@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useState } from 'react';
 import type { Department } from '@/domain/department/types';
+import { CsvImport } from './CsvImport';
 
 /** 部署管理 (issue #25)。一覧・作成・有効/無効・並び替えを管理 API 経由で行う。 */
 export function DepartmentsManager() {
@@ -82,6 +83,13 @@ export function DepartmentsManager() {
           追加
         </button>
       </div>
+
+      <CsvImport
+        endpoint="/api/admin/departments/import"
+        placeholder={'department_id,name,kana,display_order,enabled\n,法務部,ほうむぶ,5,true'}
+        onApplied={() => void load()}
+        testId="dept"
+      />
 
       <table data-testid="dept-table" style={{ width: '100%', borderCollapse: 'collapse' }}>
         <thead>

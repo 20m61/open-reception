@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import type { Department } from '@/domain/department/types';
 import type { Staff } from '@/domain/staff/types';
+import { CsvImport } from './CsvImport';
 
 /** 担当者管理 (issue #26)。一覧・作成・有効/無効・部署割り当てを管理 API 経由で行う。 */
 export function StaffManager() {
@@ -85,6 +86,13 @@ export function StaffManager() {
           追加
         </button>
       </div>
+
+      <CsvImport
+        endpoint="/api/admin/staff/import"
+        placeholder={'staff_id,display_name,kana,aliases,department_id,enabled,available\n,新任 太郎,しんにん たろう,Shinnin,dept-sales,true,true'}
+        onApplied={() => void load()}
+        testId="staff"
+      />
 
       <table data-testid="staff-table" style={{ width: '100%', borderCollapse: 'collapse' }}>
         <thead>

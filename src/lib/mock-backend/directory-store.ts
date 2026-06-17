@@ -193,6 +193,104 @@ export function updateStaff(id: string, patch: unknown): Result<Staff> {
   return { ok: true, value: found };
 }
 
+/* ---------- CSV インポート (issue #25, #26) ---------- */
+
+export type ImportSummary = {
+  mode: 'preview' | 'apply';
+  created: number;
+  updated: number;
+  invalid: Array<{ row: number; reason: string }>;
+};
+
+function parseBool(value: string | undefined, fallback: boolean): boolean {
+  if (value === undefined || value === '') return fallback;
+  return value === 'true' || value === '1' || value === 'yes';
+}
+
+/** 部署 CSV（department_id,name,kana,display_order,enabled）を取り込む。 */
+export function importDepartments(records: Record<string, string>[], mode: 'preview' | 'apply'): ImportSummary {
+  const summary: ImportSummary = { mode, created: 0, updated: 0, invalid: [] };
+  records.forEach((rec, i) => {
+    const name = (rec.name ?? '').trim();
+    if (name === '') {
+      summary.invalid.push({ row: i + 2, reason: 'name is required' });
+      return;
+    }
+    const id = (rec.department_id ?? '').trim();
+    const existing = id ? departments.find((d) => d.id === id) : undefined;
+    if (existing) {
+      summary.updated++;
+      if (mode === 'apply') {
+        existing.name = name;
+        existing.kana = rec.kana?.trim() || undefined;
+        if (rec.display_order) existing.displayOrder = Number(rec.display_order) || existing.displayOrder;
+        existing.enabled = parseBool(rec.enabled, existing.enabled);
+      }
+    } else {
+      summary.created++;
+      if (mode === 'apply') {
+        const maxOrder = departments.reduce((m, d) => Math.max(m, d.displayOrder), 0);
+        departments.push({
+          id: id || nextId('dept'),
+          name,
+          kana: rec.kana?.trim() || undefined,
+          displayOrder: rec.display_order ? Number(rec.display_order) || maxOrder + 1 : maxOrder + 1,
+          enabled: parseBool(rec.enabled, true),
+        });
+      }
+    }
+  });
+  return summary;
+}
+
+/** 担当者 CSV（staff_id,display_name,kana,aliases,department_id,enabled,available）を取り込む。 */
+export function importStaff(records: Record<string, string>[], mode: 'preview' | 'apply'): ImportSummary {
+  const summary: ImportSummary = { mode, created: 0, updated: 0, invalid: [] };
+  records.forEach((rec, i) => {
+    const displayName = (rec.display_name ?? '').trim();
+    const departmentId = (rec.department_id ?? '').trim();
+    if (displayName === '') {
+      summary.invalid.push({ row: i + 2, reason: 'display_name is required' });
+      return;
+    }
+    if (!departments.some((d) => d.id === departmentId)) {
+      summary.invalid.push({ row: i + 2, reason: `unknown department_id: ${departmentId}` });
+      return;
+    }
+    const aliases = (rec.aliases ?? '')
+      .split(';')
+      .map((a) => a.trim())
+      .filter((a) => a !== '');
+    const id = (rec.staff_id ?? '').trim();
+    const existing = id ? staff.find((s) => s.id === id) : undefined;
+    if (existing) {
+      summary.updated++;
+      if (mode === 'apply') {
+        existing.displayName = displayName;
+        existing.kana = rec.kana?.trim() || undefined;
+        existing.aliases = aliases;
+        existing.departmentId = departmentId;
+        existing.enabled = parseBool(rec.enabled, existing.enabled);
+        existing.available = parseBool(rec.available, existing.available);
+      }
+    } else {
+      summary.created++;
+      if (mode === 'apply') {
+        staff.push({
+          id: id || nextId('staff'),
+          displayName,
+          kana: rec.kana?.trim() || undefined,
+          aliases,
+          departmentId,
+          enabled: parseBool(rec.enabled, true),
+          available: parseBool(rec.available, true),
+        });
+      }
+    }
+  });
+  return summary;
+}
+
 /* ---------- kiosk 公開ビュー ---------- */
 
 /** 受付端末向けの最小情報（mockCallOutcome 等の内部情報は含めない）。 */
