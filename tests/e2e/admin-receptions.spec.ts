@@ -1,4 +1,5 @@
 import { test, expect, type Page } from '@playwright/test';
+import { loginAsAdmin } from './helpers';
 
 /**
  * 受付履歴・監査ログの E2E (issue #19)。
@@ -22,6 +23,7 @@ test('呼び出し成功・完了が受付履歴に記録される', async ({ pa
   await page.getByTestId('complete').click();
   await expect(page.getByTestId('completed')).toBeVisible();
 
+  await loginAsAdmin(page);
   await page.goto('/admin/receptions');
   await expect(page.getByTestId('receptions-table')).toBeVisible();
   await expect(page.getByTestId('reception-row').filter({ hasText: '応答' }).first()).toBeVisible();
@@ -33,6 +35,7 @@ test('未応答→代替導線の利用が受付履歴に記録される', async
   await page.getByTestId('use-fallback').click();
   await expect(page.getByTestId('fallback')).toBeVisible();
 
+  await loginAsAdmin(page);
   await page.goto('/admin/receptions');
   const fallbackRow = page.getByTestId('reception-row').filter({ hasText: '未応答' }).filter({ hasText: 'あり' });
   await expect(fallbackRow.first()).toBeVisible();
@@ -42,6 +45,7 @@ test('受付履歴に来訪者の個人情報が表示されない', async ({ pa
   await runReception(page, 'staff-staff-takahashi');
   await expect(page.getByTestId('result-failed')).toBeVisible();
 
+  await loginAsAdmin(page);
   await page.goto('/admin/receptions');
   await expect(page.getByTestId('receptions-table')).toBeVisible();
   await expect(page.getByText('来客 一郎')).toHaveCount(0);

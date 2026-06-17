@@ -1,4 +1,5 @@
 import { test, expect } from '@playwright/test';
+import { loginAsAdmin } from './helpers';
 
 /**
  * 部署・担当者管理の E2E (issue #3, #25, #26)。
@@ -11,7 +12,10 @@ function uniq(prefix: string) {
 
 test('部署を追加すると一覧と受付端末に反映される', async ({ page }) => {
   const name = uniq('部署');
+  await loginAsAdmin(page);
   await page.goto('/admin/departments');
+  // クライアントの読み込み完了（=ハイドレーション済み）を待ってから入力する。
+  await expect(page.getByTestId('dept-row').first()).toBeVisible();
   await page.getByTestId('dept-name-input').fill(name);
   await page.getByTestId('dept-add').click();
 
@@ -27,7 +31,9 @@ test('部署を追加すると一覧と受付端末に反映される', async ({
 
 test('追加した部署を無効化できる', async ({ page }) => {
   const name = uniq('無効化部署');
+  await loginAsAdmin(page);
   await page.goto('/admin/departments');
+  await expect(page.getByTestId('dept-row').first()).toBeVisible();
   await page.getByTestId('dept-name-input').fill(name);
   await page.getByTestId('dept-add').click();
 
@@ -39,7 +45,9 @@ test('追加した部署を無効化できる', async ({ page }) => {
 
 test('担当者を追加して無効化できる', async ({ page }) => {
   const name = uniq('担当');
+  await loginAsAdmin(page);
   await page.goto('/admin/staff');
+  await expect(page.getByTestId('staff-row').first()).toBeVisible();
   await page.getByTestId('staff-name-input').fill(name);
   await page.getByTestId('staff-add').click();
 

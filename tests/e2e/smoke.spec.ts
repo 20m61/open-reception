@@ -1,4 +1,5 @@
 import { test, expect } from '@playwright/test';
+import { loginAsAdmin } from './helpers';
 
 /**
  * 基盤の smoke test (issue #9)。
@@ -17,7 +18,8 @@ test('受付待機画面が表示される', async ({ page }) => {
   await expect(page.getByRole('button', { name: '受付を開始する' })).toBeVisible();
 });
 
-test('管理ダッシュボードが表示される', async ({ page }) => {
+test('管理ダッシュボードが表示される（要ログイン）', async ({ page }) => {
+  await loginAsAdmin(page);
   await page.goto('/admin');
   await expect(page.getByRole('heading', { name: 'ダッシュボード' })).toBeVisible();
 });
