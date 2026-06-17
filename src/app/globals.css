@@ -1,12 +1,26 @@
 :root {
-  /* iPad 受付端末向けレイアウトトークン (issue #17 で拡充) */
+  /* iPad 受付端末向けレイアウトトークン (issue #17) */
   --color-bg: #0f172a;
   --color-surface: #1e293b;
+  --color-surface-2: #334155;
   --color-text: #f8fafc;
+  --color-muted: #94a3b8;
   --color-accent: #38bdf8;
+  --color-success: #22c55e;
+  --color-danger: #f87171;
+  --color-warning: #fbbf24;
+
+  /* タッチターゲットは十分大きく、間隔を空ける */
   --touch-target-min: 64px;
+  --space-sm: 12px;
+  --space-md: 16px;
   --space-lg: 24px;
+  --space-xl: 40px;
   --radius-lg: 16px;
+
+  --font-body: 1.25rem;
+  --font-lg: 1.75rem;
+  --font-xl: 2.5rem;
 }
 
 * {
@@ -21,10 +35,173 @@ body {
   background: var(--color-bg);
   color: var(--color-text);
   font-family: system-ui, -apple-system, 'Hiragino Kaku Gothic ProN', 'Noto Sans JP', sans-serif;
+  font-size: var(--font-body);
   -webkit-text-size-adjust: 100%;
 }
 
 a {
   color: inherit;
   text-decoration: none;
+}
+
+/* ---- 受付端末向けユーティリティ (issue #17) ---- */
+
+.screen {
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-lg);
+  padding: var(--space-xl);
+}
+
+.screen__title {
+  font-size: var(--font-xl);
+  margin: 0;
+}
+
+.screen__lead {
+  font-size: var(--font-lg);
+  color: var(--color-muted);
+  margin: 0;
+}
+
+.screen__body {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-lg);
+}
+
+.screen__footer {
+  display: flex;
+  gap: var(--space-md);
+  flex-wrap: wrap;
+}
+
+/* タッチしやすい大きなボタン。最小 64px の高さを保証する。 */
+.btn {
+  min-height: var(--touch-target-min);
+  min-width: 160px;
+  padding: var(--space-md) var(--space-lg);
+  font-size: var(--font-lg);
+  font-weight: 700;
+  border-radius: var(--radius-lg);
+  border: 2px solid transparent;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-sm);
+}
+
+.btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.btn--primary {
+  background: var(--color-accent);
+  color: #0f172a;
+}
+
+.btn--secondary {
+  background: var(--color-surface);
+  color: var(--color-text);
+  border-color: rgba(255, 255, 255, 0.15);
+}
+
+.btn--ghost {
+  background: transparent;
+  color: var(--color-muted);
+  border-color: rgba(255, 255, 255, 0.15);
+}
+
+.btn--danger {
+  background: var(--color-danger);
+  color: #0f172a;
+}
+
+.btn--block {
+  width: 100%;
+}
+
+/* 選択カードのグリッド（目的・担当者選択）。 */
+.card-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: var(--space-lg);
+}
+
+.card {
+  min-height: 120px;
+  padding: var(--space-lg);
+  background: var(--color-surface);
+  border: 2px solid rgba(255, 255, 255, 0.1);
+  border-radius: var(--radius-lg);
+  font-size: var(--font-lg);
+  font-weight: 700;
+  text-align: left;
+  color: var(--color-text);
+  cursor: pointer;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: var(--space-sm);
+}
+
+.card:hover {
+  border-color: var(--color-accent);
+}
+
+.card__sub {
+  font-size: var(--font-body);
+  font-weight: 400;
+  color: var(--color-muted);
+}
+
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-sm);
+}
+
+.field__label {
+  font-size: var(--font-body);
+  color: var(--color-muted);
+}
+
+.input {
+  min-height: var(--touch-target-min);
+  padding: var(--space-md);
+  font-size: var(--font-lg);
+  border-radius: var(--radius-lg);
+  border: 2px solid var(--color-surface-2);
+  background: var(--color-surface);
+  color: var(--color-text);
+}
+
+.input:focus {
+  outline: none;
+  border-color: var(--color-accent);
+}
+
+.notice {
+  padding: var(--space-lg);
+  border-radius: var(--radius-lg);
+  font-size: var(--font-lg);
+}
+
+.notice--success {
+  background: rgba(34, 197, 94, 0.15);
+  border: 2px solid var(--color-success);
+}
+
+.notice--danger {
+  background: rgba(248, 113, 113, 0.15);
+  border: 2px solid var(--color-danger);
+}
+
+.notice--warning {
+  background: rgba(251, 191, 36, 0.15);
+  border: 2px solid var(--color-warning);
 }
