@@ -40,6 +40,9 @@ npm run dev            # http://localhost:3000 で起動
 | `npm run lint` | ESLint |
 | `npm test` | ユニットテスト (Vitest) |
 | `npm run test:e2e` | iPad viewport の E2E smoke test (Playwright) |
+| `npm run verify` | typecheck → lint → test → build を一括実行（品質ゲート） |
+
+> 本リポジトリは GitHub Actions を使用しません。コミット/PR 前に `npm run verify` をローカル実行して品質ゲートを通してください。E2E は別途 `npm run test:e2e` で実行します。
 
 E2E を初めて実行する場合はブラウザを取得する。
 

@@ -11,7 +11,8 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",
-    "test:e2e": "playwright test"
+    "test:e2e": "playwright test",
+    "verify": "npm run typecheck && npm run lint && npm test && npm run build"
   },
   "dependencies": {
     "next": "15.5.19",
