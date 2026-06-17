@@ -145,47 +145,38 @@ main へのマージ前に推奨:
 - accessibility test
 - iPad 実機 UAT チェックリスト確認
 
-## 6. GitHub Actions 初期案
+## 6. 品質ゲートの実行方針
 
-```yaml
-name: quality-gate
+本リポジトリは **GitHub Actions を使用しない**。品質ゲートはローカル（または将来 Actions 以外の CI を採用する場合はそのランナー）で実行する。
 
-on:
-  pull_request:
-  push:
-    branches: [main]
+### ローカル品質ゲート
 
-permissions:
-  contents: read
-  security-events: write
+コミット/PR 前に以下を実行する。
 
-jobs:
-  app-check:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: '22'
-          cache: 'npm'
-      - run: npm ci
-      - run: npm run typecheck --if-present
-      - run: npm run lint --if-present
-      - run: npm test --if-present
-      - run: npm run test:e2e --if-present
-
-  semgrep:
-    runs-on: ubuntu-latest
-    container:
-      image: semgrep/semgrep
-    steps:
-      - uses: actions/checkout@v4
-      - run: semgrep scan --config auto --sarif --output semgrep.sarif || true
-      - uses: github/codeql-action/upload-sarif@v3
-        if: always()
-        with:
-          sarif_file: semgrep.sarif
+```bash
+npm run verify      # typecheck → lint → test → build
+npm run test:e2e    # iPad viewport の E2E smoke test
 ```
+
+`npm run verify` は `package.json` の単一スクリプトに集約しており、CI 基盤に依存しない。
+
+### セキュリティスキャン（ローカル / 任意ツール）
+
+Semgrep・依存関係監査・secret scan は CI 固有機能に依存せず、ローカルまたは任意の実行基盤で動かす。
+
+```bash
+# SAST（Semgrep CLI もしくは Docker イメージ semgrep/semgrep）
+semgrep scan --config auto
+
+# 依存関係監査
+npm audit
+
+# secret scan（例: gitleaks / trufflehog などの CLI を利用）
+```
+
+### 将来 Actions 以外の CI を採用する場合
+
+上記コマンド（`npm ci` → `npm run verify` → `npm run test:e2e` → 各セキュリティスキャン）を、採用する CI のジョブ定義へそのまま移植する。アプリ側のスクリプトは CI 基盤非依存に保つ。
 
 ## 7. iPad 実機 UAT チェックリスト
 

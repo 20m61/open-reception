@@ -18,6 +18,52 @@ open-reception は、iPad を受付端末として利用する無人受付シス
 - 通信: Vonage Video API / WebRTC 相当のリアルタイム通話
 - 管理: 担当者、部署、呼び出し先、受付履歴、端末設定
 
+## ローカル起動手順
+
+前提: Node.js 22 以上。
+
+```bash
+npm install
+npm run dev            # http://localhost:3000 で起動
+```
+
+- 受付端末: http://localhost:3000/kiosk
+- 管理画面: http://localhost:3000/admin
+
+### 受付 MVP フロー（実装済み）
+
+`/kiosk` で iPad 受付フローが動作します（状態遷移モデルで制御）。
+
+待機 → 目的選択 → 担当者/部署選択（検索可） → 来訪者情報入力 → 確認 →
+呼び出し中 → 成功 / 未応答 / 失敗（代替導線） → 完了（自動で待機画面へ復帰）
+
+- 呼び出しは mock adapter で成功/未応答/失敗/タイムアウトを再現（本番 Vonage は adapter 差し替え）
+- 受付セッションは mock backend（`/api/kiosk/receptions*`）で作成・更新
+- 担当者/部署は仮データ（管理画面・CSV インポートで置換予定）
+- 完了/キャンセル後は個人情報を画面に残さない
+
+### 開発コマンド
+
+| コマンド | 用途 |
+| --- | --- |
+| `npm run dev` | 開発サーバ起動 |
+| `npm run build` | 本番ビルド |
+| `npm run typecheck` | 型チェック (`tsc --noEmit`) |
+| `npm run lint` | ESLint |
+| `npm test` | ユニットテスト (Vitest) |
+| `npm run test:e2e` | iPad viewport の E2E smoke test (Playwright) |
+| `npm run verify` | typecheck → lint → test → build を一括実行（品質ゲート） |
+
+> 本リポジトリは GitHub Actions を使用しません。コミット/PR 前に `npm run verify` をローカル実行して品質ゲートを通してください。E2E は別途 `npm run test:e2e` で実行します。
+
+E2E を初めて実行する場合はブラウザを取得する。
+
+```bash
+npx playwright install --with-deps chromium webkit
+```
+
+ソース構成と認可境界の方針は [`src/ARCHITECTURE.md`](./src/ARCHITECTURE.md) を参照。
+
 ## 初期ドキュメント
 
 - [Project Charter](./PROJECT_CHARTER.md)

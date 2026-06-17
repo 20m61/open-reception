@@ -1,0 +1,17 @@
+import { NextResponse } from 'next/server';
+import { createReception } from '@/lib/mock-backend/reception-store';
+import { toResponse } from '@/lib/mock-backend/http';
+
+/**
+ * POST /api/kiosk/receptions — 受付セッションを作成する (issue #16)。
+ * 目的・呼び出し先・来訪者情報が揃った状態で受付を確定開始する。
+ */
+export async function POST(request: Request): Promise<NextResponse> {
+  let body: unknown;
+  try {
+    body = await request.json();
+  } catch {
+    return NextResponse.json({ error: 'invalid_input', message: 'invalid JSON' }, { status: 400 });
+  }
+  return toResponse(createReception(body), 201);
+}
