@@ -42,6 +42,13 @@ npm run dev            # http://localhost:3000 で起動
 - 担当者/部署は仮データ（管理画面・CSV インポートで置換予定）
 - 完了/キャンセル後は個人情報を画面に残さない
 
+### 受付履歴・監査ログ（実装済み）
+
+呼び出し結果（応答/未応答/失敗/キャンセル）・所要時間・代替導線の利用を記録し、
+管理画面 `/admin/receptions` で閲覧できます（`GET /api/admin/receptions`・`/api/admin/audit`）。
+来訪者の氏名・会社名・要件メモなどの個人情報はログに保持しません。方針は
+[`docs/audit-logging.md`](./docs/audit-logging.md) を参照。
+
 ### 開発コマンド
 
 | コマンド | 用途 |
