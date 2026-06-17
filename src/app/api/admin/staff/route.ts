@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server';
 import { createStaff, listStaff } from '@/lib/mock-backend/directory-store';
 import { readJson, resultResponse } from '@/lib/mock-backend/result-http';
+import { appendAdminAudit } from '@/lib/mock-backend/reception-log-store';
 
 /**
  * GET /api/admin/staff — 担当者一覧（無効含む） (issue #3, #26)。
@@ -13,5 +14,7 @@ export function GET(): NextResponse {
 }
 
 export async function POST(request: Request): Promise<NextResponse> {
-  return resultResponse(createStaff(await readJson(request)), 201);
+  const result = createStaff(await readJson(request));
+  if (result.ok) appendAdminAudit('staff.created', { type: 'staff', id: result.value.id });
+  return resultResponse(result, 201);
 }

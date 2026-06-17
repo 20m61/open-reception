@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server';
 import { moveDepartment } from '@/lib/mock-backend/directory-store';
 import { readJson, resultResponse } from '@/lib/mock-backend/result-http';
+import { appendAdminAudit } from '@/lib/mock-backend/reception-log-store';
 
 /**
  * POST /api/admin/departments/:id/move — 部署の表示順を1つ上/下へ移動 (issue #25)。
@@ -16,5 +17,7 @@ export async function POST(
   if (direction !== 'up' && direction !== 'down') {
     return NextResponse.json({ error: 'invalid_input', message: 'direction must be up or down' }, { status: 400 });
   }
-  return resultResponse(moveDepartment(id, direction));
+  const result = moveDepartment(id, direction);
+  if (result.ok) appendAdminAudit('department.reordered', { type: 'department', id }, { direction });
+  return resultResponse(result);
 }

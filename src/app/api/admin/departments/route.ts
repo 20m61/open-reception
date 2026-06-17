@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server';
 import { createDepartment, listDepartments } from '@/lib/mock-backend/directory-store';
 import { readJson, resultResponse } from '@/lib/mock-backend/result-http';
+import { appendAdminAudit } from '@/lib/mock-backend/reception-log-store';
 
 /**
  * GET /api/admin/departments — 部署一覧（無効含む） (issue #3, #25)。
@@ -13,5 +14,7 @@ export function GET(): NextResponse {
 }
 
 export async function POST(request: Request): Promise<NextResponse> {
-  return resultResponse(createDepartment(await readJson(request)), 201);
+  const result = createDepartment(await readJson(request));
+  if (result.ok) appendAdminAudit('department.created', { type: 'department', id: result.value.id });
+  return resultResponse(result, 201);
 }

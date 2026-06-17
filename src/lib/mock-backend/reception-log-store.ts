@@ -34,6 +34,15 @@ function pushCapped<T>(arr: T[], item: T, max: number): void {
   }
 }
 
+/** 管理操作を監査ログに記録する (issue #22)。actor は admin 固定。 */
+export function appendAdminAudit(
+  action: AuditAction,
+  target: { type: string; id?: string },
+  metadata?: Record<string, string>,
+): AuditLog {
+  return appendAuditLog({ action, actor: 'admin', targetType: target.type, targetId: target.id, metadata });
+}
+
 export function appendAuditLog(entry: Omit<AuditLog, 'id' | 'at'> & { at?: string }): AuditLog {
   const log: AuditLog = {
     id: randomUUID(),

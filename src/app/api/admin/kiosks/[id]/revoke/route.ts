@@ -1,6 +1,7 @@
 import type { NextResponse } from 'next/server';
 import { setKioskEnabled } from '@/lib/kiosk/kiosk-store';
 import { resultResponse } from '@/lib/mock-backend/result-http';
+import { appendAdminAudit } from '@/lib/mock-backend/reception-log-store';
 
 /**
  * POST /api/admin/kiosks/:id/revoke — 端末を失効する (issue #18, #23)。
@@ -11,5 +12,7 @@ export async function POST(
   { params }: { params: Promise<{ id: string }> },
 ): Promise<NextResponse> {
   const { id } = await params;
-  return resultResponse(setKioskEnabled(id, false));
+  const result = setKioskEnabled(id, false);
+  if (result.ok) appendAdminAudit('kiosk.revoked', { type: 'kiosk', id });
+  return resultResponse(result);
 }
