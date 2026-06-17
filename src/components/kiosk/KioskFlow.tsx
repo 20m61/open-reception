@@ -84,24 +84,32 @@ export function KioskFlow() {
   const [directory, setDirectory] = useState<Directory>({ departments: [], staff: [] });
   // null=取得前/取得失敗（既定で表示継続）、false=失効、true=有効。
   const [active, setActive] = useState<boolean | null>(null);
+  // PIN 許可状態。既定では PIN 不要として表示を継続する (issue #23)。
+  const [needsAuthorize, setNeedsAuthorize] = useState(false);
 
-  // 端末設定を取得し、失効端末は受付を停止する (issue #18)。
-  useEffect(() => {
-    let cancelled = false;
-    (async () => {
-      try {
-        const res = await fetch(`/api/kiosk/config?kioskId=${encodeURIComponent(KIOSK_ID)}`);
-        if (!res.ok) return;
-        const config = (await res.json()) as { active: boolean };
-        if (!cancelled) setActive(config.active);
-      } catch {
-        /* 取得失敗時は表示を継続（真っ白にしない） */
+  const refreshAccess = useCallback(async () => {
+    try {
+      const [configRes, statusRes] = await Promise.all([
+        fetch(`/api/kiosk/config?kioskId=${encodeURIComponent(KIOSK_ID)}`),
+        fetch('/api/kiosk/session-status'),
+      ]);
+      if (configRes.ok) {
+        const config = (await configRes.json()) as { active: boolean };
+        setActive(config.active);
       }
-    })();
-    return () => {
-      cancelled = true;
-    };
+      if (statusRes.ok) {
+        const status = (await statusRes.json()) as { pinRequired: boolean; authorized: boolean };
+        setNeedsAuthorize(status.pinRequired && !status.authorized);
+      }
+    } catch {
+      /* 取得失敗時は表示を継続（真っ白にしない） */
+    }
   }, []);
+
+  // 端末設定と許可状態を取得する (issue #18, #23)。
+  useEffect(() => {
+    void refreshAccess();
+  }, [refreshAccess]);
 
   // 部署・担当者を管理画面と共有のディレクトリ API から取得する (issue #3)。
   useEffect(() => {
@@ -190,18 +198,76 @@ export function KioskFlow() {
     dispatch({ type: 'USE_FALLBACK' });
   }, [data.sessionId]);
 
+  const view = active === false ? 'revoked' : needsAuthorize ? 'authorize' : 'ready';
+
   return (
-    <main className="screen" data-kiosk-state={active === false ? 'revoked' : data.state}>
-      {active === false ? (
+    <main className="screen" data-kiosk-state={view === 'ready' ? data.state : view}>
+      {view === 'revoked' ? (
         <div className="screen__body" style={{ alignItems: 'center', justifyContent: 'center', textAlign: 'center' }}>
           <div className="notice notice--danger" data-testid="kiosk-revoked">
             この受付端末は現在ご利用いただけません。担当者にお問い合わせください。
           </div>
         </div>
+      ) : view === 'authorize' ? (
+        <KioskAuthorizeView onAuthorized={() => setNeedsAuthorize(false)} />
       ) : (
         renderScreen(data, dispatch, complete, handleFallback, directory)
       )}
     </main>
+  );
+}
+
+function KioskAuthorizeView({ onAuthorized }: { onAuthorized: () => void }) {
+  const [pin, setPin] = useState('');
+  const [error, setError] = useState(false);
+  const [busy, setBusy] = useState(false);
+
+  const submit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (busy) return;
+    setBusy(true);
+    setError(false);
+    try {
+      const res = await fetch('/api/kiosk/authorize', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ pin, kioskId: KIOSK_ID }),
+      });
+      if (res.ok) onAuthorized();
+      else setError(true);
+    } catch {
+      setError(true);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <form
+      onSubmit={submit}
+      className="screen__body"
+      style={{ alignItems: 'center', justifyContent: 'center', textAlign: 'center', gap: 'var(--space-lg)' }}
+    >
+      <h1 className="screen__title">受付端末の許可</h1>
+      <p className="screen__lead">PIN を入力してください。</p>
+      <input
+        type="password"
+        inputMode="numeric"
+        className="input"
+        data-testid="kiosk-pin"
+        value={pin}
+        onChange={(e) => setPin(e.target.value)}
+        style={{ maxWidth: 280, textAlign: 'center' }}
+      />
+      {error ? (
+        <p className="notice notice--danger" data-testid="kiosk-pin-error">
+          PIN が正しくありません。
+        </p>
+      ) : null}
+      <button type="submit" className="btn btn--primary" data-testid="kiosk-authorize" disabled={busy}>
+        受付を開始する
+      </button>
+    </form>
   );
 }
 

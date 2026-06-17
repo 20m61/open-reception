@@ -21,7 +21,7 @@ export async function middleware(req: NextRequest): Promise<NextResponse> {
 
   const token = req.cookies.get(ADMIN_COOKIE)?.value;
   const session = await verifySession(token, getAdminSecret());
-  if (session) return NextResponse.next();
+  if (session?.role === 'admin') return NextResponse.next();
 
   if (isAdminApi) {
     return NextResponse.json({ error: 'unauthorized', message: 'admin authentication required' }, { status: 401 });
