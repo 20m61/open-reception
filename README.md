@@ -18,6 +18,37 @@ open-reception は、iPad を受付端末として利用する無人受付シス
 - 通信: Vonage Video API / WebRTC 相当のリアルタイム通話
 - 管理: 担当者、部署、呼び出し先、受付履歴、端末設定
 
+## ローカル起動手順
+
+前提: Node.js 22 以上。
+
+```bash
+npm install
+npm run dev            # http://localhost:3000 で起動
+```
+
+- 受付端末: http://localhost:3000/kiosk
+- 管理画面: http://localhost:3000/admin
+
+### 開発コマンド
+
+| コマンド | 用途 |
+| --- | --- |
+| `npm run dev` | 開発サーバ起動 |
+| `npm run build` | 本番ビルド |
+| `npm run typecheck` | 型チェック (`tsc --noEmit`) |
+| `npm run lint` | ESLint |
+| `npm test` | ユニットテスト (Vitest) |
+| `npm run test:e2e` | iPad viewport の E2E smoke test (Playwright) |
+
+E2E を初めて実行する場合はブラウザを取得する。
+
+```bash
+npx playwright install --with-deps chromium webkit
+```
+
+ソース構成と認可境界の方針は [`src/ARCHITECTURE.md`](./src/ARCHITECTURE.md) を参照。
+
 ## 初期ドキュメント
 
 - [Project Charter](./PROJECT_CHARTER.md)
