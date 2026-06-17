@@ -8,11 +8,21 @@ import {
   type VisitorInfo,
 } from '@/domain/reception/session';
 import { transition, type ReceptionEvent, type ReceptionState } from '@/domain/reception/state';
-import { MOCK_DEPARTMENTS, MOCK_STAFF } from '@/domain/staff/mock-data';
-import { searchStaff } from '@/domain/staff/search';
 
 /** MVP では端末 ID は固定。将来 kiosk config から取得する (issue #18)。 */
 const KIOSK_ID = 'kiosk-dev';
+
+type DirDepartment = { id: string; name: string };
+type DirStaff = { id: string; displayName: string; kana?: string; aliases: string[]; departmentId: string };
+type Directory = { departments: DirDepartment[]; staff: DirStaff[] };
+
+function matchesQuery(s: DirStaff, query: string): boolean {
+  const q = query.normalize('NFKC').trim().toLowerCase();
+  if (q === '') return true;
+  return [s.displayName, s.kana ?? '', ...s.aliases]
+    .map((v) => v.normalize('NFKC').toLowerCase())
+    .some((v) => v.includes(q));
+}
 /** 完了・キャンセル後に待機画面へ自動復帰するまでの時間。 */
 const AUTO_RESET_MS = 6000;
 
@@ -71,6 +81,25 @@ function reducer(data: FlowData, action: Action): FlowData {
 
 export function KioskFlow() {
   const [data, dispatch] = useReducer(reducer, INITIAL);
+  const [directory, setDirectory] = useState<Directory>({ departments: [], staff: [] });
+
+  // 部署・担当者を管理画面と共有のディレクトリ API から取得する (issue #3)。
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await fetch('/api/kiosk/directory');
+        if (!res.ok) return;
+        const dir = (await res.json()) as Directory;
+        if (!cancelled) setDirectory(dir);
+      } catch {
+        /* 取得失敗時は空のまま。受付開始ボタンは表示され、画面は壊れない */
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   // 呼び出し中になったら、セッション作成 → 呼び出しを実行して結果を反映する。
   useEffect(() => {
@@ -143,7 +172,7 @@ export function KioskFlow() {
 
   return (
     <main className="screen" data-kiosk-state={data.state}>
-      {renderScreen(data, dispatch, complete, handleFallback)}
+      {renderScreen(data, dispatch, complete, handleFallback, directory)}
     </main>
   );
 }
@@ -153,6 +182,7 @@ function renderScreen(
   dispatch: React.Dispatch<Action>,
   complete: () => void,
   onFallback: () => void,
+  directory: Directory,
 ) {
   switch (data.state) {
     case 'idle':
@@ -167,6 +197,7 @@ function renderScreen(
     case 'selectingTarget':
       return (
         <TargetView
+          directory={directory}
           onSelect={(target) => dispatch({ type: 'SELECT_TARGET', target })}
           onBack={() => dispatch({ type: 'BACK' })}
         />
@@ -259,10 +290,18 @@ function PurposeView({
   );
 }
 
-function TargetView({ onSelect, onBack }: { onSelect: (t: Target) => void; onBack: () => void }) {
+function TargetView({
+  directory,
+  onSelect,
+  onBack,
+}: {
+  directory: Directory;
+  onSelect: (t: Target) => void;
+  onBack: () => void;
+}) {
   const [query, setQuery] = useState('');
-  const results = useMemo(() => searchStaff(MOCK_STAFF, query), [query]);
-  const departments = useMemo(() => MOCK_DEPARTMENTS.filter((d) => d.enabled), []);
+  const results = useMemo(() => directory.staff.filter((s) => matchesQuery(s, query)), [directory.staff, query]);
+  const departments = directory.departments;
 
   return (
     <>
@@ -294,7 +333,7 @@ function TargetView({ onSelect, onBack }: { onSelect: (t: Target) => void; onBac
                 onClick={() => onSelect({ type: 'staff', id: s.id, label: s.displayName })}
               >
                 {s.displayName}
-                <span className="card__sub">{MOCK_DEPARTMENTS.find((d) => d.id === s.departmentId)?.name}</span>
+                <span className="card__sub">{directory.departments.find((d) => d.id === s.departmentId)?.name}</span>
               </button>
             ))}
           </div>
