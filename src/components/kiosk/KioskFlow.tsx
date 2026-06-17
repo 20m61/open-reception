@@ -82,6 +82,26 @@ function reducer(data: FlowData, action: Action): FlowData {
 export function KioskFlow() {
   const [data, dispatch] = useReducer(reducer, INITIAL);
   const [directory, setDirectory] = useState<Directory>({ departments: [], staff: [] });
+  // null=取得前/取得失敗（既定で表示継続）、false=失効、true=有効。
+  const [active, setActive] = useState<boolean | null>(null);
+
+  // 端末設定を取得し、失効端末は受付を停止する (issue #18)。
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await fetch(`/api/kiosk/config?kioskId=${encodeURIComponent(KIOSK_ID)}`);
+        if (!res.ok) return;
+        const config = (await res.json()) as { active: boolean };
+        if (!cancelled) setActive(config.active);
+      } catch {
+        /* 取得失敗時は表示を継続（真っ白にしない） */
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   // 部署・担当者を管理画面と共有のディレクトリ API から取得する (issue #3)。
   useEffect(() => {
@@ -171,8 +191,16 @@ export function KioskFlow() {
   }, [data.sessionId]);
 
   return (
-    <main className="screen" data-kiosk-state={data.state}>
-      {renderScreen(data, dispatch, complete, handleFallback, directory)}
+    <main className="screen" data-kiosk-state={active === false ? 'revoked' : data.state}>
+      {active === false ? (
+        <div className="screen__body" style={{ alignItems: 'center', justifyContent: 'center', textAlign: 'center' }}>
+          <div className="notice notice--danger" data-testid="kiosk-revoked">
+            この受付端末は現在ご利用いただけません。担当者にお問い合わせください。
+          </div>
+        </div>
+      ) : (
+        renderScreen(data, dispatch, complete, handleFallback, directory)
+      )}
     </main>
   );
 }

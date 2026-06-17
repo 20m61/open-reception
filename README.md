@@ -47,6 +47,10 @@ npm run dev            # http://localhost:3000 で起動
 `/admin/*` と `/api/admin/*` は管理セッション必須です（middleware で保護）。未認証は `/admin/login` へリダイレクト、管理 API は 401 を返します。受付端末（kiosk）からは管理画面/API にアクセスできません。`/api/kiosk/*` は公開です。
 ログインは `/admin/login`（パスワードは `ADMIN_PASSWORD`、署名は `ADMIN_SESSION_SECRET`。いずれも server-only）。
 
+### 受付端末管理・失効（実装済み）
+
+受付端末を `/admin/kiosks` で登録・失効・再有効化できます。受付端末は `GET /api/kiosk/config?kioskId=...` で設定を取得し、**失効端末は受付開始を停止**します（利用停止画面を表示）。
+
 ### 部署・担当者管理（実装済み）
 
 部署・担当者を管理画面 `/admin/departments`・`/admin/staff` で作成・編集・有効/無効・並び替えできます。
