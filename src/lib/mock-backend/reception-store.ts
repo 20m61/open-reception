@@ -14,7 +14,7 @@ import {
 } from '@/domain/reception/session';
 import { transition, type ReceptionEvent } from '@/domain/reception/state';
 import { MockCallAdapter } from '@/adapters/call/mock';
-import { MOCK_STAFF } from '@/domain/staff/mock-data';
+import { listStaff } from './directory-store';
 import type { CallResult } from '@/adapters/call/types';
 import {
   markFallbackUsed,
@@ -36,7 +36,6 @@ export type StoreError = { code: 'not_found' | 'invalid_input' | 'invalid_transi
 export type StoreResult<T> = { ok: true; value: T } | { ok: false; error: StoreError };
 
 const sessions = new Map<string, ReceptionSession>();
-const callAdapter = new MockCallAdapter(MOCK_STAFF);
 
 function now(): string {
   return new Date().toISOString();
@@ -136,6 +135,8 @@ export async function startCall(id: string): Promise<StoreResult<ReceptionSessio
   const calling = applyEvent(found.value, 'CONFIRM');
   if (!calling.ok) return calling;
 
+  // ディレクトリストアの現在の担当者から adapter を構成する（管理画面の変更を反映）。
+  const callAdapter = new MockCallAdapter(listStaff(true));
   const result: CallResult = await callAdapter.call({
     receptionId: calling.value.id,
     targetType: calling.value.targetType!,
