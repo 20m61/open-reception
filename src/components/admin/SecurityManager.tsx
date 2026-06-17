@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useState } from 'react';
 
-type SecurityView = { pinRequired: boolean; ipAllowlist: string[]; pinConfigured: boolean };
+type SecurityView = { pinRequired: boolean; ipAllowlist: string[]; pinConfigured: boolean; emergencyStop: boolean };
 
 /** セキュリティ設定 (issue #23, #29)。PIN 必須・PIN 変更・IP 許可リストを編集する。 */
 export function SecurityManager() {
@@ -12,6 +12,7 @@ export function SecurityManager() {
   const [ipText, setIpText] = useState('');
   const [busy, setBusy] = useState(false);
   const [saved, setSaved] = useState(false);
+  const [confirmingEmergency, setConfirmingEmergency] = useState(false);
 
   const load = useCallback(async () => {
     const res = await fetch('/api/admin/security');
@@ -50,11 +51,54 @@ export function SecurityManager() {
     }
   }, [busy, ipText, pinRequired, pin, load]);
 
+  const setEmergency = useCallback(
+    async (emergencyStop: boolean) => {
+      setConfirmingEmergency(false);
+      await fetch('/api/admin/security', {
+        method: 'PUT',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ emergencyStop }),
+      });
+      await load();
+    },
+    [load],
+  );
+
   if (!view) return <section><h1 style={{ marginTop: 0 }}>セキュリティ設定</h1><p>読み込み中…</p></section>;
 
   return (
     <section style={{ maxWidth: 480 }}>
       <h1 style={{ marginTop: 0 }}>セキュリティ設定</h1>
+
+      <div
+        data-testid="emergency-section"
+        className={view.emergencyStop ? 'notice notice--danger' : 'notice notice--warning'}
+        style={{ marginBottom: 24 }}
+      >
+        <strong>緊急停止モード</strong>
+        <p style={{ margin: '8px 0' }} data-testid="emergency-state">
+          現在: {view.emergencyStop ? '停止中（全端末で受付を停止）' : '通常稼働'}
+        </p>
+        {view.emergencyStop ? (
+          <button type="button" data-testid="emergency-resume" onClick={() => setEmergency(false)} style={primary}>
+            受付を再開する
+          </button>
+        ) : confirmingEmergency ? (
+          <div style={{ display: 'flex', gap: 8 }}>
+            <button type="button" data-testid="emergency-confirm" onClick={() => setEmergency(true)} style={danger}>
+              本当に全端末を停止する
+            </button>
+            <button type="button" data-testid="emergency-cancel" onClick={() => setConfirmingEmergency(false)} style={ghost}>
+              やめる
+            </button>
+          </div>
+        ) : (
+          <button type="button" data-testid="emergency-stop" onClick={() => setConfirmingEmergency(true)} style={danger}>
+            緊急停止する
+          </button>
+        )}
+      </div>
+
       <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
         <label style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
           <input
@@ -102,5 +146,15 @@ const primary: React.CSSProperties = {
   background: 'var(--color-accent)',
   color: '#0f172a',
   fontWeight: 700,
+  cursor: 'pointer',
+};
+const danger: React.CSSProperties = { ...primary, background: 'var(--color-danger)' };
+const ghost: React.CSSProperties = {
+  minHeight: 40,
+  padding: '8px 16px',
+  borderRadius: 8,
+  border: '1px solid rgba(255,255,255,0.2)',
+  background: 'var(--color-surface)',
+  color: 'var(--color-text)',
   cursor: 'pointer',
 };

@@ -43,4 +43,22 @@ test('セキュリティ設定ページが表示される', async ({ page }) => 
   await loginAsAdmin(page);
   await page.goto('/admin/security');
   await expect(page.getByTestId('security-pin-required')).toBeVisible();
+  await expect(page.getByTestId('emergency-section')).toBeVisible();
+});
+
+test('緊急停止は確認ステップを挟む（実行はしない＝他テストを止めない）', async ({ page }) => {
+  await loginAsAdmin(page);
+  await page.goto('/admin/security');
+  await page.getByTestId('emergency-stop').click();
+  // 確認ボタンが出るが、停止せず「やめる」で取り消す（グローバル状態は変えない）。
+  await expect(page.getByTestId('emergency-confirm')).toBeVisible();
+  await page.getByTestId('emergency-cancel').click();
+  await expect(page.getByTestId('emergency-stop')).toBeVisible();
+});
+
+test('緊急停止 API は emergencyStop を返す（false のまま）', async ({ page }) => {
+  await loginAsAdmin(page);
+  const res = await page.request.put('/api/admin/security', { data: { emergencyStop: false } });
+  const body = (await res.json()) as { emergencyStop: boolean };
+  expect(body.emergencyStop).toBe(false);
 });

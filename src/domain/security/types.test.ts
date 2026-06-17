@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { isIpAllowed, resolveKioskAccess } from './types';
+import { effectiveKioskActive, isIpAllowed, resolveKioskAccess } from './types';
 
 describe('resolveKioskAccess (#23)', () => {
   it('失効端末は revoked', () => {
@@ -13,6 +13,16 @@ describe('resolveKioskAccess (#23)', () => {
   });
   it('PIN 不要は ready', () => {
     expect(resolveKioskAccess({ active: true, pinRequired: false, authorized: false })).toBe('ready');
+  });
+});
+
+describe('effectiveKioskActive (#29)', () => {
+  it('緊急停止中は有効端末でも停止する', () => {
+    expect(effectiveKioskActive(true, true)).toBe(false);
+  });
+  it('通常時は端末の有効状態に従う', () => {
+    expect(effectiveKioskActive(true, false)).toBe(true);
+    expect(effectiveKioskActive(false, false)).toBe(false);
   });
 });
 
