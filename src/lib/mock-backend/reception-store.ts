@@ -16,6 +16,11 @@ import { transition, type ReceptionEvent } from '@/domain/reception/state';
 import { MockCallAdapter } from '@/adapters/call/mock';
 import { MOCK_STAFF } from '@/domain/staff/mock-data';
 import type { CallResult } from '@/adapters/call/types';
+import {
+  markFallbackUsed,
+  recordReceptionCompleted,
+  recordReceptionOutcome,
+} from './reception-log-store';
 
 export type CreateReceptionInput = {
   kioskId: string;
@@ -154,6 +159,11 @@ export async function startCall(id: string): Promise<StoreResult<ReceptionSessio
     completedAt: result.status === 'connected' ? undefined : now(),
   };
   sessions.set(withOutcome.id, withOutcome);
+  // 未応答/失敗はこの時点で結果が確定するため履歴化する (issue #19)。
+  // 成功は完了時に履歴化する（completeReception）。
+  if (result.status !== 'connected') {
+    recordReceptionOutcome(withOutcome);
+  }
   return { ok: true, value: withOutcome };
 }
 
@@ -164,6 +174,7 @@ export function cancelReception(id: string): StoreResult<ReceptionSession> {
   if (result.ok && result.value.state === 'cancelled') {
     result.value.callOutcome = 'cancelled';
     result.value.completedAt = now();
+    recordReceptionOutcome(result.value);
   }
   return result;
 }
@@ -173,8 +184,25 @@ export function completeReception(id: string): StoreResult<ReceptionSession> {
   if (!found.ok) return found;
   const result = applyEvent(found.value, 'COMPLETE');
   if (result.ok) {
-    sessions.set(result.value.id, { ...result.value, completedAt: now() });
+    const completed = { ...result.value, completedAt: now() };
+    sessions.set(completed.id, completed);
+    // connected → completed の正常完了を履歴化する (issue #19)。
+    if (completed.callOutcome === 'connected') {
+      recordReceptionOutcome(completed);
+    }
+    recordReceptionCompleted(completed.id, completed.kioskId);
     return getReception(id);
+  }
+  return result;
+}
+
+/** 失敗/未応答後の代替導線利用を記録する (issue #19)。状態は failed/timeout → fallback。 */
+export function recordFallback(id: string): StoreResult<ReceptionSession> {
+  const found = getReception(id);
+  if (!found.ok) return found;
+  const result = applyEvent(found.value, 'USE_FALLBACK');
+  if (result.ok) {
+    markFallbackUsed(result.value.id, result.value.kioskId);
   }
   return result;
 }

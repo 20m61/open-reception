@@ -130,9 +130,20 @@ export function KioskFlow() {
     dispatch({ type: 'COMPLETE' });
   }, [data.sessionId]);
 
+  const handleFallback = useCallback(async () => {
+    if (data.sessionId) {
+      try {
+        await fetch(`/api/kiosk/receptions/${data.sessionId}/fallback`, { method: 'POST' });
+      } catch {
+        /* 代替導線の記録失敗は受付フローを止めない */
+      }
+    }
+    dispatch({ type: 'USE_FALLBACK' });
+  }, [data.sessionId]);
+
   return (
     <main className="screen" data-kiosk-state={data.state}>
-      {renderScreen(data, dispatch, complete)}
+      {renderScreen(data, dispatch, complete, handleFallback)}
     </main>
   );
 }
@@ -141,6 +152,7 @@ function renderScreen(
   data: FlowData,
   dispatch: React.Dispatch<Action>,
   complete: () => void,
+  onFallback: () => void,
 ) {
   switch (data.state) {
     case 'idle':
@@ -184,7 +196,7 @@ function renderScreen(
       return (
         <ResultView
           outcome={data.state}
-          onFallback={() => dispatch({ type: 'USE_FALLBACK' })}
+          onFallback={onFallback}
           onReset={() => dispatch({ type: 'RESET' })}
         />
       );
