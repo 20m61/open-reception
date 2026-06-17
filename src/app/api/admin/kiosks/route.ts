@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server';
 import { createKiosk, listKiosks } from '@/lib/kiosk/kiosk-store';
 import { readJson, resultResponse } from '@/lib/mock-backend/result-http';
+import { appendAdminAudit } from '@/lib/mock-backend/reception-log-store';
 
 /**
  * GET /api/admin/kiosks — 受付端末一覧 (issue #18)。
@@ -13,5 +14,7 @@ export function GET(): NextResponse {
 }
 
 export async function POST(request: Request): Promise<NextResponse> {
-  return resultResponse(createKiosk(await readJson(request)), 201);
+  const result = createKiosk(await readJson(request));
+  if (result.ok) appendAdminAudit('kiosk.created', { type: 'kiosk', id: result.value.id });
+  return resultResponse(result, 201);
 }

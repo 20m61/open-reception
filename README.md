@@ -61,9 +61,12 @@ npm run dev            # http://localhost:3000 で起動
 ### 受付履歴・監査ログ（実装済み）
 
 呼び出し結果（応答/未応答/失敗/キャンセル）・所要時間・代替導線の利用を記録し、
-管理画面 `/admin/receptions` で閲覧できます（`GET /api/admin/receptions`・`/api/admin/audit`）。
+管理画面 `/admin/receptions` で閲覧できます（`GET /api/admin/receptions`）。
 来訪者の氏名・会社名・要件メモなどの個人情報はログに保持しません。方針は
 [`docs/audit-logging.md`](./docs/audit-logging.md) を参照。
+
+加えて、**管理操作（部署・担当者・端末の作成/更新/失効/並び替え）も監査ログに記録**され、
+受付イベントとあわせて `/admin/audit`（`GET /api/admin/audit`）で確認できます。
 
 ### 開発コマンド
 

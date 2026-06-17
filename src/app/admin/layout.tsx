@@ -14,6 +14,7 @@ const NAV_ITEMS = [
   { href: '/admin/assets', label: 'アセット' },
   { href: '/admin/voice', label: '音声' },
   { href: '/admin/security', label: 'セキュリティ' },
+  { href: '/admin/audit', label: '監査ログ' },
 ];
 
 export default function AdminLayout({

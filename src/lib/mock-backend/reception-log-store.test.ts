@@ -9,6 +9,7 @@ import {
 } from './reception-store';
 import {
   __resetLogStore,
+  appendAdminAudit,
   listAuditLogs,
   listReceptionLogs,
 } from './reception-log-store';
@@ -97,5 +98,13 @@ describe('reception history logging (#19)', () => {
     completeReception(id);
     const audit = listAuditLogs();
     expect(audit.some((a) => a.action === 'reception.completed')).toBe(true);
+  });
+
+  it('管理操作を監査ログに残す（actor=admin）', () => {
+    appendAdminAudit('department.created', { type: 'department', id: 'dept-x' });
+    const entry = listAuditLogs()[0];
+    expect(entry?.action).toBe('department.created');
+    expect(entry?.actor).toBe('admin');
+    expect(entry?.targetId).toBe('dept-x');
   });
 });

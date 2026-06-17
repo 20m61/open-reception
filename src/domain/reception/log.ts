@@ -36,7 +36,16 @@ export type AuditAction =
   | 'reception.failed'
   | 'reception.cancelled'
   | 'reception.completed'
-  | 'reception.fallback_used';
+  | 'reception.fallback_used'
+  // 管理操作 (issue #22)
+  | 'department.created'
+  | 'department.updated'
+  | 'department.reordered'
+  | 'staff.created'
+  | 'staff.updated'
+  | 'kiosk.created'
+  | 'kiosk.revoked'
+  | 'kiosk.restored';
 
 export type AuditLog = {
   id: string;
