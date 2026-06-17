@@ -7,6 +7,8 @@ const encoder = new TextEncoder();
 const decoder = new TextDecoder();
 
 export type AdminSession = { role: 'admin'; exp: number };
+/** 署名トークンの汎用ペイロード（role はカテゴリ識別、呼び出し側で検証する）。 */
+export type SessionPayload = { role: string; exp: number; [key: string]: unknown };
 
 function toBase64Url(bytes: Uint8Array): string {
   let binary = '';
@@ -37,21 +39,22 @@ function timingSafeEqual(a: string, b: string): boolean {
   return diff === 0;
 }
 
-export async function signSession(payload: AdminSession, secret: string): Promise<string> {
+export async function signSession(payload: SessionPayload, secret: string): Promise<string> {
   const body = toBase64Url(encoder.encode(JSON.stringify(payload)));
   const sig = toBase64Url(await hmac(secret, body));
   return `${body}.${sig}`;
 }
 
-export async function verifySession(token: string | undefined, secret: string): Promise<AdminSession | null> {
+/** 署名と有効期限のみ検証する。role の判定は呼び出し側で行う。 */
+export async function verifySession(token: string | undefined, secret: string): Promise<SessionPayload | null> {
   if (!token) return null;
   const [body, sig] = token.split('.');
   if (!body || !sig) return null;
   const expected = toBase64Url(await hmac(secret, body));
   if (!timingSafeEqual(sig, expected)) return null;
   try {
-    const payload = JSON.parse(decoder.decode(fromBase64Url(body))) as AdminSession;
-    if (payload.role !== 'admin') return null;
+    const payload = JSON.parse(decoder.decode(fromBase64Url(body))) as SessionPayload;
+    if (typeof payload.role !== 'string') return null;
     if (typeof payload.exp !== 'number' || payload.exp < Date.now()) return null;
     return payload;
   } catch {
