@@ -9,6 +9,7 @@ import {
 } from '@/domain/reception/session';
 import { transition, type ReceptionEvent, type ReceptionState } from '@/domain/reception/state';
 import { motionKeyForState } from '@/domain/motion/types';
+import { primeSpeech, speak, type SpeakSettings } from './speech';
 
 /** MVP では端末 ID は固定。将来 kiosk config から取得する (issue #18)。 */
 const KIOSK_ID = 'kiosk-dev';
@@ -28,6 +29,15 @@ function matchesQuery(s: DirStaff, query: string): boolean {
 const AUTO_RESET_MS = 6000;
 /** 端末有効性・設定変更を検知する heartbeat 間隔 (issue #30)。 */
 const HEARTBEAT_INTERVAL_MS = 30000;
+
+/** 状態別の読み上げ文言（TTS 有効時のみ） (issue #5)。idle は案内文言を使う。 */
+const SPEAK_PHRASES: Partial<Record<ReceptionState, string>> = {
+  calling: '担当者を呼び出しています。少々お待ちください。',
+  connected: '応答がありました。まもなくお越しになります。',
+  timeout: '応答がありませんでした。別の方法でお呼びすることもできます。',
+  failed: '呼び出しに失敗しました。別の方法でお呼びすることもできます。',
+  completed: '受付が完了しました。ありがとうございました。',
+};
 
 type Target = { type: ReceptionTargetType; id: string; label: string };
 type CallOutcome = 'connected' | 'timeout' | 'failed';
@@ -86,6 +96,7 @@ export function KioskFlow() {
   const [data, dispatch] = useReducer(reducer, INITIAL);
   const [directory, setDirectory] = useState<Directory>({ departments: [], staff: [] });
   const [guidanceIdle, setGuidanceIdle] = useState('ようこそ。画面にタッチして受付を開始してください。');
+  const [speakSettings, setSpeakSettings] = useState<SpeakSettings>({ ttsEnabled: false, rate: 1, volume: 1, language: 'ja-JP' });
   const [backgroundUrl, setBackgroundUrl] = useState<string | undefined>(undefined);
   // null=取得前/取得失敗（既定で表示継続）、false=失効、true=有効。
   const [active, setActive] = useState<boolean | null>(null);
@@ -144,8 +155,21 @@ export function KioskFlow() {
       try {
         const res = await fetch('/api/kiosk/voice');
         if (!res.ok) return;
-        const voice = (await res.json()) as { guidanceIdle?: string };
-        if (!cancelled && voice.guidanceIdle) setGuidanceIdle(voice.guidanceIdle);
+        const voice = (await res.json()) as {
+          guidanceIdle?: string;
+          ttsEnabled?: boolean;
+          rate?: number;
+          volume?: number;
+          language?: string;
+        };
+        if (cancelled) return;
+        if (voice.guidanceIdle) setGuidanceIdle(voice.guidanceIdle);
+        setSpeakSettings({
+          ttsEnabled: voice.ttsEnabled ?? false,
+          rate: voice.rate ?? 1,
+          volume: voice.volume ?? 1,
+          language: voice.language ?? 'ja-JP',
+        });
       } catch {
         /* 取得失敗時は既定文言を使う */
       }
@@ -219,6 +243,12 @@ export function KioskFlow() {
     const timer = setTimeout(() => dispatch({ type: 'RESET' }), AUTO_RESET_MS);
     return () => clearTimeout(timer);
   }, [data.state]);
+
+  // 音声合成が有効な場合、状態に応じた案内を読み上げる (issue #5)。
+  useEffect(() => {
+    const phrase = SPEAK_PHRASES[data.state] ?? (data.state === 'idle' ? guidanceIdle : undefined);
+    if (phrase) speak(phrase, speakSettings);
+  }, [data.state, guidanceIdle, speakSettings]);
 
   const complete = useCallback(async () => {
     if (data.sessionId) {
@@ -340,7 +370,16 @@ function renderScreen(
 ) {
   switch (data.state) {
     case 'idle':
-      return <IdleView onStart={() => dispatch({ type: 'START' })} guidance={guidanceIdle} />;
+      return (
+        <IdleView
+          onStart={() => {
+            // 初回タップで音声再生を有効化（ブラウザの自動再生制約）(issue #5)。
+            primeSpeech();
+            dispatch({ type: 'START' });
+          }}
+          guidance={guidanceIdle}
+        />
+      );
     case 'selectingPurpose':
       return (
         <PurposeView
