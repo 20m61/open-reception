@@ -13,7 +13,7 @@ import { transition, type ReceptionEvent, type ReceptionState } from '@/domain/r
 const KIOSK_ID = 'kiosk-dev';
 
 type DirDepartment = { id: string; name: string };
-type DirStaff = { id: string; displayName: string; kana?: string; aliases: string[]; departmentId: string };
+type DirStaff = { id: string; displayName: string; kana?: string; aliases: string[]; departmentId: string; available: boolean };
 type Directory = { departments: DirDepartment[]; staff: DirStaff[] };
 
 function matchesQuery(s: DirStaff, query: string): boolean {
@@ -471,18 +471,35 @@ function TargetView({
 
         {results.length > 0 ? (
           <div className="card-grid">
-            {results.map((s) => (
-              <button
-                key={s.id}
-                type="button"
-                className="card"
-                data-testid={`staff-${s.id}`}
-                onClick={() => onSelect({ type: 'staff', id: s.id, label: s.displayName })}
-              >
-                {s.displayName}
-                <span className="card__sub">{directory.departments.find((d) => d.id === s.departmentId)?.name}</span>
-              </button>
-            ))}
+            {results.map((s) =>
+              s.available ? (
+                <button
+                  key={s.id}
+                  type="button"
+                  className="card"
+                  data-testid={`staff-${s.id}`}
+                  onClick={() => onSelect({ type: 'staff', id: s.id, label: s.displayName })}
+                >
+                  {s.displayName}
+                  <span className="card__sub">{directory.departments.find((d) => d.id === s.departmentId)?.name}</span>
+                </button>
+              ) : (
+                // 不在の担当者は呼び出せない。部署/代表窓口へ誘導する (issue #26)。
+                <div
+                  key={s.id}
+                  className="card"
+                  data-testid={`staff-${s.id}`}
+                  data-unavailable="true"
+                  aria-disabled="true"
+                  style={{ opacity: 0.55, cursor: 'not-allowed' }}
+                >
+                  {s.displayName}
+                  <span className="card__sub" data-testid={`staff-${s.id}-absent`}>
+                    現在不在です。部署または代表窓口をお選びください。
+                  </span>
+                </div>
+              ),
+            )}
           </div>
         ) : (
           <div className="notice notice--warning" data-testid="staff-empty">
