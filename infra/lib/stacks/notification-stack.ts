@@ -1,23 +1,18 @@
-import { Stack, StackProps, RemovalPolicy, CfnOutput } from 'aws-cdk-lib';
+import { Stack, StackProps, CfnOutput } from 'aws-cdk-lib';
 import { Construct } from 'constructs';
-import * as logs from 'aws-cdk-lib/aws-logs';
 import * as secretsmanager from 'aws-cdk-lib/aws-secretsmanager';
 import { EnvConfig } from '../config/environments';
+import { toRetentionDays, prodRemovalPolicy } from '../config/aws-helpers';
 import { applyCostTags } from '../constructs/cost-tags';
 import { NotificationFunction } from '../constructs/notification-function';
 import { NotificationApi } from '../constructs/notification-api';
 
-const RETENTION: Record<number, logs.RetentionDays> = {
-  14: logs.RetentionDays.TWO_WEEKS,
-  30: logs.RetentionDays.ONE_MONTH,
-  90: logs.RetentionDays.THREE_MONTHS,
-};
-
 export interface NotificationStackProps extends StackProps {
   readonly config: EnvConfig;
   /**
-   * 既存の Vonage 接続情報 Secret 名（任意）。指定時は通知 Lambda に読取権限を付与し、
-   * VONAGE_SECRET_ARN を渡す。未指定なら Mock 通知（実発信なし）。
+   * Vonage 接続情報 Secret 名（任意）。JSON `{ endpoint, token, timeoutMs? }` を保持する。
+   * 指定時は通知 Lambda に読取権限を付与し VONAGE_SECRET_ARN を渡す。handler は初回 notify 時に
+   * Secret を解決して実 HTTP 通知する。未指定なら Mock 通知（実発信なし）。
    */
   readonly vonageSecretName?: string;
   /**
@@ -39,9 +34,8 @@ export class NotificationStack extends Stack {
   constructor(scope: Construct, id: string, props: NotificationStackProps) {
     super(scope, id, props);
     const { config } = props;
-    const retention = RETENTION[config.notification.logRetentionDays] ?? logs.RetentionDays.ONE_MONTH;
-    const removalPolicy =
-      config.environment === 'prod' ? RemovalPolicy.RETAIN : RemovalPolicy.DESTROY;
+    const retention = toRetentionDays(config.notification.logRetentionDays);
+    const removalPolicy = prodRemovalPolicy(config.environment);
 
     applyCostTags(this, config, 'notification');
 

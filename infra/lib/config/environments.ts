@@ -15,8 +15,6 @@ export interface WebConfig {
   imageMemoryMb: number;
   /** CloudWatch Logs 保持日数。 */
   logRetentionDays: number;
-  /** warmer (定期ウォームアップ) を有効化するか。低頻度環境では無効でよい。 */
-  enableWarmer: boolean;
 }
 
 export interface NotificationConfig {
@@ -69,7 +67,6 @@ export const ENVIRONMENTS: Record<EnvironmentName, EnvConfig> = {
       serverTimeoutSec: 30,
       imageMemoryMb: 1536,
       logRetentionDays: 14,
-      enableWarmer: false,
     },
     notification: {
       memoryMb: 256,
@@ -90,7 +87,6 @@ export const ENVIRONMENTS: Record<EnvironmentName, EnvConfig> = {
       serverTimeoutSec: 30,
       imageMemoryMb: 1536,
       logRetentionDays: 30,
-      enableWarmer: false,
     },
     notification: {
       memoryMb: 256,
@@ -111,7 +107,6 @@ export const ENVIRONMENTS: Record<EnvironmentName, EnvConfig> = {
       serverTimeoutSec: 30,
       imageMemoryMb: 2048,
       logRetentionDays: 90,
-      enableWarmer: true,
     },
     notification: {
       memoryMb: 512,
