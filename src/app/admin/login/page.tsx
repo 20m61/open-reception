@@ -1,80 +1,42 @@
-'use client';
+import { getAdminAuthConfig } from '@/lib/auth/admin-auth-config';
+import { AdminPasswordLogin } from '@/components/admin/AdminPasswordLogin';
 
-import { useRouter } from 'next/navigation';
-import { useState } from 'react';
-
-/** 管理画面ログイン (issue #24)。パスワード検証は server 側で行う。 */
+/**
+ * 管理画面ログイン (issue #24, #70)。
+ * ADMIN_AUTH_PROVIDER=entra のときは Microsoft Entra ID のサインインへ誘導し、
+ * それ以外は既存のパスワードログインを表示する。
+ */
 export default function AdminLoginPage() {
-  const router = useRouter();
-  const [password, setPassword] = useState('');
-  const [error, setError] = useState(false);
-  const [busy, setBusy] = useState(false);
-
-  const submit = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (busy) return;
-    setBusy(true);
-    setError(false);
-    try {
-      const res = await fetch('/api/admin/login', {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ password }),
-      });
-      if (res.ok) {
-        router.push('/admin');
-        router.refresh();
-      } else {
-        setError(true);
-      }
-    } finally {
-      setBusy(false);
-    }
-  };
+  const provider = getAdminAuthConfig().provider;
 
   return (
     <section style={{ maxWidth: 360 }}>
       <h1 style={{ marginTop: 0 }}>管理ログイン</h1>
-      <form onSubmit={submit} style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
-        <label style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
-          <span style={{ fontSize: '0.85rem', opacity: 0.8 }}>パスワード</span>
-          <input
-            type="password"
-            data-testid="admin-password"
-            value={password}
-            onChange={(e) => setPassword(e.target.value)}
+      {provider === 'entra' ? (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+          <p style={{ opacity: 0.8, margin: 0 }}>組織の Microsoft アカウントでサインインしてください。</p>
+          <a
+            href="/api/admin/auth/entra/start"
+            data-testid="admin-entra-signin"
             style={{
               minHeight: 44,
-              padding: '8px 12px',
+              display: 'inline-flex',
+              alignItems: 'center',
+              justifyContent: 'center',
               borderRadius: 8,
-              border: '1px solid var(--color-surface-2)',
-              background: 'var(--color-surface)',
-              color: 'var(--color-text)',
+              background: 'var(--color-accent)',
+              color: '#0f172a',
+              fontWeight: 700,
+              textDecoration: 'none',
+              padding: '0 16px',
             }}
-          />
-        </label>
-        {error ? (
-          <p data-testid="admin-login-error" style={{ color: 'var(--color-danger)', margin: 0 }}>
-            パスワードが正しくありません。
-          </p>
-        ) : null}
-        <button
-          type="submit"
-          data-testid="admin-login-submit"
-          disabled={busy}
-          style={{
-            minHeight: 44,
-            borderRadius: 8,
-            border: 'none',
-            background: 'var(--color-accent)',
-            color: '#0f172a',
-            fontWeight: 700,
-            cursor: 'pointer',
-          }}
-        >
-          ログイン
-        </button>
-      </form>
+          >
+            Microsoft でサインイン
+          </a>
+        </div>
+      ) : (
+        <AdminPasswordLogin />
+      )}
     </section>
   );
 }

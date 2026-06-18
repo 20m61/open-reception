@@ -1,11 +1,19 @@
 import { NextResponse } from 'next/server';
 import { signSession } from '@/lib/auth/session';
 import { ADMIN_COOKIE, ADMIN_SESSION_TTL_MS, getAdminPassword, getAdminSecret } from '@/lib/auth/admin';
+import { getAdminAuthConfig } from '@/lib/auth/admin-auth-config';
 
 /**
  * POST /api/admin/login — 管理パスワードを検証し、署名付き管理セッション cookie を発行する (issue #24)。
+ * ADMIN_AUTH_PROVIDER=entra のときはパスワード認証を無効化し、Entra ログインへ寄せる (issue #70)。
  */
 export async function POST(request: Request): Promise<NextResponse> {
+  if (getAdminAuthConfig().provider === 'entra') {
+    return NextResponse.json(
+      { error: 'password_login_disabled', message: 'Entra ID ログインを使用してください。' },
+      { status: 409 },
+    );
+  }
   const body = (await request.json().catch(() => null)) as { password?: unknown } | null;
   if (!body || typeof body.password !== 'string' || body.password !== getAdminPassword()) {
     return NextResponse.json({ error: 'unauthorized', message: 'invalid password' }, { status: 401 });
