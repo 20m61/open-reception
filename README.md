@@ -46,6 +46,10 @@ npm run dev            # http://localhost:3000 で起動
 
 `/admin/assets` で背景画像・VRM・モーション・fallback 画像を登録（URL）・有効/無効・適用（アクティブセット選択）できます（`/api/admin/assets`、`/api/kiosk/assets`）。ファイル形式（拡張子）・サイズを検証し、受付端末は適用中の背景を表示、読み込み失敗時は背景色に fallback します。実ファイルのアップロードは storage adapter（本番 S3 等）に差し替え可能な構造です。
 
+### VRM アバター表示基盤（実装済み・fallback 優先）
+
+`VrmAvatarViewer`（three.js / three-vrm）を受付待機画面に組み込み。VRM アセット（#27）が設定されていれば表示し、未設定/読み込み失敗/WebGL 不可時は安全に fallback（静止画 or 非表示）します。three/three-vrm は VRM 設定時のみ動的読み込み（初期バンドルを軽量に保つ）、unmount 時に WebGL リソースを解放、iPad 向けに pixelRatio を抑制します。実描画は実機 UAT（`docs/ipad-uat.md`）で確認します。
+
 ### モーション割り当て（基盤・実装済み）
 
 `/admin/motions` で受付状態（待機/挨拶/呼び出し中/成功/失敗/未応答 等）ごとにモーションアセットを割り当て、未設定/失敗時は default に fallback します。受付端末は状態に応じた motion キーを `data-kiosk-motion` で公開し（`/api/kiosk/motions`）、VRM レンダラ（#5）が消費します。

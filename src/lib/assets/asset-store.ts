@@ -71,14 +71,14 @@ export function getActiveAssets(): ActiveAssetSet {
   return { ...active };
 }
 
-/** 受付端末向け: アクティブな背景・fallback 画像の URL を返す。 */
-export function getKioskAssets(): { backgroundUrl?: string; fallbackImageUrl?: string } {
+/** 受付端末向け: アクティブな背景・fallback 画像・VRM の URL を返す。 */
+export function getKioskAssets(): { backgroundUrl?: string; fallbackImageUrl?: string; vrmUrl?: string } {
   const resolve = (kind: AssetKind): string | undefined => {
     const id = active[kind];
     const asset = id ? assets.find((a) => a.id === id && a.enabled) : undefined;
     return asset?.url;
   };
-  return { backgroundUrl: resolve('background'), fallbackImageUrl: resolve('fallbackImage') };
+  return { backgroundUrl: resolve('background'), fallbackImageUrl: resolve('fallbackImage'), vrmUrl: resolve('vrm') };
 }
 
 /** テスト用: seed 状態へ戻す。 */

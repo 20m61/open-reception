@@ -10,6 +10,7 @@ import {
 import { transition, type ReceptionEvent, type ReceptionState } from '@/domain/reception/state';
 import { motionKeyForState } from '@/domain/motion/types';
 import { primeSpeech, speak, type SpeakSettings } from './speech';
+import { VrmAvatarViewer } from './VrmAvatarViewer';
 
 /** MVP では端末 ID は固定。将来 kiosk config から取得する (issue #18)。 */
 const KIOSK_ID = 'kiosk-dev';
@@ -98,6 +99,8 @@ export function KioskFlow() {
   const [guidanceIdle, setGuidanceIdle] = useState('ようこそ。画面にタッチして受付を開始してください。');
   const [speakSettings, setSpeakSettings] = useState<SpeakSettings>({ ttsEnabled: false, rate: 1, volume: 1, language: 'ja-JP' });
   const [backgroundUrl, setBackgroundUrl] = useState<string | undefined>(undefined);
+  const [vrmUrl, setVrmUrl] = useState<string | undefined>(undefined);
+  const [avatarFallbackUrl, setAvatarFallbackUrl] = useState<string | undefined>(undefined);
   // null=取得前/取得失敗（既定で表示継続）、false=失効、true=有効。
   const [active, setActive] = useState<boolean | null>(null);
   // PIN 許可状態。既定では PIN 不要として表示を継続する (issue #23)。
@@ -186,8 +189,11 @@ export function KioskFlow() {
       try {
         const res = await fetch('/api/kiosk/assets');
         if (!res.ok) return;
-        const assets = (await res.json()) as { backgroundUrl?: string };
-        if (!cancelled) setBackgroundUrl(assets.backgroundUrl);
+        const assets = (await res.json()) as { backgroundUrl?: string; vrmUrl?: string; fallbackImageUrl?: string };
+        if (cancelled) return;
+        setBackgroundUrl(assets.backgroundUrl);
+        setVrmUrl(assets.vrmUrl);
+        setAvatarFallbackUrl(assets.fallbackImageUrl);
       } catch {
         /* 取得失敗時は既定背景 */
       }
@@ -300,7 +306,7 @@ export function KioskFlow() {
       ) : view === 'authorize' ? (
         <KioskAuthorizeView onAuthorized={() => setNeedsAuthorize(false)} />
       ) : (
-        renderScreen(data, dispatch, complete, handleFallback, directory, guidanceIdle)
+        renderScreen(data, dispatch, complete, handleFallback, directory, guidanceIdle, vrmUrl, avatarFallbackUrl)
       )}
     </main>
   );
@@ -367,6 +373,8 @@ function renderScreen(
   onFallback: () => void,
   directory: Directory,
   guidanceIdle: string,
+  vrmUrl: string | undefined,
+  avatarFallbackUrl: string | undefined,
 ) {
   switch (data.state) {
     case 'idle':
@@ -378,6 +386,8 @@ function renderScreen(
             dispatch({ type: 'START' });
           }}
           guidance={guidanceIdle}
+          vrmUrl={vrmUrl}
+          avatarFallbackUrl={avatarFallbackUrl}
         />
       );
     case 'selectingPurpose':
@@ -437,9 +447,24 @@ function renderScreen(
 
 /* ---------- 各画面 (issue #11–#15) ---------- */
 
-function IdleView({ onStart, guidance }: { onStart: () => void; guidance: string }) {
+function IdleView({
+  onStart,
+  guidance,
+  vrmUrl,
+  avatarFallbackUrl,
+}: {
+  onStart: () => void;
+  guidance: string;
+  vrmUrl?: string;
+  avatarFallbackUrl?: string;
+}) {
   return (
     <div className="screen__body" style={{ alignItems: 'center', justifyContent: 'center', textAlign: 'center' }}>
+      <VrmAvatarViewer
+        vrmUrl={vrmUrl}
+        fallbackImageUrl={avatarFallbackUrl}
+        className="kiosk-avatar"
+      />
       <h1 className="screen__title">受付</h1>
       <p className="screen__lead" data-testid="idle-guidance">{guidance}</p>
       <button type="button" className="btn btn--primary" data-testid="start-reception" onClick={onStart}>

@@ -205,3 +205,10 @@ a {
   background: rgba(251, 191, 36, 0.15);
   border: 2px solid var(--color-warning);
 }
+
+/* VRM アバター表示領域 (issue #36) */
+.kiosk-avatar {
+  width: 260px;
+  height: 360px;
+  max-width: 60vw;
+}
