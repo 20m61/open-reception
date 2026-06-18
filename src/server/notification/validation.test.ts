@@ -50,4 +50,19 @@ describe('validateNotificationRequest', () => {
     expect(validateNotificationRequest({ ...valid, target: { type: 'fax', value: 'x' } }).ok).toBe(false);
     expect(validateNotificationRequest({ ...valid, target: { type: 'phone' } }).ok).toBe(false);
   });
+
+  it('rejects siteId/requestId with path-injection characters (allowlist)', () => {
+    expect(validateNotificationRequest({ ...valid, siteId: 'a/../../other' }).ok).toBe(false);
+    expect(validateNotificationRequest({ ...valid, siteId: 'site/001' }).ok).toBe(false);
+    expect(validateNotificationRequest({ ...valid, requestId: 'req id' }).ok).toBe(false);
+    expect(validateNotificationRequest({ ...valid, siteId: 'site_001-A' }).ok).toBe(true);
+  });
+
+  it('applies the message length cap to the trimmed value', () => {
+    // 600 本文 + 末尾空白 → trim 後 600 で通過。
+    const padded = `${'x'.repeat(MAX_MESSAGE_LENGTH)}     `;
+    expect(validateNotificationRequest({ ...valid, message: padded }).ok).toBe(true);
+    // trim 後 601 は拒否。
+    expect(validateNotificationRequest({ ...valid, message: 'x'.repeat(MAX_MESSAGE_LENGTH + 1) }).ok).toBe(false);
+  });
 });

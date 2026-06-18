@@ -155,9 +155,11 @@ Lambda コードは `src/server/notification/`（handler / authorizer / adapters
 
 ```bash
 cd infra
-# Polly/SSM を使う構成（staging/prod は pollyEnabled=true）
+# 拠点トークン鍵 Secret は必須（未指定だと authorizer が全拒否＝/notify が全て 401/403）
 npx cdk deploy OpenReception-Notification-prod OpenReception-Monitoring-prod -c env=prod \
-  -c vonageSecretName=open-reception/prod/vonage   # 任意: 実通知用 Secret 名
+  -c siteTokenSecretName=open-reception/prod/site-token \  # 拠点トークン HMAC 鍵（必須）
+  -c vonageSecretName=open-reception/prod/vonage \         # 任意: Vonage 接続情報
+  -c alarmEmail=ops@example.com                            # 任意: アラーム通知先
 ```
 
 ### デプロイ前に用意するもの
@@ -165,12 +167,18 @@ npx cdk deploy OpenReception-Notification-prod OpenReception-Monitoring-prod -c 
 - **拠点設定**: SSM Parameter Store に `<siteConfigPrefix>/<siteId>`（例
   `/open-reception/prod/sites/site-001`）で JSON を登録（`{ "enabled": true,
   "defaultTarget": {...}, "voice": {...} }`）。未登録/`enabled:false` の拠点は 403。
-- **拠点トークン鍵**: authorizer Lambda の `SITE_TOKEN_SECRET` を注入（未設定時は
-  fail-closed で全拒否）。拠点には `<siteId>.<exp>.<HMAC-SHA256>` 形式の短命トークンを配布。
-- **Vonage 接続情報**（実通知時）: Secrets Manager に保存し `-c vonageSecretName=...` で参照。
+  siteId は英数字・`-`・`_` のみ（パラメータ名インジェクション防止のため allowlist 済み）。
+- **拠点トークン鍵**: Secrets Manager に HMAC 鍵を保存し `-c siteTokenSecretName=...` で参照。
+  authorizer が `SITE_TOKEN_SECRET_ARN` から runtime 取得（読取権限は CDK が付与）。未指定時は
+  fail-closed で全拒否。拠点には `<siteId>.<exp>.<HMAC-SHA256(hex)>` 形式の短命トークンを配布。
+  通知 API は authorizer の siteId と body の siteId が一致しない要求を 403（なりすまし防止）。
+- **Vonage 実通知**（任意）: 通知 Lambda に `VONAGE_NOTIFY_ENDPOINT` と `VONAGE_NOTIFY_TOKEN`
+  を与えると HttpVonageAdapter で実 HTTP 通知する（両方欠ける場合は Mock）。`-c vonageSecretName`
+  で Secret 読取権限を付与でき、Vonage 固有の JWT 署名連携は follow-up。
+- **アラーム通知先**: `-c alarmEmail=...` で SNS Email 購読を作成（未指定なら購読者なし）。
 
 > 既定（dev / Secret 未指定）では Polly・Vonage とも mock で動作し、実発信・実音声化を
-> 行わずに API フローを検証できる。
+> 行わずに API フローを検証できる（ただし siteTokenSecret 未指定だと authorizer は全拒否）。
 
 ## クリーンアップ
 

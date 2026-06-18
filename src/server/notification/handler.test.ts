@@ -109,4 +109,29 @@ describe('processNotification', () => {
     expect(serialized).not.toContain('お客様がお見えです');
     expect(serialized).not.toContain('+819000000000');
   });
+
+  it('rejects when authorized site does not match body siteId (IDOR guard)', async () => {
+    const res = await processNotification(baseReq, deps, 'site-OTHER');
+    expect(res.statusCode).toBe(403);
+    expect(res.body.error).toBe('site_mismatch');
+  });
+
+  it('allows when authorized site matches body siteId', async () => {
+    const res = await processNotification(baseReq, deps, 'site-001');
+    expect(res.statusCode).toBe(200);
+    expect(res.body.status).toBe('delivered');
+  });
+
+  it('does NOT suppress retries after a transient failure (only delivered is remembered)', async () => {
+    const failVonage: VonageAdapter = {
+      notify: async (_t, p) => ({ status: 'failed', requestId: p.requestId, synthesized: false }),
+    };
+    const failingDeps = makeDeps({ vonage: failVonage });
+    const first = await processNotification(baseReq, failingDeps);
+    expect(first.statusCode).toBe(502);
+    // 同一 requestId で再送 → duplicate ではなく再試行される。
+    const second = await processNotification(baseReq, failingDeps);
+    expect(second.statusCode).toBe(502);
+    expect(second.body.status).not.toBe('duplicate');
+  });
 });

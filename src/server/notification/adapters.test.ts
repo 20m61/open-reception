@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
 import { MockPollyAdapter } from './polly-adapter';
-import { HttpVonageAdapter, MockVonageAdapter } from './vonage-adapter';
+import { HttpVonageAdapter, MockVonageAdapter, createVonageAdapter } from './vonage-adapter';
 import { normalizeSiteConfig, InMemorySiteConfigLoader } from './site-config';
 
 afterEach(() => {
@@ -56,6 +56,21 @@ describe('HttpVonageAdapter', () => {
     vi.stubGlobal('fetch', vi.fn(async () => new Response('ok', { status: 200 })));
     const res = await adapter.notify(target, payload);
     expect(res.status).toBe('delivered');
+  });
+});
+
+describe('createVonageAdapter', () => {
+  it('returns MockVonageAdapter when endpoint/token are absent', () => {
+    expect(createVonageAdapter({})).toBeInstanceOf(MockVonageAdapter);
+    expect(createVonageAdapter({ VONAGE_NOTIFY_ENDPOINT: 'https://x' })).toBeInstanceOf(MockVonageAdapter);
+  });
+
+  it('returns HttpVonageAdapter when endpoint and token are both set', () => {
+    const adapter = createVonageAdapter({
+      VONAGE_NOTIFY_ENDPOINT: 'https://x.test/notify',
+      VONAGE_NOTIFY_TOKEN: 'tok',
+    });
+    expect(adapter).toBeInstanceOf(HttpVonageAdapter);
   });
 });
 

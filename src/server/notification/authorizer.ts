@@ -61,11 +61,34 @@ export function extractToken(headers: Record<string, string | undefined> | undef
   return raw.startsWith('Bearer ') ? raw.slice('Bearer '.length).trim() : raw.trim();
 }
 
+/**
+ * 拠点トークン検証鍵を解決する。
+ * - `SITE_TOKEN_SECRET`（env 直接）を最優先。
+ * - 無ければ `SITE_TOKEN_SECRET_ARN` から Secrets Manager で取得し、warm container 内でキャッシュ。
+ * いずれも無ければ undefined（呼び出し側で fail-closed）。
+ */
+let cachedSecret: string | undefined;
+async function resolveSiteTokenSecret(
+  env: Record<string, string | undefined> = process.env,
+): Promise<string | undefined> {
+  if (env.SITE_TOKEN_SECRET) return env.SITE_TOKEN_SECRET;
+  if (cachedSecret) return cachedSecret;
+  const arn = env.SITE_TOKEN_SECRET_ARN;
+  if (!arn) return undefined;
+  const { SecretsManagerClient, GetSecretValueCommand } = await import(
+    '@aws-sdk/client-secrets-manager'
+  );
+  const client = new SecretsManagerClient({ region: env.AWS_REGION ?? 'ap-northeast-1' });
+  const res = await client.send(new GetSecretValueCommand({ SecretId: arn }));
+  cachedSecret = res.SecretString ?? undefined;
+  return cachedSecret;
+}
+
 /** HTTP API SIMPLE 形式の Lambda authorizer エントリ。 */
 export async function handler(
   event: APIGatewayRequestAuthorizerEventV2,
 ): Promise<APIGatewaySimpleAuthorizerWithContextResult<AuthContext | Record<string, never>>> {
-  const secret = process.env.SITE_TOKEN_SECRET;
+  const secret = await resolveSiteTokenSecret();
   if (!secret) {
     // fail closed: 鍵が無い構成では一切認可しない。
     return { isAuthorized: false, context: {} };

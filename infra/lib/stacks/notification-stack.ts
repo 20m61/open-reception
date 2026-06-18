@@ -20,6 +20,11 @@ export interface NotificationStackProps extends StackProps {
    * VONAGE_SECRET_ARN を渡す。未指定なら Mock 通知（実発信なし）。
    */
   readonly vonageSecretName?: string;
+  /**
+   * 拠点トークン検証鍵を保持する Secret 名（任意）。指定時は authorizer に読取権限を付与し、
+   * SITE_TOKEN_SECRET_ARN を渡す。未指定なら authorizer は fail-closed（全拒否）。
+   */
+  readonly siteTokenSecretName?: string;
 }
 
 /**
@@ -43,6 +48,9 @@ export class NotificationStack extends Stack {
     const vonageSecret = props.vonageSecretName
       ? secretsmanager.Secret.fromSecretNameV2(this, 'VonageSecret', props.vonageSecretName)
       : undefined;
+    const siteTokenSecret = props.siteTokenSecretName
+      ? secretsmanager.Secret.fromSecretNameV2(this, 'SiteTokenSecret', props.siteTokenSecretName)
+      : undefined;
 
     this.notificationFn = new NotificationFunction(this, 'Notification', {
       config: config.notification,
@@ -56,6 +64,7 @@ export class NotificationStack extends Stack {
       handler: this.notificationFn.fn,
       logRetention: retention,
       removalPolicy,
+      siteTokenSecret,
     });
 
     new CfnOutput(this, 'NotifyEndpoint', {

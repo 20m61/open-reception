@@ -91,3 +91,25 @@ export class HttpVonageAdapter implements VonageAdapter {
     }
   }
 }
+
+/**
+ * 環境に応じて Vonage adapter を選ぶ（createPollyAdapter / createSiteConfigLoader と同じ流儀）。
+ * `VONAGE_NOTIFY_ENDPOINT` と `VONAGE_NOTIFY_TOKEN` が揃ったときのみ実 HTTP 通知を行う。
+ * いずれか欠ける場合は Mock（実発信なし）に fallback する。
+ * token はデプロイ時に Secrets Manager から env へ注入する（平文コミットしない）。
+ */
+export function createVonageAdapter(
+  env: Record<string, string | undefined> = process.env,
+): VonageAdapter {
+  const endpoint = env.VONAGE_NOTIFY_ENDPOINT;
+  const token = env.VONAGE_NOTIFY_TOKEN;
+  if (endpoint && token) {
+    const timeoutMs = Number(env.VONAGE_NOTIFY_TIMEOUT_MS ?? '5000');
+    return new HttpVonageAdapter({
+      endpoint,
+      token,
+      timeoutMs: Number.isFinite(timeoutMs) && timeoutMs > 0 ? timeoutMs : 5000,
+    });
+  }
+  return new MockVonageAdapter();
+}

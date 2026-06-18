@@ -7,6 +7,7 @@ import * as apigwv2 from 'aws-cdk-lib/aws-apigatewayv2';
 import { HttpLambdaIntegration } from 'aws-cdk-lib/aws-apigatewayv2-integrations';
 import { HttpLambdaAuthorizer, HttpLambdaResponseType } from 'aws-cdk-lib/aws-apigatewayv2-authorizers';
 import * as logs from 'aws-cdk-lib/aws-logs';
+import * as secretsmanager from 'aws-cdk-lib/aws-secretsmanager';
 import { NotificationConfig } from '../config/environments';
 
 const REPO_ROOT = path.join(__dirname, '..', '..', '..');
@@ -17,6 +18,12 @@ export interface NotificationApiProps {
   readonly handler: lambda.IFunction;
   readonly logRetention: logs.RetentionDays;
   readonly removalPolicy: RemovalPolicy;
+  /**
+   * 拠点トークン検証鍵を保持する Secret（任意）。指定時は authorizer に読取権限を付与し
+   * SITE_TOKEN_SECRET_ARN を渡す。未指定なら authorizer は fail-closed（全拒否）となり、
+   * /notify は全リクエストを 401/403 にする（鍵が無い構成は安全側で閉じる）。
+   */
+  readonly siteTokenSecret?: secretsmanager.ISecret;
 }
 
 /**
@@ -49,11 +56,13 @@ export class NotificationApi extends Construct {
       }),
       bundling: { format: OutputFormat.CJS, minify: true, sourceMap: true, target: 'node22' },
       environment: {
-        // SITE_TOKEN_SECRET はデプロイ時に Secrets Manager 連携等で注入する。
-        // 未設定時 authorizer は fail-closed（全拒否）。
         NODE_ENV: 'production',
+        // 鍵は Secrets Manager から runtime 取得する（平文 env に置かない）。
+        // 未設定時 authorizer は fail-closed（全拒否）。
+        ...(props.siteTokenSecret ? { SITE_TOKEN_SECRET_ARN: props.siteTokenSecret.secretArn } : {}),
       },
     });
+    props.siteTokenSecret?.grantRead(this.authorizerFn);
 
     const authorizer = new HttpLambdaAuthorizer('SiteAuthorizer', this.authorizerFn, {
       responseTypes: [HttpLambdaResponseType.SIMPLE],

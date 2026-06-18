@@ -3,20 +3,21 @@
  *
  * フロー:
  *   1. 入力検証（不正は 400）
- *   2. 拠点設定取得（未登録/失効は 403）
- *   3. 通知先解決（request.target ▷ site.defaultTarget。無ければ 400）
- *   4. 冪等性: requestId で重複実行を抑止（warm container 内 best-effort）
- *   5. Polly で音声化（失敗時はテキスト fallback、synthesized=false）
- *   6. Vonage で外部通知。delivered/timeout/failed を分類
- *   7. 結果と最小メタデータを構造化ログに記録（PII・secret は出力しない）
+ *   2. 認可拠点との突合（authorizer の siteId と body の siteId が不一致なら 403）
+ *   3. 拠点設定取得（未登録/失効は 403）
+ *   4. 通知先解決（request.target ▷ site.defaultTarget。無ければ 400）
+ *   5. 冪等性: requestId で重複実行を抑止（warm container 内 best-effort）
+ *   6. Polly で音声化（失敗時はテキスト fallback、synthesized=false）
+ *   7. Vonage で外部通知。delivered/timeout/failed を分類
+ *   8. 結果と最小メタデータを構造化ログに記録（PII・secret は出力しない）
  */
 import type {
-  APIGatewayProxyEventV2,
+  APIGatewayProxyEventV2WithLambdaAuthorizer,
   APIGatewayProxyResultV2,
 } from 'aws-lambda';
 import { validateNotificationRequest } from './validation';
 import { createPollyAdapter, type PollyAdapter } from './polly-adapter';
-import { MockVonageAdapter, type VonageAdapter } from './vonage-adapter';
+import { createVonageAdapter, type VonageAdapter } from './vonage-adapter';
 import { createSiteConfigLoader, type SiteConfigLoader } from './site-config';
 import type {
   NotificationRequest,
@@ -44,10 +45,15 @@ function defaultLog(entry: Record<string, unknown>): void {
   console.log(JSON.stringify(entry));
 }
 
-/** 通知処理の中核（API/Lambda 非依存・単体テスト対象）。 */
+/**
+ * 通知処理の中核（API/Lambda 非依存・単体テスト対象）。
+ * @param authorizedSiteId authorizer が認証した拠点 ID。指定時は body の siteId と
+ *   一致しなければ 403（クロステナントなりすまし防止）。
+ */
 export async function processNotification(
   input: unknown,
   deps: NotificationDeps,
+  authorizedSiteId?: string,
 ): Promise<ProcessResponse> {
   const started = Date.now();
   const validation = validateNotificationRequest(input);
@@ -57,7 +63,13 @@ export async function processNotification(
   }
   const req = validation.value;
 
-  // 冪等性: 既処理の requestId は再実行しない。
+  // 認可境界: 認証拠点と body の拠点が一致しない要求は拒否（IDOR/なりすまし防止）。
+  if (authorizedSiteId !== undefined && authorizedSiteId !== req.siteId) {
+    deps.log({ event: 'notify', siteId: req.siteId, requestId: req.requestId, outcome: 'site_mismatch' });
+    return { statusCode: 403, body: { error: 'site_mismatch' } };
+  }
+
+  // 冪等性: 配信済み requestId の再送は重複として実行しない（warm container 内 best-effort）。
   if (deps.seen.has(req.requestId)) {
     deps.log({ event: 'notify', siteId: req.siteId, requestId: req.requestId, outcome: 'duplicate' });
     return { statusCode: 200, body: { status: 'duplicate', requestId: req.requestId } };
@@ -84,7 +96,10 @@ export async function processNotification(
     audio,
   });
 
-  deps.seen.add(req.requestId);
+  // 配信成功時のみ冪等キーを記録する。失敗/タイムアウトは再送を許可する。
+  if (result.status === 'delivered') {
+    rememberRequest(deps.seen, req.requestId);
+  }
   deps.log({
     event: 'notify',
     siteId: req.siteId,
@@ -121,22 +136,40 @@ async function synthesizeOrFallback(
 }
 
 // warm container 全体で共有する冪等性ストア（best-effort）。
+// 注: 耐久的な exactly-once 配信は保証しない（コンテナ毎・並行非原子）。厳密保証が要る
+// 場合は DynamoDB の条件付き書き込み等の外部ストアへ差し替える。メモリリーク防止のため上限を設ける。
 const seen = new Set<string>();
+const SEEN_MAX = 5000;
 
-function buildDeps(): NotificationDeps {
-  return {
-    loader: createSiteConfigLoader(),
-    polly: createPollyAdapter(),
-    // 実 Vonage は接続情報注入が必要なため、既定は Mock（実発信しない）。
-    vonage: new MockVonageAdapter(),
-    seen,
-    log: defaultLog,
-  };
+/** 上限超過時に最古のエントリを退避させて Set のメモリ増加を抑える。 */
+function rememberRequest(store: Set<string>, requestId: string): void {
+  if (store.size >= SEEN_MAX) {
+    const oldest = store.values().next().value;
+    if (oldest !== undefined) store.delete(oldest);
+  }
+  store.add(requestId);
 }
+
+// adapter / loader は warm container 間で再利用する（毎リクエスト再生成しない）。
+const sharedDeps: NotificationDeps = {
+  loader: createSiteConfigLoader(),
+  polly: createPollyAdapter(),
+  vonage: createVonageAdapter(),
+  seen,
+  log: defaultLog,
+};
+
+/** authorizer (SIMPLE) が設定した拠点 ID を取り出す。 */
+function getAuthorizedSiteId(event: NotificationEvent): string | undefined {
+  const ctx = event.requestContext?.authorizer?.lambda as { siteId?: unknown } | undefined;
+  return typeof ctx?.siteId === 'string' ? ctx.siteId : undefined;
+}
+
+type NotificationEvent = APIGatewayProxyEventV2WithLambdaAuthorizer<{ siteId?: string }>;
 
 /** API Gateway (HTTP API v2) → Lambda エントリ。 */
 export async function handler(
-  event: APIGatewayProxyEventV2,
+  event: NotificationEvent,
 ): Promise<APIGatewayProxyResultV2> {
   let parsed: unknown;
   try {
@@ -148,7 +181,7 @@ export async function handler(
     return jsonResponse(400, { error: 'invalid_json' });
   }
 
-  const res = await processNotification(parsed, buildDeps());
+  const res = await processNotification(parsed, sharedDeps, getAuthorizedSiteId(event));
   return jsonResponse(res.statusCode, res.body);
 }
 

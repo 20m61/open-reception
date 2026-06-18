@@ -37,13 +37,19 @@ new WebStack(app, `OpenReception-Web-${config.environment}`, {
   description: `open-reception Next.js hosting (${config.environment})`,
 });
 
-// 任意: 既存 Vonage 接続情報 Secret 名を context で渡すと実通知を有効化できる。
+// 任意: Secret 名・アラーム通知先を context で渡せる（平文コミットを避ける）。
 const vonageSecretName = app.node.tryGetContext('vonageSecretName') as string | undefined;
+const siteTokenSecretName = app.node.tryGetContext('siteTokenSecretName') as string | undefined;
+const alarmEmail = app.node.tryGetContext('alarmEmail') as string | undefined;
+if (alarmEmail) {
+  config.notification.alarmEmail = alarmEmail;
+}
 
 const notification = new NotificationStack(app, `OpenReception-Notification-${config.environment}`, {
   env: { account, region },
   config,
   vonageSecretName,
+  siteTokenSecretName,
   description: `open-reception notification subsystem (${config.environment})`,
 });
 
