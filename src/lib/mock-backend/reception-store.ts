@@ -13,7 +13,7 @@ import {
   type VisitorInfo,
 } from '@/domain/reception/session';
 import { transition, type ReceptionEvent } from '@/domain/reception/state';
-import { MockCallAdapter } from '@/adapters/call/mock';
+import { getCallAdapter } from '@/lib/call/adapter-factory';
 import { listStaff } from './directory-store';
 import type { CallResult } from '@/adapters/call/types';
 import {
@@ -135,8 +135,8 @@ export async function startCall(id: string): Promise<StoreResult<ReceptionSessio
   const calling = applyEvent(found.value, 'CONFIRM');
   if (!calling.ok) return calling;
 
-  // ディレクトリストアの現在の担当者から adapter を構成する（管理画面の変更を反映）。
-  const callAdapter = new MockCallAdapter(listStaff(true));
+  // 既定は Mock。Vonage 有効時は本番 adapter（#4）。担当者は現在のディレクトリから構成。
+  const callAdapter = getCallAdapter(listStaff(true));
   const result: CallResult = await callAdapter.call({
     receptionId: calling.value.id,
     targetType: calling.value.targetType!,
