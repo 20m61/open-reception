@@ -12,7 +12,10 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "test:e2e": "playwright test",
-    "verify": "npm run typecheck && npm run lint && npm test && npm run build"
+    "verify": "npm run typecheck && npm run lint && npm test && npm run build",
+    "audit:deps": "npm audit --omit=dev",
+    "sast": "semgrep scan --config p/default --error",
+    "secrets:scan": "gitleaks detect --no-banner --redact"
   },
   "dependencies": {
     "next": "15.5.19",

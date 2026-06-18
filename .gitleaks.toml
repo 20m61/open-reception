@@ -1,0 +1,19 @@
+# gitleaks 設定 (issue #6)
+# secret/.env の誤コミットを検出する。`npm run secrets:scan` で実行。
+title = "open-reception secret scan"
+
+[extend]
+# gitleaks 既定ルールセットを継承する。
+useDefault = true
+
+[allowlist]
+description = "サンプル・テストの許可値"
+paths = [
+  '''\.env\.example''',
+  '''docs/.*''',
+]
+regexes = [
+  # 開発既定値（本番では環境変数で上書き）。
+  '''dev-insecure-(admin|kiosk)-secret''',
+  '''open-reception''',
+]
