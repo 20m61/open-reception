@@ -89,6 +89,22 @@ export function updateDepartment(id: string, patch: unknown): Result<Department>
   return { ok: true, value: found };
 }
 
+/** 指定した順序で部署の表示順を一括設定する（DnD 並び替え用） (issue #25)。 */
+export function reorderDepartments(orderedIds: unknown): Result<Department[]> {
+  if (!Array.isArray(orderedIds) || !orderedIds.every((id): id is string => typeof id === 'string')) {
+    return err('invalid_input', 'orderedIds must be an array of string');
+  }
+  const known = new Set(departments.map((d) => d.id));
+  if (!orderedIds.every((id) => known.has(id))) {
+    return err('invalid_input', 'orderedIds contains unknown department id');
+  }
+  orderedIds.forEach((id, index) => {
+    const dept = departments.find((d) => d.id === id);
+    if (dept) dept.displayOrder = index + 1;
+  });
+  return { ok: true, value: listDepartments(true) };
+}
+
 /** 部署を1つ上/下へ並び替える (issue #25)。 */
 export function moveDepartment(id: string, direction: 'up' | 'down'): Result<Department[]> {
   const ordered = listDepartments(true);

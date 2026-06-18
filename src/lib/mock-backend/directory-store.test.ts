@@ -7,6 +7,7 @@ import {
   listDepartments,
   listStaff,
   moveDepartment,
+  reorderDepartments,
   searchEnabledStaff,
   updateDepartment,
   updateStaff,
@@ -53,6 +54,18 @@ describe('directory-store departments (#25)', () => {
     moveDepartment(second, 'up');
     const after = listDepartments(true).map((d) => d.id);
     expect(after[0]).toBe(second);
+  });
+
+  it('DnD 順序で一括並び替えできる', () => {
+    const ids = listDepartments(true).map((d) => d.id);
+    const reversed = [...ids].reverse();
+    const r = reorderDepartments(reversed);
+    expect(r.ok).toBe(true);
+    expect(listDepartments(true).map((d) => d.id)).toEqual(reversed);
+  });
+
+  it('未知 id を含む並び替えは拒否する', () => {
+    expect(reorderDepartments(['nope']).ok).toBe(false);
   });
 });
 

@@ -10,6 +10,7 @@ export function DepartmentsManager() {
   const [name, setName] = useState('');
   const [kana, setKana] = useState('');
   const [busy, setBusy] = useState(false);
+  const [dragIndex, setDragIndex] = useState<number | null>(null);
 
   const load = useCallback(async () => {
     const res = await fetch('/api/admin/departments');
@@ -61,6 +62,25 @@ export function DepartmentsManager() {
     [load],
   );
 
+  // DnD で並び替える (issue #25)。確定順序を reorder API へ送る。
+  const handleDrop = useCallback(
+    async (targetIndex: number) => {
+      if (dragIndex === null || dragIndex === targetIndex) return setDragIndex(null);
+      const next = [...items];
+      const [moved] = next.splice(dragIndex, 1);
+      if (moved) next.splice(targetIndex, 0, moved);
+      setItems(next);
+      setDragIndex(null);
+      await fetch('/api/admin/departments/reorder', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ orderedIds: next.map((d) => d.id) }),
+      });
+      await load();
+    },
+    [dragIndex, items, load],
+  );
+
   return (
     <section>
       <h1 style={{ marginTop: 0 }}>部署管理</h1>
@@ -102,8 +122,16 @@ export function DepartmentsManager() {
         </thead>
         <tbody>
           {items.map((d, i) => (
-            <tr key={d.id} data-testid="dept-row" style={{ borderBottom: '1px solid rgba(255,255,255,0.08)' }}>
-              <td style={td}>{i + 1}</td>
+            <tr
+              key={d.id}
+              data-testid="dept-row"
+              draggable
+              onDragStart={() => setDragIndex(i)}
+              onDragOver={(e) => e.preventDefault()}
+              onDrop={() => handleDrop(i)}
+              style={{ borderBottom: '1px solid rgba(255,255,255,0.08)', cursor: 'grab' }}
+            >
+              <td style={td} title="ドラッグで並び替え">⠿ {i + 1}</td>
               <td style={td} data-testid="dept-name">
                 {d.name}
                 {d.kana ? <span style={{ opacity: 0.6 }}>（{d.kana}）</span> : null}
