@@ -8,7 +8,7 @@ import {
   type VisitorInfo,
 } from '@/domain/reception/session';
 import { transition, type ReceptionEvent, type ReceptionState } from '@/domain/reception/state';
-import { motionKeyForState } from '@/domain/motion/types';
+import { motionKeyForState, resolveMotionUrl, type MotionKey } from '@/domain/motion/types';
 import { primeSpeech, speak, type SpeakSettings } from './speech';
 import { VrmAvatarViewer } from './VrmAvatarViewer';
 import { MockSttAdapter } from '@/adapters/speech/mock-stt';
@@ -103,6 +103,10 @@ export function KioskFlow() {
   const [backgroundUrl, setBackgroundUrl] = useState<string | undefined>(undefined);
   const [vrmUrl, setVrmUrl] = useState<string | undefined>(undefined);
   const [avatarFallbackUrl, setAvatarFallbackUrl] = useState<string | undefined>(undefined);
+  // 状態別モーション URL（#31）。default URL に fallback して VRM レンダラへ渡す。
+  const [motions, setMotions] = useState<{ motions: Partial<Record<MotionKey, string>>; defaultUrl?: string }>({
+    motions: {},
+  });
   // null=取得前/取得失敗（既定で表示継続）、false=失効、true=有効。
   const [active, setActive] = useState<boolean | null>(null);
   // PIN 許可状態。既定では PIN 不要として表示を継続する (issue #23)。
@@ -207,6 +211,24 @@ export function KioskFlow() {
     };
   }, []);
 
+  // 状態別モーション URL を取得する (issue #31)。未設定/失敗時は default または無効化で fallback。
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await fetch('/api/kiosk/motions');
+        if (!res.ok) return;
+        const m = (await res.json()) as { motions: Partial<Record<MotionKey, string>>; defaultUrl?: string };
+        if (!cancelled) setMotions({ motions: m.motions ?? {}, defaultUrl: m.defaultUrl });
+      } catch {
+        /* 取得失敗時はモーション無し（アバターは静止/ fallback のまま） */
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
   // 呼び出し中になったら、セッション作成 → 呼び出しを実行して結果を反映する。
   useEffect(() => {
     if (data.state !== 'calling') return;
@@ -283,6 +305,8 @@ export function KioskFlow() {
   }, [data.sessionId]);
 
   const view = active === false ? 'revoked' : needsAuthorize ? 'authorize' : 'ready';
+  // 現在の受付状態に対応するモーション URL（未設定は default に fallback）(issue #31)。
+  const motionUrl = resolveMotionUrl(motionKeyForState(data.state), motions.motions, motions.defaultUrl);
 
   const backgroundStyle: React.CSSProperties = backgroundUrl
     ? { backgroundImage: `url(${backgroundUrl})`, backgroundSize: 'cover', backgroundPosition: 'center' }
@@ -310,7 +334,7 @@ export function KioskFlow() {
       ) : view === 'authorize' ? (
         <KioskAuthorizeView onAuthorized={() => setNeedsAuthorize(false)} />
       ) : (
-        renderScreen(data, dispatch, complete, handleFallback, directory, guidanceIdle, vrmUrl, avatarFallbackUrl, sttEnabled)
+        renderScreen(data, dispatch, complete, handleFallback, directory, guidanceIdle, vrmUrl, avatarFallbackUrl, sttEnabled, motionUrl)
       )}
     </main>
   );
@@ -380,6 +404,7 @@ function renderScreen(
   vrmUrl: string | undefined,
   avatarFallbackUrl: string | undefined,
   sttEnabled: boolean,
+  motionUrl: string | undefined,
 ) {
   switch (data.state) {
     case 'idle':
@@ -393,6 +418,7 @@ function renderScreen(
           guidance={guidanceIdle}
           vrmUrl={vrmUrl}
           avatarFallbackUrl={avatarFallbackUrl}
+          motionUrl={motionUrl}
         />
       );
     case 'selectingPurpose':
@@ -458,17 +484,20 @@ function IdleView({
   guidance,
   vrmUrl,
   avatarFallbackUrl,
+  motionUrl,
 }: {
   onStart: () => void;
   guidance: string;
   vrmUrl?: string;
   avatarFallbackUrl?: string;
+  motionUrl?: string;
 }) {
   return (
     <div className="screen__body" style={{ alignItems: 'center', justifyContent: 'center', textAlign: 'center' }}>
       <VrmAvatarViewer
         vrmUrl={vrmUrl}
         fallbackImageUrl={avatarFallbackUrl}
+        motionUrl={motionUrl}
         className="kiosk-avatar"
       />
       <h1 className="screen__title">受付</h1>

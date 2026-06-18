@@ -67,3 +67,16 @@ export function resolveMotionAssetId(
 ): string | undefined {
   return mapping[key] ?? defaultAssetId;
 }
+
+/**
+ * 受付端末向け: キー → 解決済みモーション URL を返す（純関数）。
+ * 状態キーに URL が割り当てられていなければ default URL に fallback する。
+ * 受付状態とモーション再生を接続するために VRM レンダラ（#5/#31）が消費する。
+ */
+export function resolveMotionUrl(
+  key: MotionKey,
+  motions: Partial<Record<MotionKey, string>>,
+  defaultUrl?: string,
+): string | undefined {
+  return motions[key] ?? defaultUrl;
+}

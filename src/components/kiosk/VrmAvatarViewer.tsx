@@ -16,11 +16,15 @@ import { ResourceTracker } from '@/lib/three/resource-tracker';
 export function VrmAvatarViewer({
   vrmUrl,
   fallbackImageUrl,
+  motionUrl,
   className,
 }: {
   vrmUrl?: string;
   fallbackImageUrl?: string;
-  /** 状態別モーション URL（#31 で再生制御に使用予定）。 */
+  /**
+   * 受付状態に応じて解決済みのモーション URL（#31）。
+   * 実際の .vrma 再生は実機 UAT（#65）で実装。ここでは描画要素へ接続して受け渡しを明示する。
+   */
   motionUrl?: string;
   className?: string;
 }) {
@@ -108,5 +112,6 @@ export function VrmAvatarViewer({
     );
   }
 
-  return <canvas ref={canvasRef} className={className} data-testid="vrm-canvas" />;
+  // data-motion-url: 現在の状態で再生すべきモーション URL（#31 の接続口。実再生は #65）。
+  return <canvas ref={canvasRef} className={className} data-testid="vrm-canvas" data-motion-url={motionUrl} />;
 }

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { motionKeyForState, resolveMotionAssetId } from './types';
+import { motionKeyForState, resolveMotionAssetId, resolveMotionUrl } from './types';
 
 describe('motionKeyForState (#31)', () => {
   it('主要な受付状態をモーションキーに対応づける', () => {
@@ -26,5 +26,19 @@ describe('resolveMotionAssetId (#31)', () => {
   });
   it('default も無ければ undefined（受付画面は壊さない）', () => {
     expect(resolveMotionAssetId('failed', {})).toBeUndefined();
+  });
+});
+
+describe('resolveMotionUrl (#31)', () => {
+  it('割り当て済みキーはその URL', () => {
+    expect(resolveMotionUrl('calling', { calling: 'https://x/c.vrma' }, 'https://x/def.vrma')).toBe(
+      'https://x/c.vrma',
+    );
+  });
+  it('未設定キーは default URL に fallback', () => {
+    expect(resolveMotionUrl('failed', {}, 'https://x/def.vrma')).toBe('https://x/def.vrma');
+  });
+  it('default も無ければ undefined（受付画面は壊さない）', () => {
+    expect(resolveMotionUrl('failed', {})).toBeUndefined();
   });
 });
