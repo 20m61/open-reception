@@ -41,7 +41,7 @@ npm run test:e2e       # 認可境界を含む e2e
 ## 秘匿情報（ASVS V6）
 
 - [ ] secret は server-only 環境変数で扱い、`NEXT_PUBLIC_` を付けない
-- [ ] Vonage secret/private key をクライアント bundle に含めない（本番連携時）
+- [x] Vonage secret/private key をクライアント bundle に含めない: `'use client'` からの server-only secret 参照を禁止する静的ガードテスト（`src/lib/security/client-secret-guard.test.ts`、`npm test` に含む）
 - [ ] `.env` を誤コミットしない（`npm run secrets:scan`）
 
 ## 通信・ヘッダ（ASVS V14）
