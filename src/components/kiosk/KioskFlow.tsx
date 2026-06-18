@@ -85,6 +85,7 @@ export function KioskFlow() {
   const [data, dispatch] = useReducer(reducer, INITIAL);
   const [directory, setDirectory] = useState<Directory>({ departments: [], staff: [] });
   const [guidanceIdle, setGuidanceIdle] = useState('ようこそ。画面にタッチして受付を開始してください。');
+  const [backgroundUrl, setBackgroundUrl] = useState<string | undefined>(undefined);
   // null=取得前/取得失敗（既定で表示継続）、false=失効、true=有効。
   const [active, setActive] = useState<boolean | null>(null);
   // PIN 許可状態。既定では PIN 不要として表示を継続する (issue #23)。
@@ -146,6 +147,24 @@ export function KioskFlow() {
         if (!cancelled && voice.guidanceIdle) setGuidanceIdle(voice.guidanceIdle);
       } catch {
         /* 取得失敗時は既定文言を使う */
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  // 適用中の背景アセットを反映する (issue #27)。読み込み失敗時は背景色で fallback。
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await fetch('/api/kiosk/assets');
+        if (!res.ok) return;
+        const assets = (await res.json()) as { backgroundUrl?: string };
+        if (!cancelled) setBackgroundUrl(assets.backgroundUrl);
+      } catch {
+        /* 取得失敗時は既定背景 */
       }
     })();
     return () => {
@@ -224,8 +243,12 @@ export function KioskFlow() {
 
   const view = active === false ? 'revoked' : needsAuthorize ? 'authorize' : 'ready';
 
+  const backgroundStyle: React.CSSProperties = backgroundUrl
+    ? { backgroundImage: `url(${backgroundUrl})`, backgroundSize: 'cover', backgroundPosition: 'center' }
+    : {};
+
   return (
-    <main className="screen" data-kiosk-state={view === 'ready' ? data.state : view}>
+    <main className="screen" data-kiosk-state={view === 'ready' ? data.state : view} style={backgroundStyle}>
       {!online ? (
         <div className="notice notice--warning" data-testid="kiosk-offline" style={{ marginBottom: 'var(--space-md)' }}>
           通信が不安定です。復帰までしばらくお待ちください。

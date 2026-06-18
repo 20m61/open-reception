@@ -20,6 +20,8 @@ const ACTION_LABEL: Record<AuditAction, string> = {
   'kiosk.restored': '端末: 再有効化',
   'security.updated': 'セキュリティ設定: 更新',
   'voice.updated': '音声設定: 更新',
+  'asset.created': 'アセット: 登録',
+  'asset.updated': 'アセット: 更新',
 };
 
 /** 管理画面: 監査ログ一覧 (issue #22, #19)。受付ライフサイクルと管理操作の証跡。 */
