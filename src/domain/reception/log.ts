@@ -49,7 +49,8 @@ export type AuditAction =
   | 'security.updated'
   | 'voice.updated'
   | 'asset.created'
-  | 'asset.updated';
+  | 'asset.updated'
+  | 'motion.updated';
 
 export type AuditLog = {
   id: string;

@@ -1,0 +1,69 @@
+/**
+ * VRM モーション割り当てのドメイン型 (issue #31)。
+ * 受付状態ごとにモーション（#27 のアセット）を割り当て、未設定/失敗時は default に fallback する。
+ * 実際の VRM 再生（three.js レンダラ）は #5 で本書のマッピングを消費する。
+ */
+import type { ReceptionState } from '@/domain/reception/state';
+
+export const MOTION_KEYS = [
+  'idle',
+  'greeting',
+  'listening',
+  'thinking',
+  'selecting',
+  'calling',
+  'connected',
+  'success',
+  'failed',
+  'timeout',
+  'fallback',
+] as const;
+
+export type MotionKey = (typeof MOTION_KEYS)[number];
+
+/** モーションキー → モーションアセット id。未設定キーは default を使う。 */
+export type MotionMapping = Partial<Record<MotionKey, string>>;
+
+export function isMotionKey(value: unknown): value is MotionKey {
+  return typeof value === 'string' && (MOTION_KEYS as readonly string[]).includes(value);
+}
+
+/** 受付状態から再生すべきモーションキーを決める（純関数）。 */
+export function motionKeyForState(state: ReceptionState): MotionKey {
+  switch (state) {
+    case 'idle':
+    case 'cancelled':
+      return 'idle';
+    case 'selectingPurpose':
+      return 'greeting';
+    case 'selectingTarget':
+      return 'selecting';
+    case 'inputVisitorInfo':
+      return 'listening';
+    case 'confirming':
+      return 'thinking';
+    case 'calling':
+      return 'calling';
+    case 'connected':
+      return 'connected';
+    case 'completed':
+      return 'success';
+    case 'failed':
+      return 'failed';
+    case 'timeout':
+      return 'timeout';
+    case 'fallback':
+      return 'fallback';
+    default:
+      return 'idle';
+  }
+}
+
+/** キーに割り当てられたアセット id を返す。未設定なら default（あれば）。 */
+export function resolveMotionAssetId(
+  key: MotionKey,
+  mapping: MotionMapping,
+  defaultAssetId?: string,
+): string | undefined {
+  return mapping[key] ?? defaultAssetId;
+}
