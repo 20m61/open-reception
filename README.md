@@ -52,7 +52,7 @@ npm run dev            # http://localhost:3000 で起動
 
 ### モーション割り当て（基盤・実装済み）
 
-`/admin/motions` で受付状態（待機/挨拶/呼び出し中/成功/失敗/未応答 等）ごとにモーションアセットを割り当て、未設定/失敗時は default に fallback します。受付端末は状態に応じた motion キーを `data-kiosk-motion` で公開し（`/api/kiosk/motions`）、VRM レンダラ（#5）が消費します。
+`/admin/motions` で受付状態（待機/挨拶/呼び出し中/成功/失敗/未応答 等）ごとにモーションアセットを割り当て、未設定/失敗時は default に fallback します。受付端末は状態に応じた motion キーを `data-kiosk-motion` で公開し、`/api/kiosk/motions`（キー→URL）から**現在状態のモーション URL を解決**して VRM レンダラ（`VrmAvatarViewer` の `motionUrl`）へ受け渡します（`resolveMotionUrl`）。実際の `.vrma` 再生・リップシンク優先制御は実機 UAT（#65）で実装します。
 
 ### 音声設定・案内文言（実装済み）
 
