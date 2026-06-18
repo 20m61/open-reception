@@ -1,0 +1,30 @@
+{
+  "name": "open-reception-infra",
+  "version": "0.1.0",
+  "private": true,
+  "description": "open-reception の AWS CDK インフラ定義（Next.js ホスティング WebStack ほか）",
+  "bin": {
+    "open-reception": "bin/open-reception.ts"
+  },
+  "scripts": {
+    "synth": "cdk synth",
+    "diff": "cdk diff",
+    "deploy": "cdk deploy",
+    "deploy:web": "cdk deploy OpenReception-Web-dev",
+    "destroy": "cdk destroy",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run"
+  },
+  "devDependencies": {
+    "@types/node": "22.10.7",
+    "aws-cdk": "2.1128.0",
+    "ts-node": "10.9.2",
+    "typescript": "5.7.3",
+    "vitest": "3.2.6"
+  },
+  "dependencies": {
+    "aws-cdk-lib": "2.260.0",
+    "constructs": "10.6.0",
+    "source-map-support": "0.5.21"
+  }
+}

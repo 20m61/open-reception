@@ -78,6 +78,13 @@ web_modules/
 .next
 out
 
+# OpenNext build output (Lambda 成果物。デプロイ時に `open-next build` で再生成)
+.open-next
+
+# AWS CDK synth output
+infra/cdk.out
+cdk.out
+
 # Nuxt.js build / generate output
 .nuxt
 dist

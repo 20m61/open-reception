@@ -1,0 +1,141 @@
+# AWS サーバーレス デプロイ手順（Next.js / OpenNext + CDK）
+
+open-reception の Next.js アプリ本体を **AWS サーバーレス**（CloudFront + Lambda + S3）へ
+デプロイする手順。インフラは AWS CDK (TypeScript) で定義する（`infra/`）。
+通知サブシステム（#32/#34）の CDK 方針と同じ App に同居させる前提。
+
+## アーキテクチャ
+
+```
+                ┌──────────────── CloudFront ────────────────┐
+利用者(iPad) ──▶│  *               → server Lambda (SSR/API)  │
+                │  /_next/image*   → image  Lambda (最適化)   │
+                │  /_next/* ,      → S3 (静的アセット)         │
+                │  /BUILD_ID                                   │
+                └──────────────────────────────────────────────┘
+   - server / image Lambda は Function URL(AWS_IAM) + CloudFront OAC で限定公開
+   - proxy(旧 middleware) による /admin 認可は server Lambda 内で動作（nodejs runtime）
+   - ISR/revalidate 不使用のため SQS/DynamoDB は無し（open-next.config.ts で dummy 化）
+```
+
+OpenNext が `.open-next/` に生成する成果物を、CDK の `WebStack` が取り込む。
+出力契約（origins / behaviors）は `.open-next/open-next.output.json` を参照。
+
+## 前提
+
+- Node.js 22 以上
+- AWS アカウントと認証情報（`aws configure` 済み、または環境変数）
+- リージョン: 既定 `ap-northeast-1`（`CDK_DEFAULT_REGION` で変更可）
+- 初回のみ CDK ブートストラップ済みであること
+
+## 手順
+
+### 1. アプリのビルド成果物を生成（OpenNext）
+
+リポジトリルートで:
+
+```bash
+npm install
+npm run verify          # typecheck / lint / test / build（品質ゲート）
+npm run build:open-next # → .open-next/ を生成（内部で next build も実行）
+```
+
+### 2. インフラ依存をインストール
+
+```bash
+cd infra
+npm install
+```
+
+### 3. CDK ブートストラップ（アカウント/リージョンごとに初回のみ）
+
+```bash
+cd infra
+export CDK_DEFAULT_ACCOUNT=$(aws sts get-caller-identity --query Account --output text)
+export CDK_DEFAULT_REGION=ap-northeast-1
+npx cdk bootstrap
+```
+
+### 4. 合成して差分を確認
+
+```bash
+cd infra
+npm run synth                 # env=dev（既定）
+npx cdk synth -c env=prod     # 本番設定で合成
+npx cdk diff  -c env=prod     # 既存スタックとの差分
+```
+
+### 5. アプリ環境変数（機密）の注入
+
+server Lambda にはデプロイ時に環境変数を渡す。`.env.example` の server-only 値が対象。
+
+- **非機密**（例 `ADMIN_AUTH_PROVIDER=none`）は context で渡せる:
+
+  ```bash
+  npx cdk deploy -c env=prod -c appEnv.ADMIN_AUTH_PROVIDER=none
+  ```
+
+- **機密**（`ADMIN_PASSWORD` / `ADMIN_SESSION_SECRET` / `KIOSK_SESSION_SECRET` /
+  `ENTRA_*` / `VONAGE_*`）は平文でコミット・履歴に残さないこと。次のいずれかを推奨:
+  - AWS Secrets Manager / SSM Parameter Store に保存し、デプロイ運用者がデプロイ時に
+    `-c appEnv.KEY=...` へ展開する（CI のシークレットストアから注入）。
+  - 値を runtime で取得する場合は server Lambda に Secrets Manager 読取権限を付与する
+    follow-up を別途実装（現状の WebStack は環境変数注入方式）。
+
+> `NODE_ENV=production` は WebStack が自動設定する。`ADMIN_AUTH_REQUIRED=false` は本番では
+> アプリの fail-closed ガードによりエラーになる（#70）。
+
+### 6. デプロイ
+
+```bash
+cd infra
+npx cdk deploy OpenReception-Web-prod -c env=prod \
+  -c appEnv.ADMIN_PASSWORD="$ADMIN_PASSWORD" \
+  -c appEnv.ADMIN_SESSION_SECRET="$ADMIN_SESSION_SECRET" \
+  -c appEnv.KIOSK_SESSION_SECRET="$KIOSK_SESSION_SECRET"
+```
+
+完了後、出力（Outputs）に表示される:
+- `DistributionDomainName` … 公開 URL（`https://<domain>/kiosk`, `/admin`）
+- `DistributionId` … キャッシュ無効化に使用
+- `AssetBucketName` … 静的アセットバケット
+
+### 7. 再デプロイ（コード更新時）
+
+```bash
+# ルートで再ビルド
+npm run build:open-next
+# infra で再デプロイ（アセットは BucketDeployment が更新）
+cd infra && npx cdk deploy OpenReception-Web-prod -c env=prod -c appEnv.<...>
+```
+
+静的アセットは immutable（ハッシュ付き）。動的レスポンスは CloudFront でキャッシュ無効
+（`CACHING_DISABLED`）のため、ページ更新の即時反映に手動 invalidation は不要。
+
+## 環境別設定
+
+`infra/lib/config/environments.ts` で dev / staging / prod を型付き定義。
+Lambda メモリ・ログ保持・CloudFront PriceClass を環境ごとに調整する。
+`-c env=<name>` で選択（既定 dev）。
+
+## コスト管理タグ
+
+`Project` / `Environment` / `Component` / `Owner` / `ManagedBy` を全リソースに付与
+（`infra/lib/constructs/cost-tags.ts`、[cost-management-tags.md](./cost-management-tags.md)）。
+
+## セキュリティ要点
+
+- Lambda Function URL は `AWS_IAM` 認証 + CloudFront OAC（SourceArn 限定）で、直接の
+  公開アクセス不可。CloudFront 経由のみ。
+- S3 バケットは公開ブロック + OAC 経由のみ読取。`enforceSSL`。
+- セキュリティヘッダ: アプリ側 `next.config.ts`（CSP 等）に加え、CloudFront でも
+  `SECURITY_HEADERS` レスポンスポリシーを付与。
+- 管理認可（`/admin`, `/api/admin`）は server Lambda 上の `proxy`（旧 middleware）が担う。
+
+## クリーンアップ
+
+```bash
+cd infra && npx cdk destroy OpenReception-Web-dev -c env=dev
+```
+
+> prod の S3 バケットは `RemovalPolicy.RETAIN`。destroy 後も残るため手動削除する。
