@@ -35,7 +35,7 @@ function denyApiOrRedirect(req: NextRequest, isAdminApi: boolean, status: 401 | 
   return NextResponse.redirect(url);
 }
 
-export async function middleware(req: NextRequest): Promise<NextResponse> {
+export async function proxy(req: NextRequest): Promise<NextResponse> {
   const { pathname } = req.nextUrl;
   if (PUBLIC_PATHS.has(pathname)) return NextResponse.next();
 
@@ -71,8 +71,13 @@ export async function middleware(req: NextRequest): Promise<NextResponse> {
     if (!result.ok) return denyApiOrRedirect(req, isAdminApi, 401);
 
     // ロール認可: Viewer は状態変更（書き込み）を行えない。
-    if (isAdminApi && isWriteMethod(req.method) && !canWrite(result.role)) {
-      return denyApiOrRedirect(req, isAdminApi, 403);
+    // 管理 API だけでなく管理ページ（Server Action 等の POST）にも適用する。
+    // 認証済みだが権限不足のため、ページ経由でも 401 リダイレクトではなく 403 を返す。
+    if ((isAdminApi || isAdminPage) && isWriteMethod(req.method) && !canWrite(result.role)) {
+      return NextResponse.json(
+        { error: 'forbidden', message: 'insufficient role' },
+        { status: 403 },
+      );
     }
     return NextResponse.next();
   }
