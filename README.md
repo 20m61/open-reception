@@ -115,6 +115,7 @@ npx playwright install --with-deps chromium webkit
 - [セキュリティレビュー チェックリスト](./docs/security-checklist.md)
 - [iPad 運用・実機 UAT チェックリスト](./docs/ipad-uat.md)
 - [受付履歴・監査ログ方針](./docs/audit-logging.md)
+- [インフラ SPEC（フルサーバーレス・NoOps）](./docs/infrastructure-spec.md)
 - [コスト管理タグ方針](./docs/cost-management-tags.md)
 - [用語集](./docs/glossary.md)
 - [スコープ整理（MVP / Phase 2 / Future）](./docs/scope.md)
