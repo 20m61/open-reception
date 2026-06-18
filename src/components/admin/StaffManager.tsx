@@ -4,6 +4,7 @@ import { useCallback, useEffect, useState } from 'react';
 import type { Department } from '@/domain/department/types';
 import type { Staff } from '@/domain/staff/types';
 import { CsvImport } from './CsvImport';
+import { StaffEditor } from './StaffEditor';
 
 /** 担当者管理 (issue #26)。一覧・作成・有効/無効・部署割り当てを管理 API 経由で行う。 */
 export function StaffManager() {
@@ -13,6 +14,7 @@ export function StaffManager() {
   const [kana, setKana] = useState('');
   const [departmentId, setDepartmentId] = useState('');
   const [busy, setBusy] = useState(false);
+  const [editingId, setEditingId] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     const [sRes, dRes] = await Promise.all([fetch('/api/admin/staff'), fetch('/api/admin/departments')]);
@@ -126,7 +128,25 @@ export function StaffManager() {
                   <button type="button" data-testid="staff-toggle" onClick={() => patch(s, { enabled: !s.enabled })} style={smallBtn}>
                     {s.enabled ? '無効化' : '有効化'}
                   </button>
+                  <button
+                    type="button"
+                    data-testid="staff-edit"
+                    onClick={() => setEditingId((cur) => (cur === s.id ? null : s.id))}
+                    style={smallBtn}
+                  >
+                    {editingId === s.id ? '閉じる' : '呼び出し先'}
+                  </button>
                 </div>
+                {editingId === s.id ? (
+                  <StaffEditor
+                    staff={s}
+                    allStaff={items}
+                    onSaved={() => {
+                      setEditingId(null);
+                      void load();
+                    }}
+                  />
+                ) : null}
               </td>
             </tr>
           ))}

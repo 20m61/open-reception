@@ -24,6 +24,11 @@ export const MOCK_STAFF: ReadonlyArray<Staff> = [
     departmentId: 'dept-sales',
     enabled: true,
     available: true,
+    callTargets: [
+      { type: 'vonage', value: 'sato-session', priority: 0, enabled: true },
+      { type: 'email', value: 'sato@example.com', priority: 1, enabled: true },
+    ],
+    fallbackStaffIds: ['staff-suzuki'],
     mockCallOutcome: 'success',
   },
   {
@@ -34,6 +39,8 @@ export const MOCK_STAFF: ReadonlyArray<Staff> = [
     departmentId: 'dept-dev',
     enabled: true,
     available: true,
+    callTargets: [],
+    fallbackStaffIds: [],
     mockCallOutcome: 'no_answer',
   },
   {
@@ -44,6 +51,8 @@ export const MOCK_STAFF: ReadonlyArray<Staff> = [
     departmentId: 'dept-dev',
     enabled: true,
     available: true,
+    callTargets: [],
+    fallbackStaffIds: [],
     mockCallOutcome: 'failure',
   },
   {
@@ -54,6 +63,8 @@ export const MOCK_STAFF: ReadonlyArray<Staff> = [
     departmentId: 'dept-hr',
     enabled: true,
     available: true,
+    callTargets: [],
+    fallbackStaffIds: [],
     mockCallOutcome: 'timeout',
   },
   {
@@ -64,6 +75,8 @@ export const MOCK_STAFF: ReadonlyArray<Staff> = [
     departmentId: 'dept-sales',
     enabled: false,
     available: false,
+    callTargets: [],
+    fallbackStaffIds: [],
   },
   {
     id: 'staff-ono',
@@ -73,6 +86,8 @@ export const MOCK_STAFF: ReadonlyArray<Staff> = [
     departmentId: 'dept-hr',
     enabled: true,
     available: false,
+    callTargets: [],
+    fallbackStaffIds: [],
     mockCallOutcome: 'success',
   },
 ];

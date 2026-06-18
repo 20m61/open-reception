@@ -6,7 +6,7 @@
  * NOTE: プロセス内配列のため単一インスタンス前提。
  */
 import type { Department } from '@/domain/department/types';
-import type { MockCallOutcome, Staff } from '@/domain/staff/types';
+import { normalizeCallTargets, type MockCallOutcome, type Staff } from '@/domain/staff/types';
 import { MOCK_DEPARTMENTS, MOCK_STAFF } from '@/domain/staff/mock-data';
 import { searchStaff } from '@/domain/staff/search';
 
@@ -177,6 +177,8 @@ export function createStaff(input: unknown): Result<Staff> {
     departmentId: v.value.departmentId,
     enabled: v.value.enabled ?? true,
     available: v.value.available ?? true,
+    callTargets: [],
+    fallbackStaffIds: [],
   };
   staff.push(member);
   return { ok: true, value: member };
@@ -205,6 +207,17 @@ export function updateStaff(id: string, patch: unknown): Result<Staff> {
   if (o.available !== undefined) {
     if (typeof o.available !== 'boolean') return err('invalid_input', 'available must be boolean');
     found.available = o.available;
+  }
+  if (o.callTargets !== undefined) {
+    // 配列順を優先順位として正規化する（DnD 並び替えの確定）。
+    found.callTargets = normalizeCallTargets(o.callTargets);
+  }
+  if (o.fallbackStaffIds !== undefined) {
+    if (!Array.isArray(o.fallbackStaffIds)) return err('invalid_input', 'fallbackStaffIds must be an array');
+    const valid = o.fallbackStaffIds
+      .filter((sid): sid is string => typeof sid === 'string')
+      .filter((sid) => sid !== id && staff.some((s) => s.id === sid));
+    found.fallbackStaffIds = valid;
   }
   return { ok: true, value: found };
 }
@@ -292,6 +305,10 @@ export function importStaff(records: Record<string, string>[], mode: 'preview' |
     } else {
       summary.created++;
       if (mode === 'apply') {
+        const fallbackStaffIds = (rec.fallback_staff_ids ?? '')
+          .split(';')
+          .map((s) => s.trim())
+          .filter((s) => s !== '');
         staff.push({
           id: id || nextId('staff'),
           displayName,
@@ -300,6 +317,8 @@ export function importStaff(records: Record<string, string>[], mode: 'preview' |
           departmentId,
           enabled: parseBool(rec.enabled, true),
           available: parseBool(rec.available, true),
+          callTargets: [],
+          fallbackStaffIds,
         });
       }
     }
