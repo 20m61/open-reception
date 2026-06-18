@@ -45,6 +45,7 @@ npm run dev            # http://localhost:3000 で起動
 ### 受付端末のアクセス制御（実装済み）
 
 受付端末は PIN / IP 許可で初回許可でき（`/admin/security` で設定）、許可後は長期 kiosk セッションでリロード/再起動後も表示を維持します（`POST /api/kiosk/authorize`、`GET /api/kiosk/session-status`）。kiosk セッションでは管理画面/API を操作できません。PIN は既定で無効です。
+`/admin/security` から **緊急停止モード**（確認付き）で全端末の受付を一括停止/再開できます。設定変更は監査ログに記録されます。
 
 ### 管理画面の認可（実装済み）
 

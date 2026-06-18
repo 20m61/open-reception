@@ -8,6 +8,7 @@ const DEFAULTS: SecuritySettings = {
   pinRequired: false,
   pin: process.env.KIOSK_PIN ?? '0000',
   ipAllowlist: [],
+  emergencyStop: false,
 };
 
 let settings: SecuritySettings = { ...DEFAULTS, ipAllowlist: [...DEFAULTS.ipAllowlist] };
@@ -24,6 +25,7 @@ export function updateSecuritySettings(patch: unknown): SecuritySettings {
     if (Array.isArray(o.ipAllowlist)) {
       settings.ipAllowlist = o.ipAllowlist.filter((x): x is string => typeof x === 'string').map((x) => x.trim()).filter(Boolean);
     }
+    if (typeof o.emergencyStop === 'boolean') settings.emergencyStop = o.emergencyStop;
   }
   return getSecuritySettings();
 }

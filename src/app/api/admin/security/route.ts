@@ -12,15 +12,24 @@ import { appendAdminAudit } from '@/lib/mock-backend/reception-log-store';
  */
 export function GET(): NextResponse {
   const s = getSecuritySettings();
-  return NextResponse.json({ pinRequired: s.pinRequired, ipAllowlist: s.ipAllowlist, pinConfigured: s.pin !== '' });
+  return NextResponse.json({
+    pinRequired: s.pinRequired,
+    ipAllowlist: s.ipAllowlist,
+    pinConfigured: s.pin !== '',
+    emergencyStop: s.emergencyStop,
+  });
 }
 
 export async function PUT(request: Request): Promise<NextResponse> {
   const updated = updateSecuritySettings(await readJson(request));
-  appendAdminAudit('security.updated', { type: 'security' }, { pinRequired: String(updated.pinRequired) });
+  appendAdminAudit('security.updated', { type: 'security' }, {
+    pinRequired: String(updated.pinRequired),
+    emergencyStop: String(updated.emergencyStop),
+  });
   return NextResponse.json({
     pinRequired: updated.pinRequired,
     ipAllowlist: updated.ipAllowlist,
     pinConfigured: updated.pin !== '',
+    emergencyStop: updated.emergencyStop,
   });
 }

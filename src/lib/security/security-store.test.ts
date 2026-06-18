@@ -24,4 +24,9 @@ describe('security-store (#23 #29)', () => {
     const updated = updateSecuritySettings({ ipAllowlist: ['10.0.0.1', ' 10.0.0.2 '] });
     expect(updated.ipAllowlist).toEqual(['10.0.0.1', '10.0.0.2']);
   });
+
+  it('緊急停止は既定 false、切り替えできる', () => {
+    expect(getSecuritySettings().emergencyStop).toBe(false);
+    expect(updateSecuritySettings({ emergencyStop: true }).emergencyStop).toBe(true);
+  });
 });

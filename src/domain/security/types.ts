@@ -8,7 +8,14 @@ export type SecuritySettings = {
   pin: string;
   /** 許可 IP リスト（空なら全許可）。 */
   ipAllowlist: string[];
+  /** 緊急停止モード。true の間は全受付端末を停止する。 */
+  emergencyStop: boolean;
 };
+
+/** 端末レジストリの有効状態と緊急停止から、実際に受付可能かを決める（純関数）。 */
+export function effectiveKioskActive(registryActive: boolean, emergencyStop: boolean): boolean {
+  return registryActive && !emergencyStop;
+}
 
 /** 受付端末のアクセス状態。 */
 export type KioskAccessState = 'revoked' | 'authorize' | 'ready';
