@@ -27,9 +27,9 @@
     "three": "^0.184.0"
   },
   "devDependencies": {
-    "@aws-sdk/client-polly": "3.726.1",
-    "@aws-sdk/client-secrets-manager": "3.726.1",
-    "@aws-sdk/client-ssm": "3.726.1",
+    "@aws-sdk/client-polly": "3.1071.0",
+    "@aws-sdk/client-secrets-manager": "3.1071.0",
+    "@aws-sdk/client-ssm": "3.1071.0",
     "@axe-core/playwright": "^4.11.3",
     "@lhci/cli": "^0.15.1",
     "@opennextjs/aws": "4.0.3",
