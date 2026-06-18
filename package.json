@@ -13,6 +13,7 @@
     "test:watch": "vitest",
     "test:e2e": "playwright test",
     "verify": "npm run typecheck && npm run lint && npm test && npm run build",
+    "lighthouse": "lhci autorun",
     "audit:deps": "npm audit --omit=dev",
     "sast": "semgrep scan --config p/default --error",
     "secrets:scan": "gitleaks detect --no-banner --redact"
@@ -24,6 +25,7 @@
   },
   "devDependencies": {
     "@axe-core/playwright": "^4.11.3",
+    "@lhci/cli": "^0.15.1",
     "@playwright/test": "1.61.0",
     "@types/node": "22.10.7",
     "@types/react": "19.0.7",
