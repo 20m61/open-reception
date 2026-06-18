@@ -25,6 +25,8 @@ function matchesQuery(s: DirStaff, query: string): boolean {
 }
 /** 完了・キャンセル後に待機画面へ自動復帰するまでの時間。 */
 const AUTO_RESET_MS = 6000;
+/** 端末有効性・設定変更を検知する heartbeat 間隔 (issue #30)。 */
+const HEARTBEAT_INTERVAL_MS = 30000;
 
 type Target = { type: ReceptionTargetType; id: string; label: string };
 type CallOutcome = 'connected' | 'timeout' | 'failed';
@@ -87,30 +89,33 @@ export function KioskFlow() {
   const [active, setActive] = useState<boolean | null>(null);
   // PIN 許可状態。既定では PIN 不要として表示を継続する (issue #23)。
   const [needsAuthorize, setNeedsAuthorize] = useState(false);
+  // オンライン状態。heartbeat 失敗で false、復帰で true (issue #30)。
+  const [online, setOnline] = useState(true);
 
-  const refreshAccess = useCallback(async () => {
+  const refreshHeartbeat = useCallback(async () => {
     try {
-      const [configRes, statusRes] = await Promise.all([
-        fetch(`/api/kiosk/config?kioskId=${encodeURIComponent(KIOSK_ID)}`),
-        fetch('/api/kiosk/session-status'),
-      ]);
-      if (configRes.ok) {
-        const config = (await configRes.json()) as { active: boolean };
-        setActive(config.active);
+      const res = await fetch(`/api/kiosk/heartbeat?kioskId=${encodeURIComponent(KIOSK_ID)}`, { cache: 'no-store' });
+      if (!res.ok) {
+        setOnline(false);
+        return;
       }
-      if (statusRes.ok) {
-        const status = (await statusRes.json()) as { pinRequired: boolean; authorized: boolean };
-        setNeedsAuthorize(status.pinRequired && !status.authorized);
-      }
+      const hb = (await res.json()) as { active: boolean; pinRequired: boolean; authorized: boolean };
+      setOnline(true);
+      setActive(hb.active);
+      setNeedsAuthorize(hb.pinRequired && !hb.authorized);
+      // 失効/緊急停止を検知したら、受付中の個人情報を破棄して待機へ戻す (issue #30)。
+      if (!hb.active) dispatch({ type: 'RESET' });
     } catch {
-      /* 取得失敗時は表示を継続（真っ白にしない） */
+      setOnline(false);
     }
   }, []);
 
-  // 端末設定と許可状態を取得する (issue #18, #23)。
+  // 起動時に確認し、以降は定期 heartbeat で長期表示中の変化を検知する (issue #30)。
   useEffect(() => {
-    void refreshAccess();
-  }, [refreshAccess]);
+    void refreshHeartbeat();
+    const timer = setInterval(() => void refreshHeartbeat(), HEARTBEAT_INTERVAL_MS);
+    return () => clearInterval(timer);
+  }, [refreshHeartbeat]);
 
   // 部署・担当者を管理画面と共有のディレクトリ API から取得する (issue #3)。
   useEffect(() => {
@@ -221,6 +226,11 @@ export function KioskFlow() {
 
   return (
     <main className="screen" data-kiosk-state={view === 'ready' ? data.state : view}>
+      {!online ? (
+        <div className="notice notice--warning" data-testid="kiosk-offline" style={{ marginBottom: 'var(--space-md)' }}>
+          通信が不安定です。復帰までしばらくお待ちください。
+        </div>
+      ) : null}
       {view === 'revoked' ? (
         <div className="screen__body" style={{ alignItems: 'center', justifyContent: 'center', textAlign: 'center' }}>
           <div className="notice notice--danger" data-testid="kiosk-revoked">
