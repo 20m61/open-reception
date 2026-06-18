@@ -17,6 +17,7 @@ const FORBIDDEN = [
   /process\.env\.ADMIN_[A-Z_]+/,
   /process\.env\.KIOSK_SESSION_SECRET/,
   /process\.env\.KIOSK_PIN/,
+  /process\.env\.ENTRA_[A-Z_]+/,
 ];
 
 function listSourceFiles(dir: string): string[] {
