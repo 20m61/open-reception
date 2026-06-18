@@ -82,6 +82,7 @@ function reducer(data: FlowData, action: Action): FlowData {
 export function KioskFlow() {
   const [data, dispatch] = useReducer(reducer, INITIAL);
   const [directory, setDirectory] = useState<Directory>({ departments: [], staff: [] });
+  const [guidanceIdle, setGuidanceIdle] = useState('ようこそ。画面にタッチして受付を開始してください。');
   // null=取得前/取得失敗（既定で表示継続）、false=失効、true=有効。
   const [active, setActive] = useState<boolean | null>(null);
   // PIN 許可状態。既定では PIN 不要として表示を継続する (issue #23)。
@@ -122,6 +123,24 @@ export function KioskFlow() {
         if (!cancelled) setDirectory(dir);
       } catch {
         /* 取得失敗時は空のまま。受付開始ボタンは表示され、画面は壊れない */
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  // 音声設定の案内文言を受付画面へ反映する (issue #28)。
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await fetch('/api/kiosk/voice');
+        if (!res.ok) return;
+        const voice = (await res.json()) as { guidanceIdle?: string };
+        if (!cancelled && voice.guidanceIdle) setGuidanceIdle(voice.guidanceIdle);
+      } catch {
+        /* 取得失敗時は既定文言を使う */
       }
     })();
     return () => {
@@ -211,7 +230,7 @@ export function KioskFlow() {
       ) : view === 'authorize' ? (
         <KioskAuthorizeView onAuthorized={() => setNeedsAuthorize(false)} />
       ) : (
-        renderScreen(data, dispatch, complete, handleFallback, directory)
+        renderScreen(data, dispatch, complete, handleFallback, directory, guidanceIdle)
       )}
     </main>
   );
@@ -277,10 +296,11 @@ function renderScreen(
   complete: () => void,
   onFallback: () => void,
   directory: Directory,
+  guidanceIdle: string,
 ) {
   switch (data.state) {
     case 'idle':
-      return <IdleView onStart={() => dispatch({ type: 'START' })} />;
+      return <IdleView onStart={() => dispatch({ type: 'START' })} guidance={guidanceIdle} />;
     case 'selectingPurpose':
       return (
         <PurposeView
@@ -338,11 +358,11 @@ function renderScreen(
 
 /* ---------- 各画面 (issue #11–#15) ---------- */
 
-function IdleView({ onStart }: { onStart: () => void }) {
+function IdleView({ onStart, guidance }: { onStart: () => void; guidance: string }) {
   return (
     <div className="screen__body" style={{ alignItems: 'center', justifyContent: 'center', textAlign: 'center' }}>
       <h1 className="screen__title">受付</h1>
-      <p className="screen__lead">ようこそ。画面にタッチして受付を開始してください。</p>
+      <p className="screen__lead" data-testid="idle-guidance">{guidance}</p>
       <button type="button" className="btn btn--primary" data-testid="start-reception" onClick={onStart}>
         受付を開始する
       </button>

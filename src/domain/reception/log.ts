@@ -46,7 +46,8 @@ export type AuditAction =
   | 'kiosk.created'
   | 'kiosk.revoked'
   | 'kiosk.restored'
-  | 'security.updated';
+  | 'security.updated'
+  | 'voice.updated';
 
 export type AuditLog = {
   id: string;
