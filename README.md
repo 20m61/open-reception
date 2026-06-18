@@ -71,7 +71,8 @@ npm run dev            # http://localhost:3000 で起動
 受付端末は共有のディレクトリ API（`GET /api/kiosk/directory`）から取得するため、
 管理画面の変更がコード修正なしで受付画面に反映されます。管理 API は `/api/admin/departments`・`/api/admin/staff`。
 **CSV による一括登録/更新**にも対応（各管理画面の「CSV インポート」、`POST /api/admin/{departments,staff}/import` の preview/apply）。
-（DnD 並び替え・担当者の不在/代替設定は後続 #25 #26。認証・認可は #24。）
+部署は **DnD 並び替え**（上下移動も併用可、`POST /api/admin/departments/reorder`）に対応。
+（担当者の不在/代替担当者設定は後続 #26。認証・認可は #24。）
 
 ### 受付履歴・監査ログ（実装済み）
 
