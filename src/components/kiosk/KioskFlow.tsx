@@ -11,6 +11,7 @@ import { transition, type ReceptionEvent, type ReceptionState } from '@/domain/r
 import { motionKeyForState } from '@/domain/motion/types';
 import { primeSpeech, speak, type SpeakSettings } from './speech';
 import { VrmAvatarViewer } from './VrmAvatarViewer';
+import { MockSttAdapter } from '@/adapters/speech/mock-stt';
 
 /** MVP では端末 ID は固定。将来 kiosk config から取得する (issue #18)。 */
 const KIOSK_ID = 'kiosk-dev';
@@ -98,6 +99,7 @@ export function KioskFlow() {
   const [directory, setDirectory] = useState<Directory>({ departments: [], staff: [] });
   const [guidanceIdle, setGuidanceIdle] = useState('ようこそ。画面にタッチして受付を開始してください。');
   const [speakSettings, setSpeakSettings] = useState<SpeakSettings>({ ttsEnabled: false, rate: 1, volume: 1, language: 'ja-JP' });
+  const [sttEnabled, setSttEnabled] = useState(false);
   const [backgroundUrl, setBackgroundUrl] = useState<string | undefined>(undefined);
   const [vrmUrl, setVrmUrl] = useState<string | undefined>(undefined);
   const [avatarFallbackUrl, setAvatarFallbackUrl] = useState<string | undefined>(undefined);
@@ -161,12 +163,14 @@ export function KioskFlow() {
         const voice = (await res.json()) as {
           guidanceIdle?: string;
           ttsEnabled?: boolean;
+          sttEnabled?: boolean;
           rate?: number;
           volume?: number;
           language?: string;
         };
         if (cancelled) return;
         if (voice.guidanceIdle) setGuidanceIdle(voice.guidanceIdle);
+        setSttEnabled(voice.sttEnabled ?? false);
         setSpeakSettings({
           ttsEnabled: voice.ttsEnabled ?? false,
           rate: voice.rate ?? 1,
@@ -306,7 +310,7 @@ export function KioskFlow() {
       ) : view === 'authorize' ? (
         <KioskAuthorizeView onAuthorized={() => setNeedsAuthorize(false)} />
       ) : (
-        renderScreen(data, dispatch, complete, handleFallback, directory, guidanceIdle, vrmUrl, avatarFallbackUrl)
+        renderScreen(data, dispatch, complete, handleFallback, directory, guidanceIdle, vrmUrl, avatarFallbackUrl, sttEnabled)
       )}
     </main>
   );
@@ -375,6 +379,7 @@ function renderScreen(
   guidanceIdle: string,
   vrmUrl: string | undefined,
   avatarFallbackUrl: string | undefined,
+  sttEnabled: boolean,
 ) {
   switch (data.state) {
     case 'idle':
@@ -401,6 +406,7 @@ function renderScreen(
       return (
         <TargetView
           directory={directory}
+          sttEnabled={sttEnabled}
           onSelect={(target) => dispatch({ type: 'SELECT_TARGET', target })}
           onBack={() => dispatch({ type: 'BACK' })}
         />
@@ -510,16 +516,36 @@ function PurposeView({
 
 function TargetView({
   directory,
+  sttEnabled,
   onSelect,
   onBack,
 }: {
   directory: Directory;
+  sttEnabled: boolean;
   onSelect: (t: Target) => void;
   onBack: () => void;
 }) {
   const [query, setQuery] = useState('');
+  // 音声認識の候補。タップで検索欄に反映し、来訪者の確認後に選択する（即時呼び出ししない）(issue #5)。
+  const [sttCandidates, setSttCandidates] = useState<string[]>([]);
+  const [sttListening, setSttListening] = useState(false);
   const results = useMemo(() => directory.staff.filter((s) => matchesQuery(s, query)), [directory.staff, query]);
   const departments = directory.departments;
+
+  const listen = useCallback(async () => {
+    if (sttListening) return;
+    setSttListening(true);
+    try {
+      // 実ブラウザの音声認識は実機前提（#65）。ここでは在席担当者名から候補を生成する。
+      const phrases = directory.staff
+        .filter((s) => s.available)
+        .map((s) => s.kana ?? s.displayName);
+      const candidates = await new MockSttAdapter(phrases).listen();
+      setSttCandidates(candidates);
+    } finally {
+      setSttListening(false);
+    }
+  }, [directory.staff, sttListening]);
 
   return (
     <>
@@ -539,6 +565,41 @@ function TargetView({
             autoComplete="off"
           />
         </div>
+
+        {sttEnabled ? (
+          <div className="field" data-testid="stt-panel">
+            <button
+              type="button"
+              className="btn btn--secondary"
+              data-testid="stt-listen"
+              onClick={() => void listen()}
+              disabled={sttListening}
+            >
+              {sttListening ? '聞き取り中…' : '音声で担当者を探す'}
+            </button>
+            {sttCandidates.length > 0 ? (
+              <>
+                <p className="card__sub" data-testid="stt-hint">
+                  認識した候補です。タップして検索欄に反映し、内容をご確認のうえお選びください。
+                </p>
+                <div className="card-grid" data-testid="stt-candidates">
+                  {sttCandidates.map((c, i) => (
+                    <button
+                      key={`${c}-${i}`}
+                      type="button"
+                      className="card"
+                      data-testid={`stt-candidate-${i}`}
+                      // 候補は検索欄に反映するのみ。担当者選択・呼び出しは行わない (issue #5)。
+                      onClick={() => setQuery(c)}
+                    >
+                      {c}
+                    </button>
+                  ))}
+                </div>
+              </>
+            ) : null}
+          </div>
+        ) : null}
 
         {results.length > 0 ? (
           <div className="card-grid">
