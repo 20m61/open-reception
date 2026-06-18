@@ -53,6 +53,7 @@ export function MotionsManager() {
         <span style={{ width: 120 }}>default モーション</span>
         <select
           data-testid="motion-default"
+          aria-label="default モーション"
           value={defaultId ?? ''}
           onChange={(e) => assign({ default: e.target.value || null })}
           style={select}
@@ -78,6 +79,7 @@ export function MotionsManager() {
               <td style={cell}>
                 <select
                   data-testid={`motion-${key}`}
+                  aria-label={`${KEY_LABEL[key]}（${key}）のモーション`}
                   value={mapping[key] ?? ''}
                   onChange={(e) => assign({ key, assetId: e.target.value || null })}
                   style={select}
