@@ -19,9 +19,11 @@
     "secrets:scan": "gitleaks detect --no-banner --redact"
   },
   "dependencies": {
+    "@pixiv/three-vrm": "^3.5.4",
     "next": "15.5.19",
     "react": "19.0.0",
-    "react-dom": "19.0.0"
+    "react-dom": "19.0.0",
+    "three": "^0.184.0"
   },
   "devDependencies": {
     "@axe-core/playwright": "^4.11.3",
@@ -30,6 +32,7 @@
     "@types/node": "22.10.7",
     "@types/react": "19.0.7",
     "@types/react-dom": "19.0.3",
+    "@types/three": "^0.184.1",
     "@vitejs/plugin-react": "4.3.4",
     "eslint": "9.39.4",
     "eslint-config-next": "15.5.19",
