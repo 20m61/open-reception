@@ -82,4 +82,4 @@ iPad(受付) --confirm--> /api/kiosk/receptions/:id/call (server)
 - [ ] 担当者応答 UI / URL
 - [ ] iPad 通話 UI（接続中 / 通話中 / 終了 / 再呼び出し）
 - [ ] 通話イベントの監査ログ保存（#19）
-- [ ] secret がフロント bundle に含まれないことの検査（#6）
+- [x] secret がフロント bundle に含まれないことの検査（#6）: `'use client'` から server-only secret 環境変数（`VONAGE_*` / `ADMIN_*` / `KIOSK_SESSION_SECRET` / `KIOSK_PIN`）の参照を禁止する静的ガードテスト（`src/lib/security/client-secret-guard.test.ts`）。Vonage 実装時もこのガードで回帰を防ぐ。
