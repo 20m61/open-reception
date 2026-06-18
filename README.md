@@ -102,6 +102,8 @@ npx playwright install --with-deps chromium webkit
 - [Requirements](./docs/requirements.md)
 - [Specification](./docs/specification.md)
 - [Security and Testing Plan](./docs/security-testing-plan.md)
+- [iPad 運用・実機 UAT チェックリスト](./docs/ipad-uat.md)
+- [受付履歴・監査ログ方針](./docs/audit-logging.md)
 
 ## 品質方針
 
