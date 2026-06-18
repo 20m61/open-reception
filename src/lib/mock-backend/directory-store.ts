@@ -310,7 +310,7 @@ export function importStaff(records: Record<string, string>[], mode: 'preview' |
 /* ---------- kiosk 公開ビュー ---------- */
 
 /** 受付端末向けの最小情報（mockCallOutcome 等の内部情報は含めない）。 */
-export type KioskStaff = { id: string; displayName: string; kana?: string; aliases: string[]; departmentId: string };
+export type KioskStaff = { id: string; displayName: string; kana?: string; aliases: string[]; departmentId: string; available: boolean };
 export type KioskDirectory = {
   departments: Array<Pick<Department, 'id' | 'name'>>;
   staff: KioskStaff[];
@@ -326,6 +326,7 @@ export function getKioskDirectory(): KioskDirectory {
       kana: s.kana,
       aliases: s.aliases,
       departmentId: s.departmentId,
+      available: s.available,
     })),
   };
 }

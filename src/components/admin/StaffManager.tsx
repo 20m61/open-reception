@@ -45,12 +45,12 @@ export function StaffManager() {
     }
   }, [displayName, kana, departmentId, busy, load]);
 
-  const toggle = useCallback(
-    async (s: Staff) => {
+  const patch = useCallback(
+    async (s: Staff, body: Record<string, unknown>) => {
       await fetch(`/api/admin/staff/${s.id}`, {
         method: 'PATCH',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ enabled: !s.enabled }),
+        body: JSON.stringify(body),
       });
       await load();
     },
@@ -100,6 +100,7 @@ export function StaffManager() {
             <th style={cell}>氏名</th>
             <th style={cell}>部署</th>
             <th style={cell}>状態</th>
+            <th style={cell}>在席</th>
             <th style={cell}>操作</th>
           </tr>
         </thead>
@@ -114,10 +115,18 @@ export function StaffManager() {
               <td style={{ ...cell, color: s.enabled ? 'var(--color-success)' : 'var(--color-muted)' }}>
                 {s.enabled ? '有効' : '無効'}
               </td>
+              <td style={{ ...cell, color: s.available ? 'var(--color-success)' : 'var(--color-warning)' }} data-testid="staff-availability">
+                {s.available ? '在席' : '不在'}
+              </td>
               <td style={cell}>
-                <button type="button" data-testid="staff-toggle" onClick={() => toggle(s)} style={smallBtn}>
-                  {s.enabled ? '無効化' : '有効化'}
-                </button>
+                <div style={{ display: 'flex', gap: 6 }}>
+                  <button type="button" data-testid="staff-availability-toggle" onClick={() => patch(s, { available: !s.available })} style={smallBtn}>
+                    {s.available ? '不在にする' : '在席にする'}
+                  </button>
+                  <button type="button" data-testid="staff-toggle" onClick={() => patch(s, { enabled: !s.enabled })} style={smallBtn}>
+                    {s.enabled ? '無効化' : '有効化'}
+                  </button>
+                </div>
               </td>
             </tr>
           ))}

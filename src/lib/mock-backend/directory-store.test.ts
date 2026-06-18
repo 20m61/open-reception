@@ -108,6 +108,12 @@ describe('kiosk directory view (#3)', () => {
     expect(serialized).not.toContain('no_answer');
   });
 
+  it('在席状態(available)を含み、不在担当者も有効なら一覧に出る', () => {
+    const ono = getKioskDirectory().staff.find((s) => s.id === 'staff-ono');
+    expect(ono).toBeDefined();
+    expect(ono?.available).toBe(false);
+  });
+
   it('検索に必要な kana / aliases は含める', () => {
     const sato = getKioskDirectory().staff.find((s) => s.id === 'staff-sato');
     expect(sato?.kana).toBeDefined();

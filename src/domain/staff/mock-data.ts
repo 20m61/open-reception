@@ -65,4 +65,14 @@ export const MOCK_STAFF: ReadonlyArray<Staff> = [
     enabled: false,
     available: false,
   },
+  {
+    id: 'staff-ono',
+    displayName: '大野 健一',
+    kana: 'おおの けんいち',
+    aliases: ['Ono'],
+    departmentId: 'dept-hr',
+    enabled: true,
+    available: false,
+    mockCallOutcome: 'success',
+  },
 ];
