@@ -35,7 +35,7 @@ function denyApiOrRedirect(req: NextRequest, isAdminApi: boolean, status: 401 | 
   return NextResponse.redirect(url);
 }
 
-export async function middleware(req: NextRequest): Promise<NextResponse> {
+export async function proxy(req: NextRequest): Promise<NextResponse> {
   const { pathname } = req.nextUrl;
   if (PUBLIC_PATHS.has(pathname)) return NextResponse.next();
 
