@@ -8,6 +8,7 @@ import {
   type VisitorInfo,
 } from '@/domain/reception/session';
 import { transition, type ReceptionEvent, type ReceptionState } from '@/domain/reception/state';
+import { motionKeyForState } from '@/domain/motion/types';
 
 /** MVP では端末 ID は固定。将来 kiosk config から取得する (issue #18)。 */
 const KIOSK_ID = 'kiosk-dev';
@@ -248,7 +249,13 @@ export function KioskFlow() {
     : {};
 
   return (
-    <main className="screen" data-kiosk-state={view === 'ready' ? data.state : view} style={backgroundStyle}>
+    <main
+      className="screen"
+      data-kiosk-state={view === 'ready' ? data.state : view}
+      // 受付状態に対応するモーションキー。VRM レンダラ（#5）が消費する (issue #31)。
+      data-kiosk-motion={motionKeyForState(data.state)}
+      style={backgroundStyle}
+    >
       {!online ? (
         <div className="notice notice--warning" data-testid="kiosk-offline" style={{ marginBottom: 'var(--space-md)' }}>
           通信が不安定です。復帰までしばらくお待ちください。

@@ -12,6 +12,7 @@ const NAV_ITEMS = [
   { href: '/admin/departments', label: '部署' },
   { href: '/admin/staff', label: '担当者' },
   { href: '/admin/assets', label: 'アセット' },
+  { href: '/admin/motions', label: 'モーション' },
   { href: '/admin/voice', label: '音声' },
   { href: '/admin/security', label: 'セキュリティ' },
   { href: '/admin/audit', label: '監査ログ' },
