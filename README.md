@@ -118,6 +118,7 @@ npx playwright install --with-deps chromium webkit
 - [Specification](./docs/specification.md)
 - [Security and Testing Plan](./docs/security-testing-plan.md)
 - [セキュリティレビュー チェックリスト](./docs/security-checklist.md)
+- [品質ゲート（Lighthouse / a11y）](./docs/quality-gate.md)
 - [iPad 運用・実機 UAT チェックリスト](./docs/ipad-uat.md)
 - [受付履歴・監査ログ方針](./docs/audit-logging.md)
 - [インフラ SPEC（フルサーバーレス・NoOps）](./docs/infrastructure-spec.md)
