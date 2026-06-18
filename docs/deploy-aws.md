@@ -172,9 +172,12 @@ npx cdk deploy OpenReception-Notification-prod OpenReception-Monitoring-prod -c 
   authorizer が `SITE_TOKEN_SECRET_ARN` から runtime 取得（読取権限は CDK が付与）。未指定時は
   fail-closed で全拒否。拠点には `<siteId>.<exp>.<HMAC-SHA256(hex)>` 形式の短命トークンを配布。
   通知 API は authorizer の siteId と body の siteId が一致しない要求を 403（なりすまし防止）。
-- **Vonage 実通知**（任意）: 通知 Lambda に `VONAGE_NOTIFY_ENDPOINT` と `VONAGE_NOTIFY_TOKEN`
-  を与えると HttpVonageAdapter で実 HTTP 通知する（両方欠ける場合は Mock）。`-c vonageSecretName`
-  で Secret 読取権限を付与でき、Vonage 固有の JWT 署名連携は follow-up。
+- **Vonage 実通知**（任意）: 次のいずれかで HttpVonageAdapter による実 HTTP 通知が有効化される
+  （どちらも無ければ Mock）。
+  1. `-c vonageSecretName=...` で Secrets Manager に JSON `{ "endpoint": "...", "token": "..." }`
+     を保存。handler が初回 notify 時に Secret を解決（読取権限は CDK が付与）。
+  2. 通知 Lambda に `VONAGE_NOTIFY_ENDPOINT` と `VONAGE_NOTIFY_TOKEN` を直接 env 指定。
+  Vonage 固有の JWT 署名連携は follow-up。
 - **アラーム通知先**: `-c alarmEmail=...` で SNS Email 購読を作成（未指定なら購読者なし）。
 
 > 既定（dev / Secret 未指定）では Polly・Vonage とも mock で動作し、実発信・実音声化を

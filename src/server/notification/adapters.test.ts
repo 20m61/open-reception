@@ -1,6 +1,11 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
 import { MockPollyAdapter } from './polly-adapter';
-import { HttpVonageAdapter, MockVonageAdapter, createVonageAdapter } from './vonage-adapter';
+import {
+  HttpVonageAdapter,
+  MockVonageAdapter,
+  SecretsVonageAdapter,
+  createVonageAdapter,
+} from './vonage-adapter';
 import { normalizeSiteConfig, InMemorySiteConfigLoader } from './site-config';
 
 afterEach(() => {
@@ -71,6 +76,11 @@ describe('createVonageAdapter', () => {
       VONAGE_NOTIFY_TOKEN: 'tok',
     });
     expect(adapter).toBeInstanceOf(HttpVonageAdapter);
+  });
+
+  it('returns SecretsVonageAdapter when only VONAGE_SECRET_ARN is set', () => {
+    const adapter = createVonageAdapter({ VONAGE_SECRET_ARN: 'arn:aws:secretsmanager:...:vonage' });
+    expect(adapter).toBeInstanceOf(SecretsVonageAdapter);
   });
 });
 

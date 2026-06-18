@@ -1,12 +1,6 @@
 import * as path from 'node:path';
 import * as fs from 'node:fs';
-import {
-  Stack,
-  StackProps,
-  Duration,
-  RemovalPolicy,
-  CfnOutput,
-} from 'aws-cdk-lib';
+import { Stack, StackProps, Duration, CfnOutput } from 'aws-cdk-lib';
 import { Construct } from 'constructs';
 import * as lambda from 'aws-cdk-lib/aws-lambda';
 import * as s3 from 'aws-cdk-lib/aws-s3';
@@ -15,6 +9,7 @@ import * as logs from 'aws-cdk-lib/aws-logs';
 import * as cloudfront from 'aws-cdk-lib/aws-cloudfront';
 import * as origins from 'aws-cdk-lib/aws-cloudfront-origins';
 import { EnvConfig } from '../config/environments';
+import { toRetentionDays, prodRemovalPolicy } from '../config/aws-helpers';
 import { applyCostTags } from '../constructs/cost-tags';
 
 /** リポジトリルート（infra/ の 1 つ上）。 */
@@ -32,12 +27,6 @@ export interface WebStackProps extends StackProps {
    */
   readonly appEnv?: Record<string, string>;
 }
-
-const CONFIG_RETENTION: Record<number, logs.RetentionDays> = {
-  14: logs.RetentionDays.TWO_WEEKS,
-  30: logs.RetentionDays.ONE_MONTH,
-  90: logs.RetentionDays.THREE_MONTHS,
-};
 
 /**
  * Next.js (OpenNext) を AWS サーバーレスにホスティングする WebStack。
@@ -58,16 +47,13 @@ export class WebStack extends Stack {
     this.assertBuildArtifacts();
 
     const { config, appEnv = {} } = props;
-    const retention = CONFIG_RETENTION[config.web.logRetentionDays] ?? logs.RetentionDays.ONE_MONTH;
+    const retention = toRetentionDays(config.web.logRetentionDays);
+    const removalPolicy = prodRemovalPolicy(config.environment);
 
     applyCostTags(this, config, 'web');
 
     const makeLogGroup = (logicalId: string): logs.LogGroup =>
-      new logs.LogGroup(this, logicalId, {
-        retention,
-        removalPolicy:
-          config.environment === 'prod' ? RemovalPolicy.RETAIN : RemovalPolicy.DESTROY,
-      });
+      new logs.LogGroup(this, logicalId, { retention, removalPolicy });
 
     // --- S3: 静的アセット ---
     const assetBucket = new s3.Bucket(this, 'AssetBucket', {
@@ -75,7 +61,7 @@ export class WebStack extends Stack {
       blockPublicAccess: s3.BlockPublicAccess.BLOCK_ALL,
       encryption: s3.BucketEncryption.S3_MANAGED,
       enforceSSL: true,
-      removalPolicy: config.environment === 'prod' ? RemovalPolicy.RETAIN : RemovalPolicy.DESTROY,
+      removalPolicy,
       autoDeleteObjects: config.environment !== 'prod',
     });
 
