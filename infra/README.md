@@ -10,12 +10,17 @@ infra/
   lib/
     stacks/
       web-stack.ts               # Next.js (OpenNext) ホスティング: CloudFront+Lambda+S3
-      # notification-stack.ts     # 通知サブシステム (#32/#34) ← 追加予定
+      notification-stack.ts      # 通知サブシステム (#32/#34): HTTP API+Lambda+authorizer
+      monitoring-stack.ts        # 通知の監視: CloudWatch Alarms / Dashboard / SNS
     constructs/
       cost-tags.ts               # コスト管理タグ一括付与
+      notification-function.ts   # 通知 Lambda（NodejsFunction + 最小権限 IAM）
+      notification-api.ts        # HTTP API + POST /notify + 拠点 authorizer + throttle
     config/
       environments.ts            # 環境別設定（型付き）
-  test/web-stack.test.ts         # synth アサーションテスト
+  test/
+    web-stack.test.ts            # WebStack synth アサーション
+    notification-stack.test.ts   # Notification/Monitoring synth アサーション
 ```
 
 詳細設計は [`../docs/infrastructure-design.md`](../docs/infrastructure-design.md)、

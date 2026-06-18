@@ -19,11 +19,29 @@ export interface WebConfig {
   enableWarmer: boolean;
 }
 
+export interface NotificationConfig {
+  /** 通知 Lambda のメモリ (MB)。 */
+  memoryMb: number;
+  /** 通知 Lambda のタイムアウト (秒)。Vonage タイムアウトに余裕を持たせる。 */
+  timeoutSec: number;
+  /** CloudWatch Logs 保持日数。 */
+  logRetentionDays: number;
+  /** API Gateway スロットリング（rate=平均 req/s, burst=瞬間上限）。 */
+  throttle: { rateLimit: number; burstLimit: number };
+  /** 拠点設定を保持する SSM パラメータ prefix。 */
+  siteConfigPrefix: string;
+  /** Polly を実呼び出しするか（false なら mock 音声）。 */
+  pollyEnabled: boolean;
+  /** アラーム通知先メール（空なら SNS購読を作らない）。 */
+  alarmEmail: string;
+}
+
 export interface EnvConfig {
   environment: EnvironmentName;
   /** リソース名 prefix。 */
   prefix: string;
   web: WebConfig;
+  notification: NotificationConfig;
   /** コスト管理タグ (docs/cost-management-tags.md)。 */
   tags: {
     Project: string;
@@ -53,6 +71,15 @@ export const ENVIRONMENTS: Record<EnvironmentName, EnvConfig> = {
       logRetentionDays: 14,
       enableWarmer: false,
     },
+    notification: {
+      memoryMb: 256,
+      timeoutSec: 15,
+      logRetentionDays: 14,
+      throttle: { rateLimit: 20, burstLimit: 40 },
+      siteConfigPrefix: '/open-reception/dev/sites',
+      pollyEnabled: false,
+      alarmEmail: '',
+    },
     tags: { ...BASE_TAGS, Environment: 'dev' },
   },
   staging: {
@@ -65,6 +92,15 @@ export const ENVIRONMENTS: Record<EnvironmentName, EnvConfig> = {
       logRetentionDays: 30,
       enableWarmer: false,
     },
+    notification: {
+      memoryMb: 256,
+      timeoutSec: 15,
+      logRetentionDays: 30,
+      throttle: { rateLimit: 50, burstLimit: 100 },
+      siteConfigPrefix: '/open-reception/staging/sites',
+      pollyEnabled: true,
+      alarmEmail: '',
+    },
     tags: { ...BASE_TAGS, Environment: 'staging' },
   },
   prod: {
@@ -76,6 +112,15 @@ export const ENVIRONMENTS: Record<EnvironmentName, EnvConfig> = {
       imageMemoryMb: 2048,
       logRetentionDays: 90,
       enableWarmer: true,
+    },
+    notification: {
+      memoryMb: 512,
+      timeoutSec: 20,
+      logRetentionDays: 90,
+      throttle: { rateLimit: 100, burstLimit: 200 },
+      siteConfigPrefix: '/open-reception/prod/sites',
+      pollyEnabled: true,
+      alarmEmail: '',
     },
     tags: { ...BASE_TAGS, Environment: 'prod' },
   },

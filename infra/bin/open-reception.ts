@@ -2,6 +2,8 @@
 import 'source-map-support/register';
 import * as cdk from 'aws-cdk-lib';
 import { WebStack } from '../lib/stacks/web-stack';
+import { NotificationStack } from '../lib/stacks/notification-stack';
+import { MonitoringStack } from '../lib/stacks/monitoring-stack';
 import { resolveEnv } from '../lib/config/environments';
 
 /**
@@ -10,8 +12,9 @@ import { resolveEnv } from '../lib/config/environments';
  * 環境は context で選択する: `cdk deploy -c env=prod`。既定は dev。
  *
  * Stack 構成:
- *   - WebStack          : Next.js (OpenNext) ホスティング ← 本デプロイの対象
- *   - NotificationStack : 通知サブシステム (#32/#34) ← 別 issue で追加予定
+ *   - WebStack          : Next.js (OpenNext) ホスティング
+ *   - NotificationStack : 通知サブシステム (#32/#34) — API + Lambda + Polly/Vonage
+ *   - MonitoringStack   : 通知サブシステムの監視（Alarms / Dashboard / SNS）
  *
  * デプロイ先アカウント/リージョンは CDK 既定の環境変数
  * (CDK_DEFAULT_ACCOUNT / CDK_DEFAULT_REGION) を使用する。
@@ -32,6 +35,24 @@ new WebStack(app, `OpenReception-Web-${config.environment}`, {
   config,
   appEnv: appEnvContext,
   description: `open-reception Next.js hosting (${config.environment})`,
+});
+
+// 任意: 既存 Vonage 接続情報 Secret 名を context で渡すと実通知を有効化できる。
+const vonageSecretName = app.node.tryGetContext('vonageSecretName') as string | undefined;
+
+const notification = new NotificationStack(app, `OpenReception-Notification-${config.environment}`, {
+  env: { account, region },
+  config,
+  vonageSecretName,
+  description: `open-reception notification subsystem (${config.environment})`,
+});
+
+new MonitoringStack(app, `OpenReception-Monitoring-${config.environment}`, {
+  env: { account, region },
+  config,
+  notificationFn: notification.notificationFn.fn,
+  httpApi: notification.api.httpApi,
+  description: `open-reception notification monitoring (${config.environment})`,
 });
 
 app.synth();

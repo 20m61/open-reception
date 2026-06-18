@@ -132,10 +132,51 @@ Lambda メモリ・ログ保持・CloudFront PriceClass を環境ごとに調整
   `SECURITY_HEADERS` レスポンスポリシーを付与。
 - 管理認可（`/admin`, `/api/admin`）は server Lambda 上の `proxy`（旧 middleware）が担う。
 
+## 通知サブシステム（NotificationStack / MonitoringStack）
+
+通知サブシステム（#32/#34）も同じ CDK App に含まれる。Next.js 本体（WebStack）とは
+独立してデプロイできる。
+
+```
+拠点(受付/管理) → API Gateway(HTTP API) → 通知 Lambda → Polly(音声化) → Vonage(外部通知)
+                       └ 拠点 authorizer(短命トークン HMAC 検証)    └ CloudWatch(構造化ログ)
+```
+
+- **NotificationStack**: HTTP API（`POST /notify`）+ 通知 Lambda + 拠点 authorizer Lambda +
+  LogGroup。Lambda は VPC 外配置で NAT 固定費を回避。SSM 読取は拠点設定 prefix に限定、
+  Polly は `pollyEnabled` 時のみ付与（最小権限）。
+- **MonitoringStack**: Lambda エラー/遅延 p95/スロットル・API 5xx のアラームを SNS 通知、
+  ダッシュボードを生成。
+
+Lambda コードは `src/server/notification/`（handler / authorizer / adapters）を esbuild で
+バンドルする。AWS SDK v3 は Lambda ランタイム同梱のため externalize。
+
+### デプロイ
+
+```bash
+cd infra
+# Polly/SSM を使う構成（staging/prod は pollyEnabled=true）
+npx cdk deploy OpenReception-Notification-prod OpenReception-Monitoring-prod -c env=prod \
+  -c vonageSecretName=open-reception/prod/vonage   # 任意: 実通知用 Secret 名
+```
+
+### デプロイ前に用意するもの
+
+- **拠点設定**: SSM Parameter Store に `<siteConfigPrefix>/<siteId>`（例
+  `/open-reception/prod/sites/site-001`）で JSON を登録（`{ "enabled": true,
+  "defaultTarget": {...}, "voice": {...} }`）。未登録/`enabled:false` の拠点は 403。
+- **拠点トークン鍵**: authorizer Lambda の `SITE_TOKEN_SECRET` を注入（未設定時は
+  fail-closed で全拒否）。拠点には `<siteId>.<exp>.<HMAC-SHA256>` 形式の短命トークンを配布。
+- **Vonage 接続情報**（実通知時）: Secrets Manager に保存し `-c vonageSecretName=...` で参照。
+
+> 既定（dev / Secret 未指定）では Polly・Vonage とも mock で動作し、実発信・実音声化を
+> 行わずに API フローを検証できる。
+
 ## クリーンアップ
 
 ```bash
 cd infra && npx cdk destroy OpenReception-Web-dev -c env=dev
+cd infra && npx cdk destroy OpenReception-Monitoring-dev OpenReception-Notification-dev -c env=dev
 ```
 
 > prod の S3 バケットは `RemovalPolicy.RETAIN`。destroy 後も残るため手動削除する。
