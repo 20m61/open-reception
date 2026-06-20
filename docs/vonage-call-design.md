@@ -77,9 +77,45 @@ iPad(受付) --confirm--> /api/kiosk/receptions/:id/call (server)
 
 ## 9. 実装時タスク（認証情報が用意でき次第）
 
-- [ ] `VonageSessionService` の実装（session 作成・短命 token 発行）
-- [ ] `VonageCallAdapter.call` の実装（scaffold を置換）
-- [ ] 担当者応答 UI / URL
-- [ ] iPad 通話 UI（接続中 / 通話中 / 終了 / 再呼び出し）
-- [ ] 通話イベントの監査ログ保存（#19）
+- [x] `VonageSessionService` の実装（session 作成・短命 token 発行）→ increment 1
+- [x] `VonageCallAdapter.call` の実装（scaffold を置換）→ increment 1（session 確立まで）
+- [ ] 担当者応答 UI / URL → increment 2
+- [ ] iPad 通話 UI（接続中 / 通話中 / 終了 / 再呼び出し）→ increment 2
+- [ ] 応答/未応答の非同期検知（calling→connected/timeout の実イベント写像）→ increment 2
+- [ ] 通話イベントの監査ログ保存（#19）→ increment 2 で拡充
 - [x] secret がフロント bundle に含まれないことの検査（#6）: `'use client'` から server-only secret 環境変数（`VONAGE_*` / `ADMIN_*` / `KIOSK_SESSION_SECRET` / `KIOSK_PIN`）の参照を禁止する静的ガードテスト（`src/lib/security/client-secret-guard.test.ts`）。Vonage 実装時もこのガードで回帰を防ぐ。
+
+## 10. 実装方針確定（increment 分割）
+
+実通話は「クライアント動画 UI + 担当者応答の非同期検知」が必須で規模が大きく、かつ実認証情報が
+ないとライブ検証できない。そこで **セキュリティ中核（サーバ側 session/token）を先に確定・実装** し、
+クライアント UI と非同期状態遷移を後続イテレーションに分離する。
+
+### Vonage 製品 / 認証方式
+
+- **Vonage Video API（Unified）** を採用（受付の遠隔“顔合わせ”= ビデオ）。
+- 認証は **Application ID + Private Key による RS256 JWT**（`VONAGE_APPLICATION_ID` /
+  `VONAGE_PRIVATE_KEY`）。`VONAGE_API_KEY` / `VONAGE_API_SECRET` はアカウント系 API 用に保持。
+- すべて server-only。クライアントへ渡すのは短命 client token のみ。
+
+### increment 1（本イテレーション・このPR）— サーバ中核 + 単体テスト
+
+- `src/lib/call/vonage-jwt.ts`: `node:crypto` で RS256 JWT を生成（外部依存なし）。
+  - アプリ認証 JWT（REST 呼び出し用）と client 接続トークン（`scope: "session.connect"`）。
+  - claims / 有効期限 / 署名検証（公開鍵）を単体テスト。
+- `src/adapters/call/vonage-session.ts`: `VonageSessionService` を実装。
+  - `createSession(receptionId)`: Vonage Video REST `POST /v2/project/{appId}/session` を
+    **注入された transport（fetch 互換）** で呼ぶ（テスト時は mock）。
+  - `issueToken(session, role)`: ローカルで RS256 JWT を発行（ネットワーク不要）。
+- `VonageCallAdapter.call`: session 作成 + publisher token 発行までを行い結果を返す。
+  - フラグ `VONAGE_ENABLED` 既定 off。**Mock の挙動・既存 e2e は不変。**
+  - 本 increment の `connected` は「通話セッション確立」を意味する暫定セマンティクス
+    （担当者の実応答検知は increment 2）。
+- **ライブ検証の注意**: REST エンドポイント/レスポンス形は実認証情報での結合確認が必要
+  （単体テストは request 整形・JWT 正当性まで）。
+
+### increment 2（後続）— クライアント/非同期
+
+- 受付端末のビデオ UI（publisher）、担当者応答 UI/URL（subscriber）。
+- `calling → connected/timeout` を Vonage の実イベント（接続/未応答）から写像。
+- token 配布 API（受付端末・担当者）、通話イベントの監査ログ拡充。
