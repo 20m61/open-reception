@@ -61,7 +61,17 @@ export type AuditAction =
   | 'reservation.token_reissued'
   // 拠点（Site）管理 (issue #87)。テナント/サイト境界の操作のみ記録。
   | 'site.created'
-  | 'site.updated';
+  | 'site.updated'
+  // 呼び出し先・通知ルート設定 (issue #88)。
+  | 'call_route.created'
+  | 'call_route.updated'
+  | 'call_route.deleted'
+  // 認証方式・外部連携・シークレット状態管理 (issue #93)。secret 値そのものは記録しない（状態のみ）。
+  | 'auth_config.updated'
+  | 'integration.updated'
+  | 'integration.tested'
+  | 'secret.updated'
+  | 'secret.cleared';
 
 export type AuditLog = {
   id: string;
