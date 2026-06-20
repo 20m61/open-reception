@@ -59,6 +59,7 @@ export function createCallController(deps: CallControllerDeps): CallController {
   let timer: ReturnType<typeof setTimeout> | undefined;
   let settled = false;
   let stopped = false;
+  let started = false;
 
   const clear = () => {
     if (timer !== undefined) {
@@ -68,6 +69,8 @@ export function createCallController(deps: CallControllerDeps): CallController {
   };
 
   async function start(): Promise<void> {
+    if (started) return; // 再入防止（二重 connect / タイマー leak を防ぐ）。
+    started = true;
     deps.onState('connecting');
     const token = await deps.fetchToken();
     if (!token || stopped) {
@@ -80,7 +83,8 @@ export function createCallController(deps: CallControllerDeps): CallController {
       if (settled) return;
       settled = true;
       void deps.client.disconnect().catch(() => {});
-      void deps.reportTimeout().catch(() => {});
+      // 報告失敗はフローを止めないが、サーバが状態を取りこぼすため観測可能にする。
+      void deps.reportTimeout().catch((e) => console.warn('reportTimeout failed', e));
       deps.onState('timeout');
     }, deps.timeoutMs);
 
@@ -93,7 +97,7 @@ export function createCallController(deps: CallControllerDeps): CallController {
           if (settled) return;
           settled = true;
           clear();
-          void deps.reportConnected().catch(() => {});
+          void deps.reportConnected().catch((e) => console.warn('reportConnected failed', e));
           deps.onState('connected');
         },
         // SDK エラーは UI を fallback に降格。タイマーは継続し、未応答なら timeout を確定する。

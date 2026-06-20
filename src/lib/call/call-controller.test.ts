@@ -105,12 +105,22 @@ describe('createCallController', () => {
     expect(reportTimeout).not.toHaveBeenCalled();
   });
 
-  it('does not double-settle when answered then timer would fire', async () => {
+  it('ignores a late onConnected after a timeout already fired (settle guard)', async () => {
+    // onError は settle/clear しないため timer は生き続ける。timeout 確定後の
+    // 遅延 onConnected が settled ガードで無視されることを検証する（timer は clear されない経路）。
     const { ctrl, client, reportConnected, reportTimeout } = setup();
     await ctrl.start();
-    client.triggerConnected();
-    vi.advanceTimersByTime(5000);
-    expect(reportConnected).toHaveBeenCalledTimes(1);
-    expect(reportTimeout).not.toHaveBeenCalled();
+    client.triggerError(new Error('blip')); // settle せず timer 継続
+    vi.advanceTimersByTime(1000); // timer 発火 → settled=true, timeout 報告
+    expect(reportTimeout).toHaveBeenCalledTimes(1);
+    client.triggerConnected(); // 遅延応答 → settled ガードで無視
+    expect(reportConnected).not.toHaveBeenCalled();
+  });
+
+  it('is not re-entrant: a second start() does not connect twice', async () => {
+    const { ctrl, client } = setup();
+    await ctrl.start();
+    await ctrl.start();
+    expect(client.connect).toHaveBeenCalledTimes(1);
   });
 });

@@ -66,6 +66,14 @@ describe('GET /api/kiosk/receptions/:id/token', () => {
     expect(res.status).toBe(409);
   });
 
+  it('409 when vonage is configured but the call session is not yet established', async () => {
+    getReception.mockResolvedValue({ ok: true, value: { id: 'rec-1', kioskId: 'kiosk-1', vonageSessionId: undefined } });
+    getVonageSessionService.mockReturnValue({ issueToken: vi.fn() });
+    getVonagePublicConfig.mockReturnValue({ applicationId: 'app-123' });
+    const res = await call();
+    expect(res.status).toBe(409);
+  });
+
   it('returns applicationId/sessionId/token only — never a secret', async () => {
     getReception.mockResolvedValue({ ok: true, value: { id: 'rec-1', kioskId: 'kiosk-1', vonageSessionId: 'sess-9' } });
     getVonageSessionService.mockReturnValue({
