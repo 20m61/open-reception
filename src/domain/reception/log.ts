@@ -51,7 +51,14 @@ export type AuditAction =
   | 'voice.updated'
   | 'asset.created'
   | 'asset.updated'
-  | 'motion.updated';
+  | 'motion.updated'
+  // 来訪予約・QR 操作 (issue #97)。PII は metadata に残さない。
+  | 'reservation.created'
+  | 'reservation.updated'
+  | 'reservation.cancelled'
+  | 'reservation.revoked'
+  | 'reservation.token_issued'
+  | 'reservation.token_reissued';
 
 export type AuditLog = {
   id: string;

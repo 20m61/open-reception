@@ -24,6 +24,12 @@ const ACTION_LABEL: Record<AuditAction, string> = {
   'asset.created': 'アセット: 登録',
   'asset.updated': 'アセット: 更新',
   'motion.updated': 'モーション割り当て: 更新',
+  'reservation.created': '来訪予約: 作成',
+  'reservation.updated': '来訪予約: 更新',
+  'reservation.cancelled': '来訪予約: キャンセル',
+  'reservation.revoked': '来訪予約: 失効',
+  'reservation.token_issued': '来訪予約: QR発行',
+  'reservation.token_reissued': '来訪予約: QR再発行',
 };
 
 /** 管理画面: 監査ログ一覧 (issue #22, #19)。受付ライフサイクルと管理操作の証跡。 */
