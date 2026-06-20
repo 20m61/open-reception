@@ -30,6 +30,8 @@ const ACTION_LABEL: Record<AuditAction, string> = {
   'reservation.revoked': '来訪予約: 失効',
   'reservation.token_issued': '来訪予約: QR発行',
   'reservation.token_reissued': '来訪予約: QR再発行',
+  'site.created': '拠点: 作成',
+  'site.updated': '拠点: 更新',
 };
 
 /** 管理画面: 監査ログ一覧 (issue #22, #19)。受付ライフサイクルと管理操作の証跡。 */
