@@ -69,8 +69,18 @@ describe('POST /api/staff/calls/:id/answer', () => {
   });
 
   it('409 when the reception is not in a callable state', async () => {
+    // calling でなく connected でもない（例: timeout/cancelled）→ 不正遷移として 409。
+    getReception.mockResolvedValue({ ok: true, value: { id: 'rec-1', kioskId: 'k', vonageSessionId: 'sess-9', state: 'timeout' } });
     markConnected.mockResolvedValue({ ok: false, error: { code: 'invalid_transition', message: 'no' } });
     expect((await call()).status).toBe(409);
+  });
+
+  it('is idempotent: already-connected reception re-issues a token (rejoin)', async () => {
+    getReception.mockResolvedValue({ ok: true, value: { id: 'rec-1', kioskId: 'k', vonageSessionId: 'sess-9', state: 'connected' } });
+    markConnected.mockResolvedValue({ ok: false, error: { code: 'invalid_transition', message: 'already' } });
+    const res = await call();
+    expect(res.status).toBe(200);
+    expect((await res.json()).token).toBe('sub-token');
   });
 
   it('502 without changing state when token issuance fails', async () => {
@@ -85,7 +95,7 @@ describe('POST /api/staff/calls/:id/answer', () => {
   it('issues a subscriber token and marks connected — never a secret', async () => {
     const res = await call();
     expect(res.status).toBe(200);
-    expect(markConnected).toHaveBeenCalledWith('rec-1');
+    expect(markConnected).toHaveBeenCalledWith('rec-1', 'staff');
     const data = await res.json();
     expect(data).toEqual({
       applicationId: 'app-123',

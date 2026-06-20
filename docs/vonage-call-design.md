@@ -86,8 +86,8 @@ iPad(受付) --confirm--> /api/kiosk/receptions/:id/call (server)
 - [x] 実 Vonage client SDK アダプタ（CallClient 実装・CDN 動的ロード + fallback）→ 2c（要ライブ検証）
 - [x] 受付端末ビデオ UI への組込み（KioskFlow calling 状態・fallback-first）→ 2c（要ライブ検証）
 - [x] 担当者応答エンドポイント + 応答トークン + subscriber トークン配布 → 2c
-- [ ] 担当者応答ページ UI（subscriber ビデオ表示）→ 2c-残（要ライブ検証）
-- [ ] 通話イベントの監査ログ拡充（応答イベント等）→ 2c-残
+- [x] 担当者応答ページ UI（subscriber ビデオ表示）→ 2c-残（要ライブ検証）
+- [x] 通話イベントの監査ログ拡充（reception.answered）→ 2c-残
 - [x] secret がフロント bundle に含まれないことの検査（#6）: `'use client'` から server-only secret 環境変数（`VONAGE_*` / `ADMIN_*` / `KIOSK_SESSION_SECRET` / `KIOSK_PIN`）の参照を禁止する静的ガードテスト（`src/lib/security/client-secret-guard.test.ts`）。Vonage 実装時もこのガードで回帰を防ぐ。
 
 ## 10. 実装方針確定（increment 分割）
@@ -152,8 +152,16 @@ iPad(受付) --confirm--> /api/kiosk/receptions/:id/call (server)
   （`src/lib/call/answer-token.ts`）で認可し、subscriber トークンを発行 + calling→connected を確定。
   secret は返さない。401/403/404/409/200 を単体テスト。
 
-### increment 2c-残（後続）
+### increment 2c-残（コード実装済み・要ライブ検証）
 
-- 担当者応答ページ UI（subscriber ビデオ表示・通知リンクからの導線）。
-- 通話イベント（応答等）の監査ログ拡充。
-- **すべて実 Vonage 認証情報・実機での結合検証が前提**（REST/JWT/SDK のグローバル名・API 差異を調整）。
+- **担当者応答ページ UI**: `/staff/calls/[id]?token=<answerToken>`（`src/app/staff/calls/[id]/page.tsx`
+  + `src/components/staff/StaffCallView.tsx`）。応答エンドポイントを呼んで subscriber トークンを取得し
+  通話に参加（fallback-first）。proxy 認可の対象外（公開・トークン認可）。
+- **通話イベント監査拡充**: 応答の瞬間に `reception.answered` を監査ログへ記録（markConnected）。
+  connected/completed の監査とは別イベント。管理画面の監査一覧にラベル追加。
+- **要ライブ検証**: ビデオ参加（StaffCallView の実 SDK 接続）は実 Vonage 認証情報・実機が前提。
+
+### 全体の残（ライブ検証フェーズ）
+
+- 実 Vonage 認証情報・実機で REST/JWT/client SDK（グローバル名・URL・API 差異）を結合検証。
+- 受付端末↔担当者の双方向ビデオ疎通、応答/未応答/再呼び出しの実イベント確認。
