@@ -19,6 +19,10 @@
 #   --audit          npm audit（本番依存）を含める
 #   --lighthouse     Lighthouse CI を含める
 #   --strict         任意ツールが未インストールの場合も FAIL 扱いにする
+#   --no-bootstrap   依存（node_modules / infra/node_modules）の自動インストールを行わない
+#
+# fresh な git worktree では node_modules / infra/node_modules が無いため、既定で
+# 不足を検出したら install してからゲートを実行する（並列 worktree トラックの自己修復）。
 #
 # 終了コード: いずれかの必須ステップが失敗したら 1。SKIP（任意ツール未導入）は
 #            --strict 指定時のみ失敗扱い。
@@ -32,6 +36,7 @@ ROOT="$(pwd)"
 RUN_TYPECHECK=1 RUN_LINT=1 RUN_UNIT=1 RUN_BUILD=0
 RUN_E2E=0 RUN_SECRETS=0 RUN_SAST=0 RUN_AUDIT=0 RUN_LH=0
 STRICT=0
+BOOTSTRAP=1
 TIER="fast"
 
 if [[ $# -eq 0 ]]; then set -- --fast; fi
@@ -47,6 +52,7 @@ for arg in "$@"; do
     --audit)      RUN_AUDIT=1 ;;
     --lighthouse) RUN_LH=1 ;;
     --strict)     STRICT=1 ;;
+    --no-bootstrap) BOOTSTRAP=0 ;;
     -h|--help) grep '^#' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) echo "unknown arg: $arg" >&2; exit 2 ;;
   esac
@@ -83,6 +89,29 @@ echo "================================================================"
 echo " quality-gate  tier=${TIER}  $(node -v 2>/dev/null)"
 echo " repo: ${ROOT}"
 echo "================================================================"
+
+# ---- 依存 bootstrap（fresh worktree の自己修復）---------------------------
+install_deps() { # install_deps <dir-label> <prefix-or-empty>
+  local label="$1" prefix="$2"
+  local lock; lock="${prefix:+$prefix/}package-lock.json"
+  echo "  ↳ ${label}: 依存が無いためインストールします"
+  if [[ -f "$lock" ]]; then
+    npm ${prefix:+--prefix "$prefix"} ci
+  else
+    npm ${prefix:+--prefix "$prefix"} install
+  fi
+}
+
+if [[ "$BOOTSTRAP" -eq 1 ]]; then
+  if [[ ! -d node_modules ]]; then
+    install_deps "root" "" || { echo "❌ root 依存のインストールに失敗"; exit 2; }
+  fi
+  # root tsconfig は infra/**/*.ts を include するため、infra 依存が無いと
+  # typecheck/build が失敗する。infra/ があり node_modules が無ければ入れる。
+  if [[ -d infra && ! -d infra/node_modules ]]; then
+    install_deps "infra" "infra" || { echo "❌ infra 依存のインストールに失敗"; exit 2; }
+  fi
+fi
 
 # ---- 必須ステップ ---------------------------------------------------------
 [[ "$RUN_TYPECHECK" -eq 1 ]] && step "typecheck (tsc)"      npm run --silent typecheck
