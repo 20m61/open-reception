@@ -109,4 +109,18 @@ describe('MemoryTenantStore.adminUsers (#80)', () => {
     await store.adminUsers.putAdminUser({ ...user, displayName: 'Renamed' });
     expect((await store.adminUsers.getAdminUser(asAdminUserId('u1')))?.displayName).toBe('Renamed');
   });
+
+  it('findBySubject は Entra subject（oid/sub）で解決する', async () => {
+    const withSubject: AdminUser = { ...user, entraSubject: 'oid-123' };
+    const store = new MemoryTenantStore({ adminUsers: [withSubject] });
+    expect(await store.adminUsers.findBySubject('oid-123')).toMatchObject({ id: 'u1' });
+    expect(await store.adminUsers.findBySubject('other')).toBeUndefined();
+    expect(await store.adminUsers.findBySubject('')).toBeUndefined();
+  });
+
+  it('findBySubject は subject 未設定ユーザーには空文字でも誤マッチしない', async () => {
+    const store = new MemoryTenantStore({ adminUsers: [user] }); // entraSubject なし
+    expect(await store.adminUsers.findBySubject('')).toBeUndefined();
+    expect(await store.adminUsers.findBySubject('anything')).toBeUndefined();
+  });
 });

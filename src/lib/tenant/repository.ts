@@ -49,7 +49,9 @@ export interface DeviceRepository {
 
 export interface AdminUserRepository {
   getAdminUser(id: AdminUserId): Promise<AdminUser | undefined>;
-  /** ログイン識別子（email）からの解決。認証連携で使う。 */
+  /** Entra 安定主体（oid/sub）からの解決。認証連携の正キー。 */
+  findBySubject(subject: string): Promise<AdminUser | undefined>;
+  /** ログイン識別子（email）からの解決。subject で引けない場合の補助。 */
   findByEmail(email: string): Promise<AdminUser | undefined>;
   putAdminUser(user: AdminUser): Promise<void>;
 }

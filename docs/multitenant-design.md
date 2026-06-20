@@ -153,10 +153,28 @@ migration は次増分で用意する（受け入れ条件「既存運用は def
 - 各モジュールの vitest 単体テスト（境界・権限のテーブルテスト）。
 - 本設計書。
 
-### increment 2 以降（残課題）
+### increment 2（このトラックの範囲・実装済み）
 
-- [ ] DynamoDB シングルテーブル実装（PK/SK・GSI）と `getBackend()` 統合。
-- [ ] 全テーブル（Settings/Session/AuditLog 等）への `tenantId` 付与。
+実 actor 解決(#117) で残った「全管理ユーザーが env 既定テナントへ集約される」状態を解消し、
+真のテナント分離へ近づける（キーストン）。詳細は `docs/admin-actor-resolution-design.md`
+§increment 2。
+
+- [x] 実 `AdminUser` ストア（`src/lib/tenant/admin-user-store.ts`）を `getBackend()`
+  （memory/dynamodb 両対応）で永続化。コレクション `admin_user`。
+- [x] `AdminUser.entraSubject` 追加 + `AdminUserRepository.findBySubject`（memory 実装も）。
+- [x] `resolveAdminActor` の Entra 経路を AdminUser ストアの**実 `assignments`** 解決へ変更
+  （`resolveActorFromStore` / `buildActorFromAdminUser`、純関数 `buildActorFrom*` は不変）。
+- [x] Entra 未登録ユーザーは既定で拒否（最小権限）。`OPEN_RECEPTION_ENTRA_UNREGISTERED=env_roles`
+  で後方互換フォールバック。
+- [x] seed / `putAdminUser` による最小プロビジョニング（管理 UI は #82/#90）。
+
+### increment 3 以降（残課題）
+
+- [ ] `Tenant`/`Site`/`Device` を `MemoryTenantStore` から `getBackend()` 永続化へ移行
+  （repository interface 維持・`site-service.test.ts` を壊さない）。**increment 2 では
+  キーストン（AdminUser + actor 実データ化）に集中し、本項は inc3 へ繰り延べ**。
+- [ ] DynamoDB シングルテーブル実装（PK/SK・GSI）と `getBackend()` 統合（tenant 系）。
+- [ ] 全テーブル（Settings/Session/AuditLog 等）への `tenantId` 付与（usage/log は #89）。
 - [ ] 管理 API の認可 middleware（`401`/`403`、tenantId 解決）。
 - [ ] Entra App Role → `TenantRole`/`RoleAssignment` マッピング（#70 連携）。
 - [ ] kiosk `deviceToken` 発行・失効方式の実装と端末 API 検証配線。

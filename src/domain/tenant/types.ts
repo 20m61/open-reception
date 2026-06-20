@@ -99,10 +99,16 @@ export type RoleAssignment = {
   deviceId: DeviceId | null;
 };
 
-/** 管理画面ユーザー。認証ソース（Entra/Cognito）は次増分で接続する。 */
+/** 管理画面ユーザー。Entra 認証ソースとの紐付けは `entraSubject` で行う（increment 2）。 */
 export type AdminUser = {
   id: AdminUserId;
-  /** ログイン識別子（メール等）。PII 最小化のため表示用途以外には保持しない。 */
+  /**
+   * Entra ID の安定主体識別子（`oid` 優先、無ければ `sub`）。
+   * 認証連携で AdminUser を一意に解決する正キー。メール変更に追従できるよう
+   * email とは独立に保持する。password セッション由来のユーザーには無い（任意）。
+   */
+  entraSubject?: string;
+  /** ログイン識別子（メール等）。PII 最小化のため表示・補助解決用途以外には保持しない。 */
   email: string;
   displayName: string;
   /** 所属とロール。複数テナント/サイトに跨りうる。 */
