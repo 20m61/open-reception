@@ -74,19 +74,23 @@ CSS 変数（`src/app/globals.css` の `--color-*` / `--space-*`）を TypeScrip
 > `SecretStatusField` は型に value を持たない（機密値を渡せない）。`DangerZone` は
 > レイアウトのみで、確認導線・理由入力・監査連携は #91 `components/admin/danger/**` が担う。
 
-## 5. 既存重複コンポーネント → `ui/` 移行対応表（移行は increment 2）
+## 5. 既存重複コンポーネント → `ui/` 移行対応表（increment 2 で実施）
 
-| 既存（現状）                                                   | 寄せ先（`ui/`）          | 差分・移行メモ |
+increment 2（本増分）で dashboard / usage / costs / integrations の重複コンポーネントを
+共有 `ui/` プリミティブ利用へ寄せた。移行元ファイルは **薄い委譲 / re-export シム** にして
+import パスと `data-testid` を互換維持し、表示・テストの挙動は変えていない（リファクタ）。
+
+| 既存（現状）                                                   | 寄せ先（`ui/`）          | 状態 / 移行メモ |
 | -------------------------------------------------------------- | ------------------------ | -------------- |
-| `admin/dashboard/MetricCard.tsx`                              | `ui/Card` の `MetricCard` | `MetricTone` → `Tone`。`href` 導線（Link 包み）は移行時に option として再付与 |
-| `admin/usage/UsageCard.tsx`（`UsageCard` / `CardGrid`）        | `ui/Card`（`MetricCard` / `CardGrid`） | ほぼ同形。`usage-card` testid を使うテストは移行時に更新 |
-| `admin/dashboard/StatusBadge.tsx`                            | `ui/StatusBadge`          | 3 値（ok/warning/critical）→ 5 値へ拡張。`OverallStatus` を `StatusKind` へマップ |
-| `admin/dashboard/Section.tsx`（`Section` / `CardGrid`）        | `ui/Section` ＋ `ui/Card` の `CardGrid` | `description`/`actions` が増える。CardGrid は Card 側へ集約 |
-| `admin/dashboard/RecentCalls.tsx` の table 描画                | `ui/DataTable`            | 列定義へ書き換え。空状態は `ui/EmptyState` に寄せる |
-| `admin/integrations/SecretStatusField.tsx`                   | `ui/SecretStatusField`    | 視覚は `ui/` に寄せ、操作（onMarkUpdated/onClear）は `actions` で注入。挙動は #93 |
-| 各 `*Manager.tsx` のインライン ghost/danger ボタン             | `ui/Button`               | `variant` へ集約。data-testid は呼び出し側で付与 |
-| 各画面のインライン入力 + ラベル                                 | `ui/Field` / `ui/FormRow` | `htmlFor`/`id` 結合と error 表示を統一 |
-| 危険操作の素のセクション（将来 #91）                            | `ui/DangerZone`           | 器のみ寄せ、確認導線は #91 danger/ を中に置く |
+| `admin/dashboard/MetricCard.tsx`                              | `ui/Card` の `MetricCard` | ✅ 完了。`ui/MetricCard` に `href`（Link 包み + 「詳細を見る →」）と `testId`/`noteTestId` を追加し委譲。`metric-card`/`metric-note`/`metric-card-link` testid 維持 |
+| `admin/usage/UsageCard.tsx`（`UsageCard` / `CardGrid`）        | `ui/Card`（`MetricCard` / `CardGrid`） | ✅ 完了。`alwaysShowNote` で usage の note 常時表示を再現。`usage-card`/`usage-note` testid 維持。`CardGrid` は `ui/CardGrid` へ委譲 |
+| `admin/dashboard/StatusBadge.tsx`                            | `ui/StatusBadge`          | ✅ 完了。`OverallStatus`（3 値）→ `StatusKind` マップ + 業務文言（ok=正常稼働中）付与の薄い委譲。`dashboard-status-badge` testid 維持 |
+| `admin/dashboard/Section.tsx`（`Section` / `CardGrid`）        | `ui/Section` ＋ `ui/Card` の `CardGrid` | ✅ 完了。`ui` からの re-export シム化（CardGrid は Card 側へ集約済み） |
+| `admin/dashboard/RecentCalls.tsx` の table 描画                | `ui/DataTable`            | ✅ 完了。列定義へ書き換え。空状態は `ui/DataTable`→`ui/EmptyState` に委譲（`recent-calls-table` testid 維持） |
+| `admin/integrations/SecretStatusField.tsx`                   | `ui/SecretStatusField`    | ✅ 完了。視覚を `ui/` に寄せ、操作（onMarkUpdated/onClear）は `actions` に `ui/Button` で注入。presence+health→3 状態語彙にマップ。`secret-<key>` 系 testid 維持 |
+| 各 `*Manager.tsx` のインライン ghost/danger/primary ボタン     | `ui/Button`               | ✅ 完了。接続テスト/確認/再読み込みボタンを `variant` へ集約。data-testid は呼び出し側で付与 |
+| 各画面のインライン入力 + ラベル                                 | `ui/Field` / `ui/FormRow` | 対象外（本増分の dashboard/usage/costs/integrations にはフォーム入力なし。reservations 等は別増分） |
+| 危険操作の素のセクション（将来 #91）                            | `ui/DangerZone`           | 対象外（#91 danger/ の責務。本増分の 4 画面に危険操作なし） |
 
 ## 6. アクセシビリティ 最低基準
 

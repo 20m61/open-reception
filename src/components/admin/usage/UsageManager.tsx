@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useState } from 'react';
 import type { UsageSummary } from '@/domain/usage/usage-summary';
+import { Button } from '@/components/admin/ui';
 import { UsageCard, CardGrid } from './UsageCard';
 
 /** /api/admin/usage のレスポンス型（当月＋前月）。 */
@@ -56,9 +57,9 @@ export function UsageManager({ tenantId = DEFAULT_TENANT_ID }: { tenantId?: stri
       ) : state.phase === 'error' ? (
         <div data-testid="usage-error">
           <p style={{ color: 'var(--color-danger)' }}>利用量の取得に失敗しました。</p>
-          <button type="button" onClick={() => void load()} style={retryBtn}>
+          <Button variant="secondary" onClick={() => void load()}>
             再読み込み
-          </button>
+          </Button>
         </div>
       ) : (
         <Body data={state.data} />
@@ -120,13 +121,3 @@ function Body({ data }: { data: UsageResponse }) {
     </div>
   );
 }
-
-const retryBtn: React.CSSProperties = {
-  minHeight: 44,
-  padding: '8px 16px',
-  borderRadius: 8,
-  border: '1px solid var(--color-surface-2)',
-  background: 'var(--color-surface)',
-  color: 'var(--color-text)',
-  cursor: 'pointer',
-};

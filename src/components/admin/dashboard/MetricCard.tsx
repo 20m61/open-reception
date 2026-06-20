@@ -1,21 +1,15 @@
-import Link from 'next/link';
 import type { ReactNode } from 'react';
+import { MetricCard as UiMetricCard } from '@/components/admin/ui';
 
 /**
- * 概況の 1 指標を表すカード (issue #86, increment 1)。
+ * 概況の 1 指標を表すカード (issue #86 / #92 increment 2)。
  * クリックすると詳細画面へ遷移できるカード構成（href 指定時）。
  * 実データが無い指標は `placeholder` を立て、design 注記（note）を添える。
  *
- * dashboard サブディレクトリ内に閉じる（汎用 MetricCard のトップレベル共通化は #92）。
+ * #92 increment 2: 共有 `ui/MetricCard` への薄い委譲。`metric-card` / `metric-note` /
+ * `metric-card-link` の data-testid は呼び出し側互換のため維持する（testId 上書きで注入）。
  */
 export type MetricTone = 'neutral' | 'success' | 'warning' | 'danger';
-
-const TONE_COLOR: Record<MetricTone, string> = {
-  neutral: 'var(--color-text)',
-  success: 'var(--color-success)',
-  warning: 'var(--color-warning)',
-  danger: 'var(--color-danger)',
-};
 
 export function MetricCard({
   label,
@@ -42,47 +36,20 @@ export function MetricCard({
   placeholder?: boolean;
   children?: ReactNode;
 }) {
-  const body = (
-    <div
-      data-testid="metric-card"
-      data-placeholder={placeholder ? 'true' : undefined}
-      style={{
-        display: 'flex',
-        flexDirection: 'column',
-        gap: 6,
-        padding: 'var(--space-md, 16px)',
-        borderRadius: 12,
-        background: 'var(--color-surface)',
-        border: '1px solid var(--color-surface-2)',
-        minHeight: 110,
-        height: '100%',
-        opacity: placeholder ? 0.7 : 1,
-      }}
+  return (
+    <UiMetricCard
+      label={label}
+      value={value}
+      unit={unit}
+      tone={tone}
+      href={href}
+      hint={hint}
+      note={note}
+      placeholder={placeholder}
+      testId="metric-card"
+      noteTestId="metric-note"
     >
-      <span style={{ fontSize: '0.85rem', opacity: 0.8 }}>{label}</span>
-      {value !== undefined ? (
-        <span style={{ fontSize: '1.9rem', fontWeight: 800, color: TONE_COLOR[tone] }}>
-          {value}
-          {unit ? <span style={{ fontSize: '0.95rem', fontWeight: 600, opacity: 0.7, marginLeft: 4 }}>{unit}</span> : null}
-        </span>
-      ) : null}
       {children}
-      {hint ? <span style={{ fontSize: '0.8rem', opacity: 0.65 }}>{hint}</span> : null}
-      {placeholder && note ? (
-        <span data-testid="metric-note" style={{ fontSize: '0.75rem', opacity: 0.6, fontStyle: 'italic' }}>
-          {note}
-        </span>
-      ) : null}
-      {href ? <span style={{ fontSize: '0.8rem', color: 'var(--color-accent)', marginTop: 'auto' }}>詳細を見る →</span> : null}
-    </div>
+    </UiMetricCard>
   );
-
-  if (href) {
-    return (
-      <Link href={href} data-testid="metric-card-link" style={{ textDecoration: 'none', color: 'inherit' }}>
-        {body}
-      </Link>
-    );
-  }
-  return body;
 }

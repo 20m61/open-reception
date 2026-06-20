@@ -6,6 +6,7 @@ import type {
   SecretKey,
   SecretStatus,
 } from '@/domain/security/integration-status';
+import { Button } from '@/components/admin/ui';
 import { SecretStatusField } from './SecretStatusField';
 
 /**
@@ -156,15 +157,14 @@ export function IntegrationsManager({
                 </div>
               </div>
               {canManage ? (
-                <button
-                  type="button"
+                <Button
+                  variant="primary"
                   data-testid={`integration-${it.id}-test`}
                   onClick={() => runTest(it.id)}
                   disabled={busy}
-                  style={primary}
                 >
                   接続テスト
-                </button>
+                </Button>
               ) : null}
             </div>
           </div>
@@ -181,12 +181,12 @@ export function IntegrationsManager({
             <div key={s.key} data-testid={`secret-${s.key}-confirm`} className="notice notice--danger" style={{ padding: 12 }}>
               <strong>{s.key}</strong> を「要更新」にしますか？（値には触れません）
               <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
-                <button type="button" data-testid={`secret-${s.key}-confirm-yes`} onClick={() => clearSecret(s.key)} style={danger}>
+                <Button variant="danger" data-testid={`secret-${s.key}-confirm-yes`} onClick={() => clearSecret(s.key)}>
                   はい
-                </button>
-                <button type="button" onClick={() => setConfirmClear(null)} style={ghost}>
+                </Button>
+                <Button variant="ghost" onClick={() => setConfirmClear(null)}>
                   やめる
-                </button>
+                </Button>
               </div>
             </div>
           ) : (
@@ -210,24 +210,4 @@ const card: React.CSSProperties = {
   borderRadius: 8,
   border: '1px solid var(--color-surface-2)',
   background: 'var(--color-surface)',
-};
-const primary: React.CSSProperties = {
-  minHeight: 36,
-  padding: '6px 14px',
-  borderRadius: 8,
-  border: 'none',
-  background: 'var(--color-accent)',
-  color: '#0f172a',
-  fontWeight: 700,
-  cursor: 'pointer',
-};
-const danger: React.CSSProperties = { ...primary, background: 'var(--color-danger)', color: '#fff' };
-const ghost: React.CSSProperties = {
-  minHeight: 36,
-  padding: '6px 14px',
-  borderRadius: 8,
-  border: '1px solid rgba(255,255,255,0.2)',
-  background: 'var(--color-surface)',
-  color: 'var(--color-text)',
-  cursor: 'pointer',
 };
