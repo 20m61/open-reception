@@ -134,3 +134,5 @@ iPad(受付) --confirm--> /api/kiosk/receptions/:id/call (server)
 - 担当者応答 UI/URL と subscriber トークン配布（担当者認証/通知リンク連携）。
 - クライアントの接続/未応答検知を 2a のエンドポイントへ接続。
 - 通話イベント（応答等）の監査ログ拡充。**実認証情報での結合検証が前提。**
+- **トークン発行の認可強化**: `GET /token` を kiosk セッションへ束縛（`reception.kioskId` と
+  リクエストの kiosk セッション一致確認）+ レート制限。2a では未認証（reception id=UUID 前提）。

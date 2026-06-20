@@ -9,6 +9,10 @@ import { getVonagePublicConfig } from '@/lib/call/vonage-config';
  *
  * クライアントへ渡すのは applicationId / sessionId / 短命 token のみ（secret は渡さない）。
  * Vonage 無効時や通話セッション未確立時は 409 を返す（受付フローはフォールバックで継続）。
+ *
+ * SECURITY NOTE (increment 2a): 本エンドポイントは未認証。reception id は推測困難な
+ * randomUUID（122bit）で URL 等に露出しない前提だが、id を知れば publisher トークンを発行できる。
+ * increment 2b で kiosk セッションへの束縛（reception.kioskId と一致確認）+ レート制限を実装する。
  */
 export async function GET(
   _request: Request,
