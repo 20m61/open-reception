@@ -73,6 +73,7 @@ export const ADMIN_NAV: readonly NavGroup[] = [
     items: [
       { href: '/admin/receptions', label: '受付履歴' },
       { href: '/admin/reservations', label: '来訪予約' },
+      { href: '/admin/stay', label: '在館状況' },
       { href: '/admin/sites', label: '拠点' },
       { href: '/admin/kiosks', label: '受付端末' },
       { href: '/admin/devices', label: '受付端末（拠点別）' },
@@ -86,6 +87,8 @@ export const ADMIN_NAV: readonly NavGroup[] = [
     label: '受付体験',
     roles: TENANT_ADMINS,
     items: [
+      { href: '/admin/reception-flows', label: '受付フロー' },
+      { href: '/admin/signage', label: '待機サイネージ' },
       { href: '/admin/assets', label: 'アセット' },
       { href: '/admin/motions', label: 'モーション' },
       { href: '/admin/voice', label: '音声' },
