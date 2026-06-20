@@ -13,5 +13,5 @@ export async function POST(request: Request): Promise<NextResponse> {
   } catch {
     return NextResponse.json({ error: 'invalid_input', message: 'invalid JSON' }, { status: 400 });
   }
-  return toResponse(createReception(body), 201);
+  return toResponse(await createReception(body), 201);
 }

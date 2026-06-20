@@ -9,8 +9,8 @@ import {
 } from './asset-store';
 import { validateAsset } from '@/domain/assets/types';
 
-beforeEach(() => {
-  __resetAssets();
+beforeEach(async () => {
+  await __resetAssets();
 });
 
 describe('validateAsset (#27)', () => {
@@ -28,37 +28,37 @@ describe('validateAsset (#27)', () => {
 });
 
 describe('asset-store (#27)', () => {
-  it('seed の背景が適用中', () => {
-    expect(getKioskAssets().backgroundUrl).toBe('/assets/default-bg.png');
+  it('seed の背景が適用中', async () => {
+    expect((await getKioskAssets()).backgroundUrl).toBe('/assets/default-bg.png');
   });
 
-  it('アセットを登録できる', () => {
-    const r = createAsset({ kind: 'background', name: 'イベント背景', url: 'https://cdn/x.jpg' });
+  it('アセットを登録できる', async () => {
+    const r = await createAsset({ kind: 'background', name: 'イベント背景', url: 'https://cdn/x.jpg' });
     expect(r.ok).toBe(true);
-    if (r.ok) expect(listAssets('background').some((a) => a.id === r.value.id)).toBe(true);
+    if (r.ok) expect((await listAssets('background')).some((a) => a.id === r.value.id)).toBe(true);
   });
 
-  it('不正な形式を拒否', () => {
-    const r = createAsset({ kind: 'vrm', name: 'bad', url: 'bad.txt' });
+  it('不正な形式を拒否', async () => {
+    const r = await createAsset({ kind: 'vrm', name: 'bad', url: 'bad.txt' });
     expect(r.ok).toBe(false);
   });
 
-  it('アクティブ背景を切り替えられる', () => {
-    const created = createAsset({ kind: 'background', name: 'new', url: 'https://cdn/n.png' });
+  it('アクティブ背景を切り替えられる', async () => {
+    const created = await createAsset({ kind: 'background', name: 'new', url: 'https://cdn/n.png' });
     if (!created.ok) return;
-    setActiveAsset(created.value.id);
-    expect(getKioskAssets().backgroundUrl).toBe('https://cdn/n.png');
+    await setActiveAsset(created.value.id);
+    expect((await getKioskAssets()).backgroundUrl).toBe('https://cdn/n.png');
   });
 
-  it('無効なアセットは適用できない', () => {
-    const created = createAsset({ kind: 'background', name: 'd', url: 'https://cdn/d.png' });
+  it('無効なアセットは適用できない', async () => {
+    const created = await createAsset({ kind: 'background', name: 'd', url: 'https://cdn/d.png' });
     if (!created.ok) return;
-    setAssetEnabled(created.value.id, false);
-    expect(setActiveAsset(created.value.id).ok).toBe(false);
+    await setAssetEnabled(created.value.id, false);
+    expect((await setActiveAsset(created.value.id)).ok).toBe(false);
   });
 
-  it('適用中アセットを無効化すると適用解除される', () => {
-    setAssetEnabled('asset-bg-default', false);
-    expect(getKioskAssets().backgroundUrl).toBeUndefined();
+  it('適用中アセットを無効化すると適用解除される', async () => {
+    await setAssetEnabled('asset-bg-default', false);
+    expect((await getKioskAssets()).backgroundUrl).toBeUndefined();
   });
 });

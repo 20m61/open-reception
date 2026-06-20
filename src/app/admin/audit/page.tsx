@@ -26,8 +26,8 @@ const ACTION_LABEL: Record<AuditAction, string> = {
 };
 
 /** 管理画面: 監査ログ一覧 (issue #22, #19)。受付ライフサイクルと管理操作の証跡。 */
-export default function AdminAuditPage() {
-  const logs = listAuditLogs();
+export default async function AdminAuditPage() {
+  const logs = await listAuditLogs();
   return (
     <section>
       <h1 style={{ marginTop: 0 }}>監査ログ</h1>

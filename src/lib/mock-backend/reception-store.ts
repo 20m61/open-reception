@@ -1,8 +1,7 @@
 /**
- * 受付セッションの in-memory mock backend (issue #16)。
- * 本番 DB 連携前に、e2e/開発で受付セッションを扱えるようにする。
- *
- * NOTE: プロセス内 Map のため単一インスタンス前提。本番では永続化層へ置換する。
+ * 受付セッションのストア (issue #16)。
+ * 永続化は data backend（memory / dynamodb）に委譲する (docs/persistence-design.md)。
+ * 受付セッションは短期失効（TTL）対象。
  */
 import { randomUUID } from 'node:crypto';
 import {
@@ -14,6 +13,7 @@ import {
 } from '@/domain/reception/session';
 import { transition, type ReceptionEvent } from '@/domain/reception/state';
 import { getCallAdapter } from '@/lib/call/adapter-factory';
+import { getBackend } from '@/lib/data';
 import { listStaff } from './directory-store';
 import type { CallResult } from '@/adapters/call/types';
 import {
@@ -35,7 +35,12 @@ export type StoreError = { code: 'not_found' | 'invalid_input' | 'invalid_transi
 
 export type StoreResult<T> = { ok: true; value: T } | { ok: false; error: StoreError };
 
-const sessions = new Map<string, ReceptionSession>();
+const DEFAULT_TTL_SEC = 24 * 60 * 60;
+
+const sessions = () =>
+  getBackend().collection<ReceptionSession>('reception', {
+    ttlSeconds: Number(process.env.RECEPTION_SESSION_TTL_SEC) || DEFAULT_TTL_SEC,
+  });
 
 function now(): string {
   return new Date().toISOString();
@@ -83,7 +88,7 @@ function validateCreateInput(input: unknown): StoreResult<CreateReceptionInput> 
 }
 
 /** 受付セッションを作成する。全情報が揃った confirming 状態で開始する。 */
-export function createReception(input: unknown): StoreResult<ReceptionSession> {
+export async function createReception(input: unknown): Promise<StoreResult<ReceptionSession>> {
   const validated = validateCreateInput(input);
   if (!validated.ok) {
     return validated;
@@ -102,19 +107,22 @@ export function createReception(input: unknown): StoreResult<ReceptionSession> {
     startedAt: ts,
     updatedAt: ts,
   };
-  sessions.set(session.id, session);
+  await sessions().put(session);
   return { ok: true, value: session };
 }
 
-export function getReception(id: string): StoreResult<ReceptionSession> {
-  const session = sessions.get(id);
+export async function getReception(id: string): Promise<StoreResult<ReceptionSession>> {
+  const session = await sessions().get(id);
   if (!session) {
     return { ok: false, error: { code: 'not_found', message: 'reception not found' } };
   }
   return { ok: true, value: session };
 }
 
-function applyEvent(session: ReceptionSession, event: ReceptionEvent): StoreResult<ReceptionSession> {
+async function applyEvent(
+  session: ReceptionSession,
+  event: ReceptionEvent,
+): Promise<StoreResult<ReceptionSession>> {
   const next = transition(session.state, event);
   if (next === null) {
     return {
@@ -123,20 +131,20 @@ function applyEvent(session: ReceptionSession, event: ReceptionEvent): StoreResu
     };
   }
   const updated: ReceptionSession = { ...session, state: next, updatedAt: now() };
-  sessions.set(updated.id, updated);
+  await sessions().put(updated);
   return { ok: true, value: updated };
 }
 
 /** 呼び出しを開始し、mock adapter の結果でセッション状態を確定する。 */
 export async function startCall(id: string): Promise<StoreResult<ReceptionSession>> {
-  const found = getReception(id);
+  const found = await getReception(id);
   if (!found.ok) return found;
 
-  const calling = applyEvent(found.value, 'CONFIRM');
+  const calling = await applyEvent(found.value, 'CONFIRM');
   if (!calling.ok) return calling;
 
   // 既定は Mock。Vonage 有効時は本番 adapter（#4）。担当者は現在のディレクトリから構成。
-  const callAdapter = getCallAdapter(listStaff(true));
+  const callAdapter = getCallAdapter(await listStaff(true));
   const result: CallResult = await callAdapter.call({
     receptionId: calling.value.id,
     targetType: calling.value.targetType!,
@@ -150,7 +158,7 @@ export async function startCall(id: string): Promise<StoreResult<ReceptionSessio
         ? 'CALL_TIMEOUT'
         : 'CALL_FAILED';
 
-  const resolved = applyEvent(calling.value, event);
+  const resolved = await applyEvent(calling.value, event);
   if (!resolved.ok) return resolved;
 
   const withOutcome: ReceptionSession = {
@@ -159,56 +167,57 @@ export async function startCall(id: string): Promise<StoreResult<ReceptionSessio
     failureReason: result.reason,
     completedAt: result.status === 'connected' ? undefined : now(),
   };
-  sessions.set(withOutcome.id, withOutcome);
+  await sessions().put(withOutcome);
   // 未応答/失敗はこの時点で結果が確定するため履歴化する (issue #19)。
   // 成功は完了時に履歴化する（completeReception）。
   if (result.status !== 'connected') {
-    recordReceptionOutcome(withOutcome);
+    await recordReceptionOutcome(withOutcome);
   }
   return { ok: true, value: withOutcome };
 }
 
-export function cancelReception(id: string): StoreResult<ReceptionSession> {
-  const found = getReception(id);
+export async function cancelReception(id: string): Promise<StoreResult<ReceptionSession>> {
+  const found = await getReception(id);
   if (!found.ok) return found;
-  const result = applyEvent(found.value, 'CANCEL');
+  const result = await applyEvent(found.value, 'CANCEL');
   if (result.ok && result.value.state === 'cancelled') {
     result.value.callOutcome = 'cancelled';
     result.value.completedAt = now();
-    recordReceptionOutcome(result.value);
+    await sessions().put(result.value);
+    await recordReceptionOutcome(result.value);
   }
   return result;
 }
 
-export function completeReception(id: string): StoreResult<ReceptionSession> {
-  const found = getReception(id);
+export async function completeReception(id: string): Promise<StoreResult<ReceptionSession>> {
+  const found = await getReception(id);
   if (!found.ok) return found;
-  const result = applyEvent(found.value, 'COMPLETE');
+  const result = await applyEvent(found.value, 'COMPLETE');
   if (result.ok) {
     const completed = { ...result.value, completedAt: now() };
-    sessions.set(completed.id, completed);
+    await sessions().put(completed);
     // connected → completed の正常完了を履歴化する (issue #19)。
     if (completed.callOutcome === 'connected') {
-      recordReceptionOutcome(completed);
+      await recordReceptionOutcome(completed);
     }
-    recordReceptionCompleted(completed.id, completed.kioskId);
+    await recordReceptionCompleted(completed.id, completed.kioskId);
     return getReception(id);
   }
   return result;
 }
 
 /** 失敗/未応答後の代替導線利用を記録する (issue #19)。状態は failed/timeout → fallback。 */
-export function recordFallback(id: string): StoreResult<ReceptionSession> {
-  const found = getReception(id);
+export async function recordFallback(id: string): Promise<StoreResult<ReceptionSession>> {
+  const found = await getReception(id);
   if (!found.ok) return found;
-  const result = applyEvent(found.value, 'USE_FALLBACK');
+  const result = await applyEvent(found.value, 'USE_FALLBACK');
   if (result.ok) {
-    markFallbackUsed(result.value.id, result.value.kioskId);
+    await markFallbackUsed(result.value.id, result.value.kioskId);
   }
   return result;
 }
 
 /** テスト用: ストアを初期化する。 */
-export function __resetStore(): void {
-  sessions.clear();
+export async function __resetStore(): Promise<void> {
+  await sessions().reset();
 }

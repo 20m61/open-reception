@@ -78,4 +78,52 @@ describe.runIf(OPEN_NEXT_READY)('WebStack synthesis', () => {
       },
     });
   });
+
+  it('provisions a single on-demand DynamoDB table with PK/SK and TTL', () => {
+    template.resourceCountIs('AWS::DynamoDB::Table', 1);
+    template.hasResourceProperties('AWS::DynamoDB::Table', {
+      BillingMode: 'PAY_PER_REQUEST',
+      KeySchema: [
+        { AttributeName: 'PK', KeyType: 'HASH' },
+        { AttributeName: 'SK', KeyType: 'RANGE' },
+      ],
+      TimeToLiveSpecification: { AttributeName: 'ttl', Enabled: true },
+    });
+  });
+
+  it('defines GSI1 for reception-log lookups', () => {
+    template.hasResourceProperties('AWS::DynamoDB::Table', {
+      GlobalSecondaryIndexes: Match.arrayWith([
+        Match.objectLike({
+          IndexName: 'GSI1',
+          KeySchema: [
+            { AttributeName: 'GSI1PK', KeyType: 'HASH' },
+            { AttributeName: 'GSI1SK', KeyType: 'RANGE' },
+          ],
+        }),
+      ]),
+    });
+  });
+
+  it('wires the server function to DynamoDB (env + IAM)', () => {
+    template.hasResourceProperties('AWS::Lambda::Function', {
+      Environment: {
+        Variables: Match.objectLike({
+          DATA_BACKEND: 'dynamodb',
+          TABLE_NAME: Match.anyValue(),
+        }),
+      },
+    });
+    template.hasResourceProperties('AWS::IAM::Policy', {
+      PolicyDocument: Match.objectLike({
+        Statement: Match.arrayWith([
+          Match.objectLike({
+            // grantReadWriteData の証左として書き込み権限の付与を確認する。
+            Action: Match.arrayWith(['dynamodb:PutItem']),
+            Effect: 'Allow',
+          }),
+        ]),
+      }),
+    });
+  });
 });

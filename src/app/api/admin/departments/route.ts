@@ -9,12 +9,12 @@ import { appendAdminAudit } from '@/lib/mock-backend/reception-log-store';
  *
  * NOTE: 認証・認可は #24 で middleware により付与する。
  */
-export function GET(): NextResponse {
-  return NextResponse.json({ items: listDepartments(true) });
+export async function GET(): Promise<NextResponse> {
+  return NextResponse.json({ items: await listDepartments(true) });
 }
 
 export async function POST(request: Request): Promise<NextResponse> {
-  const result = createDepartment(await readJson(request));
-  if (result.ok) appendAdminAudit('department.created', { type: 'department', id: result.value.id });
+  const result = await createDepartment(await readJson(request));
+  if (result.ok) await appendAdminAudit('department.created', { type: 'department', id: result.value.id });
   return resultResponse(result, 201);
 }

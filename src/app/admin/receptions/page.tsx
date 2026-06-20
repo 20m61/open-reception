@@ -25,8 +25,8 @@ function purposeLabel(id?: string): string {
  * 管理画面: 受付履歴一覧 (issue #19, #22)。
  * 来訪者の個人情報は保持せず、運用に必要な情報のみ表示する。
  */
-export default function AdminReceptionsPage() {
-  const logs = listReceptionLogs();
+export default async function AdminReceptionsPage() {
+  const logs = await listReceptionLogs();
 
   return (
     <section>

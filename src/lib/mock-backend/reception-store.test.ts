@@ -17,13 +17,13 @@ const baseInput = {
   visitor: { name: '来客 一郎', company: 'ACME' },
 };
 
-beforeEach(() => {
-  __resetStore();
+beforeEach(async () => {
+  await __resetStore();
 });
 
 describe('reception-store', () => {
-  it('有効な入力で受付セッションを作成できる', () => {
-    const r = createReception(baseInput);
+  it('有効な入力で受付セッションを作成できる', async () => {
+    const r = await createReception(baseInput);
     expect(r.ok).toBe(true);
     if (r.ok) {
       expect(r.value.state).toBe('confirming');
@@ -31,19 +31,19 @@ describe('reception-store', () => {
     }
   });
 
-  it('不正な入力を拒否する', () => {
-    const r = createReception({ ...baseInput, visitor: { name: '' } });
+  it('不正な入力を拒否する', async () => {
+    const r = await createReception({ ...baseInput, visitor: { name: '' } });
     expect(r.ok).toBe(false);
     if (!r.ok) expect(r.error.code).toBe('invalid_input');
   });
 
-  it('purpose が不正なら拒否する', () => {
-    const r = createReception({ ...baseInput, purpose: 'unknown' });
+  it('purpose が不正なら拒否する', async () => {
+    const r = await createReception({ ...baseInput, purpose: 'unknown' });
     expect(r.ok).toBe(false);
   });
 
   it('成功する担当者への呼び出しは connected になる', async () => {
-    const created = createReception(baseInput);
+    const created = await createReception(baseInput);
     expect(created.ok).toBe(true);
     if (!created.ok) return;
     const r = await startCall(created.value.id);
@@ -55,7 +55,7 @@ describe('reception-store', () => {
   });
 
   it('未応答の担当者への呼び出しは timeout になる', async () => {
-    const created = createReception({ ...baseInput, targetId: 'staff-suzuki', targetLabel: '鈴木 花子' });
+    const created = await createReception({ ...baseInput, targetId: 'staff-suzuki', targetLabel: '鈴木 花子' });
     if (!created.ok) return;
     const r = await startCall(created.value.id);
     expect(r.ok).toBe(true);
@@ -66,17 +66,17 @@ describe('reception-store', () => {
   });
 
   it('失敗する担当者への呼び出しは failed になる', async () => {
-    const created = createReception({ ...baseInput, targetId: 'staff-takahashi', targetLabel: '高橋 健' });
+    const created = await createReception({ ...baseInput, targetId: 'staff-takahashi', targetLabel: '高橋 健' });
     if (!created.ok) return;
     const r = await startCall(created.value.id);
     expect(r.ok && r.value.state).toBe('failed');
   });
 
   it('接続後に完了できる', async () => {
-    const created = createReception(baseInput);
+    const created = await createReception(baseInput);
     if (!created.ok) return;
     await startCall(created.value.id);
-    const r = completeReception(created.value.id);
+    const r = await completeReception(created.value.id);
     expect(r.ok).toBe(true);
     if (r.ok) {
       expect(r.value.state).toBe('completed');
@@ -84,23 +84,23 @@ describe('reception-store', () => {
     }
   });
 
-  it('confirming からキャンセルできる', () => {
-    const created = createReception(baseInput);
+  it('confirming からキャンセルできる', async () => {
+    const created = await createReception(baseInput);
     if (!created.ok) return;
-    const r = cancelReception(created.value.id);
+    const r = await cancelReception(created.value.id);
     expect(r.ok && r.value.state).toBe('cancelled');
   });
 
-  it('不正な状態遷移を拒否する（呼び出し前の complete）', () => {
-    const created = createReception(baseInput);
+  it('不正な状態遷移を拒否する（呼び出し前の complete）', async () => {
+    const created = await createReception(baseInput);
     if (!created.ok) return;
-    const r = completeReception(created.value.id);
+    const r = await completeReception(created.value.id);
     expect(r.ok).toBe(false);
     if (!r.ok) expect(r.error.code).toBe('invalid_transition');
   });
 
-  it('存在しないセッションは not_found', () => {
-    const r = getReception('missing');
+  it('存在しないセッションは not_found', async () => {
+    const r = await getReception('missing');
     expect(r.ok).toBe(false);
     if (!r.ok) expect(r.error.code).toBe('not_found');
   });

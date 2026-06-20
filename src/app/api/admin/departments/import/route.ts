@@ -15,9 +15,9 @@ export async function POST(request: Request): Promise<NextResponse> {
   }
   const mode = body.mode === 'apply' ? 'apply' : 'preview';
   const { records } = parseCsvRecords(body.csv);
-  const summary = importDepartments(records, mode);
+  const summary = await importDepartments(records, mode);
   if (mode === 'apply') {
-    appendAdminAudit('department.created', { type: 'department' }, {
+    await appendAdminAudit('department.created', { type: 'department' }, {
       via: 'csv',
       created: String(summary.created),
       updated: String(summary.updated),

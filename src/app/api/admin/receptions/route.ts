@@ -8,6 +8,6 @@ import { listReceptionLogs } from '@/lib/mock-backend/reception-log-store';
  * NOTE: 管理 API の認証・認可は #24 で middleware により付与する。
  * 現時点では kiosk API と namespace を分離して責務境界を明確化している。
  */
-export function GET(): NextResponse {
-  return NextResponse.json({ items: listReceptionLogs() });
+export async function GET(): Promise<NextResponse> {
+  return NextResponse.json({ items: await listReceptionLogs() });
 }

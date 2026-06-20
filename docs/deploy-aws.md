@@ -15,7 +15,9 @@ open-reception の Next.js アプリ本体を **AWS サーバーレス**（Cloud
                 └──────────────────────────────────────────────┘
    - server / image Lambda は Function URL(AWS_IAM) + CloudFront OAC で限定公開
    - proxy(旧 middleware) による /admin 認可は server Lambda 内で動作（nodejs runtime）
-   - ISR/revalidate 不使用のため SQS/DynamoDB は無し（open-next.config.ts で dummy 化）
+   - ISR/revalidate 用の SQS/DynamoDB は無し（open-next.config.ts で dummy 化）
+   - 業務データ（部署/担当者/受付/履歴/設定）は DynamoDB シングルテーブルに永続化
+     （server Lambda が読み書き。docs/persistence-design.md）
 ```
 
 OpenNext が `.open-next/` に生成する成果物を、CDK の `WebStack` が取り込む。
@@ -99,8 +101,27 @@ npx cdk deploy OpenReception-Web-prod -c env=prod \
 - `DistributionDomainName` … 公開 URL（`https://<domain>/kiosk`, `/admin`）
 - `DistributionId` … キャッシュ無効化に使用
 - `AssetBucketName` … 静的アセットバケット
+- `DataTableName` … 業務データ DynamoDB テーブル名（seed/運用に使用）
 
-### 7. 再デプロイ（コード更新時）
+> `DATA_BACKEND=dynamodb` と `TABLE_NAME` は WebStack が server Lambda に自動設定する
+> （`-c appEnv` での指定は不要）。テーブルへの読み書き権限も付与済み。
+
+### 7. 初期データ投入（seed・初回のみ）
+
+DynamoDB は seed を自動投入しない（運用データ保護のため）。初回は最小データを投入する:
+
+```bash
+# ルートで（DataTableName は手順6の Outputs）
+DATA_BACKEND=dynamodb TABLE_NAME=<DataTableName> AWS_REGION=ap-northeast-1 \
+  npm run seed:dynamodb              # 端末1台 + 既定背景アセット
+# デモ用に架空の部署・担当者も入れる場合:
+#   npm run seed:dynamodb -- --with-mock
+```
+
+部署・担当者は管理画面（`/admin`）や CSV インポートからも登録できる。
+seed は冪等（同一 id は上書き）。
+
+### 8. 再デプロイ（コード更新時）
 
 ```bash
 # ルートで再ビルド

@@ -11,8 +11,8 @@ import { KIOSK_COOKIE, readKioskSession } from '@/lib/auth/kiosk';
  */
 export async function GET(request: Request): Promise<NextResponse> {
   const kioskId = new URL(request.url).searchParams.get('kioskId') ?? '';
-  const config = getKioskConfig(kioskId);
-  const security = getSecuritySettings();
+  const config = await getKioskConfig(kioskId);
+  const security = await getSecuritySettings();
   const token = (await cookies()).get(KIOSK_COOKIE)?.value;
   const session = await readKioskSession(token);
   return NextResponse.json({

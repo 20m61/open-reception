@@ -11,7 +11,7 @@ export async function POST(
   { params }: { params: Promise<{ id: string }> },
 ): Promise<NextResponse> {
   const { id } = await params;
-  const result = setKioskEnabled(id, true);
-  if (result.ok) appendAdminAudit('kiosk.restored', { type: 'kiosk', id });
+  const result = await setKioskEnabled(id, true);
+  if (result.ok) await appendAdminAudit('kiosk.restored', { type: 'kiosk', id });
   return resultResponse(result);
 }

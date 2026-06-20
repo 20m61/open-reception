@@ -3,6 +3,7 @@ import * as fs from 'node:fs';
 import { Stack, StackProps, Duration, CfnOutput } from 'aws-cdk-lib';
 import { Construct } from 'constructs';
 import * as lambda from 'aws-cdk-lib/aws-lambda';
+import * as dynamodb from 'aws-cdk-lib/aws-dynamodb';
 import * as s3 from 'aws-cdk-lib/aws-s3';
 import * as s3deploy from 'aws-cdk-lib/aws-s3-deployment';
 import * as logs from 'aws-cdk-lib/aws-logs';
@@ -74,6 +75,26 @@ export class WebStack extends Stack {
       cacheControl: [s3deploy.CacheControl.fromString('public,max-age=31536000,immutable')],
     });
 
+    // --- DynamoDB: 業務データの永続化（シングルテーブル）(docs/persistence-design.md §4) ---
+    // PK/SK 複合キー。受付セッションの失効に TTL、受付履歴の receptionId 検索に GSI1 を用いる。
+    const dataTable = new dynamodb.Table(this, 'DataTable', {
+      partitionKey: { name: 'PK', type: dynamodb.AttributeType.STRING },
+      sortKey: { name: 'SK', type: dynamodb.AttributeType.STRING },
+      billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
+      timeToLiveAttribute: 'ttl',
+      encryption: dynamodb.TableEncryption.AWS_MANAGED,
+      pointInTimeRecoverySpecification: {
+        pointInTimeRecoveryEnabled: config.data.pointInTimeRecovery,
+      },
+      deletionProtection: config.data.removalProtection,
+      removalPolicy,
+    });
+    dataTable.addGlobalSecondaryIndex({
+      indexName: 'GSI1',
+      partitionKey: { name: 'GSI1PK', type: dynamodb.AttributeType.STRING },
+      sortKey: { name: 'GSI1SK', type: dynamodb.AttributeType.STRING },
+    });
+
     // --- server Lambda ---
     const serverFn = new lambda.Function(this, 'ServerFn', {
       runtime: lambda.Runtime.NODEJS_22_X,
@@ -88,8 +109,14 @@ export class WebStack extends Stack {
         // NODE_ENV は明示する。
         NODE_ENV: 'production',
         ...appEnv,
+        // 永続化バックエンドは DynamoDB を使用（appEnv による上書きより後に置き、確定させる）。
+        DATA_BACKEND: 'dynamodb',
+        TABLE_NAME: dataTable.tableName,
       },
     });
+
+    // server Lambda（SSR / Route Handlers）は業務データの読み書きを行う。
+    dataTable.grantReadWriteData(serverFn);
 
     const serverFnUrl = serverFn.addFunctionUrl({
       authType: lambda.FunctionUrlAuthType.AWS_IAM,
@@ -192,6 +219,10 @@ export class WebStack extends Stack {
     new CfnOutput(this, 'AssetBucketName', {
       value: assetBucket.bucketName,
       description: '静的アセット S3 バケット名',
+    });
+    new CfnOutput(this, 'DataTableName', {
+      value: dataTable.tableName,
+      description: '業務データ DynamoDB テーブル名（seed/運用に使用）',
     });
   }
 

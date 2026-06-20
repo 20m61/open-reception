@@ -9,7 +9,7 @@ import { appendAdminAudit } from '@/lib/mock-backend/reception-log-store';
  */
 export async function POST(request: Request): Promise<NextResponse> {
   const body = (await readJson(request)) as { orderedIds?: unknown } | null;
-  const result = reorderDepartments(body?.orderedIds);
-  if (result.ok) appendAdminAudit('department.reordered', { type: 'department' }, { via: 'dnd' });
+  const result = await reorderDepartments(body?.orderedIds);
+  if (result.ok) await appendAdminAudit('department.reordered', { type: 'department' }, { via: 'dnd' });
   return resultResponse(result);
 }
