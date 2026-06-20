@@ -9,6 +9,7 @@ import {
   markTimeout,
   startCall,
 } from './reception-store';
+import { __resetLogStore, listAuditLogs } from './reception-log-store';
 import type { CallAdapter } from '@/adapters/call/types';
 
 /** Vonage を模した非同期 adapter（calling を返す）。 */
@@ -158,6 +159,16 @@ describe('reception-store', () => {
         expect(r.value.callOutcome).toBe('timeout');
         expect(r.value.completedAt).toBeDefined();
       }
+    });
+
+    it('応答時に reception.answered を監査ログへ記録する', async () => {
+      await __resetLogStore();
+      const created = await createReception(baseInput);
+      if (!created.ok) return;
+      await startCall(created.value.id, callingAdapter);
+      await markConnected(created.value.id);
+      const audits = await listAuditLogs();
+      expect(audits.some((a) => a.action === 'reception.answered' && a.targetId === created.value.id)).toBe(true);
     });
 
     it('calling 以外からの markConnected は不正遷移', async () => {

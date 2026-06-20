@@ -4,7 +4,8 @@ import type { AuditAction } from '@/domain/reception/log';
 export const dynamic = 'force-dynamic';
 
 const ACTION_LABEL: Record<AuditAction, string> = {
-  'reception.connected': '受付: 応答',
+  'reception.connected': '受付: 接続確定',
+  'reception.answered': '受付: 担当者応答',
   'reception.timeout': '受付: 未応答',
   'reception.failed': '受付: 失敗',
   'reception.cancelled': '受付: キャンセル',

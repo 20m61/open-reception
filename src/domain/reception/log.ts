@@ -32,6 +32,7 @@ export type ReceptionLog = {
 
 export type AuditAction =
   | 'reception.connected'
+  | 'reception.answered'
   | 'reception.timeout'
   | 'reception.failed'
   | 'reception.cancelled'

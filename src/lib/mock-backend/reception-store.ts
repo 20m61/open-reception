@@ -17,6 +17,7 @@ import { getBackend } from '@/lib/data';
 import { listStaff } from './directory-store';
 import type { CallAdapter, CallResult } from '@/adapters/call/types';
 import {
+  appendAuditLog,
   markFallbackUsed,
   recordReceptionCompleted,
   recordReceptionOutcome,
@@ -221,7 +222,8 @@ export async function completeReception(id: string): Promise<StoreResult<Recepti
 
 /**
  * 非同期通話で担当者が応答したことを記録する（calling → connected）(issue #4 increment 2)。
- * 受付履歴は完了時に記録するため、ここでは状態と callOutcome のみ確定する。
+ * 受付履歴は完了時に記録するが、応答の瞬間は監査ログ（reception.answered）に残す
+ * （connected/completed の監査とは別イベント）(issue #19, increment 2c)。
  */
 export async function markConnected(id: string): Promise<StoreResult<ReceptionSession>> {
   const found = await getReception(id);
@@ -230,6 +232,12 @@ export async function markConnected(id: string): Promise<StoreResult<ReceptionSe
   if (result.ok) {
     const connected: ReceptionSession = { ...result.value, callOutcome: 'connected' };
     await sessions().put(connected);
+    await appendAuditLog({
+      action: 'reception.answered',
+      actor: `kiosk:${connected.kioskId}`,
+      targetType: 'reception',
+      targetId: connected.id,
+    });
     return { ok: true, value: connected };
   }
   return result;
