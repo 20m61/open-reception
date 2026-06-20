@@ -14,6 +14,8 @@ import { VrmAvatarViewer } from './VrmAvatarViewer';
 import { KioskCallView } from './KioskCallView';
 import { CheckinFlow } from './CheckinFlow';
 import { MockSttAdapter } from '@/adapters/speech/mock-stt';
+import { useStaffResponse } from './useStaffResponse';
+import type { StaffResponseResult } from '@/domain/reception/staff-response';
 
 /** MVP では端末 ID は固定。将来 kiosk config から取得する (issue #18)。 */
 const KIOSK_ID = 'kiosk-dev';
@@ -317,6 +319,21 @@ export function KioskFlow() {
     dispatch({ type: 'USE_FALLBACK' });
   }, [data.sessionId]);
 
+  // 担当者の応答アクションを短時間ポーリングで取得する (issue #99)。
+  // 呼び出し中・応答後（calling/connected）のみ。終端状態では停止し、個人情報は持ち越さない。
+  const pollResponseEnabled = data.state === 'calling' || data.state === 'connected';
+  const staffResponse = useStaffResponse(data.sessionId ?? null, { enabled: pollResponseEnabled });
+
+  // 拒否・別チャネル誘導（offersFallback）応答からの代替導線。calling からは USE_FALLBACK が
+  // 不正遷移のため、まず failed へ落としてから既存の代替導線フロー（ResultView）へ繋ぐ。
+  const handleStaffResponseFallback = useCallback(() => {
+    if (data.state === 'calling') {
+      dispatch({ type: 'CALL_FAILED', sessionId: data.sessionId });
+    } else {
+      void handleFallback();
+    }
+  }, [data.state, data.sessionId, handleFallback]);
+
   const view = active === false ? 'revoked' : needsAuthorize ? 'authorize' : 'ready';
   // 現在の受付状態に対応するモーション URL（未設定は default に fallback）(issue #31)。
   const motionUrl = resolveMotionUrl(motionKeyForState(data.state), motions.motions, motions.defaultUrl);
@@ -363,6 +380,8 @@ export function KioskFlow() {
           motionUrl,
           vonageCallId,
           () => setMode('checkin'),
+          staffResponse,
+          handleStaffResponseFallback,
         )
       )}
     </main>
@@ -436,6 +455,8 @@ function renderScreen(
   motionUrl: string | undefined,
   vonageCallId: string | null,
   onStartCheckin: () => void,
+  staffResponse: StaffResponseResult | null,
+  onStaffResponseFallback: () => void,
 ) {
   switch (data.state) {
     case 'idle':
@@ -487,18 +508,29 @@ function renderScreen(
       );
     case 'calling':
       // Vonage（非同期）通話はビデオビューがライフサイクルを駆動する。Mock 同期通話は従来表示。
-      return vonageCallId ? (
-        <KioskCallView
-          receptionId={vonageCallId}
-          onConnected={() => dispatch({ type: 'CALL_CONNECTED', sessionId: vonageCallId })}
-          onTimeout={() => dispatch({ type: 'CALL_TIMEOUT', sessionId: vonageCallId })}
-          onFallback={() => dispatch({ type: 'CALL_FAILED', sessionId: vonageCallId })}
-        />
-      ) : (
-        <CallingView target={data.target?.label ?? ''} />
+      // 担当者の応答アクションがあれば、その来訪者向けメッセージを上に重ねて表示する (issue #99)。
+      return (
+        <>
+          <StaffResponseBanner response={staffResponse} onFallback={onStaffResponseFallback} />
+          {vonageCallId ? (
+            <KioskCallView
+              receptionId={vonageCallId}
+              onConnected={() => dispatch({ type: 'CALL_CONNECTED', sessionId: vonageCallId })}
+              onTimeout={() => dispatch({ type: 'CALL_TIMEOUT', sessionId: vonageCallId })}
+              onFallback={() => dispatch({ type: 'CALL_FAILED', sessionId: vonageCallId })}
+            />
+          ) : (
+            <CallingView target={data.target?.label ?? ''} />
+          )}
+        </>
       );
     case 'connected':
-      return <ConnectedView target={data.target?.label ?? ''} onComplete={complete} />;
+      return (
+        <>
+          <StaffResponseBanner response={staffResponse} onFallback={onStaffResponseFallback} />
+          <ConnectedView target={data.target?.label ?? ''} onComplete={complete} />
+        </>
+      );
     case 'timeout':
     case 'failed':
       return (
@@ -864,6 +896,52 @@ function ConfirmView({
         </button>
       </div>
     </>
+  );
+}
+
+/**
+ * 担当者の応答アクションを来訪者向けに表示するバナー (issue #99)。
+ * 応答がなければ何も描画しない（呼び出し中の通常表示を妨げない）。
+ * 拒否・別チャネル誘導（offersFallback）のときは代替導線を併記する。
+ */
+function StaffResponseBanner({
+  response,
+  onFallback,
+}: {
+  response: StaffResponseResult | null;
+  onFallback: () => void;
+}) {
+  if (!response) return null;
+  const noticeClass =
+    response.severity === 'danger'
+      ? 'notice notice--danger'
+      : response.severity === 'warning'
+        ? 'notice notice--warning'
+        : response.severity === 'success'
+          ? 'notice notice--success'
+          : 'notice';
+  return (
+    <div
+      className="staff-response-banner"
+      data-testid="staff-response-banner"
+      data-status={response.kioskStatus}
+      style={{ marginBottom: 'var(--space-md)' }}
+    >
+      <div className={noticeClass} role="status" data-testid="staff-response-message">
+        {response.visitorMessage}
+      </div>
+      {response.offersFallback ? (
+        <button
+          type="button"
+          className="btn btn--secondary"
+          data-testid="staff-response-fallback"
+          onClick={onFallback}
+          style={{ marginTop: 'var(--space-sm)' }}
+        >
+          受付窓口へ
+        </button>
+      ) : null}
+    </div>
   );
 }
 

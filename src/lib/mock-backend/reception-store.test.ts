@@ -7,6 +7,8 @@ import {
   getReception,
   markConnected,
   markTimeout,
+  recordStaffResponse,
+  getReceptionVisitorStatus,
   startCall,
 } from './reception-store';
 import { __resetLogStore, listAuditLogs } from './reception-log-store';
@@ -183,6 +185,77 @@ describe('reception-store', () => {
       const r = await markConnected(created.value.id); // confirming のまま
       expect(r.ok).toBe(false);
       if (!r.ok) expect(r.error.code).toBe('invalid_transition');
+    });
+  });
+
+  describe('recordStaffResponse (issue #99)', () => {
+    it('calling 中に応答を記録し、来訪者向け結果を session に載せる', async () => {
+      const created = await createReception(baseInput);
+      if (!created.ok) return;
+      await startCall(created.value.id, callingAdapter); // → calling
+      const r = await recordStaffResponse(created.value.id, 'coming');
+      expect(r.ok).toBe(true);
+      if (r.ok) {
+        expect(r.value.action).toBe('coming');
+        expect(r.value.kioskStatus).toBe('acknowledged');
+        expect(r.value.visitorMessage.length).toBeGreaterThan(0);
+      }
+      const saved = await getReception(created.value.id);
+      if (saved.ok) expect(saved.value.staffResponse?.action).toBe('coming');
+    });
+
+    it('最新の応答で上書きする（5分お待ち → 今行きます）', async () => {
+      const created = await createReception(baseInput);
+      if (!created.ok) return;
+      await startCall(created.value.id, callingAdapter);
+      await recordStaffResponse(created.value.id, 'wait', { respondedAt: '2026-06-20T00:00:00.000Z' });
+      await recordStaffResponse(created.value.id, 'coming', { respondedAt: '2026-06-20T00:01:00.000Z' });
+      const saved = await getReception(created.value.id);
+      if (saved.ok) expect(saved.value.staffResponse?.action).toBe('coming');
+    });
+
+    it('応答種別のみを監査 (reception.staff_responded) に残す（PII を残さない）', async () => {
+      await __resetLogStore();
+      const created = await createReception(baseInput);
+      if (!created.ok) return;
+      await startCall(created.value.id, callingAdapter);
+      await recordStaffResponse(created.value.id, 'decline');
+      const logs = (await listAuditLogs()).filter(
+        (a) => a.action === 'reception.staff_responded' && a.targetId === created.value.id,
+      );
+      expect(logs).toHaveLength(1);
+      expect(logs[0]!.actor).toBe('staff');
+      expect(logs[0]!.metadata).toEqual({ action: 'decline' });
+      // 監査に来訪者文言・氏名等の PII を含めない。
+      expect(JSON.stringify(logs[0]!.metadata)).not.toMatch(/来客|ACME/);
+    });
+
+    it('confirming など calling/connected 以外からは記録できない', async () => {
+      const created = await createReception(baseInput); // confirming のまま
+      if (!created.ok) return;
+      const r = await recordStaffResponse(created.value.id, 'coming');
+      expect(r.ok).toBe(false);
+      if (!r.ok) expect(r.error.code).toBe('invalid_transition');
+    });
+
+    it('存在しない受付は not_found', async () => {
+      const r = await recordStaffResponse('missing', 'coming');
+      expect(r.ok).toBe(false);
+      if (!r.ok) expect(r.error.code).toBe('not_found');
+    });
+
+    it('getReceptionVisitorStatus は PII を返さず state と staffResponse のみ返す', async () => {
+      const created = await createReception(baseInput);
+      if (!created.ok) return;
+      await startCall(created.value.id, callingAdapter);
+      await recordStaffResponse(created.value.id, 'wait');
+      const r = await getReceptionVisitorStatus(created.value.id);
+      expect(r.ok).toBe(true);
+      if (r.ok) {
+        expect(Object.keys(r.value).sort()).toEqual(['staffResponse', 'state']);
+        expect(r.value.staffResponse?.action).toBe('wait');
+        expect(JSON.stringify(r.value)).not.toMatch(/来客|ACME/);
+      }
     });
   });
 });

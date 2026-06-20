@@ -12,6 +12,11 @@ import {
   type VisitorInfo,
 } from '@/domain/reception/session';
 import { transition, type ReceptionEvent } from '@/domain/reception/state';
+import {
+  buildStaffResponseResult,
+  type StaffResponseAction,
+  type StaffResponseResult,
+} from '@/domain/reception/staff-response';
 import { getCallAdapter } from '@/lib/call/adapter-factory';
 import { getBackend } from '@/lib/data';
 import { listStaff } from './directory-store';
@@ -245,6 +250,76 @@ export async function markConnected(
     return { ok: true, value: connected };
   }
   return result;
+}
+
+/** 担当者応答を記録できる受付状態（呼び出し中・応答済み）。終端状態には記録しない。 */
+const STAFF_RESPONSE_ALLOWED_STATES: ReadonlySet<ReceptionSession['state']> = new Set([
+  'calling',
+  'connected',
+]);
+
+/**
+ * 担当者の応答アクションを記録する (issue #99 increment 1)。
+ *
+ * 既存 (issue #4 2c) の markConnected（通話参加＝connected 確定）とは別レイヤ。
+ * 来訪者向けメッセージを session.staffResponse に載せ、受付端末が短時間ポーリングで反映する。
+ * 状態機械は壊さない: calling/connected の間だけ受け付け、最新応答で上書き（担当者が
+ * 「5分お待ちください」→「今行きます」と更新できる）。
+ *
+ * 監査は事前定義済みの `reception.staff_responded` を使い、応答種別は metadata.action に持つ
+ * （PII は残さない）。応答文言・来訪者情報は監査に書かない。
+ */
+export async function recordStaffResponse(
+  id: string,
+  action: StaffResponseAction,
+  options?: { messageOverride?: string; respondedAt?: string },
+): Promise<StoreResult<StaffResponseResult>> {
+  const found = await getReception(id);
+  if (!found.ok) return found;
+
+  if (!STAFF_RESPONSE_ALLOWED_STATES.has(found.value.state)) {
+    return {
+      ok: false,
+      error: {
+        code: 'invalid_transition',
+        message: `cannot record staff response from ${found.value.state}`,
+      },
+    };
+  }
+
+  const result = buildStaffResponseResult(
+    action,
+    options?.respondedAt ?? now(),
+    options?.messageOverride,
+  );
+  const updated: ReceptionSession = { ...found.value, staffResponse: result, updatedAt: now() };
+  await sessions().put(updated);
+
+  // 応答種別のみを監査に残す（来訪者向け文言・PII は載せない）。
+  await appendAuditLog({
+    action: 'reception.staff_responded',
+    actor: 'staff',
+    targetType: 'reception',
+    targetId: id,
+    metadata: { action },
+  });
+
+  return { ok: true, value: result };
+}
+
+/**
+ * 受付端末向けに、来訪者表示に必要な最小限の状態を返す (issue #99)。
+ * PII（visitor.*）は返さない。担当者の最新応答と受付状態のみ。
+ */
+export async function getReceptionVisitorStatus(
+  id: string,
+): Promise<StoreResult<{ state: ReceptionSession['state']; staffResponse?: StaffResponseResult }>> {
+  const found = await getReception(id);
+  if (!found.ok) return found;
+  return {
+    ok: true,
+    value: { state: found.value.state, staffResponse: found.value.staffResponse },
+  };
 }
 
 /**
