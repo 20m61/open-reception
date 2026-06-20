@@ -3,8 +3,10 @@ import { redirect } from 'next/navigation';
 import type { TenantRole } from '@/domain/tenant/types';
 import type { Actor } from '@/domain/tenant/authorization';
 import { AdminShell } from '@/components/admin/AdminShell';
+import { TenantSwitcher } from '@/components/admin/TenantSwitcher';
 import { ADMIN_NAV } from '@/components/admin/navigation';
 import { resolveAdminActor } from '@/lib/auth/actor';
+import { resolveActiveTenant } from '@/lib/tenant/active-tenant';
 import { canEnterArea } from '@/components/admin/route-guard';
 import { PATHNAME_HEADER } from '@/proxy';
 
@@ -37,8 +39,20 @@ export default async function AdminLayout({ children }: { children: React.ReactN
     redirect('/admin/login');
   }
 
+  // 選択中テナントと選択肢を actor 基準で解決する（越境 cookie は採用しない）。
+  // 選択は表示用であり、認可は引き続き各 API / service が actor を正として検証する。
+  const { options, activeTenantId } = await resolveActiveTenant(actor);
+
   return (
-    <AdminShell area="admin" title="管理画面" nav={ADMIN_NAV} roles={rolesFromActor(actor)}>
+    <AdminShell
+      area="admin"
+      title="管理画面"
+      nav={ADMIN_NAV}
+      roles={rolesFromActor(actor)}
+      tenantSwitcher={
+        <TenantSwitcher options={options} activeTenantId={activeTenantId ?? undefined} />
+      }
+    >
       {children}
     </AdminShell>
   );

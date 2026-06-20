@@ -168,12 +168,37 @@ migration は次増分で用意する（受け入れ条件「既存運用は def
   で後方互換フォールバック。
 - [x] seed / `putAdminUser` による最小プロビジョニング（管理 UI は #82/#90）。
 
-### increment 3 以降（残課題）
+### increment 3（このトラックの範囲・実装済み）
 
-- [ ] `Tenant`/`Site`/`Device` を `MemoryTenantStore` から `getBackend()` 永続化へ移行
-  （repository interface 維持・`site-service.test.ts` を壊さない）。**increment 2 では
-  キーストン（AdminUser + actor 実データ化）に集中し、本項は inc3 へ繰り延べ**。
+`Tenant`/`Site`/`Device` の永続化を `getBackend()` ベースへ移行し、管理画面に対象テナント
+切り替え（TenantSwitcher）を載せた。詳細:
+
+- [x] `Tenant`/`Site`/`Device` を `MemoryTenantStore` から `getBackend()` 永続化へ移行
+  （`src/lib/tenant/data-repository.ts` の `DataBackedTenantStore`。コレクション `tenant`/
+  `site`/`device`、AdminUser は inc2 の `admin_user` を再利用）。**repository interface は維持**し、
+  `site-service.test.ts`/`device-service.test.ts`/`memory-repository.test.ts` は memory backend で
+  緑のまま。`store.ts` の `getTenantStore()` を差し替え（seed は memory のみ有効）。
+- [x] テナント選択の純粋ロジック（`src/lib/tenant/tenant-selection.ts`）:
+  `selectableTenants` / `canSelectTenant` / `resolveActiveTenantId`（越境 cookie を安全側へ倒す）
+  / `isSwitchable`。`accessibleTenants(actor)` を土台に developer=all / 所属テナントを導出。
+- [x] TenantSwitcher（`src/components/admin/TenantSwitcher.tsx`）と server action
+  （`select-tenant-action.ts`）。`AdminShell` の `tenantLabel` を `tenantSwitcher` slot へ差し替え、
+  `admin/layout.tsx` で配線。単一所属は固定表示、developer/複数所属はドロップダウン切替。
+- [x] 選択中テナントの解決導線（`active-tenant.ts` / cookie `or_active_tenant`、HttpOnly）。
+  read 系画面はここから対象テナントを取得できる。
+
+**セキュリティ（越境拒否）**: テナント選択は表示・操作対象の切り替え（UX）であり認可ではない。
+クライアントが送る tenantId はそのまま信用せず、server action は `resolveAdminActor()` で actor を
+サーバ側に解決し直して `canSelectTenant` で越境を拒否（権限外テナントの選択要求は cookie を
+書き換えず無視）。cookie 値も `resolveActiveTenantId` が actor 基準で検証し、越境・失効時は安全側
+（選択肢の先頭）へフォールバックする。最終的な認可は引き続き各 API / service が actor を正として
+検証する。
+
+### increment 4 以降（残課題）
+
 - [ ] DynamoDB シングルテーブル実装（PK/SK・GSI）と `getBackend()` 統合（tenant 系）。
+  inc3 は Collection 抽象（id 単位）の上に素直に載せ、PK=TENANT#... のキー最適化は未着手。
+- [ ] 選択中テナントの per-screen 細粒度認可の全面適用（inc3 は最小導線のみ）。
 - [ ] 全テーブル（Settings/Session/AuditLog 等）への `tenantId` 付与（usage/log は #89）。
 - [ ] 管理 API の認可 middleware（`401`/`403`、tenantId 解決）。
 - [ ] Entra App Role → `TenantRole`/`RoleAssignment` マッピング（#70 連携）。

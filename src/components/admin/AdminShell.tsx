@@ -15,6 +15,11 @@ export function AdminShell({
   roles,
   /** developer/platform でテナント横断する場合の対象テナント表示（#85 安全 UX）。 */
   tenantLabel,
+  /**
+   * 対象テナント切り替え UI（#80 inc3）。指定時は tenantLabel より優先してヘッダに表示する。
+   * TenantSwitcher を想定するが、AdminShell は actor 解決に依存しないよう ReactNode で受ける。
+   */
+  tenantSwitcher,
   children,
 }: {
   area: 'admin' | 'platform';
@@ -22,6 +27,7 @@ export function AdminShell({
   nav: readonly NavGroup[];
   roles: readonly TenantRole[];
   tenantLabel?: string;
+  tenantSwitcher?: ReactNode;
   children: ReactNode;
 }) {
   return (
@@ -53,7 +59,9 @@ export function AdminShell({
           <span style={{ opacity: 0.6, fontSize: '0.875rem' }}>
             {area === 'platform' ? 'プラットフォーム運用' : 'テナント管理'}
           </span>
-          {tenantLabel ? (
+          {tenantSwitcher ? (
+            tenantSwitcher
+          ) : tenantLabel ? (
             <span
               data-testid="active-tenant"
               style={{
