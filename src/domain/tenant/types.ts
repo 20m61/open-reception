@@ -35,6 +35,11 @@ export type SiteStatus = 'active' | 'suspended';
 /** Device は登録/失効の二値（既存 Kiosk.enabled と対応）。 */
 export type DeviceStatus = 'active' | 'revoked';
 
+/**
+ * 受付端末の種別 (issue #87 inc2)。一覧の表示用。既定は kiosk（据置受付端末）。
+ */
+export type DeviceKind = 'kiosk' | 'tablet' | 'desktop';
+
 /** 導入先企業・組織。テナント境界の最上位。 */
 export type Tenant = {
   id: TenantId;
@@ -58,7 +63,12 @@ export type Site = {
   updatedAt: string;
 };
 
-/** Site 配下の受付端末。テナント境界に乗せた Device 表現。 */
+/**
+ * Site 配下の受付端末。テナント境界に乗せた Device 表現。
+ *
+ * #87 inc2 で受付端末管理 UI 用の表示メタを追加（すべて任意・後方互換）。
+ * セキュリティ: token の平文は保持しない。登録済みかの真偽（`tokenRegistered`）のみ持つ。
+ */
 export type Device = {
   id: DeviceId;
   tenantId: TenantId;
@@ -66,6 +76,19 @@ export type Device = {
   /** 表示名（例: iPad受付端末）。 */
   name: string;
   status: DeviceStatus;
+  /** 設置場所（例: 1F エントランス）。任意・PII ではない運用メモ。 */
+  location?: string;
+  /** 端末種別。未指定は kiosk 扱い。 */
+  kind?: DeviceKind;
+  /** 最終 heartbeat（オンライン判定の基準）。未取得なら未設定。 */
+  lastSeenAt?: string;
+  /** メンテナンス表示中か（受付を止め保守メッセージを出す）。 */
+  maintenance?: boolean;
+  /**
+   * キオスク token が登録済みか（真偽のみ。平文・ハッシュは保持しない）。
+   * 再発行・失効の運用状態を UI に出すために使う。
+   */
+  tokenRegistered?: boolean;
   createdAt: string;
   updatedAt: string;
 };

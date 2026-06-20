@@ -24,6 +24,7 @@ import {
 import { MemoryTenantStore } from './memory-repository';
 import type { TenantStore } from './repository';
 import { SiteService } from './site-service';
+import { DeviceService } from './device-service';
 
 /** 単一テナント運用の互換シード（#80 §移行・互換）。 */
 const SEED_TENANTS: Tenant[] = [
@@ -56,6 +57,10 @@ const SEED_DEVICES: Device[] = [
     siteId: asSiteId('default-site'),
     name: '受付端末1',
     status: 'active',
+    location: '1F エントランス',
+    kind: 'kiosk',
+    maintenance: false,
+    tokenRegistered: true,
     createdAt: '2026-01-01T00:00:00.000Z',
     updatedAt: '2026-01-01T00:00:00.000Z',
   },
@@ -63,6 +68,7 @@ const SEED_DEVICES: Device[] = [
 
 let store: TenantStore | undefined;
 let siteService: SiteService | undefined;
+let deviceService: DeviceService | undefined;
 
 export function getTenantStore(): TenantStore {
   if (!store) {
@@ -87,8 +93,21 @@ export function getSiteService(): SiteService {
   return siteService;
 }
 
+export function getDeviceService(): DeviceService {
+  if (!deviceService) {
+    const s = getTenantStore();
+    deviceService = new DeviceService({
+      devices: s.devices,
+      sites: s.sites,
+      appendAudit: appendAdminAudit,
+    });
+  }
+  return deviceService;
+}
+
 /** テスト用: ストア（と in-memory データ）を破棄する。 */
 export function __resetTenantStore(): void {
   store = undefined;
   siteService = undefined;
+  deviceService = undefined;
 }
