@@ -3,7 +3,9 @@ import type { AuditAction } from '@/domain/reception/log';
 
 export const dynamic = 'force-dynamic';
 
-const ACTION_LABEL: Record<AuditAction, string> = {
+// 非網羅マップ（フォールバックあり）。新しい AuditAction 追加でこの画面の編集を不要にし、
+// 並行トラックでの編集衝突を避ける。未登録のアクションは raw 文字列で表示する。
+const ACTION_LABEL: Partial<Record<AuditAction, string>> = {
   'reception.connected': '受付: 接続確定',
   'reception.answered': '受付: 担当者応答',
   'reception.timeout': '受付: 未応答',
@@ -32,6 +34,14 @@ const ACTION_LABEL: Record<AuditAction, string> = {
   'reservation.token_reissued': '来訪予約: QR再発行',
   'site.created': '拠点: 作成',
   'site.updated': '拠点: 更新',
+  'call_route.created': '呼び出しルート: 作成',
+  'call_route.updated': '呼び出しルート: 更新',
+  'call_route.deleted': '呼び出しルート: 削除',
+  'auth_config.updated': '認証設定: 更新',
+  'integration.updated': '外部連携: 更新',
+  'integration.tested': '外部連携: 接続テスト',
+  'secret.updated': 'シークレット: 更新',
+  'secret.cleared': 'シークレット: 削除',
 };
 
 /** 管理画面: 監査ログ一覧 (issue #22, #19)。受付ライフサイクルと管理操作の証跡。 */
