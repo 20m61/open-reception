@@ -72,8 +72,10 @@ export const ADMIN_NAV: readonly NavGroup[] = [
     roles: TENANT_VIEWERS,
     items: [
       { href: '/admin/receptions', label: '受付履歴' },
+      { href: '/admin/reservations', label: '来訪予約' },
       { href: '/admin/sites', label: '拠点' },
       { href: '/admin/kiosks', label: '受付端末' },
+      { href: '/admin/devices', label: '受付端末（拠点別）' },
       { href: '/admin/call-routes', label: '呼び出しルート' },
       { href: '/admin/departments', label: '部署' },
       { href: '/admin/staff', label: '担当者' },
