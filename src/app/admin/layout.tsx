@@ -1,26 +1,44 @@
+import { headers } from 'next/headers';
+import { redirect } from 'next/navigation';
 import type { TenantRole } from '@/domain/tenant/types';
+import type { Actor } from '@/domain/tenant/authorization';
 import { AdminShell } from '@/components/admin/AdminShell';
 import { ADMIN_NAV } from '@/components/admin/navigation';
+import { resolveAdminActor } from '@/lib/auth/actor';
+import { canEnterArea } from '@/components/admin/route-guard';
+import { PATHNAME_HEADER } from '@/proxy';
 
 /**
- * 管理画面レイアウト (issue #22, #24, #85)。
+ * 管理画面レイアウト (issue #22, #24, #85; 実 actor 解決 increment 1)。
  *
- * 管理画面は認証・認可必須。actor（セッション→AdminUser）の解決と route guard の
- * 厳密適用は次増分（session.ts は現状 role:'admin' のみで RoleAssignment 未連携）。
- * increment 1 では IA 反映の共通シェル（責務グループ別ナビ・現在地表示）に差し替えるに留め、
- * 既存ルート・既存ページは非破壊で維持する。
+ * 管理画面は認証・認可必須。actor（実セッション/Entra クレーム → 境界付き RoleAssignment）を
+ * 中央モジュール @/lib/auth/actor で解決し、route guard（canEnterArea）を実適用する。
+ *   - 未認証 / 非 active / テナント割り当てなし → /admin/login へリダイレクト。
+ * nav の表示は解決済み actor のロールに基づく（暫定の固定ロールは廃止）。
  *
- * route guard の雛形と適用方針は src/components/admin/route-guard.ts（canEnterArea）。
- * actor 解決が入り次第、ここで canEnterArea(actor, 'admin') を適用する想定。
+ * 最終的な認可は引き続き各 API / middleware（src/proxy.ts）で行う。本ガードは入口 UX。
  */
 
-// actor 解決が未連携のため、テナント管理者相当の表示ロールを暫定で用いる
-// （既存の「全項目表示」を IA 上で再現する。次増分で実 actor のロールに差し替え）。
-const PROVISIONAL_ROLES: readonly TenantRole[] = ['tenant_admin'];
+/** actor の割り当てから表示ロール（TenantRole[]）を導く（重複除去）。 */
+function rolesFromActor(actor: Actor): readonly TenantRole[] {
+  return [...new Set(actor.assignments.map((a) => a.role))];
+}
 
-export default function AdminLayout({ children }: { children: React.ReactNode }) {
+export default async function AdminLayout({ children }: { children: React.ReactNode }) {
+  // ログインページは認証前に表示する必要があるため、ガード・共通シェルを適用しない。
+  // （proxy.ts が PATHNAME_HEADER に現在パスを付与する。/admin/login は middleware の公開パス。）
+  const pathname = (await headers()).get(PATHNAME_HEADER) ?? '';
+  if (pathname === '/admin/login') {
+    return <>{children}</>;
+  }
+
+  const actor = await resolveAdminActor();
+  if (!actor || !canEnterArea(actor, 'admin').allowed) {
+    redirect('/admin/login');
+  }
+
   return (
-    <AdminShell area="admin" title="管理画面" nav={ADMIN_NAV} roles={PROVISIONAL_ROLES}>
+    <AdminShell area="admin" title="管理画面" nav={ADMIN_NAV} roles={rolesFromActor(actor)}>
       {children}
     </AdminShell>
   );

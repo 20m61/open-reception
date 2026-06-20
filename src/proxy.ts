@@ -35,9 +35,18 @@ function denyApiOrRedirect(req: NextRequest, isAdminApi: boolean, status: 401 | 
   return NextResponse.redirect(url);
 }
 
+/** Server Component（layout）が現在パスを参照できるよう、リクエストヘッダへ pathname を付与する。 */
+export const PATHNAME_HEADER = 'x-or-pathname';
+
+function passThrough(req: NextRequest): NextResponse {
+  const headers = new Headers(req.headers);
+  headers.set(PATHNAME_HEADER, req.nextUrl.pathname);
+  return NextResponse.next({ request: { headers } });
+}
+
 export async function proxy(req: NextRequest): Promise<NextResponse> {
   const { pathname } = req.nextUrl;
-  if (PUBLIC_PATHS.has(pathname)) return NextResponse.next();
+  if (PUBLIC_PATHS.has(pathname)) return passThrough(req);
 
   const isAdminApi = pathname.startsWith('/api/admin');
   const isAdminPage = pathname === '/admin' || pathname.startsWith('/admin/');
@@ -57,7 +66,7 @@ export async function proxy(req: NextRequest): Promise<NextResponse> {
   // --- Entra ID（OIDC JWT）でパスワード認証を置換 ---
   if (cfg.provider === 'entra' && cfg.entra) {
     // PoC/ローカルで認証を緩和する設定（本番は config 検証でエラー）。
-    if (!cfg.required) return NextResponse.next();
+    if (!cfg.required) return passThrough(req);
 
     const token = req.cookies.get(ENTRA_TOKEN_COOKIE)?.value;
     if (!token) return denyApiOrRedirect(req, isAdminApi, 401);
@@ -79,13 +88,13 @@ export async function proxy(req: NextRequest): Promise<NextResponse> {
         { status: 403 },
       );
     }
-    return NextResponse.next();
+    return passThrough(req);
   }
 
   // --- 既存のパスワードセッション（provider=none / 未実装の cognito は安全側で既存方式を維持） ---
   const token = req.cookies.get(ADMIN_COOKIE)?.value;
   const session = await verifySession(token, getAdminSecret());
-  if (session?.role === 'admin') return NextResponse.next();
+  if (session?.role === 'admin') return passThrough(req);
 
   return denyApiOrRedirect(req, isAdminApi, 401);
 }
