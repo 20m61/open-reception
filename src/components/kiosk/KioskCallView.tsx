@@ -12,7 +12,7 @@
  * 本コンポーネントの制御は call-controller / VonageCallClient（いずれも単体テスト済み）に委譲する。
  */
 import { useEffect, useRef, useState } from 'react';
-import { createCallController, type CallUiState } from '@/lib/call/call-controller';
+import { createCallController, type CallTokenResponse, type CallUiState } from '@/lib/call/call-controller';
 import { VonageCallClient } from '@/adapters/call/vonage-client';
 
 /** 応答待ちの上限（ミリ秒）。 */
@@ -41,7 +41,7 @@ export function KioskCallView({ receptionId, onConnected, onTimeout, onFallback 
     const controller = createCallController({
       fetchToken: async () => {
         const res = await fetch(`/api/kiosk/receptions/${receptionId}/token`);
-        return res.ok ? ((await res.json()) as Awaited<ReturnType<typeof res.json>>) : null;
+        return res.ok ? ((await res.json()) as CallTokenResponse) : null;
       },
       reportConnected: async () => {
         await fetch(`/api/kiosk/receptions/${receptionId}/connected`, { method: 'POST' });

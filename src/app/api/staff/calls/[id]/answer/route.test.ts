@@ -73,6 +73,15 @@ describe('POST /api/staff/calls/:id/answer', () => {
     expect((await call()).status).toBe(409);
   });
 
+  it('502 without changing state when token issuance fails', async () => {
+    getVonageSessionService.mockReturnValue({
+      issueToken: vi.fn().mockRejectedValue(new Error('jwt error')),
+    });
+    const res = await call();
+    expect(res.status).toBe(502);
+    expect(markConnected).not.toHaveBeenCalled(); // 状態を変えない
+  });
+
   it('issues a subscriber token and marks connected — never a secret', async () => {
     const res = await call();
     expect(res.status).toBe(200);

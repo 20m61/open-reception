@@ -41,7 +41,15 @@ export async function POST(
     );
   }
 
-  // calling → connected を確定（未応答状態以外は不正遷移として 409）。
+  // 先に subscriber トークンを発行する。発行失敗時は受付状態を変えない（不整合防止）。
+  let token;
+  try {
+    token = await service.issueToken({ sessionId }, 'subscriber');
+  } catch {
+    return NextResponse.json({ error: 'vonage_error', message: 'failed to issue token' }, { status: 502 });
+  }
+
+  // calling → connected を確定（未応答状態以外は不正遷移として 409。発行済みトークンは未使用で破棄）。
   const connected = await markConnected(id);
   if (!connected.ok) {
     return NextResponse.json(
@@ -50,7 +58,6 @@ export async function POST(
     );
   }
 
-  const token = await service.issueToken({ sessionId }, 'subscriber');
   return NextResponse.json({
     applicationId: publicConfig.applicationId,
     sessionId,
