@@ -1,13 +1,15 @@
 /**
- * テナント基盤ストア / SiteService の組み立て (issue #87, increment 1)。
+ * テナント基盤ストア / SiteService の組み立て (issue #87, increment 1; #80, increment 3)。
  *
- * route から使う TenantStore と SiteService を 1 つ生成して共有する。本増分の永続化は
- * in-memory（dev/test/CI）。DynamoDB シングルテーブル実装と getBackend() への接続は
- * 次増分（docs/multitenant-design.md §increment 計画 / §データ設計）。
+ * route から使う TenantStore と SiteService を 1 つ生成して共有する。
+ * inc3 で永続化を getBackend()（DATA_BACKEND=memory|dynamodb）ベースの DataBackedTenantStore へ
+ * 移行した（admin-user-store.ts の流儀）。repository interface は維持しているため、
+ * SiteService/DeviceService と既存テスト（memory backend）への影響はない。
  *
  * dev seed は単一テナント運用の互換（docs/multitenant-design.md §移行・互換）に合わせ、
  * `internal` テナント + `default-site` を初期投入し、既存 kiosk-dev に対応する Device を
- * 紐づける。Device/kiosk の統合方針は docs/site-device-management-design.md。
+ * 紐づける。seed は memory backend のみ有効（dynamodb では実データを正とし無視される）。
+ * Device/kiosk の統合方針は docs/site-device-management-design.md。
  *
  * 監査は既存の appendAdminAudit（src/lib/mock-backend/reception-log-store.ts）を使い、
  * actor=admin・PII なしで記録する。
@@ -21,7 +23,7 @@ import {
   type Site,
   type Tenant,
 } from '@/domain/tenant/types';
-import { MemoryTenantStore } from './memory-repository';
+import { DataBackedTenantStore, resetTenantCollections } from './data-repository';
 import type { TenantStore } from './repository';
 import { SiteService } from './site-service';
 import { DeviceService } from './device-service';
@@ -66,17 +68,15 @@ const SEED_DEVICES: Device[] = [
   },
 ];
 
+const SEED = { tenants: SEED_TENANTS, sites: SEED_SITES, devices: SEED_DEVICES };
+
 let store: TenantStore | undefined;
 let siteService: SiteService | undefined;
 let deviceService: DeviceService | undefined;
 
 export function getTenantStore(): TenantStore {
   if (!store) {
-    store = new MemoryTenantStore({
-      tenants: SEED_TENANTS,
-      sites: SEED_SITES,
-      devices: SEED_DEVICES,
-    });
+    store = new DataBackedTenantStore(SEED);
   }
   return store;
 }
@@ -105,8 +105,12 @@ export function getDeviceService(): DeviceService {
   return deviceService;
 }
 
-/** テスト用: ストア（と in-memory データ）を破棄する。 */
-export function __resetTenantStore(): void {
+/**
+ * テスト用: ストア（と in-memory データ）を破棄する。
+ * getBackend() の Collection は name で共有されるため、seed 状態へ明示リセットする。
+ */
+export async function __resetTenantStore(): Promise<void> {
+  await resetTenantCollections(SEED);
   store = undefined;
   siteService = undefined;
   deviceService = undefined;
