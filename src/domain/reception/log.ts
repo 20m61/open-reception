@@ -71,7 +71,13 @@ export type AuditAction =
   | 'integration.updated'
   | 'integration.tested'
   | 'secret.updated'
-  | 'secret.cleared';
+  | 'secret.cleared'
+  // 担当者応答アクション (issue #99)。応答種別は metadata.action に持つ（PII は残さない）。
+  | 'reception.staff_responded'
+  // 受付端末（Device）管理 (issue #87 inc2)。token 値そのものは記録しない。
+  | 'device.token_reissued'
+  | 'device.disabled'
+  | 'device.enabled';
 
 export type AuditLog = {
   id: string;

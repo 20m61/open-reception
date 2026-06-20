@@ -42,6 +42,10 @@ const ACTION_LABEL: Partial<Record<AuditAction, string>> = {
   'integration.tested': '外部連携: 接続テスト',
   'secret.updated': 'シークレット: 更新',
   'secret.cleared': 'シークレット: 削除',
+  'reception.staff_responded': '受付: 担当者応答アクション',
+  'device.token_reissued': '端末: トークン再発行',
+  'device.disabled': '端末: 無効化',
+  'device.enabled': '端末: 有効化',
 };
 
 /** 管理画面: 監査ログ一覧 (issue #22, #19)。受付ライフサイクルと管理操作の証跡。 */
