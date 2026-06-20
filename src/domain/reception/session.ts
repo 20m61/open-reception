@@ -3,6 +3,7 @@
  * 来訪者の個人情報は最小限に保つ（issue #14, #19）。
  */
 import type { ReceptionState } from './state';
+import type { StaffResponseResult } from './staff-response';
 
 export type ReceptionTargetType = 'staff' | 'department';
 
@@ -29,6 +30,11 @@ export type ReceptionSession = {
   failureReason?: string;
   /** Vonage 通話セッション ID（本番 adapter 利用時に紐づく。issue #4 increment 2）。 */
   vonageSessionId?: string;
+  /**
+   * 担当者の最新応答（来訪者向け）。受付端末が短時間ポーリングで反映する (issue #99)。
+   * PII を含めない（応答種別・来訪者向けメッセージ・時刻のみ）。
+   */
+  staffResponse?: StaffResponseResult;
   startedAt: string;
   updatedAt: string;
   completedAt?: string;

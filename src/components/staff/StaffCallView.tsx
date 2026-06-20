@@ -12,6 +12,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { VonageCallClient } from '@/adapters/call/vonage-client';
 import type { CallTokenResponse } from '@/lib/call/call-controller';
+import { StaffResponseActions } from './StaffResponseActions';
 
 type StaffCallState = 'connecting' | 'connected' | 'error';
 
@@ -71,6 +72,8 @@ export function StaffCallView({ receptionId, token }: StaffCallViewProps): React
         {state === 'connected' && '通話中です。'}
         {state === 'error' && '通話に接続できませんでした。リンクの有効期限切れ、または別の端末で応答済みの可能性があります。'}
       </p>
+      {/* 通話に参加できなくても応答アクションは選べる（fallback-first）(issue #99)。 */}
+      <StaffResponseActions receptionId={receptionId} token={token} />
     </div>
   );
 }
