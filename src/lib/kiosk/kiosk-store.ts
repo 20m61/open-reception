@@ -1,8 +1,9 @@
 /**
- * 受付端末レジストリの in-memory ストア (issue #18)。
- * 端末登録・失効・設定取得を扱う。本番では永続化層へ置換する。
+ * 受付端末レジストリのストア (issue #18)。端末登録・失効・設定取得を扱う。
+ * 永続化は data backend（memory / dynamodb）に委譲する (docs/persistence-design.md)。
  */
 import type { Kiosk, KioskConfig } from '@/domain/kiosk/types';
+import { getBackend } from '@/lib/data';
 
 export type StoreError = { code: 'not_found' | 'invalid_input'; message: string };
 export type Result<T> = { ok: true; value: T } | { ok: false; error: StoreError };
@@ -11,22 +12,23 @@ const SEED: Kiosk[] = [
   { id: 'kiosk-dev', displayName: '受付端末1', location: '本社1Fエントランス', enabled: true },
 ];
 
-let kiosks: Kiosk[] = SEED.map((k) => ({ ...k }));
+const kiosks = () =>
+  getBackend().collection<Kiosk>('kiosk', { seed: () => SEED.map((k) => ({ ...k })) });
 
 function err(code: StoreError['code'], message: string): Result<never> {
   return { ok: false, error: { code, message } };
 }
 
-export function listKiosks(): Kiosk[] {
-  return [...kiosks];
+export async function listKiosks(): Promise<Kiosk[]> {
+  return kiosks().list();
 }
 
-export function getKiosk(id: string): Result<Kiosk> {
-  const found = kiosks.find((k) => k.id === id);
+export async function getKiosk(id: string): Promise<Result<Kiosk>> {
+  const found = await kiosks().get(id);
   return found ? { ok: true, value: found } : err('not_found', 'kiosk not found');
 }
 
-export function createKiosk(input: unknown): Result<Kiosk> {
+export async function createKiosk(input: unknown): Promise<Result<Kiosk>> {
   if (typeof input !== 'object' || input === null) return err('invalid_input', 'body must be an object');
   const o = input as Record<string, unknown>;
   if (typeof o.displayName !== 'string' || o.displayName.trim() === '')
@@ -37,20 +39,21 @@ export function createKiosk(input: unknown): Result<Kiosk> {
     location: typeof o.location === 'string' && o.location.trim() !== '' ? o.location.trim() : undefined,
     enabled: true,
   };
-  kiosks.push(kiosk);
+  await kiosks().put(kiosk);
   return { ok: true, value: kiosk };
 }
 
-export function setKioskEnabled(id: string, enabled: boolean): Result<Kiosk> {
-  const found = kiosks.find((k) => k.id === id);
+export async function setKioskEnabled(id: string, enabled: boolean): Promise<Result<Kiosk>> {
+  const found = await kiosks().get(id);
   if (!found) return err('not_found', 'kiosk not found');
   found.enabled = enabled;
+  await kiosks().put(found);
   return { ok: true, value: found };
 }
 
 /** 受付端末向けの設定を返す。未登録・失効端末は active=false。 */
-export function getKioskConfig(id: string): KioskConfig {
-  const found = kiosks.find((k) => k.id === id);
+export async function getKioskConfig(id: string): Promise<KioskConfig> {
+  const found = await kiosks().get(id);
   if (!found || !found.enabled) {
     return { kioskId: id, active: false };
   }
@@ -58,6 +61,6 @@ export function getKioskConfig(id: string): KioskConfig {
 }
 
 /** テスト用: ストアを seed 状態に戻す。 */
-export function __resetKiosks(): void {
-  kiosks = SEED.map((k) => ({ ...k }));
+export async function __resetKiosks(): Promise<void> {
+  await kiosks().reset();
 }

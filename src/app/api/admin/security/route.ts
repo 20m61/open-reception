@@ -10,8 +10,8 @@ import { appendAdminAudit } from '@/lib/mock-backend/reception-log-store';
  *
  * NOTE: 認証・認可は middleware（#24）で付与済み。
  */
-export function GET(): NextResponse {
-  const s = getSecuritySettings();
+export async function GET(): Promise<NextResponse> {
+  const s = await getSecuritySettings();
   return NextResponse.json({
     pinRequired: s.pinRequired,
     ipAllowlist: s.ipAllowlist,
@@ -21,8 +21,8 @@ export function GET(): NextResponse {
 }
 
 export async function PUT(request: Request): Promise<NextResponse> {
-  const updated = updateSecuritySettings(await readJson(request));
-  appendAdminAudit('security.updated', { type: 'security' }, {
+  const updated = await updateSecuritySettings(await readJson(request));
+  await appendAdminAudit('security.updated', { type: 'security' }, {
     pinRequired: String(updated.pinRequired),
     emergencyStop: String(updated.emergencyStop),
   });

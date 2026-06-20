@@ -1,33 +1,42 @@
 /**
- * 音声設定の in-memory ストア (issue #28)。既定では TTS/STT とも無効（テキスト主導）。
+ * 音声設定のストア (issue #28)。既定では TTS/STT とも無効（テキスト主導）。
+ * 永続化は data backend（memory / dynamodb）に委譲する (docs/persistence-design.md)。
  */
 import { clampRate, clampVolume, type VoiceProvider, type VoiceSettings } from '@/domain/voice/types';
+import { getBackend } from '@/lib/data';
 
-const DEFAULTS: VoiceSettings = {
-  ttsEnabled: false,
-  sttEnabled: false,
-  ttsProvider: 'browser',
-  sttProvider: 'browser',
-  voiceId: '',
-  rate: 1,
-  volume: 1,
-  language: 'ja-JP',
-  guidanceIdle: 'ようこそ。画面にタッチして受付を開始してください。',
-  guidanceConfirm: '内容をご確認のうえ、呼び出しを開始してください。',
-  fallbackText: '音声がご利用いただけない場合も、画面の案内に沿って受付できます。',
-};
+function defaults(): VoiceSettings {
+  return {
+    ttsEnabled: false,
+    sttEnabled: false,
+    ttsProvider: 'browser',
+    sttProvider: 'browser',
+    voiceId: '',
+    rate: 1,
+    volume: 1,
+    language: 'ja-JP',
+    guidanceIdle: 'ようこそ。画面にタッチして受付を開始してください。',
+    guidanceConfirm: '内容をご確認のうえ、呼び出しを開始してください。',
+    fallbackText: '音声がご利用いただけない場合も、画面の案内に沿って受付できます。',
+  };
+}
 
-let settings: VoiceSettings = { ...DEFAULTS };
+const voice = () => getBackend().singleton<VoiceSettings>('voice', { default: defaults });
 
-export function getVoiceSettings(): VoiceSettings {
-  return { ...settings };
+async function current(): Promise<VoiceSettings> {
+  return (await voice().get()) ?? defaults();
+}
+
+export async function getVoiceSettings(): Promise<VoiceSettings> {
+  return { ...(await current()) };
 }
 
 function asProvider(value: unknown, fallback: VoiceProvider): VoiceProvider {
   return value === 'browser' || value === 'none' ? value : fallback;
 }
 
-export function updateVoiceSettings(patch: unknown): VoiceSettings {
+export async function updateVoiceSettings(patch: unknown): Promise<VoiceSettings> {
+  const settings = await current();
   if (typeof patch === 'object' && patch !== null) {
     const o = patch as Record<string, unknown>;
     if (typeof o.ttsEnabled === 'boolean') settings.ttsEnabled = o.ttsEnabled;
@@ -42,10 +51,11 @@ export function updateVoiceSettings(patch: unknown): VoiceSettings {
     if (typeof o.guidanceConfirm === 'string') settings.guidanceConfirm = o.guidanceConfirm;
     if (typeof o.fallbackText === 'string') settings.fallbackText = o.fallbackText;
   }
-  return getVoiceSettings();
+  await voice().put(settings);
+  return { ...settings };
 }
 
 /** テスト用: 既定へ戻す。 */
-export function __resetVoice(): void {
-  settings = { ...DEFAULTS };
+export async function __resetVoice(): Promise<void> {
+  await voice().reset();
 }

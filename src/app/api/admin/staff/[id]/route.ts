@@ -11,7 +11,7 @@ export async function PATCH(
   { params }: { params: Promise<{ id: string }> },
 ): Promise<NextResponse> {
   const { id } = await params;
-  const result = updateStaff(id, await readJson(request));
-  if (result.ok) appendAdminAudit('staff.updated', { type: 'staff', id });
+  const result = await updateStaff(id, await readJson(request));
+  if (result.ok) await appendAdminAudit('staff.updated', { type: 'staff', id });
   return resultResponse(result);
 }

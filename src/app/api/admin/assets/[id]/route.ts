@@ -15,13 +15,13 @@ export async function PATCH(
   const body = (await readJson(request)) as { enabled?: unknown; active?: unknown } | null;
 
   if (body && typeof body.enabled === 'boolean') {
-    const r = setAssetEnabled(id, body.enabled);
-    if (r.ok) appendAdminAudit('asset.updated', { type: 'asset', id }, { enabled: String(body.enabled) });
+    const r = await setAssetEnabled(id, body.enabled);
+    if (r.ok) await appendAdminAudit('asset.updated', { type: 'asset', id }, { enabled: String(body.enabled) });
     return resultResponse(r);
   }
   if (body && body.active === true) {
-    const r = setActiveAsset(id);
-    if (r.ok) appendAdminAudit('asset.updated', { type: 'asset', id }, { active: 'true' });
+    const r = await setActiveAsset(id);
+    if (r.ok) await appendAdminAudit('asset.updated', { type: 'asset', id }, { active: 'true' });
     return resultResponse(r);
   }
   return NextResponse.json({ error: 'invalid_input', message: 'enabled or active required' }, { status: 400 });

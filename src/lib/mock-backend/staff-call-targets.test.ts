@@ -2,8 +2,8 @@ import { beforeEach, describe, expect, it } from 'vitest';
 import { __resetDirectory, getStaff, updateStaff } from './directory-store';
 import { normalizeCallTargets } from '@/domain/staff/types';
 
-beforeEach(() => {
-  __resetDirectory();
+beforeEach(async () => {
+  await __resetDirectory();
 });
 
 describe('normalizeCallTargets (#26)', () => {
@@ -23,28 +23,28 @@ describe('normalizeCallTargets (#26)', () => {
 });
 
 describe('updateStaff call targets / fallback (#26)', () => {
-  it('呼び出し先を設定し優先順位を採番する', () => {
-    updateStaff('staff-suzuki', {
+  it('呼び出し先を設定し優先順位を採番する', async () => {
+    await updateStaff('staff-suzuki', {
       callTargets: [
         { type: 'phone', value: '03-0000-0000' },
         { type: 'slack', value: '#hanako' },
       ],
     });
-    const s = getStaff('staff-suzuki');
+    const s = await getStaff('staff-suzuki');
     if (!s.ok) throw new Error('not found');
     expect(s.value.callTargets.map((t) => t.priority)).toEqual([0, 1]);
   });
 
-  it('DnD 並び替え（配列順）を反映する', () => {
-    updateStaff('staff-suzuki', { callTargets: [{ type: 'email', value: 'b' }, { type: 'phone', value: 'a' }] });
-    updateStaff('staff-suzuki', { callTargets: [{ type: 'phone', value: 'a' }, { type: 'email', value: 'b' }] });
-    const s = getStaff('staff-suzuki');
+  it('DnD 並び替え（配列順）を反映する', async () => {
+    await updateStaff('staff-suzuki', { callTargets: [{ type: 'email', value: 'b' }, { type: 'phone', value: 'a' }] });
+    await updateStaff('staff-suzuki', { callTargets: [{ type: 'phone', value: 'a' }, { type: 'email', value: 'b' }] });
+    const s = await getStaff('staff-suzuki');
     if (s.ok) expect(s.value.callTargets[0]?.type).toBe('phone');
   });
 
-  it('代替担当者は存在する他担当者のみ受け付ける（自分・不明は除外）', () => {
-    updateStaff('staff-sato', { fallbackStaffIds: ['staff-tanaka', 'staff-sato', 'unknown'] });
-    const s = getStaff('staff-sato');
+  it('代替担当者は存在する他担当者のみ受け付ける（自分・不明は除外）', async () => {
+    await updateStaff('staff-sato', { fallbackStaffIds: ['staff-tanaka', 'staff-sato', 'unknown'] });
+    const s = await getStaff('staff-sato');
     if (s.ok) expect(s.value.fallbackStaffIds).toEqual(['staff-tanaka']);
   });
 });

@@ -10,14 +10,14 @@ import { readJson } from '@/lib/mock-backend/result-http';
  */
 export async function POST(request: Request): Promise<NextResponse> {
   const body = (await readJson(request)) as { pin?: unknown; kioskId?: unknown } | null;
-  const settings = getSecuritySettings();
+  const settings = await getSecuritySettings();
   const clientIp = (request.headers.get('x-forwarded-for') ?? '').split(',')[0]?.trim() ?? '';
 
   if (!isIpAllowed(clientIp, settings.ipAllowlist)) {
     return NextResponse.json({ error: 'forbidden', message: 'ip not allowed' }, { status: 403 });
   }
   const pin = typeof body?.pin === 'string' ? body.pin : '';
-  if (!verifyPin(pin)) {
+  if (!(await verifyPin(pin))) {
     return NextResponse.json({ error: 'unauthorized', message: 'invalid pin' }, { status: 401 });
   }
 

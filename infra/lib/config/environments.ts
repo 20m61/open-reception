@@ -34,12 +34,20 @@ export interface NotificationConfig {
   alarmEmail: string;
 }
 
+export interface DataConfig {
+  /** DynamoDB の Point-in-Time Recovery を有効化するか。 */
+  pointInTimeRecovery: boolean;
+  /** 誤削除防止（DeletionProtection）を有効化するか。 */
+  removalProtection: boolean;
+}
+
 export interface EnvConfig {
   environment: EnvironmentName;
   /** リソース名 prefix。 */
   prefix: string;
   web: WebConfig;
   notification: NotificationConfig;
+  data: DataConfig;
   /** コスト管理タグ (docs/cost-management-tags.md)。 */
   tags: {
     Project: string;
@@ -77,6 +85,7 @@ export const ENVIRONMENTS: Record<EnvironmentName, EnvConfig> = {
       pollyEnabled: false,
       alarmEmail: '',
     },
+    data: { pointInTimeRecovery: false, removalProtection: false },
     tags: { ...BASE_TAGS, Environment: 'dev' },
   },
   staging: {
@@ -97,6 +106,7 @@ export const ENVIRONMENTS: Record<EnvironmentName, EnvConfig> = {
       pollyEnabled: true,
       alarmEmail: '',
     },
+    data: { pointInTimeRecovery: true, removalProtection: false },
     tags: { ...BASE_TAGS, Environment: 'staging' },
   },
   prod: {
@@ -117,6 +127,7 @@ export const ENVIRONMENTS: Record<EnvironmentName, EnvConfig> = {
       pollyEnabled: true,
       alarmEmail: '',
     },
+    data: { pointInTimeRecovery: true, removalProtection: true },
     tags: { ...BASE_TAGS, Environment: 'prod' },
   },
 };

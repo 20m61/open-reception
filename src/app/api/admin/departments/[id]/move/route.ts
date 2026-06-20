@@ -17,7 +17,7 @@ export async function POST(
   if (direction !== 'up' && direction !== 'down') {
     return NextResponse.json({ error: 'invalid_input', message: 'direction must be up or down' }, { status: 400 });
   }
-  const result = moveDepartment(id, direction);
-  if (result.ok) appendAdminAudit('department.reordered', { type: 'department', id }, { direction });
+  const result = await moveDepartment(id, direction);
+  if (result.ok) await appendAdminAudit('department.reordered', { type: 'department', id }, { direction });
   return resultResponse(result);
 }

@@ -10,5 +10,5 @@ export async function POST(
   { params }: { params: Promise<{ id: string }> },
 ): Promise<NextResponse> {
   const { id } = await params;
-  return toResponse(cancelReception(id));
+  return toResponse(await cancelReception(id));
 }
