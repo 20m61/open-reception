@@ -118,6 +118,14 @@ class MemoryAdminUserRepository implements AdminUserRepository {
     return u ? clone(u) : undefined;
   }
 
+  async findBySubject(subject: string): Promise<AdminUser | undefined> {
+    if (!subject) return undefined;
+    for (const u of this.users.values()) {
+      if (u.entraSubject && u.entraSubject === subject) return clone(u);
+    }
+    return undefined;
+  }
+
   async findByEmail(email: string): Promise<AdminUser | undefined> {
     const needle = email.trim().toLowerCase();
     for (const u of this.users.values()) {

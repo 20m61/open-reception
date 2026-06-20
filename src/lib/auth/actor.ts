@@ -24,9 +24,11 @@ import type { Actor } from '@/domain/tenant/authorization';
 import {
   asSiteId,
   asTenantId,
+  type AdminUser,
   type RoleAssignment,
   type TenantRole,
 } from '@/domain/tenant/types';
+import { getAdminUserRepository } from '@/lib/tenant/admin-user-store';
 import { ADMIN_COOKIE, ENTRA_TOKEN_COOKIE, getAdminSecret } from '@/lib/auth/admin';
 import { getAdminAuthConfig } from '@/lib/auth/admin-auth-config';
 import { createJwksResolver, verifyEntraToken, type EntraClaims } from '@/lib/auth/entra';
@@ -46,6 +48,13 @@ export type ActorConfig = {
   passwordRole: TenantRole;
   /** developer を付与するメール allowlist（小文字化済み集合）。空なら誰にも付与しない。 */
   developerEmails: Set<string>;
+  /**
+   * AdminUser ストアに登録の無い Entra ユーザーの扱い（最小権限が既定）:
+   *   - 'deny'（既定）: 割り当てを解決できないため拒否（Actor=null）。真のテナント分離。
+   *   - 'env_roles':    従来どおり env 既定テナント境界 + Entra roles claim から Actor を作る
+   *                     （後方互換。単一テナント運用や移行期向け）。
+   */
+  entraUnregistered: 'deny' | 'env_roles';
 };
 
 /**
@@ -127,6 +136,32 @@ export function buildActorFromEntraRoles(
 }
 
 /**
+ * 永続化された AdminUser から Actor を構築する（実データによるテナント境界の解決）。
+ *   - AdminUser.assignments をそのまま正とする（env 既定テナントへ束ねない）。
+ *   - status!=='active'（suspended）は拒否=null。
+ *   - developer は AdminUser に明示割り当てがある場合に加え、email が allowlist にある
+ *     場合も付与する（buildActorFromEntraRoles と一貫した最小権限ポリシー）。
+ *   - 有効な割り当てが 1 件も無ければ null。
+ *
+ * 純関数（I/O は呼び出し側の resolveActorFromStore が担う）。
+ */
+export function buildActorFromAdminUser(
+  user: Pick<AdminUser, 'assignments' | 'status' | 'email'>,
+  config: ActorConfig,
+): Actor | null {
+  if (user.status !== 'active') return null;
+  const assignments: RoleAssignment[] = [...user.assignments];
+
+  const hasDeveloper = assignments.some((a) => a.role === 'developer');
+  if (!hasDeveloper && isDeveloperEmail(user.email, config)) {
+    assignments.push({ role: 'developer', tenantId: null, siteId: null, deviceId: null });
+  }
+
+  if (assignments.length === 0) return null;
+  return { status: 'active', assignments };
+}
+
+/**
  * password セッション（共有パスワード）から Actor を構築する。
  *   - 既定で config.passwordRole（既定 tenant_admin）を 1 件付与する。
  *   - developer を許すのは OPEN_RECEPTION_ADMIN_PASSWORD_ROLE=developer の明示時のみ。
@@ -170,11 +205,15 @@ export function buildActorConfig(env: Record<string, string | undefined> = proce
     rawPasswordRole && VALID_TENANT_ROLES.has(rawPasswordRole)
       ? (rawPasswordRole as TenantRole)
       : 'tenant_admin';
+  // 未登録 Entra ユーザーの扱い。既定は最小権限（拒否）。明示時のみ env roles フォールバック。
+  const entraUnregistered =
+    env.OPEN_RECEPTION_ENTRA_UNREGISTERED === 'env_roles' ? 'env_roles' : 'deny';
   return {
     defaultTenantId: env.OPEN_RECEPTION_DEFAULT_TENANT_ID ?? 'default',
     defaultSiteId: env.OPEN_RECEPTION_DEFAULT_SITE_ID,
     passwordRole,
     developerEmails: parseEmails(env.OPEN_RECEPTION_PLATFORM_DEVELOPER_EMAILS),
+    entraUnregistered,
   };
 }
 
@@ -193,10 +232,39 @@ export async function hasValidAdminSession(): Promise<boolean> {
 }
 
 /**
+ * Entra ユーザーを AdminUser ストアから解決し、実 assignments で Actor を組み立てる
+ * （キーストン: 実データによるテナント分離）。
+ *   1. subject（oid/sub）で AdminUser を引く（正キー）。無ければ email で補助解決。
+ *   2. 見つかれば buildActorFromAdminUser（実 assignments + developer allowlist）。
+ *   3. 未登録なら config.entraUnregistered に従う:
+ *        - 'deny'（既定）: null を返す（最小権限 / 真のテナント分離）。
+ *        - 'env_roles':    buildActorFromEntraRoles（env 既定境界 + roles claim）で後方互換。
+ *
+ * 非純粋ラッパ（ストア I/O は getAdminUserRepository が担い、判定は純関数に委譲）。
+ */
+export async function resolveActorFromStore(
+  identity: { subject: string; email?: string; rolesClaim?: unknown },
+  config: ActorConfig,
+  repo = getAdminUserRepository(),
+): Promise<Actor | null> {
+  let user = identity.subject ? await repo.findBySubject(identity.subject) : undefined;
+  if (!user && identity.email) user = await repo.findByEmail(identity.email);
+
+  if (user) return buildActorFromAdminUser(user, config);
+
+  // 未登録ユーザー: 既定は最小権限で拒否。明示設定時のみ env roles フォールバック。
+  if (config.entraUnregistered === 'env_roles') {
+    return buildActorFromEntraRoles(identity.rolesClaim, config, { email: identity.email });
+  }
+  return null;
+}
+
+/**
  * 認可主体（Actor）を実セッション / Entra クレームから解決する。
  *   1. password セッション（verifySession で role==='admin'）→ buildActorFromPasswordSession。
- *   2. Entra トークン cookie があれば verifyEntraToken（JWKS 署名検証）を通し、
- *      roles claim から buildActorFromEntraRoles。
+ *   2. Entra トークン cookie があれば verifyEntraToken（JWKS 署名検証）を通し、検証済み
+ *      subject/email で AdminUser ストアの実 assignments を解決（resolveActorFromStore）。
+ *      未登録は config.entraUnregistered（既定 deny）に従う。
  *   いずれも無効なら null（route 側で 401）。
  *
  * Entra と password の両方が存在する場合は password を優先する（明示ログイン）。
@@ -226,7 +294,9 @@ export async function resolveAdminActor(): Promise<Actor | null> {
   });
   if (!result.ok) return null;
 
-  return buildActorFromEntraRoles(result.claims.roles, config, {
-    email: result.email,
-  });
+  // 検証済み subject/email で実 AdminUser を解決する（env 既定テナントへ束ねない）。
+  return resolveActorFromStore(
+    { subject: result.subject, email: result.email, rolesClaim: result.claims.roles },
+    config,
+  );
 }

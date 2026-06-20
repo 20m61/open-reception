@@ -90,18 +90,48 @@ middleware（`src/proxy.ts`, Next 16 では旧 middleware）は引き続き `/ad
 - **Entra トークン検証**: `resolveAdminActor` は middleware (`src/proxy.ts`) と同じ
   `verifyEntraToken`（RS256 / JWKS 署名・issuer・audience・exp/nbf）を通してから claim を信頼する。
   トークンを未検証のまま actor 解決に使わない。JWKS は 10 分キャッシュ（`createJwksResolver`）。
-- **テナント/サイト境界は env 由来の単一既定**: 実 `AdminUser` ストア（Entra subject →
-  AdminUser / `assignments` 永続化）が未実装のため、現状はすべての管理ユーザーが
-  `OPEN_RECEPTION_DEFAULT_TENANT_ID` 配下に束ねられる。**真のマルチテナント分離は次増分で
-  AdminUser ストアを入れるまで成立しない**。本増分の目的は「ロール境界（read/write・
-  platform/admin・developer 非自動付与）を実際に効かせる」ことにある。
+- **テナント/サイト境界**: ~~env 由来の単一既定~~ → **#80 increment 2 で実 `AdminUser`
+  ストアを導入し解消済み**。Entra ログインは検証済み subject（`oid`/`sub`）→ AdminUser を
+  `getBackend()`（memory/dynamodb）から解決し、当該ユーザーの**実 `assignments`**で
+  テナント/サイト境界を決める（env 既定テナントへ束ねない）。詳細は下記「increment 2」。
 - **password セッションは email を持たない**ため、Entra のような per-user allowlist を適用できず
   `OPEN_RECEPTION_ADMIN_PASSWORD_ROLE` 一律で制御する（共有パスワードは PoC / 単一テナント想定）。
 
+## increment 2（#80）: 実 AdminUser ストアによるテナント分離 — 実装済み
+
+実 `AdminUser` ストアを `src/lib/tenant/admin-user-store.ts` に追加し、`getBackend()`
+（`DATA_BACKEND=memory|dynamodb`、既存業務データと同じ流儀）で永続化する。コレクション名は
+`admin_user`。
+
+- **解決キー**: `findBySubject(subject)`（Entra `oid`/`sub`、認証連携の正キー）→ 無ければ
+  `findByEmail(email)`（補助）。AdminUser は小規模のため `list()` 走査（LogStore.findBy の
+  パーティション走査フォールバックと同じ扱い。GSI 化は将来増分）。
+- **型拡張**: `AdminUser.entraSubject?`（`oid` 優先）を追加。email 変更に追従できるよう email と
+  独立に保持。`AdminUserRepository` に `findBySubject` を追加（memory 実装も対応）。
+- **actor 解決**: `resolveAdminActor` の Entra 経路を、検証済み `subject`/`email` で
+  `resolveActorFromStore` → `buildActorFromAdminUser`（**実 `assignments` を正**、env 既定
+  テナントへ束ねない）に変更。純関数 `buildActorFrom*` は不変、ストア解決は薄い async ラッパ。
+- **password セッションは従来どおり** env 設定（`buildActorFromPasswordSession`）。理由: 共有
+  パスワードは email/subject を持たず per-user 解決ができないため（PoC / 単一テナント想定）。
+- **Entra 未登録ユーザーの扱い**（最小権限が既定）: `OPEN_RECEPTION_ENTRA_UNREGISTERED`
+  - `deny`（既定）: 解決できず `Actor=null`（401/リダイレクト）。真のテナント分離。
+  - `env_roles`: 従来の env 既定境界 + roles claim フォールバック（移行期 / 単一テナント向け）。
+- **プロビジョニング**: seed（`OPEN_RECEPTION_ADMIN_SEED_SUBJECT` / `..._EMAIL`）で `internal`
+  テナントの tenant_admin を投入。本番は seed 非適用、`putAdminUser` で登録（管理 UI は #82/#90）。
+- **PII 最小化**: `email` は表示・補助解決のみ。不要な PII は保存しない。
+
+### 設定 env（increment 2 追加分）
+
+| env | 既定 | 説明 |
+| --- | --- | --- |
+| `OPEN_RECEPTION_ENTRA_UNREGISTERED` | `deny` | 未登録 Entra ユーザーの扱い（`deny`=拒否 / `env_roles`=後方互換） |
+| `OPEN_RECEPTION_ADMIN_SEED_SUBJECT` | （空） | dev seed の AdminUser に紐づける Entra subject（memory のみ） |
+| `OPEN_RECEPTION_ADMIN_SEED_EMAIL` | `admin@internal.local` | dev seed の AdminUser email（memory のみ） |
+
 ## 次増分
 
-1. 実 `AdminUser` ストア（DynamoDB）: Entra subject → AdminUser / `assignments` を永続化し、
-   env 既定ではなく実データでテナント/サイト境界を解決する。
+1. `Tenant`/`Site`/`Device` の `getBackend()` 永続化（現状は `MemoryTenantStore`。#80 inc3）。
 2. `TenantSwitcher` UI（developer / 複数テナント所属者の明示テナント選択）。
 3. 各画面・各 route への細粒度認可（`canAccessTenant` / `canAccessSite` の per-screen 適用）。
 4. Entra claim からの siteId / tenantId 取り出し（App Role に加えた group / カスタム claim 連携）。
+5. AdminUser 管理 UI（#82/#90）と、subject/email の GSI 解決（規模拡大時）。

@@ -2,18 +2,23 @@ import { describe, expect, it } from 'vitest';
 import {
   adminRoleToTenantRole,
   buildActorConfig,
+  buildActorFromAdminUser,
   buildActorFromEntraRoles,
   buildActorFromPasswordSession,
   buildAssignment,
+  resolveActorFromStore,
   type ActorConfig,
 } from './actor';
 import { canEnterArea } from '@/components/admin/route-guard';
+import { asAdminUserId, asTenantId, type AdminUser } from '@/domain/tenant/types';
+import type { AdminUserRepository } from '@/lib/tenant/repository';
 
 const baseConfig: ActorConfig = {
   defaultTenantId: 'default',
   defaultSiteId: undefined,
   passwordRole: 'tenant_admin',
   developerEmails: new Set<string>(),
+  entraUnregistered: 'deny',
 };
 
 const withSite: ActorConfig = { ...baseConfig, defaultSiteId: 'site-1' };
@@ -177,5 +182,127 @@ describe('canEnterArea × 解決済み actor の組み合わせ', () => {
   it('null actor（未認証）はどのエリアにも入れない', () => {
     expect(canEnterArea(null, 'admin').allowed).toBe(false);
     expect(canEnterArea(null, 'platform').allowed).toBe(false);
+  });
+});
+
+/* ===================== AdminUser ストアによる実 actor 解決（increment 2） ===================== */
+
+const now = '2026-06-20T00:00:00.000Z';
+
+function adminUser(over: Partial<AdminUser> = {}): AdminUser {
+  return {
+    id: asAdminUserId('u1'),
+    entraSubject: 'oid-1',
+    email: 'user@acme.com',
+    displayName: 'User',
+    assignments: [{ role: 'tenant_admin', tenantId: asTenantId('acme'), siteId: null, deviceId: null }],
+    status: 'active',
+    createdAt: now,
+    updatedAt: now,
+    ...over,
+  };
+}
+
+describe('buildActorFromAdminUser', () => {
+  it('実 assignments をそのまま正とする（env 既定テナントへ束ねない）', () => {
+    const actor = buildActorFromAdminUser(adminUser(), baseConfig);
+    expect(actor?.assignments).toEqual([
+      { role: 'tenant_admin', tenantId: 'acme', siteId: null, deviceId: null },
+    ]);
+  });
+
+  it('suspended ユーザーは拒否（null）', () => {
+    expect(buildActorFromAdminUser(adminUser({ status: 'suspended' }), baseConfig)).toBeNull();
+  });
+
+  it('assignments が空なら null', () => {
+    expect(buildActorFromAdminUser(adminUser({ assignments: [] }), baseConfig)).toBeNull();
+  });
+
+  it('email が developer allowlist にあれば developer を追加付与', () => {
+    const cfg: ActorConfig = { ...baseConfig, developerEmails: new Set(['dev@acme.com']) };
+    const actor = buildActorFromAdminUser(adminUser({ email: 'DEV@acme.com' }), cfg);
+    expect(actor?.assignments.some((a) => a.role === 'developer')).toBe(true);
+    expect(actor?.assignments.some((a) => a.role === 'tenant_admin')).toBe(true);
+  });
+});
+
+/** subject/email で 1 件返すだけの最小 fake リポジトリ。 */
+function fakeRepo(users: AdminUser[]): AdminUserRepository {
+  return {
+    async getAdminUser(id) {
+      return users.find((u) => u.id === id);
+    },
+    async findBySubject(subject) {
+      return subject ? users.find((u) => u.entraSubject === subject) : undefined;
+    },
+    async findByEmail(email) {
+      const n = email.trim().toLowerCase();
+      return n ? users.find((u) => u.email.toLowerCase() === n) : undefined;
+    },
+    async putAdminUser() {},
+  };
+}
+
+describe('resolveActorFromStore', () => {
+  it('subject で実 AdminUser を解決し実 assignments で actor を作る', async () => {
+    const repo = fakeRepo([adminUser({ entraSubject: 'oid-99' })]);
+    const actor = await resolveActorFromStore({ subject: 'oid-99' }, baseConfig, repo);
+    expect(actor?.assignments).toEqual([
+      { role: 'tenant_admin', tenantId: 'acme', siteId: null, deviceId: null },
+    ]);
+  });
+
+  it('subject で引けない場合は email で補助解決する', async () => {
+    const repo = fakeRepo([adminUser({ entraSubject: 'oid-other', email: 'who@acme.com' })]);
+    const actor = await resolveActorFromStore(
+      { subject: 'unknown', email: 'who@acme.com' },
+      baseConfig,
+      repo,
+    );
+    expect(actor?.assignments[0]?.tenantId).toBe('acme');
+  });
+
+  it('未登録ユーザーは既定（deny）で null＝最小権限', async () => {
+    const repo = fakeRepo([]);
+    const actor = await resolveActorFromStore(
+      { subject: 'nobody', email: 'nobody@x.com', rolesClaim: ['OpenReception.Admin'] },
+      baseConfig,
+      repo,
+    );
+    expect(actor).toBeNull();
+  });
+
+  it('entraUnregistered=env_roles なら未登録でも env 既定境界で actor を作る（後方互換）', async () => {
+    const repo = fakeRepo([]);
+    const cfg: ActorConfig = { ...baseConfig, entraUnregistered: 'env_roles' };
+    const actor = await resolveActorFromStore(
+      { subject: 'nobody', email: 'nobody@x.com', rolesClaim: ['OpenReception.Admin'] },
+      cfg,
+      repo,
+    );
+    expect(actor?.assignments).toEqual([
+      { role: 'tenant_admin', tenantId: 'default', siteId: null, deviceId: null },
+    ]);
+  });
+
+  it('suspended な登録ユーザーは拒否（null）', async () => {
+    const repo = fakeRepo([adminUser({ entraSubject: 'oid-sus', status: 'suspended' })]);
+    const actor = await resolveActorFromStore({ subject: 'oid-sus' }, baseConfig, repo);
+    expect(actor).toBeNull();
+  });
+});
+
+describe('buildActorConfig entraUnregistered', () => {
+  it('既定は deny（最小権限）', () => {
+    expect(buildActorConfig({}).entraUnregistered).toBe('deny');
+  });
+  it('env_roles を明示した時のみ後方互換モード', () => {
+    expect(buildActorConfig({ OPEN_RECEPTION_ENTRA_UNREGISTERED: 'env_roles' }).entraUnregistered).toBe(
+      'env_roles',
+    );
+    expect(buildActorConfig({ OPEN_RECEPTION_ENTRA_UNREGISTERED: 'bogus' }).entraUnregistered).toBe(
+      'deny',
+    );
   });
 });
