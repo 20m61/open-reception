@@ -15,7 +15,7 @@ import { transition, type ReceptionEvent } from '@/domain/reception/state';
 import { getCallAdapter } from '@/lib/call/adapter-factory';
 import { getBackend } from '@/lib/data';
 import { listStaff } from './directory-store';
-import type { CallResult } from '@/adapters/call/types';
+import type { CallAdapter, CallResult } from '@/adapters/call/types';
 import {
   markFallbackUsed,
   recordReceptionCompleted,
@@ -135,8 +135,13 @@ async function applyEvent(
   return { ok: true, value: updated };
 }
 
-/** 呼び出しを開始し、mock adapter の結果でセッション状態を確定する。 */
-export async function startCall(id: string): Promise<StoreResult<ReceptionSession>> {
+/**
+ * 呼び出しを開始する。
+ * 同期 adapter（Mock）は結果でセッション状態を確定する。
+ * 非同期 adapter（Vonage）は calling のまま sessionId を紐づけ、応答は後続イベントで確定する。
+ * adapter はテスト用に注入可能（既定は env に応じた getCallAdapter）。
+ */
+export async function startCall(id: string, adapter?: CallAdapter): Promise<StoreResult<ReceptionSession>> {
   const found = await getReception(id);
   if (!found.ok) return found;
 
@@ -144,12 +149,20 @@ export async function startCall(id: string): Promise<StoreResult<ReceptionSessio
   if (!calling.ok) return calling;
 
   // 既定は Mock。Vonage 有効時は本番 adapter（#4）。担当者は現在のディレクトリから構成。
-  const callAdapter = getCallAdapter(await listStaff(true));
+  const callAdapter = adapter ?? getCallAdapter(await listStaff(true));
   const result: CallResult = await callAdapter.call({
     receptionId: calling.value.id,
     targetType: calling.value.targetType!,
     targetId: calling.value.targetId!,
   });
+
+  // 非同期 adapter（Vonage）: セッション確立 → 応答待ち。calling のまま sessionId を紐づけ、
+  // 応答/未応答は /connected・/timeout（markConnected/markTimeout）で確定する (increment 2)。
+  if (result.status === 'calling') {
+    const withSession: ReceptionSession = { ...calling.value, vonageSessionId: result.sessionId };
+    await sessions().put(withSession);
+    return { ok: true, value: withSession };
+  }
 
   const event: ReceptionEvent =
     result.status === 'connected'
@@ -204,6 +217,37 @@ export async function completeReception(id: string): Promise<StoreResult<Recepti
     return getReception(id);
   }
   return result;
+}
+
+/**
+ * 非同期通話で担当者が応答したことを記録する（calling → connected）(issue #4 increment 2)。
+ * 受付履歴は完了時に記録するため、ここでは状態と callOutcome のみ確定する。
+ */
+export async function markConnected(id: string): Promise<StoreResult<ReceptionSession>> {
+  const found = await getReception(id);
+  if (!found.ok) return found;
+  const result = await applyEvent(found.value, 'CALL_CONNECTED');
+  if (result.ok) {
+    const connected: ReceptionSession = { ...result.value, callOutcome: 'connected' };
+    await sessions().put(connected);
+    return { ok: true, value: connected };
+  }
+  return result;
+}
+
+/**
+ * 非同期通話の未応答を記録する（calling → timeout）(issue #4 increment 2)。
+ * timeout は結果が確定するため受付履歴を記録する（同期 timeout と同じ扱い）。
+ */
+export async function markTimeout(id: string): Promise<StoreResult<ReceptionSession>> {
+  const found = await getReception(id);
+  if (!found.ok) return found;
+  const result = await applyEvent(found.value, 'CALL_TIMEOUT');
+  if (!result.ok) return result;
+  const timed: ReceptionSession = { ...result.value, callOutcome: 'timeout', completedAt: now() };
+  await sessions().put(timed);
+  await recordReceptionOutcome(timed);
+  return { ok: true, value: timed };
 }
 
 /** 失敗/未応答後の代替導線利用を記録する (issue #19)。状態は failed/timeout → fallback。 */

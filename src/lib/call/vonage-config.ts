@@ -28,6 +28,15 @@ export function isVonageEnabled(): boolean {
   return process.env.VONAGE_ENABLED === 'true' && isVonageConfigured();
 }
 
+/**
+ * クライアントが Vonage に接続するために必要な非機密の公開値（applicationId のみ）。
+ * secret/private key は含めない。token API のレスポンスに同梱してよい。
+ */
+export function getVonagePublicConfig(): { applicationId: string } | null {
+  const applicationId = process.env.VONAGE_APPLICATION_ID;
+  return applicationId ? { applicationId } : null;
+}
+
 export function getVonageConfig(): VonageConfig | null {
   if (!isVonageConfigured()) return null;
   return {

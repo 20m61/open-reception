@@ -27,6 +27,8 @@ export type ReceptionSession = {
   visitor?: VisitorInfo;
   callOutcome?: CallOutcome;
   failureReason?: string;
+  /** Vonage 通話セッション ID（本番 adapter 利用時に紐づく。issue #4 increment 2）。 */
+  vonageSessionId?: string;
   startedAt: string;
   updatedAt: string;
   completedAt?: string;

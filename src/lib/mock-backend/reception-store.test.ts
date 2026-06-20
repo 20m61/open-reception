@@ -5,8 +5,16 @@ import {
   completeReception,
   createReception,
   getReception,
+  markConnected,
+  markTimeout,
   startCall,
 } from './reception-store';
+import type { CallAdapter } from '@/adapters/call/types';
+
+/** Vonage を模した非同期 adapter（calling を返す）。 */
+const callingAdapter: CallAdapter = {
+  call: async () => ({ status: 'calling', sessionId: 'sess-async' }),
+};
 
 const baseInput = {
   kioskId: 'kiosk-1',
@@ -103,5 +111,61 @@ describe('reception-store', () => {
     const r = await getReception('missing');
     expect(r.ok).toBe(false);
     if (!r.ok) expect(r.error.code).toBe('not_found');
+  });
+
+  describe('非同期通話（Vonage, increment 2）', () => {
+    it('calling を返す adapter では calling のまま sessionId を紐づける', async () => {
+      const created = await createReception(baseInput);
+      if (!created.ok) return;
+      const r = await startCall(created.value.id, callingAdapter);
+      expect(r.ok).toBe(true);
+      if (r.ok) {
+        expect(r.value.state).toBe('calling');
+        expect(r.value.vonageSessionId).toBe('sess-async');
+        expect(r.value.callOutcome).toBeUndefined();
+      }
+    });
+
+    it('応答で calling → connected に確定する', async () => {
+      const created = await createReception(baseInput);
+      if (!created.ok) return;
+      await startCall(created.value.id, callingAdapter);
+      const r = await markConnected(created.value.id);
+      expect(r.ok).toBe(true);
+      if (r.ok) {
+        expect(r.value.state).toBe('connected');
+        expect(r.value.callOutcome).toBe('connected');
+      }
+    });
+
+    it('connected 後に完了できる', async () => {
+      const created = await createReception(baseInput);
+      if (!created.ok) return;
+      await startCall(created.value.id, callingAdapter);
+      await markConnected(created.value.id);
+      const r = await completeReception(created.value.id);
+      expect(r.ok && r.value.state).toBe('completed');
+    });
+
+    it('未応答で calling → timeout に確定し completedAt を持つ', async () => {
+      const created = await createReception(baseInput);
+      if (!created.ok) return;
+      await startCall(created.value.id, callingAdapter);
+      const r = await markTimeout(created.value.id);
+      expect(r.ok).toBe(true);
+      if (r.ok) {
+        expect(r.value.state).toBe('timeout');
+        expect(r.value.callOutcome).toBe('timeout');
+        expect(r.value.completedAt).toBeDefined();
+      }
+    });
+
+    it('calling 以外からの markConnected は不正遷移', async () => {
+      const created = await createReception(baseInput);
+      if (!created.ok) return;
+      const r = await markConnected(created.value.id); // confirming のまま
+      expect(r.ok).toBe(false);
+      if (!r.ok) expect(r.error.code).toBe('invalid_transition');
+    });
   });
 });
