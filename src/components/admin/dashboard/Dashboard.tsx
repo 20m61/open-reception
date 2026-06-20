@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useState } from 'react';
 import type { DashboardSummary } from '@/domain/reception/dashboard-summary';
+import { Button } from '@/components/admin/ui';
 import { StatusBadge } from './StatusBadge';
 import { MetricCard } from './MetricCard';
 import { Section, CardGrid } from './Section';
@@ -56,9 +57,9 @@ export function Dashboard() {
     return (
       <div data-testid="dashboard-error">
         <p style={{ color: 'var(--color-danger)' }}>概況の取得に失敗しました。</p>
-        <button type="button" onClick={() => void load()} style={retryBtn}>
+        <Button variant="secondary" onClick={() => void load()}>
           再読み込み
-        </button>
+        </Button>
       </div>
     );
   }
@@ -159,13 +160,3 @@ export function Dashboard() {
     </div>
   );
 }
-
-const retryBtn: React.CSSProperties = {
-  minHeight: 44,
-  padding: '8px 16px',
-  borderRadius: 8,
-  border: '1px solid var(--color-surface-2)',
-  background: 'var(--color-surface)',
-  color: 'var(--color-text)',
-  cursor: 'pointer',
-};

@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useState } from 'react';
 import type { CostEstimate } from '@/domain/usage/cost-estimate';
+import { Button } from '@/components/admin/ui';
 import { UsageCard, CardGrid } from '../usage/UsageCard';
 
 type LoadState =
@@ -56,9 +57,9 @@ export function CostManager({ tenantId = DEFAULT_TENANT_ID }: { tenantId?: strin
       ) : state.phase === 'error' ? (
         <div data-testid="costs-error">
           <p style={{ color: 'var(--color-danger)' }}>コストの取得に失敗しました。</p>
-          <button type="button" onClick={() => void load()} style={retryBtn}>
+          <Button variant="secondary" onClick={() => void load()}>
             再読み込み
-          </button>
+          </Button>
         </div>
       ) : (
         <Body estimate={state.estimate} />
@@ -154,13 +155,3 @@ function Body({ estimate }: { estimate: CostEstimate }) {
 }
 
 const cell: React.CSSProperties = { padding: '8px 12px' };
-
-const retryBtn: React.CSSProperties = {
-  minHeight: 44,
-  padding: '8px 16px',
-  borderRadius: 8,
-  border: '1px solid var(--color-surface-2)',
-  background: 'var(--color-surface)',
-  color: 'var(--color-text)',
-  cursor: 'pointer',
-};

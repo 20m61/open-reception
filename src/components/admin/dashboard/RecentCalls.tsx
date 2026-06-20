@@ -1,10 +1,14 @@
 import type { CallOutcome } from '@/domain/reception/session';
 import type { RecentCall } from '@/domain/reception/dashboard-summary';
+import { DataTable, type Column } from '@/components/admin/ui';
 
 /**
- * 直近の呼び出し履歴 (issue #86, increment 1)。
+ * 直近の呼び出し履歴 (issue #86 / #92 increment 2)。
  * 来訪者の氏名等 PII は含めず、呼び出し対象名・成否・所要時間のみ。
  * 空状態では自然な案内を出す。
+ *
+ * #92 increment 2: 素朴な table 描画を共有 `ui/DataTable`（列定義ベース・空時 EmptyState）
+ * へ寄せた。結果セルの色付け・代替導線注記など描画ロジックは列定義に閉じる。
  */
 const OUTCOME_META: Record<CallOutcome, { label: string; color: string }> = {
   connected: { label: '応答', color: 'var(--color-success)' },
@@ -25,43 +29,33 @@ function formatDuration(ms: number): string {
   return `${Math.floor(sec / 60)}分${sec % 60}秒`;
 }
 
-export function RecentCalls({ calls }: { calls: readonly RecentCall[] }) {
-  if (calls.length === 0) {
-    return (
-      <p data-testid="recent-calls-empty" style={{ opacity: 0.7, margin: 0 }}>
-        まだ受付履歴がありません。
-      </p>
-    );
-  }
+const columns: ReadonlyArray<Column<RecentCall>> = [
+  { key: 'time', header: '時刻', cell: (c) => formatTime(c.startedAt) },
+  { key: 'target', header: '呼び出し先', cell: (c) => c.targetLabel ?? '-' },
+  {
+    key: 'outcome',
+    header: '結果',
+    cell: (c) => {
+      const meta = OUTCOME_META[c.outcome];
+      return (
+        <span style={{ color: meta.color }}>
+          {meta.label}
+          {c.fallbackUsed ? <span style={{ opacity: 0.6, fontSize: '0.8rem' }}>（代替導線）</span> : null}
+        </span>
+      );
+    },
+  },
+  { key: 'duration', header: '所要', cell: (c) => formatDuration(c.durationMs) },
+];
 
+export function RecentCalls({ calls }: { calls: readonly RecentCall[] }) {
   return (
-    <table data-testid="recent-calls-table" style={{ width: '100%', borderCollapse: 'collapse' }}>
-      <thead>
-        <tr style={{ textAlign: 'left', borderBottom: '1px solid rgba(255,255,255,0.2)' }}>
-          <th style={cell}>時刻</th>
-          <th style={cell}>呼び出し先</th>
-          <th style={cell}>結果</th>
-          <th style={cell}>所要</th>
-        </tr>
-      </thead>
-      <tbody>
-        {calls.map((c) => {
-          const meta = OUTCOME_META[c.outcome];
-          return (
-            <tr key={c.id} data-testid="recent-call-row" style={{ borderBottom: '1px solid rgba(255,255,255,0.08)' }}>
-              <td style={cell}>{formatTime(c.startedAt)}</td>
-              <td style={cell}>{c.targetLabel ?? '-'}</td>
-              <td style={{ ...cell, color: meta.color }}>
-                {meta.label}
-                {c.fallbackUsed ? <span style={{ opacity: 0.6, fontSize: '0.8rem' }}>（代替導線）</span> : null}
-              </td>
-              <td style={cell}>{formatDuration(c.durationMs)}</td>
-            </tr>
-          );
-        })}
-      </tbody>
-    </table>
+    <DataTable
+      columns={columns}
+      rows={calls}
+      rowKey={(c) => c.id}
+      emptyMessage="まだ受付履歴がありません。"
+      testId="recent-calls-table"
+    />
   );
 }
-
-const cell: React.CSSProperties = { padding: '8px 12px' };
