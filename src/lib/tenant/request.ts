@@ -1,9 +1,8 @@
 /**
  * 拠点（Site）管理 API のリクエスト解釈ヘルパ (issue #87, increment 1)。
  *
- * - actor（#80 の認可主体）の解決は来訪予約（#97）の resolveAdminActor を再利用する。
- *   本増分では Entra→AdminUser 写像が未配線のため、管理セッションが有効なら developer
- *   スコープの actor を返す暫定実装（docs/site-device-management-design.md §認可・既知の制約）。
+ * - actor（#80 の認可主体）の実解決は中央モジュール @/lib/auth/actor に集約済みで、
+ *   ここからは互換のため re-export する（docs/admin-actor-resolution-design.md）。
  * - tenantId の取り出しとボディ正規化、ServiceResult → HTTP 変換。
  *
  * 認可そのものは #80 の純関数（canAccessTenant / canAccessSite）に委譲する。
@@ -12,7 +11,7 @@ import { NextResponse } from 'next/server';
 import { asTenantId, type TenantId } from '@/domain/tenant/types';
 import type { ServiceResult } from './site-service';
 
-export { resolveAdminActor } from '@/lib/reservation/request';
+export { resolveAdminActor } from '@/lib/auth/actor';
 
 export type TenantScopeError = { code: 'invalid_input'; message: string };
 

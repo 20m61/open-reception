@@ -5,14 +5,11 @@
  * - リクエストから actor（#80 の認可主体）を解決する。
  * - tenantId/siteId とボディの正規化、ServiceResult → HTTP 変換。
  *
- * 認可は #80 の純関数（canAccessSite）に委譲する。actor の解決は本増分では
- * Entra→AdminUser 写像が未配線のため、管理セッションが有効なら developer スコープの
- * actor を返す暫定実装とする（docs/visit-reservation-design.md §認可・既知の制約）。
- * 実 AdminUser 解決は次増分で TenantStore / Entra クレームから行う。
+ * 認可は #80 の純関数（canAccessSite）に委譲する。actor の実解決（実セッション/Entra
+ * クレーム → 境界付き RoleAssignment）は中央モジュール @/lib/auth/actor に集約済みで、
+ * ここからは互換のため re-export する（docs/admin-actor-resolution-design.md）。
  */
-import { cookies } from 'next/headers';
 import { NextResponse } from 'next/server';
-import type { Actor } from '@/domain/tenant/authorization';
 import { asSiteId, asTenantId, type SiteId, type TenantId } from '@/domain/tenant/types';
 import {
   asReservationId,
@@ -20,33 +17,10 @@ import {
   type EditReservationPatch,
   type ReservationId,
 } from '@/domain/reservation/types';
-import { ADMIN_COOKIE, ENTRA_TOKEN_COOKIE, getAdminSecret } from '@/lib/auth/admin';
-import { verifySession } from '@/lib/auth/session';
 import type { ServiceResult } from './service';
 
-/**
- * 管理セッションが有効かを判定する。password / entra いずれの cookie でも、
- * 署名・期限が有効なら true。
- */
-export async function hasValidAdminSession(): Promise<boolean> {
-  const jar = await cookies();
-  const admin = await verifySession(jar.get(ADMIN_COOKIE)?.value, getAdminSecret());
-  if (admin && admin.role === 'admin') return true;
-  // Entra トークン cookie がある場合も管理セッションとみなす（検証は #70 の経路）。
-  return Boolean(jar.get(ENTRA_TOKEN_COOKIE)?.value);
-}
-
-/**
- * 認可主体を解決する。本増分では管理セッションが有効なら developer 相当の actor を返す。
- * 無効なら null（route 側で 401）。
- */
-export async function resolveAdminActor(): Promise<Actor | null> {
-  if (!(await hasValidAdminSession())) return null;
-  return {
-    status: 'active',
-    assignments: [{ role: 'developer', tenantId: null, siteId: null, deviceId: null }],
-  };
-}
+// actor 解決の実装は中央モジュールへ集約。既存 import 互換のため re-export する。
+export { hasValidAdminSession, resolveAdminActor } from '@/lib/auth/actor';
 
 export type ScopeError = { code: 'invalid_input'; message: string };
 
