@@ -79,10 +79,11 @@ iPad(受付) --confirm--> /api/kiosk/receptions/:id/call (server)
 
 - [x] `VonageSessionService` の実装（session 作成・短命 token 発行）→ increment 1
 - [x] `VonageCallAdapter.call` の実装（scaffold を置換）→ increment 1（session 確立まで）
-- [ ] 担当者応答 UI / URL → increment 2
-- [ ] iPad 通話 UI（接続中 / 通話中 / 終了 / 再呼び出し）→ increment 2
-- [ ] 応答/未応答の非同期検知（calling→connected/timeout の実イベント写像）→ increment 2
-- [ ] 通話イベントの監査ログ保存（#19）→ increment 2 で拡充
+- [x] 非同期通話ライフサイクル（サーバ）: calling 保持・sessionId 永続化・/connected・/timeout → increment 2a
+- [x] 受付端末トークン配布 API（publisher）→ increment 2a
+- [ ] 担当者応答 UI / URL（subscriber トークン配布含む）→ increment 2b
+- [ ] iPad 通話 UI（接続中 / 通話中 / 終了 / 再呼び出し）→ increment 2b
+- [ ] 通話イベントの監査ログ拡充（応答イベント等）→ increment 2b
 - [x] secret がフロント bundle に含まれないことの検査（#6）: `'use client'` から server-only secret 環境変数（`VONAGE_*` / `ADMIN_*` / `KIOSK_SESSION_SECRET` / `KIOSK_PIN`）の参照を禁止する静的ガードテスト（`src/lib/security/client-secret-guard.test.ts`）。Vonage 実装時もこのガードで回帰を防ぐ。
 
 ## 10. 実装方針確定（increment 分割）
@@ -114,8 +115,24 @@ iPad(受付) --confirm--> /api/kiosk/receptions/:id/call (server)
 - **ライブ検証の注意**: REST エンドポイント/レスポンス形は実認証情報での結合確認が必要
   （単体テストは request 整形・JWT 正当性まで）。
 
-### increment 2（後続）— クライアント/非同期
+### increment 2a（実装済み）— サーバ側 非同期通話ライフサイクル
 
-- 受付端末のビデオ UI（publisher）、担当者応答 UI/URL（subscriber）。
-- `calling → connected/timeout` を Vonage の実イベント（接続/未応答）から写像。
-- token 配布 API（受付端末・担当者）、通話イベントの監査ログ拡充。
+- `CallResult` に `calling`（応答待ち）+ `sessionId` を追加。Vonage adapter は session 作成後
+  `calling` を返し、受付状態は `calling` のまま `vonageSessionId` を紐づける（即 connected にしない）。
+  Mock は従来どおり connected/timeout/failed を同期返却（挙動不変）。
+- 状態確定エンドポイント（受付端末/クライアントの接続検知から呼ぶ）:
+  - `POST /api/kiosk/receptions/:id/connected` → calling→connected（`markConnected`）
+  - `POST /api/kiosk/receptions/:id/timeout`   → calling→timeout（`markTimeout`、履歴記録）
+- トークン配布 API（受付端末 publisher）:
+  - `GET /api/kiosk/receptions/:id/token` → `{ applicationId, sessionId, token, role, expiresAt }`
+    を返す（secret は返さない。未確立/無効時は 409）。
+- すべて単体テスト済み（adapter 注入で calling/connected/timeout 経路を検証）。
+
+### increment 2b（後続）— クライアント/担当者 UI
+
+- 受付端末のビデオ UI（publisher、Vonage client SDK の動的 import + フォールバック）。
+- 担当者応答 UI/URL と subscriber トークン配布（担当者認証/通知リンク連携）。
+- クライアントの接続/未応答検知を 2a のエンドポイントへ接続。
+- 通話イベント（応答等）の監査ログ拡充。**実認証情報での結合検証が前提。**
+- **トークン発行の認可強化**: `GET /token` を kiosk セッションへ束縛（`reception.kioskId` と
+  リクエストの kiosk セッション一致確認）+ レート制限。2a では未認証（reception id=UUID 前提）。

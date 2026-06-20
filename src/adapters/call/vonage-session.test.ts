@@ -97,13 +97,14 @@ describe('RestVonageSessionService.issueToken', () => {
 });
 
 describe('VonageCallAdapter', () => {
-  it('returns connected after creating a session and issuing a token', async () => {
+  it('returns calling with the created sessionId (awaiting answer)', async () => {
     const adapter = new VonageCallAdapter(config, {
       createSession: async () => ({ sessionId: 'sess-1' }),
       issueToken: async (s, role) => ({ token: 't', role, expiresAt: new Date().toISOString() }),
     });
     const result = await adapter.call({ receptionId: 'rec-1', targetType: 'staff', targetId: 'staff-1' });
-    expect(result.status).toBe('connected');
+    expect(result.status).toBe('calling');
+    expect(result.sessionId).toBe('sess-1');
   });
 
   it('returns failed with reason when session creation throws', async () => {
