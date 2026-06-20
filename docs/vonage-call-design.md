@@ -81,9 +81,12 @@ iPad(受付) --confirm--> /api/kiosk/receptions/:id/call (server)
 - [x] `VonageCallAdapter.call` の実装（scaffold を置換）→ increment 1（session 確立まで）
 - [x] 非同期通話ライフサイクル（サーバ）: calling 保持・sessionId 永続化・/connected・/timeout → increment 2a
 - [x] 受付端末トークン配布 API（publisher）→ increment 2a
-- [ ] 担当者応答 UI / URL（subscriber トークン配布含む）→ increment 2b
-- [ ] iPad 通話 UI（接続中 / 通話中 / 終了 / 再呼び出し）→ increment 2b
-- [ ] 通話イベントの監査ログ拡充（応答イベント等）→ increment 2b
+- [x] トークン発行の認可（kiosk セッション束縛 + 端末一致）→ increment 2b
+- [x] クライアント通話ライフサイクル制御（fetch→接続→connected/timeout→fallback）→ increment 2b
+- [ ] 実 Vonage client SDK アダプタ（CallClient 実装・dynamic import）→ increment 2c
+- [ ] 受付端末ビデオ UI への組込み（KioskFlow calling 状態）→ increment 2c
+- [ ] 担当者応答 UI / URL（subscriber トークン配布・担当者認証）→ increment 2c
+- [ ] 通話イベントの監査ログ拡充（応答イベント等）→ increment 2c
 - [x] secret がフロント bundle に含まれないことの検査（#6）: `'use client'` から server-only secret 環境変数（`VONAGE_*` / `ADMIN_*` / `KIOSK_SESSION_SECRET` / `KIOSK_PIN`）の参照を禁止する静的ガードテスト（`src/lib/security/client-secret-guard.test.ts`）。Vonage 実装時もこのガードで回帰を防ぐ。
 
 ## 10. 実装方針確定（increment 分割）
@@ -128,11 +131,18 @@ iPad(受付) --confirm--> /api/kiosk/receptions/:id/call (server)
     を返す（secret は返さない。未確立/無効時は 409）。
 - すべて単体テスト済み（adapter 注入で calling/connected/timeout 経路を検証）。
 
-### increment 2b（後続）— クライアント/担当者 UI
+### increment 2b（実装済み）— 認可 + クライアント通話制御の中核
 
-- 受付端末のビデオ UI（publisher、Vonage client SDK の動的 import + フォールバック）。
+- **トークン発行の認可**: `GET /token` を kiosk セッション必須 + `reception.kioskId` 一致に限定
+  （第三者が reception id を知っても発行不可）。`src/app/api/kiosk/receptions/[id]/token/route.ts`。
+- **クライアント通話ライフサイクル制御**: `src/lib/call/call-controller.ts`（フレームワーク非依存）。
+  - token API 取得 → `CallClient` で接続 → 応答で `/connected`、未応答で `/timeout` を報告 → 失敗は
+    fallback へ降格（受付フローを止めない）。
+  - 実 SDK 接続は `CallClient` interface に隔離（2c で具体実装）。fetch/タイマー/状態遷移を単体テスト。
+
+### increment 2c（後続）— 実 SDK / UI / 担当者
+
+- `CallClient` の実装（Vonage client SDK の動的 import + フォールバック）。
+- 受付端末ビデオ UI（publisher）を KioskFlow の calling 状態へ組込み。
 - 担当者応答 UI/URL と subscriber トークン配布（担当者認証/通知リンク連携）。
-- クライアントの接続/未応答検知を 2a のエンドポイントへ接続。
-- 通話イベント（応答等）の監査ログ拡充。**実認証情報での結合検証が前提。**
-- **トークン発行の認可強化**: `GET /token` を kiosk セッションへ束縛（`reception.kioskId` と
-  リクエストの kiosk セッション一致確認）+ レート制限。2a では未認証（reception id=UUID 前提）。
+- 通話イベント（応答等）の監査ログ拡充。**実 Vonage 認証情報・実機での結合検証が前提。**
