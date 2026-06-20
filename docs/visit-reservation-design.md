@@ -102,6 +102,7 @@ route（`src/app/api/admin/reservations/**`）は薄く保つ。
 | DELETE | `/api/admin/reservations/:id` | キャンセル | `reservation.cancelled` |
 | POST | `/api/admin/reservations/:id/revoke` | 失効 | `reservation.revoked` |
 | POST | `/api/admin/reservations/:id/token` | QR 再発行（旧トークン無効化） | `reservation.token_reissued` |
+| GET | `/api/admin/reservations/:id/qr?tenantId=&siteId=&format=` | QR 画像取得（SVG / JSON dataUrl）。inc2 | – |
 
 `tenantId`/`siteId` は GET/DELETE はクエリ、POST/PATCH はボディで受ける。
 
@@ -149,6 +150,29 @@ route（`src/app/api/admin/reservations/**`）は薄く保つ。
 代替候補（同 MIT）: `qrcode-generator`（純 JS・依存なし）。読み取り（decode）は本スコープ外
 （受付端末のカメラ読み取りは別 increment、映像はローカル処理・非保存の原則に従う）。
 
+### 6.1 採用決定（increment 2）
+
+increment 2 で QR 画像描画ライブラリの最終採用を決定した。**`qrcode` ではなく
+`qrcode-generator` を採用**する（`qrcode` は `yargs` 等の重い transitive 依存を持ち込むため）。
+
+```
+- 対象: qrcode-generator@2.0.4
+- ライセンス: MIT（SPDX: MIT、npm view / license-checker で確認済み）
+- 依存: なし（zero dependency。transitive ライセンス問題なし）
+- 用途: 管理画面で予約 token の checkin URL を QR 画像（SVG / data URL）へ描画・DL
+- 商用利用: 可 / 改変・再配布: 可（帰属表示） / 帰属表示: 要（THIRD_PARTY_NOTICES.md に記載）
+- 個人情報: 扱わない（描画対象は token URL のみ。PII は載せない）
+- 特許 / 商標: QR 基本仕様はロイヤリティフリー。装飾 QR / フレーム QR は使わない。
+  「QR Code」は登録商標のためプロダクト名・ロゴで強調しない。
+- 確認手段: `npm view qrcode-generator license`（MIT）/ `npx license-checker --production`
+  で本番依存全体を俯瞰し、新規追加が qrcode-generator のみ（MIT）であることを確認。
+- 判断: 採用（permissive・依存ゼロ・SVG 出力で canvas 不要）。
+```
+
+SVG 生成の中核（モジュール行列 → `<svg>` 文字列）はライブラリ非依存の純関数
+（`src/lib/reservation/qr.ts` の `renderMatrixToSvg`）に切り出し、ライブラリは「文字列 →
+モジュール行列」の符号化のみに用いる。色はサニタイズし、任意マークアップの混入を防ぐ。
+
 ---
 
 ## 7. increment 計画
@@ -156,8 +180,12 @@ route（`src/app/api/admin/reservations/**`）は薄く保つ。
 - **increment 1（本 PR）**: ドメイン型 / トークン生成 / QR payload 仕様 / ライフサイクル純関数 /
   リポジトリ interface + in-memory / 予約 CRUD・失効・再発行 API / 監査 / テスト / 本書。
   **UI・QR 画像・新規依存は追加しない。**
-- **increment 2**: QR **画像**描画ライブラリ採用（上記判断ログを確定）+ 管理画面 UI（#85 の
-  admin シェル整備後）+ 受付端末のチェックイン（token 検証 → `markUsed`）。
+- **increment 2（本 PR・QR 画像 + 管理 UI）**: QR 画像描画ライブラリ採用を確定
+  （`qrcode-generator`・§6.1）+ サーバ側 QR レンダリング（`src/lib/reservation/qr.ts`・
+  SVG / data URL）+ QR 取得 API（`GET /api/admin/reservations/:id/qr`）+ 管理画面 予約 UI
+  （`src/app/admin/reservations`・`src/components/admin/ReservationsManager.tsx`：一覧・作成・
+  キャンセル・失効・QR 表示/DL/再発行）。受付端末のチェックイン（token 検証 → `markUsed`）は
+  別トラック（#98）。
 - **increment 3**: DynamoDB シングルテーブル実装 + `getBackend()` 接続 + 保存期間（retention）
   に基づく PII 破棄バッチ / TTL。
 - **後続**: カレンダー連携・退館管理（本 Issue 非スコープ）。
