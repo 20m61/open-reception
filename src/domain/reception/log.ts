@@ -58,7 +58,10 @@ export type AuditAction =
   | 'reservation.cancelled'
   | 'reservation.revoked'
   | 'reservation.token_issued'
-  | 'reservation.token_reissued';
+  | 'reservation.token_reissued'
+  // 拠点（Site）管理 (issue #87)。テナント/サイト境界の操作のみ記録。
+  | 'site.created'
+  | 'site.updated';
 
 export type AuditLog = {
   id: string;

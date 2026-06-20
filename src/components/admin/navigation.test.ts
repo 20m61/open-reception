@@ -64,6 +64,12 @@ describe('visibleNav: ロールに応じた出し分け (#85)', () => {
     const groups = visibleNav(ADMIN_NAV, ['viewer', 'tenant_admin']);
     expect(groups.map((g) => g.id)).toContain('experience');
   });
+
+  it('拠点（sites）は日常運用グループにあり viewer も閲覧できる (#87)', () => {
+    const groups = visibleNav(ADMIN_NAV, ['viewer']);
+    const ops = groups.find((g) => g.id === 'operations');
+    expect(ops?.items.map((i) => i.href)).toContain('/admin/sites');
+  });
 });
 
 describe('isActivePath: 現在地判定 (#85)', () => {
