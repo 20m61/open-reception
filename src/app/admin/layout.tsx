@@ -1,48 +1,27 @@
-import Link from 'next/link';
+import type { TenantRole } from '@/domain/tenant/types';
+import { AdminShell } from '@/components/admin/AdminShell';
+import { ADMIN_NAV } from '@/components/admin/navigation';
 
 /**
- * 管理画面レイアウト。
- * 管理画面は認証・認可必須 (issue #22, #24)。
- * 認証ガードは後続 issue で middleware / server-only 処理と接続する。
+ * 管理画面レイアウト (issue #22, #24, #85)。
+ *
+ * 管理画面は認証・認可必須。actor（セッション→AdminUser）の解決と route guard の
+ * 厳密適用は次増分（session.ts は現状 role:'admin' のみで RoleAssignment 未連携）。
+ * increment 1 では IA 反映の共通シェル（責務グループ別ナビ・現在地表示）に差し替えるに留め、
+ * 既存ルート・既存ページは非破壊で維持する。
+ *
+ * route guard の雛形と適用方針は src/components/admin/route-guard.ts（canEnterArea）。
+ * actor 解決が入り次第、ここで canEnterArea(actor, 'admin') を適用する想定。
  */
-const NAV_ITEMS = [
-  { href: '/admin', label: 'ダッシュボード' },
-  { href: '/admin/receptions', label: '受付履歴' },
-  { href: '/admin/kiosks', label: '受付端末' },
-  { href: '/admin/departments', label: '部署' },
-  { href: '/admin/staff', label: '担当者' },
-  { href: '/admin/assets', label: 'アセット' },
-  { href: '/admin/motions', label: 'モーション' },
-  { href: '/admin/voice', label: '音声' },
-  { href: '/admin/security', label: 'セキュリティ' },
-  { href: '/admin/audit', label: '監査ログ' },
-];
 
-export default function AdminLayout({
-  children,
-}: {
-  children: React.ReactNode;
-}) {
+// actor 解決が未連携のため、テナント管理者相当の表示ロールを暫定で用いる
+// （既存の「全項目表示」を IA 上で再現する。次増分で実 actor のロールに差し替え）。
+const PROVISIONAL_ROLES: readonly TenantRole[] = ['tenant_admin'];
+
+export default function AdminLayout({ children }: { children: React.ReactNode }) {
   return (
-    <div data-area="admin" style={{ display: 'flex', minHeight: '100vh' }}>
-      <aside
-        style={{
-          width: 240,
-          background: 'var(--color-surface)',
-          padding: 'var(--space-lg)',
-          borderRight: '1px solid rgba(255,255,255,0.1)',
-        }}
-      >
-        <h2 style={{ fontSize: '1.25rem', marginTop: 0 }}>管理画面</h2>
-        <nav style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-          {NAV_ITEMS.map((item) => (
-            <Link key={item.href} href={item.href} style={{ padding: '8px 0', opacity: 0.9 }}>
-              {item.label}
-            </Link>
-          ))}
-        </nav>
-      </aside>
-      <main style={{ flex: 1, padding: 'var(--space-lg)' }}>{children}</main>
-    </div>
+    <AdminShell area="admin" title="管理画面" nav={ADMIN_NAV} roles={PROVISIONAL_ROLES}>
+      {children}
+    </AdminShell>
   );
 }
