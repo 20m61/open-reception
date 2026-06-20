@@ -164,6 +164,10 @@ git worktree remove ../open-reception-105   # マージ後に撤去
 サブエージェントに実装させる場合は `isolation: "worktree"` を使い、
 **並行で書き込むトラック同士が同一ファイルを触らない**ことを割り当て時に保証する。
 
+> fresh な worktree には `node_modules` / `infra/node_modules` が無い。
+> `scripts/quality-gate.sh` は既定で不足を検出して `npm ci`（無ければ `install`）を
+> 実行し自己修復するため、手動インストールは不要（`--no-bootstrap` で抑止可能）。
+
 ### 直列を守る点（重要な制約）
 
 - **マージは直列 + ユーザー確認**（手順 8）。並列で PR が積まれても、マージは 1 本ずつ
