@@ -93,7 +93,11 @@ class MemoryLogStore<T extends { id: string }> implements LogStore<T> {
   }
 
   async findBy(field: keyof T & string, value: string): Promise<T | undefined> {
-    const found = this.items.find((i) => i[field] === value);
+    // DynamoDB の GSI（ScanIndexForward:false, Limit:1）と一致させ、最新の 1 件を返す。
+    const ts = (i: T) => String((i as Record<string, unknown>)[this.tsField] ?? '');
+    const found = [...this.items]
+      .sort((a, b) => (ts(a) < ts(b) ? 1 : ts(a) > ts(b) ? -1 : a.id < b.id ? 1 : -1))
+      .find((i) => i[field] === value);
     return found ? clone(found) : undefined;
   }
 

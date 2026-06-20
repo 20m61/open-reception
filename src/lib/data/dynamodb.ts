@@ -224,7 +224,9 @@ export class DynamoBackend implements DataBackend {
     return new DynamoCollection<T>(this.doc, this.table, name, opts?.ttlSeconds);
   }
 
-  singleton<T>(name: string): Singleton<T> {
+  singleton<T>(name: string, _opts?: { default?: () => T }): Singleton<T> {
+    // _opts.default は memory バックエンド専用。DynamoDB では未保存時 undefined を返し、
+    // 呼び出し側が DEFAULTS にフォールバックする（interface 互換のため引数は受ける）。
     return new DynamoSingleton<T>(this.doc, this.table, name);
   }
 
