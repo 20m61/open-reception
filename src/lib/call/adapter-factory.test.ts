@@ -41,9 +41,22 @@ describe('call adapter selection (#4)', () => {
   });
 });
 
-describe('VonageCallAdapter scaffold (#4)', () => {
-  it('未実装の実連携は failed を返す（受付フローを壊さない）', async () => {
-    const adapter = new VonageCallAdapter({ applicationId: 'a', apiKey: 'b', apiSecret: 'c', privateKey: 'd' });
+describe('VonageCallAdapter (#4)', () => {
+  // session 作成が失敗しても受付フローを壊さず failed を返す。
+  // 実ネットワークを呼ばないよう stub service を注入する（詳細は vonage-session.test.ts）。
+  it('session 作成失敗時は failed を返す（受付フローを壊さない）', async () => {
+    const failing = {
+      createSession: async () => {
+        throw new Error('boom');
+      },
+      issueToken: async () => {
+        throw new Error('unused');
+      },
+    };
+    const adapter = new VonageCallAdapter(
+      { applicationId: 'a', apiKey: 'b', apiSecret: 'c', privateKey: 'd' },
+      failing,
+    );
     const r = await adapter.call({ receptionId: 'r1', targetType: 'staff', targetId: 'staff-sato' });
     expect(r.status).toBe('failed');
   });
