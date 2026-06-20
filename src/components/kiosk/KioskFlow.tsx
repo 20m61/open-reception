@@ -11,6 +11,7 @@ import { transition, type ReceptionEvent, type ReceptionState } from '@/domain/r
 import { motionKeyForState, resolveMotionUrl, type MotionKey } from '@/domain/motion/types';
 import { primeSpeech, speak, type SpeakSettings } from './speech';
 import { VrmAvatarViewer } from './VrmAvatarViewer';
+import { KioskCallView } from './KioskCallView';
 import { MockSttAdapter } from '@/adapters/speech/mock-stt';
 
 /** MVP では端末 ID は固定。将来 kiosk config から取得する (issue #18)。 */
@@ -229,10 +230,14 @@ export function KioskFlow() {
     };
   }, []);
 
+  // Vonage（非同期）通話のとき、ビデオビューに渡す受付 ID。Mock 同期通話では null のまま。
+  const [vonageCallId, setVonageCallId] = useState<string | null>(null);
+
   // 呼び出し中になったら、セッション作成 → 呼び出しを実行して結果を反映する。
   useEffect(() => {
     if (data.state !== 'calling') return;
     let cancelled = false;
+    setVonageCallId(null);
 
     (async () => {
       try {
@@ -258,6 +263,8 @@ export function KioskFlow() {
         if (cancelled) return;
         if (result.state === 'connected') dispatch({ type: 'CALL_CONNECTED', sessionId: session.id });
         else if (result.state === 'timeout') dispatch({ type: 'CALL_TIMEOUT', sessionId: session.id });
+        // 'calling' は Vonage（非同期）: ビデオビューが応答/未応答を確定する。
+        else if (result.state === 'calling') setVonageCallId(session.id);
         else dispatch({ type: 'CALL_FAILED', sessionId: session.id });
       } catch {
         if (!cancelled) dispatch({ type: 'CALL_FAILED' });
@@ -334,7 +341,7 @@ export function KioskFlow() {
       ) : view === 'authorize' ? (
         <KioskAuthorizeView onAuthorized={() => setNeedsAuthorize(false)} />
       ) : (
-        renderScreen(data, dispatch, complete, handleFallback, directory, guidanceIdle, vrmUrl, avatarFallbackUrl, sttEnabled, motionUrl)
+        renderScreen(data, dispatch, complete, handleFallback, directory, guidanceIdle, vrmUrl, avatarFallbackUrl, sttEnabled, motionUrl, vonageCallId)
       )}
     </main>
   );
@@ -405,6 +412,7 @@ function renderScreen(
   avatarFallbackUrl: string | undefined,
   sttEnabled: boolean,
   motionUrl: string | undefined,
+  vonageCallId: string | null,
 ) {
   switch (data.state) {
     case 'idle':
@@ -454,7 +462,17 @@ function renderScreen(
         />
       );
     case 'calling':
-      return <CallingView target={data.target?.label ?? ''} />;
+      // Vonage（非同期）通話はビデオビューがライフサイクルを駆動する。Mock 同期通話は従来表示。
+      return vonageCallId ? (
+        <KioskCallView
+          receptionId={vonageCallId}
+          onConnected={() => dispatch({ type: 'CALL_CONNECTED', sessionId: vonageCallId })}
+          onTimeout={() => dispatch({ type: 'CALL_TIMEOUT', sessionId: vonageCallId })}
+          onFallback={() => dispatch({ type: 'CALL_FAILED', sessionId: vonageCallId })}
+        />
+      ) : (
+        <CallingView target={data.target?.label ?? ''} />
+      );
     case 'connected':
       return <ConnectedView target={data.target?.label ?? ''} onComplete={complete} />;
     case 'timeout':

@@ -83,10 +83,11 @@ iPad(受付) --confirm--> /api/kiosk/receptions/:id/call (server)
 - [x] 受付端末トークン配布 API（publisher）→ increment 2a
 - [x] トークン発行の認可（kiosk セッション束縛 + 端末一致）→ increment 2b
 - [x] クライアント通話ライフサイクル制御（fetch→接続→connected/timeout→fallback）→ increment 2b
-- [ ] 実 Vonage client SDK アダプタ（CallClient 実装・dynamic import）→ increment 2c
-- [ ] 受付端末ビデオ UI への組込み（KioskFlow calling 状態）→ increment 2c
-- [ ] 担当者応答 UI / URL（subscriber トークン配布・担当者認証）→ increment 2c
-- [ ] 通話イベントの監査ログ拡充（応答イベント等）→ increment 2c
+- [x] 実 Vonage client SDK アダプタ（CallClient 実装・CDN 動的ロード + fallback）→ 2c（要ライブ検証）
+- [x] 受付端末ビデオ UI への組込み（KioskFlow calling 状態・fallback-first）→ 2c（要ライブ検証）
+- [x] 担当者応答エンドポイント + 応答トークン + subscriber トークン配布 → 2c
+- [ ] 担当者応答ページ UI（subscriber ビデオ表示）→ 2c-残（要ライブ検証）
+- [ ] 通話イベントの監査ログ拡充（応答イベント等）→ 2c-残
 - [x] secret がフロント bundle に含まれないことの検査（#6）: `'use client'` から server-only secret 環境変数（`VONAGE_*` / `ADMIN_*` / `KIOSK_SESSION_SECRET` / `KIOSK_PIN`）の参照を禁止する静的ガードテスト（`src/lib/security/client-secret-guard.test.ts`）。Vonage 実装時もこのガードで回帰を防ぐ。
 
 ## 10. 実装方針確定（increment 分割）
@@ -140,9 +141,19 @@ iPad(受付) --confirm--> /api/kiosk/receptions/:id/call (server)
     fallback へ降格（受付フローを止めない）。
   - 実 SDK 接続は `CallClient` interface に隔離（2c で具体実装）。fetch/タイマー/状態遷移を単体テスト。
 
-### increment 2c（後続）— 実 SDK / UI / 担当者
+### increment 2c（コード実装済み・要ライブ検証）
 
-- `CallClient` の実装（Vonage client SDK の動的 import + フォールバック）。
-- 受付端末ビデオ UI（publisher）を KioskFlow の calling 状態へ組込み。
-- 担当者応答 UI/URL と subscriber トークン配布（担当者認証/通知リンク連携）。
-- 通話イベント（応答等）の監査ログ拡充。**実 Vonage 認証情報・実機での結合検証が前提。**
+- **`CallClient` 実装** `src/adapters/call/vonage-client.ts`: OpenTok 互換 SDK を CDN スクリプトで
+  動的ロード（`NEXT_PUBLIC_VONAGE_SDK_URL` で上書き可）。接続/publish/streamCreated→onConnected を
+  実装。loadSdk 注入で制御ロジックを単体テスト（SDK の DOM ロードは browser-only・要ライブ検証）。
+- **受付端末ビデオ UI** `src/components/kiosk/KioskCallView.tsx` を KioskFlow の calling 状態へ組込み。
+  Vonage（`calling` 返却）時のみビデオビューを描画し、Mock 同期通話の挙動・既存 e2e は不変（fallback-first）。
+- **担当者応答（サーバ）**: `POST /api/staff/calls/:id/answer`。署名付き応答トークン
+  （`src/lib/call/answer-token.ts`）で認可し、subscriber トークンを発行 + calling→connected を確定。
+  secret は返さない。401/403/404/409/200 を単体テスト。
+
+### increment 2c-残（後続）
+
+- 担当者応答ページ UI（subscriber ビデオ表示・通知リンクからの導線）。
+- 通話イベント（応答等）の監査ログ拡充。
+- **すべて実 Vonage 認証情報・実機での結合検証が前提**（REST/JWT/SDK のグローバル名・API 差異を調整）。
