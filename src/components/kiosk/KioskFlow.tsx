@@ -12,6 +12,7 @@ import { motionKeyForState, resolveMotionUrl, type MotionKey } from '@/domain/mo
 import { primeSpeech, speak, type SpeakSettings } from './speech';
 import { VrmAvatarViewer } from './VrmAvatarViewer';
 import { KioskCallView } from './KioskCallView';
+import { CheckinFlow } from './CheckinFlow';
 import { MockSttAdapter } from '@/adapters/speech/mock-stt';
 
 /** MVP では端末 ID は固定。将来 kiosk config から取得する (issue #18)。 */
@@ -114,6 +115,8 @@ export function KioskFlow() {
   const [needsAuthorize, setNeedsAuthorize] = useState(false);
   // オンライン状態。heartbeat 失敗で false、復帰で true (issue #30)。
   const [online, setOnline] = useState(true);
+  // 受付モード。idle から「QRで受付」を選ぶと checkin へ。完了/通常受付選択で normal へ戻す (issue #98)。
+  const [mode, setMode] = useState<'normal' | 'checkin'>('normal');
 
   const refreshHeartbeat = useCallback(async () => {
     try {
@@ -127,7 +130,10 @@ export function KioskFlow() {
       setActive(hb.active);
       setNeedsAuthorize(hb.pinRequired && !hb.authorized);
       // 失効/緊急停止を検知したら、受付中の個人情報を破棄して待機へ戻す (issue #30)。
-      if (!hb.active) dispatch({ type: 'RESET' });
+      if (!hb.active) {
+        dispatch({ type: 'RESET' });
+        setMode('normal');
+      }
     } catch {
       setOnline(false);
     }
@@ -340,8 +346,24 @@ export function KioskFlow() {
         </div>
       ) : view === 'authorize' ? (
         <KioskAuthorizeView onAuthorized={() => setNeedsAuthorize(false)} />
+      ) : mode === 'checkin' ? (
+        // QR 受付モード (issue #98)。通常受付選択 / 終了で normal へ戻す（個人情報は破棄される）。
+        <CheckinFlow onUseManual={() => setMode('normal')} onExit={() => setMode('normal')} />
       ) : (
-        renderScreen(data, dispatch, complete, handleFallback, directory, guidanceIdle, vrmUrl, avatarFallbackUrl, sttEnabled, motionUrl, vonageCallId)
+        renderScreen(
+          data,
+          dispatch,
+          complete,
+          handleFallback,
+          directory,
+          guidanceIdle,
+          vrmUrl,
+          avatarFallbackUrl,
+          sttEnabled,
+          motionUrl,
+          vonageCallId,
+          () => setMode('checkin'),
+        )
       )}
     </main>
   );
@@ -413,6 +435,7 @@ function renderScreen(
   sttEnabled: boolean,
   motionUrl: string | undefined,
   vonageCallId: string | null,
+  onStartCheckin: () => void,
 ) {
   switch (data.state) {
     case 'idle':
@@ -423,6 +446,7 @@ function renderScreen(
             primeSpeech();
             dispatch({ type: 'START' });
           }}
+          onStartCheckin={onStartCheckin}
           guidance={guidanceIdle}
           vrmUrl={vrmUrl}
           avatarFallbackUrl={avatarFallbackUrl}
@@ -499,12 +523,14 @@ function renderScreen(
 
 function IdleView({
   onStart,
+  onStartCheckin,
   guidance,
   vrmUrl,
   avatarFallbackUrl,
   motionUrl,
 }: {
   onStart: () => void;
+  onStartCheckin: () => void;
   guidance: string;
   vrmUrl?: string;
   avatarFallbackUrl?: string;
@@ -522,6 +548,10 @@ function IdleView({
       <p className="screen__lead" data-testid="idle-guidance">{guidance}</p>
       <button type="button" className="btn btn--primary" data-testid="start-reception" onClick={onStart}>
         受付を開始する
+      </button>
+      {/* 予約 QR をお持ちの方向けの導線 (issue #98)。非破壊で追加。 */}
+      <button type="button" className="btn btn--secondary" data-testid="start-checkin" onClick={onStartCheckin}>
+        QR で受付
       </button>
     </div>
   );
