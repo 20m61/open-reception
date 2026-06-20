@@ -25,6 +25,7 @@
     "@aws-sdk/lib-dynamodb": "^3.1071.0",
     "@pixiv/three-vrm": "^3.5.4",
     "next": "16.2.9",
+    "qrcode-generator": "^2.0.4",
     "react": "19.2.7",
     "react-dom": "19.2.7",
     "three": "^0.184.0"
