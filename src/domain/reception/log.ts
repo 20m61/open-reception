@@ -77,7 +77,16 @@ export type AuditAction =
   // 受付端末（Device）管理 (issue #87 inc2)。token 値そのものは記録しない。
   | 'device.token_reissued'
   | 'device.disabled'
-  | 'device.enabled';
+  | 'device.enabled'
+  // 来訪目的別カスタム受付フロー (issue #100)。
+  | 'reception_flow.created'
+  | 'reception_flow.updated'
+  | 'reception_flow.deleted'
+  // 待機中サイネージ設定 (issue #101)。
+  | 'signage.updated'
+  // 退館チェックアウト・滞在状態管理 (issue #102)。PII は残さない。
+  | 'visitor.checked_out'
+  | 'stay.updated';
 
 export type AuditLog = {
   id: string;

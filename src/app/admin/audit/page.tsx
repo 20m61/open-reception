@@ -46,6 +46,12 @@ const ACTION_LABEL: Partial<Record<AuditAction, string>> = {
   'device.token_reissued': '端末: トークン再発行',
   'device.disabled': '端末: 無効化',
   'device.enabled': '端末: 有効化',
+  'reception_flow.created': '受付フロー: 作成',
+  'reception_flow.updated': '受付フロー: 更新',
+  'reception_flow.deleted': '受付フロー: 削除',
+  'signage.updated': 'サイネージ: 更新',
+  'visitor.checked_out': '来訪者: 退館',
+  'stay.updated': '滞在状態: 更新',
 };
 
 /** 管理画面: 監査ログ一覧 (issue #22, #19)。受付ライフサイクルと管理操作の証跡。 */
