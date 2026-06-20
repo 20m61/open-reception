@@ -1,0 +1,138 @@
+#!/usr/bin/env bash
+#
+# scripts/quality-gate.sh — ローカル品質ゲート
+#
+# 本リポジトリは GitHub Actions を使用しない方針のため、CI に相当する品質ゲートを
+# このスクリプトでローカル（または Actions 以外のランナー）から実行する。
+# ループ運用では「PR を作る前に必ず ./scripts/quality-gate.sh --pr が green」を必須とする。
+#
+# 段階（tier）:
+#   --fast   typecheck + lint + unit            （各変更ごとの高速チェック・デフォルト）
+#   --pr     fast + build                        （PR 作成前の必須ゲート）
+#   --full   pr + secrets + sast + audit + e2e + lighthouse （マージ前/定期の重ゲート）
+#
+# 個別トグル（tier に追加・除外）:
+#   --no-build       build を省く
+#   --e2e            Playwright E2E を含める
+#   --secrets        gitleaks による秘密情報スキャンを含める
+#   --sast           semgrep による SAST を含める
+#   --audit          npm audit（本番依存）を含める
+#   --lighthouse     Lighthouse CI を含める
+#   --strict         任意ツールが未インストールの場合も FAIL 扱いにする
+#
+# 終了コード: いずれかの必須ステップが失敗したら 1。SKIP（任意ツール未導入）は
+#            --strict 指定時のみ失敗扱い。
+#
+set -uo pipefail
+
+cd "$(dirname "$0")/.." || exit 2
+ROOT="$(pwd)"
+
+# ---- 引数解析 -------------------------------------------------------------
+RUN_TYPECHECK=1 RUN_LINT=1 RUN_UNIT=1 RUN_BUILD=0
+RUN_E2E=0 RUN_SECRETS=0 RUN_SAST=0 RUN_AUDIT=0 RUN_LH=0
+STRICT=0
+TIER="fast"
+
+if [[ $# -eq 0 ]]; then set -- --fast; fi
+for arg in "$@"; do
+  case "$arg" in
+    --fast) TIER="fast"; RUN_BUILD=0 ;;
+    --pr)   TIER="pr";   RUN_BUILD=1 ;;
+    --full) TIER="full"; RUN_BUILD=1; RUN_SECRETS=1; RUN_SAST=1; RUN_AUDIT=1; RUN_E2E=1; RUN_LH=1 ;;
+    --no-build)   RUN_BUILD=0 ;;
+    --e2e)        RUN_E2E=1 ;;
+    --secrets)    RUN_SECRETS=1 ;;
+    --sast)       RUN_SAST=1 ;;
+    --audit)      RUN_AUDIT=1 ;;
+    --lighthouse) RUN_LH=1 ;;
+    --strict)     STRICT=1 ;;
+    -h|--help) grep '^#' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    *) echo "unknown arg: $arg" >&2; exit 2 ;;
+  esac
+done
+
+# ---- 実行ヘルパ -----------------------------------------------------------
+declare -a SUMMARY
+FAILED=0
+
+step() { # step <label> <cmd...>
+  local label="$1"; shift
+  echo ""
+  echo "▶ ${label}"
+  echo "  \$ $*"
+  local start; start=$SECONDS
+  if "$@"; then
+    SUMMARY+=("PASS  ${label}  ($((SECONDS-start))s)")
+  else
+    SUMMARY+=("FAIL  ${label}  ($((SECONDS-start))s)")
+    FAILED=1
+  fi
+}
+
+skip_or_fail() { # skip_or_fail <label> <reason>
+  if [[ "$STRICT" -eq 1 ]]; then
+    SUMMARY+=("FAIL  $1  (${2}; --strict)")
+    FAILED=1
+  else
+    SUMMARY+=("SKIP  $1  (${2})")
+  fi
+}
+
+echo "================================================================"
+echo " quality-gate  tier=${TIER}  $(node -v 2>/dev/null)"
+echo " repo: ${ROOT}"
+echo "================================================================"
+
+# ---- 必須ステップ ---------------------------------------------------------
+[[ "$RUN_TYPECHECK" -eq 1 ]] && step "typecheck (tsc)"      npm run --silent typecheck
+[[ "$RUN_LINT"      -eq 1 ]] && step "lint (eslint)"        npm run --silent lint
+[[ "$RUN_UNIT"      -eq 1 ]] && step "unit (vitest)"        npm run --silent test
+[[ "$RUN_BUILD"     -eq 1 ]] && step "build (next build)"   npm run --silent build
+
+# ---- 任意ステップ ---------------------------------------------------------
+if [[ "$RUN_E2E" -eq 1 ]]; then
+  step "e2e (playwright)" npm run --silent test:e2e
+fi
+
+if [[ "$RUN_SECRETS" -eq 1 ]]; then
+  if command -v gitleaks >/dev/null 2>&1; then
+    step "secrets (gitleaks)" gitleaks detect --no-banner --redact
+  else
+    skip_or_fail "secrets (gitleaks)" "gitleaks not installed"
+  fi
+fi
+
+if [[ "$RUN_SAST" -eq 1 ]]; then
+  if command -v semgrep >/dev/null 2>&1; then
+    step "sast (semgrep)" semgrep scan --config p/default --error
+  else
+    skip_or_fail "sast (semgrep)" "semgrep not installed"
+  fi
+fi
+
+if [[ "$RUN_AUDIT" -eq 1 ]]; then
+  step "audit (npm audit)" npm audit --omit=dev
+fi
+
+if [[ "$RUN_LH" -eq 1 ]]; then
+  if command -v lhci >/dev/null 2>&1 || npx --no-install lhci --version >/dev/null 2>&1; then
+    step "lighthouse (lhci)" npm run --silent lighthouse
+  else
+    skip_or_fail "lighthouse (lhci)" "lhci not available"
+  fi
+fi
+
+# ---- サマリ ---------------------------------------------------------------
+echo ""
+echo "================================================================"
+echo " summary (tier=${TIER})"
+echo "----------------------------------------------------------------"
+for line in "${SUMMARY[@]}"; do echo "  ${line}"; done
+echo "================================================================"
+
+if [[ "$FAILED" -eq 1 ]]; then
+  echo "❌ quality-gate FAILED"
+  exit 1
+fi
+echo "✅ quality-gate PASSED"
