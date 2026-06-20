@@ -1,14 +1,12 @@
+import { Dashboard } from '@/components/admin/dashboard/Dashboard';
+
+export const dynamic = 'force-dynamic';
+
 /**
- * 管理ダッシュボードのプレースホルダ (issue #22 で本実装)。
+ * 管理ダッシュボード (issue #86, increment 1)。
+ * 受付の概況（本日の受付状況・端末稼働・直近の呼び出し）と各管理画面への導線を表示する。
+ * 概況は集約 API（/api/admin/dashboard）から取得する。
  */
 export default function AdminHomePage() {
-  return (
-    <section>
-      <h1 style={{ marginTop: 0 }}>ダッシュボード</h1>
-      <p style={{ opacity: 0.85, maxWidth: 640 }}>
-        受付端末、部署、担当者、アセット、音声、セキュリティ設定をここから管理します。
-        各設定画面は後続の issue で実装します。
-      </p>
-    </section>
-  );
+  return <Dashboard />;
 }
