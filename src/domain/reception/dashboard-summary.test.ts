@@ -1,0 +1,123 @@
+import { describe, expect, it } from 'vitest';
+import type { ReceptionLog } from './log';
+import {
+  buildDashboardSummary,
+  deriveOverallStatus,
+  recentCalls,
+  summarizeDevices,
+  summarizeToday,
+  type DeviceLike,
+} from './dashboard-summary';
+
+const NOW = new Date('2026-06-20T12:00:00.000Z');
+
+function log(over: Partial<ReceptionLog> & Pick<ReceptionLog, 'id' | 'outcome' | 'startedAt'>): ReceptionLog {
+  return {
+    receptionId: `rcp-${over.id}`,
+    kioskId: 'kiosk-1',
+    fallbackUsed: false,
+    endedAt: over.startedAt,
+    durationMs: 1000,
+    createdAt: over.startedAt,
+    ...over,
+  };
+}
+
+describe('summarizeToday (#86)', () => {
+  it('本日分のみを件数・成否別に集計し、前日分を除外する', () => {
+    const logs: ReceptionLog[] = [
+      log({ id: 'a', outcome: 'connected', startedAt: '2026-06-20T09:00:00.000Z' }),
+      log({ id: 'b', outcome: 'failed', startedAt: '2026-06-20T10:00:00.000Z', fallbackUsed: true }),
+      log({ id: 'c', outcome: 'timeout', startedAt: '2026-06-20T11:00:00.000Z' }),
+      // 前日分は対象外（TZ に依存せず確実に別日になるよう 24h 以上前にする）
+      log({ id: 'd', outcome: 'connected', startedAt: '2026-06-18T12:00:00.000Z' }),
+    ];
+    const today = summarizeToday(logs, NOW);
+    expect(today.total).toBe(3);
+    expect(today.connected).toBe(1);
+    expect(today.failed).toBe(1);
+    expect(today.timeout).toBe(1);
+    expect(today.cancelled).toBe(0);
+    expect(today.fallbackUsed).toBe(1);
+  });
+
+  it('空履歴では全カウントが 0', () => {
+    const today = summarizeToday([], NOW);
+    expect(today).toEqual({ total: 0, connected: 0, timeout: 0, failed: 0, cancelled: 0, fallbackUsed: 0 });
+  });
+
+  it('不正な日付文字列は本日扱いしない', () => {
+    const today = summarizeToday([log({ id: 'x', outcome: 'connected', startedAt: 'not-a-date' })], NOW);
+    expect(today.total).toBe(0);
+  });
+});
+
+describe('summarizeDevices (#86)', () => {
+  it('enabled をオンライン稼働として集計する', () => {
+    const devices: DeviceLike[] = [
+      { id: '1', displayName: 'A', enabled: true },
+      { id: '2', displayName: 'B', enabled: false },
+      { id: '3', displayName: 'C', enabled: true },
+    ];
+    expect(summarizeDevices(devices)).toEqual({ total: 3, online: 2, offline: 1 });
+  });
+
+  it('端末ゼロでも破綻しない', () => {
+    expect(summarizeDevices([])).toEqual({ total: 0, online: 0, offline: 0 });
+  });
+});
+
+describe('recentCalls (#86)', () => {
+  it('新しい順に最大 limit 件、PII を含めず返す', () => {
+    const logs: ReceptionLog[] = [
+      log({ id: 'old', outcome: 'connected', startedAt: '2026-06-20T08:00:00.000Z' }),
+      log({ id: 'new', outcome: 'failed', startedAt: '2026-06-20T11:00:00.000Z' }),
+      log({ id: 'mid', outcome: 'timeout', startedAt: '2026-06-20T10:00:00.000Z' }),
+    ];
+    const recent = recentCalls(logs, 2);
+    expect(recent.map((r) => r.id)).toEqual(['new', 'mid']);
+    // 表示形に visitor/PII フィールドが無いことを保証
+    expect(Object.keys(recent[0] ?? {}).sort()).toEqual(
+      ['durationMs', 'fallbackUsed', 'id', 'kioskId', 'outcome', 'startedAt', 'targetLabel'].sort(),
+    );
+  });
+});
+
+describe('deriveOverallStatus (#86)', () => {
+  const base = { total: 0, connected: 0, timeout: 0, failed: 0, cancelled: 0, fallbackUsed: 0 };
+
+  it('全端末オフラインは critical', () => {
+    expect(deriveOverallStatus(base, { total: 2, online: 0, offline: 2 })).toBe('critical');
+  });
+
+  it('呼び出し失敗があれば warning', () => {
+    expect(deriveOverallStatus({ ...base, failed: 1 }, { total: 2, online: 2, offline: 0 })).toBe('warning');
+  });
+
+  it('一部端末オフラインは warning', () => {
+    expect(deriveOverallStatus(base, { total: 2, online: 1, offline: 1 })).toBe('warning');
+  });
+
+  it('問題なしは ok', () => {
+    expect(deriveOverallStatus({ ...base, connected: 3 }, { total: 2, online: 2, offline: 0 })).toBe('ok');
+  });
+
+  it('端末未登録（total=0）は critical にしない', () => {
+    expect(deriveOverallStatus(base, { total: 0, online: 0, offline: 0 })).toBe('ok');
+  });
+});
+
+describe('buildDashboardSummary (#86)', () => {
+  it('履歴と端末から概況サマリ全体を組み立てる', () => {
+    const logs: ReceptionLog[] = [
+      log({ id: 'a', outcome: 'connected', startedAt: '2026-06-20T09:00:00.000Z' }),
+      log({ id: 'b', outcome: 'failed', startedAt: '2026-06-20T10:00:00.000Z' }),
+    ];
+    const devices: DeviceLike[] = [{ id: '1', displayName: 'A', enabled: true }];
+    const summary = buildDashboardSummary(logs, devices, NOW);
+    expect(summary.status).toBe('warning'); // failed あり
+    expect(summary.today.total).toBe(2);
+    expect(summary.devices).toEqual({ total: 1, online: 1, offline: 0 });
+    expect(summary.recentCalls).toHaveLength(2);
+  });
+});
