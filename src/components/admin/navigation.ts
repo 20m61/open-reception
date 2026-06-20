@@ -74,6 +74,7 @@ export const ADMIN_NAV: readonly NavGroup[] = [
       { href: '/admin/receptions', label: '受付履歴' },
       { href: '/admin/sites', label: '拠点' },
       { href: '/admin/kiosks', label: '受付端末' },
+      { href: '/admin/call-routes', label: '呼び出しルート' },
       { href: '/admin/departments', label: '部署' },
       { href: '/admin/staff', label: '担当者' },
     ],
@@ -89,11 +90,21 @@ export const ADMIN_NAV: readonly NavGroup[] = [
     ],
   },
   {
+    id: 'status',
+    label: '利用状況',
+    roles: TENANT_VIEWERS,
+    items: [
+      { href: '/admin/usage', label: '利用量' },
+      { href: '/admin/costs', label: '予想コスト' },
+    ],
+  },
+  {
     id: 'governance',
     label: 'ガバナンス',
     roles: TENANT_VIEWERS,
     items: [
       { href: '/admin/security', label: 'セキュリティ', roles: TENANT_ADMINS },
+      { href: '/admin/integrations', label: '外部連携', roles: TENANT_ADMINS },
       { href: '/admin/audit', label: '監査ログ' },
     ],
   },
