@@ -49,9 +49,10 @@ export async function POST(
     return NextResponse.json({ error: 'vonage_error', message: 'failed to issue token' }, { status: 502 });
   }
 
-  // calling → connected を確定（未応答状態以外は不正遷移として 409。発行済みトークンは未使用で破棄）。
-  const connected = await markConnected(id);
-  if (!connected.ok) {
+  // calling → connected を確定（担当者応答として監査）。
+  // 既に connected（再参加 / 二重 POST）の場合は冪等にトークンを返す。
+  const connected = await markConnected(id, 'staff');
+  if (!connected.ok && found.value.state !== 'connected') {
     return NextResponse.json(
       { error: connected.error.code, message: connected.error.message },
       { status: 409 },

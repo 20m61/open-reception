@@ -161,14 +161,20 @@ describe('reception-store', () => {
       }
     });
 
-    it('応答時に reception.answered を監査ログへ記録する', async () => {
+    it('応答時に reception.answered を監査ログへ一度だけ記録する', async () => {
       await __resetLogStore();
       const created = await createReception(baseInput);
+      expect(created.ok).toBe(true);
       if (!created.ok) return;
       await startCall(created.value.id, callingAdapter);
-      await markConnected(created.value.id);
-      const audits = await listAuditLogs();
-      expect(audits.some((a) => a.action === 'reception.answered' && a.targetId === created.value.id)).toBe(true);
+      await markConnected(created.value.id, 'staff');
+      // 二度目は不正遷移（既に connected）→ answered を重複記録しない。
+      await markConnected(created.value.id, 'staff');
+      const answered = (await listAuditLogs()).filter(
+        (a) => a.action === 'reception.answered' && a.targetId === created.value.id,
+      );
+      expect(answered).toHaveLength(1);
+      expect(answered[0]!.actor).toBe('staff');
     });
 
     it('calling 以外からの markConnected は不正遷移', async () => {

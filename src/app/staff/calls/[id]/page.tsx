@@ -1,4 +1,8 @@
+import type { Metadata } from 'next';
 import { StaffCallView } from '@/components/staff/StaffCallView';
+
+// 応答トークンを URL に含むため、Referer 経由の漏えいを避ける。
+export const metadata: Metadata = { referrer: 'no-referrer' };
 
 /**
  * 担当者応答ページ (issue #4 increment 2c-残)。
