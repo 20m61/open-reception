@@ -34,6 +34,7 @@ export function getVonageConfig(): VonageConfig | null {
     applicationId: process.env.VONAGE_APPLICATION_ID!,
     apiKey: process.env.VONAGE_API_KEY!,
     apiSecret: process.env.VONAGE_API_SECRET!,
-    privateKey: process.env.VONAGE_PRIVATE_KEY!,
+    // PEM を 1 行 env / Secrets Manager に入れる際の \n エスケープを実改行へ戻す。
+    privateKey: process.env.VONAGE_PRIVATE_KEY!.replace(/\\n/g, '\n'),
   };
 }

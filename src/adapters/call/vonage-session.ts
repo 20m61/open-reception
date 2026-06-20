@@ -72,7 +72,12 @@ export class RestVonageSessionService implements VonageSessionService {
     if (!res.ok) {
       throw new Error(`vonage createSession failed: HTTP ${res.status}`);
     }
-    const body = JSON.parse(await res.text()) as Array<{ session_id?: string }> | { session_id?: string };
+    let body: Array<{ session_id?: string }> | { session_id?: string };
+    try {
+      body = JSON.parse(await res.text());
+    } catch {
+      throw new Error('vonage createSession: invalid JSON response');
+    }
     const sessionId = Array.isArray(body) ? body[0]?.session_id : body.session_id;
     if (!sessionId) {
       throw new Error('vonage createSession: session_id missing in response');

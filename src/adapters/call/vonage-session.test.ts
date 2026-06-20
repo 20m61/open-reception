@@ -71,6 +71,16 @@ describe('RestVonageSessionService.createSession', () => {
     const svc = new RestVonageSessionService(config, transport);
     await expect(svc.createSession('r')).rejects.toThrow(/session_id missing/);
   });
+
+  it('throws a clear error on a non-JSON 200 body', async () => {
+    const transport: VonageTransport = async () => ({
+      ok: true,
+      status: 200,
+      text: async () => '<html>oops</html>',
+    });
+    const svc = new RestVonageSessionService(config, transport);
+    await expect(svc.createSession('r')).rejects.toThrow(/invalid JSON response/);
+  });
 });
 
 describe('RestVonageSessionService.issueToken', () => {
