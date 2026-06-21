@@ -92,9 +92,9 @@ echo "================================================================"
 
 # ---- 依存 bootstrap（fresh worktree の自己修復）---------------------------
 install_deps() { # install_deps <dir-label> <prefix-or-empty>
-  local label="$1" prefix="$2"
+  local label="$1" prefix="$2" reason="$3"
   local lock; lock="${prefix:+$prefix/}package-lock.json"
-  echo "  ↳ ${label}: 依存が無いためインストールします"
+  echo "  ↳ ${label}: ${reason} → インストールします"
   if [[ -f "$lock" ]]; then
     npm ${prefix:+--prefix "$prefix"} ci
   else
@@ -102,14 +102,30 @@ install_deps() { # install_deps <dir-label> <prefix-or-empty>
   fi
 }
 
-if [[ "$BOOTSTRAP" -eq 1 ]]; then
-  if [[ ! -d node_modules ]]; then
-    install_deps "root" "" || { echo "❌ root 依存のインストールに失敗"; exit 2; }
+# install が必要かを判定し、必要なら理由を echo して 0 を、不要なら 1 を返す。
+#   - node_modules が無い（fresh worktree）
+#   - package-lock.json が node_modules/.package-lock.json より新しい
+#     （依存追加 PR をマージした後の lockfile ドリフト）
+needs_install() { # needs_install <prefix-or-empty>
+  local prefix="$1"
+  local dir="${prefix:+$prefix/}node_modules"
+  local lock="${prefix:+$prefix/}package-lock.json"
+  local marker="${dir}/.package-lock.json"
+  if [[ ! -d "$dir" ]]; then echo "node_modules が無い"; return 0; fi
+  if [[ -f "$lock" && ( ! -f "$marker" || "$lock" -nt "$marker" ) ]]; then
+    echo "package-lock.json が node_modules より新しい（ドリフト）"; return 0
   fi
-  # root tsconfig は infra/**/*.ts を include するため、infra 依存が無いと
-  # typecheck/build が失敗する。infra/ があり node_modules が無ければ入れる。
-  if [[ -d infra && ! -d infra/node_modules ]]; then
-    install_deps "infra" "infra" || { echo "❌ infra 依存のインストールに失敗"; exit 2; }
+  return 1
+}
+
+if [[ "$BOOTSTRAP" -eq 1 ]]; then
+  if reason=$(needs_install ""); then
+    install_deps "root" "" "$reason" || { echo "❌ root 依存のインストールに失敗"; exit 2; }
+  fi
+  # root tsconfig は infra/**/*.ts を include するため、infra 依存が無い/ドリフトしていると
+  # typecheck/build が失敗する。infra/ があれば同様に同期する。
+  if [[ -d infra ]] && reason=$(needs_install "infra"); then
+    install_deps "infra" "infra" "$reason" || { echo "❌ infra 依存のインストールに失敗"; exit 2; }
   fi
 fi
 
