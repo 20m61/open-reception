@@ -16,6 +16,7 @@
  */
 import {
   isChatActionAllowed,
+  isActionAllowed,
   CHAT_FORBIDDEN_ACTIONS,
   REQUIRES_CONFIRMATION_ACTIONS,
   type ChatMessage,
@@ -113,7 +114,11 @@ export function suggestionToQuickReply(
     return null;
   }
   // 重要操作はチャットから確定不可。タッチ確認への誘導に降格する。
+  // ただし現状態で到達不能な操作（例: idle での confirm）は提示しない（reachability gate）。
   if (CHAT_FORBIDDEN_ACTIONS.has(action) || REQUIRES_CONFIRMATION_ACTIONS.has(action)) {
+    if (!isActionAllowed(state, action)) {
+      return null;
+    }
     return { kind: 'confirm-redirect', label, action, needsTouchConfirm: true };
   }
   if (isChatActionAllowed(state, action)) {
