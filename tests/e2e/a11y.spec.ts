@@ -30,6 +30,31 @@ test('管理ログインに critical な a11y 違反がない', async ({ page })
   expect(await criticalViolations(page)).toEqual([]);
 });
 
+test('受付の確認画面に critical な a11y 違反がない（呼び出し直前・安全上重要）', async ({ page }) => {
+  await page.goto('/kiosk');
+  await page.getByTestId('start-reception').click();
+  await page.getByTestId('purpose-meeting').click();
+  await page.getByTestId('staff-staff-sato').click();
+  await page.getByTestId('visitor-name').fill('来客 一郎');
+  await page.getByTestId('to-confirm').click();
+  await expect(page.getByTestId('confirm-call')).toBeVisible();
+  expect(await criticalViolations(page)).toEqual([]);
+});
+
+test('iPad 横置きの待機画面に critical な a11y 違反がない', async ({ page }) => {
+  await page.setViewportSize({ width: 1080, height: 810 });
+  await page.goto('/kiosk');
+  await expect(page.getByTestId('start-reception')).toBeVisible();
+  expect(await criticalViolations(page)).toEqual([]);
+});
+
+test('大型横画面の待機画面に critical な a11y 違反がない', async ({ page }) => {
+  await page.setViewportSize({ width: 1920, height: 1080 });
+  await page.goto('/kiosk');
+  await expect(page.getByTestId('start-reception')).toBeVisible();
+  expect(await criticalViolations(page)).toEqual([]);
+});
+
 test('モーション割り当て画面のフォーム要素にアクセシブルな名前がある', async ({ page }) => {
   await loginAsAdmin(page);
   await page.goto('/admin/motions');
