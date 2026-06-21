@@ -15,3 +15,4 @@ export { Field, FormRow } from './Field';
 export { SecretStatusField } from './SecretStatusField';
 export { DangerZone } from './DangerZone';
 export { EmptyState } from './EmptyState';
+export { Skeleton, SkeletonBlock } from './Skeleton';

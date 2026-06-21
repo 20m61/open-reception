@@ -212,3 +212,158 @@ a {
   height: 360px;
   max-width: 60vw;
 }
+
+/* =========================================================================
+ * 管理画面シェル: SPA ライクなレスポンシブ・レイアウト (issue #94, increment 1)
+ *
+ * 見た目（レイアウト/開閉/アニメーション）は CSS に集約する。AdminShell（JS）は
+ * data-sidebar-open の状態だけを持つ。デスクトップ幅では常時サイドバー、iPad/モバイル
+ * 幅ではオフキャンバスのドロワーに切替える。
+ * ======================================================================= */
+.admin-shell {
+  display: flex;
+  min-height: 100vh;
+}
+
+.admin-shell__sidebar {
+  width: 240px;
+  flex-shrink: 0;
+  background: var(--color-surface);
+  padding: var(--space-lg);
+  border-right: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+.admin-shell__sidebar-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: var(--space-md);
+}
+
+.admin-shell__title {
+  font-size: 1.25rem;
+  margin: 0;
+}
+
+.admin-shell__main-col {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.admin-shell__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: var(--space-md) var(--space-lg);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+.admin-shell__content {
+  /* ルート遷移後にコンテンツが差し替わる際の控えめなフェードイン。 */
+  animation: admin-content-fade 180ms ease;
+}
+
+/* ハンバーガー / 閉じる / 背景はデスクトップでは不要。モバイルでのみ出す。 */
+.admin-shell__hamburger,
+.admin-shell__close,
+.admin-shell__scrim {
+  display: none;
+}
+
+.admin-shell__hamburger,
+.admin-shell__close {
+  appearance: none;
+  background: transparent;
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  color: var(--color-text);
+  border-radius: 8px;
+  width: 40px;
+  height: 40px;
+  font-size: 1.1rem;
+  cursor: pointer;
+}
+
+/* iPad/モバイル幅: サイドバーをドロワー化する。 */
+@media (max-width: 900px) {
+  .admin-shell__hamburger {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+  }
+
+  .admin-shell__close {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+  }
+
+  .admin-shell__sidebar {
+    position: fixed;
+    inset: 0 auto 0 0;
+    z-index: 50;
+    transform: translateX(-100%);
+    transition: transform 200ms ease;
+    overflow-y: auto;
+    box-shadow: 0 0 24px rgba(0, 0, 0, 0.4);
+  }
+
+  .admin-shell[data-sidebar-open='true'] .admin-shell__sidebar {
+    transform: translateX(0);
+  }
+
+  .admin-shell__scrim {
+    position: fixed;
+    inset: 0;
+    z-index: 40;
+    border: 0;
+    padding: 0;
+    background: rgba(0, 0, 0, 0.5);
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 200ms ease;
+  }
+
+  .admin-shell[data-sidebar-open='true'] .admin-shell__scrim {
+    display: block;
+    opacity: 1;
+    pointer-events: auto;
+  }
+}
+
+/* SPA 遷移フィードバック用アニメーション。 */
+@keyframes admin-skeleton-pulse {
+  0%,
+  100% {
+    opacity: 0.5;
+  }
+  50% {
+    opacity: 0.9;
+  }
+}
+
+@keyframes admin-spinner-rotate {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@keyframes admin-content-fade {
+  from {
+    opacity: 0.6;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+/* モーション抑制設定を尊重する。 */
+@media (prefers-reduced-motion: reduce) {
+  .admin-shell__sidebar,
+  .admin-shell__scrim,
+  .admin-shell__content {
+    transition: none;
+    animation: none;
+  }
+}
