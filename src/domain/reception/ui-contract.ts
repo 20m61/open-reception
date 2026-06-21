@@ -24,6 +24,9 @@ import {
   transition,
 } from './state';
 
+// 契約モジュールの消費側（#121/#122/#123）が screenState 型を 1 箇所から import できるよう再エクスポート。
+export type { ReceptionState } from './state';
+
 /**
  * 受付UXのアクション（来訪者が起こせる操作）。
  *
