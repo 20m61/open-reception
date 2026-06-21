@@ -5,6 +5,17 @@
  */
 export type VoiceProvider = 'browser' | 'none';
 
+/**
+ * locale 別の TTS 上書き (issue #103)。未設定の locale は既定マップ
+ * (src/lib/voice/locale-voice.ts: LOCALE_LANGUAGE_CODE) へフォールバックする。
+ */
+export type LocaleVoice = {
+  /** TTS 言語コード（BCP-47, 例 'en-US'）。 */
+  languageCode: string;
+  /** プロバイダ固有の voiceId（例 Polly 'Joanna'）。空なら lang から既定音声を選ぶ。 */
+  voiceId: string;
+};
+
 export type VoiceSettings = {
   ttsEnabled: boolean;
   sttEnabled: boolean;
@@ -21,6 +32,11 @@ export type VoiceSettings = {
   guidanceConfirm: string;
   /** 音声再生不可時の案内（テキスト fallback）。 */
   fallbackText: string;
+  /**
+   * locale 別 TTS 上書き (issue #103)。任意。未設定 locale は既定言語コードへ
+   * フォールバックする（resolveLocaleVoice 参照）。後方互換のため optional。
+   */
+  localeVoices?: Partial<Record<string, LocaleVoice>>;
 };
 
 export function clampRate(rate: number): number {
