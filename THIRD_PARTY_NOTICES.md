@@ -47,3 +47,24 @@ SOFTWARE.
 > 「QR Code」は DENSO WAVE INCORPORATED の登録商標です。本プロダクトでは QR コードの
 > 基本仕様（ロイヤリティフリー）のみを用い、装飾 QR / フレーム QR は使用しません。商標を
 > プロダクト名・ロゴで強調しません（`docs/license-privacy-guide.md` §2.8）。
+
+---
+
+## jsQR
+
+- バージョン: 1.4.0
+- SPDX: Apache-2.0
+- 商用利用: 可
+- 改変 / 再配布: 可（帰属表示要・特許許諾あり）
+- 依存: なし（zero dependency）
+- 著作権: Copyright the jsQR authors (Cozmo and contributors)
+- リポジトリ: https://github.com/cozmo/jsQR
+- 用途: QR 読み取りチェックイン (issue #98 increment 2) で、受付端末カメラ映像の
+  Canvas フレーム（RGBA 画素列）から QR を decode し、予約参照トークンの checkin URL を
+  読む。カメラ映像・フレームは**ローカル処理のみ・非送信・非保存**（録画 / 画像保存しない）。
+  WASM / worker は同梱しないピュア JS デコーダ。
+
+> Apache-2.0 のため NOTICE ファイル同梱があればその内容を転記する必要があるが、jsQR の
+> 配布物に `NOTICE` ファイルは含まれない（`LICENSE`（Apache-2.0 全文）のみ）。上記の帰属
+> 表示と Apache-2.0 ライセンス（http://www.apache.org/licenses/LICENSE-2.0）の参照で
+> 帰属条件を満たす。`node_modules/jsqr/LICENSE` に全文を同梱。

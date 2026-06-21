@@ -101,6 +101,9 @@ const TRANSITIONS: Partial<Record<CheckinState, Partial<Record<CheckinEvent, Che
   scanning: {
     QR_DETECTED: 'resolving',
     SCAN_ERROR: 'scanError',
+    // 実カメラでは権限プロンプトが読み取り開始時に出るため、scanning 中の
+    // カメラ拒否 / 未対応を cameraError として区別する（issue #98, increment 2）。
+    CAMERA_DENIED: 'cameraError',
     CANCEL: 'idle',
   },
   resolving: {

@@ -8,24 +8,26 @@ import {
 } from '@/domain/checkin/state';
 import type { CheckinSummary, CheckinFailureReason } from '@/domain/checkin/types';
 import type { QrScanner, ScanError } from '@/domain/checkin/scanner';
-import { MockQrScanner } from '@/lib/checkin/mock-scanner';
+import { CameraQrScanner } from '@/lib/checkin/camera-scanner';
 
 /**
- * QR チェックインフロー (issue #98, increment 1)。
+ * QR チェックインフロー (issue #98, increment 2)。
  *
  * 状態機械（src/domain/checkin/state.ts）に沿って
  * 受付方法選択 → カメラ権限確認 → QR 読み取り → 予約取得 → 予約内容確認 → 呼び出し、
  * と各エラー / フォールバック遷移を描画する。
  *
- * scanner は**注入可能**（既定は inc1 の MockQrScanner）。実カメラ + デコードは
- * increment 2 で interface を変えずに差し替える（docs/qr-checkin-design.md §5）。
+ * scanner は**注入可能**。既定は increment 2 で結線した実カメラ + jsQR デコードの
+ * CameraQrScanner（getUserMedia → フレーム → デコード → token）。テスト / フォールバック
+ * 用に MockQrScanner を注入できる（interface は inc1 から不変。docs/qr-checkin-design.md §5）。
+ * 映像はローカル処理のみ・非送信・非保存。
  *
  * 確認操作必須・カメラ拒否でも通常受付へ完走・完了/キャンセル後は個人情報を残さない。
  */
 
 /** 受付方法選択で「通常受付」を選んだとき / フォールバック時に呼ばれる。 */
 export type CheckinFlowProps = {
-  /** 注入する QR スキャナ（テスト・実機差し替え用）。既定は mock。 */
+  /** 注入する QR スキャナ（テスト・実機差し替え用）。既定は実カメラ CameraQrScanner。 */
   scanner?: QrScanner;
   /** 「通常受付」へ切り替えるときのハンドラ（既存フローへ委譲）。 */
   onUseManual?: () => void;
@@ -85,8 +87,8 @@ const REASON_EVENT: Record<CheckinFailureReason, SimpleEvent> = {
 
 export function CheckinFlow({ scanner, onUseManual, onExit }: CheckinFlowProps) {
   const [data, dispatch] = useReducer(reducer, INITIAL);
-  // 注入されたスキャナ（既定は mock）。再レンダーで作り直さない。
-  const scannerRef = useRef<QrScanner>(scanner ?? new MockQrScanner());
+  // 注入されたスキャナ（既定は実カメラ CameraQrScanner）。再レンダーで作り直さない。
+  const scannerRef = useRef<QrScanner>(scanner ?? new CameraQrScanner());
 
   // scanning 状態の間だけスキャナを起動し、離脱時に必ず停止する（カメラ解放）。
   useEffect(() => {
@@ -98,7 +100,11 @@ export function CheckinFlow({ scanner, onUseManual, onExit }: CheckinFlowProps) 
         if (!stopped) dispatch({ type: 'QR_DETECTED', payload: text });
       },
       (error) => {
-        if (!stopped) dispatch({ type: 'SCAN_ERROR', error });
+        if (stopped) return;
+        // 実カメラでは権限プロンプトが読み取り開始時に出る。カメラ拒否 / 未対応は
+        // cameraError として区別し、それ以外（デコード失敗 / タイムアウト）は scanError。
+        if (error.kind === 'camera_denied') dispatch({ type: 'CAMERA_DENIED' });
+        else dispatch({ type: 'SCAN_ERROR', error });
       },
     );
     return () => {
