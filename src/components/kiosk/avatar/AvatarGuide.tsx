@@ -1,0 +1,154 @@
+'use client';
+
+import { useEffect, useMemo } from 'react';
+import type { ReceptionState } from '@/domain/reception/state';
+import { deriveAvatarState } from '@/domain/reception/ui-contract';
+import { resolveMotionUrl, type MotionKey } from '@/domain/motion/types';
+import { DEFAULT_LOCALE, type Locale } from '@/lib/i18n';
+import { speak, type SpeakSettings } from '../speech';
+import { VrmAvatarViewer } from '../VrmAvatarViewer';
+import { avatarGuidanceFor, type AvatarGuidance } from './guidance';
+
+/**
+ * 受付状態と同期したアバター案内コンポーネント (issue #123 / Epic #119)。
+ *
+ * 責務:
+ *  - #120 の `deriveAvatarState(screenState)` を購読し、状態に応じた表情/モーション・
+ *    発話・字幕・軽い誘導を提示する（写像ロジックは avatar/guidance.ts の純関数）。
+ *  - 音声が出ない/出せない場合も「字幕」で同内容を表示する（subtitle は常に表示）。
+ *  - VRM ロード失敗時は VrmAvatarViewer が静止画/プレースホルダへ落ち、本コンポーネントは
+ *    さらにテキスト案内（fallbackText）で内容を保証する。
+ *  - チャットドロワー表示中も操作を遮らないよう、オーバーレイは pointer-events: none。
+ *
+ * 配線方針（KioskFlow へは本トラックでは触らない / #121 のスロット待ち）:
+ *  - KioskFlow が保持する screenState をそのまま `screenState` に渡す。
+ *  - locale は受付の言語設定（#103）から、TTS 設定は管理設定（#5/#28）から渡す。
+ *  - VRM/静止画 URL・モーションマップは端末設定（#27/#31）から渡す。
+ *
+ * 本コンポーネントは状態を所有しない（screenState の導出のみ）。スタイルはインラインで
+ * 完結させ globals.css は触らない（#121 のスコープ）。
+ */
+export type AvatarGuideProps = {
+  /** 受付フローの画面状態。ここから avatarState を導出する（state は持たない）。 */
+  screenState: ReceptionState;
+  /** 表示言語（#103）。未指定は既定 locale。 */
+  locale?: Locale;
+  /** VRM モデル URL（無ければ静止画/プレースホルダ）。実アセット検証は #65。 */
+  vrmUrl?: string;
+  /** VRM 不可/失敗時の静止画 URL。 */
+  fallbackImageUrl?: string;
+  /** モーションキー → 解決済みモーション URL（#31）。実再生は #65。 */
+  motionUrls?: Partial<Record<MotionKey, string>>;
+  /** 既定モーション URL（キー未割当時の fallback）。 */
+  defaultMotionUrl?: string;
+  /** TTS 設定（#5/#28）。未指定/無効なら音声は出さず字幕のみ。 */
+  ttsSettings?: SpeakSettings;
+  className?: string;
+};
+
+export function AvatarGuide({
+  screenState,
+  locale = DEFAULT_LOCALE,
+  vrmUrl,
+  fallbackImageUrl,
+  motionUrls,
+  defaultMotionUrl,
+  ttsSettings,
+  className,
+}: AvatarGuideProps) {
+  const avatarState = deriveAvatarState(screenState);
+  const guidance: AvatarGuidance = useMemo(
+    () => avatarGuidanceFor(avatarState, locale),
+    [avatarState, locale],
+  );
+
+  const motionUrl = resolveMotionUrl(guidance.motionKey, motionUrls ?? {}, defaultMotionUrl);
+
+  // TTS が有効なら発話する。失敗/無効でも字幕で同内容を保証するためフローは止めない。
+  useEffect(() => {
+    if (!ttsSettings) return;
+    speak(guidance.speech, ttsSettings);
+  }, [guidance.speech, ttsSettings]);
+
+  const voiceless = !ttsSettings || !ttsSettings.ttsEnabled;
+
+  return (
+    <div
+      className={className}
+      data-testid="avatar-guide"
+      data-avatar-state={avatarState}
+      data-screen-state={screenState}
+      data-cue={guidance.cue}
+      data-expression={guidance.expression}
+      style={containerStyle}
+    >
+      <div style={viewerStyle} aria-hidden="true">
+        <VrmAvatarViewer
+          vrmUrl={vrmUrl}
+          fallbackImageUrl={fallbackImageUrl}
+          motionUrl={motionUrl}
+          className={undefined}
+        />
+        {/* VRM も静止画も使えない場合の最終フォールバック（テキストで内容を保証）。 */}
+        {!vrmUrl && !fallbackImageUrl ? (
+          <p data-testid="avatar-fallback-text" lang={locale} style={fallbackTextStyle}>
+            {guidance.fallbackText}
+          </p>
+        ) : null}
+      </div>
+
+      {/* 字幕。音声の有無に関わらず常に表示し、音声が出せない場合も同内容を伝える。 */}
+      <p
+        data-testid="avatar-subtitle"
+        data-voiceless={voiceless ? 'true' : 'false'}
+        lang={locale}
+        // 案内は live region で読み上げ可能にしつつ、視覚字幕としても見せる。
+        aria-live="polite"
+        style={subtitleStyle}
+      >
+        {guidance.subtitle}
+      </p>
+    </div>
+  );
+}
+
+// チャットドロワー等の上に重ねても操作を遮らないよう pointer-events を無効化する。
+const containerStyle: React.CSSProperties = {
+  display: 'flex',
+  flexDirection: 'column',
+  alignItems: 'center',
+  gap: 12,
+  pointerEvents: 'none',
+};
+
+const viewerStyle: React.CSSProperties = {
+  position: 'relative',
+  width: '100%',
+  maxWidth: 360,
+  aspectRatio: '3 / 4',
+};
+
+const subtitleStyle: React.CSSProperties = {
+  margin: 0,
+  maxWidth: 480,
+  padding: '8px 16px',
+  textAlign: 'center',
+  fontSize: 20,
+  lineHeight: 1.4,
+  borderRadius: 12,
+  background: 'rgba(0, 0, 0, 0.6)',
+  color: '#fff',
+};
+
+const fallbackTextStyle: React.CSSProperties = {
+  position: 'absolute',
+  inset: 0,
+  display: 'flex',
+  alignItems: 'center',
+  justifyContent: 'center',
+  margin: 0,
+  padding: 16,
+  textAlign: 'center',
+  fontSize: 18,
+  color: 'var(--color-muted, #555)',
+};
