@@ -2,15 +2,29 @@ import { NextResponse } from 'next/server';
 import { moveDepartment } from '@/lib/mock-backend/directory-store';
 import { readJson, resultResponse } from '@/lib/mock-backend/result-http';
 import { appendAdminAudit } from '@/lib/mock-backend/reception-log-store';
+import {
+  assertCanWrite,
+  defaultAdminTenantId,
+  requireActor,
+  toGuardResponse,
+} from '@/lib/admin/guard';
 
 /**
  * POST /api/admin/departments/:id/move — 部署の表示順を1つ上/下へ移動 (issue #25)。
  * body: { direction: 'up' | 'down' }
+ *
+ * 認可（#91 inc2）: `requireActor` + `assertCanWrite` で最終認可（viewer は 403）。
  */
 export async function POST(
   request: Request,
   { params }: { params: Promise<{ id: string }> },
 ): Promise<NextResponse> {
+  try {
+    const actor = await requireActor();
+    assertCanWrite(actor, defaultAdminTenantId());
+  } catch (err) {
+    return toGuardResponse(err);
+  }
   const { id } = await params;
   const body = (await readJson(request)) as { direction?: unknown } | null;
   const direction = body?.direction;

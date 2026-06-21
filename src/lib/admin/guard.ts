@@ -18,8 +18,8 @@ import {
   canAccessTenant,
   type Actor,
 } from '@/domain/tenant/authorization';
-import type { SiteId, TenantId } from '@/domain/tenant/types';
-import { resolveAdminActor } from '@/lib/auth/actor';
+import { asTenantId, type SiteId, type TenantId } from '@/domain/tenant/types';
+import { buildActorConfig, resolveAdminActor } from '@/lib/auth/actor';
 
 /** ガード違反。HTTP ステータスと安定したエラーコードを持つ（本文に機微値は含めない）。 */
 export class AdminGuardError extends Error {
@@ -52,6 +52,15 @@ export async function requireActor(): Promise<Actor> {
   const actor = await resolveAdminActor();
   if (!actor) throw unauthorized();
   return actor;
+}
+
+/**
+ * 単一テナント運用の既定テナント ID（env 由来）。tenantId を URL/body で受け取らない
+ * 旧 admin route（部署・担当者・端末・アセット・モーション・音声・受付/監査ログ等）の
+ * 認可スコープに使う。複数テナント分離が必要になった route は scope を明示すること。
+ */
+export function defaultAdminTenantId(): TenantId {
+  return asTenantId(buildActorConfig().defaultTenantId);
 }
 
 /** actor が指定テナントへ書き込めることを表明する。不可なら 403。純粋（throw のみ）。 */
