@@ -2,9 +2,21 @@
 
 import { useCallback, useEffect, useState } from 'react';
 import type { StoredReceptionFlow } from '@/lib/reception/flow-config/types';
-import { DEFAULT_STEPS, type FlowField, type FlowStepKind } from '@/domain/reception/custom-flow';
+import {
+  DEFAULT_STEPS,
+  FIELD_TYPES,
+  type FieldType,
+  type FlowField,
+  type FlowStepKind,
+} from '@/domain/reception/custom-flow';
 import { Button, Card, Field } from '@/components/admin/ui';
 import { color, space } from '@/components/admin/ui/tokens';
+import {
+  buildFieldDraft,
+  isFieldFormReady,
+  reorderBySwap,
+  type FieldFormInput,
+} from './reception-flow-edit';
 
 /**
  * 来訪目的別カスタム受付フロー管理 (issue #100, increment 1)。
@@ -14,9 +26,10 @@ import { color, space } from '@/components/admin/ui/tokens';
  * 把握できるよう、フローごとにステップ並びと入力項目（タイプ・必須）を可視化する。
  * 削除は本番運用に影響するため確認ダイアログを挟む。
  *
- * inc1 のスコープ:
- *   - 作成は目的キー・表示名・説明で行い、ステップは標準並び（DEFAULT_STEPS）を初期値とする。
- *     ステップ取捨選択・入力項目の編集フォームは API では可能（次増分で UI を拡張）。
+ * スコープ:
+ *   - inc1: 作成（目的キー・表示名）・名称編集・有効/無効・削除。ステップは標準並びを初期値。
+ *   - inc2: 並び替え（order を上/下で入れ替え）と入力項目（text/textarea/select/checkbox）の
+ *     追加・削除 UI を追加。検証はドメイン/API、UI 整形は reception-flow-edit.ts の純関数に委ねる。
  *   - 一覧では表示順（order）→ 表示名の安定順で並べる。tenant 切り替え UI は次増分。
  */
 const DEFAULT_TENANT_ID = 'internal';
@@ -108,6 +121,31 @@ export function ReceptionFlowsManager({
 
   const toggle = useCallback((f: StoredReceptionFlow) => patch(f.id, { enabled: !f.enabled }), [patch]);
 
+  // 並び替え (inc2): 隣と order を入れ替え、変わった項目だけ PATCH してから一度だけ再読込する。
+  const reorder = useCallback(
+    async (index: number, dir: -1 | 1) => {
+      const { changed } = reorderBySwap(items, index, dir);
+      if (changed.length === 0) return;
+      await Promise.all(
+        changed.map((c) =>
+          fetch(`/api/admin/reception-flows/${c.id}`, {
+            method: 'PATCH',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ tenantId, order: c.order }),
+          }),
+        ),
+      );
+      await load();
+    },
+    [items, tenantId, load],
+  );
+
+  // 入力項目の保存 (inc2): fields 配列ごと PATCH する（検証は API のドメイン層）。
+  const saveFields = useCallback(
+    (id: string, fields: FlowField[]) => patch(id, { fields }),
+    [patch],
+  );
+
   const saveName = useCallback(
     async (id: string) => {
       if (editName.trim() === '') return;
@@ -169,7 +207,7 @@ export function ReceptionFlowsManager({
       </div>
 
       <div data-testid="flow-list" style={{ display: 'flex', flexDirection: 'column', gap: space.md }}>
-        {items.map((f) => (
+        {items.map((f, index) => (
           <Card key={f.id} testId="flow-card">
             <header style={{ display: 'flex', gap: 12, alignItems: 'center', flexWrap: 'wrap' }}>
               {editingId === f.id ? (
@@ -205,6 +243,22 @@ export function ReceptionFlowsManager({
                 ) : (
                   <>
                     <Button
+                      data-testid="flow-move-up"
+                      onClick={() => reorder(index, -1)}
+                      disabled={index === 0}
+                      aria-label={`${f.displayName}を上へ`}
+                    >
+                      ↑
+                    </Button>
+                    <Button
+                      data-testid="flow-move-down"
+                      onClick={() => reorder(index, 1)}
+                      disabled={index === items.length - 1}
+                      aria-label={`${f.displayName}を下へ`}
+                    >
+                      ↓
+                    </Button>
+                    <Button
                       data-testid="flow-edit"
                       onClick={() => {
                         setEditingId(f.id);
@@ -228,7 +282,11 @@ export function ReceptionFlowsManager({
               <p style={{ opacity: 0.75, fontSize: '0.9rem', margin: '8px 0 0' }}>{f.description}</p>
             ) : null}
 
-            <FlowSummary steps={f.steps} fields={f.fields} />
+            <FlowSummary steps={f.steps} />
+            <FlowFieldsEditor
+              fields={f.fields}
+              onSave={(fields) => saveFields(f.id, fields)}
+            />
           </Card>
         ))}
       </div>
@@ -236,10 +294,10 @@ export function ReceptionFlowsManager({
   );
 }
 
-/** フローのステップ並びと入力項目を可視化する。 */
-function FlowSummary({ steps, fields }: { steps: FlowStepKind[]; fields: FlowField[] }) {
+/** フローのステップ並びを可視化する（読み取り専用）。 */
+function FlowSummary({ steps }: { steps: FlowStepKind[] }) {
   return (
-    <div style={{ marginTop: 12, display: 'flex', flexDirection: 'column', gap: 10 }}>
+    <div style={{ marginTop: 12 }}>
       <div data-testid="flow-steps">
         <div style={{ fontSize: '0.8rem', opacity: 0.7, marginBottom: 4 }}>ステップ</div>
         <ol style={{ margin: 0, paddingLeft: 20, display: 'flex', gap: 12, flexWrap: 'wrap', listStyle: 'decimal' }}>
@@ -250,23 +308,127 @@ function FlowSummary({ steps, fields }: { steps: FlowStepKind[]; fields: FlowFie
           ))}
         </ol>
       </div>
-      <div data-testid="flow-fields">
-        <div style={{ fontSize: '0.8rem', opacity: 0.7, marginBottom: 4 }}>入力項目</div>
-        {fields.length === 0 ? (
-          <p style={{ opacity: 0.6, fontSize: '0.85rem', margin: 0 }}>入力項目はありません。</p>
-        ) : (
-          <ul style={{ margin: 0, paddingLeft: 20, display: 'flex', flexDirection: 'column', gap: 4 }}>
-            {fields.map((field) => (
-              <li key={field.key} data-testid="flow-field" style={{ fontSize: '0.9rem' }}>
-                <span>{field.label}</span>{' '}
-                <span style={{ opacity: 0.7 }}>
-                  （{FIELD_TYPE_LABELS[field.type]}
-                  {field.required ? ' / 必須' : ''}）
-                </span>
-              </li>
+    </div>
+  );
+}
+
+const EMPTY_FIELD_FORM: FieldFormInput = {
+  key: '',
+  label: '',
+  type: 'text',
+  required: false,
+  optionsInput: '',
+};
+
+/**
+ * 入力項目（visitorInfo フィールド）の追加・削除エディタ (issue #100 inc2)。
+ * 既存項目を一覧し、削除と追加ができる。整形は reception-flow-edit.ts の純関数、
+ * 検証は API のドメイン層（validateFields）が担う。onSave は fields 配列ごと保存する。
+ */
+function FlowFieldsEditor({
+  fields,
+  onSave,
+}: {
+  fields: FlowField[];
+  onSave: (fields: FlowField[]) => void;
+}) {
+  const [form, setForm] = useState<FieldFormInput>(EMPTY_FIELD_FORM);
+
+  const addField = () => {
+    if (!isFieldFormReady(form)) return;
+    onSave([...fields, buildFieldDraft(form)]);
+    setForm(EMPTY_FIELD_FORM);
+  };
+
+  const removeField = (key: string) => onSave(fields.filter((f) => f.key !== key));
+
+  return (
+    <div data-testid="flow-fields" style={{ marginTop: 12 }}>
+      <div style={{ fontSize: '0.8rem', opacity: 0.7, marginBottom: 4 }}>入力項目</div>
+      {fields.length === 0 ? (
+        <p style={{ opacity: 0.6, fontSize: '0.85rem', margin: '0 0 8px' }}>入力項目はありません。</p>
+      ) : (
+        <ul style={{ margin: '0 0 8px', paddingLeft: 0, listStyle: 'none', display: 'flex', flexDirection: 'column', gap: 4 }}>
+          {fields.map((field) => (
+            <li
+              key={field.key}
+              data-testid="flow-field"
+              style={{ fontSize: '0.9rem', display: 'flex', alignItems: 'center', gap: 8 }}
+            >
+              <span>{field.label}</span>
+              <span style={{ opacity: 0.7 }}>
+                （{FIELD_TYPE_LABELS[field.type]}
+                {field.required ? ' / 必須' : ''}）
+              </span>
+              <Button
+                data-testid="flow-field-remove"
+                onClick={() => removeField(field.key)}
+                aria-label={`${field.label}を削除`}
+                style={{ marginLeft: 'auto' }}
+              >
+                削除
+              </Button>
+            </li>
+          ))}
+        </ul>
+      )}
+
+      <div style={{ display: 'flex', gap: space.sm, alignItems: 'flex-end', flexWrap: 'wrap' }}>
+        <Field label="項目キー（英数）" htmlFor={`field-key-${fields.length}`}>
+          <input
+            data-testid="flow-field-key"
+            value={form.key}
+            onChange={(e) => setForm((s) => ({ ...s, key: e.target.value }))}
+            placeholder="slot"
+            style={inputStyle}
+          />
+        </Field>
+        <Field label="ラベル" htmlFor={`field-label-${fields.length}`}>
+          <input
+            data-testid="flow-field-label"
+            value={form.label}
+            onChange={(e) => setForm((s) => ({ ...s, label: e.target.value }))}
+            placeholder="希望枠"
+            style={inputStyle}
+          />
+        </Field>
+        <Field label="種別" htmlFor={`field-type-${fields.length}`}>
+          <select
+            data-testid="flow-field-type"
+            value={form.type}
+            onChange={(e) => setForm((s) => ({ ...s, type: e.target.value as FieldType }))}
+            style={inputStyle}
+          >
+            {FIELD_TYPES.map((t) => (
+              <option key={t} value={t}>
+                {FIELD_TYPE_LABELS[t]}
+              </option>
             ))}
-          </ul>
-        )}
+          </select>
+        </Field>
+        {form.type === 'select' ? (
+          <Field label="選択肢（カンマ区切り）" htmlFor={`field-options-${fields.length}`}>
+            <input
+              data-testid="flow-field-options"
+              value={form.optionsInput}
+              onChange={(e) => setForm((s) => ({ ...s, optionsInput: e.target.value }))}
+              placeholder="午前, 午後"
+              style={inputStyle}
+            />
+          </Field>
+        ) : null}
+        <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: '0.85rem', minHeight: 44 }}>
+          <input
+            type="checkbox"
+            data-testid="flow-field-required"
+            checked={form.required}
+            onChange={(e) => setForm((s) => ({ ...s, required: e.target.checked }))}
+          />
+          必須
+        </label>
+        <Button data-testid="flow-field-add" onClick={addField} disabled={!isFieldFormReady(form)}>
+          項目を追加
+        </Button>
       </div>
     </div>
   );
