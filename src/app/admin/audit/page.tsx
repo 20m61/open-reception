@@ -52,6 +52,9 @@ const ACTION_LABEL: Partial<Record<AuditAction, string>> = {
   'signage.updated': 'サイネージ: 更新',
   'visitor.checked_out': '来訪者: 退館',
   'stay.updated': '滞在状態: 更新',
+  'ai_guidance.escalated': 'AI案内: 有人切替要求',
+  'ai_guidance.handoff': 'AI案内: 担当者引き継ぎ',
+  'ai_guidance.fallback': 'AI案内: 代替導線へ',
 };
 
 /** 管理画面: 監査ログ一覧 (issue #22, #19)。受付ライフサイクルと管理操作の証跡。 */
