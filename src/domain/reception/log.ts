@@ -86,7 +86,14 @@ export type AuditAction =
   | 'signage.updated'
   // 退館チェックアウト・滞在状態管理 (issue #102)。PII は残さない。
   | 'visitor.checked_out'
-  | 'stay.updated';
+  | 'stay.updated'
+  // AI 案内 → 担当者/有人切替 (issue #104)。会話内容・PII は残さない。
+  // 引き継ぎ要求が出たことと、その理由種別（metadata.reason）のみを記録する。
+  | 'ai_guidance.escalated'
+  // 担当者/有人へ確実に引き継がれた。
+  | 'ai_guidance.handoff'
+  // 引き継ぎ失敗→既存受付フロー/代替導線へフォールバックした。
+  | 'ai_guidance.fallback';
 
 export type AuditLog = {
   id: string;
