@@ -24,21 +24,29 @@ import { SignageItemView } from './SignageItemView';
 export function SignageDisplay({
   tenantId = 'internal',
   siteId = 'default',
+  onStart,
 }: {
   tenantId?: string;
   siteId?: string;
+  /**
+   * 受付復帰の振る舞いを差し替えるフック (kiosk-integration inc1)。
+   * - 未指定（スタンドアロン /kiosk/signage）: 既定どおり /kiosk へ遷移する（非破壊）。
+   * - 指定（KioskFlow へ埋め込み）: 画面遷移せず受付状態機械の START を呼ぶ。
+   */
+  onStart?: () => void;
 }) {
   const router = useRouter();
   const [signage, setSignage] = useState<KioskSignage | null>(null);
   const [index, setIndex] = useState(0);
 
-  // 受付復帰: 明示操作で /kiosk へ。連打を吸収するため一度だけ遷移する。
+  // 受付復帰: 明示操作で受付へ。連打を吸収するため一度だけ実行する。
   const returned = useRef(false);
   const returnToReception = useCallback(() => {
     if (returned.current) return;
     returned.current = true;
-    router.push('/kiosk');
-  }, [router]);
+    if (onStart) onStart();
+    else router.push('/kiosk');
+  }, [router, onStart]);
 
   useEffect(() => {
     let cancelled = false;
