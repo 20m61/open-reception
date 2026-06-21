@@ -92,6 +92,7 @@ export const ADMIN_NAV: readonly NavGroup[] = [
       { href: '/admin/assets', label: 'アセット' },
       { href: '/admin/motions', label: 'モーション' },
       { href: '/admin/voice', label: '音声' },
+      { href: '/admin/languages', label: '言語設定' },
     ],
   },
   {
