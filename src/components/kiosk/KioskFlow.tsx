@@ -16,6 +16,19 @@ import { CheckinFlow } from './CheckinFlow';
 import { MockSttAdapter } from '@/adapters/speech/mock-stt';
 import { useStaffResponse } from './useStaffResponse';
 import type { StaffResponseResult } from '@/domain/reception/staff-response';
+import { PurposeSelector } from './custom-flow/PurposeSelector';
+import { VisitorInfoForm } from './custom-flow/VisitorInfoForm';
+import type { KioskFlow as KioskCustomFlow, FlowFieldValues } from './custom-flow/types';
+import { SignageDisplay } from './signage/SignageDisplay';
+import { usePresenceCamera } from './usePresenceCamera';
+import {
+  flowValuesToVisitorInfo,
+  purposeIdForFlow,
+  shouldShowSignage,
+  shouldUseCustomFlow,
+} from './integration';
+import type { PresenceCameraStatus } from './usePresenceCamera';
+import Link from 'next/link';
 
 /** MVP では端末 ID は固定。将来 kiosk config から取得する (issue #18)。 */
 const KIOSK_ID = 'kiosk-dev';
@@ -119,6 +132,15 @@ export function KioskFlow() {
   const [online, setOnline] = useState(true);
   // 受付モード。idle から「QRで受付」を選ぶと checkin へ。完了/通常受付選択で normal へ戻す (issue #98)。
   const [mode, setMode] = useState<'normal' | 'checkin'>('normal');
+
+  // カスタム受付フロー (issue #100)。null=取得前/失敗、[]=無効（既定フローへフォールバック）。
+  const [customFlows, setCustomFlows] = useState<KioskCustomFlow[] | null>(null);
+  // 来訪者が目的選択で選んだカスタムフロー。null のときは既定フローのまま進む。
+  const [selectedFlow, setSelectedFlow] = useState<KioskCustomFlow | null>(null);
+  // 待機サイネージ (issue #101)。再生可能項目数だけ保持し、idle 中の待機表示判定に使う。
+  const [signageCount, setSignageCount] = useState(0);
+  // 来訪者検知カメラの有効化トグル (issue #79)。既定 OFF（タップ起動が常に生きる）。
+  const [presenceEnabled, setPresenceEnabled] = useState(false);
 
   const refreshHeartbeat = useCallback(async () => {
     try {
@@ -238,6 +260,46 @@ export function KioskFlow() {
     };
   }, []);
 
+  // 有効なカスタム受付フローを取得する (issue #100)。取得失敗/無効時は既定フローへフォールバック。
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await fetch('/api/kiosk/flow', { cache: 'no-store' });
+        if (!res.ok) {
+          // 403（セッション未確立）/503（障害）等は既定フローで継続する。
+          if (!cancelled) setCustomFlows([]);
+          return;
+        }
+        const body = (await res.json()) as { flows?: KioskCustomFlow[] };
+        if (!cancelled) setCustomFlows(body.flows ?? []);
+      } catch {
+        if (!cancelled) setCustomFlows([]); // 取得失敗＝既定フロー
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  // 待機サイネージの再生可能項目数を取得する (issue #101)。失敗/無効時は 0（既定 IdleView）。
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await fetch('/api/kiosk/signage');
+        if (!res.ok) return;
+        const sig = (await res.json()) as { items?: unknown[] };
+        if (!cancelled) setSignageCount(Array.isArray(sig.items) ? sig.items.length : 0);
+      } catch {
+        /* 取得失敗時は 0 のまま（待機画面は既定の IdleView） */
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
   // Vonage（非同期）通話のとき、ビデオビューに渡す受付 ID。Mock 同期通話では null のまま。
   const [vonageCallId, setVonageCallId] = useState<string | null>(null);
 
@@ -255,6 +317,8 @@ export function KioskFlow() {
           body: JSON.stringify({
             kioskId: KIOSK_ID,
             purpose: data.purpose,
+            // カスタムフロー選択時は purposeKey も併送する（サーバ将来拡張用・未知でも非破壊）(issue #100)。
+            purposeKey: selectedFlow?.purposeKey,
             targetType: data.target?.type,
             targetId: data.target?.id,
             targetLabel: data.target?.label,
@@ -282,13 +346,18 @@ export function KioskFlow() {
     return () => {
       cancelled = true;
     };
-  }, [data.state, data.purpose, data.target, data.visitor]);
+  }, [data.state, data.purpose, data.target, data.visitor, selectedFlow]);
 
   // 完了・キャンセル後は一定時間で待機画面へ自動復帰する。個人情報も破棄される。
   useEffect(() => {
     if (data.state !== 'completed' && data.state !== 'cancelled') return;
     const timer = setTimeout(() => dispatch({ type: 'RESET' }), AUTO_RESET_MS);
     return () => clearTimeout(timer);
+  }, [data.state]);
+
+  // idle へ戻ったら選んだカスタムフローを破棄する（次の来訪者へ持ち越さない）(issue #100)。
+  useEffect(() => {
+    if (data.state === 'idle') setSelectedFlow(null);
   }, [data.state]);
 
   // 音声合成が有効な場合、状態に応じた案内を読み上げる (issue #5)。
@@ -334,7 +403,29 @@ export function KioskFlow() {
     }
   }, [data.state, data.sessionId, handleFallback]);
 
+  // 受付開始（タップ / サイネージ / 来訪検知 共通）。音声再生を有効化してから START。
+  const startReception = useCallback(() => {
+    primeSpeech();
+    dispatch({ type: 'START' });
+  }, []);
+
   const view = active === false ? 'revoked' : needsAuthorize ? 'authorize' : 'ready';
+
+  // 待機サイネージを出すか (issue #101)。idle・online・非失効・項目ありのときだけ。
+  const showSignage = shouldShowSignage({
+    receptionState: data.state,
+    online,
+    active,
+    signageItemCount: signageCount,
+  });
+  // カスタムフローを使うか (issue #100)。無効/未取得は既定フローへフォールバック。
+  const useCustomFlow = shouldUseCustomFlow(customFlows);
+
+  // 来訪者検知カメラ (issue #79)。待機サイネージ表示中かつトグル ON のときだけ起動。
+  // 未対応/拒否時は status='unavailable' に倒れ、タップ起動で完走する（非破壊）。
+  const presenceActive = presenceEnabled && showSignage && mode === 'normal' && view === 'ready';
+  const presence = usePresenceCamera(presenceActive, startReception);
+
   // 現在の受付状態に対応するモーション URL（未設定は default に fallback）(issue #31)。
   const motionUrl = resolveMotionUrl(motionKeyForState(data.state), motions.motions, motions.defaultUrl);
 
@@ -366,23 +457,55 @@ export function KioskFlow() {
       ) : mode === 'checkin' ? (
         // QR 受付モード (issue #98)。通常受付選択 / 終了で normal へ戻す（個人情報は破棄される）。
         <CheckinFlow onUseManual={() => setMode('normal')} onExit={() => setMode('normal')} />
+      ) : showSignage ? (
+        // 待機サイネージ (issue #101) + 来訪検知 (issue #79)。タップ/検知/QR/退館で受付へ。
+        <SignageWaitingView
+          onStart={startReception}
+          onStartCheckin={() => setMode('checkin')}
+          presenceEnabled={presenceEnabled}
+          onTogglePresence={() => setPresenceEnabled((v) => !v)}
+          presenceStatus={presence.status}
+        />
+      ) : useCustomFlow && data.state === 'selectingPurpose' ? (
+        // カスタム目的選択 (issue #100)。選択でフローを保持し、入力ステップ有無で次へ分岐。
+        <CustomPurposeView
+          flows={customFlows ?? []}
+          onCancel={() => dispatch({ type: 'RESET' })}
+          onSelect={(flow) => {
+            setSelectedFlow(flow);
+            dispatch({ type: 'SELECT_PURPOSE', purpose: purposeIdForFlow(flow) });
+          }}
+        />
+      ) : useCustomFlow && selectedFlow && data.state === 'inputVisitorInfo' ? (
+        // カスタム来訪者情報入力 (issue #100)。確認・呼び出しは既存状態機械へ委譲。
+        <CustomVisitorInfoView
+          flow={selectedFlow}
+          onBack={() => dispatch({ type: 'BACK' })}
+          onSubmit={(values) =>
+            dispatch({ type: 'SUBMIT_VISITOR_INFO', visitor: flowValuesToVisitorInfo(selectedFlow, values) })
+          }
+        />
       ) : (
-        renderScreen(
-          data,
-          dispatch,
-          complete,
-          handleFallback,
-          directory,
-          guidanceIdle,
-          vrmUrl,
-          avatarFallbackUrl,
-          sttEnabled,
-          motionUrl,
-          vonageCallId,
-          () => setMode('checkin'),
-          staffResponse,
-          handleStaffResponseFallback,
-        )
+        <>
+          {renderScreen(
+            data,
+            dispatch,
+            complete,
+            handleFallback,
+            directory,
+            guidanceIdle,
+            vrmUrl,
+            avatarFallbackUrl,
+            sttEnabled,
+            motionUrl,
+            vonageCallId,
+            () => setMode('checkin'),
+            staffResponse,
+            handleStaffResponseFallback,
+          )}
+          {/* 退館チェックアウト導線 (issue #102)。待機中のみ小さく常設する（非破壊）。 */}
+          {data.state === 'idle' ? <CheckoutLink /> : null}
+        </>
       )}
     </main>
   );
@@ -439,6 +562,124 @@ function KioskAuthorizeView({ onAuthorized }: { onAuthorized: () => void }) {
         受付を開始する
       </button>
     </form>
+  );
+}
+
+/**
+ * 待機サイネージ + 来訪検知の待機画面 (issue #101 / #79 統合)。
+ *
+ * 埋め込み版 SignageDisplay（onStart で受付状態機械の START を呼ぶ）に、来訪検知トグルと
+ * 受付/QR/退館の明示導線を重ねる。受付開始導線は常に大きく表示する（issue #101 UX 方針）。
+ * カメラはトグル ON のときだけ起動し、未対応/拒否（unavailable）でもタップ起動で完走する。
+ */
+function SignageWaitingView({
+  onStart,
+  onStartCheckin,
+  presenceEnabled,
+  onTogglePresence,
+  presenceStatus,
+}: {
+  onStart: () => void;
+  onStartCheckin: () => void;
+  presenceEnabled: boolean;
+  onTogglePresence: () => void;
+  presenceStatus: PresenceCameraStatus;
+}) {
+  return (
+    <div data-testid="kiosk-signage-waiting" style={{ position: 'relative', minHeight: '100%' }}>
+      <SignageDisplay onStart={onStart} />
+      <div
+        className="screen__footer"
+        style={{ position: 'absolute', bottom: 'var(--space-md)', left: 0, right: 0, justifyContent: 'center', gap: 'var(--space-sm)', flexWrap: 'wrap' }}
+      >
+        <button type="button" className="btn btn--secondary" data-testid="signage-start-checkin" onClick={onStartCheckin}>
+          QR で受付
+        </button>
+        <CheckoutLink />
+        <button
+          type="button"
+          className="btn btn--ghost"
+          data-testid="presence-toggle"
+          aria-pressed={presenceEnabled}
+          onClick={onTogglePresence}
+        >
+          {presenceEnabled
+            ? presenceStatus === 'unavailable'
+              ? '来訪検知: 利用不可'
+              : '来訪検知: ON'
+            : '来訪検知: OFF'}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+/** 退館チェックアウトへの明示導線 (issue #102)。/kiosk/checkout へ遷移する小ボタン。 */
+function CheckoutLink() {
+  return (
+    <Link href="/kiosk/checkout" className="btn btn--ghost" data-testid="kiosk-checkout-link">
+      退館チェックアウト
+    </Link>
+  );
+}
+
+/** カスタム目的選択画面 (issue #100)。スタンドアロン PurposeSelector を受付画面の枠で包む。 */
+function CustomPurposeView({
+  flows,
+  onSelect,
+  onCancel,
+}: {
+  flows: readonly KioskCustomFlow[];
+  onSelect: (flow: KioskCustomFlow) => void;
+  onCancel: () => void;
+}) {
+  return (
+    <>
+      <div className="screen__body" data-testid="custom-purpose-view">
+        <PurposeSelector flows={flows} onSelect={onSelect} />
+      </div>
+      <div className="screen__footer">
+        <button type="button" className="btn btn--ghost" data-testid="purpose-cancel" onClick={onCancel}>
+          最初に戻る
+        </button>
+      </div>
+    </>
+  );
+}
+
+/** カスタム来訪者情報入力画面 (issue #100)。fields が無ければ入力を省略して確認へ進める。 */
+function CustomVisitorInfoView({
+  flow,
+  onSubmit,
+  onBack,
+}: {
+  flow: KioskCustomFlow;
+  onSubmit: (values: FlowFieldValues) => void;
+  onBack: () => void;
+}) {
+  // visitorInfo ステップが無い / fields 空のフローは、入力なしで確認へ進める（非破壊）。
+  if (!flow.steps.includes('visitorInfo') || flow.fields.length === 0) {
+    return (
+      <>
+        <div className="screen__body" data-testid="custom-flow-no-input" style={{ alignItems: 'center', justifyContent: 'center', textAlign: 'center' }}>
+          <h1 className="screen__title">{flow.displayName}</h1>
+          {flow.description ? <p className="screen__lead">{flow.description}</p> : null}
+        </div>
+        <div className="screen__footer">
+          <button type="button" className="btn btn--ghost" data-testid="visitor-back" onClick={onBack}>
+            戻る
+          </button>
+          <button type="button" className="btn btn--primary" data-testid="custom-flow-proceed" onClick={() => onSubmit({})}>
+            確認へ進む
+          </button>
+        </div>
+      </>
+    );
+  }
+  return (
+    <div className="screen__body" data-testid="custom-visitor-view">
+      <VisitorInfoForm fields={flow.fields} onBack={onBack} onSubmit={onSubmit} />
+    </div>
   );
 }
 
