@@ -1,16 +1,17 @@
 'use client';
 
+import Link from 'next/link';
 import { useEffect, useState } from 'react';
 import type { TenantFleetSummary, TenantRow } from '@/domain/platform/console-summary';
 import { DangerActionPlaceholder, MetricCard, StatusBadge } from './primitives';
 
 /**
- * テナント一覧（テナント横断 read） (issue #90, increment 1)。
+ * テナント一覧（テナント横断 read） (issue #90, increment 1; #90, increment 2 で詳細導線追加)。
  *
  * /api/platform/tenants（developer 専用 read API）から全テナントのメタ情報を取得して
- * 一覧表示する。各行の「対象テナントとして選択」は次増分で対象テナント明示 UX として
- * 配線する（本増分は read 中心）。有効/停止の切り替えは破壊的操作のため
- * DangerActionPlaceholder で無効化表示する。
+ * 一覧表示する。inc2 で各行からテナント詳細（/platform/tenants/[tenantId]）へ遷移できる
+ * read 導線を追加した。対象テナント選択 UX・有効/停止の切り替えは破壊的操作のため
+ * DangerActionPlaceholder で無効化表示する（次増分で昇格・確認・監査を伴って実装）。
  */
 type TenantsResponse = { summary: TenantFleetSummary; tenants: TenantRow[] };
 
@@ -63,7 +64,9 @@ export function TenantList() {
         <tbody>
           {(data?.tenants ?? []).map((t) => (
             <tr key={t.id} style={{ borderTop: '1px solid rgba(255,255,255,0.08)' }}>
-              <td style={{ padding: '6px 8px' }}>{t.name}</td>
+              <td style={{ padding: '6px 8px' }}>
+                <Link href={`/platform/tenants/${encodeURIComponent(t.id)}`}>{t.name}</Link>
+              </td>
               <td style={{ padding: '6px 8px', opacity: 0.7 }}>{t.slug}</td>
               <td style={{ padding: '6px 8px' }}>
                 <StatusBadge status={t.status} />
