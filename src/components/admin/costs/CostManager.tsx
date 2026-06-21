@@ -1,14 +1,18 @@
 'use client';
 
 import { useCallback, useEffect, useState } from 'react';
-import type { CostEstimate } from '@/domain/usage/cost-estimate';
+import type { CostEstimate, CostTrendPoint } from '@/domain/usage/cost-estimate';
 import { Button } from '@/components/admin/ui';
 import { UsageCard, CardGrid } from '../usage/UsageCard';
+import { TrendBars, TrendSection } from '../usage/TrendBars';
+
+/** /api/admin/costs のレスポンス型（概算サマリ＋日次推移）。 */
+type CostResponse = CostEstimate & { trend: CostTrendPoint[] };
 
 type LoadState =
   | { phase: 'loading' }
   | { phase: 'error' }
-  | { phase: 'ready'; estimate: CostEstimate };
+  | { phase: 'ready'; estimate: CostResponse };
 
 const DEFAULT_TENANT_ID = 'internal';
 
@@ -32,7 +36,7 @@ export function CostManager({ tenantId = DEFAULT_TENANT_ID }: { tenantId?: strin
         setState({ phase: 'error' });
         return;
       }
-      setState({ phase: 'ready', estimate: (await res.json()) as CostEstimate });
+      setState({ phase: 'ready', estimate: (await res.json()) as CostResponse });
     } catch {
       setState({ phase: 'error' });
     }
@@ -68,8 +72,8 @@ export function CostManager({ tenantId = DEFAULT_TENANT_ID }: { tenantId?: strin
   );
 }
 
-function Body({ estimate }: { estimate: CostEstimate }) {
-  const { estimatedSoFar, projectedMonthEnd, breakdown, previousMonthComparison, threshold, assumptions } = estimate;
+function Body({ estimate }: { estimate: CostResponse }) {
+  const { estimatedSoFar, projectedMonthEnd, breakdown, previousMonthComparison, threshold, assumptions, trend } = estimate;
   const comparisonHint = previousMonthComparison
     ? `前月概算 ${yen(previousMonthComparison.previousEstimated)}（${previousMonthComparison.delta >= 0 ? '+' : ''}${yen(previousMonthComparison.delta)}）`
     : '前月データなし';
@@ -138,6 +142,17 @@ function Body({ estimate }: { estimate: CostEstimate }) {
           </tbody>
         </table>
       </div>
+
+      <TrendSection title="概算コストの推移（当月・日次）" testId="cost-trend">
+        <TrendBars
+          data={trend.map((p) => ({ date: p.date, value: p.total }))}
+          unit="円"
+          testId="cost-trend-bars"
+        />
+        <p style={{ fontSize: '0.8rem', opacity: 0.6, margin: 0 }}>
+          日次の利用量に単価仮定を掛けた<strong>概算</strong>です（UTC 日境界）。実課金とは異なります。
+        </p>
+      </TrendSection>
 
       <div data-testid="cost-assumptions" style={{ fontSize: '0.8rem', opacity: 0.7 }}>
         <h2 style={{ fontSize: '1.05rem', marginBottom: 8, opacity: 1 }}>単価仮定（未確定）</h2>

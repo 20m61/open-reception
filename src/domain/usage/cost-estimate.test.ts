@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
-import type { UsageSummary } from './usage-summary';
+import type { UsageSummary, UsageTrendPoint } from './usage-summary';
 import {
+  buildCostTrend,
   DEFAULT_COST_ASSUMPTIONS,
   estimateCost,
   monthProgress,
@@ -110,5 +111,41 @@ describe('estimateCost (#89)', () => {
     const est = estimateCost(usage(), null, NOW, DEFAULT_COST_ASSUMPTIONS);
     expect(est.estimatedSoFar).toBe(0);
     expect(est.projectedMonthEnd).toBe(0);
+  });
+});
+
+describe('buildCostTrend (#89 inc2)', () => {
+  const trendPoint = (over: Partial<UsageTrendPoint> & Pick<UsageTrendPoint, 'date'>): UsageTrendPoint => ({
+    receptions: 0,
+    connectedCalls: 0,
+    connectedCallMinutes: 0,
+    ...over,
+  });
+
+  it('日次利用量に単価仮定を掛けてサービス別・合計の概算コストを返す', () => {
+    const trend = [
+      trendPoint({ date: '2026-06-01', receptions: 10, connectedCallMinutes: 4 }),
+      trendPoint({ date: '2026-06-02', receptions: 0, connectedCallMinutes: 0 }),
+    ];
+    const cost = buildCostTrend(trend, ASSUMPTIONS);
+    // 6/1: vonage 4×15=60, aws 10×2=20, total 80
+    expect(cost[0]).toEqual({ date: '2026-06-01', vonage: 60, aws: 20, total: 80 });
+    expect(cost[1]).toEqual({ date: '2026-06-02', vonage: 0, aws: 0, total: 0 });
+  });
+
+  it('日次合計の総和は estimateCost の estimatedSoFar と整合する', () => {
+    const trend = [
+      trendPoint({ date: '2026-06-01', receptions: 50, connectedCallMinutes: 100 }),
+      trendPoint({ date: '2026-06-02', receptions: 50, connectedCallMinutes: 100 }),
+    ];
+    const cost = buildCostTrend(trend, ASSUMPTIONS);
+    const trendTotal = cost.reduce((s, p) => s + p.total, 0);
+    // 同じ利用量サマリ（receptions 100, minutes 200）の概算と一致する
+    const est = estimateCost(usage({ receptions: 100, connectedCallMinutes: 200 }), null, NOW, ASSUMPTIONS);
+    expect(trendTotal).toBe(est.estimatedSoFar);
+  });
+
+  it('空の推移は空配列を返す', () => {
+    expect(buildCostTrend([], ASSUMPTIONS)).toEqual([]);
   });
 });

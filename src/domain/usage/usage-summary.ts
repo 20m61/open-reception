@@ -47,6 +47,33 @@ export type UsageSummary = {
   integrationFailures: number;
 };
 
+/**
+ * 利用量の派生指標（割合）。サマリから導ける比率を 0〜1 で持つ。
+ * 受付件数 0 の場合は分母なしのため null（UI は「—」で表示し虚の割合を出さない）。
+ */
+export type UsageRates = {
+  /** 呼び出し成功率 = connectedCalls / receptions。 */
+  connectedRate: number | null;
+  /** 未応答率 = timeoutCalls / receptions。 */
+  timeoutRate: number | null;
+  /** 失敗率 = failedCalls / receptions。 */
+  failedRate: number | null;
+  /** 代替導線率 = fallbackUsed / receptions。 */
+  fallbackRate: number | null;
+};
+
+/** 利用量推移 1 区間（日次バケット、UTC 日境界）。 */
+export type UsageTrendPoint = {
+  /** バケット開始日（UTC、YYYY-MM-DD）。 */
+  date: string;
+  /** その日の受付件数。 */
+  receptions: number;
+  /** その日の呼び出し成功件数。 */
+  connectedCalls: number;
+  /** その日の接続済み通話分数（その日の durationMs 総和を分に切り上げ）。 */
+  connectedCallMinutes: number;
+};
+
 /** `at`（ISO 文字列）が期間 [start, end) に入るか。不正な日付は false。 */
 export function isWithinPeriod(at: string, period: UsagePeriod): boolean {
   const t = new Date(at).getTime();
@@ -151,4 +178,76 @@ export function summarizeUsage(
   }
 
   return summary;
+}
+
+/** 0 除算を避けつつ比率を返す。分母 0 は null。 */
+function ratio(numerator: number, denominator: number): number | null {
+  if (denominator <= 0) return null;
+  return numerator / denominator;
+}
+
+/**
+ * サマリから派生する割合（成功率・未応答率・失敗率・代替導線率）を導く（純関数）。
+ * 受付件数が 0 のときは全て null（分母なし）。比率は丸めず生値で返し、整形は表示側に委ねる。
+ */
+export function deriveUsageRates(summary: UsageSummary): UsageRates {
+  const { receptions } = summary;
+  return {
+    connectedRate: ratio(summary.connectedCalls, receptions),
+    timeoutRate: ratio(summary.timeoutCalls, receptions),
+    failedRate: ratio(summary.failedCalls, receptions),
+    fallbackRate: ratio(summary.fallbackUsed, receptions),
+  };
+}
+
+/** ISO 文字列を UTC の YYYY-MM-DD（日キー）に落とす。 */
+function utcDayKey(at: string): string {
+  return at.slice(0, 10);
+}
+
+/** period の各 UTC 日（[start, end) に含まれる日）のキー列を返す。 */
+function enumerateDays(period: UsagePeriod): string[] {
+  const start = new Date(period.start);
+  const end = new Date(period.end).getTime();
+  const days: string[] = [];
+  // UTC 日初に正規化してから 1 日ずつ進める。
+  let cursor = Date.UTC(start.getUTCFullYear(), start.getUTCMonth(), start.getUTCDate());
+  // 最大日数のガード（不正期間で無限ループしないよう 366 日で打ち切る）。
+  for (let i = 0; i < 366 && cursor < end; i += 1) {
+    days.push(new Date(cursor).toISOString().slice(0, 10));
+    cursor += 86_400_000;
+  }
+  return days;
+}
+
+/**
+ * 受付履歴を UTC 日単位の推移（時系列）に集計する（純関数）。
+ *
+ * period 内の全日を 0 埋めで含め、欠測日も連続した系列として返す（グラフの断絶を防ぐ）。
+ * 監査由来指標は推移に含めない（記録ソース未接続のため。#89 次増分）。
+ */
+export function buildUsageTrend(
+  receptionLogs: readonly ReceptionLog[],
+  period: UsagePeriod,
+): UsageTrendPoint[] {
+  const buckets = new Map<string, { receptions: number; connectedCalls: number; connectedMs: number }>();
+  for (const day of enumerateDays(period)) {
+    buckets.set(day, { receptions: 0, connectedCalls: 0, connectedMs: 0 });
+  }
+  for (const log of receptionLogs) {
+    if (!isWithinPeriod(log.startedAt, period)) continue;
+    const bucket = buckets.get(utcDayKey(log.startedAt));
+    if (!bucket) continue;
+    bucket.receptions += 1;
+    if (log.outcome === 'connected') {
+      bucket.connectedCalls += 1;
+      bucket.connectedMs += Math.max(0, log.durationMs);
+    }
+  }
+  return [...buckets.entries()].map(([date, b]) => ({
+    date,
+    receptions: b.receptions,
+    connectedCalls: b.connectedCalls,
+    connectedCallMinutes: msToMinutes(b.connectedMs),
+  }));
 }
