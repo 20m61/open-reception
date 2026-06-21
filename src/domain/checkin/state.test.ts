@@ -54,6 +54,12 @@ describe('checkin state machine (issue #98)', () => {
     expect(transition('scanning', 'SCAN_ERROR')).toBe('scanError');
   });
 
+  it('実カメラの権限プロンプトは読取開始時に出るため scanning 中の拒否も cameraError へ (increment 2)', () => {
+    // CameraQrScanner は scanning に入ってから getUserMedia を呼ぶ。そこでの拒否 /
+    // 未対応は scanError ではなく cameraError として区別する（通常受付へフォールバック可）。
+    expect(transition('scanning', 'CAMERA_DENIED')).toBe('cameraError');
+  });
+
   it('すべてのエラー状態から通常受付（manualFallback）へフォールバックできる', () => {
     for (const s of CHECKIN_ERROR_STATES) {
       expect(transition(s, 'USE_MANUAL')).toBe('manualFallback');

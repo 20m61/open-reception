@@ -184,14 +184,45 @@ interface QrScanner {
 
 ---
 
-## 6. ライセンス判断ログ — QR デコードライブラリ（採用は increment 2）
+## 6. ライセンス判断ログ — QR デコードライブラリ
 
 `docs/license-privacy-guide.md` §2.1 / §0 / §1.3 に従い、QR **読み取り（decode）**
-ライブラリ採用の判断を記録する。**inc1 では新規 runtime 依存を追加しない**
-（scanner アダプタ interface + mock でフロー側を完成させる）。
+ライブラリ採用の判断を記録する。inc1 では新規 runtime 依存を追加せず、scanner アダプタ
+interface + mock でフロー側を完成させた。**increment 2 で実デコードライブラリを採用・結線した。**
 
-候補の事前調査（採用は increment 2 で最終確認・`npm view <pkg> license` +
-`npx license-checker` を別途実行）:
+### 6.0 increment 2 の確定記録（採用: jsQR）
+
+実機検証前にローカルで `npm view <pkg> license` / `npm view <pkg> dependencies` /
+`npx license-checker --production` を実行し、以下を確定した。
+
+```
+- 対象: jsqr v1.4.0（https://github.com/cozmo/jsQR）
+- ライセンス: Apache-2.0（SPDX: Apache-2.0。package.json + 同梱 LICENSE で確認。許容リスト内）
+- 推移的依存: なし（zero dependency）。license-checker でも jsqr 単体のみ
+- WASM / worker: なし（ピュア JS。同梱 WASM なし → 監査容易）
+- 用途: 受付端末カメラ映像（Canvas フレーム）から QR を decode し token 参照 URL を読む
+- 商用利用: 可（Apache-2.0）/ 改変・再配布: 可（帰属表示要・特許許諾あり）
+- 帰属表示: 要（掲載先: THIRD_PARTY_NOTICES.md。NOTICE ファイルは同梱なし → LICENSE + 著作権で十分）
+- 特許: QR 基本仕様はロイヤリティフリー。装飾 QR / フレーム QR は使わない
+- 個人情報・映像: カメラ映像・フレームは**ローカル処理のみ・非送信・非保存**（録画 / 画像保存しない）
+- 判断: **採用**（permissive・zero-dependency・WASM なし・TS 型同梱で adapter に薄く乗る）
+```
+
+候補比較の結論: 設計時の第一候補 `@zxing/library` は現行版が **Apache-2.0**（当初メモの
+「MIT」は誤り。`@zxing/browser` は MIT だが `@zxing/library`(Apache-2.0) + `ts-custom-error`
+を推移的に引く）。jsQR は **zero-dependency のピュアデコーダ**で、リポジトリに既にある
+getUserMedia パターン（`usePresenceCamera.ts`）に最も薄く乗るため採用した。
+カメラ取得は自前実装（`src/lib/checkin/camera-scanner.ts`）、デコードの純化部は
+`src/lib/checkin/decode-frame.ts` に分離してユニットテスト可能にした。実機（iPad Safari /
+PWA）での読み取り検証は #65 にスタックする。
+
+### 6.1 当初の候補事前調査（参考・inc1 時点のメモ）
+
+> 注: 下記の `@zxing/library` ライセンス記述（MIT）は inc2 の `npm view` で Apache-2.0 と
+> 判明した。最終採用は §6.0 のとおり jsQR。
+
+```
+- 候補 A: @zxing/library（+ @zxing/browser）/ 想定 v0.21 系
 
 ```
 - 候補 A: @zxing/library（+ @zxing/browser）/ 想定 v0.21 系
@@ -215,9 +246,9 @@ interface QrScanner {
   - 判断: アダプタ実装に最も薄く乗るが、カメラ取得を自前で書く必要あり
 ```
 
-最終採用は increment 2 で SPDX 再確認 + transitive ライセンス確認
-（`npx license-checker`）+ WASM/worker 同梱有無の確認後に決定し、本書に確定記録する。
-帰属が要るものは `THIRD_PARTY_NOTICES.md` に集約する。
+最終採用は §6.0 のとおり increment 2 で SPDX 再確認 + transitive ライセンス確認
+（`npx license-checker --production`）+ WASM/worker 同梱有無の確認後に **jsQR（Apache-2.0）**
+に決定済み。帰属は `THIRD_PARTY_NOTICES.md` に集約した。
 
 ---
 
@@ -237,15 +268,18 @@ interface QrScanner {
 
 ## 8. increment 計画
 
-- **increment 1（本 PR）**: 状態機械 / token 解決 service / checkin API / scanner アダプタ
+- **increment 1（済）**: 状態機械 / token 解決 service / checkin API / scanner アダプタ
   (mock) / UI（カメラ権限・スキャン・確認・エラー・フォールバック）/ `/kiosk` 導線 / 本書 /
-  ユニットテスト。**新規 runtime 依存なし。**
-- **increment 2**: 実カメラ QR デコードライブラリの採用（§6 判断を確定）+ 実 scanner
-  アダプタ差し替え + iPad Safari/PWA 実機での読み取り検証（#65 スタック） +
-  受付履歴への entryMethod（qr/manual）記録（reception-store 拡張） +
-  Playwright iPad viewport smoke test の拡充。
+  ユニットテスト。新規 runtime 依存なし。
+- **increment 2（本 PR）**: 実カメラ QR デコードライブラリ（**jsQR / Apache-2.0**）を採用・確定
+  （§6.0）+ 実 scanner アダプタ `CameraQrScanner`（getUserMedia → Canvas フレーム →
+  `decodeQrFromFrame`(jsQR) → token）を `CheckinFlow` の既定として結線（mock は test /
+  フォールバック用に保持）+ scanning 中のカメラ拒否を `cameraError` へ区別する状態遷移追加
+  + デコード純化部 / フォールバック分岐のユニットテスト。**iPad Safari/PWA 実機での
+  読み取り検証は #65 にスタック。** 受付履歴への entryMethod（qr/manual）記録（reception-store
+  拡張）と Playwright iPad viewport smoke test の拡充は後続増分へ繰り越す。
 - **increment 3**: kiosk→tenant/site 写像の実配線（#80/#18）+ #97 increment 3
-  （DynamoDB）への追従。
+  （DynamoDB）への追従 + 受付履歴への entryMethod 記録 + Playwright iPad smoke。
 
 ---
 
