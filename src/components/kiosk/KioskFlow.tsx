@@ -28,6 +28,13 @@ import {
   shouldUseCustomFlow,
 } from './integration';
 import type { PresenceCameraStatus } from './usePresenceCamera';
+import {
+  escapeHatchesFor,
+  quickActionsFor,
+  type EscapeHatch,
+  type QuickAction,
+} from './quick-actions';
+import type { ReceptionAction } from '@/domain/reception/ui-contract';
 import Link from 'next/link';
 
 /** MVP では端末 ID は固定。将来 kiosk config から取得する (issue #18)。 */
@@ -68,10 +75,16 @@ type FlowData = {
   visitor?: VisitorInfo;
   sessionId?: string;
   outcome?: CallOutcome;
+  /**
+   * クイックアクションで用件を先取りした場合の目的 (issue #121)。
+   * START 直後に selectingPurpose で自動選択し、目的選択画面をスキップして担当/部署選択へ
+   * 進めるためのヒント。担当者を呼ぶ（用件未確定）では undefined のまま通常の目的選択を出す。
+   */
+  pendingPurpose?: ReceptionPurposeId;
 };
 
 type Action =
-  | { type: 'START' }
+  | { type: 'START'; pendingPurpose?: ReceptionPurposeId }
   | { type: 'SELECT_PURPOSE'; purpose: ReceptionPurposeId }
   | { type: 'SELECT_TARGET'; target: Target }
   | { type: 'SUBMIT_VISITOR_INFO'; visitor: VisitorInfo }
@@ -82,6 +95,7 @@ type Action =
   | { type: 'USE_FALLBACK' }
   | { type: 'COMPLETE' }
   | { type: 'BACK' }
+  | { type: 'CANCEL' }
   | { type: 'RESET' };
 
 const INITIAL: FlowData = { state: 'idle' };
@@ -92,8 +106,12 @@ function reducer(data: FlowData, action: Action): FlowData {
   if (next === null) return data;
 
   switch (action.type) {
+    case 'START':
+      // クイックアクションで用件を先取りした目的を保持し、selectingPurpose で自動選択する。
+      return { ...data, state: next, pendingPurpose: action.pendingPurpose };
     case 'SELECT_PURPOSE':
-      return { ...data, state: next, purpose: action.purpose, target: undefined };
+      // 目的が確定したら先取りヒントは消費済み。target も作り直す。
+      return { ...data, state: next, purpose: action.purpose, target: undefined, pendingPurpose: undefined };
     case 'SELECT_TARGET':
       return { ...data, state: next, target: action.target };
     case 'SUBMIT_VISITOR_INFO':
@@ -409,6 +427,26 @@ export function KioskFlow() {
     dispatch({ type: 'START' });
   }, []);
 
+  // クイックアクションからの受付開始 (issue #121)。用件を先取りした目的を pendingPurpose に載せる。
+  // checkin（QR 受付）はモード切替なので START を使わず、ここではなく UI 側で mode='checkin' にする。
+  const startWithQuickAction = useCallback((action: QuickAction) => {
+    if (action.isCheckin) {
+      setMode('checkin');
+      return;
+    }
+    primeSpeech();
+    dispatch({ type: 'START', pendingPurpose: action.presetPurpose });
+  }, []);
+
+  // 用件先取りがあるとき、目的選択画面をスキップして担当/部署選択へ自動で進める (issue #121)。
+  // カスタムフロー有効時はカスタム目的選択を尊重するためスキップしない。
+  useEffect(() => {
+    if (data.state !== 'selectingPurpose') return;
+    if (!data.pendingPurpose) return;
+    if (shouldUseCustomFlow(customFlows)) return;
+    dispatch({ type: 'SELECT_PURPOSE', purpose: data.pendingPurpose });
+  }, [data.state, data.pendingPurpose, customFlows]);
+
   const view = active === false ? 'revoked' : needsAuthorize ? 'authorize' : 'ready';
 
   // 待機サイネージを出すか (issue #101)。idle・online・非失効・項目ありのときだけ。
@@ -502,12 +540,77 @@ export function KioskFlow() {
             () => setMode('checkin'),
             staffResponse,
             handleStaffResponseFallback,
+            startWithQuickAction,
           )}
           {/* 退館チェックアウト導線 (issue #102)。待機中のみ小さく常設する（非破壊）。 */}
           {data.state === 'idle' ? <CheckoutLink /> : null}
+          {/*
+            常時見える「逃げ道」バー (issue #121)。状態に応じて 戻る/キャンセル/最初に戻る/人に繋ぐ を
+            表示する。出すアクションは #120 契約の availableActions に従う（許可外は出さない）。
+            各画面の文脈ボタン（修正する等）とは別に、画面下部に安全な離脱導線を常設する。
+          */}
+          <EscapeHatchBar
+            state={data.state}
+            onAction={(action) => {
+              // useFallback は記録 API を伴うため専用ハンドラへ。残りは状態機械イベントへ写す。
+              if (action === 'useFallback') {
+                void handleFallback();
+                return;
+              }
+              // escapeHatchesFor が返すのは back/cancel/reset/useFallback のみ（useFallback は上で処理）。
+              const eventByAction: Partial<Record<ReceptionAction, Action>> = {
+                back: { type: 'BACK' },
+                cancel: { type: 'CANCEL' },
+                reset: { type: 'RESET' },
+              };
+              const next = eventByAction[action];
+              if (next) dispatch(next);
+            }}
+          />
+          {/*
+            #122 Chat-assisted ドロワーのマウントポイント。中身は後続トラックが差し込む。
+            開閉/利用可否は deriveChatAvailability(state) を購読して制御する想定（idle/終端では閉じる）。
+          */}
+          <div className="kiosk-chat-slot" data-slot="chat-drawer" aria-hidden="true" />
         </>
       )}
     </main>
+  );
+}
+
+/**
+ * 常時見える逃げ道バー (issue #121)。
+ *
+ * `escapeHatchesFor(state)`（#120 契約の availableActions 由来）が返すアクションだけを出す。
+ * idle や逃げ道が無い状態では何も描画しない。重要操作（確認必須）は含めない。
+ */
+function EscapeHatchBar({
+  state,
+  onAction,
+}: {
+  state: ReceptionState;
+  onAction: (action: ReceptionAction) => void;
+}) {
+  const hatches: ReadonlyArray<EscapeHatch> = escapeHatchesFor(state);
+  if (hatches.length === 0) return null;
+  return (
+    <nav
+      className="kiosk-escape-bar"
+      data-testid="kiosk-escape-bar"
+      aria-label="受付の操作（戻る・キャンセルなど）"
+    >
+      {hatches.map((hatch) => (
+        <button
+          key={hatch.action}
+          type="button"
+          className={`btn btn--${hatch.variant}`}
+          data-testid={hatch.testId}
+          onClick={() => onAction(hatch.action)}
+        >
+          {hatch.label}
+        </button>
+      ))}
+    </nav>
   );
 }
 
@@ -698,17 +801,13 @@ function renderScreen(
   onStartCheckin: () => void,
   staffResponse: StaffResponseResult | null,
   onStaffResponseFallback: () => void,
+  onQuickAction: (action: QuickAction) => void,
 ) {
   switch (data.state) {
     case 'idle':
       return (
         <IdleView
-          onStart={() => {
-            // 初回タップで音声再生を有効化（ブラウザの自動再生制約）(issue #5)。
-            primeSpeech();
-            dispatch({ type: 'START' });
-          }}
-          onStartCheckin={onStartCheckin}
+          onQuickAction={onQuickAction}
           guidance={guidanceIdle}
           vrmUrl={vrmUrl}
           avatarFallbackUrl={avatarFallbackUrl}
@@ -794,38 +893,68 @@ function renderScreen(
 
 /* ---------- 各画面 (issue #11–#15) ---------- */
 
+/**
+ * 待機/初期画面 (issue #121 タッチファースト再設計)。
+ *
+ * 1 画面 1 主目的: 「何のご用件か」を大きなカードで選ぶ。主要 CTA（担当者を呼ぶ / QR で受付 /
+ * 部署から選ぶ / 配送・納品 / その他）はクイックアクションとして `quickActionsFor('idle')` から
+ * 描画する（ボタン集合の真実源は #120 の契約）。音声・チャットなしでもタッチだけで進める。
+ *
+ * 後方互換: 既存 E2E/テストが参照する `start-reception`（受付を開始する）と
+ * `start-checkin`（QR で受付）の testid を、それぞれ「担当者を呼ぶ」「QR で受付」カードに
+ * 付与し直して維持する。
+ */
 function IdleView({
-  onStart,
-  onStartCheckin,
+  onQuickAction,
   guidance,
   vrmUrl,
   avatarFallbackUrl,
   motionUrl,
 }: {
-  onStart: () => void;
-  onStartCheckin: () => void;
+  onQuickAction: (action: QuickAction) => void;
   guidance: string;
   vrmUrl?: string;
   avatarFallbackUrl?: string;
   motionUrl?: string;
 }) {
+  const actions = quickActionsFor('idle');
+  // 既存 testid との後方互換（再設計後もリンク切れにしない）。
+  const legacyTestId: Partial<Record<QuickAction['intent'], string>> = {
+    callStaff: 'start-reception',
+    checkin: 'start-checkin',
+  };
   return (
-    <div className="screen__body" style={{ alignItems: 'center', justifyContent: 'center', textAlign: 'center' }}>
-      <VrmAvatarViewer
-        vrmUrl={vrmUrl}
-        fallbackImageUrl={avatarFallbackUrl}
-        motionUrl={motionUrl}
-        className="kiosk-avatar"
-      />
-      <h1 className="screen__title">受付</h1>
-      <p className="screen__lead" data-testid="idle-guidance">{guidance}</p>
-      <button type="button" className="btn btn--primary" data-testid="start-reception" onClick={onStart}>
-        受付を開始する
-      </button>
-      {/* 予約 QR をお持ちの方向けの導線 (issue #98)。非破壊で追加。 */}
-      <button type="button" className="btn btn--secondary" data-testid="start-checkin" onClick={onStartCheckin}>
-        QR で受付
-      </button>
+    <div className="screen__body kiosk-idle" data-testid="kiosk-idle">
+      {/* #123 アバター状態同期のマウントポイント。発話/字幕は後続トラックが差し込む。 */}
+      <div className="kiosk-idle__avatar" data-slot="avatar">
+        <VrmAvatarViewer
+          vrmUrl={vrmUrl}
+          fallbackImageUrl={avatarFallbackUrl}
+          motionUrl={motionUrl}
+          className="kiosk-avatar"
+        />
+      </div>
+      <header className="kiosk-idle__head">
+        <h1 className="screen__title">ご用件をお選びください</h1>
+        <p className="screen__lead" data-testid="idle-guidance">
+          {guidance}
+        </p>
+      </header>
+      <div className="card-grid kiosk-quick-actions" data-testid="kiosk-quick-actions">
+        {actions.map((action) => (
+          <button
+            key={action.intent}
+            type="button"
+            className="card card--cta"
+            data-testid={legacyTestId[action.intent] ?? action.testId}
+            data-intent={action.intent}
+            onClick={() => onQuickAction(action)}
+          >
+            {action.label}
+            <span className="card__sub">{action.description}</span>
+          </button>
+        ))}
+      </div>
     </div>
   );
 }

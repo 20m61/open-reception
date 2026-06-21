@@ -214,6 +214,63 @@ a {
 }
 
 /* =========================================================================
+ * タッチファースト受付導線 (issue #121 / Epic #119)
+ *
+ * 待機/初期画面は「1 画面 1 主目的」。大きなクイックアクションカードでご用件を選ばせ、
+ * 音声・チャットなしでもタッチだけで進められるようにする。逃げ道は画面下部に常設する。
+ * ======================================================================= */
+.kiosk-idle {
+  align-items: center;
+  justify-content: flex-start;
+  text-align: center;
+}
+
+.kiosk-idle__avatar {
+  display: flex;
+  justify-content: center;
+}
+
+.kiosk-idle__head {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-sm);
+  align-items: center;
+}
+
+/* クイックアクションのカード群。主要 CTA を大きく・押しやすく並べる。 */
+.kiosk-quick-actions {
+  width: 100%;
+  max-width: 1100px;
+}
+
+/* CTA カードは中央寄せ・主目的が読み取りやすい配置にする（通常カードより縦を強調）。 */
+.card--cta {
+  min-height: 160px;
+  align-items: center;
+  text-align: center;
+  font-size: var(--font-xl);
+}
+
+.card--cta .card__sub {
+  text-align: center;
+}
+
+/* 常時見える逃げ道バー（戻る/キャンセル/最初に戻る/人に繋ぐ）。 */
+.kiosk-escape-bar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-md);
+  justify-content: center;
+  padding-top: var(--space-md);
+  border-top: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+/* #122 Chat-assisted ドロワーのスロット（中身は後続トラックが差し込む）。 */
+.kiosk-chat-slot:empty {
+  display: none;
+}
+
+/* =========================================================================
  * 管理画面シェル: SPA ライクなレスポンシブ・レイアウト (issue #94, increment 1)
  *
  * 見た目（レイアウト/開閉/アニメーション）は CSS に集約する。AdminShell（JS）は
