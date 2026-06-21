@@ -14,6 +14,21 @@ npm run test:e2e      # iPad viewport の E2E（axe a11y を含む）
 npm run lighthouse    # Lighthouse CI（performance / accessibility / best-practices / seo）
 ```
 
+### E2E のブラウザ（macOS 13 対応）
+
+E2E は iPad 受付端末を主対象とするが、ブラウザは 2 系統で回す（`playwright.config.ts`）。
+
+| プロジェクト | ブラウザ | 既定で実行 | 用途 |
+| --- | --- | --- | --- |
+| `chromium-ipad` | chromium（iPad viewport エミュレート） | ✅ 常時 | ローカル主ゲート。全 OS で動く |
+| `ipad-landscape` / `ipad-portrait` | webkit（Safari 忠実度） | CI または `E2E_WEBKIT=1` 時のみ | 実 Safari 相当の検証 |
+
+**Playwright は macOS 13 (Ventura) で webkit 非対応**（`playwright install webkit` が
+`does not support webkit on mac13` で失敗する）。このため macOS 13 のローカルでは
+`chromium-ipad` のみが既定で走り、webkit プロジェクトは自動的に除外される。実 Safari
+忠実度が要る検証は webkit 対応 OS の CI、または明示的に `E2E_WEBKIT=1 npm run test:e2e`
+で実行する（webkit が入っている環境が前提）。
+
 `npm run lighthouse` は本番ビルドを `npm run start` で起動し、主要ルートを検査する
 （`lighthouserc.json`）。Chrome が必要で、`CHROME_PATH` で明示できる。
 

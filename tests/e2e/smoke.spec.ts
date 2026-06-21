@@ -15,7 +15,9 @@ test('トップから受付端末と管理画面の入口が表示される', as
 
 test('受付待機画面が表示される', async ({ page }) => {
   await page.goto('/kiosk');
-  await expect(page.getByRole('button', { name: '受付を開始する' })).toBeVisible();
+  // タッチファースト再設計 (#121): 待機画面は用件選択のクイックアクションを大きく出す。
+  await expect(page.getByRole('heading', { name: 'ご用件をお選びください' })).toBeVisible();
+  await expect(page.getByTestId('start-reception')).toBeVisible();
 });
 
 test('管理ダッシュボードが表示される（要ログイン）', async ({ page }) => {
