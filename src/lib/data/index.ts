@@ -10,7 +10,13 @@
 import type { DataBackend } from './backend';
 import { MemoryBackend } from './memory';
 
-let cached: DataBackend | undefined;
+// Next.js の production ビルドでは route handler / server component が別モジュール
+// インスタンスにバンドルされ得るため、モジュールレベル変数だと in-memory backend が
+// それぞれ別インスタンスになり状態を共有できない（受付ログが admin 画面に出ない等）。
+// プロセス全体で 1 つを共有するため globalThis に載せる（dynamodb 利用時は無害）。
+const GLOBAL_KEY = Symbol.for('open-reception.data-backend');
+type BackendGlobal = { [GLOBAL_KEY]?: DataBackend };
+const backendGlobal = globalThis as BackendGlobal;
 
 function create(): DataBackend {
   const kind = process.env.DATA_BACKEND ?? 'memory';
@@ -27,13 +33,13 @@ function create(): DataBackend {
 }
 
 export function getBackend(): DataBackend {
-  if (!cached) cached = create();
-  return cached;
+  if (!backendGlobal[GLOBAL_KEY]) backendGlobal[GLOBAL_KEY] = create();
+  return backendGlobal[GLOBAL_KEY];
 }
 
 /** テスト用: バックエンドのキャッシュを破棄する（次回 getBackend で再生成）。 */
 export function __resetBackend(): void {
-  cached = undefined;
+  backendGlobal[GLOBAL_KEY] = undefined;
 }
 
 export type { DataBackend } from './backend';
