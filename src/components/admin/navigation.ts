@@ -88,6 +88,7 @@ export const ADMIN_NAV: readonly NavGroup[] = [
     roles: TENANT_ADMINS,
     items: [
       { href: '/admin/reception-flows', label: '受付フロー' },
+      { href: '/admin/staff-response', label: '担当者応答' },
       { href: '/admin/signage', label: '待機サイネージ' },
       { href: '/admin/assets', label: 'アセット' },
       { href: '/admin/motions', label: 'モーション' },
