@@ -1,8 +1,10 @@
 'use client';
 
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import type { Department } from '@/domain/department/types';
 import { CsvImport } from './CsvImport';
+import { Button, DataTable, Field, type Column } from '@/components/admin/ui';
+import { color, space } from '@/components/admin/ui/tokens';
 
 /** 部署管理 (issue #25)。一覧・作成・有効/無効・並び替えを管理 API 経由で行う。 */
 export function DepartmentsManager() {
@@ -81,27 +83,68 @@ export function DepartmentsManager() {
     [dragIndex, items, load],
   );
 
+  const columns = useMemo<Column<Department>[]>(() => {
+    const indexOf = (d: Department) => items.findIndex((x) => x.id === d.id);
+    return [
+      {
+        key: 'order',
+        header: '順',
+        cell: (d) => <span title="ドラッグで並び替え">⠿ {indexOf(d) + 1}</span>,
+      },
+      {
+        key: 'name',
+        header: '部署名',
+        cellTestId: () => 'dept-name',
+        cell: (d) => (
+          <>
+            {d.name}
+            {d.kana ? <span style={{ opacity: 0.6 }}>（{d.kana}）</span> : null}
+          </>
+        ),
+      },
+      {
+        key: 'status',
+        header: '状態',
+        cellStyle: (d) => ({ color: d.enabled ? color.success : color.muted }),
+        cell: (d) => (d.enabled ? '有効' : '無効'),
+      },
+      {
+        key: 'actions',
+        header: '操作',
+        cell: (d) => {
+          const i = indexOf(d);
+          return (
+            <div style={{ display: 'flex', gap: 6 }}>
+              <Button aria-label="up" onClick={() => move(d, 'up')} disabled={i === 0}>
+                ↑
+              </Button>
+              <Button aria-label="down" onClick={() => move(d, 'down')} disabled={i === items.length - 1}>
+                ↓
+              </Button>
+              <Button data-testid="dept-toggle" onClick={() => toggle(d)}>
+                {d.enabled ? '無効化' : '有効化'}
+              </Button>
+            </div>
+          );
+        },
+      },
+    ];
+  }, [items, move, toggle]);
+
   return (
     <section>
       <h1 style={{ marginTop: 0 }}>部署管理</h1>
 
-      <div style={{ display: 'flex', gap: 8, alignItems: 'flex-end', flexWrap: 'wrap', marginBottom: 24 }}>
-        <label style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
-          <span style={{ fontSize: '0.85rem', opacity: 0.8 }}>部署名</span>
-          <input
-            data-testid="dept-name-input"
-            value={name}
-            onChange={(e) => setName(e.target.value)}
-            style={inputStyle}
-          />
-        </label>
-        <label style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
-          <span style={{ fontSize: '0.85rem', opacity: 0.8 }}>よみがな（任意）</span>
-          <input data-testid="dept-kana-input" value={kana} onChange={(e) => setKana(e.target.value)} style={inputStyle} />
-        </label>
-        <button type="button" data-testid="dept-add" onClick={add} disabled={busy || name.trim() === ''} style={btnStyle}>
+      <div style={{ display: 'flex', gap: space.sm, alignItems: 'flex-end', flexWrap: 'wrap', marginBottom: space.lg }}>
+        <Field label="部署名" htmlFor="dept-name-input">
+          <input id="dept-name-input" data-testid="dept-name-input" value={name} onChange={(e) => setName(e.target.value)} style={inputStyle} />
+        </Field>
+        <Field label="よみがな（任意）" htmlFor="dept-kana-input">
+          <input id="dept-kana-input" data-testid="dept-kana-input" value={kana} onChange={(e) => setKana(e.target.value)} style={inputStyle} />
+        </Field>
+        <Button variant="primary" data-testid="dept-add" onClick={add} disabled={busy || name.trim() === ''}>
           追加
-        </button>
+        </Button>
       </div>
 
       <CsvImport
@@ -111,57 +154,21 @@ export function DepartmentsManager() {
         testId="dept"
       />
 
-      <table data-testid="dept-table" style={{ width: '100%', borderCollapse: 'collapse' }}>
-        <thead>
-          <tr style={{ textAlign: 'left', borderBottom: '1px solid rgba(255,255,255,0.2)' }}>
-            <th style={th}>順</th>
-            <th style={th}>部署名</th>
-            <th style={th}>状態</th>
-            <th style={th}>操作</th>
-          </tr>
-        </thead>
-        <tbody>
-          {items.map((d, i) => (
-            <tr
-              key={d.id}
-              data-testid="dept-row"
-              draggable
-              onDragStart={() => setDragIndex(i)}
-              onDragOver={(e) => e.preventDefault()}
-              onDrop={() => handleDrop(i)}
-              style={{ borderBottom: '1px solid rgba(255,255,255,0.08)', cursor: 'grab' }}
-            >
-              <td style={td} title="ドラッグで並び替え">⠿ {i + 1}</td>
-              <td style={td} data-testid="dept-name">
-                {d.name}
-                {d.kana ? <span style={{ opacity: 0.6 }}>（{d.kana}）</span> : null}
-              </td>
-              <td style={{ ...td, color: d.enabled ? 'var(--color-success)' : 'var(--color-muted)' }}>
-                {d.enabled ? '有効' : '無効'}
-              </td>
-              <td style={td}>
-                <div style={{ display: 'flex', gap: 6 }}>
-                  <button type="button" aria-label="up" onClick={() => move(d, 'up')} disabled={i === 0} style={smallBtn}>
-                    ↑
-                  </button>
-                  <button
-                    type="button"
-                    aria-label="down"
-                    onClick={() => move(d, 'down')}
-                    disabled={i === items.length - 1}
-                    style={smallBtn}
-                  >
-                    ↓
-                  </button>
-                  <button type="button" data-testid="dept-toggle" onClick={() => toggle(d)} style={smallBtn}>
-                    {d.enabled ? '無効化' : '有効化'}
-                  </button>
-                </div>
-              </td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
+      <DataTable
+        testId="dept-table"
+        columns={columns}
+        rows={items}
+        rowKey={(d) => d.id}
+        rowTestId={() => 'dept-row'}
+        rowProps={(_d, i) => ({
+          draggable: true,
+          onDragStart: () => setDragIndex(i),
+          onDragOver: (e) => e.preventDefault(),
+          onDrop: () => handleDrop(i),
+          style: { cursor: 'grab' },
+        })}
+        emptyMessage="登録された部署はありません。"
+      />
     </section>
   );
 }
@@ -174,23 +181,3 @@ const inputStyle: React.CSSProperties = {
   background: 'var(--color-surface)',
   color: 'var(--color-text)',
 };
-const btnStyle: React.CSSProperties = {
-  minHeight: 44,
-  padding: '8px 16px',
-  borderRadius: 8,
-  border: 'none',
-  background: 'var(--color-accent)',
-  color: '#0f172a',
-  fontWeight: 700,
-  cursor: 'pointer',
-};
-const smallBtn: React.CSSProperties = {
-  padding: '6px 10px',
-  borderRadius: 8,
-  border: '1px solid rgba(255,255,255,0.2)',
-  background: 'var(--color-surface)',
-  color: 'var(--color-text)',
-  cursor: 'pointer',
-};
-const th: React.CSSProperties = { padding: '8px 12px' };
-const td: React.CSSProperties = { padding: '8px 12px' };

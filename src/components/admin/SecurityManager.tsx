@@ -1,6 +1,8 @@
 'use client';
 
 import { useCallback, useEffect, useState } from 'react';
+import { Button, Field } from '@/components/admin/ui';
+import { color, space } from '@/components/admin/ui/tokens';
 
 type SecurityView = { pinRequired: boolean; ipAllowlist: string[]; pinConfigured: boolean; emergencyStop: boolean };
 
@@ -80,27 +82,27 @@ export function SecurityManager() {
           現在: {view.emergencyStop ? '停止中（全端末で受付を停止）' : '通常稼働'}
         </p>
         {view.emergencyStop ? (
-          <button type="button" data-testid="emergency-resume" onClick={() => setEmergency(false)} style={primary}>
+          <Button variant="primary" data-testid="emergency-resume" onClick={() => setEmergency(false)}>
             受付を再開する
-          </button>
+          </Button>
         ) : confirmingEmergency ? (
-          <div style={{ display: 'flex', gap: 8 }}>
-            <button type="button" data-testid="emergency-confirm" onClick={() => setEmergency(true)} style={danger}>
+          <div style={{ display: 'flex', gap: space.sm }}>
+            <Button variant="danger" data-testid="emergency-confirm" onClick={() => setEmergency(true)}>
               本当に全端末を停止する
-            </button>
-            <button type="button" data-testid="emergency-cancel" onClick={() => setConfirmingEmergency(false)} style={ghost}>
+            </Button>
+            <Button data-testid="emergency-cancel" onClick={() => setConfirmingEmergency(false)}>
               やめる
-            </button>
+            </Button>
           </div>
         ) : (
-          <button type="button" data-testid="emergency-stop" onClick={() => setConfirmingEmergency(true)} style={danger}>
+          <Button variant="danger" data-testid="emergency-stop" onClick={() => setConfirmingEmergency(true)}>
             緊急停止する
-          </button>
+          </Button>
         )}
       </div>
 
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
-        <label style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: space.md }}>
+        <label style={{ display: 'flex', gap: space.sm, alignItems: 'center' }}>
           <input
             type="checkbox"
             data-testid="security-pin-required"
@@ -109,21 +111,20 @@ export function SecurityManager() {
           />
           受付端末の表示に PIN 許可を必須にする
         </label>
-        <label style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
-          <span style={{ fontSize: '0.85rem', opacity: 0.8 }}>
-            PIN を変更（空欄なら変更しない／現在: {view.pinConfigured ? '設定済み' : '未設定'}）
-          </span>
-          <input type="password" data-testid="security-pin" value={pin} onChange={(e) => setPin(e.target.value)} style={input} />
-        </label>
-        <label style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
-          <span style={{ fontSize: '0.85rem', opacity: 0.8 }}>IP 許可リスト（1 行に 1 件、空なら全許可）</span>
-          <textarea data-testid="security-ip" value={ipText} onChange={(e) => setIpText(e.target.value)} rows={4} style={input} />
-        </label>
-        <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-          <button type="button" data-testid="security-save" onClick={save} disabled={busy} style={primary}>
+        <Field
+          label={`PIN を変更（空欄なら変更しない／現在: ${view.pinConfigured ? '設定済み' : '未設定'}）`}
+          htmlFor="security-pin"
+        >
+          <input type="password" id="security-pin" data-testid="security-pin" value={pin} onChange={(e) => setPin(e.target.value)} style={input} />
+        </Field>
+        <Field label="IP 許可リスト（1 行に 1 件、空なら全許可）" htmlFor="security-ip">
+          <textarea id="security-ip" data-testid="security-ip" value={ipText} onChange={(e) => setIpText(e.target.value)} rows={4} style={input} />
+        </Field>
+        <div style={{ display: 'flex', gap: space.sm, alignItems: 'center' }}>
+          <Button variant="primary" data-testid="security-save" onClick={save} disabled={busy}>
             保存
-          </button>
-          {saved ? <span data-testid="security-saved" style={{ color: 'var(--color-success)' }}>保存しました</span> : null}
+          </Button>
+          {saved ? <span data-testid="security-saved" style={{ color: color.success }}>保存しました</span> : null}
         </div>
       </div>
     </section>
@@ -137,24 +138,4 @@ const input: React.CSSProperties = {
   border: '1px solid var(--color-surface-2)',
   background: 'var(--color-surface)',
   color: 'var(--color-text)',
-};
-const primary: React.CSSProperties = {
-  minHeight: 40,
-  padding: '8px 16px',
-  borderRadius: 8,
-  border: 'none',
-  background: 'var(--color-accent)',
-  color: '#0f172a',
-  fontWeight: 700,
-  cursor: 'pointer',
-};
-const danger: React.CSSProperties = { ...primary, background: 'var(--color-danger)' };
-const ghost: React.CSSProperties = {
-  minHeight: 40,
-  padding: '8px 16px',
-  borderRadius: 8,
-  border: '1px solid rgba(255,255,255,0.2)',
-  background: 'var(--color-surface)',
-  color: 'var(--color-text)',
-  cursor: 'pointer',
 };

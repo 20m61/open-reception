@@ -1,7 +1,9 @@
 'use client';
 
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import type { SiteWithDevices } from '@/lib/tenant/site-service';
+import { Button, DataTable, Field, type Column } from '@/components/admin/ui';
+import { color, space } from '@/components/admin/ui/tokens';
 
 /**
  * 拠点管理 (issue #87, increment 1)。
@@ -75,6 +77,71 @@ export function SitesManager({ tenantId = DEFAULT_TENANT_ID }: { tenantId?: stri
     [editName, patch],
   );
 
+  const columns = useMemo<Column<SiteWithDevices>[]>(
+    () => [
+      {
+        key: 'name',
+        header: '拠点名',
+        cellTestId: () => 'site-name',
+        cell: (s) =>
+          editingId === s.id ? (
+            <input
+              data-testid="site-edit-input"
+              value={editName}
+              onChange={(e) => setEditName(e.target.value)}
+              style={inputStyle}
+            />
+          ) : (
+            s.name
+          ),
+      },
+      {
+        key: 'devices',
+        header: '端末',
+        cellTestId: () => 'site-devices',
+        cell: (s) => `${s.onlineDeviceCount} / ${s.deviceCount} オンライン`,
+      },
+      {
+        key: 'status',
+        header: '状態',
+        cellStyle: (s) => ({ color: s.status === 'active' ? color.success : color.muted }),
+        cell: (s) => (s.status === 'active' ? '有効' : '停止中'),
+      },
+      {
+        key: 'actions',
+        header: '操作',
+        cell: (s) => (
+          <div style={{ display: 'flex', gap: 6 }}>
+            {editingId === s.id ? (
+              <>
+                <Button data-testid="site-save" onClick={() => saveName(s.id)}>
+                  保存
+                </Button>
+                <Button onClick={() => setEditingId(null)}>取消</Button>
+              </>
+            ) : (
+              <>
+                <Button
+                  data-testid="site-edit"
+                  onClick={() => {
+                    setEditingId(s.id);
+                    setEditName(s.name);
+                  }}
+                >
+                  名称編集
+                </Button>
+                <Button data-testid="site-toggle" onClick={() => toggle(s)}>
+                  {s.status === 'active' ? '停止' : '再開'}
+                </Button>
+              </>
+            )}
+          </div>
+        ),
+      },
+    ],
+    [editingId, editName, saveName, toggle],
+  );
+
   return (
     <section>
       <h1 style={{ marginTop: 0 }}>拠点管理</h1>
@@ -82,98 +149,29 @@ export function SitesManager({ tenantId = DEFAULT_TENANT_ID }: { tenantId?: stri
         テナント <code>{tenantId}</code> 配下の受付拠点を管理します。各拠点に紐づく受付端末数を表示します。
       </p>
 
-      <div style={{ display: 'flex', gap: 8, alignItems: 'flex-end', flexWrap: 'wrap', marginBottom: 24 }}>
-        <label style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
-          <span style={{ fontSize: '0.85rem', opacity: 0.8 }}>拠点名</span>
+      <div style={{ display: 'flex', gap: space.sm, alignItems: 'flex-end', flexWrap: 'wrap', marginBottom: space.lg }}>
+        <Field label="拠点名" htmlFor="site-name-input">
           <input
+            id="site-name-input"
             data-testid="site-name-input"
             value={name}
             onChange={(e) => setName(e.target.value)}
             style={inputStyle}
           />
-        </label>
-        <button
-          type="button"
-          data-testid="site-add"
-          onClick={add}
-          disabled={busy || name.trim() === ''}
-          style={btnStyle}
-        >
+        </Field>
+        <Button variant="primary" data-testid="site-add" onClick={add} disabled={busy || name.trim() === ''}>
           追加
-        </button>
+        </Button>
       </div>
 
-      <table data-testid="site-table" style={{ width: '100%', borderCollapse: 'collapse' }}>
-        <thead>
-          <tr style={{ textAlign: 'left', borderBottom: '1px solid rgba(255,255,255,0.2)' }}>
-            <th style={th}>拠点名</th>
-            <th style={th}>端末</th>
-            <th style={th}>状態</th>
-            <th style={th}>操作</th>
-          </tr>
-        </thead>
-        <tbody>
-          {items.map((s) => (
-            <tr
-              key={s.id}
-              data-testid="site-row"
-              style={{ borderBottom: '1px solid rgba(255,255,255,0.08)' }}
-            >
-              <td style={td} data-testid="site-name">
-                {editingId === s.id ? (
-                  <input
-                    data-testid="site-edit-input"
-                    value={editName}
-                    onChange={(e) => setEditName(e.target.value)}
-                    style={inputStyle}
-                  />
-                ) : (
-                  s.name
-                )}
-              </td>
-              <td style={td} data-testid="site-devices">
-                {s.onlineDeviceCount} / {s.deviceCount} オンライン
-              </td>
-              <td
-                style={{ ...td, color: s.status === 'active' ? 'var(--color-success)' : 'var(--color-muted)' }}
-              >
-                {s.status === 'active' ? '有効' : '停止中'}
-              </td>
-              <td style={td}>
-                <div style={{ display: 'flex', gap: 6 }}>
-                  {editingId === s.id ? (
-                    <>
-                      <button type="button" data-testid="site-save" onClick={() => saveName(s.id)} style={smallBtn}>
-                        保存
-                      </button>
-                      <button type="button" onClick={() => setEditingId(null)} style={smallBtn}>
-                        取消
-                      </button>
-                    </>
-                  ) : (
-                    <>
-                      <button
-                        type="button"
-                        data-testid="site-edit"
-                        onClick={() => {
-                          setEditingId(s.id);
-                          setEditName(s.name);
-                        }}
-                        style={smallBtn}
-                      >
-                        名称編集
-                      </button>
-                      <button type="button" data-testid="site-toggle" onClick={() => toggle(s)} style={smallBtn}>
-                        {s.status === 'active' ? '停止' : '再開'}
-                      </button>
-                    </>
-                  )}
-                </div>
-              </td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
+      <DataTable
+        testId="site-table"
+        columns={columns}
+        rows={items}
+        rowKey={(s) => s.id}
+        rowTestId={() => 'site-row'}
+        emptyMessage="このテナントに登録された拠点はありません。"
+      />
     </section>
   );
 }
@@ -186,23 +184,3 @@ const inputStyle: React.CSSProperties = {
   background: 'var(--color-surface)',
   color: 'var(--color-text)',
 };
-const btnStyle: React.CSSProperties = {
-  minHeight: 44,
-  padding: '8px 16px',
-  borderRadius: 8,
-  border: 'none',
-  background: 'var(--color-accent)',
-  color: '#0f172a',
-  fontWeight: 700,
-  cursor: 'pointer',
-};
-const smallBtn: React.CSSProperties = {
-  padding: '6px 10px',
-  borderRadius: 8,
-  border: '1px solid rgba(255,255,255,0.2)',
-  background: 'var(--color-surface)',
-  color: 'var(--color-text)',
-  cursor: 'pointer',
-};
-const th: React.CSSProperties = { padding: '8px 12px' };
-const td: React.CSSProperties = { padding: '8px 12px' };

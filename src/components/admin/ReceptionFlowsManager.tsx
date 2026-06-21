@@ -3,6 +3,8 @@
 import { useCallback, useEffect, useState } from 'react';
 import type { StoredReceptionFlow } from '@/lib/reception/flow-config/types';
 import { DEFAULT_STEPS, type FlowField, type FlowStepKind } from '@/domain/reception/custom-flow';
+import { Button, Card, Field } from '@/components/admin/ui';
+import { color, space } from '@/components/admin/ui/tokens';
 
 /**
  * 来訪目的別カスタム受付フロー管理 (issue #100, increment 1)。
@@ -135,50 +137,40 @@ export function ReceptionFlowsManager({
         目的ごとに、受付端末で表示するステップと入力項目を切り替えられます。
       </p>
 
-      <div style={{ display: 'flex', gap: 8, alignItems: 'flex-end', flexWrap: 'wrap', marginBottom: 24 }}>
-        <label style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
-          <span style={{ fontSize: '0.85rem', opacity: 0.8 }}>目的キー（英数）</span>
+      <div style={{ display: 'flex', gap: space.sm, alignItems: 'flex-end', flexWrap: 'wrap', marginBottom: space.lg }}>
+        <Field label="目的キー（英数）" htmlFor="flow-key-input">
           <input
+            id="flow-key-input"
             data-testid="flow-key-input"
             value={purposeKey}
             onChange={(e) => setPurposeKey(e.target.value)}
             placeholder="interview"
             style={inputStyle}
           />
-        </label>
-        <label style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
-          <span style={{ fontSize: '0.85rem', opacity: 0.8 }}>表示名</span>
+        </Field>
+        <Field label="表示名" htmlFor="flow-name-input">
           <input
+            id="flow-name-input"
             data-testid="flow-name-input"
             value={displayName}
             onChange={(e) => setDisplayName(e.target.value)}
             placeholder="面接・採用候補者"
             style={inputStyle}
           />
-        </label>
-        <button
-          type="button"
+        </Field>
+        <Button
+          variant="primary"
           data-testid="flow-add"
           onClick={add}
           disabled={busy || purposeKey.trim() === '' || displayName.trim() === ''}
-          style={btnStyle}
         >
           追加
-        </button>
+        </Button>
       </div>
 
-      <div data-testid="flow-list" style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+      <div data-testid="flow-list" style={{ display: 'flex', flexDirection: 'column', gap: space.md }}>
         {items.map((f) => (
-          <article
-            key={f.id}
-            data-testid="flow-card"
-            style={{
-              border: '1px solid rgba(255,255,255,0.12)',
-              borderRadius: 12,
-              padding: 16,
-              background: 'var(--color-surface)',
-            }}
-          >
+          <Card key={f.id} testId="flow-card">
             <header style={{ display: 'flex', gap: 12, alignItems: 'center', flexWrap: 'wrap' }}>
               {editingId === f.id ? (
                 <input
@@ -197,7 +189,7 @@ export function ReceptionFlowsManager({
                 data-testid="flow-status"
                 style={{
                   fontSize: '0.8rem',
-                  color: f.enabled ? 'var(--color-success)' : 'var(--color-muted)',
+                  color: f.enabled ? color.success : color.muted,
                 }}
               >
                 {f.enabled ? '有効' : '無効'}
@@ -205,32 +197,28 @@ export function ReceptionFlowsManager({
               <div style={{ display: 'flex', gap: 6, marginLeft: 'auto' }}>
                 {editingId === f.id ? (
                   <>
-                    <button type="button" data-testid="flow-save" onClick={() => saveName(f.id)} style={smallBtn}>
+                    <Button data-testid="flow-save" onClick={() => saveName(f.id)}>
                       保存
-                    </button>
-                    <button type="button" onClick={() => setEditingId(null)} style={smallBtn}>
-                      取消
-                    </button>
+                    </Button>
+                    <Button onClick={() => setEditingId(null)}>取消</Button>
                   </>
                 ) : (
                   <>
-                    <button
-                      type="button"
+                    <Button
                       data-testid="flow-edit"
                       onClick={() => {
                         setEditingId(f.id);
                         setEditName(f.displayName);
                       }}
-                      style={smallBtn}
                     >
                       名称編集
-                    </button>
-                    <button type="button" data-testid="flow-toggle" onClick={() => toggle(f)} style={smallBtn}>
+                    </Button>
+                    <Button data-testid="flow-toggle" onClick={() => toggle(f)}>
                       {f.enabled ? '無効化' : '有効化'}
-                    </button>
-                    <button type="button" data-testid="flow-delete" onClick={() => remove(f)} style={dangerBtn}>
+                    </Button>
+                    <Button variant="danger" data-testid="flow-delete" onClick={() => remove(f)}>
                       削除
-                    </button>
+                    </Button>
                   </>
                 )}
               </div>
@@ -241,7 +229,7 @@ export function ReceptionFlowsManager({
             ) : null}
 
             <FlowSummary steps={f.steps} fields={f.fields} />
-          </article>
+          </Card>
         ))}
       </div>
     </section>
@@ -291,27 +279,4 @@ const inputStyle: React.CSSProperties = {
   border: '1px solid var(--color-surface-2)',
   background: 'var(--color-surface)',
   color: 'var(--color-text)',
-};
-const btnStyle: React.CSSProperties = {
-  minHeight: 44,
-  padding: '8px 16px',
-  borderRadius: 8,
-  border: 'none',
-  background: 'var(--color-accent)',
-  color: '#0f172a',
-  fontWeight: 700,
-  cursor: 'pointer',
-};
-const smallBtn: React.CSSProperties = {
-  padding: '6px 10px',
-  borderRadius: 8,
-  border: '1px solid rgba(255,255,255,0.2)',
-  background: 'var(--color-surface)',
-  color: 'var(--color-text)',
-  cursor: 'pointer',
-};
-const dangerBtn: React.CSSProperties = {
-  ...smallBtn,
-  borderColor: 'rgba(248,113,113,0.5)',
-  color: 'var(--color-danger, #f87171)',
 };
