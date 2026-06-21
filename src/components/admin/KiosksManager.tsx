@@ -3,7 +3,14 @@
 import { useCallback, useEffect, useState } from 'react';
 import type { Kiosk } from '@/domain/kiosk/types';
 
-/** 受付端末管理 (issue #18)。登録・失効・再有効化を管理 API 経由で行う。 */
+/**
+ * 受付端末管理（旧レジストリ・issue #18）。登録・失効・再有効化を管理 API 経由で行う。
+ *
+ * Kiosk→Device 統合 (issue #87)：テナント/サイト境界つきの受付端末管理は `/admin/devices`
+ * に集約していく方針（docs/site-device-management-design.md §Device/Kiosk 統合）。この画面は
+ * 当面の互換のため残す（kiosk token 登録・失効など旧フローの維持）。重複説明を避けるため、
+ * 上部に統合先への導線を出す。
+ */
 export function KiosksManager() {
   const [items, setItems] = useState<Kiosk[]>([]);
   const [displayName, setDisplayName] = useState('');
@@ -46,7 +53,16 @@ export function KiosksManager() {
 
   return (
     <section>
-      <h1 style={{ marginTop: 0 }}>受付端末管理</h1>
+      <h1 style={{ marginTop: 0 }}>受付端末管理（旧）</h1>
+
+      <p data-testid="kiosk-devices-link" style={noticeStyle}>
+        テナント・拠点（サイト）境界つきの受付端末管理は{' '}
+        <a href="/admin/devices" style={{ color: 'var(--color-accent)', fontWeight: 700 }}>
+          受付端末（/admin/devices）
+        </a>{' '}
+        に集約しています。オンライン状態・拠点ごとの管理はそちらをご利用ください。この画面は
+        従来フロー互換のため残しています。
+      </p>
 
       <div style={{ display: 'flex', gap: 8, alignItems: 'flex-end', flexWrap: 'wrap', marginBottom: 24 }}>
         <label style={col}>
@@ -96,6 +112,15 @@ export function KiosksManager() {
 
 const col: React.CSSProperties = { display: 'flex', flexDirection: 'column', gap: 4 };
 const lbl: React.CSSProperties = { fontSize: '0.85rem', opacity: 0.8 };
+const noticeStyle: React.CSSProperties = {
+  margin: '0 0 24px',
+  padding: '12px 16px',
+  borderRadius: 8,
+  border: '1px solid var(--color-surface-2)',
+  background: 'var(--color-surface)',
+  fontSize: '0.9rem',
+  lineHeight: 1.6,
+};
 const inputStyle: React.CSSProperties = {
   minHeight: 44,
   padding: '8px 12px',

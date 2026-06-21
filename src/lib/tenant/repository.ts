@@ -43,6 +43,14 @@ export interface DeviceRepository {
   /** 指定サイト配下の端末のみ返す。 */
   listDevices(tenantId: TenantId, siteId: SiteId): Promise<Device[]>;
   getDevice(tenantId: TenantId, id: DeviceId): Promise<Device | undefined>;
+  /**
+   * テナント境界を跨いで id だけで端末を引く (issue #87 inc3)。
+   * Kiosk→Device 統合で、テナント文脈を持たない kiosk heartbeat から対応 Device を
+   * 解決するために使う。Device の id は kiosk レジストリの id と一致させて寄せる方針
+   * （docs/site-device-management-design.md §Device/Kiosk 統合）。通常の管理 API は
+   * テナント境界つきの getDevice/listDevices を使うこと。
+   */
+  findDeviceById(id: DeviceId): Promise<Device | undefined>;
   createDevice(device: Device): Promise<RepoResult<Device>>;
   putDevice(device: Device): Promise<void>;
 }

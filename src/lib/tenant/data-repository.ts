@@ -135,6 +135,10 @@ class DataBackedDeviceRepository implements DeviceRepository {
     return d && d.tenantId === tenantId ? d : undefined;
   }
 
+  async findDeviceById(id: DeviceId): Promise<Device | undefined> {
+    return this.col().get(id);
+  }
+
   async createDevice(device: Device): Promise<RepoResult<Device>> {
     const col = this.col();
     if (await col.get(device.id))
