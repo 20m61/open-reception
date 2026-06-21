@@ -4,9 +4,13 @@ import {
   buildStaffResponseResult,
   getStaffResponseDefinition,
   isStaffResponseAction,
+  isStaffResponseEnabled,
   kioskStatusFor,
   listStaffResponseDefinitions,
   requiresConfirmation,
+  resolveStaffResponseDefinition,
+  resolveStaffResponseDefinitions,
+  resolvedVisitorMessageFor,
   visitorMessageFor,
 } from './staff-response';
 
@@ -75,5 +79,52 @@ describe('staff-response domain', () => {
     for (const def of list) {
       expect(typeof def.defaultEnabled).toBe('boolean');
     }
+  });
+});
+
+describe('staff-response config resolution (issue #99 inc2)', () => {
+  it('isStaffResponseEnabled は設定がなければ defaultEnabled を返す', () => {
+    expect(isStaffResponseEnabled('coming')).toBe(getStaffResponseDefinition('coming').defaultEnabled);
+    expect(isStaffResponseEnabled('coming', {})).toBe(true);
+  });
+
+  it('isStaffResponseEnabled は設定の enabled を優先する', () => {
+    expect(isStaffResponseEnabled('coming', { coming: { enabled: false } })).toBe(false);
+    // 指定のない種別は既定にフォールバックする。
+    expect(isStaffResponseEnabled('wait', { coming: { enabled: false } })).toBe(true);
+  });
+
+  it('resolvedVisitorMessageFor は上書きがあればそれを、空白/未指定なら既定を返す', () => {
+    expect(resolvedVisitorMessageFor('coming', { coming: { messageOverride: 'すぐ参ります' } })).toBe(
+      'すぐ参ります',
+    );
+    expect(resolvedVisitorMessageFor('coming', { coming: { messageOverride: '  ' } })).toBe(
+      getStaffResponseDefinition('coming').defaultVisitorMessage,
+    );
+    expect(resolvedVisitorMessageFor('coming')).toBe(
+      getStaffResponseDefinition('coming').defaultVisitorMessage,
+    );
+  });
+
+  it('resolveStaffResponseDefinition は実効的な enabled / visitorMessage / 上書きフラグを返す', () => {
+    const overridden = resolveStaffResponseDefinition('decline', {
+      enabled: false,
+      messageOverride: '本日は受付を終了しました',
+    });
+    expect(overridden.enabled).toBe(false);
+    expect(overridden.visitorMessage).toBe('本日は受付を終了しました');
+    expect(overridden.isMessageOverridden).toBe(true);
+
+    const def = resolveStaffResponseDefinition('coming');
+    expect(def.enabled).toBe(getStaffResponseDefinition('coming').defaultEnabled);
+    expect(def.visitorMessage).toBe(getStaffResponseDefinition('coming').defaultVisitorMessage);
+    expect(def.isMessageOverridden).toBe(false);
+  });
+
+  it('resolveStaffResponseDefinitions は全種別を表示順で実効化する', () => {
+    const list = resolveStaffResponseDefinitions({ coming: { enabled: false } });
+    expect(list.map((d) => d.action)).toEqual([...STAFF_RESPONSE_ACTIONS]);
+    expect(list.find((d) => d.action === 'coming')?.enabled).toBe(false);
+    expect(list.find((d) => d.action === 'wait')?.enabled).toBe(true);
   });
 });

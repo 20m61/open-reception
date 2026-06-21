@@ -10,25 +10,69 @@
  * 誤タップ防止: requiresConfirmation な種別（拒否・別チャネル誘導）は 2 段階で確認する。
  * 通話参加導線は壊さない（本コンポーネントは応答アクションのみを扱う）。
  */
-import { useCallback, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import {
   listStaffResponseDefinitions,
   type StaffResponseAction,
   type StaffResponseResult,
+  type StaffResponseSeverity,
 } from '@/domain/reception/staff-response';
 
 type SubmitState = 'idle' | 'submitting' | 'done' | 'error';
+
+/** 担当者ボタンに必要な最小メタ（GET /respond の応答形）。来訪者文言・PII は含まない。 */
+type ActionMeta = {
+  action: StaffResponseAction;
+  staffLabel: string;
+  severity: StaffResponseSeverity;
+  requiresConfirmation: boolean;
+  enabled: boolean;
+};
 
 export type StaffResponseActionsProps = {
   receptionId: string;
   token: string;
 };
 
+/** 設定取得前/失敗時のフォールバック: ドメイン既定（defaultEnabled）から組み立てる。 */
+function defaultActionMeta(): ActionMeta[] {
+  return listStaffResponseDefinitions().map((d) => ({
+    action: d.action,
+    staffLabel: d.staffLabel,
+    severity: d.severity,
+    requiresConfirmation: d.requiresConfirmation,
+    enabled: d.defaultEnabled,
+  }));
+}
+
 export function StaffResponseActions({ receptionId, token }: StaffResponseActionsProps): React.ReactElement {
   // 確認待ちの種別（誤タップ防止）。null なら確認中なし。
   const [pendingConfirm, setPendingConfirm] = useState<StaffResponseAction | null>(null);
   const [submitState, setSubmitState] = useState<SubmitState>('idle');
   const [lastResult, setLastResult] = useState<StaffResponseResult | null>(null);
+  // サイト設定を反映した応答種別。取得前/失敗時はドメイン既定にフォールバックする。
+  const [actions, setActions] = useState<ActionMeta[]>(defaultActionMeta);
+
+  // この受付で有効な応答種別を取得する（無効化された種別をボタンに出さない）。
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      try {
+        const res = await fetch(
+          `/api/staff/calls/${receptionId}/respond?token=${encodeURIComponent(token)}`,
+          { cache: 'no-store' },
+        );
+        if (!res.ok || cancelled) return;
+        const data = (await res.json()) as { actions?: ActionMeta[] };
+        if (!cancelled && Array.isArray(data.actions)) setActions(data.actions);
+      } catch {
+        /* 取得失敗時はフォールバック（defaultEnabled）のまま操作可能にする */
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [receptionId, token]);
 
   const submit = useCallback(
     async (action: StaffResponseAction) => {
@@ -64,7 +108,7 @@ export function StaffResponseActions({ receptionId, token }: StaffResponseAction
     [pendingConfirm, submit],
   );
 
-  const definitions = listStaffResponseDefinitions().filter((d) => d.defaultEnabled);
+  const definitions = actions.filter((d) => d.enabled);
 
   return (
     <section className="staff-response" data-testid="staff-response" data-submit-state={submitState}>

@@ -134,6 +134,73 @@ export function listStaffResponseDefinitions(): StaffResponseDefinition[] {
   return STAFF_RESPONSE_ACTIONS.map((a) => DEFINITIONS[a]);
 }
 
+/**
+ * 管理画面で上書きする応答種別ごとの設定 (issue #99 increment 2)。
+ * テナント/サイト境界は永続化層（src/lib/reception/staff-response-config）が持つ。
+ * 本ドメインは「設定をどう解決して既定にフォールバックするか」の純関数のみを担う。
+ *
+ *  - enabled: 担当者がこの応答種別を選べるか。未指定なら定義の defaultEnabled。
+ *  - messageOverride: 来訪者向け文言の上書き。空白/未指定なら既定文言。
+ */
+export type StaffResponseActionOverride = {
+  enabled?: boolean;
+  messageOverride?: string;
+};
+
+/** 応答種別 → 上書き設定の写像（部分指定可。指定のない種別は既定にフォールバック）。 */
+export type StaffResponseConfigOverrides = Partial<
+  Record<StaffResponseAction, StaffResponseActionOverride>
+>;
+
+/** 設定を適用した応答種別の実効定義。管理画面一覧・担当者ボタン生成に使う。 */
+export type ResolvedStaffResponseDefinition = StaffResponseDefinition & {
+  /** 設定適用後に担当者が選べるか。 */
+  enabled: boolean;
+  /** 設定適用後に来訪者へ表示される文言（上書き or 既定）。 */
+  visitorMessage: string;
+  /** 既定から上書きされた文言を持つか（管理画面の表示補助）。 */
+  isMessageOverridden: boolean;
+};
+
+/** 単一応答種別に設定を適用した実効定義を返す。純関数。 */
+export function resolveStaffResponseDefinition(
+  action: StaffResponseAction,
+  override?: StaffResponseActionOverride,
+): ResolvedStaffResponseDefinition {
+  const def = DEFINITIONS[action];
+  const trimmed = override?.messageOverride?.trim();
+  const isMessageOverridden = !!trimmed && trimmed.length > 0;
+  return {
+    ...def,
+    enabled: override?.enabled ?? def.defaultEnabled,
+    visitorMessage: isMessageOverridden ? trimmed : def.defaultVisitorMessage,
+    isMessageOverridden,
+  };
+}
+
+/** 全応答種別に設定を適用した実効定義を表示順で返す。 */
+export function resolveStaffResponseDefinitions(
+  overrides?: StaffResponseConfigOverrides,
+): ResolvedStaffResponseDefinition[] {
+  return STAFF_RESPONSE_ACTIONS.map((a) => resolveStaffResponseDefinition(a, overrides?.[a]));
+}
+
+/** 設定上、この応答種別が担当者から選べる（有効）か。未指定なら defaultEnabled。 */
+export function isStaffResponseEnabled(
+  action: StaffResponseAction,
+  overrides?: StaffResponseConfigOverrides,
+): boolean {
+  return overrides?.[action]?.enabled ?? DEFINITIONS[action].defaultEnabled;
+}
+
+/** 設定を踏まえた来訪者向け文言。上書きがあればそれを、なければ既定を返す。 */
+export function resolvedVisitorMessageFor(
+  action: StaffResponseAction,
+  overrides?: StaffResponseConfigOverrides,
+): string {
+  return visitorMessageFor(action, overrides?.[action]?.messageOverride);
+}
+
 /** 応答種別 → 来訪者向けメッセージ。上書き文言があればそれを優先する（空白は無視）。 */
 export function visitorMessageFor(
   action: StaffResponseAction,
