@@ -271,6 +271,71 @@ a {
 }
 
 /* =========================================================================
+ * レイアウトプロファイル: iPad 縦/横・4K/大型横画面 (issue #124 / Epic #119)
+ *
+ * 配置の真実源は純ロジック resolveKioskLayout。KioskFlow が data-kiosk-layout 属性で
+ * プロファイルを公開し、ここで「画面種別ごとの役割配置」を切り替える（単純拡大ではない）。
+ * タッチターゲット/文字/余白には最小・最大を設け、4K で過度に巨大化しないようにする。
+ * ======================================================================= */
+
+/* タッチターゲットと文字の上限（4K で巨大化させない）。最小は :root の各トークンが床。 */
+:root {
+  --touch-target-max: 96px;
+  --font-xl-max: 3.25rem;
+}
+
+/* iPad 縦置き（既定）: 上アバター → 中央案内 → 下に大きな操作。.kiosk-idle の縦積みを踏襲。 */
+.screen[data-kiosk-layout='ipad-portrait'] .kiosk-idle {
+  justify-content: flex-start;
+}
+
+/* iPad 横置き: 左アバター / 右に案内文+操作カードを同時に見せる。 */
+.screen[data-kiosk-layout='ipad-landscape'] .kiosk-idle {
+  display: grid;
+  grid-template-columns: minmax(260px, 32%) 1fr;
+  grid-template-areas:
+    'avatar head'
+    'avatar actions';
+  align-items: center;
+  text-align: left;
+  gap: var(--space-lg);
+}
+
+.screen[data-kiosk-layout='ipad-landscape'] .kiosk-idle__avatar {
+  grid-area: avatar;
+}
+
+.screen[data-kiosk-layout='ipad-landscape'] .kiosk-idle__head {
+  grid-area: head;
+  align-items: flex-start;
+}
+
+.screen[data-kiosk-layout='ipad-landscape'] .kiosk-quick-actions {
+  grid-area: actions;
+}
+
+/* 4K/大型横画面: 主要操作を画面全体に散らさず、触れる範囲（中央寄せ・幅上限）へ集約する。 */
+.screen[data-kiosk-layout='large-display'] {
+  align-items: center;
+}
+
+.screen[data-kiosk-layout='large-display'] .kiosk-idle {
+  width: 100%;
+  max-width: 1400px;
+  margin-inline: auto;
+}
+
+/* 大型画面では CTA を読みやすく保ちつつ上限を設け、ボタンが過度に巨大化しないようにする。 */
+.screen[data-kiosk-layout='large-display'] .card--cta {
+  font-size: clamp(var(--font-lg), 2.5vw, var(--font-xl-max));
+  min-height: clamp(160px, 18vh, 260px);
+}
+
+.screen[data-kiosk-layout='large-display'] .btn {
+  max-height: var(--touch-target-max);
+}
+
+/* =========================================================================
  * 管理画面シェル: SPA ライクなレスポンシブ・レイアウト (issue #94, increment 1)
  *
  * 見た目（レイアウト/開閉/アニメーション）は CSS に集約する。AdminShell（JS）は
