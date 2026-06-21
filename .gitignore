@@ -157,3 +157,7 @@ vite.config.ts.timestamp-*
 
 # Lighthouse CI
 /.lighthouseci/
+
+# Claude Code: ランタイム worktree と個人設定は追跡しない（共有 config は追跡する）
+/.claude/worktrees/
+/.claude/settings.local.json
