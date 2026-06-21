@@ -96,7 +96,44 @@ metadata を記録。tenantId/siteId/userId/role/ip/requestId 等の完全装備
 - GET: `requireActor` + `assertCanRead`。PUT: `requireActor` + `assertCanWrite`（viewer は 403）。
 - PUT 成功時に `recordDangerAction('security.updated', …)`。PIN 値は metadata に残さない。
 
-他の Manager / platform 配下 / 各画面への横展開は次増分（#90/#82 と協調）。
+## 4.1 適用状況（increment 2: 旧 admin API ルートへの横展開）
+
+inc1 の `requireActor` + `assertCanRead/Write` を、tenantId を URL/body で受け取らない
+旧 admin ルートへ一貫適用した。これらは単一テナント運用の既定スコープで動くため、認可
+スコープは `guard.defaultAdminTenantId()`（= `buildActorConfig().defaultTenantId`、未設定時
+'default'）を使う（security route と同方針）。機能・レスポンス形は不変で、認可前段のみ追加。
+
+| ルート | メソッド | ガード | 監査 |
+| ------ | -------- | ------ | ---- |
+| `departments/route.ts` | GET / POST | read / write | 既存 `department.created` 維持 |
+| `departments/[id]/route.ts` | PATCH | write | 既存 `department.updated` 維持 |
+| `departments/[id]/move/route.ts` | POST | write | 既存 `department.reordered` 維持 |
+| `departments/reorder/route.ts` | POST | write | 既存 `department.reordered` 維持 |
+| `departments/import/route.ts` | POST | write（preview も書込権を要求） | 既存 `department.created` 維持 |
+| `staff/route.ts` | GET / POST | read / write | 既存 `staff.created` 維持 |
+| `staff/[id]/route.ts` | PATCH | write | 既存 `staff.updated` 維持 |
+| `staff/import/route.ts` | POST | write | 既存 `staff.created` 維持 |
+| `kiosks/route.ts` | GET / POST | read / write | 既存 `kiosk.created` 維持 |
+| `kiosks/[id]/revoke/route.ts` | POST | write（危険操作） | `recordDangerAction('kiosk.revoked')` |
+| `kiosks/[id]/restore/route.ts` | POST | write | 既存 `kiosk.restored` 維持 |
+| `assets/route.ts` | GET / POST | read / write | 既存 `asset.created` 維持 |
+| `assets/[id]/route.ts` | PATCH | write | 既存 `asset.updated` 維持 |
+| `motions/route.ts` | GET / PUT | read / write | 既存 `motion.updated` 維持 |
+| `voice/route.ts` | GET / PUT | read / write | 既存 `voice.updated` 維持 |
+| `receptions/route.ts` | GET | read | （監査出力なし） |
+| `audit/route.ts` | GET | read | （監査出力なし） |
+| `security/route.ts` | GET / PUT | read / write | inc1 で適用済（`recordDangerAction('security.updated')`） |
+
+既適用の新ルート（`sites` / `devices` / `call-routes` / `reservations` / `integrations` /
+`auth`）は本増分の対象外（既に各 route が #80 純関数で境界判定済み）。`platform` 配下は #90。
+
+新規 AuditAction は追加していない（`log.ts` 不変）。端末失効は既存 `kiosk.revoked` を
+`recordDangerAction` 経由で記録し、§5 の `device.disabled` 追加は不要と判断した。
+
+検証: `src/app/api/admin/legacy-routes-guard.test.ts` で各ルートの 401 / viewer 書込 403 /
+テナント越境 403 / viewer 読込 200 / tenant_admin 通過（≠401/403）を表テストで網羅。
+
+他の各画面（フロント表示制御）への横展開は次増分（#92/#90/#82 と協調）。
 
 ## 5. 必要になりうる新 AuditAction（log.ts 編集は本トラックではしない）
 
