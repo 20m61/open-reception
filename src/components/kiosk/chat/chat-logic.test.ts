@@ -58,27 +58,49 @@ describe('suggestionToQuickReply', () => {
     });
   });
 
+  it('現状態で到達不能な重要操作は提示しない（idle の confirm は null）', () => {
+    expect(suggestionToQuickReply('idle', { label: 'x', action: 'confirm' })).toBeNull();
+    expect(
+      suggestionToQuickReply('idle', { label: 'y', action: 'submitVisitorInfo' }),
+    ).toBeNull();
+  });
+
   it('action を伴わない候補は null（ラベルだけ提案は実行候補にしない）', () => {
     expect(suggestionToQuickReply('selectingPurpose', { label: '別の名前で探す' })).toBeNull();
   });
 });
 
 describe('buildTurnResult', () => {
-  it('許可アクションのみ採用し、最後尾にスタッフ誘導を必ず添える', () => {
+  it('許可アクションのみ採用し、到達不能な重要操作は捨て、最後尾にスタッフ誘導を必ず添える', () => {
     const response: ChatAdapterResponse = {
       reply: '山田さんをお探しですね。候補が2名います',
       suggestions: [
         { label: '営業部 山田太郎さん', action: 'selectTarget', optionId: 'staff-1' },
         { label: '開発部 山田花子さん', action: 'selectTarget', optionId: 'staff-2' },
-        // 現状態では許可されない操作は捨てられる。
+        // selectingTarget では confirm は到達不能なので、誘導も出さず捨てる（reachability gate）。
         { label: '呼び出し確定', action: 'confirm' },
       ],
     };
     const result = buildTurnResult('selectingTarget', response);
     expect(result.isFallback).toBe(false);
-    // 2 件の selectTarget + confirm-redirect(降格) + staff。
+    // 2 件の selectTarget + staff。confirm は到達不能なので confirm-redirect も出ない。
     const kinds = result.quickReplies.map((q) => q.kind);
     expect(kinds).toContain('action');
+    expect(kinds).not.toContain('confirm-redirect');
+    expect(result.quickReplies.at(-1)).toEqual(STAFF_QUICK_REPLY);
+  });
+
+  it('現状態で到達可能な重要操作は confirm-redirect（タッチ確認誘導）に降格する', () => {
+    const response: ChatAdapterResponse = {
+      reply: '内容をご確認ください',
+      suggestions: [
+        // confirming では confirm が到達可能 → 実行ではなくタッチ確認への誘導に降格。
+        { label: '呼び出しを確定', action: 'confirm' },
+      ],
+    };
+    const result = buildTurnResult('confirming', response);
+    expect(result.isFallback).toBe(false);
+    const kinds = result.quickReplies.map((q) => q.kind);
     expect(kinds).toContain('confirm-redirect');
     expect(result.quickReplies.at(-1)).toEqual(STAFF_QUICK_REPLY);
   });
