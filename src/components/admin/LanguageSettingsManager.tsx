@@ -7,6 +7,7 @@ import {
   type Locale,
 } from '@/lib/i18n';
 import type { LanguageSettings } from '@/lib/i18n/language-settings';
+import { Button, Field } from '@/components/admin/ui';
 
 /**
  * 言語設定 (issue #103, increment 1)。受付で出す言語（有効言語）と初期表示言語を選ぶ。
@@ -86,9 +87,9 @@ export function LanguageSettingsManager() {
         ))}
       </fieldset>
 
-      <label style={col}>
-        <span style={lbl}>初期表示する言語</span>
+      <Field label="初期表示する言語" htmlFor="lang-default">
         <select
+          id="lang-default"
           data-testid="lang-default"
           value={s.defaultLocale}
           onChange={(e) => setS((cur) => (cur ? { ...cur, defaultLocale: e.target.value as Locale } : cur))}
@@ -100,12 +101,12 @@ export function LanguageSettingsManager() {
             </option>
           ))}
         </select>
-      </label>
+      </Field>
 
       <div style={{ marginTop: 24, display: 'flex', alignItems: 'center', gap: 12 }}>
-        <button type="button" data-testid="lang-save" onClick={save} disabled={busy} style={saveBtn}>
+        <Button variant="primary" data-testid="lang-save" onClick={save} disabled={busy} style={saveBtn}>
           {busy ? '保存中…' : '保存'}
-        </button>
+        </Button>
         {saved ? <span style={{ color: 'var(--color-success, #16a34a)' }}>保存しました</span> : null}
       </div>
     </section>
@@ -115,7 +116,5 @@ export function LanguageSettingsManager() {
 const fieldset: React.CSSProperties = { border: '1px solid var(--color-border, #ddd)', borderRadius: 12, padding: 16, marginBottom: 24 };
 const legend: React.CSSProperties = { padding: '0 8px', fontWeight: 600 };
 const chk: React.CSSProperties = { display: 'flex', alignItems: 'center', gap: 8, padding: '6px 0' };
-const col: React.CSSProperties = { display: 'flex', flexDirection: 'column', gap: 8 };
-const lbl: React.CSSProperties = { fontWeight: 600 };
 const input: React.CSSProperties = { padding: '10px 12px', fontSize: 16, borderRadius: 8, border: '1px solid var(--color-border, #ccc)' };
-const saveBtn: React.CSSProperties = { padding: '10px 24px', fontSize: 16, borderRadius: 8, border: 'none', background: 'var(--color-accent, #2563eb)', color: '#fff', cursor: 'pointer' };
+const saveBtn: React.CSSProperties = { minHeight: 44, padding: '10px 24px', fontSize: 16 };

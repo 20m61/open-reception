@@ -1,10 +1,12 @@
 'use client';
 
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import type { Department } from '@/domain/department/types';
 import type { Staff } from '@/domain/staff/types';
 import { CsvImport } from './CsvImport';
 import { StaffEditor } from './StaffEditor';
+import { Button, DataTable, Field, type Column } from '@/components/admin/ui';
+import { color, space } from '@/components/admin/ui/tokens';
 
 /** 担当者管理 (issue #26)。一覧・作成・有効/無効・部署割り当てを管理 API 経由で行う。 */
 export function StaffManager() {
@@ -59,34 +61,97 @@ export function StaffManager() {
     [load],
   );
 
-  const deptName = (id: string) => departments.find((d) => d.id === id)?.name ?? '-';
+  const deptName = useCallback(
+    (id: string) => departments.find((d) => d.id === id)?.name ?? '-',
+    [departments],
+  );
+
+  const columns = useMemo<Column<Staff>[]>(
+    () => [
+      {
+        key: 'name',
+        header: '氏名',
+        cellTestId: () => 'staff-name',
+        cell: (s) => (
+          <>
+            {s.displayName}
+            {s.kana ? <span style={{ opacity: 0.6 }}>（{s.kana}）</span> : null}
+          </>
+        ),
+      },
+      { key: 'dept', header: '部署', cell: (s) => deptName(s.departmentId) },
+      {
+        key: 'status',
+        header: '状態',
+        cellStyle: (s) => ({ color: s.enabled ? color.success : color.muted }),
+        cell: (s) => (s.enabled ? '有効' : '無効'),
+      },
+      {
+        key: 'availability',
+        header: '在席',
+        cellTestId: () => 'staff-availability',
+        cellStyle: (s) => ({ color: s.available ? color.success : color.warning }),
+        cell: (s) => (s.available ? '在席' : '不在'),
+      },
+      {
+        key: 'actions',
+        header: '操作',
+        cell: (s) => (
+          <>
+            <div style={{ display: 'flex', gap: 6 }}>
+              <Button data-testid="staff-availability-toggle" onClick={() => patch(s, { available: !s.available })}>
+                {s.available ? '不在にする' : '在席にする'}
+              </Button>
+              <Button data-testid="staff-toggle" onClick={() => patch(s, { enabled: !s.enabled })}>
+                {s.enabled ? '無効化' : '有効化'}
+              </Button>
+              <Button
+                data-testid="staff-edit"
+                onClick={() => setEditingId((cur) => (cur === s.id ? null : s.id))}
+              >
+                {editingId === s.id ? '閉じる' : '呼び出し先'}
+              </Button>
+            </div>
+            {editingId === s.id ? (
+              <StaffEditor
+                staff={s}
+                allStaff={items}
+                onSaved={() => {
+                  setEditingId(null);
+                  void load();
+                }}
+              />
+            ) : null}
+          </>
+        ),
+      },
+    ],
+    [deptName, patch, editingId, items, load],
+  );
 
   return (
     <section>
       <h1 style={{ marginTop: 0 }}>担当者管理</h1>
 
-      <div style={{ display: 'flex', gap: 8, alignItems: 'flex-end', flexWrap: 'wrap', marginBottom: 24 }}>
-        <label style={col}>
-          <span style={lbl}>氏名</span>
-          <input data-testid="staff-name-input" value={displayName} onChange={(e) => setDisplayName(e.target.value)} style={inputStyle} />
-        </label>
-        <label style={col}>
-          <span style={lbl}>よみがな（任意）</span>
-          <input data-testid="staff-kana-input" value={kana} onChange={(e) => setKana(e.target.value)} style={inputStyle} />
-        </label>
-        <label style={col}>
-          <span style={lbl}>部署</span>
-          <select data-testid="staff-dept-select" value={departmentId} onChange={(e) => setDepartmentId(e.target.value)} style={inputStyle}>
+      <div style={{ display: 'flex', gap: space.sm, alignItems: 'flex-end', flexWrap: 'wrap', marginBottom: space.lg }}>
+        <Field label="氏名" htmlFor="staff-name-input">
+          <input id="staff-name-input" data-testid="staff-name-input" value={displayName} onChange={(e) => setDisplayName(e.target.value)} style={inputStyle} />
+        </Field>
+        <Field label="よみがな（任意）" htmlFor="staff-kana-input">
+          <input id="staff-kana-input" data-testid="staff-kana-input" value={kana} onChange={(e) => setKana(e.target.value)} style={inputStyle} />
+        </Field>
+        <Field label="部署" htmlFor="staff-dept-select">
+          <select id="staff-dept-select" data-testid="staff-dept-select" value={departmentId} onChange={(e) => setDepartmentId(e.target.value)} style={inputStyle}>
             {departments.map((d) => (
               <option key={d.id} value={d.id}>
                 {d.name}
               </option>
             ))}
           </select>
-        </label>
-        <button type="button" data-testid="staff-add" onClick={add} disabled={busy || displayName.trim() === ''} style={btnStyle}>
+        </Field>
+        <Button variant="primary" data-testid="staff-add" onClick={add} disabled={busy || displayName.trim() === ''}>
           追加
-        </button>
+        </Button>
       </div>
 
       <CsvImport
@@ -96,68 +161,18 @@ export function StaffManager() {
         testId="staff"
       />
 
-      <table data-testid="staff-table" style={{ width: '100%', borderCollapse: 'collapse' }}>
-        <thead>
-          <tr style={{ textAlign: 'left', borderBottom: '1px solid rgba(255,255,255,0.2)' }}>
-            <th style={cell}>氏名</th>
-            <th style={cell}>部署</th>
-            <th style={cell}>状態</th>
-            <th style={cell}>在席</th>
-            <th style={cell}>操作</th>
-          </tr>
-        </thead>
-        <tbody>
-          {items.map((s) => (
-            <tr key={s.id} data-testid="staff-row" style={{ borderBottom: '1px solid rgba(255,255,255,0.08)' }}>
-              <td style={cell} data-testid="staff-name">
-                {s.displayName}
-                {s.kana ? <span style={{ opacity: 0.6 }}>（{s.kana}）</span> : null}
-              </td>
-              <td style={cell}>{deptName(s.departmentId)}</td>
-              <td style={{ ...cell, color: s.enabled ? 'var(--color-success)' : 'var(--color-muted)' }}>
-                {s.enabled ? '有効' : '無効'}
-              </td>
-              <td style={{ ...cell, color: s.available ? 'var(--color-success)' : 'var(--color-warning)' }} data-testid="staff-availability">
-                {s.available ? '在席' : '不在'}
-              </td>
-              <td style={cell}>
-                <div style={{ display: 'flex', gap: 6 }}>
-                  <button type="button" data-testid="staff-availability-toggle" onClick={() => patch(s, { available: !s.available })} style={smallBtn}>
-                    {s.available ? '不在にする' : '在席にする'}
-                  </button>
-                  <button type="button" data-testid="staff-toggle" onClick={() => patch(s, { enabled: !s.enabled })} style={smallBtn}>
-                    {s.enabled ? '無効化' : '有効化'}
-                  </button>
-                  <button
-                    type="button"
-                    data-testid="staff-edit"
-                    onClick={() => setEditingId((cur) => (cur === s.id ? null : s.id))}
-                    style={smallBtn}
-                  >
-                    {editingId === s.id ? '閉じる' : '呼び出し先'}
-                  </button>
-                </div>
-                {editingId === s.id ? (
-                  <StaffEditor
-                    staff={s}
-                    allStaff={items}
-                    onSaved={() => {
-                      setEditingId(null);
-                      void load();
-                    }}
-                  />
-                ) : null}
-              </td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
+      <DataTable
+        testId="staff-table"
+        columns={columns}
+        rows={items}
+        rowKey={(s) => s.id}
+        rowTestId={() => 'staff-row'}
+        emptyMessage="登録された担当者はありません。"
+      />
     </section>
   );
 }
 
-const col: React.CSSProperties = { display: 'flex', flexDirection: 'column', gap: 4 };
-const lbl: React.CSSProperties = { fontSize: '0.85rem', opacity: 0.8 };
 const inputStyle: React.CSSProperties = {
   minHeight: 44,
   padding: '8px 12px',
@@ -166,22 +181,3 @@ const inputStyle: React.CSSProperties = {
   background: 'var(--color-surface)',
   color: 'var(--color-text)',
 };
-const btnStyle: React.CSSProperties = {
-  minHeight: 44,
-  padding: '8px 16px',
-  borderRadius: 8,
-  border: 'none',
-  background: 'var(--color-accent)',
-  color: '#0f172a',
-  fontWeight: 700,
-  cursor: 'pointer',
-};
-const smallBtn: React.CSSProperties = {
-  padding: '6px 10px',
-  borderRadius: 8,
-  border: '1px solid rgba(255,255,255,0.2)',
-  background: 'var(--color-surface)',
-  color: 'var(--color-text)',
-  cursor: 'pointer',
-};
-const cell: React.CSSProperties = { padding: '8px 12px' };

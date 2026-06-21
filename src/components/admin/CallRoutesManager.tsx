@@ -2,6 +2,8 @@
 
 import { useCallback, useEffect, useState } from 'react';
 import type { CallRoute, CallTargetGroup } from '@/lib/notification/types';
+import { Button, Card, Field } from '@/components/admin/ui';
+import { color, space } from '@/components/admin/ui/tokens';
 
 /**
  * 呼び出し先・通知ルート管理 (issue #88, increment 1)。
@@ -122,39 +124,24 @@ export function CallRoutesManager({
         ルートごとに「どのグループの誰へ、どの手段で、どの順番で通知するか」を確認できます。
       </p>
 
-      <div style={{ display: 'flex', gap: 8, alignItems: 'flex-end', flexWrap: 'wrap', marginBottom: 24 }}>
-        <label style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
-          <span style={{ fontSize: '0.85rem', opacity: 0.8 }}>ルート名</span>
+      <div style={{ display: 'flex', gap: space.sm, alignItems: 'flex-end', flexWrap: 'wrap', marginBottom: space.lg }}>
+        <Field label="ルート名" htmlFor="route-name-input">
           <input
+            id="route-name-input"
             data-testid="route-name-input"
             value={name}
             onChange={(e) => setName(e.target.value)}
             style={inputStyle}
           />
-        </label>
-        <button
-          type="button"
-          data-testid="route-add"
-          onClick={add}
-          disabled={busy || name.trim() === ''}
-          style={btnStyle}
-        >
+        </Field>
+        <Button variant="primary" data-testid="route-add" onClick={add} disabled={busy || name.trim() === ''}>
           追加
-        </button>
+        </Button>
       </div>
 
-      <div data-testid="route-list" style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+      <div data-testid="route-list" style={{ display: 'flex', flexDirection: 'column', gap: space.md }}>
         {items.map((r) => (
-          <article
-            key={r.id}
-            data-testid="route-card"
-            style={{
-              border: '1px solid rgba(255,255,255,0.12)',
-              borderRadius: 12,
-              padding: 16,
-              background: 'var(--color-surface)',
-            }}
-          >
+          <Card key={r.id} testId="route-card">
             <header style={{ display: 'flex', gap: 12, alignItems: 'center', flexWrap: 'wrap' }}>
               {editingId === r.id ? (
                 <input
@@ -172,7 +159,7 @@ export function CallRoutesManager({
                 data-testid="route-status"
                 style={{
                   fontSize: '0.8rem',
-                  color: r.enabled ? 'var(--color-success)' : 'var(--color-muted)',
+                  color: r.enabled ? color.success : color.muted,
                 }}
               >
                 {r.enabled ? '有効' : '無効'}
@@ -180,39 +167,35 @@ export function CallRoutesManager({
               <div style={{ display: 'flex', gap: 6, marginLeft: 'auto' }}>
                 {editingId === r.id ? (
                   <>
-                    <button type="button" data-testid="route-save" onClick={() => saveName(r.id)} style={smallBtn}>
+                    <Button data-testid="route-save" onClick={() => saveName(r.id)}>
                       保存
-                    </button>
-                    <button type="button" onClick={() => setEditingId(null)} style={smallBtn}>
-                      取消
-                    </button>
+                    </Button>
+                    <Button onClick={() => setEditingId(null)}>取消</Button>
                   </>
                 ) : (
                   <>
-                    <button
-                      type="button"
+                    <Button
                       data-testid="route-edit"
                       onClick={() => {
                         setEditingId(r.id);
                         setEditName(r.name);
                       }}
-                      style={smallBtn}
                     >
                       名称編集
-                    </button>
-                    <button type="button" data-testid="route-toggle" onClick={() => toggle(r)} style={smallBtn}>
+                    </Button>
+                    <Button data-testid="route-toggle" onClick={() => toggle(r)}>
                       {r.enabled ? '無効化' : '有効化'}
-                    </button>
-                    <button type="button" data-testid="route-delete" onClick={() => remove(r)} style={dangerBtn}>
+                    </Button>
+                    <Button variant="danger" data-testid="route-delete" onClick={() => remove(r)}>
                       削除
-                    </button>
+                    </Button>
                   </>
                 )}
               </div>
             </header>
 
             <RouteFlow groups={r.groups} />
-          </article>
+          </Card>
         ))}
       </div>
     </section>
@@ -260,27 +243,4 @@ const inputStyle: React.CSSProperties = {
   border: '1px solid var(--color-surface-2)',
   background: 'var(--color-surface)',
   color: 'var(--color-text)',
-};
-const btnStyle: React.CSSProperties = {
-  minHeight: 44,
-  padding: '8px 16px',
-  borderRadius: 8,
-  border: 'none',
-  background: 'var(--color-accent)',
-  color: '#0f172a',
-  fontWeight: 700,
-  cursor: 'pointer',
-};
-const smallBtn: React.CSSProperties = {
-  padding: '6px 10px',
-  borderRadius: 8,
-  border: '1px solid rgba(255,255,255,0.2)',
-  background: 'var(--color-surface)',
-  color: 'var(--color-text)',
-  cursor: 'pointer',
-};
-const dangerBtn: React.CSSProperties = {
-  ...smallBtn,
-  borderColor: 'rgba(248,113,113,0.5)',
-  color: 'var(--color-danger, #f87171)',
 };
