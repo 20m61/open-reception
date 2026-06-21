@@ -1,12 +1,24 @@
 'use client';
 
 import { useCallback, useEffect, useState } from 'react';
-import type { UsageSummary } from '@/domain/usage/usage-summary';
+import type { UsageRates, UsageSummary, UsageTrendPoint } from '@/domain/usage/usage-summary';
 import { Button } from '@/components/admin/ui';
 import { UsageCard, CardGrid } from './UsageCard';
+import { TrendBars, TrendSection } from './TrendBars';
 
-/** /api/admin/usage のレスポンス型（当月＋前月）。 */
-type UsageResponse = { current: UsageSummary; previous: UsageSummary };
+/** /api/admin/usage のレスポンス型（当月＋前月、割合・日次推移つき）。 */
+type UsageResponse = {
+  current: UsageSummary;
+  previous: UsageSummary;
+  currentRates: UsageRates;
+  trend: UsageTrendPoint[];
+};
+
+/** 割合（0〜1）をパーセント文字列にする。null は「—」。 */
+function pct(rate: number | null): string {
+  if (rate === null) return '—';
+  return `${Math.round(rate * 1000) / 10}%`;
+}
 
 type LoadState =
   | { phase: 'loading' }
@@ -75,7 +87,7 @@ function delta(current: number, previous: number): string {
 }
 
 function Body({ data }: { data: UsageResponse }) {
-  const { current, previous } = data;
+  const { current, previous, currentRates, trend } = data;
   return (
     <div data-testid="usage-ready" style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-lg, 24px)' }}>
       <CardGrid>
@@ -108,6 +120,46 @@ function Body({ data }: { data: UsageResponse }) {
           hint={delta(current.fallbackUsed, previous.fallbackUsed)}
         />
       </CardGrid>
+
+      <div data-testid="usage-rates">
+        <h2 style={{ fontSize: '1.05rem', marginBottom: 12 }}>受付の品質（割合）</h2>
+        <CardGrid>
+          <UsageCard
+            label="呼び出し成功率"
+            value={pct(currentRates.connectedRate)}
+            tone="success"
+            hint="connected / 受付件数"
+          />
+          <UsageCard
+            label="未応答率"
+            value={pct(currentRates.timeoutRate)}
+            tone={currentRates.timeoutRate && currentRates.timeoutRate > 0 ? 'warning' : 'neutral'}
+            hint="timeout / 受付件数"
+          />
+          <UsageCard
+            label="失敗率"
+            value={pct(currentRates.failedRate)}
+            tone={currentRates.failedRate && currentRates.failedRate > 0 ? 'warning' : 'neutral'}
+            hint="failed / 受付件数"
+          />
+          <UsageCard
+            label="代替導線率"
+            value={pct(currentRates.fallbackRate)}
+            hint="fallback / 受付件数"
+          />
+        </CardGrid>
+      </div>
+
+      <TrendSection title="受付件数の推移（当月・日次）" testId="usage-trend">
+        <TrendBars
+          data={trend.map((p) => ({ date: p.date, value: p.receptions }))}
+          unit="件"
+          testId="usage-trend-bars"
+        />
+        <p style={{ fontSize: '0.8rem', opacity: 0.6, margin: 0 }}>
+          UTC 日境界で集計しています。空の日も連続した系列として表示します。
+        </p>
+      </TrendSection>
 
       <div>
         <h2 style={{ fontSize: '1.05rem', marginBottom: 12 }}>準備中の指標</h2>

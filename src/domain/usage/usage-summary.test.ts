@@ -1,11 +1,14 @@
 import { describe, expect, it } from 'vitest';
 import type { AuditLog, ReceptionLog } from '@/domain/reception/log';
 import {
+  buildUsageTrend,
   currentMonthPeriod,
+  deriveUsageRates,
   isWithinPeriod,
   previousMonthPeriod,
   summarizeUsage,
   type UsagePeriod,
+  type UsageSummary,
 } from './usage-summary';
 
 const NOW = new Date('2026-06-20T12:00:00.000Z');
@@ -110,5 +113,66 @@ describe('summarizeUsage (#89)', () => {
     const u = summarizeUsage([], audit, JUNE);
     expect(u.adminLogins).toBe(0);
     expect(u.integrationFailures).toBe(0);
+  });
+});
+
+function summary(over: Partial<UsageSummary> = {}): UsageSummary {
+  return {
+    period: JUNE,
+    receptions: 0,
+    connectedCalls: 0,
+    timeoutCalls: 0,
+    failedCalls: 0,
+    fallbackUsed: 0,
+    connectedCallMinutes: 0,
+    adminLogins: 0,
+    integrationFailures: 0,
+    ...over,
+  };
+}
+
+describe('deriveUsageRates (#89 inc2)', () => {
+  it('成功率・未応答率・失敗率・代替導線率を受付件数で割って返す', () => {
+    const r = deriveUsageRates(
+      summary({ receptions: 10, connectedCalls: 7, timeoutCalls: 2, failedCalls: 1, fallbackUsed: 3 }),
+    );
+    expect(r.connectedRate).toBeCloseTo(0.7);
+    expect(r.timeoutRate).toBeCloseTo(0.2);
+    expect(r.failedRate).toBeCloseTo(0.1);
+    expect(r.fallbackRate).toBeCloseTo(0.3);
+  });
+
+  it('受付件数 0 のときは分母なしで全て null（虚の割合を出さない）', () => {
+    const r = deriveUsageRates(summary({ receptions: 0, connectedCalls: 0 }));
+    expect(r).toEqual({ connectedRate: null, timeoutRate: null, failedRate: null, fallbackRate: null });
+  });
+});
+
+describe('buildUsageTrend (#89 inc2)', () => {
+  it('日次バケットに受付・接続・通話分数を割り当てる', () => {
+    const logs: ReceptionLog[] = [
+      rlog({ id: 'a', outcome: 'connected', startedAt: '2026-06-01T01:00:00.000Z', durationMs: 90_000 }),
+      rlog({ id: 'b', outcome: 'connected', startedAt: '2026-06-01T05:00:00.000Z', durationMs: 30_000 }),
+      rlog({ id: 'c', outcome: 'timeout', startedAt: '2026-06-02T09:00:00.000Z' }),
+    ];
+    const trend = buildUsageTrend(logs, JUNE);
+    const d1 = trend.find((p) => p.date === '2026-06-01');
+    const d2 = trend.find((p) => p.date === '2026-06-02');
+    expect(d1).toEqual({ date: '2026-06-01', receptions: 2, connectedCalls: 2, connectedCallMinutes: 2 });
+    expect(d2).toEqual({ date: '2026-06-02', receptions: 1, connectedCalls: 0, connectedCallMinutes: 0 });
+  });
+
+  it('期間内の全日を 0 埋めで連続して返す（6月は30点）', () => {
+    const trend = buildUsageTrend([], JUNE);
+    expect(trend).toHaveLength(30);
+    expect(trend.at(0)?.date).toBe('2026-06-01');
+    expect(trend.at(-1)?.date).toBe('2026-06-30');
+    expect(trend.every((p) => p.receptions === 0)).toBe(true);
+  });
+
+  it('期間外のログはどのバケットにも入らない', () => {
+    const logs = [rlog({ id: 'x', outcome: 'connected', startedAt: '2026-05-31T23:00:00.000Z', durationMs: 60_000 })];
+    const trend = buildUsageTrend(logs, JUNE);
+    expect(trend.every((p) => p.receptions === 0)).toBe(true);
   });
 });

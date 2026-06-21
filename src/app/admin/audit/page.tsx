@@ -1,5 +1,7 @@
 import { listAuditLogs } from '@/lib/mock-backend/reception-log-store';
 import type { AuditAction } from '@/domain/reception/log';
+import { auditActionFacets } from '@/domain/audit/audit-filter';
+import { AuditLogViewer } from '@/components/admin/audit/AuditLogViewer';
 
 export const dynamic = 'force-dynamic';
 
@@ -57,42 +59,23 @@ const ACTION_LABEL: Partial<Record<AuditAction, string>> = {
   'ai_guidance.fallback': 'AI案内: 代替導線へ',
 };
 
-/** 管理画面: 監査ログ一覧 (issue #22, #19)。受付ライフサイクルと管理操作の証跡。 */
+/**
+ * 管理画面: 監査ログ一覧 (issue #22, #19; 検索/フィルタ #89 inc2)。
+ *
+ * サーバ側でログを取得（admin layout が認可ガード済み・PII なし）し、検索/フィルタ UI は
+ * クライアント側で純関数（filterAuditLogs）に委譲する。アクション種別の選択肢は実在ログから
+ * 動的に生成し、表示ラベルは非網羅マップ（フォールバックあり）を渡す。
+ */
 export default async function AdminAuditPage() {
   const logs = await listAuditLogs();
+  const facets = auditActionFacets(logs);
   return (
     <section>
       <h1 style={{ marginTop: 0 }}>監査ログ</h1>
-      <p style={{ opacity: 0.8 }}>受付イベントと管理操作の証跡です。個人情報は含めません。</p>
-      {logs.length === 0 ? (
-        <p data-testid="audit-empty" style={{ opacity: 0.7 }}>
-          まだ監査ログはありません。
-        </p>
-      ) : (
-        <table data-testid="audit-table" style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.95rem' }}>
-          <thead>
-            <tr style={{ textAlign: 'left', borderBottom: '1px solid rgba(255,255,255,0.2)' }}>
-              <th style={{ padding: '8px 12px' }}>日時</th>
-              <th style={{ padding: '8px 12px' }}>操作</th>
-              <th style={{ padding: '8px 12px' }}>主体</th>
-              <th style={{ padding: '8px 12px' }}>対象</th>
-            </tr>
-          </thead>
-          <tbody>
-            {logs.map((log) => (
-              <tr key={log.id} data-testid="audit-row" style={{ borderBottom: '1px solid rgba(255,255,255,0.08)' }}>
-                <td style={{ padding: '8px 12px' }}>{new Date(log.at).toLocaleString('ja-JP')}</td>
-                <td style={{ padding: '8px 12px' }}>{ACTION_LABEL[log.action] ?? log.action}</td>
-                <td style={{ padding: '8px 12px' }}>{log.actor}</td>
-                <td style={{ padding: '8px 12px' }}>
-                  {log.targetType ?? '-'}
-                  {log.targetId ? <span style={{ opacity: 0.6 }}> {log.targetId}</span> : null}
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      )}
+      <p style={{ opacity: 0.8 }}>
+        受付イベントと管理操作の証跡です。個人情報は含めません。期間・操作種別・主体・キーワードで絞り込めます。
+      </p>
+      <AuditLogViewer logs={logs} actionFacets={facets} actionLabels={ACTION_LABEL} />
     </section>
   );
 }

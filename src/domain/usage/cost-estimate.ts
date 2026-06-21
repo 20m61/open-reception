@@ -9,7 +9,7 @@
  * 単価仮定の根拠は docs/usage-cost-visualization-design.md に明記する（未確定は注記）。
  * 通貨は JPY 固定（多通貨は次増分）。金額は四捨五入した整数円で扱う。
  */
-import type { UsageSummary } from './usage-summary';
+import type { UsageSummary, UsageTrendPoint } from './usage-summary';
 
 /** サービス区分（コスト内訳の軸）。docs/cost-management-tags.md の Component に対応づく。 */
 export type CostService = 'vonage' | 'aws';
@@ -163,4 +163,33 @@ export function estimateCost(
     threshold,
     assumptions,
   };
+}
+
+/** コスト推移 1 区間（日次）。利用量推移にサービス別概算コストを重ねたもの。 */
+export type CostTrendPoint = {
+  /** バケット開始日（UTC、YYYY-MM-DD）。 */
+  date: string;
+  /** その日の Vonage 概算コスト（円）。 */
+  vonage: number;
+  /** その日の AWS 概算コスト（円）。 */
+  aws: number;
+  /** その日の概算コスト合計（円）。 */
+  total: number;
+};
+
+/**
+ * 利用量推移（日次）に単価仮定を掛けて日次のサービス別概算コストへ写像する（純関数）。
+ *
+ * 出力は概算であり、実課金とは異なる（呼び出し側が「概算」を明示する）。日次の合計を足し上げると
+ * estimateCost の estimatedSoFar と一致する（同じ単価仮定・同じ丸め単位を用いる前提）。
+ */
+export function buildCostTrend(
+  usageTrend: readonly UsageTrendPoint[],
+  assumptions: CostAssumptions = DEFAULT_COST_ASSUMPTIONS,
+): CostTrendPoint[] {
+  return usageTrend.map((point) => {
+    const vonage = yen(point.connectedCallMinutes * assumptions.vonagePerCallMinute);
+    const aws = yen(point.receptions * assumptions.awsPerReception);
+    return { date: point.date, vonage, aws, total: vonage + aws };
+  });
 }

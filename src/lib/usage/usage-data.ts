@@ -11,38 +11,64 @@
  * （docs/usage-cost-visualization-design.md に明記）。
  */
 import {
+  buildUsageTrend,
   currentMonthPeriod,
+  deriveUsageRates,
   previousMonthPeriod,
   summarizeUsage,
+  type UsageRates,
   type UsageSummary,
+  type UsageTrendPoint,
 } from '@/domain/usage/usage-summary';
 import {
+  buildCostTrend,
   DEFAULT_COST_ASSUMPTIONS,
   estimateCost,
   type CostAssumptions,
   type CostEstimate,
+  type CostTrendPoint,
 } from '@/domain/usage/cost-estimate';
 import { listAuditLogs, listReceptionLogs } from '@/lib/mock-backend/reception-log-store';
 
-/** 利用量レスポンス（当月＋前月の業務単位サマリ）。 */
+/**
+ * 利用量レスポンス（当月＋前月の業務単位サマリ）。
+ * increment 2: 当月の派生割合（rates）と日次推移（trend）を追加。
+ */
 export type UsageResponse = {
   current: UsageSummary;
   previous: UsageSummary;
+  /** 当月サマリから導いた割合（成功率・代替導線率など）。 */
+  currentRates: UsageRates;
+  /** 当月の日次推移（受付件数・接続・通話分数）。 */
+  trend: UsageTrendPoint[];
 };
 
-/** 当月・前月の利用量サマリを組み立てる。 */
+/** 当月・前月の利用量サマリ・割合・日次推移を組み立てる。 */
 export async function loadUsage(now: Date = new Date()): Promise<UsageResponse> {
   const [receptionLogs, auditLogs] = await Promise.all([listReceptionLogs(), listAuditLogs()]);
-  const current = summarizeUsage(receptionLogs, auditLogs, currentMonthPeriod(now));
+  const currentPeriod = currentMonthPeriod(now);
+  const current = summarizeUsage(receptionLogs, auditLogs, currentPeriod);
   const previous = summarizeUsage(receptionLogs, auditLogs, previousMonthPeriod(now));
-  return { current, previous };
+  return {
+    current,
+    previous,
+    currentRates: deriveUsageRates(current),
+    trend: buildUsageTrend(receptionLogs, currentPeriod),
+  };
 }
 
-/** 予想コスト概算を組み立てる（当月利用量×単価仮定、前月比較つき）。 */
+/** コストレスポンス（概算サマリ＋日次推移）。 */
+export type CostResponse = CostEstimate & {
+  /** 当月の日次コスト推移（概算）。 */
+  trend: CostTrendPoint[];
+};
+
+/** 予想コスト概算を組み立てる（当月利用量×単価仮定、前月比較・日次推移つき）。 */
 export async function loadCostEstimate(
   now: Date = new Date(),
   assumptions: CostAssumptions = DEFAULT_COST_ASSUMPTIONS,
-): Promise<CostEstimate> {
-  const { current, previous } = await loadUsage(now);
-  return estimateCost(current, previous, now, assumptions);
+): Promise<CostResponse> {
+  const { current, previous, trend } = await loadUsage(now);
+  const estimate = estimateCost(current, previous, now, assumptions);
+  return { ...estimate, trend: buildCostTrend(trend, assumptions) };
 }
