@@ -110,6 +110,7 @@ export const ADMIN_NAV: readonly NavGroup[] = [
     roles: TENANT_VIEWERS,
     items: [
       { href: '/admin/security', label: 'セキュリティ', roles: TENANT_ADMINS },
+      { href: '/admin/auth', label: '認証方式', roles: TENANT_ADMINS },
       { href: '/admin/integrations', label: '外部連携', roles: TENANT_ADMINS },
       { href: '/admin/audit', label: '監査ログ' },
     ],
