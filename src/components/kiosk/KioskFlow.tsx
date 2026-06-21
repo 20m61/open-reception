@@ -21,6 +21,7 @@ import { VisitorInfoForm } from './custom-flow/VisitorInfoForm';
 import type { KioskFlow as KioskCustomFlow, FlowFieldValues } from './custom-flow/types';
 import { SignageDisplay } from './signage/SignageDisplay';
 import { usePresenceCamera } from './usePresenceCamera';
+import { useKioskLayout } from './useKioskLayout';
 import {
   flowValuesToVisitorInfo,
   purposeIdForFlow,
@@ -467,6 +468,10 @@ export function KioskFlow() {
   // 現在の受付状態に対応するモーション URL（未設定は default に fallback）(issue #31)。
   const motionUrl = resolveMotionUrl(motionKeyForState(data.state), motions.motions, motions.defaultUrl);
 
+  // 画面種別（iPad 縦/横・4K/大型）のレイアウトプロファイル (issue #124)。
+  // 配置は CSS が data-kiosk-layout 属性で切り替える。
+  const layout = useKioskLayout();
+
   const backgroundStyle: React.CSSProperties = backgroundUrl
     ? { backgroundImage: `url(${backgroundUrl})`, backgroundSize: 'cover', backgroundPosition: 'center' }
     : {};
@@ -477,6 +482,8 @@ export function KioskFlow() {
       data-kiosk-state={view === 'ready' ? data.state : view}
       // 受付状態に対応するモーションキー。VRM レンダラ（#5）が消費する (issue #31)。
       data-kiosk-motion={motionKeyForState(data.state)}
+      // 画面種別レイアウトプロファイル。配置は CSS が消費する (issue #124)。
+      data-kiosk-layout={layout}
       style={backgroundStyle}
     >
       {!online ? (
