@@ -96,7 +96,73 @@ export function validateAdminAuthConfig(
     if (!cfg.entra?.issuer) errors.push('ENTRA_ISSUER（または ENTRA_TENANT_ID）が未設定です。');
     if (!cfg.entra?.audience) errors.push('ENTRA_AUDIENCE（または ENTRA_CLIENT_ID）が未設定です。');
     if (!cfg.entra?.jwksUri) errors.push('JWKS URI を導出できません（ENTRA_ISSUER を確認）。');
+    // clientId はトークン検証（JWKS）には不要だが、OIDC ログイン導線（authorize）に必須。
+    // 欠落しても fail-closed には倒さず（既存トークンの検証は可能）、ログイン不能を警告で示す。
+    if (!cfg.entra?.clientId) {
+      warnings.push('ENTRA_CLIENT_ID が未設定です。Microsoft サインイン導線が機能しません。');
+    }
   }
 
   return { ok: errors.length === 0, errors, warnings };
+}
+
+/* ---------- 状態表示（secret/トークンを出さない） ---------- */
+
+export type SettingPresence = 'set' | 'missing';
+export type EntraSettingStatus = {
+  /** 設定キー（issuer / audience / jwksUri / clientId / allowedRoles）。 */
+  key: 'issuer' | 'audience' | 'jwksUri' | 'clientId' | 'allowedRoles';
+  /** 設定済みか未設定か（値そのものは含めない）。 */
+  presence: SettingPresence;
+  /** OIDC ログイン導線に必須か（欠落で機能不全）。 */
+  requiredForLogin: boolean;
+};
+
+export type AdminAuthStatus = {
+  provider: AdminAuthProvider;
+  required: boolean;
+  ok: boolean;
+  errors: string[];
+  warnings: string[];
+  /** provider==='entra' のときのみ。各設定の有無（値は含めない）。 */
+  entra?: {
+    settings: EntraSettingStatus[];
+    /** 許可ロール（公開可能な列挙値。secret ではない）。 */
+    allowedRoles: AdminRole[];
+  };
+};
+
+/**
+ * 管理画面認証の状態を、機密値を含めずに記述する (issue #70)。
+ * UI / API 用。issuer / audience / clientId などの**値は返さず**、設定の有無のみを返す。
+ * allowedRoles は機密ではない列挙値のため値を返す（Client Secret / トークンは扱わない）。
+ */
+export function describeAdminAuthStatus(
+  env: Record<string, string | undefined> = process.env,
+): AdminAuthStatus {
+  const cfg = getAdminAuthConfig(env);
+  const check = validateAdminAuthConfig(cfg, env.NODE_ENV);
+  const base: AdminAuthStatus = {
+    provider: cfg.provider,
+    required: cfg.required,
+    ok: check.ok,
+    errors: check.errors,
+    warnings: check.warnings,
+  };
+  if (cfg.provider !== 'entra' || !cfg.entra) return base;
+
+  const e = cfg.entra;
+  const presence = (v: string | undefined): SettingPresence => (v && v.trim() ? 'set' : 'missing');
+  const settings: EntraSettingStatus[] = [
+    { key: 'issuer', presence: presence(e.issuer), requiredForLogin: true },
+    { key: 'audience', presence: presence(e.audience), requiredForLogin: true },
+    { key: 'jwksUri', presence: presence(e.jwksUri), requiredForLogin: true },
+    { key: 'clientId', presence: presence(e.clientId), requiredForLogin: true },
+    {
+      key: 'allowedRoles',
+      presence: e.allowedRoles.size > 0 ? 'set' : 'missing',
+      requiredForLogin: false,
+    },
+  ];
+  return { ...base, entra: { settings, allowedRoles: [...e.allowedRoles] } };
 }
