@@ -98,6 +98,11 @@ class MemoryDeviceRepository implements DeviceRepository {
     return d && d.tenantId === tenantId ? clone(d) : undefined;
   }
 
+  async findDeviceById(id: DeviceId): Promise<Device | undefined> {
+    const d = this.devices.get(id);
+    return d ? clone(d) : undefined;
+  }
+
   async createDevice(device: Device): Promise<RepoResult<Device>> {
     if (this.devices.has(device.id))
       return { ok: false, error: { code: 'conflict', message: 'device id exists' } };

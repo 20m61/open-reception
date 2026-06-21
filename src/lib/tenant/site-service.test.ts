@@ -43,13 +43,22 @@ function site(over: Partial<Site> & Pick<Site, 'id' | 'tenantId'>): Site {
     ...over,
   };
 }
-function device(id: string, tenantId = T_A, siteId = S_A1, status: Device['status'] = 'active'): Device {
+const NOW = new Date('2026-06-20T00:00:00.000Z');
+
+function device(
+  id: string,
+  tenantId = T_A,
+  siteId = S_A1,
+  status: Device['status'] = 'active',
+  lastSeenAt?: string,
+): Device {
   return {
     id: asDeviceId(id),
     tenantId,
     siteId,
     name: id,
     status,
+    lastSeenAt,
     createdAt: '2026-01-01T00:00:00.000Z',
     updatedAt: '2026-01-01T00:00:00.000Z',
   };
@@ -67,8 +76,10 @@ function makeService() {
       site({ id: S_B1, tenantId: T_B, name: '他社受付' }),
     ],
     devices: [
-      device('dev-1', T_A, S_A1, 'active'),
+      // dev-1 は直近の heartbeat ありで online。dev-2 は revoked、dev-4 は heartbeat 未着で offline。
+      device('dev-1', T_A, S_A1, 'active', NOW.toISOString()),
       device('dev-2', T_A, S_A1, 'revoked'),
+      device('dev-4', T_A, S_A1, 'active'),
       device('dev-3', T_B, S_B1, 'active'),
     ],
   });
@@ -76,7 +87,7 @@ function makeService() {
     sites: store.sites,
     devices: store.devices,
     appendAudit,
-    now: () => new Date('2026-06-20T00:00:00.000Z'),
+    now: () => NOW,
   });
   return { svc, audits, store };
 }
@@ -89,8 +100,10 @@ describe('SiteService.list (#87)', () => {
     if (r.ok) {
       expect(r.value.map((s) => s.id).sort()).toEqual([S_A1, S_A2].sort());
       const a1 = r.value.find((s) => s.id === S_A1);
-      expect(a1?.deviceCount).toBe(2);
-      expect(a1?.onlineDeviceCount).toBe(1); // revoked は除く
+      expect(a1?.deviceCount).toBe(3);
+      // inc3: online は実 heartbeat（lastSeenAt が窓内）由来。dev-1 のみ。
+      // revoked（dev-2）・heartbeat 未着（dev-4）は online に数えない。
+      expect(a1?.onlineDeviceCount).toBe(1);
     }
   });
 

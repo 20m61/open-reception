@@ -25,6 +25,7 @@ import {
   type TenantId,
 } from '@/domain/tenant/types';
 import type { DeviceRepository, SiteRepository } from './repository';
+import { deriveConnectivity } from './device-service';
 
 export type ServiceError = {
   code: 'invalid_input' | 'not_found' | 'forbidden';
@@ -65,7 +66,11 @@ export type AppendAudit = (
 export type SiteWithDevices = Site & {
   /** サイト配下の端末数。 */
   deviceCount: number;
-  /** オンライン（status=active）の端末数。inc1 は status を稼働状態の近似として扱う。 */
+  /**
+   * オンライン端末数。inc3 で実 heartbeat（Device.lastSeenAt）由来の稼働状態へ更新。
+   * deriveConnectivity が 'online' を返す端末のみ数える（DeviceService と同一ロジック）。
+   * heartbeat 未着・revoked・maintenance はオンラインに数えない。
+   */
   onlineDeviceCount: number;
 };
 
@@ -189,10 +194,11 @@ export class SiteService {
   /** サイトに Device 集計を付与する。端末の機密は読まない（数のみ）。 */
   private async attachDevices(site: Site): Promise<SiteWithDevices> {
     const devices = await this.devices.listDevices(site.tenantId, site.id);
+    const now = this.now();
     return {
       ...site,
       deviceCount: devices.length,
-      onlineDeviceCount: devices.filter((d) => d.status === 'active').length,
+      onlineDeviceCount: devices.filter((d) => deriveConnectivity(d, now) === 'online').length,
     };
   }
 

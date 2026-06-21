@@ -39,9 +39,32 @@ function fail(
 
 /**
  * UI 向けの稼働状態（issue #87 画面要件: オンライン / オフライン / メンテナンス中）。
- * 実 heartbeat 取得は次増分。本増分は status + maintenance + lastSeenAt から近似する。
+ * inc3 で Kiosk→Device の heartbeat を `lastSeenAt` に取り込み、online/offline を実活動から
+ * 導く（recordHeartbeat 経由）。status + maintenance + lastSeenAt から派生する。
  */
 export type DeviceConnectivity = 'online' | 'offline' | 'maintenance' | 'disabled';
+
+export const DEFAULT_ONLINE_WINDOW_MS = 5 * 60 * 1000;
+
+/**
+ * Device の稼働状態を派生する純関数 (issue #87 inc3)。
+ * DeviceService（一覧/詳細）と SiteService（オンライン端末数の集計）で同一ロジックを共有する。
+ *   - revoked → disabled
+ *   - maintenance → maintenance
+ *   - lastSeenAt が窓内 → online、それ以外 → offline
+ *   - lastSeenAt 未取得 → offline（heartbeat 未着）
+ */
+export function deriveConnectivity(
+  device: Device,
+  now: Date,
+  onlineWindowMs: number = DEFAULT_ONLINE_WINDOW_MS,
+): DeviceConnectivity {
+  if (device.status === 'revoked') return 'disabled';
+  if (device.maintenance) return 'maintenance';
+  if (!device.lastSeenAt) return 'offline';
+  const age = now.getTime() - new Date(device.lastSeenAt).getTime();
+  return age >= 0 && age <= onlineWindowMs ? 'online' : 'offline';
+}
 
 /** 一覧/詳細レスポンス。token 平文は含めない（tokenRegistered の真偽のみ）。 */
 export type DeviceView = Device & {
@@ -72,8 +95,6 @@ export type DeviceServiceDeps = {
   /** オフライン判定のしきい値（ms）。既定 5 分。 */
   onlineWindowMs?: number;
 };
-
-const DEFAULT_ONLINE_WINDOW_MS = 5 * 60 * 1000;
 
 export class DeviceService {
   private readonly devices: DeviceRepository;
@@ -232,24 +253,44 @@ export class DeviceService {
     return { ok: true, value: this.toView(next) };
   }
 
-  /** Device → DeviceView。token 平文は持ち込まない（型上も存在しない）。 */
-  private toView(device: Device): DeviceView {
-    return { ...device, connectivity: this.connectivity(device) };
+  /**
+   * Kiosk→Device 統合の read 経路 (issue #87 inc3)。
+   *
+   * 既存 kiosk heartbeat（/api/kiosk/heartbeat, #30）から呼び、kiosk id に一致する
+   * Device の `lastSeenAt` を更新する。これにより Device 側の稼働状態（online/offline）が
+   * 実際の端末活動を反映する（inc2 までは lastSeenAt が常に未設定で offline 固定だった）。
+   *
+   * 設計上の注意:
+   *   - 認可しない。これは端末自身の定期確認パスであり、管理 actor は介在しない。
+   *     既存 kiosk heartbeat が認可なしなのと同じ扱い。
+   *   - テナント文脈を持たないため id 一致のみで解決する（findDeviceById）。更新は
+   *     その 1 件の lastSeenAt に限定し、テナント/サイト境界は崩さない。
+   *   - 監査しない（高頻度イベントのため。AuditAction も増やさない）。
+   *   - 対応 Device が無い kiosk（旧レジストリのみの端末）は no-op で握りつぶさず
+   *     `matched: false` を返す。呼び出し側は heartbeat 応答を止めない（best-effort）。
+   */
+  async recordHeartbeat(
+    kioskId: string,
+    seenAt?: Date,
+  ): Promise<{ matched: boolean }> {
+    const trimmed = kioskId.trim();
+    if (trimmed === '') return { matched: false };
+    const device = await this.devices.findDeviceById(asDeviceId(trimmed));
+    if (!device) return { matched: false };
+    const next: Device = {
+      ...device,
+      lastSeenAt: (seenAt ?? this.now()).toISOString(),
+    };
+    await this.devices.putDevice(next);
+    return { matched: true };
   }
 
-  /**
-   * 稼働状態の近似。
-   *   - revoked → disabled
-   *   - maintenance → maintenance
-   *   - lastSeenAt が窓内 → online、それ以外 → offline
-   *   - lastSeenAt 未取得 → offline（heartbeat 未着）
-   */
-  private connectivity(device: Device): DeviceConnectivity {
-    if (device.status === 'revoked') return 'disabled';
-    if (device.maintenance) return 'maintenance';
-    if (!device.lastSeenAt) return 'offline';
-    const age = this.now().getTime() - new Date(device.lastSeenAt).getTime();
-    return age >= 0 && age <= this.onlineWindowMs ? 'online' : 'offline';
+  /** Device → DeviceView。token 平文は持ち込まない（型上も存在しない）。 */
+  private toView(device: Device): DeviceView {
+    return {
+      ...device,
+      connectivity: deriveConnectivity(device, this.now(), this.onlineWindowMs),
+    };
   }
 
   /** PII を含めない監査記録。token 値は決して metadata に入れない。 */

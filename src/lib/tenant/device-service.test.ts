@@ -301,3 +301,48 @@ describe('DeviceService.reissueToken (#87 inc2)', () => {
     expect(r.ok).toBe(false);
   });
 });
+
+describe('DeviceService.recordHeartbeat (#87 inc3 Kiosk→Device 統合)', () => {
+  it('kiosk id 一致の Device に lastSeenAt を記録し online になる', async () => {
+    const { svc, store } = makeService();
+    // 初期は heartbeat 未着で offline。
+    const before = await svc.list(developer, T_A, S_A1);
+    if (before.ok) expect(before.value[0]?.connectivity).toBe('offline');
+
+    // kiosk heartbeat（id = device id）→ lastSeenAt 記録。
+    const res = await svc.recordHeartbeat(String(D_A1), NOW);
+    expect(res).toEqual({ matched: true });
+
+    const after = await svc.list(developer, T_A, S_A1);
+    if (after.ok) {
+      expect(after.value[0]?.connectivity).toBe('online');
+      expect(after.value[0]?.lastSeenAt).toBe(NOW.toISOString());
+    }
+    // 直接ストアでも反映を確認。
+    const persisted = await store.devices.getDevice(T_A, D_A1);
+    expect(persisted?.lastSeenAt).toBe(NOW.toISOString());
+  });
+
+  it('対応 Device が無い kiosk は matched:false（no-op）', async () => {
+    const { svc } = makeService();
+    const res = await svc.recordHeartbeat('kiosk-unknown', NOW);
+    expect(res).toEqual({ matched: false });
+  });
+
+  it('空 id は matched:false（ストアを引かない）', async () => {
+    const { svc } = makeService();
+    expect(await svc.recordHeartbeat('  ', NOW)).toEqual({ matched: false });
+  });
+
+  it('heartbeat は status を変えない（revoked は disabled のまま）', async () => {
+    const { svc } = makeService();
+    // D_A2 は revoked。heartbeat が来ても有効化しない。
+    const res = await svc.recordHeartbeat(String(D_A2), NOW);
+    expect(res).toEqual({ matched: true });
+    const after = await svc.list(developer, T_A, S_A2);
+    if (after.ok) {
+      expect(after.value[0]?.status).toBe('revoked');
+      expect(after.value[0]?.connectivity).toBe('disabled');
+    }
+  });
+});
