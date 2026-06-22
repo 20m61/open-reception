@@ -103,6 +103,33 @@ export const TERMINAL_STATES: ReadonlySet<ReceptionState> = new Set<ReceptionSta
 ]);
 
 /**
+ * 無操作タイムアウトで待機(idle)へ戻すべき状態 (issue #125)。
+ *
+ * 来訪者が操作途中（目的/担当者選択・情報入力・確認・結果/代替案内）で離席したとき、
+ * 一定時間後に個人情報を破棄して待機画面へ戻すための対象集合。RESET は INITIAL を返すため
+ * 氏名等の PII は持ち越されない。
+ *
+ * 除外する状態と理由:
+ *  - idle: すでに待機画面。
+ *  - calling / connected: 担当者と接続中の通話。離席リセットで生きた接続を切らない。
+ *  - completed / cancelled: 終端状態。より短い自動復帰（AUTO_RESET）が別途扱う。
+ */
+export const INACTIVITY_RESET_STATES: ReadonlySet<ReceptionState> = new Set<ReceptionState>([
+  'selectingPurpose',
+  'selectingTarget',
+  'inputVisitorInfo',
+  'confirming',
+  'timeout',
+  'failed',
+  'fallback',
+]);
+
+/** 無操作タイムアウトで待機へ戻すべき状態か。 */
+export function shouldResetOnInactivity(state: ReceptionState): boolean {
+  return INACTIVITY_RESET_STATES.has(state);
+}
+
+/**
  * 与えられた状態とイベントの遷移先を返す。不正遷移なら null。
  * RESET は安全のため全状態から idle を許可する（端末の自動リセット）。
  */
