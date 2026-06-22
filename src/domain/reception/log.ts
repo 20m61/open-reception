@@ -93,7 +93,9 @@ export type AuditAction =
   // 担当者/有人へ確実に引き継がれた。
   | 'ai_guidance.handoff'
   // 引き継ぎ失敗→既存受付フロー/代替導線へフォールバックした。
-  | 'ai_guidance.fallback';
+  | 'ai_guidance.fallback'
+  // AI 案内の運用設定（有効/無効・許可トピック）を更新した (issue #104)。
+  | 'ai_guidance.config_updated';
 
 export type AuditLog = {
   id: string;
