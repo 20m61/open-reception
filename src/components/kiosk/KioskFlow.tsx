@@ -7,7 +7,12 @@ import {
   type ReceptionTargetType,
   type VisitorInfo,
 } from '@/domain/reception/session';
-import { transition, type ReceptionEvent, type ReceptionState } from '@/domain/reception/state';
+import {
+  shouldResetOnInactivity,
+  transition,
+  type ReceptionEvent,
+  type ReceptionState,
+} from '@/domain/reception/state';
 import { motionKeyForState, resolveMotionUrl, type MotionKey } from '@/domain/motion/types';
 import { primeSpeech, speak, type SpeakSettings } from './speech';
 import { VrmAvatarViewer } from './VrmAvatarViewer';
@@ -54,6 +59,12 @@ function matchesQuery(s: DirStaff, query: string): boolean {
 }
 /** 完了・キャンセル後に待機画面へ自動復帰するまでの時間。 */
 const AUTO_RESET_MS = 6000;
+
+/**
+ * 操作途中で離席した場合に、無操作のまま待機画面へ戻すまでの時間 (issue #125)。
+ * 公共端末に入力途中の個人情報を残さないための上限。`?inactivityMs=` で E2E から短縮できる。
+ */
+const INACTIVITY_RESET_MS = 60000;
 /** 端末有効性・設定変更を検知する heartbeat 間隔 (issue #30)。 */
 const HEARTBEAT_INTERVAL_MS = 30000;
 
@@ -372,6 +383,28 @@ export function KioskFlow() {
     if (data.state !== 'completed' && data.state !== 'cancelled') return;
     const timer = setTimeout(() => dispatch({ type: 'RESET' }), AUTO_RESET_MS);
     return () => clearTimeout(timer);
+  }, [data.state]);
+
+  // 操作途中（選択・入力・確認・結果案内）で離席した場合、無操作のまま一定時間で待機へ戻す
+  // (issue #125)。RESET は INITIAL を返すため、入力済みの氏名等 PII は持ち越されない。
+  // 来訪者がタッチ/キー操作するたびにタイマーを延長する。
+  useEffect(() => {
+    if (!shouldResetOnInactivity(data.state)) return;
+    const params = new URLSearchParams(window.location.search);
+    const override = Number(params.get('inactivityMs'));
+    const limit = Number.isFinite(override) && override > 0 ? override : INACTIVITY_RESET_MS;
+    let timer = window.setTimeout(() => dispatch({ type: 'RESET' }), limit);
+    const bump = () => {
+      window.clearTimeout(timer);
+      timer = window.setTimeout(() => dispatch({ type: 'RESET' }), limit);
+    };
+    window.addEventListener('pointerdown', bump);
+    window.addEventListener('keydown', bump);
+    return () => {
+      window.clearTimeout(timer);
+      window.removeEventListener('pointerdown', bump);
+      window.removeEventListener('keydown', bump);
+    };
   }, [data.state]);
 
   // idle へ戻ったら選んだカスタムフローを破棄する（次の来訪者へ持ち越さない）(issue #100)。

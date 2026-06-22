@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   isTerminal,
+  shouldResetOnInactivity,
   transition,
   transitionOrThrow,
   type ReceptionState,
@@ -56,5 +57,32 @@ describe('reception state machine', () => {
     expect(isTerminal('completed')).toBe(true);
     expect(isTerminal('cancelled')).toBe(true);
     expect(isTerminal('calling')).toBe(false);
+  });
+
+  describe('無操作タイムアウト対象 (issue #125)', () => {
+    it('操作途中（選択・入力・確認・結果/代替案内）は待機へ戻す対象', () => {
+      for (const s of [
+        'selectingPurpose',
+        'selectingTarget',
+        'inputVisitorInfo',
+        'confirming',
+        'timeout',
+        'failed',
+        'fallback',
+      ] as ReceptionState[]) {
+        expect(shouldResetOnInactivity(s)).toBe(true);
+      }
+    });
+
+    it('待機・通話接続中は対象外（生きた接続を切らない／既に待機）', () => {
+      for (const s of ['idle', 'calling', 'connected'] as ReceptionState[]) {
+        expect(shouldResetOnInactivity(s)).toBe(false);
+      }
+    });
+
+    it('終端状態は対象外（短い自動復帰 AUTO_RESET が別途扱う）', () => {
+      expect(shouldResetOnInactivity('completed')).toBe(false);
+      expect(shouldResetOnInactivity('cancelled')).toBe(false);
+    });
   });
 });
