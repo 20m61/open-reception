@@ -18,6 +18,7 @@
     "@aws-cdk/core:validateSnapshotRemovalPolicy": true,
     "@aws-cdk/aws-s3:serverAccessLogsUseBucketPolicy": true,
     "@aws-cdk/aws-cloudfront:defaultSecurityPolicyTLSv1.2_2021": true,
-    "@aws-cdk/core:bootstrapQualifier": "hnb659fds"
+    "@aws-cdk/core:bootstrapQualifier": "hnb659fds",
+    "@aws-cdk/core:defaultCrossStackReferences": "strong"
   }
 }
