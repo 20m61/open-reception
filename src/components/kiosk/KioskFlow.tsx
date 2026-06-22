@@ -15,7 +15,7 @@ import {
 } from '@/domain/reception/state';
 import { motionKeyForState, resolveMotionUrl, type MotionKey } from '@/domain/motion/types';
 import { primeSpeech, speak, type SpeakSettings } from './speech';
-import { VrmAvatarViewer } from './VrmAvatarViewer';
+import { AvatarGuide } from './avatar/AvatarGuide';
 import { KioskCallView } from './KioskCallView';
 import { CheckinFlow } from './CheckinFlow';
 import { MockSttAdapter } from '@/adapters/speech/mock-stt';
@@ -987,13 +987,19 @@ function IdleView({
   };
   return (
     <div className="screen__body kiosk-idle" data-testid="kiosk-idle">
-      {/* #123 アバター状態同期のマウントポイント。発話/字幕は後続トラックが差し込む。 */}
+      {/*
+        #123 アバター状態同期。AvatarGuide が screenState から発話/字幕/モーションを導出し、
+        idle では「AI受付です…」の字幕で AI 受付であることを初期体験で明示する。音声は KioskFlow 側の
+        案内読み上げ（SPEAK_PHRASES）と二重化しないよう、ここでは字幕のみ（ttsSettings 未指定）。
+        VRM/静止画が無くても字幕・フォールバックテキストで内容を保証する。pointer-events:none で操作を妨げない。
+      */}
       <div className="kiosk-idle__avatar" data-slot="avatar">
-        <VrmAvatarViewer
+        <AvatarGuide
+          className="kiosk-avatar-guide"
+          screenState="idle"
           vrmUrl={vrmUrl}
           fallbackImageUrl={avatarFallbackUrl}
-          motionUrl={motionUrl}
-          className="kiosk-avatar"
+          defaultMotionUrl={motionUrl}
         />
       </div>
       <header className="kiosk-idle__head">

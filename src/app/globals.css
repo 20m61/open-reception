@@ -213,6 +213,15 @@ a {
   max-width: 60vw;
 }
 
+/*
+ * #123 アバター案内。flex/grid のセル内で幅が潰れて未描画にならないよう、明示的に幅を与える。
+ * これがないと横置きグリッドの左カラムで内容が 0 幅に収縮して字幕が見えなくなる。
+ */
+.kiosk-avatar-guide {
+  width: 100%;
+  max-width: 360px;
+}
+
 /* =========================================================================
  * タッチファースト受付導線 (issue #121 / Epic #119)
  *
@@ -321,6 +330,9 @@ a {
 
 .screen[data-kiosk-layout='ipad-landscape'] .kiosk-idle__avatar {
   grid-area: avatar;
+  /* グリッド縦中央寄せだと背の高い操作列に対しアバター字幕が初期フォールド外へ沈むため、
+     アバター（#123 の AI 受付字幕）は上寄せで初期表示に収める。 */
+  align-self: start;
 }
 
 .screen[data-kiosk-layout='ipad-landscape'] .kiosk-idle__head {
