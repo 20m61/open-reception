@@ -93,6 +93,12 @@ describe('reception history logging (#19)', () => {
     expect(audit[0]?.actor).toBe('kiosk:kiosk-1');
   });
 
+  it('監査ログのメタデータに来訪目的を残す（PII ではないカテゴリ）(#100)', async () => {
+    await runReception('staff-suzuki', '鈴木 花子');
+    const entry = (await listAuditLogs()).find((a) => a.action === 'reception.timeout');
+    expect(entry?.metadata?.purpose).toBe('meeting');
+  });
+
   it('完了イベントを監査ログに残す', async () => {
     const id = await runReception('staff-sato', '佐藤 太郎');
     await completeReception(id);

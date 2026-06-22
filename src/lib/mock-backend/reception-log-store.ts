@@ -54,12 +54,16 @@ export async function appendAuditLog(entry: Omit<AuditLog, 'id' | 'at'> & { at?:
 export async function recordReceptionOutcome(session: ReceptionSession, fallbackUsed = false): Promise<ReceptionLog> {
   const log = deriveReceptionLog(session, randomUUID(), fallbackUsed);
   await receptionLogs().put(log);
+  // 来訪目的（カテゴリ。PII ではない）と失敗理由のみを監査メタデータに残す (issue #100)。
+  const metadata: Record<string, string> = {};
+  if (log.purpose) metadata.purpose = log.purpose;
+  if (log.failureReason) metadata.failureReason = log.failureReason;
   await appendAuditLog({
     action: OUTCOME_TO_AUDIT[log.outcome],
     actor: `kiosk:${log.kioskId}`,
     targetType: log.targetType,
     targetId: log.targetId,
-    metadata: log.failureReason ? { failureReason: log.failureReason } : undefined,
+    metadata: Object.keys(metadata).length > 0 ? metadata : undefined,
   });
   return log;
 }
