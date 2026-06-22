@@ -209,8 +209,11 @@ export function buildActorConfig(env: Record<string, string | undefined> = proce
   const entraUnregistered =
     env.OPEN_RECEPTION_ENTRA_UNREGISTERED === 'env_roles' ? 'env_roles' : 'deny';
   return {
-    defaultTenantId: env.OPEN_RECEPTION_DEFAULT_TENANT_ID ?? 'default',
-    defaultSiteId: env.OPEN_RECEPTION_DEFAULT_SITE_ID,
+    // 既定はプロビジョニング済みテナント（lib/tenant/store.ts の seed）に一致させる。
+    // ここが 'default' だと password 管理セッションが 'internal' テナントの admin データを
+    // 一切操作できず、admin 画面が機能しない（#171）。env で上書き可能。
+    defaultTenantId: env.OPEN_RECEPTION_DEFAULT_TENANT_ID ?? 'internal',
+    defaultSiteId: env.OPEN_RECEPTION_DEFAULT_SITE_ID ?? 'default-site',
     passwordRole,
     developerEmails: parseEmails(env.OPEN_RECEPTION_PLATFORM_DEVELOPER_EMAILS),
     entraUnregistered,
