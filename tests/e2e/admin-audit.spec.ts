@@ -52,6 +52,12 @@ test('監査フィルタ状態が URL に反映され、リロードで復元さ
   // 条件クリアで URL からも除かれる。
   await page.getByTestId('audit-filter-reset').click();
   await expect(page).not.toHaveURL(/action=/);
+
+  // テキスト入力（キーワード）も URL に反映され、リロードで復元される。
+  await page.getByTestId('audit-filter-keyword').fill('department');
+  await expect(page).toHaveURL(/[?&]keyword=department/);
+  await page.reload();
+  await expect(page.getByTestId('audit-filter-keyword')).toHaveValue('department');
 });
 
 test('監査ログは未認証だと 401', async ({ page }) => {
