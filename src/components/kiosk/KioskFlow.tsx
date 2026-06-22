@@ -995,6 +995,7 @@ function IdleView({
       */}
       <div className="kiosk-idle__avatar" data-slot="avatar">
         <AvatarGuide
+          className="kiosk-avatar-guide"
           screenState="idle"
           vrmUrl={vrmUrl}
           fallbackImageUrl={avatarFallbackUrl}
