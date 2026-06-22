@@ -93,6 +93,12 @@ export type ReceptionFlow = {
   order: number;
   /** 有効/無効。無効な目的は受付端末に表示しない。 */
   enabled: boolean;
+  /**
+   * この目的の受付で使う通知ルート（src/lib/notification の CallRoute）の ID。任意。
+   * 未指定なら従来どおり担当者/部署選択に基づく既定の呼び出しを使う（後方互換）。
+   * 参照整合（実在するルートか）は UI/サービス層の責務。本ドメインは形式のみ検証する。
+   */
+  callRouteId?: string;
   /** 表示するステップ種別の並び（先頭から順に進む）。 */
   steps: FlowStepKind[];
   /** visitorInfo ステップで表示する入力フィールド。 */
@@ -135,6 +141,19 @@ export function validateDisplayName(raw: unknown): FlowValidated<string> {
   if (name === '') return fail('displayName must not be empty');
   if (name.length > MAX_LABEL) return fail('displayName is too long');
   return { ok: true, value: name };
+}
+
+/**
+ * 通知ルート ID の検証（任意）。未指定/空文字は「割り当てなし」(undefined)。
+ * 参照先の実在チェックは行わない（形式のみ）。安定 ID の長さ上限だけ設ける。
+ */
+export function validateCallRouteId(raw: unknown): FlowValidated<string | undefined> {
+  if (raw === undefined || raw === null) return { ok: true, value: undefined };
+  if (typeof raw !== 'string') return fail('callRouteId must be a string');
+  const id = raw.trim();
+  if (id === '') return { ok: true, value: undefined };
+  if (id.length > 128) return fail('callRouteId is too long');
+  return { ok: true, value: id };
 }
 
 /** 任意テキスト（説明・完了メッセージ）の検証。未指定は undefined を許容。 */
@@ -244,6 +263,7 @@ export type ReceptionFlowDraft = {
   steps?: unknown;
   fields?: unknown;
   completionMessage?: unknown;
+  callRouteId?: unknown;
 };
 
 /**
@@ -269,6 +289,8 @@ export function validateReceptionFlow(draft: ReceptionFlowDraft): FlowValidated<
     'completionMessage',
   );
   if (!completionMessage.ok) return completionMessage;
+  const callRouteId = validateCallRouteId(draft.callRouteId);
+  if (!callRouteId.ok) return callRouteId;
 
   return {
     ok: true,
@@ -278,6 +300,7 @@ export function validateReceptionFlow(draft: ReceptionFlowDraft): FlowValidated<
       description: description.value,
       order: order.value,
       enabled: true,
+      callRouteId: callRouteId.value,
       steps: steps.value,
       fields: fields.value,
       completionMessage: completionMessage.value,

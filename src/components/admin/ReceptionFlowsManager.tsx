@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useState } from 'react';
 import type { StoredReceptionFlow } from '@/lib/reception/flow-config/types';
+import type { CallRoute } from '@/lib/notification/types';
 import {
   DEFAULT_STEPS,
   FIELD_TYPES,
@@ -58,6 +59,7 @@ export function ReceptionFlowsManager({
   siteId?: string;
 }) {
   const [items, setItems] = useState<StoredReceptionFlow[]>([]);
+  const [routes, setRoutes] = useState<CallRoute[]>([]);
   const [purposeKey, setPurposeKey] = useState('');
   const [displayName, setDisplayName] = useState('');
   const [busy, setBusy] = useState(false);
@@ -78,9 +80,18 @@ export function ReceptionFlowsManager({
     }
   }, [tenantId, siteId]);
 
+  // 目的ごとの通知ルート割り当て用に、選択肢となる通知ルート一覧を読み込む (issue #100)。
+  const loadRoutes = useCallback(async () => {
+    const res = await fetch(
+      `/api/admin/call-routes?tenantId=${encodeURIComponent(tenantId)}&siteId=${encodeURIComponent(siteId)}`,
+    );
+    if (res.ok) setRoutes((await res.json()) as CallRoute[]);
+  }, [tenantId, siteId]);
+
   useEffect(() => {
     void load();
-  }, [load]);
+    void loadRoutes();
+  }, [load, loadRoutes]);
 
   const add = useCallback(async () => {
     if (purposeKey.trim() === '' || displayName.trim() === '' || busy) return;
@@ -283,6 +294,25 @@ export function ReceptionFlowsManager({
             ) : null}
 
             <FlowSummary steps={f.steps} />
+            <label
+              style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 8, fontSize: '0.9rem' }}
+            >
+              <span style={{ opacity: 0.75 }}>通知ルート</span>
+              <select
+                data-testid="flow-call-route"
+                value={f.callRouteId ?? ''}
+                onChange={(e) => patch(f.id, { callRouteId: e.target.value })}
+                style={{ padding: '4px 8px', borderRadius: 6 }}
+              >
+                <option value="">未割当（担当者選択に従う）</option>
+                {routes.map((r) => (
+                  <option key={r.id} value={r.id}>
+                    {r.name}
+                    {r.enabled ? '' : '（無効）'}
+                  </option>
+                ))}
+              </select>
+            </label>
             <FlowFieldsEditor
               fields={f.fields}
               onSave={(fields) => saveFields(f.id, fields)}
