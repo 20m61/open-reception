@@ -20,6 +20,7 @@ import { randomUUID } from 'node:crypto';
 import {
   asReceptionFlowId,
   enabledFlowsForDisplay,
+  validateCallRouteId,
   validateOptionalText,
   validateOrder,
   validateReceptionFlow,
@@ -181,6 +182,11 @@ export class ReceptionFlowService {
       const v = validateOptionalText(patch.completionMessage, DESCRIPTION_MAX, 'completionMessage');
       if (!v.ok) return fail('invalid_input', v.error.message);
       next.completionMessage = v.value;
+    }
+    if (patch.callRouteId !== undefined) {
+      const v = validateCallRouteId(patch.callRouteId);
+      if (!v.ok) return fail('invalid_input', v.error.message);
+      next.callRouteId = v.value;
     }
     if (patch.enabled !== undefined) next.enabled = patch.enabled;
 

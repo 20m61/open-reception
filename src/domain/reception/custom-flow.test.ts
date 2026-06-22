@@ -5,6 +5,7 @@ import {
   isFieldType,
   isFlowStepKind,
   sortFlowsForDisplay,
+  validateCallRouteId,
   validateField,
   validateFields,
   validateReceptionFlow,
@@ -116,6 +117,31 @@ describe('validateReceptionFlow (#100)', () => {
     const r = validateReceptionFlow(baseDraft({ description: '   ' }));
     expect(r.ok).toBe(true);
     if (r.ok) expect(r.value.description).toBeUndefined();
+  });
+});
+
+describe('validateCallRouteId (#100)', () => {
+  it('未指定・空文字は割り当てなし(undefined)', () => {
+    expect(validateCallRouteId(undefined)).toEqual({ ok: true, value: undefined });
+    expect(validateCallRouteId(null)).toEqual({ ok: true, value: undefined });
+    expect(validateCallRouteId('   ')).toEqual({ ok: true, value: undefined });
+  });
+
+  it('有効な ID は trim して採用する', () => {
+    expect(validateCallRouteId(' route-abc ')).toEqual({ ok: true, value: 'route-abc' });
+  });
+
+  it('文字列以外・長すぎる ID は不正', () => {
+    expect(validateCallRouteId(123).ok).toBe(false);
+    expect(validateCallRouteId('x'.repeat(129)).ok).toBe(false);
+  });
+
+  it('validateReceptionFlow は callRouteId を取り込み、不正なら失敗する', () => {
+    const ok = validateReceptionFlow(baseDraft({ callRouteId: 'route-1' }));
+    expect(ok.ok && ok.value.callRouteId).toBe('route-1');
+    const cleared = validateReceptionFlow(baseDraft({ callRouteId: '' }));
+    expect(cleared.ok && cleared.value.callRouteId).toBeUndefined();
+    expect(validateReceptionFlow(baseDraft({ callRouteId: 123 })).ok).toBe(false);
   });
 });
 

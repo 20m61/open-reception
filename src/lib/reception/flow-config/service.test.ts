@@ -162,6 +162,21 @@ describe('ReceptionFlowService.update/remove (#100)', () => {
     expect(audits.at(-1)?.action).toBe('reception_flow.updated');
   });
 
+  it('通知ルート(callRouteId)を割り当て・解除できる', async () => {
+    const { svc } = makeService([flow({ id: asReceptionFlowId('f1') })]);
+    const assigned = await svc.update(tenantAdminA, T_A, asReceptionFlowId('f1'), {
+      callRouteId: 'route-xyz',
+    });
+    expect(assigned.ok).toBe(true);
+    if (assigned.ok) expect(assigned.value.callRouteId).toBe('route-xyz');
+
+    const cleared = await svc.update(tenantAdminA, T_A, asReceptionFlowId('f1'), {
+      callRouteId: '',
+    });
+    expect(cleared.ok).toBe(true);
+    if (cleared.ok) expect(cleared.value.callRouteId).toBeUndefined();
+  });
+
   it('viewer は更新不可', async () => {
     const { svc } = makeService([flow({ id: asReceptionFlowId('f1') })]);
     const r = await svc.update(viewerA, T_A, asReceptionFlowId('f1'), { displayName: 'X' });

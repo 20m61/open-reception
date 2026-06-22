@@ -23,6 +23,8 @@ export type StoredReceptionFlow = {
   description?: string;
   order: number;
   enabled: boolean;
+  /** この目的の受付で使う通知ルート ID（src/lib/notification の CallRoute）。任意。 */
+  callRouteId?: string;
   steps: FlowStepKind[];
   fields: FlowField[];
   completionMessage?: string;
@@ -42,6 +44,7 @@ export type CreateReceptionFlowInput = {
   steps?: unknown;
   fields?: unknown;
   completionMessage?: unknown;
+  callRouteId?: unknown;
 };
 
 /** 更新パッチ。指定フィールドのみ反映する。enabled は有効/無効トグルに使う。 */
@@ -52,5 +55,6 @@ export type UpdateReceptionFlowPatch = {
   steps?: unknown;
   fields?: unknown;
   completionMessage?: unknown;
+  callRouteId?: unknown;
   enabled?: boolean;
 };

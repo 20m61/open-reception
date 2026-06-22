@@ -62,6 +62,7 @@ function parseUpdateBody(body: unknown): UpdateReceptionFlowPatch {
   if ('steps' in o) patch.steps = o.steps;
   if ('fields' in o) patch.fields = o.fields;
   if ('completionMessage' in o) patch.completionMessage = o.completionMessage;
+  if ('callRouteId' in o) patch.callRouteId = o.callRouteId;
   if (typeof o.enabled === 'boolean') patch.enabled = o.enabled;
   return patch;
 }
