@@ -35,6 +35,25 @@ test('監査ログページが表示される', async ({ page }) => {
   await expect(page.getByTestId('audit-row').first()).toBeVisible();
 });
 
+test('監査フィルタ状態が URL に反映され、リロードで復元される（#94）', async ({ page }) => {
+  await loginAsAdmin(page);
+  await page.request.post('/api/admin/departments', { data: { name: `URL状態-${Date.now()}` } });
+  await page.goto('/admin/audit');
+
+  // 操作種別フィルタを選ぶと URL クエリに反映される。
+  await page.getByTestId('audit-filter-action').selectOption('department.created');
+  await expect(page).toHaveURL(/[?&]action=department\.created/);
+
+  // リロードしても URL からフィルタ状態が復元される（URL が真実源）。
+  await page.reload();
+  await expect(page.getByTestId('audit-filter-action')).toHaveValue('department.created');
+  await expect(page).toHaveURL(/[?&]action=department\.created/);
+
+  // 条件クリアで URL からも除かれる。
+  await page.getByTestId('audit-filter-reset').click();
+  await expect(page).not.toHaveURL(/action=/);
+});
+
 test('監査ログは未認証だと 401', async ({ page }) => {
   const res = await page.request.get('/api/admin/audit');
   expect(res.status()).toBe(401);

@@ -1,9 +1,10 @@
 'use client';
 
-import { useMemo, useState } from 'react';
+import { useMemo } from 'react';
 import type { AuditAction, AuditLog } from '@/domain/reception/log';
 import { filterAuditLogs, type AuditFilter } from '@/domain/audit/audit-filter';
 import { Button, color, font, radius, space } from '@/components/admin/ui';
+import { useQueryParams } from '@/components/admin/use-query-params';
 
 /**
  * 監査ログの検索・フィルタ表示 (issue #89, increment 2)。
@@ -26,11 +27,13 @@ export function AuditLogViewer({
   actionFacets: readonly ActionFacet[];
   actionLabels: Readonly<Partial<Record<AuditAction, string>>>;
 }) {
-  const [start, setStart] = useState('');
-  const [end, setEnd] = useState('');
-  const [action, setAction] = useState('');
-  const [actor, setActor] = useState('');
-  const [keyword, setKeyword] = useState('');
+  // 検索/フィルタ状態は URL クエリを真実源にする (issue #94)。戻る/進む・リロード・共有で復元される。
+  const { get, setMany } = useQueryParams();
+  const start = get('start');
+  const end = get('end');
+  const action = get('action');
+  const actor = get('actor');
+  const keyword = get('keyword');
 
   const filter: AuditFilter = useMemo(
     () => ({
@@ -47,13 +50,7 @@ export function AuditLogViewer({
   const labelFor = (a: string) => actionLabels[a as AuditAction] ?? a;
   const hasFilter = Boolean(start || end || action || actor || keyword);
 
-  const reset = () => {
-    setStart('');
-    setEnd('');
-    setAction('');
-    setActor('');
-    setKeyword('');
-  };
+  const reset = () => setMany({ start: '', end: '', action: '', actor: '', keyword: '' });
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: space.md }}>
@@ -66,7 +63,7 @@ export function AuditLogViewer({
             type="date"
             data-testid="audit-filter-start"
             value={start}
-            onChange={(e) => setStart(e.target.value)}
+            onChange={(e) => setMany({ start: e.target.value })}
             style={inputStyle}
           />
         </FilterField>
@@ -75,7 +72,7 @@ export function AuditLogViewer({
             type="date"
             data-testid="audit-filter-end"
             value={end}
-            onChange={(e) => setEnd(e.target.value)}
+            onChange={(e) => setMany({ end: e.target.value })}
             style={inputStyle}
           />
         </FilterField>
@@ -83,7 +80,7 @@ export function AuditLogViewer({
           <select
             data-testid="audit-filter-action"
             value={action}
-            onChange={(e) => setAction(e.target.value)}
+            onChange={(e) => setMany({ action: e.target.value })}
             style={inputStyle}
           >
             <option value="">すべて</option>
@@ -100,7 +97,7 @@ export function AuditLogViewer({
             data-testid="audit-filter-actor"
             placeholder="admin / kiosk:..."
             value={actor}
-            onChange={(e) => setActor(e.target.value)}
+            onChange={(e) => setMany({ actor: e.target.value })}
             style={inputStyle}
           />
         </FilterField>
@@ -110,7 +107,7 @@ export function AuditLogViewer({
             data-testid="audit-filter-keyword"
             placeholder="対象種別 / ID など"
             value={keyword}
-            onChange={(e) => setKeyword(e.target.value)}
+            onChange={(e) => setMany({ keyword: e.target.value })}
             style={inputStyle}
           />
         </FilterField>
