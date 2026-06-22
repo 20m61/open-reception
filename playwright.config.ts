@@ -57,5 +57,11 @@ export default defineConfig({
     url: baseURL,
     reuseExistingServer: !process.env.CI,
     timeout: 120_000,
+    // E2E ではパスワード管理セッションを developer（全テナント可）として解決する。
+    // #80/#85 の actor 厳格化で password セッションは既定 tenant_admin(tenant='default') に
+    // なるが、admin 系のシード/画面は 'internal' テナントを使うため、テナント横断の
+    // developer で管理 CRUD を一貫して検証できるようにする（本番 auth 既定は不変）。
+    // 注: admin↔kiosk↔actor のテナント統一は別 Issue で扱う。
+    env: { ...process.env, OPEN_RECEPTION_ADMIN_PASSWORD_ROLE: 'developer' },
   },
 });
