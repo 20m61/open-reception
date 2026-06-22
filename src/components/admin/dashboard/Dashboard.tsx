@@ -64,8 +64,9 @@ export function Dashboard() {
     );
   }
 
-  const { status, today, devices, recentCalls } = state.summary;
+  const { status, today, devices, recentCalls, usageCost } = state.summary;
   const callProblem = today.failed + today.timeout;
+  const yen = (n: number) => `¥${n.toLocaleString('ja-JP')}`;
 
   return (
     <div data-testid="dashboard">
@@ -116,22 +117,31 @@ export function Dashboard() {
 
       <Section title="利用量・コスト（概況）">
         <CardGrid>
-          <MetricCard
-            label="今月の利用量"
-            href="/admin/audit"
-            placeholder
-            note="利用量サマリは #89 で実装（概況サマリからの導線）"
-          >
-            <span style={{ fontSize: '1.1rem', fontWeight: 700, opacity: 0.7 }}>準備中</span>
-          </MetricCard>
-          <MetricCard
-            label="今月の予想コスト"
-            href="/admin/audit"
-            placeholder
-            note="「概算」「予想」コストは #89 で実装"
-          >
-            <span style={{ fontSize: '1.1rem', fontWeight: 700, opacity: 0.7 }}>準備中</span>
-          </MetricCard>
+          {usageCost ? (
+            <MetricCard
+              label="今月の利用量"
+              value={usageCost.receptionsThisMonth}
+              unit="件"
+              href="/admin/usage"
+              hint="当月の受付件数（詳細は利用量へ）"
+            />
+          ) : (
+            <MetricCard label="今月の利用量" href="/admin/usage" placeholder note="利用量サマリ未集計">
+              <span style={{ fontSize: '1.1rem', fontWeight: 700, opacity: 0.7 }}>—</span>
+            </MetricCard>
+          )}
+          {usageCost ? (
+            <MetricCard
+              label="今月の予想コスト（概算）"
+              value={yen(usageCost.projectedMonthEnd)}
+              href="/admin/costs"
+              hint={`今月これまで 約${yen(usageCost.estimatedSoFar)}（概算・予想）`}
+            />
+          ) : (
+            <MetricCard label="今月の予想コスト（概算）" href="/admin/costs" placeholder note="コスト概算未集計">
+              <span style={{ fontSize: '1.1rem', fontWeight: 700, opacity: 0.7 }}>—</span>
+            </MetricCard>
+          )}
           <MetricCard
             label="重要なお知らせ"
             href="/admin/audit"

@@ -58,11 +58,27 @@ export type RecentCall = {
 };
 
 /** ダッシュボード概況の集計結果。 */
+/**
+ * 利用量・予想コストの概況（#86/#89）。ダッシュボードに概要だけを出し、詳細は各画面へ誘導する。
+ * 集約 API が usage/cost 集計から組み立てて渡す（フロントで複数 API を叩かない）。
+ */
+export type UsageCostSummary = {
+  /** 当月の受付件数。 */
+  receptionsThisMonth: number;
+  /** 今月これまでの概算コスト（円）。 */
+  estimatedSoFar: number;
+  /** 月末までの予想コスト概算（円）。 */
+  projectedMonthEnd: number;
+  currency: 'JPY';
+};
+
 export type DashboardSummary = {
   status: OverallStatus;
   today: TodayCounts;
   devices: DeviceSummary;
   recentCalls: RecentCall[];
+  /** 利用量・予想コストの概況（未集計時は null）。 */
+  usageCost: UsageCostSummary | null;
 };
 
 /** `at`（ISO 文字列）が、基準時刻 `now` と同じ暦日（ローカル）かを判定する。 */
@@ -143,6 +159,7 @@ export function buildDashboardSummary(
   logs: readonly ReceptionLog[],
   devices: readonly DeviceLike[],
   now: Date = new Date(),
+  usageCost: UsageCostSummary | null = null,
 ): DashboardSummary {
   const today = summarizeToday(logs, now);
   const deviceSummary = summarizeDevices(devices);
@@ -151,5 +168,6 @@ export function buildDashboardSummary(
     today,
     devices: deviceSummary,
     recentCalls: recentCalls(logs),
+    usageCost,
   };
 }

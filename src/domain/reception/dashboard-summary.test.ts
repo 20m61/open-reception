@@ -119,5 +119,17 @@ describe('buildDashboardSummary (#86)', () => {
     expect(summary.today.total).toBe(2);
     expect(summary.devices).toEqual({ total: 1, online: 1, offline: 0 });
     expect(summary.recentCalls).toHaveLength(2);
+    expect(summary.usageCost).toBeNull(); // 未指定なら null
+  });
+
+  it('利用量/コスト概況を受け取ると含める (#86)', () => {
+    const usageCost = {
+      receptionsThisMonth: 42,
+      estimatedSoFar: 1200,
+      projectedMonthEnd: 3000,
+      currency: 'JPY' as const,
+    };
+    const summary = buildDashboardSummary([], [], NOW, usageCost);
+    expect(summary.usageCost).toEqual(usageCost);
   });
 });
