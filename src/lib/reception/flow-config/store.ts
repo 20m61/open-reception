@@ -5,9 +5,9 @@
  * （DATA_BACKEND=memory|dynamodb）に委譲する DataBackedReceptionFlowRepository。
  *
  * dev seed は memory backend のみ有効（dynamodb では無視され実データを正とする）。
- *   - 管理画面の既定テナント（internal / default-site。CallRoute シードと整合）。
- *   - 受付端末の checkin scope（dev-tenant / dev-site。resolveCheckinScope と整合）。
- * これにより管理画面・受付端末いずれの初期表示でもフローが見える。
+ * 既定テナント（internal / default-site）に投入する。管理画面・受付端末（kiosk）とも
+ * 同じ既定プロビジョニング・スコープ（lib/tenant/default-scope）を参照するため、
+ * いずれの初期表示でも同じフローが見える（#171）。
  *
  * 監査は既存 appendAdminAudit（src/lib/mock-backend/reception-log-store）を使い、
  * actor=admin・PII なしで記録する（事前定義済み reception_flow.* アクションを参照）。
@@ -86,10 +86,7 @@ function seedFlowsFor(prefix: string, tenantId: string, siteId: string): StoredR
 }
 
 function seed(): StoredReceptionFlow[] {
-  return [
-    ...seedFlowsFor('internal', 'internal', 'default-site'),
-    ...seedFlowsFor('dev', 'dev-tenant', 'dev-site'),
-  ];
+  return [...seedFlowsFor('internal', 'internal', 'default-site')];
 }
 
 let service: ReceptionFlowService | undefined;
