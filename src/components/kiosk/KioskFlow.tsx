@@ -40,7 +40,8 @@ import {
   type EscapeHatch,
   type QuickAction,
 } from './quick-actions';
-import type { ReceptionAction } from '@/domain/reception/ui-contract';
+import { deriveChatAvailability, type ReceptionAction } from '@/domain/reception/ui-contract';
+import { KioskChatDrawer } from './KioskChatDrawer';
 import Link from 'next/link';
 
 /** MVP では端末 ID は固定。将来 kiosk config から取得する (issue #18)。 */
@@ -608,10 +609,31 @@ export function KioskFlow() {
             }}
           />
           {/*
-            #122 Chat-assisted ドロワーのマウントポイント。中身は後続トラックが差し込む。
-            開閉/利用可否は deriveChatAvailability(state) を購読して制御する想定（idle/終端では閉じる）。
+            #122 Chat-assisted ドロワー (#124 で配線)。利用可否は deriveChatAvailability(state) に従い、
+            idle/終端では自動で閉じ・履歴を破棄する（ドロワー側で null を返す→スロットは :empty で非表示）。
+            ドロワーは状態を所有せず、許可済みアクションのタッチ確定だけを KioskFlow のイベントへ写す。
+            重要操作（confirm/submitVisitorInfo）はチャットからは確定不可（contract が弾く）。
           */}
-          <div className="kiosk-chat-slot" data-slot="chat-drawer" aria-hidden="true" />
+          <div className="kiosk-chat-slot" data-slot="chat-drawer">
+            <KioskChatDrawer
+              screenState={data.state}
+              available={deriveChatAvailability(data.state) === 'available'}
+              onRequestStaff={() => void handleFallback()}
+              onAction={(action) => {
+                // useFallback/complete は記録 API を伴う専用ハンドラへ。残りは状態機械イベントへ写す。
+                if (action === 'useFallback') return void handleFallback();
+                if (action === 'complete') return void complete();
+                // 文脈不要な安全アクションのみ写す。選択系（payload 必要）/重要操作は契約上ここへ来ない。
+                const eventByAction: Partial<Record<ReceptionAction, Action>> = {
+                  back: { type: 'BACK' },
+                  cancel: { type: 'CANCEL' },
+                  reset: { type: 'RESET' },
+                };
+                const next = eventByAction[action];
+                if (next) dispatch(next);
+              }}
+            />
+          </div>
         </>
       )}
     </main>
