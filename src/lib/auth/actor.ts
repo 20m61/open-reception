@@ -29,6 +29,7 @@ import {
   type TenantRole,
 } from '@/domain/tenant/types';
 import { getAdminUserRepository } from '@/lib/tenant/admin-user-store';
+import { defaultSiteIdFrom, defaultTenantIdFrom } from '@/lib/tenant/default-scope';
 import { ADMIN_COOKIE, ENTRA_TOKEN_COOKIE, getAdminSecret } from '@/lib/auth/admin';
 import { getAdminAuthConfig } from '@/lib/auth/admin-auth-config';
 import { createJwksResolver, verifyEntraToken, type EntraClaims } from '@/lib/auth/entra';
@@ -213,10 +214,9 @@ export function buildActorConfig(env: Record<string, string | undefined> = proce
     env.OPEN_RECEPTION_ENTRA_UNREGISTERED === 'env_roles' ? 'env_roles' : 'deny';
   return {
     // 既定はプロビジョニング済みテナント（lib/tenant/store.ts の seed）に一致させる。
-    // ここが 'default' だと password 管理セッションが 'internal' テナントの admin データを
-    // 一切操作できず、admin 画面が機能しない（#171）。env で上書き可能。
-    defaultTenantId: env.OPEN_RECEPTION_DEFAULT_TENANT_ID ?? 'internal',
-    defaultSiteId: env.OPEN_RECEPTION_DEFAULT_SITE_ID ?? 'default-site',
+    // 真実源は lib/tenant/default-scope（admin / kiosk と共有）。env で上書き可能（#171）。
+    defaultTenantId: defaultTenantIdFrom(env),
+    defaultSiteId: defaultSiteIdFrom(env),
     passwordRole,
     developerEmails: parseEmails(env.OPEN_RECEPTION_PLATFORM_DEVELOPER_EMAILS),
     entraUnregistered,
