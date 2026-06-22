@@ -27,8 +27,15 @@ const config = resolveEnv(envName);
 const account = process.env.CDK_DEFAULT_ACCOUNT;
 const region = process.env.CDK_DEFAULT_REGION ?? 'ap-northeast-1';
 
-// 非機密のアプリ環境変数を context (`-c appEnv.KEY=value`) から集約。
-const appEnvContext = (app.node.tryGetContext('appEnv') ?? {}) as Record<string, string>;
+// アプリ環境変数を context から集約する。
+// CDK CLI の `-c appEnv='{"KEY":"VALUE",...}'` は文字列として渡るため JSON.parse する。
+// cdk.json 等でオブジェクトを直接与えた場合はそのまま使う。未指定は空。
+// （注意: `-c appEnv.KEY=VALUE` は flat キー "appEnv.KEY" になり tryGetContext('appEnv') では拾えない）
+const rawAppEnv = app.node.tryGetContext('appEnv') as unknown;
+const appEnvContext: Record<string, string> =
+  typeof rawAppEnv === 'string'
+    ? (JSON.parse(rawAppEnv) as Record<string, string>)
+    : ((rawAppEnv as Record<string, string> | undefined) ?? {});
 
 new WebStack(app, `OpenReception-Web-${config.environment}`, {
   env: { account, region },
