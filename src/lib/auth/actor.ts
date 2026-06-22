@@ -40,9 +40,12 @@ import { verifySession } from '@/lib/auth/session';
  * actor 解決のためのテナント/サイト境界設定。env から読み出す（buildActorConfig 参照）。
  */
 export type ActorConfig = {
-  /** 既定テナント ID（env 未指定なら 'default'）。 */
+  /** 既定テナント ID（env 未指定なら 'internal'＝プロビジョニング済み seed テナント）。 */
   defaultTenantId: string;
-  /** 既定サイト ID（任意）。site_manager の siteId 確定に使う。 */
+  /**
+   * 既定サイト ID（site_manager の siteId 確定に使う）。
+   * env 未指定なら 'default-site'（seed サイト）に倒れる。
+   */
   defaultSiteId?: string;
   /** password セッションに与える TenantRole（既定 'tenant_admin'）。 */
   passwordRole: TenantRole;
@@ -209,8 +212,11 @@ export function buildActorConfig(env: Record<string, string | undefined> = proce
   const entraUnregistered =
     env.OPEN_RECEPTION_ENTRA_UNREGISTERED === 'env_roles' ? 'env_roles' : 'deny';
   return {
-    defaultTenantId: env.OPEN_RECEPTION_DEFAULT_TENANT_ID ?? 'default',
-    defaultSiteId: env.OPEN_RECEPTION_DEFAULT_SITE_ID,
+    // 既定はプロビジョニング済みテナント（lib/tenant/store.ts の seed）に一致させる。
+    // ここが 'default' だと password 管理セッションが 'internal' テナントの admin データを
+    // 一切操作できず、admin 画面が機能しない（#171）。env で上書き可能。
+    defaultTenantId: env.OPEN_RECEPTION_DEFAULT_TENANT_ID ?? 'internal',
+    defaultSiteId: env.OPEN_RECEPTION_DEFAULT_SITE_ID ?? 'default-site',
     passwordRole,
     developerEmails: parseEmails(env.OPEN_RECEPTION_PLATFORM_DEVELOPER_EMAILS),
     entraUnregistered,

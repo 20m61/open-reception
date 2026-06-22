@@ -45,8 +45,8 @@
 
 | env | 既定 | 説明 |
 | --- | --- | --- |
-| `OPEN_RECEPTION_DEFAULT_TENANT_ID` | `default` | 既定テナント ID（実 AdminUser ストア導入までの暫定境界） |
-| `OPEN_RECEPTION_DEFAULT_SITE_ID` | （なし） | `site_manager` の siteId を claim から取れない場合の既定 |
+| `OPEN_RECEPTION_DEFAULT_TENANT_ID` | `internal` | 既定テナント ID（プロビジョニング済み seed テナントに一致、#171） |
+| `OPEN_RECEPTION_DEFAULT_SITE_ID` | `default-site` | `site_manager` の siteId を claim から取れない場合の既定（seed サイト） |
 | `OPEN_RECEPTION_ADMIN_PASSWORD_ROLE` | `tenant_admin` | password セッションに与える `TenantRole`。`developer` を許すのは明示時のみ。不正値は安全側で `tenant_admin` |
 | `OPEN_RECEPTION_PLATFORM_DEVELOPER_EMAILS` | （空） | developer を付与するメール allowlist |
 

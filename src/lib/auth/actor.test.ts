@@ -127,9 +127,11 @@ describe('buildActorFromPasswordSession', () => {
 });
 
 describe('buildActorConfig', () => {
-  it('未設定時の既定（default tenant / tenant_admin / 空 allowlist）', () => {
+  it('未設定時の既定（internal tenant / default-site / tenant_admin / 空 allowlist）', () => {
     const cfg = buildActorConfig({});
-    expect(cfg.defaultTenantId).toBe('default');
+    // 既定はプロビジョニング済みテナント（lib/tenant/store.ts）と一致させる（#171）。
+    expect(cfg.defaultTenantId).toBe('internal');
+    expect(cfg.defaultSiteId).toBe('default-site');
     expect(cfg.passwordRole).toBe('tenant_admin');
     expect(cfg.developerEmails.size).toBe(0);
   });
