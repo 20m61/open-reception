@@ -1,43 +1,62 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import type { TenantDetail as TenantDetailData } from '@/domain/platform/console-summary';
-import { DangerActionPlaceholder, MetricCard, StatusBadge } from './primitives';
+import type { TenantLifecycleAction } from '@/domain/platform/tenant-lifecycle';
+import { DangerActionButton } from '@/components/admin/danger/DangerActionButton';
+import { MetricCard, StatusBadge } from './primitives';
 
 /**
- * テナント詳細（テナント横断 read） (issue #90, increment 2)。
+ * テナント詳細（テナント横断 read + 有効/停止操作） (issue #90)。
  *
- * /api/platform/tenants/[tenantId]（developer 専用 read）から、テナントのメタ情報と配下の
- * サイト/端末の数・状態を取得して表示する。機密値・来訪者/担当者 PII は含めない。
- * 有効/停止・プラン/制限変更は破壊的操作のため DangerActionPlaceholder に隔離する。
+ * /api/platform/tenants/[tenantId] から、テナントのメタ情報と配下のサイト/端末の数・状態を
+ * 取得して表示する。機密値・来訪者/担当者 PII は含めない。有効/停止は破壊的操作のため
+ * DangerActionButton（影響範囲ack + 理由入力 + 二段確認）で隔離し、PATCH で実行する。
  */
 type DetailResponse = { detail: TenantDetailData };
 
 export function TenantDetail({ tenantId }: { tenantId: string }) {
   const [data, setData] = useState<TenantDetailData | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+
+  const load = useCallback(async () => {
+    const res = await fetch(`/api/platform/tenants/${encodeURIComponent(tenantId)}`);
+    if (!res.ok) {
+      setError(
+        res.status === 403
+          ? 'この画面の閲覧権限がありません。'
+          : res.status === 404
+            ? 'テナントが見つかりません。'
+            : 'テナント詳細の取得に失敗しました。',
+      );
+      return;
+    }
+    setError(null);
+    setData(((await res.json()) as DetailResponse).detail);
+  }, [tenantId]);
 
   useEffect(() => {
-    let cancelled = false;
-    void (async () => {
-      const res = await fetch(`/api/platform/tenants/${encodeURIComponent(tenantId)}`);
-      if (cancelled) return;
-      if (!res.ok) {
-        setError(
-          res.status === 403
-            ? 'この画面の閲覧権限がありません。'
-            : res.status === 404
-              ? 'テナントが見つかりません。'
-              : 'テナント詳細の取得に失敗しました。',
-        );
-        return;
+    void load();
+  }, [load]);
+
+  const runLifecycle = useCallback(
+    async (action: TenantLifecycleAction, reason?: string) => {
+      setBusy(true);
+      try {
+        const res = await fetch(`/api/platform/tenants/${encodeURIComponent(tenantId)}`, {
+          method: 'PATCH',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ action, reason }),
+        });
+        if (res.ok) await load();
+        else setError('操作に失敗しました。');
+      } finally {
+        setBusy(false);
       }
-      setData(((await res.json()) as DetailResponse).detail);
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, [tenantId]);
+    },
+    [tenantId, load],
+  );
 
   return (
     <section>
@@ -51,7 +70,7 @@ export function TenantDetail({ tenantId }: { tenantId: string }) {
       </h1>
       <p style={{ opacity: 0.85, maxWidth: 760 }}>
         対象テナントのサイト/端末の構成と状態を確認します（読み取り中心）。機密値・個人情報は
-        表示しません。有効/停止・プラン/制限の変更は次増分で、確認・昇格・監査を伴って実装します。
+        表示しません。有効/停止は破壊的操作のため、影響範囲の確認と理由入力を伴う確認フローで実行します。
       </p>
 
       {error ? <p style={{ color: '#e0a880' }}>{error}</p> : null}
@@ -88,9 +107,24 @@ export function TenantDetail({ tenantId }: { tenantId: string }) {
         </tbody>
       </table>
 
-      <div style={{ marginTop: 'var(--space-lg)', maxWidth: 760 }}>
-        <DangerActionPlaceholder label="テナントの有効化 / 停止・プラン/制限変更" />
-      </div>
+      {data ? (
+        <div style={{ marginTop: 'var(--space-lg)', maxWidth: 760 }}>
+          <h2 style={{ fontSize: '1rem', opacity: 0.7 }}>危険な操作</h2>
+          <DangerActionButton
+            label={data.status === 'active' ? 'このテナントを停止する' : 'このテナントを有効化する'}
+            requirement={{ requireImpactAck: true, requireReason: true }}
+            impactSummary={
+              data.status === 'active'
+                ? '停止すると当該テナントの受付・管理操作ができなくなります（データは保持されます）。'
+                : '有効化すると当該テナントの受付・管理操作が再開されます。'
+            }
+            busy={busy}
+            onConfirm={({ reason }) =>
+              void runLifecycle(data.status === 'active' ? 'suspend' : 'activate', reason)
+            }
+          />
+        </div>
+      ) : null}
     </section>
   );
 }

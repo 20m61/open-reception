@@ -62,6 +62,9 @@ export type AuditAction =
   // 拠点（Site）管理 (issue #87)。テナント/サイト境界の操作のみ記録。
   | 'site.created'
   | 'site.updated'
+  // プラットフォーム運用: テナントの有効/停止 (issue #90)。理由を metadata.reason に残す。
+  | 'tenant.suspended'
+  | 'tenant.activated'
   // 呼び出し先・通知ルート設定 (issue #88)。
   | 'call_route.created'
   | 'call_route.updated'
