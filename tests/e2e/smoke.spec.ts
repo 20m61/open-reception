@@ -25,3 +25,12 @@ test('管理ダッシュボードが表示される（要ログイン）', async
   await page.goto('/admin');
   await expect(page.getByRole('heading', { name: 'ダッシュボード' })).toBeVisible();
 });
+
+test('ダッシュボードに利用量・予想コスト概況と詳細への導線がある（#86）', async ({ page }) => {
+  await loginAsAdmin(page);
+  await page.goto('/admin');
+  await expect(page.getByText('今月の予想コスト（概算）')).toBeVisible();
+  // 概況カードから利用量/コスト詳細へ誘導する（集約 API・準備中ではない）。
+  await expect(page.locator('a[href="/admin/usage"]').first()).toBeVisible();
+  await expect(page.locator('a[href="/admin/costs"]').first()).toBeVisible();
+});
