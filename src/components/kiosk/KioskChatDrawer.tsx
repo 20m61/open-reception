@@ -258,7 +258,11 @@ export function KioskChatDrawer({
  */
 function scopedStyles(scope: string): string {
   return `
-.${scope} { position: fixed; right: 16px; bottom: 16px; z-index: 40; font-size: 16px; }
+.${scope} {
+  position: fixed; right: 16px; z-index: 40; font-size: 16px;
+  /* 安全バー（逃げ道）と重ならないよう、その高さ分だけ上へ持ち上げる（KioskFlow が値を継承させる）。 */
+  bottom: calc(16px + var(--kiosk-chat-safe-bottom, 0px));
+}
 .${scope}__fab {
   min-height: 48px; padding: 12px 20px; border-radius: 24px; border: none;
   background: #1f6feb; color: #fff; box-shadow: 0 2px 8px rgba(0,0,0,.2); cursor: pointer;

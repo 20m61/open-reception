@@ -263,9 +263,27 @@ a {
   justify-content: center;
   padding-top: var(--space-md);
   border-top: 1px solid rgba(255, 255, 255, 0.1);
+  /*
+   * #124: 安全な逃げ道（戻る/キャンセル/最初に戻る）は画面下端に sticky で固定し、不透明背景で
+   * スクロール内容に隠れないようにする。チャットドロワー（右下・固定）はこのバーの高さ分だけ上へ
+   * 持ち上げて配置するため（--kiosk-chat-safe-bottom）、両者は物理的に重ならず常にタッチできる。
+   */
+  position: sticky;
+  bottom: 0;
+  z-index: 30;
+  background: var(--color-bg);
+  padding-bottom: var(--space-sm);
 }
 
 /* #122 Chat-assisted ドロワーのスロット（中身は後続トラックが差し込む）。 */
+/*
+ * チャットドロワーを安全バー（.kiosk-escape-bar）より上へ持ち上げるための予約高さ。
+ * ドロワーは固定配置だが DOM 上はこのスロットの子のため、カスタムプロパティが継承される。
+ */
+.kiosk-chat-slot {
+  --kiosk-chat-safe-bottom: 96px;
+}
+
 .kiosk-chat-slot:empty {
   display: none;
 }
