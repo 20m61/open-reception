@@ -9,12 +9,14 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Actor } from '@/domain/tenant/authorization';
 import { asTenantId } from '@/domain/tenant/types';
 import type { Incident } from '@/domain/platform/incident';
+import type { MaintenanceWindow } from '@/domain/platform/maintenance-window';
 
 const resolveAdminActor = vi.fn<() => Promise<Actor | null>>();
 const listIntegrationStatuses = vi.fn<() => Promise<unknown[]>>();
 const listAuthMethodStatuses = vi.fn();
 const listTenants = vi.fn<() => Promise<unknown[]>>();
 const listIncidents = vi.fn<() => Promise<Incident[]>>();
+const listMaintenanceWindows = vi.fn<() => Promise<MaintenanceWindow[]>>();
 
 vi.mock('@/lib/auth/actor', () => ({
   resolveAdminActor: () => resolveAdminActor(),
@@ -32,6 +34,9 @@ vi.mock('@/lib/tenant/store', () => ({
 }));
 vi.mock('@/lib/platform/incident-store', () => ({
   listIncidents: () => listIncidents(),
+}));
+vi.mock('@/lib/platform/maintenance-window-store', () => ({
+  listMaintenanceWindows: () => listMaintenanceWindows(),
 }));
 
 import { GET as INTEGRATIONS } from './integrations/route';
@@ -96,6 +101,19 @@ beforeEach(() => {
       updatedBy: 'platform:secret-op',
     },
   ]);
+  listMaintenanceWindows.mockResolvedValue([
+    {
+      id: 'w1',
+      scope: 'platform',
+      status: 'scheduled',
+      startsAt: '2026-07-01T15:00:00.000Z',
+      endsAt: '2026-07-01T16:00:00.000Z',
+      message: '定期メンテ',
+      impact: 'read_only',
+      createdBy: 'platform:secret-op',
+      updatedAt: '2026-06-20T00:00:00.000Z',
+    },
+  ]);
 });
 
 describe('GET /api/platform/integrations authorization', () => {
@@ -156,5 +174,14 @@ describe('GET /api/platform/maintenance incidents (inc3e)', () => {
     // 操作者識別子は載せない。
     expect('updatedBy' in body.incidents.incidents[0]).toBe(false);
     expect(JSON.stringify(body)).not.toContain('secret-op');
+  });
+
+  it('includes maintenance window summary without operator identity', async () => {
+    resolveAdminActor.mockResolvedValue(developer());
+    const body = await (await MAINTENANCE()).json();
+    expect(body.windows.scheduledCount).toBe(1);
+    expect(body.windows.totalCount).toBe(1);
+    expect(body.windows.windows[0]).toMatchObject({ id: 'w1', impact: 'read_only', open: true });
+    expect('createdBy' in body.windows.windows[0]).toBe(false);
   });
 });

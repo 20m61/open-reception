@@ -3,6 +3,12 @@
 import { useEffect, useState } from 'react';
 import type { MaintenanceSummary } from '@/domain/platform/console-summary';
 import type { IncidentRow, IncidentSeverity, IncidentSummary } from '@/domain/platform/incident';
+import type {
+  MaintenanceImpact,
+  MaintenanceWindowRow,
+  MaintenanceWindowStatus,
+  MaintenanceWindowSummary,
+} from '@/domain/platform/maintenance-window';
 import { DangerActionPlaceholder, MetricCard } from './primitives';
 
 /**
@@ -16,8 +22,28 @@ import { DangerActionPlaceholder, MetricCard } from './primitives';
 type MaintenanceResponse = {
   summary: MaintenanceSummary;
   incidents: IncidentSummary;
+  windows: MaintenanceWindowSummary;
   notices: { status: 'pending' };
 };
+
+const WINDOW_STATUS_LABEL: Record<MaintenanceWindowStatus, string> = {
+  scheduled: '予定',
+  active: '進行中',
+  completed: '完了',
+  cancelled: '取消',
+};
+
+const IMPACT_LABEL: Record<MaintenanceImpact, string> = {
+  notice_only: '案内のみ',
+  limited: '一部制限',
+  read_only: '読み取り専用',
+  unavailable: '利用不可',
+};
+
+function windowScopeLabel(w: MaintenanceWindowRow): string {
+  if (w.scope === 'platform') return '全体';
+  return w.deviceId ?? w.siteId ?? w.tenantId ?? w.scope;
+}
 
 const SEVERITY_LABEL: Record<IncidentSeverity, string> = {
   info: '情報',
@@ -75,6 +101,10 @@ export function MaintenanceStatus() {
           value={data ? data.summary.devicesInMaintenance : '—'}
         />
         <MetricCard label="進行中の障害" value={data ? data.incidents.activeCount : '—'} />
+        <MetricCard
+          label="メンテナンス予定/進行"
+          value={data ? data.windows.scheduledCount + data.windows.activeCount : '—'}
+        />
         <MetricCard label="お知らせ（notices）" pending note="次増分で接続" />
       </div>
 
@@ -123,6 +153,39 @@ export function MaintenanceStatus() {
                 <td style={{ padding: '6px 8px', opacity: 0.7 }}>{incidentScopeLabel(i)}</td>
                 <td style={{ padding: '6px 8px' }}>{i.title}</td>
                 <td style={{ padding: '6px 8px', opacity: 0.7 }}>{i.startedAt}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
+
+      <h2 style={{ fontSize: '1rem', opacity: 0.7, marginTop: 'var(--space-lg)' }}>予定メンテナンス</h2>
+      {data && data.windows.windows.length === 0 ? (
+        <p style={{ opacity: 0.7 }}>予定メンテナンスはありません。</p>
+      ) : (
+        <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.9rem' }}>
+          <thead>
+            <tr style={{ textAlign: 'left', opacity: 0.6 }}>
+              <th style={{ padding: '6px 8px' }}>状態</th>
+              <th style={{ padding: '6px 8px' }}>範囲</th>
+              <th style={{ padding: '6px 8px' }}>影響</th>
+              <th style={{ padding: '6px 8px' }}>概要</th>
+              <th style={{ padding: '6px 8px' }}>開始</th>
+              <th style={{ padding: '6px 8px' }}>終了</th>
+            </tr>
+          </thead>
+          <tbody>
+            {(data?.windows.windows ?? []).map((w) => (
+              <tr
+                key={w.id}
+                style={{ borderTop: '1px solid rgba(255,255,255,0.08)', opacity: w.open ? 1 : 0.55 }}
+              >
+                <td style={{ padding: '6px 8px' }}>{WINDOW_STATUS_LABEL[w.status]}</td>
+                <td style={{ padding: '6px 8px', opacity: 0.7 }}>{windowScopeLabel(w)}</td>
+                <td style={{ padding: '6px 8px', opacity: 0.8 }}>{IMPACT_LABEL[w.impact]}</td>
+                <td style={{ padding: '6px 8px' }}>{w.message}</td>
+                <td style={{ padding: '6px 8px', opacity: 0.7 }}>{w.startsAt}</td>
+                <td style={{ padding: '6px 8px', opacity: 0.7 }}>{w.endsAt}</td>
               </tr>
             ))}
           </tbody>
