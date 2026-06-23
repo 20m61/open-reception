@@ -6,14 +6,17 @@ import type { NextConfig } from 'next';
  * Next.js の hydration/inline style のため script/style は 'unsafe-inline' を許可しつつ、
  * frame-ancestors none・object-src none・base-uri self でクリックジャッキング/注入を抑止する。
  */
+// アセット（背景/アバター/フォント）は同一オリジン（CloudFront/S3 経由 or data:）で配信するため、
+// img-src/media-src のスキームワイルドカード `https:`（ZAP 10055）は付けず self/data: に限定する。
+// 外部 CDN を使う将来機能（#31 VRM・#4 Vonage SDK）は、その時に必要 origin を明示追加する。
 const csp = [
   "default-src 'self'",
   "script-src 'self' 'unsafe-inline'",
   "style-src 'self' 'unsafe-inline'",
-  "img-src 'self' data: https:",
+  "img-src 'self' data:",
   "font-src 'self' data:",
   "connect-src 'self'",
-  "media-src 'self' https:",
+  "media-src 'self' data:",
   "object-src 'none'",
   "base-uri 'self'",
   "form-action 'self'",
@@ -27,6 +30,10 @@ const securityHeaders = [
   { key: 'Referrer-Policy', value: 'strict-origin-when-cross-origin' },
   // 受付端末では将来マイク/カメラ（音声/VRM）を self で許可、位置情報は不許可。
   { key: 'Permissions-Policy', value: 'camera=(self), microphone=(self), geolocation=()' },
+  // クロスオリジン分離（ZAP 90004 / 堅牢化）。リソースは同一オリジンのため require-corp で問題ない。
+  { key: 'Cross-Origin-Embedder-Policy', value: 'require-corp' },
+  { key: 'Cross-Origin-Opener-Policy', value: 'same-origin' },
+  { key: 'Cross-Origin-Resource-Policy', value: 'same-origin' },
 ];
 
 const nextConfig: NextConfig = {
