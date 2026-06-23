@@ -161,3 +161,9 @@ vite.config.ts.timestamp-*
 # Claude Code: ランタイム worktree と個人設定は追跡しない（共有 config は追跡する）
 /.claude/worktrees/
 /.claude/settings.local.json
+
+# 検証成果物（ローカル/デプロイ）
+screenshots/
+.url-quality-gate/
+.lighthouseci/
+infra/cdk-outputs-*.json
