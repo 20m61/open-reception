@@ -16,6 +16,8 @@ import {
   summarizeMaintenance,
   summarizeTenantDetail,
   summarizeTenantFleet,
+  toAuthMethodStatusRows,
+  toIntegrationStatusRows,
   toMaskedAuditRows,
   toTenantRows,
 } from './console-summary';
@@ -223,5 +225,42 @@ describe('toMaskedAuditRows', () => {
     });
     // metadata は表示行に載せない。
     expect('metadata' in (rows[0] ?? {})).toBe(false);
+  });
+});
+
+describe('toIntegrationStatusRows (increment 3)', () => {
+  it('label 昇順で表示用フィールドのみを射影し、想定外フィールドは落とす', () => {
+    const rows = toIntegrationStatusRows([
+      {
+        id: 'vonage',
+        label: 'Vonage',
+        configured: true,
+        enabled: false,
+        lastResult: 'failure',
+        lastFailureAt: '2026-06-01T00:00:00.000Z',
+        lastErrorSummary: 'auth failed',
+        // @ts-expect-error 機密が将来混入しても射影が落とすことを確認する。
+        apiSecret: 'SHOULD-NOT-LEAK',
+      },
+      { id: 'aws', label: 'AWS', configured: false, enabled: false, lastResult: 'untested' },
+    ]);
+    expect(rows.map((r) => r.label)).toEqual(['AWS', 'Vonage']);
+    expect('apiSecret' in (rows[1] ?? {})).toBe(false);
+    expect(JSON.stringify(rows)).not.toContain('SHOULD-NOT-LEAK');
+    expect(rows[1]).toMatchObject({ id: 'vonage', lastErrorSummary: 'auth failed' });
+  });
+});
+
+describe('toAuthMethodStatusRows (increment 3)', () => {
+  it('label 昇順で射影し issues を複製して返す', () => {
+    const source = [
+      { id: 'password', label: '共有パスワード', enabled: false, issues: ['未設定'] },
+      { id: 'entra', label: 'Entra ID', enabled: true, issues: [] },
+    ];
+    const rows = toAuthMethodStatusRows(source);
+    expect(rows.map((r) => r.id)).toEqual(['entra', 'password']);
+    // issues は複製（元配列への参照を共有しない）。
+    expect(rows[1]?.issues).toEqual(['未設定']);
+    expect(rows[1]?.issues).not.toBe(source[0]?.issues);
   });
 });

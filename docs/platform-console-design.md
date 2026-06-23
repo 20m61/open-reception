@@ -37,7 +37,7 @@
 | `/platform/tenants` | テナント運用 | inc1 一覧 read → inc2 **詳細 read 導線**（行から詳細へ遷移） |
 | `/platform/tenants/[tenantId]` | テナント運用 | inc2 **実装**: テナント詳細 read（サイト/端末の数・状態。PII/機密なし）。操作は Danger プレースホルダ |
 | `/platform/feature-flags` | テナント運用 | inc1 スケルトン → inc2 **read 実接続**（Vonage/ログイン方式は実値、上限は「未接続」明示）。変更は Danger プレースホルダ |
-| `/platform/integrations` | テナント運用 | スケルトン（登録状態のみ。機密値は非露出。read 配線は次増分） |
+| `/platform/integrations` | テナント運用 | inc1 スケルトン → inc3 **read 実接続**（外部連携＋管理ログイン方式の登録/有効/接続結果。機密値は非露出）。変更は Danger プレースホルダ |
 | `/platform/observability` | 信頼性 | inc1 スケルトン → inc2 **read 実接続**（連携接続結果・マスク済み直近アクティビティ。指標は「未接続」明示） |
 | `/platform/maintenance` | 信頼性 | inc1 スケルトン → inc2 **read 実接続**（メンテナンス表示中端末の横断集計）。発動は Danger プレースホルダ |
 | `/platform/audit-logs` | 信頼性 | inc1 スケルトン → inc2 **read 実接続**（テナント横断マスク済み監査ログ） |
@@ -48,6 +48,11 @@ inc1:
 
 - `GET /api/platform/dashboard` — 全テナント稼働概況（`fleet`）+ 未接続運用指標（`metrics.*.status='pending'`）。
 - `GET /api/platform/tenants` — 全テナント一覧（メタ情報のみ）+ 概況サマリ。
+
+inc3（追加）:
+
+- `GET /api/platform/integrations` — 外部連携（Vonage 等）＋管理ログイン方式（Entra/Cognito/共有
+  パスワード）の登録状態・有効状態・接続結果・最終日時。**機密値は含めない**（射影 whitelist）。
 
 inc2（追加）:
 
@@ -87,10 +92,16 @@ inc2: `summarizeTenantDetail` / `summarizeMaintenance` / `maskAuditActor` / `toM
   - メンテナンス read 実接続（メンテナンス表示中端末の横断集計）。
   - 監査ログのテナント横断マスク読み取り配線（actor マスク・metadata 非表示）。
   - 破壊的操作は引き続き Danger プレースホルダ（昇格・確認・監査は未実装）。
-- **inc3 以降**:
-  - 対象テナント選択 UX（選択中テナントの常時表示と read スコープの絞り込み）。
-  - 機能フラグ / 利用制限のテナント単位 read と利用量メータリング接続（#89）。
-  - 外部連携の登録状態・接続確認 read（`/platform/integrations` 配線）。
-  - オブザーバビリティ指標ソース接続（エラー率/レイテンシ/利用量/アラート履歴）。
-  - メンテナンスモードのお知らせ/障害情報の状態 read（→ 発動は影響範囲表示 + 昇格 + 監査）。
-  - 破壊的操作の Just-in-Time 昇格・理由入力・確認・影響範囲表示・監査（既存 `AuditAction` 参照）。
+- **inc3（#83 のスコープ分割）**: 残りの read 配線を小さく安全な増分へ分割し、書き込み（破壊的操作）
+  の前提となる JIT 昇格基盤を後段に置く。各増分は純関数射影＋ユニットテスト＋ authorizePlatform()
+  ガードを守り、機密値・PII を露出しない。
+  - **inc3a（実装済 / 本増分）**: 外部連携の登録状態・接続確認 read（`/platform/integrations` 配線）。
+    `GET /api/platform/integrations`＋射影 `toIntegrationStatusRows` / `toAuthMethodStatusRows`。
+  - **inc3b**: 対象テナント選択 UX（選択中テナントの常時表示と read スコープの絞り込み）。
+  - **inc3c**: 機能フラグ / 利用制限のテナント単位 read と利用量メータリング接続（#89）。
+  - **inc3d**: オブザーバビリティ指標ソース接続（エラー率/レイテンシ/利用量/アラート履歴）。
+  - **inc3e**: メンテナンス/障害（Incident・MaintenanceWindow）の状態 read（→ 発動は影響範囲表示 + 昇格 + 監査）。
+- **inc4 以降（書き込み・安全装置）**:
+  - 破壊的操作の Just-in-Time 昇格・理由入力・確認・影響範囲表示・MFA 再認証・期限付き昇格・
+    break-glass 分離・高詳細監査（before/after・IP・UA、新規 `AuditAction`）。
+  - 機能フラグ／利用制限の変更、メンテナンス発動、保守操作（usage 再集計・webhook 再送・端末 token 失効 等）。
