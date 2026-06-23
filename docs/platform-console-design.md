@@ -39,7 +39,7 @@
 | `/platform/feature-flags` | テナント運用 | inc1 スケルトン → inc2 **read 実接続**（Vonage/ログイン方式は実値、上限は「未接続」明示）。変更は Danger プレースホルダ |
 | `/platform/integrations` | テナント運用 | inc1 スケルトン → inc3 **read 実接続**（外部連携＋管理ログイン方式の登録/有効/接続結果。機密値は非露出）。変更は Danger プレースホルダ |
 | `/platform/observability` | 信頼性 | inc1 スケルトン → inc2 **read 実接続**（連携接続結果・マスク済み直近アクティビティ。指標は「未接続」明示） |
-| `/platform/maintenance` | 信頼性 | inc1 スケルトン → inc2 **read 実接続**（メンテナンス表示中端末の横断集計）。発動は Danger プレースホルダ |
+| `/platform/maintenance` | 信頼性 | inc1 スケルトン → inc2 端末横断集計 → inc3e **障害/インシデント read 追加**（進行中件数・重大度内訳・横断一覧）。発動/登録は Danger プレースホルダ |
 | `/platform/audit-logs` | 信頼性 | inc1 スケルトン → inc2 **read 実接続**（テナント横断マスク済み監査ログ） |
 
 ## API（developer 専用 read）
@@ -100,7 +100,9 @@ inc2: `summarizeTenantDetail` / `summarizeMaintenance` / `maskAuditActor` / `toM
   - **inc3b**: 対象テナント選択 UX（選択中テナントの常時表示と read スコープの絞り込み）。
   - **inc3c**: 機能フラグ / 利用制限のテナント単位 read と利用量メータリング接続（#89）。
   - **inc3d**: オブザーバビリティ指標ソース接続（エラー率/レイテンシ/利用量/アラート履歴）。
-  - **inc3e**: メンテナンス/障害（Incident・MaintenanceWindow）の状態 read（→ 発動は影響範囲表示 + 昇格 + 監査）。
+  - **inc3e（一部実装済）**: 障害（Incident）の状態 read を `/platform/maintenance` へ追加
+    （`summarizeIncidents`＋`incident-store`。seed は memory 専用＝本番 DynamoDB はダミーを出さない）。
+    MaintenanceWindow（予定メンテナンス）read は未着手（→ 発動/登録は影響範囲表示 + 昇格 + 監査）。
 - **inc4 以降（書き込み・安全装置）**:
   - 破壊的操作の Just-in-Time 昇格・理由入力・確認・影響範囲表示・MFA 再認証・期限付き昇格・
     break-glass 分離・高詳細監査（before/after・IP・UA、新規 `AuditAction`）。
