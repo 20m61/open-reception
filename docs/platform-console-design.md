@@ -100,9 +100,10 @@ inc2: `summarizeTenantDetail` / `summarizeMaintenance` / `maskAuditActor` / `toM
   - **inc3b**: 対象テナント選択 UX（選択中テナントの常時表示と read スコープの絞り込み）。
   - **inc3c**: 機能フラグ / 利用制限のテナント単位 read と利用量メータリング接続（#89）。
   - **inc3d**: オブザーバビリティ指標ソース接続（エラー率/レイテンシ/利用量/アラート履歴）。
-  - **inc3e（一部実装済）**: 障害（Incident）の状態 read を `/platform/maintenance` へ追加
-    （`summarizeIncidents`＋`incident-store`。seed は memory 専用＝本番 DynamoDB はダミーを出さない）。
-    MaintenanceWindow（予定メンテナンス）read は未着手（→ 発動/登録は影響範囲表示 + 昇格 + 監査）。
+  - **inc3e（実装済）**: 障害（Incident）＋予定メンテナンス（MaintenanceWindow）の状態 read を
+    `/platform/maintenance` へ追加（`summarizeIncidents`/`summarizeMaintenanceWindows`＋各 store。
+    seed は memory 専用＝本番 DynamoDB はダミーを出さない）。発動/登録は影響範囲表示 + 昇格 + 監査
+    （inc4）。お知らせ（notices）read は未着手。
 - **inc4 以降（書き込み・安全装置）**:
   - 破壊的操作の Just-in-Time 昇格・理由入力・確認・影響範囲表示・MFA 再認証・期限付き昇格・
     break-glass 分離・高詳細監査（before/after・IP・UA、新規 `AuditAction`）。

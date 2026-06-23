@@ -4,6 +4,8 @@ import { getTenantStore } from '@/lib/tenant/store';
 import { summarizeMaintenance } from '@/domain/platform/console-summary';
 import { summarizeIncidents } from '@/domain/platform/incident';
 import { listIncidents } from '@/lib/platform/incident-store';
+import { summarizeMaintenanceWindows } from '@/domain/platform/maintenance-window';
+import { listMaintenanceWindows } from '@/lib/platform/maintenance-window-store';
 import { authorizePlatform } from '@/lib/platform/request';
 
 /**
@@ -13,9 +15,11 @@ import { authorizePlatform } from '@/lib/platform/request';
  *   - メンテナンス表示中（受付を止め保守メッセージを出している）の端末を横断集計（inc2）。
  *   - 障害・インシデント（Incident）の横断集計（inc3e）。進行中優先・重大度降順で並べ、
  *     進行中件数と重大度内訳を返す。来訪者/担当者 PII・操作者識別子は含めない（射影 whitelist）。
+ *   - 予定メンテナンス（MaintenanceWindow）の横断集計（inc3e）。進行/予定を優先し開始予定の
+ *     早い順で並べ、進行中/予定件数を返す。操作者識別子は含めない（射影 whitelist）。
  *
  * 機密値・来訪者/担当者 PII は含めない（端末名は運用メモであり PII ではない）。
- * 未接続（次増分）: 全体/テナント単位のメンテナンスモード状態・お知らせ（notices）。
+ * 未接続（次増分）: お知らせ（notices）。
  *
  * メンテナンスモード発動・障害登録などの破壊的操作は本 API では提供せず、画面側で影響範囲表示・
  * 昇格・監査を伴う導線（DangerActionPlaceholder）に隔離する。
@@ -39,10 +43,12 @@ export async function GET(): Promise<NextResponse> {
   }
 
   const incidents = summarizeIncidents(await listIncidents());
+  const windows = summarizeMaintenanceWindows(await listMaintenanceWindows());
   const pending = { status: 'pending' as const };
   return NextResponse.json({
     summary: summarizeMaintenance(entries),
     incidents,
+    windows,
     notices: pending,
   });
 }
