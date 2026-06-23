@@ -32,7 +32,10 @@ function denyApiOrRedirect(req: NextRequest, isAdminApi: boolean, status: 401 | 
   }
   const url = req.nextUrl.clone();
   url.pathname = '/admin/login';
-  return NextResponse.redirect(url);
+  const res = NextResponse.redirect(url);
+  // 307 リダイレクト応答にも Content-Type を明示する（ZAP 10019: Content-Type 欠落の解消）。
+  res.headers.set('Content-Type', 'text/plain; charset=utf-8');
+  return res;
 }
 
 /** Server Component（layout）が現在パスを参照できるよう、リクエストヘッダへ pathname を付与する。 */
