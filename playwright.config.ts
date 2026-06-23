@@ -1,7 +1,12 @@
 import { defineConfig, devices } from '@playwright/test';
 
 const PORT = Number(process.env.PORT ?? 3000);
-const baseURL = `http://127.0.0.1:${PORT}`;
+/**
+ * 既定はローカル本番ビルド（127.0.0.1）。`PLAYWRIGHT_BASE_URL` を指定すると稼働中の任意 URL
+ * （実環境 CloudFront 等）を対象に E2E/smoke を回せる（その場合ローカルサーバは起動しない）。
+ */
+const remoteBaseURL = process.env.PLAYWRIGHT_BASE_URL?.replace(/\/$/, '');
+const baseURL = remoteBaseURL ?? `http://127.0.0.1:${PORT}`;
 
 /**
  * iPad 受付端末を主対象とするため、iPad viewport を中心に E2E を回す。
@@ -52,10 +57,13 @@ export default defineConfig({
         ]
       : []),
   ],
-  webServer: {
-    command: 'npm run start',
-    url: baseURL,
-    reuseExistingServer: !process.env.CI,
-    timeout: 120_000,
-  },
+  // 実環境 URL を対象にする場合（PLAYWRIGHT_BASE_URL 指定時）はローカルサーバを起動しない。
+  webServer: remoteBaseURL
+    ? undefined
+    : {
+        command: 'npm run start',
+        url: baseURL,
+        reuseExistingServer: !process.env.CI,
+        timeout: 120_000,
+      },
 });
