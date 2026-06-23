@@ -2,19 +2,41 @@
 
 import { useEffect, useState } from 'react';
 import type { MaintenanceSummary } from '@/domain/platform/console-summary';
+import type { IncidentRow, IncidentSeverity, IncidentSummary } from '@/domain/platform/incident';
 import { DangerActionPlaceholder, MetricCard } from './primitives';
 
 /**
- * メンテナンス状況（read 中心） (issue #90, increment 2)。
+ * メンテナンス状況・障害情報（read 中心） (issue #90, increment 2/3e)。
  *
- * /api/platform/maintenance（developer 専用 read）から、メンテナンス表示中の端末を横断確認する。
- * 機密値・PII は含めない。お知らせ/障害情報は未接続として明示する。メンテナンス発動などの
- * 破壊的操作は影響範囲が広いため DangerActionPlaceholder に隔離する。
+ * /api/platform/maintenance（developer 専用 read）から、メンテナンス表示中の端末と
+ * 障害・インシデントを横断確認する。機密値・PII・操作者識別子は含めない。お知らせ（notices）は
+ * 未接続として明示する。メンテナンス発動・障害登録などの破壊的操作は影響範囲が広いため
+ * DangerActionPlaceholder に隔離する。
  */
 type MaintenanceResponse = {
   summary: MaintenanceSummary;
+  incidents: IncidentSummary;
   notices: { status: 'pending' };
 };
+
+const SEVERITY_LABEL: Record<IncidentSeverity, string> = {
+  info: '情報',
+  minor: '軽微',
+  major: '重大',
+  critical: '致命的',
+};
+
+const STATUS_LABEL: Record<IncidentRow['status'], string> = {
+  investigating: '調査中',
+  identified: '原因特定',
+  monitoring: '経過観察',
+  resolved: '復旧済',
+};
+
+function incidentScopeLabel(i: IncidentRow): string {
+  if (i.scope === 'platform') return '全体';
+  return i.deviceId ?? i.siteId ?? i.tenantId ?? i.scope;
+}
 
 export function MaintenanceStatus() {
   const [data, setData] = useState<MaintenanceResponse | null>(null);
@@ -40,8 +62,9 @@ export function MaintenanceStatus() {
     <section>
       <h1 style={{ marginTop: 0 }}>メンテナンス</h1>
       <p style={{ opacity: 0.85, maxWidth: 760 }}>
-        メンテナンス表示中の端末を横断確認します（読み取り中心）。お知らせ・障害情報の表示は
-        次増分で接続します。状態の変更は影響範囲が広いため、確認・昇格・監査を伴う導線に隔離します。
+        メンテナンス表示中の端末と障害・インシデントを横断確認します（読み取り中心）。お知らせ
+        （notices）の表示は次増分で接続します。状態の変更・障害登録は影響範囲が広いため、確認・
+        昇格・監査を伴う導線に隔離します。
       </p>
 
       {error ? <p style={{ color: '#e0a880' }}>{error}</p> : null}
@@ -51,9 +74,11 @@ export function MaintenanceStatus() {
           label="メンテナンス表示中の端末"
           value={data ? data.summary.devicesInMaintenance : '—'}
         />
-        <MetricCard label="お知らせ / 障害情報" pending note="次増分で接続" />
+        <MetricCard label="進行中の障害" value={data ? data.incidents.activeCount : '—'} />
+        <MetricCard label="お知らせ（notices）" pending note="次増分で接続" />
       </div>
 
+      <h2 style={{ fontSize: '1rem', opacity: 0.7 }}>メンテナンス表示中の端末</h2>
       <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.9rem' }}>
         <thead>
           <tr style={{ textAlign: 'left', opacity: 0.6 }}>
@@ -72,6 +97,37 @@ export function MaintenanceStatus() {
           ))}
         </tbody>
       </table>
+
+      <h2 style={{ fontSize: '1rem', opacity: 0.7, marginTop: 'var(--space-lg)' }}>障害・インシデント</h2>
+      {data && data.incidents.incidents.length === 0 ? (
+        <p style={{ opacity: 0.7 }}>登録された障害情報はありません。</p>
+      ) : (
+        <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.9rem' }}>
+          <thead>
+            <tr style={{ textAlign: 'left', opacity: 0.6 }}>
+              <th style={{ padding: '6px 8px' }}>重大度</th>
+              <th style={{ padding: '6px 8px' }}>状態</th>
+              <th style={{ padding: '6px 8px' }}>範囲</th>
+              <th style={{ padding: '6px 8px' }}>概要</th>
+              <th style={{ padding: '6px 8px' }}>発生</th>
+            </tr>
+          </thead>
+          <tbody>
+            {(data?.incidents.incidents ?? []).map((i) => (
+              <tr
+                key={i.id}
+                style={{ borderTop: '1px solid rgba(255,255,255,0.08)', opacity: i.active ? 1 : 0.55 }}
+              >
+                <td style={{ padding: '6px 8px' }}>{SEVERITY_LABEL[i.severity]}</td>
+                <td style={{ padding: '6px 8px', opacity: 0.8 }}>{STATUS_LABEL[i.status]}</td>
+                <td style={{ padding: '6px 8px', opacity: 0.7 }}>{incidentScopeLabel(i)}</td>
+                <td style={{ padding: '6px 8px' }}>{i.title}</td>
+                <td style={{ padding: '6px 8px', opacity: 0.7 }}>{i.startedAt}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
 
       <div style={{ marginTop: 'var(--space-lg)', maxWidth: 760 }}>
         <DangerActionPlaceholder label="メンテナンスモード発動 / お知らせ・障害情報の登録" />
