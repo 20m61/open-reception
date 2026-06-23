@@ -15,6 +15,11 @@
  */
 import type { Device, Site, Tenant } from '@/domain/tenant/types';
 import type { AuditLog } from '@/domain/reception/log';
+import type {
+  AuthMethodStatus,
+  ConnectionResult,
+  IntegrationStatus,
+} from '@/domain/security/integration-status';
 
 /** 全テナントの稼働状況の横断集計。 */
 export type TenantFleetSummary = {
@@ -226,4 +231,62 @@ export function toMaskedAuditRows(logs: readonly AuditLog[]): MaskedAuditRow[] {
     targetType: log.targetType,
     targetId: log.targetId,
   }));
+}
+
+/* ===================== increment 3: 外部連携状態（read 射影） ===================== */
+
+/** 外部連携の横断 read 行。登録状態・接続結果・最終日時のみ。機密値は含めない。 */
+export type IntegrationStatusRow = {
+  id: string;
+  label: string;
+  configured: boolean;
+  enabled: boolean;
+  lastResult: ConnectionResult;
+  lastSuccessAt?: string;
+  lastFailureAt?: string;
+  lastErrorSummary?: string;
+};
+
+/** 管理ログイン方式の横断 read 行。Client Secret 等は含めない。 */
+export type AuthMethodStatusRow = {
+  id: string;
+  label: string;
+  enabled: boolean;
+  issues: string[];
+};
+
+/**
+ * 外部連携状態を read 行へ射影する純関数（label 昇順）。
+ *
+ * `IntegrationStatus` 自体が機密値を持たない設計だが、ここで**表示に必要なフィールドのみ
+ * を明示的に whitelist** し、将来 `IntegrationStatus` にフィールドが増えても platform の
+ * 横断 read へ機密が漏れないようにする（#83 機密非露出方針）。
+ */
+export function toIntegrationStatusRows(
+  statuses: readonly IntegrationStatus[],
+): IntegrationStatusRow[] {
+  return statuses
+    .map((s) => ({
+      id: s.id,
+      label: s.label,
+      configured: s.configured,
+      enabled: s.enabled,
+      lastResult: s.lastResult,
+      lastSuccessAt: s.lastSuccessAt,
+      lastFailureAt: s.lastFailureAt,
+      lastErrorSummary: s.lastErrorSummary,
+    }))
+    .sort((a, b) => a.label.localeCompare(b.label));
+}
+
+/**
+ * 管理ログイン方式を read 行へ射影する純関数（label 昇順）。
+ * 表示に必要なフィールドのみを whitelist し、機密値の漏えいを防ぐ。
+ */
+export function toAuthMethodStatusRows(
+  methods: readonly AuthMethodStatus[],
+): AuthMethodStatusRow[] {
+  return methods
+    .map((m) => ({ id: m.id, label: m.label, enabled: m.enabled, issues: [...m.issues] }))
+    .sort((a, b) => a.label.localeCompare(b.label));
 }
