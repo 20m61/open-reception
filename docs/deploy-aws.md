@@ -71,16 +71,22 @@ npx cdk diff  -c env=prod     # 既存スタックとの差分
 
 server Lambda にはデプロイ時に環境変数を渡す。`.env.example` の server-only 値が対象。
 
-- **非機密**（例 `ADMIN_AUTH_PROVIDER=none`）は context で渡せる:
+> **重要**: `appEnv` は **JSON オブジェクト文字列**として 1 つの context キーで渡す
+> （`-c appEnv='{"KEY":"VALUE",...}'`）。`-c appEnv.KEY=VALUE` のドット記法は flat キー
+> `"appEnv.KEY"` になり `bin/open-reception.ts` の `tryGetContext('appEnv')` で拾えないため
+> **注入されない**（過去にこの誤りで secret 未注入 → 本番 fail-closed になった）。bin は
+> 文字列なら `JSON.parse` する。
+
+- **非機密**（例 `ADMIN_AUTH_PROVIDER=none`）も同じ JSON で渡す:
 
   ```bash
-  npx cdk deploy -c env=prod -c appEnv.ADMIN_AUTH_PROVIDER=none
+  npx cdk deploy -c env=prod -c appEnv='{"ADMIN_AUTH_PROVIDER":"none"}'
   ```
 
 - **機密**（`ADMIN_PASSWORD` / `ADMIN_SESSION_SECRET` / `KIOSK_SESSION_SECRET` /
   `ENTRA_*` / `VONAGE_*`）は平文でコミット・履歴に残さないこと。次のいずれかを推奨:
   - AWS Secrets Manager / SSM Parameter Store に保存し、デプロイ運用者がデプロイ時に
-    `-c appEnv.KEY=...` へ展開する（CI のシークレットストアから注入）。
+    `-c appEnv='{...}'` へ展開する（CI のシークレットストアから注入）。
   - 値を runtime で取得する場合は server Lambda に Secrets Manager 読取権限を付与する
     follow-up を別途実装（現状の WebStack は環境変数注入方式）。
 
@@ -91,10 +97,11 @@ server Lambda にはデプロイ時に環境変数を渡す。`.env.example` の
 
 ```bash
 cd infra
-npx cdk deploy OpenReception-Web-prod -c env=prod \
-  -c appEnv.ADMIN_PASSWORD="$ADMIN_PASSWORD" \
-  -c appEnv.ADMIN_SESSION_SECRET="$ADMIN_SESSION_SECRET" \
-  -c appEnv.KIOSK_SESSION_SECRET="$KIOSK_SESSION_SECRET"
+# 機密値を JSON にまとめて 1 つの appEnv context で渡す（jq でエスケープすると安全）。
+APP_ENV=$(jq -nc \
+  --arg p "$ADMIN_PASSWORD" --arg a "$ADMIN_SESSION_SECRET" --arg k "$KIOSK_SESSION_SECRET" \
+  '{ADMIN_PASSWORD:$p, ADMIN_SESSION_SECRET:$a, KIOSK_SESSION_SECRET:$k}')
+npx cdk deploy OpenReception-Web-prod -c env=prod -c appEnv="$APP_ENV"
 ```
 
 完了後、出力（Outputs）に表示される:

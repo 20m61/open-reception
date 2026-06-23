@@ -16,7 +16,10 @@ const config = {
   default: {
     override: {
       wrapper: 'aws-lambda',
-      converter: 'aws-cloudfront',
+      // server function は CloudFront → Lambda Function URL 経由で呼ばれる。Function URL は
+      // API Gateway v2(payload 2.0) 形式でイベントを渡すため converter は aws-apigw-v2。
+      // （aws-cloudfront は Lambda@Edge 用で、Function URL 経由だと event 形状不一致で 502 になる）
+      converter: 'aws-apigw-v2',
       // ISR/On-demand Revalidation を使わないため、リバリデーション基盤
       // (SQS / DynamoDB tag cache / S3 incremental cache) を無効化する。
       // これにより WebStack は S3 + server/image Lambda + CloudFront のみで完結する。
