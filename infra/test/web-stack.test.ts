@@ -244,3 +244,42 @@ describe.runIf(OPEN_NEXT_READY)('WebStack custom domain (#189)', () => {
     ).toThrow(/hostedZoneDomainName/);
   }, 30000);
 });
+
+// Secrets Manager 化 (issue #194): appSecretsName 指定時、server Lambda に
+// APP_SECRETS_ARN env と secretsmanager:GetSecretValue 権限を付与する。
+describe.runIf(OPEN_NEXT_READY)('WebStack app secrets (#194)', () => {
+  const synth = (appSecretsName?: string) => {
+    const app = new cdk.App();
+    const stack = new WebStack(app, 'TestWebSecrets', {
+      env: { account: '123456789012', region: 'ap-northeast-1' },
+      config: resolveEnv('prod'),
+      appEnv: { ADMIN_AUTH_PROVIDER: 'none' },
+      appSecretsName,
+    });
+    return Template.fromStack(stack);
+  };
+
+  it('does not wire Secrets Manager when appSecretsName is absent', () => {
+    const template = synth(undefined);
+    template.hasResourceProperties('AWS::Lambda::Function', {
+      Environment: { Variables: Match.objectLike({ APP_SECRETS_ARN: Match.absent() }) },
+    });
+  }, 30000);
+
+  it('sets APP_SECRETS_ARN and grants GetSecretValue to the server function', () => {
+    const template = synth('open-reception/prod/app');
+    template.hasResourceProperties('AWS::Lambda::Function', {
+      Environment: { Variables: Match.objectLike({ APP_SECRETS_ARN: Match.anyValue() }) },
+    });
+    template.hasResourceProperties('AWS::IAM::Policy', {
+      PolicyDocument: Match.objectLike({
+        Statement: Match.arrayWith([
+          Match.objectLike({
+            Action: Match.arrayWith(['secretsmanager:GetSecretValue']),
+            Effect: 'Allow',
+          }),
+        ]),
+      }),
+    });
+  }, 30000);
+});
