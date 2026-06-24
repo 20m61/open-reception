@@ -9,8 +9,8 @@ export const metadata: Metadata = {
 export const viewport: Viewport = {
   width: 'device-width',
   initialScale: 1,
-  maximumScale: 1,
-  userScalable: false,
+  // 拡大縮小は無効化しない（WCAG 1.4.4 Resize text）。ロービジョンの来訪者が
+  // ピンチズームで読めるようにする。キオスク運用での操作制限は MDM/ガイドアクセス側で行う。
   themeColor: '#0f172a',
 };
 
