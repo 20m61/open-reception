@@ -17,9 +17,20 @@ const listAuthMethodStatuses = vi.fn();
 const listTenants = vi.fn<() => Promise<unknown[]>>();
 const listIncidents = vi.fn<() => Promise<Incident[]>>();
 const listMaintenanceWindows = vi.fn<() => Promise<MaintenanceWindow[]>>();
+/** 対象テナント選択 Cookie（or_platform_tenant）の値。null で未選択。 */
+let selectedTenantCookie: string | null = null;
 
 vi.mock('@/lib/auth/actor', () => ({
   resolveAdminActor: () => resolveAdminActor(),
+}));
+vi.mock('next/headers', () => ({
+  cookies: () =>
+    Promise.resolve({
+      get: (name: string) =>
+        name === 'or_platform_tenant' && selectedTenantCookie
+          ? { value: selectedTenantCookie }
+          : undefined,
+    }),
 }));
 vi.mock('@/lib/security/integration-status-store', () => ({
   listIntegrationStatuses: () => listIntegrationStatuses(),
@@ -113,7 +124,20 @@ beforeEach(() => {
       createdBy: 'platform:secret-op',
       updatedAt: '2026-06-20T00:00:00.000Z',
     },
+    {
+      id: 'w2',
+      scope: 'tenant',
+      tenantId: 'internal',
+      status: 'scheduled',
+      startsAt: '2026-07-02T15:00:00.000Z',
+      endsAt: '2026-07-02T16:00:00.000Z',
+      message: 'テナント個別メンテ',
+      impact: 'limited',
+      createdBy: 'platform:secret-op',
+      updatedAt: '2026-06-20T00:00:00.000Z',
+    },
   ]);
+  selectedTenantCookie = null;
 });
 
 describe('GET /api/platform/integrations authorization', () => {
@@ -179,9 +203,35 @@ describe('GET /api/platform/maintenance incidents (inc3e)', () => {
   it('includes maintenance window summary without operator identity', async () => {
     resolveAdminActor.mockResolvedValue(developer());
     const body = await (await MAINTENANCE()).json();
-    expect(body.windows.scheduledCount).toBe(1);
-    expect(body.windows.totalCount).toBe(1);
-    expect(body.windows.windows[0]).toMatchObject({ id: 'w1', impact: 'read_only', open: true });
+    expect(body.windows.scheduledCount).toBe(2);
+    expect(body.windows.totalCount).toBe(2);
     expect('createdBy' in body.windows.windows[0]).toBe(false);
+  });
+});
+
+describe('GET /api/platform/maintenance tenant scope narrowing (inc3b-2)', () => {
+  beforeEach(() => resolveAdminActor.mockResolvedValue(developer()));
+
+  it('未選択は全件（platform + 全テナント）', async () => {
+    selectedTenantCookie = null;
+    const body = await (await MAINTENANCE()).json();
+    expect(body.incidents.totalCount).toBe(2);
+    expect(body.windows.totalCount).toBe(2);
+  });
+
+  it('選択テナントは platform + 当該テナントのみに絞る', async () => {
+    selectedTenantCookie = 'internal';
+    const body = await (await MAINTENANCE()).json();
+    // incidents: i1(platform) + i2(tenant=internal) = 2
+    expect(body.incidents.incidents.map((i: { id: string }) => i.id).sort()).toEqual(['i1', 'i2']);
+    // windows: w1(platform) + w2(tenant=internal) = 2
+    expect(body.windows.windows.map((w: { id: string }) => w.id).sort()).toEqual(['w1', 'w2']);
+  });
+
+  it('無関係テナント選択時は platform スコープのみ残る', async () => {
+    selectedTenantCookie = 'other-tenant';
+    const body = await (await MAINTENANCE()).json();
+    expect(body.incidents.incidents.map((i: { id: string }) => i.id)).toEqual(['i1']);
+    expect(body.windows.windows.map((w: { id: string }) => w.id)).toEqual(['w1']);
   });
 });

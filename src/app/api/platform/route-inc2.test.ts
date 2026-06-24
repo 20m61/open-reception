@@ -29,6 +29,10 @@ const listAuthMethodStatuses = vi.fn();
 vi.mock('@/lib/auth/actor', () => ({
   resolveAdminActor: () => resolveAdminActor(),
 }));
+// maintenance ルートは対象テナント選択 Cookie を読む（inc3b-2）。未選択（絞り込みなし）で返す。
+vi.mock('next/headers', () => ({
+  cookies: () => Promise.resolve({ get: () => undefined }),
+}));
 vi.mock('@/lib/tenant/store', () => ({
   getTenantStore: () => ({
     tenants: { listTenants: () => listTenants(), getTenant: (id: string) => getTenant(id) },

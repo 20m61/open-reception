@@ -100,8 +100,11 @@ inc2: `summarizeTenantDetail` / `summarizeMaintenance` / `maskAuditActor` / `toM
   - **inc3b（一部実装済）**: 対象テナント選択 UX。AdminShell ヘッダの `tenantSwitcher` スロットに
     `TenantSwitcher` を常時表示し、Cookie（`or_platform_tenant`）へ id を保持（純関数
     `parseSelectedTenantId`/`resolveSelectedTenant`、`/lib/platform/selected-tenant`）。選択中は
-    そのテナント詳細への導線を出す。**各 read API のスコープ絞り込みは follow-up**（選択を参照して
-    絞る。現状は選択の保持・常時表示・詳細導線まで）。
+    そのテナント詳細への導線を出す。切替時は全 read へ確実に効かせるためフルリロードする。
+  - **inc3b-2（実装済）**: 対象テナント選択による read スコープ絞り込み。共有純関数
+    `filterToSelectedTenant`（`/domain/platform/tenant-scope`。`scope=platform` か `tenantId` 一致を残す）。
+    `/api/platform/maintenance` が選択 Cookie を読み、障害・予定メンテを「全体影響 + 選択テナント」に絞る。
+    端末メンテ集計は端末がテナント横断のため絞らない（全体把握優先）。他 read への展開は順次。
   - **inc3c**: 機能フラグ / 利用制限のテナント単位 read と利用量メータリング接続（#89）。
   - **inc3d**: オブザーバビリティ指標ソース接続（エラー率/レイテンシ/利用量/アラート履歴）。
   - **inc3e（実装済）**: 障害（Incident）＋予定メンテナンス（MaintenanceWindow）の状態 read を
