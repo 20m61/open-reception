@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import 'source-map-support/register';
 import * as cdk from 'aws-cdk-lib';
-import { WebStack } from '../lib/stacks/web-stack';
+import { WebStack, CustomDomainConfig } from '../lib/stacks/web-stack';
 import { NotificationStack } from '../lib/stacks/notification-stack';
 import { MonitoringStack } from '../lib/stacks/monitoring-stack';
 import { resolveEnv } from '../lib/config/environments';
@@ -37,10 +37,22 @@ const appEnvContext: Record<string, string> =
     ? (JSON.parse(rawAppEnv) as Record<string, string>)
     : ((rawAppEnv as Record<string, string> | undefined) ?? {});
 
+// 任意: 既存サブドメインを CloudFront に紐付ける (issue #189)。
+// `-c customDomain='{"domainName":"...","certificateArn":"arn:aws:acm:us-east-1:...",...}'`。
+// enabled:false または未指定なら CDK 生成ドメインのみ。
+const rawCustomDomain = app.node.tryGetContext('customDomain') as unknown;
+const customDomainContext: (CustomDomainConfig & { enabled?: boolean }) | undefined =
+  typeof rawCustomDomain === 'string'
+    ? (JSON.parse(rawCustomDomain) as CustomDomainConfig & { enabled?: boolean })
+    : (rawCustomDomain as (CustomDomainConfig & { enabled?: boolean }) | undefined);
+const customDomain =
+  customDomainContext && customDomainContext.enabled !== false ? customDomainContext : undefined;
+
 new WebStack(app, `OpenReception-Web-${config.environment}`, {
   env: { account, region },
   config,
   appEnv: appEnvContext,
+  customDomain,
   description: `open-reception Next.js hosting (${config.environment})`,
 });
 

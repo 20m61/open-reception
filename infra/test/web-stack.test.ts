@@ -158,4 +158,89 @@ describe.runIf(OPEN_NEXT_READY)('WebStack synthesis', () => {
       }),
     });
   });
+
+  it('does not set CloudFront aliases when no custom domain is configured', () => {
+    template.hasResourceProperties('AWS::CloudFront::Distribution', {
+      DistributionConfig: Match.objectLike({ Aliases: Match.absent() }),
+    });
+  });
+});
+
+// カスタムドメイン (issue #189): 既存 us-east-1 証明書 ARN を取り込み、Distribution に
+// alias と ViewerCertificate を設定する。createDnsRecord=false なら Route53 を作らない。
+// 各テストはフルスタック構築（OpenNext アセットのハッシュ）を伴うため timeout を緩める。
+describe.runIf(OPEN_NEXT_READY)('WebStack custom domain (#189)', () => {
+  const CERT_ARN = 'arn:aws:acm:us-east-1:123456789012:certificate/abcd-1234';
+  const ACCOUNT = '123456789012';
+  const REGION = 'ap-northeast-1';
+
+  // HostedZone.fromLookup は実 AWS の context provider を起動するため、unit テストでは
+  // 既知の lookup キーを context に seed して同期的にダミーゾーンを返させる。
+  const hostedZoneContext = {
+    [`hosted-zone:account=${ACCOUNT}:domainName=parent.example.com:region=${REGION}`]: {
+      Id: '/hostedzone/DUMMY1234',
+      Name: 'parent.example.com.',
+    },
+  };
+
+  const synth = (createDnsRecord: boolean) => {
+    const app = new cdk.App({ context: createDnsRecord ? hostedZoneContext : undefined });
+    const stack = new WebStack(app, 'TestWebCustomDomain', {
+      env: { account: ACCOUNT, region: REGION },
+      config: resolveEnv('prod'),
+      appEnv: { ADMIN_AUTH_PROVIDER: 'none' },
+      customDomain: {
+        domainName: 'open-reception.parent.example.com',
+        certificateArn: CERT_ARN,
+        hostedZoneDomainName: createDnsRecord ? 'parent.example.com' : undefined,
+        createDnsRecord,
+      },
+    });
+    return Template.fromStack(stack);
+  };
+
+  it('binds the FQDN as a CloudFront alias with the imported certificate', () => {
+    synth(false).hasResourceProperties('AWS::CloudFront::Distribution', {
+      DistributionConfig: Match.objectLike({
+        Aliases: ['open-reception.parent.example.com'],
+        ViewerCertificate: Match.objectLike({
+          AcmCertificateArn: CERT_ARN,
+          SslSupportMethod: 'sni-only',
+        }),
+      }),
+    });
+  }, 30000);
+
+  it('does not create Route53 records when createDnsRecord is false', () => {
+    synth(false).resourceCountIs('AWS::Route53::RecordSet', 0);
+  }, 30000);
+
+  it('creates A and AAAA alias records when createDnsRecord is true', () => {
+    const template = synth(true);
+    template.resourceCountIs('AWS::Route53::RecordSet', 2);
+    template.hasResourceProperties('AWS::Route53::RecordSet', {
+      Type: 'A',
+      Name: 'open-reception.parent.example.com.',
+    });
+    template.hasResourceProperties('AWS::Route53::RecordSet', {
+      Type: 'AAAA',
+      Name: 'open-reception.parent.example.com.',
+    });
+  }, 30000);
+
+  it('rejects createDnsRecord without a hosted zone', () => {
+    const app = new cdk.App();
+    expect(
+      () =>
+        new WebStack(app, 'TestWebBadDomain', {
+          env: { account: ACCOUNT, region: REGION },
+          config: resolveEnv('prod'),
+          customDomain: {
+            domainName: 'open-reception.parent.example.com',
+            certificateArn: CERT_ARN,
+            createDnsRecord: true,
+          },
+        }),
+    ).toThrow(/hostedZoneDomainName/);
+  }, 30000);
 });
