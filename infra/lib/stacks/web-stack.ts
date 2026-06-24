@@ -176,6 +176,38 @@ export class WebStack extends Stack {
       enableAcceptEncodingBrotli: true,
     });
 
+    // S3/画像オリジンの静的アセットは Next.js Lambda を経由しないため next.config.ts の
+    // セキュリティヘッダが付かない (issue #193)。CloudFront 側で付与し、SSR と静的で
+    // ヘッダを揃える。特に COEP require-corp の文書が静的サブリソースを読めるよう CORP を付ける。
+    const staticHeadersPolicy = new cloudfront.ResponseHeadersPolicy(this, 'StaticSecurityHeaders', {
+      comment: `${config.prefix} static asset security headers`,
+      securityHeadersBehavior: {
+        contentTypeOptions: { override: true },
+        strictTransportSecurity: {
+          accessControlMaxAge: Duration.days(730),
+          includeSubdomains: true,
+          override: true,
+        },
+        frameOptions: { frameOption: cloudfront.HeadersFrameOption.DENY, override: true },
+        referrerPolicy: {
+          referrerPolicy: cloudfront.HeadersReferrerPolicy.STRICT_ORIGIN_WHEN_CROSS_ORIGIN,
+          override: true,
+        },
+      },
+      customHeadersBehavior: {
+        customHeaders: [
+          {
+            header: 'Permissions-Policy',
+            value: 'camera=(self), microphone=(self), geolocation=()',
+            override: true,
+          },
+          { header: 'Cross-Origin-Resource-Policy', value: 'same-origin', override: true },
+          { header: 'Cross-Origin-Embedder-Policy', value: 'require-corp', override: true },
+          { header: 'Cross-Origin-Opener-Policy', value: 'same-origin', override: true },
+        ],
+      },
+    });
+
     const distribution = new cloudfront.Distribution(this, 'Distribution', {
       comment: `${config.prefix} Next.js (OpenNext)`,
       defaultBehavior: serverBehavior,
@@ -192,6 +224,7 @@ export class WebStack extends Stack {
           allowedMethods: cloudfront.AllowedMethods.ALLOW_GET_HEAD_OPTIONS,
           cachePolicy: imageCachePolicy,
           originRequestPolicy: cloudfront.OriginRequestPolicy.CORS_CUSTOM_ORIGIN,
+          responseHeadersPolicy: staticHeadersPolicy,
         },
         '/_next/data/*': serverBehavior,
         '/_next/*': {
@@ -199,12 +232,14 @@ export class WebStack extends Stack {
           viewerProtocolPolicy: cloudfront.ViewerProtocolPolicy.REDIRECT_TO_HTTPS,
           allowedMethods: cloudfront.AllowedMethods.ALLOW_GET_HEAD_OPTIONS,
           cachePolicy: cloudfront.CachePolicy.CACHING_OPTIMIZED,
+          responseHeadersPolicy: staticHeadersPolicy,
         },
         '/BUILD_ID': {
           origin: s3Origin,
           viewerProtocolPolicy: cloudfront.ViewerProtocolPolicy.REDIRECT_TO_HTTPS,
           allowedMethods: cloudfront.AllowedMethods.ALLOW_GET_HEAD_OPTIONS,
           cachePolicy: cloudfront.CachePolicy.CACHING_OPTIMIZED,
+          responseHeadersPolicy: staticHeadersPolicy,
         },
       },
     });

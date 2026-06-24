@@ -81,6 +81,24 @@ describe.runIf(OPEN_NEXT_READY)('WebStack synthesis', () => {
     );
   });
 
+  it('attaches security headers to static/image assets via ResponseHeadersPolicy (#193)', () => {
+    // S3/画像オリジンの静的アセットにも CORP/Permissions-Policy/HSTS 等を付与する。
+    template.hasResourceProperties('AWS::CloudFront::ResponseHeadersPolicy', {
+      ResponseHeadersPolicyConfig: {
+        CustomHeadersConfig: {
+          Items: Match.arrayWith([
+            Match.objectLike({ Header: 'Cross-Origin-Resource-Policy', Value: 'same-origin' }),
+            Match.objectLike({ Header: 'Cross-Origin-Embedder-Policy', Value: 'require-corp' }),
+          ]),
+        },
+        SecurityHeadersConfig: Match.objectLike({
+          StrictTransportSecurity: Match.anyValue(),
+          ContentTypeOptions: Match.anyValue(),
+        }),
+      },
+    });
+  });
+
   it('serves through a single CloudFront distribution', () => {
     template.resourceCountIs('AWS::CloudFront::Distribution', 1);
   });
