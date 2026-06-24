@@ -9,22 +9,39 @@ import type {
   MaintenanceWindowStatus,
   MaintenanceWindowSummary,
 } from '@/domain/platform/maintenance-window';
+import type { NoticeLevel, NoticeRow, NoticeSummary } from '@/domain/platform/notice';
 import { DangerActionPlaceholder, MetricCard } from './primitives';
 
 /**
  * メンテナンス状況・障害情報（read 中心） (issue #90, increment 2/3e)。
  *
- * /api/platform/maintenance（developer 専用 read）から、メンテナンス表示中の端末と
- * 障害・インシデントを横断確認する。機密値・PII・操作者識別子は含めない。お知らせ（notices）は
- * 未接続として明示する。メンテナンス発動・障害登録などの破壊的操作は影響範囲が広いため
+ * /api/platform/maintenance（developer 専用 read）から、メンテナンス表示中の端末・障害・
+ * 予定メンテナンス・お知らせを横断確認する。機密値・PII・操作者識別子は含めない。
+ * メンテナンス発動・障害/お知らせの登録などの破壊的操作は影響範囲が広いため
  * DangerActionPlaceholder に隔離する。
  */
 type MaintenanceResponse = {
   summary: MaintenanceSummary;
   incidents: IncidentSummary;
   windows: MaintenanceWindowSummary;
-  notices: { status: 'pending' };
+  notices: NoticeSummary;
 };
+
+const NOTICE_LEVEL_LABEL: Record<NoticeLevel, string> = {
+  info: 'お知らせ',
+  warning: '注意',
+  critical: '重要',
+};
+
+const NOTICE_STATUS_LABEL: Record<NoticeRow['status'], string> = {
+  published: '掲示中',
+  archived: '終了',
+};
+
+function noticeScopeLabel(n: NoticeRow): string {
+  if (n.scope === 'platform') return '全体';
+  return n.deviceId ?? n.siteId ?? n.tenantId ?? n.scope;
+}
 
 const WINDOW_STATUS_LABEL: Record<MaintenanceWindowStatus, string> = {
   scheduled: '予定',
@@ -88,9 +105,9 @@ export function MaintenanceStatus() {
     <section>
       <h1 style={{ marginTop: 0 }}>メンテナンス</h1>
       <p style={{ opacity: 0.85, maxWidth: 760 }}>
-        メンテナンス表示中の端末と障害・インシデントを横断確認します（読み取り中心）。お知らせ
-        （notices）の表示は次増分で接続します。状態の変更・障害登録は影響範囲が広いため、確認・
-        昇格・監査を伴う導線に隔離します。
+        メンテナンス表示中の端末・障害・予定メンテナンス・お知らせを横断確認します（読み取り中心）。
+        対象テナント選択中は全体影響＋当該テナントに絞り込まれます。状態の変更・登録は影響範囲が
+        広いため、確認・昇格・監査を伴う導線に隔離します。
       </p>
 
       {error ? <p style={{ color: '#e0a880' }}>{error}</p> : null}
@@ -105,7 +122,7 @@ export function MaintenanceStatus() {
           label="メンテナンス予定/進行"
           value={data ? data.windows.scheduledCount + data.windows.activeCount : '—'}
         />
-        <MetricCard label="お知らせ（notices）" pending note="次増分で接続" />
+        <MetricCard label="掲示中のお知らせ" value={data ? data.notices.activeCount : '—'} />
       </div>
 
       <h2 style={{ fontSize: '1rem', opacity: 0.7 }}>メンテナンス表示中の端末</h2>
@@ -186,6 +203,37 @@ export function MaintenanceStatus() {
                 <td style={{ padding: '6px 8px' }}>{w.message}</td>
                 <td style={{ padding: '6px 8px', opacity: 0.7 }}>{w.startsAt}</td>
                 <td style={{ padding: '6px 8px', opacity: 0.7 }}>{w.endsAt}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
+
+      <h2 style={{ fontSize: '1rem', opacity: 0.7, marginTop: 'var(--space-lg)' }}>お知らせ</h2>
+      {data && data.notices.notices.length === 0 ? (
+        <p style={{ opacity: 0.7 }}>お知らせはありません。</p>
+      ) : (
+        <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.9rem' }}>
+          <thead>
+            <tr style={{ textAlign: 'left', opacity: 0.6 }}>
+              <th style={{ padding: '6px 8px' }}>重要度</th>
+              <th style={{ padding: '6px 8px' }}>状態</th>
+              <th style={{ padding: '6px 8px' }}>範囲</th>
+              <th style={{ padding: '6px 8px' }}>件名</th>
+              <th style={{ padding: '6px 8px' }}>公開</th>
+            </tr>
+          </thead>
+          <tbody>
+            {(data?.notices.notices ?? []).map((n) => (
+              <tr
+                key={n.id}
+                style={{ borderTop: '1px solid rgba(255,255,255,0.08)', opacity: n.active ? 1 : 0.55 }}
+              >
+                <td style={{ padding: '6px 8px' }}>{NOTICE_LEVEL_LABEL[n.level]}</td>
+                <td style={{ padding: '6px 8px', opacity: 0.8 }}>{NOTICE_STATUS_LABEL[n.status]}</td>
+                <td style={{ padding: '6px 8px', opacity: 0.7 }}>{noticeScopeLabel(n)}</td>
+                <td style={{ padding: '6px 8px' }}>{n.title}</td>
+                <td style={{ padding: '6px 8px', opacity: 0.7 }}>{n.publishedAt}</td>
               </tr>
             ))}
           </tbody>
