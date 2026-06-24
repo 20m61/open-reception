@@ -13,6 +13,7 @@ import * as origins from 'aws-cdk-lib/aws-cloudfront-origins';
 import * as acm from 'aws-cdk-lib/aws-certificatemanager';
 import * as route53 from 'aws-cdk-lib/aws-route53';
 import * as route53Targets from 'aws-cdk-lib/aws-route53-targets';
+import * as secretsmanager from 'aws-cdk-lib/aws-secretsmanager';
 import { EnvConfig } from '../config/environments';
 import { toRetentionDays, prodRemovalPolicy } from '../config/aws-helpers';
 import { applyCostTags } from '../constructs/cost-tags';
@@ -63,6 +64,13 @@ export interface WebStackProps extends StackProps {
   readonly appEnv?: Record<string, string>;
   /** 既存サブドメインを CloudFront に紐付ける場合の設定 (issue #189)。未指定なら CDK 生成ドメインのみ。 */
   readonly customDomain?: CustomDomainConfig;
+  /**
+   * アプリ機密（ADMIN_SESSION_SECRET 等）をまとめた Secrets Manager シークレットの名前 (issue #194)。
+   * 指定すると server Lambda に読取権限を付与し、`APP_SECRETS_ARN` env を設定する。Lambda 起動時に
+   * `src/instrumentation.ts` の register() が JSON を解決して process.env に流し込む。
+   * 未指定なら従来の `appEnv` 平文注入方式のまま（後方互換）。
+   */
+  readonly appSecretsName?: string;
 }
 
 /**
@@ -83,7 +91,7 @@ export class WebStack extends Stack {
 
     this.assertBuildArtifacts();
 
-    const { config, appEnv = {}, customDomain } = props;
+    const { config, appEnv = {}, customDomain, appSecretsName } = props;
     const retention = toRetentionDays(config.web.logRetentionDays);
     const removalPolicy = prodRemovalPolicy(config.environment);
 
@@ -153,6 +161,14 @@ export class WebStack extends Stack {
 
     // server Lambda（SSR / Route Handlers）は業務データの読み書きを行う。
     dataTable.grantReadWriteData(serverFn);
+
+    // アプリ機密の Secrets Manager 化 (issue #194)。指定時は server Lambda に読取権限を付与し
+    // APP_SECRETS_ARN を渡す。Lambda 起動時に instrumentation register() が解決して process.env へ。
+    if (appSecretsName) {
+      const appSecret = secretsmanager.Secret.fromSecretNameV2(this, 'AppSecrets', appSecretsName);
+      appSecret.grantRead(serverFn);
+      serverFn.addEnvironment('APP_SECRETS_ARN', appSecret.secretArn);
+    }
 
     const serverFnUrl = serverFn.addFunctionUrl({
       authType: lambda.FunctionUrlAuthType.AWS_IAM,

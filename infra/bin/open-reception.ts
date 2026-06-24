@@ -48,11 +48,16 @@ const customDomainContext: (CustomDomainConfig & { enabled?: boolean }) | undefi
 const customDomain =
   customDomainContext && customDomainContext.enabled !== false ? customDomainContext : undefined;
 
+// 任意: アプリ機密を Secrets Manager から runtime 取得する (issue #194)。
+// `-c appSecretsName=open-reception/prod/app`。未指定なら appEnv 平文注入のまま。
+const appSecretsName = app.node.tryGetContext('appSecretsName') as string | undefined;
+
 new WebStack(app, `OpenReception-Web-${config.environment}`, {
   env: { account, region },
   config,
   appEnv: appEnvContext,
   customDomain,
+  appSecretsName,
   description: `open-reception Next.js hosting (${config.environment})`,
 });
 

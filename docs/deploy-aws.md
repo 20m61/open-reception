@@ -84,11 +84,35 @@ server Lambda にはデプロイ時に環境変数を渡す。`.env.example` の
   ```
 
 - **機密**（`ADMIN_PASSWORD` / `ADMIN_SESSION_SECRET` / `KIOSK_SESSION_SECRET` /
-  `ENTRA_*` / `VONAGE_*`）は平文でコミット・履歴に残さないこと。次のいずれかを推奨:
-  - AWS Secrets Manager / SSM Parameter Store に保存し、デプロイ運用者がデプロイ時に
-    `-c appEnv='{...}'` へ展開する（CI のシークレットストアから注入）。
-  - 値を runtime で取得する場合は server Lambda に Secrets Manager 読取権限を付与する
-    follow-up を別途実装（現状の WebStack は環境変数注入方式）。
+  `ENTRA_*` / `VONAGE_*`）は平文でコミット・履歴に残さないこと。次の **方式 B（推奨）** か
+  方式 A を使う。
+
+#### 方式 A: appEnv 平文注入（従来）
+
+AWS Secrets Manager / SSM に保存した値を、デプロイ運用者がデプロイ時に `-c appEnv='{...}'`
+へ展開する（CI のシークレットストアから注入）。Lambda 環境変数に平文で乗る点に注意。
+
+#### 方式 B: Secrets Manager から runtime 取得（推奨） (issue #194)
+
+機密を 1 つの Secrets Manager シークレット（**JSON オブジェクト**）にまとめ、`appSecretsName`
+を渡す。WebStack が server Lambda に `secretsmanager:GetSecretValue` を付与し `APP_SECRETS_ARN`
+を設定、Lambda 起動時に `src/instrumentation.ts` の `register()` が JSON を解決して
+`process.env` へ流し込む（既存の同期 getter は無改変）。Lambda 環境変数に機密の平文が乗らない。
+
+```bash
+# 1) シークレットを作成（JSON オブジェクト。キーは env 名に一致させる）
+aws secretsmanager create-secret --name open-reception/prod/app \
+  --secret-string '{"ADMIN_PASSWORD":"...","ADMIN_SESSION_SECRET":"...","KIOSK_SESSION_SECRET":"..."}'
+
+# 2) デプロイ時に名前を渡す（appEnv には非機密のみ）
+npx cdk deploy OpenReception-Web-prod -c env=prod \
+  -c appEnv='{"ADMIN_AUTH_PROVIDER":"none"}' \
+  -c appSecretsName=open-reception/prod/app
+```
+
+- `appSecretsName` 未指定なら方式 A のまま（**後方互換**）。
+- 明示注入（`appEnv`）が同名キーを持つ場合はそちらを優先（register は既存キーを上書きしない）。
+- シークレット取得失敗時は Lambda 起動が **fail-fast**（dev 既定値での稼働を防ぐ）。
 
 > `NODE_ENV=production` は WebStack が自動設定する。`ADMIN_AUTH_REQUIRED=false` は本番では
 > アプリの fail-closed ガードによりエラーになる（#70）。
