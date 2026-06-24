@@ -1,5 +1,6 @@
 import { redirect } from 'next/navigation';
 import { AdminShell } from '@/components/admin/AdminShell';
+import { TenantSwitcher } from '@/components/admin/platform/TenantSwitcher';
 import { PLATFORM_NAV } from '@/components/admin/navigation';
 import { resolveAdminActor } from '@/lib/auth/actor';
 import { canEnterArea } from '@/components/admin/route-guard';
@@ -29,6 +30,7 @@ export default async function PlatformLayout({ children }: { children: React.Rea
       nav={PLATFORM_NAV}
       roles={['developer']}
       tenantLabel="全テナント横断"
+      tenantSwitcher={<TenantSwitcher />}
     >
       {children}
     </AdminShell>
