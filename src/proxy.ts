@@ -20,6 +20,22 @@ const PUBLIC_PATHS = new Set<string>([
   '/api/admin/auth/entra/callback',
 ]);
 
+/**
+ * CloudFront 経由アクセスの検証 (OAC POST 署名問題の回避方式)。
+ * Function URL を authType=NONE で公開する代わり、CloudFront が origin custom header
+ * `x-origin-verify` に高エントロピーのシークレットを付与する。これと一致しないリクエスト
+ * （= Function URL 直叩き / CloudFront 迂回）は全ルートで 403 拒否する。
+ * `ORIGIN_VERIFY_SECRET` 未設定（ローカル / OAC 方式）なら検証しない（後方互換）。
+ */
+const ORIGIN_VERIFY_HEADER = 'x-origin-verify';
+
+function isFromTrustedOrigin(req: NextRequest): boolean {
+  const expected = process.env.ORIGIN_VERIFY_SECRET;
+  if (!expected) return true;
+  // シークレットは高エントロピーのため単純比較で十分（タイミング攻撃は非現実的）。
+  return req.headers.get(ORIGIN_VERIFY_HEADER) === expected;
+}
+
 /** 状態変更系メソッドか（Viewer に拒否する対象）。 */
 function isWriteMethod(method: string): boolean {
   return method !== 'GET' && method !== 'HEAD' && method !== 'OPTIONS';
@@ -48,6 +64,11 @@ function passThrough(req: NextRequest): NextResponse {
 }
 
 export async function proxy(req: NextRequest): Promise<NextResponse> {
+  // CloudFront 迂回（Function URL 直叩き）を全ルートで拒否する（origin-verify 方式時のみ）。
+  if (!isFromTrustedOrigin(req)) {
+    return new NextResponse('forbidden', { status: 403 });
+  }
+
   const { pathname } = req.nextUrl;
   if (PUBLIC_PATHS.has(pathname)) return passThrough(req);
 
@@ -103,5 +124,7 @@ export async function proxy(req: NextRequest): Promise<NextResponse> {
 }
 
 export const config = {
-  matcher: ['/admin', '/admin/:path*', '/api/admin/:path*'],
+  // origin-verify を全ルートで検証するため、静的アセット以外の全リクエストで実行する。
+  // 認可（admin/api/admin）の適用は proxy() 内で pathname により分岐する。
+  matcher: ['/((?!_next/static|_next/image|favicon.ico).*)'],
 };
