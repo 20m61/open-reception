@@ -10,6 +10,7 @@ import type { Actor } from '@/domain/tenant/authorization';
 import { asTenantId } from '@/domain/tenant/types';
 import type { Incident } from '@/domain/platform/incident';
 import type { MaintenanceWindow } from '@/domain/platform/maintenance-window';
+import type { Notice } from '@/domain/platform/notice';
 
 const resolveAdminActor = vi.fn<() => Promise<Actor | null>>();
 const listIntegrationStatuses = vi.fn<() => Promise<unknown[]>>();
@@ -17,6 +18,7 @@ const listAuthMethodStatuses = vi.fn();
 const listTenants = vi.fn<() => Promise<unknown[]>>();
 const listIncidents = vi.fn<() => Promise<Incident[]>>();
 const listMaintenanceWindows = vi.fn<() => Promise<MaintenanceWindow[]>>();
+const listNotices = vi.fn<() => Promise<Notice[]>>();
 /** 対象テナント選択 Cookie（or_platform_tenant）の値。null で未選択。 */
 let selectedTenantCookie: string | null = null;
 
@@ -48,6 +50,9 @@ vi.mock('@/lib/platform/incident-store', () => ({
 }));
 vi.mock('@/lib/platform/maintenance-window-store', () => ({
   listMaintenanceWindows: () => listMaintenanceWindows(),
+}));
+vi.mock('@/lib/platform/notice-store', () => ({
+  listNotices: () => listNotices(),
 }));
 
 import { GET as INTEGRATIONS } from './integrations/route';
@@ -137,6 +142,31 @@ beforeEach(() => {
       updatedAt: '2026-06-20T00:00:00.000Z',
     },
   ]);
+  listNotices.mockResolvedValue([
+    {
+      id: 'n1',
+      scope: 'platform',
+      level: 'info',
+      status: 'published',
+      title: '全体お知らせ',
+      body: 'b',
+      publishedAt: '2026-06-20T00:00:00.000Z',
+      createdBy: 'platform:secret-op',
+      updatedAt: '2026-06-20T00:00:00.000Z',
+    },
+    {
+      id: 'n2',
+      scope: 'tenant',
+      tenantId: 'internal',
+      level: 'warning',
+      status: 'archived',
+      title: 'テナント告知',
+      body: 'b',
+      publishedAt: '2026-06-18T00:00:00.000Z',
+      createdBy: 'platform:secret-op',
+      updatedAt: '2026-06-19T00:00:00.000Z',
+    },
+  ]);
   selectedTenantCookie = null;
 });
 
@@ -207,6 +237,16 @@ describe('GET /api/platform/maintenance incidents (inc3e)', () => {
     expect(body.windows.totalCount).toBe(2);
     expect('createdBy' in body.windows.windows[0]).toBe(false);
   });
+
+  it('includes notice summary (published first) without operator identity', async () => {
+    resolveAdminActor.mockResolvedValue(developer());
+    const body = await (await MAINTENANCE()).json();
+    expect(body.notices.activeCount).toBe(1);
+    expect(body.notices.totalCount).toBe(2);
+    expect(body.notices.notices[0].id).toBe('n1'); // published が先頭
+    expect('createdBy' in body.notices.notices[0]).toBe(false);
+    expect(JSON.stringify(body)).not.toContain('secret-op');
+  });
 });
 
 describe('GET /api/platform/maintenance tenant scope narrowing (inc3b-2)', () => {
@@ -217,6 +257,7 @@ describe('GET /api/platform/maintenance tenant scope narrowing (inc3b-2)', () =>
     const body = await (await MAINTENANCE()).json();
     expect(body.incidents.totalCount).toBe(2);
     expect(body.windows.totalCount).toBe(2);
+    expect(body.notices.totalCount).toBe(2);
   });
 
   it('選択テナントは platform + 当該テナントのみに絞る', async () => {
@@ -226,6 +267,8 @@ describe('GET /api/platform/maintenance tenant scope narrowing (inc3b-2)', () =>
     expect(body.incidents.incidents.map((i: { id: string }) => i.id).sort()).toEqual(['i1', 'i2']);
     // windows: w1(platform) + w2(tenant=internal) = 2
     expect(body.windows.windows.map((w: { id: string }) => w.id).sort()).toEqual(['w1', 'w2']);
+    // notices: n1(platform) + n2(tenant=internal) = 2
+    expect(body.notices.notices.map((n: { id: string }) => n.id).sort()).toEqual(['n1', 'n2']);
   });
 
   it('無関係テナント選択時は platform スコープのみ残る', async () => {
@@ -233,5 +276,6 @@ describe('GET /api/platform/maintenance tenant scope narrowing (inc3b-2)', () =>
     const body = await (await MAINTENANCE()).json();
     expect(body.incidents.incidents.map((i: { id: string }) => i.id)).toEqual(['i1']);
     expect(body.windows.windows.map((w: { id: string }) => w.id)).toEqual(['w1']);
+    expect(body.notices.notices.map((n: { id: string }) => n.id)).toEqual(['n1']);
   });
 });
