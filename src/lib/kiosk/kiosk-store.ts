@@ -53,6 +53,9 @@ export async function setKioskEnabled(id: string, enabled: boolean): Promise<Res
 
 /** 受付端末向けの設定を返す。未登録・失効端末は active=false。 */
 export async function getKioskConfig(id: string): Promise<KioskConfig> {
+  // 空 id（kioskId 未指定）は未登録端末として扱う。DynamoDB バックエンドは空文字の
+  // キー属性（SK）を拒否し ValidationException→500 になるため、ストアを引く前に短絡する。
+  if (!id) return { kioskId: id, active: false };
   const found = await kiosks().get(id);
   if (!found || !found.enabled) {
     return { kioskId: id, active: false };

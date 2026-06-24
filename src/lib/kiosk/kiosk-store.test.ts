@@ -41,6 +41,15 @@ describe('kiosk-store (#18)', () => {
     expect(config.displayName).toBeUndefined();
   });
 
+  it('kioskId が空ならストアを引かず active=false（DynamoDB 空キー 500 回避）', async () => {
+    // /api/kiosk/config?kioskId= 未指定で id='' になると、DynamoDB バックエンドが
+    // 空文字 SK を拒否して 500 になっていた（実 dev デプロイで発見）。空 id は短絡する。
+    const config = await getKioskConfig('');
+    expect(config.active).toBe(false);
+    expect(config.kioskId).toBe('');
+    expect(config.displayName).toBeUndefined();
+  });
+
   it('再有効化できる', async () => {
     await setKioskEnabled('kiosk-dev', false);
     await setKioskEnabled('kiosk-dev', true);
