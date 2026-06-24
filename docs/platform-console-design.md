@@ -97,7 +97,11 @@ inc2: `summarizeTenantDetail` / `summarizeMaintenance` / `maskAuditActor` / `toM
   ガードを守り、機密値・PII を露出しない。
   - **inc3a（実装済 / 本増分）**: 外部連携の登録状態・接続確認 read（`/platform/integrations` 配線）。
     `GET /api/platform/integrations`＋射影 `toIntegrationStatusRows` / `toAuthMethodStatusRows`。
-  - **inc3b**: 対象テナント選択 UX（選択中テナントの常時表示と read スコープの絞り込み）。
+  - **inc3b（一部実装済）**: 対象テナント選択 UX。AdminShell ヘッダの `tenantSwitcher` スロットに
+    `TenantSwitcher` を常時表示し、Cookie（`or_platform_tenant`）へ id を保持（純関数
+    `parseSelectedTenantId`/`resolveSelectedTenant`、`/lib/platform/selected-tenant`）。選択中は
+    そのテナント詳細への導線を出す。**各 read API のスコープ絞り込みは follow-up**（選択を参照して
+    絞る。現状は選択の保持・常時表示・詳細導線まで）。
   - **inc3c**: 機能フラグ / 利用制限のテナント単位 read と利用量メータリング接続（#89）。
   - **inc3d**: オブザーバビリティ指標ソース接続（エラー率/レイテンシ/利用量/アラート履歴）。
   - **inc3e（実装済）**: 障害（Incident）＋予定メンテナンス（MaintenanceWindow）の状態 read を
