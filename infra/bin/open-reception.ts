@@ -52,12 +52,17 @@ const customDomain =
 // `-c appSecretsName=open-reception/prod/app`。未指定なら appEnv 平文注入のまま。
 const appSecretsName = app.node.tryGetContext('appSecretsName') as string | undefined;
 
+// 任意: CloudFront 経由検証用シークレット。指定すると Function URL を NONE + 秘密ヘッダ方式にし、
+// OAC が POST ボディを署名しない制約（GET 可・POST 403）を回避する。`-c originVerifySecret=<高エントロピー値>`。
+const originVerifySecret = app.node.tryGetContext('originVerifySecret') as string | undefined;
+
 new WebStack(app, `OpenReception-Web-${config.environment}`, {
   env: { account, region },
   config,
   appEnv: appEnvContext,
   customDomain,
   appSecretsName,
+  originVerifySecret,
   description: `open-reception Next.js hosting (${config.environment})`,
 });
 

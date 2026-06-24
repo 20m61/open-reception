@@ -283,3 +283,60 @@ describe.runIf(OPEN_NEXT_READY)('WebStack app secrets (#194)', () => {
     });
   }, 30000);
 });
+
+// originVerifySecret 方式（CloudFront OAC の POST 署名問題回避）:
+// Function URL を NONE にし、CloudFront origin custom header x-origin-verify で保護する。
+describe.runIf(OPEN_NEXT_READY)('WebStack origin-verify secret (#OAC-POST)', () => {
+  const SECRET = 'test-origin-verify-secret-高エントロピー';
+  const template = (() => {
+    const app = new cdk.App();
+    const stack = new WebStack(app, 'TestWebOriginVerify', {
+      env: { account: '123456789012', region: 'ap-northeast-1' },
+      config: resolveEnv('prod'),
+      appEnv: { ADMIN_AUTH_PROVIDER: 'none' },
+      originVerifySecret: SECRET,
+    });
+    return Template.fromStack(stack);
+  })();
+
+  it('uses Function URL authType NONE (public, protected by header)', () => {
+    template.resourceCountIs('AWS::Lambda::Url', 2);
+    template.hasResourceProperties('AWS::Lambda::Url', { AuthType: 'NONE' });
+  }, 30000);
+
+  it('does not create OAC for the Lambda origins (only S3 OAC remains)', () => {
+    template.resourceCountIs('AWS::CloudFront::OriginAccessControl', 1);
+  }, 30000);
+
+  it('does not grant lambda:InvokeFunction to CloudFront (no OAC invoke needed)', () => {
+    template.resourcePropertiesCountIs(
+      'AWS::Lambda::Permission',
+      {
+        Action: 'lambda:InvokeFunction',
+        Principal: 'cloudfront.amazonaws.com',
+        SourceArn: Match.anyValue(),
+      },
+      0,
+    );
+  }, 30000);
+
+  it('injects x-origin-verify custom header into the CloudFront origins', () => {
+    template.hasResourceProperties('AWS::CloudFront::Distribution', {
+      DistributionConfig: Match.objectLike({
+        Origins: Match.arrayWith([
+          Match.objectLike({
+            OriginCustomHeaders: Match.arrayWith([
+              Match.objectLike({ HeaderName: 'x-origin-verify', HeaderValue: SECRET }),
+            ]),
+          }),
+        ]),
+      }),
+    });
+  }, 30000);
+
+  it('passes ORIGIN_VERIFY_SECRET to the server function', () => {
+    template.hasResourceProperties('AWS::Lambda::Function', {
+      Environment: { Variables: Match.objectLike({ ORIGIN_VERIFY_SECRET: SECRET }) },
+    });
+  }, 30000);
+});
