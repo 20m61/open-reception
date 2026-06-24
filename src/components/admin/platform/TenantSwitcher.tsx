@@ -1,7 +1,6 @@
 'use client';
 
 import { useEffect, useState } from 'react';
-import { useRouter } from 'next/navigation';
 import {
   parseSelectedTenantId,
   resolveSelectedTenant,
@@ -29,7 +28,6 @@ function writeSelectionCookie(tenantId: string): void {
 }
 
 export function TenantSwitcher() {
-  const router = useRouter();
   const [tenants, setTenants] = useState<NamedTenant[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
 
@@ -53,7 +51,10 @@ export function TenantSwitcher() {
     const nextId = value === '' ? null : value;
     setSelectedId(nextId);
     writeSelectionCookie(nextId ?? '');
-    router.refresh();
+    // platform の各 read はクライアントで mount 時に fetch するため、router.refresh() では
+    // 再取得されない。選択 Cookie を反映した read 絞り込みを全画面へ確実に効かせるため
+    // フルリロードする（内部運用コンソールのため許容）。
+    window.location.reload();
   }
 
   return (
