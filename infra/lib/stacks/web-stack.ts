@@ -3,6 +3,7 @@ import * as fs from 'node:fs';
 import { Stack, StackProps, Duration, CfnOutput } from 'aws-cdk-lib';
 import { Construct } from 'constructs';
 import * as lambda from 'aws-cdk-lib/aws-lambda';
+import * as iam from 'aws-cdk-lib/aws-iam';
 import * as dynamodb from 'aws-cdk-lib/aws-dynamodb';
 import * as s3 from 'aws-cdk-lib/aws-s3';
 import * as s3deploy from 'aws-cdk-lib/aws-s3-deployment';
@@ -206,6 +207,24 @@ export class WebStack extends Stack {
           cachePolicy: cloudfront.CachePolicy.CACHING_OPTIMIZED,
         },
       },
+    });
+
+    // CloudFront OAC → Lambda Function URL の invoke 権限 (issue #192)。
+    // `FunctionUrlOrigin.withOriginAccessControl` は `lambda:InvokeFunctionUrl` のみを付与するが、
+    // 2025-10 以降 AWS は OAC 経由の呼び出しに **`lambda:InvokeFunction` も必須**としており、
+    // これが無いと CloudFront → Function URL が 403（AccessDeniedException）になる。
+    // 参照: aws-samples/remote-swe-agents#361。両 Lambda（server/image）へ明示的に付与する。
+    const cloudfrontPrincipal = new iam.ServicePrincipal('cloudfront.amazonaws.com');
+    const distributionArn = `arn:aws:cloudfront::${this.account}:distribution/${distribution.distributionId}`;
+    serverFn.addPermission('CloudFrontOacInvokeFunction', {
+      principal: cloudfrontPrincipal,
+      action: 'lambda:InvokeFunction',
+      sourceArn: distributionArn,
+    });
+    imageFn.addPermission('CloudFrontOacInvokeFunction', {
+      principal: cloudfrontPrincipal,
+      action: 'lambda:InvokeFunction',
+      sourceArn: distributionArn,
     });
 
     new CfnOutput(this, 'DistributionDomainName', {

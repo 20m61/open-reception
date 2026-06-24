@@ -67,6 +67,20 @@ describe.runIf(OPEN_NEXT_READY)('WebStack synthesis', () => {
     });
   });
 
+  it('grants lambda:InvokeFunction to CloudFront for OAC (AWS 2025-10 requirement, #192)', () => {
+    // OAC 経由の Function URL 呼び出しは InvokeFunctionUrl に加え InvokeFunction も必須。
+    // server / image の 2 関数分。これが無いと CloudFront → Function URL が 403 になる。
+    template.resourcePropertiesCountIs(
+      'AWS::Lambda::Permission',
+      {
+        Action: 'lambda:InvokeFunction',
+        Principal: 'cloudfront.amazonaws.com',
+        SourceArn: Match.anyValue(),
+      },
+      2,
+    );
+  });
+
   it('serves through a single CloudFront distribution', () => {
     template.resourceCountIs('AWS::CloudFront::Distribution', 1);
   });
