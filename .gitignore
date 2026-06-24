@@ -96,6 +96,11 @@ dist
 # https://nextjs.org/blog/next-9-1#public-directory-support
 # public
 
+# 受付アバターの VRM/モーション バイナリはリポジトリに含めない（ライセンス・サイズ, #31/#105）。
+# 配備時に public/avatar/ へ配置する。README は追跡する。
+public/avatar/*.vrm
+public/avatar/*.vrma
+
 # vuepress build output
 .vuepress/dist
 

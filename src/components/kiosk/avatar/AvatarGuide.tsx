@@ -87,6 +87,7 @@ export function AvatarGuide({
           vrmUrl={vrmUrl}
           fallbackImageUrl={fallbackImageUrl}
           motionUrl={motionUrl}
+          expression={guidance.expression}
           className={undefined}
         />
         {/* VRM も静止画も無い場合のプレースホルダ。案内文言は下の字幕（avatar-subtitle）が

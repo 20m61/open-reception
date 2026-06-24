@@ -2,6 +2,8 @@
 
 import { useEffect, useRef, useState } from 'react';
 import { ResourceTracker } from '@/lib/three/resource-tracker';
+import { emotionExpressionValues } from './avatar/vrm-expression';
+import type { AvatarExpression } from './avatar/guidance';
 
 /**
  * VRM アバター表示基盤 (issue #36)。
@@ -17,6 +19,7 @@ export function VrmAvatarViewer({
   vrmUrl,
   fallbackImageUrl,
   motionUrl,
+  expression,
   className,
 }: {
   vrmUrl?: string;
@@ -26,10 +29,17 @@ export function VrmAvatarViewer({
    * 実際の .vrma 再生は実機 UAT（#65）で実装。ここでは描画要素へ接続して受け渡しを明示する。
    */
   motionUrl?: string;
+  /** 受付状態に応じた論理表情（#31）。VRM expressionManager に毎フレーム適用する。 */
+  expression?: AvatarExpression;
   className?: string;
 }) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const [failed, setFailed] = useState(false);
+  // 表情はレンダーループ（[vrmUrl] 依存）の外から更新されるため ref で最新値を渡す。
+  const expressionRef = useRef<AvatarExpression>(expression ?? 'neutral');
+  useEffect(() => {
+    expressionRef.current = expression ?? 'neutral';
+  }, [expression]);
 
   useEffect(() => {
     // vrmUrl が無ければ WebGL を一切初期化しない（既定の受付画面を軽量に保つ）。
@@ -75,6 +85,14 @@ export function VrmAvatarViewer({
 
         const render = () => {
           if (disposed) return;
+          // 受付状態に応じた表情を expressionManager に適用（#31）。感情 preset のみを操作し、
+          // 口形素/瞬き/視線は触らない（リップシンク #5 と非干渉）。
+          const expressionManager = vrm?.expressionManager;
+          if (expressionManager) {
+            for (const { name, value } of emotionExpressionValues(expressionRef.current)) {
+              expressionManager.setValue(name, value);
+            }
+          }
           vrm?.update?.(1 / 60);
           gl.render(scene, camera);
           animationId = requestAnimationFrame(render);

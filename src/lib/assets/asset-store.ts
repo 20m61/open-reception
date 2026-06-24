@@ -90,6 +90,21 @@ export async function getActiveAssets(): Promise<ActiveAssetSet> {
   return getActive();
 }
 
+/**
+ * 既定 VRM モデルの URL（純関数）。管理画面で VRM アセットを未登録/未選択でも、
+ * 環境変数 `KIOSK_DEFAULT_VRM_URL` を設定しておけば受付端末にアバターを表示できる (issue #31)。
+ * - 空文字 / 'none' / 'off' で明示的に無効化できる。
+ * - 未設定なら undefined（VRM 無し＝従来どおりプレースホルダ）。
+ * モデルファイルは `public/avatar/` 等に置き、ライセンス（#105）を満たすものを使う。
+ */
+export function defaultVrmUrl(env: Record<string, string | undefined> = process.env): string | undefined {
+  const raw = env.KIOSK_DEFAULT_VRM_URL;
+  if (raw === undefined) return undefined;
+  const v = raw.trim();
+  if (v === '' || v === 'none' || v === 'off') return undefined;
+  return v;
+}
+
 /** 受付端末向け: アクティブな背景・fallback 画像・VRM の URL を返す。 */
 export async function getKioskAssets(): Promise<{ backgroundUrl?: string; fallbackImageUrl?: string; vrmUrl?: string }> {
   const [all, active] = await Promise.all([assets().list(), getActive()]);
@@ -98,7 +113,12 @@ export async function getKioskAssets(): Promise<{ backgroundUrl?: string; fallba
     const asset = id ? all.find((a) => a.id === id && a.enabled) : undefined;
     return asset?.url;
   };
-  return { backgroundUrl: resolve('background'), fallbackImageUrl: resolve('fallbackImage'), vrmUrl: resolve('vrm') };
+  // 管理画面で選択された VRM を優先し、無ければ環境変数の既定モデルへ fallback する。
+  return {
+    backgroundUrl: resolve('background'),
+    fallbackImageUrl: resolve('fallbackImage'),
+    vrmUrl: resolve('vrm') ?? defaultVrmUrl(),
+  };
 }
 
 /** テスト用: seed 状態へ戻す。 */
