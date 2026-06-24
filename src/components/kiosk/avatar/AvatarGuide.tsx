@@ -89,11 +89,13 @@ export function AvatarGuide({
           motionUrl={motionUrl}
           className={undefined}
         />
-        {/* VRM も静止画も使えない場合の最終フォールバック（テキストで内容を保証）。 */}
+        {/* VRM も静止画も無い場合のプレースホルダ。案内文言は下の字幕（avatar-subtitle）が
+            常時表示・読み上げ（aria-live）するため、ここで文言を重複表示しない。AI 受付で
+            あることを示す装飾バッジのみを置く（#123 / アバター未配置時の字幕重複を解消）。 */}
         {!vrmUrl && !fallbackImageUrl ? (
-          <p data-testid="avatar-fallback-text" lang={locale} style={fallbackTextStyle}>
-            {guidance.fallbackText}
-          </p>
+          <div data-testid="avatar-placeholder" aria-hidden="true" style={placeholderStyle}>
+            <span style={placeholderBadgeStyle}>AI</span>
+          </div>
         ) : null}
       </div>
 
@@ -140,15 +142,25 @@ const subtitleStyle: React.CSSProperties = {
   color: '#fff',
 };
 
-const fallbackTextStyle: React.CSSProperties = {
+const placeholderStyle: React.CSSProperties = {
   position: 'absolute',
   inset: 0,
   display: 'flex',
   alignItems: 'center',
   justifyContent: 'center',
-  margin: 0,
-  padding: 16,
-  textAlign: 'center',
-  fontSize: 18,
-  color: 'var(--color-muted, #555)',
+};
+
+const placeholderBadgeStyle: React.CSSProperties = {
+  display: 'flex',
+  alignItems: 'center',
+  justifyContent: 'center',
+  width: '40%',
+  aspectRatio: '1 / 1',
+  borderRadius: '9999px',
+  background: 'rgba(255, 255, 255, 0.06)',
+  border: '1px solid rgba(255, 255, 255, 0.15)',
+  color: 'var(--color-muted, #94a3b8)',
+  fontSize: 28,
+  fontWeight: 700,
+  letterSpacing: '0.05em',
 };
