@@ -140,6 +140,40 @@ cd infra && npx cdk deploy OpenReception-Web-prod -c env=prod -c appEnv.<...>
 静的アセットは immutable（ハッシュ付き）。動的レスポンスは CloudFront でキャッシュ無効
 （`CACHING_DISABLED`）のため、ページ更新の即時反映に手動 invalidation は不要。
 
+## カスタムドメイン（既存サブドメインの紐付け・任意） (issue #189)
+
+DNS 委譲・サブドメイン作成が**別管理で完了済み**の既存 FQDN を CloudFront に紐付ける。
+`-c customDomain='{...}'`（JSON 文字列）を WebStack に渡す。`enabled:false` または未指定なら
+CDK 生成ドメインのみ。
+
+> **重要**: CloudFront は **us-east-1 の ACM 証明書**しか受け付けない。証明書はこの Stack では
+> 発行せず、`domainName`（と追加ドメイン）をカバーする**既存の us-east-1 証明書 ARN**を
+> `certificateArn` に指定する（クロスリージョン発行は scope 外）。
+
+| キー | 必須 | 説明 |
+| --- | --- | --- |
+| `domainName` | ✓ | Distribution に割り当てる FQDN（例: `open-reception.parent.example.com`） |
+| `certificateArn` | ✓ | us-east-1 の ACM 証明書 ARN |
+| `additionalDomainNames` | | 追加の代替ドメイン名 |
+| `hostedZoneDomainName` | △ | Route53 管理ゾーンのドメイン（`createDnsRecord` 時のみ必須） |
+| `createDnsRecord` | | `true` で alias A/AAAA を Route53 に作成（既定 `false`） |
+
+```bash
+# Route53 管理下: alias A/AAAA も自動作成
+npx cdk deploy OpenReception-Web-prod -c env=prod -c appEnv="$APP_ENV" \
+  -c customDomain='{"domainName":"open-reception.parent.example.com",
+  "certificateArn":"arn:aws:acm:us-east-1:<acct>:certificate/<id>",
+  "hostedZoneDomainName":"parent.example.com","createDnsRecord":true}'
+
+# Route53 管理外/手動管理: CloudFront 紐付けのみ（DNS は別途 CNAME/ALIAS を手動設定）
+npx cdk deploy OpenReception-Web-prod -c env=prod -c appEnv="$APP_ENV" \
+  -c customDomain='{"domainName":"open-reception.parent.example.com",
+  "certificateArn":"arn:aws:acm:us-east-1:<acct>:certificate/<id>","createDnsRecord":false}'
+```
+
+紐付け後、Outputs の `CustomDomainUrl` が公開 URL になる。`createDnsRecord:false` の場合は
+DNS 側で当該 FQDN を `DistributionDomainName` 宛の CNAME/ALIAS に向ける。
+
 ## 環境別設定
 
 `infra/lib/config/environments.ts` で dev / staging / prod を型付き定義。

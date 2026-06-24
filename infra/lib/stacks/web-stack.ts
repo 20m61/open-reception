@@ -10,6 +10,9 @@ import * as s3deploy from 'aws-cdk-lib/aws-s3-deployment';
 import * as logs from 'aws-cdk-lib/aws-logs';
 import * as cloudfront from 'aws-cdk-lib/aws-cloudfront';
 import * as origins from 'aws-cdk-lib/aws-cloudfront-origins';
+import * as acm from 'aws-cdk-lib/aws-certificatemanager';
+import * as route53 from 'aws-cdk-lib/aws-route53';
+import * as route53Targets from 'aws-cdk-lib/aws-route53-targets';
 import { EnvConfig } from '../config/environments';
 import { toRetentionDays, prodRemovalPolicy } from '../config/aws-helpers';
 import { applyCostTags } from '../constructs/cost-tags';
@@ -17,6 +20,36 @@ import { applyCostTags } from '../constructs/cost-tags';
 /** リポジトリルート（infra/ の 1 つ上）。 */
 const REPO_ROOT = path.join(__dirname, '..', '..', '..');
 const OPEN_NEXT_DIR = path.join(REPO_ROOT, '.open-next');
+
+/**
+ * 既存サブドメインを CloudFront に紐付けるカスタムドメイン設定 (issue #189)。
+ *
+ * DNS 委譲・サブドメイン作成自体は別管理（完了済み）である前提で、open-reception 側は
+ * 既存 FQDN を Distribution に関連付ける。CloudFront は **us-east-1 の ACM 証明書**しか
+ * 受け付けないため、証明書はその場で発行せず既存 `certificateArn` を取り込む方式とする
+ * （クロスリージョン発行は scope 外）。Route53 管理下なら alias レコードも作成できる。
+ */
+export interface CustomDomainConfig {
+  /** Distribution に割り当てる FQDN（例: open-reception.parent.example.com）。 */
+  readonly domainName: string;
+  /** 追加の代替ドメイン名（任意）。 */
+  readonly additionalDomainNames?: string[];
+  /**
+   * CloudFront 用 ACM 証明書 ARN（**us-east-1 必須**）。`domainName`（と追加ドメイン）を
+   * カバーする証明書を事前に用意して指定する。
+   */
+  readonly certificateArn: string;
+  /**
+   * Route53 で管理している Hosted Zone のドメイン（例: parent.example.com）。
+   * `createDnsRecord` を有効にする場合のみ必要。
+   */
+  readonly hostedZoneDomainName?: string;
+  /**
+   * Route53 に alias A/AAAA レコードを作成するか。Route53 管理外、または DNS を
+   * 手動管理する場合は false（既定）にして、紐付けだけ行う。
+   */
+  readonly createDnsRecord?: boolean;
+}
 
 export interface WebStackProps extends StackProps {
   readonly env: StackProps['env'];
@@ -28,6 +61,8 @@ export interface WebStackProps extends StackProps {
    * 詳細は docs/deploy-aws.md。
    */
   readonly appEnv?: Record<string, string>;
+  /** 既存サブドメインを CloudFront に紐付ける場合の設定 (issue #189)。未指定なら CDK 生成ドメインのみ。 */
+  readonly customDomain?: CustomDomainConfig;
 }
 
 /**
@@ -48,7 +83,7 @@ export class WebStack extends Stack {
 
     this.assertBuildArtifacts();
 
-    const { config, appEnv = {} } = props;
+    const { config, appEnv = {}, customDomain } = props;
     const retention = toRetentionDays(config.web.logRetentionDays);
     const removalPolicy = prodRemovalPolicy(config.environment);
 
@@ -208,9 +243,24 @@ export class WebStack extends Stack {
       },
     });
 
+    // カスタムドメイン (issue #189): 既存サブドメインを alias として割り当て、
+    // 既存の us-east-1 ACM 証明書を取り込む（証明書の新規発行は行わない）。
+    const customDomainNames = customDomain
+      ? [customDomain.domainName, ...(customDomain.additionalDomainNames ?? [])]
+      : undefined;
+    const customCertificate = customDomain
+      ? acm.Certificate.fromCertificateArn(
+          this,
+          'CustomDomainCertificate',
+          customDomain.certificateArn,
+        )
+      : undefined;
+
     const distribution = new cloudfront.Distribution(this, 'Distribution', {
       comment: `${config.prefix} Next.js (OpenNext)`,
       defaultBehavior: serverBehavior,
+      domainNames: customDomainNames,
+      certificate: customCertificate,
       httpVersion: cloudfront.HttpVersion.HTTP2_AND_3,
       priceClass:
         config.environment === 'prod'
@@ -261,6 +311,40 @@ export class WebStack extends Stack {
       action: 'lambda:InvokeFunction',
       sourceArn: distributionArn,
     });
+
+    // Route53 管理下なら alias A/AAAA を作成して FQDN を Distribution に向ける (issue #189)。
+    // 管理外・手動管理の場合は createDnsRecord=false にして、CloudFront 側の紐付けだけ行う。
+    if (customDomain?.createDnsRecord) {
+      if (!customDomain.hostedZoneDomainName) {
+        throw new Error(
+          'customDomain.createDnsRecord=true には hostedZoneDomainName（Route53 管理ゾーン）が必要です。' +
+            'Route53 管理外の場合は createDnsRecord=false にしてください。',
+        );
+      }
+      const hostedZone = route53.HostedZone.fromLookup(this, 'CustomDomainHostedZone', {
+        domainName: customDomain.hostedZoneDomainName,
+      });
+      const aliasTarget = route53.RecordTarget.fromAlias(
+        new route53Targets.CloudFrontTarget(distribution),
+      );
+      new route53.ARecord(this, 'CustomDomainAliasA', {
+        zone: hostedZone,
+        recordName: customDomain.domainName,
+        target: aliasTarget,
+      });
+      new route53.AaaaRecord(this, 'CustomDomainAliasAAAA', {
+        zone: hostedZone,
+        recordName: customDomain.domainName,
+        target: aliasTarget,
+      });
+    }
+
+    if (customDomain) {
+      new CfnOutput(this, 'CustomDomainUrl', {
+        value: `https://${customDomain.domainName}`,
+        description: 'カスタムドメインの公開 URL (#189)',
+      });
+    }
 
     new CfnOutput(this, 'DistributionDomainName', {
       value: distribution.distributionDomainName,
