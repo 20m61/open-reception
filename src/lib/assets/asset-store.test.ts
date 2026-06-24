@@ -1,7 +1,8 @@
-import { beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import {
   __resetAssets,
   createAsset,
+  defaultVrmUrl,
   getKioskAssets,
   listAssets,
   setActiveAsset,
@@ -11,6 +12,44 @@ import { validateAsset } from '@/domain/assets/types';
 
 beforeEach(async () => {
   await __resetAssets();
+});
+
+describe('defaultVrmUrl (#31)', () => {
+  it('未設定なら undefined', () => {
+    expect(defaultVrmUrl({})).toBeUndefined();
+  });
+
+  it('設定値をそのまま返す', () => {
+    expect(defaultVrmUrl({ KIOSK_DEFAULT_VRM_URL: '/avatar/default.vrm' })).toBe('/avatar/default.vrm');
+  });
+
+  it('空 / none / off で無効化できる', () => {
+    expect(defaultVrmUrl({ KIOSK_DEFAULT_VRM_URL: '' })).toBeUndefined();
+    expect(defaultVrmUrl({ KIOSK_DEFAULT_VRM_URL: '  ' })).toBeUndefined();
+    expect(defaultVrmUrl({ KIOSK_DEFAULT_VRM_URL: 'none' })).toBeUndefined();
+    expect(defaultVrmUrl({ KIOSK_DEFAULT_VRM_URL: 'off' })).toBeUndefined();
+  });
+});
+
+describe('getKioskAssets VRM 既定 (#31)', () => {
+  const original = process.env.KIOSK_DEFAULT_VRM_URL;
+  afterEach(() => {
+    if (original === undefined) delete process.env.KIOSK_DEFAULT_VRM_URL;
+    else process.env.KIOSK_DEFAULT_VRM_URL = original;
+  });
+
+  it('VRM 未登録時は環境変数の既定モデルへ fallback する', async () => {
+    process.env.KIOSK_DEFAULT_VRM_URL = '/avatar/default.vrm';
+    expect((await getKioskAssets()).vrmUrl).toBe('/avatar/default.vrm');
+  });
+
+  it('登録済み VRM は既定より優先される', async () => {
+    process.env.KIOSK_DEFAULT_VRM_URL = '/avatar/default.vrm';
+    const created = await createAsset({ kind: 'vrm', name: 'カスタム', url: 'https://cdn/custom.vrm' });
+    expect(created.ok).toBe(true);
+    if (created.ok) await setActiveAsset(created.value.id);
+    expect((await getKioskAssets()).vrmUrl).toBe('https://cdn/custom.vrm');
+  });
 });
 
 describe('validateAsset (#27)', () => {
