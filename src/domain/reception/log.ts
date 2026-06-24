@@ -65,6 +65,10 @@ export type AuditAction =
   // プラットフォーム運用: テナントの有効/停止 (issue #90)。理由を metadata.reason に残す。
   | 'tenant.suspended'
   | 'tenant.activated'
+  // 危険操作の安全装置 (issue #83 inc4 / #91)。JIT 権限昇格と再認証。reason/対象スコープを
+  // metadata に残す（機微値・PII は残さない）。実際の昇格付与・再認証フローは inc4 で接続する。
+  | 'privilege.elevated'
+  | 'auth.reauthenticated'
   // 呼び出し先・通知ルート設定 (issue #88)。
   | 'call_route.created'
   | 'call_route.updated'
