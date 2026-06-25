@@ -8,14 +8,16 @@ import type { NextConfig } from 'next';
  */
 // アセット（背景/アバター/フォント）は同一オリジン（CloudFront/S3 経由 or data:）で配信するため、
 // img-src/media-src のスキームワイルドカード `https:`（ZAP 10055）は付けず self/data: に限定する。
-// 外部 CDN を使う将来機能（#31 VRM・#4 Vonage SDK）は、その時に必要 origin を明示追加する。
+// 外部 CDN を使う将来機能（#4 Vonage SDK）は、その時に必要 origin を明示追加する。
+// VRM アバター (#31): three.js GLTFLoader は埋め込みテクスチャを blob: URL で読み込むため、
+// img-src/connect-src に blob: を限定追加する（同一オリジン由来のオブジェクト URL のみ）。
 const csp = [
   "default-src 'self'",
   "script-src 'self' 'unsafe-inline'",
   "style-src 'self' 'unsafe-inline'",
-  "img-src 'self' data:",
+  "img-src 'self' data: blob:",
   "font-src 'self' data:",
-  "connect-src 'self'",
+  "connect-src 'self' blob:",
   "media-src 'self' data:",
   "object-src 'none'",
   "base-uri 'self'",
