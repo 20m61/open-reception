@@ -1152,8 +1152,8 @@ function TargetView({
       <h1 className="screen__title">{tr('reception.targetPrompt')}</h1>
       <div className="screen__body">
         <div className="field">
-          <label className="field__label" htmlFor="staff-search">
-            担当者を検索（氏名・よみがな・英字）
+          <label className="field__label" htmlFor="staff-search" lang={locale}>
+            {tr('reception.searchStaff')}
           </label>
           <input
             id="staff-search"
@@ -1161,7 +1161,7 @@ function TargetView({
             data-testid="staff-search"
             value={query}
             onChange={(e) => setQuery(e.target.value)}
-            placeholder="例: さとう / Sato"
+            placeholder={tr('reception.searchPlaceholder')}
             autoComplete="off"
           />
         </div>
@@ -1175,12 +1175,12 @@ function TargetView({
               onClick={() => void listen()}
               disabled={sttListening}
             >
-              {sttListening ? '聞き取り中…' : '音声で担当者を探す'}
+              {sttListening ? tr('reception.listening') : tr('reception.voiceSearch')}
             </button>
             {sttCandidates.length > 0 ? (
               <>
-                <p className="card__sub" data-testid="stt-hint">
-                  認識した候補です。タップして検索欄に反映し、内容をご確認のうえお選びください。
+                <p className="card__sub" data-testid="stt-hint" lang={locale}>
+                  {tr('reception.voiceHint')}
                 </p>
                 <div className="card-grid" data-testid="stt-candidates">
                   {sttCandidates.map((c, i) => (
@@ -1226,20 +1226,20 @@ function TargetView({
                   style={{ opacity: 0.55, cursor: 'not-allowed' }}
                 >
                   {s.displayName}
-                  <span className="card__sub" data-testid={`staff-${s.id}-absent`}>
-                    現在不在です。部署または代表窓口をお選びください。
+                  <span className="card__sub" data-testid={`staff-${s.id}-absent`} lang={locale}>
+                    {tr('reception.staffAbsent')}
                   </span>
                 </div>
               ),
             )}
           </div>
         ) : (
-          <div className="notice notice--warning" data-testid="staff-empty">
-            該当する担当者が見つかりません。部署または代表窓口をお選びください。
+          <div className="notice notice--warning" data-testid="staff-empty" lang={locale}>
+            {tr('reception.staffNotFound')}
           </div>
         )}
 
-        <h2 style={{ fontSize: 'var(--font-lg)', margin: 0 }}>部署から選ぶ</h2>
+        <h2 style={{ fontSize: 'var(--font-lg)', margin: 0 }} lang={locale}>{tr('reception.byDepartment')}</h2>
         <div className="card-grid">
           {departments.map((d) => (
             <button
@@ -1285,8 +1285,8 @@ function VisitorInfoView({
       <h1 className="screen__title">{tr('reception.visitorInfoPrompt')}</h1>
       <div className="screen__body">
         <div className="field">
-          <label className="field__label" htmlFor="visitor-name">
-            お名前（必須）
+          <label className="field__label" htmlFor="visitor-name" lang={locale}>
+            {tr('reception.requiredLabel', { field: tr('reception.fieldName') })}
           </label>
           <input
             id="visitor-name"
@@ -1298,8 +1298,8 @@ function VisitorInfoView({
           />
         </div>
         <div className="field">
-          <label className="field__label" htmlFor="visitor-company">
-            会社名（任意）
+          <label className="field__label" htmlFor="visitor-company" lang={locale}>
+            {tr('reception.optionalLabel', { field: tr('reception.fieldCompany') })}
           </label>
           <input
             id="visitor-company"
@@ -1311,8 +1311,8 @@ function VisitorInfoView({
           />
         </div>
         <div className="field">
-          <label className="field__label" htmlFor="visitor-note">
-            ご用件メモ（任意）
+          <label className="field__label" htmlFor="visitor-note" lang={locale}>
+            {tr('reception.optionalLabel', { field: tr('reception.fieldNote') })}
           </label>
           <input
             id="visitor-note"
@@ -1366,19 +1366,19 @@ function ConfirmView({
       <h1 className="screen__title">{tr('reception.confirm')}</h1>
       <div className="screen__body">
         <dl style={{ display: 'grid', gridTemplateColumns: 'auto 1fr', gap: 'var(--space-md)', fontSize: 'var(--font-lg)' }}>
-          <dt className="card__sub">ご用件</dt>
+          <dt className="card__sub" lang={locale}>{tr('reception.fieldPurpose')}</dt>
           <dd style={{ margin: 0 }}>{purposeLabel}</dd>
-          <dt className="card__sub">呼び出し先</dt>
+          <dt className="card__sub" lang={locale}>{tr('reception.fieldTarget')}</dt>
           <dd style={{ margin: 0 }} data-testid="confirm-target">
             {data.target?.label}
           </dd>
-          <dt className="card__sub">お名前</dt>
+          <dt className="card__sub" lang={locale}>{tr('reception.fieldName')}</dt>
           <dd style={{ margin: 0 }} data-testid="confirm-name">
             {data.visitor?.name}
           </dd>
           {data.visitor?.company ? (
             <>
-              <dt className="card__sub">会社名</dt>
+              <dt className="card__sub" lang={locale}>{tr('reception.fieldCompany')}</dt>
               <dd style={{ margin: 0 }}>{data.visitor.company}</dd>
             </>
           ) : null}
