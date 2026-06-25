@@ -244,6 +244,106 @@ a {
   transform: translateY(-1px) scale(0.995);
 }
 
+/* =========================================================================
+ * 受付フロー進捗ステッパー (#121 / UX 研究準拠)
+ * 「今どのステップか・あと何ステップか」を来訪者に示す（モダン受付の標準）。
+ * ======================================================================= */
+.flow-stepper {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  width: 100%;
+  max-width: 720px;
+  align-self: center;
+}
+
+.flow-stepper__item {
+  position: relative;
+  flex: 1 1 0;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--space-sm);
+  text-align: center;
+}
+
+/* ステップ間の連結線（各セルの左右に半分ずつ伸ばす）。 */
+.flow-stepper__item::before,
+.flow-stepper__item::after {
+  content: '';
+  position: absolute;
+  top: 21px;
+  height: 2px;
+  width: 50%;
+  background: var(--color-border-strong);
+}
+
+.flow-stepper__item::before {
+  left: 0;
+}
+
+.flow-stepper__item::after {
+  right: 0;
+}
+
+.flow-stepper__item:first-child::before,
+.flow-stepper__item:last-child::after {
+  display: none;
+}
+
+/* 通過済み区間はアクセントで塗る。 */
+.flow-stepper__item[data-status='done']::after,
+.flow-stepper__item[data-status='current']::before {
+  background: var(--color-accent);
+}
+
+.flow-stepper__dot {
+  position: relative;
+  z-index: 1;
+  width: 44px;
+  height: 44px;
+  border-radius: var(--radius-pill);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: var(--font-body);
+  font-weight: 700;
+  background: var(--color-surface);
+  color: var(--color-muted);
+  border: 2px solid var(--color-border-strong);
+  transition:
+    background var(--dur-base) var(--ease-out),
+    border-color var(--dur-base) var(--ease-out),
+    box-shadow var(--dur-base) var(--ease-out),
+    color var(--dur-base) var(--ease-out);
+}
+
+.flow-stepper__label {
+  font-size: 1rem;
+  font-weight: 600;
+  color: var(--color-muted);
+}
+
+.flow-stepper__item[data-status='done'] .flow-stepper__dot {
+  background: var(--color-accent);
+  border-color: var(--color-accent);
+  color: var(--color-accent-ink);
+}
+
+.flow-stepper__item[data-status='current'] .flow-stepper__dot {
+  border-color: var(--color-accent);
+  color: var(--color-text);
+  box-shadow: var(--shadow-glow);
+}
+
+.flow-stepper__item[data-status='current'] .flow-stepper__label {
+  color: var(--color-text);
+}
+
 .card__sub {
   font-size: var(--font-body);
   font-weight: 400;

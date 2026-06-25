@@ -19,6 +19,7 @@ import { AvatarGuide } from './avatar/AvatarGuide';
 import { LanguageSwitcher } from './LanguageSwitcher';
 import { makeT, DEFAULT_LOCALE, type Locale, type MessageKey } from '@/lib/i18n';
 import { LOCALE_LANGUAGE_CODE } from '@/lib/voice/locale-voice';
+import { FlowStepper } from './FlowStepper';
 import type { QuickActionIntent } from './quick-actions';
 import { KioskCallView } from './KioskCallView';
 import { CheckinFlow } from './CheckinFlow';
@@ -595,6 +596,7 @@ export function KioskFlow() {
         />
       ) : (
         <>
+          <FlowStepper state={data.state} locale={locale} />
           {renderScreen(
             data,
             dispatch,
