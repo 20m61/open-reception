@@ -413,9 +413,13 @@ export function KioskFlow() {
     };
   }, [data.state]);
 
-  // idle へ戻ったら選んだカスタムフローを破棄する（次の来訪者へ持ち越さない）(issue #100)。
+  // idle へ戻ったら選んだカスタムフローを破棄し、表示言語も既定へ戻す（次の来訪者へ持ち越さない）
+  // (issue #100 / #103)。待機中の言語切替はそのまま有効（idle に居る間は state 遷移しないため）。
   useEffect(() => {
-    if (data.state === 'idle') setSelectedFlow(null);
+    if (data.state === 'idle') {
+      setSelectedFlow(null);
+      setLocale(DEFAULT_LOCALE);
+    }
   }, [data.state]);
 
   // 音声合成が有効な場合、状態に応じた案内を読み上げる (issue #5)。
@@ -554,7 +558,6 @@ export function KioskFlow() {
         // カスタム目的選択 (issue #100)。選択でフローを保持し、入力ステップ有無で次へ分岐。
         <CustomPurposeView
           flows={customFlows ?? []}
-          onCancel={() => dispatch({ type: 'RESET' })}
           onSelect={(flow) => {
             setSelectedFlow(flow);
             dispatch({ type: 'SELECT_PURPOSE', purpose: purposeIdForFlow(flow) });
@@ -799,21 +802,15 @@ function CheckoutLink() {
 function CustomPurposeView({
   flows,
   onSelect,
-  onCancel,
 }: {
   flows: readonly KioskCustomFlow[];
   onSelect: (flow: KioskCustomFlow) => void;
-  onCancel: () => void;
 }) {
+  // 「最初に戻る」は常設の逃げ道バーに一本化（画面内フッターとの二重表示を解消, #121）。
   return (
     <>
       <div className="screen__body" data-testid="custom-purpose-view">
         <PurposeSelector flows={flows} onSelect={onSelect} />
-      </div>
-      <div className="screen__footer">
-        <button type="button" className="btn btn--ghost" data-testid="purpose-cancel" onClick={onCancel}>
-          最初に戻る
-        </button>
       </div>
     </>
   );
@@ -891,7 +888,6 @@ function renderScreen(
       return (
         <PurposeView
           onSelect={(purpose) => dispatch({ type: 'SELECT_PURPOSE', purpose })}
-          onCancel={() => dispatch({ type: 'RESET' })}
         />
       );
     case 'selectingTarget':
@@ -1070,13 +1066,9 @@ function IdleView({
   );
 }
 
-function PurposeView({
-  onSelect,
-  onCancel,
-}: {
-  onSelect: (p: ReceptionPurposeId) => void;
-  onCancel: () => void;
-}) {
+function PurposeView({ onSelect }: { onSelect: (p: ReceptionPurposeId) => void }) {
+  // 「最初に戻る/キャンセル」は常設の逃げ道バー（EscapeHatchBar）に一本化したため、ここには置かない
+  // （画面内フッターと逃げ道バーで「最初に戻る」が二重表示になる問題を解消, #121）。
   return (
     <>
       <h1 className="screen__title">ご用件をお選びください</h1>
@@ -1094,11 +1086,6 @@ function PurposeView({
             </button>
           ))}
         </div>
-      </div>
-      <div className="screen__footer">
-        <button type="button" className="btn btn--ghost" data-testid="purpose-cancel" onClick={onCancel}>
-          最初に戻る
-        </button>
       </div>
     </>
   );
