@@ -17,7 +17,7 @@ export type StoreError = { code: 'not_found' | 'invalid_input'; message: string 
 export type Result<T> = { ok: true; value: T } | { ok: false; error: StoreError };
 
 const SEED: Asset[] = [
-  { id: 'asset-bg-default', kind: 'background', name: '既定の背景', url: '/assets/default-bg.png', enabled: true },
+  { id: 'asset-bg-default', kind: 'background', name: '既定の背景', url: '/assets/default-bg.jpg', enabled: true },
 ];
 const DEFAULT_ACTIVE: ActiveAssetSet = { background: 'asset-bg-default' };
 

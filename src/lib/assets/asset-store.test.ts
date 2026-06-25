@@ -68,7 +68,7 @@ describe('validateAsset (#27)', () => {
 
 describe('asset-store (#27)', () => {
   it('seed の背景が適用中', async () => {
-    expect((await getKioskAssets()).backgroundUrl).toBe('/assets/default-bg.png');
+    expect((await getKioskAssets()).backgroundUrl).toBe('/assets/default-bg.jpg');
   });
 
   it('アセットを登録できる', async () => {
