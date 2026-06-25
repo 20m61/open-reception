@@ -88,7 +88,12 @@ export type MessageKey =
   | 'reception.fieldCompany'
   | 'reception.fieldNote'
   | 'reception.requiredLabel'
-  | 'reception.optionalLabel';
+  | 'reception.optionalLabel'
+  // 進捗ステッパーのステップ短ラベル（#121 UX）
+  | 'reception.step.purpose'
+  | 'reception.step.target'
+  | 'reception.step.info'
+  | 'reception.step.confirm';
 
 /** 既定 locale 辞書は全キー網羅必須。他 locale は Partial 可（欠落は ja へフォールバック）。 */
 type DefaultDictionary = Record<MessageKey, string>;
@@ -158,6 +163,10 @@ const ja: DefaultDictionary = {
   'reception.fieldNote': 'ご用件メモ',
   'reception.requiredLabel': '{field}（必須）',
   'reception.optionalLabel': '{field}（任意）',
+  'reception.step.purpose': '用件',
+  'reception.step.target': '相手',
+  'reception.step.info': '情報',
+  'reception.step.confirm': '確認',
 };
 
 const en: LocaleDictionary = {
@@ -224,6 +233,10 @@ const en: LocaleDictionary = {
   'reception.fieldNote': 'Note',
   'reception.requiredLabel': '{field} (required)',
   'reception.optionalLabel': '{field} (optional)',
+  'reception.step.purpose': 'Purpose',
+  'reception.step.target': 'Person',
+  'reception.step.info': 'Details',
+  'reception.step.confirm': 'Confirm',
 };
 
 const ko: LocaleDictionary = {
@@ -290,6 +303,10 @@ const ko: LocaleDictionary = {
   'reception.fieldNote': '용건 메모',
   'reception.requiredLabel': '{field}(필수)',
   'reception.optionalLabel': '{field}(선택)',
+  'reception.step.purpose': '용건',
+  'reception.step.target': '대상',
+  'reception.step.info': '정보',
+  'reception.step.confirm': '확인',
 };
 
 const zh: LocaleDictionary = {
@@ -356,6 +373,10 @@ const zh: LocaleDictionary = {
   'reception.fieldNote': '事由备注',
   'reception.requiredLabel': '{field}（必填）',
   'reception.optionalLabel': '{field}（选填）',
+  'reception.step.purpose': '事由',
+  'reception.step.target': '对象',
+  'reception.step.info': '信息',
+  'reception.step.confirm': '确认',
 };
 
 /**
