@@ -336,6 +336,15 @@ export class WebStack extends Stack {
           cachePolicy: cloudfront.CachePolicy.CACHING_OPTIMIZED,
           responseHeadersPolicy: staticHeadersPolicy,
         },
+        // 受付アバターの VRM/モーション等の静的アセット（public/avatar/*）は S3 から配信・長期キャッシュ
+        // する（server Lambda を経由しない）(issue #31)。
+        '/avatar/*': {
+          origin: s3Origin,
+          viewerProtocolPolicy: cloudfront.ViewerProtocolPolicy.REDIRECT_TO_HTTPS,
+          allowedMethods: cloudfront.AllowedMethods.ALLOW_GET_HEAD_OPTIONS,
+          cachePolicy: cloudfront.CachePolicy.CACHING_OPTIMIZED,
+          responseHeadersPolicy: staticHeadersPolicy,
+        },
       },
     });
 

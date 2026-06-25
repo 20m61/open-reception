@@ -68,3 +68,16 @@ SOFTWARE.
 > 配布物に `NOTICE` ファイルは含まれない（`LICENSE`（Apache-2.0 全文）のみ）。上記の帰属
 > 表示と Apache-2.0 ライセンス（http://www.apache.org/licenses/LICENSE-2.0）の参照で
 > 帰属条件を満たす。`node_modules/jsqr/LICENSE` に全文を同梱。
+
+## 受付アバター 既定 VRM モデル: "Rose" (100Avatars R1)
+
+- ファイル: `public/avatar/default.vrm`
+- 作者: Polygonal Mind（100Avatars プロジェクト R1）
+- ライセンス: **CC0 1.0**（パブリックドメイン相当・商用利用可・改変可・クレジット表記不要）
+- 検証: コレクション定義（toxsam/open-source-avatars の projects.json で 100Avatars R1 = CC0）
+  および VRM 埋め込みメタ（`licenseName=CC0` / `commercialUssageName=Allow` /
+  `allowedUserName=Everyone`）の双方で確認。
+- 出所: https://github.com/toxsam/open-source-avatars
+- 用途: 受付端末（kiosk）の既定アバター表示（issue #31）。差し替え可能（`KIOSK_DEFAULT_VRM_URL`）。
+
+> CC0 のためクレジット表記は不要だが、provenance（出所・ライセンス確認）を上記に明記する。

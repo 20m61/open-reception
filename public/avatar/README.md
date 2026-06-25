@@ -2,6 +2,13 @@
 
 受付端末（kiosk）の待機〜案内で表示する VRM アバターのモデルファイル置き場です。
 
+## 同梱の既定モデル
+
+`default.vrm` … CC0 の VRM モデル「Rose」（作者: Polygonal Mind / 100Avatars R1）。
+CC0（パブリックドメイン相当・商用可・クレジット不要）であることをコレクション定義と VRM 埋め込み
+メタ（`licenseName=CC0` / 商用可 / 全員利用可）の双方で確認済み。出所:
+[Open Source Avatars (toxsam)](https://github.com/toxsam/open-source-avatars)。差し替え可。
+
 ## 使い方
 
 1. ライセンス上問題のない VRM 1.0 モデル（`.vrm`）を、このディレクトリに置く。

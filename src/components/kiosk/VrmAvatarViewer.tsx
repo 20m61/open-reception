@@ -12,8 +12,9 @@ import type { AvatarExpression } from './avatar/guidance';
  * - unmount 時に renderer/geometry/material/texture を破棄する。
  * - 受付フローとは疎結合。実描画は実機 UAT で確認する（headless では fallback 経路を検証）。
  *
- * NOTE: 状態別モーション再生（#31）・リップシンク（#5）は本コンポーネントの接続口
- * （vrmUrl/motionUrl props と onReady）経由で後続実装が利用する。
+ * 状態別モーション再生（#31）: motionUrl の .vrma を AnimationMixer で切替再生する。
+ * リップシンク（#5）は今後 expression(aa) と協調して接続する。
+ * 実描画・実モーションの確認は実機 UAT（#65）。
  */
 export function VrmAvatarViewer({
   vrmUrl,
@@ -41,6 +42,15 @@ export function VrmAvatarViewer({
     expressionRef.current = expression ?? 'neutral';
   }, [expression]);
 
+  // モーション URL も [vrmUrl] エフェクト外から変化するため ref 経由で渡す。
+  // VRM ロード完了後に loadMotionRef.current が設定され、状態遷移ごとに .vrma を切替える（#31）。
+  const motionUrlRef = useRef<string | undefined>(motionUrl);
+  const loadMotionRef = useRef<((url: string | undefined) => void) | null>(null);
+  useEffect(() => {
+    motionUrlRef.current = motionUrl;
+    loadMotionRef.current?.(motionUrl);
+  }, [motionUrl]);
+
   useEffect(() => {
     // vrmUrl が無ければ WebGL を一切初期化しない（既定の受付画面を軽量に保つ）。
     if (!vrmUrl) return;
@@ -57,6 +67,9 @@ export function VrmAvatarViewer({
         const THREE = await import('three');
         const { GLTFLoader } = await import('three/examples/jsm/loaders/GLTFLoader.js');
         const { VRMLoaderPlugin, VRMUtils } = await import('@pixiv/three-vrm');
+        const { VRMAnimationLoaderPlugin, createVRMAnimationClip } = await import(
+          '@pixiv/three-vrm-animation'
+        );
 
         if (disposed) return;
         const gl = new THREE.WebGLRenderer({ canvas, alpha: true, antialias: false });
@@ -83,8 +96,39 @@ export function VrmAvatarViewer({
         scene.add(gltf.scene);
         tracker.track({ dispose: () => VRMUtils.deepDispose(gltf.scene) });
 
+        // --- 状態別モーション（.vrma）再生 (#31) ---
+        // 受付状態 → motionUrl は AvatarGuide/KioskFlow が解決する。ここでは .vrma を読み込み、
+        // AnimationMixer で切替再生する。読込失敗時は idle ポーズのまま安全に継続する。
+        const mixer = new THREE.AnimationMixer(vrm?.scene ?? gltf.scene);
+        let currentAction: { fadeOut: (d: number) => void } | null = null;
+        let motionToken = 0;
+        const loadMotion = async (url: string | undefined): Promise<void> => {
+          if (!url) return;
+          const token = ++motionToken;
+          try {
+            const animLoader = new GLTFLoader();
+            animLoader.register((parser) => new VRMAnimationLoaderPlugin(parser));
+            const vrma = await animLoader.loadAsync(url);
+            // 破棄済み or 後発のモーション要求が来ていれば破棄（古い読込を捨てる）。
+            if (disposed || token !== motionToken) return;
+            const vrmAnimation = vrma.userData.vrmAnimations?.[0];
+            if (!vrmAnimation || !vrm) return;
+            const clip = createVRMAnimationClip(vrmAnimation, vrm);
+            const action = mixer.clipAction(clip);
+            action.reset().setLoop(THREE.LoopRepeat, Infinity).fadeIn(0.3).play();
+            currentAction?.fadeOut(0.3);
+            currentAction = action;
+          } catch {
+            // モーション読込失敗は受付フローを止めない（idle 継続）。
+          }
+        };
+        loadMotionRef.current = (url) => void loadMotion(url);
+        void loadMotion(motionUrlRef.current);
+
+        const clock = new THREE.Clock();
         const render = () => {
           if (disposed) return;
+          const dt = clock.getDelta();
           // 受付状態に応じた表情を expressionManager に適用（#31）。感情 preset のみを操作し、
           // 口形素/瞬き/視線は触らない（リップシンク #5 と非干渉）。
           const expressionManager = vrm?.expressionManager;
@@ -93,10 +137,12 @@ export function VrmAvatarViewer({
               expressionManager.setValue(name, value);
             }
           }
-          vrm?.update?.(1 / 60);
+          mixer.update(dt);
+          vrm?.update?.(dt);
           gl.render(scene, camera);
           animationId = requestAnimationFrame(render);
         };
+        tracker.track({ dispose: () => mixer.stopAllAction() });
         render();
       } catch {
         // WebGL 不可 / VRM 読み込み失敗 → fallback。受付フローは継続。
@@ -106,6 +152,7 @@ export function VrmAvatarViewer({
 
     return () => {
       disposed = true;
+      loadMotionRef.current = null;
       if (animationId) cancelAnimationFrame(animationId);
       tracker.disposeAll();
       try {
@@ -130,6 +177,6 @@ export function VrmAvatarViewer({
     );
   }
 
-  // data-motion-url: 現在の状態で再生すべきモーション URL（#31 の接続口。実再生は #65）。
+  // data-motion-url: 現在再生中のモーション URL（#31。AnimationMixer で再生、実描画確認は #65）。
   return <canvas ref={canvasRef} className={className} data-testid="vrm-canvas" data-motion-url={motionUrl} />;
 }
