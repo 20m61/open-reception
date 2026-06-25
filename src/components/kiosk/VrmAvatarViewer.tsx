@@ -3,9 +3,10 @@
 import { useEffect, useRef, useState } from 'react';
 import { ResourceTracker } from '@/lib/three/resource-tracker';
 import { emotionExpressionValues } from './avatar/vrm-expression';
-import { IDLE_REST_POSE, breathingRotation, swayRotation } from './avatar/vrm-idle';
+import { resolveStatePose } from './avatar/vrm-pose';
 import { mouthOpenValue } from './avatar/lip-sync';
 import type { AvatarExpression } from './avatar/guidance';
+import type { AvatarState } from '@/domain/reception/ui-contract';
 
 /**
  * VRM アバター表示基盤 (issue #36)。
@@ -24,6 +25,7 @@ export function VrmAvatarViewer({
   motionUrl,
   expression,
   speaking,
+  avatarState,
   className,
 }: {
   vrmUrl?: string;
@@ -37,6 +39,8 @@ export function VrmAvatarViewer({
   expression?: AvatarExpression;
   /** TTS 発話中か（#5 簡易リップシンク）。true の間、口形素 `aa` を時間ベースで開閉する。 */
   speaking?: boolean;
+  /** 受付アバター状態（#31）。.vrma 非再生時に状態別の手続き的ポーズ/所作を適用する。 */
+  avatarState?: AvatarState;
   className?: string;
 }) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
@@ -51,6 +55,11 @@ export function VrmAvatarViewer({
   useEffect(() => {
     speakingRef.current = speaking ?? false;
   }, [speaking]);
+  // 受付状態もレンダーループ外から変化するため ref で渡す（#31 状態別ポーズ）。
+  const avatarStateRef = useRef<AvatarState>(avatarState ?? 'idle');
+  useEffect(() => {
+    avatarStateRef.current = avatarState ?? 'idle';
+  }, [avatarState]);
 
   // モーション URL も [vrmUrl] エフェクト外から変化するため ref 経由で渡す。
   // VRM ロード完了後に loadMotionRef.current が設定され、状態遷移ごとに .vrma を切替える（#31）。
@@ -150,19 +159,15 @@ export function VrmAvatarViewer({
             // 別チャンネルなので共存する（口を閉じるときは 0）。
             expressionManager.setValue('aa', mouthOpenValue(clock.elapsedTime, speakingRef.current));
           }
-          // .vrma モーションが無いときは手続き的アイドル（腕を下ろす立ち姿 + 呼吸/揺れ）を適用する。
+          // .vrma モーションが無いときは受付状態に応じた手続き的ポーズ/所作を適用する（#31）。
           // モーション再生中は AnimationMixer がボーンを駆動するため適用しない。
           const humanoid = vrm?.humanoid;
           if (!currentAction && humanoid) {
-            const elapsed = clock.elapsedTime;
-            for (const [bone, rot] of Object.entries(IDLE_REST_POSE)) {
+            const pose = resolveStatePose(avatarStateRef.current, clock.elapsedTime);
+            for (const [bone, rot] of Object.entries(pose)) {
               const node = humanoid.getNormalizedBoneNode(bone);
               if (node) node.rotation.set(rot.x ?? 0, rot.y ?? 0, rot.z ?? 0);
             }
-            const spine = humanoid.getNormalizedBoneNode('spine');
-            if (spine) spine.rotation.x = breathingRotation(elapsed);
-            const chest = humanoid.getNormalizedBoneNode('chest');
-            if (chest) chest.rotation.z = swayRotation(elapsed);
           }
           mixer.update(dt);
           vrm?.update?.(dt);

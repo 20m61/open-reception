@@ -97,6 +97,7 @@ export function AvatarGuide({
           motionUrl={motionUrl}
           expression={guidance.expression}
           speaking={speaking}
+          avatarState={avatarState}
           className={undefined}
         />
         {/* VRM も静止画も無い場合のプレースホルダ。案内文言は下の字幕（avatar-subtitle）が
