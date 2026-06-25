@@ -484,6 +484,45 @@ a {
   text-align: center;
 }
 
+/* CTA カードのアイコン（スキャン性向上, #119）。アクセント色のラインアイコン。 */
+.card--cta .card__icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--color-accent);
+  margin-bottom: var(--space-sm);
+}
+
+.card--cta:hover .card__icon {
+  color: var(--color-text);
+}
+
+/* 待機画面の登場アニメ（上品に立ち上げる）。reduced-motion では実質無効化される。 */
+@keyframes kiosk-rise {
+  from {
+    opacity: 0;
+    transform: translateY(14px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+.kiosk-idle__avatar,
+.kiosk-idle__head,
+.kiosk-quick-actions {
+  animation: kiosk-rise var(--dur-slow) var(--ease-out) both;
+}
+
+.kiosk-idle__head {
+  animation-delay: 70ms;
+}
+
+.kiosk-quick-actions {
+  animation-delay: 140ms;
+}
+
 /* 常時見える逃げ道バー（戻る/キャンセル/最初に戻る/人に繋ぐ）。 */
 .kiosk-escape-bar {
   display: flex;
