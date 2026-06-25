@@ -888,6 +888,7 @@ function renderScreen(
       return (
         <PurposeView
           onSelect={(purpose) => dispatch({ type: 'SELECT_PURPOSE', purpose })}
+          locale={locale}
         />
       );
     case 'selectingTarget':
@@ -897,6 +898,7 @@ function renderScreen(
           sttEnabled={sttEnabled}
           onSelect={(target) => dispatch({ type: 'SELECT_TARGET', target })}
           onBack={() => dispatch({ type: 'BACK' })}
+          locale={locale}
         />
       );
     case 'inputVisitorInfo':
@@ -905,6 +907,7 @@ function renderScreen(
           initial={data.visitor}
           onSubmit={(visitor) => dispatch({ type: 'SUBMIT_VISITOR_INFO', visitor })}
           onBack={() => dispatch({ type: 'BACK' })}
+          locale={locale}
         />
       );
     case 'confirming':
@@ -913,6 +916,7 @@ function renderScreen(
           data={data}
           onConfirm={() => dispatch({ type: 'CONFIRM' })}
           onBack={() => dispatch({ type: 'BACK' })}
+          locale={locale}
         />
       );
     case 'calling':
@@ -1066,12 +1070,19 @@ function IdleView({
   );
 }
 
-function PurposeView({ onSelect }: { onSelect: (p: ReceptionPurposeId) => void }) {
+function PurposeView({
+  onSelect,
+  locale,
+}: {
+  onSelect: (p: ReceptionPurposeId) => void;
+  locale: Locale;
+}) {
   // 「最初に戻る/キャンセル」は常設の逃げ道バー（EscapeHatchBar）に一本化したため、ここには置かない
   // （画面内フッターと逃げ道バーで「最初に戻る」が二重表示になる問題を解消, #121）。
+  const tr = makeT(locale);
   return (
     <>
-      <h1 className="screen__title">ご用件をお選びください</h1>
+      <h1 className="screen__title">{tr('reception.purposePrompt')}</h1>
       <div className="screen__body">
         <div className="card-grid">
           {RECEPTION_PURPOSES.map((p) => (
@@ -1080,9 +1091,10 @@ function PurposeView({ onSelect }: { onSelect: (p: ReceptionPurposeId) => void }
               type="button"
               className="card"
               data-testid={`purpose-${p.id}`}
+              lang={locale}
               onClick={() => onSelect(p.id)}
             >
-              {p.label}
+              {tr(`reception.purpose.${p.id}` as MessageKey)}
             </button>
           ))}
         </div>
@@ -1096,12 +1108,15 @@ function TargetView({
   sttEnabled,
   onSelect,
   onBack,
+  locale,
 }: {
   directory: Directory;
   sttEnabled: boolean;
   onSelect: (t: Target) => void;
   onBack: () => void;
+  locale: Locale;
 }) {
+  const tr = makeT(locale);
   const [query, setQuery] = useState('');
   // 音声認識の候補。タップで検索欄に反映し、来訪者の確認後に選択する（即時呼び出ししない）(issue #5)。
   const [sttCandidates, setSttCandidates] = useState<string[]>([]);
@@ -1126,7 +1141,7 @@ function TargetView({
 
   return (
     <>
-      <h1 className="screen__title">担当者・部署をお選びください</h1>
+      <h1 className="screen__title">{tr('reception.targetPrompt')}</h1>
       <div className="screen__body">
         <div className="field">
           <label className="field__label" htmlFor="staff-search">
@@ -1233,7 +1248,7 @@ function TargetView({
       </div>
       <div className="screen__footer">
         <button type="button" className="btn btn--ghost" data-testid="target-back" onClick={onBack}>
-          戻る
+          {tr('reception.back')}
         </button>
       </div>
     </>
@@ -1244,11 +1259,14 @@ function VisitorInfoView({
   initial,
   onSubmit,
   onBack,
+  locale,
 }: {
   initial?: VisitorInfo;
   onSubmit: (v: VisitorInfo) => void;
   onBack: () => void;
+  locale: Locale;
 }) {
+  const tr = makeT(locale);
   const [name, setName] = useState(initial?.name ?? '');
   const [company, setCompany] = useState(initial?.company ?? '');
   const [note, setNote] = useState(initial?.note ?? '');
@@ -1256,7 +1274,7 @@ function VisitorInfoView({
 
   return (
     <>
-      <h1 className="screen__title">来訪者情報を入力してください</h1>
+      <h1 className="screen__title">{tr('reception.visitorInfoPrompt')}</h1>
       <div className="screen__body">
         <div className="field">
           <label className="field__label" htmlFor="visitor-name">
@@ -1300,7 +1318,7 @@ function VisitorInfoView({
       </div>
       <div className="screen__footer">
         <button type="button" className="btn btn--ghost" data-testid="visitor-back" onClick={onBack}>
-          戻る
+          {tr('reception.back')}
         </button>
         <button
           type="button"
@@ -1315,7 +1333,7 @@ function VisitorInfoView({
             })
           }
         >
-          確認へ進む
+          {tr('reception.proceedConfirm')}
         </button>
       </div>
     </>
@@ -1326,15 +1344,18 @@ function ConfirmView({
   data,
   onConfirm,
   onBack,
+  locale,
 }: {
   data: FlowData;
   onConfirm: () => void;
   onBack: () => void;
+  locale: Locale;
 }) {
-  const purposeLabel = RECEPTION_PURPOSES.find((p) => p.id === data.purpose)?.label ?? '-';
+  const tr = makeT(locale);
+  const purposeLabel = data.purpose ? tr(`reception.purpose.${data.purpose}` as MessageKey) : '-';
   return (
     <>
-      <h1 className="screen__title">内容をご確認ください</h1>
+      <h1 className="screen__title">{tr('reception.confirm')}</h1>
       <div className="screen__body">
         <dl style={{ display: 'grid', gridTemplateColumns: 'auto 1fr', gap: 'var(--space-md)', fontSize: 'var(--font-lg)' }}>
           <dt className="card__sub">ご用件</dt>
@@ -1357,10 +1378,10 @@ function ConfirmView({
       </div>
       <div className="screen__footer">
         <button type="button" className="btn btn--ghost" data-testid="confirm-back" onClick={onBack}>
-          修正する
+          {tr('reception.editInfo')}
         </button>
         <button type="button" className="btn btn--primary" data-testid="confirm-call" onClick={onConfirm}>
-          この内容で呼び出す
+          {tr('reception.callWithThis')}
         </button>
       </div>
     </>
