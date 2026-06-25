@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { ResourceTracker } from '@/lib/three/resource-tracker';
 import { emotionExpressionValues } from './avatar/vrm-expression';
+import { IDLE_REST_POSE, breathingRotation, swayRotation } from './avatar/vrm-idle';
 import type { AvatarExpression } from './avatar/guidance';
 
 /**
@@ -136,6 +137,20 @@ export function VrmAvatarViewer({
             for (const { name, value } of emotionExpressionValues(expressionRef.current)) {
               expressionManager.setValue(name, value);
             }
+          }
+          // .vrma モーションが無いときは手続き的アイドル（腕を下ろす立ち姿 + 呼吸/揺れ）を適用する。
+          // モーション再生中は AnimationMixer がボーンを駆動するため適用しない。
+          const humanoid = vrm?.humanoid;
+          if (!currentAction && humanoid) {
+            const elapsed = clock.elapsedTime;
+            for (const [bone, rot] of Object.entries(IDLE_REST_POSE)) {
+              const node = humanoid.getNormalizedBoneNode(bone);
+              if (node) node.rotation.set(rot.x ?? 0, rot.y ?? 0, rot.z ?? 0);
+            }
+            const spine = humanoid.getNormalizedBoneNode('spine');
+            if (spine) spine.rotation.x = breathingRotation(elapsed);
+            const chest = humanoid.getNormalizedBoneNode('chest');
+            if (chest) chest.rotation.z = swayRotation(elapsed);
           }
           mixer.update(dt);
           vrm?.update?.(dt);
