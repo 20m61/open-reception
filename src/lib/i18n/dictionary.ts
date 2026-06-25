@@ -48,7 +48,17 @@ export type MessageKey =
   | 'kiosk.action.delivery.label'
   | 'kiosk.action.delivery.desc'
   | 'kiosk.action.other.label'
-  | 'kiosk.action.other.desc';
+  | 'kiosk.action.other.desc'
+  // 受付フロー画面の見出し・目的・主要ボタン（#103 increment 3）
+  | 'reception.targetPrompt'
+  | 'reception.visitorInfoPrompt'
+  | 'reception.purpose.meeting'
+  | 'reception.purpose.delivery'
+  | 'reception.purpose.interview'
+  | 'reception.purpose.other'
+  | 'reception.proceedConfirm'
+  | 'reception.editInfo'
+  | 'reception.callWithThis';
 
 /** 既定 locale 辞書は全キー網羅必須。他 locale は Partial 可（欠落は ja へフォールバック）。 */
 type DefaultDictionary = Record<MessageKey, string>;
@@ -81,6 +91,15 @@ const ja: DefaultDictionary = {
   'kiosk.action.delivery.desc': 'お届け物・納品の方はこちら',
   'kiosk.action.other.label': 'その他のご用件',
   'kiosk.action.other.desc': '上記にあてはまらない方はこちら',
+  'reception.targetPrompt': '担当者・部署をお選びください',
+  'reception.visitorInfoPrompt': '来訪者情報を入力してください',
+  'reception.purpose.meeting': '面会',
+  'reception.purpose.delivery': '納品',
+  'reception.purpose.interview': '打ち合わせ',
+  'reception.purpose.other': 'その他',
+  'reception.proceedConfirm': '確認へ進む',
+  'reception.editInfo': '修正する',
+  'reception.callWithThis': 'この内容で呼び出す',
 };
 
 const en: LocaleDictionary = {
@@ -110,6 +129,15 @@ const en: LocaleDictionary = {
   'kiosk.action.delivery.desc': 'For deliveries and drop-offs',
   'kiosk.action.other.label': 'Other inquiry',
   'kiosk.action.other.desc': 'If none of the above apply',
+  'reception.targetPrompt': 'Choose a person or department',
+  'reception.visitorInfoPrompt': 'Please enter your details',
+  'reception.purpose.meeting': 'Visit',
+  'reception.purpose.delivery': 'Delivery',
+  'reception.purpose.interview': 'Meeting',
+  'reception.purpose.other': 'Other',
+  'reception.proceedConfirm': 'Continue to confirm',
+  'reception.editInfo': 'Edit',
+  'reception.callWithThis': 'Call with these details',
 };
 
 const ko: LocaleDictionary = {
@@ -139,6 +167,15 @@ const ko: LocaleDictionary = {
   'kiosk.action.delivery.desc': '배송·납품하시는 분',
   'kiosk.action.other.label': '기타 용건',
   'kiosk.action.other.desc': '위에 해당하지 않는 분',
+  'reception.targetPrompt': '담당자·부서를 선택해 주세요',
+  'reception.visitorInfoPrompt': '방문자 정보를 입력해 주세요',
+  'reception.purpose.meeting': '면회',
+  'reception.purpose.delivery': '납품',
+  'reception.purpose.interview': '미팅',
+  'reception.purpose.other': '기타',
+  'reception.proceedConfirm': '확인으로 진행',
+  'reception.editInfo': '수정',
+  'reception.callWithThis': '이 내용으로 호출',
 };
 
 const zh: LocaleDictionary = {
@@ -168,6 +205,15 @@ const zh: LocaleDictionary = {
   'kiosk.action.delivery.desc': '送货·快递请走这里',
   'kiosk.action.other.label': '其他事由',
   'kiosk.action.other.desc': '不属于以上情况的访客',
+  'reception.targetPrompt': '请选择负责人或部门',
+  'reception.visitorInfoPrompt': '请输入来访者信息',
+  'reception.purpose.meeting': '会面',
+  'reception.purpose.delivery': '送货',
+  'reception.purpose.interview': '洽谈',
+  'reception.purpose.other': '其他',
+  'reception.proceedConfirm': '继续确认',
+  'reception.editInfo': '修改',
+  'reception.callWithThis': '按此呼叫',
 };
 
 /**
