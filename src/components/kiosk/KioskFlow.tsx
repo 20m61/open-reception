@@ -16,6 +16,9 @@ import {
 import { motionKeyForState, resolveMotionUrl, type MotionKey } from '@/domain/motion/types';
 import { primeSpeech, speak, type SpeakSettings } from './speech';
 import { AvatarGuide } from './avatar/AvatarGuide';
+import { LanguageSwitcher } from './LanguageSwitcher';
+import { makeT, DEFAULT_LOCALE, type Locale, type MessageKey } from '@/lib/i18n';
+import type { QuickActionIntent } from './quick-actions';
 import { KioskCallView } from './KioskCallView';
 import { CheckinFlow } from './CheckinFlow';
 import { MockSttAdapter } from '@/adapters/speech/mock-stt';
@@ -146,6 +149,8 @@ export function KioskFlow() {
   const [data, dispatch] = useReducer(reducer, INITIAL);
   const [directory, setDirectory] = useState<Directory>({ departments: [], staff: [] });
   const [guidanceIdle, setGuidanceIdle] = useState('ようこそ。画面にタッチして受付を開始してください。');
+  // 受付の表示言語 (#103)。来訪者が待機画面の LanguageSwitcher で切替える（セッション内で保持）。
+  const [locale, setLocale] = useState<Locale>(DEFAULT_LOCALE);
   const [speakSettings, setSpeakSettings] = useState<SpeakSettings>({ ttsEnabled: false, rate: 1, volume: 1, language: 'ja-JP' });
   const [sttEnabled, setSttEnabled] = useState(false);
   const [backgroundUrl, setBackgroundUrl] = useState<string | undefined>(undefined);
@@ -582,6 +587,8 @@ export function KioskFlow() {
             staffResponse,
             handleStaffResponseFallback,
             startWithQuickAction,
+            locale,
+            setLocale,
           )}
           {/* 退館チェックアウト導線 (issue #102)。待機中のみ小さく常設する（非破壊）。 */}
           {data.state === 'idle' ? <CheckoutLink /> : null}
@@ -864,6 +871,8 @@ function renderScreen(
   staffResponse: StaffResponseResult | null,
   onStaffResponseFallback: () => void,
   onQuickAction: (action: QuickAction) => void,
+  locale: Locale,
+  onLocaleChange: (next: Locale) => void,
 ) {
   switch (data.state) {
     case 'idle':
@@ -874,6 +883,8 @@ function renderScreen(
           vrmUrl={vrmUrl}
           avatarFallbackUrl={avatarFallbackUrl}
           motionUrl={motionUrl}
+          locale={locale}
+          onLocaleChange={onLocaleChange}
         />
       );
     case 'selectingPurpose':
@@ -966,20 +977,41 @@ function renderScreen(
  * `start-checkin`（QR で受付）の testid を、それぞれ「担当者を呼ぶ」「QR で受付」カードに
  * 付与し直して維持する。
  */
+/** クイックアクション intent → 辞書キー（label/desc）。多言語表示に使う (#103)。 */
+const QUICK_ACTION_I18N: Record<QuickActionIntent, { label: MessageKey; desc: MessageKey }> = {
+  callStaff: { label: 'kiosk.action.callStaff.label', desc: 'kiosk.action.callStaff.desc' },
+  checkin: { label: 'kiosk.action.checkin.label', desc: 'kiosk.action.checkin.desc' },
+  department: { label: 'kiosk.action.department.label', desc: 'kiosk.action.department.desc' },
+  delivery: { label: 'kiosk.action.delivery.label', desc: 'kiosk.action.delivery.desc' },
+  other: { label: 'kiosk.action.other.label', desc: 'kiosk.action.other.desc' },
+};
+
 function IdleView({
   onQuickAction,
   guidance,
   vrmUrl,
   avatarFallbackUrl,
   motionUrl,
+  locale,
+  onLocaleChange,
 }: {
   onQuickAction: (action: QuickAction) => void;
   guidance: string;
   vrmUrl?: string;
   avatarFallbackUrl?: string;
   motionUrl?: string;
+  locale: Locale;
+  onLocaleChange: (next: Locale) => void;
 }) {
   const actions = quickActionsFor('idle');
+  const tr = makeT(locale);
+  // ja は管理設定で上書きできる案内文言（guidance）を使い、他言語は辞書のようこそ文を出す (#103)。
+  // 文の区切りは locale に合わせる（CJK は「。」、それ以外は「. 」）。
+  const sentenceSep = locale === 'ja' || locale === 'zh' ? '。' : '. ';
+  const lead =
+    locale === DEFAULT_LOCALE
+      ? guidance
+      : `${tr('welcome.title')}${sentenceSep}${tr('welcome.tapToStart')}`;
   // 既存 testid との後方互換（再設計後もリンク切れにしない）。
   const legacyTestId: Partial<Record<QuickAction['intent'], string>> = {
     callStaff: 'start-reception',
@@ -997,31 +1029,42 @@ function IdleView({
         <AvatarGuide
           className="kiosk-avatar-guide"
           screenState="idle"
+          locale={locale}
           vrmUrl={vrmUrl}
           fallbackImageUrl={avatarFallbackUrl}
           defaultMotionUrl={motionUrl}
         />
       </div>
       <header className="kiosk-idle__head">
-        <h1 className="screen__title">ご用件をお選びください</h1>
-        <p className="screen__lead" data-testid="idle-guidance">
-          {guidance}
+        <h1 className="screen__title">{tr('reception.purposePrompt')}</h1>
+        <p className="screen__lead" data-testid="idle-guidance" lang={locale}>
+          {lead}
         </p>
+        {/* 言語切替 (#103)。読めない言語でも自言語ラベルで選べる。 */}
+        <LanguageSwitcher
+          locale={locale}
+          onChange={onLocaleChange}
+          label={tr('welcome.chooseLanguage')}
+        />
       </header>
       <div className="card-grid kiosk-quick-actions" data-testid="kiosk-quick-actions">
-        {actions.map((action) => (
-          <button
-            key={action.intent}
-            type="button"
-            className="card card--cta"
-            data-testid={legacyTestId[action.intent] ?? action.testId}
-            data-intent={action.intent}
-            onClick={() => onQuickAction(action)}
-          >
-            {action.label}
-            <span className="card__sub">{action.description}</span>
-          </button>
-        ))}
+        {actions.map((action) => {
+          const keys = QUICK_ACTION_I18N[action.intent];
+          return (
+            <button
+              key={action.intent}
+              type="button"
+              className="card card--cta"
+              data-testid={legacyTestId[action.intent] ?? action.testId}
+              data-intent={action.intent}
+              lang={locale}
+              onClick={() => onQuickAction(action)}
+            >
+              {tr(keys.label)}
+              <span className="card__sub">{tr(keys.desc)}</span>
+            </button>
+          );
+        })}
       </div>
     </div>
   );

@@ -37,7 +37,18 @@ export type MessageKey =
   | 'voice.fallbackNotice'
   | 'common.next'
   | 'common.cancel'
-  | 'common.retry';
+  | 'common.retry'
+  // 待機画面のクイックアクション（カード label/desc, #103 increment 2）
+  | 'kiosk.action.callStaff.label'
+  | 'kiosk.action.callStaff.desc'
+  | 'kiosk.action.checkin.label'
+  | 'kiosk.action.checkin.desc'
+  | 'kiosk.action.department.label'
+  | 'kiosk.action.department.desc'
+  | 'kiosk.action.delivery.label'
+  | 'kiosk.action.delivery.desc'
+  | 'kiosk.action.other.label'
+  | 'kiosk.action.other.desc';
 
 /** 既定 locale 辞書は全キー網羅必須。他 locale は Partial 可（欠落は ja へフォールバック）。 */
 type DefaultDictionary = Record<MessageKey, string>;
@@ -60,6 +71,16 @@ const ja: DefaultDictionary = {
   'common.next': '次へ',
   'common.cancel': 'キャンセル',
   'common.retry': 'もう一度',
+  'kiosk.action.callStaff.label': '担当者を呼ぶ',
+  'kiosk.action.callStaff.desc': 'お名前・ご用件をうかがって担当者をお呼びします',
+  'kiosk.action.checkin.label': 'QR で受付',
+  'kiosk.action.checkin.desc': '予約 QR コードをお持ちの方はこちら',
+  'kiosk.action.department.label': '部署から選ぶ',
+  'kiosk.action.department.desc': '訪問先の部署が決まっている方はこちら',
+  'kiosk.action.delivery.label': '配送・納品',
+  'kiosk.action.delivery.desc': 'お届け物・納品の方はこちら',
+  'kiosk.action.other.label': 'その他のご用件',
+  'kiosk.action.other.desc': '上記にあてはまらない方はこちら',
 };
 
 const en: LocaleDictionary = {
@@ -79,6 +100,16 @@ const en: LocaleDictionary = {
   'common.next': 'Next',
   'common.cancel': 'Cancel',
   'common.retry': 'Try again',
+  'kiosk.action.callStaff.label': 'Call a staff member',
+  'kiosk.action.callStaff.desc': "We'll ask your name and purpose, then call the right person",
+  'kiosk.action.checkin.label': 'Check in with QR',
+  'kiosk.action.checkin.desc': 'If you have a reservation QR code, start here',
+  'kiosk.action.department.label': 'Choose a department',
+  'kiosk.action.department.desc': "If you know the department you're visiting",
+  'kiosk.action.delivery.label': 'Delivery / drop-off',
+  'kiosk.action.delivery.desc': 'For deliveries and drop-offs',
+  'kiosk.action.other.label': 'Other inquiry',
+  'kiosk.action.other.desc': 'If none of the above apply',
 };
 
 const ko: LocaleDictionary = {
@@ -98,6 +129,16 @@ const ko: LocaleDictionary = {
   'common.next': '다음',
   'common.cancel': '취소',
   'common.retry': '다시 시도',
+  'kiosk.action.callStaff.label': '담당자 호출',
+  'kiosk.action.callStaff.desc': '성함과 용건을 여쭙고 담당자를 호출합니다',
+  'kiosk.action.checkin.label': 'QR로 접수',
+  'kiosk.action.checkin.desc': '예약 QR 코드가 있으면 여기서 시작하세요',
+  'kiosk.action.department.label': '부서 선택',
+  'kiosk.action.department.desc': '방문할 부서를 알고 계신 분',
+  'kiosk.action.delivery.label': '배송 / 납품',
+  'kiosk.action.delivery.desc': '배송·납품하시는 분',
+  'kiosk.action.other.label': '기타 용건',
+  'kiosk.action.other.desc': '위에 해당하지 않는 분',
 };
 
 const zh: LocaleDictionary = {
@@ -117,6 +158,16 @@ const zh: LocaleDictionary = {
   'common.next': '下一步',
   'common.cancel': '取消',
   'common.retry': '重试',
+  'kiosk.action.callStaff.label': '呼叫负责人',
+  'kiosk.action.callStaff.desc': '我们会询问您的姓名和事由，然后呼叫相应人员',
+  'kiosk.action.checkin.label': '扫码登记',
+  'kiosk.action.checkin.desc': '持有预约二维码请从这里开始',
+  'kiosk.action.department.label': '选择部门',
+  'kiosk.action.department.desc': '已确定来访部门的访客',
+  'kiosk.action.delivery.label': '送货 / 快递',
+  'kiosk.action.delivery.desc': '送货·快递请走这里',
+  'kiosk.action.other.label': '其他事由',
+  'kiosk.action.other.desc': '不属于以上情况的访客',
 };
 
 /**
