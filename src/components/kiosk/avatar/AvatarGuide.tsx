@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useMemo } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import type { ReceptionState } from '@/domain/reception/state';
 import { deriveAvatarState } from '@/domain/reception/ui-contract';
 import { resolveMotionUrl, type MotionKey } from '@/domain/motion/types';
@@ -64,10 +64,18 @@ export function AvatarGuide({
 
   const motionUrl = resolveMotionUrl(guidance.motionKey, motionUrls ?? {}, defaultMotionUrl);
 
+  // 発話中フラグ（簡易リップシンク #5）。発話の開始/終了で口パクの ON/OFF を切替える。
+  const [speaking, setSpeaking] = useState(false);
+
   // TTS が有効なら発話する。失敗/無効でも字幕で同内容を保証するためフローは止めない。
   useEffect(() => {
     if (!ttsSettings) return;
-    speak(guidance.speech, ttsSettings);
+    speak(guidance.speech, ttsSettings, {
+      onStart: () => setSpeaking(true),
+      onEnd: () => setSpeaking(false),
+    });
+    // 状態遷移・アンマウント時は口を閉じる（onEnd が来ない場合の保険）。
+    return () => setSpeaking(false);
   }, [guidance.speech, ttsSettings]);
 
   const voiceless = !ttsSettings || !ttsSettings.ttsEnabled;
@@ -88,6 +96,7 @@ export function AvatarGuide({
           fallbackImageUrl={fallbackImageUrl}
           motionUrl={motionUrl}
           expression={guidance.expression}
+          speaking={speaking}
           className={undefined}
         />
         {/* VRM も静止画も無い場合のプレースホルダ。案内文言は下の字幕（avatar-subtitle）が

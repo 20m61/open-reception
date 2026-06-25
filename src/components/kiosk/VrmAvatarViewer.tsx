@@ -4,6 +4,7 @@ import { useEffect, useRef, useState } from 'react';
 import { ResourceTracker } from '@/lib/three/resource-tracker';
 import { emotionExpressionValues } from './avatar/vrm-expression';
 import { IDLE_REST_POSE, breathingRotation, swayRotation } from './avatar/vrm-idle';
+import { mouthOpenValue } from './avatar/lip-sync';
 import type { AvatarExpression } from './avatar/guidance';
 
 /**
@@ -22,6 +23,7 @@ export function VrmAvatarViewer({
   fallbackImageUrl,
   motionUrl,
   expression,
+  speaking,
   className,
 }: {
   vrmUrl?: string;
@@ -33,6 +35,8 @@ export function VrmAvatarViewer({
   motionUrl?: string;
   /** 受付状態に応じた論理表情（#31）。VRM expressionManager に毎フレーム適用する。 */
   expression?: AvatarExpression;
+  /** TTS 発話中か（#5 簡易リップシンク）。true の間、口形素 `aa` を時間ベースで開閉する。 */
+  speaking?: boolean;
   className?: string;
 }) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
@@ -42,6 +46,11 @@ export function VrmAvatarViewer({
   useEffect(() => {
     expressionRef.current = expression ?? 'neutral';
   }, [expression]);
+  // 発話中フラグもレンダーループ外から変化するため ref で渡す（#5 リップシンク）。
+  const speakingRef = useRef<boolean>(speaking ?? false);
+  useEffect(() => {
+    speakingRef.current = speaking ?? false;
+  }, [speaking]);
 
   // モーション URL も [vrmUrl] エフェクト外から変化するため ref 経由で渡す。
   // VRM ロード完了後に loadMotionRef.current が設定され、状態遷移ごとに .vrma を切替える（#31）。
@@ -137,6 +146,9 @@ export function VrmAvatarViewer({
             for (const { name, value } of emotionExpressionValues(expressionRef.current)) {
               expressionManager.setValue(name, value);
             }
+            // 簡易リップシンク（#5）: 発話中は口形素 `aa` を時間ベースで開閉。感情 preset とは
+            // 別チャンネルなので共存する（口を閉じるときは 0）。
+            expressionManager.setValue('aa', mouthOpenValue(clock.elapsedTime, speakingRef.current));
           }
           // .vrma モーションが無いときは手続き的アイドル（腕を下ろす立ち姿 + 呼吸/揺れ）を適用する。
           // モーション再生中は AnimationMixer がボーンを駆動するため適用しない。
