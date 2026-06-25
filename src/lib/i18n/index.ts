@@ -11,4 +11,4 @@ export {
   type Locale,
 } from './locale';
 export { DICTIONARIES, type MessageKey } from './dictionary';
-export { t, makeT } from './t';
+export { t, makeT, type TParams } from './t';
