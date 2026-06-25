@@ -72,7 +72,23 @@ export type MessageKey =
   | 'reception.toDesk'
   | 'reception.cancelled'
   | 'reception.completedTitle'
-  | 'reception.thanksLead';
+  | 'reception.thanksLead'
+  // 担当・部署選択 / 音声検索 / フォーム・確認の項目ラベル（#103 increment 5・{field} は補間）
+  | 'reception.searchStaff'
+  | 'reception.searchPlaceholder'
+  | 'reception.byDepartment'
+  | 'reception.staffAbsent'
+  | 'reception.staffNotFound'
+  | 'reception.voiceSearch'
+  | 'reception.listening'
+  | 'reception.voiceHint'
+  | 'reception.fieldPurpose'
+  | 'reception.fieldTarget'
+  | 'reception.fieldName'
+  | 'reception.fieldCompany'
+  | 'reception.fieldNote'
+  | 'reception.requiredLabel'
+  | 'reception.optionalLabel';
 
 /** 既定 locale 辞書は全キー網羅必須。他 locale は Partial 可（欠落は ja へフォールバック）。 */
 type DefaultDictionary = Record<MessageKey, string>;
@@ -127,6 +143,21 @@ const ja: DefaultDictionary = {
   'reception.cancelled': '受付をキャンセルしました',
   'reception.completedTitle': '受付が完了しました',
   'reception.thanksLead': 'ありがとうございました',
+  'reception.searchStaff': '担当者を検索（氏名・よみがな・英字）',
+  'reception.searchPlaceholder': '例: さとう / Sato',
+  'reception.byDepartment': '部署から選ぶ',
+  'reception.staffAbsent': '現在不在です。部署または代表窓口をお選びください。',
+  'reception.staffNotFound': '該当する担当者が見つかりません。部署または代表窓口をお選びください。',
+  'reception.voiceSearch': '音声で担当者を探す',
+  'reception.listening': '聞き取り中…',
+  'reception.voiceHint': '認識した候補です。タップして検索欄に反映し、内容をご確認のうえお選びください。',
+  'reception.fieldPurpose': 'ご用件',
+  'reception.fieldTarget': '呼び出し先',
+  'reception.fieldName': 'お名前',
+  'reception.fieldCompany': '会社名',
+  'reception.fieldNote': 'ご用件メモ',
+  'reception.requiredLabel': '{field}（必須）',
+  'reception.optionalLabel': '{field}（任意）',
 };
 
 const en: LocaleDictionary = {
@@ -178,6 +209,21 @@ const en: LocaleDictionary = {
   'reception.cancelled': 'Reception cancelled',
   'reception.completedTitle': 'Check-in complete',
   'reception.thanksLead': 'Thank you',
+  'reception.searchStaff': 'Search by name (kana / romaji)',
+  'reception.searchPlaceholder': 'e.g. Sato',
+  'reception.byDepartment': 'Choose by department',
+  'reception.staffAbsent': 'Currently unavailable. Please choose a department or the main desk.',
+  'reception.staffNotFound': 'No matching staff found. Please choose a department or the main desk.',
+  'reception.voiceSearch': 'Search by voice',
+  'reception.listening': 'Listening…',
+  'reception.voiceHint': 'Recognized candidates. Tap to fill the search box, review, then choose.',
+  'reception.fieldPurpose': 'Purpose',
+  'reception.fieldTarget': 'Calling',
+  'reception.fieldName': 'Name',
+  'reception.fieldCompany': 'Company',
+  'reception.fieldNote': 'Note',
+  'reception.requiredLabel': '{field} (required)',
+  'reception.optionalLabel': '{field} (optional)',
 };
 
 const ko: LocaleDictionary = {
@@ -229,6 +275,21 @@ const ko: LocaleDictionary = {
   'reception.cancelled': '접수가 취소되었습니다',
   'reception.completedTitle': '접수가 완료되었습니다',
   'reception.thanksLead': '감사합니다',
+  'reception.searchStaff': '담당자 검색 (이름 / 발음 / 영문)',
+  'reception.searchPlaceholder': '예: Sato',
+  'reception.byDepartment': '부서로 선택',
+  'reception.staffAbsent': '현재 부재중입니다. 부서 또는 대표 창구를 선택해 주세요.',
+  'reception.staffNotFound': '해당 담당자를 찾을 수 없습니다. 부서 또는 대표 창구를 선택해 주세요.',
+  'reception.voiceSearch': '음성으로 검색',
+  'reception.listening': '듣는 중…',
+  'reception.voiceHint': '인식된 후보입니다. 탭하여 검색창에 반영하고 확인 후 선택해 주세요.',
+  'reception.fieldPurpose': '용건',
+  'reception.fieldTarget': '호출 대상',
+  'reception.fieldName': '성함',
+  'reception.fieldCompany': '회사명',
+  'reception.fieldNote': '용건 메모',
+  'reception.requiredLabel': '{field}(필수)',
+  'reception.optionalLabel': '{field}(선택)',
 };
 
 const zh: LocaleDictionary = {
@@ -280,6 +341,21 @@ const zh: LocaleDictionary = {
   'reception.cancelled': '登记已取消',
   'reception.completedTitle': '登记完成',
   'reception.thanksLead': '谢谢',
+  'reception.searchStaff': '搜索负责人（姓名 / 拼音）',
+  'reception.searchPlaceholder': '例: Sato',
+  'reception.byDepartment': '按部门选择',
+  'reception.staffAbsent': '当前不在。请选择部门或前台。',
+  'reception.staffNotFound': '未找到相应负责人。请选择部门或前台。',
+  'reception.voiceSearch': '语音搜索',
+  'reception.listening': '正在聆听…',
+  'reception.voiceHint': '识别到的候选。点击填入搜索框，确认后选择。',
+  'reception.fieldPurpose': '事由',
+  'reception.fieldTarget': '呼叫对象',
+  'reception.fieldName': '姓名',
+  'reception.fieldCompany': '公司名',
+  'reception.fieldNote': '事由备注',
+  'reception.requiredLabel': '{field}（必填）',
+  'reception.optionalLabel': '{field}（选填）',
 };
 
 /**
