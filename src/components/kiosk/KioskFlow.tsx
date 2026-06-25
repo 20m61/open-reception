@@ -871,6 +871,7 @@ function renderScreen(
   locale: Locale,
   onLocaleChange: (next: Locale) => void,
 ) {
+  const tr = makeT(locale);
   switch (data.state) {
     case 'idle':
       return (
@@ -924,7 +925,7 @@ function renderScreen(
       // 担当者の応答アクションがあれば、その来訪者向けメッセージを上に重ねて表示する (issue #99)。
       return (
         <>
-          <StaffResponseBanner response={staffResponse} onFallback={onStaffResponseFallback} />
+          <StaffResponseBanner response={staffResponse} onFallback={onStaffResponseFallback} locale={locale} />
           {vonageCallId ? (
             <KioskCallView
               receptionId={vonageCallId}
@@ -933,15 +934,15 @@ function renderScreen(
               onFallback={() => dispatch({ type: 'CALL_FAILED', sessionId: vonageCallId })}
             />
           ) : (
-            <CallingView target={data.target?.label ?? ''} />
+            <CallingView target={data.target?.label ?? ''} locale={locale} />
           )}
         </>
       );
     case 'connected':
       return (
         <>
-          <StaffResponseBanner response={staffResponse} onFallback={onStaffResponseFallback} />
-          <ConnectedView target={data.target?.label ?? ''} onComplete={complete} />
+          <StaffResponseBanner response={staffResponse} onFallback={onStaffResponseFallback} locale={locale} />
+          <ConnectedView target={data.target?.label ?? ''} onComplete={complete} locale={locale} />
         </>
       );
     case 'timeout':
@@ -951,14 +952,21 @@ function renderScreen(
           outcome={data.state}
           onFallback={onFallback}
           onReset={() => dispatch({ type: 'RESET' })}
+          locale={locale}
         />
       );
     case 'fallback':
-      return <FallbackView onReset={() => dispatch({ type: 'RESET' })} />;
+      return <FallbackView onReset={() => dispatch({ type: 'RESET' })} locale={locale} />;
     case 'cancelled':
-      return <EndView testid="completed" title="受付をキャンセルしました" />;
+      return <EndView testid="completed" title={tr('reception.cancelled')} />;
     case 'completed':
-      return <EndView testid="completed" title="受付が完了しました" lead="ありがとうございました" />;
+      return (
+        <EndView
+          testid="completed"
+          title={tr('reception.completedTitle')}
+          lead={tr('reception.thanksLead')}
+        />
+      );
     default:
       return null;
   }
@@ -1396,9 +1404,11 @@ function ConfirmView({
 function StaffResponseBanner({
   response,
   onFallback,
+  locale,
 }: {
   response: StaffResponseResult | null;
   onFallback: () => void;
+  locale: Locale;
 }) {
   if (!response) return null;
   const noticeClass =
@@ -1426,33 +1436,44 @@ function StaffResponseBanner({
           data-testid="staff-response-fallback"
           onClick={onFallback}
           style={{ marginTop: 'var(--space-sm)' }}
+          lang={locale}
         >
-          受付窓口へ
+          {makeT(locale)('reception.toDesk')}
         </button>
       ) : null}
     </div>
   );
 }
 
-function CallingView({ target }: { target: string }) {
+function CallingView({ target, locale }: { target: string; locale: Locale }) {
+  const tr = makeT(locale);
   return (
     <div className="screen__body" style={{ alignItems: 'center', justifyContent: 'center', textAlign: 'center' }}>
-      <h1 className="screen__title" data-testid="calling">
-        呼び出し中…
+      <h1 className="screen__title" data-testid="calling" lang={locale}>
+        {tr('reception.callingTitle')}
       </h1>
-      <p className="screen__lead">{target} を呼び出しています。少々お待ちください。</p>
+      <p className="screen__lead" lang={locale}>{tr('reception.callingBody', { target })}</p>
     </div>
   );
 }
 
-function ConnectedView({ target, onComplete }: { target: string; onComplete: () => void }) {
+function ConnectedView({
+  target,
+  onComplete,
+  locale,
+}: {
+  target: string;
+  onComplete: () => void;
+  locale: Locale;
+}) {
+  const tr = makeT(locale);
   return (
     <div className="screen__body" style={{ alignItems: 'center', justifyContent: 'center', textAlign: 'center' }}>
-      <div className="notice notice--success" data-testid="result-connected">
-        {target} が応答しました。まもなくお越しになります。
+      <div className="notice notice--success" data-testid="result-connected" lang={locale}>
+        {tr('reception.connectedBody', { target })}
       </div>
-      <button type="button" className="btn btn--primary" data-testid="complete" onClick={onComplete}>
-        受付を終了する
+      <button type="button" className="btn btn--primary" data-testid="complete" onClick={onComplete} lang={locale}>
+        {tr('reception.finishReception')}
       </button>
     </div>
   );
@@ -1462,40 +1483,41 @@ function ResultView({
   outcome,
   onFallback,
   onReset,
+  locale,
 }: {
   outcome: 'timeout' | 'failed';
   onFallback: () => void;
   onReset: () => void;
+  locale: Locale;
 }) {
-  const message =
-    outcome === 'timeout'
-      ? '応答がありませんでした。別の方法でお呼びすることもできます。'
-      : '呼び出しに失敗しました。別の方法でお呼びすることもできます。';
+  const tr = makeT(locale);
+  const message = tr(outcome === 'timeout' ? 'reception.timeoutBody' : 'reception.failedBody');
   return (
     <div className="screen__body" style={{ alignItems: 'center', justifyContent: 'center', textAlign: 'center' }}>
-      <div className="notice notice--danger" data-testid={`result-${outcome}`}>
+      <div className="notice notice--danger" data-testid={`result-${outcome}`} lang={locale}>
         {message}
       </div>
       <div className="screen__footer" style={{ justifyContent: 'center' }}>
-        <button type="button" className="btn btn--secondary" data-testid="use-fallback" onClick={onFallback}>
-          代替の連絡先へ
+        <button type="button" className="btn btn--secondary" data-testid="use-fallback" onClick={onFallback} lang={locale}>
+          {tr('reception.altContact')}
         </button>
-        <button type="button" className="btn btn--ghost" data-testid="result-reset" onClick={onReset}>
-          最初に戻る
+        <button type="button" className="btn btn--ghost" data-testid="result-reset" onClick={onReset} lang={locale}>
+          {tr('reception.reset')}
         </button>
       </div>
     </div>
   );
 }
 
-function FallbackView({ onReset }: { onReset: () => void }) {
+function FallbackView({ onReset, locale }: { onReset: () => void; locale: Locale }) {
+  const tr = makeT(locale);
   return (
     <div className="screen__body" style={{ alignItems: 'center', justifyContent: 'center', textAlign: 'center' }}>
-      <div className="notice notice--warning" data-testid="fallback">
-        代表窓口にお繋ぎします。受付スタッフが対応いたしますので、しばらくお待ちください。
+      <div className="notice notice--warning" data-testid="fallback" lang={locale}>
+        {tr('reception.fallbackBody')}
       </div>
-      <button type="button" className="btn btn--ghost" data-testid="fallback-reset" onClick={onReset}>
-        最初に戻る
+      <button type="button" className="btn btn--ghost" data-testid="fallback-reset" onClick={onReset} lang={locale}>
+        {tr('reception.reset')}
       </button>
     </div>
   );

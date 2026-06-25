@@ -9,6 +9,30 @@ import {
   DICTIONARIES,
 } from './index';
 
+describe('t 補間 (#103)', () => {
+  it('{name} を params で置換する', () => {
+    expect(t('reception.callingBody', 'ja', { target: '佐藤 太郎' })).toContain('佐藤 太郎');
+    expect(t('reception.callingBody', 'en', { target: 'Sato' })).toBe(
+      'Calling Sato. Please wait a moment.',
+    );
+  });
+
+  it('params 未指定ならプレースホルダはそのまま残す（壊さない）', () => {
+    expect(t('reception.callingBody', 'en')).toContain('{target}');
+  });
+
+  it('未知のプレースホルダは置換せず残す', () => {
+    expect(t('reception.callingBody', 'en', { other: 'x' })).toContain('{target}');
+  });
+
+  it('makeT も params を受け付ける', () => {
+    const tr = makeT('en');
+    expect(tr('reception.connectedBody', { target: 'Sato' })).toBe(
+      'Sato answered. They will be with you shortly.',
+    );
+  });
+});
+
 describe('normalizeLocale (#103)', () => {
   it('対応 locale はそのまま返す', () => {
     expect(normalizeLocale('en')).toBe('en');

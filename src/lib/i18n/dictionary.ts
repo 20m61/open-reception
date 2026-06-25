@@ -58,7 +58,21 @@ export type MessageKey =
   | 'reception.purpose.other'
   | 'reception.proceedConfirm'
   | 'reception.editInfo'
-  | 'reception.callWithThis';
+  | 'reception.callWithThis'
+  // 呼び出し中/結果/お詫びのステータス画面（#103 increment 4・{target} は補間）
+  | 'reception.callingTitle'
+  | 'reception.callingBody'
+  | 'reception.connectedBody'
+  | 'reception.finishReception'
+  | 'reception.timeoutBody'
+  | 'reception.failedBody'
+  | 'reception.altContact'
+  | 'reception.reset'
+  | 'reception.fallbackBody'
+  | 'reception.toDesk'
+  | 'reception.cancelled'
+  | 'reception.completedTitle'
+  | 'reception.thanksLead';
 
 /** 既定 locale 辞書は全キー網羅必須。他 locale は Partial 可（欠落は ja へフォールバック）。 */
 type DefaultDictionary = Record<MessageKey, string>;
@@ -100,6 +114,19 @@ const ja: DefaultDictionary = {
   'reception.proceedConfirm': '確認へ進む',
   'reception.editInfo': '修正する',
   'reception.callWithThis': 'この内容で呼び出す',
+  'reception.callingTitle': '呼び出し中…',
+  'reception.callingBody': '{target} を呼び出しています。少々お待ちください。',
+  'reception.connectedBody': '{target} が応答しました。まもなくお越しになります。',
+  'reception.finishReception': '受付を終了する',
+  'reception.timeoutBody': '応答がありませんでした。別の方法でお呼びすることもできます。',
+  'reception.failedBody': '呼び出しに失敗しました。別の方法でお呼びすることもできます。',
+  'reception.altContact': '代替の連絡先へ',
+  'reception.reset': '最初に戻る',
+  'reception.fallbackBody': '代表窓口にお繋ぎします。受付スタッフが対応いたしますので、しばらくお待ちください。',
+  'reception.toDesk': '受付窓口へ',
+  'reception.cancelled': '受付をキャンセルしました',
+  'reception.completedTitle': '受付が完了しました',
+  'reception.thanksLead': 'ありがとうございました',
 };
 
 const en: LocaleDictionary = {
@@ -138,6 +165,19 @@ const en: LocaleDictionary = {
   'reception.proceedConfirm': 'Continue to confirm',
   'reception.editInfo': 'Edit',
   'reception.callWithThis': 'Call with these details',
+  'reception.callingTitle': 'Calling…',
+  'reception.callingBody': 'Calling {target}. Please wait a moment.',
+  'reception.connectedBody': '{target} answered. They will be with you shortly.',
+  'reception.finishReception': 'Finish',
+  'reception.timeoutBody': 'There was no answer. We can try another way to reach them.',
+  'reception.failedBody': 'The call failed. We can try another way to reach them.',
+  'reception.altContact': 'Try another way',
+  'reception.reset': 'Start over',
+  'reception.fallbackBody': "We'll connect you to the main desk. A staff member will assist you shortly.",
+  'reception.toDesk': 'Go to the main desk',
+  'reception.cancelled': 'Reception cancelled',
+  'reception.completedTitle': 'Check-in complete',
+  'reception.thanksLead': 'Thank you',
 };
 
 const ko: LocaleDictionary = {
@@ -176,6 +216,19 @@ const ko: LocaleDictionary = {
   'reception.proceedConfirm': '확인으로 진행',
   'reception.editInfo': '수정',
   'reception.callWithThis': '이 내용으로 호출',
+  'reception.callingTitle': '호출 중…',
+  'reception.callingBody': '{target}님을 호출하고 있습니다. 잠시만 기다려 주세요.',
+  'reception.connectedBody': '{target}님이 응답했습니다. 곧 도착합니다.',
+  'reception.finishReception': '접수 종료',
+  'reception.timeoutBody': '응답이 없습니다. 다른 방법으로 호출할 수도 있습니다.',
+  'reception.failedBody': '호출에 실패했습니다. 다른 방법으로 호출할 수도 있습니다.',
+  'reception.altContact': '다른 연락 방법',
+  'reception.reset': '처음으로',
+  'reception.fallbackBody': '대표 창구로 연결합니다. 접수 직원이 도와드리니 잠시만 기다려 주세요.',
+  'reception.toDesk': '접수 창구로',
+  'reception.cancelled': '접수가 취소되었습니다',
+  'reception.completedTitle': '접수가 완료되었습니다',
+  'reception.thanksLead': '감사합니다',
 };
 
 const zh: LocaleDictionary = {
@@ -214,6 +267,19 @@ const zh: LocaleDictionary = {
   'reception.proceedConfirm': '继续确认',
   'reception.editInfo': '修改',
   'reception.callWithThis': '按此呼叫',
+  'reception.callingTitle': '正在呼叫…',
+  'reception.callingBody': '正在呼叫 {target}，请稍候。',
+  'reception.connectedBody': '{target} 已应答，马上就来。',
+  'reception.finishReception': '结束登记',
+  'reception.timeoutBody': '无人应答。我们可以用其他方式联系。',
+  'reception.failedBody': '呼叫失败。我们可以用其他方式联系。',
+  'reception.altContact': '其他联系方式',
+  'reception.reset': '返回首页',
+  'reception.fallbackBody': '正在为您转接前台，工作人员将很快为您服务，请稍候。',
+  'reception.toDesk': '前往前台',
+  'reception.cancelled': '登记已取消',
+  'reception.completedTitle': '登记完成',
+  'reception.thanksLead': '谢谢',
 };
 
 /**
