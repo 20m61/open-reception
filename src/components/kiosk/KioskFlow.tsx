@@ -18,6 +18,7 @@ import { primeSpeech, speak, type SpeakSettings } from './speech';
 import { AvatarGuide } from './avatar/AvatarGuide';
 import { LanguageSwitcher } from './LanguageSwitcher';
 import { makeT, DEFAULT_LOCALE, type Locale, type MessageKey } from '@/lib/i18n';
+import { LOCALE_LANGUAGE_CODE } from '@/lib/voice/locale-voice';
 import type { QuickActionIntent } from './quick-actions';
 import { KioskCallView } from './KioskCallView';
 import { CheckinFlow } from './CheckinFlow';
@@ -71,15 +72,6 @@ const AUTO_RESET_MS = 6000;
 const INACTIVITY_RESET_MS = 60000;
 /** 端末有効性・設定変更を検知する heartbeat 間隔 (issue #30)。 */
 const HEARTBEAT_INTERVAL_MS = 30000;
-
-/** 状態別の読み上げ文言（TTS 有効時のみ） (issue #5)。idle は案内文言を使う。 */
-const SPEAK_PHRASES: Partial<Record<ReceptionState, string>> = {
-  calling: '担当者を呼び出しています。少々お待ちください。',
-  connected: '応答がありました。まもなくお越しになります。',
-  timeout: '応答がありませんでした。別の方法でお呼びすることもできます。',
-  failed: '呼び出しに失敗しました。別の方法でお呼びすることもできます。',
-  completed: '受付が完了しました。ありがとうございました。',
-};
 
 type Target = { type: ReceptionTargetType; id: string; label: string };
 type CallOutcome = 'connected' | 'timeout' | 'failed';
@@ -422,11 +414,40 @@ export function KioskFlow() {
     }
   }, [data.state]);
 
-  // 音声合成が有効な場合、状態に応じた案内を読み上げる (issue #5)。
+  // 音声合成が有効な場合、状態に応じた案内を「選択中の言語」で読み上げる (issue #5 / #103)。
+  // 文言は表示と同じ辞書から引き、発話言語(BCP-47)も locale に合わせる（ja は管理設定の language を尊重）。
   useEffect(() => {
-    const phrase = SPEAK_PHRASES[data.state] ?? (data.state === 'idle' ? guidanceIdle : undefined);
-    if (phrase) speak(phrase, speakSettings);
-  }, [data.state, guidanceIdle, speakSettings]);
+    const tr = makeT(locale);
+    const target = data.target?.label ?? '';
+    let phrase: string | undefined;
+    switch (data.state) {
+      case 'calling':
+        phrase = tr('reception.callingBody', { target });
+        break;
+      case 'connected':
+        phrase = tr('reception.connectedBody', { target });
+        break;
+      case 'timeout':
+        phrase = tr('reception.timeoutBody');
+        break;
+      case 'failed':
+        phrase = tr('reception.failedBody');
+        break;
+      case 'completed':
+        phrase = tr('reception.thanks');
+        break;
+      case 'idle':
+        phrase = locale === DEFAULT_LOCALE ? guidanceIdle : tr('welcome.tapToStart');
+        break;
+      default:
+        phrase = undefined;
+    }
+    if (phrase) {
+      const language =
+        locale === DEFAULT_LOCALE ? speakSettings.language : LOCALE_LANGUAGE_CODE[locale];
+      speak(phrase, { ...speakSettings, language });
+    }
+  }, [data.state, data.target?.label, guidanceIdle, speakSettings, locale]);
 
   const complete = useCallback(async () => {
     if (data.sessionId) {
