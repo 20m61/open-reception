@@ -1,5 +1,14 @@
 import type { Metadata, Viewport } from 'next';
+import { Inter } from 'next/font/google';
 import './globals.css';
+
+// 専用書体（Latin）。next/font が self-host するため CSP（font-src 'self'）と整合し、
+// 外部リクエスト・FOUT なし。日本語/韓国語/中国語のグリフは system スタックへフォールバックする。
+const inter = Inter({
+  subsets: ['latin'],
+  display: 'swap',
+  variable: '--font-inter',
+});
 
 export const metadata: Metadata = {
   title: 'open-reception',
@@ -20,7 +29,7 @@ export default function RootLayout({
   children: React.ReactNode;
 }) {
   return (
-    <html lang="ja">
+    <html lang="ja" className={inter.variable}>
       <body>{children}</body>
     </html>
   );

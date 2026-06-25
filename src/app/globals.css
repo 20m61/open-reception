@@ -1,26 +1,62 @@
 :root {
-  /* iPad 受付端末向けレイアウトトークン (issue #17) */
-  --color-bg: #0f172a;
-  --color-surface: #1e293b;
-  --color-surface-2: #334155;
-  --color-text: #f8fafc;
-  --color-muted: #94a3b8;
-  --color-accent: #38bdf8;
-  --color-success: #22c55e;
+  /* ============================================================
+     デザインシステム・トークン（プレミアム・ダーク, issue #17）
+     色は --brand-accent を上書きすればテナント別テーマ化できる土台。
+     ============================================================ */
+
+  /* ---- 配色 ---- */
+  --color-bg: #0b1120; /* 背景ベース（深い藍黒） */
+  --color-bg-2: #0f172a;
+  --color-surface: #18233a; /* 不透明面 */
+  --color-surface-2: #223150;
+  --color-glass: rgba(26, 38, 61, 0.55); /* ガラスカード（backdrop-blur 前提） */
+  --color-text: #f6f9ff;
+  --color-muted: #9fb1cc;
+  --color-border: rgba(255, 255, 255, 0.08);
+  --color-border-strong: rgba(255, 255, 255, 0.16);
+
+  /* アクセント（ブランドで差し替える土台） */
+  --brand-accent: #38bdf8;
+  --color-accent: var(--brand-accent);
+  --color-accent-strong: #0ea5e9;
+  --color-accent-ink: #06121f; /* アクセント上の文字色 */
+  --color-accent-soft: rgba(56, 189, 248, 0.16);
+  --color-success: #34d399;
   --color-danger: #f87171;
   --color-warning: #fbbf24;
 
-  /* タッチターゲットは十分大きく、間隔を空ける */
+  /* ---- タッチ・余白 ---- */
   --touch-target-min: 64px;
   --space-sm: 12px;
   --space-md: 16px;
   --space-lg: 24px;
   --space-xl: 40px;
-  --radius-lg: 16px;
 
+  /* ---- 角丸 ---- */
+  --radius-sm: 10px;
+  --radius-md: 14px;
+  --radius-lg: 18px;
+  --radius-xl: 28px;
+  --radius-pill: 9999px;
+
+  /* ---- 影（奥行き） ---- */
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.3);
+  --shadow-md: 0 10px 28px rgba(0, 0, 0, 0.38);
+  --shadow-lg: 0 24px 56px rgba(0, 0, 0, 0.5);
+  --shadow-glow: 0 0 0 1px var(--color-accent-soft), 0 10px 34px rgba(56, 189, 248, 0.2);
+
+  /* ---- モーション ---- */
+  --ease-out: cubic-bezier(0.22, 1, 0.36, 1);
+  --dur-fast: 140ms;
+  --dur-base: 220ms;
+  --dur-slow: 380ms;
+
+  /* ---- タイポ ---- */
+  --font-sans: var(--font-inter), system-ui, -apple-system, 'Hiragino Kaku Gothic ProN',
+    'Noto Sans JP', 'Noto Sans KR', 'Noto Sans SC', sans-serif;
   --font-body: 1.25rem;
   --font-lg: 1.75rem;
-  --font-xl: 2.5rem;
+  --font-xl: 2.75rem;
 }
 
 * {
@@ -32,16 +68,30 @@ body {
   margin: 0;
   padding: 0;
   min-height: 100%;
-  background: var(--color-bg);
+  /* ベースにごく淡いアクセント光を載せて単調さを消す（奥行き） */
+  background:
+    radial-gradient(135% 90% at 50% -15%, rgba(56, 189, 248, 0.07), transparent 55%),
+    radial-gradient(110% 80% at 85% 110%, rgba(34, 80, 128, 0.16), transparent 55%),
+    var(--color-bg);
+  background-attachment: fixed;
   color: var(--color-text);
-  font-family: system-ui, -apple-system, 'Hiragino Kaku Gothic ProN', 'Noto Sans JP', sans-serif;
+  font-family: var(--font-sans);
   font-size: var(--font-body);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
   -webkit-text-size-adjust: 100%;
 }
 
 a {
   color: inherit;
   text-decoration: none;
+}
+
+/* キーボード操作の可視フォーカスリング（a11y）。マウス/タッチでは出さない。 */
+:focus-visible {
+  outline: 3px solid var(--color-accent);
+  outline-offset: 2px;
+  border-radius: var(--radius-sm);
 }
 
 /* ---- 受付端末向けユーティリティ (issue #17) ---- */
@@ -57,12 +107,16 @@ a {
 .screen__title {
   font-size: var(--font-xl);
   margin: 0;
+  font-weight: 800;
+  letter-spacing: -0.02em;
+  line-height: 1.12;
 }
 
 .screen__lead {
   font-size: var(--font-lg);
   color: var(--color-muted);
   margin: 0;
+  line-height: 1.4;
 }
 
 .screen__body {
@@ -86,12 +140,21 @@ a {
   font-size: var(--font-lg);
   font-weight: 700;
   border-radius: var(--radius-lg);
-  border: 2px solid transparent;
+  border: 1px solid transparent;
   cursor: pointer;
   display: inline-flex;
   align-items: center;
   justify-content: center;
   gap: var(--space-sm);
+  transition:
+    transform var(--dur-fast) var(--ease-out),
+    box-shadow var(--dur-fast) var(--ease-out),
+    border-color var(--dur-fast) var(--ease-out),
+    background var(--dur-fast) var(--ease-out);
+}
+
+.btn:active:not(:disabled) {
+  transform: translateY(1px) scale(0.99);
 }
 
 .btn:disabled {
@@ -100,20 +163,35 @@ a {
 }
 
 .btn--primary {
-  background: var(--color-accent);
-  color: #0f172a;
+  background: linear-gradient(180deg, var(--color-accent), var(--color-accent-strong));
+  color: var(--color-accent-ink);
+  box-shadow: var(--shadow-md), inset 0 1px 0 rgba(255, 255, 255, 0.25);
+}
+
+.btn--primary:hover:not(:disabled) {
+  box-shadow: var(--shadow-glow), var(--shadow-md);
 }
 
 .btn--secondary {
   background: var(--color-surface);
   color: var(--color-text);
-  border-color: rgba(255, 255, 255, 0.15);
+  border-color: var(--color-border-strong);
+}
+
+.btn--secondary:hover:not(:disabled) {
+  border-color: var(--color-accent);
+  box-shadow: var(--shadow-sm);
 }
 
 .btn--ghost {
   background: transparent;
   color: var(--color-muted);
-  border-color: rgba(255, 255, 255, 0.15);
+  border-color: var(--color-border-strong);
+}
+
+.btn--ghost:hover:not(:disabled) {
+  color: var(--color-text);
+  border-color: var(--color-text);
 }
 
 .btn--danger {
@@ -135,9 +213,12 @@ a {
 .card {
   min-height: 120px;
   padding: var(--space-lg);
-  background: var(--color-surface);
-  border: 2px solid rgba(255, 255, 255, 0.1);
+  background: var(--color-glass);
+  -webkit-backdrop-filter: blur(14px) saturate(1.15);
+  backdrop-filter: blur(14px) saturate(1.15);
+  border: 1px solid var(--color-border);
   border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-md);
   font-size: var(--font-lg);
   font-weight: 700;
   text-align: left;
@@ -147,10 +228,20 @@ a {
   flex-direction: column;
   justify-content: center;
   gap: var(--space-sm);
+  transition:
+    transform var(--dur-base) var(--ease-out),
+    box-shadow var(--dur-base) var(--ease-out),
+    border-color var(--dur-base) var(--ease-out);
 }
 
 .card:hover {
   border-color: var(--color-accent);
+  transform: translateY(-3px);
+  box-shadow: var(--shadow-lg), var(--shadow-glow);
+}
+
+.card:active {
+  transform: translateY(-1px) scale(0.995);
 }
 
 .card__sub {
@@ -174,15 +265,24 @@ a {
   min-height: var(--touch-target-min);
   padding: var(--space-md);
   font-size: var(--font-lg);
-  border-radius: var(--radius-lg);
-  border: 2px solid var(--color-surface-2);
-  background: var(--color-surface);
+  border-radius: var(--radius-md);
+  border: 1px solid var(--color-border-strong);
+  background: rgba(11, 17, 32, 0.6);
   color: var(--color-text);
+  transition:
+    border-color var(--dur-fast) var(--ease-out),
+    box-shadow var(--dur-fast) var(--ease-out);
+}
+
+.input::placeholder {
+  color: var(--color-muted);
+  opacity: 0.7;
 }
 
 .input:focus {
   outline: none;
   border-color: var(--color-accent);
+  box-shadow: 0 0 0 3px var(--color-accent-soft);
 }
 
 .notice {
@@ -252,12 +352,32 @@ a {
   max-width: 1100px;
 }
 
-/* CTA カードは中央寄せ・主目的が読み取りやすい配置にする（通常カードより縦を強調）。 */
+/* CTA カードは中央寄せ・主目的が読み取りやすい配置にする（通常カードより縦を強調）。
+   待機画面の主役なので、上端にアクセントのきらめきを入れて「タイル」として立たせる。 */
 .card--cta {
-  min-height: 160px;
+  position: relative;
+  overflow: hidden;
+  min-height: 168px;
   align-items: center;
   text-align: center;
   font-size: var(--font-xl);
+  background:
+    linear-gradient(180deg, rgba(56, 189, 248, 0.06), transparent 40%),
+    var(--color-glass);
+}
+
+.card--cta::before {
+  content: '';
+  position: absolute;
+  inset: 0 0 auto 0;
+  height: 3px;
+  background: linear-gradient(90deg, transparent, var(--color-accent), transparent);
+  opacity: 0.5;
+  transition: opacity var(--dur-base) var(--ease-out);
+}
+
+.card--cta:hover::before {
+  opacity: 1;
 }
 
 .card--cta .card__sub {
@@ -510,12 +630,14 @@ a {
   }
 }
 
-/* モーション抑制設定を尊重する。 */
+/* モーション抑制設定を尊重する（デザインシステムの全トランジション/アニメを抑える）。 */
 @media (prefers-reduced-motion: reduce) {
-  .admin-shell__sidebar,
-  .admin-shell__scrim,
-  .admin-shell__content {
-    transition: none;
-    animation: none;
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
   }
 }
