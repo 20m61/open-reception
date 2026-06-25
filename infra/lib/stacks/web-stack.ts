@@ -345,6 +345,14 @@ export class WebStack extends Stack {
           cachePolicy: cloudfront.CachePolicy.CACHING_OPTIMIZED,
           responseHeadersPolicy: staticHeadersPolicy,
         },
+        // 背景画像など受付端末の静的アセット（public/assets/*）も S3 から配信・長期キャッシュする (issue #27)。
+        '/assets/*': {
+          origin: s3Origin,
+          viewerProtocolPolicy: cloudfront.ViewerProtocolPolicy.REDIRECT_TO_HTTPS,
+          allowedMethods: cloudfront.AllowedMethods.ALLOW_GET_HEAD_OPTIONS,
+          cachePolicy: cloudfront.CachePolicy.CACHING_OPTIMIZED,
+          responseHeadersPolicy: staticHeadersPolicy,
+        },
       },
     });
 
