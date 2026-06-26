@@ -49,6 +49,7 @@ export type AuditAction =
   | 'kiosk.restored'
   | 'security.updated'
   | 'voice.updated'
+  | 'branding.updated'
   | 'asset.created'
   | 'asset.updated'
   | 'motion.updated'

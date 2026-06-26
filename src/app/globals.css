@@ -514,6 +514,28 @@ a {
   justify-content: center;
 }
 
+/* テナントのブランド（ロゴ/社名）。待機画面の最上部に置く (#88)。 */
+.kiosk-brand {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-md);
+  flex-wrap: wrap;
+  animation: kiosk-rise var(--dur-slow) var(--ease-out) both;
+}
+
+.kiosk-brand__logo {
+  height: 64px;
+  max-width: 280px;
+  object-fit: contain;
+}
+
+.kiosk-brand__name {
+  font-size: var(--font-lg);
+  font-weight: 800;
+  letter-spacing: 0.01em;
+}
+
 .kiosk-idle__head {
   display: flex;
   flex-direction: column;
@@ -660,6 +682,19 @@ a {
   align-items: center;
   text-align: left;
   gap: var(--space-lg);
+}
+
+/* ブランド有り（#88）: 横置きはブランド行を上に足す。非ブランドのレイアウトは変えない。 */
+.screen[data-kiosk-layout='ipad-landscape'] .kiosk-idle--branded {
+  grid-template-areas:
+    'brand brand'
+    'avatar head'
+    'avatar actions';
+}
+
+.screen[data-kiosk-layout='ipad-landscape'] .kiosk-idle--branded .kiosk-brand {
+  grid-area: brand;
+  justify-content: flex-start;
 }
 
 .screen[data-kiosk-layout='ipad-landscape'] .kiosk-idle__avatar {

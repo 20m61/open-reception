@@ -21,6 +21,7 @@ import { makeT, DEFAULT_LOCALE, type Locale, type MessageKey } from '@/lib/i18n'
 import { LOCALE_LANGUAGE_CODE } from '@/lib/voice/locale-voice';
 import { FlowStepper } from './FlowStepper';
 import { quickActionIcon } from './quick-action-icons';
+import { normalizeAccentColor, type BrandingSettings } from '@/domain/branding/types';
 import type { QuickActionIntent } from './quick-actions';
 import { KioskCallView } from './KioskCallView';
 import { CheckinFlow } from './CheckinFlow';
@@ -157,6 +158,8 @@ export function KioskFlow() {
   const [speakSettings, setSpeakSettings] = useState<SpeakSettings>({ ttsEnabled: false, rate: 1, volume: 1, language: 'ja-JP' });
   const [sttEnabled, setSttEnabled] = useState(false);
   const [backgroundUrl, setBackgroundUrl] = useState<string | undefined>(undefined);
+  // テナントのブランド設定（ロゴ/アクセント色/社名）。「会社の顔」テーマ注入 (#88)。
+  const [branding, setBranding] = useState<BrandingSettings>({});
   const [vrmUrl, setVrmUrl] = useState<string | undefined>(undefined);
   const [avatarFallbackUrl, setAvatarFallbackUrl] = useState<string | undefined>(undefined);
   // 状態別モーション URL（#31）。default URL に fallback して VRM レンダラへ渡す。
@@ -274,6 +277,24 @@ export function KioskFlow() {
         setAvatarFallbackUrl(assets.fallbackImageUrl);
       } catch {
         /* 取得失敗時は既定背景 */
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  // テナントのブランド設定を取得（#88）。失敗時は汎用テーマのまま。
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await fetch('/api/kiosk/branding');
+        if (!res.ok) return;
+        const data = (await res.json()) as BrandingSettings;
+        if (!cancelled) setBranding(data);
+      } catch {
+        /* 取得失敗時は汎用テーマ */
       }
     })();
     return () => {
@@ -584,9 +605,14 @@ export function KioskFlow() {
   // 配置は CSS が data-kiosk-layout 属性で切り替える。
   const layout = useKioskLayout();
 
-  const backgroundStyle: React.CSSProperties = backgroundUrl
-    ? { backgroundImage: `url(${backgroundUrl})`, backgroundSize: 'cover', backgroundPosition: 'center' }
-    : {};
+  // ブランドのアクセント色で CSS 変数 --brand-accent を上書きしてテーマ化する (#88)。
+  const brandAccent = normalizeAccentColor(branding.accentColor);
+  const backgroundStyle: React.CSSProperties = {
+    ...(backgroundUrl
+      ? { backgroundImage: `url(${backgroundUrl})`, backgroundSize: 'cover', backgroundPosition: 'center' }
+      : {}),
+    ...(brandAccent ? ({ '--brand-accent': brandAccent } as React.CSSProperties) : {}),
+  };
 
   return (
     <main
@@ -671,6 +697,7 @@ export function KioskFlow() {
               startWithQuickAction,
               locale,
               setLocale,
+              branding,
             )}
           </div>
           {/* 退館チェックアウト導線 (issue #102)。待機中のみ小さく常設する（非破壊）。 */}
@@ -950,6 +977,7 @@ function renderScreen(
   onQuickAction: (action: QuickAction) => void,
   locale: Locale,
   onLocaleChange: (next: Locale) => void,
+  branding: BrandingSettings,
 ) {
   const tr = makeT(locale);
   switch (data.state) {
@@ -963,6 +991,7 @@ function renderScreen(
           motionUrl={motionUrl}
           locale={locale}
           onLocaleChange={onLocaleChange}
+          branding={branding}
         />
       );
     case 'selectingPurpose':
@@ -1082,6 +1111,7 @@ function IdleView({
   motionUrl,
   locale,
   onLocaleChange,
+  branding,
 }: {
   onQuickAction: (action: QuickAction) => void;
   guidance: string;
@@ -1090,6 +1120,7 @@ function IdleView({
   motionUrl?: string;
   locale: Locale;
   onLocaleChange: (next: Locale) => void;
+  branding: BrandingSettings;
 }) {
   const actions = quickActionsFor('idle');
   const tr = makeT(locale);
@@ -1105,8 +1136,22 @@ function IdleView({
     callStaff: 'start-reception',
     checkin: 'start-checkin',
   };
+  const hasBrand = Boolean(branding.logoUrl || branding.companyName);
   return (
-    <div className="screen__body kiosk-idle" data-testid="kiosk-idle">
+    <div
+      className={`screen__body kiosk-idle${hasBrand ? ' kiosk-idle--branded' : ''}`}
+      data-testid="kiosk-idle"
+    >
+      {/* テナントのブランド（ロゴ/社名）。待機画面を「その会社の受付」に見せる (#88)。 */}
+      {hasBrand ? (
+        <div className="kiosk-brand" data-testid="kiosk-brand">
+          {branding.logoUrl ? (
+            // eslint-disable-next-line @next/next/no-img-element
+            <img className="kiosk-brand__logo" src={branding.logoUrl} alt={branding.companyName ?? ''} />
+          ) : null}
+          {branding.companyName ? <span className="kiosk-brand__name">{branding.companyName}</span> : null}
+        </div>
+      ) : null}
       {/*
         #123 アバター状態同期。AvatarGuide が screenState から発話/字幕/モーションを導出し、
         idle では「AI受付です…」の字幕で AI 受付であることを初期体験で明示する。音声は KioskFlow 側の
