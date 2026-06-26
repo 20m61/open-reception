@@ -497,6 +497,36 @@ a {
   max-width: 360px;
 }
 
+/*
+ * #123 アバター常設コンパニオン。待機画面以外でも受付に付き添う。左下に控えめに置き、
+ * pointer-events:none で操作を妨げない（逃げ道バーは中央なので左下は安全）。
+ */
+.kiosk-avatar-companion {
+  position: fixed;
+  left: var(--space-md);
+  bottom: var(--space-md);
+  width: 200px;
+  max-width: 26vw;
+  z-index: 5;
+  pointer-events: none;
+  animation: kiosk-rise var(--dur-slow) var(--ease-out) both;
+}
+
+.kiosk-avatar-companion .kiosk-avatar-guide {
+  max-width: 100%;
+}
+
+/* コンパニオンは字幕を出さない（各ステータス画面が独自メッセージを持つため重複/競合を避ける）。
+   wrapper は aria-hidden 済みなので a11y 上の損失はない。 */
+.kiosk-avatar-companion [data-testid='avatar-subtitle'] {
+  display: none;
+}
+
+/* 縦置きは下部に操作が密集しがちなので、companion はさらに控えめにする。 */
+.screen[data-kiosk-layout='ipad-portrait'] .kiosk-avatar-companion {
+  width: 150px;
+}
+
 /* =========================================================================
  * タッチファースト受付導線 (issue #121 / Epic #119)
  *
