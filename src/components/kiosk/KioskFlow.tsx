@@ -651,25 +651,28 @@ export function KioskFlow() {
       ) : (
         <>
           <FlowStepper state={data.state} locale={locale} />
-          {renderScreen(
-            data,
-            dispatch,
-            complete,
-            handleFallback,
-            directory,
-            guidanceIdle,
-            vrmUrl,
-            avatarFallbackUrl,
-            sttEnabled,
-            motionUrl,
-            vonageCallId,
-            () => setMode('checkin'),
-            staffResponse,
-            handleStaffResponseFallback,
-            startWithQuickAction,
-            locale,
-            setLocale,
-          )}
+          {/* 画面遷移ごとに key を変え、上品な入場アニメを再生する（#119 UX 仕上げ）。 */}
+          <div className="screen-anim" key={data.state}>
+            {renderScreen(
+              data,
+              dispatch,
+              complete,
+              handleFallback,
+              directory,
+              guidanceIdle,
+              vrmUrl,
+              avatarFallbackUrl,
+              sttEnabled,
+              motionUrl,
+              vonageCallId,
+              () => setMode('checkin'),
+              staffResponse,
+              handleStaffResponseFallback,
+              startWithQuickAction,
+              locale,
+              setLocale,
+            )}
+          </div>
           {/* 退館チェックアウト導線 (issue #102)。待機中のみ小さく常設する（非破壊）。 */}
           {data.state === 'idle' ? <CheckoutLink /> : null}
           {/*
