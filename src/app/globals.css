@@ -359,6 +359,9 @@ a {
   -webkit-backdrop-filter: blur(6px);
   backdrop-filter: blur(6px);
   animation: kiosk-rise var(--dur-base) var(--ease-out) both;
+  /* 来訪者を罠にしない: 背景はクリック透過。どこを操作しても延長され（window リスナ）、
+     裏の操作もそのまま通る。明示の「続ける」はパネル側で受ける。 */
+  pointer-events: none;
 }
 
 .inactivity-overlay__panel {
@@ -373,6 +376,7 @@ a {
   flex-direction: column;
   align-items: center;
   gap: var(--space-md);
+  pointer-events: auto;
 }
 
 .inactivity-overlay__title {
@@ -392,6 +396,27 @@ a {
   font-weight: 800;
   color: var(--color-accent);
   font-variant-numeric: tabular-nums;
+}
+
+/* 画面遷移の入場アニメ用ラッパ（#119 UX 仕上げ）。.screen の列レイアウトを引き継ぐ。 */
+.screen-anim {
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 auto;
+  min-height: 0;
+  gap: var(--space-lg);
+  animation: screen-enter var(--dur-base) var(--ease-out);
+}
+
+@keyframes screen-enter {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
 }
 
 .card__sub {
