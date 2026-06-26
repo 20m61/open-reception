@@ -81,6 +81,24 @@ const INACTIVITY_WARNING_MS = 10000;
 /** 端末有効性・設定変更を検知する heartbeat 間隔 (issue #30)。 */
 const HEARTBEAT_INTERVAL_MS = 30000;
 
+/**
+ * アバター常設コンパニオン（#123）を表示する状態。中央寄せで余白のあるステータス画面に限定し、
+ * 選択/入力画面（カード・フォームでコンテンツが密集）では重なりを避けて出さない。
+ */
+const AVATAR_COMPANION_STATES: ReadonlySet<ReceptionState> = new Set([
+  'calling',
+  'connected',
+  'timeout',
+  'failed',
+  'fallback',
+  'completed',
+  'cancelled',
+]);
+
+function showAvatarCompanion(state: ReceptionState): boolean {
+  return AVATAR_COMPANION_STATES.has(state);
+}
+
 type Target = { type: ReceptionTargetType; id: string; label: string };
 type CallOutcome = 'connected' | 'timeout' | 'failed';
 
@@ -700,6 +718,25 @@ export function KioskFlow() {
               branding,
             )}
           </div>
+          {/*
+            #123 アバター常設コンパニオン。screenState（=data.state）から表情/モーション/字幕を
+            導出し受付に「付き添う」。pointer-events:none で操作は妨げない。
+            選択/入力画面はカードや入力欄でコンテンツが密集し重なるため出さず、中央寄せで余白のある
+            ステータス画面（呼び出し中/結果/お詫び/完了）に限定する。ここはアバターの感情表現
+            （呼び出し中=気遣い・完了=お見送り・失敗=お詫び）が最も活きる場面でもある。
+            待機画面は IdleView 側がヒーローとして大きく表示する。
+          */}
+          {showAvatarCompanion(data.state) ? (
+            <div className="kiosk-avatar-companion" aria-hidden="true">
+              <AvatarGuide
+                screenState={data.state}
+                locale={locale}
+                vrmUrl={vrmUrl}
+                fallbackImageUrl={avatarFallbackUrl}
+                defaultMotionUrl={motionUrl}
+              />
+            </div>
+          ) : null}
           {/* 退館チェックアウト導線 (issue #102)。待機中のみ小さく常設する（非破壊）。 */}
           {data.state === 'idle' ? <CheckoutLink /> : null}
           {/*
