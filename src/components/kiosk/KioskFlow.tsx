@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useEffect, useMemo, useReducer, useState } from 'react';
+import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from 'react';
 import {
   RECEPTION_PURPOSES,
   type ReceptionPurposeId,
@@ -72,6 +72,11 @@ const AUTO_RESET_MS = 6000;
  * 公共端末に入力途中の個人情報を残さないための上限。`?inactivityMs=` で E2E から短縮できる。
  */
 const INACTIVITY_RESET_MS = 60000;
+/**
+ * リセット前にカウントダウン警告を出す時間 (issue #125 UX, "don't surprise-expire")。
+ * 残り WARNING ミリ秒で警告を表示し、来訪者が操作すれば延長する。
+ */
+const INACTIVITY_WARNING_MS = 10000;
 /** 端末有効性・設定変更を検知する heartbeat 間隔 (issue #30)。 */
 const HEARTBEAT_INTERVAL_MS = 30000;
 
@@ -145,6 +150,10 @@ export function KioskFlow() {
   const [guidanceIdle, setGuidanceIdle] = useState('ようこそ。画面にタッチして受付を開始してください。');
   // 受付の表示言語 (#103)。来訪者が待機画面の LanguageSwitcher で切替える（セッション内で保持）。
   const [locale, setLocale] = useState<Locale>(DEFAULT_LOCALE);
+  // 無操作リセット直前のカウントダウン警告（#125 UX, "don't surprise-expire"）。null=非表示。
+  const [inactivitySeconds, setInactivitySeconds] = useState<number | null>(null);
+  // 「続ける」ボタンから無操作タイマーを延長するための ref（実体は inactivity effect 内で設定）。
+  const extendInactivityRef = useRef<() => void>(() => {});
   const [speakSettings, setSpeakSettings] = useState<SpeakSettings>({ ttsEnabled: false, rate: 1, volume: 1, language: 'ja-JP' });
   const [sttEnabled, setSttEnabled] = useState(false);
   const [backgroundUrl, setBackgroundUrl] = useState<string | undefined>(undefined);
@@ -389,21 +398,58 @@ export function KioskFlow() {
   // (issue #125)。RESET は INITIAL を返すため、入力済みの氏名等 PII は持ち越されない。
   // 来訪者がタッチ/キー操作するたびにタイマーを延長する。
   useEffect(() => {
-    if (!shouldResetOnInactivity(data.state)) return;
+    if (!shouldResetOnInactivity(data.state)) {
+      setInactivitySeconds(null);
+      return;
+    }
     const params = new URLSearchParams(window.location.search);
     const override = Number(params.get('inactivityMs'));
     const limit = Number.isFinite(override) && override > 0 ? override : INACTIVITY_RESET_MS;
-    let timer = window.setTimeout(() => dispatch({ type: 'RESET' }), limit);
-    const bump = () => {
-      window.clearTimeout(timer);
-      timer = window.setTimeout(() => dispatch({ type: 'RESET' }), limit);
+    // 警告（カウントダウン）に割く時間は limit を超えない範囲で確保する。
+    const warnMs = Math.min(INACTIVITY_WARNING_MS, Math.max(0, limit - 500));
+    const warnAfter = Math.max(0, limit - warnMs);
+
+    let warnTimer = 0;
+    let interval = 0;
+
+    // 残り warnMs になったらカウントダウン警告を表示し、毎秒減らして 0 でリセットする。
+    const startCountdown = () => {
+      let remaining = Math.max(1, Math.ceil(warnMs / 1000));
+      setInactivitySeconds(remaining);
+      interval = window.setInterval(() => {
+        remaining -= 1;
+        if (remaining <= 0) {
+          window.clearInterval(interval);
+          dispatch({ type: 'RESET' });
+        } else {
+          setInactivitySeconds(remaining);
+        }
+      }, 1000);
     };
+
+    const schedule = () => {
+      warnTimer = window.setTimeout(startCountdown, warnAfter);
+    };
+
+    // 何か操作されたら警告を消し、無操作タイマーを最初から測り直す（=延長）。
+    const bump = () => {
+      window.clearTimeout(warnTimer);
+      window.clearInterval(interval);
+      interval = 0;
+      setInactivitySeconds(null);
+      schedule();
+    };
+
+    extendInactivityRef.current = bump;
+    schedule();
     window.addEventListener('pointerdown', bump);
     window.addEventListener('keydown', bump);
     return () => {
-      window.clearTimeout(timer);
+      window.clearTimeout(warnTimer);
+      window.clearInterval(interval);
       window.removeEventListener('pointerdown', bump);
       window.removeEventListener('keydown', bump);
+      setInactivitySeconds(null);
     };
   }, [data.state]);
 
@@ -552,6 +598,13 @@ export function KioskFlow() {
       data-kiosk-layout={layout}
       style={backgroundStyle}
     >
+      {inactivitySeconds !== null ? (
+        <InactivityWarning
+          seconds={inactivitySeconds}
+          locale={locale}
+          onContinue={() => extendInactivityRef.current()}
+        />
+      ) : null}
       {!online ? (
         <div className="notice notice--warning" data-testid="kiosk-offline" style={{ marginBottom: 'var(--space-md)' }}>
           通信が不安定です。復帰までしばらくお待ちください。
@@ -1546,6 +1599,48 @@ function FallbackView({ onReset, locale }: { onReset: () => void; locale: Locale
       <button type="button" className="btn btn--ghost" data-testid="fallback-reset" onClick={onReset} lang={locale}>
         {tr('reception.reset')}
       </button>
+    </div>
+  );
+}
+
+/**
+ * 無操作リセット直前のカウントダウン警告 (issue #125 UX, "don't surprise-expire")。
+ * 突然のリセットで来訪者を驚かせず、プライバシーのために戻ることを予告し、続行手段を与える。
+ */
+function InactivityWarning({
+  seconds,
+  locale,
+  onContinue,
+}: {
+  seconds: number;
+  locale: Locale;
+  onContinue: () => void;
+}) {
+  const tr = makeT(locale);
+  return (
+    <div
+      className="inactivity-overlay"
+      data-testid="inactivity-warning"
+      role="alertdialog"
+      aria-live="assertive"
+      aria-label={tr('reception.inactivityTitle')}
+      lang={locale}
+    >
+      <div className="inactivity-overlay__panel">
+        <h2 className="inactivity-overlay__title">{tr('reception.inactivityTitle')}</h2>
+        <p className="inactivity-overlay__body">{tr('reception.inactivityBody')}</p>
+        <p className="inactivity-overlay__count" data-testid="inactivity-countdown">
+          {tr('reception.inactivityCountdown', { seconds })}
+        </p>
+        <button
+          type="button"
+          className="btn btn--primary"
+          data-testid="inactivity-continue"
+          onClick={onContinue}
+        >
+          {tr('reception.inactivityContinue')}
+        </button>
+      </div>
     </div>
   );
 }

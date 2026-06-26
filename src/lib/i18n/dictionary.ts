@@ -93,7 +93,12 @@ export type MessageKey =
   | 'reception.step.purpose'
   | 'reception.step.target'
   | 'reception.step.info'
-  | 'reception.step.confirm';
+  | 'reception.step.confirm'
+  // 無操作タイムアウトのカウントダウン警告（#125 UX・{seconds} 補間）
+  | 'reception.inactivityTitle'
+  | 'reception.inactivityBody'
+  | 'reception.inactivityCountdown'
+  | 'reception.inactivityContinue';
 
 /** 既定 locale 辞書は全キー網羅必須。他 locale は Partial 可（欠落は ja へフォールバック）。 */
 type DefaultDictionary = Record<MessageKey, string>;
@@ -167,6 +172,10 @@ const ja: DefaultDictionary = {
   'reception.step.target': '相手',
   'reception.step.info': '情報',
   'reception.step.confirm': '確認',
+  'reception.inactivityTitle': 'まだご利用中ですか？',
+  'reception.inactivityBody': 'プライバシー保護のため、まもなく最初の画面に戻ります。',
+  'reception.inactivityCountdown': '{seconds} 秒後にリセットします',
+  'reception.inactivityContinue': '続ける',
 };
 
 const en: LocaleDictionary = {
@@ -237,6 +246,10 @@ const en: LocaleDictionary = {
   'reception.step.target': 'Person',
   'reception.step.info': 'Details',
   'reception.step.confirm': 'Confirm',
+  'reception.inactivityTitle': 'Are you still there?',
+  'reception.inactivityBody': 'For your privacy, this will return to the start screen shortly.',
+  'reception.inactivityCountdown': 'Resetting in {seconds}s',
+  'reception.inactivityContinue': 'Continue',
 };
 
 const ko: LocaleDictionary = {
@@ -307,6 +320,10 @@ const ko: LocaleDictionary = {
   'reception.step.target': '대상',
   'reception.step.info': '정보',
   'reception.step.confirm': '확인',
+  'reception.inactivityTitle': '아직 이용 중이신가요?',
+  'reception.inactivityBody': '개인정보 보호를 위해 곧 첫 화면으로 돌아갑니다.',
+  'reception.inactivityCountdown': '{seconds}초 후 초기화됩니다',
+  'reception.inactivityContinue': '계속',
 };
 
 const zh: LocaleDictionary = {
@@ -377,6 +394,10 @@ const zh: LocaleDictionary = {
   'reception.step.target': '对象',
   'reception.step.info': '信息',
   'reception.step.confirm': '确认',
+  'reception.inactivityTitle': '您还在吗？',
+  'reception.inactivityBody': '为保护隐私，即将返回首页。',
+  'reception.inactivityCountdown': '{seconds} 秒后重置',
+  'reception.inactivityContinue': '继续',
 };
 
 /**
