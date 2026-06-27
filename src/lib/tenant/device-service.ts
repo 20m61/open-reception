@@ -20,7 +20,13 @@ import { canAccessSite } from '@/domain/tenant/authorization';
 import type { Actor } from '@/domain/tenant/authorization';
 import type { AuditAction } from '@/domain/reception/log';
 import {
+  issueEnrollmentToken,
+  newEnrollmentJti,
+  type EnrollmentClaims,
+} from '@/lib/auth/kiosk-enrollment';
+import {
   asDeviceId,
+  asTenantId,
   type Device,
   type DeviceId,
   type DeviceKind,
@@ -71,6 +77,18 @@ export type DeviceView = Device & {
   /** 派生した稼働状態。 */
   connectivity: DeviceConnectivity;
 };
+
+/**
+ * エンロール発行の結果。`enrollment` は **一過性**（一度だけ返す）。
+ * 平文 token は永続化・監査・再取得しない（docs/reception-issuance-design.md §3）。
+ */
+export type EnrollmentIssue = {
+  view: DeviceView;
+  enrollment: { token: string; expiresAt: string };
+};
+
+/** consumeEnrollment の失敗理由。enroll API の HTTP マッピングに使う。 */
+export type ConsumeFailure = 'not_found' | 'used' | 'revoked';
 
 export type CreateDeviceInput = {
   tenantId: TenantId;
@@ -251,6 +269,71 @@ export class DeviceService {
     await this.devices.putDevice(next);
     await this.audit('device.token_reissued', next);
     return { ok: true, value: this.toView(next) };
+  }
+
+  /**
+   * 受付 URL/QR 用のエンロールトークンを発行する（危険操作・確認ダイアログ前提は UI 側）。
+   * サイト write 認可が必要。新 jti を採番して `enrollmentTokenId` に保存し（旧 URL を無効化）、
+   * `tokenRegistered=true` を立てる。
+   *
+   * セキュリティ: 平文トークンは `enrollment`（一過性フィールド）でのみ一度返す。**view・監査・
+   * 永続化のいずれにも平文を出さない**（docs/reception-issuance-design.md §3, #105）。
+   * 監査: device.token_reissued（metadata は id/name/siteId/status のみ）。
+   */
+  async issueEnrollment(
+    actor: Actor,
+    tenantId: TenantId,
+    id: DeviceId,
+    ttlMs?: number,
+  ): Promise<ServiceResult<EnrollmentIssue>> {
+    const found = await this.devices.getDevice(tenantId, id);
+    if (!found) return fail('not_found', 'device not found');
+    if (!canAccessSite(actor, tenantId, found.siteId, 'write'))
+      return fail('forbidden', 'actor cannot issue enrollment for this device');
+
+    const jti = newEnrollmentJti();
+    const { token, expiresAt } = await issueEnrollmentToken(
+      { tenantId: String(tenantId), siteId: String(found.siteId), deviceId: String(found.id), jti },
+      ttlMs,
+      this.now().getTime(),
+    );
+    const next: Device = {
+      ...found,
+      tokenRegistered: true,
+      enrollmentTokenId: jti,
+      updatedAt: this.now().toISOString(),
+    };
+    await this.devices.putDevice(next);
+    await this.audit('device.token_reissued', next);
+    return { ok: true, value: { view: this.toView(next), enrollment: { token, expiresAt } } };
+  }
+
+  /**
+   * エンロールトークンを消費し、kiosk セッション交換用の kioskId を返す。
+   *
+   * 受付端末自身のパス（/api/kiosk/enroll）から呼ぶ。管理 actor は介在しないため認可しない
+   * （recordHeartbeat / kiosk authorize と同じ扱い）。守りは署名（呼び出し側で検証済み）・単回性・
+   * 端末状態で行う。単回性: `jti === enrollmentTokenId` の時のみ成功し、成功時に消去する。
+   *   - 端末なし → not_found / jti 不一致（消費済 or 再発行後）→ used / revoked → revoked。
+   * 成功時に lastSeenAt を更新する（初回起動を稼働反映）。監査しない（端末起動の高頻度パス）。
+   */
+  async consumeEnrollment(
+    claims: EnrollmentClaims,
+  ): Promise<{ ok: true; kioskId: string } | { ok: false; reason: ConsumeFailure }> {
+    const tenantId = asTenantId(claims.tenantId);
+    const device = await this.devices.getDevice(tenantId, asDeviceId(claims.deviceId));
+    if (!device) return { ok: false, reason: 'not_found' };
+    if (!device.enrollmentTokenId || device.enrollmentTokenId !== claims.jti)
+      return { ok: false, reason: 'used' };
+    if (device.status === 'revoked') return { ok: false, reason: 'revoked' };
+
+    const next: Device = {
+      ...device,
+      enrollmentTokenId: undefined,
+      lastSeenAt: this.now().toISOString(),
+    };
+    await this.devices.putDevice(next);
+    return { ok: true, kioskId: String(device.id) };
   }
 
   /**
