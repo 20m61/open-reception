@@ -460,6 +460,9 @@ const dialogBackdrop: React.CSSProperties = {
 };
 const dialogBox: React.CSSProperties = {
   maxWidth: 440,
+  // 縦の低い解像度でも見切れないよう、内部スクロールで収める（発行モーダルは QR で背が高い, M1）。
+  maxHeight: '90vh',
+  overflowY: 'auto',
   padding: 24,
   borderRadius: 12,
   background: 'var(--color-bg)',

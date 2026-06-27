@@ -20,6 +20,8 @@ export default function HomePage() {
         justifyContent: 'center',
         padding: 'var(--space-lg)',
         textAlign: 'center',
+        wordBreak: 'keep-all',
+        overflowWrap: 'anywhere',
       }}
     >
       <div style={{ display: 'grid', gap: 'var(--space-sm)', maxWidth: 560 }}>

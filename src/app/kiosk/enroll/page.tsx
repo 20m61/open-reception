@@ -12,13 +12,19 @@ import { useRouter } from 'next/navigation';
  */
 type Phase =
   | { kind: 'working' }
-  | { kind: 'error'; title: string; detail: string };
+  | { kind: 'error'; title: string; detail: string; retryable: boolean };
 
-type ErrorCopy = { title: string; detail: string };
+/**
+ * `retryable`: 同じ URL の再試行で復帰しうるか。トークンが無効/使用済み等の端末エラーは
+ * 何度叩いても直らないため false（再試行ボタンを出さず「管理画面で再発行」を案内）。通信エラー
+ * のみ true（一時的なため再試行が有効）。
+ */
+type ErrorCopy = { title: string; detail: string; retryable: boolean };
 
 const FALLBACK_ERROR: ErrorCopy = {
   title: 'URLが無効か期限切れです',
   detail: '管理画面で受付URLを再発行してください。',
+  retryable: false,
 };
 
 /** API のエラーコード → 受付端末向けの平易なメッセージ。 */
@@ -26,29 +32,34 @@ const ERROR_MESSAGE: Record<string, ErrorCopy> = {
   missing: {
     title: 'URLが不正です',
     detail: 'QRコードまたはURLをもう一度確認してください。',
+    retryable: false,
   },
   invalid_token: FALLBACK_ERROR,
   used: {
     title: 'このURLは既に使用されています',
     detail: '管理画面で受付URLを再発行してください。',
+    retryable: false,
   },
   not_found: {
     title: '端末が見つかりません',
     detail: '管理画面で端末の登録を確認してください。',
+    retryable: false,
   },
   revoked: {
     title: 'この端末は無効化されています',
     detail: '管理画面で端末を有効化してから再発行してください。',
+    retryable: false,
   },
   network: {
     title: '通信に失敗しました',
     detail: 'ネットワークを確認して、もう一度お試しください。',
+    retryable: true,
   },
 };
 
 function toError(code: string): Phase {
   const m = ERROR_MESSAGE[code] ?? FALLBACK_ERROR;
-  return { kind: 'error', title: m.title, detail: m.detail };
+  return { kind: 'error', title: m.title, detail: m.detail, retryable: m.retryable };
 }
 
 export default function KioskEnrollPage() {
@@ -115,26 +126,31 @@ export default function KioskEnrollPage() {
           受付端末を準備しています…
         </p>
       ) : (
-        <div data-testid="enroll-error" style={{ maxWidth: 480, display: 'grid', gap: 'var(--space-md)' }}>
+        <div
+          data-testid="enroll-error"
+          style={{ maxWidth: 480, display: 'grid', gap: 'var(--space-md)', wordBreak: 'keep-all' }}
+        >
           <h1 style={{ fontSize: '1.6rem', margin: 0 }}>{phase.title}</h1>
           <p style={{ opacity: 0.85, margin: 0 }}>{phase.detail}</p>
-          <button
-            data-testid="enroll-retry"
-            onClick={() => void enroll()}
-            style={{
-              minHeight: 'var(--touch-target-min)',
-              padding: '0 24px',
-              borderRadius: 'var(--radius-lg)',
-              border: '1px solid rgba(255,255,255,0.2)',
-              background: 'var(--color-surface)',
-              color: 'var(--color-text)',
-              fontWeight: 700,
-              fontSize: '1.05rem',
-              cursor: 'pointer',
-            }}
-          >
-            再試行
-          </button>
+          {phase.retryable ? (
+            <button
+              data-testid="enroll-retry"
+              onClick={() => void enroll()}
+              style={{
+                minHeight: 'var(--touch-target-min)',
+                padding: '0 24px',
+                borderRadius: 'var(--radius-lg)',
+                border: '1px solid rgba(255,255,255,0.2)',
+                background: 'var(--color-surface)',
+                color: 'var(--color-text)',
+                fontWeight: 700,
+                fontSize: '1.05rem',
+                cursor: 'pointer',
+              }}
+            >
+              再試行
+            </button>
+          ) : null}
         </div>
       )}
     </main>

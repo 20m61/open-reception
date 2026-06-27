@@ -163,7 +163,10 @@ test.describe('理想ジャーニーの堅牢性: 単回URL / 再起動復帰 / 
 
   test('無効なトークンのURLは安全に弾かれ、再発行を案内する', async ({ page }) => {
     await page.goto('/kiosk/enroll?token=not-a-valid-token');
-    await expect(page.getByTestId('enroll-error')).toBeVisible({ timeout: 15_000 });
-    await expect(page.getByTestId('enroll-retry')).toBeVisible();
+    const error = page.getByTestId('enroll-error');
+    await expect(error).toBeVisible({ timeout: 15_000 });
+    // 端末エラー（再試行しても直らない）では再試行ボタンを出さず、再発行を案内する（M2）。
+    await expect(error).toContainText('再発行');
+    await expect(page.getByTestId('enroll-retry')).toHaveCount(0);
   });
 });

@@ -587,10 +587,19 @@ a {
   min-height: 168px;
   align-items: center;
   text-align: center;
-  font-size: var(--font-xl);
+  /* L1: 2カラム時に「担当者を呼ぶ」等の 5–6 文字見出しが 1 行に収まる大きさにし、
+     「呼／ぶ」のような語中改行を防ぐ。広い画面では --font-xl まで拡大（#119 スキャン性）。 */
+  font-size: clamp(2rem, 3.6vw, var(--font-xl));
+  /* CJK 連なりを語として扱い、語中での折り返しを避ける（見出し・説明文に継承される）。 */
+  word-break: keep-all;
   background:
     linear-gradient(180deg, rgba(56, 189, 248, 0.06), transparent 40%),
     var(--color-glass);
+}
+
+/* L2: catch-all（その他のご用件）は全幅にし、5 枚で最終行が片寄る不揃いを解消する。 */
+.kiosk-quick-actions .card[data-intent='other'] {
+  grid-column: 1 / -1;
 }
 
 .card--cta::before {
@@ -609,6 +618,10 @@ a {
 
 .card--cta .card__sub {
   text-align: center;
+  /* 説明文は通常の折り返しへ戻す。keep-all を継承したままだと長文が折り返せず横にあふれて
+     見切れるため、ここで打ち消す（見出しのみ keep-all を効かせる, L1）。 */
+  word-break: normal;
+  overflow-wrap: anywhere;
 }
 
 /* CTA カードのアイコン（スキャン性向上, #119）。アクセント色のラインアイコン。 */
