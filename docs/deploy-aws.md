@@ -84,8 +84,11 @@ server Lambda にはデプロイ時に環境変数を渡す。`.env.example` の
   ```
 
 - **機密**（`ADMIN_PASSWORD` / `ADMIN_SESSION_SECRET` / `KIOSK_SESSION_SECRET` /
-  `ENTRA_*` / `VONAGE_*`）は平文でコミット・履歴に残さないこと。次の **方式 B（推奨）** か
-  方式 A を使う。
+  `KIOSK_ENROLLMENT_SECRET` / `ENTRA_*` / `VONAGE_*`）は平文でコミット・履歴に残さないこと。
+  次の **方式 B（推奨）** か方式 A を使う。
+  > **注意**: `KIOSK_ENROLLMENT_SECRET`（受付URL/QR の署名鍵）は実デプロイ（Lambda）で**必須**。
+  > 未設定だと未認証 `/api/kiosk/enroll` が fail-closed で 500 になり、発行/エンロールが機能しない
+  > （`docs/reception-issuance-design.md`）。Secrets/appEnv の JSON に必ず含める。
 
 #### 方式 A: appEnv 平文注入（従来）
 
