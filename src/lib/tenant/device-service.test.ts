@@ -255,50 +255,26 @@ describe('DeviceService.setEnabled (#87 inc2)', () => {
     expect(r.ok).toBe(false);
     if (!r.ok) expect(r.error.code).toBe('forbidden');
   });
-});
 
-describe('DeviceService.reissueToken (#87 inc2)', () => {
-  it('再発行で tokenRegistered=true になり device.token_reissued を監査する', async () => {
-    const { svc, audits } = makeService();
-    // まず未登録状態にしておく。
-    const created = await svc.create(tenantAdminA, { tenantId: T_A, siteId: S_A1, name: '新' });
-    expect(created.ok).toBe(true);
-    if (!created.ok) return;
-    const r = await svc.reissueToken(tenantAdminA, T_A, created.value.id);
-    expect(r.ok).toBe(true);
-    if (r.ok) expect(r.value.tokenRegistered).toBe(true);
-    expect(audits.map((a) => a.action)).toEqual(['device.token_reissued']);
-  });
+  it('無効化は保留中のエンロール URL を無効化する（再有効化で復活しない）', async () => {
+    const { svc, store } = makeService();
+    const issued = await svc.issueEnrollment(developer, T_A, D_A1);
+    if (!issued.ok) throw new Error('issue failed');
+    const jti = extractJti(issued.value.enrollment.token);
 
-  it('監査・レスポンスに token 平文を含めない', async () => {
-    const { svc, audits } = makeService();
-    const r = await svc.reissueToken(tenantAdminA, T_A, D_A1);
-    expect(r.ok).toBe(true);
-    // レスポンスに token 系フィールドが無いこと。
-    if (r.ok) {
-      expect(r.value).not.toHaveProperty('token');
-      expect(r.value).not.toHaveProperty('tokenHash');
-      expect(r.value).not.toHaveProperty('secret');
-    }
-    // 監査 metadata に token 系の値が無いこと。
-    const meta = audits[0]?.metadata ?? {};
-    for (const key of Object.keys(meta)) {
-      expect(key.toLowerCase()).not.toContain('token');
-      expect(key.toLowerCase()).not.toContain('secret');
-    }
-  });
+    // revoke で enrollmentTokenId が消える。
+    await svc.setEnabled(tenantAdminA, T_A, D_A1, false);
+    expect((await store.devices.getDevice(T_A, D_A1))?.enrollmentTokenId).toBeUndefined();
 
-  it('viewer は再発行不可（forbidden）', async () => {
-    const { svc } = makeService();
-    const r = await svc.reissueToken(viewerA, T_A, D_A1);
-    expect(r.ok).toBe(false);
-    if (!r.ok) expect(r.error.code).toBe('forbidden');
-  });
-
-  it('他テナントの端末は再発行できない（テナント越境）', async () => {
-    const { svc } = makeService();
-    const r = await svc.reissueToken(tenantAdminA, T_B, D_B1);
-    expect(r.ok).toBe(false);
+    // 再有効化しても旧 jti は consume 不可（復活しない）。
+    await svc.setEnabled(tenantAdminA, T_A, D_A1, true);
+    const consume = await svc.consumeEnrollment({
+      tenantId: String(T_A),
+      siteId: String(S_A1),
+      deviceId: String(D_A1),
+      jti,
+    });
+    expect(consume).toEqual({ ok: false, reason: 'used' });
   });
 });
 

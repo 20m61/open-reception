@@ -3,8 +3,10 @@ import Link from 'next/link';
 /**
  * ランディングページ (docs/reception-issuance-design.md §2)。
  *
- * 主導線は「ログイン」→ 管理画面。受付端末（/kiosk）は公開導線から到達させず、
- * 管理画面が発行した受付URL/QR からのみ有効化する方針のため、ここに直リンクは置かない。
+ * 主導線は「ログイン」→ 管理画面。受付端末（/kiosk）は公開導線に出さない（直リンクを置かない）。
+ * 受付端末の想定プロビジョニングは管理画面発行の受付URL/QR からのエンロール。
+ * 注: `/kiosk` への直接到達自体のアクセス制御は #23（PIN/IP allowlist）が担う。`/kiosk` を
+ * kiosk セッション必須にする完全なゲートは後続（docs/reception-issuance-design.md §6）。
  */
 export default function HomePage() {
   return (

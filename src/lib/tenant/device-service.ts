@@ -160,7 +160,7 @@ export class DeviceService {
   /**
    * 受付端末を登録する。対象サイトへの write 認可が必要（site_manager は自サイトのみ可）。
    * 親サイトの存在を確認する。token はここでは発行せず（tokenRegistered=false）、
-   * 別途 reissueToken で登録する運用にする。
+   * 別途 issueEnrollment（受付 URL/QR 発行）で登録する運用にする。
    */
   async create(actor: Actor, input: CreateDeviceInput): Promise<ServiceResult<DeviceView>> {
     if (!canAccessSite(actor, input.tenantId, input.siteId, 'write'))
@@ -223,6 +223,9 @@ export class DeviceService {
   /**
    * 端末の有効 / 無効を切り替える（危険操作）。サイト write 認可が必要。
    * 監査: device.enabled / device.disabled（token 値は残さない）。
+   *
+   * 有効/無効の切替は **保留中のエンロール URL を必ず無効化**する（`enrollmentTokenId` を消去）。
+   * これがないと「URL を止めるために revoke → TTL 内に再有効化」で旧 URL が復活してしまう。
    */
   async setEnabled(
     actor: Actor,
@@ -238,36 +241,11 @@ export class DeviceService {
     const next: Device = {
       ...found,
       status: enabled ? 'active' : 'revoked',
+      enrollmentTokenId: undefined,
       updatedAt: this.now().toISOString(),
     };
     await this.devices.putDevice(next);
     await this.audit(enabled ? 'device.enabled' : 'device.disabled', next);
-    return { ok: true, value: this.toView(next) };
-  }
-
-  /**
-   * 端末 token を再発行する（危険操作・確認ダイアログ前提は UI 側）。
-   * サイト write 認可が必要。token の平文は **レスポンスにも監査にも残さない**。
-   * 本増分は tokenRegistered=true を立てるところまで（実 token 発行・配布は次増分）。
-   * 監査: device.token_reissued（metadata は id/name/siteId のみ）。
-   */
-  async reissueToken(
-    actor: Actor,
-    tenantId: TenantId,
-    id: DeviceId,
-  ): Promise<ServiceResult<DeviceView>> {
-    const found = await this.devices.getDevice(tenantId, id);
-    if (!found) return fail('not_found', 'device not found');
-    if (!canAccessSite(actor, tenantId, found.siteId, 'write'))
-      return fail('forbidden', 'actor cannot reissue token for this device');
-
-    const next: Device = {
-      ...found,
-      tokenRegistered: true,
-      updatedAt: this.now().toISOString(),
-    };
-    await this.devices.putDevice(next);
-    await this.audit('device.token_reissued', next);
     return { ok: true, value: this.toView(next) };
   }
 

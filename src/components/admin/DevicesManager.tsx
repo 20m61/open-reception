@@ -69,6 +69,8 @@ export function DevicesManager({ tenantId = DEFAULT_TENANT_ID }: { tenantId?: st
     null,
   );
   const [copied, setCopied] = useState(false);
+  /** 発行失敗時のメッセージ（null=非表示）。無反応を避けるため必ず表示する。 */
+  const [issueError, setIssueError] = useState<string | null>(null);
 
   const loadSites = useCallback(async () => {
     const res = await fetch(`/api/admin/sites?tenantId=${encodeURIComponent(tenantId)}`);
@@ -148,15 +150,25 @@ export function DevicesManager({ tenantId = DEFAULT_TENANT_ID }: { tenantId?: st
     if (!reissueTarget) return;
     const target = reissueTarget;
     setReissueTarget(null);
-    const res = await fetch(`/api/admin/devices/${target.id}/reissue-token`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ tenantId }),
-    });
-    if (res.ok) {
-      const data = (await res.json()) as { enrollmentUrl: string; expiresAt: string };
-      setCopied(false);
-      setIssued({ deviceName: target.name, url: data.enrollmentUrl, expiresAt: data.expiresAt });
+    setIssueError(null);
+    try {
+      const res = await fetch(`/api/admin/devices/${target.id}/reissue-token`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ tenantId }),
+      });
+      if (res.ok) {
+        const data = (await res.json()) as { enrollmentUrl: string; expiresAt: string };
+        setCopied(false);
+        setIssued({ deviceName: target.name, url: data.enrollmentUrl, expiresAt: data.expiresAt });
+      } else {
+        const detail = (await res.json().catch(() => null)) as { message?: string } | null;
+        setIssueError(
+          `受付URLの発行に失敗しました（${res.status}）。${detail?.message ?? '権限・接続を確認してください。'}`,
+        );
+      }
+    } catch {
+      setIssueError('受付URLの発行に失敗しました（通信エラー）。接続を確認して再試行してください。');
     }
     await loadDevices();
   }, [reissueTarget, tenantId, loadDevices]);
@@ -359,6 +371,20 @@ export function DevicesManager({ tenantId = DEFAULT_TENANT_ID }: { tenantId?: st
               </Button>
               <Button variant="primary" data-testid="device-reissue-confirm" onClick={confirmReissue}>
                 発行する
+              </Button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {issueError && (
+        <div data-testid="device-issue-error" role="alert" style={dialogBackdrop}>
+          <div style={dialogBox}>
+            <h2 style={{ marginTop: 0, color: 'var(--color-danger)' }}>発行に失敗しました</h2>
+            <p>{issueError}</p>
+            <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
+              <Button data-testid="device-issue-error-close" onClick={() => setIssueError(null)}>
+                閉じる
               </Button>
             </div>
           </div>

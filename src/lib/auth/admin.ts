@@ -3,6 +3,8 @@
  * secret / password は server-only な環境変数で扱う（NEXT_PUBLIC_ を付けない）。
  * 開発・ローカル e2e 用の既定値を持つが、本番では必ず環境変数で上書きする。
  */
+import { serverSecret } from './server-secret';
+
 export const ADMIN_COOKIE = 'admin_session';
 /** Entra ログイン後のアクセストークンを保持する cookie (issue #70)。 */
 export const ENTRA_TOKEN_COOKIE = 'admin_entra_token';
@@ -14,7 +16,7 @@ export const ENTRA_STATE_COOKIE = 'admin_entra_state';
 export const ADMIN_SESSION_TTL_MS = 1000 * 60 * 60 * 8;
 
 export function getAdminSecret(): string {
-  return process.env.ADMIN_SESSION_SECRET ?? 'dev-insecure-admin-secret';
+  return serverSecret('ADMIN_SESSION_SECRET', 'dev-insecure-admin-secret');
 }
 
 export function getAdminPassword(): string {

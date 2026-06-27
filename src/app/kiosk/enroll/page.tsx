@@ -57,6 +57,19 @@ export default function KioskEnrollPage() {
 
   const enroll = useCallback(async () => {
     setPhase({ kind: 'working' });
+    // 既にエンロール済み（kiosk セッション保持）なら、使い捨てトークンを再消費せず受付画面へ。
+    // これがないと、URL をホーム画面ブックマークした端末が再起動のたびに consume 済みトークンを
+    // 叩いて 409 'used' で締め出される。
+    try {
+      const status = await fetch('/api/kiosk/session-status', { cache: 'no-store' });
+      if (status.ok && ((await status.json()) as { authorized?: boolean }).authorized) {
+        router.replace('/kiosk');
+        return;
+      }
+    } catch {
+      // セッション確認に失敗しても通常のエンロールへフォールスルー。
+    }
+
     // useSearchParams は Suspense 境界を要するため、ここでは location から直接読む。
     const token = new URLSearchParams(window.location.search).get('token') ?? '';
     if (!token) {

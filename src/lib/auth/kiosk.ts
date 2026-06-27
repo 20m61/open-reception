@@ -4,13 +4,14 @@
  * kiosk セッションは role='kiosk' であり、管理 API（role='admin' 必須）には使えない。
  */
 import { signSession, verifySession } from './session';
+import { serverSecret } from './server-secret';
 
 export const KIOSK_COOKIE = 'kiosk_session';
 /** 長期保持（30 日）。失効は端末レジストリ（#18）で制御する。 */
 export const KIOSK_SESSION_TTL_MS = 1000 * 60 * 60 * 24 * 30;
 
 export function getKioskSecret(): string {
-  return process.env.KIOSK_SESSION_SECRET ?? 'dev-insecure-kiosk-secret';
+  return serverSecret('KIOSK_SESSION_SECRET', 'dev-insecure-kiosk-secret');
 }
 
 export async function issueKioskSession(kioskId: string): Promise<string> {

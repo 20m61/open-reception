@@ -13,6 +13,7 @@
  */
 import { randomUUID } from 'node:crypto';
 import { signSession, verifySession } from './session';
+import { serverSecret } from './server-secret';
 
 /** kiosk セッション（role='kiosk'）と取り違えないための専用 role。 */
 export const ENROLLMENT_ROLE = 'kiosk-enroll';
@@ -21,7 +22,10 @@ export const ENROLLMENT_ROLE = 'kiosk-enroll';
 export const DEFAULT_ENROLLMENT_TTL_MS = 15 * 60 * 1000;
 
 export function getEnrollmentSecret(): string {
-  return process.env.KIOSK_ENROLLMENT_SECRET ?? 'dev-insecure-kiosk-enroll-secret';
+  // 未認証の受付エンロールの署名鍵。実デプロイで未設定なら fail closed（トークン偽造防止）。
+  return serverSecret('KIOSK_ENROLLMENT_SECRET', 'dev-insecure-kiosk-enroll-secret', {
+    failClosed: true,
+  });
 }
 
 /** エンロールトークンが束ねる主体（テナント境界つき端末参照 + 単回検証用 jti）。 */
