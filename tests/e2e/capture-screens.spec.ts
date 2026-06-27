@@ -83,3 +83,48 @@ test.describe('管理画面（admin）', () => {
     }
   });
 });
+
+/**
+ * 新規導線（LP / ログイン / 受付URL発行モーダル / エンロール）の画面取得。
+ * docs/reception-issuance-design.md / docs/customer-journeys.md の J2/J3 と LP 改修に対応。
+ */
+test.describe('新規導線（発行/エンロール/LP）', () => {
+  test('LP とログイン', async ({ page }) => {
+    page.setViewportSize({ width: 1280, height: 900 });
+    await page.goto('/');
+    await expect(page.getByTestId('lp-login')).toBeVisible();
+    await shot(page, 'lp-00-landing');
+
+    await page.goto('/admin/login');
+    await page.waitForLoadState('load').catch(() => {});
+    await page.waitForTimeout(300);
+    await shot(page, 'admin-00-login');
+  });
+
+  test('受付URL発行モーダル（URL+QR）', async ({ page }) => {
+    page.setViewportSize({ width: 1280, height: 900 });
+    await loginAsAdmin(page);
+    // 専用端末を作成してシード端末の取り合いを避ける。
+    const name = `SS-issue-${Date.now()}`;
+    const res = await page.request.post('/api/admin/devices', {
+      data: { tenantId: 'internal', siteId: 'default-site', name, kind: 'kiosk' },
+    });
+    expect(res.ok()).toBeTruthy();
+
+    await page.goto('/admin/devices');
+    const row = page.getByTestId('device-table').locator('tr', { hasText: name });
+    await expect(row).toBeVisible({ timeout: 15_000 });
+    await row.getByTestId('device-reissue').click();
+    await page.getByTestId('device-reissue-confirm').click();
+    await expect(page.getByTestId('device-issued-dialog')).toBeVisible();
+    await expect(page.getByTestId('device-issued-qr')).toBeVisible();
+    await shot(page, 'admin-05b-device-issued');
+  });
+
+  test('受付端末エンロールのエラー画面', async ({ page }) => {
+    page.setViewportSize({ width: 810, height: 1080 });
+    await page.goto('/kiosk/enroll?token=invalid-token-for-screenshot');
+    await expect(page.getByTestId('enroll-error')).toBeVisible({ timeout: 15_000 });
+    await shot(page, 'kiosk-06-enroll-error');
+  });
+});
