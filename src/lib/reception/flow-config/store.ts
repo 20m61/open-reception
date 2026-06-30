@@ -86,6 +86,10 @@ function seedFlowsFor(prefix: string, tenantId: string, siteId: string): StoredR
 }
 
 function seed(): StoredReceptionFlow[] {
+  // E2E では dev seed を無効化する (issue #239)。/kiosk がセッション必須になった結果、enroll 済み
+  // kiosk が常に seed 済みカスタムフローを表示し、既定（組込み）受付フローを検証する e2e と衝突する
+  // ため。dev/デモ（npm run dev）では従来どおり seed する。dynamodb では seed 自体が無視される。
+  if (process.env.RECEPTION_DISABLE_DEV_SEED === '1') return [];
   return [...seedFlowsFor('internal', 'internal', 'default-site')];
 }
 

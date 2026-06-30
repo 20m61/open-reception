@@ -1,4 +1,4 @@
-import { test, expect } from '@playwright/test';
+import { test, expect } from './kiosk-fixtures';
 
 /**
  * Kiosk 統合 inc1 の iPad viewport smoke test (issue #96 / #79 / #100 / #101 / #102)。

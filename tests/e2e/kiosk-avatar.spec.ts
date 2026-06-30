@@ -1,4 +1,4 @@
-import { test, expect } from '@playwright/test';
+import { test, expect } from './kiosk-fixtures';
 
 /**
  * アバター案内の状態同期ゲート E2E (issue #123 / Epic #119)。

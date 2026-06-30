@@ -119,3 +119,34 @@ export function shouldShowSignage(input: {
   if (input.active === false) return false;
   return input.signageItemCount > 0;
 }
+
+/* ===================== /kiosk アクセスゲート判定 ===================== */
+
+export type KioskGate = 'revoked' | 'authorize' | 'unenrolled' | 'checking' | 'ready';
+
+/**
+ * `/kiosk` のアクセスゲートを判定する (issue #239)。受付端末は kiosk セッション
+ * （管理発行 URL/QR からのエンロール、または PIN 許可 #23）必須にし、未保持なら受付フローを
+ * 出さず誘導する。これにより `/kiosk` への直接到達で誰でも受付フローを開ける穴を塞ぐ。
+ *
+ * **fail-closed**: セッションの有無が未確定（`authorized===null`）の間は受付フローを出さない。
+ * 実アクセス制御はサーバ側ガード（`denyWithoutKioskSession`）が担い、本判定は UX 誘導。
+ *
+ *   - `active===false`（失効/緊急停止）→ `'revoked'`（最優先・既存の利用不可表示）。
+ *   - `authorized===null`（heartbeat 未確定・取得失敗）→ `'checking'`。受付フローを出さず確認中表示。
+ *     heartbeat 成功で確定するまで開かない（取得失敗が続いても開かない）。確立済み端末は前回成功時の
+ *     `authorized===true` を保持するため `'ready'` のまま（ネットワーク断は別途オフライン表示）。
+ *   - セッション未保持（`authorized===false`）:
+ *       - PIN 必須なら `'authorize'`（PIN で自己許可できる, #23）。
+ *       - PIN 不要なら `'unenrolled'`（自己許可手段が無い → 管理発行の受付URL/QRでエンロール）。
+ */
+export function resolveKioskGate(input: {
+  active: boolean | null;
+  authorized: boolean | null;
+  pinRequired: boolean;
+}): KioskGate {
+  if (input.active === false) return 'revoked';
+  if (input.authorized === null) return 'checking';
+  if (input.authorized === false) return input.pinRequired ? 'authorize' : 'unenrolled';
+  return 'ready';
+}

@@ -37,6 +37,7 @@ import { useKioskLayout } from './useKioskLayout';
 import {
   flowValuesToVisitorInfo,
   purposeIdForFlow,
+  resolveKioskGate,
   shouldShowSignage,
   shouldUseCustomFlow,
 } from './integration';
@@ -186,8 +187,11 @@ export function KioskFlow() {
   });
   // null=取得前/取得失敗（既定で表示継続）、false=失効、true=有効。
   const [active, setActive] = useState<boolean | null>(null);
-  // PIN 許可状態。既定では PIN 不要として表示を継続する (issue #23)。
-  const [needsAuthorize, setNeedsAuthorize] = useState(false);
+  // kiosk セッション保持状態 (issue #239)。null=heartbeat 取得前（楽観的に表示継続）、
+  // false=未保持（ゲートで受付フローを出さない）、true=保持。
+  const [authorized, setAuthorized] = useState<boolean | null>(null);
+  // PIN 必須設定 (issue #23)。未保持時に PIN 自己許可へ誘導するか未エンロール案内かを分ける。
+  const [pinRequired, setPinRequired] = useState(false);
   // オンライン状態。heartbeat 失敗で false、復帰で true (issue #30)。
   const [online, setOnline] = useState(true);
   // 受付モード。idle から「QRで受付」を選ぶと checkin へ。完了/通常受付選択で normal へ戻す (issue #98)。
@@ -231,7 +235,8 @@ export function KioskFlow() {
       const hb = (await res.json()) as { active: boolean; pinRequired: boolean; authorized: boolean };
       setOnline(true);
       setActive(hb.active);
-      setNeedsAuthorize(hb.pinRequired && !hb.authorized);
+      setAuthorized(hb.authorized);
+      setPinRequired(hb.pinRequired);
       // 失効/緊急停止を検知したら、受付中の個人情報を破棄して待機へ戻す (issue #30)。
       if (!hb.active) {
         dispatch({ type: 'RESET' });
@@ -618,7 +623,8 @@ export function KioskFlow() {
     dispatch({ type: 'SELECT_PURPOSE', purpose: data.pendingPurpose });
   }, [data.state, data.pendingPurpose, customFlows]);
 
-  const view = active === false ? 'revoked' : needsAuthorize ? 'authorize' : 'ready';
+  // /kiosk アクセスゲート (issue #239)。セッション未保持なら受付フローを出さず誘導する。
+  const view = resolveKioskGate({ active, authorized, pinRequired });
 
   // 待機サイネージを出すか (issue #101)。idle・online・非失効・項目ありのときだけ。
   const showSignage = shouldShowSignage({
@@ -680,7 +686,11 @@ export function KioskFlow() {
           </div>
         </div>
       ) : view === 'authorize' ? (
-        <KioskAuthorizeView onAuthorized={() => setNeedsAuthorize(false)} />
+        <KioskAuthorizeView onAuthorized={() => setAuthorized(true)} />
+      ) : view === 'unenrolled' ? (
+        <KioskUnenrolledView />
+      ) : view === 'checking' ? (
+        <KioskCheckingView />
       ) : mode === 'checkin' ? (
         // QR 受付モード (issue #98)。通常受付選択 / 終了で normal へ戻す（個人情報は破棄される）。
         <CheckinFlow onUseManual={() => setMode('normal')} onExit={() => setMode('normal')} />
@@ -912,6 +922,44 @@ function KioskAuthorizeView({ onAuthorized }: { onAuthorized: () => void }) {
         受付を開始する
       </button>
     </form>
+  );
+}
+
+/**
+ * 未エンロール案内 (issue #239)。kiosk セッション未保持・PIN 不要設定のとき、受付フローを出さず
+ * 「この端末はまだ受付用に設定されていない」ことと、管理発行の受付URL/QRでエンロールする導線を示す。
+ * 自己許可手段（PIN）が無いため来訪者操作で先へ進ませない。PII・秘密は一切出さない。
+ */
+/**
+ * セッション確認中の中立表示 (issue #239)。heartbeat で kiosk セッションの有無が確定するまで
+ * 受付フローを出さない（fail-closed）。確定後に ready / unenrolled / authorize へ分岐する。
+ */
+function KioskCheckingView() {
+  return (
+    <div
+      className="screen__body"
+      style={{ alignItems: 'center', justifyContent: 'center', textAlign: 'center' }}
+      data-testid="kiosk-checking"
+    >
+      <p className="screen__lead">受付端末を確認しています…</p>
+    </div>
+  );
+}
+
+function KioskUnenrolledView() {
+  return (
+    <div
+      className="screen__body"
+      style={{ alignItems: 'center', justifyContent: 'center', textAlign: 'center', gap: 'var(--space-md)' }}
+      data-testid="kiosk-unenrolled"
+    >
+      <h1 className="screen__title">受付端末の設定が必要です</h1>
+      <p className="screen__lead">
+        この端末はまだ受付用に登録されていません。担当者が管理画面で発行する受付 URL / QR コードから
+        エンロールしてください。
+      </p>
+      <p className="notice notice--info">設定が完了すると、この画面から受付を開始できます。</p>
+    </div>
   );
 }
 

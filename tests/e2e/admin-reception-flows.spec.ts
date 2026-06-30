@@ -10,12 +10,35 @@ function uniq(prefix: string) {
   return `${prefix}-${Math.random().toString(36).slice(2, 7)}`;
 }
 
+// このスペックが既定スコープ（internal/default-site）へ作成した有効フローは、/kiosk セッションゲート
+// (issue #239) 導入後は他の kiosk テストの /api/kiosk/flow に漏れ出し既定受付フローの検証を壊す。
+// 各テスト後に purposeKey で引いて削除し、共有 in-memory バックエンドの汚染を残さない。
+const createdKeys: string[] = [];
+
 async function createFlow(page: Page, key: string, name: string) {
+  createdKeys.push(key);
   await page.getByTestId('flow-key-input').fill(key);
   await page.getByTestId('flow-name-input').fill(name);
   await page.getByTestId('flow-add').click();
   await expect(page.getByTestId('flow-card').filter({ hasText: name })).toHaveCount(1);
 }
+
+test.afterEach(async ({ page }) => {
+  if (!createdKeys.length) return;
+  const res = await page.request
+    .get('/api/admin/reception-flows?tenantId=internal&siteId=default-site')
+    .catch(() => null);
+  // 一覧 API は配列を直接返す（{flows} 包みではない）。両形に耐えるよう取り出す。
+  const json = res && res.ok() ? await res.json() : [];
+  const flows: { id: string; purposeKey: string }[] = Array.isArray(json) ? json : (json.flows ?? []);
+  for (const f of flows) {
+    if (!createdKeys.includes(f.purposeKey)) continue;
+    await page.request
+      .delete(`/api/admin/reception-flows/${f.id}?tenantId=internal&siteId=default-site`)
+      .catch(() => {});
+  }
+  createdKeys.length = 0;
+});
 
 test('カスタムフローを作成し、選択肢付きの入力項目を追加できる（永続化される）', async ({ page }) => {
   const key = uniq('e2e-flow');

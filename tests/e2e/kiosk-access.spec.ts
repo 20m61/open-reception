@@ -6,6 +6,17 @@ import { loginAsAdmin } from './helpers';
  * 並行実行を壊さないため pinRequired は true にしない（PIN 必須の判定は unit test で検証）。
  */
 
+test('kiosk セッション未保持で /kiosk は未エンロール案内を出す（受付フローを出さない, #239）', async ({
+  page,
+}) => {
+  // セッション未確立のまま /kiosk へ直接到達（pinRequired は既定 false）。
+  await page.goto('/kiosk');
+  // 受付フローではなく未エンロール案内が出る（heartbeat 後にゲートが閉じる）。
+  await expect(page.getByTestId('kiosk-unenrolled')).toBeVisible({ timeout: 15_000 });
+  // 受付待機画面の開始導線は出ない（フローへ入れない）。
+  await expect(page.getByTestId('start-reception')).toHaveCount(0);
+});
+
 test('受付端末の許可 API でセッションを確立できる', async ({ page }) => {
   const auth = await page.request.post('/api/kiosk/authorize', { data: { pin: '0000', kioskId: 'kiosk-dev' } });
   expect(auth.ok()).toBeTruthy();

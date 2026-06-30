@@ -1,4 +1,4 @@
-import { test, expect, type Page } from '@playwright/test';
+import { test, expect, type Page } from './kiosk-fixtures';
 
 /**
  * 受付端末のプライバシー・安全性ゲート E2E (issue #125 / Epic #119)。
