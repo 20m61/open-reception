@@ -65,16 +65,14 @@ describe('escapeHatchesFor', () => {
     }
   });
 
-  it('selectingTarget では 戻る・キャンセル を出す（state.ts 遷移表に整合）', () => {
-    const actions = escapeHatchesFor('selectingTarget').map((h) => h.action);
-    expect(actions).toContain('back');
-    expect(actions).toContain('cancel');
-  });
-
-  it('confirming では 戻る（修正）・キャンセル を出す', () => {
-    const actions = escapeHatchesFor('confirming').map((h) => h.action);
-    expect(actions).toContain('back');
-    expect(actions).toContain('cancel');
+  it('文脈の戻るを持つ状態（selectingTarget/inputVisitorInfo/confirming）はバーに back を出さない（#240）', () => {
+    // 画面フッターの 戻る/修正する と二重になるため、逃げ道バーからは back を外す。
+    // キャンセル等の他の逃げ道は残す（戻る操作はフッターの文脈ボタンで可能）。
+    for (const state of ['selectingTarget', 'inputVisitorInfo', 'confirming'] as ReceptionState[]) {
+      const actions = escapeHatchesFor(state).map((h) => h.action);
+      expect(actions).not.toContain('back');
+      expect(actions).toContain('cancel');
+    }
   });
 
   it('failed/timeout では 人に繋ぐ(useFallback)・最初に戻る(reset) を出す', () => {

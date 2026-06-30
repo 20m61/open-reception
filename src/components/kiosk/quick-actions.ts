@@ -141,11 +141,26 @@ const ESCAPE_HATCH_META: Record<EscapeHatchAction, Omit<EscapeHatch, 'action'>> 
   useFallback: { label: '人に繋ぐ', variant: 'secondary', testId: 'escape-staff' },
 };
 
+/**
+ * 画面内に文脈の「戻る」ボタンを持つ状態 (#240)。これらでは逃げ道バーに `back`（戻る）を重複表示
+ * しない（フッターの 修正する / 戻る とバーの 戻る が二重になり後退系コントロールが過多になるため）。
+ * 戻る操作自体はフッターの文脈ボタンで可能なので機能は失わない。
+ *   - selectingTarget=target-back / inputVisitorInfo=visitor-back / confirming=confirm-back
+ */
+const STATES_WITH_CONTEXTUAL_BACK: ReadonlySet<ReceptionState> = new Set([
+  'selectingTarget',
+  'inputVisitorInfo',
+  'confirming',
+]);
+
 export function escapeHatchesFor(state: ReceptionState): ReadonlyArray<EscapeHatch> {
   // idle では逃げ道を出さない（クイックアクションが入口で、戻る先が無い）。
   if (state === 'idle') return [];
   const allowed = availableActions(state);
-  return ESCAPE_HATCH_ACTIONS.filter((a) => allowed.has(a)).map((action) => ({
+  const omitBack = STATES_WITH_CONTEXTUAL_BACK.has(state);
+  return ESCAPE_HATCH_ACTIONS.filter(
+    (a) => allowed.has(a) && !(a === 'back' && omitBack),
+  ).map((action) => ({
     action,
     ...ESCAPE_HATCH_META[action],
   }));
