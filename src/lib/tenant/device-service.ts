@@ -310,7 +310,10 @@ export class DeviceService {
       enrollmentTokenId: undefined,
       lastSeenAt: this.now().toISOString(),
     };
-    await this.devices.putDevice(next);
+    // 消去は **CAS**（enrollmentTokenId === jti のときのみ）で行う。同一 URL の同時アクセスで
+    // 上の read チェックを両者が通過しても、書込で勝てるのは 1 つだけ → 二重消費を防ぐ (issue #239)。
+    const won = await this.devices.consumeEnrollment(next, claims.jti);
+    if (!won) return { ok: false, reason: 'used' };
     return { ok: true, kioskId: String(device.id) };
   }
 

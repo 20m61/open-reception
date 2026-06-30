@@ -379,6 +379,18 @@ describe('DeviceService.consumeEnrollment (受付エンロール)', () => {
     expect(await svc.consumeEnrollment(claims)).toEqual({ ok: false, reason: 'used' });
   });
 
+  it('同時2リクエストでも成功は1つだけ（CAS で二重消費を防止, #239）', async () => {
+    const { svc } = makeService();
+    const jti = await issueJti(svc);
+    const claims = { tenantId: String(T_A), siteId: String(S_A1), deviceId: String(D_A1), jti };
+    // 並行に2回消費（両者 read 時点では enrollmentTokenId=jti）。CAS により書込で勝てるのは1つ。
+    const results = await Promise.all([svc.consumeEnrollment(claims), svc.consumeEnrollment(claims)]);
+    const ok = results.filter((r) => r.ok);
+    const used = results.filter((r) => !r.ok && r.reason === 'used');
+    expect(ok).toHaveLength(1);
+    expect(used).toHaveLength(1);
+  });
+
   it('未発行端末（jti 不一致）は used', async () => {
     const { svc } = makeService();
     const r = await svc.consumeEnrollment({

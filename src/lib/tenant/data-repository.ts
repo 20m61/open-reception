@@ -150,6 +150,11 @@ class DataBackedDeviceRepository implements DeviceRepository {
   async putDevice(device: Device): Promise<void> {
     await this.col().put(device);
   }
+
+  async consumeEnrollment(next: Device, expectedJti: string): Promise<boolean> {
+    // CAS: enrollmentTokenId が expectedJti のときのみ next（消去後）で上書き。
+    return this.col().putIfMatches(next, { enrollmentTokenId: expectedJti });
+  }
 }
 
 /**

@@ -92,9 +92,10 @@ URL/QR には**使い捨て・期限付きのエンロールトークン**を埋
   セッションを確立する導線を入れたが、`/kiosk` への直接到達自体は依然可能（アクセス制御は #23
   PIN/IP）。セッション未保持なら「未エンロール」画面へ誘導するゲートは後続で入れる（既存 e2e の
   `/kiosk` 直接遷移前提の見直しを伴う）。
-- **エンロール consume の原子性**: `consumeEnrollment` は read→check→put で、条件付き書き込み
-  （compare-and-swap）を持たない。同一 URL の同時アクセスで二重消費の理論的レースがある。実害は
-  DynamoDB 永続化増分で顕在化するため、その増分で条件式付き `putDevice`（または専用 CAS）にする。
+- **エンロール consume の原子性**: ~~read→check→put で条件付き書き込みを持たず二重消費の理論的レース~~
+  → **解消済 (issue #239)**: `Collection.putIfMatches`（CAS。memory=同期 check+set / dynamo=PutItem の
+  ConditionExpression）を追加し、`DeviceRepository.consumeEnrollment` 経由で `enrollmentTokenId === jti`
+  の時のみ消去する。同時アクセスでも書込で勝てるのは 1 つだけ（concurrency テストで担保）。
 - 実機 iPad での発行〜エンロール疎通検証（#65 にスタック。実機・実 URL が要る）。
 - Device と既存 kiosk レジストリ（#18）の完全統合（kioskId ↔ deviceId 一意化の本対応）。
 - 複数テナント切替 UI（#87 後続）。Entra ロール写像。

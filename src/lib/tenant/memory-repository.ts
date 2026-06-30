@@ -113,6 +113,14 @@ class MemoryDeviceRepository implements DeviceRepository {
   async putDevice(device: Device): Promise<void> {
     this.devices.set(device.id, clone(device));
   }
+
+  // get→check→set を await なしで行うため原子的（CAS, issue #239）。
+  async consumeEnrollment(next: Device, expectedJti: string): Promise<boolean> {
+    const cur = this.devices.get(next.id);
+    if (!cur || cur.enrollmentTokenId !== expectedJti) return false;
+    this.devices.set(next.id, clone(next));
+    return true;
+  }
 }
 
 class MemoryAdminUserRepository implements AdminUserRepository {

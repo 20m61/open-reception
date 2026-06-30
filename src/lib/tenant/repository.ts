@@ -53,6 +53,12 @@ export interface DeviceRepository {
   findDeviceById(id: DeviceId): Promise<Device | undefined>;
   createDevice(device: Device): Promise<RepoResult<Device>>;
   putDevice(device: Device): Promise<void>;
+  /**
+   * エンロールトークンを**原子的に**消費する (issue #239)。現在の `enrollmentTokenId` が
+   * `expectedJti` に一致するときのみ `next` で上書きし true。一致しない（消費済 / 競合で他が先に消費 /
+   * 端末なし）なら false。read→write 間の二重消費レースを防ぐ（CAS）。
+   */
+  consumeEnrollment(next: Device, expectedJti: string): Promise<boolean>;
 }
 
 export interface AdminUserRepository {

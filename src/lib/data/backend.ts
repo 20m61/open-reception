@@ -13,6 +13,13 @@ export interface Collection<T extends { id: string }> {
   get(id: string): Promise<T | undefined>;
   /** 作成または上書き（read-modify-write は呼び出し側で行う）。 */
   put(item: T): Promise<void>;
+  /**
+   * 条件付き書込（compare-and-swap）。**現在保存されている**アイテムが `expected` の全フィールドに
+   * 一致するときのみ `item` で上書きし `true` を返す。一致しない / 対象が存在しないなら書き込まず
+   * `false`。read→write 間の競合（例: 使い捨てトークンの二重消費）を原子的に防ぐために使う。
+   * memory は単一スレッドの同期 check+set、dynamo は PutItem の ConditionExpression で実現する。
+   */
+  putIfMatches(item: T, expected: Partial<T>): Promise<boolean>;
   remove(id: string): Promise<void>;
   /** テスト/seed 用に初期状態へ戻す（memory のみ実効、dynamo は no-op）。 */
   reset(): Promise<void>;

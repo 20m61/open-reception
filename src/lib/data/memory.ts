@@ -45,6 +45,17 @@ class MemoryCollection<T extends { id: string }> implements Collection<T> {
     this.items.set(item.id, clone(item));
   }
 
+  // get→check→set を await を挟まず同期で行うため、単一スレッドの event loop 上で原子的。
+  async putIfMatches(item: T, expected: Partial<T>): Promise<boolean> {
+    const cur = this.items.get(item.id);
+    if (!cur) return false;
+    for (const key of Object.keys(expected) as (keyof T)[]) {
+      if (cur[key] !== expected[key]) return false;
+    }
+    this.items.set(item.id, clone(item));
+    return true;
+  }
+
   async remove(id: string): Promise<void> {
     this.items.delete(id);
   }

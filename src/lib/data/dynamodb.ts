@@ -98,6 +98,40 @@ class DynamoCollection<T extends { id: string }> implements Collection<T> {
     await this.doc.send(new PutCommand({ TableName: this.table, Item: record }));
   }
 
+  // 条件付き PutItem（CAS）。expected の全フィールドが現在値と一致するときのみ書込。
+  // フィールドは top-level 属性として格納されるため ConditionExpression で直接参照できる。
+  async putIfMatches(item: T, expected: Partial<T>): Promise<boolean> {
+    const record: Item = { ...item, PK: this.pk, SK: item.id };
+    if (this.ttlSeconds && this.ttlSeconds > 0) {
+      record.ttl = Math.floor(Date.now() / 1000) + this.ttlSeconds;
+    }
+    const names: Record<string, string> = {};
+    const values: Record<string, unknown> = {};
+    const conds: string[] = [];
+    let i = 0;
+    for (const [k, v] of Object.entries(expected)) {
+      names[`#k${i}`] = k;
+      values[`:v${i}`] = v;
+      conds.push(`#k${i} = :v${i}`);
+      i += 1;
+    }
+    try {
+      await this.doc.send(
+        new PutCommand({
+          TableName: this.table,
+          Item: record,
+          ConditionExpression: conds.join(' AND '),
+          ExpressionAttributeNames: names,
+          ExpressionAttributeValues: values,
+        }),
+      );
+      return true;
+    } catch (e) {
+      if ((e as { name?: string })?.name === 'ConditionalCheckFailedException') return false;
+      throw e;
+    }
+  }
+
   async remove(id: string): Promise<void> {
     await this.doc.send(
       new DeleteCommand({ TableName: this.table, Key: { PK: this.pk, SK: id } }),
