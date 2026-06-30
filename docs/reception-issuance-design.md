@@ -100,8 +100,10 @@ URL/QR には**使い捨て・期限付きのエンロールトークン**を埋
 - Device と既存 kiosk レジストリ（#18）の完全統合（kioskId ↔ deviceId 一意化の本対応）。
 - 複数テナント切替 UI（#87 後続）。Entra ロール写像。
 - トークンの DynamoDB 永続化最適化（現状 in-memory / DataBackedTenantStore に準拠）。
-- 受付 URL の bearer トークンはクエリ文字列で運ぶ（既存予約 QR `rt=` と同方式）。アクセスログ/
-  履歴への露出を避ける強化（POST 受け渡し等）は後続のハードニング候補。
+- 受付 URL の bearer トークンは **fragment**（`/kiosk/enroll#token=…`）で運ぶ (issue #239)。fragment は
+  HTTP リクエストに含まれずサーバのアクセスログ・リファラに残らないため、クエリ文字列より露出が
+  小さい。enroll ページは fragment 優先・query フォールバックで読む（旧 URL 互換）。
+  なお既存予約 QR（`?rt=`）は別経路（#97）で未対応。
 
 ## 7. テスト
 

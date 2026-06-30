@@ -33,7 +33,7 @@ async function issueUrlViaApi(request: APIRequestContext, deviceId: string): Pro
   });
   expect(res.ok()).toBeTruthy();
   const body = (await res.json()) as { enrollmentUrl: string };
-  expect(body.enrollmentUrl).toContain('/kiosk/enroll?token=');
+  expect(body.enrollmentUrl).toContain('/kiosk/enroll#token=');
   return body.enrollmentUrl;
 }
 
@@ -50,7 +50,7 @@ async function issueUrlViaUi(admin: Page, deviceName: string): Promise<string> {
   await expect(admin.getByTestId('device-issued-dialog')).toBeVisible();
   await expect(admin.getByTestId('device-issued-qr')).toBeVisible();
   const url = await admin.getByTestId('device-issued-url').inputValue();
-  expect(url).toContain('/kiosk/enroll?token=');
+  expect(url).toContain('/kiosk/enroll#token=');
   return url;
 }
 

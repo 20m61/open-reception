@@ -2,13 +2,17 @@
 
 import { useCallback, useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
+import { tokenFromUrl } from './token-from-url';
 
 /**
  * 受付端末エンロール画面 (docs/reception-issuance-design.md inc1)。
  *
- * 管理画面が発行した受付URL/QR（`/kiosk/enroll?token=…`）で開かれる。token を
+ * 管理画面が発行した受付URL/QR（`/kiosk/enroll#token=…`）で開かれる。token を
  * `/api/kiosk/enroll` に渡して kiosk セッションへ交換し、成功したら受付画面 `/kiosk` へ遷移する。
  * 成功後は token を URL から消すため replace で遷移する。token は表示・ログに残さない。
+ *
+ * トークンは **fragment**（`#token=…`）で受け取る (issue #239)。fragment はサーバへ送られず
+ * アクセスログに残らないため、クエリ露出を避ける。旧 URL 互換で query もフォールバックで読む。
  */
 type Phase =
   | { kind: 'working' }
@@ -82,7 +86,8 @@ export default function KioskEnrollPage() {
     }
 
     // useSearchParams は Suspense 境界を要するため、ここでは location から直接読む。
-    const token = new URLSearchParams(window.location.search).get('token') ?? '';
+    // fragment 優先・query フォールバック (issue #239)。
+    const token = tokenFromUrl({ hash: window.location.hash, search: window.location.search });
     if (!token) {
       setPhase(toError('missing'));
       return;

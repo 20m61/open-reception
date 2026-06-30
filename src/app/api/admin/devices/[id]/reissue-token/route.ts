@@ -15,6 +15,8 @@ type Ctx = { params: Promise<{ id: string }> };
  * 認可: サイト write（service 層 #80 認可）。viewer 不可・テナント越境拒否。
  * セキュリティ: 平文トークンは **このレスポンスでのみ一度だけ**返す（`enrollmentUrl`）。
  *   監査・永続化・再取得には残さない（device.token_reissued の metadata は id/name/siteId/status のみ）。
+ *   トークンは **fragment**（`#token=…`）に載せる (issue #239)。fragment はサーバへ送られず
+ *   アクセスログに残らないため、クエリ文字列より露出が小さい。
  * baseUrl はサーバ側で解決し、クライアント送信値は信用しない（resolveCheckinBaseUrl）。
  */
 export async function POST(request: Request, { params }: Ctx): Promise<NextResponse> {
@@ -36,7 +38,7 @@ export async function POST(request: Request, { params }: Ctx): Promise<NextRespo
   const result = await getDeviceService().issueEnrollment(actor, scope.tenantId, asDeviceId(id));
   if (!result.ok) return serviceResponse(result);
 
-  const enrollmentUrl = `${baseUrl}/kiosk/enroll?token=${encodeURIComponent(result.value.enrollment.token)}`;
+  const enrollmentUrl = `${baseUrl}/kiosk/enroll#token=${encodeURIComponent(result.value.enrollment.token)}`;
   return NextResponse.json({
     device: result.value.view,
     enrollmentUrl,
