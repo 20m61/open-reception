@@ -379,6 +379,18 @@ describe('DeviceService.consumeEnrollment (受付エンロール)', () => {
     expect(await svc.consumeEnrollment(claims)).toEqual({ ok: false, reason: 'used' });
   });
 
+  it('同時2リクエストでも成功は1つだけ（CAS で二重消費を防止, #239）', async () => {
+    const { svc } = makeService();
+    const jti = await issueJti(svc);
+    const claims = { tenantId: String(T_A), siteId: String(S_A1), deviceId: String(D_A1), jti };
+    // 並行に2回消費（両者 read 時点では enrollmentTokenId=jti）。CAS により書込で勝てるのは1つ。
+    const results = await Promise.all([svc.consumeEnrollment(claims), svc.consumeEnrollment(claims)]);
+    const ok = results.filter((r) => r.ok);
+    const used = results.filter((r) => !r.ok && r.reason === 'used');
+    expect(ok).toHaveLength(1);
+    expect(used).toHaveLength(1);
+  });
+
   it('未発行端末（jti 不一致）は used', async () => {
     const { svc } = makeService();
     const r = await svc.consumeEnrollment({
@@ -459,5 +471,26 @@ describe('DeviceService.recordHeartbeat (#87 inc3 Kiosk→Device 統合)', () =>
       expect(after.value[0]?.status).toBe('revoked');
       expect(after.value[0]?.connectivity).toBe('disabled');
     }
+  });
+
+  it('heartbeat は enrollmentTokenId を復活させない（lastSeenAt のみ部分更新, #239）', async () => {
+    const { svc, store } = makeService();
+    // 発行→消費で enrollmentTokenId は消去済み。
+    const r0 = await svc.issueEnrollment(developer, T_A, D_A1);
+    if (!r0.ok) throw new Error('issue failed');
+    const jti = extractJti(r0.value.enrollment.token);
+    await svc.consumeEnrollment({
+      tenantId: String(T_A),
+      siteId: String(S_A1),
+      deviceId: String(D_A1),
+      jti,
+    });
+    expect((await store.devices.getDevice(T_A, D_A1))?.enrollmentTokenId).toBeUndefined();
+
+    // 全置換 put なら stale な enrollmentTokenId を書き戻し得るが、部分更新なので消えたまま。
+    await svc.recordHeartbeat(String(D_A1), NOW);
+    const after = await store.devices.getDevice(T_A, D_A1);
+    expect(after?.enrollmentTokenId).toBeUndefined();
+    expect(after?.lastSeenAt).toBe(NOW.toISOString());
   });
 });

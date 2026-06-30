@@ -305,12 +305,21 @@ export class DeviceService {
       return { ok: false, reason: 'used' };
     if (device.status === 'revoked') return { ok: false, reason: 'revoked' };
 
-    const next: Device = {
-      ...device,
-      enrollmentTokenId: undefined,
-      lastSeenAt: this.now().toISOString(),
-    };
-    await this.devices.putDevice(next);
+    // 消去は **条件付き部分更新**（enrollmentTokenId === jti のときのみ）で原子的に行う。同一 URL の
+    // 同時アクセスで上の read チェックを両者が通過しても、書込で勝てるのは 1 つだけ → 二重消費を防ぐ。
+    // アイテム全体は置換せず該当フィールドのみ更新するため lost-update も避ける (issue #239)。
+    const won = await this.devices.consumeEnrollment(
+      asDeviceId(claims.deviceId),
+      claims.jti,
+      this.now().toISOString(),
+    );
+    if (!won) {
+      // 競合で書込に負けた。再読込で割り込みの種類を区別する（used と取り違えない）。
+      const after = await this.devices.getDevice(tenantId, asDeviceId(claims.deviceId));
+      if (!after) return { ok: false, reason: 'not_found' }; // 間に削除された。
+      if (after.status === 'revoked') return { ok: false, reason: 'revoked' };
+      return { ok: false, reason: 'used' };
+    }
     return { ok: true, kioskId: String(device.id) };
   }
 
@@ -338,11 +347,9 @@ export class DeviceService {
     if (trimmed === '') return { matched: false };
     const device = await this.devices.findDeviceById(asDeviceId(trimmed));
     if (!device) return { matched: false };
-    const next: Device = {
-      ...device,
-      lastSeenAt: (seenAt ?? this.now()).toISOString(),
-    };
-    await this.devices.putDevice(next);
+    // lastSeenAt **のみ**を部分更新する。全置換 put だと read→write 間に consumeEnrollment が消去した
+    // enrollmentTokenId を stale 値で書き戻し、消費済トークンを復活させ得る (issue #239)。
+    await this.devices.touchLastSeen(device.id, (seenAt ?? this.now()).toISOString());
     return { matched: true };
   }
 

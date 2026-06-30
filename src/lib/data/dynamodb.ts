@@ -18,6 +18,7 @@ import {
   GetCommand,
   PutCommand,
   QueryCommand,
+  UpdateCommand,
 } from '@aws-sdk/lib-dynamodb';
 import type {
   Collection,
@@ -96,6 +97,76 @@ class DynamoCollection<T extends { id: string }> implements Collection<T> {
       record.ttl = Math.floor(Date.now() / 1000) + this.ttlSeconds;
     }
     await this.doc.send(new PutCommand({ TableName: this.table, Item: record }));
+  }
+
+  // 条件付き**部分更新**（UpdateItem）。expected が現在値と一致するときのみ changes を適用。
+  // アイテム全体を置換しないため他フィールドの並行更新を失わない（lost-update 回避）。
+  // フィールドは top-level 属性として格納されるため式で直接参照できる。
+  async updateIf(id: string, changes: Partial<T>, expected: Partial<T>): Promise<boolean> {
+    const names: Record<string, string> = {};
+    const values: Record<string, unknown> = {};
+    const sets: string[] = [];
+    const removes: string[] = [];
+    let n = 0;
+    for (const [k, v] of Object.entries(changes)) {
+      const nm = `#u${n}`;
+      names[nm] = k;
+      if (v === undefined) {
+        removes.push(nm); // 属性削除（REMOVE）。
+      } else {
+        values[`:u${n}`] = v;
+        sets.push(`${nm} = :u${n}`);
+      }
+      n += 1;
+    }
+    // 期待条件（expected）を組み立てる。undefined は属性不在を要求。どの場合も **対象の存在** を
+    // 必須にする（attribute_exists(PK)）。これにより不在 id への upsert を防ぎ、「対象が存在しない
+    // なら false」という契約を memory backend と揃える。
+    names['#pk'] = 'PK';
+    const conds: string[] = ['attribute_exists(#pk)'];
+    let c = 0;
+    for (const [k, v] of Object.entries(expected)) {
+      const nm = `#c${c}`;
+      names[nm] = k;
+      if (v === undefined) {
+        conds.push(`attribute_not_exists(${nm})`);
+      } else {
+        values[`:c${c}`] = v;
+        conds.push(`${nm} = :c${c}`);
+      }
+      c += 1;
+    }
+
+    const updateParts: string[] = [];
+    if (sets.length) updateParts.push(`SET ${sets.join(', ')}`);
+    if (removes.length) updateParts.push(`REMOVE ${removes.join(', ')}`);
+
+    // changes が空（書込なしの純粋な CAS 表明）: UpdateItem は空の式を許さないため read して
+    // expected を評価する。書込が無いので原子性の懸念もなく、memory backend と同義になる。
+    if (updateParts.length === 0) {
+      const cur = await this.get(id);
+      if (!cur) return false;
+      return Object.entries(expected).every(
+        ([k, v]) => (cur as Record<string, unknown>)[k] === v,
+      );
+    }
+
+    try {
+      await this.doc.send(
+        new UpdateCommand({
+          TableName: this.table,
+          Key: { PK: this.pk, SK: id },
+          UpdateExpression: updateParts.join(' '),
+          ConditionExpression: conds.join(' AND '),
+          ExpressionAttributeNames: names,
+          ...(Object.keys(values).length ? { ExpressionAttributeValues: values } : {}),
+        }),
+      );
+      return true;
+    } catch (e) {
+      if ((e as { name?: string })?.name === 'ConditionalCheckFailedException') return false;
+      throw e;
+    }
   }
 
   async remove(id: string): Promise<void> {

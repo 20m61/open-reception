@@ -113,6 +113,27 @@ class MemoryDeviceRepository implements DeviceRepository {
   async putDevice(device: Device): Promise<void> {
     this.devices.set(device.id, clone(device));
   }
+
+  // lastSeenAt のみ部分更新（heartbeat）。enrollmentTokenId 等は触らないため消費済トークンを
+  // 復活させない（lost-update 回避, issue #239）。端末なしは no-op。
+  async touchLastSeen(deviceId: DeviceId, lastSeenAt: string): Promise<void> {
+    const cur = this.devices.get(deviceId);
+    if (!cur) return;
+    this.devices.set(deviceId, clone({ ...cur, lastSeenAt }));
+  }
+
+  // get→check→部分更新→set を await なしで行うため原子的（CAS, issue #239）。
+  // 現在値から該当フィールドのみ変更し、他フィールドの並行更新を失わない。
+  async consumeEnrollment(
+    deviceId: DeviceId,
+    expectedJti: string,
+    lastSeenAt: string,
+  ): Promise<boolean> {
+    const cur = this.devices.get(deviceId);
+    if (!cur || cur.enrollmentTokenId !== expectedJti) return false;
+    this.devices.set(deviceId, clone({ ...cur, enrollmentTokenId: undefined, lastSeenAt }));
+    return true;
+  }
 }
 
 class MemoryAdminUserRepository implements AdminUserRepository {

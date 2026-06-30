@@ -13,6 +13,16 @@ export interface Collection<T extends { id: string }> {
   get(id: string): Promise<T | undefined>;
   /** 作成または上書き（read-modify-write は呼び出し側で行う）。 */
   put(item: T): Promise<void>;
+  /**
+   * 条件付き**部分更新**（atomic compare-and-set）。対象 id の**現在値**が `expected` の全フィールドに
+   * 一致するときのみ、`changes` のフィールドだけを更新し `true` を返す。値が `undefined` の changes は
+   * 属性削除（REMOVE）。一致しない / 対象が存在しないなら何もせず `false`。
+   *
+   * アイテム**全体を置換しない**ため、read→write 間に別フィールドへ並行更新が入っても失われない
+   * （lost-update を避ける）。使い捨てトークンの二重消費防止などに使う。memory は単一スレッドの同期
+   * read-modify-write、dynamo は UpdateItem(SET/REMOVE) + ConditionExpression で実現する。
+   */
+  updateIf(id: string, changes: Partial<T>, expected: Partial<T>): Promise<boolean>;
   remove(id: string): Promise<void>;
   /** テスト/seed 用に初期状態へ戻す（memory のみ実効、dynamo は no-op）。 */
   reset(): Promise<void>;
