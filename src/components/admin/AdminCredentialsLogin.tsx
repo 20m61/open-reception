@@ -13,14 +13,14 @@ export function AdminCredentialsLogin() {
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
-  const [error, setError] = useState(false);
+  const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
   const submit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (busy) return;
     setBusy(true);
-    setError(false);
+    setError(null);
     try {
       const res = await fetch('/api/admin/login', {
         method: 'POST',
@@ -30,11 +30,12 @@ export function AdminCredentialsLogin() {
       if (res.ok) {
         router.push('/admin');
         router.refresh();
-      } else {
-        setError(true);
+        return;
       }
+      const body = (await res.json().catch(() => null)) as { error?: string } | null;
+      setError(errorMessage(res.status, body?.error));
     } catch {
-      setError(true);
+      setError('現在ログインできません。しばらくして再度お試しください。');
     } finally {
       setBusy(false);
     }
@@ -88,7 +89,7 @@ export function AdminCredentialsLogin() {
       </label>
       {error ? (
         <p data-testid="admin-login-error" className="notice notice--danger" style={{ padding: 12, margin: 0 }}>
-          ユーザー名またはパスワードが正しくありません。
+          {error}
         </p>
       ) : null}
       <button
@@ -110,6 +111,17 @@ export function AdminCredentialsLogin() {
       </button>
     </form>
   );
+}
+
+/** レスポンスに応じた平易なメッセージ（資格情報誤りと、権限/障害/設定不備を区別する, レビュー#4）。 */
+function errorMessage(status: number, code: string | undefined): string {
+  if (code === 'password_change_required')
+    return '初回パスワードの変更が必要です。管理者にお問い合わせください。';
+  if (code === 'challenge_required') return '追加の認証が必要です。管理者にお問い合わせください。';
+  if (status === 403) return 'このアカウントには管理画面の権限がありません。';
+  if (status === 503) return '現在ログインできません。しばらくして再度お試しください。';
+  if (status >= 500) return 'ログインに失敗しました。時間をおいて再度お試しください。';
+  return 'ユーザー名またはパスワードが正しくありません。';
 }
 
 const inputStyle: React.CSSProperties = {

@@ -51,11 +51,34 @@ describe('cognitoSrpLogin', () => {
     expect(send).toHaveBeenCalledTimes(1);
   });
 
-  it('RespondToAuthChallenge が更にチャレンジを返すと challenge_required', async () => {
+  it('NEW_PASSWORD_REQUIRED は password_change_required（汎用401に丸めない, #1）', async () => {
     send
       .mockResolvedValueOnce({ ChallengeName: 'PASSWORD_VERIFIER' })
       .mockResolvedValueOnce({ ChallengeName: 'NEW_PASSWORD_REQUIRED' });
+    expect(await cognitoSrpLogin('user', 'pass', params)).toEqual({
+      ok: false,
+      reason: 'password_change_required',
+    });
+  });
+
+  it('その他の二段チャレンジ（MFA 等）は challenge_required', async () => {
+    send
+      .mockResolvedValueOnce({ ChallengeName: 'PASSWORD_VERIFIER' })
+      .mockResolvedValueOnce({ ChallengeName: 'SOFTWARE_TOKEN_MFA' });
     expect(await cognitoSrpLogin('user', 'pass', params)).toEqual({ ok: false, reason: 'challenge_required' });
+  });
+
+  it('ChallengeResponses.USERNAME に USER_ID_FOR_SRP を使う（エイリアスログイン対応, #2）', async () => {
+    send
+      .mockResolvedValueOnce({
+        ChallengeName: 'PASSWORD_VERIFIER',
+        ChallengeParameters: { USER_ID_FOR_SRP: 'canonical-user' },
+      })
+      .mockResolvedValueOnce({ AuthenticationResult: { IdToken: 'id.jwt.token' } });
+    await cognitoSrpLogin('user@example.com', 'pass', params);
+    // 2 回目の send（RespondToAuthChallenge）の input を検査。
+    const respondCmd = send.mock.calls[1]?.[0] as { input?: { ChallengeResponses?: { USERNAME?: string } } };
+    expect(respondCmd?.input?.ChallengeResponses?.USERNAME).toBe('canonical-user');
   });
 
   it('NotAuthorizedException は invalid_credentials', async () => {

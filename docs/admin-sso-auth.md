@@ -84,6 +84,14 @@ aws cognito-idp admin-add-user-to-group --user-pool-id "$POOL" --username admin@
 appEnv で渡す必要はない（bin が畳み込む）。`-c appEnv='{"ADMIN_AUTH_PROVIDER":"none"}'` で明示退避も可。
 `docs/deploy-aws.md` の originVerifySecret / 公開 base-URL 必須は引き続き必要。
 
+> ⚠️ **cutover の注意（ロックアウト防止）**: cognito へ切替えると **パスワードログイン（none）は無効**に
+> なる。新規 User Pool は selfSignUp 無効・**ユーザー 0** の状態で作られるため、**管理者ユーザーを
+> 先に（または同時に）provisioning しないと全員がログイン不能**になる。手順:
+> 1. まず `-c env=<env>` でデプロイ（User Pool 作成 → `AdminUserPoolId` 出力）。
+> 2. 上記「管理者ユーザーの provisioning」でグループ＋ユーザー＋恒久パスワードを作成。
+> 3. ログイン確認後に運用開始。退避が要る場合は `-c appEnv='{"ADMIN_AUTH_PROVIDER":"none"}'` で
+>    一時的にパスワード方式へ戻せる。
+
 ## 依存（#105）
 
 - `@aws-sdk/client-cognito-identity-provider`（Apache-2.0・AWS 公式・SDK v3 と整合）

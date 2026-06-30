@@ -129,7 +129,9 @@ export async function verifyOidcToken(token: string, options: VerifyOptions): Pr
     ok: true,
     role,
     subject,
-    email: claims.preferred_username ?? claims.email ?? claims['cognito:username'],
+    // email は email 形式の claim のみ。cognito:username は username であり email ではないため
+    // ストアの email 照合（findByEmail）に渡さない（レビュー#6）。
+    email: claims.email ?? claims.preferred_username,
     claims,
   };
 }

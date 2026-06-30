@@ -32,10 +32,9 @@ export async function POST(request: Request): Promise<NextResponse> {
 
   if (cfg.provider === 'cognito') {
     if (!cfg.cognito?.userPoolId || !cfg.cognito.clientId || !cfg.cognito.region) {
-      return NextResponse.json(
-        { error: 'misconfigured', message: 'Cognito 設定が不足しています。' },
-        { status: 500 },
-      );
+      // 公開エンドポイントのため内部の設定状態を本文に出さない（レビュー#7）。詳細はサーバログへ。
+      console.error('[auth] cognito provider selected but COGNITO_* is incomplete');
+      return NextResponse.json({ error: 'server_error' }, { status: 500 });
     }
     const body = (await request.json().catch(() => null)) as
       | { username?: unknown; password?: unknown }
@@ -52,9 +51,18 @@ export async function POST(request: Request): Promise<NextResponse> {
       clientId: cfg.cognito.clientId,
     });
     if (!login.ok) {
-      // challenge_required（MFA 等）/ invalid_credentials / error はすべて汎用 401 に丸める
-      // （詳細は client に出さない。MFA は inc2 で対応）。
-      return NextResponse.json({ error: 'unauthorized', message: 'invalid credentials' }, { status: 401 });
+      // 失敗理由を適切な HTTP に写す。資格情報誤りのみ 401。一時障害を 401 に偽装しない（レビュー#1/#3）。
+      if (login.reason === 'password_change_required') {
+        return NextResponse.json({ error: 'password_change_required' }, { status: 409 });
+      }
+      if (login.reason === 'challenge_required') {
+        return NextResponse.json({ error: 'challenge_required' }, { status: 409 });
+      }
+      if (login.reason === 'error') {
+        // throttle / network / 5xx 等の一時障害。認証失敗と区別する。
+        return NextResponse.json({ error: 'unavailable' }, { status: 503 });
+      }
+      return NextResponse.json({ error: 'unauthorized' }, { status: 401 });
     }
 
     // ID トークンを検証し、管理ロール（cognito:groups → allowedRoles）を満たすことを確認する。
