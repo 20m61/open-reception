@@ -689,6 +689,8 @@ export function KioskFlow() {
         <KioskAuthorizeView onAuthorized={() => setAuthorized(true)} />
       ) : view === 'unenrolled' ? (
         <KioskUnenrolledView />
+      ) : view === 'checking' ? (
+        <KioskCheckingView />
       ) : mode === 'checkin' ? (
         // QR 受付モード (issue #98)。通常受付選択 / 終了で normal へ戻す（個人情報は破棄される）。
         <CheckinFlow onUseManual={() => setMode('normal')} onExit={() => setMode('normal')} />
@@ -928,6 +930,22 @@ function KioskAuthorizeView({ onAuthorized }: { onAuthorized: () => void }) {
  * 「この端末はまだ受付用に設定されていない」ことと、管理発行の受付URL/QRでエンロールする導線を示す。
  * 自己許可手段（PIN）が無いため来訪者操作で先へ進ませない。PII・秘密は一切出さない。
  */
+/**
+ * セッション確認中の中立表示 (issue #239)。heartbeat で kiosk セッションの有無が確定するまで
+ * 受付フローを出さない（fail-closed）。確定後に ready / unenrolled / authorize へ分岐する。
+ */
+function KioskCheckingView() {
+  return (
+    <div
+      className="screen__body"
+      style={{ alignItems: 'center', justifyContent: 'center', textAlign: 'center' }}
+      data-testid="kiosk-checking"
+    >
+      <p className="screen__lead">受付端末を確認しています…</p>
+    </div>
+  );
+}
+
 function KioskUnenrolledView() {
   return (
     <div

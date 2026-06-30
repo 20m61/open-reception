@@ -132,8 +132,12 @@ describe('resolveKioskGate (#239)', () => {
     );
   });
 
-  it('authorized=null（heartbeat 取得前）は楽観的に ready（初期フラッシュ回避）', () => {
-    expect(resolveKioskGate({ active: null, authorized: null, pinRequired: false })).toBe('ready');
-    expect(resolveKioskGate({ active: true, authorized: null, pinRequired: true })).toBe('ready');
+  it('authorized=null（heartbeat 未確定/取得失敗）は checking（fail-closed・受付フロー出さない）', () => {
+    expect(resolveKioskGate({ active: null, authorized: null, pinRequired: false })).toBe('checking');
+    expect(resolveKioskGate({ active: true, authorized: null, pinRequired: true })).toBe('checking');
+  });
+
+  it('失効は authorized 未確定でも最優先 revoked', () => {
+    expect(resolveKioskGate({ active: false, authorized: null, pinRequired: false })).toBe('revoked');
   });
 });

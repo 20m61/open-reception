@@ -16,7 +16,10 @@ export async function loginAsAdmin(page: Page): Promise<void> {
  * 許可 API を叩く（pinRequired に依らず成立）。page.request は BrowserContext と cookie を共有する。
  */
 export async function establishKioskSession(page: Page): Promise<void> {
-  await page.request.post('/api/kiosk/authorize', {
+  const res = await page.request.post('/api/kiosk/authorize', {
     data: { pin: '0000', kioskId: 'kiosk-dev' },
   });
+  // 許可が失敗するとセッション未確立のまま全 kiosk spec が未エンロールゲートで落ち、原因が
+  // 分かりにくくなる。loginAsAdmin と同様にここで明示的に失敗させる。
+  expect(res.ok()).toBeTruthy();
 }

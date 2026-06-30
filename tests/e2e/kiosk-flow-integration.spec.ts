@@ -1,5 +1,5 @@
 import { test, expect } from '@playwright/test';
-import { loginAsAdmin } from './helpers';
+import { establishKioskSession, loginAsAdmin } from './helpers';
 
 /**
  * admin↔kiosk のテナント統合 E2E (issue #171 inc2)。
@@ -47,10 +47,7 @@ test('admin で作成・有効化したフローが受付端末の /api/kiosk/fl
   createdFlowIds.push(((await created.json()) as { id: string }).id);
 
   // 2) 受付端末セッションを確立する。
-  const auth = await page.request.post('/api/kiosk/authorize', {
-    data: { pin: '0000', kioskId: 'kiosk-dev' },
-  });
-  expect(auth.ok()).toBeTruthy();
+  await establishKioskSession(page);
 
   // 3) 受付端末のフロー一覧に作成したフローが含まれる（有効なフローのみ返る）。
   const res = await page.request.get('/api/kiosk/flow');
@@ -84,7 +81,7 @@ test('admin で無効化したフローは受付端末に出ない', async ({ pa
   });
   expect(patched.ok()).toBeTruthy();
 
-  await page.request.post('/api/kiosk/authorize', { data: { pin: '0000', kioskId: 'kiosk-dev' } });
+  await establishKioskSession(page);
   const res = await page.request.get('/api/kiosk/flow');
   const body = (await res.json()) as { flows: { purposeKey: string }[] };
   expect(body.flows.some((f) => f.purposeKey === key)).toBe(false);

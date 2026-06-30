@@ -69,7 +69,10 @@ export default defineConfig({
         // env を command に埋め込み、reuseExistingServer での取りこぼしを避ける。
         command: 'RECEPTION_DISABLE_DEV_SEED=1 npm run start',
         url: baseURL,
-        reuseExistingServer: !process.env.CI,
+        // 既存サーバを再利用しない。再利用すると dev seed 無効化フラグ無しで起動した stale サーバに
+        // 繋がり、seed 済みカスタムフローが漏れて既定フロー検証が壊れる（#239 レビュー反映）。常に
+        // env 注入済みのコマンドで起動する。
+        reuseExistingServer: false,
         timeout: 120_000,
         env: { RECEPTION_DISABLE_DEV_SEED: '1' },
       },
