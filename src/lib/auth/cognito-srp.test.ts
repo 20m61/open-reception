@@ -3,8 +3,9 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 // SRP の暗号計算（cognito-srp-helper）は AWS 公式系ライブラリに委譲しているため、ここでは
 // **オーケストレーション**（2 段フロー・ChallengeName 分岐・エラー写像）のみを検証する。
 // ライブラリと SDK を mock し、自前ロジックを切り出してテストする。
+const createSrpSession = vi.fn((..._a: unknown[]) => ({ srp: 'session' }));
 vi.mock('cognito-srp-helper', () => ({
-  createSrpSession: vi.fn(() => ({ srp: 'session' })),
+  createSrpSession: (...a: unknown[]) => createSrpSession(...a),
   signSrpSession: vi.fn(() => ({ srp: 'signed' })),
   wrapInitiateAuth: vi.fn((_s: unknown, req: unknown) => req),
   wrapAuthChallenge: vi.fn((_s: unknown, req: unknown) => req),
@@ -39,6 +40,8 @@ describe('cognitoSrpLogin', () => {
     const r = await cognitoSrpLogin('user', 'pass', params);
     expect(r).toEqual({ ok: true, idToken: 'id.jwt.token', accessToken: 'a', refreshToken: 'r' });
     expect(send).toHaveBeenCalledTimes(2);
+    // isHashed=false を必ず渡す（平文 PW を helper にハッシュさせる。true だと NotAuthorized）。
+    expect(createSrpSession).toHaveBeenCalledWith('user', 'pass', params.userPoolId, false);
   });
 
   it('PASSWORD_VERIFIER 以外のチャレンジ（MFA 等）は challenge_required', async () => {

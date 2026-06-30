@@ -42,7 +42,9 @@ export async function cognitoSrpLogin(
 ): Promise<SrpLoginResult> {
   const cip = client ?? new CognitoIdentityProviderClient({ region: params.region });
   try {
-    const session = createSrpSession(username, password, params.userPoolId);
+    // 第4引数 isHashed は **false 必須**。既定 true は「password が既に SHA-256 ハッシュ済み」を
+    // 意味し、平文 PW を渡すと署名が不一致になり Cognito が NotAuthorized を返す（実機検証で判明）。
+    const session = createSrpSession(username, password, params.userPoolId, false);
 
     const initiateInput = wrapInitiateAuth(session, {
       AuthFlow: 'USER_SRP_AUTH',

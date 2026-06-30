@@ -67,6 +67,17 @@ aws cognito-idp admin-add-user-to-group --user-pool-id "$POOL" --username admin@
 `ADMIN_ALLOWED_ROLES`（例 `OpenReception.Admin,OpenReception.SiteManager,OpenReception.Viewer`）と
 グループ名・`resolveAdminRole`（`src/domain/auth/roles.ts`）の写像を一致させる。
 
+### 未登録 SSO ユーザーの扱い（重要）
+
+`resolveAdminActor`（`src/lib/auth/actor.ts`）は subject/email で **AdminUser ストア**を引く。
+未登録ユーザーの既定は **deny**（最小権限・真のテナント分離）。次のどちらかで運用する:
+
+- **AdminUser を登録**（推奨・本番のマルチテナント運用）: ストアに subject 紐付けの AdminUser を作る。
+- **`OPEN_RECEPTION_ENTRA_UNREGISTERED=env_roles`**（単一テナント / 検証）: 未登録でもトークンの
+  グループ（ロール）＋既定テナント境界で Actor を組む。dev 検証はこれを使用。
+
+> env 名は歴史的に ENTRA だが Cognito にも適用される（SSO 共通の未登録ポリシ）。
+
 ## デプロイ
 
 `infra/lib/config/environments.ts` の既定で **deploy は cognito**。`ADMIN_AUTH_PROVIDER` を
