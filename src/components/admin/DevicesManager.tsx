@@ -12,6 +12,7 @@ import {
   type Column,
   type StatusKind,
 } from '@/components/admin/ui';
+import { renderTextToQrSvg } from '@/lib/reservation/qr';
 
 /**
  * 受付端末（Device）管理 (issue #87, increment 2)。
@@ -61,8 +62,15 @@ export function DevicesManager({ tenantId = DEFAULT_TENANT_ID }: { tenantId?: st
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editName, setEditName] = useState('');
   const [editLocation, setEditLocation] = useState('');
-  /** token 再発行の確認対象（null=ダイアログ非表示）。 */
+  /** 受付URL発行の確認対象（null=ダイアログ非表示）。 */
   const [reissueTarget, setReissueTarget] = useState<DeviceView | null>(null);
+  /** 発行結果（URL+QR を一度だけ表示。閉じると再表示不可）。 */
+  const [issued, setIssued] = useState<{ deviceName: string; url: string; expiresAt: string } | null>(
+    null,
+  );
+  const [copied, setCopied] = useState(false);
+  /** 発行失敗時のメッセージ（null=非表示）。無反応を避けるため必ず表示する。 */
+  const [issueError, setIssueError] = useState<string | null>(null);
 
   const loadSites = useCallback(async () => {
     const res = await fetch(`/api/admin/sites?tenantId=${encodeURIComponent(tenantId)}`);
@@ -140,14 +148,40 @@ export function DevicesManager({ tenantId = DEFAULT_TENANT_ID }: { tenantId?: st
 
   const confirmReissue = useCallback(async () => {
     if (!reissueTarget) return;
-    await fetch(`/api/admin/devices/${reissueTarget.id}/reissue-token`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ tenantId }),
-    });
+    const target = reissueTarget;
     setReissueTarget(null);
+    setIssueError(null);
+    try {
+      const res = await fetch(`/api/admin/devices/${target.id}/reissue-token`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ tenantId }),
+      });
+      if (res.ok) {
+        const data = (await res.json()) as { enrollmentUrl: string; expiresAt: string };
+        setCopied(false);
+        setIssued({ deviceName: target.name, url: data.enrollmentUrl, expiresAt: data.expiresAt });
+      } else {
+        const detail = (await res.json().catch(() => null)) as { message?: string } | null;
+        setIssueError(
+          `受付URLの発行に失敗しました（${res.status}）。${detail?.message ?? '権限・接続を確認してください。'}`,
+        );
+      }
+    } catch {
+      setIssueError('受付URLの発行に失敗しました（通信エラー）。接続を確認して再試行してください。');
+    }
     await loadDevices();
   }, [reissueTarget, tenantId, loadDevices]);
+
+  const copyUrl = useCallback(async () => {
+    if (!issued) return;
+    try {
+      await navigator.clipboard.writeText(issued.url);
+      setCopied(true);
+    } catch {
+      setCopied(false);
+    }
+  }, [issued]);
 
   const columns = useMemo<Column<DeviceView>[]>(
     () => [
@@ -235,11 +269,11 @@ export function DevicesManager({ tenantId = DEFAULT_TENANT_ID }: { tenantId?: st
                   {d.status === 'active' ? '無効化' : '有効化'}
                 </Button>
                 <Button
-                  variant="danger"
+                  variant="primary"
                   data-testid="device-reissue"
                   onClick={() => setReissueTarget(d)}
                 >
-                  token 再発行
+                  受付URLを発行
                 </Button>
               </>
             )}
@@ -326,17 +360,76 @@ export function DevicesManager({ tenantId = DEFAULT_TENANT_ID }: { tenantId?: st
       {reissueTarget && (
         <div data-testid="device-reissue-dialog" role="dialog" aria-modal="true" style={dialogBackdrop}>
           <div style={dialogBox}>
-            <h2 style={{ marginTop: 0 }}>token を再発行しますか？</h2>
+            <h2 style={{ marginTop: 0 }}>受付URLを発行しますか？</h2>
             <p>
-              端末 <strong>{reissueTarget.name}</strong> の token を再発行します。現在の token は無効になり、
-              端末は再設定が必要になります。この操作は監査ログに記録されます。
+              端末 <strong>{reissueTarget.name}</strong> の受付URL（QR）を発行します。現在有効なURLは無効になり、
+              新しいURL/QRから受付画面を開けるようになります。この操作は監査ログに記録されます。
             </p>
             <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
               <Button data-testid="device-reissue-cancel" onClick={() => setReissueTarget(null)}>
                 取消
               </Button>
-              <Button variant="danger" data-testid="device-reissue-confirm" onClick={confirmReissue}>
-                再発行する
+              <Button variant="primary" data-testid="device-reissue-confirm" onClick={confirmReissue}>
+                発行する
+              </Button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {issueError && (
+        <div data-testid="device-issue-error" role="alert" style={dialogBackdrop}>
+          <div style={dialogBox}>
+            <h2 style={{ marginTop: 0, color: 'var(--color-danger)' }}>発行に失敗しました</h2>
+            <p>{issueError}</p>
+            <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
+              <Button data-testid="device-issue-error-close" onClick={() => setIssueError(null)}>
+                閉じる
+              </Button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {issued && (
+        <div data-testid="device-issued-dialog" role="dialog" aria-modal="true" style={dialogBackdrop}>
+          <div style={{ ...dialogBox, maxWidth: 520 }}>
+            <h2 style={{ marginTop: 0 }}>受付URLを発行しました</h2>
+            <p style={{ marginTop: 0 }}>
+              端末 <strong>{issued.deviceName}</strong> をこのURL/QRで開くと受付画面が有効になります。
+            </p>
+            <div style={{ display: 'flex', justifyContent: 'center', marginBottom: 12 }}>
+              <div
+                data-testid="device-issued-qr"
+                aria-hidden="true"
+                style={{ background: '#fff', padding: 8, borderRadius: 8, lineHeight: 0 }}
+                dangerouslySetInnerHTML={{
+                  __html: renderTextToQrSvg(issued.url, { cellSize: 5, ariaLabel: '受付端末エンロールQR' }),
+                }}
+              />
+            </div>
+            <label style={labelText}>受付URL</label>
+            <div style={{ display: 'flex', gap: 8, marginTop: 4 }}>
+              <input
+                data-testid="device-issued-url"
+                readOnly
+                value={issued.url}
+                onFocus={(e) => e.currentTarget.select()}
+                style={{ ...inputStyle, flex: 1, fontFamily: 'monospace', fontSize: '0.8rem' }}
+              />
+              <Button data-testid="device-issued-copy" onClick={copyUrl}>
+                {copied ? 'コピー済み' : 'コピー'}
+              </Button>
+            </div>
+            <p style={{ fontSize: '0.85rem', opacity: 0.8, marginBottom: 4 }}>
+              有効期限: {formatLastSeen(issued.expiresAt)}
+            </p>
+            <p style={{ fontSize: '0.85rem', color: 'var(--color-warning)', marginTop: 0 }}>
+              ⚠ このURL/QRはここでしか表示できません。閉じる前に控えるか受付端末で開いてください。
+            </p>
+            <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
+              <Button data-testid="device-issued-close" onClick={() => setIssued(null)}>
+                閉じる
               </Button>
             </div>
           </div>
@@ -367,6 +460,9 @@ const dialogBackdrop: React.CSSProperties = {
 };
 const dialogBox: React.CSSProperties = {
   maxWidth: 440,
+  // 縦の低い解像度でも見切れないよう、内部スクロールで収める（発行モーダルは QR で背が高い, M1）。
+  maxHeight: '90vh',
+  overflowY: 'auto',
   padding: 24,
   borderRadius: 12,
   background: 'var(--color-bg)',

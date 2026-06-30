@@ -89,6 +89,11 @@ export type Device = {
    * 再発行・失効の運用状態を UI に出すために使う。
    */
   tokenRegistered?: boolean;
+  /**
+   * 現在有効なエンロールトークンの jti（使い捨て検証用。docs/reception-issuance-design.md §3）。
+   * 平文トークンは保持しない（jti のみ）。発行で採番・consume / 再発行で無効化（消去・更新）。
+   */
+  enrollmentTokenId?: string;
   createdAt: string;
   updatedAt: string;
 };

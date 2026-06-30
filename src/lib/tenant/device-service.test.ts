@@ -255,50 +255,165 @@ describe('DeviceService.setEnabled (#87 inc2)', () => {
     expect(r.ok).toBe(false);
     if (!r.ok) expect(r.error.code).toBe('forbidden');
   });
+
+  it('無効化は保留中のエンロール URL を無効化する（再有効化で復活しない）', async () => {
+    const { svc, store } = makeService();
+    const issued = await svc.issueEnrollment(developer, T_A, D_A1);
+    if (!issued.ok) throw new Error('issue failed');
+    const jti = extractJti(issued.value.enrollment.token);
+
+    // revoke で enrollmentTokenId が消える。
+    await svc.setEnabled(tenantAdminA, T_A, D_A1, false);
+    expect((await store.devices.getDevice(T_A, D_A1))?.enrollmentTokenId).toBeUndefined();
+
+    // 再有効化しても旧 jti は consume 不可（復活しない）。
+    await svc.setEnabled(tenantAdminA, T_A, D_A1, true);
+    const consume = await svc.consumeEnrollment({
+      tenantId: String(T_A),
+      siteId: String(S_A1),
+      deviceId: String(D_A1),
+      jti,
+    });
+    expect(consume).toEqual({ ok: false, reason: 'used' });
+  });
 });
 
-describe('DeviceService.reissueToken (#87 inc2)', () => {
-  it('再発行で tokenRegistered=true になり device.token_reissued を監査する', async () => {
-    const { svc, audits } = makeService();
-    // まず未登録状態にしておく。
-    const created = await svc.create(tenantAdminA, { tenantId: T_A, siteId: S_A1, name: '新' });
-    expect(created.ok).toBe(true);
-    if (!created.ok) return;
-    const r = await svc.reissueToken(tenantAdminA, T_A, created.value.id);
-    expect(r.ok).toBe(true);
-    if (r.ok) expect(r.value.tokenRegistered).toBe(true);
-    expect(audits.map((a) => a.action)).toEqual(['device.token_reissued']);
-  });
-
-  it('監査・レスポンスに token 平文を含めない', async () => {
-    const { svc, audits } = makeService();
-    const r = await svc.reissueToken(tenantAdminA, T_A, D_A1);
-    expect(r.ok).toBe(true);
-    // レスポンスに token 系フィールドが無いこと。
-    if (r.ok) {
-      expect(r.value).not.toHaveProperty('token');
-      expect(r.value).not.toHaveProperty('tokenHash');
-      expect(r.value).not.toHaveProperty('secret');
-    }
-    // 監査 metadata に token 系の値が無いこと。
-    const meta = audits[0]?.metadata ?? {};
-    for (const key of Object.keys(meta)) {
-      expect(key.toLowerCase()).not.toContain('token');
-      expect(key.toLowerCase()).not.toContain('secret');
-    }
-  });
-
-  it('viewer は再発行不可（forbidden）', async () => {
+describe('DeviceService.issueEnrollment (受付発行)', () => {
+  it('発行で enrollmentTokenId/tokenRegistered を立て、平文 token を一度だけ返す', async () => {
     const { svc } = makeService();
-    const r = await svc.reissueToken(viewerA, T_A, D_A1);
+    const r = await svc.issueEnrollment(tenantAdminA, T_A, D_A1);
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.value.enrollment.token).toBeTruthy();
+    expect(new Date(r.value.enrollment.expiresAt).getTime()).toBeGreaterThan(NOW.getTime());
+    expect(r.value.view.tokenRegistered).toBe(true);
+    // view（一覧/詳細に出る形）には平文 token を含めない。
+    expect(r.value.view).not.toHaveProperty('token');
+    expect(JSON.stringify(r.value.view)).not.toContain(r.value.enrollment.token);
+  });
+
+  it('監査 metadata に token 平文を残さない', async () => {
+    const { svc, audits } = makeService();
+    const r = await svc.issueEnrollment(tenantAdminA, T_A, D_A1);
+    expect(r.ok).toBe(true);
+    expect(audits.map((a) => a.action)).toEqual(['device.token_reissued']);
+    const meta = audits[0]?.metadata ?? {};
+    const token = r.ok ? r.value.enrollment.token : '';
+    for (const [key, value] of Object.entries(meta)) {
+      expect(key.toLowerCase()).not.toContain('token');
+      expect(value).not.toBe(token);
+    }
+  });
+
+  it('再発行は jti を更新し、旧 token を無効化する（consume 不可）', async () => {
+    const { svc } = makeService();
+    const first = await svc.issueEnrollment(tenantAdminA, T_A, D_A1);
+    const second = await svc.issueEnrollment(tenantAdminA, T_A, D_A1);
+    if (!first.ok || !second.ok) throw new Error('issue failed');
+    // 旧 jti は consume できない（used）。
+    const stale = await svc.consumeEnrollment({
+      tenantId: String(T_A),
+      siteId: String(S_A1),
+      deviceId: String(D_A1),
+      jti: extractJti(first.value.enrollment.token),
+    });
+    expect(stale).toEqual({ ok: false, reason: 'used' });
+    // 新 jti は consume できる。
+    const ok = await svc.consumeEnrollment({
+      tenantId: String(T_A),
+      siteId: String(S_A1),
+      deviceId: String(D_A1),
+      jti: extractJti(second.value.enrollment.token),
+    });
+    expect(ok.ok).toBe(true);
+  });
+
+  it('viewer は発行不可（forbidden）', async () => {
+    const { svc } = makeService();
+    const r = await svc.issueEnrollment(viewerA, T_A, D_A1);
     expect(r.ok).toBe(false);
     if (!r.ok) expect(r.error.code).toBe('forbidden');
   });
 
-  it('他テナントの端末は再発行できない（テナント越境）', async () => {
+  it('他テナントの端末は発行できない（テナント越境 = not_found）', async () => {
     const { svc } = makeService();
-    const r = await svc.reissueToken(tenantAdminA, T_B, D_B1);
+    const r = await svc.issueEnrollment(tenantAdminA, T_B, D_B1);
     expect(r.ok).toBe(false);
+  });
+});
+
+/** テスト補助: 署名トークンの payload から jti を取り出す（base64url の最初のセグメント）。 */
+function extractJti(token: string): string {
+  const body = token.split('.')[0] ?? '';
+  const json = Buffer.from(body.replace(/-/g, '+').replace(/_/g, '/'), 'base64').toString('utf8');
+  return (JSON.parse(json) as { jti: string }).jti;
+}
+
+describe('DeviceService.consumeEnrollment (受付エンロール)', () => {
+  async function issueJti(svc: DeviceService, tenantId = T_A, id = D_A1): Promise<string> {
+    const r = await svc.issueEnrollment(developer, tenantId, id);
+    if (!r.ok) throw new Error('issue failed');
+    return extractJti(r.value.enrollment.token);
+  }
+
+  it('単回成功で kioskId を返し、jti を消去し lastSeenAt を更新する', async () => {
+    const { svc, store } = makeService();
+    const jti = await issueJti(svc);
+    const r = await svc.consumeEnrollment({
+      tenantId: String(T_A),
+      siteId: String(S_A1),
+      deviceId: String(D_A1),
+      jti,
+    });
+    expect(r).toEqual({ ok: true, kioskId: String(D_A1) });
+    const after = await store.devices.getDevice(T_A, D_A1);
+    expect(after?.enrollmentTokenId).toBeUndefined();
+    expect(after?.lastSeenAt).toBe(NOW.toISOString());
+  });
+
+  it('二度目の consume は used', async () => {
+    const { svc } = makeService();
+    const jti = await issueJti(svc);
+    const claims = { tenantId: String(T_A), siteId: String(S_A1), deviceId: String(D_A1), jti };
+    expect((await svc.consumeEnrollment(claims)).ok).toBe(true);
+    expect(await svc.consumeEnrollment(claims)).toEqual({ ok: false, reason: 'used' });
+  });
+
+  it('未発行端末（jti 不一致）は used', async () => {
+    const { svc } = makeService();
+    const r = await svc.consumeEnrollment({
+      tenantId: String(T_A),
+      siteId: String(S_A1),
+      deviceId: String(D_A1),
+      jti: 'never-issued',
+    });
+    expect(r).toEqual({ ok: false, reason: 'used' });
+  });
+
+  it('存在しない端末は not_found', async () => {
+    const { svc } = makeService();
+    const r = await svc.consumeEnrollment({
+      tenantId: String(T_A),
+      siteId: String(S_A1),
+      deviceId: 'nope',
+      jti: 'x',
+    });
+    expect(r).toEqual({ ok: false, reason: 'not_found' });
+  });
+
+  it('revoked 端末は発行 jti が一致しても revoked 拒否', async () => {
+    const { svc } = makeService();
+    // D_A2 は revoked。発行は write 認可で通るが consume で revoked 拒否。
+    const r0 = await svc.issueEnrollment(developer, T_A, D_A2);
+    if (!r0.ok) throw new Error('issue failed');
+    const jti = extractJti(r0.value.enrollment.token);
+    const r = await svc.consumeEnrollment({
+      tenantId: String(T_A),
+      siteId: String(S_A2),
+      deviceId: String(D_A2),
+      jti,
+    });
+    expect(r).toEqual({ ok: false, reason: 'revoked' });
   });
 });
 

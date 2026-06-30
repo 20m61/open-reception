@@ -2,15 +2,16 @@ import { test, expect } from '@playwright/test';
 import { loginAsAdmin } from './helpers';
 
 /**
- * 基盤の smoke test (issue #9)。
- * 受付端末 (/kiosk) と管理画面 (/admin) の入口が分離して表示できることを確認する。
- * 受付フロー本体の smoke test は issue #21 で拡充する。
+ * 基盤の smoke test (issue #9 → docs/reception-issuance-design.md inc1)。
+ * LP はログイン主導線に整理し、受付端末（/kiosk）は管理画面が発行する受付URL/QR から
+ * のみ到達させる。よって LP に公開 /kiosk 直リンクは置かない。
  */
-test('トップから受付端末と管理画面の入口が表示される', async ({ page }) => {
+test('トップにログイン導線が表示され、公開 /kiosk 直リンクは無い', async ({ page }) => {
   await page.goto('/');
   await expect(page.getByRole('heading', { name: 'open-reception' })).toBeVisible();
-  await expect(page.getByRole('link', { name: /受付端末/ })).toBeVisible();
-  await expect(page.getByRole('link', { name: /管理画面/ })).toBeVisible();
+  await expect(page.getByTestId('lp-login')).toBeVisible();
+  await expect(page.getByTestId('lp-login')).toHaveAttribute('href', '/admin/login');
+  await expect(page.locator('a[href="/kiosk"]')).toHaveCount(0);
 });
 
 test('受付待機画面が表示される', async ({ page }) => {

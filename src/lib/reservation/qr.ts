@@ -28,6 +28,8 @@ export type QrRenderOptions = {
   dark?: string;
   /** 背景色。既定 '#ffffff'（透過は受付端末のスキャン失敗を避けるため使わない）。 */
   light?: string;
+  /** SVG の aria-label。用途に応じて差し替える（既定は予約 checkin 用）。 */
+  ariaLabel?: string;
 };
 
 const DEFAULTS = {
@@ -58,6 +60,8 @@ export function renderMatrixToSvg(matrix: QrMatrix, options: QrRenderOptions = {
   const margin = options.margin ?? DEFAULTS.margin;
   const dark = isSafeColor(options.dark ?? '') ? (options.dark as string) : DEFAULTS.dark;
   const light = isSafeColor(options.light ?? '') ? (options.light as string) : DEFAULTS.light;
+  // aria-label は属性値として無害化する（任意マークアップ混入を防ぐ）。
+  const ariaLabel = (options.ariaLabel ?? 'reservation check-in QR code').replace(/[<>"&]/g, '');
 
   const count = matrix.length;
   const dimension = (count + margin * 2) * cellSize;
@@ -76,7 +80,7 @@ export function renderMatrixToSvg(matrix: QrMatrix, options: QrRenderOptions = {
   return (
     `<svg xmlns="http://www.w3.org/2000/svg" width="${dimension}" height="${dimension}" ` +
     `viewBox="0 0 ${dimension} ${dimension}" shape-rendering="crispEdges" role="img" ` +
-    `aria-label="reservation check-in QR code">` +
+    `aria-label="${ariaLabel}">` +
     `<rect width="${dimension}" height="${dimension}" fill="${light}"/>` +
     `<g fill="${dark}">${rects.join('')}</g>` +
     `</svg>`

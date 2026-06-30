@@ -68,7 +68,12 @@ const SEED_DEVICES: Device[] = [
   },
 ];
 
-const SEED = { tenants: SEED_TENANTS, sites: SEED_SITES, devices: SEED_DEVICES };
+/**
+ * 単一テナント運用の互換シード。memory backend は DataBackedTenantStore が自動投入するが、
+ * dynamodb backend は seed を無視するため、デプロイ環境では scripts/seed-dynamodb.ts が
+ * この同じ定義を各コレクションへ書き込む（`/admin/sites`・`/admin/devices` を初期から使えるように）。
+ */
+export const SEED = { tenants: SEED_TENANTS, sites: SEED_SITES, devices: SEED_DEVICES };
 
 let store: TenantStore | undefined;
 let siteService: SiteService | undefined;

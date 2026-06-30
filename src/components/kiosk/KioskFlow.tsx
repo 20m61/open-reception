@@ -192,6 +192,25 @@ export function KioskFlow() {
   const [online, setOnline] = useState(true);
   // 受付モード。idle から「QRで受付」を選ぶと checkin へ。完了/通常受付選択で normal へ戻す (issue #98)。
   const [mode, setMode] = useState<'normal' | 'checkin'>('normal');
+  // 逃げ道バーの実測高さ。チャット FAB をこの上へ確実に持ち上げ重なりを防ぐ (#121 H1)。
+  // バーは flex-wrap で複数行になりうるため固定値ではなく実測する。
+  const escapeBarRef = useRef<HTMLElement | null>(null);
+  const [escapeBarHeight, setEscapeBarHeight] = useState(0);
+
+  // 逃げ道バーの高さを実測してチャット FAB の持ち上げ量に反映する (#121 H1)。
+  // バーの表示/段数が状態で変わるため data.state を依存に再観測する。
+  useEffect(() => {
+    const el = escapeBarRef.current;
+    if (!el || typeof ResizeObserver === 'undefined') {
+      setEscapeBarHeight(0);
+      return;
+    }
+    const measure = () => setEscapeBarHeight(el.offsetHeight);
+    measure();
+    const ro = new ResizeObserver(measure);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [data.state]);
 
   // カスタム受付フロー (issue #100)。null=取得前/失敗、[]=無効（既定フローへフォールバック）。
   const [customFlows, setCustomFlows] = useState<KioskCustomFlow[] | null>(null);
@@ -745,6 +764,7 @@ export function KioskFlow() {
             各画面の文脈ボタン（修正する等）とは別に、画面下部に安全な離脱導線を常設する。
           */}
           <EscapeHatchBar
+            barRef={escapeBarRef}
             state={data.state}
             onAction={(action) => {
               // useFallback は記録 API を伴うため専用ハンドラへ。残りは状態機械イベントへ写す。
@@ -768,7 +788,15 @@ export function KioskFlow() {
             ドロワーは状態を所有せず、許可済みアクションのタッチ確定だけを KioskFlow のイベントへ写す。
             重要操作（confirm/submitVisitorInfo）はチャットからは確定不可（contract が弾く）。
           */}
-          <div className="kiosk-chat-slot" data-slot="chat-drawer">
+          <div
+            className="kiosk-chat-slot"
+            data-slot="chat-drawer"
+            style={
+              escapeBarHeight > 0
+                ? ({ '--kiosk-chat-safe-bottom': `${escapeBarHeight + 16}px` } as React.CSSProperties)
+                : undefined
+            }
+          >
             <KioskChatDrawer
               screenState={data.state}
               available={deriveChatAvailability(data.state) === 'available'}
@@ -803,14 +831,17 @@ export function KioskFlow() {
 function EscapeHatchBar({
   state,
   onAction,
+  barRef,
 }: {
   state: ReceptionState;
   onAction: (action: ReceptionAction) => void;
+  barRef?: React.Ref<HTMLElement>;
 }) {
   const hatches: ReadonlyArray<EscapeHatch> = escapeHatchesFor(state);
   if (hatches.length === 0) return null;
   return (
     <nav
+      ref={barRef}
       className="kiosk-escape-bar"
       data-testid="kiosk-escape-bar"
       aria-label="受付の操作（戻る・キャンセルなど）"
