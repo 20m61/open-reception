@@ -54,6 +54,12 @@ export interface DeviceRepository {
   createDevice(device: Device): Promise<RepoResult<Device>>;
   putDevice(device: Device): Promise<void>;
   /**
+   * `lastSeenAt` **だけ**を部分更新する（heartbeat 用, issue #239）。全置換 put は read→write 間に
+   * 別経路（consumeEnrollment の消去）で変わった `enrollmentTokenId` を stale 値で書き戻し、消費済
+   * トークンを復活させ得る。lastSeenAt のみ触ることでこの lost-update を避ける。端末なしは no-op。
+   */
+  touchLastSeen(deviceId: DeviceId, lastSeenAt: string): Promise<void>;
+  /**
    * エンロールトークンを**原子的に**消費する (issue #239)。現在の `enrollmentTokenId` が
    * `expectedJti` に一致するときのみ、enrollmentTokenId を消去し lastSeenAt を更新して true。
    * 一致しない（消費済 / 競合で他が先に消費 / 端末なし）なら false。アイテム全体を置換せず

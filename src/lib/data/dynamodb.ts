@@ -119,12 +119,11 @@ class DynamoCollection<T extends { id: string }> implements Collection<T> {
       }
       n += 1;
     }
-    const updateParts: string[] = [];
-    if (sets.length) updateParts.push(`SET ${sets.join(', ')}`);
-    if (removes.length) updateParts.push(`REMOVE ${removes.join(', ')}`);
-    if (updateParts.length === 0) return true; // 変更なし。
-
-    const conds: string[] = [];
+    // 期待条件（expected）を組み立てる。undefined は属性不在を要求。どの場合も **対象の存在** を
+    // 必須にする（attribute_exists(PK)）。これにより不在 id への upsert を防ぎ、「対象が存在しない
+    // なら false」という契約を memory backend と揃える。
+    names['#pk'] = 'PK';
+    const conds: string[] = ['attribute_exists(#pk)'];
     let c = 0;
     for (const [k, v] of Object.entries(expected)) {
       const nm = `#c${c}`;
@@ -138,13 +137,27 @@ class DynamoCollection<T extends { id: string }> implements Collection<T> {
       c += 1;
     }
 
+    const updateParts: string[] = [];
+    if (sets.length) updateParts.push(`SET ${sets.join(', ')}`);
+    if (removes.length) updateParts.push(`REMOVE ${removes.join(', ')}`);
+
+    // changes が空（書込なしの純粋な CAS 表明）: UpdateItem は空の式を許さないため read して
+    // expected を評価する。書込が無いので原子性の懸念もなく、memory backend と同義になる。
+    if (updateParts.length === 0) {
+      const cur = await this.get(id);
+      if (!cur) return false;
+      return Object.entries(expected).every(
+        ([k, v]) => (cur as Record<string, unknown>)[k] === v,
+      );
+    }
+
     try {
       await this.doc.send(
         new UpdateCommand({
           TableName: this.table,
           Key: { PK: this.pk, SK: id },
           UpdateExpression: updateParts.join(' '),
-          ...(conds.length ? { ConditionExpression: conds.join(' AND ') } : {}),
+          ConditionExpression: conds.join(' AND '),
           ExpressionAttributeNames: names,
           ...(Object.keys(values).length ? { ExpressionAttributeValues: values } : {}),
         }),

@@ -472,4 +472,25 @@ describe('DeviceService.recordHeartbeat (#87 inc3 Kiosk→Device 統合)', () =>
       expect(after.value[0]?.connectivity).toBe('disabled');
     }
   });
+
+  it('heartbeat は enrollmentTokenId を復活させない（lastSeenAt のみ部分更新, #239）', async () => {
+    const { svc, store } = makeService();
+    // 発行→消費で enrollmentTokenId は消去済み。
+    const r0 = await svc.issueEnrollment(developer, T_A, D_A1);
+    if (!r0.ok) throw new Error('issue failed');
+    const jti = extractJti(r0.value.enrollment.token);
+    await svc.consumeEnrollment({
+      tenantId: String(T_A),
+      siteId: String(S_A1),
+      deviceId: String(D_A1),
+      jti,
+    });
+    expect((await store.devices.getDevice(T_A, D_A1))?.enrollmentTokenId).toBeUndefined();
+
+    // 全置換 put なら stale な enrollmentTokenId を書き戻し得るが、部分更新なので消えたまま。
+    await svc.recordHeartbeat(String(D_A1), NOW);
+    const after = await store.devices.getDevice(T_A, D_A1);
+    expect(after?.enrollmentTokenId).toBeUndefined();
+    expect(after?.lastSeenAt).toBe(NOW.toISOString());
+  });
 });

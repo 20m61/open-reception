@@ -151,6 +151,11 @@ class DataBackedDeviceRepository implements DeviceRepository {
     await this.col().put(device);
   }
 
+  async touchLastSeen(deviceId: DeviceId, lastSeenAt: string): Promise<void> {
+    // lastSeenAt のみ部分更新（expected なし = 無条件）。存在しない id は updateIf が false で no-op。
+    await this.col().updateIf(String(deviceId), { lastSeenAt }, {});
+  }
+
   async consumeEnrollment(
     deviceId: DeviceId,
     expectedJti: string,
