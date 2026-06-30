@@ -32,7 +32,7 @@ import { getAdminUserRepository } from '@/lib/tenant/admin-user-store';
 import { defaultSiteIdFrom, defaultTenantIdFrom } from '@/lib/tenant/default-scope';
 import { ADMIN_COOKIE, ENTRA_TOKEN_COOKIE, getAdminSecret } from '@/lib/auth/admin';
 import { getAdminAuthConfig } from '@/lib/auth/admin-auth-config';
-import { createJwksResolver, verifyEntraToken, type EntraClaims } from '@/lib/auth/entra';
+import { createJwksResolver, verifyOidcToken, type EntraClaims } from '@/lib/auth/entra';
 import { verifySession } from '@/lib/auth/session';
 
 /* ===================== 純関数（テスト対象） ===================== */
@@ -285,24 +285,29 @@ export async function resolveAdminActor(): Promise<Actor | null> {
     return buildActorFromPasswordSession(config);
   }
 
-  // 2. Entra トークン。署名・issuer・audience・exp を検証してから信頼する。
+  // 2. SSO トークン（Entra / Cognito）。署名・issuer・audience・exp を検証してから信頼する。
+  //    proxy(#238) と同じ汎用 OIDC 検証（rolesClaim のみ provider 差）を通す。
   const token = jar.get(ENTRA_TOKEN_COOKIE)?.value;
   if (!token) return null;
 
   const cfg = getAdminAuthConfig();
-  if (cfg.provider !== 'entra' || !cfg.entra) return null;
+  const oidc =
+    cfg.provider === 'entra' ? cfg.entra : cfg.provider === 'cognito' ? cfg.cognito : undefined;
+  if (!oidc) return null;
+  const rolesClaim = 'rolesClaim' in oidc ? oidc.rolesClaim : 'roles';
 
-  const result = await verifyEntraToken(token, {
-    issuer: cfg.entra.issuer,
-    audience: cfg.entra.audience,
-    allowedRoles: cfg.entra.allowedRoles,
-    getKey: createJwksResolver(cfg.entra.jwksUri),
+  const result = await verifyOidcToken(token, {
+    issuer: oidc.issuer,
+    audience: oidc.audience,
+    allowedRoles: oidc.allowedRoles,
+    getKey: createJwksResolver(oidc.jwksUri),
+    rolesClaim,
   });
   if (!result.ok) return null;
 
   // 検証済み subject/email で実 AdminUser を解決する（env 既定テナントへ束ねない）。
   return resolveActorFromStore(
-    { subject: result.subject, email: result.email, rolesClaim: result.claims.roles },
+    { subject: result.subject, email: result.email, rolesClaim: result.claims[rolesClaim] },
     config,
   );
 }

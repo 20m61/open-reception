@@ -14,6 +14,7 @@ import * as acm from 'aws-cdk-lib/aws-certificatemanager';
 import * as route53 from 'aws-cdk-lib/aws-route53';
 import * as route53Targets from 'aws-cdk-lib/aws-route53-targets';
 import * as secretsmanager from 'aws-cdk-lib/aws-secretsmanager';
+import * as cognito from 'aws-cdk-lib/aws-cognito';
 import { EnvConfig } from '../config/environments';
 import { toRetentionDays, prodRemovalPolicy } from '../config/aws-helpers';
 import { applyCostTags } from '../constructs/cost-tags';
@@ -79,6 +80,13 @@ export interface WebStackProps extends StackProps {
    * 未指定なら従来どおり OAC + IAM 署名（GET は通るが POST は 403 になる既知問題）。
    */
   readonly originVerifySecret?: string;
+  /**
+   * 管理ログインに Cognito（埋め込み SRP）を使う場合 true (issue #238)。指定すると Cognito
+   * User Pool + App Client（USER_SRP_AUTH 有効・client secret 無し・Hosted UI 無し）を作成し、
+   * server Lambda に `COGNITO_USER_POOL_ID/COGNITO_CLIENT_ID/COGNITO_REGION/COGNITO_ISSUER` を注入する。
+   * `ADMIN_AUTH_PROVIDER=cognito` は bin が appEnv に畳み込む。
+   */
+  readonly cognitoAuth?: boolean;
 }
 
 /**
@@ -99,7 +107,8 @@ export class WebStack extends Stack {
 
     this.assertBuildArtifacts();
 
-    const { config, appEnv = {}, customDomain, appSecretsName, originVerifySecret } = props;
+    const { config, appEnv = {}, customDomain, appSecretsName, originVerifySecret, cognitoAuth } =
+      props;
     const retention = toRetentionDays(config.web.logRetentionDays);
     const removalPolicy = prodRemovalPolicy(config.environment);
 
@@ -181,6 +190,46 @@ export class WebStack extends Stack {
     // CloudFront 経由検証（直叩き拒否）。middleware(proxy.ts) が x-origin-verify を照合する。
     if (originVerifySecret) {
       serverFn.addEnvironment('ORIGIN_VERIFY_SECRET', originVerifySecret);
+    }
+
+    // --- 管理ログイン Cognito（埋め込み SRP・Hosted UI 無し） (issue #238) ---
+    // App Client は USER_SRP_AUTH のみ・client secret 無し（SECRET_HASH/IAM 不要）。UserPoolDomain は
+    // 作らない（= Hosted UI 無し）。ADMIN_AUTH_PROVIDER=cognito は bin が appEnv に畳み込む。
+    if (cognitoAuth) {
+      const userPool = new cognito.UserPool(this, 'AdminUserPool', {
+        selfSignUpEnabled: false, // 管理者がユーザーを作成（セルフサインアップ無効）
+        signInAliases: { username: true, email: true },
+        passwordPolicy: {
+          minLength: 12,
+          requireLowercase: true,
+          requireUppercase: true,
+          requireDigits: true,
+          requireSymbols: true,
+        },
+        accountRecovery: cognito.AccountRecovery.EMAIL_ONLY,
+        removalPolicy,
+      });
+      const userPoolClient = userPool.addClient('AdminAppClient', {
+        authFlows: { userSrp: true }, // USER_SRP_AUTH のみ（PW を平文送信しない）
+        generateSecret: false, // client secret 無し
+        preventUserExistenceErrors: true,
+        idTokenValidity: Duration.hours(8), // セッション長（refresh は inc2）
+        accessTokenValidity: Duration.hours(8),
+      });
+      const issuer = `https://cognito-idp.${this.region}.amazonaws.com/${userPool.userPoolId}`;
+      serverFn.addEnvironment('COGNITO_USER_POOL_ID', userPool.userPoolId);
+      serverFn.addEnvironment('COGNITO_CLIENT_ID', userPoolClient.userPoolClientId);
+      serverFn.addEnvironment('COGNITO_REGION', this.region);
+      serverFn.addEnvironment('COGNITO_ISSUER', issuer);
+
+      new CfnOutput(this, 'AdminUserPoolId', {
+        value: userPool.userPoolId,
+        description: '管理ログイン Cognito User Pool ID（管理者ユーザー作成に使用）',
+      });
+      new CfnOutput(this, 'AdminUserPoolClientId', {
+        value: userPoolClient.userPoolClientId,
+        description: '管理ログイン Cognito App Client ID',
+      });
     }
 
     // Function URL の認証方式。originVerifySecret 指定時は NONE（CloudFront 秘密ヘッダで保護）に切替え、

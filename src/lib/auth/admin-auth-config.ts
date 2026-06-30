@@ -22,11 +22,39 @@ export type EntraConfig = {
   allowedRoles: Set<AdminRole>;
 };
 
+/**
+ * Cognito（埋め込み SRP ログイン）設定 (issue #238)。
+ * - 検証: issuer/audience/jwksUri/rolesClaim（ID トークンの汎用 OIDC 検証に使う）。
+ * - ログイン: userPoolId/clientId/region（USER_SRP_AUTH の InitiateAuth に使う。server-only）。
+ *   App Client は client secret 無し前提（generateSecret:false）。Hosted UI は使わない。
+ */
+export type CognitoConfig = {
+  userPoolId: string;
+  clientId: string;
+  region: string;
+  issuer: string;
+  audience: string;
+  jwksUri: string;
+  /** ロール写像の claim 名。Cognito は 'cognito:groups'。 */
+  rolesClaim: string;
+  allowedRoles: Set<AdminRole>;
+};
+
 export type AdminAuthConfig = {
   provider: AdminAuthProvider;
   required: boolean;
   entra?: EntraConfig;
+  cognito?: CognitoConfig;
 };
+
+/** Cognito User Pool の OIDC issuer / JWKS を region+poolId から導出する。 */
+export function cognitoIssuer(region: string, userPoolId: string): string {
+  if (!region || !userPoolId) return '';
+  return `https://cognito-idp.${region}.amazonaws.com/${userPoolId}`;
+}
+export function cognitoJwksUri(issuer: string): string {
+  return issuer ? `${issuer}/.well-known/jwks.json` : '';
+}
 
 function parseProvider(raw: string | undefined): AdminAuthProvider {
   if (raw === 'entra' || raw === 'cognito') return raw;
@@ -49,6 +77,28 @@ export function getAdminAuthConfig(
   // provider=none（既存パスワード認証）は常に有効。緩和フラグは SSO のみに適用する。
   const requiredRaw = env.ADMIN_AUTH_REQUIRED;
   const required = provider === 'none' ? true : requiredRaw !== 'false';
+
+  if (provider === 'cognito') {
+    const region = env.COGNITO_REGION ?? env.AWS_REGION ?? '';
+    const userPoolId = env.COGNITO_USER_POOL_ID ?? '';
+    const clientId = env.COGNITO_CLIENT_ID ?? '';
+    const issuer = env.COGNITO_ISSUER ?? cognitoIssuer(region, userPoolId);
+    return {
+      provider,
+      required,
+      cognito: {
+        userPoolId,
+        clientId,
+        region,
+        issuer,
+        // Cognito ID トークンの aud は App Client ID。
+        audience: clientId,
+        jwksUri: cognitoJwksUri(issuer),
+        rolesClaim: 'cognito:groups',
+        allowedRoles: parseAllowedRoles(env.ADMIN_ALLOWED_ROLES),
+      },
+    };
+  }
 
   if (provider !== 'entra') {
     return { provider, required };
@@ -92,6 +142,14 @@ export function validateAdminAuthConfig(
     else warnings.push(`${msg} ローカル/PoC 用途のみ。`);
   }
 
+  if (cfg.provider === 'cognito') {
+    if (!cfg.cognito?.userPoolId) errors.push('COGNITO_USER_POOL_ID が未設定です。');
+    if (!cfg.cognito?.clientId) errors.push('COGNITO_CLIENT_ID が未設定です。');
+    if (!cfg.cognito?.region) errors.push('COGNITO_REGION（または AWS_REGION）が未設定です。');
+    if (!cfg.cognito?.issuer) errors.push('Cognito issuer を導出できません（region/userPoolId を確認）。');
+    if (!cfg.cognito?.jwksUri) errors.push('Cognito JWKS URI を導出できません。');
+  }
+
   if (cfg.provider === 'entra') {
     if (!cfg.entra?.issuer) errors.push('ENTRA_ISSUER（または ENTRA_TENANT_ID）が未設定です。');
     if (!cfg.entra?.audience) errors.push('ENTRA_AUDIENCE（または ENTRA_CLIENT_ID）が未設定です。');
@@ -118,6 +176,9 @@ export type EntraSettingStatus = {
   requiredForLogin: boolean;
 };
 
+/** provider 非依存の設定有無（値は含めない）。 */
+export type AuthSettingStatus = { key: string; presence: SettingPresence; requiredForLogin: boolean };
+
 export type AdminAuthStatus = {
   provider: AdminAuthProvider;
   required: boolean;
@@ -128,6 +189,11 @@ export type AdminAuthStatus = {
   entra?: {
     settings: EntraSettingStatus[];
     /** 許可ロール（公開可能な列挙値。secret ではない）。 */
+    allowedRoles: AdminRole[];
+  };
+  /** provider==='cognito' のときのみ。各設定の有無（値は含めない）。 */
+  cognito?: {
+    settings: AuthSettingStatus[];
     allowedRoles: AdminRole[];
   };
 };
@@ -149,10 +215,28 @@ export function describeAdminAuthStatus(
     errors: check.errors,
     warnings: check.warnings,
   };
+  const presence = (v: string | undefined): SettingPresence => (v && v.trim() ? 'set' : 'missing');
+
+  if (cfg.provider === 'cognito' && cfg.cognito) {
+    const c = cfg.cognito;
+    const settings: AuthSettingStatus[] = [
+      { key: 'userPoolId', presence: presence(c.userPoolId), requiredForLogin: true },
+      { key: 'clientId', presence: presence(c.clientId), requiredForLogin: true },
+      { key: 'region', presence: presence(c.region), requiredForLogin: true },
+      { key: 'issuer', presence: presence(c.issuer), requiredForLogin: true },
+      { key: 'jwksUri', presence: presence(c.jwksUri), requiredForLogin: true },
+      {
+        key: 'allowedRoles',
+        presence: c.allowedRoles.size > 0 ? 'set' : 'missing',
+        requiredForLogin: false,
+      },
+    ];
+    return { ...base, cognito: { settings, allowedRoles: [...c.allowedRoles] } };
+  }
+
   if (cfg.provider !== 'entra' || !cfg.entra) return base;
 
   const e = cfg.entra;
-  const presence = (v: string | undefined): SettingPresence => (v && v.trim() ? 'set' : 'missing');
   const settings: EntraSettingStatus[] = [
     { key: 'issuer', presence: presence(e.issuer), requiredForLogin: true },
     { key: 'audience', presence: presence(e.audience), requiredForLogin: true },

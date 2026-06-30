@@ -3,7 +3,7 @@ import type { NextRequest } from 'next/server';
 import { verifySession } from '@/lib/auth/session';
 import { ADMIN_COOKIE, ENTRA_TOKEN_COOKIE, getAdminSecret } from '@/lib/auth/admin';
 import { getAdminAuthConfig, validateAdminAuthConfig } from '@/lib/auth/admin-auth-config';
-import { verifyEntraToken, createJwksResolver } from '@/lib/auth/entra';
+import { verifyOidcToken, createJwksResolver } from '@/lib/auth/entra';
 import { canWrite } from '@/domain/auth/roles';
 
 /**
@@ -87,19 +87,22 @@ export async function proxy(req: NextRequest): Promise<NextResponse> {
     );
   }
 
-  // --- Entra ID（OIDC JWT）でパスワード認証を置換 ---
-  if (cfg.provider === 'entra' && cfg.entra) {
+  // --- SSO（OIDC JWT: Entra / Cognito）でパスワード認証を置換 ---
+  // entra / cognito は SSO トークン Cookie を毎リクエスト汎用 OIDC 検証する（rolesClaim のみ provider 差）。
+  const oidc = cfg.provider === 'entra' ? cfg.entra : cfg.provider === 'cognito' ? cfg.cognito : undefined;
+  if (oidc) {
     // PoC/ローカルで認証を緩和する設定（本番は config 検証でエラー）。
     if (!cfg.required) return passThrough(req);
 
     const token = req.cookies.get(ENTRA_TOKEN_COOKIE)?.value;
     if (!token) return denyApiOrRedirect(req, isAdminApi, 401);
 
-    const result = await verifyEntraToken(token, {
-      issuer: cfg.entra.issuer,
-      audience: cfg.entra.audience,
-      allowedRoles: cfg.entra.allowedRoles,
-      getKey: createJwksResolver(cfg.entra.jwksUri),
+    const result = await verifyOidcToken(token, {
+      issuer: oidc.issuer,
+      audience: oidc.audience,
+      allowedRoles: oidc.allowedRoles,
+      getKey: createJwksResolver(oidc.jwksUri),
+      rolesClaim: 'rolesClaim' in oidc ? oidc.rolesClaim : 'roles',
     });
     if (!result.ok) return denyApiOrRedirect(req, isAdminApi, 401);
 
@@ -115,7 +118,7 @@ export async function proxy(req: NextRequest): Promise<NextResponse> {
     return passThrough(req);
   }
 
-  // --- 既存のパスワードセッション（provider=none / 未実装の cognito は安全側で既存方式を維持） ---
+  // --- 既存のパスワードセッション（provider=none。entra/cognito は上の SSO 分岐で処理済み） ---
   const token = req.cookies.get(ADMIN_COOKIE)?.value;
   const session = await verifySession(token, getAdminSecret());
   if (session?.role === 'admin') return passThrough(req);

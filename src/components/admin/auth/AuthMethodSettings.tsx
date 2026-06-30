@@ -30,6 +30,15 @@ const SETTING_LABEL: Record<EntraSettingStatus['key'], string> = {
   allowedRoles: '許可ロール（ADMIN_ALLOWED_ROLES）',
 };
 
+const COGNITO_SETTING_LABEL: Record<string, string> = {
+  userPoolId: 'User Pool ID（COGNITO_USER_POOL_ID）',
+  clientId: 'App Client ID（COGNITO_CLIENT_ID）',
+  region: 'Region（COGNITO_REGION）',
+  issuer: 'Issuer（region/poolId から導出）',
+  jwksUri: 'JWKS URI（issuer から導出）',
+  allowedRoles: '許可ロール（ADMIN_ALLOWED_ROLES）',
+};
+
 export function AuthMethodSettings() {
   const [status, setStatus] = useState<AdminAuthStatus | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -106,7 +115,48 @@ export function AuthMethodSettings() {
         ) : null}
       </Section>
 
-      {status.entra ? (
+      {status.cognito ? (
+        <Section
+          title="Cognito 必須設定"
+          description="値は env / CDK で設定します。ここでは有無のみ表示します（埋め込み SRP ログイン）。"
+        >
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+            {status.cognito.settings.map((s) => (
+              <div
+                key={s.key}
+                data-testid={`cognito-setting-${s.key}`}
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'space-between',
+                  gap: 12,
+                  padding: '10px 12px',
+                  borderRadius: 8,
+                  border: '1px solid var(--color-surface-2)',
+                  background: 'var(--color-surface)',
+                }}
+              >
+                <span>
+                  {COGNITO_SETTING_LABEL[s.key] ?? s.key}
+                  {s.requiredForLogin ? (
+                    <span style={{ marginLeft: 6, fontSize: '0.75rem', opacity: 0.6 }}>必須</span>
+                  ) : null}
+                </span>
+                <StatusBadge
+                  status={s.presence === 'set' ? 'ok' : s.requiredForLogin ? 'critical' : 'warning'}
+                  label={s.presence === 'set' ? '設定済み' : '未設定'}
+                />
+              </div>
+            ))}
+          </div>
+          <p data-testid="cognito-allowed-roles" style={{ fontSize: '0.85rem', marginTop: 12 }}>
+            許可ロール:{' '}
+            {status.cognito.allowedRoles.length > 0
+              ? status.cognito.allowedRoles.join(', ')
+              : '（未設定: 全ロール許可）'}
+          </p>
+        </Section>
+      ) : status.entra ? (
         <Section
           title="Entra ID 必須設定"
           description="値は env / Secrets Manager で設定します。ここでは有無のみ表示します。"

@@ -1,5 +1,6 @@
 import { getAdminAuthConfig } from '@/lib/auth/admin-auth-config';
 import { AdminPasswordLogin } from '@/components/admin/AdminPasswordLogin';
+import { AdminCredentialsLogin } from '@/components/admin/AdminCredentialsLogin';
 
 /**
  * 管理画面ログイン (issue #24, #70)。
@@ -77,6 +78,9 @@ export default async function AdminLoginPage({
             Microsoft でサインイン
           </a>
         </div>
+      ) : provider === 'cognito' ? (
+        // Hosted UI へは飛ばさず、自前フォームで SRP ログイン (issue #238)。
+        <AdminCredentialsLogin />
       ) : (
         <AdminPasswordLogin />
       )}

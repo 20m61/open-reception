@@ -41,6 +41,18 @@ export interface DataConfig {
   removalProtection: boolean;
 }
 
+/** 管理画面認証プロバイダ (issue #238)。デプロイ環境の既定は cognito。 */
+export type AdminAuthProviderName = 'none' | 'cognito' | 'entra';
+
+export interface AuthConfig {
+  /**
+   * 管理ログインの認証プロバイダ。**デプロイ環境の既定は `cognito`**（埋め込み SRP）。
+   * `cognito` のとき WebStack が User Pool + App Client を作成し COGNITO_* / ADMIN_AUTH_PROVIDER を
+   * server Lambda に注入する。ローカル/CI/e2e は CDK を通らないため未設定＝`none`（パスワード）。
+   */
+  adminProvider: AdminAuthProviderName;
+}
+
 export interface EnvConfig {
   environment: EnvironmentName;
   /** リソース名 prefix。 */
@@ -48,6 +60,8 @@ export interface EnvConfig {
   web: WebConfig;
   notification: NotificationConfig;
   data: DataConfig;
+  /** 管理画面認証 (issue #238)。 */
+  auth: AuthConfig;
   /** コスト管理タグ (docs/cost-management-tags.md)。 */
   tags: {
     Project: string;
@@ -86,6 +100,7 @@ export const ENVIRONMENTS: Record<EnvironmentName, EnvConfig> = {
       alarmEmail: '',
     },
     data: { pointInTimeRecovery: false, removalProtection: false },
+    auth: { adminProvider: 'cognito' },
     tags: { ...BASE_TAGS, Environment: 'dev' },
   },
   staging: {
@@ -107,6 +122,7 @@ export const ENVIRONMENTS: Record<EnvironmentName, EnvConfig> = {
       alarmEmail: '',
     },
     data: { pointInTimeRecovery: true, removalProtection: false },
+    auth: { adminProvider: 'cognito' },
     tags: { ...BASE_TAGS, Environment: 'staging' },
   },
   prod: {
@@ -128,6 +144,7 @@ export const ENVIRONMENTS: Record<EnvironmentName, EnvConfig> = {
       alarmEmail: '',
     },
     data: { pointInTimeRecovery: true, removalProtection: true },
+    auth: { adminProvider: 'cognito' },
     tags: { ...BASE_TAGS, Environment: 'prod' },
   },
 };

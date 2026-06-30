@@ -1,15 +1,18 @@
 /**
- * Microsoft Entra ID（OIDC）アクセストークン検証 (issue #70)。
- * Edge middleware / Node Route の双方で動くよう Web Crypto のみを使い、RS256 を検証する。
+ * 汎用 OIDC（RS256 JWT）トークン検証 (issue #70 / #238)。
+ * Edge middleware / Node Route の双方で動くよう Web Crypto のみを使う。
  *
- * 検証項目: 署名（JWKS の公開鍵）・issuer・audience・exp/nbf・roles claim。
+ * 検証項目: 署名（JWKS の公開鍵）・issuer・audience・exp/nbf・ロール claim。
+ * ロール claim 名は provider 可変（Entra=`roles` / Cognito=`cognito:groups` / 汎用 OIDC=任意）。
  * secret/private key は扱わない（公開鍵のみ）。クライアントへは何も渡さない。
+ *
+ * 歴史的に Entra 用だったため file 名は entra.ts のままだが、ロジックは provider 非依存。
  */
 import { resolveAdminRole, type AdminRole } from '@/domain/auth/roles';
 
 const decoder = new TextDecoder();
 
-export type EntraClaims = {
+export type OidcClaims = {
   iss?: string;
   aud?: string | string[];
   exp?: number;
@@ -19,11 +22,16 @@ export type EntraClaims = {
   preferred_username?: string;
   email?: string;
   roles?: unknown;
+  /** Cognito のグループ。ロール写像の入力（rolesClaim='cognito:groups'）。 */
+  'cognito:groups'?: unknown;
+  'cognito:username'?: string;
   [key: string]: unknown;
 };
+/** 後方互換の別名。 */
+export type EntraClaims = OidcClaims;
 
 export type VerifyResult =
-  | { ok: true; role: AdminRole; subject: string; email?: string; claims: EntraClaims }
+  | { ok: true; role: AdminRole; subject: string; email?: string; claims: OidcClaims }
   | { ok: false; reason: string };
 
 /** JWKS の鍵（DOM の JsonWebKey は kid を含まないため拡張する）。 */
@@ -35,6 +43,8 @@ export type VerifyOptions = {
   audience: string;
   allowedRoles: Set<AdminRole>;
   getKey: JwkResolver;
+  /** ロールを取り出す claim 名。既定 'roles'（Entra）。Cognito は 'cognito:groups'。 */
+  rolesClaim?: string;
   /** 時刻ずれ許容（秒）。既定 60。 */
   clockToleranceSec?: number;
   /** テスト用に現在時刻（ms）を注入する。 */
@@ -63,10 +73,10 @@ function audienceMatches(aud: string | string[] | undefined, expected: string): 
 }
 
 /**
- * Entra アクセストークン（JWT）を検証して管理ロールを返す。
+ * OIDC トークン（RS256 JWT）を検証して管理ロールを返す。provider 非依存。
  * 失敗理由は呼び出し側のログ用（クライアントには汎用 401/403 のみ返す）。
  */
-export async function verifyEntraToken(token: string, options: VerifyOptions): Promise<VerifyResult> {
+export async function verifyOidcToken(token: string, options: VerifyOptions): Promise<VerifyResult> {
   const parts = token.split('.');
   if (parts.length !== 3) return { ok: false, reason: 'malformed_token' };
   const [headerSeg, payloadSeg, sigSeg] = parts;
@@ -96,7 +106,7 @@ export async function verifyEntraToken(token: string, options: VerifyOptions): P
   }
   if (!valid) return { ok: false, reason: 'bad_signature' };
 
-  const claims = decodeJson<EntraClaims>(payloadSeg);
+  const claims = decodeJson<OidcClaims>(payloadSeg);
   if (!claims) return { ok: false, reason: 'bad_payload' };
 
   if (claims.iss !== options.issuer) return { ok: false, reason: 'issuer_mismatch' };
@@ -107,7 +117,8 @@ export async function verifyEntraToken(token: string, options: VerifyOptions): P
   if (typeof claims.exp === 'number' && claims.exp + leeway < nowSec) return { ok: false, reason: 'expired' };
   if (typeof claims.nbf === 'number' && claims.nbf - leeway > nowSec) return { ok: false, reason: 'not_yet_valid' };
 
-  const role = resolveAdminRole(claims.roles);
+  // ロール claim 名は provider 可変（既定 'roles'）。Cognito は 'cognito:groups'。
+  const role = resolveAdminRole(claims[options.rolesClaim ?? 'roles']);
   if (!role) return { ok: false, reason: 'no_admin_role' };
   if (!options.allowedRoles.has(role)) return { ok: false, reason: 'role_not_allowed' };
 
@@ -118,10 +129,15 @@ export async function verifyEntraToken(token: string, options: VerifyOptions): P
     ok: true,
     role,
     subject,
-    email: claims.preferred_username ?? claims.email,
+    // email は email 形式の claim のみ。cognito:username は username であり email ではないため
+    // ストアの email 照合（findByEmail）に渡さない（レビュー#6）。
+    email: claims.email ?? claims.preferred_username,
     claims,
   };
 }
+
+/** 後方互換の別名（Entra 用の従来呼び出し）。rolesClaim 既定 'roles'。 */
+export const verifyEntraToken = verifyOidcToken;
 
 /* ---------- JWKS 取得（キャッシュ付き） ---------- */
 
