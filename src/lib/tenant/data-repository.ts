@@ -151,9 +151,17 @@ class DataBackedDeviceRepository implements DeviceRepository {
     await this.col().put(device);
   }
 
-  async consumeEnrollment(next: Device, expectedJti: string): Promise<boolean> {
-    // CAS: enrollmentTokenId が expectedJti のときのみ next（消去後）で上書き。
-    return this.col().putIfMatches(next, { enrollmentTokenId: expectedJti });
+  async consumeEnrollment(
+    deviceId: DeviceId,
+    expectedJti: string,
+    lastSeenAt: string,
+  ): Promise<boolean> {
+    // 条件付き部分更新: enrollmentTokenId === expectedJti のときのみ消去 + lastSeenAt 更新。
+    return this.col().updateIf(
+      String(deviceId),
+      { enrollmentTokenId: undefined, lastSeenAt },
+      { enrollmentTokenId: expectedJti },
+    );
   }
 }
 

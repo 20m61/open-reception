@@ -45,14 +45,16 @@ class MemoryCollection<T extends { id: string }> implements Collection<T> {
     this.items.set(item.id, clone(item));
   }
 
-  // get→check→set を await を挟まず同期で行うため、単一スレッドの event loop 上で原子的。
-  async putIfMatches(item: T, expected: Partial<T>): Promise<boolean> {
-    const cur = this.items.get(item.id);
+  // get→check→部分更新→set を await を挟まず同期で行うため、単一スレッドの event loop 上で原子的。
+  // **現在値**から changes のフィールドだけを変えるので、他フィールドの並行更新を失わない。
+  async updateIf(id: string, changes: Partial<T>, expected: Partial<T>): Promise<boolean> {
+    const cur = this.items.get(id);
     if (!cur) return false;
     for (const key of Object.keys(expected) as (keyof T)[]) {
+      // プリミティブ前提（dynamo の値比較と揃える）。一致しなければ更新しない。
       if (cur[key] !== expected[key]) return false;
     }
-    this.items.set(item.id, clone(item));
+    this.items.set(id, clone({ ...cur, ...changes }));
     return true;
   }
 

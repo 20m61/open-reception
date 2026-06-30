@@ -305,15 +305,20 @@ export class DeviceService {
       return { ok: false, reason: 'used' };
     if (device.status === 'revoked') return { ok: false, reason: 'revoked' };
 
-    const next: Device = {
-      ...device,
-      enrollmentTokenId: undefined,
-      lastSeenAt: this.now().toISOString(),
-    };
-    // 消去は **CAS**（enrollmentTokenId === jti のときのみ）で行う。同一 URL の同時アクセスで
-    // 上の read チェックを両者が通過しても、書込で勝てるのは 1 つだけ → 二重消費を防ぐ (issue #239)。
-    const won = await this.devices.consumeEnrollment(next, claims.jti);
-    if (!won) return { ok: false, reason: 'used' };
+    // 消去は **条件付き部分更新**（enrollmentTokenId === jti のときのみ）で原子的に行う。同一 URL の
+    // 同時アクセスで上の read チェックを両者が通過しても、書込で勝てるのは 1 つだけ → 二重消費を防ぐ。
+    // アイテム全体は置換せず該当フィールドのみ更新するため lost-update も避ける (issue #239)。
+    const won = await this.devices.consumeEnrollment(
+      asDeviceId(claims.deviceId),
+      claims.jti,
+      this.now().toISOString(),
+    );
+    if (!won) {
+      // 競合で書込に負けた。割り込みが revoke だった場合は revoked を返す（used と取り違えない）。
+      const after = await this.devices.getDevice(tenantId, asDeviceId(claims.deviceId));
+      if (after?.status === 'revoked') return { ok: false, reason: 'revoked' };
+      return { ok: false, reason: 'used' };
+    }
     return { ok: true, kioskId: String(device.id) };
   }
 

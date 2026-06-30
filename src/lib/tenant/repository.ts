@@ -55,10 +55,11 @@ export interface DeviceRepository {
   putDevice(device: Device): Promise<void>;
   /**
    * エンロールトークンを**原子的に**消費する (issue #239)。現在の `enrollmentTokenId` が
-   * `expectedJti` に一致するときのみ `next` で上書きし true。一致しない（消費済 / 競合で他が先に消費 /
-   * 端末なし）なら false。read→write 間の二重消費レースを防ぐ（CAS）。
+   * `expectedJti` に一致するときのみ、enrollmentTokenId を消去し lastSeenAt を更新して true。
+   * 一致しない（消費済 / 競合で他が先に消費 / 端末なし）なら false。アイテム全体を置換せず
+   * 当該フィールドのみ条件付き部分更新するため、他フィールドの並行更新を失わない（lost-update 回避）。
    */
-  consumeEnrollment(next: Device, expectedJti: string): Promise<boolean>;
+  consumeEnrollment(deviceId: DeviceId, expectedJti: string, lastSeenAt: string): Promise<boolean>;
 }
 
 export interface AdminUserRepository {

@@ -18,6 +18,7 @@ import {
   GetCommand,
   PutCommand,
   QueryCommand,
+  UpdateCommand,
 } from '@aws-sdk/lib-dynamodb';
 import type {
   Collection,
@@ -98,31 +99,54 @@ class DynamoCollection<T extends { id: string }> implements Collection<T> {
     await this.doc.send(new PutCommand({ TableName: this.table, Item: record }));
   }
 
-  // 条件付き PutItem（CAS）。expected の全フィールドが現在値と一致するときのみ書込。
-  // フィールドは top-level 属性として格納されるため ConditionExpression で直接参照できる。
-  async putIfMatches(item: T, expected: Partial<T>): Promise<boolean> {
-    const record: Item = { ...item, PK: this.pk, SK: item.id };
-    if (this.ttlSeconds && this.ttlSeconds > 0) {
-      record.ttl = Math.floor(Date.now() / 1000) + this.ttlSeconds;
-    }
+  // 条件付き**部分更新**（UpdateItem）。expected が現在値と一致するときのみ changes を適用。
+  // アイテム全体を置換しないため他フィールドの並行更新を失わない（lost-update 回避）。
+  // フィールドは top-level 属性として格納されるため式で直接参照できる。
+  async updateIf(id: string, changes: Partial<T>, expected: Partial<T>): Promise<boolean> {
     const names: Record<string, string> = {};
     const values: Record<string, unknown> = {};
-    const conds: string[] = [];
-    let i = 0;
-    for (const [k, v] of Object.entries(expected)) {
-      names[`#k${i}`] = k;
-      values[`:v${i}`] = v;
-      conds.push(`#k${i} = :v${i}`);
-      i += 1;
+    const sets: string[] = [];
+    const removes: string[] = [];
+    let n = 0;
+    for (const [k, v] of Object.entries(changes)) {
+      const nm = `#u${n}`;
+      names[nm] = k;
+      if (v === undefined) {
+        removes.push(nm); // 属性削除（REMOVE）。
+      } else {
+        values[`:u${n}`] = v;
+        sets.push(`${nm} = :u${n}`);
+      }
+      n += 1;
     }
+    const updateParts: string[] = [];
+    if (sets.length) updateParts.push(`SET ${sets.join(', ')}`);
+    if (removes.length) updateParts.push(`REMOVE ${removes.join(', ')}`);
+    if (updateParts.length === 0) return true; // 変更なし。
+
+    const conds: string[] = [];
+    let c = 0;
+    for (const [k, v] of Object.entries(expected)) {
+      const nm = `#c${c}`;
+      names[nm] = k;
+      if (v === undefined) {
+        conds.push(`attribute_not_exists(${nm})`);
+      } else {
+        values[`:c${c}`] = v;
+        conds.push(`${nm} = :c${c}`);
+      }
+      c += 1;
+    }
+
     try {
       await this.doc.send(
-        new PutCommand({
+        new UpdateCommand({
           TableName: this.table,
-          Item: record,
-          ConditionExpression: conds.join(' AND '),
+          Key: { PK: this.pk, SK: id },
+          UpdateExpression: updateParts.join(' '),
+          ...(conds.length ? { ConditionExpression: conds.join(' AND ') } : {}),
           ExpressionAttributeNames: names,
-          ExpressionAttributeValues: values,
+          ...(Object.keys(values).length ? { ExpressionAttributeValues: values } : {}),
         }),
       );
       return true;

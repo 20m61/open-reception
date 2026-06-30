@@ -114,11 +114,16 @@ class MemoryDeviceRepository implements DeviceRepository {
     this.devices.set(device.id, clone(device));
   }
 
-  // get→check→set を await なしで行うため原子的（CAS, issue #239）。
-  async consumeEnrollment(next: Device, expectedJti: string): Promise<boolean> {
-    const cur = this.devices.get(next.id);
+  // get→check→部分更新→set を await なしで行うため原子的（CAS, issue #239）。
+  // 現在値から該当フィールドのみ変更し、他フィールドの並行更新を失わない。
+  async consumeEnrollment(
+    deviceId: DeviceId,
+    expectedJti: string,
+    lastSeenAt: string,
+  ): Promise<boolean> {
+    const cur = this.devices.get(deviceId);
     if (!cur || cur.enrollmentTokenId !== expectedJti) return false;
-    this.devices.set(next.id, clone(next));
+    this.devices.set(deviceId, clone({ ...cur, enrollmentTokenId: undefined, lastSeenAt }));
     return true;
   }
 }
