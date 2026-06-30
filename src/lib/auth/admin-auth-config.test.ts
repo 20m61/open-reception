@@ -158,3 +158,41 @@ describe('describeAdminAuthStatus (#70)', () => {
     expect(s.ok).toBe(false);
   });
 });
+
+describe('admin auth config: cognito (#238)', () => {
+  const baseEnv = {
+    ADMIN_AUTH_PROVIDER: 'cognito',
+    COGNITO_REGION: 'ap-northeast-1',
+    COGNITO_USER_POOL_ID: 'ap-northeast-1_abc',
+    COGNITO_CLIENT_ID: 'client123',
+    ADMIN_ALLOWED_ROLES: 'OpenReception.Admin',
+  } as Record<string, string | undefined>;
+
+  it('issuer/jwks/audience/rolesClaim を導出する', () => {
+    const cfg = getAdminAuthConfig(baseEnv);
+    expect(cfg.provider).toBe('cognito');
+    expect(cfg.cognito?.issuer).toBe('https://cognito-idp.ap-northeast-1.amazonaws.com/ap-northeast-1_abc');
+    expect(cfg.cognito?.jwksUri).toBe(
+      'https://cognito-idp.ap-northeast-1.amazonaws.com/ap-northeast-1_abc/.well-known/jwks.json',
+    );
+    expect(cfg.cognito?.audience).toBe('client123');
+    expect(cfg.cognito?.rolesClaim).toBe('cognito:groups');
+  });
+
+  it('必須欠落は fail（userPoolId/clientId/region）', () => {
+    const cfg = getAdminAuthConfig({ ADMIN_AUTH_PROVIDER: 'cognito' });
+    const check = validateAdminAuthConfig(cfg, 'production');
+    expect(check.ok).toBe(false);
+    expect(check.errors.join(' ')).toMatch(/COGNITO_USER_POOL_ID/);
+  });
+
+  it('describe は値を出さず presence のみ返す', () => {
+    const s = describeAdminAuthStatus(baseEnv);
+    expect(s.provider).toBe('cognito');
+    const byKey = Object.fromEntries((s.cognito?.settings ?? []).map((x) => [x.key, x.presence]));
+    expect(byKey.userPoolId).toBe('set');
+    expect(byKey.clientId).toBe('set');
+    // 値（poolId 等）が status に漏れていないこと。
+    expect(JSON.stringify(s)).not.toContain('ap-northeast-1_abc');
+  });
+});

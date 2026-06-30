@@ -56,13 +56,20 @@ const appSecretsName = app.node.tryGetContext('appSecretsName') as string | unde
 // OAC が POST ボディを署名しない制約（GET 可・POST 403）を回避する。`-c originVerifySecret=<高エントロピー値>`。
 const originVerifySecret = app.node.tryGetContext('originVerifySecret') as string | undefined;
 
+// 管理ログイン認証プロバイダ (issue #238)。デプロイ環境の既定は config.auth.adminProvider（=cognito）。
+// `-c appEnv='{"ADMIN_AUTH_PROVIDER":"none"}'` で明示上書きも可能。cognito のとき WebStack が
+// Cognito User Pool/Client を作成し COGNITO_* を注入する。
+const adminProvider = appEnvContext.ADMIN_AUTH_PROVIDER ?? config.auth.adminProvider;
+const appEnv = { ...appEnvContext, ADMIN_AUTH_PROVIDER: adminProvider };
+
 new WebStack(app, `OpenReception-Web-${config.environment}`, {
   env: { account, region },
   config,
-  appEnv: appEnvContext,
+  appEnv,
   customDomain,
   appSecretsName,
   originVerifySecret,
+  cognitoAuth: adminProvider === 'cognito',
   description: `open-reception Next.js hosting (${config.environment})`,
 });
 

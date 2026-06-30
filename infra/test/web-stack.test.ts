@@ -340,3 +340,55 @@ describe.runIf(OPEN_NEXT_READY)('WebStack origin-verify secret (#OAC-POST)', () 
     });
   }, 30000);
 });
+
+// 管理ログイン Cognito（埋め込み SRP）(issue #238)。
+describe.runIf(OPEN_NEXT_READY)('WebStack admin Cognito auth', () => {
+  const app = new cdk.App();
+  const stack = new WebStack(app, 'TestWebCognito', {
+    env: { account: '123456789012', region: 'ap-northeast-1' },
+    config: resolveEnv('prod'),
+    appEnv: { ADMIN_AUTH_PROVIDER: 'cognito' },
+    cognitoAuth: true,
+  });
+  const template = Template.fromStack(stack);
+
+  it('provisions a Cognito User Pool with self sign-up disabled', () => {
+    template.resourceCountIs('AWS::Cognito::UserPool', 1);
+    template.hasResourceProperties('AWS::Cognito::UserPool', {
+      AdminCreateUserConfig: { AllowAdminCreateUserOnly: true },
+    });
+  });
+
+  it('App Client enables USER_SRP_AUTH only and no client secret / no hosted UI', () => {
+    template.hasResourceProperties('AWS::Cognito::UserPoolClient', {
+      ExplicitAuthFlows: Match.arrayWith(['ALLOW_USER_SRP_AUTH']),
+      GenerateSecret: false,
+    });
+    // Hosted UI を使わないため UserPoolDomain は作らない。
+    template.resourceCountIs('AWS::Cognito::UserPoolDomain', 0);
+  });
+
+  it('injects COGNITO_* env into the server function', () => {
+    template.hasResourceProperties('AWS::Lambda::Function', {
+      Environment: {
+        Variables: Match.objectLike({
+          ADMIN_AUTH_PROVIDER: 'cognito',
+          COGNITO_USER_POOL_ID: Match.anyValue(),
+          COGNITO_CLIENT_ID: Match.anyValue(),
+          COGNITO_REGION: 'ap-northeast-1',
+          COGNITO_ISSUER: Match.anyValue(),
+        }),
+      },
+    });
+  }, 30000);
+
+  it('does NOT create Cognito when cognitoAuth is unset', () => {
+    const app2 = new cdk.App();
+    const noCog = new WebStack(app2, 'TestWebNoCognito', {
+      env: { account: '123456789012', region: 'ap-northeast-1' },
+      config: resolveEnv('dev'),
+      appEnv: { ADMIN_AUTH_PROVIDER: 'none' },
+    });
+    Template.fromStack(noCog).resourceCountIs('AWS::Cognito::UserPool', 0);
+  });
+});
