@@ -21,6 +21,13 @@ import type { Kiosk } from '@/domain/kiosk/types';
 import type { Asset, ActiveAssetSet } from '@/domain/assets/types';
 import type { Department } from '@/domain/department/types';
 import type { Staff } from '@/domain/staff/types';
+import type { Tenant, Site, Device } from '@/domain/tenant/types';
+import { SEED as TENANT_SEED } from '@/lib/tenant/store';
+import {
+  TENANT_COLLECTION,
+  SITE_COLLECTION,
+  DEVICE_COLLECTION,
+} from '@/lib/tenant/data-repository';
 
 async function main(): Promise<void> {
   // 安全側に倒して DynamoDB を明示する（誤って memory に投入しない）。
@@ -48,7 +55,17 @@ async function main(): Promise<void> {
   });
   await backend.singleton<ActiveAssetSet>('activeAssets').put({ background: 'asset-bg-default' });
 
-  console.log('Seeded base data: kiosk-dev, default background asset + active set.');
+  // テナント境界（#87）の既定 tenant/site/device を投入する。memory backend は store の SEED が
+  // 自動投入するが dynamodb は無視するため、ここで同じ定義を書き込み /admin/sites・/admin/devices を
+  // 初期から使えるようにする（未投入だと device 作成が 404 "site not found" になる）。
+  for (const t of TENANT_SEED.tenants) await backend.collection<Tenant>(TENANT_COLLECTION).put({ ...t });
+  for (const s of TENANT_SEED.sites) await backend.collection<Site>(SITE_COLLECTION).put({ ...s });
+  for (const d of TENANT_SEED.devices) await backend.collection<Device>(DEVICE_COLLECTION).put({ ...d });
+
+  console.log(
+    `Seeded base data: kiosk-dev, default background asset + active set, ` +
+      `tenant/site/device (${TENANT_SEED.tenants.length}/${TENANT_SEED.sites.length}/${TENANT_SEED.devices.length}).`,
+  );
 
   if (process.argv.includes('--with-mock')) {
     const { MOCK_DEPARTMENTS, MOCK_STAFF } = await import('../src/domain/staff/mock-data');
