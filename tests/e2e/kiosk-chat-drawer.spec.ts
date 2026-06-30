@@ -1,4 +1,4 @@
-import { test, expect } from '@playwright/test';
+import { test, expect } from './kiosk-fixtures';
 
 /**
  * Chat-assisted ドロワーの配線・非遮蔽ゲート E2E (issue #124 / Epic #119)。

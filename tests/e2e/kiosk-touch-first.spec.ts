@@ -1,4 +1,4 @@
-import { test, expect } from '@playwright/test';
+import { test, expect } from './kiosk-fixtures';
 
 /**
  * タッチファースト受付導線の iPad viewport E2E (issue #121 / Epic #119)。

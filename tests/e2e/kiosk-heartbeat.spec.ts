@@ -1,4 +1,4 @@
-import { test, expect } from '@playwright/test';
+import { test, expect } from './kiosk-fixtures';
 
 /**
  * 受付端末 heartbeat の E2E (issue #30)。

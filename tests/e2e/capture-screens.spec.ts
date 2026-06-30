@@ -1,5 +1,5 @@
 import { test, expect, type Page } from '@playwright/test';
-import { loginAsAdmin } from './helpers';
+import { establishKioskSession, loginAsAdmin } from './helpers';
 
 /**
  * 各画面のスクリーンショット取得（手動検証/レビュー用・回帰比較ではない）(品質ゲート整備)。
@@ -16,6 +16,8 @@ test.describe('受付端末（kiosk）', () => {
   test.use({ viewport: { width: 810, height: 1080 } });
 
   test('kiosk 主要画面', async ({ page }) => {
+    // /kiosk はセッション必須 (issue #239)。撮影のため先にセッションを確立する。
+    await establishKioskSession(page);
     await page.goto('/kiosk');
     await expect(page.getByTestId('start-reception')).toBeVisible();
     await shot(page, 'kiosk-01-idle');

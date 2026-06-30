@@ -33,7 +33,10 @@ export default defineConfig({
   testDir: './tests/e2e',
   fullyParallel: true,
   forbidOnly: !!process.env.CI,
-  retries: process.env.CI ? 2 : 0,
+  // 共有 in-memory バックエンドのため、フロー作成系テスト（admin-reception-flows /
+  // kiosk-flow-integration）の作成中ウィンドウに kiosk テストが当たると稀にフレークする
+  // （作成フローは afterEach で削除し持続汚染は無い）。ローカルも 1 回再試行して吸収する。
+  retries: process.env.CI ? 2 : 1,
   reporter: process.env.CI ? 'github' : 'list',
   use: {
     baseURL,
@@ -61,9 +64,13 @@ export default defineConfig({
   webServer: remoteBaseURL
     ? undefined
     : {
-        command: 'npm run start',
+        // /kiosk セッションゲート (issue #239) により enroll 済み kiosk は seed 済みカスタムフローを
+        // 表示する。既定（組込み）受付フローを検証する e2e と衝突するため、e2e では dev seed を無効化。
+        // env を command に埋め込み、reuseExistingServer での取りこぼしを避ける。
+        command: 'RECEPTION_DISABLE_DEV_SEED=1 npm run start',
         url: baseURL,
         reuseExistingServer: !process.env.CI,
         timeout: 120_000,
+        env: { RECEPTION_DISABLE_DEV_SEED: '1' },
       },
 });

@@ -1,4 +1,4 @@
-import { test, expect } from '@playwright/test';
+import { test, expect } from './kiosk-fixtures';
 import AxeBuilder from '@axe-core/playwright';
 import { loginAsAdmin } from './helpers';
 

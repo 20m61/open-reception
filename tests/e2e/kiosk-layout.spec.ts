@@ -1,4 +1,4 @@
-import { test, expect } from '@playwright/test';
+import { test, expect } from './kiosk-fixtures';
 
 /**
  * 受付端末のレイアウトプロファイル E2E (issue #124 / Epic #119)。

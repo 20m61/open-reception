@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   flowValuesToVisitorInfo,
+  resolveKioskGate,
   shouldShowSignage,
   shouldUseCustomFlow,
 } from './integration';
@@ -101,5 +102,38 @@ describe('shouldShowSignage', () => {
 
   it('サイネージ項目なしは false（既定 IdleView へ）', () => {
     expect(shouldShowSignage({ ...base, signageItemCount: 0 })).toBe(false);
+  });
+});
+
+describe('resolveKioskGate (#239)', () => {
+  it('セッション保持で ready（受付フロー表示）', () => {
+    expect(resolveKioskGate({ active: true, authorized: true, pinRequired: false })).toBe('ready');
+    expect(resolveKioskGate({ active: null, authorized: true, pinRequired: true })).toBe('ready');
+  });
+
+  it('未保持かつ PIN 不要は unenrolled（自己許可手段なし→エンロール誘導）', () => {
+    expect(resolveKioskGate({ active: true, authorized: false, pinRequired: false })).toBe(
+      'unenrolled',
+    );
+  });
+
+  it('未保持かつ PIN 必須は authorize（PIN で自己許可可能, #23）', () => {
+    expect(resolveKioskGate({ active: true, authorized: false, pinRequired: true })).toBe(
+      'authorize',
+    );
+  });
+
+  it('失効は最優先で revoked（未保持でも利用不可表示）', () => {
+    expect(resolveKioskGate({ active: false, authorized: false, pinRequired: false })).toBe(
+      'revoked',
+    );
+    expect(resolveKioskGate({ active: false, authorized: true, pinRequired: false })).toBe(
+      'revoked',
+    );
+  });
+
+  it('authorized=null（heartbeat 取得前）は楽観的に ready（初期フラッシュ回避）', () => {
+    expect(resolveKioskGate({ active: null, authorized: null, pinRequired: false })).toBe('ready');
+    expect(resolveKioskGate({ active: true, authorized: null, pinRequired: true })).toBe('ready');
   });
 });

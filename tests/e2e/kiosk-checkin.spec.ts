@@ -1,4 +1,4 @@
-import { test, expect } from '@playwright/test';
+import { test, expect } from './kiosk-fixtures';
 
 /**
  * QR 読み取りチェックインの iPad viewport smoke test (issue #98, increment 1)。

@@ -1,4 +1,4 @@
-import { test, expect } from '@playwright/test';
+import { test, expect } from './kiosk-fixtures';
 
 /**
  * 受付端末 待機画面の主要 viewport スクリーンショット差分 (issue #124 / #125 / Epic #119)。
