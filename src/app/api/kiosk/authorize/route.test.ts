@@ -58,4 +58,30 @@ describe('POST /api/kiosk/authorize (#244)', () => {
     expect(res.status).toBe(401);
     expect(issueKioskSession).not.toHaveBeenCalled();
   });
+
+  it('pinRequired=false でも IP allowlist 運用なら許可 IP からはセッションを発行（IP-only, #23/#244）', async () => {
+    getSecuritySettings.mockResolvedValue({ pinRequired: false, pin: '0000', ipAllowlist: ['1.2.3.4'] });
+    const res = await POST(
+      new Request('http://localhost/api/kiosk/authorize', {
+        method: 'POST',
+        headers: { 'x-forwarded-for': '1.2.3.4' },
+        body: JSON.stringify({ kioskId: 'kiosk-dev' }),
+      }),
+    );
+    expect(res.status).toBe(200);
+    expect(issueKioskSession).toHaveBeenCalledTimes(1);
+  });
+
+  it('IP allowlist 運用でも許可外 IP は 403（IP ゲート）', async () => {
+    getSecuritySettings.mockResolvedValue({ pinRequired: false, pin: '0000', ipAllowlist: ['1.2.3.4'] });
+    const res = await POST(
+      new Request('http://localhost/api/kiosk/authorize', {
+        method: 'POST',
+        headers: { 'x-forwarded-for': '9.9.9.9' },
+        body: JSON.stringify({}),
+      }),
+    );
+    expect(res.status).toBe(403);
+    expect(issueKioskSession).not.toHaveBeenCalled();
+  });
 });
