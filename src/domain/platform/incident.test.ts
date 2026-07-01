@@ -44,6 +44,22 @@ describe('buildIncident (#83 AC7)', () => {
     const r = buildIncident({ scope: 'platform', severity: 'info', status: 'resolved', title: 't', message: 'm' }, OPTS);
     expect(r.ok && r.value.resolvedAt).toBe('2026-07-01T00:00:00.000Z');
   });
+
+  it('title/message が長すぎると error（貼り付け抑制）', () => {
+    expect(buildIncident({ scope: 'platform', severity: 'info', title: 'a'.repeat(201), message: 'm' }, OPTS).ok).toBe(false);
+    expect(buildIncident({ scope: 'platform', severity: 'info', title: 't', message: 'm'.repeat(2001) }, OPTS).ok).toBe(false);
+  });
+
+  it('startedAt は ISO に正規化して保存する（非 ISO の parse 可能値も）', () => {
+    const r = buildIncident(
+      { scope: 'platform', severity: 'info', title: 't', message: 'm', startedAt: '2026-06-01T09:00:00+09:00' },
+      OPTS,
+    );
+    expect(r.ok && r.value.startedAt).toBe('2026-06-01T00:00:00.000Z'); // +09:00 → UTC ISO
+    // parse 不能は now。
+    const bad = buildIncident({ scope: 'platform', severity: 'info', title: 't', message: 'm', startedAt: 'not-a-date' }, OPTS);
+    expect(bad.ok && bad.value.startedAt).toBe('2026-07-01T00:00:00.000Z');
+  });
 });
 
 function incident(args: Partial<Incident> & Pick<Incident, 'id' | 'severity' | 'status'>): Incident {

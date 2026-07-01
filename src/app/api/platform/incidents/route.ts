@@ -22,9 +22,10 @@ export async function POST(request: Request): Promise<NextResponse> {
   if (!built.ok) {
     return NextResponse.json({ error: 'invalid_input', message: built.error }, { status: 400 });
   }
-  await createIncident(built.value);
 
-  const reason = typeof input.reason === 'string' ? input.reason.trim() : undefined;
+  // reason は運用者記述で監査に残す値だが sanitize 対象外のため長さで上限（貼り付けの PII/secret・肥大を抑制）。
+  const reason = typeof input.reason === 'string' ? input.reason.trim().slice(0, 500) : undefined;
+  // **監査を先に**記録してから変更を確定する（audit 失敗時に未監査の変更を残さない）。
   await recordDangerAction({
     action: 'platform.incident.created',
     target: { type: 'incident', id: built.value.id },
@@ -32,6 +33,7 @@ export async function POST(request: Request): Promise<NextResponse> {
     metadata: { scope: built.value.scope, severity: built.value.severity, status: built.value.status },
     request,
   });
+  await createIncident(built.value);
 
   return NextResponse.json(
     {

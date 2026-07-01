@@ -107,6 +107,9 @@ export function buildIncident(
   const title = str(input.title);
   const message = str(input.message);
   if (title === '' || message === '') return { ok: false, error: 'title and message are required' };
+  // 長さ上限（巨大な貼り付け＝secret/PII 混入や監査肥大を抑制。運用者記述は短文想定）。
+  if (title.length > 200) return { ok: false, error: 'title too long (max 200)' };
+  if (message.length > 2000) return { ok: false, error: 'message too long (max 2000)' };
 
   const tenantId = str(input.tenantId) || undefined;
   const siteId = str(input.siteId) || undefined;
@@ -116,9 +119,11 @@ export function buildIncident(
   if ((scope === 'site' || scope === 'device') && !siteId) return { ok: false, error: 'siteId required for this scope' };
   if (scope === 'device' && !deviceId) return { ok: false, error: 'deviceId required for this scope' };
 
+  // startedAt は **ISO へ正規化**して保存する（非 ISO の parse 可能値を verbatim 保存すると、read の
+  // 辞書順ソート（byFlagRankTimeDesc）が ISO 前提で崩れるため）。parse 不能/未指定は now。
   const startedRaw = str(input.startedAt);
-  const startedAt =
-    startedRaw !== '' && !Number.isNaN(Date.parse(startedRaw)) ? startedRaw : opts.now.toISOString();
+  const startedMs = startedRaw !== '' ? Date.parse(startedRaw) : NaN;
+  const startedAt = Number.isNaN(startedMs) ? opts.now.toISOString() : new Date(startedMs).toISOString();
 
   return {
     ok: true,
