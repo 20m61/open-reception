@@ -41,26 +41,27 @@ describe('isWithinPeriod (#89)', () => {
   });
 });
 
-describe('currentMonthPeriod / previousMonthPeriod (#89)', () => {
-  it('当月は [当月初, 翌月初) を返す', () => {
+describe('currentMonthPeriod / previousMonthPeriod (#89 / JST 月境界 #254)', () => {
+  // 月境界は JST 月初 00:00（= UTC 前日 15:00）。NOW=2026-06-20 は JST でも 6 月。
+  it('当月は [当月初, 翌月初) を JST 月境界で返す', () => {
     expect(currentMonthPeriod(NOW)).toEqual({
-      start: '2026-06-01T00:00:00.000Z',
-      end: '2026-07-01T00:00:00.000Z',
+      start: '2026-05-31T15:00:00.000Z', // 2026-06-01 00:00 JST
+      end: '2026-06-30T15:00:00.000Z', // 2026-07-01 00:00 JST
     });
   });
 
-  it('前月は [前月初, 当月初) を返す', () => {
+  it('前月は [前月初, 当月初) を JST 月境界で返す', () => {
     expect(previousMonthPeriod(NOW)).toEqual({
-      start: '2026-05-01T00:00:00.000Z',
-      end: '2026-06-01T00:00:00.000Z',
+      start: '2026-04-30T15:00:00.000Z', // 2026-05-01 00:00 JST
+      end: '2026-05-31T15:00:00.000Z', // 2026-06-01 00:00 JST
     });
   });
 
-  it('年初（1月）の前月は前年12月になる', () => {
-    const jan = new Date('2026-01-15T00:00:00.000Z');
+  it('年初（1月）の前月は前年12月になる（JST）', () => {
+    const jan = new Date('2026-01-15T00:00:00.000Z'); // JST 2026-01-15 09:00 → 1 月
     expect(previousMonthPeriod(jan)).toEqual({
-      start: '2025-12-01T00:00:00.000Z',
-      end: '2026-01-01T00:00:00.000Z',
+      start: '2025-11-30T15:00:00.000Z', // 2025-12-01 00:00 JST
+      end: '2025-12-31T15:00:00.000Z', // 2026-01-01 00:00 JST
     });
   });
 });
@@ -162,8 +163,9 @@ describe('buildUsageTrend (#89 inc2)', () => {
     expect(d2).toEqual({ date: '2026-06-02', receptions: 1, connectedCalls: 0, connectedCallMinutes: 0 });
   });
 
-  it('期間内の全日を 0 埋めで連続して返す（6月は30点）', () => {
-    const trend = buildUsageTrend([], JUNE);
+  it('期間内の全日を 0 埋めで連続して返す（JST 整合の6月は30点）', () => {
+    // 実際の period は JST 月境界（currentMonthPeriod）。JST 6 月は 06-01..06-30 の 30 点ちょうど。
+    const trend = buildUsageTrend([], currentMonthPeriod(NOW));
     expect(trend).toHaveLength(30);
     expect(trend.at(0)?.date).toBe('2026-06-01');
     expect(trend.at(-1)?.date).toBe('2026-06-30');
@@ -174,5 +176,16 @@ describe('buildUsageTrend (#89 inc2)', () => {
     const logs = [rlog({ id: 'x', outcome: 'connected', startedAt: '2026-05-31T23:00:00.000Z', durationMs: 60_000 })];
     const trend = buildUsageTrend(logs, JUNE);
     expect(trend.every((p) => p.receptions === 0)).toBe(true);
+  });
+
+  it('JST 非整合な period でも末日の受付を落とさない（enumerateDays を JST 深夜へ正規化, #254）', () => {
+    // UTC 深夜境界のカスタム期間（JST 月境界に整合しない）。
+    const period: UsagePeriod = { start: '2026-06-01T00:00:00.000Z', end: '2026-06-08T00:00:00.000Z' };
+    // 2026-06-07T16:00Z = JST 2026-06-08 01:00。期間内（< end）で JST 日は 06-08。
+    const logs = [rlog({ id: 'tail', outcome: 'connected', startedAt: '2026-06-07T16:00:00.000Z' })];
+    const trend = buildUsageTrend(logs, period);
+    const d = trend.find((p) => p.date === '2026-06-08');
+    expect(d?.receptions).toBe(1); // バケットが存在し、末日の受付が計上される。
+    expect(trend.reduce((s, p) => s + p.receptions, 0)).toBe(1); // 落ちない。
   });
 });

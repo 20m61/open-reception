@@ -10,6 +10,7 @@
  * 通貨は JPY 固定（多通貨は次増分）。金額は四捨五入した整数円で扱う。
  */
 import type { UsageSummary, UsageTrendPoint } from './usage-summary';
+import { daysInJstMonth, jstDayOfMonth, jstYearMonth } from '@/domain/util/jst';
 
 /** サービス区分（コスト内訳の軸）。docs/cost-management-tags.md の Component に対応づく。 */
 export type CostService = 'vonage' | 'aws';
@@ -112,13 +113,10 @@ export function projectMonthEnd(soFar: number, elapsedDays: number, daysInMonth:
   return yen(perDay * daysInMonth);
 }
 
-/** `now`（UTC）の暦月の経過日数（当日含む）と総日数を返す。 */
+/** `now` の **JST 暦月**の経過日数（当日含む）と総日数を返す (issue #254)。月進捗を JST 月に揃える。 */
 export function monthProgress(now: Date = new Date()): { elapsedDays: number; daysInMonth: number } {
-  const y = now.getUTCFullYear();
-  const m = now.getUTCMonth();
-  const daysInMonth = new Date(Date.UTC(y, m + 1, 0)).getUTCDate();
-  const elapsedDays = now.getUTCDate();
-  return { elapsedDays, daysInMonth };
+  const { y, m } = jstYearMonth(now);
+  return { elapsedDays: jstDayOfMonth(now), daysInMonth: daysInJstMonth(y, m) };
 }
 
 /**
