@@ -83,27 +83,35 @@ export function isWithinPeriod(at: string, period: UsagePeriod): boolean {
   return t >= start && t < end;
 }
 
-/**
- * 基準時刻 `now`（UTC 基準）を含む暦月の期間 [月初, 翌月初) を返す。
- *
- * 「今月」の境界は UTC 月初で固定する。表示上のローカル日付ズレは許容し、集計の
- * 再現性（テスト容易性・テナント横断比較）を優先する。TZ 厳密化は次増分。
- */
-export function currentMonthPeriod(now: Date = new Date()): UsagePeriod {
-  const y = now.getUTCFullYear();
-  const m = now.getUTCMonth();
-  const start = new Date(Date.UTC(y, m, 1)).toISOString();
-  const end = new Date(Date.UTC(y, m + 1, 1)).toISOString();
-  return { start, end };
+// 月境界は **JST（Asia/Tokyo, UTC+9・DST なし）** で判定する (issue #254)。ダッシュボードの「本日」
+// (dashboard-summary) を JST 固定にしたため、「今月/前月」も JST 月初で揃えて内部整合を取る
+// （ランタイム TZ にも依存させない）。JST 月初 00:00 の UTC 瞬間は `Date.UTC(y,m,1) - 9h`。
+const JST_OFFSET_MS = 9 * 60 * 60 * 1000;
+
+/** `now` を含む **JST 暦月**の年・月（0 始まり）。 */
+function jstYearMonth(now: Date): { y: number; m: number } {
+  const jst = new Date(now.getTime() + JST_OFFSET_MS);
+  return { y: jst.getUTCFullYear(), m: jst.getUTCMonth() };
 }
 
-/** `now` の暦月の前月の期間 [前月初, 当月初) を返す（前月比較用）。 */
+/** JST 暦月 (y, m) の月初 00:00 JST を UTC ISO で返す。 */
+function jstMonthStart(y: number, m: number): string {
+  return new Date(Date.UTC(y, m, 1) - JST_OFFSET_MS).toISOString();
+}
+
+/**
+ * 基準時刻 `now` を含む **JST 暦月**の期間 [月初, 翌月初) を返す（UTC ISO の瞬間で表現）。
+ * 「今月」の境界を JST 月初に固定し、ダッシュボードの「本日」(JST) と整合させる。
+ */
+export function currentMonthPeriod(now: Date = new Date()): UsagePeriod {
+  const { y, m } = jstYearMonth(now);
+  return { start: jstMonthStart(y, m), end: jstMonthStart(y, m + 1) };
+}
+
+/** `now` の JST 暦月の前月の期間 [前月初, 当月初) を返す（前月比較用）。 */
 export function previousMonthPeriod(now: Date = new Date()): UsagePeriod {
-  const y = now.getUTCFullYear();
-  const m = now.getUTCMonth();
-  const start = new Date(Date.UTC(y, m - 1, 1)).toISOString();
-  const end = new Date(Date.UTC(y, m, 1)).toISOString();
-  return { start, end };
+  const { y, m } = jstYearMonth(now);
+  return { start: jstMonthStart(y, m - 1), end: jstMonthStart(y, m) };
 }
 
 /** ミリ秒を分に丸める（切り上げ。0ms は 0 分）。 */

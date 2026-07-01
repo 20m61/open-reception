@@ -41,26 +41,27 @@ describe('isWithinPeriod (#89)', () => {
   });
 });
 
-describe('currentMonthPeriod / previousMonthPeriod (#89)', () => {
-  it('当月は [当月初, 翌月初) を返す', () => {
+describe('currentMonthPeriod / previousMonthPeriod (#89 / JST 月境界 #254)', () => {
+  // 月境界は JST 月初 00:00（= UTC 前日 15:00）。NOW=2026-06-20 は JST でも 6 月。
+  it('当月は [当月初, 翌月初) を JST 月境界で返す', () => {
     expect(currentMonthPeriod(NOW)).toEqual({
-      start: '2026-06-01T00:00:00.000Z',
-      end: '2026-07-01T00:00:00.000Z',
+      start: '2026-05-31T15:00:00.000Z', // 2026-06-01 00:00 JST
+      end: '2026-06-30T15:00:00.000Z', // 2026-07-01 00:00 JST
     });
   });
 
-  it('前月は [前月初, 当月初) を返す', () => {
+  it('前月は [前月初, 当月初) を JST 月境界で返す', () => {
     expect(previousMonthPeriod(NOW)).toEqual({
-      start: '2026-05-01T00:00:00.000Z',
-      end: '2026-06-01T00:00:00.000Z',
+      start: '2026-04-30T15:00:00.000Z', // 2026-05-01 00:00 JST
+      end: '2026-05-31T15:00:00.000Z', // 2026-06-01 00:00 JST
     });
   });
 
-  it('年初（1月）の前月は前年12月になる', () => {
-    const jan = new Date('2026-01-15T00:00:00.000Z');
+  it('年初（1月）の前月は前年12月になる（JST）', () => {
+    const jan = new Date('2026-01-15T00:00:00.000Z'); // JST 2026-01-15 09:00 → 1 月
     expect(previousMonthPeriod(jan)).toEqual({
-      start: '2025-12-01T00:00:00.000Z',
-      end: '2026-01-01T00:00:00.000Z',
+      start: '2025-11-30T15:00:00.000Z', // 2025-12-01 00:00 JST
+      end: '2025-12-31T15:00:00.000Z', // 2026-01-01 00:00 JST
     });
   });
 });
