@@ -10,6 +10,7 @@ import type {
   MaintenanceWindowSummary,
 } from '@/domain/platform/maintenance-window';
 import type { NoticeLevel, NoticeRow, NoticeSummary } from '@/domain/platform/notice';
+import { NoticePublishForm } from './NoticePublishForm';
 import { DangerActionPlaceholder, MetricCard } from './primitives';
 
 /**
@@ -17,8 +18,8 @@ import { DangerActionPlaceholder, MetricCard } from './primitives';
  *
  * /api/platform/maintenance（developer 専用 read）から、メンテナンス表示中の端末・障害・
  * 予定メンテナンス・お知らせを横断確認する。機密値・PII・操作者識別子は含めない。
- * メンテナンス発動・障害/お知らせの登録などの破壊的操作は影響範囲が広いため
- * DangerActionPlaceholder に隔離する。
+ * 破壊的操作のうち**お知らせ登録**は JIT 昇格つきフォーム（NoticePublishForm, #83 inc4d）へ
+ * 格上げ済み。メンテナンス発動・障害登録は引き続き DangerActionPlaceholder に隔離する。
  */
 type MaintenanceResponse = {
   summary: MaintenanceSummary;
@@ -85,6 +86,9 @@ export function MaintenanceStatus() {
   const [data, setData] = useState<MaintenanceResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
 
+  // お知らせ登録（NoticePublishForm）成功後に refreshKey を進めて再取得し、一覧へ即時反映する。
+  const [refreshKey, setRefreshKey] = useState(0);
+
   useEffect(() => {
     let cancelled = false;
     void (async () => {
@@ -94,12 +98,13 @@ export function MaintenanceStatus() {
         setError(res.status === 403 ? 'この画面の閲覧権限がありません。' : 'メンテナンス状況の取得に失敗しました。');
         return;
       }
+      setError(null);
       setData((await res.json()) as MaintenanceResponse);
     })();
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [refreshKey]);
 
   return (
     <section>
@@ -240,8 +245,9 @@ export function MaintenanceStatus() {
         </table>
       )}
 
-      <div style={{ marginTop: 'var(--space-lg)', maxWidth: 760 }}>
-        <DangerActionPlaceholder label="メンテナンスモード発動 / お知らせ・障害情報の登録" />
+      <div style={{ marginTop: 'var(--space-lg)', maxWidth: 760, display: 'grid', gap: 'var(--space-md)' }}>
+        <NoticePublishForm onPublished={() => setRefreshKey((k) => k + 1)} />
+        <DangerActionPlaceholder label="メンテナンスモード発動 / 障害情報の登録" />
       </div>
     </section>
   );
