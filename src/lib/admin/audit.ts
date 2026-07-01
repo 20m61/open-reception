@@ -2,8 +2,9 @@
  * 危険操作（失効・削除・停止・ローテーション等）の監査連携ヘルパ (issue #91, increment 1)。
  *
  * 方針:
- *   - 監査記録そのものは既存 `appendAdminAudit`（@/lib/mock-backend/reception-log-store）へ
- *     委譲する。本モジュールは「危険操作で監査に何を残すか」を一箇所に集約する薄い層。
+ *   - 監査記録そのものは `appendAuditLog`（@/lib/mock-backend/reception-log-store）へ委譲する。
+ *     actor を明示できるため #264 の操作者帰属に使う（未指定は 'admin'）。本モジュールは
+ *     「危険操作で監査に何を残すか」を一箇所に集約する薄い層。
  *   - **既存の AuditAction（src/domain/reception/log.ts）だけを使う**。log.ts は読み取り参照
  *     のみで編集しない。新しい action が必要なケースは docs / report に列挙してオーケストレータ
  *     が後で log.ts へ追加する。
@@ -11,7 +12,7 @@
  *     プリミティブのみへ縮約し、secret/PII を疑わせるキーは値をマスクする。
  */
 import type { AuditAction } from '@/domain/reception/log';
-import { appendAdminAudit } from '@/lib/mock-backend/reception-log-store';
+import { appendAuditLog } from '@/lib/mock-backend/reception-log-store';
 
 /**
  * 値をマスクすべきキーの判定（小文字・部分一致）。機微情報の取り違えを防ぐ防御的フィルタで、
@@ -100,18 +101,26 @@ export type DangerAuditInput = {
   after?: Record<string, unknown>;
   /** 操作元の IP・user-agent を記録するためのリクエスト (issue #83 AC13)。 */
   request?: Request;
+  /** 操作者識別子 (issue #264)。未指定は 'admin'。platform 破壊的操作は昇格した developer の identity を渡す。 */
+  actor?: string;
 };
 
 /**
  * 危険操作を監査ログに記録する。reason と sanitize 済み metadata に加え、高詳細監査 (#83 AC13) の
  * before/after（sanitize 済み）・IP・user-agent を残す。機微値・PII は落とす。
- * 戻り値は appendAdminAudit の結果（呼び出し側はレスポンス整形に使わない方がよい）。
+ * 戻り値は appendAuditLog の結果（呼び出し側はレスポンス整形に使わない方がよい）。
  */
 export async function recordDangerAction(input: DangerAuditInput) {
   const merged: Record<string, unknown> = { ...input.metadata };
   if (input.reason !== undefined) merged.reason = input.reason;
   const ctx = input.request ? auditContextFromRequest(input.request) : {};
-  return appendAdminAudit(input.action, input.target, sanitizeAuditMetadata(merged), {
+  // actor 未指定は従来どおり 'admin'。platform 破壊的操作は操作者 identity を残す（#264 説明責任）。
+  return appendAuditLog({
+    action: input.action,
+    actor: input.actor ?? 'admin',
+    targetType: input.target.type,
+    targetId: input.target.id,
+    metadata: sanitizeAuditMetadata(merged),
     before: sanitizeAuditMetadata(input.before),
     after: sanitizeAuditMetadata(input.after),
     ip: ctx.ip,

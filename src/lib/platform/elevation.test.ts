@@ -6,16 +6,26 @@ import { reauthenticate } from './reauth';
 describe('elevation cookie (#83 inc4b)', () => {
   it('issue → read で昇格を往復復元する', async () => {
     const elevation = grantElevation({ reason: '障害調査のため設定変更', scope: { tenantId: 't1' } }, Date.now());
-    const token = await issueElevationToken(elevation, 'jti-1');
+    const token = await issueElevationToken(elevation, 'jti-1', 'dev@example.com');
     const read = await readElevation(token);
     expect(read).not.toBeNull();
     expect(read?.reason).toBe('障害調査のため設定変更');
     expect(read?.scope).toEqual({ tenantId: 't1', siteId: undefined, deviceId: undefined });
     expect(read?.until).toBe(elevation.until);
+    expect(read?.sub).toBe('dev@example.com'); // 操作者 identity を復元（#264）。
+  });
+
+  it('sub 欠落の cookie は無効＝null（#264 前の cookie で platform:unknown を出さない）', async () => {
+    const { signSession } = await import('@/lib/auth/session');
+    const noSub = await signSession(
+      { role: 'platform_elevation', exp: Date.now() + 60_000, reason: 'x', scope: {}, jti: 'j' },
+      'dev-insecure-elevation-secret',
+    );
+    expect(await readElevation(noSub)).toBeNull();
   });
 
   it('署名改ざん・空トークンは null', async () => {
-    const token = await issueElevationToken(grantElevation({ reason: 'x', scope: {} }, Date.now()), 'j');
+    const token = await issueElevationToken(grantElevation({ reason: 'x', scope: {} }, Date.now()), 'j', 'dev@example.com');
     expect(await readElevation(`${token}tamper`)).toBeNull();
     expect(await readElevation(undefined)).toBeNull();
     expect(await readElevation('not.a.token')).toBeNull();
@@ -24,7 +34,7 @@ describe('elevation cookie (#83 inc4b)', () => {
   it('失効済み（until 過去）は null（verifySession の期限検証）', async () => {
     // until を過去にするため、grant 済みトークンの発行時刻を過去に置く。
     const past = grantElevation({ reason: 'x', scope: {} }, Date.now() - 2 * 60 * 60 * 1000); // 2h 前 grant → 30分TTL は既に失効
-    const token = await issueElevationToken(past, 'j');
+    const token = await issueElevationToken(past, 'j', 'dev@example.com');
     expect(await readElevation(token)).toBeNull();
   });
 });

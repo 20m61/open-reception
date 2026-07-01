@@ -23,7 +23,7 @@ function developer(): Actor {
   return { status: 'active', assignments: [{ role: 'developer', tenantId: null, siteId: null, deviceId: null }] };
 }
 async function elevate(): Promise<void> {
-  const token = await issueElevationToken(grantElevation({ reason: '障害登録のため', scope: {} }, Date.now()), 'j');
+  const token = await issueElevationToken(grantElevation({ reason: '障害登録のため', scope: {} }, Date.now()), 'j', 'dev@example.com');
   cookieGet.mockImplementation((n) => (n === ELEVATION_COOKIE ? { value: token } : undefined));
 }
 function post(body: unknown): Promise<Response> {
@@ -72,6 +72,7 @@ describe('POST /api/platform/incidents (#83 AC7)', () => {
       expect.objectContaining({
         action: 'platform.incident.created',
         reason: '影響大',
+        actor: 'platform:dev@example.com', // 昇格した操作者を監査に帰属（#264）。
         request: expect.any(Request),
       }),
     );

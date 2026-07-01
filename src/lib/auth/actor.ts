@@ -276,13 +276,24 @@ export async function resolveActorFromStore(
  * Entra と password の両方が存在する場合は password を優先する（明示ログイン）。
  */
 export async function resolveAdminActor(): Promise<Actor | null> {
+  return (await resolveAdminActorWithIdentity())?.actor ?? null;
+}
+
+/**
+ * `resolveAdminActor` に加えて操作者の**安定識別子**（identity）も返す (issue #264)。
+ * SSO は検証済み email（無ければ subject）、password セッションは 'password-admin'（email を持たない）。
+ * 監査の actor（誰が破壊的操作をしたか）や昇格 cookie の subject 束縛に使う。identity は運用者側の
+ * 識別子で来訪者 PII ではない（監査の説明責任のために意図的に残す）。
+ */
+export async function resolveAdminActorWithIdentity(): Promise<{ actor: Actor; identity: string } | null> {
   const jar = await cookies();
   const config = buildActorConfig();
 
   // 1. password セッション。
   const admin = await verifySession(jar.get(ADMIN_COOKIE)?.value, getAdminSecret());
   if (admin && admin.role === 'admin') {
-    return buildActorFromPasswordSession(config);
+    const pwActor = buildActorFromPasswordSession(config);
+    return pwActor ? { actor: pwActor, identity: 'password-admin' } : null;
   }
 
   // 2. SSO トークン（Entra / Cognito）。署名・issuer・audience・exp を検証してから信頼する。
@@ -306,8 +317,11 @@ export async function resolveAdminActor(): Promise<Actor | null> {
   if (!result.ok) return null;
 
   // 検証済み subject/email で実 AdminUser を解決する（env 既定テナントへ束ねない）。
-  return resolveActorFromStore(
+  const actor = await resolveActorFromStore(
     { subject: result.subject, email: result.email, rolesClaim: result.claims[rolesClaim] },
     config,
   );
+  if (!actor) return null;
+  // 空文字 email も subject へフォールバック（?? だと '' を通し 'platform:' になるため || で）。
+  return { actor, identity: result.email || result.subject || 'unknown-admin' };
 }

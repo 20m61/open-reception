@@ -1,8 +1,8 @@
 import { describe, expect, it, vi, beforeEach } from 'vitest';
 
-const appendAdminAudit = vi.fn();
+const appendAuditLog = vi.fn();
 vi.mock('@/lib/mock-backend/reception-log-store', () => ({
-  appendAdminAudit: (...a: unknown[]) => appendAdminAudit(...a),
+  appendAuditLog: (...a: unknown[]) => appendAuditLog(...a),
 }));
 
 // mock 設定後に被テストモジュールを読み込む（vi.mock は巻き上げられるが順序を明示）。
@@ -76,24 +76,27 @@ describe('auditContextFromRequest (#83 AC13 高詳細監査)', () => {
 describe('recordDangerAction 高詳細監査 (#83 AC13)', () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    appendAdminAudit.mockResolvedValue({ id: 'a1' });
+    appendAuditLog.mockResolvedValue({ id: 'a1' });
   });
 
-  it('before/after を sanitize し、IP/user-agent を付与して記録する', async () => {
+  it('before/after を sanitize し、IP/user-agent・actor を付与して記録する', async () => {
     await recordDangerAction({
       action: 'tenant.suspended',
       target: { type: 'tenant', id: 't1' },
       reason: '調査のため',
       before: { status: 'active', secret: 'x' },
       after: { status: 'suspended' },
+      actor: 'platform:dev@example.com',
       request: req({ 'x-forwarded-for': '9.9.9.9', 'user-agent': 'UA' }),
     });
-    expect(appendAdminAudit).toHaveBeenCalledTimes(1);
-    const [action, target, metadata, extra] = appendAdminAudit.mock.calls[0]!;
-    expect(action).toBe('tenant.suspended');
-    expect(target).toEqual({ type: 'tenant', id: 't1' });
-    expect(metadata).toEqual({ reason: '調査のため' });
-    expect(extra).toEqual({
+    expect(appendAuditLog).toHaveBeenCalledTimes(1);
+    const [entry] = appendAuditLog.mock.calls[0]!;
+    expect(entry).toEqual({
+      action: 'tenant.suspended',
+      actor: 'platform:dev@example.com', // #264: 操作者を帰属。
+      targetType: 'tenant',
+      targetId: 't1',
+      metadata: { reason: '調査のため' },
       before: { status: 'active', secret: '[redacted]' }, // 機微キーは落とす
       after: { status: 'suspended' },
       ip: '9.9.9.9',
@@ -101,10 +104,11 @@ describe('recordDangerAction 高詳細監査 (#83 AC13)', () => {
     });
   });
 
-  it('request 未指定なら IP/user-agent は undefined', async () => {
+  it('actor 未指定は admin・request 未指定なら IP/user-agent は undefined', async () => {
     await recordDangerAction({ action: 'tenant.activated', target: { type: 'tenant', id: 't1' } });
-    const [, , , extra] = appendAdminAudit.mock.calls[0]!;
-    expect(extra.ip).toBeUndefined();
-    expect(extra.userAgent).toBeUndefined();
+    const [entry] = appendAuditLog.mock.calls[0]!;
+    expect(entry.actor).toBe('admin');
+    expect(entry.ip).toBeUndefined();
+    expect(entry.userAgent).toBeUndefined();
   });
 });
