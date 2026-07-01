@@ -5,7 +5,7 @@ import {
 } from '@/lib/visit/store';
 import { getBackend } from '@/lib/data';
 import type { VisitStay } from '@/domain/visit/types';
-import { appendAuditLog } from '@/lib/mock-backend/reception-log-store';
+import { appendAuditLog } from '@/lib/data-stores/reception-log-store';
 import {
   checkoutFailureResponse,
   readStayId,

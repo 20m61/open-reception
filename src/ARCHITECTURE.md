@@ -37,7 +37,7 @@ src/
     platform/       platform API ガード (request.ts: authorizePlatform/assertElevated)
     data/           データバックエンド抽象 (backend.ts: Collection/Singleton/LogStore、
                     index.ts が DATA_BACKEND env で memory / dynamodb を選択) (#273)
-    mock-backend/   実データアクセス層 (名前に反して本番経路。リネーム予定 #273)
+    data-stores/    エンティティ別ストア（実データアクセス層。旧 mock-backend、#273 で改名）
     tenant/ notification/ checkin/ reservation/ signage/ call/ i18n/ ほか
   server/
     notification/   通知ワーカー側 (handler/authorizer/polly/vonage adapter) (#275 で lib と統合予定)

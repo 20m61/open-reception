@@ -5,10 +5,10 @@
  * in-memory（dev/test/CI）。DynamoDB 実装と getBackend() への接続は次増分
  * （docs/visit-reservation-design.md §increment 計画）。
  *
- * 監査は既存の appendAdminAudit（src/lib/mock-backend/reception-log-store.ts）を使い、
+ * 監査は既存の appendAdminAudit（src/lib/data-stores/reception-log-store.ts）を使い、
  * actor=admin・PII なしで記録する。
  */
-import { appendAdminAudit } from '@/lib/mock-backend/reception-log-store';
+import { appendAdminAudit } from '@/lib/data-stores/reception-log-store';
 import { MemoryReservationRepository } from './memory-repository';
 import { ReservationService } from './service';
 

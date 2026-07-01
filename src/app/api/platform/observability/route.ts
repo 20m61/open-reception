@@ -1,6 +1,6 @@
 import { NextResponse } from 'next/server';
 import { listIntegrationStatuses } from '@/lib/security/integration-status-store';
-import { listAuditLogs, listReceptionLogsSince } from '@/lib/mock-backend/reception-log-store';
+import { listAuditLogs, listReceptionLogsSince } from '@/lib/data-stores/reception-log-store';
 import { listKiosks } from '@/lib/kiosk/kiosk-store';
 import { toMaskedAuditRows } from '@/domain/platform/console-summary';
 import { summarizeDevices } from '@/domain/reception/dashboard-summary';

@@ -74,7 +74,7 @@ try {
 ## 3. 監査連携（既存 AuditAction を使用・機微値非保存）
 
 `src/lib/admin/audit.ts` の `recordDangerAction(input)` が既存 `appendAdminAudit`
-（`@/lib/mock-backend/reception-log-store`）へ委譲する。`reason` を metadata に含め、
+（`@/lib/data-stores/reception-log-store`）へ委譲する。`reason` を metadata に含め、
 `sanitizeAuditMetadata` で安全化する:
 
 - `null` / `undefined` / object / array は捨てる（構造体・PII の混入防止）。

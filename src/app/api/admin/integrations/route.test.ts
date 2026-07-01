@@ -13,7 +13,7 @@ const appendAdminAudit = vi.fn();
 vi.mock('@/lib/auth/actor', () => ({
   resolveAdminActor: () => resolveAdminActor(),
 }));
-vi.mock('@/lib/mock-backend/reception-log-store', () => ({
+vi.mock('@/lib/data-stores/reception-log-store', () => ({
   appendAdminAudit: (...a: unknown[]) => appendAdminAudit(...a),
 }));
 

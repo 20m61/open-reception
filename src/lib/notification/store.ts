@@ -8,10 +8,10 @@
  * dev seed は単一テナント運用の互換に合わせ、既存テナント基盤シード
  * （src/lib/tenant/store.ts の internal / default-site）に紐づくルートを 1 件投入する。
  *
- * 監査は既存 appendAdminAudit（src/lib/mock-backend/reception-log-store）を使い、
+ * 監査は既存 appendAdminAudit（src/lib/data-stores/reception-log-store）を使い、
  * actor=admin・PII なしで記録する（事前定義済み call_route.* アクションを参照）。
  */
-import { appendAdminAudit } from '@/lib/mock-backend/reception-log-store';
+import { appendAdminAudit } from '@/lib/data-stores/reception-log-store';
 import { asSiteId, asTenantId } from '@/domain/tenant/types';
 import { CallRouteService } from './call-route-service';
 import { MemoryCallRouteRepository } from './repository';

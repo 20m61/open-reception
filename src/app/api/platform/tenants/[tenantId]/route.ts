@@ -9,7 +9,7 @@ import {
 } from '@/domain/platform/tenant-lifecycle';
 import { authorizePlatform, assertElevated } from '@/lib/platform/request';
 import { recordDangerAction } from '@/lib/admin/audit';
-import { readJson } from '@/lib/mock-backend/result-http';
+import { readJson } from '@/lib/data-stores/result-http';
 
 /**
  * GET /api/platform/tenants/[tenantId] — テナント詳細（テナント横断 read） (issue #90, increment 2)。

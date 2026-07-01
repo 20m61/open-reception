@@ -29,8 +29,8 @@ vi.mock('@/lib/auth/actor', () => ({
     entraUnregistered: 'deny',
   }),
 }));
-vi.mock('@/lib/mock-backend/reception-log-store', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('@/lib/mock-backend/reception-log-store')>();
+vi.mock('@/lib/data-stores/reception-log-store', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@/lib/data-stores/reception-log-store')>();
   return { ...actual, appendAdminAudit: (...a: unknown[]) => appendAdminAudit(...a) };
 });
 

@@ -1,5 +1,5 @@
 import { NextResponse } from 'next/server';
-import { listReceptionLogs } from '@/lib/mock-backend/reception-log-store';
+import { listReceptionLogs } from '@/lib/data-stores/reception-log-store';
 import {
   assertCanRead,
   defaultAdminTenantId,

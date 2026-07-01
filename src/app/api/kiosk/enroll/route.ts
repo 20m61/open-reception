@@ -1,5 +1,5 @@
 import { NextResponse } from 'next/server';
-import { readJson } from '@/lib/mock-backend/result-http';
+import { readJson } from '@/lib/data-stores/result-http';
 import { getDeviceService } from '@/lib/tenant/store';
 import { readEnrollmentToken } from '@/lib/auth/kiosk-enrollment';
 import { KIOSK_COOKIE, KIOSK_SESSION_TTL_MS, issueKioskSession } from '@/lib/auth/kiosk';

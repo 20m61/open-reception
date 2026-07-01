@@ -5,7 +5,7 @@
  * （memory: dev/test/CI, dynamodb: 本番）に委譲する。監査は既存 appendAdminAudit を使い、
  * actor=admin・PII なしで 'signage.updated' を記録する。
  */
-import { appendAdminAudit } from '@/lib/mock-backend/reception-log-store';
+import { appendAdminAudit } from '@/lib/data-stores/reception-log-store';
 import { BackendSignageRepository } from './backend-repository';
 import { SignageService } from './service';
 

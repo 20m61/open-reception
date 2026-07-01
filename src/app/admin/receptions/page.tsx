@@ -1,4 +1,4 @@
-import { listReceptionLogs } from '@/lib/mock-backend/reception-log-store';
+import { listReceptionLogs } from '@/lib/data-stores/reception-log-store';
 import { RECEPTION_PURPOSES, type CallOutcome } from '@/domain/reception/session';
 
 export const dynamic = 'force-dynamic';

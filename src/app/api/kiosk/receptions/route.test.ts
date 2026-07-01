@@ -13,7 +13,7 @@ vi.mock('@/lib/auth/kiosk', () => ({
   KIOSK_COOKIE: 'kiosk_session',
   readKioskSession: (...a: unknown[]) => readKioskSession(...a),
 }));
-vi.mock('@/lib/mock-backend/reception-store', () => ({
+vi.mock('@/lib/data-stores/reception-store', () => ({
   createReception: (...a: unknown[]) => createReception(...a),
 }));
 

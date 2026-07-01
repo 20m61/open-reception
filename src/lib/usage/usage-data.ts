@@ -28,7 +28,7 @@ import {
   type CostEstimate,
   type CostTrendPoint,
 } from '@/domain/usage/cost-estimate';
-import { listAuditLogs, listReceptionLogsSince } from '@/lib/mock-backend/reception-log-store';
+import { listAuditLogs, listReceptionLogsSince } from '@/lib/data-stores/reception-log-store';
 
 /**
  * 利用量レスポンス（当月＋前月の業務単位サマリ）。

@@ -1,5 +1,5 @@
 import { NextResponse } from 'next/server';
-import { readJson } from '@/lib/mock-backend/result-http';
+import { readJson } from '@/lib/data-stores/result-http';
 import { asDeviceId, type DeviceKind } from '@/domain/tenant/types';
 import { getDeviceService } from '@/lib/tenant/store';
 import { readTenantScope, resolveAdminActor, serviceResponse } from '@/lib/tenant/request';

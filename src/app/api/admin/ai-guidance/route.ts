@@ -1,7 +1,7 @@
 import { NextResponse } from 'next/server';
 import { getAiGuidanceConfig, updateAiGuidanceConfig } from '@/lib/ai-guidance/config-store';
-import { readJson } from '@/lib/mock-backend/result-http';
-import { appendAdminAudit } from '@/lib/mock-backend/reception-log-store';
+import { readJson } from '@/lib/data-stores/result-http';
+import { appendAdminAudit } from '@/lib/data-stores/reception-log-store';
 import {
   assertCanRead,
   assertCanWrite,

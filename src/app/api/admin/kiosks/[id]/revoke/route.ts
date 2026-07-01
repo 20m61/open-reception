@@ -1,6 +1,6 @@
 import { NextResponse } from 'next/server';
 import { setKioskEnabled } from '@/lib/kiosk/kiosk-store';
-import { resultResponse } from '@/lib/mock-backend/result-http';
+import { resultResponse } from '@/lib/data-stores/result-http';
 import {
   assertCanWrite,
   defaultAdminTenantId,

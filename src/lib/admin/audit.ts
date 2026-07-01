@@ -2,7 +2,7 @@
  * 危険操作（失効・削除・停止・ローテーション等）の監査連携ヘルパ (issue #91, increment 1)。
  *
  * 方針:
- *   - 監査記録そのものは `appendAuditLog`（@/lib/mock-backend/reception-log-store）へ委譲する。
+ *   - 監査記録そのものは `appendAuditLog`（@/lib/data-stores/reception-log-store）へ委譲する。
  *     actor を明示できるため #264 の操作者帰属に使う（未指定は 'admin'）。本モジュールは
  *     「危険操作で監査に何を残すか」を一箇所に集約する薄い層。
  *   - **既存の AuditAction（src/domain/reception/log.ts）だけを使う**。log.ts は読み取り参照
@@ -12,7 +12,7 @@
  *     プリミティブのみへ縮約し、secret/PII を疑わせるキーは値をマスクする。
  */
 import type { AuditAction } from '@/domain/reception/log';
-import { appendAuditLog } from '@/lib/mock-backend/reception-log-store';
+import { appendAuditLog } from '@/lib/data-stores/reception-log-store';
 
 /**
  * 値をマスクすべきキーの判定（小文字・部分一致）。機微情報の取り違えを防ぐ防御的フィルタで、

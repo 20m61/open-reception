@@ -2,7 +2,7 @@ import { NextResponse } from 'next/server';
 import { getSecuritySettings, verifyPin } from '@/lib/security/security-store';
 import { isIpAllowed } from '@/domain/security/types';
 import { KIOSK_COOKIE, KIOSK_SESSION_TTL_MS, issueKioskSession } from '@/lib/auth/kiosk';
-import { readJson } from '@/lib/mock-backend/result-http';
+import { readJson } from '@/lib/data-stores/result-http';
 
 /**
  * POST /api/kiosk/authorize — PIN / IP による受付端末の初回許可 (issue #23)。

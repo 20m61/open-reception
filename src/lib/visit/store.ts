@@ -12,7 +12,7 @@
  *     inc1 では dev 既定 scope を返す暫定実装とする（実解決は後続増分）。
  */
 import { asSiteId, asTenantId, type SiteId, type TenantId } from '@/domain/tenant/types';
-import { appendAdminAudit } from '@/lib/mock-backend/reception-log-store';
+import { appendAdminAudit } from '@/lib/data-stores/reception-log-store';
 import { BackendStayRepository } from './backend-repository';
 import { KioskStayService } from './kiosk-service';
 import { StayService } from './service';

@@ -1,5 +1,5 @@
 import { NextResponse } from 'next/server';
-import { getKioskDirectory } from '@/lib/mock-backend/directory-store';
+import { getKioskDirectory } from '@/lib/data-stores/directory-store';
 
 /**
  * GET /api/kiosk/directory — 受付端末向けの部署・担当者一覧 (issue #3)。

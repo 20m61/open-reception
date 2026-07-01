@@ -2,7 +2,7 @@ import { NextResponse } from 'next/server';
 import { getTenantStore } from '@/lib/tenant/store';
 import { summarizeTenantFleet } from '@/domain/platform/console-summary';
 import { summarizeToday } from '@/domain/reception/dashboard-summary';
-import { listReceptionLogsSince } from '@/lib/mock-backend/reception-log-store';
+import { listReceptionLogsSince } from '@/lib/data-stores/reception-log-store';
 import { jstDayStartIso } from '@/domain/util/jst';
 import { authorizePlatform } from '@/lib/platform/request';
 

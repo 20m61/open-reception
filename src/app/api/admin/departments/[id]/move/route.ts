@@ -1,7 +1,7 @@
 import { NextResponse } from 'next/server';
-import { moveDepartment } from '@/lib/mock-backend/directory-store';
-import { readJson, resultResponse } from '@/lib/mock-backend/result-http';
-import { appendAdminAudit } from '@/lib/mock-backend/reception-log-store';
+import { moveDepartment } from '@/lib/data-stores/directory-store';
+import { readJson, resultResponse } from '@/lib/data-stores/result-http';
+import { appendAdminAudit } from '@/lib/data-stores/reception-log-store';
 import {
   assertCanWrite,
   defaultAdminTenantId,

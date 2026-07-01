@@ -1,5 +1,5 @@
 import { NextResponse } from 'next/server';
-import { readJson } from '@/lib/mock-backend/result-http';
+import { readJson } from '@/lib/data-stores/result-http';
 import { isStaffResponseAction } from '@/domain/reception/staff-response';
 import { getStaffResponseConfigService } from '@/lib/reception/staff-response-config/store';
 import {

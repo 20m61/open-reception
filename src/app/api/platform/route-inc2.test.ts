@@ -43,7 +43,7 @@ vi.mock('@/lib/tenant/store', () => ({
     devices: { listDevices: (t: string, s: string) => listDevices(t, s) },
   }),
 }));
-vi.mock('@/lib/mock-backend/reception-log-store', () => ({
+vi.mock('@/lib/data-stores/reception-log-store', () => ({
   listAuditLogs: () => listAuditLogs(),
   listReceptionLogsSince: () => listReceptionLogsSince(),
 }));
