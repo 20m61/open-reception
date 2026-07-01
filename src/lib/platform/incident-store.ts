@@ -45,6 +45,14 @@ export async function listIncidents(): Promise<Incident[]> {
   return collection().list();
 }
 
+/**
+ * 障害を登録する（破壊的操作。#83 AC7）。呼び出し側は **JIT 昇格ゲート（assertElevated）と監査**を
+ * 通した後に呼ぶこと。id は呼び出し側で採番済み（buildIncident 済みの Incident を渡す）。
+ */
+export async function createIncident(incident: Incident): Promise<void> {
+  await collection().put(incident);
+}
+
 /** テスト/seed 用に初期状態へ戻す（memory のみ実効）。 */
 export async function __resetIncidents(): Promise<void> {
   await collection().reset();
