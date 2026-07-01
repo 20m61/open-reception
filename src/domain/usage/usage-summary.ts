@@ -5,7 +5,7 @@
  * 本モジュールは既存ドメインの受付履歴（ReceptionLog）と監査ログ（AuditLog）から、
  * その利用量を導く純関数群。I/O は持たない（テスト可能な純粋ロジックに閉じる）。
  *
- * データ取得・API 配線は src/lib/mock-backend / src/app/api/admin/usage に置く。
+ * データ取得・API 配線は src/lib/data-stores / src/app/api/admin/usage に置く。
  * 来訪者 PII は集計対象に含めない（ReceptionLog/AuditLog は元々 PII を持たない）。
  *
  * スコープ注記:

@@ -1,9 +1,9 @@
 import { NextResponse } from 'next/server';
-import { getReception, markConnected } from '@/lib/mock-backend/reception-store';
+import { getReception, markConnected } from '@/lib/data-stores/reception-store';
 import { getVonageSessionService } from '@/lib/call/adapter-factory';
 import { getVonagePublicConfig } from '@/lib/call/vonage-config';
 import { readAnswerToken } from '@/lib/call/answer-token';
-import { readJson } from '@/lib/mock-backend/result-http';
+import { readJson } from '@/lib/data-stores/result-http';
 
 /**
  * POST /api/staff/calls/:id/answer — 担当者が通話に応答する (issue #4 increment 2c)。

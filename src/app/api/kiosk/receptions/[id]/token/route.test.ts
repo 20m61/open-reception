@@ -15,7 +15,7 @@ vi.mock('@/lib/auth/kiosk', () => ({
   KIOSK_COOKIE: 'kiosk_session',
   readKioskSession: (...a: unknown[]) => readKioskSession(...a),
 }));
-vi.mock('@/lib/mock-backend/reception-store', () => ({ getReception: (...a: unknown[]) => getReception(...a) }));
+vi.mock('@/lib/data-stores/reception-store', () => ({ getReception: (...a: unknown[]) => getReception(...a) }));
 vi.mock('@/lib/call/adapter-factory', () => ({
   getVonageSessionService: (...a: unknown[]) => getVonageSessionService(...a),
 }));

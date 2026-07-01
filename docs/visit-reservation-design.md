@@ -108,7 +108,7 @@ route（`src/app/api/admin/reservations/**`）は薄く保つ。
 
 ### 監査ログ（#19/#22）
 
-既存の `appendAdminAudit`（`src/lib/mock-backend/reception-log-store.ts`）に追記し、
+既存の `appendAdminAudit`（`src/lib/data-stores/reception-log-store.ts`）に追記し、
 `AuditAction` を `reservation.*` で拡張（`src/domain/reception/log.ts`）。
 **metadata に PII（氏名/会社名/メモ）を残さない**。残すのは予約 id・`targetType`・
 `usagePolicy`・`status` のみ（テストで PII 非混入を検証）。

@@ -1,6 +1,6 @@
 import { NextResponse } from 'next/server';
 import { cookies } from 'next/headers';
-import { getReception, getReceptionVisitorStatus } from '@/lib/mock-backend/reception-store';
+import { getReception, getReceptionVisitorStatus } from '@/lib/data-stores/reception-store';
 import { KIOSK_COOKIE, readKioskSession } from '@/lib/auth/kiosk';
 
 /**

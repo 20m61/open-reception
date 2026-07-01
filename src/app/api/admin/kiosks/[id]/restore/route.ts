@@ -1,7 +1,7 @@
 import { NextResponse } from 'next/server';
 import { setKioskEnabled } from '@/lib/kiosk/kiosk-store';
-import { resultResponse } from '@/lib/mock-backend/result-http';
-import { appendAdminAudit } from '@/lib/mock-backend/reception-log-store';
+import { resultResponse } from '@/lib/data-stores/result-http';
+import { appendAdminAudit } from '@/lib/data-stores/reception-log-store';
 import {
   assertCanWrite,
   defaultAdminTenantId,

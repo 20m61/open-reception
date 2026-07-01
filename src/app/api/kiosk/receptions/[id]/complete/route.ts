@@ -1,6 +1,6 @@
 import type { NextResponse } from 'next/server';
-import { completeReception } from '@/lib/mock-backend/reception-store';
-import { toResponse } from '@/lib/mock-backend/http';
+import { completeReception } from '@/lib/data-stores/reception-store';
+import { toResponse } from '@/lib/data-stores/http';
 import { denyWithoutKioskSession } from '@/lib/kiosk/session-guard';
 
 /**

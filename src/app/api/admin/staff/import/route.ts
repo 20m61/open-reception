@@ -1,8 +1,8 @@
 import { NextResponse } from 'next/server';
-import { importStaff } from '@/lib/mock-backend/directory-store';
+import { importStaff } from '@/lib/data-stores/directory-store';
 import { parseCsvRecords } from '@/lib/csv/parse';
-import { readJson } from '@/lib/mock-backend/result-http';
-import { appendAdminAudit } from '@/lib/mock-backend/reception-log-store';
+import { readJson } from '@/lib/data-stores/result-http';
+import { appendAdminAudit } from '@/lib/data-stores/reception-log-store';
 import {
   assertCanWrite,
   defaultAdminTenantId,

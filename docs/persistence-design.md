@@ -5,7 +5,7 @@
 
 実装の所在:
 - 抽象 / バックエンド: `src/lib/data/{backend,index,memory,dynamodb}.ts`
-- ストア（async 化済み）: `src/lib/mock-backend/*`, `src/lib/{kiosk,assets,motion,security,voice}/*-store.ts`
+- ストア（async 化済み）: `src/lib/data-stores/*`, `src/lib/{kiosk,assets,motion,security,voice}/*-store.ts`
 - CDK テーブル: `infra/lib/stacks/web-stack.ts`（`DataTable` + GSI1 + TTL + IAM 付与）
 - seed: `scripts/seed-dynamodb.ts`（`npm run seed:dynamodb`）
 
@@ -20,9 +20,9 @@
 
 | ストア | 実体 | ファイル |
 |--------|------|----------|
-| 部署・担当者 | `let departments`, `let staff` | `src/lib/mock-backend/directory-store.ts` |
-| 受付セッション | `const sessions = new Map()` | `src/lib/mock-backend/reception-store.ts` |
-| 受付履歴・監査ログ | `const receptionLogs/auditLogs = []` | `src/lib/mock-backend/reception-log-store.ts` |
+| 部署・担当者 | `let departments`, `let staff` | `src/lib/data-stores/directory-store.ts` |
+| 受付セッション | `const sessions = new Map()` | `src/lib/data-stores/reception-store.ts` |
+| 受付履歴・監査ログ | `const receptionLogs/auditLogs = []` | `src/lib/data-stores/reception-log-store.ts` |
 | 端末レジストリ | `let kiosks` | `src/lib/kiosk/kiosk-store.ts` |
 | アセット | `let assets`, `let active` | `src/lib/assets/asset-store.ts` |
 | モーション割当 | `let mapping` | `src/lib/motion/motion-store.ts` |

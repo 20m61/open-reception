@@ -6,7 +6,7 @@
  * 受付履歴（ReceptionLog）と端末レジストリ（Kiosk）から、その概況を導く純関数群。
  *
  * I/O は持たない（テスト可能な純粋ロジックに閉じる）。データ取得と API 配線は
- * src/lib/mock-backend / src/app/api/admin/dashboard に置く。実データが無い指標
+ * src/lib/data-stores / src/app/api/admin/dashboard に置く。実データが無い指標
  * （Vonage 連携状態・利用量・予想コスト・お知らせ）は #89 / #82 / #90 の本実装まで
  * プレースホルダ扱いとし、ここでは集計しない。
  */

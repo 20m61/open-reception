@@ -1,7 +1,7 @@
 import { NextResponse } from 'next/server';
 import { asTenantId } from '@/domain/tenant/types';
 import { getSecuritySettings, updateSecuritySettings } from '@/lib/security/security-store';
-import { readJson } from '@/lib/mock-backend/result-http';
+import { readJson } from '@/lib/data-stores/result-http';
 import {
   assertCanRead,
   assertCanWrite,

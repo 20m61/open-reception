@@ -1,6 +1,6 @@
 import { NextResponse } from 'next/server';
 import { listKiosks } from '@/lib/kiosk/kiosk-store';
-import { listReceptionLogs } from '@/lib/mock-backend/reception-log-store';
+import { listReceptionLogs } from '@/lib/data-stores/reception-log-store';
 import { loadUsage, loadCostEstimate } from '@/lib/usage/usage-data';
 import {
   buildDashboardSummary,

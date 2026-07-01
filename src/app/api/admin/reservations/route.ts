@@ -1,5 +1,5 @@
 import { NextResponse } from 'next/server';
-import { readJson } from '@/lib/mock-backend/result-http';
+import { readJson } from '@/lib/data-stores/result-http';
 import { getReservationService } from '@/lib/reservation/store';
 import {
   parseCreateBody,

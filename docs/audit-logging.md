@@ -44,6 +44,6 @@
 ## 実装
 
 - 型: `src/domain/reception/log.ts`
-- ストア: `src/lib/mock-backend/reception-log-store.ts`
-- 受付フロー連携: `src/lib/mock-backend/reception-store.ts`（終端遷移で記録）
+- ストア: `src/lib/data-stores/reception-log-store.ts`
+- 受付フロー連携: `src/lib/data-stores/reception-store.ts`（終端遷移で記録）
 - 管理閲覧: `/admin/receptions`、API `GET /api/admin/receptions`・`GET /api/admin/audit`

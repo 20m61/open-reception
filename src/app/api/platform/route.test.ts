@@ -21,7 +21,7 @@ vi.mock('@/lib/auth/actor', () => ({
 vi.mock('@/lib/tenant/store', () => ({
   getTenantStore: () => ({ tenants: { listTenants: () => listTenants() } }),
 }));
-vi.mock('@/lib/mock-backend/reception-log-store', () => ({
+vi.mock('@/lib/data-stores/reception-log-store', () => ({
   listReceptionLogsSince: () => listReceptionLogsSince(),
 }));
 

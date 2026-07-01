@@ -1,6 +1,6 @@
 import { NextResponse } from 'next/server';
 import { cookies } from 'next/headers';
-import { getReception } from '@/lib/mock-backend/reception-store';
+import { getReception } from '@/lib/data-stores/reception-store';
 import { getVonageSessionService } from '@/lib/call/adapter-factory';
 import { getVonagePublicConfig } from '@/lib/call/vonage-config';
 import { KIOSK_COOKIE, readKioskSession } from '@/lib/auth/kiosk';

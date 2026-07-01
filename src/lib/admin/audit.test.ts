@@ -1,7 +1,7 @@
 import { describe, expect, it, vi, beforeEach } from 'vitest';
 
 const appendAuditLog = vi.fn();
-vi.mock('@/lib/mock-backend/reception-log-store', () => ({
+vi.mock('@/lib/data-stores/reception-log-store', () => ({
   appendAuditLog: (...a: unknown[]) => appendAuditLog(...a),
 }));
 

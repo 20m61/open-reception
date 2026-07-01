@@ -1,8 +1,8 @@
 import { NextResponse } from 'next/server';
 import { getCheckinService, resolveCheckinScope } from '@/lib/checkin/store';
 import { failureResponse, readPayload, requireKioskSession } from '@/lib/checkin/request';
-import { createReception } from '@/lib/mock-backend/reception-store';
-import { appendAuditLog } from '@/lib/mock-backend/reception-log-store';
+import { createReception } from '@/lib/data-stores/reception-store';
+import { appendAuditLog } from '@/lib/data-stores/reception-log-store';
 
 /**
  * POST /api/kiosk/checkin/confirm — 確認後にチェックインし、受付セッションへ接続する (issue #98)。

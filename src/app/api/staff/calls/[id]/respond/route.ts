@@ -1,7 +1,7 @@
 import { NextResponse } from 'next/server';
-import { getReception, recordStaffResponse } from '@/lib/mock-backend/reception-store';
+import { getReception, recordStaffResponse } from '@/lib/data-stores/reception-store';
 import { readAnswerToken } from '@/lib/call/answer-token';
-import { readJson } from '@/lib/mock-backend/result-http';
+import { readJson } from '@/lib/data-stores/result-http';
 import {
   isStaffResponseAction,
   isStaffResponseEnabled,

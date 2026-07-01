@@ -70,7 +70,7 @@ inc2: `summarizeTenantDetail` / `summarizeMaintenance` / `maskAuditActor` / `toM
 に委譲しユニットテストで網羅する。データは目的限定の read（メタ情報のみ）で、PII・機密値を
 含めない。監査ログは actor の識別子部分をマスクし metadata を表示行に載せない。read 元は既存
 ストア（`@/lib/tenant/store`・`@/lib/security/integration-status-store`・
-`@/lib/mock-backend/reception-log-store`・`@/lib/call/vonage-config`）を**参照のみ**で利用する
+`@/lib/data-stores/reception-log-store`・`@/lib/call/vonage-config`）を**参照のみ**で利用する
 （既存ファイルは編集しない）。
 
 ## ディレクトリ

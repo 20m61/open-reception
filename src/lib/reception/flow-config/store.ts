@@ -9,10 +9,10 @@
  * 同じ既定プロビジョニング・スコープ（lib/tenant/default-scope）を参照するため、
  * いずれの初期表示でも同じフローが見える（#171）。
  *
- * 監査は既存 appendAdminAudit（src/lib/mock-backend/reception-log-store）を使い、
+ * 監査は既存 appendAdminAudit（src/lib/data-stores/reception-log-store）を使い、
  * actor=admin・PII なしで記録する（事前定義済み reception_flow.* アクションを参照）。
  */
-import { appendAdminAudit } from '@/lib/mock-backend/reception-log-store';
+import { appendAdminAudit } from '@/lib/data-stores/reception-log-store';
 import { asReceptionFlowId } from '@/domain/reception/custom-flow';
 import { asSiteId, asTenantId } from '@/domain/tenant/types';
 import { DataBackedReceptionFlowRepository } from './repository';

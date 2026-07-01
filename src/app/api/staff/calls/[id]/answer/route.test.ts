@@ -10,7 +10,7 @@ const getVonageSessionService = vi.fn();
 const getVonagePublicConfig = vi.fn();
 const readAnswerToken = vi.fn();
 
-vi.mock('@/lib/mock-backend/reception-store', () => ({
+vi.mock('@/lib/data-stores/reception-store', () => ({
   getReception: (...a: unknown[]) => getReception(...a),
   markConnected: (...a: unknown[]) => markConnected(...a),
 }));

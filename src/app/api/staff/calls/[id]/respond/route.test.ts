@@ -11,7 +11,7 @@ const readAnswerToken = vi.fn();
 const resolveOverrides = vi.fn();
 const resolveCheckinScope = vi.fn();
 
-vi.mock('@/lib/mock-backend/reception-store', () => ({
+vi.mock('@/lib/data-stores/reception-store', () => ({
   recordStaffResponse: (...a: unknown[]) => recordStaffResponse(...a),
   getReception: (...a: unknown[]) => getReception(...a),
 }));

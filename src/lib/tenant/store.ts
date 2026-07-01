@@ -11,10 +11,10 @@
  * 紐づける。seed は memory backend のみ有効（dynamodb では実データを正とし無視される）。
  * Device/kiosk の統合方針は docs/site-device-management-design.md。
  *
- * 監査は既存の appendAdminAudit（src/lib/mock-backend/reception-log-store.ts）を使い、
+ * 監査は既存の appendAdminAudit（src/lib/data-stores/reception-log-store.ts）を使い、
  * actor=admin・PII なしで記録する。
  */
-import { appendAdminAudit } from '@/lib/mock-backend/reception-log-store';
+import { appendAdminAudit } from '@/lib/data-stores/reception-log-store';
 import {
   asDeviceId,
   asSiteId,

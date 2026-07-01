@@ -1,5 +1,5 @@
 import { NextResponse } from 'next/server';
-import { readJson } from '@/lib/mock-backend/result-http';
+import { readJson } from '@/lib/data-stores/result-http';
 import { getCallRouteService } from '@/lib/notification/store';
 import { callRouteResponse, readRouteScope, resolveAdminActor } from '@/lib/notification/request';
 import { asCallRouteId, type CallTargetGroup, type UpdateCallRoutePatch } from '@/lib/notification/types';

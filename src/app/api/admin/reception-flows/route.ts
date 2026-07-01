@@ -1,5 +1,5 @@
 import { NextResponse } from 'next/server';
-import { readJson } from '@/lib/mock-backend/result-http';
+import { readJson } from '@/lib/data-stores/result-http';
 import { asSiteId } from '@/domain/tenant/types';
 import { getReceptionFlowService } from '@/lib/reception/flow-config/store';
 import { flowResponse, readFlowScope, resolveAdminActor } from '@/lib/reception/flow-config/request';

@@ -1,4 +1,4 @@
-import { listAuditLogs } from '@/lib/mock-backend/reception-log-store';
+import { listAuditLogs } from '@/lib/data-stores/reception-log-store';
 import type { AuditAction } from '@/domain/reception/log';
 import { auditActionFacets } from '@/domain/audit/audit-filter';
 import { AuditLogViewer } from '@/components/admin/audit/AuditLogViewer';
