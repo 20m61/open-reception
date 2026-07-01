@@ -22,7 +22,8 @@ type BuildResult<T> = { ok: true; value: T } | { ok: false; error: string };
 export async function handlePlatformDangerCreate<In, T extends { id: string }>(
   request: Request,
   opts: {
-    build: (input: In, ctx: { id: string; now: Date }) => BuildResult<T>;
+    // ctx.operator = 昇格した操作者 identity（記録の updatedBy/createdBy に使う, #264）。
+    build: (input: In, ctx: { id: string; now: Date; operator: string }) => BuildResult<T>;
     create: (value: T) => Promise<void>;
     action: AuditAction;
     targetType: string;
@@ -33,10 +34,11 @@ export async function handlePlatformDangerCreate<In, T extends { id: string }>(
 ): Promise<NextResponse> {
   const gate = await assertElevated();
   if (!gate.ok) return gate.response;
-  const actor = `platform:${gate.elevation.sub}`; // 昇格した操作者を監査 actor に（#264）。
+  const operator = gate.elevation.sub; // 昇格した操作者 identity。
+  const actor = `platform:${operator}`; // 監査 actor（#264）。
 
   const body = ((await request.json().catch(() => ({}))) ?? {}) as Record<string, unknown>;
-  const built = opts.build(body as In, { id: randomUUID(), now: new Date() });
+  const built = opts.build(body as In, { id: randomUUID(), now: new Date(), operator });
   if (!built.ok) {
     return NextResponse.json({ error: 'invalid_input', message: built.error }, { status: 400 });
   }

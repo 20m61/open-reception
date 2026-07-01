@@ -12,7 +12,7 @@ import { handlePlatformDangerCreate } from '@/lib/platform/danger-create';
  */
 export async function POST(request: Request): Promise<NextResponse> {
   return handlePlatformDangerCreate<NoticeInput, Notice>(request, {
-    build: (input, ctx) => buildNotice(input, { ...ctx, createdBy: 'platform' }),
+    build: (input, ctx) => buildNotice(input, { id: ctx.id, now: ctx.now, createdBy: ctx.operator }),
     create: createNotice,
     action: 'platform.notice.published',
     targetType: 'notice',

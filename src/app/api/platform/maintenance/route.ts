@@ -83,7 +83,7 @@ export async function GET(): Promise<NextResponse> {
  */
 export async function POST(request: Request): Promise<NextResponse> {
   return handlePlatformDangerCreate<MaintenanceWindowInput, MaintenanceWindow>(request, {
-    build: (input, ctx) => buildMaintenanceWindow(input, { ...ctx, createdBy: 'platform' }),
+    build: (input, ctx) => buildMaintenanceWindow(input, { id: ctx.id, now: ctx.now, createdBy: ctx.operator }),
     create: createMaintenanceWindow,
     action: 'platform.maintenance.scheduled',
     targetType: 'maintenance_window',
