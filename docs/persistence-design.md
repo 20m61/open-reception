@@ -74,6 +74,10 @@ src/lib/data/
 ```
 
 - **切替**: `DATA_BACKEND` 環境変数。`memory`（既定, dev/test/CI）/ `dynamodb`（AWS）。
+- **fail-closed（#273 inc1）**: デプロイ実行（`AWS_LAMBDA_FUNCTION_NAME` あり）で
+  `DATA_BACKEND` 未設定なら throw し、揮発性 memory への黙示フォールバックを拒否する。
+  ローカルの production ビルド（`next start` での e2e / lighthouse）はマーカーが無いため
+  従来どおり memory。明示的な `DATA_BACKEND=memory` は意図的な選択として許容。
 - バリデーション・派生（`validateStaffInput`, `searchStaff`, `deriveReceptionLog`, `transition` 等）は **pure なまま** リポジトリの外（ドメイン or リポジトリ内の同期ヘルパ）に残す。リポジトリは「永続化プリミティブ」に集中する。
 
 ### 3.2 非同期化の波及

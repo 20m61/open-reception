@@ -5,10 +5,44 @@
  *   - 'memory'（既定 / dev / test / CI）: プロセス内 in-memory
  *   - 'dynamodb'（本番 / AWS）: DynamoDB シングルテーブル
  *
+ * fail-closed (#273 inc1): **デプロイ実行**（Lambda 実行マーカー
+ * `AWS_LAMBDA_FUNCTION_NAME` あり = OpenNext の実デプロイ）で DATA_BACKEND が
+ * 未設定なら、黙って揮発性の memory にフォールバックせず throw する。
+ * `NODE_ENV` ではなく Lambda マーカーで判定するのは server-secret.ts と同じ理由:
+ * ローカルの production ビルド（quality-gate の build / e2e / lighthouse は
+ * `next start` で NODE_ENV=production）を壊さないため。
+ *
  * バックエンドはプロセス内で 1 つだけ生成し、全ストアで共有する。
  */
 import type { DataBackend } from './backend';
 import { MemoryBackend } from './memory';
+
+export type BackendKind = 'memory' | 'dynamodb';
+
+/**
+ * 環境変数からバックエンド種別を決定する純粋関数（unit テスト対象）。
+ *
+ * - デプロイ実行（AWS_LAMBDA_FUNCTION_NAME あり）で DATA_BACKEND 未設定 → throw。
+ *   明示的な `DATA_BACKEND=memory` は「意図的に揮発でよい」宣言として許容する
+ *   （fail-closed の対象はあくまで**設定漏れ**）。
+ * - それ以外（dev / test / CI / ローカル `next start`）は従来どおり memory 既定。
+ */
+export function resolveBackendKind(env: Record<string, string | undefined>): BackendKind {
+  const kind = env.DATA_BACKEND;
+  if (kind === undefined) {
+    if (env.AWS_LAMBDA_FUNCTION_NAME) {
+      throw new Error(
+        'DATA_BACKEND is not set in a deployed environment; refusing the volatile in-memory fallback ' +
+          '(data would be lost on every cold start). Set DATA_BACKEND=dynamodb (plus TABLE_NAME) on the ' +
+          'server Lambda — infra/lib/stacks/web-stack.ts does this for CDK deploys — or set ' +
+          "DATA_BACKEND=memory explicitly if ephemeral data is intentional. See docs/persistence-design.md. (#273)",
+      );
+    }
+    return 'memory';
+  }
+  if (kind === 'memory' || kind === 'dynamodb') return kind;
+  throw new Error(`Unknown DATA_BACKEND="${kind}". Use 'memory' or 'dynamodb'.`);
+}
 
 // Next.js の production ビルドでは route handler / server component が別モジュール
 // インスタンスにバンドルされ得るため、モジュールレベル変数だと in-memory backend が
@@ -19,16 +53,13 @@ type BackendGlobal = { [GLOBAL_KEY]?: DataBackend };
 const backendGlobal = globalThis as BackendGlobal;
 
 function create(): DataBackend {
-  const kind = process.env.DATA_BACKEND ?? 'memory';
-  switch (kind) {
+  switch (resolveBackendKind(process.env)) {
     case 'memory':
       return new MemoryBackend();
     case 'dynamodb':
-      // 遅延 import で AWS SDK をコールドスタート時のみ読み込む（フェーズ3で実装）。
+      // 遅延 import で AWS SDK をコールドスタート時のみ読み込む。
       // eslint-disable-next-line @typescript-eslint/no-require-imports
       return new (require('./dynamodb').DynamoBackend)() as DataBackend;
-    default:
-      throw new Error(`Unknown DATA_BACKEND="${kind}". Use 'memory' or 'dynamodb'.`);
   }
 }
 
