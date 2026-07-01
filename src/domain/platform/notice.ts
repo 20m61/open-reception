@@ -9,6 +9,8 @@
  * 表示行に載せない。title/body は運用者が記述する告知であり機密値・個人情報を書かない運用とする。
  */
 
+import { byFlagRankTimeDesc } from './scoped-summary';
+
 /** 影響/対象範囲。 */
 export type NoticeScope = 'platform' | 'tenant' | 'site' | 'device';
 
@@ -93,11 +95,13 @@ export function toNoticeRow(notice: Notice): NoticeRow {
  * 並び順: 掲示中（active）を先頭 → 重要度降順 → 公開日時の新しい順。
  */
 export function summarizeNotices(notices: readonly Notice[]): NoticeSummary {
-  const rows = notices.map(toNoticeRow).sort((a, b) => {
-    if (a.active !== b.active) return a.active ? -1 : 1;
-    if (a.level !== b.level) return LEVEL_RANK[b.level] - LEVEL_RANK[a.level];
-    return b.publishedAt.localeCompare(a.publishedAt);
-  });
+  const rows = notices.map(toNoticeRow).sort(
+    byFlagRankTimeDesc({
+      flagOf: (r) => r.active,
+      rankOf: (r) => LEVEL_RANK[r.level],
+      timeOf: (r) => r.publishedAt,
+    }),
+  );
 
   return {
     activeCount: rows.filter((r) => r.active).length,

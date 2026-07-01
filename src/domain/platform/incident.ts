@@ -9,6 +9,8 @@
  * 運用者が記述する障害説明であり、機密値・個人情報を書かない運用とする。
  */
 
+import { byFlagRankTimeDesc } from './scoped-summary';
+
 /** 障害の影響範囲。 */
 export type IncidentScope = 'platform' | 'tenant' | 'site' | 'device';
 
@@ -101,11 +103,13 @@ export function toIncidentRow(incident: Incident): IncidentRow {
  * 並び順: 進行中を先頭 → 重大度降順 → 発生日時の新しい順。
  */
 export function summarizeIncidents(incidents: readonly Incident[]): IncidentSummary {
-  const rows = incidents.map(toIncidentRow).sort((a, b) => {
-    if (a.active !== b.active) return a.active ? -1 : 1;
-    if (a.severity !== b.severity) return SEVERITY_RANK[b.severity] - SEVERITY_RANK[a.severity];
-    return b.startedAt.localeCompare(a.startedAt);
-  });
+  const rows = incidents.map(toIncidentRow).sort(
+    byFlagRankTimeDesc({
+      flagOf: (r) => r.active,
+      rankOf: (r) => SEVERITY_RANK[r.severity],
+      timeOf: (r) => r.startedAt,
+    }),
+  );
 
   const activeBySeverity: Record<IncidentSeverity, number> = {
     info: 0,
