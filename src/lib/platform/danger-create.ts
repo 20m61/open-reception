@@ -16,10 +16,40 @@ import { NextResponse } from 'next/server';
 import type { AuditAction } from '@/domain/reception/log';
 import { recordDangerAction } from '@/lib/admin/audit';
 import { assertElevated } from '@/lib/platform/request';
+import { getTenantStore } from '@/lib/tenant/store';
+import { asTenantId, asSiteId, asDeviceId } from '@/domain/tenant/types';
 
 type BuildResult<T> = { ok: true; value: T } | { ok: false; error: string };
 
-export async function handlePlatformDangerCreate<In, T extends { id: string }>(
+/** スコープ対象の型（登録レコードが共通で持つ）。 */
+type Scoped = { scope: string; tenantId?: string; siteId?: string; deviceId?: string };
+
+/**
+ * スコープ id が示す tenant/site/device が**実在**するか検証する (issue #268)。存在しなければエラー文字列。
+ * presence 検証（buildX）だけでは typo の tenantId が通り、対象に届かない不可視レコードを作り得るため。
+ */
+async function assertScopeExists(v: Scoped): Promise<string | null> {
+  if (v.scope === 'platform') return null;
+  // build の presence 検証に依存せず防御的に確認（undefined id で store を叩かない）。
+  if (!v.tenantId) return 'tenantId required for this scope';
+  const store = getTenantStore();
+  const tenantId = asTenantId(v.tenantId);
+  if (!(await store.tenants.getTenant(tenantId))) return 'tenant not found';
+  if (v.scope === 'site' || v.scope === 'device') {
+    if (!v.siteId) return 'siteId required for this scope';
+    if (!(await store.sites.getSite(tenantId, asSiteId(v.siteId)))) return 'site not found';
+  }
+  if (v.scope === 'device') {
+    if (!v.deviceId) return 'deviceId required for this scope';
+    const device = await store.devices.getDevice(tenantId, asDeviceId(v.deviceId));
+    if (!device) return 'device not found';
+    // getDevice は tenant 境界のみ。device が指定 site 配下かも確認（不整合な site/device を弾く）。
+    if (String(device.siteId) !== v.siteId) return 'device does not belong to the site';
+  }
+  return null;
+}
+
+export async function handlePlatformDangerCreate<In, T extends { id: string } & Scoped>(
   request: Request,
   opts: {
     // ctx.operator = 昇格した操作者 identity（記録の updatedBy/createdBy に使う, #264）。
@@ -41,6 +71,18 @@ export async function handlePlatformDangerCreate<In, T extends { id: string }>(
   const built = opts.build(body as In, { id: randomUUID(), now: new Date(), operator });
   if (!built.ok) {
     return NextResponse.json({ error: 'invalid_input', message: built.error }, { status: 400 });
+  }
+
+  // スコープ対象の実在検証（typo の tenant/site/device による不可視レコードを防ぐ, #268）。
+  // tenant-store の一時障害は unhandled にせず 500 で返す（監査/変更はまだ無いので補償不要）。
+  let scopeErr: string | null;
+  try {
+    scopeErr = await assertScopeExists(built.value);
+  } catch {
+    return NextResponse.json({ error: 'scope_check_failed' }, { status: 500 });
+  }
+  if (scopeErr) {
+    return NextResponse.json({ error: 'invalid_input', message: scopeErr }, { status: 400 });
   }
 
   const reason = typeof body.reason === 'string' ? body.reason.trim().slice(0, 500) : undefined;
