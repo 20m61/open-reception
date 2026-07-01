@@ -56,6 +56,9 @@ export type ReadElevation = Elevation & { sub: string };
 export async function readElevation(token: string | undefined): Promise<ReadElevation | null> {
   const payload = await verifySession(token, elevationSecret());
   if (!payload || payload.role !== 'platform_elevation') return null;
+  // 操作者 identity(sub) は #264 で必須。欠落（#264 前の cookie 等）は無効扱いにし、'platform:unknown'
+  // での監査を防ぐ（短命 cookie なので再昇格で解消・安全側）。
+  if (typeof payload.sub !== 'string' || payload.sub === '') return null;
   const scope = (payload.scope ?? {}) as ElevationScope;
   return {
     until: payload.exp,
@@ -65,6 +68,6 @@ export async function readElevation(token: string | undefined): Promise<ReadElev
       siteId: scope.siteId,
       deviceId: scope.deviceId,
     },
-    sub: typeof payload.sub === 'string' ? payload.sub : 'unknown',
+    sub: payload.sub,
   };
 }

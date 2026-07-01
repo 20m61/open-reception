@@ -15,6 +15,15 @@ describe('elevation cookie (#83 inc4b)', () => {
     expect(read?.sub).toBe('dev@example.com'); // 操作者 identity を復元（#264）。
   });
 
+  it('sub 欠落の cookie は無効＝null（#264 前の cookie で platform:unknown を出さない）', async () => {
+    const { signSession } = await import('@/lib/auth/session');
+    const noSub = await signSession(
+      { role: 'platform_elevation', exp: Date.now() + 60_000, reason: 'x', scope: {}, jti: 'j' },
+      'dev-insecure-elevation-secret',
+    );
+    expect(await readElevation(noSub)).toBeNull();
+  });
+
   it('署名改ざん・空トークンは null', async () => {
     const token = await issueElevationToken(grantElevation({ reason: 'x', scope: {} }, Date.now()), 'j', 'dev@example.com');
     expect(await readElevation(`${token}tamper`)).toBeNull();

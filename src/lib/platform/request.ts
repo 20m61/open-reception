@@ -31,35 +31,36 @@ export { resolveAdminActor };
  *
  * 返り値が ok:false の場合はそのまま return できる NextResponse を同梱する。
  */
-export async function authorizePlatform(): Promise<
-  { ok: true; actor: Actor } | { ok: false; response: NextResponse }
-> {
-  const actor = await resolveAdminActor();
+/** 未認証 401 / 非 developer 403 の共通ゲート（両 authorize が同一判定を共有し drift を防ぐ）。 */
+function platformGate(actor: Actor | null): { ok: true } | { ok: false; response: NextResponse } {
   if (!actor || actor.status !== 'active' || actor.assignments.length === 0) {
     return { ok: false, response: NextResponse.json({ error: 'unauthorized' }, { status: 401 }) };
   }
   if (!canEnterArea(actor, 'platform').allowed) {
     return { ok: false, response: NextResponse.json({ error: 'forbidden' }, { status: 403 }) };
   }
-  return { ok: true, actor };
+  return { ok: true };
+}
+
+export async function authorizePlatform(): Promise<
+  { ok: true; actor: Actor } | { ok: false; response: NextResponse }
+> {
+  const actor = await resolveAdminActor();
+  const gate = platformGate(actor);
+  return gate.ok ? { ok: true, actor: actor! } : gate;
 }
 
 /**
  * `authorizePlatform` に加えて操作者 identity も返す (issue #264)。昇格発行（/elevate）で cookie の
  * subject 束縛・監査 actor に使う。write ルートは identity を cookie（昇格）から得るため本関数は不要
- * （assertElevated の elevation.sub を使う）。
+ * （assertElevated の elevation.sub を使う）。認可判定は platformGate を共有する。
  */
 export async function authorizePlatformWithIdentity(): Promise<
   { ok: true; actor: Actor; identity: string } | { ok: false; response: NextResponse }
 > {
   const resolved = await resolveAdminActorWithIdentity();
-  if (!resolved || resolved.actor.status !== 'active' || resolved.actor.assignments.length === 0) {
-    return { ok: false, response: NextResponse.json({ error: 'unauthorized' }, { status: 401 }) };
-  }
-  if (!canEnterArea(resolved.actor, 'platform').allowed) {
-    return { ok: false, response: NextResponse.json({ error: 'forbidden' }, { status: 403 }) };
-  }
-  return { ok: true, actor: resolved.actor, identity: resolved.identity };
+  const gate = platformGate(resolved?.actor ?? null);
+  return gate.ok ? { ok: true, actor: resolved!.actor, identity: resolved!.identity } : gate;
 }
 
 /**

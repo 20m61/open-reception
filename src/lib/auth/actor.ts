@@ -322,5 +322,6 @@ export async function resolveAdminActorWithIdentity(): Promise<{ actor: Actor; i
     config,
   );
   if (!actor) return null;
-  return { actor, identity: result.email ?? result.subject };
+  // 空文字 email も subject へフォールバック（?? だと '' を通し 'platform:' になるため || で）。
+  return { actor, identity: result.email || result.subject || 'unknown-admin' };
 }
