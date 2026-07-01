@@ -226,6 +226,31 @@ describe('toMaskedAuditRows', () => {
     // metadata は表示行に載せない。
     expect('metadata' in (rows[0] ?? {})).toBe(false);
   });
+
+  it('高詳細監査フィールド（ip/userAgent/before/after）を射影する（#83 AC13）', () => {
+    const logs: AuditLog[] = [
+      {
+        id: '2',
+        action: 'tenant.suspended',
+        actor: 'admin:ops@example.com',
+        targetType: 'tenant',
+        targetId: 't1',
+        at: '2026-06-02T00:00:00.000Z',
+        ip: '203.0.113.4',
+        userAgent: 'UA/1.0',
+        before: { status: 'active' },
+        after: { status: 'suspended' },
+      },
+    ];
+    const row = toMaskedAuditRows(logs)[0]!;
+    expect(row.actor).toBe('admin:***'); // actor はマスク維持。
+    expect(row.ip).toBe('203.0.113.4');
+    expect(row.userAgent).toBe('UA/1.0');
+    expect(row.before).toEqual({ status: 'active' });
+    expect(row.after).toEqual({ status: 'suspended' });
+    // metadata は依然として載せない。
+    expect('metadata' in row).toBe(false);
+  });
 });
 
 describe('toIntegrationStatusRows (increment 3)', () => {

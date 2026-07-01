@@ -115,6 +115,18 @@ export type AuditLog = {
   at: string;
   /** PII を含めない補助情報のみ。 */
   metadata?: Record<string, string>;
+  /**
+   * 高詳細監査の追加コンテキスト (issue #83 AC13)。運用者操作の追跡と設定変更の差分監査に使う。
+   * いずれも任意（旧レコードや低リスク操作では未設定）。before/after は sanitize 済みで機微値を残さない。
+   */
+  /** 操作元 IP（`x-forwarded-for` 先頭・best-effort）。運用者操作の追跡用。 */
+  ip?: string;
+  /** 操作元 user-agent（切り詰め）。 */
+  userAgent?: string;
+  /** 変更前の値（sanitize 済み・機微値/PII は落とす）。設定変更の差分監査用。 */
+  before?: Record<string, string>;
+  /** 変更後の値（sanitize 済み）。 */
+  after?: Record<string, string>;
 };
 
 /**

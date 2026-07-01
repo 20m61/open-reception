@@ -87,7 +87,10 @@ export async function PATCH(
     action: auditActionForLifecycle(action),
     target: { type: 'tenant', id: tenant.id },
     reason: reason || undefined,
-    metadata: { status: next.status },
+    // 高詳細監査 (issue #83 AC13): status の before/after と操作元 IP/user-agent を残す。
+    before: { status: tenant.status },
+    after: { status: next.status },
+    request,
   });
 
   return NextResponse.json({

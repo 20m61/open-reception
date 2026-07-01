@@ -67,6 +67,24 @@ export function sanitizeAuditMetadata(
   return Object.keys(out).length > 0 ? out : undefined;
 }
 
+/**
+ * リクエストから高詳細監査のコンテキスト（IP・user-agent）を取り出す (issue #83 AC13)。
+ *
+ * IP は `x-forwarded-for` の **末尾（最も手前の信頼 proxy が付与した値）** を採る。CloudFront は
+ * client 提供の X-Forwarded-For の**右側**に実 client IP を追記するため、先頭値は client 詐称可能で
+ * 運用者 IP を偽装できてしまう（監査の accountability を崩す）。認可には使わない best-effort。
+ * user-agent は監査肥大化を避けるため 256 文字で切り詰める。取得できないものは undefined。
+ */
+export function auditContextFromRequest(request: Request): { ip?: string; userAgent?: string } {
+  const hops = (request.headers.get('x-forwarded-for') ?? '')
+    .split(',')
+    .map((s) => s.trim())
+    .filter(Boolean);
+  const ip = hops.at(-1) || undefined;
+  const ua = request.headers.get('user-agent')?.slice(0, 256) || undefined;
+  return { ip, userAgent: ua };
+}
+
 /** 危険操作の監査入力。reason は理由入力 UX（confirm-flow）の値を想定。 */
 export type DangerAuditInput = {
   /** 既存 AuditAction のみ。新規が必要なら log.ts を編集せず report に列挙する。 */
@@ -77,14 +95,26 @@ export type DangerAuditInput = {
   reason?: string;
   /** 追加の補助情報。sanitizeAuditMetadata を通して機微値を落とす。 */
   metadata?: Record<string, unknown>;
+  /** 設定変更の変更前/後の値 (issue #83 AC13)。sanitize して機微値を落とす。 */
+  before?: Record<string, unknown>;
+  after?: Record<string, unknown>;
+  /** 操作元の IP・user-agent を記録するためのリクエスト (issue #83 AC13)。 */
+  request?: Request;
 };
 
 /**
- * 危険操作を監査ログに記録する。reason と sanitize 済み metadata を残し、機微値は落とす。
+ * 危険操作を監査ログに記録する。reason と sanitize 済み metadata に加え、高詳細監査 (#83 AC13) の
+ * before/after（sanitize 済み）・IP・user-agent を残す。機微値・PII は落とす。
  * 戻り値は appendAdminAudit の結果（呼び出し側はレスポンス整形に使わない方がよい）。
  */
 export async function recordDangerAction(input: DangerAuditInput) {
   const merged: Record<string, unknown> = { ...input.metadata };
   if (input.reason !== undefined) merged.reason = input.reason;
-  return appendAdminAudit(input.action, input.target, sanitizeAuditMetadata(merged));
+  const ctx = input.request ? auditContextFromRequest(input.request) : {};
+  return appendAdminAudit(input.action, input.target, sanitizeAuditMetadata(merged), {
+    before: sanitizeAuditMetadata(input.before),
+    after: sanitizeAuditMetadata(input.after),
+    ip: ctx.ip,
+    userAgent: ctx.userAgent,
+  });
 }
