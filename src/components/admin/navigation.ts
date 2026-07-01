@@ -147,6 +147,7 @@ export const PLATFORM_NAV: readonly NavGroup[] = [
     roles: PLATFORM_OPERATORS,
     items: [
       { href: '/platform/observability', label: '可観測性' },
+      { href: '/platform/updates', label: 'アップデート' },
       { href: '/platform/maintenance', label: 'メンテナンス', danger: true },
       { href: '/platform/audit-logs', label: '監査ログ' },
     ],
