@@ -11,6 +11,8 @@ const cookieGet = vi.fn<(name: string) => { value: string } | undefined>();
 const createIncident = vi.fn<(i: Incident) => Promise<void>>();
 const recordDangerAction = vi.fn<(i: unknown) => Promise<unknown>>();
 const getTenant = vi.fn<(id: string) => Promise<unknown>>();
+const getSite = vi.fn<(t: string, s: string) => Promise<unknown>>();
+const getDevice = vi.fn<(t: string, d: string) => Promise<unknown>>();
 
 vi.mock('@/lib/auth/actor', () => ({
   resolveAdminActor: () => resolveAdminActor(),
@@ -26,8 +28,8 @@ vi.mock('@/lib/admin/audit', () => ({ recordDangerAction: (i: unknown) => record
 vi.mock('@/lib/tenant/store', () => ({
   getTenantStore: () => ({
     tenants: { getTenant: (id: string) => getTenant(id) },
-    sites: { getSite: () => undefined },
-    devices: { getDevice: () => undefined },
+    sites: { getSite: (t: string, s: string) => getSite(t, s) },
+    devices: { getDevice: (t: string, d: string) => getDevice(t, d) },
   }),
 }));
 
@@ -90,6 +92,36 @@ describe('POST /api/platform/incidents (#83 AC7)', () => {
     const res = await post({ scope: 'tenant', tenantId: 'internal', severity: 'minor', title: 't', message: 'm', reason: 'x' });
     expect(res.status).toBe(201);
     expect(createIncident).toHaveBeenCalled();
+  });
+
+  it('site スコープで実在しない siteId は 400（#268）', async () => {
+    await elevate();
+    getTenant.mockResolvedValue({ id: 'internal' });
+    getSite.mockResolvedValue(undefined); // site が無い。
+    const res = await post({ scope: 'site', tenantId: 'internal', siteId: 'ghost', severity: 'minor', title: 't', message: 'm' });
+    expect(res.status).toBe(400);
+    expect(createIncident).not.toHaveBeenCalled();
+  });
+
+  it('device スコープで device が指定 site 配下でなければ 400（不整合防止・#268）', async () => {
+    await elevate();
+    getTenant.mockResolvedValue({ id: 'internal' });
+    getSite.mockResolvedValue({ id: 's1' });
+    getDevice.mockResolvedValue({ id: 'd1', siteId: 's2' }); // 別 site の device。
+    const res = await post({
+      scope: 'device', tenantId: 'internal', siteId: 's1', deviceId: 'd1',
+      severity: 'minor', title: 't', message: 'm',
+    });
+    expect(res.status).toBe(400);
+    expect(createIncident).not.toHaveBeenCalled();
+  });
+
+  it('スコープ検証中の store 障害は 500（unhandled にしない・#268）', async () => {
+    await elevate();
+    getTenant.mockRejectedValue(new Error('store down'));
+    const res = await post({ scope: 'tenant', tenantId: 'internal', severity: 'minor', title: 't', message: 'm' });
+    expect(res.status).toBe(500);
+    expect(createIncident).not.toHaveBeenCalled();
   });
 
   it('昇格済みは登録でき、201 + 障害保存 + 監査（理由つき）が残る', async () => {

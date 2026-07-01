@@ -30,14 +30,21 @@ type Scoped = { scope: string; tenantId?: string; siteId?: string; deviceId?: st
  */
 async function assertScopeExists(v: Scoped): Promise<string | null> {
   if (v.scope === 'platform') return null;
+  // build の presence 検証に依存せず防御的に確認（undefined id で store を叩かない）。
+  if (!v.tenantId) return 'tenantId required for this scope';
   const store = getTenantStore();
-  const tenantId = asTenantId(v.tenantId!);
+  const tenantId = asTenantId(v.tenantId);
   if (!(await store.tenants.getTenant(tenantId))) return 'tenant not found';
   if (v.scope === 'site' || v.scope === 'device') {
-    if (!(await store.sites.getSite(tenantId, asSiteId(v.siteId!)))) return 'site not found';
+    if (!v.siteId) return 'siteId required for this scope';
+    if (!(await store.sites.getSite(tenantId, asSiteId(v.siteId)))) return 'site not found';
   }
   if (v.scope === 'device') {
-    if (!(await store.devices.getDevice(tenantId, asDeviceId(v.deviceId!)))) return 'device not found';
+    if (!v.deviceId) return 'deviceId required for this scope';
+    const device = await store.devices.getDevice(tenantId, asDeviceId(v.deviceId));
+    if (!device) return 'device not found';
+    // getDevice は tenant 境界のみ。device が指定 site 配下かも確認（不整合な site/device を弾く）。
+    if (String(device.siteId) !== v.siteId) return 'device does not belong to the site';
   }
   return null;
 }
@@ -67,7 +74,13 @@ export async function handlePlatformDangerCreate<In, T extends { id: string } & 
   }
 
   // スコープ対象の実在検証（typo の tenant/site/device による不可視レコードを防ぐ, #268）。
-  const scopeErr = await assertScopeExists(built.value);
+  // tenant-store の一時障害は unhandled にせず 500 で返す（監査/変更はまだ無いので補償不要）。
+  let scopeErr: string | null;
+  try {
+    scopeErr = await assertScopeExists(built.value);
+  } catch {
+    return NextResponse.json({ error: 'scope_check_failed' }, { status: 500 });
+  }
   if (scopeErr) {
     return NextResponse.json({ error: 'invalid_input', message: scopeErr }, { status: 400 });
   }
