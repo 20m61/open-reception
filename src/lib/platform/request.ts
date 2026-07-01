@@ -16,7 +16,7 @@
 import { NextResponse } from 'next/server';
 import { cookies } from 'next/headers';
 import type { Actor } from '@/domain/tenant/authorization';
-import { canEnterArea } from '@/components/admin/route-guard';
+import { canEnterArea } from '@/domain/auth/route-guard';
 import { resolveAdminActor, resolveAdminActorWithIdentity } from '@/lib/auth/actor';
 import { type ElevationScope, requireElevation } from '@/domain/auth/elevation';
 import { ELEVATION_COOKIE, readElevation, type ReadElevation } from './elevation';

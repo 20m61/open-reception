@@ -9,7 +9,7 @@ import {
   resolveActorFromStore,
   type ActorConfig,
 } from './actor';
-import { canEnterArea } from '@/components/admin/route-guard';
+import { canEnterArea } from '@/domain/auth/route-guard';
 import { asAdminUserId, asTenantId, type AdminUser } from '@/domain/tenant/types';
 import type { AdminUserRepository } from '@/lib/tenant/repository';
 
