@@ -81,20 +81,26 @@ export type DashboardSummary = {
   usageCost: UsageCostSummary | null;
 };
 
-/** `at`（ISO 文字列）が、基準時刻 `now` と同じ暦日（ローカル）かを判定する。 */
-function isSameLocalDay(at: string, now: Date): boolean {
-  const d = new Date(at);
-  if (Number.isNaN(d.getTime())) return false;
-  return (
-    d.getFullYear() === now.getFullYear() &&
-    d.getMonth() === now.getMonth() &&
-    d.getDate() === now.getDate()
-  );
+// 「本日」は **JST（Asia/Tokyo, UTC+9・DST なし）** で判定する (issue #254)。ランタイムの TZ に依存
+// させない（Lambda/OpenNext は UTC のため、サーバローカル暦日だと JST 早朝/深夜の受付が別日に計上
+// されてしまう）。UTC+9 の固定オフセットで暦日キー（YYYY-MM-DD）に落として比較する。
+const JST_OFFSET_MS = 9 * 60 * 60 * 1000;
+
+/** エポック ms を JST 暦日キー（YYYY-MM-DD）へ。 */
+function jstDayKey(ms: number): string {
+  return new Date(ms + JST_OFFSET_MS).toISOString().slice(0, 10);
 }
 
-/** 受付履歴から本日分のみを抽出する。 */
+/** `at`（ISO 文字列）が、基準時刻 `now` と同じ **JST 暦日**かを判定する。無効な日付は false。 */
+function isSameJstDay(at: string, now: Date): boolean {
+  const t = new Date(at).getTime();
+  if (Number.isNaN(t)) return false;
+  return jstDayKey(t) === jstDayKey(now.getTime());
+}
+
+/** 受付履歴から本日（JST）分のみを抽出する。 */
 function filterToday(logs: readonly ReceptionLog[], now: Date): ReceptionLog[] {
-  return logs.filter((log) => isSameLocalDay(log.startedAt, now));
+  return logs.filter((log) => isSameJstDay(log.startedAt, now));
 }
 
 /** 本日の受付件数・呼び出し成否を集計する。 */
