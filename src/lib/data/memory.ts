@@ -106,9 +106,13 @@ class MemoryLogStore<T extends { id: string }> implements LogStore<T> {
   }
 
   async listSince(sinceIso: string): Promise<T[]> {
-    // dynamo の `SK >= :since` と揃える（timestampField >= sinceIso を含む）。新しい順は list に委譲。
+    // dynamo の `SK >= :since` と揃える（timestampField >= sinceIso を含む）。捨てる分を clone しないよう
+    // filter を先に、その後 list と同じ新しい順ソート＋clone。
     const ts = (i: T) => String((i as Record<string, unknown>)[this.tsField] ?? '');
-    return (await this.list()).filter((i) => ts(i) >= sinceIso);
+    return [...this.items]
+      .filter((i) => ts(i) >= sinceIso)
+      .sort((a, b) => (ts(a) < ts(b) ? 1 : ts(a) > ts(b) ? -1 : a.id < b.id ? 1 : -1))
+      .map(clone);
   }
 
   async findBy(field: keyof T & string, value: string): Promise<T | undefined> {

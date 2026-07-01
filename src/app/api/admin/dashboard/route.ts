@@ -1,7 +1,6 @@
 import { NextResponse } from 'next/server';
 import { listKiosks } from '@/lib/kiosk/kiosk-store';
-import { listReceptionLogsSince } from '@/lib/mock-backend/reception-log-store';
-import { currentMonthPeriod } from '@/domain/usage/usage-summary';
+import { listReceptionLogs } from '@/lib/mock-backend/reception-log-store';
 import { loadUsage, loadCostEstimate } from '@/lib/usage/usage-data';
 import {
   buildDashboardSummary,
@@ -23,9 +22,10 @@ import {
  */
 export async function GET(): Promise<NextResponse> {
   const now = new Date();
-  // 概況は当月分（本日＋当月トレンド）しか使わないため、当月初以降を境界クエリで取得 (#254)。
+  // NOTE: recentCalls（直近の呼び出し履歴）は日付非依存で全履歴から直近 N 件を引くため、ここは境界
+  // クエリにできない（当月に絞ると月境界/閑散期に履歴が空になる。#254 では platform/usage のみ境界化）。
   const [logs, kiosks, usage, cost] = await Promise.all([
-    listReceptionLogsSince(currentMonthPeriod(now).start),
+    listReceptionLogs(),
     listKiosks(),
     loadUsage(now),
     loadCostEstimate(now),
