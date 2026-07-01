@@ -86,21 +86,17 @@ export type DashboardSummary = {
 // されてしまう）。UTC+9 の固定オフセットで暦日キー（YYYY-MM-DD）に落として比較する。
 const JST_OFFSET_MS = 9 * 60 * 60 * 1000;
 
-/** エポック ms を JST 暦日キー（YYYY-MM-DD）へ。 */
-function jstDayKey(ms: number): string {
+/** エポック ms を JST 暦日キー（YYYY-MM-DD）へ。無効な ms は null。 */
+function jstDayKey(ms: number): string | null {
+  if (Number.isNaN(ms)) return null;
   return new Date(ms + JST_OFFSET_MS).toISOString().slice(0, 10);
 }
 
-/** `at`（ISO 文字列）が、基準時刻 `now` と同じ **JST 暦日**かを判定する。無効な日付は false。 */
-function isSameJstDay(at: string, now: Date): boolean {
-  const t = new Date(at).getTime();
-  if (Number.isNaN(t)) return false;
-  return jstDayKey(t) === jstDayKey(now.getTime());
-}
-
-/** 受付履歴から本日（JST）分のみを抽出する。 */
+/** 受付履歴から本日（JST）分のみを抽出する。無効な now は本日なし（graceful empty）。 */
 function filterToday(logs: readonly ReceptionLog[], now: Date): ReceptionLog[] {
-  return logs.filter((log) => isSameJstDay(log.startedAt, now));
+  const nowKey = jstDayKey(now.getTime());
+  if (nowKey === null) return [];
+  return logs.filter((log) => jstDayKey(new Date(log.startedAt).getTime()) === nowKey);
 }
 
 /** 本日の受付件数・呼び出し成否を集計する。 */

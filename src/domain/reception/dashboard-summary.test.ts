@@ -51,6 +51,14 @@ describe('summarizeToday (#86)', () => {
     expect(today.total).toBe(0);
   });
 
+  it('無効な now は本日なしへ degrade（例外を投げない, #254 レビュー）', () => {
+    const today = summarizeToday(
+      [log({ id: 'a', outcome: 'connected', startedAt: '2026-06-20T09:00:00.000Z' })],
+      new Date('invalid'),
+    );
+    expect(today.total).toBe(0);
+  });
+
   it('「本日」は JST で判定する（UTC 暦日と食い違う早朝/深夜も正しく計上, #254）', () => {
     // now = 2026-07-01 11:00 JST（= 2026-07-01T02:00Z）。
     const nowJst = new Date('2026-07-01T02:00:00.000Z');
