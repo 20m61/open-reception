@@ -16,6 +16,9 @@ test.describe('受付端末（kiosk）', () => {
   test.use({ viewport: { width: 810, height: 1080 } });
 
   test('kiosk 主要画面', async ({ page }) => {
+    // VRM アバター/アニメ入りの重い画面を複数回 fullPage 撮影するため、負荷時の既定 30s では
+    // page.screenshot がタイムアウトし得る。撮影用テストとして余裕を持たせる。
+    test.setTimeout(120_000);
     // /kiosk はセッション必須 (issue #239)。撮影のため先にセッションを確立する。
     await establishKioskSession(page);
     await page.goto('/kiosk');
