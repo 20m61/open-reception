@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from 'react';
 import type { TenantFleetSummary } from '@/domain/platform/console-summary';
+import type { TodayCounts } from '@/domain/reception/dashboard-summary';
 import { MetricCard } from './primitives';
 
 /**
@@ -14,6 +15,7 @@ import { MetricCard } from './primitives';
 type PendingMetric = { status: 'pending' };
 type DashboardResponse = {
   fleet: TenantFleetSummary;
+  receptionsToday: TodayCounts;
   metrics: Record<string, PendingMetric>;
 };
 
@@ -61,6 +63,14 @@ export function PlatformDashboard() {
         <MetricCard label="全テナント数" value={data ? data.fleet.total : '—'} />
         <MetricCard label="稼働中" value={data ? data.fleet.active : '—'} />
         <MetricCard label="停止中" value={data ? data.fleet.suspended : '—'} />
+      </div>
+
+      <h2 style={{ fontSize: '1rem', opacity: 0.7, marginTop: 'var(--space-lg)' }}>本日の受付活動</h2>
+      <div style={{ display: 'flex', gap: 'var(--space-md)', flexWrap: 'wrap' }}>
+        <MetricCard label="本日の受付数" value={data ? data.receptionsToday.total : '—'} />
+        <MetricCard label="接続" value={data ? data.receptionsToday.connected : '—'} />
+        <MetricCard label="未応答" value={data ? data.receptionsToday.timeout : '—'} />
+        <MetricCard label="失敗" value={data ? data.receptionsToday.failed : '—'} />
       </div>
 
       <h2 style={{ fontSize: '1rem', opacity: 0.7, marginTop: 'var(--space-lg)' }}>

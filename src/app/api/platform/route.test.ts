@@ -13,12 +13,16 @@ import { asTenantId, asSiteId, type Tenant } from '@/domain/tenant/types';
 
 const resolveAdminActor = vi.fn<() => Promise<Actor | null>>();
 const listTenants = vi.fn<() => Promise<Tenant[]>>();
+const listReceptionLogs = vi.fn<() => Promise<unknown[]>>();
 
 vi.mock('@/lib/auth/actor', () => ({
   resolveAdminActor: () => resolveAdminActor(),
 }));
 vi.mock('@/lib/tenant/store', () => ({
   getTenantStore: () => ({ tenants: { listTenants: () => listTenants() } }),
+}));
+vi.mock('@/lib/mock-backend/reception-log-store', () => ({
+  listReceptionLogs: () => listReceptionLogs(),
 }));
 
 import { GET as DASHBOARD } from './dashboard/route';
@@ -62,6 +66,7 @@ const SAMPLE: Tenant[] = [
 beforeEach(() => {
   vi.clearAllMocks();
   listTenants.mockResolvedValue(SAMPLE);
+  listReceptionLogs.mockResolvedValue([]);
 });
 
 describe.each([
@@ -96,6 +101,22 @@ describe('GET /api/platform/dashboard payload', () => {
     expect(body.fleet).toEqual({ total: 2, active: 1, suspended: 1 });
     expect(body.metrics.estimatedCost).toEqual({ status: 'pending' });
     expect(body.metrics.recentErrors).toEqual({ status: 'pending' });
+  });
+
+  it('本日の受付活動を実接続する（pending でない・#83 AC3）', async () => {
+    resolveAdminActor.mockResolvedValue(developer());
+    // 本日分の受付ログ 2 件（うち1件は connected）。startedAt=当日で summarizeToday が拾う。
+    const today = new Date().toISOString();
+    listReceptionLogs.mockResolvedValue([
+      { id: 'r1', outcome: 'connected', startedAt: today, fallbackUsed: false },
+      { id: 'r2', outcome: 'timeout', startedAt: today, fallbackUsed: false },
+    ]);
+    const body = await (await DASHBOARD()).json();
+    expect(body.receptionsToday.total).toBe(2);
+    expect(body.receptionsToday.connected).toBe(1);
+    expect(body.receptionsToday.timeout).toBe(1);
+    // pending プレースホルダではない。
+    expect('status' in body.receptionsToday).toBe(false);
   });
 });
 
