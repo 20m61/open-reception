@@ -105,7 +105,8 @@ export type AuditAction =
   // AI 案内の運用設定（有効/無効・許可トピック）を更新した (issue #104)。
   | 'ai_guidance.config_updated'
   | 'platform.incident.created'
-  | 'platform.maintenance.scheduled';
+  | 'platform.maintenance.scheduled'
+  | 'platform.notice.published';
 
 export type AuditLog = {
   id: string;

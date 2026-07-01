@@ -10,6 +10,7 @@
  */
 
 import { byFlagRankTimeDesc } from './scoped-summary';
+import { PLATFORM_SCOPES, trimStr, validateScopeIds } from './danger-input';
 
 /** 影響/対象範囲。 */
 export type NoticeScope = 'platform' | 'tenant' | 'site' | 'device';
@@ -67,10 +68,62 @@ export type NoticeSummary = {
 
 /** 重要度の順位（大きいほど重要）。並べ替えに使う。 */
 const LEVEL_RANK: Record<NoticeLevel, number> = { info: 0, warning: 1, critical: 2 };
+const NOTICE_LEVELS: readonly NoticeLevel[] = ['info', 'warning', 'critical'];
 
 /** 掲示中（published）か。 */
 export function isActiveNotice(notice: Pick<Notice, 'status'>): boolean {
   return notice.status === 'published';
+}
+
+/** お知らせ登録の入力（信頼できない外部入力）。 */
+export type NoticeInput = {
+  scope?: unknown;
+  tenantId?: unknown;
+  siteId?: unknown;
+  deviceId?: unknown;
+  level?: unknown;
+  title?: unknown;
+  body?: unknown;
+};
+
+/**
+ * 外部入力を検証して Notice を組み立てる純関数（登録 write 用・#83 お知らせ）。
+ * enum 妥当性・スコープ整合（共有 danger-input）・title/body 必須+長さ上限を確認する。
+ * **登録時 status は 'published' 固定**（archived は別の更新操作）。publishedAt/updatedAt は now。
+ */
+export function buildNotice(
+  input: NoticeInput,
+  opts: { id: string; now: Date; createdBy: string },
+): { ok: true; value: Notice } | { ok: false; error: string } {
+  const scope = trimStr(input.scope) as NoticeScope;
+  if (!PLATFORM_SCOPES.includes(scope)) return { ok: false, error: 'invalid scope' };
+  const level = trimStr(input.level) as NoticeLevel;
+  if (!NOTICE_LEVELS.includes(level)) return { ok: false, error: 'invalid level' };
+  const title = trimStr(input.title);
+  const body = trimStr(input.body);
+  if (title === '' || body === '') return { ok: false, error: 'title and body are required' };
+  if (title.length > 200) return { ok: false, error: 'title too long (max 200)' };
+  if (body.length > 2000) return { ok: false, error: 'body too long (max 2000)' };
+
+  const scoped = validateScopeIds(scope, input);
+  if (!scoped.ok) return scoped;
+
+  const nowIso = opts.now.toISOString();
+  return {
+    ok: true,
+    value: {
+      id: opts.id,
+      scope,
+      ...scoped.ids,
+      level,
+      title,
+      body,
+      status: 'published', // 登録＝公開。archived は別操作。
+      publishedAt: nowIso,
+      createdBy: opts.createdBy,
+      updatedAt: nowIso,
+    },
+  };
 }
 
 /** お知らせを横断 read 行へ射影する純関数（whitelist。createdBy は載せない）。 */

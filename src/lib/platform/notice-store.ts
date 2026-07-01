@@ -45,6 +45,14 @@ export async function listNotices(): Promise<Notice[]> {
   return collection().list();
 }
 
+/**
+ * お知らせを登録する（破壊的操作。#83 お知らせ）。呼び出し側は **JIT 昇格ゲート（assertElevated）と
+ * 監査**を通した後に呼ぶこと。id は呼び出し側で採番済み。
+ */
+export async function createNotice(notice: Notice): Promise<void> {
+  await collection().put(notice);
+}
+
 /** テスト/seed 用に初期状態へ戻す（memory のみ実効）。 */
 export async function __resetNotices(): Promise<void> {
   await collection().reset();
