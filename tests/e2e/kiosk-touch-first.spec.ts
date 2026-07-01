@@ -36,9 +36,10 @@ test('進行中の画面に常時見える逃げ道バーが出る', async ({ pa
   await page.goto('/kiosk');
   await page.getByTestId('start-reception').click();
   await page.getByTestId('purpose-meeting').click();
-  // selectingTarget では 戻る・キャンセル の逃げ道が常設される。
+  // selectingTarget では 戻る・キャンセル の逃げ道が常設される（内容が長くても常時可視）。
   await expect(page.getByTestId('kiosk-escape-bar')).toBeVisible();
   await expect(page.getByTestId('escape-cancel')).toBeVisible();
+  await expect(page.getByTestId('escape-back')).toBeVisible();
 });
 
 test('逃げ道のキャンセルで待機画面へ戻れる', async ({ page }) => {

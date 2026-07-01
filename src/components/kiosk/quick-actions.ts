@@ -141,11 +141,25 @@ const ESCAPE_HATCH_META: Record<EscapeHatchAction, Omit<EscapeHatch, 'action'>> 
   useFallback: { label: '人に繋ぐ', variant: 'secondary', testId: 'escape-staff' },
 };
 
+/**
+ * 逃げ道バーに `back`（戻る）を重複表示しない状態 (#240)。確認画面（confirming）は短い要約で、
+ * フッターの「修正する」(confirm-back) が常に到達可能なため、常設バーの 戻る と二重になる後退系
+ * コントロールを整理する。戻る操作自体はフッターの文脈ボタンで可能なので機能は失わない。
+ *
+ * selectingTarget（担当者一覧）/ inputVisitorInfo（入力フォーム）は内容がビューポートを超え得るため
+ * 除外しない — これらではフッターの target-back/visitor-back はスクロールしないと届かず、常時可視な
+ * バーの 戻る が唯一の常設戻る導線になる（sticky バーの back を残す）。
+ */
+const STATES_WITH_CONTEXTUAL_BACK: ReadonlySet<ReceptionState> = new Set(['confirming']);
+
 export function escapeHatchesFor(state: ReceptionState): ReadonlyArray<EscapeHatch> {
   // idle では逃げ道を出さない（クイックアクションが入口で、戻る先が無い）。
   if (state === 'idle') return [];
   const allowed = availableActions(state);
-  return ESCAPE_HATCH_ACTIONS.filter((a) => allowed.has(a)).map((action) => ({
+  const omitBack = STATES_WITH_CONTEXTUAL_BACK.has(state);
+  return ESCAPE_HATCH_ACTIONS.filter(
+    (a) => allowed.has(a) && !(a === 'back' && omitBack),
+  ).map((action) => ({
     action,
     ...ESCAPE_HATCH_META[action],
   }));

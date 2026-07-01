@@ -65,15 +65,17 @@ describe('escapeHatchesFor', () => {
     }
   });
 
-  it('selectingTarget では 戻る・キャンセル を出す（state.ts 遷移表に整合）', () => {
+  it('selectingTarget では 戻る・キャンセル を出す（内容がビューポートを超え得るため常設 back を残す）', () => {
     const actions = escapeHatchesFor('selectingTarget').map((h) => h.action);
     expect(actions).toContain('back');
     expect(actions).toContain('cancel');
   });
 
-  it('confirming では 戻る（修正）・キャンセル を出す', () => {
+  it('confirming はバーに back を出さない（フッターの修正するに集約・#240）', () => {
+    // 確認画面は短い要約でフッターの confirm-back が常に到達可能なため、二重の 戻る を整理する。
+    // キャンセルは残す（戻る操作はフッターの修正するで可能）。
     const actions = escapeHatchesFor('confirming').map((h) => h.action);
-    expect(actions).toContain('back');
+    expect(actions).not.toContain('back');
     expect(actions).toContain('cancel');
   });
 
