@@ -7,12 +7,13 @@
  * + exp）を再利用し、新しい暗号は導入しない。
  *
  * セキュリティ: HttpOnly + Secure + SameSite=Strict。write ルートは `authorizePlatform`（developer 検証）と
- * 二重化して使う（cookie 単体では write に至らない）。per-subject 束縛は Actor に安定 subject が無いため
- * 本増分では未実施（hardening は subject 露出とセットで別途）。secret は admin/kiosk と別 env。
+ * 二重化して使う（cookie 単体では write に至らない）。per-subject 束縛は `sub`（#264）、期限前の
+ * 取り消しは jti 失効ストア（#264 対応案 2、elevation-jti-store）で行う。secret は admin/kiosk と別 env。
  */
 import { type Elevation, type ElevationScope } from '@/domain/auth/elevation';
 import { serverSecret } from '@/lib/auth/server-secret';
 import { signSession, verifySession } from '@/lib/auth/session';
+import { registerElevationJti } from './elevation-jti-store';
 
 export const ELEVATION_COOKIE = 'platform_elevation';
 
@@ -33,7 +34,11 @@ function elevationSecret(): string {
   return serverSecret('PLATFORM_ELEVATION_SECRET', 'dev-insecure-elevation-secret', { failClosed: true });
 }
 
-/** 昇格を署名トークン（cookie 値）へ。`jti` はリプレイ/失効検知用、`sub` は操作者 identity。 */
+/**
+ * 昇格を署名トークン（cookie 値）へ。`jti` はリプレイ/失効検知用、`sub` は操作者 identity。
+ * 発行 = 失効ストアへの記録（#264）。assertElevated は **fail-closed**（記録の無い jti は無効）で
+ * 検証するため、署名だけしてストアに記録しないトークンは使えない（発行経路をここに一本化する）。
+ */
 export async function issueElevationToken(elevation: Elevation, jti: string, sub: string): Promise<string> {
   const claim: ElevationClaim = {
     role: 'platform_elevation',
@@ -43,11 +48,12 @@ export async function issueElevationToken(elevation: Elevation, jti: string, sub
     jti,
     sub,
   };
+  await registerElevationJti({ jti, sub, expiresAt: elevation.until });
   return signSession(claim, elevationSecret());
 }
 
-/** 復元した昇格（domain Elevation ＋ 操作者 identity `sub`）。 */
-export type ReadElevation = Elevation & { sub: string };
+/** 復元した昇格（domain Elevation ＋ 操作者 identity `sub` ＋ 失効チェック用 `jti`）。 */
+export type ReadElevation = Elevation & { sub: string; jti: string };
 
 /**
  * cookie 値から昇格を復元する。署名不正/期限切れ/role 不一致は null。
@@ -59,6 +65,8 @@ export async function readElevation(token: string | undefined): Promise<ReadElev
   // 操作者 identity(sub) は #264 で必須。欠落（#264 前の cookie 等）は無効扱いにし、'platform:unknown'
   // での監査を防ぐ（短命 cookie なので再昇格で解消・安全側）。
   if (typeof payload.sub !== 'string' || payload.sub === '') return null;
+  // jti も必須（#264 対応案 2）。欠落トークンは失効追跡できないため無効扱い（fail-closed）。
+  if (typeof payload.jti !== 'string' || payload.jti === '') return null;
   const scope = (payload.scope ?? {}) as ElevationScope;
   return {
     until: payload.exp,
@@ -69,5 +77,6 @@ export async function readElevation(token: string | undefined): Promise<ReadElev
       deviceId: scope.deviceId,
     },
     sub: payload.sub,
+    jti: payload.jti,
   };
 }

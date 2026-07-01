@@ -101,6 +101,38 @@ export function requireElevation(
 }
 
 /**
+ * jti 失効ストアの 1 レコード (issue #264 対応案 2)。`id` = 発行 jti。
+ * 発行時に短命ストアへ記録し、`/api/platform/elevate/end` 等で `revokedAt` を刻むと期限前でも失効する。
+ */
+export type ElevationJtiRecord = {
+  id: string;
+  /** 発行先の操作者 identity（cookie の sub と同値。失効操作の帰属確認に使う）。 */
+  sub: string;
+  /** 失効時刻（= Elevation.until, epoch ms）。ストア側の期限判定に使う。 */
+  expiresAt: number;
+  /** 明示失効（/elevate/end 等）の時刻。設定済みなら期限内でも無効。 */
+  revokedAt?: number;
+};
+
+export type ElevationJtiStatus = 'active' | 'revoked' | 'expired' | 'unknown';
+
+/**
+ * jti 記録の失効判定（純関数）。**fail-closed**: 記録が無い jti は `unknown` を返し、呼び出し側は
+ * 無効として扱う（署名鍵が漏れても、ストアに発行記録の無い cookie は使えない）。正規発行は必ず
+ * 発行時に記録されるため、正常系で unknown にはならない。優先順位は revoked > expired
+ * （明示失効の事実を期限経過で上書きしない）。
+ */
+export function elevationJtiStatus(
+  record: ElevationJtiRecord | null | undefined,
+  now: number,
+): ElevationJtiStatus {
+  if (!record) return 'unknown';
+  if (record.revokedAt !== undefined) return 'revoked';
+  if (record.expiresAt <= now) return 'expired';
+  return 'active';
+}
+
+/**
  * 昇格を監査メタdata（sanitize 済の `Record<string,string>`）へ射影する。
  * `privilege.elevated` 監査で使う。reason・対象スコープ・失効時刻のみ（機微値・PII は載せない）。
  */

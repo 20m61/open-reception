@@ -18,8 +18,10 @@ vi.mock('next/headers', () => ({ cookies: () => Promise.resolve({ get: (n: strin
 vi.mock('@/lib/admin/audit', () => ({ recordDangerAction: vi.fn().mockResolvedValue(undefined) }));
 
 import { POST as ELEVATE } from './route';
+import { POST as ELEVATE_END } from './end/route';
 import { assertElevated } from '@/lib/platform/request';
 import { issueElevationToken, ELEVATION_COOKIE } from '@/lib/platform/elevation';
+import { revokeElevationJti, __resetElevationJtis } from '@/lib/platform/elevation-jti-store';
 
 function developer(): Actor {
   return { status: 'active', assignments: [{ role: 'developer', tenantId: null, siteId: null, deviceId: null }] };
@@ -32,9 +34,10 @@ function req(body: unknown): Request {
 }
 
 const prevMock = process.env.PLATFORM_REAUTH_MOCK;
-beforeEach(() => {
+beforeEach(async () => {
   vi.clearAllMocks();
   cookieGet.mockReturnValue(undefined);
+  await __resetElevationJtis();
 });
 afterEach(() => {
   if (prevMock === undefined) delete process.env.PLATFORM_REAUTH_MOCK;
@@ -114,5 +117,75 @@ describe('assertElevated', () => {
     cookieGet.mockImplementation((n) => (n === ELEVATION_COOKIE ? { value: token } : undefined));
     const r = await assertElevated({ tenantId: 't2' });
     expect(r.ok).toBe(false);
+  });
+
+  it('失効済み jti の cookie は 403 revoked（期限内でも end 後は replay 不可, #264）', async () => {
+    asSelf();
+    const token = await issueElevationToken(grantElevation({ reason: 'x', scope: {} }, Date.now()), 'j-revoked', 'dev@example.com');
+    cookieGet.mockImplementation((n) => (n === ELEVATION_COOKIE ? { value: token } : undefined));
+    await revokeElevationJti('j-revoked', Date.now());
+    const r = await assertElevated();
+    expect(r.ok).toBe(false);
+    if (!r.ok) {
+      expect(r.response.status).toBe(403);
+      expect(await r.response.json()).toEqual({ error: 'elevation_required', reason: 'revoked' });
+    }
+  });
+
+  it('ストアに記録の無い jti は 403（fail-closed: 署名が正しくても発行記録が無ければ無効, #264）', async () => {
+    asSelf();
+    const token = await issueElevationToken(grantElevation({ reason: 'x', scope: {} }, Date.now()), 'j-unknown', 'dev@example.com');
+    cookieGet.mockImplementation((n) => (n === ELEVATION_COOKIE ? { value: token } : undefined));
+    await __resetElevationJtis(); // 発行記録を消す = 鍵漏洩などで offline 生成された cookie を模す。
+    const r = await assertElevated();
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.response.status).toBe(403);
+  });
+});
+
+describe('POST /api/platform/elevate/end (#264)', () => {
+  const asSelf = () => resolveAdminActorWithIdentity.mockResolvedValue({ actor: developer(), identity: 'dev@example.com' });
+  const endReq = () => new Request('http://t/api/platform/elevate/end', { method: 'POST' });
+
+  it('未認証は 401', async () => {
+    resolveAdminActorWithIdentity.mockResolvedValue(null);
+    expect((await ELEVATE_END(endReq())).status).toBe(401);
+  });
+
+  it('非 developer は 403', async () => {
+    resolveAdminActorWithIdentity.mockResolvedValue({ actor: tenantAdmin(), identity: 'ta@example.com' });
+    expect((await ELEVATE_END(endReq())).status).toBe(403);
+  });
+
+  it('本人の昇格を end すると jti が失効し、以降の assertElevated は 403', async () => {
+    asSelf();
+    const token = await issueElevationToken(grantElevation({ reason: '調査', scope: {} }, Date.now()), 'j-end', 'dev@example.com');
+    cookieGet.mockImplementation((n) => (n === ELEVATION_COOKIE ? { value: token } : undefined));
+    expect((await assertElevated()).ok).toBe(true); // end 前は有効。
+
+    const res = await ELEVATE_END(endReq());
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ ok: true, ended: true });
+    // cookie も即時削除する（失効はサーバ側 jti で強制済み。削除は UX）。
+    expect((res.headers.get('set-cookie') ?? '').toLowerCase()).toContain('platform_elevation=;');
+
+    expect((await assertElevated()).ok).toBe(false); // cookie が残っていても jti 失効で拒否。
+  });
+
+  it('昇格 cookie なしでも 200（冪等: ended:false で何も失効しない）', async () => {
+    asSelf();
+    cookieGet.mockReturnValue(undefined);
+    const res = await ELEVATE_END(endReq());
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ ok: true, ended: false });
+  });
+
+  it('別人の昇格 cookie は end しない（ended:false。他人の jti を横取り失効させない）', async () => {
+    asSelf();
+    const token = await issueElevationToken(grantElevation({ reason: 'x', scope: {} }, Date.now()), 'j-other', 'other@example.com');
+    cookieGet.mockImplementation((n) => (n === ELEVATION_COOKIE ? { value: token } : undefined));
+    const res = await ELEVATE_END(endReq());
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ ok: true, ended: false });
   });
 });

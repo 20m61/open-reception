@@ -8,10 +8,12 @@ import {
   grantElevation,
   isElevated,
   requireElevation,
+  elevationJtiStatus,
   ELEVATION_MIN_TTL_MS,
   ELEVATION_MAX_TTL_MS,
   ELEVATION_DEFAULT_TTL_MS,
   type Elevation,
+  type ElevationJtiRecord,
 } from './elevation';
 
 const NOW = 1_000_000_000_000;
@@ -79,5 +81,31 @@ describe('elevationAuditMetadata', () => {
     expect(meta.tenantId).toBe('acme');
     expect('siteId' in meta).toBe(false);
     expect(meta.until).toMatch(/^\d{4}-\d{2}-\d{2}T/);
+  });
+});
+
+describe('elevationJtiStatus (#264 jti 失効ストアの純判定)', () => {
+  const record: ElevationJtiRecord = { id: 'jti-1', sub: 'dev@example.com', expiresAt: NOW + 1000 };
+
+  it('記録なし（undefined/null）は unknown ＝ fail-closed で無効扱い', () => {
+    expect(elevationJtiStatus(undefined, NOW)).toBe('unknown');
+    expect(elevationJtiStatus(null, NOW)).toBe('unknown');
+  });
+
+  it('記録あり・未失効・期限内は active', () => {
+    expect(elevationJtiStatus(record, NOW)).toBe('active');
+  });
+
+  it('revokedAt が設定済みなら revoked（期限内でも無効）', () => {
+    expect(elevationJtiStatus({ ...record, revokedAt: NOW - 1 }, NOW)).toBe('revoked');
+  });
+
+  it('期限切れ（expiresAt <= now）は expired', () => {
+    expect(elevationJtiStatus({ ...record, expiresAt: NOW }, NOW)).toBe('expired');
+    expect(elevationJtiStatus({ ...record, expiresAt: NOW - 1 }, NOW)).toBe('expired');
+  });
+
+  it('revoked は expired より優先（失効操作の事実を保つ）', () => {
+    expect(elevationJtiStatus({ ...record, expiresAt: NOW - 1, revokedAt: NOW - 2 }, NOW)).toBe('revoked');
   });
 });
