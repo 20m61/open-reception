@@ -9,6 +9,8 @@
  * 表示行に載せない。message は運用者が記述する案内であり機密値・個人情報を書かない運用とする。
  */
 
+import { PLATFORM_SCOPES, toIso, trimStr, validateScopeIds } from './danger-input';
+
 /** 影響範囲。 */
 export type MaintenanceScope = 'platform' | 'tenant' | 'site' | 'device';
 
@@ -69,6 +71,62 @@ export type MaintenanceWindowSummary = {
 /** 進行/予定（scheduled or active）か。 */
 export function isOpenWindow(window: Pick<MaintenanceWindow, 'status'>): boolean {
   return window.status === 'scheduled' || window.status === 'active';
+}
+
+const MW_IMPACTS: readonly MaintenanceImpact[] = ['notice_only', 'limited', 'read_only', 'unavailable'];
+
+/** メンテナンス登録の入力（信頼できない外部入力）。 */
+export type MaintenanceWindowInput = {
+  scope?: unknown;
+  tenantId?: unknown;
+  siteId?: unknown;
+  deviceId?: unknown;
+  impact?: unknown;
+  message?: unknown;
+  startsAt?: unknown;
+  endsAt?: unknown;
+};
+
+/**
+ * 外部入力を検証して MaintenanceWindow を組み立てる純関数（登録 write 用・#83 メンテナンス）。
+ * enum 妥当性・スコープ整合（共有 danger-input）・message 必須+長さ上限・startsAt/endsAt の ISO 正規化と
+ * 前後関係を確認する。**登録時 status は 'scheduled' 固定**（active/completed 等への遷移は別の更新操作）。
+ */
+export function buildMaintenanceWindow(
+  input: MaintenanceWindowInput,
+  opts: { id: string; now: Date; createdBy: string },
+): { ok: true; value: MaintenanceWindow } | { ok: false; error: string } {
+  const scope = trimStr(input.scope) as MaintenanceScope;
+  if (!PLATFORM_SCOPES.includes(scope)) return { ok: false, error: 'invalid scope' };
+  const impact = trimStr(input.impact) as MaintenanceImpact;
+  if (!MW_IMPACTS.includes(impact)) return { ok: false, error: 'invalid impact' };
+  const message = trimStr(input.message);
+  if (message === '') return { ok: false, error: 'message is required' };
+  if (message.length > 2000) return { ok: false, error: 'message too long (max 2000)' };
+
+  const scoped = validateScopeIds(scope, input);
+  if (!scoped.ok) return scoped;
+
+  const startsAt = toIso(trimStr(input.startsAt));
+  const endsAt = toIso(trimStr(input.endsAt));
+  if (!startsAt || !endsAt) return { ok: false, error: 'startsAt and endsAt must be valid dates' };
+  if (Date.parse(endsAt) <= Date.parse(startsAt)) return { ok: false, error: 'endsAt must be after startsAt' };
+
+  return {
+    ok: true,
+    value: {
+      id: opts.id,
+      scope,
+      ...scoped.ids,
+      status: 'scheduled', // 登録は必ず予定。監査アクション platform.maintenance.scheduled と一致させる。
+      startsAt,
+      endsAt,
+      message,
+      impact,
+      createdBy: opts.createdBy,
+      updatedAt: opts.now.toISOString(),
+    },
+  };
 }
 
 /** 予定メンテナンスを横断 read 行へ射影する純関数（whitelist。createdBy は載せない）。 */

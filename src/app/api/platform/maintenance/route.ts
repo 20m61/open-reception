@@ -5,8 +5,14 @@ import { getTenantStore } from '@/lib/tenant/store';
 import { summarizeMaintenance } from '@/domain/platform/console-summary';
 import { summarizeIncidents } from '@/domain/platform/incident';
 import { listIncidents } from '@/lib/platform/incident-store';
-import { summarizeMaintenanceWindows } from '@/domain/platform/maintenance-window';
-import { listMaintenanceWindows } from '@/lib/platform/maintenance-window-store';
+import {
+  summarizeMaintenanceWindows,
+  buildMaintenanceWindow,
+  type MaintenanceWindow,
+  type MaintenanceWindowInput,
+} from '@/domain/platform/maintenance-window';
+import { listMaintenanceWindows, createMaintenanceWindow } from '@/lib/platform/maintenance-window-store';
+import { handlePlatformDangerCreate } from '@/lib/platform/danger-create';
 import { summarizeNotices } from '@/domain/platform/notice';
 import { listNotices } from '@/lib/platform/notice-store';
 import { filterToSelectedTenant } from '@/domain/platform/tenant-scope';
@@ -65,5 +71,31 @@ export async function GET(): Promise<NextResponse> {
     incidents,
     windows,
     notices,
+  });
+}
+
+/**
+ * POST /api/platform/maintenance — メンテナンスウィンドウの登録 (issue #83 メンテナンス管理 / inc4c)。
+ *
+ * developer の**破壊的操作**。共有ハンドラ handlePlatformDangerCreate が JIT 昇格・理由つき監査
+ * （audit-first + 補償）・whitelist 射影の不変条件を担保する。登録 status は 'scheduled' 固定。
+ * message は PII/機密を書かない運用（横断 read 行に createdBy は載せない）。
+ */
+export async function POST(request: Request): Promise<NextResponse> {
+  return handlePlatformDangerCreate<MaintenanceWindowInput, MaintenanceWindow>(request, {
+    build: (input, ctx) => buildMaintenanceWindow(input, { ...ctx, createdBy: 'platform' }),
+    create: createMaintenanceWindow,
+    action: 'platform.maintenance.scheduled',
+    targetType: 'maintenance_window',
+    metadataOf: (v) => ({ scope: v.scope, impact: v.impact, status: v.status }),
+    project: (v) => ({
+      id: v.id,
+      scope: v.scope,
+      status: v.status,
+      impact: v.impact,
+      startsAt: v.startsAt,
+      endsAt: v.endsAt,
+    }),
+    responseKey: 'window',
   });
 }
