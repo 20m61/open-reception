@@ -322,6 +322,8 @@ export async function resolveAdminActorWithIdentity(): Promise<{ actor: Actor; i
     config,
   );
   if (!actor) return null;
-  // 空文字 email も subject へフォールバック（?? だと '' を通し 'platform:' になるため || で）。
-  return { actor, identity: result.email || result.subject || 'unknown-admin' };
+  // identity は監査帰属・昇格 cookie の sub 束縛のキー。session を跨いで安定させるため trim + lowercase
+  // で正規化する（大小文字ゆらぎで自分の有効な昇格 cookie を誤拒否しないため）。空 email は subject へ。
+  const identity = (result.email || result.subject || 'unknown-admin').trim().toLowerCase();
+  return { actor, identity };
 }

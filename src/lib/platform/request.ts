@@ -82,9 +82,14 @@ export async function assertElevated(
   const elevation = await readElevation(token);
   // 昇格 cookie は発行時の操作者(sub)に束縛。別 developer が漏洩 cookie を replay しても拒否し、
   // かつ他人の操作を誤帰属しない（#264）。sub 不一致は未昇格と同じ 403 で存在を秘匿する。
+  // 限界: これは **per-operator identity（SSO の email/subject）** 前提。共有パスワード運用
+  // （OPEN_RECEPTION_ADMIN_PASSWORD_ROLE=developer）は全員 identity='password-admin' で per-operator の
+  // 区別が無いため束縛は実質的な制約にならない（SSO 運用でのみ有効。単一資格運用は元々同一主体）。
   const boundToActor = elevation !== null && elevation.sub === auth.identity;
   const check = requireElevation(boundToActor ? elevation : null, target, Date.now());
-  if (!check.ok || !elevation || !boundToActor) {
+  // boundToActor が false のときは requireElevation(null) が not ok を返すので !check.ok が拾う。
+  // !elevation は ok:true 分岐で elevation を非 null に絞るための TS ガード。
+  if (!check.ok || !elevation) {
     return {
       ok: false,
       response: NextResponse.json(
