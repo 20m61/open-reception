@@ -12,7 +12,13 @@ const cookieGet = vi.fn<(name: string) => { value: string } | undefined>();
 const createNotice = vi.fn<(n: Notice) => Promise<void>>();
 const recordDangerAction = vi.fn<(i: unknown) => Promise<unknown>>();
 
-vi.mock('@/lib/auth/actor', () => ({ resolveAdminActor: () => resolveAdminActor() }));
+vi.mock('@/lib/auth/actor', () => ({
+  resolveAdminActor: () => resolveAdminActor(),
+  resolveAdminActorWithIdentity: async () => {
+    const a = await resolveAdminActor();
+    return a ? { actor: a, identity: 'dev@example.com' } : null;
+  },
+}));
 vi.mock('next/headers', () => ({ cookies: () => Promise.resolve({ get: (n: string) => cookieGet(n) }) }));
 vi.mock('@/lib/platform/notice-store', () => ({ createNotice: (n: Notice) => createNotice(n) }));
 vi.mock('@/lib/admin/audit', () => ({ recordDangerAction: (i: unknown) => recordDangerAction(i) }));

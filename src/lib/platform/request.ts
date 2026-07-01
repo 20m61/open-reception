@@ -66,21 +66,25 @@ export async function authorizePlatformWithIdentity(): Promise<
 /**
  * platform の**破壊的操作**ゲート (issue #83 AC5/AC10 / inc4b)。`authorizePlatform` に加えて
  * JIT 昇格（`platform_elevation` cookie）が有効で対象スコープを覆うことを要求する。
- *   - 未認証 / 非 developer                 → authorizePlatform の 401 / 403。
+ *   - 未認証 / 非 developer                 → 401 / 403。
  *   - 認証済みだが未昇格 / 失効 / スコープ外 → 403 `elevation_required`（UI が昇格導線を出せる）。
- *   - 昇格中                                 → ok:true で actor と elevation を返す。
+ *   - 昇格 cookie が**別人の identity**       → 403（漏洩 cookie の replay/誤帰属を防ぐ, #264）。
+ *   - 昇格中（本人）                          → ok:true で actor と elevation を返す。
  * write ルートはこのガード通過後に処理し、必ず recordDangerAction で before/after を監査する。
  */
 export async function assertElevated(
   target: ElevationScope = {},
 ): Promise<{ ok: true; actor: Actor; elevation: ReadElevation } | { ok: false; response: NextResponse }> {
-  const auth = await authorizePlatform();
+  const auth = await authorizePlatformWithIdentity();
   if (!auth.ok) return auth;
 
   const token = (await cookies()).get(ELEVATION_COOKIE)?.value;
   const elevation = await readElevation(token);
-  const check = requireElevation(elevation, target, Date.now());
-  if (!check.ok || !elevation) {
+  // 昇格 cookie は発行時の操作者(sub)に束縛。別 developer が漏洩 cookie を replay しても拒否し、
+  // かつ他人の操作を誤帰属しない（#264）。sub 不一致は未昇格と同じ 403 で存在を秘匿する。
+  const boundToActor = elevation !== null && elevation.sub === auth.identity;
+  const check = requireElevation(boundToActor ? elevation : null, target, Date.now());
+  if (!check.ok || !elevation || !boundToActor) {
     return {
       ok: false,
       response: NextResponse.json(
