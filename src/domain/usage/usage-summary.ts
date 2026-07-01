@@ -17,6 +17,7 @@
  */
 import type { AuditLog } from '@/domain/reception/log';
 import type { ReceptionLog } from '@/domain/reception/log';
+import { jstDayKey, jstMonthStartIso, jstYearMonth } from '@/domain/util/jst';
 
 /** 集計の対象期間（半開区間 [start, end)）。境界は呼び出し側が決める。 */
 export type UsagePeriod = {
@@ -62,9 +63,9 @@ export type UsageRates = {
   fallbackRate: number | null;
 };
 
-/** 利用量推移 1 区間（日次バケット、UTC 日境界）。 */
+/** 利用量推移 1 区間（日次バケット、**JST 日境界** #254）。 */
 export type UsageTrendPoint = {
-  /** バケット開始日（UTC、YYYY-MM-DD）。 */
+  /** バケット開始日（JST、YYYY-MM-DD）。 */
   date: string;
   /** その日の受付件数。 */
   receptions: number;
@@ -84,26 +85,18 @@ export function isWithinPeriod(at: string, period: UsagePeriod): boolean {
 }
 
 /**
- * 基準時刻 `now`（UTC 基準）を含む暦月の期間 [月初, 翌月初) を返す。
- *
- * 「今月」の境界は UTC 月初で固定する。表示上のローカル日付ズレは許容し、集計の
- * 再現性（テスト容易性・テナント横断比較）を優先する。TZ 厳密化は次増分。
+ * 基準時刻 `now` を含む **JST 暦月**の期間 [月初, 翌月初) を返す（UTC ISO の瞬間で表現） (issue #254)。
+ * 「今月」の境界を JST 月初に固定し、ダッシュボードの「本日」(JST) と整合させる。
  */
 export function currentMonthPeriod(now: Date = new Date()): UsagePeriod {
-  const y = now.getUTCFullYear();
-  const m = now.getUTCMonth();
-  const start = new Date(Date.UTC(y, m, 1)).toISOString();
-  const end = new Date(Date.UTC(y, m + 1, 1)).toISOString();
-  return { start, end };
+  const { y, m } = jstYearMonth(now);
+  return { start: jstMonthStartIso(y, m), end: jstMonthStartIso(y, m + 1) };
 }
 
-/** `now` の暦月の前月の期間 [前月初, 当月初) を返す（前月比較用）。 */
+/** `now` の JST 暦月の前月の期間 [前月初, 当月初) を返す（前月比較用）。 */
 export function previousMonthPeriod(now: Date = new Date()): UsagePeriod {
-  const y = now.getUTCFullYear();
-  const m = now.getUTCMonth();
-  const start = new Date(Date.UTC(y, m - 1, 1)).toISOString();
-  const end = new Date(Date.UTC(y, m, 1)).toISOString();
-  return { start, end };
+  const { y, m } = jstYearMonth(now);
+  return { start: jstMonthStartIso(y, m - 1), end: jstMonthStartIso(y, m) };
 }
 
 /** ミリ秒を分に丸める（切り上げ。0ms は 0 分）。 */
@@ -200,21 +193,18 @@ export function deriveUsageRates(summary: UsageSummary): UsageRates {
   };
 }
 
-/** ISO 文字列を UTC の YYYY-MM-DD（日キー）に落とす。 */
-function utcDayKey(at: string): string {
-  return at.slice(0, 10);
-}
-
-/** period の各 UTC 日（[start, end) に含まれる日）のキー列を返す。 */
+/** period の各 **JST 日**（[start, end) に含まれる日）のキー列を返す (issue #254)。 */
 function enumerateDays(period: UsagePeriod): string[] {
-  const start = new Date(period.start);
+  const startMs = new Date(period.start).getTime();
   const end = new Date(period.end).getTime();
   const days: string[] = [];
-  // UTC 日初に正規化してから 1 日ずつ進める。
-  let cursor = Date.UTC(start.getUTCFullYear(), start.getUTCMonth(), start.getUTCDate());
-  // 最大日数のガード（不正期間で無限ループしないよう 366 日で打ち切る）。
+  if (Number.isNaN(startMs) || Number.isNaN(end)) return days;
+  // period は JST 月境界（= JST 月初 00:00 の UTC 瞬間）で来るため、start から 1 日(86.4M ms)ずつ
+  // 進めると連続した JST 暦日になる。最大日数のガード（不正期間で無限ループしないよう 366 日）。
+  let cursor = startMs;
   for (let i = 0; i < 366 && cursor < end; i += 1) {
-    days.push(new Date(cursor).toISOString().slice(0, 10));
+    const key = jstDayKey(cursor);
+    if (key) days.push(key);
     cursor += 86_400_000;
   }
   return days;
@@ -236,7 +226,8 @@ export function buildUsageTrend(
   }
   for (const log of receptionLogs) {
     if (!isWithinPeriod(log.startedAt, period)) continue;
-    const bucket = buckets.get(utcDayKey(log.startedAt));
+    const key = jstDayKey(new Date(log.startedAt).getTime());
+    const bucket = key ? buckets.get(key) : undefined;
     if (!bucket) continue;
     bucket.receptions += 1;
     if (log.outcome === 'connected') {

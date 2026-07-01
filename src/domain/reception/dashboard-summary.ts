@@ -12,6 +12,7 @@
  */
 import type { CallOutcome } from './session';
 import type { ReceptionLog } from './log';
+import { jstDayKey } from '@/domain/util/jst';
 
 /** 端末稼働の集計に必要な最小限の端末情報（Kiosk の部分形）。 */
 export type DeviceLike = {
@@ -81,16 +82,9 @@ export type DashboardSummary = {
   usageCost: UsageCostSummary | null;
 };
 
-// 「本日」は **JST（Asia/Tokyo, UTC+9・DST なし）** で判定する (issue #254)。ランタイムの TZ に依存
-// させない（Lambda/OpenNext は UTC のため、サーバローカル暦日だと JST 早朝/深夜の受付が別日に計上
-// されてしまう）。UTC+9 の固定オフセットで暦日キー（YYYY-MM-DD）に落として比較する。
-const JST_OFFSET_MS = 9 * 60 * 60 * 1000;
-
-/** エポック ms を JST 暦日キー（YYYY-MM-DD）へ。無効な ms は null。 */
-function jstDayKey(ms: number): string | null {
-  if (Number.isNaN(ms)) return null;
-  return new Date(ms + JST_OFFSET_MS).toISOString().slice(0, 10);
-}
+// 「本日」は **JST** で判定する (issue #254)。ランタイムの TZ に依存させない（Lambda/OpenNext は
+// UTC のため、サーバローカル暦日だと JST 早朝/深夜の受付が別日に計上されてしまう）。日付境界の
+// ロジックは domain/util/jst に集約（usage/cost の「今月/トレンド」と JST 境界を揃えるため）。
 
 /** 受付履歴から本日（JST）分のみを抽出する。無効な now は本日なし（graceful empty）。 */
 function filterToday(logs: readonly ReceptionLog[], now: Date): ReceptionLog[] {
