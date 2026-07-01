@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useState } from 'react';
 import type { UsageRates, UsageSummary, UsageTrendPoint } from '@/domain/usage/usage-summary';
+import { formatPercent as pct } from '@/domain/util/format';
 import { Button } from '@/components/admin/ui';
 import { UsageCard, CardGrid } from './UsageCard';
 import { TrendBars, TrendSection } from './TrendBars';
@@ -13,12 +14,6 @@ type UsageResponse = {
   currentRates: UsageRates;
   trend: UsageTrendPoint[];
 };
-
-/** 割合（0〜1）をパーセント文字列にする。null は「—」。 */
-function pct(rate: number | null): string {
-  if (rate === null) return '—';
-  return `${Math.round(rate * 1000) / 10}%`;
-}
 
 type LoadState =
   | { phase: 'loading' }
