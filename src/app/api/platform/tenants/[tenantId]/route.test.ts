@@ -6,10 +6,12 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Actor } from '@/domain/tenant/authorization';
 import { asTenantId, type Tenant } from '@/domain/tenant/types';
 import type { AuditAction } from '@/domain/reception/log';
+import { grantElevation } from '@/domain/auth/elevation';
 
 const resolveAdminActor = vi.fn<() => Promise<Actor | null>>();
 const getTenant = vi.fn<(id: unknown) => Promise<Tenant | undefined>>();
 const putTenant = vi.fn<(t: Tenant) => Promise<void>>();
+const cookieGet = vi.fn<(name: string) => { value: string } | undefined>();
 const recordDangerAction =
   vi.fn<
     (input: {
@@ -24,12 +26,20 @@ const recordDangerAction =
   >();
 
 vi.mock('@/lib/auth/actor', () => ({ resolveAdminActor: () => resolveAdminActor() }));
+vi.mock('next/headers', () => ({ cookies: () => Promise.resolve({ get: (n: string) => cookieGet(n) }) }));
 vi.mock('@/lib/tenant/store', () => ({
   getTenantStore: () => ({ tenants: { getTenant: (id: unknown) => getTenant(id), putTenant: (t: Tenant) => putTenant(t) } }),
 }));
 vi.mock('@/lib/admin/audit', () => ({ recordDangerAction: (i: unknown) => recordDangerAction(i as never) }));
 
 import { PATCH } from './route';
+import { issueElevationToken, ELEVATION_COOKIE } from '@/lib/platform/elevation';
+
+/** developer に platform 全体の有効な昇格 cookie を持たせる。 */
+async function grantCookie(): Promise<void> {
+  const token = await issueElevationToken(grantElevation({ reason: 'テナント運用のため', scope: {} }, Date.now()), 'j');
+  cookieGet.mockImplementation((n) => (n === ELEVATION_COOKIE ? { value: token } : undefined));
+}
 
 function developer(): Actor {
   return { status: 'active', assignments: [{ role: 'developer', tenantId: null, siteId: null, deviceId: null }] };
@@ -59,9 +69,10 @@ function patch(body: unknown, tenantId = 'internal') {
 beforeEach(() => {
   vi.clearAllMocks();
   getTenant.mockResolvedValue({ ...TENANT });
+  cookieGet.mockReturnValue(undefined); // 既定: 未昇格。
 });
 
-describe('PATCH /api/platform/tenants/[tenantId] (#90)', () => {
+describe('PATCH /api/platform/tenants/[tenantId] (#90 / JIT #83 AC5)', () => {
   it('未認証は 401', async () => {
     resolveAdminActor.mockResolvedValue(null);
     expect((await patch({ action: 'suspend' })).status).toBe(401);
@@ -72,20 +83,31 @@ describe('PATCH /api/platform/tenants/[tenantId] (#90)', () => {
     expect((await patch({ action: 'suspend' })).status).toBe(403);
   });
 
-  it('不正な action は 400', async () => {
+  it('developer でも未昇格は 403 elevation_required（破壊的操作は JIT 昇格必須）', async () => {
     resolveAdminActor.mockResolvedValue(developer());
+    const res = await patch({ action: 'suspend', reason: 'x' });
+    expect(res.status).toBe(403);
+    expect((await res.json()).error).toBe('elevation_required');
+    expect(putTenant).not.toHaveBeenCalled();
+  });
+
+  it('不正な action は 400（昇格済み）', async () => {
+    resolveAdminActor.mockResolvedValue(developer());
+    await grantCookie();
     expect((await patch({ action: 'delete' })).status).toBe(400);
     expect(putTenant).not.toHaveBeenCalled();
   });
 
-  it('存在しないテナントは 404', async () => {
+  it('存在しないテナントは 404（昇格済み）', async () => {
     resolveAdminActor.mockResolvedValue(developer());
+    await grantCookie();
     getTenant.mockResolvedValue(undefined);
     expect((await patch({ action: 'suspend' })).status).toBe(404);
   });
 
-  it('developer は停止でき、状態更新と監査（理由つき）が残る', async () => {
+  it('昇格済み developer は停止でき、状態更新と監査（理由つき）が残る', async () => {
     resolveAdminActor.mockResolvedValue(developer());
+    await grantCookie();
     const res = await patch({ action: 'suspend', reason: '請求停止のため' });
     expect(res.status).toBe(200);
     expect((await res.json()).tenant.status).toBe('suspended');
@@ -102,8 +124,9 @@ describe('PATCH /api/platform/tenants/[tenantId] (#90)', () => {
     );
   });
 
-  it('developer は有効化でき、監査が tenant.activated になる', async () => {
+  it('昇格済み developer は有効化でき、監査が tenant.activated になる', async () => {
     resolveAdminActor.mockResolvedValue(developer());
+    await grantCookie();
     getTenant.mockResolvedValue({ ...TENANT, status: 'suspended' });
     const res = await patch({ action: 'activate' });
     expect(res.status).toBe(200);

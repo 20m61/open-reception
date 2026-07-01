@@ -7,7 +7,7 @@ import {
   isTenantLifecycleAction,
   statusForLifecycleAction,
 } from '@/domain/platform/tenant-lifecycle';
-import { authorizePlatform } from '@/lib/platform/request';
+import { authorizePlatform, assertElevated } from '@/lib/platform/request';
 import { recordDangerAction } from '@/lib/admin/audit';
 import { readJson } from '@/lib/mock-backend/result-http';
 
@@ -58,8 +58,10 @@ export async function PATCH(
   request: Request,
   { params }: { params: Promise<{ tenantId: string }> },
 ): Promise<NextResponse> {
-  const auth = await authorizePlatform();
-  if (!auth.ok) return auth.response;
+  const { tenantId: raw } = await params;
+  // 破壊的操作（テナント停止/再開）は JIT 昇格必須 (#83 AC5/AC10)。当該テナントを覆う昇格が要る。
+  const gate = await assertElevated({ tenantId: raw });
+  if (!gate.ok) return gate.response;
 
   const body = (await readJson(request)) as { action?: unknown; reason?: unknown } | null;
   const action = body?.action;
@@ -67,7 +69,6 @@ export async function PATCH(
     return NextResponse.json({ error: 'invalid_input', message: 'action must be suspend|activate' }, { status: 400 });
   }
 
-  const { tenantId: raw } = await params;
   const tenantId = asTenantId(raw);
   const store = getTenantStore();
   const tenant = await store.tenants.getTenant(tenantId);
