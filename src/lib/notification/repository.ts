@@ -11,7 +11,7 @@
  * （src/lib/tenant/repository.ts と同方針）。
  */
 import type { SiteId, TenantId } from '@/domain/tenant/types';
-import type { CallRoute, CallRouteId } from './types';
+import type { CallRoute, CallRouteId } from '@/domain/notification/call-route';
 
 export type RepoError = { code: 'not_found' | 'conflict' | 'invalid_input'; message: string };
 export type RepoResult<T> = { ok: true; value: T } | { ok: false; error: RepoError };

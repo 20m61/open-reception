@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { asSiteId, asTenantId } from '@/domain/tenant/types';
 import { MemoryCallRouteRepository } from './repository';
-import { asCallRouteId, type CallRoute } from './types';
+import { asCallRouteId, type CallRoute } from '@/domain/notification/call-route';
 
 const T_A = asTenantId('tenant-a');
 const T_B = asTenantId('tenant-b');

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { validateGroup, validateGroups, validateRouteName, validateTarget } from './validation';
+import { validateGroup, validateGroups, validateRouteName, validateTarget } from './call-route-validation';
 
 describe('validateRouteName (#88)', () => {
   it('前後空白を除去して返す', () => {

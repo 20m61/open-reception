@@ -110,6 +110,8 @@ EventBridge Scheduler + CodeBuild を第一候補とし、`cdk deploy` を低影
 
 - `infra/` は `cdk synth` のスナップショット/アサーションテスト（`aws-cdk-lib/assertions`）。
 - `src/server/notification` の handler/adapter は unit test（Polly/Vonage は mock）。
+  `/notify` の wire schema・入力検証は `src/domain/notification/{notify,notify-validation}.ts`
+  に単一定義（#275）。server 側 `types.ts`/`validation.ts` は再輸出のみ。
 - アプリ側の `CallAdapter` は既存の MockCallAdapter（#20）で e2e 可能。
 
 ## 12. 受け入れ確認

@@ -15,7 +15,7 @@ import { appendAdminAudit } from '@/lib/mock-backend/reception-log-store';
 import { asSiteId, asTenantId } from '@/domain/tenant/types';
 import { CallRouteService } from './call-route-service';
 import { MemoryCallRouteRepository } from './repository';
-import { asCallRouteId, type CallRoute } from './types';
+import { asCallRouteId, type CallRoute } from '@/domain/notification/call-route';
 
 /** 既存テナント基盤シード（internal / default-site）に紐づく初期ルート。 */
 const SEED_ROUTES: CallRoute[] = [
