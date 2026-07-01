@@ -201,8 +201,9 @@ export type MaskedAuditRow = {
   targetType?: string;
   targetId?: string;
   /**
-   * 高詳細監査 (issue #83 AC13)。運用者操作の追跡と設定変更の差分。いずれも PII/機微値を含まない
-   * （ip/userAgent は運用者側・記録時 sanitize 済み、before/after は sanitize 済みの設定値）。
+   * 高詳細監査 (issue #83 AC13)。運用者操作の追跡と設定変更の差分。**運用者側の IP/UA**（accountability
+   * のため platform_developer に開示する。来訪者 PII ではない）と、記録時 sanitize 済みの before/after
+   * （secret/PII キーは `[redacted]`）。監査ログの export/開示範囲を広げる際は運用者 IP/UA の扱いを別途要検討。
    */
   ip?: string;
   userAgent?: string;
@@ -238,8 +239,8 @@ export function toMaskedAuditRows(logs: readonly AuditLog[]): MaskedAuditRow[] {
     actor: maskAuditActor(log.actor),
     targetType: log.targetType,
     targetId: log.targetId,
-    // 高詳細監査 (issue #83 AC13)。記録時に sanitize 済みのため PII/機微値は含まない。metadata は
-    // 従来どおり表示に載せない。
+    // 高詳細監査 (issue #83 AC13)。運用者側の IP/UA（来訪者 PII ではない）と sanitize 済み before/after。
+    // metadata は従来どおり表示に載せない。
     ip: log.ip,
     userAgent: log.userAgent,
     before: log.before,

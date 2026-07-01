@@ -69,12 +69,18 @@ export function sanitizeAuditMetadata(
 
 /**
  * リクエストから高詳細監査のコンテキスト（IP・user-agent）を取り出す (issue #83 AC13)。
- * IP は `x-forwarded-for` 先頭・best-effort（信頼できる proxy 前提。認可には使わない）。
+ *
+ * IP は `x-forwarded-for` の **末尾（最も手前の信頼 proxy が付与した値）** を採る。CloudFront は
+ * client 提供の X-Forwarded-For の**右側**に実 client IP を追記するため、先頭値は client 詐称可能で
+ * 運用者 IP を偽装できてしまう（監査の accountability を崩す）。認可には使わない best-effort。
  * user-agent は監査肥大化を避けるため 256 文字で切り詰める。取得できないものは undefined。
  */
 export function auditContextFromRequest(request: Request): { ip?: string; userAgent?: string } {
-  const xff = request.headers.get('x-forwarded-for') ?? '';
-  const ip = xff.split(',')[0]?.trim() || undefined;
+  const hops = (request.headers.get('x-forwarded-for') ?? '')
+    .split(',')
+    .map((s) => s.trim())
+    .filter(Boolean);
+  const ip = hops.at(-1) || undefined;
   const ua = request.headers.get('user-agent')?.slice(0, 256) || undefined;
   return { ip, userAgent: ua };
 }

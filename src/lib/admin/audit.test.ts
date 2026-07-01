@@ -54,10 +54,11 @@ describe('sanitizeAuditMetadata (#91 監査連携・機微値非保存)', () => 
 });
 
 describe('auditContextFromRequest (#83 AC13 高詳細監査)', () => {
-  it('x-forwarded-for 先頭を IP に、user-agent を取り出す', () => {
+  it('x-forwarded-for 末尾（信頼 proxy が付与した値）を IP に、user-agent を取り出す', () => {
+    // 先頭は client 詐称可能。CloudFront が右側に追記する末尾の実 client IP を採る。
     expect(
       auditContextFromRequest(req({ 'x-forwarded-for': '1.2.3.4, 5.6.7.8', 'user-agent': 'UA/1.0' })),
-    ).toEqual({ ip: '1.2.3.4', userAgent: 'UA/1.0' });
+    ).toEqual({ ip: '5.6.7.8', userAgent: 'UA/1.0' });
   });
 
   it('ヘッダ欠如は undefined', () => {

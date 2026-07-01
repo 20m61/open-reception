@@ -76,7 +76,14 @@ export function AuditLogs() {
                 <td style={{ padding: '6px 8px', opacity: 0.7, fontSize: '0.82rem' }}>
                   {log.before || log.after ? <span>{formatDiff(log.before, log.after)}</span> : null}
                   {log.ip ? <span style={{ opacity: 0.6 }}> · {log.ip}</span> : null}
-                  {!log.before && !log.after && !log.ip ? '-' : null}
+                  {log.userAgent ? (
+                    // UA は長いので切り詰めて表示（全文は title で確認）。
+                    <span style={{ opacity: 0.5 }} title={log.userAgent}>
+                      {' '}
+                      · {log.userAgent.length > 40 ? `${log.userAgent.slice(0, 40)}…` : log.userAgent}
+                    </span>
+                  ) : null}
+                  {!log.before && !log.after && !log.ip && !log.userAgent ? '-' : null}
                 </td>
               </tr>
             ))}
