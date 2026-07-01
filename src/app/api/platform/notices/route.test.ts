@@ -24,7 +24,7 @@ function developer(): Actor {
   return { status: 'active', assignments: [{ role: 'developer', tenantId: null, siteId: null, deviceId: null }] };
 }
 async function elevate(): Promise<void> {
-  const token = await issueElevationToken(grantElevation({ reason: 'お知らせ掲示', scope: {} }, Date.now()), 'j');
+  const token = await issueElevationToken(grantElevation({ reason: 'お知らせ掲示', scope: {} }, Date.now()), 'j', 'dev@example.com');
   cookieGet.mockImplementation((n) => (n === ELEVATION_COOKIE ? { value: token } : undefined));
 }
 function post(body: unknown): Promise<Response> {

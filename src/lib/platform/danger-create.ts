@@ -33,6 +33,7 @@ export async function handlePlatformDangerCreate<In, T extends { id: string }>(
 ): Promise<NextResponse> {
   const gate = await assertElevated();
   if (!gate.ok) return gate.response;
+  const actor = `platform:${gate.elevation.sub}`; // 昇格した操作者を監査 actor に（#264）。
 
   const body = ((await request.json().catch(() => ({}))) ?? {}) as Record<string, unknown>;
   const built = opts.build(body as In, { id: randomUUID(), now: new Date() });
@@ -47,6 +48,7 @@ export async function handlePlatformDangerCreate<In, T extends { id: string }>(
     target,
     reason: reason || undefined,
     metadata: opts.metadataOf(built.value),
+    actor,
     request,
   });
 
@@ -58,6 +60,7 @@ export async function handlePlatformDangerCreate<In, T extends { id: string }>(
       action: opts.action,
       target,
       metadata: { result: 'store_failed' },
+      actor,
       request,
     });
     return NextResponse.json({ error: 'store_failed' }, { status: 500 });

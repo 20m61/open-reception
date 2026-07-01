@@ -17,9 +17,9 @@ import { NextResponse } from 'next/server';
 import { cookies } from 'next/headers';
 import type { Actor } from '@/domain/tenant/authorization';
 import { canEnterArea } from '@/components/admin/route-guard';
-import { resolveAdminActor } from '@/lib/auth/actor';
-import { type Elevation, type ElevationScope, requireElevation } from '@/domain/auth/elevation';
-import { ELEVATION_COOKIE, readElevation } from './elevation';
+import { resolveAdminActor, resolveAdminActorWithIdentity } from '@/lib/auth/actor';
+import { type ElevationScope, requireElevation } from '@/domain/auth/elevation';
+import { ELEVATION_COOKIE, readElevation, type ReadElevation } from './elevation';
 
 export { resolveAdminActor };
 
@@ -36,18 +36,30 @@ export async function authorizePlatform(): Promise<
 > {
   const actor = await resolveAdminActor();
   if (!actor || actor.status !== 'active' || actor.assignments.length === 0) {
-    return {
-      ok: false,
-      response: NextResponse.json({ error: 'unauthorized' }, { status: 401 }),
-    };
+    return { ok: false, response: NextResponse.json({ error: 'unauthorized' }, { status: 401 }) };
   }
   if (!canEnterArea(actor, 'platform').allowed) {
-    return {
-      ok: false,
-      response: NextResponse.json({ error: 'forbidden' }, { status: 403 }),
-    };
+    return { ok: false, response: NextResponse.json({ error: 'forbidden' }, { status: 403 }) };
   }
   return { ok: true, actor };
+}
+
+/**
+ * `authorizePlatform` に加えて操作者 identity も返す (issue #264)。昇格発行（/elevate）で cookie の
+ * subject 束縛・監査 actor に使う。write ルートは identity を cookie（昇格）から得るため本関数は不要
+ * （assertElevated の elevation.sub を使う）。
+ */
+export async function authorizePlatformWithIdentity(): Promise<
+  { ok: true; actor: Actor; identity: string } | { ok: false; response: NextResponse }
+> {
+  const resolved = await resolveAdminActorWithIdentity();
+  if (!resolved || resolved.actor.status !== 'active' || resolved.actor.assignments.length === 0) {
+    return { ok: false, response: NextResponse.json({ error: 'unauthorized' }, { status: 401 }) };
+  }
+  if (!canEnterArea(resolved.actor, 'platform').allowed) {
+    return { ok: false, response: NextResponse.json({ error: 'forbidden' }, { status: 403 }) };
+  }
+  return { ok: true, actor: resolved.actor, identity: resolved.identity };
 }
 
 /**
@@ -60,7 +72,7 @@ export async function authorizePlatform(): Promise<
  */
 export async function assertElevated(
   target: ElevationScope = {},
-): Promise<{ ok: true; actor: Actor; elevation: Elevation } | { ok: false; response: NextResponse }> {
+): Promise<{ ok: true; actor: Actor; elevation: ReadElevation } | { ok: false; response: NextResponse }> {
   const auth = await authorizePlatform();
   if (!auth.ok) return auth;
 

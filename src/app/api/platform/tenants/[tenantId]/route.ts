@@ -91,6 +91,7 @@ export async function PATCH(
     // 高詳細監査 (issue #83 AC13): status の before/after と操作元 IP/user-agent を残す。
     before: { status: tenant.status },
     after: { status: next.status },
+    actor: `platform:${gate.elevation.sub}`, // 昇格した操作者を監査 actor に（#264）。
     request,
   });
 

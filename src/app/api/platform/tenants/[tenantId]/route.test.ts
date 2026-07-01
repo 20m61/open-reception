@@ -37,7 +37,7 @@ import { issueElevationToken, ELEVATION_COOKIE } from '@/lib/platform/elevation'
 
 /** developer に platform 全体の有効な昇格 cookie を持たせる。 */
 async function grantCookie(): Promise<void> {
-  const token = await issueElevationToken(grantElevation({ reason: 'テナント運用のため', scope: {} }, Date.now()), 'j');
+  const token = await issueElevationToken(grantElevation({ reason: 'テナント運用のため', scope: {} }, Date.now()), 'j', 'dev@example.com');
   cookieGet.mockImplementation((n) => (n === ELEVATION_COOKIE ? { value: token } : undefined));
 }
 

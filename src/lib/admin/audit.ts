@@ -11,7 +11,7 @@
  *     プリミティブのみへ縮約し、secret/PII を疑わせるキーは値をマスクする。
  */
 import type { AuditAction } from '@/domain/reception/log';
-import { appendAdminAudit } from '@/lib/mock-backend/reception-log-store';
+import { appendAuditLog } from '@/lib/mock-backend/reception-log-store';
 
 /**
  * 値をマスクすべきキーの判定（小文字・部分一致）。機微情報の取り違えを防ぐ防御的フィルタで、
@@ -100,6 +100,8 @@ export type DangerAuditInput = {
   after?: Record<string, unknown>;
   /** 操作元の IP・user-agent を記録するためのリクエスト (issue #83 AC13)。 */
   request?: Request;
+  /** 操作者識別子 (issue #264)。未指定は 'admin'。platform 破壊的操作は昇格した developer の identity を渡す。 */
+  actor?: string;
 };
 
 /**
@@ -111,7 +113,13 @@ export async function recordDangerAction(input: DangerAuditInput) {
   const merged: Record<string, unknown> = { ...input.metadata };
   if (input.reason !== undefined) merged.reason = input.reason;
   const ctx = input.request ? auditContextFromRequest(input.request) : {};
-  return appendAdminAudit(input.action, input.target, sanitizeAuditMetadata(merged), {
+  // actor 未指定は従来どおり 'admin'。platform 破壊的操作は操作者 identity を残す（#264 説明責任）。
+  return appendAuditLog({
+    action: input.action,
+    actor: input.actor ?? 'admin',
+    targetType: input.target.type,
+    targetId: input.target.id,
+    metadata: sanitizeAuditMetadata(merged),
     before: sanitizeAuditMetadata(input.before),
     after: sanitizeAuditMetadata(input.after),
     ip: ctx.ip,

@@ -8,7 +8,11 @@ import { grantElevation } from '@/domain/auth/elevation';
 const resolveAdminActor = vi.fn<() => Promise<Actor | null>>();
 const cookieGet = vi.fn<(name: string) => { value: string } | undefined>();
 
-vi.mock('@/lib/auth/actor', () => ({ resolveAdminActor: () => resolveAdminActor() }));
+const resolveAdminActorWithIdentity = vi.fn<() => Promise<{ actor: Actor; identity: string } | null>>();
+vi.mock('@/lib/auth/actor', () => ({
+  resolveAdminActor: () => resolveAdminActor(),
+  resolveAdminActorWithIdentity: () => resolveAdminActorWithIdentity(),
+}));
 vi.mock('next/headers', () => ({ cookies: () => Promise.resolve({ get: (n: string) => cookieGet(n) }) }));
 // 監査は副作用なので no-op 化（appendAdminAudit の実書込みを避ける）。
 vi.mock('@/lib/admin/audit', () => ({ recordDangerAction: vi.fn().mockResolvedValue(undefined) }));
@@ -38,24 +42,26 @@ afterEach(() => {
 });
 
 describe('POST /api/platform/elevate', () => {
+  const asDeveloper = () => resolveAdminActorWithIdentity.mockResolvedValue({ actor: developer(), identity: 'dev@example.com' });
+
   it('未認証は 401', async () => {
-    resolveAdminActor.mockResolvedValue(null);
+    resolveAdminActorWithIdentity.mockResolvedValue(null);
     expect((await ELEVATE(req({ reason: 'x', credential: 'x' }))).status).toBe(401);
   });
 
   it('非 developer は 403', async () => {
-    resolveAdminActor.mockResolvedValue(tenantAdmin());
+    resolveAdminActorWithIdentity.mockResolvedValue({ actor: tenantAdmin(), identity: 'ta@example.com' });
     expect((await ELEVATE(req({ reason: 'x', credential: 'x' }))).status).toBe(403);
   });
 
   it('reason 空は 400', async () => {
-    resolveAdminActor.mockResolvedValue(developer());
+    asDeveloper();
     expect((await ELEVATE(req({ reason: '  ', credential: 'x' }))).status).toBe(400);
   });
 
   it('mock 未設定（再認証不可）は 403 reauth_failed', async () => {
     delete process.env.PLATFORM_REAUTH_MOCK;
-    resolveAdminActor.mockResolvedValue(developer());
+    asDeveloper();
     const res = await ELEVATE(req({ reason: '設定変更', credential: 'x' }));
     expect(res.status).toBe(403);
     expect((await res.json()).error).toBe('reauth_failed');
@@ -63,7 +69,7 @@ describe('POST /api/platform/elevate', () => {
 
   it('再認証成功で 200 + platform_elevation cookie', async () => {
     process.env.PLATFORM_REAUTH_MOCK = 'otp-123';
-    resolveAdminActor.mockResolvedValue(developer());
+    asDeveloper();
     const res = await ELEVATE(req({ reason: '障害調査', provider: 'none', credential: 'otp-123' }));
     expect(res.status).toBe(200);
     const setCookie = res.headers.get('set-cookie') ?? '';
@@ -83,7 +89,7 @@ describe('assertElevated', () => {
 
   it('有効な昇格 cookie があれば ok（actor + elevation を返す）', async () => {
     resolveAdminActor.mockResolvedValue(developer());
-    const token = await issueElevationToken(grantElevation({ reason: '調査', scope: {} }, Date.now()), 'j');
+    const token = await issueElevationToken(grantElevation({ reason: '調査', scope: {} }, Date.now()), 'j', 'dev@example.com');
     cookieGet.mockImplementation((n) => (n === ELEVATION_COOKIE ? { value: token } : undefined));
     const r = await assertElevated();
     expect(r.ok).toBe(true);
@@ -93,7 +99,7 @@ describe('assertElevated', () => {
   it('スコープ外の昇格は 403（platform 全体でない昇格で tenant 限定操作を要求）', async () => {
     resolveAdminActor.mockResolvedValue(developer());
     // tenant t1 のみの昇格 cookie で、tenant t2 を対象に要求 → out_of_scope。
-    const token = await issueElevationToken(grantElevation({ reason: 'x', scope: { tenantId: 't1' } }, Date.now()), 'j');
+    const token = await issueElevationToken(grantElevation({ reason: 'x', scope: { tenantId: 't1' } }, Date.now()), 'j', 'dev@example.com');
     cookieGet.mockImplementation((n) => (n === ELEVATION_COOKIE ? { value: token } : undefined));
     const r = await assertElevated({ tenantId: 't2' });
     expect(r.ok).toBe(false);

@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { NextResponse } from 'next/server';
 import { grantElevation, elevationAuditMetadata } from '@/domain/auth/elevation';
 import { recordDangerAction } from '@/lib/admin/audit';
-import { authorizePlatform } from '@/lib/platform/request';
+import { authorizePlatformWithIdentity } from '@/lib/platform/request';
 import { ELEVATION_COOKIE, issueElevationToken } from '@/lib/platform/elevation';
 import { reauthenticate, type ReauthProvider } from '@/lib/platform/reauth';
 
@@ -17,8 +17,9 @@ import { reauthenticate, type ReauthProvider } from '@/lib/platform/reauth';
  * 認可: authorizePlatform()（未認証 401 / 非 developer 403）。
  */
 export async function POST(request: Request): Promise<NextResponse> {
-  const auth = await authorizePlatform();
+  const auth = await authorizePlatformWithIdentity();
   if (!auth.ok) return auth.response;
+  const actor = `platform:${auth.identity}`; // 監査/cookie の操作者識別（#264）。
 
   const body = (await request.json().catch(() => ({}))) as {
     reason?: unknown;
@@ -38,6 +39,7 @@ export async function POST(request: Request): Promise<NextResponse> {
       target: { type: 'platform' },
       reason,
       metadata: { result: 'denied', why: reauth.reason },
+      actor,
       request,
     });
     return NextResponse.json({ error: 'reauth_failed', reason: reauth.reason }, { status: 403 });
@@ -46,13 +48,14 @@ export async function POST(request: Request): Promise<NextResponse> {
   // inc4b は platform 全体スコープ（{}）。テナント限定昇格は後続。
   const now = Date.now();
   const elevation = grantElevation({ reason, scope: {} }, now);
-  const token = await issueElevationToken(elevation, randomUUID());
+  const token = await issueElevationToken(elevation, randomUUID(), auth.identity);
 
   await recordDangerAction({
     action: 'privilege.elevated',
     target: { type: 'platform' },
     reason,
     metadata: elevationAuditMetadata(elevation),
+    actor,
     request,
   });
 

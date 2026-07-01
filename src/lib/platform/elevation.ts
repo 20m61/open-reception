@@ -23,6 +23,8 @@ type ElevationClaim = {
   reason: string;
   scope: ElevationScope;
   jti: string;
+  /** 昇格した操作者の identity (issue #264)。破壊的操作の監査 actor に使う。 */
+  sub: string;
 };
 
 function elevationSecret(): string {
@@ -31,23 +33,27 @@ function elevationSecret(): string {
   return serverSecret('PLATFORM_ELEVATION_SECRET', 'dev-insecure-elevation-secret', { failClosed: true });
 }
 
-/** 昇格を署名トークン（cookie 値）へ。`jti` はリプレイ/失効検知用。 */
-export async function issueElevationToken(elevation: Elevation, jti: string): Promise<string> {
+/** 昇格を署名トークン（cookie 値）へ。`jti` はリプレイ/失効検知用、`sub` は操作者 identity。 */
+export async function issueElevationToken(elevation: Elevation, jti: string, sub: string): Promise<string> {
   const claim: ElevationClaim = {
     role: 'platform_elevation',
     exp: elevation.until,
     reason: elevation.reason,
     scope: elevation.scope,
     jti,
+    sub,
   };
   return signSession(claim, elevationSecret());
 }
+
+/** 復元した昇格（domain Elevation ＋ 操作者 identity `sub`）。 */
+export type ReadElevation = Elevation & { sub: string };
 
 /**
  * cookie 値から昇格を復元する。署名不正/期限切れ/role 不一致は null。
  * 期限は verifySession が Date.now() で検証するため、失効トークンは自然に null になる。
  */
-export async function readElevation(token: string | undefined): Promise<Elevation | null> {
+export async function readElevation(token: string | undefined): Promise<ReadElevation | null> {
   const payload = await verifySession(token, elevationSecret());
   if (!payload || payload.role !== 'platform_elevation') return null;
   const scope = (payload.scope ?? {}) as ElevationScope;
@@ -59,5 +65,6 @@ export async function readElevation(token: string | undefined): Promise<Elevatio
       siteId: scope.siteId,
       deviceId: scope.deviceId,
     },
+    sub: typeof payload.sub === 'string' ? payload.sub : 'unknown',
   };
 }
