@@ -7,7 +7,7 @@ import { TenantSwitcher } from '@/components/admin/TenantSwitcher';
 import { ADMIN_NAV } from '@/components/admin/navigation';
 import { resolveAdminActor } from '@/lib/auth/actor';
 import { resolveActiveTenant } from '@/lib/tenant/active-tenant';
-import { canEnterArea } from '@/components/admin/route-guard';
+import { canEnterArea } from '@/domain/auth/route-guard';
 import { PATHNAME_HEADER } from '@/proxy';
 
 /**

@@ -3,7 +3,7 @@ import { AdminShell } from '@/components/admin/AdminShell';
 import { TenantSwitcher } from '@/components/admin/platform/TenantSwitcher';
 import { PLATFORM_NAV } from '@/components/admin/navigation';
 import { resolveAdminActor } from '@/lib/auth/actor';
-import { canEnterArea } from '@/components/admin/route-guard';
+import { canEnterArea } from '@/domain/auth/route-guard';
 
 /**
  * プラットフォーム運用コンソールのレイアウト (issue #85; 実 actor 解決 increment 1)。
