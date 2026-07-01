@@ -66,7 +66,13 @@ describe('POST /api/platform/incidents (#83 AC7)', () => {
     const res = await post(VALID);
     expect(res.status).toBe(201);
     expect(createIncident).toHaveBeenCalledWith(
-      expect.objectContaining({ scope: 'platform', severity: 'major', status: 'investigating', title: '通話障害' }),
+      expect.objectContaining({
+        scope: 'platform',
+        severity: 'major',
+        status: 'investigating',
+        title: '通話障害',
+        updatedBy: 'dev@example.com', // 記録も操作者に帰属（#264）。
+      }),
     );
     expect(recordDangerAction).toHaveBeenCalledWith(
       expect.objectContaining({
