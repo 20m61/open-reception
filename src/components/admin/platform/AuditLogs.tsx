@@ -7,9 +7,16 @@ import type { MaskedAuditRow } from '@/domain/platform/console-summary';
  * 監査ログ（テナント横断・マスク済み read） (issue #90, increment 2)。
  *
  * /api/platform/audit-logs（developer 専用 read）から、新しい順のマスク済み監査ログを表示する。
- * actor の識別子はマスク済みで、metadata は表示しない（PII・機密非露出）。
+ * actor の識別子はマスク済みで、metadata は表示しない（PII・機密非露出）。高詳細監査 (#83 AC13) の
+ * before/after 差分・操作元 IP は記録時に sanitize 済みのため表示する（機微値/PII は含まない）。
  */
 type AuditResponse = { logs: MaskedAuditRow[] };
+
+/** before/after を `key: 変更前→変更後` の短い差分表記へ（sanitize 済みのため機密値は無い）(#83 AC13)。 */
+function formatDiff(before?: Record<string, string>, after?: Record<string, string>): string {
+  const keys = new Set([...Object.keys(before ?? {}), ...Object.keys(after ?? {})]);
+  return [...keys].map((k) => `${k}: ${before?.[k] ?? '-'}→${after?.[k] ?? '-'}`).join(', ');
+}
 
 export function AuditLogs() {
   const [data, setData] = useState<AuditResponse | null>(null);
@@ -53,6 +60,7 @@ export function AuditLogs() {
               <th style={{ padding: '6px 8px' }}>操作</th>
               <th style={{ padding: '6px 8px' }}>主体</th>
               <th style={{ padding: '6px 8px' }}>対象</th>
+              <th style={{ padding: '6px 8px' }}>詳細</th>
             </tr>
           </thead>
           <tbody>
@@ -64,6 +72,11 @@ export function AuditLogs() {
                 <td style={{ padding: '6px 8px', opacity: 0.7 }}>
                   {log.targetType ?? '-'}
                   {log.targetId ? <span style={{ opacity: 0.6 }}> {log.targetId}</span> : null}
+                </td>
+                <td style={{ padding: '6px 8px', opacity: 0.7, fontSize: '0.82rem' }}>
+                  {log.before || log.after ? <span>{formatDiff(log.before, log.after)}</span> : null}
+                  {log.ip ? <span style={{ opacity: 0.6 }}> · {log.ip}</span> : null}
+                  {!log.before && !log.after && !log.ip ? '-' : null}
                 </td>
               </tr>
             ))}

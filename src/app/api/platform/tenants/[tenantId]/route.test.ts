@@ -11,7 +11,17 @@ const resolveAdminActor = vi.fn<() => Promise<Actor | null>>();
 const getTenant = vi.fn<(id: unknown) => Promise<Tenant | undefined>>();
 const putTenant = vi.fn<(t: Tenant) => Promise<void>>();
 const recordDangerAction =
-  vi.fn<(input: { action: AuditAction; target: unknown; reason?: string; metadata?: unknown }) => Promise<unknown>>();
+  vi.fn<
+    (input: {
+      action: AuditAction;
+      target: unknown;
+      reason?: string;
+      metadata?: unknown;
+      before?: unknown;
+      after?: unknown;
+      request?: Request;
+    }) => Promise<unknown>
+  >();
 
 vi.mock('@/lib/auth/actor', () => ({ resolveAdminActor: () => resolveAdminActor() }));
 vi.mock('@/lib/tenant/store', () => ({
@@ -81,7 +91,14 @@ describe('PATCH /api/platform/tenants/[tenantId] (#90)', () => {
     expect((await res.json()).tenant.status).toBe('suspended');
     expect(putTenant).toHaveBeenCalledWith(expect.objectContaining({ status: 'suspended' }));
     expect(recordDangerAction).toHaveBeenCalledWith(
-      expect.objectContaining({ action: 'tenant.suspended', reason: '請求停止のため' }),
+      expect.objectContaining({
+        action: 'tenant.suspended',
+        reason: '請求停止のため',
+        // 高詳細監査 (#83 AC13): status の before/after と操作元リクエストを渡す。
+        before: { status: 'active' },
+        after: { status: 'suspended' },
+        request: expect.any(Request),
+      }),
     );
   });
 

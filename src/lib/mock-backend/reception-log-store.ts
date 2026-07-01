@@ -29,8 +29,17 @@ export async function appendAdminAudit(
   action: AuditAction,
   target: { type: string; id?: string },
   metadata?: Record<string, string>,
+  /** 高詳細監査の追加コンテキスト (issue #83 AC13)。before/after・IP・user-agent。 */
+  extra?: Pick<AuditLog, 'before' | 'after' | 'ip' | 'userAgent'>,
 ): Promise<AuditLog> {
-  return appendAuditLog({ action, actor: 'admin', targetType: target.type, targetId: target.id, metadata });
+  return appendAuditLog({
+    action,
+    actor: 'admin',
+    targetType: target.type,
+    targetId: target.id,
+    metadata,
+    ...extra,
+  });
 }
 
 export async function appendAuditLog(entry: Omit<AuditLog, 'id' | 'at'> & { at?: string }): Promise<AuditLog> {
@@ -42,6 +51,11 @@ export async function appendAuditLog(entry: Omit<AuditLog, 'id' | 'at'> & { at?:
     targetType: entry.targetType,
     targetId: entry.targetId,
     metadata: entry.metadata,
+    // 高詳細監査 (issue #83 AC13)。未設定は undefined のまま（旧レコード互換）。
+    ip: entry.ip,
+    userAgent: entry.userAgent,
+    before: entry.before,
+    after: entry.after,
   };
   await auditLogs().put(log);
   return log;

@@ -1,5 +1,14 @@
-import { describe, expect, it } from 'vitest';
-import { sanitizeAuditMetadata } from './audit';
+import { describe, expect, it, vi, beforeEach } from 'vitest';
+import { auditContextFromRequest, recordDangerAction, sanitizeAuditMetadata } from './audit';
+
+const appendAdminAudit = vi.fn();
+vi.mock('@/lib/mock-backend/reception-log-store', () => ({
+  appendAdminAudit: (...a: unknown[]) => appendAdminAudit(...a),
+}));
+
+function req(headers: Record<string, string>): Request {
+  return new Request('http://localhost/api/platform/tenants/t1', { method: 'PATCH', headers });
+}
 
 describe('sanitizeAuditMetadata (#91 監査連携・機微値非保存)', () => {
   it('undefined はそのまま undefined', () => {
@@ -41,5 +50,58 @@ describe('sanitizeAuditMetadata (#91 監査連携・機微値非保存)', () => 
 
   it('結果が空なら undefined', () => {
     expect(sanitizeAuditMetadata({ a: null })).toBeUndefined();
+  });
+});
+
+describe('auditContextFromRequest (#83 AC13 高詳細監査)', () => {
+  it('x-forwarded-for 先頭を IP に、user-agent を取り出す', () => {
+    expect(
+      auditContextFromRequest(req({ 'x-forwarded-for': '1.2.3.4, 5.6.7.8', 'user-agent': 'UA/1.0' })),
+    ).toEqual({ ip: '1.2.3.4', userAgent: 'UA/1.0' });
+  });
+
+  it('ヘッダ欠如は undefined', () => {
+    expect(auditContextFromRequest(req({}))).toEqual({ ip: undefined, userAgent: undefined });
+  });
+
+  it('user-agent は 256 文字で切り詰める', () => {
+    const long = 'x'.repeat(400);
+    expect(auditContextFromRequest(req({ 'user-agent': long })).userAgent).toHaveLength(256);
+  });
+});
+
+describe('recordDangerAction 高詳細監査 (#83 AC13)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    appendAdminAudit.mockResolvedValue({ id: 'a1' });
+  });
+
+  it('before/after を sanitize し、IP/user-agent を付与して記録する', async () => {
+    await recordDangerAction({
+      action: 'tenant.suspended',
+      target: { type: 'tenant', id: 't1' },
+      reason: '調査のため',
+      before: { status: 'active', secret: 'x' },
+      after: { status: 'suspended' },
+      request: req({ 'x-forwarded-for': '9.9.9.9', 'user-agent': 'UA' }),
+    });
+    expect(appendAdminAudit).toHaveBeenCalledTimes(1);
+    const [action, target, metadata, extra] = appendAdminAudit.mock.calls[0]!;
+    expect(action).toBe('tenant.suspended');
+    expect(target).toEqual({ type: 'tenant', id: 't1' });
+    expect(metadata).toEqual({ reason: '調査のため' });
+    expect(extra).toEqual({
+      before: { status: 'active', secret: '[redacted]' }, // 機微キーは落とす
+      after: { status: 'suspended' },
+      ip: '9.9.9.9',
+      userAgent: 'UA',
+    });
+  });
+
+  it('request 未指定なら IP/user-agent は undefined', async () => {
+    await recordDangerAction({ action: 'tenant.activated', target: { type: 'tenant', id: 't1' } });
+    const [, , , extra] = appendAdminAudit.mock.calls[0]!;
+    expect(extra.ip).toBeUndefined();
+    expect(extra.userAgent).toBeUndefined();
   });
 });
