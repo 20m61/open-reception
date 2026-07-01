@@ -16,6 +16,7 @@ import {
   type Tenant,
 } from '@/domain/tenant/types';
 import type { AuditLog } from '@/domain/reception/log';
+import { currentMonthPeriod } from '@/domain/usage/usage-summary';
 
 const resolveAdminActor = vi.fn<() => Promise<Actor | null>>();
 const listTenants = vi.fn<() => Promise<Tenant[]>>();
@@ -23,6 +24,8 @@ const getTenant = vi.fn<(id: string) => Promise<Tenant | undefined>>();
 const listSites = vi.fn<(tenantId: string) => Promise<Site[]>>();
 const listDevices = vi.fn<(tenantId: string, siteId: string) => Promise<Device[]>>();
 const listAuditLogs = vi.fn<() => Promise<AuditLog[]>>();
+const listReceptionLogsSince = vi.fn<() => Promise<unknown[]>>();
+const listKiosks = vi.fn<() => Promise<unknown[]>>();
 const listIntegrationStatuses = vi.fn<() => Promise<unknown[]>>();
 const listAuthMethodStatuses = vi.fn();
 
@@ -42,6 +45,10 @@ vi.mock('@/lib/tenant/store', () => ({
 }));
 vi.mock('@/lib/mock-backend/reception-log-store', () => ({
   listAuditLogs: () => listAuditLogs(),
+  listReceptionLogsSince: () => listReceptionLogsSince(),
+}));
+vi.mock('@/lib/kiosk/kiosk-store', () => ({
+  listKiosks: () => listKiosks(),
 }));
 vi.mock('@/lib/security/integration-status-store', () => ({
   listIntegrationStatuses: () => listIntegrationStatuses(),
@@ -123,6 +130,8 @@ beforeEach(() => {
   listSites.mockResolvedValue(SITES);
   listDevices.mockResolvedValue(DEVICES);
   listAuditLogs.mockResolvedValue(AUDIT);
+  listReceptionLogsSince.mockResolvedValue([]);
+  listKiosks.mockResolvedValue([]);
   listIntegrationStatuses.mockResolvedValue([
     { id: 'vonage', label: 'Vonage', configured: true, enabled: false, lastResult: 'untested' },
   ]);
@@ -202,5 +211,23 @@ describe('payload safety (no PII / masked)', () => {
     expect(body.integrations).toHaveLength(1);
     expect(body.recentActivity[0].actor).toBe('kiosk:***');
     expect(body.metrics.latency).toEqual({ status: 'pending' });
+  });
+
+  it('observability は受付成功率・端末状態を実接続する（pending でない・#83 簡易オブザーバビリティ）', async () => {
+    resolveAdminActor.mockResolvedValue(developer());
+    const period = currentMonthPeriod();
+    listReceptionLogsSince.mockResolvedValue([
+      { id: 'r1', outcome: 'connected', startedAt: period.start, fallbackUsed: false, durationMs: 1000 },
+      { id: 'r2', outcome: 'failed', startedAt: period.start, fallbackUsed: false, durationMs: 0 },
+    ]);
+    listKiosks.mockResolvedValue([
+      { id: 'k1', displayName: 'A', enabled: true },
+      { id: 'k2', displayName: 'B', enabled: false },
+    ]);
+    const body = await (await OBSERVABILITY()).json();
+    expect(body.reception.receptions).toBe(2);
+    expect(body.reception.successRate).toBeCloseTo(0.5); // connected 1 / 2
+    expect(body.reception.callFailures).toBe(1);
+    expect(body.devices).toEqual({ total: 2, online: 1, offline: 1 });
   });
 });

@@ -24,19 +24,23 @@ type Integration = {
 type ObservabilityResponse = {
   integrations: Integration[];
   recentActivity: MaskedAuditRow[];
+  reception: { receptions: number; successRate: number | null; callFailures: number; noAnswer: number };
+  devices: { total: number; online: number; offline: number };
   metrics: Record<string, { status: 'pending' }>;
 };
 
 const PENDING_METRICS: readonly { key: string; label: string }[] = [
   { key: 'errorRate', label: 'エラー率' },
-  { key: 'callFailureRate', label: '呼び出し失敗率' },
-  { key: 'vonageErrors', label: 'Vonage エラー' },
   { key: 'authErrors', label: '認証エラー' },
   { key: 'lambdaApiErrors', label: 'Lambda / API エラー' },
   { key: 'latency', label: 'レイテンシ' },
-  { key: 'tenantUsage', label: 'テナント別利用量' },
   { key: 'alerts', label: 'アラート履歴' },
 ];
+
+/** 割合を % 表示（null は「—」）。 */
+function pct(rate: number | null): string {
+  return rate === null ? '—' : `${Math.round(rate * 100)}%`;
+}
 
 const RESULT_LABEL: Record<Integration['lastResult'], string> = {
   untested: '未テスト',
@@ -97,6 +101,15 @@ export function Observability() {
           ))}
         </tbody>
       </table>
+
+      <h2 style={{ fontSize: '1rem', opacity: 0.7, marginTop: 'var(--space-lg)' }}>受付・端末（今月・実データ）</h2>
+      <div style={{ display: 'flex', gap: 'var(--space-md)', flexWrap: 'wrap' }}>
+        <MetricCard label="受付成功率" value={data ? pct(data.reception.successRate) : '—'} />
+        <MetricCard label="今月の受付数" value={data ? data.reception.receptions : '—'} />
+        <MetricCard label="通話失敗数" value={data ? data.reception.callFailures : '—'} />
+        <MetricCard label="未応答" value={data ? data.reception.noAnswer : '—'} />
+        <MetricCard label="端末オンライン" value={data ? `${data.devices.online}/${data.devices.total}` : '—'} />
+      </div>
 
       <h2 style={{ fontSize: '1rem', opacity: 0.7, marginTop: 'var(--space-lg)' }}>指標（実データ未接続）</h2>
       <div style={{ display: 'flex', gap: 'var(--space-md)', flexWrap: 'wrap' }}>
