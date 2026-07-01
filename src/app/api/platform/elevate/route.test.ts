@@ -79,16 +79,18 @@ describe('POST /api/platform/elevate', () => {
 });
 
 describe('assertElevated', () => {
+  const asSelf = () => resolveAdminActorWithIdentity.mockResolvedValue({ actor: developer(), identity: 'dev@example.com' });
+
   it('developer でも未昇格は 403 elevation_required', async () => {
-    resolveAdminActor.mockResolvedValue(developer());
+    asSelf();
     cookieGet.mockReturnValue(undefined);
     const r = await assertElevated();
     expect(r.ok).toBe(false);
     if (!r.ok) expect((await r.response.json()).error).toBe('elevation_required');
   });
 
-  it('有効な昇格 cookie があれば ok（actor + elevation を返す）', async () => {
-    resolveAdminActor.mockResolvedValue(developer());
+  it('有効な昇格 cookie（本人）は ok（actor + elevation を返す）', async () => {
+    asSelf();
     const token = await issueElevationToken(grantElevation({ reason: '調査', scope: {} }, Date.now()), 'j', 'dev@example.com');
     cookieGet.mockImplementation((n) => (n === ELEVATION_COOKIE ? { value: token } : undefined));
     const r = await assertElevated();
@@ -96,8 +98,17 @@ describe('assertElevated', () => {
     if (r.ok) expect(r.elevation.reason).toBe('調査');
   });
 
+  it('別 developer の昇格 cookie（sub 不一致）は 403（replay/誤帰属防止, #264）', async () => {
+    asSelf(); // 現在の操作者は dev@example.com。
+    // cookie は other@example.com が発行した昇格。
+    const token = await issueElevationToken(grantElevation({ reason: 'x', scope: {} }, Date.now()), 'j', 'other@example.com');
+    cookieGet.mockImplementation((n) => (n === ELEVATION_COOKIE ? { value: token } : undefined));
+    const r = await assertElevated();
+    expect(r.ok).toBe(false);
+  });
+
   it('スコープ外の昇格は 403（platform 全体でない昇格で tenant 限定操作を要求）', async () => {
-    resolveAdminActor.mockResolvedValue(developer());
+    asSelf();
     // tenant t1 のみの昇格 cookie で、tenant t2 を対象に要求 → out_of_scope。
     const token = await issueElevationToken(grantElevation({ reason: 'x', scope: { tenantId: 't1' } }, Date.now()), 'j', 'dev@example.com');
     cookieGet.mockImplementation((n) => (n === ELEVATION_COOKIE ? { value: token } : undefined));

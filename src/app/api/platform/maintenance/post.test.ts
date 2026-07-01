@@ -11,7 +11,13 @@ const cookieGet = vi.fn<(name: string) => { value: string } | undefined>();
 const createMaintenanceWindow = vi.fn<(w: MaintenanceWindow) => Promise<void>>();
 const recordDangerAction = vi.fn<(i: unknown) => Promise<unknown>>();
 
-vi.mock('@/lib/auth/actor', () => ({ resolveAdminActor: () => resolveAdminActor() }));
+vi.mock('@/lib/auth/actor', () => ({
+  resolveAdminActor: () => resolveAdminActor(),
+  resolveAdminActorWithIdentity: async () => {
+    const a = await resolveAdminActor();
+    return a ? { actor: a, identity: 'dev@example.com' } : null;
+  },
+}));
 vi.mock('next/headers', () => ({ cookies: () => Promise.resolve({ get: (n: string) => cookieGet(n) }) }));
 vi.mock('@/lib/platform/maintenance-window-store', () => ({
   listMaintenanceWindows: vi.fn().mockResolvedValue([]),
