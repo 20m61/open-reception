@@ -10,6 +10,7 @@ const resolveAdminActor = vi.fn<() => Promise<Actor | null>>();
 const cookieGet = vi.fn<(name: string) => { value: string } | undefined>();
 const createIncident = vi.fn<(i: Incident) => Promise<void>>();
 const recordDangerAction = vi.fn<(i: unknown) => Promise<unknown>>();
+const getTenant = vi.fn<(id: string) => Promise<unknown>>();
 
 vi.mock('@/lib/auth/actor', () => ({
   resolveAdminActor: () => resolveAdminActor(),
@@ -22,6 +23,13 @@ vi.mock('@/lib/auth/actor', () => ({
 vi.mock('next/headers', () => ({ cookies: () => Promise.resolve({ get: (n: string) => cookieGet(n) }) }));
 vi.mock('@/lib/platform/incident-store', () => ({ createIncident: (i: Incident) => createIncident(i) }));
 vi.mock('@/lib/admin/audit', () => ({ recordDangerAction: (i: unknown) => recordDangerAction(i) }));
+vi.mock('@/lib/tenant/store', () => ({
+  getTenantStore: () => ({
+    tenants: { getTenant: (id: string) => getTenant(id) },
+    sites: { getSite: () => undefined },
+    devices: { getDevice: () => undefined },
+  }),
+}));
 
 import { POST } from './route';
 import { issueElevationToken, ELEVATION_COOKIE } from '@/lib/platform/elevation';
@@ -66,6 +74,22 @@ describe('POST /api/platform/incidents (#83 AC7)', () => {
     // tenant スコープで tenantId 欠落。
     expect((await post({ scope: 'tenant', severity: 'minor', title: 't', message: 'm' })).status).toBe(400);
     expect(createIncident).not.toHaveBeenCalled();
+  });
+
+  it('tenant スコープで実在しない tenantId は 400（不可視レコード防止・#268）', async () => {
+    await elevate();
+    getTenant.mockResolvedValue(undefined); // 実在しない tenant。
+    const res = await post({ scope: 'tenant', tenantId: 'ghost', severity: 'minor', title: 't', message: 'm', reason: 'x' });
+    expect(res.status).toBe(400);
+    expect(createIncident).not.toHaveBeenCalled();
+  });
+
+  it('tenant スコープで実在する tenantId は登録できる（#268）', async () => {
+    await elevate();
+    getTenant.mockResolvedValue({ id: 'internal' }); // 実在。
+    const res = await post({ scope: 'tenant', tenantId: 'internal', severity: 'minor', title: 't', message: 'm', reason: 'x' });
+    expect(res.status).toBe(201);
+    expect(createIncident).toHaveBeenCalled();
   });
 
   it('昇格済みは登録でき、201 + 障害保存 + 監査（理由つき）が残る', async () => {
