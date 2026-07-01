@@ -4,7 +4,7 @@ import type { AuditAction } from '@/domain/reception/log';
 import { asSiteId, asTenantId } from '@/domain/tenant/types';
 import { CallRouteService, type AppendAudit } from './call-route-service';
 import { MemoryCallRouteRepository } from './repository';
-import { asCallRouteId, type CallRoute } from './types';
+import { asCallRouteId, type CallRoute } from '@/domain/notification/call-route';
 
 const T_A = asTenantId('tenant-a');
 const T_B = asTenantId('tenant-b');

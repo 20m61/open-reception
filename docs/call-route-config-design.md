@@ -13,6 +13,15 @@
 - 既存 `src/server/notification/**` = **通知の実行**（Polly 音声化 / Vonage 接続）。
   実行サブシステムは将来この設定を解決して `NotificationRequest` を組み立てる。
   本増分では両者を結線しない（設定の土台のみ）。
+- **schema/型・検証の定義元は `src/domain/notification/**` の 1 箇所**（#275 で集約。
+  純粋な型+検証のみ、フレームワーク/AWS SDK import 禁止）:
+  - `call-route.ts` / `call-route-validation.ts` … 設定ドメイン（本書のデータモデル）。
+    `src/lib/notification/{types,validation}.ts` は既存 import パス互換の再輸出。
+  - `notify.ts` / `notify-validation.ts` … `/notify` の共有 wire schema。
+    `src/server/notification/{types,validation}.ts` は再輸出（worker 内部専用型
+    SiteConfig/VoiceSettings/AudioRef は server 側に残置）。
+  - 両側が同一定義を参照することは
+    `src/domain/notification/schema-consistency.test.ts` が参照同一性で担保する。
 
 ## データモデル
 

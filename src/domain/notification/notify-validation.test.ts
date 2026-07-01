@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { validateNotificationRequest, MAX_MESSAGE_LENGTH } from './validation';
+import { validateNotificationRequest, MAX_MESSAGE_LENGTH } from './notify-validation';
 
 describe('validateNotificationRequest', () => {
   const valid = {

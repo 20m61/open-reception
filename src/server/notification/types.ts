@@ -1,46 +1,24 @@
 /**
- * 通知サブシステムのドメイン型 (infra SPEC #32 / DESIGN #34)。
+ * 通知サブシステム worker 側の型 (infra SPEC #32 / DESIGN #34)。
  *
- * 拠点（受付/管理）からの通知リクエストを受け、テキストを音声化（Polly）して
- * 外部通知（Vonage）へ接続する。アプリ本体の CallAdapter (#4/#20) の本番実装が
- * この通知 API を呼ぶ想定。
+ * 送受信で共有する wire schema（NotificationRequest 等）は #275 で
+ * src/domain/notification/notify.ts に集約し、ここでは再輸出のみ行う
+ * （定義箇所は domain の 1 箇所。参照同一性は
+ * src/domain/notification/schema-consistency.test.ts で担保）。
+ * worker 実装内部でのみ使う型（SiteConfig / VoiceSettings / AudioRef）は本モジュールに置く。
+ *
+ * NOTE: Lambda バンドル（infra/lib/constructs/notification-function.ts の esbuild）が
+ * tsconfig paths に依存しないよう、domain へは相対 import で参照する。
  */
+import type { NotificationTarget } from '../../domain/notification/notify';
 
-/** 通知種別。拠点側の用途で分岐する。 */
-export type NotificationKind = 'call' | 'announcement';
-
-/** 外部通知先（電話番号・SIP・拠点内エンドポイント等を抽象化）。 */
-export interface NotificationTarget {
-  /** 通知先種別（電話/アプリ内/SIP 等）。 */
-  type: 'phone' | 'sip' | 'app';
-  /** 宛先（E.164 電話番号 / SIP URI / アプリ ID）。 */
-  value: string;
-}
-
-/** 拠点からの通知リクエスト（API 入力）。 */
-export interface NotificationRequest {
-  /** 拠点識別子（authorizer で検証済みのものと突合）。 */
-  siteId: string;
-  /** 冪等キー。同一キーの重複実行を抑止する。 */
-  requestId: string;
-  kind: NotificationKind;
-  /** 読み上げ/通知本文。PII を最小化すること。 */
-  message: string;
-  /** 任意。未指定なら拠点設定の既定通知先を使う。 */
-  target?: NotificationTarget;
-}
-
-/** 通知結果の分類（既存 CallResult と整合: connected/timeout/failed）。 */
-export type NotificationStatus = 'delivered' | 'timeout' | 'failed';
-
-export interface NotificationResult {
-  status: NotificationStatus;
-  requestId: string;
-  /** 音声化を行ったか（Polly 利用有無）。 */
-  synthesized: boolean;
-  /** failed/timeout 時の理由（ログ・代替導線判断用。PII を含めない）。 */
-  reason?: string;
-}
+export type {
+  NotificationKind,
+  NotificationTarget,
+  NotificationRequest,
+  NotificationStatus,
+  NotificationResult,
+} from '../../domain/notification/notify';
 
 /** 拠点ごとの設定（SSM / DynamoDB から取得）。 */
 export interface SiteConfig {

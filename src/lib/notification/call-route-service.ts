@@ -26,8 +26,8 @@ import {
   type CallRouteId,
   type CreateCallRouteInput,
   type UpdateCallRoutePatch,
-} from './types';
-import { validateGroups, validateRouteName } from './validation';
+} from '@/domain/notification/call-route';
+import { validateGroups, validateRouteName } from '@/domain/notification/call-route-validation';
 
 export type ServiceError = {
   code: 'invalid_input' | 'not_found' | 'forbidden';
