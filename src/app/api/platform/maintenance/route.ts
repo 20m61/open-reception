@@ -5,8 +5,15 @@ import { getTenantStore } from '@/lib/tenant/store';
 import { summarizeMaintenance } from '@/domain/platform/console-summary';
 import { summarizeIncidents } from '@/domain/platform/incident';
 import { listIncidents } from '@/lib/platform/incident-store';
-import { summarizeMaintenanceWindows } from '@/domain/platform/maintenance-window';
-import { listMaintenanceWindows } from '@/lib/platform/maintenance-window-store';
+import { randomUUID } from 'node:crypto';
+import {
+  summarizeMaintenanceWindows,
+  buildMaintenanceWindow,
+  type MaintenanceWindowInput,
+} from '@/domain/platform/maintenance-window';
+import { listMaintenanceWindows, createMaintenanceWindow } from '@/lib/platform/maintenance-window-store';
+import { recordDangerAction } from '@/lib/admin/audit';
+import { assertElevated } from '@/lib/platform/request';
 import { summarizeNotices } from '@/domain/platform/notice';
 import { listNotices } from '@/lib/platform/notice-store';
 import { filterToSelectedTenant } from '@/domain/platform/tenant-scope';
@@ -66,4 +73,47 @@ export async function GET(): Promise<NextResponse> {
     windows,
     notices,
   });
+}
+
+/**
+ * POST /api/platform/maintenance — メンテナンスウィンドウの登録 (issue #83 メンテナンス管理 / inc4c)。
+ *
+ * developer の**破壊的操作**。JIT 昇格（assertElevated・platform 全体スコープ）必須 + 理由つき監査。
+ * message は運用者記述で PII/機密を書かない運用（横断 read 行に createdBy は載せない）。
+ * 認可: 未認証 401 / 非 developer 403 / 未昇格 403 elevation_required。
+ */
+export async function POST(request: Request): Promise<NextResponse> {
+  const gate = await assertElevated();
+  if (!gate.ok) return gate.response;
+
+  const input = ((await request.json().catch(() => ({}))) ?? {}) as MaintenanceWindowInput & { reason?: unknown };
+  const built = buildMaintenanceWindow(input, { id: randomUUID(), now: new Date(), createdBy: 'platform' });
+  if (!built.ok) {
+    return NextResponse.json({ error: 'invalid_input', message: built.error }, { status: 400 });
+  }
+
+  const reason = typeof input.reason === 'string' ? input.reason.trim().slice(0, 500) : undefined;
+  // 監査を先に記録してから確定する（audit 失敗時に未監査の変更を残さない）。
+  await recordDangerAction({
+    action: 'platform.maintenance.scheduled',
+    target: { type: 'maintenance_window', id: built.value.id },
+    reason: reason || undefined,
+    metadata: { scope: built.value.scope, impact: built.value.impact, status: built.value.status },
+    request,
+  });
+  await createMaintenanceWindow(built.value);
+
+  return NextResponse.json(
+    {
+      window: {
+        id: built.value.id,
+        scope: built.value.scope,
+        status: built.value.status,
+        impact: built.value.impact,
+        startsAt: built.value.startsAt,
+        endsAt: built.value.endsAt,
+      },
+    },
+    { status: 201 },
+  );
 }

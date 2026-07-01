@@ -34,6 +34,14 @@ export async function listMaintenanceWindows(): Promise<MaintenanceWindow[]> {
   return collection().list();
 }
 
+/**
+ * メンテナンスを登録する（破壊的操作。#83 メンテナンスウィンドウ管理）。呼び出し側は **JIT 昇格
+ * ゲート（assertElevated）と監査**を通した後に呼ぶこと。id は呼び出し側で採番済み。
+ */
+export async function createMaintenanceWindow(window: MaintenanceWindow): Promise<void> {
+  await collection().put(window);
+}
+
 /** テスト/seed 用に初期状態へ戻す（memory のみ実効）。 */
 export async function __resetMaintenanceWindows(): Promise<void> {
   await collection().reset();

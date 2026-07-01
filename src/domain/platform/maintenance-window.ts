@@ -71,6 +71,83 @@ export function isOpenWindow(window: Pick<MaintenanceWindow, 'status'>): boolean
   return window.status === 'scheduled' || window.status === 'active';
 }
 
+const MW_SCOPES: readonly MaintenanceScope[] = ['platform', 'tenant', 'site', 'device'];
+const MW_STATUSES: readonly MaintenanceWindowStatus[] = ['scheduled', 'active', 'completed', 'cancelled'];
+const MW_IMPACTS: readonly MaintenanceImpact[] = ['notice_only', 'limited', 'read_only', 'unavailable'];
+
+/** メンテナンス登録の入力（信頼できない外部入力）。 */
+export type MaintenanceWindowInput = {
+  scope?: unknown;
+  tenantId?: unknown;
+  siteId?: unknown;
+  deviceId?: unknown;
+  status?: unknown;
+  impact?: unknown;
+  message?: unknown;
+  startsAt?: unknown;
+  endsAt?: unknown;
+};
+
+function mwStr(v: unknown): string {
+  return typeof v === 'string' ? v.trim() : '';
+}
+/** ISO へ正規化（read の辞書順ソートが ISO 前提のため）。parse 不能は null。 */
+function toIso(raw: string): string | null {
+  if (raw === '') return null;
+  const ms = Date.parse(raw);
+  return Number.isNaN(ms) ? null : new Date(ms).toISOString();
+}
+
+/**
+ * 外部入力を検証して MaintenanceWindow を組み立てる純関数（登録 write 用・#83 AC メンテナンス）。
+ * enum 妥当性・スコープ整合・message 必須+長さ上限・startsAt/endsAt の ISO 正規化と前後関係を確認する。
+ * status 既定 'scheduled'。id/createdBy/now は呼び出し側が与える。
+ */
+export function buildMaintenanceWindow(
+  input: MaintenanceWindowInput,
+  opts: { id: string; now: Date; createdBy: string },
+): { ok: true; value: MaintenanceWindow } | { ok: false; error: string } {
+  const scope = mwStr(input.scope) as MaintenanceScope;
+  if (!MW_SCOPES.includes(scope)) return { ok: false, error: 'invalid scope' };
+  const impact = mwStr(input.impact) as MaintenanceImpact;
+  if (!MW_IMPACTS.includes(impact)) return { ok: false, error: 'invalid impact' };
+  const status = (input.status === undefined ? 'scheduled' : mwStr(input.status)) as MaintenanceWindowStatus;
+  if (!MW_STATUSES.includes(status)) return { ok: false, error: 'invalid status' };
+  const message = mwStr(input.message);
+  if (message === '') return { ok: false, error: 'message is required' };
+  if (message.length > 2000) return { ok: false, error: 'message too long (max 2000)' };
+
+  const tenantId = mwStr(input.tenantId) || undefined;
+  const siteId = mwStr(input.siteId) || undefined;
+  const deviceId = mwStr(input.deviceId) || undefined;
+  if (scope !== 'platform' && !tenantId) return { ok: false, error: 'tenantId required for this scope' };
+  if ((scope === 'site' || scope === 'device') && !siteId) return { ok: false, error: 'siteId required for this scope' };
+  if (scope === 'device' && !deviceId) return { ok: false, error: 'deviceId required for this scope' };
+
+  const startsAt = toIso(mwStr(input.startsAt));
+  const endsAt = toIso(mwStr(input.endsAt));
+  if (!startsAt || !endsAt) return { ok: false, error: 'startsAt and endsAt must be valid dates' };
+  if (Date.parse(endsAt) <= Date.parse(startsAt)) return { ok: false, error: 'endsAt must be after startsAt' };
+
+  return {
+    ok: true,
+    value: {
+      id: opts.id,
+      scope,
+      tenantId: scope === 'platform' ? undefined : tenantId,
+      siteId: scope === 'site' || scope === 'device' ? siteId : undefined,
+      deviceId: scope === 'device' ? deviceId : undefined,
+      status,
+      startsAt,
+      endsAt,
+      message,
+      impact,
+      createdBy: opts.createdBy,
+      updatedAt: opts.now.toISOString(),
+    },
+  };
+}
+
 /** 予定メンテナンスを横断 read 行へ射影する純関数（whitelist。createdBy は載せない）。 */
 export function toMaintenanceWindowRow(window: MaintenanceWindow): MaintenanceWindowRow {
   return {
