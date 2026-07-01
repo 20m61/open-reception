@@ -115,7 +115,8 @@ export function summarizeUpdateStatuses(updates: readonly UpdateStatus[]): Updat
   for (const row of rows) byState[row.state] += 1;
 
   return {
-    pendingCount: rows.filter((r) => r.pending).length,
+    // up_to_date 以外＝pending。byState 集計から導出（追加の走査を避ける）。
+    pendingCount: rows.length - byState.up_to_date,
     totalCount: rows.length,
     byState,
     updates: rows,

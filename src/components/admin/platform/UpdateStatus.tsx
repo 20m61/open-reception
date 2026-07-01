@@ -45,13 +45,18 @@ export function UpdateStatus() {
   useEffect(() => {
     let cancelled = false;
     void (async () => {
-      const res = await fetch('/api/platform/updates');
-      if (cancelled) return;
-      if (!res.ok) {
-        setError(res.status === 403 ? 'この画面の閲覧権限がありません。' : 'アップデート状況の取得に失敗しました。');
-        return;
+      try {
+        const res = await fetch('/api/platform/updates');
+        if (cancelled) return;
+        if (!res.ok) {
+          setError(res.status === 403 ? 'この画面の閲覧権限がありません。' : 'アップデート状況の取得に失敗しました。');
+          return;
+        }
+        setData((await res.json()) as UpdatesResponse);
+      } catch {
+        // ネットワーク断・レスポンス解析失敗を握り潰さずエラー表示する。
+        if (!cancelled) setError('アップデート状況の取得に失敗しました。');
       }
-      setData((await res.json()) as UpdatesResponse);
     })();
     return () => {
       cancelled = true;
@@ -78,9 +83,11 @@ export function UpdateStatus() {
         <MetricCard label="全対象" value={data ? data.updates.totalCount : '—'} />
       </div>
 
+      {!data && !error ? <p style={{ opacity: 0.7 }}>読み込み中…</p> : null}
       {data && rows.length === 0 ? (
         <p style={{ opacity: 0.7 }}>アップデート状況の登録はありません。</p>
-      ) : (
+      ) : null}
+      {rows.length > 0 ? (
         <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.9rem' }}>
           <thead>
             <tr style={{ textAlign: 'left', opacity: 0.6 }}>
@@ -108,7 +115,7 @@ export function UpdateStatus() {
             ))}
           </tbody>
         </table>
-      )}
+      ) : null}
 
       <div style={{ marginTop: 'var(--space-lg)', maxWidth: 760 }}>
         <DangerActionPlaceholder label="アップデート実行 / ロールバック" />
