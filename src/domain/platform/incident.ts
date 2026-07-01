@@ -10,6 +10,7 @@
  */
 
 import { byFlagRankTimeDesc } from './scoped-summary';
+import { PLATFORM_SCOPES, toIso, trimStr, validateScopeIds } from './danger-input';
 
 /** 障害の影響範囲。 */
 export type IncidentScope = 'platform' | 'tenant' | 'site' | 'device';
@@ -67,7 +68,6 @@ export type IncidentSummary = {
   incidents: IncidentRow[];
 };
 
-const SCOPES: readonly IncidentScope[] = ['platform', 'tenant', 'site', 'device'];
 const SEVERITIES: readonly IncidentSeverity[] = ['info', 'minor', 'major', 'critical'];
 const STATUSES: readonly IncidentStatus[] = ['investigating', 'identified', 'monitoring', 'resolved'];
 
@@ -84,55 +84,40 @@ export type IncidentInput = {
   startedAt?: unknown;
 };
 
-function str(v: unknown): string {
-  return typeof v === 'string' ? v.trim() : '';
-}
-
 /**
  * 外部入力を検証して Incident を組み立てる純関数（登録 write 用）。
- * enum 妥当性・必須（title/message）・スコープ整合（tenant→tenantId 必須 等）を確認する。
- * status 既定は 'investigating'、startedAt 既定は now。id/updatedBy は呼び出し側が与える。
+ * enum 妥当性・必須（title/message）・スコープ整合は共有ヘルパ（danger-input）に委譲する。
+ * status 既定は 'investigating'（初期状態は運用者が選べる）、startedAt 既定は now。
  */
 export function buildIncident(
   input: IncidentInput,
   opts: { id: string; now: Date; updatedBy: string },
 ): { ok: true; value: Incident } | { ok: false; error: string } {
-  const scope = str(input.scope) as IncidentScope;
-  if (!SCOPES.includes(scope)) return { ok: false, error: 'invalid scope' };
-  const severity = str(input.severity) as IncidentSeverity;
+  const scope = trimStr(input.scope) as IncidentScope;
+  if (!PLATFORM_SCOPES.includes(scope)) return { ok: false, error: 'invalid scope' };
+  const severity = trimStr(input.severity) as IncidentSeverity;
   if (!SEVERITIES.includes(severity)) return { ok: false, error: 'invalid severity' };
-  const statusRaw = input.status === undefined ? 'investigating' : str(input.status);
-  const status = statusRaw as IncidentStatus;
+  const status = (input.status === undefined ? 'investigating' : trimStr(input.status)) as IncidentStatus;
   if (!STATUSES.includes(status)) return { ok: false, error: 'invalid status' };
-  const title = str(input.title);
-  const message = str(input.message);
+  const title = trimStr(input.title);
+  const message = trimStr(input.message);
   if (title === '' || message === '') return { ok: false, error: 'title and message are required' };
   // 長さ上限（巨大な貼り付け＝secret/PII 混入や監査肥大を抑制。運用者記述は短文想定）。
   if (title.length > 200) return { ok: false, error: 'title too long (max 200)' };
   if (message.length > 2000) return { ok: false, error: 'message too long (max 2000)' };
 
-  const tenantId = str(input.tenantId) || undefined;
-  const siteId = str(input.siteId) || undefined;
-  const deviceId = str(input.deviceId) || undefined;
-  // スコープ整合: 下位スコープほど上位 id が要る。
-  if (scope !== 'platform' && !tenantId) return { ok: false, error: 'tenantId required for this scope' };
-  if ((scope === 'site' || scope === 'device') && !siteId) return { ok: false, error: 'siteId required for this scope' };
-  if (scope === 'device' && !deviceId) return { ok: false, error: 'deviceId required for this scope' };
+  const scoped = validateScopeIds(scope, input);
+  if (!scoped.ok) return scoped;
 
-  // startedAt は **ISO へ正規化**して保存する（非 ISO の parse 可能値を verbatim 保存すると、read の
-  // 辞書順ソート（byFlagRankTimeDesc）が ISO 前提で崩れるため）。parse 不能/未指定は now。
-  const startedRaw = str(input.startedAt);
-  const startedMs = startedRaw !== '' ? Date.parse(startedRaw) : NaN;
-  const startedAt = Number.isNaN(startedMs) ? opts.now.toISOString() : new Date(startedMs).toISOString();
+  // startedAt は **ISO へ正規化**して保存（辞書順ソートが ISO 前提のため）。parse 不能/未指定は now。
+  const startedAt = toIso(trimStr(input.startedAt)) ?? opts.now.toISOString();
 
   return {
     ok: true,
     value: {
       id: opts.id,
       scope,
-      tenantId: scope === 'platform' ? undefined : tenantId,
-      siteId: scope === 'site' || scope === 'device' ? siteId : undefined,
-      deviceId: scope === 'device' ? deviceId : undefined,
+      ...scoped.ids,
       severity,
       status,
       title,

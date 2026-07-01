@@ -80,4 +80,22 @@ describe('POST /api/platform/maintenance (#83)', () => {
     );
     expect('createdBy' in (await res.json()).window).toBe(false);
   });
+
+  it('登録は必ず scheduled（client の status は無視される）', async () => {
+    await elevate();
+    await post({ ...VALID, status: 'active' });
+    expect(createMaintenanceWindow).toHaveBeenCalledWith(expect.objectContaining({ status: 'scheduled' }));
+  });
+
+  it('store 失敗時は 500 + 補償監査（audit-first の phantom を明示）', async () => {
+    await elevate();
+    createMaintenanceWindow.mockRejectedValueOnce(new Error('backend down'));
+    const res = await post(VALID);
+    expect(res.status).toBe(500);
+    // 先の「登録」監査 + 補償（store_failed）監査の 2 回。
+    expect(recordDangerAction).toHaveBeenCalledTimes(2);
+    expect(recordDangerAction).toHaveBeenLastCalledWith(
+      expect.objectContaining({ metadata: { result: 'store_failed' } }),
+    );
+  });
 });

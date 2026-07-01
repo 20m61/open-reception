@@ -9,6 +9,8 @@
  * 表示行に載せない。message は運用者が記述する案内であり機密値・個人情報を書かない運用とする。
  */
 
+import { PLATFORM_SCOPES, toIso, trimStr, validateScopeIds } from './danger-input';
+
 /** 影響範囲。 */
 export type MaintenanceScope = 'platform' | 'tenant' | 'site' | 'device';
 
@@ -71,8 +73,6 @@ export function isOpenWindow(window: Pick<MaintenanceWindow, 'status'>): boolean
   return window.status === 'scheduled' || window.status === 'active';
 }
 
-const MW_SCOPES: readonly MaintenanceScope[] = ['platform', 'tenant', 'site', 'device'];
-const MW_STATUSES: readonly MaintenanceWindowStatus[] = ['scheduled', 'active', 'completed', 'cancelled'];
 const MW_IMPACTS: readonly MaintenanceImpact[] = ['notice_only', 'limited', 'read_only', 'unavailable'];
 
 /** メンテナンス登録の入力（信頼できない外部入力）。 */
@@ -81,51 +81,34 @@ export type MaintenanceWindowInput = {
   tenantId?: unknown;
   siteId?: unknown;
   deviceId?: unknown;
-  status?: unknown;
   impact?: unknown;
   message?: unknown;
   startsAt?: unknown;
   endsAt?: unknown;
 };
 
-function mwStr(v: unknown): string {
-  return typeof v === 'string' ? v.trim() : '';
-}
-/** ISO へ正規化（read の辞書順ソートが ISO 前提のため）。parse 不能は null。 */
-function toIso(raw: string): string | null {
-  if (raw === '') return null;
-  const ms = Date.parse(raw);
-  return Number.isNaN(ms) ? null : new Date(ms).toISOString();
-}
-
 /**
- * 外部入力を検証して MaintenanceWindow を組み立てる純関数（登録 write 用・#83 AC メンテナンス）。
- * enum 妥当性・スコープ整合・message 必須+長さ上限・startsAt/endsAt の ISO 正規化と前後関係を確認する。
- * status 既定 'scheduled'。id/createdBy/now は呼び出し側が与える。
+ * 外部入力を検証して MaintenanceWindow を組み立てる純関数（登録 write 用・#83 メンテナンス）。
+ * enum 妥当性・スコープ整合（共有 danger-input）・message 必須+長さ上限・startsAt/endsAt の ISO 正規化と
+ * 前後関係を確認する。**登録時 status は 'scheduled' 固定**（active/completed 等への遷移は別の更新操作）。
  */
 export function buildMaintenanceWindow(
   input: MaintenanceWindowInput,
   opts: { id: string; now: Date; createdBy: string },
 ): { ok: true; value: MaintenanceWindow } | { ok: false; error: string } {
-  const scope = mwStr(input.scope) as MaintenanceScope;
-  if (!MW_SCOPES.includes(scope)) return { ok: false, error: 'invalid scope' };
-  const impact = mwStr(input.impact) as MaintenanceImpact;
+  const scope = trimStr(input.scope) as MaintenanceScope;
+  if (!PLATFORM_SCOPES.includes(scope)) return { ok: false, error: 'invalid scope' };
+  const impact = trimStr(input.impact) as MaintenanceImpact;
   if (!MW_IMPACTS.includes(impact)) return { ok: false, error: 'invalid impact' };
-  const status = (input.status === undefined ? 'scheduled' : mwStr(input.status)) as MaintenanceWindowStatus;
-  if (!MW_STATUSES.includes(status)) return { ok: false, error: 'invalid status' };
-  const message = mwStr(input.message);
+  const message = trimStr(input.message);
   if (message === '') return { ok: false, error: 'message is required' };
   if (message.length > 2000) return { ok: false, error: 'message too long (max 2000)' };
 
-  const tenantId = mwStr(input.tenantId) || undefined;
-  const siteId = mwStr(input.siteId) || undefined;
-  const deviceId = mwStr(input.deviceId) || undefined;
-  if (scope !== 'platform' && !tenantId) return { ok: false, error: 'tenantId required for this scope' };
-  if ((scope === 'site' || scope === 'device') && !siteId) return { ok: false, error: 'siteId required for this scope' };
-  if (scope === 'device' && !deviceId) return { ok: false, error: 'deviceId required for this scope' };
+  const scoped = validateScopeIds(scope, input);
+  if (!scoped.ok) return scoped;
 
-  const startsAt = toIso(mwStr(input.startsAt));
-  const endsAt = toIso(mwStr(input.endsAt));
+  const startsAt = toIso(trimStr(input.startsAt));
+  const endsAt = toIso(trimStr(input.endsAt));
   if (!startsAt || !endsAt) return { ok: false, error: 'startsAt and endsAt must be valid dates' };
   if (Date.parse(endsAt) <= Date.parse(startsAt)) return { ok: false, error: 'endsAt must be after startsAt' };
 
@@ -134,10 +117,8 @@ export function buildMaintenanceWindow(
     value: {
       id: opts.id,
       scope,
-      tenantId: scope === 'platform' ? undefined : tenantId,
-      siteId: scope === 'site' || scope === 'device' ? siteId : undefined,
-      deviceId: scope === 'device' ? deviceId : undefined,
-      status,
+      ...scoped.ids,
+      status: 'scheduled', // 登録は必ず予定。監査アクション platform.maintenance.scheduled と一致させる。
       startsAt,
       endsAt,
       message,
