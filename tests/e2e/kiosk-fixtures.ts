@@ -14,8 +14,8 @@ import { establishKioskSession } from './helpers';
  * これを使わず `@playwright/test` の素の `test` を使うこと。
  */
 export const test = base.extend({
-  page: async ({ page }, use) => {
-    await establishKioskSession(page);
+  page: async ({ page, browser }, use) => {
+    await establishKioskSession(page, browser);
     await use(page);
   },
 });

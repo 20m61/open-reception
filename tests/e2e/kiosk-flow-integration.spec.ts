@@ -26,7 +26,7 @@ test.afterEach(async ({ page }) => {
   }
 });
 
-test('admin で作成・有効化したフローが受付端末の /api/kiosk/flow に出る', async ({ page }) => {
+test('admin で作成・有効化したフローが受付端末の /api/kiosk/flow に出る', async ({ page, browser }) => {
   const key = uniq('e2e-kioskflow');
   const name = uniq('統合フロー');
 
@@ -47,7 +47,7 @@ test('admin で作成・有効化したフローが受付端末の /api/kiosk/fl
   createdFlowIds.push(((await created.json()) as { id: string }).id);
 
   // 2) 受付端末セッションを確立する。
-  await establishKioskSession(page);
+  await establishKioskSession(page, browser);
 
   // 3) 受付端末のフロー一覧に作成したフローが含まれる（有効なフローのみ返る）。
   const res = await page.request.get('/api/kiosk/flow');
@@ -56,7 +56,7 @@ test('admin で作成・有効化したフローが受付端末の /api/kiosk/fl
   expect(body.flows.some((f) => f.purposeKey === key && f.displayName === name)).toBe(true);
 });
 
-test('admin で無効化したフローは受付端末に出ない', async ({ page }) => {
+test('admin で無効化したフローは受付端末に出ない', async ({ page, browser }) => {
   const key = uniq('e2e-disabled');
   const name = uniq('無効フロー');
 
@@ -81,7 +81,7 @@ test('admin で無効化したフローは受付端末に出ない', async ({ pa
   });
   expect(patched.ok()).toBeTruthy();
 
-  await establishKioskSession(page);
+  await establishKioskSession(page, browser);
   const res = await page.request.get('/api/kiosk/flow');
   const body = (await res.json()) as { flows: { purposeKey: string }[] };
   expect(body.flows.some((f) => f.purposeKey === key)).toBe(false);

@@ -7,6 +7,10 @@ import { readJson } from '@/lib/mock-backend/result-http';
 /**
  * POST /api/kiosk/authorize — PIN / IP による受付端末の初回許可 (issue #23)。
  * 許可後は長期 kiosk session cookie を発行し、リロード/再起動後も受付画面に復帰できる。
+ *
+ * PIN 必須設定時のみ有効 (issue #244)。`pinRequired=false` では PIN による自己許可を認めず 403 を返す。
+ * さもないと `verifyPin` が任意 PIN で true を返し、誰でも authorize でセッションを取得できてしまい、
+ * `/kiosk` セッションゲート (#239) を回避できる。PIN 不要運用の端末は管理発行 URL/QR でエンロールする。
  */
 export async function POST(request: Request): Promise<NextResponse> {
   const body = (await readJson(request)) as { pin?: unknown; kioskId?: unknown } | null;
@@ -15,6 +19,12 @@ export async function POST(request: Request): Promise<NextResponse> {
 
   if (!isIpAllowed(clientIp, settings.ipAllowlist)) {
     return NextResponse.json({ error: 'forbidden', message: 'ip not allowed' }, { status: 403 });
+  }
+  if (!settings.pinRequired) {
+    return NextResponse.json(
+      { error: 'forbidden', message: 'pin authorization disabled; enroll via issued URL/QR' },
+      { status: 403 },
+    );
   }
   const pin = typeof body?.pin === 'string' ? body.pin : '';
   if (!(await verifyPin(pin))) {

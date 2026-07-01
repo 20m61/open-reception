@@ -1,5 +1,5 @@
 import { test, expect } from '@playwright/test';
-import { loginAsAdmin } from './helpers';
+import { establishKioskSession, loginAsAdmin } from './helpers';
 
 /**
  * 受付端末アクセス制御の E2E (issue #23)。
@@ -17,17 +17,18 @@ test('kiosk セッション未保持で /kiosk は未エンロール案内を出
   await expect(page.getByTestId('start-reception')).toHaveCount(0);
 });
 
-test('受付端末の許可 API でセッションを確立できる', async ({ page }) => {
+test('pinRequired=false では authorize がセッションを発行しない（403, #244）', async ({ page }) => {
+  // PIN 不要運用では PIN 自己許可を認めない（誰でも authorize でゲートを回避できないように）。
   const auth = await page.request.post('/api/kiosk/authorize', { data: { pin: '0000', kioskId: 'kiosk-dev' } });
-  expect(auth.ok()).toBeTruthy();
+  expect(auth.status()).toBe(403);
 
   const status = await page.request.get('/api/kiosk/session-status');
   const body = (await status.json()) as { authorized: boolean };
-  expect(body.authorized).toBe(true);
+  expect(body.authorized).toBe(false);
 });
 
-test('kiosk セッションでは管理 API を操作できない', async ({ page }) => {
-  await page.request.post('/api/kiosk/authorize', { data: { pin: '0000' } });
+test('kiosk セッション（エンロール由来）では管理 API を操作できない', async ({ page, browser }) => {
+  await establishKioskSession(page, browser);
   // kiosk_session は持つが admin_session は持たない → 401。
   const res = await page.request.get('/api/admin/security');
   expect(res.status()).toBe(401);

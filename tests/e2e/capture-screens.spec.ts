@@ -15,9 +15,9 @@ async function shot(page: Page, name: string) {
 test.describe('受付端末（kiosk）', () => {
   test.use({ viewport: { width: 810, height: 1080 } });
 
-  test('kiosk 主要画面', async ({ page }) => {
+  test('kiosk 主要画面', async ({ page, browser }) => {
     // /kiosk はセッション必須 (issue #239)。撮影のため先にセッションを確立する。
-    await establishKioskSession(page);
+    await establishKioskSession(page, browser);
     await page.goto('/kiosk');
     await expect(page.getByTestId('start-reception')).toBeVisible();
     await shot(page, 'kiosk-01-idle');
