@@ -198,10 +198,12 @@ function enumerateDays(period: UsagePeriod): string[] {
   const startMs = new Date(period.start).getTime();
   const end = new Date(period.end).getTime();
   const days: string[] = [];
-  if (Number.isNaN(startMs) || Number.isNaN(end)) return days;
-  // period は JST 月境界（= JST 月初 00:00 の UTC 瞬間）で来るため、start から 1 日(86.4M ms)ずつ
-  // 進めると連続した JST 暦日になる。最大日数のガード（不正期間で無限ループしないよう 366 日）。
-  let cursor = startMs;
+  const startKey = jstDayKey(startMs);
+  if (startKey === null || Number.isNaN(end)) return days;
+  // period.start を含む **JST 暦日の 00:00 JST** に正規化してから 1 日(86.4M ms)ずつ進める。
+  // これにより period が JST 月境界に整合していなくても、buildUsageTrend の jstDayKey バケットと
+  // 必ず一致する。最大日数のガード（不正期間で無限ループしないよう 366 日で打ち切る）。
+  let cursor = Date.parse(`${startKey}T00:00:00+09:00`);
   for (let i = 0; i < 366 && cursor < end; i += 1) {
     const key = jstDayKey(cursor);
     if (key) days.push(key);
@@ -211,7 +213,7 @@ function enumerateDays(period: UsagePeriod): string[] {
 }
 
 /**
- * 受付履歴を UTC 日単位の推移（時系列）に集計する（純関数）。
+ * 受付履歴を **JST 日単位**の推移（時系列）に集計する（純関数） (issue #254)。
  *
  * period 内の全日を 0 埋めで含め、欠測日も連続した系列として返す（グラフの断絶を防ぐ）。
  * 監査由来指標は推移に含めない（記録ソース未接続のため。#89 次増分）。
@@ -224,9 +226,13 @@ export function buildUsageTrend(
   for (const day of enumerateDays(period)) {
     buckets.set(day, { receptions: 0, connectedCalls: 0, connectedMs: 0 });
   }
+  const startMs = new Date(period.start).getTime();
+  const endMs = new Date(period.end).getTime();
   for (const log of receptionLogs) {
-    if (!isWithinPeriod(log.startedAt, period)) continue;
-    const key = jstDayKey(new Date(log.startedAt).getTime());
+    // startedAt の parse を 1 回に集約（期間判定と日キーで共用）。半開区間 [start, end)。
+    const t = new Date(log.startedAt).getTime();
+    if (Number.isNaN(t) || t < startMs || t >= endMs) continue;
+    const key = jstDayKey(t);
     const bucket = key ? buckets.get(key) : undefined;
     if (!bucket) continue;
     bucket.receptions += 1;
