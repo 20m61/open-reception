@@ -11,6 +11,8 @@
  * （JIT 昇格・理由入力・監査つき）で扱い、本モジュールは read のみを対象にする。
  */
 
+import { byFlagRankTimeDesc } from './scoped-summary';
+
 /** 更新対象のスコープ。 */
 export type UpdateScope = 'platform' | 'tenant' | 'site' | 'device';
 
@@ -100,11 +102,13 @@ export function toUpdateStatusRow(update: UpdateStatus): UpdateStatusRow {
  * 並び順: 対応が要るものを先頭 → 状況の重み降順（failed→update_available→updating）→ 確認新しい順。
  */
 export function summarizeUpdateStatuses(updates: readonly UpdateStatus[]): UpdateStatusSummary {
-  const rows = updates.map(toUpdateStatusRow).sort((a, b) => {
-    if (a.pending !== b.pending) return a.pending ? -1 : 1;
-    if (a.state !== b.state) return STATE_RANK[b.state] - STATE_RANK[a.state];
-    return b.checkedAt.localeCompare(a.checkedAt);
-  });
+  const rows = updates.map(toUpdateStatusRow).sort(
+    byFlagRankTimeDesc({
+      flagOf: (r) => r.pending,
+      rankOf: (r) => STATE_RANK[r.state],
+      timeOf: (r) => r.checkedAt,
+    }),
+  );
 
   const byState: Record<UpdateState, number> = {
     up_to_date: 0,
