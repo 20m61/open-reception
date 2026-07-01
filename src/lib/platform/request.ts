@@ -20,6 +20,7 @@ import { canEnterArea } from '@/domain/auth/route-guard';
 import { resolveAdminActor, resolveAdminActorWithIdentity } from '@/lib/auth/actor';
 import { type ElevationScope, requireElevation } from '@/domain/auth/elevation';
 import { ELEVATION_COOKIE, readElevation, type ReadElevation } from './elevation';
+import { elevationJtiState } from './elevation-jti-store';
 
 export { resolveAdminActor };
 
@@ -69,6 +70,7 @@ export async function authorizePlatformWithIdentity(): Promise<
  *   - 未認証 / 非 developer                 → 401 / 403。
  *   - 認証済みだが未昇格 / 失効 / スコープ外 → 403 `elevation_required`（UI が昇格導線を出せる）。
  *   - 昇格 cookie が**別人の identity**       → 403（漏洩 cookie の replay/誤帰属を防ぐ, #264）。
+ *   - jti が失効済み/記録なし                 → 403 reason:'revoked'（/elevate/end による期限前取り消し, #264）。
  *   - 昇格中（本人）                          → ok:true で actor と elevation を返す。
  * write ルートはこのガード通過後に処理し、必ず recordDangerAction で before/after を監査する。
  */
@@ -85,8 +87,9 @@ export async function assertElevated(
   // 限界: これは **per-operator identity（SSO の email/subject）** 前提。共有パスワード運用
   // （OPEN_RECEPTION_ADMIN_PASSWORD_ROLE=developer）は全員 identity='password-admin' で per-operator の
   // 区別が無いため束縛は実質的な制約にならない（SSO 運用でのみ有効。単一資格運用は元々同一主体）。
+  const now = Date.now();
   const boundToActor = elevation !== null && elevation.sub === auth.identity;
-  const check = requireElevation(boundToActor ? elevation : null, target, Date.now());
+  const check = requireElevation(boundToActor ? elevation : null, target, now);
   // boundToActor が false のときは requireElevation(null) が not ok を返すので !check.ok が拾う。
   // !elevation は ok:true 分岐で elevation を非 null に絞るための TS ガード。
   if (!check.ok || !elevation) {
@@ -96,6 +99,16 @@ export async function assertElevated(
         { error: 'elevation_required', reason: check.ok ? 'not_elevated' : check.reason },
         { status: 403 },
       ),
+    };
+  }
+  // jti 失効チェック (#264 対応案 2)。/elevate/end で期限前に取り消された昇格の cookie を拒否する。
+  // **fail-closed**: ストアに発行記録の無い jti（unknown）も無効。正規発行（issueElevationToken）は
+  // 必ず記録するため正常系では起きず、署名鍵漏洩等で offline 生成された cookie だけがここに落ちる。
+  // 記録有無を外へ区別せず、active 以外は一律 reason:'revoked' で返す（存在を秘匿・再昇格で解消）。
+  if ((await elevationJtiState(elevation.jti, now)) !== 'active') {
+    return {
+      ok: false,
+      response: NextResponse.json({ error: 'elevation_required', reason: 'revoked' }, { status: 403 }),
     };
   }
   return { ok: true, actor: auth.actor, elevation };

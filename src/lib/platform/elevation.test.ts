@@ -1,7 +1,12 @@
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { grantElevation } from '@/domain/auth/elevation';
 import { issueElevationToken, readElevation } from './elevation';
+import { elevationJtiState, __resetElevationJtis } from './elevation-jti-store';
 import { reauthenticate } from './reauth';
+
+beforeEach(async () => {
+  await __resetElevationJtis();
+});
 
 describe('elevation cookie (#83 inc4b)', () => {
   it('issue → read で昇格を往復復元する', async () => {
@@ -13,6 +18,22 @@ describe('elevation cookie (#83 inc4b)', () => {
     expect(read?.scope).toEqual({ tenantId: 't1', siteId: undefined, deviceId: undefined });
     expect(read?.until).toBe(elevation.until);
     expect(read?.sub).toBe('dev@example.com'); // 操作者 identity を復元（#264）。
+    expect(read?.jti).toBe('jti-1'); // 失効チェック用に jti も復元（#264）。
+  });
+
+  it('issue は jti を失効ストアへ登録する（#264: 発行 = 記録。fail-closed の前提）', async () => {
+    const elevation = grantElevation({ reason: 'x', scope: {} }, Date.now());
+    await issueElevationToken(elevation, 'jti-reg', 'dev@example.com');
+    expect(await elevationJtiState('jti-reg', Date.now())).toBe('active');
+  });
+
+  it('jti 欠落の cookie は無効＝null（失効追跡できないトークンを流通させない）', async () => {
+    const { signSession } = await import('@/lib/auth/session');
+    const noJti = await signSession(
+      { role: 'platform_elevation', exp: Date.now() + 60_000, reason: 'x', scope: {}, sub: 'dev@example.com' },
+      'dev-insecure-elevation-secret',
+    );
+    expect(await readElevation(noJti)).toBeNull();
   });
 
   it('sub 欠落の cookie は無効＝null（#264 前の cookie で platform:unknown を出さない）', async () => {
