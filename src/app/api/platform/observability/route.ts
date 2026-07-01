@@ -4,7 +4,7 @@ import { listAuditLogs, listReceptionLogsSince } from '@/lib/mock-backend/recept
 import { listKiosks } from '@/lib/kiosk/kiosk-store';
 import { toMaskedAuditRows } from '@/domain/platform/console-summary';
 import { summarizeDevices } from '@/domain/reception/dashboard-summary';
-import { currentMonthPeriod, summarizeUsage, deriveUsageRates } from '@/domain/usage/usage-summary';
+import { currentMonthPeriod, summarizeUsage } from '@/domain/usage/usage-summary';
 import { authorizePlatform } from '@/lib/platform/request';
 
 /** 直近ログとして返す件数の上限（マスク済み）。 */
@@ -30,16 +30,19 @@ export async function GET(): Promise<NextResponse> {
   const now = new Date();
   const period = currentMonthPeriod(now);
   // 当月分のみ必要なため境界クエリで取得（全件走査を避ける, #254）。端末は全テナント横断の状態集計。
+  // 監視画面なので取得失敗は握り潰さず伝播させる（偽の健全表示を出さない。UI は !res.ok で明示）。
   const [integrations, auditLogs, receptionLogs, kiosks] = await Promise.all([
     listIntegrationStatuses(),
     listAuditLogs(),
-    listReceptionLogsSince(period.start).catch(() => []),
-    listKiosks().catch(() => []),
+    listReceptionLogsSince(period.start),
+    listKiosks(),
   ]);
 
   const recentActivity = toMaskedAuditRows(auditLogs).slice(0, RECENT_LIMIT);
   const usage = summarizeUsage(receptionLogs, [], period);
-  const rates = deriveUsageRates(usage);
+  // 受付成功率は「通話を試みた受付」を分母にする（cancelled=来訪者が離脱で通話未試行、は除外）。
+  const callAttempts = usage.connectedCalls + usage.timeoutCalls + usage.failedCalls;
+  const successRate = callAttempts > 0 ? usage.connectedCalls / callAttempts : null;
   const devices = summarizeDevices(
     kiosks.map((k) => ({ id: k.id, displayName: k.displayName, enabled: k.enabled })),
   );
@@ -51,11 +54,12 @@ export async function GET(): Promise<NextResponse> {
     // 実接続（当月 JST・件数と割合のみ）。
     reception: {
       receptions: usage.receptions,
-      successRate: rates.connectedRate, // 受付成功率 = connected / receptions（0 件は null）
+      successRate, // connected / (connected+timeout+failed)。試行 0 は null
       callFailures: usage.failedCalls, // 通話失敗数（Vonage 失敗の近似）
       noAnswer: usage.timeoutCalls, // 未応答
     },
-    devices, // { total, online, offline }
+    // 注: devices.online は「有効フラグ」ベース（実死活=heartbeat は次増分）。UI も「有効な端末」と表記。
+    devices, // { total, online, offline }（online=enabled 数）
     metrics: {
       // メトリクス基盤/監視連携が要る指標は pending 維持。
       errorRate: pending,
