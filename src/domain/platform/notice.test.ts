@@ -2,7 +2,38 @@
  * お知らせ集計の単体テスト (issue #83 §8 / #90 increment 3e)。
  */
 import { describe, expect, it } from 'vitest';
-import { isActiveNotice, summarizeNotices, toNoticeRow, type Notice } from './notice';
+import { buildNotice, isActiveNotice, summarizeNotices, toNoticeRow, type Notice } from './notice';
+
+const N_OPTS = { id: 'n-1', now: new Date('2026-07-01T00:00:00.000Z'), createdBy: 'platform' };
+const N_VALID = { scope: 'platform', level: 'warning', title: '告知', body: '本文' };
+
+describe('buildNotice (#83 お知らせ)', () => {
+  it('妥当な入力から組み立てる（status=published 固定・publishedAt=now）', () => {
+    const r = buildNotice(N_VALID, N_OPTS);
+    expect(r.ok).toBe(true);
+    if (r.ok) {
+      expect(r.value).toMatchObject({ id: 'n-1', scope: 'platform', level: 'warning', status: 'published' });
+      expect(r.value.publishedAt).toBe('2026-07-01T00:00:00.000Z');
+    }
+  });
+
+  it('client の status は無視され published 固定', () => {
+    const r = buildNotice({ ...N_VALID, status: 'archived' } as never, N_OPTS);
+    expect(r.ok && r.value.status).toBe('published');
+  });
+
+  it('不正 level・空 title/body・長すぎは error', () => {
+    expect(buildNotice({ ...N_VALID, level: 'x' }, N_OPTS).ok).toBe(false);
+    expect(buildNotice({ ...N_VALID, title: '  ' }, N_OPTS).ok).toBe(false);
+    expect(buildNotice({ ...N_VALID, body: 'b'.repeat(2001) }, N_OPTS).ok).toBe(false);
+  });
+
+  it('スコープ整合: tenant は tenantId が要る／platform は下位 id を落とす', () => {
+    expect(buildNotice({ ...N_VALID, scope: 'tenant' }, N_OPTS).ok).toBe(false);
+    const r = buildNotice({ ...N_VALID, tenantId: 'x' }, N_OPTS);
+    expect(r.ok && r.value.tenantId).toBeUndefined();
+  });
+});
 
 function notice(
   args: Partial<Notice> & Pick<Notice, 'id' | 'level' | 'status' | 'publishedAt'>,
