@@ -93,12 +93,13 @@ authorizePlatform() → verifyElevation(cookie, actor) → requireElevation(elev
 - `POST /elevate`: 非 developer 403 / reason 空 400 / mock 再認証成功で cookie＋監査。
 - flag 変更 write: 未昇格 403(elevation_required) / 昇格中 200＋before/after 監査 / scope 外 403。
 
-### レビュー論点（inc4b 着手前に確定したい）
-1. 昇格ウィンドウは既定 **30 分**（inc4a 準拠）で良いか（濫用窓 vs 一操作）。
-2. `platform_developer` を現 `developer` と別ロールに分離するか（現状は同一・scope 判定）。
-3. PlatformAuditLog は**既存 `audit` ストア再利用**（推奨・`/platform/audit-logs` read 配線済み）で良いか。
-4. 最初にゲートする write は「機能フラグ変更」で妥当か。
-5. `jti` のサーバ側失効リストは持つか（cookie 失効のみで足りるか）。
+### レビュー論点（**確定済み** 2026-07-01）
+1. 昇格ウィンドウ = **30 分**（inc4a 準拠）。
+2. ロール = **現 `developer` のまま**（新ロールを作らず scope 判定。昇格は `platform_elevation` cookie で表現）。
+3. PlatformAuditLog = **既存 `audit` ストア再利用**（`/platform/audit-logs` read 配線済み・重複を作らない）。
+4. 最初にゲートする write = **機能フラグ変更**（`POST/PATCH /api/platform/feature-flags`）。
+5. `jti` = inc4b は **cookie 失効のみ**（サーバ側失効リストは持たない）。将来必要なら別増分。
+6. MFA = **interface + mock 先行**（`reauthenticate(provider, credential)`）。実 Cognito TOTP は #65。
 
 ## ディレクトリ
 - 純ドメイン: `src/domain/auth/elevation.ts`（inc4a 実装済）
