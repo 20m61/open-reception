@@ -15,7 +15,7 @@
 > `gh issue view <N>` の AC を既存コードにマッピングし、**未充足の AC だけ**を increment
 > として TDD する（純ロジック先行、新規ビルドの重複を避ける）。
 
-## オープン issue 一覧（9 件・2026-07-02 時点）
+## オープン issue 一覧（12 件・2026-07-02 時点）
 
 | # | 種別 | 状態 | 分類 |
 | --- | --- | --- | --- |
@@ -28,6 +28,9 @@
 | **#4** | feature | Vonage 実通話（基盤・interface 済） | #65 スタック |
 | **#31** | feature | VRM 状態別モーション再生（実描画済・残 idle .vrma） | #65 スタック |
 | **#65** | 集約 | 実機 UAT / 実認証 / WebKit E2E のスタック先 | 外部リソース待ち |
+| **#273** | reliability | DATA_BACKEND fail-closed + mock-backend リネーム（監査 2026-07-02） | 独立・**#195 の前提** |
+| **#274** | refactor | 永続化イディオム収斂 + list() 境界化 | 独立（#261 と同時が効率的） |
+| **#275** | refactor | notification 分裂解消（lib/server の validation/types 統合） | 独立・#195 の前が望ましい |
 
 ## 本流トラック — #83 platform epic 締め
 
