@@ -65,14 +65,18 @@ describe('escapeHatchesFor', () => {
     }
   });
 
-  it('文脈の戻るを持つ状態（selectingTarget/inputVisitorInfo/confirming）はバーに back を出さない（#240）', () => {
-    // 画面フッターの 戻る/修正する と二重になるため、逃げ道バーからは back を外す。
-    // キャンセル等の他の逃げ道は残す（戻る操作はフッターの文脈ボタンで可能）。
-    for (const state of ['selectingTarget', 'inputVisitorInfo', 'confirming'] as ReceptionState[]) {
-      const actions = escapeHatchesFor(state).map((h) => h.action);
-      expect(actions).not.toContain('back');
-      expect(actions).toContain('cancel');
-    }
+  it('selectingTarget では 戻る・キャンセル を出す（内容がビューポートを超え得るため常設 back を残す）', () => {
+    const actions = escapeHatchesFor('selectingTarget').map((h) => h.action);
+    expect(actions).toContain('back');
+    expect(actions).toContain('cancel');
+  });
+
+  it('confirming はバーに back を出さない（フッターの修正するに集約・#240）', () => {
+    // 確認画面は短い要約でフッターの confirm-back が常に到達可能なため、二重の 戻る を整理する。
+    // キャンセルは残す（戻る操作はフッターの修正するで可能）。
+    const actions = escapeHatchesFor('confirming').map((h) => h.action);
+    expect(actions).not.toContain('back');
+    expect(actions).toContain('cancel');
   });
 
   it('failed/timeout では 人に繋ぐ(useFallback)・最初に戻る(reset) を出す', () => {

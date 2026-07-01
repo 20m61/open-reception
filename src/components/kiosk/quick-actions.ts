@@ -142,16 +142,15 @@ const ESCAPE_HATCH_META: Record<EscapeHatchAction, Omit<EscapeHatch, 'action'>> 
 };
 
 /**
- * 画面内に文脈の「戻る」ボタンを持つ状態 (#240)。これらでは逃げ道バーに `back`（戻る）を重複表示
- * しない（フッターの 修正する / 戻る とバーの 戻る が二重になり後退系コントロールが過多になるため）。
- * 戻る操作自体はフッターの文脈ボタンで可能なので機能は失わない。
- *   - selectingTarget=target-back / inputVisitorInfo=visitor-back / confirming=confirm-back
+ * 逃げ道バーに `back`（戻る）を重複表示しない状態 (#240)。確認画面（confirming）は短い要約で、
+ * フッターの「修正する」(confirm-back) が常に到達可能なため、常設バーの 戻る と二重になる後退系
+ * コントロールを整理する。戻る操作自体はフッターの文脈ボタンで可能なので機能は失わない。
+ *
+ * selectingTarget（担当者一覧）/ inputVisitorInfo（入力フォーム）は内容がビューポートを超え得るため
+ * 除外しない — これらではフッターの target-back/visitor-back はスクロールしないと届かず、常時可視な
+ * バーの 戻る が唯一の常設戻る導線になる（sticky バーの back を残す）。
  */
-const STATES_WITH_CONTEXTUAL_BACK: ReadonlySet<ReceptionState> = new Set([
-  'selectingTarget',
-  'inputVisitorInfo',
-  'confirming',
-]);
+const STATES_WITH_CONTEXTUAL_BACK: ReadonlySet<ReceptionState> = new Set(['confirming']);
 
 export function escapeHatchesFor(state: ReceptionState): ReadonlyArray<EscapeHatch> {
   // idle では逃げ道を出さない（クイックアクションが入口で、戻る先が無い）。
