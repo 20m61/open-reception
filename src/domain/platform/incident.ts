@@ -67,6 +67,78 @@ export type IncidentSummary = {
   incidents: IncidentRow[];
 };
 
+const SCOPES: readonly IncidentScope[] = ['platform', 'tenant', 'site', 'device'];
+const SEVERITIES: readonly IncidentSeverity[] = ['info', 'minor', 'major', 'critical'];
+const STATUSES: readonly IncidentStatus[] = ['investigating', 'identified', 'monitoring', 'resolved'];
+
+/** 障害登録の入力（信頼できない外部入力）。 */
+export type IncidentInput = {
+  scope?: unknown;
+  tenantId?: unknown;
+  siteId?: unknown;
+  deviceId?: unknown;
+  severity?: unknown;
+  status?: unknown;
+  title?: unknown;
+  message?: unknown;
+  startedAt?: unknown;
+};
+
+function str(v: unknown): string {
+  return typeof v === 'string' ? v.trim() : '';
+}
+
+/**
+ * 外部入力を検証して Incident を組み立てる純関数（登録 write 用）。
+ * enum 妥当性・必須（title/message）・スコープ整合（tenant→tenantId 必須 等）を確認する。
+ * status 既定は 'investigating'、startedAt 既定は now。id/updatedBy は呼び出し側が与える。
+ */
+export function buildIncident(
+  input: IncidentInput,
+  opts: { id: string; now: Date; updatedBy: string },
+): { ok: true; value: Incident } | { ok: false; error: string } {
+  const scope = str(input.scope) as IncidentScope;
+  if (!SCOPES.includes(scope)) return { ok: false, error: 'invalid scope' };
+  const severity = str(input.severity) as IncidentSeverity;
+  if (!SEVERITIES.includes(severity)) return { ok: false, error: 'invalid severity' };
+  const statusRaw = input.status === undefined ? 'investigating' : str(input.status);
+  const status = statusRaw as IncidentStatus;
+  if (!STATUSES.includes(status)) return { ok: false, error: 'invalid status' };
+  const title = str(input.title);
+  const message = str(input.message);
+  if (title === '' || message === '') return { ok: false, error: 'title and message are required' };
+
+  const tenantId = str(input.tenantId) || undefined;
+  const siteId = str(input.siteId) || undefined;
+  const deviceId = str(input.deviceId) || undefined;
+  // スコープ整合: 下位スコープほど上位 id が要る。
+  if (scope !== 'platform' && !tenantId) return { ok: false, error: 'tenantId required for this scope' };
+  if ((scope === 'site' || scope === 'device') && !siteId) return { ok: false, error: 'siteId required for this scope' };
+  if (scope === 'device' && !deviceId) return { ok: false, error: 'deviceId required for this scope' };
+
+  const startedRaw = str(input.startedAt);
+  const startedAt =
+    startedRaw !== '' && !Number.isNaN(Date.parse(startedRaw)) ? startedRaw : opts.now.toISOString();
+
+  return {
+    ok: true,
+    value: {
+      id: opts.id,
+      scope,
+      tenantId: scope === 'platform' ? undefined : tenantId,
+      siteId: scope === 'site' || scope === 'device' ? siteId : undefined,
+      deviceId: scope === 'device' ? deviceId : undefined,
+      severity,
+      status,
+      title,
+      message,
+      startedAt,
+      resolvedAt: status === 'resolved' ? opts.now.toISOString() : undefined,
+      updatedBy: opts.updatedBy,
+    },
+  };
+}
+
 /** 重大度の順位（大きいほど重大）。並べ替えに使う。 */
 const SEVERITY_RANK: Record<IncidentSeverity, number> = {
   info: 0,

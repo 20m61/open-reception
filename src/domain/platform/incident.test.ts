@@ -3,11 +3,48 @@
  */
 import { describe, expect, it } from 'vitest';
 import {
+  buildIncident,
   isActiveIncident,
   summarizeIncidents,
   toIncidentRow,
   type Incident,
 } from './incident';
+
+const OPTS = { id: 'inc-1', now: new Date('2026-07-01T00:00:00.000Z'), updatedBy: 'platform' };
+
+describe('buildIncident (#83 AC7)', () => {
+  it('妥当な入力から Incident を組み立てる（status 既定 investigating・startedAt 既定 now）', () => {
+    const r = buildIncident({ scope: 'platform', severity: 'major', title: 't', message: 'm' }, OPTS);
+    expect(r.ok).toBe(true);
+    if (r.ok) {
+      expect(r.value).toMatchObject({ id: 'inc-1', scope: 'platform', status: 'investigating', updatedBy: 'platform' });
+      expect(r.value.startedAt).toBe('2026-07-01T00:00:00.000Z');
+    }
+  });
+
+  it('不正な enum・空 title/message は error', () => {
+    expect(buildIncident({ scope: 'x', severity: 'major', title: 't', message: 'm' }, OPTS).ok).toBe(false);
+    expect(buildIncident({ scope: 'platform', severity: 'x', title: 't', message: 'm' }, OPTS).ok).toBe(false);
+    expect(buildIncident({ scope: 'platform', severity: 'major', title: '  ', message: 'm' }, OPTS).ok).toBe(false);
+  });
+
+  it('スコープ整合: tenant は tenantId、device は tenantId+siteId+deviceId が要る', () => {
+    expect(buildIncident({ scope: 'tenant', severity: 'minor', title: 't', message: 'm' }, OPTS).ok).toBe(false);
+    const ok = buildIncident({ scope: 'tenant', tenantId: 'x', severity: 'minor', title: 't', message: 'm' }, OPTS);
+    expect(ok.ok).toBe(true);
+    expect(buildIncident({ scope: 'device', tenantId: 'x', siteId: 's', severity: 'minor', title: 't', message: 'm' }, OPTS).ok).toBe(false);
+  });
+
+  it('platform スコープでは下位 id を落とす', () => {
+    const r = buildIncident({ scope: 'platform', tenantId: 'x', severity: 'info', title: 't', message: 'm' }, OPTS);
+    expect(r.ok && r.value.tenantId).toBeUndefined();
+  });
+
+  it('status=resolved は resolvedAt を now で埋める', () => {
+    const r = buildIncident({ scope: 'platform', severity: 'info', status: 'resolved', title: 't', message: 'm' }, OPTS);
+    expect(r.ok && r.value.resolvedAt).toBe('2026-07-01T00:00:00.000Z');
+  });
+});
 
 function incident(args: Partial<Incident> & Pick<Incident, 'id' | 'severity' | 'status'>): Incident {
   return {
