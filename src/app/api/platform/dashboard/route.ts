@@ -20,11 +20,16 @@ export async function GET(): Promise<NextResponse> {
   const auth = await authorizePlatform();
   if (!auth.ok) return auth.response;
 
-  const tenants = await getTenantStore().tenants.listTenants();
+  // 独立した 2 つの read を並行取得。受付ログ取得が失敗しても本日受付だけ degrade し、fleet 概況は
+  // 落とさない（受付ログは fleet に依存しない補助指標）。
+  const [tenants, logs] = await Promise.all([
+    getTenantStore().tenants.listTenants(),
+    listReceptionLogs().catch(() => []),
+  ]);
   const fleet = summarizeTenantFleet(tenants);
 
   // 本日の受付活動（全テナント横断）。件数のみで PII は含まない (#83 AC3)。
-  const receptionsToday = summarizeToday(await listReceptionLogs());
+  const receptionsToday = summarizeToday(logs);
 
   // 未接続の運用指標。フロントに「未接続（pending）」と明示させるためのスキーマ。
   const pending = { status: 'pending' as const };

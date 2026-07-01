@@ -118,6 +118,16 @@ describe('GET /api/platform/dashboard payload', () => {
     // pending プレースホルダではない。
     expect('status' in body.receptionsToday).toBe(false);
   });
+
+  it('受付ログ取得が失敗しても fleet を落とさず本日受付だけ degrade する', async () => {
+    resolveAdminActor.mockResolvedValue(developer());
+    listReceptionLogs.mockRejectedValue(new Error('backend down'));
+    const res = await DASHBOARD();
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.fleet).toEqual({ total: 2, active: 1, suspended: 1 }); // fleet は健在。
+    expect(body.receptionsToday.total).toBe(0); // 受付は 0 へ degrade。
+  });
 });
 
 describe('GET /api/platform/tenants payload', () => {

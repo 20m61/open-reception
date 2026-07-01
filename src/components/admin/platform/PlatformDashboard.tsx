@@ -67,10 +67,10 @@ export function PlatformDashboard() {
 
       <h2 style={{ fontSize: '1rem', opacity: 0.7, marginTop: 'var(--space-lg)' }}>本日の受付活動</h2>
       <div style={{ display: 'flex', gap: 'var(--space-md)', flexWrap: 'wrap' }}>
-        <MetricCard label="本日の受付数" value={data ? data.receptionsToday.total : '—'} />
-        <MetricCard label="接続" value={data ? data.receptionsToday.connected : '—'} />
-        <MetricCard label="未応答" value={data ? data.receptionsToday.timeout : '—'} />
-        <MetricCard label="失敗" value={data ? data.receptionsToday.failed : '—'} />
+        <MetricCard label="本日の受付数" value={data?.receptionsToday?.total ?? '—'} />
+        <MetricCard label="接続" value={data?.receptionsToday?.connected ?? '—'} />
+        <MetricCard label="未応答" value={data?.receptionsToday?.timeout ?? '—'} />
+        <MetricCard label="失敗" value={data?.receptionsToday?.failed ?? '—'} />
       </div>
 
       <h2 style={{ fontSize: '1rem', opacity: 0.7, marginTop: 'var(--space-lg)' }}>
