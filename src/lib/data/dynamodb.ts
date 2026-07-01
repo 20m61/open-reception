@@ -251,6 +251,27 @@ class DynamoLogStore<T extends { id: string }> implements LogStore<T> {
     return items.map((i) => strip<T>(i)!);
   }
 
+  async listSince(sinceIso: string): Promise<T[]> {
+    // SK=`<timestamp>#<id>`。`SK >= sinceIso`（sinceIso は裸の ISO）で timestamp>=since を含む
+    // （同一 timestamp は `#id` 付きで辞書順 > sinceIso のため含まれる）。範囲クエリで全件走査を避ける。
+    const items: Item[] = [];
+    let start: Item | undefined;
+    do {
+      const res = await this.doc.send(
+        new QueryCommand({
+          TableName: this.table,
+          KeyConditionExpression: 'PK = :pk AND SK >= :since',
+          ExpressionAttributeValues: { ':pk': this.pk, ':since': sinceIso },
+          ScanIndexForward: false, // 新しい順
+          ExclusiveStartKey: start,
+        }),
+      );
+      items.push(...((res.Items as Item[]) ?? []));
+      start = res.LastEvaluatedKey as Item | undefined;
+    } while (start);
+    return items.map((i) => strip<T>(i)!);
+  }
+
   async findBy(field: keyof T & string, value: string): Promise<T | undefined> {
     if (this.indexedField && field === this.indexedField) {
       const res = await this.doc.send(

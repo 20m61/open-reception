@@ -28,7 +28,7 @@ import {
   type CostEstimate,
   type CostTrendPoint,
 } from '@/domain/usage/cost-estimate';
-import { listAuditLogs, listReceptionLogs } from '@/lib/mock-backend/reception-log-store';
+import { listAuditLogs, listReceptionLogsSince } from '@/lib/mock-backend/reception-log-store';
 
 /**
  * 利用量レスポンス（当月＋前月の業務単位サマリ）。
@@ -45,7 +45,11 @@ export type UsageResponse = {
 
 /** 当月・前月の利用量サマリ・割合・日次推移を組み立てる。 */
 export async function loadUsage(now: Date = new Date()): Promise<UsageResponse> {
-  const [receptionLogs, auditLogs] = await Promise.all([listReceptionLogs(), listAuditLogs()]);
+  // 前月〜当月しか使わないため、前月初以降を境界クエリで取得（全件走査を避ける, #254）。
+  const [receptionLogs, auditLogs] = await Promise.all([
+    listReceptionLogsSince(previousMonthPeriod(now).start),
+    listAuditLogs(),
+  ]);
   const currentPeriod = currentMonthPeriod(now);
   const current = summarizeUsage(receptionLogs, auditLogs, currentPeriod);
   const previous = summarizeUsage(receptionLogs, auditLogs, previousMonthPeriod(now));

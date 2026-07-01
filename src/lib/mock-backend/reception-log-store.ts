@@ -102,6 +102,14 @@ export async function listReceptionLogs(): Promise<ReceptionLog[]> {
   return receptionLogs().list();
 }
 
+/**
+ * `createdAt >= sinceIso`（含む）の受付履歴のみを新しい順で返す (issue #254)。全件走査を避け、
+ * ダッシュボードの「本日/当月」集計を境界付きで取得する。呼び出し側は集計側の期間で再フィルタする。
+ */
+export async function listReceptionLogsSince(sinceIso: string): Promise<ReceptionLog[]> {
+  return receptionLogs().listSince(sinceIso);
+}
+
 /** 監査ログを新しい順で返す。 */
 export async function listAuditLogs(): Promise<AuditLog[]> {
   return auditLogs().list();

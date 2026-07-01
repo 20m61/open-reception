@@ -2,7 +2,8 @@ import { NextResponse } from 'next/server';
 import { getTenantStore } from '@/lib/tenant/store';
 import { summarizeTenantFleet } from '@/domain/platform/console-summary';
 import { summarizeToday } from '@/domain/reception/dashboard-summary';
-import { listReceptionLogs } from '@/lib/mock-backend/reception-log-store';
+import { listReceptionLogsSince } from '@/lib/mock-backend/reception-log-store';
+import { jstDayStartIso } from '@/domain/util/jst';
 import { authorizePlatform } from '@/lib/platform/request';
 
 /**
@@ -20,15 +21,17 @@ export async function GET(): Promise<NextResponse> {
   const auth = await authorizePlatform();
   if (!auth.ok) return auth.response;
 
+  // 本日の受付活動は当日 JST 分だけ必要。全件走査を避け、本日 JST 00:00 以降を境界クエリで取る (#254)。
+  const sinceToday = jstDayStartIso(new Date());
   // 独立した 2 つの read を並行取得。受付ログ取得が失敗しても本日受付だけ degrade し、fleet 概況は
   // 落とさない（受付ログは fleet に依存しない補助指標）。
   const [tenants, logs] = await Promise.all([
     getTenantStore().tenants.listTenants(),
-    listReceptionLogs().catch(() => []),
+    (sinceToday ? listReceptionLogsSince(sinceToday) : Promise.resolve([])).catch(() => []),
   ]);
   const fleet = summarizeTenantFleet(tenants);
 
-  // 本日の受付活動（全テナント横断）。件数のみで PII は含まない (#83 AC3)。
+  // 本日の受付活動（全テナント横断）。summarizeToday が JST 当日で再フィルタする。件数のみ・PII なし (#83 AC3)。
   const receptionsToday = summarizeToday(logs);
 
   // 未接続の運用指標。フロントに「未接続（pending）」と明示させるためのスキーマ。

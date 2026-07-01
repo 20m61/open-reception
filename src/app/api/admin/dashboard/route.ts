@@ -21,11 +21,14 @@ import {
  * 本増分では既存 admin read API（receptions/kiosks/audit）と同じ責務境界に合わせる。
  */
 export async function GET(): Promise<NextResponse> {
+  const now = new Date();
+  // NOTE: recentCalls（直近の呼び出し履歴）は日付非依存で全履歴から直近 N 件を引くため、ここは境界
+  // クエリにできない（当月に絞ると月境界/閑散期に履歴が空になる。#254 では platform/usage のみ境界化）。
   const [logs, kiosks, usage, cost] = await Promise.all([
     listReceptionLogs(),
     listKiosks(),
-    loadUsage(),
-    loadCostEstimate(),
+    loadUsage(now),
+    loadCostEstimate(now),
   ]);
   const devices: DeviceLike[] = kiosks.map((k) => ({
     id: k.id,

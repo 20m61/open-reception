@@ -3,6 +3,7 @@ import {
   daysInJstMonth,
   jstDayKey,
   jstDayOfMonth,
+  jstDayStartIso,
   jstMonthStartIso,
   jstYearMonth,
 } from './jst';
@@ -41,5 +42,16 @@ describe('jstDayOfMonth / daysInJstMonth (#254)', () => {
   });
   it('無効な now は NaN', () => {
     expect(jstDayOfMonth(new Date('invalid'))).toBeNaN();
+  });
+});
+
+describe('jstDayStartIso (#254)', () => {
+  it('当日 JST 00:00 の UTC ISO を返す', () => {
+    // JST 2026-07-01 の任意時刻 → 2026-07-01 00:00 JST = 2026-06-30T15:00Z。
+    expect(jstDayStartIso(new Date('2026-06-30T20:00:00.000Z'))).toBe('2026-06-30T15:00:00.000Z');
+    expect(jstDayStartIso(new Date('2026-07-01T05:00:00.000Z'))).toBe('2026-06-30T15:00:00.000Z');
+  });
+  it('無効な now は null', () => {
+    expect(jstDayStartIso(new Date('invalid'))).toBeNull();
   });
 });

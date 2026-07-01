@@ -42,6 +42,12 @@ export interface LogStore<T extends { id: string }> {
   put(item: T): Promise<void>;
   /** 新しい順（timestampField 降順）で返す。 */
   list(): Promise<T[]>;
+  /**
+   * `timestampField >= sinceIso`（含む）のログのみを新しい順で返す (issue #254)。全件走査を避け、
+   * ダッシュボード等の「直近 N 日/当月」集計を境界付きクエリで取得するために使う。dynamo は SK 範囲
+   * クエリ（`SK >= :since`）、memory は走査フィルタで実現する。
+   */
+  listSince(sinceIso: string): Promise<T[]>;
   /** 指定フィールド一致の最初の 1 件（dynamo は GSI、memory は走査）。 */
   findBy(field: keyof T & string, value: string): Promise<T | undefined>;
   reset(): Promise<void>;
