@@ -59,5 +59,6 @@ tests/e2e/          Playwright (iPad viewport)
 ## データ層 (issue #273, #274)
 
 - ルート → `lib/*` サービス/store → `lib/data` バックエンド（memory | dynamodb 単一テーブル）。
-- **本番は `DATA_BACKEND=dynamodb` 必須**（未設定時の fail-closed 化は #273）。
+- **本番は `DATA_BACKEND=dynamodb` 必須**。デプロイ実行（Lambda マーカーあり）で未設定なら
+  起動時に throw する fail-closed（#273 inc1 済。判定は `resolveBackendKind`）。
 - 永続化イディオムは store 直呼びと repository 三点セットが併存中 → 収斂方針は #274。
