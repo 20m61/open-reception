@@ -15,12 +15,12 @@
 > `gh issue view <N>` の AC を既存コードにマッピングし、**未充足の AC だけ**を increment
 > として TDD する（純ロジック先行、新規ビルドの重複を避ける）。
 
-## オープン issue 一覧（12 件・2026-07-02 時点）
+## オープン issue 一覧（11 件・2026-07-02 更新）
 
 | # | 種別 | 状態 | 分類 |
 | --- | --- | --- | --- |
 | **#83** | platform epic | inc1〜4c マージ済（read 実接続・JIT 昇格ゲート） | 本流 |
-| **#264** | security | cookie subject 束縛・attribution 済、**jti 失効が残** | 本流 |
+| ~~#264~~ | security | **クローズ済**（subject 束縛 #271 + jti 失効 #278 + end route） | 完了 2026-07-02 |
 | **#261** | observability | PR #260 撤回（構造的問題）→ まとめ設計が必要 | 独立 |
 | **#200** | security | nonce CSP、**一度撤回**（proxy+OpenNext でアプリ破壊） | 独立 |
 | **#196** | perf | Lighthouse perf 0.68-0.72 → 0.7+ 安定化 | 独立（live 検証） |
