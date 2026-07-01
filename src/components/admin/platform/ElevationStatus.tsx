@@ -132,7 +132,8 @@ export function ElevationStatus({ initial }: { initial: ElevationView | null }) 
         {active && elevation ? (
           <>
             <span data-testid="elevation-remaining">
-              残り <strong>{formatRemaining(elevation.until, now)}</strong>
+              {/* SSR 時点と hydration 時点で now が進み文字列が変わり得るため、時刻表示のみ許容する。 */}
+              残り <strong suppressHydrationWarning>{formatRemaining(elevation.until, now)}</strong>
             </span>
             <span style={{ opacity: 0.8 }}>対象: {elevationScopeLabel(elevation.scope)}</span>
             {elevation.reason ? <span style={{ opacity: 0.65 }}>理由: {elevation.reason}</span> : null}
