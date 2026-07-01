@@ -1,10 +1,12 @@
 import { describe, expect, it, vi, beforeEach } from 'vitest';
-import { auditContextFromRequest, recordDangerAction, sanitizeAuditMetadata } from './audit';
 
 const appendAdminAudit = vi.fn();
 vi.mock('@/lib/mock-backend/reception-log-store', () => ({
   appendAdminAudit: (...a: unknown[]) => appendAdminAudit(...a),
 }));
+
+// mock 設定後に被テストモジュールを読み込む（vi.mock は巻き上げられるが順序を明示）。
+import { auditContextFromRequest, recordDangerAction, sanitizeAuditMetadata } from './audit';
 
 function req(headers: Record<string, string>): Request {
   return new Request('http://localhost/api/platform/tenants/t1', { method: 'PATCH', headers });
