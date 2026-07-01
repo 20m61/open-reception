@@ -16,6 +16,16 @@ export function jstDayKey(ms: number): string | null {
   return new Date(ms + JST_OFFSET_MS).toISOString().slice(0, 10);
 }
 
+/**
+ * `now` の JST 暦日の 00:00 JST を UTC ISO で返す（境界クエリの since に使う） (issue #254)。
+ * 無効な now は null。例: JST 2026-07-01 の任意時刻 → "2026-06-30T15:00:00.000Z"。
+ */
+export function jstDayStartIso(now: Date): string | null {
+  const key = jstDayKey(now.getTime());
+  if (key === null) return null;
+  return new Date(Date.parse(`${key}T00:00:00+09:00`)).toISOString();
+}
+
 /** `now` を含む JST 暦月の年・月（0 始まり）。 */
 export function jstYearMonth(now: Date): { y: number; m: number } {
   const jst = new Date(now.getTime() + JST_OFFSET_MS);

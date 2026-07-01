@@ -105,6 +105,12 @@ class MemoryLogStore<T extends { id: string }> implements LogStore<T> {
       .map(clone);
   }
 
+  async listSince(sinceIso: string): Promise<T[]> {
+    // dynamo の `SK >= :since` と揃える（timestampField >= sinceIso を含む）。新しい順は list に委譲。
+    const ts = (i: T) => String((i as Record<string, unknown>)[this.tsField] ?? '');
+    return (await this.list()).filter((i) => ts(i) >= sinceIso);
+  }
+
   async findBy(field: keyof T & string, value: string): Promise<T | undefined> {
     // DynamoDB の GSI（ScanIndexForward:false, Limit:1）と一致させ、最新の 1 件を返す。
     const ts = (i: T) => String((i as Record<string, unknown>)[this.tsField] ?? '');

@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server';
 import { listKiosks } from '@/lib/kiosk/kiosk-store';
-import { listReceptionLogs } from '@/lib/mock-backend/reception-log-store';
+import { listReceptionLogsSince } from '@/lib/mock-backend/reception-log-store';
+import { currentMonthPeriod } from '@/domain/usage/usage-summary';
 import { loadUsage, loadCostEstimate } from '@/lib/usage/usage-data';
 import {
   buildDashboardSummary,
@@ -21,11 +22,13 @@ import {
  * 本増分では既存 admin read API（receptions/kiosks/audit）と同じ責務境界に合わせる。
  */
 export async function GET(): Promise<NextResponse> {
+  const now = new Date();
+  // 概況は当月分（本日＋当月トレンド）しか使わないため、当月初以降を境界クエリで取得 (#254)。
   const [logs, kiosks, usage, cost] = await Promise.all([
-    listReceptionLogs(),
+    listReceptionLogsSince(currentMonthPeriod(now).start),
     listKiosks(),
-    loadUsage(),
-    loadCostEstimate(),
+    loadUsage(now),
+    loadCostEstimate(now),
   ]);
   const devices: DeviceLike[] = kiosks.map((k) => ({
     id: k.id,

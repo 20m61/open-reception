@@ -13,7 +13,7 @@ import { asTenantId, asSiteId, type Tenant } from '@/domain/tenant/types';
 
 const resolveAdminActor = vi.fn<() => Promise<Actor | null>>();
 const listTenants = vi.fn<() => Promise<Tenant[]>>();
-const listReceptionLogs = vi.fn<() => Promise<unknown[]>>();
+const listReceptionLogsSince = vi.fn<() => Promise<unknown[]>>();
 
 vi.mock('@/lib/auth/actor', () => ({
   resolveAdminActor: () => resolveAdminActor(),
@@ -22,7 +22,7 @@ vi.mock('@/lib/tenant/store', () => ({
   getTenantStore: () => ({ tenants: { listTenants: () => listTenants() } }),
 }));
 vi.mock('@/lib/mock-backend/reception-log-store', () => ({
-  listReceptionLogs: () => listReceptionLogs(),
+  listReceptionLogsSince: () => listReceptionLogsSince(),
 }));
 
 import { GET as DASHBOARD } from './dashboard/route';
@@ -66,7 +66,7 @@ const SAMPLE: Tenant[] = [
 beforeEach(() => {
   vi.clearAllMocks();
   listTenants.mockResolvedValue(SAMPLE);
-  listReceptionLogs.mockResolvedValue([]);
+  listReceptionLogsSince.mockResolvedValue([]);
 });
 
 describe.each([
@@ -107,7 +107,7 @@ describe('GET /api/platform/dashboard payload', () => {
     resolveAdminActor.mockResolvedValue(developer());
     // 本日分の受付ログ 2 件（うち1件は connected）。startedAt=当日で summarizeToday が拾う。
     const today = new Date().toISOString();
-    listReceptionLogs.mockResolvedValue([
+    listReceptionLogsSince.mockResolvedValue([
       { id: 'r1', outcome: 'connected', startedAt: today, fallbackUsed: false },
       { id: 'r2', outcome: 'timeout', startedAt: today, fallbackUsed: false },
     ]);
@@ -121,7 +121,7 @@ describe('GET /api/platform/dashboard payload', () => {
 
   it('受付ログ取得が失敗しても fleet を落とさず本日受付だけ degrade する', async () => {
     resolveAdminActor.mockResolvedValue(developer());
-    listReceptionLogs.mockRejectedValue(new Error('backend down'));
+    listReceptionLogsSince.mockRejectedValue(new Error('backend down'));
     const res = await DASHBOARD();
     expect(res.status).toBe(200);
     const body = await res.json();
