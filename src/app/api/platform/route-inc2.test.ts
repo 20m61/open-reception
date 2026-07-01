@@ -23,9 +23,9 @@ const listTenants = vi.fn<() => Promise<Tenant[]>>();
 const getTenant = vi.fn<(id: string) => Promise<Tenant | undefined>>();
 const listSites = vi.fn<(tenantId: string) => Promise<Site[]>>();
 const listDevices = vi.fn<(tenantId: string, siteId: string) => Promise<Device[]>>();
+const listAllDevices = vi.fn<() => Promise<Device[]>>();
 const listAuditLogs = vi.fn<() => Promise<AuditLog[]>>();
 const listReceptionLogsSince = vi.fn<() => Promise<unknown[]>>();
-const listKiosks = vi.fn<() => Promise<unknown[]>>();
 const listIntegrationStatuses = vi.fn<() => Promise<unknown[]>>();
 const listAuthMethodStatuses = vi.fn();
 
@@ -40,15 +40,15 @@ vi.mock('@/lib/tenant/store', () => ({
   getTenantStore: () => ({
     tenants: { listTenants: () => listTenants(), getTenant: (id: string) => getTenant(id) },
     sites: { listSites: (t: string) => listSites(t) },
-    devices: { listDevices: (t: string, s: string) => listDevices(t, s) },
+    devices: {
+      listDevices: (t: string, s: string) => listDevices(t, s),
+      listAllDevices: () => listAllDevices(),
+    },
   }),
 }));
 vi.mock('@/lib/mock-backend/reception-log-store', () => ({
   listAuditLogs: () => listAuditLogs(),
   listReceptionLogsSince: () => listReceptionLogsSince(),
-}));
-vi.mock('@/lib/kiosk/kiosk-store', () => ({
-  listKiosks: () => listKiosks(),
 }));
 vi.mock('@/lib/security/integration-status-store', () => ({
   listIntegrationStatuses: () => listIntegrationStatuses(),
@@ -131,7 +131,7 @@ beforeEach(() => {
   listDevices.mockResolvedValue(DEVICES);
   listAuditLogs.mockResolvedValue(AUDIT);
   listReceptionLogsSince.mockResolvedValue([]);
-  listKiosks.mockResolvedValue([]);
+  listAllDevices.mockResolvedValue([]);
   listIntegrationStatuses.mockResolvedValue([
     { id: 'vonage', label: 'Vonage', configured: true, enabled: false, lastResult: 'untested' },
   ]);
@@ -213,21 +213,35 @@ describe('payload safety (no PII / masked)', () => {
     expect(body.metrics.latency).toEqual({ status: 'pending' });
   });
 
-  it('observability は受付成功率・端末状態を実接続する（pending でない・#83 簡易オブザーバビリティ）', async () => {
+  it('observability は受付成功率・端末の実死活を実接続する（#83 簡易オブザーバビリティ）', async () => {
     resolveAdminActor.mockResolvedValue(developer());
     const period = currentMonthPeriod();
     listReceptionLogsSince.mockResolvedValue([
       { id: 'r1', outcome: 'connected', startedAt: period.start, fallbackUsed: false, durationMs: 1000 },
       { id: 'r2', outcome: 'failed', startedAt: period.start, fallbackUsed: false, durationMs: 0 },
     ]);
-    listKiosks.mockResolvedValue([
-      { id: 'k1', displayName: 'A', enabled: true },
-      { id: 'k2', displayName: 'B', enabled: false },
+    const dev = (over: Partial<Device>): Device => ({
+      id: asDeviceId('x'),
+      tenantId: asTenantId('internal'),
+      siteId: asSiteId('s1'),
+      name: 'd',
+      status: 'active',
+      maintenance: false,
+      createdAt: '2026-01-01T00:00:00.000Z',
+      updatedAt: '2026-01-01T00:00:00.000Z',
+      ...over,
+    });
+    // 実死活: lastSeenAt が 5 分窓内=online、窓外=offline、maintenance/revoked は別状態。
+    listAllDevices.mockResolvedValue([
+      dev({ id: asDeviceId('on'), lastSeenAt: new Date().toISOString() }),
+      dev({ id: asDeviceId('off'), lastSeenAt: new Date(Date.now() - 30 * 60 * 1000).toISOString() }),
+      dev({ id: asDeviceId('mnt'), maintenance: true }),
+      dev({ id: asDeviceId('dis'), status: 'revoked' }),
     ]);
     const body = await (await OBSERVABILITY()).json();
     expect(body.reception.receptions).toBe(2);
-    expect(body.reception.successRate).toBeCloseTo(0.5); // connected 1 / 2
+    expect(body.reception.successRate).toBeCloseTo(0.5); // connected 1 / 通話試行 2
     expect(body.reception.callFailures).toBe(1);
-    expect(body.devices).toEqual({ total: 2, online: 1, offline: 1 });
+    expect(body.devices).toEqual({ total: 4, online: 1, offline: 1, maintenance: 1, disabled: 1 });
   });
 });

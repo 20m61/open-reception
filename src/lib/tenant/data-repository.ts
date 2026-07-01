@@ -130,6 +130,10 @@ class DataBackedDeviceRepository implements DeviceRepository {
     return all.filter((d) => d.tenantId === tenantId && d.siteId === siteId);
   }
 
+  async listAllDevices(): Promise<Device[]> {
+    return this.col().list();
+  }
+
   async getDevice(tenantId: TenantId, id: DeviceId): Promise<Device | undefined> {
     const d = await this.col().get(id);
     return d && d.tenantId === tenantId ? d : undefined;

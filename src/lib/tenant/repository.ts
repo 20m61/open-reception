@@ -42,6 +42,11 @@ export interface SiteRepository {
 export interface DeviceRepository {
   /** 指定サイト配下の端末のみ返す。 */
   listDevices(tenantId: TenantId, siteId: SiteId): Promise<Device[]>;
+  /**
+   * テナント境界を跨いで全端末を返す (issue #83 オブザーバビリティ)。platform 横断の稼働状態集計に使う。
+   * 呼び出し側は platform 認可（developer 限定）でゲートすること。通常の管理 API は listDevices を使う。
+   */
+  listAllDevices(): Promise<Device[]>;
   getDevice(tenantId: TenantId, id: DeviceId): Promise<Device | undefined>;
   /**
    * テナント境界を跨いで id だけで端末を引く (issue #87 inc3)。
