@@ -19,8 +19,8 @@ test('未登録端末の heartbeat は active=false', async ({ page }) => {
   expect(hb.active).toBe(false);
 });
 
-test('許可後は heartbeat の authorized が true になる', async ({ page }) => {
-  await page.request.post('/api/kiosk/authorize', { data: { pin: '0000', kioskId: 'kiosk-dev' } });
+test('エンロール済み端末の heartbeat は authorized が true（#239/#244）', async ({ page }) => {
+  // フィクスチャがエンロールで kiosk セッションを確立済み。heartbeat がそれを authorized で反映する。
   const res = await page.request.get('/api/kiosk/heartbeat?kioskId=kiosk-dev');
   const hb = (await res.json()) as { authorized: boolean };
   expect(hb.authorized).toBe(true);

@@ -21,6 +21,10 @@ const baseURL = remoteBaseURL ?? `http://127.0.0.1:${PORT}`;
  */
 const includeWebkit = !!process.env.CI || process.env.E2E_WEBKIT === '1';
 
+// 既定スコープへカスタム受付フローを一時投入する spec (#248)。他 kiosk テストと分離するため、
+// 通常 project からは除外し、専用 project で本 suite の後に単独実行する。
+const FLOW_MUTATING_SPECS = /(admin-reception-flows|kiosk-flow-integration)\.spec\.ts$/;
+
 // iPad (gen 7) 縦向き相当のエミュレーション設定（chromium 用）。
 const iPadPortraitViewport = {
   viewport: { width: 810, height: 1080 },
@@ -33,9 +37,8 @@ export default defineConfig({
   testDir: './tests/e2e',
   fullyParallel: true,
   forbidOnly: !!process.env.CI,
-  // 共有 in-memory バックエンドのため、フロー作成系テスト（admin-reception-flows /
-  // kiosk-flow-integration）の作成中ウィンドウに kiosk テストが当たると稀にフレークする
-  // （作成フローは afterEach で削除し持続汚染は無い）。ローカルも 1 回再試行して吸収する。
+  // 稀な負荷/タイミング由来のフレークを吸収する（CI は 2 回）。フロー作成系との衝突は下記の
+  // project 分離で構造的に解消済み (#248)。
   retries: process.env.CI ? 2 : 1,
   reporter: process.env.CI ? 'github' : 'list',
   use: {
@@ -46,19 +49,31 @@ export default defineConfig({
     {
       name: 'chromium-ipad',
       use: { browserName: 'chromium', ...iPadPortraitViewport },
+      testIgnore: FLOW_MUTATING_SPECS,
     },
     ...(includeWebkit
       ? [
           {
             name: 'ipad-landscape',
             use: { ...devices['iPad (gen 7) landscape'] },
+            testIgnore: FLOW_MUTATING_SPECS,
           },
           {
             name: 'ipad-portrait',
             use: { ...devices['iPad (gen 7)'] },
+            testIgnore: FLOW_MUTATING_SPECS,
           },
         ]
       : []),
+    {
+      // フロー作成系 spec は既定スコープ（internal/default-site）へカスタムフローを一時投入するため、
+      // 他の kiosk テストと並行すると /api/kiosk/flow 経由で漏れて既定フロー検証をフレークさせる
+      // (#248)。本 suite の全 project 完了後に単独実行して構造的に分離する（互いは一意キーで独立）。
+      name: 'flow-mutation',
+      use: { browserName: 'chromium', ...iPadPortraitViewport },
+      testMatch: FLOW_MUTATING_SPECS,
+      dependencies: ['chromium-ipad', ...(includeWebkit ? ['ipad-landscape', 'ipad-portrait'] : [])],
+    },
   ],
   // 実環境 URL を対象にする場合（PLAYWRIGHT_BASE_URL 指定時）はローカルサーバを起動しない。
   webServer: remoteBaseURL
