@@ -44,7 +44,8 @@ export async function POST(request: Request): Promise<NextResponse> {
   }
 
   // inc4b は platform 全体スコープ（{}）。テナント限定昇格は後続。
-  const elevation = grantElevation({ reason, scope: {} }, Date.now());
+  const now = Date.now();
+  const elevation = grantElevation({ reason, scope: {} }, now);
   const token = await issueElevationToken(elevation, randomUUID());
 
   await recordDangerAction({
@@ -55,13 +56,16 @@ export async function POST(request: Request): Promise<NextResponse> {
     request,
   });
 
+  // Secure は admin セッション cookie（login/route.ts）と同じくリクエストプロトコルで判定する
+  // （NODE_ENV はデプロイ実行の信頼できる指標ではないため）。maxAge は grant と同一 `now` から導く。
+  const isHttps = new URL(request.url).protocol === 'https:';
   const res = NextResponse.json({ ok: true, until: elevation.until });
   res.cookies.set(ELEVATION_COOKIE, token, {
     httpOnly: true,
     sameSite: 'strict',
-    secure: process.env.NODE_ENV === 'production',
+    secure: isHttps,
     path: '/',
-    maxAge: Math.max(0, Math.floor((elevation.until - Date.now()) / 1000)),
+    maxAge: Math.max(0, Math.floor((elevation.until - now) / 1000)),
   });
   return res;
 }
