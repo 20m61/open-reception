@@ -16,8 +16,9 @@ import { revokeElevationJti } from '@/lib/platform/elevation-jti-store';
  * - 冪等: 昇格 cookie が無い/無効/失効済みでも 200 `{ ok:true, ended:false }`（終了操作にエラー UX は不要）。
  * - 他人の cookie（sub 不一致）は revoke しない（別 developer の昇格を横取り失効させない。自分の
  *   昇格は自分で end する。漏洩 cookie の replay 自体は sub 束縛が既に拒否している）。
- * - 監査: 実際に失効させたときのみ記録。専用 AuditAction の追加は共有ファイル（log.ts）編集になるため
- *   行わず、既存 `privilege.elevated` + metadata.result='revoked' で表す（発行時は result なし）。
+ * - 監査: 実際に失効させたときのみ記録。通常昇格は既存 `privilege.elevated` + metadata.result='revoked'
+ *   で表す（発行時は result なし）。break-glass（#83 §3）の終了は `privilege.break_glass` +
+ *   result='revoked'（高重要度）で記録し、発行〜終了までを利用後レビューで一続きに追える。
  */
 export async function POST(request: Request): Promise<NextResponse> {
   const auth = await authorizePlatformWithIdentity();
@@ -31,7 +32,8 @@ export async function POST(request: Request): Promise<NextResponse> {
     ended = await revokeElevationJti(elevation.jti, Date.now());
     if (ended) {
       await recordDangerAction({
-        action: 'privilege.elevated',
+        // break-glass の終了は専用 action（高重要度・利用後レビュー対象, #83 §3）。
+        action: elevation.breakGlass ? 'privilege.break_glass' : 'privilege.elevated',
         target: { type: 'platform' },
         metadata: { ...elevationAuditMetadata(elevation), result: 'revoked' },
         actor: `platform:${auth.identity}`,

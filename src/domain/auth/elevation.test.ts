@@ -6,12 +6,16 @@ import {
   elevationAuditMetadata,
   elevationCoversScope,
   grantElevation,
+  grantBreakGlass,
   isElevated,
   requireElevation,
   elevationJtiStatus,
+  elevatedWriteAuditMetadata,
+  isBreakGlassAudit,
   ELEVATION_MIN_TTL_MS,
   ELEVATION_MAX_TTL_MS,
   ELEVATION_DEFAULT_TTL_MS,
+  BREAK_GLASS_TTL_MS,
   type Elevation,
   type ElevationJtiRecord,
 } from './elevation';
@@ -107,5 +111,67 @@ describe('elevationJtiStatus (#264 jti 失効ストアの純判定)', () => {
 
   it('revoked は expired より優先（失効操作の事実を保つ）', () => {
     expect(elevationJtiStatus({ ...record, expiresAt: NOW - 1, revokedAt: NOW - 2 }, NOW)).toBe('revoked');
+  });
+});
+
+describe('grantBreakGlass (#83 §3 break-glass)', () => {
+  it('breakGlass:true・固定短窓（15 分）で付与する', () => {
+    const e = grantBreakGlass({ reason: '本番障害の緊急対応', scope: {} }, NOW);
+    expect(e.breakGlass).toBe(true);
+    expect(e.until).toBe(NOW + BREAK_GLASS_TTL_MS);
+    expect(BREAK_GLASS_TTL_MS).toBeLessThan(ELEVATION_DEFAULT_TTL_MS);
+  });
+
+  it('reason 必須（空白のみは throw）', () => {
+    expect(() => grantBreakGlass({ reason: '   ', scope: {} }, NOW)).toThrow();
+  });
+
+  it('通常昇格（grantElevation）は breakGlass を持たない（後方互換）', () => {
+    const e = grantElevation({ reason: 'r', scope: {} }, NOW);
+    expect(e.breakGlass).toBeUndefined();
+  });
+
+  it('break-glass 昇格も requireElevation の同じ強制（期限・スコープ）を受ける', () => {
+    const e = grantBreakGlass({ reason: 'r', scope: {} }, NOW);
+    expect(requireElevation(e, { tenantId: 't1' }, NOW)).toEqual({ ok: true });
+    expect(requireElevation(e, {}, NOW + BREAK_GLASS_TTL_MS)).toEqual({ ok: false, reason: 'expired' });
+  });
+});
+
+describe('elevationAuditMetadata + break-glass 高重要度 (#83 §3)', () => {
+  it('break-glass 昇格は breakGlass/severity を監査 metadata に載せる', () => {
+    const meta = elevationAuditMetadata(grantBreakGlass({ reason: '緊急', scope: {} }, NOW));
+    expect(meta.breakGlass).toBe('true');
+    expect(meta.severity).toBe('high');
+  });
+
+  it('通常昇格の監査 metadata には breakGlass/severity を載せない（既存互換）', () => {
+    const meta = elevationAuditMetadata(grantElevation({ reason: 'r', scope: {} }, NOW));
+    expect('breakGlass' in meta).toBe(false);
+    expect('severity' in meta).toBe(false);
+  });
+});
+
+describe('elevatedWriteAuditMetadata (#83 §3 全 write の高重要度マーク)', () => {
+  it('break-glass 中の write は breakGlass/severity マークを返す', () => {
+    const e = grantBreakGlass({ reason: 'r', scope: {} }, NOW);
+    expect(elevatedWriteAuditMetadata(e)).toEqual({ breakGlass: 'true', severity: 'high' });
+  });
+  it('通常昇格中の write は空（既存の監査表現を変えない）', () => {
+    const e = grantElevation({ reason: 'r', scope: {} }, NOW);
+    expect(elevatedWriteAuditMetadata(e)).toEqual({});
+  });
+});
+
+describe('isBreakGlassAudit (#83 §3 利用後レビュー抽出)', () => {
+  it('privilege.break_glass アクションはレビュー対象', () => {
+    expect(isBreakGlassAudit({ action: 'privilege.break_glass' })).toBe(true);
+  });
+  it('metadata.breakGlass=true の write もレビュー対象', () => {
+    expect(isBreakGlassAudit({ action: 'platform.notice.published', metadata: { breakGlass: 'true' } })).toBe(true);
+  });
+  it('通常操作はレビュー対象外', () => {
+    expect(isBreakGlassAudit({ action: 'privilege.elevated' })).toBe(false);
+    expect(isBreakGlassAudit({ action: 'platform.notice.published', metadata: { reason: 'x' } })).toBe(false);
   });
 });

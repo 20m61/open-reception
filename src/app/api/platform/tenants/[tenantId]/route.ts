@@ -7,6 +7,7 @@ import {
   isTenantLifecycleAction,
   statusForLifecycleAction,
 } from '@/domain/platform/tenant-lifecycle';
+import { elevatedWriteAuditMetadata } from '@/domain/auth/elevation';
 import { authorizePlatform, assertElevated } from '@/lib/platform/request';
 import { recordDangerAction } from '@/lib/admin/audit';
 import { readJson } from '@/lib/data-stores/result-http';
@@ -88,6 +89,8 @@ export async function PATCH(
     action: auditActionForLifecycle(action),
     target: { type: 'tenant', id: tenant.id },
     reason: reason || undefined,
+    // break-glass 中の write は高重要度マークを付ける（利用後レビュー対象, #83 §3）。通常昇格は {}。
+    metadata: elevatedWriteAuditMetadata(gate.elevation),
     // 高詳細監査 (issue #83 AC13): status の before/after と操作元 IP/user-agent を残す。
     before: { status: tenant.status },
     after: { status: next.status },

@@ -26,6 +26,8 @@ type ElevationClaim = {
   jti: string;
   /** 昇格した操作者の identity (issue #264)。破壊的操作の監査 actor に使う。 */
   sub: string;
+  /** break-glass 区分 (issue #83 §3)。欠落（既存 cookie）は非 break-glass として扱う（後方互換）。 */
+  breakGlass?: true;
 };
 
 function elevationSecret(): string {
@@ -48,6 +50,8 @@ export async function issueElevationToken(elevation: Elevation, jti: string, sub
     jti,
     sub,
   };
+  // break-glass（#83 §3）は claim にも区分を残し、write 監査の高重要度マークへ復元する。
+  if (elevation.breakGlass) claim.breakGlass = true;
   await registerElevationJti({ jti, sub, expiresAt: elevation.until });
   return signSession(claim, elevationSecret());
 }
@@ -78,5 +82,7 @@ export async function readElevation(token: string | undefined): Promise<ReadElev
     },
     sub: payload.sub,
     jti: payload.jti,
+    // break-glass 区分 (#83 §3)。欠落した既存 cookie は非 break-glass（後方互換）。
+    ...(payload.breakGlass === true ? { breakGlass: true as const } : {}),
   };
 }

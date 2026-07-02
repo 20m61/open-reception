@@ -2,7 +2,9 @@
 
 import { useEffect, useState, type FormEvent } from 'react';
 import {
+  buildBreakGlassRequest,
   buildElevateRequest,
+  breakGlassErrorMessage,
   elevateErrorMessage,
   elevationScopeLabel,
   formatRemaining,
@@ -18,6 +20,11 @@ import {
  *   - 昇格中: 残り時間（毎秒更新）・対象スコープ・入力した理由を表示し、
  *     「昇格を終了」で `POST /api/platform/elevate/end`（jti 即時失効）を呼べる。
  *
+ * break-glass（緊急権限, #83 §3）は通常導線に出さない: 平常時は目立たない「緊急アクセス」
+ * エントリのみを置き、開いても**緊急事態確認（解錠チェック）**を通すまで発行フォームを有効化しない。
+ * 発行は別エンドポイント（/api/platform/elevate/break-glass）・15 分固定窓・高重要度監査で、
+ * 利用中は明示の警告表示（全操作が記録され利用後レビュー対象であること）を出す。
+ *
  * セキュリティ: **サーバ強制（assertElevated / 署名 cookie / jti 失効ストア）が本体**であり、
  * この UI は可視化と導線の UX に過ぎない。ここでの表示・カウントダウンに依存した保護はしない
  * （表示が「昇格中」でもサーバが失効していれば write は 403 になる）。initial は SSR 時点の
@@ -32,6 +39,9 @@ export function ElevationStatus({ initial }: { initial: ElevationView | null }) 
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [info, setInfo] = useState<string | null>(null);
+  // break-glass（#83 §3）: 平常時はロックされた「緊急アクセス」導線のみ。acknowledged が解錠ステップ。
+  const [bgOpen, setBgOpen] = useState(false);
+  const [bgAcknowledged, setBgAcknowledged] = useState(false);
 
   const active = elevation !== null && elevation.until > now;
   // 期限到達は elevation を消さず「active でない」として導出する（表示は自動で読み取り専用へ戻る）。
@@ -82,6 +92,46 @@ export function ElevationStatus({ initial }: { initial: ElevationView | null }) 
     }
   }
 
+  async function submitBreakGlass(e: FormEvent) {
+    e.preventDefault();
+    setError(null);
+    setInfo(null);
+    const built = buildBreakGlassRequest({ reason, credential, acknowledged: bgAcknowledged });
+    if (!built.ok) {
+      setError(built.error);
+      return;
+    }
+    setBusy(true);
+    try {
+      const res = await fetch('/api/platform/elevate/break-glass', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(built.payload),
+      });
+      const body: unknown = await res.json().catch(() => null);
+      if (!res.ok) {
+        setError(breakGlassErrorMessage(res.status, body));
+        return;
+      }
+      const until = (body as { until?: unknown } | null)?.until;
+      setElevation({
+        until: typeof until === 'number' ? until : Date.now(),
+        scope: {}, // break-glass は緊急対応のため platform 全体スコープ（サーバ側で固定）。
+        reason: built.payload.reason,
+        breakGlass: true,
+      });
+      setNow(Date.now());
+      setBgOpen(false);
+      setBgAcknowledged(false);
+      setReason('');
+      setCredential('');
+    } catch {
+      setError('break-glass リクエストの送信に失敗しました。ネットワークを確認してください。');
+    } finally {
+      setBusy(false);
+    }
+  }
+
   async function endElevation() {
     setBusy(true);
     setError(null);
@@ -111,14 +161,25 @@ export function ElevationStatus({ initial }: { initial: ElevationView | null }) 
     fontSize: '0.85rem',
   } as const;
 
+  // break-glass 昇格中は通常昇格より強い警告色で常時明示する（#83 §3）。
+  const activeBreakGlass = active && elevation?.breakGlass === true;
+
   return (
     <section
       id="platform-elevation"
       aria-label="JIT 昇格の状態"
       data-testid="elevation-status"
       style={{
-        border: active ? '1px solid rgba(224,168,128,0.6)' : '1px solid rgba(255,255,255,0.12)',
-        background: active ? 'rgba(224,168,128,0.08)' : 'var(--color-surface)',
+        border: activeBreakGlass
+          ? '1px solid rgba(230,110,110,0.75)'
+          : active
+            ? '1px solid rgba(224,168,128,0.6)'
+            : '1px solid rgba(255,255,255,0.12)',
+        background: activeBreakGlass
+          ? 'rgba(230,110,110,0.1)'
+          : active
+            ? 'rgba(224,168,128,0.08)'
+            : 'var(--color-surface)',
         borderRadius: 12,
         padding: 'var(--space-md)',
         marginBottom: 'var(--space-lg)',
@@ -126,8 +187,12 @@ export function ElevationStatus({ initial }: { initial: ElevationView | null }) 
       }}
     >
       <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-md)', flexWrap: 'wrap' }}>
-        <strong style={{ color: active ? '#e0a880' : undefined }}>
-          {active ? 'JIT 昇格中' : 'JIT 昇格: なし（読み取り専用）'}
+        <strong style={{ color: activeBreakGlass ? '#e66e6e' : active ? '#e0a880' : undefined }}>
+          {activeBreakGlass
+            ? 'BREAK-GLASS 昇格中（緊急）'
+            : active
+              ? 'JIT 昇格中'
+              : 'JIT 昇格: なし（読み取り専用）'}
         </strong>
         {active && elevation ? (
           <>
@@ -151,18 +216,43 @@ export function ElevationStatus({ initial }: { initial: ElevationView | null }) 
             <span style={{ opacity: 0.7 }}>
               破壊的操作（登録・変更・失効）には理由と再認証を伴う一時昇格が必要です（既定 30 分で自動失効）。
             </span>
-            {!formOpen ? (
-              <button
-                type="button"
-                onClick={() => setFormOpen(true)}
-                style={{ ...inputStyle, cursor: 'pointer' }}
-              >
-                昇格を開始…
-              </button>
+            {!formOpen && !bgOpen ? (
+              <>
+                <button
+                  type="button"
+                  onClick={() => setFormOpen(true)}
+                  style={{ ...inputStyle, cursor: 'pointer' }}
+                >
+                  昇格を開始…
+                </button>
+                {/* break-glass は通常導線に混ぜず、平常時はロックされた低強調エントリのみ（#83 §3）。 */}
+                <button
+                  type="button"
+                  data-testid="break-glass-entry"
+                  onClick={() => {
+                    setBgOpen(true);
+                    setBgAcknowledged(false);
+                    setError(null);
+                  }}
+                  style={{ ...inputStyle, cursor: 'pointer', opacity: 0.45 }}
+                  title="障害対応など緊急時のみ。解錠と理由・再認証が必要です。"
+                >
+                  緊急アクセス（break-glass）…
+                </button>
+              </>
             ) : null}
           </>
         )}
       </div>
+
+      {active && elevation ? (
+        activeBreakGlass ? (
+          <p style={{ color: '#e66e6e', margin: 'var(--space-sm) 0 0' }}>
+            緊急権限で操作しています。この間のすべての操作は高重要度監査に記録され、利用後レビューの
+            対象です（15 分で自動失効・不要になったら直ちに終了してください）。
+          </p>
+        ) : null
+      ) : null}
 
       {!active && formOpen ? (
         <form
@@ -207,6 +297,78 @@ export function ElevationStatus({ initial }: { initial: ElevationView | null }) 
           >
             取消
           </button>
+        </form>
+      ) : null}
+
+      {!active && bgOpen ? (
+        <form
+          onSubmit={(e) => void submitBreakGlass(e)}
+          data-testid="break-glass-panel"
+          style={{
+            border: '1px solid rgba(230,110,110,0.5)',
+            background: 'rgba(230,110,110,0.06)',
+            borderRadius: 8,
+            padding: 'var(--space-md)',
+            marginTop: 'var(--space-sm)',
+            display: 'flex',
+            flexDirection: 'column',
+            gap: 'var(--space-sm)',
+          }}
+        >
+          <strong style={{ color: '#e66e6e' }}>break-glass（緊急権限）— 障害時のみ</strong>
+          <p style={{ margin: 0, opacity: 0.8 }}>
+            通常の JIT 昇格と分離された緊急経路です。窓は 15 分固定・すべての操作が高重要度監査に
+            記録され、利用後レビューの対象になります。平常時の作業には通常の「昇格を開始」を使ってください。
+          </p>
+          <label style={{ display: 'flex', gap: 8, alignItems: 'center', cursor: 'pointer' }}>
+            <input
+              type="checkbox"
+              checked={bgAcknowledged}
+              onChange={(e) => setBgAcknowledged(e.target.checked)}
+              aria-label="緊急事態であることを確認"
+            />
+            <span>緊急事態（障害対応等）であり、記録・レビュー対象になることを確認しました。</span>
+          </label>
+          {/* 解錠（確認チェック）まで入力・送信をロックする（#83 §3「非表示またはロック + 明示的な解錠」）。 */}
+          <div style={{ display: 'flex', gap: 'var(--space-sm)', flexWrap: 'wrap', alignItems: 'center' }}>
+            <input
+              type="text"
+              value={reason}
+              onChange={(e) => setReason(e.target.value)}
+              placeholder="緊急対応の理由（必須・高重要度監査に記録）"
+              aria-label="緊急対応の理由"
+              disabled={!bgAcknowledged}
+              style={{ ...inputStyle, minWidth: 260, opacity: bgAcknowledged ? 1 : 0.5 }}
+            />
+            <input
+              type="password"
+              value={credential}
+              onChange={(e) => setCredential(e.target.value)}
+              placeholder="再認証コード"
+              aria-label="再認証コード"
+              autoComplete="one-time-code"
+              disabled={!bgAcknowledged}
+              style={{ ...inputStyle, minWidth: 140, opacity: bgAcknowledged ? 1 : 0.5 }}
+            />
+            <button
+              type="submit"
+              disabled={busy || !bgAcknowledged}
+              style={{ ...inputStyle, cursor: 'pointer', borderColor: 'rgba(230,110,110,0.6)' }}
+            >
+              {busy ? '発行中…' : '緊急権限を発行する'}
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                setBgOpen(false);
+                setBgAcknowledged(false);
+                setError(null);
+              }}
+              style={{ ...inputStyle, cursor: 'pointer', opacity: 0.7 }}
+            >
+              取消
+            </button>
+          </div>
         </form>
       ) : null}
 

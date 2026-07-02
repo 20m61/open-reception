@@ -5,7 +5,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Actor } from '@/domain/tenant/authorization';
 import type { Notice } from '@/domain/platform/notice';
-import { grantElevation } from '@/domain/auth/elevation';
+import { grantBreakGlass, grantElevation } from '@/domain/auth/elevation';
 
 const resolveAdminActor = vi.fn<() => Promise<Actor | null>>();
 const cookieGet = vi.fn<(name: string) => { value: string } | undefined>();
@@ -68,5 +68,27 @@ describe('POST /api/platform/notices (#83)', () => {
       expect.objectContaining({ action: 'platform.notice.published', reason: '周知' }),
     );
     expect('createdBy' in (await res.json()).notice).toBe(false);
+  });
+
+  it('通常昇格の write 監査には breakGlass マークが付かない（既存互換, #83 §3）', async () => {
+    await elevate();
+    await post(VALID);
+    const input = recordDangerAction.mock.calls.at(-1)?.[0] as { metadata: Record<string, unknown> };
+    expect('breakGlass' in input.metadata).toBe(false);
+    expect('severity' in input.metadata).toBe(false);
+  });
+
+  it('break-glass 中の write は高重要度監査（breakGlass/severity マーク）になる (#83 §3)', async () => {
+    const token = await issueElevationToken(
+      grantBreakGlass({ reason: '緊急対応', scope: {} }, Date.now()),
+      'j-bg',
+      'dev@example.com',
+    );
+    cookieGet.mockImplementation((n) => (n === ELEVATION_COOKIE ? { value: token } : undefined));
+    const res = await post(VALID);
+    expect(res.status).toBe(201);
+    const input = recordDangerAction.mock.calls.at(-1)?.[0] as { metadata: Record<string, unknown> };
+    expect(input.metadata.breakGlass).toBe('true');
+    expect(input.metadata.severity).toBe('high');
   });
 });

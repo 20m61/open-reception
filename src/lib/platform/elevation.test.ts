@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { grantElevation } from '@/domain/auth/elevation';
+import { grantBreakGlass, grantElevation } from '@/domain/auth/elevation';
 import { issueElevationToken, readElevation } from './elevation';
 import { elevationJtiState, __resetElevationJtis } from './elevation-jti-store';
 import { reauthenticate } from './reauth';
@@ -50,6 +50,18 @@ describe('elevation cookie (#83 inc4b)', () => {
     expect(await readElevation(`${token}tamper`)).toBeNull();
     expect(await readElevation(undefined)).toBeNull();
     expect(await readElevation('not.a.token')).toBeNull();
+  });
+
+  it('break-glass 昇格は breakGlass:true を往復復元する（#83 §3）', async () => {
+    const token = await issueElevationToken(grantBreakGlass({ reason: '緊急対応', scope: {} }, Date.now()), 'j-bg', 'dev@example.com');
+    const read = await readElevation(token);
+    expect(read?.breakGlass).toBe(true);
+  });
+
+  it('breakGlass の無い既存クレームは非 break-glass として復元する（後方互換, #83 §3）', async () => {
+    const token = await issueElevationToken(grantElevation({ reason: 'x', scope: {} }, Date.now()), 'j-std', 'dev@example.com');
+    const read = await readElevation(token);
+    expect(read?.breakGlass).toBeUndefined();
   });
 
   it('失効済み（until 過去）は null（verifySession の期限検証）', async () => {

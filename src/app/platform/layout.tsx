@@ -25,7 +25,13 @@ async function readElevationView(identity: string): Promise<ElevationView | null
     const elevation = await readElevation(token);
     if (!elevation || elevation.sub !== identity) return null;
     if ((await elevationJtiState(elevation.jti, Date.now())) !== 'active') return null;
-    return { until: elevation.until, scope: elevation.scope, reason: elevation.reason };
+    return {
+      until: elevation.until,
+      scope: elevation.scope,
+      reason: elevation.reason,
+      // break-glass 区分 (#83 §3)。UI が緊急昇格中の警告表示（高重要度監査・利用後レビュー）を出す。
+      breakGlass: elevation.breakGlass === true,
+    };
   } catch {
     return null;
   }

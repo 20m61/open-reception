@@ -14,6 +14,7 @@
 import { randomUUID } from 'node:crypto';
 import { NextResponse } from 'next/server';
 import type { AuditAction } from '@/domain/reception/log';
+import { elevatedWriteAuditMetadata } from '@/domain/auth/elevation';
 import { recordDangerAction } from '@/lib/admin/audit';
 import { assertElevated } from '@/lib/platform/request';
 import { getTenantStore } from '@/lib/tenant/store';
@@ -66,6 +67,8 @@ export async function handlePlatformDangerCreate<In, T extends { id: string } & 
   if (!gate.ok) return gate.response;
   const operator = gate.elevation.sub; // 昇格した操作者 identity。
   const actor = `platform:${operator}`; // 監査 actor（#264）。
+  // break-glass 中の write は高重要度マーク（breakGlass/severity）を全監査に付ける (#83 §3)。通常昇格は {}。
+  const severityMeta = elevatedWriteAuditMetadata(gate.elevation);
 
   const body = ((await request.json().catch(() => ({}))) ?? {}) as Record<string, unknown>;
   const built = opts.build(body as In, { id: randomUUID(), now: new Date(), operator });
@@ -91,7 +94,7 @@ export async function handlePlatformDangerCreate<In, T extends { id: string } & 
     action: opts.action,
     target,
     reason: reason || undefined,
-    metadata: opts.metadataOf(built.value),
+    metadata: { ...opts.metadataOf(built.value), ...severityMeta },
     actor,
     request,
   });
@@ -103,7 +106,7 @@ export async function handlePlatformDangerCreate<In, T extends { id: string } & 
     await recordDangerAction({
       action: opts.action,
       target,
-      metadata: { result: 'store_failed' },
+      metadata: { result: 'store_failed', ...severityMeta },
       actor,
       request,
     });
