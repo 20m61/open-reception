@@ -129,8 +129,12 @@ export const ENVIRONMENTS: Record<EnvironmentName, EnvConfig> = {
     environment: 'prod',
     prefix: `${PROJECT}-prod`,
     web: {
-      serverMemoryMb: 2048,
+      // dev 実測 (issue #308): Max Memory Used ~161MB / 1024MB 設定、p50 46ms・TTFB 50-90ms。
+      // 2048 は実測に基づかない初期値だったため 1024 に是正（メモリ×時間課金が半減）。
+      // 実トラフィック開始後は WebMonitoring ダッシュボード (#299) で再評価する。
+      serverMemoryMb: 1024,
       serverTimeoutSec: 30,
+      // image は直近 7 日で呼び出しゼロ（実測なし・課金ゼロ）のため据え置き (issue #308)。
       imageMemoryMb: 2048,
       logRetentionDays: 90,
     },
