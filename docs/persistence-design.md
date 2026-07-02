@@ -186,11 +186,11 @@ src/lib/data/
 1. **getBackend() 直呼び store**（`src/lib/data-stores/*`、`src/lib/{assets,kiosk,platform,...}/*-store.ts` 約 20 ファイル）
    — モジュール関数が直接 `getBackend().collection()` を引く。手早いが、永続化詳細
    （collection 名・走査フィルタ）が呼び出し側へ漏れやすく、route が collection を
-   直接触る逸脱（例: `/api/kiosk/checkout`）を生みやすい。
-2. **repository 三点セット**（`src/lib/{visit,tenant,signage,reservation}/`）
-   — `repository.ts`（interface）+ `memory-repository.ts` + `backend-repository.ts` +
-   `store.ts`（ファクトリ）。境界が型で明示される一方、backend 抽象が既に memory/dynamodb
-   切替を提供しているため **memory 実装が二重投資**になっている。
+   直接触る逸脱（例: 旧 `/api/kiosk/checkout`。#274 ① で解消済み）を生みやすい。
+2. **repository 三点セット**（`src/lib/{signage,reservation}/`。tenant は #274 ②、visit は
+   ① で単一実装へ統合済み）— `repository.ts`（interface）+ `memory-repository.ts` +
+   `backend-repository.ts` + `store.ts`（ファクトリ）。境界が型で明示される一方、backend
+   抽象が既に memory/dynamodb 切替を提供しているため **memory 実装が二重投資**になっている。
 
 ### 9.2 新規エンティティの標準（決定）
 
@@ -246,19 +246,26 @@ src/lib/<entity>/
 
 ### 9.4 既存 store の移行順（段階増分、1 PR = 1〜2 エンティティ、挙動不変）
 
-1. **visitstay** — `/api/kiosk/checkout` の getBackend() 直呼びを `StayRepository` 経由へ
-   （既存 interface に present 一覧を追加するだけ。イディオム逸脱の解消を最優先）。
+1. ~~**visitstay**~~ — **済（#274 ①）**。`/api/kiosk/checkout` の getBackend() 直呼びを
+   `StayRepository.listPresent`（KioskStayService 経由）へ解消。visit の
+   `memory-repository.ts` / `backend-repository.ts` の二重実装は廃止し、
+   `src/lib/visit/repository.ts`（interface + DataBackedStayRepository）+ store のファクトリ
+   （getStayRepository）へ統合（テストは memory backend + seed で単一実装を直接検証）。
 2. ~~**device / kiosk**~~ — **済（#274 ②/#284）**。kiosk-store は `KioskRepository`
    （`src/lib/kiosk/repository.ts` + kiosk-store のファクトリ/互換 API）へ、tenant の
    `memory-repository.ts` は廃止（テストは memory backend + seed で DataBacked 実装を直接検証）。
    死活集計の境界クエリ化は §9.3 の listByIndex（tenantId）で恒久化。kiosk レジストリ自体の
    Device への本統合（Device 起点発番）は docs/site-device-management-design.md の残増分。
-3. **platform 系**（incident / notice / maintenance-window / update-status / feature-flag）
-   — read/write が対で揃っており repository 化が機械的。
+3. ~~**platform 系**~~（incident / notice / maintenance-window / update-status / feature-flag
+   / elevation-jti）— **済（#274 ③）**。`src/lib/platform/repository.ts` に interface +
+   getBackend() 委譲実装（運用レコード 4 種は同型契約 `PlatformRecordRepository<T>`、
+   feature-flag / elevation-jti は専用 interface）を集約し、各 `*-store.ts` はファクトリ +
+   互換 API（呼び出し側 route は無変更）。elevation-jti はセキュリティ経路（#264/#278）のため
+   fail-closed / updateIf CAS / 冪等 revoke の挙動を変えず移設。`PLATFORM_LIST_LIMIT` 維持。
 4. **directory**（department / staff）— 検索・並び替えは domain の純関数のまま repository 化。
    staff は件数増に備え部署別の境界クエリを検討。
-5. **reception-store（セッション）/ elevation-jti** — TTL 前提の短命データ。
+5. **reception-store（セッション）** — TTL 前提の短命データ（elevation-jti は ③ で移行済み）。
 6. **reception-log-store**（LogStore）— #254 の範囲クエリと合わせて最後。
-7. 既存三点セット（visit/signage/reservation/notification。tenant は #274 ② で廃止済み）の
+7. 既存三点セット（signage/reservation/notification。tenant は #274 ②、visit は ① で廃止済み）の
    `memory-repository.ts` は、各エンティティを触る増分の中で**機会的に廃止**する
    （専用 PR は立てない）。

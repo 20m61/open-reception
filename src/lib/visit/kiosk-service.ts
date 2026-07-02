@@ -41,6 +41,14 @@ export class KioskStayService {
   }
 
   /**
+   * 当該サイトの在館中（present）滞在を返す（#274 ①: 受付端末の在館一覧）。
+   * 走査・status フィルタの詳細は repository に閉じる（route は collection を知らない）。
+   */
+  async listPresent(tenantId: TenantId, siteId: SiteId): Promise<VisitStay[]> {
+    return this.repo.listPresent(tenantId, siteId);
+  }
+
+  /**
    * 受付番号（stayId）から退館を確定する。
    * - 該当なし / 越境: not_found（端末から越境理由を見せない）。
    * - 終端（退館済み / 取消）: already_checked_out（二重退館防止・誤操作からの復帰）。

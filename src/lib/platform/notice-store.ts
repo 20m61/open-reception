@@ -1,14 +1,19 @@
 /**
  * プラットフォームお知らせ（Notice）のストア (issue #83 §8 / #90 increment 3e)。
  *
- * 永続化は data backend の collection に委譲する。`seed` は **memory バックエンド専用**（dev/test/
- * デモ）であり、DynamoDB（本番）は無視する。したがって本番では実際に公開されたお知らせのみが
- * 見え、デモ用のダミーは出ない。公開/更新（書き込み）は破壊的操作のため後段増分（JIT 昇格・
- * 理由入力・監査つき）で実装する。本モジュールは read のみを公開する。
+ * #274 ③ で §9 標準（docs/persistence-design.md）へ統合: 永続化は PlatformRecordRepository
+ * （./repository.ts、getBackend() 委譲の単一実装）に閉じ、本ファイルはプロセス共有ファクトリ
+ * （getNoticeRepository）と互換 API を担う。呼び出し側 route の変更は不要。
+ *
+ * `seed` は **memory バックエンド専用**（dev/test/デモ）であり、DynamoDB（本番）は無視する。
+ * したがって本番では実際に公開されたお知らせのみが見え、デモ用のダミーは出ない。
  */
 import type { Notice } from '@/domain/platform/notice';
-import { getBackend } from '@/lib/data';
-import { PLATFORM_LIST_LIMIT } from './store-limits';
+import {
+  DataBackedPlatformRecordRepository,
+  PLATFORM_NOTICE_COLLECTION,
+  type PlatformRecordRepository,
+} from './repository';
 
 /** memory バックエンド専用のデモ用サンプル（本番 DynamoDB では無視される）。 */
 function seed(): Notice[] {
@@ -39,11 +44,19 @@ function seed(): Notice[] {
   ];
 }
 
-const collection = () => getBackend().collection<Notice>('platform_notices', { seed });
+let repository: PlatformRecordRepository<Notice> | undefined;
+
+/** プロセス共有の Notice リポジトリ（§9.2 のファクトリ）。 */
+export function getNoticeRepository(): PlatformRecordRepository<Notice> {
+  if (!repository) {
+    repository = new DataBackedPlatformRecordRepository<Notice>(PLATFORM_NOTICE_COLLECTION, seed);
+  }
+  return repository;
+}
 
 /** 全お知らせを返す（read-only）。並べ替え・集計は domain の summarizeNotices に委譲する。 */
 export async function listNotices(): Promise<Notice[]> {
-  return collection().list({ limit: PLATFORM_LIST_LIMIT });
+  return getNoticeRepository().list();
 }
 
 /**
@@ -51,10 +64,10 @@ export async function listNotices(): Promise<Notice[]> {
  * 監査**を通した後に呼ぶこと。id は呼び出し側で採番済み。
  */
 export async function createNotice(notice: Notice): Promise<void> {
-  await collection().put(notice);
+  await getNoticeRepository().create(notice);
 }
 
 /** テスト/seed 用に初期状態へ戻す（memory のみ実効）。 */
 export async function __resetNotices(): Promise<void> {
-  await collection().reset();
+  await getNoticeRepository().reset();
 }

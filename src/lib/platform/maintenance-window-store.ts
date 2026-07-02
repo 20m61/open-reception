@@ -1,14 +1,19 @@
 /**
  * 予定メンテナンス（MaintenanceWindow）のストア (issue #83 §8 / #90 increment 3e)。
  *
- * 永続化は data backend の collection に委譲する。`seed` は **memory バックエンド専用**（dev/test/
- * デモ）であり、DynamoDB（本番）は無視する。したがって本番では実際に登録された予定のみが見え、
- * デモ用のダミー予定は出ない。登録/状態変更（書き込み）は破壊的操作のため後段増分（JIT 昇格・
- * 理由入力・監査つき）で実装する。本モジュールは read のみを公開する。
+ * #274 ③ で §9 標準（docs/persistence-design.md）へ統合: 永続化は PlatformRecordRepository
+ * （./repository.ts、getBackend() 委譲の単一実装）に閉じ、本ファイルはプロセス共有ファクトリ
+ * （getMaintenanceWindowRepository）と互換 API を担う。呼び出し側 route の変更は不要。
+ *
+ * `seed` は **memory バックエンド専用**（dev/test/デモ）であり、DynamoDB（本番）は無視する。
+ * したがって本番では実際に登録された予定のみが見え、デモ用のダミー予定は出ない。
  */
 import type { MaintenanceWindow } from '@/domain/platform/maintenance-window';
-import { getBackend } from '@/lib/data';
-import { PLATFORM_LIST_LIMIT } from './store-limits';
+import {
+  DataBackedPlatformRecordRepository,
+  PLATFORM_MAINTENANCE_WINDOW_COLLECTION,
+  type PlatformRecordRepository,
+} from './repository';
 
 /** memory バックエンド専用のデモ用サンプル（本番 DynamoDB では無視される）。 */
 function seed(): MaintenanceWindow[] {
@@ -27,12 +32,22 @@ function seed(): MaintenanceWindow[] {
   ];
 }
 
-const collection = () =>
-  getBackend().collection<MaintenanceWindow>('platform_maintenance_windows', { seed });
+let repository: PlatformRecordRepository<MaintenanceWindow> | undefined;
+
+/** プロセス共有の MaintenanceWindow リポジトリ（§9.2 のファクトリ）。 */
+export function getMaintenanceWindowRepository(): PlatformRecordRepository<MaintenanceWindow> {
+  if (!repository) {
+    repository = new DataBackedPlatformRecordRepository<MaintenanceWindow>(
+      PLATFORM_MAINTENANCE_WINDOW_COLLECTION,
+      seed,
+    );
+  }
+  return repository;
+}
 
 /** 全予定メンテナンスを返す（read-only）。並べ替え・集計は domain に委譲する。 */
 export async function listMaintenanceWindows(): Promise<MaintenanceWindow[]> {
-  return collection().list({ limit: PLATFORM_LIST_LIMIT });
+  return getMaintenanceWindowRepository().list();
 }
 
 /**
@@ -40,10 +55,10 @@ export async function listMaintenanceWindows(): Promise<MaintenanceWindow[]> {
  * ゲート（assertElevated）と監査**を通した後に呼ぶこと。id は呼び出し側で採番済み。
  */
 export async function createMaintenanceWindow(window: MaintenanceWindow): Promise<void> {
-  await collection().put(window);
+  await getMaintenanceWindowRepository().create(window);
 }
 
 /** テスト/seed 用に初期状態へ戻す（memory のみ実効）。 */
 export async function __resetMaintenanceWindows(): Promise<void> {
-  await collection().reset();
+  await getMaintenanceWindowRepository().reset();
 }

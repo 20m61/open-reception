@@ -1,15 +1,21 @@
 /**
  * プラットフォーム アップデート状況のストア (issue #83 AC6)。
  *
- * 永続化は data backend の collection に委譲する（docs/persistence-design.md）。
+ * #274 ③ で §9 標準（docs/persistence-design.md）へ統合: 永続化は PlatformRecordRepository
+ * （./repository.ts、getBackend() 委譲の単一実装）に閉じ、本ファイルはプロセス共有ファクトリ
+ * （getUpdateStatusRepository）と互換 API を担う。呼び出し側 route の変更は不要。
+ *
  * `seed` は **memory バックエンド専用**（dev/test/デモ）であり、DynamoDB（本番）は無視する。
  * したがって本番では実際に登録された状況のみが見え、デモ用のダミーは出ない
  * （偽の「更新待ち/最新」を見せない）。更新実行（デプロイ/ロールバック）は破壊的操作のため後段
  * 増分（JIT 昇格・理由入力・監査つき）で扱い、本モジュールは read のみを公開する。
  */
 import type { UpdateStatus } from '@/domain/platform/update-status';
-import { getBackend } from '@/lib/data';
-import { PLATFORM_LIST_LIMIT } from './store-limits';
+import {
+  DataBackedPlatformRecordRepository,
+  PLATFORM_UPDATE_STATUS_COLLECTION,
+  type PlatformRecordRepository,
+} from './repository';
 
 /** memory バックエンド専用のデモ用サンプル（本番 DynamoDB では無視される）。 */
 function seed(): UpdateStatus[] {
@@ -51,14 +57,25 @@ function seed(): UpdateStatus[] {
   ];
 }
 
-const collection = () => getBackend().collection<UpdateStatus>('platform_update_status', { seed });
+let repository: PlatformRecordRepository<UpdateStatus> | undefined;
+
+/** プロセス共有の UpdateStatus リポジトリ（§9.2 のファクトリ）。 */
+export function getUpdateStatusRepository(): PlatformRecordRepository<UpdateStatus> {
+  if (!repository) {
+    repository = new DataBackedPlatformRecordRepository<UpdateStatus>(
+      PLATFORM_UPDATE_STATUS_COLLECTION,
+      seed,
+    );
+  }
+  return repository;
+}
 
 /** 全アップデート状況を返す（read-only）。並べ替え・集計は domain の summarizeUpdateStatuses に委譲。 */
 export async function listUpdateStatuses(): Promise<UpdateStatus[]> {
-  return collection().list({ limit: PLATFORM_LIST_LIMIT });
+  return getUpdateStatusRepository().list();
 }
 
 /** テスト/seed 用に初期状態へ戻す（memory のみ実効）。 */
 export async function __resetUpdateStatuses(): Promise<void> {
-  await collection().reset();
+  await getUpdateStatusRepository().reset();
 }
