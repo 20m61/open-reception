@@ -16,6 +16,8 @@ vi.mock('@/lib/auth/actor', () => ({
   },
 }));
 vi.mock('@/lib/data-stores/reception-log-store', () => ({ listAuditLogs: () => listAuditLogs() }));
+// 閲覧監査 (#83 §5 / inc5b) は本テストの関心外なので記録だけ吸収する（検証は route-view-audit.test.ts）。
+vi.mock('@/lib/platform/read-audit', () => ({ recordPlatformReadAudit: async () => ({}) }));
 
 import { GET } from './route';
 

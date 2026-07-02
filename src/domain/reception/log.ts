@@ -112,7 +112,13 @@ export type AuditAction =
   | 'platform.maintenance.scheduled'
   | 'platform.notice.published'
   // テナント別機能フラグの変更 (issue #83 inc5a)。変更キーと before/after を記録する（機微値なし）。
-  | 'feature_flag.updated';
+  | 'feature_flag.updated'
+  // platform の read 系監査 (issue #83 §5 / inc5b)。対象テナント切替・テナント設定閲覧・監査ログ閲覧。
+  // PII・機微値は残さない。監査ログ閲覧は同一 actor の窓内連続閲覧を 1 回に絞る（自己増殖ループ防止、
+  // src/domain/platform/read-audit.ts）。
+  | 'platform.tenant_scope.switched'
+  | 'platform.tenant.viewed'
+  | 'platform.audit_log.viewed';
 
 export type AuditLog = {
   id: string;

@@ -32,7 +32,15 @@ const listAuthMethodStatuses = vi.fn();
 
 vi.mock('@/lib/auth/actor', () => ({
   resolveAdminActor: () => resolveAdminActor(),
+  // 監査ログ閲覧・テナント詳細 read は identity 帰属の閲覧監査 (#83 §5 / inc5b) を残すため identity 付き解決を使う。
+  resolveAdminActorWithIdentity: async () => {
+    const a = await resolveAdminActor();
+    return a ? { actor: a, identity: 'dev@example.com' } : null;
+  },
 }));
+// read 系監査 (#83 §5 / inc5b) は本ファイルの関心外なので記録だけ吸収する
+// （検証は audit-logs/route-view-audit.test.ts と tenants/[tenantId]/route.test.ts）。
+vi.mock('@/lib/platform/read-audit', () => ({ recordPlatformReadAudit: async () => ({}) }));
 // maintenance ルートは対象テナント選択 Cookie を読む（inc3b-2）。未選択（絞り込みなし）で返す。
 vi.mock('next/headers', () => ({
   cookies: () => Promise.resolve({ get: () => undefined }),
