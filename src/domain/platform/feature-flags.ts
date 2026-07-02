@@ -79,6 +79,18 @@ export function effectiveTenantFeatureFlags(
   return { ...DEFAULT_TENANT_FEATURE_FLAGS, ...record?.flags };
 }
 
+/**
+ * 単一キーの実効値を返す enforcement 用ヘルパ (#290 item4)。
+ * 消費側（kiosk 設定配信など）が「このテナントでこの機能は使えるか」を 1 キーだけ問うための
+ * 純関数。レコード未作成・キー未上書きは既定値（有効）に解決する。
+ */
+export function isTenantFeatureEnabled(
+  record: TenantFeatureFlagRecord | undefined,
+  key: TenantFeatureFlagKey,
+): boolean {
+  return effectiveTenantFeatureFlags(record)[key];
+}
+
 export type ApplyResult = {
   /** 保存すべき次レコード（changedKeys が空なら保存不要）。 */
   next: TenantFeatureFlagRecord;

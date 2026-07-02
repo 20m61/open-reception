@@ -7,6 +7,7 @@ import {
   TENANT_FEATURE_FLAG_KEYS,
   DEFAULT_TENANT_FEATURE_FLAGS,
   effectiveTenantFeatureFlags,
+  isTenantFeatureEnabled,
   parseFeatureFlagChanges,
   applyFeatureFlagChanges,
   type TenantFeatureFlagRecord,
@@ -64,6 +65,32 @@ describe('effectiveTenantFeatureFlags', () => {
       ...DEFAULT_TENANT_FEATURE_FLAGS,
       voiceSynthesis: false,
     });
+  });
+});
+
+describe('isTenantFeatureEnabled (#290 item4 enforcement)', () => {
+  it('レコード未作成なら既定値（有効）', () => {
+    expect(isTenantFeatureEnabled(undefined, 'voiceSynthesis')).toBe(true);
+    expect(isTenantFeatureEnabled(undefined, 'avatarReception')).toBe(true);
+  });
+
+  it('無効化されたキーのみ false になり、欠落キーは既定値のまま', () => {
+    const record: TenantFeatureFlagRecord = {
+      id: 'internal',
+      flags: { avatarReception: false },
+      updatedAt: '2026-01-01T00:00:00.000Z',
+    };
+    expect(isTenantFeatureEnabled(record, 'avatarReception')).toBe(false);
+    expect(isTenantFeatureEnabled(record, 'voiceSynthesis')).toBe(true);
+  });
+
+  it('再有効化（明示 true の上書き）を反映する', () => {
+    const record: TenantFeatureFlagRecord = {
+      id: 'internal',
+      flags: { voiceSynthesis: true },
+      updatedAt: '2026-01-01T00:00:00.000Z',
+    };
+    expect(isTenantFeatureEnabled(record, 'voiceSynthesis')).toBe(true);
   });
 });
 
