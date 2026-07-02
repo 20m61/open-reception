@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server';
 import { setKioskEnabled } from '@/lib/kiosk/kiosk-store';
+import { syncKioskToDevice } from '@/lib/kiosk/device-sync';
 import { resultResponse } from '@/lib/data-stores/result-http';
 import {
   assertCanWrite,
@@ -28,6 +29,10 @@ export async function POST(
   }
   const { id } = await params;
   const result = await setKioskEnabled(id, false);
-  if (result.ok) await recordDangerAction({ action: 'kiosk.revoked', target: { type: 'kiosk', id } });
+  if (result.ok) {
+    await recordDangerAction({ action: 'kiosk.revoked', target: { type: 'kiosk', id } });
+    // Device レジストリへ revoked を即時写像（#284 inc1 逆方向同期・best-effort）。
+    await syncKioskToDevice(result.value);
+  }
   return resultResponse(result);
 }
