@@ -262,9 +262,16 @@ src/lib/<entity>/
    feature-flag / elevation-jti は専用 interface）を集約し、各 `*-store.ts` はファクトリ +
    互換 API（呼び出し側 route は無変更）。elevation-jti はセキュリティ経路（#264/#278）のため
    fail-closed / updateIf CAS / 冪等 revoke の挙動を変えず移設。`PLATFORM_LIST_LIMIT` 維持。
-4. **directory**（department / staff）— 検索・並び替えは domain の純関数のまま repository 化。
-   staff は件数増に備え部署別の境界クエリを検討。
-5. **reception-store（セッション）** — TTL 前提の短命データ（elevation-jti は ③ で移行済み）。
+4. ~~**directory**~~（department / staff）— **済（#274 ④）**。
+   `src/lib/data-stores/directory-repository.ts`（DirectoryRepository + getBackend() 委譲の
+   単一実装）+ directory-store のファクトリ/互換 API（検索・並び替え・CSV インポートは
+   domain 純関数と互換 API のまま）。部署別の境界クエリは**採らない**: 規模が小さく
+   （STAFF_LIST_LIMIT = 1000 の安全弁で十分）、departmentId は異動で変わる可変フィールドの
+   ため §9.3 の indexedField（不変限定）に適さない。上限に近づいたら #284 と統合設計で移行。
+5. ~~**reception-store（セッション）**~~ — **済（#274 ⑤）**。
+   `src/lib/data-stores/reception-repository.ts`（ReceptionSessionRepository、TTL 付き
+   Collection 委譲）+ reception-store のファクトリ/互換 API（状態機械・呼び出し adapter・
+   監査/履歴化は互換 API のまま）。id でのみ引く短命データのため一覧 API は持たない。
 6. **reception-log-store**（LogStore）— #254 の範囲クエリと合わせて最後。
 7. 既存三点セット（signage/reservation/notification。tenant は #274 ②、visit は ① で廃止済み）の
    `memory-repository.ts` は、各エンティティを触る増分の中で**機会的に廃止**する

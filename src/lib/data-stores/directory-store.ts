@@ -2,26 +2,35 @@
  * 部署・担当者ディレクトリのストア (issue #3)。
  * 受付端末・管理画面・呼び出し adapter の単一の情報源とする。
  *
- * 永続化は data backend（memory / dynamodb）に委譲する (docs/persistence-design.md)。
- * memory バックエンドでは mock-data を seed として読み込む。
+ * #274 ④ で §9 標準（docs/persistence-design.md）へ統合: 永続化は DirectoryRepository
+ * （./directory-repository.ts、getBackend() 委譲の単一実装）に閉じ、本ファイルはプロセス共有
+ * ファクトリ（getDirectoryRepository）と互換 API（入力検証・並び替え・CSV インポート・
+ * kiosk 公開ビュー）を担う。既存呼び出し側（/api/admin/{departments,staff}/*,
+ * /api/kiosk/directory, call adapter）の変更は不要。
+ *
+ * memory バックエンドでは mock-data を seed として読み込む（dynamodb は無視し実データを正とする）。
  */
 import type { Department } from '@/domain/department/types';
 import { normalizeCallTargets, type MockCallOutcome, type Staff } from '@/domain/staff/types';
 import { MOCK_DEPARTMENTS, MOCK_STAFF } from '@/domain/staff/mock-data';
 import { searchStaff } from '@/domain/staff/search';
-import { getBackend } from '@/lib/data';
+import { DataBackedDirectoryRepository, type DirectoryRepository } from './directory-repository';
 
 export type StoreError = { code: 'not_found' | 'invalid_input'; message: string };
 export type Result<T> = { ok: true; value: T } | { ok: false; error: StoreError };
 
-const depts = () =>
-  getBackend().collection<Department>('department', {
-    seed: () => MOCK_DEPARTMENTS.map((d) => ({ ...d })),
-  });
-const staffCol = () =>
-  getBackend().collection<Staff>('staff', {
-    seed: () => MOCK_STAFF.map((s) => ({ ...s, aliases: [...s.aliases] })),
-  });
+let repository: DirectoryRepository | undefined;
+
+/** プロセス共有の DirectoryRepository（§9.2 のファクトリ）。 */
+export function getDirectoryRepository(): DirectoryRepository {
+  if (!repository) {
+    repository = new DataBackedDirectoryRepository(
+      () => MOCK_DEPARTMENTS.map((d) => ({ ...d })),
+      () => MOCK_STAFF.map((s) => ({ ...s, aliases: [...s.aliases] })),
+    );
+  }
+  return repository;
+}
 
 function err(code: StoreError['code'], message: string): Result<never> {
   return { ok: false, error: { code, message } };
@@ -31,24 +40,17 @@ function nextId(prefix: string): string {
   return `${prefix}-${Math.random().toString(36).slice(2, 8)}`;
 }
 
-/**
- * 担当者一覧の上限（#274 inc1）。部署は構造的に小さい（既定上限で十分）が、担当者は組織規模で
- * 増え得るため明示する。超過分は list() が warn つきで切り詰める。これを超える組織規模では
- * 境界付きクエリ（部署別 GSI 等）へ移行する（#274 の移行増分）。
- */
-const STAFF_LIST_LIMIT = 1000;
-
 /* ---------- 部署 ---------- */
 
 export async function listDepartments(includeDisabled = false): Promise<Department[]> {
-  const all = await depts().list();
+  const all = await getDirectoryRepository().listDepartments();
   return all
     .filter((d) => includeDisabled || d.enabled)
     .sort((a, b) => a.displayOrder - b.displayOrder);
 }
 
 export async function getDepartment(id: string): Promise<Result<Department>> {
-  const found = await depts().get(id);
+  const found = await getDirectoryRepository().getDepartment(id);
   return found ? { ok: true, value: found } : err('not_found', 'department not found');
 }
 
@@ -71,7 +73,8 @@ function validateDepartmentInput(input: unknown): Result<DepartmentInput> {
 export async function createDepartment(input: unknown): Promise<Result<Department>> {
   const v = validateDepartmentInput(input);
   if (!v.ok) return v;
-  const all = await depts().list();
+  const repo = getDirectoryRepository();
+  const all = await repo.listDepartments();
   const maxOrder = all.reduce((m, d) => Math.max(m, d.displayOrder), 0);
   const dept: Department = {
     id: nextId('dept'),
@@ -80,12 +83,13 @@ export async function createDepartment(input: unknown): Promise<Result<Departmen
     displayOrder: maxOrder + 1,
     enabled: v.value.enabled ?? true,
   };
-  await depts().put(dept);
+  await repo.putDepartment(dept);
   return { ok: true, value: dept };
 }
 
 export async function updateDepartment(id: string, patch: unknown): Promise<Result<Department>> {
-  const found = await depts().get(id);
+  const repo = getDirectoryRepository();
+  const found = await repo.getDepartment(id);
   if (!found) return err('not_found', 'department not found');
   if (typeof patch !== 'object' || patch === null) return err('invalid_input', 'body must be an object');
   const o = patch as Record<string, unknown>;
@@ -102,7 +106,7 @@ export async function updateDepartment(id: string, patch: unknown): Promise<Resu
     if (typeof o.displayOrder !== 'number') return err('invalid_input', 'displayOrder must be a number');
     found.displayOrder = o.displayOrder;
   }
-  await depts().put(found);
+  await repo.putDepartment(found);
   return { ok: true, value: found };
 }
 
@@ -111,7 +115,8 @@ export async function reorderDepartments(orderedIds: unknown): Promise<Result<De
   if (!Array.isArray(orderedIds) || !orderedIds.every((id): id is string => typeof id === 'string')) {
     return err('invalid_input', 'orderedIds must be an array of string');
   }
-  const all = await depts().list();
+  const repo = getDirectoryRepository();
+  const all = await repo.listDepartments();
   const known = new Set(all.map((d) => d.id));
   if (!orderedIds.every((id) => known.has(id))) {
     return err('invalid_input', 'orderedIds contains unknown department id');
@@ -120,7 +125,7 @@ export async function reorderDepartments(orderedIds: unknown): Promise<Result<De
     const dept = all.find((d) => d.id === id);
     if (dept) {
       dept.displayOrder = index + 1;
-      await depts().put(dept);
+      await repo.putDepartment(dept);
     }
   }
   return { ok: true, value: await listDepartments(true) };
@@ -138,25 +143,26 @@ export async function moveDepartment(id: string, direction: 'up' | 'down'): Prom
   const tmp = a.displayOrder;
   a.displayOrder = b.displayOrder;
   b.displayOrder = tmp;
-  await depts().put(a);
-  await depts().put(b);
+  const repo = getDirectoryRepository();
+  await repo.putDepartment(a);
+  await repo.putDepartment(b);
   return { ok: true, value: await listDepartments(true) };
 }
 
 /* ---------- 担当者 ---------- */
 
 export async function listStaff(includeDisabled = false): Promise<Staff[]> {
-  const all = await staffCol().list({ limit: STAFF_LIST_LIMIT });
+  const all = await getDirectoryRepository().listStaff();
   return all.filter((s) => includeDisabled || s.enabled);
 }
 
 export async function getStaff(id: string): Promise<Result<Staff>> {
-  const found = await staffCol().get(id);
+  const found = await getDirectoryRepository().getStaff(id);
   return found ? { ok: true, value: found } : err('not_found', 'staff not found');
 }
 
 export async function searchEnabledStaff(query: string): Promise<Staff[]> {
-  return searchStaff(await staffCol().list({ limit: STAFF_LIST_LIMIT }), query);
+  return searchStaff(await getDirectoryRepository().listStaff(), query);
 }
 
 export type StaffInput = {
@@ -191,7 +197,8 @@ function validateStaffInput(input: unknown, knownDeptIds: Set<string>): Result<S
 }
 
 export async function createStaff(input: unknown): Promise<Result<Staff>> {
-  const deptIds = new Set((await depts().list()).map((d) => d.id));
+  const repo = getDirectoryRepository();
+  const deptIds = new Set((await repo.listDepartments()).map((d) => d.id));
   const v = validateStaffInput(input, deptIds);
   if (!v.ok) return v;
   const member: Staff = {
@@ -205,12 +212,13 @@ export async function createStaff(input: unknown): Promise<Result<Staff>> {
     callTargets: [],
     fallbackStaffIds: [],
   };
-  await staffCol().put(member);
+  await repo.putStaff(member);
   return { ok: true, value: member };
 }
 
 export async function updateStaff(id: string, patch: unknown): Promise<Result<Staff>> {
-  const found = await staffCol().get(id);
+  const repo = getDirectoryRepository();
+  const found = await repo.getStaff(id);
   if (!found) return err('not_found', 'staff not found');
   if (typeof patch !== 'object' || patch === null) return err('invalid_input', 'body must be an object');
   const o = patch as Record<string, unknown>;
@@ -221,7 +229,7 @@ export async function updateStaff(id: string, patch: unknown): Promise<Result<St
   }
   if (o.kana !== undefined) found.kana = typeof o.kana === 'string' ? o.kana : undefined;
   if (o.departmentId !== undefined) {
-    const deptIds = new Set((await depts().list()).map((d) => d.id));
+    const deptIds = new Set((await repo.listDepartments()).map((d) => d.id));
     if (typeof o.departmentId !== 'string' || !deptIds.has(o.departmentId))
       return err('invalid_input', 'departmentId is invalid');
     found.departmentId = o.departmentId;
@@ -240,13 +248,13 @@ export async function updateStaff(id: string, patch: unknown): Promise<Result<St
   }
   if (o.fallbackStaffIds !== undefined) {
     if (!Array.isArray(o.fallbackStaffIds)) return err('invalid_input', 'fallbackStaffIds must be an array');
-    const allStaff = await staffCol().list({ limit: STAFF_LIST_LIMIT });
+    const allStaff = await repo.listStaff();
     const valid = o.fallbackStaffIds
       .filter((sid): sid is string => typeof sid === 'string')
       .filter((sid) => sid !== id && allStaff.some((s) => s.id === sid));
     found.fallbackStaffIds = valid;
   }
-  await staffCol().put(found);
+  await repo.putStaff(found);
   return { ok: true, value: found };
 }
 
@@ -270,7 +278,8 @@ export async function importDepartments(
   mode: 'preview' | 'apply',
 ): Promise<ImportSummary> {
   const summary: ImportSummary = { mode, created: 0, updated: 0, invalid: [] };
-  const current = await depts().list();
+  const repo = getDirectoryRepository();
+  const current = await repo.listDepartments();
   let maxOrder = current.reduce((m, d) => Math.max(m, d.displayOrder), 0);
   for (const [i, rec] of records.entries()) {
     const name = (rec.name ?? '').trim();
@@ -287,7 +296,7 @@ export async function importDepartments(
         existing.kana = rec.kana?.trim() || undefined;
         if (rec.display_order) existing.displayOrder = Number(rec.display_order) || existing.displayOrder;
         existing.enabled = parseBool(rec.enabled, existing.enabled);
-        await depts().put(existing);
+        await repo.putDepartment(existing);
       }
     } else {
       summary.created++;
@@ -301,7 +310,7 @@ export async function importDepartments(
           enabled: parseBool(rec.enabled, true),
         };
         current.push(dept);
-        await depts().put(dept);
+        await repo.putDepartment(dept);
       }
     }
   }
@@ -314,8 +323,9 @@ export async function importStaff(
   mode: 'preview' | 'apply',
 ): Promise<ImportSummary> {
   const summary: ImportSummary = { mode, created: 0, updated: 0, invalid: [] };
-  const deptIds = new Set((await depts().list()).map((d) => d.id));
-  const current = await staffCol().list({ limit: STAFF_LIST_LIMIT });
+  const repo = getDirectoryRepository();
+  const deptIds = new Set((await repo.listDepartments()).map((d) => d.id));
+  const current = await repo.listStaff();
   for (const [i, rec] of records.entries()) {
     const displayName = (rec.display_name ?? '').trim();
     const departmentId = (rec.department_id ?? '').trim();
@@ -342,7 +352,7 @@ export async function importStaff(
         existing.departmentId = departmentId;
         existing.enabled = parseBool(rec.enabled, existing.enabled);
         existing.available = parseBool(rec.available, existing.available);
-        await staffCol().put(existing);
+        await repo.putStaff(existing);
       }
     } else {
       summary.created++;
@@ -363,7 +373,7 @@ export async function importStaff(
           fallbackStaffIds,
         };
         current.push(member);
-        await staffCol().put(member);
+        await repo.putStaff(member);
       }
     }
   }
@@ -397,5 +407,5 @@ export async function getKioskDirectory(): Promise<KioskDirectory> {
 
 /** テスト用: ストアを seed 状態に戻す。 */
 export async function __resetDirectory(): Promise<void> {
-  await Promise.all([depts().reset(), staffCol().reset()]);
+  await getDirectoryRepository().reset();
 }

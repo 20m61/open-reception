@@ -1,7 +1,11 @@
 /**
  * 受付セッションのストア (issue #16)。
- * 永続化は data backend（memory / dynamodb）に委譲する (docs/persistence-design.md)。
- * 受付セッションは短期失効（TTL）対象。
+ *
+ * #274 ⑤ で §9 標準（docs/persistence-design.md）へ統合: 永続化は ReceptionSessionRepository
+ * （./reception-repository.ts、getBackend() 委譲の単一実装）に閉じ、本ファイルはプロセス共有
+ * ファクトリ（getReceptionSessionRepository）と互換 API（入力検証・状態機械・呼び出し
+ * adapter・監査/履歴化）を担う。既存呼び出し側（/api/kiosk/receptions/*, /api/staff/calls/*）の
+ * 変更は不要。受付セッションは短期失効（TTL）対象。
  */
 import { randomUUID } from 'node:crypto';
 import {
@@ -18,7 +22,10 @@ import {
   type StaffResponseResult,
 } from '@/domain/reception/staff-response';
 import { getCallAdapter } from '@/lib/call/adapter-factory';
-import { getBackend } from '@/lib/data';
+import {
+  DataBackedReceptionSessionRepository,
+  type ReceptionSessionRepository,
+} from './reception-repository';
 import { listStaff } from './directory-store';
 import type { CallAdapter, CallResult } from '@/adapters/call/types';
 import {
@@ -41,12 +48,17 @@ export type StoreError = { code: 'not_found' | 'invalid_input' | 'invalid_transi
 
 export type StoreResult<T> = { ok: true; value: T } | { ok: false; error: StoreError };
 
-const DEFAULT_TTL_SEC = 24 * 60 * 60;
+let repository: ReceptionSessionRepository | undefined;
 
-const sessions = () =>
-  getBackend().collection<ReceptionSession>('reception', {
-    ttlSeconds: Number(process.env.RECEPTION_SESSION_TTL_SEC) || DEFAULT_TTL_SEC,
-  });
+/** プロセス共有の ReceptionSessionRepository（§9.2 のファクトリ）。 */
+export function getReceptionSessionRepository(): ReceptionSessionRepository {
+  if (!repository) {
+    repository = new DataBackedReceptionSessionRepository();
+  }
+  return repository;
+}
+
+const sessions = () => getReceptionSessionRepository();
 
 function now(): string {
   return new Date().toISOString();
