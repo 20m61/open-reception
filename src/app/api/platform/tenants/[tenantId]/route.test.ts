@@ -1,6 +1,7 @@
 /**
  * テナント有効/停止 API（PATCH /api/platform/tenants/[tenantId]）のテスト (issue #90)。
  * developer 専用の破壊的操作であること・状態更新・監査（理由つき）を検証する。
+ * あわせて GET（テナント詳細 read）のテナント設定閲覧監査 (#83 §5 / inc5b) を検証する。
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Actor } from '@/domain/tenant/authorization';
@@ -12,6 +13,7 @@ const resolveAdminActor = vi.fn<() => Promise<Actor | null>>();
 const getTenant = vi.fn<(id: unknown) => Promise<Tenant | undefined>>();
 const putTenant = vi.fn<(t: Tenant) => Promise<void>>();
 const cookieGet = vi.fn<(name: string) => { value: string } | undefined>();
+const recordPlatformReadAudit = vi.fn<(input: unknown) => Promise<unknown>>();
 const recordDangerAction =
   vi.fn<
     (input: {
@@ -34,11 +36,18 @@ vi.mock('@/lib/auth/actor', () => ({
 }));
 vi.mock('next/headers', () => ({ cookies: () => Promise.resolve({ get: (n: string) => cookieGet(n) }) }));
 vi.mock('@/lib/tenant/store', () => ({
-  getTenantStore: () => ({ tenants: { getTenant: (id: unknown) => getTenant(id), putTenant: (t: Tenant) => putTenant(t) } }),
+  getTenantStore: () => ({
+    tenants: { getTenant: (id: unknown) => getTenant(id), putTenant: (t: Tenant) => putTenant(t) },
+    sites: { listSites: async () => [] },
+    devices: { listDevices: async () => [] },
+  }),
 }));
 vi.mock('@/lib/admin/audit', () => ({ recordDangerAction: (i: unknown) => recordDangerAction(i as never) }));
+vi.mock('@/lib/platform/read-audit', () => ({
+  recordPlatformReadAudit: (i: unknown) => recordPlatformReadAudit(i),
+}));
 
-import { PATCH } from './route';
+import { GET, PATCH } from './route';
 import { issueElevationToken, ELEVATION_COOKIE } from '@/lib/platform/elevation';
 
 /** developer に platform 全体の有効な昇格 cookie を持たせる。 */
@@ -76,6 +85,49 @@ beforeEach(() => {
   vi.clearAllMocks();
   getTenant.mockResolvedValue({ ...TENANT });
   cookieGet.mockReturnValue(undefined); // 既定: 未昇格。
+  recordPlatformReadAudit.mockResolvedValue({});
+});
+
+function getDetail(tenantId = 'internal') {
+  return GET(new Request(`http://x/api/platform/tenants/${tenantId}`), {
+    params: Promise.resolve({ tenantId }),
+  });
+}
+
+describe('GET /api/platform/tenants/[tenantId] テナント設定閲覧監査 (#83 §5 / inc5b)', () => {
+  it('developer の詳細閲覧を platform.tenant.viewed として記録する（actor 帰属・対象明示）', async () => {
+    resolveAdminActor.mockResolvedValue(developer());
+    const res = await getDetail();
+    expect(res.status).toBe(200);
+    expect(recordPlatformReadAudit).toHaveBeenCalledWith(
+      expect.objectContaining({
+        action: 'platform.tenant.viewed',
+        identity: 'dev@example.com',
+        target: { type: 'tenant', id: 'internal' },
+        request: expect.any(Request),
+      }),
+    );
+  });
+
+  it('未認証 401 / 非 developer 403 / 存在しないテナント 404 では記録しない', async () => {
+    resolveAdminActor.mockResolvedValue(null);
+    expect((await getDetail()).status).toBe(401);
+    resolveAdminActor.mockResolvedValue(tenantAdmin());
+    expect((await getDetail()).status).toBe(403);
+    resolveAdminActor.mockResolvedValue(developer());
+    getTenant.mockResolvedValue(undefined);
+    expect((await getDetail('ghost')).status).toBe(404);
+    expect(recordPlatformReadAudit).not.toHaveBeenCalled();
+  });
+
+  it('§4 回帰: 詳細応答に来訪者 PII（visitor/email/phone）を含まない', async () => {
+    resolveAdminActor.mockResolvedValue(developer());
+    const body = await (await getDetail()).json();
+    const text = JSON.stringify(body).toLowerCase();
+    for (const needle of ['visitor', 'email', 'phone']) {
+      expect(text).not.toContain(needle);
+    }
+  });
 });
 
 describe('PATCH /api/platform/tenants/[tenantId] (#90 / JIT #83 AC5)', () => {

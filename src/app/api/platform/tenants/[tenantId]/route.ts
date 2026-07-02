@@ -8,8 +8,9 @@ import {
   statusForLifecycleAction,
 } from '@/domain/platform/tenant-lifecycle';
 import { elevatedWriteAuditMetadata } from '@/domain/auth/elevation';
-import { authorizePlatform, assertElevated } from '@/lib/platform/request';
+import { authorizePlatformWithIdentity, assertElevated } from '@/lib/platform/request';
 import { recordDangerAction } from '@/lib/admin/audit';
+import { recordPlatformReadAudit } from '@/lib/platform/read-audit';
 import { readJson } from '@/lib/data-stores/result-http';
 
 /**
@@ -19,13 +20,17 @@ import { readJson } from '@/lib/data-stores/result-http';
  * （稼働中/メンテナンス表示中）を集計して返す。端末トークン等の機密や来訪者/担当者 PII は
  * 含めない。有効/停止・プラン/制限変更などの破壊的操作は本増分では提供しない（プレースホルダ維持）。
  *
- * 認可: authorizePlatform()（未認証 401 / 非 developer 403）。developer は全テナント横断 read。
+ * テナント設定閲覧の監査 (#83 §5 / inc5b): 詳細 read の到達（＝対象テナント付き read）を
+ * `platform.tenant.viewed` として actor 帰属つきで記録する。詳細画面への明示的な遷移ごと
+ * なので窓による抑制はしない。記録失敗は伝播させる（未監査の閲覧に詳細を返さない・fail-closed）。
+ *
+ * 認可: authorizePlatformWithIdentity()（未認証 401 / 非 developer 403）。developer は全テナント横断 read。
  */
 export async function GET(
-  _req: Request,
+  request: Request,
   { params }: { params: Promise<{ tenantId: string }> },
 ): Promise<NextResponse> {
-  const auth = await authorizePlatform();
+  const auth = await authorizePlatformWithIdentity();
   if (!auth.ok) return auth.response;
 
   const { tenantId: raw } = await params;
@@ -35,6 +40,14 @@ export async function GET(
   if (!tenant) {
     return NextResponse.json({ error: 'not_found' }, { status: 404 });
   }
+
+  // テナント設定閲覧の監査 (#83 §5)。実在するテナントの詳細に到達した時点で記録する。
+  await recordPlatformReadAudit({
+    action: 'platform.tenant.viewed',
+    identity: auth.identity,
+    target: { type: 'tenant', id: String(tenant.id) },
+    request,
+  });
 
   const sites: Site[] = await store.sites.listSites(tenantId);
   const sitesWithDevices: { site: Site; devices: Device[] }[] = [];
