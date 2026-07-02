@@ -2,6 +2,7 @@
 import 'source-map-support/register';
 import * as cdk from 'aws-cdk-lib';
 import { WebStack, CustomDomainConfig } from '../lib/stacks/web-stack';
+import { WebMonitoringStack } from '../lib/stacks/web-monitoring-stack';
 import { NotificationStack } from '../lib/stacks/notification-stack';
 import { MonitoringStack } from '../lib/stacks/monitoring-stack';
 import { resolveEnv } from '../lib/config/environments';
@@ -12,9 +13,10 @@ import { resolveEnv } from '../lib/config/environments';
  * 環境は context で選択する: `cdk deploy -c env=prod`。既定は dev。
  *
  * Stack 構成:
- *   - WebStack          : Next.js (OpenNext) ホスティング
- *   - NotificationStack : 通知サブシステム (#32/#34) — API + Lambda + Polly/Vonage
- *   - MonitoringStack   : 通知サブシステムの監視（Alarms / Dashboard / SNS）
+ *   - WebStack           : Next.js (OpenNext) ホスティング
+ *   - WebMonitoringStack : WebStack の監視 (#299) — Lambda/DynamoDB Alarms + Dashboard + SNS
+ *   - NotificationStack  : 通知サブシステム (#32/#34) — API + Lambda + Polly/Vonage
+ *   - MonitoringStack    : 通知サブシステムの監視（Alarms / Dashboard / SNS）
  *
  * デプロイ先アカウント/リージョンは CDK 既定の環境変数
  * (CDK_DEFAULT_ACCOUNT / CDK_DEFAULT_REGION) を使用する。
@@ -62,7 +64,7 @@ const originVerifySecret = app.node.tryGetContext('originVerifySecret') as strin
 const adminProvider = appEnvContext.ADMIN_AUTH_PROVIDER ?? config.auth.adminProvider;
 const appEnv = { ...appEnvContext, ADMIN_AUTH_PROVIDER: adminProvider };
 
-new WebStack(app, `OpenReception-Web-${config.environment}`, {
+const web = new WebStack(app, `OpenReception-Web-${config.environment}`, {
   env: { account, region },
   config,
   appEnv,
@@ -80,6 +82,17 @@ const alarmEmail = app.node.tryGetContext('alarmEmail') as string | undefined;
 if (alarmEmail) {
   config.notification.alarmEmail = alarmEmail;
 }
+
+// WebStack の監視 (#299)。alarmEmail の注入（上）より後に構築し、購読へ反映させる。
+new WebMonitoringStack(app, `OpenReception-WebMonitoring-${config.environment}`, {
+  env: { account, region },
+  config,
+  serverFn: web.serverFn,
+  imageFn: web.imageFn,
+  table: web.dataTable,
+  distributionId: web.distribution.distributionId,
+  description: `open-reception web monitoring (${config.environment})`,
+});
 
 const notification = new NotificationStack(app, `OpenReception-Notification-${config.environment}`, {
   env: { account, region },

@@ -237,6 +237,46 @@ Lambda メモリ・ログ保持・CloudFront PriceClass を環境ごとに調整
   `SECURITY_HEADERS` レスポンスポリシーを付与。
 - 管理認可（`/admin`, `/api/admin`）は server Lambda 上の `proxy`（旧 middleware）が担う。
 
+## WebStack の監視（WebMonitoringStack） (issue #299)
+
+本番トラフィックの主経路である WebStack を監視する専用 Stack。WebStack と同時に
+（`--all` またはスタック名指定で）デプロイする。
+
+```bash
+cd infra
+npx cdk deploy OpenReception-Web-prod OpenReception-WebMonitoring-prod -c env=prod \
+  -c appEnv="$APP_ENV" \
+  -c alarmEmail=ops@example.com   # 任意: アラーム通知先（下記参照）
+```
+
+- **アラーム（8 個、5 分 period / missing data は notBreaching）**:
+  - server Lambda: Errors / Throttles / Duration p95（タイムアウトの 80% 超・3 期間）/
+    ConcurrentExecutions（アカウント既定上限 1000 の 80% = 800 到達で暴走/攻撃の兆候）
+  - image Lambda: Errors / Duration p95
+  - DynamoDB: ThrottledRequests（read 系 / write 系オペレーション別。オンデマンドでも
+    テーブル/パーティション上限超過でスロットルは起こり得る）
+- **ダッシュボード** `open-reception-<env>-web`: Lambda invocations/errors/duration p95、
+  DynamoDB Consumed RCU/WCU + Throttles、CloudFront Requests / BytesDownloaded / 5xxErrorRate。
+- **SNS Topic は MonitoringStack と分離**（cost tag `Component=web` / デプロイ独立性のため）。
+  `-c alarmEmail` は両 Stack の Topic に同じ値が購読されるため運用上の差はない。
+
+> **CloudFront 5xxErrorRate の「アラーム」は未提供（意図的な見送り）**: AWS/CloudFront
+> メトリクスは **us-east-1 にのみ発行**され、CloudWatch アラームはメトリクスと同一リージョン
+> にしか置けない。us-east-1 の別 Stack + `crossRegionReferences`（custom resource 追加）は
+> 複雑さに見合わないため、リージョン跨ぎ参照が可能なダッシュボード widget でカバーする。
+> オリジン起因の 5xx は server/image Lambda の Errors アラームで実質検知できる。
+
+### alarmEmail の運用
+
+- 通知先メールは **`-c alarmEmail=ops@example.com`** をデプロイコマンドで都度渡す
+  （WebMonitoringStack / MonitoringStack 共通）。未指定なら Topic は作られるが購読者なし
+  （= 発報しても届かない）ので、実運用環境では必ず指定する。
+- `infra/lib/config/environments.ts` の `alarmEmail` 既定は全環境で空にしてある。実メール
+  アドレスのコード埋め込みは平文コミット（公開リポジトリでのアドレス収集・spam 対象化）に
+  なるため行わない。
+- 初回デプロイ後、SNS からの確認メール（Subscription Confirmation）を承認するまで通知は
+  届かない。
+
 ## 通知サブシステム（NotificationStack / MonitoringStack）
 
 通知サブシステム（#32/#34）も同じ CDK App に含まれる。Next.js 本体（WebStack）とは
@@ -284,6 +324,7 @@ npx cdk deploy OpenReception-Notification-prod OpenReception-Monitoring-prod -c 
   2. 通知 Lambda に `VONAGE_NOTIFY_ENDPOINT` と `VONAGE_NOTIFY_TOKEN` を直接 env 指定。
   Vonage 固有の JWT 署名連携は follow-up。
 - **アラーム通知先**: `-c alarmEmail=...` で SNS Email 購読を作成（未指定なら購読者なし）。
+  同じ context が WebMonitoringStack の Topic にも適用される（「alarmEmail の運用」参照）。
 
 > 既定（dev / Secret 未指定）では Polly・Vonage とも mock で動作し、実発信・実音声化を
 > 行わずに API フローを検証できる（ただし siteTokenSecret 未指定だと authorizer は全拒否）。
@@ -291,7 +332,7 @@ npx cdk deploy OpenReception-Notification-prod OpenReception-Monitoring-prod -c 
 ## クリーンアップ
 
 ```bash
-cd infra && npx cdk destroy OpenReception-Web-dev -c env=dev
+cd infra && npx cdk destroy OpenReception-WebMonitoring-dev OpenReception-Web-dev -c env=dev
 cd infra && npx cdk destroy OpenReception-Monitoring-dev OpenReception-Notification-dev -c env=dev
 ```
 
