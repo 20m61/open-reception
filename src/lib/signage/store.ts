@@ -6,7 +6,7 @@
  * actor=admin・PII なしで 'signage.updated' を記録する。
  */
 import { appendAdminAudit } from '@/lib/data-stores/reception-log-store';
-import { BackendSignageRepository } from './backend-repository';
+import { DataBackedSignageRepository } from './repository';
 import { SignageService } from './service';
 
 let service: SignageService | undefined;
@@ -14,7 +14,7 @@ let service: SignageService | undefined;
 export function getSignageService(): SignageService {
   if (!service) {
     service = new SignageService({
-      repo: new BackendSignageRepository(),
+      repo: new DataBackedSignageRepository(),
       appendAudit: appendAdminAudit,
     });
   }

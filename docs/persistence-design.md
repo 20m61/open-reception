@@ -187,10 +187,12 @@ src/lib/data/
    — モジュール関数が直接 `getBackend().collection()` を引く。手早いが、永続化詳細
    （collection 名・走査フィルタ）が呼び出し側へ漏れやすく、route が collection を
    直接触る逸脱（例: 旧 `/api/kiosk/checkout`。#274 ① で解消済み）を生みやすい。
-2. **repository 三点セット**（`src/lib/{signage,reservation}/`。tenant は #274 ②、visit は
-   ① で単一実装へ統合済み）— `repository.ts`（interface）+ `memory-repository.ts` +
+2. **repository 三点セット**（tenant は #274 ②、visit は ①、signage は ⑦ で単一実装へ
+   統合済み）— `repository.ts`（interface）+ `memory-repository.ts` +
    `backend-repository.ts` + `store.ts`（ファクトリ）。境界が型で明示される一方、backend
    抽象が既に memory/dynamodb 切替を提供しているため **memory 実装が二重投資**になっている。
+   残る `src/lib/{reservation,notification}/` の memory 実装は「二重」ではなく**唯一の実装**
+   （getBackend 未接続）のため、§9.4 の 7 参照。
 
 ### 9.2 新規エンティティの標準（決定）
 
@@ -272,7 +274,24 @@ src/lib/<entity>/
    `src/lib/data-stores/reception-repository.ts`（ReceptionSessionRepository、TTL 付き
    Collection 委譲）+ reception-store のファクトリ/互換 API（状態機械・呼び出し adapter・
    監査/履歴化は互換 API のまま）。id でのみ引く短命データのため一覧 API は持たない。
-6. **reception-log-store**（LogStore）— #254 の範囲クエリと合わせて最後。
-7. 既存三点セット（signage/reservation/notification。tenant は #274 ②、visit は ① で廃止済み）の
-   `memory-repository.ts` は、各エンティティを触る増分の中で**機会的に廃止**する
-   （専用 PR は立てない）。
+6. ~~**reception-log-store**~~（LogStore）— **済（#274 ⑥）**。
+   `src/lib/data-stores/reception-log-repository.ts`（ReceptionLogRepository /
+   AuditLogRepository、getBackend() の LogStore 委譲）+ reception-log-store のファクトリ/
+   互換 API。#254 の listSince 範囲クエリ契約（`>= sinceIso` 含む・新しい順）は
+   repository の契約テストで固定。全件 list は管理画面表示のみ（§9.3 のとおり境界化は
+   別増分）。
+7. 既存三点セットの `memory-repository.ts` の機会的廃止 — **対象分は済（#274 ⑦）**。
+   - signage: **済**。memory-/backend- の二重実装を廃止し `repository.ts`
+     （DataBackedSignageRepository、Singleton 委譲の単一実装）へ統合。テストは memory
+     backend + `__resetBackend` で単一実装を直接検証。
+   - reservation / notification: **対象外（残置）**。これらの memory 実装は二重実装ではなく
+     **唯一の実装**（getBackend 未接続。本番でもプロセス内メモリ）。廃止＝dynamodb 永続化
+     への切替であり挙動不変で消せないため、それぞれの永続化増分
+     （docs/visit-reservation-design.md / docs/call-route-config-design.md）で §9 標準へ
+     移行する際に扱う。
+
+**運用状態（#274 完了時点）**: 移行対象の getBackend() 直呼び store / 二重実装はすべて
+§9.2 標準（repository interface + getBackend 委譲の単一実装 + ファクトリ/互換 API）へ
+収斂済み。**新規エンティティは §9.2 の標準に従うこと**（シングルトン設定の例外も §9.2）。
+残る非標準は reservation / notification の memory 唯一実装のみで、上記 7 のとおり
+各永続化増分で扱う。
