@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server';
 import { createKiosk, listKiosks } from '@/lib/kiosk/kiosk-store';
+import { syncKioskToDevice } from '@/lib/kiosk/device-sync';
 import { readJson, resultResponse } from '@/lib/data-stores/result-http';
 import { appendAdminAudit } from '@/lib/data-stores/reception-log-store';
 import {
@@ -35,6 +36,10 @@ export async function POST(request: Request): Promise<NextResponse> {
     return toGuardResponse(err);
   }
   const result = await createKiosk(await readJson(request));
-  if (result.ok) await appendAdminAudit('kiosk.created', { type: 'kiosk', id: result.value.id });
+  if (result.ok) {
+    await appendAdminAudit('kiosk.created', { type: 'kiosk', id: result.value.id });
+    // Device レジストリへ即時写像（#284 inc1 逆方向同期・best-effort）。
+    await syncKioskToDevice(result.value);
+  }
   return resultResponse(result, 201);
 }

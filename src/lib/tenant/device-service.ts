@@ -378,6 +378,60 @@ export class DeviceService {
     return { created: created.ok };
   }
 
+  /**
+   * kiosk 管理操作（/admin/kiosks の作成・setEnabled）を Device レジストリへ即時写像する
+   * (issue #284 inc1 逆方向同期。adoptKiosk の heartbeat 起点取り込みを管理操作起点で補完)。
+   *
+   * 設計上の注意:
+   *   - 対応 Device が無ければ adoptKiosk と同型で作成する。ただし **lastSeenAt は付けない**。
+   *     管理操作は端末の稼働証跡ではないため、heartbeat 前の端末を偽 online にしない。
+   *   - 既存 Device は **status のみ** enabled から写像する（enabled=false → revoked。#283 と
+   *     同じ規則）。name/location は Device 側の編集（update）を正とし、kiosk 側で上書きしない。
+   *   - status 切替時は保留中エンロール URL を無効化する（enrollmentTokenId 消去。
+   *     setEnabled と同じ「revoke → 再有効化で旧 URL が復活しない」規則）。
+   *   - 認可しない。呼び出し側（/api/admin/kiosks 系ルート）が requireActor + assertCanWrite
+   *     で認可済みの管理操作に限って渡す契約。
+   *   - 監査しない。管理操作そのものは既存の kiosk.created / kiosk.revoked / kiosk.restored で
+   *     記録済みであり、写像で AuditAction を増やさない（二重記録を避ける）。
+   *   - kiosk レジストリはテナントレスのため、解決は findDeviceById（id 一致）・作成先は
+   *     呼び出し側が渡す既定スコープ（#283 と同じ既知の制約）。
+   */
+  async syncKioskState(
+    kiosk: { id: string; displayName: string; location?: string; enabled: boolean },
+    scope: { tenantId: TenantId; siteId: SiteId },
+  ): Promise<{ created: boolean; updated: boolean }> {
+    const id = kiosk.id.trim();
+    const name = kiosk.displayName.trim();
+    if (id === '' || name === '') return { created: false, updated: false };
+
+    const existing = await this.devices.findDeviceById(asDeviceId(id));
+    const status = kiosk.enabled ? 'active' : 'revoked';
+    if (!existing) {
+      const nowIso = this.now().toISOString();
+      const created = await this.devices.createDevice({
+        id: asDeviceId(id),
+        tenantId: scope.tenantId,
+        siteId: scope.siteId,
+        name,
+        status,
+        location: kiosk.location?.trim() || undefined,
+        kind: 'kiosk',
+        maintenance: false,
+        createdAt: nowIso,
+        updatedAt: nowIso,
+      });
+      return { created: created.ok, updated: false };
+    }
+    if (existing.status === status) return { created: false, updated: false };
+    await this.devices.putDevice({
+      ...existing,
+      status,
+      enrollmentTokenId: undefined,
+      updatedAt: this.now().toISOString(),
+    });
+    return { created: false, updated: true };
+  }
+
   /** Device → DeviceView。token 平文は持ち込まない（型上も存在しない）。 */
   private toView(device: Device): DeviceView {
     return {
