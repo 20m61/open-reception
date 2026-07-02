@@ -31,6 +31,13 @@ function nextId(prefix: string): string {
   return `${prefix}-${Math.random().toString(36).slice(2, 8)}`;
 }
 
+/**
+ * 担当者一覧の上限（#274 inc1）。部署は構造的に小さい（既定上限で十分）が、担当者は組織規模で
+ * 増え得るため明示する。超過分は list() が warn つきで切り詰める。これを超える組織規模では
+ * 境界付きクエリ（部署別 GSI 等）へ移行する（#274 の移行増分）。
+ */
+const STAFF_LIST_LIMIT = 1000;
+
 /* ---------- 部署 ---------- */
 
 export async function listDepartments(includeDisabled = false): Promise<Department[]> {
@@ -139,7 +146,7 @@ export async function moveDepartment(id: string, direction: 'up' | 'down'): Prom
 /* ---------- 担当者 ---------- */
 
 export async function listStaff(includeDisabled = false): Promise<Staff[]> {
-  const all = await staffCol().list();
+  const all = await staffCol().list({ limit: STAFF_LIST_LIMIT });
   return all.filter((s) => includeDisabled || s.enabled);
 }
 
@@ -149,7 +156,7 @@ export async function getStaff(id: string): Promise<Result<Staff>> {
 }
 
 export async function searchEnabledStaff(query: string): Promise<Staff[]> {
-  return searchStaff(await staffCol().list(), query);
+  return searchStaff(await staffCol().list({ limit: STAFF_LIST_LIMIT }), query);
 }
 
 export type StaffInput = {
@@ -233,7 +240,7 @@ export async function updateStaff(id: string, patch: unknown): Promise<Result<St
   }
   if (o.fallbackStaffIds !== undefined) {
     if (!Array.isArray(o.fallbackStaffIds)) return err('invalid_input', 'fallbackStaffIds must be an array');
-    const allStaff = await staffCol().list();
+    const allStaff = await staffCol().list({ limit: STAFF_LIST_LIMIT });
     const valid = o.fallbackStaffIds
       .filter((sid): sid is string => typeof sid === 'string')
       .filter((sid) => sid !== id && allStaff.some((s) => s.id === sid));
@@ -308,7 +315,7 @@ export async function importStaff(
 ): Promise<ImportSummary> {
   const summary: ImportSummary = { mode, created: 0, updated: 0, invalid: [] };
   const deptIds = new Set((await depts().list()).map((d) => d.id));
-  const current = await staffCol().list();
+  const current = await staffCol().list({ limit: STAFF_LIST_LIMIT });
   for (const [i, rec] of records.entries()) {
     const displayName = (rec.display_name ?? '').trim();
     const departmentId = (rec.department_id ?? '').trim();

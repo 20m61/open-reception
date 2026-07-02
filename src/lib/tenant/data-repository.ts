@@ -43,6 +43,13 @@ export const TENANT_COLLECTION = 'tenant';
 export const SITE_COLLECTION = 'site';
 export const DEVICE_COLLECTION = 'device';
 
+/**
+ * テナント/サイト/端末一覧の上限（#274 inc1）。いずれも契約数・台数スケールで増え得るため
+ * 明示する。超過分は list() が warn つきで切り詰める。恒久対応は tenantId/siteId の境界付き
+ * クエリ（GSI or 維持カウンタ、#284 と統合設計）への移行。
+ */
+const TENANT_SCOPE_LIST_LIMIT = 1000;
+
 export type TenantSeed = {
   tenants?: Tenant[];
   sites?: Site[];
@@ -72,7 +79,7 @@ class DataBackedTenantRepository implements TenantRepository {
   constructor(private readonly col: () => Collection<Tenant>) {}
 
   async listTenants(): Promise<Tenant[]> {
-    return this.col().list();
+    return this.col().list({ limit: TENANT_SCOPE_LIST_LIMIT });
   }
 
   async getTenant(id: TenantId): Promise<Tenant | undefined> {
@@ -84,7 +91,7 @@ class DataBackedTenantRepository implements TenantRepository {
     if (await col.get(tenant.id))
       return { ok: false, error: { code: 'conflict', message: 'tenant id exists' } };
     // slug 一意制約は走査で担保（小規模・GSI 化は将来増分）。
-    const all = await col.list();
+    const all = await col.list({ limit: TENANT_SCOPE_LIST_LIMIT });
     if (all.some((t) => t.slug === tenant.slug))
       return { ok: false, error: { code: 'conflict', message: 'tenant slug exists' } };
     await col.put(tenant);
@@ -100,7 +107,7 @@ class DataBackedSiteRepository implements SiteRepository {
   constructor(private readonly col: () => Collection<Site>) {}
 
   async listSites(tenantId: TenantId): Promise<Site[]> {
-    const all = await this.col().list();
+    const all = await this.col().list({ limit: TENANT_SCOPE_LIST_LIMIT });
     return all.filter((s) => s.tenantId === tenantId);
   }
 
@@ -126,13 +133,13 @@ class DataBackedDeviceRepository implements DeviceRepository {
   constructor(private readonly col: () => Collection<Device>) {}
 
   async listDevices(tenantId: TenantId, siteId: SiteId): Promise<Device[]> {
-    const all = await this.col().list();
+    const all = await this.col().list({ limit: TENANT_SCOPE_LIST_LIMIT });
     return all.filter((d) => d.tenantId === tenantId && d.siteId === siteId);
   }
 
   async listAllDevices(): Promise<Device[]> {
     // 全件走査だが、呼び出しは device-fleet.ts の TTL キャッシュ越しに限定する（repository.ts の契約）。
-    return this.col().list();
+    return this.col().list({ limit: TENANT_SCOPE_LIST_LIMIT });
   }
 
   async getDevice(tenantId: TenantId, id: DeviceId): Promise<Device | undefined> {

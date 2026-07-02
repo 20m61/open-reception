@@ -20,6 +20,7 @@ function err(code: StoreError['code'], message: string): Result<never> {
 }
 
 export async function listKiosks(): Promise<Kiosk[]> {
+  // 端末レジストリは構造的に小さい（拠点あたり数台）。既定上限（500, #274）で十分。
   return kiosks().list();
 }
 

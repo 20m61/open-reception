@@ -9,6 +9,7 @@
  */
 import type { TenantFeatureFlagRecord } from '@/domain/platform/feature-flags';
 import { getBackend } from '@/lib/data';
+import { PLATFORM_LIST_LIMIT } from './store-limits';
 
 const collection = () => getBackend().collection<TenantFeatureFlagRecord>('platform_feature_flags');
 
@@ -21,7 +22,7 @@ export async function getTenantFeatureFlagRecord(
 
 /** 全テナントの上書きレコードを返す（プラットフォーム横断サマリ用 read）。 */
 export async function listTenantFeatureFlagRecords(): Promise<TenantFeatureFlagRecord[]> {
-  return collection().list();
+  return collection().list({ limit: PLATFORM_LIST_LIMIT });
 }
 
 /** 上書きレコードを保存する（呼び出し側で昇格ゲート + 監査を通した後に呼ぶ）。 */

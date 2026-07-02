@@ -8,6 +8,7 @@
  */
 import type { MaintenanceWindow } from '@/domain/platform/maintenance-window';
 import { getBackend } from '@/lib/data';
+import { PLATFORM_LIST_LIMIT } from './store-limits';
 
 /** memory バックエンド専用のデモ用サンプル（本番 DynamoDB では無視される）。 */
 function seed(): MaintenanceWindow[] {
@@ -31,7 +32,7 @@ const collection = () =>
 
 /** 全予定メンテナンスを返す（read-only）。並べ替え・集計は domain に委譲する。 */
 export async function listMaintenanceWindows(): Promise<MaintenanceWindow[]> {
-  return collection().list();
+  return collection().list({ limit: PLATFORM_LIST_LIMIT });
 }
 
 /**

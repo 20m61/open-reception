@@ -7,9 +7,28 @@
  * 切替は getBackend()（DATA_BACKEND 環境変数）で行う。
  */
 
+/**
+ * Collection.list() の既定上限（#274 inc1）。パーティション内の無境界読みを防ぐ安全弁であり、
+ * これを超える集合は「増加し得る一覧」なので、呼び出し側で limit を明示するか、境界付き
+ * クエリ（GSI / 維持カウンタ、#284）へ移行する。上限超過時は各バックエンドが warn を出して
+ * 切り詰める（サイレントに欠落させない）。
+ */
+export const DEFAULT_COLLECTION_LIST_LIMIT = 500;
+
+/** Collection.list() のオプション（#274 inc1）。 */
+export interface ListOptions {
+  /** 返す最大件数。省略時は DEFAULT_COLLECTION_LIST_LIMIT。0 以下は空配列。 */
+  limit?: number;
+}
+
 /** id を持つアイテムの集合（部署・担当者・端末・アセット・受付セッション）。 */
 export interface Collection<T extends { id: string }> {
-  list(): Promise<T[]>;
+  /**
+   * パーティション内の全件を返す — ただし**上限つき**（options.limit、既定
+   * DEFAULT_COLLECTION_LIST_LIMIT）。上限を超えた分は切り詰められ warn が出る（#274）。
+   * 切り詰めが業務上許されない集合は、境界付きクエリへの移行（#284）を計画すること。
+   */
+  list(options?: ListOptions): Promise<T[]>;
   get(id: string): Promise<T | undefined>;
   /** 作成または上書き（read-modify-write は呼び出し側で行う）。 */
   put(item: T): Promise<void>;
