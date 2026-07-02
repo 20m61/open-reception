@@ -93,6 +93,10 @@ class MemoryDeviceRepository implements DeviceRepository {
       .map(clone);
   }
 
+  async listAllDevices(): Promise<Device[]> {
+    return [...this.devices.values()].map(clone);
+  }
+
   async getDevice(tenantId: TenantId, id: DeviceId): Promise<Device | undefined> {
     const d = this.devices.get(id);
     return d && d.tenantId === tenantId ? clone(d) : undefined;

@@ -96,12 +96,20 @@ export function Dashboard() {
 
       <Section title="受付端末">
         <CardGrid>
+          {/* 実死活 (#261): 直近 5 分の heartbeat 由来。分母は稼働可能端末のみ（保守/無効は別掲）。 */}
           <MetricCard
             label="オンライン端末"
             value={`${devices.online} / ${devices.total}`}
             tone={devices.total > 0 && devices.online === 0 ? 'danger' : devices.offline > 0 ? 'warning' : 'success'}
-            href="/admin/kiosks"
+            href="/admin/devices"
             hint={devices.offline > 0 ? `${devices.offline} 台がオフラインです` : 'すべての端末が稼働中'}
+          />
+          <MetricCard
+            label="保守・停止中の端末"
+            value={devices.maintenance + devices.disabled}
+            unit="台"
+            href="/admin/devices"
+            hint={`メンテナンス ${devices.maintenance} / 無効 ${devices.disabled}（オンライン率の分母に含めません）`}
           />
           <MetricCard
             label="Vonage 連携状態"

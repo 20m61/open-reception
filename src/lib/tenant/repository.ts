@@ -42,6 +42,15 @@ export interface SiteRepository {
 export interface DeviceRepository {
   /** 指定サイト配下の端末のみ返す。 */
   listDevices(tenantId: TenantId, siteId: SiteId): Promise<Device[]>;
+  /**
+   * テナント境界を跨いで全端末を返す (issue #261 死活集計)。platform 横断の稼働状態集計に使う。
+   * 呼び出し規約:
+   *   - 毎リクエストで直接呼ばない。集計は src/lib/tenant/device-fleet.ts の TTL キャッシュ
+   *     越しに行い、無境界フルスキャンの再来（#254 / #260 撤回理由 3）を防ぐ。
+   *   - 露出は件数集計のみ（developer 限定 surface か、自テナント集約ダッシュボード）。
+   *     通常の管理 API はテナント境界つきの listDevices を使うこと。
+   */
+  listAllDevices(): Promise<Device[]>;
   getDevice(tenantId: TenantId, id: DeviceId): Promise<Device | undefined>;
   /**
    * テナント境界を跨いで id だけで端末を引く (issue #87 inc3)。

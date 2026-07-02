@@ -26,7 +26,8 @@ type ObservabilityResponse = {
   integrations: Integration[];
   recentActivity: MaskedAuditRow[];
   reception: { receptions: number; successRate: number | null; callFailures: number; noAnswer: number };
-  devices: { total: number; online: number; offline: number };
+  // 端末の実死活 (#261)。total は稼働可能端末のみ（= online + offline）。maintenance/disabled は別掲。
+  devices: { total: number; online: number; offline: number; maintenance: number; disabled: number };
   metrics: Record<string, { status: 'pending' }>;
 };
 
@@ -104,11 +105,15 @@ export function Observability() {
         <MetricCard label="今月の受付数" value={data?.reception?.receptions ?? '—'} />
         <MetricCard label="通話失敗数" value={data?.reception?.callFailures ?? '—'} />
         <MetricCard label="未応答" value={data?.reception?.noAnswer ?? '—'} />
-        {/* enabled フラグ数（実死活=heartbeat は次増分）。 */}
+        {/* 実死活 (#261): 直近 5 分に heartbeat を受信した端末数。分母は稼働可能端末のみ。 */}
         <MetricCard
-          label="有効な端末"
+          label="端末オンライン"
           value={data?.devices ? `${data.devices.online}/${data.devices.total}` : '—'}
         />
+        <MetricCard label="オフライン" value={data?.devices?.offline ?? '—'} />
+        {/* 保守/無効は意図的な停止のため分母から除外し別掲する（希釈防止, #261 AC4）。 */}
+        <MetricCard label="メンテナンス中" value={data?.devices?.maintenance ?? '—'} />
+        <MetricCard label="無効な端末" value={data?.devices?.disabled ?? '—'} />
       </div>
 
       <h2 style={{ fontSize: '1rem', opacity: 0.7, marginTop: 'var(--space-lg)' }}>指標（実データ未接続）</h2>

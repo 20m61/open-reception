@@ -17,6 +17,11 @@
  */
 import { randomUUID } from 'node:crypto';
 import { canAccessSite } from '@/domain/tenant/authorization';
+import {
+  DEFAULT_ONLINE_WINDOW_MS,
+  deriveConnectivity,
+  type DeviceConnectivity,
+} from '@/domain/tenant/device-liveness';
 import type { Actor } from '@/domain/tenant/authorization';
 import type { AuditAction } from '@/domain/reception/log';
 import {
@@ -43,34 +48,13 @@ function fail(
   return { ok: false, error: { code, message } };
 }
 
-/**
- * UI 向けの稼働状態（issue #87 画面要件: オンライン / オフライン / メンテナンス中）。
- * inc3 で Kiosk→Device の heartbeat を `lastSeenAt` に取り込み、online/offline を実活動から
- * 導く（recordHeartbeat 経由）。status + maintenance + lastSeenAt から派生する。
- */
-export type DeviceConnectivity = 'online' | 'offline' | 'maintenance' | 'disabled';
-
-export const DEFAULT_ONLINE_WINDOW_MS = 5 * 60 * 1000;
-
-/**
- * Device の稼働状態を派生する純関数 (issue #87 inc3)。
- * DeviceService（一覧/詳細）と SiteService（オンライン端末数の集計）で同一ロジックを共有する。
- *   - revoked → disabled
- *   - maintenance → maintenance
- *   - lastSeenAt が窓内 → online、それ以外 → offline
- *   - lastSeenAt 未取得 → offline（heartbeat 未着）
- */
-export function deriveConnectivity(
-  device: Device,
-  now: Date,
-  onlineWindowMs: number = DEFAULT_ONLINE_WINDOW_MS,
-): DeviceConnectivity {
-  if (device.status === 'revoked') return 'disabled';
-  if (device.maintenance) return 'maintenance';
-  if (!device.lastSeenAt) return 'offline';
-  const age = now.getTime() - new Date(device.lastSeenAt).getTime();
-  return age >= 0 && age <= onlineWindowMs ? 'online' : 'offline';
-}
+// 稼働状態の派生は #261 で純ドメイン（src/domain/tenant/device-liveness.ts）へ移設した。
+// SiteService / fleet 集計と同一ロジックを共有する。既存 import 互換のため再輸出する。
+export {
+  DEFAULT_ONLINE_WINDOW_MS,
+  deriveConnectivity,
+  type DeviceConnectivity,
+} from '@/domain/tenant/device-liveness';
 
 /** 一覧/詳細レスポンス。token 平文は含めない（tokenRegistered の真偽のみ）。 */
 export type DeviceView = Device & {
@@ -351,6 +335,47 @@ export class DeviceService {
     // enrollmentTokenId を stale 値で書き戻し、消費済トークンを復活させ得る (issue #239)。
     await this.devices.touchLastSeen(device.id, (seenAt ?? this.now()).toISOString());
     return { matched: true };
+  }
+
+  /**
+   * kiosk レジストリ（#18）のみに存在する端末を Device レジストリへ取り込む (issue #261)。
+   *
+   * Device を source-of-truth へ寄せる片方向同期（docs/site-device-management-design.md
+   * §Device/Kiosk 統合方針）。heartbeat 経路（/api/kiosk/heartbeat）から、recordHeartbeat が
+   * matched:false（対応 Device なし）のときに呼ばれる。これで kiosk-only の実機も
+   * 死活集計（summarizeFleet）の実 heartbeat に載る（#260 撤回理由 1 の恒久解）。
+   *
+   * 設計上の注意:
+   *   - 認可しない（端末自身のパス）。ただし **呼び出し側が kiosk レジストリでの実在を確認**
+   *     してから渡す契約とし、無認可 heartbeat からの任意行作成を防ぐ（登録済み kiosk 限定）。
+   *   - id は kiosk と一致させる（統合方針の id 一致）。既存 Device がある場合は conflict で
+   *     no-op（冪等・並行 heartbeat の競合も片方だけが作成に勝つ）。
+   *   - enabled=false の kiosk は revoked として写像し、取り込みで勝手に有効化しない。
+   *   - 監査しない（actor 不在のシステム由来同期。対象は管理者登録済み kiosk のみ）。
+   */
+  async adoptKiosk(
+    kiosk: { id: string; displayName: string; location?: string; enabled: boolean },
+    scope: { tenantId: TenantId; siteId: SiteId },
+    seenAt?: Date,
+  ): Promise<{ created: boolean }> {
+    const id = kiosk.id.trim();
+    const name = kiosk.displayName.trim();
+    if (id === '' || name === '') return { created: false };
+    const nowIso = this.now().toISOString();
+    const created = await this.devices.createDevice({
+      id: asDeviceId(id),
+      tenantId: scope.tenantId,
+      siteId: scope.siteId,
+      name,
+      status: kiosk.enabled ? 'active' : 'revoked',
+      location: kiosk.location?.trim() || undefined,
+      kind: 'kiosk',
+      maintenance: false,
+      lastSeenAt: (seenAt ?? this.now()).toISOString(),
+      createdAt: nowIso,
+      updatedAt: nowIso,
+    });
+    return { created: created.ok };
   }
 
   /** Device → DeviceView。token 平文は持ち込まない（型上も存在しない）。 */
