@@ -44,7 +44,7 @@
 | ~~#275~~ | refactor | **クローズ済**（#279: domain/notification へ集約・参照同一性テスト） | 完了 2026-07-02 |
 | ~~#299~~ | infra | **クローズ済**（#302: WebMonitoringStack = アラーム8個 + web ダッシュボード + alarmEmail docs 化。CloudFront 5xx アラームは #303 へ） | 完了 2026-07-03 |
 | ~~#300~~ | infra | **クローズ済**（#301: prod CloudFront PriceClass_200・S3 MPU 掃除ライフサイクル。年齢 Expiration は現役アセット失効リスクで不採用を設計固定） | 完了 2026-07-03 |
-| **#303** | infra | CloudFront 5xxErrorRate のアラーム化（us-east-1 Stack + crossRegionReferences）+ リージョン全体 ConcurrentExecutions | 低優先（実トラフィック後） |
+| ~~#303~~ | infra | **クローズ済**（#306: CloudFrontMonitoringStack(us-east-1) 5xx>1%×15分 + dimensionless ConcurrentExecutions。crossRegionReferences は additive 実証済み。dev apply は別途） | 完了 2026-07-03 |
 
 ## 本流トラック — #83 platform epic 締め
 
