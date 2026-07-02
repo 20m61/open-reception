@@ -8,6 +8,8 @@ import {
   noticePublishError,
   buildBreakGlassRequest,
   breakGlassErrorMessage,
+  buildFeatureFlagUpdatePayload,
+  featureFlagUpdateError,
 } from './client-elevation';
 
 describe('formatRemaining', () => {
@@ -192,5 +194,51 @@ describe('breakGlassErrorMessage (#83 §3)', () => {
       elevateErrorMessage(400, { error: 'reason_required' }),
     );
     expect(breakGlassErrorMessage(401, null)).toBe(elevateErrorMessage(401, null));
+  });
+});
+
+describe('buildFeatureFlagUpdatePayload (#83 inc5a)', () => {
+  it('フラグキー + 有効/無効 + 操作理由から PATCH payload を組み立てる', () => {
+    const built = buildFeatureFlagUpdatePayload({
+      key: 'voiceSynthesis',
+      enable: false,
+      reason: ' PoC プランのため ',
+    });
+    expect(built).toEqual({
+      ok: true,
+      payload: { flags: { voiceSynthesis: false }, reason: 'PoC プランのため' },
+    });
+  });
+
+  it('操作理由の空はネットワークに出す前に弾く（#83 §2 理由必須）', () => {
+    expect(buildFeatureFlagUpdatePayload({ key: 'voiceSynthesis', enable: false, reason: '  ' })).toEqual({
+      ok: false,
+      error: '操作理由を入力してください（監査に記録されます）。',
+    });
+  });
+});
+
+describe('featureFlagUpdateError (#83 inc5a)', () => {
+  it('未昇格 403 は昇格導線つきエラー（notice と同じ汎用マップ）', () => {
+    const e = featureFlagUpdateError(403, { error: 'elevation_required', reason: 'not_elevated' });
+    expect(e.needsElevation).toBe(true);
+    expect(e.message).toContain('昇格');
+  });
+
+  it('昇格スコープ外（scope）も昇格導線つきエラーにする（対象テナントの明示昇格が要る）', () => {
+    const e = featureFlagUpdateError(403, { error: 'elevation_required', reason: 'scope' });
+    expect(e.needsElevation).toBe(true);
+  });
+
+  it('404 は対象テナント不存在の文言', () => {
+    const e = featureFlagUpdateError(404, { error: 'not_found' });
+    expect(e.needsElevation).toBe(false);
+    expect(e.message).toContain('見つかりません');
+  });
+
+  it('その他は操作名入りの汎用文言', () => {
+    expect(featureFlagUpdateError(500, { error: 'store_failed' }).message).toBe(
+      '機能フラグの変更に失敗しました（HTTP 500）。',
+    );
   });
 });

@@ -110,7 +110,9 @@ export type AuditAction =
   | 'ai_guidance.config_updated'
   | 'platform.incident.created'
   | 'platform.maintenance.scheduled'
-  | 'platform.notice.published';
+  | 'platform.notice.published'
+  // テナント別機能フラグの変更 (issue #83 inc5a)。変更キーと before/after を記録する（機微値なし）。
+  | 'feature_flag.updated';
 
 export type AuditLog = {
   id: string;

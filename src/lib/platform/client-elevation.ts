@@ -131,8 +131,12 @@ export function buildNoticePublishPayload(input: {
 /** 昇格つき write のエラー表示。needsElevation=true のとき UI は昇格導線へ誘導する。 */
 export type ElevatedWriteError = { message: string; needsElevation: boolean };
 
-/** `/api/platform/notices` のエラー応答 → ユーザー向け文言 + 昇格導線フラグ。 */
-export function noticePublishError(status: number, body: unknown): ElevatedWriteError {
+/**
+ * 昇格つき write 共通のエラー応答 → ユーザー向け文言 + 昇格導線フラグ (#83 inc4d/inc5a)。
+ * 403 elevation_required（未昇格/期限切れ/失効/スコープ外）はすべて昇格導線へ誘導する。
+ * `actionLabel` は最終フォールバック文言に使う操作名（例: 「お知らせの登録」）。
+ */
+export function elevatedWriteError(status: number, body: unknown, actionLabel: string): ElevatedWriteError {
   const error = bodyField(body, 'error');
   if (status === 403 && error === 'elevation_required') {
     const reason = bodyField(body, 'reason');
@@ -154,5 +158,39 @@ export function noticePublishError(status: number, body: unknown): ElevatedWrite
   if (status === 403) {
     return { needsElevation: false, message: 'この操作を実行する権限がありません。' };
   }
-  return { needsElevation: false, message: `お知らせの登録に失敗しました（HTTP ${status}）。` };
+  if (status === 404) {
+    return { needsElevation: false, message: '対象が見つかりません。画面を再読み込みしてください。' };
+  }
+  return { needsElevation: false, message: `${actionLabel}に失敗しました（HTTP ${status}）。` };
+}
+
+/** `/api/platform/notices` のエラー応答 → ユーザー向け文言 + 昇格導線フラグ（共通マップへ委譲）。 */
+export function noticePublishError(status: number, body: unknown): ElevatedWriteError {
+  return elevatedWriteError(status, body, 'お知らせの登録');
+}
+
+/** `PATCH .../feature-flags` の payload (#83 inc5a)。1 操作 = 1 フラグの切替（誤爆を小さくする）。 */
+export type FeatureFlagUpdatePayload = {
+  flags: Record<string, boolean>;
+  /** 操作理由（監査 recordDangerAction に記録される。PII/機密値を書かない運用）。 */
+  reason: string;
+};
+
+/**
+ * 機能フラグ切替 payload の組み立て。サーバ（parseFeatureFlagChanges）が正だが、
+ * #83 §2（理由必須の破壊的操作）に合わせ UI では操作理由を必須にする。
+ */
+export function buildFeatureFlagUpdatePayload(input: {
+  key: string;
+  enable: boolean;
+  reason: string;
+}): Built<FeatureFlagUpdatePayload> {
+  const reason = input.reason.trim();
+  if (reason === '') return { ok: false, error: '操作理由を入力してください（監査に記録されます）。' };
+  return { ok: true, payload: { flags: { [input.key]: input.enable }, reason } };
+}
+
+/** `PATCH .../feature-flags` のエラー応答 → ユーザー向け文言 + 昇格導線フラグ（共通マップへ委譲）。 */
+export function featureFlagUpdateError(status: number, body: unknown): ElevatedWriteError {
+  return elevatedWriteError(status, body, '機能フラグの変更');
 }
