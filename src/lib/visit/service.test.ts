@@ -1,9 +1,15 @@
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { asSiteId, asTenantId } from '@/domain/tenant/types';
 import type { Actor } from '@/domain/tenant/authorization';
 import { asStayId, type VisitStay } from '@/domain/visit/types';
-import { MemoryStayRepository } from './memory-repository';
+import { __resetBackend } from '@/lib/data';
+import { DataBackedStayRepository } from './repository';
 import { StayService, durationBucket, type AppendAudit } from './service';
+
+// #274 ①: memory repository は廃止。memory backend + seed で単一実装を直接検証する（§9.2）。
+afterEach(() => {
+  __resetBackend();
+});
 
 const T = asTenantId('tenant-a');
 const S = asSiteId('site-1');
@@ -34,7 +40,8 @@ function stay(over: Partial<VisitStay> = {}): VisitStay {
 }
 
 function makeService(seed: VisitStay[] = []) {
-  const repo = new MemoryStayRepository(seed);
+  __resetBackend();
+  const repo = new DataBackedStayRepository(() => seed.map((s) => ({ ...s })));
   const appendAudit = vi.fn<AppendAudit>().mockResolvedValue(undefined);
   return { repo, appendAudit, service: new StayService({ repo, appendAudit, now: () => NOW }) };
 }

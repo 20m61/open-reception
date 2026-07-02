@@ -2,8 +2,9 @@
  * 滞在サービスの組み立てと受付端末の scope 解決 (issue #102, increment 1)。
  *
  * 管理画面用 StayService と受付端末用 KioskStayService を 1 つずつ生成して共有する。
- * 両者は getBackend ベースの同一リポジトリ（BackendStayRepository）を使うため、
- * 端末で退館した滞在が管理画面の在館一覧へ反映される。
+ * 両者は getBackend ベースの同一リポジトリ（DataBackedStayRepository、§9.2 の
+ * プロセス共有ファクトリ getStayRepository）を使うため、端末で退館した滞在が
+ * 管理画面の在館一覧へ反映される。
  *
  * 監査は既存の appendAdminAudit（PII なし）を使う。
  *
@@ -13,7 +14,7 @@
  */
 import { asSiteId, asTenantId, type SiteId, type TenantId } from '@/domain/tenant/types';
 import { appendAdminAudit } from '@/lib/data-stores/reception-log-store';
-import { BackendStayRepository } from './backend-repository';
+import { DataBackedStayRepository, type StayRepository } from './repository';
 import { KioskStayService } from './kiosk-service';
 import { StayService } from './service';
 
@@ -21,13 +22,22 @@ import { StayService } from './service';
 export const DEV_STAY_TENANT_ID: TenantId = asTenantId('dev-tenant');
 export const DEV_STAY_SITE_ID: SiteId = asSiteId('dev-site');
 
+let repository: StayRepository | undefined;
 let adminService: StayService | undefined;
 let kioskService: KioskStayService | undefined;
+
+/** プロセス共有の StayRepository（§9.2 のファクトリ）。 */
+export function getStayRepository(): StayRepository {
+  if (!repository) {
+    repository = new DataBackedStayRepository();
+  }
+  return repository;
+}
 
 export function getStayService(): StayService {
   if (!adminService) {
     adminService = new StayService({
-      repo: new BackendStayRepository(),
+      repo: getStayRepository(),
       appendAudit: appendAdminAudit,
     });
   }
@@ -36,7 +46,7 @@ export function getStayService(): StayService {
 
 export function getKioskStayService(): KioskStayService {
   if (!kioskService) {
-    kioskService = new KioskStayService({ repo: new BackendStayRepository() });
+    kioskService = new KioskStayService({ repo: getStayRepository() });
   }
   return kioskService;
 }
@@ -49,8 +59,9 @@ export function resolveStayScope(_kioskId: string): { tenantId: TenantId; siteId
   return { tenantId: DEV_STAY_TENANT_ID, siteId: DEV_STAY_SITE_ID };
 }
 
-/** テスト用: サービスのシングルトンを破棄する（次回 getter で再生成）。 */
+/** テスト用: リポジトリ/サービスのシングルトンを破棄する（次回 getter で再生成）。 */
 export function __resetStayServices(): void {
+  repository = undefined;
   adminService = undefined;
   kioskService = undefined;
 }

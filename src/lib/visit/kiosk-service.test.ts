@@ -1,8 +1,14 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it } from 'vitest';
 import { asSiteId, asTenantId } from '@/domain/tenant/types';
 import { asStayId, type VisitStay } from '@/domain/visit/types';
-import { MemoryStayRepository } from './memory-repository';
+import { __resetBackend } from '@/lib/data';
+import { DataBackedStayRepository } from './repository';
 import { KioskStayService, parseStayId } from './kiosk-service';
+
+// #274 ①: memory repository は廃止。memory backend + seed で単一実装を直接検証する（§9.2）。
+afterEach(() => {
+  __resetBackend();
+});
 
 const T = asTenantId('dev-tenant');
 const S = asSiteId('dev-site');
@@ -24,7 +30,8 @@ function stay(over: Partial<VisitStay> = {}): VisitStay {
 }
 
 function makeService(seed: VisitStay[] = []) {
-  const repo = new MemoryStayRepository(seed);
+  __resetBackend();
+  const repo = new DataBackedStayRepository(() => seed.map((s) => ({ ...s })));
   return { repo, service: new KioskStayService({ repo, now: () => NOW }) };
 }
 
