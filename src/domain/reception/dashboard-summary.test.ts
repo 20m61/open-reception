@@ -4,10 +4,14 @@ import {
   buildDashboardSummary,
   deriveOverallStatus,
   recentCalls,
-  summarizeDevices,
   summarizeToday,
-  type DeviceLike,
+  type DeviceSummary,
 } from './dashboard-summary';
+
+/** 端末死活サマリのフィクスチャ（#261: 分母 total は稼働可能端末のみ）。 */
+function fleet(over: Partial<DeviceSummary> = {}): DeviceSummary {
+  return { total: 0, online: 0, offline: 0, maintenance: 0, disabled: 0, ...over };
+}
 
 const NOW = new Date('2026-06-20T12:00:00.000Z');
 
@@ -77,21 +81,6 @@ describe('summarizeToday (#86)', () => {
   });
 });
 
-describe('summarizeDevices (#86)', () => {
-  it('enabled をオンライン稼働として集計する', () => {
-    const devices: DeviceLike[] = [
-      { id: '1', displayName: 'A', enabled: true },
-      { id: '2', displayName: 'B', enabled: false },
-      { id: '3', displayName: 'C', enabled: true },
-    ];
-    expect(summarizeDevices(devices)).toEqual({ total: 3, online: 2, offline: 1 });
-  });
-
-  it('端末ゼロでも破綻しない', () => {
-    expect(summarizeDevices([])).toEqual({ total: 0, online: 0, offline: 0 });
-  });
-});
-
 describe('recentCalls (#86)', () => {
   it('新しい順に最大 limit 件、PII を含めず返す', () => {
     const logs: ReceptionLog[] = [
@@ -112,23 +101,27 @@ describe('deriveOverallStatus (#86)', () => {
   const base = { total: 0, connected: 0, timeout: 0, failed: 0, cancelled: 0, fallbackUsed: 0 };
 
   it('全端末オフラインは critical', () => {
-    expect(deriveOverallStatus(base, { total: 2, online: 0, offline: 2 })).toBe('critical');
+    expect(deriveOverallStatus(base, fleet({ total: 2, offline: 2 }))).toBe('critical');
   });
 
   it('呼び出し失敗があれば warning', () => {
-    expect(deriveOverallStatus({ ...base, failed: 1 }, { total: 2, online: 2, offline: 0 })).toBe('warning');
+    expect(deriveOverallStatus({ ...base, failed: 1 }, fleet({ total: 2, online: 2 }))).toBe('warning');
   });
 
   it('一部端末オフラインは warning', () => {
-    expect(deriveOverallStatus(base, { total: 2, online: 1, offline: 1 })).toBe('warning');
+    expect(deriveOverallStatus(base, fleet({ total: 2, online: 1, offline: 1 }))).toBe('warning');
   });
 
   it('問題なしは ok', () => {
-    expect(deriveOverallStatus({ ...base, connected: 3 }, { total: 2, online: 2, offline: 0 })).toBe('ok');
+    expect(deriveOverallStatus({ ...base, connected: 3 }, fleet({ total: 2, online: 2 }))).toBe('ok');
   });
 
   it('端末未登録（total=0）は critical にしない', () => {
-    expect(deriveOverallStatus(base, { total: 0, online: 0, offline: 0 })).toBe('ok');
+    expect(deriveOverallStatus(base, fleet())).toBe('ok');
+  });
+
+  it('全台が保守/無効（分母 0）は critical にしない（意図的な停止, #261）', () => {
+    expect(deriveOverallStatus(base, fleet({ maintenance: 1, disabled: 1 }))).toBe('ok');
   });
 });
 
@@ -138,11 +131,11 @@ describe('buildDashboardSummary (#86)', () => {
       log({ id: 'a', outcome: 'connected', startedAt: '2026-06-20T09:00:00.000Z' }),
       log({ id: 'b', outcome: 'failed', startedAt: '2026-06-20T10:00:00.000Z' }),
     ];
-    const devices: DeviceLike[] = [{ id: '1', displayName: 'A', enabled: true }];
+    const devices = fleet({ total: 1, online: 1 });
     const summary = buildDashboardSummary(logs, devices, NOW);
     expect(summary.status).toBe('warning'); // failed あり
     expect(summary.today.total).toBe(2);
-    expect(summary.devices).toEqual({ total: 1, online: 1, offline: 0 });
+    expect(summary.devices).toEqual(devices);
     expect(summary.recentCalls).toHaveLength(2);
     expect(summary.usageCost).toBeNull(); // 未指定なら null
   });
@@ -154,7 +147,7 @@ describe('buildDashboardSummary (#86)', () => {
       projectedMonthEnd: 3000,
       currency: 'JPY' as const,
     };
-    const summary = buildDashboardSummary([], [], NOW, usageCost);
+    const summary = buildDashboardSummary([], fleet(), NOW, usageCost);
     expect(summary.usageCost).toEqual(usageCost);
   });
 });

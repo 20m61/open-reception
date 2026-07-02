@@ -89,10 +89,59 @@ Device 稼働状態**の read 経路を 1 本通した。
 影響しない補助経路で、Device 側へ片方向に反映するのみ（Kiosk の enabled/失効を Device へ自動
 写像する逆方向や、新規端末の Device 化は次増分）。
 
+### #261 で通した統合の二歩目: 実死活の統一表示（実装済み）
+
+PR #260（observability の enabled→heartbeat 化）が二重レジストリ・surface 不整合・無境界
+フルスキャン・分母希釈で撤回されたため、issue #261 で以下を**まとめて**設計・実装した。
+
+- **レジストリ統一（AC1）**: 集計は kiosk / Device 両レジストリの **union（id 一致は Device
+  優先）** で行い、どちらで登録された端末も漏れなく数える（純関数
+  `summarizeFleet` / `src/domain/tenant/device-liveness.ts`）。加えて heartbeat 経路で
+  **kiosk レジストリのみの端末を Device へ取り込む**（`DeviceService.adoptKiosk`。
+  kiosk レジストリに実在する id 限定 → 無認可 heartbeat からの任意行作成にならない。
+  enabled=false は revoked として写像し勝手に有効化しない。既定スコープ
+  `resolveDefaultScope()` に紐づけ、監査なし=actor 不在のシステム由来同期）。これにより
+  実機が生きている kiosk-only 端末は初回 heartbeat で Device（source-of-truth）に収束する。
+- **surface 一致（AC2）**: admin ダッシュボード（#86）と platform オブザーバビリティ
+  （#83/#90）は **同一の共有関数 `summarizeDeviceFleet`**（`src/lib/tenant/device-fleet.ts`）
+  から端末死活を得る。surface ごとの独自集計は残さない。
+- **境界化（AC3）**: `DeviceRepository.listAllDevices()`（テナント横断）は
+  **device-fleet の TTL キャッシュ（30 秒）越しにのみ**呼ぶ契約。リクエスト毎の
+  フルスキャンはしない（amortized O(1)）。台数が大きく増えた場合の恒久解
+  （lastSeenAt GSI / 維持カウンタによる境界クエリ）は次増分。
+- **分母是正（AC4）**: `FleetSummary.total` は稼働可能端末（online+offline）のみ。
+  maintenance / disabled は別掲カウントとして UI に表示し、意図的な停止で
+  オンライン率が希釈されないようにする。総合ステータスの critical 判定も
+  「稼働可能端末が全台オフライン」に限定（全台保守中は critical にしない）。
+- **false-offline 方針（課題 5）**: heartbeat は best-effort 書込（クライアント 30 秒間隔）。
+  オンライン窓 5 分 = 10 周期分のため、単発の書込失敗は次周期が実質リトライとなり
+  false-offline にならない。即時リトライは持たない（恒常障害では無意味で、窓が吸収する）。
+- **失効の優先**: 旧レジストリで enabled=false にされた端末は、取り込み済み Device が
+  active のまま heartbeat を受け続けていても union で **disabled を優先**する
+  （逆方向同期が入るまでの穴塞ぎ。失効した端末を online に数えない）。
+
+#### #261 時点の既知の制約（次増分で解消）
+
+- **adoptKiosk の帰属**: 旧 kiosk レジストリはテナントレスのため、取り込み先は
+  `resolveDefaultScope()`（internal/default-site）固定。マルチテナントで kiosk を
+  運用する場合は誤帰属になる（現状は単一テナント互換運用のみ）。kiosk レジストリの
+  テナント化 or Device 起点発番への置き換えで解消する。
+- **admin ダッシュボードの集計範囲**: 従来の `listKiosks()`（グローバル）と同じく
+  全体集計（単一テナント互換）。テナントスコープの死活集計は実 actor 解決（#85）後に
+  `listDevices` ベースへ切り替える。
+- **heartbeat の無認可性**: `/api/kiosk/heartbeat` は従来どおり認可なし（#30）。登録済み
+  kioskId を知る第三者が lastSeenAt を更新し「偽 online」を作れる点は従来からの姿勢
+  （kiosk セッションと死活を紐づける強化は将来増分）。
+- **キャッシュの鮮度**: 死活表示は per-instance TTL（30 秒）分の staleness を持つ
+  （検知遅延は最大で窓 5 分 + TTL）。監視要件が厳しくなったら TTL 短縮 or 共有カウンタ化。
+
 ## increment 4 以降（次増分・残課題）
 
-- Kiosk の enabled/失効・登録名を Device へ写像する**逆方向の同期**（現状は片方向 heartbeat のみ）。
+- Kiosk の enabled/失効・登録名を Device へ写像する**逆方向の同期**（#261 で heartbeat 起点の
+  取り込みは実装済み。残りは /admin/kiosks の作成・setEnabled 時の即時写像）。
   新規端末を Device 起点で発番し、kiosk レジストリを Device の射影に置き換える本統合。
+- 端末台数スケール時の死活集計の境界クエリ化（lastSeenAt GSI or 維持カウンタ。現状は
+  TTL キャッシュで走査頻度を抑制）。
 - 旧 `/admin/kiosks` の段階的廃止（Device 画面に token 登録・失効フローを移設してから撤去）。
 - 複数テナント所属時の **Tenant 切り替え UI** と現在操作中 Tenant/Site の明示（inc1 は `internal` 固定）。
 - 実 actor 解決（Entra/Cognito クレーム → AdminUser/RoleAssignment 写像）。inc1 は管理セッション有効なら

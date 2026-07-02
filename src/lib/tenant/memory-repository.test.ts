@@ -84,6 +84,14 @@ describe('MemoryTenantStore.devices (#80 テナント境界)', () => {
     const store = new MemoryTenantStore({ devices: [device(D_1, T_A, S_1)] });
     expect(await store.devices.getDevice(T_B, D_1)).toBeUndefined();
   });
+
+  it('listAllDevices はテナント横断で全端末を返す（platform 集計用, #261）', async () => {
+    const store = new MemoryTenantStore({
+      devices: [device(D_1, T_A, S_1), device(asDeviceId('d3'), T_B, S_1)],
+    });
+    const r = await store.devices.listAllDevices();
+    expect(r.map((d) => String(d.id)).sort()).toEqual([String(D_1), 'd3'].sort());
+  });
 });
 
 describe('MemoryTenantStore.adminUsers (#80)', () => {

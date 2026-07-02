@@ -23,6 +23,7 @@ const listTenants = vi.fn<() => Promise<Tenant[]>>();
 const getTenant = vi.fn<(id: string) => Promise<Tenant | undefined>>();
 const listSites = vi.fn<(tenantId: string) => Promise<Site[]>>();
 const listDevices = vi.fn<(tenantId: string, siteId: string) => Promise<Device[]>>();
+const listAllDevices = vi.fn<() => Promise<Device[]>>();
 const listAuditLogs = vi.fn<() => Promise<AuditLog[]>>();
 const listReceptionLogsSince = vi.fn<() => Promise<unknown[]>>();
 const listKiosks = vi.fn<() => Promise<unknown[]>>();
@@ -40,7 +41,10 @@ vi.mock('@/lib/tenant/store', () => ({
   getTenantStore: () => ({
     tenants: { listTenants: () => listTenants(), getTenant: (id: string) => getTenant(id) },
     sites: { listSites: (t: string) => listSites(t) },
-    devices: { listDevices: (t: string, s: string) => listDevices(t, s) },
+    devices: {
+      listDevices: (t: string, s: string) => listDevices(t, s),
+      listAllDevices: () => listAllDevices(),
+    },
   }),
 }));
 vi.mock('@/lib/data-stores/reception-log-store', () => ({
@@ -59,6 +63,7 @@ vi.mock('@/lib/call/vonage-config', () => ({
   isVonageEnabled: () => false,
 }));
 
+import { __resetDeviceFleetCache } from '@/lib/tenant/device-fleet';
 import { GET as TENANT_DETAIL } from './tenants/[tenantId]/route';
 import { GET as FEATURE_FLAGS } from './feature-flags/route';
 import { GET as OBSERVABILITY } from './observability/route';
@@ -125,10 +130,13 @@ const detailCtx = { params: Promise.resolve({ tenantId: 'internal' }) };
 
 beforeEach(() => {
   vi.clearAllMocks();
+  // 端末死活は TTL キャッシュ越しに集計されるため、テスト間の持ち越しを防ぐ (#261)。
+  __resetDeviceFleetCache();
   listTenants.mockResolvedValue([TENANT]);
   getTenant.mockResolvedValue(TENANT);
   listSites.mockResolvedValue(SITES);
   listDevices.mockResolvedValue(DEVICES);
+  listAllDevices.mockResolvedValue([]);
   listAuditLogs.mockResolvedValue(AUDIT);
   listReceptionLogsSince.mockResolvedValue([]);
   listKiosks.mockResolvedValue([]);
@@ -213,21 +221,40 @@ describe('payload safety (no PII / masked)', () => {
     expect(body.metrics.latency).toEqual({ status: 'pending' });
   });
 
-  it('observability は受付成功率・端末状態を実接続する（pending でない・#83 簡易オブザーバビリティ）', async () => {
+  it('observability は受付成功率・端末の実死活を実接続する（#83 / #261）', async () => {
     resolveAdminActor.mockResolvedValue(developer());
     const period = currentMonthPeriod();
     listReceptionLogsSince.mockResolvedValue([
       { id: 'r1', outcome: 'connected', startedAt: period.start, fallbackUsed: false, durationMs: 1000 },
       { id: 'r2', outcome: 'failed', startedAt: period.start, fallbackUsed: false, durationMs: 0 },
     ]);
+    const dev = (over: Partial<Device>): Device => ({
+      id: asDeviceId('x'),
+      tenantId: asTenantId('internal'),
+      siteId: asSiteId('s1'),
+      name: 'd',
+      status: 'active',
+      maintenance: false,
+      createdAt: '2026-01-01T00:00:00.000Z',
+      updatedAt: '2026-01-01T00:00:00.000Z',
+      ...over,
+    });
+    // 実死活は kiosk/Device 両レジストリの union (#261 AC1)。id 一致（kiosk-dev）は Device 優先。
     listKiosks.mockResolvedValue([
-      { id: 'k1', displayName: 'A', enabled: true },
-      { id: 'k2', displayName: 'B', enabled: false },
+      { id: 'kiosk-dev', displayName: '対応済', enabled: true }, // Device 側の heartbeat を採用
+      { id: 'kiosk-legacy', displayName: '旧のみ', enabled: true }, // kiosk のみ → offline
+      { id: 'kiosk-gone', displayName: '失効', enabled: false }, // kiosk のみ失効 → disabled
+    ]);
+    listAllDevices.mockResolvedValue([
+      dev({ id: asDeviceId('kiosk-dev'), lastSeenAt: new Date().toISOString() }), // online
+      dev({ id: asDeviceId('mnt'), maintenance: true }), // maintenance（別掲）
+      dev({ id: asDeviceId('dis'), status: 'revoked' }), // disabled（別掲）
     ]);
     const body = await (await OBSERVABILITY()).json();
     expect(body.reception.receptions).toBe(2);
-    expect(body.reception.successRate).toBeCloseTo(0.5); // connected 1 / 2
+    expect(body.reception.successRate).toBeCloseTo(0.5); // connected 1 / 通話試行 2
     expect(body.reception.callFailures).toBe(1);
-    expect(body.devices).toEqual({ total: 2, online: 1, offline: 1 });
+    // 分母（total）は稼働可能端末のみ（online 1 + offline 1）。maintenance/disabled は別掲 (#261 AC4)。
+    expect(body.devices).toEqual({ total: 2, online: 1, offline: 1, maintenance: 1, disabled: 2 });
   });
 });

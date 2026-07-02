@@ -2,24 +2,18 @@
  * テナント管理者向けダッシュボードの概況集計 (issue #86, increment 1)。
  *
  * 受付システムの管理者が最初に知りたいのは細かい設定値ではなく
- * 「いま受付が安全に動いているか」である。本モジュールは既存ドメインの
- * 受付履歴（ReceptionLog）と端末レジストリ（Kiosk）から、その概況を導く純関数群。
+ * 「いま受付が安全に動いているか」である。本モジュールは受付履歴（ReceptionLog）と
+ * 端末死活サマリ（#261: kiosk/Device union の実 heartbeat 集計）から概況を導く純関数群。
  *
  * I/O は持たない（テスト可能な純粋ロジックに閉じる）。データ取得と API 配線は
- * src/lib/data-stores / src/app/api/admin/dashboard に置く。実データが無い指標
- * （Vonage 連携状態・利用量・予想コスト・お知らせ）は #89 / #82 / #90 の本実装まで
+ * src/lib/data-stores / src/lib/tenant/device-fleet.ts / src/app/api/admin/dashboard に置く。
+ * 実データが無い指標（Vonage 連携状態・お知らせ）は #89 / #82 / #90 の本実装まで
  * プレースホルダ扱いとし、ここでは集計しない。
  */
+import type { FleetSummary } from '@/domain/tenant/device-liveness';
 import type { CallOutcome } from './session';
 import type { ReceptionLog } from './log';
 import { jstDayKey } from '@/domain/util/jst';
-
-/** 端末稼働の集計に必要な最小限の端末情報（Kiosk の部分形）。 */
-export type DeviceLike = {
-  id: string;
-  displayName: string;
-  enabled: boolean;
-};
 
 /** 概況の総合ステータス。正常 / 注意 / 異常を視覚的に区別する起点。 */
 export type OverallStatus = 'ok' | 'warning' | 'critical';
@@ -40,12 +34,12 @@ export type TodayCounts = {
   fallbackUsed: number;
 };
 
-/** 端末稼働の集計。 */
-export type DeviceSummary = {
-  total: number;
-  online: number;
-  offline: number;
-};
+/**
+ * 端末稼働の集計 (#261 で実死活の共有型 FleetSummary へ統一)。
+ * platform オブザーバビリティと同一ロジック（summarizeDeviceFleet）から供給される。
+ * total は稼働可能端末のみ（= online + offline）。maintenance/disabled は別掲。
+ */
+export type DeviceSummary = FleetSummary;
 
 /** 直近の呼び出し履歴（表示用に PII を含まない最小形）。 */
 export type RecentCall = {
@@ -111,12 +105,6 @@ export function summarizeToday(logs: readonly ReceptionLog[], now: Date = new Da
   return counts;
 }
 
-/** 端末レジストリから稼働状況を集計する（enabled = オンライン稼働とみなす）。 */
-export function summarizeDevices(devices: readonly DeviceLike[]): DeviceSummary {
-  const online = devices.filter((d) => d.enabled).length;
-  return { total: devices.length, online, offline: devices.length - online };
-}
-
 /** 直近の呼び出し履歴を新しい順で最大 `limit` 件返す（PII は含めない）。 */
 export function recentCalls(logs: readonly ReceptionLog[], limit = 5): RecentCall[] {
   return [...logs]
@@ -136,7 +124,8 @@ export function recentCalls(logs: readonly ReceptionLog[], limit = 5): RecentCal
 /**
  * 本日の集計と端末稼働から総合ステータスを導く（純関数）。
  *
- * - critical: 全端末オフライン（端末が 1 台以上登録されているのに稼働ゼロ）。
+ * - critical: 稼働可能端末（total = online+offline）が 1 台以上あるのに全台オフライン。
+ *             全台が保守/無効（total=0）は意図的な停止のため critical にしない (#261)。
  * - warning:  本日の呼び出し失敗/未応答がある、または一部端末がオフライン。
  * - ok:       上記いずれにも該当しない。
  *
@@ -150,19 +139,21 @@ export function deriveOverallStatus(today: TodayCounts, devices: DeviceSummary):
   return 'ok';
 }
 
-/** 受付履歴と端末から概況サマリ全体を組み立てる。 */
+/**
+ * 受付履歴と端末死活サマリから概況サマリ全体を組み立てる。
+ * devices は summarizeDeviceFleet（kiosk/Device union・実 heartbeat, #261）の結果を渡す。
+ */
 export function buildDashboardSummary(
   logs: readonly ReceptionLog[],
-  devices: readonly DeviceLike[],
+  devices: DeviceSummary,
   now: Date = new Date(),
   usageCost: UsageCostSummary | null = null,
 ): DashboardSummary {
   const today = summarizeToday(logs, now);
-  const deviceSummary = summarizeDevices(devices);
   return {
-    status: deriveOverallStatus(today, deviceSummary),
+    status: deriveOverallStatus(today, devices),
     today,
-    devices: deviceSummary,
+    devices,
     recentCalls: recentCalls(logs),
     usageCost,
   };

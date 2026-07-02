@@ -494,3 +494,68 @@ describe('DeviceService.recordHeartbeat (#87 inc3 Kiosk→Device 統合)', () =>
     expect(after?.lastSeenAt).toBe(NOW.toISOString());
   });
 });
+
+describe('DeviceService.adoptKiosk (#261 kiosk-only 端末の Device 取り込み)', () => {
+  const SCOPE = { tenantId: T_A, siteId: S_A1 };
+
+  it('kiosk レジストリのみの端末を Device として作成し、heartbeat を稼働反映する', async () => {
+    const { svc, store } = makeService();
+    const res = await svc.adoptKiosk(
+      { id: 'kiosk-legacy', displayName: '旧受付端末', location: '2F', enabled: true },
+      SCOPE,
+      NOW,
+    );
+    expect(res).toEqual({ created: true });
+    const created = await store.devices.getDevice(T_A, asDeviceId('kiosk-legacy'));
+    expect(created).toMatchObject({
+      id: 'kiosk-legacy',
+      tenantId: T_A,
+      siteId: S_A1,
+      name: '旧受付端末',
+      location: '2F',
+      kind: 'kiosk',
+      status: 'active',
+      lastSeenAt: NOW.toISOString(),
+    });
+  });
+
+  it('失効中（enabled=false）の kiosk は revoked として取り込む（勝手に有効化しない）', async () => {
+    const { svc, store } = makeService();
+    const res = await svc.adoptKiosk(
+      { id: 'kiosk-off', displayName: '停止端末', enabled: false },
+      SCOPE,
+      NOW,
+    );
+    expect(res).toEqual({ created: true });
+    expect((await store.devices.getDevice(T_A, asDeviceId('kiosk-off')))?.status).toBe('revoked');
+  });
+
+  it('既に Device が存在する id は no-op（冪等・上書きしない）', async () => {
+    const { svc, store } = makeService();
+    const res = await svc.adoptKiosk(
+      { id: String(D_A1), displayName: '別名で上書きしようとする', enabled: false },
+      SCOPE,
+      NOW,
+    );
+    expect(res).toEqual({ created: false });
+    const existing = await store.devices.getDevice(T_A, D_A1);
+    expect(existing?.name).toBe('受付1');
+    expect(existing?.status).toBe('active');
+  });
+
+  it('空 id / 空表示名は取り込まない', async () => {
+    const { svc } = makeService();
+    expect(await svc.adoptKiosk({ id: '  ', displayName: 'x', enabled: true }, SCOPE)).toEqual({
+      created: false,
+    });
+    expect(
+      await svc.adoptKiosk({ id: 'kiosk-x', displayName: '  ', enabled: true }, SCOPE),
+    ).toEqual({ created: false });
+  });
+
+  it('監査は記録しない（actor 不在のシステム由来同期）', async () => {
+    const { svc, audits } = makeService();
+    await svc.adoptKiosk({ id: 'kiosk-legacy', displayName: '旧受付端末', enabled: true }, SCOPE);
+    expect(audits).toEqual([]);
+  });
+});
