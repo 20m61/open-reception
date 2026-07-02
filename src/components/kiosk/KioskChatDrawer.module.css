@@ -1,0 +1,163 @@
+/*
+ * Chat-assisted ドロワーのコンポーネント閉域スタイル (issue #122 / #289)。
+ *
+ * 元は JSX 内の `<style>` 要素（一意 scope クラス）だったが、CSP の style-src から
+ * 'unsafe-inline' を排除する（#289）ため CSS Modules へ移設した。ビルド時に外部
+ * stylesheet（同一オリジン）へ束ねられるため style-src 'self' で許可される。
+ * クラス名はハッシュ化され一意になるので、従来の scope クラスと同様 globals.css を
+ * 汚さない。タッチ前提なので各ボタンは十分な高さ（>=48px 相当）を確保する。
+ */
+
+.root {
+  position: fixed;
+  right: 16px;
+  z-index: 40;
+  font-size: 16px;
+  /* 安全バー（逃げ道）と重ならないよう、その高さ分だけ上へ持ち上げる（KioskFlow が値を継承させる）。 */
+  bottom: calc(16px + var(--kiosk-chat-safe-bottom, 0px));
+}
+
+.fab {
+  min-height: 48px;
+  padding: 12px 20px;
+  border-radius: 24px;
+  border: none;
+  background: #1f6feb;
+  color: #fff;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.2);
+  cursor: pointer;
+}
+
+.panel {
+  width: min(360px, 92vw);
+  max-height: min(70vh, 560px);
+  display: flex;
+  flex-direction: column;
+  background: #fff;
+  color: #111;
+  border-radius: 16px;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.25);
+  overflow: hidden;
+}
+
+.head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 16px;
+  background: #1f6feb;
+  color: #fff;
+}
+
+.title {
+  font-weight: 600;
+}
+
+.close {
+  background: transparent;
+  border: none;
+  color: #fff;
+  font-size: 22px;
+  min-width: 44px;
+  min-height: 44px;
+  cursor: pointer;
+}
+
+.log {
+  flex: 1;
+  overflow-y: auto;
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.turn {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.bubble {
+  margin: 0;
+  padding: 10px 12px;
+  border-radius: 12px;
+  line-height: 1.4;
+  max-width: 90%;
+}
+
+.bubbleAssistant {
+  background: #f1f3f5;
+  align-self: flex-start;
+}
+
+.bubbleVisitor {
+  background: #d7e7ff;
+  align-self: flex-end;
+}
+
+.replies {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.reply {
+  text-align: left;
+  min-height: 48px;
+  padding: 12px 14px;
+  border-radius: 12px;
+  border: 1px solid #1f6feb;
+  background: #fff;
+  color: #1f6feb;
+  cursor: pointer;
+  font-size: 16px;
+}
+
+.replyStaff {
+  border-color: #888;
+  color: #333;
+}
+
+.replyConfirmRedirect {
+  border-style: dashed;
+}
+
+.hint {
+  display: block;
+  font-size: 12px;
+  color: #666;
+  margin-top: 2px;
+}
+
+.form {
+  display: flex;
+  gap: 8px;
+  padding: 12px;
+  border-top: 1px solid #eee;
+}
+
+.input {
+  flex: 1;
+  min-height: 48px;
+  padding: 10px 12px;
+  border: 1px solid #ccc;
+  border-radius: 10px;
+  font-size: 16px;
+}
+
+.send {
+  min-height: 48px;
+  padding: 0 16px;
+  border: none;
+  border-radius: 10px;
+  background: #1f6feb;
+  color: #fff;
+  cursor: pointer;
+}
+
+.send:disabled,
+.input:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}

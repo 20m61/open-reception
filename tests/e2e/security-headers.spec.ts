@@ -30,6 +30,36 @@ test('script-src は nonce 化され unsafe-inline を含まない (#200)', asyn
   expect(scriptSrc).not.toContain("'unsafe-inline'");
 });
 
+test('style-src は unsafe-inline を含まず、style 属性は style-src-attr で許可する (#289)', async ({ request }) => {
+  const res = await request.get('/');
+  const directives = res
+    .headers()
+    ['content-security-policy'].split(';')
+    .map((d) => d.trim());
+  const styleSrc = directives.find((d) => d.startsWith('style-src '));
+  const styleSrcAttr = directives.find((d) => d.startsWith('style-src-attr'));
+  // 本番ビルド（e2e 対象）では style-src（elem フォールバック）は 'self' のみ。
+  expect(styleSrc).toBe("style-src 'self'");
+  // React SSR の style 属性は style-src-attr で明示許可する（nonce 不可のため）。
+  expect(styleSrcAttr).toBe("style-src-attr 'unsafe-inline'");
+});
+
+test('inline <style> なしでスタイルが適用される（CSP violation なし / #289）', async ({ page }) => {
+  // 注: /kiosk は #239 のセッションゲートで enroll なしだと受付画面にならないため、
+  // 素の fixture で検証できるランディングを対象にする（kiosk 画面の CSP 影響は
+  // kiosk-* suite の表示/スクリーンショット検証が担保する）。
+  const violations: string[] = [];
+  page.on('console', (msg) => {
+    if (msg.text().includes('Content Security Policy')) violations.push(msg.text());
+  });
+  await page.goto('/');
+  await expect(page.getByTestId('lp-login')).toBeVisible();
+  // 外部 stylesheet（globals.css）が実際に適用されている（ブロックされていない）こと。
+  const bodyMargin = await page.evaluate(() => getComputedStyle(document.body).margin);
+  expect(bodyMargin).toBe('0px');
+  expect(violations).toEqual([]);
+});
+
 test('nonce はレスポンスごとに変わる (#200)', async ({ request }) => {
   const nonceOf = (csp: string) => csp.match(/'nonce-([^']+)'/)?.[1];
   const [a, b] = await Promise.all([request.get('/'), request.get('/')]);

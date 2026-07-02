@@ -28,11 +28,31 @@ describe('buildCsp', () => {
     expect(scriptSrc).not.toContain("'strict-dynamic'");
   });
 
-  it('style-src は現状維持（unsafe-inline のまま。別課題）', () => {
+  it("style-src から unsafe-inline を排除する（'self' のみ / #289）", () => {
     const styleSrc = buildCsp(nonce)
       .split(';')
-      .find((d) => d.trim().startsWith('style-src'))!;
-    expect(styleSrc).toContain("'unsafe-inline'");
+      .map((d) => d.trim())
+      .find((d) => d.startsWith('style-src ') || d === 'style-src')!;
+    expect(styleSrc).toBe("style-src 'self'");
+    expect(styleSrc).not.toContain("'unsafe-inline'");
+  });
+
+  it("style-src-attr は 'unsafe-inline' を許可する（React SSR の style 属性 / #289）", () => {
+    const attr = buildCsp(nonce)
+      .split(';')
+      .map((d) => d.trim())
+      .find((d) => d.startsWith('style-src-attr'))!;
+    expect(attr).toBe("style-src-attr 'unsafe-inline'");
+  });
+
+  it('開発時のみ style-src に unsafe-inline を許可する（HMR の style 注入）', () => {
+    const styleSrcOf = (csp: string) =>
+      csp
+        .split(';')
+        .map((d) => d.trim())
+        .find((d) => d.startsWith('style-src ') || d === 'style-src')!;
+    expect(styleSrcOf(buildCsp(nonce, { dev: true }))).toContain("'unsafe-inline'");
+    expect(styleSrcOf(buildCsp(nonce, { dev: false }))).not.toContain("'unsafe-inline'");
   });
 
   it('既存の堅牢化ディレクティブを維持する（#6/#31 と同等）', () => {
