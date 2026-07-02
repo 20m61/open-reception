@@ -15,7 +15,7 @@
 > `gh issue view <N>` の AC を既存コードにマッピングし、**未充足の AC だけ**を increment
 > として TDD する（純ロジック先行、新規ビルドの重複を避ける）。
 
-## オープン issue 一覧（8 件・2026-07-03 更新）
+## オープン issue 一覧（6 件・2026-07-03 更新）
 
 > 2026-07-02 の自律ループで #264/#275/#273/#261/#83/#289 をクローズ（PR #276〜#293）。
 > **ローカルで消化可能なタスクは完了**（#274 クローズ・#284 は外部待ち化）。次の関門は
@@ -25,8 +25,16 @@
 > 2026-07-02 のコスト/アーキテクチャ棚卸しで #299（WebStack 監視）/#300（PriceClass_200 +
 > S3 ライフサイクル）を起票・同日消化（PR #302/#301）。Billing のコスト配分タグ
 > `Project`/`Environment`/`Component` を Active 化済み（以後の請求からプロジェクト別集計可）。
-> follow-up として #303（CloudFront 5xx アラーム化、低優先）を積んだ。WebMonitoringStack の
-> dev への実 apply は #195 の dev デプロイと同じ流儀で実施可能（未デプロイ）。
+> follow-up として #303（CloudFront 5xx アラーム化、低優先）を積んだ。
+>
+> 2026-07-03 続報: **WebMonitoring / CfMonitoring は dev へ apply 済み**（アラーム計 14 個稼働、
+> SNS 購読は web=承認済・notification/cf=確認待ち）。dev 実測を根拠に **#308**（prod server
+> Lambda 1024MB 化）を消化。AC 再マッピングの結果 **「#284/#290 = 外部待ち」分類は stale**
+> と判明 — #284 は 4 AC 中 3 つが既に main 充足で残り 1 つも #311 で消化しクローズ。#290 は
+> item4（フラグ enforcement）を #310 で消化、item3（メンテナンス enforcement）・item2
+> （再集計 dry-run）・item1 の interface+mock まではローカル実装可で、**真の外部待ちは
+> item1 の実 deploy 実行本体のみ**。各周回の冒頭で AC を実コードへ再マッピングすること
+> （キューの分類を鵜呑みにしない）。
 
 | # | 種別 | 状態 | 分類 |
 | --- | --- | --- | --- |
@@ -44,7 +52,10 @@
 | ~~#275~~ | refactor | **クローズ済**（#279: domain/notification へ集約・参照同一性テスト） | 完了 2026-07-02 |
 | ~~#299~~ | infra | **クローズ済**（#302: WebMonitoringStack = アラーム8個 + web ダッシュボード + alarmEmail docs 化。CloudFront 5xx アラームは #303 へ） | 完了 2026-07-03 |
 | ~~#300~~ | infra | **クローズ済**（#301: prod CloudFront PriceClass_200・S3 MPU 掃除ライフサイクル。年齢 Expiration は現役アセット失効リスクで不採用を設計固定） | 完了 2026-07-03 |
-| ~~#303~~ | infra | **クローズ済**（#306: CloudFrontMonitoringStack(us-east-1) 5xx>1%×15分 + dimensionless ConcurrentExecutions。crossRegionReferences は additive 実証済み。dev apply は別途） | 完了 2026-07-03 |
+| ~~#303~~ | infra | **クローズ済**（#306: CloudFrontMonitoringStack(us-east-1) 5xx>1%×15分 + dimensionless ConcurrentExecutions。crossRegionReferences は additive 実証済み。dev apply 済み） | 完了 2026-07-03 |
+| ~~#308~~ | infra | **クローズ済**（#309: prod serverMemoryMb 2048→1024。dev 実測 Max Memory ~161MB/1024MB・p50 46ms が根拠。image は実測ゼロで据え置き） | 完了 2026-07-03 |
+| ~~#284~~ | observability | **クローズ済**（#311: dashboard を実 actor のテナント境界集計へ。item1-3 は #292/#294/a52b682 で既充足だった。残課題: kiosk→tenant 実写像） | 完了 2026-07-03 |
+| **#290** | platform ops | item4 フラグ enforcement は #310 で消化（default テナントスコープ・fail-open）。**残はローカル可**: item3 メンテ enforcement → item2 再集計 dry-run → item1 interface+mock。実 deploy 実行本体のみ外部待ち | ローカル増分可 |
 
 ## 本流トラック — #83 platform epic 締め
 
