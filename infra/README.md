@@ -10,6 +10,8 @@ infra/
   lib/
     stacks/
       web-stack.ts               # Next.js (OpenNext) ホスティング: CloudFront+Lambda+S3
+      web-monitoring-stack.ts    # WebStack の監視 (#299): Lambda/DynamoDB Alarms + Dashboard
+      cloudfront-monitoring-stack.ts # CloudFront 5xx アラーム (#303): us-east-1 専用
       notification-stack.ts      # 通知サブシステム (#32/#34): HTTP API+Lambda+authorizer
       monitoring-stack.ts        # 通知の監視: CloudWatch Alarms / Dashboard / SNS
     constructs/
@@ -20,6 +22,8 @@ infra/
       environments.ts            # 環境別設定（型付き）
   test/
     web-stack.test.ts            # WebStack synth アサーション
+    web-monitoring-stack.test.ts # WebMonitoringStack synth アサーション
+    cloudfront-monitoring-stack.test.ts # CloudFrontMonitoringStack + cross-region 連携
     notification-stack.test.ts   # Notification/Monitoring synth アサーション
 ```
 
@@ -57,4 +61,7 @@ npx cdk deploy OpenReception-Web-prod -c env=prod -c appEnv.ADMIN_PASSWORD=...
 - `cdk synth` / `deploy` 前にリポジトリルートで `npm run build:open-next` が必要。
   未ビルドの場合 `WebStack` が明示的にエラーを出す。
 - デプロイ先は `CDK_DEFAULT_ACCOUNT` / `CDK_DEFAULT_REGION`（既定 `ap-northeast-1`）。
+  `OpenReception-CfMonitoring-*` のみ us-east-1（CloudFront メトリクスの発行先）。
+  認証情報なしの synth では `CDK_DEFAULT_ACCOUNT` が未解決のため CfMonitoring は
+  synth 対象から除外される（cross-region 参照に concrete account が必要）。
 - 機密の環境変数は平文コミットしない（[deploy-aws.md](../docs/deploy-aws.md) §5）。

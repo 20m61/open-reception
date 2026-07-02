@@ -3,6 +3,7 @@ import 'source-map-support/register';
 import * as cdk from 'aws-cdk-lib';
 import { WebStack, CustomDomainConfig } from '../lib/stacks/web-stack';
 import { WebMonitoringStack } from '../lib/stacks/web-monitoring-stack';
+import { CloudFrontMonitoringStack } from '../lib/stacks/cloudfront-monitoring-stack';
 import { NotificationStack } from '../lib/stacks/notification-stack';
 import { MonitoringStack } from '../lib/stacks/monitoring-stack';
 import { resolveEnv } from '../lib/config/environments';
@@ -13,10 +14,11 @@ import { resolveEnv } from '../lib/config/environments';
  * 環境は context で選択する: `cdk deploy -c env=prod`。既定は dev。
  *
  * Stack 構成:
- *   - WebStack           : Next.js (OpenNext) ホスティング
- *   - WebMonitoringStack : WebStack の監視 (#299) — Lambda/DynamoDB Alarms + Dashboard + SNS
- *   - NotificationStack  : 通知サブシステム (#32/#34) — API + Lambda + Polly/Vonage
- *   - MonitoringStack    : 通知サブシステムの監視（Alarms / Dashboard / SNS）
+ *   - WebStack                  : Next.js (OpenNext) ホスティング
+ *   - WebMonitoringStack        : WebStack の監視 (#299) — Lambda/DynamoDB Alarms + Dashboard + SNS
+ *   - CloudFrontMonitoringStack : CloudFront 5xx アラーム (#303) — **us-east-1**（メトリクス発行先）
+ *   - NotificationStack         : 通知サブシステム (#32/#34) — API + Lambda + Polly/Vonage
+ *   - MonitoringStack           : 通知サブシステムの監視（Alarms / Dashboard / SNS）
  *
  * デプロイ先アカウント/リージョンは CDK 既定の環境変数
  * (CDK_DEFAULT_ACCOUNT / CDK_DEFAULT_REGION) を使用する。
@@ -66,6 +68,9 @@ const appEnv = { ...appEnvContext, ADMIN_AUTH_PROVIDER: adminProvider };
 
 const web = new WebStack(app, `OpenReception-Web-${config.environment}`, {
   env: { account, region },
+  // CloudFrontMonitoringStack (us-east-1) が distributionId を参照するため (#303)。
+  // SSM ベースの ExportWriter custom resource が「追加」されるのみで既存リソースは不変。
+  crossRegionReferences: true,
   config,
   appEnv,
   customDomain,
@@ -93,6 +98,25 @@ new WebMonitoringStack(app, `OpenReception-WebMonitoring-${config.environment}`,
   distributionId: web.distribution.distributionId,
   description: `open-reception web monitoring (${config.environment})`,
 });
+
+// CloudFront 5xxErrorRate のアラーム (#303)。AWS/CloudFront メトリクスは us-east-1 にのみ
+// 発行され、アラームは同一リージョン制約があるため us-east-1 の小 Stack に置く。
+// crossRegionReferences には concrete な account が必要（cross-region 参照の SSM 連携先を
+// 確定させるため）。認証情報なしの synth では account が未解決になるためスキップする
+// （deploy 時は CDK CLI が必ず解決する）。
+if (account) {
+  new CloudFrontMonitoringStack(app, `OpenReception-CfMonitoring-${config.environment}`, {
+    env: { account, region: 'us-east-1' },
+    crossRegionReferences: true,
+    config,
+    distributionId: web.distribution.distributionId,
+    description: `open-reception cloudfront monitoring in us-east-1 (${config.environment})`,
+  });
+} else {
+  console.warn(
+    '[open-reception] CDK_DEFAULT_ACCOUNT が未解決のため OpenReception-CfMonitoring-* を synth 対象から除外しました（cross-region 参照には concrete account が必要）。',
+  );
+}
 
 const notification = new NotificationStack(app, `OpenReception-Notification-${config.environment}`, {
   env: { account, region },
