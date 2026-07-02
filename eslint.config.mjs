@@ -17,6 +17,9 @@ const eslintConfig = [
       'tests/e2e/**',
       'playwright-report/**',
       'test-results/**',
+      // isolation:"worktree" のサブエージェントがリポジトリ内 (.claude/worktrees/) に
+      // worktree を作るため、走査すると path スコープの設定が外れて誤検知する。
+      '.claude/worktrees/**',
     ],
   },
   ...nextCoreWebVitals,
