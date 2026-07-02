@@ -15,14 +15,14 @@
 > `gh issue view <N>` の AC を既存コードにマッピングし、**未充足の AC だけ**を increment
 > として TDD する（純ロジック先行、新規ビルドの重複を避ける）。
 
-## オープン issue 一覧（8 件・2026-07-02 更新）
+## オープン issue 一覧（8 件・2026-07-02 深夜更新）
 
 | # | 種別 | 状態 | 分類 |
 | --- | --- | --- | --- |
-| **#83** | platform epic | inc1〜4c マージ済（read 実接続・JIT 昇格ゲート） | 本流 |
+| ~~#83~~ | platform epic | **クローズ済**（inc4d UX #280・break-glass #282・フラグwrite #285・read監査 #287。運用ops は #290 へ切り出し） | 完了 2026-07-02 |
 | ~~#264~~ | security | **クローズ済**（subject 束縛 #271 + jti 失効 #278 + end route） | 完了 2026-07-02 |
 | ~~#261~~ | observability | **クローズ済**（#283: union+adoptKiosk・共有summarize・TTLキャッシュ・分母是正） | 完了 2026-07-02 |
-| **#200** | security | nonce CSP、**一度撤回**（proxy+OpenNext でアプリ破壊） | 独立 |
+| **#200** | security | script-src nonce 化**マージ済**（#288、根因=静的プリレンダ→force-dynamic）。残: live ZAP 検証（#195 後）。style-src は #289 | live 待ち |
 | **#196** | perf | Lighthouse perf 0.68-0.72 → 0.7+ 安定化 | 独立（live 検証） |
 | **#195** | infra | Notification/Monitoring デプロイ + prod 準備 | 外部リソース待ち |
 | **#4** | feature | Vonage 実通話（基盤・interface 済） | #65 スタック |
