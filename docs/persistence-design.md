@@ -13,6 +13,11 @@
 実装上の確定事項（仕様からの差分メモ）:
 - DynamoDB のキーは name から導出する（コレクション=`col#<name>`, シングルトン PK=`config`/SK=`<name>`,
   ログ=`log#<name>` / SK=`<timestamp>#<id>`, GSI1=`log#<name>#idx#<value>`）。§4.1 の表は概念図。
+- コレクションの境界クエリ（`Collection.listByIndex`, #274/#284）も **既存 GSI1 を再利用**する
+  （GSI1PK=`col#<name>#idx#<value>`, GSI1SK=`<id>`。`CollectionOpts.indexedField` 指定時に put が
+  write-through）。名前空間が `log#` と分かれるため衝突しない。**CDK 追加・実デプロイ不要**。
+  ただし sparse index のため、indexedField 導入以前に書かれた既存アイテムは再 put（backfill）まで
+  listByIndex に現れない（§9.3 の注意参照）。
 - DynamoDB テーブルは WebStack 内に定義（grant/env 配線をローカル化）。prod は RETAIN + PITR + 削除保護。
 
 ## 1. 背景と問題
@@ -227,6 +232,15 @@ src/lib/<entity>/
   `TENANT_SCOPE_LIST_LIMIT` / `PLATFORM_LIST_LIMIT`）。
 - この上限は**安全弁**であり恒久解ではない。上限に近づく集合は境界付きクエリ
   （GSI / 維持カウンタ）へ移行する（#284 と統合設計）。
+- **境界付きクエリの標準プリミティブ（#274 ②/#284 で追加）**: `Collection.listByIndex(value,
+  { limit })`。`CollectionOpts.indexedField`（**不変フィールド限定**。updateIf は GSI キーを
+  更新しない）を指定した collection で使え、dynamo は GSI1（`col#<name>#idx#<value>`）への
+  Query、memory は等価フィルタ。読み取り量がスコープ内の件数に比例する。
+  - 適用済み: device（indexedField=`tenantId`）。死活集計（device-fleet）は「テナント一覧起点 +
+    テナント毎の listByIndex」で集約し、無境界の listAllDevices を廃止した。
+  - **backfill の注意**: GSI1 キーは put 時に書くため、導入以前の既存 dynamodb アイテムは
+    再 put まで listByIndex に現れない（sparse index）。デプロイ増分で backfill
+    （seed 再実行 or 対象アイテムの再保存）を行うこと。memory backend は影響なし。
 - `LogStore.list()` は本増分の対象外（受付/監査ログの集計経路は #254 の `listSince` で
   境界化済み。残る全件 list は管理画面表示のみで、境界化は移行増分で扱う）。
 
@@ -234,14 +248,17 @@ src/lib/<entity>/
 
 1. **visitstay** — `/api/kiosk/checkout` の getBackend() 直呼びを `StayRepository` 経由へ
    （既存 interface に present 一覧を追加するだけ。イディオム逸脱の解消を最優先）。
-2. **device / kiosk** — `kiosk-store` を tenant の `DeviceRepository` へ統合
-   （#261 の残増分 #284 と同時に。境界クエリ化も併せて設計）。
+2. ~~**device / kiosk**~~ — **済（#274 ②/#284）**。kiosk-store は `KioskRepository`
+   （`src/lib/kiosk/repository.ts` + kiosk-store のファクトリ/互換 API）へ、tenant の
+   `memory-repository.ts` は廃止（テストは memory backend + seed で DataBacked 実装を直接検証）。
+   死活集計の境界クエリ化は §9.3 の listByIndex（tenantId）で恒久化。kiosk レジストリ自体の
+   Device への本統合（Device 起点発番）は docs/site-device-management-design.md の残増分。
 3. **platform 系**（incident / notice / maintenance-window / update-status / feature-flag）
    — read/write が対で揃っており repository 化が機械的。
 4. **directory**（department / staff）— 検索・並び替えは domain の純関数のまま repository 化。
    staff は件数増に備え部署別の境界クエリを検討。
 5. **reception-store（セッション）/ elevation-jti** — TTL 前提の短命データ。
 6. **reception-log-store**（LogStore）— #254 の範囲クエリと合わせて最後。
-7. 既存三点セット（visit/tenant/signage/reservation/notification）の
+7. 既存三点セット（visit/signage/reservation/notification。tenant は #274 ② で廃止済み）の
    `memory-repository.ts` は、各エンティティを触る増分の中で**機会的に廃止**する
    （専用 PR は立てない）。

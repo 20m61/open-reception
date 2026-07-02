@@ -26,9 +26,21 @@ export interface Collection<T extends { id: string }> {
   /**
    * パーティション内の全件を返す — ただし**上限つき**（options.limit、既定
    * DEFAULT_COLLECTION_LIST_LIMIT）。上限を超えた分は切り詰められ warn が出る（#274）。
-   * 切り詰めが業務上許されない集合は、境界付きクエリへの移行（#284）を計画すること。
+   * 切り詰めが業務上許されない集合は、境界付きクエリへの移行（#284、listByIndex）を計画すること。
    */
   list(options?: ListOptions): Promise<T[]>;
+  /**
+   * `CollectionOpts.indexedField` の値が一致するアイテムのみを**境界付きクエリ**で返す
+   * （#274/#284）。list() + 呼び出し側フィルタと違い、読み取り量がスコープ（例: tenantId）内の
+   * 件数に比例する。dynamo は GSI1（GSI1PK=`col#<name>#idx#<value>`）への Query、memory は
+   * 走査フィルタで等価挙動。上限（options.limit、既定 DEFAULT_COLLECTION_LIST_LIMIT）を超えた
+   * 分は warn つきで切り詰める。indexedField 未設定の collection で呼ぶと throw（設定ミスの
+   * fail-fast）。
+   *
+   * 注意（dynamo）: GSI1 キーは put() 時に書き込むため、indexedField 導入**以前**に書かれた
+   * 既存アイテムは再 put（backfill）まで listByIndex に現れない（sparse index）。
+   */
+  listByIndex(value: string, options?: ListOptions): Promise<T[]>;
   get(id: string): Promise<T | undefined>;
   /** 作成または上書き（read-modify-write は呼び出し側で行う）。 */
   put(item: T): Promise<void>;
@@ -77,6 +89,12 @@ export interface CollectionOpts<T extends { id: string }> {
   seed?: () => T[];
   /** dynamo の TTL 秒数（put 時に ttl 属性を付与）。memory は無視。 */
   ttlSeconds?: number;
+  /**
+   * listByIndex の対象フィールド（#274/#284）。dynamo は put 時に GSI1 キー
+   * （GSI1PK=`col#<name>#idx#<value>`, GSI1SK=id）を書き込む。**不変フィールド限定**
+   * （updateIf は GSI キーを更新しないため、可変フィールドを指定すると index が古くなる）。
+   */
+  indexedField?: keyof T & string;
 }
 
 export interface LogOpts<T extends { id: string }> {

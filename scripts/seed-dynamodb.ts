@@ -27,6 +27,7 @@ import {
   TENANT_COLLECTION,
   SITE_COLLECTION,
   DEVICE_COLLECTION,
+  DEVICE_COLLECTION_OPTS,
 } from '@/lib/tenant/data-repository';
 
 async function main(): Promise<void> {
@@ -60,7 +61,10 @@ async function main(): Promise<void> {
   // 初期から使えるようにする（未投入だと device 作成が 404 "site not found" になる）。
   for (const t of TENANT_SEED.tenants) await backend.collection<Tenant>(TENANT_COLLECTION).put({ ...t });
   for (const s of TENANT_SEED.sites) await backend.collection<Site>(SITE_COLLECTION).put({ ...s });
-  for (const d of TENANT_SEED.devices) await backend.collection<Device>(DEVICE_COLLECTION).put({ ...d });
+  // DEVICE_COLLECTION_OPTS（indexedField=tenantId）を共有し、put が GSI1 キーを書く（#274/#284）。
+  // 既存 device の backfill（境界クエリに現れない sparse index の解消）も seed 再実行で行える。
+  for (const d of TENANT_SEED.devices)
+    await backend.collection<Device>(DEVICE_COLLECTION, DEVICE_COLLECTION_OPTS).put({ ...d });
 
   console.log(
     `Seeded base data: kiosk-dev, default background asset + active set, ` +

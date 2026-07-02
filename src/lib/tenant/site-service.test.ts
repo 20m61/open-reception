@@ -8,7 +8,8 @@ import {
   type Device,
   type Site,
 } from '@/domain/tenant/types';
-import { MemoryTenantStore } from './memory-repository';
+import { __resetBackend } from '@/lib/data';
+import { DataBackedTenantStore } from './data-repository';
 import { SiteService, type AppendAudit } from './site-service';
 
 const T_A = asTenantId('tenant-a');
@@ -69,7 +70,10 @@ function makeService() {
   const appendAudit: AppendAudit = vi.fn(async (action, _t, metadata) => {
     audits.push({ action, metadata });
   });
-  const store = new MemoryTenantStore({
+  // §9 標準（#274）: エンティティ専用の in-memory repository は持たない。
+  // memory backend + seed で DataBacked 実装をそのままテストする（テスト毎に backend を作り直す）。
+  __resetBackend();
+  const store = new DataBackedTenantStore({
     sites: [
       site({ id: S_A1, tenantId: T_A, name: '本社受付' }),
       site({ id: S_A2, tenantId: T_A, name: '名古屋支店' }),

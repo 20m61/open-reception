@@ -8,9 +8,10 @@
  * repository interface（./repository.ts）は維持する。SiteService/DeviceService は interface に
  * のみ依存するため、本実装へ差し替えても既存サービスのテスト（memory backend）は緑のまま。
  *
- * テナント境界の強制（他テナントのデータを返さない）は、Collection.list() を tenantId/siteId で
- * フィルタすることで成立させる（admin-user-store の findBy 走査フォールバックと同じ扱い。
- * Tenant/Site/Device は小規模なため list 走査で足りる。PK/SK・GSI 最適化は将来増分）。
+ * テナント境界の強制（他テナントのデータを返さない）:
+ *   - Device は tenantId の**境界クエリ**（Collection.listByIndex → dynamo は GSI1、#274 ②/#284）。
+ *     読み取り量がテナント内の台数に比例し、パーティション全読みをしない。
+ *   - Tenant/Site は小規模なため list 走査 + フィルタで足りる（境界クエリ化は将来増分）。
  * 認可判定そのものは呼び出し側（src/domain/tenant/authorization.ts）の責務（責務分離）。
  *
  * 永続化先非依存: DATA_BACKEND=memory なら in-memory Collection に、dynamodb なら DynamoDB に
@@ -28,7 +29,7 @@ import {
   type TenantId,
 } from '@/domain/tenant/types';
 import { getBackend } from '@/lib/data';
-import type { Collection } from '@/lib/data/backend';
+import type { Collection, CollectionOpts } from '@/lib/data/backend';
 import { DataBackedAdminUserRepository } from './admin-user-store';
 import type {
   AdminUserRepository,
@@ -44,9 +45,20 @@ export const SITE_COLLECTION = 'site';
 export const DEVICE_COLLECTION = 'device';
 
 /**
+ * device collection の共通オプション（#274/#284）。tenantId の境界クエリ（listByIndex →
+ * dynamo GSI1）用。tenantId は Device の不変フィールド。**seed スクリプト
+ * （scripts/seed-dynamodb.ts）と実装で同一定義を共有**し、seed 経由の put でも GSI キーが
+ * 書かれるようにする（seed 再実行 = 既存データの backfill 手段になる）。
+ */
+export const DEVICE_COLLECTION_OPTS = {
+  indexedField: 'tenantId',
+} as const satisfies CollectionOpts<Device>;
+
+/**
  * テナント/サイト/端末一覧の上限（#274 inc1）。いずれも契約数・台数スケールで増え得るため
- * 明示する。超過分は list() が warn つきで切り詰める。恒久対応は tenantId/siteId の境界付き
- * クエリ（GSI or 維持カウンタ、#284 と統合設計）への移行。
+ * 明示する。超過分は list()/listByIndex() が warn つきで切り詰める。
+ * device は #274 ②/#284 で tenantId の境界クエリ（listByIndex → dynamo GSI1）へ移行済み。
+ * tenant/site の境界クエリ化は残増分（テナント数・サイト数は契約規模で当面この上限で足りる）。
  */
 const TENANT_SCOPE_LIST_LIMIT = 1000;
 
@@ -71,6 +83,7 @@ function collections(seed?: TenantSeed) {
     }),
     devices: backend.collection<Device>(DEVICE_COLLECTION, {
       seed: seed?.devices ? () => (seed.devices ?? []).map((d) => ({ ...d })) : undefined,
+      ...DEVICE_COLLECTION_OPTS,
     }),
   };
 }
@@ -133,13 +146,15 @@ class DataBackedDeviceRepository implements DeviceRepository {
   constructor(private readonly col: () => Collection<Device>) {}
 
   async listDevices(tenantId: TenantId, siteId: SiteId): Promise<Device[]> {
-    const all = await this.col().list({ limit: TENANT_SCOPE_LIST_LIMIT });
-    return all.filter((d) => d.tenantId === tenantId && d.siteId === siteId);
+    const inTenant = await this.listDevicesByTenant(tenantId);
+    return inTenant.filter((d) => d.siteId === siteId);
   }
 
-  async listAllDevices(): Promise<Device[]> {
-    // 全件走査だが、呼び出しは device-fleet.ts の TTL キャッシュ越しに限定する（repository.ts の契約）。
-    return this.col().list({ limit: TENANT_SCOPE_LIST_LIMIT });
+  async listDevicesByTenant(tenantId: TenantId): Promise<Device[]> {
+    // tenantId の境界クエリ（#274/#284）。dynamo は GSI1（put 時に write-through）への Query、
+    // memory は等価フィルタ。読み取り量はテナント内の台数に比例し、パーティション全読みをしない。
+    // 横断集計はテナント一覧起点で本メソッドを呼ぶ（device-fleet.ts の TTL キャッシュ越し限定）。
+    return this.col().listByIndex(String(tenantId), { limit: TENANT_SCOPE_LIST_LIMIT });
   }
 
   async getDevice(tenantId: TenantId, id: DeviceId): Promise<Device | undefined> {

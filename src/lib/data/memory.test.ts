@@ -62,3 +62,57 @@ describe('MemoryBackend collection list() の境界化 (#274)', () => {
     expect(second.find((r) => r.id === first[0]!.id)?.n).not.toBe(999);
   });
 });
+
+type Scoped = { id: string; tenantId: string; n?: number };
+
+describe('MemoryBackend collection listByIndex() の境界クエリ (#274/#284)', () => {
+  it('indexedField の値一致のみ返す（他スコープを混ぜない）', async () => {
+    const backend = new MemoryBackend();
+    const col = backend.collection<Scoped>('scoped', {
+      indexedField: 'tenantId',
+      seed: () => [
+        { id: 'a1', tenantId: 't-a' },
+        { id: 'a2', tenantId: 't-a' },
+        { id: 'b1', tenantId: 't-b' },
+      ],
+    });
+    const rows = await col.listByIndex('t-a');
+    expect(rows.map((r) => r.id).sort()).toEqual(['a1', 'a2']);
+  });
+
+  it('put した項目も listByIndex で引ける（write-through）', async () => {
+    const backend = new MemoryBackend();
+    const col = backend.collection<Scoped>('scoped-put', { indexedField: 'tenantId' });
+    await col.put({ id: 'x1', tenantId: 't-x' });
+    expect((await col.listByIndex('t-x')).map((r) => r.id)).toEqual(['x1']);
+    expect(await col.listByIndex('t-other')).toEqual([]);
+  });
+
+  it('limit を強制し、切り詰め時は warn を出す', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const backend = new MemoryBackend();
+    const col = backend.collection<Scoped>('scoped-bulk', {
+      indexedField: 'tenantId',
+      seed: () => Array.from({ length: 10 }, (_, i) => ({ id: `r${i}`, tenantId: 't' })),
+    });
+    expect(await col.listByIndex('t', { limit: 3 })).toHaveLength(3);
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('scoped-bulk'));
+  });
+
+  it('返す配列は clone（変更がストアへ波及しない）', async () => {
+    const backend = new MemoryBackend();
+    const col = backend.collection<Scoped>('scoped-clone', {
+      indexedField: 'tenantId',
+      seed: () => [{ id: 'c1', tenantId: 't', n: 1 }],
+    });
+    const rows = await col.listByIndex('t');
+    rows[0]!.n = 999;
+    expect((await col.listByIndex('t'))[0]?.n).toBe(1);
+  });
+
+  it('indexedField 未設定の collection では設定ミスとして throw する（fail-fast）', async () => {
+    const backend = new MemoryBackend();
+    const col = backend.collection<Scoped>('unindexed');
+    await expect(col.listByIndex('t')).rejects.toThrow(/indexedField/);
+  });
+});

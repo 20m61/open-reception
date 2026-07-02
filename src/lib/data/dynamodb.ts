@@ -64,6 +64,7 @@ class DynamoCollection<T extends { id: string }> implements Collection<T> {
     private readonly table: string,
     name: string,
     private readonly ttlSeconds?: number,
+    private readonly indexedField?: string,
   ) {
     this.pk = `col#${name}`;
   }
@@ -96,6 +97,41 @@ class DynamoCollection<T extends { id: string }> implements Collection<T> {
     return items.map((i) => strip<T>(i)!);
   }
 
+  // indexedField の値一致のみを GSI1 への境界付き Query で返す（#274/#284）。読み取り量が
+  // スコープ内の件数に比例し、パーティション全読みを避ける。put() 時に GSI1 キーを書くため、
+  // 導入以前の既存アイテムは再 put（backfill）まで現れない（backend.ts の契約コメント参照）。
+  async listByIndex(value: string, options?: ListOptions): Promise<T[]> {
+    if (!this.indexedField) {
+      throw new Error(
+        `collection '${this.pk}' has no indexedField; configure CollectionOpts.indexedField to use listByIndex (#274/#284).`,
+      );
+    }
+    const limit = options?.limit ?? DEFAULT_COLLECTION_LIST_LIMIT;
+    if (!Number.isFinite(limit) || limit <= 0) return [];
+    const items: Item[] = [];
+    let start: Item | undefined;
+    do {
+      const res = await this.doc.send(
+        new QueryCommand({
+          TableName: this.table,
+          IndexName: GSI1,
+          KeyConditionExpression: 'GSI1PK = :g',
+          ExpressionAttributeValues: { ':g': `${this.pk}#idx#${value}` },
+          Limit: limit - items.length,
+          ExclusiveStartKey: start,
+        }),
+      );
+      items.push(...((res.Items as Item[]) ?? []));
+      start = res.LastEvaluatedKey as Item | undefined;
+    } while (start && items.length < limit);
+    if (start) {
+      console.warn(
+        `[data] collection '${this.pk}' listByIndex('${value}') truncated at ${limit} items (#274/#284).`,
+      );
+    }
+    return items.map((i) => strip<T>(i)!);
+  }
+
   async get(id: string): Promise<T | undefined> {
     const res = await this.doc.send(
       new GetCommand({ TableName: this.table, Key: { PK: this.pk, SK: id } }),
@@ -105,6 +141,12 @@ class DynamoCollection<T extends { id: string }> implements Collection<T> {
 
   async put(item: T): Promise<void> {
     const record: Item = { ...item, PK: this.pk, SK: item.id };
+    if (this.indexedField) {
+      // 境界クエリ用の GSI1 キー（#274/#284）。indexedField は不変フィールド限定（backend.ts）。
+      const value = String((item as Item)[this.indexedField] ?? '');
+      record.GSI1PK = `${this.pk}#idx#${value}`;
+      record.GSI1SK = item.id;
+    }
     if (this.ttlSeconds && this.ttlSeconds > 0) {
       record.ttl = Math.floor(Date.now() / 1000) + this.ttlSeconds;
     }
@@ -325,7 +367,7 @@ export class DynamoBackend implements DataBackend {
   }
 
   collection<T extends { id: string }>(name: string, opts?: CollectionOpts<T>): Collection<T> {
-    return new DynamoCollection<T>(this.doc, this.table, name, opts?.ttlSeconds);
+    return new DynamoCollection<T>(this.doc, this.table, name, opts?.ttlSeconds, opts?.indexedField);
   }
 
   singleton<T>(name: string, _opts?: { default?: () => T }): Singleton<T> {
