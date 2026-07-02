@@ -341,6 +341,53 @@ describe.runIf(OPEN_NEXT_READY)('WebStack origin-verify secret (#OAC-POST)', () 
   }, 30000);
 });
 
+// コスト微最適化 (issue #300): 全環境 PriceClass_200 + アセットバケットの安全なライフサイクル。
+describe.runIf(OPEN_NEXT_READY)('WebStack cost optimization (#300)', () => {
+  const synth = (envName: 'dev' | 'prod') => {
+    const app = new cdk.App();
+    const stack = new WebStack(app, `TestWebCost${envName}`, {
+      env: { account: '123456789012', region: 'ap-northeast-1' },
+      config: resolveEnv(envName),
+      appEnv: { ADMIN_AUTH_PROVIDER: 'none' },
+    });
+    return Template.fromStack(stack);
+  };
+
+  it.each(['dev', 'prod'] as const)(
+    'uses PriceClass_200 in %s (国内 iPad 端末向けのため全世界エッジは不要)',
+    (envName) => {
+      synth(envName).hasResourceProperties('AWS::CloudFront::Distribution', {
+        DistributionConfig: Match.objectLike({ PriceClass: 'PriceClass_200' }),
+      });
+    },
+    30000,
+  );
+
+  it('asset bucket cleans up incomplete multipart uploads via lifecycle', () => {
+    synth('prod').hasResourceProperties('AWS::S3::Bucket', {
+      LifecycleConfiguration: {
+        Rules: Match.arrayWith([
+          Match.objectLike({
+            AbortIncompleteMultipartUpload: { DaysAfterInitiation: 7 },
+            Status: 'Enabled',
+          }),
+        ]),
+      },
+    });
+  }, 30000);
+
+  it('asset bucket does NOT expire objects by age (可用性をデプロイ頻度に依存させない)', () => {
+    // BucketDeployment(s3 sync) は「アセットが変わったデプロイ時」しか LastModified を
+    // 更新しないため、作成日時基準の Expiration は無デプロイ期間が続くと現役アセットを
+    // 失効させ得る。年齢ベースの失効ルールを持たないことを設計判断として固定する。
+    synth('prod').hasResourceProperties('AWS::S3::Bucket', {
+      LifecycleConfiguration: {
+        Rules: [Match.objectLike({ ExpirationInDays: Match.absent() })],
+      },
+    });
+  }, 30000);
+});
+
 // 管理ログイン Cognito（埋め込み SRP）(issue #238)。
 describe.runIf(OPEN_NEXT_READY)('WebStack admin Cognito auth', () => {
   const app = new cdk.App();

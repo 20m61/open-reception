@@ -125,13 +125,21 @@ export class WebStack extends Stack {
       enforceSSL: true,
       removalPolicy,
       autoDeleteObjects: config.environment !== 'prod',
+      // コスト微最適化 (issue #300): 未完了マルチパートアップロード（不可視だが課金対象）を掃除する。
+      // 旧ハッシュアセットの年齢ベース Expiration は採用しない: BucketDeployment(aws s3 sync) は
+      // アセットが変化したデプロイ時にしか LastModified を更新しないため、無デプロイ期間が
+      // 失効日数を超えると**現役**アセットまで削除され得る（可用性がデプロイ頻度に依存する）。
+      // 蓄積コストは数 MB/デプロイ程度で無視できるため、リスクに見合わない。
+      lifecycleRules: [{ abortIncompleteMultipartUploadAfter: Duration.days(7) }],
     });
 
     new s3deploy.BucketDeployment(this, 'AssetDeployment', {
       sources: [s3deploy.Source.asset(path.join(OPEN_NEXT_DIR, 'assets'))],
       destinationBucket: assetBucket,
       destinationKeyPrefix: '_assets',
-      // ハッシュ付き immutable アセットなので長期キャッシュ。古い世代は次回デプロイで上書き。
+      // ハッシュ付き immutable アセットなので長期キャッシュ。prune:false のため旧世代は蓄積するが、
+      // ローリングデプロイ直後にキャッシュ済み HTML が旧アセットを参照しても壊れないための意図的な選択
+      // （失効させない根拠は上の lifecycleRules コメント参照）。
       prune: false,
       cacheControl: [s3deploy.CacheControl.fromString('public,max-age=31536000,immutable')],
     });
@@ -356,10 +364,9 @@ export class WebStack extends Stack {
       domainNames: customDomainNames,
       certificate: customCertificate,
       httpVersion: cloudfront.HttpVersion.HTTP2_AND_3,
-      priceClass:
-        config.environment === 'prod'
-          ? cloudfront.PriceClass.PRICE_CLASS_ALL
-          : cloudfront.PriceClass.PRICE_CLASS_200,
+      // 国内 iPad 受付端末向け用途のため全世界エッジは不要。prod 含む全環境で
+      // PriceClass_200（北米/欧州/アジア等）に抑えてコストを最適化する (issue #300)。
+      priceClass: cloudfront.PriceClass.PRICE_CLASS_200,
       additionalBehaviors: {
         // OpenNext behaviors に対応:
         '/_next/image*': {
