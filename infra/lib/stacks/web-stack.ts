@@ -102,6 +102,15 @@ export interface WebStackProps extends StackProps {
  *   - CloudFront    : 単一エントリ。behaviors を OpenNext 定義に合わせて振り分け
  */
 export class WebStack extends Stack {
+  /** server Lambda（SSR / Route Handlers）。WebMonitoringStack (#299) が参照する。 */
+  readonly serverFn: lambda.Function;
+  /** image optimization Lambda。WebMonitoringStack (#299) が参照する。 */
+  readonly imageFn: lambda.Function;
+  /** 業務データ DynamoDB テーブル。WebMonitoringStack (#299) が参照する。 */
+  readonly dataTable: dynamodb.Table;
+  /** CloudFront Distribution。WebMonitoringStack (#299) が参照する。 */
+  readonly distribution: cloudfront.Distribution;
+
   constructor(scope: Construct, id: string, props: WebStackProps) {
     super(scope, id, props);
 
@@ -163,6 +172,7 @@ export class WebStack extends Stack {
       partitionKey: { name: 'GSI1PK', type: dynamodb.AttributeType.STRING },
       sortKey: { name: 'GSI1SK', type: dynamodb.AttributeType.STRING },
     });
+    this.dataTable = dataTable;
 
     // --- server Lambda ---
     const serverFn = new lambda.Function(this, 'ServerFn', {
@@ -183,6 +193,8 @@ export class WebStack extends Stack {
         TABLE_NAME: dataTable.tableName,
       },
     });
+
+    this.serverFn = serverFn;
 
     // server Lambda（SSR / Route Handlers）は業務データの読み書きを行う。
     dataTable.grantReadWriteData(serverFn);
@@ -265,6 +277,8 @@ export class WebStack extends Stack {
         BUCKET_KEY_PREFIX: '_assets',
       },
     });
+    this.imageFn = imageFn;
+
     // image 最適化は元画像を S3 から読む。
     assetBucket.grantRead(imageFn);
 
@@ -411,6 +425,7 @@ export class WebStack extends Stack {
         },
       },
     });
+    this.distribution = distribution;
 
     // CloudFront OAC → Lambda Function URL の invoke 権限 (issue #192)。OAC 方式のときのみ必要。
     // `FunctionUrlOrigin.withOriginAccessControl` は `lambda:InvokeFunctionUrl` のみを付与するが、
