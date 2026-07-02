@@ -27,6 +27,7 @@ vi.mock('@/lib/kiosk/kiosk-store', () => ({
 import {
   DEVICE_FLEET_CACHE_TTL_MS,
   summarizeDeviceFleet,
+  summarizeDeviceFleetForTenants,
   __resetDeviceFleetCache,
 } from './device-fleet';
 
@@ -145,5 +146,59 @@ describe('summarizeDeviceFleet (#261/#284)', () => {
     listDevicesByTenant.mockResolvedValue([device('d1', { lastSeenAt: NOW.toISOString() })]);
     const recovered = await summarizeDeviceFleet(new Date(NOW.getTime() + 1_000));
     expect(recovered.online).toBe(1);
+  });
+});
+
+describe('summarizeDeviceFleetForTenants (#284 item4: テナントスコープ集計)', () => {
+  it('指定テナントの境界クエリのみ集計し、テナント一覧走査をしない', async () => {
+    listDevicesByTenant.mockImplementation(async (tenantId) =>
+      tenantId === 't-a'
+        ? [device('a1', { tenantId: asTenantId('t-a'), lastSeenAt: NOW.toISOString() })]
+        : [],
+    );
+    const summary = await summarizeDeviceFleetForTenants([asTenantId('t-a')], NOW);
+    expect(summary).toEqual({ total: 1, online: 1, offline: 0, maintenance: 0, disabled: 0 });
+    expect(listDevicesByTenant).toHaveBeenCalledTimes(1);
+    expect(listDevicesByTenant).toHaveBeenCalledWith(asTenantId('t-a'));
+    expect(listTenants).not.toHaveBeenCalled();
+  });
+
+  it('既定テナントを含むスコープでは kiosk レガシーレジストリを union する（既定運用の同値性）', async () => {
+    listDevicesByTenant.mockResolvedValue([device('on', { lastSeenAt: NOW.toISOString() })]);
+    listKiosks.mockResolvedValue([
+      { id: 'on', displayName: '対応済', enabled: true }, // Device と id 一致 → 二重に数えない
+      { id: 'legacy', displayName: '旧のみ', enabled: true }, // kiosk のみ → offline
+    ]);
+    const summary = await summarizeDeviceFleetForTenants([asTenantId('internal')], NOW);
+    expect(summary).toEqual({ total: 2, online: 1, offline: 1, maintenance: 0, disabled: 0 });
+  });
+
+  it('既定テナント外のスコープでは kiosk（tenantId 非保持）を混入させない', async () => {
+    listDevicesByTenant.mockResolvedValue([
+      device('b1', { tenantId: asTenantId('t-b'), lastSeenAt: NOW.toISOString() }),
+    ]);
+    listKiosks.mockResolvedValue([{ id: 'legacy', displayName: '旧のみ', enabled: true }]);
+    const summary = await summarizeDeviceFleetForTenants([asTenantId('t-b')], NOW);
+    // kiosk 分（他テナントには属さない）が t-b の集計へ漏れない。
+    expect(summary).toEqual({ total: 1, online: 1, offline: 0, maintenance: 0, disabled: 0 });
+    expect(listKiosks).not.toHaveBeenCalled();
+  });
+
+  it('複数テナント割り当ての actor 向けに、各テナントの境界クエリを合算する', async () => {
+    listDevicesByTenant.mockImplementation(async (tenantId) =>
+      tenantId === 't-a'
+        ? [device('a1', { tenantId: asTenantId('t-a'), lastSeenAt: NOW.toISOString() })]
+        : [device('b1', { tenantId: asTenantId('t-b'), maintenance: true })],
+    );
+    const summary = await summarizeDeviceFleetForTenants([asTenantId('t-a'), asTenantId('t-b')], NOW);
+    expect(summary).toEqual({ total: 1, online: 1, offline: 0, maintenance: 1, disabled: 0 });
+    expect(listDevicesByTenant).toHaveBeenCalledTimes(2);
+  });
+
+  it('取得失敗は握り潰さず伝播する（偽の健全表示を出さない）', async () => {
+    listDevicesByTenant.mockRejectedValue(new Error('backend down'));
+    await expect(summarizeDeviceFleetForTenants([asTenantId('internal')], NOW)).rejects.toThrow(
+      'backend down',
+    );
   });
 });

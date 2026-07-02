@@ -23,7 +23,10 @@
  * PII・token を含まない。
  */
 import { summarizeFleet, type FleetSummary } from '@/domain/tenant/device-liveness';
+import type { TenantId } from '@/domain/tenant/types';
+import { asTenantId } from '@/domain/tenant/types';
 import { listKiosks } from '@/lib/kiosk/kiosk-store';
+import { defaultTenantIdFrom } from '@/lib/tenant/default-scope';
 import { getTenantStore } from '@/lib/tenant/store';
 
 export type { FleetSummary } from '@/domain/tenant/device-liveness';
@@ -69,6 +72,37 @@ export function summarizeDeviceFleet(now: Date = new Date()): Promise<FleetSumma
     if (cache === entry) cache = undefined;
   });
   return promise;
+}
+
+/**
+ * テナント境界付きの死活集計 (#284 item4)。actor の accessibleTenants が返す自テナント集合
+ * のみを集計する（admin ダッシュボード用。developer=全テナント横断は summarizeDeviceFleet）。
+ *
+ * 境界化: テナント毎の境界クエリ（listDevicesByTenant）だけで、テナント一覧走査も
+ * 無境界の全件読みもしない。読み取り量は自テナントの台数に比例する（/admin/kiosks の
+ * 一覧 GET と同じコストクラス）ため、横断集計のような TTL キャッシュは持たない
+ * （テナント別キャッシュの複雑さ > 節約。必要になればここに閉じて追加できる）。
+ *
+ * kiosk union の制約: レガシー kiosk レジストリ（Kiosk 型, src/domain/kiosk/types.ts）は
+ * tenantId を持たず、adoptKiosk も Device を既定テナント配下へ写像する。そのため kiosk 分は
+ * **既定テナント扱い**とし、スコープが既定テナントを含む場合のみ union する（単一テナント
+ * 既定運用では横断集計と同値）。kiosk→tenant の実写像は別増分（#284 スコープ外）。
+ */
+export async function summarizeDeviceFleetForTenants(
+  tenantIds: readonly TenantId[],
+  now: Date = new Date(),
+): Promise<FleetSummary> {
+  const store = getTenantStore();
+  const includeKiosks = tenantIds.includes(asTenantId(defaultTenantIdFrom()));
+  const [perTenant, kiosks] = await Promise.all([
+    Promise.all(tenantIds.map((t) => store.devices.listDevicesByTenant(t))),
+    includeKiosks ? listKiosks() : Promise.resolve([]),
+  ]);
+  return summarizeFleet(
+    perTenant.flat(),
+    kiosks.map((k) => ({ id: k.id, enabled: k.enabled })),
+    now,
+  );
 }
 
 /** テスト用: キャッシュを破棄する（テスト間の集計持ち越しを防ぐ）。 */
