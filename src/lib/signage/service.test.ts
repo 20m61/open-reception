@@ -1,10 +1,16 @@
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { Actor } from '@/domain/tenant/authorization';
 import { asSiteId, asTenantId } from '@/domain/tenant/types';
 import type { AuditAction } from '@/domain/reception/log';
 import { asSignageItemId, type SignageItem } from '@/domain/signage/types';
-import { MemorySignageRepository } from './memory-repository';
+import { __resetBackend } from '@/lib/data';
+import { DataBackedSignageRepository } from './repository';
 import { SignageService, type AppendAudit, type UpdateSignageInput } from './service';
+
+// memory-repository 廃止（#274 ⑦）: memory backend + 単一実装（DataBacked）を直接検証する。
+afterEach(() => {
+  __resetBackend();
+});
 
 const T_A = asTenantId('tenant-a');
 const T_B = asTenantId('tenant-b');
@@ -24,7 +30,7 @@ function makeService() {
   const appendAudit: AppendAudit = vi.fn(async (action, _target, metadata) => {
     audits.push({ action, metadata });
   });
-  const repo = new MemorySignageRepository();
+  const repo = new DataBackedSignageRepository();
   const svc = new SignageService({ repo, appendAudit, now: () => new Date('2026-06-20T00:00:00.000Z') });
   return { svc, audits, repo };
 }

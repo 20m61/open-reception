@@ -11,8 +11,7 @@
 import type { SiteId, TenantId } from '@/domain/tenant/types';
 import type { SignageContentType } from '@/domain/signage/types';
 import { playableItems } from '@/domain/signage/rotation';
-import { BackendSignageRepository } from './backend-repository';
-import type { SignageRepository } from './repository';
+import { DataBackedSignageRepository, type SignageRepository } from './repository';
 
 /** 端末へ返す 1 項目（id を伏せ、表示に必要な最小限のみ）。 */
 export type KioskSignageItem = {
@@ -35,7 +34,7 @@ export type KioskSignage = {
 export async function getKioskSignage(
   tenantId: TenantId,
   siteId: SiteId,
-  repo: SignageRepository = new BackendSignageRepository(),
+  repo: SignageRepository = new DataBackedSignageRepository(),
 ): Promise<KioskSignage> {
   const config = await repo.get(tenantId, siteId);
   if (!config || !config.enabled) {
