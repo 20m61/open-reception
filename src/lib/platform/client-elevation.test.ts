@@ -6,6 +6,8 @@ import {
   elevationScopeLabel,
   formatRemaining,
   noticePublishError,
+  buildBreakGlassRequest,
+  breakGlassErrorMessage,
 } from './client-elevation';
 
 describe('formatRemaining', () => {
@@ -156,5 +158,39 @@ describe('noticePublishError', () => {
       'お知らせの登録に失敗しました（HTTP 500）。',
     );
     expect(noticePublishError(502, null).message).toBe('お知らせの登録に失敗しました（HTTP 502）。');
+  });
+});
+
+describe('buildBreakGlassRequest (#83 §3)', () => {
+  const ok = { reason: '本番障害の緊急対応', credential: 'otp', acknowledged: true };
+
+  it('理由・再認証コード・緊急確認が揃えば acknowledge:true 付き payload を返す', () => {
+    const built = buildBreakGlassRequest(ok);
+    expect(built).toEqual({
+      ok: true,
+      payload: { reason: '本番障害の緊急対応', provider: 'none', credential: 'otp', acknowledge: true },
+    });
+  });
+
+  it('緊急確認（解錠ステップ）が無ければ弾く', () => {
+    const built = buildBreakGlassRequest({ ...ok, acknowledged: false });
+    expect(built.ok).toBe(false);
+  });
+
+  it('理由/再認証コードの空は弾く', () => {
+    expect(buildBreakGlassRequest({ ...ok, reason: '  ' }).ok).toBe(false);
+    expect(buildBreakGlassRequest({ ...ok, credential: '' }).ok).toBe(false);
+  });
+});
+
+describe('breakGlassErrorMessage (#83 §3)', () => {
+  it('acknowledge_required は緊急確認を促す', () => {
+    expect(breakGlassErrorMessage(400, { error: 'acknowledge_required' })).toContain('緊急');
+  });
+  it('それ以外は通常昇格のエラー文言に委譲する', () => {
+    expect(breakGlassErrorMessage(400, { error: 'reason_required' })).toBe(
+      elevateErrorMessage(400, { error: 'reason_required' }),
+    );
+    expect(breakGlassErrorMessage(401, null)).toBe(elevateErrorMessage(401, null));
   });
 });

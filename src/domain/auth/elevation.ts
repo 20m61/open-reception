@@ -28,12 +28,23 @@ export type Elevation = {
   reason: string;
   /** 昇格が及ぶ対象スコープ。 */
   scope: ElevationScope;
+  /**
+   * break-glass（緊急権限, #83 §3）区分。通常昇格には存在しない（undefined）。後方互換:
+   * 既存 cookie / 旧クレームはこのフィールドを持たず、非 break-glass として扱われる。
+   */
+  breakGlass?: true;
 };
 
 /** 昇格 TTL の下限/上限/既定（#83: 15〜60分、既定 30分）。 */
 export const ELEVATION_MIN_TTL_MS = 15 * 60 * 1000;
 export const ELEVATION_MAX_TTL_MS = 60 * 60 * 1000;
 export const ELEVATION_DEFAULT_TTL_MS = 30 * 60 * 1000;
+
+/**
+ * break-glass の固定窓（#83 §3）。緊急権限は通常昇格（既定 30 分）より**短い 15 分固定**とする。
+ * 障害対応が長引く場合は再発行させる（再発行ごとに理由 + 再認証 + 高重要度監査が残る）。
+ */
+export const BREAK_GLASS_TTL_MS = 15 * 60 * 1000;
 
 /** requireElevation の判定結果。 */
 export type ElevationCheck =
@@ -65,6 +76,16 @@ export function grantElevation(
       deviceId: input.scope.deviceId,
     },
   };
+}
+
+/**
+ * break-glass（緊急権限, #83 §3）を付与する純関数。通常昇格との違い:
+ *   - 窓は **BREAK_GLASS_TTL_MS（15 分）固定**（呼び出し側が TTL を選べない・延長できない）。
+ *   - `breakGlass: true` が立ち、発行・全 write・終了が高重要度監査の対象になる。
+ * 強制の仕組み（sub 束縛・jti 失効・requireElevation）は通常昇格と同一で、分離は監査/UI 上の区分。
+ */
+export function grantBreakGlass(input: { reason: string; scope: ElevationScope }, now: number): Elevation {
+  return { ...grantElevation({ ...input, ttlMs: BREAK_GLASS_TTL_MS }, now), breakGlass: true };
 }
 
 /** 昇格が現在有効か（失効していないか）。 */
@@ -140,9 +161,31 @@ export function elevationAuditMetadata(elevation: Elevation): Record<string, str
   const meta: Record<string, string> = {
     reason: elevation.reason,
     until: new Date(elevation.until).toISOString(),
+    // break-glass は高重要度監査（#83 §3）。通常昇格には載せず既存の監査表現を変えない。
+    ...elevatedWriteAuditMetadata(elevation),
   };
   if (elevation.scope.tenantId !== undefined) meta.tenantId = elevation.scope.tenantId;
   if (elevation.scope.siteId !== undefined) meta.siteId = elevation.scope.siteId;
   if (elevation.scope.deviceId !== undefined) meta.deviceId = elevation.scope.deviceId;
   return meta;
+}
+
+/**
+ * 昇格中の write 監査へ merge する高重要度マーク（#83 §3）。break-glass 中は
+ * `{ breakGlass:'true', severity:'high' }`、通常昇格は `{}`（既存の監査表現を変えない）。
+ * platform の全 write（danger-create / tenant lifecycle 等）が metadata に spread して、
+ * break-glass で行われた**すべての操作**を利用後レビューで抽出可能にする。
+ */
+export function elevatedWriteAuditMetadata(elevation: Elevation): Record<string, string> {
+  return elevation.breakGlass ? { breakGlass: 'true', severity: 'high' } : {};
+}
+
+/**
+ * 監査エントリが break-glass 関連（= 利用後レビュー対象, #83 §3）かの純判定。
+ *   - 発行/終了: action `privilege.break_glass`。
+ *   - break-glass 中の write: metadata.breakGlass === 'true'（elevatedWriteAuditMetadata で付与）。
+ * 構造的型（action/metadata のみ）で受け、AuditLog 型へ依存しない。
+ */
+export function isBreakGlassAudit(entry: { action: string; metadata?: Record<string, string> }): boolean {
+  return entry.action === 'privilege.break_glass' || entry.metadata?.breakGlass === 'true';
 }

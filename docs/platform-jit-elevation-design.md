@@ -22,7 +22,16 @@
   sanitize 済 metadata 文字列で持つ。新規 AuditAction: `privilege.elevated` / `auth.reauthenticated`。
 - **MFA 再認証**: interface + mock 先行（CLAUDE.md ガード）。`provider=entra`→step-up、`provider=none`
   →パスワード再入力。実 MFA は #65 / Entra にスタック。
-- **break-glass**: 分離概念として定義し後続増分で実装（緊急権限・高重要度監査）。
+- **break-glass**（#83 §3・実装済）: 緊急権限を通常昇格から**発行経路ごと分離**する。
+  - 発行: `POST /api/platform/elevate/break-glass`（理由必須 + 再認証 + `acknowledge:true` の解錠ステップ）。
+  - 窓: **15 分固定**（通常の既定 30 分より短い・TTL 指定不可）。延長せず再発行（再発行ごとに監査）。
+  - 区分: `Elevation.breakGlass`（cookie クレームにも保持。欠落した既存 cookie は非 break-glass = 後方互換）。
+  - 監査: 発行/否認/終了は `privilege.break_glass` + `severity='high'`。break-glass 中の**全 write** には
+    `elevatedWriteAuditMetadata` で `metadata.breakGlass='true'`/`severity='high'` が付き、
+    `/api/platform/audit-logs?breakGlass=1` で利用後レビューとして抽出できる。
+  - 強制: sub 束縛・jti 失効・`assertElevated`・fail-closed は通常昇格と**同一**（緊急経路でも緩めない）。
+  - UI: 平常時はロックされた低強調「緊急アクセス」導線のみ。緊急確認チェックで解錠するまで入力不可。
+    利用中は警告表示（高重要度監査・利用後レビュー対象・即時終了の促し）。
 
 ## スコープ判定
 昇格スコープ `{tenantId?, siteId?, deviceId?}`（undefined=ワイルドカード）が操作対象を覆うかで判定

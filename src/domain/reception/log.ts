@@ -70,6 +70,10 @@ export type AuditAction =
   // metadata に残す（機微値・PII は残さない）。実際の昇格付与・再認証フローは inc4 で接続する。
   | 'privilege.elevated'
   | 'auth.reauthenticated'
+  // break-glass 緊急権限 (issue #83 §3)。発行/否認/終了を高重要度（metadata.severity='high'）で記録し、
+  // 利用後レビュー対象として抽出できるようにする。break-glass 中の write は各操作の既存 action に
+  // metadata.breakGlass='true' が付く。
+  | 'privilege.break_glass'
   // 呼び出し先・通知ルート設定 (issue #88)。
   | 'call_route.created'
   | 'call_route.updated'

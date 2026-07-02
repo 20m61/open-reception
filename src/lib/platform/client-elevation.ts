@@ -14,6 +14,8 @@ export type ElevationView = {
   scope: ElevationScope;
   /** 昇格時に入力した操作理由（本人へのリマインド表示用）。 */
   reason: string;
+  /** break-glass（緊急権限, #83 §3）区分。通常昇格では undefined。 */
+  breakGlass?: boolean;
 };
 
 /**
@@ -67,6 +69,34 @@ export function elevateErrorMessage(status: number, body: unknown): string {
   }
   if (status === 403) return '昇格する権限がありません（developer ロールが必要です）。';
   return `昇格に失敗しました（HTTP ${status}）。`;
+}
+
+/** `POST /api/platform/elevate/break-glass` の payload (#83 §3)。acknowledge は解錠ステップの明示同意。 */
+export type BreakGlassPayload = ElevatePayload & { acknowledge: true };
+
+/**
+ * break-glass リクエストの組み立て (#83 §3)。通常昇格の必須（理由・再認証コード）に加え、
+ * 「緊急事態である」ことの明示確認（UI のロック解除チェック）が無ければネットワークに出さない。
+ */
+export function buildBreakGlassRequest(input: {
+  reason: string;
+  credential: string;
+  acknowledged: boolean;
+}): Built<BreakGlassPayload> {
+  if (!input.acknowledged) {
+    return { ok: false, error: '緊急事態であることを確認してください（break-glass の解錠）。' };
+  }
+  const base = buildElevateRequest(input);
+  if (!base.ok) return base;
+  return { ok: true, payload: { ...base.payload, acknowledge: true } };
+}
+
+/** `/api/platform/elevate/break-glass` のエラー応答 → ユーザー向け文言（通常昇格と共通部は委譲）。 */
+export function breakGlassErrorMessage(status: number, body: unknown): string {
+  if (status === 400 && bodyField(body, 'error') === 'acknowledge_required') {
+    return '緊急事態であることの確認が必要です（break-glass の解錠ステップ）。';
+  }
+  return elevateErrorMessage(status, body);
 }
 
 /** `POST /api/platform/notices` の payload（本増分の対象スコープは platform 全体固定）。 */
