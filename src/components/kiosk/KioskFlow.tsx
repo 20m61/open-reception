@@ -23,8 +23,19 @@ import { FlowStepper } from './FlowStepper';
 import { quickActionIcon } from './quick-action-icons';
 import { normalizeAccentColor, type BrandingSettings } from '@/domain/branding/types';
 import type { QuickActionIntent } from './quick-actions';
+import dynamic from 'next/dynamic';
 import { KioskCallView } from './KioskCallView';
-import { CheckinFlow } from './CheckinFlow';
+
+/**
+ * チェックイン画面は QR デコーダ（jsQR）とカメラスキャナを内包するため `next/dynamic` で
+ * kiosk 初期チャンクから分離する (#196)。checkin モードへ遷移したときのみ読み込む。
+ * ssr:false（カメラ前提のクライアント専用）。ローディング中は null（従来もカメラ起動までは
+ * 実表示が無く、E2E は要素の出現を待つため影響しない）。
+ */
+const CheckinFlow = dynamic(() => import('./CheckinFlow').then((mod) => mod.CheckinFlow), {
+  ssr: false,
+  loading: () => null,
+});
 import { MockSttAdapter } from '@/adapters/speech/mock-stt';
 import { useStaffResponse } from './useStaffResponse';
 import type { StaffResponseResult } from '@/domain/reception/staff-response';

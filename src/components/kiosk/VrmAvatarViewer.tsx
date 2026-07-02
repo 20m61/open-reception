@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState } from 'react';
 import { ResourceTracker } from '@/lib/three/resource-tracker';
+import { AvatarFallbackImage } from './avatar/fallback-image';
 import { emotionExpressionValues } from './avatar/vrm-expression';
 import { resolveStatePose } from './avatar/vrm-pose';
 import { mouthOpenValue } from './avatar/lip-sync';
@@ -201,12 +202,7 @@ export function VrmAvatarViewer({
   if (showFallback) {
     // VRM も fallback 画像も無ければ何も表示しない（既定の受付画面の体裁を保つ）。
     if (!fallbackImageUrl) return null;
-    return (
-      <div className={className} data-testid="vrm-fallback" aria-hidden="true">
-        {/* eslint-disable-next-line @next/next/no-img-element */}
-        <img src={fallbackImageUrl} alt="" style={{ width: '100%', height: '100%', objectFit: 'contain' }} />
-      </div>
-    );
+    return <AvatarFallbackImage src={fallbackImageUrl} className={className} />;
   }
 
   // data-motion-url: 現在再生中のモーション URL（#31。AnimationMixer で再生、実描画確認は #65）。
