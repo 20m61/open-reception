@@ -29,7 +29,7 @@ import {
   type TenantId,
 } from '@/domain/tenant/types';
 import { getBackend } from '@/lib/data';
-import type { Collection } from '@/lib/data/backend';
+import type { Collection, CollectionOpts } from '@/lib/data/backend';
 import { DataBackedAdminUserRepository } from './admin-user-store';
 import type {
   AdminUserRepository,
@@ -43,6 +43,16 @@ import type {
 export const TENANT_COLLECTION = 'tenant';
 export const SITE_COLLECTION = 'site';
 export const DEVICE_COLLECTION = 'device';
+
+/**
+ * device collection の共通オプション（#274/#284）。tenantId の境界クエリ（listByIndex →
+ * dynamo GSI1）用。tenantId は Device の不変フィールド。**seed スクリプト
+ * （scripts/seed-dynamodb.ts）と実装で同一定義を共有**し、seed 経由の put でも GSI キーが
+ * 書かれるようにする（seed 再実行 = 既存データの backfill 手段になる）。
+ */
+export const DEVICE_COLLECTION_OPTS = {
+  indexedField: 'tenantId',
+} as const satisfies CollectionOpts<Device>;
 
 /**
  * テナント/サイト/端末一覧の上限（#274 inc1）。いずれも契約数・台数スケールで増え得るため
@@ -73,8 +83,7 @@ function collections(seed?: TenantSeed) {
     }),
     devices: backend.collection<Device>(DEVICE_COLLECTION, {
       seed: seed?.devices ? () => (seed.devices ?? []).map((d) => ({ ...d })) : undefined,
-      // tenantId の境界クエリ（listByIndex, #274/#284）。tenantId は Device の不変フィールド。
-      indexedField: 'tenantId',
+      ...DEVICE_COLLECTION_OPTS,
     }),
   };
 }
