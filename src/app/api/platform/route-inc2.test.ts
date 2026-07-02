@@ -23,7 +23,7 @@ const listTenants = vi.fn<() => Promise<Tenant[]>>();
 const getTenant = vi.fn<(id: string) => Promise<Tenant | undefined>>();
 const listSites = vi.fn<(tenantId: string) => Promise<Site[]>>();
 const listDevices = vi.fn<(tenantId: string, siteId: string) => Promise<Device[]>>();
-const listAllDevices = vi.fn<() => Promise<Device[]>>();
+const listDevicesByTenant = vi.fn<(tenantId: string) => Promise<Device[]>>();
 const listAuditLogs = vi.fn<() => Promise<AuditLog[]>>();
 const listReceptionLogsSince = vi.fn<() => Promise<unknown[]>>();
 const listKiosks = vi.fn<() => Promise<unknown[]>>();
@@ -51,7 +51,7 @@ vi.mock('@/lib/tenant/store', () => ({
     sites: { listSites: (t: string) => listSites(t) },
     devices: {
       listDevices: (t: string, s: string) => listDevices(t, s),
-      listAllDevices: () => listAllDevices(),
+      listDevicesByTenant: (t: string) => listDevicesByTenant(t),
     },
   }),
 }));
@@ -144,7 +144,7 @@ beforeEach(() => {
   getTenant.mockResolvedValue(TENANT);
   listSites.mockResolvedValue(SITES);
   listDevices.mockResolvedValue(DEVICES);
-  listAllDevices.mockResolvedValue([]);
+  listDevicesByTenant.mockResolvedValue([]);
   listAuditLogs.mockResolvedValue(AUDIT);
   listReceptionLogsSince.mockResolvedValue([]);
   listKiosks.mockResolvedValue([]);
@@ -253,7 +253,8 @@ describe('payload safety (no PII / masked)', () => {
       { id: 'kiosk-legacy', displayName: '旧のみ', enabled: true }, // kiosk のみ → offline
       { id: 'kiosk-gone', displayName: '失効', enabled: false }, // kiosk のみ失効 → disabled
     ]);
-    listAllDevices.mockResolvedValue([
+    // 横断集計はテナント一覧起点の境界クエリ（#274/#284。listTenants は beforeEach で TENANT=internal）。
+    listDevicesByTenant.mockResolvedValue([
       dev({ id: asDeviceId('kiosk-dev'), lastSeenAt: new Date().toISOString() }), // online
       dev({ id: asDeviceId('mnt'), maintenance: true }), // maintenance（別掲）
       dev({ id: asDeviceId('dis'), status: 'revoked' }), // disabled（別掲）

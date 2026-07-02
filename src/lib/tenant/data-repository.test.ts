@@ -1,8 +1,10 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import {
+  asAdminUserId,
   asDeviceId,
   asSiteId,
   asTenantId,
+  type AdminUser,
   type Device,
   type Site,
   type Tenant,
@@ -106,12 +108,44 @@ describe('DataBackedTenantStore.devices (#80 テナント境界)', () => {
     expect(await store.devices.getDevice(T_B, D_1)).toBeUndefined();
   });
 
-  it('listAllDevices はテナント横断で全端末を返す（platform 集計用, #261）', async () => {
+  it('listDevicesByTenant はテナント境界のみ返す（fleet 集計の境界クエリ, #274/#284）', async () => {
     const store = new DataBackedTenantStore();
     await store.devices.createDevice(device(D_1, T_A, S_1));
+    await store.devices.createDevice(device(asDeviceId('d2'), T_A, S_2));
     await store.devices.createDevice(device(asDeviceId('d3'), T_B, S_1));
-    const r = await store.devices.listAllDevices();
-    expect(r.map((d) => String(d.id)).sort()).toEqual([String(D_1), 'd3'].sort());
+    const a = await store.devices.listDevicesByTenant(T_A);
+    expect(a.map((d) => String(d.id)).sort()).toEqual(['d2', String(D_1)]);
+    const b = await store.devices.listDevicesByTenant(T_B);
+    expect(b.map((d) => String(d.id))).toEqual(['d3']);
+    expect(await store.devices.listDevicesByTenant(asTenantId('t-none'))).toEqual([]);
+  });
+});
+
+describe('DataBackedTenantStore.adminUsers (#80 / memory-repository 廃止で移設, #274)', () => {
+  const user: AdminUser = {
+    id: asAdminUserId('u1'),
+    email: 'Admin@Example.com',
+    displayName: 'Admin',
+    assignments: [{ role: 'tenant_admin', tenantId: T_A, siteId: null, deviceId: null }],
+    status: 'active',
+    createdAt: now,
+    updatedAt: now,
+  };
+
+  it('email は大文字小文字を無視して解決', async () => {
+    const store = new DataBackedTenantStore();
+    await store.adminUsers.putAdminUser({ ...user });
+    expect(await store.adminUsers.findByEmail('admin@example.com')).toMatchObject({ id: 'u1' });
+    expect(await store.adminUsers.findByEmail('  ADMIN@EXAMPLE.COM ')).toMatchObject({ id: 'u1' });
+    expect(await store.adminUsers.findByEmail('nope@example.com')).toBeUndefined();
+  });
+
+  it('findBySubject は Entra subject で解決し、空文字は誤マッチしない', async () => {
+    const store = new DataBackedTenantStore();
+    await store.adminUsers.putAdminUser({ ...user, entraSubject: 'oid-123' });
+    expect(await store.adminUsers.findBySubject('oid-123')).toMatchObject({ id: 'u1' });
+    expect(await store.adminUsers.findBySubject('other')).toBeUndefined();
+    expect(await store.adminUsers.findBySubject('')).toBeUndefined();
   });
 });
 

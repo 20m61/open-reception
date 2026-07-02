@@ -7,12 +7,16 @@
  * 委譲し、ここはデータ取得と境界化（キャッシュ）だけを担う。surface ごとに別ロジックで
  * online 数が食い違う問題（#260 撤回理由 2）を構造的に防ぐ。
  *
- * 境界化（#261 AC3、#260 撤回理由 3）: Device / kiosk の全件走査は **TTL キャッシュ越しのみ**
- * 行う。リクエスト毎のフルスキャンはせず、走査は TTL（30 秒）に 1 回へ抑える（amortized O(1)）。
+ * 境界化（#261 AC3 → #274/#284 で恒久化）:
+ *   - storage 読み: 旧 listAllDevices（テナント横断の全件読み）を廃し、**テナント一覧起点 +
+ *     テナント毎の境界クエリ**（DeviceRepository.listDevicesByTenant → dynamo は tenantId の
+ *     GSI1）で集約する。テナント数は契約規模で小さく、各クエリの読み取り量はテナント内の
+ *     台数に比例する（無境界のパーティション全読みをしない）。
+ *   - 頻度: 集計は **TTL キャッシュ越しのみ** 行う。リクエスト毎のフルスキャンはせず、
+ *     走査は TTL（30 秒）に 1 回へ抑える（amortized O(1)）。
  * 死活のオンライン窓は 5 分なので 30 秒の staleness は表示品質に影響しない。
  * Lambda 等の複数インスタンスではインスタンス毎のキャッシュになるが、読み取り専用の
- * 件数集計であり一貫性要件はない。台数が大きく増えた場合の恒久解（lastSeenAt GSI /
- * 維持カウンタによる境界クエリ）は次増分（issue #261 参照）。
+ * 件数集計であり一貫性要件はない。
  *
  * 認可: 本関数は認可を行わない。呼び出し route 側が担う（observability は
  * authorizePlatform=developer 限定、dashboard は admin セッション境界）。返すのは件数のみで
@@ -43,10 +47,15 @@ export function summarizeDeviceFleet(now: Date = new Date()): Promise<FleetSumma
     return cache.promise;
   }
   const promise = (async () => {
-    const [devices, kiosks] = await Promise.all([
-      getTenantStore().devices.listAllDevices(),
-      listKiosks(),
-    ]);
+    const store = getTenantStore();
+    const [tenants, kiosks] = await Promise.all([store.tenants.listTenants(), listKiosks()]);
+    // テナント毎の境界クエリで集約（#274/#284）。未知テナントへ孤児化した Device は現れないが、
+    // Device は必ず既存テナント配下に作成される（create のサイト存在チェック / adoptKiosk の
+    // 既定スコープ）ため実運用では発生しない。
+    const perTenant = await Promise.all(
+      tenants.map((t) => store.devices.listDevicesByTenant(t.id)),
+    );
+    const devices = perTenant.flat();
     return summarizeFleet(
       devices,
       kiosks.map((k) => ({ id: k.id, enabled: k.enabled })),

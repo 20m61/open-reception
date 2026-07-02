@@ -86,7 +86,9 @@ GSI 候補（次増分で検討）: `SITE#{siteId}` / `USER#{userId}` / `DEVICE#
 PK にテナントを置くことで、クエリ自体がテナント境界に閉じる。リポジトリ interface
 （`src/lib/tenant/repository.ts`）は `listSites(tenantId)` / `getSite(tenantId, id)` の
 ように **tenantId/siteId を引数で必須**にし、保存先非依存でこの境界を表現する。
-in-memory 実装（`memory-repository.ts`）も同じ境界でフィルタする。
+実装（`data-repository.ts`）も同じ境界でフィルタする（当初の in-memory 実装
+`memory-repository.ts` は #274 ② で廃止。テストは memory backend + seed で行う。
+Device は tenantId の境界クエリ `listByIndex` へ移行済み、#284）。
 
 既存 `src/lib/data/`（Collection/Singleton/LogStore）への統合（テナント単位の
 コレクション名 or PK 前置）は次増分で行う。

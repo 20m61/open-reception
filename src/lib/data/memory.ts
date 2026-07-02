@@ -26,6 +26,7 @@ class MemoryCollection<T extends { id: string }> implements Collection<T> {
   constructor(
     private readonly name: string,
     private readonly seed?: () => T[],
+    private readonly indexedField?: string,
   ) {
     this.applySeed();
   }
@@ -49,6 +50,28 @@ class MemoryCollection<T extends { id: string }> implements Collection<T> {
       );
     }
     return all.slice(0, limit).map(clone);
+  }
+
+  // indexedField の値一致のみ返す境界クエリ（#274/#284）。dynamo の GSI1 Query と等価挙動
+  // （memory は走査フィルタで実現。単一プロセスの dev/test 用なので走査で十分）。
+  async listByIndex(value: string, options?: ListOptions): Promise<T[]> {
+    if (!this.indexedField) {
+      throw new Error(
+        `collection '${this.name}' has no indexedField; configure CollectionOpts.indexedField to use listByIndex (#274/#284).`,
+      );
+    }
+    const limit = options?.limit ?? DEFAULT_COLLECTION_LIST_LIMIT;
+    if (!Number.isFinite(limit) || limit <= 0) return [];
+    const field = this.indexedField;
+    const matched = [...this.items.values()].filter(
+      (item) => String((item as Record<string, unknown>)[field] ?? '') === value,
+    );
+    if (matched.length > limit) {
+      console.warn(
+        `[data] collection '${this.name}' listByIndex('${value}') truncated to ${limit} of ${matched.length} items (#274/#284).`,
+      );
+    }
+    return matched.slice(0, limit).map(clone);
   }
 
   async get(id: string): Promise<T | undefined> {
@@ -156,6 +179,7 @@ export class MemoryBackend implements DataBackend {
       existing = new MemoryCollection<{ id: string }>(
         name,
         opts?.seed as (() => { id: string }[]) | undefined,
+        opts?.indexedField,
       );
       this.collections.set(name, existing);
     }

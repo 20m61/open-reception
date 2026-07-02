@@ -1,9 +1,9 @@
 /**
  * テナント基盤のリポジトリ interface (issue #80, increment 1)。
  *
- * 保存先非依存の抽象のみを定義する。DynamoDB シングルテーブル実装・S3 prefix 実配線は
- * 次増分（docs/multitenant-design.md §increment 計画）。本増分では interface と、
- * 単体テスト/開発用の in-memory 実装（./memory-repository.ts）を提供する。
+ * 保存先非依存の抽象のみを定義する。実装は §9 標準（docs/persistence-design.md #274）どおり
+ * getBackend() 委譲の 1 つだけ（./data-repository.ts）。エンティティごとの in-memory 実装は
+ * 持たない（テストは memory backend + seed で行う。旧 ./memory-repository.ts は #274 ② で廃止）。
  *
  * 既存 src/lib/data/backend.ts（Collection/Singleton/LogStore）の Result/エラー様式に
  * 合わせる。テナント境界の強制は本層では行わず、呼び出し側が
@@ -43,16 +43,20 @@ export interface DeviceRepository {
   /** 指定サイト配下の端末のみ返す。 */
   listDevices(tenantId: TenantId, siteId: SiteId): Promise<Device[]>;
   /**
-   * テナント境界を跨いで全端末を返す (issue #261 死活集計)。platform 横断の稼働状態集計に使う。
-   * 呼び出し規約:
+   * 指定テナント配下の全端末を返す（テナント境界つきの境界クエリ, #274/#284）。
+   * 実装は storage 側の境界クエリ（dynamo: tenantId の GSI1、memory: 等価フィルタ）で行い、
+   * 読み取り量はテナント内の台数に比例する。
+   *
+   * 横断集計（#261 死活集計）の呼び出し規約:
+   *   - 旧 listAllDevices（テナント横断の全件読み）は本メソッドへ置換した。横断集計は
+   *     「テナント一覧起点 + テナント毎の本クエリ」で行う（テナント数は契約規模で小さい）。
    *   - 毎リクエストで直接呼ばない。集計は src/lib/tenant/device-fleet.ts の TTL キャッシュ
    *     越しに行い、無境界フルスキャンの再来（#254 / #260 撤回理由 3）を防ぐ。
    *   - 露出は件数集計のみ・PII/token なし。developer 限定 surface（observability）と、
-   *     単一テナント互換運用の admin ダッシュボード（旧 listKiosks 同様の全体集計。テナント
-   *     スコープ化は実 actor 解決 #85 後の増分）から使う。通常の管理 API はテナント境界つきの
+   *     単一テナント互換運用の admin ダッシュボードから使う。通常の管理 API はサイト境界つきの
    *     listDevices を使うこと。
    */
-  listAllDevices(): Promise<Device[]>;
+  listDevicesByTenant(tenantId: TenantId): Promise<Device[]>;
   getDevice(tenantId: TenantId, id: DeviceId): Promise<Device | undefined>;
   /**
    * テナント境界を跨いで id だけで端末を引く (issue #87 inc3)。
