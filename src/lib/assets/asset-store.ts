@@ -35,6 +35,7 @@ async function getActive(): Promise<ActiveAssetSet> {
 }
 
 export async function listAssets(kind?: AssetKind): Promise<Asset[]> {
+  // アセットは管理者が手動登録する設定系で構造的に小さい。既定上限（500, #274）で十分。
   const all = await assets().list();
   return all.filter((a) => (kind ? a.kind === kind : true));
 }

@@ -4,6 +4,7 @@ import {
   resolveStayScope,
 } from '@/lib/visit/store';
 import { getBackend } from '@/lib/data';
+import { STAY_LIST_LIMIT } from '@/lib/visit/backend-repository';
 import type { VisitStay } from '@/domain/visit/types';
 import { appendAuditLog } from '@/lib/data-stores/reception-log-store';
 import {
@@ -35,7 +36,10 @@ export async function GET(): Promise<NextResponse> {
   const { tenantId, siteId } = resolveStayScope(session.kioskId);
   try {
     // 端末からは在館中のみを最小限の非 PII で返す。
-    const all = await getBackend().collection<VisitStay>('visitstay').list();
+    // 滞在記録は増加し得るため上限を明示（#274。恒久対応は境界付きクエリ移行）。
+    const all = await getBackend()
+      .collection<VisitStay>('visitstay')
+      .list({ limit: STAY_LIST_LIMIT });
     const present: PresentStaySummary[] = all
       .filter((s) => s.tenantId === tenantId && s.siteId === siteId && s.status === 'present')
       .map((s) => ({ stayId: s.id, checkedInAt: s.checkedInAt }));

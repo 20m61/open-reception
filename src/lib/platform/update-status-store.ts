@@ -9,6 +9,7 @@
  */
 import type { UpdateStatus } from '@/domain/platform/update-status';
 import { getBackend } from '@/lib/data';
+import { PLATFORM_LIST_LIMIT } from './store-limits';
 
 /** memory バックエンド専用のデモ用サンプル（本番 DynamoDB では無視される）。 */
 function seed(): UpdateStatus[] {
@@ -54,7 +55,7 @@ const collection = () => getBackend().collection<UpdateStatus>('platform_update_
 
 /** 全アップデート状況を返す（read-only）。並べ替え・集計は domain の summarizeUpdateStatuses に委譲。 */
 export async function listUpdateStatuses(): Promise<UpdateStatus[]> {
-  return collection().list();
+  return collection().list({ limit: PLATFORM_LIST_LIMIT });
 }
 
 /** テスト/seed 用に初期状態へ戻す（memory のみ実効）。 */

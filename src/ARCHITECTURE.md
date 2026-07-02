@@ -61,4 +61,8 @@ tests/e2e/          Playwright (iPad viewport)
 - ルート → `lib/*` サービス/store → `lib/data` バックエンド（memory | dynamodb 単一テーブル）。
 - **本番は `DATA_BACKEND=dynamodb` 必須**。デプロイ実行（Lambda マーカーあり）で未設定なら
   起動時に throw する fail-closed（#273 inc1 済。判定は `resolveBackendKind`）。
-- 永続化イディオムは store 直呼びと repository 三点セットが併存中 → 収斂方針は #274。
+- **新規エンティティは repository パターン**（ドメイン語彙の interface + getBackend() 委譲実装 1 つ。
+  memory 実装は重複させない）に統一（#274 inc1 で決定。標準・例外・移行順は
+  `docs/persistence-design.md` §9）。既存 store は段階移行中。
+- `Collection.list()` は上限つき（既定 500。超過は warn + 切り詰め）。増加し得る一覧は呼び出し側で
+  limit を明示し、恒久対応は境界付きクエリ（GSI / 維持カウンタ、#284）。

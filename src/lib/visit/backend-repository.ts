@@ -12,6 +12,13 @@ import type { RepoResult, StayRepository } from './repository';
 
 const COLLECTION = 'visitstay';
 
+/**
+ * 滞在記録一覧の上限（#274 inc1）。滞在記録は日々増加するため明示する。超過分は list() が
+ * warn つきで切り詰める。恒久対応は siteId/status の境界付きクエリ（GSI）への移行
+ * （docs/checkout-stay-design.md §6 / #284 と統合設計）。
+ */
+export const STAY_LIST_LIMIT = 1000;
+
 const stays = () => getBackend().collection<VisitStay>(COLLECTION);
 
 function inBounds(s: VisitStay, tenantId: TenantId, siteId: SiteId): boolean {
@@ -20,7 +27,9 @@ function inBounds(s: VisitStay, tenantId: TenantId, siteId: SiteId): boolean {
 
 export class BackendStayRepository implements StayRepository {
   async list(tenantId: TenantId, siteId: SiteId): Promise<VisitStay[]> {
-    return (await stays().list()).filter((s) => inBounds(s, tenantId, siteId));
+    return (await stays().list({ limit: STAY_LIST_LIMIT })).filter((s) =>
+      inBounds(s, tenantId, siteId),
+    );
   }
 
   async get(tenantId: TenantId, siteId: SiteId, id: StayId): Promise<VisitStay | undefined> {

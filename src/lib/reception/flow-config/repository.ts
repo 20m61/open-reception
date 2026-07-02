@@ -18,6 +18,12 @@ import type { StoredReceptionFlow } from './types';
 
 export const RECEPTION_FLOW_COLLECTION = 'reception_flow';
 
+/**
+ * フロー一覧の上限（#274 inc1）。フロー定義は設定系だがテナント×サイト数に比例して増え得る
+ * ため明示する。超過分は list() が warn つきで切り詰める（恒久対応は tenantId の境界付きクエリ）。
+ */
+const FLOW_LIST_LIMIT = 1000;
+
 export type RepoError = { code: 'not_found' | 'conflict' | 'invalid_input'; message: string };
 export type RepoResult<T> = { ok: true; value: T } | { ok: false; error: RepoError };
 
@@ -60,7 +66,7 @@ export class DataBackedReceptionFlowRepository implements ReceptionFlowRepositor
   }
 
   async listFlows(tenantId: TenantId, siteId?: SiteId): Promise<StoredReceptionFlow[]> {
-    const all = await this.col().list();
+    const all = await this.col().list({ limit: FLOW_LIST_LIMIT });
     return all.filter(
       (f) => f.tenantId === tenantId && (siteId === undefined || f.siteId === siteId),
     );
@@ -75,7 +81,7 @@ export class DataBackedReceptionFlowRepository implements ReceptionFlowRepositor
     const col = this.col();
     if (await col.get(flow.id))
       return { ok: false, error: { code: 'conflict', message: 'reception flow id exists' } };
-    if (hasPurposeConflict(await col.list(), flow))
+    if (hasPurposeConflict(await col.list({ limit: FLOW_LIST_LIMIT }), flow))
       return { ok: false, error: { code: 'conflict', message: 'purposeKey already exists for this site' } };
     await col.put(flow);
     return { ok: true, value: clone(flow) };

@@ -9,6 +9,7 @@
  */
 import type { Incident } from '@/domain/platform/incident';
 import { getBackend } from '@/lib/data';
+import { PLATFORM_LIST_LIMIT } from './store-limits';
 
 /** memory バックエンド専用のデモ用サンプル（本番 DynamoDB では無視される）。 */
 function seed(): Incident[] {
@@ -42,7 +43,7 @@ const collection = () => getBackend().collection<Incident>('platform_incidents',
 
 /** 全障害を返す（read-only）。並べ替え・集計は domain の summarizeIncidents に委譲する。 */
 export async function listIncidents(): Promise<Incident[]> {
-  return collection().list();
+  return collection().list({ limit: PLATFORM_LIST_LIMIT });
 }
 
 /**

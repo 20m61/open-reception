@@ -1,6 +1,7 @@
 # 永続化層の設計 (DynamoDB 移行)
 
-ステータス: 実装済み（フェーズ 1〜5 完了）/ SDD（仕様駆動開発）
+ステータス: 実装済み（フェーズ 1〜5 完了）/ SDD（仕様駆動開発）。
+**新規エンティティの標準イディオムと list() の境界化は §9（#274 inc1）**。
 関連: `docs/infrastructure-design.md`, `docs/audit-logging.md`, `src/ARCHITECTURE.md`, `docs/deploy-aws.md`
 
 実装の所在:
@@ -169,3 +170,78 @@ src/lib/data/
 | 設定シングルトンの未存在 | 読み取り時に DEFAULTS フォールバック（書き込み時に作成） |
 | コールドスタートの SDK 初期化コスト | DocumentClient をハンドラ外で生成、`@aws-sdk/lib-dynamodb` を遅延 import |
 | 既存 seed データ（mock-data）依存のテスト | in-memory は引き続き seed 利用。DynamoDB は seed 非依存設計 |
+
+## 9. 永続化イディオムの標準（issue #274 inc1）
+
+§3 の「リポジトリ抽象」は実装過程で 2 系統に分岐した。本節はそれを 1 つに収斂させる
+**新規エンティティの標準**を定める（§3 と矛盾しない拡張。既存コードの一括移行はしない）。
+
+### 9.1 現状の 2 イディオム
+
+1. **getBackend() 直呼び store**（`src/lib/data-stores/*`、`src/lib/{assets,kiosk,platform,...}/*-store.ts` 約 20 ファイル）
+   — モジュール関数が直接 `getBackend().collection()` を引く。手早いが、永続化詳細
+   （collection 名・走査フィルタ）が呼び出し側へ漏れやすく、route が collection を
+   直接触る逸脱（例: `/api/kiosk/checkout`）を生みやすい。
+2. **repository 三点セット**（`src/lib/{visit,tenant,signage,reservation}/`）
+   — `repository.ts`（interface）+ `memory-repository.ts` + `backend-repository.ts` +
+   `store.ts`（ファクトリ）。境界が型で明示される一方、backend 抽象が既に memory/dynamodb
+   切替を提供しているため **memory 実装が二重投資**になっている。
+
+### 9.2 新規エンティティの標準（決定）
+
+**repository パターンに収斂する。ただし実装は 1 つだけ持つ**（memory-/backend- の
+二重実装はしない）。
+
+```
+src/lib/<entity>/
+  repository.ts        ドメイン語彙の interface（RepoResult、tenantId/siteId 等の境界引数）
+                       + getBackend() の Collection/Singleton/LogStore に委譲する実装
+                       （肥大時は data-repository.ts に実装を分離してよい）
+  store.ts             プロセス共有ファクトリ（getXxxRepository()）とテスト用 reset
+```
+
+- interface は「テナント境界つきのドメイン操作」（`listSites(tenantId)` 等）を語彙にする。
+  route / サービスは interface のみに依存し、collection 名や走査フィルタを知らない。
+- 実装は 1 つ: memory/dynamodb の差し替えは backend 層（`DATA_BACKEND`）が担うため、
+  エンティティごとの in-memory repository は作らない。テストは memory backend + seed で行う。
+- 参考実装: `src/lib/tenant/data-repository.ts`、`src/lib/reception/flow-config/repository.ts`。
+- **シングルトン設定**（voice/security/motion/i18n/branding 等の単一値設定）は例外とし、
+  現行の「store 関数 + Singleton」のままでよい（repository 化の価値が薄い）。
+
+判断根拠:
+- Collection 抽象が既に backend 差し替えとテスト容易性（memory backend）を提供しており、
+  memory repository の重複実装に維持コストを払う価値がない。実際、新しいコード
+  （tenant inc3 以降・flow-config・staff-response-config）は自然にこの形へ収束している。
+- interface があることで境界（tenantId/siteId）と契約（RepoResult）が型で明示され、
+  #80 のテナント境界強制・#274 の境界クエリ移行を実装差し替えだけで行える。
+
+### 9.3 list() の境界化（inc1 実装済み）
+
+- `Collection.list(options?: { limit })` — 既定 `DEFAULT_COLLECTION_LIST_LIMIT`（500）。
+  memory / dynamodb 両実装が上限を強制し、超過分は **warn を出して切り詰める**
+  （サイレント欠落しない）。dynamodb は Query の `Limit` に残数を渡し、上限到達で
+  ページングを打ち切る。
+- 呼び出し側の運用: **構造的に小さい設定系**（部署・端末・アセット等）は既定上限のまま、
+  **増加し得る一覧**（担当者・滞在記録・テナント/サイト/デバイス・platform 運用レコード）は
+  呼び出し箇所で limit を明示する（例: `STAFF_LIST_LIMIT` / `STAY_LIST_LIMIT` /
+  `TENANT_SCOPE_LIST_LIMIT` / `PLATFORM_LIST_LIMIT`）。
+- この上限は**安全弁**であり恒久解ではない。上限に近づく集合は境界付きクエリ
+  （GSI / 維持カウンタ）へ移行する（#284 と統合設計）。
+- `LogStore.list()` は本増分の対象外（受付/監査ログの集計経路は #254 の `listSince` で
+  境界化済み。残る全件 list は管理画面表示のみで、境界化は移行増分で扱う）。
+
+### 9.4 既存 store の移行順（段階増分、1 PR = 1〜2 エンティティ、挙動不変）
+
+1. **visitstay** — `/api/kiosk/checkout` の getBackend() 直呼びを `StayRepository` 経由へ
+   （既存 interface に present 一覧を追加するだけ。イディオム逸脱の解消を最優先）。
+2. **device / kiosk** — `kiosk-store` を tenant の `DeviceRepository` へ統合
+   （#261 の残増分 #284 と同時に。境界クエリ化も併せて設計）。
+3. **platform 系**（incident / notice / maintenance-window / update-status / feature-flag）
+   — read/write が対で揃っており repository 化が機械的。
+4. **directory**（department / staff）— 検索・並び替えは domain の純関数のまま repository 化。
+   staff は件数増に備え部署別の境界クエリを検討。
+5. **reception-store（セッション）/ elevation-jti** — TTL 前提の短命データ。
+6. **reception-log-store**（LogStore）— #254 の範囲クエリと合わせて最後。
+7. 既存三点セット（visit/tenant/signage/reservation/notification）の
+   `memory-repository.ts` は、各エンティティを触る増分の中で**機会的に廃止**する
+   （専用 PR は立てない）。

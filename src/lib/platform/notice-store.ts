@@ -8,6 +8,7 @@
  */
 import type { Notice } from '@/domain/platform/notice';
 import { getBackend } from '@/lib/data';
+import { PLATFORM_LIST_LIMIT } from './store-limits';
 
 /** memory バックエンド専用のデモ用サンプル（本番 DynamoDB では無視される）。 */
 function seed(): Notice[] {
@@ -42,7 +43,7 @@ const collection = () => getBackend().collection<Notice>('platform_notices', { s
 
 /** 全お知らせを返す（read-only）。並べ替え・集計は domain の summarizeNotices に委譲する。 */
 export async function listNotices(): Promise<Notice[]> {
-  return collection().list();
+  return collection().list({ limit: PLATFORM_LIST_LIMIT });
 }
 
 /**

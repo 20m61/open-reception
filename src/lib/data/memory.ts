@@ -5,13 +5,15 @@
  * 同一プロセス内で同じ name を要求すると同じハンドルを返し、状態を共有する。
  * seed は構築時と reset() 時に適用する。
  */
-import type {
-  Collection,
-  CollectionOpts,
-  DataBackend,
-  LogOpts,
-  LogStore,
-  Singleton,
+import {
+  DEFAULT_COLLECTION_LIST_LIMIT,
+  type Collection,
+  type CollectionOpts,
+  type DataBackend,
+  type ListOptions,
+  type LogOpts,
+  type LogStore,
+  type Singleton,
 } from './backend';
 
 function clone<T>(value: T): T {
@@ -21,7 +23,10 @@ function clone<T>(value: T): T {
 class MemoryCollection<T extends { id: string }> implements Collection<T> {
   private items = new Map<string, T>();
 
-  constructor(private readonly seed?: () => T[]) {
+  constructor(
+    private readonly name: string,
+    private readonly seed?: () => T[],
+  ) {
     this.applySeed();
   }
 
@@ -32,8 +37,18 @@ class MemoryCollection<T extends { id: string }> implements Collection<T> {
     }
   }
 
-  async list(): Promise<T[]> {
-    return [...this.items.values()].map(clone);
+  // 上限つき list（#274）。dynamo バックエンドの Limit 強制と挙動を揃える。
+  async list(options?: ListOptions): Promise<T[]> {
+    const limit = options?.limit ?? DEFAULT_COLLECTION_LIST_LIMIT;
+    if (!Number.isFinite(limit) || limit <= 0) return [];
+    const all = [...this.items.values()];
+    if (all.length > limit) {
+      // サイレント欠落を避けるため、切り詰めの発生は必ず可視化する（境界クエリ移行の合図, #284）。
+      console.warn(
+        `[data] collection '${this.name}' list() truncated to ${limit} of ${all.length} items (#274). 境界付きクエリへの移行を検討すること。`,
+      );
+    }
+    return all.slice(0, limit).map(clone);
   }
 
   async get(id: string): Promise<T | undefined> {
@@ -138,7 +153,10 @@ export class MemoryBackend implements DataBackend {
   collection<T extends { id: string }>(name: string, opts?: CollectionOpts<T>): Collection<T> {
     let existing = this.collections.get(name);
     if (!existing) {
-      existing = new MemoryCollection<{ id: string }>(opts?.seed as (() => { id: string }[]) | undefined);
+      existing = new MemoryCollection<{ id: string }>(
+        name,
+        opts?.seed as (() => { id: string }[]) | undefined,
+      );
       this.collections.set(name, existing);
     }
     return existing as unknown as Collection<T>;

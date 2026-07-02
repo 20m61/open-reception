@@ -62,6 +62,12 @@ function seedAdminUsers(): AdminUser[] {
   ];
 }
 
+/**
+ * 管理ユーザー一覧の上限（#274 inc1）。テナント数に比例して増え得るため明示する。
+ * 超過分は list() が warn つきで切り詰める（恒久対応は subject/email の GSI 化。上記コメント参照）。
+ */
+const ADMIN_USER_LIST_LIMIT = 1000;
+
 const adminUsers = () =>
   getBackend().collection<AdminUser>(COLLECTION, {
     seed: () => seedAdminUsers().map((u) => ({ ...u })),
@@ -76,14 +82,14 @@ export class DataBackedAdminUserRepository implements AdminUserRepository {
   async findBySubject(subject: string): Promise<AdminUser | undefined> {
     const needle = subject.trim();
     if (!needle) return undefined;
-    const all = await adminUsers().list();
+    const all = await adminUsers().list({ limit: ADMIN_USER_LIST_LIMIT });
     return all.find((u) => u.entraSubject != null && u.entraSubject === needle);
   }
 
   async findByEmail(email: string): Promise<AdminUser | undefined> {
     const needle = email.trim().toLowerCase();
     if (!needle) return undefined;
-    const all = await adminUsers().list();
+    const all = await adminUsers().list({ limit: ADMIN_USER_LIST_LIMIT });
     return all.find((u) => u.email.toLowerCase() === needle);
   }
 

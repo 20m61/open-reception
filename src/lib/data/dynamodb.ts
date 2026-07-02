@@ -20,13 +20,15 @@ import {
   QueryCommand,
   UpdateCommand,
 } from '@aws-sdk/lib-dynamodb';
-import type {
-  Collection,
-  CollectionOpts,
-  DataBackend,
-  LogOpts,
-  LogStore,
-  Singleton,
+import {
+  DEFAULT_COLLECTION_LIST_LIMIT,
+  type Collection,
+  type CollectionOpts,
+  type DataBackend,
+  type ListOptions,
+  type LogOpts,
+  type LogStore,
+  type Singleton,
 } from './backend';
 
 const GSI1 = 'GSI1';
@@ -66,7 +68,10 @@ class DynamoCollection<T extends { id: string }> implements Collection<T> {
     this.pk = `col#${name}`;
   }
 
-  async list(): Promise<T[]> {
+  // 上限つき list（#274）。Query の Limit に残数を渡し、上限到達でページングを打ち切る。
+  async list(options?: ListOptions): Promise<T[]> {
+    const limit = options?.limit ?? DEFAULT_COLLECTION_LIST_LIMIT;
+    if (!Number.isFinite(limit) || limit <= 0) return [];
     const items: Item[] = [];
     let start: Item | undefined;
     do {
@@ -75,12 +80,19 @@ class DynamoCollection<T extends { id: string }> implements Collection<T> {
           TableName: this.table,
           KeyConditionExpression: 'PK = :pk',
           ExpressionAttributeValues: { ':pk': this.pk },
+          Limit: limit - items.length,
           ExclusiveStartKey: start,
         }),
       );
       items.push(...((res.Items as Item[]) ?? []));
       start = res.LastEvaluatedKey as Item | undefined;
-    } while (start);
+    } while (start && items.length < limit);
+    if (start) {
+      // 上限で打ち切った（まだ続きがある）。サイレント欠落を避けるため必ず可視化する（#284）。
+      console.warn(
+        `[data] collection '${this.pk}' list() truncated at ${limit} items (#274). 境界付きクエリへの移行を検討すること。`,
+      );
+    }
     return items.map((i) => strip<T>(i)!);
   }
 
