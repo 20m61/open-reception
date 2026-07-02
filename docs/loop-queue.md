@@ -27,9 +27,9 @@
 | ~~#83~~ | platform epic | **クローズ済**（inc4d UX #280・break-glass #282・フラグwrite #285・read監査 #287。運用ops は #290 へ切り出し） | 完了 2026-07-02 |
 | ~~#264~~ | security | **クローズ済**（subject 束縛 #271 + jti 失効 #278 + end route） | 完了 2026-07-02 |
 | ~~#261~~ | observability | **クローズ済**（#283: union+adoptKiosk・共有summarize・TTLキャッシュ・分母是正） | 完了 2026-07-02 |
-| **#200** | security | script-src nonce 化**マージ済**（#288、根因=静的プリレンダ→force-dynamic）。残: live ZAP 検証（#195 後）。style-src は #289 | live 待ち |
-| **#196** | perf | Lighthouse perf 0.68-0.72 → 0.7+ 安定化 | 独立（live 検証） |
-| **#195** | infra | Notification/Monitoring デプロイ + prod 準備 | 外部リソース待ち |
+| ~~#200~~ | security | **クローズ済**（live ZAP FAIL 0・[10055] PASS を dev 実機で確認） | 完了 2026-07-03 |
+| **#196** | perf | バンドル-19%済・a11y 1.0/BP 0.96 live 確定・TTFB 50-90ms。残: PSI で perf 値取得（クォータ回復後） | PSI 待ち |
+| **#195** | infra | **dev 分完了**（Notification/Monitoring 稼働・authorizer 検証済・アラームOK）。残: prod deploy（実機 UAT 後にユーザー判断） | prod 見送り中 |
 | **#4** | feature | Vonage 実通話（基盤・interface 済） | #65 スタック |
 | **#31** | feature | VRM 状態別モーション再生（実描画済・残 idle .vrma） | #65 スタック |
 | **#65** | 集約 | 実機 UAT / 実認証 / WebKit E2E のスタック先 | 外部リソース待ち |
