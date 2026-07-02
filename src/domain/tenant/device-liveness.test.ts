@@ -92,6 +92,18 @@ describe('summarizeFleet (#261 union 集計)', () => {
     expect(summary).toEqual({ total: 0, online: 0, offline: 0, maintenance: 0, disabled: 1 });
   });
 
+  it('旧レジストリで失効した kiosk は、heartbeat 継続中の Device shadow より優先して disabled', () => {
+    // 逆方向同期（kiosk setEnabled → Device 写像）が入るまでの穴塞ぎ: 取り込み済み Device が
+    // active のまま heartbeat を受け続けても、管理上の失効（enabled=false）を online 計上で
+    // 打ち消さない（#261 レビュー指摘）。
+    const summary = summarizeFleet(
+      [device('kiosk-dec', { lastSeenAt: iso(1_000) })], // adopt 済み・生きている
+      [{ id: 'kiosk-dec', enabled: false }], // だが旧レジストリで失効済み
+      NOW,
+    );
+    expect(summary).toEqual({ total: 0, online: 0, offline: 0, maintenance: 0, disabled: 1 });
+  });
+
   it('分母（total）は稼働可能端末のみ。maintenance/disabled は含めず別掲（AC4）', () => {
     const summary = summarizeFleet(
       [

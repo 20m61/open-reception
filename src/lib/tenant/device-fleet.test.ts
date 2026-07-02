@@ -91,8 +91,27 @@ describe('summarizeDeviceFleet (#261)', () => {
     expect(listAllDevices).toHaveBeenCalledTimes(2);
   });
 
+  it('並行リクエストは in-flight の集計を共有し、走査を多重発火しない（stampede 防止）', async () => {
+    let release: (v: Device[]) => void = () => {};
+    listAllDevices.mockReturnValue(new Promise<Device[]>((r) => (release = r)));
+    const p1 = summarizeDeviceFleet(NOW);
+    const p2 = summarizeDeviceFleet(new Date(NOW.getTime() + 1_000)); // 解決前の並行呼び出し
+    release([device('d1', { lastSeenAt: NOW.toISOString() })]);
+    const [r1, r2] = await Promise.all([p1, p2]);
+    expect(r1).toEqual(r2);
+    expect(listAllDevices).toHaveBeenCalledTimes(1);
+  });
+
   it('取得失敗は握り潰さず伝播する（偽の健全表示を出さない）', async () => {
     listAllDevices.mockRejectedValue(new Error('backend down'));
     await expect(summarizeDeviceFleet(NOW)).rejects.toThrow('backend down');
+  });
+
+  it('失敗はキャッシュしない（次のリクエストで再試行して復帰する）', async () => {
+    listAllDevices.mockRejectedValueOnce(new Error('backend down'));
+    await expect(summarizeDeviceFleet(NOW)).rejects.toThrow('backend down');
+    listAllDevices.mockResolvedValue([device('d1', { lastSeenAt: NOW.toISOString() })]);
+    const recovered = await summarizeDeviceFleet(new Date(NOW.getTime() + 1_000));
+    expect(recovered.online).toBe(1);
   });
 });

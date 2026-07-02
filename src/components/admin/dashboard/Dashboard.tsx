@@ -104,12 +104,13 @@ export function Dashboard() {
             href="/admin/devices"
             hint={devices.offline > 0 ? `${devices.offline} 台がオフラインです` : 'すべての端末が稼働中'}
           />
+          {/* rolling deploy 中は旧 API 形（maintenance/disabled なし）が返りうるため 0 に fallback。 */}
           <MetricCard
             label="保守・停止中の端末"
-            value={devices.maintenance + devices.disabled}
+            value={(devices.maintenance ?? 0) + (devices.disabled ?? 0)}
             unit="台"
             href="/admin/devices"
-            hint={`メンテナンス ${devices.maintenance} / 無効 ${devices.disabled}（オンライン率の分母に含めません）`}
+            hint={`メンテナンス ${devices.maintenance ?? 0} / 無効 ${devices.disabled ?? 0}（オンライン率の分母に含めません）`}
           />
           <MetricCard
             label="Vonage 連携状態"

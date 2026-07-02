@@ -47,8 +47,10 @@ export interface DeviceRepository {
    * 呼び出し規約:
    *   - 毎リクエストで直接呼ばない。集計は src/lib/tenant/device-fleet.ts の TTL キャッシュ
    *     越しに行い、無境界フルスキャンの再来（#254 / #260 撤回理由 3）を防ぐ。
-   *   - 露出は件数集計のみ（developer 限定 surface か、自テナント集約ダッシュボード）。
-   *     通常の管理 API はテナント境界つきの listDevices を使うこと。
+   *   - 露出は件数集計のみ・PII/token なし。developer 限定 surface（observability）と、
+   *     単一テナント互換運用の admin ダッシュボード（旧 listKiosks 同様の全体集計。テナント
+   *     スコープ化は実 actor 解決 #85 後の増分）から使う。通常の管理 API はテナント境界つきの
+   *     listDevices を使うこと。
    */
   listAllDevices(): Promise<Device[]>;
   getDevice(tenantId: TenantId, id: DeviceId): Promise<Device | undefined>;

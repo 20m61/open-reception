@@ -83,6 +83,10 @@ export type FleetSummary = {
  *
  * - id 一致（kiosk↔Device の対応づけは id 一致: docs/site-device-management-design.md）は
  *   Device 側を採用する（heartbeat の lastSeenAt・maintenance を持つのは Device のみ）。
+ *   ただし **管理上の失効はどちらのレジストリ由来でも優先**する: 旧レジストリで
+ *   enabled=false にされた端末は、取り込み済み Device が active のまま heartbeat を
+ *   受け続けていても disabled として数える（kiosk setEnabled → Device の逆方向同期が
+ *   入るまで、失効が online 計上に打ち消される穴を塞ぐ）。
  * - kiosk のみの端末（旧 /admin/kiosks 経路で登録・未 heartbeat）は enabled から
  *   active/revoked へ射影する。lastSeenAt が無いため offline 扱いになるが、heartbeat が
  *   届き次第 Device へ取り込まれ（DeviceService.adoptKiosk）実死活に載る。
@@ -93,12 +97,15 @@ export function summarizeFleet(
   now: Date,
   onlineWindowMs: number = DEFAULT_ONLINE_WINDOW_MS,
 ): FleetSummary {
+  const kioskById = new Map(kiosks.map((k) => [k.id, k]));
   const byId = new Map<string, ConnectivityInput>();
   for (const kiosk of kiosks) {
     byId.set(kiosk.id, { status: kiosk.enabled ? 'active' : 'revoked' });
   }
   for (const device of devices) {
-    byId.set(device.id, device); // Device 優先（kiosk 射影を上書き）。
+    // Device 優先（kiosk 射影を上書き）。ただし旧レジストリでの失効は Device より強い。
+    const kiosk = kioskById.get(device.id);
+    byId.set(device.id, kiosk && !kiosk.enabled ? { ...device, status: 'revoked' } : device);
   }
   const counts: Record<DeviceConnectivity, number> = {
     online: 0,

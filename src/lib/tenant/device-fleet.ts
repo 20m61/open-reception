@@ -27,29 +27,39 @@ export type { FleetSummary } from '@/domain/tenant/device-liveness';
 /** 走査を抑える TTL。オンライン窓（5 分）より十分小さく、表示鮮度と負荷のバランスを取る。 */
 export const DEVICE_FLEET_CACHE_TTL_MS = 30_000;
 
-let cache: { at: number; value: FleetSummary } | undefined;
+// 集計の promise を持つ（値ではなく）。TTL 失効直後に並行リクエストが重なっても、走査は
+// in-flight の 1 本に合流させる（stampede 防止）。失敗した promise はキャッシュから外し、
+// 次のリクエストが再試行する（エラー自体は呼び出し元へ伝播）。
+let cache: { at: number; promise: Promise<FleetSummary> } | undefined;
 
 /**
  * Device / kiosk 両レジストリの union で端末死活を集計して返す。
  * 取得失敗は握り潰さず伝播する（監視 surface に偽の健全表示を出さない）。
  */
-export async function summarizeDeviceFleet(now: Date = new Date()): Promise<FleetSummary> {
+export function summarizeDeviceFleet(now: Date = new Date()): Promise<FleetSummary> {
   const at = now.getTime();
   // 時計の巻き戻り（at < cache.at）はキャッシュ鮮度を判定できないため信用しない。
   if (cache && at >= cache.at && at - cache.at < DEVICE_FLEET_CACHE_TTL_MS) {
-    return cache.value;
+    return cache.promise;
   }
-  const [devices, kiosks] = await Promise.all([
-    getTenantStore().devices.listAllDevices(),
-    listKiosks(),
-  ]);
-  const value = summarizeFleet(
-    devices,
-    kiosks.map((k) => ({ id: k.id, enabled: k.enabled })),
-    now,
-  );
-  cache = { at, value };
-  return value;
+  const promise = (async () => {
+    const [devices, kiosks] = await Promise.all([
+      getTenantStore().devices.listAllDevices(),
+      listKiosks(),
+    ]);
+    return summarizeFleet(
+      devices,
+      kiosks.map((k) => ({ id: k.id, enabled: k.enabled })),
+      now,
+    );
+  })();
+  const entry = { at, promise };
+  cache = entry;
+  promise.catch(() => {
+    // 失敗をキャッシュに残さない（TTL の間エラーを配り続けない）。伝播は呼び出し元の await が担う。
+    if (cache === entry) cache = undefined;
+  });
+  return promise;
 }
 
 /** テスト用: キャッシュを破棄する（テスト間の集計持ち越しを防ぐ）。 */
