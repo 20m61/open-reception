@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server';
 import type { NextRequest } from 'next/server';
+import { buildCsp, createCspNonce, NONCE_HEADER } from '@/lib/security/csp';
 import { verifySession } from '@/lib/auth/session';
 import { ADMIN_COOKIE, ENTRA_TOKEN_COOKIE, getAdminSecret } from '@/lib/auth/admin';
 import { getAdminAuthConfig, validateAdminAuthConfig } from '@/lib/auth/admin-auth-config';
@@ -57,24 +58,47 @@ function denyApiOrRedirect(req: NextRequest, isAdminApi: boolean, status: 401 | 
 /** Server Component（layout）が現在パスを参照できるよう、リクエストヘッダへ pathname を付与する。 */
 export const PATHNAME_HEADER = 'x-or-pathname';
 
-function passThrough(req: NextRequest): NextResponse {
+/**
+ * nonce ベース CSP（issue #200）。
+ * Next.js はリクエストヘッダの Content-Security-Policy から nonce を抽出し、
+ * SSR 時に自身の framework/inline script へ自動付与する。そのため pass-through
+ * 応答ではリクエストヘッダにも CSP / x-nonce を載せる（レスポンスヘッダの付与は
+ * proxy() の出口で全応答経路に対して一括で行う）。
+ */
+type CspContext = { nonce: string; value: string };
+
+function passThrough(req: NextRequest, csp: CspContext): NextResponse {
   const headers = new Headers(req.headers);
   headers.set(PATHNAME_HEADER, req.nextUrl.pathname);
+  headers.set(NONCE_HEADER, csp.nonce);
+  headers.set('content-security-policy', csp.value);
   return NextResponse.next({ request: { headers } });
 }
 
 export async function proxy(req: NextRequest): Promise<NextResponse> {
+  const nonce = createCspNonce();
+  const csp: CspContext = {
+    nonce,
+    value: buildCsp(nonce, { dev: process.env.NODE_ENV === 'development' }),
+  };
+  const res = await route(req, csp);
+  // 全応答（pass-through / 拒否 / リダイレクト）に per-request CSP を付与する。
+  res.headers.set('Content-Security-Policy', csp.value);
+  return res;
+}
+
+async function route(req: NextRequest, csp: CspContext): Promise<NextResponse> {
   // CloudFront 迂回（Function URL 直叩き）を全ルートで拒否する（origin-verify 方式時のみ）。
   if (!isFromTrustedOrigin(req)) {
     return new NextResponse('forbidden', { status: 403 });
   }
 
   const { pathname } = req.nextUrl;
-  if (PUBLIC_PATHS.has(pathname)) return passThrough(req);
+  if (PUBLIC_PATHS.has(pathname)) return passThrough(req, csp);
 
   const isAdminApi = pathname.startsWith('/api/admin');
   const isAdminPage = pathname === '/admin' || pathname.startsWith('/admin/');
-  if (!isAdminApi && !isAdminPage) return NextResponse.next();
+  if (!isAdminApi && !isAdminPage) return passThrough(req, csp);
 
   const cfg = getAdminAuthConfig();
 
@@ -92,7 +116,7 @@ export async function proxy(req: NextRequest): Promise<NextResponse> {
   const oidc = cfg.provider === 'entra' ? cfg.entra : cfg.provider === 'cognito' ? cfg.cognito : undefined;
   if (oidc) {
     // PoC/ローカルで認証を緩和する設定（本番は config 検証でエラー）。
-    if (!cfg.required) return passThrough(req);
+    if (!cfg.required) return passThrough(req, csp);
 
     const token = req.cookies.get(ENTRA_TOKEN_COOKIE)?.value;
     if (!token) return denyApiOrRedirect(req, isAdminApi, 401);
@@ -115,13 +139,13 @@ export async function proxy(req: NextRequest): Promise<NextResponse> {
         { status: 403 },
       );
     }
-    return passThrough(req);
+    return passThrough(req, csp);
   }
 
   // --- 既存のパスワードセッション（provider=none。entra/cognito は上の SSO 分岐で処理済み） ---
   const token = req.cookies.get(ADMIN_COOKIE)?.value;
   const session = await verifySession(token, getAdminSecret());
-  if (session?.role === 'admin') return passThrough(req);
+  if (session?.role === 'admin') return passThrough(req, csp);
 
   return denyApiOrRedirect(req, isAdminApi, 401);
 }

@@ -10,6 +10,15 @@ const inter = Inter({
   variable: '--font-inter',
 });
 
+/**
+ * nonce ベース CSP（issue #200）のため全ルートを動的レンダリングに固定する。
+ * nonce は per-request で、Next.js がリクエストヘッダの CSP から抽出して
+ * inline/bootstrap script へ付与するのは SSR 時のみ。静的プリレンダリング
+ * （従来は / と /kiosk 系のみ）だと build 時の HTML に nonce が無く、
+ * per-request CSP と不一致になり全スクリプトがブロックされる（#200 撤回の根因）。
+ */
+export const dynamic = 'force-dynamic';
+
 export const metadata: Metadata = {
   title: 'open-reception',
   description: 'iPad 受付端末向け無人受付システム',

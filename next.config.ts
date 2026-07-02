@@ -2,31 +2,16 @@ import type { NextConfig } from 'next';
 
 /**
  * セキュリティヘッダ (issue #6)。
- * CSP は受付端末/管理画面の双方で動くよう実用的な強度に設定する。
- * Next.js の hydration/inline style のため script/style は 'unsafe-inline' を許可しつつ、
- * frame-ancestors none・object-src none・base-uri self でクリックジャッキング/注入を抑止する。
+ *
+ * Content-Security-Policy はここでは付与しない（issue #200）:
+ * script-src の nonce 化により CSP は per-request となるため、`src/proxy.ts` が
+ * 生成・付与する（内容は `src/lib/security/csp.ts`）。ここで静的 CSP を併設すると
+ * 二重ヘッダとなり、ブラウザは両方の積（intersection）を強制するため
+ * nonce 許可が打ち消されてしまう。
+ * proxy の matcher 対象外（_next/static 等のサブリソース）は CSP なしで配信されるが、
+ * CSP が防御対象とするのは document であり、サブリソース側には不要。
  */
-// アセット（背景/アバター/フォント）は同一オリジン（CloudFront/S3 経由 or data:）で配信するため、
-// img-src/media-src のスキームワイルドカード `https:`（ZAP 10055）は付けず self/data: に限定する。
-// 外部 CDN を使う将来機能（#4 Vonage SDK）は、その時に必要 origin を明示追加する。
-// VRM アバター (#31): three.js GLTFLoader は埋め込みテクスチャを blob: URL で読み込むため、
-// img-src/connect-src に blob: を限定追加する（同一オリジン由来のオブジェクト URL のみ）。
-const csp = [
-  "default-src 'self'",
-  "script-src 'self' 'unsafe-inline'",
-  "style-src 'self' 'unsafe-inline'",
-  "img-src 'self' data: blob:",
-  "font-src 'self' data:",
-  "connect-src 'self' blob:",
-  "media-src 'self' data:",
-  "object-src 'none'",
-  "base-uri 'self'",
-  "form-action 'self'",
-  "frame-ancestors 'none'",
-].join('; ');
-
 const securityHeaders = [
-  { key: 'Content-Security-Policy', value: csp },
   { key: 'X-Frame-Options', value: 'DENY' },
   { key: 'X-Content-Type-Options', value: 'nosniff' },
   { key: 'Referrer-Policy', value: 'strict-origin-when-cross-origin' },
