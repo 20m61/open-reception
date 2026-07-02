@@ -1,6 +1,12 @@
 /**
  * 受付履歴・監査ログのストア (issue #19)。
- * 永続化は data backend（memory / dynamodb）に委譲する (docs/persistence-design.md)。
+ *
+ * #274 ⑥ で §9 標準（docs/persistence-design.md）へ統合: 永続化は ReceptionLogRepository /
+ * AuditLogRepository（./reception-log-repository.ts、getBackend() の LogStore へ委譲する
+ * 単一実装）に閉じ、本ファイルはプロセス共有ファクトリと互換 API（ログ導出・監査エントリ
+ * 組み立て）を担う。既存呼び出し側（route / 各サービスの appendAdminAudit 等）の変更は不要。
+ * #254 の listSince 範囲クエリ契約は repository の契約テストが固定する。
+ *
  * 保持方針は docs/audit-logging.md を参照。来訪者の PII は記録しない。
  */
 import { randomUUID } from 'node:crypto';
@@ -11,11 +17,34 @@ import {
   type AuditLog,
   type ReceptionLog,
 } from '@/domain/reception/log';
-import { getBackend } from '@/lib/data';
+import {
+  DataBackedAuditLogRepository,
+  DataBackedReceptionLogRepository,
+  type AuditLogRepository,
+  type ReceptionLogRepository,
+} from './reception-log-repository';
 
-const receptionLogs = () =>
-  getBackend().log<ReceptionLog>('rcplog', { timestampField: 'createdAt', indexedField: 'receptionId' });
-const auditLogs = () => getBackend().log<AuditLog>('audit', { timestampField: 'at' });
+let receptionLogRepository: ReceptionLogRepository | undefined;
+let auditLogRepository: AuditLogRepository | undefined;
+
+/** プロセス共有の ReceptionLogRepository（§9.2 のファクトリ）。 */
+export function getReceptionLogRepository(): ReceptionLogRepository {
+  if (!receptionLogRepository) {
+    receptionLogRepository = new DataBackedReceptionLogRepository();
+  }
+  return receptionLogRepository;
+}
+
+/** プロセス共有の AuditLogRepository（§9.2 のファクトリ）。 */
+export function getAuditLogRepository(): AuditLogRepository {
+  if (!auditLogRepository) {
+    auditLogRepository = new DataBackedAuditLogRepository();
+  }
+  return auditLogRepository;
+}
+
+const receptionLogs = () => getReceptionLogRepository();
+const auditLogs = () => getAuditLogRepository();
 
 const OUTCOME_TO_AUDIT: Record<ReceptionLog['outcome'], AuditAction> = {
   connected: 'reception.connected',
@@ -89,7 +118,7 @@ export async function recordReceptionCompleted(receptionId: string, kioskId: str
 
 /** 代替導線の利用を記録し、対象履歴の fallbackUsed を立てる。 */
 export async function markFallbackUsed(receptionId: string, kioskId: string): Promise<void> {
-  const log = await receptionLogs().findBy('receptionId', receptionId);
+  const log = await receptionLogs().findByReceptionId(receptionId);
   if (log) {
     log.fallbackUsed = true;
     await receptionLogs().put(log);

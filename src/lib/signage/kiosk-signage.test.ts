@@ -1,21 +1,27 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it } from 'vitest';
 import { asSiteId, asTenantId } from '@/domain/tenant/types';
 import { asSignageItemId, defaultSignageConfig, type SignageConfig } from '@/domain/signage/types';
-import { MemorySignageRepository } from './memory-repository';
+import { __resetBackend } from '@/lib/data';
+import { DataBackedSignageRepository } from './repository';
 import { getKioskSignage } from './kiosk-signage';
 
 const T = asTenantId('tenant-a');
 const S = asSiteId('site-1');
 
-function seed(over: Partial<SignageConfig>): MemorySignageRepository {
-  const repo = new MemorySignageRepository();
+// memory-repository 廃止（#274 ⑦）: memory backend + 単一実装（DataBacked）を直接検証する。
+afterEach(() => {
+  __resetBackend();
+});
+
+function seed(over: Partial<SignageConfig>): DataBackedSignageRepository {
+  const repo = new DataBackedSignageRepository();
   void repo.put({ ...defaultSignageConfig(T, S, '2026-06-20T00:00:00.000Z'), ...over });
   return repo;
 }
 
 describe('getKioskSignage (#101)', () => {
   it('設定なしなら enabled=false + 空配列', async () => {
-    const r = await getKioskSignage(T, S, new MemorySignageRepository());
+    const r = await getKioskSignage(T, S, new DataBackedSignageRepository());
     expect(r).toEqual({ enabled: false, defaultIntervalSeconds: 10, items: [] });
   });
 
