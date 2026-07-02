@@ -1,13 +1,28 @@
 'use client';
 
+import dynamic from 'next/dynamic';
 import { useEffect, useMemo, useState } from 'react';
 import type { ReceptionState } from '@/domain/reception/state';
 import { deriveAvatarState } from '@/domain/reception/ui-contract';
 import { resolveMotionUrl, type MotionKey } from '@/domain/motion/types';
 import { DEFAULT_LOCALE, type Locale } from '@/lib/i18n';
 import { speak, type SpeakSettings } from '../speech';
-import { VrmAvatarViewer } from '../VrmAvatarViewer';
+import { AvatarFallbackImage } from './fallback-image';
+import { resolveAvatarVisual } from './visual';
 import { avatarGuidanceFor, type AvatarGuidance } from './guidance';
+
+/**
+ * VrmAvatarViewer は viewer 本体 + avatar サブモジュール（lip-sync / vrm-expression /
+ * vrm-pose / resource-tracker）を含むため `next/dynamic` で kiosk 初期チャンクから分離する
+ * (#196)。three.js / three-vrm 本体は従来どおり viewer 内部でさらに動的 import される。
+ * `resolveAvatarVisual` により VRM 未設定時はこのチャンク自体を読み込まない。
+ * ローディング中は null（コンテナが aspect-ratio を確保しておりレイアウトシフトしない。
+ * 従来もロード完了までは透明 canvas だったため見た目の変化はない）。
+ */
+const VrmAvatarViewer = dynamic(
+  () => import('../VrmAvatarViewer').then((mod) => mod.VrmAvatarViewer),
+  { ssr: false, loading: () => null },
+);
 
 /**
  * 受付状態と同期したアバター案内コンポーネント (issue #123 / Epic #119)。
@@ -64,6 +79,9 @@ export function AvatarGuide({
 
   const motionUrl = resolveMotionUrl(guidance.motionKey, motionUrls ?? {}, defaultMotionUrl);
 
+  // 表示手段の決定（#196）: viewer（遅延チャンク）/ 静止画 / プレースホルダ。
+  const visual = resolveAvatarVisual(vrmUrl, fallbackImageUrl);
+
   // 発話中フラグ（簡易リップシンク #5）。発話の開始/終了で口パクの ON/OFF を切替える。
   const [speaking, setSpeaking] = useState(false);
 
@@ -91,19 +109,27 @@ export function AvatarGuide({
       style={containerStyle}
     >
       <div style={viewerStyle} aria-hidden="true">
-        <VrmAvatarViewer
-          vrmUrl={vrmUrl}
-          fallbackImageUrl={fallbackImageUrl}
-          motionUrl={motionUrl}
-          expression={guidance.expression}
-          speaking={speaking}
-          avatarState={avatarState}
-          className={undefined}
-        />
+        {/* VRM 設定時のみ遅延チャンクをマウントする（#196）。未設定時は viewer を経由せず
+            静止画/プレースホルダを直接出し、three/viewer のコードを一切読み込まない。
+            VRM ロード失敗時の静止画 fallback は viewer 内部で従来どおり処理される。 */}
+        {visual === 'viewer' ? (
+          <VrmAvatarViewer
+            vrmUrl={vrmUrl}
+            fallbackImageUrl={fallbackImageUrl}
+            motionUrl={motionUrl}
+            expression={guidance.expression}
+            speaking={speaking}
+            avatarState={avatarState}
+            className={undefined}
+          />
+        ) : null}
+        {visual === 'image' && fallbackImageUrl ? (
+          <AvatarFallbackImage src={fallbackImageUrl} />
+        ) : null}
         {/* VRM も静止画も無い場合のプレースホルダ。案内文言は下の字幕（avatar-subtitle）が
             常時表示・読み上げ（aria-live）するため、ここで文言を重複表示しない。AI 受付で
             あることを示す装飾バッジのみを置く（#123 / アバター未配置時の字幕重複を解消）。 */}
-        {!vrmUrl && !fallbackImageUrl ? (
+        {visual === 'placeholder' ? (
           <div data-testid="avatar-placeholder" aria-hidden="true" style={placeholderStyle}>
             <span style={placeholderBadgeStyle}>AI</span>
           </div>
