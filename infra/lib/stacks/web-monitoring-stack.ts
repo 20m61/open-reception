@@ -58,11 +58,10 @@ const DDB_WRITE_OPERATIONS = [
  * - **SNS Topic も分離**: MonitoringStack.topic を共用すると WebStack 系のデプロイ順序が
  *   Notification/Monitoring に依存してしまう。Topic 自体は無料に近く、alarmEmail は両方の
  *   Topic に同じ context (`-c alarmEmail=...`) から購読されるため運用は変わらない。
- * - **CloudFront 5xxErrorRate の「アラーム」は見送り**: AWS/CloudFront メトリクスは us-east-1
- *   にのみ発行され、CloudWatch アラームはメトリクスと同一リージョンにしか置けない。us-east-1 の
- *   別 Stack + crossRegionReferences（custom resource 追加）に見合う価値がないため、リージョン
- *   跨ぎ参照が可能な**ダッシュボード widget** でカバーし、アラーム化は follow-up とする。
- *   オリジン起因の 5xx は server/image Lambda Errors アラームで実質的に検知できる。
+ * - **CloudFront 5xxErrorRate の「アラーム」は本 Stack にはない**: AWS/CloudFront メトリクスは
+ *   us-east-1 にのみ発行され、CloudWatch アラームはメトリクスと同一リージョンにしか置けない。
+ *   本 Stack はリージョン跨ぎ参照が可能な**ダッシュボード widget** でのみカバーし、アラームは
+ *   us-east-1 の CloudFrontMonitoringStack (#303) が持つ。
  */
 export class WebMonitoringStack extends Stack {
   readonly topic: sns.Topic;
@@ -128,6 +127,25 @@ export class WebMonitoringStack extends Stack {
           'server Lambda の同時実行数がアカウント既定上限 (1000) の 80% に到達（暴走/攻撃の兆候）',
       });
     serverConcurrent.addAlarmAction(action);
+
+    // --- リージョン全体（アカウント）の Lambda 同時実行 (#303) ---
+    // ConcurrentExecutions の上限 (1000) はアカウント × リージョンで共有される。per-function
+    // メトリクスだけでは「各関数は上限未満だが合計で枯渇」を過小検知するため、次元なし
+    // （リージョン全体）のメトリクスでも同じしきい値で監視する。
+    const accountConcurrent = new cloudwatch.Metric({
+      namespace: 'AWS/Lambda',
+      metricName: 'ConcurrentExecutions',
+      period: Duration.minutes(5),
+      statistic: 'Maximum',
+    }).createAlarm(this, 'AccountConcurrentExecutions', {
+      threshold: CONCURRENT_EXECUTIONS_THRESHOLD,
+      evaluationPeriods: 1,
+      comparisonOperator: cloudwatch.ComparisonOperator.GREATER_THAN_OR_EQUAL_TO_THRESHOLD,
+      treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
+      alarmDescription:
+        'リージョン全体の Lambda 同時実行数がアカウント既定上限 (1000) の 80% に到達（共有上限の枯渇兆候）',
+    });
+    accountConcurrent.addAlarmAction(action);
 
     // --- image Lambda ---
     const imageErrors = imageFn

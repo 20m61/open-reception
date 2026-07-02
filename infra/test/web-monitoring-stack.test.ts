@@ -63,8 +63,8 @@ describe('WebMonitoringStack (#299)', () => {
     });
   });
 
-  it('creates 8 alarms: server(Errors/Throttles/Duration/Concurrent) + image(Errors/Duration) + ddb(read/write)', () => {
-    template.resourceCountIs('AWS::CloudWatch::Alarm', 8);
+  it('creates 9 alarms: server(Errors/Throttles/Duration/Concurrent) + image(Errors/Duration) + ddb(read/write) + account concurrent', () => {
+    template.resourceCountIs('AWS::CloudWatch::Alarm', 9);
   });
 
   it('alarms notify the SNS topic and treat missing data as notBreaching', () => {
@@ -117,6 +117,37 @@ describe('WebMonitoringStack (#299)', () => {
       ComparisonOperator: 'GreaterThanOrEqualToThreshold',
       Threshold: 800,
     });
+  });
+
+  it('alarms on region-wide (dimensionless) Lambda concurrent executions (#303)', () => {
+    // per-function メトリクスではアカウント共有上限 (1000) の枯渇を過小検知するため、
+    // 次元なし（リージョン全体）の ConcurrentExecutions アラームを別に持つ。
+    const alarms = template.findResources('AWS::CloudWatch::Alarm');
+    const dimensionless = Object.values(alarms).filter((alarm) => {
+      const props = alarm.Properties as {
+        Namespace?: string;
+        MetricName?: string;
+        Dimensions?: unknown[];
+      };
+      return (
+        props.Namespace === 'AWS/Lambda' &&
+        props.MetricName === 'ConcurrentExecutions' &&
+        props.Dimensions === undefined
+      );
+    });
+    expect(dimensionless).toHaveLength(1);
+    const props = dimensionless[0]?.Properties as
+      | {
+          Statistic?: string;
+          Threshold?: number;
+          Period?: number;
+          TreatMissingData?: string;
+        }
+      | undefined;
+    expect(props?.Statistic).toBe('Maximum');
+    expect(props?.Threshold).toBe(800);
+    expect(props?.Period).toBe(300);
+    expect(props?.TreatMissingData).toBe('notBreaching');
   });
 
   it('alarms on DynamoDB throttled requests for read and write operations', () => {
@@ -174,7 +205,7 @@ describe.runIf(OPEN_NEXT_READY)('WebStack -> WebMonitoringStack wiring (#299)', 
       distributionId: web.distribution.distributionId,
     });
     const template = Template.fromStack(monitoring);
-    template.resourceCountIs('AWS::CloudWatch::Alarm', 8);
+    template.resourceCountIs('AWS::CloudWatch::Alarm', 9);
     template.resourceCountIs('AWS::CloudWatch::Dashboard', 1);
   }, 60000);
 });

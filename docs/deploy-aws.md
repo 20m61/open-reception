@@ -249,9 +249,11 @@ npx cdk deploy OpenReception-Web-prod OpenReception-WebMonitoring-prod -c env=pr
   -c alarmEmail=ops@example.com   # 任意: アラーム通知先（下記参照）
 ```
 
-- **アラーム（8 個、5 分 period / missing data は notBreaching）**:
+- **アラーム（9 個、5 分 period / missing data は notBreaching）**:
   - server Lambda: Errors / Throttles / Duration p95（タイムアウトの 80% 超・3 期間）/
     ConcurrentExecutions（アカウント既定上限 1000 の 80% = 800 到達で暴走/攻撃の兆候）
+  - Lambda リージョン全体: ConcurrentExecutions（次元なし、同じく 800 到達）。上限 1000 は
+    アカウント × リージョン共有のため、per-function だけでは合計での枯渇を過小検知する (#303)
   - image Lambda: Errors / Duration p95
   - DynamoDB: ThrottledRequests（read 系 / write 系オペレーション別。オンデマンドでも
     テーブル/パーティション上限超過でスロットルは起こり得る）
@@ -260,16 +262,43 @@ npx cdk deploy OpenReception-Web-prod OpenReception-WebMonitoring-prod -c env=pr
 - **SNS Topic は MonitoringStack と分離**（cost tag `Component=web` / デプロイ独立性のため）。
   `-c alarmEmail` は両 Stack の Topic に同じ値が購読されるため運用上の差はない。
 
-> **CloudFront 5xxErrorRate の「アラーム」は未提供（意図的な見送り）**: AWS/CloudFront
-> メトリクスは **us-east-1 にのみ発行**され、CloudWatch アラームはメトリクスと同一リージョン
-> にしか置けない。us-east-1 の別 Stack + `crossRegionReferences`（custom resource 追加）は
-> 複雑さに見合わないため、リージョン跨ぎ参照が可能なダッシュボード widget でカバーする。
-> オリジン起因の 5xx は server/image Lambda の Errors アラームで実質検知できる。
+> **CloudFront 5xxErrorRate の「アラーム」はこの Stack にはない**: AWS/CloudFront メトリクスは
+> **us-east-1 にのみ発行**され、CloudWatch アラームはメトリクスと同一リージョンにしか
+> 置けない。この Stack ではリージョン跨ぎ参照が可能なダッシュボード widget でのみカバーし、
+> アラームは us-east-1 の CloudFrontMonitoringStack（次節、#303）が持つ。
+
+## CloudFront の監視（CloudFrontMonitoringStack, us-east-1） (issue #303)
+
+CloudFront `5xxErrorRate`（Average が 1% を 3 × 5 分 = 15 分継続で発報、missing data は
+notBreaching）のアラームを **us-east-1** に置く小さな Stack。SNS Topic も us-east-1 に別途
+作成し、`-c alarmEmail` で購読する（アラームアクションの Topic はアラームと同一リージョン
+である必要があるため）。
+
+```bash
+cd infra
+npx cdk deploy OpenReception-CfMonitoring-prod -c env=prod \
+  -c appEnv="$APP_ENV" \
+  -c alarmEmail=ops@example.com   # 任意: アラーム通知先
+```
+
+- **DistributionId の連携は `crossRegionReferences`**（WebStack と本 Stack の双方に設定済み）。
+  CloudFormation Export ではなく **SSM Parameter 経由の custom resource**（WebStack 側に
+  ExportWriter、本 Stack 側に ExportReader）で連携されるため、既存 WebStack には writer
+  リソースが追加されるだけで既存リソースの変更・置換はない。
+- 初回は WebStack 側に ExportWriter が追加されるため、`cdk deploy --all` か
+  `OpenReception-Web-<env> OpenReception-CfMonitoring-<env>` の順でデプロイする。
+- **destroy の順序**: 参照の consumer である本 Stack を **WebStack より先に** destroy する
+  （cross-region 参照が残っていると WebStack 側の export 削除がブロックされる）。
+- 4xxErrorRate のアラームは持たない（ボット由来のノイズ源。可用性は 5xx + Lambda Errors で
+  検知できる）。
+- 認証情報なしで `cdk synth` した場合（`CDK_DEFAULT_ACCOUNT` 未解決）、この Stack は synth
+  対象から除外される（cross-region 参照に concrete account が必要なため。deploy 時は常に解決）。
 
 ### alarmEmail の運用
 
 - 通知先メールは **`-c alarmEmail=ops@example.com`** をデプロイコマンドで都度渡す
-  （WebMonitoringStack / MonitoringStack 共通）。未指定なら Topic は作られるが購読者なし
+  （WebMonitoringStack / CloudFrontMonitoringStack / MonitoringStack 共通）。未指定なら
+  Topic は作られるが購読者なし
   （= 発報しても届かない）ので、実運用環境では必ず指定する。
 - `infra/lib/config/environments.ts` の `alarmEmail` 既定は全環境で空にしてある。実メール
   アドレスのコード埋め込みは平文コミット（公開リポジトリでのアドレス収集・spam 対象化）に
@@ -332,6 +361,8 @@ npx cdk deploy OpenReception-Notification-prod OpenReception-Monitoring-prod -c 
 ## クリーンアップ
 
 ```bash
+# CfMonitoring (us-east-1) は WebStack の distributionId を cross-region 参照しているため先に destroy する
+cd infra && npx cdk destroy OpenReception-CfMonitoring-dev -c env=dev
 cd infra && npx cdk destroy OpenReception-WebMonitoring-dev OpenReception-Web-dev -c env=dev
 cd infra && npx cdk destroy OpenReception-Monitoring-dev OpenReception-Notification-dev -c env=dev
 ```
