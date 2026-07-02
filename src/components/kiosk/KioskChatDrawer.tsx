@@ -15,9 +15,11 @@
  *
  * スタンドアロン: KioskFlow への配線は後続（#121 のスロット or オーケストレータ）に委ねる。
  * 本コンポーネントは props 経由でのみ受付状態とコールバックを受け取り、自前で状態を進めない。
- * スタイルはコンポーネント内に閉じる（globals.css は編集しない）。
+ * スタイルはコンポーネントに閉じた CSS Modules（globals.css は編集しない）。
+ * inline `<style>` は CSP style-src 'self'（#289）でブロックされるため使わない。
  */
 import { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react';
+import styles from './KioskChatDrawer.module.css';
 import type { ReceptionAction, ReceptionState } from '@/domain/reception/ui-contract';
 import {
   buildGreetingMessage,
@@ -149,16 +151,12 @@ export function KioskChatDrawer({
     return null;
   }
 
-  const scope = `chatdrawer-${panelId.replace(/[^a-zA-Z0-9_-]/g, '')}`;
-
   return (
-    <div className={scope} data-testid="kiosk-chat-drawer" data-open={open}>
-      <style>{scopedStyles(scope)}</style>
-
+    <div className={styles.root} data-testid="kiosk-chat-drawer" data-open={open}>
       {!open && (
         <button
           type="button"
-          className={`${scope}__fab`}
+          className={styles.fab}
           aria-expanded={false}
           aria-controls={panelId}
           onClick={() => setOpen(true)}
@@ -170,16 +168,16 @@ export function KioskChatDrawer({
       {open && (
         <section
           id={panelId}
-          className={`${scope}__panel`}
+          className={styles.panel}
           role="dialog"
           aria-label="受付のお手伝いチャット"
           aria-modal={false}
         >
-          <header className={`${scope}__head`}>
-            <span className={`${scope}__title`}>お手伝い</span>
+          <header className={styles.head}>
+            <span className={styles.title}>お手伝い</span>
             <button
               type="button"
-              className={`${scope}__close`}
+              className={styles.close}
               aria-label="閉じる"
               onClick={() => setOpen(false)}
             >
@@ -187,33 +185,30 @@ export function KioskChatDrawer({
             </button>
           </header>
 
-          <div className={`${scope}__log`} role="log" aria-live="polite">
+          <div className={styles.log} role="log" aria-live="polite">
             {messages.map((m) =>
               m.role === 'turn' ? (
-                <div key={m.id} className={`${scope}__turn`}>
-                  <p className={`${scope}__bubble ${scope}__bubble--assistant`}>{m.text}</p>
-                  <div className={`${scope}__replies`} role="group" aria-label="次の操作">
+                <div key={m.id} className={styles.turn}>
+                  <p className={`${styles.bubble} ${styles.bubbleAssistant}`}>{m.text}</p>
+                  <div className={styles.replies} role="group" aria-label="次の操作">
                     {m.quickReplies.map((qr, i) => (
                       <button
                         key={`${m.id}-qr-${i}`}
                         type="button"
-                        className={`${scope}__reply ${scope}__reply--${qr.kind}`}
+                        className={replyClassName(qr.kind)}
                         data-kind={qr.kind}
                         onClick={() => handleQuickReply(qr)}
                       >
                         {qr.label}
                         {qr.kind === 'confirm-redirect' && (
-                          <span className={`${scope}__hint`}>（確認画面で操作します）</span>
+                          <span className={styles.hint}>（確認画面で操作します）</span>
                         )}
                       </button>
                     ))}
                   </div>
                 </div>
               ) : (
-                <p
-                  key={m.id}
-                  className={`${scope}__bubble ${scope}__bubble--${m.role}`}
-                >
+                <p key={m.id} className={`${styles.bubble} ${bubbleModifier[m.role]}`}>
                   {m.text}
                 </p>
               ),
@@ -222,14 +217,14 @@ export function KioskChatDrawer({
           </div>
 
           <form
-            className={`${scope}__form`}
+            className={styles.form}
             onSubmit={(e) => {
               e.preventDefault();
               void submit();
             }}
           >
             <input
-              className={`${scope}__input`}
+              className={styles.input}
               type="text"
               inputMode="text"
               value={draft}
@@ -240,7 +235,7 @@ export function KioskChatDrawer({
             />
             <button
               type="submit"
-              className={`${scope}__send`}
+              className={styles.send}
               disabled={busy || draft.trim() === ''}
             >
               送信
@@ -252,48 +247,15 @@ export function KioskChatDrawer({
   );
 }
 
-/**
- * コンポーネントに閉じたスタイル。globals.css を汚さないため一意 scope クラスで限定する。
- * タッチ前提なので各ボタンは十分な高さ（>=48px 相当）を確保する。
- */
-function scopedStyles(scope: string): string {
-  return `
-.${scope} {
-  position: fixed; right: 16px; z-index: 40; font-size: 16px;
-  /* 安全バー（逃げ道）と重ならないよう、その高さ分だけ上へ持ち上げる（KioskFlow が値を継承させる）。 */
-  bottom: calc(16px + var(--kiosk-chat-safe-bottom, 0px));
-}
-.${scope}__fab {
-  min-height: 48px; padding: 12px 20px; border-radius: 24px; border: none;
-  background: #1f6feb; color: #fff; box-shadow: 0 2px 8px rgba(0,0,0,.2); cursor: pointer;
-}
-.${scope}__panel {
-  width: min(360px, 92vw); max-height: min(70vh, 560px); display: flex; flex-direction: column;
-  background: #fff; color: #111; border-radius: 16px; box-shadow: 0 8px 32px rgba(0,0,0,.25);
-  overflow: hidden;
-}
-.${scope}__head {
-  display: flex; align-items: center; justify-content: space-between;
-  padding: 12px 16px; background: #1f6feb; color: #fff;
-}
-.${scope}__title { font-weight: 600; }
-.${scope}__close { background: transparent; border: none; color: #fff; font-size: 22px; min-width: 44px; min-height: 44px; cursor: pointer; }
-.${scope}__log { flex: 1; overflow-y: auto; padding: 12px; display: flex; flex-direction: column; gap: 8px; }
-.${scope}__turn { display: flex; flex-direction: column; gap: 8px; }
-.${scope}__bubble { margin: 0; padding: 10px 12px; border-radius: 12px; line-height: 1.4; max-width: 90%; }
-.${scope}__bubble--assistant { background: #f1f3f5; align-self: flex-start; }
-.${scope}__bubble--visitor { background: #d7e7ff; align-self: flex-end; }
-.${scope}__replies { display: flex; flex-direction: column; gap: 8px; }
-.${scope}__reply {
-  text-align: left; min-height: 48px; padding: 12px 14px; border-radius: 12px;
-  border: 1px solid #1f6feb; background: #fff; color: #1f6feb; cursor: pointer; font-size: 16px;
-}
-.${scope}__reply--staff { border-color: #888; color: #333; }
-.${scope}__reply--confirm-redirect { border-style: dashed; }
-.${scope}__hint { display: block; font-size: 12px; color: #666; margin-top: 2px; }
-.${scope}__form { display: flex; gap: 8px; padding: 12px; border-top: 1px solid #eee; }
-.${scope}__input { flex: 1; min-height: 48px; padding: 10px 12px; border: 1px solid #ccc; border-radius: 10px; font-size: 16px; }
-.${scope}__send { min-height: 48px; padding: 0 16px; border: none; border-radius: 10px; background: #1f6feb; color: #fff; cursor: pointer; }
-.${scope}__send:disabled, .${scope}__input:disabled { opacity: .5; cursor: not-allowed; }
-`;
+/** 吹き出しの話者別モディファイア（旧 `__bubble--<role>`）。 */
+const bubbleModifier: Record<'assistant' | 'visitor', string> = {
+  assistant: styles.bubbleAssistant ?? '',
+  visitor: styles.bubbleVisitor ?? '',
+};
+
+/** クイックリプライの種類別クラス（旧 `__reply--<kind>`。action は基本スタイルのみ）。 */
+function replyClassName(kind: QuickReply['kind']): string {
+  const modifier =
+    kind === 'staff' ? styles.replyStaff : kind === 'confirm-redirect' ? styles.replyConfirmRedirect : undefined;
+  return modifier ? `${styles.reply} ${modifier}` : (styles.reply ?? '');
 }

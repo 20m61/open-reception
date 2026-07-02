@@ -11,7 +11,15 @@
  *
  * 段階導入（#200 撤回知見）: 'strict-dynamic' は付けない。同一オリジンの
  * chunk（外部 script）は 'self' で許可し、inline script のみ nonce で許可する。
- * style-src の 'unsafe-inline' 排除は別課題として現状維持。
+ *
+ * style-src（issue #289）: 本番ビルドの SSR HTML に `<style>` 要素は含まれず
+ * （CSS は同一オリジンの外部 stylesheet）、inline style は React の style 属性
+ * （style-src-attr の管轄）のみ。そのため style-src（= style-src-elem の
+ * フォールバック）から 'unsafe-inline' を排除し、注入 `<style>`/外部 CSS を
+ * ブロックする。style 属性は React SSR が多用しており CSP nonce では許可
+ * できない（属性は nonce 対象外）ため、style-src-attr で明示的に許可する。
+ * ZAP 10055 は style-src-attr の 'unsafe-inline' を警告しない（ローカル ZAP
+ * baseline で確認済み）。
  */
 
 /** Server Component から nonce を参照するためのリクエストヘッダ名。 */
@@ -36,10 +44,16 @@ export function buildCsp(nonce: string, opts?: { dev?: boolean }): string {
   // 開発時のみ 'unsafe-eval' を許可（React がサーバエラーのスタック再構築等に
   // eval を使うため。production では React/Next.js とも eval を使わない）。
   const devEval = opts?.dev ? " 'unsafe-eval'" : '';
+  // 開発時のみ style-src（elem）に 'unsafe-inline' を許可（Turbopack dev/HMR や
+  // dev オーバーレイが `<style>` を注入するため。production ビルドは外部 CSS のみ）。
+  const devStyleInline = opts?.dev ? " 'unsafe-inline'" : '';
   return [
     "default-src 'self'",
     `script-src 'self' 'nonce-${nonce}'${devEval}`,
-    "style-src 'self' 'unsafe-inline'",
+    `style-src 'self'${devStyleInline}`,
+    // React SSR の style 属性（766 箇所超）を許可する。属性は nonce/hash 対象外
+    //（hash は 'unsafe-hashes' が別途要る）ため 'unsafe-inline' で明示許可する。
+    "style-src-attr 'unsafe-inline'",
     "img-src 'self' data: blob:",
     "font-src 'self' data:",
     "connect-src 'self' blob:",
