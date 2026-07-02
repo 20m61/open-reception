@@ -18,9 +18,15 @@
 ## オープン issue 一覧（8 件・2026-07-03 更新）
 
 > 2026-07-02 の自律ループで #264/#275/#273/#261/#83/#289 をクローズ（PR #276〜#293）。
-> **ローカルで消化可能なタスクは完了**（#274 クローズ・#284 は外部待ち化）。オープン 8 件はすべて
-> 外部リソース / live 環境待ち。次の関門は **#195 の実 AWS apply（要ユーザー承認）** — これで
-> #196 live Lighthouse・#200 live ZAP・#284 backfill・#290 運用 ops が解禁される。
+> **ローカルで消化可能なタスクは完了**（#274 クローズ・#284 は外部待ち化）。次の関門は
+> **#195 の実 AWS apply（要ユーザー承認）** — これで #196 live Lighthouse・#200 live ZAP・
+> #284 backfill・#290 運用 ops が解禁される。
+>
+> 2026-07-02 のコスト/アーキテクチャ棚卸しで #299（WebStack 監視）/#300（PriceClass_200 +
+> S3 ライフサイクル）を起票・同日消化（PR #302/#301）。Billing のコスト配分タグ
+> `Project`/`Environment`/`Component` を Active 化済み（以後の請求からプロジェクト別集計可）。
+> follow-up として #303（CloudFront 5xx アラーム化、低優先）を積んだ。WebMonitoringStack の
+> dev への実 apply は #195 の dev デプロイと同じ流儀で実施可能（未デプロイ）。
 
 | # | 種別 | 状態 | 分類 |
 | --- | --- | --- | --- |
@@ -36,6 +42,9 @@
 | ~~#273~~ | reliability | **クローズ済**（inc1 fail-closed #277 + inc2 リネーム #281） | 完了 2026-07-02 |
 | ~~#274~~ | refactor | **クローズ済**（#291/#294/#295/#296/#298 で全移行完了。reservation/notification の永続化は別増分送り） | 完了 2026-07-03 |
 | ~~#275~~ | refactor | **クローズ済**（#279: domain/notification へ集約・参照同一性テスト） | 完了 2026-07-02 |
+| ~~#299~~ | infra | **クローズ済**（#302: WebMonitoringStack = アラーム8個 + web ダッシュボード + alarmEmail docs 化。CloudFront 5xx アラームは #303 へ） | 完了 2026-07-03 |
+| ~~#300~~ | infra | **クローズ済**（#301: prod CloudFront PriceClass_200・S3 MPU 掃除ライフサイクル。年齢 Expiration は現役アセット失効リスクで不採用を設計固定） | 完了 2026-07-03 |
+| **#303** | infra | CloudFront 5xxErrorRate のアラーム化（us-east-1 Stack + crossRegionReferences）+ リージョン全体 ConcurrentExecutions | 低優先（実トラフィック後） |
 
 ## 本流トラック — #83 platform epic 締め
 
