@@ -40,7 +40,8 @@ test('未応答フロー: timeout → 代替導線 → 待機画面へ復帰', a
   await page.getByTestId('use-fallback').click();
   await expect(page.getByTestId('fallback')).toBeVisible();
 
-  await page.getByTestId('fallback-reset').click();
+  // 後退（最初に戻る）は逃げ道バーへ一本化 (#325)。コンテンツ内の fallback-reset は撤去済み。
+  await page.getByTestId('escape-reset').click();
   await expect(page.getByTestId('start-reception')).toBeVisible();
 });
 
@@ -49,7 +50,8 @@ test('失敗フロー: failed でも代替導線で詰まらない', async ({ pa
   await page.getByTestId('confirm-call').click();
 
   await expect(page.getByTestId('result-failed')).toBeVisible();
-  await page.getByTestId('result-reset').click();
+  // 結果画面の最初に戻るは逃げ道バー（escape-reset）へ一本化 (#325)。
+  await page.getByTestId('escape-reset').click();
   await expect(page.getByTestId('start-reception')).toBeVisible();
 });
 

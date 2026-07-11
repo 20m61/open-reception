@@ -727,7 +727,6 @@ export function KioskFlow() {
         // カスタム来訪者情報入力 (issue #100)。確認・呼び出しは既存状態機械へ委譲。
         <CustomVisitorInfoView
           flow={selectedFlow}
-          onBack={() => dispatch({ type: 'BACK' })}
           onSubmit={(values) =>
             dispatch({ type: 'SUBMIT_VISITOR_INFO', visitor: flowValuesToVisitorInfo(selectedFlow, values) })
           }
@@ -780,23 +779,18 @@ export function KioskFlow() {
           {/* 退館チェックアウト導線 (issue #102)。待機中のみ小さく常設する（非破壊）。 */}
           {data.state === 'idle' ? <CheckoutLink /> : null}
           {/*
-            常時見える「逃げ道」バー (issue #121)。状態に応じて 戻る/キャンセル/最初に戻る/人に繋ぐ を
-            表示する。出すアクションは #120 契約の availableActions に従う（許可外は出さない）。
-            各画面の文脈ボタン（修正する等）とは別に、画面下部に安全な離脱導線を常設する。
+            常時見える「逃げ道」バー (issue #121 / #325)。後退系コントロールはここに一本化し、
+            戻る（1 ステップ）/ 最初に戻る（リセット）の 2 語だけを出す。出すアクションは #120 契約の
+            availableActions に従う（許可外は出さない）。各画面のコンテンツ側は前進系（主 CTA）と
+            文脈固有（修正する）に限定し、後退ボタンは置かない（同一機能ボタンの二重表示を解消）。
           */}
           <EscapeHatchBar
             barRef={escapeBarRef}
             state={data.state}
             onAction={(action) => {
-              // useFallback は記録 API を伴うため専用ハンドラへ。残りは状態機械イベントへ写す。
-              if (action === 'useFallback') {
-                void handleFallback();
-                return;
-              }
-              // escapeHatchesFor が返すのは back/cancel/reset/useFallback のみ（useFallback は上で処理）。
+              // escapeHatchesFor が返すのは back/reset のみ（#325）。状態機械イベントへ写す。
               const eventByAction: Partial<Record<ReceptionAction, Action>> = {
                 back: { type: 'BACK' },
-                cancel: { type: 'CANCEL' },
                 reset: { type: 'RESET' },
               };
               const next = eventByAction[action];
@@ -865,7 +859,7 @@ function EscapeHatchBar({
       ref={barRef}
       className="kiosk-escape-bar"
       data-testid="kiosk-escape-bar"
-      aria-label="受付の操作（戻る・キャンセルなど）"
+      aria-label="受付の操作（戻る・最初に戻る）"
     >
       {hatches.map((hatch) => (
         <button
@@ -1054,13 +1048,13 @@ function CustomPurposeView({
 function CustomVisitorInfoView({
   flow,
   onSubmit,
-  onBack,
 }: {
   flow: KioskCustomFlow;
   onSubmit: (values: FlowFieldValues) => void;
-  onBack: () => void;
 }) {
-  // visitorInfo ステップが無い / fields 空のフローは、入力なしで確認へ進める（非破壊）。
+  // 後退（戻る/最初に戻る）は逃げ道バーへ一本化 (#325)。カスタムフローの入力も inputVisitorInfo 状態
+  // なので sticky バーの 戻る/最初に戻る が常時可視。コンテンツ側フッターは前進の主 CTA のみにし、
+  // VisitorInfoForm へも onBack を渡さない（フォーム内 戻るとバーの二重表示を解消）。
   if (!flow.steps.includes('visitorInfo') || flow.fields.length === 0) {
     return (
       <>
@@ -1069,9 +1063,6 @@ function CustomVisitorInfoView({
           {flow.description ? <p className="screen__lead">{flow.description}</p> : null}
         </div>
         <div className="screen__footer">
-          <button type="button" className="btn btn--ghost" data-testid="visitor-back" onClick={onBack}>
-            戻る
-          </button>
           <button type="button" className="btn btn--primary" data-testid="custom-flow-proceed" onClick={() => onSubmit({})}>
             確認へ進む
           </button>
@@ -1081,7 +1072,7 @@ function CustomVisitorInfoView({
   }
   return (
     <div className="screen__body" data-testid="custom-visitor-view">
-      <VisitorInfoForm fields={flow.fields} onBack={onBack} onSubmit={onSubmit} />
+      <VisitorInfoForm fields={flow.fields} onSubmit={onSubmit} />
     </div>
   );
 }
@@ -1134,7 +1125,6 @@ function renderScreen(
           directory={directory}
           sttEnabled={sttEnabled}
           onSelect={(target) => dispatch({ type: 'SELECT_TARGET', target })}
-          onBack={() => dispatch({ type: 'BACK' })}
           locale={locale}
         />
       );
@@ -1143,7 +1133,6 @@ function renderScreen(
         <VisitorInfoView
           initial={data.visitor}
           onSubmit={(visitor) => dispatch({ type: 'SUBMIT_VISITOR_INFO', visitor })}
-          onBack={() => dispatch({ type: 'BACK' })}
           locale={locale}
         />
       );
@@ -1187,12 +1176,11 @@ function renderScreen(
         <ResultView
           outcome={data.state}
           onFallback={onFallback}
-          onReset={() => dispatch({ type: 'RESET' })}
           locale={locale}
         />
       );
     case 'fallback':
-      return <FallbackView onReset={() => dispatch({ type: 'RESET' })} locale={locale} />;
+      return <FallbackView locale={locale} />;
     case 'cancelled':
       return <EndView testid="completed" title={tr('reception.cancelled')} />;
     case 'completed':
@@ -1370,13 +1358,11 @@ function TargetView({
   directory,
   sttEnabled,
   onSelect,
-  onBack,
   locale,
 }: {
   directory: Directory;
   sttEnabled: boolean;
   onSelect: (t: Target) => void;
-  onBack: () => void;
   locale: Locale;
 }) {
   const tr = makeT(locale);
@@ -1509,11 +1495,10 @@ function TargetView({
           ))}
         </div>
       </div>
-      <div className="screen__footer">
-        <button type="button" className="btn btn--ghost" data-testid="target-back" onClick={onBack}>
-          {tr('reception.back')}
-        </button>
-      </div>
+      {/*
+        後退（戻る/最初に戻る）は常設の逃げ道バー（EscapeHatchBar, sticky）へ一本化した (#325)。
+        担当者一覧は長くなり得るが、バーは画面下端に常時可視なので戻る導線は失われない。
+      */}
     </>
   );
 }
@@ -1521,12 +1506,10 @@ function TargetView({
 function VisitorInfoView({
   initial,
   onSubmit,
-  onBack,
   locale,
 }: {
   initial?: VisitorInfo;
   onSubmit: (v: VisitorInfo) => void;
-  onBack: () => void;
   locale: Locale;
 }) {
   const tr = makeT(locale);
@@ -1579,10 +1562,8 @@ function VisitorInfoView({
           />
         </div>
       </div>
+      {/* 後退（戻る/最初に戻る）は逃げ道バーへ一本化 (#325)。フッターは前進の主 CTA のみ。 */}
       <div className="screen__footer">
-        <button type="button" className="btn btn--ghost" data-testid="visitor-back" onClick={onBack}>
-          {tr('reception.back')}
-        </button>
         <button
           type="button"
           className="btn btn--primary"
@@ -1737,16 +1718,16 @@ function ConnectedView({
 function ResultView({
   outcome,
   onFallback,
-  onReset,
   locale,
 }: {
   outcome: 'timeout' | 'failed';
   onFallback: () => void;
-  onReset: () => void;
   locale: Locale;
 }) {
   const tr = makeT(locale);
   const message = tr(outcome === 'timeout' ? 'reception.timeoutBody' : 'reception.failedBody');
+  // 後退（最初に戻る）は逃げ道バーへ一本化 (#325)。コンテンツ側は前進の主 CTA（代替の連絡先へ＝
+  // useFallback）のみ。以前あった result-reset（最初に戻る）はバーの escape-reset と重複するため撤去。
   return (
     <div className="screen__body" style={{ alignItems: 'center', justifyContent: 'center', textAlign: 'center' }}>
       <div className="notice notice--danger" data-testid={`result-${outcome}`} lang={locale}>
@@ -1756,24 +1737,20 @@ function ResultView({
         <button type="button" className="btn btn--secondary" data-testid="use-fallback" onClick={onFallback} lang={locale}>
           {tr('reception.altContact')}
         </button>
-        <button type="button" className="btn btn--ghost" data-testid="result-reset" onClick={onReset} lang={locale}>
-          {tr('reception.reset')}
-        </button>
       </div>
     </div>
   );
 }
 
-function FallbackView({ onReset, locale }: { onReset: () => void; locale: Locale }) {
+function FallbackView({ locale }: { locale: Locale }) {
   const tr = makeT(locale);
+  // 後退（最初に戻る）は逃げ道バー（escape-reset）へ一本化 (#325)。以前あった fallback-reset は
+  // バーと重複するため撤去し、コンテンツは代替案内メッセージのみにする。
   return (
     <div className="screen__body" style={{ alignItems: 'center', justifyContent: 'center', textAlign: 'center' }}>
       <div className="notice notice--warning" data-testid="fallback" lang={locale}>
         {tr('reception.fallbackBody')}
       </div>
-      <button type="button" className="btn btn--ghost" data-testid="fallback-reset" onClick={onReset} lang={locale}>
-        {tr('reception.reset')}
-      </button>
     </div>
   );
 }
