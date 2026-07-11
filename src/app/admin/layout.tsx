@@ -1,10 +1,11 @@
 import { headers } from 'next/headers';
 import { redirect } from 'next/navigation';
+import type { Metadata } from 'next';
 import type { TenantRole } from '@/domain/tenant/types';
 import type { Actor } from '@/domain/tenant/authorization';
 import { AdminShell } from '@/components/admin/AdminShell';
 import { TenantSwitcher } from '@/components/admin/TenantSwitcher';
-import { ADMIN_NAV } from '@/components/admin/navigation';
+import { ADMIN_NAV, isActivePath } from '@/components/admin/navigation';
 import { resolveAdminActor } from '@/lib/auth/actor';
 import { resolveActiveTenant } from '@/lib/tenant/active-tenant';
 import { canEnterArea } from '@/domain/auth/route-guard';
@@ -24,6 +25,33 @@ import { PATHNAME_HEADER } from '@/proxy';
 /** actor の割り当てから表示ロール（TenantRole[]）を導く（重複除去）。 */
 function rolesFromActor(actor: Actor): readonly TenantRole[] {
   return [...new Set(actor.assignments.map((a) => a.role))];
+}
+
+/**
+ * 管理画面のタブタイトル解決 (issue #331)。
+ *
+ * `ADMIN_NAV`（IA の単一情報源。表示ラベルはここから借用するだけで編集はしない）を
+ * 平坦化し、現在パスに最長一致するナビ項目のラベルをタイトルにする。これにより
+ * 個々の page.tsx にタイトルを追加配線せずとも、ナビが増減すれば自動でタブタイトルも
+ * 追従する。root layout の `template: '%s | open-reception'` と合わさって
+ * 「受付履歴 | open-reception」のように画面ごとに区別できるタイトルになる。
+ */
+const ADMIN_TITLE_ENTRIES: readonly { href: string; label: string }[] = [
+  { href: '/admin/login', label: 'ログイン' },
+  ...ADMIN_NAV.flatMap((group) => group.items),
+];
+
+/** 現在パスに最も近い（最長一致の）ナビ項目ラベルを解決する。未知のパスは既定文言。 */
+export function resolveAdminTitle(pathname: string): string {
+  const match = [...ADMIN_TITLE_ENTRIES]
+    .sort((a, b) => b.href.length - a.href.length)
+    .find((entry) => isActivePath(entry.href, pathname));
+  return match?.label ?? '管理画面';
+}
+
+export async function generateMetadata(): Promise<Metadata> {
+  const pathname = (await headers()).get(PATHNAME_HEADER) ?? '';
+  return { title: resolveAdminTitle(pathname) };
 }
 
 export default async function AdminLayout({ children }: { children: React.ReactNode }) {

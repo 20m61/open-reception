@@ -1,14 +1,37 @@
 import { redirect } from 'next/navigation';
-import { cookies } from 'next/headers';
+import { cookies, headers } from 'next/headers';
+import type { Metadata } from 'next';
 import { AdminShell } from '@/components/admin/AdminShell';
 import { ElevationStatus } from '@/components/admin/platform/ElevationStatus';
 import { TenantSwitcher } from '@/components/admin/platform/TenantSwitcher';
-import { PLATFORM_NAV } from '@/components/admin/navigation';
+import { PLATFORM_NAV, isActivePath } from '@/components/admin/navigation';
 import { resolveAdminActorWithIdentity } from '@/lib/auth/actor';
 import { canEnterArea } from '@/domain/auth/route-guard';
 import type { ElevationView } from '@/lib/platform/client-elevation';
 import { ELEVATION_COOKIE, readElevation } from '@/lib/platform/elevation';
 import { elevationJtiState } from '@/lib/platform/elevation-jti-store';
+import { PATHNAME_HEADER } from '@/proxy';
+
+/**
+ * 運用コンソールのタブタイトル解決 (issue #331)。admin/layout.tsx と同じ方式で、
+ * `PLATFORM_NAV`（表示ラベルは借用のみ、編集はしない）を平坦化して現在パスに
+ * 最長一致するラベルをタイトルにする。root layout の title template と合わさり
+ * 「テナント | open-reception」のように画面ごとに区別できるタイトルになる。
+ */
+const PLATFORM_TITLE_ENTRIES = PLATFORM_NAV.flatMap((group) => group.items);
+
+/** 現在パスに最も近い（最長一致の）ナビ項目ラベルを解決する。未知のパスは既定文言。 */
+export function resolvePlatformTitle(pathname: string): string {
+  const match = [...PLATFORM_TITLE_ENTRIES]
+    .sort((a, b) => b.href.length - a.href.length)
+    .find((entry) => isActivePath(entry.href, pathname));
+  return match?.label ?? '運用コンソール';
+}
+
+export async function generateMetadata(): Promise<Metadata> {
+  const pathname = (await headers()).get(PATHNAME_HEADER) ?? '';
+  return { title: resolvePlatformTitle(pathname) };
+}
 
 /**
  * SSR 用: 現在の昇格状態を表示用スナップショットとして読む (issue #83 §2 / inc4d)。
