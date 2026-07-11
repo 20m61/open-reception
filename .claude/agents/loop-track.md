@@ -13,7 +13,7 @@ tools: ["*"]
 ## 厳守ルール
 - **スコープ厳守**: 割り当てられた担当ディレクトリのみ変更。並行トラックが触る共有ファイル（特に `src/components/admin/navigation.ts` / `src/domain/reception/log.ts` / `src/app/admin/audit/page.tsx`）は、明示的に「単独編集者」と指定された場合を除き触らない。nav 配線はオーケストレータが後でまとめて行う。
 - **品質ゲート**: PR 前に `./scripts/quality-gate.sh --pr` を green にする（依存追加時は `--secrets` も）。依存欠落/lockfile ドリフトはゲートが自動 bootstrap する。
-- **コミット署名**: 1Password ロック中は署名が失敗するため、その場合のみ `git commit --no-gpg-sign`。**`--no-verify` は使わない**。本文末尾に `Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>`。
+- **コミット署名**: 1Password ロック中は署名が失敗するため、その場合のみ `git commit --no-gpg-sign`。**`--no-verify` は使わない**。本文末尾に実行モデルの Co-Authored-By（例 `Co-Authored-By: Claude <モデル名> <noreply@anthropic.com>`。オーケストレータから指定があればそれに従う）。
 - **Conventional Commits**（日本語可）。PR タイトル = squash 後の main コミット。
 - **PR**: `gh pr create --base main`、本文は `.github/pull_request_template.md` 構成。完全充足なら `Closes #N`、増分なら `関連 #N`。末尾に `🤖 Generated with [Claude Code](https://claude.com/claude-code)`。
 - **マージしない**。
