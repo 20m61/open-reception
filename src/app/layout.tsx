@@ -19,9 +19,26 @@ const inter = Inter({
  */
 export const dynamic = 'force-dynamic';
 
+/**
+ * title はテンプレート化する (issue #331)。子レイアウト（admin/kiosk/platform）が
+ * `title` 文字列を返すと、ここで定義した `template` により `<page> | open-reception`
+ * の形でタブタイトルに反映される（Next.js の title メタデータ継承ルール）。
+ * 子が何も指定しない場合は `default` の 'open-reception' がそのまま使われる。
+ */
 export const metadata: Metadata = {
-  title: 'open-reception',
+  title: {
+    default: 'open-reception',
+    template: '%s | open-reception',
+  },
   description: 'iPad 受付端末向け無人受付システム',
+  // ホーム画面追加時の standalone 表示・タイトル・ステータスバー (issue #331)。
+  // アイコン/背景色は manifest.ts、`/manifest.webmanifest` へのリンクは
+  // `src/app/manifest.ts` の存在により Next.js が自動挿入する（手動配線不要）。
+  appleWebApp: {
+    capable: true,
+    title: 'open-reception',
+    statusBarStyle: 'black-translucent',
+  },
 };
 
 export const viewport: Viewport = {
