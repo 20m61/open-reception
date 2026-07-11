@@ -76,6 +76,32 @@
 ため、アバターを描画しない場合でも `availableActions` と `screenState` だけでタッチUIが
 完結する。`chatAvailability='unavailable'`（idle/cancelled/completed）ではチャットを閉じる。
 
+## 後退系コントロールの表示位置ポリシー（#325）
+
+`availableActions` は変えない（状態機械・許可判定は不変）。ここで定めるのは「許可済みアクションを
+**どこに描画するか**」の表示位置ポリシーで、来訪者が「戻る/キャンセル/最初に戻る/修正する」の違いを
+判別できず後退系ボタンが氾濫・二重表示する問題 (#325) を解消する。
+
+- **後退語彙は 2 語に集約**: `back`＝「戻る」（1 ステップ前へ）/ `reset`＝「最初に戻る」（フロー破棄・
+  待機へ）。「キャンセル」は実質リセット（フローを破棄して待機へ）なので **`reset` へ統合**し、独立した
+  「キャンセル」ボタンは出さない。状態機械の `cancel`（CANCEL 遷移）自体は契約に残す（削除しない）。
+- **後退系は逃げ道バー（`kiosk-escape-bar`）へ一本化**: 画面下端に sticky で常時可視。`escapeHatchesFor`
+  は `back` / `reset` のうち `availableActions(state)` にあるものだけを出す。コンテンツ内には後退ボタンを
+  置かない（`target-back` / `visitor-back` / `result-reset` / `fallback-reset` は撤去済み）。
+- **コンテンツ側は前進系（主 CTA）＋文脈固有のみ**:
+  - 前進主 CTA の例: `to-confirm`（確認へ）/ `confirm-call`（この内容で呼ぶ）/ `complete`（受付を終了）/
+    `use-fallback`（代替の連絡先へ＝`useFallback`。timeout/failed を fallback へ**前進**させる主 CTA なので
+    コンテンツ側に置き、バーには出さない）。
+  - 文脈固有の例: `confirm-back`（「修正する」）。確認画面は短い要約でフッターが常に到達可能なため、
+    バーの `back` は出さず（`STATES_WITH_CONTEXTUAL_BACK`）「修正する」に集約する。
+- **不変条件（受け入れ条件）**: どの画面でも同一機能の後退ボタンを 2 個出さない。後退系は最大 2 種
+  （戻る / 最初に戻る）＋ 文脈固有 1（修正する）以内。長い画面（`selectingTarget` / `inputVisitorInfo`）でも
+  sticky バーの `back` が常時可視なので、コンテンツ内フッターの戻るを撤去しても戻る導線は失われない。
+
+真実源: 表示集合の純ロジックは `src/components/kiosk/quick-actions.ts`（`escapeHatchesFor` /
+`STATES_WITH_CONTEXTUAL_BACK`）、ユニットは `quick-actions.test.ts`、E2E は `reception-flow` /
+`kiosk-touch-first`。
+
 ## 後続トラックの消費（想定）
 
 - **#121 タッチファースト導線**: `availableActions(state)` を画面のボタン集合の真実源に

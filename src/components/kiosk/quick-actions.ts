@@ -117,38 +117,44 @@ export function quickActionsFor(state: ReceptionState): ReadonlyArray<QuickActio
 /**
  * 常時見える「逃げ道」アクション。状態に応じて表示する (受け入れ条件)。
  *
- * back（戻る）/ cancel（キャンセル）/ reset（最初に戻る）/ useFallback（人に繋ぐ）を、
- * 契約の `availableActions(state)` に含まれるものだけ出す。これにより「許可されていない逃げ道
- * は出さない」＝状態と矛盾しない。`reset` は契約上どの状態からも許可されるが、待機/初期
- * 画面（idle）では戻る先が無く冗長なので出さない。
+ * 後退系コントロールは `back`（戻る=1 ステップ）/ `reset`（最初に戻る=リセット）の 2 語に集約する
+ * (#325)。契約の `availableActions(state)` に含まれるものだけ出すため「許可されていない逃げ道は
+ * 出さない」＝状態と矛盾しない。`reset` は契約上どの状態からも許可されるが、待機/初期画面（idle）
+ * では戻る先が無く冗長なので出さない。
+ *
+ * #325 で削除した語彙:
+ *  - `cancel`（キャンセル）: 来訪者は 戻る/キャンセル/最初に戻る の違いを判別しにくい。キャンセルは
+ *    リセット相当（フローを破棄して待機へ）なので「最初に戻る」(reset) へ統合する。状態機械の
+ *    CANCEL 遷移（ui-contract）自体は変更せず、逃げ道バーに別ボタンとして出さないだけ（表示位置の整理）。
+ *  - `useFallback`（人に繋ぐ/代替連絡先）: これは受付を前進させる主 CTA（timeout/failed →
+ *    fallback）であり後退系ではない。結果画面のコンテンツ側（ResultView の主 CTA）に置き、
+ *    バーには出さない（同一機能ボタンの二重表示を解消）。
  */
-const ESCAPE_HATCH_ACTIONS = ['back', 'cancel', 'useFallback', 'reset'] as const;
+const ESCAPE_HATCH_ACTIONS = ['back', 'reset'] as const;
 
 type EscapeHatchAction = (typeof ESCAPE_HATCH_ACTIONS)[number];
 
 export type EscapeHatch = {
   action: ReceptionAction;
   label: string;
-  /** 強調度。cancel/reset は控えめ(ghost)、useFallback は人へ繋ぐ導線として目立たせる。 */
+  /** 強調度。後退系（戻る/最初に戻る）はいずれも控えめ(ghost)。 */
   variant: 'ghost' | 'secondary';
   testId: string;
 };
 
 const ESCAPE_HATCH_META: Record<EscapeHatchAction, Omit<EscapeHatch, 'action'>> = {
   back: { label: '戻る', variant: 'ghost', testId: 'escape-back' },
-  cancel: { label: 'キャンセル', variant: 'ghost', testId: 'escape-cancel' },
   reset: { label: '最初に戻る', variant: 'ghost', testId: 'escape-reset' },
-  useFallback: { label: '人に繋ぐ', variant: 'secondary', testId: 'escape-staff' },
 };
 
 /**
- * 逃げ道バーに `back`（戻る）を重複表示しない状態 (#240)。確認画面（confirming）は短い要約で、
+ * 逃げ道バーに `back`（戻る）を重複表示しない状態 (#240 / #325)。確認画面（confirming）は短い要約で、
  * フッターの「修正する」(confirm-back) が常に到達可能なため、常設バーの 戻る と二重になる後退系
- * コントロールを整理する。戻る操作自体はフッターの文脈ボタンで可能なので機能は失わない。
+ * コントロールを整理する。戻る操作自体はフッターの文脈ボタン（修正する）で可能なので機能は失わない。
  *
  * selectingTarget（担当者一覧）/ inputVisitorInfo（入力フォーム）は内容がビューポートを超え得るため
- * 除外しない — これらではフッターの target-back/visitor-back はスクロールしないと届かず、常時可視な
- * バーの 戻る が唯一の常設戻る導線になる（sticky バーの back を残す）。
+ * 除外しない。#325 でコンテンツ側の戻る（target-back/visitor-back）を撤去したため、sticky で常時可視な
+ * バーの 戻る が唯一の戻る導線になる（ここで back を残さないと戻れなくなる）。
  */
 const STATES_WITH_CONTEXTUAL_BACK: ReadonlySet<ReceptionState> = new Set(['confirming']);
 

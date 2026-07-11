@@ -65,25 +65,37 @@ describe('escapeHatchesFor', () => {
     }
   });
 
-  it('selectingTarget では 戻る・キャンセル を出す（内容がビューポートを超え得るため常設 back を残す）', () => {
+  it('後退語彙は 戻る(back)・最初に戻る(reset) の 2 語だけ（キャンセル/人に繋ぐは出さない・#325）', () => {
+    // #325: 後退系コントロールを 2 語に集約。cancel は最初に戻る(reset)へ統合、
+    // useFallback（人に繋ぐ/代替連絡先）は前進系の主 CTA としてコンテンツ側に置く。
+    for (const state of RECEPTION_STATES) {
+      const actions = escapeHatchesFor(state).map((h) => h.action);
+      expect(actions).not.toContain('cancel');
+      expect(actions).not.toContain('useFallback');
+      for (const a of actions) {
+        expect(['back', 'reset']).toContain(a);
+      }
+    }
+  });
+
+  it('selectingTarget では 戻る・最初に戻る を出す（内容がビューポートを超え得るため常設 back を残す）', () => {
     const actions = escapeHatchesFor('selectingTarget').map((h) => h.action);
     expect(actions).toContain('back');
-    expect(actions).toContain('cancel');
+    expect(actions).toContain('reset');
   });
 
-  it('confirming はバーに back を出さない（フッターの修正するに集約・#240）', () => {
-    // 確認画面は短い要約でフッターの confirm-back が常に到達可能なため、二重の 戻る を整理する。
-    // キャンセルは残す（戻る操作はフッターの修正するで可能）。
+  it('confirming はバーに back を出さない（フッターの修正するに集約・#240/#325）', () => {
+    // 確認画面は短い要約でフッターの confirm-back（修正する）が常に到達可能なため、二重の 戻る を整理する。
+    // バーに残る後退系は 最初に戻る(reset) のみ。
     const actions = escapeHatchesFor('confirming').map((h) => h.action);
     expect(actions).not.toContain('back');
-    expect(actions).toContain('cancel');
+    expect(actions).toEqual(['reset']);
   });
 
-  it('failed/timeout では 人に繋ぐ(useFallback)・最初に戻る(reset) を出す', () => {
+  it('failed/timeout のバーは 最初に戻る(reset) のみ（人に繋ぐはコンテンツの主 CTA・#325）', () => {
     for (const state of ['failed', 'timeout'] as ReceptionState[]) {
       const actions = escapeHatchesFor(state).map((h) => h.action);
-      expect(actions).toContain('useFallback');
-      expect(actions).toContain('reset');
+      expect(actions).toEqual(['reset']);
     }
   });
 
