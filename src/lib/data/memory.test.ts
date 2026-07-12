@@ -116,3 +116,43 @@ describe('MemoryBackend collection listByIndex() の境界クエリ (#274/#284)'
     await expect(col.listByIndex('t')).rejects.toThrow(/indexedField/);
   });
 });
+
+/**
+ * MemoryLogStore の読み取り時 TTL 判定 (issue #313)。
+ * dynamo の `ttl`（epoch 秒）属性と同じフィールドを item が持つとき、期限切れを list/listSince/
+ * findBy から除外する（`platform/repository.ts` の expiresAt 方式に倣う）。実削除はしない。
+ */
+type LogRow = { id: string; createdAt: string; ttl?: number };
+
+describe('MemoryBackend log() の読み取り時 TTL 判定 (#313)', () => {
+  it('ttl が未来のレコードは list/listSince/findBy に現れ、ttl フィールドは返却時に取り除かれる', async () => {
+    const backend = new MemoryBackend();
+    const log = backend.log<LogRow>('rcplog-ttl', { timestampField: 'createdAt' });
+    const future = Math.floor(Date.now() / 1000) + 3600;
+    await log.put({ id: 'a', createdAt: '2026-07-01T00:00:00.000Z', ttl: future });
+
+    const list = await log.list();
+    expect(list).toHaveLength(1);
+    expect(list[0]).not.toHaveProperty('ttl');
+  });
+
+  it('ttl が過去のレコードは list/listSince/findBy から除外される（削除はしない・put 直後の再 list では消えている）', async () => {
+    const backend = new MemoryBackend();
+    const log = backend.log<LogRow>('rcplog-ttl-expired', { timestampField: 'createdAt' });
+    const past = Math.floor(Date.now() / 1000) - 1;
+    await log.put({ id: 'a', createdAt: '2026-07-01T00:00:00.000Z', ttl: past });
+    await log.put({ id: 'b', createdAt: '2026-07-02T00:00:00.000Z' }); // ttl 無し = 非期限
+
+    expect((await log.list()).map((l) => l.id)).toEqual(['b']);
+    expect((await log.listSince('2026-01-01T00:00:00.000Z')).map((l) => l.id)).toEqual(['b']);
+    expect(await log.findBy('id', 'a')).toBeUndefined();
+    expect((await log.findBy('id', 'b'))?.id).toBe('b');
+  });
+
+  it('ttl フィールドを持たない item は従来どおり常に返る（他の LogStore 利用への非破壊）', async () => {
+    const backend = new MemoryBackend();
+    const log = backend.log<{ id: string; at: string }>('audit-ttl-none', { timestampField: 'at' });
+    await log.put({ id: 'a', at: '2026-07-01T00:00:00.000Z' });
+    expect((await log.list()).map((l) => l.id)).toEqual(['a']);
+  });
+});

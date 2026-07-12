@@ -130,6 +130,23 @@ class MemoryLogStore<T extends { id: string }> implements LogStore<T> {
 
   constructor(private readonly tsField: string) {}
 
+  // 保持期間 TTL の読み取り時判定 (issue #313)。dynamo の `ttl`（epoch 秒）属性と同名・同単位の
+  // フィールドが item に載っていれば、それを使って期限切れを判定する（`platform/repository.ts`
+  // の expiresAt 方式に倣う）。`ttl` を持たない item（このフィールドを使わない他の LogStore 利用）
+  // は対象外（常に非期限扱い）。実際の削除はしない（メモリはプロセス生存中のみ保持する既存方針
+  // どおり。読み取りから除外するだけ）。
+  private notExpired(item: T, nowSec: number): boolean {
+    const ttl = (item as Record<string, unknown>).ttl;
+    return !(typeof ttl === 'number' && ttl <= nowSec);
+  }
+
+  // dynamo の strip()（PK/SK/ttl 等の内部属性除去）と挙動を揃え、`ttl` を呼び出し側へ漏らさない。
+  private stripTtl(item: T): T {
+    if (!('ttl' in (item as Record<string, unknown>))) return item;
+    const { ttl: _ttl, ...rest } = item as Record<string, unknown>;
+    return rest as T;
+  }
+
   async put(item: T): Promise<void> {
     const idx = this.items.findIndex((i) => i.id === item.id);
     if (idx >= 0) this.items[idx] = clone(item);
@@ -138,28 +155,33 @@ class MemoryLogStore<T extends { id: string }> implements LogStore<T> {
 
   async list(): Promise<T[]> {
     const ts = (i: T) => String((i as Record<string, unknown>)[this.tsField] ?? '');
+    const nowSec = Math.floor(Date.now() / 1000);
     return [...this.items]
+      .filter((i) => this.notExpired(i, nowSec))
       .sort((a, b) => (ts(a) < ts(b) ? 1 : ts(a) > ts(b) ? -1 : a.id < b.id ? 1 : -1))
-      .map(clone);
+      .map((i) => this.stripTtl(clone(i)));
   }
 
   async listSince(sinceIso: string): Promise<T[]> {
     // dynamo の `SK >= :since` と揃える（timestampField >= sinceIso を含む）。捨てる分を clone しないよう
     // filter を先に、その後 list と同じ新しい順ソート＋clone。
     const ts = (i: T) => String((i as Record<string, unknown>)[this.tsField] ?? '');
+    const nowSec = Math.floor(Date.now() / 1000);
     return [...this.items]
-      .filter((i) => ts(i) >= sinceIso)
+      .filter((i) => ts(i) >= sinceIso && this.notExpired(i, nowSec))
       .sort((a, b) => (ts(a) < ts(b) ? 1 : ts(a) > ts(b) ? -1 : a.id < b.id ? 1 : -1))
-      .map(clone);
+      .map((i) => this.stripTtl(clone(i)));
   }
 
   async findBy(field: keyof T & string, value: string): Promise<T | undefined> {
     // DynamoDB の GSI（ScanIndexForward:false, Limit:1）と一致させ、最新の 1 件を返す。
     const ts = (i: T) => String((i as Record<string, unknown>)[this.tsField] ?? '');
+    const nowSec = Math.floor(Date.now() / 1000);
     const found = [...this.items]
+      .filter((i) => this.notExpired(i, nowSec))
       .sort((a, b) => (ts(a) < ts(b) ? 1 : ts(a) > ts(b) ? -1 : a.id < b.id ? 1 : -1))
       .find((i) => i[field] === value);
-    return found ? clone(found) : undefined;
+    return found ? this.stripTtl(clone(found)) : undefined;
   }
 
   async reset(): Promise<void> {

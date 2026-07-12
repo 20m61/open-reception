@@ -11,10 +11,20 @@
  *   - listSince は `timestampField >= sinceIso`（含む）の範囲クエリ (issue #254)。全件走査を
  *     避けるダッシュボード集計経路のため、この契約は reception-log-repository.test.ts が固定する。
  *   - 全件 list は管理画面表示のみ（§9.3。境界化は移行増分で扱う）。
+ *
+ * 保持期間 TTL (issue #313): put() 時に `resolveReceptionLogTtl` / `resolveAuditLogTtl`
+ * （./log-retention.ts）で計算した `ttl`（epoch 秒）を item に載せて書き込む。`ReceptionLog` /
+ * `AuditLog`（src/domain/reception/log.ts）自体には `ttl` フィールドを追加しない（並行トラックが
+ * 触る共有ファイルのため）。item を `ttl` 付きへ構造的に拡張するだけで、DynamoLogStore.put() は
+ * item をそのまま record へ展開するため既存の TTL 属性の仕組みに素通しで乗る。memory backend は
+ * MemoryLogStore（src/lib/data/memory.ts）が読み取り時に同じ `ttl` で期限判定し、返却時に取り除く
+ * （strip、dynamo の strip() と同じ挙動）。新規書き込みにのみ適用し、既存レコードへの遡及適用は
+ * しない（docs/audit-logging.md）。
  */
 import type { AuditLog, ReceptionLog } from '@/domain/reception/log';
 import { getBackend } from '@/lib/data';
 import type { LogStore } from '@/lib/data/backend';
+import { resolveAuditLogTtl, resolveReceptionLogTtl } from './log-retention';
 
 export const RECEPTION_LOG_NAME = 'rcplog';
 export const AUDIT_LOG_NAME = 'audit';
@@ -50,7 +60,14 @@ export class DataBackedReceptionLogRepository implements ReceptionLogRepository 
     });
 
   async put(log: ReceptionLog): Promise<void> {
-    await this.store().put(log);
+    // ttl は log.createdAt を起点に計算する（fallbackUsed 等の再 put で失効時刻が
+    // 「今」へずれないように、書き込み時刻ではなく発生時刻を起点にする）。
+    const ttl = await resolveReceptionLogTtl(new Date(log.createdAt).getTime());
+    // ReceptionLog 型自体には ttl を追加しない（変数経由なので excess-property check は掛からず、
+    // LogStore<ReceptionLog> へ構造的に代入できる。DynamoLogStore.put() は item をそのまま
+    // record へ展開するため、この ttl がそのまま DynamoDB の TTL 属性になる）。
+    const record = { ...log, ttl };
+    await this.store().put(record);
   }
 
   async list(): Promise<ReceptionLog[]> {
@@ -76,7 +93,11 @@ export class DataBackedAuditLogRepository implements AuditLogRepository {
     getBackend().log<AuditLog>(AUDIT_LOG_NAME, { timestampField: 'at' });
 
   async put(log: AuditLog): Promise<void> {
-    await this.store().put(log);
+    // ttl は log.at を起点に計算する（監査ログは同一 id での再 put が発生しない前提だが、
+    // 受付履歴と同じ「発生時刻起点」に揃えておく）。
+    const ttl = await resolveAuditLogTtl(new Date(log.at).getTime());
+    const record = { ...log, ttl };
+    await this.store().put(record);
   }
 
   async list(): Promise<AuditLog[]> {
