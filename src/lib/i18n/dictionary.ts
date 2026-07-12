@@ -32,6 +32,9 @@ export type MessageKey =
   | 'welcome.tapToStart'
   | 'welcome.chooseLanguage'
   | 'reception.purposePrompt'
+  // 待機画面リードの安心情報 / 目的選択の絞り込み見出し（#324 1画面1メッセージ）
+  | 'reception.idleReassure'
+  | 'reception.purposeDetailPrompt'
   | 'reception.appointment'
   | 'reception.delivery'
   | 'reception.other'
@@ -62,6 +65,11 @@ export type MessageKey =
   | 'reception.purpose.delivery'
   | 'reception.purpose.interview'
   | 'reception.purpose.other'
+  // 目的選択カードの説明（待機カードと視覚語彙を統一, #324-3）
+  | 'reception.purpose.meeting.desc'
+  | 'reception.purpose.delivery.desc'
+  | 'reception.purpose.interview.desc'
+  | 'reception.purpose.other.desc'
   | 'reception.proceedConfirm'
   | 'reception.editInfo'
   | 'reception.callWithThis'
@@ -162,6 +170,8 @@ const ja: DefaultDictionary = {
   'welcome.tapToStart': '画面にタッチして受付を開始してください',
   'welcome.chooseLanguage': '言語を選択してください',
   'reception.purposePrompt': 'ご用件をお選びください',
+  'reception.idleReassure': 'タッチ操作だけで受付できます',
+  'reception.purposeDetailPrompt': 'ご用件の種類をお選びください',
   'reception.appointment': '訪問のお約束',
   'reception.delivery': '配達・集荷',
   'reception.other': 'その他',
@@ -190,13 +200,17 @@ const ja: DefaultDictionary = {
   'reception.purpose.delivery': '納品',
   'reception.purpose.interview': '打ち合わせ',
   'reception.purpose.other': 'その他',
+  'reception.purpose.meeting.desc': 'お約束の面会・ご訪問先の担当者へ',
+  'reception.purpose.delivery.desc': 'お届け物・集荷の受け渡し',
+  'reception.purpose.interview.desc': '会議・打ち合わせでお越しの方',
+  'reception.purpose.other.desc': '上記以外のご用件',
   'reception.proceedConfirm': '確認へ進む',
   'reception.editInfo': '修正する',
   'reception.callWithThis': 'この内容で呼び出す',
   'reception.callingTitle': '呼び出し中…',
   'reception.callingBody': '{target} を呼び出しています。少々お待ちください。',
-  'reception.connectedBody': '{target} が応答しました。まもなくお越しになります。',
-  'reception.finishReception': '受付を終了する',
+  'reception.connectedBody': '{target} が応答しました。担当者がまいりますので、そのままお待ちください。操作は不要です。',
+  'reception.finishReception': '受付を終える',
   'reception.timeoutBody': '応答がありませんでした。別の方法でお呼びすることもできます。',
   'reception.failedBody': '呼び出しに失敗しました。別の方法でお呼びすることもできます。',
   'reception.altContact': '代替の連絡先へ',
@@ -280,6 +294,8 @@ const en: LocaleDictionary = {
   'welcome.tapToStart': 'Tap the screen to begin check-in',
   'welcome.chooseLanguage': 'Please choose your language',
   'reception.purposePrompt': 'Please select the reason for your visit',
+  'reception.idleReassure': 'You can check in with touch alone',
+  'reception.purposeDetailPrompt': 'Please choose the type of visit',
   'reception.appointment': 'Scheduled appointment',
   'reception.delivery': 'Delivery / pickup',
   'reception.other': 'Other',
@@ -308,13 +324,18 @@ const en: LocaleDictionary = {
   'reception.purpose.delivery': 'Delivery',
   'reception.purpose.interview': 'Meeting',
   'reception.purpose.other': 'Other',
+  'reception.purpose.meeting.desc': 'Visiting a specific person',
+  'reception.purpose.delivery.desc': 'Deliveries and pickups',
+  'reception.purpose.interview.desc': 'Meetings and appointments',
+  'reception.purpose.other.desc': 'Anything else',
   'reception.proceedConfirm': 'Continue to confirm',
   'reception.editInfo': 'Edit',
   'reception.callWithThis': 'Call with these details',
   'reception.callingTitle': 'Calling…',
   'reception.callingBody': 'Calling {target}. Please wait a moment.',
-  'reception.connectedBody': '{target} answered. They will be with you shortly.',
-  'reception.finishReception': 'Finish',
+  'reception.connectedBody':
+    '{target} answered and will come to meet you shortly. Please wait here—no action is needed.',
+  'reception.finishReception': 'Done',
   'reception.timeoutBody': 'There was no answer. We can try another way to reach them.',
   'reception.failedBody': 'The call failed. We can try another way to reach them.',
   'reception.altContact': 'Try another way',
@@ -399,6 +420,8 @@ const ko: LocaleDictionary = {
   'welcome.tapToStart': '화면을 터치하여 접수를 시작하세요',
   'welcome.chooseLanguage': '언어를 선택해 주세요',
   'reception.purposePrompt': '방문 목적을 선택해 주세요',
+  'reception.idleReassure': '터치만으로 접수할 수 있습니다',
+  'reception.purposeDetailPrompt': '방문 종류를 선택해 주세요',
   'reception.appointment': '방문 예약',
   'reception.delivery': '배송 / 수령',
   'reception.other': '기타',
@@ -427,12 +450,16 @@ const ko: LocaleDictionary = {
   'reception.purpose.delivery': '납품',
   'reception.purpose.interview': '미팅',
   'reception.purpose.other': '기타',
+  'reception.purpose.meeting.desc': '약속된 면회·담당자 방문',
+  'reception.purpose.delivery.desc': '물품 전달·수령',
+  'reception.purpose.interview.desc': '회의·미팅 방문',
+  'reception.purpose.other.desc': '그 외 용무',
   'reception.proceedConfirm': '확인으로 진행',
   'reception.editInfo': '수정',
   'reception.callWithThis': '이 내용으로 호출',
   'reception.callingTitle': '호출 중…',
   'reception.callingBody': '{target}님을 호출하고 있습니다. 잠시만 기다려 주세요.',
-  'reception.connectedBody': '{target}님이 응답했습니다. 곧 도착합니다.',
+  'reception.connectedBody': '{target}님이 응답했습니다. 담당자가 곧 나오니 그대로 기다려 주세요. 별도의 조작은 필요하지 않습니다.',
   'reception.finishReception': '접수 종료',
   'reception.timeoutBody': '응답이 없습니다. 다른 방법으로 호출할 수도 있습니다.',
   'reception.failedBody': '호출에 실패했습니다. 다른 방법으로 호출할 수도 있습니다.',
@@ -517,6 +544,8 @@ const zh: LocaleDictionary = {
   'welcome.tapToStart': '请触摸屏幕开始登记',
   'welcome.chooseLanguage': '请选择语言',
   'reception.purposePrompt': '请选择来访事由',
+  'reception.idleReassure': '仅触摸屏幕即可完成登记',
+  'reception.purposeDetailPrompt': '请选择来访类型',
   'reception.appointment': '预约来访',
   'reception.delivery': '快递 / 取件',
   'reception.other': '其他',
@@ -545,12 +574,16 @@ const zh: LocaleDictionary = {
   'reception.purpose.delivery': '送货',
   'reception.purpose.interview': '洽谈',
   'reception.purpose.other': '其他',
+  'reception.purpose.meeting.desc': '拜访指定人员',
+  'reception.purpose.delivery.desc': '收发货物',
+  'reception.purpose.interview.desc': '会议·洽谈来访',
+  'reception.purpose.other.desc': '其他事由',
   'reception.proceedConfirm': '继续确认',
   'reception.editInfo': '修改',
   'reception.callWithThis': '按此呼叫',
   'reception.callingTitle': '正在呼叫…',
   'reception.callingBody': '正在呼叫 {target}，请稍候。',
-  'reception.connectedBody': '{target} 已应答，马上就来。',
+  'reception.connectedBody': '{target} 已应答，工作人员即将前来，请在此稍候。无需任何操作。',
   'reception.finishReception': '结束登记',
   'reception.timeoutBody': '无人应答。我们可以用其他方式联系。',
   'reception.failedBody': '呼叫失败。我们可以用其他方式联系。',

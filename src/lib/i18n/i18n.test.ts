@@ -28,7 +28,7 @@ describe('t 補間 (#103)', () => {
   it('makeT も params を受け付ける', () => {
     const tr = makeT('en');
     expect(tr('reception.connectedBody', { target: 'Sato' })).toBe(
-      'Sato answered. They will be with you shortly.',
+      'Sato answered and will come to meet you shortly. Please wait here—no action is needed.',
     );
   });
 });

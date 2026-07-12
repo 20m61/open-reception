@@ -25,6 +25,8 @@ test('呼び出し成功フロー: 接続 → 完了 → 待機画面へ復帰',
   await page.getByTestId('confirm-call').click();
 
   await expect(page.getByTestId('result-connected')).toBeVisible();
+  // 接続後は来訪者が操作不要なことを文言で示す (#324-5)。終了操作は任意。
+  await expect(page.getByTestId('result-connected')).toContainText('操作は不要です');
   await page.getByTestId('complete').click();
 
   await expect(page.getByTestId('completed')).toBeVisible();

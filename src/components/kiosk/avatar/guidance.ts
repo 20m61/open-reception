@@ -102,7 +102,7 @@ type AvatarLines = Record<AvatarState, string>;
 type PartialAvatarLines = Partial<AvatarLines>;
 
 const ja: AvatarLines = {
-  idle: 'AI受付です。画面にタッチして受付を始めてください',
+  idle: 'AI受付です。ご用件をお選びください',
   greeting: 'ようこそ。ご用件をお選びください',
   guiding: 'お訪ねする担当や部署をお選びください',
   listening: 'お名前など、ごゆっくりご入力ください',
@@ -114,7 +114,7 @@ const ja: AvatarLines = {
 };
 
 const en: PartialAvatarLines = {
-  idle: 'AI reception here. Tap the screen to begin.',
+  idle: 'AI reception here. Please choose your reason for visiting.',
   greeting: 'Welcome. Please choose your reason for visiting.',
   guiding: 'Please choose the person or department to reach.',
   listening: 'Please enter your details at your own pace.',
@@ -126,7 +126,7 @@ const en: PartialAvatarLines = {
 };
 
 const ko: PartialAvatarLines = {
-  idle: 'AI 접수입니다. 화면을 터치해 시작하세요.',
+  idle: 'AI 접수입니다. 방문 목적을 선택해 주세요.',
   greeting: '환영합니다. 방문 목적을 선택해 주세요.',
   guiding: '찾으시는 담당자나 부서를 선택해 주세요.',
   listening: '성함 등을 천천히 입력해 주세요.',
@@ -138,7 +138,7 @@ const ko: PartialAvatarLines = {
 };
 
 const zh: PartialAvatarLines = {
-  idle: 'AI 接待。请触摸屏幕开始登记。',
+  idle: 'AI 接待。请选择来访事由。',
   greeting: '欢迎。请选择来访事由。',
   guiding: '请选择要联系的负责人或部门。',
   listening: '请放心慢慢填写您的信息。',
