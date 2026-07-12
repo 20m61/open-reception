@@ -40,6 +40,11 @@ export async function POST(request: Request): Promise<NextResponse> {
     const found = await getReception(receptionId);
     // 受付が見つからない場合は not_found（存在しない受付から在館を作らない）。
     if (!found.ok) return NextResponse.json({ error: 'not_found' }, { status: 404 });
+    // 対象 reception を作成した端末（reception.kioskId）からの要求に限定する
+    // （token/status 兄弟ルートと同じ受付所有権チェック。他端末の受付を在館化させない）。
+    if (found.value.kioskId !== session.kioskId) {
+      return NextResponse.json({ error: 'forbidden', message: 'reception belongs to another kiosk' }, { status: 403 });
+    }
     // 担当者応答で完了した受付のみ在館化する（未応答/失敗/取消/フォールバック完了は対象外）。
     if (!shouldCreateStayForReception(found.value)) {
       return NextResponse.json({ error: 'not_eligible' }, { status: 409 });
@@ -52,7 +57,10 @@ export async function POST(request: Request): Promise<NextResponse> {
       kioskId: session.kioskId,
     });
     return NextResponse.json({ stayId }, { status: 201 });
-  } catch {
+  } catch (e) {
+    // 在館記録の生成失敗は受付フローを止めない（503）。原因追跡のため非ブロッキングに記録する
+    // （PII/token は載せない。error オブジェクトのみ）。
+    console.warn('[kiosk-stay] create failed', e);
     return NextResponse.json({ error: 'network' }, { status: 503 });
   }
 }

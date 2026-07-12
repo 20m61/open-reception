@@ -62,7 +62,7 @@ import {
 } from './quick-actions';
 import { deriveChatAvailability, type ReceptionAction } from '@/domain/reception/ui-contract';
 import { KioskChatDrawer } from './KioskChatDrawer';
-import { buildCheckoutUrl, checkoutQrDataUrl } from './checkout/credential-display';
+import { buildCheckoutUrl, safeCheckoutQrDataUrl } from './checkout/credential-display';
 import Link from 'next/link';
 import {
   createTracker,
@@ -665,7 +665,11 @@ export function KioskFlow() {
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ receptionId }),
       });
-      if (!stayRes.ok) return;
+      if (!stayRes.ok) {
+        // 沈黙させず観測可能にする（step/status のみ。token/PII は載せない）。
+        console.warn('[kiosk] checkout credential issuance failed', { step: 'stay', status: stayRes.status });
+        return;
+      }
       const { stayId } = (await stayRes.json()) as { stayId?: string };
       if (!stayId) return;
       const issueRes = await fetch('/api/kiosk/checkout/issue', {
@@ -673,13 +677,17 @@ export function KioskFlow() {
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ stayId }),
       });
-      if (!issueRes.ok) return;
+      if (!issueRes.ok) {
+        console.warn('[kiosk] checkout credential issuance failed', { step: 'issue', status: issueRes.status });
+        return;
+      }
       const cred = (await issueRes.json()) as Partial<CheckoutCredential>;
       if (cred.token && cred.code && cred.expiresAt) {
         setCheckoutCredential({ token: cred.token, code: cred.code, expiresAt: cred.expiresAt });
       }
-    } catch {
+    } catch (e) {
       /* 退館クレデンシャル発行の失敗は受付完了画面を妨げない（QR 非表示で継続） */
+      console.warn('[kiosk] checkout credential issuance failed', { step: 'issue', error: e });
     }
   }, []);
 
@@ -1932,7 +1940,14 @@ function ResultPanel({
   testId: string;
   title?: string;
   message?: string;
-  action?: { label: string; onClick: () => void; testId: string; variant?: 'primary' | 'secondary' };
+  action?: {
+    label: string;
+    onClick: () => void;
+    testId: string;
+    variant?: 'primary' | 'secondary';
+    /** 実行中に二度押しを防ぐため無効化する（例: 受付完了ボタンの busy ガード, #342）。 */
+    disabled?: boolean;
+  };
   locale: Locale;
 }) {
   return (
@@ -1950,6 +1965,7 @@ function ResultPanel({
               className={`btn btn--${action.variant ?? 'primary'}`}
               data-testid={action.testId}
               onClick={action.onClick}
+              disabled={action.disabled}
               lang={locale}
             >
               {action.label}
@@ -1980,10 +1996,23 @@ function ConnectedView({
   locale,
 }: {
   target: string;
-  onComplete: () => void;
+  onComplete: () => void | Promise<void>;
   locale: Locale;
 }) {
   const tr = makeT(locale);
+  // 二度押しガード: 完了は在館記録の起票 API を伴い、サーバの冪等チェックは check-then-act で
+  // 非原子的（#342 レビュー指摘）。実運用の二重タップ由来の重複起票を単一 in-flight に絞るため、
+  // 実行中はボタンを無効化して onComplete を一度しか発火させない（KioskAuthorize.busy と同型）。
+  const [busy, setBusy] = useState(false);
+  const finish = async () => {
+    if (busy) return;
+    setBusy(true);
+    try {
+      await onComplete();
+    } finally {
+      setBusy(false);
+    }
+  };
   // connected は「担当者がまいります／操作は不要です」を message で明示し、終了操作は任意にする (#324-5)。
   // 主 CTA（primary）で終了を促すと「押さないと進まない」と誤解させるため、secondary の任意アクションにする。
   // 「操作不要」の案内と挙動を一致させるため、connected は無操作タイムアウトで待機へ自動復帰する
@@ -1993,7 +2022,13 @@ function ConnectedView({
       tone={resultToneForState('connected')}
       testId="result-connected"
       message={tr('reception.connectedBody', { target })}
-      action={{ label: tr('reception.finishReception'), onClick: onComplete, testId: 'complete', variant: 'secondary' }}
+      action={{
+        label: tr('reception.finishReception'),
+        onClick: () => void finish(),
+        testId: 'complete',
+        variant: 'secondary',
+        disabled: busy,
+      }}
       locale={locale}
     />
   );
@@ -2129,7 +2164,9 @@ function CheckoutCredentialPanel({
   const origin = typeof window !== 'undefined' ? window.location.origin : '';
   const checkoutUrl = buildCheckoutUrl(origin, credential.token);
   const qrAlt = tr('checkout.credential.qrAlt');
-  const qrSrc = checkoutQrDataUrl(checkoutUrl, qrAlt);
+  // QR 生成は render 中に走る。完了画面には error boundary が無いため、throw すると退館コード/
+  // 案内まで巻き添えでクラッシュする。安全版で失敗時は null にし、QR を省いてコード/案内は残す。
+  const qrSrc = safeCheckoutQrDataUrl(checkoutUrl, qrAlt);
   const expiry = formatExpiryTime(credential.expiresAt, locale);
   return (
     <section
@@ -2149,14 +2186,16 @@ function CheckoutCredentialPanel({
         {tr('checkout.credential.title')}
       </h2>
       <p className="screen__lead">{tr('checkout.credential.instruction')}</p>
-      <img
-        src={qrSrc}
-        alt={qrAlt}
-        data-testid="checkout-credential-qr"
-        width={200}
-        height={200}
-        style={{ width: 200, height: 200, maxWidth: '60vw' }}
-      />
+      {qrSrc ? (
+        <img
+          src={qrSrc}
+          alt={qrAlt}
+          data-testid="checkout-credential-qr"
+          width={200}
+          height={200}
+          style={{ width: 200, height: 200, maxWidth: '60vw' }}
+        />
+      ) : null}
       <p className="checkout-credential__code" style={{ fontSize: 'var(--font-lg)' }}>
         {tr('checkout.credential.codeLabel')}:{' '}
         <strong data-testid="checkout-credential-code" style={{ letterSpacing: '0.15em' }}>

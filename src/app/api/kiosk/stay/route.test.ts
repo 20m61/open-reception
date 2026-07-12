@@ -38,7 +38,8 @@ function post(body: unknown = { receptionId: 'rec-1' }) {
 
 const connectedSession = {
   id: 'rec-1',
-  kioskId: 'kiosk-dev',
+  // 受付所有権チェックを通すため、テストセッションと同じ kioskId にする（正常系は 201）。
+  kioskId: 'kiosk-session-1',
   state: 'completed',
   callOutcome: 'connected',
   purpose: 'meeting',
@@ -94,6 +95,16 @@ describe('POST /api/kiosk/stay (issue #342)', () => {
     expect(arg.kioskId).toBe('kiosk-session-1');
     // 作成入力に PII を載せない。
     expect(JSON.stringify(arg.stay)).not.toContain('山田');
+  });
+
+  it('別端末が作成した受付は 403 forbidden（在館記録を作らない）', async () => {
+    getReception.mockResolvedValue({
+      ok: true,
+      value: { ...connectedSession, kioskId: 'kiosk-other' },
+    });
+    const res = await post();
+    expect(res.status).toBe(403);
+    expect(createPresentForReception).not.toHaveBeenCalled();
   });
 
   it('存在しない受付は 404', async () => {

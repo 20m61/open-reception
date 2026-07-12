@@ -32,3 +32,20 @@ export function checkoutQrDataUrl(url: string, ariaLabel: string): string {
   const svg = renderTextToQrSvg(url, { ariaLabel });
   return `data:image/svg+xml,${encodeURIComponent(svg)}`;
 }
+
+/**
+ * `checkoutQrDataUrl` の安全版。QR 符号化が例外を投げても throw せず null を返す。
+ *
+ * 完了画面には React error boundary が無く、QR 生成中の throw は画面全体をクラッシュさせて
+ * 退館コード/案内まで巻き添えにする（graceful degradation の意図に反する）。呼び出し側は
+ * null のとき QR を省いてコード/案内だけを描画する。失敗は非ブロッキングに記録する
+ * （PII/token は載せない。error オブジェクトのみ）。
+ */
+export function safeCheckoutQrDataUrl(url: string, ariaLabel: string): string | null {
+  try {
+    return checkoutQrDataUrl(url, ariaLabel);
+  } catch (e) {
+    console.warn('[kiosk] checkout QR render failed', e);
+    return null;
+  }
+}

@@ -74,8 +74,14 @@ export class KioskStayService {
    * 二重防御（repository の境界フィルタ）。retention/監査は管理経由の createPresent と揃える
    * （DEFAULT_RETENTION_DAYS・stay.updated）。PII は保存も監査もしない。
    *
-   * **冪等**: 同一 receptionId の在館記録が同 scope に既にあれば再生成せず既存 id を返す
-   * （受付完了画面の再マウント/再試行で在館記録が二重化しないため）。
+   * **冪等（best-effort）**: 同一 receptionId の在館記録が同 scope に既にあれば再生成せず
+   * 既存 id を返す（受付完了画面の再マウント/再試行で在館記録が二重化しないため）。この
+   * `listPresent`→`find` は check-then-act であり原子的ではない。冪等保証が成立するのは
+   * **クライアントが同時 in-flight を 1 本に絞る契約**（受付完了ボタンの busy ガード:
+   * KioskFlow の ConnectedView）を前提としたときで、その前提下では実運用の二重タップは
+   * 一本化される。残余の TOCTOU（真に並行した重複 POST）は、ストレージ層に一意制約
+   * （receptionId のユニークキー）が無い現状では受容する既知の制限とする（新規 GSI /
+   * 条件付き put の導入は本修正のスコープ外・#342 の後続で検討）。
    *
    * 監査失敗は在館記録の生成を妨げない（best-effort。監査に PII は無い）。
    */
@@ -120,8 +126,10 @@ export class KioskStayService {
           targetId: stay.id,
           metadata: { status: stay.status },
         });
-      } catch {
+      } catch (e) {
         // 監査追記の失敗は在館記録の生成を無効化しない（帰属ログの欠落のみ）。
+        // 沈黙させず非ブロッキングに記録する（PII/token なし。error オブジェクトのみ）。
+        console.warn('[kiosk-stay] audit append failed', e);
       }
     }
 
