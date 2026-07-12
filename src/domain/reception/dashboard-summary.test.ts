@@ -138,6 +138,27 @@ describe('buildDashboardSummary (#86)', () => {
     expect(summary.devices).toEqual(devices);
     expect(summary.recentCalls).toHaveLength(2);
     expect(summary.usageCost).toBeNull(); // 未指定なら null
+    // 体験 KPI も本日分から集計される (#319)。experience メトリクスは未添付なので 30 秒 KPI は null。
+    expect(summary.experience.total).toBe(2);
+    expect(summary.experience.completion).toEqual({ connected: 1, total: 2 });
+    expect(summary.experience.callStartWithin30sRate).toBeNull();
+  });
+
+  it('体験メトリクス付きログから本日の 30 秒 KPI を集計する (#319)', () => {
+    const logs: ReceptionLog[] = [
+      {
+        ...log({ id: 'a', outcome: 'connected', startedAt: '2026-06-20T09:00:00.000Z' }),
+        experience: { timeToCallMs: 12000, inputMethod: 'touch' },
+      },
+      {
+        ...log({ id: 'b', outcome: 'timeout', startedAt: '2026-06-20T10:00:00.000Z' }),
+        experience: { timeToCallMs: 45000, abandonedAtStep: 'calling' },
+      },
+    ];
+    const summary = buildDashboardSummary(logs, fleet({ total: 1, online: 1 }), NOW);
+    expect(summary.experience.measured).toBe(2);
+    expect(summary.experience.callStartWithin30s).toEqual({ within: 1, reached: 2 });
+    expect(summary.experience.callStartWithin30sRate).toBeCloseTo(0.5);
   });
 
   it('利用量/コスト概況を受け取ると含める (#86)', () => {
@@ -149,5 +170,8 @@ describe('buildDashboardSummary (#86)', () => {
     };
     const summary = buildDashboardSummary([], fleet(), NOW, usageCost);
     expect(summary.usageCost).toEqual(usageCost);
+    // 空履歴では体験 KPI もゼロ値（graceful empty）。
+    expect(summary.experience.total).toBe(0);
+    expect(summary.experience.medianDurationMs).toBeNull();
   });
 });

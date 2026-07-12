@@ -14,7 +14,12 @@
  * ここで集計するのは Tenant ストアから確実に読める範囲（テナント数・稼働/停止）に限る。
  */
 import type { Device, Site, Tenant } from '@/domain/tenant/types';
-import type { AuditLog } from '@/domain/reception/log';
+import type { AuditLog, ReceptionLog } from '@/domain/reception/log';
+import {
+  emptyExperienceKpi,
+  summarizeExperience,
+  type ExperienceKpi,
+} from '@/domain/reception/experience-summary';
 import type {
   AuthMethodStatus,
   ConnectionResult,
@@ -304,4 +309,59 @@ export function toAuthMethodStatusRows(
   return methods
     .map((m) => ({ id: m.id, label: m.label, enabled: m.enabled, issues: [...m.issues] }))
     .sort((a, b) => a.label.localeCompare(b.label));
+}
+
+/* ===================== issue #319: テナント横断の受付体験サマリ ===================== */
+
+/** テナント単位の体験 KPI 行（テナント横断表示用。PII は含まない）。 */
+export type TenantExperienceRow = {
+  tenantId: string;
+  tenantName: string;
+  /** 体験メトリクスが記録された受付数（この行の 30 秒 KPI の主分母）。 */
+  measured: number;
+  /** 30 秒以内呼び出し開始率（0..1）。呼び出し到達がなければ null。 */
+  callStartWithin30sRate: number | null;
+  /** 完遂率（0..1）。対象なしなら null。 */
+  completionRate: number | null;
+  /** 全体所要の中央値 (ms)。対象なしなら null。 */
+  medianDurationMs: number | null;
+};
+
+/** テナント横断の受付体験サマリ（プラットフォーム運用の #284 集計へ体験観点を追加）。 */
+export type CrossTenantExperienceSummary = {
+  /** 全テナント合算の体験 KPI（30 秒 KPI・完遂率・中央値・ファネル・入力手段）。 */
+  overall: ExperienceKpi;
+  /** テナント別の体験 KPI 行（measured 降順 → テナント名昇順）。 */
+  perTenant: TenantExperienceRow[];
+};
+
+/**
+ * 各テナントの受付ログ（期間フィルタ済みを想定）から、テナント横断の受付体験サマリを組み立てる純関数。
+ *
+ * 全体は全テナントのログを合算して {@link summarizeExperience} で集計し、テナント別行も同じ純関数で
+ * 導く（分子/分母の定義を 1 箇所に集約し、テナント間で食い違わせない）。来訪者 PII は一切含めない
+ * （所要 ms・件数・列挙のみ。tenantName は運用メタで PII ではない）。呼び出し側がテナント境界
+ * （tenantId 一致）を保証して渡す前提。
+ */
+export function summarizeExperienceAcrossTenants(
+  entries: readonly { tenant: Pick<Tenant, 'id' | 'name'>; logs: readonly ReceptionLog[] }[],
+): CrossTenantExperienceSummary {
+  if (entries.length === 0) {
+    return { overall: emptyExperienceKpi(), perTenant: [] };
+  }
+  const allLogs: ReceptionLog[] = [];
+  const perTenant: TenantExperienceRow[] = entries.map(({ tenant, logs }) => {
+    allLogs.push(...logs);
+    const kpi = summarizeExperience(logs);
+    return {
+      tenantId: tenant.id,
+      tenantName: tenant.name,
+      measured: kpi.measured,
+      callStartWithin30sRate: kpi.callStartWithin30sRate,
+      completionRate: kpi.completionRate,
+      medianDurationMs: kpi.medianDurationMs,
+    };
+  });
+  perTenant.sort((a, b) => b.measured - a.measured || a.tenantName.localeCompare(b.tenantName));
+  return { overall: summarizeExperience(allLogs), perTenant };
 }

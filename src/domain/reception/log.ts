@@ -11,6 +11,57 @@ import type {
   ReceptionTargetType,
 } from './session';
 
+/**
+ * 受付体験メトリクスのステップ識別子 (issue #319)。
+ *
+ * 受付フローの「局面」だけを表す列挙で、PII は一切含まない。ファネル（どこで離脱したか）と
+ * ステップ別所要の集計に使う。順序は experience-summary の `EXPERIENCE_STEP_ORDER` で定義する。
+ */
+export type ExperienceStep =
+  | 'selectingPurpose'
+  | 'selectingTarget'
+  | 'inputVisitorInfo'
+  | 'confirming'
+  | 'calling'
+  | 'connected';
+
+/**
+ * 来訪者が用件確定までに主に用いた入力手段 (issue #319)。
+ * 操作種別のみで PII ではない。STT/チャット/QR 利用率の算出に使う。
+ */
+export type ExperienceInputMethod = 'touch' | 'stt' | 'chat' | 'qr';
+
+/**
+ * 受付体験 KPI の計測メトリクス (issue #319)。
+ *
+ * すべて PII を含まない（所要 ms・回数・列挙値のみ。氏名/会社名/メモ/連絡先は持たない）。
+ * `.claude/rules/pii-secret-minimization.md` / docs/audit-logging.md の最小化方針に従う。
+ * 旧レコード互換のため ReceptionLog 側では optional（未設定でも既存集計は壊れない）。
+ */
+export type ReceptionExperience = {
+  /**
+   * ステップ別の滞在所要 (ms)。実際に入ったステップのみキーを持つ（未到達ステップはキーなし）。
+   * ファネルの「到達したか」と平均滞在時間の算出に使う。
+   */
+  stepDurations?: Partial<Record<ExperienceStep, number>>;
+  /**
+   * 受付開始（START）から呼び出し確定（calling への遷移）までの所要 (ms)。
+   * 「30 秒以内呼び出し開始率」KPI の分子判定に使う。呼び出しへ到達しなかった受付では未設定。
+   */
+  timeToCallMs?: number;
+  /** 「戻る」操作の回数（やり直し量）。0 のときは省略する。 */
+  backCount?: number;
+  /** 「キャンセル」操作の回数。0 のときは省略する。 */
+  cancelCount?: number;
+  /** 主入力手段（touch/stt/chat/qr）。判定できないときは未設定。 */
+  inputMethod?: ExperienceInputMethod;
+  /**
+   * 無操作リセット・キャンセルなどで離脱したときに到達していた最終ステップ (issue #319 AC)。
+   * 完遂（connected 到達）した受付では未設定。ファネルの離脱ステップ特定に使う。
+   */
+  abandonedAtStep?: ExperienceStep;
+};
+
 export type ReceptionLog = {
   id: string;
   receptionId: string;
@@ -28,6 +79,11 @@ export type ReceptionLog = {
   endedAt: string;
   durationMs: number;
   createdAt: string;
+  /**
+   * 受付体験 KPI メトリクス (issue #319)。**optional**（旧レコード・既存テスト互換）。
+   * PII は含まない（所要/回数/列挙のみ）。KioskFlow が計測し、集計は experience-summary が担う。
+   */
+  experience?: ReceptionExperience;
 };
 
 export type AuditAction =
@@ -152,6 +208,11 @@ export function deriveReceptionLog(
   session: ReceptionSession,
   logId: string,
   fallbackUsed: boolean,
+  /**
+   * KioskFlow が計測した体験メトリクス (issue #319)。省略可（旧呼び出し互換）。
+   * 渡された場合のみ log に載せる（PII は含まない前提。呼び出し側で担保）。
+   */
+  experience?: ReceptionExperience,
 ): ReceptionLog {
   const endedAt = session.completedAt ?? session.updatedAt;
   const durationMs = Math.max(0, new Date(endedAt).getTime() - new Date(session.startedAt).getTime());
@@ -170,5 +231,7 @@ export function deriveReceptionLog(
     endedAt,
     durationMs,
     createdAt: new Date().toISOString(),
+    // 未指定なら experience キー自体を付けない（旧レコード互換・最小化）。
+    ...(experience ? { experience } : {}),
   };
 }

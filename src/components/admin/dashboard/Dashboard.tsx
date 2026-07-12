@@ -7,6 +7,7 @@ import { StatusBadge } from './StatusBadge';
 import { MetricCard } from './MetricCard';
 import { Section, CardGrid } from './Section';
 import { RecentCalls } from './RecentCalls';
+import { ExperienceKpiSection } from './ExperienceKpiSection';
 
 type LoadState =
   | { phase: 'loading' }
@@ -65,7 +66,7 @@ export function Dashboard() {
     );
   }
 
-  const { status, today, devices, recentCalls, usageCost } = state.summary;
+  const { status, today, devices, recentCalls, usageCost, experience } = state.summary;
   const callProblem = today.failed + today.timeout;
   const yen = (n: number) => `¥${n.toLocaleString('ja-JP')}`;
 
@@ -94,6 +95,9 @@ export function Dashboard() {
           <MetricCard label="代替導線の利用" value={today.fallbackUsed} unit="件" href="/admin/receptions" hint="呼び出しできず別手段に切替えた件数" />
         </CardGrid>
       </Section>
+
+      {/* 受付体験 KPI (#319)。rolling deploy 中の旧 API 形（experience なし）では表示しない。 */}
+      {experience ? <ExperienceKpiSection experience={experience} /> : null}
 
       <Section title="受付端末">
         <CardGrid>
