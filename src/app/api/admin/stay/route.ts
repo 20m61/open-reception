@@ -34,6 +34,9 @@ export async function POST(request: Request): Promise<NextResponse> {
     siteId: scope.siteId,
     reservationId: typeof o.reservationId === 'string' ? o.reservationId : undefined,
     receptionId: typeof o.receptionId === 'string' ? o.receptionId : undefined,
+    // 呼び出し先ラベル・用件（非 PII）。在館一覧の判別材料・退館確認に使う (#328)。
+    targetLabel: typeof o.targetLabel === 'string' ? o.targetLabel : undefined,
+    purpose: typeof o.purpose === 'string' ? o.purpose : undefined,
   });
   return serviceResponse(result, 201);
 }

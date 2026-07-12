@@ -121,7 +121,37 @@ export type MessageKey =
   | 'checkout.error.notFound'
   | 'checkout.error.alreadyCheckedOut'
   | 'checkout.error.invalid'
-  | 'checkout.error.network';
+  | 'checkout.error.network'
+  // 退館の自己特定 再設計 (#328)。QR/短コード + ラベル照合 + 確認ステップ。
+  | 'checkout.lead'
+  | 'checkout.tokenSectionTitle'
+  | 'checkout.tokenSectionHint'
+  | 'checkout.tokenLabel'
+  | 'checkout.tokenPlaceholder'
+  | 'checkout.scanButton'
+  | 'checkout.or'
+  | 'checkout.codeSectionTitle'
+  | 'checkout.codeSectionHint'
+  | 'checkout.codeLabel'
+  | 'checkout.codePlaceholder'
+  | 'checkout.targetLabelLabel'
+  | 'checkout.targetLabelPlaceholder'
+  | 'checkout.resolveSubmit'
+  | 'checkout.targetUnknown'
+  | 'checkout.purposeUnknown'
+  | 'checkout.back'
+  | 'checkout.startOver'
+  | 'checkout.confirm.title'
+  | 'checkout.confirm.lead'
+  | 'checkout.confirm.question'
+  | 'checkout.confirm.timeLabel'
+  | 'checkout.confirm.targetLabel'
+  | 'checkout.confirm.purposeLabel'
+  | 'checkout.confirm.yes'
+  | 'checkout.confirm.no'
+  | 'checkout.error.expired'
+  | 'checkout.error.throttled'
+  | 'checkout.error.notRecognized';
 
 /** 既定 locale 辞書は全キー網羅必須。他 locale は Partial 可（欠落は ja へフォールバック）。 */
 type DefaultDictionary = Record<MessageKey, string>;
@@ -214,6 +244,35 @@ const ja: DefaultDictionary = {
   'checkout.error.alreadyCheckedOut': 'この受付番号はすでに退館済みです。',
   'checkout.error.invalid': '受付番号を入力してください。',
   'checkout.error.network': '通信エラーが発生しました。もう一度お試しください。',
+  'checkout.lead': '退館用の QR コード、または受付時にお渡しした退館コードで退館できます。',
+  'checkout.tokenSectionTitle': '退館 QR で退館',
+  'checkout.tokenSectionHint': '受付完了時の QR コードをかざすか、リンクを貼り付けてください。',
+  'checkout.tokenLabel': '退館 QR / リンク',
+  'checkout.tokenPlaceholder': 'QR を読み取るか、リンクを貼り付け',
+  'checkout.scanButton': '確認へ進む',
+  'checkout.or': 'または',
+  'checkout.codeSectionTitle': '退館コードで退館',
+  'checkout.codeSectionHint': '4 桁の退館コードと、呼び出し先（部署・担当）を入力してください。',
+  'checkout.codeLabel': '退館コード（4 桁）',
+  'checkout.codePlaceholder': '0000',
+  'checkout.targetLabelLabel': '呼び出し先（部署・担当）',
+  'checkout.targetLabelPlaceholder': '例: 総務部',
+  'checkout.resolveSubmit': '確認へ進む',
+  'checkout.targetUnknown': '呼び出し先の記録なし',
+  'checkout.purposeUnknown': '用件の記録なし',
+  'checkout.back': '戻る',
+  'checkout.startOver': '最初に戻る',
+  'checkout.confirm.title': '退館の確認',
+  'checkout.confirm.lead': '以下の内容で退館します。ご本人かご確認ください。',
+  'checkout.confirm.question': '{time} に {target} 宛でご来館の方で間違いありませんか？',
+  'checkout.confirm.timeLabel': '入館時刻',
+  'checkout.confirm.targetLabel': '呼び出し先',
+  'checkout.confirm.purposeLabel': '用件',
+  'checkout.confirm.yes': 'はい、退館します',
+  'checkout.confirm.no': 'いいえ、戻る',
+  'checkout.error.expired': '退館コードの有効期限が切れています。受付にお問い合わせください。',
+  'checkout.error.throttled': '退館コードの試行が続いたため、しばらく受け付けを制限しています。少し時間をおくか、退館 QR をご利用いただくか、受付にお問い合わせください。',
+  'checkout.error.notRecognized': '退館コードまたは呼び出し先が確認できませんでした。もう一度ご確認ください。',
 };
 
 const en: LocaleDictionary = {
@@ -304,6 +363,35 @@ const en: LocaleDictionary = {
   'checkout.error.alreadyCheckedOut': 'This reception number has already been checked out.',
   'checkout.error.invalid': 'Please enter a reception number.',
   'checkout.error.network': 'A network error occurred. Please try again.',
+  'checkout.lead': 'Check out with your checkout QR code, or with the checkout code given to you at reception.',
+  'checkout.tokenSectionTitle': 'Check out with QR',
+  'checkout.tokenSectionHint': 'Hold up the QR code from your check-in, or paste the link.',
+  'checkout.tokenLabel': 'Checkout QR / link',
+  'checkout.tokenPlaceholder': 'Scan the QR or paste the link',
+  'checkout.scanButton': 'Continue',
+  'checkout.or': 'or',
+  'checkout.codeSectionTitle': 'Check out with a code',
+  'checkout.codeSectionHint': 'Enter your 4-digit checkout code and who you were visiting (department or person).',
+  'checkout.codeLabel': 'Checkout code (4 digits)',
+  'checkout.codePlaceholder': '0000',
+  'checkout.targetLabelLabel': 'Who you were visiting (department or person)',
+  'checkout.targetLabelPlaceholder': 'e.g. General Affairs',
+  'checkout.resolveSubmit': 'Continue',
+  'checkout.targetUnknown': 'No visit target on record',
+  'checkout.purposeUnknown': 'No purpose on record',
+  'checkout.back': 'Back',
+  'checkout.startOver': 'Start over',
+  'checkout.confirm.title': 'Confirm checkout',
+  'checkout.confirm.lead': 'You are about to check out with the details below. Please confirm this is you.',
+  'checkout.confirm.question': 'Are you the visitor who arrived at {time} to see {target}?',
+  'checkout.confirm.timeLabel': 'Checked in at',
+  'checkout.confirm.targetLabel': 'Visiting',
+  'checkout.confirm.purposeLabel': 'Purpose',
+  'checkout.confirm.yes': 'Yes, check me out',
+  'checkout.confirm.no': 'No, go back',
+  'checkout.error.expired': 'This checkout code has expired. Please ask reception for help.',
+  'checkout.error.throttled': 'Too many checkout code attempts. Please wait a moment, use your checkout QR, or ask reception for help.',
+  'checkout.error.notRecognized': 'We could not recognize that checkout code or visit target. Please check and try again.',
 };
 
 const ko: LocaleDictionary = {
@@ -393,6 +481,35 @@ const ko: LocaleDictionary = {
   'checkout.error.alreadyCheckedOut': '이 접수 번호는 이미 퇴실 처리되었습니다.',
   'checkout.error.invalid': '접수 번호를 입력해 주세요.',
   'checkout.error.network': '통신 오류가 발생했습니다. 다시 시도해 주세요.',
+  'checkout.lead': '퇴실용 QR 코드 또는 접수 시 받은 퇴실 코드로 퇴실할 수 있습니다.',
+  'checkout.tokenSectionTitle': 'QR로 퇴실',
+  'checkout.tokenSectionHint': '체크인 시 받은 QR 코드를 대거나 링크를 붙여넣으세요.',
+  'checkout.tokenLabel': '퇴실 QR / 링크',
+  'checkout.tokenPlaceholder': 'QR을 스캔하거나 링크를 붙여넣기',
+  'checkout.scanButton': '확인으로 진행',
+  'checkout.or': '또는',
+  'checkout.codeSectionTitle': '코드로 퇴실',
+  'checkout.codeSectionHint': '4자리 퇴실 코드와 방문 대상(부서·담당자)을 입력하세요.',
+  'checkout.codeLabel': '퇴실 코드(4자리)',
+  'checkout.codePlaceholder': '0000',
+  'checkout.targetLabelLabel': '방문 대상(부서·담당자)',
+  'checkout.targetLabelPlaceholder': '예: 총무부',
+  'checkout.resolveSubmit': '확인으로 진행',
+  'checkout.targetUnknown': '방문 대상 기록 없음',
+  'checkout.purposeUnknown': '용건 기록 없음',
+  'checkout.back': '뒤로',
+  'checkout.startOver': '처음으로',
+  'checkout.confirm.title': '퇴실 확인',
+  'checkout.confirm.lead': '아래 내용으로 퇴실합니다. 본인이 맞는지 확인해 주세요.',
+  'checkout.confirm.question': '{time}에 {target}을(를) 방문하신 분이 맞습니까?',
+  'checkout.confirm.timeLabel': '입실 시각',
+  'checkout.confirm.targetLabel': '방문 대상',
+  'checkout.confirm.purposeLabel': '용건',
+  'checkout.confirm.yes': '네, 퇴실합니다',
+  'checkout.confirm.no': '아니요, 돌아가기',
+  'checkout.error.expired': '퇴실 코드의 유효 기간이 지났습니다. 접수처에 문의해 주세요.',
+  'checkout.error.throttled': '퇴실 코드 시도가 많아 잠시 접수를 제한하고 있습니다. 잠시 후 다시 시도하거나 퇴실 QR을 이용하거나 접수처에 문의해 주세요.',
+  'checkout.error.notRecognized': '퇴실 코드 또는 방문 대상을 확인할 수 없습니다. 다시 확인해 주세요.',
 };
 
 const zh: LocaleDictionary = {
@@ -482,6 +599,35 @@ const zh: LocaleDictionary = {
   'checkout.error.alreadyCheckedOut': '该受理编号已办理退馆。',
   'checkout.error.invalid': '请输入受理编号。',
   'checkout.error.network': '发生网络错误，请重试。',
+  'checkout.lead': '可使用退馆二维码，或使用登记时提供的退馆码办理退馆。',
+  'checkout.tokenSectionTitle': '扫码退馆',
+  'checkout.tokenSectionHint': '出示登记时的二维码，或粘贴链接。',
+  'checkout.tokenLabel': '退馆二维码 / 链接',
+  'checkout.tokenPlaceholder': '扫描二维码或粘贴链接',
+  'checkout.scanButton': '继续确认',
+  'checkout.or': '或',
+  'checkout.codeSectionTitle': '用退馆码退馆',
+  'checkout.codeSectionHint': '请输入 4 位退馆码，以及您要拜访的对象（部门·负责人）。',
+  'checkout.codeLabel': '退馆码（4 位）',
+  'checkout.codePlaceholder': '0000',
+  'checkout.targetLabelLabel': '拜访对象（部门·负责人）',
+  'checkout.targetLabelPlaceholder': '例：总务部',
+  'checkout.resolveSubmit': '继续确认',
+  'checkout.targetUnknown': '无拜访对象记录',
+  'checkout.purposeUnknown': '无事由记录',
+  'checkout.back': '返回',
+  'checkout.startOver': '回到开始',
+  'checkout.confirm.title': '确认退馆',
+  'checkout.confirm.lead': '将按以下信息办理退馆，请确认是否为本人。',
+  'checkout.confirm.question': '您是否为 {time} 到访 {target} 的访客？',
+  'checkout.confirm.timeLabel': '入馆时间',
+  'checkout.confirm.targetLabel': '拜访对象',
+  'checkout.confirm.purposeLabel': '事由',
+  'checkout.confirm.yes': '是，办理退馆',
+  'checkout.confirm.no': '否，返回',
+  'checkout.error.expired': '退馆码已过期，请联系前台。',
+  'checkout.error.throttled': '退馆码尝试次数过多，暂时限制受理。请稍后再试，或使用退馆二维码，或联系前台。',
+  'checkout.error.notRecognized': '无法识别该退馆码或拜访对象，请确认后重试。',
 };
 
 /**

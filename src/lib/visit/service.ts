@@ -132,6 +132,8 @@ export class StayService {
       checkedInAt: input.checkedInAt ?? nowIso,
       reservationId: input.reservationId,
       receptionId: input.receptionId,
+      targetLabel: input.targetLabel,
+      purpose: input.purpose,
       retentionDays: input.retentionDays ?? DEFAULT_RETENTION_DAYS,
       createdAt: nowIso,
       updatedAt: nowIso,

@@ -53,6 +53,16 @@ export type VisitStay = {
   /** 受付セッション参照（#16）。PII ではない。 */
   receptionId?: string;
 
+  /**
+   * 呼び出し先ラベル（部署名・担当者の表示名。氏名そのものではない）(issue #328)。
+   * 在館一覧の判別材料・退館確認ステップの表示に使う非 PII 情報。
+   */
+  targetLabel?: string;
+  /**
+   * 用件（来訪目的種別のラベル）(issue #328)。在館一覧・確認ステップの判別材料（非 PII）。
+   */
+  purpose?: string;
+
   /** 滞在情報の保存期間（日数）。超過分は破棄する運用の根拠（docs §4）。 */
   retentionDays: number;
 
@@ -68,6 +78,10 @@ export type CreateStayInput = {
   checkedInAt?: string;
   reservationId?: string;
   receptionId?: string;
+  /** 呼び出し先ラベル（非 PII、#328）。判別材料・退館確認用。 */
+  targetLabel?: string;
+  /** 用件（非 PII、#328）。 */
+  purpose?: string;
   retentionDays?: number;
 };
 

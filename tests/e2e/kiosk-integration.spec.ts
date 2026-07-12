@@ -29,6 +29,10 @@ test('待機画面に退館チェックアウト導線があり /kiosk/checkout 
   const link = page.getByTestId('kiosk-checkout-link');
   await expect(link).toBeVisible();
   await link.click();
-  await expect(page).toHaveURL(/\/kiosk\/checkout$/);
-  await expect(page.getByTestId('checkout-stay-id')).toBeVisible();
+  // CheckoutLink は選択中 locale を `?locale=` で引き継ぐ（#327）ため末尾アンカーは張らない。
+  await expect(page).toHaveURL(/\/kiosk\/checkout(\?|$)/);
+  // 自己特定 再設計後の識別画面（#328）: 退館 QR / 退館コード入力が出る。
+  await expect(page.getByTestId('checkout-token')).toBeVisible();
+  await expect(page.getByTestId('checkout-code')).toBeVisible();
+  await expect(page.getByTestId('checkout-resolve-submit')).toBeVisible();
 });

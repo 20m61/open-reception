@@ -19,10 +19,15 @@ import {
  * （docs/checkout-stay-design.md §3）。
  */
 
-/** PII を含まない在館サマリ（受付端末の一覧表示用）。 */
+/**
+ * PII を含まない在館サマリ（受付端末の一覧表示用）。
+ * 判別材料として呼び出し先ラベル・用件を含む（氏名等 PII は含めない、#328）。
+ */
 type PresentStaySummary = {
   stayId: string;
   checkedInAt: string;
+  targetLabel?: string;
+  purpose?: string;
 };
 
 export async function GET(): Promise<NextResponse> {
@@ -36,7 +41,12 @@ export async function GET(): Promise<NextResponse> {
     // StayRepository に閉じる（#274 ①: route は collection を直接触らない）。
     const present: PresentStaySummary[] = (
       await getKioskStayService().listPresent(tenantId, siteId)
-    ).map((s) => ({ stayId: s.id, checkedInAt: s.checkedInAt }));
+    ).map((s) => ({
+      stayId: s.id,
+      checkedInAt: s.checkedInAt,
+      targetLabel: s.targetLabel,
+      purpose: s.purpose,
+    }));
     return NextResponse.json({ stays: present });
   } catch {
     return NextResponse.json({ error: 'network' }, { status: 503 });
