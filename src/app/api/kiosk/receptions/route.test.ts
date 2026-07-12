@@ -48,4 +48,18 @@ describe('POST /api/kiosk/receptions', () => {
     expect(res.status).toBe(201);
     expect(createReception).toHaveBeenCalledTimes(1);
   });
+
+  it('kioskId は認証済みセッション由来で確定し、クライアント送信値は無視する (#348)', async () => {
+    readKioskSession.mockResolvedValue({ kioskId: 'kiosk-1' });
+    await post({ purpose: 'meeting', kioskId: 'kiosk-dev' });
+    const input = createReception.mock.calls[0]?.[0] as Record<string, unknown>;
+    expect(input.kioskId).toBe('kiosk-1');
+  });
+
+  it('クライアントが kioskId を送らなくてもセッション由来で補完する (#348)', async () => {
+    readKioskSession.mockResolvedValue({ kioskId: 'kiosk-2' });
+    await post({ purpose: 'meeting' });
+    const input = createReception.mock.calls[0]?.[0] as Record<string, unknown>;
+    expect(input.kioskId).toBe('kiosk-2');
+  });
 });
