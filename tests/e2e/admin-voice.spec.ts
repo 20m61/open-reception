@@ -29,6 +29,8 @@ test('音声設定ページが表示される', async ({ page }) => {
   await page.goto('/admin/voice');
   await expect(page.getByTestId('voice-tts')).toBeVisible();
   await expect(page.getByTestId('voice-guidance-idle')).toBeVisible();
+  // 来訪者向けプライバシー通知の上書き文言編集欄 (issue #314)。
+  await expect(page.getByTestId('voice-privacy-notice')).toBeVisible();
 });
 
 test('受付端末は案内文言 API を取得し待機画面に表示する', async ({ page }) => {

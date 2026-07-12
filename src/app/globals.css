@@ -513,6 +513,66 @@ a {
   border: 2px solid var(--color-warning);
 }
 
+/*
+ * 来訪者向けプライバシー通知 (issue #314)。入力ステップで常時表示する要約 + 折りたたみ詳細。
+ * タッチのみで開閉でき、文字サイズ/コントラストは他 kiosk UI と揃える (#17)。
+ */
+.privacy-notice {
+  padding: var(--space-md) var(--space-lg);
+  border-radius: var(--radius-lg);
+  border: 1px solid var(--color-border-strong);
+  background: var(--color-surface);
+}
+
+.privacy-notice__title {
+  margin: 0 0 var(--space-sm);
+  font-weight: 700;
+  color: var(--color-text);
+}
+
+.privacy-notice__summary {
+  margin: 0;
+  color: var(--color-text);
+  line-height: 1.5;
+}
+
+.privacy-notice__toggle {
+  display: inline-flex;
+  align-items: center;
+  min-height: var(--touch-target-min);
+  margin-top: var(--space-sm);
+  padding: 0;
+  border: none;
+  background: none;
+  color: var(--color-accent);
+  font-size: var(--font-body);
+  font-weight: 700;
+  text-decoration: underline;
+  cursor: pointer;
+}
+
+.privacy-notice__details {
+  margin: var(--space-sm) 0 0;
+  padding-top: var(--space-sm);
+  border-top: 1px solid var(--color-border);
+  color: var(--color-muted);
+}
+
+.privacy-notice__details dt {
+  margin-top: var(--space-sm);
+  font-weight: 700;
+  color: var(--color-text);
+}
+
+.privacy-notice__details dt:first-child {
+  margin-top: 0;
+}
+
+.privacy-notice__details dd {
+  margin: 0;
+  line-height: 1.5;
+}
+
 /* VRM アバター表示領域 (issue #36) */
 .kiosk-avatar {
   width: 260px;

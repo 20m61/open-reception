@@ -171,7 +171,22 @@ export type MessageKey =
   | 'kiosk.signage.tapToStart'
   | 'kiosk.signage.presenceOn'
   | 'kiosk.signage.presenceOff'
-  | 'kiosk.signage.presenceUnavailable';
+  | 'kiosk.signage.presenceUnavailable'
+  // 来訪者向けプライバシー通知（受付情報入力ステップ, #314）。要約は常時表示、詳細は折りたたみ。
+  | 'privacy.noticeTitle'
+  | 'privacy.summary'
+  | 'privacy.detailsShow'
+  | 'privacy.detailsHide'
+  | 'privacy.purposeLabel'
+  | 'privacy.purposeText'
+  | 'privacy.storageLabel'
+  | 'privacy.storageText'
+  | 'privacy.retentionLabel'
+  | 'privacy.retentionText'
+  | 'privacy.contactLabel'
+  | 'privacy.contactText'
+  | 'privacy.presenceCameraLabel'
+  | 'privacy.presenceCameraNote';
 
 /** 既定 locale 辞書は全キー網羅必須。他 locale は Partial 可（欠落は ja へフォールバック）。 */
 type DefaultDictionary = Record<MessageKey, string>;
@@ -308,6 +323,24 @@ const ja: DefaultDictionary = {
   'kiosk.signage.presenceOn': '来訪検知: ON',
   'kiosk.signage.presenceOff': '来訪検知: OFF',
   'kiosk.signage.presenceUnavailable': '来訪検知: 利用不可',
+  'privacy.noticeTitle': '入力情報の取り扱いについて',
+  'privacy.summary':
+    '入力いただいたお名前・会社名・ご用件は、担当者への取り次ぎにのみ使用し、記録には保存しません。',
+  'privacy.detailsShow': '詳しく見る',
+  'privacy.detailsHide': '閉じる',
+  'privacy.purposeLabel': '利用目的',
+  'privacy.purposeText': '受付担当者の呼び出し・取り次ぎのためだけに使用します。',
+  'privacy.storageLabel': '保存の有無',
+  'privacy.storageText':
+    'お名前・会社名・ご用件メモは受付記録に保存されません。受付完了後は画面から自動的に消去されます。',
+  'privacy.retentionLabel': '保持期間',
+  'privacy.retentionText':
+    '呼び出し結果などの運用記録は必要な期間のみ保持し、入力いただいた個人情報自体は保持しません。',
+  'privacy.contactLabel': 'お問い合わせ',
+  'privacy.contactText': '取り扱いについてのご質問は受付窓口の担当者までお尋ねください。',
+  'privacy.presenceCameraLabel': '来訪者検知カメラについて',
+  'privacy.presenceCameraNote':
+    '来訪者検知カメラの映像は端末内でのみ処理し、保存・送信は行いません。',
 };
 
 const en: LocaleDictionary = {
@@ -443,6 +476,24 @@ const en: LocaleDictionary = {
   'kiosk.signage.presenceOn': 'Visitor detection: ON',
   'kiosk.signage.presenceOff': 'Visitor detection: OFF',
   'kiosk.signage.presenceUnavailable': 'Visitor detection: Unavailable',
+  'privacy.noticeTitle': 'About your information',
+  'privacy.summary':
+    'The name, company, and purpose you enter are used only to notify staff and are not saved to any record.',
+  'privacy.detailsShow': 'Show details',
+  'privacy.detailsHide': 'Close',
+  'privacy.purposeLabel': 'Purpose of use',
+  'privacy.purposeText': 'Used only to call and connect you with the staff member you are visiting.',
+  'privacy.storageLabel': 'Storage',
+  'privacy.storageText':
+    'Your name, company, and notes are not saved to reception records. They are cleared from the screen automatically once reception is complete.',
+  'privacy.retentionLabel': 'Retention period',
+  'privacy.retentionText':
+    'Operational records such as call outcomes are kept only as long as needed; the personal details you enter are not retained.',
+  'privacy.contactLabel': 'Contact',
+  'privacy.contactText': 'For questions about how your information is handled, please ask the reception staff.',
+  'privacy.presenceCameraLabel': 'About the visitor-detection camera',
+  'privacy.presenceCameraNote':
+    'The visitor-detection camera image is processed on this device only and is never saved or transmitted.',
 };
 
 const ko: LocaleDictionary = {
@@ -576,6 +627,24 @@ const ko: LocaleDictionary = {
   'kiosk.signage.presenceOn': '방문 감지: ON',
   'kiosk.signage.presenceOff': '방문 감지: OFF',
   'kiosk.signage.presenceUnavailable': '방문 감지: 사용 불가',
+  'privacy.noticeTitle': '입력 정보 처리 안내',
+  'privacy.summary':
+    '입력하신 성함, 회사명, 용건은 담당자 호출 목적으로만 사용되며 기록에 저장되지 않습니다.',
+  'privacy.detailsShow': '자세히 보기',
+  'privacy.detailsHide': '닫기',
+  'privacy.purposeLabel': '이용 목적',
+  'privacy.purposeText': '방문하신 담당자를 호출하고 연결하는 용도로만 사용됩니다.',
+  'privacy.storageLabel': '저장 여부',
+  'privacy.storageText':
+    '성함, 회사명, 메모는 접수 기록에 저장되지 않습니다. 접수가 완료되면 화면에서 자동으로 삭제됩니다.',
+  'privacy.retentionLabel': '보관 기간',
+  'privacy.retentionText':
+    '호출 결과 등 운영 기록은 필요한 기간만 보관하며, 입력하신 개인정보 자체는 보관하지 않습니다.',
+  'privacy.contactLabel': '문의처',
+  'privacy.contactText': '정보 처리에 대해 궁금한 점은 접수 담당자에게 문의해 주세요.',
+  'privacy.presenceCameraLabel': '방문자 감지 카메라 안내',
+  'privacy.presenceCameraNote':
+    '방문자 감지 카메라 영상은 이 단말기 내에서만 처리되며 저장하거나 전송하지 않습니다.',
 };
 
 const zh: LocaleDictionary = {
@@ -709,6 +778,20 @@ const zh: LocaleDictionary = {
   'kiosk.signage.presenceOn': '访客检测：开启',
   'kiosk.signage.presenceOff': '访客检测：关闭',
   'kiosk.signage.presenceUnavailable': '访客检测：不可用',
+  'privacy.noticeTitle': '关于输入信息的处理',
+  'privacy.summary': '您输入的姓名、公司名称和来访事由仅用于通知接待人员，不会保存到记录中。',
+  'privacy.detailsShow': '查看详情',
+  'privacy.detailsHide': '关闭',
+  'privacy.purposeLabel': '使用目的',
+  'privacy.purposeText': '仅用于呼叫并转接您要访问的负责人。',
+  'privacy.storageLabel': '是否保存',
+  'privacy.storageText': '姓名、公司名称和备注不会保存到接待记录中。登记完成后将自动从屏幕上清除。',
+  'privacy.retentionLabel': '保存期限',
+  'privacy.retentionText': '呼叫结果等运营记录仅保留必要期限，您输入的个人信息本身不会被保留。',
+  'privacy.contactLabel': '咨询方式',
+  'privacy.contactText': '如对信息处理方式有疑问，请咨询前台工作人员。',
+  'privacy.presenceCameraLabel': '关于访客检测摄像头',
+  'privacy.presenceCameraNote': '访客检测摄像头的画面仅在本设备内处理，不会保存或发送。',
 };
 
 /**

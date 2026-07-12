@@ -70,6 +70,18 @@ export function VoiceManager() {
         <Field label="音声不可時の案内（fallback）" htmlFor="voice-fallback-input">
           <input id="voice-fallback-input" data-testid="voice-fallback" value={v.fallbackText} onChange={(e) => patch({ fallbackText: e.target.value })} style={input} />
         </Field>
+        {/* 来訪者向けプライバシー通知の要約文言（未設定時は既定文言, issue 314）。 */}
+        <Field label="来訪者向けプライバシー通知（未設定時は既定文言）" htmlFor="voice-privacy-notice-input">
+          <textarea
+            id="voice-privacy-notice-input"
+            data-testid="voice-privacy-notice"
+            value={v.privacyNotice ?? ''}
+            onChange={(e) => patch({ privacyNotice: e.target.value })}
+            rows={3}
+            placeholder="入力いただいたお名前・会社名・ご用件は、担当者への取り次ぎにのみ使用し、記録には保存しません。"
+            style={{ ...input, fontFamily: 'inherit', resize: 'vertical' }}
+          />
+        </Field>
 
         <FormRow>
           <Field label="話速（0.5–2.0）" htmlFor="voice-rate-input">
