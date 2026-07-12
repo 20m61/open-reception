@@ -7,6 +7,7 @@ import {
   type ReceptionTargetType,
   type VisitorInfo,
 } from '@/domain/reception/session';
+import type { FeedbackReasonCode, SatisfactionRating } from '@/domain/reception/log';
 import {
   shouldResetOnInactivity,
   transition,
@@ -365,6 +366,9 @@ export function KioskFlow() {
   // 受付完了時に発行された退館クレデンシャル (issue #342)。null=未発行/発行失敗（QR 非表示で継続）。
   // 完了画面に退館 QR / 短コード / 有効期限を提示する。idle 復帰で破棄する（次の来訪者へ持ち越さない）。
   const [checkoutCredential, setCheckoutCredential] = useState<CheckoutCredential | null>(null);
+  // ワンタップ満足度フィードバック収集の有効/無効 (issue #320)。テナント設定 (#28) を尊重する。
+  // 既定 true（未取得/未設定は収集する）。false のときは終端画面から評価 UI 自体を出さない。
+  const [feedbackEnabled, setFeedbackEnabled] = useState(true);
   // 呼び出し中(calling)の段階的ケア (issue #323)。しきい値・文言はテナント設定 (#28) を尊重する。
   // 未取得時は既定値のまま（クランプ側が既定へフォールバックするため壊れない）。
   const [callingStageTenantOverride, setCallingStageTenantOverride] = useState<
@@ -499,6 +503,7 @@ export function KioskFlow() {
           callingStageNoticeAfterMs?: number;
           guidanceCallingWaiting?: string;
           guidanceCallingNotice?: string;
+          feedbackEnabled?: boolean;
         };
         if (cancelled) return;
         if (voice.guidanceIdle) setGuidanceIdle(voice.guidanceIdle);
@@ -519,6 +524,8 @@ export function KioskFlow() {
           waiting: voice.guidanceCallingWaiting,
           notice: voice.guidanceCallingNotice,
         });
+        // ワンタップ満足度フィードバック収集の有効/無効 (issue #320)。未設定は収集する（既定 true）。
+        setFeedbackEnabled(voice.feedbackEnabled ?? true);
       } catch {
         /* 取得失敗時は既定文言を使う */
       }
@@ -927,6 +934,26 @@ export function KioskFlow() {
     dispatch({ type: 'USE_FALLBACK' });
   }, [data.sessionId]);
 
+  /**
+   * ワンタップ満足度フィードバックの送信 (issue #320)。完了/未応答/失敗の終端画面から呼ばれる。
+   * fire-and-forget（結果を待たず、失敗しても状態機械には触れない）: 評価は既存の自動復帰
+   * タイマー（AUTO_RESET_MS・無操作リセット）を一切延長・変更しない。未評価のまま放置しても
+   * 挙動は変わらない（SatisfactionFeedback 側は評価が無ければ何も送らない）。
+   */
+  const submitFeedback = useCallback(
+    (rating: SatisfactionRating, reasonCodes: FeedbackReasonCode[]) => {
+      if (!data.sessionId) return;
+      void fetch(`/api/kiosk/receptions/${data.sessionId}/feedback`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ rating, reasonCodes }),
+      }).catch(() => {
+        /* 送信失敗は受付フローを止めない（評価は完全任意, #320 AC） */
+      });
+    },
+    [data.sessionId],
+  );
+
   // 担当者の応答アクションを短時間ポーリングで取得する (issue #99)。
   // 呼び出し中・応答後（calling/connected）のみ。終端状態では停止し、個人情報は持ち越さない。
   const pollResponseEnabled = data.state === 'calling' || data.state === 'connected';
@@ -1109,6 +1136,8 @@ export function KioskFlow() {
               // 呼び出し中の段階的ケア (#323)。UI 層のタイマー派生（state.ts/ui-contract.ts は不変）。
               callingStageState,
               callingStageTextOverride,
+              // ワンタップ満足度フィードバック (#320)。完了/未応答/失敗画面のみが使う。
+              { enabled: feedbackEnabled, onSubmit: submitFeedback },
             )}
           </div>
           {/*
@@ -1571,6 +1600,11 @@ function renderScreen(
   callingStageState: { stage: CallingStage; elapsedMs: number },
   /** 呼び出し中の段階的ケアのテナント文言上書き (issue #28 / #323)。ja のみ適用。 */
   callingStageTextOverride: { waiting?: string; notice?: string },
+  /**
+   * ワンタップ満足度フィードバック (issue #320)。完了/未応答/失敗の終端画面のみが使う。
+   * `enabled=false`（テナント設定でオフ）のときは呼び出し側で UI ごと出さない。
+   */
+  feedback: { enabled: boolean; onSubmit: (rating: SatisfactionRating, reasonCodes: FeedbackReasonCode[]) => void },
 ) {
   const tr = makeT(locale);
   switch (data.state) {
@@ -1672,11 +1706,15 @@ function renderScreen(
     case 'timeout':
     case 'failed':
       return (
-        <ResultView
-          outcome={data.state}
-          onFallback={onFallback}
-          locale={locale}
-        />
+        <>
+          <ResultView
+            outcome={data.state}
+            onFallback={onFallback}
+            locale={locale}
+          />
+          {/* ワンタップ満足度フィードバック (#320)。テナント設定でオフなら UI ごと出さない。 */}
+          {feedback.enabled ? <SatisfactionFeedback onSubmit={feedback.onSubmit} locale={locale} /> : null}
+        </>
       );
     case 'fallback':
       return <FallbackView locale={locale} />;
@@ -1696,6 +1734,8 @@ function renderScreen(
           {checkoutCredential ? (
             <CheckoutCredentialPanel credential={checkoutCredential} locale={locale} />
           ) : null}
+          {/* ワンタップ満足度フィードバック (#320)。テナント設定でオフなら UI ごと出さない。 */}
+          {feedback.enabled ? <SatisfactionFeedback onSubmit={feedback.onSubmit} locale={locale} /> : null}
         </>
       );
     default:
@@ -2525,6 +2565,111 @@ function FallbackView({ locale }: { locale: Locale }) {
       message={tr('reception.fallbackBody')}
       locale={locale}
     />
+  );
+}
+
+/** ワンタップ満足度評価の表示順・絵文字・testid・aria-label キー (issue #320)。 */
+const SATISFACTION_RATINGS: readonly { rating: SatisfactionRating; icon: string; labelKey: MessageKey }[] = [
+  { rating: 'happy', icon: '😊', labelKey: 'reception.feedback.happy' },
+  { rating: 'neutral', icon: '😐', labelKey: 'reception.feedback.neutral' },
+  { rating: 'unhappy', icon: '😞', labelKey: 'reception.feedback.unhappy' },
+];
+
+/** 満足度評価に添える定型理由チップの表示順・testid・辞書キー (issue #320)。自由記述は無い。 */
+const FEEDBACK_REASON_CHIPS: readonly { code: FeedbackReasonCode; labelKey: MessageKey }[] = [
+  { code: 'waitTooLong', labelKey: 'reception.feedback.reason.waitTooLong' },
+  { code: 'hardToOperate', labelKey: 'reception.feedback.reason.hardToOperate' },
+  { code: 'staffUnavailable', labelKey: 'reception.feedback.reason.staffUnavailable' },
+  { code: 'other', labelKey: 'reception.feedback.reason.other' },
+];
+
+/**
+ * 終端画面（完了/未応答/失敗）のワンタップ満足度フィードバック (issue #320)。
+ *
+ * AC「1 タップで評価でき、直後に通常の自動復帰が動く」: 絵文字ボタンを 1 回タップした時点で
+ * 評価を確定・送信する（送信は fire-and-forget。以降の待機/確認ステップは無い）。理由チップは
+ * 評価後に追加で選べる任意項目で、選択のたびに（評価値 + そこまでの選択）を再送して上書きする。
+ * 自由記述欄は存在しない（コード化された列挙のみ、#105 PII 最小化）。
+ *
+ * 評価しないまま放置しても何も送信されない（AC「評価せず放置しても体験が変わらない」）。
+ * 親（KioskFlow）は画面遷移ごとに `key={data.state}` で本コンポーネントを再マウントするため、
+ * 内部状態（rating/reasons）は終端画面に入るたびに自然にリセットされる。
+ */
+function SatisfactionFeedback({
+  onSubmit,
+  locale,
+}: {
+  onSubmit: (rating: SatisfactionRating, reasonCodes: FeedbackReasonCode[]) => void;
+  locale: Locale;
+}) {
+  const tr = makeT(locale);
+  const [rating, setRating] = useState<SatisfactionRating | null>(null);
+  const [reasons, setReasons] = useState<FeedbackReasonCode[]>([]);
+
+  const pickRating = (next: SatisfactionRating) => {
+    if (rating !== null) return; // 評価は 1 タップで確定（連打で上書きしない）
+    setRating(next);
+    onSubmit(next, []);
+  };
+
+  const toggleReason = (code: FeedbackReasonCode) => {
+    if (rating === null) return;
+    const next = reasons.includes(code) ? reasons.filter((c) => c !== code) : [...reasons, code];
+    setReasons(next);
+    onSubmit(rating, next);
+  };
+
+  return (
+    <div className="satisfaction-feedback" data-testid="satisfaction-feedback" lang={locale}>
+      {rating === null ? (
+        <>
+          <p className="satisfaction-feedback__prompt">{tr('reception.feedback.prompt')}</p>
+          <div
+            className="satisfaction-feedback__ratings"
+            role="group"
+            aria-label={tr('reception.feedback.prompt')}
+          >
+            {SATISFACTION_RATINGS.map(({ rating: r, icon, labelKey }) => (
+              <button
+                key={r}
+                type="button"
+                className="satisfaction-feedback__rating-btn"
+                data-testid={`satisfaction-${r}`}
+                aria-label={tr(labelKey)}
+                onClick={() => pickRating(r)}
+              >
+                <span aria-hidden="true">{icon}</span>
+              </button>
+            ))}
+          </div>
+        </>
+      ) : (
+        <>
+          <p className="satisfaction-feedback__prompt" data-testid="satisfaction-feedback-thanks">
+            {tr('reception.feedback.thanks')}
+          </p>
+          <p className="satisfaction-feedback__prompt">{tr('reception.feedback.reasonPrompt')}</p>
+          <div
+            className="satisfaction-feedback__reasons"
+            role="group"
+            aria-label={tr('reception.feedback.reasonPrompt')}
+          >
+            {FEEDBACK_REASON_CHIPS.map(({ code, labelKey }) => (
+              <button
+                key={code}
+                type="button"
+                className="satisfaction-feedback__reason-chip"
+                data-testid={`satisfaction-reason-${code}`}
+                aria-pressed={reasons.includes(code)}
+                onClick={() => toggleReason(code)}
+              >
+                {tr(labelKey)}
+              </button>
+            ))}
+          </div>
+        </>
+      )}
+    </div>
   );
 }
 

@@ -121,6 +121,68 @@ export function sanitizeReceptionExperience(input: unknown): ReceptionExperience
   return Object.keys(out).length > 0 ? out : undefined;
 }
 
+/**
+ * ワンタップ満足度評価の値 (issue #320)。完了/未応答/失敗の終端画面から任意で送信される。
+ * 3 段階の列挙のみ（PII を一切含まない）。
+ */
+export type SatisfactionRating = 'happy' | 'neutral' | 'unhappy';
+
+/**
+ * 満足度評価に添える任意の定型理由コード (issue #320)。
+ *
+ * **自由記述は設けない**（PII 混入を構造的に排除するため、コード化された列挙のみを許可する）。
+ * 複数選択可。
+ */
+export type FeedbackReasonCode =
+  | 'waitTooLong'
+  | 'hardToOperate'
+  | 'staffUnavailable'
+  | 'other';
+
+/** 満足度フィードバックのサニタイズ済み形（受信直後の検証結果）。 */
+export type ReceptionFeedback = {
+  rating: SatisfactionRating;
+  reasonCodes?: FeedbackReasonCode[];
+};
+
+const SATISFACTION_RATING_VALUES: readonly SatisfactionRating[] = ['happy', 'neutral', 'unhappy'];
+const FEEDBACK_REASON_CODE_VALUES: readonly FeedbackReasonCode[] = [
+  'waitTooLong',
+  'hardToOperate',
+  'staffUnavailable',
+  'other',
+];
+
+/**
+ * 信頼できない入力（受付端末クライアントが送る満足度フィードバック）を、PII を含まない
+ * {@link ReceptionFeedback} へサニタイズする (issue #320)。
+ *
+ * ホワイトリスト方式: `rating` は列挙値必須、`reasonCodes` は既知コードのみ（重複除去）を
+ * 任意で取り込む。**自由記述フィールドは存在しない**ため、未知キー（例: コメント文字列）は
+ * サニタイズ対象にすら含めず構造的に破棄する。`rating` が列挙値でなければ全体を `undefined`
+ * にする（部分的な保存はしない）。
+ */
+export function sanitizeReceptionFeedback(input: unknown): ReceptionFeedback | undefined {
+  if (typeof input !== 'object' || input === null) return undefined;
+  const o = input as Record<string, unknown>;
+  if (
+    typeof o.rating !== 'string' ||
+    !(SATISFACTION_RATING_VALUES as readonly string[]).includes(o.rating)
+  ) {
+    return undefined;
+  }
+  const out: ReceptionFeedback = { rating: o.rating as SatisfactionRating };
+  if (Array.isArray(o.reasonCodes)) {
+    const known = o.reasonCodes.filter(
+      (c): c is FeedbackReasonCode =>
+        typeof c === 'string' && (FEEDBACK_REASON_CODE_VALUES as readonly string[]).includes(c),
+    );
+    const unique = Array.from(new Set(known));
+    if (unique.length > 0) out.reasonCodes = unique;
+  }
+  return out;
+}
+
 export type ReceptionLog = {
   id: string;
   receptionId: string;
@@ -143,6 +205,13 @@ export type ReceptionLog = {
    * PII は含まない（所要/回数/列挙のみ）。KioskFlow が計測し、集計は experience-summary が担う。
    */
   experience?: ReceptionExperience;
+  /**
+   * ワンタップ満足度フィードバック (issue #320)。**optional**（未評価・旧レコード互換）。
+   * 評価値・理由コードのみ（自由記述なし・PII 構造的に排除）。ログ生成時点では未確定のため、
+   * 終端画面から別 API（feedback）で事後に追記される（`reception-log-store.recordSatisfactionFeedback`）。
+   */
+  satisfactionRating?: SatisfactionRating;
+  feedbackReasonCodes?: FeedbackReasonCode[];
 };
 
 export type AuditAction =
@@ -201,6 +270,8 @@ export type AuditAction =
   | 'secret.cleared'
   // 担当者応答アクション (issue #99)。応答種別は metadata.action に持つ（PII は残さない）。
   | 'reception.staff_responded'
+  // ワンタップ満足度フィードバック (issue #320)。metadata は評価値・理由コードのみ（PII なし）。
+  | 'reception.feedback_submitted'
   // 受付端末（Device）管理 (issue #87 inc2)。token 値そのものは記録しない。
   | 'device.token_reissued'
   | 'device.disabled'

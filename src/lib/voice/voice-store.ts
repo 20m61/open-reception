@@ -65,6 +65,8 @@ export async function updateVoiceSettings(patch: unknown): Promise<VoiceSettings
     }
     if (typeof o.guidanceCallingWaiting === 'string') settings.guidanceCallingWaiting = o.guidanceCallingWaiting.trim() || undefined;
     if (typeof o.guidanceCallingNotice === 'string') settings.guidanceCallingNotice = o.guidanceCallingNotice.trim() || undefined;
+    // ワンタップ満足度フィードバック収集の有効/無効 (issue #320)。既定（未設定）は「有効」扱い。
+    if (typeof o.feedbackEnabled === 'boolean') settings.feedbackEnabled = o.feedbackEnabled;
   }
   await voice().put(settings);
   return { ...settings };

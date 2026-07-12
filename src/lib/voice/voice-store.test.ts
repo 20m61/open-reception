@@ -86,4 +86,17 @@ describe('voice-store (#28)', () => {
     const v = await updateVoiceSettings({ guidanceCallingNotice: '   ' });
     expect(v.guidanceCallingNotice).toBeUndefined();
   });
+
+  it('ワンタップ満足度フィードバック収集の有効/無効を切替できる（既定は未設定=有効扱い, #320）', async () => {
+    const before = await getVoiceSettings();
+    expect(before.feedbackEnabled).toBeUndefined();
+
+    const off = await updateVoiceSettings({ feedbackEnabled: false });
+    expect(off.feedbackEnabled).toBe(false);
+    const persisted = await getVoiceSettings();
+    expect(persisted.feedbackEnabled).toBe(false);
+
+    const on = await updateVoiceSettings({ feedbackEnabled: true });
+    expect(on.feedbackEnabled).toBe(true);
+  });
 });

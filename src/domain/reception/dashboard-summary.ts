@@ -15,6 +15,7 @@ import type { CallOutcome } from './session';
 import type { ReceptionLog } from './log';
 import { jstDayKey } from '@/domain/util/jst';
 import { summarizeExperience, type ExperienceKpi } from './experience-summary';
+import { summarizeSatisfaction, type SatisfactionSummary } from './satisfaction-summary';
 
 /** 概況の総合ステータス。正常 / 注意 / 異常を視覚的に区別する起点。 */
 export type OverallStatus = 'ok' | 'warning' | 'critical';
@@ -82,9 +83,21 @@ export type ExperiencePeriodKpi = {
   kpi: ExperienceKpi;
 };
 
+/** 期間プリセットごとの満足度フィードバック集計（issue #320・体験 KPI と同じ期間プリセットを共有）。 */
+export type SatisfactionPeriodKpi = {
+  key: ExperiencePeriodKey;
+  /** 管理画面表示ラベル（日本語・i18n 対象外）。 */
+  label: string;
+  /** 対象の JST 暦日数（本日を含む直近 N 日。today=1）。 */
+  days: number;
+  /** その期間に絞ったログの満足度集計。 */
+  summary: SatisfactionSummary;
+};
+
 /**
  * 期間プリセット定義 (issue #319 AC「期間指定で見られる」)。JST 暦日で「本日を含む直近 N 日」を切る。
- * 定義はここ 1 箇所に集約し、ラベル/日数を集計と表示で共有する。
+ * 定義はここ 1 箇所に集約し、ラベル/日数を集計と表示で共有する。体験 KPI (#319) と満足度
+ * フィードバック (#320) の期間指定は同一のプリセット（本日/直近7日/直近30日）を共有する。
  */
 const EXPERIENCE_PERIOD_DEFS: readonly { key: ExperiencePeriodKey; label: string; days: number }[] = [
   { key: 'today', label: '本日', days: 1 },
@@ -110,6 +123,16 @@ export type DashboardSummary = {
    * クライアントは追加 API を叩かず、これらの中から表示期間を切り替える（集約 API 1 本の方針を維持）。
    */
   experiencePeriods: ExperiencePeriodKpi[];
+  /**
+   * 本日（JST）のワンタップ満足度フィードバック集計 (issue #320)。評価分布・終端状態別内訳。
+   * 期間指定表示は `satisfactionPeriods` で提供する（本フィールドは本日プリセットと同値・後方互換）。
+   */
+  satisfaction: SatisfactionSummary;
+  /**
+   * 期間指定の満足度フィードバック集計プリセット (issue #320 AC「期間指定の評価集計」)。
+   * 本日/直近7日/直近30日を JST 暦日境界で集計する（体験 KPI と同じプリセット定義を共有）。
+   */
+  satisfactionPeriods: SatisfactionPeriodKpi[];
 };
 
 // 「本日」は **JST** で判定する (issue #254)。ランタイムの TZ に依存させない（Lambda/OpenNext は
@@ -159,6 +182,23 @@ export function summarizeExperiencePeriods(
     label,
     days,
     kpi: summarizeExperience(filterWithinJstDays(logs, now, days)),
+  }));
+}
+
+/**
+ * 期間プリセット（本日/直近7日/直近30日）ごとの満足度フィードバック集計を導く
+ * (issue #320 AC「期間指定で見られる」)。体験 KPI と同一のプリセット定義・JST 境界フィルタ
+ * （`filterWithinJstDays`）を使い回し、期間の定義を食い違わせない。
+ */
+export function summarizeSatisfactionPeriods(
+  logs: readonly ReceptionLog[],
+  now: Date = new Date(),
+): SatisfactionPeriodKpi[] {
+  return EXPERIENCE_PERIOD_DEFS.map(({ key, label, days }) => ({
+    key,
+    label,
+    days,
+    summary: summarizeSatisfaction(filterWithinJstDays(logs, now, days)),
   }));
 }
 
@@ -229,6 +269,9 @@ export function buildDashboardSummary(
   // `experience` は本日プリセットと同値（後方互換：既存 UI／rolling deploy 中の旧クライアント向け）。
   const experiencePeriods = summarizeExperiencePeriods(logs, now);
   const experience = experiencePeriods[0]?.kpi ?? summarizeExperience(filterToday(logs, now));
+  // 満足度フィードバックも同じ期間プリセットで集計する（#320）。
+  const satisfactionPeriods = summarizeSatisfactionPeriods(logs, now);
+  const satisfaction = satisfactionPeriods[0]?.summary ?? summarizeSatisfaction(filterToday(logs, now));
   return {
     status: deriveOverallStatus(today, devices),
     today,
@@ -237,5 +280,7 @@ export function buildDashboardSummary(
     usageCost,
     experience,
     experiencePeriods,
+    satisfaction,
+    satisfactionPeriods,
   };
 }

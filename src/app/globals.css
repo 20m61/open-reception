@@ -717,6 +717,91 @@ a {
 }
 
 /* =========================================================================
+ * ワンタップ満足度フィードバック (issue #320)
+ *
+ * 完了/未応答/失敗の終端画面のみに出す。絵文字ボタン 1 タップで評価を確定し、任意の定型理由
+ * チップは評価後に追加で選べる。自由記述欄は設けない（PII 混入を構造的に排除）。
+ * ======================================================================= */
+.satisfaction-feedback {
+  width: 100%;
+  max-width: 560px;
+  margin: var(--space-lg) auto 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+  gap: var(--space-sm);
+  animation: kiosk-rise var(--dur-slow) var(--ease-out) both;
+}
+
+.satisfaction-feedback__prompt {
+  font-size: var(--font-body);
+  color: var(--color-muted);
+  margin: 0;
+}
+
+.satisfaction-feedback__ratings {
+  display: flex;
+  gap: var(--space-md);
+  flex-wrap: wrap;
+  justify-content: center;
+}
+
+.satisfaction-feedback__rating-btn {
+  width: 88px;
+  height: 88px;
+  min-width: 0;
+  padding: 0;
+  font-size: var(--font-xl);
+  line-height: 1;
+  border-radius: var(--radius-pill);
+  border: 1px solid var(--color-border-strong);
+  background: var(--color-surface);
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  transition:
+    transform var(--dur-fast) var(--ease-out),
+    border-color var(--dur-fast) var(--ease-out),
+    box-shadow var(--dur-fast) var(--ease-out);
+}
+
+.satisfaction-feedback__rating-btn:hover {
+  border-color: var(--color-accent);
+  box-shadow: var(--shadow-sm);
+}
+
+.satisfaction-feedback__rating-btn:active {
+  transform: translateY(1px) scale(0.97);
+}
+
+.satisfaction-feedback__reasons {
+  display: flex;
+  gap: var(--space-sm);
+  flex-wrap: wrap;
+  justify-content: center;
+}
+
+.satisfaction-feedback__reason-chip {
+  min-height: 44px;
+  min-width: 0;
+  padding: var(--space-sm) var(--space-md);
+  border-radius: var(--radius-pill);
+  border: 1px solid var(--color-border-strong);
+  background: var(--color-surface);
+  color: var(--color-text);
+  font-size: var(--font-body);
+  cursor: pointer;
+}
+
+.satisfaction-feedback__reason-chip[aria-pressed='true'] {
+  border-color: var(--color-accent);
+  background: var(--color-accent-soft);
+  color: var(--color-accent);
+}
+
+/* =========================================================================
  * 呼び出し中の経過フィードバック・段階的ケア (issue #323)
  *
  * 「進んでいるのか固まっているのか分からない」を解消するための常時アニメーション。
