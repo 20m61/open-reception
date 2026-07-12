@@ -159,7 +159,13 @@ export type MessageKey =
   | 'checkout.confirm.no'
   | 'checkout.error.expired'
   | 'checkout.error.throttled'
-  | 'checkout.error.notRecognized';
+  | 'checkout.error.notRecognized'
+  // 待機サイネージ（埋め込み版 SignageWaitingView / スタンドアロン /kiosk/signage）の
+  // 未設定フォールバック CTA・来訪検知トグル文言 (#327 2nd increment)。
+  | 'kiosk.signage.tapToStart'
+  | 'kiosk.signage.presenceOn'
+  | 'kiosk.signage.presenceOff'
+  | 'kiosk.signage.presenceUnavailable';
 
 /** 既定 locale 辞書は全キー網羅必須。他 locale は Partial 可（欠落は ja へフォールバック）。 */
 type DefaultDictionary = Record<MessageKey, string>;
@@ -287,6 +293,10 @@ const ja: DefaultDictionary = {
   'checkout.error.expired': '退館コードの有効期限が切れています。受付にお問い合わせください。',
   'checkout.error.throttled': '退館コードの試行が続いたため、しばらく受け付けを制限しています。少し時間をおくか、退館 QR をご利用いただくか、受付にお問い合わせください。',
   'checkout.error.notRecognized': '退館コードまたは呼び出し先が確認できませんでした。もう一度ご確認ください。',
+  'kiosk.signage.tapToStart': '画面をタップして受付を開始',
+  'kiosk.signage.presenceOn': '来訪検知: ON',
+  'kiosk.signage.presenceOff': '来訪検知: OFF',
+  'kiosk.signage.presenceUnavailable': '来訪検知: 利用不可',
 };
 
 const en: LocaleDictionary = {
@@ -413,6 +423,10 @@ const en: LocaleDictionary = {
   'checkout.error.expired': 'This checkout code has expired. Please ask reception for help.',
   'checkout.error.throttled': 'Too many checkout code attempts. Please wait a moment, use your checkout QR, or ask reception for help.',
   'checkout.error.notRecognized': 'We could not recognize that checkout code or visit target. Please check and try again.',
+  'kiosk.signage.tapToStart': 'Tap the screen to start check-in',
+  'kiosk.signage.presenceOn': 'Visitor detection: ON',
+  'kiosk.signage.presenceOff': 'Visitor detection: OFF',
+  'kiosk.signage.presenceUnavailable': 'Visitor detection: Unavailable',
 };
 
 const ko: LocaleDictionary = {
@@ -537,6 +551,10 @@ const ko: LocaleDictionary = {
   'checkout.error.expired': '퇴실 코드의 유효 기간이 지났습니다. 접수처에 문의해 주세요.',
   'checkout.error.throttled': '퇴실 코드 시도가 많아 잠시 접수를 제한하고 있습니다. 잠시 후 다시 시도하거나 퇴실 QR을 이용하거나 접수처에 문의해 주세요.',
   'checkout.error.notRecognized': '퇴실 코드 또는 방문 대상을 확인할 수 없습니다. 다시 확인해 주세요.',
+  'kiosk.signage.tapToStart': '화면을 터치하여 접수를 시작하세요',
+  'kiosk.signage.presenceOn': '방문 감지: ON',
+  'kiosk.signage.presenceOff': '방문 감지: OFF',
+  'kiosk.signage.presenceUnavailable': '방문 감지: 사용 불가',
 };
 
 const zh: LocaleDictionary = {
@@ -661,6 +679,10 @@ const zh: LocaleDictionary = {
   'checkout.error.expired': '退馆码已过期，请联系前台。',
   'checkout.error.throttled': '退馆码尝试次数过多，暂时限制受理。请稍后再试，或使用退馆二维码，或联系前台。',
   'checkout.error.notRecognized': '无法识别该退馆码或拜访对象，请确认后重试。',
+  'kiosk.signage.tapToStart': '请触摸屏幕开始登记',
+  'kiosk.signage.presenceOn': '访客检测：开启',
+  'kiosk.signage.presenceOff': '访客检测：关闭',
+  'kiosk.signage.presenceUnavailable': '访客检测：不可用',
 };
 
 /**

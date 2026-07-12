@@ -5,7 +5,7 @@ import { useRouter } from 'next/navigation';
 import { nextIndex } from '@/domain/signage/rotation';
 import type { KioskSignage, KioskSignageItem } from '@/lib/signage/kiosk-signage';
 import { hasBrandingContent, type BrandingSettings } from '@/domain/branding/types';
-import { makeT, DEFAULT_LOCALE } from '@/lib/i18n';
+import { makeT, DEFAULT_LOCALE, normalizeLocale, type Locale } from '@/lib/i18n';
 import { SignageItemView } from './SignageItemView';
 import { SignageClock } from './SignageClock';
 
@@ -28,6 +28,7 @@ export function SignageDisplay({
   tenantId = 'internal',
   siteId = 'default',
   onStart,
+  locale,
 }: {
   tenantId?: string;
   siteId?: string;
@@ -37,6 +38,13 @@ export function SignageDisplay({
    * - 指定（KioskFlow へ埋め込み）: 画面遷移せず受付状態機械の START を呼ぶ。
    */
   onStart?: () => void;
+  /**
+   * 表示言語 (#327 2nd increment)。
+   * - KioskFlow へ埋め込む場合: 選択中 locale を明示的に渡す（React state で一意に決まる）。
+   * - 未指定（スタンドアロン /kiosk/signage）: CheckoutLink と同じ `?locale=` クエリ規約を
+   *   マウント後に読み取り、既定 locale へフォールバックする。
+   */
+  locale?: Locale;
 }) {
   const router = useRouter();
   const [signage, setSignage] = useState<KioskSignage | null>(null);
@@ -44,6 +52,14 @@ export function SignageDisplay({
   // テナントのブランド設定 (issue #88)。アセット未設定フォールバック (#326 L1) で
   // 「会社の顔」を出すために使う。取得失敗時は汎用フォールバック（時計＋挨拶のみ）にする。
   const [branding, setBranding] = useState<BrandingSettings>({});
+  // スタンドアロン利用時の表示言語 (#327)。`locale` prop が明示されていればそちらを優先する。
+  const [queryLocale, setQueryLocale] = useState<Locale>(DEFAULT_LOCALE);
+  useEffect(() => {
+    if (locale) return;
+    setQueryLocale(normalizeLocale(new URLSearchParams(window.location.search).get('locale')));
+  }, [locale]);
+  const resolvedLocale = locale ?? queryLocale;
+  const tr = makeT(resolvedLocale);
 
   // 受付復帰: 明示操作で受付へ。連打を吸収するため一度だけ実行する。
   const returned = useRef(false);
@@ -134,13 +150,18 @@ export function SignageDisplay({
           overflow: 'hidden',
         }}
       >
-        {current ? <SignageItemView item={toSignageItem(current)} /> : <SignageFallback branding={branding} />}
+        {current ? (
+          <SignageItemView item={toSignageItem(current)} />
+        ) : (
+          <SignageFallback branding={branding} locale={resolvedLocale} />
+        )}
       </div>
 
       {/* 受付開始の導線は常に大きく表示する（クリック/タップで /kiosk へ）。 */}
       <button
         type="button"
         data-testid="signage-start"
+        lang={resolvedLocale}
         onClick={(e) => {
           e.stopPropagation();
           returnToReception();
@@ -156,7 +177,7 @@ export function SignageDisplay({
           cursor: 'pointer',
         }}
       >
-        画面をタップして受付を開始
+        {tr('kiosk.signage.tapToStart')}
       </button>
     </div>
   );
@@ -169,10 +190,11 @@ export function SignageDisplay({
  * 何も出さない状態を解消する。ブランド設定（ロゴ/社名）があれば「会社の顔」を出し、
  * 無くても時計＋既定の挨拶で「動いている」ことを示す既定フォールバックにする。
  * 文言は kiosk 待機画面（IdleView）と同じ辞書キー（welcome.*）を再利用し、新規キーは
- * 追加しない。
+ * 追加しない。表示言語は呼び出し元が解決した locale に従う (#327 2nd increment。以前は
+ * DEFAULT_LOCALE 固定で、選択中言語に関わらず常に日本語が出ていた翻訳漏れ)。
  */
-function SignageFallback({ branding }: { branding: BrandingSettings }) {
-  const tr = makeT(DEFAULT_LOCALE);
+function SignageFallback({ branding, locale }: { branding: BrandingSettings; locale: Locale }) {
+  const tr = makeT(locale);
   const showBrand = hasBrandingContent(branding);
   return (
     <div
@@ -210,7 +232,7 @@ function SignageFallback({ branding }: { branding: BrandingSettings }) {
         下部の大きな CTA ボタンに一本化し、上下で同一文言（タップして開始）を重複させない。
       */}
       <p
-        lang={DEFAULT_LOCALE}
+        lang={locale}
         style={{ fontSize: 'clamp(20px, 3vw, 40px)', opacity: 0.85, margin: 0, maxWidth: '70%' }}
       >
         {tr('welcome.title')}
