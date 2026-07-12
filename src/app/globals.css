@@ -35,6 +35,17 @@
   --color-platform-danger: #e66e6e; /* break-glass（緊急権限・危険） */
   --color-platform-ok: #7fe0a0; /* ok（有効・成功） */
 
+  /*
+   * 個別サーフェス上の固定インク/オーバーレイ (#329 増分4)。
+   * いずれも exact value 保存のため個別トークン化（--color-text や --color-accent-ink とは
+   * 値/コントラスト方向が異なり流用不可）。テーマ非対象の固定値。
+   */
+  --color-on-danger: #fff; /* 危険サーフェス上の文字色（DangerActionButton 実行ボタンの白インク） */
+  --color-on-accent: #fff; /* アクセント上の文字色（--color-accent-ink=#06121f とは逆コントラスト。LanguageSwitcher アクティブボタン） */
+  --color-scrim: rgba(0, 0, 0, 0.6); /* 暗幕オーバーレイ（AvatarGuide 字幕背景） */
+  --color-on-scrim: #fff; /* 暗幕上の文字色（AvatarGuide 字幕） */
+  --color-surface-faint: rgba(255, 255, 255, 0.06); /* ごく薄い面（AvatarGuide プレースホルダ地色） */
+
   /* ---- タッチ・余白 ---- */
   --touch-target-min: 64px;
   --space-sm: 12px;

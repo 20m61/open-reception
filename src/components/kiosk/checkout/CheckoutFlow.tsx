@@ -478,7 +478,8 @@ const detailRow: React.CSSProperties = {
   justifyContent: 'space-between',
   gap: 16,
   paddingBottom: 8,
-  borderBottom: '1px solid rgba(255,255,255,0.1)',
+  // #329: 白ボーダー収れん（0.1 → --color-border=0.08、承認済み α 差分）。
+  borderBottom: '1px solid var(--color-border)',
 };
 const errorStyle: React.CSSProperties = { color: 'var(--color-danger)', fontWeight: 700 };
 const listStyle: React.CSSProperties = { listStyle: 'none', padding: 0, margin: 0, display: 'flex', flexDirection: 'column', gap: 8 };
@@ -488,5 +489,6 @@ const listItemStyle: React.CSSProperties = {
   justifyContent: 'space-between',
   gap: 12,
   padding: '12px 0',
-  borderBottom: '1px solid rgba(255,255,255,0.1)',
+  // #329: 白ボーダー収れん（0.1 → --color-border=0.08、承認済み α 差分）。
+  borderBottom: '1px solid var(--color-border)',
 };

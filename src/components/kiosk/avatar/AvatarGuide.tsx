@@ -175,8 +175,9 @@ const subtitleStyle: React.CSSProperties = {
   fontSize: 20,
   lineHeight: 1.4,
   borderRadius: 12,
-  background: 'rgba(0, 0, 0, 0.6)',
-  color: '#fff',
+  // #329: 字幕の暗幕オーバーレイと白インクを exact value で単一ソース化。
+  background: 'var(--color-scrim)',
+  color: 'var(--color-on-scrim)',
 };
 
 const placeholderStyle: React.CSSProperties = {
@@ -194,9 +195,12 @@ const placeholderBadgeStyle: React.CSSProperties = {
   width: '40%',
   aspectRatio: '1 / 1',
   borderRadius: '9999px',
-  background: 'rgba(255, 255, 255, 0.06)',
-  border: '1px solid rgba(255, 255, 255, 0.15)',
-  color: 'var(--color-muted, #94a3b8)',
+  // #329: ごく薄い地色を exact value で単一ソース化。ボーダーは白ボーダー収れん
+  // （0.15 → --color-border-strong=0.16、承認済み α 差分）。フォールバックは
+  // --color-muted が :root に常に定義済みのため除去しても描画は不変。
+  background: 'var(--color-surface-faint)',
+  border: '1px solid var(--color-border-strong)',
+  color: 'var(--color-muted)',
   fontSize: 28,
   fontWeight: 700,
   letterSpacing: '0.05em',

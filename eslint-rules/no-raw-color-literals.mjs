@@ -37,12 +37,12 @@ const RAW_COLOR_PATTERN =
 export const RAW_COLOR_ALLOWLIST = [
   // ---- 色の定義元（恒久的に許可: rgba パレットを持つ） ----
   'src/components/admin/ui/tokens.ts',
-  // ---- 移行前の既存直書き（#329 で段階移行する負債・AST 検出スナップショット） ----
+  // ---- 移行前の既存直書き（#329 で段階移行した負債・AST 検出スナップショット） ----
   //
   // 移行済み（allowlist から削除＝厳格検証対象。値を厳密保存した無回帰リファクタ）:
   //   [1st] admin フォーム/ナビ群（4f64332）: AdminCredentialsLogin / AdminNav /
   //     AdminPasswordLogin / LanguageSettingsManager。
-  //   [2nd] 本増分:
+  //   [2nd]:
   //     - policy 1 白ボーダー収れん: CsvImport / KiosksManager / StaffEditor /
   //       TenantSwitcher（admin）。primary インク #0f172a→var(--color-bg-2)（同値）、白ボーダーは
   //       最近傍トークンへ収れん（0.08/0.1→--color-border、0.12/0.15/0.2→--color-border-strong。
@@ -55,25 +55,24 @@ export const RAW_COLOR_ALLOWLIST = [
   //     - policy 3 visitor kiosk（exact のみ）: LocalizedWelcome / CustomFlowRenderer /
   //       VisitorInfoForm / SignageDisplay。CSS 変数フォールバックの生値除去（描画不変）と
   //       #0f172a→var(--color-bg-2)（同値）のみ。
+  //   [3rd/最終増分] 残っていた 4 ファイルを単一ソース化し allowlist から全て除去:
+  //     - DangerActionButton.tsx: 破壊ボタンの白インク #fff → var(--color-on-danger)（新規
+  //       exact 変数）。白ボーダー 0.2 → var(--color-border-strong)（承認済み収れん）。
+  //     - LanguageSwitcher.tsx: アクセント上の #fff → var(--color-on-accent)（新規 exact 変数。
+  //       --color-accent-ink とは逆コントラストのため流用不可）。CSS 変数フォールバックの
+  //       生値（#ccc/#fff/#111/#2563eb、常に :root で定義済みのため未使用）は除去。
+  //     - AvatarGuide.tsx: 字幕スクリム rgba(0,0,0,0.6) → var(--color-scrim)、字幕の白インク
+  //       #fff → var(--color-on-scrim)、プレースホルダ地色 rgba(255,255,255,0.06) →
+  //       var(--color-surface-faint)（いずれも新規 exact 変数）。プレースホルダの白ボーダー
+  //       0.15 → var(--color-border-strong)（承認済み収れん）。
+  //     - CheckoutFlow.tsx: 白ボーダー 0.1（2 箇所） → var(--color-border)（承認済み収れん）。
+  //       #0f172a の直書きは無かった。
   //
-  // 引き続き許可（残債）。理由付き:
-  //   - policy 4 機能色（テーマ非対象。意図的にトークン化しない）。各エントリに inline 注記:
-  //       BrandingManager（色ピッカー既定値）/ DevicesManager・ReservationsManager（QR 背景）。
-  //   - DangerActionButton.tsx: 破壊操作ボタンの白インク #fff。既存 var へ exact 化できず
-  //     （--color-text=#f6f9ff とは微差、.btn--danger は逆に #0f172a の暗インク）、視覚差分の
-  //     採否はオーケストレータ判断を要するため据え置き（policy 1〜4 いずれの対象でもない）。
-  //   - policy 3 defer（新規変数/視覚回帰リスクで見送り。e2e キャプチャ前提で別バッチ）:
-  //       LanguageSwitcher（accent 上の #fff、--color-accent-ink とは逆コントラスト）、
-  //       AvatarGuide（字幕スクリム rgba(0,0,0,0.6) と白 6% 地色に既存 var が無い）、
-  //       CheckoutFlow（白 0.1 ボーダー、来訪者向けの α 差分回避）。
+  // 引き続き許可（残債）: policy 4 機能色のみ（テーマ非対象。意図的にトークン化しない）。
+  // 各エントリに inline 注記あり。
   'src/components/admin/BrandingManager.tsx', // 機能色: 色ピッカー既定値 #38bdf8（input[type=color] は生 hex 必須）
   'src/components/admin/DevicesManager.tsx', // 機能色: QR 背景 #fff（読取のための固定色。テーマ非対象）
   'src/components/admin/ReservationsManager.tsx', // 機能色: QR 背景 #fff（読取のための固定色。テーマ非対象）
-  'src/components/admin/danger/DangerActionButton.tsx', // 残債: 破壊ボタンの白インク #fff（exact 化不可・要判断）
-  // kiosk（policy 3 defer。視覚回帰リスク/新規変数が必要）:
-  'src/components/kiosk/LanguageSwitcher.tsx',
-  'src/components/kiosk/avatar/AvatarGuide.tsx',
-  'src/components/kiosk/checkout/CheckoutFlow.tsx',
 ];
 
 function toRepoRelative(filename) {
