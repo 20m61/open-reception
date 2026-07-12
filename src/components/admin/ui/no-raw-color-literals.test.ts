@@ -65,4 +65,18 @@ describe('RAW_COLOR_ALLOWLIST の健全性 (#329)', () => {
       'src/components/admin/dashboard/ExperienceKpiSection.tsx',
     );
   });
+
+  // #329 AC(2): admin フォーム/ナビ群を単一ソース化した増分。allowlist から外したので
+  // 以後これらのファイルへ生の色を戻すとルールが即エラーにする（再追加を防ぐ回帰ガード）。
+  it('移行済みの admin フォーム/ナビ群は allowlist から外れている', () => {
+    const migrated = [
+      'src/components/admin/AdminCredentialsLogin.tsx',
+      'src/components/admin/AdminNav.tsx',
+      'src/components/admin/AdminPasswordLogin.tsx',
+      'src/components/admin/LanguageSettingsManager.tsx',
+    ];
+    for (const f of migrated) {
+      expect(RAW_COLOR_ALLOWLIST).not.toContain(f);
+    }
+  });
 });

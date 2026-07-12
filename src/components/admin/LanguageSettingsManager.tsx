@@ -70,7 +70,7 @@ export function LanguageSettingsManager() {
   return (
     <section style={{ maxWidth: 560 }}>
       <h1 style={{ marginTop: 0 }}>言語設定</h1>
-      <p style={{ color: 'var(--color-muted, #666)' }}>
+      <p style={{ color: 'var(--color-muted)' }}>
         受付端末で選べる言語と、最初に表示する言語を設定します。音声が使えない場合も画面で受付を完了できます。
       </p>
 
@@ -115,8 +115,8 @@ export function LanguageSettingsManager() {
   );
 }
 
-const fieldset: React.CSSProperties = { border: '1px solid var(--color-border, #ddd)', borderRadius: 12, padding: 16, marginBottom: 24 };
+const fieldset: React.CSSProperties = { border: '1px solid var(--color-border)', borderRadius: 12, padding: 16, marginBottom: 24 };
 const legend: React.CSSProperties = { padding: '0 8px', fontWeight: 600 };
 const chk: React.CSSProperties = { display: 'flex', alignItems: 'center', gap: 8, padding: '6px 0' };
-const input: React.CSSProperties = { padding: '10px 12px', fontSize: 16, borderRadius: 8, border: '1px solid var(--color-border, #ccc)' };
+const input: React.CSSProperties = { padding: '10px 12px', fontSize: 16, borderRadius: 8, border: '1px solid var(--color-border)' };
 const saveBtn: React.CSSProperties = { minHeight: 44, padding: '10px 24px', fontSize: 16 };

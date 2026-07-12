@@ -101,7 +101,7 @@ export function AdminCredentialsLogin() {
           borderRadius: 8,
           border: 'none',
           background: 'var(--color-accent)',
-          color: '#0f172a',
+          color: 'var(--color-bg-2)',
           fontWeight: 700,
           cursor: busy ? 'default' : 'pointer',
           opacity: busy ? 0.7 : 1,
