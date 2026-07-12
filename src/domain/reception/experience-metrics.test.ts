@@ -6,6 +6,7 @@ import {
   recordBack,
   recordCancel,
   recordInputMethod,
+  recordSearchQuery,
   stepForState,
 } from './experience-metrics';
 
@@ -105,5 +106,31 @@ describe('experience tracker (#319)', () => {
     for (const key of Object.keys(exp)) {
       expect(allowed.has(key)).toBe(true);
     }
+  });
+});
+
+describe('recordSearchQuery (#322) — 担当者検索のヒット率/0件率フック', () => {
+  it('検索実行のたびにクエリ数を数え、ヒット無しのときだけ 0 件数を増やす', () => {
+    let t = createTracker();
+    expect(t.searchQueryCount).toBe(0);
+    expect(t.searchZeroHitCount).toBe(0);
+
+    t = recordSearchQuery(t, true); // ヒットあり
+    expect(t.searchQueryCount).toBe(1);
+    expect(t.searchZeroHitCount).toBe(0);
+
+    t = recordSearchQuery(t, false); // 0 件
+    t = recordSearchQuery(t, false); // 0 件
+    expect(t.searchQueryCount).toBe(3);
+    expect(t.searchZeroHitCount).toBe(2);
+  });
+
+  it('検索クエリ文字列や結果（PII になり得る値）を保持しない', () => {
+    let t = createTracker();
+    t = recordSearchQuery(t, false);
+    const keys = Object.keys(t);
+    expect(keys).not.toContain('query');
+    expect(keys).not.toContain('lastQuery');
+    expect(keys).not.toContain('results');
   });
 });

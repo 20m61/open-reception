@@ -186,7 +186,11 @@ export type MessageKey =
   | 'privacy.contactLabel'
   | 'privacy.contactText'
   | 'privacy.presenceCameraLabel'
-  | 'privacy.presenceCameraNote';
+  | 'privacy.presenceCameraNote'
+  // 担当者検索で 0 件だったときの次の一手（部署一覧・チャット相談への誘導, #322）。
+  | 'reception.searchNoResultsGuidance'
+  | 'reception.searchNoResultsChatCta'
+  | 'reception.searchMaybeMatch';
 
 /** 既定 locale 辞書は全キー網羅必須。他 locale は Partial 可（欠落は ja へフォールバック）。 */
 type DefaultDictionary = Record<MessageKey, string>;
@@ -341,6 +345,10 @@ const ja: DefaultDictionary = {
   'privacy.presenceCameraLabel': '来訪者検知カメラについて',
   'privacy.presenceCameraNote':
     '来訪者検知カメラの映像は端末内でのみ処理し、保存・送信は行いません。',
+  'reception.searchNoResultsGuidance':
+    'お探しの方が見つかりませんか？ 部署から選ぶか、チャットで受付係に相談できます。',
+  'reception.searchNoResultsChatCta': 'チャットで受付係に相談する',
+  'reception.searchMaybeMatch': 'もしかして',
 };
 
 const en: LocaleDictionary = {
@@ -494,6 +502,10 @@ const en: LocaleDictionary = {
   'privacy.presenceCameraLabel': 'About the visitor-detection camera',
   'privacy.presenceCameraNote':
     'The visitor-detection camera image is processed on this device only and is never saved or transmitted.',
+  'reception.searchNoResultsGuidance':
+    "Can't find them? Try browsing by department, or chat with the reception desk.",
+  'reception.searchNoResultsChatCta': 'Chat with the reception desk',
+  'reception.searchMaybeMatch': 'Did you mean',
 };
 
 const ko: LocaleDictionary = {
@@ -645,6 +657,9 @@ const ko: LocaleDictionary = {
   'privacy.presenceCameraLabel': '방문자 감지 카메라 안내',
   'privacy.presenceCameraNote':
     '방문자 감지 카메라 영상은 이 단말기 내에서만 처리되며 저장하거나 전송하지 않습니다.',
+  'reception.searchNoResultsGuidance': '찾으시는 분이 없나요? 부서에서 선택하거나 채팅으로 접수 담당자와 상담해 보세요.',
+  'reception.searchNoResultsChatCta': '채팅으로 접수 담당자와 상담하기',
+  'reception.searchMaybeMatch': '혹시 이 분인가요',
 };
 
 const zh: LocaleDictionary = {
@@ -792,6 +807,9 @@ const zh: LocaleDictionary = {
   'privacy.contactText': '如对信息处理方式有疑问，请咨询前台工作人员。',
   'privacy.presenceCameraLabel': '关于访客检测摄像头',
   'privacy.presenceCameraNote': '访客检测摄像头的画面仅在本设备内处理，不会保存或发送。',
+  'reception.searchNoResultsGuidance': '找不到对方？可以从部门中选择，或通过聊天与前台工作人员咨询。',
+  'reception.searchNoResultsChatCta': '通过聊天咨询前台工作人员',
+  'reception.searchMaybeMatch': '是否是这位',
 };
 
 /**
