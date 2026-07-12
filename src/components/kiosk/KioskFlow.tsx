@@ -87,7 +87,17 @@ import {
   type CallingStageThresholds,
 } from '@/domain/reception/calling-experience';
 
-/** MVP では端末 ID は固定。将来 kiosk config から取得する (issue #18)。 */
+/**
+ * MVP では heartbeat・PIN 許可（初回セッション発行前）向けの端末 ID は固定。将来 kiosk
+ * config から取得する (issue #18)。
+ *
+ * 受付作成（`POST /api/kiosk/receptions`）はこの定数を送らない (issue #348):
+ * `reception.kioskId` はサーバが認証済み kiosk セッション（cookie）から確定するため、
+ * クライアントがここで何を送っても（送らなくても）権威にならない。かつてこの定数を
+ * 受付作成にも使い回していたため、実際にエンロールされた端末（ランダム UUID の
+ * kioskId）と 'kiosk-dev' 固定値が食い違い、以後の所有権チェック（status/stay）が
+ * 正当な同一端末の要求まで 403 にしていた。
+ */
 const KIOSK_ID = 'kiosk-dev';
 
 type DirDepartment = { id: string; name: string };
@@ -676,7 +686,9 @@ export function KioskFlow() {
           method: 'POST',
           headers: { 'content-type': 'application/json' },
           body: JSON.stringify({
-            kioskId: KIOSK_ID,
+            // kioskId は送らない: サーバが認証済み kiosk セッション（cookie）から確定する
+            // (issue #348)。クライアント値は信用されないため、ハードコードした固定 ID を
+            // 送ると実セッションと食い違い、以後の status/stay 所有権チェックが 403 になる。
             purpose: data.purpose,
             // カスタムフロー選択時は purposeKey も併送する（サーバ将来拡張用・未知でも非破壊）(issue #100)。
             purposeKey: selectedFlow?.purposeKey,
