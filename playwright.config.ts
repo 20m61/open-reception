@@ -25,6 +25,12 @@ const includeWebkit = !!process.env.CI || process.env.E2E_WEBKIT === '1';
 // 通常 project からは除外し、専用 project で本 suite の後に単独実行する。
 const FLOW_MUTATING_SPECS = /(admin-reception-flows|kiosk-flow-integration)\.spec\.ts$/;
 
+// soak（長時間連続稼働）テストは `tests/e2e/soak/` に隔離し、専用の playwright.soak.config.ts
+// （`npm run test:soak*`）からのみ実行する (issue #317)。本設定（既定 `npm run test:e2e` /
+// `scripts/quality-gate.sh --pr|--full`）では、testDir の再帰探索に紛れ込まないよう明示的に除外する。
+const SOAK_SPECS = /\/soak\//;
+const DEFAULT_TEST_IGNORE = [FLOW_MUTATING_SPECS, SOAK_SPECS];
+
 // iPad (gen 7) 縦向き相当のエミュレーション設定（chromium 用）。
 const iPadPortraitViewport = {
   viewport: { width: 810, height: 1080 },
@@ -49,19 +55,19 @@ export default defineConfig({
     {
       name: 'chromium-ipad',
       use: { browserName: 'chromium', ...iPadPortraitViewport },
-      testIgnore: FLOW_MUTATING_SPECS,
+      testIgnore: DEFAULT_TEST_IGNORE,
     },
     ...(includeWebkit
       ? [
           {
             name: 'ipad-landscape',
             use: { ...devices['iPad (gen 7) landscape'] },
-            testIgnore: FLOW_MUTATING_SPECS,
+            testIgnore: DEFAULT_TEST_IGNORE,
           },
           {
             name: 'ipad-portrait',
             use: { ...devices['iPad (gen 7)'] },
-            testIgnore: FLOW_MUTATING_SPECS,
+            testIgnore: DEFAULT_TEST_IGNORE,
           },
         ]
       : []),
