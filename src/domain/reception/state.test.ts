@@ -74,8 +74,15 @@ describe('reception state machine', () => {
       }
     });
 
-    it('待機・通話接続中は対象外（生きた接続を切らない／既に待機）', () => {
-      for (const s of ['idle', 'calling', 'connected'] as ReceptionState[]) {
+    it('connected（来訪待ち・画面にメディア無し）も無操作で待機へ戻す対象 (#324)', () => {
+      // 「操作は不要です」と案内する画面（#324-5）。来訪者が指示どおり離席しても、前の来訪者の
+      // セッション（PII）を表示したまま次の来訪者をブロックしないよう自動復帰の対象にする。
+      expect(shouldResetOnInactivity('connected')).toBe(true);
+    });
+
+    it('待機・呼び出し中は対象外（生きたビデオ接続を切らない／既に待機）', () => {
+      // calling は Vonage 非同期でビデオ確立中のため対象外。connected は上記のとおり対象に含める。
+      for (const s of ['idle', 'calling'] as ReceptionState[]) {
         expect(shouldResetOnInactivity(s)).toBe(false);
       }
     });

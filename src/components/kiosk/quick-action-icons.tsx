@@ -1,5 +1,6 @@
 import type { ReactNode } from 'react';
 import type { QuickActionIntent } from './quick-actions';
+import type { ReceptionPurposeId } from '@/domain/reception/session';
 
 /**
  * クイックアクションのラインアイコン (#119 UX, モダン受付のスキャン性向上)。
@@ -63,4 +64,46 @@ const ICONS: Record<QuickActionIntent, ReactNode> = {
 
 export function quickActionIcon(intent: QuickActionIntent): ReactNode {
   return ICONS[intent] ?? null;
+}
+
+/**
+ * 目的選択カードのラインアイコン (#324-3, 視覚語彙の統一)。
+ * 待機カード（`quickActionIcon`）と同じ svgProps・stroke 語彙で、目的選択カードにも
+ * アイコンを添えて「無装飾ラベルだけ」の不整合を解消する。装飾なので描画側で aria-hidden を付ける。
+ */
+const PURPOSE_ICONS: Record<ReceptionPurposeId, ReactNode> = {
+  // 面会：来訪者と担当者（人物二人）
+  meeting: (
+    <svg {...svgProps} aria-hidden="true">
+      <circle cx="8" cy="8" r="3" />
+      <circle cx="16.5" cy="9" r="2.5" />
+      <path d="M3 20v-1a5 5 0 0 1 10 0v1M14 20v-.5a4.5 4.5 0 0 1 7-3.7" />
+    </svg>
+  ),
+  // 納品：荷物（待機の delivery と同じ語彙で統一）
+  delivery: (
+    <svg {...svgProps} aria-hidden="true">
+      <path d="M3 8l9-5 9 5v8l-9 5-9-5V8z" />
+      <path d="M3 8l9 5 9-5M12 13v8" />
+    </svg>
+  ),
+  // 打ち合わせ：会話の吹き出し
+  interview: (
+    <svg {...svgProps} aria-hidden="true">
+      <path d="M4 5h13a2 2 0 0 1 2 2v6a2 2 0 0 1-2 2H9l-4 3v-3H4a2 2 0 0 1-2-2V7a2 2 0 0 1 2-2z" />
+      <path d="M7 9h7M7 12h4" />
+    </svg>
+  ),
+  // その他：3 点（待機の other と同じ語彙で統一）
+  other: (
+    <svg {...svgProps} aria-hidden="true">
+      <circle cx="5" cy="12" r="1.4" fill="currentColor" stroke="none" />
+      <circle cx="12" cy="12" r="1.4" fill="currentColor" stroke="none" />
+      <circle cx="19" cy="12" r="1.4" fill="currentColor" stroke="none" />
+    </svg>
+  ),
+};
+
+export function purposeIcon(id: ReceptionPurposeId): ReactNode {
+  return PURPOSE_ICONS[id] ?? null;
 }

@@ -20,7 +20,7 @@ import { LanguageSwitcher } from './LanguageSwitcher';
 import { makeT, DEFAULT_LOCALE, type Locale, type MessageKey } from '@/lib/i18n';
 import { LOCALE_LANGUAGE_CODE } from '@/lib/voice/locale-voice';
 import { FlowStepper } from './FlowStepper';
-import { quickActionIcon } from './quick-action-icons';
+import { quickActionIcon, purposeIcon } from './quick-action-icons';
 import { hasBrandingContent, normalizeAccentColor, type BrandingSettings } from '@/domain/branding/types';
 import { resultToneForState, type ResultTone } from './result-tone';
 import type { QuickActionIntent } from './quick-actions';
@@ -97,6 +97,13 @@ const AUTO_RESET_MS = 6000;
  * 公共端末に入力途中の個人情報を残さないための上限。`?inactivityMs=` で E2E から短縮できる。
  */
 const INACTIVITY_RESET_MS = 60000;
+/**
+ * connected（担当者応答済み・来訪待ち）画面の無操作リセット上限 (#324)。
+ * 「操作は不要です」と案内し来訪者はその場で担当者の到着を待つため、選択/入力画面より長めに取り、
+ * 正当な待機中の誤リセットを避ける。離席した場合はこの時間で PII を破棄して待機へ戻す。
+ * 待機中の来訪者は警告カウントダウンで「続ける」を押せば延長できる。
+ */
+const CONNECTED_INACTIVITY_RESET_MS = 120000;
 /**
  * リセット前にカウントダウン警告を出す時間 (issue #125 UX, "don't surprise-expire")。
  * 残り WARNING ミリ秒で警告を表示し、来訪者が操作すれば延長する。
@@ -190,7 +197,10 @@ function reducer(data: FlowData, action: Action): FlowData {
 export function KioskFlow() {
   const [data, dispatch] = useReducer(reducer, INITIAL);
   const [directory, setDirectory] = useState<Directory>({ departments: [], staff: [] });
-  const [guidanceIdle, setGuidanceIdle] = useState('ようこそ。画面にタッチして受付を開始してください。');
+  // 待機画面リードの既定文言 (#324)。主指示（「ご用件をお選びください」）は見出し・アバター字幕が
+  // 担うため、リードは挨拶＋安心情報（タッチだけで受付できる）のみにして指示を二重化しない。
+  // ja は管理設定 (#28) で上書き可能。
+  const [guidanceIdle, setGuidanceIdle] = useState('ようこそ。タッチ操作だけで受付できます。');
   // 受付の表示言語 (#103)。来訪者が待機画面の LanguageSwitcher で切替える（セッション内で保持）。
   const [locale, setLocale] = useState<Locale>(DEFAULT_LOCALE);
   // 無操作リセット直前のカウントダウン警告（#125 UX, "don't surprise-expire"）。null=非表示。
@@ -532,7 +542,9 @@ export function KioskFlow() {
     }
     const params = new URLSearchParams(window.location.search);
     const override = Number(params.get('inactivityMs'));
-    const limit = Number.isFinite(override) && override > 0 ? override : INACTIVITY_RESET_MS;
+    // connected（来訪待ち）は長めの上限を使う (#324)。?inactivityMs= の明示指定は常に優先（E2E 短縮用）。
+    const base = data.state === 'connected' ? CONNECTED_INACTIVITY_RESET_MS : INACTIVITY_RESET_MS;
+    const limit = Number.isFinite(override) && override > 0 ? override : base;
     // 警告（カウントダウン）に割く時間は limit を超えない範囲で確保する。
     const warnMs = Math.min(INACTIVITY_WARNING_MS, Math.max(0, limit - 500));
     const warnAfter = Math.max(0, limit - warnMs);
@@ -613,7 +625,13 @@ export function KioskFlow() {
         phrase = tr('reception.thanks');
         break;
       case 'idle':
-        phrase = locale === DEFAULT_LOCALE ? guidanceIdle : tr('welcome.tapToStart');
+        // 待機の発話は視覚リードと同じ役割（挨拶＋安心情報）に揃える (#324)。旧「タッチして開始」
+        // （welcome.tapToStart）は 1画面1メッセージ設計から外したため発話でも再導入しない。
+        // ja は管理設定の案内文言（guidanceIdle＝リード）を、他言語は挨拶＋idleReassure を読み上げる。
+        phrase =
+          locale === DEFAULT_LOCALE
+            ? guidanceIdle
+            : `${tr('welcome.title')}${locale === 'zh' ? '。' : '. '}${tr('reception.idleReassure')}`;
         break;
       default:
         phrase = undefined;
@@ -1322,13 +1340,14 @@ function IdleView({
 }) {
   const actions = quickActionsFor('idle');
   const tr = makeT(locale);
-  // ja は管理設定で上書きできる案内文言（guidance）を使い、他言語は辞書のようこそ文を出す (#103)。
-  // 文の区切りは locale に合わせる（CJK は「。」、それ以外は「. 」）。
+  // ja は管理設定で上書きできる案内文言（guidance）を使い、他言語は辞書の挨拶＋安心情報を出す (#103 / #324)。
+  // リードは主指示（見出しの「ご用件をお選びください」）を重ねず、挨拶＋「タッチだけで受付できる」
+  // 安心情報に限定して二重指示を避ける (#324)。文の区切りは locale に合わせる（CJK は「。」、他は「. 」）。
   const sentenceSep = locale === 'ja' || locale === 'zh' ? '。' : '. ';
   const lead =
     locale === DEFAULT_LOCALE
       ? guidance
-      : `${tr('welcome.title')}${sentenceSep}${tr('welcome.tapToStart')}`;
+      : `${tr('welcome.title')}${sentenceSep}${tr('reception.idleReassure')}`;
   // 既存 testid との後方互換（再設計後もリンク切れにしない）。
   const legacyTestId: Partial<Record<QuickAction['intent'], string>> = {
     callStaff: 'start-reception',
@@ -1414,21 +1433,28 @@ function PurposeView({
   // 「最初に戻る/キャンセル」は常設の逃げ道バー（EscapeHatchBar）に一本化したため、ここには置かない
   // （画面内フッターと逃げ道バーで「最初に戻る」が二重表示になる問題を解消, #121）。
   const tr = makeT(locale);
+  // 待機の見出し（purposePrompt）と同一文言だと「担当者を呼ぶ」→ 目的選択で同じ質問が二重に見える
+  // ため、ここは「種類の絞り込み」として purposeDetailPrompt を出す (#324-2)。
+  // カード自体も待機カードと同じアイコン＋説明を持たせて視覚語彙を統一する (#324-3)。
   return (
     <>
-      <h1 className="screen__title">{tr('reception.purposePrompt')}</h1>
+      <h1 className="screen__title">{tr('reception.purposeDetailPrompt')}</h1>
       <div className="screen__body">
         <div className="card-grid">
           {RECEPTION_PURPOSES.map((p) => (
             <button
               key={p.id}
               type="button"
-              className="card"
+              className="card card--cta"
               data-testid={`purpose-${p.id}`}
               lang={locale}
               onClick={() => onSelect(p.id)}
             >
+              <span className="card__icon" aria-hidden="true">
+                {purposeIcon(p.id)}
+              </span>
               {tr(`reception.purpose.${p.id}` as MessageKey)}
+              <span className="card__sub">{tr(`reception.purpose.${p.id}.desc` as MessageKey)}</span>
             </button>
           ))}
         </div>
@@ -1893,12 +1919,16 @@ function ConnectedView({
   locale: Locale;
 }) {
   const tr = makeT(locale);
+  // connected は「担当者がまいります／操作は不要です」を message で明示し、終了操作は任意にする (#324-5)。
+  // 主 CTA（primary）で終了を促すと「押さないと進まない」と誤解させるため、secondary の任意アクションにする。
+  // 「操作不要」の案内と挙動を一致させるため、connected は無操作タイムアウトで待機へ自動復帰する
+  // （INACTIVITY_RESET_STATES に connected を追加, #324）。明示的に今すぐ終えたい来訪者のため操作は残す。
   return (
     <ResultPanel
       tone={resultToneForState('connected')}
       testId="result-connected"
       message={tr('reception.connectedBody', { target })}
-      action={{ label: tr('reception.finishReception'), onClick: onComplete, testId: 'complete', variant: 'primary' }}
+      action={{ label: tr('reception.finishReception'), onClick: onComplete, testId: 'complete', variant: 'secondary' }}
       locale={locale}
     />
   );

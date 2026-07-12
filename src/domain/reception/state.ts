@@ -111,14 +111,22 @@ export const TERMINAL_STATES: ReadonlySet<ReceptionState> = new Set<ReceptionSta
  *
  * 除外する状態と理由:
  *  - idle: すでに待機画面。
- *  - calling / connected: 担当者と接続中の通話。離席リセットで生きた接続を切らない。
+ *  - calling: 呼び出し中（Vonage 非同期ではビデオ通話が確立中）。離席リセットで生きた接続を切らない。
  *  - completed / cancelled: 終端状態。より短い自動復帰（AUTO_RESET）が別途扱う。
+ *
+ * connected を含める理由 (#324): connected は「担当者が応答し、まもなく来訪する」案内画面で、
+ * 画面上に生きたメディア（ビデオ）は無い（ビデオは calling の KioskCallView が持つ）。この画面は
+ * 「操作は不要です」と案内する（#324-5）ため、来訪者が指示どおり離席した場合に COMPLETE 待ちで
+ * 端末が前の来訪者のセッション（PII）を表示したまま次の来訪者をブロックする不整合が起きる。
+ * よって無操作時は既存の警告カウントダウン（#125 "don't surprise-expire"）付きで待機へ自動復帰させ、
+ * 案内文言（操作不要）と実挙動を一致させる。待機中の来訪者は「続ける」で延長できる。
  */
 export const INACTIVITY_RESET_STATES: ReadonlySet<ReceptionState> = new Set<ReceptionState>([
   'selectingPurpose',
   'selectingTarget',
   'inputVisitorInfo',
   'confirming',
+  'connected',
   'timeout',
   'failed',
   'fallback',

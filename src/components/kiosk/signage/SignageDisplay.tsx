@@ -205,11 +205,15 @@ function SignageFallback({ branding }: { branding: BrandingSettings }) {
         </div>
       ) : null}
       <SignageClock />
+      {/*
+        上部ヒントは挨拶（welcome.title）のみにする (#324-4)。受付開始の「タップして開始」導線は
+        下部の大きな CTA ボタンに一本化し、上下で同一文言（タップして開始）を重複させない。
+      */}
       <p
         lang={DEFAULT_LOCALE}
         style={{ fontSize: 'clamp(20px, 3vw, 40px)', opacity: 0.85, margin: 0, maxWidth: '70%' }}
       >
-        {tr('welcome.title')} · {tr('welcome.tapToStart')}
+        {tr('welcome.title')}
       </p>
     </div>
   );
