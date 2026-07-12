@@ -25,12 +25,19 @@ export const color = {
   success: 'var(--color-success)',
   danger: 'var(--color-danger)',
   warning: 'var(--color-warning)',
-  /** 罫線・区切り。半透明の白で surface に重ねる（既存トーン）。 */
-  border: 'rgba(255,255,255,0.1)',
-  borderStrong: 'rgba(255,255,255,0.2)',
+  /**
+   * 罫線・区切り。globals.css の `--color-border` / `--color-border-strong` を **単一ソース**
+   * として参照する（#329: 旧 `rgba(255,255,255,0.1)/0.2` の直値は CSS 定義（0.08 / 0.16）と
+   * 乖離していた。CSS を正として TS を参照へ統一。テーマ/コントラスト調整も CSS 側で完結）。
+   */
+  border: 'var(--color-border)',
+  borderStrong: 'var(--color-border-strong)',
 } as const;
 
-/** 間隔トークン（px）。`--space-*` と整合。 */
+/**
+ * 間隔トークン（px）。globals.css の `--space-*` と同値（#329 検証テストで一致を担保）。
+ * テンプレートリテラル（`${space.xs}px`）で数値が要る消費側があるため数値で保持する。
+ */
 export const space = {
   xs: 6,
   sm: 12,
@@ -39,12 +46,18 @@ export const space = {
   xl: 40,
 } as const;
 
-/** 角丸トークン（px）。 */
+/**
+ * 角丸トークン（px）。globals.css の `--radius-*` を正とし同値で保持する
+ * （#329: 旧 TS 値 sm:8/md:12/lg:16/pill:999 は CSS の 10/14/18/9999 と乖離していた。
+ * CSS を正として TS を修正）。`borderRadius: radius.md` 等で数値が要るため数値で保持し、
+ * 一致は `tokens-css-parity.test.ts` が globals.css を解析して検証する。
+ */
 export const radius = {
-  sm: 8,
-  md: 12,
-  lg: 16,
-  pill: 999,
+  sm: 10,
+  md: 14,
+  lg: 18,
+  xl: 28,
+  pill: 9999,
 } as const;
 
 /** タイポトークン。管理画面（情報密度寄り）の標準値。 */

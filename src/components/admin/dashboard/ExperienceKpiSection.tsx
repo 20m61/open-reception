@@ -1,4 +1,5 @@
 import type { ExperienceKpi } from '@/domain/reception/experience-summary';
+import { color, space } from '../ui/tokens';
 import { MetricCard } from './MetricCard';
 import { Section, CardGrid } from './Section';
 
@@ -67,21 +68,21 @@ export function ExperienceKpiSection({ experience }: { experience: ExperienceKpi
         />
       </CardGrid>
 
-      <div style={{ marginTop: 'var(--space-lg, 24px)' }} data-testid="experience-funnel">
-        <h3 style={{ margin: '0 0 var(--space-sm, 8px)' }}>ステップ別ファネル</h3>
+      <div style={{ marginTop: space.lg }} data-testid="experience-funnel">
+        <h3 style={{ margin: `0 0 ${space.sm}px` }}>ステップ別ファネル</h3>
         <p style={{ opacity: 0.7, marginTop: 0 }}>各ステップへの到達数と、そのステップでの離脱数（離脱が多い局面を特定できます）。</p>
-        <ul style={{ listStyle: 'none', margin: 0, padding: 0, display: 'grid', gap: 'var(--space-sm, 8px)' }}>
+        <ul style={{ listStyle: 'none', margin: 0, padding: 0, display: 'grid', gap: space.sm }}>
           {funnel.map((f) => {
             const widthPct = Math.round((f.reached / reachedTop) * 100);
             return (
-              <li key={f.step} data-testid={`funnel-${f.step}`} style={{ display: 'grid', gridTemplateColumns: '10rem 1fr auto', alignItems: 'center', gap: 'var(--space-sm, 8px)' }}>
+              <li key={f.step} data-testid={`funnel-${f.step}`} style={{ display: 'grid', gridTemplateColumns: '10rem 1fr auto', alignItems: 'center', gap: space.sm }}>
                 <span>{STEP_LABEL[f.step] ?? f.step}</span>
-                <span aria-hidden="true" style={{ background: 'var(--color-surface-alt, #eee)', borderRadius: 4, height: 12, overflow: 'hidden' }}>
-                  <span style={{ display: 'block', width: `${widthPct}%`, height: '100%', background: 'var(--color-accent, #3b82f6)' }} />
+                <span aria-hidden="true" style={{ background: color.surface2, borderRadius: 4, height: 12, overflow: 'hidden' }}>
+                  <span style={{ display: 'block', width: `${widthPct}%`, height: '100%', background: color.accent }} />
                 </span>
                 <span style={{ fontVariantNumeric: 'tabular-nums', whiteSpace: 'nowrap' }}>
                   到達 {f.reached}
-                  {f.abandoned > 0 ? <span style={{ color: 'var(--color-danger, #c00)' }}>・離脱 {f.abandoned}</span> : null}
+                  {f.abandoned > 0 ? <span style={{ color: color.danger }}>・離脱 {f.abandoned}</span> : null}
                 </span>
               </li>
             );
@@ -89,9 +90,9 @@ export function ExperienceKpiSection({ experience }: { experience: ExperienceKpi
         </ul>
       </div>
 
-      <div style={{ marginTop: 'var(--space-lg, 24px)' }} data-testid="experience-input-methods">
-        <h3 style={{ margin: '0 0 var(--space-sm, 8px)' }}>入力手段の利用</h3>
-        <ul style={{ listStyle: 'none', margin: 0, padding: 0, display: 'flex', gap: 'var(--space-md, 16px)', flexWrap: 'wrap' }}>
+      <div style={{ marginTop: space.lg }} data-testid="experience-input-methods">
+        <h3 style={{ margin: `0 0 ${space.sm}px` }}>入力手段の利用</h3>
+        <ul style={{ listStyle: 'none', margin: 0, padding: 0, display: 'flex', gap: space.md, flexWrap: 'wrap' }}>
           {(Object.keys(inputMethods) as (keyof typeof inputMethods)[]).map((m) => (
             <li key={m} data-testid={`input-method-${m}`}>
               <strong style={{ fontVariantNumeric: 'tabular-nums' }}>{inputMethods[m]}</strong>{' '}

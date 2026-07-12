@@ -1,6 +1,7 @@
 import nextCoreWebVitals from 'eslint-config-next/core-web-vitals';
 import nextTypeScript from 'eslint-config-next/typescript';
 import reactHooks from 'eslint-plugin-react-hooks';
+import noRawColorLiterals from './eslint-rules/no-raw-color-literals.mjs';
 
 /**
  * ESLint Flat Config (Next.js 16 で `next lint` が廃止されたため ESLint CLI へ移行)。
@@ -36,6 +37,17 @@ const eslintConfig = [
       // 意図的なデータ取得・heartbeat であり Next 15 時点では非エラーだった。
       // 機械的リファクタの回帰リスクを避けるため助言（warn）に留める。
       'react-hooks/set-state-in-effect': 'warn',
+    },
+  },
+  {
+    // 生の色リテラル禁止 (#329)。色は globals.css の CSS 変数と admin/ui/tokens.ts に集約する。
+    // 対象は components 配下のみ（テストは除外）。移行前の既存直書きはルール内蔵の
+    // RAW_COLOR_ALLOWLIST（eslint-rules/no-raw-color-literals.mjs）で段階的に許可する。
+    files: ['src/components/**/*.ts', 'src/components/**/*.tsx'],
+    ignores: ['src/components/**/*.test.ts', 'src/components/**/*.test.tsx'],
+    plugins: { 'design-tokens': { rules: { 'no-raw-color-literals': noRawColorLiterals } } },
+    rules: {
+      'design-tokens/no-raw-color-literals': 'error',
     },
   },
 ];
