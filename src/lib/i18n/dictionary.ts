@@ -208,7 +208,19 @@ export type MessageKey =
   | 'reception.feedback.reason.waitTooLong'
   | 'reception.feedback.reason.hardToOperate'
   | 'reception.feedback.reason.staffUnavailable'
-  | 'reception.feedback.reason.other';
+  | 'reception.feedback.reason.other'
+  // 常設アクセシビリティ支援モードパネル（#321）。UI chrome のため全 locale（ja/en/ko/zh）で
+  // 網羅する（ja-simple はこのパネル自体の対象外＝bounded scope の意図的な除外、ja へフォールバック）。
+  | 'a11y.button.label'
+  | 'a11y.panel.title'
+  | 'a11y.panel.close'
+  | 'a11y.fontScale.label'
+  | 'a11y.fontScale.normal'
+  | 'a11y.fontScale.large'
+  | 'a11y.fontScale.extraLarge'
+  | 'a11y.contrast.label'
+  | 'a11y.lowReach.label'
+  | 'a11y.simpleJapanese.label';
 
 /** 既定 locale 辞書は全キー網羅必須。他 locale は Partial 可（欠落は ja へフォールバック）。 */
 type DefaultDictionary = Record<MessageKey, string>;
@@ -380,6 +392,16 @@ const ja: DefaultDictionary = {
   'reception.feedback.reason.hardToOperate': '操作が分かりにくい',
   'reception.feedback.reason.staffUnavailable': '担当者につながらなかった',
   'reception.feedback.reason.other': 'その他',
+  'a11y.button.label': '見やすさ設定',
+  'a11y.panel.title': '見やすさ・使いやすさの設定',
+  'a11y.panel.close': '閉じる',
+  'a11y.fontScale.label': '文字の大きさ',
+  'a11y.fontScale.normal': '標準',
+  'a11y.fontScale.large': '大きい',
+  'a11y.fontScale.extraLarge': 'とても大きい',
+  'a11y.contrast.label': '高コントラスト表示',
+  'a11y.lowReach.label': '操作ボタンを下に寄せる',
+  'a11y.simpleJapanese.label': 'やさしい日本語',
 };
 
 const en: LocaleDictionary = {
@@ -550,6 +572,16 @@ const en: LocaleDictionary = {
   'reception.feedback.reason.hardToOperate': 'The screen was hard to use',
   'reception.feedback.reason.staffUnavailable': "Couldn't reach the staff member",
   'reception.feedback.reason.other': 'Other',
+  'a11y.button.label': 'Accessibility options',
+  'a11y.panel.title': 'Display and accessibility settings',
+  'a11y.panel.close': 'Close',
+  'a11y.fontScale.label': 'Text size',
+  'a11y.fontScale.normal': 'Normal',
+  'a11y.fontScale.large': 'Large',
+  'a11y.fontScale.extraLarge': 'Extra large',
+  'a11y.contrast.label': 'High contrast',
+  'a11y.lowReach.label': 'Move buttons lower',
+  'a11y.simpleJapanese.label': 'Simple Japanese',
 };
 
 const ko: LocaleDictionary = {
@@ -717,6 +749,16 @@ const ko: LocaleDictionary = {
   'reception.feedback.reason.hardToOperate': '조작이 어려웠어요',
   'reception.feedback.reason.staffUnavailable': '담당자와 연결되지 않았어요',
   'reception.feedback.reason.other': '기타',
+  'a11y.button.label': '화면 설정',
+  'a11y.panel.title': '보기 편한 화면 설정',
+  'a11y.panel.close': '닫기',
+  'a11y.fontScale.label': '글자 크기',
+  'a11y.fontScale.normal': '표준',
+  'a11y.fontScale.large': '크게',
+  'a11y.fontScale.extraLarge': '아주 크게',
+  'a11y.contrast.label': '고대비 화면',
+  'a11y.lowReach.label': '버튼을 아래로 이동',
+  'a11y.simpleJapanese.label': '쉬운 일본어',
 };
 
 const zh: LocaleDictionary = {
@@ -880,6 +922,96 @@ const zh: LocaleDictionary = {
   'reception.feedback.reason.hardToOperate': '操作不易理解',
   'reception.feedback.reason.staffUnavailable': '未能联系到负责人',
   'reception.feedback.reason.other': '其他',
+  'a11y.button.label': '显示设置',
+  'a11y.panel.title': '易读性与操作辅助设置',
+  'a11y.panel.close': '关闭',
+  'a11y.fontScale.label': '文字大小',
+  'a11y.fontScale.normal': '标准',
+  'a11y.fontScale.large': '较大',
+  'a11y.fontScale.extraLarge': '特大',
+  'a11y.contrast.label': '高对比度显示',
+  'a11y.lowReach.label': '按钮下移',
+  'a11y.simpleJapanese.label': '简明日语',
+};
+
+/**
+ * やさしい日本語 (ja-simple, issue #321)。
+ *
+ * **意図的な部分網羅（bounded scope）**: 主要フロー画面の文言のみを平易な語彙・短文で用意する
+ * （welcome / 目的選択 / 検索プロンプト / 情報入力 / 確認 / 呼び出し中 / 終端 + 共通のボタン文言）。
+ * 全画面の網羅はしない（巨大翻訳作業にしない方針、#321）。未整備キーは `t()` の既存フォールバック
+ * （既定 locale=ja）で解決される。i18n.test.ts の #327 locale 網羅テストはこの locale を
+ * 明示的な例外として除外している。
+ *
+ * 方針: 一文を短く区切り、漢字を最小限にし、敬語を簡素化する（外部翻訳 API は使わない #105、
+ * 自前の平易な言い換え）。ふりがな併記は本増分では見送り（follow-up、レポートに明記）。
+ */
+const jaSimple: LocaleDictionary = {
+  'welcome.title': 'ようこそ',
+  'welcome.tapToStart': '画面を さわって ください',
+  'welcome.chooseLanguage': 'ことばを えらんで ください',
+  'reception.idleReassure': '画面に さわるだけで うけつけできます',
+  'reception.purposePrompt': 'ようけんを えらんで ください',
+  'reception.purposeDetailPrompt': 'ようけんの しゅるいを えらんで ください',
+  'reception.purpose.meeting': 'めんかい',
+  'reception.purpose.delivery': 'のうひん',
+  'reception.purpose.interview': 'うちあわせ',
+  'reception.purpose.other': 'その他',
+  'reception.purpose.meeting.desc': 'やくそくした 人に あう',
+  'reception.purpose.delivery.desc': 'にもつを とどける',
+  'reception.purpose.interview.desc': '会議や うちあわせで きた 方',
+  'reception.purpose.other.desc': '上に ない ようけん',
+  'kiosk.action.callStaff.label': '人を よぶ',
+  'kiosk.action.callStaff.desc': 'お名前と ようけんを きいて 人を よびます',
+  'kiosk.action.checkin.label': 'QRで うけつけ',
+  'kiosk.action.checkin.desc': 'よやくの QRコードが ある 方は こちら',
+  'kiosk.action.department.label': 'ぶしょから えらぶ',
+  'kiosk.action.department.desc': '行き先の ぶしょが わかる 方は こちら',
+  'kiosk.action.delivery.label': 'にもつを とどける',
+  'kiosk.action.delivery.desc': 'にもつを とどける 方は こちら',
+  'kiosk.action.other.label': 'その他',
+  'kiosk.action.other.desc': '上に ない 方は こちら',
+  'reception.targetPrompt': '会いたい 人・ぶしょを えらんで ください',
+  'reception.searchStaff': '名前で さがす',
+  'reception.searchPlaceholder': '例: さとう',
+  'reception.byDepartment': 'ぶしょから えらぶ',
+  'reception.staffAbsent': '今は いません。べつの ぶしょを えらんで ください',
+  'reception.staffNotFound': '見つかりません。べつの ぶしょを えらんで ください',
+  'reception.voiceSearch': '声で さがす',
+  'reception.listening': '聞いて います…',
+  'reception.voiceHint': 'タップして 検索欄に 入れます。ないようを 見て えらんで ください',
+  'reception.visitorInfoPrompt': 'お名前などを 入れて ください',
+  'reception.fieldPurpose': 'ようけん',
+  'reception.fieldTarget': '会う 人',
+  'reception.fieldName': 'お名前',
+  'reception.fieldCompany': '会社名',
+  'reception.fieldNote': 'メモ',
+  'reception.requiredLabel': '{field}（かならず）',
+  'reception.optionalLabel': '{field}（かかなくても よい）',
+  'reception.confirm': 'ないようを かくにん して ください',
+  'reception.proceedConfirm': 'かくにんへ すすむ',
+  'reception.editInfo': 'なおす',
+  'reception.callWithThis': 'この ないようで よぶ',
+  'reception.callingTitle': 'よんで います…',
+  'reception.callingBody': '{target} を よんで います。少し お待ち ください',
+  'reception.callingStageWaiting': 'もう少し お待ち ください',
+  'reception.callingStageNotice': 'つながらない ときは、べつの 方法で ごあんない します',
+  'reception.connectedBody': '{target} が おへんじ しました。そのまま お待ち ください',
+  'reception.waitMessage': 'そのまま お待ち ください',
+  'reception.thanks': 'うけつけが おわりました。ありがとう ございます',
+  'reception.completedTitle': 'うけつけが おわりました',
+  'reception.thanksLead': 'ありがとう ございました',
+  'reception.timeoutBody': 'おへんじが ありませんでした。べつの 方法で よぶ ことも できます',
+  'reception.failedBody': 'よびだしに しっぱい しました。べつの 方法で よぶ ことも できます',
+  'reception.altContact': 'べつの 方法で よぶ',
+  'reception.cancelled': 'うけつけを やめました',
+  'reception.reset': 'さいしょに もどる',
+  'reception.fallbackBody': '受付の 人が おてつだい します。少し お待ち ください',
+  'reception.toDesk': '受付へ',
+  'common.next': 'つぎへ',
+  'common.cancel': 'やめる',
+  'common.retry': 'もう一度',
+  'reception.back': 'もどる',
 };
 
 /**
@@ -891,4 +1023,5 @@ export const DICTIONARIES: Record<Locale, LocaleDictionary> = {
   en,
   ko,
   zh,
+  'ja-simple': jaSimple,
 };

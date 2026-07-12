@@ -5,6 +5,7 @@ import type { VoiceSettings } from '@/domain/voice/types';
 import { Button, Field, FormRow, SaveFeedback, useSaveFeedback } from '@/components/admin/ui';
 import { space } from '@/components/admin/ui/tokens';
 import { DEFAULT_CALLING_STAGE_THRESHOLDS } from '@/domain/reception/calling-experience';
+import { sanitizeA11yEnabledModes, type A11yEnabledModes } from '@/domain/kiosk/a11y-modes';
 
 /** 音声設定 (issue #28)。TTS/STT の有効化・案内文言・話速・音量を編集する。 */
 export function VoiceManager() {
@@ -48,6 +49,12 @@ export function VoiceManager() {
   }, [v, busy, success, failure, clear]);
 
   if (!v) return <section><h1 style={{ marginTop: 0 }}>音声設定</h1><p>読み込み中…</p></section>;
+
+  // アクセシビリティ支援モードの有効/無効 (issue #321)。未設定は「全モード有効」として表示する
+  // （sanitizeA11yEnabledModes の既定と一致させる。保存時は常に全 4 モード分をまとめて送る）。
+  const a11yModes = sanitizeA11yEnabledModes(v.a11yModesEnabled);
+  const patchA11yMode = (key: keyof A11yEnabledModes, enabled: boolean) =>
+    patch({ a11yModesEnabled: { ...a11yModes, [key]: enabled } });
 
   return (
     <section style={{ maxWidth: 560 }}>
@@ -141,6 +148,50 @@ export function VoiceManager() {
           />
         </Field>
 
+        {/*
+          来訪者向けアクセシビリティ支援モード (issue #321)。モードごとに kiosk の支援モードパネルへ
+          出す/出さないを切り替える。無効にしたモードはパネル自体から消える（機能フラグと同じ扱い）。
+        */}
+        <fieldset style={fieldset}>
+          <legend style={legend}>アクセシビリティ支援モード（受付端末の常設パネルに出す機能）</legend>
+          <label style={chk}>
+            <input
+              type="checkbox"
+              data-testid="voice-a11y-large-text"
+              checked={a11yModes.largeText}
+              onChange={(e) => patchA11yMode('largeText', e.target.checked)}
+            />
+            大きな文字（フォントサイズ切替）
+          </label>
+          <label style={chk}>
+            <input
+              type="checkbox"
+              data-testid="voice-a11y-high-contrast"
+              checked={a11yModes.highContrast}
+              onChange={(e) => patchA11yMode('highContrast', e.target.checked)}
+            />
+            ハイコントラスト表示
+          </label>
+          <label style={chk}>
+            <input
+              type="checkbox"
+              data-testid="voice-a11y-low-reach"
+              checked={a11yModes.lowReach}
+              onChange={(e) => patchA11yMode('lowReach', e.target.checked)}
+            />
+            低位置レイアウト（操作ボタンを下寄せ）
+          </label>
+          <label style={chk}>
+            <input
+              type="checkbox"
+              data-testid="voice-a11y-simple-japanese"
+              checked={a11yModes.simpleJapanese}
+              onChange={(e) => patchA11yMode('simpleJapanese', e.target.checked)}
+            />
+            やさしい日本語
+          </label>
+        </fieldset>
+
         <FormRow>
           <Field label="話速（0.5–2.0）" htmlFor="voice-rate-input">
             <input id="voice-rate-input" type="number" step="0.1" min="0.5" max="2" data-testid="voice-rate" value={v.rate} onChange={(e) => patch({ rate: Number(e.target.value) })} style={{ ...input, width: 120 }} />
@@ -165,6 +216,15 @@ export function VoiceManager() {
 }
 
 const chk: React.CSSProperties = { display: 'flex', gap: 8, alignItems: 'center' };
+const fieldset: React.CSSProperties = {
+  border: '1px solid var(--color-surface-2)',
+  borderRadius: 8,
+  padding: 12,
+  display: 'flex',
+  flexDirection: 'column',
+  gap: 8,
+};
+const legend: React.CSSProperties = { padding: '0 8px', fontWeight: 600 };
 const input: React.CSSProperties = {
   minHeight: 40,
   padding: '8px 12px',

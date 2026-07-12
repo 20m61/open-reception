@@ -5,7 +5,7 @@ import { useRouter } from 'next/navigation';
 import { nextIndex } from '@/domain/signage/rotation';
 import type { KioskSignage, KioskSignageItem } from '@/lib/signage/kiosk-signage';
 import { hasBrandingContent, type BrandingSettings } from '@/domain/branding/types';
-import { makeT, DEFAULT_LOCALE, normalizeLocale, type Locale } from '@/lib/i18n';
+import { makeT, DEFAULT_LOCALE, htmlLangFor, normalizeLocale, type Locale } from '@/lib/i18n';
 import { SignageItemView } from './SignageItemView';
 import { SignageClock } from './SignageClock';
 
@@ -161,7 +161,7 @@ export function SignageDisplay({
       <button
         type="button"
         data-testid="signage-start"
-        lang={resolvedLocale}
+        lang={htmlLangFor(resolvedLocale)}
         onClick={(e) => {
           e.stopPropagation();
           returnToReception();
@@ -232,7 +232,7 @@ function SignageFallback({ branding, locale }: { branding: BrandingSettings; loc
         下部の大きな CTA ボタンに一本化し、上下で同一文言（タップして開始）を重複させない。
       */}
       <p
-        lang={locale}
+        lang={htmlLangFor(locale)}
         style={{ fontSize: 'clamp(20px, 3vw, 40px)', opacity: 0.85, margin: 0, maxWidth: '70%' }}
       >
         {tr('welcome.title')}

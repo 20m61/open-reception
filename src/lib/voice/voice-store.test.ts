@@ -99,4 +99,32 @@ describe('voice-store (#28)', () => {
     const on = await updateVoiceSettings({ feedbackEnabled: true });
     expect(on.feedbackEnabled).toBe(true);
   });
+
+  it('アクセシビリティ支援モードの有効/無効をテナント設定できる（既定は未設定=全モード有効扱い, #321）', async () => {
+    const before = await getVoiceSettings();
+    expect(before.a11yModesEnabled).toBeUndefined();
+
+    const updated = await updateVoiceSettings({
+      a11yModesEnabled: { largeText: true, highContrast: false, lowReach: true, simpleJapanese: false },
+    });
+    expect(updated.a11yModesEnabled).toEqual({
+      largeText: true,
+      highContrast: false,
+      lowReach: true,
+      simpleJapanese: false,
+    });
+
+    const persisted = await getVoiceSettings();
+    expect(persisted.a11yModesEnabled).toEqual(updated.a11yModesEnabled);
+  });
+
+  it('アクセシビリティ支援モードの不正値は既定=有効へ補正する（#321）', async () => {
+    const v = await updateVoiceSettings({ a11yModesEnabled: { largeText: 'no' } });
+    expect(v.a11yModesEnabled).toEqual({
+      largeText: true,
+      highContrast: true,
+      lowReach: true,
+      simpleJapanese: true,
+    });
+  });
 });

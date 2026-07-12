@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   DEFAULT_LOCALE,
+  htmlLangFor,
   isSupportedLocale,
   makeT,
   type Locale,
@@ -42,6 +43,7 @@ const TIME_FORMAT_LOCALE: Record<Locale, string> = {
   en: 'en-US',
   ko: 'ko-KR',
   zh: 'zh-CN',
+  'ja-simple': 'ja-JP',
 };
 
 type FlowState = 'identify' | 'confirm' | 'done';
@@ -216,7 +218,7 @@ export function CheckoutFlow() {
 
   if (state === 'done') {
     return (
-      <main className="screen" data-testid="checkout-done" lang={locale}>
+      <main className="screen" data-testid="checkout-done" lang={htmlLangFor(locale)}>
         <div className="screen__body" style={centeredCard}>
           <h1 className="screen__title">{tr('checkout.doneTitle')}</h1>
           <p className="screen__lead">{tr('checkout.doneBody')}</p>
@@ -231,7 +233,7 @@ export function CheckoutFlow() {
     const target = pending.summary.targetLabel.trim() || tr('checkout.targetUnknown');
     const purpose = pending.summary.purpose.trim() || tr('checkout.purposeUnknown');
     return (
-      <main className="screen" data-testid="checkout-confirm" lang={locale}>
+      <main className="screen" data-testid="checkout-confirm" lang={htmlLangFor(locale)}>
         <div style={switcherRow}>
           <LanguageSwitcher locale={locale} onChange={setLocale} />
         </div>
@@ -278,7 +280,7 @@ export function CheckoutFlow() {
 
   // identify
   return (
-    <main className="screen" lang={locale}>
+    <main className="screen" lang={htmlLangFor(locale)}>
       <div style={switcherRow}>
         <LanguageSwitcher locale={locale} onChange={setLocale} />
       </div>

@@ -38,6 +38,11 @@ export async function PUT(request: Request): Promise<NextResponse> {
     ttsEnabled: String(updated.ttsEnabled),
     sttEnabled: String(updated.sttEnabled),
     feedbackEnabled: String(updated.feedbackEnabled ?? true),
+    // アクセシビリティ支援モードの有効/無効 (issue #321)。真偽値の要約のみ（PII なし）。
+    a11yLargeTextEnabled: String(updated.a11yModesEnabled?.largeText ?? true),
+    a11yHighContrastEnabled: String(updated.a11yModesEnabled?.highContrast ?? true),
+    a11yLowReachEnabled: String(updated.a11yModesEnabled?.lowReach ?? true),
+    a11ySimpleJapaneseEnabled: String(updated.a11yModesEnabled?.simpleJapanese ?? true),
   });
   return NextResponse.json(updated);
 }

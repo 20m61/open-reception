@@ -10,6 +10,13 @@ import type { LanguageSettings } from '@/lib/i18n/language-settings';
 import { Button, Field, SaveFeedback, useSaveFeedback } from '@/components/admin/ui';
 
 /**
+ * 通常の言語設定に出す locale（#321: 'ja-simple' はここには出さない）。
+ * やさしい日本語は表示言語ではなくアクセシビリティ支援モードの 1 つとして扱い、有効/無効は
+ * 音声設定画面のアクセシビリティ支援モード欄（VoiceManager）で切り替える（重複した設定 UI を避ける）。
+ */
+const DISPLAY_LOCALES = SUPPORTED_LOCALES.filter((value) => value !== 'ja-simple');
+
+/**
  * 言語設定 (issue #103, increment 1)。受付で出す言語（有効言語）と初期表示言語を選ぶ。
  * 不変条件はサーバ側 sanitizeLanguageSettings で最終補正される（既定言語は有効言語内に補正）。
  */
@@ -76,7 +83,7 @@ export function LanguageSettingsManager() {
 
       <fieldset style={fieldset}>
         <legend style={legend}>受付で出す言語</legend>
-        {SUPPORTED_LOCALES.map((locale) => (
+        {DISPLAY_LOCALES.map((locale) => (
           <label key={locale} style={chk}>
             <input
               type="checkbox"

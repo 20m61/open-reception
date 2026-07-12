@@ -19,12 +19,16 @@
 import { DEFAULT_LOCALE, normalizeLocale, type Locale } from '@/lib/i18n';
 import type { LocaleVoice, VoiceSettings } from '@/domain/voice/types';
 
-/** locale → TTS 言語コード（BCP-47）の既定マップ。 */
+/**
+ * locale → TTS 言語コード（BCP-47）の既定マップ。
+ * 'ja-simple'（やさしい日本語, #321）は日本語音声（ja-JP）をそのまま使う。
+ */
 export const LOCALE_LANGUAGE_CODE: Record<Locale, string> = {
   ja: 'ja-JP',
   en: 'en-US',
   ko: 'ko-KR',
   zh: 'cmn-CN',
+  'ja-simple': 'ja-JP',
 };
 
 /**

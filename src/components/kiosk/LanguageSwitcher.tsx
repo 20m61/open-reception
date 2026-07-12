@@ -8,6 +8,14 @@ import {
 } from '@/lib/i18n';
 
 /**
+ * 通常の言語選択に出す locale（#321: 'ja-simple' はここには出さない）。
+ * やさしい日本語は「表示言語の切替」ではなくアクセシビリティ支援モードの 1 つとして扱い、
+ * 専用の支援モードパネル（AccessibilityMenu）からのみ選ばせる（AC「1〜2タップ」の到達点を
+ * 一本化し、通常の言語一覧に紛れさせない）。
+ */
+const DISPLAY_LOCALES = SUPPORTED_LOCALES.filter((value) => value !== 'ja-simple');
+
+/**
  * 受付の言語切替 (issue #103, increment 1)。
  *
  * スタンドアロン: KioskFlow へは組み込まない（配線は後増分でオーケストレータが行う）。
@@ -35,7 +43,7 @@ export function LanguageSwitcher({
     <div role="group" aria-label={label ?? 'Language'} style={groupStyle}>
       {label ? <p style={labelStyle}>{label}</p> : null}
       <div style={listStyle}>
-        {SUPPORTED_LOCALES.map((value) => {
+        {DISPLAY_LOCALES.map((value) => {
           const active = value === current;
           return (
             <button
@@ -91,8 +99,12 @@ const activeButtonStyle: React.CSSProperties = {
   ...buttonStyle,
   borderColor: 'var(--color-accent)',
   background: 'var(--color-accent)',
-  // #329: アクセント上の白インクを exact value で単一ソース化
-  // （--color-accent-ink=#06121f とは逆コントラストのため流用不可）。
-  color: 'var(--color-on-accent)',
+  /*
+   * #321: 既定アクセント色（--brand-accent #38bdf8）上で --color-on-accent（白）を使うと
+   * コントラスト比が約 2.1:1 しか出ず axe の color-contrast（serious）に抵触する。
+   * `.btn--primary` と同じ確立済みパターン（アクセント上は --color-accent-ink、比 8.8:1）へ揃える。
+   * #329 時点の exact value 保存（元の白インク）より a11y 適合を優先する。
+   */
+  color: 'var(--color-accent-ink)',
   fontWeight: 700,
 };
