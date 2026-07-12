@@ -146,7 +146,8 @@ const ghost: React.CSSProperties = {
   minHeight: 34,
   padding: '6px 12px',
   borderRadius: 8,
-  border: '1px solid rgba(255,255,255,0.2)',
+  // #329: 白ボーダー収れん（0.2 → --color-border-strong=0.16、承認済み α 差分）。
+  border: '1px solid var(--color-border-strong)',
   background: 'var(--color-surface)',
   color: 'var(--color-text)',
   cursor: 'pointer',
@@ -160,7 +161,8 @@ const dangerSolid: React.CSSProperties = {
   ...ghost,
   borderColor: 'var(--color-danger)',
   background: 'var(--color-danger)',
-  color: '#fff',
+  // #329: 危険サーフェス上の白インクを exact value で単一ソース化。
+  color: 'var(--color-on-danger)',
 };
 const panel: React.CSSProperties = {
   display: 'flex',

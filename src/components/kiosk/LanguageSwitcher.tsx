@@ -73,22 +73,26 @@ const listStyle: React.CSSProperties = {
   gap: 12,
 };
 
+// #329: CSS 変数は globals.css :root に常に定義されているため生値フォールバックは不要
+// （フォールバックは実際には使われない＝除去しても描画は不変）。単一ソース化のため除去。
 const buttonStyle: React.CSSProperties = {
   minWidth: 120,
   minHeight: 56,
   padding: '12px 24px',
   fontSize: 20,
   borderRadius: 12,
-  border: '2px solid var(--color-border, #ccc)',
-  background: 'var(--color-surface, #fff)',
-  color: 'var(--color-text, #111)',
+  border: '2px solid var(--color-border)',
+  background: 'var(--color-surface)',
+  color: 'var(--color-text)',
   cursor: 'pointer',
 };
 
 const activeButtonStyle: React.CSSProperties = {
   ...buttonStyle,
-  borderColor: 'var(--color-accent, #2563eb)',
-  background: 'var(--color-accent, #2563eb)',
-  color: '#fff',
+  borderColor: 'var(--color-accent)',
+  background: 'var(--color-accent)',
+  // #329: アクセント上の白インクを exact value で単一ソース化
+  // （--color-accent-ink=#06121f とは逆コントラストのため流用不可）。
+  color: 'var(--color-on-accent)',
   fontWeight: 700,
 };

@@ -127,24 +127,42 @@ describe('RAW_COLOR_ALLOWLIST の健全性 (#329)', () => {
     }
   });
 
-  // 視覚回帰リスク/新規変数が必要なため本増分では意図的に残す負債（policy 3/4）。
-  // 「残すべきものが誤って外れていない」ことも固定し、機能色の誤トークン化を防ぐ。
-  it('機能色・視覚回帰リスクのファイルは allowlist に残す (policy 3/4 の残債)', () => {
-    const deferred = [
-      // policy 4: 機能色（テーマ非対象）。
-      'src/components/admin/BrandingManager.tsx',
-      'src/components/admin/DevicesManager.tsx',
-      'src/components/admin/ReservationsManager.tsx',
-      // policy 4 外だが exact 化できない #fff ボタンインク（要判断）。
+  // #329 最終増分: 残っていた 4 ファイル（DangerActionButton / LanguageSwitcher /
+  // AvatarGuide / CheckoutFlow）を新規セマンティック変数（--color-on-danger /
+  // --color-on-accent / --color-scrim / --color-on-scrim / --color-surface-faint）と
+  // 承認済み白ボーダー収れんで単一ソース化し、allowlist から全て外した。
+  it('最終増分で移行した danger/kiosk 群は allowlist から外れている', () => {
+    const migrated = [
       'src/components/admin/danger/DangerActionButton.tsx',
-      // policy 3: 新規変数/視覚回帰リスクで defer。
       'src/components/kiosk/LanguageSwitcher.tsx',
       'src/components/kiosk/avatar/AvatarGuide.tsx',
       'src/components/kiosk/checkout/CheckoutFlow.tsx',
     ];
+    for (const f of migrated) {
+      expect(RAW_COLOR_ALLOWLIST).not.toContain(f);
+    }
+  });
+
+  // 機能色（テーマ非対象）は意図的に残す（policy 4）。
+  // 「残すべきものが誤って外れていない」ことも固定し、機能色の誤トークン化を防ぐ。
+  it('機能色のファイルは allowlist に残す (policy 4)', () => {
+    const deferred = [
+      'src/components/admin/BrandingManager.tsx',
+      'src/components/admin/DevicesManager.tsx',
+      'src/components/admin/ReservationsManager.tsx',
+    ];
     for (const f of deferred) {
       expect(RAW_COLOR_ALLOWLIST).toContain(f);
     }
+  });
+
+  it('allowlist は tokens.ts + policy 4 機能色 3 件のみ（#329 完了）', () => {
+    expect(RAW_COLOR_ALLOWLIST).toEqual([
+      'src/components/admin/ui/tokens.ts',
+      'src/components/admin/BrandingManager.tsx',
+      'src/components/admin/DevicesManager.tsx',
+      'src/components/admin/ReservationsManager.tsx',
+    ]);
   });
 
   it('platform セマンティック変数が tokens.ts にミラーされている (policy 2)', async () => {
