@@ -80,7 +80,7 @@ export function KiosksManager() {
 
       <table data-testid="kiosk-table" style={{ width: '100%', borderCollapse: 'collapse' }}>
         <thead>
-          <tr style={{ textAlign: 'left', borderBottom: '1px solid rgba(255,255,255,0.2)' }}>
+          <tr style={{ textAlign: 'left', borderBottom: '1px solid var(--color-border-strong)' }}>
             <th style={cell}>端末名</th>
             <th style={cell}>設置場所</th>
             <th style={cell}>状態</th>
@@ -89,7 +89,7 @@ export function KiosksManager() {
         </thead>
         <tbody>
           {items.map((k) => (
-            <tr key={k.id} data-testid="kiosk-row" style={{ borderBottom: '1px solid rgba(255,255,255,0.08)' }}>
+            <tr key={k.id} data-testid="kiosk-row" style={{ borderBottom: '1px solid var(--color-border)' }}>
               <td style={cell} data-testid="kiosk-name">
                 {k.displayName}
               </td>
@@ -135,14 +135,14 @@ const btnStyle: React.CSSProperties = {
   borderRadius: 8,
   border: 'none',
   background: 'var(--color-accent)',
-  color: '#0f172a',
+  color: 'var(--color-bg-2)',
   fontWeight: 700,
   cursor: 'pointer',
 };
 const smallBtn: React.CSSProperties = {
   padding: '6px 10px',
   borderRadius: 8,
-  border: '1px solid rgba(255,255,255,0.2)',
+  border: '1px solid var(--color-border-strong)',
   background: 'var(--color-surface)',
   color: 'var(--color-text)',
   cursor: 'pointer',

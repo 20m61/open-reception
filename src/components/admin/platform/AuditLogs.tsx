@@ -65,7 +65,7 @@ export function AuditLogs() {
         <span>break-glass のみ表示（緊急権限の利用後レビュー）</span>
       </label>
 
-      {error ? <p style={{ color: '#e0a880' }}>{error}</p> : null}
+      {error ? <p style={{ color: 'var(--color-platform-warn)' }}>{error}</p> : null}
 
       {data && logs.length === 0 ? (
         <p style={{ opacity: 0.7 }}>
@@ -84,7 +84,7 @@ export function AuditLogs() {
           </thead>
           <tbody>
             {logs.map((log) => (
-              <tr key={log.id} style={{ borderTop: '1px solid rgba(255,255,255,0.08)' }}>
+              <tr key={log.id} style={{ borderTop: '1px solid var(--color-border)' }}>
                 <td style={{ padding: '6px 8px', opacity: 0.8 }}>{log.at}</td>
                 <td style={{ padding: '6px 8px' }}>
                   {log.action}
@@ -95,8 +95,8 @@ export function AuditLogs() {
                         padding: '1px 6px',
                         borderRadius: 6,
                         fontSize: '0.72rem',
-                        color: '#e66e6e',
-                        border: '1px solid rgba(230,110,110,0.5)',
+                        color: 'var(--color-platform-danger)',
+                        border: '1px solid color-mix(in srgb, var(--color-platform-danger) 50%, transparent)',
                       }}
                     >
                       break-glass

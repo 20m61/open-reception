@@ -3,7 +3,9 @@ import type { ReceptionLog } from './log';
 import {
   buildDashboardSummary,
   deriveOverallStatus,
+  filterWithinJstDays,
   recentCalls,
+  summarizeExperiencePeriods,
   summarizeToday,
   type DeviceSummary,
 } from './dashboard-summary';
@@ -125,6 +127,71 @@ describe('deriveOverallStatus (#86)', () => {
   });
 });
 
+describe('filterWithinJstDays (#319 期間指定)', () => {
+  // NOW = 2026-06-20T12:00:00Z（JST 06-20 21:00）。JST 暦日で「直近 N 日」を切る。
+  const logs: ReceptionLog[] = [
+    log({ id: 'today', outcome: 'connected', startedAt: '2026-06-20T09:00:00.000Z' }), // JST 06-20
+    log({ id: 'd5', outcome: 'connected', startedAt: '2026-06-15T09:00:00.000Z' }), // JST 06-15（7日窓内）
+    log({ id: 'd26', outcome: 'connected', startedAt: '2026-05-25T09:00:00.000Z' }), // JST 05-25（30日窓内・7日窓外）
+    log({ id: 'd41', outcome: 'connected', startedAt: '2026-05-10T09:00:00.000Z' }), // JST 05-10（全窓外）
+  ];
+
+  it('days=1 は本日のみ（summarizeToday と同じ JST 境界）', () => {
+    expect(filterWithinJstDays(logs, NOW, 1).map((l) => l.id)).toEqual(['today']);
+  });
+
+  it('days=7 は本日を含む直近7 JST 暦日', () => {
+    expect(filterWithinJstDays(logs, NOW, 7).map((l) => l.id).sort()).toEqual(['d5', 'today']);
+  });
+
+  it('days=30 は本日を含む直近30 JST 暦日（41日前は除外）', () => {
+    expect(filterWithinJstDays(logs, NOW, 30).map((l) => l.id).sort()).toEqual(['d26', 'd5', 'today']);
+  });
+
+  it('境界（開始日ちょうど）を含み、その前日を除外する', () => {
+    // days=7 → 最古の含有日は JST 06-14。06-14 は含み 06-13 は除外。
+    const boundary: ReceptionLog[] = [
+      log({ id: 'in', outcome: 'connected', startedAt: '2026-06-14T06:00:00.000Z' }), // JST 06-14 15:00
+      log({ id: 'out', outcome: 'connected', startedAt: '2026-06-13T06:00:00.000Z' }), // JST 06-13 15:00
+    ];
+    expect(filterWithinJstDays(boundary, NOW, 7).map((l) => l.id)).toEqual(['in']);
+  });
+
+  it('無効な now は空（graceful empty, #254 と同方針）', () => {
+    expect(filterWithinJstDays(logs, new Date('invalid'), 7)).toEqual([]);
+  });
+});
+
+describe('summarizeExperiencePeriods (#319 期間指定)', () => {
+  const withExp = (id: string, startedAt: string, timeToCallMs: number): ReceptionLog => ({
+    ...log({ id, outcome: 'connected', startedAt }),
+    experience: { timeToCallMs },
+  });
+  const logs: ReceptionLog[] = [
+    withExp('today', '2026-06-20T09:00:00.000Z', 10000), // 30s 以内
+    withExp('d5', '2026-06-15T09:00:00.000Z', 45000), // 30s 超
+    withExp('d26', '2026-05-25T09:00:00.000Z', 20000), // 30s 以内
+  ];
+
+  it('本日/直近7日/直近30日の 3 プリセットを返す', () => {
+    const periods = summarizeExperiencePeriods(logs, NOW);
+    expect(periods.map((p) => p.key)).toEqual(['today', 'last7d', 'last30d']);
+    expect(periods.map((p) => p.label)).toEqual(['本日', '直近7日', '直近30日']);
+    expect(periods.map((p) => p.days)).toEqual([1, 7, 30]);
+  });
+
+  it('各期間ごとに窓内ログだけで KPI を集計する（30 秒 KPI が期間で変わる）', () => {
+    const periods = summarizeExperiencePeriods(logs, NOW);
+    const kpiFor = (key: string) => periods.find((p) => p.key === key)?.kpi;
+    expect(kpiFor('today')?.total).toBe(1);
+    expect(kpiFor('today')?.callStartWithin30s).toEqual({ within: 1, reached: 1 });
+    expect(kpiFor('last7d')?.total).toBe(2);
+    expect(kpiFor('last7d')?.callStartWithin30s).toEqual({ within: 1, reached: 2 });
+    expect(kpiFor('last30d')?.total).toBe(3);
+    expect(kpiFor('last30d')?.callStartWithin30s).toEqual({ within: 2, reached: 3 });
+  });
+});
+
 describe('buildDashboardSummary (#86)', () => {
   it('履歴と端末から概況サマリ全体を組み立てる', () => {
     const logs: ReceptionLog[] = [
@@ -159,6 +226,19 @@ describe('buildDashboardSummary (#86)', () => {
     expect(summary.experience.measured).toBe(2);
     expect(summary.experience.callStartWithin30s).toEqual({ within: 1, reached: 2 });
     expect(summary.experience.callStartWithin30sRate).toBeCloseTo(0.5);
+  });
+
+  it('期間プリセット（本日/直近7日/直近30日）の体験 KPI を含み、experience は本日と一致する (#319)', () => {
+    const logs: ReceptionLog[] = [
+      { ...log({ id: 'a', outcome: 'connected', startedAt: '2026-06-20T09:00:00.000Z' }), experience: { timeToCallMs: 10000 } },
+      { ...log({ id: 'b', outcome: 'connected', startedAt: '2026-06-15T09:00:00.000Z' }), experience: { timeToCallMs: 45000 } },
+    ];
+    const summary = buildDashboardSummary(logs, fleet({ total: 1, online: 1 }), NOW);
+    expect(summary.experiencePeriods.map((p) => p.key)).toEqual(['today', 'last7d', 'last30d']);
+    // 本日プリセットは既存の experience（本日集計）と同一値。
+    expect(summary.experiencePeriods[0]?.kpi).toEqual(summary.experience);
+    expect(summary.experience.total).toBe(1);
+    expect(summary.experiencePeriods[1]?.kpi.total).toBe(2);
   });
 
   it('利用量/コスト概況を受け取ると含める (#86)', () => {

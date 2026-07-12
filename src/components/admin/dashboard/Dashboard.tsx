@@ -66,7 +66,7 @@ export function Dashboard() {
     );
   }
 
-  const { status, today, devices, recentCalls, usageCost, experience } = state.summary;
+  const { status, today, devices, recentCalls, usageCost, experience, experiencePeriods } = state.summary;
   const callProblem = today.failed + today.timeout;
   const yen = (n: number) => `¥${n.toLocaleString('ja-JP')}`;
 
@@ -97,7 +97,7 @@ export function Dashboard() {
       </Section>
 
       {/* 受付体験 KPI (#319)。rolling deploy 中の旧 API 形（experience なし）では表示しない。 */}
-      {experience ? <ExperienceKpiSection experience={experience} /> : null}
+      {experience ? <ExperienceKpiSection experience={experience} periods={experiencePeriods} /> : null}
 
       <Section title="受付端末">
         <CardGrid>

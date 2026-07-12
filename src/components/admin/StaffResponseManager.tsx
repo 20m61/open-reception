@@ -1,7 +1,7 @@
 'use client';
 
 import { useCallback, useEffect, useState } from 'react';
-import { Button, Card, Field } from '@/components/admin/ui';
+import { Button, Card, Field, SaveFeedback, useSaveFeedback } from '@/components/admin/ui';
 import { color, space } from '@/components/admin/ui/tokens';
 import type {
   ResolvedStaffResponseDefinition,
@@ -9,7 +9,7 @@ import type {
 } from '@/domain/reception/staff-response';
 
 /**
- * 担当者応答アクション設定 (issue #99, increment 2)。
+ * 担当者応答アクション設定 (issue #99, increment 2; 保存フィードバックは #330 item2 残増分)。
  *
  * テナント/サイト配下の応答種別ごとに「担当者が選べるか（有効/無効）」「来訪者へ表示する
  * 文言の上書き」を管理 API 経由で設定する。未設定の種別はドメイン既定にフォールバックする
@@ -17,6 +17,9 @@ import type {
  *
  * 無効化した種別は担当者 UI/エンドポイントで選べなくなり、上書き文言は受付端末の来訪者表示
  * に反映される（応答実行経路が本設定を尊重する）。
+ *
+ * 保存/失敗フィードバックは共有プリミティブ（`SaveFeedback`/`useSaveFeedback`）を使う
+ * （#330 item6 と同方針。これまで本画面は結果を一切表示しておらず操作後の無反応が課題だった）。
  */
 const DEFAULT_TENANT_ID = 'internal';
 const DEFAULT_SITE_ID = 'default-site';
@@ -39,6 +42,7 @@ export function StaffResponseManager({
   const [busy, setBusy] = useState(false);
   const [editingAction, setEditingAction] = useState<StaffResponseAction | null>(null);
   const [editMessage, setEditMessage] = useState('');
+  const { feedback, success, failure, clear } = useSaveFeedback();
 
   const load = useCallback(async () => {
     const res = await fetch(
@@ -55,9 +59,10 @@ export function StaffResponseManager({
   }, [load]);
 
   const patch = useCallback(
-    async (action: StaffResponseAction, body: Record<string, unknown>) => {
+    async (action: StaffResponseAction, body: Record<string, unknown>, successMessage?: string) => {
       if (busy) return;
       setBusy(true);
+      clear();
       try {
         const res = await fetch('/api/admin/staff-response', {
           method: 'PATCH',
@@ -67,16 +72,22 @@ export function StaffResponseManager({
         if (res.ok) {
           const data = (await res.json()) as ConfigView;
           setDefinitions(data.definitions);
+          success(successMessage);
+        } else {
+          failure();
         }
+      } catch {
+        failure('通信エラーのため保存に失敗しました。');
       } finally {
         setBusy(false);
       }
     },
-    [busy, tenantId, siteId],
+    [busy, tenantId, siteId, clear, success, failure],
   );
 
   const toggle = useCallback(
-    (d: ResolvedStaffResponseDefinition) => patch(d.action, { enabled: !d.enabled }),
+    (d: ResolvedStaffResponseDefinition) =>
+      patch(d.action, { enabled: !d.enabled }, d.enabled ? '無効化しました' : '有効化しました'),
     [patch],
   );
 
@@ -84,7 +95,11 @@ export function StaffResponseManager({
     async (action: StaffResponseAction) => {
       // 空文字を渡すと上書きを解除して既定へ戻す。
       const trimmed = editMessage.trim();
-      await patch(action, { messageOverride: trimmed.length === 0 ? null : trimmed });
+      await patch(
+        action,
+        { messageOverride: trimmed.length === 0 ? null : trimmed },
+        '表示文言を保存しました',
+      );
       setEditingAction(null);
       setEditMessage('');
     },
@@ -92,7 +107,7 @@ export function StaffResponseManager({
   );
 
   const resetMessage = useCallback(
-    (action: StaffResponseAction) => patch(action, { messageOverride: null }),
+    (action: StaffResponseAction) => patch(action, { messageOverride: null }, '既定の文言に戻しました'),
     [patch],
   );
 
@@ -104,6 +119,14 @@ export function StaffResponseManager({
         アクションの有効/無効と、来訪者向けに表示する文言を設定します。無効にした応答は担当者
         画面に表示されず、文言の上書きは受付端末の来訪者表示に反映されます。
       </p>
+
+      <div style={{ marginBottom: space.sm }}>
+        <SaveFeedback
+          feedback={feedback}
+          successTestId="staff-response-config-saved"
+          errorTestId="staff-response-config-error"
+        />
+      </div>
 
       <div
         data-testid="staff-response-config-list"

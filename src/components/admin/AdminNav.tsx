@@ -87,7 +87,7 @@ function NavLink({
     >
       <span style={{ flex: 1 }}>{item.label}</span>
       {item.danger ? (
-        <span aria-label="危険操作を含む" title="危険操作を含む" style={{ color: '#f87171' }}>
+        <span aria-label="危険操作を含む" title="危険操作を含む" style={{ color: 'var(--color-danger)' }}>
           ⚠
         </span>
       ) : null}

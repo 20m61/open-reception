@@ -115,7 +115,7 @@ export function MaintenanceStatus() {
         広いため、確認・昇格・監査を伴う導線に隔離します。
       </p>
 
-      {error ? <p style={{ color: '#e0a880' }}>{error}</p> : null}
+      {error ? <p style={{ color: 'var(--color-platform-warn)' }}>{error}</p> : null}
 
       <div style={{ display: 'flex', gap: 'var(--space-md)', flexWrap: 'wrap', marginBottom: 'var(--space-md)' }}>
         <MetricCard
@@ -141,7 +141,7 @@ export function MaintenanceStatus() {
         </thead>
         <tbody>
           {(data?.summary.devices ?? []).map((d) => (
-            <tr key={d.deviceId} style={{ borderTop: '1px solid rgba(255,255,255,0.08)' }}>
+            <tr key={d.deviceId} style={{ borderTop: '1px solid var(--color-border)' }}>
               <td style={{ padding: '6px 8px' }}>{d.tenantName}</td>
               <td style={{ padding: '6px 8px' }}>{d.deviceName}</td>
               <td style={{ padding: '6px 8px', opacity: 0.7 }}>{d.siteId}</td>
@@ -168,7 +168,7 @@ export function MaintenanceStatus() {
             {(data?.incidents.incidents ?? []).map((i) => (
               <tr
                 key={i.id}
-                style={{ borderTop: '1px solid rgba(255,255,255,0.08)', opacity: i.active ? 1 : 0.55 }}
+                style={{ borderTop: '1px solid var(--color-border)', opacity: i.active ? 1 : 0.55 }}
               >
                 <td style={{ padding: '6px 8px' }}>{SEVERITY_LABEL[i.severity]}</td>
                 <td style={{ padding: '6px 8px', opacity: 0.8 }}>{STATUS_LABEL[i.status]}</td>
@@ -200,7 +200,7 @@ export function MaintenanceStatus() {
             {(data?.windows.windows ?? []).map((w) => (
               <tr
                 key={w.id}
-                style={{ borderTop: '1px solid rgba(255,255,255,0.08)', opacity: w.open ? 1 : 0.55 }}
+                style={{ borderTop: '1px solid var(--color-border)', opacity: w.open ? 1 : 0.55 }}
               >
                 <td style={{ padding: '6px 8px' }}>{WINDOW_STATUS_LABEL[w.status]}</td>
                 <td style={{ padding: '6px 8px', opacity: 0.7 }}>{windowScopeLabel(w)}</td>
@@ -232,7 +232,7 @@ export function MaintenanceStatus() {
             {(data?.notices.notices ?? []).map((n) => (
               <tr
                 key={n.id}
-                style={{ borderTop: '1px solid rgba(255,255,255,0.08)', opacity: n.active ? 1 : 0.55 }}
+                style={{ borderTop: '1px solid var(--color-border)', opacity: n.active ? 1 : 0.55 }}
               >
                 <td style={{ padding: '6px 8px' }}>{NOTICE_LEVEL_LABEL[n.level]}</td>
                 <td style={{ padding: '6px 8px', opacity: 0.8 }}>{NOTICE_STATUS_LABEL[n.status]}</td>

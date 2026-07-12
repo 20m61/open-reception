@@ -81,7 +81,7 @@ const ghost: React.CSSProperties = {
   minHeight: 40,
   padding: '6px 14px',
   borderRadius: 8,
-  border: '1px solid rgba(255,255,255,0.2)',
+  border: '1px solid var(--color-border-strong)',
   background: 'var(--color-surface)',
   color: 'var(--color-text)',
   cursor: 'pointer',
@@ -92,7 +92,7 @@ const primary: React.CSSProperties = {
   borderRadius: 8,
   border: 'none',
   background: 'var(--color-accent)',
-  color: '#0f172a',
+  color: 'var(--color-bg-2)',
   fontWeight: 700,
   cursor: 'pointer',
 };

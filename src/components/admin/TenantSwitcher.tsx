@@ -75,7 +75,7 @@ export function TenantSwitcher({
           borderRadius: 999,
           background: 'var(--color-surface-2)',
           color: 'var(--color-text)',
-          border: '1px solid rgba(255,255,255,0.15)',
+          border: '1px solid var(--color-border-strong)',
         }}
       >
         {options.map((o) => (

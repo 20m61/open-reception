@@ -83,20 +83,27 @@
 
 ## 4. 表示
 
-- テナント管理ダッシュボード `/admin/dashboard`: 「受付体験 KPI（本日）」セクション
+- テナント管理ダッシュボード `/admin/dashboard`: 「受付体験 KPI」セクション
   （`src/components/admin/dashboard/ExperienceKpiSection.tsx`）で 30 秒 KPI・完遂率・中央値・
   ステップ別ファネル・入力手段を表示する。管理画面ラベルは日本語のまま（kiosk 向けではないため
   i18n 対象外）。
-- **期間指定**: 同じ `summarizeExperience` を任意期間で絞ったログへ適用して実現する
-  （ストアの `listReceptionLogsSince` で境界取得）。既定表示は本日。任意期間ピッカー UI は次増分。
+- **期間指定** (AC「30 秒以内呼び出し開始率が期間指定で見られる」): 集約 API
+  `/api/admin/dashboard` が **本日 / 直近7日 / 直近30日** を JST 暦日境界で集計した
+  `experiencePeriods`（`summarizeExperiencePeriods`, `src/domain/reception/dashboard-summary.ts`）
+  を返し、ダッシュボードのセクション内セレクタで表示期間を切り替える（**追加 API を叩かない**＝
+  集約 API 1 本の方針を維持）。各期間は同一の純関数 `summarizeExperience` を期間フィルタ済み
+  ログへ適用するため、分子/分母の定義が期間間で食い違わない。既定表示は本日。`experience`
+  フィールドは本日プリセットと同値（rolling deploy 中の旧クライアント互換）。任意の from–to
+  カスタム期間ピッカー（境界取得は `listReceptionLogsSince`）は将来増分。
 
 ## 5. スコープと次増分
 
 - 本増分（#319）: `experience` スキーマ（optional・PII-free）、計測（KioskFlow）、KPI 純関数と
   ダッシュボード表示、テナント横断サマリ、本 KPI 定義。呼び出し到達時に `experience` を作成 API へ
   同送する（現サーバは未知フィールドとして無視。**非破壊・前方互換**）。
-- **次増分**: サーバ側での `experience` 永続化（作成 API/セッション/`deriveReceptionLog` は
-  optional 引数受け入れ済み）。呼び出しへ到達しない**離脱受付**（用件/担当選択・入力・確認での
-  無操作リセット/キャンセル）は現状サーバレコードが無いため、専用の軽量テレメトリ経路
-  （sendBeacon 等）で `abandonedAtStep` を含めて収集する。任意期間ピッカー UI。QR 受付
+- **本増分（#319 期間指定）**: ダッシュボードの期間指定表示（本日/直近7日/直近30日プリセット・
+  `experiencePeriods`）。集約 API 1 本のままクライアントで期間切替。
+- **次増分**: 呼び出しへ到達しない**離脱受付**（用件/担当選択・入力・確認での無操作リセット/
+  キャンセル）は現状サーバレコードが無いため、専用の軽量テレメトリ経路（sendBeacon 等）で
+  `abandonedAtStep` を含めて収集する。任意の from–to カスタム期間ピッカー UI。QR 受付
   （CheckinFlow）の `inputMethod='qr'` 計測。

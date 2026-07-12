@@ -73,7 +73,7 @@ export function TenantDetail({ tenantId }: { tenantId: string }) {
         表示しません。有効/停止は破壊的操作のため、影響範囲の確認と理由入力を伴う確認フローで実行します。
       </p>
 
-      {error ? <p style={{ color: '#e0a880' }}>{error}</p> : null}
+      {error ? <p style={{ color: 'var(--color-platform-warn)' }}>{error}</p> : null}
 
       <div style={{ display: 'flex', gap: 'var(--space-md)', flexWrap: 'wrap', marginBottom: 'var(--space-md)' }}>
         <MetricCard label="slug" value={data ? data.slug : '—'} />
@@ -95,7 +95,7 @@ export function TenantDetail({ tenantId }: { tenantId: string }) {
         </thead>
         <tbody>
           {(data?.sites ?? []).map((s) => (
-            <tr key={s.id} style={{ borderTop: '1px solid rgba(255,255,255,0.08)' }}>
+            <tr key={s.id} style={{ borderTop: '1px solid var(--color-border)' }}>
               <td style={{ padding: '6px 8px' }}>{s.name}</td>
               <td style={{ padding: '6px 8px' }}>
                 <StatusBadge status={s.status} />

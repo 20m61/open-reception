@@ -68,6 +68,30 @@ export type UsageCostSummary = {
   currency: 'JPY';
 };
 
+/** ダッシュボードの体験 KPI 期間プリセットのキー (issue #319)。 */
+export type ExperiencePeriodKey = 'today' | 'last7d' | 'last30d';
+
+/** 期間プリセットごとの体験 KPI（ダッシュボードの期間指定表示用）。 */
+export type ExperiencePeriodKpi = {
+  key: ExperiencePeriodKey;
+  /** 管理画面表示ラベル（日本語・i18n 対象外）。 */
+  label: string;
+  /** 対象の JST 暦日数（本日を含む直近 N 日。today=1）。 */
+  days: number;
+  /** その期間に絞ったログの体験 KPI。 */
+  kpi: ExperienceKpi;
+};
+
+/**
+ * 期間プリセット定義 (issue #319 AC「期間指定で見られる」)。JST 暦日で「本日を含む直近 N 日」を切る。
+ * 定義はここ 1 箇所に集約し、ラベル/日数を集計と表示で共有する。
+ */
+const EXPERIENCE_PERIOD_DEFS: readonly { key: ExperiencePeriodKey; label: string; days: number }[] = [
+  { key: 'today', label: '本日', days: 1 },
+  { key: 'last7d', label: '直近7日', days: 7 },
+  { key: 'last30d', label: '直近30日', days: 30 },
+];
+
 export type DashboardSummary = {
   status: OverallStatus;
   today: TodayCounts;
@@ -78,20 +102,64 @@ export type DashboardSummary = {
   /**
    * 本日（JST）の受付体験 KPI (issue #319)。30 秒以内呼び出し開始率・完遂率・中央値所要・
    * ステップ別ファネル。体験メトリクスを持つログのみ 30 秒 KPI/ファネルの対象になる。
-   * 期間指定表示は同じ summarizeExperience を期間フィルタ済みログに適用して実現する（次増分で UI）。
+   * 期間指定表示は `experiencePeriods` で提供する（本フィールドは本日プリセットと同値・後方互換）。
    */
   experience: ExperienceKpi;
+  /**
+   * 期間指定の体験 KPI プリセット (issue #319 AC)。本日/直近7日/直近30日を JST 暦日境界で集計する。
+   * クライアントは追加 API を叩かず、これらの中から表示期間を切り替える（集約 API 1 本の方針を維持）。
+   */
+  experiencePeriods: ExperiencePeriodKpi[];
 };
 
 // 「本日」は **JST** で判定する (issue #254)。ランタイムの TZ に依存させない（Lambda/OpenNext は
 // UTC のため、サーバローカル暦日だと JST 早朝/深夜の受付が別日に計上されてしまう）。日付境界の
 // ロジックは domain/util/jst に集約（usage/cost の「今月/トレンド」と JST 境界を揃えるため）。
 
-/** 受付履歴から本日（JST）分のみを抽出する。無効な now は本日なし（graceful empty）。 */
-function filterToday(logs: readonly ReceptionLog[], now: Date): ReceptionLog[] {
+const DAY_MS = 24 * 60 * 60 * 1000;
+
+/**
+ * 受付履歴から「本日を含む直近 `days` JST 暦日」に入るものだけを抽出する (issue #319)。
+ *
+ * JST 暦日境界で判定する（#254 の `jstDayKey` と揃える）。`days` 日分を含む最古の暦日は
+ * `now - (days-1)日` の JST 暦日。JST は固定オフセット（DST なし）のため 24h 倍数の減算で
+ * 時刻を保ったまま暦日だけがずれ、境界が正確。無効な now / startedAt は除外（graceful empty）。
+ */
+export function filterWithinJstDays(
+  logs: readonly ReceptionLog[],
+  now: Date,
+  days: number,
+): ReceptionLog[] {
   const nowKey = jstDayKey(now.getTime());
   if (nowKey === null) return [];
-  return logs.filter((log) => jstDayKey(new Date(log.startedAt).getTime()) === nowKey);
+  const minKey = jstDayKey(now.getTime() - Math.max(0, days - 1) * DAY_MS);
+  if (minKey === null) return [];
+  return logs.filter((log) => {
+    const key = jstDayKey(new Date(log.startedAt).getTime());
+    return key !== null && key >= minKey && key <= nowKey;
+  });
+}
+
+/** 受付履歴から本日（JST）分のみを抽出する。無効な now は本日なし（graceful empty）。 */
+function filterToday(logs: readonly ReceptionLog[], now: Date): ReceptionLog[] {
+  return filterWithinJstDays(logs, now, 1);
+}
+
+/**
+ * 期間プリセット（本日/直近7日/直近30日）ごとの体験 KPI を集計する (issue #319 AC「期間指定」)。
+ * 各期間で JST 暦日境界に絞ったログへ同一の純関数 `summarizeExperience` を適用する
+ * （分子/分母の定義を期間間で食い違わせない）。
+ */
+export function summarizeExperiencePeriods(
+  logs: readonly ReceptionLog[],
+  now: Date = new Date(),
+): ExperiencePeriodKpi[] {
+  return EXPERIENCE_PERIOD_DEFS.map(({ key, label, days }) => ({
+    key,
+    label,
+    days,
+    kpi: summarizeExperience(filterWithinJstDays(logs, now, days)),
+  }));
 }
 
 /** 本日の受付件数・呼び出し成否を集計する。 */
@@ -157,13 +225,17 @@ export function buildDashboardSummary(
   usageCost: UsageCostSummary | null = null,
 ): DashboardSummary {
   const today = summarizeToday(logs, now);
+  // 体験 KPI は期間プリセット（本日/直近7日/直近30日）を JST 暦日境界で集計する（#254/#319）。
+  // `experience` は本日プリセットと同値（後方互換：既存 UI／rolling deploy 中の旧クライアント向け）。
+  const experiencePeriods = summarizeExperiencePeriods(logs, now);
+  const experience = experiencePeriods[0]?.kpi ?? summarizeExperience(filterToday(logs, now));
   return {
     status: deriveOverallStatus(today, devices),
     today,
     devices,
     recentCalls: recentCalls(logs),
     usageCost,
-    // 体験 KPI は「本日（JST）」に絞ったログで集計する（件数集計と同じ境界, #254/#319）。
-    experience: summarizeExperience(filterToday(logs, now)),
+    experience,
+    experiencePeriods,
   };
 }

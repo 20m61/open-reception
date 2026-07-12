@@ -27,7 +27,7 @@ export function MetricCard({
         background: 'var(--color-surface)',
         borderRadius: 12,
         padding: 'var(--space-md)',
-        border: '1px solid rgba(255,255,255,0.1)',
+        border: '1px solid var(--color-border)',
         minWidth: 160,
       }}
     >
@@ -53,8 +53,8 @@ export function StatusBadge({ status }: { status: 'active' | 'suspended' }) {
         fontSize: '0.75rem',
         padding: '2px 8px',
         borderRadius: 999,
-        background: active ? 'rgba(80,200,120,0.18)' : 'rgba(200,120,80,0.18)',
-        color: active ? '#7fe0a0' : '#e0a880',
+        background: active ? 'color-mix(in srgb, var(--color-platform-ok) 18%, transparent)' : 'color-mix(in srgb, var(--color-platform-warn) 18%, transparent)',
+        color: active ? 'var(--color-platform-ok)' : 'var(--color-platform-warn)',
       }}
     >
       {active ? '稼働中' : '停止中'}
@@ -71,10 +71,10 @@ export function DangerActionPlaceholder({ label }: { label: string }) {
     <div
       role="note"
       style={{
-        border: '1px dashed rgba(224,168,128,0.5)',
+        border: '1px dashed color-mix(in srgb, var(--color-platform-warn) 50%, transparent)',
         borderRadius: 10,
         padding: 'var(--space-md)',
-        color: '#e0a880',
+        color: 'var(--color-platform-warn)',
         fontSize: '0.85rem',
       }}
     >

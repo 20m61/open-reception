@@ -44,7 +44,7 @@ export function TenantList() {
         伴って実装します。
       </p>
 
-      {error ? <p style={{ color: '#e0a880' }}>{error}</p> : null}
+      {error ? <p style={{ color: 'var(--color-platform-warn)' }}>{error}</p> : null}
 
       <div style={{ display: 'flex', gap: 'var(--space-md)', flexWrap: 'wrap', marginBottom: 'var(--space-md)' }}>
         <MetricCard label="全テナント数" value={data ? data.summary.total : '—'} />
@@ -63,7 +63,7 @@ export function TenantList() {
         </thead>
         <tbody>
           {(data?.tenants ?? []).map((t) => (
-            <tr key={t.id} style={{ borderTop: '1px solid rgba(255,255,255,0.08)' }}>
+            <tr key={t.id} style={{ borderTop: '1px solid var(--color-border)' }}>
               <td style={{ padding: '6px 8px' }}>
                 <Link href={`/platform/tenants/${encodeURIComponent(t.id)}`}>{t.name}</Link>
               </td>

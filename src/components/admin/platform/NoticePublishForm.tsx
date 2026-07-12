@@ -66,7 +66,7 @@ export function NoticePublishForm({ onPublished }: { onPublished?: () => void })
 
   const inputStyle = {
     background: 'var(--color-surface-2)',
-    border: '1px solid rgba(255,255,255,0.15)',
+    border: '1px solid var(--color-border-strong)',
     borderRadius: 8,
     padding: '6px 10px',
     color: 'inherit',
@@ -80,7 +80,7 @@ export function NoticePublishForm({ onPublished }: { onPublished?: () => void })
       onSubmit={(e) => void submit(e)}
       data-testid="notice-publish-form"
       style={{
-        border: '1px solid rgba(224,168,128,0.4)',
+        border: '1px solid color-mix(in srgb, var(--color-platform-warn) 40%, transparent)',
         borderRadius: 10,
         padding: 'var(--space-md)',
         display: 'grid',
@@ -88,7 +88,7 @@ export function NoticePublishForm({ onPublished }: { onPublished?: () => void })
         fontSize: '0.85rem',
       }}
     >
-      <strong style={{ color: '#e0a880' }}>お知らせを登録（昇格が必要な操作）</strong>
+      <strong style={{ color: 'var(--color-platform-warn)' }}>お知らせを登録（昇格が必要な操作）</strong>
       <p style={{ margin: 0, opacity: 0.7 }}>
         全テナントの管理画面に掲示されます（対象: プラットフォーム全体）。実行には JIT
         昇格が必要で、操作理由とともに監査に記録されます。件名・本文に個人情報や機密値を書かないでください。
@@ -146,19 +146,19 @@ export function NoticePublishForm({ onPublished }: { onPublished?: () => void })
       </div>
 
       {error ? (
-        <p role="alert" style={{ color: '#e0a880', margin: 0 }}>
+        <p role="alert" style={{ color: 'var(--color-platform-warn)', margin: 0 }}>
           {error.message}
           {error.needsElevation ? (
             <>
               {' '}
-              <a href="#platform-elevation" style={{ color: '#e0a880', textDecoration: 'underline' }}>
+              <a href="#platform-elevation" style={{ color: 'var(--color-platform-warn)', textDecoration: 'underline' }}>
                 画面上部の「JIT 昇格」パネルから昇格する
               </a>
             </>
           ) : null}
         </p>
       ) : null}
-      {done ? <p style={{ color: '#7fe0a0', margin: 0 }}>{done}</p> : null}
+      {done ? <p style={{ color: 'var(--color-platform-ok)', margin: 0 }}>{done}</p> : null}
     </form>
   );
 }

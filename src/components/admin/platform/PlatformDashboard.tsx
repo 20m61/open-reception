@@ -56,7 +56,7 @@ export function PlatformDashboard() {
         対象テナントは画面上部に常時明示しています（全テナント横断）。
       </p>
 
-      {error ? <p style={{ color: '#e0a880' }}>{error}</p> : null}
+      {error ? <p style={{ color: 'var(--color-platform-warn)' }}>{error}</p> : null}
 
       <h2 style={{ fontSize: '1rem', opacity: 0.7 }}>テナント稼働</h2>
       <div style={{ display: 'flex', gap: 'var(--space-md)', flexWrap: 'wrap' }}>

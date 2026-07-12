@@ -32,6 +32,15 @@ export const color = {
    */
   border: 'var(--color-border)',
   borderStrong: 'var(--color-border-strong)',
+  /**
+   * プラットフォーム運用コンソール（superadmin 危険域）のセマンティック色 (#329)。
+   * globals.css の `--color-platform-*` を単一ソースとして参照する。半透明は消費側で
+   * `color-mix(in srgb, var(--color-platform-*) N%, transparent)` として導出する
+   * （旧直値 #e0a880 / #e66e6e / #7fe0a0 と可変 alpha rgba を集約）。
+   */
+  platformWarn: 'var(--color-platform-warn)',
+  platformDanger: 'var(--color-platform-danger)',
+  platformOk: 'var(--color-platform-ok)',
 } as const;
 
 /**

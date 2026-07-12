@@ -154,7 +154,7 @@ export function ElevationStatus({ initial }: { initial: ElevationView | null }) 
 
   const inputStyle = {
     background: 'var(--color-surface-2)',
-    border: '1px solid rgba(255,255,255,0.15)',
+    border: '1px solid var(--color-border-strong)',
     borderRadius: 8,
     padding: '6px 10px',
     color: 'inherit',
@@ -171,14 +171,14 @@ export function ElevationStatus({ initial }: { initial: ElevationView | null }) 
       data-testid="elevation-status"
       style={{
         border: activeBreakGlass
-          ? '1px solid rgba(230,110,110,0.75)'
+          ? '1px solid color-mix(in srgb, var(--color-platform-danger) 75%, transparent)'
           : active
-            ? '1px solid rgba(224,168,128,0.6)'
-            : '1px solid rgba(255,255,255,0.12)',
+            ? '1px solid color-mix(in srgb, var(--color-platform-warn) 60%, transparent)'
+            : '1px solid var(--color-border-strong)',
         background: activeBreakGlass
-          ? 'rgba(230,110,110,0.1)'
+          ? 'color-mix(in srgb, var(--color-platform-danger) 10%, transparent)'
           : active
-            ? 'rgba(224,168,128,0.08)'
+            ? 'color-mix(in srgb, var(--color-platform-warn) 8%, transparent)'
             : 'var(--color-surface)',
         borderRadius: 12,
         padding: 'var(--space-md)',
@@ -187,7 +187,7 @@ export function ElevationStatus({ initial }: { initial: ElevationView | null }) 
       }}
     >
       <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-md)', flexWrap: 'wrap' }}>
-        <strong style={{ color: activeBreakGlass ? '#e66e6e' : active ? '#e0a880' : undefined }}>
+        <strong style={{ color: activeBreakGlass ? 'var(--color-platform-danger)' : active ? 'var(--color-platform-warn)' : undefined }}>
           {activeBreakGlass
             ? 'BREAK-GLASS 昇格中（緊急）'
             : active
@@ -247,7 +247,7 @@ export function ElevationStatus({ initial }: { initial: ElevationView | null }) 
 
       {active && elevation ? (
         activeBreakGlass ? (
-          <p style={{ color: '#e66e6e', margin: 'var(--space-sm) 0 0' }}>
+          <p style={{ color: 'var(--color-platform-danger)', margin: 'var(--space-sm) 0 0' }}>
             緊急権限で操作しています。この間のすべての操作は高重要度監査に記録され、利用後レビューの
             対象です（15 分で自動失効・不要になったら直ちに終了してください）。
           </p>
@@ -305,8 +305,8 @@ export function ElevationStatus({ initial }: { initial: ElevationView | null }) 
           onSubmit={(e) => void submitBreakGlass(e)}
           data-testid="break-glass-panel"
           style={{
-            border: '1px solid rgba(230,110,110,0.5)',
-            background: 'rgba(230,110,110,0.06)',
+            border: '1px solid color-mix(in srgb, var(--color-platform-danger) 50%, transparent)',
+            background: 'color-mix(in srgb, var(--color-platform-danger) 6%, transparent)',
             borderRadius: 8,
             padding: 'var(--space-md)',
             marginTop: 'var(--space-sm)',
@@ -315,7 +315,7 @@ export function ElevationStatus({ initial }: { initial: ElevationView | null }) 
             gap: 'var(--space-sm)',
           }}
         >
-          <strong style={{ color: '#e66e6e' }}>break-glass（緊急権限）— 障害時のみ</strong>
+          <strong style={{ color: 'var(--color-platform-danger)' }}>break-glass（緊急権限）— 障害時のみ</strong>
           <p style={{ margin: 0, opacity: 0.8 }}>
             通常の JIT 昇格と分離された緊急経路です。窓は 15 分固定・すべての操作が高重要度監査に
             記録され、利用後レビューの対象になります。平常時の作業には通常の「昇格を開始」を使ってください。
@@ -353,7 +353,7 @@ export function ElevationStatus({ initial }: { initial: ElevationView | null }) 
             <button
               type="submit"
               disabled={busy || !bgAcknowledged}
-              style={{ ...inputStyle, cursor: 'pointer', borderColor: 'rgba(230,110,110,0.6)' }}
+              style={{ ...inputStyle, cursor: 'pointer', borderColor: 'color-mix(in srgb, var(--color-platform-danger) 60%, transparent)' }}
             >
               {busy ? '発行中…' : '緊急権限を発行する'}
             </button>
@@ -373,7 +373,7 @@ export function ElevationStatus({ initial }: { initial: ElevationView | null }) 
       ) : null}
 
       {error ? (
-        <p role="alert" style={{ color: '#e0a880', margin: 'var(--space-sm) 0 0' }}>
+        <p role="alert" style={{ color: 'var(--color-platform-warn)', margin: 'var(--space-sm) 0 0' }}>
           {error}
         </p>
       ) : null}

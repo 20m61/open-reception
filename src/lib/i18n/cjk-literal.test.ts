@@ -18,4 +18,24 @@ describe('kiosk 配下の生 CJK リテラル (#327)', () => {
   it('退館チェックアウト (checkout/**) は例外なしで完全に検証される', () => {
     expect(CJK_EXCEPTION_ALLOWLIST.some((p) => p.includes('/checkout/'))).toBe(false);
   });
+
+  it('待機サイネージ (SignageDisplay.tsx) は例外なしで完全に検証される (#327 2nd increment)', () => {
+    expect(
+      CJK_EXCEPTION_ALLOWLIST.includes('src/components/kiosk/signage/SignageDisplay.tsx'),
+    ).toBe(false);
+  });
+
+  it('走査対象は components/kiosk と app/kiosk の両方に及ぶ（app router ページの棚卸し漏れを防ぐ）', () => {
+    // enroll/page.tsx は端末プロビジョニング画面（来訪者向け多言語導線の対象外）で明示除外。
+    // layout.tsx はブラウザタブタイトルのみで画面本文ではないため明示除外。それ以外の
+    // src/app/kiosk 配下（checkout/page.tsx・signage/page.tsx・page.tsx）は例外なしで検証される。
+    expect(CJK_EXCEPTION_ALLOWLIST).toContain('src/app/kiosk/enroll/page.tsx');
+    expect(CJK_EXCEPTION_ALLOWLIST).toContain('src/app/kiosk/layout.tsx');
+    expect(CJK_EXCEPTION_ALLOWLIST.some((p) => p === 'src/app/kiosk/checkout/page.tsx')).toBe(
+      false,
+    );
+    expect(CJK_EXCEPTION_ALLOWLIST.some((p) => p === 'src/app/kiosk/signage/page.tsx')).toBe(
+      false,
+    );
+  });
 });

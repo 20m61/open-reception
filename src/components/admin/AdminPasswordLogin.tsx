@@ -74,7 +74,7 @@ export function AdminPasswordLogin() {
               padding: 0,
               border: 'none',
               background: 'transparent',
-              color: 'var(--color-muted, #94a3b8)',
+              color: 'var(--color-muted)',
               cursor: 'pointer',
             }}
           >
@@ -96,7 +96,7 @@ export function AdminPasswordLogin() {
           borderRadius: 8,
           border: 'none',
           background: 'var(--color-accent)',
-          color: '#0f172a',
+          color: 'var(--color-bg-2)',
           fontWeight: 700,
           cursor: 'pointer',
         }}

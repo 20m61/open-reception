@@ -1070,18 +1070,29 @@ function SignageWaitingView({
   presenceEnabled: boolean;
   onTogglePresence: () => void;
   presenceStatus: PresenceCameraStatus;
-  /** 退館チェックアウト導線 (CheckoutLink) の表示言語 (#327)。 */
+  /**
+   * 表示言語 (#327)。埋め込み SignageDisplay・退館チェックアウト導線 (CheckoutLink)・
+   * QR 受付/来訪検知トグルの各文言に共通で使う（以前は SignageDisplay と QR/来訪検知の
+   * 2 箇所が locale に連動しない翻訳漏れだった）。
+   */
   locale: Locale;
 }) {
+  const tr = makeT(locale);
   return (
     <div data-testid="kiosk-signage-waiting" style={{ position: 'relative', minHeight: '100%' }}>
-      <SignageDisplay onStart={onStart} />
+      <SignageDisplay onStart={onStart} locale={locale} />
       <div
         className="screen__footer"
         style={{ position: 'absolute', bottom: 'var(--space-md)', left: 0, right: 0, justifyContent: 'center', gap: 'var(--space-sm)', flexWrap: 'wrap' }}
       >
-        <button type="button" className="btn btn--secondary" data-testid="signage-start-checkin" onClick={onStartCheckin}>
-          QR で受付
+        <button
+          type="button"
+          className="btn btn--secondary"
+          data-testid="signage-start-checkin"
+          lang={locale}
+          onClick={onStartCheckin}
+        >
+          {tr('kiosk.action.checkin.label')}
         </button>
         <CheckoutLink locale={locale} />
         <button
@@ -1089,13 +1100,14 @@ function SignageWaitingView({
           className="btn btn--ghost"
           data-testid="presence-toggle"
           aria-pressed={presenceEnabled}
+          lang={locale}
           onClick={onTogglePresence}
         >
           {presenceEnabled
             ? presenceStatus === 'unavailable'
-              ? '来訪検知: 利用不可'
-              : '来訪検知: ON'
-            : '来訪検知: OFF'}
+              ? tr('kiosk.signage.presenceUnavailable')
+              : tr('kiosk.signage.presenceOn')
+            : tr('kiosk.signage.presenceOff')}
         </button>
       </div>
     </div>
