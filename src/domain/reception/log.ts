@@ -214,6 +214,10 @@ export type AuditAction =
   // 退館チェックアウト・滞在状態管理 (issue #102)。PII は残さない。
   | 'visitor.checked_out'
   | 'stay.updated'
+  // 来訪者の自己特定による退館 (issue #328)。QR/短コードで本人が退館した記録。
+  // 誤退館調査のため staff/admin 退館（visitor.checked_out）と区別する。
+  // metadata は method（'qr'|'code'）と状態のみ。token/code/PII は残さない。
+  | 'visitor.checkout_self_identified'
   // AI 案内 → 担当者/有人切替 (issue #104)。会話内容・PII は残さない。
   // 引き継ぎ要求が出たことと、その理由種別（metadata.reason）のみを記録する。
   | 'ai_guidance.escalated'

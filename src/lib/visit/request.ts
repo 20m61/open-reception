@@ -12,6 +12,7 @@ import { asSiteId, asTenantId, type SiteId, type TenantId } from '@/domain/tenan
 import { asStayId, type StayId } from '@/domain/visit/types';
 import type { CheckoutFailureReason } from './kiosk-service';
 import type { ServiceResult } from './service';
+import type { CheckoutResolveInput, CheckoutResolveReason } from './checkout-credential';
 
 // actor 解決の実装は中央モジュールへ集約。route から使うため re-export する。
 export { resolveAdminActor } from '@/lib/auth/actor';
@@ -31,6 +32,40 @@ const STATUS_BY_REASON: Record<CheckoutFailureReason, number> = {
 
 export function checkoutFailureResponse(reason: CheckoutFailureReason): NextResponse {
   return NextResponse.json({ error: reason }, { status: STATUS_BY_REASON[reason] });
+}
+
+/** 退館クレデンシャル解決/確定の失敗理由ごとの HTTP ステータス (issue #328)。 */
+const STATUS_BY_SELFID_REASON: Record<CheckoutResolveReason, number> = {
+  invalid: 400,
+  not_found: 404,
+  expired: 410,
+  locked: 429,
+  label_mismatch: 409,
+  already_checked_out: 409,
+};
+
+export function checkoutSelfIdFailureResponse(reason: CheckoutResolveReason): NextResponse {
+  return NextResponse.json({ error: reason }, { status: STATUS_BY_SELFID_REASON[reason] });
+}
+
+/**
+ * 退館の自己特定入力（QR token or code+ラベル）をリクエストボディから取り出す (issue #328)。
+ * - `payload`（文字列）があれば QR token 経路。
+ * - なければ `code`（文字列）を code 経路として扱い、`targetLabel` を併せて取る。
+ * どちらの手掛かりも無ければ null。PII は受け取らない（token/code/label のみ）。
+ */
+export function readCheckoutResolveInput(body: unknown): CheckoutResolveInput | null {
+  if (typeof body !== 'object' || body === null) return null;
+  const o = body as Record<string, unknown>;
+  if (typeof o.payload === 'string') return { kind: 'token', payload: o.payload };
+  if (typeof o.code === 'string') {
+    return {
+      kind: 'code',
+      code: o.code,
+      targetLabel: typeof o.targetLabel === 'string' ? o.targetLabel : '',
+    };
+  }
+  return null;
 }
 
 /** リクエストボディから受付番号（stayId）を取り出す。 */

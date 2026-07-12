@@ -10,31 +10,33 @@ import {
 import { LanguageSwitcher } from '../LanguageSwitcher';
 import {
   CHECKOUT_FAILURE_MESSAGE,
-  type CheckoutFlowState,
+  type CheckoutMethod,
+  type CheckoutSelfIdSummary,
   type PresentStaySummary,
 } from './logic';
+import { CHECKOUT_TOKEN_QUERY, normalizeCheckoutCode } from './self-id';
 
 /**
- * 受付端末の退館チェックアウトフロー (issue #102, increment 1 / #327 i18n 化)。
+ * 受付端末の退館チェックアウトフロー — 自己特定 再設計 (issue #328、#102/#327 の上に再設計)。
  *
- * KioskFlow には組み込まない**スタンドアロン**の退館導線（/kiosk/checkout）。
- *   1. 在館中一覧から選ぶ、または受付番号を入力する。
- *   2. 退館を確定する（/api/kiosk/checkout、kiosk セッション保護）。
- *   3. 完了画面は「退館を受け付けました」のみ表示し、個人情報を残さない。
- *      一定時間で入力画面へ自動リセットする（次の来訪者に情報を残さない）。
+ * 旧実装の「受付番号（内部 stayId）直入力前提」を解消し、来訪者が **ID を記憶せず**退館できる
+ * 導線にする（docs/checkout-stay-design.md §8）:
+ *   1. identify: 退館 QR（token）をかざす/貼り付け、または 短い退館コード + 呼び出し先ラベルを入力
+ *      （staff 補助として在館一覧からも選べる。氏名は出さない）。
+ *   2. confirm: 「◯時◯分に △△ 宛でご来館の方ですか？」＋用件を提示し本人確認（PII なし）。
+ *   3. done: 「退館を受け付けました」のみ表示し、一定時間で入力へ戻る（PII を残さない）。
  *
- * 一覧・完了とも PII を表示しない（受付番号と入館時刻のみ）。
+ * 見た目は受付フローと同一のデザイン言語（.screen/.btn/.field/.input・逃げ道バー・64px タッチ）に統一。
+ * 退館 QR/URL（`?ct=<token>`）で開かれた場合は自動で解決し確認へ進む（#98 の QR 機構を流用）。
  *
- * **locale (#327)**: 待機画面の「退館チェックアウト」リンク（`KioskFlow` の
- * `CheckoutLink`）が選択中の locale を `?locale=` クエリで引き継ぐ。本画面はそれを
- * 初期値にしつつ、直接このページへ来た来訪者のためにも `LanguageSwitcher` を出す
- * （KioskFlow 側の React state をまたいで共有する仕組みは無い＝ページ単位の導線のため）。
+ * **locale (#327)**: 待機画面の CheckoutLink が付与する `?locale=` を初期値に引き継ぎ、直接来た
+ * 来訪者のためにも LanguageSwitcher を出す。文言は i18n カタログが正（生 CJK を書かない = #327 CJK lint）。
  */
 
 /** 完了画面の自動リセット時間（ミリ秒）。 */
-const RESET_DELAY_MS = 5000;
+const RESET_DELAY_MS = 6000;
 
-/** 受付時刻表示用の Intl locale（TTS 言語コードとは独立。時刻表示専用の軽量マップ）。 */
+/** 受付時刻表示用の Intl locale（時刻表示専用の軽量マップ）。 */
 const TIME_FORMAT_LOCALE: Record<Locale, string> = {
   ja: 'ja-JP',
   en: 'en-US',
@@ -42,22 +44,38 @@ const TIME_FORMAT_LOCALE: Record<Locale, string> = {
   zh: 'zh-CN',
 };
 
+type FlowState = 'identify' | 'confirm' | 'done';
+
+/** 確認画面へ渡す保留中の退館（自己特定 or staff の在館一覧選択）。 */
+type Pending = {
+  summary: CheckoutSelfIdSummary;
+} & (
+  | { kind: 'credential'; method: CheckoutMethod; input: Record<string, string> }
+  | { kind: 'stay'; stayId: string }
+);
+
 export function CheckoutFlow() {
-  const [state, setState] = useState<CheckoutFlowState>('input');
-  const [stayId, setStayId] = useState('');
+  const [state, setState] = useState<FlowState>('identify');
+  const [token, setToken] = useState('');
+  const [code, setCode] = useState('');
+  const [targetLabel, setTargetLabel] = useState('');
   const [present, setPresent] = useState<PresentStaySummary[]>([]);
-  const [error, setError] = useState<string | null>(null);
+  const [pending, setPending] = useState<Pending | null>(null);
+  // エラーは「理由コード」で保持し、表示時に現在の locale で解決する。
+  // これにより (a) 言語切替でエラーも再ローカライズされ、(b) `?ct=`/`?locale=` の
+  // 初期化順に依存せず常に選択中 locale の文言になる（tr クロージャの取り違えを防ぐ）。
+  const [errorReason, setErrorReason] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [locale, setLocale] = useState<Locale>(DEFAULT_LOCALE);
 
+  const tr = useMemo(() => makeT(locale), [locale]);
+  const error = errorReason ? CHECKOUT_FAILURE_MESSAGE(errorReason, tr) : null;
+
   // 待機画面の CheckoutLink が付与する `?locale=` を初期値として引き継ぐ（#327）。
-  // 直接このページへ来た場合は既定 locale から LanguageSwitcher で選び直せる。
   useEffect(() => {
     const fromQuery = new URLSearchParams(window.location.search).get('locale');
     if (isSupportedLocale(fromQuery)) setLocale(fromQuery);
   }, []);
-
-  const tr = useMemo(() => makeT(locale), [locale]);
 
   const loadPresent = useCallback(async () => {
     try {
@@ -67,7 +85,7 @@ export function CheckoutFlow() {
         setPresent(data.stays);
       }
     } catch {
-      // 一覧取得失敗は致命的でない（手入力で退館できる）。
+      // 一覧取得失敗は致命的でない（QR/コードで退館できる）。
     }
   }, []);
 
@@ -75,125 +93,358 @@ export function CheckoutFlow() {
     void loadPresent();
   }, [loadPresent]);
 
-  // 完了後に入力画面へ自動で戻す（PII を残さない）。
-  useEffect(() => {
-    if (state !== 'done') return;
-    const timer = setTimeout(() => {
-      setState('input');
-      setStayId('');
-      setError(null);
-      void loadPresent();
-    }, RESET_DELAY_MS);
-    return () => clearTimeout(timer);
-  }, [state, loadPresent]);
-
-  const checkout = useCallback(
-    async (id: string) => {
-      const trimmed = id.trim();
-      if (trimmed === '' || busy) return;
+  /** resolve API を叩き、成功なら確認画面へ進む。 */
+  const resolveCredential = useCallback(
+    async (body: Record<string, string>, method: CheckoutMethod) => {
+      if (busy) return;
       setBusy(true);
-      setError(null);
+      setErrorReason(null);
       try {
-        const res = await fetch('/api/kiosk/checkout', {
+        const res = await fetch('/api/kiosk/checkout/resolve', {
           method: 'POST',
           headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({ stayId: trimmed }),
+          body: JSON.stringify(body),
         });
         if (res.ok) {
-          setState('done');
+          const data = (await res.json()) as { method: CheckoutMethod; summary: CheckoutSelfIdSummary };
+          setPending({ kind: 'credential', method: data.method ?? method, input: body, summary: data.summary });
+          setState('confirm');
         } else {
           const data = (await res.json().catch(() => null)) as { error?: string } | null;
-          setError(CHECKOUT_FAILURE_MESSAGE(data?.error, tr));
+          setErrorReason(data?.error ?? 'network');
         }
       } catch {
-        setError(CHECKOUT_FAILURE_MESSAGE('network', tr));
+        setErrorReason('network');
       } finally {
         setBusy(false);
       }
     },
-    [busy, tr],
+    [busy],
   );
+
+  // 退館 QR/URL（`?ct=<token>`）で開かれたら自動で解決し確認へ（#98 QR 機構の流用）。
+  useEffect(() => {
+    const ct = new URLSearchParams(window.location.search).get(CHECKOUT_TOKEN_QUERY);
+    if (ct) void resolveCredential({ payload: ct }, 'qr');
+    // 初回のみ。resolveCredential は tr/busy に依存するため意図的に依存を絞る。
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const submitToken = useCallback(() => {
+    if (token.trim() === '') return;
+    void resolveCredential({ payload: token.trim() }, 'qr');
+  }, [token, resolveCredential]);
+
+  const submitCode = useCallback(() => {
+    const normalized = normalizeCheckoutCode(code);
+    if (!normalized) {
+      setErrorReason('invalid');
+      return;
+    }
+    void resolveCredential({ code: normalized, targetLabel: targetLabel.trim() }, 'code');
+  }, [code, targetLabel, resolveCredential]);
+
+  /** 在館一覧（staff 補助）から選ぶ。判別材料を持つ確認画面へ進む。 */
+  const selectPresent = useCallback((s: PresentStaySummary) => {
+    setErrorReason(null);
+    setPending({
+      kind: 'stay',
+      stayId: s.stayId,
+      summary: {
+        checkedInAt: s.checkedInAt,
+        targetLabel: s.targetLabel ?? '',
+        purpose: s.purpose ?? '',
+      },
+    });
+    setState('confirm');
+  }, []);
+
+  /** 確認画面で「はい」→ 退館確定。 */
+  const confirmCheckout = useCallback(async () => {
+    if (!pending || busy) return;
+    setBusy(true);
+    setErrorReason(null);
+    try {
+      const res =
+        pending.kind === 'credential'
+          ? await fetch('/api/kiosk/checkout/confirm', {
+              method: 'POST',
+              headers: { 'content-type': 'application/json' },
+              body: JSON.stringify(pending.input),
+            })
+          : await fetch('/api/kiosk/checkout', {
+              method: 'POST',
+              headers: { 'content-type': 'application/json' },
+              body: JSON.stringify({ stayId: pending.stayId }),
+            });
+      if (res.ok) {
+        setState('done');
+        setPending(null);
+      } else {
+        const data = (await res.json().catch(() => null)) as { error?: string } | null;
+        setErrorReason(data?.error ?? 'network');
+        setState('identify');
+        setPending(null);
+      }
+    } catch {
+      setErrorReason('network');
+      setState('identify');
+      setPending(null);
+    } finally {
+      setBusy(false);
+    }
+  }, [pending, busy]);
+
+  const resetToIdentify = useCallback(() => {
+    setState('identify');
+    setPending(null);
+    setToken('');
+    setCode('');
+    setTargetLabel('');
+    setErrorReason(null);
+    void loadPresent();
+  }, [loadPresent]);
+
+  // 完了後に入力画面へ自動で戻す（PII を残さない）。
+  useEffect(() => {
+    if (state !== 'done') return;
+    const timer = setTimeout(resetToIdentify, RESET_DELAY_MS);
+    return () => clearTimeout(timer);
+  }, [state, resetToIdentify]);
+
+  // ---- 画面 ----
 
   if (state === 'done') {
     return (
-      <main style={pageStyle} data-testid="checkout-done" lang={locale}>
-        <div style={cardStyle}>
-          <h1 style={{ margin: 0 }}>{tr('checkout.doneTitle')}</h1>
-          <p style={{ opacity: 0.8 }}>{tr('checkout.doneBody')}</p>
+      <main className="screen" data-testid="checkout-done" lang={locale}>
+        <div className="screen__body" style={centeredCard}>
+          <h1 className="screen__title">{tr('checkout.doneTitle')}</h1>
+          <p className="screen__lead">{tr('checkout.doneBody')}</p>
+        </div>
+        <EscapeBar tr={tr} onStartOver={resetToIdentify} />
+      </main>
+    );
+  }
+
+  if (state === 'confirm' && pending) {
+    const time = formatTime(pending.summary.checkedInAt, locale);
+    const target = pending.summary.targetLabel.trim() || tr('checkout.targetUnknown');
+    const purpose = pending.summary.purpose.trim() || tr('checkout.purposeUnknown');
+    return (
+      <main className="screen" data-testid="checkout-confirm" lang={locale}>
+        <div style={switcherRow}>
+          <LanguageSwitcher locale={locale} onChange={setLocale} />
+        </div>
+        <div className="screen__body">
+          <h1 className="screen__title">{tr('checkout.confirm.title')}</h1>
+          <p className="screen__lead">{tr('checkout.confirm.lead')}</p>
+          <p data-testid="checkout-confirm-question" style={questionStyle}>
+            {tr('checkout.confirm.question', { time, target })}
+          </p>
+          <dl style={detailList}>
+            <DetailRow label={tr('checkout.confirm.timeLabel')} value={time} />
+            <DetailRow label={tr('checkout.confirm.targetLabel')} value={target} />
+            <DetailRow label={tr('checkout.confirm.purposeLabel')} value={purpose} />
+          </dl>
+          {error ? (
+            <p data-testid="checkout-error" role="alert" className="notice" style={errorStyle}>
+              {error}
+            </p>
+          ) : null}
+        </div>
+        <div className="screen__footer">
+          <button
+            type="button"
+            className="btn btn--primary"
+            data-testid="checkout-confirm-yes"
+            onClick={() => void confirmCheckout()}
+            disabled={busy}
+          >
+            {tr('checkout.confirm.yes')}
+          </button>
+          <button
+            type="button"
+            className="btn btn--secondary"
+            data-testid="checkout-confirm-no"
+            onClick={resetToIdentify}
+            disabled={busy}
+          >
+            {tr('checkout.confirm.no')}
+          </button>
         </div>
       </main>
     );
   }
 
+  // identify
   return (
-    <main style={pageStyle} lang={locale}>
-      <div style={cardStyle}>
-        <div style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: 16 }}>
-          <LanguageSwitcher locale={locale} onChange={setLocale} />
-        </div>
-
-        <h1 style={{ marginTop: 0 }}>{tr('checkout.title')}</h1>
-        <p style={{ opacity: 0.8, marginTop: 0 }}>{tr('checkout.description')}</p>
-
-        <label htmlFor="checkout-stay-id" style={labelStyle}>
-          {tr('checkout.stayIdLabel')}
-        </label>
-        <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap' }}>
-          <input
-            id="checkout-stay-id"
-            data-testid="checkout-stay-id"
-            value={stayId}
-            onChange={(e) => setStayId(e.target.value)}
-            placeholder="stay-..."
-            style={inputStyle}
-          />
-          <button
-            type="button"
-            data-testid="checkout-submit"
-            onClick={() => void checkout(stayId)}
-            disabled={busy || stayId.trim() === ''}
-            style={primaryButtonStyle}
-          >
-            {tr('checkout.submit')}
-          </button>
-        </div>
+    <main className="screen" lang={locale}>
+      <div style={switcherRow}>
+        <LanguageSwitcher locale={locale} onChange={setLocale} />
+      </div>
+      <div className="screen__body">
+        <h1 className="screen__title">{tr('checkout.title')}</h1>
+        <p className="screen__lead">{tr('checkout.lead')}</p>
 
         {error ? (
-          <p data-testid="checkout-error" role="alert" style={{ color: '#f87171' }}>
+          <p data-testid="checkout-error" role="alert" className="notice" style={errorStyle}>
             {error}
           </p>
         ) : null}
 
-        <h2 style={{ fontSize: '1.1rem', marginBottom: 8 }}>{tr('checkout.presentListTitle')}</h2>
-        {present.length === 0 ? (
-          <p data-testid="checkout-empty" style={{ opacity: 0.7 }}>
-            {tr('checkout.emptyPresent')}
-          </p>
-        ) : (
-          <ul data-testid="checkout-present-list" style={{ listStyle: 'none', padding: 0, margin: 0 }}>
-            {present.map((s) => (
-              <li key={s.stayId} style={listItemStyle}>
-                <span>
-                  <code style={{ fontSize: '0.85rem' }}>{s.stayId}</code>
-                  <span style={{ opacity: 0.7, marginLeft: 12 }}>
-                    {tr('checkout.checkedInAt', { time: formatTime(s.checkedInAt, locale) })}
+        {/* 退館 QR / token 経路 */}
+        <section style={sectionStyle} aria-labelledby="checkout-token-title">
+          <h2 id="checkout-token-title" style={sectionTitle}>
+            {tr('checkout.tokenSectionTitle')}
+          </h2>
+          <p className="field__label">{tr('checkout.tokenSectionHint')}</p>
+          <div className="field">
+            <label className="field__label" htmlFor="checkout-token">
+              {tr('checkout.tokenLabel')}
+            </label>
+            <input
+              id="checkout-token"
+              data-testid="checkout-token"
+              className="input"
+              value={token}
+              onChange={(e) => setToken(e.target.value)}
+              placeholder={tr('checkout.tokenPlaceholder')}
+              autoComplete="off"
+            />
+          </div>
+          <button
+            type="button"
+            className="btn btn--primary"
+            data-testid="checkout-token-submit"
+            onClick={submitToken}
+            disabled={busy || token.trim() === ''}
+          >
+            {tr('checkout.scanButton')}
+          </button>
+        </section>
+
+        <div style={dividerStyle} aria-hidden="true">
+          {tr('checkout.or')}
+        </div>
+
+        {/* 短コード + 呼び出し先ラベル経路 */}
+        <section style={sectionStyle} aria-labelledby="checkout-code-title">
+          <h2 id="checkout-code-title" style={sectionTitle}>
+            {tr('checkout.codeSectionTitle')}
+          </h2>
+          <p className="field__label">{tr('checkout.codeSectionHint')}</p>
+          <div className="field">
+            <label className="field__label" htmlFor="checkout-code">
+              {tr('checkout.codeLabel')}
+            </label>
+            <input
+              id="checkout-code"
+              data-testid="checkout-code"
+              className="input"
+              value={code}
+              onChange={(e) => setCode(e.target.value)}
+              placeholder={tr('checkout.codePlaceholder')}
+              inputMode="numeric"
+              autoComplete="off"
+              maxLength={8}
+            />
+          </div>
+          <div className="field">
+            <label className="field__label" htmlFor="checkout-target-label">
+              {tr('checkout.targetLabelLabel')}
+            </label>
+            <input
+              id="checkout-target-label"
+              data-testid="checkout-target-label"
+              className="input"
+              value={targetLabel}
+              onChange={(e) => setTargetLabel(e.target.value)}
+              placeholder={tr('checkout.targetLabelPlaceholder')}
+              autoComplete="off"
+            />
+          </div>
+          <button
+            type="button"
+            className="btn btn--primary"
+            data-testid="checkout-resolve-submit"
+            onClick={submitCode}
+            disabled={busy || code.trim() === '' || targetLabel.trim() === ''}
+          >
+            {tr('checkout.resolveSubmit')}
+          </button>
+        </section>
+
+        {/* staff 補助: 在館一覧（判別材料 = 時刻 + 呼び出し先 + 用件。氏名は出さない） */}
+        <section style={sectionStyle} aria-labelledby="checkout-present-title">
+          <h2 id="checkout-present-title" style={sectionTitle}>
+            {tr('checkout.presentListTitle')}
+          </h2>
+          {present.length === 0 ? (
+            <p data-testid="checkout-empty" className="field__label">
+              {tr('checkout.emptyPresent')}
+            </p>
+          ) : (
+            <ul data-testid="checkout-present-list" style={listStyle}>
+              {present.map((s) => (
+                <li key={s.stayId} style={listItemStyle}>
+                  <span style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                    <span>{tr('checkout.checkedInAt', { time: formatTime(s.checkedInAt, locale) })}</span>
+                    <span className="field__label">
+                      {(s.targetLabel?.trim() || tr('checkout.targetUnknown')) +
+                        ' / ' +
+                        (s.purpose?.trim() || tr('checkout.purposeUnknown'))}
+                    </span>
                   </span>
-                </span>
-                <button
-                  type="button"
-                  data-testid="checkout-present-item"
-                  onClick={() => void checkout(s.stayId)}
-                  disabled={busy}
-                  style={secondaryButtonStyle}
-                >
-                  {tr('checkout.checkoutButton')}
-                </button>
-              </li>
-            ))}
-          </ul>
-        )}
+                  <button
+                    type="button"
+                    className="btn btn--secondary"
+                    data-testid="checkout-present-item"
+                    onClick={() => selectPresent(s)}
+                    disabled={busy}
+                  >
+                    {tr('checkout.checkoutButton')}
+                  </button>
+                </li>
+              ))}
+            </ul>
+          )}
+        </section>
       </div>
+
+      <EscapeBar tr={tr} onStartOver={resetToIdentify} />
     </main>
+  );
+}
+
+function DetailRow({ label, value }: { label: string; value: string }) {
+  return (
+    <div style={detailRow}>
+      <dt className="field__label" style={{ margin: 0 }}>
+        {label}
+      </dt>
+      <dd style={{ margin: 0, fontWeight: 700 }}>{value}</dd>
+    </div>
+  );
+}
+
+function EscapeBar({
+  tr,
+  onStartOver,
+}: {
+  tr: (key: 'checkout.startOver') => string;
+  onStartOver: () => void;
+}) {
+  return (
+    <nav className="kiosk-escape-bar" aria-label={tr('checkout.startOver')}>
+      <button
+        type="button"
+        className="btn btn--ghost"
+        data-testid="checkout-start-over"
+        onClick={onStartOver}
+      >
+        {tr('checkout.startOver')}
+      </button>
+    </nav>
   );
 }
 
@@ -203,66 +454,39 @@ function formatTime(iso: string, locale: Locale): string {
   return new Date(t).toLocaleTimeString(TIME_FORMAT_LOCALE[locale], { hour: '2-digit', minute: '2-digit' });
 }
 
-const pageStyle: React.CSSProperties = {
-  minHeight: '100vh',
-  display: 'flex',
+// ---- レイアウト微調整（globals.css のトークン/クラスを尊重。CSS ファイルは編集しない #329） ----
+
+const switcherRow: React.CSSProperties = { display: 'flex', justifyContent: 'flex-end' };
+const centeredCard: React.CSSProperties = {
   alignItems: 'center',
   justifyContent: 'center',
-  padding: 24,
-  background: '#0f172a',
-  color: '#e2e8f0',
+  textAlign: 'center',
 };
-
-const cardStyle: React.CSSProperties = {
-  width: '100%',
-  maxWidth: 560,
-  background: '#1e293b',
-  borderRadius: 16,
-  padding: 32,
-  boxShadow: '0 10px 40px rgba(0,0,0,0.4)',
-};
-
-const labelStyle: React.CSSProperties = { display: 'block', marginBottom: 8, fontWeight: 700 };
-
-const inputStyle: React.CSSProperties = {
-  flex: '1 1 240px',
-  minHeight: 48,
-  padding: '12px 16px',
-  fontSize: '1.1rem',
-  borderRadius: 10,
-  border: '1px solid #334155',
-  background: '#0f172a',
-  color: '#e2e8f0',
-};
-
-const primaryButtonStyle: React.CSSProperties = {
-  minHeight: 48,
-  padding: '12px 24px',
-  fontSize: '1.1rem',
+const sectionStyle: React.CSSProperties = { display: 'flex', flexDirection: 'column', gap: 12 };
+const sectionTitle: React.CSSProperties = { fontSize: '1.15rem', margin: 0, fontWeight: 800 };
+const dividerStyle: React.CSSProperties = {
+  textAlign: 'center',
+  opacity: 0.6,
   fontWeight: 700,
-  borderRadius: 10,
-  border: 'none',
-  background: '#38bdf8',
-  color: '#0f172a',
-  cursor: 'pointer',
+  textTransform: 'uppercase',
+  letterSpacing: '0.08em',
 };
-
-const secondaryButtonStyle: React.CSSProperties = {
-  minHeight: 40,
-  padding: '8px 18px',
-  fontWeight: 700,
-  borderRadius: 8,
-  border: '1px solid #38bdf8',
-  background: 'transparent',
-  color: '#38bdf8',
-  cursor: 'pointer',
+const questionStyle: React.CSSProperties = { fontSize: '1.4rem', fontWeight: 800, lineHeight: 1.35 };
+const detailList: React.CSSProperties = { display: 'flex', flexDirection: 'column', gap: 12, margin: 0 };
+const detailRow: React.CSSProperties = {
+  display: 'flex',
+  justifyContent: 'space-between',
+  gap: 16,
+  paddingBottom: 8,
+  borderBottom: '1px solid rgba(255,255,255,0.1)',
 };
-
+const errorStyle: React.CSSProperties = { color: 'var(--color-danger)', fontWeight: 700 };
+const listStyle: React.CSSProperties = { listStyle: 'none', padding: 0, margin: 0, display: 'flex', flexDirection: 'column', gap: 8 };
 const listItemStyle: React.CSSProperties = {
   display: 'flex',
   alignItems: 'center',
   justifyContent: 'space-between',
   gap: 12,
   padding: '12px 0',
-  borderBottom: '1px solid #334155',
+  borderBottom: '1px solid rgba(255,255,255,0.1)',
 };

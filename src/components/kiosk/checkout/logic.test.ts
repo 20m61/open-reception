@@ -29,4 +29,20 @@ describe('CHECKOUT_FAILURE_MESSAGE (issue #102 / #327 i18n)', () => {
     expect(CHECKOUT_FAILURE_MESSAGE('not_found', makeT('ko'))).toContain('접수 번호');
     expect(CHECKOUT_FAILURE_MESSAGE('not_found', makeT('zh'))).toContain('受理编号');
   });
+
+  it('自己特定（#328）由来の失敗理由も文言化する（expired/locked/label_mismatch）', () => {
+    const tr = makeT('ja');
+    expect(CHECKOUT_FAILURE_MESSAGE('expired', tr)).toContain('有効期限');
+    expect(CHECKOUT_FAILURE_MESSAGE('locked', tr)).toContain('上限');
+    expect(CHECKOUT_FAILURE_MESSAGE('label_mismatch', tr)).toContain('一致しません');
+    // en でも日本語が露出しない。
+    const en = makeT('en');
+    expect(CHECKOUT_FAILURE_MESSAGE('expired', en)).toBe(
+      'This checkout code has expired. Please ask reception for help.',
+    );
+    expect(CHECKOUT_FAILURE_MESSAGE('locked', en)).toBe('Too many attempts. Please ask reception for help.');
+    expect(CHECKOUT_FAILURE_MESSAGE('label_mismatch', en)).toBe(
+      'The checkout code and visit target do not match. Please check and try again.',
+    );
+  });
 });
