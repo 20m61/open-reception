@@ -20,8 +20,9 @@ type LoadState =
  * 各管理画面（受付履歴/端末/部署/担当者/セキュリティ/監査）への導線を提供する。
  * 概況は集約 API（/api/admin/dashboard）から 1 度に取得する（過剰な API を叩かない）。
  *
- * 実データが未接続の指標（Vonage 連携状態・利用量・予想コスト・お知らせ）は
- * プレースホルダ + design 注記で表示し、本実装を #89/#82/#90 に委譲する。
+ * 実データが未接続の指標（Vonage 連携状態・利用量・予想コスト・お知らせ）は、内部の
+ * 開発経緯（issue 番号）を出さない管理者向けの空状態文言でプレースホルダ表示する
+ * （issue #330 item1）。
  * ロール/テナント境界に沿った表示制御は #85 の actor 解決連携後に厳密化する。
  */
 export function Dashboard() {
@@ -117,7 +118,7 @@ export function Dashboard() {
             tone="neutral"
             href="/admin/voice"
             placeholder
-            note="連携状態の実データは #82/#90 で接続予定（design 注記）"
+            note="通話連携の状態はまだ表示されていません"
           >
             <span style={{ fontSize: '1.1rem', fontWeight: 700, opacity: 0.7 }}>準備中</span>
           </MetricCard>
@@ -155,7 +156,7 @@ export function Dashboard() {
             label="重要なお知らせ"
             href="/admin/audit"
             placeholder
-            note="メンテナンス情報・警告は #90 で実装"
+            note="メンテナンス情報や警告が発生するとここに表示されます"
           >
             <span style={{ fontSize: '1.1rem', fontWeight: 700, opacity: 0.7 }}>現在お知らせはありません</span>
           </MetricCard>

@@ -102,4 +102,18 @@ describe('IA 定義の不変条件 (#85)', () => {
     expect(dangerHrefs).toContain('/platform/tenants');
     expect(dangerHrefs).toContain('/platform/maintenance');
   });
+
+  it('サイドバー（240px）で 1 行に収まる長さにラベルを抑える（#330 item4 の回帰防止）', () => {
+    // nav-link-style.ts が font.body（0.95rem=15.2px）+ keep-all を使う前提で、
+    // サイドバー内側の使用可能幅（240 - padding(24*2) - リンク padding(10*2) ≒ 172px）に
+    // 収まる目安として 10 文字を上限にする。これを超えるラベルは折り返しやすくなる。
+    const MAX_LABEL_LENGTH = 10;
+    for (const nav of [ADMIN_NAV, PLATFORM_NAV]) {
+      for (const group of nav) {
+        for (const item of group.items) {
+          expect(item.label.length).toBeLessThanOrEqual(MAX_LABEL_LENGTH);
+        }
+      }
+    }
+  });
 });

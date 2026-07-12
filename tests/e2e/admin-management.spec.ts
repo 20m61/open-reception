@@ -59,6 +59,32 @@ test('担当者を追加して無効化できる', async ({ page }) => {
   await expect(row).toContainText('無効');
 });
 
+test('担当者一覧を氏名・部署・状態で絞り込める（#330 item2）', async ({ page }) => {
+  const name = uniq('絞込担当');
+  await loginAsAdmin(page);
+  await page.goto('/admin/staff');
+  await expect(page.getByTestId('staff-row').first()).toBeVisible();
+  await page.getByTestId('staff-name-input').fill(name);
+  await page.getByTestId('staff-add').click();
+  await expect(page.getByTestId('staff-row').filter({ hasText: name })).toHaveCount(1);
+
+  // 氏名の部分一致で絞り込むと URL に反映され、当該行のみ表示される。
+  await page.getByTestId('staff-filter-keyword').fill(name);
+  await expect(page).toHaveURL(new RegExp(`[?&]q=${encodeURIComponent(name)}`));
+  await expect(page.getByTestId('staff-row')).toHaveCount(1);
+  await expect(page.getByTestId('staff-row')).toContainText(name);
+
+  // 状態フィルタと組み合わせても該当する（既定は有効）。
+  await page.getByTestId('staff-filter-status').selectOption('enabled');
+  await expect(page.getByTestId('staff-row')).toHaveCount(1);
+  await page.getByTestId('staff-filter-status').selectOption('disabled');
+  await expect(page.getByTestId('staff-table-empty')).toBeVisible();
+
+  await page.getByTestId('staff-filter-reset').click();
+  await expect(page).not.toHaveURL(/[?&]q=/);
+  await expect(page.getByTestId('staff-row').filter({ hasText: name })).toHaveCount(1);
+});
+
 test('受付端末は管理画面の部署・担当者を取得して表示する', async ({ page }) => {
   await page.goto('/kiosk');
   await page.getByTestId('start-reception').click();

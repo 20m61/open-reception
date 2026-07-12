@@ -7,7 +7,7 @@ import {
   type SignageContentType,
   type SignageItem,
 } from '@/domain/signage/types';
-import { Button, Field, FormRow, Section } from '@/components/admin/ui';
+import { Button, Field, FormRow, SaveFeedback, Section, useSaveFeedback } from '@/components/admin/ui';
 import { color, radius, space } from '@/components/admin/ui/tokens';
 
 /**
@@ -55,7 +55,7 @@ export function SignageManager({
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [fieldErrors, setFieldErrors] = useState<FieldError[]>([]);
-  const [savedAt, setSavedAt] = useState<string | null>(null);
+  const { feedback, success, failure, clear } = useSaveFeedback();
 
   const scopeQuery = useMemo(
     () => `tenantId=${encodeURIComponent(tenantId)}&siteId=${encodeURIComponent(siteId)}`,
@@ -99,7 +99,7 @@ export function SignageManager({
     setBusy(true);
     setError(null);
     setFieldErrors([]);
-    setSavedAt(null);
+    clear();
     const res = await fetch('/api/admin/signage', {
       method: 'PUT',
       headers: { 'content-type': 'application/json' },
@@ -113,17 +113,17 @@ export function SignageManager({
     });
     if (res.ok) {
       setConfig((await res.json()) as SignageConfig);
-      setSavedAt(new Date().toLocaleTimeString());
+      success(`保存しました（${new Date().toLocaleTimeString()}）`);
     } else {
       const data = (await res.json().catch(() => ({}))) as {
         message?: string;
         fields?: FieldError[];
       };
-      setError(data.message ?? '保存に失敗しました');
+      failure(data.message ?? '保存に失敗しました。');
       setFieldErrors(data.fields ?? []);
     }
     setBusy(false);
-  }, [config, tenantId, siteId]);
+  }, [config, tenantId, siteId, success, failure, clear]);
 
   const errorFor = useCallback(
     (field: string) => fieldErrors.find((e) => e.field === field)?.message,
@@ -157,11 +157,7 @@ export function SignageManager({
           {error}
         </p>
       ) : null}
-      {savedAt ? (
-        <p data-testid="signage-saved" style={{ color: color.accent }}>
-          保存しました（{savedAt}）
-        </p>
-      ) : null}
+      <SaveFeedback feedback={feedback} successTestId="signage-saved" errorTestId="signage-save-error" />
 
       {config ? (
         <>
