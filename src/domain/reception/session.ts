@@ -4,6 +4,7 @@
  */
 import type { ReceptionState } from './state';
 import type { StaffResponseResult } from './staff-response';
+import type { ReceptionExperience } from './log';
 
 export type ReceptionTargetType = 'staff' | 'department';
 
@@ -35,6 +36,12 @@ export type ReceptionSession = {
    * PII を含めない（応答種別・来訪者向けメッセージ・時刻のみ）。
    */
   staffResponse?: StaffResponseResult;
+  /**
+   * 受付体験 KPI メトリクス (issue #319)。**optional**（旧セッション・既存テスト互換）。
+   * 受付端末が呼び出し確定時に送るサニタイズ済みメトリクス（所要/回数/列挙のみ・PII なし）を
+   * 作成時に保持し、終端で ReceptionLog へ引き継ぐ。
+   */
+  experience?: ReceptionExperience;
   startedAt: string;
   updatedAt: string;
   completedAt?: string;

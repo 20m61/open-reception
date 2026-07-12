@@ -114,3 +114,66 @@ describe('reception history logging (#19)', () => {
     expect(entry?.targetId).toBe('dept-x');
   });
 });
+
+describe('受付体験メトリクスの終端ログ引き継ぎ (#319)', () => {
+  const experience = {
+    stepDurations: { selectingPurpose: 1200, selectingTarget: 3400, confirming: 800, calling: 100 },
+    timeToCallMs: 12000,
+    backCount: 1,
+    inputMethod: 'stt' as const,
+  };
+
+  it('作成時の experience を終端 ReceptionLog へ引き継ぐ（30 秒/ファネル/入力手段）', async () => {
+    const created = await createReception({ ...baseInput, experience });
+    if (!created.ok) throw new Error('create failed');
+    // create 時点でセッションに保持されている。
+    expect(created.value.experience).toEqual(experience);
+    await cancelReception(created.value.id);
+    const log = (await listReceptionLogs())[0];
+    expect(log?.experience).toEqual(experience);
+    // 30 秒 KPI・ファネル・入力手段が読める。
+    expect(log?.experience?.timeToCallMs).toBe(12000);
+    expect(log?.experience?.stepDurations?.selectingTarget).toBe(3400);
+    expect(log?.experience?.inputMethod).toBe('stt');
+  });
+
+  it('experience 無しでも作成・記録できる（後方互換）', async () => {
+    const created = await createReception(baseInput);
+    if (!created.ok) throw new Error('create failed');
+    expect(created.value.experience).toBeUndefined();
+    await cancelReception(created.value.id);
+    expect((await listReceptionLogs())[0]?.experience).toBeUndefined();
+  });
+
+  it('未知キー・PII を含む experience はサニタイズされ、そのまま保存されない', async () => {
+    const created = await createReception({
+      ...baseInput,
+      experience: {
+        timeToCallMs: 9000,
+        inputMethod: 'touch',
+        // 以下は破棄されるべき: 未知キー・PII・不正値。
+        visitorName: '来客 一郎',
+        company: 'ACME',
+        note: '内密の用件',
+        cancelCount: -5,
+        inputMethodExtra: 'keyboard',
+        stepDurations: { selectingPurpose: 500, bogusStep: 999 },
+      } as unknown as Record<string, unknown>,
+    });
+    if (!created.ok) throw new Error('create failed');
+    await cancelReception(created.value.id);
+    const log = (await listReceptionLogs())[0];
+    expect(log?.experience).toEqual({
+      timeToCallMs: 9000,
+      inputMethod: 'touch',
+      stepDurations: { selectingPurpose: 500 },
+    });
+    // PII・未知キーは受付履歴に一切残らない。
+    const serialized = JSON.stringify(await listReceptionLogs());
+    expect(serialized).not.toContain('来客 一郎');
+    expect(serialized).not.toContain('ACME');
+    expect(serialized).not.toContain('内密の用件');
+    expect(serialized).not.toContain('bogusStep');
+    expect(serialized).not.toContain('keyboard');
+  });
+});

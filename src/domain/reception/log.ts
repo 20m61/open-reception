@@ -62,6 +62,65 @@ export type ReceptionExperience = {
   abandonedAtStep?: ExperienceStep;
 };
 
+/** 体験メトリクスで許可するステップ列挙（サニタイズ用の網羅リスト）。 */
+const EXPERIENCE_STEP_VALUES: readonly ExperienceStep[] = [
+  'selectingPurpose',
+  'selectingTarget',
+  'inputVisitorInfo',
+  'confirming',
+  'calling',
+  'connected',
+];
+
+/** 体験メトリクスで許可する入力手段列挙。 */
+const EXPERIENCE_INPUT_METHOD_VALUES: readonly ExperienceInputMethod[] = ['touch', 'stt', 'chat', 'qr'];
+
+function isFiniteNonNegative(value: unknown): value is number {
+  return typeof value === 'number' && Number.isFinite(value) && value >= 0;
+}
+
+/**
+ * 信頼できない入力（受付端末クライアントが送る experience ペイロード）を、PII を含まない
+ * 体験メトリクスへサニタイズする (issue #319)。
+ *
+ * ホワイトリスト方式: 既知キーのみを型検査して取り込み、**未知キーは破棄**する（クライアントが
+ * 氏名等 PII を紛れ込ませても保存しない）。所要 ms は有限・非負のみ、回数は正のみ（0/負は省略）、
+ * `inputMethod`/`abandonedAtStep` は列挙値のみ許可。有効な値が 1 つも無ければ `undefined`
+ * （＝保存しない。破損/空の experience をそのまま永続化しない）。
+ */
+export function sanitizeReceptionExperience(input: unknown): ReceptionExperience | undefined {
+  if (typeof input !== 'object' || input === null) return undefined;
+  const o = input as Record<string, unknown>;
+  const out: ReceptionExperience = {};
+
+  if (typeof o.stepDurations === 'object' && o.stepDurations !== null) {
+    const src = o.stepDurations as Record<string, unknown>;
+    const sd: Partial<Record<ExperienceStep, number>> = {};
+    for (const step of EXPERIENCE_STEP_VALUES) {
+      const val = src[step];
+      if (isFiniteNonNegative(val)) sd[step] = val;
+    }
+    if (Object.keys(sd).length > 0) out.stepDurations = sd;
+  }
+  if (isFiniteNonNegative(o.timeToCallMs)) out.timeToCallMs = o.timeToCallMs;
+  if (isFiniteNonNegative(o.backCount) && o.backCount > 0) out.backCount = o.backCount;
+  if (isFiniteNonNegative(o.cancelCount) && o.cancelCount > 0) out.cancelCount = o.cancelCount;
+  if (
+    typeof o.inputMethod === 'string' &&
+    (EXPERIENCE_INPUT_METHOD_VALUES as readonly string[]).includes(o.inputMethod)
+  ) {
+    out.inputMethod = o.inputMethod as ExperienceInputMethod;
+  }
+  if (
+    typeof o.abandonedAtStep === 'string' &&
+    (EXPERIENCE_STEP_VALUES as readonly string[]).includes(o.abandonedAtStep)
+  ) {
+    out.abandonedAtStep = o.abandonedAtStep as ExperienceStep;
+  }
+
+  return Object.keys(out).length > 0 ? out : undefined;
+}
+
 export type ReceptionLog = {
   id: string;
   receptionId: string;
