@@ -54,6 +54,17 @@ export async function updateVoiceSettings(patch: unknown): Promise<VoiceSettings
     if (typeof o.fallbackText === 'string') settings.fallbackText = o.fallbackText;
     // 来訪者向けプライバシー通知の要約文言の上書き (issue #314)。空文字は「未設定へ戻す」扱い。
     if (typeof o.privacyNotice === 'string') settings.privacyNotice = o.privacyNotice.trim() || undefined;
+    // 呼び出し中の段階的ケア (issue #323)。しきい値は正の有限値のみ受け付ける（クランプ自体は
+    // 消費側 src/domain/reception/calling-experience.ts の clampCallingStageThresholds に委譲）。
+    // 文言は privacyNotice と同じ運用: 空文字は「未設定へ戻す（既定文言を使う）」扱い。
+    if (typeof o.callingStageWaitingAfterMs === 'number' && Number.isFinite(o.callingStageWaitingAfterMs) && o.callingStageWaitingAfterMs > 0) {
+      settings.callingStageWaitingAfterMs = o.callingStageWaitingAfterMs;
+    }
+    if (typeof o.callingStageNoticeAfterMs === 'number' && Number.isFinite(o.callingStageNoticeAfterMs) && o.callingStageNoticeAfterMs > 0) {
+      settings.callingStageNoticeAfterMs = o.callingStageNoticeAfterMs;
+    }
+    if (typeof o.guidanceCallingWaiting === 'string') settings.guidanceCallingWaiting = o.guidanceCallingWaiting.trim() || undefined;
+    if (typeof o.guidanceCallingNotice === 'string') settings.guidanceCallingNotice = o.guidanceCallingNotice.trim() || undefined;
   }
   await voice().put(settings);
   return { ...settings };

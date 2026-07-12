@@ -16,6 +16,7 @@ import {
 import { motionKeyForState, resolveMotionUrl, type MotionKey } from '@/domain/motion/types';
 import { primeSpeech, speak, type SpeakSettings } from './speech';
 import { AvatarGuide } from './avatar/AvatarGuide';
+import type { AvatarGuidanceOverride } from './avatar/guidance';
 import { LanguageSwitcher } from './LanguageSwitcher';
 import { makeT, DEFAULT_LOCALE, type Locale, type MessageKey } from '@/lib/i18n';
 import { LOCALE_LANGUAGE_CODE } from '@/lib/voice/locale-voice';
@@ -78,6 +79,13 @@ import {
 } from '@/domain/reception/experience-metrics';
 import { EXPERIENCE_STEP_ORDER } from '@/domain/reception/experience-summary';
 import { searchStaffScored } from '@/domain/staff/search';
+import {
+  clampCallingStageThresholds,
+  deriveCallingStage,
+  timeoutDispatchDelayMs,
+  type CallingStage,
+  type CallingStageThresholds,
+} from '@/domain/reception/calling-experience';
 
 /** MVP では端末 ID は固定。将来 kiosk config から取得する (issue #18)。 */
 const KIOSK_ID = 'kiosk-dev';
@@ -124,6 +132,89 @@ const AVATAR_COMPANION_STATES: ReadonlySet<ReceptionState> = new Set([
 
 function showAvatarCompanion(state: ReceptionState): boolean {
   return AVATAR_COMPANION_STATES.has(state);
+}
+
+/** 「動いている」演出のための定期更新の上限間隔（ms）。段階境界が近ければもっと短く刻む。 */
+const CALLING_TICK_MAX_MS = 500;
+
+/**
+ * 呼び出し中(calling)の経過段階を UI 層のタイマーで導出するフック (issue #323)。
+ *
+ * 「動いている」ことの伝達を優先し、正確な秒数カウントより段階（dialing/waiting/
+ * preTimeoutNotice）の切り替えを重視する。次の tick は「段階の境界（waitingAfterMs /
+ * noticeAfterMs）」または `CALLING_TICK_MAX_MS` のどちらか近い方に合わせて動的に予約する
+ * （固定間隔だと、E2E のようにしきい値を短く上書きしたときに境界を読み飛ばしうるため）。
+ *
+ * `startedAtRef` は calling に入った時刻（ms epoch）を持つ ref（レンダー中に ref を直接
+ * 読まないよう、`.current` の読み出しは常にタイマーコールバック内で行い、結果は state に
+ * 反映する）。`active=false` の間はタイマーを止め 'dialing'・経過 0 を返す。
+ *
+ * state.ts の遷移表・ui-contract.ts の screenState/avatarState 写像は一切変更しない
+ * （ここで導出する段階は KioskFlow ローカルの見た目の演出のみ）。
+ */
+function useCallingStage(
+  active: boolean,
+  startedAtRef: React.RefObject<number | null>,
+  thresholds: CallingStageThresholds,
+): { stage: CallingStage; elapsedMs: number } {
+  const [elapsedMs, setElapsedMs] = useState(0);
+  useEffect(() => {
+    if (!active) {
+      setElapsedMs(0);
+      return;
+    }
+    let timer = 0;
+    const tick = () => {
+      const startedAt = startedAtRef.current;
+      const elapsed = startedAt !== null ? Math.max(0, Date.now() - startedAt) : 0;
+      setElapsedMs(elapsed);
+      // 次に到達すべき段階境界までの残り時間（無ければ上限間隔で「動いている」演出だけ更新する）。
+      const nextBoundaryMs =
+        elapsed < thresholds.waitingAfterMs
+          ? thresholds.waitingAfterMs
+          : elapsed < thresholds.noticeAfterMs
+            ? thresholds.noticeAfterMs
+            : null;
+      const untilBoundaryMs = nextBoundaryMs === null ? Infinity : Math.max(0, nextBoundaryMs - elapsed);
+      // 境界のわずかに後（+10ms）まで読み、確実に境界を跨いだ状態を検知する。
+      const delay = Math.min(CALLING_TICK_MAX_MS, Number.isFinite(untilBoundaryMs) ? untilBoundaryMs + 10 : CALLING_TICK_MAX_MS);
+      timer = window.setTimeout(tick, delay);
+    };
+    tick();
+    return () => window.clearTimeout(timer);
+    // startedAtRef は ref オブジェクト自体（identity は不変）を依存にする。中身の変更検知は
+    // tick() の中で毎回読む（react-hooks/refs: レンダー中に ref を触らない）。
+  }, [active, startedAtRef, thresholds]);
+  return { stage: deriveCallingStage(elapsedMs, thresholds), elapsedMs };
+}
+
+/**
+ * 呼び出し中の段階（dialing/waiting/preTimeoutNotice）から表示文言を導出する (#323)。
+ *
+ * ja のみテナント上書き（`guidanceCallingWaiting` / `guidanceCallingNotice`。#28 の
+ * 案内文言設定と同じ運用）を尊重し、他 locale は i18n 辞書の既定文言を使う（`guidanceIdle` と
+ * 同じ運用方針。avatar/guidance.ts の locale 内製文言とは別に、辞書（dictionary.ts）を
+ * 真実源にする＝ #327 の全 locale 網羅検証の対象にする）。dialing 段階は既存の
+ * `reception.callingBody` をそのまま使い、新規表示を増やさない（既存動作を変えない）。
+ */
+function callingStageMessage(
+  stage: CallingStage,
+  target: string,
+  locale: Locale,
+  textOverride: { waiting?: string; notice?: string },
+): string {
+  const tr = makeT(locale);
+  if (stage === 'waiting') {
+    return locale === DEFAULT_LOCALE && textOverride.waiting
+      ? textOverride.waiting
+      : tr('reception.callingStageWaiting');
+  }
+  if (stage === 'preTimeoutNotice') {
+    return locale === DEFAULT_LOCALE && textOverride.notice
+      ? textOverride.notice
+      : tr('reception.callingStageNotice');
+  }
+  return tr('reception.callingBody', { target });
 }
 
 type Target = { type: ReceptionTargetType; id: string; label: string };
@@ -264,6 +355,73 @@ export function KioskFlow() {
   // 受付完了時に発行された退館クレデンシャル (issue #342)。null=未発行/発行失敗（QR 非表示で継続）。
   // 完了画面に退館 QR / 短コード / 有効期限を提示する。idle 復帰で破棄する（次の来訪者へ持ち越さない）。
   const [checkoutCredential, setCheckoutCredential] = useState<CheckoutCredential | null>(null);
+  // 呼び出し中(calling)の段階的ケア (issue #323)。しきい値・文言はテナント設定 (#28) を尊重する。
+  // 未取得時は既定値のまま（クランプ側が既定へフォールバックするため壊れない）。
+  const [callingStageTenantOverride, setCallingStageTenantOverride] = useState<
+    Partial<CallingStageThresholds>
+  >({});
+  const [callingStageTextOverride, setCallingStageTextOverride] = useState<{
+    waiting?: string;
+    notice?: string;
+  }>({});
+  // E2E タイマー短縮用のクエリ上書き（`?callingStageMs=` 等、既存 `?inactivityMs=` の流儀）。
+  // window 参照は SSR 不一致を避けるため effect 内でのみ行う。
+  const [callingStageQueryOverride, setCallingStageQueryOverride] = useState<
+    Partial<CallingStageThresholds>
+  >({});
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const num = (key: string): number | undefined => {
+      const v = Number(params.get(key));
+      return Number.isFinite(v) && v > 0 ? v : undefined;
+    };
+    setCallingStageQueryOverride({
+      waitingAfterMs: num('callingStageMs'),
+      noticeAfterMs: num('callingNoticeMs'),
+      noticeMinDurationMs: num('callingNoticeHoldMs'),
+    });
+  }, []);
+  // テナント設定 → E2E クエリの順で重ねてしきい値を確定する（クエリが最優先, #323）。
+  const callingStageThresholds = useMemo(
+    () =>
+      clampCallingStageThresholds(
+        callingStageQueryOverride,
+        clampCallingStageThresholds(callingStageTenantOverride),
+      ),
+    [callingStageTenantOverride, callingStageQueryOverride],
+  );
+  // 呼び出し(calling)開始時刻。経過 ms の起点で、calling を抜けたら null に戻す（次回呼び出しで
+  // 取り直す）。UI 層のタイマー派生のみに使い、state.ts の遷移表・screenState は変えない。
+  const callingStartedAtRef = useRef<number | null>(null);
+  useEffect(() => {
+    callingStartedAtRef.current = data.state === 'calling' ? Date.now() : null;
+  }, [data.state]);
+  // 呼び出しの calling-effect（下記）は data.purpose/target/visitor 等の変化でも再実行されうるが、
+  // しきい値の変化では再実行させたくない（無関係な再作成で受付を再作成してしまう事故を防ぐ）。
+  // そのため ref 経由で「その時点の最新しきい値」だけを参照する。
+  const callingStageThresholdsRef = useRef<CallingStageThresholds>(callingStageThresholds);
+  useEffect(() => {
+    callingStageThresholdsRef.current = callingStageThresholds;
+  }, [callingStageThresholds]);
+  // 予告を見せてから実際に CALL_TIMEOUT を dispatch するための遅延タイマー（#323 AC3）。
+  const timeoutDispatchTimerRef = useRef<number | null>(null);
+  // 呼び出し中の表示段階（dialing/waiting/preTimeoutNotice）。CallingView とアバターコンパニオンの
+  // 両方が同じ経過時刻（callingStartedAtRef）・しきい値から導出するため常に一致する。
+  const callingStageState = useCallingStage(
+    data.state === 'calling',
+    callingStartedAtRef,
+    callingStageThresholds,
+  );
+  // アバター常設コンパニオンの段階演出 (#323)。avatarState 自体は変えず、同じ avatarState
+  // ('calling') 内の字幕/表情だけを差し替える（見た目の演出のみ・状態機械は不変）。
+  // dialing 段階は既存どおり avatarState 標準の文言（新規表示を増やさない）。
+  const callingAvatarGuidanceOverride: AvatarGuidanceOverride | undefined = useMemo(() => {
+    if (data.state !== 'calling' || callingStageState.stage === 'dialing') return undefined;
+    return {
+      text: callingStageMessage(callingStageState.stage, data.target?.label ?? '', locale, callingStageTextOverride),
+      expression: callingStageState.stage === 'preTimeoutNotice' ? 'concerned' : undefined,
+    };
+  }, [data.state, data.target?.label, callingStageState.stage, locale, callingStageTextOverride]);
 
   const refreshHeartbeat = useCallback(async () => {
     try {
@@ -327,6 +485,10 @@ export function KioskFlow() {
           volume?: number;
           language?: string;
           privacyNotice?: string;
+          callingStageWaitingAfterMs?: number;
+          callingStageNoticeAfterMs?: number;
+          guidanceCallingWaiting?: string;
+          guidanceCallingNotice?: string;
         };
         if (cancelled) return;
         if (voice.guidanceIdle) setGuidanceIdle(voice.guidanceIdle);
@@ -337,6 +499,15 @@ export function KioskFlow() {
           rate: voice.rate ?? 1,
           volume: voice.volume ?? 1,
           language: voice.language ?? 'ja-JP',
+        });
+        // 呼び出し中の段階的ケア (issue #323)。テナント設定のしきい値・案内文言の上書き。
+        setCallingStageTenantOverride({
+          waitingAfterMs: voice.callingStageWaitingAfterMs,
+          noticeAfterMs: voice.callingStageNoticeAfterMs,
+        });
+        setCallingStageTextOverride({
+          waiting: voice.guidanceCallingWaiting,
+          notice: voice.guidanceCallingNotice,
         });
       } catch {
         /* 取得失敗時は既定文言を使う */
@@ -530,7 +701,22 @@ export function KioskFlow() {
         const result = (await callRes.json()) as { state: ReceptionState };
         if (cancelled) return;
         if (result.state === 'connected') dispatch({ type: 'CALL_CONNECTED', sessionId: session.id });
-        else if (result.state === 'timeout') dispatch({ type: 'CALL_TIMEOUT', sessionId: session.id });
+        else if (result.state === 'timeout') {
+          // タイムアウト直前の予告を挟んでから実遷移する (issue #323 AC3)。予告
+          // （preTimeoutNotice 段階）を最低 noticeMinDurationMs は見せてから CALL_TIMEOUT を
+          // dispatch する。state.ts の遷移表自体は変えず、「いつ dispatch するか」だけを
+          // UI 層で遅らせる。しきい値は ref 経由（この effect の再実行トリガーにはしない）。
+          const startedAt = callingStartedAtRef.current;
+          const elapsedMs = startedAt !== null ? Date.now() - startedAt : 0;
+          const delayMs = timeoutDispatchDelayMs(elapsedMs, callingStageThresholdsRef.current);
+          if (delayMs <= 0) {
+            dispatch({ type: 'CALL_TIMEOUT', sessionId: session.id });
+          } else {
+            timeoutDispatchTimerRef.current = window.setTimeout(() => {
+              if (!cancelled) dispatch({ type: 'CALL_TIMEOUT', sessionId: session.id });
+            }, delayMs);
+          }
+        }
         // 'calling' は Vonage（非同期）: ビデオビューが応答/未応答を確定する。
         else if (result.state === 'calling') setVonageCallId(session.id);
         else dispatch({ type: 'CALL_FAILED', sessionId: session.id });
@@ -541,6 +727,10 @@ export function KioskFlow() {
 
     return () => {
       cancelled = true;
+      if (timeoutDispatchTimerRef.current !== null) {
+        window.clearTimeout(timeoutDispatchTimerRef.current);
+        timeoutDispatchTimerRef.current = null;
+      }
     };
   }, [data.state, data.purpose, data.target, data.visitor, selectedFlow]);
 
@@ -904,6 +1094,9 @@ export function KioskFlow() {
               // eslint-disable-next-line react-hooks/refs -- クリック/検索実行時のみ実行される安定コールバック
               markSearchQuery,
               requestChatOpen,
+              // 呼び出し中の段階的ケア (#323)。UI 層のタイマー派生（state.ts/ui-contract.ts は不変）。
+              callingStageState,
+              callingStageTextOverride,
             )}
           </div>
           {/*
@@ -922,6 +1115,7 @@ export function KioskFlow() {
                 vrmUrl={vrmUrl}
                 fallbackImageUrl={avatarFallbackUrl}
                 defaultMotionUrl={motionUrl}
+                guidanceOverride={callingAvatarGuidanceOverride}
               />
             </div>
           ) : null}
@@ -1358,6 +1552,13 @@ function renderScreen(
   onSearchQuery: (hasHit: boolean) => void,
   /** 検索 0 件時などから Chat-assisted ドロワーを開く合図を送る (issue #322)。 */
   onRequestChat: () => void,
+  /**
+   * 呼び出し中の経過段階 (issue #323)。UI 層のタイマー派生（state.ts/ui-contract.ts は不変）。
+   * calling 以外の画面では参照しない。
+   */
+  callingStageState: { stage: CallingStage; elapsedMs: number },
+  /** 呼び出し中の段階的ケアのテナント文言上書き (issue #28 / #323)。ja のみ適用。 */
+  callingStageTextOverride: { waiting?: string; notice?: string },
 ) {
   const tr = makeT(locale);
   switch (data.state) {
@@ -1417,7 +1618,14 @@ function renderScreen(
       // 担当者の応答アクションがあれば、その来訪者向けメッセージを上に重ねて表示する (issue #99)。
       return (
         <>
-          <StaffResponseBanner response={staffResponse} onFallback={onStaffResponseFallback} locale={locale} />
+          <StaffResponseBanner
+            // respondedAt で key を切り替え、新しい応答が届くたびに入場アニメを再生して
+            // 「応答が届いた瞬間」を明確に伝える (issue #323 AC2)。
+            key={staffResponse?.respondedAt ?? 'none'}
+            response={staffResponse}
+            onFallback={onStaffResponseFallback}
+            locale={locale}
+          />
           {vonageCallId ? (
             <KioskCallView
               receptionId={vonageCallId}
@@ -1426,14 +1634,26 @@ function renderScreen(
               onFallback={() => dispatch({ type: 'CALL_FAILED', sessionId: vonageCallId })}
             />
           ) : (
-            <CallingView target={data.target?.label ?? ''} locale={locale} />
+            <CallingView
+              target={data.target?.label ?? ''}
+              locale={locale}
+              stage={callingStageState.stage}
+              textOverride={callingStageTextOverride}
+            />
           )}
         </>
       );
     case 'connected':
       return (
         <>
-          <StaffResponseBanner response={staffResponse} onFallback={onStaffResponseFallback} locale={locale} />
+          <StaffResponseBanner
+            // respondedAt で key を切り替え、新しい応答が届くたびに入場アニメを再生して
+            // 「応答が届いた瞬間」を明確に伝える (issue #323 AC2)。
+            key={staffResponse?.respondedAt ?? 'none'}
+            response={staffResponse}
+            onFallback={onStaffResponseFallback}
+            locale={locale}
+          />
           <ConnectedView target={data.target?.label ?? ''} onComplete={complete} locale={locale} />
         </>
       );
@@ -2002,6 +2222,12 @@ function ConfirmView({
  * 担当者の応答アクションを来訪者向けに表示するバナー (issue #99)。
  * 応答がなければ何も描画しない（呼び出し中の通常表示を妨げない）。
  * 拒否・別チャネル誘導（offersFallback）のときは代替導線を併記する。
+ *
+ * (#323 AC2) 応答内容を主役として大きく表示する（`staff-response-banner--prominent`）。
+ * 呼び出し側が `key={response.respondedAt}` を付けて呼ぶことで、新しい応答が届くたびに
+ * 本コンポーネントが再マウントされ入場アニメ（`kiosk-rise`）が再生される＝「応答が届いた瞬間」を
+ * 視覚的に明確化する。`kioskStatus === 'waiting'`（「5分お待ちください」）のときは、目安の
+ * 再案内（reception.staffResponseWaitReguidance）を併記する。
  */
 function StaffResponseBanner({
   response,
@@ -2023,14 +2249,19 @@ function StaffResponseBanner({
           : 'notice';
   return (
     <div
-      className="staff-response-banner"
+      className="staff-response-banner staff-response-banner--prominent"
       data-testid="staff-response-banner"
       data-status={response.kioskStatus}
       style={{ marginBottom: 'var(--space-md)' }}
     >
-      <div className={noticeClass} role="status" data-testid="staff-response-message">
+      <div className={`${noticeClass} staff-response-banner__message`} role="status" data-testid="staff-response-message">
         {response.visitorMessage}
       </div>
+      {response.kioskStatus === 'waiting' ? (
+        <p className="staff-response-banner__reguidance" data-testid="staff-response-reguidance" lang={locale}>
+          {makeT(locale)('reception.staffResponseWaitReguidance')}
+        </p>
+      ) : null}
       {response.offersFallback ? (
         <button
           type="button"
@@ -2111,6 +2342,8 @@ function ResultPanel({
   message,
   action,
   locale,
+  panelDataAttrs,
+  children,
 }: {
   tone: ResultTone;
   /** パネル自体の testid。既存 e2e の可視性チェックはこのまま通る。 */
@@ -2126,13 +2359,18 @@ function ResultPanel({
     disabled?: boolean;
   };
   locale: Locale;
+  /** パネルの root div へ追加する data-* 属性（例: 呼び出し段階 #323）。 */
+  panelDataAttrs?: Record<string, string>;
+  /** アイコンとタイトルの間に差し込む追加要素（例: 経過インジケータ, #323）。 */
+  children?: React.ReactNode;
 }) {
   return (
     <div className="screen__body" style={{ alignItems: 'center', justifyContent: 'center' }}>
-      <div className={`result-panel result-panel--${tone}`} data-testid={testId} lang={locale}>
+      <div className={`result-panel result-panel--${tone}`} data-testid={testId} lang={locale} {...panelDataAttrs}>
         <span className="result-panel__icon">
           <ResultToneIcon tone={tone} />
         </span>
+        {children}
         {title ? <h1 className="result-panel__title">{title}</h1> : null}
         {message ? <p className="result-panel__message">{message}</p> : null}
         {action ? (
@@ -2154,16 +2392,45 @@ function ResultPanel({
   );
 }
 
-function CallingView({ target, locale }: { target: string; locale: Locale }) {
+/**
+ * 呼び出し中の待ち画面 (issue #323)。
+ *
+ * 「進んでいるのか固まっているのか分からない」を解消するため、常時アニメーションする
+ * 経過インジケータ（`calling-pulse`。正確な秒数より「動いている」ことの伝達を優先）と、
+ * 経過段階（dialing/waiting/preTimeoutNotice、UI 層のタイマー派生。state.ts は不変）に応じた
+ * 文言の切り替えを行う。`stage` は KioskFlow の `useCallingStage` が算出する。
+ */
+function CallingView({
+  target,
+  locale,
+  stage,
+  textOverride,
+}: {
+  target: string;
+  locale: Locale;
+  /** 呼び出し中の経過段階 (#323)。UI 層のタイマー派生。 */
+  stage: CallingStage;
+  /** テナントの案内文言上書き（ja のみ, #28）。未設定は i18n 既定文言。 */
+  textOverride: { waiting?: string; notice?: string };
+}) {
   const tr = makeT(locale);
   return (
     <ResultPanel
-      tone={resultToneForState('calling')}
+      tone={stage === 'preTimeoutNotice' ? 'warning' : resultToneForState('calling')}
       testId="calling"
       title={tr('reception.callingTitle')}
-      message={tr('reception.callingBody', { target })}
+      message={callingStageMessage(stage, target, locale, textOverride)}
       locale={locale}
-    />
+      panelDataAttrs={{ 'data-calling-stage': stage }}
+    >
+      {/* 常時動く経過インジケータ。「動いている」ことの伝達を優先し、正確な秒数は示さない。
+          prefers-reduced-motion は globals.css の全体ルールで自動的に抑制される。 */}
+      <span className="calling-pulse" data-testid="calling-pulse" aria-hidden="true">
+        <span className="calling-pulse__dot" />
+        <span className="calling-pulse__dot" />
+        <span className="calling-pulse__dot" />
+      </span>
+    </ResultPanel>
   );
 }
 

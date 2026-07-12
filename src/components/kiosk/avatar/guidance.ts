@@ -167,23 +167,38 @@ function fallbackTextFor(avatarState: AvatarState, locale: Locale): string {
 }
 
 /**
+ * 呼び出し中の経過段階などに応じた提示内容の上書き (issue #323)。
+ *
+ * `avatarState` 自体（=状態機械・ui-contract の写像）は変えない。あくまで同じ
+ * avatarState 内での「見た目の演出」を UI 層（KioskFlow）のタイマー派生から差し込むための
+ * 追加入力。`text` を指定すると speech/subtitle/fallbackText の全てがその文言になり
+ * （不変条件「speech === subtitle」を保ったまま）、`expression` を指定すると表情のみ上書きする。
+ */
+export type AvatarGuidanceOverride = {
+  text?: string;
+  expression?: AvatarExpression;
+};
+
+/**
  * avatarState（+ locale）から提示内容を導出する純関数。
  * 発話と字幕は常に同一（音声が無くても字幕で同内容を保証する不変条件）。
+ * `overrides` は任意（省略時は既存どおり avatarState 標準の提示内容）。
  */
 export function avatarGuidanceFor(
   avatarState: AvatarState,
   locale: Locale = DEFAULT_LOCALE,
+  overrides?: AvatarGuidanceOverride,
 ): AvatarGuidance {
   const presentation = PRESENTATION[avatarState];
-  const text = lineFor(avatarState, locale);
+  const text = overrides?.text ?? lineFor(avatarState, locale);
   return {
     avatarState,
-    expression: presentation.expression,
+    expression: overrides?.expression ?? presentation.expression,
     motionKey: presentation.motionKey,
     speech: text,
     subtitle: text, // 音声が出せない場合も字幕で同内容を表示する。
     cue: presentation.cue,
-    fallbackText: fallbackTextFor(avatarState, locale),
+    fallbackText: overrides?.text ? text : fallbackTextFor(avatarState, locale),
   };
 }
 

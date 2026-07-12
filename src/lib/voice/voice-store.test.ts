@@ -50,4 +50,40 @@ describe('voice-store (#28)', () => {
     const v = await updateVoiceSettings({ privacyNotice: '   ' });
     expect(v.privacyNotice).toBeUndefined();
   });
+
+  it('呼び出し中の段階的ケアのしきい値・文言を上書きできる（既定は未設定, #323）', async () => {
+    const before = await getVoiceSettings();
+    expect(before.callingStageWaitingAfterMs).toBeUndefined();
+    expect(before.callingStageNoticeAfterMs).toBeUndefined();
+    expect(before.guidanceCallingWaiting).toBeUndefined();
+    expect(before.guidanceCallingNotice).toBeUndefined();
+
+    const v = await updateVoiceSettings({
+      callingStageWaitingAfterMs: 5000,
+      callingStageNoticeAfterMs: 12000,
+      guidanceCallingWaiting: 'もう少しお待ちください',
+      guidanceCallingNotice: 'つながらない場合は別の方法でご案内します',
+    });
+    expect(v.callingStageWaitingAfterMs).toBe(5000);
+    expect(v.callingStageNoticeAfterMs).toBe(12000);
+    expect(v.guidanceCallingWaiting).toBe('もう少しお待ちください');
+    expect(v.guidanceCallingNotice).toBe('つながらない場合は別の方法でご案内します');
+
+    const persisted = await getVoiceSettings();
+    expect(persisted.callingStageWaitingAfterMs).toBe(5000);
+  });
+
+  it('段階的ケアのしきい値は 0/負値/NaN を無視する（既存値を保つ）', async () => {
+    await updateVoiceSettings({ callingStageWaitingAfterMs: 5000 });
+    const v = await updateVoiceSettings({ callingStageWaitingAfterMs: -1 });
+    expect(v.callingStageWaitingAfterMs).toBe(5000);
+    const v2 = await updateVoiceSettings({ callingStageWaitingAfterMs: NaN });
+    expect(v2.callingStageWaitingAfterMs).toBe(5000);
+  });
+
+  it('段階的ケアの文言上書きを空文字にすると未設定へ戻る', async () => {
+    await updateVoiceSettings({ guidanceCallingNotice: 'カスタム予告文言' });
+    const v = await updateVoiceSettings({ guidanceCallingNotice: '   ' });
+    expect(v.guidanceCallingNotice).toBeUndefined();
+  });
 });

@@ -4,6 +4,7 @@ import { useCallback, useEffect, useState } from 'react';
 import type { VoiceSettings } from '@/domain/voice/types';
 import { Button, Field, FormRow, SaveFeedback, useSaveFeedback } from '@/components/admin/ui';
 import { space } from '@/components/admin/ui/tokens';
+import { DEFAULT_CALLING_STAGE_THRESHOLDS } from '@/domain/reception/calling-experience';
 
 /** 音声設定 (issue #28)。TTS/STT の有効化・案内文言・話速・音量を編集する。 */
 export function VoiceManager() {
@@ -80,6 +81,54 @@ export function VoiceManager() {
             rows={3}
             placeholder="入力いただいたお名前・会社名・ご用件は、担当者への取り次ぎにのみ使用し、記録には保存しません。"
             style={{ ...input, fontFamily: 'inherit', resize: 'vertical' }}
+          />
+        </Field>
+
+        {/* 呼び出し中(calling)の段階的ケア (issue #323)。しきい値・案内文言をテナント側で調整できる。 */}
+        <FormRow>
+          <Field label={`「もう少しお待ちください」に切り替える経過(ms) / 既定 ${DEFAULT_CALLING_STAGE_THRESHOLDS.waitingAfterMs}`} htmlFor="voice-calling-waiting-after-input">
+            <input
+              id="voice-calling-waiting-after-input"
+              type="number"
+              min="100"
+              step="1000"
+              data-testid="voice-calling-waiting-after-ms"
+              value={v.callingStageWaitingAfterMs ?? ''}
+              placeholder={String(DEFAULT_CALLING_STAGE_THRESHOLDS.waitingAfterMs)}
+              onChange={(e) => patch({ callingStageWaitingAfterMs: e.target.value ? Number(e.target.value) : undefined })}
+              style={{ ...input, width: 160 }}
+            />
+          </Field>
+          <Field label={`タイムアウト予告を出す経過(ms) / 既定 ${DEFAULT_CALLING_STAGE_THRESHOLDS.noticeAfterMs}`} htmlFor="voice-calling-notice-after-input">
+            <input
+              id="voice-calling-notice-after-input"
+              type="number"
+              min="100"
+              step="1000"
+              data-testid="voice-calling-notice-after-ms"
+              value={v.callingStageNoticeAfterMs ?? ''}
+              placeholder={String(DEFAULT_CALLING_STAGE_THRESHOLDS.noticeAfterMs)}
+              onChange={(e) => patch({ callingStageNoticeAfterMs: e.target.value ? Number(e.target.value) : undefined })}
+              style={{ ...input, width: 160 }}
+            />
+          </Field>
+        </FormRow>
+        <Field label="「もう少しお待ちください」段階の案内文言（未設定時は既定文言）" htmlFor="voice-guidance-calling-waiting-input">
+          <input
+            id="voice-guidance-calling-waiting-input"
+            data-testid="voice-guidance-calling-waiting"
+            value={v.guidanceCallingWaiting ?? ''}
+            onChange={(e) => patch({ guidanceCallingWaiting: e.target.value })}
+            style={input}
+          />
+        </Field>
+        <Field label="タイムアウト予告段階の案内文言（未設定時は既定文言）" htmlFor="voice-guidance-calling-notice-input">
+          <input
+            id="voice-guidance-calling-notice-input"
+            data-testid="voice-guidance-calling-notice"
+            value={v.guidanceCallingNotice ?? ''}
+            onChange={(e) => patch({ guidanceCallingNotice: e.target.value })}
+            style={input}
           />
         </Field>
 

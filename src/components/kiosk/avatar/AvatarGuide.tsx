@@ -9,7 +9,7 @@ import { DEFAULT_LOCALE, type Locale } from '@/lib/i18n';
 import { speak, type SpeakSettings } from '../speech';
 import { AvatarFallbackImage } from './fallback-image';
 import { resolveAvatarVisual } from './visual';
-import { avatarGuidanceFor, type AvatarGuidance } from './guidance';
+import { avatarGuidanceFor, type AvatarGuidance, type AvatarGuidanceOverride } from './guidance';
 
 /**
  * VrmAvatarViewer は viewer 本体 + avatar サブモジュール（lip-sync / vrm-expression /
@@ -58,6 +58,13 @@ export type AvatarGuideProps = {
   defaultMotionUrl?: string;
   /** TTS 設定（#5/#28）。未指定/無効なら音声は出さず字幕のみ。 */
   ttsSettings?: SpeakSettings;
+  /**
+   * 同一 avatarState 内での見た目の演出上書き (issue #323)。呼び出し中(calling)の経過段階
+   * （UI 層のタイマー派生）などで、字幕/表情だけを差し替えたいときに使う。avatarState 自体
+   * （#120 契約・ui-contract.ts の写像）は変えない。未指定時は既存どおり avatarState 標準の
+   * 提示内容（後方互換）。
+   */
+  guidanceOverride?: AvatarGuidanceOverride;
   className?: string;
 };
 
@@ -69,12 +76,13 @@ export function AvatarGuide({
   motionUrls,
   defaultMotionUrl,
   ttsSettings,
+  guidanceOverride,
   className,
 }: AvatarGuideProps) {
   const avatarState = deriveAvatarState(screenState);
   const guidance: AvatarGuidance = useMemo(
-    () => avatarGuidanceFor(avatarState, locale),
-    [avatarState, locale],
+    () => avatarGuidanceFor(avatarState, locale, guidanceOverride),
+    [avatarState, locale, guidanceOverride],
   );
 
   const motionUrl = resolveMotionUrl(guidance.motionKey, motionUrls ?? {}, defaultMotionUrl);
