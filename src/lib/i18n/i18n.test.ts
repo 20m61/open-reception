@@ -117,3 +117,25 @@ describe('dictionary 整合 (#103)', () => {
     }
   });
 });
+
+describe('locale 網羅の機械検証 (#327)', () => {
+  const jaKeys = Object.keys(DICTIONARIES[DEFAULT_LOCALE]) as Array<keyof typeof DICTIONARIES['ja']>;
+
+  it('全 locale が既定 locale (ja) と同一のキー集合を持つ（欠落キーが無い）', () => {
+    for (const locale of SUPPORTED_LOCALES) {
+      const keys = new Set(Object.keys(DICTIONARIES[locale]));
+      const missing = jaKeys.filter((key) => !keys.has(key));
+      expect(missing, `locale=${locale} に欠落しているキー`).toEqual([]);
+    }
+  });
+
+  it('全 locale の全キーが非空文字（フォールバックに頼らない実値を持つ）', () => {
+    for (const locale of SUPPORTED_LOCALES) {
+      for (const key of jaKeys) {
+        const value = DICTIONARIES[locale][key];
+        expect(value, `locale=${locale} key=${key}`).toBeTruthy();
+        expect((value ?? '').trim().length, `locale=${locale} key=${key}`).toBeGreaterThan(0);
+      }
+    }
+  });
+});

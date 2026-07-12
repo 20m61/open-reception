@@ -105,6 +105,31 @@
 3. TTS 案内文言を locale 別に持てるよう `voice-store` を拡張（`guidance*` の多言語化）。
 4. Playwright で ja/en/ko/zh の主要画面 smoke と iPad viewport 表示崩れを確認。
 
+## 6b. locale 網羅の機械検証（#327・スコープ決定）
+
+`docs/ui-review-2026-07-11.md` H2（English モードに退館チェックアウトの日本語が残存、
+`/kiosk/checkout` が locale 非連動）への対応として、**#327 で以下を追加した**:
+
+- **辞書は既に ja/en/ko/zh 全キーを完全網羅していた**（inc1 時点の「他 locale はサブセット可・
+  `t()` が ja へフォールバック」という設計は型上は維持しつつ、運用上は #327 時点で実際には
+  すでに全キー・全 locale が翻訳済みだった）。そのため #327 では **一部キーだけを対象にした
+  部分的な網羅チェックではなく、`MessageKey` 全キー × `SUPPORTED_LOCALES` 全 locale の
+  完全一致**を `src/lib/i18n/i18n.test.ts`（`describe('locale 網羅の機械検証 (#327)')`）で
+  強制する運用に切り替えた。新規キー追加時は **ja/en/ko/zh 全てへの追記が必須**になり、
+  1 つでも欠けるとローカル品質ゲート（unit）が FAIL する。
+- **CJK 生リテラルの検出**（`scripts/check-cjk-literals.ts` + `src/lib/i18n/cjk-literal.test.ts`）:
+  TypeScript AST を解析し、文字列/テンプレートリテラル/JSX テキストに含まれる CJK
+  （ひらがな・カタカナ・CJK 統合漢字・ハングル）を検出する。日本語コメントは対象外。
+  `src/components/kiosk/checkout/**` は例外なしで完全検証、他の未移行 kiosk コンポーネントは
+  `CJK_EXCEPTION_ALLOWLIST`（ファイル単位）で明示的に除外し、ゲートを green に保ちつつ
+  **新規ファイル・checkout 配下の新規リテラルは即座に検出**される。allowlist 済みファイル
+  内への追加リテラルまでは検出しない（ファイル単位のため）。行単位 diff ベースの検出強化は
+  残りの kiosk 画面棚卸し（follow-up）と合わせて再検討する。
+- **待機画面の CheckoutLink**（`KioskFlow.tsx`）と `/kiosk/checkout`（`CheckoutFlow.tsx`）を
+  i18n 化し、選択中 locale を `?locale=` クエリで橋渡しする（ページを跨ぐため React state
+  ではなくクエリで locale を引き継ぐ）。`/kiosk/checkout` へ直接来た場合用に
+  `LanguageSwitcher` も設置した。
+
 ## 7. ライセンス・権利・プライバシー (#105)
 
 `docs/license-privacy-guide.md` の観点を本機能に適用する。

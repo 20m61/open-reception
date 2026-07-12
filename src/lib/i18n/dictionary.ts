@@ -8,7 +8,13 @@
  *   - キーは `<画面>.<要素>` のドット区切り（例 'welcome.title'）。フラットな
  *     Record<MessageKey, string> を locale 別に持つ。
  *   - 既定 locale (ja) を「正」とし、全キーを必ず網羅する（型 Record<MessageKey, string>
- *     で欠落を型エラーにする）。他 locale はサブセット可で、欠落は t() が ja へフォールバック。
+ *     で欠落を型エラーにする）。他 locale の型は引き続き Partial（`t()` の ja フォールバック
+ *     は安全網として維持）だが、**実運用ではすべての locale が全キーを網羅する**運用を
+ *     #327 で開始した。`i18n.test.ts` の「locale 網羅の機械検証」が
+ *     `SUPPORTED_LOCALES` の全 locale × 全 `MessageKey` の完全一致を検証し、キー追加時に
+ *     いずれかの locale の翻訳を書き忘れるとローカル品質ゲート（unit）で FAIL する。
+ *     新規キーを追加する際は **ja/en/ko/zh 全てに追記する**こと（自前の短い翻訳で可、
+ *     外部翻訳 API は使わない #105）。
  *
  * ライセンス / 権利 (#105):
  *   - 文言はすべて本プロジェクトの自前表現。競合 SaaS の UI 文言をコピーしない。
@@ -98,7 +104,24 @@ export type MessageKey =
   | 'reception.inactivityTitle'
   | 'reception.inactivityBody'
   | 'reception.inactivityCountdown'
-  | 'reception.inactivityContinue';
+  | 'reception.inactivityContinue'
+  // 待機画面の退館チェックアウト導線ラベル、および /kiosk/checkout 画面文言
+  // （#327・全 locale 完全網羅を単体テストで強制する対象）。
+  | 'kiosk.checkoutLink'
+  | 'checkout.title'
+  | 'checkout.description'
+  | 'checkout.stayIdLabel'
+  | 'checkout.submit'
+  | 'checkout.presentListTitle'
+  | 'checkout.emptyPresent'
+  | 'checkout.checkedInAt'
+  | 'checkout.checkoutButton'
+  | 'checkout.doneTitle'
+  | 'checkout.doneBody'
+  | 'checkout.error.notFound'
+  | 'checkout.error.alreadyCheckedOut'
+  | 'checkout.error.invalid'
+  | 'checkout.error.network';
 
 /** 既定 locale 辞書は全キー網羅必須。他 locale は Partial 可（欠落は ja へフォールバック）。 */
 type DefaultDictionary = Record<MessageKey, string>;
@@ -176,6 +199,21 @@ const ja: DefaultDictionary = {
   'reception.inactivityBody': 'プライバシー保護のため、まもなく最初の画面に戻ります。',
   'reception.inactivityCountdown': '{seconds} 秒後にリセットします',
   'reception.inactivityContinue': '続ける',
+  'kiosk.checkoutLink': '退館チェックアウト',
+  'checkout.title': '退館チェックアウト',
+  'checkout.description': '受付番号を入力するか、在館中の一覧から選んで退館してください。',
+  'checkout.stayIdLabel': '受付番号',
+  'checkout.submit': '退館する',
+  'checkout.presentListTitle': '在館中の来訪者',
+  'checkout.emptyPresent': '在館中の来訪者はいません。',
+  'checkout.checkedInAt': '{time} 入館',
+  'checkout.checkoutButton': '退館',
+  'checkout.doneTitle': '退館を受け付けました',
+  'checkout.doneBody': 'お気をつけてお帰りください。',
+  'checkout.error.notFound': '受付番号が見つかりませんでした。番号をご確認ください。',
+  'checkout.error.alreadyCheckedOut': 'この受付番号はすでに退館済みです。',
+  'checkout.error.invalid': '受付番号を入力してください。',
+  'checkout.error.network': '通信エラーが発生しました。もう一度お試しください。',
 };
 
 const en: LocaleDictionary = {
@@ -250,6 +288,22 @@ const en: LocaleDictionary = {
   'reception.inactivityBody': 'For your privacy, this will return to the start screen shortly.',
   'reception.inactivityCountdown': 'Resetting in {seconds}s',
   'reception.inactivityContinue': 'Continue',
+  'kiosk.checkoutLink': 'Checkout',
+  'checkout.title': 'Checkout',
+  'checkout.description':
+    'Enter your reception number, or choose from the list of visitors currently on site.',
+  'checkout.stayIdLabel': 'Reception number',
+  'checkout.submit': 'Check out',
+  'checkout.presentListTitle': 'Visitors currently on site',
+  'checkout.emptyPresent': 'No visitors are currently on site.',
+  'checkout.checkedInAt': 'Checked in at {time}',
+  'checkout.checkoutButton': 'Check out',
+  'checkout.doneTitle': 'Checkout complete',
+  'checkout.doneBody': 'Please travel home safely.',
+  'checkout.error.notFound': 'We could not find that reception number. Please check the number and try again.',
+  'checkout.error.alreadyCheckedOut': 'This reception number has already been checked out.',
+  'checkout.error.invalid': 'Please enter a reception number.',
+  'checkout.error.network': 'A network error occurred. Please try again.',
 };
 
 const ko: LocaleDictionary = {
@@ -324,6 +378,21 @@ const ko: LocaleDictionary = {
   'reception.inactivityBody': '개인정보 보호를 위해 곧 첫 화면으로 돌아갑니다.',
   'reception.inactivityCountdown': '{seconds}초 후 초기화됩니다',
   'reception.inactivityContinue': '계속',
+  'kiosk.checkoutLink': '퇴실 체크아웃',
+  'checkout.title': '퇴실 체크아웃',
+  'checkout.description': '접수 번호를 입력하거나 현재 재실 중인 목록에서 선택하여 퇴실해 주세요.',
+  'checkout.stayIdLabel': '접수 번호',
+  'checkout.submit': '퇴실하기',
+  'checkout.presentListTitle': '현재 재실 중인 방문객',
+  'checkout.emptyPresent': '현재 재실 중인 방문객이 없습니다.',
+  'checkout.checkedInAt': '{time} 입실',
+  'checkout.checkoutButton': '퇴실',
+  'checkout.doneTitle': '퇴실이 접수되었습니다',
+  'checkout.doneBody': '안전하게 귀가하시기 바랍니다.',
+  'checkout.error.notFound': '접수 번호를 찾을 수 없습니다. 번호를 확인해 주세요.',
+  'checkout.error.alreadyCheckedOut': '이 접수 번호는 이미 퇴실 처리되었습니다.',
+  'checkout.error.invalid': '접수 번호를 입력해 주세요.',
+  'checkout.error.network': '통신 오류가 발생했습니다. 다시 시도해 주세요.',
 };
 
 const zh: LocaleDictionary = {
@@ -398,6 +467,21 @@ const zh: LocaleDictionary = {
   'reception.inactivityBody': '为保护隐私，即将返回首页。',
   'reception.inactivityCountdown': '{seconds} 秒后重置',
   'reception.inactivityContinue': '继续',
+  'kiosk.checkoutLink': '退馆结账',
+  'checkout.title': '退馆结账',
+  'checkout.description': '请输入受理编号，或从在馆访客列表中选择后退馆。',
+  'checkout.stayIdLabel': '受理编号',
+  'checkout.submit': '办理退馆',
+  'checkout.presentListTitle': '在馆访客',
+  'checkout.emptyPresent': '目前没有在馆访客。',
+  'checkout.checkedInAt': '{time} 入馆',
+  'checkout.checkoutButton': '退馆',
+  'checkout.doneTitle': '退馆登记已完成',
+  'checkout.doneBody': '请注意安全，一路顺风。',
+  'checkout.error.notFound': '未找到该受理编号，请确认后重试。',
+  'checkout.error.alreadyCheckedOut': '该受理编号已办理退馆。',
+  'checkout.error.invalid': '请输入受理编号。',
+  'checkout.error.network': '发生网络错误，请重试。',
 };
 
 /**

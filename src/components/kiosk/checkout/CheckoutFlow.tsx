@@ -1,6 +1,13 @@
 'use client';
 
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
+import {
+  DEFAULT_LOCALE,
+  isSupportedLocale,
+  makeT,
+  type Locale,
+} from '@/lib/i18n';
+import { LanguageSwitcher } from '../LanguageSwitcher';
 import {
   CHECKOUT_FAILURE_MESSAGE,
   type CheckoutFlowState,
@@ -8,7 +15,7 @@ import {
 } from './logic';
 
 /**
- * 受付端末の退館チェックアウトフロー (issue #102, increment 1)。
+ * 受付端末の退館チェックアウトフロー (issue #102, increment 1 / #327 i18n 化)。
  *
  * KioskFlow には組み込まない**スタンドアロン**の退館導線（/kiosk/checkout）。
  *   1. 在館中一覧から選ぶ、または受付番号を入力する。
@@ -17,10 +24,23 @@ import {
  *      一定時間で入力画面へ自動リセットする（次の来訪者に情報を残さない）。
  *
  * 一覧・完了とも PII を表示しない（受付番号と入館時刻のみ）。
+ *
+ * **locale (#327)**: 待機画面の「退館チェックアウト」リンク（`KioskFlow` の
+ * `CheckoutLink`）が選択中の locale を `?locale=` クエリで引き継ぐ。本画面はそれを
+ * 初期値にしつつ、直接このページへ来た来訪者のためにも `LanguageSwitcher` を出す
+ * （KioskFlow 側の React state をまたいで共有する仕組みは無い＝ページ単位の導線のため）。
  */
 
 /** 完了画面の自動リセット時間（ミリ秒）。 */
 const RESET_DELAY_MS = 5000;
+
+/** 受付時刻表示用の Intl locale（TTS 言語コードとは独立。時刻表示専用の軽量マップ）。 */
+const TIME_FORMAT_LOCALE: Record<Locale, string> = {
+  ja: 'ja-JP',
+  en: 'en-US',
+  ko: 'ko-KR',
+  zh: 'zh-CN',
+};
 
 export function CheckoutFlow() {
   const [state, setState] = useState<CheckoutFlowState>('input');
@@ -28,6 +48,16 @@ export function CheckoutFlow() {
   const [present, setPresent] = useState<PresentStaySummary[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [locale, setLocale] = useState<Locale>(DEFAULT_LOCALE);
+
+  // 待機画面の CheckoutLink が付与する `?locale=` を初期値として引き継ぐ（#327）。
+  // 直接このページへ来た場合は既定 locale から LanguageSwitcher で選び直せる。
+  useEffect(() => {
+    const fromQuery = new URLSearchParams(window.location.search).get('locale');
+    if (isSupportedLocale(fromQuery)) setLocale(fromQuery);
+  }, []);
+
+  const tr = useMemo(() => makeT(locale), [locale]);
 
   const loadPresent = useCallback(async () => {
     try {
@@ -73,38 +103,40 @@ export function CheckoutFlow() {
           setState('done');
         } else {
           const data = (await res.json().catch(() => null)) as { error?: string } | null;
-          setError(CHECKOUT_FAILURE_MESSAGE(data?.error));
+          setError(CHECKOUT_FAILURE_MESSAGE(data?.error, tr));
         }
       } catch {
-        setError(CHECKOUT_FAILURE_MESSAGE('network'));
+        setError(CHECKOUT_FAILURE_MESSAGE('network', tr));
       } finally {
         setBusy(false);
       }
     },
-    [busy],
+    [busy, tr],
   );
 
   if (state === 'done') {
     return (
-      <main style={pageStyle} data-testid="checkout-done">
+      <main style={pageStyle} data-testid="checkout-done" lang={locale}>
         <div style={cardStyle}>
-          <h1 style={{ margin: 0 }}>退館を受け付けました</h1>
-          <p style={{ opacity: 0.8 }}>お気をつけてお帰りください。</p>
+          <h1 style={{ margin: 0 }}>{tr('checkout.doneTitle')}</h1>
+          <p style={{ opacity: 0.8 }}>{tr('checkout.doneBody')}</p>
         </div>
       </main>
     );
   }
 
   return (
-    <main style={pageStyle}>
+    <main style={pageStyle} lang={locale}>
       <div style={cardStyle}>
-        <h1 style={{ marginTop: 0 }}>退館チェックアウト</h1>
-        <p style={{ opacity: 0.8, marginTop: 0 }}>
-          受付番号を入力するか、在館中の一覧から選んで退館してください。
-        </p>
+        <div style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: 16 }}>
+          <LanguageSwitcher locale={locale} onChange={setLocale} />
+        </div>
+
+        <h1 style={{ marginTop: 0 }}>{tr('checkout.title')}</h1>
+        <p style={{ opacity: 0.8, marginTop: 0 }}>{tr('checkout.description')}</p>
 
         <label htmlFor="checkout-stay-id" style={labelStyle}>
-          受付番号
+          {tr('checkout.stayIdLabel')}
         </label>
         <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap' }}>
           <input
@@ -122,7 +154,7 @@ export function CheckoutFlow() {
             disabled={busy || stayId.trim() === ''}
             style={primaryButtonStyle}
           >
-            退館する
+            {tr('checkout.submit')}
           </button>
         </div>
 
@@ -132,10 +164,10 @@ export function CheckoutFlow() {
           </p>
         ) : null}
 
-        <h2 style={{ fontSize: '1.1rem', marginBottom: 8 }}>在館中の来訪者</h2>
+        <h2 style={{ fontSize: '1.1rem', marginBottom: 8 }}>{tr('checkout.presentListTitle')}</h2>
         {present.length === 0 ? (
           <p data-testid="checkout-empty" style={{ opacity: 0.7 }}>
-            在館中の来訪者はいません。
+            {tr('checkout.emptyPresent')}
           </p>
         ) : (
           <ul data-testid="checkout-present-list" style={{ listStyle: 'none', padding: 0, margin: 0 }}>
@@ -143,7 +175,9 @@ export function CheckoutFlow() {
               <li key={s.stayId} style={listItemStyle}>
                 <span>
                   <code style={{ fontSize: '0.85rem' }}>{s.stayId}</code>
-                  <span style={{ opacity: 0.7, marginLeft: 12 }}>{formatTime(s.checkedInAt)} 入館</span>
+                  <span style={{ opacity: 0.7, marginLeft: 12 }}>
+                    {tr('checkout.checkedInAt', { time: formatTime(s.checkedInAt, locale) })}
+                  </span>
                 </span>
                 <button
                   type="button"
@@ -152,7 +186,7 @@ export function CheckoutFlow() {
                   disabled={busy}
                   style={secondaryButtonStyle}
                 >
-                  退館
+                  {tr('checkout.checkoutButton')}
                 </button>
               </li>
             ))}
@@ -163,10 +197,10 @@ export function CheckoutFlow() {
   );
 }
 
-function formatTime(iso: string): string {
+function formatTime(iso: string, locale: Locale): string {
   const t = Date.parse(iso);
   if (!Number.isFinite(t)) return iso;
-  return new Date(t).toLocaleTimeString('ja-JP', { hour: '2-digit', minute: '2-digit' });
+  return new Date(t).toLocaleTimeString(TIME_FORMAT_LOCALE[locale], { hour: '2-digit', minute: '2-digit' });
 }
 
 const pageStyle: React.CSSProperties = {
