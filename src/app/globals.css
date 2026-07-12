@@ -104,19 +104,30 @@ a {
   padding: var(--space-xl);
 }
 
+/*
+ * 語中改行・孤立行対策 (#326 L1)。固定 --font-xl だと「担当者・部署をお選びくださ／い」の
+ * ように、わずかな幅超過で overflow-wrap:anywhere の最終手段が語の途中で発火し孤立行になる。
+ * clamp() で viewport 幅に応じて先に縮小することで anywhere フォールバックの発火自体を避け、
+ * それでも収まらない極端な幅でのみ anywhere が効く（コンテナからの溢れを防ぐ最終防波堤）。
+ * word-break:keep-all は CJK の意味のない字間での通常改行を避けるためのもの。
+ */
 .screen__title {
-  font-size: var(--font-xl);
+  font-size: clamp(1.9rem, 4.6vw, var(--font-xl));
   margin: 0;
   font-weight: 800;
   letter-spacing: -0.02em;
-  line-height: 1.12;
+  line-height: 1.2;
+  word-break: keep-all;
+  overflow-wrap: anywhere;
 }
 
 .screen__lead {
-  font-size: var(--font-lg);
+  font-size: clamp(1.15rem, 2.8vw, var(--font-lg));
   color: var(--color-muted);
   margin: 0;
-  line-height: 1.4;
+  line-height: 1.5;
+  word-break: keep-all;
+  overflow-wrap: anywhere;
 }
 
 .screen__body {
@@ -528,6 +539,92 @@ a {
 }
 
 /* =========================================================================
+ * 結果/待ち画面の共通レイアウト (#326 L1)
+ *
+ * 呼び出し中・結果（接続/タイムアウト/失敗/代替導線）・完了/キャンセルは、これまで
+ * 「通知ピルが画面中央にぽつんと浮く」だけで上下左右に大きな死空間があった。
+ * 状態アイコン＋メッセージ＋次の一手（あれば）を 1 枚のパネルへ凝集し、fold 内で
+ * 完結させる。トーン（success/danger/warning/info）はアイコンの縁取りで一目で伝わる
+ * ようにし、成功/失敗の見分けをつきやすくする（受け入れ条件）。
+ * ======================================================================= */
+.result-panel {
+  width: 100%;
+  max-width: 560px;
+  margin: auto;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+  gap: var(--space-md);
+  padding: var(--space-xl) var(--space-lg);
+  background: var(--color-glass);
+  -webkit-backdrop-filter: blur(14px) saturate(1.15);
+  backdrop-filter: blur(14px) saturate(1.15);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-xl);
+  box-shadow: var(--shadow-lg);
+  animation: kiosk-rise var(--dur-slow) var(--ease-out) both;
+}
+
+.result-panel__icon {
+  width: 88px;
+  height: 88px;
+  flex-shrink: 0;
+  border-radius: var(--radius-pill);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.result-panel__icon svg {
+  width: 44px;
+  height: 44px;
+}
+
+.result-panel--success .result-panel__icon {
+  background: rgba(52, 211, 153, 0.16);
+  color: var(--color-success);
+}
+
+.result-panel--danger .result-panel__icon {
+  background: rgba(248, 113, 113, 0.16);
+  color: var(--color-danger);
+}
+
+.result-panel--warning .result-panel__icon {
+  background: rgba(251, 191, 36, 0.16);
+  color: var(--color-warning);
+}
+
+.result-panel--info .result-panel__icon {
+  background: var(--color-accent-soft);
+  color: var(--color-accent);
+}
+
+.result-panel__title {
+  font-size: var(--font-lg);
+  margin: 0;
+  font-weight: 800;
+}
+
+.result-panel__message {
+  font-size: var(--font-body);
+  color: var(--color-muted);
+  margin: 0;
+  line-height: 1.5;
+  word-break: keep-all;
+  overflow-wrap: anywhere;
+}
+
+.result-panel__actions {
+  display: flex;
+  gap: var(--space-md);
+  flex-wrap: wrap;
+  justify-content: center;
+  margin-top: var(--space-sm);
+}
+
+/* =========================================================================
  * タッチファースト受付導線 (issue #121 / Epic #119)
  *
  * 待機/初期画面は「1 画面 1 主目的」。大きなクイックアクションカードでご用件を選ばせ、
@@ -754,6 +851,19 @@ a {
 
 .screen[data-kiosk-layout='ipad-landscape'] .kiosk-quick-actions {
   grid-area: actions;
+}
+
+/*
+ * 横置き（ipad-landscape / large-display）のカード文字あふれ対策 (#326 L1)。
+ * auto-fit(minmax(240px,1fr)) はコンテナ幅次第で列数が読めず、large-display では
+ * kiosk-quick-actions の max-width:1100px にちょうど 4 列収まってしまい、1 カードの幅が
+ * 200px 台まで縮んで見出し（「担当者を呼ぶ」等）が端に接触/語中で折れていた。
+ * 列数を明示的に 2×2 + 全幅（other は既存の grid-column:1/-1）へ固定し、カード幅を
+ * 常に十分（コンテナの約半分）確保する。
+ */
+.screen[data-kiosk-layout='ipad-landscape'] .kiosk-quick-actions,
+.screen[data-kiosk-layout='large-display'] .kiosk-quick-actions {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
 }
 
 /* 4K/大型横画面: 主要操作を画面全体に散らさず、触れる範囲（中央寄せ・幅上限）へ集約する。 */

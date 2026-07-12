@@ -21,7 +21,8 @@ import { makeT, DEFAULT_LOCALE, type Locale, type MessageKey } from '@/lib/i18n'
 import { LOCALE_LANGUAGE_CODE } from '@/lib/voice/locale-voice';
 import { FlowStepper } from './FlowStepper';
 import { quickActionIcon } from './quick-action-icons';
-import { normalizeAccentColor, type BrandingSettings } from '@/domain/branding/types';
+import { hasBrandingContent, normalizeAccentColor, type BrandingSettings } from '@/domain/branding/types';
+import { resultToneForState, type ResultTone } from './result-tone';
 import type { QuickActionIntent } from './quick-actions';
 import dynamic from 'next/dynamic';
 import { KioskCallView } from './KioskCallView';
@@ -1262,13 +1263,15 @@ function renderScreen(
     case 'fallback':
       return <FallbackView locale={locale} />;
     case 'cancelled':
-      return <EndView testid="completed" title={tr('reception.cancelled')} />;
+      return <EndView testid="completed" tone="info" title={tr('reception.cancelled')} locale={locale} />;
     case 'completed':
       return (
         <EndView
           testid="completed"
+          tone="success"
           title={tr('reception.completedTitle')}
           lead={tr('reception.thanksLead')}
+          locale={locale}
         />
       );
     default:
@@ -1331,7 +1334,7 @@ function IdleView({
     callStaff: 'start-reception',
     checkin: 'start-checkin',
   };
-  const hasBrand = Boolean(branding.logoUrl || branding.companyName);
+  const hasBrand = hasBrandingContent(branding);
   return (
     <div
       className={`screen__body kiosk-idle${hasBrand ? ' kiosk-idle--branded' : ''}`}
@@ -1768,15 +1771,115 @@ function StaffResponseBanner({
   );
 }
 
+/**
+ * 結果/待ち画面のトーンアイコン (#326 L1)。装飾のみ（ラベルはメッセージ側が持つ）で
+ * aria-hidden にする。currentColor で `.result-panel--<tone>` の色を継承する。
+ */
+function ResultToneIcon({ tone }: { tone: ResultTone }) {
+  const svgProps = {
+    viewBox: '0 0 24 24',
+    fill: 'none',
+    stroke: 'currentColor',
+    strokeWidth: 1.8,
+    strokeLinecap: 'round' as const,
+    strokeLinejoin: 'round' as const,
+    'aria-hidden': true as const,
+  };
+  switch (tone) {
+    case 'success':
+      return (
+        <svg {...svgProps}>
+          <circle cx="12" cy="12" r="9" />
+          <path d="m8 12.5 2.5 2.5L16 9.5" />
+        </svg>
+      );
+    case 'danger':
+      return (
+        <svg {...svgProps}>
+          <circle cx="12" cy="12" r="9" />
+          <path d="M9 9l6 6M15 9l-6 6" />
+        </svg>
+      );
+    case 'warning':
+      return (
+        <svg {...svgProps}>
+          <path d="M12 3.5 21.5 20h-19L12 3.5z" />
+          <path d="M12 10v4M12 17h.01" />
+        </svg>
+      );
+    case 'info':
+    default:
+      return (
+        <svg {...svgProps}>
+          <circle cx="12" cy="12" r="9" />
+          <path d="M12 8h.01M12 11v5" />
+        </svg>
+      );
+  }
+}
+
+/**
+ * 結果/待ち画面の共通レイアウト (#326 L1)。
+ *
+ * 呼び出し中・結果（接続/タイムアウト/失敗/代替導線）・完了/キャンセルは、これまで
+ * 「通知ピルが画面中央にぽつんと浮く」だけで死空間が大きかった。状態アイコン＋メッセージ＋
+ * 次の一手（あれば）を 1 枚のパネル（.result-panel）へ凝集し、fold 内で完結させる。
+ * トーンは `resultToneForState` が状態から一意に導出する（真実源はそちら）。
+ * 後退（戻る/最初に戻る）は逃げ道バーへ一本化済み (#325) のため、ここでは前進系の
+ * アクションのみを扱う。
+ */
+function ResultPanel({
+  tone,
+  testId,
+  title,
+  message,
+  action,
+  locale,
+}: {
+  tone: ResultTone;
+  /** パネル自体の testid。既存 e2e の可視性チェックはこのまま通る。 */
+  testId: string;
+  title?: string;
+  message?: string;
+  action?: { label: string; onClick: () => void; testId: string; variant?: 'primary' | 'secondary' };
+  locale: Locale;
+}) {
+  return (
+    <div className="screen__body" style={{ alignItems: 'center', justifyContent: 'center' }}>
+      <div className={`result-panel result-panel--${tone}`} data-testid={testId} lang={locale}>
+        <span className="result-panel__icon">
+          <ResultToneIcon tone={tone} />
+        </span>
+        {title ? <h1 className="result-panel__title">{title}</h1> : null}
+        {message ? <p className="result-panel__message">{message}</p> : null}
+        {action ? (
+          <div className="result-panel__actions">
+            <button
+              type="button"
+              className={`btn btn--${action.variant ?? 'primary'}`}
+              data-testid={action.testId}
+              onClick={action.onClick}
+              lang={locale}
+            >
+              {action.label}
+            </button>
+          </div>
+        ) : null}
+      </div>
+    </div>
+  );
+}
+
 function CallingView({ target, locale }: { target: string; locale: Locale }) {
   const tr = makeT(locale);
   return (
-    <div className="screen__body" style={{ alignItems: 'center', justifyContent: 'center', textAlign: 'center' }}>
-      <h1 className="screen__title" data-testid="calling" lang={locale}>
-        {tr('reception.callingTitle')}
-      </h1>
-      <p className="screen__lead" lang={locale}>{tr('reception.callingBody', { target })}</p>
-    </div>
+    <ResultPanel
+      tone={resultToneForState('calling')}
+      testId="calling"
+      title={tr('reception.callingTitle')}
+      message={tr('reception.callingBody', { target })}
+      locale={locale}
+    />
   );
 }
 
@@ -1791,14 +1894,13 @@ function ConnectedView({
 }) {
   const tr = makeT(locale);
   return (
-    <div className="screen__body" style={{ alignItems: 'center', justifyContent: 'center', textAlign: 'center' }}>
-      <div className="notice notice--success" data-testid="result-connected" lang={locale}>
-        {tr('reception.connectedBody', { target })}
-      </div>
-      <button type="button" className="btn btn--primary" data-testid="complete" onClick={onComplete} lang={locale}>
-        {tr('reception.finishReception')}
-      </button>
-    </div>
+    <ResultPanel
+      tone={resultToneForState('connected')}
+      testId="result-connected"
+      message={tr('reception.connectedBody', { target })}
+      action={{ label: tr('reception.finishReception'), onClick: onComplete, testId: 'complete', variant: 'primary' }}
+      locale={locale}
+    />
   );
 }
 
@@ -1816,16 +1918,13 @@ function ResultView({
   // 後退（最初に戻る）は逃げ道バーへ一本化 (#325)。コンテンツ側は前進の主 CTA（代替の連絡先へ＝
   // useFallback）のみ。以前あった result-reset（最初に戻る）はバーの escape-reset と重複するため撤去。
   return (
-    <div className="screen__body" style={{ alignItems: 'center', justifyContent: 'center', textAlign: 'center' }}>
-      <div className="notice notice--danger" data-testid={`result-${outcome}`} lang={locale}>
-        {message}
-      </div>
-      <div className="screen__footer" style={{ justifyContent: 'center' }}>
-        <button type="button" className="btn btn--secondary" data-testid="use-fallback" onClick={onFallback} lang={locale}>
-          {tr('reception.altContact')}
-        </button>
-      </div>
-    </div>
+    <ResultPanel
+      tone={resultToneForState(outcome)}
+      testId={`result-${outcome}`}
+      message={message}
+      action={{ label: tr('reception.altContact'), onClick: onFallback, testId: 'use-fallback', variant: 'secondary' }}
+      locale={locale}
+    />
   );
 }
 
@@ -1834,11 +1933,12 @@ function FallbackView({ locale }: { locale: Locale }) {
   // 後退（最初に戻る）は逃げ道バー（escape-reset）へ一本化 (#325)。以前あった fallback-reset は
   // バーと重複するため撤去し、コンテンツは代替案内メッセージのみにする。
   return (
-    <div className="screen__body" style={{ alignItems: 'center', justifyContent: 'center', textAlign: 'center' }}>
-      <div className="notice notice--warning" data-testid="fallback" lang={locale}>
-        {tr('reception.fallbackBody')}
-      </div>
-    </div>
+    <ResultPanel
+      tone={resultToneForState('fallback')}
+      testId="fallback"
+      message={tr('reception.fallbackBody')}
+      locale={locale}
+    />
   );
 }
 
@@ -1884,13 +1984,18 @@ function InactivityWarning({
   );
 }
 
-function EndView({ testid, title, lead }: { testid: string; title: string; lead?: string }) {
-  return (
-    <div className="screen__body" style={{ alignItems: 'center', justifyContent: 'center', textAlign: 'center' }}>
-      <h1 className="screen__title" data-testid={testid}>
-        {title}
-      </h1>
-      {lead ? <p className="screen__lead">{lead}</p> : null}
-    </div>
-  );
+function EndView({
+  testid,
+  tone,
+  title,
+  lead,
+  locale,
+}: {
+  testid: string;
+  tone: ResultTone;
+  title: string;
+  lead?: string;
+  locale: Locale;
+}) {
+  return <ResultPanel tone={tone} testId={testid} title={title} message={lead} locale={locale} />;
 }

@@ -4,7 +4,10 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { nextIndex } from '@/domain/signage/rotation';
 import type { KioskSignage, KioskSignageItem } from '@/lib/signage/kiosk-signage';
+import { hasBrandingContent, type BrandingSettings } from '@/domain/branding/types';
+import { makeT, DEFAULT_LOCALE } from '@/lib/i18n';
 import { SignageItemView } from './SignageItemView';
+import { SignageClock } from './SignageClock';
 
 /**
  * 待機中サイネージの表示 (issue #101, increment 1)。スタンドアロン待機画面。
@@ -38,6 +41,9 @@ export function SignageDisplay({
   const router = useRouter();
   const [signage, setSignage] = useState<KioskSignage | null>(null);
   const [index, setIndex] = useState(0);
+  // テナントのブランド設定 (issue #88)。アセット未設定フォールバック (#326 L1) で
+  // 「会社の顔」を出すために使う。取得失敗時は汎用フォールバック（時計＋挨拶のみ）にする。
+  const [branding, setBranding] = useState<BrandingSettings>({});
 
   // 受付復帰: 明示操作で受付へ。連打を吸収するため一度だけ実行する。
   const returned = useRef(false);
@@ -56,12 +62,28 @@ export function SignageDisplay({
         if (!cancelled && data) setSignage(data as KioskSignage);
       })
       .catch(() => {
-        /* 読み込み失敗時は待機画面を空にする（受付導線は残す）。 */
+        /* 読み込み失敗時はフォールバック表示にする（下の hasContent 判定で拾う）。 */
       });
     return () => {
       cancelled = true;
     };
   }, [tenantId, siteId]);
+
+  // ブランド設定を取得する (#88 / #326)。失敗時は汎用フォールバックのまま。
+  useEffect(() => {
+    let cancelled = false;
+    void fetch('/api/kiosk/branding')
+      .then((res) => (res.ok ? res.json() : null))
+      .then((data) => {
+        if (!cancelled && data) setBranding(data as BrandingSettings);
+      })
+      .catch(() => {
+        /* 取得失敗時は汎用フォールバック */
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   const items = signage?.items ?? [];
   const current: KioskSignageItem | undefined = items[Math.min(index, Math.max(items.length - 1, 0))];
@@ -112,7 +134,7 @@ export function SignageDisplay({
           overflow: 'hidden',
         }}
       >
-        {current ? <SignageItemView item={toSignageItem(current)} /> : null}
+        {current ? <SignageItemView item={toSignageItem(current)} /> : <SignageFallback branding={branding} />}
       </div>
 
       {/* 受付開始の導線は常に大きく表示する（クリック/タップで /kiosk へ）。 */}
@@ -136,6 +158,59 @@ export function SignageDisplay({
       >
         画面をタップして受付を開始
       </button>
+    </div>
+  );
+}
+
+/**
+ * サイネージのアセット未設定フォールバック (issue #326 L1)。
+ *
+ * 再生可能な項目が 0（未設定・無効・取得失敗）のとき、待機中サイネージが黒画面のまま
+ * 何も出さない状態を解消する。ブランド設定（ロゴ/社名）があれば「会社の顔」を出し、
+ * 無くても時計＋既定の挨拶で「動いている」ことを示す既定フォールバックにする。
+ * 文言は kiosk 待機画面（IdleView）と同じ辞書キー（welcome.*）を再利用し、新規キーは
+ * 追加しない。
+ */
+function SignageFallback({ branding }: { branding: BrandingSettings }) {
+  const tr = makeT(DEFAULT_LOCALE);
+  const showBrand = hasBrandingContent(branding);
+  return (
+    <div
+      data-testid="signage-fallback"
+      style={{
+        display: 'flex',
+        flexDirection: 'column',
+        alignItems: 'center',
+        justifyContent: 'center',
+        gap: 32,
+        textAlign: 'center',
+      }}
+    >
+      {showBrand ? (
+        <div
+          data-testid="signage-fallback-brand"
+          style={{ display: 'flex', alignItems: 'center', gap: 20, flexWrap: 'wrap', justifyContent: 'center' }}
+        >
+          {branding.logoUrl ? (
+            // eslint-disable-next-line @next/next/no-img-element
+            <img
+              src={branding.logoUrl}
+              alt={branding.companyName ?? ''}
+              style={{ height: 96, maxWidth: 360, objectFit: 'contain' }}
+            />
+          ) : null}
+          {branding.companyName ? (
+            <span style={{ fontSize: 'clamp(28px, 4vw, 56px)', fontWeight: 800 }}>{branding.companyName}</span>
+          ) : null}
+        </div>
+      ) : null}
+      <SignageClock />
+      <p
+        lang={DEFAULT_LOCALE}
+        style={{ fontSize: 'clamp(20px, 3vw, 40px)', opacity: 0.85, margin: 0, maxWidth: '70%' }}
+      >
+        {tr('welcome.title')} · {tr('welcome.tapToStart')}
+      </p>
     </div>
   );
 }
