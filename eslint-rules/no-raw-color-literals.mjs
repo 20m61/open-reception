@@ -40,59 +40,40 @@ export const RAW_COLOR_ALLOWLIST = [
   // ---- 移行前の既存直書き（#329 で段階移行する負債・AST 検出スナップショット） ----
   //
   // 移行済み（allowlist から削除＝厳格検証対象。値を厳密保存した無回帰リファクタ）:
-  //   admin フォーム/ナビ群。primary ボタンのインク #0f172a→var(--color-bg-2)（同値）、
-  //   CSS 変数フォールバックの生値除去（var(--color-muted, #94a3b8) 等 → フォールバック削除。
-  //   変数は globals.css で常時定義済みのため描画は不変）、⚠ の #f87171→var(--color-danger)
-  //   （同値）。対象: AdminCredentialsLogin / AdminNav / AdminPasswordLogin /
-  //   LanguageSettingsManager。
+  //   [1st] admin フォーム/ナビ群（4f64332）: AdminCredentialsLogin / AdminNav /
+  //     AdminPasswordLogin / LanguageSettingsManager。
+  //   [2nd] 本増分:
+  //     - policy 1 白ボーダー収れん: CsvImport / KiosksManager / StaffEditor /
+  //       TenantSwitcher（admin）。primary インク #0f172a→var(--color-bg-2)（同値）、白ボーダーは
+  //       最近傍トークンへ収れん（0.08/0.1→--color-border、0.12/0.15/0.2→--color-border-strong。
+  //       0.2→0.16 は 45a4a05 の収れん決定の延長として受容済みの α 差分）。
+  //     - policy 2 platform 一式: 独自パレット #e0a880/#e66e6e/#7fe0a0 を globals.css の
+  //       --color-platform-warn/danger/ok へ単一ソース化。可変 alpha は
+  //       color-mix(in srgb, var(--color-platform-*) N%, transparent) で厳密再現（無回帰）。
+  //       primitives の状態ピルの ad-hoc 緑/橙（#50c878/#c87850 相当）は ok/warn soft へ統一
+  //       （18% alpha 上での軽微な色相補正）。
+  //     - policy 3 visitor kiosk（exact のみ）: LocalizedWelcome / CustomFlowRenderer /
+  //       VisitorInfoForm / SignageDisplay。CSS 変数フォールバックの生値除去（描画不変）と
+  //       #0f172a→var(--color-bg-2)（同値）のみ。
   //
-  // 次増分の負債（引き続き許可）。無回帰リファクタとは別バッチに切り出す理由付き:
-  //   - CsvImport / KiosksManager / StaffEditor: primary ボタンのインク #0f172a は同値の
-  //     var(--color-bg-2) へ寄せられるが、いずれも rgba(255,255,255,0.2) の白ボーダーが
-  //     残る。0.2 は既存トークン（border=0.08 / border-strong=0.16）と一致せず、寄せると
-  //     わずかに alpha が変わる（45a4a05 が tokens.ts で 0.2→0.16 に収れんさせた決定の延長だが
-  //     視覚差分を伴う）。無回帰を厳守するため本増分では触らず、ボーダー収れんは別途判断する。
-  //   - platform/* 一式: superadmin 危険域の独自パレット（caution #e0a880 / break-glass
-  //     #e66e6e / ok #7fe0a0 と、それらの可変 alpha rgba）。globals.css へ半透明も含む
-  //     セマンティック変数を新設し color-mix 等で alpha を再現する必要があり、視覚差分リスクが
-  //     高いためまとめて移行する。
-  //   - kiosk/* 一式: 受付端末画面（別トラック #324/#327/#328 由来）。来訪者向けの視覚回帰
-  //     リスクが高く、e2e キャプチャ前提で別バッチにする。
-  //   - BrandingManager.tsx: 既定アクセント #38bdf8 は色ピッカー入力へ渡すデータ既定値で、
-  //     CSS 変数化できない（input[type=color] は生 hex を要求）。
-  //   - DevicesManager.tsx / ReservationsManager.tsx: QR 背景の #fff は読取のための機能色で、
-  //     テナントテーマで変えてはならない（意図的にトークン化しない）。
-  //   - DangerActionButton.tsx: 破壊操作ボタンの白インク #fff。--color-text(#f6f9ff) と
-  //     微差があり、無回帰を優先して platform バッチと同時に判断する。
-  'src/components/admin/BrandingManager.tsx',
-  'src/components/admin/CsvImport.tsx',
-  'src/components/admin/DevicesManager.tsx',
-  'src/components/admin/KiosksManager.tsx',
-  'src/components/admin/ReservationsManager.tsx',
-  'src/components/admin/StaffEditor.tsx',
-  'src/components/admin/TenantSwitcher.tsx',
-  'src/components/admin/danger/DangerActionButton.tsx',
-  'src/components/admin/platform/AuditLogs.tsx',
-  'src/components/admin/platform/ElevationStatus.tsx',
-  'src/components/admin/platform/FeatureFlags.tsx',
-  'src/components/admin/platform/Integrations.tsx',
-  'src/components/admin/platform/MaintenanceStatus.tsx',
-  'src/components/admin/platform/NoticePublishForm.tsx',
-  'src/components/admin/platform/Observability.tsx',
-  'src/components/admin/platform/PlatformDashboard.tsx',
-  'src/components/admin/platform/TenantDetail.tsx',
-  'src/components/admin/platform/TenantList.tsx',
-  'src/components/admin/platform/TenantSwitcher.tsx',
-  'src/components/admin/platform/UpdateStatus.tsx',
-  'src/components/admin/platform/primitives.tsx',
-  // kiosk（別トラック #324/#327/#328 が所有。#329 では触らず allowlist のみ）:
+  // 引き続き許可（残債）。理由付き:
+  //   - policy 4 機能色（テーマ非対象。意図的にトークン化しない）。各エントリに inline 注記:
+  //       BrandingManager（色ピッカー既定値）/ DevicesManager・ReservationsManager（QR 背景）。
+  //   - DangerActionButton.tsx: 破壊操作ボタンの白インク #fff。既存 var へ exact 化できず
+  //     （--color-text=#f6f9ff とは微差、.btn--danger は逆に #0f172a の暗インク）、視覚差分の
+  //     採否はオーケストレータ判断を要するため据え置き（policy 1〜4 いずれの対象でもない）。
+  //   - policy 3 defer（新規変数/視覚回帰リスクで見送り。e2e キャプチャ前提で別バッチ）:
+  //       LanguageSwitcher（accent 上の #fff、--color-accent-ink とは逆コントラスト）、
+  //       AvatarGuide（字幕スクリム rgba(0,0,0,0.6) と白 6% 地色に既存 var が無い）、
+  //       CheckoutFlow（白 0.1 ボーダー、来訪者向けの α 差分回避）。
+  'src/components/admin/BrandingManager.tsx', // 機能色: 色ピッカー既定値 #38bdf8（input[type=color] は生 hex 必須）
+  'src/components/admin/DevicesManager.tsx', // 機能色: QR 背景 #fff（読取のための固定色。テーマ非対象）
+  'src/components/admin/ReservationsManager.tsx', // 機能色: QR 背景 #fff（読取のための固定色。テーマ非対象）
+  'src/components/admin/danger/DangerActionButton.tsx', // 残債: 破壊ボタンの白インク #fff（exact 化不可・要判断）
+  // kiosk（policy 3 defer。視覚回帰リスク/新規変数が必要）:
   'src/components/kiosk/LanguageSwitcher.tsx',
-  'src/components/kiosk/LocalizedWelcome.tsx',
   'src/components/kiosk/avatar/AvatarGuide.tsx',
   'src/components/kiosk/checkout/CheckoutFlow.tsx',
-  'src/components/kiosk/custom-flow/CustomFlowRenderer.tsx',
-  'src/components/kiosk/custom-flow/VisitorInfoForm.tsx',
-  'src/components/kiosk/signage/SignageDisplay.tsx',
 ];
 
 function toRepoRelative(filename) {

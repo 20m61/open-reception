@@ -43,4 +43,4 @@ const sectionStyle: React.CSSProperties = {
 
 const titleStyle: React.CSSProperties = { margin: 0, fontSize: 40, fontWeight: 700 };
 const leadStyle: React.CSSProperties = { margin: 0, fontSize: 24 };
-const noticeStyle: React.CSSProperties = { margin: 0, fontSize: 16, color: 'var(--color-muted, #666)' };
+const noticeStyle: React.CSSProperties = { margin: 0, fontSize: 16, color: 'var(--color-muted)' };

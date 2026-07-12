@@ -48,7 +48,7 @@ export function VisitorInfoForm({
         <label key={field.key} style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
           <span style={{ fontSize: '1rem' }}>
             {field.label}
-            {field.required ? <span style={{ color: 'var(--color-danger, #f87171)' }}> *</span> : null}
+            {field.required ? <span style={{ color: 'var(--color-danger)' }}> *</span> : null}
           </span>
           <FieldControl
             field={field}
@@ -84,7 +84,7 @@ function FieldControl({
   invalid: boolean;
   onChange: (value: string | boolean) => void;
 }) {
-  const border = invalid ? '1px solid var(--color-danger, #f87171)' : '1px solid var(--color-surface-2)';
+  const border = invalid ? '1px solid var(--color-danger)' : '1px solid var(--color-surface-2)';
   const textValue = typeof value === 'string' ? value : '';
 
   switch (field.type) {
@@ -156,7 +156,7 @@ const primaryBtn: React.CSSProperties = {
   borderRadius: 12,
   border: 'none',
   background: 'var(--color-accent)',
-  color: '#0f172a',
+  color: 'var(--color-bg-2)',
   fontWeight: 700,
   fontSize: '1.05rem',
   cursor: 'pointer',

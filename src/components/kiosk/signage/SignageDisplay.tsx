@@ -136,8 +136,8 @@ export function SignageDisplay({
         gap: 32,
         padding: 32,
         cursor: 'pointer',
-        background: 'var(--color-bg, #0b0f17)',
-        color: 'var(--color-text, #fff)',
+        background: 'var(--color-bg)',
+        color: 'var(--color-text)',
       }}
     >
       <div
@@ -172,8 +172,8 @@ export function SignageDisplay({
           padding: '20px 48px',
           borderRadius: 999,
           border: 'none',
-          background: 'var(--color-accent, #38bdf8)',
-          color: 'var(--color-bg, #0b0f17)',
+          background: 'var(--color-accent)',
+          color: 'var(--color-bg)',
           cursor: 'pointer',
         }}
       >

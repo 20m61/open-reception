@@ -77,7 +77,7 @@ export function FeatureFlags() {
         機密値は表示しません。変更（機能制限の変更）は JIT 昇格が必要な破壊的操作で、監査に記録されます。
       </p>
 
-      {error ? <p style={{ color: '#e0a880' }}>{error}</p> : null}
+      {error ? <p style={{ color: 'var(--color-platform-warn)' }}>{error}</p> : null}
 
       <h2 style={{ fontSize: '1rem', opacity: 0.7 }}>機能フラグ</h2>
       <div style={{ display: 'flex', gap: 'var(--space-md)', flexWrap: 'wrap' }}>
@@ -208,7 +208,7 @@ function TenantFeatureFlagEditor({ onChanged }: { onChanged?: () => void }) {
 
   const inputStyle = {
     background: 'var(--color-surface-2)',
-    border: '1px solid rgba(255,255,255,0.15)',
+    border: '1px solid var(--color-border-strong)',
     borderRadius: 8,
     padding: '6px 10px',
     color: 'inherit',
@@ -222,7 +222,7 @@ function TenantFeatureFlagEditor({ onChanged }: { onChanged?: () => void }) {
       style={{
         marginTop: 'var(--space-lg)',
         maxWidth: 760,
-        border: '1px solid rgba(224,168,128,0.4)',
+        border: '1px solid color-mix(in srgb, var(--color-platform-warn) 40%, transparent)',
         borderRadius: 10,
         padding: 'var(--space-md)',
         display: 'grid',
@@ -230,7 +230,7 @@ function TenantFeatureFlagEditor({ onChanged }: { onChanged?: () => void }) {
         fontSize: '0.85rem',
       }}
     >
-      <strong style={{ color: '#e0a880' }}>テナント別機能フラグの変更（昇格が必要な操作）</strong>
+      <strong style={{ color: 'var(--color-platform-warn)' }}>テナント別機能フラグの変更（昇格が必要な操作）</strong>
       <p style={{ margin: 0, opacity: 0.7 }}>
         テナントごとに利用できる機能を切り替えます。実行には対象テナントを覆う JIT
         昇格が必要で、操作理由・変更前後の値とともに監査に記録されます。無効化しても設定・データは保持されます。
@@ -268,7 +268,7 @@ function TenantFeatureFlagEditor({ onChanged }: { onChanged?: () => void }) {
                 style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-sm)', flexWrap: 'wrap' }}
               >
                 <span style={{ minWidth: 180 }}>{TENANT_FEATURE_FLAG_LABELS[key]}</span>
-                <span style={{ color: flags.flags[key] ? '#7fe0a0' : '#e0a880' }}>
+                <span style={{ color: flags.flags[key] ? 'var(--color-platform-ok)' : 'var(--color-platform-warn)' }}>
                   {boolLabel(flags.flags[key])}
                 </span>
                 <button
@@ -292,19 +292,19 @@ function TenantFeatureFlagEditor({ onChanged }: { onChanged?: () => void }) {
       {tenantId !== '' && !flags && !writeError ? <p style={{ margin: 0, opacity: 0.6 }}>読み込み中…</p> : null}
 
       {writeError ? (
-        <p role="alert" style={{ color: '#e0a880', margin: 0 }}>
+        <p role="alert" style={{ color: 'var(--color-platform-warn)', margin: 0 }}>
           {writeError.message}
           {writeError.needsElevation ? (
             <>
               {' '}
-              <a href="#platform-elevation" style={{ color: '#e0a880', textDecoration: 'underline' }}>
+              <a href="#platform-elevation" style={{ color: 'var(--color-platform-warn)', textDecoration: 'underline' }}>
                 画面上部の「JIT 昇格」パネルから昇格する
               </a>
             </>
           ) : null}
         </p>
       ) : null}
-      {done ? <p style={{ color: '#7fe0a0', margin: 0 }}>{done}</p> : null}
+      {done ? <p style={{ color: 'var(--color-platform-ok)', margin: 0 }}>{done}</p> : null}
     </div>
   );
 }

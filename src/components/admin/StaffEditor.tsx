@@ -99,10 +99,10 @@ const field: React.CSSProperties = {
   border: '1px solid var(--color-surface-2)', background: 'var(--color-bg)', color: 'var(--color-text)',
 };
 const small: React.CSSProperties = {
-  padding: '6px 10px', borderRadius: 8, border: '1px solid rgba(255,255,255,0.2)',
+  padding: '6px 10px', borderRadius: 8, border: '1px solid var(--color-border-strong)',
   background: 'var(--color-bg)', color: 'var(--color-text)', cursor: 'pointer',
 };
 const primary: React.CSSProperties = {
   minHeight: 40, padding: '8px 16px', borderRadius: 8, border: 'none',
-  background: 'var(--color-accent)', color: '#0f172a', fontWeight: 700, cursor: 'pointer',
+  background: 'var(--color-accent)', color: 'var(--color-bg-2)', fontWeight: 700, cursor: 'pointer',
 };

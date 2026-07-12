@@ -74,7 +74,7 @@ export function UpdateStatus() {
         昇格・監査を伴う導線に隔離します。
       </p>
 
-      {error ? <p style={{ color: '#e0a880' }}>{error}</p> : null}
+      {error ? <p style={{ color: 'var(--color-platform-warn)' }}>{error}</p> : null}
 
       <div style={{ display: 'flex', gap: 'var(--space-md)', flexWrap: 'wrap', marginBottom: 'var(--space-md)' }}>
         <MetricCard label="要対応（更新待ち/中/失敗）" value={data ? data.updates.pendingCount : '—'} />
@@ -101,7 +101,7 @@ export function UpdateStatus() {
           </thead>
           <tbody>
             {rows.map((r) => (
-              <tr key={r.id} style={{ borderTop: '1px solid rgba(255,255,255,0.08)', opacity: r.pending ? 1 : 0.6 }}>
+              <tr key={r.id} style={{ borderTop: '1px solid var(--color-border)', opacity: r.pending ? 1 : 0.6 }}>
                 <td style={{ padding: '6px 8px' }}>{STATE_LABEL[r.state]}</td>
                 <td style={{ padding: '6px 8px', opacity: 0.7 }}>{SCOPE_LABEL[r.scope]}</td>
                 <td style={{ padding: '6px 8px', opacity: 0.7 }}>{scopeTarget(r)}</td>

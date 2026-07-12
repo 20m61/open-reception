@@ -40,7 +40,7 @@ const RESULT_LABEL: Record<IntegrationRow['lastResult'], string> = {
 
 const th = { padding: '6px 8px' } as const;
 const headRow = { textAlign: 'left', opacity: 0.6 } as const;
-const bodyRow = { borderTop: '1px solid rgba(255,255,255,0.08)' } as const;
+const bodyRow = { borderTop: '1px solid var(--color-border)' } as const;
 
 export function Integrations() {
   const [data, setData] = useState<IntegrationsResponse | null>(null);
@@ -73,7 +73,7 @@ export function Integrations() {
         などの機密値は表示しません。
       </p>
 
-      {error ? <p style={{ color: '#e0a880' }}>{error}</p> : null}
+      {error ? <p style={{ color: 'var(--color-platform-warn)' }}>{error}</p> : null}
 
       <h2 style={{ fontSize: '1rem', opacity: 0.7 }}>外部連携</h2>
       <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.9rem' }}>

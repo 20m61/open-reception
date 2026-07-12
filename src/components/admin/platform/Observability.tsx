@@ -73,7 +73,7 @@ export function Observability() {
         マスク済みで個人情報を露出しません。エラー率・レイテンシ等の指標は次増分で接続します。
       </p>
 
-      {error ? <p style={{ color: '#e0a880' }}>{error}</p> : null}
+      {error ? <p style={{ color: 'var(--color-platform-warn)' }}>{error}</p> : null}
 
       <h2 style={{ fontSize: '1rem', opacity: 0.7 }}>外部連携の接続状態</h2>
       <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.9rem' }}>
@@ -88,7 +88,7 @@ export function Observability() {
         </thead>
         <tbody>
           {(data?.integrations ?? []).map((i) => (
-            <tr key={i.id} style={{ borderTop: '1px solid rgba(255,255,255,0.08)' }}>
+            <tr key={i.id} style={{ borderTop: '1px solid var(--color-border)' }}>
               <td style={{ padding: '6px 8px' }}>{i.label}</td>
               <td style={{ padding: '6px 8px', opacity: 0.8 }}>{i.configured ? '済' : '未'}</td>
               <td style={{ padding: '6px 8px', opacity: 0.8 }}>{i.enabled ? '有効' : '無効'}</td>
@@ -137,7 +137,7 @@ export function Observability() {
         </thead>
         <tbody>
           {(data?.recentActivity ?? []).map((r) => (
-            <tr key={r.id} style={{ borderTop: '1px solid rgba(255,255,255,0.08)' }}>
+            <tr key={r.id} style={{ borderTop: '1px solid var(--color-border)' }}>
               <td style={{ padding: '6px 8px', opacity: 0.8 }}>{r.at}</td>
               <td style={{ padding: '6px 8px' }}>{r.action}</td>
               <td style={{ padding: '6px 8px', opacity: 0.7 }}>{r.actor}</td>

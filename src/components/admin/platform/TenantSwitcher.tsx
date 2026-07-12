@@ -79,7 +79,7 @@ export function TenantSwitcher() {
           borderRadius: 999,
           background: 'var(--color-surface-2)',
           color: 'inherit',
-          border: '1px solid rgba(255,255,255,0.15)',
+          border: '1px solid var(--color-border-strong)',
         }}
       >
         <option value="">全テナント横断</option>

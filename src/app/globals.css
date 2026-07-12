@@ -25,6 +25,16 @@
   --color-danger: #f87171;
   --color-warning: #fbbf24;
 
+  /*
+   * プラットフォーム運用コンソール（superadmin 危険域）のセマンティック色 (#329)。
+   * 従来 platform/* に直書きされていた caution/break-glass/ok の独自パレットを単一ソース化する。
+   * 半透明は site 側で color-mix(in srgb, var(--color-platform-*) N%, transparent) として導出する
+   * （srgb で不透明色を N% と transparent で混色すると rgba(色, N%) と厳密一致する = 無回帰）。
+   */
+  --color-platform-warn: #e0a880; /* caution（注意・要昇格） */
+  --color-platform-danger: #e66e6e; /* break-glass（緊急権限・危険） */
+  --color-platform-ok: #7fe0a0; /* ok（有効・成功） */
+
   /* ---- タッチ・余白 ---- */
   --touch-target-min: 64px;
   --space-sm: 12px;
