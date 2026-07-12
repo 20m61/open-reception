@@ -54,6 +54,11 @@ export type KioskChatDrawerProps = {
   online?: boolean;
   /** 初期表示で開いておくか（既定 false = 控えめ）。 */
   defaultOpen?: boolean;
+  /**
+   * 外部（例: 検索 0 件時の誘導ボタン）からドロワーを開かせる合図 (issue #322)。
+   * 値が増えるたびに開く（内容は問わない。単調増加のカウンタを想定）。未指定なら外部起動なし。
+   */
+  openSignal?: number;
 };
 
 type DisplayMessage =
@@ -71,6 +76,7 @@ export function KioskChatDrawer({
   adapter,
   online = true,
   defaultOpen = false,
+  openSignal,
 }: KioskChatDrawerProps): React.ReactElement | null {
   const [open, setOpen] = useState(defaultOpen);
   const [draft, setDraft] = useState('');
@@ -89,6 +95,19 @@ export function KioskChatDrawer({
       setMessages(() => clearOnComplete() as DisplayMessage[]);
     }
   }, [available]);
+
+  // 外部からの開く合図（値が変わるたび）。0/undefined は初期値のため無視し、増加のみで開く (issue #322)。
+  const prevOpenSignalRef = useRef(openSignal);
+  useEffect(() => {
+    if (
+      available &&
+      openSignal !== undefined &&
+      openSignal !== prevOpenSignalRef.current
+    ) {
+      setOpen(true);
+    }
+    prevOpenSignalRef.current = openSignal;
+  }, [openSignal, available]);
 
   // 開いた直後に控えめな呼びかけを 1 件だけ出す。
   useEffect(() => {

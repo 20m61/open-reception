@@ -72,10 +72,12 @@ import {
   recordBack,
   recordCancel,
   recordInputMethod,
+  recordSearchQuery,
   stepForState,
   type ExperienceTracker,
 } from '@/domain/reception/experience-metrics';
 import { EXPERIENCE_STEP_ORDER } from '@/domain/reception/experience-summary';
+import { searchStaffScored } from '@/domain/staff/search';
 
 /** MVP では端末 ID は固定。将来 kiosk config から取得する (issue #18)。 */
 const KIOSK_ID = 'kiosk-dev';
@@ -83,14 +85,6 @@ const KIOSK_ID = 'kiosk-dev';
 type DirDepartment = { id: string; name: string };
 type DirStaff = { id: string; displayName: string; kana?: string; aliases: string[]; departmentId: string; available: boolean };
 type Directory = { departments: DirDepartment[]; staff: DirStaff[] };
-
-function matchesQuery(s: DirStaff, query: string): boolean {
-  const q = query.normalize('NFKC').trim().toLowerCase();
-  if (q === '') return true;
-  return [s.displayName, s.kana ?? '', ...s.aliases]
-    .map((v) => v.normalize('NFKC').toLowerCase())
-    .some((v) => v.includes(q));
-}
 /** 完了・キャンセル後に待機画面へ自動復帰するまでの時間。 */
 const AUTO_RESET_MS = 6000;
 
@@ -463,6 +457,16 @@ export function KioskFlow() {
   // 素の関数呼び出しのため、ref を触る処理は（インライン arrow ではなく）useCallback で渡す
   // （react-hooks/refs: レンダー中に ref を触らない）。実行はクリック時のみ。
   const markVoiceInput = useCallback(() => markInputMethod('stt'), [markInputMethod]);
+  // 担当者検索の実行（ヒット有無のみ）をヒット率/0 件率フックへ記録する安定ハンドラ (issue #322)。
+  // クエリ文字列や検索結果自体は ref に持ち込まない（PII 最小化）。
+  const markSearchQuery = useCallback((hasHit: boolean) => {
+    experienceRef.current = recordSearchQuery(experienceRef.current, hasHit);
+  }, []);
+
+  // 検索 0 件時などから Chat-assisted ドロワーを外部から開く合図 (issue #322)。値の増加を
+  // KioskChatDrawer 側の effect が検知して開く（ドロワーは自身の開閉状態を所有したまま）。
+  const [chatOpenSignal, setChatOpenSignal] = useState(0);
+  const requestChatOpen = useCallback(() => setChatOpenSignal((n) => n + 1), []);
 
   // 状態遷移から体験メトリクスを計測する (issue #319)。ステップ滞在所要・呼び出し到達までの所要・
   // 「戻る」回数（ステップ後退で検知）・「キャンセル」回数を記録し、idle でトラッカをリセットする。
@@ -895,6 +899,11 @@ export function KioskFlow() {
               checkoutCredential,
               privacyNoticeOverride,
               presenceEnabled,
+              // markVoiceInput と同様、レンダー中には呼ばれない安定コールバック（デバウンス後の
+              // 検索実行時のみ ref を更新する, issue #322）。
+              // eslint-disable-next-line react-hooks/refs -- クリック/検索実行時のみ実行される安定コールバック
+              markSearchQuery,
+              requestChatOpen,
             )}
           </div>
           {/*
@@ -955,6 +964,8 @@ export function KioskFlow() {
             <KioskChatDrawer
               screenState={data.state}
               available={deriveChatAvailability(data.state) === 'available'}
+              // 担当者検索 0 件時の「チャットで相談する」ボタンから開く合図 (issue #322)。
+              openSignal={chatOpenSignal}
               onRequestStaff={() => {
                 markInputMethod('chat');
                 void handleFallback();
@@ -1343,6 +1354,10 @@ function renderScreen(
   privacyNoticeOverride: string | undefined,
   /** 来訪者検知カメラの有効状態 (issue #79)。有効時のみ通知にローカル処理・非保存の注記を足す。 */
   presenceCameraEnabled: boolean,
+  /** 担当者検索の実行を体験メトリクスへ通知する（ヒット有無のみ。PII なし, issue #322）。 */
+  onSearchQuery: (hasHit: boolean) => void,
+  /** 検索 0 件時などから Chat-assisted ドロワーを開く合図を送る (issue #322)。 */
+  onRequestChat: () => void,
 ) {
   const tr = makeT(locale);
   switch (data.state) {
@@ -1373,6 +1388,8 @@ function renderScreen(
           sttEnabled={sttEnabled}
           onSelect={(target) => dispatch({ type: 'SELECT_TARGET', target })}
           onVoiceUse={onVoiceUse}
+          onSearchQuery={onSearchQuery}
+          onRequestChat={onRequestChat}
           locale={locale}
         />
       );
@@ -1625,6 +1642,8 @@ function TargetView({
   sttEnabled,
   onSelect,
   onVoiceUse,
+  onSearchQuery,
+  onRequestChat,
   locale,
 }: {
   directory: Directory;
@@ -1632,6 +1651,10 @@ function TargetView({
   onSelect: (t: Target) => void;
   /** 音声候補が採用されたことを体験メトリクスへ通知する (issue #319)。 */
   onVoiceUse?: () => void;
+  /** 検索実行のヒット有無を体験メトリクスへ通知する（クエリ文字列は渡さない, issue #322）。 */
+  onSearchQuery?: (hasHit: boolean) => void;
+  /** 0 件時の「チャットで相談する」から Chat-assisted ドロワーを開く (issue #322)。 */
+  onRequestChat?: () => void;
   locale: Locale;
 }) {
   const tr = makeT(locale);
@@ -1639,8 +1662,29 @@ function TargetView({
   // 音声認識の候補。タップで検索欄に反映し、来訪者の確認後に選択する（即時呼び出ししない）(issue #5)。
   const [sttCandidates, setSttCandidates] = useState<string[]>([]);
   const [sttListening, setSttListening] = useState(false);
-  const results = useMemo(() => directory.staff.filter((s) => matchesQuery(s, query)), [directory.staff, query]);
+  const isSearching = query.trim() !== '';
+  // 未入力時は従来どおり全件表示。入力時は tier 付きスコアリング検索（ローマ字/表記ゆれ/1 文字
+  // typo に寛容, issue #322）を行い、exact/prefix/contains → fuzzy（もしかして）の順で並べる。
+  const scored = useMemo(
+    () => (isSearching ? searchStaffScored(directory.staff, query) : []),
+    [directory.staff, query, isSearching],
+  );
+  const results = isSearching ? scored.map((m) => m.item) : directory.staff;
+  const tierById = useMemo(() => new Map(scored.map((m) => [m.item.id, m.tier])), [scored]);
   const departments = directory.departments;
+  const departmentSectionRef = useRef<HTMLDivElement>(null);
+  const hasNoResults = isSearching && results.length === 0;
+
+  // 検索実行のヒット有無を体験メトリクスへ記録する（クエリ文字列自体は保持しない, issue #322）。
+  // 打鍵のたびに数えないよう軽くデバウンスする。
+  useEffect(() => {
+    if (!isSearching) return;
+    const timer = setTimeout(() => {
+      onSearchQuery?.(results.length > 0);
+    }, 400);
+    return () => clearTimeout(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- results は query/directory から導出済み
+  }, [query, isSearching]);
 
   const listen = useCallback(async () => {
     if (sttListening) return;
@@ -1726,6 +1770,13 @@ function TargetView({
                   data-testid={`staff-${s.id}`}
                   onClick={() => onSelect({ type: 'staff', id: s.id, label: s.displayName })}
                 >
+                  {tierById.get(s.id) === 'fuzzy' ? (
+                    // あいまい一致（1 文字 typo・表記ゆれ由来）は「もしかして」と明示し、
+                    // 完全一致/前方一致と混同させない (issue #322 AC2)。
+                    <span className="card__badge" data-testid={`staff-${s.id}-maybe`} lang={locale}>
+                      {tr('reception.searchMaybeMatch')}
+                    </span>
+                  ) : null}
                   {s.displayName}
                   <span className="card__sub">{directory.departments.find((d) => d.id === s.departmentId)?.name}</span>
                 </button>
@@ -1749,23 +1800,55 @@ function TargetView({
           </div>
         ) : (
           <div className="notice notice--warning" data-testid="staff-empty" lang={locale}>
-            {tr('reception.staffNotFound')}
+            <p style={{ margin: 0 }}>{tr('reception.staffNotFound')}</p>
           </div>
         )}
 
-        <h2 style={{ fontSize: 'var(--font-lg)', margin: 0 }} lang={locale}>{tr('reception.byDepartment')}</h2>
-        <div className="card-grid">
-          {departments.map((d) => (
-            <button
-              key={d.id}
-              type="button"
-              className="card"
-              data-testid={`dept-${d.id}`}
-              onClick={() => onSelect({ type: 'department', id: d.id, label: d.name })}
-            >
-              {d.name}
-            </button>
-          ))}
+        {hasNoResults ? (
+          // 0 件で行き止まりにしない：部署一覧・チャット相談への次の一手を必ず提示する
+          // (issue #322 AC3)。文言は i18n（dictionary.ts の privacy.* 隣接キー）。
+          <div className="notice notice--warning" data-testid="search-no-results-guidance" lang={locale}>
+            <p style={{ margin: 0 }}>{tr('reception.searchNoResultsGuidance')}</p>
+            <div className="card-grid" style={{ marginTop: 'var(--space-md)' }}>
+              <button
+                type="button"
+                className="btn btn--secondary"
+                data-testid="search-empty-department-cta"
+                onClick={() =>
+                  departmentSectionRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+                }
+              >
+                {tr('reception.byDepartment')}
+              </button>
+              {onRequestChat ? (
+                <button
+                  type="button"
+                  className="btn btn--secondary"
+                  data-testid="search-empty-chat-cta"
+                  onClick={() => onRequestChat()}
+                >
+                  {tr('reception.searchNoResultsChatCta')}
+                </button>
+              ) : null}
+            </div>
+          </div>
+        ) : null}
+
+        <div ref={departmentSectionRef}>
+          <h2 style={{ fontSize: 'var(--font-lg)', margin: 0 }} lang={locale}>{tr('reception.byDepartment')}</h2>
+          <div className="card-grid">
+            {departments.map((d) => (
+              <button
+                key={d.id}
+                type="button"
+                className="card"
+                data-testid={`dept-${d.id}`}
+                onClick={() => onSelect({ type: 'department', id: d.id, label: d.name })}
+              >
+                {d.name}
+              </button>
+            ))}
+          </div>
         </div>
       </div>
       {/*

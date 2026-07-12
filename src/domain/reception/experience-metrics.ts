@@ -45,6 +45,14 @@ export type ExperienceTracker = {
   readonly backCount: number;
   readonly cancelCount: number;
   readonly inputMethod: ExperienceInputMethod | null;
+  /**
+   * 担当者検索（テキスト入力）の実行回数と、うち 0 件だった回数 (issue #322)。
+   * ヒット率・0 件率を後で算出できるようにするための非 PII フック。クエリ文字列そのものは
+   * 保持しない（回数のみ）。`ReceptionExperience`（log.ts）側への出力配線は次増分（#322 は
+   * 検索ロジック・UI 側の対応が主眼のため、集計スキーマの拡張はここでは行わない）。
+   */
+  readonly searchQueryCount: number;
+  readonly searchZeroHitCount: number;
 };
 
 /** まっさらな tracker を作る（受付開始前）。 */
@@ -58,6 +66,8 @@ export function createTracker(): ExperienceTracker {
     backCount: 0,
     cancelCount: 0,
     inputMethod: null,
+    searchQueryCount: 0,
+    searchZeroHitCount: 0,
   };
 }
 
@@ -104,6 +114,18 @@ export function recordInputMethod(
   method: ExperienceInputMethod,
 ): ExperienceTracker {
   return { ...tracker, inputMethod: method };
+}
+
+/**
+ * 担当者検索の 1 回の実行を記録する (issue #322)。ヒット率・0 件率の算出用の非 PII カウンタ。
+ * クエリ文字列や検索結果（担当者名等）は一切保持しない。
+ */
+export function recordSearchQuery(tracker: ExperienceTracker, hasHit: boolean): ExperienceTracker {
+  return {
+    ...tracker,
+    searchQueryCount: tracker.searchQueryCount + 1,
+    searchZeroHitCount: tracker.searchZeroHitCount + (hasHit ? 0 : 1),
+  };
 }
 
 /**

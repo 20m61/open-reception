@@ -457,6 +457,17 @@ a {
   color: var(--color-muted);
 }
 
+/* あいまい一致（1 文字 typo・表記ゆれ由来）の「もしかして」バッジ (issue #322)。 */
+.card__badge {
+  align-self: flex-start;
+  padding: 2px 10px;
+  border-radius: var(--radius-pill);
+  background: color-mix(in srgb, var(--color-accent) 18%, transparent);
+  color: var(--color-accent);
+  font-size: var(--font-body);
+  font-weight: 700;
+}
+
 .field {
   display: flex;
   flex-direction: column;

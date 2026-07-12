@@ -94,6 +94,36 @@ test('担当者検索で絞り込める', async ({ page }) => {
   await expect(page.getByTestId('staff-staff-sato')).toHaveCount(0);
 });
 
+test('1 文字 typo でも「もしかして」候補として見つかる (#322)', async ({ page }) => {
+  await page.goto('/kiosk');
+  await page.getByTestId('start-reception').click();
+  await page.getByTestId('purpose-meeting').click();
+  // 「たかはし」の 1 文字 typo。従来の完全部分一致では 0 件だった。
+  await page.getByTestId('staff-search').fill('たかばし');
+  await expect(page.getByTestId('staff-staff-takahashi')).toBeVisible();
+  await expect(page.getByTestId('staff-staff-takahashi-maybe')).toBeVisible();
+  // 0 件時の誘導は出ない（ヒットしているため）。
+  await expect(page.getByTestId('search-no-results-guidance')).toHaveCount(0);
+});
+
+test('検索 0 件でも行き止まりにならず、部署一覧・チャット相談への導線が出る (#322 AC3)', async ({ page }) => {
+  await page.goto('/kiosk');
+  await page.getByTestId('start-reception').click();
+  await page.getByTestId('purpose-meeting').click();
+  await page.getByTestId('staff-search').fill('存在しない名前です');
+
+  await expect(page.getByTestId('staff-empty')).toBeVisible();
+  const guidance = page.getByTestId('search-no-results-guidance');
+  await expect(guidance).toBeVisible();
+
+  // 次の一手 1: 部署一覧へスクロール誘導。
+  await expect(page.getByTestId('search-empty-department-cta')).toBeVisible();
+
+  // 次の一手 2: チャットで受付係に相談する（Chat-assisted ドロワーが開く）。
+  await page.getByTestId('search-empty-chat-cta').click();
+  await expect(page.getByTestId('kiosk-chat-drawer')).toHaveAttribute('data-open', 'true');
+});
+
 test('確認画面から修正に戻れる', async ({ page }) => {
   await advanceToConfirm(page, 'staff-staff-sato', '修正 花子');
   await expect(page.getByTestId('confirm-name')).toHaveText('修正 花子');
