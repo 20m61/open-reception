@@ -1,7 +1,7 @@
 'use client';
 
 import type { ReceptionState } from '@/domain/reception/state';
-import { makeT, type Locale, type MessageKey } from '@/lib/i18n';
+import { htmlLangFor, makeT, type Locale, type MessageKey } from '@/lib/i18n';
 
 /**
  * 受付フローの進捗ステッパー (issue #121 / Epic #119, UX 研究準拠)。
@@ -48,7 +48,7 @@ export function FlowStepper({ state, locale }: { state: ReceptionState; locale: 
             <span className="flow-stepper__dot" aria-hidden="true">
               {i + 1}
             </span>
-            <span className="flow-stepper__label" lang={locale}>
+            <span className="flow-stepper__label" lang={htmlLangFor(locale)}>
               {tr(step.labelKey)}
             </span>
           </li>

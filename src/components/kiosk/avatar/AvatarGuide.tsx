@@ -5,7 +5,7 @@ import { useEffect, useMemo, useState } from 'react';
 import type { ReceptionState } from '@/domain/reception/state';
 import { deriveAvatarState } from '@/domain/reception/ui-contract';
 import { resolveMotionUrl, type MotionKey } from '@/domain/motion/types';
-import { DEFAULT_LOCALE, type Locale } from '@/lib/i18n';
+import { DEFAULT_LOCALE, htmlLangFor, type Locale } from '@/lib/i18n';
 import { speak, type SpeakSettings } from '../speech';
 import { AvatarFallbackImage } from './fallback-image';
 import { resolveAvatarVisual } from './visual';
@@ -148,7 +148,7 @@ export function AvatarGuide({
       <p
         data-testid="avatar-subtitle"
         data-voiceless={voiceless ? 'true' : 'false'}
-        lang={locale}
+        lang={htmlLangFor(locale)}
         // 案内は live region で読み上げ可能にしつつ、視覚字幕としても見せる。
         aria-live="polite"
         style={subtitleStyle}

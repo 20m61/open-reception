@@ -3,6 +3,7 @@
  * 永続化は data backend（memory / dynamodb）に委譲する (docs/persistence-design.md)。
  */
 import { clampRate, clampVolume, type VoiceProvider, type VoiceSettings } from '@/domain/voice/types';
+import { sanitizeA11yEnabledModes } from '@/domain/kiosk/a11y-modes';
 import { getBackend } from '@/lib/data';
 
 function defaults(): VoiceSettings {
@@ -67,6 +68,11 @@ export async function updateVoiceSettings(patch: unknown): Promise<VoiceSettings
     if (typeof o.guidanceCallingNotice === 'string') settings.guidanceCallingNotice = o.guidanceCallingNotice.trim() || undefined;
     // ワンタップ満足度フィードバック収集の有効/無効 (issue #320)。既定（未設定）は「有効」扱い。
     if (typeof o.feedbackEnabled === 'boolean') settings.feedbackEnabled = o.feedbackEnabled;
+    // 来訪者向けアクセシビリティ支援モードの有効/無効 (issue #321)。既定（未設定）は「全モード有効」
+    // 扱い（sanitizeA11yEnabledModes(undefined) が返す既定）。オブジェクトが来たときのみ補正して保持する。
+    if (typeof o.a11yModesEnabled === 'object' && o.a11yModesEnabled !== null) {
+      settings.a11yModesEnabled = sanitizeA11yEnabledModes(o.a11yModesEnabled);
+    }
   }
   await voice().put(settings);
   return { ...settings };

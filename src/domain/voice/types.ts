@@ -3,6 +3,8 @@
  * 音声合成(TTS)・音声認識(STT)・案内文言・話速・音量・言語を扱う。
  * 方針: タッチ操作を主導線とし、音声は補助。音声不可でもテキストで完走する。
  */
+import type { A11yEnabledModes } from '@/domain/kiosk/a11y-modes';
+
 export type VoiceProvider = 'browser' | 'none';
 
 /**
@@ -70,6 +72,13 @@ export type VoiceSettings = {
    * 未設定は i18n 辞書の既定文言 (`reception.callingStageNotice`)。
    */
   guidanceCallingNotice?: string;
+  /**
+   * 来訪者向けアクセシビリティ支援モードの有効/無効 (issue #321)。任意・既定は未設定。
+   * 未設定は `sanitizeA11yEnabledModes(undefined)` により「全モード有効」扱いになる
+   * （既存テナントは自動で有効になる後方互換の既定、feedbackEnabled #320 と同方針）。
+   * `false` にしたモードは kiosk の支援モードパネル自体から出さない（UI ごと非表示）。
+   */
+  a11yModesEnabled?: A11yEnabledModes;
 };
 
 export function clampRate(rate: number): number {

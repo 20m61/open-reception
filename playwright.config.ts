@@ -21,9 +21,11 @@ const baseURL = remoteBaseURL ?? `http://127.0.0.1:${PORT}`;
  */
 const includeWebkit = !!process.env.CI || process.env.E2E_WEBKIT === '1';
 
-// 既定スコープへカスタム受付フローを一時投入する spec (#248)。他 kiosk テストと分離するため、
-// 通常 project からは除外し、専用 project で本 suite の後に単独実行する。
-const FLOW_MUTATING_SPECS = /(admin-reception-flows|kiosk-flow-integration)\.spec\.ts$/;
+// 既定スコープへカスタム受付フローを一時投入する spec (#248)、および共有シングルトン設定
+// （voice-store の a11yModesEnabled 等, #321）を一時的に無効化して検証する spec。どちらも
+// グローバル状態を書き換えるため、他 kiosk テストと分離し専用 project で本 suite の後に
+// 単独実行する（テスト自身は最後に既定値へ戻すが、並行実行中の一瞬の観測を避けるため）。
+const FLOW_MUTATING_SPECS = /(admin-reception-flows|kiosk-flow-integration|kiosk-a11y-tenant-toggle)\.spec\.ts$/;
 
 // soak（長時間連続稼働）テストは `tests/e2e/soak/` に隔離し、専用の playwright.soak.config.ts
 // （`npm run test:soak*`）からのみ実行する (issue #317)。本設定（既定 `npm run test:e2e` /
@@ -74,7 +76,8 @@ export default defineConfig({
     {
       // フロー作成系 spec は既定スコープ（internal/default-site）へカスタムフローを一時投入するため、
       // 他の kiosk テストと並行すると /api/kiosk/flow 経由で漏れて既定フロー検証をフレークさせる
-      // (#248)。本 suite の全 project 完了後に単独実行して構造的に分離する（互いは一意キーで独立）。
+      // (#248)。voice-store の a11yModesEnabled 一時無効化 spec (#321) も同様の理由でここに含める。
+      // 本 suite の全 project 完了後に単独実行して構造的に分離する（互いは一意キーで独立）。
       name: 'flow-mutation',
       use: { browserName: 'chromium', ...iPadPortraitViewport },
       testMatch: FLOW_MUTATING_SPECS,

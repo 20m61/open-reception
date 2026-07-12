@@ -149,7 +149,23 @@ const zh: PartialAvatarLines = {
   farewell: '登记完成，请等待引导。',
 };
 
-const LINES: Record<Locale, PartialAvatarLines> = { ja, en, ko, zh };
+/**
+ * やさしい日本語 (ja-simple, #321)。短文・平易な語彙に言い換えた版。全状態を用意する
+ * （アバター字幕は常設表示のため、bounded scope でも欠かせない主要導線）。
+ */
+const jaSimple: PartialAvatarLines = {
+  idle: 'AI うけつけです。ようけんを えらんで ください',
+  greeting: 'ようこそ。ようけんを えらんで ください',
+  guiding: '会いたい 人や ぶしょを えらんで ください',
+  listening: 'お名前などを ゆっくり 入れて ください',
+  confirming: 'ないようを かくにんして すすんで ください',
+  calling: '人を よんで います。少し お待ち ください',
+  connected: 'つながりました。どうぞ お話し ください',
+  apologizing: 'いま つながりませんでした。べつの 方法で ごあんない します',
+  farewell: 'うけつけが おわりました。ごあんないを お待ち ください',
+};
+
+const LINES: Record<Locale, PartialAvatarLines> = { ja, en, ko, zh, 'ja-simple': jaSimple };
 
 /** locale を適用して 1 状態の短文を返す（欠落は既定 locale へフォールバック）。 */
 function lineFor(avatarState: AvatarState, locale: Locale): string {

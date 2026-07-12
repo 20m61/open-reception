@@ -8,6 +8,7 @@ export {
   LOCALE_NATIVE_LABEL,
   isSupportedLocale,
   normalizeLocale,
+  htmlLangFor,
   type Locale,
 } from './locale';
 export { DICTIONARIES, type MessageKey } from './dictionary';

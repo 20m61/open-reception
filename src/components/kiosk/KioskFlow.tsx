@@ -19,8 +19,16 @@ import { primeSpeech, speak, type SpeakSettings } from './speech';
 import { AvatarGuide } from './avatar/AvatarGuide';
 import type { AvatarGuidanceOverride } from './avatar/guidance';
 import { LanguageSwitcher } from './LanguageSwitcher';
-import { makeT, DEFAULT_LOCALE, type Locale, type MessageKey } from '@/lib/i18n';
+import { makeT, DEFAULT_LOCALE, htmlLangFor, type Locale, type MessageKey } from '@/lib/i18n';
 import { LOCALE_LANGUAGE_CODE } from '@/lib/voice/locale-voice';
+import { AccessibilityMenu } from './AccessibilityMenu';
+import {
+  DEFAULT_A11Y_MODE_STATE,
+  clampA11yModeState,
+  sanitizeA11yEnabledModes,
+  type A11yEnabledModes,
+  type FontScale,
+} from '@/domain/kiosk/a11y-modes';
 import { FlowStepper } from './FlowStepper';
 import { quickActionIcon, purposeIcon } from './quick-action-icons';
 import { hasBrandingContent, normalizeAccentColor, type BrandingSettings } from '@/domain/branding/types';
@@ -369,6 +377,30 @@ export function KioskFlow() {
   // ワンタップ満足度フィードバック収集の有効/無効 (issue #320)。テナント設定 (#28) を尊重する。
   // 既定 true（未取得/未設定は収集する）。false のときは終端画面から評価 UI 自体を出さない。
   const [feedbackEnabled, setFeedbackEnabled] = useState(true);
+  // 来訪者が選べるアクセシビリティ支援モード (issue #321)。文字サイズ・ハイコントラスト・
+  // 低位置レイアウトの現在値。既定は無支援（DEFAULT_A11Y_MODE_STATE）で、セッション終了・
+  // 無操作リセットで idle 復帰時に既定へ戻す（次の来訪者へ持ち越さない、下記 idle effect 参照）。
+  const [fontScale, setFontScale] = useState<FontScale>(DEFAULT_A11Y_MODE_STATE.fontScale);
+  const [a11yHighContrast, setA11yHighContrast] = useState(DEFAULT_A11Y_MODE_STATE.highContrast);
+  const [a11yLowReach, setA11yLowReach] = useState(DEFAULT_A11Y_MODE_STATE.lowReach);
+  // テナント/サイト設定でのモードごとの有効/無効 (issue #321 AC)。未取得時は既定=全モード有効。
+  const [a11yEnabledModes, setA11yEnabledModes] = useState<A11yEnabledModes>(
+    sanitizeA11yEnabledModes(undefined),
+  );
+  // テナント設定の取得後にモードが無効化されていた場合、既に選ばれていた値を既定へ丸める
+  // （#321: 無効モードの残留表示を防ぐ。clampA11yModeState は純関数、src/domain/kiosk/a11y-modes.ts）。
+  useEffect(() => {
+    const clamped = clampA11yModeState(
+      { fontScale, highContrast: a11yHighContrast, lowReach: a11yLowReach },
+      a11yEnabledModes,
+    );
+    if (clamped.fontScale !== fontScale) setFontScale(clamped.fontScale);
+    if (clamped.highContrast !== a11yHighContrast) setA11yHighContrast(clamped.highContrast);
+    if (clamped.lowReach !== a11yLowReach) setA11yLowReach(clamped.lowReach);
+    // fontScale/a11yHighContrast/a11yLowReach は「クランプ対象」であり、この effect 自身の
+    // setState で変わりうるため依存に含めない（a11yEnabledModes の変化にのみ反応する）。
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [a11yEnabledModes]);
   // 呼び出し中(calling)の段階的ケア (issue #323)。しきい値・文言はテナント設定 (#28) を尊重する。
   // 未取得時は既定値のまま（クランプ側が既定へフォールバックするため壊れない）。
   const [callingStageTenantOverride, setCallingStageTenantOverride] = useState<
@@ -504,6 +536,7 @@ export function KioskFlow() {
           guidanceCallingWaiting?: string;
           guidanceCallingNotice?: string;
           feedbackEnabled?: boolean;
+          a11yModesEnabled?: Partial<A11yEnabledModes>;
         };
         if (cancelled) return;
         if (voice.guidanceIdle) setGuidanceIdle(voice.guidanceIdle);
@@ -526,6 +559,8 @@ export function KioskFlow() {
         });
         // ワンタップ満足度フィードバック収集の有効/無効 (issue #320)。未設定は収集する（既定 true）。
         setFeedbackEnabled(voice.feedbackEnabled ?? true);
+        // アクセシビリティ支援モードの有効/無効 (issue #321)。未設定は全モード有効扱い。
+        setA11yEnabledModes(sanitizeA11yEnabledModes(voice.a11yModesEnabled));
       } catch {
         /* 取得失敗時は既定文言を使う */
       }
@@ -829,6 +864,11 @@ export function KioskFlow() {
       setLocale(DEFAULT_LOCALE);
       // 退館クレデンシャル (#342) を破棄する（次の来訪者の完了画面へ持ち越さない）。
       setCheckoutCredential(null);
+      // アクセシビリティ支援モードも既定へ戻す (issue #321 AC「既定表示へ自動復帰」)。
+      // 上の setLocale(DEFAULT_LOCALE) がやさしい日本語 ('ja-simple') も既定 'ja' へ戻す。
+      setFontScale(DEFAULT_A11Y_MODE_STATE.fontScale);
+      setA11yHighContrast(DEFAULT_A11Y_MODE_STATE.highContrast);
+      setA11yLowReach(DEFAULT_A11Y_MODE_STATE.lowReach);
     }
   }, [data.state]);
 
@@ -861,7 +901,8 @@ export function KioskFlow() {
         phrase =
           locale === DEFAULT_LOCALE
             ? guidanceIdle
-            : `${tr('welcome.title')}${locale === 'zh' ? '。' : '. '}${tr('reception.idleReassure')}`;
+            // 'ja-simple' は日本語の一種なので 'zh' と同じ全角句点区切りにする (#321)。
+            : `${tr('welcome.title')}${locale === 'zh' || locale === 'ja-simple' ? '。' : '. '}${tr('reception.idleReassure')}`;
         break;
       default:
         phrase = undefined;
@@ -1023,7 +1064,10 @@ export function KioskFlow() {
   // ブランドのアクセント色で CSS 変数 --brand-accent を上書きしてテーマ化する (#88)。
   const brandAccent = normalizeAccentColor(branding.accentColor);
   const backgroundStyle: React.CSSProperties = {
-    ...(backgroundUrl
+    // ハイコントラストモード (#321) では背景画像を出さない（前景/背景コントラストを
+    // globals.css の data-a11y-contrast トークンで確実に確保するため）。ブランド accent
+    // （--brand-accent）は保持する（AC「ブランド accent は保持しつつコントラストを強化」）。
+    ...(backgroundUrl && !a11yHighContrast
       ? { backgroundImage: `url(${backgroundUrl})`, backgroundSize: 'cover', backgroundPosition: 'center' }
       : {}),
     ...(brandAccent ? ({ '--brand-accent': brandAccent } as React.CSSProperties) : {}),
@@ -1037,8 +1081,30 @@ export function KioskFlow() {
       data-kiosk-motion={motionKeyForState(data.state)}
       // 画面種別レイアウトプロファイル。配置は CSS が消費する (issue #124)。
       data-kiosk-layout={layout}
+      // 来訪者が選べるアクセシビリティ支援モード (issue #321)。配置・配色・文字サイズの
+      // 切り替えは globals.css がこれらの属性セレクタで担う（JS はスタイルを持たない）。
+      data-a11y-font-scale={fontScale}
+      data-a11y-contrast={a11yHighContrast ? 'high' : undefined}
+      data-a11y-reach={a11yLowReach ? 'low' : undefined}
       style={backgroundStyle}
     >
+      {/*
+        常設アクセシビリティ支援モードボタン (issue #321 AC「全 kiosk 画面でモード切替が
+        1〜2タップで到達できる」)。view/mode/showSignage の分岐の外側（<main> 直下）に置き、
+        PIN 許可待ち・未エンロール案内・QR 受付・待機サイネージ・受付フローの全画面で
+        同じ場所に常設する。
+      */}
+      <AccessibilityMenu
+        fontScale={fontScale}
+        onFontScale={setFontScale}
+        highContrast={a11yHighContrast}
+        onHighContrast={setA11yHighContrast}
+        lowReach={a11yLowReach}
+        onLowReach={setA11yLowReach}
+        locale={locale}
+        onSimpleJapaneseChange={(enabled) => setLocale(enabled ? 'ja-simple' : DEFAULT_LOCALE)}
+        enabledModes={a11yEnabledModes}
+      />
       {inactivitySeconds !== null ? (
         <InactivityWarning
           seconds={inactivitySeconds}
@@ -1398,7 +1464,7 @@ function SignageWaitingView({
           type="button"
           className="btn btn--secondary"
           data-testid="signage-start-checkin"
-          lang={locale}
+          lang={htmlLangFor(locale)}
           onClick={onStartCheckin}
         >
           {tr('kiosk.action.checkin.label')}
@@ -1409,7 +1475,7 @@ function SignageWaitingView({
           className="btn btn--ghost"
           data-testid="presence-toggle"
           aria-pressed={presenceEnabled}
-          lang={locale}
+          lang={htmlLangFor(locale)}
           onClick={onTogglePresence}
         >
           {presenceEnabled
@@ -1436,7 +1502,7 @@ function CheckoutLink({ locale = DEFAULT_LOCALE }: { locale?: Locale }) {
       href={`/kiosk/checkout?locale=${locale}`}
       className="btn btn--ghost"
       data-testid="kiosk-checkout-link"
-      lang={locale}
+      lang={htmlLangFor(locale)}
     >
       {tr('kiosk.checkoutLink')}
     </Link>
@@ -1526,7 +1592,7 @@ function PrivacyNotice({
     presenceCameraEnabled,
   });
   return (
-    <div className="privacy-notice" data-testid="privacy-notice" lang={locale}>
+    <div className="privacy-notice" data-testid="privacy-notice" lang={htmlLangFor(locale)}>
       <p className="privacy-notice__title">{content.title}</p>
       <p className="privacy-notice__summary" data-testid="privacy-notice-summary">
         {content.summary}
@@ -1789,7 +1855,8 @@ function IdleView({
   // ja は管理設定で上書きできる案内文言（guidance）を使い、他言語は辞書の挨拶＋安心情報を出す (#103 / #324)。
   // リードは主指示（見出しの「ご用件をお選びください」）を重ねず、挨拶＋「タッチだけで受付できる」
   // 安心情報に限定して二重指示を避ける (#324)。文の区切りは locale に合わせる（CJK は「。」、他は「. 」）。
-  const sentenceSep = locale === 'ja' || locale === 'zh' ? '。' : '. ';
+  // 'ja-simple' は日本語の一種なので 'ja' と同じ区切りにする (#321)。
+  const sentenceSep = locale === 'ja' || locale === 'zh' || locale === 'ja-simple' ? '。' : '. ';
   const lead =
     locale === DEFAULT_LOCALE
       ? guidance
@@ -1833,7 +1900,7 @@ function IdleView({
       </div>
       <header className="kiosk-idle__head">
         <h1 className="screen__title">{tr('reception.purposePrompt')}</h1>
-        <p className="screen__lead" data-testid="idle-guidance" lang={locale}>
+        <p className="screen__lead" data-testid="idle-guidance" lang={htmlLangFor(locale)}>
           {lead}
         </p>
         {/* 言語切替 (#103)。読めない言語でも自言語ラベルで選べる。 */}
@@ -1853,7 +1920,7 @@ function IdleView({
               className="card card--cta"
               data-testid={legacyTestId[action.intent] ?? action.testId}
               data-intent={action.intent}
-              lang={locale}
+              lang={htmlLangFor(locale)}
               onClick={() => onQuickAction(action)}
             >
               <span className="card__icon" aria-hidden="true">
@@ -1893,7 +1960,7 @@ function PurposeView({
               type="button"
               className="card card--cta"
               data-testid={`purpose-${p.id}`}
-              lang={locale}
+              lang={htmlLangFor(locale)}
               onClick={() => onSelect(p.id)}
             >
               <span className="card__icon" aria-hidden="true">
@@ -1978,7 +2045,7 @@ function TargetView({
       <h1 className="screen__title">{tr('reception.targetPrompt')}</h1>
       <div className="screen__body">
         <div className="field">
-          <label className="field__label" htmlFor="staff-search" lang={locale}>
+          <label className="field__label" htmlFor="staff-search" lang={htmlLangFor(locale)}>
             {tr('reception.searchStaff')}
           </label>
           <input
@@ -2005,7 +2072,7 @@ function TargetView({
             </button>
             {sttCandidates.length > 0 ? (
               <>
-                <p className="card__sub" data-testid="stt-hint" lang={locale}>
+                <p className="card__sub" data-testid="stt-hint" lang={htmlLangFor(locale)}>
                   {tr('reception.voiceHint')}
                 </p>
                 <div className="card-grid" data-testid="stt-candidates">
@@ -2045,7 +2112,7 @@ function TargetView({
                   {tierById.get(s.id) === 'fuzzy' ? (
                     // あいまい一致（1 文字 typo・表記ゆれ由来）は「もしかして」と明示し、
                     // 完全一致/前方一致と混同させない (issue #322 AC2)。
-                    <span className="card__badge" data-testid={`staff-${s.id}-maybe`} lang={locale}>
+                    <span className="card__badge" data-testid={`staff-${s.id}-maybe`} lang={htmlLangFor(locale)}>
                       {tr('reception.searchMaybeMatch')}
                     </span>
                   ) : null}
@@ -2063,7 +2130,7 @@ function TargetView({
                   style={{ opacity: 0.55, cursor: 'not-allowed' }}
                 >
                   {s.displayName}
-                  <span className="card__sub" data-testid={`staff-${s.id}-absent`} lang={locale}>
+                  <span className="card__sub" data-testid={`staff-${s.id}-absent`} lang={htmlLangFor(locale)}>
                     {tr('reception.staffAbsent')}
                   </span>
                 </div>
@@ -2071,7 +2138,7 @@ function TargetView({
             )}
           </div>
         ) : (
-          <div className="notice notice--warning" data-testid="staff-empty" lang={locale}>
+          <div className="notice notice--warning" data-testid="staff-empty" lang={htmlLangFor(locale)}>
             <p style={{ margin: 0 }}>{tr('reception.staffNotFound')}</p>
           </div>
         )}
@@ -2079,7 +2146,7 @@ function TargetView({
         {hasNoResults ? (
           // 0 件で行き止まりにしない：部署一覧・チャット相談への次の一手を必ず提示する
           // (issue #322 AC3)。文言は i18n（dictionary.ts の privacy.* 隣接キー）。
-          <div className="notice notice--warning" data-testid="search-no-results-guidance" lang={locale}>
+          <div className="notice notice--warning" data-testid="search-no-results-guidance" lang={htmlLangFor(locale)}>
             <p style={{ margin: 0 }}>{tr('reception.searchNoResultsGuidance')}</p>
             <div className="card-grid" style={{ marginTop: 'var(--space-md)' }}>
               <button
@@ -2107,7 +2174,7 @@ function TargetView({
         ) : null}
 
         <div ref={departmentSectionRef}>
-          <h2 style={{ fontSize: 'var(--font-lg)', margin: 0 }} lang={locale}>{tr('reception.byDepartment')}</h2>
+          <h2 style={{ fontSize: 'var(--font-lg)', margin: 0 }} lang={htmlLangFor(locale)}>{tr('reception.byDepartment')}</h2>
           <div className="card-grid">
             {departments.map((d) => (
               <button
@@ -2161,7 +2228,7 @@ function VisitorInfoView({
           presenceCameraEnabled={presenceCameraEnabled}
         />
         <div className="field">
-          <label className="field__label" htmlFor="visitor-name" lang={locale}>
+          <label className="field__label" htmlFor="visitor-name" lang={htmlLangFor(locale)}>
             {tr('reception.requiredLabel', { field: tr('reception.fieldName') })}
           </label>
           <input
@@ -2174,7 +2241,7 @@ function VisitorInfoView({
           />
         </div>
         <div className="field">
-          <label className="field__label" htmlFor="visitor-company" lang={locale}>
+          <label className="field__label" htmlFor="visitor-company" lang={htmlLangFor(locale)}>
             {tr('reception.optionalLabel', { field: tr('reception.fieldCompany') })}
           </label>
           <input
@@ -2187,7 +2254,7 @@ function VisitorInfoView({
           />
         </div>
         <div className="field">
-          <label className="field__label" htmlFor="visitor-note" lang={locale}>
+          <label className="field__label" htmlFor="visitor-note" lang={htmlLangFor(locale)}>
             {tr('reception.optionalLabel', { field: tr('reception.fieldNote') })}
           </label>
           <input
@@ -2240,19 +2307,19 @@ function ConfirmView({
       <h1 className="screen__title">{tr('reception.confirm')}</h1>
       <div className="screen__body">
         <dl style={{ display: 'grid', gridTemplateColumns: 'auto 1fr', gap: 'var(--space-md)', fontSize: 'var(--font-lg)' }}>
-          <dt className="card__sub" lang={locale}>{tr('reception.fieldPurpose')}</dt>
+          <dt className="card__sub" lang={htmlLangFor(locale)}>{tr('reception.fieldPurpose')}</dt>
           <dd style={{ margin: 0 }}>{purposeLabel}</dd>
-          <dt className="card__sub" lang={locale}>{tr('reception.fieldTarget')}</dt>
+          <dt className="card__sub" lang={htmlLangFor(locale)}>{tr('reception.fieldTarget')}</dt>
           <dd style={{ margin: 0 }} data-testid="confirm-target">
             {data.target?.label}
           </dd>
-          <dt className="card__sub" lang={locale}>{tr('reception.fieldName')}</dt>
+          <dt className="card__sub" lang={htmlLangFor(locale)}>{tr('reception.fieldName')}</dt>
           <dd style={{ margin: 0 }} data-testid="confirm-name">
             {data.visitor?.name}
           </dd>
           {data.visitor?.company ? (
             <>
-              <dt className="card__sub" lang={locale}>{tr('reception.fieldCompany')}</dt>
+              <dt className="card__sub" lang={htmlLangFor(locale)}>{tr('reception.fieldCompany')}</dt>
               <dd style={{ margin: 0 }}>{data.visitor.company}</dd>
             </>
           ) : null}
@@ -2310,7 +2377,7 @@ function StaffResponseBanner({
         {response.visitorMessage}
       </div>
       {response.kioskStatus === 'waiting' ? (
-        <p className="staff-response-banner__reguidance" data-testid="staff-response-reguidance" lang={locale}>
+        <p className="staff-response-banner__reguidance" data-testid="staff-response-reguidance" lang={htmlLangFor(locale)}>
           {makeT(locale)('reception.staffResponseWaitReguidance')}
         </p>
       ) : null}
@@ -2321,7 +2388,7 @@ function StaffResponseBanner({
           data-testid="staff-response-fallback"
           onClick={onFallback}
           style={{ marginTop: 'var(--space-sm)' }}
-          lang={locale}
+          lang={htmlLangFor(locale)}
         >
           {makeT(locale)('reception.toDesk')}
         </button>
@@ -2418,7 +2485,7 @@ function ResultPanel({
 }) {
   return (
     <div className="screen__body" style={{ alignItems: 'center', justifyContent: 'center' }}>
-      <div className={`result-panel result-panel--${tone}`} data-testid={testId} lang={locale} {...panelDataAttrs}>
+      <div className={`result-panel result-panel--${tone}`} data-testid={testId} lang={htmlLangFor(locale)} {...panelDataAttrs}>
         <span className="result-panel__icon">
           <ResultToneIcon tone={tone} />
         </span>
@@ -2433,7 +2500,7 @@ function ResultPanel({
               data-testid={action.testId}
               onClick={action.onClick}
               disabled={action.disabled}
-              lang={locale}
+              lang={htmlLangFor(locale)}
             >
               {action.label}
             </button>
@@ -2620,7 +2687,7 @@ function SatisfactionFeedback({
   };
 
   return (
-    <div className="satisfaction-feedback" data-testid="satisfaction-feedback" lang={locale}>
+    <div className="satisfaction-feedback" data-testid="satisfaction-feedback" lang={htmlLangFor(locale)}>
       {rating === null ? (
         <>
           <p className="satisfaction-feedback__prompt">{tr('reception.feedback.prompt')}</p>
@@ -2694,7 +2761,7 @@ function InactivityWarning({
       role="alertdialog"
       aria-live="assertive"
       aria-label={tr('reception.inactivityTitle')}
-      lang={locale}
+      lang={htmlLangFor(locale)}
     >
       <div className="inactivity-overlay__panel">
         <h2 className="inactivity-overlay__title">{tr('reception.inactivityTitle')}</h2>
@@ -2773,7 +2840,7 @@ function CheckoutCredentialPanel({
     <section
       className="checkout-credential"
       data-testid="checkout-credential"
-      lang={locale}
+      lang={htmlLangFor(locale)}
       style={{
         marginTop: 'var(--space-lg)',
         display: 'flex',
