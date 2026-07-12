@@ -46,6 +46,12 @@ export type VoiceSettings = {
    */
   privacyNotice?: string;
   /**
+   * ワンタップ満足度フィードバック収集の有効/無効 (issue #320)。任意・既定は未設定。
+   * 未設定/`true` は収集する（既存テナントは自動で有効になる後方互換の既定）。`false` に
+   * すると kiosk の終端画面（完了/未応答/失敗）から評価 UI 自体を出さない（UI ごと非表示）。
+   */
+  feedbackEnabled?: boolean;
+  /**
    * 呼び出し中(calling)の段階的ケア (issue #323) のしきい値上書き（ミリ秒）。
    * 任意・未設定/不正値は `src/domain/reception/calling-experience.ts` の既定値へ
    * フォールバックする（クランプは同モジュールの `clampCallingStageThresholds` に委譲し、

@@ -196,7 +196,19 @@ export type MessageKey =
   // 担当者検索で 0 件だったときの次の一手（部署一覧・チャット相談への誘導, #322）。
   | 'reception.searchNoResultsGuidance'
   | 'reception.searchNoResultsChatCta'
-  | 'reception.searchMaybeMatch';
+  | 'reception.searchMaybeMatch'
+  // ワンタップ満足度フィードバック（完了/未応答/失敗の終端画面, #320）。自由記述は無く、
+  // 評価（happy/neutral/unhappy）の aria-label と定型理由チップの文言のみ。
+  | 'reception.feedback.prompt'
+  | 'reception.feedback.happy'
+  | 'reception.feedback.neutral'
+  | 'reception.feedback.unhappy'
+  | 'reception.feedback.thanks'
+  | 'reception.feedback.reasonPrompt'
+  | 'reception.feedback.reason.waitTooLong'
+  | 'reception.feedback.reason.hardToOperate'
+  | 'reception.feedback.reason.staffUnavailable'
+  | 'reception.feedback.reason.other';
 
 /** 既定 locale 辞書は全キー網羅必須。他 locale は Partial 可（欠落は ja へフォールバック）。 */
 type DefaultDictionary = Record<MessageKey, string>;
@@ -358,6 +370,16 @@ const ja: DefaultDictionary = {
     'お探しの方が見つかりませんか？ 部署から選ぶか、チャットで受付係に相談できます。',
   'reception.searchNoResultsChatCta': 'チャットで受付係に相談する',
   'reception.searchMaybeMatch': 'もしかして',
+  'reception.feedback.prompt': '今回の受付はいかがでしたか？',
+  'reception.feedback.happy': '満足',
+  'reception.feedback.neutral': '普通',
+  'reception.feedback.unhappy': '不満',
+  'reception.feedback.thanks': 'ご協力ありがとうございました',
+  'reception.feedback.reasonPrompt': 'よろしければ理由もお選びください（任意）',
+  'reception.feedback.reason.waitTooLong': '待ち時間が長い',
+  'reception.feedback.reason.hardToOperate': '操作が分かりにくい',
+  'reception.feedback.reason.staffUnavailable': '担当者につながらなかった',
+  'reception.feedback.reason.other': 'その他',
 };
 
 const en: LocaleDictionary = {
@@ -518,6 +540,16 @@ const en: LocaleDictionary = {
     "Can't find them? Try browsing by department, or chat with the reception desk.",
   'reception.searchNoResultsChatCta': 'Chat with the reception desk',
   'reception.searchMaybeMatch': 'Did you mean',
+  'reception.feedback.prompt': 'How was your visit today?',
+  'reception.feedback.happy': 'Satisfied',
+  'reception.feedback.neutral': 'Okay',
+  'reception.feedback.unhappy': 'Unsatisfied',
+  'reception.feedback.thanks': 'Thank you for your feedback',
+  'reception.feedback.reasonPrompt': "If you'd like, tell us why (optional)",
+  'reception.feedback.reason.waitTooLong': 'The wait was too long',
+  'reception.feedback.reason.hardToOperate': 'The screen was hard to use',
+  'reception.feedback.reason.staffUnavailable': "Couldn't reach the staff member",
+  'reception.feedback.reason.other': 'Other',
 };
 
 const ko: LocaleDictionary = {
@@ -675,6 +707,16 @@ const ko: LocaleDictionary = {
   'reception.searchNoResultsGuidance': '찾으시는 분이 없나요? 부서에서 선택하거나 채팅으로 접수 담당자와 상담해 보세요.',
   'reception.searchNoResultsChatCta': '채팅으로 접수 담당자와 상담하기',
   'reception.searchMaybeMatch': '혹시 이 분인가요',
+  'reception.feedback.prompt': '오늘 접수는 어떠셨나요?',
+  'reception.feedback.happy': '만족',
+  'reception.feedback.neutral': '보통',
+  'reception.feedback.unhappy': '불만족',
+  'reception.feedback.thanks': '소중한 의견 감사합니다',
+  'reception.feedback.reasonPrompt': '괜찮으시다면 이유도 선택해 주세요 (선택)',
+  'reception.feedback.reason.waitTooLong': '대기 시간이 길었어요',
+  'reception.feedback.reason.hardToOperate': '조작이 어려웠어요',
+  'reception.feedback.reason.staffUnavailable': '담당자와 연결되지 않았어요',
+  'reception.feedback.reason.other': '기타',
 };
 
 const zh: LocaleDictionary = {
@@ -828,6 +870,16 @@ const zh: LocaleDictionary = {
   'reception.searchNoResultsGuidance': '找不到对方？可以从部门中选择，或通过聊天与前台工作人员咨询。',
   'reception.searchNoResultsChatCta': '通过聊天咨询前台工作人员',
   'reception.searchMaybeMatch': '是否是这位',
+  'reception.feedback.prompt': '这次接待您感觉如何？',
+  'reception.feedback.happy': '满意',
+  'reception.feedback.neutral': '一般',
+  'reception.feedback.unhappy': '不满意',
+  'reception.feedback.thanks': '感谢您的反馈',
+  'reception.feedback.reasonPrompt': '方便的话，也可以选择原因（可选）',
+  'reception.feedback.reason.waitTooLong': '等待时间过长',
+  'reception.feedback.reason.hardToOperate': '操作不易理解',
+  'reception.feedback.reason.staffUnavailable': '未能联系到负责人',
+  'reception.feedback.reason.other': '其他',
 };
 
 /**

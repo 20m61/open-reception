@@ -61,6 +61,15 @@ export function VoiceManager() {
           <input type="checkbox" data-testid="voice-stt" checked={v.sttEnabled} onChange={(e) => patch({ sttEnabled: e.target.checked })} />
           音声認識を有効にする（結果は候補表示・確認必須／即時呼び出しはしない）
         </label>
+        <label style={chk}>
+          <input
+            type="checkbox"
+            data-testid="voice-feedback-enabled"
+            checked={v.feedbackEnabled ?? true}
+            onChange={(e) => patch({ feedbackEnabled: e.target.checked })}
+          />
+          受付完了・未応答・失敗画面でワンタップ満足度フィードバックを収集する
+        </label>
 
         <Field label="待機画面の案内文言" htmlFor="voice-guidance-idle-input">
           <input id="voice-guidance-idle-input" data-testid="voice-guidance-idle" value={v.guidanceIdle} onChange={(e) => patch({ guidanceIdle: e.target.value })} style={input} />

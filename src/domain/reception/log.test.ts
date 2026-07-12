@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { sanitizeReceptionExperience } from './log';
+import { sanitizeReceptionExperience, sanitizeReceptionFeedback } from './log';
 
 describe('sanitizeReceptionExperience (#319)', () => {
   it('既知キーのみを型検査して取り込む', () => {
@@ -53,5 +53,57 @@ describe('sanitizeReceptionExperience (#319)', () => {
     expect(sanitizeReceptionExperience({})).toBeUndefined();
     expect(sanitizeReceptionExperience({ unknownOnly: 1 })).toBeUndefined();
     expect(sanitizeReceptionExperience({ backCount: 0 })).toBeUndefined();
+  });
+});
+
+describe('sanitizeReceptionFeedback (#320)', () => {
+  it('評価値のみでも取り込む（理由コードは任意）', () => {
+    expect(sanitizeReceptionFeedback({ rating: 'happy' })).toEqual({ rating: 'happy' });
+  });
+
+  it('評価値 + 理由コード（複数）を取り込む', () => {
+    const out = sanitizeReceptionFeedback({
+      rating: 'unhappy',
+      reasonCodes: ['waitTooLong', 'hardToOperate'],
+    });
+    expect(out).toEqual({ rating: 'unhappy', reasonCodes: ['waitTooLong', 'hardToOperate'] });
+  });
+
+  it('理由コードの重複を除去する', () => {
+    const out = sanitizeReceptionFeedback({
+      rating: 'neutral',
+      reasonCodes: ['waitTooLong', 'waitTooLong'],
+    });
+    expect(out).toEqual({ rating: 'neutral', reasonCodes: ['waitTooLong'] });
+  });
+
+  it('未知の理由コードは破棄する（不正値を弾く）', () => {
+    const out = sanitizeReceptionFeedback({
+      rating: 'happy',
+      reasonCodes: ['waitTooLong', 'freeTextComment', 123, null],
+    } as unknown);
+    expect(out).toEqual({ rating: 'happy', reasonCodes: ['waitTooLong'] });
+  });
+
+  it('理由コードが全て未知なら reasonCodes キー自体を付けない', () => {
+    const out = sanitizeReceptionFeedback({ rating: 'happy', reasonCodes: ['freeTextComment'] } as unknown);
+    expect(out).toEqual({ rating: 'happy' });
+  });
+
+  it('未知の評価値・自由記述らしきキーを破棄する（ホワイトリスト、PII混入経路を作らない）', () => {
+    const out = sanitizeReceptionFeedback({
+      rating: 'very happy!!',
+      comment: '自由記述コメント',
+      name: '来客 一郎',
+    } as unknown);
+    expect(out).toBeUndefined();
+  });
+
+  it('rating が無い・非オブジェクトは undefined', () => {
+    expect(sanitizeReceptionFeedback(undefined)).toBeUndefined();
+    expect(sanitizeReceptionFeedback(null)).toBeUndefined();
+    expect(sanitizeReceptionFeedback('happy')).toBeUndefined();
+    expect(sanitizeReceptionFeedback({})).toBeUndefined();
+    expect(sanitizeReceptionFeedback({ reasonCodes: ['waitTooLong'] })).toBeUndefined();
   });
 });

@@ -12,6 +12,7 @@ import {
   appendAdminAudit,
   listAuditLogs,
   listReceptionLogs,
+  recordSatisfactionFeedback,
 } from './reception-log-store';
 
 const baseInput = {
@@ -175,5 +176,63 @@ describe('受付体験メトリクスの終端ログ引き継ぎ (#319)', () => 
     expect(serialized).not.toContain('内密の用件');
     expect(serialized).not.toContain('bogusStep');
     expect(serialized).not.toContain('keyboard');
+  });
+});
+
+describe('ワンタップ満足度フィードバック (#320)', () => {
+  it('評価値のみを記録できる', async () => {
+    const id = await runReception('staff-sato', '佐藤 太郎');
+    await completeReception(id);
+    const result = await recordSatisfactionFeedback(id, 'kiosk-1', { rating: 'happy' });
+    expect(result.ok).toBe(true);
+    const log = (await listReceptionLogs())[0];
+    expect(log?.satisfactionRating).toBe('happy');
+    expect(log?.feedbackReasonCodes).toBeUndefined();
+  });
+
+  it('評価値 + 理由コードを記録できる', async () => {
+    const id = await runReception('staff-suzuki', '鈴木 花子'); // timeout
+    const result = await recordSatisfactionFeedback(id, 'kiosk-1', {
+      rating: 'unhappy',
+      reasonCodes: ['waitTooLong', 'staffUnavailable'],
+    });
+    expect(result.ok).toBe(true);
+    const log = (await listReceptionLogs())[0];
+    expect(log?.satisfactionRating).toBe('unhappy');
+    expect(log?.feedbackReasonCodes).toEqual(['waitTooLong', 'staffUnavailable']);
+  });
+
+  it('監査ログに評価値・理由コードのみを残す（PII なし）', async () => {
+    const id = await runReception('staff-sato', '佐藤 太郎');
+    await completeReception(id);
+    await recordSatisfactionFeedback(id, 'kiosk-1', { rating: 'neutral', reasonCodes: ['hardToOperate'] });
+    const entry = (await listAuditLogs()).find((a) => a.action === 'reception.feedback_submitted');
+    expect(entry).toBeDefined();
+    expect(entry?.actor).toBe('kiosk:kiosk-1');
+    expect(entry?.metadata?.rating).toBe('neutral');
+    expect(entry?.metadata?.reasonCodes).toBe('hardToOperate');
+    const serialized = JSON.stringify(await listAuditLogs());
+    expect(serialized).not.toContain('来客 一郎');
+  });
+
+  it('不正な入力（評価値なし・未知列挙）は invalid_input で拒否し記録しない', async () => {
+    const id = await runReception('staff-sato', '佐藤 太郎');
+    await completeReception(id);
+    const result = await recordSatisfactionFeedback(id, 'kiosk-1', { rating: 'very happy' });
+    expect(result).toEqual({ ok: false, error: 'invalid_input' });
+    expect((await listReceptionLogs())[0]?.satisfactionRating).toBeUndefined();
+  });
+
+  it('存在しない receptionId は not_found', async () => {
+    const result = await recordSatisfactionFeedback('no-such-reception', 'kiosk-1', { rating: 'happy' });
+    expect(result).toEqual({ ok: false, error: 'not_found' });
+  });
+
+  it('別 kiosk からのフィードバックは forbidden（所有権チェック）', async () => {
+    const id = await runReception('staff-sato', '佐藤 太郎');
+    await completeReception(id);
+    const result = await recordSatisfactionFeedback(id, 'kiosk-2', { rating: 'happy' });
+    expect(result).toEqual({ ok: false, error: 'forbidden' });
+    expect((await listReceptionLogs())[0]?.satisfactionRating).toBeUndefined();
   });
 });

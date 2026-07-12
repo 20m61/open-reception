@@ -13,6 +13,7 @@ import { randomUUID } from 'node:crypto';
 import type { ReceptionSession } from '@/domain/reception/session';
 import {
   deriveReceptionLog,
+  sanitizeReceptionFeedback,
   type AuditAction,
   type AuditLog,
   type ReceptionLog,
@@ -125,6 +126,50 @@ export async function markFallbackUsed(receptionId: string, kioskId: string): Pr
     await receptionLogs().put(log);
   }
   await appendAuditLog({ action: 'reception.fallback_used', actor: `kiosk:${kioskId}`, targetId: receptionId, targetType: 'reception' });
+}
+
+export type RecordFeedbackResult =
+  | { ok: true }
+  | { ok: false; error: 'not_found' | 'forbidden' | 'invalid_input' };
+
+/**
+ * ワンタップ満足度フィードバックを既存の受付履歴に追記する (issue #320)。
+ *
+ * `markFallbackUsed` と同じ read-modify-write（`findByReceptionId` → `put`）で、終端ログ確定後
+ * （完了/未応答/失敗）に事後追記する。`input` はホワイトリスト方式でサニタイズし（自由記述は
+ * 構造的に存在しない）、無効なら記録せず `invalid_input` を返す。所有権チェック（`kioskId` が
+ * ログの `kioskId` と一致するか）は他の kiosk API と同じ方針（#348）で、対象 reception を
+ * 作成した端末以外からの書き込みを拒否する。監査ログには評価値・理由コード（列挙のみ・PII なし）
+ * だけを残す。
+ */
+export async function recordSatisfactionFeedback(
+  receptionId: string,
+  kioskId: string,
+  input: unknown,
+): Promise<RecordFeedbackResult> {
+  const feedback = sanitizeReceptionFeedback(input);
+  if (!feedback) return { ok: false, error: 'invalid_input' };
+
+  const log = await receptionLogs().findByReceptionId(receptionId);
+  if (!log) return { ok: false, error: 'not_found' };
+  if (log.kioskId !== kioskId) return { ok: false, error: 'forbidden' };
+
+  log.satisfactionRating = feedback.rating;
+  if (feedback.reasonCodes) log.feedbackReasonCodes = feedback.reasonCodes;
+  await receptionLogs().put(log);
+
+  const metadata: Record<string, string> = { rating: feedback.rating };
+  if (feedback.reasonCodes && feedback.reasonCodes.length > 0) {
+    metadata.reasonCodes = feedback.reasonCodes.join(',');
+  }
+  await appendAuditLog({
+    action: 'reception.feedback_submitted',
+    actor: `kiosk:${kioskId}`,
+    targetId: receptionId,
+    targetType: 'reception',
+    metadata,
+  });
+  return { ok: true };
 }
 
 /** 受付履歴を新しい順で返す。 */

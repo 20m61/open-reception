@@ -6,6 +6,7 @@ import {
   filterWithinJstDays,
   recentCalls,
   summarizeExperiencePeriods,
+  summarizeSatisfactionPeriods,
   summarizeToday,
   type DeviceSummary,
 } from './dashboard-summary';
@@ -192,6 +193,33 @@ describe('summarizeExperiencePeriods (#319 期間指定)', () => {
   });
 });
 
+describe('summarizeSatisfactionPeriods (#320 期間指定)', () => {
+  const withFeedback = (id: string, startedAt: string, rating: ReceptionLog['satisfactionRating']): ReceptionLog => ({
+    ...log({ id, outcome: 'connected', startedAt }),
+    satisfactionRating: rating,
+  });
+  const logs: ReceptionLog[] = [
+    withFeedback('today', '2026-06-20T09:00:00.000Z', 'happy'),
+    withFeedback('d5', '2026-06-15T09:00:00.000Z', 'unhappy'),
+    withFeedback('d26', '2026-05-25T09:00:00.000Z', 'neutral'),
+  ];
+
+  it('本日/直近7日/直近30日の 3 プリセットを返す', () => {
+    const periods = summarizeSatisfactionPeriods(logs, NOW);
+    expect(periods.map((p) => p.key)).toEqual(['today', 'last7d', 'last30d']);
+    expect(periods.map((p) => p.label)).toEqual(['本日', '直近7日', '直近30日']);
+  });
+
+  it('各期間ごとに窓内ログだけで満足度を集計する', () => {
+    const periods = summarizeSatisfactionPeriods(logs, NOW);
+    const summaryFor = (key: string) => periods.find((p) => p.key === key)?.summary;
+    expect(summaryFor('today')?.responded).toBe(1);
+    expect(summaryFor('today')?.byRating).toEqual({ happy: 1, neutral: 0, unhappy: 0 });
+    expect(summaryFor('last7d')?.responded).toBe(2);
+    expect(summaryFor('last30d')?.responded).toBe(3);
+  });
+});
+
 describe('buildDashboardSummary (#86)', () => {
   it('履歴と端末から概況サマリ全体を組み立てる', () => {
     const logs: ReceptionLog[] = [
@@ -209,6 +237,11 @@ describe('buildDashboardSummary (#86)', () => {
     expect(summary.experience.total).toBe(2);
     expect(summary.experience.completion).toEqual({ connected: 1, total: 2 });
     expect(summary.experience.callStartWithin30sRate).toBeNull();
+    // 満足度フィードバックも本日分から集計される (#320)。未評価なので responded は 0。
+    expect(summary.satisfaction.total).toBe(2);
+    expect(summary.satisfaction.responded).toBe(0);
+    expect(summary.satisfactionPeriods.map((p) => p.key)).toEqual(['today', 'last7d', 'last30d']);
+    expect(summary.satisfactionPeriods[0]?.summary).toEqual(summary.satisfaction);
   });
 
   it('体験メトリクス付きログから本日の 30 秒 KPI を集計する (#319)', () => {

@@ -37,6 +37,7 @@ export async function PUT(request: Request): Promise<NextResponse> {
   await appendAdminAudit('voice.updated', { type: 'voice' }, {
     ttsEnabled: String(updated.ttsEnabled),
     sttEnabled: String(updated.sttEnabled),
+    feedbackEnabled: String(updated.feedbackEnabled ?? true),
   });
   return NextResponse.json(updated);
 }
