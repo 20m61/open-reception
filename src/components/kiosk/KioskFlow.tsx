@@ -62,6 +62,17 @@ import {
 import { deriveChatAvailability, type ReceptionAction } from '@/domain/reception/ui-contract';
 import { KioskChatDrawer } from './KioskChatDrawer';
 import Link from 'next/link';
+import {
+  createTracker,
+  enterStep,
+  finalizeExperience,
+  recordBack,
+  recordCancel,
+  recordInputMethod,
+  stepForState,
+  type ExperienceTracker,
+} from '@/domain/reception/experience-metrics';
+import { EXPERIENCE_STEP_ORDER } from '@/domain/reception/experience-summary';
 
 /** MVP では端末 ID は固定。将来 kiosk config から取得する (issue #18)。 */
 const KIOSK_ID = 'kiosk-dev';
@@ -413,6 +424,42 @@ export function KioskFlow() {
     };
   }, []);
 
+  // 受付体験メトリクスの計測 (issue #319)。PII を含まない所要/回数/入力手段を集計し、呼び出し作成時に
+  // サーバへ同送する（現状サーバは未知フィールドとして無視。永続化は次増分）。計測は非破壊で受付挙動を
+  // 変えない。ref で保持し、状態遷移・戻る/キャンセル・入力手段イベントごとにイミュータブルに置換する。
+  const experienceRef = useRef<ExperienceTracker>(createTracker());
+  const prevStepRef = useRef<ReturnType<typeof stepForState>>(null);
+
+  const markInputMethod = useCallback((method: Parameters<typeof recordInputMethod>[1]) => {
+    experienceRef.current = recordInputMethod(experienceRef.current, method);
+  }, []);
+  // 音声検索の採用を主入力手段=音声として記録する安定ハンドラ (issue #319)。renderScreen は
+  // 素の関数呼び出しのため、ref を触る処理は（インライン arrow ではなく）useCallback で渡す
+  // （react-hooks/refs: レンダー中に ref を触らない）。実行はクリック時のみ。
+  const markVoiceInput = useCallback(() => markInputMethod('stt'), [markInputMethod]);
+
+  // 状態遷移から体験メトリクスを計測する (issue #319)。ステップ滞在所要・呼び出し到達までの所要・
+  // 「戻る」回数（ステップ後退で検知）・「キャンセル」回数を記録し、idle でトラッカをリセットする。
+  // 「calling」への create 副作用より前に定義し、作成時スナップショットで timeToCall が確定するようにする。
+  useEffect(() => {
+    if (data.state === 'idle') {
+      experienceRef.current = createTracker();
+      prevStepRef.current = null;
+      return;
+    }
+    const step = stepForState(data.state);
+    if (step) {
+      const prev = prevStepRef.current;
+      if (prev && EXPERIENCE_STEP_ORDER.indexOf(step) < EXPERIENCE_STEP_ORDER.indexOf(prev)) {
+        experienceRef.current = recordBack(experienceRef.current);
+      }
+      experienceRef.current = enterStep(experienceRef.current, step, Date.now());
+      prevStepRef.current = step;
+    } else if (data.state === 'cancelled') {
+      experienceRef.current = recordCancel(experienceRef.current);
+    }
+  }, [data.state]);
+
   // Vonage（非同期）通話のとき、ビデオビューに渡す受付 ID。Mock 同期通話では null のまま。
   const [vonageCallId, setVonageCallId] = useState<string | null>(null);
 
@@ -436,6 +483,12 @@ export function KioskFlow() {
             targetId: data.target?.id,
             targetLabel: data.target?.label,
             visitor: data.visitor,
+            // 体験メトリクス (issue #319)。PII を含まない所要/回数/入力手段。呼び出し到達時点の
+            // スナップショット（timeToCall はこの時点で確定）。サーバ未対応時は無視される（非破壊）。
+            experience: finalizeExperience(experienceRef.current, {
+              abandoned: false,
+              nowMs: Date.now(),
+            }),
           }),
         });
         if (!createRes.ok) {
@@ -756,6 +809,10 @@ export function KioskFlow() {
               locale,
               setLocale,
               branding,
+              // renderScreen は素の関数のため lint はこの引数をレンダー中の ref アクセスと誤検知する。
+              // markVoiceInput は音声候補クリック時のみ実行される（レンダー中に ref を触らない）(issue #319)。
+              // eslint-disable-next-line react-hooks/refs -- クリック時のみ実行される安定コールバック
+              markVoiceInput,
             )}
           </div>
           {/*
@@ -816,8 +873,13 @@ export function KioskFlow() {
             <KioskChatDrawer
               screenState={data.state}
               available={deriveChatAvailability(data.state) === 'available'}
-              onRequestStaff={() => void handleFallback()}
+              onRequestStaff={() => {
+                markInputMethod('chat');
+                void handleFallback();
+              }}
               onAction={(action) => {
+                // チャットから操作された＝主入力手段はチャット (issue #319)。
+                markInputMethod('chat');
                 // useFallback/complete は記録 API を伴う専用ハンドラへ。残りは状態機械イベントへ写す。
                 if (action === 'useFallback') return void handleFallback();
                 if (action === 'complete') return void complete();
@@ -1111,6 +1173,8 @@ function renderScreen(
   locale: Locale,
   onLocaleChange: (next: Locale) => void,
   branding: BrandingSettings,
+  /** 音声検索が使われたことを体験メトリクスへ通知する (issue #319)。 */
+  onVoiceUse: () => void,
 ) {
   const tr = makeT(locale);
   switch (data.state) {
@@ -1140,6 +1204,7 @@ function renderScreen(
           directory={directory}
           sttEnabled={sttEnabled}
           onSelect={(target) => dispatch({ type: 'SELECT_TARGET', target })}
+          onVoiceUse={onVoiceUse}
           locale={locale}
         />
       );
@@ -1373,11 +1438,14 @@ function TargetView({
   directory,
   sttEnabled,
   onSelect,
+  onVoiceUse,
   locale,
 }: {
   directory: Directory;
   sttEnabled: boolean;
   onSelect: (t: Target) => void;
+  /** 音声候補が採用されたことを体験メトリクスへ通知する (issue #319)。 */
+  onVoiceUse?: () => void;
   locale: Locale;
 }) {
   const tr = makeT(locale);
@@ -1446,7 +1514,11 @@ function TargetView({
                       className="card"
                       data-testid={`stt-candidate-${i}`}
                       // 候補は検索欄に反映するのみ。担当者選択・呼び出しは行わない (issue #5)。
-                      onClick={() => setQuery(c)}
+                      // 音声候補の採用を主入力手段=音声として体験メトリクスに記録する (issue #319)。
+                      onClick={() => {
+                        onVoiceUse?.();
+                        setQuery(c);
+                      }}
                     >
                       {c}
                     </button>

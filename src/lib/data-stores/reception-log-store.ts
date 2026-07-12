@@ -95,7 +95,8 @@ export async function appendAuditLog(entry: Omit<AuditLog, 'id' | 'at'> & { at?:
  * 来訪者の PII は記録しない。
  */
 export async function recordReceptionOutcome(session: ReceptionSession, fallbackUsed = false): Promise<ReceptionLog> {
-  const log = deriveReceptionLog(session, randomUUID(), fallbackUsed);
+  // 受付端末が計測した体験メトリクス (issue #319) を終端ログへ引き継ぐ（PII なし・optional）。
+  const log = deriveReceptionLog(session, randomUUID(), fallbackUsed, session.experience);
   await receptionLogs().put(log);
   // 来訪目的（カテゴリ。PII ではない）と失敗理由のみを監査メタデータに残す (issue #100)。
   const metadata: Record<string, string> = {};

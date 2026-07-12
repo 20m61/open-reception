@@ -14,6 +14,7 @@ import type { FleetSummary } from '@/domain/tenant/device-liveness';
 import type { CallOutcome } from './session';
 import type { ReceptionLog } from './log';
 import { jstDayKey } from '@/domain/util/jst';
+import { summarizeExperience, type ExperienceKpi } from './experience-summary';
 
 /** 概況の総合ステータス。正常 / 注意 / 異常を視覚的に区別する起点。 */
 export type OverallStatus = 'ok' | 'warning' | 'critical';
@@ -74,6 +75,12 @@ export type DashboardSummary = {
   recentCalls: RecentCall[];
   /** 利用量・予想コストの概況（未集計時は null）。 */
   usageCost: UsageCostSummary | null;
+  /**
+   * 本日（JST）の受付体験 KPI (issue #319)。30 秒以内呼び出し開始率・完遂率・中央値所要・
+   * ステップ別ファネル。体験メトリクスを持つログのみ 30 秒 KPI/ファネルの対象になる。
+   * 期間指定表示は同じ summarizeExperience を期間フィルタ済みログに適用して実現する（次増分で UI）。
+   */
+  experience: ExperienceKpi;
 };
 
 // 「本日」は **JST** で判定する (issue #254)。ランタイムの TZ に依存させない（Lambda/OpenNext は
@@ -156,5 +163,7 @@ export function buildDashboardSummary(
     devices,
     recentCalls: recentCalls(logs),
     usageCost,
+    // 体験 KPI は「本日（JST）」に絞ったログで集計する（件数集計と同じ境界, #254/#319）。
+    experience: summarizeExperience(filterToday(logs, now)),
   };
 }

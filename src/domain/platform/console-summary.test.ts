@@ -17,10 +17,12 @@ import {
   summarizeTenantDetail,
   summarizeTenantFleet,
   toAuthMethodStatusRows,
+  summarizeExperienceAcrossTenants,
   toIntegrationStatusRows,
   toMaskedAuditRows,
   toTenantRows,
 } from './console-summary';
+import type { ReceptionExperience, ReceptionLog } from '@/domain/reception/log';
 
 function tenant(args: {
   id: string;
@@ -37,6 +39,59 @@ function tenant(args: {
     updatedAt: '2026-01-02T00:00:00.000Z',
   };
 }
+
+function rlog(
+  id: string,
+  outcome: ReceptionLog['outcome'],
+  experience?: ReceptionExperience,
+): ReceptionLog {
+  return {
+    id,
+    receptionId: `rcp-${id}`,
+    kioskId: 'kiosk-1',
+    outcome,
+    fallbackUsed: false,
+    startedAt: '2026-07-11T00:00:00.000Z',
+    endedAt: '2026-07-11T00:00:05.000Z',
+    durationMs: 5000,
+    createdAt: '2026-07-11T00:00:05.000Z',
+    ...(experience ? { experience } : {}),
+  };
+}
+
+describe('summarizeExperienceAcrossTenants (#319/#284)', () => {
+  it('空エントリはゼロ値サマリ', () => {
+    const s = summarizeExperienceAcrossTenants([]);
+    expect(s.perTenant).toEqual([]);
+    expect(s.overall.total).toBe(0);
+    expect(s.overall.callStartWithin30sRate).toBeNull();
+  });
+
+  it('全テナント合算と、テナント別行（measured 降順）を返す。PII を含まない', () => {
+    const s = summarizeExperienceAcrossTenants([
+      {
+        tenant: { id: asTenantId('t1'), name: 'Alpha' },
+        logs: [
+          rlog('a', 'connected', { timeToCallMs: 10000 }),
+          rlog('b', 'timeout', { timeToCallMs: 40000 }),
+        ],
+      },
+      {
+        tenant: { id: asTenantId('t2'), name: 'Bravo' },
+        logs: [rlog('c', 'connected', { timeToCallMs: 5000 })],
+      },
+    ]);
+    // 合算: 呼び出し到達 3 件中 30 秒以内 2 件。
+    expect(s.overall.callStartWithin30s).toEqual({ within: 2, reached: 3 });
+    expect(s.overall.total).toBe(3);
+    // テナント別は measured 降順（t1=2 → t2=1）。
+    expect(s.perTenant.map((r) => r.tenantId)).toEqual(['t1', 't2']);
+    expect(s.perTenant[0]).toMatchObject({ tenantName: 'Alpha', measured: 2 });
+    expect(s.perTenant[1]).toMatchObject({ tenantName: 'Bravo', measured: 1 });
+    // PII らしきキーを含まない（数値/文字列 id・名前のみ）。
+    expect(JSON.stringify(s)).not.toMatch(/name":"[^"]*(?:様|さん)/);
+  });
+});
 
 describe('summarizeTenantFleet', () => {
   it('counts total / active / suspended', () => {

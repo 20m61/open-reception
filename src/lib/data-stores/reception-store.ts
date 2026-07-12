@@ -15,6 +15,10 @@ import {
   type ReceptionTargetType,
   type VisitorInfo,
 } from '@/domain/reception/session';
+import {
+  sanitizeReceptionExperience,
+  type ReceptionExperience,
+} from '@/domain/reception/log';
 import { transition, type ReceptionEvent } from '@/domain/reception/state';
 import {
   buildStaffResponseResult,
@@ -42,6 +46,8 @@ export type CreateReceptionInput = {
   targetId: string;
   targetLabel: string;
   visitor: VisitorInfo;
+  /** 受付端末が送る体験メトリクス (issue #319)。サニタイズ済み（PII なし）。省略可。 */
+  experience?: ReceptionExperience;
 };
 
 export type StoreError = { code: 'not_found' | 'invalid_input' | 'invalid_transition'; message: string };
@@ -88,6 +94,9 @@ function validateCreateInput(input: unknown): StoreResult<CreateReceptionInput> 
   if (typeof visitor !== 'object' || visitor === null || typeof visitor.name !== 'string' || visitor.name.trim() === '') {
     return { ok: false, error: { code: 'invalid_input', message: 'visitor.name is required' } };
   }
+  // 体験メトリクス (issue #319) はホワイトリスト方式でサニタイズする（未知キー/PII は破棄）。
+  // 有効値が無ければ undefined（experience キー自体を付けない）。
+  const experience = sanitizeReceptionExperience(o.experience);
   return {
     ok: true,
     value: {
@@ -101,6 +110,7 @@ function validateCreateInput(input: unknown): StoreResult<CreateReceptionInput> 
         company: typeof visitor.company === 'string' ? visitor.company : undefined,
         note: typeof visitor.note === 'string' ? visitor.note : undefined,
       },
+      ...(experience ? { experience } : {}),
     },
   };
 }
@@ -122,6 +132,8 @@ export async function createReception(input: unknown): Promise<StoreResult<Recep
     targetId: v.targetId,
     targetLabel: v.targetLabel,
     visitor: v.visitor,
+    // サニタイズ済み体験メトリクス (issue #319)。終端で ReceptionLog へ引き継ぐ。未指定なら付けない。
+    ...(v.experience ? { experience: v.experience } : {}),
     startedAt: ts,
     updatedAt: ts,
   };
