@@ -1,23 +1,30 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 import { asSiteId, asTenantId } from '@/domain/tenant/types';
 import { asStayId } from '@/domain/visit/types';
-import { CHECKOUT_MAX_ATTEMPTS } from '@/components/kiosk/checkout/self-id';
 import {
   CheckoutCredentialService,
+  type CheckoutCredentialServiceDeps,
   type CheckoutIssueInput,
 } from './checkout-credential';
 
 /**
- * 退館クレデンシャルサービス (issue #328)。
+ * 退館クレデンシャルサービス (issue #328、#339 セキュリティレビュー反映)。
  *
- * 発行（高エントロピー token + 一意な 4 桁コード）、解決（QR token / code+ラベル照合）、
- * 確定（consume）を、サイト境界・TTL・試行上限・二重確定の各境界で検証する。
+ * 検証:
+ *   - 発行（高エントロピー token + サイト内一意な 4 桁コード）
+ *   - QR/token 経路（強い経路・スロットルなし・サイト境界二重照合）
+ *   - code 経路の**列挙防止**: スロットル（scope 単位スライディングウィンドウ）と
+ *     **オラクル封じ**（コード未一致 == ラベル不一致 == 同一 not_recognized）
+ *   - **consume ロールバック**: resolveForCheckout は状態を変えず、checkout 成功後の
+ *     markConsumed でのみ無効化する（失敗時に来訪者を締め出さない）
  * PII は保存/返却しない（非 PII サマリのみ）。
  */
 
 const T1 = asTenantId('tenant-1');
 const S1 = asSiteId('site-1');
 const S2 = asSiteId('site-2');
+const SCOPE1 = { tenantId: T1, siteId: S1 };
+const SCOPE2 = { tenantId: T1, siteId: S2 };
 
 const NOW = new Date('2026-07-12T09:00:00.000Z');
 
@@ -33,7 +40,12 @@ function baseInput(over: Partial<CheckoutIssueInput> = {}): CheckoutIssueInput {
   };
 }
 
-describe('CheckoutCredentialService.issue (#328)', () => {
+/** 固定コードを発行する service（テスト用）。 */
+function withFixedCode(code: string, over: CheckoutCredentialServiceDeps = {}) {
+  return new CheckoutCredentialService({ now: () => NOW, randomCode: () => code, ...over });
+}
+
+describe('issue (#328)', () => {
   it('token（高エントロピー）と 4 桁コードと expiresAt を発行する', () => {
     const svc = new CheckoutCredentialService({ now: () => NOW });
     const cred = svc.issue(baseInput());
@@ -43,7 +55,6 @@ describe('CheckoutCredentialService.issue (#328)', () => {
   });
 
   it('同一サイトのアクティブなコードは衝突しない（再ロールする）', () => {
-    // 最初の 2 回は同じコード、その後は別コードを返す stub。
     const codes = ['0001', '0001', '0002'];
     let i = 0;
     const svc = new CheckoutCredentialService({
@@ -57,7 +68,7 @@ describe('CheckoutCredentialService.issue (#328)', () => {
   });
 });
 
-describe('CheckoutCredentialService QR/token 経路 (#328)', () => {
+describe('QR/token 経路 (#328)', () => {
   let svc: CheckoutCredentialService;
   let token: string;
   beforeEach(() => {
@@ -66,8 +77,7 @@ describe('CheckoutCredentialService QR/token 経路 (#328)', () => {
   });
 
   it('正しい token を同一サイトで解決し非 PII サマリを返す', () => {
-    const r = svc.resolve({ tenantId: T1, siteId: S1 }, { kind: 'token', payload: token });
-    expect(r).toEqual({
+    expect(svc.resolve(SCOPE1, { kind: 'token', payload: token })).toEqual({
       ok: true,
       method: 'qr',
       summary: { checkedInAt: '2026-07-12T08:30:00.000Z', targetLabel: '総務部', purpose: '打ち合わせ' },
@@ -75,119 +85,172 @@ describe('CheckoutCredentialService QR/token 経路 (#328)', () => {
   });
 
   it('QR URL 形式でも解決できる', () => {
-    const r = svc.resolve(
-      { tenantId: T1, siteId: S1 },
-      { kind: 'token', payload: `https://x.example/kiosk/checkout?ct=${token}` },
-    );
+    const r = svc.resolve(SCOPE1, { kind: 'token', payload: `https://x.example/kiosk/checkout?ct=${token}` });
     expect(r.ok).toBe(true);
   });
 
   it('別サイトからは解決できない（cross-site isolation）', () => {
-    const r = svc.resolve({ tenantId: T1, siteId: S2 }, { kind: 'token', payload: token });
-    expect(r).toEqual({ ok: false, reason: 'not_found' });
+    expect(svc.resolve(SCOPE2, { kind: 'token', payload: token })).toEqual({ ok: false, reason: 'not_found' });
   });
 
   it('未知 token は not_found、壊れた payload は invalid', () => {
-    expect(svc.resolve({ tenantId: T1, siteId: S1 }, { kind: 'token', payload: 'zzzznope' })).toEqual({
-      ok: false,
-      reason: 'not_found',
-    });
-    expect(svc.resolve({ tenantId: T1, siteId: S1 }, { kind: 'token', payload: 'a b/c' })).toEqual({
-      ok: false,
-      reason: 'invalid',
-    });
+    expect(svc.resolve(SCOPE1, { kind: 'token', payload: 'zzzznope' })).toEqual({ ok: false, reason: 'not_found' });
+    expect(svc.resolve(SCOPE1, { kind: 'token', payload: 'a b/c' })).toEqual({ ok: false, reason: 'invalid' });
   });
 
   it('TTL 超過で expired', () => {
     const later = new Date(NOW.getTime() + 13 * 60 * 60 * 1000);
-    const r = svc.resolve({ tenantId: T1, siteId: S1 }, { kind: 'token', payload: token }, later);
-    expect(r).toEqual({ ok: false, reason: 'expired' });
+    expect(svc.resolve(SCOPE1, { kind: 'token', payload: token }, later)).toEqual({ ok: false, reason: 'expired' });
   });
 });
 
-describe('CheckoutCredentialService コード経路（ラベル照合・試行上限） (#328)', () => {
-  let svc: CheckoutCredentialService;
-  let code: string;
-  const scope = { tenantId: T1, siteId: S1 };
-  beforeEach(() => {
-    let n = 0;
-    svc = new CheckoutCredentialService({ now: () => NOW, randomCode: () => ['4242'][n++] ?? '4242' });
-    code = svc.issue(baseInput()).code;
-    expect(code).toBe('4242');
-  });
-
-  it('コード + 正しいラベルで解決する', () => {
-    const r = svc.resolve(scope, { kind: 'code', code: '4242', targetLabel: ' 総務部 ' });
+describe('code 経路 — 正常系と入力検証 (#328)', () => {
+  it('コード + 正しいラベルで解決する（method=code）', () => {
+    const svc = withFixedCode('4242');
+    svc.issue(baseInput());
+    const r = svc.resolve(SCOPE1, { kind: 'code', code: '4242', targetLabel: ' 総務部 ' });
     expect(r.ok).toBe(true);
     if (r.ok) expect(r.method).toBe('code');
   });
 
-  it('不正な形式のコードは invalid', () => {
-    expect(svc.resolve(scope, { kind: 'code', code: '42', targetLabel: '総務部' })).toEqual({
-      ok: false,
-      reason: 'invalid',
-    });
-  });
-
-  it('存在しないコードは not_found', () => {
-    expect(svc.resolve(scope, { kind: 'code', code: '0000', targetLabel: '総務部' })).toEqual({
-      ok: false,
-      reason: 'not_found',
-    });
-  });
-
-  it('ラベル不一致は label_mismatch を返し、試行を消費し、上限で locked になる', () => {
-    for (let i = 0; i < CHECKOUT_MAX_ATTEMPTS - 1; i++) {
-      expect(svc.resolve(scope, { kind: 'code', code: '4242', targetLabel: '営業部' })).toEqual({
+  it('不正な形式のコードは invalid（スロットルに計上しない）', () => {
+    const svc = withFixedCode('4242', { codeThrottleMax: 3 });
+    svc.issue(baseInput());
+    for (let i = 0; i < 5; i++) {
+      expect(svc.resolve(SCOPE1, { kind: 'code', code: '42', targetLabel: '総務部' })).toEqual({
         ok: false,
-        reason: 'label_mismatch',
+        reason: 'invalid',
       });
     }
-    // 上限到達で locked。
-    expect(svc.resolve(scope, { kind: 'code', code: '4242', targetLabel: '営業部' })).toEqual({
-      ok: false,
-      reason: 'locked',
-    });
-    // 以降は正しいラベルでも locked（再発行が必要）。
-    expect(svc.resolve(scope, { kind: 'code', code: '4242', targetLabel: '総務部' })).toEqual({
-      ok: false,
-      reason: 'locked',
-    });
+    // 形式不正は列挙ではないのでスロットルされず、正しいコードは依然解決できる。
+    expect(svc.resolve(SCOPE1, { kind: 'code', code: '4242', targetLabel: '総務部' }).ok).toBe(true);
   });
 
-  it('別サイトの同一コードは解決しない（cross-site isolation）', () => {
-    expect(
-      svc.resolve({ tenantId: T1, siteId: S2 }, { kind: 'code', code: '4242', targetLabel: '総務部' }),
-    ).toEqual({ ok: false, reason: 'not_found' });
+  it('期限切れの一致コードは expired', () => {
+    const svc = withFixedCode('4242');
+    svc.issue(baseInput());
+    const later = new Date(NOW.getTime() + 13 * 60 * 60 * 1000);
+    expect(svc.resolve(SCOPE1, { kind: 'code', code: '4242', targetLabel: '総務部' }, later)).toEqual({
+      ok: false,
+      reason: 'expired',
+    });
   });
 });
 
-describe('CheckoutCredentialService.consume 確定と二重確定 (#328)', () => {
-  const scope = { tenantId: T1, siteId: S1 };
-  it('token 確定で stayId を返し、二重確定は already_checked_out', () => {
+describe('code 経路 — 列挙オラクル封じ (#328 / #339)', () => {
+  it('未知コードとラベル不一致は同一の失敗（not_recognized）で存在を露呈しない', () => {
+    const svc = withFixedCode('4242');
+    svc.issue(baseInput());
+    const wrongCode = svc.resolve(SCOPE1, { kind: 'code', code: '0000', targetLabel: '総務部' });
+    const wrongLabel = svc.resolve(SCOPE1, { kind: 'code', code: '4242', targetLabel: '営業部' });
+    expect(wrongCode).toEqual({ ok: false, reason: 'not_recognized' });
+    expect(wrongLabel).toEqual({ ok: false, reason: 'not_recognized' });
+    // 「生きたコードが存在するか」を区別できない = オラクルが無い。
+    expect(wrongCode).toEqual(wrongLabel);
+  });
+});
+
+describe('code 経路 — スロットル（一次防御） (#328 / #339)', () => {
+  it('ウィンドウ内で上限失敗すると、以降は正しいコードでも throttled で塞ぐ', () => {
+    const svc = withFixedCode('4242', { codeThrottleMax: 3, codeThrottleWindowMs: 60_000 });
+    const issued = svc.issue(baseInput());
+
+    // 3 回の失敗（コード未一致でもラベル不一致でも計上される）。
+    for (let i = 0; i < 3; i++) {
+      expect(svc.resolve(SCOPE1, { kind: 'code', code: '0000', targetLabel: 'x' })).toEqual({
+        ok: false,
+        reason: 'not_recognized',
+      });
+    }
+    // 上限到達後は**正しい**コード+ラベルでも throttled（盲目的列挙を打ち切る）。
+    expect(svc.resolve(SCOPE1, { kind: 'code', code: '4242', targetLabel: '総務部' })).toEqual({
+      ok: false,
+      reason: 'throttled',
+    });
+    // token 経路（256 bit）はスロットルの影響を受けない（同一クレデンシャルの token を使う）。
+    expect(svc.resolve(SCOPE1, { kind: 'token', payload: issued.token }).ok).toBe(true);
+  });
+
+  it('スロットルは scope 単位（他サイトの試行数に影響されない）', () => {
+    const svc = withFixedCode('4242', { codeThrottleMax: 2, codeThrottleWindowMs: 60_000 });
+    svc.issue(baseInput({ siteId: S1, stayId: asStayId('s1') }));
+    svc.issue(baseInput({ siteId: S2, stayId: asStayId('s2') }));
+
+    // site1 を上限まで失敗させる。
+    svc.resolve(SCOPE1, { kind: 'code', code: '0000', targetLabel: 'x' });
+    svc.resolve(SCOPE1, { kind: 'code', code: '0000', targetLabel: 'x' });
+    expect(svc.resolve(SCOPE1, { kind: 'code', code: '4242', targetLabel: '総務部' })).toEqual({
+      ok: false,
+      reason: 'throttled',
+    });
+
+    // site2 は独立して正常に解決できる（cross-site 隔離）。
+    expect(svc.resolve(SCOPE2, { kind: 'code', code: '4242', targetLabel: '総務部' }).ok).toBe(true);
+  });
+
+  it('ウィンドウ経過で失敗計数がリセットされ、再び解決できる', () => {
+    let clock = NOW.getTime();
+    const svc = new CheckoutCredentialService({
+      now: () => new Date(clock),
+      randomCode: () => '4242',
+      codeThrottleMax: 2,
+      codeThrottleWindowMs: 60_000,
+    });
+    svc.issue(baseInput());
+    svc.resolve(SCOPE1, { kind: 'code', code: '0000', targetLabel: 'x' });
+    svc.resolve(SCOPE1, { kind: 'code', code: '0000', targetLabel: 'x' });
+    expect(svc.resolve(SCOPE1, { kind: 'code', code: '4242', targetLabel: '総務部' })).toEqual({
+      ok: false,
+      reason: 'throttled',
+    });
+    // ウィンドウを越えて時間を進める。
+    clock += 61_000;
+    expect(svc.resolve(SCOPE1, { kind: 'code', code: '4242', targetLabel: '総務部' }).ok).toBe(true);
+  });
+});
+
+describe('resolveForCheckout / markConsumed — ロールバック安全性 (#328 / #339)', () => {
+  const scope = SCOPE1;
+
+  it('resolveForCheckout は状態を変えない（checkout 失敗でクレデンシャルは再利用可能）', () => {
     const svc = new CheckoutCredentialService({ now: () => NOW });
     const token = svc.issue(baseInput({ stayId: asStayId('stay-xyz') })).token;
 
-    const first = svc.consume(scope, { kind: 'token', payload: token });
-    expect(first).toEqual({ ok: true, method: 'qr', stayId: asStayId('stay-xyz') });
+    const first = svc.resolveForCheckout(scope, { kind: 'token', payload: token });
+    expect(first).toEqual({ ok: true, method: 'qr', stayId: asStayId('stay-xyz'), credentialToken: token });
 
-    const second = svc.consume(scope, { kind: 'token', payload: token });
-    expect(second).toEqual({ ok: false, reason: 'already_checked_out' });
+    // markConsumed を呼ばなければ（= checkout 失敗を模す）まだ有効。
+    const again = svc.resolveForCheckout(scope, { kind: 'token', payload: token });
+    expect(again.ok).toBe(true);
+    expect(svc.resolve(scope, { kind: 'token', payload: token }).ok).toBe(true);
+  });
 
-    // consumed 後は resolve も already_checked_out。
-    expect(svc.resolve(scope, { kind: 'token', payload: token })).toEqual({
+  it('markConsumed 後は token 経路は already_checked_out、code 経路は not_recognized', () => {
+    const svc = withFixedCode('7777');
+    const issued = svc.issue(baseInput({ stayId: asStayId('stay-c') }));
+
+    const r = svc.resolveForCheckout(scope, { kind: 'token', payload: issued.token });
+    expect(r.ok).toBe(true);
+    if (r.ok) svc.markConsumed(r.credentialToken);
+
+    // token: 使用済みは区別してよい（token は秘密）。
+    expect(svc.resolve(scope, { kind: 'token', payload: issued.token })).toEqual({
       ok: false,
       reason: 'already_checked_out',
     });
+    // code: 使用済みは「存在しない」= not_recognized（オラクルを作らない）。
+    expect(svc.resolve(scope, { kind: 'code', code: '7777', targetLabel: '総務部' })).toEqual({
+      ok: false,
+      reason: 'not_recognized',
+    });
   });
 
-  it('consume はラベル不一致では確定しない', () => {
-    let n = 0;
-    const svc = new CheckoutCredentialService({ now: () => NOW, randomCode: () => ['7777'][n++] ?? '7777' });
+  it('resolveForCheckout もラベル不一致では確定用に解決しない（not_recognized）', () => {
+    const svc = withFixedCode('7777');
     svc.issue(baseInput());
-    expect(svc.consume(scope, { kind: 'code', code: '7777', targetLabel: '営業部' })).toEqual({
+    expect(svc.resolveForCheckout(scope, { kind: 'code', code: '7777', targetLabel: '営業部' })).toEqual({
       ok: false,
-      reason: 'label_mismatch',
+      reason: 'not_recognized',
     });
   });
 });

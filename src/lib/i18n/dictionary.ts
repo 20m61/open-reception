@@ -150,8 +150,8 @@ export type MessageKey =
   | 'checkout.confirm.yes'
   | 'checkout.confirm.no'
   | 'checkout.error.expired'
-  | 'checkout.error.locked'
-  | 'checkout.error.labelMismatch';
+  | 'checkout.error.throttled'
+  | 'checkout.error.notRecognized';
 
 /** 既定 locale 辞書は全キー網羅必須。他 locale は Partial 可（欠落は ja へフォールバック）。 */
 type DefaultDictionary = Record<MessageKey, string>;
@@ -271,8 +271,8 @@ const ja: DefaultDictionary = {
   'checkout.confirm.yes': 'はい、退館します',
   'checkout.confirm.no': 'いいえ、戻る',
   'checkout.error.expired': '退館コードの有効期限が切れています。受付にお問い合わせください。',
-  'checkout.error.locked': '入力回数の上限に達しました。受付にお問い合わせください。',
-  'checkout.error.labelMismatch': '退館コードと呼び出し先が一致しません。もう一度ご確認ください。',
+  'checkout.error.throttled': '退館コードの試行が続いたため、しばらく受け付けを制限しています。少し時間をおくか、退館 QR をご利用いただくか、受付にお問い合わせください。',
+  'checkout.error.notRecognized': '退館コードまたは呼び出し先が確認できませんでした。もう一度ご確認ください。',
 };
 
 const en: LocaleDictionary = {
@@ -390,8 +390,8 @@ const en: LocaleDictionary = {
   'checkout.confirm.yes': 'Yes, check me out',
   'checkout.confirm.no': 'No, go back',
   'checkout.error.expired': 'This checkout code has expired. Please ask reception for help.',
-  'checkout.error.locked': 'Too many attempts. Please ask reception for help.',
-  'checkout.error.labelMismatch': 'The checkout code and visit target do not match. Please check and try again.',
+  'checkout.error.throttled': 'Too many checkout code attempts. Please wait a moment, use your checkout QR, or ask reception for help.',
+  'checkout.error.notRecognized': 'We could not recognize that checkout code or visit target. Please check and try again.',
 };
 
 const ko: LocaleDictionary = {
@@ -508,8 +508,8 @@ const ko: LocaleDictionary = {
   'checkout.confirm.yes': '네, 퇴실합니다',
   'checkout.confirm.no': '아니요, 돌아가기',
   'checkout.error.expired': '퇴실 코드의 유효 기간이 지났습니다. 접수처에 문의해 주세요.',
-  'checkout.error.locked': '입력 횟수 상한에 도달했습니다. 접수처에 문의해 주세요.',
-  'checkout.error.labelMismatch': '퇴실 코드와 방문 대상이 일치하지 않습니다. 다시 확인해 주세요.',
+  'checkout.error.throttled': '퇴실 코드 시도가 많아 잠시 접수를 제한하고 있습니다. 잠시 후 다시 시도하거나 퇴실 QR을 이용하거나 접수처에 문의해 주세요.',
+  'checkout.error.notRecognized': '퇴실 코드 또는 방문 대상을 확인할 수 없습니다. 다시 확인해 주세요.',
 };
 
 const zh: LocaleDictionary = {
@@ -626,8 +626,8 @@ const zh: LocaleDictionary = {
   'checkout.confirm.yes': '是，办理退馆',
   'checkout.confirm.no': '否，返回',
   'checkout.error.expired': '退馆码已过期，请联系前台。',
-  'checkout.error.locked': '输入次数已达上限，请联系前台。',
-  'checkout.error.labelMismatch': '退馆码与拜访对象不匹配，请确认后重试。',
+  'checkout.error.throttled': '退馆码尝试次数过多，暂时限制受理。请稍后再试，或使用退馆二维码，或联系前台。',
+  'checkout.error.notRecognized': '无法识别该退馆码或拜访对象，请确认后重试。',
 };
 
 /**

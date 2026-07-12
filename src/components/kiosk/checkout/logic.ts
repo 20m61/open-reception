@@ -37,12 +37,12 @@ export type CheckoutMethod = 'qr' | 'code';
  * API の失敗コード → 来訪者向け文言（`tr` で locale に応じて解決）。
  *
  * 退館の自己特定（#328）の resolve/confirm 由来コードも含めて写す:
- * - not_found:           退館 QR/コードが見つからない（誤入力・他拠点・cross-site）。
+ * - not_found:           退館 QR（token）が見つからない（token 経路。token は秘密なので区別可）。
+ * - not_recognized:      退館コードまたは呼び出し先が確認できない（code 経路の**統一失敗**＝オラクル封じ）。
  * - already_checked_out: すでに退館済み（二重退館・誤操作からの復帰）。
  * - invalid:             入力が不正（コード形式不正・payload 不正）。
  * - expired:             退館コード/QR の有効期限切れ（#328）。
- * - locked:              試行回数上限に達しロックされた（#328 総当り防止）。
- * - label_mismatch:      コードは合うが呼び出し先ラベルが一致しない（#328）。
+ * - throttled:           コード試行がウィンドウ内上限に達した（#328 列挙防止の一次防御）。
  * - network/その他:       通信エラー。
  */
 export function CHECKOUT_FAILURE_MESSAGE(
@@ -52,16 +52,16 @@ export function CHECKOUT_FAILURE_MESSAGE(
   switch (reason) {
     case 'not_found':
       return tr('checkout.error.notFound');
+    case 'not_recognized':
+      return tr('checkout.error.notRecognized');
     case 'already_checked_out':
       return tr('checkout.error.alreadyCheckedOut');
     case 'invalid':
       return tr('checkout.error.invalid');
     case 'expired':
       return tr('checkout.error.expired');
-    case 'locked':
-      return tr('checkout.error.locked');
-    case 'label_mismatch':
-      return tr('checkout.error.labelMismatch');
+    case 'throttled':
+      return tr('checkout.error.throttled');
     default:
       return tr('checkout.error.network');
   }

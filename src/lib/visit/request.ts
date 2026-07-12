@@ -34,13 +34,17 @@ export function checkoutFailureResponse(reason: CheckoutFailureReason): NextResp
   return NextResponse.json({ error: reason }, { status: STATUS_BY_REASON[reason] });
 }
 
-/** 退館クレデンシャル解決/確定の失敗理由ごとの HTTP ステータス (issue #328)。 */
+/**
+ * 退館クレデンシャル解決/確定の失敗理由ごとの HTTP ステータス (issue #328)。
+ * code 経路の列挙オラクルを塞ぐため `not_recognized` は単一ステータス（404）に統一する。
+ * `throttled` は 429（一次防御のスロットル）。
+ */
 const STATUS_BY_SELFID_REASON: Record<CheckoutResolveReason, number> = {
   invalid: 400,
   not_found: 404,
+  not_recognized: 404,
   expired: 410,
-  locked: 429,
-  label_mismatch: 409,
+  throttled: 429,
   already_checked_out: 409,
 };
 

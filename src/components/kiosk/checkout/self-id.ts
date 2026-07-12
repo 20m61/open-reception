@@ -15,9 +15,6 @@
 /** 退館コードの桁数（4 桁数字）。 */
 export const CHECKOUT_CODE_LENGTH = 4;
 
-/** コード解決の失敗試行上限（超過で locked → 再発行必須）。 */
-export const CHECKOUT_MAX_ATTEMPTS = 5;
-
 /** 退館 QR/URL の token クエリ名（`<baseUrl>/kiosk/checkout?ct=<token>`）。 */
 export const CHECKOUT_TOKEN_QUERY = 'ct';
 
