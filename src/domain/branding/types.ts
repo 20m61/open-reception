@@ -48,3 +48,12 @@ export function normalizeCompanyName(value: unknown): string | undefined {
   const s = value.trim().slice(0, 60);
   return s.length > 0 ? s : undefined;
 }
+
+/**
+ * ロゴ or 社名のどちらかがあれば「ブランド表示あり」と判定する (issue #326)。
+ * 待機画面（IdleView）とサイネージのアセット未設定フォールバックが同じ基準を共有するための
+ * 単一の真実源（重複判定による乖離を防ぐ）。
+ */
+export function hasBrandingContent(branding: Pick<BrandingSettings, 'logoUrl' | 'companyName'>): boolean {
+  return Boolean(branding.logoUrl || branding.companyName);
+}
