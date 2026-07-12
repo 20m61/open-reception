@@ -76,11 +76,17 @@ export type MessageKey =
   // 呼び出し中/結果/お詫びのステータス画面（#103 increment 4・{target} は補間）
   | 'reception.callingTitle'
   | 'reception.callingBody'
+  // 呼び出し中の段階的ケア (#323)。経過に応じて文言を切り替える（UI 層のタイマー派生。
+  // state.ts / ui-contract.ts の状態・遷移は変えない）。
+  | 'reception.callingStageWaiting'
+  | 'reception.callingStageNotice'
   | 'reception.connectedBody'
   | 'reception.finishReception'
   | 'reception.timeoutBody'
   | 'reception.failedBody'
   | 'reception.altContact'
+  // 担当者クイック応答 (#99) の「5分お待ちください」に対する目安の再案内 (#323 AC2)。
+  | 'reception.staffResponseWaitReguidance'
   | 'reception.reset'
   | 'reception.fallbackBody'
   | 'reception.toDesk'
@@ -240,11 +246,14 @@ const ja: DefaultDictionary = {
   'reception.callWithThis': 'この内容で呼び出す',
   'reception.callingTitle': '呼び出し中…',
   'reception.callingBody': '{target} を呼び出しています。少々お待ちください。',
+  'reception.callingStageWaiting': 'もう少しお待ちください。担当者に確認しています。',
+  'reception.callingStageNotice': 'つながらない場合は、別の方法でご案内します。',
   'reception.connectedBody': '{target} が応答しました。担当者がまいりますので、そのままお待ちください。操作は不要です。',
   'reception.finishReception': '受付を終える',
   'reception.timeoutBody': '応答がありませんでした。別の方法でお呼びすることもできます。',
   'reception.failedBody': '呼び出しに失敗しました。別の方法でお呼びすることもできます。',
   'reception.altContact': '代替の連絡先へ',
+  'reception.staffResponseWaitReguidance': '目安は数分です。担当者が向かい次第、この画面が切り替わります。',
   'reception.reset': '最初に戻る',
   'reception.fallbackBody': '代表窓口にお繋ぎします。受付スタッフが対応いたしますので、しばらくお待ちください。',
   'reception.toDesk': '受付窓口へ',
@@ -395,12 +404,15 @@ const en: LocaleDictionary = {
   'reception.callWithThis': 'Call with these details',
   'reception.callingTitle': 'Calling…',
   'reception.callingBody': 'Calling {target}. Please wait a moment.',
+  'reception.callingStageWaiting': 'Thanks for your patience—still checking with the person in charge.',
+  'reception.callingStageNotice': "If we can't reach them, we'll guide you another way.",
   'reception.connectedBody':
     '{target} answered and will come to meet you shortly. Please wait here—no action is needed.',
   'reception.finishReception': 'Done',
   'reception.timeoutBody': 'There was no answer. We can try another way to reach them.',
   'reception.failedBody': 'The call failed. We can try another way to reach them.',
   'reception.altContact': 'Try another way',
+  'reception.staffResponseWaitReguidance': "It'll be about a few minutes. This screen will update once they're on the way.",
   'reception.reset': 'Start over',
   'reception.fallbackBody': "We'll connect you to the main desk. A staff member will assist you shortly.",
   'reception.toDesk': 'Go to the main desk',
@@ -552,11 +564,14 @@ const ko: LocaleDictionary = {
   'reception.callWithThis': '이 내용으로 호출',
   'reception.callingTitle': '호출 중…',
   'reception.callingBody': '{target}님을 호출하고 있습니다. 잠시만 기다려 주세요.',
+  'reception.callingStageWaiting': '조금만 더 기다려 주세요. 담당자에게 확인하고 있습니다.',
+  'reception.callingStageNotice': '연결되지 않으면 다른 방법으로 안내해 드립니다.',
   'reception.connectedBody': '{target}님이 응답했습니다. 담당자가 곧 나오니 그대로 기다려 주세요. 별도의 조작은 필요하지 않습니다.',
   'reception.finishReception': '접수 종료',
   'reception.timeoutBody': '응답이 없습니다. 다른 방법으로 호출할 수도 있습니다.',
   'reception.failedBody': '호출에 실패했습니다. 다른 방법으로 호출할 수도 있습니다.',
   'reception.altContact': '다른 연락 방법',
+  'reception.staffResponseWaitReguidance': '예상 소요 시간은 몇 분입니다. 담당자가 출발하면 화면이 바뀝니다.',
   'reception.reset': '처음으로',
   'reception.fallbackBody': '대표 창구로 연결합니다. 접수 직원이 도와드리니 잠시만 기다려 주세요.',
   'reception.toDesk': '접수 창구로',
@@ -706,11 +721,14 @@ const zh: LocaleDictionary = {
   'reception.callWithThis': '按此呼叫',
   'reception.callingTitle': '正在呼叫…',
   'reception.callingBody': '正在呼叫 {target}，请稍候。',
+  'reception.callingStageWaiting': '请再稍候片刻，我们正在与负责人确认。',
+  'reception.callingStageNotice': '如果无法接通，我们将为您提供其他方式。',
   'reception.connectedBody': '{target} 已应答，工作人员即将前来，请在此稍候。无需任何操作。',
   'reception.finishReception': '结束登记',
   'reception.timeoutBody': '无人应答。我们可以用其他方式联系。',
   'reception.failedBody': '呼叫失败。我们可以用其他方式联系。',
   'reception.altContact': '其他联系方式',
+  'reception.staffResponseWaitReguidance': '预计需要几分钟。负责人出发后，本画面将自动更新。',
   'reception.reset': '返回首页',
   'reception.fallbackBody': '正在为您转接前台，工作人员将很快为您服务，请稍候。',
   'reception.toDesk': '前往前台',

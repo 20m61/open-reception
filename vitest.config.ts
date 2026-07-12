@@ -12,7 +12,9 @@ export default defineConfig({
   test: {
     environment: 'node',
     globals: true,
-    include: ['src/**/*.{test,spec}.{ts,tsx}'],
+    // soak ハーネスの純ロジック（tests/soak/thresholds.ts）は unit test で高速検証する (#317)。
+    // ブラウザ前提の実ループは tests/e2e/soak/*.spec.ts（vitest 対象外・playwright.soak.config.ts）。
+    include: ['src/**/*.{test,spec}.{ts,tsx}', 'tests/soak/**/*.{test,spec}.ts'],
     exclude: ['tests/e2e/**', 'node_modules/**'],
   },
 });

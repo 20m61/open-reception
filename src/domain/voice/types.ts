@@ -45,6 +45,25 @@ export type VoiceSettings = {
    * 後方互換のため optional（既存永続データに無くても壊れない）。
    */
   privacyNotice?: string;
+  /**
+   * 呼び出し中(calling)の段階的ケア (issue #323) のしきい値上書き（ミリ秒）。
+   * 任意・未設定/不正値は `src/domain/reception/calling-experience.ts` の既定値へ
+   * フォールバックする（クランプは同モジュールの `clampCallingStageThresholds` に委譲し、
+   * ここでは値をそのまま保持するだけ）。後方互換のため optional。
+   */
+  callingStageWaitingAfterMs?: number;
+  /** 呼び出し中の段階的ケア (#323): タイムアウト直前の予告を出し始める経過 ms の上書き。 */
+  callingStageNoticeAfterMs?: number;
+  /**
+   * 呼び出し中の段階的ケア (#323): 「もう少しお待ちください」段階の案内文言上書き (ja のみ、
+   * guidanceIdle 等と同じ運用)。未設定は i18n 辞書の既定文言 (`reception.callingStageWaiting`)。
+   */
+  guidanceCallingWaiting?: string;
+  /**
+   * 呼び出し中の段階的ケア (#323): タイムアウト直前の予告段階の案内文言上書き (ja のみ)。
+   * 未設定は i18n 辞書の既定文言 (`reception.callingStageNotice`)。
+   */
+  guidanceCallingNotice?: string;
 };
 
 export function clampRate(rate: number): number {

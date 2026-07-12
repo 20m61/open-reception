@@ -7,8 +7,8 @@ import { loginAsAdmin } from './helpers';
  * in-memory ストアはサーバープロセス共有のため、件数ではなく行の存在で検証する。
  */
 
-async function runReception(page: Page, staffTestId: string) {
-  await page.goto('/kiosk');
+async function runReception(page: Page, staffTestId: string, query = '') {
+  await page.goto(`/kiosk${query}`);
   await page.getByTestId('start-reception').click();
   await page.getByTestId('purpose-meeting').click();
   await page.getByTestId(staffTestId).click();
@@ -30,7 +30,9 @@ test('呼び出し成功・完了が受付履歴に記録される', async ({ pa
 });
 
 test('未応答→代替導線の利用が受付履歴に記録される', async ({ page }) => {
-  await runReception(page, 'staff-staff-suzuki');
+  // タイムアウト直前の予告を挟んでから実遷移する (issue #323 AC3)。本番既定（約 30s）を
+  // 待たず短縮する（既存 ?inactivityMs= と同じ流儀）。
+  await runReception(page, 'staff-staff-suzuki', '?callingStageMs=100&callingNoticeMs=200&callingNoticeHoldMs=100');
   await expect(page.getByTestId('result-timeout')).toBeVisible();
   await page.getByTestId('use-fallback').click();
   await expect(page.getByTestId('fallback')).toBeVisible();
