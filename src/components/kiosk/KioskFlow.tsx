@@ -62,6 +62,7 @@ import {
 } from './quick-actions';
 import { deriveChatAvailability, type ReceptionAction } from '@/domain/reception/ui-contract';
 import { KioskChatDrawer } from './KioskChatDrawer';
+import { buildCheckoutUrl, checkoutQrDataUrl } from './checkout/credential-display';
 import Link from 'next/link';
 import {
   createTracker,
@@ -132,6 +133,12 @@ function showAvatarCompanion(state: ReceptionState): boolean {
 
 type Target = { type: ReceptionTargetType; id: string; label: string };
 type CallOutcome = 'connected' | 'timeout' | 'failed';
+
+/**
+ * 受付完了画面へ提示する退館クレデンシャル (issue #342)。/api/kiosk/checkout/issue の戻り値。
+ * token/code は秘密（PII ではない）。ログには出さず表示のためだけに保持する。
+ */
+type CheckoutCredential = { token: string; code: string; expiresAt: string };
 
 type FlowData = {
   state: ReceptionState;
@@ -257,6 +264,9 @@ export function KioskFlow() {
   const [signageCount, setSignageCount] = useState(0);
   // 来訪者検知カメラの有効化トグル (issue #79)。既定 OFF（タップ起動が常に生きる）。
   const [presenceEnabled, setPresenceEnabled] = useState(false);
+  // 受付完了時に発行された退館クレデンシャル (issue #342)。null=未発行/発行失敗（QR 非表示で継続）。
+  // 完了画面に退館 QR / 短コード / 有効期限を提示する。idle 復帰で破棄する（次の来訪者へ持ち越さない）。
+  const [checkoutCredential, setCheckoutCredential] = useState<CheckoutCredential | null>(null);
 
   const refreshHeartbeat = useCallback(async () => {
     try {
@@ -599,6 +609,8 @@ export function KioskFlow() {
     if (data.state === 'idle') {
       setSelectedFlow(null);
       setLocale(DEFAULT_LOCALE);
+      // 退館クレデンシャル (#342) を破棄する（次の来訪者の完了画面へ持ち越さない）。
+      setCheckoutCredential(null);
     }
   }, [data.state]);
 
@@ -643,6 +655,34 @@ export function KioskFlow() {
     }
   }, [data.state, data.target?.label, guidanceIdle, speakSettings, locale]);
 
+  // 受付完了時に在館記録を自動生成し、退館クレデンシャルを発行して完了画面へ提示する (issue #342)。
+  // 失敗しても受付完了画面の表示・自動リセットは妨げない（ホットパスを止めない・来訪者をブロックしない）。
+  // token/code はここでもログに出さない（PII ではないが秘密）。
+  const issueCheckoutCredential = useCallback(async (receptionId: string) => {
+    try {
+      const stayRes = await fetch('/api/kiosk/stay', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ receptionId }),
+      });
+      if (!stayRes.ok) return;
+      const { stayId } = (await stayRes.json()) as { stayId?: string };
+      if (!stayId) return;
+      const issueRes = await fetch('/api/kiosk/checkout/issue', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ stayId }),
+      });
+      if (!issueRes.ok) return;
+      const cred = (await issueRes.json()) as Partial<CheckoutCredential>;
+      if (cred.token && cred.code && cred.expiresAt) {
+        setCheckoutCredential({ token: cred.token, code: cred.code, expiresAt: cred.expiresAt });
+      }
+    } catch {
+      /* 退館クレデンシャル発行の失敗は受付完了画面を妨げない（QR 非表示で継続） */
+    }
+  }, []);
+
   const complete = useCallback(async () => {
     if (data.sessionId) {
       try {
@@ -650,9 +690,12 @@ export function KioskFlow() {
       } catch {
         /* 完了通知の失敗は受付フローを止めない */
       }
+      // 担当者応答で完了した受付のみ在館化し退館クレデンシャルを提示する (#342)。
+      // 非同期で走らせ、完了画面の表示・自動リセットを遅らせない（発行できたら QR を後追い表示）。
+      if (data.outcome === 'connected') void issueCheckoutCredential(data.sessionId);
     }
     dispatch({ type: 'COMPLETE' });
-  }, [data.sessionId]);
+  }, [data.sessionId, data.outcome, issueCheckoutCredential]);
 
   const handleFallback = useCallback(async () => {
     if (data.sessionId) {
@@ -832,6 +875,8 @@ export function KioskFlow() {
               // markVoiceInput は音声候補クリック時のみ実行される（レンダー中に ref を触らない）(issue #319)。
               // eslint-disable-next-line react-hooks/refs -- クリック時のみ実行される安定コールバック
               markVoiceInput,
+              // 受付完了画面に提示する退館クレデンシャル (#342)。connected 完了時のみ非 null。
+              checkoutCredential,
             )}
           </div>
           {/*
@@ -1206,6 +1251,8 @@ function renderScreen(
   branding: BrandingSettings,
   /** 音声検索が使われたことを体験メトリクスへ通知する (issue #319)。 */
   onVoiceUse: () => void,
+  /** 受付完了画面に提示する退館クレデンシャル (issue #342)。未発行なら null。 */
+  checkoutCredential: CheckoutCredential | null,
 ) {
   const tr = makeT(locale);
   switch (data.state) {
@@ -1296,13 +1343,19 @@ function renderScreen(
       return <EndView testid="completed" tone="info" title={tr('reception.cancelled')} locale={locale} />;
     case 'completed':
       return (
-        <EndView
-          testid="completed"
-          tone="success"
-          title={tr('reception.completedTitle')}
-          lead={tr('reception.thanksLead')}
-          locale={locale}
-        />
+        <>
+          <EndView
+            testid="completed"
+            tone="success"
+            title={tr('reception.completedTitle')}
+            lead={tr('reception.thanksLead')}
+            locale={locale}
+          />
+          {/* 退館クレデンシャル (#342)。発行できた場合のみ QR / 短コード / 有効期限を提示する。 */}
+          {checkoutCredential ? (
+            <CheckoutCredentialPanel credential={checkoutCredential} locale={locale} />
+          ) : null}
+        </>
       );
     default:
       return null;
@@ -2040,4 +2093,81 @@ function EndView({
   locale: Locale;
 }) {
   return <ResultPanel tone={tone} testId={testid} title={title} message={lead} locale={locale} />;
+}
+
+/**
+ * 退館クレデンシャルの有効期限（ISO）を locale の時刻表記へ整形する (issue #342)。
+ * 不正日付は空文字（表示を壊さない）。
+ */
+function formatExpiryTime(iso: string, locale: Locale): string {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return '';
+  try {
+    return new Intl.DateTimeFormat(locale, { hour: '2-digit', minute: '2-digit' }).format(d);
+  } catch {
+    return d.toISOString();
+  }
+}
+
+/**
+ * 受付完了画面の退館クレデンシャル提示 (issue #342)。
+ *
+ * 退館 QR（token を参照する URL のみを符号化。PII 非包含）・短い退館コード・有効期限・一行案内を出す。
+ * 表示のみで、来訪者を待たせず（発行できた場合に後追い表示）、失敗時はそもそも描画しない
+ * （呼び出し側が credential=null を渡す）。氏名・会社名は同居させない。token/code はログに出さない。
+ * 色リテラルは使わずデザイントークン（--space-* 等）とデザインシステムのクラスに揃える。
+ */
+function CheckoutCredentialPanel({
+  credential,
+  locale,
+}: {
+  credential: CheckoutCredential;
+  locale: Locale;
+}) {
+  const tr = makeT(locale);
+  // origin はブラウザ由来（SSR 時は空。完了画面はクライアントで描画される）。
+  const origin = typeof window !== 'undefined' ? window.location.origin : '';
+  const checkoutUrl = buildCheckoutUrl(origin, credential.token);
+  const qrAlt = tr('checkout.credential.qrAlt');
+  const qrSrc = checkoutQrDataUrl(checkoutUrl, qrAlt);
+  const expiry = formatExpiryTime(credential.expiresAt, locale);
+  return (
+    <section
+      className="checkout-credential"
+      data-testid="checkout-credential"
+      lang={locale}
+      style={{
+        marginTop: 'var(--space-lg)',
+        display: 'flex',
+        flexDirection: 'column',
+        alignItems: 'center',
+        gap: 'var(--space-sm)',
+        textAlign: 'center',
+      }}
+    >
+      <h2 className="screen__title" style={{ fontSize: 'var(--font-lg)' }}>
+        {tr('checkout.credential.title')}
+      </h2>
+      <p className="screen__lead">{tr('checkout.credential.instruction')}</p>
+      <img
+        src={qrSrc}
+        alt={qrAlt}
+        data-testid="checkout-credential-qr"
+        width={200}
+        height={200}
+        style={{ width: 200, height: 200, maxWidth: '60vw' }}
+      />
+      <p className="checkout-credential__code" style={{ fontSize: 'var(--font-lg)' }}>
+        {tr('checkout.credential.codeLabel')}:{' '}
+        <strong data-testid="checkout-credential-code" style={{ letterSpacing: '0.15em' }}>
+          {credential.code}
+        </strong>
+      </p>
+      {expiry ? (
+        <p className="screen__lead" data-testid="checkout-credential-expiry">
+          {tr('checkout.credential.expiresAt', { time: expiry })}
+        </p>
+      ) : null}
+    </section>
+  );
 }
