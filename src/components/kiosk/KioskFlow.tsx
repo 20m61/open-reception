@@ -713,6 +713,7 @@ export function KioskFlow() {
           presenceEnabled={presenceEnabled}
           onTogglePresence={() => setPresenceEnabled((v) => !v)}
           presenceStatus={presence.status}
+          locale={locale}
         />
       ) : useCustomFlow && data.state === 'selectingPurpose' ? (
         // カスタム目的選択 (issue #100)。選択でフローを保持し、入力ステップ有無で次へ分岐。
@@ -777,7 +778,7 @@ export function KioskFlow() {
             </div>
           ) : null}
           {/* 退館チェックアウト導線 (issue #102)。待機中のみ小さく常設する（非破壊）。 */}
-          {data.state === 'idle' ? <CheckoutLink /> : null}
+          {data.state === 'idle' ? <CheckoutLink locale={locale} /> : null}
           {/*
             常時見える「逃げ道」バー (issue #121 / #325)。後退系コントロールはここに一本化し、
             戻る（1 ステップ）/ 最初に戻る（リセット）の 2 語だけを出す。出すアクションは #120 契約の
@@ -981,12 +982,15 @@ function SignageWaitingView({
   presenceEnabled,
   onTogglePresence,
   presenceStatus,
+  locale,
 }: {
   onStart: () => void;
   onStartCheckin: () => void;
   presenceEnabled: boolean;
   onTogglePresence: () => void;
   presenceStatus: PresenceCameraStatus;
+  /** 退館チェックアウト導線 (CheckoutLink) の表示言語 (#327)。 */
+  locale: Locale;
 }) {
   return (
     <div data-testid="kiosk-signage-waiting" style={{ position: 'relative', minHeight: '100%' }}>
@@ -998,7 +1002,7 @@ function SignageWaitingView({
         <button type="button" className="btn btn--secondary" data-testid="signage-start-checkin" onClick={onStartCheckin}>
           QR で受付
         </button>
-        <CheckoutLink />
+        <CheckoutLink locale={locale} />
         <button
           type="button"
           className="btn btn--ghost"
@@ -1017,11 +1021,22 @@ function SignageWaitingView({
   );
 }
 
-/** 退館チェックアウトへの明示導線 (issue #102)。/kiosk/checkout へ遷移する小ボタン。 */
-function CheckoutLink() {
+/**
+ * 退館チェックアウトへの明示導線 (issue #102 / #327 i18n 化)。/kiosk/checkout へ遷移する
+ * 小ボタン。選択中の locale を `?locale=` で引き継ぎ、遷移先の CheckoutFlow が同じ言語で
+ * 開始できるようにする（KioskFlow と CheckoutFlow はページを跨ぐため React state ではなく
+ * クエリで locale を橋渡しする）。
+ */
+function CheckoutLink({ locale = DEFAULT_LOCALE }: { locale?: Locale }) {
+  const tr = makeT(locale);
   return (
-    <Link href="/kiosk/checkout" className="btn btn--ghost" data-testid="kiosk-checkout-link">
-      退館チェックアウト
+    <Link
+      href={`/kiosk/checkout?locale=${locale}`}
+      className="btn btn--ghost"
+      data-testid="kiosk-checkout-link"
+      lang={locale}
+    >
+      {tr('kiosk.checkoutLink')}
     </Link>
   );
 }
