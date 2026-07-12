@@ -34,6 +34,23 @@ test('呼び出し成功フロー: 接続 → 完了 → 待機画面へ復帰',
   await expect(page.getByTestId('start-reception')).toBeVisible({ timeout: 10_000 });
 });
 
+test('接続画面は無操作で待機へ自動復帰する（「操作不要」案内と挙動を一致, #324）', async ({ page }) => {
+  // connected は「操作は不要です」と案内する (#324-5)。指示どおり操作しないと、無操作タイムアウトで
+  // 待機へ自動復帰し、前の来訪者のセッション（PII）を残して次の来訪者をブロックしないことを検証する。
+  // 本番の connected 既定は 120s。E2E では ?inactivityMs= で短縮する。
+  await page.goto('/kiosk?inactivityMs=600');
+  await page.getByTestId('start-reception').click();
+  await page.getByTestId('purpose-meeting').click();
+  await page.getByTestId('staff-staff-sato').click();
+  await page.getByTestId('visitor-name').fill('来客 一郎');
+  await page.getByTestId('to-confirm').click();
+  await page.getByTestId('confirm-call').click();
+  await expect(page.getByTestId('result-connected')).toBeVisible();
+
+  // 終了ボタンを押さず、そのまま無操作にする → 待機画面へ自動復帰する。
+  await expect(page.getByTestId('start-reception')).toBeVisible({ timeout: 5_000 });
+});
+
 test('未応答フロー: timeout → 代替導線 → 待機画面へ復帰', async ({ page }) => {
   await advanceToConfirm(page, 'staff-staff-suzuki');
   await page.getByTestId('confirm-call').click();

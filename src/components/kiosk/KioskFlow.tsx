@@ -98,6 +98,13 @@ const AUTO_RESET_MS = 6000;
  */
 const INACTIVITY_RESET_MS = 60000;
 /**
+ * connected（担当者応答済み・来訪待ち）画面の無操作リセット上限 (#324)。
+ * 「操作は不要です」と案内し来訪者はその場で担当者の到着を待つため、選択/入力画面より長めに取り、
+ * 正当な待機中の誤リセットを避ける。離席した場合はこの時間で PII を破棄して待機へ戻す。
+ * 待機中の来訪者は警告カウントダウンで「続ける」を押せば延長できる。
+ */
+const CONNECTED_INACTIVITY_RESET_MS = 120000;
+/**
  * リセット前にカウントダウン警告を出す時間 (issue #125 UX, "don't surprise-expire")。
  * 残り WARNING ミリ秒で警告を表示し、来訪者が操作すれば延長する。
  */
@@ -535,7 +542,9 @@ export function KioskFlow() {
     }
     const params = new URLSearchParams(window.location.search);
     const override = Number(params.get('inactivityMs'));
-    const limit = Number.isFinite(override) && override > 0 ? override : INACTIVITY_RESET_MS;
+    // connected（来訪待ち）は長めの上限を使う (#324)。?inactivityMs= の明示指定は常に優先（E2E 短縮用）。
+    const base = data.state === 'connected' ? CONNECTED_INACTIVITY_RESET_MS : INACTIVITY_RESET_MS;
+    const limit = Number.isFinite(override) && override > 0 ? override : base;
     // 警告（カウントダウン）に割く時間は limit を超えない範囲で確保する。
     const warnMs = Math.min(INACTIVITY_WARNING_MS, Math.max(0, limit - 500));
     const warnAfter = Math.max(0, limit - warnMs);
@@ -616,7 +625,13 @@ export function KioskFlow() {
         phrase = tr('reception.thanks');
         break;
       case 'idle':
-        phrase = locale === DEFAULT_LOCALE ? guidanceIdle : tr('welcome.tapToStart');
+        // 待機の発話は視覚リードと同じ役割（挨拶＋安心情報）に揃える (#324)。旧「タッチして開始」
+        // （welcome.tapToStart）は 1画面1メッセージ設計から外したため発話でも再導入しない。
+        // ja は管理設定の案内文言（guidanceIdle＝リード）を、他言語は挨拶＋idleReassure を読み上げる。
+        phrase =
+          locale === DEFAULT_LOCALE
+            ? guidanceIdle
+            : `${tr('welcome.title')}${locale === 'zh' ? '。' : '. '}${tr('reception.idleReassure')}`;
         break;
       default:
         phrase = undefined;
@@ -1906,7 +1921,8 @@ function ConnectedView({
   const tr = makeT(locale);
   // connected は「担当者がまいります／操作は不要です」を message で明示し、終了操作は任意にする (#324-5)。
   // 主 CTA（primary）で終了を促すと「押さないと進まない」と誤解させるため、secondary の任意アクションにする。
-  // 自動終了はしない（connected は COMPLETE でのみ遷移）ので、明示的に終えたい来訪者のために操作は残す。
+  // 「操作不要」の案内と挙動を一致させるため、connected は無操作タイムアウトで待機へ自動復帰する
+  // （INACTIVITY_RESET_STATES に connected を追加, #324）。明示的に今すぐ終えたい来訪者のため操作は残す。
   return (
     <ResultPanel
       tone={resultToneForState('connected')}
