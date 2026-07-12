@@ -34,15 +34,32 @@ describe('filterReceptionLogs: 受付履歴の検索・フィルタ純関数 (is
     expect(filterReceptionLogs(logs, {})).toHaveLength(2);
   });
 
-  it('期間（開始/終了）で絞り込む。終了日はその日いっぱいを含む', () => {
+  it('期間（開始/終了）は JST 暦日で解釈する（終了日はその日いっぱいを含む・#254 と整合）', () => {
+    // date-only フィルタの境界はダッシュボードの受付日（JST バケット）と揃える。
     const logs = [
-      fixture({ id: 'a', startedAt: '2026-06-30T23:59:00.000Z' }),
-      fixture({ id: 'b', startedAt: '2026-07-01T12:00:00.000Z' }),
-      fixture({ id: 'c', startedAt: '2026-07-02T00:00:01.000Z' }),
+      // JST 06-30 23:00（= UTC 06-30T14:00）→ 6/30 → 除外。
+      fixture({ id: 'before', startedAt: '2026-06-30T14:00:00.000Z' }),
+      // JST 07-01 05:00（= UTC 06-30T20:00）→ 7/1 → 含む（UTC 暦日判定だと誤って除外される境界）。
+      fixture({ id: 'jst-early', startedAt: '2026-06-30T20:00:00.000Z' }),
+      // JST 07-01 21:00（= UTC 07-01T12:00）→ 7/1 → 含む。
+      fixture({ id: 'mid', startedAt: '2026-07-01T12:00:00.000Z' }),
+      // JST 07-01 23:59（= UTC 07-01T14:59）→ 7/1 → 含む（終了日いっぱい）。
+      fixture({ id: 'jst-late', startedAt: '2026-07-01T14:59:00.000Z' }),
+      // JST 07-02 00:00（= UTC 07-01T15:00）→ 7/2 → 除外。
+      fixture({ id: 'after', startedAt: '2026-07-01T15:00:00.000Z' }),
     ];
     const filter: ReceptionLogFilter = { start: '2026-07-01', end: '2026-07-01' };
     const result = filterReceptionLogs(logs, filter);
-    expect(result.map((l) => l.id)).toEqual(['b']);
+    expect(result.map((l) => l.id)).toEqual(['jst-early', 'mid', 'jst-late']);
+  });
+
+  it('時刻付き ISO の start/end はその瞬間を境界に使う（date-only の JST 補正はしない）', () => {
+    const logs = [
+      fixture({ id: 'x', startedAt: '2026-07-01T02:00:00.000Z' }),
+      fixture({ id: 'y', startedAt: '2026-07-01T10:00:00.000Z' }),
+    ];
+    const result = filterReceptionLogs(logs, { start: '2026-07-01T05:00:00.000Z' });
+    expect(result.map((l) => l.id)).toEqual(['y']);
   });
 
   it('結果（outcome）で絞り込む（複数選択は OR）', () => {
@@ -155,5 +172,24 @@ describe('receptionLogsToCsv: CSV エクスポート (issue #330 item2)', () => 
   it('0 件でもヘッダ行のみを返す', () => {
     const csv = receptionLogsToCsv([], { outcomeLabel, purposeLabel });
     expect(csv.trim().split('\n')).toHaveLength(1);
+  });
+
+  it('数式インジェクション: =/+/@ で始まる自由入力セルを無害化する（先頭タブ）', () => {
+    const csv = receptionLogsToCsv(
+      [fixture({ targetLabel: '=HYPERLINK("http://evil","x")' })],
+      { outcomeLabel, purposeLabel },
+    );
+    // 先頭にタブが付き、かつ引用符/カンマを含むため RFC4180 でクォートされる。
+    expect(csv).toContain('"\t=HYPERLINK(""http://evil"",""x"")"');
+    // 生の =HYPERLINK が行頭/セル頭に出ない（式として評価されない）。
+    expect(csv).not.toMatch(/(^|,)=HYPERLINK/m);
+  });
+
+  it('式にならない単独 "-"（未設定プレースホルダ）や数値は無害化しない', () => {
+    const csv = receptionLogsToCsv(
+      [fixture({ purpose: 'other', targetLabel: undefined })],
+      { outcomeLabel, purposeLabel },
+    );
+    expect(csv).not.toContain('\t');
   });
 });

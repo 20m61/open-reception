@@ -62,8 +62,17 @@ export function DataTable<Row>({
   if (rows.length === 0) {
     return <EmptyState message={emptyMessage} testId={`${testId}-empty`} />;
   }
+  // 狭幅では横スクロールで全列を見せる。スクロール領域はキーボードでも到達できるよう
+  // tabIndex=0 + role="region" を付与する（WCAG 2.1.1: マウス/タッチの無い利用者でも
+  // スクロールできる。#330 レビュー）。
   return (
-    <div data-testid={`${testId}-scroll`} style={{ overflowX: 'auto' }}>
+    <div
+      data-testid={`${testId}-scroll`}
+      role="region"
+      aria-label="テーブル（横スクロール可）"
+      tabIndex={0}
+      style={{ overflowX: 'auto' }}
+    >
       <table
         data-testid={testId}
         style={{ width: '100%', minWidth: 'max-content', borderCollapse: 'collapse', fontSize: font.body }}

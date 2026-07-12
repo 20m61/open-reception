@@ -21,14 +21,32 @@ export type ReceptionLogFilter = {
   kioskId?: string;
 };
 
-/** `end` 日付文字列を「その日の終わり」を含む上限ミリ秒に変換する（audit-filter と同じ規則）。 */
+/**
+ * 日付フィルタの境界は **JST 暦日**で解釈する（#330 レビュー）。受付日はダッシュボードで
+ * JST バケットされる（`src/domain/util/jst.ts` の `jstDayKey`, #254）。date-only（YYYY-MM-DD）を
+ * ランタイム TZ（OpenNext/Lambda は UTC）の暦日として比較すると、JST 早朝の受付
+ * （例 2026-06-30T20:00Z = JST 07-01 05:00）が表示上は 7/1 なのに「7/1 開始」フィルタから漏れる。
+ * `jstDayStartIso` と同じ `T00:00:00+09:00` の規則で境界を求め、表示/運用上の受付日と一致させる。
+ * 時刻を含む ISO 文字列はその瞬間をそのまま境界に使う。
+ */
+const DATE_ONLY = /^\d{4}-\d{2}-\d{2}$/;
+
+/** `start`（含む下限）を epoch ms に。date-only は JST 00:00、時刻付き ISO はその瞬間。 */
+function startBoundary(start: string): number {
+  const s = start.trim();
+  if (DATE_ONLY.test(s)) return Date.parse(`${s}T00:00:00+09:00`);
+  return new Date(start).getTime();
+}
+
+/** `end`（その JST 暦日の終わりまで含む上限）を epoch ms に。時刻付き ISO はその瞬間。 */
 function endBoundary(end: string): number {
-  const t = new Date(end).getTime();
-  if (Number.isNaN(t)) return Number.POSITIVE_INFINITY;
-  if (/^\d{4}-\d{2}-\d{2}$/.test(end.trim())) {
-    return t + 86_400_000 - 1;
+  const e = end.trim();
+  if (DATE_ONLY.test(e)) {
+    const dayStart = Date.parse(`${e}T00:00:00+09:00`);
+    return Number.isNaN(dayStart) ? Number.POSITIVE_INFINITY : dayStart + 86_400_000 - 1;
   }
-  return t;
+  const t = new Date(end).getTime();
+  return Number.isNaN(t) ? Number.POSITIVE_INFINITY : t;
 }
 
 /** ログ 1 件がフィルタ条件をすべて満たすか（純関数）。 */
@@ -36,7 +54,7 @@ export function matchesReceptionFilter(log: ReceptionLog, filter: ReceptionLogFi
   const at = new Date(log.startedAt).getTime();
 
   if (filter.start) {
-    const start = new Date(filter.start).getTime();
+    const start = startBoundary(filter.start);
     if (!Number.isNaN(start) && !Number.isNaN(at) && at < start) return false;
   }
   if (filter.end) {
@@ -117,12 +135,20 @@ export function paginate<T>(items: readonly T[], page: number, pageSize: number)
   };
 }
 
-/** RFC4180 に沿って 1 セル値をエスケープする（カンマ・改行・ダブルクォートを含む場合のみクォート）。 */
+/**
+ * RFC4180 に沿って 1 セル値をエスケープする（カンマ・改行・ダブルクォートを含む場合のみクォート）。
+ * あわせて Excel/Sheets の数式インジェクションを無害化する（#330 レビュー）: `=`/`+`/`@` で始まる、
+ * または `-` の後に式が続くセルは先頭にタブを付け、式として評価させない。`targetLabel`（呼び出し先の
+ * 表示名）は管理者が編集可能な自由入力のため対象になりうる。未設定プレースホルダの単独 `-` や純数値
+ * （所要秒）は式にならないので無害化しない。
+ */
 function csvCell(value: string): string {
-  if (/[",\n\r]/.test(value)) {
-    return `"${value.replace(/"/g, '""')}"`;
+  const isFormula = /^[=+@]/.test(value) || (value.startsWith('-') && value !== '-' && !/^-?\d/.test(value));
+  const guarded = isFormula ? `\t${value}` : value;
+  if (/[",\n\r]/.test(guarded)) {
+    return `"${guarded.replace(/"/g, '""')}"`;
   }
-  return value;
+  return guarded;
 }
 
 /** CSV 出力用の表示ラベル解決。 */
