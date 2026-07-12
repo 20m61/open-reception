@@ -18,7 +18,10 @@ import {
   StatusBadge,
   type Column,
 } from '@/components/admin/ui';
-import { color, radius, space } from '@/components/admin/ui/tokens';
+import { color, radius, space, font } from '@/components/admin/ui/tokens';
+import { useQueryParams } from './use-query-params';
+import { paginate } from './list-io';
+import { filterReservations, reservationsToCsv, type ReservationListFilter } from './reservations/list-filter';
 import {
   availableActions,
   qrFileName,
@@ -29,9 +32,10 @@ import {
   targetTypeLabel,
   usagePolicyLabel,
 } from './reservations/logic';
+import type { ReservationStatus } from '@/domain/reservation/types';
 
 /**
- * 来訪予約 管理画面 (issue #97, increment 2)。
+ * 来訪予約 管理画面 (issue #97, increment 2; フィルタ/ページング/CSV は #330 item2 残増分)。
  *
  * inc1 の予約 API（/api/admin/reservations/**）を介して予約の一覧・作成・編集・キャンセル・
  * 失効・QR 再発行を行い、予約ごとの QR 画像を表示/ダウンロードする。
@@ -40,12 +44,16 @@ import {
  * 本コンポーネントは入出力（fetch / フォーム状態）に集中する。
  * QR には token 参照 URL のみが載り、PII は載らない（サーバ側 qr.ts で生成）。
  *
+ * 検索/フィルタ/ページ状態は監査ログ・受付履歴と同じく URL クエリを真実源にする（issue #94）。
+ * CSV エクスポートは来訪者名・会社名等の PII を含めない（`reservations/list-filter.ts` 参照）。
+ *
  * actor の実テナント解決は #80 配線に依存する。inc2 は単一テナント運用の互換シード
  * `internal` を既定にする（SitesManager と同方針）。siteId は運用上の必須スコープのため、
  * 画面上部で選択（暫定は手入力 + 既定値）する。
  */
 const DEFAULT_TENANT_ID = 'internal';
 const DEFAULT_SITE_ID = 'default';
+const PAGE_SIZE = 20;
 
 type CreateForm = {
   visitorName: string;
@@ -80,6 +88,13 @@ export function ReservationsManager({
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [qrFor, setQrFor] = useState<{ id: string; dataUrl: string } | null>(null);
+
+  const { get, setMany } = useQueryParams();
+  const filterStart = get('start');
+  const filterEnd = get('end');
+  const filterStatus = get('status');
+  const filterTargetType = get('target');
+  const pageParam = get('page');
 
   const scopeQuery = useMemo(
     () => `tenantId=${encodeURIComponent(tenantId)}&siteId=${encodeURIComponent(siteId)}`,
@@ -182,7 +197,36 @@ export function ReservationsManager({
   );
 
   const summary = useMemo(() => summarize(items), [items]);
-  const rows = useMemo(() => sortByVisitAt(items), [items]);
+  const sorted = useMemo(() => sortByVisitAt(items), [items]);
+
+  const filter: ReservationListFilter = useMemo(
+    () => ({
+      start: filterStart || undefined,
+      end: filterEnd || undefined,
+      status: (filterStatus as ReservationStatus) || undefined,
+      targetType: (filterTargetType as ReservationTargetType) || undefined,
+    }),
+    [filterStart, filterEnd, filterStatus, filterTargetType],
+  );
+  const filtered = useMemo(() => filterReservations(sorted, filter), [sorted, filter]);
+  const paged = useMemo(() => paginate(filtered, Number(pageParam) || 1, PAGE_SIZE), [filtered, pageParam]);
+  const hasFilter = Boolean(filterStart || filterEnd || filterStatus || filterTargetType);
+
+  // フィルタ変更時はページを 1 に戻す（絞り込み後に空ページへ迷い込まないようにする）。
+  const updateFilter = (updates: Record<string, string>) => setMany({ ...updates, page: '' });
+  const resetFilter = () => setMany({ start: '', end: '', status: '', target: '', page: '' });
+
+  const downloadCsv = () => {
+    const csv = reservationsToCsv(filtered);
+    // Excel（Windows/日本語ロケール）で文字化けしないよう UTF-8 BOM を付与する。
+    const blob = new Blob(['﻿' + csv], { type: 'text/csv;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `reservations-${new Date().toISOString().slice(0, 10)}.csv`;
+    a.click();
+    URL.revokeObjectURL(url);
+  };
 
   const columns: ReadonlyArray<Column<VisitReservation>> = [
     {
@@ -300,13 +344,112 @@ export function ReservationsManager({
       ) : null}
 
       <Section title="予約一覧" description="予定日時の近い順に表示します。">
+        <div
+          data-testid="reservation-filters"
+          style={{ display: 'flex', flexWrap: 'wrap', gap: space.sm, alignItems: 'flex-end', marginBottom: space.md }}
+        >
+          <Field label="予定日（開始）" htmlFor="reservation-filter-start">
+            <input
+              id="reservation-filter-start"
+              type="date"
+              data-testid="reservation-filter-start"
+              value={filterStart}
+              onChange={(e) => updateFilter({ start: e.target.value })}
+              style={inputStyle}
+            />
+          </Field>
+          <Field label="予定日（終了）" htmlFor="reservation-filter-end">
+            <input
+              id="reservation-filter-end"
+              type="date"
+              data-testid="reservation-filter-end"
+              value={filterEnd}
+              onChange={(e) => updateFilter({ end: e.target.value })}
+              style={inputStyle}
+            />
+          </Field>
+          <Field label="状態" htmlFor="reservation-filter-status">
+            <select
+              id="reservation-filter-status"
+              data-testid="reservation-filter-status"
+              value={filterStatus}
+              onChange={(e) => updateFilter({ status: e.target.value })}
+              style={inputStyle}
+            >
+              <option value="">すべて</option>
+              <option value="active">有効</option>
+              <option value="used">使用済み</option>
+              <option value="expired">期限切れ</option>
+              <option value="revoked">失効</option>
+              <option value="cancelled">キャンセル</option>
+            </select>
+          </Field>
+          <Field label="呼び出し先種別" htmlFor="reservation-filter-target">
+            <select
+              id="reservation-filter-target"
+              data-testid="reservation-filter-target"
+              value={filterTargetType}
+              onChange={(e) => updateFilter({ target: e.target.value })}
+              style={inputStyle}
+            >
+              <option value="">すべて</option>
+              <option value="staff">担当者</option>
+              <option value="department">部署</option>
+            </select>
+          </Field>
+          {hasFilter ? (
+            <Button variant="secondary" onClick={resetFilter} data-testid="reservation-filter-reset">
+              条件をクリア
+            </Button>
+          ) : null}
+          <Button
+            variant="secondary"
+            onClick={downloadCsv}
+            disabled={filtered.length === 0}
+            data-testid="reservation-csv-export"
+          >
+            CSV エクスポート
+          </Button>
+        </div>
+
+        <p data-testid="reservation-count" style={{ opacity: 0.7, fontSize: font.small, margin: 0, marginBottom: space.sm }}>
+          {sorted.length} 件中 {filtered.length} 件を表示
+        </p>
+
         <DataTable
           columns={columns}
-          rows={rows}
+          rows={paged.items}
           rowKey={(r) => r.id}
-          emptyMessage="この拠点の来訪予約はまだありません。"
+          emptyMessage={hasFilter ? '条件に一致する来訪予約はありません。' : 'この拠点の来訪予約はまだありません。'}
           testId="reservation-table"
         />
+
+        {paged.pageCount > 1 ? (
+          <div
+            data-testid="reservation-pagination"
+            style={{ display: 'flex', gap: space.sm, alignItems: 'center', marginTop: space.sm }}
+          >
+            <Button
+              variant="secondary"
+              data-testid="reservation-page-prev"
+              disabled={paged.page <= 1}
+              onClick={() => setMany({ page: String(paged.page - 1) })}
+            >
+              前へ
+            </Button>
+            <span style={{ fontSize: font.small, opacity: 0.8 }} data-testid="reservation-page-label">
+              {paged.page} / {paged.pageCount} ページ
+            </span>
+            <Button
+              variant="secondary"
+              data-testid="reservation-page-next"
+              disabled={paged.page >= paged.pageCount}
+              onClick={() => setMany({ page: String(paged.page + 1) })}
+            >
+              次へ
+            </Button>
+          </div>
+        ) : null}
       </Section>
 
       {qrFor ? (

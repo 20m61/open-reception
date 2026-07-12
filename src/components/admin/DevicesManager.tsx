@@ -7,15 +7,20 @@ import type { DeviceKind } from '@/domain/tenant/types';
 import {
   Button,
   DataTable,
+  Field,
   Section,
   StatusBadge,
   type Column,
   type StatusKind,
 } from '@/components/admin/ui';
+import { font, space } from '@/components/admin/ui/tokens';
 import { renderTextToQrSvg } from '@/lib/reservation/qr';
+import { useQueryParams } from './use-query-params';
+import { paginate } from './list-io';
+import { filterDevices, devicesToCsv, type DeviceListFilter } from './devices-filter';
 
 /**
- * 受付端末（Device）管理 (issue #87, increment 2)。
+ * 受付端末（Device）管理 (issue #87, increment 2; 検索/フィルタ/ページング/CSV は #330 item2 残増分)。
  *
  * Tenant > Site > Device のテナント境界に乗せた端末管理。サイトを選び、その配下の
  * 受付端末を一覧・登録・編集（名称/設置場所/種別/メンテ表示）し、有効/無効の切り替えと
@@ -24,11 +29,15 @@ import { renderTextToQrSvg } from '@/lib/reservation/qr';
  * 既存 kiosks 管理（#18 / KiosksManager）は書き換えず、Device/kiosk 統合の本対応は
  * 次増分（docs/site-device-management-design.md §Device/Kiosk 統合方針）。
  *
- * セキュリティ: token の平文は UI に出さない（登録済みの真偽のみ表示）。
+ * 検索/フィルタ/ページ状態は監査ログ・受付履歴と同じく URL クエリを真実源にする（issue #94）。
+ *
+ * セキュリティ: token の平文は UI に出さない（登録済みの真偽のみ表示）。CSV にも token 平文は
+ * 出力しない（`devices-filter.ts` 参照）。
  * actor 解決は現状 developer 相当（#80 写像が未配線）。複数テナント所属時の Tenant 切替 UI は
  * 次増分。inc2 は単一テナント運用の互換シード `internal` を既定テナントとして扱う。
  */
 const DEFAULT_TENANT_ID = 'internal';
+const PAGE_SIZE = 20;
 
 const KIND_LABEL: Record<DeviceKind, string> = {
   kiosk: '据置端末',
@@ -71,6 +80,12 @@ export function DevicesManager({ tenantId = DEFAULT_TENANT_ID }: { tenantId?: st
   const [copied, setCopied] = useState(false);
   /** 発行失敗時のメッセージ（null=非表示）。無反応を避けるため必ず表示する。 */
   const [issueError, setIssueError] = useState<string | null>(null);
+
+  const { get, setMany } = useQueryParams();
+  const keyword = get('q');
+  const connectivityFilter = get('connectivity');
+  const kindFilter = get('kind');
+  const pageParam = get('page');
 
   const loadSites = useCallback(async () => {
     const res = await fetch(`/api/admin/sites?tenantId=${encodeURIComponent(tenantId)}`);
@@ -182,6 +197,33 @@ export function DevicesManager({ tenantId = DEFAULT_TENANT_ID }: { tenantId?: st
       setCopied(false);
     }
   }, [issued]);
+
+  const filter: DeviceListFilter = useMemo(
+    () => ({
+      keyword: keyword || undefined,
+      connectivity: (connectivityFilter as DeviceConnectivity) || undefined,
+      kind: (kindFilter as DeviceKind) || undefined,
+    }),
+    [keyword, connectivityFilter, kindFilter],
+  );
+  const filtered = useMemo(() => filterDevices(devices, filter), [devices, filter]);
+  const paged = useMemo(() => paginate(filtered, Number(pageParam) || 1, PAGE_SIZE), [filtered, pageParam]);
+  const hasFilter = Boolean(keyword || connectivityFilter || kindFilter);
+
+  // フィルタ変更時はページを 1 に戻す（絞り込み後に空ページへ迷い込まないようにする）。
+  const updateFilter = (updates: Record<string, string>) => setMany({ ...updates, page: '' });
+
+  const downloadCsv = () => {
+    const csv = devicesToCsv(filtered);
+    // Excel（Windows/日本語ロケール）で文字化けしないよう UTF-8 BOM を付与する。
+    const blob = new Blob(['﻿' + csv], { type: 'text/csv;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `devices-${new Date().toISOString().slice(0, 10)}.csv`;
+    a.click();
+    URL.revokeObjectURL(url);
+  };
 
   const columns = useMemo<Column<DeviceView>[]>(
     () => [
@@ -349,13 +391,107 @@ export function DevicesManager({ tenantId = DEFAULT_TENANT_ID }: { tenantId?: st
         </Button>
       </div>
 
+      <div
+        data-testid="device-filters"
+        style={{ display: 'flex', gap: 8, alignItems: 'flex-end', flexWrap: 'wrap', marginBottom: 16 }}
+      >
+        <Field label="端末名・設置場所で検索" htmlFor="device-filter-keyword">
+          <input
+            id="device-filter-keyword"
+            data-testid="device-filter-keyword"
+            value={keyword}
+            onChange={(e) => updateFilter({ q: e.target.value })}
+            style={inputStyle}
+          />
+        </Field>
+        <Field label="稼働状態で絞り込み" htmlFor="device-filter-connectivity">
+          <select
+            id="device-filter-connectivity"
+            data-testid="device-filter-connectivity"
+            value={connectivityFilter}
+            onChange={(e) => updateFilter({ connectivity: e.target.value })}
+            style={inputStyle}
+          >
+            <option value="">すべて</option>
+            <option value="online">オンライン</option>
+            <option value="offline">オフライン</option>
+            <option value="maintenance">メンテナンス中</option>
+            <option value="disabled">無効</option>
+          </select>
+        </Field>
+        <Field label="種別で絞り込み" htmlFor="device-filter-kind">
+          <select
+            id="device-filter-kind"
+            data-testid="device-filter-kind"
+            value={kindFilter}
+            onChange={(e) => updateFilter({ kind: e.target.value })}
+            style={inputStyle}
+          >
+            <option value="">すべて</option>
+            {(Object.keys(KIND_LABEL) as DeviceKind[]).map((k) => (
+              <option key={k} value={k}>
+                {KIND_LABEL[k]}
+              </option>
+            ))}
+          </select>
+        </Field>
+        {hasFilter ? (
+          <Button
+            variant="secondary"
+            onClick={() => setMany({ q: '', connectivity: '', kind: '', page: '' })}
+            data-testid="device-filter-reset"
+          >
+            条件をクリア
+          </Button>
+        ) : null}
+        <Button
+          variant="secondary"
+          onClick={downloadCsv}
+          disabled={filtered.length === 0}
+          data-testid="device-csv-export"
+        >
+          CSV エクスポート
+        </Button>
+      </div>
+
+      <p data-testid="device-count" style={{ opacity: 0.7, fontSize: font.small, margin: 0, marginBottom: space.sm }}>
+        {devices.length} 件中 {filtered.length} 件を表示
+      </p>
+
       <DataTable
         testId="device-table"
         columns={columns}
-        rows={devices}
+        rows={paged.items}
         rowKey={(d) => d.id}
-        emptyMessage="このサイトに登録された受付端末はありません。"
+        emptyMessage={hasFilter ? '条件に一致する受付端末はありません。' : 'このサイトに登録された受付端末はありません。'}
       />
+
+      {paged.pageCount > 1 ? (
+        <div
+          data-testid="device-pagination"
+          style={{ display: 'flex', gap: space.sm, alignItems: 'center', marginTop: space.sm }}
+        >
+          <Button
+            variant="secondary"
+            data-testid="device-page-prev"
+            disabled={paged.page <= 1}
+            onClick={() => setMany({ page: String(paged.page - 1) })}
+          >
+            前へ
+          </Button>
+          <span style={{ fontSize: font.small, opacity: 0.8 }} data-testid="device-page-label">
+            {paged.page} / {paged.pageCount} ページ
+          </span>
+          <Button
+            variant="secondary"
+            data-testid="device-page-next"
+            disabled={paged.page >= paged.pageCount}
+            onClick={() => setMany({ page: String(paged.page + 1) })}
+          >
+            次へ
+          </Button>
+        </div>
+      ) : null}
 
       {reissueTarget && (
         <div data-testid="device-reissue-dialog" role="dialog" aria-modal="true" style={dialogBackdrop}>

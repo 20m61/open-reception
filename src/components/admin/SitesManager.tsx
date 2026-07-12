@@ -1,22 +1,29 @@
 'use client';
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
+import type { SiteStatus } from '@/domain/tenant/types';
 import type { SiteWithDevices } from '@/lib/tenant/site-service';
 import { Button, DataTable, Field, type Column } from '@/components/admin/ui';
-import { color, space } from '@/components/admin/ui/tokens';
+import { color, font, space } from '@/components/admin/ui/tokens';
+import { useQueryParams } from './use-query-params';
+import { paginate } from './list-io';
+import { filterSites, sitesToCsv, type SiteListFilter } from './sites-filter';
 
 /**
- * 拠点管理 (issue #87, increment 1)。
+ * 拠点管理 (issue #87, increment 1; 検索/フィルタ/ページング/CSV は #330 item2 残増分)。
  *
  * テナント配下の拠点一覧・作成・編集（名称）・有効/停止を管理 API 経由で行う。
  * Tenant > Site > Device の階層が分かるよう、各拠点に紐づく端末数・オンライン端末数を表示する
  * （Device の作り替えは行わず紐づけ表示に留める＝既存 kiosks 管理と二重管理しない）。
+ *
+ * 検索/フィルタ/ページ状態は監査ログ・受付履歴と同じく URL クエリを真実源にする（issue #94）。
  *
  * 現状の actor 解決は developer 相当（#80 写像が未配線）。複数テナント所属時の
  * Tenant 切り替え UI は次増分（docs/site-device-management-design.md §次増分）。
  * inc1 は単一テナント運用の互換シード `internal` を既定テナントとして扱う。
  */
 const DEFAULT_TENANT_ID = 'internal';
+const PAGE_SIZE = 20;
 
 export function SitesManager({ tenantId = DEFAULT_TENANT_ID }: { tenantId?: string }) {
   const [items, setItems] = useState<SiteWithDevices[]>([]);
@@ -24,6 +31,11 @@ export function SitesManager({ tenantId = DEFAULT_TENANT_ID }: { tenantId?: stri
   const [busy, setBusy] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editName, setEditName] = useState('');
+
+  const { get, setMany } = useQueryParams();
+  const keyword = get('q');
+  const filterStatus = get('status');
+  const pageParam = get('page');
 
   const load = useCallback(async () => {
     const res = await fetch(`/api/admin/sites?tenantId=${encodeURIComponent(tenantId)}`);
@@ -142,6 +154,29 @@ export function SitesManager({ tenantId = DEFAULT_TENANT_ID }: { tenantId?: stri
     [editingId, editName, saveName, toggle],
   );
 
+  const filter: SiteListFilter = useMemo(
+    () => ({ keyword: keyword || undefined, status: (filterStatus as SiteStatus) || undefined }),
+    [keyword, filterStatus],
+  );
+  const filtered = useMemo(() => filterSites(items, filter), [items, filter]);
+  const paged = useMemo(() => paginate(filtered, Number(pageParam) || 1, PAGE_SIZE), [filtered, pageParam]);
+  const hasFilter = Boolean(keyword || filterStatus);
+
+  // フィルタ変更時はページを 1 に戻す（絞り込み後に空ページへ迷い込まないようにする）。
+  const updateFilter = (updates: Record<string, string>) => setMany({ ...updates, page: '' });
+
+  const downloadCsv = () => {
+    const csv = sitesToCsv(filtered);
+    // Excel（Windows/日本語ロケール）で文字化けしないよう UTF-8 BOM を付与する。
+    const blob = new Blob(['﻿' + csv], { type: 'text/csv;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `sites-${new Date().toISOString().slice(0, 10)}.csv`;
+    a.click();
+    URL.revokeObjectURL(url);
+  };
+
   return (
     <section>
       <h1 style={{ marginTop: 0 }}>拠点管理</h1>
@@ -164,14 +199,86 @@ export function SitesManager({ tenantId = DEFAULT_TENANT_ID }: { tenantId?: stri
         </Button>
       </div>
 
+      <div
+        data-testid="site-filters"
+        style={{ display: 'flex', flexWrap: 'wrap', gap: space.sm, alignItems: 'flex-end', marginBottom: space.md }}
+      >
+        <Field label="拠点名で検索" htmlFor="site-filter-keyword">
+          <input
+            id="site-filter-keyword"
+            data-testid="site-filter-keyword"
+            value={keyword}
+            onChange={(e) => updateFilter({ q: e.target.value })}
+            style={inputStyle}
+          />
+        </Field>
+        <Field label="状態で絞り込み" htmlFor="site-filter-status">
+          <select
+            id="site-filter-status"
+            data-testid="site-filter-status"
+            value={filterStatus}
+            onChange={(e) => updateFilter({ status: e.target.value })}
+            style={inputStyle}
+          >
+            <option value="">すべて</option>
+            <option value="active">有効</option>
+            <option value="suspended">停止中</option>
+          </select>
+        </Field>
+        {hasFilter ? (
+          <Button variant="secondary" onClick={() => setMany({ q: '', status: '', page: '' })} data-testid="site-filter-reset">
+            条件をクリア
+          </Button>
+        ) : null}
+        <Button
+          variant="secondary"
+          onClick={downloadCsv}
+          disabled={filtered.length === 0}
+          data-testid="site-csv-export"
+        >
+          CSV エクスポート
+        </Button>
+      </div>
+
+      <p data-testid="site-count" style={{ opacity: 0.7, fontSize: font.small, margin: 0, marginBottom: space.sm }}>
+        {items.length} 件中 {filtered.length} 件を表示
+      </p>
+
       <DataTable
         testId="site-table"
         columns={columns}
-        rows={items}
+        rows={paged.items}
         rowKey={(s) => s.id}
         rowTestId={() => 'site-row'}
-        emptyMessage="このテナントに登録された拠点はありません。"
+        emptyMessage={hasFilter ? '条件に一致する拠点はありません。' : 'このテナントに登録された拠点はありません。'}
       />
+
+      {paged.pageCount > 1 ? (
+        <div
+          data-testid="site-pagination"
+          style={{ display: 'flex', gap: space.sm, alignItems: 'center', marginTop: space.sm }}
+        >
+          <Button
+            variant="secondary"
+            data-testid="site-page-prev"
+            disabled={paged.page <= 1}
+            onClick={() => setMany({ page: String(paged.page - 1) })}
+          >
+            前へ
+          </Button>
+          <span style={{ fontSize: font.small, opacity: 0.8 }} data-testid="site-page-label">
+            {paged.page} / {paged.pageCount} ページ
+          </span>
+          <Button
+            variant="secondary"
+            data-testid="site-page-next"
+            disabled={paged.page >= paged.pageCount}
+            onClick={() => setMany({ page: String(paged.page + 1) })}
+          >
+            次へ
+          </Button>
+        </div>
+      ) : null}
     </section>
   );
 }

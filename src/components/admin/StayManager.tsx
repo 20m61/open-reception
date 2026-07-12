@@ -12,7 +12,11 @@ import {
   StatusBadge,
   type Column,
 } from '@/components/admin/ui';
-import { color, radius, space } from '@/components/admin/ui/tokens';
+import { color, font, radius, space } from '@/components/admin/ui/tokens';
+import { useQueryParams } from './use-query-params';
+import { paginate } from './list-io';
+import { filterStays, staysToCsv, type StayListFilter } from './stay/list-filter';
+import type { StayStatus } from '@/domain/visit/types';
 import {
   availableActions,
   durationText,
@@ -23,19 +27,23 @@ import {
 } from './stay/logic';
 
 /**
- * 滞在状況 管理画面 (issue #102, increment 1)。
+ * 滞在状況 管理画面 (issue #102, increment 1; フィルタ/ページング/CSV は #330 item2 残増分)。
  *
  * inc1 の滞在 API（/api/admin/stay/**）を介して在館中 / 退館済み / 未退館を一覧表示し、
  * 在館者を退館済みにする（誤登録は取消）。
  *
  * 表示変換・集計・操作可否は副作用なしの純ロジック（./stay/logic.ts）へ委譲する。
- * VisitStay に PII は無く、来訪者識別は参照（受付番号 = id / receptionId）のみ。
+ * VisitStay に PII は無く、来訪者識別は参照（受付番号 = id / receptionId）のみ。CSV にも
+ * PII は含まれない（`stay/list-filter.ts` 参照）。
+ *
+ * 検索/フィルタ/ページ状態は監査ログ・受付履歴と同じく URL クエリを真実源にする（issue #94）。
  *
  * actor の実テナント解決は #80 配線に依存する。inc1 は単一テナント運用の互換シード
  * `internal` を既定にし、siteId は画面上部で選択（暫定は手入力 + 既定値）する。
  */
 const DEFAULT_TENANT_ID = 'internal';
 const DEFAULT_SITE_ID = 'default';
+const PAGE_SIZE = 20;
 
 export function StayManager({
   tenantId = DEFAULT_TENANT_ID,
@@ -50,6 +58,12 @@ export function StayManager({
   const [error, setError] = useState<string | null>(null);
   // 滞在時間表示の基準。マウント時刻で固定し、再レンダの揺れを抑える。
   const [now] = useState(() => new Date());
+
+  const { get, setMany } = useQueryParams();
+  const filterStart = get('start');
+  const filterEnd = get('end');
+  const filterStatus = get('status');
+  const pageParam = get('page');
 
   const scopeQuery = useMemo(
     () => `tenantId=${encodeURIComponent(tenantId)}&siteId=${encodeURIComponent(siteId)}`,
@@ -93,7 +107,35 @@ export function StayManager({
   const cancel = useCallback((s: VisitStay) => act(`/api/admin/stay/${s.id}/cancel`), [act]);
 
   const summary = useMemo(() => summarize(items, now), [items, now]);
-  const rows = useMemo(() => sortStays(items), [items]);
+  const sorted = useMemo(() => sortStays(items), [items]);
+
+  const filter: StayListFilter = useMemo(
+    () => ({
+      start: filterStart || undefined,
+      end: filterEnd || undefined,
+      status: (filterStatus as StayStatus) || undefined,
+    }),
+    [filterStart, filterEnd, filterStatus],
+  );
+  const filtered = useMemo(() => filterStays(sorted, filter), [sorted, filter]);
+  const paged = useMemo(() => paginate(filtered, Number(pageParam) || 1, PAGE_SIZE), [filtered, pageParam]);
+  const hasFilter = Boolean(filterStart || filterEnd || filterStatus);
+
+  // フィルタ変更時はページを 1 に戻す（絞り込み後に空ページへ迷い込まないようにする）。
+  const updateFilter = (updates: Record<string, string>) => setMany({ ...updates, page: '' });
+  const resetFilter = () => setMany({ start: '', end: '', status: '', page: '' });
+
+  const downloadCsv = () => {
+    const csv = staysToCsv(filtered, now);
+    // Excel（Windows/日本語ロケール）で文字化けしないよう UTF-8 BOM を付与する。
+    const blob = new Blob(['﻿' + csv], { type: 'text/csv;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `stays-${new Date().toISOString().slice(0, 10)}.csv`;
+    a.click();
+    URL.revokeObjectURL(url);
+  };
 
   const columns: ReadonlyArray<Column<VisitStay>> = [
     {
@@ -163,13 +205,97 @@ export function StayManager({
       ) : null}
 
       <Section title="滞在一覧" description="在館中を先頭に、入館の新しい順で表示します。">
+        <div
+          data-testid="stay-filters"
+          style={{ display: 'flex', flexWrap: 'wrap', gap: space.sm, alignItems: 'flex-end', marginBottom: space.md }}
+        >
+          <Field label="入館日（開始）" htmlFor="stay-filter-start">
+            <input
+              id="stay-filter-start"
+              type="date"
+              data-testid="stay-filter-start"
+              value={filterStart}
+              onChange={(e) => updateFilter({ start: e.target.value })}
+              style={inputStyle}
+            />
+          </Field>
+          <Field label="入館日（終了）" htmlFor="stay-filter-end">
+            <input
+              id="stay-filter-end"
+              type="date"
+              data-testid="stay-filter-end"
+              value={filterEnd}
+              onChange={(e) => updateFilter({ end: e.target.value })}
+              style={inputStyle}
+            />
+          </Field>
+          <Field label="状態" htmlFor="stay-filter-status">
+            <select
+              id="stay-filter-status"
+              data-testid="stay-filter-status"
+              value={filterStatus}
+              onChange={(e) => updateFilter({ status: e.target.value })}
+              style={inputStyle}
+            >
+              <option value="">すべて</option>
+              <option value="present">在館中</option>
+              <option value="checked_out">退館済み</option>
+              <option value="cancelled">取消</option>
+            </select>
+          </Field>
+          {hasFilter ? (
+            <Button variant="secondary" onClick={resetFilter} data-testid="stay-filter-reset">
+              条件をクリア
+            </Button>
+          ) : null}
+          <Button
+            variant="secondary"
+            onClick={downloadCsv}
+            disabled={filtered.length === 0}
+            data-testid="stay-csv-export"
+          >
+            CSV エクスポート
+          </Button>
+        </div>
+
+        <p data-testid="stay-count" style={{ opacity: 0.7, fontSize: font.small, margin: 0, marginBottom: space.sm }}>
+          {sorted.length} 件中 {filtered.length} 件を表示
+        </p>
+
         <DataTable
           columns={columns}
-          rows={rows}
+          rows={paged.items}
           rowKey={(s) => s.id}
-          emptyMessage="この拠点の滞在記録はまだありません。"
+          emptyMessage={hasFilter ? '条件に一致する滞在記録はありません。' : 'この拠点の滞在記録はまだありません。'}
           testId="stay-table"
         />
+
+        {paged.pageCount > 1 ? (
+          <div
+            data-testid="stay-pagination"
+            style={{ display: 'flex', gap: space.sm, alignItems: 'center', marginTop: space.sm }}
+          >
+            <Button
+              variant="secondary"
+              data-testid="stay-page-prev"
+              disabled={paged.page <= 1}
+              onClick={() => setMany({ page: String(paged.page - 1) })}
+            >
+              前へ
+            </Button>
+            <span style={{ fontSize: font.small, opacity: 0.8 }} data-testid="stay-page-label">
+              {paged.page} / {paged.pageCount} ページ
+            </span>
+            <Button
+              variant="secondary"
+              data-testid="stay-page-next"
+              disabled={paged.page >= paged.pageCount}
+              onClick={() => setMany({ page: String(paged.page + 1) })}
+            >
+              次へ
+            </Button>
+          </div>
+        ) : null}
       </Section>
     </div>
   );
