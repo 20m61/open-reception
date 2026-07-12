@@ -23,6 +23,7 @@ import { FlowStepper } from './FlowStepper';
 import { quickActionIcon, purposeIcon } from './quick-action-icons';
 import { hasBrandingContent, normalizeAccentColor, type BrandingSettings } from '@/domain/branding/types';
 import { resultToneForState, type ResultTone } from './result-tone';
+import { resolvePrivacyNoticeContent } from './privacy-notice';
 import type { QuickActionIntent } from './quick-actions';
 import dynamic from 'next/dynamic';
 import { KioskCallView } from './KioskCallView';
@@ -208,6 +209,8 @@ export function KioskFlow() {
   // 担うため、リードは挨拶＋安心情報（タッチだけで受付できる）のみにして指示を二重化しない。
   // ja は管理設定 (#28) で上書き可能。
   const [guidanceIdle, setGuidanceIdle] = useState('ようこそ。タッチ操作だけで受付できます。');
+  // 来訪者向けプライバシー通知の要約文言の上書き (issue #28 / #314)。未設定なら i18n 既定文言を使う。
+  const [privacyNoticeOverride, setPrivacyNoticeOverride] = useState<string | undefined>(undefined);
   // 受付の表示言語 (#103)。来訪者が待機画面の LanguageSwitcher で切替える（セッション内で保持）。
   const [locale, setLocale] = useState<Locale>(DEFAULT_LOCALE);
   // 無操作リセット直前のカウントダウン警告（#125 UX, "don't surprise-expire"）。null=非表示。
@@ -329,9 +332,11 @@ export function KioskFlow() {
           rate?: number;
           volume?: number;
           language?: string;
+          privacyNotice?: string;
         };
         if (cancelled) return;
         if (voice.guidanceIdle) setGuidanceIdle(voice.guidanceIdle);
+        setPrivacyNoticeOverride(voice.privacyNotice);
         setSttEnabled(voice.sttEnabled ?? false);
         setSpeakSettings({
           ttsEnabled: voice.ttsEnabled ?? false,
@@ -854,6 +859,9 @@ export function KioskFlow() {
           onSubmit={(values) =>
             dispatch({ type: 'SUBMIT_VISITOR_INFO', visitor: flowValuesToVisitorInfo(selectedFlow, values) })
           }
+          locale={locale}
+          privacyNoticeOverride={privacyNoticeOverride}
+          presenceCameraEnabled={presenceEnabled}
         />
       ) : (
         <>
@@ -885,6 +893,8 @@ export function KioskFlow() {
               markVoiceInput,
               // 受付完了画面に提示する退館クレデンシャル (#342)。connected 完了時のみ非 null。
               checkoutCredential,
+              privacyNoticeOverride,
+              presenceEnabled,
             )}
           </div>
           {/*
@@ -1209,9 +1219,15 @@ function CustomPurposeView({
 function CustomVisitorInfoView({
   flow,
   onSubmit,
+  locale,
+  privacyNoticeOverride,
+  presenceCameraEnabled,
 }: {
   flow: KioskCustomFlow;
   onSubmit: (values: FlowFieldValues) => void;
+  locale: Locale;
+  privacyNoticeOverride: string | undefined;
+  presenceCameraEnabled: boolean;
 }) {
   // 後退（戻る/最初に戻る）は逃げ道バーへ一本化 (#325)。カスタムフローの入力も inputVisitorInfo 状態
   // なので sticky バーの 戻る/最初に戻る が常時可視。コンテンツ側フッターは前進の主 CTA のみにし、
@@ -1233,7 +1249,69 @@ function CustomVisitorInfoView({
   }
   return (
     <div className="screen__body" data-testid="custom-visitor-view">
+      {/* 来訪者情報を入力させる前に用途・保存有無を明示する (issue #314)。 */}
+      <PrivacyNotice
+        locale={locale}
+        overrideSummary={privacyNoticeOverride}
+        presenceCameraEnabled={presenceCameraEnabled}
+      />
       <VisitorInfoForm fields={flow.fields} onSubmit={onSubmit} />
+    </div>
+  );
+}
+
+/**
+ * 来訪者向けプライバシー通知 (issue #314)。要約は入力ステップで常時表示し、詳細
+ * （利用目的・保存の有無・保持期間・問い合わせ先、presence カメラ注記）は折りたたみで読める。
+ * タッチのみで開閉でき、大きな文字/コントラストの kiosk UI 基準 (#17) に沿う。
+ */
+function PrivacyNotice({
+  locale,
+  overrideSummary,
+  presenceCameraEnabled,
+}: {
+  locale: Locale;
+  overrideSummary: string | undefined;
+  presenceCameraEnabled: boolean;
+}) {
+  const [expanded, setExpanded] = useState(false);
+  const content = resolvePrivacyNoticeContent(locale, {
+    overrideSummary,
+    presenceCameraEnabled,
+  });
+  return (
+    <div className="privacy-notice" data-testid="privacy-notice" lang={locale}>
+      <p className="privacy-notice__title">{content.title}</p>
+      <p className="privacy-notice__summary" data-testid="privacy-notice-summary">
+        {content.summary}
+      </p>
+      <button
+        type="button"
+        className="privacy-notice__toggle"
+        data-testid="privacy-notice-toggle"
+        aria-expanded={expanded}
+        onClick={() => setExpanded((v) => !v)}
+      >
+        {expanded ? content.detailsHideLabel : content.detailsShowLabel}
+      </button>
+      {expanded ? (
+        <dl className="privacy-notice__details" data-testid="privacy-notice-details">
+          <dt>{content.purposeLabel}</dt>
+          <dd>{content.purposeText}</dd>
+          <dt>{content.storageLabel}</dt>
+          <dd>{content.storageText}</dd>
+          <dt>{content.retentionLabel}</dt>
+          <dd>{content.retentionText}</dd>
+          <dt>{content.contactLabel}</dt>
+          <dd>{content.contactText}</dd>
+          {content.presenceCameraNote ? (
+            <>
+              <dt>{content.presenceCameraLabel}</dt>
+              <dd data-testid="privacy-notice-presence-camera">{content.presenceCameraNote}</dd>
+            </>
+          ) : null}
+        </dl>
+      ) : null}
     </div>
   );
 }
@@ -1261,6 +1339,10 @@ function renderScreen(
   onVoiceUse: () => void,
   /** 受付完了画面に提示する退館クレデンシャル (issue #342)。未発行なら null。 */
   checkoutCredential: CheckoutCredential | null,
+  /** 来訪者向けプライバシー通知の要約文言の上書き (issue #28 / #314)。未設定は既定文言。 */
+  privacyNoticeOverride: string | undefined,
+  /** 来訪者検知カメラの有効状態 (issue #79)。有効時のみ通知にローカル処理・非保存の注記を足す。 */
+  presenceCameraEnabled: boolean,
 ) {
   const tr = makeT(locale);
   switch (data.state) {
@@ -1300,6 +1382,8 @@ function renderScreen(
           initial={data.visitor}
           onSubmit={(visitor) => dispatch({ type: 'SUBMIT_VISITOR_INFO', visitor })}
           locale={locale}
+          privacyNoticeOverride={privacyNoticeOverride}
+          presenceCameraEnabled={presenceCameraEnabled}
         />
       );
     case 'confirming':
@@ -1696,10 +1780,14 @@ function VisitorInfoView({
   initial,
   onSubmit,
   locale,
+  privacyNoticeOverride,
+  presenceCameraEnabled,
 }: {
   initial?: VisitorInfo;
   onSubmit: (v: VisitorInfo) => void;
   locale: Locale;
+  privacyNoticeOverride: string | undefined;
+  presenceCameraEnabled: boolean;
 }) {
   const tr = makeT(locale);
   const [name, setName] = useState(initial?.name ?? '');
@@ -1711,6 +1799,12 @@ function VisitorInfoView({
     <>
       <h1 className="screen__title">{tr('reception.visitorInfoPrompt')}</h1>
       <div className="screen__body">
+        {/* 用途・保存有無・保持期間・問い合わせ先を入力前に明示する (issue #314)。 */}
+        <PrivacyNotice
+          locale={locale}
+          overrideSummary={privacyNoticeOverride}
+          presenceCameraEnabled={presenceCameraEnabled}
+        />
         <div className="field">
           <label className="field__label" htmlFor="visitor-name" lang={locale}>
             {tr('reception.requiredLabel', { field: tr('reception.fieldName') })}

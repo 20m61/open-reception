@@ -52,6 +52,8 @@ export async function updateVoiceSettings(patch: unknown): Promise<VoiceSettings
     if (typeof o.guidanceIdle === 'string') settings.guidanceIdle = o.guidanceIdle;
     if (typeof o.guidanceConfirm === 'string') settings.guidanceConfirm = o.guidanceConfirm;
     if (typeof o.fallbackText === 'string') settings.fallbackText = o.fallbackText;
+    // 来訪者向けプライバシー通知の要約文言の上書き (issue #314)。空文字は「未設定へ戻す」扱い。
+    if (typeof o.privacyNotice === 'string') settings.privacyNotice = o.privacyNotice.trim() || undefined;
   }
   await voice().put(settings);
   return { ...settings };

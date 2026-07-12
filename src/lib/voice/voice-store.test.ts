@@ -33,4 +33,21 @@ describe('voice-store (#28)', () => {
     const v2 = await updateVoiceSettings({ ttsProvider: 'none' });
     expect(v2.ttsProvider).toBe('none');
   });
+
+  it('プライバシー通知の要約文言を上書きできる（既定は未設定, #314）', async () => {
+    const before = await getVoiceSettings();
+    expect(before.privacyNotice).toBeUndefined();
+
+    const v = await updateVoiceSettings({ privacyNotice: 'カスタム通知文言です' });
+    expect(v.privacyNotice).toBe('カスタム通知文言です');
+
+    const persisted = await getVoiceSettings();
+    expect(persisted.privacyNotice).toBe('カスタム通知文言です');
+  });
+
+  it('プライバシー通知の上書きを空文字にすると未設定へ戻る', async () => {
+    await updateVoiceSettings({ privacyNotice: 'カスタム通知文言です' });
+    const v = await updateVoiceSettings({ privacyNotice: '   ' });
+    expect(v.privacyNotice).toBeUndefined();
+  });
 });
