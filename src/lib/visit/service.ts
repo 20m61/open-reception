@@ -49,7 +49,12 @@ export type StayServiceDeps = {
   now?: () => Date;
 };
 
-const DEFAULT_RETENTION_DAYS = 30;
+/**
+ * 在館記録の既定保存期間（日数、docs/checkout-stay-design.md §4）。
+ * 管理経由（StayService）と kiosk 経由（KioskStayService.createPresentForReception）の両起票で
+ * 同一の retention を使う（#313 が TTL 削除を所有）。新しい retention 方式を発明しない。
+ */
+export const DEFAULT_RETENTION_DAYS = 30;
 
 /** state の StayResult を ServiceResult へ写す。 */
 function fromState<T>(r: StayResult<T>): ServiceResult<T> {

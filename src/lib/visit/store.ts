@@ -13,7 +13,7 @@
  *     inc1 では dev 既定 scope を返す暫定実装とする（実解決は後続増分）。
  */
 import { asSiteId, asTenantId, type SiteId, type TenantId } from '@/domain/tenant/types';
-import { appendAdminAudit } from '@/lib/data-stores/reception-log-store';
+import { appendAdminAudit, appendAuditLog } from '@/lib/data-stores/reception-log-store';
 import { DataBackedStayRepository, type StayRepository } from './repository';
 import { KioskStayService } from './kiosk-service';
 import { StayService } from './service';
@@ -46,7 +46,8 @@ export function getStayService(): StayService {
 
 export function getKioskStayService(): KioskStayService {
   if (!kioskService) {
-    kioskService = new KioskStayService({ repo: getStayRepository() });
+    // 受付完了からの自動起票 (#342) の監査（stay.updated・PII なし）を注入する。
+    kioskService = new KioskStayService({ repo: getStayRepository(), appendAudit: appendAuditLog });
   }
   return kioskService;
 }
