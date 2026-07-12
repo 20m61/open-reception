@@ -2,14 +2,14 @@
 
 import { useCallback, useEffect, useState } from 'react';
 import type { VoiceSettings } from '@/domain/voice/types';
-import { Button, Field, FormRow } from '@/components/admin/ui';
-import { color, space } from '@/components/admin/ui/tokens';
+import { Button, Field, FormRow, SaveFeedback, useSaveFeedback } from '@/components/admin/ui';
+import { space } from '@/components/admin/ui/tokens';
 
 /** 音声設定 (issue #28)。TTS/STT の有効化・案内文言・話速・音量を編集する。 */
 export function VoiceManager() {
   const [v, setV] = useState<VoiceSettings | null>(null);
   const [busy, setBusy] = useState(false);
-  const [saved, setSaved] = useState(false);
+  const { feedback, success, failure, clear } = useSaveFeedback();
 
   const load = useCallback(async () => {
     const res = await fetch('/api/admin/voice');
@@ -20,12 +20,15 @@ export function VoiceManager() {
     void load();
   }, [load]);
 
-  const patch = (p: Partial<VoiceSettings>) => setV((cur) => (cur ? { ...cur, ...p } : cur));
+  const patch = (p: Partial<VoiceSettings>) => {
+    clear();
+    setV((cur) => (cur ? { ...cur, ...p } : cur));
+  };
 
   const save = useCallback(async () => {
     if (!v || busy) return;
     setBusy(true);
-    setSaved(false);
+    clear();
     try {
       const res = await fetch('/api/admin/voice', {
         method: 'PUT',
@@ -34,12 +37,14 @@ export function VoiceManager() {
       });
       if (res.ok) {
         setV((await res.json()) as VoiceSettings);
-        setSaved(true);
+        success();
+      } else {
+        failure();
       }
     } finally {
       setBusy(false);
     }
-  }, [v, busy]);
+  }, [v, busy, success, failure, clear]);
 
   if (!v) return <section><h1 style={{ marginTop: 0 }}>音声設定</h1><p>読み込み中…</p></section>;
 
@@ -82,7 +87,7 @@ export function VoiceManager() {
           <Button variant="primary" data-testid="voice-save" onClick={save} disabled={busy}>
             保存
           </Button>
-          {saved ? <span data-testid="voice-saved" style={{ color: color.success }}>保存しました</span> : null}
+          <SaveFeedback feedback={feedback} successTestId="voice-saved" errorTestId="voice-error" />
         </div>
       </div>
     </section>

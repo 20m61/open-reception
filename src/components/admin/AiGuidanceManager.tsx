@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useState } from 'react';
 import type { AiGuidanceConfig } from '@/domain/ai-guidance/config';
-import { Button, Field } from '@/components/admin/ui';
+import { Button, Field, SaveFeedback, useSaveFeedback } from '@/components/admin/ui';
 import { color, space } from '@/components/admin/ui/tokens';
 
 /**
@@ -14,7 +14,7 @@ export function AiGuidanceManager() {
   const [config, setConfig] = useState<AiGuidanceConfig | null>(null);
   const [topicsText, setTopicsText] = useState('');
   const [busy, setBusy] = useState(false);
-  const [saved, setSaved] = useState(false);
+  const { feedback, success, failure, clear } = useSaveFeedback();
 
   const load = useCallback(async () => {
     const res = await fetch('/api/admin/ai-guidance');
@@ -32,7 +32,7 @@ export function AiGuidanceManager() {
   const save = useCallback(async () => {
     if (!config || busy) return;
     setBusy(true);
-    setSaved(false);
+    clear();
     try {
       const res = await fetch('/api/admin/ai-guidance', {
         method: 'PUT',
@@ -43,12 +43,14 @@ export function AiGuidanceManager() {
         const c = (await res.json()) as AiGuidanceConfig;
         setConfig(c);
         setTopicsText(c.allowedTopics.join('\n'));
-        setSaved(true);
+        success();
+      } else {
+        failure();
       }
     } finally {
       setBusy(false);
     }
-  }, [config, topicsText, busy]);
+  }, [config, topicsText, busy, success, failure, clear]);
 
   if (!config) {
     return (
@@ -72,7 +74,7 @@ export function AiGuidanceManager() {
             data-testid="ai-guidance-enabled"
             checked={config.enabled}
             onChange={(e) => {
-              setSaved(false);
+              clear();
               setConfig({ ...config, enabled: e.target.checked });
             }}
           />
@@ -85,7 +87,7 @@ export function AiGuidanceManager() {
             data-testid="ai-guidance-topics"
             value={topicsText}
             onChange={(e) => {
-              setSaved(false);
+              clear();
               setTopicsText(e.target.value);
             }}
             rows={6}
@@ -98,11 +100,11 @@ export function AiGuidanceManager() {
           <Button variant="primary" data-testid="ai-guidance-save" onClick={save} disabled={busy}>
             保存
           </Button>
-          {saved ? (
-            <span data-testid="ai-guidance-saved" style={{ color: color.success }}>
-              保存しました
-            </span>
-          ) : null}
+          <SaveFeedback
+            feedback={feedback}
+            successTestId="ai-guidance-saved"
+            errorTestId="ai-guidance-error"
+          />
         </div>
       </div>
     </section>

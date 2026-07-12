@@ -11,6 +11,16 @@ import { EmptyState } from './EmptyState';
  *
  * increment 3: 各 *Manager の素のテーブルを寄せるため、行 `<tr>` / セル `<td>` の
  * data-testid と行レベル属性（draggable / onDrop 等）を保てる上書き口を追加した。
+ *
+ * 狭幅（iPad 縦・390px 等）での破綻対策 (issue #330 item5): 列が多い表を `width: 100%`
+ * のまま狭い画面に収めようとすると、table の auto レイアウトが各セルを極端に狭く
+ * 潰しにかかり、CJK テキストは語間の空白なしにどこでも改行できてしまうため 1 文字ずつ
+ * 縦に積まれる「縦書き化」のような見た目になり判読・操作ができなくなる（#94 AC 未達）。
+ * 対策として (1) 表全体を `overflow-x: auto` のラッパで包み、(2) `min-width: max-content`
+ * で「一切折り返さなかった場合の自然な内容幅」を表の最小幅として保証する。結果として、
+ * 広い画面では従来通り全幅、狭い画面では列が潰れず横スクロールで判読・操作できる
+ * （縦書き化しない）。セル自体の折り返し可否（white-space）は変更しない＝既存の
+ * 複雑なセル内容（ボタン群・インライン編集フォーム等）の見た目に影響しない。
  */
 export type Column<Row> = {
   /** 列の安定キー。 */
@@ -53,46 +63,57 @@ export function DataTable<Row>({
     return <EmptyState message={emptyMessage} testId={`${testId}-empty`} />;
   }
   return (
-    <table data-testid={testId} style={{ width: '100%', borderCollapse: 'collapse', fontSize: font.body }}>
-      <thead>
-        <tr style={{ textAlign: 'left', borderBottom: `1px solid ${color.borderStrong}` }}>
-          {columns.map((c) => (
-            <th
-              key={c.key}
-              style={{ padding: `${space.xs}px ${space.sm}px`, textAlign: c.align ?? 'left', opacity: 0.7, fontWeight: 700 }}
-            >
-              {c.header}
-            </th>
-          ))}
-        </tr>
-      </thead>
-      <tbody>
-        {rows.map((row, i) => {
-          const extra = rowProps?.(row, i);
-          return (
-            <tr
-              key={rowKey(row, i)}
-              data-testid={rowTestId?.(row, i)}
-              {...extra}
-              style={{ borderBottom: `1px solid ${color.border}`, ...extra?.style }}
-            >
-              {columns.map((c) => (
-                <td
-                  key={c.key}
-                  data-testid={c.cellTestId?.(row)}
-                  style={{
-                    padding: `${space.xs}px ${space.sm}px`,
-                    textAlign: c.align ?? 'left',
-                    ...c.cellStyle?.(row),
-                  }}
-                >
-                  {c.cell(row)}
-                </td>
-              ))}
-            </tr>
-          );
-        })}
-      </tbody>
-    </table>
+    <div data-testid={`${testId}-scroll`} style={{ overflowX: 'auto' }}>
+      <table
+        data-testid={testId}
+        style={{ width: '100%', minWidth: 'max-content', borderCollapse: 'collapse', fontSize: font.body }}
+      >
+        <thead>
+          <tr style={{ textAlign: 'left', borderBottom: `1px solid ${color.borderStrong}` }}>
+            {columns.map((c) => (
+              <th
+                key={c.key}
+                style={{
+                  padding: `${space.xs}px ${space.sm}px`,
+                  textAlign: c.align ?? 'left',
+                  opacity: 0.7,
+                  fontWeight: 700,
+                  whiteSpace: 'nowrap',
+                }}
+              >
+                {c.header}
+              </th>
+            ))}
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((row, i) => {
+            const extra = rowProps?.(row, i);
+            return (
+              <tr
+                key={rowKey(row, i)}
+                data-testid={rowTestId?.(row, i)}
+                {...extra}
+                style={{ borderBottom: `1px solid ${color.border}`, ...extra?.style }}
+              >
+                {columns.map((c) => (
+                  <td
+                    key={c.key}
+                    data-testid={c.cellTestId?.(row)}
+                    style={{
+                      padding: `${space.xs}px ${space.sm}px`,
+                      textAlign: c.align ?? 'left',
+                      ...c.cellStyle?.(row),
+                    }}
+                  >
+                    {c.cell(row)}
+                  </td>
+                ))}
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
+    </div>
   );
 }

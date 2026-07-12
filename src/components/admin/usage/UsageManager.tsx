@@ -159,10 +159,10 @@ function Body({ data }: { data: UsageResponse }) {
       <div>
         <h2 style={{ fontSize: '1.05rem', marginBottom: 12 }}>準備中の指標</h2>
         <CardGrid>
-          <UsageCard label="音声合成回数" note="記録ソース未接続。#89 次増分で集計" />
-          <UsageCard label="API リクエスト数" note="記録ソース未接続。#89 次増分で集計" />
-          <UsageCard label="管理画面ログイン数" note="監査アクション未定義。#89 次増分で集計" />
-          <UsageCard label="外部連携失敗数" note="連携テスト結果の記録待ち。#89 次増分で集計" />
+          <UsageCard label="音声合成回数" note="まだ計測していません" />
+          <UsageCard label="API リクエスト数" note="まだ計測していません" />
+          <UsageCard label="管理画面ログイン数" note="まだ計測していません" />
+          <UsageCard label="外部連携失敗数" note="まだ計測していません" />
         </CardGrid>
       </div>
     </div>

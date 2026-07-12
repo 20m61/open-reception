@@ -50,3 +50,46 @@ test('受付履歴に来訪者の個人情報が表示されない', async ({ pa
   await expect(page.getByTestId('receptions-table')).toBeVisible();
   await expect(page.getByText('来客 一郎')).toHaveCount(0);
 });
+
+test('受付履歴のフィルタ状態が URL に反映され、リロードで復元される（#330 item2）', async ({ page }) => {
+  await runReception(page, 'staff-staff-sato');
+  await expect(page.getByTestId('result-connected')).toBeVisible();
+  await page.getByTestId('complete').click();
+
+  await loginAsAdmin(page);
+  await page.goto('/admin/receptions');
+  await expect(page.getByTestId('receptions-table')).toBeVisible();
+
+  await page.getByTestId('receptions-filter-outcome').selectOption('connected');
+  await expect(page).toHaveURL(/[?&]outcome=connected/);
+
+  await page.reload();
+  await expect(page.getByTestId('receptions-filter-outcome')).toHaveValue('connected');
+  await expect(page).toHaveURL(/[?&]outcome=connected/);
+
+  // 絞り込むと「結果」列は選んだ outcome のみになる。
+  const rows = page.getByTestId('reception-row');
+  const count = await rows.count();
+  for (let i = 0; i < count; i++) {
+    await expect(rows.nth(i)).toContainText('応答');
+  }
+
+  await page.getByTestId('receptions-filter-reset').click();
+  await expect(page).not.toHaveURL(/outcome=/);
+});
+
+test('受付履歴を CSV でエクスポートできる（#330 item2）', async ({ page }) => {
+  await runReception(page, 'staff-staff-sato');
+  await expect(page.getByTestId('result-connected')).toBeVisible();
+  await page.getByTestId('complete').click();
+
+  await loginAsAdmin(page);
+  await page.goto('/admin/receptions');
+  await expect(page.getByTestId('receptions-table')).toBeVisible();
+
+  const [download] = await Promise.all([
+    page.waitForEvent('download'),
+    page.getByTestId('receptions-csv-export').click(),
+  ]);
+  expect(download.suggestedFilename()).toMatch(/^receptions-\d{4}-\d{2}-\d{2}\.csv$/);
+});

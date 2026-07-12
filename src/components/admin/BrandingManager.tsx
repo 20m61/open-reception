@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { MAX_LOGO_DATA_URI_LENGTH, type BrandingSettings } from '@/domain/branding/types';
-import { Button, Field } from '@/components/admin/ui';
+import { Button, Field, SaveFeedback, useSaveFeedback } from '@/components/admin/ui';
 import { color, space } from '@/components/admin/ui/tokens';
 
 /**
@@ -12,7 +12,7 @@ import { color, space } from '@/components/admin/ui/tokens';
 export function BrandingManager() {
   const [b, setB] = useState<BrandingSettings | null>(null);
   const [busy, setBusy] = useState(false);
-  const [saved, setSaved] = useState(false);
+  const { feedback, success, failure, clear } = useSaveFeedback();
   const [error, setError] = useState<string | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
 
@@ -49,7 +49,7 @@ export function BrandingManager() {
   const save = useCallback(async () => {
     if (!b || busy) return;
     setBusy(true);
-    setSaved(false);
+    clear();
     setError(null);
     try {
       const res = await fetch('/api/admin/branding', {
@@ -59,14 +59,14 @@ export function BrandingManager() {
       });
       if (res.ok) {
         setB((await res.json()) as BrandingSettings);
-        setSaved(true);
+        success();
       } else {
-        setError('保存に失敗しました。');
+        failure();
       }
     } finally {
       setBusy(false);
     }
-  }, [b, busy]);
+  }, [b, busy, success, failure, clear]);
 
   if (!b)
     return (
@@ -166,11 +166,7 @@ export function BrandingManager() {
           <Button variant="primary" data-testid="brand-save" onClick={save} disabled={busy}>
             保存
           </Button>
-          {saved ? (
-            <span data-testid="brand-saved" style={{ color: color.success }}>
-              保存しました
-            </span>
-          ) : null}
+          <SaveFeedback feedback={feedback} successTestId="brand-saved" errorTestId="brand-save-error" />
         </div>
       </div>
     </section>

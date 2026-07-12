@@ -7,7 +7,7 @@ import {
   type Locale,
 } from '@/lib/i18n';
 import type { LanguageSettings } from '@/lib/i18n/language-settings';
-import { Button, Field } from '@/components/admin/ui';
+import { Button, Field, SaveFeedback, useSaveFeedback } from '@/components/admin/ui';
 
 /**
  * 言語設定 (issue #103, increment 1)。受付で出す言語（有効言語）と初期表示言語を選ぶ。
@@ -16,7 +16,7 @@ import { Button, Field } from '@/components/admin/ui';
 export function LanguageSettingsManager() {
   const [s, setS] = useState<LanguageSettings | null>(null);
   const [busy, setBusy] = useState(false);
-  const [saved, setSaved] = useState(false);
+  const { feedback, success, failure, clear } = useSaveFeedback();
 
   const load = useCallback(async () => {
     const res = await fetch('/api/admin/languages');
@@ -40,7 +40,7 @@ export function LanguageSettingsManager() {
   const save = useCallback(async () => {
     if (!s || busy) return;
     setBusy(true);
-    setSaved(false);
+    clear();
     try {
       const res = await fetch('/api/admin/languages', {
         method: 'PUT',
@@ -49,12 +49,14 @@ export function LanguageSettingsManager() {
       });
       if (res.ok) {
         setS((await res.json()) as LanguageSettings);
-        setSaved(true);
+        success();
+      } else {
+        failure();
       }
     } finally {
       setBusy(false);
     }
-  }, [s, busy]);
+  }, [s, busy, success, failure, clear]);
 
   if (!s) {
     return (
@@ -107,7 +109,7 @@ export function LanguageSettingsManager() {
         <Button variant="primary" data-testid="lang-save" onClick={save} disabled={busy} style={saveBtn}>
           {busy ? '保存中…' : '保存'}
         </Button>
-        {saved ? <span style={{ color: 'var(--color-success, #16a34a)' }}>保存しました</span> : null}
+        <SaveFeedback feedback={feedback} successTestId="lang-saved" errorTestId="lang-error" />
       </div>
     </section>
   );

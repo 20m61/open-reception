@@ -1,8 +1,8 @@
 'use client';
 
 import { useCallback, useEffect, useState } from 'react';
-import { Button, Field } from '@/components/admin/ui';
-import { color, space } from '@/components/admin/ui/tokens';
+import { Button, Field, SaveFeedback, useSaveFeedback } from '@/components/admin/ui';
+import { space } from '@/components/admin/ui/tokens';
 
 type SecurityView = { pinRequired: boolean; ipAllowlist: string[]; pinConfigured: boolean; emergencyStop: boolean };
 
@@ -13,7 +13,7 @@ export function SecurityManager() {
   const [pin, setPin] = useState('');
   const [ipText, setIpText] = useState('');
   const [busy, setBusy] = useState(false);
-  const [saved, setSaved] = useState(false);
+  const { feedback, success, failure, clear } = useSaveFeedback();
   const [confirmingEmergency, setConfirmingEmergency] = useState(false);
 
   const load = useCallback(async () => {
@@ -33,7 +33,7 @@ export function SecurityManager() {
   const save = useCallback(async () => {
     if (busy) return;
     setBusy(true);
-    setSaved(false);
+    clear();
     try {
       const ipAllowlist = ipText.split('\n').map((s) => s.trim()).filter(Boolean);
       const body: Record<string, unknown> = { pinRequired, ipAllowlist };
@@ -45,13 +45,15 @@ export function SecurityManager() {
       });
       if (res.ok) {
         setPin('');
-        setSaved(true);
+        success();
         await load();
+      } else {
+        failure();
       }
     } finally {
       setBusy(false);
     }
-  }, [busy, ipText, pinRequired, pin, load]);
+  }, [busy, ipText, pinRequired, pin, load, success, failure, clear]);
 
   const setEmergency = useCallback(
     async (emergencyStop: boolean) => {
@@ -124,7 +126,7 @@ export function SecurityManager() {
           <Button variant="primary" data-testid="security-save" onClick={save} disabled={busy}>
             保存
           </Button>
-          {saved ? <span data-testid="security-saved" style={{ color: color.success }}>保存しました</span> : null}
+          <SaveFeedback feedback={feedback} successTestId="security-saved" errorTestId="security-error" />
         </div>
       </div>
     </section>
