@@ -7,8 +7,9 @@
  *
  * `seed` は **memory バックエンド専用**（dev/test/デモ）であり、DynamoDB（本番）は無視する。
  * したがって本番では実際に登録された状況のみが見え、デモ用のダミーは出ない
- * （偽の「更新待ち/最新」を見せない）。更新実行（デプロイ/ロールバック）は破壊的操作のため後段
- * 増分（JIT 昇格・理由入力・監査つき）で扱い、本モジュールは read のみを公開する。
+ * （偽の「更新待ち/最新」を見せない）。更新実行（デプロイ/ロールバック）は破壊的操作のため JIT 昇格・
+ * 理由入力・監査つきの route（/api/platform/updates/[id]/execute, #290 item1）で扱う。本モジュールは
+ * read（listUpdateStatuses）と、実行後の状態遷移を反映する putUpdateStatus を公開する。
  */
 import type { UpdateStatus } from '@/domain/platform/update-status';
 import {
@@ -73,6 +74,14 @@ export function getUpdateStatusRepository(): PlatformRecordRepository<UpdateStat
 /** 全アップデート状況を返す（read-only）。並べ替え・集計は domain の summarizeUpdateStatuses に委譲。 */
 export async function listUpdateStatuses(): Promise<UpdateStatus[]> {
   return getUpdateStatusRepository().list();
+}
+
+/**
+ * アップデート状況を保存する（put/upsert）。更新実行/ロールバック後の状態遷移を反映する
+ * (issue #290 item1)。id 一致で置換する（PlatformRecordRepository.create は put 相当）。
+ */
+export async function putUpdateStatus(status: UpdateStatus): Promise<void> {
+  await getUpdateStatusRepository().create(status);
 }
 
 /** テスト/seed 用に初期状態へ戻す（memory のみ実効）。 */

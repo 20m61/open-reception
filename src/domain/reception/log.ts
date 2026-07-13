@@ -310,7 +310,11 @@ export type AuditAction =
   | 'platform.tenant.viewed'
   | 'platform.audit_log.viewed'
   // 端末レジストリ整合の dry-run プレビュー (issue #290 item2)。昇格必須・修復は行わず drift 件数のみ記録。
-  | 'platform.data_reconcile.previewed';
+  | 'platform.data_reconcile.previewed'
+  // テナント単位アップデートの実行 / ロールバック (issue #290 item1)。昇格必須・高重要度監査。
+  // metadata は component/from/to/dryRun/result のみ（PII・秘匿値なし）。実デプロイは #195/#65 外部待ち。
+  | 'platform.update.executed'
+  | 'platform.update.rolled_back';
 
 export type AuditLog = {
   id: string;
