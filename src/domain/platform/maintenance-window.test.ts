@@ -5,6 +5,7 @@ import { describe, expect, it } from 'vitest';
 import {
   buildMaintenanceWindow,
   isOpenWindow,
+  resolveActiveMaintenance,
   summarizeMaintenanceWindows,
   toMaintenanceWindowRow,
   type MaintenanceWindow,
@@ -107,5 +108,75 @@ describe('summarizeMaintenanceWindows', () => {
   it('空配列は 0 件', () => {
     const summary = summarizeMaintenanceWindows([]);
     expect(summary).toMatchObject({ activeCount: 0, scheduledCount: 0, totalCount: 0, windows: [] });
+  });
+});
+
+describe('resolveActiveMaintenance（kiosk enforcement 解決 #290 item3）', () => {
+  const NOW = new Date('2026-07-01T12:00:00.000Z'); // win 既定 [00:00, 16:00] の内側
+  const inWindow = { startsAt: '2026-07-01T00:00:00.000Z', endsAt: '2026-07-01T16:00:00.000Z' };
+
+  it('platform スコープの進行中メンテは全端末に影響する', () => {
+    const r = resolveActiveMaintenance(
+      [win({ id: 'p', status: 'active', scope: 'platform', impact: 'read_only', ...inWindow })],
+      { tenantId: 'acme', siteId: 'hq', deviceId: 'kiosk-1' },
+      NOW,
+    );
+    expect(r).toEqual({ impact: 'read_only', message: 'm', endsAt: inWindow.endsAt });
+  });
+
+  it('tenant スコープは同一 tenantId のみ影響する', () => {
+    const windows = [win({ id: 't', status: 'active', scope: 'tenant', tenantId: 'acme', ...inWindow })];
+    expect(resolveActiveMaintenance(windows, { tenantId: 'acme' }, NOW)).not.toBeNull();
+    expect(resolveActiveMaintenance(windows, { tenantId: 'other' }, NOW)).toBeNull();
+    expect(resolveActiveMaintenance(windows, {}, NOW)).toBeNull();
+  });
+
+  it('site スコープは同一 siteId のみ影響する', () => {
+    const windows = [win({ id: 's', status: 'active', scope: 'site', siteId: 'hq', ...inWindow })];
+    expect(resolveActiveMaintenance(windows, { siteId: 'hq' }, NOW)).not.toBeNull();
+    expect(resolveActiveMaintenance(windows, { siteId: 'branch' }, NOW)).toBeNull();
+    expect(resolveActiveMaintenance(windows, {}, NOW)).toBeNull();
+  });
+
+  it('device スコープは同一 deviceId のみ影響する', () => {
+    const windows = [win({ id: 'd', status: 'active', scope: 'device', deviceId: 'kiosk-1', ...inWindow })];
+    expect(resolveActiveMaintenance(windows, { deviceId: 'kiosk-1' }, NOW)).not.toBeNull();
+    expect(resolveActiveMaintenance(windows, { deviceId: 'kiosk-2' }, NOW)).toBeNull();
+  });
+
+  it('now が [startsAt, endsAt] の外なら enforcement しない（open でも）', () => {
+    const before = new Date('2026-06-30T00:00:00.000Z');
+    const after = new Date('2026-07-02T00:00:00.000Z');
+    const windows = [win({ id: 'p', status: 'scheduled', scope: 'platform', ...inWindow })];
+    expect(resolveActiveMaintenance(windows, {}, before)).toBeNull();
+    expect(resolveActiveMaintenance(windows, {}, after)).toBeNull();
+    // 内側なら scheduled でも時刻到来で enforcement する。
+    expect(resolveActiveMaintenance(windows, {}, NOW)).not.toBeNull();
+  });
+
+  it('completed / cancelled は時間内でも enforcement しない', () => {
+    expect(
+      resolveActiveMaintenance([win({ id: 'c', status: 'completed', scope: 'platform', ...inWindow })], {}, NOW),
+    ).toBeNull();
+    expect(
+      resolveActiveMaintenance([win({ id: 'x', status: 'cancelled', scope: 'platform', ...inWindow })], {}, NOW),
+    ).toBeNull();
+  });
+
+  it('複数該当時は最も影響度の重いものを返す', () => {
+    const r = resolveActiveMaintenance(
+      [
+        win({ id: 'n', status: 'active', scope: 'platform', impact: 'notice_only', ...inWindow }),
+        win({ id: 'u', status: 'active', scope: 'platform', impact: 'unavailable', ...inWindow }),
+        win({ id: 'l', status: 'active', scope: 'platform', impact: 'limited', ...inWindow }),
+      ],
+      {},
+      NOW,
+    );
+    expect(r?.impact).toBe('unavailable');
+  });
+
+  it('該当なし・空配列は null', () => {
+    expect(resolveActiveMaintenance([], { tenantId: 'acme' }, NOW)).toBeNull();
   });
 });
