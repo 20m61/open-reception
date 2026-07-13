@@ -8,7 +8,12 @@
 > **2026-07-12 の自律ループで #313〜#323 / #327〜#330 / #342 と派生バグ #348 を消化・クローズ済み**
 > （PR #343〜#352、詳細は **`docs/handoff-2026-07-12.md`**）。本表の #313〜#331 行は stale。残る
 > オープンは外部リソース待ち（#4/#31/#65/#195/#196/#290）と #328（実質完了・クローズ判断待ち）。
-> 未起票の要 follow-up: 実 `resolveStayScope`（kiosk→tenant/site 写像、#342 のマルチテナント前提）。
+> **2026-07-13**: 実 `resolveStayScope`（kiosk→tenant/site 写像）を実装済み（Device レジストリ
+> `findDeviceById(kioskId)` 解決・未登録は dev 既定へフォールバック）。#342 のマルチテナント前提を解消。
+> 統合後 e2e 一括実行も完了（`PW_EXECUTABLE_PATH=/opt/pw-browsers/chromium npx playwright test`：
+> 155 passed / 3 は既知の並列負荷フレーク＝単独実行で緑・`kiosk-checkout-i18n` 在館数前提 /
+> `journey-reception` / `capture-screens` 発行モーダル）。playwright.config は env ガード付き
+> `PW_EXECUTABLE_PATH` でブラウザ実行ファイルを差し替え可能にした（web セッションのブラウザ版ズレ対策）。
 
 初期 DAG・QR チェーン・管理画面クラスタ・受付拡張・受付 UX の各 epic は**完了・クローズ済み**
 （`#82` / `#96` / `#119` およびその子 issue はすべてクローズ）。基盤・ルート・コンポーネント・

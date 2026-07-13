@@ -30,7 +30,7 @@ export async function POST(request: Request): Promise<NextResponse> {
   const input = readCheckoutResolveInput(body);
   if (input === null) return NextResponse.json({ error: 'invalid' }, { status: 400 });
 
-  const scope = resolveStayScope(session.kioskId);
+  const scope = await resolveStayScope(session.kioskId);
   const result = getCheckoutCredentialService().resolve(scope, input);
   if (!result.ok) return checkoutSelfIdFailureResponse(result.reason);
   return NextResponse.json({ method: result.method, summary: result.summary });
