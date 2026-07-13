@@ -129,6 +129,57 @@ export function buildMaintenanceWindow(
   };
 }
 
+/** 受付端末（kiosk）のスコープ識別子。config enforcement の scope 一致判定に使う。 */
+export type KioskMaintenanceScope = { tenantId?: string; siteId?: string; deviceId?: string };
+
+/** enforcement 側へ渡す、現在有効なメンテナンスの最小情報（PII・createdBy は含めない）。 */
+export type ActiveMaintenance = { impact: MaintenanceImpact; message: string; endsAt: string };
+
+/** メンテナンスが対象 kiosk のスコープに影響するか（platform は全端末・下位は id 一致）。 */
+function windowAffectsScope(window: MaintenanceWindow, scope: KioskMaintenanceScope): boolean {
+  switch (window.scope) {
+    case 'platform':
+      return true;
+    case 'tenant':
+      return scope.tenantId !== undefined && window.tenantId === scope.tenantId;
+    case 'site':
+      return scope.siteId !== undefined && window.siteId === scope.siteId;
+    case 'device':
+      return scope.deviceId !== undefined && window.deviceId === scope.deviceId;
+    default:
+      return false;
+  }
+}
+
+/**
+ * kiosk のスコープに現在（now）影響しているメンテナンスのうち、最も影響度の重いものを返す純関数
+ * （無ければ null）。I/O は持たない (issue #290 item3 の kiosk enforcement 解決)。
+ *
+ * 「現在影響している」= open（scheduled|active）かつ now ∈ [startsAt, endsAt]。時刻到来で自動的に
+ * 効き、endsAt 経過で自動的に切れる（status の手動遷移漏れに依存しない）。completed / cancelled は
+ * 時間内でも対象外。scope 一致は platform=全端末、tenant/site/device=各 id 一致。
+ * 影響度は notice_only < limited < read_only < unavailable の順で最重を採る。
+ */
+export function resolveActiveMaintenance(
+  windows: readonly MaintenanceWindow[],
+  scope: KioskMaintenanceScope,
+  now: Date,
+): ActiveMaintenance | null {
+  const nowMs = now.getTime();
+  const affecting = windows.filter(
+    (w) =>
+      isOpenWindow(w) &&
+      nowMs >= Date.parse(w.startsAt) &&
+      nowMs <= Date.parse(w.endsAt) &&
+      windowAffectsScope(w, scope),
+  );
+  if (affecting.length === 0) return null;
+  const most = affecting.reduce((a, b) =>
+    MW_IMPACTS.indexOf(b.impact) > MW_IMPACTS.indexOf(a.impact) ? b : a,
+  );
+  return { impact: most.impact, message: most.message, endsAt: most.endsAt };
+}
+
 /** 予定メンテナンスを横断 read 行へ射影する純関数（whitelist。createdBy は載せない）。 */
 export function toMaintenanceWindowRow(window: MaintenanceWindow): MaintenanceWindowRow {
   return {
