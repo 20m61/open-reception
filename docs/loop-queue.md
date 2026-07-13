@@ -66,7 +66,7 @@
 | ~~#303~~ | infra | **クローズ済**（#306: CloudFrontMonitoringStack(us-east-1) 5xx>1%×15分 + dimensionless ConcurrentExecutions。crossRegionReferences は additive 実証済み。dev apply 済み） | 完了 2026-07-03 |
 | ~~#308~~ | infra | **クローズ済**（#309: prod serverMemoryMb 2048→1024。dev 実測 Max Memory ~161MB/1024MB・p50 46ms が根拠。image は実測ゼロで据え置き） | 完了 2026-07-03 |
 | ~~#284~~ | observability | **クローズ済**（#311: dashboard を実 actor のテナント境界集計へ。item1-3 は #292/#294/a52b682 で既充足だった。残課題: kiosk→tenant 実写像） | 完了 2026-07-03 |
-| **#290** | platform ops | item4 フラグ enforcement は #310→テナント別へ拡張（2026-07-13）。**item3 メンテ enforcement も 2026-07-13 に消化**（`resolveActiveMaintenance` 純関数 + `resolveKioskMaintenance` gate → `/api/kiosk/config` が端末スコープの現在有効メンテを解決し impact=unavailable で active=false・軽い影響は maintenance フィールドで案内・fail-open）。**残はローカル可**: item2 再集計 dry-run → item1 interface+mock。実 deploy 実行本体と soft impact の client 表示は follow-up | ローカル増分可 |
+| **#290** | platform ops | item4 フラグ enforcement は #310→テナント別へ拡張（2026-07-13）。**item3 メンテ enforcement も 2026-07-13 に消化**（`resolveActiveMaintenance` 純関数 + `resolveKioskMaintenance` gate → `/api/kiosk/config` が端末スコープの現在有効メンテを解決し impact=unavailable で active=false・軽い影響は maintenance フィールドで案内・fail-open）。**item2 データ修復 dry-run も 2026-07-13 に消化**（端末レジストリ整合: flat kiosk-store↔Device レジストリの drift を昇格ゲート+高重要度監査つき `POST /api/platform/reconcile/devices` で非破壊プレビュー・adopt/sync/deviceOnly を算出）。**残はローカル可**: item1 interface+mock。実 deploy 実行本体・soft impact の client 表示・reconcile 結果の platform console 表示は follow-up | ローカル増分可 |
 | **#313** | privacy | 受付履歴・監査ログの保持期間実効化（DynamoDB TTL + `logRetentionDays` 接続） | ローカル可 |
 | **#314** | privacy/UX | 来訪者向けプライバシー通知を kiosk 入力ステップに表示（文言設定 + i18n） | ローカル可 |
 | **#315** | ops | バックアップ/リストア・DR 手順 + dev 復元演習（PITR/S3/SSM/Secrets） | 演習は AWS 承認要 |

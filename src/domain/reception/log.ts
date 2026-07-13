@@ -308,7 +308,9 @@ export type AuditAction =
   // src/domain/platform/read-audit.ts）。
   | 'platform.tenant_scope.switched'
   | 'platform.tenant.viewed'
-  | 'platform.audit_log.viewed';
+  | 'platform.audit_log.viewed'
+  // 端末レジストリ整合の dry-run プレビュー (issue #290 item2)。昇格必須・修復は行わず drift 件数のみ記録。
+  | 'platform.data_reconcile.previewed';
 
 export type AuditLog = {
   id: string;
