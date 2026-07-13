@@ -50,7 +50,7 @@ export async function POST(request: Request): Promise<NextResponse> {
       return NextResponse.json({ error: 'not_eligible' }, { status: 409 });
     }
 
-    const scope = resolveStayScope(session.kioskId);
+    const scope = await resolveStayScope(session.kioskId);
     const stayId = await getKioskStayService().createPresentForReception({
       scope,
       stay: receptionToCreateStayInput(found.value, scope),

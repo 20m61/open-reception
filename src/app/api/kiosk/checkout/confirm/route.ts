@@ -36,7 +36,7 @@ export async function POST(request: Request): Promise<NextResponse> {
   const input = readCheckoutResolveInput(body);
   if (input === null) return NextResponse.json({ error: 'invalid' }, { status: 400 });
 
-  const scope = resolveStayScope(session.kioskId);
+  const scope = await resolveStayScope(session.kioskId);
   const credentials = getCheckoutCredentialService();
   // 状態は変更しない（consumed 化は checkout 成功後）。
   const resolved = credentials.resolveForCheckout(scope, input);

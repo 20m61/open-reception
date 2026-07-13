@@ -35,7 +35,7 @@ export async function GET(): Promise<NextResponse> {
   if (!session) {
     return NextResponse.json({ error: 'forbidden', message: 'kiosk session required' }, { status: 403 });
   }
-  const { tenantId, siteId } = resolveStayScope(session.kioskId);
+  const { tenantId, siteId } = await resolveStayScope(session.kioskId);
   try {
     // 端末からは在館中のみを最小限の非 PII で返す。走査・上限（STAY_LIST_LIMIT）は
     // StayRepository に閉じる（#274 ①: route は collection を直接触らない）。
@@ -68,7 +68,7 @@ export async function POST(request: Request): Promise<NextResponse> {
   const stayId = readStayId(body);
   if (stayId === null) return NextResponse.json({ error: 'invalid' }, { status: 400 });
 
-  const { tenantId, siteId } = resolveStayScope(session.kioskId);
+  const { tenantId, siteId } = await resolveStayScope(session.kioskId);
   try {
     const result = await getKioskStayService().checkOutById(tenantId, siteId, stayId);
     if (!result.ok) return checkoutFailureResponse(result.reason);

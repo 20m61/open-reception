@@ -29,7 +29,7 @@ export async function POST(request: Request): Promise<NextResponse> {
   const rawStayId = readStayId(body);
   if (rawStayId === null) return NextResponse.json({ error: 'invalid' }, { status: 400 });
 
-  const scope = resolveStayScope(session.kioskId);
+  const scope = await resolveStayScope(session.kioskId);
   try {
     const stay = await getStayRepository().get(scope.tenantId, scope.siteId, asStayId(rawStayId));
     // 在館中のみ発行対象（退館済み/取消/越境は not_found で秘匿）。
