@@ -21,6 +21,17 @@ const baseURL = remoteBaseURL ?? `http://127.0.0.1:${PORT}`;
  */
 const includeWebkit = !!process.env.CI || process.env.E2E_WEBKIT === '1';
 
+/**
+ * ブラウザ実行ファイルの明示指定（chromium 系 project 用）。プリインストール済み Chromium の
+ * ビルド番号が、インストール済み @playwright/test が期待する版とずれる実行環境（例: Claude Code
+ * on the web の /opt/pw-browsers）向けの逃げ道。`playwright install` を走らせずに既存バイナリを
+ * 使う（環境ガイド準拠）。`PW_EXECUTABLE_PATH` 未設定時は Playwright の既定解決に委ねるため、
+ * 通常環境・CI には無影響。
+ */
+const chromiumLaunchOptions = process.env.PW_EXECUTABLE_PATH
+  ? { executablePath: process.env.PW_EXECUTABLE_PATH }
+  : undefined;
+
 // 既定スコープへカスタム受付フローを一時投入する spec (#248)、および共有シングルトン設定
 // （voice-store の a11yModesEnabled 等, #321）を一時的に無効化して検証する spec。どちらも
 // グローバル状態を書き換えるため、他 kiosk テストと分離し専用 project で本 suite の後に
@@ -56,7 +67,7 @@ export default defineConfig({
   projects: [
     {
       name: 'chromium-ipad',
-      use: { browserName: 'chromium', ...iPadPortraitViewport },
+      use: { browserName: 'chromium', ...iPadPortraitViewport, launchOptions: chromiumLaunchOptions },
       testIgnore: DEFAULT_TEST_IGNORE,
     },
     ...(includeWebkit
@@ -79,7 +90,7 @@ export default defineConfig({
       // (#248)。voice-store の a11yModesEnabled 一時無効化 spec (#321) も同様の理由でここに含める。
       // 本 suite の全 project 完了後に単独実行して構造的に分離する（互いは一意キーで独立）。
       name: 'flow-mutation',
-      use: { browserName: 'chromium', ...iPadPortraitViewport },
+      use: { browserName: 'chromium', ...iPadPortraitViewport, launchOptions: chromiumLaunchOptions },
       testMatch: FLOW_MUTATING_SPECS,
       dependencies: ['chromium-ipad', ...(includeWebkit ? ['ipad-landscape', 'ipad-portrait'] : [])],
     },
