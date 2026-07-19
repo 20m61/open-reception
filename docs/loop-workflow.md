@@ -179,6 +179,17 @@ git worktree remove ../open-reception-105   # マージ後に撤去
 > `scripts/quality-gate.sh` は既定で不足を検出して `npm ci`（無ければ `install`）を
 > 実行し自己修復するため、手動インストールは不要（`--no-bootstrap` で抑止可能）。
 
+> **ゲートの起動パス（事故多発ポイント）**: worktree では **その worktree 自身の
+> `scripts/quality-gate.sh`** を叩く。スクリプトは `cd "$(dirname "$0")/.."` で repo root を
+> 解決するので、**main チェックアウトの絶対パスを渡すと main のツリーが検証され、worktree の
+> 変更は一切見られない**。サブエージェントへの指示に「絶対パスで起動」とだけ書くと、この
+> 取り違えが起きる（2026-07-19 に 2 トラック同時に空振りさせた）。
+> `$(git rev-parse --show-toplevel)/scripts/quality-gate.sh` の形で渡し、実行後は出力の
+> `repo:` 行でどのツリーで走ったかを確認する。
+>
+> 並行トラックでは**他トラックのプロセスを kill しない**。同名の `npm run typecheck` が
+> 複数走るため、pid の見当で kill すると他トラックのゲートを壊す（同日、実際に発生）。
+
 ### 直列を守る点（重要な制約）
 
 - **マージは直列**（手順 8）。並列で PR が積まれても、マージは 1 本ずつ（ゲート + レビュー
