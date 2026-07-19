@@ -114,7 +114,12 @@ describe('AWS Cost Explorer adapter (#377)', () => {
     expect(url).toBe('https://ce.us-east-1.amazonaws.com/');
     const headers = init.headers as Record<string, string>;
     expect(headers['x-amz-target']).toBe('AWSInsightsIndexService.GetCostAndUsage');
-    expect(headers.authorization).toMatch(/^AWS4-HMAC-SHA256 Credential=AKIDEXAMPLE\//);
+    // 同一 payload/date/credentials を botocore SigV4Auth で署名した値と完全一致させる。
+    expect(headers.authorization).toBe(
+      'AWS4-HMAC-SHA256 Credential=AKIDEXAMPLE/20260719/us-east-1/ce/aws4_request, ' +
+        'SignedHeaders=content-type;host;x-amz-date;x-amz-security-token;x-amz-target, ' +
+        'Signature=24cc4d3958100adea1bf4cb6c61287fe413f554e7c9c69dc1e50e7e0c25f5814',
+    );
     expect(headers['x-amz-security-token']).toBe('session-example');
 
     const requestBody = JSON.parse(init.body as string);
