@@ -26,7 +26,21 @@
       "Bash(gh issue list:*)",
       "Bash(gh pr view:*)",
       "Bash(gh pr list:*)",
-      "Bash(gh pr diff:*)"
+      "Bash(gh pr diff:*)",
+      "Bash(npm run build)",
+      "Bash(npm audit)",
+      "Bash(npm run audit:deps)",
+      "Bash(npm run secrets:scan)",
+      "Bash(npm run sast)",
+      "Bash(npm run cdk:synth:staging)",
+      "Bash(git fetch:*)",
+      "Bash(git pull --ff-only)",
+      "Bash(git switch:*)",
+      "Bash(git worktree add:*)",
+      "Bash(git worktree remove:*)",
+      "Bash(aws cloudformation list-stacks:*)",
+      "Bash(aws cloudformation describe-stacks:*)",
+      "Bash(aws sts get-caller-identity)"
     ]
   }
 }
