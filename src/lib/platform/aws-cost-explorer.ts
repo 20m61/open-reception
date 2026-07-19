@@ -205,7 +205,7 @@ export function buildCostFilter(filters: AwsCostFilters): CostExpression {
   if (filters.component !== 'all') {
     expressions.push(tagExpression('Component', filters.component));
   }
-  return expressions.length === 1 ? expressions[0] : { And: expressions };
+  return expressions.length === 1 ? expressions[0]! : { And: expressions };
 }
 
 function normalizeGroupKey(raw: string | undefined, groupBy: 'Component' | 'Service'): string {
