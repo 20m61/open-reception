@@ -3,13 +3,15 @@
 import { useEffect, useState } from 'react';
 import type { TenantFleetSummary } from '@/domain/platform/console-summary';
 import type { TodayCounts } from '@/domain/reception/dashboard-summary';
+import { AwsCostPanel } from './AwsCostPanel';
 import { MetricCard } from './primitives';
 
 /**
- * プラットフォーム概況ダッシュボード (issue #90, increment 1)。
+ * プラットフォーム概況ダッシュボード (issue #90, increment 1 / #377)。
  *
  * /api/platform/dashboard（developer 専用 read API）から全テナントの稼働概況を取得して
- * 表示する。実データ未接続の運用指標は「未接続」と明示し、偽の安心を与えない。
+ * 表示する。AWS コストは独立した /api/platform/costs から取得し、Cost Explorer 側の障害が
+ * 稼働概況を巻き込まないよう分離する。実データ未接続の運用指標は「未接続」と明示する。
  * 破壊的操作は本画面に置かない（read 中心）。
  */
 type PendingMetric = { status: 'pending' };
@@ -24,7 +26,6 @@ const PENDING_METRICS: readonly { key: string; label: string }[] = [
   { key: 'integrationErrors', label: '外部連携エラー' },
   { key: 'authErrors', label: '認証エラー' },
   { key: 'totalUsage', label: '総利用量' },
-  { key: 'estimatedCost', label: '総コスト概算' },
   { key: 'maintenance', label: 'メンテナンス' },
 ];
 
@@ -73,8 +74,10 @@ export function PlatformDashboard() {
         <MetricCard label="失敗" value={data?.receptionsToday?.failed ?? '—'} />
       </div>
 
+      <AwsCostPanel />
+
       <h2 style={{ fontSize: '1rem', opacity: 0.7, marginTop: 'var(--space-lg)' }}>
-        運用指標（実データ未接続）
+        その他の運用指標（実データ未接続）
       </h2>
       <div style={{ display: 'flex', gap: 'var(--space-md)', flexWrap: 'wrap' }}>
         {PENDING_METRICS.map((m) => (
