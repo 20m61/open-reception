@@ -94,7 +94,7 @@ if (alarmEmail) {
 }
 
 // WebStack の監視 (#299)。alarmEmail の注入（上）より後に構築し、購読へ反映させる。
-new WebMonitoringStack(app, `OpenReception-WebMonitoring-${config.environment}`, {
+const webMonitoring = new WebMonitoringStack(app, `OpenReception-WebMonitoring-${config.environment}`, {
   env: { account, region },
   config,
   serverFn: web.serverFn,
@@ -103,6 +103,8 @@ new WebMonitoringStack(app, `OpenReception-WebMonitoring-${config.environment}`,
   distributionId: web.distribution.distributionId,
   description: `open-reception web monitoring (${config.environment})`,
 });
+// 既存 Stack 内の Component=web を監視専用タグへ上書きし、Cost Explorer で分離集計する。
+cdk.Tags.of(webMonitoring).add('Component', 'web-monitoring', { priority: 200 });
 
 // CloudFront 5xxErrorRate のアラーム (#303)。AWS/CloudFront メトリクスは us-east-1 にのみ
 // 発行され、アラームは同一リージョン制約があるため us-east-1 の小 Stack に置く。
@@ -110,13 +112,18 @@ new WebMonitoringStack(app, `OpenReception-WebMonitoring-${config.environment}`,
 // 確定させるため）。認証情報なしの synth では account が未解決になるためスキップする
 // （deploy 時は CDK CLI が必ず解決する）。
 if (account) {
-  new CloudFrontMonitoringStack(app, `OpenReception-CfMonitoring-${config.environment}`, {
-    env: { account, region: 'us-east-1' },
-    crossRegionReferences: true,
-    config,
-    distributionId: web.distribution.distributionId,
-    description: `open-reception cloudfront monitoring in us-east-1 (${config.environment})`,
-  });
+  const cloudFrontMonitoring = new CloudFrontMonitoringStack(
+    app,
+    `OpenReception-CfMonitoring-${config.environment}`,
+    {
+      env: { account, region: 'us-east-1' },
+      crossRegionReferences: true,
+      config,
+      distributionId: web.distribution.distributionId,
+      description: `open-reception cloudfront monitoring in us-east-1 (${config.environment})`,
+    },
+  );
+  cdk.Tags.of(cloudFrontMonitoring).add('Component', 'cloudfront-monitoring', { priority: 200 });
 } else {
   console.warn(
     '[open-reception] CDK_DEFAULT_ACCOUNT が未解決のため OpenReception-CfMonitoring-* を synth 対象から除外しました（cross-region 参照には concrete account が必要）。',
@@ -131,12 +138,13 @@ const notification = new NotificationStack(app, `OpenReception-Notification-${co
   description: `open-reception notification subsystem (${config.environment})`,
 });
 
-new MonitoringStack(app, `OpenReception-Monitoring-${config.environment}`, {
+const monitoring = new MonitoringStack(app, `OpenReception-Monitoring-${config.environment}`, {
   env: { account, region },
   config,
   notificationFn: notification.notificationFn.fn,
   httpApi: notification.api.httpApi,
   description: `open-reception notification monitoring (${config.environment})`,
 });
+cdk.Tags.of(monitoring).add('Component', 'monitoring', { priority: 200 });
 
 app.synth();
