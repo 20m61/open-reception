@@ -7,6 +7,7 @@ import { CloudFrontMonitoringStack } from '../lib/stacks/cloudfront-monitoring-s
 import { NotificationStack } from '../lib/stacks/notification-stack';
 import { MonitoringStack } from '../lib/stacks/monitoring-stack';
 import { resolveEnv } from '../lib/config/environments';
+import { configureCostExplorerAccess } from '../lib/constructs/cost-explorer-access';
 
 /**
  * open-reception CDK App エントリ (docs/infrastructure-design.md §1)。
@@ -62,7 +63,7 @@ const originVerifySecret = app.node.tryGetContext('originVerifySecret') as strin
 
 // 管理ログイン認証プロバイダ (issue #238)。デプロイ環境の既定は config.auth.adminProvider（=cognito）。
 // `-c appEnv='{"ADMIN_AUTH_PROVIDER":"none"}'` で明示上書きも可能。cognito のとき WebStack が
-// Cognito User Pool/Client を作成し COGNITO_* を注入する。
+// Cognito User Pool/Client（USER_SRP_AUTH 有効）を作成し COGNITO_* を注入する。
 const adminProvider = appEnvContext.ADMIN_AUTH_PROVIDER ?? config.auth.adminProvider;
 const appEnv = { ...appEnvContext, ADMIN_AUTH_PROVIDER: adminProvider };
 
@@ -79,6 +80,10 @@ const web = new WebStack(app, `OpenReception-Web-${config.environment}`, {
   cognitoAuth: adminProvider === 'cognito',
   description: `open-reception Next.js hosting (${config.environment})`,
 });
+
+// developer 運用画面から Cost Explorer を read-only 参照する (#377)。
+// WebStack 本体の責務を膨らませず、追加 IAM / env は専用 construct に隔離する。
+configureCostExplorerAccess(web.serverFn, config);
 
 // 任意: Secret 名・アラーム通知先を context で渡せる（平文コミットを避ける）。
 const vonageSecretName = app.node.tryGetContext('vonageSecretName') as string | undefined;
