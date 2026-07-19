@@ -32,7 +32,7 @@
   Increment 4（営業時間外 Kiosk UX）は EC2 非依存でローカル完結可能。#366 が要るのは
   EC2 start/stop adapter のみ。
 
-## オープン issue（26 件）
+## オープン issue（25 件）
 
 ### 新 epic 群（2026-07-19 起票）
 
@@ -55,14 +55,14 @@
 | **#374** | domain/routing | **部分**: `call-route.ts` にチャネル抽象化・priority・管理 UI 実装済。未達は `ContactEndpoint` union・`nextOn` 遷移・Orchestrator・循環検出・notify/live_bridge 区別 | ローカル可 |
 | **#375** | domain/invitation | **部分**: token/usagePolicy/expiresAt/status・`CheckinFailureReason` 実装済。未達は **生 token 保存**（`tokenHash` 0 ヒット）と 3-ref 分離 | ローカル可（hash 化は**スキーマ破壊 → 要ユーザー確認**） |
 | **#376** | spike/vonage | **部分**: `vonage-adapter.ts`・`vonage-jwt.ts`・`docs/vonage-call-design.md` 在り。実測部未着手 | ADR はローカル可 / 実測は**外部待ち**→ #65 |
-| **#377** | platform | **未着手**: `api/platform/dashboard/route.ts:48` に `estimatedCost: pending` のプレースホルダ実在。タグ付与は `infra/lib/constructs/cost-tags.ts` で済 | **PR #378 で対応中** |
+| ~~#377~~ | platform | **クローズ済**（PR #378: developer 専用 `GET /api/platform/costs`・タグ絞り込み・実績/予測・追加依存なしの SigV4 自作署名。レビューで署名を独立実装と照合し一致確認）。follow-up は **#379** | 完了 2026-07-19 |
+| **#379** | platform | #378 follow-up: 予測失敗理由の伝播（現状 AccessDenied も「履歴不足」と誤表示）・CE 課金抑制（1 view = $0.02、共有キャッシュ不在）・Component タグ回帰テスト・縮退パステスト・canonical header ソート | ローカル可 |
 
 ### 継続オープン
 
 | # | 種別 | 状態 | 分類 |
 | --- | --- | --- | --- |
 | **#290** | platform ops | ローカル可能分は消化完了（item1-4）。残: 実 deploy 実行本体 | #195 外部待ち |
-| **#328** | ux/kiosk | 実質完了（#339 でマージ済）。クローズ判断待ち | 要確認 |
 | **#196** | perf | バンドル -19%・a11y 1.0/BP 0.96 live 確定・TTFB 50-90ms。残: PSI で perf 値取得 | PSI クォータ待ち |
 | **#195** | infra | dev 分完了（Notification/Monitoring 稼働・authorizer 検証済）。残: prod deploy | prod 見送り中 |
 | **#4** | feature | Vonage 実通話（基盤・interface 済） | #65 スタック |
@@ -96,7 +96,7 @@
 
 | トラック | Issue | 触る領域 | 選定理由 |
 | --- | --- | --- | --- |
-| A | **#377** | `src/app/api/platform/*`・`infra/lib/` | 他 issue と一切重ならない。可視のプレースホルダを潰す小さな単発 → **PR #378 進行中** |
+| A | ~~#377~~ → **#379** | `src/app/api/platform/*`・`infra/lib/` | 他 issue と一切重ならない。#377 は PR #378 で**消化済み**。follow-up #379 を同トラックで継続 |
 | B | **#365** | `tests/voice-evaluation/`（新規） | 既存ファイル非改変。#369〜#372 共通の event schema を先に固め後続の手戻りを最小化 |
 | C | **#373** | `src/domain/organization/`（新規）+ staff/department の compatibility reader | #374 のブロッカー。Track C 全体のクリティカルパス先頭 |
 
