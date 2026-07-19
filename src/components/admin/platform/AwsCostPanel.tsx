@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useMemo, useState } from 'react';
+import { type ReactNode, useEffect, useMemo, useState } from 'react';
 import {
   COST_COMPONENT_FILTERS,
   COST_ENVIRONMENT_FILTERS,
@@ -39,7 +39,7 @@ function FilterSelect({
   label: string;
   value: string;
   onChange: (value: string) => void;
-  children: React.ReactNode;
+  children: ReactNode;
   disabled?: boolean;
 }) {
   return (
@@ -82,10 +82,11 @@ export function AwsCostPanel() {
       const params = new URLSearchParams();
       if (environment) params.set('environment', environment);
       params.set('component', component);
+      // 明示的な再取得だけ URL を変え、通常表示・フィルター往復では private max-age=300 を活用する。
+      if (refreshToken > 0) params.set('_refresh', String(refreshToken));
       try {
         const response = await fetch(`/api/platform/costs?${params.toString()}`, {
           signal: controller.signal,
-          cache: 'no-store',
         });
         if (!response.ok) {
           setError(
