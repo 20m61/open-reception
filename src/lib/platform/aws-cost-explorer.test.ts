@@ -110,7 +110,7 @@ describe('AWS Cost Explorer adapter (#377)', () => {
     });
     expect(fetchMock).toHaveBeenCalledTimes(2);
 
-    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    const [url, init] = fetchMock.mock.calls[0]! as [string, RequestInit];
     expect(url).toBe('https://ce.us-east-1.amazonaws.com/');
     const headers = init.headers as Record<string, string>;
     expect(headers['x-amz-target']).toBe('AWSInsightsIndexService.GetCostAndUsage');
