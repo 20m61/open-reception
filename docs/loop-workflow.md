@@ -34,6 +34,10 @@ git switch main && git pull --ff-only
 gh issue view <N>
 ```
 
+着手前に **`/issue-ac-mapping`**（project skill）で AC を実コードへマッピングする。
+issue 本文と `docs/loop-queue.md` の分類は仮説であり、事実は main のコードだけ。
+**未充足の AC だけ**を increment 化する（既に在るものを作り直さない）。
+
 ### 2. ブランチを作る
 
 命名規約: `<type>/<topic>`（既存実績に合わせる。例 `feat/visit-reservation-qr`）。
@@ -210,5 +214,5 @@ git worktree remove ../open-reception-105   # マージ後に撤去
 ## 着手キュー
 
 依存 DAG・並列トラック・ウェーブは **`docs/loop-queue.md`** を正典とする。
-概略: 独立ルート `#105` / `#80→#85→管理画面クラスタ` / `#79` を並行、QR チェーン
-`#97→#98→#99` を直列、`#4/#31/#65` は外部リソース待ちで対象外。
+本書には具体的な issue 番号を書かない（陳腐化して誤誘導するため）。着手時は
+必ず `docs/loop-queue.md` の「現在地」節と `/issue-ac-mapping` の両方を通す。

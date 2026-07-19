@@ -1,157 +1,138 @@
 # ループ着手キュー & 残作業マップ
 
 `docs/loop-workflow.md` の運用対象キュー。**独立トラックは並行、統合点は直列、
-マージは直列 + ユーザー確認**（理由は workflow の「並列オーケストレーション」節）。
+マージは直列**（理由は workflow の「並列オーケストレーション」節）。
 
-## 現在地（2026-07-12 更新）
+> **本書の分類は仮説であって事実ではない。** 各周回の冒頭で必ず `/issue-ac-mapping`
+> （project skill）を通し、AC を実コードへマッピングしてから着手する。過去 3 回、
+> 本書の「未実装」「外部待ち」分類が stale で、既に main に在るものを作り直しかけた。
+> 分類が実態と違ったら、その周回で本書を直す。
 
-> **2026-07-12 の自律ループで #313〜#323 / #327〜#330 / #342 と派生バグ #348 を消化・クローズ済み**
-> （PR #343〜#352、詳細は **`docs/handoff-2026-07-12.md`**）。本表の #313〜#331 行は stale。残る
-> オープンは外部リソース待ち（#4/#31/#65/#195/#196/#290）と #328（実質完了・クローズ判断待ち）。
-> **2026-07-13**: 実 `resolveStayScope`（kiosk→tenant/site 写像）を実装済み（Device レジストリ
-> `findDeviceById(kioskId)` 解決・未登録は dev 既定へフォールバック）。#342 のマルチテナント前提を解消。
-> 統合後 e2e 一括実行も完了（`PW_EXECUTABLE_PATH=/opt/pw-browsers/chromium npx playwright test`：
-> 155 passed / 3 は既知の並列負荷フレーク＝単独実行で緑・`kiosk-checkout-i18n` 在館数前提 /
-> `journey-reception` / `capture-screens` 発行モーダル）。playwright.config は env ガード付き
-> `PW_EXECUTABLE_PATH` でブラウザ実行ファイルを差し替え可能にした（web セッションのブラウザ版ズレ対策）。
+## 現在地（2026-07-19 更新）
 
-初期 DAG・QR チェーン・管理画面クラスタ・受付拡張・受付 UX の各 epic は**完了・クローズ済み**
-（`#82` / `#96` / `#119` およびその子 issue はすべてクローズ）。基盤・ルート・コンポーネント・
-ドメインは main に実在する。2026-07-02〜03 の自律ループでローカル消化可能な残タスクも完了した。
+**前フェーズ（2026-07-11 起票の三層棚卸し #313〜#331）は完了・クローズ済み**
+（PR #333〜#359、詳細は `docs/handoff-2026-07-12.md`）。
 
-> 現在の LOOP は **「2026-07-11 の三層棚卸し（要件ギャップ #313〜318 / 体験 #319〜323 /
-> UI レビュー #324〜331）で起票した改善タスクを、下表の優先度・トラック割りに沿って消化する」**
-> フェーズ。外部リソース待ち（#4/#31/#65/#195 の残）は従来どおりスタック。各周回の冒頭で
-> `gh issue view <N>` の AC を既存コードにマッピングし、**未充足の AC だけ**を increment
-> として TDD する（純ロジック先行、新規ビルドの重複を避ける）。モデル割り当ては本書末尾の
-> 「モデル割り当て指針」に従う。
+**現在の LOOP は「2026-07-19 に起票された次世代 epic 群（#360 / #364 / #368）を
+消化する」フェーズ。** 起票時に 18 件（#360〜#377）が追加され、全件を実コードへ
+マッピング済み（結果は下表）。マッピングで判明した重要事項:
 
-## オープン issue 一覧（25 件・2026-07-11 更新）
+- **#374（ルーティング）を「未着手」扱いしない。** `domain/notification/call-route.ts` に
+  `CallRoute > CallTargetGroup > CallTarget(channel/priority)` + 管理 UI + API が既に在り、
+  AC「Vonage 以外の Provider 追加時に受付ドメインを変更しない」は設計上ほぼ達成済み。
+  残差分は `RoutingStep.nextOn` の結果別遷移と Orchestrator に絞れる。
+- **#375（QR 招待）も部分充足。** 期限/使用済み/取消の区別（`CheckinFailureReason`）と
+  「QR に PII を含めない」は既に充足。残るのは token の hash 化と 3-ref 分離のみ。
+- **#362 は AC 違反が現物として存在する。** `KioskFlow.tsx:1055` で
+  `usePresenceCamera(presenceActive, startReception)` が検知→`dispatch({type:'START'})` に
+  直結している。バグ相当なので配線分離 + 回帰テストで消化できる。
+- **#369〜#372 は完全 greenfield。** `src/lib/voice/` は TTS *設定ストア*であって
+  音声パイプラインではない。既存資産と誤認しないこと。
+- **#367 の「#366 依存」は過剰記述。** Increment 1（ServiceOperatingPolicy）と
+  Increment 4（営業時間外 Kiosk UX）は EC2 非依存でローカル完結可能。#366 が要るのは
+  EC2 start/stop adapter のみ。
 
-> 2026-07-02 の自律ループで #264/#275/#273/#261/#83/#289 をクローズ（PR #276〜#293）。
-> **ローカルで消化可能なタスクは完了**（#274 クローズ・#284 は外部待ち化）。次の関門は
-> **#195 の実 AWS apply（要ユーザー承認）** — これで #196 live Lighthouse・#200 live ZAP・
-> #284 backfill・#290 運用 ops が解禁される。
->
-> 2026-07-02 のコスト/アーキテクチャ棚卸しで #299（WebStack 監視）/#300（PriceClass_200 +
-> S3 ライフサイクル）を起票・同日消化（PR #302/#301）。Billing のコスト配分タグ
-> `Project`/`Environment`/`Component` を Active 化済み（以後の請求からプロジェクト別集計可）。
-> follow-up として #303（CloudFront 5xx アラーム化、低優先）を積んだ。
->
-> 2026-07-03 続報: **WebMonitoring / CfMonitoring は dev へ apply 済み**（アラーム計 14 個稼働、
-> SNS 購読は web=承認済・notification/cf=確認待ち）。dev 実測を根拠に **#308**（prod server
-> Lambda 1024MB 化）を消化。AC 再マッピングの結果 **「#284/#290 = 外部待ち」分類は stale**
-> と判明 — #284 は 4 AC 中 3 つが既に main 充足で残り 1 つも #311 で消化しクローズ。#290 は
-> item4（フラグ enforcement）を #310 で消化、item3（メンテナンス enforcement）・item2
-> （再集計 dry-run）・item1 の interface+mock まではローカル実装可で、**真の外部待ちは
-> item1 の実 deploy 実行本体のみ**。各周回の冒頭で AC を実コードへ再マッピングすること
-> （キューの分類を鵜呑みにしない）。
+## オープン issue（26 件）
+
+### 新 epic 群（2026-07-19 起票）
+
+| # | 種別 | 充足状況（根拠） | 分類 |
+| --- | --- | --- | --- |
+| **#360** | epic | Character-led 受付・会話・低コスト基盤の統合 epic（トラッキング） | — |
+| **#361** | ux/kiosk | **部分**: `domain/reception/ui-contract.ts` に状態駆動契約・`AVATAR_STATES`・`REQUIRES_CONFIRMATION_ACTIONS`/`CHAT_FORBIDDEN_ACTIONS` 実装済（AC「音声認識だけで発信されない」ほぼ充足）。未達: `ConversationTurnView` 不在、QR が `CheckinFlow.tsx` の別シェル | ローカル可 |
+| **#362** | ux/kiosk | **部分**: `domain/presence/state.ts`(5状態+テスト)・`SignageDisplay.tsx`・`domain/signage/rotation.ts` 実装済。**未達 + AC 違反実在**（`KioskFlow.tsx:1055` の検知→START 直結）。`KioskMode` 型は不在 | ローカル可 |
+| **#363** | admin/demo | **未着手**: `DemoScenario`/studio/preview は 0 ヒット。土台は `ReceptionFlowsManager.tsx`・`src/lib/reception/flow-config/` | ローカル可 |
+| **#364** | epic | 日本語リアルタイム会話基盤 epic（トラッキング） | — |
+| **#365** | quality/voice | **未着手**: `tests/voice-evaluation/` 不在。`domain/reception/experience-metrics.ts` は #319 KPI で別責務 | ローカル可 |
+| **#366** | infra/cdk | **未着手**: `infra/lib/stacks/` に realtime 系なし。`docs/adr/` 自体が不在 | **要ユーザー判断（固定費増）**。Phase 0 ADR のみローカル可 |
+| **#367** | admin/ops | **未着手**: `operatingHours`/`out_of_hours` は全体 0 ヒット。流用可: `domain/platform/maintenance-window.ts`・`feature-flags.ts` | ローカル可（EC2 adapter 部のみ #366 待ち） |
+| **#368** | epic | 組織・接続先・ルーティング・QR 招待の再構築 epic（トラッキング） | — |
+| **#369** | voice | **未着手**: `domain/voice/types.ts` は `VoiceProvider = 'browser' \| 'none'`。AudioWorklet/WSS なし | ローカル可（実機計測は #65） |
+| **#370** | voice/stt | **未着手**: Transcribe 参照 0。接続先 `domain/staff/search.ts` は在る | ローカル可（mock 先行）/ 実 AWS は外部待ち |
+| **#371** | voice/tts | **未着手**: Polly 参照 0。`VrmAvatarViewer.tsx`・`avatar/vrm-pose.ts` は再利用可 | 同上 |
+| **#372** | voice/turn | **未着手**: VAD/turn detector なし | ローカル可 |
+| **#373** | domain/org | **未着手**: `OrganizationUnit`/`parentId` 0 ヒット。`domain/staff/types.ts:26` はフラット単一所属 | ローカル可 |
+| **#374** | domain/routing | **部分**: `call-route.ts` にチャネル抽象化・priority・管理 UI 実装済。未達は `ContactEndpoint` union・`nextOn` 遷移・Orchestrator・循環検出・notify/live_bridge 区別 | ローカル可 |
+| **#375** | domain/invitation | **部分**: token/usagePolicy/expiresAt/status・`CheckinFailureReason` 実装済。未達は **生 token 保存**（`tokenHash` 0 ヒット）と 3-ref 分離 | ローカル可（hash 化は**スキーマ破壊 → 要ユーザー確認**） |
+| **#376** | spike/vonage | **部分**: `vonage-adapter.ts`・`vonage-jwt.ts`・`docs/vonage-call-design.md` 在り。実測部未着手 | ADR はローカル可 / 実測は**外部待ち**→ #65 |
+| **#377** | platform | **未着手**: `api/platform/dashboard/route.ts:48` に `estimatedCost: pending` のプレースホルダ実在。タグ付与は `infra/lib/constructs/cost-tags.ts` で済 | **PR #378 で対応中** |
+
+### 継続オープン
 
 | # | 種別 | 状態 | 分類 |
 | --- | --- | --- | --- |
-| ~~#83~~ | platform epic | **クローズ済**（inc4d UX #280・break-glass #282・フラグwrite #285・read監査 #287。運用ops は #290 へ切り出し） | 完了 2026-07-02 |
-| ~~#264~~ | security | **クローズ済**（subject 束縛 #271 + jti 失効 #278 + end route） | 完了 2026-07-02 |
-| ~~#261~~ | observability | **クローズ済**（#283: union+adoptKiosk・共有summarize・TTLキャッシュ・分母是正） | 完了 2026-07-02 |
-| ~~#200~~ | security | **クローズ済**（live ZAP FAIL 0・[10055] PASS を dev 実機で確認） | 完了 2026-07-03 |
-| **#196** | perf | バンドル-19%済・a11y 1.0/BP 0.96 live 確定・TTFB 50-90ms。残: PSI で perf 値取得（クォータ回復後） | PSI 待ち |
-| **#195** | infra | **dev 分完了**（Notification/Monitoring 稼働・authorizer 検証済・アラームOK）。残: prod deploy（実機 UAT 後にユーザー判断） | prod 見送り中 |
+| **#290** | platform ops | ローカル可能分は消化完了（item1-4）。残: 実 deploy 実行本体 | #195 外部待ち |
+| **#328** | ux/kiosk | 実質完了（#339 でマージ済）。クローズ判断待ち | 要確認 |
+| **#196** | perf | バンドル -19%・a11y 1.0/BP 0.96 live 確定・TTFB 50-90ms。残: PSI で perf 値取得 | PSI クォータ待ち |
+| **#195** | infra | dev 分完了（Notification/Monitoring 稼働・authorizer 検証済）。残: prod deploy | prod 見送り中 |
 | **#4** | feature | Vonage 実通話（基盤・interface 済） | #65 スタック |
-| **#31** | feature | VRM 状態別モーション再生（実描画済・残 idle .vrma） | #65 スタック |
+| **#31** | feature | VRM 状態別モーション（実描画済・残 idle `.vrma`） | #65 スタック |
 | **#65** | 集約 | 実機 UAT / 実認証 / WebKit E2E のスタック先 | 外部リソース待ち |
-| ~~#273~~ | reliability | **クローズ済**（inc1 fail-closed #277 + inc2 リネーム #281） | 完了 2026-07-02 |
-| ~~#274~~ | refactor | **クローズ済**（#291/#294/#295/#296/#298 で全移行完了。reservation/notification の永続化は別増分送り） | 完了 2026-07-03 |
-| ~~#275~~ | refactor | **クローズ済**（#279: domain/notification へ集約・参照同一性テスト） | 完了 2026-07-02 |
-| ~~#299~~ | infra | **クローズ済**（#302: WebMonitoringStack = アラーム8個 + web ダッシュボード + alarmEmail docs 化。CloudFront 5xx アラームは #303 へ） | 完了 2026-07-03 |
-| ~~#300~~ | infra | **クローズ済**（#301: prod CloudFront PriceClass_200・S3 MPU 掃除ライフサイクル。年齢 Expiration は現役アセット失効リスクで不採用を設計固定） | 完了 2026-07-03 |
-| ~~#303~~ | infra | **クローズ済**（#306: CloudFrontMonitoringStack(us-east-1) 5xx>1%×15分 + dimensionless ConcurrentExecutions。crossRegionReferences は additive 実証済み。dev apply 済み） | 完了 2026-07-03 |
-| ~~#308~~ | infra | **クローズ済**（#309: prod serverMemoryMb 2048→1024。dev 実測 Max Memory ~161MB/1024MB・p50 46ms が根拠。image は実測ゼロで据え置き） | 完了 2026-07-03 |
-| ~~#284~~ | observability | **クローズ済**（#311: dashboard を実 actor のテナント境界集計へ。item1-3 は #292/#294/a52b682 で既充足だった。残課題: kiosk→tenant 実写像） | 完了 2026-07-03 |
-| **#290** | platform ops | item4 フラグ enforcement は #310→テナント別へ拡張（2026-07-13）。**item3 メンテ enforcement も 2026-07-13 に消化**（`resolveActiveMaintenance` 純関数 + `resolveKioskMaintenance` gate → `/api/kiosk/config` が端末スコープの現在有効メンテを解決し impact=unavailable で active=false・軽い影響は maintenance フィールドで案内・fail-open）。**item2 データ修復 dry-run も 2026-07-13 に消化**（端末レジストリ整合: flat kiosk-store↔Device レジストリの drift を昇格ゲート+高重要度監査つき `POST /api/platform/reconcile/devices` で非破壊プレビュー・adopt/sync/deviceOnly を算出）。**item1 実行/ロールバックも 2026-07-13 に interface+mock 先行で消化**（`planUpdateExecution`/`resultingUpdateStatus` 純関数 + `UpdateDeployer` interface + `MockUpdateDeployer` + `POST /api/platform/updates/[id]/execute` 昇格必須+高重要度監査+dry-run。実 deployer 未配線間は dry-run のみ・実行は 503 deploy_unavailable）。**#290 のローカル可能分は消化完了**。残: 実 deploy 実行本体（#195 外部待ち）・各 follow-up（soft impact client 表示・reconcile/更新結果の console 表示） | ほぼ完了（実 deploy のみ外部待ち） |
-| **#313** | privacy | 受付履歴・監査ログの保持期間実効化（DynamoDB TTL + `logRetentionDays` 接続） | ローカル可 |
-| **#314** | privacy/UX | 来訪者向けプライバシー通知を kiosk 入力ステップに表示（文言設定 + i18n） | ローカル可 |
-| **#315** | ops | バックアップ/リストア・DR 手順 + dev 復元演習（PITR/S3/SSM/Secrets） | 演習は AWS 承認要 |
-| **#316** | ops | 運用 Runbook + 利用者別マニュアル（アラーム対応・手動受付切替・端末運用） | ローカル可（docs） |
-| **#317** | quality | 1 営業日連続稼働 soak テスト（ハーネスはローカル可、実機 soak は #65 へ） | ローカル可 |
-| **#318** | governance | 品質ゲート `--full` の定期実行運用（週次 + 記録 + FAIL フロー） | ローカル可 |
-| **#319** | ux/metrics | 受付体験 KPI 計測（30 秒到達・完遂率・ファネル）+ ダッシュボード | ローカル可 |
-| **#320** | ux | 来訪者ワンタップ満足度フィードバック（終端画面・PII なし・任意） | ローカル可（#319 後推奨） |
-| **#321** | a11y/ux | 来訪者が選べる支援モード（文字サイズ・コントラスト・低位置・やさしい日本語） | ローカル可 |
-| **#322** | ux | 担当者検索の寛容化（表記ゆれ・typo・0 件時誘導・誤選択防止） | ローカル可 |
-| **#323** | ux | 呼び出し中の待ち体験（経過フィードバック・段階的ケア・代替予告） | ローカル可 |
-| **#324** | ux/kiosk | 案内文言の重複・二重質問の解消（待機三重案内・purpose 再質問・connected CTA） | ローカル可 |
-| **#325** | ux/kiosk | 後退系コントロール整理（「最初に戻る」二重表示の解消・語彙一本化） | ローカル可 |
-| **#326** | visual/kiosk | タイポ/レイアウトポリッシュ（見出し語中改行・横置きあふれ・結果画面・サイネージ既定） | ローカル可 |
-| **#327** | i18n | 多言語漏れ解消 + ロケール網羅の機械検証（退館導線・checkout ページ） | ローカル可 |
-| **#328** | ux/kiosk | 退館チェックアウトの自己特定再設計（stayId 前提解消・デザイン統一） | ローカル可 |
-| **#329** | design system | トークン単一ソース化（tokens.ts/globals.css 乖離・インライン移行完遂・色直書きガード） | ローカル可 |
-| **#330** | admin ux | 管理画面運用性（一覧フィルタ/CSV・内部注記除去・コード和訳・狭幅テーブル・共通トースト） | ローカル可 |
-| **#331** | pwa | ホーム画面設置体験（manifest・アイコン・ページタイトル・スプラッシュ） | ローカル可 |
 
-> 2026-07-11 の UI 全画面レビュー（42 キャプチャ + 静的レビュー、`docs/ui-review-2026-07-11.md`）で
-> #324〜#331 を起票。優先度: #325/#327 が体験欠陥（H）、#324/#328/#329/#330 が M、#326/#331 が
-> ポリッシュ（L）。#324/#325/#326 は KioskFlow 周辺で競合しやすく**直列推奨**、#327・#329・#330・
-> #331 は領域独立で並行可。#328 は #98/#327 と整合を取る。
+## 依存 DAG
 
-> 2026-07-11 のギャップ棚卸し（PROJECT_CHARTER / requirements と実装の突合）で #313〜#318 を
-> 起票。観点: 保持期間の実効化（requirements 4.6 未充足）・来訪者への PII 取り扱い明示
-> （5.2）・復旧可能性（PITR はあるが手順なし）・運用手順（charter マイルストーン 8 の残）・
-> 連続稼働の成功指標・CI レス方針下の定期スキャン。#313/#314 は独立トラックとして並行可。
->
-> 同日、エンドユーザ体験の棚卸し（customer-journeys / reception-ux-contract と実装の突合）で
-> #319〜#323 を起票。観点: 30 秒 KPI の実測（計測なくして改善なし）・来訪者の声の収集・
-> 「誰でも一人で完了できる」支援モード・検索 0 件の行き止まり解消・呼び出し中の心理的ケア。
-> 推奨順: #319（計測基盤）を先行 → #322/#323/#321 は領域が分かれ並行可（search ドメイン /
-> KioskFlow 呼び出し中 / レイアウトトークン）→ #320 は #319 のログ拡張に載せる。
+```
+#365 評価基盤 ──┐(先行・並行)
+                ├→ #369 Transport ─┬→ #370 STT ─┐
+                │                   └→ #371 TTS ─┴→ #372 Turn/Barge-in
+#366 Phase0 ADR ─→ #366 Stack ─→ #367（EC2 adapter 部のみ）
+                                  #367 Inc1/Inc4 は #366 非依存 ★
+#373 Organization ─→ #374 Routing ─→ #4 Vonage Provider
+#375 Invitation ───→ #374（RoutingPolicy 解決で合流）
+#362 状態分離 ─→ #361 Character-led UI ─→ #363 Demo Harness
+                                  #363 は #374 の Mock contract も要求
+#376 Spike ─→ #4 MVP2
+すべて ─→ #65 実機 UAT
+```
 
-## 本流トラック — #83 platform epic 締め
+★ issue 本文の「#367 依存: #366」は過剰記述（上記「現在地」参照）。
 
-進捗（マージ済 increment）: read 実接続（inc1-3）→ 高詳細監査 AC13（#249）→ 対象テナント
-選択（#204/205）→ ダッシュボード実データ AC3（#253）→ アップデート横断 read AC6（#250）→
-簡易オブザーバビリティ実接続（#259）→ **JIT 昇格ゲート基盤 AC5/AC10（#263）→ incident /
-maintenance-window / notice 登録を昇格ゲートで解禁 inc4c（#265/266/267）**。
+**issue 本文に無い実装上の依存**: **#362 → #361**。両者とも `KioskFlow.tsx`（2880 行）を
+触るため、先に #362 の presence 配線分離を入れてから #361 の大規模再構成に入る。
 
-残タスク（依存順）:
+## ウェーブ計画
 
-1. **#264 jti 失効ストア**（本流の直接の続き・実認証不要）
-   - 発行 jti を TTL=昇格窓の短命ストアに記録し、`/elevate/end`・管理操作で失効可能に。
-   - `assertElevated` で失効チェックを追加。cookie subject 束縛（済）と合わせて replay を封じる。
-   - → 完了で **#264 クローズ**、#83 の JIT 昇格まわり（AC5/AC10）が一段落。
-2. **#83 break-glass 運用**（AC の §3）
-   - `break_glass` フラグ・利用理由必須・高重要度監査・平常時 UI では非表示/ロック。
-3. **#83 残 AC の監査・網羅**
-   - データマスク（§4）の網羅検証、二者承認（任意）、実 MFA 再認証は **#65 にスタック**。
-   - 全 AC 充足で **#83 クローズ**。
+**第 1 wave（3 トラック並行・ファイル衝突なし）**
 
-## 独立トラック（worktree 分離で並行可・ファイル非重複）
-
-| トラック | Issue | 触る主な領域 | 注意 |
+| トラック | Issue | 触る領域 | 選定理由 |
 | --- | --- | --- | --- |
-| Obs | **#261** 端末実死活 | `src/domain` の Device/kiosk レジストリ, observability 画面 | source-of-truth 統一が肝。撤回した #260 の `deriveConnectivity`/`DEFAULT_ONLINE_WINDOW_MS` は再利用可。**まとめて設計**（二重レジストリ・surface 不整合・無境界スキャン・分母希釈） |
-| Sec | **#200** nonce CSP | `proxy.ts`/middleware, `next.config.ts` | **撤回履歴あり**。段階導入（script-src のみ先行）。切り分け手順はメモ `csp-nonce-nextjs16` 参照。hydration 感受性高、E2E で全画面確認 |
-| Perf | **#196** Lighthouse perf | 初期バンドル/フォント/LCP, kiosk 初期描画の遅延読込 | ローカルは計測不能（`lighthouse-no-navstart-local`）→ **live URL で検証**。#195 の prod / OAC 解消に依存しがち |
+| A | **#377** | `src/app/api/platform/*`・`infra/lib/` | 他 issue と一切重ならない。可視のプレースホルダを潰す小さな単発 → **PR #378 進行中** |
+| B | **#365** | `tests/voice-evaluation/`（新規） | 既存ファイル非改変。#369〜#372 共通の event schema を先に固め後続の手戻りを最小化 |
+| C | **#373** | `src/domain/organization/`（新規）+ staff/department の compatibility reader | #374 のブロッカー。Track C 全体のクリティカルパス先頭 |
 
-## 外部リソース待ち（#65 スタック・現環境で完了不可）
+同 wave に **#366 Phase 0 ADR のみ**（`docs/adr/*.md` 新規・コスト増ゼロ）を差し込むのは安全。
+CDK 実装と deploy は分離し、Budget 見積を添えてユーザー承認を取る。
 
-- **#195** Notification/Monitoring デプロイ + prod: siteTokenSecret（Secrets Manager）設定・
-  CloudWatch アラーム検証・prod 実 apply。実 AWS 承認が要る。
-- **#4** Vonage 実通話: `VONAGE_*` 実認証情報。基盤・interface・mock e2e は実装済。
-- **#31** VRM 状態別モーション: 実 `.vrma` アセット。`VrmAvatarViewer` 実描画は dev 確認済、
-  残は idle 系モーション。
-- **#65**: 上記の集約 + iPad 実機 UAT・QR 実読取・presence カメラ実機・Entra 実ログイン・
-  多言語 TTS 実再生・WebKit E2E（本開発機は Tier3 で WebKit 非対応）。
+**第 2 wave**: #374（#373 後）／ #362（`KioskFlow.tsx` 単独占有）／ #375
+**第 3 wave**: #361（KioskFlow 大改修・単独）／ #369
+**第 4 wave**: #370 + #371 並行 → #372、#363 Inc1
+**第 5 wave**: #366 Stack（**ユーザー承認後**）→ #367、#376 Spike → #4 → #65
 
-> いずれも unit/統合ゲートは緑。実機/実認証が整い次第、各 issue で検証を再開する。
+## 落とし穴（着手前に必読）
+
+- **#366 は本プロジェクト初の実質的な固定費**。EC2 t4g + Route 53 + EBS + CloudWatch を
+  8:00–23:00 常時稼働させる。現状 open-reception の AWS 実績は**月 $0.0005**（2026-07 実測、
+  dev のみ・ほぼ無料枠内）なので、コスト構造が質的に変わる。CLAUDE.md の重大変更条件に
+  該当 → **Phase 0 ADR で Budget 見積を出して承認を取ってから CDK を書く**。
+- **#361 は既存の意図的設計の反転**。`KioskFlow.tsx:1210-1216` のコメントが「選択/入力画面は
+  コンテンツが密集し重なるためアバターを出さない」と明記し、`avatar-companion.test.ts` で
+  テスト固定されている。#361 の AC はこれを覆すので、既存テストの意図的な書き換えと
+  レビュー合意が要る。単なる追加実装ではない。
+- **#375 の token hash 化は永続データのスキーマ破壊**。既存 `VisitReservation.token` は
+  生値保存で migration 必須 → 要ユーザー確認。ただし他 AC は充足済みなので、
+  **hash 化と 3-ref 分離だけを increment 化**すればよくモデル全体の作り直しは不要。
+- **#369〜#372 は greenfield**。既存 `src/lib/voice/` を音声パイプラインと誤認しない。
 
 ## モデル割り当て指針（オーケストレータ向け）
 
 オーケストレータ（マージ判断・レビュー・競合解決・スコープ裁定）は上位モデルで実行し、
-実装トラックは `Agent` の `model` パラメータでタスク特性に合わせて割り当てる:
+実装トラックは `Agent` の `model` でタスク特性に合わせる:
 
 | 割り当て | 対象 | 例 |
 | --- | --- | --- |
-| **上位（opus 等）** | 設計判断を伴う UX/情報設計、横断リファクタ、スキーマ設計 | #324（情報設計）/#325（語彙設計）/#328（退館再設計）/#329（トークン統一・700+ 箇所）/#319（ログスキーマ） |
-| **標準（sonnet 等）** | AC が具体的で対象ファイルが特定済みの実装 | #313（TTL）/#314（通知 UI）/#326（CSS ポリッシュ）/#327（i18n 移行）/#330（admin 個別項目）/#331（manifest）/#320〜#322 |
-| **標準（sonnet 等）** | ドキュメント整備 | #315/#316/#318 |
+| **上位（opus 等）** | 設計判断を伴う UX/情報設計、横断リファクタ、スキーマ設計 | #361（画面再設計・既存設計の反転）/ #373（組織モデル）/ #374（ルーティング抽象）/ #375（招待モデル） |
+| **標準（sonnet 等）** | AC が具体的で対象ファイルが特定済みの実装 | #362（配線分離）/ #365（ハーネス）/ #367 Inc1 / #369〜#372（仕様が明確な greenfield）/ #377 |
+| **標準（sonnet 等）** | ドキュメント整備・ADR 草案 | #366 Phase 0 / #376 ADR |
 
 - レビュー/検証エージェント（読み取り専用 fan-out）は標準モデルで並行可。
 - トラック内で設計疑義が出たら実装を止めてオーケストレータへ報告（トラック側で判断しない）。
@@ -159,8 +140,20 @@ maintenance-window / notice 登録を昇格ゲートで解禁 inc4c（#265/266/2
 ## 進め方メモ
 
 - 各トラックは独立 worktree（または `isolation: "worktree"` のサブエージェント）で実装。
-- fresh worktree は `node_modules` が無いが、`quality-gate.sh` の bootstrap が自己修復する。
-- コミット署名は 1Password `op-ssh-sign`（ロック中は失敗→アンロックして再実行）。
-- マージは 1 本ずつゲート green を示してユーザー確認 → squash + `--delete-branch`。
+- fresh worktree は `node_modules` が無いが `quality-gate.sh` の bootstrap が自己修復する。
+  worktree 内でゲートを起動するときは**スクリプトを絶対パスで叩く**（cd 前提だと main 側で走る）。
+- コミット署名は 1Password `op-ssh-sign`（ロック中は失敗 → アンロックして再実行）。
+- マージは 1 本ずつ。ゲート green + レビュー blocking なしなら自動マージ（重大変更時のみ確認）。
   後続トラックはマージ後 main を `git pull --ff-only` で取り込んでから整合確認。
-- 状態は本ファイルの表で更新していく。
+- 状態は本ファイルの表で更新していく。**分類が実態と違ったらその周回で直す。**
+
+## 完了アーカイブ
+
+過去フェーズの詳細は各ハンドオフに委譲する（本書には残さない — 陳腐化して誤誘導するため）。
+
+| フェーズ | 範囲 | 記録 |
+| --- | --- | --- |
+| 初期 DAG / QR チェーン / 管理画面クラスタ / 受付拡張・UX | epic #82 / #96 / #119 とその子 issue | 全クローズ |
+| platform console | epic #83（運用 ops は #290 へ切り出し） | `docs/platform-console-design.md` |
+| 2026-07-02〜03 自律ループ | #264/#275/#273/#261/#289/#274/#299/#300/#303/#308/#284/#200 | クローズ済 |
+| 2026-07-11 三層棚卸し → 07-12/13 消化 | #313〜#331・#342・#348 | `docs/handoff-2026-07-12.md` |
