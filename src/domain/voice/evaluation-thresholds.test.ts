@@ -1,6 +1,12 @@
 import { describe, expect, it } from 'vitest';
 
-import type { LatencySummary, VoiceEvalSuiteMetrics } from './evaluation-metrics';
+import { VOICE_EVAL_SCHEMA_VERSION, type VoiceEvalEvent } from './evaluation-events';
+import {
+  computeSessionMetrics,
+  computeSuiteMetrics,
+  type LatencySummary,
+  type VoiceEvalSuiteMetrics,
+} from './evaluation-metrics';
 import { VOICE_EVAL_PROFILES, evaluateAgainstSlo, parseVoiceEvalProfile } from './evaluation-thresholds';
 
 function summary(value: number | null): LatencySummary {
@@ -39,6 +45,8 @@ function healthySuite(): VoiceEvalSuiteMetrics {
       falseStopRate: 0,
       nearEndOnsetDetectionRate: 1,
       spuriousNearEndOnsetCount: 0,
+      unattributedStopRate: 0,
+      unattributedStopCount: 0,
     },
     entity: { top1Rate: 1, top3Rate: 1, recall: 1, precision: 0.5 },
     reliability: {
@@ -148,6 +156,8 @@ describe('evaluateAgainstSlo', () => {
         falseStopRate: null,
         nearEndOnsetDetectionRate: null,
         spuriousNearEndOnsetCount: 0,
+        unattributedStopRate: null,
+        unattributedStopCount: 0,
       },
       entity: { top1Rate: null, top3Rate: null, recall: null, precision: null },
       reliability: {
@@ -215,5 +225,69 @@ describe('evaluateAgainstSlo', () => {
     suite.entity.top3Rate = 0.8;
     const violation = evaluateAgainstSlo(suite, uat).violations.find((v) => v.metric === 'minEntityTop3Rate');
     expect(violation?.observed).toBe(0.8);
+  });
+
+  it('flags stops that could not be attributed to any onset', () => {
+    const suite = healthySuite();
+    suite.bargeIn.unattributedStopRate = 0.1;
+    expect(evaluateAgainstSlo(suite, uat).violations.map((v) => v.metric)).toContain(
+      'maxUnattributedBargeInStopRate',
+    );
+  });
+});
+
+describe('遅い停止の抜け穴', () => {
+  /** 割り込み 1 件だけのセッション。`stopLatencyMs` で停止までの時間を決める。 */
+  function interruptionSession(id: string, stopLatencyMs: number) {
+    const events: VoiceEvalEvent[] = [
+      { t: 0, turnIndex: 0, type: 'tts.request', text: 'a' },
+      { t: 100, turnIndex: 0, type: 'tts.playback_start' },
+      { t: 300, turnIndex: 0, type: 'audio.onset' },
+      { t: 300 + stopLatencyMs, turnIndex: 0, type: 'tts.playback_stopped', reason: 'barge_in' },
+    ];
+    return computeSessionMetrics({
+      schemaVersion: VOICE_EVAL_SCHEMA_VERSION,
+      sessionId: id,
+      locale: 'ja-JP',
+      providers: { stt: 'mock', tts: 'mock', turn: 'mock' },
+      events,
+      groundTruth: {
+        turns: [],
+        nearEndStimuli: [{ id: 'i', atMs: 300, toleranceMs: 100, label: 'interruption' }],
+      },
+    });
+  }
+
+  it('does not let detection-rate slack hide an arbitrarily slow stop', () => {
+    // 割り込み 10 件のうち 9 件は 120ms、1 件は 2000ms で停止する provider。
+    // 帰属できない停止のサンプルを捨てると、検出率 0.9（ci の下限ちょうど = PASS）に吸収されて
+    // P95 が 120ms のまま緑になり、2000ms の停止が指標から丸ごと消える。
+    const sessions = [
+      ...Array.from({ length: 9 }, (_, i) => interruptionSession(`fast-${i}`, 120)),
+      interruptionSession('slow', 2000),
+    ];
+    const suite = computeSuiteMetrics(sessions);
+
+    expect(suite.bargeIn.trueInterruptionDetectionRate).toBe(0.9); // 検出率だけでは赤くならない
+    expect(suite.latency.nearEndOnsetToPlaybackStopped.count).toBe(10); // サンプルを消さない
+    expect(suite.latency.nearEndOnsetToPlaybackStopped.max).toBe(2000);
+    expect(suite.bargeIn.unattributedStopRate).toBeCloseTo(0.1);
+
+    const result = evaluateAgainstSlo(suite, VOICE_EVAL_PROFILES.ci.thresholds);
+    expect(result.violations.map((v) => v.metric).sort()).toEqual([
+      'bargeInStopP95Ms',
+      'maxUnattributedBargeInStopRate',
+    ]);
+    expect(result.passed).toBe(false);
+  });
+
+  it('keeps the ci P95 threshold reachable (デッド閾値にしない)', () => {
+    // 反応窓を超える停止が admit されるので、400ms より大きい実測値が P95 に現れうる。
+    const suite = computeSuiteMetrics([interruptionSession('slow', 700)]);
+    expect(suite.latency.nearEndOnsetToPlaybackStopped.p95).toBe(700);
+    expect(VOICE_EVAL_PROFILES.ci.thresholds.bargeInStopP95Ms).toBeLessThan(700);
+    expect(evaluateAgainstSlo(suite, VOICE_EVAL_PROFILES.ci.thresholds).violations.map((v) => v.metric)).toContain(
+      'bargeInStopP95Ms',
+    );
   });
 });

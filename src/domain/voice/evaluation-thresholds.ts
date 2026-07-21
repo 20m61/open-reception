@@ -39,6 +39,12 @@ export type VoiceEvalThresholds = {
   minTrueInterruptionDetectionRate: number;
   /** 近端発話を onset として拾えた割合の下限。VAD の検出漏れを罰する。 */
   minNearEndOnsetDetectionRate: number;
+  /**
+   * 原因の onset を特定できなかった `barge_in` 停止の割合の上限。
+   * これが無いと、反応窓より遅い停止が「検出漏れ 1 件」に化け、
+   * `minTrueInterruptionDetectionRate` の余裕（ci 10% / uat 2%）に吸収されて緑になる。
+   */
+  maxUnattributedBargeInStopRate: number;
 
   // --- ターン（上限と下限の対） ---
   /** 誤ターン終了率の上限。 */
@@ -85,6 +91,7 @@ export const VOICE_EVAL_PROFILES: Record<VoiceEvalProfileName, VoiceEvalProfile>
       maxFalseStopRate: 0.05,
       minTrueInterruptionDetectionRate: 0.9,
       minNearEndOnsetDetectionRate: 0.85,
+      maxUnattributedBargeInStopRate: 0,
       maxFalseCommitRate: 0.06,
       maxMissedEndRate: 0.06,
       maxCorpusCer: 0.1,
@@ -109,6 +116,7 @@ export const VOICE_EVAL_PROFILES: Record<VoiceEvalProfileName, VoiceEvalProfile>
       maxFalseStopRate: 0.02,
       minTrueInterruptionDetectionRate: 0.98,
       minNearEndOnsetDetectionRate: 0.95,
+      maxUnattributedBargeInStopRate: 0,
       maxFalseCommitRate: 0.03,
       maxMissedEndRate: 0.03,
       maxCorpusCer: 0.05,
@@ -219,6 +227,13 @@ function collectChecks(metrics: VoiceEvalSuiteMetrics, thresholds: VoiceEvalThre
       observed: bargeIn.nearEndOnsetDetectionRate,
       allowed: thresholds.minNearEndOnsetDetectionRate,
       direction: 'min',
+    },
+    {
+      metric: 'maxUnattributedBargeInStopRate',
+      label: '原因を特定できなかった再生停止の割合',
+      observed: bargeIn.unattributedStopRate,
+      allowed: thresholds.maxUnattributedBargeInStopRate,
+      direction: 'max',
     },
     {
       metric: 'maxFalseCommitRate',

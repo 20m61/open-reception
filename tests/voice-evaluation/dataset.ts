@@ -165,8 +165,10 @@ const SPECS: VoiceEvalDatasetSpec[] = [
     tags: ['barge-in', 'backchannel', 'attribution'],
     speechDurationMs: 900,
     nearEnd: [
+      // 間隔は許容窓 (STIMULUS_TOLERANCE_MS) の 2 倍より広く取る。近すぎると窓が重なり、
+      // 観測をどちらの刺激に帰属させるか決められない（バリデータが弾く）。
       { id: 'backchannel-ee', turnIndex: 0, offsetFromPlaybackStartMs: 300, label: 'backchannel' },
-      { id: 'real-interruption', turnIndex: 0, offsetFromPlaybackStartMs: 700, label: 'interruption' },
+      { id: 'real-interruption', turnIndex: 0, offsetFromPlaybackStartMs: 1500, label: 'interruption' },
     ],
     turns: [
       {

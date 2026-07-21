@@ -15,6 +15,7 @@ import {
   latencySummary,
   matchNearEnd,
   percentile,
+  unattributedBargeInStops,
 } from './evaluation-metrics';
 
 describe('percentile', () => {
@@ -203,9 +204,11 @@ describe('attributeBargeInStops', () => {
     expect(attributions[1]?.stopLatencyMs).toBeNull();
   });
 
-  it('attributes nothing when every onset is older than the reaction window (悲観側に倒す)', () => {
-    // 停止が onset から 700ms 後。反応窓 (30–400ms) の外なので原因を特定できない。
-    // 「たぶんこれだろう」で帰属すると、遅い provider の遅延が本当の値より小さく見える。
+  it('does not credit an onset older than the reaction window, but keeps the stop measurable', () => {
+    // 停止が onset から 700ms 後。反応窓 (30–400ms) の外なので「この onset を検出して止めた」とは
+    // 言えない。だからといって**停止を無かったことにはしない** —— サンプルを捨てると、遅い停止が
+    // 検出率の余裕に吸収されて P95 の SLO をすり抜ける。最も早い候補からの経過（= 最大の見積り）を
+    // 悲観的に積む。
     const slow: VoiceEvalEvent[] = [
       { t: 0, turnIndex: 0, type: 'tts.request', text: 'a' },
       { t: 100, turnIndex: 0, type: 'tts.playback_start' },
@@ -213,9 +216,26 @@ describe('attributeBargeInStops', () => {
       { t: 1000, turnIndex: 0, type: 'tts.playback_stopped', reason: 'barge_in' },
     ];
     expect(attributeBargeInStops(slow).map((a) => a.stopped)).toEqual([false]);
-    expect(computeLatencyMetrics(baseSession(slow, { turns: [], nearEndStimuli: [] })).nearEndOnsetToPlaybackStopped.count).toBe(
-      0,
-    );
+    expect(unattributedBargeInStops(slow)).toEqual([{ stop: 1000, pessimisticStopLatencyMs: 700 }]);
+
+    const latency = computeLatencyMetrics(baseSession(slow, { turns: [], nearEndStimuli: [] }));
+    expect(latency.nearEndOnsetToPlaybackStopped.count).toBe(1);
+    expect(latency.nearEndOnsetToPlaybackStopped.max).toBe(700);
+  });
+
+  it('records a barge-in stop with no near-end onset at all as unattributed', () => {
+    // 近端発話が 1 つも観測されていないのに barge_in で止まった = 説明のつかない停止。
+    // 遅延は測りようがないが、件数としては必ず残す。
+    const unexplained: VoiceEvalEvent[] = [
+      { t: 0, turnIndex: 0, type: 'tts.request', text: 'a' },
+      { t: 100, turnIndex: 0, type: 'tts.playback_start' },
+      { t: 500, turnIndex: 0, type: 'tts.playback_stopped', reason: 'barge_in' },
+    ];
+    expect(unattributedBargeInStops(unexplained)).toEqual([{ stop: 500, pessimisticStopLatencyMs: null }]);
+    expect(
+      computeLatencyMetrics(baseSession(unexplained, { turns: [], nearEndStimuli: [] })).nearEndOnsetToPlaybackStopped
+        .count,
+    ).toBe(0);
   });
 
   it('credits nothing when the playback finished naturally', () => {
@@ -293,8 +313,8 @@ describe('matchNearEnd', () => {
       baseSession(dropped, {
         turns: [],
         nearEndStimuli: [
-          { id: 'backchannel-ee', atMs: 1540, toleranceMs: 400, label: 'backchannel' },
-          { id: 'real-interruption', atMs: 1940, toleranceMs: 400, label: 'interruption' },
+          { id: 'backchannel-ee', atMs: 1540, toleranceMs: 150, label: 'backchannel' },
+          { id: 'real-interruption', atMs: 1940, toleranceMs: 150, label: 'interruption' },
         ],
       }),
     );
@@ -494,8 +514,8 @@ describe('computeBargeInMetrics', () => {
       baseSession(droppedBackchannel, {
         turns: [],
         nearEndStimuli: [
-          { id: 'backchannel-ee', atMs: 1540, toleranceMs: 400, label: 'backchannel' },
-          { id: 'real-interruption', atMs: 1940, toleranceMs: 400, label: 'interruption' },
+          { id: 'backchannel-ee', atMs: 1540, toleranceMs: 150, label: 'backchannel' },
+          { id: 'real-interruption', atMs: 1940, toleranceMs: 150, label: 'interruption' },
         ],
       }),
     );

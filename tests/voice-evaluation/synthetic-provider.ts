@@ -69,8 +69,13 @@ export type SyntheticProviderConfig = {
   firstAudioMs: number;
   /** 応答音声の長さ。 */
   playbackDurationMs: number;
-  /** 近端発話に反応して止めるまでの時間。 */
+  /** 近端発話に反応して止めるまでの時間（観測した onset から数える）。 */
   bargeInStopMs: number;
+  /**
+   * 刺激を鳴らしてから `audio.onset` を報告するまでの検出遅れ。VAD のハングオーバ等を模す。
+   * `STIMULUS_TOLERANCE_MS` を超えると検出漏れ + 誤検出として採点される（許容予算の検証用）。
+   */
+  onsetLagMs?: number;
   /**
    * 割り込み方針。
    * - `ideal`  … 真の割り込みだけ止める
@@ -100,12 +105,17 @@ export type SyntheticProviderConfig = {
 const TURN_GAP_MS = 500;
 
 /**
- * 刺激と観測 onset を対応付ける許容幅。応答時刻の小さなぶれで検出漏れ扱いにしないための余裕。
+ * 刺激（音を鳴らした時刻）と観測 onset（検出器が発話開始を報告した時刻）を対応付ける許容幅
+ * = **検出遅れの許容予算**。
  *
- * **同一再生区間内の最小刺激間隔（`consecutive-near-end` の 400ms）の半分未満**に保つこと。
- * 窓が重なると観測をどちらの刺激に帰属させるか決められず、`validateVoiceEvalSession` が弾く。
+ * 実 provider の `audio.onset` は VAD のハングオーバやバッファリングで刺激より遅れる。
+ * 予算より遅れた観測は「検出漏れ + 誤検出」として採点され、「onset が X ms ずれている」という
+ * 実態が読めなくなるため、barge-in 停止 SLO の P95 (uat 300ms) と同じ 300ms を予算とする。
+ *
+ * 予算は**セッション全体で最も近い刺激どうしの間隔の半分未満**に保つこと（`validateVoiceEvalSession`
+ * が窓の重なりを弾く）。予算を広げるときは、データセット側の刺激間隔も併せて広げる。
  */
-const STIMULUS_TOLERANCE_MS = 150;
+const STIMULUS_TOLERANCE_MS = 300;
 
 /** 基準となる「よくできた」provider 設定。ここから 1 ノブずつ崩して回帰検知を確認する。 */
 export const BASELINE_SYNTHETIC_CONFIG: Omit<SyntheticProviderConfig, 'id' | 'providers'> = {
@@ -314,10 +324,12 @@ export function createSyntheticProvider(
 
         let stopAt: number | null = null;
         for (const stimulus of inWindow) {
-          // 既に停止した後の刺激は再生中ではないので観測されない。
-          if (stopAt !== null && stimulus.atMs >= stopAt) continue;
+          // 検出器が発話開始を報告する時刻。刺激そのものの時刻とは限らない。
+          const observedAt = stimulus.atMs + (config.onsetLagMs ?? 0);
+          // 既に停止した / 再生が終わった後は再生中ではないので観測されない。
+          if (observedAt >= (stopAt ?? naturalEndAt)) continue;
 
-          events.push({ t: stimulus.atMs, turnIndex, type: 'audio.onset' });
+          events.push({ t: observedAt, turnIndex, type: 'audio.onset' });
 
           const shouldStop =
             config.bargeInPolicy === 'naive'
@@ -325,7 +337,7 @@ export function createSyntheticProvider(
               : config.bargeInPolicy === 'deaf'
                 ? false
                 : stimulus.label === 'interruption';
-          if (shouldStop && stopAt === null) stopAt = stimulus.atMs + config.bargeInStopMs;
+          if (shouldStop && stopAt === null) stopAt = observedAt + config.bargeInStopMs;
         }
 
         if (stopAt !== null) {

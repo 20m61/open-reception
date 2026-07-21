@@ -35,6 +35,7 @@ const COLUMNS: Column[] = [
   { header: 'true_interruption_detection_rate', value: (r) => r.metrics.bargeIn.trueInterruptionDetectionRate },
   { header: 'near_end_onset_detection_rate', value: (r) => r.metrics.bargeIn.nearEndOnsetDetectionRate },
   { header: 'spurious_near_end_onset_count', value: (r) => r.metrics.bargeIn.spuriousNearEndOnsetCount },
+  { header: 'unattributed_barge_in_stop_rate', value: (r) => r.metrics.bargeIn.unattributedStopRate },
   { header: 'false_stop_rate', value: (r) => r.metrics.bargeIn.falseStopRate },
   { header: 'backchannel_false_stop_rate', value: (r) => r.metrics.bargeIn.backchannelFalseStopRate },
   { header: 'echo_false_stop_rate', value: (r) => r.metrics.bargeIn.echoFalseStopRate },

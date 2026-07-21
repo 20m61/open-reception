@@ -130,9 +130,32 @@ describe('SLO 判定', () => {
     const { result, violations } = await runWith(provider('deaf', { bargeInPolicy: 'deaf' }));
     expect(result.metrics.bargeIn.falseStopRate).toBe(0);
     expect(result.metrics.bargeIn.trueInterruptionDetectionRate).toBe(0);
-    expect(violations).toEqual(['bargeInStopP50Ms', 'bargeInStopP95Ms', 'minTrueInterruptionDetectionRate']);
+    // 一度も止めないので停止に関する指標は全て計測不能。uat は strict なので計測不能自体が違反。
+    expect(violations).toEqual([
+      'bargeInStopP50Ms',
+      'bargeInStopP95Ms',
+      'maxUnattributedBargeInStopRate',
+      'minTrueInterruptionDetectionRate',
+    ]);
     expect(result.passed).toBe(false);
     expect(result.schemaErrors).toEqual([]);
+  });
+
+  it('検出遅れが許容予算の内側なら、刺激との対応は保たれる', async () => {
+    // 実 provider の onset は VAD のハングオーバ等で刺激より遅れる。予算 (STIMULUS_TOLERANCE_MS)
+    // の内側なら「onset が少し遅い」であって検出漏れではない。
+    const { result, violations } = await runWith(provider('laggy-onset', { onsetLagMs: 250 }));
+    expect(result.metrics.bargeIn.nearEndOnsetDetectionRate).toBe(1);
+    expect(result.metrics.bargeIn.spuriousNearEndOnsetCount).toBe(0);
+    expect(violations).toEqual([]);
+  });
+
+  it('検出遅れが予算を超えると検出漏れ + 誤検出として現れる（予算の崖を固定する）', async () => {
+    // 予算を超えた時点で「1 件も検出できず、幻の検出が同数ある」という採点になる。
+    // 崖の存在自体を固定しておき、実 provider の実測でずれが出たら予算と刺激間隔を見直す。
+    const { result } = await runWith(provider('very-laggy-onset', { onsetLagMs: 400 }));
+    expect(result.metrics.bargeIn.nearEndOnsetDetectionRate).toBe(0);
+    expect(result.metrics.bargeIn.spuriousNearEndOnsetCount).toBeGreaterThan(0);
   });
 
   it('フィラーで切る provider は誤ターン終了率だけで落ちる', async () => {

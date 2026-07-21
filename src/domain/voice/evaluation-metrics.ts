@@ -14,10 +14,12 @@
  */
 import {
   observedNearEndOnsets,
+  playbackWindows,
   sortVoiceEvalEvents,
   type VoiceEvalEvent,
   type VoiceEvalNearEndObservation,
   type VoiceEvalNearEndStimulus,
+  type VoiceEvalPlaybackWindow,
   type VoiceEvalSession,
   type VoiceEvalTurnGroundTruth,
 } from './evaluation-events';
@@ -137,11 +139,36 @@ export const MIN_BARGE_IN_REACTION_MS = 30;
  * つもりなら、とっくに止まっていたはずだから。
  *
  * 値は uat の停止遅延 SLO（P50 150ms / P95 300ms）より広く取ってある。SLO を満たす provider の
- * 停止は必ず窓に入る。逆に窓より遅い停止は**原因不明として帰属しない**: 該当の割り込みは
- * 「検出できなかった」として数えられ、遅延サンプルも積まれない。これは意図的に悲観側の読みで、
- * 「たぶん直前の onset だろう」と帰属して遅延を実際より小さく見せるより安全である。
+ * 停止は必ず窓に入る。逆に窓より遅い停止は**原因不明として帰属しない**（該当の割り込みは
+ * 「検出できなかった」として数えられる）。ただし**停止そのものは捨てない** ——
+ * {@link unattributedBargeInStops} が悲観的な遅延見積りと件数を残す。捨てると、検出率の余裕に
+ * 吸収されてどれだけ遅い停止でもゲートが緑になる。
  */
 export const MAX_BARGE_IN_REACTION_MS = 400;
+
+/** 再生区間の同一性キー。`observedNearEndOnsets` が返す window とは別インスタンスになるため。 */
+function windowKey(window: VoiceEvalPlaybackWindow): string {
+  return `${window.start}:${window.stop}`;
+}
+
+/** 区間ごとに原因とみなせる onset を 1 つだけ選ぶ（帰属の唯一の実装）。 */
+function bargeInCauses(events: readonly VoiceEvalEvent[]): {
+  observations: VoiceEvalNearEndObservation[];
+  causeOfWindow: Map<string, number>;
+} {
+  const observations = observedNearEndOnsets(events);
+  // observations は時刻順なので、窓に入る最初のものがそのまま「最も早い原因」になる。
+  const causeOfWindow = new Map<string, number>();
+  for (const observation of observations) {
+    const { window } = observation;
+    if (window.reason !== 'barge_in') continue;
+    const reaction = window.stop - observation.t;
+    if (reaction < MIN_BARGE_IN_REACTION_MS || reaction > MAX_BARGE_IN_REACTION_MS) continue;
+    const key = windowKey(window);
+    if (!causeOfWindow.has(key)) causeOfWindow.set(key, observation.observationIndex);
+  }
+  return { observations, causeOfWindow };
+}
 
 /**
  * 再生停止の原因を近端 onset へ帰属させる。
@@ -160,21 +187,10 @@ export const MAX_BARGE_IN_REACTION_MS = 400;
  * 「割り込みは未検出なのに、後続の相づちが誤停止として数えられる」といった両方向の誤ラベルが起きる。
  */
 export function attributeBargeInStops(events: readonly VoiceEvalEvent[]): BargeInAttribution[] {
-  const observations = observedNearEndOnsets(events);
-
-  // 区間ごとに、原因とみなせる onset を 1 つだけ選ぶ。observations は時刻順なので、
-  // 窓に入る最初のものがそのまま「最も早い原因」になる。
-  const causeOfWindow = new Map<VoiceEvalNearEndObservation['window'], number>();
-  for (const observation of observations) {
-    const { window } = observation;
-    if (window.reason !== 'barge_in') continue;
-    const reaction = window.stop - observation.t;
-    if (reaction < MIN_BARGE_IN_REACTION_MS || reaction > MAX_BARGE_IN_REACTION_MS) continue;
-    if (!causeOfWindow.has(window)) causeOfWindow.set(window, observation.observationIndex);
-  }
+  const { observations, causeOfWindow } = bargeInCauses(events);
 
   return observations.map((observation) => {
-    const causedStop = causeOfWindow.get(observation.window) === observation.observationIndex;
+    const causedStop = causeOfWindow.get(windowKey(observation.window)) === observation.observationIndex;
     return {
       observationIndex: observation.observationIndex,
       t: observation.t,
@@ -182,6 +198,46 @@ export function attributeBargeInStops(events: readonly VoiceEvalEvent[]): BargeI
       stopLatencyMs: causedStop ? observation.window.stop - observation.t : null,
     };
   });
+}
+
+/** 原因の onset を特定できなかった `barge_in` 停止。 */
+export type UnattributedBargeInStop = {
+  /** 停止時刻。 */
+  stop: number;
+  /**
+   * 悲観的な遅延の見積り = 停止から**最も早い候補 onset**（`MIN_BARGE_IN_REACTION_MS` 以上前）
+   * までの間隔。候補が 1 つも無ければ `null`（近端発話なしで止まった = 測りようがない）。
+   */
+  pessimisticStopLatencyMs: number | null;
+};
+
+/**
+ * 帰属できなかった `barge_in` 停止を列挙する。
+ *
+ * **停止を無かったことにしてはいけない。** 反応窓（{@link MAX_BARGE_IN_REACTION_MS}）より遅い停止の
+ * サンプルを捨てると、その割り込みは単に「検出漏れ」1 件になり、`minTrueInterruptionDetectionRate` の
+ * 余裕（ci で 10%・uat で 2%）に吸収されて **どれだけ遅い停止でもゲートが緑になる**。実測でも
+ * 「9 件が 120ms + 1 件が 2000ms」のスイートが検出率 0.9（下限ちょうど）で PASS していた。
+ *
+ * そこで、遅延は**最も早い候補からの経過**（= 取りうる最大の見積り）として悲観的に積み、
+ * 件数は `unattributedStopRate` として独自の SLO で罰する。原因の onset を「たぶんこれ」と
+ * 決め打ちしないので、誤停止率・検出率が楽観方向に動くこともない。
+ */
+export function unattributedBargeInStops(events: readonly VoiceEvalEvent[]): UnattributedBargeInStop[] {
+  const { observations, causeOfWindow } = bargeInCauses(events);
+
+  return playbackWindows(events)
+    .filter((window) => window.reason === 'barge_in' && !causeOfWindow.has(windowKey(window)))
+    .map((window) => {
+      const key = windowKey(window);
+      const earliest = observations.find(
+        (o) => windowKey(o.window) === key && window.stop - o.t >= MIN_BARGE_IN_REACTION_MS,
+      );
+      return {
+        stop: window.stop,
+        pessimisticStopLatencyMs: earliest ? window.stop - earliest.t : null,
+      };
+    });
 }
 
 export type NearEndMatch = {
@@ -216,6 +272,7 @@ type AssignmentMove = 'match' | 'skip-stimulus' | 'skip-observation';
  */
 function assignObservationsToStimuli(
   stimuli: readonly VoiceEvalNearEndStimulus[],
+  tolerances: readonly number[],
   observations: readonly VoiceEvalNearEndObservation[],
 ): (VoiceEvalNearEndObservation | null)[] {
   const stimulusCount = stimuli.length;
@@ -239,7 +296,7 @@ function assignObservationsToStimuli(
 
       // 同点なら「対応付ける」「早い観測を使う」を優先する（決定論的にするため）。
       const candidates: { score: AssignmentScore; move: AssignmentMove }[] = [];
-      if (distance <= stimulus.toleranceMs) {
+      if (distance <= (tolerances[i] ?? stimulus.toleranceMs)) {
         candidates.push({ score: { count: paired.count + 1, distance: paired.distance + distance }, move: 'match' });
       }
       candidates.push({ score: best[i + 1]![j]!, move: 'skip-stimulus' });
@@ -270,6 +327,22 @@ function assignObservationsToStimuli(
 }
 
 /**
+ * 隣接する刺激の許容窓が重なっている場合に、重ならない幅まで縮めた実効許容幅を返す。
+ *
+ * 重なる正解は `validateVoiceEvalSession` が弾くが、`matchNearEnd` は export されていて
+ * バリデータを通さずに呼べる。窓が重なったまま解くと、DP が交差しない解しか出せないぶん
+ * 対応件数が劣化しうる（= 検出漏れを水増しする）。縮めておけば、どんな入力でも
+ * 「1 観測が高々 1 刺激の窓に入る」が保たれ、DP が厳密解になる。
+ */
+function disjointTolerances(stimuli: readonly VoiceEvalNearEndStimulus[]): number[] {
+  return stimuli.map((stimulus, index) => {
+    const neighbours = [stimuli[index - 1], stimuli[index + 1]].filter((s) => s !== undefined);
+    const halfGaps = neighbours.map((neighbour) => Math.abs(stimulus.atMs - neighbour.atMs) / 2);
+    return Math.min(stimulus.toleranceMs, ...halfGaps);
+  });
+}
+
+/**
  * 刺激（正解）と観測 onset を時間窓でマッチングする。
  * 未マッチの刺激 = 検出漏れ、未マッチの観測 = 誤検出として、**どちらも計測可能**にする。
  *
@@ -282,7 +355,7 @@ export function matchNearEnd(session: VoiceEvalSession): NearEndMatching {
   const observations = observedNearEndOnsets(session.events);
   const attributions = new Map(attributeBargeInStops(session.events).map((a) => [a.observationIndex, a]));
   const stimuli = [...session.groundTruth.nearEndStimuli].sort((a, b) => a.atMs - b.atMs);
-  const assigned = assignObservationsToStimuli(stimuli, observations);
+  const assigned = assignObservationsToStimuli(stimuli, disjointTolerances(stimuli), observations);
   const used = new Set(assigned.filter((o) => o !== null).map((o) => o.observationIndex));
 
   const matches: NearEndMatch[] = stimuli.map((stimulus, index) => {
@@ -384,6 +457,10 @@ export function computeLatencySamples(session: VoiceEvalSession): LatencySamples
   // 窓内の全 onset を積むと、停止を起こしていない相づちが小さい値を寄与して p50/p95 を楽観方向に歪める。
   for (const attribution of attributeBargeInStops(session.events)) {
     if (attribution.stopLatencyMs !== null) samples.nearEndOnsetToPlaybackStopped.push(attribution.stopLatencyMs);
+  }
+  // 帰属できなかった停止も、悲観的な見積りで必ず標本に入れる（捨てると遅い停止が SLO をすり抜ける）。
+  for (const stop of unattributedBargeInStops(session.events)) {
+    if (stop.pessimisticStopLatencyMs !== null) samples.nearEndOnsetToPlaybackStopped.push(stop.pessimisticStopLatencyMs);
   }
 
   return samples;
@@ -568,6 +645,9 @@ export type BargeInCounts = {
   stimuliTotal: number;
   /** どの刺激にも対応しない観測 = 誤検出。 */
   spuriousObservations: number;
+  /** `barge_in` で終わった再生区間の総数と、そのうち原因を特定できなかった件数。 */
+  bargeInStops: number;
+  unattributedStops: number;
 };
 
 export type BargeInMetrics = {
@@ -582,6 +662,13 @@ export type BargeInMetrics = {
   /** 近端発話そのものを onset として拾えた割合。 */
   nearEndOnsetDetectionRate: number | null;
   spuriousNearEndOnsetCount: number;
+  /**
+   * `barge_in` 停止のうち、原因の onset を特定できなかった割合。反応窓より遅い停止と、
+   * 近端発話が無いのに止まった停止を捕まえる。「停止したのに理由が言えない」は計測の穴なので、
+   * 遅延の分布に埋もれさせず独立した指標にする。
+   */
+  unattributedStopRate: number | null;
+  unattributedStopCount: number;
 };
 
 export function computeBargeInCounts(session: VoiceEvalSession): BargeInCounts {
@@ -597,10 +684,14 @@ export function computeBargeInCounts(session: VoiceEvalSession): BargeInCounts {
     detectedStimuli: 0,
     stimuliTotal: 0,
     spuriousObservations: 0,
+    bargeInStops: 0,
+    unattributedStops: 0,
   };
 
   const { matches, spuriousObservations } = matchNearEnd(session);
   counts.spuriousObservations = spuriousObservations.length;
+  counts.bargeInStops = playbackWindows(session.events).filter((w) => w.reason === 'barge_in').length;
+  counts.unattributedStops = unattributedBargeInStops(session.events).length;
 
   for (const match of matches) {
     counts.stimuliTotal += 1;
@@ -636,6 +727,8 @@ export function summarizeBargeIn(counts: BargeInCounts): BargeInMetrics {
     falseStopRate: ratio(counts.nonInterruptionStopped, counts.nonInterruptionTotal),
     nearEndOnsetDetectionRate: ratio(counts.detectedStimuli, counts.stimuliTotal),
     spuriousNearEndOnsetCount: counts.spuriousObservations,
+    unattributedStopRate: ratio(counts.unattributedStops, counts.bargeInStops),
+    unattributedStopCount: counts.unattributedStops,
   };
 }
 
@@ -888,6 +981,8 @@ export function computeSuiteMetrics(sessions: readonly VoiceEvalSessionMetrics[]
       detectedStimuli: 0,
       stimuliTotal: 0,
       spuriousObservations: 0,
+      bargeInStops: 0,
+      unattributedStops: 0,
     },
   );
   const entity = sumCounts(
