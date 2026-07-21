@@ -32,15 +32,15 @@ describe('isOrganizationRelation', () => {
 
 describe('isWithinScope', () => {
   it('他テナントの組織を境界外と判定する', () => {
-    expect(isWithinScope(unit({ tenantId: 'tenant-b' }), { tenantId: 'tenant-a' })).toBe(false);
+    expect(isWithinScope(unit({ tenantId: 'tenant-b' }), { kind: 'tenant', tenantId: 'tenant-a' })).toBe(false);
   });
 
   it('site 未指定の scope はテナント内の全組織を含む', () => {
-    expect(isWithinScope(unit({ siteId: 'site-9' }), { tenantId: 'tenant-a' })).toBe(true);
+    expect(isWithinScope(unit({ siteId: 'site-9' }), { kind: 'tenant', tenantId: 'tenant-a' })).toBe(true);
   });
 
   it('site 指定の scope は同一サイトとテナント横断組織のみ含む', () => {
-    const scope = { tenantId: 'tenant-a', siteId: 'site-1' };
+    const scope = { kind: 'site', tenantId: 'tenant-a', siteId: 'site-1' } as const;
     expect(isWithinScope(unit({ siteId: 'site-1' }), scope)).toBe(true);
     expect(isWithinScope(unit({ siteId: undefined }), scope)).toBe(true);
     expect(isWithinScope(unit({ siteId: 'site-2' }), scope)).toBe(false);

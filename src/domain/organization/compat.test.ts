@@ -11,7 +11,7 @@ import {
 import { validateOrganizationHierarchy } from './hierarchy';
 import type { OrganizationUnit } from './types';
 
-const SCOPE = { tenantId: 'tenant-a', siteId: 'site-1' };
+const SCOPE = { kind: 'site', tenantId: 'tenant-a', siteId: 'site-1' } as const;
 
 function staff(overrides: Partial<Staff> & Pick<Staff, 'id' | 'displayName'>): Staff {
   return {
@@ -151,10 +151,40 @@ describe('mergeOrganizationUnits', () => {
     const stored: OrganizationUnit[] = [
       { ...compat[0]!, publicDisplayName: '営業', officialName: '第一営業本部' },
     ];
-    const merged = mergeOrganizationUnits(compat, stored);
+    const merged = mergeOrganizationUnits(compat, stored, SCOPE);
     expect(merged).toHaveLength(1);
     expect(merged[0]?.publicDisplayName).toBe('営業');
     expect(merged[0]?.officialName).toBe('第一営業本部');
+  });
+
+  it('[#394-7] 部署側で無効化したら、保存済みが有効でも無効になる（fail-closed）', () => {
+    const closedCompat = [
+      organizationUnitFromDepartment(
+        { id: 'dept-sales', name: '営業部', displayOrder: 1, enabled: false },
+        SCOPE,
+      ),
+    ];
+    const stored: OrganizationUnit[] = [{ ...compat[0]!, enabled: true }];
+    expect(mergeOrganizationUnits(closedCompat, stored, SCOPE)[0]?.enabled).toBe(false);
+  });
+
+  it('[#394-7] 保存済み側で無効化した場合も無効になる', () => {
+    const stored: OrganizationUnit[] = [{ ...compat[0]!, enabled: false }];
+    expect(mergeOrganizationUnits(compat, stored, SCOPE)[0]?.enabled).toBe(false);
+  });
+
+  it('[#394-7] 両方有効なときだけ有効', () => {
+    const stored: OrganizationUnit[] = [{ ...compat[0]!, publicDisplayName: '営業' }];
+    expect(mergeOrganizationUnits(compat, stored, SCOPE)[0]?.enabled).toBe(true);
+  });
+
+  it('[#394-7] scope 境界外の保存済み組織は落とす', () => {
+    const foreign: OrganizationUnit[] = [
+      { ...compat[0]!, id: 'foreign', tenantId: 'tenant-b' },
+      { ...compat[0]!, id: 'other-site', siteId: 'site-2' },
+    ];
+    const ids = mergeOrganizationUnits(compat, foreign, SCOPE).map((u) => u.id);
+    expect(ids).toEqual(['dept-sales']);
   });
 
   it('保存済みにしか無い組織も残す（新設の階層組織）', () => {
@@ -172,7 +202,7 @@ describe('mergeOrganizationUnits', () => {
         publicInDirectory: true,
       },
     ];
-    const merged = mergeOrganizationUnits(compat, stored);
+    const merged = mergeOrganizationUnits(compat, stored, SCOPE);
     expect(merged.map((u) => u.id).sort()).toEqual(['dept-sales', 'org-new']);
     expect(validateOrganizationHierarchy(merged)).toEqual([]);
   });

@@ -6,6 +6,7 @@ import {
   canSetParent,
   depthOf,
   descendantIdsOf,
+  findAllOrganizationCycleIds,
   findOrganizationCycle,
   validateOrganizationHierarchy,
 } from './hierarchy';
@@ -92,6 +93,19 @@ describe('validateOrganizationHierarchy', () => {
     expect(issues.some((i) => i.kind === 'max_depth_exceeded')).toBe(true);
   });
 
+  it('[regression #394-4] 循環が複数あっても全件を issue として報告する', () => {
+    const twoCycles = [
+      unit({ id: 'a', parentId: 'b' }),
+      unit({ id: 'b', parentId: 'a' }),
+      unit({ id: 'c', parentId: 'd' }),
+      unit({ id: 'd', parentId: 'c' }),
+    ];
+    const cycleIds = validateOrganizationHierarchy(twoCycles)
+      .filter((i) => i.kind === 'cycle')
+      .map((i) => i.organizationId);
+    expect(cycleIds.sort()).toEqual(['a', 'b', 'c', 'd']);
+  });
+
   it('id が重複する組織を拒否する', () => {
     const issues = validateOrganizationHierarchy([unit({ id: 'a' }), unit({ id: 'a' })]);
     expect(issues).toContainEqual({ kind: 'duplicate_id', organizationId: 'a' });
@@ -126,9 +140,11 @@ describe('depthOf / ancestorsOf / descendantIdsOf', () => {
     ]);
   });
 
-  it('循環していても祖先探索が無限ループしない', () => {
+  it('循環していても祖先探索が無限ループせず、既訪問で打ち切る', () => {
     const cyclic = [unit({ id: 'a', parentId: 'b' }), unit({ id: 'b', parentId: 'a' })];
-    expect(ancestorsOf(cyclic, 'a').length).toBeLessThanOrEqual(2);
+    // a -> b と辿り、b の親 a は訪問済みなので打ち切る。
+    expect(ancestorsOf(cyclic, 'a').map((u) => u.id)).toEqual(['b']);
+    expect(ancestorsOf(cyclic, 'b').map((u) => u.id)).toEqual(['a']);
   });
 
   it('子孫 id を集められる', () => {
@@ -194,7 +210,73 @@ describe('buildOrganizationTree', () => {
 
   it('循環している組織はツリーに含めず落とさない（root 昇格）', () => {
     const cyclic = [unit({ id: 'a', parentId: 'b' }), unit({ id: 'b', parentId: 'a' })];
-    const ids = buildOrganizationTree(cyclic).map((n) => n.unit.id);
-    expect(ids.length).toBeGreaterThan(0);
+    expect(buildOrganizationTree(cyclic).map((n) => n.unit.id).sort()).toEqual(['a', 'b']);
+  });
+
+  it('[regression #394-3] 循環が複数あっても 1 件も落とさない', () => {
+    const twoCycles = [
+      unit({ id: 'a', parentId: 'b' }),
+      unit({ id: 'b', parentId: 'a' }),
+      unit({ id: 'c', parentId: 'd' }),
+      unit({ id: 'd', parentId: 'c' }),
+    ];
+    const ids = buildOrganizationTree(twoCycles).map((n) => n.unit.id);
+    expect(ids.sort()).toEqual(['a', 'b', 'c', 'd']);
+  });
+
+  it('[regression #394-3] 正常な木と循環が混在しても全件出力する', () => {
+    const mixed = [
+      ...CHAIN,
+      unit({ id: 'x', parentId: 'y' }),
+      unit({ id: 'y', parentId: 'x' }),
+      unit({ id: 'self', parentId: 'self' }),
+    ];
+    const collect = (nodes: ReturnType<typeof buildOrganizationTree>): string[] =>
+      nodes.flatMap((n) => [n.unit.id, ...collect(n.children)]);
+    expect(collect(buildOrganizationTree(mixed)).sort()).toEqual(
+      mixed.map((u) => u.id).sort(),
+    );
+  });
+
+  it('[regression #394-3] 循環ノードが入れ子になって重複出力されない', () => {
+    const twoCycles = [
+      unit({ id: 'a', parentId: 'b' }),
+      unit({ id: 'b', parentId: 'a' }),
+      unit({ id: 'c', parentId: 'd' }),
+      unit({ id: 'd', parentId: 'c' }),
+    ];
+    const roots = buildOrganizationTree(twoCycles);
+    expect(roots.every((n) => n.children.length === 0)).toBe(true);
+  });
+});
+
+describe('findAllOrganizationCycleIds (#394 finding 3/4)', () => {
+  it('複数の循環に含まれる全ノードを返す', () => {
+    const twoCycles = [
+      unit({ id: 'a', parentId: 'b' }),
+      unit({ id: 'b', parentId: 'a' }),
+      unit({ id: 'c', parentId: 'd' }),
+      unit({ id: 'd', parentId: 'c' }),
+    ];
+    expect([...findAllOrganizationCycleIds(twoCycles)].sort()).toEqual(['a', 'b', 'c', 'd']);
+  });
+
+  it('循環にぶら下がるだけのノードは含めない', () => {
+    const units = [
+      unit({ id: 'a', parentId: 'b' }),
+      unit({ id: 'b', parentId: 'a' }),
+      unit({ id: 'leaf', parentId: 'a' }),
+    ];
+    expect([...findAllOrganizationCycleIds(units)].sort()).toEqual(['a', 'b']);
+  });
+
+  it('自己ループも循環として返す', () => {
+    expect([...findAllOrganizationCycleIds([unit({ id: 'self', parentId: 'self' })])]).toEqual([
+      'self',
+    ]);
+  });
+
+  it('循環が無ければ空', () => {
+    expect(findAllOrganizationCycleIds(CHAIN).size).toBe(0);
   });
 });

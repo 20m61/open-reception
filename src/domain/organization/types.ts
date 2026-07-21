@@ -76,17 +76,26 @@ export type OrganizationMembership = {
 
 /**
  * 参照可能な tenant/site 境界。サーバ側で解決した actor から作る。
- * `siteId` 未設定はテナント全体（テナント横断組織 + 全サイト）を指す。
+ *
+ * **判別可能ユニオンにしている理由**: `siteId?: string` にすると「意図的にテナント全体を見る」と
+ * 「site を埋め忘れた」が型で区別できず、API 配線時の埋め忘れが黙って権限拡大になる。
+ * `kind` を必須にすることで、テナント全体を見るのは明示的な選択に限られる。
  */
-export type OrganizationScope = {
-  tenantId: string;
-  siteId?: string;
-};
+export type OrganizationScope =
+  /** テナント全体（テナント横断組織 + 全サイト）。 */
+  | { kind: 'tenant'; tenantId: string }
+  /** 単一サイト（同一サイトの組織 + テナント横断組織）。 */
+  | { kind: 'site'; tenantId: string; siteId: string };
+
+/** scope が指すサイト（テナント全体スコープなら undefined）。 */
+export function scopeSiteId(scope: OrganizationScope): string | undefined {
+  return scope.kind === 'site' ? scope.siteId : undefined;
+}
 
 /** 組織が scope の境界内かを判定する（テナント横断組織は同一テナントの全サイトから見える）。 */
 export function isWithinScope(unit: OrganizationUnit, scope: OrganizationScope): boolean {
   if (unit.tenantId !== scope.tenantId) return false;
-  if (scope.siteId === undefined) return true;
+  if (scope.kind === 'tenant') return true;
   return unit.siteId === undefined || unit.siteId === scope.siteId;
 }
 

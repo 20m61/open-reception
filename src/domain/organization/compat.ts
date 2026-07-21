@@ -14,6 +14,7 @@
 import type { Department } from '@/domain/department/types';
 import type { Staff } from '@/domain/staff/types';
 import type { OrganizationMembership, OrganizationScope, OrganizationUnit } from './types';
+import { isWithinScope, scopeSiteId } from './types';
 
 /** 部署 1 件を、フラット（ルート）な組織として読む。 */
 export function organizationUnitFromDepartment(
@@ -23,7 +24,7 @@ export function organizationUnitFromDepartment(
   return {
     id: department.id,
     tenantId: scope.tenantId,
-    siteId: scope.siteId,
+    siteId: scopeSiteId(scope),
     // フラットモデルには階層が無いので、移行時点では全てルート。
     parentId: undefined,
     // 名称は移行時点では分離できない。運用で publicDisplayName を編集していく。
@@ -94,15 +95,36 @@ export function readOrganizationCompat(
 }
 
 /**
- * 互換組織（部署由来）に、保存済みの組織定義を重ねる。同一 id は**保存済みが勝つ**。
- * これにより「部署はそのまま・階層化したものだけ保存」という段階移行ができる。
+ * 互換組織（部署由来）に、保存済みの組織定義を重ねる。
+ * 「部署はそのまま・階層化したものだけ保存」という段階移行のための合成。
+ *
+ * **`enabled` だけは AND を採る**（両方が有効なときだけ有効）。他のフィールドは保存済みが勝つ。
+ * 理由: stored がユニット全体を置換すると、一度でも階層編集した組織は既存の部署管理 UI で
+ * `Department.enabled = false` にしても無効化されなくなり、「部署を閉じたのに来訪者から
+ * 呼べる」状態を段階移行期に作ってしまう。無効化は安全側（fail-closed）の性質なので、
+ * どちらの UI から閉じても必ず効くようにする。名称・階層・表示順・公開可否は新 UI が
+ * 所有すべき編集結果なので保存済みを優先する。
+ *
+ * `scope` 境界外の保存済み組織は落とす（呼び出し側の `scopeOrganizationUnits` 忘れが
+ * そのまま越境参照にならないように、合成の時点で弾く）。
  */
 export function mergeOrganizationUnits(
   compatUnits: ReadonlyArray<OrganizationUnit>,
   storedUnits: ReadonlyArray<OrganizationUnit>,
+  scope: OrganizationScope,
 ): OrganizationUnit[] {
   const merged = new Map<string, OrganizationUnit>();
-  for (const unit of compatUnits) merged.set(unit.id, unit);
-  for (const unit of storedUnits) merged.set(unit.id, unit);
+  for (const unit of compatUnits) {
+    if (!isWithinScope(unit, scope)) continue;
+    merged.set(unit.id, unit);
+  }
+  for (const unit of storedUnits) {
+    if (!isWithinScope(unit, scope)) continue;
+    const compat = merged.get(unit.id);
+    merged.set(
+      unit.id,
+      compat === undefined ? unit : { ...unit, enabled: compat.enabled && unit.enabled },
+    );
+  }
   return [...merged.values()];
 }

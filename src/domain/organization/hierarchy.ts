@@ -63,6 +63,42 @@ export function findOrganizationCycle(units: ReadonlyArray<OrganizationUnit>): s
   return null;
 }
 
+/**
+ * 循環に巻き込まれている**全**ノードの id を返す。
+ *
+ * 親ポインタのグラフは各ノードの出次数が高々 1（= functional graph）なので、
+ * 「子を持たないノードを繰り返し取り除く」と最後に残るのが循環ノードちょうどになる。
+ * `findOrganizationCycle` は最初の 1 循環しか返さないため、複数の循環が同時に存在すると
+ * 取りこぼす（表示から組織が黙って消える原因になる）。検証とツリー構築はこちらを使う。
+ */
+export function findAllOrganizationCycleIds(
+  units: ReadonlyArray<OrganizationUnit>,
+): Set<string> {
+  const byId = indexById(units);
+  // 子の数（= 親ポインタで自分を指しているノード数）。
+  const childCount = new Map<string, number>();
+  for (const id of byId.keys()) childCount.set(id, 0);
+  for (const unit of byId.values()) {
+    const parentId = unit.parentId;
+    if (parentId === undefined || !byId.has(parentId)) continue;
+    childCount.set(parentId, (childCount.get(parentId) ?? 0) + 1);
+  }
+
+  const remaining = new Set(byId.keys());
+  const queue = [...remaining].filter((id) => (childCount.get(id) ?? 0) === 0);
+  while (queue.length > 0) {
+    const id = queue.shift();
+    if (id === undefined || !remaining.has(id)) continue;
+    remaining.delete(id);
+    const parentId = byId.get(id)?.parentId;
+    if (parentId === undefined || !remaining.has(parentId)) continue;
+    const next = (childCount.get(parentId) ?? 0) - 1;
+    childCount.set(parentId, next);
+    if (next === 0) queue.push(parentId);
+  }
+  return remaining;
+}
+
 /** 循環していない前提で親を辿る内部走査（循環時は打ち切る）。 */
 function walkAncestors(
   byId: Map<string, OrganizationUnit>,
@@ -181,9 +217,10 @@ export function validateOrganizationHierarchy(
     }
   }
 
-  const cycle = findOrganizationCycle(units);
-  if (cycle !== null) {
-    for (const id of cycle) issues.push({ kind: 'cycle', organizationId: id });
+  // 複数の循環が同時に存在しても全件報告する（1 つ直すたびに再検証、を避ける）。
+  const cycleIds = findAllOrganizationCycleIds(units);
+  if (cycleIds.size > 0) {
+    for (const id of cycleIds) issues.push({ kind: 'cycle', organizationId: id });
     // 循環がある間は深度が定義できないので、深度検証は行わない。
     return issues;
   }
@@ -248,8 +285,9 @@ export type OrganizationTreeNode = {
 export function buildOrganizationTree(
   units: ReadonlyArray<OrganizationUnit>,
 ): OrganizationTreeNode[] {
-  const byId = indexById(units);
-  const cycleIds = new Set(findOrganizationCycle(units) ?? []);
+  // 循環ノードは**全件**取得する。取りこぼすと、その循環のノードが roots にも children にも
+  // 入らず出力から消える（管理画面で組織が理由なく消える障害になる）。
+  const cycleIds = findAllOrganizationCycleIds(units);
 
   const nodes = new Map<string, OrganizationTreeNode>();
   for (const unit of units) {
@@ -259,12 +297,42 @@ export function buildOrganizationTree(
   const roots: OrganizationTreeNode[] = [];
   for (const [id, node] of nodes) {
     const parentId = node.unit.parentId;
+    // 循環ノードはルートへ昇格させる（親リンクを切るので互いに入れ子にならない）。
     const parentNode =
       parentId === undefined || cycleIds.has(id) ? undefined : nodes.get(parentId);
-    if (parentNode === undefined || !byId.has(parentId ?? '')) {
+    if (parentNode === undefined) {
       roots.push(node);
     } else {
       parentNode.children.push(node);
+    }
+  }
+
+  /**
+   * 防御的な回収: roots から到達できないノードをルートへ戻す。
+   * 循環検出が完全なら空になるが、**組織が出力から黙って消える**のは復旧不能に見える障害なので、
+   * 将来の変更に対する安全網としてツリー構築の最後で必ず確認する。
+   */
+  const reached = new Set<string>();
+  const stack = [...roots];
+  while (stack.length > 0) {
+    const node = stack.pop();
+    if (node === undefined || reached.has(node.unit.id)) continue;
+    reached.add(node.unit.id);
+    stack.push(...node.children);
+  }
+  for (const [id, node] of nodes) {
+    if (!reached.has(id)) {
+      // 到達不能なノードは親リンクを断ち切ってルート化する（重複入れ子を作らない）。
+      node.children = node.children.filter((c) => !reached.has(c.unit.id));
+      roots.push(node);
+      reached.add(id);
+      stack.push(...node.children);
+      while (stack.length > 0) {
+        const n = stack.pop();
+        if (n === undefined || reached.has(n.unit.id)) continue;
+        reached.add(n.unit.id);
+        stack.push(...n.children);
+      }
     }
   }
 
