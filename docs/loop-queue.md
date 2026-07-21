@@ -43,7 +43,7 @@
 | **#362** | ux/kiosk | **部分**: `domain/presence/state.ts`(5状態+テスト)・`SignageDisplay.tsx`・`domain/signage/rotation.ts` 実装済。**未達 + AC 違反実在**（`KioskFlow.tsx:1055` の検知→START 直結）。`KioskMode` 型は不在 | ローカル可 |
 | **#363** | admin/demo | **未着手**: `DemoScenario`/studio/preview は 0 ヒット。土台は `ReceptionFlowsManager.tsx`・`src/lib/reception/flow-config/` | ローカル可 |
 | **#364** | epic | 日本語リアルタイム会話基盤 epic（トラッキング） | — |
-| **#365** | quality/voice | **未着手**: `tests/voice-evaluation/` 不在。`domain/reception/experience-metrics.ts` は #319 KPI で別責務 | ローカル可 |
+| ~~#365~~ | quality/voice | **クローズ済**（PR #393）。`src/domain/voice/evaluation-*` + `tests/voice-evaluation/`。**#369〜#372 の共通イベント形式が確定** — 正解は刺激側（`nearEndStimuli[]` の `atMs ± toleranceMs`）に固定し観測とマッチング、計測不能は `null`、`strict` で欠落自体を違反に。詳細は `docs/voice-evaluation-harness.md` | 完了 2026-07-22 |
 | **#366** | infra/cdk | **未着手**: `infra/lib/stacks/` に realtime 系なし。`docs/adr/` 自体が不在 | **要ユーザー判断（固定費増）**。Phase 0 ADR のみローカル可 |
 | **#367** | admin/ops | **未着手**: `operatingHours`/`out_of_hours` は全体 0 ヒット。流用可: `domain/platform/maintenance-window.ts`・`feature-flags.ts` | ローカル可（EC2 adapter 部のみ #366 待ち） |
 | **#368** | epic | 組織・接続先・ルーティング・QR 招待の再構築 epic（トラッキング） | — |
@@ -51,12 +51,13 @@
 | **#370** | voice/stt | **未着手**: Transcribe 参照 0。接続先 `domain/staff/search.ts` は在る | ローカル可（mock 先行）/ 実 AWS は外部待ち |
 | **#371** | voice/tts | **未着手**: Polly 参照 0。`VrmAvatarViewer.tsx`・`avatar/vrm-pose.ts` は再利用可 | 同上 |
 | **#372** | voice/turn | **未着手**: VAD/turn detector なし | ローカル可 |
-| **#373** | domain/org | **未着手**: `OrganizationUnit`/`parentId` 0 ヒット。`domain/staff/types.ts:26` はフラット単一所属 | ローカル可 |
+| **#373** | domain/org | **increment 1 完了**（PR #394 = `src/domain/organization/` の型・階層検証・ディレクトリ・compat reader。additive 限定で既存 `Department`/`staff.departmentId` は無改変）。残: 永続化 repository → Directory API 配線 → 来訪者 UI → tenant 越境 E2E。follow-up は **#396** | ローカル可（継続） |
 | **#374** | domain/routing | **部分**: `call-route.ts` にチャネル抽象化・priority・管理 UI 実装済。未達は `ContactEndpoint` union・`nextOn` 遷移・Orchestrator・循環検出・notify/live_bridge 区別 | ローカル可 |
 | **#375** | domain/invitation | **部分**: token/usagePolicy/expiresAt/status・`CheckinFailureReason` 実装済。未達は **生 token 保存**（`tokenHash` 0 ヒット）と 3-ref 分離 | ローカル可（hash 化は**スキーマ破壊 → 要ユーザー確認**） |
 | **#376** | spike/vonage | **部分**: `vonage-adapter.ts`・`vonage-jwt.ts`・`docs/vonage-call-design.md` 在り。実測部未着手 | ADR はローカル可 / 実測は**外部待ち**→ #65 |
 | ~~#377~~ | platform | **クローズ済**（PR #378: developer 専用 `GET /api/platform/costs`・タグ絞り込み・実績/予測・追加依存なしの SigV4 自作署名。レビューで署名を独立実装と照合し一致確認）。follow-up は **#379** | 完了 2026-07-19 |
 | **#379** | platform | #378 follow-up: 予測失敗理由の伝播（現状 AccessDenied も「履歴不足」と誤表示）・CE 課金抑制（1 view = $0.02、共有キャッシュ不在）・Component タグ回帰テスト・縮退パステスト・canonical header ソート | ローカル可 |
+| **#396** | domain/org | #394 follow-up（**#374 の配線前に潰す**）: `buildOrganizationTree` の防御的回収が発火するとクラッシュ（親の `children` から自分を外していない → 無限再帰。現状は到達不能だがミューテーションの唯一の survivor）・`AffiliationQuery.scope` と `resolveActingMembers` の scope が任意のままで越境が漏れる・`toVisitorOrganization` の `publicIds` が任意で安全でない側が既定 | ローカル可 |
 
 ### 継続オープン
 
@@ -96,14 +97,24 @@
 
 | トラック | Issue | 触る領域 | 選定理由 |
 | --- | --- | --- | --- |
-| A | ~~#377~~ → **#379** | `src/app/api/platform/*`・`infra/lib/` | 他 issue と一切重ならない。#377 は PR #378 で**消化済み**。follow-up #379 を同トラックで継続 |
-| B | **#365** | `tests/voice-evaluation/`（新規） | 既存ファイル非改変。#369〜#372 共通の event schema を先に固め後続の手戻りを最小化 |
-| C | **#373** | `src/domain/organization/`（新規）+ staff/department の compatibility reader | #374 のブロッカー。Track C 全体のクリティカルパス先頭 |
+**第 1 wave は消化済み**（2026-07-19〜22）。結果:
+
+| トラック | Issue | 結果 |
+| --- | --- | --- |
+| A | ~~#377~~ → **#379** | PR #378 マージ・#377 クローズ。follow-up #379 が残 |
+| B | **#365** | PR #393（レビュー 2 巡で blocking 9 件を修正）。**#369〜#372 の共通イベント形式が確定** |
+| C | ~~#373 inc1~~ → **#396** | PR #394 マージ（#373 はオープン継続）。follow-up #396 は **#374 の前に必須** |
+
+**第 2 wave（次に着手する）**
+
+| トラック | Issue | 前提・注意 |
+| --- | --- | --- |
+| A | **#396** → **#374** | **#396 を先に潰す**（scope 任意・`publicIds` 既定・回収ブロックのクラッシュ）。その後 #374 が #373 の型契約に乗る |
+| B | **#362** | `KioskFlow.tsx` を単独占有（2880 行）。**#361 より先**に presence 配線を分離する |
+| C | **#375** または **#379** | #375 の token hash 化は**スキーマ破壊 → 要ユーザー確認**。それ以外の AC は充足済み |
 
 同 wave に **#366 Phase 0 ADR のみ**（`docs/adr/*.md` 新規・コスト増ゼロ）を差し込むのは安全。
 CDK 実装と deploy は分離し、Budget 見積を添えてユーザー承認を取る。
-
-**第 2 wave**: #374（#373 後）／ #362（`KioskFlow.tsx` 単独占有）／ #375
 **第 3 wave**: #361（KioskFlow 大改修・単独）／ #369
 **第 4 wave**: #370 + #371 並行 → #372、#363 Inc1
 **第 5 wave**: #366 Stack（**ユーザー承認後**）→ #367、#376 Spike → #4 → #65
