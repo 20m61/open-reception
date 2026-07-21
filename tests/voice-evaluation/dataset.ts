@@ -161,8 +161,7 @@ const SPECS: VoiceEvalDatasetSpec[] = [
   },
   {
     id: 'consecutive-near-end',
-    description:
-      '1 回の再生中に相づちと真の割り込みが連続する。停止の帰属規則（区間の最初の onset）を検証する',
+    description: '1 回の再生中に相づちと真の割り込みが連続する。停止の帰属規則と刺激マッチングを検証する',
     tags: ['barge-in', 'backchannel', 'attribution'],
     speechDurationMs: 900,
     nearEnd: [

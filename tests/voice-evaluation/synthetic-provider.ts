@@ -99,8 +99,13 @@ export type SyntheticProviderConfig = {
 /** ターン間の余白。ターンが重ならないよう十分に取る。 */
 const TURN_GAP_MS = 500;
 
-/** 刺激と観測 onset を対応付ける許容幅。応答時刻の小さなぶれで検出漏れ扱いにしないための余裕。 */
-const STIMULUS_TOLERANCE_MS = 400;
+/**
+ * 刺激と観測 onset を対応付ける許容幅。応答時刻の小さなぶれで検出漏れ扱いにしないための余裕。
+ *
+ * **同一再生区間内の最小刺激間隔（`consecutive-near-end` の 400ms）の半分未満**に保つこと。
+ * 窓が重なると観測をどちらの刺激に帰属させるか決められず、`validateVoiceEvalSession` が弾く。
+ */
+const STIMULUS_TOLERANCE_MS = 150;
 
 /** 基準となる「よくできた」provider 設定。ここから 1 ノブずつ崩して回帰検知を確認する。 */
 export const BASELINE_SYNTHETIC_CONFIG: Omit<SyntheticProviderConfig, 'id' | 'providers'> = {

@@ -186,6 +186,38 @@ describe('attributeBargeInStops', () => {
     expect(attributions[1]?.stopLatencyMs).toBe(120);
   });
 
+  it('credits the earlier onset when a backchannel lands between it and the stop (割り込み → 相づち)', () => {
+    // 割り込み(1000) で停止判断が始まり、その 60ms 後に相づち(1060)、120ms 後に停止(1120)。
+    // 「最も遅い onset」を採ると相づちが原因にされ、割り込みは未検出・遅延も 60ms と
+    // 真値 120ms の半分に過小評価される。
+    const reversed: VoiceEvalEvent[] = [
+      { t: 0, turnIndex: 0, type: 'tts.request', text: 'a' },
+      { t: 100, turnIndex: 0, type: 'tts.playback_start' },
+      { t: 1000, turnIndex: 0, type: 'audio.onset' },
+      { t: 1060, turnIndex: 0, type: 'audio.onset' },
+      { t: 1120, turnIndex: 0, type: 'tts.playback_stopped', reason: 'barge_in' },
+    ];
+    const attributions = attributeBargeInStops(reversed);
+    expect(attributions.map((a) => a.stopped)).toEqual([true, false]);
+    expect(attributions[0]?.stopLatencyMs).toBe(120);
+    expect(attributions[1]?.stopLatencyMs).toBeNull();
+  });
+
+  it('attributes nothing when every onset is older than the reaction window (悲観側に倒す)', () => {
+    // 停止が onset から 700ms 後。反応窓 (30–400ms) の外なので原因を特定できない。
+    // 「たぶんこれだろう」で帰属すると、遅い provider の遅延が本当の値より小さく見える。
+    const slow: VoiceEvalEvent[] = [
+      { t: 0, turnIndex: 0, type: 'tts.request', text: 'a' },
+      { t: 100, turnIndex: 0, type: 'tts.playback_start' },
+      { t: 300, turnIndex: 0, type: 'audio.onset' },
+      { t: 1000, turnIndex: 0, type: 'tts.playback_stopped', reason: 'barge_in' },
+    ];
+    expect(attributeBargeInStops(slow).map((a) => a.stopped)).toEqual([false]);
+    expect(computeLatencyMetrics(baseSession(slow, { turns: [], nearEndStimuli: [] })).nearEndOnsetToPlaybackStopped.count).toBe(
+      0,
+    );
+  });
+
   it('credits nothing when the playback finished naturally', () => {
     const natural: VoiceEvalEvent[] = [
       { t: 0, turnIndex: 0, type: 'tts.request', text: 'a' },
@@ -230,7 +262,7 @@ describe('matchNearEnd', () => {
     expect(spuriousObservations).toHaveLength(1);
   });
 
-  it('never assigns one observation to two stimuli', () => {
+  it('never assigns one observation to two stimuli, and gives it to the nearer one', () => {
     const { matches } = matchNearEnd(
       baseSession(events, {
         turns: [],
@@ -240,7 +272,36 @@ describe('matchNearEnd', () => {
         ],
       }),
     );
-    expect(matches.filter((m) => m.observation !== null)).toHaveLength(1);
+    // 件数だけを見ると「どちらに付いたか」が固定されず、横取りのバグを素通しする。
+    expect(matches.map((m) => [m.stimulus.id, m.observation?.t ?? null])).toEqual([
+      ['a', 300],
+      ['b', null],
+    ]);
+  });
+
+  it('does not let an earlier stimulus steal the observation belonging to a later one', () => {
+    // `consecutive-near-end` と同じ配置（刺激間隔 400ms・許容窓 400ms）で、相づちの onset だけを
+    // 落とした provider。刺激順の貪欲法だと相づちが 1940 を先に取り、正しく止めた provider が
+    // 「割り込み未検出 + 相づち誤停止」という逆向きの誤ラベルで採点される。
+    const dropped: VoiceEvalEvent[] = [
+      { t: 1030, turnIndex: 0, type: 'tts.request', text: 'a' },
+      { t: 1240, turnIndex: 0, type: 'tts.playback_start' },
+      { t: 1940, turnIndex: 0, type: 'audio.onset' },
+      { t: 2060, turnIndex: 0, type: 'tts.playback_stopped', reason: 'barge_in' },
+    ];
+    const { matches } = matchNearEnd(
+      baseSession(dropped, {
+        turns: [],
+        nearEndStimuli: [
+          { id: 'backchannel-ee', atMs: 1540, toleranceMs: 400, label: 'backchannel' },
+          { id: 'real-interruption', atMs: 1940, toleranceMs: 400, label: 'interruption' },
+        ],
+      }),
+    );
+    expect(matches.map((m) => [m.stimulus.id, m.observation?.t ?? null, m.stopped])).toEqual([
+      ['backchannel-ee', null, false],
+      ['real-interruption', 1940, true],
+    ]);
   });
 });
 
@@ -418,6 +479,30 @@ describe('computeBargeInMetrics', () => {
     expect(empty.trueInterruptionDetectionRate).toBeNull();
     expect(empty.backchannelFalseStopRate).toBeNull();
     expect(empty.nearEndOnsetDetectionRate).toBeNull();
+  });
+
+  it('scores a provider that missed only the backchannel onset as a correct interruption stop', () => {
+    // 相づちの onset を取りこぼしただけで、割り込みは正しく検出して止めた provider。
+    // 刺激順の貪欲マッチングだと検出率 0.5 / 相づち誤停止率 0.5 という逆向きの誤ラベルになる。
+    const droppedBackchannel: VoiceEvalEvent[] = [
+      { t: 1030, turnIndex: 0, type: 'tts.request', text: 'a' },
+      { t: 1240, turnIndex: 0, type: 'tts.playback_start' },
+      { t: 1940, turnIndex: 0, type: 'audio.onset' },
+      { t: 2060, turnIndex: 0, type: 'tts.playback_stopped', reason: 'barge_in' },
+    ];
+    const metrics = computeBargeInMetrics(
+      baseSession(droppedBackchannel, {
+        turns: [],
+        nearEndStimuli: [
+          { id: 'backchannel-ee', atMs: 1540, toleranceMs: 400, label: 'backchannel' },
+          { id: 'real-interruption', atMs: 1940, toleranceMs: 400, label: 'interruption' },
+        ],
+      }),
+    );
+    expect(metrics.trueInterruptionDetectionRate).toBe(1);
+    expect(metrics.backchannelFalseStopRate).toBe(0);
+    expect(metrics.nearEndOnsetDetectionRate).toBe(0.5);
+    expect(metrics.spuriousNearEndOnsetCount).toBe(0);
   });
 
   it('treats a playback that never stops as an undetected interruption, not as zero onsets', () => {

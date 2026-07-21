@@ -133,15 +133,28 @@ export type BargeInAttribution = {
 export const MIN_BARGE_IN_REACTION_MS = 30;
 
 /**
+ * 停止判断に許される最大の時間。これより古い onset は原因とみなさない —— その onset で止める
+ * つもりなら、とっくに止まっていたはずだから。
+ *
+ * 値は uat の停止遅延 SLO（P50 150ms / P95 300ms）より広く取ってある。SLO を満たす provider の
+ * 停止は必ず窓に入る。逆に窓より遅い停止は**原因不明として帰属しない**: 該当の割り込みは
+ * 「検出できなかった」として数えられ、遅延サンプルも積まれない。これは意図的に悲観側の読みで、
+ * 「たぶん直前の onset だろう」と帰属して遅延を実際より小さく見せるより安全である。
+ */
+export const MAX_BARGE_IN_REACTION_MS = 400;
+
+/**
  * 再生停止の原因を近端 onset へ帰属させる。
  *
- * 規則: `barge_in` で終わった再生区間について、**停止より `MIN_BARGE_IN_REACTION_MS` 以上前にある
- * onset のうち最も遅いもの**を原因とみなす。
+ * 規則: `barge_in` で終わった再生区間について、停止までの間隔が
+ * **`MIN_BARGE_IN_REACTION_MS` 以上 `MAX_BARGE_IN_REACTION_MS` 以下**の onset のうち
+ * **最も早いもの**を原因とみなす。
  *
- * 単純な「区間の最初」でも「停止直前」でも誤る:
- * - 「最初」だと、相づちの 400ms 後に本当の割り込みが来て停止した系列で、相づちが原因にされる。
- * - 「直前」だと、割り込みで停止判断が飛んでいる最中に入った相づちが原因にされる。
- * 反応時間の窓を使うと、どちらの系列も正しく帰属できる。
+ * 片側だけの窓ではどちらの向きも誤る（実測で確認した誤ラベル）:
+ * - 「区間の最初」だと、相づちの 400ms 後に本当の割り込みが来て停止した系列で相づちが原因にされる。
+ * - 「停止より前で最も遅いもの」だと、割り込み(1000ms) → 相づち(1060ms) → 停止(1120ms) の系列で
+ *   相づちが原因にされ、割り込みは未検出、さらに遅延が 120ms ではなく 60ms と**半分に過小評価**される。
+ * 両端で挟んで最も早いものを採ると、どちらの系列も正しく解ける。
  *
  * 遅延指標と誤停止率の**両方がこの関数だけを使う**。別々の規則で帰属すると、指標同士が矛盾し、
  * 「割り込みは未検出なのに、後続の相づちが誤停止として数えられる」といった両方向の誤ラベルが起きる。
@@ -149,15 +162,15 @@ export const MIN_BARGE_IN_REACTION_MS = 30;
 export function attributeBargeInStops(events: readonly VoiceEvalEvent[]): BargeInAttribution[] {
   const observations = observedNearEndOnsets(events);
 
-  // 区間ごとに、原因とみなせる onset を 1 つだけ選ぶ。
+  // 区間ごとに、原因とみなせる onset を 1 つだけ選ぶ。observations は時刻順なので、
+  // 窓に入る最初のものがそのまま「最も早い原因」になる。
   const causeOfWindow = new Map<VoiceEvalNearEndObservation['window'], number>();
   for (const observation of observations) {
     const { window } = observation;
     if (window.reason !== 'barge_in') continue;
-    if (window.stop - observation.t < MIN_BARGE_IN_REACTION_MS) continue;
-    const currentCause = causeOfWindow.get(window);
-    const currentT = observations.find((o) => o.observationIndex === currentCause)?.t ?? -Infinity;
-    if (observation.t > currentT) causeOfWindow.set(window, observation.observationIndex);
+    const reaction = window.stop - observation.t;
+    if (reaction < MIN_BARGE_IN_REACTION_MS || reaction > MAX_BARGE_IN_REACTION_MS) continue;
+    if (!causeOfWindow.has(window)) causeOfWindow.set(window, observation.observationIndex);
   }
 
   return observations.map((observation) => {
@@ -185,34 +198,99 @@ export type NearEndMatching = {
   spuriousObservations: VoiceEvalNearEndObservation[];
 };
 
+/** 割り当ての良さ。件数を最大化し、同数なら距離の総和が小さい方を選ぶ。 */
+type AssignmentScore = { count: number; distance: number };
+
+function isBetterAssignment(candidate: AssignmentScore, incumbent: AssignmentScore): boolean {
+  return candidate.count !== incumbent.count ? candidate.count > incumbent.count : candidate.distance < incumbent.distance;
+}
+
+type AssignmentMove = 'match' | 'skip-stimulus' | 'skip-observation';
+
+/**
+ * 刺激と観測の**大域最適**な対応を求める（貪欲法ではない）。
+ *
+ * 時刻順に並んだ 2 列の対応なので、交差しない割り当てだけを考えれば十分で、O(刺激 × 観測) の
+ * DP で厳密解が出る（許容窓が互いに重ならない限り、最適解は必ず交差しない。重なりは
+ * `validateVoiceEvalSession` が構造的に弾く）。
+ */
+function assignObservationsToStimuli(
+  stimuli: readonly VoiceEvalNearEndStimulus[],
+  observations: readonly VoiceEvalNearEndObservation[],
+): (VoiceEvalNearEndObservation | null)[] {
+  const stimulusCount = stimuli.length;
+  const observationCount = observations.length;
+  const empty: AssignmentScore = { count: 0, distance: 0 };
+  // best[i][j] = 刺激 i 以降と観測 j 以降を対応付けたときの最良スコア。末尾行/列は「残りは全て
+  // 検出漏れ / 誤検出」で 0 件。
+  const best: AssignmentScore[][] = Array.from({ length: stimulusCount + 1 }, () =>
+    Array.from({ length: observationCount + 1 }, () => empty),
+  );
+  const move: AssignmentMove[][] = Array.from({ length: stimulusCount }, () =>
+    Array.from({ length: observationCount }, () => 'skip-stimulus' as AssignmentMove),
+  );
+
+  for (let i = stimulusCount - 1; i >= 0; i -= 1) {
+    for (let j = observationCount - 1; j >= 0; j -= 1) {
+      const stimulus = stimuli[i]!;
+      const observation = observations[j]!;
+      const distance = Math.abs(observation.t - stimulus.atMs);
+      const paired = best[i + 1]![j + 1]!;
+
+      // 同点なら「対応付ける」「早い観測を使う」を優先する（決定論的にするため）。
+      const candidates: { score: AssignmentScore; move: AssignmentMove }[] = [];
+      if (distance <= stimulus.toleranceMs) {
+        candidates.push({ score: { count: paired.count + 1, distance: paired.distance + distance }, move: 'match' });
+      }
+      candidates.push({ score: best[i + 1]![j]!, move: 'skip-stimulus' });
+      candidates.push({ score: best[i]![j + 1]!, move: 'skip-observation' });
+      const winner = candidates.reduce((acc, c) => (isBetterAssignment(c.score, acc.score) ? c : acc));
+
+      best[i]![j] = winner.score;
+      move[i]![j] = winner.move;
+    }
+  }
+
+  const assigned: (VoiceEvalNearEndObservation | null)[] = stimuli.map(() => null);
+  let i = 0;
+  let j = 0;
+  while (i < stimulusCount && j < observationCount) {
+    const step = move[i]![j]!;
+    if (step === 'match') {
+      assigned[i] = observations[j]!;
+      i += 1;
+      j += 1;
+    } else if (step === 'skip-stimulus') {
+      i += 1;
+    } else {
+      j += 1;
+    }
+  }
+  return assigned;
+}
+
 /**
  * 刺激（正解）と観測 onset を時間窓でマッチングする。
- *
- * 刺激を時刻順に見て、許容窓内の未使用の観測のうち最も近いものを割り当てる貪欲法。
  * 未マッチの刺激 = 検出漏れ、未マッチの観測 = 誤検出として、**どちらも計測可能**にする。
+ *
+ * 割り当ては大域最適（件数最大 → 総距離最小）で行う。**刺激順の貪欲法は使わない**:
+ * 許容窓が刺激間隔以上に広いと先行する刺激が後続刺激の観測を横取りし、相づちの onset を
+ * 取りこぼしただけの provider が「割り込み未検出 + 相づち誤停止」という**逆向きの誤ラベル**で
+ * 採点される（刺激 1540/1940ms・許容窓 400ms の同梱データセットで実際に再現した）。
  */
 export function matchNearEnd(session: VoiceEvalSession): NearEndMatching {
   const observations = observedNearEndOnsets(session.events);
   const attributions = new Map(attributeBargeInStops(session.events).map((a) => [a.observationIndex, a]));
-  const used = new Set<number>();
   const stimuli = [...session.groundTruth.nearEndStimuli].sort((a, b) => a.atMs - b.atMs);
+  const assigned = assignObservationsToStimuli(stimuli, observations);
+  const used = new Set(assigned.filter((o) => o !== null).map((o) => o.observationIndex));
 
-  const matches: NearEndMatch[] = stimuli.map((stimulus) => {
-    let best: VoiceEvalNearEndObservation | null = null;
-    let bestDistance = Infinity;
-    for (const observation of observations) {
-      if (used.has(observation.observationIndex)) continue;
-      const distance = Math.abs(observation.t - stimulus.atMs);
-      if (distance <= stimulus.toleranceMs && distance < bestDistance) {
-        best = observation;
-        bestDistance = distance;
-      }
-    }
-    if (best) used.add(best.observationIndex);
+  const matches: NearEndMatch[] = stimuli.map((stimulus, index) => {
+    const observation = assigned[index] ?? null;
     return {
       stimulus,
-      observation: best,
-      stopped: best ? (attributions.get(best.observationIndex)?.stopped ?? false) : false,
+      observation,
+      stopped: observation ? (attributions.get(observation.observationIndex)?.stopped ?? false) : false,
     };
   });
 

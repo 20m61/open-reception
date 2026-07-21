@@ -198,6 +198,39 @@ describe('validateVoiceEvalSession', () => {
       expect(result.errors.join()).toContain('toleranceMs');
     });
 
+    it('rejects tolerance windows that overlap (刺激間隔より広い許容窓は帰属を壊す)', () => {
+      // 許容窓が刺激間隔以上に広いと「どちらの刺激の観測か」が原理的に決まらない。
+      // データセット側の設定ミスなので、指標として現れる前に構造的に弾く。
+      const result = validateVoiceEvalSession(
+        session({
+          groundTruth: {
+            turns: [],
+            nearEndStimuli: [
+              { id: 'backchannel', atMs: 1540, toleranceMs: 400, label: 'backchannel' },
+              { id: 'interruption', atMs: 1940, toleranceMs: 400, label: 'interruption' },
+            ],
+          },
+        }),
+      );
+      expect(result.valid).toBe(false);
+      expect(result.errors.join()).toContain('toleranceMs');
+    });
+
+    it('accepts tolerance windows that stay clear of each other', () => {
+      const result = validateVoiceEvalSession(
+        session({
+          groundTruth: {
+            turns: [],
+            nearEndStimuli: [
+              { id: 'backchannel', atMs: 1540, toleranceMs: 150, label: 'backchannel' },
+              { id: 'interruption', atMs: 1940, toleranceMs: 150, label: 'interruption' },
+            ],
+          },
+        }),
+      );
+      expect(result.errors).toEqual([]);
+    });
+
     it('rejects an unknown label', () => {
       const result = validateVoiceEvalSession(
         session({

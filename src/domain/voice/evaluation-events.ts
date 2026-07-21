@@ -172,7 +172,10 @@ export type VoiceEvalNearEndStimulus = {
   id: string;
   /** 刺激を与えた時刻（セッション開始からの相対ミリ秒）。 */
   atMs: number;
-  /** 観測 onset をこの刺激へ帰属させる許容幅（片側ミリ秒）。 */
+  /**
+   * 観測 onset をこの刺激へ帰属させる許容幅（片側ミリ秒）。
+   * **隣の刺激の窓と重ならないこと**（重なると帰属が原理的に決まらない。バリデータが弾く）。
+   */
   toleranceMs: number;
   label: VoiceEvalNearEndLabel;
 };
@@ -424,6 +427,22 @@ export function validateVoiceEvalSession(session: VoiceEvalSession): VoiceEvalVa
     }
     if (!['interruption', 'backchannel', 'echo', 'environment'].includes(stimulus.label)) {
       errors.push(`groundTruth.nearEndStimuli['${stimulus.id}']: label が不正 '${String(stimulus.label)}'`);
+    }
+  }
+
+  // 許容窓が重なると「どちらの刺激の観測か」が原理的に決まらない。マッチング側は大域最適で
+  // 解くが、そもそも重なる正解はデータセットの設定ミスなので、指標として現れる前に弾く
+  // （実際、刺激間隔 400ms に対して許容窓 400ms を置いていて誤ラベルの温床になっていた）。
+  const ordered = [...(session.groundTruth?.nearEndStimuli ?? [])]
+    .filter((s) => typeof s.atMs === 'number' && typeof s.toleranceMs === 'number' && s.toleranceMs > 0)
+    .sort((a, b) => a.atMs - b.atMs);
+  for (let i = 1; i < ordered.length; i += 1) {
+    const previous = ordered[i - 1]!;
+    const current = ordered[i]!;
+    if (previous.atMs + previous.toleranceMs >= current.atMs - current.toleranceMs) {
+      errors.push(
+        `groundTruth.nearEndStimuli: '${previous.id}' と '${current.id}' の toleranceMs 窓が重なっている（間隔 ${current.atMs - previous.atMs}ms に対して ${previous.toleranceMs}ms / ${current.toleranceMs}ms）。観測をどちらの刺激に帰属させるか決められない`,
+      );
     }
   }
 
