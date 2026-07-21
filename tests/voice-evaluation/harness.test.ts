@@ -4,6 +4,12 @@
  * 合成データセットを複数 provider に流し、指標算出 → SLO 判定 → レポート出力までを
  * ネットワーク・実音声なしで再現する。「基準 provider は緑」「1 ノブ崩すと該当指標だけ赤」
  * を確認することで、SLO 低下がレポートで検知できることを担保する（#365 AC）。
+ *
+ * テストの書き方の約束:
+ * - **違反集合は完全一致で固定する**（`toContain` で済ませない）。1 ノブの劣化が、意図した指標
+ *   だけを赤くし、他を巻き込まないことまで含めて検証するため。
+ * - **必ず `schemaErrors` も検証する**。セッションが検証で落ちて計測されないまま
+ *   「違反 0 件」で緑に見える事故を防ぐ。
  */
 import { describe, expect, it } from 'vitest';
 
@@ -33,7 +39,7 @@ async function runWith(p: VoiceEvalProvider) {
   const report = await runVoiceEvalSuite({ providers: [p], scenarios: VOICE_EVAL_SCENARIOS, profile });
   const result = report.providers[0];
   if (!result) throw new Error('provider result missing');
-  return { report, result };
+  return { report, result, violations: result.slo.violations.map((v) => v.metric).sort() };
 }
 
 describe('データセット', () => {
@@ -50,9 +56,13 @@ describe('データセット', () => {
     }
   });
 
-  it('近端発話の注釈数が仕様の発生数と一致する', () => {
-    for (const entry of VOICE_EVAL_DATASET) {
-      expect(entry.scenario.groundTruth.nearEndOnsets).toHaveLength(entry.nearEnd.length);
+  it('近端発話の正解を刺激の絶対時刻として持つ（観測の通番に依存しない）', () => {
+    const stimuli = VOICE_EVAL_SCENARIOS.flatMap((s) => s.groundTruth.nearEndStimuli);
+    expect(stimuli.length).toBeGreaterThan(0);
+    for (const stimulus of stimuli) {
+      expect(stimulus.atMs).toBeGreaterThan(0);
+      expect(stimulus.toleranceMs).toBeGreaterThan(0);
+      expect(stimulus.id).not.toBe('');
     }
   });
 });
@@ -71,73 +81,125 @@ describe('合成 provider の適合', () => {
     const second = await provider('baseline').run(VOICE_EVAL_SCENARIOS[0]!);
     expect(first.events).toEqual(second.events);
   });
+
+  it('transport イベントを出す（#369 が計測値を出せる形になっている）', async () => {
+    const session = await provider('baseline').run(VOICE_EVAL_SCENARIOS[0]!);
+    expect(session.events.map((e) => e.type)).toContain('transport.connected');
+    expect(session.events.map((e) => e.type)).toContain('transport.stream_open');
+  });
 });
 
 describe('SLO 判定', () => {
-  it('基準 provider は実機 SLO を満たす', async () => {
-    const { result } = await runWith(provider('baseline'));
-    expect(result.slo.violations).toEqual([]);
+  it('基準 provider は実機 SLO を全項目満たす', async () => {
+    const { result, violations } = await runWith(provider('baseline'));
+    expect(violations).toEqual([]);
     expect(result.schemaErrors).toEqual([]);
+    expect(result.slo.skipped).toEqual([]); // uat は strict なので skipped も出ない
+    expect(result.passed).toBe(true);
+    expect(result.metrics.sessionCount).toBe(VOICE_EVAL_SCENARIOS.length);
   });
 
   it('確定 partial を遅くすると該当指標だけが違反になる', async () => {
-    const { result } = await runWith(provider('slow-stt', { stablePartialMs: 900 }));
-    expect(result.slo.violations.map((v) => v.metric)).toEqual(['stablePartialP50Ms']);
-    expect(result.slo.violations[0]?.observed).toBe(900);
+    const { result, violations } = await runWith(provider('slow-stt', { stablePartialMs: 900 }));
+    expect(violations).toEqual(['stablePartialP50Ms']);
+    expect(result.schemaErrors).toEqual([]);
+    expect(result.metrics.latency.audioOnsetToStablePartial.p50).toBe(900);
   });
 
-  it('応答音声を遅くすると短答の first audio SLO が違反になる', async () => {
-    const { result } = await runWith(provider('slow-tts', { firstAudioMs: 900, firstByteMs: 800 }));
-    expect(result.slo.violations.map((v) => v.metric)).toContain('shortAnswerFirstAudioP50Ms');
+  it('応答音声を遅くすると first audio の SLO が違反になる', async () => {
+    const { result, violations } = await runWith(provider('slow-tts', { firstAudioMs: 900, firstByteMs: 800 }));
+    expect(violations).toContain('shortAnswerFirstAudioP50Ms');
+    expect(result.schemaErrors).toEqual([]);
   });
 
   it('相づちで止まる provider は誤割り込み率で落ちる', async () => {
-    const { result } = await runWith(provider('naive-barge-in', { bargeInPolicy: 'naive' }));
-    expect(result.slo.violations.map((v) => v.metric)).toContain('maxFalseStopRate');
+    const { result, violations } = await runWith(provider('naive-barge-in', { bargeInPolicy: 'naive' }));
+    expect(violations).toEqual([
+      'maxFalseStopRate',
+      'minNearEndOnsetDetectionRate',
+      'minTrueInterruptionDetectionRate',
+    ]);
+    expect(result.schemaErrors).toEqual([]);
     expect(result.metrics.bargeIn.backchannelFalseStopRate).toBe(1);
     expect(result.metrics.bargeIn.echoFalseStopRate).toBe(1);
+    expect(result.metrics.bargeIn.falseStopRate).toBe(0.75);
   });
 
-  it('割り込みを取りこぼす provider は誤停止こそ 0 だが検出率が 0 になる', async () => {
-    const { result } = await runWith(provider('deaf', { bargeInPolicy: 'deaf' }));
+  it('割り込みを一切止めない provider は「誤停止 0」でも緑にならない', async () => {
+    // 非対称な SLO セットだと、何もしない provider が最も安い緑になってしまう。
+    const { result, violations } = await runWith(provider('deaf', { bargeInPolicy: 'deaf' }));
     expect(result.metrics.bargeIn.falseStopRate).toBe(0);
     expect(result.metrics.bargeIn.trueInterruptionDetectionRate).toBe(0);
+    expect(violations).toEqual(['bargeInStopP50Ms', 'bargeInStopP95Ms', 'minTrueInterruptionDetectionRate']);
+    expect(result.passed).toBe(false);
+    expect(result.schemaErrors).toEqual([]);
   });
 
-  it('フィラーで切る provider は誤ターン終了率で落ちる', async () => {
-    const { result } = await runWith(provider('naive-turn', { turnPolicy: 'naive' }));
-    expect(result.slo.violations.map((v) => v.metric)).toContain('maxFalseCommitRate');
+  it('フィラーで切る provider は誤ターン終了率だけで落ちる', async () => {
+    const { result, violations } = await runWith(provider('naive-turn', { turnPolicy: 'naive' }));
+    expect(violations).toEqual(['maxFalseCommitRate']);
+    expect(result.schemaErrors).toEqual([]);
+    expect(result.metrics.turn.falseCommitRate).toBe(1);
     expect(result.metrics.turn.fillerFalseResponseRate).toBe(1);
+    expect(result.metrics.turn.missedEndRate).toBe(0);
   });
 
-  it('ターンを取りこぼす provider は誤終了 0 のまま終了見逃しに出る', async () => {
-    const { result } = await runWith(provider('slow-turn', { turnPolicy: 'slow' }));
+  it('ターンを取りこぼす provider は誤終了 0 のまま終了見逃しで落ちる（スキーマ違反にしない）', async () => {
+    // 以前はターン脱落で近端発話の注釈が無効になり、セッションが検証で落ちて 8 件中 5 件しか
+    // 集計されていなかった。ターンの脱落は性能の失敗であって計測の失敗ではない。
+    const { result, violations } = await runWith(provider('slow-turn', { turnPolicy: 'slow' }));
+    expect(result.schemaErrors).toEqual([]);
+    expect(result.metrics.sessionCount).toBe(VOICE_EVAL_SCENARIOS.length);
     expect(result.metrics.turn.falseCommitRate).toBe(0);
-    expect(result.metrics.turn.missedEndRate).toBeGreaterThan(0);
+    expect(result.metrics.turn.missedEndRate).toBeCloseTo(0.8);
+    expect(violations).toContain('maxMissedEndRate');
   });
 
   it('担当者候補の順位が落ちると Top3 は保たれても Top1 が下がる', async () => {
-    const { result } = await runWith(provider('rank3', { entityRank: 3 }));
+    const { result, violations } = await runWith(provider('rank3', { entityRank: 3 }));
     expect(result.metrics.entity.top3Rate).toBe(1);
     expect(result.metrics.entity.top1Rate).toBe(0);
+    expect(violations).toEqual([]); // Top3 SLO は満たすので赤にはしない
   });
 
   it('候補から漏れると Top3 SLO で落ちる', async () => {
-    const { result } = await runWith(provider('entity-miss', { entityRank: 'miss' }));
-    expect(result.slo.violations.map((v) => v.metric)).toContain('minEntityTop3Rate');
+    const { result, violations } = await runWith(provider('entity-miss', { entityRank: 'miss' }));
+    expect(violations).toEqual(['minEntityTop3Rate']);
+    expect(result.schemaErrors).toEqual([]);
+    expect(result.metrics.entity.top3Rate).toBe(0);
+  });
+
+  it('途中で終わる provider は「イベントが少ないだけ」に見えず、中断として赤くなる', async () => {
+    const { result, violations } = await runWith(provider('aborting', { abortAtTurn: 0 }));
+    expect(result.schemaErrors).toEqual([]);
+    expect(result.metrics.reliability.abortedSessionRate).toBe(1);
+    expect(violations).toContain('maxAbortedSessionRate');
+    expect(result.passed).toBe(false);
   });
 });
 
 describe('固有名詞の精度は CER と別に見える', () => {
   it('同音異字の取り違えは CER が小さくても人名一致率で落ちる', async () => {
-    const { result } = await runWith(provider('homophone', { misrecognitions: { 斎藤: '佐藤', 山田: '山下' } }));
-    expect(result.metrics.stt.cer.p50).toBeLessThan(0.3);
-    expect(result.metrics.stt.personNameExactMatchRate).toBeLessThan(1);
+    const { result, violations } = await runWith(
+      provider('homophone', { misrecognitions: { 斎藤: '佐藤', 山田: '山下' } }),
+    );
+
+    // コーパス CER は 2.4% と小さく、CER だけを見ていると回帰に気付けない。
+    expect(result.metrics.stt.corpusCer).toBeCloseTo(0.024);
+    // 発話ごとの CER も最大で 9% 程度。ただし「厳密に 0 より大きい」ことは確認する
+    // （CER が常に 0 を返す実装でもテストが通ってしまうのを防ぐ）。
+    expect(result.metrics.stt.cer.max).toBeGreaterThan(0);
+    expect(result.metrics.stt.cer.max).toBeLessThan(0.1);
+    // 一方で人名一致率は 3 件中 1 件まで落ちる。
+    expect(result.metrics.stt.personNameExactMatchRate).toBeCloseTo(1 / 3);
+    expect(violations).toContain('minPersonNameExactMatchRate');
+    expect(violations).not.toContain('maxCorpusCer');
   });
 
   it('誤りを注入しない provider は人名も部門名も完全一致する', async () => {
     const { result } = await runWith(provider('clean'));
     expect(result.metrics.stt.cer.max).toBe(0);
+    expect(result.metrics.stt.corpusCer).toBe(0);
     expect(result.metrics.stt.personNameExactMatchRate).toBe(1);
     expect(result.metrics.stt.departmentNameExactMatchRate).toBe(1);
   });
@@ -154,7 +216,9 @@ describe('provider 比較とレポート', () => {
     expect(report.providers).toHaveLength(2);
     expect(report.providers[0]?.metrics.latency.audioOnsetToStablePartial.p50).toBe(250);
     expect(report.providers[1]?.metrics.latency.audioOnsetToStablePartial.p50).toBe(700);
-    expect(report.passed).toBe(false); // browser 側が SLO を割る
+    expect(report.providers[0]?.passed).toBe(true);
+    expect(report.providers[1]?.passed).toBe(false);
+    expect(report.passed).toBe(false);
   });
 
   it('JSON / CSV / Markdown を出力できる', async () => {

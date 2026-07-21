@@ -26,17 +26,24 @@ const COLUMNS: Column[] = [
   { header: 'barge_in_stop_p95_ms', value: (r) => r.metrics.latency.nearEndOnsetToPlaybackStopped.p95 },
   { header: 'viseme_sync_error_p50_ms', value: (r) => r.metrics.latency.visemeSyncError.p50 },
   { header: 'cer_p50', value: (r) => r.metrics.stt.cer.p50 },
+  { header: 'corpus_cer', value: (r) => r.metrics.stt.corpusCer },
   { header: 'person_name_exact_match_rate', value: (r) => r.metrics.stt.personNameExactMatchRate },
   { header: 'department_name_exact_match_rate', value: (r) => r.metrics.stt.departmentNameExactMatchRate },
   { header: 'false_commit_rate', value: (r) => r.metrics.turn.falseCommitRate },
   { header: 'missed_end_rate', value: (r) => r.metrics.turn.missedEndRate },
   { header: 'filler_false_response_rate', value: (r) => r.metrics.turn.fillerFalseResponseRate },
   { header: 'true_interruption_detection_rate', value: (r) => r.metrics.bargeIn.trueInterruptionDetectionRate },
+  { header: 'near_end_onset_detection_rate', value: (r) => r.metrics.bargeIn.nearEndOnsetDetectionRate },
+  { header: 'spurious_near_end_onset_count', value: (r) => r.metrics.bargeIn.spuriousNearEndOnsetCount },
   { header: 'false_stop_rate', value: (r) => r.metrics.bargeIn.falseStopRate },
   { header: 'backchannel_false_stop_rate', value: (r) => r.metrics.bargeIn.backchannelFalseStopRate },
   { header: 'echo_false_stop_rate', value: (r) => r.metrics.bargeIn.echoFalseStopRate },
   { header: 'entity_top1_rate', value: (r) => r.metrics.entity.top1Rate },
   { header: 'entity_top3_rate', value: (r) => r.metrics.entity.top3Rate },
+  { header: 'aborted_session_rate', value: (r) => r.metrics.reliability.abortedSessionRate },
+  { header: 'reconnects_per_session', value: (r) => r.metrics.reliability.reconnectsPerSession },
+  { header: 'schema_errors', value: (r) => r.schemaErrors.length },
+  { header: 'run_errors', value: (r) => r.errors.length },
 ];
 
 function csvCell(value: string): string {
@@ -49,10 +56,11 @@ function numberCell(value: number | null): string {
 }
 
 export function toCsvReport(report: VoiceEvalSuiteReport): string {
-  const header = ['provider', 'slo_passed', ...COLUMNS.map((c) => c.header)].join(',');
+  const header = ['provider', 'passed', 'slo_passed', ...COLUMNS.map((c) => c.header)].join(',');
   const rows = report.providers.map((result) =>
     [
       csvCell(result.providerId),
+      String(result.passed),
       String(result.slo.passed),
       ...COLUMNS.map((column) => numberCell(column.value(result))),
     ].join(','),
@@ -96,16 +104,20 @@ export function toMarkdownReport(report: VoiceEvalSuiteReport): string {
 
   lines.push('## 精度・ターン・割り込み');
   lines.push('');
-  lines.push('| provider | CER P50 | 人名一致 | 部門名一致 | 誤ターン終了 | 誤停止 | 割り込み検出 | Entity Top3 |');
-  lines.push('| --- | --- | --- | --- | --- | --- | --- | --- |');
+  lines.push(
+    '| provider | コーパスCER | 人名一致 | 部門名一致 | 誤ターン終了 | 終了見逃し | 誤停止 | 割り込み検出 | onset検出 | Entity Top3 |',
+  );
+  lines.push('| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |');
   for (const result of report.providers) {
     const { stt, turn, bargeIn, entity } = result.metrics;
     lines.push(
-      `| ${result.providerId} | ${mdCell(stt.cer.p50)} | ${mdCell(stt.personNameExactMatchRate)} | ${mdCell(
+      `| ${result.providerId} | ${mdCell(stt.corpusCer)} | ${mdCell(stt.personNameExactMatchRate)} | ${mdCell(
         stt.departmentNameExactMatchRate,
-      )} | ${mdCell(turn.falseCommitRate)} | ${mdCell(bargeIn.falseStopRate)} | ${mdCell(
-        bargeIn.trueInterruptionDetectionRate,
-      )} | ${mdCell(entity.top3Rate)} |`,
+      )} | ${mdCell(turn.falseCommitRate)} | ${mdCell(turn.missedEndRate)} | ${mdCell(
+        bargeIn.falseStopRate,
+      )} | ${mdCell(bargeIn.trueInterruptionDetectionRate)} | ${mdCell(bargeIn.nearEndOnsetDetectionRate)} | ${mdCell(
+        entity.top3Rate,
+      )} |`,
     );
   }
   lines.push('');
@@ -113,7 +125,8 @@ export function toMarkdownReport(report: VoiceEvalSuiteReport): string {
   lines.push('## SLO 判定');
   lines.push('');
   for (const result of report.providers) {
-    lines.push(`### ${result.providerId} — ${result.slo.passed ? 'PASS' : 'FAIL'}`);
+    // SLO だけでなくスキーマ違反・実行エラーも含めた総合判定を出す。
+    lines.push(`### ${result.providerId} — ${result.passed ? 'PASS' : 'FAIL'}`);
     lines.push('');
     for (const error of result.schemaErrors) lines.push(`- スキーマ違反: ${error}`);
     for (const error of result.errors) lines.push(`- 実行エラー: ${error}`);

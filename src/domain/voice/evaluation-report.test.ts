@@ -4,19 +4,19 @@ import { VOICE_EVAL_SCHEMA_VERSION, type VoiceEvalEvent, type VoiceEvalSession }
 import { computeSessionMetrics, computeSuiteMetrics } from './evaluation-metrics';
 import { toCsvReport, toJsonReport, toMarkdownReport } from './evaluation-report';
 import { VOICE_EVAL_PROFILES, evaluateAgainstSlo } from './evaluation-thresholds';
-import type { VoiceEvalSuiteReport } from './evaluation-runner';
+import type { VoiceEvalProviderResult, VoiceEvalSuiteReport } from './evaluation-runner';
 
 function session(id: string, partialAt: number): VoiceEvalSession {
   const events: VoiceEvalEvent[] = [
     { t: 0, turnIndex: 0, type: 'audio.onset' },
     { t: partialAt, turnIndex: 0, type: 'stt.partial', text: 'や', stable: true },
-    { t: 500, turnIndex: 0, type: 'speech.end' },
-    { t: 550, turnIndex: 0, type: 'stt.final', text: '山田' },
-    { t: 560, turnIndex: 0, type: 'turn.committed', text: '山田', trigger: 'silence' },
-    { t: 570, turnIndex: 0, type: 'tts.request', text: 'ok' },
-    { t: 640, turnIndex: 0, type: 'tts.first_byte' },
-    { t: 700, turnIndex: 0, type: 'tts.playback_start' },
-    { t: 1500, turnIndex: 0, type: 'tts.playback_stopped', reason: 'completed' },
+    { t: 1400, turnIndex: 0, type: 'speech.end' },
+    { t: 1450, turnIndex: 0, type: 'stt.final', text: '山田' },
+    { t: 1460, turnIndex: 0, type: 'turn.committed', text: '山田', trigger: 'silence' },
+    { t: 1470, turnIndex: 0, type: 'tts.request', text: 'ok' },
+    { t: 1540, turnIndex: 0, type: 'tts.first_byte' },
+    { t: 1600, turnIndex: 0, type: 'tts.playback_start' },
+    { t: 2400, turnIndex: 0, type: 'tts.playback_stopped', reason: 'completed' },
   ];
   return {
     schemaVersion: VOICE_EVAL_SCHEMA_VERSION,
@@ -34,29 +34,25 @@ function session(id: string, partialAt: number): VoiceEvalSession {
           utteranceKind: 'short_answer',
         },
       ],
-      nearEndOnsets: [],
+      nearEndStimuli: [],
     },
   };
 }
 
+function buildResult(id: string, partialAt: number): VoiceEvalProviderResult {
+  const metrics = computeSuiteMetrics([computeSessionMetrics(session(id, partialAt))]);
+  const slo = evaluateAgainstSlo(metrics, VOICE_EVAL_PROFILES.uat.thresholds, { strict: false });
+  return { providerId: id, metrics, slo, schemaErrors: [], errors: [], passed: slo.passed };
+}
+
 function report(): VoiceEvalSuiteReport {
-  const build = (id: string, partialAt: number) => {
-    const metrics = computeSuiteMetrics([computeSessionMetrics(session(id, partialAt))]);
-    return {
-      providerId: id,
-      metrics,
-      slo: evaluateAgainstSlo(metrics, VOICE_EVAL_PROFILES.uat.thresholds),
-      schemaErrors: [],
-      errors: [],
-    };
-  };
-  const providers = [build('transcribe', 200), build('browser', 1200)];
+  const providers = [buildResult('transcribe', 200), buildResult('browser', 1200)];
   return {
     profile: VOICE_EVAL_PROFILES.uat.name,
     schemaVersion: VOICE_EVAL_SCHEMA_VERSION,
     scenarioCount: 1,
     providers,
-    passed: providers.every((p) => p.slo.passed),
+    passed: providers.every((p) => p.passed),
   };
 }
 
@@ -82,6 +78,13 @@ describe('toCsvReport', () => {
     expect(lines[1]?.startsWith('transcribe,')).toBe(true);
   });
 
+  it('exposes schema and run error counts so a failed provider is visible in the table', () => {
+    const header = toCsvReport(report()).trim().split('\n')[0] ?? '';
+    expect(header).toContain('schema_errors');
+    expect(header).toContain('run_errors');
+    expect(header).toContain('passed');
+  });
+
   it('writes an empty cell for an undecidable metric rather than 0', () => {
     const csv = toCsvReport(report());
     const header = csv.trim().split('\n')[0]?.split(',') ?? [];
@@ -93,10 +96,7 @@ describe('toCsvReport', () => {
 
   it('quotes any provider id containing a comma', () => {
     const base = report();
-    const withComma = {
-      ...base,
-      providers: [{ ...base.providers[0]!, providerId: 'a,b' }],
-    };
+    const withComma = { ...base, providers: [{ ...base.providers[0]!, providerId: 'a,b' }] };
     expect(toCsvReport(withComma)).toContain('"a,b"');
   });
 });
@@ -118,5 +118,24 @@ describe('toMarkdownReport', () => {
 
   it('marks the overall verdict', () => {
     expect(toMarkdownReport(report())).toContain('FAIL');
+  });
+
+  it('marks a provider FAIL when its sessions failed schema validation even with no SLO violation', () => {
+    const base = report();
+    const withSchemaError: VoiceEvalSuiteReport = {
+      ...base,
+      providers: [
+        {
+          ...base.providers[0]!,
+          providerId: 'broken',
+          slo: { passed: true, violations: [], skipped: [] },
+          schemaErrors: ['sc-1: t が単調増加していない'],
+          passed: false,
+        },
+      ],
+    };
+    const md = toMarkdownReport(withSchemaError);
+    expect(md).toContain('### broken — FAIL');
+    expect(md).toContain('スキーマ違反');
   });
 });

@@ -4,6 +4,8 @@ import {
   VOICE_EVAL_SCHEMA_VERSION,
   countNearEndOnsets,
   isPlaybackActiveAt,
+  observedNearEndOnsets,
+  playbackWindows,
   sortVoiceEvalEvents,
   validateVoiceEvalSession,
   type VoiceEvalEvent,
@@ -29,7 +31,7 @@ function session(overrides: Partial<VoiceEvalSession> = {}): VoiceEvalSession {
     locale: 'ja-JP',
     providers: { stt: 'mock-stt', tts: 'mock-tts', turn: 'mock-turn' },
     events,
-    groundTruth: { turns: [], nearEndOnsets: [] },
+    groundTruth: { turns: [], nearEndStimuli: [] },
     ...overrides,
   };
 }
@@ -42,7 +44,7 @@ describe('validateVoiceEvalSession', () => {
   });
 
   it('rejects a schema version it cannot interpret', () => {
-    const result = validateVoiceEvalSession(session({ schemaVersion: 999 }));
+    const result = validateVoiceEvalSession(session({ schemaVersion: 1 }));
     expect(result.valid).toBe(false);
     expect(result.errors.join()).toContain('schemaVersion');
   });
@@ -59,8 +61,7 @@ describe('validateVoiceEvalSession', () => {
 
   it('rejects negative timestamps', () => {
     const events: VoiceEvalEvent[] = [{ t: -1, turnIndex: 0, type: 'audio.onset' }];
-    const result = validateVoiceEvalSession(session({ events }));
-    expect(result.valid).toBe(false);
+    expect(validateVoiceEvalSession(session({ events })).valid).toBe(false);
   });
 
   it('rejects an unknown event type', () => {
@@ -90,25 +91,18 @@ describe('validateVoiceEvalSession', () => {
     expect(result.errors.join()).toContain('tts.request');
   });
 
-  it('rejects ground truth referring to a turn that has no events', () => {
+  it('accepts ground truth for a turn the provider produced no events for (脱落は性能の失敗)', () => {
+    // ターンの脱落は missedEndRate として計測されるべきもの。スキーマ違反にすると
+    // 「実装が壊れた」が「計測が壊れた」として現れ、両者を区別できなくなる。
     const result = validateVoiceEvalSession(
       session({
         groundTruth: {
           turns: [{ turnIndex: 7, referenceTranscript: 'x', shouldCommit: true, endsWithFiller: false }],
-          nearEndOnsets: [],
+          nearEndStimuli: [],
         },
       }),
     );
-    expect(result.valid).toBe(false);
-    expect(result.errors.join()).toContain('turnIndex 7');
-  });
-
-  it('rejects a near-end annotation with no matching audio onset', () => {
-    const result = validateVoiceEvalSession(
-      session({ groundTruth: { turns: [], nearEndOnsets: [{ onsetIndex: 5, label: 'interruption' }] } }),
-    );
-    expect(result.valid).toBe(false);
-    expect(result.errors.join()).toContain('onsetIndex 5');
+    expect(result.errors).toEqual([]);
   });
 
   it('rejects an entity event whose candidates are not ranked by descending score', () => {
@@ -139,6 +133,83 @@ describe('validateVoiceEvalSession', () => {
     expect(result.valid).toBe(false);
     expect(result.errors.join()).toContain('audioUri');
   });
+
+  it('rejects an error event carrying a full exception message instead of a code', () => {
+    const events: VoiceEvalEvent[] = [{ t: 0, turnIndex: 0, type: 'error', stage: 'stt', code: 'x'.repeat(65) }];
+    const result = validateVoiceEvalSession(session({ events }));
+    expect(result.valid).toBe(false);
+    expect(result.errors.join()).toContain('長すぎる');
+  });
+
+  it('accepts transport and failure events (#369 が計測値を出せる)', () => {
+    const events: VoiceEvalEvent[] = [
+      { t: 0, turnIndex: 0, type: 'transport.connected' },
+      { t: 5, turnIndex: 0, type: 'transport.stream_open' },
+      { t: 10, turnIndex: 0, type: 'transport.stats', droppedPackets: 2, jitterMs: 18 },
+      { t: 20, turnIndex: 0, type: 'transport.reconnecting', attempt: 1 },
+      { t: 30, turnIndex: 0, type: 'transport.disconnected', reason: 'network' },
+      { t: 40, turnIndex: 0, type: 'error', stage: 'stt', code: 'stream_timeout' },
+      { t: 50, turnIndex: 0, type: 'session.aborted', stage: 'transport', code: 'closed' },
+    ];
+    expect(validateVoiceEvalSession(session({ events })).errors).toEqual([]);
+  });
+
+  it('rejects a reconnect attempt number below 1', () => {
+    const events: VoiceEvalEvent[] = [{ t: 0, turnIndex: 0, type: 'transport.reconnecting', attempt: 0 }];
+    expect(validateVoiceEvalSession(session({ events })).valid).toBe(false);
+  });
+
+  describe('近端発話の正解（刺激ベース）', () => {
+    it('accepts a stimulus with no matching observation (検出漏れは指標であって違反ではない)', () => {
+      const result = validateVoiceEvalSession(
+        session({
+          groundTruth: {
+            turns: [],
+            nearEndStimuli: [{ id: 'a', atMs: 99_000, toleranceMs: 200, label: 'interruption' }],
+          },
+        }),
+      );
+      expect(result.errors).toEqual([]);
+    });
+
+    it('rejects duplicate stimulus ids', () => {
+      const result = validateVoiceEvalSession(
+        session({
+          groundTruth: {
+            turns: [],
+            nearEndStimuli: [
+              { id: 'dup', atMs: 100, toleranceMs: 200, label: 'echo' },
+              { id: 'dup', atMs: 300, toleranceMs: 200, label: 'echo' },
+            ],
+          },
+        }),
+      );
+      expect(result.valid).toBe(false);
+      expect(result.errors.join()).toContain('重複');
+    });
+
+    it('rejects a non-positive tolerance', () => {
+      const result = validateVoiceEvalSession(
+        session({
+          groundTruth: { turns: [], nearEndStimuli: [{ id: 'a', atMs: 100, toleranceMs: 0, label: 'echo' }] },
+        }),
+      );
+      expect(result.valid).toBe(false);
+      expect(result.errors.join()).toContain('toleranceMs');
+    });
+
+    it('rejects an unknown label', () => {
+      const result = validateVoiceEvalSession(
+        session({
+          groundTruth: {
+            turns: [],
+            nearEndStimuli: [{ id: 'a', atMs: 100, toleranceMs: 200, label: 'cough' as never }],
+          },
+        }),
+      );
+      expect(result.valid).toBe(false);
+    });
+  });
 });
 
 describe('sortVoiceEvalEvents', () => {
@@ -150,6 +221,39 @@ describe('sortVoiceEvalEvents', () => {
     const sorted = sortVoiceEvalEvents(input);
     expect(sorted.map((e) => e.t)).toEqual([100, 300]);
     expect(input[0]?.t).toBe(300);
+  });
+});
+
+describe('playbackWindows', () => {
+  it('records a terminated window with its stop reason', () => {
+    const events: VoiceEvalEvent[] = [
+      { t: 0, turnIndex: 0, type: 'tts.request', text: 'a' },
+      { t: 100, turnIndex: 0, type: 'tts.playback_start' },
+      { t: 500, turnIndex: 0, type: 'tts.playback_stopped', reason: 'completed' },
+    ];
+    expect(playbackWindows(events)).toEqual([{ start: 100, stop: 500, reason: 'completed', terminated: true }]);
+  });
+
+  it('keeps a playback that never stopped, extending it to the end of the session', () => {
+    // 再生が全く止まらないのは barge-in の最悪の失敗。捨てると近端 onset ごと指標から消える。
+    const events: VoiceEvalEvent[] = [
+      { t: 0, turnIndex: 0, type: 'tts.request', text: 'a' },
+      { t: 100, turnIndex: 0, type: 'tts.playback_start' },
+      { t: 300, turnIndex: 0, type: 'audio.onset' },
+      { t: 900, turnIndex: 0, type: 'speech.end' },
+    ];
+    expect(playbackWindows(events)).toEqual([{ start: 100, stop: 900, reason: 'unterminated', terminated: false }]);
+    expect(countNearEndOnsets(events)).toBe(1);
+  });
+
+  it('closes an unterminated window when the next playback starts', () => {
+    const events: VoiceEvalEvent[] = [
+      { t: 0, turnIndex: 0, type: 'tts.request', text: 'a' },
+      { t: 100, turnIndex: 0, type: 'tts.playback_start' },
+      { t: 400, turnIndex: 1, type: 'tts.playback_start' },
+      { t: 900, turnIndex: 1, type: 'tts.playback_stopped', reason: 'completed' },
+    ];
+    expect(playbackWindows(events).map((w) => w.reason)).toEqual(['unterminated', 'completed']);
   });
 });
 
@@ -170,8 +274,8 @@ describe('isPlaybackActiveAt', () => {
   });
 });
 
-describe('countNearEndOnsets', () => {
-  it('counts only the audio onsets that land during playback', () => {
+describe('observedNearEndOnsets', () => {
+  it('returns only the audio onsets that land during playback', () => {
     const events: VoiceEvalEvent[] = [
       { t: 0, turnIndex: 0, type: 'audio.onset' },
       { t: 10, turnIndex: 0, type: 'tts.request', text: 'a' },
@@ -180,6 +284,8 @@ describe('countNearEndOnsets', () => {
       { t: 500, turnIndex: 0, type: 'tts.playback_stopped', reason: 'barge_in' },
       { t: 900, turnIndex: 1, type: 'audio.onset' },
     ];
-    expect(countNearEndOnsets(events)).toBe(1);
+    const onsets = observedNearEndOnsets(events);
+    expect(onsets).toHaveLength(1);
+    expect(onsets[0]?.t).toBe(200);
   });
 });

@@ -81,6 +81,12 @@ export type VoiceEvalProviderResult = {
   schemaErrors: string[];
   /** provider の実行時例外。1 つの provider の失敗でスイート全体を落とさない。 */
   errors: string[];
+  /**
+   * この provider の総合判定。**SLO だけでなくスキーマ違反と実行エラーも含める** ——
+   * `slo.passed` だけを見ると、セッションが検証で落ちて計測されなかった provider が
+   * 「違反 0 件」で緑に見える。
+   */
+  passed: boolean;
 };
 
 export type VoiceEvalSuiteReport = {
@@ -124,7 +130,14 @@ export async function runVoiceEvalSuite(config: {
 
     const metrics = computeSuiteMetrics(sessions.map(computeSessionMetrics));
     const slo = evaluateAgainstSlo(metrics, config.profile.thresholds, { strict: config.profile.strict });
-    results.push({ providerId: provider.id, metrics, slo, schemaErrors, errors });
+    results.push({
+      providerId: provider.id,
+      metrics,
+      slo,
+      schemaErrors,
+      errors,
+      passed: slo.passed && schemaErrors.length === 0 && errors.length === 0,
+    });
   }
 
   return {
@@ -132,6 +145,6 @@ export async function runVoiceEvalSuite(config: {
     schemaVersion: VOICE_EVAL_SCHEMA_VERSION,
     scenarioCount: config.scenarios.length,
     providers: results,
-    passed: results.every((r) => r.slo.passed && r.schemaErrors.length === 0 && r.errors.length === 0),
+    passed: results.every((r) => r.passed),
   };
 }
