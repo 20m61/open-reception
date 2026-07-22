@@ -17,7 +17,7 @@ import type {
 } from 'aws-lambda';
 import { validateNotificationRequest } from './validation';
 import { createPollyAdapter, type PollyAdapter } from './polly-adapter';
-import { createVonageAdapter, type VonageAdapter } from './vonage-adapter';
+import { MockVonageAdapter, type VonageAdapter } from './vonage-adapter';
 import { createSiteConfigLoader, type SiteConfigLoader } from './site-config';
 import type {
   NotificationRequest,
@@ -151,10 +151,13 @@ function rememberRequest(store: Set<string>, requestId: string): void {
 }
 
 // adapter / loader は warm container 間で再利用する（毎リクエスト再生成しない）。
+// 通知 adapter の既定は Mock（実発信なし）。グローバル `VONAGE_*` env 経路は #405 Inc3 で撤去。
+// テナント別の実 Vonage 通知は `resolveVonageAdapterForTenant(tenantId)` へ移行済みで、
+// 通知リクエストに tenant コンテキストが配線される #4 の実結線時に per-request 解決へ差し替える。
 const sharedDeps: NotificationDeps = {
   loader: createSiteConfigLoader(),
   polly: createPollyAdapter(),
-  vonage: createVonageAdapter(),
+  vonage: new MockVonageAdapter(),
   seen,
   log: defaultLog,
 };

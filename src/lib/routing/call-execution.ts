@@ -61,6 +61,11 @@ export function selectEntryPolicy(
  *   - live_bridge / announce_and_bridge: 担当者へ繋がる → `answered`。
  * これにより「個人携帯へ通知→…→部門代表へ読み上げてつなぐ」で最後に繋がる、といった
  * 段階が決定的に再現される。実 Provider（#4）へ差し替えても Orchestrator は無改変。
+ *
+ * プロバイダ選択の権威は `@/lib/platform/provider-resolution` の `resolveProviderForTenant(tenantId)`。
+ * この経路は資格情報を一切読まない純 mock（グローバル `VONAGE_*` env にも依存しない）ため、#405 Inc3
+ * では切替対象の env が無い。#4 で実 `VonageConnectionProvider` が入った時点で、`executeRoutedCall`
+ * が `resolveProviderForTenant(scope.tenantId)` の解決結果に応じて mock / vonage を選ぶ（現状は mock）。
  */
 export function createKioskMockProvider(key: string): ConnectionProvider {
   let n = 0;
