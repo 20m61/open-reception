@@ -68,6 +68,16 @@ describe('buildCsp', () => {
     expect(csp).not.toContain(' https:');
   });
 
+  it('frameAncestors 未指定の既定は none（全ルート iframe 拒否を維持）', () => {
+    expect(buildCsp(nonce, {})).toContain("frame-ancestors 'none'");
+  });
+
+  it("frameAncestors='self' でプレビュー用の同一オリジン埋め込みだけ許可できる (#363)", () => {
+    const csp = buildCsp(nonce, { frameAncestors: 'self' });
+    expect(csp).toContain("frame-ancestors 'self'");
+    expect(csp).not.toContain("frame-ancestors 'none'");
+  });
+
   it('開発時のみ unsafe-eval を許可する（React のデバッグ用 eval）', () => {
     expect(buildCsp(nonce, { dev: true })).toContain("'unsafe-eval'");
     expect(buildCsp(nonce)).not.toContain("'unsafe-eval'");

@@ -35,7 +35,7 @@ note('admin login', login.ok());
 await page.goto(baseURL + '/admin/demo', { waitUntil: 'domcontentloaded', timeout: 90000 });
 await page.waitForTimeout(3000);
 note('studio: page renders', await page.getByTestId('demo-studio').isVisible().catch(() => false));
-const scenarioCount = await page.locator('[data-testid^="demo-scenario-"]').count();
+const scenarioCount = await page.locator('[data-testid^="demo-scenario-"]:not([data-testid="demo-scenario-list"])').count();
 note('studio: 9 scenarios listed', scenarioCount === 9, `count=${scenarioCount}`);
 const navLink = await page.getByText('受付体験スタジオ').count();
 note('studio: admin nav shows 受付体験スタジオ', navLink > 0, `count=${navLink}`);
@@ -69,6 +69,8 @@ const offending = requests.filter((u) => {
   const p = new URL(u).pathname;
   if (p.startsWith('/_next/') || p.startsWith('/avatar/') || p.startsWith('/assets/')) return false;
   if (p === '/admin/demo/preview' || p.startsWith('/admin/demo')) return false;
+  // 親ページの管理ナビ Link prefetch(RSC)はデモ由来の通信ではないため除外
+  if ((p === '/admin' || p.startsWith('/admin/')) && u.includes('_rsc=')) return false;
   if (p.startsWith('/api/kiosk/')) return false;
   if (p === '/api/admin/demo/run') return false;
   if (p === '/favicon.ico') return false;
@@ -86,8 +88,7 @@ await page.screenshot({ path: `${outDir}/W4-03-preview-call-failed.png` });
 // --- 5. 監査: reception.demo_executed が記録されている
 const audit = await page.request.get(baseURL + '/api/admin/audit');
 const auditBody = await audit.json().catch(() => null);
-const entries = Array.isArray(auditBody) ? auditBody : (auditBody?.entries ?? auditBody?.logs ?? []);
-const demoEntries = JSON.stringify(entries).includes('reception.demo_executed');
+const demoEntries = JSON.stringify(auditBody ?? {}).includes('reception.demo_executed');
 note('audit: reception.demo_executed recorded', demoEntries);
 
 // --- 6. 未知シナリオ

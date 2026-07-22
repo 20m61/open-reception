@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { DEMO_SCENARIOS } from '@/domain/demo-studio/scenarios';
 import type { DemoInitialMode } from '@/domain/demo-studio/scenario';
 
@@ -23,11 +23,29 @@ const MODE_LABEL: Record<DemoInitialMode, string> = {
 
 type RunState = 'idle' | 'running' | 'error';
 
+/** プレビューの内部解像度（横向き iPad 相当。#361 の 35%/65% レール検証と同値）。 */
+const PREVIEW_WIDTH = 1080;
+const PREVIEW_HEIGHT = 810;
+
 export function DemoStudio() {
   const [selectedId, setSelectedId] = useState<string>(DEMO_SCENARIOS[0]?.id ?? '');
   const [previewSrc, setPreviewSrc] = useState<string | null>(null);
   const [runState, setRunState] = useState<RunState>('idle');
   const frameRef = useRef<HTMLIFrameElement | null>(null);
+  // プレビューは横向き iPad 実寸(1080x810)で描画し、コンテナ幅に合わせて縮小表示する。
+  // CSS サイズ=iframe viewport のため、小さい枠にそのまま流し込むと本番と異なる
+  // 縮こまったレイアウトになる(実ブラウザ検証 2026-07-22 で発覚)。
+  const previewBoxRef = useRef<HTMLDivElement | null>(null);
+  const [previewScale, setPreviewScale] = useState(1);
+  useEffect(() => {
+    const el = previewBoxRef.current;
+    if (!el) return;
+    const measure = () => setPreviewScale(Math.min(1, el.clientWidth / PREVIEW_WIDTH));
+    measure();
+    const ro = new ResizeObserver(measure);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [previewSrc]);
 
   const selected = useMemo(
     () => DEMO_SCENARIOS.find((s) => s.id === selectedId),
@@ -131,11 +149,12 @@ export function DemoStudio() {
           <h2 className="card__title">ライブプレビュー（横向きiPad）</h2>
           {previewSrc ? (
             <div
+              ref={previewBoxRef}
               style={{
                 position: 'relative',
                 width: '100%',
-                maxWidth: 1024,
-                aspectRatio: '4 / 3',
+                maxWidth: PREVIEW_WIDTH,
+                aspectRatio: `${PREVIEW_WIDTH} / ${PREVIEW_HEIGHT}`,
                 border: '1px solid var(--color-border)',
                 borderRadius: 8,
                 overflow: 'hidden',
@@ -149,7 +168,13 @@ export function DemoStudio() {
                 // 別ブラウジングコンテキスト（分離した window.fetch）が sandbox 境界の本体。
                 // allow-same-origin は同一オリジンのプレビューページの動作に必要。
                 sandbox="allow-scripts allow-same-origin allow-forms"
-                style={{ width: '100%', height: '100%', border: 0 }}
+                style={{
+                  width: PREVIEW_WIDTH,
+                  height: PREVIEW_HEIGHT,
+                  border: 0,
+                  transform: `scale(${previewScale})`,
+                  transformOrigin: 'top left',
+                }}
               />
             </div>
           ) : (

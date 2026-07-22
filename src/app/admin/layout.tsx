@@ -67,6 +67,13 @@ export default async function AdminLayout({ children }: { children: React.ReactN
     redirect('/admin/login');
   }
 
+  // 受付体験スタジオのプレビュー (#363) は本番 Kiosk 画面を iframe で映すルートのため、
+  // 管理ナビ・ヘッダの chrome を付けない（認可ガードは上で通過済み。付けると iframe 内に
+  // 管理画面が入れ子表示される — 実ブラウザ検証 2026-07-22 で発覚）。
+  if (pathname === '/admin/demo/preview') {
+    return <>{children}</>;
+  }
+
   // 選択中テナントと選択肢を actor 基準で解決する（越境 cookie は採用しない）。
   // 選択は表示用であり、認可は引き続き各 API / service が actor を正として検証する。
   const { options, activeTenantId } = await resolveActiveTenant(actor);
