@@ -154,8 +154,19 @@
 
 第 2 wave 外の付随対応: Dependabot high 2 件（sharp<0.35 の libvips CVE）を `overrides` で解消。
 
-**第 3 wave（次に着手する）**: #374（A の後続・上位モデル推奨）／ #375 残 increment
-（token hash 化は**スキーマ破壊 → 要ユーザー確認**）／ #361（KioskFlow 大改修・単独）
+**第 3 wave（2026-07-22 消化済み）** — 同ブランチ・3 トラック並行。結果:
+
+| トラック | Issue | 結果 |
+| --- | --- | --- |
+| A | **#374** | increment 1 完了（`src/domain/routing/` 新設: ContactEndpoint union・nextOn 遷移・静的循環検出+hop 上限・冪等台帳・Orchestrator・mock provider・CallRoute 非破壊 compat・seed・日本語 describe。テスト 62 件）。**残**: 文章形式ルートビルダー UI・永続化/API 配線・tenant 越境 E2E・Vonage adapter(#4) |
+| B | **#361** | increment 1 完了（`ConversationTurnView` を ui-contract に一本化・横向き 35%/65% アバター継続レール・#123 の意図反転テストを明示改訂・`docs/character-led-kiosk-ux.md`）。横向き実ブラウザ検証 green。**残**: QR シェル統一・音声復唱 UI・displayText 多言語結線・VRT/axe |
+| C | **#369** | increment 1 完了（`src/domain/voice-transport/`+`src/lib/voice-transport/`: 短命 token(HMAC/jti リプレイ拒否/サーバ権威 claims)・有界キュー・rate limit・lifecycle・fallback イベント・#365 ハーネス適合 eval-bridge・ADR 0001。テスト 123+ 件）。**残**: 実 WSS(API GW WebSocket) infra・Kiosk fallback 配線・AudioWorklet(#65) |
+
+付随: **VRM 実描画検証で #31 の一部を de-stack**（rotateVRM0 欠落による背面向き描画を修正・
+自作 idle.vrma 同梱・SwiftShader WebGL2 で .vrma 実再生まで検証。残: 実機負荷・リップシンク #65）。
+
+**第 4 wave（次に着手する）**: #370(STT)+#371(TTS) 並行 → #372(Turn) ／ #363 Inc1（#374 mock
+contract 利用可に）／ #374・#361 の残 increment ／ #375 残（token hash 化は**要ユーザー確認**のまま）
 
 同 wave に **#366 Phase 0 ADR のみ**（`docs/adr/*.md` 新規・コスト増ゼロ）を差し込むのは安全。
 CDK 実装と deploy は分離し、Budget 見積を添えてユーザー承認を取る。

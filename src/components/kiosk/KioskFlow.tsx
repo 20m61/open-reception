@@ -72,7 +72,12 @@ import {
   type EscapeHatch,
   type QuickAction,
 } from './quick-actions';
-import { deriveChatAvailability, type ReceptionAction } from '@/domain/reception/ui-contract';
+import {
+  deriveAvatarPresence,
+  deriveChatAvailability,
+  type ReceptionAction,
+} from '@/domain/reception/ui-contract';
+import type { KioskLayout } from './layout';
 import { KioskChatDrawer } from './KioskChatDrawer';
 import { buildCheckoutUrl, safeCheckoutQrDataUrl } from './checkout/credential-display';
 import Link from 'next/link';
@@ -137,10 +142,16 @@ const INACTIVITY_WARNING_MS = 10000;
 const HEARTBEAT_INTERVAL_MS = 30000;
 
 /**
- * アバター常設コンパニオン（#123）を表示する状態。中央寄せで余白のあるステータス画面に限定し、
- * 選択/入力画面（カード・フォームでコンテンツが密集）では重なりを避けて出さない。
+ * 縦向き(ipad-portrait)でアバターコンパニオンを表示する状態 (#361 / 旧 #123)。
+ *
+ * #361 は「選択/入力/確認画面でもアバターとの対話を継続する」意図反転を導入したが、縦向きは
+ * 操作が下部に密集し既存プロファイルを壊しやすい。よって縦向きでは従来どおり中央寄せで余白の
+ * あるステータス画面（呼び出し中/通話/結果/完了/中止）に限定し、控えめ表示を維持する。
+ * 横向き(ipad-landscape/large-display)は 35%/65% のレール構成で全受付ステップに継続表示する
+ * （下記 showAvatarCompanion 参照）。表示状態の意味論的真実源は ui-contract の
+ * deriveAvatarPresence（横縦非依存）で、ここはレイアウト別の描画ゲートに限る。
  */
-const AVATAR_COMPANION_STATES: ReadonlySet<ReceptionState> = new Set([
+const PORTRAIT_COMPANION_STATES: ReadonlySet<ReceptionState> = new Set([
   'calling',
   'connected',
   'timeout',
@@ -150,8 +161,16 @@ const AVATAR_COMPANION_STATES: ReadonlySet<ReceptionState> = new Set([
   'cancelled',
 ]);
 
-function showAvatarCompanion(state: ReceptionState): boolean {
-  return AVATAR_COMPANION_STATES.has(state);
+/**
+ * その状態・レイアウトでアバターコンパニオンを描画するか (#361)。
+ *  - 待機(idle)は IdleView がヒーロー(presence='primary')として大きく出すため companion は不要。
+ *  - 縦向きは PORTRAIT_COMPANION_STATES に限定（重なり回避・既存プロファイル維持）。
+ *  - 横向き/大型は presence!=='primary' の全受付ステップで会話コンパニオンを継続する（意図反転）。
+ */
+function showAvatarCompanion(state: ReceptionState, layout: KioskLayout): boolean {
+  if (deriveAvatarPresence(state) === 'primary') return false;
+  if (layout === 'ipad-portrait') return PORTRAIT_COMPANION_STATES.has(state);
+  return true;
 }
 
 /** 「動いている」演出のための定期更新の上限間隔（ms）。段階境界が近ければもっと短く刻む。 */
@@ -1119,6 +1138,9 @@ export function KioskFlow() {
       data-kiosk-motion={motionKeyForState(data.state)}
       // 画面種別レイアウトプロファイル。配置は CSS が消費する (issue #124)。
       data-kiosk-layout={layout}
+      // アバターの在り方（primary/companion/minimal）。#361 の会話継続レイアウトを CSS が消費する。
+      // 横向きの選択/入力/確認ではアバターをレール(companion)として並置し対話の連続性を保つ。
+      data-kiosk-presence={view === 'ready' ? deriveAvatarPresence(data.state) : undefined}
       // 来訪者が選べるアクセシビリティ支援モード (issue #321)。配置・配色・文字サイズの
       // 切り替えは globals.css がこれらの属性セレクタで担う（JS はスタイルを持たない）。
       data-a11y-font-scale={fontScale}
@@ -1257,7 +1279,7 @@ export function KioskFlow() {
             （呼び出し中=気遣い・完了=お見送り・失敗=お詫び）が最も活きる場面でもある。
             待機画面は IdleView 側がヒーローとして大きく表示する。
           */}
-          {showAvatarCompanion(data.state) ? (
+          {showAvatarCompanion(data.state, layout) ? (
             <div className="kiosk-avatar-companion" aria-hidden="true">
               <AvatarGuide
                 screenState={data.state}

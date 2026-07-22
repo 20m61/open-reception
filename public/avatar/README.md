@@ -29,11 +29,21 @@ VRM モデルは**著作物**です。配置するモデルは必ずライセン
 モデルをコミット／配信しないこと。`.vrm` バイナリはリポジトリに含めず（`.gitignore` 済）、配備時に配置する
 運用を推奨する。
 
+## 同梱の既定モーション
+
+`idle.vrma` … `scripts/generate-idle-vrma.mjs` で**自作生成**した待機モーション（呼吸・ゆるい揺れ・
+腕を下ろした立ち姿。VRM Animation 1.0 / `VRMC_vrm_animation`）。自作のため CC0 相当・出所明確。
+管理画面（/admin/motions）でアセット登録（URL: `/avatar/idle.vrma`）して割り当てる。
+
 ## 実装メモ
 
 - 表示は `src/components/kiosk/VrmAvatarViewer.tsx`（three / @pixiv/three-vrm）。
+  VRM 0.x モデルは `VRMUtils.rotateVRM0()` で +Z 向きへ正規化する（無いと背面向きになる）。
 - 受付状態 → 表情（expression）の写像は `src/components/kiosk/avatar/vrm-expression.ts`。
-- モーション（.vrma）再生は `@pixiv/three-vrm-animation` 導入後に対応（現状はモーション URL を
-  受け渡すところまで）。
-- WebGL を使うため実描画の確認は実機 UAT（#65）で行う。WebGL 不可・読込失敗時は静止画/プレースホルダへ
-  安全に fallback する。
+- モーション（.vrma）再生は `@pixiv/three-vrm-animation` の AnimationMixer 切替で実装済み。
+  再生中は手続き的ポーズ（`vrm-idle.ts`）を適用しないため、待機系クリップは腕を下ろす回転を
+  含めること（`generate-idle-vrma.mjs` 参照）。
+- 実描画・.vrma 再生は SwiftShader(WebGL2) の headless Chromium で検証済み
+  （`scripts/vrm-visual-check.mjs`、2026-07-22。記録: `docs/ui-review-2026-07-22.md`）。
+  実機 iPad の負荷・リップシンク優先順位の検証は引き続き #65。WebGL 不可・読込失敗時は
+  静止画/プレースホルダへ安全に fallback する。
