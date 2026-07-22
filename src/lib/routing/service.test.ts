@@ -256,6 +256,29 @@ describe('RoutingService policies', () => {
     expect(r.value.map((p) => p.id)).toEqual(['p-a']);
   });
 
+  it('description は policy のサイト scope で label 解決する（別サイトの接続先ラベルを使わない / 第5wave nit）', async () => {
+    const epSame = storedEndpoint({ id: 'ep-1', siteId: String(S_A1), label: '同サイト担当' });
+    const epOther = storedEndpoint({ id: 'ep-2', siteId: 'site-a2', label: '別サイト担当' });
+    const epTenant = storedEndpoint({ id: 'ep-t', siteId: undefined, label: 'テナント共通' });
+    const policy = storedPolicy({
+      id: 'p1',
+      siteId: String(S_A1),
+      steps: [
+        { id: 's1', endpointId: 'ep-1', action: 'notify', timeoutSeconds: 20, nextOn: {} },
+        { id: 's2', endpointId: 'ep-2', action: 'notify', timeoutSeconds: 20, nextOn: {} },
+        { id: 's3', endpointId: 'ep-t', action: 'notify', timeoutSeconds: 20, nextOn: {} },
+      ],
+    });
+    const { service } = makeService({ endpoints: [epSame, epOther, epTenant], policies: [policy] });
+    const r = await service.getPolicy(tenantAdminA, T_A, 'p1');
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    const text = r.value.description.join('\n');
+    expect(text).toContain('同サイト担当'); // 同一サイトは解決する
+    expect(text).toContain('テナント共通'); // テナント横断（siteId 未設定）も解決する
+    expect(text).not.toContain('別サイト担当'); // 別サイトのラベルは解決しない
+  });
+
   it('developer は横断で読める', async () => {
     const { service } = makeService({
       endpoints: [storedEndpoint({ id: 'ep-1', tenantId: String(T_B) })],

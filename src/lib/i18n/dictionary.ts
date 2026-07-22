@@ -44,6 +44,14 @@ export type MessageKey =
   | 'reception.waitMessage'
   | 'reception.thanks'
   | 'voice.fallbackNotice'
+  // 音声対話 UI（#364 kiosk 配線 / #361 音声復唱 UI）。字幕・復唱確認・タッチ縮退案内。
+  | 'voice.caption.listening'
+  | 'voice.caption.speaking'
+  | 'voice.caption.ducked'
+  | 'voice.readback.confirmTarget'
+  | 'voice.readback.yes'
+  | 'voice.readback.no'
+  | 'voice.fallback.touchNotice'
   | 'common.next'
   | 'common.cancel'
   | 'common.retry'
@@ -259,6 +267,13 @@ const ja: DefaultDictionary = {
   'reception.waitMessage': 'そのままお待ちください',
   'reception.thanks': '受付が完了しました。ありがとうございます',
   'voice.fallbackNotice': '音声がご利用いただけない場合も、画面の案内に沿って受付できます',
+  'voice.caption.listening': 'お話しください',
+  'voice.caption.speaking': 'ご案内しています',
+  'voice.caption.ducked': 'どうぞ、お話しください',
+  'voice.readback.confirmTarget': '{name}様ですね？',
+  'voice.readback.yes': 'はい',
+  'voice.readback.no': 'いいえ',
+  'voice.fallback.touchNotice': '音声が使えないため、画面のタッチで受付を続けられます',
   'common.next': '次へ',
   'common.cancel': 'キャンセル',
   'common.retry': 'もう一度',
@@ -449,6 +464,13 @@ const en: LocaleDictionary = {
   'reception.waitMessage': 'Please wait a moment',
   'reception.thanks': 'Check-in complete. Thank you',
   'voice.fallbackNotice': 'If audio is unavailable, you can still complete check-in by following the on-screen guidance',
+  'voice.caption.listening': 'Please speak',
+  'voice.caption.speaking': 'Speaking…',
+  'voice.caption.ducked': 'Go ahead, please speak',
+  'voice.readback.confirmTarget': 'Do you mean {name}?',
+  'voice.readback.yes': 'Yes',
+  'voice.readback.no': 'No',
+  'voice.fallback.touchNotice': 'Voice is unavailable. You can continue by touch',
   'common.next': 'Next',
   'common.cancel': 'Cancel',
   'common.retry': 'Try again',
@@ -641,6 +663,13 @@ const ko: LocaleDictionary = {
   'reception.waitMessage': '잠시만 기다려 주세요',
   'reception.thanks': '접수가 완료되었습니다. 감사합니다',
   'voice.fallbackNotice': '음성을 사용할 수 없어도 화면 안내에 따라 접수를 완료할 수 있습니다',
+  'voice.caption.listening': '말씀해 주세요',
+  'voice.caption.speaking': '안내하고 있습니다',
+  'voice.caption.ducked': '말씀하세요',
+  'voice.readback.confirmTarget': '{name}님이 맞으신가요?',
+  'voice.readback.yes': '네',
+  'voice.readback.no': '아니요',
+  'voice.fallback.touchNotice': '음성을 사용할 수 없어 화면 터치로 접수를 이어갈 수 있습니다',
   'common.next': '다음',
   'common.cancel': '취소',
   'common.retry': '다시 시도',
@@ -830,6 +859,13 @@ const zh: LocaleDictionary = {
   'reception.waitMessage': '请稍候',
   'reception.thanks': '登记完成，谢谢',
   'voice.fallbackNotice': '即使无法使用语音，您也可以按照屏幕提示完成登记',
+  'voice.caption.listening': '请讲话',
+  'voice.caption.speaking': '正在为您讲解',
+  'voice.caption.ducked': '请讲',
+  'voice.readback.confirmTarget': '您是找{name}吗？',
+  'voice.readback.yes': '是',
+  'voice.readback.no': '否',
+  'voice.fallback.touchNotice': '语音暂不可用，您可以通过触摸屏幕继续登记',
   'common.next': '下一步',
   'common.cancel': '取消',
   'common.retry': '重试',

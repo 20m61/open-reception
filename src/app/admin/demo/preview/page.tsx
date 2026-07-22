@@ -3,6 +3,7 @@
 import { useEffect, useState } from 'react';
 import { KioskFlow } from '@/components/kiosk/KioskFlow';
 import { createDemoKioskFetch } from '@/domain/demo-studio/mock-adapter';
+import { deriveKioskFlowProps } from '@/domain/demo-studio/kiosk-injection';
 import { isDemoScenario, type DemoScenario } from '@/domain/demo-studio/scenario';
 import { getDemoScenario } from '@/domain/demo-studio/scenarios';
 
@@ -43,17 +44,21 @@ async function resolveScenario(id: string): Promise<DemoScenario | undefined> {
 
 export default function DemoPreviewPage() {
   const [status, setStatus] = useState<Status>('loading');
+  // 解決済みシナリオ (#363 第7wave)。KioskFlow への注入 props（operatingStatus /
+  // sttAdapterFactory / qrScanner）を deriveKioskFlowProps で導出するために保持する。
+  const [scenario, setScenario] = useState<DemoScenario | undefined>(undefined);
 
   useEffect(() => {
     const id = new URLSearchParams(window.location.search).get('scenario');
     let cancelled = false;
     void (async () => {
-      const scenario = id ? await resolveScenario(id) : undefined;
+      const resolved = id ? await resolveScenario(id) : undefined;
       if (cancelled) return;
       // 外部システム（この iframe の window.fetch）を Mock へ差し替える。以後この iframe 内の全 fetch は
       // Mock 経由になり、本番エンドポイントへは到達しない。差し替え後にその結果を React へ通知する。
-      if (scenario) window.fetch = createDemoKioskFetch(scenario);
-      setStatus(scenario ? 'ready' : 'unknown');
+      if (resolved) window.fetch = createDemoKioskFetch(resolved);
+      setScenario(resolved);
+      setStatus(resolved ? 'ready' : 'unknown');
     })();
     return () => {
       cancelled = true;
@@ -61,7 +66,7 @@ export default function DemoPreviewPage() {
   }, []);
 
   if (status === 'loading') return null;
-  if (status === 'unknown') {
+  if (status === 'unknown' || !scenario) {
     return (
       <main className="screen" data-testid="demo-preview-unknown" style={{ padding: 24 }}>
         <div className="notice notice--warning">
@@ -72,5 +77,8 @@ export default function DemoPreviewPage() {
   }
 
   // 本番 Kiosk を無改変で再利用（プレビュー専用の類似 UI を作らない, issue #363 安全設計）。
-  return <KioskFlow />;
+  // 外部注入点（#363 第7wave）: シナリオの initialMode/simulatedResults から導出した
+  // operatingStatus/sttAdapterFactory/qrScanner を props で渡し、営業時間外・STT失敗・QR結果を
+  // 実際の専用 UI として再現する（未該当は undefined のまま＝従来どおり）。
+  return <KioskFlow {...deriveKioskFlowProps(scenario)} />;
 }

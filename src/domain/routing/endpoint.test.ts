@@ -85,6 +85,11 @@ describe('validateEndpoint (#374)', () => {
     expect(validateEndpoint({ ...validPstn, enabled: 'true' }).ok).toBe(false);
   });
 
+  it('label が長すぎると拒否する（入力サイズ上限 / 第5wave nit）', () => {
+    const longLabel = 'ラベル'.repeat(200);
+    expect(validateEndpoint({ ...validPstn, label: longLabel }).ok).toBe(false);
+  });
+
   it('エラーメッセージにアドレス値を含めない（PII 最小化）', () => {
     const r = validateEndpoint({ ...validPstn, e164: '09012345678' });
     expect(r.ok).toBe(false);

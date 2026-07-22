@@ -92,6 +92,9 @@ export function endpointAddress(endpoint: ContactEndpoint): string {
   return endpoint.channel === 'pstn' ? endpoint.e164 : endpoint.uri;
 }
 
+/** 表示ラベルの最大文字数（入力サイズ上限 / issue #374 第5wave nit）。文章形式説明の暴走を防ぐ。 */
+export const MAX_ENDPOINT_LABEL_LENGTH = 120;
+
 // E.164: 先頭 '+' + 国番号(1-9始まり) + 本体、合計 8〜15 桁。
 const E164_RE = /^\+[1-9]\d{6,14}$/;
 // SIP URI: sip: / sips: スキーム + user@host（最小検証）。
@@ -128,6 +131,7 @@ export function validateEndpoint(raw: unknown): ValidatedEndpoint {
   if (typeof o.enabled !== 'boolean') return fail('endpoint enabled must be a boolean');
 
   const label = typeof o.label === 'string' && o.label.trim() !== '' ? o.label.trim() : undefined;
+  if (label !== undefined && label.length > MAX_ENDPOINT_LABEL_LENGTH) return fail('endpoint label is too long');
   const base = { id, ownerType: o.ownerType, ownerId, providerKey, enabled: o.enabled, label };
 
   if (!isContactChannel(o.channel)) return fail('endpoint channel is invalid');

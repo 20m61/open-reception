@@ -68,6 +68,8 @@ import { resolveKioskMode } from '@/domain/kiosk/mode';
 import { operatingStateOf, type KioskOperatingStatus } from '@/domain/kiosk/operating-status';
 import { OutOfHoursView } from './OutOfHoursView';
 import { defaultSttAdapterFactory, type SttAdapterFactory } from './stt-adapter';
+import { VoiceSessionLayer } from './VoiceSessionLayer';
+import type { VoiceSessionFactory } from '@/lib/voice-session/kiosk-binding';
 import { debugScannerFromSearch } from './qr-injection';
 import type { QrScanner } from '@/domain/checkin/scanner';
 import { parseCallStages, type CallStage } from '@/domain/kiosk/call-stages';
@@ -349,13 +351,20 @@ export type KioskFlowProps = {
    */
   sttAdapterFactory?: SttAdapterFactory;
   /**
+   * 音声対話セッションの注入 (#364)。未指定は従来どおりタッチ専用（音声 UI を一切マウントしない
+   * = 完全な無変更動作）。指定時のみ音声対話 UI（字幕・復唱確認・barge-in インジケータ・タッチ縮退
+   * 案内）を有効化する。synthetic（demo-studio 再現/テスト）でも 実 orchestrator wrapper でも、
+   * `src/lib/voice-session/kiosk-binding.ts` の中立 factory を差し込む（直接 new しない）。
+   */
+  voiceSession?: VoiceSessionFactory;
+  /**
    * QR スキャナの注入 (#363)。CheckinFlow へ透過する。未指定でも `?debugScanPayload=` があれば
    * カメラ無しのデバッグ用スキャナを使う。いずれも無ければ実カメラ（CameraQrScanner）のまま。
    */
   qrScanner?: QrScanner;
 };
 
-export function KioskFlow({ operatingStatus, sttAdapterFactory, qrScanner }: KioskFlowProps = {}) {
+export function KioskFlow({ operatingStatus, sttAdapterFactory, voiceSession, qrScanner }: KioskFlowProps = {}) {
   const [data, dispatch] = useReducer(reducer, INITIAL);
   const [directory, setDirectory] = useState<Directory>({ departments: [], staff: [] });
   // 待機画面リードの既定文言 (#324)。主指示（「ご用件をお選びください」）は見出し・アバター字幕が
@@ -1213,6 +1222,12 @@ export function KioskFlow({ operatingStatus, sttAdapterFactory, qrScanner }: Kio
         onSimpleJapaneseChange={(enabled) => setLocale(enabled ? 'ja-simple' : DEFAULT_LOCALE)}
         enabledModes={a11yEnabledModes}
       />
+      {/*
+        音声対話 UI レイヤ (#364 / #361)。voiceSession 注入時のみマウントする opt-in オーバーレイ。
+        既存の 35%/65% レール（アバター/操作）を壊さない画面下部の重ね描画で、字幕・復唱確認・
+        barge-in インジケータ・タッチ縮退案内を担う。未指定なら一切マウントされない（無変更動作）。
+      */}
+      {voiceSession ? <VoiceSessionLayer factory={voiceSession} locale={locale} /> : null}
       {inactivitySeconds !== null ? (
         <InactivityWarning
           seconds={inactivitySeconds}

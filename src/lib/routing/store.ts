@@ -16,6 +16,8 @@ import { buildSeedRoutingPolicy } from '@/domain/routing/seed';
 import {
   DataBackedContactEndpointRepository,
   DataBackedRoutingPolicyRepository,
+  type ContactEndpointRepository,
+  type RoutingPolicyRepository,
 } from './repository';
 import { RoutingService } from './service';
 import type { StoredContactEndpoint, StoredRoutingPolicy } from './types';
@@ -59,13 +61,29 @@ function seedPolicies(): StoredRoutingPolicy[] {
   return buildSeed().policies;
 }
 
+/**
+ * 永続化リポジトリ（seed 込み）を組み立てる。RoutingService（admin 経由）と、kiosk の取次実行
+ * （`call-execution.ts`）が同じ backing collection / seed を共有するための単一の生成点。
+ * リポジトリは状態を持たない薄いラッパ（各操作で getBackend() を引く）なので都度生成でよい。
+ */
+export function getRoutingRepositories(): {
+  endpoints: ContactEndpointRepository;
+  policies: RoutingPolicyRepository;
+} {
+  return {
+    endpoints: new DataBackedContactEndpointRepository(seedEndpoints),
+    policies: new DataBackedRoutingPolicyRepository(seedPolicies),
+  };
+}
+
 let service: RoutingService | undefined;
 
 export function getRoutingService(): RoutingService {
   if (!service) {
+    const repos = getRoutingRepositories();
     service = new RoutingService({
-      endpoints: new DataBackedContactEndpointRepository(seedEndpoints),
-      policies: new DataBackedRoutingPolicyRepository(seedPolicies),
+      endpoints: repos.endpoints,
+      policies: repos.policies,
       appendAudit: appendAdminAudit,
     });
   }
