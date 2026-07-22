@@ -205,7 +205,7 @@ export class RoutingService {
     const all = await this.policies.list(tenantId, siteId);
     const visible = all.filter((p) => this.canAccess(actor, tenantId, p.siteId, 'read'));
     const endpoints = await this.endpoints.list(tenantId);
-    return { ok: true, value: visible.map((p) => toPolicyView(p, endpoints)) };
+    return { ok: true, value: visible.map((p) => toPolicyView(p, endpointsForPolicyScope(p, endpoints))) };
   }
 
   async getPolicy(actor: Actor, tenantId: TenantId, id: string): Promise<ServiceResult<PolicyView>> {
@@ -213,7 +213,7 @@ export class RoutingService {
     if (!found) return fail('not_found', 'policy not found');
     if (!this.canAccess(actor, tenantId, found.siteId, 'read')) return fail('forbidden', 'cannot read policy');
     const endpoints = await this.endpoints.list(tenantId);
-    return { ok: true, value: toPolicyView(found, endpoints) };
+    return { ok: true, value: toPolicyView(found, endpointsForPolicyScope(found, endpoints)) };
   }
 
   async createPolicy(actor: Actor, input: CreatePolicyInput): Promise<ServiceResult<PolicyView>> {
@@ -241,7 +241,7 @@ export class RoutingService {
     if (!created.ok) return fail(created.error.code === 'conflict' ? 'conflict' : 'invalid_input', created.error.message);
     await this.auditPolicy('routing_policy.created', created.value);
     const endpoints = await this.endpoints.list(tenantId);
-    return { ok: true, value: toPolicyView(created.value, endpoints) };
+    return { ok: true, value: toPolicyView(created.value, endpointsForPolicyScope(created.value, endpoints)) };
   }
 
   async updatePolicy(
@@ -274,7 +274,7 @@ export class RoutingService {
     await this.policies.put(candidate);
     await this.auditPolicy('routing_policy.updated', candidate);
     const endpoints = await this.endpoints.list(tenantId);
-    return { ok: true, value: toPolicyView(candidate, endpoints) };
+    return { ok: true, value: toPolicyView(candidate, endpointsForPolicyScope(candidate, endpoints)) };
   }
 
   async removePolicy(actor: Actor, tenantId: TenantId, id: string): Promise<ServiceResult<void>> {
@@ -340,7 +340,23 @@ export function toEndpointView(e: StoredContactEndpoint): EndpointView {
   };
 }
 
-/** 保存ポリシー + テナントの接続先 → 文章形式説明つき API ビュー。 */
+/**
+ * 文章形式説明の label 解決に使う接続先を **policy のサイト scope** に絞る (issue #374 第5wave nit)。
+ *
+ * これまで `describeRoutingPolicy` にテナント内の**全**接続先を渡していたため、別サイトの接続先
+ * ラベルまで解決対象になっていた。サイト付きポリシーは「同一サイト or テナント横断（siteId 未設定）」
+ * の接続先だけを解決対象にする（別サイトのラベル露出を防ぐ）。テナント横断ポリシー（siteId 未設定）は
+ * 絞り込む基準サイトが無いため全件を対象にする（従来どおり）。
+ */
+export function endpointsForPolicyScope(
+  policy: Pick<StoredRoutingPolicy, 'siteId'>,
+  endpoints: ReadonlyArray<StoredContactEndpoint>,
+): StoredContactEndpoint[] {
+  if (policy.siteId === undefined) return [...endpoints];
+  return endpoints.filter((e) => e.siteId === policy.siteId || e.siteId === undefined);
+}
+
+/** 保存ポリシー + サイト scope の接続先 → 文章形式説明つき API ビュー。 */
 export function toPolicyView(p: StoredRoutingPolicy, endpoints: ReadonlyArray<ContactEndpoint>): PolicyView {
   return { ...p, description: describeRoutingPolicy(p, endpoints as ContactEndpoint[]) };
 }

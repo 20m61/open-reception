@@ -1,5 +1,16 @@
 import { describe, expect, it } from 'vitest';
-import { parseRoutingPolicyBody, parseRoutingPolicyPatch, parseRoutingSteps } from './input';
+import {
+  MAX_POLICY_NAME_LENGTH,
+  MAX_STEPS_PER_POLICY,
+  MAX_STEP_ID_LENGTH,
+  parseRoutingPolicyBody,
+  parseRoutingPolicyPatch,
+  parseRoutingSteps,
+} from './input';
+
+function step(over: Record<string, unknown> = {}): Record<string, unknown> {
+  return { id: 's1', endpointId: 'ep-1', action: 'notify', timeoutSeconds: 20, nextOn: {}, ...over };
+}
 
 describe('parseRoutingSteps', () => {
   it('正常な step 列を正規化する（trim・順序保持）', () => {
@@ -49,6 +60,19 @@ describe('parseRoutingSteps', () => {
     expect(parseRoutingSteps([{ id: 's', endpointId: '  ', action: 'notify', timeoutSeconds: 5, nextOn: {} }]).ok).toBe(
       false,
     );
+  });
+
+  it('入力サイズ上限: steps 件数が上限超過なら invalid_input（第5wave nit）', () => {
+    const many = Array.from({ length: MAX_STEPS_PER_POLICY + 1 }, (_, i) => step({ id: `s${i}` }));
+    expect(parseRoutingSteps(many).ok).toBe(false);
+    const atLimit = Array.from({ length: MAX_STEPS_PER_POLICY }, (_, i) => step({ id: `s${i}` }));
+    expect(parseRoutingSteps(atLimit).ok).toBe(true);
+  });
+
+  it('入力サイズ上限: step id / endpointId が長すぎると invalid_input（第5wave nit）', () => {
+    const long = 'x'.repeat(MAX_STEP_ID_LENGTH + 1);
+    expect(parseRoutingSteps([step({ id: long })]).ok).toBe(false);
+    expect(parseRoutingSteps([step({ endpointId: long })]).ok).toBe(false);
   });
 
   it('nextOn のキーが RouteResult でなければ invalid_input', () => {
@@ -116,6 +140,12 @@ describe('parseRoutingPolicyBody (作成)', () => {
 
   it('name 空は invalid_input', () => {
     const r = parseRoutingPolicyBody({ name: '  ', steps: [] });
+    expect(r.ok).toBe(false);
+  });
+
+  it('入力サイズ上限: name が長すぎると invalid_input（第5wave nit）', () => {
+    const longName = 'あ'.repeat(MAX_POLICY_NAME_LENGTH + 1);
+    const r = parseRoutingPolicyBody({ name: longName, steps: [step()] });
     expect(r.ok).toBe(false);
   });
 

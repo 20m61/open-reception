@@ -17,6 +17,17 @@ import {
 export type ParseError = { code: 'invalid_input'; message: string };
 export type ParseResult<T> = { ok: true; value: T } | { ok: false; error: ParseError };
 
+/**
+ * 入力サイズ上限 (issue #374, 第5wave 申し送りの nit)。信頼できない入力が肥大化して
+ * 保存/検証/描画を圧迫するのを防ぐ。値は運用に十分な余裕を持たせた保守的な上限。
+ *   - name: ルート名の最大文字数。
+ *   - steps: 1 ポリシーあたりの最大手順数（描画・循環検出コストの上限）。
+ *   - id/endpointId: 1 識別子あたりの最大文字数。
+ */
+export const MAX_POLICY_NAME_LENGTH = 120;
+export const MAX_STEPS_PER_POLICY = 50;
+export const MAX_STEP_ID_LENGTH = 120;
+
 /** 作成/更新で受け取るポリシー本体（永続化フィールド・tenantId・id を除く可変部）。 */
 export type ParsedRoutingPolicyBody = {
   name: string;
@@ -72,6 +83,7 @@ function parseNextOn(raw: unknown): ParseResult<RoutingStep['nextOn']> {
 /** 信頼できない値を RoutingStep[] へ正規化・検証する。 */
 export function parseRoutingSteps(raw: unknown): ParseResult<RoutingStep[]> {
   if (!Array.isArray(raw)) return fail('steps must be an array');
+  if (raw.length > MAX_STEPS_PER_POLICY) return fail('too many steps');
   const steps: RoutingStep[] = [];
   for (const item of raw) {
     const o = asRecord(item);
@@ -79,9 +91,11 @@ export function parseRoutingSteps(raw: unknown): ParseResult<RoutingStep[]> {
 
     const id = typeof o.id === 'string' ? o.id.trim() : '';
     if (id === '') return fail('step id is required');
+    if (id.length > MAX_STEP_ID_LENGTH) return fail('step id is too long');
 
     const endpointId = typeof o.endpointId === 'string' ? o.endpointId.trim() : '';
     if (endpointId === '') return fail('step endpointId is required');
+    if (endpointId.length > MAX_STEP_ID_LENGTH) return fail('step endpointId is too long');
 
     if (!isRouteAction(o.action)) return fail('step action is invalid');
 
@@ -100,6 +114,7 @@ export function parseRoutingSteps(raw: unknown): ParseResult<RoutingStep[]> {
 function parseName(raw: unknown): ParseResult<string> {
   const name = typeof raw === 'string' ? raw.trim() : '';
   if (name === '') return fail('policy name is required');
+  if (name.length > MAX_POLICY_NAME_LENGTH) return fail('policy name is too long');
   return { ok: true, value: name };
 }
 

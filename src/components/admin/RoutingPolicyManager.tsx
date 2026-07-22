@@ -13,6 +13,12 @@ import {
 } from '@/domain/routing/policy';
 import { CONTACT_CHANNELS, type ContactChannel } from '@/domain/routing/endpoint';
 import { groupIssues } from '@/lib/routing/policy-issues';
+import {
+  TRANSITION_KIND_OPTIONS,
+  buildTransition,
+  gotoStepChoices,
+  transitionKindOf,
+} from '@/lib/routing/transition-options';
 import type { EndpointView, PolicyView } from '@/lib/routing/types';
 
 /**
@@ -502,6 +508,7 @@ function PolicyEditor({
             step={step}
             index={index}
             total={draft.steps.length}
+            steps={draft.steps}
             endpoints={endpoints}
             policies={policies}
             errors={stepErrors[step.id] ?? []}
@@ -531,6 +538,7 @@ function StepRow({
   step,
   index,
   total,
+  steps,
   endpoints,
   policies,
   errors,
@@ -541,6 +549,7 @@ function StepRow({
   step: RoutingStep;
   index: number;
   total: number;
+  steps: RoutingStep[];
   endpoints: EndpointView[];
   policies: PolicyView[];
   errors: string[];
@@ -624,6 +633,9 @@ function StepRow({
               result={result}
               transition={step.nextOn[result]}
               policies={policies}
+              steps={steps}
+              currentStepId={step.id}
+              endpoints={endpoints}
               onChange={(t) => setTransition(result, t)}
             />
           ))}
@@ -645,14 +657,26 @@ function TransitionRow({
   result,
   transition,
   policies,
+  steps,
+  currentStepId,
+  endpoints,
   onChange,
 }: {
   result: RouteResult;
   transition: RouteTransition | undefined;
   policies: PolicyView[];
+  /** 同一ポリシーの手順一覧（goto_step の遷移先候補）。 */
+  steps: RoutingStep[];
+  /** この遷移行が属する手順の id（表示用途）。 */
+  currentStepId: string;
+  endpoints: EndpointView[];
   onChange: (t: RouteTransition | undefined) => void;
 }) {
-  const kind = transition?.kind ?? 'default';
+  const kind = transitionKindOf(transition);
+  // goto_step の遷移先候補は接続先ラベルで見せる（アドレスは出さない）。
+  const labelForEndpoint = (endpointId: string): string | undefined =>
+    endpoints.find((ep) => ep.id === endpointId)?.label;
+  const choices = gotoStepChoices(steps, labelForEndpoint);
   return (
     <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap', fontSize: '0.85rem' }}>
       <span style={{ minWidth: 64 }}>{RESULT_LABELS[result]}</span>
@@ -660,22 +684,46 @@ function TransitionRow({
         data-testid="transition-kind-select"
         value={kind}
         onChange={(e) => {
-          const v = e.target.value;
-          if (v === 'default') onChange(undefined);
-          else if (v === 'stop') onChange({ kind: 'stop' });
-          else if (v === 'fallback_policy') onChange({ kind: 'fallback_policy', policyId: policies[0]?.id ?? '' });
+          const v = e.target.value as ReturnType<typeof transitionKindOf>;
+          if (v === 'goto_step') {
+            // 既定の遷移先は自分以外の先頭手順（無ければ自分）。
+            const first = choices.find((c) => c.stepId !== currentStepId) ?? choices[0];
+            onChange(buildTransition('goto_step', { stepId: first?.stepId ?? '' }));
+          } else if (v === 'fallback_policy') {
+            onChange(buildTransition('fallback_policy', { policyId: policies[0]?.id ?? '' }));
+          } else {
+            onChange(buildTransition(v));
+          }
         }}
         style={{ ...inputStyle, minHeight: 34 }}
       >
-        <option value="default">既定（次の手順へ）</option>
-        <option value="stop">取次を終了</option>
-        <option value="fallback_policy">別ルートへ引き継ぐ</option>
+        {TRANSITION_KIND_OPTIONS.map((o) => (
+          <option key={o.value} value={o.value}>
+            {o.label}
+          </option>
+        ))}
       </select>
+      {transition?.kind === 'goto_step' ? (
+        <select
+          data-testid="transition-step-select"
+          value={transition.stepId}
+          onChange={(e) => onChange(buildTransition('goto_step', { stepId: e.target.value }))}
+          style={{ ...inputStyle, minHeight: 34 }}
+        >
+          <option value="">（手順を選択）</option>
+          {choices.map((c, i) => (
+            <option key={c.stepId} value={c.stepId}>
+              {`${i + 1}. ${c.label}`}
+              {c.stepId === currentStepId ? '（この手順）' : ''}
+            </option>
+          ))}
+        </select>
+      ) : null}
       {transition?.kind === 'fallback_policy' ? (
         <select
           data-testid="transition-policy-select"
           value={transition.policyId}
-          onChange={(e) => onChange({ kind: 'fallback_policy', policyId: e.target.value })}
+          onChange={(e) => onChange(buildTransition('fallback_policy', { policyId: e.target.value }))}
           style={{ ...inputStyle, minHeight: 34 }}
         >
           <option value="">（ルートを選択）</option>
