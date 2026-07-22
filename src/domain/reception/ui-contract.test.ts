@@ -1,5 +1,11 @@
 import { describe, expect, it } from 'vitest';
 import { RECEPTION_STATES, transition, type ReceptionState } from './state';
+import {
+  CHECKIN_STATES,
+  CHECKIN_ERROR_STATES,
+  CHECKIN_TERMINAL_STATES,
+  transition as checkinTransition,
+} from '@/domain/checkin/state';
 import { motionKeyForState } from '@/domain/motion/types';
 import { avatarGuidanceFor } from '@/components/kiosk/avatar/guidance';
 import {
@@ -9,6 +15,13 @@ import {
   availableActions,
   buildUiContract,
   CHAT_FORBIDDEN_ACTIONS,
+  CHECKIN_MESSAGE_KEYS,
+  checkinAvatarProxyState,
+  checkinConversationTurnFor,
+  checkinEscapeHatchesFor,
+  checkinInputModesFor,
+  checkinMessageKeyFor,
+  checkinRequiresExplicitConfirmation,
   conversationTurnFor,
   deriveAvatarEmotion,
   deriveAvatarPresence,
@@ -470,5 +483,126 @@ describe('reception ui-contract: conversationTurnFor (#361)', () => {
     });
     expect(turn.answers[0]?.intent).toBe('selectTarget');
     expect(isActionAllowed('selectingTarget', 'selectTarget')).toBe(true);
+  });
+});
+
+// =============================================================================
+// #361 QR 受付シェル統一: CheckinState を会話ターンとして提示する契約
+// -----------------------------------------------------------------------------
+// QR 受付(CheckinFlow)を KioskFlow と同じアバター継続レール・字幕・逃げ道シェルで提示する
+// ための表示契約。真実源は本モジュール（ui-contract.ts）に一本化し、進行の真実源は
+// 状態機械（domain/checkin/state.ts）に委ねる（発信は confirming の CONFIRM のみ）。
+// =============================================================================
+describe('checkin ui-contract: checkinConversationTurnFor (#361 QRシェル統一)', () => {
+  it('全 CHECKIN_STATES から構造的に妥当な CheckinTurnView を生成する', () => {
+    for (const state of CHECKIN_STATES) {
+      const turn = checkinConversationTurnFor(state);
+      expect(turn.stateKey).toBe(state);
+      // アバターは ReceptionState 代理経由で導出（AvatarGuide をそのまま再利用できる）。
+      expect(RECEPTION_STATES).toContain(turn.avatar.proxyState);
+      expect(turn.avatar.proxyState).toBe(checkinAvatarProxyState(state));
+      expect(AVATAR_PRESENCES).toContain(turn.avatar.presence);
+      expect(AVATAR_EMOTIONS).toContain(turn.avatar.emotion);
+      expect(turn.avatar.motionKey).toBe(motionKeyForState(turn.avatar.proxyState));
+      // 字幕: semanticKey と displayText は非空。
+      expect(CHECKIN_MESSAGE_KEYS).toContain(turn.message.semanticKey);
+      expect(turn.message.semanticKey).toBe(checkinMessageKeyFor(state));
+      expect(turn.message.displayText.length).toBeGreaterThan(0);
+      // 導出値との一致。
+      expect(turn.inputModes).toEqual(checkinInputModesFor(state));
+      expect(turn.requiresExplicitConfirmation).toBe(checkinRequiresExplicitConfirmation(state));
+      expect(turn.escapeHatches).toEqual(checkinEscapeHatchesFor(state));
+    }
+  });
+
+  it('タッチはすべてのターンで必ず提示される（音声/QR/カメラが不可でもタッチで完走できる）', () => {
+    for (const state of CHECKIN_STATES) {
+      expect(checkinConversationTurnFor(state).inputModes).toContain('touch');
+    }
+  });
+
+  it('QR は読み取りだけで発信しない: 発信の明示確認は confirming のみ（scan/resolve では要求しない）', () => {
+    for (const state of CHECKIN_STATES) {
+      const expected = state === 'confirming';
+      expect(checkinConversationTurnFor(state).requiresExplicitConfirmation).toBe(expected);
+    }
+    // 読み取り(scanning) / 取得(resolving) からは発信確認を求めない。
+    expect(checkinRequiresExplicitConfirmation('scanning')).toBe(false);
+    expect(checkinRequiresExplicitConfirmation('resolving')).toBe(false);
+  });
+
+  it('発信確認の不変条件は状態機械に紐づく（confirming の CONFIRM だけが calling へ進む）', () => {
+    for (const state of CHECKIN_STATES) {
+      const goesToCalling = checkinTransition(state, 'CONFIRM') === 'calling';
+      expect(checkinRequiresExplicitConfirmation(state)).toBe(goesToCalling);
+    }
+  });
+
+  it('qr-scan ターン(scanning)は QR を入力手段に持ち、発信確認は不要（読み取りのみ）', () => {
+    const turn = checkinConversationTurnFor('scanning');
+    expect(turn.inputModes).toContain('qr');
+    expect(turn.requiresExplicitConfirmation).toBe(false);
+    // 読み取りレールでもアバターは付き添う（companion）。
+    expect(turn.avatar.presence).toBe('companion');
+  });
+
+  it('qr-confirm ターン(confirming)は発信の明示タッチ確認を要求し、QR は入力手段にしない', () => {
+    const turn = checkinConversationTurnFor('confirming');
+    expect(turn.requiresExplicitConfirmation).toBe(true);
+    expect(turn.inputModes).toEqual(['touch']);
+  });
+
+  it('idle は入口のため逃げ道を出さない / アバターはヒーロー(primary)', () => {
+    const turn = checkinConversationTurnFor('idle');
+    expect(turn.escapeHatches).toEqual([]);
+    expect(turn.avatar.presence).toBe('primary');
+  });
+
+  it('idle 以外の全ターンでアバターは継続レール(companion)として付き添う', () => {
+    for (const state of CHECKIN_STATES) {
+      if (state === 'idle') continue;
+      expect(checkinConversationTurnFor(state).avatar.presence).toBe('companion');
+    }
+  });
+
+  it('各エラー結果(期限切れ/使用済み/取消/読取失敗/カメラ不可/通信断)は通常受付へ切替(USE_MANUAL)の逃げ道を持つ', () => {
+    for (const state of CHECKIN_ERROR_STATES) {
+      const events = checkinEscapeHatchesFor(state).map((h) => h.event);
+      expect(events).toContain('USE_MANUAL');
+    }
+  });
+
+  it('受付方法選択(selectingMethod)は通常受付(CHOOSE_MANUAL)へ切替できる', () => {
+    const events = checkinEscapeHatchesFor('selectingMethod').map((h) => h.event);
+    expect(events).toContain('CHOOSE_MANUAL');
+  });
+
+  it('終端(completed/cancelled/manualFallback)は最初に戻る(RESET)を提示する', () => {
+    for (const state of CHECKIN_TERMINAL_STATES) {
+      const events = checkinEscapeHatchesFor(state).map((h) => h.event);
+      expect(events).toContain('RESET');
+    }
+  });
+
+  it('逃げ道イベントは RESET を除き必ず状態機械で許可されている（存在しない遷移を出さない）', () => {
+    for (const state of CHECKIN_STATES) {
+      for (const { event } of checkinEscapeHatchesFor(state)) {
+        if (event === 'RESET') continue;
+        expect(checkinTransition(state, event)).not.toBeNull();
+      }
+    }
+  });
+
+  it('displayText は呼び出し側が locale 解決済みの値を注入できる（domain は component に依存しない）', () => {
+    const turn = checkinConversationTurnFor('scanning', {
+      message: { displayText: 'Hold your QR code to the camera.' },
+    });
+    expect(turn.message.displayText).toBe('Hold your QR code to the camera.');
+  });
+
+  it('avatar proxy は各 CheckinState を有効な ReceptionState へ写す（AvatarGuide 再利用のため）', () => {
+    for (const state of CHECKIN_STATES) {
+      expect(RECEPTION_STATES).toContain(checkinAvatarProxyState(state));
+    }
   });
 });

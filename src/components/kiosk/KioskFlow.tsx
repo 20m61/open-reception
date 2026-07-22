@@ -1191,7 +1191,18 @@ export function KioskFlow() {
         <KioskCheckingView />
       ) : mode === 'checkin' ? (
         // QR 受付モード (issue #98)。通常受付選択 / 終了で normal へ戻す（個人情報は破棄される）。
-        <CheckinFlow onUseManual={() => setMode('normal')} onExit={() => setMode('normal')} />
+        // #361: 通常受付と同じアバター継続レール・字幕シェルで提示するため、アバター資産と
+        // locale/layout を渡す（別アプリに見せない）。表示契約は checkinConversationTurnFor。
+        <CheckinFlow
+          onUseManual={() => setMode('normal')}
+          onExit={() => setMode('normal')}
+          locale={locale}
+          layout={layout}
+          vrmUrl={vrmUrl}
+          avatarFallbackUrl={avatarFallbackUrl}
+          motionUrls={motions.motions}
+          defaultMotionUrl={motions.defaultUrl}
+        />
       ) : showSignage ? (
         // 待機サイネージ (issue #101) + 来訪検知 (issue #79) + ATTRACT (issue #362)。
         // タップ/ATTRACT CTA/QR/退館で受付へ。来訪検知の自動検知は ATTRACT オーバーレイの

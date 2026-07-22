@@ -78,6 +78,7 @@ export const ADMIN_NAV: readonly NavGroup[] = [
       { href: '/admin/kiosks', label: '受付端末' },
       { href: '/admin/devices', label: '受付端末（拠点別）' },
       { href: '/admin/call-routes', label: '呼び出しルート' },
+      { href: '/admin/call-routing', label: '取次ルート' },
       { href: '/admin/departments', label: '部署' },
       { href: '/admin/staff', label: '担当者' },
     ],
