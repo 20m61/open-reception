@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { createDemoKioskFetch } from './mock-adapter';
+import { createDemoKioskFetch, DEMO_CALL_FAILED_LATENCY_MS } from './mock-adapter';
 import { DemoSandboxViolation } from './sandbox';
 import { getDemoScenario } from './scenarios';
 import type { DemoScenario } from './scenario';
@@ -116,6 +116,39 @@ describe('createDemoKioskFetch — call 結果 → 受付状態', () => {
     await f(`/api/kiosk/receptions/${create.id}/call`, { method: 'POST' });
     const tokenRes = await f(`/api/kiosk/receptions/${create.id}/token`);
     expect(tokenRes.ok).toBe(false);
+  });
+
+  it('既定（callLatencyMs 未指定）は /token を遅延させない（テスト決定論・本番相当は無変更）', async () => {
+    const f = fetchFor(scenario({ simulatedResults: { call: ['failed'] } }));
+    const start = Date.now();
+    const res = await f('/api/kiosk/receptions/demo-x/token');
+    expect(res.ok).toBe(false);
+    expect(Date.now() - start).toBeLessThan(200);
+  });
+
+  it('callLatencyMs 指定時は /token 応答を段階表示のためにその時間だけ遅延させる（#364 第7wave 申し送り）', async () => {
+    vi.useFakeTimers();
+    try {
+      const f = createDemoKioskFetch(scenario({ simulatedResults: { call: ['failed'] } }), {
+        origin: ORIGIN,
+        callLatencyMs: DEMO_CALL_FAILED_LATENCY_MS,
+      });
+      const p = f('/api/kiosk/receptions/demo-x/token');
+      let settled = false;
+      void p.then(() => {
+        settled = true;
+      });
+      // レイテンシ未満では未解決（段階表示が見えている間）。
+      await vi.advanceTimersByTimeAsync(DEMO_CALL_FAILED_LATENCY_MS - 1);
+      expect(settled).toBe(false);
+      // 1 秒以上（既定 1200ms）視認できることを担保。
+      expect(DEMO_CALL_FAILED_LATENCY_MS).toBeGreaterThanOrEqual(1000);
+      await vi.advanceTimersByTimeAsync(1);
+      const res = await p;
+      expect(res.ok).toBe(false);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
 

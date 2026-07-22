@@ -4,7 +4,6 @@ import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from 'r
 import {
   RECEPTION_PURPOSES,
   type ReceptionPurposeId,
-  type ReceptionTargetType,
   type VisitorInfo,
 } from '@/domain/reception/session';
 import type { FeedbackReasonCode, SatisfactionRating } from '@/domain/reception/log';
@@ -69,7 +68,8 @@ import { operatingStateOf, type KioskOperatingStatus } from '@/domain/kiosk/oper
 import { OutOfHoursView } from './OutOfHoursView';
 import { defaultSttAdapterFactory, type SttAdapterFactory } from './stt-adapter';
 import { VoiceSessionLayer } from './VoiceSessionLayer';
-import type { VoiceSessionFactory } from '@/lib/voice-session/kiosk-binding';
+import { voiceCandidateToTarget, type ReceptionTarget } from './voice-target-binding';
+import type { OnResolved, VoiceSessionFactory } from '@/lib/voice-session/kiosk-binding';
 import { debugScannerFromSearch } from './qr-injection';
 import type { QrScanner } from '@/domain/checkin/scanner';
 import { parseCallStages, type CallStage } from '@/domain/kiosk/call-stages';
@@ -263,7 +263,8 @@ function callingStageMessage(
   return tr('reception.callingBody', { target });
 }
 
-type Target = { type: ReceptionTargetType; id: string; label: string };
+// 音声経路（voice-target-binding.ts）とタッチ経路で同一の相手構造を使う（後勝ち規則の前提）。
+type Target = ReceptionTarget;
 type CallOutcome = 'connected' | 'timeout' | 'failed';
 
 /**
@@ -366,6 +367,15 @@ export type KioskFlowProps = {
 
 export function KioskFlow({ operatingStatus, sttAdapterFactory, voiceSession, qrScanner }: KioskFlowProps = {}) {
   const [data, dispatch] = useReducer(reducer, INITIAL);
+  // onResolved 実結線 (#364): 音声で確定した相手候補を、タッチ経路と同一の SELECT_TARGET へ写像して
+  // dispatch する。相手でない候補（purpose/other/なし）は null で無視。dispatch は useReducer 由来で
+  // 安定なので、この callback は安定参照（音声セッションを不要に再起動させない）。競合は「後勝ち
+  // （last-write-wins）」で解決する（voice-target-binding.ts の doc 参照）。selectingTarget 以外では
+  // reducer が遷移を無視するため、音声確定が来ても現在の受付局面を壊さない。
+  const handleVoiceResolved = useCallback<OnResolved>((candidate) => {
+    const target = voiceCandidateToTarget(candidate);
+    if (target) dispatch({ type: 'SELECT_TARGET', target });
+  }, []);
   const [directory, setDirectory] = useState<Directory>({ departments: [], staff: [] });
   // 待機画面リードの既定文言 (#324)。主指示（「ご用件をお選びください」）は見出し・アバター字幕が
   // 担うため、リードは挨拶＋安心情報（タッチだけで受付できる）のみにして指示を二重化しない。
@@ -1227,7 +1237,9 @@ export function KioskFlow({ operatingStatus, sttAdapterFactory, voiceSession, qr
         既存の 35%/65% レール（アバター/操作）を壊さない画面下部の重ね描画で、字幕・復唱確認・
         barge-in インジケータ・タッチ縮退案内を担う。未指定なら一切マウントされない（無変更動作）。
       */}
-      {voiceSession ? <VoiceSessionLayer factory={voiceSession} locale={locale} /> : null}
+      {voiceSession ? (
+        <VoiceSessionLayer factory={voiceSession} locale={locale} onResolved={handleVoiceResolved} />
+      ) : null}
       {inactivitySeconds !== null ? (
         <InactivityWarning
           seconds={inactivitySeconds}

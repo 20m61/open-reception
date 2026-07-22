@@ -15,16 +15,20 @@ import {
   type VoiceKioskEvent,
   type VoiceKioskState,
 } from '@/domain/voice-session/kiosk-view';
-import type { VoiceSessionController, VoiceSessionFactory } from './kiosk-binding';
+import type { VoiceSessionController, VoiceSessionFactory, VoiceSessionHooks } from './kiosk-binding';
 
 export class VoiceKioskStore {
   private state: VoiceKioskState = initialVoiceKioskState();
   private readonly listeners = new Set<() => void>();
   private readonly controller: VoiceSessionController;
 
-  constructor(factory: VoiceSessionFactory) {
-    // factory へ emit を渡し、駆動可能な controller を得る。emit は reducer へ dispatch する。
-    this.controller = factory((event) => this.dispatch(event));
+  /**
+   * @param hooks マウント時の結線 hooks（`onResolved` 実結線）。KioskFlow が相手選択の dispatch を
+   *   ここへ差し込む。省略時は従来どおり（構築時 `deps.onResolved` にのみ委ねる or 何もしない）。
+   */
+  constructor(factory: VoiceSessionFactory, hooks?: VoiceSessionHooks) {
+    // factory へ emit と hooks を渡し、駆動可能な controller を得る。emit は reducer へ dispatch する。
+    this.controller = factory((event) => this.dispatch(event), hooks);
   }
 
   /** 現在状態のスナップショット（変化が無ければ同一参照を保つ）。 */

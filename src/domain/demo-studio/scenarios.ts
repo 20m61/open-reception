@@ -58,6 +58,15 @@ export const DEMO_SCENARIOS: ReadonlyArray<DemoScenario> = [
     simulatedResults: { stt: 'error', call: ['answered'], runtime: 'ready' },
   },
   {
+    // 音声成功系（#363/#364）。preview で synthetic 音声が自動再生され、発話→復唱→確定→相手選択が
+    // 進む。value は合成ディレクトリ（kiosk-injection.demoVoiceDirectory）の担当者に解決する擬似発話。
+    id: 'voice-staff-visit',
+    name: '音声で担当者を呼ぶ（発話→復唱→確定）',
+    initialMode: 'reception',
+    visitorInputs: [{ mode: 'voice', value: '鈴木' }],
+    simulatedResults: { stt: 'success', call: ['answered'], runtime: 'ready' },
+  },
+  {
     id: 'qr-expired',
     name: 'QR期限切れ/使用済み',
     initialMode: 'qr',

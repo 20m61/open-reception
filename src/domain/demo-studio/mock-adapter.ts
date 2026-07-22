@@ -44,10 +44,31 @@ export type DemoRecordedCall = { method: string; path: string };
 /** fetch 互換関数 ＋ 呼び出し記録。KioskFlow の `window.fetch` に差し込む。 */
 export type DemoKioskFetch = typeof fetch & { readonly calls: ReadonlyArray<DemoRecordedCall> };
 
+/**
+ * Vonage 発信失敗の「段階表示」を preview で目視できるようにするための既定人工レイテンシ（ms）。
+ * 第7wave 申し送り: `/token` が即時に非 ok を返すと `KioskCallView`（dial→ring→connect の段階表示）が
+ * 一瞬で CALL_FAILED へ落ち、段階が視認できなかった。**demo-studio 側のみ** `/token` 応答をこの時間
+ * 遅らせ、段階表示を 1 秒以上見えるようにする（本番経路は無変更・下記 callLatencyMs 参照）。
+ */
+export const DEMO_CALL_FAILED_LATENCY_MS = 1200;
+
 export type CreateDemoKioskFetchOptions = {
   /** iframe（デモページ）のオリジン。省略時は location.origin、無ければプレースホルダ。 */
   origin?: string;
+  /**
+   * `/token`（Vonage 発信失敗の非同期経路）応答に加える人工レイテンシ（ms）。**demo 専用**。
+   * 既定 0（テストの決定論・高速性を保つ）。preview page がここに
+   * `DEMO_CALL_FAILED_LATENCY_MS` を渡すことで、call-failed の段階表示を 1 秒以上視認可能にする。
+   * 本番 Kiosk の実 `/token` 経路（別実装）には一切影響しない。
+   */
+  callLatencyMs?: number;
 };
+
+/** テスト可能な最小の遅延ユーティリティ（demo 専用の段階表示レイテンシに使う）。 */
+function delay(ms: number): Promise<void> {
+  if (ms <= 0) return Promise.resolve();
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
 
 /** QR 失敗理由 → 非 ok の HTTP ステータス（503=通信断とは区別する）。 */
 const QR_FAILURE_STATUS: Record<'expired' | 'used' | 'revoked', number> = {
@@ -115,6 +136,8 @@ export function createDemoKioskFetch(
   const origin =
     options?.origin ??
     (typeof location !== 'undefined' && location?.origin ? location.origin : 'http://demo.local');
+  // demo 専用の段階表示レイテンシ（既定 0）。call-failed の dial→ring→connect を視認可能にする。
+  const callLatencyMs = options?.callLatencyMs ?? 0;
 
   const calls: DemoRecordedCall[] = [];
   let receptionSeq = 0;
@@ -179,6 +202,9 @@ export function createDemoKioskFetch(
     // call-controller.ts の `client.connect()`（実 Vonage SDK・CDN ロード）を一切発生させずに
     // 'fallback'（→ CALL_FAILED）へ落とす。デモは実 provider endpoint を利用しない（安全設計）。
     if (/^\/api\/kiosk\/receptions\/[^/]+\/token$/.test(pathname)) {
+      // 段階表示（KioskCallView の dial→ring→connect）を 1 秒以上見せてから CALL_FAILED へ落とす。
+      // 非 ok を返す前に demo 専用の人工レイテンシを挿む（本番 /token 経路には無関係）。
+      await delay(callLatencyMs);
       return jsonResponse({ error: 'demo_no_provider' }, 502);
     }
     // 担当者応答ポーリング: デモでは応答イベント無し（フローは既存の /call 結果で完結）。

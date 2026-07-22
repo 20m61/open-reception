@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from 'react';
 import { KioskFlow } from '@/components/kiosk/KioskFlow';
-import { createDemoKioskFetch } from '@/domain/demo-studio/mock-adapter';
+import { createDemoKioskFetch, DEMO_CALL_FAILED_LATENCY_MS } from '@/domain/demo-studio/mock-adapter';
 import { deriveKioskFlowProps } from '@/domain/demo-studio/kiosk-injection';
 import { isDemoScenario, type DemoScenario } from '@/domain/demo-studio/scenario';
 import { getDemoScenario } from '@/domain/demo-studio/scenarios';
@@ -56,7 +56,11 @@ export default function DemoPreviewPage() {
       if (cancelled) return;
       // 外部システム（この iframe の window.fetch）を Mock へ差し替える。以後この iframe 内の全 fetch は
       // Mock 経由になり、本番エンドポイントへは到達しない。差し替え後にその結果を React へ通知する。
-      if (resolved) window.fetch = createDemoKioskFetch(resolved);
+      // call-failed の段階表示（dial→ring→connect）を 1 秒以上視認できるよう、demo 側だけ
+      // `/token` 応答に人工レイテンシを与える（本番経路は無変更, 第7wave 申し送りの解消）。
+      if (resolved) {
+        window.fetch = createDemoKioskFetch(resolved, { callLatencyMs: DEMO_CALL_FAILED_LATENCY_MS });
+      }
       setScenario(resolved);
       setStatus(resolved ? 'ready' : 'unknown');
     })();
