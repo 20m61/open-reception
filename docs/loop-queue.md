@@ -143,13 +143,19 @@
 | B | **#365** | PR #393（レビュー 2 巡で blocking 9 件を修正）。**#369〜#372 の共通イベント形式が確定** |
 | C | ~~#373 inc1~~ → **#396** | PR #394 マージ（#373 はオープン継続）。follow-up #396 は **#374 の前に必須** |
 
-**第 2 wave（2026-07-21 着手・消化中）**
+**第 2 wave（2026-07-21〜22 消化済み）** — ブランチ `claude/handoff-issues-organization-a0acri`
+（web セッション）で実装。結果:
 
-| トラック | Issue | 前提・注意 |
+| トラック | Issue | 結果 |
 | --- | --- | --- |
-| A | **#396** → **#374** | **#396 を先に潰す**（scope 任意・`publicIds` 既定・回収ブロックのクラッシュ）。その後 #374 が #373 の型契約に乗る |
-| B | **#362** | `KioskFlow.tsx` を単独占有（2880 行）。**#361 より先**に presence 配線を分離する |
-| C | **#375** または **#379** | #375 の token hash 化は**スキーマ破壊 → 要ユーザー確認**。それ以外の AC は充足済み |
+| A | **#396** | 完了（防御的回収の削除・scope/publicIds 必須化・`validateOrganizationMembership` 新設）。→ 次は **#374** が #373/#396 の型契約に乗る。membership 書き込みパスで `validateOrganizationMembership` を呼ぶ配線を #374 側で行う |
+| B | **#362** | 完了（KioskMode/attract-detector 分離・ATTRACT オーバーレイ・検知→START 直結廃止）。実ブラウザ 8 シナリオ検証 green（`docs/ui-review-2026-07-22.md`）。付随して**サイネージ既定 scope バグ（default vs default-site）を修正**。残: presence E2E の恒久化（`scripts/kiosk-visual-check.mjs` を土台に）・実機は #65 |
+| C | **#379** | 完了（予測失敗理由の伝播・認可後 TTL キャッシュ・Cache-Control 削除・Component タグ回帰テスト・コードポイント順ソート）。nit: `request_failed` も 5 分キャッシュされ復旧が遅れ得る（意図確認は次周回） |
+
+第 2 wave 外の付随対応: Dependabot high 2 件（sharp<0.35 の libvips CVE）を `overrides` で解消。
+
+**第 3 wave（次に着手する）**: #374（A の後続・上位モデル推奨）／ #375 残 increment
+（token hash 化は**スキーマ破壊 → 要ユーザー確認**）／ #361（KioskFlow 大改修・単独）
 
 同 wave に **#366 Phase 0 ADR のみ**（`docs/adr/*.md` 新規・コスト増ゼロ）を差し込むのは安全。
 CDK 実装と deploy は分離し、Budget 見積を添えてユーザー承認を取る。
