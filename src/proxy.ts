@@ -75,11 +75,22 @@ function passThrough(req: NextRequest, csp: CspContext): NextResponse {
   return NextResponse.next({ request: { headers } });
 }
 
+/**
+ * 同一オリジン iframe への埋め込みを許可するルート (#363)。
+ * 受付体験スタジオ本体（/admin/demo）がプレビューを iframe で抱えるため、
+ * プレビュールートのみ frame-ancestors 'self'（X-Frame-Options は next.config.ts 側で
+ * SAMEORIGIN に上書き）。それ以外は従来どおり 'none' / DENY を維持する。
+ */
+const SELF_FRAMEABLE_PATHS = new Set<string>(['/admin/demo/preview']);
+
 export async function proxy(req: NextRequest): Promise<NextResponse> {
   const nonce = createCspNonce();
   const csp: CspContext = {
     nonce,
-    value: buildCsp(nonce, { dev: process.env.NODE_ENV === 'development' }),
+    value: buildCsp(nonce, {
+      dev: process.env.NODE_ENV === 'development',
+      frameAncestors: SELF_FRAMEABLE_PATHS.has(req.nextUrl.pathname) ? 'self' : 'none',
+    }),
   };
   const res = await route(req, csp);
   // 全応答（pass-through / 拒否 / リダイレクト）に per-request CSP を付与する。
