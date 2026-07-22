@@ -1512,10 +1512,31 @@ function SignageWaitingView({
   locale: Locale;
 }) {
   const tr = makeT(locale);
+  // フッター（QR受付/退館/来訪検知）は絶対配置でサイネージへ重ねるため、実高さを計測して
+  // SignageDisplay 側に paddingBottom として渡す。iPad 縦などでフッターが折り返して 2 段に
+  // なると「画面をタップして受付を開始」CTA と重なる（実ブラウザ検証で発見）。
+  // escape バーと同じ ResizeObserver 計測パターン（本ファイル上部参照）。
+  const footerRef = useRef<HTMLDivElement | null>(null);
+  const [footerHeight, setFooterHeight] = useState(0);
+  useEffect(() => {
+    const el = footerRef.current;
+    if (!el) return;
+    const measure = () => setFooterHeight(el.offsetHeight);
+    measure();
+    const ro = new ResizeObserver(measure);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
   return (
     <div data-testid="kiosk-signage-waiting" style={{ position: 'relative', minHeight: '100%' }}>
-      <SignageDisplay onStart={onStart} locale={locale} paused={attractVisible} />
+      <SignageDisplay
+        onStart={onStart}
+        locale={locale}
+        paused={attractVisible}
+        bottomInsetPx={footerHeight}
+      />
       <div
+        ref={footerRef}
         className="screen__footer"
         style={{ position: 'absolute', bottom: 'var(--space-md)', left: 0, right: 0, justifyContent: 'center', gap: 'var(--space-sm)', flexWrap: 'wrap' }}
       >
@@ -1587,39 +1608,54 @@ function AttractOverlay({
         flexDirection: 'column',
         alignItems: 'center',
         justifyContent: 'center',
-        gap: 'var(--space-lg)',
         padding: 'var(--space-xl)',
         textAlign: 'center',
         background: 'var(--color-scrim)',
         color: 'var(--color-on-scrim)',
       }}
     >
-      <p
-        lang={htmlLangFor(locale)}
-        style={{ fontSize: 'clamp(24px, 4vw, 56px)', fontWeight: 700, margin: 0, maxWidth: '80%' }}
+      {/* 挨拶と CTA は不透明パネルに載せる。scrim 越しに背後のサイネージ文言が透けて
+          挨拶文と重なり読めなくなるため（実ブラウザ検証で発見）。 */}
+      <div
+        style={{
+          display: 'flex',
+          flexDirection: 'column',
+          alignItems: 'center',
+          gap: 'var(--space-lg)',
+          padding: 'var(--space-xl)',
+          borderRadius: 24,
+          background: 'var(--color-surface)',
+          boxShadow: 'var(--shadow-lg)',
+          maxWidth: '90%',
+        }}
       >
-        {tr('kiosk.attract.greeting')}
-      </p>
-      <div style={{ display: 'flex', gap: 'var(--space-sm)', flexWrap: 'wrap', justifyContent: 'center' }}>
-        <button
-          type="button"
-          className="btn btn--primary"
-          data-testid="attract-start"
+        <p
           lang={htmlLangFor(locale)}
-          onClick={onStart}
-          style={{ fontSize: 'clamp(18px, 2.5vw, 32px)', padding: '16px 40px' }}
+          style={{ fontSize: 'clamp(24px, 4vw, 56px)', fontWeight: 700, margin: 0 }}
         >
-          {tr('kiosk.attract.startCta')}
-        </button>
-        <button
-          type="button"
-          className="btn btn--secondary"
-          data-testid="attract-start-checkin"
-          lang={htmlLangFor(locale)}
-          onClick={onStartCheckin}
-        >
-          {tr('kiosk.action.checkin.label')}
-        </button>
+          {tr('kiosk.attract.greeting')}
+        </p>
+        <div style={{ display: 'flex', gap: 'var(--space-sm)', flexWrap: 'wrap', justifyContent: 'center' }}>
+          <button
+            type="button"
+            className="btn btn--primary"
+            data-testid="attract-start"
+            lang={htmlLangFor(locale)}
+            onClick={onStart}
+            style={{ fontSize: 'clamp(18px, 2.5vw, 32px)', padding: '16px 40px' }}
+          >
+            {tr('kiosk.attract.startCta')}
+          </button>
+          <button
+            type="button"
+            className="btn btn--secondary"
+            data-testid="attract-start-checkin"
+            lang={htmlLangFor(locale)}
+            onClick={onStartCheckin}
+          >
+            {tr('kiosk.action.checkin.label')}
+          </button>
+        </div>
       </div>
     </div>
   );

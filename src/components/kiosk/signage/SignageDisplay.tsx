@@ -31,9 +31,16 @@ export function SignageDisplay({
   onStart,
   locale,
   paused = false,
+  bottomInsetPx = 0,
 }: {
   tenantId?: string;
   siteId?: string;
+  /**
+   * 画面下端に確保する追い出し量 (px)。KioskFlow 埋め込みでは絶対配置のフッター
+   * （QR受付/退館/来訪検知）が重なるため、その実測高さを渡して受付開始 CTA と
+   * 衝突しないようにする (issue #362 実ブラウザ検証)。スタンドアロンでは 0。
+   */
+  bottomInsetPx?: number;
   /**
    * 受付復帰の振る舞いを差し替えるフック (kiosk-integration inc1)。
    * - 未指定（スタンドアロン /kiosk/signage）: 既定どおり /kiosk へ遷移する（非破壊）。
@@ -148,6 +155,7 @@ export function SignageDisplay({
         justifyContent: 'center',
         gap: 32,
         padding: 32,
+        paddingBottom: 32 + bottomInsetPx,
         cursor: 'pointer',
         background: 'var(--color-bg)',
         color: 'var(--color-text)',
