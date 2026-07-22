@@ -65,6 +65,7 @@ import {
   shouldUseCustomFlow,
 } from './integration';
 import type { PresenceCameraStatus } from './usePresenceCamera';
+import { resolveKioskMode } from '@/domain/kiosk/mode';
 import {
   escapeHatchesFor,
   quickActionsFor,
@@ -371,6 +372,10 @@ export function KioskFlow() {
   const [signageCount, setSignageCount] = useState(0);
   // 来訪者検知カメラの有効化トグル (issue #79)。既定 OFF（タップ起動が常に生きる）。
   const [presenceEnabled, setPresenceEnabled] = useState(false);
+  // ATTRACT オーバーレイの表示状態 (issue #362)。来訪検知が ATTRACT に達したときだけ
+  // 画面が反応する（サイネージを軽く暗くし、挨拶と CTA を出す）。マイク・QR カメラ・
+  // 受付セッションはここでは一切開始しない。受付開始は CTA タップの明示操作でのみ行う。
+  const [attractVisible, setAttractVisible] = useState(false);
   // 受付完了時に発行された退館クレデンシャル (issue #342)。null=未発行/発行失敗（QR 非表示で継続）。
   // 完了画面に退館 QR / 短コード / 有効期限を提示する。idle 復帰で破棄する（次の来訪者へ持ち越さない）。
   const [checkoutCredential, setCheckoutCredential] = useState<CheckoutCredential | null>(null);
@@ -1049,10 +1054,43 @@ export function KioskFlow() {
   // カスタムフローを使うか (issue #100)。無効/未取得は既定フローへフォールバック。
   const useCustomFlow = shouldUseCustomFlow(customFlows);
 
-  // 来訪者検知カメラ (issue #79)。待機サイネージ表示中かつトグル ON のときだけ起動。
+  // 現在の表示レイヤー (issue #362)。PresenceState / ReceptionState を複製せず、既存の判定材料
+  // （アクセスゲート・QR受付トグル・受付状態機械）から写像するだけの純関数に委譲する。
+  const kioskMode = resolveKioskMode({ gate: view, uiMode: mode, receptionState: data.state });
+
+  // 来訪者検知カメラ (issue #79 / #362)。待機サイネージ表示中かつトグル ON のときだけ起動。
   // 未対応/拒否時は status='unavailable' に倒れ、タップ起動で完走する（非破壊）。
-  const presenceActive = presenceEnabled && showSignage && mode === 'normal' && view === 'ready';
-  const presence = usePresenceCamera(presenceActive, startReception);
+  // 受付中（kioskMode !== 'signage'）は presenceActive が false になり、カメラは完全に停止する
+  // ＝ 受付中の presence 入力が現在セッションを壊さない (issue #362 AC)。
+  const presenceActive = presenceEnabled && showSignage && kioskMode === 'signage';
+  // ATTRACT 到達時は画面だけ反応させる（受付は開始しない）。受付開始は ATTRACT オーバーレイの
+  // CTA タップ（=明示操作）でのみ startReception / checkin モード切替を呼ぶ。
+  const handlePresenceAttract = useCallback(() => {
+    setAttractVisible(true);
+  }, []);
+  const handlePresenceAttractTimeout = useCallback(() => {
+    setAttractVisible(false);
+  }, []);
+  const presence = usePresenceCamera(presenceActive, handlePresenceAttract, {
+    onAttractTimeout: handlePresenceAttractTimeout,
+  });
+  // presence カメラが停止したら（受付開始・トグル OFF・ゲート不可等）ATTRACT オーバーレイも
+  // 必ず閉じる。カメラは止まったのにオーバーレイだけ残る/次回サイネージ復帰時に誤って
+  // 出ている、という取り残しを防ぐ。
+  useEffect(() => {
+    if (!presenceActive) setAttractVisible(false);
+  }, [presenceActive]);
+
+  // ATTRACT オーバーレイ経由の受付開始・QR受付開始。presence の検知状態は presenceActive が
+  // false になった時点でフック側が自動的に初期化する（次の来訪者を再検知できる）。
+  const startReceptionFromAttract = useCallback(() => {
+    setAttractVisible(false);
+    startReception();
+  }, [startReception]);
+  const startCheckinFromAttract = useCallback(() => {
+    setAttractVisible(false);
+    setMode('checkin');
+  }, []);
 
   // 現在の受付状態に対応するモーション URL（未設定は default に fallback）(issue #31)。
   const motionUrl = resolveMotionUrl(motionKeyForState(data.state), motions.motions, motions.defaultUrl);
@@ -1133,13 +1171,18 @@ export function KioskFlow() {
         // QR 受付モード (issue #98)。通常受付選択 / 終了で normal へ戻す（個人情報は破棄される）。
         <CheckinFlow onUseManual={() => setMode('normal')} onExit={() => setMode('normal')} />
       ) : showSignage ? (
-        // 待機サイネージ (issue #101) + 来訪検知 (issue #79)。タップ/検知/QR/退館で受付へ。
+        // 待機サイネージ (issue #101) + 来訪検知 (issue #79) + ATTRACT (issue #362)。
+        // タップ/ATTRACT CTA/QR/退館で受付へ。来訪検知の自動検知は ATTRACT オーバーレイの
+        // 表示だけを行い、受付開始は常に明示 CTA タップから startReception/checkin を呼ぶ。
         <SignageWaitingView
           onStart={startReception}
           onStartCheckin={() => setMode('checkin')}
           presenceEnabled={presenceEnabled}
           onTogglePresence={() => setPresenceEnabled((v) => !v)}
           presenceStatus={presence.status}
+          attractVisible={attractVisible}
+          onAttractStart={startReceptionFromAttract}
+          onAttractStartCheckin={startCheckinFromAttract}
           locale={locale}
         />
       ) : useCustomFlow && data.state === 'selectingPurpose' ? (
@@ -1426,11 +1469,18 @@ function KioskUnenrolledView() {
 }
 
 /**
- * 待機サイネージ + 来訪検知の待機画面 (issue #101 / #79 統合)。
+ * 待機サイネージ + 来訪検知の待機画面 (issue #101 / #79 / #362 統合)。
  *
  * 埋め込み版 SignageDisplay（onStart で受付状態機械の START を呼ぶ）に、来訪検知トグルと
  * 受付/QR/退館の明示導線を重ねる。受付開始導線は常に大きく表示する（issue #101 UX 方針）。
- * カメラはトグル ON のときだけ起動し、未対応/拒否（unavailable）でもタップ起動で完走する。
+ * カメラはトグル ON のときだけ起動し、未対応/拒否（unavailable）でもタップ起動で完走する
+ * （カメラ権限拒否時もタップで受付開始できる, issue #362 AC）。
+ *
+ * ATTRACT (issue #362): 来訪検知が「端末前に人がいそう」と判定すると `attractVisible` が
+ * true になり、`AttractOverlay` を最前面に重ねる。オーバーレイ表示中は SignageDisplay を
+ * `paused` にして項目巡回とタップ/キー操作での復帰を止め（＝下の待機画面が同時に反応しない）、
+ * 受付開始/QR受付開始はオーバーレイの明示 CTA タップからのみ行う。マイク・QR カメラ・
+ * 受付セッション・発信はこの段階では一切開始しない。
  */
 function SignageWaitingView({
   onStart,
@@ -1438,6 +1488,9 @@ function SignageWaitingView({
   presenceEnabled,
   onTogglePresence,
   presenceStatus,
+  attractVisible,
+  onAttractStart,
+  onAttractStartCheckin,
   locale,
 }: {
   onStart: () => void;
@@ -1445,6 +1498,12 @@ function SignageWaitingView({
   presenceEnabled: boolean;
   onTogglePresence: () => void;
   presenceStatus: PresenceCameraStatus;
+  /** ATTRACT オーバーレイを表示するか (issue #362)。 */
+  attractVisible: boolean;
+  /** ATTRACT オーバーレイの受付 CTA タップ。 */
+  onAttractStart: () => void;
+  /** ATTRACT オーバーレイの QR 受付 CTA タップ。 */
+  onAttractStartCheckin: () => void;
   /**
    * 表示言語 (#327)。埋め込み SignageDisplay・退館チェックアウト導線 (CheckoutLink)・
    * QR 受付/来訪検知トグルの各文言に共通で使う（以前は SignageDisplay と QR/来訪検知の
@@ -1453,10 +1512,31 @@ function SignageWaitingView({
   locale: Locale;
 }) {
   const tr = makeT(locale);
+  // フッター（QR受付/退館/来訪検知）は絶対配置でサイネージへ重ねるため、実高さを計測して
+  // SignageDisplay 側に paddingBottom として渡す。iPad 縦などでフッターが折り返して 2 段に
+  // なると「画面をタップして受付を開始」CTA と重なる（実ブラウザ検証で発見）。
+  // escape バーと同じ ResizeObserver 計測パターン（本ファイル上部参照）。
+  const footerRef = useRef<HTMLDivElement | null>(null);
+  const [footerHeight, setFooterHeight] = useState(0);
+  useEffect(() => {
+    const el = footerRef.current;
+    if (!el) return;
+    const measure = () => setFooterHeight(el.offsetHeight);
+    measure();
+    const ro = new ResizeObserver(measure);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
   return (
     <div data-testid="kiosk-signage-waiting" style={{ position: 'relative', minHeight: '100%' }}>
-      <SignageDisplay onStart={onStart} locale={locale} />
+      <SignageDisplay
+        onStart={onStart}
+        locale={locale}
+        paused={attractVisible}
+        bottomInsetPx={footerHeight}
+      />
       <div
+        ref={footerRef}
         className="screen__footer"
         style={{ position: 'absolute', bottom: 'var(--space-md)', left: 0, right: 0, justifyContent: 'center', gap: 'var(--space-sm)', flexWrap: 'wrap' }}
       >
@@ -1484,6 +1564,98 @@ function SignageWaitingView({
               : tr('kiosk.signage.presenceOn')
             : tr('kiosk.signage.presenceOff')}
         </button>
+      </div>
+      {attractVisible ? (
+        <AttractOverlay onStart={onAttractStart} onStartCheckin={onAttractStartCheckin} locale={locale} />
+      ) : null}
+    </div>
+  );
+}
+
+/**
+ * ATTRACT オーバーレイ (issue #362)。来訪検知が「端末前に人がいそう」と判定したときだけ
+ * 画面が反応する段階。キャラクター＋CTA のみに反応し、サイネージ本体は呼び出し側で
+ * `SignageDisplay` を `paused` にして止めている（本コンポーネントは画面全体を覆う軽い暗転と
+ * 挨拶・CTA の表示だけを担当する）。
+ *
+ * ここからは明示 CTA タップでのみ受付/QR受付へ進む。マイク・QR カメラ・受付セッション・
+ * 発信はまだ一切開始しない。オーバーレイ自体は画面全体を覆って下の SignageDisplay への
+ * タップ漏れを防ぐが、CTA 以外の領域タップは無視する（何も起きない＝通行人の接触では
+ * 受付は始まらない）。無操作タイムアウトでの待機復帰は呼び出し側（KioskFlow の
+ * `usePresenceCamera` `onAttractTimeout`）が担う。
+ */
+function AttractOverlay({
+  onStart,
+  onStartCheckin,
+  locale,
+}: {
+  onStart: () => void;
+  onStartCheckin: () => void;
+  locale: Locale;
+}) {
+  const tr = makeT(locale);
+  return (
+    <div
+      data-testid="kiosk-attract-overlay"
+      role="dialog"
+      aria-label={tr('kiosk.attract.greeting')}
+      // CTA 以外へのタップ/クリックは意図的に何もしない（下のサイネージへ伝播もさせない）。
+      onClick={(e) => e.stopPropagation()}
+      style={{
+        position: 'absolute',
+        inset: 0,
+        display: 'flex',
+        flexDirection: 'column',
+        alignItems: 'center',
+        justifyContent: 'center',
+        padding: 'var(--space-xl)',
+        textAlign: 'center',
+        background: 'var(--color-scrim)',
+        color: 'var(--color-on-scrim)',
+      }}
+    >
+      {/* 挨拶と CTA は不透明パネルに載せる。scrim 越しに背後のサイネージ文言が透けて
+          挨拶文と重なり読めなくなるため（実ブラウザ検証で発見）。 */}
+      <div
+        style={{
+          display: 'flex',
+          flexDirection: 'column',
+          alignItems: 'center',
+          gap: 'var(--space-lg)',
+          padding: 'var(--space-xl)',
+          borderRadius: 24,
+          background: 'var(--color-surface)',
+          boxShadow: 'var(--shadow-lg)',
+          maxWidth: '90%',
+        }}
+      >
+        <p
+          lang={htmlLangFor(locale)}
+          style={{ fontSize: 'clamp(24px, 4vw, 56px)', fontWeight: 700, margin: 0 }}
+        >
+          {tr('kiosk.attract.greeting')}
+        </p>
+        <div style={{ display: 'flex', gap: 'var(--space-sm)', flexWrap: 'wrap', justifyContent: 'center' }}>
+          <button
+            type="button"
+            className="btn btn--primary"
+            data-testid="attract-start"
+            lang={htmlLangFor(locale)}
+            onClick={onStart}
+            style={{ fontSize: 'clamp(18px, 2.5vw, 32px)', padding: '16px 40px' }}
+          >
+            {tr('kiosk.attract.startCta')}
+          </button>
+          <button
+            type="button"
+            className="btn btn--secondary"
+            data-testid="attract-start-checkin"
+            lang={htmlLangFor(locale)}
+            onClick={onStartCheckin}
+          >
+            {tr('kiosk.action.checkin.label')}
+          </button>
+        </div>
       </div>
     </div>
   );

@@ -178,6 +178,10 @@ export type MessageKey =
   | 'kiosk.signage.presenceOn'
   | 'kiosk.signage.presenceOff'
   | 'kiosk.signage.presenceUnavailable'
+  // ATTRACT オーバーレイ（来訪検知が「端末前に人がいそう」と判定したときだけ画面が反応する
+  // 段階, #362）。挨拶は 1 回だけ表示し、マイク・QR カメラ・受付セッションは開始しない。
+  | 'kiosk.attract.greeting'
+  | 'kiosk.attract.startCta'
   // 来訪者向けプライバシー通知（受付情報入力ステップ, #314）。要約は常時表示、詳細は折りたたみ。
   | 'privacy.noticeTitle'
   | 'privacy.summary'
@@ -360,6 +364,8 @@ const ja: DefaultDictionary = {
   'kiosk.signage.presenceOn': '来訪検知: ON',
   'kiosk.signage.presenceOff': '来訪検知: OFF',
   'kiosk.signage.presenceUnavailable': '来訪検知: 利用不可',
+  'kiosk.attract.greeting': 'こんにちは。受付をご利用ですか？',
+  'kiosk.attract.startCta': '受付を始める',
   'privacy.noticeTitle': '入力情報の取り扱いについて',
   'privacy.summary':
     '入力いただいたお名前・会社名・ご用件は、担当者への取り次ぎにのみ使用し、記録には保存しません。',
@@ -540,6 +546,8 @@ const en: LocaleDictionary = {
   'kiosk.signage.presenceOn': 'Visitor detection: ON',
   'kiosk.signage.presenceOff': 'Visitor detection: OFF',
   'kiosk.signage.presenceUnavailable': 'Visitor detection: Unavailable',
+  'kiosk.attract.greeting': 'Hello. Would you like to check in?',
+  'kiosk.attract.startCta': 'Start check-in',
   'privacy.noticeTitle': 'About your information',
   'privacy.summary':
     'The name, company, and purpose you enter are used only to notify staff and are not saved to any record.',
@@ -718,6 +726,8 @@ const ko: LocaleDictionary = {
   'kiosk.signage.presenceOn': '방문 감지: ON',
   'kiosk.signage.presenceOff': '방문 감지: OFF',
   'kiosk.signage.presenceUnavailable': '방문 감지: 사용 불가',
+  'kiosk.attract.greeting': '안녕하세요. 접수를 도와드릴까요?',
+  'kiosk.attract.startCta': '접수 시작하기',
   'privacy.noticeTitle': '입력 정보 처리 안내',
   'privacy.summary':
     '입력하신 성함, 회사명, 용건은 담당자 호출 목적으로만 사용되며 기록에 저장되지 않습니다.',
@@ -895,6 +905,8 @@ const zh: LocaleDictionary = {
   'kiosk.signage.presenceOn': '访客检测：开启',
   'kiosk.signage.presenceOff': '访客检测：关闭',
   'kiosk.signage.presenceUnavailable': '访客检测：不可用',
+  'kiosk.attract.greeting': '您好，需要办理登记吗？',
+  'kiosk.attract.startCta': '开始登记',
   'privacy.noticeTitle': '关于输入信息的处理',
   'privacy.summary': '您输入的姓名、公司名称和来访事由仅用于通知接待人员，不会保存到记录中。',
   'privacy.detailsShow': '查看详情',

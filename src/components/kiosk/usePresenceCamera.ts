@@ -1,24 +1,33 @@
 'use client';
 
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { DEFAULT_PRESENCE_CONFIG } from '@/domain/presence/state';
 import {
-  DEFAULT_PRESENCE_CONFIG,
-  presenceTransition,
-  type PresenceState,
-} from '@/domain/presence/state';
+  INITIAL_ATTRACT_DETECTOR_STATE,
+  resumeAttractDetector,
+  stepAttractDetector,
+  type AttractDetectorState,
+} from '@/lib/presence/attract-detector';
 import { computeCenterMotion, rgbaToGrayscale } from '@/lib/presence/motion-diff';
 
 /**
- * 来訪者検知カメラフック (issue #79, kiosk-integration inc1)。
+ * 来訪者検知カメラフック (issue #79 / #362, kiosk-integration)。
  *
- * 待機画面で低負荷に「端末に用がありそうな接近」を推定し、検知時に onDetected を呼ぶ。
+ * 待機画面で低負荷に「端末に用がありそうな接近」を推定し、ATTRACT に達したら
+ * `onAttract` を呼ぶ。**このフックは受付を開始しない**。ATTRACT は「画面だけ反応する」
+ * 段階であり、受付開始（KioskMode の signage → reception/qr_reception 遷移）は
+ * 呼び出し側が ATTRACT オーバーレイの明示 CTA タップを受けたときにだけ行う (issue #362)。
+ *
+ * 検知ロジック本体は `src/lib/presence/attract-detector.ts` の純関数に委譲し、ここは
+ * カメラ取得・フレームサンプリング・タイムアウト管理だけを持つ薄い DOM 層にする。
+ *
  * 実装方針（非破壊・フォールバック）:
  *   - enabled=false（既定）のときは getUserMedia を一切呼ばず完全に無効。従来のタップ起動で完走する。
  *   - getUserMedia 未対応 / 権限拒否 / 取得失敗のときは status='unavailable' に倒し、何もしない
  *     （待機画面のタップ起動は常に生きている）。実機カメラ検証は #65 にスタック。
- *   - 検知は Canvas フレーム差分（motion-diff.ts）＋presence 状態機械（state.ts）に委譲する。
- *     ATTRACT（端末前に人がいそう）へ達したら受付候補とみなし onDetected を一度だけ呼ぶ。
- *     顔検出は inc1 では起動しない（CANDIDATE で動きが続けば ATTRACT とみなす軽量近似）。
+ *   - ATTRACT シグナル後、無操作のまま `attractTimeoutMs` 経過したら `onAttractTimeout` を呼び、
+ *     検知状態を初期化して次の来訪者を再検知できるようにする（8〜12 秒、既定は
+ *     `DEFAULT_PRESENCE_CONFIG.attractTimeoutMs`）。
  *
  * 映像・フレームはローカルでのみ処理し、サーバへ送らない・保存しない（プライバシー方針）。
  */
@@ -30,52 +39,66 @@ const FRAME_WIDTH = 80;
 const FRAME_HEIGHT = 60;
 /** サンプリング間隔（低 fps：負荷を抑える）。 */
 const SAMPLE_INTERVAL_MS = 400;
-/** CANDIDATE が一定回数連続でモーションを観測したら ATTRACT 相当とみなす（顔検出の軽量代替）。 */
-const CANDIDATE_MOTION_TICKS_TO_ATTRACT = 2;
+
+export type UsePresenceCameraOptions = {
+  /** ATTRACT で無操作のままサイネージへ戻すまでの時間 (ms)。既定 8000（8〜12 秒の下限）。 */
+  attractTimeoutMs?: number;
+  /** ATTRACT タイムアウトで待機へ戻ったときに呼ぶ（サイネージ再開の演出フック）。 */
+  onAttractTimeout?: () => void;
+};
 
 export function usePresenceCamera(
   enabled: boolean,
-  onDetected: () => void,
+  onAttract: () => void,
+  options: UsePresenceCameraOptions = {},
 ): { status: PresenceCameraStatus } {
   const [status, setStatus] = useState<PresenceCameraStatus>('idle');
-  // onDetected を ref 経由で参照し、effect の再起動（カメラ再取得）を避ける。
-  const onDetectedRef = useRef(onDetected);
+  const attractTimeoutMs = options.attractTimeoutMs ?? DEFAULT_PRESENCE_CONFIG.attractTimeoutMs;
+  // onAttract / onAttractTimeout を ref 経由で参照し、effect の再起動（カメラ再取得）を避ける。
+  const onAttractRef = useRef(onAttract);
   useEffect(() => {
-    onDetectedRef.current = onDetected;
-  }, [onDetected]);
+    onAttractRef.current = onAttract;
+  }, [onAttract]);
+  const onAttractTimeoutRef = useRef(options.onAttractTimeout);
+  useEffect(() => {
+    onAttractTimeoutRef.current = options.onAttractTimeout;
+  }, [options.onAttractTimeout]);
 
-  // 検知状態は state 機械が保持。effect 内のループで参照・更新する。
-  const presenceRef = useRef<PresenceState>('IDLE');
-  const candidateTicksRef = useRef(0);
-  const detectedRef = useRef(false);
+  // 検知状態は純ロジック（attract-detector.ts）が保持。effect 内のループで参照・更新する。
+  const detectorRef = useRef<AttractDetectorState>(INITIAL_ATTRACT_DETECTOR_STATE);
+  const attractTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  const handleMotion = useCallback((motionLevel: number) => {
-    if (detectedRef.current) return;
-    const prev = presenceRef.current;
-    const next = presenceTransition(prev, { type: 'MOTION', motionLevel }, DEFAULT_PRESENCE_CONFIG);
-    presenceRef.current = next.state;
-
-    // CANDIDATE 中の継続モーションで「端末前に滞在」とみなし ATTRACT へ寄せる（顔検出の代替）。
-    if (next.state === 'CANDIDATE') {
-      const overThreshold = motionLevel >= DEFAULT_PRESENCE_CONFIG.motionEnterThreshold;
-      candidateTicksRef.current = overThreshold ? candidateTicksRef.current + 1 : 0;
-      if (candidateTicksRef.current >= CANDIDATE_MOTION_TICKS_TO_ATTRACT) {
-        presenceRef.current = 'ATTRACT';
-        candidateTicksRef.current = 0;
-        detectedRef.current = true;
-        onDetectedRef.current();
-      }
-    } else if (prev !== 'CANDIDATE') {
-      candidateTicksRef.current = 0;
+  const clearAttractTimer = useCallback(() => {
+    if (attractTimerRef.current !== null) {
+      clearTimeout(attractTimerRef.current);
+      attractTimerRef.current = null;
     }
   }, []);
+
+  const handleMotion = useCallback(
+    (motionLevel: number) => {
+      const result = stepAttractDetector(detectorRef.current, motionLevel);
+      detectorRef.current = result.state;
+      if (!result.attractSignal) return;
+
+      // ATTRACT に到達: 画面だけ反応させる（受付は開始しない）。
+      onAttractRef.current();
+      clearAttractTimer();
+      attractTimerRef.current = setTimeout(() => {
+        // 無操作のまま時間切れ。検知状態を初期化し、次の来訪者を再検知できるようにする。
+        detectorRef.current = resumeAttractDetector();
+        attractTimerRef.current = null;
+        onAttractTimeoutRef.current?.();
+      }, attractTimeoutMs);
+    },
+    [attractTimeoutMs, clearAttractTimer],
+  );
 
   useEffect(() => {
     if (!enabled) {
       setStatus('idle');
-      presenceRef.current = 'IDLE';
-      candidateTicksRef.current = 0;
-      detectedRef.current = false;
+      detectorRef.current = resumeAttractDetector();
+      clearAttractTimer();
       return;
     }
 
@@ -93,9 +116,8 @@ export function usePresenceCamera(
     }
 
     setStatus('starting');
-    detectedRef.current = false;
-    presenceRef.current = 'IDLE';
-    candidateTicksRef.current = 0;
+    detectorRef.current = resumeAttractDetector();
+    clearAttractTimer();
 
     const canvas = document.createElement('canvas');
     canvas.width = FRAME_WIDTH;
@@ -119,7 +141,7 @@ export function usePresenceCamera(
         setStatus('running');
 
         timer = setInterval(() => {
-          if (cancelled || !video || !ctx || detectedRef.current) return;
+          if (cancelled || !video || !ctx || detectorRef.current.attractSignaled) return;
           try {
             ctx.drawImage(video, 0, 0, FRAME_WIDTH, FRAME_HEIGHT);
             const { data } = ctx.getImageData(0, 0, FRAME_WIDTH, FRAME_HEIGHT);
@@ -145,13 +167,14 @@ export function usePresenceCamera(
     return () => {
       cancelled = true;
       if (timer) clearInterval(timer);
+      clearAttractTimer();
       if (video) {
         video.pause();
         video.srcObject = null;
       }
       if (stream) stream.getTracks().forEach((t) => t.stop());
     };
-  }, [enabled, handleMotion]);
+  }, [enabled, handleMotion, clearAttractTimer]);
 
   return { status };
 }

@@ -7,6 +7,7 @@ import {
   type AwsCostSummary,
   type CostComponentFilter,
   type CostEnvironmentFilter,
+  type ForecastUnavailableReason,
 } from '@/domain/platform/aws-cost';
 import { MetricCard } from './primitives';
 
@@ -18,6 +19,22 @@ const COMPONENT_LABELS: Record<CostComponentFilter, string> = {
   notification: '通知・音声',
   monitoring: '通知基盤監視',
 };
+
+/**
+ * 予測欄の note を失敗理由で出し分ける (#379)。
+ * `no_history`（タグ有効化直後・履歴不足）と `request_failed`（AccessDenied・タイムアウト等、
+ * 運用者の対応が要る可能性がある）を一律「履歴不足などにより予測不可」に丸めない。
+ */
+function forecastNote(
+  forecastAvailable: boolean,
+  forecastUnavailableReason: ForecastUnavailableReason | null,
+): string {
+  if (forecastAvailable) return 'AWS Cost Forecast（80%予測区間）';
+  if (forecastUnavailableReason === 'request_failed') {
+    return '予測の取得に失敗しました（権限設定またはタイムアウトの可能性）';
+  }
+  return '履歴不足のため予測できません（タグ有効化直後など）';
+}
 
 function formatMoney(value: number | null, currency: string): string {
   if (value === null) return '—';
@@ -238,7 +255,7 @@ export function AwsCostPanel() {
             <MetricCard
               label="残期間予測"
               value={formatMoney(data.forecastRemaining, data.currency)}
-              note={data.forecastAvailable ? 'AWS Cost Forecast（80%予測区間）' : '履歴不足などにより予測不可'}
+              note={forecastNote(data.forecastAvailable, data.forecastUnavailableReason)}
             />
             <MetricCard
               label="月末見込み"

@@ -9,6 +9,7 @@ import {
   searchVisitorOrganizations,
   toVisitorAffiliations,
   toVisitorOrganization,
+  validateOrganizationMembership,
 } from './directory';
 import type { OrganizationMembership, OrganizationUnit } from './types';
 import { scopeOrganizationUnits } from './types';
@@ -54,7 +55,7 @@ const HIDDEN_PARENT: OrganizationUnit[] = [
 
 describe('toVisitorOrganization', () => {
   it('来訪者向けには公開表示名だけを出し、内部正式名称を漏らさない', () => {
-    const view = toVisitorOrganization(UNITS[0]!);
+    const view = toVisitorOrganization(UNITS[0]!, new Set(['sales']));
     expect(view.name).toBe('営業部');
     expect(JSON.stringify(view)).not.toContain('株式会社サンプル');
     expect('officialName' in view).toBe(false);
@@ -141,14 +142,14 @@ describe('resolveStaffAffiliations', () => {
   ];
 
   it('主所属と複数の兼務を返す', () => {
-    const result = resolveStaffAffiliations(memberships, UNITS, 'staff-1', { now: NOW });
+    const result = resolveStaffAffiliations(memberships, UNITS, 'staff-1', { now: NOW, scope: TENANT });
     expect(result.primary?.unit.id).toBe('sales');
     expect(result.secondary.map((a) => a.unit.id)).toEqual(['dev', 'sales-1']);
   });
 
   it('主所属が無くても兼務だけを返せる', () => {
     const only = [membership({ staffId: 'x', organizationId: 'dev', relation: 'secondary' })];
-    const result = resolveStaffAffiliations(only, UNITS, 'x', { now: NOW });
+    const result = resolveStaffAffiliations(only, UNITS, 'x', { now: NOW, scope: TENANT });
     expect(result.primary).toBeUndefined();
     expect(result.secondary).toHaveLength(1);
   });
@@ -176,7 +177,7 @@ describe('resolveStaffAffiliations', () => {
         validUntil: '2020-01-01T00:00:00.000Z',
       }),
     ];
-    expect(resolveStaffAffiliations(expired, UNITS, 'deputy', { now: NOW }).acting).toEqual([]);
+    expect(resolveStaffAffiliations(expired, UNITS, 'deputy', { now: NOW, scope: TENANT }).acting).toEqual([]);
   });
 
   it('有効期間内の代理担当は acting に含める', () => {
@@ -188,12 +189,12 @@ describe('resolveStaffAffiliations', () => {
         validUntil: '2026-12-31T00:00:00.000Z',
       }),
     ];
-    expect(resolveStaffAffiliations(active, UNITS, 'deputy', { now: NOW }).acting).toHaveLength(1);
+    expect(resolveStaffAffiliations(active, UNITS, 'deputy', { now: NOW, scope: TENANT }).acting).toHaveLength(1);
   });
 
   it('祖先組織を所属として自動的に足さない（親子＝取次フォールバックではない）', () => {
     const child = [membership({ staffId: 'y', organizationId: 'sales-1', relation: 'primary' })];
-    const result = resolveStaffAffiliations(child, UNITS, 'y', { now: NOW });
+    const result = resolveStaffAffiliations(child, UNITS, 'y', { now: NOW, scope: TENANT });
     expect(result.primary?.unit.id).toBe('sales-1');
     expect(result.secondary).toEqual([]);
     // 表示用のパンくずとしてのみ祖先を持つ。
@@ -231,7 +232,7 @@ describe('toVisitorAffiliations (PR #394 finding 1)', () => {
         publicInDirectory: false,
       }),
     ];
-    const internal = resolveStaffAffiliations(hidden, UNITS, 'staff-3', { now: NOW });
+    const internal = resolveStaffAffiliations(hidden, UNITS, 'staff-3', { now: NOW, scope: TENANT });
     expect(internal.primary).toBeDefined();
     expect(toVisitorAffiliations(internal).primary).toBeUndefined();
   });
@@ -241,14 +242,14 @@ describe('toVisitorAffiliations (PR #394 finding 1)', () => {
       membership({ staffId: 's', organizationId: 'closed', relation: 'primary' }),
       membership({ staffId: 's', organizationId: 'internal', relation: 'secondary' }),
     ];
-    const visitor = toVisitorAffiliations(resolveStaffAffiliations(ms, UNITS, 's', { now: NOW }));
+    const visitor = toVisitorAffiliations(resolveStaffAffiliations(ms, UNITS, 's', { now: NOW, scope: TENANT }));
     expect(visitor.primary).toBeUndefined();
     expect(visitor.secondary).toEqual([]);
   });
 
   it('公開の祖先はパンくずとして残す', () => {
     const ms = [membership({ staffId: 's', organizationId: 'sales-1', relation: 'primary' })];
-    const visitor = toVisitorAffiliations(resolveStaffAffiliations(ms, UNITS, 's', { now: NOW }));
+    const visitor = toVisitorAffiliations(resolveStaffAffiliations(ms, UNITS, 's', { now: NOW, scope: TENANT }));
     expect(visitor.primary?.ancestors.map((a) => a.name)).toEqual(['営業部']);
   });
 });
@@ -260,7 +261,7 @@ describe('affiliationSummaryLabel (#373 同姓同名の識別)', () => {
     opts: { includeAncestors?: boolean } = {},
   ): string {
     return affiliationSummaryLabel(
-      toVisitorAffiliations(resolveStaffAffiliations(ms, units, 's', { now: NOW })),
+      toVisitorAffiliations(resolveStaffAffiliations(ms, units, 's', { now: NOW, scope: TENANT })),
       opts,
     );
   }
@@ -316,7 +317,7 @@ describe('listCallableMembers (#373 親子で自動 fallback しない)', () => 
   ];
 
   it('指定した組織の所属だけを返し、親組織へ遡らない', () => {
-    const ids = listCallableMembers(memberships, UNITS, 'sales-1', { now: NOW }).map(
+    const ids = listCallableMembers(memberships, UNITS, 'sales-1', { now: NOW, scope: TENANT }).map(
       (m) => m.staffId,
     );
     expect(ids).toEqual(['child-staff']);
@@ -325,12 +326,12 @@ describe('listCallableMembers (#373 親子で自動 fallback しない)', () => 
 
   it('子組織へも降りない（fallback は #374 の RoutingPolicy で明示する）', () => {
     expect(
-      listCallableMembers(memberships, UNITS, 'sales', { now: NOW }).map((m) => m.staffId),
+      listCallableMembers(memberships, UNITS, 'sales', { now: NOW, scope: TENANT }).map((m) => m.staffId),
     ).toEqual(['parent-staff']);
   });
 
   it('無効な組織では呼び出し候補を返さない', () => {
-    expect(listCallableMembers(memberships, UNITS, 'closed', { now: NOW })).toEqual([]);
+    expect(listCallableMembers(memberships, UNITS, 'closed', { now: NOW, scope: TENANT })).toEqual([]);
   });
 
   it('主所属を兼務より先に並べる', () => {
@@ -338,7 +339,7 @@ describe('listCallableMembers (#373 親子で自動 fallback しない)', () => 
       membership({ staffId: 'b', organizationId: 'dev', relation: 'secondary' }),
       membership({ staffId: 'a', organizationId: 'dev', relation: 'primary' }),
     ];
-    expect(listCallableMembers(mixed, UNITS, 'dev', { now: NOW }).map((m) => m.staffId)).toEqual([
+    expect(listCallableMembers(mixed, UNITS, 'dev', { now: NOW, scope: TENANT }).map((m) => m.staffId)).toEqual([
       'a',
       'b',
     ]);
@@ -354,7 +355,7 @@ describe('listCallableMembers (#373 親子で自動 fallback しない)', () => 
         validUntil: '2020-01-01T00:00:00.000Z',
       }),
     ];
-    expect(listCallableMembers(expired, UNITS, 'sales', { now: NOW })).toEqual([]);
+    expect(listCallableMembers(expired, UNITS, 'sales', { now: NOW, scope: TENANT })).toEqual([]);
   });
 
   it('[regression #394-2] 開始前の代理担当も呼び出し候補に含めない', () => {
@@ -366,7 +367,7 @@ describe('listCallableMembers (#373 親子で自動 fallback しない)', () => 
         validFrom: '2027-01-01T00:00:00.000Z',
       }),
     ];
-    expect(listCallableMembers(future, UNITS, 'sales', { now: NOW })).toEqual([]);
+    expect(listCallableMembers(future, UNITS, 'sales', { now: NOW, scope: TENANT })).toEqual([]);
   });
 
   it('有効期間内の代理担当は呼び出し候補に含める', () => {
@@ -379,14 +380,16 @@ describe('listCallableMembers (#373 親子で自動 fallback しない)', () => 
         validUntil: '2026-12-31T00:00:00.000Z',
       }),
     ];
-    expect(listCallableMembers(active, UNITS, 'sales', { now: NOW }).map((m) => m.staffId)).toEqual([
+    expect(listCallableMembers(active, UNITS, 'sales', { now: NOW, scope: TENANT }).map((m) => m.staffId)).toEqual([
       'deputy',
     ]);
   });
 
   it('期間指定の無い primary / secondary は期間評価の影響を受けない', () => {
     expect(
-      listCallableMembers(memberships, UNITS, 'sales', { now: 'not-a-date' }).map((m) => m.staffId),
+      listCallableMembers(memberships, UNITS, 'sales', { now: 'not-a-date', scope: TENANT }).map(
+        (m) => m.staffId,
+      ),
     ).toEqual(['parent-staff']);
   });
 });
@@ -429,7 +432,7 @@ describe('resolveActingMembers (#373 代理担当)', () => {
       }),
     ];
     expect(
-      resolveActingMembers(memberships, UNITS, { actingForStaffId: 'boss', now: NOW }).map(
+      resolveActingMembers(memberships, UNITS, { actingForStaffId: 'boss', now: NOW }, TENANT).map(
         (a) => a.staffId,
       ),
     ).toEqual(['deputy']);
@@ -445,7 +448,7 @@ describe('resolveActingMembers (#373 代理担当)', () => {
         validUntil: '2026-07-01T00:00:00.000Z',
       }),
     ];
-    expect(resolveActingMembers(memberships, UNITS, { actingForStaffId: 'boss', now: NOW })).toEqual(
+    expect(resolveActingMembers(memberships, UNITS, { actingForStaffId: 'boss', now: NOW }, TENANT)).toEqual(
       [],
     );
   });
@@ -460,7 +463,7 @@ describe('resolveActingMembers (#373 代理担当)', () => {
         validFrom: '2026-08-01T00:00:00.000Z',
       }),
     ];
-    expect(resolveActingMembers(memberships, UNITS, { actingForStaffId: 'boss', now: NOW })).toEqual(
+    expect(resolveActingMembers(memberships, UNITS, { actingForStaffId: 'boss', now: NOW }, TENANT)).toEqual(
       [],
     );
   });
@@ -471,7 +474,7 @@ describe('resolveActingMembers (#373 代理担当)', () => {
       membership({ staffId: 'other', organizationId: 'dev', relation: 'acting' }),
     ];
     expect(
-      resolveActingMembers(memberships, UNITS, { organizationId: 'sales', now: NOW }).map(
+      resolveActingMembers(memberships, UNITS, { organizationId: 'sales', now: NOW }, TENANT).map(
         (a) => a.staffId,
       ),
     ).toEqual(['deputy']);
@@ -479,7 +482,7 @@ describe('resolveActingMembers (#373 代理担当)', () => {
 
   it('acting 以外の関係は代理担当として扱わない', () => {
     const memberships = [membership({ staffId: 'x', organizationId: 'sales', relation: 'primary' })];
-    expect(resolveActingMembers(memberships, UNITS, { organizationId: 'sales', now: NOW })).toEqual(
+    expect(resolveActingMembers(memberships, UNITS, { organizationId: 'sales', now: NOW }, TENANT)).toEqual(
       [],
     );
   });
@@ -489,5 +492,108 @@ describe('scopeOrganizationUnits', () => {
   it('テナント境界を跨ぐ組織を落とす', () => {
     const units = [unit({ id: 'a' }), unit({ id: 'b', tenantId: 'tenant-b' })];
     expect(scopeOrganizationUnits(units, TENANT).map((u) => u.id)).toEqual(['a']);
+  });
+});
+
+describe('#396 tenant/site 境界の必須化（scope / publicIds）', () => {
+  const OTHER_TENANT_UNITS: OrganizationUnit[] = [
+    unit({ id: 'foreign', tenantId: 'tenant-b', publicDisplayName: '他社営業部' }),
+  ];
+
+  it('resolveStaffAffiliations は scope 外（他テナント）の所属を 0 件に落とす（値固定）', () => {
+    const ms = [membership({ staffId: 's', organizationId: 'foreign', relation: 'secondary' })];
+    const result = resolveStaffAffiliations(ms, OTHER_TENANT_UNITS, 's', {
+      now: NOW,
+      scope: TENANT,
+    });
+    expect(result).toEqual({ secondary: [], acting: [] });
+  });
+
+  it('listCallableMembers は scope 外（他テナント）の組織で 0 件を返す（値固定）', () => {
+    const ms = [membership({ staffId: 's', organizationId: 'foreign', relation: 'primary' })];
+    expect(
+      listCallableMembers(ms, OTHER_TENANT_UNITS, 'foreign', { now: NOW, scope: TENANT }),
+    ).toEqual([]);
+  });
+
+  it('resolveActingMembers は scope 外（他テナント）の代理担当を 0 件に落とす（値固定）', () => {
+    const ms = [
+      membership({
+        staffId: 'deputy',
+        organizationId: 'foreign',
+        relation: 'acting',
+        actingForStaffId: 'boss',
+      }),
+    ];
+    expect(
+      resolveActingMembers(ms, OTHER_TENANT_UNITS, { actingForStaffId: 'boss', now: NOW }, TENANT),
+    ).toEqual([]);
+  });
+
+  it('toVisitorOrganization は publicIds に無い親 id を parentId へ漏らさない（値固定）', () => {
+    expect(toVisitorOrganization(HIDDEN_PARENT[1]!, new Set(['child']))).toEqual({
+      id: 'child',
+      name: '調査一課',
+      parentId: undefined,
+    });
+  });
+
+  // 以下は型レベルの契約を固定する（`@ts-expect-error` が消えたら required 化が退行）。
+  // 実行はしない（scope/publicIds 省略で境界解決がクラッシュするのは当然なので、型で弾く）。
+  it('[type] 必須引数の省略はコンパイルエラーになる', () => {
+    const typeContracts = [
+      // @ts-expect-error scope は必須（省略で他テナント組織のラベルが漏れる）。
+      () => resolveStaffAffiliations([], UNITS, 'x', { now: NOW }),
+      // @ts-expect-error scope は必須（省略で他テナント staff が候補へ混ざる）。
+      () => listCallableMembers([], UNITS, 'sales', { now: NOW }),
+      // @ts-expect-error scope（第4引数）は必須（省略で他テナントの代理担当が混ざる）。
+      () => resolveActingMembers([], UNITS, { now: NOW }),
+      // @ts-expect-error publicIds は必須（省略で非公開の親 id が漏れる）。
+      () => toVisitorOrganization(UNITS[0]!),
+    ];
+    expect(typeContracts).toHaveLength(4);
+  });
+});
+
+describe('validateOrganizationMembership (#396 有効期間は acting 専用)', () => {
+  it('acting 以外に validFrom が付いていたら弾く（値固定）', () => {
+    const m = membership({
+      staffId: 's',
+      organizationId: 'sales',
+      relation: 'primary',
+      validFrom: '2026-01-01T00:00:00.000Z',
+    });
+    expect(validateOrganizationMembership(m)).toEqual([
+      { kind: 'validity_period_on_non_acting', staffId: 's', organizationId: 'sales', relation: 'primary' },
+    ]);
+  });
+
+  it('acting 以外に validUntil が付いていたら弾く（secondary も同様・値固定）', () => {
+    const m = membership({
+      staffId: 's',
+      organizationId: 'dev',
+      relation: 'secondary',
+      validUntil: '2026-12-31T00:00:00.000Z',
+    });
+    expect(validateOrganizationMembership(m)).toEqual([
+      { kind: 'validity_period_on_non_acting', staffId: 's', organizationId: 'dev', relation: 'secondary' },
+    ]);
+  });
+
+  it('acting に有効期間が付いているのは妥当（0 件）', () => {
+    const m = membership({
+      staffId: 'deputy',
+      organizationId: 'sales',
+      relation: 'acting',
+      actingForStaffId: 'boss',
+      validFrom: '2026-01-01T00:00:00.000Z',
+      validUntil: '2026-12-31T00:00:00.000Z',
+    });
+    expect(validateOrganizationMembership(m)).toEqual([]);
+  });
+
+  it('期間指定の無い primary は妥当（0 件）', () => {
+    const m = membership({ staffId: 's', organizationId: 'sales', relation: 'primary' });
+    expect(validateOrganizationMembership(m)).toEqual([]);
   });
 });

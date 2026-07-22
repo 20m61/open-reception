@@ -29,6 +29,16 @@ export type AwsCostFilters = {
   component: CostComponentFilter;
 };
 
+/**
+ * 予測（GetCostForecast）が失敗した理由 (#379)。
+ * - `no_history`: AWS が `DataUnavailableException` を返した（履歴不足・タグ有効化直後など、
+ *   運用者の対応不要）。
+ * - `request_failed`: それ以外の失敗（AccessDenied・タイムアウト・スロットリング等）。
+ *   権限設定漏れなど運用者の対応が必要な可能性がある。
+ * `forecastAvailable: true` のときは常に `null`。
+ */
+export type ForecastUnavailableReason = 'no_history' | 'request_failed';
+
 export type AwsCostAvailable = {
   status: 'available';
   currency: string;
@@ -46,6 +56,8 @@ export type AwsCostAvailable = {
   breakdown: AwsCostBreakdownItem[];
   updatedAt: string;
   forecastAvailable: boolean;
+  /** forecastAvailable=false のときの失敗理由。true のときは null。 */
+  forecastUnavailableReason: ForecastUnavailableReason | null;
 };
 
 export type AwsCostUnavailable = {

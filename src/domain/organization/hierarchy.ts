@@ -36,6 +36,11 @@ function indexById(units: ReadonlyArray<OrganizationUnit>): Map<string, Organiza
 /**
  * 循環に含まれる組織 id を返す（無ければ null）。
  * 自己ループ（parentId === id）も循環として扱う。
+ *
+ * **本番コードからは使わない**。最初に見つけた 1 循環しか返さないため、複数の循環が
+ * 同時に存在すると取りこぼす。検証・ツリー構築・付け替え判定はすべて全循環を返す
+ * `findAllOrganizationCycleIds` を使うこと。この関数は「1 つの具体的な循環経路を人へ
+ * 提示する」デバッグ・テスト用途に限る。
  */
 export function findOrganizationCycle(units: ReadonlyArray<OrganizationUnit>): string[] | null {
   const byId = indexById(units);
@@ -256,8 +261,12 @@ export function canSetParent(
   if (nextParentId === undefined) return { ok: true };
 
   const next = units.map((u) => (u.id === organizationId ? { ...u, parentId: nextParentId } : u));
+  // 付け替えが引き起こす問題だけを見る。付け替え先を変えるのは organizationId の親エッジ
+  // だけなので、この操作が新たに作りうる循環は必ず organizationId を含む。よって循環を含む
+  // すべての問題は `organizationId` を主体として報告される（`findAllOrganizationCycleIds` は
+  // 循環ノードを全件返す）。無関係な既存循環（別ノード主体）でこの付け替えをブロックしない。
   const issues = validateOrganizationHierarchy(next).filter(
-    (i) => i.organizationId === organizationId || i.kind === 'cycle',
+    (i) => i.organizationId === organizationId,
   );
   // 付け替え先の部分木の高さも含めて深度上限を見る（子孫ごと動くため）。
   const parentDepth = depthOf(next, nextParentId);
@@ -298,6 +307,9 @@ export function buildOrganizationTree(
   for (const [id, node] of nodes) {
     const parentId = node.unit.parentId;
     // 循環ノードはルートへ昇格させる（親リンクを切るので互いに入れ子にならない）。
+    // `cycleIds` は `findAllOrganizationCycleIds` が全循環ノードを返すので、循環に属する
+    // ノードは 1 つ残らずここでルート化され、どの親の children にも入らない。したがって
+    // children グラフに循環は生じず、下の `sort` が無限再帰することはない。
     const parentNode =
       parentId === undefined || cycleIds.has(id) ? undefined : nodes.get(parentId);
     if (parentNode === undefined) {
@@ -307,34 +319,12 @@ export function buildOrganizationTree(
     }
   }
 
-  /**
-   * 防御的な回収: roots から到達できないノードをルートへ戻す。
-   * 循環検出が完全なら空になるが、**組織が出力から黙って消える**のは復旧不能に見える障害なので、
-   * 将来の変更に対する安全網としてツリー構築の最後で必ず確認する。
-   */
-  const reached = new Set<string>();
-  const stack = [...roots];
-  while (stack.length > 0) {
-    const node = stack.pop();
-    if (node === undefined || reached.has(node.unit.id)) continue;
-    reached.add(node.unit.id);
-    stack.push(...node.children);
-  }
-  for (const [id, node] of nodes) {
-    if (!reached.has(id)) {
-      // 到達不能なノードは親リンクを断ち切ってルート化する（重複入れ子を作らない）。
-      node.children = node.children.filter((c) => !reached.has(c.unit.id));
-      roots.push(node);
-      reached.add(id);
-      stack.push(...node.children);
-      while (stack.length > 0) {
-        const n = stack.pop();
-        if (n === undefined || reached.has(n.unit.id)) continue;
-        reached.add(n.unit.id);
-        stack.push(...n.children);
-      }
-    }
-  }
+  // NOTE(#396): 以前ここに「roots から到達できないノードをルートへ戻す」防御ブロックがあった。
+  // `findAllOrganizationCycleIds` が完全なため到達不能ノードは生じず、このブロックは常に
+  // デッドコードだった。しかも発火時は昇格ノードを親の children から外さないため children
+  // グラフに循環が残り、`sort` が無限再帰してクラッシュする（`[a↔b, c↔d]` で Maximum call
+  // stack）。実害のある死蔵コードなので削除した。全循環ノードが確実に root 化されること・
+  // ノードが 1 件も欠落/重複しないことは buildOrganizationTree のテストで担保する。
 
   const sort = (list: OrganizationTreeNode[]): void => {
     list.sort(

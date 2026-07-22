@@ -5,6 +5,7 @@ import type {
   AwsCostSummary,
   CostComponentFilter,
   CostEnvironmentFilter,
+  ForecastUnavailableReason,
 } from '@/domain/platform/aws-cost';
 import { isCostEnvironmentFilter } from '@/domain/platform/aws-cost';
 
@@ -15,6 +16,10 @@ const COST_EXPLORER_SERVICE = 'ce';
 const CONTENT_TYPE = 'application/x-amz-json-1.1';
 const TARGET_PREFIX = 'AWSInsightsIndexService';
 const MAX_PAGES = 20;
+/** GetCostForecast が「履歴不足で予測できない」ときに AWS が返すエラー種別。 */
+const FORECAST_DATA_UNAVAILABLE_CODE = 'DataUnavailableException';
+/** Lambda プロセス内 TTL キャッシュの有効期間 (#379: CE は 1 リクエスト $0.01 の課金が発生する)。 */
+const COST_SUMMARY_CACHE_TTL_MS = 5 * 60 * 1000;
 
 interface AwsCredentials {
   accessKeyId: string;
@@ -107,7 +112,9 @@ async function invokeCostExplorer<T>(
   if (credentials.sessionToken) {
     canonicalHeaderEntries.push(['x-amz-security-token', credentials.sessionToken]);
   }
-  canonicalHeaderEntries.sort(([a], [b]) => a.localeCompare(b));
+  // SigV4 の SignedHeaders はバイト（コードポイント）順必須。localeCompare はロケール依存のため、
+  // ヘッダを追加したときに ICU ロケール次第で並びがずれ、静かに無効な署名を作りかねない (#379)。
+  canonicalHeaderEntries.sort(([a], [b]) => (a < b ? -1 : 1));
 
   const canonicalHeaders = canonicalHeaderEntries
     .map(([key, value]) => `${key}:${canonicalizeHeaderValue(value)}\n`)
@@ -294,12 +301,18 @@ async function getActualCost(
   };
 }
 
+type ForecastOutcome = {
+  remaining: number | null;
+  /** 失敗理由。取得成功時は null（#379: 権限不足等を「履歴不足」と偽装しない）。 */
+  unavailableReason: ForecastUnavailableReason | null;
+};
+
 async function getRemainingForecast(
   filters: AwsCostFilters,
   periods: ReturnType<typeof buildCostPeriods>,
   credentials: AwsCredentials,
   now: Date,
-): Promise<number | null> {
+): Promise<ForecastOutcome> {
   try {
     const response = await invokeCostExplorer<GetCostForecastResponse>(
       'GetCostForecast',
@@ -313,11 +326,20 @@ async function getRemainingForecast(
       credentials,
       now,
     );
-    return response.Total ? metricAmount(response.Total) : null;
+    return { remaining: response.Total ? metricAmount(response.Total) : null, unavailableReason: null };
   } catch (error) {
-    // 履歴不足・タグ有効化直後など、予測だけ失敗しても実績は表示する。
-    console.warn('[platform-cost] forecast unavailable', error instanceof Error ? error.message : error);
-    return null;
+    // 履歴不足・タグ有効化直後など、予測だけ失敗しても実績は表示する。ただし失敗理由は握り潰さず
+    // 呼び出し元へ返す（#379: AccessDenied やタイムアウトを一律「履歴不足」と誤表示しない）。
+    const unavailableReason: ForecastUnavailableReason =
+      error instanceof CostExplorerRequestError && error.awsCode === FORECAST_DATA_UNAVAILABLE_CODE
+        ? 'no_history'
+        : 'request_failed';
+    console.warn(
+      '[platform-cost] forecast unavailable',
+      unavailableReason,
+      error instanceof Error ? error.message : error,
+    );
+    return { remaining: null, unavailableReason };
   }
 }
 
@@ -335,6 +357,26 @@ function resolveFilters(input: {
     environment: input.environment ?? defaultEnvironment,
     component: input.component ?? 'all',
   };
+}
+
+/**
+ * Lambda プロセス内 TTL キャッシュ（フィルタ組み合わせ単位・5 分, #379）。
+ *
+ * CE は 1 リクエスト $0.01（1 view = GetCostAndUsage + GetCostForecast = $0.02）で、フィルタ操作
+ * ごとに追加課金される。CloudFront の default behavior は CACHING_DISABLED（web-stack.ts）で
+ * 共有キャッシュが効かないため、呼び出し元（route ハンドラ）の認可チェックの**後**にここで引く
+ * プロセス内キャッシュで抑制する。認可判定より前段には置かない（未認可ユーザーへの露出を避ける）。
+ * disabled / credentials_unavailable は AWS を呼ばずに確定するため対象外（キャッシュ不要）。
+ */
+const costSummaryCache = new Map<string, { expiresAt: number; summary: AwsCostSummary }>();
+
+function costSummaryCacheKey(filters: AwsCostFilters): string {
+  return `${filters.project}|${filters.environment}|${filters.component}`;
+}
+
+/** テスト用にキャッシュを空にする（本番コードパスからは呼ばない）。 */
+export function __resetAwsCostCacheForTests(): void {
+  costSummaryCache.clear();
 }
 
 export async function getAwsCostSummary(
@@ -369,27 +411,35 @@ export async function getAwsCostSummary(
     };
   }
 
+  const cacheKey = costSummaryCacheKey(filters);
+  const cached = costSummaryCache.get(cacheKey);
+  if (cached && cached.expiresAt > now.getTime()) {
+    return cached.summary;
+  }
+
   const periods = buildCostPeriods(now);
+  let summary: AwsCostSummary;
   try {
     const actual = await getActualCost(filters, periods, credentials, now);
-    const forecastRemaining = await getRemainingForecast(filters, periods, credentials, now);
-    return {
+    const forecast = await getRemainingForecast(filters, periods, credentials, now);
+    summary = {
       status: 'available',
       currency: actual.currency,
       period: periods,
       filters,
       actualToDate: actual.amount,
-      forecastRemaining,
+      forecastRemaining: forecast.remaining,
       monthEndEstimate:
-        forecastRemaining === null ? null : actual.amount + forecastRemaining,
+        forecast.remaining === null ? null : actual.amount + forecast.remaining,
       breakdownBy: actual.breakdownBy,
       breakdown: actual.breakdown,
       updatedAt,
-      forecastAvailable: forecastRemaining !== null,
+      forecastAvailable: forecast.remaining !== null,
+      forecastUnavailableReason: forecast.remaining === null ? forecast.unavailableReason : null,
     };
   } catch (error) {
     console.error('[platform-cost] Cost Explorer unavailable', error instanceof Error ? error.message : error);
-    return {
+    summary = {
       status: 'unavailable',
       reason: 'request_failed',
       message:
@@ -398,4 +448,7 @@ export async function getAwsCostSummary(
       updatedAt,
     };
   }
+
+  costSummaryCache.set(cacheKey, { expiresAt: now.getTime() + COST_SUMMARY_CACHE_TTL_MS, summary });
+  return summary;
 }

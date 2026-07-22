@@ -7,6 +7,7 @@ import * as subscriptions from 'aws-cdk-lib/aws-sns-subscriptions';
 import * as lambda from 'aws-cdk-lib/aws-lambda';
 import * as apigwv2 from 'aws-cdk-lib/aws-apigatewayv2';
 import { EnvConfig } from '../config/environments';
+import { COST_TAG_COMPONENTS } from '../config/cost-components';
 import { applyCostTags } from '../constructs/cost-tags';
 
 export interface MonitoringStackProps extends StackProps {
@@ -25,7 +26,7 @@ export class MonitoringStack extends Stack {
   constructor(scope: Construct, id: string, props: MonitoringStackProps) {
     super(scope, id, props);
     const { config, notificationFn, httpApi } = props;
-    applyCostTags(this, config, 'notification');
+    applyCostTags(this, config, COST_TAG_COMPONENTS.notification);
 
     this.topic = new sns.Topic(this, 'AlarmTopic', {
       displayName: `${config.prefix} notification alarms`,

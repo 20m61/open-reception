@@ -8,7 +8,13 @@
 > 本書の「未実装」「外部待ち」分類が stale で、既に main に在るものを作り直しかけた。
 > 分類が実態と違ったら、その周回で本書を直す。
 
-## 現在地（2026-07-19 更新）
+## 現在地（2026-07-21 更新）
+
+**2026-07-19 に AI Evolution epic 群（#382〜#392 の 12 件）が追加起票された**（本書に未登録
+だったため 2026-07-21 に登録。下記「AI Evolution epic 群」節）。全件 greenfield
+（`src/` に Evolution/Opportunity/Signal 系の実装は無関係モジュールのヒットのみ）。
+土台として再利用する既存資産は #83 コンソール・#89 使用量/監査・feature-flags・#319 KPI・
+#320 満足度・#365 評価ハーネス・#379 コスト画面。
 
 **前フェーズ（2026-07-11 起票の三層棚卸し #313〜#331）は完了・クローズ済み**
 （PR #333〜#359、詳細は `docs/handoff-2026-07-12.md`）。
@@ -32,7 +38,7 @@
   Increment 4（営業時間外 Kiosk UX）は EC2 非依存でローカル完結可能。#366 が要るのは
   EC2 start/stop adapter のみ。
 
-## オープン issue（25 件）
+## オープン issue（35 件）
 
 ### 新 epic 群（2026-07-19 起票）
 
@@ -59,6 +65,31 @@
 | **#379** | platform | #378 follow-up: 予測失敗理由の伝播（現状 AccessDenied も「履歴不足」と誤表示）・CE 課金抑制（1 view = $0.02、共有キャッシュ不在）・Component タグ回帰テスト・縮退パステスト・canonical header ソート | ローカル可 |
 | **#396** | domain/org | #394 follow-up（**#374 の配線前に潰す**）: `buildOrganizationTree` の防御的回収が発火するとクラッシュ（親の `children` から自分を外していない → 無限再帰。現状は到達不能だがミューテーションの唯一の survivor）・`AffiliationQuery.scope` と `resolveActingMembers` の scope が任意のままで越境が漏れる・`toVisitorOrganization` の `publicIds` が任意で安全でない側が既定 | ローカル可 |
 
+### AI Evolution epic 群（2026-07-19 起票 / 2026-07-21 登録）
+
+自律型プロダクト進化基盤の epic。**全件 greenfield**。既存の #360/#364/#368 wave とは
+ファイル領域がほぼ独立（`/platform/evolution` 系）なので独立トラックにできるが、
+**既存 epic 群との優先順位はユーザー判断**（本書は依存順のみ定義する）。
+
+| # | 種別 | 充足状況（根拠） | 分類 |
+| --- | --- | --- | --- |
+| **#382** | epic | 自律進化基盤の統合 epic（トラッキング）。自律レベル L0〜L5・停止条件を定義 | — |
+| **#392** | adr/spike | **未着手**: `docs/adr/` 自体が不在。Claude Managed Agents / Agent SDK / AWS 実行基盤の責務境界検証 | ローカル可（ADR 起草）。**実コスト発生する検証は要ユーザー判断** |
+| **#383** | governance | **未着手**: 憲章・変更分類・Policy as Code・Kill Switch。`PROJECT_CHARTER.md` は在る | ローカル可。**Increment 0 = 最初に着手**（L0 固定・deny fixture 先行） |
+| **#384** | intelligence | **未着手**: 外部シグナル収集は interface + mock 先行、実クロールは外部待ち | ローカル可（mock 先行） |
+| **#385** | diagnostics | **未着手**: Scorecard。#319 KPI・#320 満足度・#89 使用量を再利用（重複計測しない） | ローカル可 |
+| **#386** | opportunity | **未着手**: Opportunity Registry。#383/#384/#385 の後 | 依存待ち |
+| **#387** | experiment | **未着手**: 土台に `domain/platform/feature-flags.ts` 在り。Shadow/Canary/Guardrail | #383 の後 |
+| **#388** | development | **未着手**: 隔離環境の自律開発 → Draft PR。main push/merge 権限なしが前提 | #386 の後（外部実行基盤は #392 ADR で裁定） |
+| **#389** | evaluation | **未着手**: 独立評価器・Evidence Package・Release Governor | #387/#388 の後 |
+| **#390** | memory | **未着手**: Evolution Ledger。Run/Evidence 最小モデルは Increment 1 で先行可 | #383 の後 |
+| **#391** | console | **未着手**: `/platform/evolution`。read-only shell は早期実装可、write は各 Policy/API 完成後 | read-only は #383 後に前倒し可 |
+
+**推奨着手順（epic 記載の Increment 準拠）**: #392 ADR + #383 → (#384 ∥ #385 ∥ #390 最小 ∥
+#391 read-only) → #386 → #388 → #389 → #387 → 段階昇格。
+**ガード**: 本 epic 群は権限・IAM・Secret・監査・課金・PII に触れる設計判断を多く含む。
+各 issue の「重大変更時ユーザー確認」条件（CLAUDE.md）への該当が既定で高いことを前提に進める。
+
 ### 継続オープン
 
 | # | 種別 | 状態 | 分類 |
@@ -84,6 +115,13 @@
                                   #363 は #374 の Mock contract も要求
 #376 Spike ─→ #4 MVP2
 すべて ─→ #65 実機 UAT
+
+[AI Evolution（独立トラック・優先順位はユーザー判断）]
+#392 ADR ─┐
+#383 Governance ─┬→ #384 Intelligence ─┐
+                 ├→ #385 Diagnostics ──┼→ #386 Opportunity ─┬→ #388 Development ─→ #389 Governor
+                 ├→ #390 Ledger        │                    └→ #387 Experiment ──→ #389
+                 └→ #391 Console(read-only 先行、write は各 Policy/API 後)
 ```
 
 ★ issue 本文の「#367 依存: #366」は過剰記述（上記「現在地」参照）。
@@ -105,13 +143,19 @@
 | B | **#365** | PR #393（レビュー 2 巡で blocking 9 件を修正）。**#369〜#372 の共通イベント形式が確定** |
 | C | ~~#373 inc1~~ → **#396** | PR #394 マージ（#373 はオープン継続）。follow-up #396 は **#374 の前に必須** |
 
-**第 2 wave（次に着手する）**
+**第 2 wave（2026-07-21〜22 消化済み）** — ブランチ `claude/handoff-issues-organization-a0acri`
+（web セッション）で実装。結果:
 
-| トラック | Issue | 前提・注意 |
+| トラック | Issue | 結果 |
 | --- | --- | --- |
-| A | **#396** → **#374** | **#396 を先に潰す**（scope 任意・`publicIds` 既定・回収ブロックのクラッシュ）。その後 #374 が #373 の型契約に乗る |
-| B | **#362** | `KioskFlow.tsx` を単独占有（2880 行）。**#361 より先**に presence 配線を分離する |
-| C | **#375** または **#379** | #375 の token hash 化は**スキーマ破壊 → 要ユーザー確認**。それ以外の AC は充足済み |
+| A | **#396** | 完了（防御的回収の削除・scope/publicIds 必須化・`validateOrganizationMembership` 新設）。→ 次は **#374** が #373/#396 の型契約に乗る。membership 書き込みパスで `validateOrganizationMembership` を呼ぶ配線を #374 側で行う |
+| B | **#362** | 完了（KioskMode/attract-detector 分離・ATTRACT オーバーレイ・検知→START 直結廃止）。実ブラウザ 8 シナリオ検証 green（`docs/ui-review-2026-07-22.md`）。付随して**サイネージ既定 scope バグ（default vs default-site）を修正**。残: presence E2E の恒久化（`scripts/kiosk-visual-check.mjs` を土台に）・実機は #65 |
+| C | **#379** | 完了（予測失敗理由の伝播・認可後 TTL キャッシュ・Cache-Control 削除・Component タグ回帰テスト・コードポイント順ソート）。nit: `request_failed` も 5 分キャッシュされ復旧が遅れ得る（意図確認は次周回） |
+
+第 2 wave 外の付随対応: Dependabot high 2 件（sharp<0.35 の libvips CVE）を `overrides` で解消。
+
+**第 3 wave（次に着手する）**: #374（A の後続・上位モデル推奨）／ #375 残 increment
+（token hash 化は**スキーマ破壊 → 要ユーザー確認**）／ #361（KioskFlow 大改修・単独）
 
 同 wave に **#366 Phase 0 ADR のみ**（`docs/adr/*.md` 新規・コスト増ゼロ）を差し込むのは安全。
 CDK 実装と deploy は分離し、Budget 見積を添えてユーザー承認を取る。

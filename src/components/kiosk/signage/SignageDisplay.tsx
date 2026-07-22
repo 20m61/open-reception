@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { nextIndex } from '@/domain/signage/rotation';
+import { DEFAULT_SITE_ID, DEFAULT_TENANT_ID } from '@/lib/tenant/default-scope';
 import type { KioskSignage, KioskSignageItem } from '@/lib/signage/kiosk-signage';
 import { hasBrandingContent, type BrandingSettings } from '@/domain/branding/types';
 import { makeT, DEFAULT_LOCALE, htmlLangFor, normalizeLocale, type Locale } from '@/lib/i18n';
@@ -25,13 +26,21 @@ import { SignageClock } from './SignageClock';
  * 次増分（kiosk/config の active と統合）。本増分は待機中の純粋なサイネージ表示に限る。
  */
 export function SignageDisplay({
-  tenantId = 'internal',
-  siteId = 'default',
+  tenantId = DEFAULT_TENANT_ID,
+  siteId = DEFAULT_SITE_ID,
   onStart,
   locale,
+  paused = false,
+  bottomInsetPx = 0,
 }: {
   tenantId?: string;
   siteId?: string;
+  /**
+   * 画面下端に確保する追い出し量 (px)。KioskFlow 埋め込みでは絶対配置のフッター
+   * （QR受付/退館/来訪検知）が重なるため、その実測高さを渡して受付開始 CTA と
+   * 衝突しないようにする (issue #362 実ブラウザ検証)。スタンドアロンでは 0。
+   */
+  bottomInsetPx?: number;
   /**
    * 受付復帰の振る舞いを差し替えるフック (kiosk-integration inc1)。
    * - 未指定（スタンドアロン /kiosk/signage）: 既定どおり /kiosk へ遷移する（非破壊）。
@@ -45,6 +54,14 @@ export function SignageDisplay({
    *   マウント後に読み取り、既定 locale へフォールバックする。
    */
   locale?: Locale;
+  /**
+   * ATTRACT オーバーレイ表示中の一時停止 (issue #362)。true の間は項目巡回を止め（表示中の
+   * 項目のまま固定＝「サイネージ停止」）、タップ/キー操作による受付復帰も無効化する。
+   * ATTRACT オーバーレイが画面を覆い明示 CTA だけを唯一の受付導線にするため、下に隠れた
+   * この待機画面自体が同時に反応してしまうと「タップ以外（オーバーレイ外縁のはみ出し等）で
+   * 受付が始まる」抜け道になる。既定 false（スタンドアロン /kiosk/signage は常に非対象）。
+   */
+  paused?: boolean;
 }) {
   const router = useRouter();
   const [signage, setSignage] = useState<KioskSignage | null>(null);
@@ -62,13 +79,15 @@ export function SignageDisplay({
   const tr = makeT(resolvedLocale);
 
   // 受付復帰: 明示操作で受付へ。連打を吸収するため一度だけ実行する。
+  // paused 中（ATTRACT オーバーレイ表示中）はこの待機画面自体の復帰導線を無効化する
+  // （受付復帰は常にオーバーレイの明示 CTA からのみ, issue #362）。
   const returned = useRef(false);
   const returnToReception = useCallback(() => {
-    if (returned.current) return;
+    if (paused || returned.current) return;
     returned.current = true;
     if (onStart) onStart();
     else router.push('/kiosk');
-  }, [router, onStart]);
+  }, [router, onStart, paused]);
 
   useEffect(() => {
     let cancelled = false;
@@ -104,13 +123,14 @@ export function SignageDisplay({
   const items = signage?.items ?? [];
   const current: KioskSignageItem | undefined = items[Math.min(index, Math.max(items.length - 1, 0))];
 
-  // 現在項目の表示秒数で次へ進める。
+  // 現在項目の表示秒数で次へ進める。paused 中は巡回を止め、表示中の項目のまま固定する
+  // （ATTRACT オーバーレイの「サイネージ停止」, issue #362）。
   useEffect(() => {
-    if (items.length <= 1 || !current) return;
+    if (items.length <= 1 || !current || paused) return;
     const ms = Math.max(current.durationSeconds, 3) * 1000;
     const id = setTimeout(() => setIndex((i) => nextIndex(i, items.length)), ms);
     return () => clearTimeout(id);
-  }, [items.length, current]);
+  }, [items.length, current, paused]);
 
   // キーボードでも受付復帰できるようにする（iPad の外付けキーボード等）。
   useEffect(() => {
@@ -135,6 +155,7 @@ export function SignageDisplay({
         justifyContent: 'center',
         gap: 32,
         padding: 32,
+        paddingBottom: 32 + bottomInsetPx,
         cursor: 'pointer',
         background: 'var(--color-bg)',
         color: 'var(--color-text)',

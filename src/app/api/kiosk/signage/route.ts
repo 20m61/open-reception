@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server';
 import { asSiteId, asTenantId } from '@/domain/tenant/types';
+import { defaultSiteIdFrom, defaultTenantIdFrom } from '@/lib/tenant/default-scope';
 import { getKioskSignage } from '@/lib/signage/kiosk-signage';
 
 /**
@@ -11,8 +12,10 @@ import { getKioskSignage } from '@/lib/signage/kiosk-signage';
  */
 export async function GET(request: Request): Promise<NextResponse> {
   const params = new URL(request.url).searchParams;
-  const tenantId = params.get('tenantId') ?? 'internal';
-  const siteId = params.get('siteId') ?? 'default';
+  // フォールバックは default-scope の既定スコープに一致させる (#171)。'default' の
+  // ハードコードは seed サイト 'default-site' と食い違い、待機サイネージが常に空になっていた。
+  const tenantId = params.get('tenantId') ?? defaultTenantIdFrom();
+  const siteId = params.get('siteId') ?? defaultSiteIdFrom();
   const signage = await getKioskSignage(asTenantId(tenantId), asSiteId(siteId));
   return NextResponse.json(signage);
 }

@@ -5,6 +5,7 @@ import * as cwactions from 'aws-cdk-lib/aws-cloudwatch-actions';
 import * as sns from 'aws-cdk-lib/aws-sns';
 import * as subscriptions from 'aws-cdk-lib/aws-sns-subscriptions';
 import { EnvConfig } from '../config/environments';
+import { COST_TAG_COMPONENTS } from '../config/cost-components';
 import { applyCostTags } from '../constructs/cost-tags';
 
 export interface CloudFrontMonitoringStackProps extends StackProps {
@@ -53,7 +54,7 @@ export class CloudFrontMonitoringStack extends Stack {
   constructor(scope: Construct, id: string, props: CloudFrontMonitoringStackProps) {
     super(scope, id, props);
     const { config, distributionId } = props;
-    applyCostTags(this, config, 'web');
+    applyCostTags(this, config, COST_TAG_COMPONENTS.web);
 
     this.topic = new sns.Topic(this, 'AlarmTopic', {
       displayName: `${config.prefix} cloudfront alarms`,
