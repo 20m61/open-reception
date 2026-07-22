@@ -8,6 +8,8 @@ import { NotificationStack } from '../lib/stacks/notification-stack';
 import { MonitoringStack } from '../lib/stacks/monitoring-stack';
 import { resolveEnv } from '../lib/config/environments';
 import { configureCostExplorerAccess } from '../lib/constructs/cost-explorer-access';
+import { overrideComponentTag } from '../lib/constructs/cost-tags';
+import { COST_TAG_COMPONENTS } from '../lib/config/cost-components';
 
 /**
  * open-reception CDK App エントリ (docs/infrastructure-design.md §1)。
@@ -103,8 +105,8 @@ const webMonitoring = new WebMonitoringStack(app, `OpenReception-WebMonitoring-$
   distributionId: web.distribution.distributionId,
   description: `open-reception web monitoring (${config.environment})`,
 });
-// 既存 Stack 内の Component=web を監視専用タグへ上書きし、Cost Explorer で分離集計する。
-cdk.Tags.of(webMonitoring).add('Component', 'web-monitoring', { priority: 200 });
+// 既存 Stack 内の Component=web を監視専用タグへ上書きし、Cost Explorer で分離集計する (#379)。
+overrideComponentTag(webMonitoring, COST_TAG_COMPONENTS.webMonitoring);
 
 // CloudFront 5xxErrorRate のアラーム (#303)。AWS/CloudFront メトリクスは us-east-1 にのみ
 // 発行され、アラームは同一リージョン制約があるため us-east-1 の小 Stack に置く。
@@ -123,7 +125,7 @@ if (account) {
       description: `open-reception cloudfront monitoring in us-east-1 (${config.environment})`,
     },
   );
-  cdk.Tags.of(cloudFrontMonitoring).add('Component', 'cloudfront-monitoring', { priority: 200 });
+  overrideComponentTag(cloudFrontMonitoring, COST_TAG_COMPONENTS.cloudFrontMonitoring);
 } else {
   console.warn(
     '[open-reception] CDK_DEFAULT_ACCOUNT が未解決のため OpenReception-CfMonitoring-* を synth 対象から除外しました（cross-region 参照には concrete account が必要）。',
@@ -145,6 +147,6 @@ const monitoring = new MonitoringStack(app, `OpenReception-Monitoring-${config.e
   httpApi: notification.api.httpApi,
   description: `open-reception notification monitoring (${config.environment})`,
 });
-cdk.Tags.of(monitoring).add('Component', 'monitoring', { priority: 200 });
+overrideComponentTag(monitoring, COST_TAG_COMPONENTS.monitoring);
 
 app.synth();

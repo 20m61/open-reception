@@ -68,8 +68,12 @@ describe('GET /api/platform/costs (#377)', () => {
   it('passes only allow-listed tag values to the Cost Explorer adapter', async () => {
     const response = await GET(request('?environment=prod&component=web'));
     expect(response.status).toBe(200);
-    expect(response.headers.get('cache-control')).toBe('private, max-age=300');
     expect(getAwsCostSummary).toHaveBeenCalledWith({ environment: 'prod', component: 'web' });
+  });
+
+  it('does not set a browser-cacheable Cache-Control (#379: caching happens server-side, not in the browser disk cache)', async () => {
+    const response = await GET(request('?environment=prod&component=web'));
+    expect(response.headers.get('cache-control')).toBeNull();
   });
 
   it('uses server-side defaults when filters are omitted', async () => {
