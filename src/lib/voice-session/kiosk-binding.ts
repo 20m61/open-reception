@@ -123,6 +123,11 @@ export type SyntheticVoiceDriver = {
   factory: VoiceSessionFactory;
   /** リスニング開始（マイク取り込み開始）を合成する。 */
   beginListening(): void;
+  /**
+   * 確定前の interim（逐次字幕）を 1 段流す (issue #361/#364 第11wave)。listening 中に複数回呼び、
+   * 「さ」→「さとう」のように字幕が育つ様子を合成する。表示専用で確定はしない（PII をログへ出さない）。
+   */
+  hearPartial(text: string): void;
   /** 発話が確定した体で Entity 解決へ回す（確定テキストを与える）。 */
   hearTurn(text: string): void;
   /** TTS 発話開始/終了を合成する。 */
@@ -171,6 +176,7 @@ export function createSyntheticVoiceSession(deps: VoiceSessionBridgeDeps): Synth
   return {
     factory,
     beginListening: () => emit({ type: 'listenStart' }),
+    hearPartial: (text) => emit({ type: 'hearPartial', text }),
     hearTurn: (text) => {
       const { event, resolved } = bridge(deps, text);
       if (event.type === 'heardAccepted') {
@@ -214,6 +220,12 @@ export interface VoiceSessionLike {
  * 写像:
  *  - `onTurnCommitted(text)` → Entity 解決（#370）→ heardAccepted / heardNeedsConfirmation / listenStart。
  *  - `onVrmStateChange('speaking'|'listening')` → speakStart / speakEnd。
+ *  - `onEvalEvent('stt.partial', stable)` → hearPartial（interim 逐次字幕、#361/#364 第11wave）。
+ *    **安定化済み（`stable:true`）の partial だけ**を UI 字幕へ流す（#370 の先読み `stable:false` は
+ *    ちらつくため出さない）。interim は表示専用で確定はしない（復唱確認の不変条件を維持）。partial
+ *    テキストは PII を含みうるため UI 一時表示に留め、監査ログ・評価イベントへは書き出さない
+ *    （`.claude/rules/pii-secret-minimization.md`）。eval ハーネス（#365）が別途 onEvalEvent を必要と
+ *    する場合は呼び出し側で合成する（この seam は UI 写像のみを担う）。
  *  - `onFallback`（transport/stt/turn 由来）→ fallbackRequired。**tts 由来は継続可能なので UI を縮退させない**
  *    （字幕/キャッシュで受付継続できる #371 設計に従い、診断シグナルとしてのみ扱う）。
  *  - `confirmYes/No` → 確定/否定を emit し、orchestrator の `resetTurn` で次ターンへ備える。
@@ -245,6 +257,13 @@ export function createOrchestratorVoiceSession(
       },
       onVrmStateChange: (state) => {
         emit(state === 'speaking' ? { type: 'speakStart' } : { type: 'speakEnd' });
+      },
+      onEvalEvent: (evalEvent) => {
+        // 安定化済み partial のみを interim 逐次字幕へ写像する（#361/#364 第11wave）。
+        // それ以外（stt.final / turn / tts / error 等）は UI 状態へ影響させない。
+        if (evalEvent.type === 'stt.partial' && evalEvent.stable) {
+          emit({ type: 'hearPartial', text: evalEvent.text });
+        }
       },
       onFallback: (fallback) => {
         // TTS は字幕/キャッシュで継続できるため UI をタッチへ縮退させない（診断のみ）。

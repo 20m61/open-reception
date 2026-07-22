@@ -81,6 +81,20 @@ describe('createSyntheticVoiceSession (#364 mock synthetic 駆動 / demo-studio 
     driver.hearTurn('さとう');
     expect(onResolved).toHaveBeenCalledWith(expect.objectContaining({ id: 's1' }));
   });
+
+  it('hearPartial は確定前 interim を逐次 emit する（#361/#364 第11wave 逐次字幕）', () => {
+    const { emit, events } = collector();
+    const driver = createSyntheticVoiceSession({ directory });
+    driver.factory(emit);
+    driver.beginListening();
+    driver.hearPartial('さ');
+    driver.hearPartial('さとう');
+    expect(events).toEqual([
+      { type: 'listenStart' },
+      { type: 'hearPartial', text: 'さ' },
+      { type: 'hearPartial', text: 'さとう' },
+    ]);
+  });
 });
 
 describe('createOrchestratorVoiceSession (実 orchestrator を束ねる seam・fake で検証)', () => {
@@ -161,5 +175,28 @@ describe('createOrchestratorVoiceSession (実 orchestrator を束ねる seam・f
     const { emit } = collector();
     const controller = createOrchestratorVoiceSession(fake.construct, { directory })(emit);
     expect(controller.notifyReceptionState).toBeUndefined();
+  });
+
+  it('onEvalEvent の stt.partial(stable) を interim(hearPartial) へ写像する（#361/#364 第11wave 実経路結線）', () => {
+    const fake = fakeOrchestrator();
+    const { emit, events } = collector();
+    const factory = createOrchestratorVoiceSession(fake.construct, { directory });
+    factory(emit);
+    const cb = fake.getCallbacks()!;
+    // 安定化前（stable:false）の先読み partial は UI へ出さない（#370 ちらつき抑制方針）。
+    cb.onEvalEvent!({ type: 'stt.partial', t: 1, turnIndex: 0, text: 'さ', stable: false });
+    expect(events.some((e) => e.type === 'hearPartial')).toBe(false);
+    // 安定化済み（stable:true）は interim 字幕として逐次反映する。
+    cb.onEvalEvent!({ type: 'stt.partial', t: 2, turnIndex: 0, text: 'さとう', stable: true });
+    expect(events).toContainEqual({ type: 'hearPartial', text: 'さとう' });
+  });
+
+  it('onEvalEvent の stt.partial 以外（stt.final 等）は interim へ写像しない（表示専用の逐次字幕のみ）', () => {
+    const fake = fakeOrchestrator();
+    const { emit, events } = collector();
+    const factory = createOrchestratorVoiceSession(fake.construct, { directory });
+    factory(emit);
+    fake.getCallbacks()!.onEvalEvent!({ type: 'stt.final', t: 3, turnIndex: 0, text: 'さとう' });
+    expect(events.some((e) => e.type === 'hearPartial')).toBe(false);
   });
 });

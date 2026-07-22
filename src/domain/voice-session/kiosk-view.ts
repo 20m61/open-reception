@@ -47,6 +47,15 @@ export type VoiceKioskState = {
   readbackReason?: SttEntityConfirmationReason;
   /** 直近フォールバック源（診断用。PII なし）。 */
   fallbackSource?: VoiceSessionFallbackSource;
+  /**
+   * 確定前の interim（逐次）字幕テキスト (issue #361/#364 第11wave)。listening 中のみ持ちうる。
+   *
+   * PII 方針: これは STT の**確定前**の途中経過（来訪者の発話断片を含みうる）で、**画面表示専用の
+   * 一時値**である。確定（heardAccepted / heardNeedsConfirmation）で必ずクリアされ、監査ログ・評価
+   * イベント・アプリログへは一切書き出さない（`.claude/rules/pii-secret-minimization.md`）。
+   * 空・空白のみの interim は「発話検知前（idle listening）」として扱う（`voiceListeningStage`）。
+   */
+  interimText?: string;
 };
 
 export type VoiceKioskEvent =
@@ -56,6 +65,13 @@ export type VoiceKioskEvent =
   | { type: 'deactivate' }
   /** ユーザー発話の取り込みを開始した。 */
   | { type: 'listenStart' }
+  /**
+   * STT の確定前 partial（逐次字幕）を受け取った (issue #361/#364 第11wave)。listening/idle でのみ
+   * 意味を持ち、interim 字幕を更新する（idle からは listening へ遷移＝発話検知の合図）。それ以外の
+   * 局面（readback/speaking/ducked/fallback/inactive）では無視して不変条件を維持する。text は
+   * 表示専用の一時値（PII を含みうるためログ/eval へは出さない）。
+   */
+  | { type: 'hearPartial'; text: string }
   /** 発話が確定し、高信頼で自動採用された（復唱を挟まず次ターンへ）。 */
   | { type: 'heardAccepted' }
   /** 発話が確定したが低信頼のため復唱確認が必要（#370 decideEntityConfirmation）。 */
@@ -108,7 +124,17 @@ export function voiceKioskReducer(state: VoiceKioskState, event: VoiceKioskEvent
       return { mode: 'fallback', fallbackSource: event.source };
 
     case 'listenStart':
+      // 新規リスニング（初回・聞き直し）。interim は明示的にクリアして「話しかけ待ち」から始める。
       return { mode: 'listening' };
+
+    case 'hearPartial': {
+      // listening/idle のときだけ interim 字幕へ反映する（idle からは listening へ遷移＝発話検知）。
+      // readback/speaking/ducked では無視して確定・発話の局面を壊さない。
+      if (state.mode !== 'listening' && state.mode !== 'idle') return state;
+      const next = event.text;
+      if (state.mode === 'listening' && state.interimText === next) return state; // 無変化
+      return { mode: 'listening', interimText: next };
+    }
 
     case 'heardAccepted':
       // 高信頼採用 → 次ターンのため待機へ。
@@ -176,4 +202,21 @@ export function captionKeyFor(state: Pick<VoiceKioskState, 'mode'>): VoiceKioskC
       return _exhaustive;
     }
   }
+}
+
+/** 聞き取り中インジケータの 2 段階 (issue #361/#364 第11wave)。 */
+export type VoiceListeningStage = 'idle' | 'speech';
+
+/**
+ * listening 局面のインジケータ段階を導出する（PII を含まない純関数）。
+ *  - `idle`:   話しかけ待ち（interim 未着＝まだ発話が検知されていない）。
+ *  - `speech`: 発話検知中（非空の interim 字幕が来ている）。
+ * listening 以外の局面では null（インジケータを描画しない）。判別材料は状態内の interim のみで、
+ * 追加の観測経路を持たない（seam を増やさない）。
+ */
+export function voiceListeningStage(
+  state: Pick<VoiceKioskState, 'mode' | 'interimText'>,
+): VoiceListeningStage | null {
+  if (state.mode !== 'listening') return null;
+  return (state.interimText ?? '').trim() !== '' ? 'speech' : 'idle';
 }
