@@ -6,7 +6,7 @@ import {
   toGuardResponse,
 } from '@/lib/admin/guard';
 import { appendAdminAudit } from '@/lib/data-stores/reception-log-store';
-import { getDemoScenario } from '@/domain/demo-studio/scenarios';
+import { resolveDemoScenario } from '@/domain/demo-studio/store';
 
 /**
  * POST /api/admin/demo/run — 受付体験スタジオでデモ実行を記録する (issue #363 Increment 1)。
@@ -41,7 +41,8 @@ export async function POST(request: Request): Promise<NextResponse> {
   if (typeof scenarioId !== 'string') {
     return NextResponse.json({ error: 'invalid' }, { status: 400 });
   }
-  const scenario = getDemoScenario(scenarioId);
+  // 解決順は 保存済み→組込 (issue #363 Inc2)。カスタムシナリオのデモ実行も記録できる。
+  const scenario = await resolveDemoScenario(scenarioId);
   if (!scenario) {
     // 未知のシナリオ id は記録しない（任意文字列を監査へ流し込ませない）。
     return NextResponse.json({ error: 'unknown_scenario' }, { status: 400 });
