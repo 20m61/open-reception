@@ -173,9 +173,17 @@
 | B | **#371** | increment 1 完了（`src/domain/voice-tts/`+`src/lib/voice-tts/`: 生成/再生の責務分離・キャッシュキー・utterance lifecycle(停止時に口パク残存なし)・viseme 中立イベント・connected 中抑止・ADR 0002。テスト 103 件）。**残**: 実 Polly・実キャッシュ配線(S3 メタデータの PII 注記あり)・VRM viewer 配線(#65/次周回) |
 | C | **#363** | Inc1 完了（`/admin/demo` Demo Harness: 本番 Kiosk 無改変 iframe + Mock 注入・既定拒否 sandbox・9 シナリオ・監査。テスト 54 件）。**実ブラウザ検証で iframe 表示不能(X-Frame-Options/frame-ancestors/admin chrome/スケール)の統合欠陥 3 件を発見・修正**。**残**: Inc2 3ペイン編集・KioskFlow 注入点 4 件(営業時間外配線・STT アダプタ DI・QR ペイロード注入・取次段階イベント)・Inc3 公開モデル |
 
-**第 5 wave（次に着手する）**: #372(Turn/Barge-in、#365 ハーネスの本丸)／ #374 残(ルートビルダー UI
-+永続化)／ #361 残(QR シェル統一)／ #363 Inc2 ／ #375 残（token hash 化は**要ユーザー確認**のまま）
-／ #366 Stack・#376 実測・#4 は**ユーザー承認/外部待ち**
+**第 5 wave（2026-07-22 消化済み）** — 同ブランチ・3 トラック並行。結果:
+
+| トラック | Issue | 結果 |
+| --- | --- | --- |
+| A | **#372** | 完了（`src/domain/voice-turn/`: 参照 VAD・日本語ルールの動的無音閾値 turn 判定・backchannel/interruption 分類・barge-in reducer・履歴切り詰め・#365 ci プロファイル SLO 遵守を非チート実証。テスト 68 件）。**残**: `src/lib/voice-turn/` I/O 層・kiosk 配線・実 AEC(#65)。**申し送り**: `duck`/`resume` は #371 `TtsPlaybackController` に未実装（port 定義のみ） |
+| B | **#374 残** | 完了（`/admin/call-routing` 文章形式ルートビルダー・永続化 repository・API・**アドレス write-only**(応答は maskedAddress のみ)・越境/viewer 403 テスト。+59 テスト）。**残**: goto_step 遷移編集 UI・Playwright E2E・orchestrator の実行時配線。**nit**(セキュリティレビュー): 入力サイズ上限なし・UI の tenant ハードコード(internal 固定)・description の全サイト label 解決 |
+| C | **#361 残** | QR シェル統一完了（CheckinFlow を `checkinConversationTurnFor` シェルで包み、既存状態機械・API 契約は無改変。「読み取りだけで発信しない」は既存遵守を退行防止テストで固定）。**残**: checkin 字幕 i18n・レール CSS 真実源統合・実カメラ(#65) |
+
+**第 6 wave（次に着手する）**: #363 Inc2(3ペイン編集。KioskFlow 注入点 4 件の解消を先行)／
+#361 残(復唱 UI・VRT/axe)／ voice 統合(kiosk への STT/TTS/turn 配線 + #371 duck/resume)／
+#375 残（token hash 化は**要ユーザー確認**のまま）／ #366 Stack・#376 実測・#4 は**ユーザー承認/外部待ち**
 
 同 wave に **#366 Phase 0 ADR のみ**（`docs/adr/*.md` 新規・コスト増ゼロ）を差し込むのは安全。
 CDK 実装と deploy は分離し、Budget 見積を添えてユーザー承認を取る。
