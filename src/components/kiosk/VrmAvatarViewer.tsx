@@ -113,6 +113,10 @@ export function VrmAvatarViewer({
           return;
         }
         const vrm = gltf.userData.vrm;
+        // VRM 0.x は -Z 向き（カメラから背面）規約のため、+Z 向きへ 180° 回す。
+        // VRM 1.0 には no-op。これが無いと 0.x モデルは常に後ろ姿で描画される
+        // （実描画検証 2026-07-22 で発覚。同梱 Rose は 0.x）。
+        if (vrm) VRMUtils.rotateVRM0(vrm);
         scene.add(gltf.scene);
         tracker.track({ dispose: () => VRMUtils.deepDispose(gltf.scene) });
 
