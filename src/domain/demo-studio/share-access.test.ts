@@ -40,3 +40,33 @@ describe('share-access 固定窓レート制限（公開経路の乱用抑止）
     expect(tryShareAccess(limiter, 'tok-b', NOW).allowed).toBe(true);
   });
 });
+
+describe('share-access 敵対的レビュー W1 対応（トークン回転・Map 増大）', () => {
+  it('トークンを毎回変えても全体窓の上限で頭打ちになる', () => {
+    let limiter = createShareAccessLimiter();
+    let allowedCount = 0;
+    for (let i = 0; i < DEMO_SHARE_RATE_LIMIT.maxTotalPerWindow + 50; i++) {
+      const r = tryShareAccess(limiter, `rotating-token-${i}`, 1_000);
+      limiter = r.limiter;
+      if (r.allowed) allowedCount++;
+    }
+    expect(allowedCount).toBe(DEMO_SHARE_RATE_LIMIT.maxTotalPerWindow);
+  });
+
+  it('トークン別バケットは保持上限を超えない（無限増大防止）', () => {
+    let limiter = createShareAccessLimiter();
+    for (let i = 0; i < DEMO_SHARE_RATE_LIMIT.maxTrackedTokens + 100; i++) {
+      limiter = tryShareAccess(limiter, `evict-token-${i}`, 1_000 + i).limiter;
+    }
+    expect(limiter.buckets.size).toBeLessThanOrEqual(DEMO_SHARE_RATE_LIMIT.maxTrackedTokens);
+  });
+
+  it('全体窓も窓明けでリセットされる', () => {
+    let limiter = createShareAccessLimiter();
+    for (let i = 0; i < DEMO_SHARE_RATE_LIMIT.maxTotalPerWindow; i++) {
+      limiter = tryShareAccess(limiter, `t-${i}`, 1_000).limiter;
+    }
+    expect(tryShareAccess(limiter, 'next', 1_000).allowed).toBe(false);
+    expect(tryShareAccess(limiter, 'next', 1_000 + DEMO_SHARE_RATE_LIMIT.windowMs).allowed).toBe(true);
+  });
+});

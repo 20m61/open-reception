@@ -121,6 +121,9 @@ export class SecretsManagerTenantSecretStore implements TenantSecretStore {
       const raw = await this.backend.get(id);
       return raw === null ? null : new SecretValue(raw);
     } catch (err) {
+      // 削除猶予中（marked for deletion）は presence=missing と整合させ null を返す
+      // （backend 層でも正規化するが、注入 backend でも成り立つよう store 層でも保証する）。
+      if (isPendingDeletion(err)) return null;
       rethrowRedacted('get', err);
     }
   }
@@ -154,7 +157,9 @@ export class AwsSecretsManagerBackend implements TenantSecretBackend {
       const res = await client.send(new GetSecretValueCommand({ SecretId: secretId }));
       return res.SecretString ?? null;
     } catch (err) {
-      if (isNotFound(err)) return null;
+      // 削除猶予中（InvalidRequestException: marked for deletion）は describe の presence=missing と
+      // 整合させ「存在しない」扱いにする。
+      if (isNotFound(err) || isPendingDeletion(err)) return null;
       throw err;
     }
   }
@@ -209,4 +214,8 @@ export class AwsSecretsManagerBackend implements TenantSecretBackend {
 
 function isNotFound(err: unknown): boolean {
   return err instanceof Error && err.name === 'ResourceNotFoundException';
+}
+
+function isPendingDeletion(err: unknown): boolean {
+  return err instanceof Error && err.name === 'InvalidRequestException';
 }

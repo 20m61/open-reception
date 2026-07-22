@@ -241,8 +241,11 @@ export class WebStack extends Stack {
             '（テナント secret 名の環境 prefix。例 open-reception/prod）。',
         );
       }
+      // ランタイム（normalizePrefix）と同じ規則で前後スラッシュを除去し、IAM ARN と
+      // 実行時のシークレット名がずれないようにする（末尾 `/` 付き指定での AccessDenied 防止）。
+      const normalizedPrefix = providerSecretPrefix.replace(/^\/+|\/+$/g, '');
       serverFn.addEnvironment('PROVIDER_SECRET_BACKEND', 'secrets-manager');
-      serverFn.addEnvironment('PROVIDER_SECRET_PREFIX', providerSecretPrefix);
+      serverFn.addEnvironment('PROVIDER_SECRET_PREFIX', normalizedPrefix);
       serverFn.addToRolePolicy(
         new iam.PolicyStatement({
           effect: iam.Effect.ALLOW,
@@ -256,7 +259,7 @@ export class WebStack extends Stack {
           // resource prefix 限定。Secrets Manager の ARN は名前末尾に 6 桁のランダム接尾辞が付くため
           // `<prefix>/tenants/*` の末尾 `*` がテナント名前空間とその接尾辞の両方を覆う。
           resources: [
-            `arn:aws:secretsmanager:${this.region}:${this.account}:secret:${providerSecretPrefix}/tenants/*`,
+            `arn:aws:secretsmanager:${this.region}:${this.account}:secret:${normalizedPrefix}/tenants/*`,
           ],
         }),
       );

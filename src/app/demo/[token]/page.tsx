@@ -41,12 +41,14 @@ export default function PublicDemoPage({ params }: { params: Promise<{ token: st
 
   useEffect(() => {
     let cancelled = false;
+    let originalFetch: typeof window.fetch | undefined;
     void (async () => {
       const resolved = await resolvePublicScenario(token);
       if (cancelled) return;
       // 外部システム（この context の window.fetch）を Mock へ差し替える。以後 admin API・本番 API へは
       // 到達しない（sandbox 境界）。call-failed の段階表示のため demo 側だけ /token に人工レイテンシ。
       if (resolved) {
+        originalFetch = window.fetch;
         window.fetch = createDemoKioskFetch(resolved, { callLatencyMs: DEMO_CALL_FAILED_LATENCY_MS });
       }
       setScenario(resolved);
@@ -54,6 +56,8 @@ export default function PublicDemoPage({ params }: { params: Promise<{ token: st
     })();
     return () => {
       cancelled = true;
+      // 差し替えたままだと SPA 遷移後の同一オリジン fetch が sandbox で throw するため復元する。
+      if (originalFetch) window.fetch = originalFetch;
     };
   }, [token]);
 
