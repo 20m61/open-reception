@@ -15,7 +15,11 @@
 'use client';
 
 import { htmlLangFor, makeT, type Locale } from '@/lib/i18n';
-import { captionKeyFor, type VoiceKioskState } from '@/domain/voice-session/kiosk-view';
+import {
+  captionKeyFor,
+  voiceListeningStage,
+  type VoiceKioskState,
+} from '@/domain/voice-session/kiosk-view';
 
 export type VoiceReadbackConfirmProps = {
   state: VoiceKioskState;
@@ -35,8 +39,13 @@ export function VoiceReadbackConfirm({ state, locale, onYes, onNo }: VoiceReadba
   const tr = makeT(locale);
   const isReadback = state.mode === 'readback';
   const isFallback = state.mode === 'fallback';
-  // fallback は専用の縮退案内で描くため、字幕としては重複させない。
-  const captionKey = isFallback ? null : captionKeyFor(state);
+  // 聞き取り中インジケータの 2 段階（idle=話しかけ待ち / speech=発話検知中）。listening 以外は null。
+  const listeningStage = voiceListeningStage(state);
+  // interim（確定前）逐次字幕。listening で非空のときのみ主字幕として描画する（PII は表示のみ）。
+  const interim = listeningStage === 'speech' ? (state.interimText ?? '') : '';
+  // fallback は専用の縮退案内で描くため字幕としては重複させない。listening で interim を主字幕に
+  // するときは静的プロンプト（お話しください）を重複させない。
+  const captionKey = isFallback || interim !== '' ? null : captionKeyFor(state);
   const caption = captionKey ? tr(captionKey, { name: state.readbackName ?? '' }) : null;
 
   return (
@@ -59,6 +68,22 @@ export function VoiceReadbackConfirm({ state, locale, onYes, onNo }: VoiceReadba
         pointerEvents: 'none',
       }}
     >
+      {listeningStage ? (
+        <div
+          className={`voice-layer__indicator voice-layer__indicator--${listeningStage}`}
+          data-testid="voice-listening-indicator"
+          data-stage={listeningStage}
+          aria-hidden="true"
+        >
+          {/* CSS のみのパルス/波形風。prefers-reduced-motion では globals.css が静的表現へ落とす。 */}
+          <span className="voice-layer__wave" />
+          <span className="voice-layer__wave" />
+          <span className="voice-layer__wave" />
+          <span className="voice-layer__wave" />
+          <span className="voice-layer__wave" />
+        </div>
+      ) : null}
+
       {caption ? (
         <p
           className="voice-layer__caption"
@@ -67,6 +92,17 @@ export function VoiceReadbackConfirm({ state, locale, onYes, onNo }: VoiceReadba
           style={{ margin: 0, textAlign: 'center', fontWeight: 600 }}
         >
           {caption}
+        </p>
+      ) : null}
+
+      {interim !== '' ? (
+        <p
+          className="voice-layer__interim"
+          data-testid="voice-interim"
+          aria-live="polite"
+          style={{ margin: 0, textAlign: 'center', fontWeight: 600 }}
+        >
+          {interim}
         </p>
       ) : null}
 

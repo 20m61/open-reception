@@ -39,10 +39,21 @@ describe('音声対話 注入 e2e（synthetic → store → UI）', () => {
     driver.beginListening();
     expect(paint(store)).toContain('data-testid="voice-caption"');
 
+    // interim 逐次字幕（#361/#364 第11wave）: partial が字幕領域へ逐次現れる
+    driver.hearPartial('さ');
+    const interim1 = paint(store);
+    expect(interim1).toContain('data-testid="voice-interim"');
+    expect(interim1).toContain('data-stage="speech"');
+    expect(interim1).toContain('さ');
+    driver.hearPartial('さとう');
+    expect(paint(store)).toContain('さとう');
+
     driver.hearTurn('さとう');
     const readback = paint(store);
     expect(readback).toContain('佐藤様ですね？');
     expect(readback).toContain('data-testid="voice-confirm-yes"');
+    // 確定で interim はクリアされ、復唱へ置き換わる（既存フロー不変）
+    expect(readback).not.toContain('data-testid="voice-interim"');
 
     store.confirmYes();
     expect(onResolved).toHaveBeenCalledWith(expect.objectContaining({ id: 's1' }));

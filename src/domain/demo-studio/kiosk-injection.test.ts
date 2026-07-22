@@ -7,6 +7,7 @@ import {
   deriveQrScanner,
   deriveSttAdapterFactory,
   deriveVoiceSession,
+  deriveInterimPrefixes,
   wantsSyntheticVoice,
   type DemoScheduler,
   type DemoTimerHandle,
@@ -285,16 +286,24 @@ describe('deriveVoiceSession (#363/#364/#361 第9wave ゼロタッチ自動化: 
     store.notifyReceptionState('selectingTarget'); // KioskFlow が相手選択画面へ到達した通知
 
     const steps = ordered();
-    expect(steps).toHaveLength(3);
+    // beginListening + interim 段（「鈴」→「鈴木」の 2 段）+ hearTurn + confirmYes = 5 段。
+    expect(steps).toHaveLength(5);
 
     steps[0]!.fn(); // beginListening
     expect(store.getState().mode).toBe('listening');
 
-    steps[1]!.fn(); // hearTurn（低信頼）→ 復唱確認
+    steps[1]!.fn(); // hearPartial('鈴') → interim 逐次字幕
+    expect(store.getState().mode).toBe('listening');
+    expect(store.getState().interimText).toBe('鈴');
+    steps[2]!.fn(); // hearPartial('鈴木')
+    expect(store.getState().interimText).toBe('鈴木');
+
+    steps[3]!.fn(); // hearTurn（低信頼）→ 復唱確認（interim は確定でクリア）
     expect(store.getState().mode).toBe('readback');
     expect(store.getState().readbackName).toContain('鈴木');
+    expect(store.getState().interimText).toBeUndefined();
 
-    steps[2]!.fn(); // confirmYes → 確定 → onResolved
+    steps[4]!.fn(); // confirmYes → 確定 → onResolved
     expect(onResolved).toHaveBeenCalledTimes(1);
     // KioskFlow と同じ写像で、mock-adapter の directory id（staff-suzuki）と噛み合う相手になる。
     const target = voiceCandidateToTarget(onResolved.mock.calls[0]![0]);
@@ -309,14 +318,14 @@ describe('deriveVoiceSession (#363/#364/#361 第9wave ゼロタッチ自動化: 
     const store = new VoiceKioskStore(factory, { onResolved });
     store.start();
     store.notifyReceptionState('selectingTarget'); // 1回目到達
-    expect(ordered()).toHaveLength(3);
+    expect(ordered()).toHaveLength(5);
 
-    // タッチで BACK → 別局面 → 再び selectingTarget（1回目の保留 3件は解除される）。
+    // タッチで BACK → 別局面 → 再び selectingTarget（1回目の保留 5件は解除される）。
     store.notifyReceptionState('selectingPurpose');
     store.notifyReceptionState('selectingTarget'); // 2回目到達（再実行）
 
     const steps = ordered().filter((t) => !t.cancelled);
-    expect(steps).toHaveLength(3); // 1回目分は cancelled 済みで除外され、2回目分の 3 件のみ残る
+    expect(steps).toHaveLength(5); // 1回目分は cancelled 済みで除外され、2回目分の 5 件のみ残る
     steps.forEach((t) => t.fn());
     expect(onResolved).toHaveBeenCalledTimes(1); // 1回目は発火せず解除、2回目のみ確定
   });
@@ -375,15 +384,43 @@ describe('deriveVoiceSession (#363/#364/#361 第9wave ゼロタッチ自動化: 
     store.notifyReceptionState('selectingTarget');
 
     const steps = ordered();
-    expect(steps).toHaveLength(3);
+    // beginListening + interim 3 段（「営」→「営業」→「営業部」）+ hearTurn + confirmYes = 6 段。
+    expect(steps).toHaveLength(6);
     steps[0]!.fn(); // beginListening
-    steps[1]!.fn(); // hearTurn → 復唱確認（低信頼固定, DEMO_VOICE_CONFIDENCE）
+    steps[1]!.fn(); // hearPartial('営')
+    steps[2]!.fn(); // hearPartial('営業')
+    steps[3]!.fn(); // hearPartial('営業部')
+    expect(store.getState().interimText).toBe('営業部');
+    steps[4]!.fn(); // hearTurn → 復唱確認（低信頼固定, DEMO_VOICE_CONFIDENCE）
     expect(store.getState().mode).toBe('readback');
     expect(store.getState().readbackName).toContain('営業部');
 
-    steps[2]!.fn(); // confirmYes → 確定
+    steps[5]!.fn(); // confirmYes → 確定
     expect(onResolved).toHaveBeenCalledTimes(1);
     const target = voiceCandidateToTarget(onResolved.mock.calls[0]![0]);
     expect(target).toEqual({ type: 'department', id: 'dept-sales', label: '営業部' });
+  });
+});
+
+describe('deriveInterimPrefixes（interim 逐次字幕の合成プレフィックス, #361/#364 第11wave）', () => {
+  it('文字ごとに育つプレフィックス列を返す（「さ」→「さとう」の逐次表示）', () => {
+    expect(deriveInterimPrefixes('鈴木')).toEqual(['鈴', '鈴木']);
+    expect(deriveInterimPrefixes('営業部')).toEqual(['営', '営業', '営業部']);
+  });
+
+  it('1 文字以下は 1 段（または空）で返す', () => {
+    expect(deriveInterimPrefixes('佐')).toEqual(['佐']);
+    expect(deriveInterimPrefixes('')).toEqual([]);
+    expect(deriveInterimPrefixes('  ')).toEqual([]);
+  });
+
+  it('長い発話は段数を上限で間引く（決定論・重複排除）', () => {
+    const prefixes = deriveInterimPrefixes('あいうえおかきくけこ', 4);
+    expect(prefixes.length).toBeLessThanOrEqual(4);
+    // 単調増加（各段の長さが前段以上）で最終段は全文
+    expect(prefixes[prefixes.length - 1]).toBe('あいうえおかきくけこ');
+    for (let i = 1; i < prefixes.length; i++) {
+      expect(prefixes[i]!.length).toBeGreaterThan(prefixes[i - 1]!.length);
+    }
   });
 });

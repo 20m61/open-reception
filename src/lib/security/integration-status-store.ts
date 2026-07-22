@@ -26,8 +26,9 @@ import {
   type SecretStatusRecord,
 } from '@/domain/security/integration-status';
 import { getAdminAuthConfig, validateAdminAuthConfig } from '@/lib/auth/admin-auth-config';
-import { isVonageConfigured, isVonageEnabled } from '@/lib/call/vonage-config';
 import { getBackend } from '@/lib/data';
+import { getVonagePresenceForTenant } from '@/lib/platform/integration-presence';
+import { defaultTenantIdFrom } from '@/lib/tenant/default-scope';
 
 /** 永続化する状態の総体（値は含まない）。 */
 type IntegrationStateDoc = {
@@ -118,30 +119,35 @@ export async function markSecretCleared(
 }
 
 /** 既知の外部連携の定義（inc1 は Vonage のみ。次増分で OAuth provider 等を追加）。 */
-const INTEGRATIONS: ReadonlyArray<{
-  id: string;
-  label: string;
-  configured: () => boolean;
-  enabled: () => boolean;
-}> = [
-  {
-    id: 'vonage',
-    label: 'Vonage（通話）',
-    configured: isVonageConfigured,
-    enabled: isVonageEnabled,
-  },
+const INTEGRATIONS: ReadonlyArray<{ id: string; label: string }> = [
+  { id: 'vonage', label: 'Vonage（通話）' },
 ];
 
-/** UI 向けの全連携状態を返す（機密値は含まない）。 */
-export async function listIntegrationStatuses(): Promise<IntegrationStatus[]> {
+/** presence（configured/enabled）の供給形。secret 値は含めない（状態のみ）。 */
+export type IntegrationPresenceInput = { configured: boolean; enabled: boolean };
+const UNCONFIGURED: IntegrationPresenceInput = { configured: false, enabled: false };
+
+/**
+ * UI 向けの全連携状態を返す（機密値は含まない）。
+ *
+ * Vonage の configured/enabled はテナント設定 presence（`getVonagePresenceForTenant`）由来。
+ * 呼び出し側が対象テナントの presence を渡す（platform=選択中テナント / admin=既定テナント）。
+ * 省略時は**既定テナント**の presence を解決する（単一テナント運用・横断 read の後方互換）。
+ * `VONAGE_*` env は読まない（#405 Inc3 で撤去）。
+ */
+export async function listIntegrationStatuses(
+  vonagePresence?: IntegrationPresenceInput,
+): Promise<IntegrationStatus[]> {
+  const presence = vonagePresence ?? (await getVonagePresenceForTenant(defaultTenantIdFrom()));
   const doc = await current();
   return INTEGRATIONS.map((def) => {
     const rec = doc.integrations[def.id];
+    const p = def.id === 'vonage' ? presence : UNCONFIGURED;
     return {
       id: def.id,
       label: def.label,
-      configured: def.configured(),
-      enabled: def.enabled(),
+      configured: p.configured,
+      enabled: p.enabled,
       lastResult: rec?.lastResult ?? 'untested',
       lastSuccessAt: rec?.lastSuccessAt,
       lastFailureAt: rec?.lastFailureAt,

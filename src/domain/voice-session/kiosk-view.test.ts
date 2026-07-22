@@ -3,6 +3,7 @@ import {
   initialVoiceKioskState,
   voiceKioskReducer,
   captionKeyFor,
+  voiceListeningStage,
   type VoiceKioskEvent,
   type VoiceKioskState,
 } from './kiosk-view';
@@ -142,5 +143,111 @@ describe('captionKeyFor（字幕/インジケータの意味論キー導出、PI
   it('idle/inactive は字幕を持たない（null）', () => {
     expect(captionKeyFor({ mode: 'idle' })).toBeNull();
     expect(captionKeyFor({ mode: 'inactive' })).toBeNull();
+  });
+});
+
+describe('interim 逐次字幕（#361/#364 第11wave: partial→interim→確定→復唱）', () => {
+  it('初期状態・活性直後は interimText を持たない', () => {
+    expect(initialVoiceKioskState().interimText).toBeUndefined();
+    const active = voiceKioskReducer(initialVoiceKioskState(), { type: 'activate' });
+    expect(active.interimText).toBeUndefined();
+  });
+
+  it('listening 中の hearPartial は interimText を逐次更新する（listening を維持）', () => {
+    const listening = run([{ type: 'activate' }, { type: 'listenStart' }]);
+    const s1 = voiceKioskReducer(listening, { type: 'hearPartial', text: 'さ' });
+    expect(s1.mode).toBe('listening');
+    expect(s1.interimText).toBe('さ');
+    const s2 = voiceKioskReducer(s1, { type: 'hearPartial', text: 'さとう' });
+    expect(s2.mode).toBe('listening');
+    expect(s2.interimText).toBe('さとう');
+  });
+
+  it('idle 中の hearPartial は listening へ遷移して interim を立てる（実 orchestrator 経路で listenStart が無くても字幕が出る）', () => {
+    const idle = voiceKioskReducer(initialVoiceKioskState(), { type: 'activate' });
+    expect(idle.mode).toBe('idle');
+    const s = voiceKioskReducer(idle, { type: 'hearPartial', text: 'す' });
+    expect(s.mode).toBe('listening');
+    expect(s.interimText).toBe('す');
+  });
+
+  it('新たな listenStart（聞き直し含む）は interim を空にする', () => {
+    const withInterim = run([
+      { type: 'activate' },
+      { type: 'listenStart' },
+      { type: 'hearPartial', text: 'さとう' },
+    ]);
+    expect(withInterim.interimText).toBe('さとう');
+    // confirmNo（聞き直し）→ listening へ戻る際 interim はクリアされる
+    const readback = run([
+      { type: 'activate' },
+      { type: 'listenStart' },
+      { type: 'hearPartial', text: 'さ' },
+      { type: 'heardNeedsConfirmation', displayName: '佐藤', reason: 'low_stt_confidence' },
+    ]);
+    const relisten = voiceKioskReducer(readback, { type: 'confirmNo' });
+    expect(relisten.mode).toBe('listening');
+    expect(relisten.interimText).toBeUndefined();
+  });
+
+  it('確定（heardNeedsConfirmation / heardAccepted）で interim はクリアされ復唱/次ターンへ置き換わる（既存フロー不変）', () => {
+    const base = run([
+      { type: 'activate' },
+      { type: 'listenStart' },
+      { type: 'hearPartial', text: 'さとう' },
+    ]);
+    const readback = voiceKioskReducer(base, {
+      type: 'heardNeedsConfirmation',
+      displayName: '佐藤',
+      reason: 'low_entity_confidence',
+    });
+    expect(readback.mode).toBe('readback');
+    expect(readback.interimText).toBeUndefined();
+
+    const accepted = voiceKioskReducer(base, { type: 'heardAccepted' });
+    expect(accepted.mode).toBe('idle');
+    expect(accepted.interimText).toBeUndefined();
+  });
+
+  it('hearPartial は inactive/fallback/readback/speaking では無視される（不変条件を壊さない）', () => {
+    // inactive
+    expect(voiceKioskReducer(initialVoiceKioskState(), { type: 'hearPartial', text: 'x' }).mode).toBe('inactive');
+    // fallback
+    const fell = run([{ type: 'activate' }, { type: 'fallbackRequired', source: 'stt' }]);
+    expect(voiceKioskReducer(fell, { type: 'hearPartial', text: 'x' })).toBe(fell);
+    // readback
+    const readback = run([
+      { type: 'activate' },
+      { type: 'listenStart' },
+      { type: 'heardNeedsConfirmation', displayName: '佐藤', reason: 'low_stt_confidence' },
+    ]);
+    expect(voiceKioskReducer(readback, { type: 'hearPartial', text: 'x' })).toBe(readback);
+    // speaking
+    const speaking = run([{ type: 'activate' }, { type: 'speakStart' }]);
+    expect(voiceKioskReducer(speaking, { type: 'hearPartial', text: 'x' })).toBe(speaking);
+  });
+
+  it('同一 interim の hearPartial は同一参照を返す（スナップショット安定性）', () => {
+    const s = run([
+      { type: 'activate' },
+      { type: 'listenStart' },
+      { type: 'hearPartial', text: 'さとう' },
+    ]);
+    expect(voiceKioskReducer(s, { type: 'hearPartial', text: 'さとう' })).toBe(s);
+  });
+});
+
+describe('voiceListeningStage（聞き取り中インジケータの 2 段階導出）', () => {
+  it('listening で interim 無し = idle（話しかけ待ち）、interim 有り = speech（発話検知中）', () => {
+    expect(voiceListeningStage({ mode: 'listening' })).toBe('idle');
+    expect(voiceListeningStage({ mode: 'listening', interimText: '' })).toBe('idle');
+    expect(voiceListeningStage({ mode: 'listening', interimText: '  ' })).toBe('idle');
+    expect(voiceListeningStage({ mode: 'listening', interimText: 'さとう' })).toBe('speech');
+  });
+
+  it('listening 以外は null（インジケータを出さない）', () => {
+    expect(voiceListeningStage({ mode: 'idle' })).toBeNull();
+    expect(voiceListeningStage({ mode: 'readback' })).toBeNull();
+    expect(voiceListeningStage({ mode: 'inactive' })).toBeNull();
   });
 });

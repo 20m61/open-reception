@@ -915,6 +915,92 @@ a {
   }
 }
 
+/* =======================================================================
+ * 聞き取り中インジケータ + interim 逐次字幕 (issue #361/#364 第11wave [C])。
+ * aituber-kit v1 の「録音中フィードバック + interim 逐次表示」の"考え方"を、受付の
+ * 復唱確認不変条件を保ったまま自前 CSS で再構成したもの（コード移植なし）。
+ * デザイントークン準拠・CSS のみ・prefers-reduced-motion 対応（静的表現へ落とす）。
+ * 2 段階: data-stage="idle"（話しかけ待ち・穏やかなパルス）/ "speech"（発話検知中・
+ * 振幅の大きい波形）。判別材料は状態内の interim の有無のみ（`voiceListeningStage`）。
+ * ======================================================================= */
+.voice-layer__indicator {
+  display: inline-flex;
+  align-items: flex-end;
+  justify-content: center;
+  gap: 5px;
+  height: 26px;
+}
+
+.voice-layer__wave {
+  display: block;
+  width: 5px;
+  height: 8px;
+  border-radius: var(--radius-pill);
+  background: var(--color-accent);
+  transform-origin: bottom center;
+  /* 待受（idle）は穏やかにゆっくり。発話検知（speech）で速く・大きく揺れる。 */
+  animation: voice-wave 1.5s var(--ease-out) infinite;
+}
+
+.voice-layer__wave:nth-child(1) {
+  animation-delay: 0s;
+}
+.voice-layer__wave:nth-child(2) {
+  animation-delay: 0.12s;
+}
+.voice-layer__wave:nth-child(3) {
+  animation-delay: 0.24s;
+}
+.voice-layer__wave:nth-child(4) {
+  animation-delay: 0.36s;
+}
+.voice-layer__wave:nth-child(5) {
+  animation-delay: 0.48s;
+}
+
+/* 発話検知中: 振幅を上げ・周期を短くして「声を拾っている」ことを強調する。 */
+.voice-layer__indicator--speech .voice-layer__wave {
+  animation-duration: 0.7s;
+  background: var(--color-accent-strong);
+}
+
+@keyframes voice-wave {
+  0%,
+  100% {
+    transform: scaleY(0.4);
+    opacity: 0.5;
+  }
+  50% {
+    transform: scaleY(2.2);
+    opacity: 1;
+  }
+}
+
+/* interim（確定前）字幕。確定前であることが分かるよう控えめなガラス地の pill に載せる。 */
+.voice-layer__interim {
+  max-width: min(80%, 40ch);
+  padding: 6px 14px;
+  border-radius: var(--radius-pill);
+  background: var(--color-scrim);
+  color: var(--color-on-scrim);
+  line-height: 1.4;
+}
+
+/* モーション抑制: バーを一定高の静的表現にする（アニメーションを止め、崩れないよう高さを固定）。
+ * 末尾の共通 prefers-reduced-motion ブロックも animation を無効化するが、静的高さをここで明示して
+ * 「無音の波形」が意味のある形（idle=低い・speech=やや高い）で止まるようにする。 */
+@media (prefers-reduced-motion: reduce) {
+  .voice-layer__wave {
+    animation: none;
+    height: 12px;
+    transform: none;
+    opacity: 0.85;
+  }
+  .voice-layer__indicator--speech .voice-layer__wave {
+    height: 20px;
+  }
+}
+
 /* 担当者クイック応答バナー (#99)。プロミネント版 (#323 AC2) は主役として大きく表示する。 */
 .staff-response-banner--prominent {
   width: 100%;

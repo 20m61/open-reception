@@ -184,6 +184,25 @@ function firstVoiceUtterance(scenario: DemoScenario): string | undefined {
 }
 
 /**
+ * interim 逐次字幕（#361/#364 第11wave）用に、発話文が「育つ」プレフィックス列を合成する。
+ * 例: `'鈴木'` → `['鈴','鈴木']`、`'営業部'` → `['営','営業','営業部']`。preview で確定前の字幕が
+ * 段階的に伸びる様子を見せるための決定論的データ（PII を新規に作らず、発話文の前方一致断片のみ）。
+ * 長い発話は `maxStages` で段数を間引き、各段が単調増加するよう重複を排除する。
+ */
+export function deriveInterimPrefixes(text: string, maxStages = 4): string[] {
+  const chars = [...text.trim()];
+  if (chars.length <= 1) return chars.length ? [chars.join('')] : [];
+  const stages = Math.min(maxStages, chars.length);
+  const out: string[] = [];
+  for (let i = 1; i <= stages; i++) {
+    const len = Math.max(1, Math.round((chars.length * i) / stages));
+    const prefix = chars.slice(0, len).join('');
+    if (out[out.length - 1] !== prefix) out.push(prefix);
+  }
+  return out;
+}
+
+/**
  * 音声成功シナリオの synthetic セッション factory を導出する (#363/#364、第9wave でゼロタッチ化)。
  *
  * 返る factory を KioskFlow の `voiceSession` prop へ渡すと、**受付が相手選択画面
@@ -209,6 +228,7 @@ export function deriveVoiceSession(
 
   const directory = opts?.directory ?? demoVoiceDirectory();
   const utterance = firstVoiceUtterance(scenario) ?? DEMO_VOICE_DEFAULT_UTTERANCE;
+  const interimPrefixes = deriveInterimPrefixes(utterance);
   const stepMs = opts?.stepDelayMs ?? DEMO_VOICE_STEP_MS;
   const confidence = opts?.sttConfidence ?? DEMO_VOICE_CONFIDENCE;
   const scheduler = opts?.scheduler ?? DEFAULT_DEMO_SCHEDULER;
@@ -226,15 +246,21 @@ export function deriveVoiceSession(
     };
 
     /**
-     * 発話→復唱→確定 の 1 サイクルを、呼び出し時点を起点にスケジュールする
-     * (issue #364/#363/#361 第9wave ゼロタッチ完全自動化)。
+     * 発話→(interim 逐次字幕)→復唱→確定 の 1 サイクルを、呼び出し時点を起点にスケジュールする
+     * (issue #364/#363/#361 第9wave ゼロタッチ完全自動化 + 第11wave interim 逐次字幕)。
+     * beginListening の後、確定前の interim を数段流して字幕が「育つ」様子を見せ、その後 hearTurn で
+     * 確定させて復唱確認へ入る（interim は確定でクリアされ復唱へ置き換わる＝復唱不変条件は不変）。
      * 保留中の前回タイマーは必ず解除してから積み直す（再入場の多重発火防止）。
      */
     const playSequence = (): void => {
       cancelAll();
-      at(1, () => driver.beginListening());
-      at(2, () => driver.hearTurn(utterance));
-      at(3, () => controller.confirmYes());
+      let step = 1;
+      at(step++, () => driver.beginListening());
+      for (const prefix of interimPrefixes) {
+        at(step++, () => driver.hearPartial(prefix));
+      }
+      at(step++, () => driver.hearTurn(utterance));
+      at(step++, () => controller.confirmYes());
     };
 
     return {

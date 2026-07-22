@@ -5,7 +5,7 @@ import { ResourceTracker } from '@/lib/three/resource-tracker';
 import { AvatarFallbackImage } from './avatar/fallback-image';
 import { emotionExpressionValues } from './avatar/vrm-expression';
 import { resolveStatePose } from './avatar/vrm-pose';
-import { mouthOpenValue } from './avatar/lip-sync';
+import { resolveFrameExpressionWeights } from './avatar/frame-weights';
 import type { AvatarExpression } from './avatar/guidance';
 import type { AvatarState } from '@/domain/reception/ui-contract';
 
@@ -17,7 +17,9 @@ import type { AvatarState } from '@/domain/reception/ui-contract';
  * - 受付フローとは疎結合。実描画は実機 UAT で確認する（headless では fallback 経路を検証）。
  *
  * 状態別モーション再生（#31）: motionUrl の .vrma を AnimationMixer で切替再生する。
- * リップシンク（#5）は今後 expression(aa) と協調して接続する。
+ * リップシンク（#5）は expression(aa) と `avatar/frame-weights.ts` の合成関数
+ * （`domain/avatar/expression-blend.ts`）を通して協調する。感情付き表情中は口の開き重みを
+ * 減衰し、まばたきを抑制することで表情と口パクの破綻を避ける（#31 感情連動）。
  * 実描画・実モーションの確認は実機 UAT（#65）。
  */
 export function VrmAvatarViewer({
@@ -25,6 +27,7 @@ export function VrmAvatarViewer({
   fallbackImageUrl,
   motionUrl,
   expression,
+  expressionIntensity,
   speaking,
   avatarState,
   className,
@@ -38,6 +41,12 @@ export function VrmAvatarViewer({
   motionUrl?: string;
   /** 受付状態に応じた論理表情（#31）。VRM expressionManager に毎フレーム適用する。 */
   expression?: AvatarExpression;
+  /**
+   * 表情の強度 0..1（省略時 1 = フル適用）。現状の avatarGuidanceFor には強度概念が無いため
+   * 常に未指定 = フル適用で扱われるが、将来の強度可変入力を受けるための注入 seam
+   * （感情連動リップシンク + まばたき抑制、#31 / `docs/aituber-kit-v1-ui-reference.md` 提案 B）。
+   */
+  expressionIntensity?: number;
   /** TTS 発話中か（#5 簡易リップシンク）。true の間、口形素 `aa` を時間ベースで開閉する。 */
   speaking?: boolean;
   /** 受付アバター状態（#31）。.vrma 非再生時に状態別の手続き的ポーズ/所作を適用する。 */
@@ -51,6 +60,11 @@ export function VrmAvatarViewer({
   useEffect(() => {
     expressionRef.current = expression ?? 'neutral';
   }, [expression]);
+  // 表情強度も同様に ref 経由で渡す（#31 感情連動リップシンク + まばたき抑制の注入 seam）。
+  const expressionIntensityRef = useRef<number | undefined>(expressionIntensity);
+  useEffect(() => {
+    expressionIntensityRef.current = expressionIntensity;
+  }, [expressionIntensity]);
   // 発話中フラグもレンダーループ外から変化するため ref で渡す（#5 リップシンク）。
   const speakingRef = useRef<boolean>(speaking ?? false);
   useEffect(() => {
@@ -160,9 +174,19 @@ export function VrmAvatarViewer({
             for (const { name, value } of emotionExpressionValues(expressionRef.current)) {
               expressionManager.setValue(name, value);
             }
-            // 簡易リップシンク（#5）: 発話中は口形素 `aa` を時間ベースで開閉。感情 preset とは
-            // 別チャンネルなので共存する（口を閉じるときは 0）。
-            expressionManager.setValue('aa', mouthOpenValue(clock.elapsedTime, speakingRef.current));
+            // 簡易リップシンク（#5）+ 感情連動の重み合成（#31）: 発話中は口形素 `aa` を
+            // 時間ベースで開閉しつつ、感情付き表情中は口の開き重みを減衰させ、まばたきは
+            // 抑制する（表情と口パクの破綻回避。`domain/avatar/expression-blend` 参照）。
+            // まばたき自体（auto-blink）は本トラック未実装のため blinkBaseWeight は既定 0
+            // （数値上は現状ノーオペだが、将来 auto-blink を繋ぐ注入 seam として先に結線する）。
+            const frameWeights = resolveFrameExpressionWeights({
+              expression: expressionRef.current,
+              expressionIntensity: expressionIntensityRef.current,
+              speaking: speakingRef.current,
+              elapsedSec: clock.elapsedTime,
+            });
+            expressionManager.setValue('aa', frameWeights.mouthAa);
+            expressionManager.setValue('blink', frameWeights.blink);
           }
           // .vrma モーションが無いときは受付状態に応じた手続き的ポーズ/所作を適用する（#31）。
           // モーション再生中は AnimationMixer がボーンを駆動するため適用しない。
