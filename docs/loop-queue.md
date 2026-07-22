@@ -221,10 +221,23 @@ fixedHolidays 上限・JIT 昇格)は同 wave 内で全て修正済み。/kiosk 
 デバイスエンロール(受付 URL 発行→`/kiosk/enroll?token=`)が必要— 手順は
 `/api/admin/devices/kiosk-dev/reissue-token`(JSON body に tenantId/siteId)→ URL を開く。
 
-**第 9 wave（次に着手する）**: #405 Inc2(Secrets Manager+CDK。**deploy 前にユーザー確認**)／
-#363 Inc3 公開モデル／ voice ゼロタッチ自動化+department デモ／ #361 残(VRT/axe、
-testing-library 導入は #105 チェック要)／ #375 残（token hash 化は**要ユーザー確認**のまま）／
-#366 Stack・#376 実測・#4 は**ユーザー承認/外部待ち**
+**第 9 wave（2026-07-22 消化済み）** — 同ブランチ・3 トラック並行。結果:
+
+| トラック | Issue | 結果 |
+| --- | --- | --- |
+| A | **#405 Inc2** | `SecretsManagerTenantSecretStore`(backend 注入・prefix 写像・削除猶予 30 日・値非漏洩)+`PROVIDER_SECRET_BACKEND` 切替(既定 memory・fail-closed)+CDK IAM を `<prefix>/tenants/*` に限定(prefix はランタイムと同一規則で正規化)。新規依存なし。**deploy 未実施 — 実 AWS apply はユーザー確認後**(手順は `docs/tenant-provider-secrets.md`)。**残**: Inc3=`VONAGE_*` env 撤去+`resolveProviderForTenant` の call-execution 実結線・#65 実疎通 |
+| B | **#363 Inc3** | 公開モデル完了(draft/test/published 分離・公開先 Kiosk fail-closed 検証・append-only version+rollback・256bit 共有トークン(期限必須+失効+監査値なし)・未認証公開ページ `/demo/[token]` は scenario のみ返却・404 一律で列挙オラクルなし・sandbox 維持)。敵対的レビュー W1 対応でレート制限を**二層化**(トークン単位+全体窓+evict)。**残**: DemoStudio への publish/share UI パネル・専用 AuditAction(`reception.demo_published` 等)の log.ts 追加 |
+| C | **voice ゼロタッチ** | `notifyReceptionState` 中継(実 orchestrator は no-op 契約)で selectingTarget 到達時に音声シーケンスを(再)開始 — 取りこぼしゼロ。`voice-department-visit` シナリオ追加(部署解決)。full-auto(タッチ手の自動代行)は単一責務契約維持のため意図的に見送り。**残**: 部署復唱の文言 polish(「営業部様ですね?」→部署用テンプレート) |
+
+第 9 wave の注記: 実ブラウザ検証 7/7 PASS(未認証の公開ページ描画・外部リクエストゼロ・無効
+トークンのエラー表示・staff/部署の音声ゼロタッチ自動選択)。検証時の落とし穴: **ポート 3100 に
+前 wave の本番サーバが残っていると旧ビルドが応答し新 route が 404 になる** — 検証前に
+`next-server` プロセスの起動時刻を確認して kill すること。
+
+**第 10 wave（次に着手する）**: #405 Inc3(env 撤去+テナント解決の実結線)／ #363 残(publish/share
+UI パネル+専用 AuditAction 追加)／ #367 残(専用 AuditAction・kiosk 定期再取得)／ #361 残(VRT/axe、
+testing-library 導入は #105 チェック要)／ **ユーザー判断待ち**: #405 Inc2 の deploy・#375 hash 化・
+#366 固定費・#4 外部依存
 
 同 wave に **#366 Phase 0 ADR のみ**（`docs/adr/*.md` 新規・コスト増ゼロ）を差し込むのは安全。
 CDK 実装と deploy は分離し、Budget 見積を添えてユーザー承認を取る。

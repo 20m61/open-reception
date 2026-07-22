@@ -63,6 +63,17 @@ const appSecretsName = app.node.tryGetContext('appSecretsName') as string | unde
 // OAC が POST ボディを署名しない制約（GET 可・POST 403）を回避する。`-c originVerifySecret=<高エントロピー値>`。
 const originVerifySecret = app.node.tryGetContext('originVerifySecret') as string | undefined;
 
+// 任意: テナント別 CCaaS プロバイダ secret を Secrets Manager で扱う (issue #405 Inc2)。
+// `-c providerSecretBackend=secrets-manager -c providerSecretPrefix=open-reception/prod`。
+// 未指定なら in-memory mock のまま（dev/test の現行動作不変）。prefix 未指定は WebStack が fail-closed。
+const providerSecretBackend = app.node.tryGetContext('providerSecretBackend') as
+  | 'memory'
+  | 'secrets-manager'
+  | undefined;
+const providerSecretPrefix =
+  (app.node.tryGetContext('providerSecretPrefix') as string | undefined) ??
+  `open-reception/${config.environment}`;
+
 // 管理ログイン認証プロバイダ (issue #238)。デプロイ環境の既定は config.auth.adminProvider（=cognito）。
 // `-c appEnv='{"ADMIN_AUTH_PROVIDER":"none"}'` で明示上書きも可能。cognito のとき WebStack が
 // Cognito User Pool/Client（USER_SRP_AUTH 有効）を作成し COGNITO_* を注入する。
@@ -80,6 +91,8 @@ const web = new WebStack(app, `OpenReception-Web-${config.environment}`, {
   appSecretsName,
   originVerifySecret,
   cognitoAuth: adminProvider === 'cognito',
+  providerSecretBackend,
+  providerSecretPrefix,
   description: `open-reception Next.js hosting (${config.environment})`,
 });
 

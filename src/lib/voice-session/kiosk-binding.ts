@@ -27,6 +27,7 @@ import type {
   EntityCandidate,
   EntityResolutionThresholds,
 } from '@/domain/voice-stt/entity-resolver';
+import type { ReceptionState } from '@/domain/reception/state';
 import type { VoiceSessionCallbacks } from './orchestrator';
 
 /** UI 状態機械へイベントを流し込む口。 */
@@ -41,6 +42,24 @@ export interface VoiceSessionController {
   close(): void | Promise<void>;
   confirmYes(): void;
   confirmNo(): void;
+  /**
+   * 現在の受付局面（`ReceptionState`）の通知 (issue #364/#363/#361 第9wave ゼロタッチ自動化)。
+   *
+   * KioskFlow は自身の `data.state` が変化するたびにこれを呼ぶ（`VoiceSessionLayer` →
+   * `useVoiceSession` → `VoiceKioskStore` 経由）。voiceSession は reception 状態機械を
+   * 直接観測できないため（seam を越えない設計）、この通知が唯一の観測手段になる。
+   *
+   * **中立な通知口**であり、controller 側が実装するかどうかは任意（optional method）。
+   *  - 実 orchestrator 経路（`createOrchestratorVoiceSession`）は実装しない ==
+   *    呼び出しは常に no-op（`?.()` で無視される）。実機の発話開始は音響イベント/ユーザー発話が
+   *    起点であり、受付局面の通知で駆動する必要がないため。
+   *  - demo-studio の synthetic 再生（`kiosk-injection.ts` の `deriveVoiceSession`）はこれを
+   *    実装し、`state === 'selectingTarget'` を受け取るたびに発話シーケンス（listen→readback→
+   *    confirm）を (再)開始する。マウント時点の固定タイマーだけに頼ると、操作者がまだ相手選択
+   *    画面へ到達していないうちに確定してしまい、reducer が SELECT_TARGET を無視して取りこぼす
+   *    （selectingTarget 以外では no-op という設計のため）。
+   */
+  notifyReceptionState?(state: ReceptionState): void;
 }
 
 /** 解決済み候補を既存選択へ橋渡しするコールバック（Kiosk が selection を進める）。 */

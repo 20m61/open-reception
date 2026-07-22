@@ -155,4 +155,11 @@ describe('createOrchestratorVoiceSession (実 orchestrator を束ねる seam・f
     expect(fake.calls).toContain('start');
     expect(fake.calls).toContain('close');
   });
+
+  it('notifyReceptionState (#364/#363/#361 第9wave) を実装しない — 実 orchestrator 経路は受付局面通知の影響を受けない（中立な no-op 契約）', () => {
+    const fake = fakeOrchestrator();
+    const { emit } = collector();
+    const controller = createOrchestratorVoiceSession(fake.construct, { directory })(emit);
+    expect(controller.notifyReceptionState).toBeUndefined();
+  });
 });

@@ -16,6 +16,7 @@ const SRC_DIR = join(process.cwd(), 'src');
 /** client から import してはならない server-only module 指定子（部分一致）。 */
 const FORBIDDEN_IMPORTS = [
   '@/domain/provider-config/secret',
+  '@/domain/provider-config/secrets-manager-store',
   '@/lib/platform/tenant-secret-store',
   'domain/provider-config/secret',
 ];

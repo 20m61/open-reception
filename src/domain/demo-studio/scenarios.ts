@@ -1,9 +1,10 @@
 /**
  * 受付体験スタジオの初期デモシナリオ seed (issue #363 Increment 1)。
  *
- * issue #363「初期デモシナリオ」9 件を静的定義する。値は用件カテゴリや合成表示名などの
- * デモ用擬似値のみ（PII なし）。Mock Adapter（`./mock-adapter.ts`）がこの `simulatedResults` を
- * 読んで本番 Kiosk のバックエンド応答を決定論的に返す。
+ * issue #363「初期デモシナリオ」9 件 + #364 音声成功系（担当者/部門解決）2 件を静的定義する。
+ * 値は用件カテゴリや合成表示名などのデモ用擬似値のみ（PII なし）。Mock Adapter
+ * （`./mock-adapter.ts`）がこの `simulatedResults` を読んで本番 Kiosk のバックエンド応答を
+ * 決定論的に返す。
  */
 import type { DemoScenario } from './scenario';
 
@@ -60,10 +61,21 @@ export const DEMO_SCENARIOS: ReadonlyArray<DemoScenario> = [
   {
     // 音声成功系（#363/#364）。preview で synthetic 音声が自動再生され、発話→復唱→確定→相手選択が
     // 進む。value は合成ディレクトリ（kiosk-injection.demoVoiceDirectory）の担当者に解決する擬似発話。
+    // 相手選択画面（selectingTarget）へ到達した瞬間に再生が始まる（第9wave ゼロタッチ化）。
     id: 'voice-staff-visit',
     name: '音声で担当者を呼ぶ（発話→復唱→確定）',
     initialMode: 'reception',
     visitorInputs: [{ mode: 'voice', value: '鈴木' }],
+    simulatedResults: { stt: 'success', call: ['answered'], runtime: 'ready' },
+  },
+  {
+    // 部署（department）解決の音声成功系（#364 department 解決デモ、第9wave）。value は合成
+    // ディレクトリの部署（kiosk-injection.demoVoiceDirectory の dept-sales「営業部」）に厳密一致で
+    // 解決する擬似発話。担当者だけでなく部署も音声で確定できることを示す。
+    id: 'voice-department-visit',
+    name: '音声で部署を呼ぶ（発話→復唱→部署確定）',
+    initialMode: 'reception',
+    visitorInputs: [{ mode: 'voice', value: '営業部' }],
     simulatedResults: { stt: 'success', call: ['answered'], runtime: 'ready' },
   },
   {
