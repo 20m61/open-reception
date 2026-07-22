@@ -23,6 +23,8 @@ import {
   type ReceptionState,
   transition,
 } from './state';
+import { motionKeyForState, type MotionKey } from '@/domain/motion/types';
+import { RECEPTION_PURPOSES } from './session';
 
 // 契約モジュールの消費側（#121/#122/#123）が screenState 型を 1 箇所から import できるよう再エクスポート。
 export type { ReceptionState } from './state';
@@ -338,6 +340,326 @@ export function buildUiContract(
     chatAvailability: deriveChatAvailability(state),
     chatMessages: ui?.chatMessages ?? [],
     visitorInput: ui?.visitorInput ?? { isEditing: false },
+  };
+}
+
+// =============================================================================
+// #361 Character-led: ConversationTurnView 契約
+// -----------------------------------------------------------------------------
+// 目的: 各 ReceptionState を「同じアバターとの 1 つの会話ターン」として提示するための
+// 状態駆動写像。選択・入力画面でもアバターとの対話が途切れないよう、アバターの在り方
+// (presence)・表情・視線・字幕・回答候補・入力手段・確認要否・逃げ道を 1 箇所で導出する。
+//
+// 設計原則（本ファイル冒頭の原則を継承）:
+//  - 状態の所有者は state.ts。本契約は screenState から導出するだけ。
+//  - 表示契約の真実源は本モジュールに一本化する（#361 AC「ui-contract.ts 以外に競合する
+//    表示契約の真実源を作らない」）。emotion 語彙は avatar/guidance.ts の expression と一致
+//    させ（テストで担保）、motionKey は #31 の motionKeyForState を再利用する（二重化しない）。
+//  - locale 依存の表示文字列（displayText/answers ラベル）は component 層で解決して注入できる
+//    （domain → component への逆依存を避けるため、既定は ja の意味論的文言を内蔵する）。
+//  - PII を持ち込まない。
+// =============================================================================
+
+/**
+ * アバターの在り方。screenState から導出する。
+ *  - primary: 待機・ウェルカム。アバターが画面の主役（ヒーロー表示）。
+ *  - companion: 選択/入力/確認/呼び出し/結果。操作の傍らで対話を継続する付き添い。
+ *  - minimal: 通話中。キャラクターは発話を止め、静かな待機姿勢へ退く（#361 レイアウト方針）。
+ */
+export const AVATAR_PRESENCES = ['primary', 'companion', 'minimal'] as const;
+export type AvatarPresence = (typeof AVATAR_PRESENCES)[number];
+
+const SCREEN_TO_PRESENCE: Record<ReceptionState, AvatarPresence> = {
+  idle: 'primary',
+  selectingPurpose: 'companion',
+  selectingTarget: 'companion',
+  inputVisitorInfo: 'companion',
+  confirming: 'companion',
+  calling: 'companion',
+  connected: 'minimal',
+  failed: 'companion',
+  timeout: 'companion',
+  cancelled: 'companion',
+  fallback: 'companion',
+  completed: 'companion',
+};
+
+/** screenState からアバターの在り方(presence)を導出する。 */
+export function deriveAvatarPresence(state: ReceptionState): AvatarPresence {
+  return SCREEN_TO_PRESENCE[state];
+}
+
+/**
+ * アバターの表情(emotion)。表示契約としての真実源はここに置く。
+ * avatar/guidance.ts の `AvatarExpression` と同一語彙で、`deriveAvatarEmotion` の値は
+ * guidance の expression と一致する（ui-contract.test.ts が cross-check で担保）。
+ */
+export const AVATAR_EMOTIONS = ['neutral', 'happy', 'relaxed', 'thinking', 'concerned'] as const;
+export type AvatarEmotion = (typeof AVATAR_EMOTIONS)[number];
+
+/** avatarState → emotion（guidance.ts の PRESENTATION 表情と一致させる）。 */
+const AVATAR_STATE_TO_EMOTION: Record<AvatarState, AvatarEmotion> = {
+  idle: 'happy',
+  greeting: 'happy',
+  guiding: 'neutral',
+  listening: 'relaxed',
+  confirming: 'thinking',
+  calling: 'relaxed',
+  connected: 'happy',
+  apologizing: 'concerned',
+  farewell: 'happy',
+};
+
+/** screenState からアバターの表情(emotion)を導出する（avatarState 経由）。 */
+export function deriveAvatarEmotion(state: ReceptionState): AvatarEmotion {
+  return AVATAR_STATE_TO_EMOTION[deriveAvatarState(state)];
+}
+
+/**
+ * 視線誘導先(gazeTarget)。次に触れるべき場所へ軽く視線を向ける意味論的ヒント。
+ * 実際の VRM 視線適用は #65。'none' は誘導なし（操作を急かさない局面）。
+ */
+export const GAZE_TARGETS = ['none', 'answers', 'form', 'confirmCta', 'fallbackCta'] as const;
+export type GazeTarget = (typeof GAZE_TARGETS)[number];
+
+const SCREEN_TO_GAZE: Record<ReceptionState, GazeTarget> = {
+  idle: 'answers',
+  selectingPurpose: 'answers',
+  selectingTarget: 'answers',
+  inputVisitorInfo: 'form',
+  confirming: 'confirmCta',
+  calling: 'none',
+  connected: 'none',
+  failed: 'fallbackCta',
+  timeout: 'fallbackCta',
+  cancelled: 'none',
+  fallback: 'answers',
+  completed: 'none',
+};
+
+/** screenState から視線誘導先を導出する。 */
+export function gazeTargetFor(state: ReceptionState): GazeTarget {
+  return SCREEN_TO_GAZE[state];
+}
+
+/**
+ * メッセージの意味論キー(MessageKey)。画面表示文と発話文はこのキーを共有し、
+ * 人名の読み・丁寧表現のため displayText / speechText を分離できる（#361）。
+ */
+export const MESSAGE_KEYS = [
+  'welcome',
+  'choosePurpose',
+  'chooseTarget',
+  'enterVisitorInfo',
+  'reviewAndConfirm',
+  'calling',
+  'connected',
+  'apologyTimeout',
+  'apologyFailed',
+  'fallbackGuidance',
+  'farewell',
+  'cancelled',
+] as const;
+export type MessageKey = (typeof MESSAGE_KEYS)[number];
+
+const SCREEN_TO_MESSAGE_KEY: Record<ReceptionState, MessageKey> = {
+  idle: 'welcome',
+  selectingPurpose: 'choosePurpose',
+  selectingTarget: 'chooseTarget',
+  inputVisitorInfo: 'enterVisitorInfo',
+  confirming: 'reviewAndConfirm',
+  calling: 'calling',
+  connected: 'connected',
+  failed: 'apologyFailed',
+  timeout: 'apologyTimeout',
+  cancelled: 'cancelled',
+  fallback: 'fallbackGuidance',
+  completed: 'farewell',
+};
+
+/** screenState からメッセージ意味論キーを導出する。 */
+export function messageKeyForState(state: ReceptionState): MessageKey {
+  return SCREEN_TO_MESSAGE_KEY[state];
+}
+
+/**
+ * ターン既定の表示文言（ja・意味論的短文）。component 層が locale 解決した値を注入しない
+ * 場合のフォールバック。avatar/guidance.ts の字幕（人格・挨拶＋声掛け）とは別スロットで、
+ * こちらは「その画面の主指示（見出し相当）」を意味論キーから供給する（#324 の役割分担）。
+ */
+const MESSAGE_TEXT_JA: Record<MessageKey, string> = {
+  welcome: 'ようこそ。ご用件をお選びください',
+  choosePurpose: 'ご用件の種類をお選びください',
+  chooseTarget: 'お訪ねする担当者・部署をお選びください',
+  enterVisitorInfo: 'お名前などをご入力ください',
+  reviewAndConfirm: '内容をご確認のうえ、お呼び出しください',
+  calling: '担当者を呼び出しています。少々お待ちください',
+  connected: 'おつなぎしました。担当者がまいります',
+  apologyTimeout: 'ただ今応答がありません。別の方法をご案内します',
+  apologyFailed: 'おつなぎできませんでした。別の方法をご案内します',
+  fallbackGuidance: '代わりのご連絡方法をご案内します',
+  farewell: '受付が完了しました。ご案内をお待ちください',
+  cancelled: '受付を中止しました',
+};
+
+/**
+ * ターンの入力手段(InputMode)。タッチ・音声・文字・QR を同一質問への入力手段として扱う。
+ * タッチは全ターンで必ず提示する（音声/VRM/STT が失敗してもタッチだけで完走できる不変条件）。
+ */
+export const INPUT_MODES = ['touch', 'voice', 'text', 'qr'] as const;
+export type InputMode = (typeof INPUT_MODES)[number];
+
+const SCREEN_TO_INPUT_MODES: Record<ReceptionState, ReadonlyArray<InputMode>> = {
+  // 待機は QR 受付の入口を併記する（読み取りだけで発信しない導線: qr-scan→qr-confirm→calling）。
+  idle: ['touch', 'qr'],
+  selectingPurpose: ['touch', 'voice', 'text'],
+  selectingTarget: ['touch', 'voice', 'text'],
+  inputVisitorInfo: ['touch', 'voice', 'text'],
+  // 発信・個人情報確定は必ずタッチ確認のみ（音声だけで発信されない）。
+  confirming: ['touch'],
+  calling: ['touch'],
+  connected: ['touch'],
+  failed: ['touch'],
+  timeout: ['touch'],
+  cancelled: ['touch'],
+  fallback: ['touch'],
+  completed: ['touch'],
+};
+
+/** screenState からそのターンで受け付ける入力手段を導出する。 */
+export function inputModesFor(state: ReceptionState): ReadonlyArray<InputMode> {
+  return SCREEN_TO_INPUT_MODES[state];
+}
+
+/**
+ * そのターンが発信/個人情報送信の明示タッチ確認を要するか。
+ * REQUIRES_CONFIRMATION_ACTIONS（confirm / submitVisitorInfo）が許可されている状態＝
+ * inputVisitorInfo（個人情報送信）と confirming（発信確定）で true。
+ */
+export function requiresExplicitConfirmationFor(state: ReceptionState): boolean {
+  const allowed = availableActions(state);
+  for (const action of REQUIRES_CONFIRMATION_ACTIONS) {
+    if (allowed.has(action)) return true;
+  }
+  return false;
+}
+
+/**
+ * ターン契約における逃げ道（意味論）。表示ラベル/強調度は component 層（quick-actions.ts の
+ * EscapeHatch）が担い、ここでは「どの後退アクションが許可されるか」だけを持つ。
+ */
+export type EscapeHatch = { action: ReceptionAction };
+
+const ESCAPE_HATCH_ACTIONS: ReadonlyArray<ReceptionAction> = ['back', 'reset'];
+
+/**
+ * そのターンで提示する逃げ道アクション（back/reset のうち availableActions にあるもの）。
+ * idle は入口画面で戻る先が無いため出さない。
+ */
+export function escapeHatchActionsFor(state: ReceptionState): ReadonlyArray<EscapeHatch> {
+  if (state === 'idle') return [];
+  const allowed = availableActions(state);
+  return ESCAPE_HATCH_ACTIONS.filter((action) => allowed.has(action)).map((action) => ({ action }));
+}
+
+/** 会話ターンの回答候補（タッチ/音声/文字いずれの入力でも同じ intent へ収束させる）。 */
+export type ConversationAnswer = {
+  id: string;
+  label: string;
+  /** 選択時に起こす許可済みアクション（既定 answers は必ず availableActions の部分集合）。 */
+  intent: ReceptionAction;
+};
+
+/**
+ * ターン既定の回答候補（ja ラベル・静的な分だけ）。担当者/部署のような実行時リストは空にし、
+ * component 層が `conversationTurnFor(state, { answers })` で注入する。
+ */
+function defaultAnswersFor(state: ReceptionState): ReadonlyArray<ConversationAnswer> {
+  switch (state) {
+    case 'selectingPurpose':
+      return RECEPTION_PURPOSES.map((p) => ({ id: p.id, label: p.label, intent: 'selectPurpose' }));
+    case 'confirming':
+      return [{ id: 'confirm', label: 'この内容で呼ぶ', intent: 'confirm' }];
+    case 'timeout':
+    case 'failed':
+      return [{ id: 'fallback', label: '別の方法でご連絡', intent: 'useFallback' }];
+    case 'connected':
+      return [{ id: 'complete', label: '受付を終了', intent: 'complete' }];
+    case 'fallback':
+      return [{ id: 'complete', label: '受付を終了', intent: 'complete' }];
+    default:
+      // idle（クイックアクションが入口）/ selectingTarget・inputVisitorInfo（実行時リスト・フォーム）/
+      // calling / completed / cancelled は既定の静的回答を持たない。
+      return [];
+  }
+}
+
+/**
+ * ConversationTurnView（#361）。タッチUI/アバター/字幕/音声/QR がこの 1 つを参照し、
+ * 「今どのターンで、何を聞かれ、どう答え/戻れるか」を状態から一貫して導出する。
+ */
+export type ConversationTurnView = {
+  stateKey: ReceptionState;
+  avatar: {
+    presence: AvatarPresence;
+    emotion: AvatarEmotion;
+    motionKey: MotionKey;
+    gazeTarget?: GazeTarget;
+  };
+  message: {
+    semanticKey: MessageKey;
+    displayText: string;
+    /** 発話専用文（読み・丁寧表現のため displayText と分離可能）。省略時は displayText を読む。 */
+    speechText?: string;
+    /** このターンでアバターが発話するか（通話中 connected は false: 静かな待機姿勢）。 */
+    speak: boolean;
+  };
+  answers: ReadonlyArray<ConversationAnswer>;
+  inputModes: ReadonlyArray<InputMode>;
+  requiresExplicitConfirmation: boolean;
+  escapeHatches: ReadonlyArray<EscapeHatch>;
+};
+
+/** 通話中はアバターが発話を止める（#361 レイアウト方針）。 */
+const NON_SPEAKING_STATES: ReadonlySet<ReceptionState> = new Set<ReceptionState>(['connected']);
+
+/**
+ * screenState（+ component 層が locale 解決した表示値）から ConversationTurnView を組み立てる純関数。
+ *
+ * `overrides.message` を渡すと displayText/speechText を差し替え（多言語や人名読みの反映）、
+ * `overrides.answers` を渡すと回答候補を差し替える（担当者/部署の実行時リストの注入）。
+ * いずれも省略時は ja の意味論的既定値を使う。domain は component へ依存しない。
+ */
+export function conversationTurnFor(
+  state: ReceptionState,
+  overrides?: {
+    message?: { displayText: string; speechText?: string };
+    answers?: ReadonlyArray<ConversationAnswer>;
+  },
+): ConversationTurnView {
+  const semanticKey = messageKeyForState(state);
+  const gazeTarget = gazeTargetFor(state);
+  return {
+    stateKey: state,
+    avatar: {
+      presence: deriveAvatarPresence(state),
+      emotion: deriveAvatarEmotion(state),
+      motionKey: motionKeyForState(state),
+      // 'none' は誘導なしなので gazeTarget を省く（issue の型は optional）。
+      ...(gazeTarget === 'none' ? {} : { gazeTarget }),
+    },
+    message: {
+      semanticKey,
+      displayText: overrides?.message?.displayText ?? MESSAGE_TEXT_JA[semanticKey],
+      ...(overrides?.message?.speechText !== undefined
+        ? { speechText: overrides.message.speechText }
+        : {}),
+      speak: !NON_SPEAKING_STATES.has(state),
+    },
+    answers: overrides?.answers ?? defaultAnswersFor(state),
+    inputModes: inputModesFor(state),
+    requiresExplicitConfirmation: requiresExplicitConfirmationFor(state),
+    escapeHatches: escapeHatchActionsFor(state),
   };
 }
 

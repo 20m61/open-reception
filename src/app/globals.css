@@ -639,6 +639,69 @@ a {
 }
 
 /* =========================================================================
+ * #361 Character-led: 横向きの会話継続レイアウト（アバター 35% / 会話・操作 65%）
+ *
+ * 選択・入力・確認の主要ステップ（selectingPurpose / selectingTarget / inputVisitorInfo /
+ * confirming）で、アバターを左レール(companion)として並置し「同じアバターとの対話」が
+ * 途中で切れないようにする。フォームやカードは右 65% に収め、レールは pointer-events:none で
+ * 操作を妨げない。字幕を常時表示して、音声が出なくても今の問いかけが読めるようにする。
+ *
+ * 呼び出し中/通話/結果（calling/connected/…）は従来どおり中央パネル＋左下の控えめ companion の
+ * まま（映像パネル等のレイアウトを壊さない）。縦向き(ipad-portrait)は本レール構成を適用せず
+ * 既存プロファイルを維持する（重なり回避は KioskFlow の showAvatarCompanion が担う）。
+ * ======================================================================= */
+.screen[data-kiosk-layout='ipad-landscape'][data-kiosk-state='selectingPurpose'] .kiosk-avatar-companion,
+.screen[data-kiosk-layout='ipad-landscape'][data-kiosk-state='selectingTarget'] .kiosk-avatar-companion,
+.screen[data-kiosk-layout='ipad-landscape'][data-kiosk-state='inputVisitorInfo'] .kiosk-avatar-companion,
+.screen[data-kiosk-layout='ipad-landscape'][data-kiosk-state='confirming'] .kiosk-avatar-companion,
+.screen[data-kiosk-layout='large-display'][data-kiosk-state='selectingPurpose'] .kiosk-avatar-companion,
+.screen[data-kiosk-layout='large-display'][data-kiosk-state='selectingTarget'] .kiosk-avatar-companion,
+.screen[data-kiosk-layout='large-display'][data-kiosk-state='inputVisitorInfo'] .kiosk-avatar-companion,
+.screen[data-kiosk-layout='large-display'][data-kiosk-state='confirming'] .kiosk-avatar-companion {
+  position: fixed;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 35%;
+  max-width: 35vw;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: var(--space-lg);
+  z-index: 2; /* 操作カードより背面。pointer-events:none なのでタッチは貫通する。 */
+}
+
+/* 会話継続レールでは字幕を常時表示する（今の問いかけが音声無しでも読める）。 */
+.screen[data-kiosk-layout='ipad-landscape'][data-kiosk-state='selectingPurpose'] .kiosk-avatar-companion [data-testid='avatar-subtitle'],
+.screen[data-kiosk-layout='ipad-landscape'][data-kiosk-state='selectingTarget'] .kiosk-avatar-companion [data-testid='avatar-subtitle'],
+.screen[data-kiosk-layout='ipad-landscape'][data-kiosk-state='inputVisitorInfo'] .kiosk-avatar-companion [data-testid='avatar-subtitle'],
+.screen[data-kiosk-layout='ipad-landscape'][data-kiosk-state='confirming'] .kiosk-avatar-companion [data-testid='avatar-subtitle'],
+.screen[data-kiosk-layout='large-display'][data-kiosk-state='selectingPurpose'] .kiosk-avatar-companion [data-testid='avatar-subtitle'],
+.screen[data-kiosk-layout='large-display'][data-kiosk-state='selectingTarget'] .kiosk-avatar-companion [data-testid='avatar-subtitle'],
+.screen[data-kiosk-layout='large-display'][data-kiosk-state='inputVisitorInfo'] .kiosk-avatar-companion [data-testid='avatar-subtitle'],
+.screen[data-kiosk-layout='large-display'][data-kiosk-state='confirming'] .kiosk-avatar-companion [data-testid='avatar-subtitle'] {
+  display: block;
+}
+
+/* 会話・操作は右 65% に寄せる（レールと重ならない）。screen-anim が各ステップの描画枠。 */
+.screen[data-kiosk-layout='ipad-landscape'][data-kiosk-state='selectingPurpose'] .screen-anim,
+.screen[data-kiosk-layout='ipad-landscape'][data-kiosk-state='selectingTarget'] .screen-anim,
+.screen[data-kiosk-layout='ipad-landscape'][data-kiosk-state='inputVisitorInfo'] .screen-anim,
+.screen[data-kiosk-layout='ipad-landscape'][data-kiosk-state='confirming'] .screen-anim,
+.screen[data-kiosk-layout='large-display'][data-kiosk-state='selectingPurpose'] .screen-anim,
+.screen[data-kiosk-layout='large-display'][data-kiosk-state='selectingTarget'] .screen-anim,
+.screen[data-kiosk-layout='large-display'][data-kiosk-state='inputVisitorInfo'] .screen-anim,
+.screen[data-kiosk-layout='large-display'][data-kiosk-state='confirming'] .screen-anim {
+  padding-left: 37%;
+}
+
+/* 低リーチ(a11y)モードは操作を下寄せするため、レール構成でも右カラムの上詰めを避ける。 */
+.screen[data-a11y-reach='low'][data-kiosk-layout='ipad-landscape'][data-kiosk-state='inputVisitorInfo'] .screen-anim {
+  padding-left: 35%;
+}
+
+/* =========================================================================
  * 結果/待ち画面の共通レイアウト (#326 L1)
  *
  * 呼び出し中・結果（接続/タイムアウト/失敗/代替導線）・完了/キャンセルは、これまで
