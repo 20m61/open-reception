@@ -16,7 +16,7 @@
  * 契約整合: `simulatedResults.call` は #374 `RouteResult` の部分集合語彙のまま扱い、Kiosk が期待する
  * 受付状態（`ReceptionState`）へ写像する（独自契約を発明しない）。
  *
- * Inc1 の再現範囲（注入点不足による制約）:
+ * Inc1 の再現範囲（注入点不足による制約。第6/第7wave で解消 — 下記 NOTE 参照）:
  *   - `/call` は**同期 Mock 通話**として終端状態（connected/timeout/failed）を直接返す。Vonage 非同期
  *     （calling→ビデオビュー）経路は使わない。複数手の取次（代理→部門代表）は個別アニメーションせず
  *     **最終結果**を来訪者に見せる（KioskFlow は単発の `/call` しか叩かないため）。
@@ -25,10 +25,18 @@
  *   - QR は `/checkin/resolve`・`/confirm` の**結果**を返せるが、QR ペイロードの**検知**はカメラ入力
  *     が要る（CheckinFlow のスキャナ）。営業時間外は KioskFlow に配線が無く視覚再現できない。
  *   これらの必要注入点はハンドオフ報告に列挙する（kiosk は編集しない）。
+ *
+ * NOTE (issue #363 第7wave): 上記の制約は第6wave で KioskFlow に追加された 4 つの外部注入点
+ * （`operatingStatus` / `sttAdapterFactory` / `qrScanner` / `/call` 応答 `stages[]`）で解消した。
+ * シナリオ→注入点の導出は `./kiosk-injection.ts`（純関数）に集約し、実際の注入（KioskFlow への
+ * props 配線）は preview page（`src/app/admin/demo/preview/page.tsx`）が行う。本モジュールは
+ * `/call` 応答の生成のみ `deriveCallResponse` に委譲する（Vonage 発信失敗の段階表示を含む。
+ * 詳細・安全設計は `kiosk-injection.ts` のモジュール doc を参照）。STT エンジン失敗・QR 検知は
+ * 依然として fetch 層の外（クライアント側注入）で解決する — そこが `kiosk-injection.ts` の役割。
  */
-import type { ReceptionState } from '@/domain/reception/state';
-import type { DemoCallResult, DemoScenario } from './scenario';
+import type { DemoScenario } from './scenario';
 import { assertDemoRequestAllowed } from './sandbox';
+import { deriveCallResponse } from './kiosk-injection';
 
 /** 記録した 1 リクエスト（method + 正規化 path）。検証用（機微値・body は残さない）。 */
 export type DemoRecordedCall = { method: string; path: string };
@@ -40,21 +48,6 @@ export type CreateDemoKioskFetchOptions = {
   /** iframe（デモページ）のオリジン。省略時は location.origin、無ければプレースホルダ。 */
   origin?: string;
 };
-
-/** #374 RouteResult 部分集合 → Kiosk が期待する受付状態への写像。 */
-const CALL_RESULT_TO_STATE: Record<DemoCallResult, Extract<ReceptionState, 'connected' | 'timeout' | 'failed'>> = {
-  answered: 'connected',
-  no_answer: 'timeout',
-  declined: 'failed',
-  failed: 'failed',
-};
-
-/** 呼び出し列の「来訪者から見た最終結果」を state へ写像する（列が空/未指定なら no_answer 相当）。 */
-function terminalCallState(scenario: DemoScenario): ReceptionState {
-  const call = scenario.simulatedResults.call;
-  const last = call && call.length > 0 ? call[call.length - 1] : undefined;
-  return CALL_RESULT_TO_STATE[last ?? 'no_answer'];
-}
 
 /** QR 失敗理由 → 非 ok の HTTP ステータス（503=通信断とは区別する）。 */
 const QR_FAILURE_STATUS: Record<'expired' | 'used' | 'revoked', number> = {
@@ -175,9 +168,18 @@ export function createDemoKioskFetch(
       return jsonResponse({ id: `demo-${scenario.id}-${receptionSeq}` });
     }
 
-    // --- 呼び出し（同期 Mock 通話・終端状態を直接返す） ---
+    // --- 呼び出し（#363 kiosk-injection.ts に導出を委譲）。
+    // 最終手が 'failed' のときだけ state:'calling' を返し、KioskCallView（非同期経路）で
+    // stages を段階表示させる。それ以外は従来どおり終端状態を直接返す同期経路（非退行）。 ---
     if (/^\/api\/kiosk\/receptions\/[^/]+\/call$/.test(pathname) && method === 'POST') {
-      return jsonResponse({ state: terminalCallState(scenario) });
+      const { state, stages } = deriveCallResponse(scenario);
+      return jsonResponse({ state, stages });
+    }
+    // 取次段階の非同期経路（Vonage 発信失敗の段階表示, #363）専用: token は必ず非 ok を返し、
+    // call-controller.ts の `client.connect()`（実 Vonage SDK・CDN ロード）を一切発生させずに
+    // 'fallback'（→ CALL_FAILED）へ落とす。デモは実 provider endpoint を利用しない（安全設計）。
+    if (/^\/api\/kiosk\/receptions\/[^/]+\/token$/.test(pathname)) {
+      return jsonResponse({ error: 'demo_no_provider' }, 502);
     }
     // 担当者応答ポーリング: デモでは応答イベント無し（フローは既存の /call 結果で完結）。
     if (/^\/api\/kiosk\/receptions\/[^/]+\/status$/.test(pathname)) {

@@ -77,27 +77,45 @@ describe('createDemoKioskFetch — runtime → heartbeat', () => {
 });
 
 describe('createDemoKioskFetch — call 結果 → 受付状態', () => {
-  async function callState(call: DemoScenario['simulatedResults']['call']): Promise<string> {
+  async function callResponse(
+    call: DemoScenario['simulatedResults']['call'],
+  ): Promise<{ state: string; stages: unknown[] }> {
     const f = fetchFor(scenario({ simulatedResults: { call } }));
     const create = await json(await f('/api/kiosk/receptions', { method: 'POST' }));
     const res = await f(`/api/kiosk/receptions/${create.id}/call`, { method: 'POST' });
-    return (await json(res)).state as string;
+    const body = await json(res);
+    return { state: body.state as string, stages: body.stages as unknown[] };
   }
 
-  it('answered → connected', async () => {
-    expect(await callState(['answered'])).toBe('connected');
+  it('answered → connected（従来どおり同期・実SDK接続を誘発しない）', async () => {
+    expect((await callResponse(['answered'])).state).toBe('connected');
   });
-  it('failed → failed', async () => {
-    expect(await callState(['failed'])).toBe('failed');
-  });
-  it('declined → failed', async () => {
-    expect(await callState(['declined'])).toBe('failed');
+  it('declined → failed（担当者到達済みの明示拒否・段階表示は使わない）', async () => {
+    expect((await callResponse(['declined'])).state).toBe('failed');
   });
   it('no_answer → timeout', async () => {
-    expect(await callState(['no_answer'])).toBe('timeout');
+    expect((await callResponse(['no_answer'])).state).toBe('timeout');
   });
   it('複数手は最終結果（部門代表応答）を来訪者に見せる: no_answer,no_answer,answered → connected', async () => {
-    expect(await callState(['no_answer', 'no_answer', 'answered'])).toBe('connected');
+    expect((await callResponse(['no_answer', 'no_answer', 'answered'])).state).toBe('connected');
+  });
+
+  it(
+    'failed（技術的発信失敗）→ state:calling + stages（#363 Vonage発信失敗の段階表示。' +
+      'KioskCallView を経由させるため直接 failed を返さない）',
+    async () => {
+      const res = await callResponse(['failed']);
+      expect(res.state).toBe('calling');
+      expect(res.stages.length).toBeGreaterThan(0);
+    },
+  );
+
+  it('failed の後続 /token は必ず非 ok（#363 実Vonage SDK・CDN ロードを誘発しない安全設計）', async () => {
+    const f = fetchFor(scenario({ simulatedResults: { call: ['failed'] } }));
+    const create = await json(await f('/api/kiosk/receptions', { method: 'POST' }));
+    await f(`/api/kiosk/receptions/${create.id}/call`, { method: 'POST' });
+    const tokenRes = await f(`/api/kiosk/receptions/${create.id}/token`);
+    expect(tokenRes.ok).toBe(false);
   });
 });
 
