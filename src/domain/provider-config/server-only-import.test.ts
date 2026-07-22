@@ -18,6 +18,7 @@ const FORBIDDEN_IMPORTS = [
   '@/domain/provider-config/secret',
   '@/domain/provider-config/secrets-manager-store',
   '@/lib/platform/tenant-secret-store',
+  '@/lib/platform/provider-resolution',
   'domain/provider-config/secret',
 ];
 

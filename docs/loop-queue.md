@@ -234,10 +234,21 @@ fixedHolidays 上限・JIT 昇格)は同 wave 内で全て修正済み。/kiosk 
 前 wave の本番サーバが残っていると旧ビルドが応答し新 route が 404 になる** — 検証前に
 `next-server` プロセスの起動時刻を確認して kill すること。
 
-**第 10 wave（次に着手する）**: #405 Inc3(env 撤去+テナント解決の実結線)／ #363 残(publish/share
-UI パネル+専用 AuditAction 追加)／ #367 残(専用 AuditAction・kiosk 定期再取得)／ #361 残(VRT/axe、
-testing-library 導入は #105 チェック要)／ **ユーザー判断待ち**: #405 Inc2 の deploy・#375 hash 化・
-#366 固定費・#4 外部依存
+**第 10 wave（2026-07-22 消化済み）** — 同ブランチ・3 トラック並行。結果:
+
+| トラック | Issue | 結果 |
+| --- | --- | --- |
+| A | **#405 Inc3** | `resolveProviderForTenant` 新設(server-only・SecretValue 維持・fail-closed=不整合は Mock)+資格情報供給の env 直読み撤去(`VONAGE_NOTIFY_*`/`VONAGE_SECRET_ARN`/`VONAGE_API_*`/`PRIVATE_KEY`/`APPLICATION_ID`/`ENABLED`)。旧 `getCallAdapter`/`getVonageSessionService` は env-free シム(常に Mock/null)。**破壊的**: 運用で VONAGE_* を使う環境はテナント設定+Secrets Manager へ移行要(`docs/tenant-provider-secrets.md`)。**残**: `resolveCallAdapter` 等の route/store への tenant threading(#4 実装時)・presence 表示(#90/#93)の env 依存を設定 presence へ移行 |
+| B | **#363/#367 残** | 専用 AuditAction 7 種+`operating_policy.updated` へ差し替え・監査ラベル追加・DemoStudio に公開/共有パネル(draft→test/publish→version/rollback→共有リンク発行[**一度きり表示**]/失効・viewer 無効化)。セキュリティレビュー **B1**(GET 応答にトークン生値)を同 wave 内修正=GET/PATCH は presence のみ・生値は発行応答限定+回帰テスト |
+| C | **aituber-kit 調査** | v1.0.0〜v1.44.1=MIT(pixiv ChatVRM 派生)・v2.0.0 から商用独自ライセンスをファイル実物で確認。**コード移植なし・考え方の参考**方針(ユーザー指示)。`docs/aituber-kit-v1-ui-reference.md` に採用提案: 聞き取り中インジケータ+interim 逐次字幕(#361/#364)・リップシンク感情連動+まばたき抑制(#31)・実音声化時の AnalyserNode 振幅駆動(#5)。当方との本質差はリップシンク駆動源のみ |
+
+実ブラウザ検証: 公開パネルの draft→publish(kiosk-dev)→版履歴→共有リンク発行→未認証閲覧→
+失効→無効表示、リロード後のトークン非再表示、監査ラベル表示まで全 PASS。
+
+**第 11 wave（次に着手する）**: aituber 提案の実装(聞き取り中インジケータ+逐次字幕・リップシンク
+感情連動)／ #367 残(kiosk 定期再取得)／ presence 表示の設定 presence 移行(#90/#93×#405)／
+#361 残(VRT/axe、testing-library は #105 チェック要)／ **ユーザー判断待ち**: #405 Inc2 の deploy・
+#375 hash 化・#366 固定費・#4 外部依存(tenant threading 含む)
 
 同 wave に **#366 Phase 0 ADR のみ**（`docs/adr/*.md` 新規・コスト増ゼロ）を差し込むのは安全。
 CDK 実装と deploy は分離し、Budget 見積を添えてユーザー承認を取る。

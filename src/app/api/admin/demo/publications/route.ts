@@ -9,7 +9,7 @@ import {
 } from '@/lib/admin/guard';
 import { appendAdminAudit } from '@/lib/data-stores/reception-log-store';
 import { createPublication } from '@/domain/demo-studio/publication';
-import { listDemoPublications, saveDemoPublication } from '@/domain/demo-studio/publication-store';
+import { listDemoPublications, saveDemoPublication, toDemoPublicationView } from '@/domain/demo-studio/publication-store';
 import { getSavedDemoScenario } from '@/domain/demo-studio/store';
 
 /**
@@ -20,9 +20,7 @@ import { getSavedDemoScenario } from '@/domain/demo-studio/store';
  * 作成は書込権を要求し viewer は 403。id はサーバ合成（クライアント指定 id を信用しない）。
  * 対象シナリオが保存済みに無ければ 400。監査は scenarioId のみ（PII/シナリオ文言は残さない）。
  *
- * NOTE（監査 action）: log.ts（他トラック占有・編集不可）に公開専用の AuditAction が未定義のため、
- * 暫定で既存 `reception.demo_scenario_saved` を使い metadata.event で区別する。オーケストレータへ
- * 専用 action（reception.demo_published 等）の追加を申し送る（本 PR 報告参照）。
+ * 監査 action: `reception.demo_publication_created`（専用 action, issue #363 Inc3）。
  */
 export async function GET(): Promise<NextResponse> {
   try {
@@ -31,7 +29,8 @@ export async function GET(): Promise<NextResponse> {
   } catch (err) {
     return toGuardResponse(err);
   }
-  return NextResponse.json(await listDemoPublications());
+  // 共有トークンの生値は返さない（presence のみ。生値は発行応答限定 — B1 対応）。
+  return NextResponse.json((await listDemoPublications()).map(toDemoPublicationView));
 }
 
 export async function POST(request: Request): Promise<NextResponse> {
@@ -66,9 +65,9 @@ export async function POST(request: Request): Promise<NextResponse> {
   const publication = createPublication(`pub-${randomUUID()}`, scenario.id, new Date().toISOString());
   await saveDemoPublication(publication);
   await appendAdminAudit(
-    'reception.demo_scenario_saved',
+    'reception.demo_publication_created',
     { type: 'demo_publication', id: publication.id },
     { event: 'publication_created', scenarioId: scenario.id, status: publication.status },
   );
-  return NextResponse.json(publication, { status: 201 });
+  return NextResponse.json(toDemoPublicationView(publication), { status: 201 });
 }

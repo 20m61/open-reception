@@ -71,7 +71,7 @@ describe('POST /api/admin/demo/publications', () => {
     const saved = await listDemoPublications();
     expect(saved).toHaveLength(1);
     const [action, target, metadata] = appendAdminAudit.mock.calls[0]!;
-    expect(action).toBe('reception.demo_scenario_saved');
+    expect(action).toBe('reception.demo_publication_created');
     expect(target).toMatchObject({ type: 'demo_publication' });
     expect(metadata).toMatchObject({ event: 'publication_created', scenarioId: 'custom-x' });
   });

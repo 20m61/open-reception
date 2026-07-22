@@ -21,7 +21,8 @@ type Ctx = { params: Promise<{ id: string }> };
  *     TTL は任意（ms・上限 DEMO_SHARE_MAX_TTL_MS にクランプ。無期限は作れない）。
  *   - トークンは高エントロピー・PII なし（`share-token.ts`）。発行/失効の**事実**を監査に残す
  *     （トークン値そのものは監査に残さない — SENSITIVE_KEY 'token' で redact される前提だが、
- *      そもそも metadata へ渡さない）。
+ *      そもそも metadata へ渡さない）。action は専用（issue #363 Inc3）:
+ *      発行→`reception.demo_share_issued`、失効→`reception.demo_share_revoked`。
  *
  * レスポンスはトークン値と有効期限を返す（管理者が共有 URL を組み立てるため）。公開 URL は
  * `/demo/<token>`（本 PR の公開ページ）。
@@ -53,7 +54,7 @@ export async function POST(request: Request, { params }: Ctx): Promise<NextRespo
   const share = issueShareToken(Date.now(), ttlMs);
   await saveDemoPublication({ ...pub, share, updatedAt: new Date().toISOString() });
   await appendAdminAudit(
-    'reception.demo_scenario_saved',
+    'reception.demo_share_issued',
     { type: 'demo_publication', id: pub.id },
     { event: 'share_issued', scenarioId: pub.scenarioId, expiresAt: share.expiresAt },
   );
@@ -75,7 +76,7 @@ export async function DELETE(_request: Request, { params }: Ctx): Promise<NextRe
   const revoked = revokeShareToken(pub.share, Date.now());
   await saveDemoPublication({ ...pub, share: revoked, updatedAt: new Date().toISOString() });
   await appendAdminAudit(
-    'reception.demo_scenario_saved',
+    'reception.demo_share_revoked',
     { type: 'demo_publication', id: pub.id },
     { event: 'share_revoked', scenarioId: pub.scenarioId },
   );

@@ -19,6 +19,8 @@ vi.mock('@/lib/data-stores/reception-log-store', () => ({
 }));
 
 import { POST, DELETE } from './route';
+import { GET as LIST } from '../../route';
+import { GET as DETAIL } from '../route';
 import {
   __resetDemoPublications,
   getDemoPublication,
@@ -66,7 +68,8 @@ describe('POST share（発行）', () => {
     expect(isValidShareTokenValue(body.token)).toBe(true);
     expect(body.expiresAt).toBeDefined();
     // 監査 metadata にトークン値が入っていないこと（PII/secret 最小化）。
-    const [, , metadata] = appendAdminAudit.mock.calls.at(-1)!;
+    const [action, , metadata] = appendAdminAudit.mock.calls.at(-1)!;
+    expect(action).toBe('reception.demo_share_issued');
     expect(metadata).toMatchObject({ event: 'share_issued' });
     expect(JSON.stringify(metadata)).not.toContain(body.token);
   });
@@ -93,11 +96,31 @@ describe('DELETE share（失効）', () => {
     const pub = await getDemoPublication('pub-1');
     expect(pub?.share?.revokedAt).toBeDefined();
     expect(isShareTokenActive(pub!.share!, Date.now())).toBe(false);
-    const [, , metadata] = appendAdminAudit.mock.calls.at(-1)!;
+    const [action, , metadata] = appendAdminAudit.mock.calls.at(-1)!;
+    expect(action).toBe('reception.demo_share_revoked');
     expect(metadata).toMatchObject({ event: 'share_revoked' });
   });
   it('共有が無い publication の失効は 404', async () => {
     await seedPublished();
     expect((await DELETE(new Request('http://x', { method: 'DELETE' }), ctx('pub-1'))).status).toBe(404);
+  });
+});
+
+describe('共有トークン生値の非露出（セキュリティレビュー B1）', () => {
+  it('発行後の GET 一覧/詳細応答に token 生値が現れない（presence のみ）', async () => {
+    await seedPublished();
+    const issued = await POST(new Request('http://x', { method: 'POST', body: '{}' }), ctx('pub-1'));
+    const { token } = await issued.json();
+
+    const listRes = await LIST();
+    expect(listRes.status).toBe(200);
+    const listText = JSON.stringify(await listRes.json());
+    expect(listText).not.toContain(token);
+    expect(listText).toContain('expiresAt'); // presence は残る
+
+    const detailRes = await DETAIL(new Request('http://x'), ctx('pub-1'));
+    expect(detailRes.status).toBe(200);
+    const detailText = JSON.stringify(await detailRes.json());
+    expect(detailText).not.toContain(token);
   });
 });

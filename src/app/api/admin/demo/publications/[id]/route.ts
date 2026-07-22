@@ -19,6 +19,7 @@ import {
 import {
   deleteDemoPublication,
   getDemoPublication,
+  toDemoPublicationView,
   saveDemoPublication,
   type StoredDemoPublication,
 } from '@/domain/demo-studio/publication-store';
@@ -36,6 +37,9 @@ type Ctx = { params: Promise<{ id: string }> };
  *     許可一覧で検証する（誤った Site/Kiosk への公開防止, fail-closed）。落選は 422。
  *   - rollback: 過去 version を新 version として復元（append-only）。存在しない version は 422。
  * 監査は event/scenarioId/status/version など**列挙・識別子のみ**（PII/シナリオ文言なし）。
+ * action は専用（issue #363 Inc3）: set_status→`reception.demo_status_changed`、
+ * publish→`reception.demo_published`、rollback→`reception.demo_rolled_back`、
+ * DELETE→`reception.demo_publication_deleted`。
  */
 
 /** テナントの有効な Kiosk から公開許可 target を組む（disabled/未知は除外＝誤公開防止の母集合）。 */
@@ -55,7 +59,7 @@ export async function GET(_request: Request, { params }: Ctx): Promise<NextRespo
   const { id } = await params;
   const pub = await getDemoPublication(id);
   if (!pub) return NextResponse.json({ error: 'not_found' }, { status: 404 });
-  return NextResponse.json(pub);
+  return NextResponse.json(toDemoPublicationView(pub));
 }
 
 export async function PATCH(request: Request, { params }: Ctx): Promise<NextResponse> {
@@ -88,11 +92,11 @@ export async function PATCH(request: Request, { params }: Ctx): Promise<NextResp
     const next: StoredDemoPublication = { ...r.publication, share: pub.share };
     await saveDemoPublication(next);
     await appendAdminAudit(
-      'reception.demo_scenario_saved',
+      'reception.demo_status_changed',
       { type: 'demo_publication', id: pub.id },
       { event: 'status_changed', scenarioId: pub.scenarioId, status },
     );
-    return NextResponse.json(next);
+    return NextResponse.json(toDemoPublicationView(next));
   }
 
   if (op === 'publish') {
@@ -109,7 +113,7 @@ export async function PATCH(request: Request, { params }: Ctx): Promise<NextResp
     const next: StoredDemoPublication = { ...r.publication, share: pub.share };
     await saveDemoPublication(next);
     await appendAdminAudit(
-      'reception.demo_scenario_saved',
+      'reception.demo_published',
       { type: 'demo_publication', id: pub.id },
       {
         event: 'published',
@@ -121,7 +125,7 @@ export async function PATCH(request: Request, { params }: Ctx): Promise<NextResp
         kioskId: target.kioskId,
       },
     );
-    return NextResponse.json(next);
+    return NextResponse.json(toDemoPublicationView(next));
   }
 
   if (op === 'rollback') {
@@ -134,7 +138,7 @@ export async function PATCH(request: Request, { params }: Ctx): Promise<NextResp
     const next: StoredDemoPublication = { ...r.publication, share: pub.share };
     await saveDemoPublication(next);
     await appendAdminAudit(
-      'reception.demo_scenario_saved',
+      'reception.demo_rolled_back',
       { type: 'demo_publication', id: pub.id },
       {
         event: 'rolled_back',
@@ -144,7 +148,7 @@ export async function PATCH(request: Request, { params }: Ctx): Promise<NextResp
         rolledBackFrom: String(version),
       },
     );
-    return NextResponse.json(next);
+    return NextResponse.json(toDemoPublicationView(next));
   }
 
   return NextResponse.json({ error: 'invalid' }, { status: 400 });
@@ -163,7 +167,7 @@ export async function DELETE(_request: Request, { params }: Ctx): Promise<NextRe
 
   await deleteDemoPublication(id);
   await appendAdminAudit(
-    'reception.demo_scenario_deleted',
+    'reception.demo_publication_deleted',
     { type: 'demo_publication', id: pub.id },
     { event: 'publication_deleted', scenarioId: pub.scenarioId },
   );
