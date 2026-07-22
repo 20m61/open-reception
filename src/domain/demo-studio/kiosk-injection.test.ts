@@ -253,7 +253,7 @@ describe('wantsSyntheticVoice (#363/#364 音声成功系の判定)', () => {
   });
 });
 
-describe('deriveVoiceSession (#363/#364 音声シナリオの自動再生)', () => {
+describe('deriveVoiceSession (#363/#364/#361 第9wave ゼロタッチ自動化: selectingTarget 到達で自動再生)', () => {
   const voiceScenario = () =>
     scenario({ visitorInputs: [{ mode: 'voice', value: '鈴木' }], simulatedResults: { stt: 'success' } });
 
@@ -265,12 +265,24 @@ describe('deriveVoiceSession (#363/#364 音声シナリオの自動再生)', () 
     ).toBeUndefined();
   });
 
-  it('自動再生: start で listening→readback→confirm と進み、onResolved が合成ディレクトリの相手を渡す', () => {
+  it('start（マウント）直後は何もスケジュールしない（selectingTarget 到達前に確定して取りこぼす旧不具合の再発防止）', () => {
+    const { scheduler, ordered } = manualScheduler();
+    const factory = deriveVoiceSession(voiceScenario(), { scheduler, stepDelayMs: 10 })!;
+    const store = new VoiceKioskStore(factory);
+    store.start();
+    expect(ordered()).toHaveLength(0);
+    // idle 通知（KioskFlow 初期状態相当）も無視する。
+    store.notifyReceptionState('idle');
+    expect(ordered()).toHaveLength(0);
+  });
+
+  it('selectingTarget 到達で自動再生: listening→readback→confirm と進み、onResolved が合成ディレクトリの相手を渡す', () => {
     const { scheduler, ordered } = manualScheduler();
     const onResolved = vi.fn();
     const factory = deriveVoiceSession(voiceScenario(), { scheduler, stepDelayMs: 10 })!;
     const store = new VoiceKioskStore(factory, { onResolved });
     store.start();
+    store.notifyReceptionState('selectingTarget'); // KioskFlow が相手選択画面へ到達した通知
 
     const steps = ordered();
     expect(steps).toHaveLength(3);
@@ -290,12 +302,43 @@ describe('deriveVoiceSession (#363/#364 音声シナリオの自動再生)', () 
     expect(store.getState().mode).toBe('idle');
   });
 
+  it('selectingTarget への再入場（BACK 等）は前回の保留タイマーを解除し、シーケンスを再実行する', () => {
+    const { scheduler, ordered } = manualScheduler();
+    const onResolved = vi.fn();
+    const factory = deriveVoiceSession(voiceScenario(), { scheduler, stepDelayMs: 10 })!;
+    const store = new VoiceKioskStore(factory, { onResolved });
+    store.start();
+    store.notifyReceptionState('selectingTarget'); // 1回目到達
+    expect(ordered()).toHaveLength(3);
+
+    // タッチで BACK → 別局面 → 再び selectingTarget（1回目の保留 3件は解除される）。
+    store.notifyReceptionState('selectingPurpose');
+    store.notifyReceptionState('selectingTarget'); // 2回目到達（再実行）
+
+    const steps = ordered().filter((t) => !t.cancelled);
+    expect(steps).toHaveLength(3); // 1回目分は cancelled 済みで除外され、2回目分の 3 件のみ残る
+    steps.forEach((t) => t.fn());
+    expect(onResolved).toHaveBeenCalledTimes(1); // 1回目は発火せず解除、2回目のみ確定
+  });
+
+  it('selectingTarget 以外の局面通知は無視する（発話シーケンスを積まない）', () => {
+    const { scheduler, ordered } = manualScheduler();
+    const factory = deriveVoiceSession(voiceScenario(), { scheduler, stepDelayMs: 10 })!;
+    const store = new VoiceKioskStore(factory);
+    store.start();
+    for (const state of ['idle', 'selectingPurpose', 'inputVisitorInfo', 'confirming', 'calling'] as const) {
+      store.notifyReceptionState(state);
+    }
+    expect(ordered()).toHaveLength(0);
+  });
+
   it('close（アンマウント）は保留タイマーを解除し、以後は発火しない（sandbox 越え・遅発を防ぐ）', () => {
     const { scheduler, runAll } = manualScheduler();
     const onResolved = vi.fn();
     const factory = deriveVoiceSession(voiceScenario(), { scheduler, stepDelayMs: 10 })!;
     const store = new VoiceKioskStore(factory, { onResolved });
     store.start();
+    store.notifyReceptionState('selectingTarget');
     store.close(); // アンマウント相当
     runAll(); // 解除済みタイマーは走らない
     expect(onResolved).not.toHaveBeenCalled();
@@ -311,10 +354,36 @@ describe('deriveVoiceSession (#363/#364 音声シナリオの自動再生)', () 
     )!;
     const store = new VoiceKioskStore(factory, { onResolved });
     store.start();
+    store.notifyReceptionState('selectingTarget');
     ordered().forEach((t) => t.fn());
     expect(onResolved).toHaveBeenCalledTimes(1);
     expect(voiceCandidateToTarget(onResolved.mock.calls[0]![0])).toEqual(
       expect.objectContaining({ type: 'staff', id: 'staff-suzuki' }),
     );
+  });
+
+  it('department 解決デモ (#364): 部署の発話は復唱→確定で dept-sales（部署）が選択される', () => {
+    const { scheduler, ordered } = manualScheduler();
+    const onResolved = vi.fn();
+    const deptScenario = scenario({
+      visitorInputs: [{ mode: 'voice', value: '営業部' }],
+      simulatedResults: { stt: 'success' },
+    });
+    const factory = deriveVoiceSession(deptScenario, { scheduler, stepDelayMs: 10 })!;
+    const store = new VoiceKioskStore(factory, { onResolved });
+    store.start();
+    store.notifyReceptionState('selectingTarget');
+
+    const steps = ordered();
+    expect(steps).toHaveLength(3);
+    steps[0]!.fn(); // beginListening
+    steps[1]!.fn(); // hearTurn → 復唱確認（低信頼固定, DEMO_VOICE_CONFIDENCE）
+    expect(store.getState().mode).toBe('readback');
+    expect(store.getState().readbackName).toContain('営業部');
+
+    steps[2]!.fn(); // confirmYes → 確定
+    expect(onResolved).toHaveBeenCalledTimes(1);
+    const target = voiceCandidateToTarget(onResolved.mock.calls[0]![0]);
+    expect(target).toEqual({ type: 'department', id: 'dept-sales', label: '営業部' });
   });
 });

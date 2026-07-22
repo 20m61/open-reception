@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import { VoiceKioskStore } from './kiosk-store';
-import { createSyntheticVoiceSession } from './kiosk-binding';
+import { createSyntheticVoiceSession, type VoiceSessionFactory } from './kiosk-binding';
 import type { Staff } from '@/domain/staff/types';
 
 function staff(id: string, displayName: string, kana: string): Staff {
@@ -89,5 +89,29 @@ describe('VoiceKioskStore (#364 synthetic 駆動で 4 シナリオを固定)', (
     const a = store.getState();
     driver.bargeIn(); // speaking でない局面での barge-in は無変化
     expect(store.getState()).toBe(a);
+  });
+
+  it('notifyReceptionState (#364/#363/#361 第9wave): controller の notifyReceptionState を中継する', () => {
+    const received: string[] = [];
+    const driver = createSyntheticVoiceSession({ directory });
+    // controller.notifyReceptionState を実装した factory ラッパで中継を確認する
+    // （demo-studio の deriveVoiceSession が実装する形の最小再現）。
+    const factory: VoiceSessionFactory = (emit, hooks) => {
+      const inner = driver.factory(emit, hooks);
+      return { ...inner, notifyReceptionState: (state) => received.push(state) };
+    };
+    const store = new VoiceKioskStore(factory);
+    store.start();
+    store.notifyReceptionState('selectingTarget');
+    expect(received).toEqual(['selectingTarget']);
+  });
+
+  it('notifyReceptionState (#364/#363/#361): controller が未実装（実 orchestrator 相当）でも例外にならず no-op', () => {
+    // createSyntheticVoiceSession の素の controller は notifyReceptionState を実装しない
+    // （実 orchestrator 経路との対称性を確認する no-op 契約）。
+    const driver = createSyntheticVoiceSession({ directory });
+    const store = new VoiceKioskStore(driver.factory);
+    store.start();
+    expect(() => store.notifyReceptionState('selectingTarget')).not.toThrow();
   });
 });

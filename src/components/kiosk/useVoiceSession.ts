@@ -11,6 +11,7 @@ import { useEffect, useMemo, useSyncExternalStore } from 'react';
 import { VoiceKioskStore } from '@/lib/voice-session/kiosk-store';
 import type { OnResolved, VoiceSessionFactory, VoiceSessionHooks } from '@/lib/voice-session/kiosk-binding';
 import type { VoiceKioskState } from '@/domain/voice-session/kiosk-view';
+import type { ReceptionState } from '@/domain/reception/state';
 
 export type UseVoiceSessionResult = {
   state: VoiceKioskState;
@@ -19,6 +20,9 @@ export type UseVoiceSessionResult = {
 };
 
 /**
+ * @param receptionState 現在の受付局面 (issue #364/#363/#361 第9wave ゼロタッチ自動化)。値が変わる
+ *   たびに `store.notifyReceptionState` へ中継する（selectingTarget 到達での自動再生トリガに使う。
+ *   `VoiceSessionController.notifyReceptionState` 未実装の controller には no-op）。
  * @param onResolved 音声で確定した相手候補を受け取る実結線点（KioskFlow が SELECT_TARGET へ渡す）。
  *   **安定参照を渡すこと**（呼び出し側で `useCallback` 等）。この identity が変わるとストアを作り直し、
  *   音声セッションが start/close で再起動する。KioskFlow は `dispatch`（useReducer 由来で安定）だけに
@@ -26,6 +30,7 @@ export type UseVoiceSessionResult = {
  */
 export function useVoiceSession(
   factory: VoiceSessionFactory,
+  receptionState: ReceptionState,
   onResolved?: OnResolved,
 ): UseVoiceSessionResult {
   const hooks = useMemo<VoiceSessionHooks>(() => ({ onResolved }), [onResolved]);
@@ -36,6 +41,12 @@ export function useVoiceSession(
     store.start();
     return () => store.close();
   }, [store]);
+
+  // selectingTarget 到達（および BACK 等での再到達）を controller へ通知する。start-effect の
+  // 後に走る（宣言順）が、start() 自体は同期タイマーを積まないため順序に依存しない。
+  useEffect(() => {
+    store.notifyReceptionState(receptionState);
+  }, [store, receptionState]);
 
   return { state, confirmYes: store.confirmYes, confirmNo: store.confirmNo };
 }

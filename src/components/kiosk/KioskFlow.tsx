@@ -1236,9 +1236,18 @@ export function KioskFlow({ operatingStatus, sttAdapterFactory, voiceSession, qr
         音声対話 UI レイヤ (#364 / #361)。voiceSession 注入時のみマウントする opt-in オーバーレイ。
         既存の 35%/65% レール（アバター/操作）を壊さない画面下部の重ね描画で、字幕・復唱確認・
         barge-in インジケータ・タッチ縮退案内を担う。未指定なら一切マウントされない（無変更動作）。
+        `receptionState={data.state}` は第9wave のゼロタッチ自動化配線: voiceSession は reception
+        状態機械を直接観測できないため、この prop 経由で現在局面（少なくとも selectingTarget か）を
+        通知する。demo-studio の synthetic driver はこれを合図に発話シーケンスを (再)開始できる
+        （実 orchestrator 経路は同 hook を実装しないため無影響 = 中立な通知口）。
       */}
       {voiceSession ? (
-        <VoiceSessionLayer factory={voiceSession} locale={locale} onResolved={handleVoiceResolved} />
+        <VoiceSessionLayer
+          factory={voiceSession}
+          locale={locale}
+          receptionState={data.state}
+          onResolved={handleVoiceResolved}
+        />
       ) : null}
       {inactivitySeconds !== null ? (
         <InactivityWarning

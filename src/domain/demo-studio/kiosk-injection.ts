@@ -133,7 +133,11 @@ export function demoVoiceDirectory(): EntityDirectory {
   };
 }
 
-/** 発話取り込み〜復唱〜確定の各段の既定間隔（ms）。preview で操作者が相手選択画面へ到達する猶予も見込む。 */
+/**
+ * 発話取り込み〜復唱〜確定の各段の既定間隔（ms）。第9wave からは selectingTarget 到達
+ * （`notifyReceptionState`）を起点に測る（マウント起点ではない）ため、この値は「相手選択画面が
+ * 表示されてから発話が始まるまでの間」の演出上の猶予にすぎない。
+ */
 export const DEMO_VOICE_STEP_MS = 2000;
 /**
  * synthetic の STT confidence 既定値。閾値（#370 既定 0.6）**未満**にして必ず復唱確認を挟む。
@@ -180,15 +184,22 @@ function firstVoiceUtterance(scenario: DemoScenario): string | undefined {
 }
 
 /**
- * 音声成功シナリオの synthetic セッション factory を導出する (#363/#364)。
+ * 音声成功シナリオの synthetic セッション factory を導出する (#363/#364、第9wave でゼロタッチ化)。
  *
- * 返る factory を KioskFlow の `voiceSession` prop へ渡すと、マウント時（store.start）に
- * **自動再生**が走る: `beginListening`（字幕「お話しください」）→ `hearTurn(発話文)`（→ 低信頼のため
- * 復唱確認「◯◯様ですね？」）→ `confirmYes`（「はい」で確定）。確定は KioskFlow が差し込む
- * `onResolved` hook 経由で相手選択（`SELECT_TARGET`）へ橋渡しされ、相手選択画面にいれば実際に次へ進む。
+ * 返る factory を KioskFlow の `voiceSession` prop へ渡すと、**受付が相手選択画面
+ * （`selectingTarget`）へ到達するたび**に自動再生が走る: `beginListening`（字幕「お話しください」）
+ * → `hearTurn(発話文)`（→ 低信頼のため復唱確認「◯◯様ですね？」）→ `confirmYes`（「はい」で確定）。
+ * 確定は KioskFlow が差し込む `onResolved` hook 経由で相手選択（`SELECT_TARGET`）へ橋渡しされる。
+ *
+ * 起点は **マウント時刻ではなく `notifyReceptionState('selectingTarget')`**（KioskFlow →
+ * `VoiceSessionLayer` → `useVoiceSession` → `VoiceKioskStore` 経由の通知）。これにより、操作者が
+ * 用件選択などのタッチ手順を終えて実際に相手選択画面へ到達した瞬間に発話が始まり、
+ * 「選択画面へ進めば音声が確実に相手を確定する」ことを保証する（取りこぼしゼロ）。BACK 等で
+ * selectingTarget へ再入場した場合も再実行する。
  *
  * 音声成功系でないシナリオは undefined を返す（従来どおり音声 UI を一切マウントしない＝非退行）。
- * タイマーは `close`（アンマウント）で必ず解除し、アンマウント後の発火・sandbox 越えを防ぐ。
+ * タイマーは `close`（アンマウント）または次回の selectingTarget 到達時に必ず解除し、
+ * アンマウント後の発火・多重発火・sandbox 越えを防ぐ。
  */
 export function deriveVoiceSession(
   scenario: DemoScenario,
@@ -214,12 +225,26 @@ export function deriveVoiceSession(
       timers.clear();
     };
 
+    /**
+     * 発話→復唱→確定 の 1 サイクルを、呼び出し時点を起点にスケジュールする
+     * (issue #364/#363/#361 第9wave ゼロタッチ完全自動化)。
+     * 保留中の前回タイマーは必ず解除してから積み直す（再入場の多重発火防止）。
+     */
+    const playSequence = (): void => {
+      cancelAll();
+      at(1, () => driver.beginListening());
+      at(2, () => driver.hearTurn(utterance));
+      at(3, () => controller.confirmYes());
+    };
+
     return {
       start: () => {
         void controller.start();
-        at(1, () => driver.beginListening());
-        at(2, () => driver.hearTurn(utterance));
-        at(3, () => controller.confirmYes());
+        // ここでは何もスケジュールしない (第8wave 申し送りの解消): マウント時点の受付局面は
+        // 大抵 idle/selectingPurpose で、selectingTarget とは限らない。旧実装のようにマウント
+        // 起点の固定タイマーで即時再生すると、操作者がまだ相手選択画面へ到達していないうちに
+        // confirmYes が SELECT_TARGET を dispatch してしまい、reducer が selectingTarget 以外を
+        // no-op にする設計のため取りこぼす。再生の起点は `notifyReceptionState` に一本化する。
       },
       close: () => {
         cancelAll();
@@ -227,6 +252,13 @@ export function deriveVoiceSession(
       },
       confirmYes: () => controller.confirmYes(),
       confirmNo: () => controller.confirmNo(),
+      // KioskFlow が data.state の変化を通知するたび呼ばれる（VoiceSessionLayer 経由）。
+      // selectingTarget へ到達する**たびに**（初回到達・BACK からの再到達いずれも）発話
+      // シーケンスを (再)開始することで「操作者が選択画面へ進めば音声が確実に相手を確定する」
+      // ことを保証する（取りこぼしゼロ）。それ以外の局面通知は無視する。
+      notifyReceptionState: (state) => {
+        if (state === 'selectingTarget') playSequence();
+      },
     };
   };
 }

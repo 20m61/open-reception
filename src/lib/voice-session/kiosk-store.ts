@@ -15,6 +15,7 @@ import {
   type VoiceKioskEvent,
   type VoiceKioskState,
 } from '@/domain/voice-session/kiosk-view';
+import type { ReceptionState } from '@/domain/reception/state';
 import type { VoiceSessionController, VoiceSessionFactory, VoiceSessionHooks } from './kiosk-binding';
 
 export class VoiceKioskStore {
@@ -62,6 +63,14 @@ export class VoiceKioskStore {
   /** 復唱確認「いいえ」（タッチ/音声 共通入口）。 */
   confirmNo = (): void => {
     this.controller.confirmNo();
+  };
+
+  /**
+   * 現在の受付局面（`ReceptionState`）を controller へ中継する (issue #364/#363/#361 第9wave)。
+   * controller が `notifyReceptionState` を実装していなければ no-op（実 orchestrator 経路は無影響）。
+   */
+  notifyReceptionState = (state: ReceptionState): void => {
+    this.controller.notifyReceptionState?.(state);
   };
 
   private dispatch(event: VoiceKioskEvent): void {
