@@ -314,7 +314,15 @@ export type AuditAction =
   // テナント単位アップデートの実行 / ロールバック (issue #290 item1)。昇格必須・高重要度監査。
   // metadata は component/from/to/dryRun/result のみ（PII・秘匿値なし）。実デプロイは #195/#65 外部待ち。
   | 'platform.update.executed'
-  | 'platform.update.rolled_back';
+  | 'platform.update.rolled_back'
+  // 接続先 Endpoint・ルーティングポリシー設定 (issue #374)。address(e164/uri) は監査に残さない。
+  // 残すのは id・ownerType・channel・件数など非機微情報のみ。
+  | 'contact_endpoint.created'
+  | 'contact_endpoint.updated'
+  | 'contact_endpoint.deleted'
+  | 'routing_policy.created'
+  | 'routing_policy.updated'
+  | 'routing_policy.deleted';
 
 export type AuditLog = {
   id: string;
