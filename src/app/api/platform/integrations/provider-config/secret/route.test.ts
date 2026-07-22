@@ -30,6 +30,9 @@ vi.mock('@/lib/tenant/store', () => ({
 vi.mock('@/lib/admin/audit', () => ({ recordDangerAction: (i: unknown) => recordDangerAction(i) }));
 
 import { PUT as SET, DELETE as CLEAR } from './route';
+import { grantElevation } from '@/domain/auth/elevation';
+import { issueElevationToken, ELEVATION_COOKIE } from '@/lib/platform/elevation';
+import { SELECTED_TENANT_COOKIE } from '@/lib/platform/selected-tenant';
 import {
   __resetProviderConfigStore,
   putTenantProviderConfig,
@@ -67,13 +70,32 @@ function req(method: 'PUT' | 'DELETE', body: unknown) {
 const setSecret = (body: unknown) => SET(req('PUT', body));
 const clearSecret = (body: unknown) => CLEAR(req('DELETE', body));
 
+/** 選択テナント cookie + 対象を覆う有効な昇格 cookie を持たせる（secret 操作は昇格必須）。 */
+async function setCookies(elevationScope: { tenantId?: string } | null = {}): Promise<void> {
+  const token =
+    elevationScope === null
+      ? null
+      : await issueElevationToken(
+          grantElevation({ reason: 'secret 設定のため', scope: elevationScope }, Date.now()),
+          'j',
+          'dev@example.com',
+        );
+  (cookieGet as unknown as { mockImplementation: (fn: (n?: string) => { value: string } | undefined) => void }).mockImplementation(
+    (n?: string) => {
+      if (n === ELEVATION_COOKIE) return token ? { value: token } : undefined;
+      if (n === SELECTED_TENANT_COOKIE) return { value: 'internal' };
+      return { value: 'internal' };
+    },
+  );
+}
+
 beforeEach(async () => {
   vi.clearAllMocks();
   __resetProviderConfigStore();
   __resetTenantSecretStore();
   resolveAdminActor.mockResolvedValue(developer());
   getTenant.mockResolvedValue({ ...TENANT });
-  cookieGet.mockReturnValue({ value: 'internal' });
+  await setCookies({});
   recordDangerAction.mockResolvedValue({});
   // secret を設定する前提として非秘密設定（provider=vonage）を用意する。
   await putTenantProviderConfig({
@@ -97,6 +119,23 @@ describe('認可・前提 (#405 Inc1)', () => {
   it('config 未設定テナントは 409（先に非秘密設定が要る）', async () => {
     __resetProviderConfigStore();
     expect((await setSecret({ secret: FAKE, expectedProvider: 'vonage' })).status).toBe(409);
+  });
+
+  it('developer でも未昇格は 403 elevation_required（secret set/clear は昇格必須）', async () => {
+    await setCookies(null);
+    const res = await setSecret({ secret: FAKE, expectedProvider: 'vonage' });
+    expect(res.status).toBe(403);
+    expect((await res.json()).error).toBe('elevation_required');
+    expect((await clearSecret({ expectedProvider: 'vonage' })).status).toBe(403);
+    expect(recordDangerAction).not.toHaveBeenCalled();
+  });
+
+  it('他テナント限定の昇格では対象テナントの secret を触れない（403 out_of_scope）', async () => {
+    await setCookies({ tenantId: 'other-tenant' });
+    const res = await setSecret({ secret: FAKE, expectedProvider: 'vonage' });
+    expect(res.status).toBe(403);
+    expect((await res.json()).reason).toBe('out_of_scope');
+    expect(recordDangerAction).not.toHaveBeenCalled();
   });
 });
 

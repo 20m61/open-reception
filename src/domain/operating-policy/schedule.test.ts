@@ -185,6 +185,18 @@ describe('validatePolicyInput: 正常系', () => {
   });
 });
 
+describe('validatePolicyInput: fixedHolidays の件数上限', () => {
+  it('366 件超は invalid_input（ストア肥大・評価コスト増の防止）', () => {
+    const result = validatePolicyInput({
+      fixedHolidays: Array.from({ length: 367 }, () => '01-01'),
+    });
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error.issues.some((i) => i.field === 'fixedHolidays' && /too many/.test(i.message))).toBe(true);
+    }
+  });
+});
+
 describe('validatePolicyInput: 不正時間帯 (逆転区間等) は invalid_input', () => {
   it('crossesMidnight 未指定で end <= start（逆転区間）は拒否する', () => {
     const result = validatePolicyInput({ weeklySchedule: { mon: [{ start: '18:00', end: '09:00' }] } });

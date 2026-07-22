@@ -40,6 +40,7 @@ const YMD_RE = /^\d{4}-(0[1-9]|1[0-2])-(0[1-9]|[12]\d|3[01])$/;
 const MAX_LABEL_LEN = 100;
 const MAX_RANGES_PER_DAY = 12;
 const MAX_EXCEPTIONS = 366;
+const MAX_FIXED_HOLIDAYS = 366;
 
 function parseTimeToMinutes(t: string): number | null {
   const m = TIME_RE.exec(t);
@@ -136,6 +137,10 @@ function validateFixedHolidays(raw: unknown, issues: PolicyValidationIssue[]): s
   if (raw === undefined) return [];
   if (!Array.isArray(raw)) {
     issues.push({ field: 'fixedHolidays', message: 'must be an array of "MM-DD" strings' });
+    return null;
+  }
+  if (raw.length > MAX_FIXED_HOLIDAYS) {
+    issues.push({ field: 'fixedHolidays', message: `too many entries (max ${MAX_FIXED_HOLIDAYS})` });
     return null;
   }
   const out: string[] = [];
