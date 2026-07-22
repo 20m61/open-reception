@@ -1,16 +1,18 @@
 /**
- * GET /api/kiosk/config のテスト (#18/#29 + #290 item3 メンテナンス enforcement)。
+ * GET /api/kiosk/config のテスト (#18/#29 + #290 item3 メンテナンス enforcement + #367 営業時間外)。
  *
  * - 通常時は端末設定 + active（緊急停止を factor 済み）を返し maintenance=null。
  * - impact=unavailable の現在有効メンテでは active=false（受付開始を止める）。
  * - read_only 等の軽い影響では active を維持し、案内表示用に maintenance を返す。
  * - 判定不能（fail-open）では maintenance=null・active は既存ロジックのまま。
+ * - #367: 保存済みポリシーの判定結果を operatingStatus として返す。未設定/判定不能は null。
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const getKioskConfig = vi.fn();
 const getSecuritySettings = vi.fn();
 const resolveKioskMaintenance = vi.fn();
+const resolveKioskOperatingStatusById = vi.fn();
 
 vi.mock('@/lib/kiosk/kiosk-store', () => ({
   getKioskConfig: (...a: unknown[]) => getKioskConfig(...a),
@@ -20,6 +22,9 @@ vi.mock('@/lib/security/security-store', () => ({
 }));
 vi.mock('@/lib/platform/maintenance-gate', () => ({
   resolveKioskMaintenance: (...a: unknown[]) => resolveKioskMaintenance(...a),
+}));
+vi.mock('@/lib/operating-policy/kiosk-gate', () => ({
+  resolveKioskOperatingStatusById: (...a: unknown[]) => resolveKioskOperatingStatusById(...a),
 }));
 
 import { GET } from './route';
@@ -31,10 +36,11 @@ beforeEach(() => {
   getKioskConfig.mockResolvedValue({ kioskId: 'kiosk-1', displayName: '受付端末1', active: true });
   getSecuritySettings.mockResolvedValue({ emergencyStop: false });
   resolveKioskMaintenance.mockResolvedValue(null);
+  resolveKioskOperatingStatusById.mockResolvedValue(undefined);
 });
 
 describe('GET /api/kiosk/config (#290 item3)', () => {
-  it('通常時は設定 + active=true・maintenance=null を返す', async () => {
+  it('通常時は設定 + active=true・maintenance=null・operatingStatus=null を返す', async () => {
     const res = await GET(req('kiosk-1'));
     expect(res.status).toBe(200);
     await expect(res.json()).resolves.toEqual({
@@ -42,6 +48,7 @@ describe('GET /api/kiosk/config (#290 item3)', () => {
       displayName: '受付端末1',
       active: true,
       maintenance: null,
+      operatingStatus: null,
     });
     expect(resolveKioskMaintenance).toHaveBeenCalledWith('kiosk-1');
   });
@@ -78,5 +85,32 @@ describe('GET /api/kiosk/config (#290 item3)', () => {
     getSecuritySettings.mockResolvedValue({ emergencyStop: true });
     const res = await GET(req('kiosk-1'));
     await expect(res.json()).resolves.toMatchObject({ active: false, maintenance: null });
+  });
+});
+
+describe('GET /api/kiosk/config — operatingStatus (#367)', () => {
+  it('保存済みポリシーが closed 判定なら operatingStatus をそのまま応答へ含める', async () => {
+    resolveKioskOperatingStatusById.mockResolvedValue({
+      state: 'closed',
+      reopenAt: '2026-07-23T00:00:00.000Z',
+      emergencyContactLabel: '警備室内線',
+    });
+    const res = await GET(req('kiosk-1'));
+    const body = await res.json();
+    expect(body.operatingStatus).toEqual({
+      state: 'closed',
+      reopenAt: '2026-07-23T00:00:00.000Z',
+      emergencyContactLabel: '警備室内線',
+    });
+    expect(resolveKioskOperatingStatusById).toHaveBeenCalledWith('kiosk-1');
+    // 営業時間外でも kiosk 自体の active（端末失効/緊急停止/メンテナンス）は独立して評価される。
+    expect(body.active).toBe(true);
+  });
+
+  it('ポリシー未設定（fail-open）は operatingStatus=null を返す', async () => {
+    resolveKioskOperatingStatusById.mockResolvedValue(undefined);
+    const res = await GET(req('kiosk-1'));
+    const body = await res.json();
+    expect(body.operatingStatus).toBeNull();
   });
 });

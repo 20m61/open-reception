@@ -2,9 +2,9 @@ import { describe, expect, it } from 'vitest';
 import { DEMO_SCENARIOS, DEMO_SCENARIO_IDS, getDemoScenario } from './scenarios';
 import { isDemoScenario, type DemoInitialMode } from './scenario';
 
-describe('DEMO_SCENARIOS (issue #363 初期 9 シナリオ)', () => {
-  it('9 シナリオを seed する', () => {
-    expect(DEMO_SCENARIOS).toHaveLength(9);
+describe('DEMO_SCENARIOS (issue #363 初期 9 シナリオ + #364 音声成功系)', () => {
+  it('10 シナリオを seed する（初期 9 + 音声成功系 1）', () => {
+    expect(DEMO_SCENARIOS).toHaveLength(10);
   });
 
   it('全シナリオが有効な DemoScenario で、id は一意', () => {
@@ -40,6 +40,8 @@ describe('DEMO_SCENARIOS (issue #363 初期 9 シナリオ)', () => {
     expect(qr).toContain('valid');
     const stt = DEMO_SCENARIOS.map((s) => s.simulatedResults.stt);
     expect(stt).toContain('error');
+    // 音声成功系（発話→復唱→確定→相手選択の自動再生, #364）も seed する。
+    expect(stt).toContain('success');
   });
 
   it('未応答→代理→部門代表シナリオは複数手の call 列を持つ', () => {

@@ -75,6 +75,7 @@ export const ADMIN_NAV: readonly NavGroup[] = [
       { href: '/admin/reservations', label: '来訪予約' },
       { href: '/admin/stay', label: '在館状況' },
       { href: '/admin/sites', label: '拠点' },
+      { href: '/admin/operating-hours', label: '営業時間' },
       { href: '/admin/kiosks', label: '受付端末' },
       { href: '/admin/devices', label: '受付端末（拠点別）' },
       { href: '/admin/call-routes', label: '呼び出しルート' },

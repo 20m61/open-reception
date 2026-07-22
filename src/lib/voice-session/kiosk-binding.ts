@@ -43,11 +43,29 @@ export interface VoiceSessionController {
   confirmNo(): void;
 }
 
-/** Kiosk へ渡す注入 prop。emit を受け取り、駆動可能な controller を返す。 */
-export type VoiceSessionFactory = (emit: VoiceKioskEmit) => VoiceSessionController;
-
 /** 解決済み候補を既存選択へ橋渡しするコールバック（Kiosk が selection を進める）。 */
 export type OnResolved = (candidate: EntityCandidate | null) => void;
+
+/**
+ * マウント時に Kiosk（`KioskFlow`）が factory へ差し込む結線 hooks (issue #364)。
+ *
+ * `onResolved` は「音声で確定した相手候補」を Kiosk の相手選択（`SELECT_TARGET`）へ渡す実結線点。
+ * factory を構築するのは demo-studio / 呼び出し側だが、実際に selection を進める `dispatch` を持つのは
+ * KioskFlow である。そこで onResolved は**構築時の `deps.onResolved` ではなくマウント時の hook**で
+ * 与えられる（構築側が Kiosk の dispatch を知らなくてよい）。両方与えられた場合は hook を優先する。
+ */
+export type VoiceSessionHooks = {
+  onResolved?: OnResolved;
+};
+
+/**
+ * Kiosk へ渡す注入 prop。emit（UI 状態機械への口）と、マウント時の結線 hooks を受け取り、
+ * 駆動可能な controller を返す。`hooks` は任意（未指定でも従来どおり動作する）。
+ */
+export type VoiceSessionFactory = (
+  emit: VoiceKioskEmit,
+  hooks?: VoiceSessionHooks,
+) => VoiceSessionController;
 
 export type VoiceSessionBridgeDeps = {
   /** マッチング対象の担当者/部門辞書。 */
@@ -103,17 +121,25 @@ export type SyntheticVoiceDriver = {
  */
 export function createSyntheticVoiceSession(deps: VoiceSessionBridgeDeps): SyntheticVoiceDriver {
   let emit: VoiceKioskEmit = () => {};
+  /** マウント時に KioskFlow が差し込む結線 hooks（onResolved 実結線）。 */
+  let activeHooks: VoiceSessionHooks | undefined;
   /** 直近の復唱で保留中の解決済み候補（confirmYes で選択へ渡す）。 */
   let pendingResolved: EntityCandidate | null = null;
 
-  const factory: VoiceSessionFactory = (e) => {
+  // 確定候補の橋渡し先: マウント時 hook を優先し、無ければ構築時 deps.onResolved（直接テスト/後方互換）。
+  const resolve = (candidate: EntityCandidate | null): void => {
+    (activeHooks?.onResolved ?? deps.onResolved)?.(candidate);
+  };
+
+  const factory: VoiceSessionFactory = (e, hooks) => {
     emit = e;
+    activeHooks = hooks;
     return {
       start: () => {},
       close: () => {},
       confirmYes: () => {
         emit({ type: 'confirmYes' });
-        deps.onResolved?.(pendingResolved);
+        resolve(pendingResolved);
         pendingResolved = null;
       },
       confirmNo: () => {
@@ -130,7 +156,7 @@ export function createSyntheticVoiceSession(deps: VoiceSessionBridgeDeps): Synth
       const { event, resolved } = bridge(deps, text);
       if (event.type === 'heardAccepted') {
         emit(event);
-        deps.onResolved?.(resolved);
+        resolve(resolved);
       } else if (event.type === 'heardNeedsConfirmation') {
         pendingResolved = resolved;
         emit(event);
@@ -177,8 +203,12 @@ export function createOrchestratorVoiceSession(
   construct: (callbacks: VoiceSessionCallbacks) => VoiceSessionLike,
   deps: VoiceSessionBridgeDeps,
 ): VoiceSessionFactory {
-  return (emit) => {
+  return (emit, hooks) => {
     let pendingResolved: EntityCandidate | null = null;
+    // マウント時 hook を優先し、無ければ構築時 deps.onResolved（直接テスト/後方互換）。
+    const resolve = (candidate: EntityCandidate | null): void => {
+      (hooks?.onResolved ?? deps.onResolved)?.(candidate);
+    };
 
     const orchestrator = construct({
       now: deps.now,
@@ -186,7 +216,7 @@ export function createOrchestratorVoiceSession(
         const { event, resolved } = bridge(deps, text);
         if (event.type === 'heardAccepted') {
           emit(event);
-          deps.onResolved?.(resolved);
+          resolve(resolved);
         } else if (event.type === 'heardNeedsConfirmation') {
           pendingResolved = resolved;
           emit(event);
@@ -210,7 +240,7 @@ export function createOrchestratorVoiceSession(
       confirmYes: () => {
         emit({ type: 'confirmYes' });
         orchestrator.resetTurn();
-        deps.onResolved?.(pendingResolved);
+        resolve(pendingResolved);
         pendingResolved = null;
       },
       confirmNo: () => {

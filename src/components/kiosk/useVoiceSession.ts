@@ -9,7 +9,7 @@
 
 import { useEffect, useMemo, useSyncExternalStore } from 'react';
 import { VoiceKioskStore } from '@/lib/voice-session/kiosk-store';
-import type { VoiceSessionFactory } from '@/lib/voice-session/kiosk-binding';
+import type { OnResolved, VoiceSessionFactory, VoiceSessionHooks } from '@/lib/voice-session/kiosk-binding';
 import type { VoiceKioskState } from '@/domain/voice-session/kiosk-view';
 
 export type UseVoiceSessionResult = {
@@ -18,8 +18,18 @@ export type UseVoiceSessionResult = {
   confirmNo: () => void;
 };
 
-export function useVoiceSession(factory: VoiceSessionFactory): UseVoiceSessionResult {
-  const store = useMemo(() => new VoiceKioskStore(factory), [factory]);
+/**
+ * @param onResolved 音声で確定した相手候補を受け取る実結線点（KioskFlow が SELECT_TARGET へ渡す）。
+ *   **安定参照を渡すこと**（呼び出し側で `useCallback` 等）。この identity が変わるとストアを作り直し、
+ *   音声セッションが start/close で再起動する。KioskFlow は `dispatch`（useReducer 由来で安定）だけに
+ *   依存した安定コールバックを渡すため、通常は再生成されない。
+ */
+export function useVoiceSession(
+  factory: VoiceSessionFactory,
+  onResolved?: OnResolved,
+): UseVoiceSessionResult {
+  const hooks = useMemo<VoiceSessionHooks>(() => ({ onResolved }), [onResolved]);
+  const store = useMemo(() => new VoiceKioskStore(factory, hooks), [factory, hooks]);
   const state = useSyncExternalStore(store.subscribe, store.getState, store.getState);
 
   useEffect(() => {

@@ -9,6 +9,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { VoiceKioskStore } from '@/lib/voice-session/kiosk-store';
 import { createSyntheticVoiceSession } from '@/lib/voice-session/kiosk-binding';
+import { voiceCandidateToTarget } from './voice-target-binding';
 import { VoiceReadbackConfirm } from './VoiceReadbackConfirm';
 import type { Staff } from '@/domain/staff/types';
 
@@ -90,5 +91,48 @@ describe('音声対話 注入 e2e（synthetic → store → UI）', () => {
     const store = new VoiceKioskStore(driver.factory);
     // start を呼ばない = inactive のまま
     expect(paint(store)).toBe('');
+  });
+});
+
+describe('onResolved 実結線 (#364): マウント時 hook で相手選択へ橋渡しする', () => {
+  it('store に渡した hook が、確定候補を KioskFlow 相当の SELECT_TARGET へ写像できる形で受け取る', () => {
+    // KioskFlow の onResolved と同じ処理（voiceCandidateToTarget → SELECT_TARGET）を模す。
+    const dispatched: Array<{ type: string; target: unknown }> = [];
+    const onResolved = vi.fn((candidate) => {
+      const target = voiceCandidateToTarget(candidate);
+      if (target) dispatched.push({ type: 'SELECT_TARGET', target });
+    });
+
+    const driver = createSyntheticVoiceSession({ directory, sttConfidence: 0.3 });
+    const store = new VoiceKioskStore(driver.factory, { onResolved });
+    store.start();
+    driver.hearTurn('さとう'); // 低信頼 → 復唱確認
+    expect(store.getState().mode).toBe('readback');
+
+    store.confirmYes(); // 復唱「はい」→ 確定 → hook 経由で相手選択
+    expect(onResolved).toHaveBeenCalledTimes(1);
+    expect(dispatched).toEqual([
+      { type: 'SELECT_TARGET', target: { type: 'staff', id: 's1', label: '佐藤' } },
+    ]);
+  });
+
+  it('高信頼の自動採用でも hook が発火し、相手選択へ橋渡しされる', () => {
+    const onResolved = vi.fn();
+    const driver = createSyntheticVoiceSession({ directory, sttConfidence: 0.95 });
+    const store = new VoiceKioskStore(driver.factory, { onResolved });
+    store.start();
+    driver.hearTurn('さとう'); // 高信頼 → heardAccepted（復唱なし）
+    expect(onResolved).toHaveBeenCalledWith(expect.objectContaining({ id: 's1' }));
+  });
+
+  it('マウント時 hook は構築時 deps.onResolved より優先される（KioskFlow の dispatch を正とする）', () => {
+    const depsOnResolved = vi.fn();
+    const hookOnResolved = vi.fn();
+    const driver = createSyntheticVoiceSession({ directory, sttConfidence: 0.95, onResolved: depsOnResolved });
+    const store = new VoiceKioskStore(driver.factory, { onResolved: hookOnResolved });
+    store.start();
+    driver.hearTurn('さとう');
+    expect(hookOnResolved).toHaveBeenCalledTimes(1);
+    expect(depsOnResolved).not.toHaveBeenCalled();
   });
 });

@@ -27,6 +27,10 @@ import type { SttAdapterFactory } from '@/components/kiosk/stt-adapter';
 import { InjectableQrScanner } from '@/components/kiosk/qr-injection';
 import type { QrScanner } from '@/domain/checkin/scanner';
 import type { CallStage } from '@/domain/kiosk/call-stages';
+import { createSyntheticVoiceSession, type VoiceSessionFactory } from '@/lib/voice-session/kiosk-binding';
+import type { EntityDirectory } from '@/domain/voice-stt/entity-resolver';
+import type { Staff } from '@/domain/staff/types';
+import type { Department } from '@/domain/department/types';
 import type { DemoCallResult, DemoScenario } from './scenario';
 
 /** 営業時間外シナリオの再開時刻サンプルのオフセット（現在時刻 + 12 時間, デモ用の擬似値）。 */
@@ -90,6 +94,143 @@ export function deriveQrScanner(scenario: DemoScenario): QrScanner | undefined {
   return new InjectableQrScanner(`demo-qr-${scenario.id}`);
 }
 
+// =============================================================================
+// Synthetic 音声セッションの注入 (#363 音声シナリオ再現 / #364 kiosk 配線)
+// =============================================================================
+
+/**
+ * synthetic 音声解決が参照する合成ディレクトリ (#364)。**mock-adapter.ts の `demoDirectory()` と
+ * 同じ id/表示名**を持つ（`staff-sato` / `staff-suzuki` / `staff-tanaka`・`dept-reception` /
+ * `dept-sales`）。これにより音声で解決した候補 id が、KioskFlow が `/api/kiosk/directory` から
+ * 得る相手一覧の id と一致し、`SELECT_TARGET` がそのまま噛み合う。PII は含まない合成表示名のみ
+ * （`.claude/rules/pii-secret-minimization.md`）。
+ */
+function mkDemoStaff(id: string, displayName: string, kana: string, departmentId: string, aliases: string[] = []): Staff {
+  return {
+    id,
+    displayName,
+    kana,
+    aliases,
+    departmentId,
+    enabled: true,
+    available: true,
+    callTargets: [],
+    fallbackStaffIds: [],
+  };
+}
+
+export function demoVoiceDirectory(): EntityDirectory {
+  return {
+    staff: [
+      mkDemoStaff('staff-sato', 'デモ 佐藤', 'さとう', 'dept-reception'),
+      mkDemoStaff('staff-suzuki', 'デモ 鈴木', 'すずき', 'dept-sales', ['スズキ']),
+      mkDemoStaff('staff-tanaka', 'デモ 田中', 'たなか', 'dept-sales'),
+    ] satisfies Staff[],
+    departments: [
+      { id: 'dept-reception', name: '受付', kana: 'うけつけ', displayOrder: 0, enabled: true },
+      { id: 'dept-sales', name: '営業部', kana: 'えいぎょうぶ', displayOrder: 1, enabled: true },
+    ] satisfies Department[],
+  };
+}
+
+/** 発話取り込み〜復唱〜確定の各段の既定間隔（ms）。preview で操作者が相手選択画面へ到達する猶予も見込む。 */
+export const DEMO_VOICE_STEP_MS = 2000;
+/**
+ * synthetic の STT confidence 既定値。閾値（#370 既定 0.6）**未満**にして必ず復唱確認を挟む。
+ * 「重要な固有名詞は必ず画面で確認する」(#364 原則) の再現でもある（発話→**復唱**→確定を見せる）。
+ */
+export const DEMO_VOICE_CONFIDENCE = 0.4;
+/** voice 入力が無いが stt success のときの既定発話（合成ディレクトリの担当者に解決する）。 */
+export const DEMO_VOICE_DEFAULT_UTTERANCE = '鈴木';
+
+/** setTimeout 互換のタイマー。テストは決定論のため手動スケジューラを注入できる。 */
+export type DemoTimerHandle = ReturnType<typeof setTimeout>;
+export type DemoScheduler = {
+  set: (fn: () => void, ms: number) => DemoTimerHandle;
+  clear: (handle: DemoTimerHandle) => void;
+};
+const DEFAULT_DEMO_SCHEDULER: DemoScheduler = {
+  set: (fn, ms) => setTimeout(fn, ms),
+  clear: (handle) => clearTimeout(handle),
+};
+
+export type DeriveVoiceSessionOptions = {
+  directory?: EntityDirectory;
+  stepDelayMs?: number;
+  sttConfidence?: number;
+  scheduler?: DemoScheduler;
+};
+
+/**
+ * シナリオが「音声成功系」かどうか (#363/#364)。
+ *  - `stt: 'error' | 'low_confidence'`（失敗系）は synthetic 音声を作らず、第7wave の失敗
+ *    `SttAdapter` 経路（`deriveSttAdapterFactory`）＝「音声認識失敗→タッチ切替」のまま残す（非退行）。
+ *  - それ以外で `stt: 'success'` か、`visitorInputs` に `mode:'voice'` があれば音声成功系とみなす。
+ */
+export function wantsSyntheticVoice(scenario: DemoScenario): boolean {
+  const stt = scenario.simulatedResults.stt;
+  if (stt === 'error' || stt === 'low_confidence') return false;
+  const hasVoiceInput = scenario.visitorInputs.some((i) => i.mode === 'voice');
+  return stt === 'success' || hasVoiceInput;
+}
+
+/** 最初の voice 入力の value（発話文）。無ければ undefined。 */
+function firstVoiceUtterance(scenario: DemoScenario): string | undefined {
+  return scenario.visitorInputs.find((i) => i.mode === 'voice')?.value;
+}
+
+/**
+ * 音声成功シナリオの synthetic セッション factory を導出する (#363/#364)。
+ *
+ * 返る factory を KioskFlow の `voiceSession` prop へ渡すと、マウント時（store.start）に
+ * **自動再生**が走る: `beginListening`（字幕「お話しください」）→ `hearTurn(発話文)`（→ 低信頼のため
+ * 復唱確認「◯◯様ですね？」）→ `confirmYes`（「はい」で確定）。確定は KioskFlow が差し込む
+ * `onResolved` hook 経由で相手選択（`SELECT_TARGET`）へ橋渡しされ、相手選択画面にいれば実際に次へ進む。
+ *
+ * 音声成功系でないシナリオは undefined を返す（従来どおり音声 UI を一切マウントしない＝非退行）。
+ * タイマーは `close`（アンマウント）で必ず解除し、アンマウント後の発火・sandbox 越えを防ぐ。
+ */
+export function deriveVoiceSession(
+  scenario: DemoScenario,
+  opts?: DeriveVoiceSessionOptions,
+): VoiceSessionFactory | undefined {
+  if (!wantsSyntheticVoice(scenario)) return undefined;
+
+  const directory = opts?.directory ?? demoVoiceDirectory();
+  const utterance = firstVoiceUtterance(scenario) ?? DEMO_VOICE_DEFAULT_UTTERANCE;
+  const stepMs = opts?.stepDelayMs ?? DEMO_VOICE_STEP_MS;
+  const confidence = opts?.sttConfidence ?? DEMO_VOICE_CONFIDENCE;
+  const scheduler = opts?.scheduler ?? DEFAULT_DEMO_SCHEDULER;
+
+  return (emit, hooks) => {
+    const driver = createSyntheticVoiceSession({ directory, sttConfidence: confidence });
+    const controller = driver.factory(emit, hooks);
+    const timers = new Set<DemoTimerHandle>();
+    const at = (step: number, fn: () => void): void => {
+      timers.add(scheduler.set(fn, stepMs * step));
+    };
+    const cancelAll = (): void => {
+      for (const handle of timers) scheduler.clear(handle);
+      timers.clear();
+    };
+
+    return {
+      start: () => {
+        void controller.start();
+        at(1, () => driver.beginListening());
+        at(2, () => driver.hearTurn(utterance));
+        at(3, () => controller.confirmYes());
+      },
+      close: () => {
+        cancelAll();
+        void controller.close();
+      },
+      confirmYes: () => controller.confirmYes(),
+      confirmNo: () => controller.confirmNo(),
+    };
+  };
+}
+
 /** KioskFlow へ渡す注入 props をまとめて導出する。未該当のフィールドは undefined のまま。 */
 export function deriveKioskFlowProps(
   scenario: DemoScenario,
@@ -99,6 +240,7 @@ export function deriveKioskFlowProps(
     operatingStatus: deriveOperatingStatus(scenario, nowMs),
     sttAdapterFactory: deriveSttAdapterFactory(scenario),
     qrScanner: deriveQrScanner(scenario),
+    voiceSession: deriveVoiceSession(scenario),
   };
 }
 

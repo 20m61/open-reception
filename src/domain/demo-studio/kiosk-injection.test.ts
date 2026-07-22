@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import {
   deriveCallResponse,
   deriveCallStages,
@@ -6,8 +6,14 @@ import {
   deriveOperatingStatus,
   deriveQrScanner,
   deriveSttAdapterFactory,
+  deriveVoiceSession,
+  wantsSyntheticVoice,
+  type DemoScheduler,
+  type DemoTimerHandle,
 } from './kiosk-injection';
 import { InjectableQrScanner } from '@/components/kiosk/qr-injection';
+import { VoiceKioskStore } from '@/lib/voice-session/kiosk-store';
+import { voiceCandidateToTarget } from '@/components/kiosk/voice-target-binding';
 import type { DemoScenario } from './scenario';
 
 function scenario(overrides: Partial<DemoScenario> = {}): DemoScenario {
@@ -118,6 +124,25 @@ describe('deriveKioskFlowProps (#363 注入点統合)', () => {
     expect(props.operatingStatus).toBeUndefined();
     expect(props.sttAdapterFactory).toBeUndefined();
     expect(props.qrScanner).toBeUndefined();
+    expect(props.voiceSession).toBeUndefined();
+  });
+
+  it('音声成功シナリオは voiceSession（synthetic factory）を注入する', () => {
+    const props = deriveKioskFlowProps(
+      scenario({ visitorInputs: [{ mode: 'voice', value: '鈴木' }], simulatedResults: { stt: 'success' } }),
+      NOW,
+    );
+    expect(props.voiceSession).toBeTypeOf('function');
+  });
+
+  it("stt:'error'（音声認識失敗→タッチ切替）は voiceSession を注入しない（失敗経路のまま・非退行）", () => {
+    const props = deriveKioskFlowProps(
+      scenario({ visitorInputs: [{ mode: 'voice', value: '鈴木' }], simulatedResults: { stt: 'error' } }),
+      NOW,
+    );
+    expect(props.voiceSession).toBeUndefined();
+    // 失敗系は従来どおり SttAdapter 側で候補ゼロ→タッチ縮退を再現する。
+    expect(props.sttAdapterFactory).toBeDefined();
   });
 
   it('営業時間外シナリオは operatingStatus のみ注入する', () => {
@@ -189,5 +214,107 @@ describe('deriveCallResponse (#363 Vonage発信失敗の段階表示)', () => {
   it('call 未指定は従来どおり no_answer 相当（state=timeout）', () => {
     const res = deriveCallResponse(scenario());
     expect(res.state).toBe('timeout');
+  });
+});
+
+/** 決定論的な手動スケジューラ（vi のフェイクタイマーに依存せず、段ごとに手で進める）。 */
+function manualScheduler() {
+  const tasks: Array<{ ms: number; fn: () => void; handle: DemoTimerHandle; cancelled: boolean }> = [];
+  let seq = 0;
+  const scheduler: DemoScheduler = {
+    set: (fn, ms) => {
+      const handle = ++seq as unknown as DemoTimerHandle;
+      tasks.push({ ms, fn, handle, cancelled: false });
+      return handle;
+    },
+    clear: (handle) => {
+      const t = tasks.find((x) => x.handle === handle);
+      if (t) t.cancelled = true;
+    },
+  };
+  const ordered = () => [...tasks].sort((a, b) => a.ms - b.ms);
+  const runAll = () => ordered().forEach((t) => { if (!t.cancelled) t.fn(); });
+  return { scheduler, ordered, runAll };
+}
+
+describe('wantsSyntheticVoice (#363/#364 音声成功系の判定)', () => {
+  it("stt: 'success' は音声成功系", () => {
+    expect(wantsSyntheticVoice(scenario({ simulatedResults: { stt: 'success' } }))).toBe(true);
+  });
+  it('voice 入力があれば音声成功系', () => {
+    expect(wantsSyntheticVoice(scenario({ visitorInputs: [{ mode: 'voice', value: '鈴木' }] }))).toBe(true);
+  });
+  it("stt: 'error' / 'low_confidence' は失敗系（synthetic を作らない・非退行）", () => {
+    expect(wantsSyntheticVoice(scenario({ visitorInputs: [{ mode: 'voice', value: 'x' }], simulatedResults: { stt: 'error' } }))).toBe(false);
+    expect(wantsSyntheticVoice(scenario({ simulatedResults: { stt: 'low_confidence' } }))).toBe(false);
+  });
+  it('voice も stt success も無ければ非対象', () => {
+    expect(wantsSyntheticVoice(scenario({ simulatedResults: { call: ['answered'] } }))).toBe(false);
+  });
+});
+
+describe('deriveVoiceSession (#363/#364 音声シナリオの自動再生)', () => {
+  const voiceScenario = () =>
+    scenario({ visitorInputs: [{ mode: 'voice', value: '鈴木' }], simulatedResults: { stt: 'success' } });
+
+  it('音声成功系は factory を返し、非対象は undefined', () => {
+    expect(deriveVoiceSession(voiceScenario())).toBeTypeOf('function');
+    expect(deriveVoiceSession(scenario({ simulatedResults: { call: ['answered'] } }))).toBeUndefined();
+    expect(
+      deriveVoiceSession(scenario({ visitorInputs: [{ mode: 'voice', value: '鈴木' }], simulatedResults: { stt: 'error' } })),
+    ).toBeUndefined();
+  });
+
+  it('自動再生: start で listening→readback→confirm と進み、onResolved が合成ディレクトリの相手を渡す', () => {
+    const { scheduler, ordered } = manualScheduler();
+    const onResolved = vi.fn();
+    const factory = deriveVoiceSession(voiceScenario(), { scheduler, stepDelayMs: 10 })!;
+    const store = new VoiceKioskStore(factory, { onResolved });
+    store.start();
+
+    const steps = ordered();
+    expect(steps).toHaveLength(3);
+
+    steps[0]!.fn(); // beginListening
+    expect(store.getState().mode).toBe('listening');
+
+    steps[1]!.fn(); // hearTurn（低信頼）→ 復唱確認
+    expect(store.getState().mode).toBe('readback');
+    expect(store.getState().readbackName).toContain('鈴木');
+
+    steps[2]!.fn(); // confirmYes → 確定 → onResolved
+    expect(onResolved).toHaveBeenCalledTimes(1);
+    // KioskFlow と同じ写像で、mock-adapter の directory id（staff-suzuki）と噛み合う相手になる。
+    const target = voiceCandidateToTarget(onResolved.mock.calls[0]![0]);
+    expect(target).toEqual({ type: 'staff', id: 'staff-suzuki', label: 'デモ 鈴木' });
+    expect(store.getState().mode).toBe('idle');
+  });
+
+  it('close（アンマウント）は保留タイマーを解除し、以後は発火しない（sandbox 越え・遅発を防ぐ）', () => {
+    const { scheduler, runAll } = manualScheduler();
+    const onResolved = vi.fn();
+    const factory = deriveVoiceSession(voiceScenario(), { scheduler, stepDelayMs: 10 })!;
+    const store = new VoiceKioskStore(factory, { onResolved });
+    store.start();
+    store.close(); // アンマウント相当
+    runAll(); // 解除済みタイマーは走らない
+    expect(onResolved).not.toHaveBeenCalled();
+    expect(store.getState().mode).toBe('inactive');
+  });
+
+  it('voice 入力が無い stt success では既定発話に解決する（発話文が無くても再生できる）', () => {
+    const { scheduler, ordered } = manualScheduler();
+    const onResolved = vi.fn();
+    const factory = deriveVoiceSession(
+      scenario({ visitorInputs: [], simulatedResults: { stt: 'success' } }),
+      { scheduler, stepDelayMs: 10 },
+    )!;
+    const store = new VoiceKioskStore(factory, { onResolved });
+    store.start();
+    ordered().forEach((t) => t.fn());
+    expect(onResolved).toHaveBeenCalledTimes(1);
+    expect(voiceCandidateToTarget(onResolved.mock.calls[0]![0])).toEqual(
+      expect.objectContaining({ type: 'staff', id: 'staff-suzuki' }),
+    );
   });
 });
