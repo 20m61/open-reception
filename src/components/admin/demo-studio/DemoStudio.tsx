@@ -32,6 +32,10 @@ import {
   updateTurnAt,
   type DemoScenarioDraft,
 } from '@/domain/demo-studio/editor';
+import type { DemoPublication, DemoPublicationStatus } from '@/domain/demo-studio/publication';
+import type { DemoShareToken } from '@/domain/demo-studio/share-token';
+import type { Kiosk } from '@/domain/kiosk/types';
+import { canIssueShare, canRevokeShare, canShowRollback, shareStatus, targetLabel } from './publish-panel';
 
 /**
  * 受付体験スタジオ Demo Harness — 3 ペイン編集スタジオ (issue #363 Increment 2)。
@@ -45,6 +49,14 @@ import {
  * 組込 9 シナリオは読み取り専用テンプレート。「複製して編集」でカスタム draft を作り、保存は
  * admin API（validateDemoScenario 強制・監査）に委ねる。保存後の「デモ開始」で、保存済み→組込 の
  * 解決順によりプレビューへ反映される。sandbox 境界（本番 API/Vonage/集計へ非接続）は Inc1 のまま。
+ *
+ * 公開/共有パネル（issue #363 Increment 3・#367 申し送り）: 保存済みカスタムシナリオを選択すると
+ * 表示され、`/api/admin/demo/publications*` に委ねて draft → test/published の遷移、Kiosk への
+ * 公開、version 履歴からの rollback、共有（認証なし閲覧）リンクの発行/失効を行う。**トークン値は
+ * 発行直後のレスポンスでのみ受け取り、以後は再表示しない**（サーバも保存しない）。状態遷移・
+ * target 検証・トークン発行は既に admin API 側が最終判定する（fail-closed・監査付き）ため、
+ * ここでの表示ロジックは `./publish-panel.ts` の純関数へ切り出し、viewer には `canWrite=false`
+ * で操作ボタンを無効化するだけの UI 側抑止に留める（API 側の 403 が本当のガード）。
  */
 
 const MODE_LABEL: Record<DemoInitialMode, string> = {
@@ -83,8 +95,16 @@ const RUNTIME_LABEL: Record<DemoRuntimeState, string> = {
   stopped: '停止',
   degraded: '劣化',
 };
+const STATUS_LABEL: Record<DemoPublicationStatus, string> = {
+  draft: '下書き',
+  test: 'テスト',
+  published: '公開中',
+};
 
 type RunState = 'idle' | 'running' | 'error';
+
+/** `/api/admin/demo/publications` が返す形（`DemoPublication` + 共有トークン）。 */
+type StoredDemoPublicationClient = DemoPublication & { share?: DemoShareToken };
 
 /** プレビューの内部解像度（横向き iPad 相当。#361 の 35%/65% レール検証と同値）。 */
 const PREVIEW_WIDTH = 1080;
@@ -100,7 +120,7 @@ const inputStyle: React.CSSProperties = {
   width: '100%',
 };
 
-export function DemoStudio() {
+export function DemoStudio({ canWrite = true, siteId }: { canWrite?: boolean; siteId: string }) {
   const [saved, setSaved] = useState<DemoScenario[]>([]);
   const [selectedBuiltinId, setSelectedBuiltinId] = useState<string>(DEMO_SCENARIOS[0]?.id ?? '');
   // editing != null のとき編集モード（カスタム draft）。null のとき組込テンプレートの読み取り表示。
@@ -134,6 +154,215 @@ export function DemoStudio() {
   useEffect(() => {
     void loadSaved();
   }, [loadSaved]);
+
+  /* ---- 公開/共有パネル (issue #363 Inc3・#367 申し送り) ---- */
+  const [publications, setPublications] = useState<StoredDemoPublicationClient[]>([]);
+  const [kiosks, setKiosks] = useState<Kiosk[]>([]);
+  const [pubBusy, setPubBusy] = useState(false);
+  const [pubError, setPubError] = useState<string | null>(null);
+  const [targetKioskId, setTargetKioskId] = useState('');
+  // 発行直後のみ保持する共有 URL（再表示不可。publication 一覧の share には token 値を持たせない）。
+  const [justIssuedShareUrl, setJustIssuedShareUrl] = useState<string | null>(null);
+  const [copyState, setCopyState] = useState<'idle' | 'copied'>('idle');
+  const [shareOrigin, setShareOrigin] = useState('');
+  // 共有状態（期限切れ判定）に使う「現在時刻」。render 中に Date.now() を直接呼ばない
+  // （react-hooks/purity）ため state に持ち、公開単位の再取得のたびに更新する
+  // （`platform/ElevationStatus.tsx` の `now` state と同じ方針）。
+  const [nowMs, setNowMs] = useState(() => Date.now());
+
+  const loadPublications = useCallback(async () => {
+    const res = await fetch('/api/admin/demo/publications');
+    if (res.ok) {
+      setPublications((await res.json()) as StoredDemoPublicationClient[]);
+      setNowMs(Date.now());
+    }
+  }, []);
+  const loadKiosks = useCallback(async () => {
+    const res = await fetch('/api/admin/kiosks');
+    if (res.ok) {
+      const body = (await res.json()) as { items: Kiosk[] };
+      setKiosks(body.items);
+    }
+  }, []);
+  useEffect(() => {
+    void loadPublications();
+    void loadKiosks();
+    setShareOrigin(window.location.origin);
+  }, [loadPublications, loadKiosks]);
+
+  // 保存済みシナリオが選択されているときだけ、その scenarioId に紐づく公開単位を表示対象にする
+  // （組込テンプレート・未保存の新規 draft には公開単位が無い＝ editingSavedId が null）。
+  const currentPub = useMemo(
+    () => (editingSavedId ? publications.find((p) => p.scenarioId === editingSavedId) : undefined),
+    [publications, editingSavedId],
+  );
+  const enabledKiosks = useMemo(() => kiosks.filter((k) => k.enabled), [kiosks]);
+
+  // 選択中の公開単位が切り替わったら、前の公開先選択・発行直後トークン表示をクリアする。
+  useEffect(() => {
+    setTargetKioskId('');
+    setJustIssuedShareUrl(null);
+    setPubError(null);
+  }, [currentPub?.id]);
+
+  const createPub = useCallback(async () => {
+    if (!editingSavedId) return;
+    setPubBusy(true);
+    setPubError(null);
+    try {
+      const res = await fetch('/api/admin/demo/publications', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ scenarioId: editingSavedId }),
+      });
+      if (!res.ok) {
+        setPubError('公開単位の作成に失敗しました。');
+        return;
+      }
+      await loadPublications();
+    } finally {
+      setPubBusy(false);
+    }
+  }, [editingSavedId, loadPublications]);
+
+  const setPubStatus = useCallback(
+    async (status: DemoPublicationStatus) => {
+      if (!currentPub) return;
+      setPubBusy(true);
+      setPubError(null);
+      try {
+        const res = await fetch(`/api/admin/demo/publications/${currentPub.id}`, {
+          method: 'PATCH',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ op: 'set_status', status }),
+        });
+        if (!res.ok) {
+          setPubError('状態の変更に失敗しました。');
+          return;
+        }
+        await loadPublications();
+      } finally {
+        setPubBusy(false);
+      }
+    },
+    [currentPub, loadPublications],
+  );
+
+  const publishPub = useCallback(async () => {
+    if (!currentPub || !targetKioskId) return;
+    const kioskName = enabledKiosks.find((k) => k.id === targetKioskId)?.displayName ?? targetKioskId;
+    if (!window.confirm(`このシナリオを Kiosk「${kioskName}」へ本番公開します。よろしいですか？`)) return;
+    setPubBusy(true);
+    setPubError(null);
+    try {
+      const res = await fetch(`/api/admin/demo/publications/${currentPub.id}`, {
+        method: 'PATCH',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ op: 'publish', target: { siteId, kioskId: targetKioskId } }),
+      });
+      if (!res.ok) {
+        setPubError('公開に失敗しました（対象端末が無効化・未登録の可能性があります）。');
+        return;
+      }
+      await loadPublications();
+    } finally {
+      setPubBusy(false);
+    }
+  }, [currentPub, targetKioskId, siteId, enabledKiosks, loadPublications]);
+
+  const rollbackPub = useCallback(
+    async (version: number) => {
+      if (!currentPub) return;
+      if (!window.confirm(`version ${version} の内容を新しい version として復元（rollback）します。よろしいですか？`)) return;
+      setPubBusy(true);
+      setPubError(null);
+      try {
+        const res = await fetch(`/api/admin/demo/publications/${currentPub.id}`, {
+          method: 'PATCH',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ op: 'rollback', version }),
+        });
+        if (!res.ok) {
+          setPubError('ロールバックに失敗しました。');
+          return;
+        }
+        await loadPublications();
+      } finally {
+        setPubBusy(false);
+      }
+    },
+    [currentPub, loadPublications],
+  );
+
+  const issueShare = useCallback(async () => {
+    if (!currentPub) return;
+    setPubBusy(true);
+    setPubError(null);
+    setJustIssuedShareUrl(null);
+    try {
+      const res = await fetch(`/api/admin/demo/publications/${currentPub.id}/share`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: '{}',
+      });
+      if (!res.ok) {
+        setPubError('共有リンクの発行に失敗しました。');
+        return;
+      }
+      const body = (await res.json()) as { token: string };
+      // トークン値はこのレスポンス以外に来ない（サーバも平文保存しない）。再表示不可を UI で明記する。
+      setJustIssuedShareUrl(`${shareOrigin}/demo/${body.token}`);
+      await loadPublications();
+    } finally {
+      setPubBusy(false);
+    }
+  }, [currentPub, shareOrigin, loadPublications]);
+
+  const revokeShare = useCallback(async () => {
+    if (!currentPub) return;
+    if (!window.confirm('この共有リンクを失効させます。よろしいですか？')) return;
+    setPubBusy(true);
+    setPubError(null);
+    try {
+      const res = await fetch(`/api/admin/demo/publications/${currentPub.id}/share`, { method: 'DELETE' });
+      if (!res.ok) {
+        setPubError('共有リンクの失効に失敗しました。');
+        return;
+      }
+      setJustIssuedShareUrl(null);
+      await loadPublications();
+    } finally {
+      setPubBusy(false);
+    }
+  }, [currentPub, loadPublications]);
+
+  const deletePub = useCallback(async () => {
+    if (!currentPub) return;
+    if (!window.confirm('この公開単位を削除します（公開履歴・共有リンクも失われます）。よろしいですか？')) return;
+    setPubBusy(true);
+    setPubError(null);
+    try {
+      const res = await fetch(`/api/admin/demo/publications/${currentPub.id}`, { method: 'DELETE' });
+      if (!res.ok) {
+        setPubError('削除に失敗しました。');
+        return;
+      }
+      setJustIssuedShareUrl(null);
+      await loadPublications();
+    } finally {
+      setPubBusy(false);
+    }
+  }, [currentPub, loadPublications]);
+
+  const copyShareUrl = useCallback(async (url: string) => {
+    try {
+      await navigator.clipboard.writeText(url);
+      setCopyState('copied');
+      setTimeout(() => setCopyState('idle'), 1500);
+    } catch {
+      // clipboard API 不可の環境（権限拒否等）は、表示済みの URL テキストを手動選択してもらう。
+    }
+  }, []);
 
   const selectedBuiltin = useMemo(
     () => DEMO_SCENARIOS.find((s) => s.id === selectedBuiltinId),
@@ -373,6 +602,242 @@ export function DemoStudio() {
             新規作成
           </button>
         </div>
+      </section>
+
+      {/* 公開/共有パネル (issue #363 Increment 3・#367 申し送り) */}
+      <section className="card stack" data-testid="demo-pub-panel" style={{ gap: 'var(--space-sm)' }}>
+        <h2 className="card__title">公開・共有</h2>
+        {!canWrite ? (
+          <p className="notice notice--info" data-testid="demo-pub-viewer-note" style={{ margin: 0 }}>
+            閲覧のみの権限です。公開・共有の操作はできません。
+          </p>
+        ) : null}
+        {!editingSavedId ? (
+          <p className="page__lead" data-testid="demo-pub-empty" style={{ margin: 0 }}>
+            保存済みカスタムシナリオを選択すると、公開先 Kiosk への公開や共有リンクの発行ができます。
+          </p>
+        ) : !currentPub ? (
+          <>
+            <p className="page__lead" style={{ margin: 0 }}>
+              このシナリオはまだ公開単位を作成していません。
+            </p>
+            <button
+              type="button"
+              data-testid="demo-pub-create"
+              className="btn btn--primary"
+              disabled={!canWrite || pubBusy}
+              onClick={() => void createPub()}
+            >
+              公開単位を作成（下書き）
+            </button>
+          </>
+        ) : (
+          <>
+            <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+              <span className="badge" data-testid="demo-pub-status" data-status={currentPub.status}>
+                {STATUS_LABEL[currentPub.status]}
+              </span>
+              {dirty && editingSavedId === currentPub.scenarioId ? (
+                <span className="page__lead" data-testid="demo-pub-dirty-note" style={{ margin: 0, fontSize: '0.8rem' }}>
+                  未保存の変更があります（公開には保存済みの内容が使われます）。
+                </span>
+              ) : null}
+            </div>
+
+            <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+              {currentPub.status === 'draft' ? (
+                <button
+                  type="button"
+                  data-testid="demo-pub-set-test"
+                  className="btn btn--ghost"
+                  disabled={!canWrite || pubBusy}
+                  onClick={() => void setPubStatus('test')}
+                >
+                  テストへ進める
+                </button>
+              ) : null}
+              {currentPub.status === 'test' ? (
+                <button
+                  type="button"
+                  data-testid="demo-pub-set-draft"
+                  className="btn btn--ghost"
+                  disabled={!canWrite || pubBusy}
+                  onClick={() => void setPubStatus('draft')}
+                >
+                  下書きへ戻す
+                </button>
+              ) : null}
+              <button
+                type="button"
+                data-testid="demo-pub-delete"
+                className="btn btn--ghost"
+                disabled={!canWrite || pubBusy}
+                onClick={() => void deletePub()}
+              >
+                公開単位を削除
+              </button>
+            </div>
+
+            {/* 公開先選択・公開 */}
+            <div className="stack" style={{ gap: 4, borderTop: '1px solid var(--color-border)', paddingTop: 8 }}>
+              <label className="stack" style={{ gap: 2 }}>
+                <span style={{ fontSize: '0.85rem', opacity: 0.75 }}>公開先 Kiosk</span>
+                <select
+                  data-testid="demo-pub-target"
+                  value={targetKioskId}
+                  onChange={(e) => setTargetKioskId(e.target.value)}
+                  disabled={!canWrite || pubBusy || enabledKiosks.length === 0}
+                  style={inputStyle}
+                >
+                  <option value="">選択してください</option>
+                  {enabledKiosks.map((k) => (
+                    <option key={k.id} value={k.id}>
+                      {k.displayName}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              {enabledKiosks.length === 0 ? (
+                <p className="notice notice--warning" data-testid="demo-pub-no-kiosks" style={{ margin: 0 }}>
+                  有効な Kiosk がありません。端末管理で登録・有効化してください。
+                </p>
+              ) : null}
+              <button
+                type="button"
+                data-testid="demo-pub-publish"
+                className="btn btn--primary"
+                disabled={!canWrite || pubBusy || !targetKioskId}
+                onClick={() => void publishPub()}
+              >
+                このシナリオを公開する
+              </button>
+            </div>
+
+            {/* version 履歴・rollback */}
+            <div
+              className="stack"
+              data-testid="demo-pub-versions"
+              style={{ gap: 4, borderTop: '1px solid var(--color-border)', paddingTop: 8 }}
+            >
+              <span style={{ fontSize: '0.85rem', opacity: 0.75 }}>公開履歴</span>
+              {!canShowRollback(currentPub.versions.length) ? (
+                <p className="page__lead" data-testid="demo-pub-versions-empty" style={{ margin: 0 }}>
+                  まだ公開されていません。
+                </p>
+              ) : (
+                <ol style={{ listStyle: 'none', margin: 0, padding: 0, display: 'flex', flexDirection: 'column', gap: 4 }}>
+                  {[...currentPub.versions].reverse().map((v) => {
+                    const isCurrent = v.version === currentPub.currentVersion;
+                    return (
+                      <li
+                        key={v.version}
+                        data-testid={`demo-pub-version-${v.version}`}
+                        style={{ display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap' }}
+                      >
+                        <span className="badge" data-current={isCurrent ? 'true' : undefined}>
+                          v{v.version}
+                          {isCurrent ? '（現在）' : ''}
+                        </span>
+                        <span style={{ fontSize: '0.8rem', opacity: 0.75 }}>
+                          {new Date(v.publishedAt).toLocaleString('ja-JP')} → {targetLabel(v.target, kiosks)}
+                          {v.rolledBackFrom !== undefined ? `（v${v.rolledBackFrom} から復元）` : ''}
+                        </span>
+                        {!isCurrent ? (
+                          <button
+                            type="button"
+                            data-testid={`demo-pub-rollback-${v.version}`}
+                            className="btn btn--ghost"
+                            disabled={!canWrite || pubBusy}
+                            onClick={() => void rollbackPub(v.version)}
+                          >
+                            この version へロールバック
+                          </button>
+                        ) : null}
+                      </li>
+                    );
+                  })}
+                </ol>
+              )}
+            </div>
+
+            {/* 共有（認証なし閲覧）リンク */}
+            <div
+              className="stack"
+              data-testid="demo-pub-share"
+              style={{ gap: 6, borderTop: '1px solid var(--color-border)', paddingTop: 8 }}
+            >
+              <span style={{ fontSize: '0.85rem', opacity: 0.75 }}>共有リンク（認証なし閲覧）</span>
+              {(() => {
+                const status = shareStatus(currentPub.share, nowMs);
+                if (status === 'active') {
+                  return (
+                    <p className="page__lead" data-testid="demo-pub-share-active" style={{ margin: 0 }}>
+                      共有リンクは有効です（有効期限:{' '}
+                      {currentPub.share ? new Date(currentPub.share.expiresAt).toLocaleString('ja-JP') : ''}）。
+                    </p>
+                  );
+                }
+                const emptyLabel =
+                  status === 'revoked'
+                    ? '共有リンクは失効済みです。'
+                    : status === 'expired'
+                      ? '共有リンクの有効期限が切れています。'
+                      : '共有リンクは未発行です。';
+                return (
+                  <p className="page__lead" data-testid="demo-pub-share-empty" style={{ margin: 0 }}>
+                    {emptyLabel}
+                  </p>
+                );
+              })()}
+              {justIssuedShareUrl ? (
+                <div className="notice notice--info stack" data-testid="demo-pub-share-token" style={{ gap: 4 }}>
+                  <p style={{ margin: 0 }}>
+                    発行直後のみ表示されます。この画面を離れると再表示できません。必ずコピーしてください。
+                  </p>
+                  <code data-testid="demo-pub-share-url" style={{ wordBreak: 'break-all' }}>
+                    {justIssuedShareUrl}
+                  </code>
+                  <button
+                    type="button"
+                    data-testid="demo-pub-share-copy"
+                    className="btn btn--ghost"
+                    onClick={() => void copyShareUrl(justIssuedShareUrl)}
+                  >
+                    {copyState === 'copied' ? 'コピーしました' : 'URLをコピー'}
+                  </button>
+                </div>
+              ) : null}
+              <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+                <button
+                  type="button"
+                  data-testid="demo-pub-share-issue"
+                  className="btn btn--primary"
+                  disabled={!canWrite || pubBusy || !canIssueShare(currentPub.status, currentPub.share, nowMs)}
+                  onClick={() => void issueShare()}
+                >
+                  共有リンクを発行
+                </button>
+                {canRevokeShare(currentPub.share, nowMs) ? (
+                  <button
+                    type="button"
+                    data-testid="demo-pub-share-revoke"
+                    className="btn btn--ghost"
+                    disabled={!canWrite || pubBusy}
+                    onClick={() => void revokeShare()}
+                  >
+                    失効させる
+                  </button>
+                ) : null}
+              </div>
+            </div>
+
+            {pubError ? (
+              <p className="notice notice--warning" data-testid="demo-pub-error" style={{ margin: 0 }}>
+                {pubError}
+              </p>
+            ) : null}
+          </>
+        )}
       </section>
 
       {/* 3 ペイン */}

@@ -66,7 +66,8 @@ describe('POST share（発行）', () => {
     expect(isValidShareTokenValue(body.token)).toBe(true);
     expect(body.expiresAt).toBeDefined();
     // 監査 metadata にトークン値が入っていないこと（PII/secret 最小化）。
-    const [, , metadata] = appendAdminAudit.mock.calls.at(-1)!;
+    const [action, , metadata] = appendAdminAudit.mock.calls.at(-1)!;
+    expect(action).toBe('reception.demo_share_issued');
     expect(metadata).toMatchObject({ event: 'share_issued' });
     expect(JSON.stringify(metadata)).not.toContain(body.token);
   });
@@ -93,7 +94,8 @@ describe('DELETE share（失効）', () => {
     const pub = await getDemoPublication('pub-1');
     expect(pub?.share?.revokedAt).toBeDefined();
     expect(isShareTokenActive(pub!.share!, Date.now())).toBe(false);
-    const [, , metadata] = appendAdminAudit.mock.calls.at(-1)!;
+    const [action, , metadata] = appendAdminAudit.mock.calls.at(-1)!;
+    expect(action).toBe('reception.demo_share_revoked');
     expect(metadata).toMatchObject({ event: 'share_revoked' });
   });
   it('共有が無い publication の失効は 404', async () => {

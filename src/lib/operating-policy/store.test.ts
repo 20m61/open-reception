@@ -73,12 +73,12 @@ describe('upsertOperatingPolicy', () => {
     ).rejects.toThrow(/invalid tenantId\/siteId/);
   });
 
-  it('保存を site.updated として監査する（PII/時間帯の具体値は残さない）', async () => {
+  it('保存を operating_policy.updated として監査する（PII/時間帯の具体値は残さない）', async () => {
     await upsertOperatingPolicy('t1', 's1', 'admin@example.com', {
       weeklySchedule: { mon: [{ start: '09:00', end: '18:00' }] },
     });
     expect(appendAdminAudit).toHaveBeenCalledWith(
-      'site.updated',
+      'operating_policy.updated',
       { type: 'operating_policy', id: 't1:s1' },
       expect.objectContaining({ resource: 'operating_policy', tenantId: 't1', siteId: 's1' }),
     );

@@ -7,11 +7,10 @@
  * （memory / dynamodb, docs/persistence-design.md）に委譲する。
  *
  * 監査 (`.claude/rules/pii-secret-minimization.md` / `appendAdminAudit`):
- *   専用の AuditAction（例: `operating_policy.updated`）はまだ `src/domain/reception/log.ts`
- *   に無い（同ファイルは他トラックと共有のため本 increment では編集しない — `lib/admin/audit.ts` の
- *   既存方針と同じ「既存 action だけを使う」）。最も意味が近い既存 action `site.updated`
- *   （拠点＝サイト単位の設定変更）を暫定で使い、`metadata.resource='operating_policy'` で
- *   対象を区別する。専用 action の追加はオーケストレータへの申し送り事項（最終報告参照）。
+ *   専用 action `operating_policy.updated`（`src/domain/reception/log.ts`, issue #363/#367 申し送り
+ *   で追加）を使う。以前は最も意味が近い既存 action `site.updated` を暫定で使い
+ *   `metadata.resource='operating_policy'` で対象を区別していたが、専用 action へ差し替えた。
+ *   `resource` フィールドは互換のため引き続き付与する（対象種別の明示に使える）。
  */
 import type { KioskOperatingStatus } from '@/domain/kiosk/operating-status';
 import {
@@ -85,7 +84,7 @@ export async function upsertOperatingPolicy(
   await collection().put(stored);
   // PII/機微値は残さない: 時間帯の具体値は載せず件数・timezone・version のみ（rules/pii-secret-minimization.md）。
   await appendAdminAudit(
-    'site.updated',
+    'operating_policy.updated',
     { type: 'operating_policy', id: stored.id },
     {
       resource: 'operating_policy',

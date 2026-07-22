@@ -74,6 +74,9 @@ describe('PATCH set_status', () => {
     expect(res.status).toBe(200);
     expect((await res.json()).status).toBe('test');
     expect((await getDemoPublication('pub-1'))?.status).toBe('test');
+    const [action, , metadata] = appendAdminAudit.mock.calls.at(-1)!;
+    expect(action).toBe('reception.demo_status_changed');
+    expect(metadata).toMatchObject({ event: 'status_changed', status: 'test' });
   });
   it('set_status で published へは 422', async () => {
     await seedDraft();
@@ -96,7 +99,7 @@ describe('PATCH publish（誤 Site/Kiosk 公開防止）', () => {
     expect(body.currentVersion).toBe(1);
     expect(body.target).toEqual({ siteId: SITE, kioskId: 'kiosk-a' });
     const [action, , metadata] = appendAdminAudit.mock.calls.at(-1)!;
-    expect(action).toBe('reception.demo_scenario_saved');
+    expect(action).toBe('reception.demo_published');
     expect(metadata).toMatchObject({ event: 'published', kioskId: 'kiosk-a', version: '1' });
   });
   it('存在しない Kiosk への公開は 422（fail-closed）', async () => {
@@ -132,7 +135,7 @@ describe('PATCH rollback', () => {
     expect(body.target).toEqual({ siteId: SITE, kioskId: 'kiosk-a' });
     expect(body.versions).toHaveLength(3);
     const [action, , metadata] = appendAdminAudit.mock.calls.at(-1)!;
-    expect(action).toBe('reception.demo_scenario_saved');
+    expect(action).toBe('reception.demo_rolled_back');
     expect(metadata).toMatchObject({ event: 'rolled_back', rolledBackFrom: '1', version: '3' });
   });
   it('存在しない version は 422', async () => {
@@ -152,7 +155,7 @@ describe('GET / DELETE', () => {
     expect(res.status).toBe(200);
     expect(await getDemoPublication('pub-1')).toBeUndefined();
     const [action, , metadata] = appendAdminAudit.mock.calls.at(-1)!;
-    expect(action).toBe('reception.demo_scenario_deleted');
+    expect(action).toBe('reception.demo_publication_deleted');
     expect(metadata).toMatchObject({ event: 'publication_deleted' });
   });
   it('未知の op は 400', async () => {
