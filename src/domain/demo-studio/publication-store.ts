@@ -49,6 +49,21 @@ export async function listDemoPublications(): Promise<StoredDemoPublication[]> {
   return publications().list({ limit: DEMO_PUBLICATION_LIMIT });
 }
 
+/**
+ * 管理 API 応答用の view。共有トークンの**生値を落とし**、presence(発行/期限/失効の時刻)のみ返す。
+ * 生値は `POST [id]/share` の発行応答にだけ載せる（「発行直後のみ表示」の不変条件をサーバ側で担保。
+ * read 権限の管理者/viewer が一覧応答からトークンを回収できてはならない）。
+ */
+export type DemoPublicationView = DemoPublication & {
+  share?: Omit<DemoShareToken, 'token'>;
+};
+
+export function toDemoPublicationView(stored: StoredDemoPublication): DemoPublicationView {
+  if (!stored.share) return stored;
+  const { token: _token, ...presence } = stored.share;
+  return { ...stored, share: presence };
+}
+
 export async function getDemoPublication(id: string): Promise<StoredDemoPublication | undefined> {
   return publications().get(id);
 }

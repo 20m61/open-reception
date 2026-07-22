@@ -19,6 +19,7 @@ import {
 import {
   deleteDemoPublication,
   getDemoPublication,
+  toDemoPublicationView,
   saveDemoPublication,
   type StoredDemoPublication,
 } from '@/domain/demo-studio/publication-store';
@@ -58,7 +59,7 @@ export async function GET(_request: Request, { params }: Ctx): Promise<NextRespo
   const { id } = await params;
   const pub = await getDemoPublication(id);
   if (!pub) return NextResponse.json({ error: 'not_found' }, { status: 404 });
-  return NextResponse.json(pub);
+  return NextResponse.json(toDemoPublicationView(pub));
 }
 
 export async function PATCH(request: Request, { params }: Ctx): Promise<NextResponse> {
@@ -95,7 +96,7 @@ export async function PATCH(request: Request, { params }: Ctx): Promise<NextResp
       { type: 'demo_publication', id: pub.id },
       { event: 'status_changed', scenarioId: pub.scenarioId, status },
     );
-    return NextResponse.json(next);
+    return NextResponse.json(toDemoPublicationView(next));
   }
 
   if (op === 'publish') {
@@ -124,7 +125,7 @@ export async function PATCH(request: Request, { params }: Ctx): Promise<NextResp
         kioskId: target.kioskId,
       },
     );
-    return NextResponse.json(next);
+    return NextResponse.json(toDemoPublicationView(next));
   }
 
   if (op === 'rollback') {
@@ -147,7 +148,7 @@ export async function PATCH(request: Request, { params }: Ctx): Promise<NextResp
         rolledBackFrom: String(version),
       },
     );
-    return NextResponse.json(next);
+    return NextResponse.json(toDemoPublicationView(next));
   }
 
   return NextResponse.json({ error: 'invalid' }, { status: 400 });

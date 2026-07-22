@@ -9,7 +9,7 @@ import {
 } from '@/lib/admin/guard';
 import { appendAdminAudit } from '@/lib/data-stores/reception-log-store';
 import { createPublication } from '@/domain/demo-studio/publication';
-import { listDemoPublications, saveDemoPublication } from '@/domain/demo-studio/publication-store';
+import { listDemoPublications, saveDemoPublication, toDemoPublicationView } from '@/domain/demo-studio/publication-store';
 import { getSavedDemoScenario } from '@/domain/demo-studio/store';
 
 /**
@@ -29,7 +29,8 @@ export async function GET(): Promise<NextResponse> {
   } catch (err) {
     return toGuardResponse(err);
   }
-  return NextResponse.json(await listDemoPublications());
+  // 共有トークンの生値は返さない（presence のみ。生値は発行応答限定 — B1 対応）。
+  return NextResponse.json((await listDemoPublications()).map(toDemoPublicationView));
 }
 
 export async function POST(request: Request): Promise<NextResponse> {
@@ -68,5 +69,5 @@ export async function POST(request: Request): Promise<NextResponse> {
     { type: 'demo_publication', id: publication.id },
     { event: 'publication_created', scenarioId: scenario.id, status: publication.status },
   );
-  return NextResponse.json(publication, { status: 201 });
+  return NextResponse.json(toDemoPublicationView(publication), { status: 201 });
 }
