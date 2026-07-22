@@ -224,7 +224,20 @@ export type MessageKey =
   | 'a11y.fontScale.extraLarge'
   | 'a11y.contrast.label'
   | 'a11y.lowReach.label'
-  | 'a11y.simpleJapanese.label';
+  | 'a11y.simpleJapanese.label'
+  // 営業時間外の待機画面表示 (#367 の kiosk 表示レール)。来訪者向け案内・再開時刻枠・緊急連絡導線
+  // プレースホルダ。PII/実連絡先は載せない。
+  | 'kiosk.outOfHours.title'
+  | 'kiosk.outOfHours.lead'
+  | 'kiosk.outOfHours.reopenLabel'
+  | 'kiosk.outOfHours.reopenUnknown'
+  | 'kiosk.outOfHours.emergencyLabel'
+  | 'kiosk.outOfHours.emergencyPlaceholder'
+  // 取次（呼び出し）段階通知の表示 (#363 injection point 4)。段階の見出しと状態ラベルのみ。
+  | 'kiosk.callStages.label'
+  | 'kiosk.callStages.status.pending'
+  | 'kiosk.callStages.status.active'
+  | 'kiosk.callStages.status.done';
 
 /** 既定 locale 辞書は全キー網羅必須。他 locale は Partial 可（欠落は ja へフォールバック）。 */
 type DefaultDictionary = Record<MessageKey, string>;
@@ -408,6 +421,16 @@ const ja: DefaultDictionary = {
   'a11y.contrast.label': '高コントラスト表示',
   'a11y.lowReach.label': '操作ボタンを下に寄せる',
   'a11y.simpleJapanese.label': 'やさしい日本語',
+  'kiosk.outOfHours.title': 'ただいま営業時間外です',
+  'kiosk.outOfHours.lead': '受付時間外のため、無人受付はご利用いただけません。恐れ入りますが受付時間内に改めてお越しください。',
+  'kiosk.outOfHours.reopenLabel': '次回の受付開始',
+  'kiosk.outOfHours.reopenUnknown': '次回の受付開始時刻は準備中です。',
+  'kiosk.outOfHours.emergencyLabel': 'お急ぎの方',
+  'kiosk.outOfHours.emergencyPlaceholder': '緊急のご用件は、掲示の連絡先までお問い合わせください。',
+  'kiosk.callStages.label': '取次の状況',
+  'kiosk.callStages.status.pending': '待機中',
+  'kiosk.callStages.status.active': '進行中',
+  'kiosk.callStages.status.done': '完了',
 };
 
 const en: LocaleDictionary = {
@@ -590,6 +613,16 @@ const en: LocaleDictionary = {
   'a11y.contrast.label': 'High contrast',
   'a11y.lowReach.label': 'Move buttons lower',
   'a11y.simpleJapanese.label': 'Simple Japanese',
+  'kiosk.outOfHours.title': 'We are currently closed',
+  'kiosk.outOfHours.lead': 'Self check-in is unavailable outside reception hours. Please come back during our reception hours.',
+  'kiosk.outOfHours.reopenLabel': 'Reception reopens',
+  'kiosk.outOfHours.reopenUnknown': 'The next reception time is not yet available.',
+  'kiosk.outOfHours.emergencyLabel': 'Need urgent help?',
+  'kiosk.outOfHours.emergencyPlaceholder': 'For urgent matters, please use the contact posted on site.',
+  'kiosk.callStages.label': 'Call progress',
+  'kiosk.callStages.status.pending': 'Waiting',
+  'kiosk.callStages.status.active': 'In progress',
+  'kiosk.callStages.status.done': 'Done',
 };
 
 const ko: LocaleDictionary = {
@@ -769,6 +802,16 @@ const ko: LocaleDictionary = {
   'a11y.contrast.label': '고대비 화면',
   'a11y.lowReach.label': '버튼을 아래로 이동',
   'a11y.simpleJapanese.label': '쉬운 일본어',
+  'kiosk.outOfHours.title': '현재 접수 시간이 아닙니다',
+  'kiosk.outOfHours.lead': '접수 시간 외에는 무인 접수를 이용하실 수 없습니다. 번거로우시더라도 접수 시간에 다시 방문해 주세요.',
+  'kiosk.outOfHours.reopenLabel': '다음 접수 시작',
+  'kiosk.outOfHours.reopenUnknown': '다음 접수 시작 시간은 준비 중입니다.',
+  'kiosk.outOfHours.emergencyLabel': '급하신 경우',
+  'kiosk.outOfHours.emergencyPlaceholder': '긴급한 용무는 게시된 연락처로 문의해 주세요.',
+  'kiosk.callStages.label': '연결 진행 상황',
+  'kiosk.callStages.status.pending': '대기 중',
+  'kiosk.callStages.status.active': '진행 중',
+  'kiosk.callStages.status.done': '완료',
 };
 
 const zh: LocaleDictionary = {
@@ -944,6 +987,16 @@ const zh: LocaleDictionary = {
   'a11y.contrast.label': '高对比度显示',
   'a11y.lowReach.label': '按钮下移',
   'a11y.simpleJapanese.label': '简明日语',
+  'kiosk.outOfHours.title': '当前为非接待时间',
+  'kiosk.outOfHours.lead': '非接待时间无法使用自助接待。请在接待时间内再次前来。',
+  'kiosk.outOfHours.reopenLabel': '下次接待开始',
+  'kiosk.outOfHours.reopenUnknown': '下次接待开始时间正在准备中。',
+  'kiosk.outOfHours.emergencyLabel': '如有紧急事务',
+  'kiosk.outOfHours.emergencyPlaceholder': '紧急事务请拨打现场公示的联系方式。',
+  'kiosk.callStages.label': '转接进度',
+  'kiosk.callStages.status.pending': '等待中',
+  'kiosk.callStages.status.active': '进行中',
+  'kiosk.callStages.status.done': '完成',
 };
 
 /**

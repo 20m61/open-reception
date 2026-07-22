@@ -112,3 +112,176 @@ export function isDemoScenario(v: unknown): v is DemoScenario {
   if (!isSimulatedResults(o.simulatedResults)) return false;
   return true;
 }
+
+/* ---------------- 保存時の検証（Increment 2・カスタムシナリオ編集/保存） ---------------- */
+
+/**
+ * カスタムシナリオ保存時の上限とパターン (issue #363 Inc2)。
+ *
+ * 目的は 2 つ:
+ *   1. 「巨大入力」を保存境界で弾く（ストレージ肥大・DoS 面の抑制）。
+ *   2. `id` を collection キー/URL パスに使える安全な文字種に限定する（キー注入の防止）。
+ * 値は運用上十分に緩く、かつデモ用途を超える持ち込みを許さない範囲に置く。
+ */
+export const DEMO_SCENARIO_LIMITS = {
+  /** 合成 id の許容パターン（英数・ハイフン・アンダースコアのみ）。 */
+  idPattern: /^[A-Za-z0-9][A-Za-z0-9_-]*$/,
+  idMaxLength: 64,
+  nameMaxLength: 80,
+  maxVisitorInputs: 12,
+  valueMaxLength: 120,
+  maxCallResults: 8,
+} as const;
+
+/** フィールド別の検証エラー（UI がフィールド脇に表示する。キーはドット区切りパス）。 */
+export type DemoScenarioFieldErrors = Record<string, string>;
+
+export type ValidateDemoScenarioResult =
+  | { ok: true; scenario: DemoScenario }
+  | { ok: false; errors: DemoScenarioFieldErrors };
+
+/**
+ * sandbox 内容境界 (issue #363 Inc2・AC「URL・スクリプト等を持ち込ませない」)。
+ *
+ * シナリオの文言はデモ用の擬似ラベルのみを想定する。URL・スクリプト・テンプレート補間・
+ * 制御文字を含む文字列は保存を拒否する。これにより保存済みシナリオが外部リソース参照や
+ * インジェクションの運び手にならないことを構造的に担保する（sandbox の既定拒否と対を成す）。
+ */
+export function hasUnsafeScenarioText(s: string): boolean {
+  // 制御文字（改行・タブ含む。デモ文言に不要）。
+  if (/[\u0000-\u001f\u007f]/.test(s)) return true;
+  // HTML/スクリプト角括弧。
+  if (/[<>]/.test(s)) return true;
+  // URL スキーム・プロトコル相対（`//host`）・危険スキーム。
+  if (/\/\//.test(s)) return true;
+  if (/\b(?:https?|data|javascript|vbscript|file|blob):/i.test(s)) return true;
+  // テンプレート補間・バッククォート。
+  if (/\$\{|\{\{|`/.test(s)) return true;
+  return false;
+}
+
+function checkText(
+  errors: DemoScenarioFieldErrors,
+  key: string,
+  value: unknown,
+  maxLength: number,
+): string | undefined {
+  if (typeof value !== 'string') {
+    errors[key] = '文字列が必要です';
+    return undefined;
+  }
+  const trimmed = value.trim();
+  if (trimmed.length === 0) {
+    errors[key] = '必須です';
+    return undefined;
+  }
+  if (trimmed.length > maxLength) {
+    errors[key] = `${maxLength} 文字以内で入力してください`;
+    return undefined;
+  }
+  if (hasUnsafeScenarioText(trimmed)) {
+    errors[key] = 'URL・記号・スクリプトは使用できません';
+    return undefined;
+  }
+  return trimmed;
+}
+
+/**
+ * 保存対象のシナリオ候補を検証し、フィールド別エラーを収集して返す (issue #363 Inc2)。
+ *
+ * `isDemoScenario`（構造ガード・boolean）と違い、
+ *   - どのフィールドが・なぜ不正かを `errors` に**全件**集める（UI がフィールド脇に出す）。
+ *   - 「巨大入力」を上限で弾き、`id` を安全な文字種に限定し、文言の URL/スクリプト持ち込みを拒否する。
+ * 成功時は正規化済み（trim 済み・既知キーのみの）シナリオを返す。
+ */
+export function validateDemoScenario(v: unknown): ValidateDemoScenarioResult {
+  const errors: DemoScenarioFieldErrors = {};
+  if (typeof v !== 'object' || v === null) {
+    return { ok: false, errors: { _: 'シナリオの形式が不正です' } };
+  }
+  const o = v as Record<string, unknown>;
+
+  // id: 安全な文字種・長さのみ（collection キー/URL パスに使う）。
+  let id: string | undefined;
+  if (typeof o.id !== 'string' || o.id.length === 0) {
+    errors.id = '必須です';
+  } else if (o.id.length > DEMO_SCENARIO_LIMITS.idMaxLength) {
+    errors.id = `${DEMO_SCENARIO_LIMITS.idMaxLength} 文字以内にしてください`;
+  } else if (!DEMO_SCENARIO_LIMITS.idPattern.test(o.id)) {
+    errors.id = '英数字・ハイフン・アンダースコアのみ使用できます';
+  } else {
+    id = o.id;
+  }
+
+  const name = checkText(errors, 'name', o.name, DEMO_SCENARIO_LIMITS.nameMaxLength);
+
+  if (!isIn(DEMO_INITIAL_MODES, o.initialMode)) {
+    errors.initialMode = '不明な起動モードです';
+  }
+
+  const visitorInputs: DemoVisitorInput[] = [];
+  if (!Array.isArray(o.visitorInputs)) {
+    errors.visitorInputs = '配列が必要です';
+  } else if (o.visitorInputs.length > DEMO_SCENARIO_LIMITS.maxVisitorInputs) {
+    errors.visitorInputs = `ターンは ${DEMO_SCENARIO_LIMITS.maxVisitorInputs} 個までです`;
+  } else {
+    o.visitorInputs.forEach((turn, i) => {
+      const t = turn as Record<string, unknown>;
+      if (typeof turn !== 'object' || turn === null) {
+        errors[`visitorInputs.${i}`] = '形式が不正です';
+        return;
+      }
+      let modeOk = true;
+      if (!isIn(DEMO_INPUT_MODES, t.mode)) {
+        errors[`visitorInputs.${i}.mode`] = '不明な入力手段です';
+        modeOk = false;
+      }
+      const value = checkText(errors, `visitorInputs.${i}.value`, t.value, DEMO_SCENARIO_LIMITS.valueMaxLength);
+      if (modeOk && value !== undefined) {
+        visitorInputs.push({ mode: t.mode as DemoInputMode, value });
+      }
+    });
+  }
+
+  const simulatedResults: DemoSimulatedResults = {};
+  if (typeof o.simulatedResults !== 'object' || o.simulatedResults === null) {
+    errors.simulatedResults = 'オブジェクトが必要です';
+  } else {
+    const r = o.simulatedResults as Record<string, unknown>;
+    if (r.stt !== undefined) {
+      if (isIn(DEMO_STT_RESULTS, r.stt)) simulatedResults.stt = r.stt;
+      else errors['simulatedResults.stt'] = '不明な音声認識結果です';
+    }
+    if (r.qr !== undefined) {
+      if (isIn(DEMO_QR_RESULTS, r.qr)) simulatedResults.qr = r.qr;
+      else errors['simulatedResults.qr'] = '不明なQR結果です';
+    }
+    if (r.runtime !== undefined) {
+      if (isIn(DEMO_RUNTIME_STATES, r.runtime)) simulatedResults.runtime = r.runtime;
+      else errors['simulatedResults.runtime'] = '不明なランタイム状態です';
+    }
+    if (r.call !== undefined) {
+      if (!Array.isArray(r.call)) {
+        errors['simulatedResults.call'] = '配列が必要です';
+      } else if (r.call.length > DEMO_SCENARIO_LIMITS.maxCallResults) {
+        errors['simulatedResults.call'] = `呼び出し結果は ${DEMO_SCENARIO_LIMITS.maxCallResults} 個までです`;
+      } else if (!r.call.every((c) => isIn(DEMO_CALL_RESULTS, c))) {
+        errors['simulatedResults.call'] = '不明な呼び出し結果が含まれます';
+      } else {
+        simulatedResults.call = r.call as DemoCallResult[];
+      }
+    }
+  }
+
+  if (Object.keys(errors).length > 0) return { ok: false, errors };
+  return {
+    ok: true,
+    scenario: {
+      id: id!,
+      name: name!,
+      initialMode: o.initialMode as DemoInitialMode,
+      visitorInputs,
+      simulatedResults,
+    },
+  };
+}

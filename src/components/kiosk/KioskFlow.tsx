@@ -48,7 +48,6 @@ const CheckinFlow = dynamic(() => import('./CheckinFlow').then((mod) => mod.Chec
   ssr: false,
   loading: () => null,
 });
-import { MockSttAdapter } from '@/adapters/speech/mock-stt';
 import { useStaffResponse } from './useStaffResponse';
 import type { StaffResponseResult } from '@/domain/reception/staff-response';
 import { PurposeSelector } from './custom-flow/PurposeSelector';
@@ -66,6 +65,12 @@ import {
 } from './integration';
 import type { PresenceCameraStatus } from './usePresenceCamera';
 import { resolveKioskMode } from '@/domain/kiosk/mode';
+import { operatingStateOf, type KioskOperatingStatus } from '@/domain/kiosk/operating-status';
+import { OutOfHoursView } from './OutOfHoursView';
+import { defaultSttAdapterFactory, type SttAdapterFactory } from './stt-adapter';
+import { debugScannerFromSearch } from './qr-injection';
+import type { QrScanner } from '@/domain/checkin/scanner';
+import { parseCallStages, type CallStage } from '@/domain/kiosk/call-stages';
 import {
   escapeHatchesFor,
   quickActionsFor,
@@ -326,7 +331,31 @@ function reducer(data: FlowData, action: Action): FlowData {
   }
 }
 
-export function KioskFlow() {
+/**
+ * KioskFlow の外部注入点 (第6wave / #363 injection points・#367 の kiosk 受け口)。
+ * すべて任意で、未指定時は従来どおり動作する（additive・既定挙動は不変）。
+ * デモ再現・テスト・将来の実 provider 接続はこれらの受け口経由で行う。
+ */
+export type KioskFlowProps = {
+  /**
+   * 営業状態 (#367)。'closed' かつ待機中のとき営業時間外表示へ切り替える。
+   * 未指定は「判定不能」= fail-open（通常受付を止めない）。ServiceOperatingPolicy の
+   * 本評価は #367 で行い、その結果をここへ注入する。
+   */
+  operatingStatus?: KioskOperatingStatus;
+  /**
+   * 音声認識(STT)アダプタの生成ファクトリ (#370)。未指定は現行 MockSttAdapter（無変更動作）。
+   * 将来の StreamingSttProvider などは中立 interface のこの受け口で接続する（直接 import しない）。
+   */
+  sttAdapterFactory?: SttAdapterFactory;
+  /**
+   * QR スキャナの注入 (#363)。CheckinFlow へ透過する。未指定でも `?debugScanPayload=` があれば
+   * カメラ無しのデバッグ用スキャナを使う。いずれも無ければ実カメラ（CameraQrScanner）のまま。
+   */
+  qrScanner?: QrScanner;
+};
+
+export function KioskFlow({ operatingStatus, sttAdapterFactory, qrScanner }: KioskFlowProps = {}) {
   const [data, dispatch] = useReducer(reducer, INITIAL);
   const [directory, setDirectory] = useState<Directory>({ departments: [], staff: [] });
   // 待機画面リードの既定文言 (#324)。主指示（「ご用件をお選びください」）は見出し・アバター字幕が
@@ -739,12 +768,23 @@ export function KioskFlow() {
 
   // Vonage（非同期）通話のとき、ビデオビューに渡す受付 ID。Mock 同期通話では null のまま。
   const [vonageCallId, setVonageCallId] = useState<string | null>(null);
+  // 取次段階 (#363 injection point 4)。`/call` 応答が `stages[]` を返したときだけ非空になり、
+  // KioskCallView が段階表示する。旧形応答（stages 無し）は [] のまま（後方互換）。
+  const [callStages, setCallStages] = useState<CallStage[]>([]);
+  // QR スキャナの実効値 (#363)。注入 prop 最優先、無ければ `?debugScanPayload=` のデバッグ用
+  // スキャナ、いずれも無ければ undefined（CheckinFlow が実カメラ CameraQrScanner を使う）。
+  // デバッグ用スキャナはマウント時に一度だけ生成する（lazy initializer, window は client のみ）。
+  const [debugQrScanner] = useState<QrScanner | undefined>(() =>
+    typeof window !== 'undefined' ? debugScannerFromSearch(window.location.search) : undefined,
+  );
+  const effectiveQrScanner = qrScanner ?? debugQrScanner;
 
   // 呼び出し中になったら、セッション作成 → 呼び出しを実行して結果を反映する。
   useEffect(() => {
     if (data.state !== 'calling') return;
     let cancelled = false;
     setVonageCallId(null);
+    setCallStages([]);
 
     (async () => {
       try {
@@ -778,6 +818,8 @@ export function KioskFlow() {
         const callRes = await fetch(`/api/kiosk/receptions/${session.id}/call`, { method: 'POST' });
         const result = (await callRes.json()) as { state: ReceptionState };
         if (cancelled) return;
+        // 取次段階を後方互換で取り込む (#363)。旧形（stages 無し）は [] で、表示は増えない。
+        setCallStages(parseCallStages(result));
         if (result.state === 'connected') dispatch({ type: 'CALL_CONNECTED', sessionId: session.id });
         else if (result.state === 'timeout') {
           // タイムアウト直前の予告を挟んでから実遷移する (issue #323 AC3)。予告
@@ -1075,7 +1117,13 @@ export function KioskFlow() {
 
   // 現在の表示レイヤー (issue #362)。PresenceState / ReceptionState を複製せず、既存の判定材料
   // （アクセスゲート・QR受付トグル・受付状態機械）から写像するだけの純関数に委譲する。
-  const kioskMode = resolveKioskMode({ gate: view, uiMode: mode, receptionState: data.state });
+  const kioskMode = resolveKioskMode({
+    gate: view,
+    uiMode: mode,
+    receptionState: data.state,
+    // 営業状態注入 (#367)。未指定/open は operatingStateOf が undefined を返し fail-open。
+    operatingStatus: operatingStateOf(operatingStatus),
+  });
 
   // 来訪者検知カメラ (issue #79 / #362)。待機サイネージ表示中かつトグル ON のときだけ起動。
   // 未対応/拒否時は status='unavailable' に倒れ、タップ起動で完走する（非破壊）。
@@ -1194,6 +1242,9 @@ export function KioskFlow() {
         // #361: 通常受付と同じアバター継続レール・字幕シェルで提示するため、アバター資産と
         // locale/layout を渡す（別アプリに見せない）。表示契約は checkinConversationTurnFor。
         <CheckinFlow
+          // QR ペイロード注入 (#363)。注入 prop / `?debugScanPayload=` があればカメラ無しで
+          // 読み取りを再現、無ければ実カメラ（CameraQrScanner）のまま（非破壊）。
+          scanner={effectiveQrScanner}
           onUseManual={() => setMode('normal')}
           onExit={() => setMode('normal')}
           locale={locale}
@@ -1202,6 +1253,14 @@ export function KioskFlow() {
           avatarFallbackUrl={avatarFallbackUrl}
           motionUrls={motions.motions}
           defaultMotionUrl={motions.defaultUrl}
+        />
+      ) : kioskMode === 'out_of_hours' ? (
+        // 営業時間外の待機画面 (#367)。resolveKioskMode が closed かつ idle のときだけ到達する。
+        // 受付進行中は out_of_hours にならないため、進行中の来訪者を中断しない。
+        <OutOfHoursView
+          status={operatingStatus ?? { state: 'closed' }}
+          locale={locale}
+          onLocaleChange={setLocale}
         />
       ) : showSignage ? (
         // 待機サイネージ (issue #101) + 来訪検知 (issue #79) + ATTRACT (issue #362)。
@@ -1280,6 +1339,10 @@ export function KioskFlow() {
               callingStageTextOverride,
               // ワンタップ満足度フィードバック (#320)。完了/未応答/失敗画面のみが使う。
               { enabled: feedbackEnabled, onSubmit: submitFeedback },
+              // STT アダプタ注入 (#370)。未指定は既定 MockSttAdapter（無変更動作）。
+              sttAdapterFactory,
+              // 取次段階 (#363)。Vonage 非同期通話ビュー（KioskCallView）が段階表示する。
+              callStages,
             )}
           </div>
           {/*
@@ -1876,6 +1939,10 @@ function renderScreen(
    * `enabled=false`（テナント設定でオフ）のときは呼び出し側で UI ごと出さない。
    */
   feedback: { enabled: boolean; onSubmit: (rating: SatisfactionRating, reasonCodes: FeedbackReasonCode[]) => void },
+  /** STT アダプタ注入 (#370)。未指定は既定 MockSttAdapter（無変更動作）。 */
+  sttAdapterFactory: SttAdapterFactory | undefined,
+  /** 取次段階 (#363)。Vonage 非同期通話ビューが段階表示する。旧形応答では空配列。 */
+  callStages: CallStage[],
 ) {
   const tr = makeT(locale);
   switch (data.state) {
@@ -1904,6 +1971,7 @@ function renderScreen(
         <TargetView
           directory={directory}
           sttEnabled={sttEnabled}
+          sttAdapterFactory={sttAdapterFactory}
           onSelect={(target) => dispatch({ type: 'SELECT_TARGET', target })}
           onVoiceUse={onVoiceUse}
           onSearchQuery={onSearchQuery}
@@ -1949,6 +2017,8 @@ function renderScreen(
               onConnected={() => dispatch({ type: 'CALL_CONNECTED', sessionId: vonageCallId })}
               onTimeout={() => dispatch({ type: 'CALL_TIMEOUT', sessionId: vonageCallId })}
               onFallback={() => dispatch({ type: 'CALL_FAILED', sessionId: vonageCallId })}
+              stages={callStages}
+              locale={locale}
             />
           ) : (
             <CallingView
@@ -2184,6 +2254,7 @@ function PurposeView({
 function TargetView({
   directory,
   sttEnabled,
+  sttAdapterFactory,
   onSelect,
   onVoiceUse,
   onSearchQuery,
@@ -2192,6 +2263,8 @@ function TargetView({
 }: {
   directory: Directory;
   sttEnabled: boolean;
+  /** STT アダプタ注入 (#370)。未指定は既定 MockSttAdapter（無変更動作）。 */
+  sttAdapterFactory?: SttAdapterFactory;
   onSelect: (t: Target) => void;
   /** 音声候補が採用されたことを体験メトリクスへ通知する (issue #319)。 */
   onVoiceUse?: () => void;
@@ -2234,16 +2307,18 @@ function TargetView({
     if (sttListening) return;
     setSttListening(true);
     try {
-      // 実ブラウザの音声認識は実機前提（#65）。ここでは在席担当者名から候補を生成する。
+      // 候補生成元は在席担当者名。実 STT は注入ファクトリ (#370) で差し替える。既定は
+      // MockSttAdapter（実ブラウザ音声認識は実機前提 #65）。中立 interface のみに依存する。
       const phrases = directory.staff
         .filter((s) => s.available)
         .map((s) => s.kana ?? s.displayName);
-      const candidates = await new MockSttAdapter(phrases).listen();
+      const factory = sttAdapterFactory ?? defaultSttAdapterFactory;
+      const candidates = await factory(phrases).listen();
       setSttCandidates(candidates);
     } finally {
       setSttListening(false);
     }
-  }, [directory.staff, sttListening]);
+  }, [directory.staff, sttListening, sttAdapterFactory]);
 
   return (
     <>

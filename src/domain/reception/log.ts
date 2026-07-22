@@ -275,6 +275,10 @@ export type AuditAction =
   // 受付体験スタジオのデモ実行 (issue #363)。管理者が本番 Kiosk を Mock 注入で試走した事実を残す。
   // metadata は scenarioId・initialMode（列挙のみ）だけ。デモは本番受付・集計に含めない（sandbox）。
   | 'reception.demo_executed'
+  // カスタムデモシナリオの保存/削除 (issue #363 Inc2)。管理者がシナリオ内容を編集・保存した事実を残す。
+  // metadata は scenarioId・initialMode（列挙のみ）。シナリオ文言（PII でない擬似ラベル）は残さない。
+  | 'reception.demo_scenario_saved'
+  | 'reception.demo_scenario_deleted'
   // 受付端末（Device）管理 (issue #87 inc2)。token 値そのものは記録しない。
   | 'device.token_reissued'
   | 'device.disabled'

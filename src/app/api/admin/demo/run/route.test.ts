@@ -5,10 +5,13 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Actor } from '@/domain/tenant/authorization';
 import type { AuditLog } from '@/domain/reception/log';
+import type { DemoScenario } from '@/domain/demo-studio/scenario';
 import { asTenantId } from '@/domain/tenant/types';
+import { getDemoScenario } from '@/domain/demo-studio/scenarios';
 
 const resolveAdminActor = vi.fn<() => Promise<Actor | null>>();
 const appendAdminAudit = vi.fn<(...args: unknown[]) => Promise<AuditLog>>();
+const resolveDemoScenario = vi.fn<(id: string) => Promise<DemoScenario | undefined>>();
 
 vi.mock('@/lib/auth/actor', () => ({
   resolveAdminActor: () => resolveAdminActor(),
@@ -16,6 +19,9 @@ vi.mock('@/lib/auth/actor', () => ({
 }));
 vi.mock('@/lib/data-stores/reception-log-store', () => ({
   appendAdminAudit: (...args: unknown[]) => appendAdminAudit(...args),
+}));
+vi.mock('@/domain/demo-studio/store', () => ({
+  resolveDemoScenario: (id: string) => resolveDemoScenario(id),
 }));
 
 import { POST } from './route';
@@ -38,6 +44,8 @@ beforeEach(() => {
   vi.clearAllMocks();
   appendAdminAudit.mockResolvedValue({} as AuditLog);
   resolveAdminActor.mockResolvedValue(actorWith('tenant_admin'));
+  // 既定は 保存済み→組込 と同じく組込を返す（Inc1 非退行）。
+  resolveDemoScenario.mockImplementation(async (id) => getDemoScenario(id));
 });
 
 describe('POST /api/admin/demo/run', () => {
@@ -73,5 +81,21 @@ describe('POST /api/admin/demo/run', () => {
     expect(action).toBe('reception.demo_executed');
     expect(target).toMatchObject({ type: 'demo', id: 'qr-checkin-valid' });
     expect(metadata).toEqual({ scenarioId: 'qr-checkin-valid', initialMode: 'qr' });
+  });
+
+  it('カスタムシナリオ（保存済み→組込 解決）のデモ実行も記録する (Inc2)', async () => {
+    resolveDemoScenario.mockResolvedValue({
+      id: 'custom-xyz',
+      name: 'マイシナリオ',
+      initialMode: 'reception',
+      visitorInputs: [],
+      simulatedResults: {},
+    });
+    const res = await post({ scenarioId: 'custom-xyz' });
+    expect(res.status).toBe(200);
+    const [action, target, metadata] = appendAdminAudit.mock.calls[0]!;
+    expect(action).toBe('reception.demo_executed');
+    expect(target).toMatchObject({ type: 'demo', id: 'custom-xyz' });
+    expect(metadata).toEqual({ scenarioId: 'custom-xyz', initialMode: 'reception' });
   });
 });

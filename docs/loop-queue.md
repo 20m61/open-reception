@@ -181,8 +181,21 @@
 | B | **#374 残** | 完了（`/admin/call-routing` 文章形式ルートビルダー・永続化 repository・API・**アドレス write-only**(応答は maskedAddress のみ)・越境/viewer 403 テスト。+59 テスト）。**残**: goto_step 遷移編集 UI・Playwright E2E・orchestrator の実行時配線。**nit**(セキュリティレビュー): 入力サイズ上限なし・UI の tenant ハードコード(internal 固定)・description の全サイト label 解決 |
 | C | **#361 残** | QR シェル統一完了（CheckinFlow を `checkinConversationTurnFor` シェルで包み、既存状態機械・API 契約は無改変。「読み取りだけで発信しない」は既存遵守を退行防止テストで固定）。**残**: checkin 字幕 i18n・レール CSS 真実源統合・実カメラ(#65) |
 
-**第 6 wave（次に着手する）**: #363 Inc2(3ペイン編集。KioskFlow 注入点 4 件の解消を先行)／
-#361 残(復唱 UI・VRT/axe)／ voice 統合(kiosk への STT/TTS/turn 配線 + #371 duck/resume)／
+**第 6 wave（2026-07-22 消化済み）** — 同ブランチ・3 トラック並行。結果:
+
+| トラック | Issue | 結果 |
+| --- | --- | --- |
+| A | **#363 注入点** | KioskFlow 外部注入点 4 件を additive に解消（`operatingStatus` prop→`OutOfHoursView`(idle のみ・fail-open・4言語)／`sttAdapterFactory` DI(中立 interface)／`InjectableQrScanner`+`?debugScanPayload=`(**非本番限定**: token の URL 露出防止、セキュリティレビュー W1 対応)／`/call` 応答 `stages[]` 後方互換拡張+`parseCallStages`(key 文字制限・上限8)）。**残**: #367 で ServiceOperatingPolicy 実装し operatingStatus に実データ供給・#370 実 provider を factory へ・demo-studio 側の注入点利用 |
+| B | **voice 統合** | #371 に `duck`/`resume` 追加（#372 申し送り解消）+ `voice-session` orchestrator 新設（transport/STT/turn/TTS 合成・障害の単一 fallback 正規化・close 冪等・#365 統合セッション検証 green）。**残**: kiosk UI 配線・実 WSS/Transcribe/Polly(#65) |
+| C | **#363 Inc2** | 3ペイン編集スタジオ完了（テンプレート複製→編集→保存(認可+検証+監査)→プレビュー反映・保存済み→組込の解決順・URL/スクリプト等の unsafe テキスト拒否・sandbox 維持）。実ブラウザ検証 14/15 PASS(残 1 は confirm ダイアログの自動 dismiss で非バグ)。**残**: Inc3 公開モデル・注入点(トラック A)を使ったシナリオ再現(営業時間外/STT 失敗) |
+
+第 6 wave の注記: dev モード(`next dev`)の hydration がこのリモートコンテナで不安定（HMR
+WebSocket がプロキシで失敗・React ハンドラ未アタッチ）。**実ブラウザ検証は本番ビルド
+(`npm run build` + `npm start`)で行うこと**（e2e 規約と同じ）。UI polish 候補: スタジオ左ペインの
+ターンチップが縦書き折返しで窮屈・プレビュー見出しとボタンの重なり(1440px)。
+
+**第 7 wave（次に着手する）**: voice-session の kiosk 配線(#364 統合)／ demo-studio×注入点統合
+(営業時間外・STT 失敗・取次段階シナリオの実再現)／ #361 残(復唱 UI・VRT/axe)／ #363 Inc3／
 #375 残（token hash 化は**要ユーザー確認**のまま）／ #366 Stack・#376 実測・#4 は**ユーザー承認/外部待ち**
 
 同 wave に **#366 Phase 0 ADR のみ**（`docs/adr/*.md` 新規・コスト増ゼロ）を差し込むのは安全。

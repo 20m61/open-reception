@@ -16,8 +16,10 @@
  * #371 (`src/domain/voice-tts/types.ts` の `TtsPlaybackController`) との接続点:
  * `TtsBargeInPort.stopPlayback` / `discardQueuedAudio` は #371 の `TtsPlaybackController` と
  * 同名・同シグネチャ（`utteranceId: string`）にしてあり、実装（`playback-controller.ts`）を
- * そのまま差し込める。`duck`/`resume` は #372 が新たに要求する能力で、#371 側に無い
- * （将来 #371 のコントローラへ委譲メソッドとして追加する接続は次周回の配線作業）。
+ * そのまま差し込める。`duck`/`resume` は第 5 wave 時点では #372 が新たに要求する能力で #371
+ * 側に無かったが、第 6 wave で `TtsPlaybackControllerImpl`（`src/lib/voice-tts/
+ * playback-controller.ts`）へ委譲メソッドとして追加し、`TtsBargeInPort` をそのまま実装できる
+ * ようにした（`src/lib/voice-session/orchestrator.ts` が実際の配線例）。
  */
 import { classifyNearEnd, shouldStopPlayback, type NearEndClassification, type NearEndClassifierConfig, type NearEndSignal } from './near-end-classifier';
 

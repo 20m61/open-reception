@@ -6,7 +6,10 @@ import {
   DEMO_QR_RESULTS,
   DEMO_STT_RESULTS,
   DEMO_RUNTIME_STATES,
+  DEMO_SCENARIO_LIMITS,
+  hasUnsafeScenarioText,
   isDemoScenario,
+  validateDemoScenario,
   type DemoScenario,
 } from './scenario';
 import { ROUTE_RESULTS } from '@/domain/routing/policy';
@@ -84,5 +87,101 @@ describe('isDemoScenario', () => {
     expect(isDemoScenario({ ...valid(), id: '' })).toBe(false);
     expect(isDemoScenario({ ...valid(), name: 42 })).toBe(false);
     expect(isDemoScenario({ ...valid(), visitorInputs: 'x' })).toBe(false);
+  });
+});
+
+describe('hasUnsafeScenarioText (sandbox 内容境界)', () => {
+  it('通常のデモ文言は安全', () => {
+    expect(hasUnsafeScenarioText('担当者への通常訪問')).toBe(false);
+    expect(hasUnsafeScenarioText('staff:sato')).toBe(false);
+    expect(hasUnsafeScenarioText('dept-reception')).toBe(false);
+  });
+
+  it('URL・スクリプト・補間・制御文字を拒否する', () => {
+    expect(hasUnsafeScenarioText('https://evil.example')).toBe(true);
+    expect(hasUnsafeScenarioText('//evil.example/x')).toBe(true);
+    expect(hasUnsafeScenarioText('javascript:alert(1)')).toBe(true);
+    expect(hasUnsafeScenarioText('data:text/html,x')).toBe(true);
+    expect(hasUnsafeScenarioText('<script>x</script>')).toBe(true);
+    expect(hasUnsafeScenarioText('${process.env.SECRET}')).toBe(true);
+    expect(hasUnsafeScenarioText('{{token}}')).toBe(true);
+    expect(hasUnsafeScenarioText('line1\nline2')).toBe(true);
+  });
+});
+
+describe('validateDemoScenario (Inc2 保存時検証・フィールド別エラー)', () => {
+  it('正しいシナリオは trim 済みで受理する', () => {
+    const res = validateDemoScenario({ ...valid(), name: '  サンプル  ' });
+    expect(res.ok).toBe(true);
+    if (res.ok) {
+      expect(res.scenario.name).toBe('サンプル');
+      expect(res.scenario.visitorInputs).toEqual([{ mode: 'touch', value: 'meeting' }]);
+      expect(res.scenario.simulatedResults).toEqual({ call: ['answered'], runtime: 'ready' });
+    }
+  });
+
+  it('未知 mode・型不正をフィールド別に集約する', () => {
+    const res = validateDemoScenario({
+      id: 'x',
+      name: '',
+      initialMode: 'lobby',
+      visitorInputs: [{ mode: 'gesture', value: 'y' }],
+      simulatedResults: { call: ['accepted'], runtime: 'crashed' },
+    });
+    expect(res.ok).toBe(false);
+    if (!res.ok) {
+      expect(res.errors.name).toBeDefined();
+      expect(res.errors.initialMode).toBeDefined();
+      expect(res.errors['visitorInputs.0.mode']).toBeDefined();
+      expect(res.errors['simulatedResults.call']).toBeDefined();
+      expect(res.errors['simulatedResults.runtime']).toBeDefined();
+    }
+  });
+
+  it('巨大入力（名前・値・ターン数・呼び出し数）を上限で弾く', () => {
+    const big = validateDemoScenario({
+      ...valid(),
+      name: 'あ'.repeat(DEMO_SCENARIO_LIMITS.nameMaxLength + 1),
+      visitorInputs: Array.from({ length: DEMO_SCENARIO_LIMITS.maxVisitorInputs + 1 }, () => ({
+        mode: 'touch',
+        value: 'x',
+      })),
+      simulatedResults: {
+        call: Array.from({ length: DEMO_SCENARIO_LIMITS.maxCallResults + 1 }, () => 'answered'),
+      },
+    });
+    expect(big.ok).toBe(false);
+    if (!big.ok) {
+      expect(big.errors.name).toBeDefined();
+      expect(big.errors.visitorInputs).toBeDefined();
+      expect(big.errors['simulatedResults.call']).toBeDefined();
+    }
+
+    const longValue = validateDemoScenario({
+      ...valid(),
+      visitorInputs: [{ mode: 'touch', value: 'x'.repeat(DEMO_SCENARIO_LIMITS.valueMaxLength + 1) }],
+    });
+    expect(longValue.ok).toBe(false);
+    if (!longValue.ok) expect(longValue.errors['visitorInputs.0.value']).toBeDefined();
+  });
+
+  it('URL・スクリプトを含む文言は保存拒否（sandbox 内容境界）', () => {
+    const res = validateDemoScenario({ ...valid(), name: 'https://evil.example' });
+    expect(res.ok).toBe(false);
+    if (!res.ok) expect(res.errors.name).toBeDefined();
+
+    const turn = validateDemoScenario({
+      ...valid(),
+      visitorInputs: [{ mode: 'text', value: '<script>alert(1)</script>' }],
+    });
+    expect(turn.ok).toBe(false);
+    if (!turn.ok) expect(turn.errors['visitorInputs.0.value']).toBeDefined();
+  });
+
+  it('不正な id 文字種・非オブジェクトを拒否する', () => {
+    const bad = validateDemoScenario({ ...valid(), id: 'has space!' });
+    expect(bad.ok).toBe(false);
+    if (!bad.ok) expect(bad.errors.id).toBeDefined();
+    expect(validateDemoScenario(null).ok).toBe(false);
   });
 });
