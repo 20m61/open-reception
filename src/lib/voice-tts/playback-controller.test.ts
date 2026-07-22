@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { TtsPlaybackControllerImpl } from './playback-controller';
 import type { VoiceEvalEvent } from '@/domain/voice/evaluation-events';
 import type { TtsSpeakingTimelineEvent, TtsVisemeEvent } from '@/domain/voice-tts/viseme';
+import type { TtsBargeInPort } from '@/domain/voice-turn/barge-in-controller';
 
 function makeChunk(utteranceId: string, seq: number, final: boolean) {
   return { utteranceId, seq, audioTimestampMs: seq * 20, byteLength: 100, final };
@@ -87,5 +88,87 @@ describe('TtsPlaybackControllerImpl (issue #371 AC: utterance 単位の再生停
     controller.completePlayback('u1');
     expect(controller.isPlaying('u1')).toBe(false);
     expect(speaking.at(-1)).toEqual({ utteranceId: 'u1', speaking: false, t: 10 });
+  });
+});
+
+describe('TtsPlaybackControllerImpl.duck/resume (issue #371 追加 — #372 の TtsBargeInPort 実装対象)', () => {
+  it('duck lowers volume without stopping playback — isPlaying stays true and no speaking/viseme event fires', () => {
+    const speaking: TtsSpeakingTimelineEvent[] = [];
+    const visemes: TtsVisemeEvent[] = [];
+    const controller = new TtsPlaybackControllerImpl({
+      now: () => 0,
+      onSpeakingChanged: (e) => speaking.push(e),
+      onViseme: (e) => visemes.push(e),
+    });
+    controller.enqueue(makeChunk('u1', 0, true));
+    controller.startPlayback('u1'); // 1 件だけ speaking=true が積まれる。
+    speaking.length = 0;
+    visemes.length = 0;
+
+    controller.duck('u1');
+
+    expect(controller.isPlaying('u1')).toBe(true);
+    expect(controller.isDucked('u1')).toBe(true);
+    // duck は停止ではない — 口パク/speaking motion は継続するので通知が発火しない。
+    expect(speaking).toEqual([]);
+    expect(visemes).toEqual([]);
+  });
+
+  it('resume clears the duck without affecting playback or speaking state', () => {
+    const speaking: TtsSpeakingTimelineEvent[] = [];
+    const controller = new TtsPlaybackControllerImpl({ now: () => 0, onSpeakingChanged: (e) => speaking.push(e) });
+    controller.enqueue(makeChunk('u1', 0, true));
+    controller.startPlayback('u1');
+    controller.duck('u1');
+    speaking.length = 0;
+
+    controller.resume('u1');
+
+    expect(controller.isDucked('u1')).toBe(false);
+    expect(controller.isPlaying('u1')).toBe(true);
+    expect(speaking).toEqual([]);
+  });
+
+  it('AC: barge-in の使い分け — backchannel (duck→resume) は speaking を止めないが、interruption (stop) は止める', () => {
+    const speaking: TtsSpeakingTimelineEvent[] = [];
+    const events: VoiceEvalEvent[] = [];
+    const controller = new TtsPlaybackControllerImpl({
+      now: () => 100,
+      onSpeakingChanged: (e) => speaking.push(e),
+      onEvalEvent: (e) => events.push(e),
+    });
+    controller.enqueue(makeChunk('u1', 0, true));
+    controller.startPlayback('u1');
+    speaking.length = 0;
+    events.length = 0;
+
+    // 相づち: duck → resume で再生が続く。
+    controller.duck('u1');
+    controller.resume('u1');
+    expect(controller.isPlaying('u1')).toBe(true);
+    expect(speaking).toEqual([]);
+
+    // 明示的な訂正: duck → stop で再生が止まる。
+    controller.duck('u1');
+    controller.stopPlayback('u1', 'barge_in');
+    expect(controller.isPlaying('u1')).toBe(false);
+    expect(controller.isDucked('u1')).toBe(false);
+    expect(speaking.at(-1)).toEqual({ utteranceId: 'u1', speaking: false, t: 100 });
+    expect(events.at(-1)).toEqual({ type: 'tts.playback_stopped', t: 100, turnIndex: 0, reason: 'barge_in' });
+  });
+
+  it('duck on a not-yet-playing (queued) utterance is a no-op', () => {
+    const controller = new TtsPlaybackControllerImpl({ now: () => 0 });
+    controller.enqueue(makeChunk('u1', 0, true));
+    controller.duck('u1');
+    expect(controller.isDucked('u1')).toBe(false);
+  });
+
+  it('implements the #372 TtsBargeInPort shape (duck/resume/stopPlayback/discardQueuedAudio)', () => {
+    const controller: TtsBargeInPort = new TtsPlaybackControllerImpl({ now: () => 0 });
+    expect(typeof controller.duck).toBe('function');
+    expect(typeof controller.resume).toBe('function');
+    expect(typeof controller.stopPlayback).toBe('function');
+    expect(typeof controller.discardQueuedAudio).toBe('function');
   });
 });

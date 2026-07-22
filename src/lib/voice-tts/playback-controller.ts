@@ -13,6 +13,13 @@
  * 実 <audio>/AudioContext 再生・実タイマーは持たない（interface + mock、issue #371 運用制約）。
  * 呼び出し側（将来の kiosk 配線）が実チャンクのデコード・再生を担い、このコントローラは
  * utterance の状態遷移と副作用イベントの発行だけを担当する。
+ *
+ * `duck`/`resume`（issue #371 追加、第 5 wave #372 の申し送り）: `src/domain/voice-turn/
+ * barge-in-controller.ts` の `TtsBargeInPort` をこのクラスがそのまま実装できるようにする。
+ * duck は「音量を下げて再生を継続する」ことであり停止ではない —— `playbackState` は変えない
+ * （`domain/voice-tts/queue.ts` の `duckPlayback`/`resumePlayback`）ため、speaking motion/viseme
+ * の通知は発火しない。停止時に口パクが残らない不変条件と同様、duck 中に motion が途切れない
+ * 不変条件をここで保証する。
  */
 import {
   emptyTtsPlaybackQueueState,
@@ -21,6 +28,9 @@ import {
   stopPlayback as queueStopPlayback,
   discardQueuedAudio as queueDiscardQueuedAudio,
   completePlayback as queueCompletePlayback,
+  duckPlayback as queueDuckPlayback,
+  resumePlayback as queueResumePlayback,
+  isDucked as queueIsDucked,
   activeUtteranceId,
   pendingUtteranceIds as queuePendingUtteranceIds,
   playbackStateOf,
@@ -31,6 +41,7 @@ import { speakingTimelineEvent, visemeStopEvent, type TtsSpeakingTimelineEvent, 
 import { ttsPlaybackStartEvent, ttsPlaybackStoppedEvent } from '@/domain/voice-tts/eval-bridge';
 import type { TtsAudioChunk, TtsPlaybackController } from '@/domain/voice-tts/types';
 import type { VoiceEvalEvent, VoiceEvalPlaybackStopReason } from '@/domain/voice/evaluation-events';
+import type { TtsBargeInPort } from '@/domain/voice-turn/barge-in-controller';
 
 export type TtsPlaybackControllerDeps = {
   now?: () => number;
@@ -39,7 +50,7 @@ export type TtsPlaybackControllerDeps = {
   onEvalEvent?: (event: VoiceEvalEvent) => void;
 };
 
-export class TtsPlaybackControllerImpl implements TtsPlaybackController {
+export class TtsPlaybackControllerImpl implements TtsPlaybackController, TtsBargeInPort {
   private state: TtsPlaybackQueueState = emptyTtsPlaybackQueueState();
   /** utterance ごとの直近の speaking 通知値。差分がある時だけ通知する（イベントの空噴射防止）。 */
   private lastNotifiedSpeaking = new Map<string, boolean>();
@@ -100,6 +111,26 @@ export class TtsPlaybackControllerImpl implements TtsPlaybackController {
     const t = this.now();
     this.syncSpeaking(utteranceId, t);
     this.deps.onEvalEvent?.(ttsPlaybackStoppedEvent(t, 'completed'));
+  }
+
+  /**
+   * `TtsBargeInPort.duck`(issue #371 追加、#372 の申し送り): 再生音量を下げて発話の継続を
+   * 見極める。**停止ではない** —— `playbackState` は変えない(`domain/voice-tts/queue.ts` の
+   * `duckPlayback` 参照)ため、speaking motion/viseme は継続する(`syncSpeaking` は
+   * `playbackState` だけを見るので、ここでは呼ばない = 通知を発火させない)。
+   */
+  duck(utteranceId: string): void {
+    this.state = queueDuckPlayback(this.state, utteranceId);
+  }
+
+  /** `TtsBargeInPort.resume`(issue #371 追加): duck を解除して通常音量へ戻す。再生は継続したまま。 */
+  resume(utteranceId: string): void {
+    this.state = queueResumePlayback(this.state, utteranceId);
+  }
+
+  /** 指定 utterance が現在 duck 中か(テスト・kiosk 配線からの状態確認用)。 */
+  isDucked(utteranceId: string): boolean {
+    return queueIsDucked(this.state, utteranceId);
   }
 
   isPlaying(utteranceId: string): boolean {

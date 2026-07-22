@@ -9,6 +9,9 @@ import {
   activeUtteranceId,
   pendingUtteranceIds,
   playbackStateOf,
+  duckPlayback,
+  resumePlayback,
+  isDucked,
 } from './queue';
 
 describe('TTS playback queue (端末側, issue #371)', () => {
@@ -87,5 +90,76 @@ describe('TTS playback queue (端末側, issue #371)', () => {
     expect(stopPlayback(state, 'missing')).toEqual(state);
     expect(discardQueuedAudio(state, 'missing')).toEqual(state);
     expect(playbackStateOf(state, 'missing')).toBeUndefined();
+  });
+});
+
+describe('duck/resume (issue #371 追加 — #372 の TtsBargeInPort 実装用, playbackState は変えない)', () => {
+  it('新規 enqueue の utterance は ducked ではない', () => {
+    const state = enqueueUtterance(emptyTtsPlaybackQueueState(), 'u1');
+    expect(isDucked(state, 'u1')).toBe(false);
+  });
+
+  it('duckPlayback は再生中の utterance を ducked にするが playbackState は playing のまま', () => {
+    let state = enqueueUtterance(emptyTtsPlaybackQueueState(), 'u1');
+    state = startPlayback(state, 'u1');
+    state = duckPlayback(state, 'u1');
+    expect(isDucked(state, 'u1')).toBe(true);
+    expect(playbackStateOf(state, 'u1')).toBe('playing');
+    expect(activeUtteranceId(state)).toBe('u1'); // duck は「今鳴っている音」の扱いを変えない。
+  });
+
+  it('resumePlayback は ducked を解除する（playbackState は playing のまま）', () => {
+    let state = enqueueUtterance(emptyTtsPlaybackQueueState(), 'u1');
+    state = startPlayback(state, 'u1');
+    state = duckPlayback(state, 'u1');
+    state = resumePlayback(state, 'u1');
+    expect(isDucked(state, 'u1')).toBe(false);
+    expect(playbackStateOf(state, 'u1')).toBe('playing');
+  });
+
+  it('再生中でない utterance（queued）への duck は no-op（まだ鳴っていない音を duck する意味がない）', () => {
+    const state = enqueueUtterance(emptyTtsPlaybackQueueState(), 'u1');
+    const ducked = duckPlayback(state, 'u1');
+    expect(isDucked(ducked, 'u1')).toBe(false);
+    expect(playbackStateOf(ducked, 'u1')).toBe('queued');
+  });
+
+  it('stopPlayback は ducked フラグもクリアする（停止後に ducked が残らない）', () => {
+    let state = enqueueUtterance(emptyTtsPlaybackQueueState(), 'u1');
+    state = startPlayback(state, 'u1');
+    state = duckPlayback(state, 'u1');
+    state = stopPlayback(state, 'u1');
+    expect(isDucked(state, 'u1')).toBe(false);
+    expect(playbackStateOf(state, 'u1')).toBe('stopped');
+  });
+
+  it('discardQueuedAudio は ducked フラグもクリアする', () => {
+    let state = enqueueUtterance(emptyTtsPlaybackQueueState(), 'u1');
+    state = enqueueUtterance(state, 'u2');
+    state = discardQueuedAudio(state, 'u2');
+    expect(isDucked(state, 'u2')).toBe(false);
+  });
+
+  it('completePlayback は ducked フラグもクリアする', () => {
+    let state = enqueueUtterance(emptyTtsPlaybackQueueState(), 'u1');
+    state = startPlayback(state, 'u1');
+    state = duckPlayback(state, 'u1');
+    state = completePlayback(state, 'u1');
+    expect(isDucked(state, 'u1')).toBe(false);
+  });
+
+  it('duck/resume は他の utterance に影響しない（utterance 単位の独立性）', () => {
+    let state = enqueueUtterance(emptyTtsPlaybackQueueState(), 'u1');
+    state = enqueueUtterance(state, 'u2');
+    state = startPlayback(state, 'u1');
+    state = duckPlayback(state, 'u1');
+    expect(isDucked(state, 'u2')).toBe(false);
+  });
+
+  it('未知の utteranceId への duck/resume は no-op', () => {
+    const state = emptyTtsPlaybackQueueState();
+    expect(duckPlayback(state, 'missing')).toEqual(state);
+    expect(resumePlayback(state, 'missing')).toEqual(state);
+    expect(isDucked(state, 'missing')).toBe(false);
   });
 });
