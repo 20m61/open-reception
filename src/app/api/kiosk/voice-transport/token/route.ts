@@ -47,14 +47,22 @@ export async function POST(request: Request): Promise<NextResponse> {
     );
   }
 
-  const scope = await resolveKioskScope(session.kioskId);
-  const { token, expiresAt } = await issueVoiceTransportToken({
-    tenantId: scope.tenantId,
-    siteId: scope.siteId,
-    kioskId: session.kioskId,
-    receptionSessionId,
-    jti: randomUUID(),
-  });
-
-  return NextResponse.json({ token, expiresAt, audioConfig: DEFAULT_VOICE_TRANSPORT_AUDIO_CONFIG });
+  // scope 解決(device レジストリ)や secret 未設定の throw は fail-closed のまま 503 に写像する
+  // (kiosk-scope.ts の方針コメントどおり。一時障害であることをクライアントへ正しく伝える)。
+  try {
+    const scope = await resolveKioskScope(session.kioskId);
+    const { token, expiresAt } = await issueVoiceTransportToken({
+      tenantId: scope.tenantId,
+      siteId: scope.siteId,
+      kioskId: session.kioskId,
+      receptionSessionId,
+      jti: randomUUID(),
+    });
+    return NextResponse.json({ token, expiresAt, audioConfig: DEFAULT_VOICE_TRANSPORT_AUDIO_CONFIG });
+  } catch {
+    return NextResponse.json(
+      { error: 'unavailable', message: 'voice transport token temporarily unavailable' },
+      { status: 503 },
+    );
+  }
 }

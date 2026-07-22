@@ -116,4 +116,21 @@ describe('POST /api/kiosk/voice-transport/token', () => {
     const jti2 = issueVoiceTransportToken.mock.calls[1]![0].jti;
     expect(jti1).not.toBe(jti2);
   });
+
+  it('503 (fail-closed) when scope resolution fails — store outage is surfaced as unavailable, not 500', async () => {
+    resolveKioskScope.mockRejectedValue(new Error('device registry unavailable'));
+    const res = await call();
+    expect(res.status).toBe(503);
+    const body = (await res.json()) as { error: string; message: string };
+    expect(body.error).toBe('unavailable');
+    // 障害詳細(内部エラー文言)をクライアントへ漏らさない
+    expect(body.message).not.toContain('registry');
+    expect(issueVoiceTransportToken).not.toHaveBeenCalled();
+  });
+
+  it('503 (fail-closed) when token signing is unavailable (e.g. secret missing in deployed env)', async () => {
+    issueVoiceTransportToken.mockRejectedValue(new Error('VOICE_TRANSPORT_TOKEN_SECRET is not configured'));
+    const res = await call();
+    expect(res.status).toBe(503);
+  });
 });
