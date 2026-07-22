@@ -31,8 +31,17 @@ function collection() {
   return getBackend().collection<StoredOperatingPolicy>(COLLECTION);
 }
 
-/** テナント/サイトから決定論的な Collection キーを作る（1サイト=1ポリシー）。 */
+/**
+ * テナント/サイトから決定論的な Collection キーを作る（1サイト=1ポリシー）。
+ * 区切り文字 `:` の混入で別 (tenant, site) 組と衝突しないよう、キー成分は安全な
+ * 文字クラスに制限する（例: `a:b`+`c` と `a`+`b:c` の衝突防止）。
+ */
+const KEY_PART_PATTERN = /^[A-Za-z0-9_-]+$/;
+
 export function operatingPolicyKey(tenantId: string, siteId: string): string {
+  if (!KEY_PART_PATTERN.test(tenantId) || !KEY_PART_PATTERN.test(siteId)) {
+    throw new Error('operating-policy: invalid tenantId/siteId for policy key');
+  }
   return `${tenantId}:${siteId}`;
 }
 

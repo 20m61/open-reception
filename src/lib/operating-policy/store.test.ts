@@ -63,6 +63,16 @@ describe('upsertOperatingPolicy', () => {
     await expect(getOperatingPolicy('t2', 's1')).resolves.toBeNull();
   });
 
+  it('区切り文字を含む tenantId/siteId はキー衝突させず拒否する（`a:b`+`c` と `a`+`b:c`）', async () => {
+    await expect(getOperatingPolicy('a:b', 'c')).rejects.toThrow(/invalid tenantId\/siteId/);
+    await expect(getOperatingPolicy('a', 'b:c')).rejects.toThrow(/invalid tenantId\/siteId/);
+    await expect(
+      upsertOperatingPolicy('a:b', 'c', 'admin@example.com', {
+        weeklySchedule: { mon: [{ start: '09:00', end: '18:00' }] },
+      }),
+    ).rejects.toThrow(/invalid tenantId\/siteId/);
+  });
+
   it('保存を site.updated として監査する（PII/時間帯の具体値は残さない）', async () => {
     await upsertOperatingPolicy('t1', 's1', 'admin@example.com', {
       weeklySchedule: { mon: [{ start: '09:00', end: '18:00' }] },
