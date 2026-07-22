@@ -24,8 +24,13 @@ export async function POST(
   const { id } = await params;
 
   // 保存済みルートに従った段階実行を試みる。読み取り/実行で失敗しても取次自体は止めない
-  // （fail-open で従来の単発 Mock へ）。
-  const routed = await executeRoutedCall(resolveDefaultScope(), id).catch(() => null);
+  // （fail-open で従来の単発 Mock へ）。fail-open は無音にせずログで可観測にする（PII なし）。
+  const routed = await executeRoutedCall(resolveDefaultScope(), id).catch((err: unknown) => {
+    console.error('[kiosk/call] routed execution failed; falling back to single mock call', {
+      reason: err instanceof Error ? err.name : 'unknown',
+    });
+    return null;
+  });
   const result = await startCall(id, routed ? routedCallAdapter(routed) : undefined);
 
   // エラー時、またはルート未設定（fail-open）時は従来どおりの応答（stages なし）。
