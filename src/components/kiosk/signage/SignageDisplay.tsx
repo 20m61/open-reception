@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { nextIndex } from '@/domain/signage/rotation';
+import { DEFAULT_SITE_ID, DEFAULT_TENANT_ID } from '@/lib/tenant/default-scope';
 import type { KioskSignage, KioskSignageItem } from '@/lib/signage/kiosk-signage';
 import { hasBrandingContent, type BrandingSettings } from '@/domain/branding/types';
 import { makeT, DEFAULT_LOCALE, htmlLangFor, normalizeLocale, type Locale } from '@/lib/i18n';
@@ -25,8 +26,8 @@ import { SignageClock } from './SignageClock';
  * 次増分（kiosk/config の active と統合）。本増分は待機中の純粋なサイネージ表示に限る。
  */
 export function SignageDisplay({
-  tenantId = 'internal',
-  siteId = 'default',
+  tenantId = DEFAULT_TENANT_ID,
+  siteId = DEFAULT_SITE_ID,
   onStart,
   locale,
   paused = false,
