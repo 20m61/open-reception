@@ -23,6 +23,11 @@ import {
   type ReceptionState,
   transition,
 } from './state';
+import {
+  transition as checkinTransition,
+  type CheckinEvent,
+  type CheckinState,
+} from '@/domain/checkin/state';
 import { motionKeyForState, type MotionKey } from '@/domain/motion/types';
 import { RECEPTION_PURPOSES } from './session';
 
@@ -665,3 +670,241 @@ export function conversationTurnFor(
 
 /** 全 screenState（再エクスポート。契約の網羅テスト/イテレーション用）。 */
 export { RECEPTION_STATES };
+
+// =============================================================================
+// #361 QR 受付シェル統一: CheckinState を会話ターンとして提示する契約
+// -----------------------------------------------------------------------------
+// 目的: QR 受付(CheckinFlow, domain/checkin/state.ts)を、通常受付(KioskFlow)と「同じ
+// アバター継続レール・字幕・逃げ道シェル」で提示し、別アプリに見せない。
+//
+// 設計原則（本ファイル冒頭の原則を継承）:
+//  - 進行の真実源は domain/checkin/state.ts（状態機械）。本契約はそこから「導出」するだけで
+//    独自に状態を進めない。発信(calling)へ進めるのは confirming の CONFIRM のみ、という不変
+//    条件は状態機械に紐づけて表現する（checkinRequiresExplicitConfirmation）。
+//  - 表示契約の真実源は ui-contract.ts に一本化する（#361 AC「競合する表示契約の真実源を作らない」）。
+//  - アバターの見た目(表情/モーション/在り方)は ReceptionState 代理経由で導出し、既存の
+//    AvatarGuide（ReceptionState 駆動）をそのまま再利用する（受付とキャラクターを共有する）。
+//  - locale 依存の字幕は component 層が解決して注入できる（既定は ja の意味論的文言を内蔵）。
+//  - PII を持ち込まない（来訪者の氏名/会社名等の値はここに持ち込まない）。
+// =============================================================================
+
+/**
+ * CheckinState → アバター視覚のための ReceptionState 代理。
+ * QR 受付でも通常受付と同じアバター/表情/モーション/字幕枠を共有するため、checkin の各状態を
+ * 意味論的に最も近い受付状態へ写す。進行そのものは checkin 状態機械が所有し、これは表示専用。
+ */
+const CHECKIN_TO_RECEPTION_PROXY: Record<CheckinState, ReceptionState> = {
+  idle: 'idle', // 入口・ヒーロー
+  selectingMethod: 'selectingPurpose', // 方法を選ぶ（挨拶して選択を促す）
+  checkingCamera: 'selectingTarget', // カメラ許可の案内（操作案内）
+  scanning: 'inputVisitorInfo', // 読み取り待ち（傾聴姿勢）
+  resolving: 'confirming', // 予約確認中（思案）
+  confirming: 'confirming', // 予約内容の確認（思案・確認CTAへ誘導）
+  calling: 'calling', // 呼び出し中（安心案内）
+  completed: 'completed', // 完了（お見送り）
+  cancelled: 'cancelled', // 中止（お見送り）
+  manualFallback: 'fallback', // 通常受付へ切替（代替案内）
+  cameraError: 'failed', // 以下エラーはお詫び・代替案内
+  scanError: 'failed',
+  expiredError: 'failed',
+  usedError: 'failed',
+  revokedError: 'failed',
+  networkError: 'failed',
+};
+
+/** CheckinState を、アバター表示のための ReceptionState 代理へ写す。 */
+export function checkinAvatarProxyState(state: CheckinState): ReceptionState {
+  return CHECKIN_TO_RECEPTION_PROXY[state];
+}
+
+/**
+ * QR 受付の字幕・案内の意味論キー。画面表示文とアバター字幕はこのキーを共有し、
+ * 通常受付(MessageKey)と混同しないよう別語彙で持つ。
+ */
+export const CHECKIN_MESSAGE_KEYS = [
+  'intro', // idle: QR 受付の入口案内
+  'chooseMethod', // selectingMethod: QR / 通常受付の選択
+  'cameraPermission', // checkingCamera: カメラ許可の案内
+  'scanning', // scanning: 読み取り中（qr-scan ターン）
+  'resolving', // resolving: 予約確認中
+  'reviewReservation', // confirming: 予約内容の確認（qr-confirm ターン）
+  'calling', // calling: 呼び出し中
+  'completed', // completed: 受付完了
+  'cancelled', // cancelled: 受付中止
+  'manualFallback', // manualFallback: 通常受付へ切替
+  'cameraError', // 以下エラー種別
+  'scanError',
+  'expiredError',
+  'usedError',
+  'revokedError',
+  'networkError',
+] as const;
+export type CheckinMessageKey = (typeof CHECKIN_MESSAGE_KEYS)[number];
+
+const CHECKIN_STATE_TO_MESSAGE_KEY: Record<CheckinState, CheckinMessageKey> = {
+  idle: 'intro',
+  selectingMethod: 'chooseMethod',
+  checkingCamera: 'cameraPermission',
+  scanning: 'scanning',
+  resolving: 'resolving',
+  confirming: 'reviewReservation',
+  calling: 'calling',
+  completed: 'completed',
+  cancelled: 'cancelled',
+  manualFallback: 'manualFallback',
+  cameraError: 'cameraError',
+  scanError: 'scanError',
+  expiredError: 'expiredError',
+  usedError: 'usedError',
+  revokedError: 'revokedError',
+  networkError: 'networkError',
+};
+
+/** CheckinState から字幕の意味論キーを導出する。 */
+export function checkinMessageKeyFor(state: CheckinState): CheckinMessageKey {
+  return CHECKIN_STATE_TO_MESSAGE_KEY[state];
+}
+
+/**
+ * QR 受付の既定字幕（ja・意味論的短文）。component 層が locale 解決した値を注入しない場合の
+ * フォールバック。画面文言・音声・字幕が矛盾しないよう、CheckinFlow の主導線に整合させる。
+ */
+const CHECKIN_MESSAGE_TEXT_JA: Record<CheckinMessageKey, string> = {
+  intro: '予約 QR をお持ちの方はこちらから受付できます',
+  chooseMethod: '受付方法をお選びください',
+  cameraPermission: 'QR を読み取るためにカメラの使用を許可してください',
+  scanning: '予約 QR をカメラにかざしてください',
+  resolving: 'ご予約を確認しています。少々お待ちください',
+  reviewReservation: 'ご予約内容をご確認のうえ、お呼び出しください',
+  calling: '担当者を呼び出しています。少々お待ちください',
+  completed: '受付が完了しました。ご案内をお待ちください',
+  cancelled: '受付を中止しました',
+  manualFallback: '通常受付に切り替えます。手入力でお進みください',
+  cameraError: 'カメラを使用できませんでした。通常受付でお進みいただけます',
+  scanError: 'QR を読み取れませんでした。もう一度お試しか、通常受付をご利用ください',
+  expiredError: 'この QR は有効期限が切れています。受付スタッフにお問い合わせください',
+  usedError: 'この QR はすでに受付に使用されています。受付スタッフにお問い合わせください',
+  revokedError: 'この QR は無効化されています。受付スタッフにお問い合わせください',
+  networkError: '通信に失敗しました。通常受付でお進みいただけます',
+};
+
+/**
+ * CheckinState ごとの入力手段。タッチは全ターンで必ず提示する（音声/QR/カメラが失敗しても
+ * タッチだけで完走できる不変条件）。QR は読み取り(scanning)の読み取り専用チャネルとしてのみ
+ * 併記し、発信確定(confirming)には含めない（音声/QR だけで発信させない）。
+ */
+const CHECKIN_STATE_TO_INPUT_MODES: Record<CheckinState, ReadonlyArray<InputMode>> = {
+  idle: ['touch'],
+  selectingMethod: ['touch'],
+  checkingCamera: ['touch'],
+  scanning: ['touch', 'qr'], // 読み取りだけ。タッチでいつでも中断/通常受付へ。
+  resolving: ['touch'],
+  confirming: ['touch'], // 発信確定はタッチのみ
+  calling: ['touch'],
+  completed: ['touch'],
+  cancelled: ['touch'],
+  manualFallback: ['touch'],
+  cameraError: ['touch'],
+  scanError: ['touch'],
+  expiredError: ['touch'],
+  usedError: ['touch'],
+  revokedError: ['touch'],
+  networkError: ['touch'],
+};
+
+/** CheckinState からそのターンで受け付ける入力手段を導出する。 */
+export function checkinInputModesFor(state: CheckinState): ReadonlyArray<InputMode> {
+  return CHECKIN_STATE_TO_INPUT_MODES[state];
+}
+
+/**
+ * そのターンが発信（担当者呼び出し）の明示タッチ確認を要するか。
+ *
+ * 「QR は読み取りだけで発信しない」不変条件を状態機械に紐づけて表現する: 発信(calling)へ進む
+ * のは confirming の CONFIRM のみ。読み取り(scanning)/取得(resolving)からは calling へ進めない
+ * ため false になる（二重定義せず checkin 状態機械へ委譲）。
+ */
+export function checkinRequiresExplicitConfirmation(state: CheckinState): boolean {
+  return checkinTransition(state, 'CONFIRM') === 'calling';
+}
+
+/** QR 受付シェルの逃げ道（後退・切替）。表示ラベルは component 層が担う。 */
+export type CheckinEscapeHatch = { event: CheckinEvent };
+
+/**
+ * 逃げ道として提示しうるイベント（後退・通常受付への切替・待機へリセット）。
+ * どれを実際に出すかは状態機械の許可に従う（存在しない遷移は出さない）。
+ */
+const CHECKIN_ESCAPE_EVENTS: ReadonlyArray<CheckinEvent> = [
+  'CHOOSE_MANUAL', // 受付方法選択から通常受付へ
+  'USE_MANUAL', // エラーから通常受付へ
+  'CANCEL', // 中断
+  'RESET', // 最初に戻る（全状態から待機へ）
+];
+
+/**
+ * そのターンで提示する逃げ道イベント。idle は入口で戻る先が無いため出さない。RESET は
+ * 状態機械上どの状態からも idle へ戻せる安全弁のため常に許可する（idle を除く）。それ以外は
+ * `checkinTransition` が非 null を返すものだけを出す（許可外は出さない）。
+ */
+export function checkinEscapeHatchesFor(state: CheckinState): ReadonlyArray<CheckinEscapeHatch> {
+  if (state === 'idle') return [];
+  return CHECKIN_ESCAPE_EVENTS.filter((event) =>
+    event === 'RESET' ? true : checkinTransition(state, event) !== null,
+  ).map((event) => ({ event }));
+}
+
+/**
+ * QR 受付の会話ターン（#361）。CheckinFlow の各画面がこの 1 つを参照し、通常受付と同じ
+ * アバター継続レール・字幕・逃げ道シェルで提示する。
+ */
+export type CheckinTurnView = {
+  stateKey: CheckinState;
+  avatar: {
+    presence: AvatarPresence;
+    emotion: AvatarEmotion;
+    motionKey: MotionKey;
+    /** アバター表示のための ReceptionState 代理（AvatarGuide 再利用のため）。 */
+    proxyState: ReceptionState;
+  };
+  message: {
+    semanticKey: CheckinMessageKey;
+    displayText: string;
+    /** このターンでアバターが発話するか（QR 受付に通話中の無発話局面は無く常に true）。 */
+    speak: boolean;
+  };
+  inputModes: ReadonlyArray<InputMode>;
+  requiresExplicitConfirmation: boolean;
+  escapeHatches: ReadonlyArray<CheckinEscapeHatch>;
+};
+
+/**
+ * CheckinState（+ component 層が locale 解決した字幕）から CheckinTurnView を組み立てる純関数。
+ * `overrides.message.displayText` を渡すと字幕を差し替え（多言語対応）。省略時は ja 既定値。
+ */
+export function checkinConversationTurnFor(
+  state: CheckinState,
+  overrides?: {
+    message?: { displayText: string };
+  },
+): CheckinTurnView {
+  const proxyState = checkinAvatarProxyState(state);
+  const semanticKey = checkinMessageKeyFor(state);
+  return {
+    stateKey: state,
+    avatar: {
+      presence: deriveAvatarPresence(proxyState),
+      emotion: deriveAvatarEmotion(proxyState),
+      motionKey: motionKeyForState(proxyState),
+      proxyState,
+    },
+    message: {
+      semanticKey,
+      displayText: overrides?.message?.displayText ?? CHECKIN_MESSAGE_TEXT_JA[semanticKey],
+      speak: true,
+    },
+    inputModes: checkinInputModesFor(state),
+    requiresExplicitConfirmation: checkinRequiresExplicitConfirmation(state),
+    escapeHatches: checkinEscapeHatchesFor(state),
+  };
+}

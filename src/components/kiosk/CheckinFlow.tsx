@@ -9,6 +9,11 @@ import {
 import type { CheckinSummary, CheckinFailureReason } from '@/domain/checkin/types';
 import type { QrScanner, ScanError } from '@/domain/checkin/scanner';
 import { CameraQrScanner } from '@/lib/checkin/camera-scanner';
+import { checkinConversationTurnFor } from '@/domain/reception/ui-contract';
+import type { MotionKey } from '@/domain/motion/types';
+import { DEFAULT_LOCALE, type Locale } from '@/lib/i18n';
+import type { KioskLayout } from './layout';
+import { AvatarGuide } from './avatar/AvatarGuide';
 
 /**
  * QR チェックインフロー (issue #98, increment 2)。
@@ -33,6 +38,18 @@ export type CheckinFlowProps = {
   onUseManual?: () => void;
   /** 待機画面へ戻すときのハンドラ。 */
   onExit?: () => void;
+  /** 表示言語（#103）。アバター継続レールの字幕 lang などに使う。 */
+  locale?: Locale;
+  /** 画面種別レイアウト（#124）。横向きはアバターを左レール、縦向きは控えめな companion にする。 */
+  layout?: KioskLayout;
+  /** アバター VRM URL（無ければ静止画/プレースホルダ）。実アセット検証は #65。 */
+  vrmUrl?: string;
+  /** VRM 不可/失敗時の静止画 URL。 */
+  avatarFallbackUrl?: string;
+  /** モーションキー → 解決済みモーション URL（#31）。 */
+  motionUrls?: Partial<Record<MotionKey, string>>;
+  /** 既定モーション URL（キー未割当時の fallback）。 */
+  defaultMotionUrl?: string;
 };
 
 type FlowData = {
@@ -85,7 +102,17 @@ const REASON_EVENT: Record<CheckinFailureReason, SimpleEvent> = {
   not_found: 'RESERVATION_INVALID',
 };
 
-export function CheckinFlow({ scanner, onUseManual, onExit }: CheckinFlowProps) {
+export function CheckinFlow({
+  scanner,
+  onUseManual,
+  onExit,
+  locale = DEFAULT_LOCALE,
+  layout = 'ipad-portrait',
+  vrmUrl,
+  avatarFallbackUrl,
+  motionUrls,
+  defaultMotionUrl,
+}: CheckinFlowProps) {
   const [data, dispatch] = useReducer(reducer, INITIAL);
   // 注入されたスキャナ（既定は実カメラ CameraQrScanner）。再レンダーで作り直さない。
   const scannerRef = useRef<QrScanner>(scanner ?? new CameraQrScanner());
@@ -178,8 +205,145 @@ export function CheckinFlow({ scanner, onUseManual, onExit }: CheckinFlowProps) 
     onExit?.();
   }, [onExit]);
 
-  return renderCheckin(data, dispatch, useManual, exit);
+  return (
+    <CheckinShell
+      state={data.state}
+      locale={locale}
+      layout={layout}
+      vrmUrl={vrmUrl}
+      avatarFallbackUrl={avatarFallbackUrl}
+      motionUrls={motionUrls}
+      defaultMotionUrl={defaultMotionUrl}
+    >
+      {renderCheckin(data, dispatch, useManual, exit)}
+    </CheckinShell>
+  );
 }
+
+/**
+ * QR 受付シェル（#361）。CheckinFlow を通常受付(KioskFlow)と同じアバター継続レール・字幕で
+ * 提示し「別アプリ」に見せない。表示契約の真実源は ui-contract の `checkinConversationTurnFor`。
+ *
+ * レイアウト方針:
+ *  - 横向き/大型: アバターを左レール(35%)として並置し、会話・操作を右(65%)へ寄せる（#361 の
+ *    横向き会話継続レイアウトに合わせる）。レールは pointer-events:none で操作を妨げない。
+ *  - 縦向き: 既存プロファイルを壊さないよう左下の控えめな companion として重ね、コンテンツは
+ *    全幅で流す（縦置きのタッチ密集を避ける）。
+ *
+ * アバターの表情/モーション/在り方は checkin 状態の ReceptionState 代理(proxyState)経由で導出し、
+ * 既存の AvatarGuide をそのまま再利用する。字幕は checkin 専用文言で上書きする（画面文言と一致）。
+ */
+function CheckinShell({
+  state,
+  locale,
+  layout,
+  vrmUrl,
+  avatarFallbackUrl,
+  motionUrls,
+  defaultMotionUrl,
+  children,
+}: {
+  state: CheckinState;
+  locale: Locale;
+  layout: KioskLayout;
+  vrmUrl?: string;
+  avatarFallbackUrl?: string;
+  motionUrls?: Partial<Record<MotionKey, string>>;
+  defaultMotionUrl?: string;
+  children: React.ReactNode;
+}) {
+  const turn = checkinConversationTurnFor(state);
+  const isRail = layout === 'ipad-landscape' || layout === 'large-display';
+
+  const avatar = (
+    <div
+      className="checkin-shell__avatar"
+      data-testid="checkin-avatar-rail"
+      aria-hidden="true"
+      style={isRail ? avatarRailStyle : avatarCompanionStyle}
+    >
+      <AvatarGuide
+        screenState={turn.avatar.proxyState}
+        locale={locale}
+        vrmUrl={vrmUrl}
+        fallbackImageUrl={avatarFallbackUrl}
+        motionUrls={motionUrls}
+        defaultMotionUrl={defaultMotionUrl}
+        // 字幕は checkin 専用文言で上書きする（受付フローの avatar 既定文言とは別スロット。
+        // 画面の見出し/リードと矛盾しないよう ui-contract の checkin 文言に一致させる）。
+        guidanceOverride={{ text: turn.message.displayText }}
+      />
+    </div>
+  );
+
+  return (
+    <div
+      className="checkin-shell"
+      data-testid="checkin-shell"
+      data-checkin-state={turn.stateKey}
+      data-checkin-presence={turn.avatar.presence}
+      style={isRail ? shellRailStyle : shellStackStyle}
+    >
+      {avatar}
+      <div className="checkin-shell__content" style={isRail ? contentRailStyle : contentStackStyle}>
+        {children}
+      </div>
+    </div>
+  );
+}
+
+// 横向き/大型: アバターを左レール(35%)として在席させる（#361 会話継続レイアウト）。
+const shellRailStyle: React.CSSProperties = {
+  display: 'flex',
+  flex: 1,
+  minHeight: 0,
+  width: '100%',
+  gap: 'var(--space-lg)',
+};
+
+// 縦向き: コンテンツ全幅 + 左下の控えめ companion（重ね置き）。
+const shellStackStyle: React.CSSProperties = {
+  display: 'flex',
+  flexDirection: 'column',
+  flex: 1,
+  minHeight: 0,
+  width: '100%',
+};
+
+const avatarRailStyle: React.CSSProperties = {
+  width: '35%',
+  maxWidth: '35vw',
+  display: 'flex',
+  flexDirection: 'column',
+  alignItems: 'center',
+  justifyContent: 'center',
+  pointerEvents: 'none',
+};
+
+const avatarCompanionStyle: React.CSSProperties = {
+  position: 'fixed',
+  left: 'var(--space-md)',
+  bottom: 'var(--space-md)',
+  width: 150,
+  maxWidth: '26vw',
+  zIndex: 5,
+  pointerEvents: 'none',
+};
+
+const contentRailStyle: React.CSSProperties = {
+  flex: 1,
+  minWidth: 0,
+  display: 'flex',
+  flexDirection: 'column',
+  gap: 'var(--space-lg)',
+};
+
+const contentStackStyle: React.CSSProperties = {
+  flex: 1,
+  display: 'flex',
+  flexDirection: 'column',
+  gap: 'var(--space-lg)',
+};
 
 function renderCheckin(
   data: FlowData,
