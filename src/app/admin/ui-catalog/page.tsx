@@ -102,8 +102,8 @@ export default function UiCatalogPage() {
 
       <Section title="シークレット状態 SecretStatusField" description="値は表示せず状態のみ">
         <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-          <SecretStatusField name="VONAGE_API_KEY" presence="configured" updatedLabel="最終更新: 2026-06-01" />
-          <SecretStatusField name="VONAGE_API_SECRET" presence="needs_rotation" updatedLabel="最終更新: 2025-12-01" actions={<Button variant="secondary">更新済みにする</Button>} />
+          <SecretStatusField name="OAUTH_CLIENT_SECRET" presence="configured" updatedLabel="最終更新: 2026-06-01" />
+          <SecretStatusField name="WEBHOOK_SECRET" presence="needs_rotation" updatedLabel="最終更新: 2025-12-01" actions={<Button variant="secondary">更新済みにする</Button>} />
           <SecretStatusField name="SMTP_PASSWORD" presence="missing" />
         </div>
       </Section>

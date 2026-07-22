@@ -18,12 +18,14 @@ export type SecretPresence = 'configured' | 'missing';
 /** ローテーション/要対応の指標。inc1 では env 検出と手動状態のみ（自動失効検知は次増分）。 */
 export type SecretHealth = 'ok' | 'needs_rotation' | 'unknown';
 
-/** 管理画面が扱える既知のシークレット種別。値は環境変数 / Secrets Manager 側にのみ存在する。 */
+/**
+ * 管理画面が扱える既知のシークレット種別。値は環境変数 / Secrets Manager 側にのみ存在する。
+ *
+ * Vonage 資格情報（旧 `VONAGE_*` env）はテナント設定（`TenantProviderConfig` + `TenantSecretStore`）へ
+ * 移行し、presence 表示も外部連携行（`getVonagePresenceForTenant`）へ移した（#405 Inc3 / #90/#93）。
+ * このため個別 secret キーの一覧からは VONAGE 項目を撤去した。
+ */
 export const SECRET_KEYS = [
-  'VONAGE_APPLICATION_ID',
-  'VONAGE_API_KEY',
-  'VONAGE_API_SECRET',
-  'VONAGE_PRIVATE_KEY',
   'OAUTH_CLIENT_SECRET',
   'WEBHOOK_SECRET',
 ] as const;

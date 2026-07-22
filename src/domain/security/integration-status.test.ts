@@ -27,7 +27,7 @@ describe('integration-status domain (#93)', () => {
 
   describe('composeSecretStatus', () => {
     it('env presence を正とし、record の更新メタを合成する', () => {
-      const status = composeSecretStatus('VONAGE_API_SECRET', 'configured', {
+      const status = composeSecretStatus('OAUTH_CLIENT_SECRET', 'configured', {
         presence: 'missing',
         health: 'ok',
         updatedAt: '2026-01-01T00:00:00.000Z',
@@ -74,7 +74,10 @@ describe('integration-status domain (#93)', () => {
 
   describe('isSecretKey', () => {
     it('既知のキーのみ true', () => {
-      expect(isSecretKey('VONAGE_API_SECRET')).toBe(true);
+      expect(isSecretKey('OAUTH_CLIENT_SECRET')).toBe(true);
+      expect(isSecretKey('WEBHOOK_SECRET')).toBe(true);
+      // VONAGE 資格情報はテナント設定へ移行済み → 個別 secret キーには含まれない。
+      expect(isSecretKey('VONAGE_API_SECRET')).toBe(false);
       expect(isSecretKey('UNKNOWN')).toBe(false);
       expect(isSecretKey(123)).toBe(false);
     });
