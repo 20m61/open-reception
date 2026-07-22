@@ -58,8 +58,12 @@ export class InjectableQrScanner implements QrScanner {
  * `?debugScanPayload=<token>` が付いていれば、その payload を seed した camera-free スキャナを返す。
  * 付いていない/空のときは undefined（実カメラ経路のまま・非破壊）。E2E タイマー上書き
  * （`?callingStageMs=` 等）と同じデバッグ用クエリの流儀。
+ *
+ * 本番ビルドでは常に undefined（タイマー系デバッグクエリと違い、こちらは reservationToken を
+ * URL クエリに載せるため、アクセスログ/履歴/Referer への露出を避ける）。
  */
 export function debugScannerFromSearch(search: string): InjectableQrScanner | undefined {
+  if (process.env.NODE_ENV === 'production') return undefined;
   const params = new URLSearchParams(search);
   const payload = params.get('debugScanPayload');
   if (!payload) return undefined;

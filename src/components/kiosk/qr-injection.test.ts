@@ -68,4 +68,13 @@ describe('debugScannerFromSearch (#363 デバッグ入力: ?debugScanPayload=)',
   it('空の payload は undefined（誤起動しない）', () => {
     expect(debugScannerFromSearch('?debugScanPayload=')).toBeUndefined();
   });
+
+  it('本番ビルドでは payload 付きでも undefined（token の URL 露出を防ぐ）', () => {
+    vi.stubEnv('NODE_ENV', 'production');
+    try {
+      expect(debugScannerFromSearch('?debugScanPayload=TOKEN_XYZ')).toBeUndefined();
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
 });
