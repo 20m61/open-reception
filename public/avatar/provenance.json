@@ -1,0 +1,19 @@
+{
+  "asset": "public/avatar/default.vrm",
+  "modelName": "AvatarSample_A",
+  "publisher": "VRoid Project / pixiv",
+  "sourceModelUrl": "https://hub.vroid.com/characters/2843975675147313744/models/5644550979324015604",
+  "licenseTermsUrl": "https://vroid.pixiv.help/hc/ja/articles/4402394424089-AvatarSample-A-Z",
+  "licenseSummary": {
+    "cc0": false,
+    "corporateUse": true,
+    "commercialUse": true,
+    "redistribution": true,
+    "modification": true,
+    "creditRequired": false
+  },
+  "acquiredAt": null,
+  "sha256": null,
+  "verificationStatus": "pending-official-download-and-hash",
+  "notes": "Update acquiredAt and sha256 after obtaining AvatarSample_A through the official VRoid distribution flow. Verify the embedded VRM metadata before release."
+}
