@@ -28,6 +28,7 @@ const ACTION_LABEL: Partial<Record<AuditAction, string>> = {
   'asset.created': 'アセット: 登録',
   'asset.updated': 'アセット: 更新',
   'motion.updated': 'モーション割り当て: 更新',
+  'reception.demo_executed': '受付体験スタジオ: デモ実行',
   'reservation.created': '来訪予約: 作成',
   'reservation.updated': '来訪予約: 更新',
   'reservation.cancelled': '来訪予約: キャンセル',
