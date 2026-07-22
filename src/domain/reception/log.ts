@@ -272,6 +272,9 @@ export type AuditAction =
   | 'reception.staff_responded'
   // ワンタップ満足度フィードバック (issue #320)。metadata は評価値・理由コードのみ（PII なし）。
   | 'reception.feedback_submitted'
+  // 受付体験スタジオのデモ実行 (issue #363)。管理者が本番 Kiosk を Mock 注入で試走した事実を残す。
+  // metadata は scenarioId・initialMode（列挙のみ）だけ。デモは本番受付・集計に含めない（sandbox）。
+  | 'reception.demo_executed'
   // 受付端末（Device）管理 (issue #87 inc2)。token 値そのものは記録しない。
   | 'device.token_reissued'
   | 'device.disabled'
