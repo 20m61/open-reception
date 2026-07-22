@@ -165,8 +165,17 @@
 付随: **VRM 実描画検証で #31 の一部を de-stack**（rotateVRM0 欠落による背面向き描画を修正・
 自作 idle.vrma 同梱・SwiftShader WebGL2 で .vrma 実再生まで検証。残: 実機負荷・リップシンク #65）。
 
-**第 4 wave（次に着手する）**: #370(STT)+#371(TTS) 並行 → #372(Turn) ／ #363 Inc1（#374 mock
-contract 利用可に）／ #374・#361 の残 increment ／ #375 残（token hash 化は**要ユーザー確認**のまま）
+**第 4 wave（2026-07-22 消化済み）** — 同ブランチ・3 トラック並行。結果:
+
+| トラック | Issue | 結果 |
+| --- | --- | --- |
+| A | **#370** | increment 1 完了（`src/domain/voice-stt/`+`src/lib/voice-stt/`: partial 安定化(LCP+debounce)・#322 接続の Entity 解決(STT/Entity confidence 分離・Top1/Top3)・低信頼確認遷移・fallback・#365 適合 eval-bridge・Transcribe 接続境界。テスト 58 件）。**残**: 実 WSS+SigV4 の ConnectionFactory・閾値の実機較正・Kiosk UI 配線(#65/次周回) |
+| B | **#371** | increment 1 完了（`src/domain/voice-tts/`+`src/lib/voice-tts/`: 生成/再生の責務分離・キャッシュキー・utterance lifecycle(停止時に口パク残存なし)・viseme 中立イベント・connected 中抑止・ADR 0002。テスト 103 件）。**残**: 実 Polly・実キャッシュ配線(S3 メタデータの PII 注記あり)・VRM viewer 配線(#65/次周回) |
+| C | **#363** | Inc1 完了（`/admin/demo` Demo Harness: 本番 Kiosk 無改変 iframe + Mock 注入・既定拒否 sandbox・9 シナリオ・監査。テスト 54 件）。**実ブラウザ検証で iframe 表示不能(X-Frame-Options/frame-ancestors/admin chrome/スケール)の統合欠陥 3 件を発見・修正**。**残**: Inc2 3ペイン編集・KioskFlow 注入点 4 件(営業時間外配線・STT アダプタ DI・QR ペイロード注入・取次段階イベント)・Inc3 公開モデル |
+
+**第 5 wave（次に着手する）**: #372(Turn/Barge-in、#365 ハーネスの本丸)／ #374 残(ルートビルダー UI
++永続化)／ #361 残(QR シェル統一)／ #363 Inc2 ／ #375 残（token hash 化は**要ユーザー確認**のまま）
+／ #366 Stack・#376 実測・#4 は**ユーザー承認/外部待ち**
 
 同 wave に **#366 Phase 0 ADR のみ**（`docs/adr/*.md` 新規・コスト増ゼロ）を差し込むのは安全。
 CDK 実装と deploy は分離し、Budget 見積を添えてユーザー承認を取る。
