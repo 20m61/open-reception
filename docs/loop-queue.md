@@ -245,10 +245,21 @@ fixedHolidays 上限・JIT 昇格)は同 wave 内で全て修正済み。/kiosk 
 実ブラウザ検証: 公開パネルの draft→publish(kiosk-dev)→版履歴→共有リンク発行→未認証閲覧→
 失効→無効表示、リロード後のトークン非再表示、監査ラベル表示まで全 PASS。
 
-**第 11 wave（次に着手する）**: aituber 提案の実装(聞き取り中インジケータ+逐次字幕・リップシンク
-感情連動)／ #367 残(kiosk 定期再取得)／ presence 表示の設定 presence 移行(#90/#93×#405)／
-#361 残(VRT/axe、testing-library は #105 チェック要)／ **ユーザー判断待ち**: #405 Inc2 の deploy・
-#375 hash 化・#366 固定費・#4 外部依存(tenant threading 含む)
+**第 11 wave（2026-07-22 消化済み）** — 同ブランチ・3 トラック並行。結果:
+
+| トラック | Issue | 結果 |
+| --- | --- | --- |
+| A | **聞き取り中 UI(#361/#364)** | 波形インジケータ(idle/speech 2 段階・reduced-motion 静止)+ interim 逐次字幕(`hearPartial`→確定で復唱へ置換・自動送信は不採用)。synthetic driver と実 orchestrator(安定化 `stt.partial` のみ写像)両対応。**残**: 実機の `listenStart`/VAD 結線(#65) |
+| B | **リップシンク感情連動(#31)** | `blendExpressionWeights` 純関数(感情中の口重み下限 0.4・blink 抑制・未知表情 fail-safe)+`resolveFrameExpressionWeights`+VRM viewer 結線(既定 neutral で不変)。**残**: auto-blink 実装・実機での係数チューニング(#65)・guidance への intensity 概念 |
+| C | **presence 移行(#90/#93×#405)** | integrations presence をテナント設定 presence(`getVonagePresenceForTenant`・値非返却)へ移行し `isVonageConfigured`/`SECRET_KEYS` の VONAGE 項目を撤去。自動レビュー対応で接続テストの presence を認可済み tenantId に一致。**残**: `getVonagePublicConfig`(公開 applicationId・kiosk/staff 供給)のテナント設定移行は #4 tenant threading と同時に |
+
+実ブラウザ検証 5/5 PASS(インジケータ段階遷移・逐次字幕・復唱置換・reduced-motion 静止・
+presence 表示)。検証の落とし穴: Playwright の `innerText()`/`getAttribute()` は要素不在時に
+auto-wait(既定 30s)でブロックする — ポーリングでは `count()` 先行 + 短 timeout を使うこと。
+
+**第 12 wave（次に着手する）**: #367 残(kiosk 定期再取得)／ auto-blink+部署復唱テンプレート等の
+UI polish 一括／ #361 残(VRT/axe、testing-library は #105 チェック要)／ **ユーザー判断待ち**:
+#405 Inc2 の deploy・#375 hash 化・#366 固定費・#4 外部依存(tenant threading 含む)
 
 同 wave に **#366 Phase 0 ADR のみ**（`docs/adr/*.md` 新規・コスト増ゼロ）を差し込むのは安全。
 CDK 実装と deploy は分離し、Budget 見積を添えてユーザー承認を取る。
