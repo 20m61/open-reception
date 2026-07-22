@@ -7,7 +7,6 @@ import {
   recordConnectionResult,
 } from '@/lib/security/integration-status-store';
 import { getVonagePresenceForTenant } from '@/lib/platform/integration-presence';
-import { defaultTenantIdFrom } from '@/lib/tenant/default-scope';
 import { actorLabel, authorize } from '../authz';
 
 /**
@@ -34,8 +33,9 @@ export async function POST(request: Request): Promise<NextResponse> {
     return NextResponse.json({ error: 'invalid_input', message: 'unknown integration' }, { status: 400 });
   }
 
-  // admin は既定テナントの presence（テナント設定 + secret set|missing）で判定する。
-  const presence = await getVonagePresenceForTenant(defaultTenantIdFrom());
+  // presence は**認可済み tenantId**（authorize が canAccessTenant で検証した対象）で判定する。
+  // 既定テナント固定にすると tenant_admin が自テナント以外の設定状態を観測しうるため一致させる。
+  const presence = await getVonagePresenceForTenant(String(result.auth.tenantId));
   const outcome = runConnectionTest(id, presence);
   const lastResult = await recordConnectionResult(id, outcome.result, outcome.summary);
 
