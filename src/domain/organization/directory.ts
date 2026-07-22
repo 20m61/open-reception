@@ -21,6 +21,41 @@ import type {
 } from './types';
 import { scopeOrganizationUnits } from './types';
 
+/** 所属設定の構造的な問題。書き込み前の検証に使う。 */
+export type MembershipIssue = {
+  /**
+   * `validFrom`/`validUntil`（有効期間）が `acting` 以外の所属に設定されている。
+   * 期間評価は `acting` にしか効かない（`resolveStaffAffiliations`/`listCallableMembers`）ため、
+   * primary/secondary に付けても**黙って無視される**。期限切れのつもりの主所属が失効しない
+   * 危険な取り違えなので、書き込み前に弾く。
+   */
+  kind: 'validity_period_on_non_acting';
+  staffId: string;
+  organizationId: string;
+  relation: OrganizationRelation;
+};
+
+/**
+ * 1 件の所属設定を検証する（空配列 = 妥当）。エラーを投げず問題を返し、呼び出し側が提示できる
+ * ようにする（`validateOrganizationHierarchy` と同じ方針）。
+ */
+export function validateOrganizationMembership(
+  membership: OrganizationMembership,
+): MembershipIssue[] {
+  const issues: MembershipIssue[] = [];
+  const hasValidityPeriod =
+    membership.validFrom !== undefined || membership.validUntil !== undefined;
+  if (membership.relation !== 'acting' && hasValidityPeriod) {
+    issues.push({
+      kind: 'validity_period_on_non_acting',
+      staffId: membership.staffId,
+      organizationId: membership.organizationId,
+      relation: membership.relation,
+    });
+  }
+  return issues;
+}
+
 /** 来訪者へ渡してよい組織の形。内部正式名称を**構造的に**含まない。 */
 export type VisitorOrganization = {
   id: string;
@@ -35,16 +70,17 @@ export type VisitorOrganization = {
 
 /**
  * 来訪者向けのビューへ落とす（`officialName` は落ちる）。
- * `publicIds` を渡すと、その集合に含まれない親への `parentId` を落とす。
+ * `publicIds` に含まれない親への `parentId` は落とす。**必須**にしているのは、省略時に
+ * 非公開の親 id がそのまま来訪者へ漏れる「安全でない側が既定」を避けるため（非公開の親を
+ * 持つ公開組織で、内部専用組織の存在と識別子が露出する）。呼び出し側は必ず「来訪者へ見せて
+ * よい組織 id の集合」を渡す。
  */
 export function toVisitorOrganization(
   unit: OrganizationUnit,
-  publicIds?: ReadonlySet<string>,
+  publicIds: ReadonlySet<string>,
 ): VisitorOrganization {
   const parentId =
-    unit.parentId !== undefined && (publicIds === undefined || publicIds.has(unit.parentId))
-      ? unit.parentId
-      : undefined;
+    unit.parentId !== undefined && publicIds.has(unit.parentId) ? unit.parentId : undefined;
   return { id: unit.id, name: unit.publicDisplayName, parentId };
 }
 
@@ -117,13 +153,17 @@ export type AffiliationQuery = {
    * そのまま所属・呼び出し候補へ混ざる。
    */
   now: string;
-  /** 省略時は境界で絞らない（呼び出し側が絞り済みの集合を渡す場合のみ）。 */
-  scope?: OrganizationScope;
+  /**
+   * 参照可能な tenant/site 境界。**必須**。任意にすると呼び忘れで境界が漏れ、他テナント組織の
+   * ラベルが出たり（`resolveStaffAffiliations`）、他テナント staff が呼び出し候補へ混ざる
+   * （`listCallableMembers`）。`now` と同じく「安全でない側が既定」を避けるため必須にする。
+   */
+  scope: OrganizationScope;
 };
 
 /**
  * 担当者の所属を主所属・兼務・代理へ分解する（**内部向け**）。
- * `scope` を渡すと境界外（他 tenant/site）の組織の所属を落とす。
+ * `query.scope` の境界外（他 tenant/site）の組織の所属は落とす。
  * `relation: 'acting'` は `now` 時点で有効期間内のものだけを返す。
  *
  * 来訪者へ出すときは必ず `toVisitorAffiliations` を通すこと。
@@ -134,8 +174,7 @@ export function resolveStaffAffiliations(
   staffId: string,
   query: AffiliationQuery,
 ): StaffAffiliations {
-  const visible =
-    query.scope === undefined ? [...units] : scopeOrganizationUnits(units, query.scope);
+  const visible = scopeOrganizationUnits(units, query.scope);
   const byId = new Map(visible.map((u) => [u.id, u]));
 
   const result: StaffAffiliations = { secondary: [], acting: [] };
@@ -260,8 +299,7 @@ export function listCallableMembers(
   organizationId: string,
   query: AffiliationQuery,
 ): OrganizationMembership[] {
-  const visible =
-    query.scope === undefined ? [...units] : scopeOrganizationUnits(units, query.scope);
+  const visible = scopeOrganizationUnits(units, query.scope);
   const unit = visible.find((u) => u.id === organizationId);
   if (unit === undefined || !unit.enabled) return [];
   return memberships
@@ -303,14 +341,17 @@ export function isActiveAt(membership: OrganizationMembership, now: string): boo
 /**
  * 代理担当（`relation: 'acting'`）を明示的に引く。
  * 代理は暗黙のフォールバックではなく設定された事実なので、期間内のものだけを返す。
+ *
+ * `scope` は**必須**。省略可能にすると呼び忘れで他テナント/他サイトの代理担当が候補へ
+ * 漏れる（`now` と同じく「安全でない側が既定」を避ける）。
  */
 export function resolveActingMembers(
   memberships: ReadonlyArray<OrganizationMembership>,
   units: ReadonlyArray<OrganizationUnit>,
   query: ActingQuery,
-  scope?: OrganizationScope,
+  scope: OrganizationScope,
 ): OrganizationMembership[] {
-  const visible = scope === undefined ? [...units] : scopeOrganizationUnits(units, scope);
+  const visible = scopeOrganizationUnits(units, scope);
   const enabledIds = new Set(visible.filter((u) => u.enabled).map((u) => u.id));
   return memberships.filter((m) => {
     if (m.relation !== 'acting') return false;

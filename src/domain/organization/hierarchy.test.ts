@@ -189,6 +189,24 @@ describe('canSetParent', () => {
     const units = [...CHAIN, unit({ id: 'foreign', tenantId: 'tenant-b' })];
     expect(canSetParent(units, 'org-team', 'foreign').ok).toBe(false);
   });
+
+  it('[#396] 対象と無関係な既存循環は付け替えをブロックしない', () => {
+    const withUnrelatedCycle = [
+      ...CHAIN,
+      unit({ id: 'x', parentId: 'y' }),
+      unit({ id: 'y', parentId: 'x' }),
+      unit({ id: 'mover' }),
+    ];
+    // mover を org-company の下へ動かすのは健全。無関係な x<->y 循環では拒否しない。
+    expect(canSetParent(withUnrelatedCycle, 'mover', 'org-company')).toEqual({ ok: true });
+  });
+
+  it('[#396] 対象自身が循環へ巻き込まれる付け替えは従来どおり拒否する', () => {
+    // org-company を org-team の下へ動かすと company が循環に入る。
+    const result = canSetParent(CHAIN, 'org-company', 'org-team');
+    expect(result.ok).toBe(false);
+    expect(result.ok === false && result.issues.some((i) => i.kind === 'cycle')).toBe(true);
+  });
 });
 
 describe('buildOrganizationTree', () => {
@@ -246,6 +264,24 @@ describe('buildOrganizationTree', () => {
       unit({ id: 'd', parentId: 'c' }),
     ];
     const roots = buildOrganizationTree(twoCycles);
+    expect(roots.every((n) => n.children.length === 0)).toBe(true);
+  });
+
+  it('[#396] 二重循環 [a↔b, c↔d] でクラッシュせず全ノードをフラットな root で返す', () => {
+    // 旧「防御的な回収」ブロックは、昇格ノードを親の children から外さないため children
+    // グラフに循環が残り、sort が無限再帰して Maximum call stack でクラッシュしていた。
+    // ブロック削除後はこの入力でも例外を投げず、4 件すべてを子を持たない root として返す。
+    const twoCycles = [
+      unit({ id: 'a', parentId: 'b' }),
+      unit({ id: 'b', parentId: 'a' }),
+      unit({ id: 'c', parentId: 'd' }),
+      unit({ id: 'd', parentId: 'c' }),
+    ];
+    let roots: ReturnType<typeof buildOrganizationTree> = [];
+    expect(() => {
+      roots = buildOrganizationTree(twoCycles);
+    }).not.toThrow();
+    expect(roots.map((n) => n.unit.id).sort()).toEqual(['a', 'b', 'c', 'd']);
     expect(roots.every((n) => n.children.length === 0)).toBe(true);
   });
 });
