@@ -87,6 +87,20 @@ export interface WebStackProps extends StackProps {
    * `ADMIN_AUTH_PROVIDER=cognito` は bin が appEnv に畳み込む。
    */
   readonly cognitoAuth?: boolean;
+  /**
+   * テナント別 CCaaS プロバイダ secret のバックエンド (issue #405 Inc2)。
+   * `secrets-manager` のとき server Lambda に `PROVIDER_SECRET_BACKEND`/`PROVIDER_SECRET_PREFIX` env と、
+   * **テナント prefix 限定**（`<providerSecretPrefix>/tenants/*`）の最小 IAM 権限を付与する。
+   * 未指定/`memory` なら in-memory mock のまま（dev/test の現行動作不変）。
+   * シークレット実体は実行時（設定 API から）作成するため CDK では作らない。
+   */
+  readonly providerSecretBackend?: 'memory' | 'secrets-manager';
+  /**
+   * テナント別 secret 名の環境 prefix (issue #405 Inc2)。参照名 `tenants/<tenantId>/<provider>` は
+   * `<providerSecretPrefix>/tenants/<tenantId>/<provider>`（例 `open-reception/prod/tenants/acme/vonage`）
+   * へ写像される。`providerSecretBackend='secrets-manager'` のとき必須（越境防止のため fail-closed）。
+   */
+  readonly providerSecretPrefix?: string;
 }
 
 /**
@@ -116,8 +130,16 @@ export class WebStack extends Stack {
 
     this.assertBuildArtifacts();
 
-    const { config, appEnv = {}, customDomain, appSecretsName, originVerifySecret, cognitoAuth } =
-      props;
+    const {
+      config,
+      appEnv = {},
+      customDomain,
+      appSecretsName,
+      originVerifySecret,
+      cognitoAuth,
+      providerSecretBackend,
+      providerSecretPrefix,
+    } = props;
     const retention = toRetentionDays(config.web.logRetentionDays);
     const removalPolicy = prodRemovalPolicy(config.environment);
 
@@ -205,6 +227,39 @@ export class WebStack extends Stack {
       const appSecret = secretsmanager.Secret.fromSecretNameV2(this, 'AppSecrets', appSecretsName);
       appSecret.grantRead(serverFn);
       serverFn.addEnvironment('APP_SECRETS_ARN', appSecret.secretArn);
+    }
+
+    // テナント別 CCaaS プロバイダ secret を Secrets Manager で扱う (issue #405 Inc2)。
+    // 参照名 `tenants/<tenantId>/<provider>` は runtime で `<prefix>/tenants/...` へ写像される。
+    // 実行ロールにはテナント prefix 限定（`<prefix>/tenants/*`）で最小権限のみ付与し、アカウント全体
+    // ワイルドカードは付けない（越境・過剰権限の防止。値の非ログ・CloudTrail 監査は runtime 側の責務）。
+    // シークレット実体は設定 API から実行時に作成するため、CDK では作らない。
+    if (providerSecretBackend === 'secrets-manager') {
+      if (!providerSecretPrefix) {
+        throw new Error(
+          "providerSecretBackend='secrets-manager' には providerSecretPrefix が必須です" +
+            '（テナント secret 名の環境 prefix。例 open-reception/prod）。',
+        );
+      }
+      serverFn.addEnvironment('PROVIDER_SECRET_BACKEND', 'secrets-manager');
+      serverFn.addEnvironment('PROVIDER_SECRET_PREFIX', providerSecretPrefix);
+      serverFn.addToRolePolicy(
+        new iam.PolicyStatement({
+          effect: iam.Effect.ALLOW,
+          actions: [
+            'secretsmanager:GetSecretValue',
+            'secretsmanager:DescribeSecret',
+            'secretsmanager:CreateSecret',
+            'secretsmanager:PutSecretValue',
+            'secretsmanager:DeleteSecret',
+          ],
+          // resource prefix 限定。Secrets Manager の ARN は名前末尾に 6 桁のランダム接尾辞が付くため
+          // `<prefix>/tenants/*` の末尾 `*` がテナント名前空間とその接尾辞の両方を覆う。
+          resources: [
+            `arn:aws:secretsmanager:${this.region}:${this.account}:secret:${providerSecretPrefix}/tenants/*`,
+          ],
+        }),
+      );
     }
 
     // CloudFront 経由検証（直叩き拒否）。middleware(proxy.ts) が x-origin-verify を照合する。

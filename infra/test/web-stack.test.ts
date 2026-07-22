@@ -284,6 +284,117 @@ describe.runIf(OPEN_NEXT_READY)('WebStack app secrets (#194)', () => {
   }, 30000);
 });
 
+// テナント別プロバイダ secret を Secrets Manager で扱う (issue #405 Inc2)。
+// providerSecretBackend=secrets-manager 指定時、server Lambda に env と、テナント prefix 限定の
+// 最小 IAM（Get/Describe/Create/Put/Delete を <prefix>/tenants/* のみ）を付与する。
+// シークレット自体は実行時作成のため CDK では作らない。
+describe.runIf(OPEN_NEXT_READY)('WebStack tenant provider secrets (#405 Inc2)', () => {
+  const PREFIX = 'open-reception/prod';
+  const synth = (opts?: {
+    providerSecretBackend?: 'memory' | 'secrets-manager';
+    providerSecretPrefix?: string;
+  }) => {
+    const app = new cdk.App();
+    const stack = new WebStack(app, 'TestWebProviderSecrets', {
+      env: { account: '123456789012', region: 'ap-northeast-1' },
+      config: resolveEnv('prod'),
+      appEnv: { ADMIN_AUTH_PROVIDER: 'none' },
+      ...opts,
+    });
+    return Template.fromStack(stack);
+  };
+
+  it('does not wire provider secrets by default (memory backend / 現行不変)', () => {
+    const template = synth();
+    template.hasResourceProperties('AWS::Lambda::Function', {
+      Environment: {
+        Variables: Match.objectLike({
+          PROVIDER_SECRET_BACKEND: Match.absent(),
+          PROVIDER_SECRET_PREFIX: Match.absent(),
+        }),
+      },
+    });
+  }, 30000);
+
+  it('injects PROVIDER_SECRET_BACKEND / PROVIDER_SECRET_PREFIX env into the server function', () => {
+    const template = synth({
+      providerSecretBackend: 'secrets-manager',
+      providerSecretPrefix: PREFIX,
+    });
+    template.hasResourceProperties('AWS::Lambda::Function', {
+      Environment: {
+        Variables: Match.objectLike({
+          PROVIDER_SECRET_BACKEND: 'secrets-manager',
+          PROVIDER_SECRET_PREFIX: PREFIX,
+        }),
+      },
+    });
+  }, 30000);
+
+  it('grants least-privilege secretsmanager actions scoped to <prefix>/tenants/* only', () => {
+    const template = synth({
+      providerSecretBackend: 'secrets-manager',
+      providerSecretPrefix: PREFIX,
+    });
+    template.hasResourceProperties('AWS::IAM::Policy', {
+      PolicyDocument: Match.objectLike({
+        Statement: Match.arrayWith([
+          Match.objectLike({
+            Action: Match.arrayWith([
+              'secretsmanager:GetSecretValue',
+              'secretsmanager:DescribeSecret',
+              'secretsmanager:CreateSecret',
+              'secretsmanager:PutSecretValue',
+              'secretsmanager:DeleteSecret',
+            ]),
+            Effect: 'Allow',
+            // resource prefix 限定（ワイルドカード全体は禁止）。ARN 末尾が :secret:<prefix>/tenants/* 。
+            Resource: Match.stringLikeRegexp(':secret:open-reception/prod/tenants/\\*$'),
+          }),
+        ]),
+      }),
+    });
+  }, 30000);
+
+  it('does NOT grant secretsmanager actions on Resource "*" (no account-wide wildcard)', () => {
+    const template = synth({
+      providerSecretBackend: 'secrets-manager',
+      providerSecretPrefix: PREFIX,
+    });
+    const policies = template.findResources('AWS::IAM::Policy');
+    for (const policy of Object.values(policies)) {
+      const statements = policy.Properties.PolicyDocument.Statement as Array<{
+        Action?: string | string[];
+        Resource?: unknown;
+      }>;
+      for (const st of statements) {
+        const actions = Array.isArray(st.Action) ? st.Action : st.Action ? [st.Action] : [];
+        const touchesProviderSecrets = actions.some(
+          (a) => a === 'secretsmanager:CreateSecret' || a === 'secretsmanager:DeleteSecret',
+        );
+        if (touchesProviderSecrets) {
+          expect(st.Resource).not.toBe('*');
+        }
+      }
+    }
+  }, 30000);
+
+  it('throws when secrets-manager backend is selected without a prefix (fail-closed)', () => {
+    expect(() => synth({ providerSecretBackend: 'secrets-manager' })).toThrow(
+      /providerSecretPrefix/,
+    );
+  }, 30000);
+
+  it('does not create the tenant secrets themselves (runtime-created)', () => {
+    const template = synth({
+      providerSecretBackend: 'secrets-manager',
+      providerSecretPrefix: PREFIX,
+    });
+    // #405 Inc2 はシークレット実体を CDK で作らない。既存 #194 の appSecrets を渡していないので 0。
+    template.resourceCountIs('AWS::SecretsManager::Secret', 0);
+  }, 30000);
+});
+
 // originVerifySecret 方式（CloudFront OAC の POST 署名問題回避）:
 // Function URL を NONE にし、CloudFront origin custom header x-origin-verify で保護する。
 describe.runIf(OPEN_NEXT_READY)('WebStack origin-verify secret (#OAC-POST)', () => {
