@@ -1,10 +1,10 @@
 # THIRD PARTY NOTICES
 
-本ファイルは open-reception が利用する第三者 OSS のうち、帰属表示（attribution）が必要な
-ものを集約する（`docs/license-privacy-guide.md` §1.4 NOTICE 運用）。
+本ファイルは open-reception が利用する第三者 OSS・配布アセットについて、権利者、利用条件、
+出所を集約する（`docs/license-privacy-guide.md` §1.4 NOTICE 運用）。
 
 依存ライセンスの俯瞰は `npx license-checker --production --summary` を都度実行して確認する
-（同 §3）。本ファイルは新規依存追加時に手動で更新する。
+（同 §3）。本ファイルは新規依存・配布アセット追加時に手動で更新する。
 
 ---
 
@@ -69,18 +69,22 @@ SOFTWARE.
 > 表示と Apache-2.0 ライセンス（http://www.apache.org/licenses/LICENSE-2.0）の参照で
 > 帰属条件を満たす。`node_modules/jsqr/LICENSE` に全文を同梱。
 
-## 受付アバター 既定 VRM モデル: "Rose" (100Avatars R1)
+---
 
-- ファイル: `public/avatar/default.vrm`
-- 作者: Polygonal Mind（100Avatars プロジェクト R1）
-- ライセンス: **CC0 1.0**（パブリックドメイン相当・商用利用可・改変可・クレジット表記不要）
-- 検証: コレクション定義（toxsam/open-source-avatars の projects.json で 100Avatars R1 = CC0）
-  および VRM 埋め込みメタ（`licenseName=CC0` / `commercialUssageName=Allow` /
-  `allowedUserName=Everyone`）の双方で確認。
-- 出所: https://github.com/toxsam/open-source-avatars
-- 用途: 受付端末（kiosk）の既定アバター表示（issue #31）。差し替え可能（`KIOSK_DEFAULT_VRM_URL`）。
+## 受付アバター既定VRMモデル: AvatarSample_A
 
-> CC0 のためクレジット表記は不要だが、provenance（出所・ライセンス確認）を上記に明記する。
+- 配置先: `public/avatar/default.vrm`
+- 権利者 / 配布者: VRoid Project / pixiv
+- ライセンス: 独自利用条件（**CC0ではなく、著作権は放棄されていない**）
+- 許諾: 法人利用、商用利用、再配布、改変
+- クレジット表記: 不要
+- 公式モデル: https://hub.vroid.com/characters/2843975675147313744/models/5644550979324015604
+- 公式利用条件: https://vroid.pixiv.help/hc/ja/articles/4402394424089-AvatarSample-A-Z
+- 用途: 受付端末（kiosk）の既定アバター表示。管理画面または `KIOSK_DEFAULT_VRM_URL` で差し替え可能。
+- provenance: `public/avatar/provenance.json` に取得日、SHA-256、検証状態を記録する。
+
+> AvatarSample_Aは再配布可能だがCC0ではない。配布前に公式条件とVRM埋め込みメタデータを
+> 再確認し、`provenance.json` の `verificationStatus` が検証済みであることを必須とする。
 
 ---
 
