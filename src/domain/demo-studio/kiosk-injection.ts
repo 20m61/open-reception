@@ -51,6 +51,8 @@ export function deriveOperatingStatus(
     reopenAt: new Date(nowMs + OUT_OF_HOURS_REOPEN_OFFSET_MS).toISOString(),
     // 実連絡先・PII は含めない（`.claude/rules/pii-secret-minimization.md`）。表示ラベルのみ。
     emergencyContactLabel: '警備室内線（デモ）',
+    // デモの営業時間ポリシーは Asia/Tokyo 固定（#367 polish: 表示側の TZ 整形に追随）。
+    timezone: 'Asia/Tokyo',
   };
 }
 

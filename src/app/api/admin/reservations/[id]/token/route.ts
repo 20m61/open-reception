@@ -8,6 +8,7 @@ import {
   resolveAdminActor,
   serviceResponse,
   toReservationId,
+  toReservationView,
 } from '@/lib/reservation/request';
 
 type Ctx = { params: Promise<{ id: string }> };
@@ -51,7 +52,10 @@ export async function POST(request: Request, { params }: Ctx): Promise<NextRespo
       return NextResponse.json({ error: 'base_url_unresolved' }, { status: 400 });
     }
     return NextResponse.json(
-      { ...result.value, qrDataUrl: renderReservationQrDataUrl(origin, result.value.token) },
+      {
+        ...toReservationView(result.value),
+        qrDataUrl: renderReservationQrDataUrl(origin, result.value.token),
+      },
       { headers: { 'cache-control': 'private, no-store' } },
     );
   }

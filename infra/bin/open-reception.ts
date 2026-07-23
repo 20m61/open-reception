@@ -178,11 +178,17 @@ if (config.realtime.enabled) {
     realtimeHostedZoneId && realtimeZoneName && realtimeRecordName
       ? { hostedZoneId: realtimeHostedZoneId, zoneName: realtimeZoneName, recordName: realtimeRecordName }
       : undefined;
+  // bedrock:InvokeModel の対象モデル ARN パターン (#366 W3)。未指定時は Stack 側の既定
+  // （Claude 系 foundation-model 限定）にフォールバックする。
+  const realtimeBedrockModelArnPattern = app.node.tryGetContext('realtimeBedrockModelArnPattern') as
+    | string
+    | undefined;
 
   new RealtimeRuntimeStack(app, `OpenReception-RealtimeRuntime-${config.environment}`, {
     env: { account, region },
     config,
     dns: realtimeDns,
+    bedrockModelArnPattern: realtimeBedrockModelArnPattern,
     description: `open-reception realtime runtime EC2 (${config.environment})`,
   });
 }
