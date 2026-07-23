@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server';
 import { readJson } from '@/lib/data-stores/result-http';
 import { renderReservationQrDataUrl } from '@/lib/reservation/qr';
+import { resolveCheckinBaseUrl } from '@/lib/reservation/base-url';
 import { getReservationService } from '@/lib/reservation/store';
 import {
   parseCreateBody,
@@ -38,7 +39,11 @@ export async function POST(request: Request): Promise<NextResponse> {
   // 生 token は一度きり応答(#375)。UI がその場で QR を表示できるよう qrDataUrl を同梱する
   // (サーバ側描画。以後は保存 hash から再生成できない)。
   if (result.ok) {
-    const origin = new URL(request.url).origin;
+    // QR 宛先はサーバ権威の解決器を使う(request 由来 origin を信用しない — base-url.ts の方針)。
+    const origin = resolveCheckinBaseUrl(request);
+    if (!origin) {
+      return NextResponse.json({ error: 'base_url_unresolved' }, { status: 400 });
+    }
     return NextResponse.json(
       { ...result.value, qrDataUrl: renderReservationQrDataUrl(origin, result.value.token) },
       { status: 201, headers: { 'cache-control': 'private, no-store' } },

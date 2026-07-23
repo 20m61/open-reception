@@ -15,8 +15,8 @@
  *
  * NodejsFunction(esbuild) でバンドルする。`@aws-sdk/*` は Lambda Node.js ランタイム同梱のため
  * externalModules 指定でバンドル対象から除外する（`infra/lib/constructs/realtime-reconciler-function.ts`
- * 参照）。このファイルは infra/tsconfig.json の include 対象外（型チェックはしない — devDependency に
- * @aws-sdk/client-* を追加しない方針の代償。follow-up: #105 チェックの上で追加し include へ足す）。
+ * 参照）。型検査は infra/tsconfig.json の include(`lambda/**`)で行い、`@aws-sdk/client-*` は
+ * infra devDependencies（#105 チェック済み・THIRD_PARTY_NOTICES.md 記載）を型定義に使う。
  */
 import {
   AutoScalingClient,
