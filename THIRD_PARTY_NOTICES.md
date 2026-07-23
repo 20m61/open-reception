@@ -106,3 +106,26 @@ SOFTWARE.
 - NOTICE: `aws-sdk-js-v3` の配布物には `NOTICE` ファイルが含まれない（`LICENSE`
   （Apache-2.0 全文）のみ）。上記の帰属表示と Apache-2.0 ライセンス
   （http://www.apache.org/licenses/LICENSE-2.0）の参照で帰属条件を満たす。
+
+---
+
+## axe-core / @axe-core/playwright（アクセシビリティ自動検査）
+
+- パッケージ: `@axe-core/playwright`（`^4.12.1`）＋ 依存 `axe-core`（`package.json` devDependencies）
+- SPDX: **MPL-2.0**（Mozilla Public License 2.0・**ファイル単位**の弱いコピーレフト）
+- 商用利用: **可**（下記「利用形態」の条件下で問題なし）
+- 改変 / 再配布: MPL-2.0 は「改変した MPL ファイルを配布する場合、その**当該ファイルの**ソースを
+  同一ライセンスで開示する」義務を課す。ファイル単位のコピーレフトであり、リンク/併用しただけの
+  非 MPL コード（本プロダクトのソース）へは伝播しない（GPL のような感染はしない）。
+- 著作権: Copyright Deque Systems, Inc. and axe-core contributors
+- リポジトリ: https://github.com/dequelabs/axe-core / https://github.com/dequelabs/axe-core-npm
+- ライセンス全文: https://www.mozilla.org/en-US/MPL/2.0/ （`node_modules/axe-core/LICENSE` に同梱）
+- 用途: 受付端末（kiosk）主要画面の e2e アクセシビリティ自動検査（issue #361 / #7）。
+  `tests/e2e/kiosk-vrt-a11y.spec.ts` ほかで critical/serious の a11y 違反ゼロを assert する。
+- **利用形態（#105 判定の要）**: **devDependency・テスト自動化専用**。axe-core を**改変せず**、
+  そのまま実行して検査するのみ。フロントエンド配布バンドル（kiosk / admin の shipped bundle）にも、
+  OpenNext デプロイ artifact にも**一切含めない**（`npm run build` の対象外・実行時ロードなし）。
+  改変も再配布もしないため MPL-2.0 のソース開示義務は発生せず、商用利用に支障はない。
+- 判定: **導入可（既存 devDependency の継続利用）**。本 issue で新規依存は追加していない
+  （`@axe-core/playwright` は既存の devDependency）。本記載は #105（`docs/license-privacy-guide.md`）
+  に基づく SPDX / 商用可否 / 利用形態の確認結果の明文化。

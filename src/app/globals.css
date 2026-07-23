@@ -1640,3 +1640,73 @@ a {
 .screen[data-a11y-contrast='high'] .a11y-menu__close {
   border-color: var(--color-border-strong);
 }
+
+/* =========================================================================
+ * 受付体験スタジオ（デモ） UI polish (issue #363, 第6/14 wave 実ブラウザ検証)
+ *
+ * 1280〜1600px の 3 ペインレイアウトで見つかった 2 件を、DemoStudio.tsx 側の inline
+ * style だけでは対処しきれない（flexbox の折返し挙動・ellipsis はビューポート幅ではなく
+ * "実際に割り当てられた幅" に依存するため）ため、このスコープに限定したクラスで補う。
+ * ======================================================================= */
+
+/* 左ペイン「会話フロー」のターンチップ: 240px 程度の狭い幅でも
+ * badge + 値 + 並べ替え矢印が横並びのまま崩れない（値だけ ellipsis）ようにする。
+ * 対処前は button に min-width:0 が無く、値テキストに white-space の指定も無かったため、
+ * 狭い幅では長い値が 1 文字ずつ折り返され縦書きのように詰まっていた。
+ */
+.demo-turn-item {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex-wrap: wrap;
+}
+
+.demo-turn-chip {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.demo-turn-chip__badge {
+  flex: 0 0 auto;
+}
+
+.demo-turn-chip__value {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.demo-turn-item__actions {
+  display: inline-flex;
+  gap: 2px;
+  flex: 0 0 auto;
+}
+
+/* 右ペイン「ライブプレビュー」の見出し行: 見出しは折返し可能にしつつ、操作ボタンは
+ * 縮まず（white-space:nowrap）常に行の右側に留める。ペインの実幅が足りない場合は
+ * flex-wrap により自然にボタンが次の行へ縦積みされる（メディアクエリではなく
+ * 実際に割り当てられた幅で判定されるため、3 ペインの折返し状態にも追従する）。
+ */
+.demo-preview-header {
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+  flex-wrap: wrap;
+}
+
+.demo-preview-header__title {
+  margin: 0;
+  flex: 1 1 200px;
+  min-width: 0;
+}
+
+.demo-preview-header__action {
+  flex: 0 0 auto;
+  margin-left: auto;
+  white-space: nowrap;
+}

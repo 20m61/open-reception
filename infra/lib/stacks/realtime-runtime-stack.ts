@@ -29,6 +29,13 @@ export interface RealtimeRuntimeDnsConfig {
 export interface RealtimeRuntimeStackProps extends StackProps {
   readonly config: EnvConfig;
   readonly dns?: RealtimeRuntimeDnsConfig;
+  /**
+   * `bedrock:InvokeModel` を許可する対象モデルの ARN パターン (#366 W3)。
+   * 未指定時は `DEFAULT_BEDROCK_MODEL_ARN_PATTERN`（Claude 系 foundation-model 限定、region は
+   * デプロイ先スタックの region）にフォールバックする。`'*'`（全モデル・全 provider 開放）よりも
+   * 狭い形に絞ることが目的で、個別モデルまで固定するかはコスト/運用判断のため context に委ねる。
+   */
+  readonly bedrockModelArnPattern?: string;
 }
 
 /**
@@ -63,6 +70,17 @@ export class RealtimeRuntimeStack extends Stack {
     super(scope, id, props);
     const { config, dns } = props;
     const { realtime } = config;
+    // Claude 系 foundation-model のみに絞る既定パターン。'*'（全モデル・全 provider）より狭い。
+    // region はこのスタックのデプロイ先 region を使う（cross-region 呼び出しは想定しない）。
+    const bedrockModelArnPattern =
+      props.bedrockModelArnPattern ?? `arn:aws:bedrock:${this.region}::foundation-model/anthropic.*`;
+    // context 上書きで既定の絞り込みを黙って全開放できないよう synth 時に拒否する(事故防止)。
+    if (bedrockModelArnPattern === '*' || !bedrockModelArnPattern.startsWith('arn:aws:bedrock:')) {
+      throw new Error(
+        `bedrockModelArnPattern must be a bedrock model ARN pattern (got "${bedrockModelArnPattern}") — ` +
+          "全モデル開放('*')や非 bedrock ARN は許可しない (#366 W3)",
+      );
+    }
 
     // --- コスト管理タグ (docs/cost-management-tags.md) ---
     // 既存 `applyCostTags`/`COST_TAG_COMPONENTS`（infra/lib/config/cost-components.ts）は
@@ -133,9 +151,10 @@ export class RealtimeRuntimeStack extends Stack {
     );
     instanceRole.addToPolicy(
       new iam.PolicyStatement({
-        // 曖昧な入力時のみ呼ぶ想定（issue #366 アーキテクチャ節）。モデル ARN 限定は次 increment。
+        // 曖昧な入力時のみ呼ぶ想定（issue #366 アーキテクチャ節）。モデル ARN をパターンへ限定する
+        // （#366 W3: '*' 全開放より狭い形。個別モデル固定は運用判断のため context 経由で上書き可）。
         actions: ['bedrock:InvokeModel'],
-        resources: ['*'],
+        resources: [bedrockModelArnPattern],
       }),
     );
 

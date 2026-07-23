@@ -6,7 +6,11 @@ import { resolveEnv } from '../lib/config/environments';
 
 const ENV = { account: '123456789012', region: 'ap-northeast-1' };
 
-function buildTemplate(envName: 'dev' | 'staging' | 'prod' = 'dev', withDns = false) {
+function buildTemplate(
+  envName: 'dev' | 'staging' | 'prod' = 'dev',
+  withDns = false,
+  bedrockModelArnPattern?: string,
+) {
   const app = new cdk.App();
   const config = resolveEnv(envName);
   const stack = new RealtimeRuntimeStack(app, 'TestRealtimeRuntime', {
@@ -15,6 +19,7 @@ function buildTemplate(envName: 'dev' | 'staging' | 'prod' = 'dev', withDns = fa
     dns: withDns
       ? { hostedZoneId: 'Z1234567890ABC', zoneName: 'example.com', recordName: 'realtime.dev.example.com' }
       : undefined,
+    bedrockModelArnPattern,
   });
   return { stack, template: Template.fromStack(stack) };
 }
@@ -133,6 +138,46 @@ describe('RealtimeRuntimeStack (issue #366 Phase 0)', () => {
     template.hasResourceProperties('AWS::Route53::RecordSet', {
       Name: 'realtime.dev.example.com.',
       Type: 'A',
+    });
+  });
+
+  describe('bedrock:InvokeModel はモデル ARN パターンへ限定する (#366 W3)', () => {
+    it('既定（未指定）でも Resource は "*" ではなく anthropic foundation-model パターンへ絞る', () => {
+      const { template } = buildTemplate('dev');
+      const policies = template.findResources('AWS::IAM::Policy');
+      const bedrockStatements = Object.values(policies).flatMap((p) => {
+        const statements = (
+          p as { Properties?: { PolicyDocument?: { Statement?: Array<{ Action?: unknown; Resource?: unknown }> } } }
+        ).Properties?.PolicyDocument?.Statement;
+        return (statements ?? []).filter((s) => {
+          const action = s.Action;
+          return action === 'bedrock:InvokeModel' || (Array.isArray(action) && action.includes('bedrock:InvokeModel'));
+        });
+      });
+      expect(bedrockStatements.length).toBeGreaterThan(0);
+      for (const statement of bedrockStatements) {
+        expect(statement.Resource).not.toBe('*');
+        const resources = Array.isArray(statement.Resource) ? statement.Resource : [statement.Resource];
+        for (const resource of resources) {
+          // CDK が Fn::Join 等でトークン化することがあるため、素の文字列のときだけ内容も検証する。
+          if (typeof resource === 'string') {
+            expect(resource).not.toBe('*');
+            expect(resource).toMatch(/foundation-model/);
+          }
+        }
+      }
+    });
+
+    it('context 経由で渡した ARN パターンを使う', () => {
+      const custom = 'arn:aws:bedrock:ap-northeast-1::foundation-model/anthropic.claude-3-haiku-*';
+      const { template } = buildTemplate('dev', false, custom);
+      template.hasResourceProperties('AWS::IAM::Policy', {
+        PolicyDocument: Match.objectLike({
+          Statement: Match.arrayWith([
+            Match.objectLike({ Action: 'bedrock:InvokeModel', Resource: custom }),
+          ]),
+        }),
+      });
     });
   });
 });

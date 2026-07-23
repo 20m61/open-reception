@@ -6,6 +6,7 @@ import {
   resolveAdminActor,
   serviceResponse,
   toReservationId,
+  toReservationView,
 } from '@/lib/reservation/request';
 
 type Ctx = { params: Promise<{ id: string }> };
@@ -27,5 +28,5 @@ export async function POST(request: Request, { params }: Ctx): Promise<NextRespo
     scope.siteId,
     toReservationId(id),
   );
-  return serviceResponse(result);
+  return serviceResponse(result, 200, toReservationView);
 }

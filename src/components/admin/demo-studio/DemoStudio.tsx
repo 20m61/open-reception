@@ -846,7 +846,7 @@ export function DemoStudio({ canWrite = true, siteId }: { canWrite?: boolean; si
         <section
           className="card stack"
           data-testid="demo-flow-pane"
-          style={{ gap: 'var(--space-xs)', flex: '1 1 240px', minWidth: 240 }}
+          style={{ gap: 'var(--space-xs)', flex: '1 1 260px', minWidth: 260 }}
         >
           <h2 className="card__title">会話フロー{isEditing ? '（編集）' : ''}</h2>
           {turns.length === 0 ? (
@@ -856,21 +856,22 @@ export function DemoStudio({ canWrite = true, siteId }: { canWrite?: boolean; si
               {turns.map((t, i) => {
                 const on = i === selectedTurn;
                 return (
-                  <li key={i} style={{ display: 'flex', gap: 4, alignItems: 'center' }}>
+                  <li key={i} className="demo-turn-item">
                     <button
                       type="button"
                       data-testid={`demo-turn-${i}`}
                       data-selected={on ? 'true' : undefined}
                       aria-pressed={on}
-                      className={`btn ${on ? 'btn--primary' : 'btn--ghost'}`}
-                      style={{ flex: '1 1 auto', justifyContent: 'flex-start', textAlign: 'left' }}
+                      title={t.value}
+                      className={`btn ${on ? 'btn--primary' : 'btn--ghost'} demo-turn-chip`}
+                      style={{ justifyContent: 'flex-start', textAlign: 'left' }}
                       onClick={() => setSelectedTurn(i)}
                     >
-                      <span className="badge" style={{ marginRight: 6 }}>{INPUT_MODE_LABEL[t.mode]}</span>
-                      {t.value}
+                      <span className="badge demo-turn-chip__badge">{INPUT_MODE_LABEL[t.mode]}</span>
+                      <span className="demo-turn-chip__value">{t.value}</span>
                     </button>
                     {isEditing ? (
-                      <span style={{ display: 'inline-flex', gap: 2 }}>
+                      <span className="demo-turn-item__actions">
                         <button
                           type="button"
                           data-testid={`demo-turn-up-${i}`}
@@ -934,7 +935,7 @@ export function DemoStudio({ canWrite = true, siteId }: { canWrite?: boolean; si
         <section
           className="card stack"
           data-testid="demo-settings-pane"
-          style={{ gap: 'var(--space-sm)', flex: '1 1 300px', minWidth: 280 }}
+          style={{ gap: 'var(--space-sm)', flex: '1 1 320px', minWidth: 300 }}
         >
           <h2 className="card__title">ターン設定・シミュレーション</h2>
 
@@ -1150,15 +1151,14 @@ export function DemoStudio({ canWrite = true, siteId }: { canWrite?: boolean; si
         <section
           className="card stack"
           data-testid="demo-preview-pane"
-          style={{ gap: 'var(--space-sm)', flex: '1 1 360px', minWidth: 320 }}
+          style={{ gap: 'var(--space-sm)', flex: '1 1 380px', minWidth: 340 }}
         >
-          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-            <h2 className="card__title" style={{ margin: 0 }}>ライブプレビュー（横向きiPad）</h2>
+          <div className="demo-preview-header">
+            <h2 className="card__title demo-preview-header__title">ライブプレビュー（横向きiPad）</h2>
             <button
               type="button"
               data-testid="demo-run"
-              className="btn btn--primary"
-              style={{ marginLeft: 'auto' }}
+              className="btn btn--primary demo-preview-header__action"
               disabled={runState === 'running' || (!isEditing && !selectedBuiltin)}
               onClick={() => void runActive()}
             >

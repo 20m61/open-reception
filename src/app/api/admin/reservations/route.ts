@@ -8,6 +8,7 @@ import {
   readScope,
   resolveAdminActor,
   serviceResponse,
+  toReservationView,
 } from '@/lib/reservation/request';
 
 /**
@@ -24,7 +25,8 @@ export async function GET(request: Request): Promise<NextResponse> {
   const scope = readScope(new URL(request.url).searchParams);
   if (!scope.ok) return NextResponse.json(scope.error, { status: 400 });
   const result = await getReservationService().list(actor, scope.tenantId, scope.siteId);
-  return serviceResponse(result);
+  // 応答から tokenHash を落とす（#375 I1: 照合専用の内部値を admin API に露出しない）。
+  return serviceResponse(result, 200, (list) => list.map(toReservationView));
 }
 
 export async function POST(request: Request): Promise<NextResponse> {
@@ -45,7 +47,10 @@ export async function POST(request: Request): Promise<NextResponse> {
       return NextResponse.json({ error: 'base_url_unresolved' }, { status: 400 });
     }
     return NextResponse.json(
-      { ...result.value, qrDataUrl: renderReservationQrDataUrl(origin, result.value.token) },
+      {
+        ...toReservationView(result.value),
+        qrDataUrl: renderReservationQrDataUrl(origin, result.value.token),
+      },
       { status: 201, headers: { 'cache-control': 'private, no-store' } },
     );
   }

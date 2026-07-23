@@ -26,10 +26,28 @@ const INTL_LOCALE: Record<Locale, string> = {
   'ja-simple': 'ja-JP',
 };
 
-function formatReopen(iso: string | undefined, locale: Locale): string | null {
+/**
+ * reopenAt を整形する。`timezone`（営業時間ポリシーの IANA TZ）が渡されればそれで整形し、
+ * 未指定時は従来どおり端末 TZ（`Intl` 既定）にフォールバックする（#367 polish）。
+ * 端末が UTC で運用されうる（kiosk 端末の TZ 設定は保証されない）ため、ポリシー TZ を優先しないと
+ * 09:00 JST の再開時刻が 0:00 と表示される不整合が起きる。
+ */
+export function formatReopen(iso: string | undefined, locale: Locale, timezone?: string): string | null {
   const ms = parseReopenAt(iso);
   if (ms === null) return null;
-  return new Date(ms).toLocaleString(INTL_LOCALE[locale], { dateStyle: 'medium', timeStyle: 'short' });
+  const options: Intl.DateTimeFormatOptions = { dateStyle: 'medium', timeStyle: 'short' };
+  if (timezone) {
+    // TZ 名はサーバ検証済みだが、ブラウザ ICU 差や検証導入前の旧ポリシー値で RangeError に
+    // なり得る。無人端末で描画を落とさないため、失敗時は端末 TZ へフォールバックする(fail-safe)。
+    try {
+      return new Intl.DateTimeFormat(INTL_LOCALE[locale], { ...options, timeZone: timezone }).format(
+        new Date(ms),
+      );
+    } catch {
+      // fall through
+    }
+  }
+  return new Intl.DateTimeFormat(INTL_LOCALE[locale], options).format(new Date(ms));
 }
 
 export type OutOfHoursViewProps = {
@@ -42,7 +60,7 @@ export type OutOfHoursViewProps = {
 export function OutOfHoursView({ status, locale, onLocaleChange }: OutOfHoursViewProps): React.ReactElement {
   const tr = makeT(locale);
   const lang = htmlLangFor(locale);
-  const reopenText = formatReopen(status.reopenAt, locale);
+  const reopenText = formatReopen(status.reopenAt, locale, status.timezone);
 
   return (
     <div

@@ -51,6 +51,11 @@ describe('deriveOperatingStatus (#363 営業時間外 注入)', () => {
     expect(status?.emergencyContactLabel).not.toMatch(/\d{2,4}-\d{2,4}-\d{4}/);
   });
 
+  it('timezone は Asia/Tokyo を同梱する（#367 polish: 表示側の TZ 整形に追随）', () => {
+    const status = deriveOperatingStatus(scenario({ initialMode: 'out_of_hours' }), NOW);
+    expect(status?.timezone).toBe('Asia/Tokyo');
+  });
+
   it('initialMode がそれ以外は undefined（fail-open・通常受付を止めない）', () => {
     expect(deriveOperatingStatus(scenario({ initialMode: 'reception' }), NOW)).toBeUndefined();
     expect(deriveOperatingStatus(scenario({ initialMode: 'signage' }), NOW)).toBeUndefined();

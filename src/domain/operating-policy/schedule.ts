@@ -330,7 +330,11 @@ export function evaluateOperatingStatus(
   return { state: 'closed', ...(nextMs !== undefined ? { reopenAt: new Date(nextMs).toISOString() } : {}) };
 }
 
-/** 評価結果を kiosk 契約（`@/domain/kiosk/operating-status`）の形へ写像する。 */
+/**
+ * 評価結果を kiosk 契約（`@/domain/kiosk/operating-status`）の形へ写像する。
+ * `timezone` を同梱する（#367 polish: 表示側が端末 TZ ではなくポリシーの TZ で reopenAt を
+ * 整形できるようにする。端末が UTC のとき 09:00 JST が 0:00 と誤表示される問題の是正）。
+ */
 export function resolveKioskOperatingStatus(
   policy: Pick<ServiceOperatingPolicy, 'timezone' | 'weeklySchedule' | 'fixedHolidays' | 'exceptionDates' | 'emergencyContactLabel'>,
   atMs: number = Date.now(),
@@ -340,5 +344,6 @@ export function resolveKioskOperatingStatus(
     state: evaluation.state,
     ...(evaluation.reopenAt ? { reopenAt: evaluation.reopenAt } : {}),
     ...(policy.emergencyContactLabel ? { emergencyContactLabel: policy.emergencyContactLabel } : {}),
+    timezone: policy.timezone || DEFAULT_TIMEZONE,
   };
 }
