@@ -104,6 +104,16 @@ export class RealtimeReconcilerFunction extends Construct {
         new iam.PolicyStatement({
           actions: ['route53:ChangeResourceRecordSets'],
           resources: [`arn:aws:route53:::hostedzone/${dns.hostedZoneId}`],
+          // ゾーン全体の書換を許さず、この Reconciler が管理する A レコード 1 本に限定する
+          // （role 奪取時のゾーン内レコードハイジャック防止）。
+          conditions: {
+            'ForAllValues:StringEquals': {
+              'route53:ChangeResourceRecordSetsNormalizedRecordNames': [
+                dns.recordName.replace(/\.$/, '').toLowerCase(),
+              ],
+              'route53:ChangeResourceRecordSetsRecordTypes': ['A'],
+            },
+          },
         }),
       );
     }

@@ -191,6 +191,8 @@ export class RealtimeRuntimeStack extends Stack {
     this.forceStopParam = new ssm.StringParameter(this, 'ForceStopFlag', {
       parameterName: `/${config.prefix}/realtime/force-stop`,
       stringValue: 'false',
+      // 誤値（"True"/"stop" 等）を書込時点で弾き、silent no-op を防ぐ。
+      allowedPattern: '^(true|false)$',
       description:
         '"true" にすると Reconciler が営業時間に関わらず DesiredCapacity=0 にする（緊急停止・deploy 不要）。',
     });

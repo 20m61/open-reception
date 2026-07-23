@@ -77,11 +77,16 @@ async function isForceStopped(): Promise<boolean> {
   if (!FORCE_STOP_PARAM) return false;
   try {
     const res = await ssm.send(new GetParameterCommand({ Name: FORCE_STOP_PARAM }));
-    return res.Parameter?.Value === 'true';
-  } catch {
-    // パラメータ未作成/取得失敗時はフェイルオープン（スケジュール通り稼働）。
-    // 停止したい場合は SSM Parameter を明示的に 'true' へ更新する運用手順とする。
-    return false;
+    // 書込側は AllowedPattern ^(true|false)$ で拘束するが、手動更新の揺れ（空白/大文字）にも
+    // 頑健にしておく（"TRUE " 等を silent no-op にしない）。
+    return res.Parameter?.Value?.trim().toLowerCase() === 'true';
+  } catch (err) {
+    // 「パラメータ未作成」だけを kill-switch 未設定 = スケジュール通りとして扱う。
+    // それ以外（権限・スロットリング等）の失敗を fail-open にすると、緊急停止フラグが
+    // 読めない間ずっと稼働し続けてしまうため、throw して invocation を失敗させ
+    // ReconcilerErrors アラームで可観測にする。
+    if (err instanceof Error && err.name === 'ParameterNotFound') return false;
+    throw err;
   }
 }
 
