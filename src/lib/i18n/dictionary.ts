@@ -49,6 +49,9 @@ export type MessageKey =
   | 'voice.caption.speaking'
   | 'voice.caption.ducked'
   | 'voice.readback.confirmTarget'
+  // 部署復唱テンプレート（issue #361 申し送り: 担当者用「◯◯様ですね？」がそのまま部署名に
+  // 付き「営業部様ですね？」となる不自然さを解消するため、部署専用の文言を分離する）。
+  | 'voice.readback.confirmDepartment'
   | 'voice.readback.yes'
   | 'voice.readback.no'
   | 'voice.fallback.touchNotice'
@@ -245,7 +248,46 @@ export type MessageKey =
   | 'kiosk.callStages.label'
   | 'kiosk.callStages.status.pending'
   | 'kiosk.callStages.status.active'
-  | 'kiosk.callStages.status.done';
+  | 'kiosk.callStages.status.done'
+  // QR チェックイン（issue #98 CheckinFlow / #361 残 i18n）。字幕・案内文言の直書き解消。
+  | 'checkin.idle.title'
+  | 'checkin.idle.lead'
+  | 'checkin.idle.start'
+  | 'checkin.backToStart'
+  | 'checkin.method.title'
+  | 'checkin.method.qr'
+  | 'checkin.method.manual'
+  | 'checkin.camera.title'
+  | 'checkin.camera.lead'
+  | 'checkin.camera.grant'
+  | 'checkin.camera.deny'
+  | 'checkin.scanning.title'
+  | 'checkin.scanning.lead'
+  | 'checkin.cancelAction'
+  | 'checkin.resolving.title'
+  | 'checkin.confirm.title'
+  | 'checkin.confirm.name'
+  | 'checkin.confirm.company'
+  | 'checkin.confirm.visitAt'
+  | 'checkin.confirm.notice'
+  | 'checkin.confirm.rescan'
+  | 'checkin.confirm.submit'
+  | 'checkin.calling.title'
+  | 'checkin.calling.lead'
+  | 'checkin.completed.title'
+  | 'checkin.completed.lead'
+  | 'checkin.cancelled.title'
+  | 'checkin.manualFallback.title'
+  | 'checkin.manualFallback.lead'
+  | 'checkin.error.camera'
+  | 'checkin.error.scan'
+  | 'checkin.error.expired'
+  | 'checkin.error.used'
+  | 'checkin.error.revoked'
+  | 'checkin.error.network'
+  | 'checkin.error.generic'
+  | 'checkin.error.useManual'
+  | 'checkin.error.retry';
 
 /** 既定 locale 辞書は全キー網羅必須。他 locale は Partial 可（欠落は ja へフォールバック）。 */
 type DefaultDictionary = Record<MessageKey, string>;
@@ -271,6 +313,7 @@ const ja: DefaultDictionary = {
   'voice.caption.speaking': 'ご案内しています',
   'voice.caption.ducked': 'どうぞ、お話しください',
   'voice.readback.confirmTarget': '{name}様ですね？',
+  'voice.readback.confirmDepartment': '{name}でよろしいですか？',
   'voice.readback.yes': 'はい',
   'voice.readback.no': 'いいえ',
   'voice.fallback.touchNotice': '音声が使えないため、画面のタッチで受付を続けられます',
@@ -446,6 +489,44 @@ const ja: DefaultDictionary = {
   'kiosk.callStages.status.pending': '待機中',
   'kiosk.callStages.status.active': '進行中',
   'kiosk.callStages.status.done': '完了',
+  'checkin.idle.title': 'QR で受付',
+  'checkin.idle.lead': '予約 QR をお持ちの方はこちらから受付できます。',
+  'checkin.idle.start': '受付を開始する',
+  'checkin.backToStart': '最初に戻る',
+  'checkin.method.title': '受付方法をお選びください',
+  'checkin.method.qr': 'QR で受付',
+  'checkin.method.manual': '通常受付（手入力）',
+  'checkin.camera.title': 'カメラの使用を許可してください',
+  'checkin.camera.lead': 'QR を読み取るためにカメラを使用します。映像は保存しません。',
+  'checkin.camera.grant': 'カメラを許可して読み取りへ',
+  'checkin.camera.deny': 'カメラを使わない',
+  'checkin.scanning.title': 'QR を読み取っています…',
+  'checkin.scanning.lead': '予約 QR をカメラにかざしてください。',
+  'checkin.cancelAction': 'やめる',
+  'checkin.resolving.title': '予約を確認しています…',
+  'checkin.confirm.title': 'ご予約内容をご確認ください',
+  'checkin.confirm.name': 'お名前',
+  'checkin.confirm.company': '会社名',
+  'checkin.confirm.visitAt': 'ご予定',
+  'checkin.confirm.notice': '内容に間違いがなければ「この内容で呼び出す」を押してください。',
+  'checkin.confirm.rescan': '読み直す',
+  'checkin.confirm.submit': 'この内容で呼び出す',
+  'checkin.calling.title': '担当者を呼び出しています…',
+  'checkin.calling.lead': '少々お待ちください。',
+  'checkin.completed.title': '受付が完了しました',
+  'checkin.completed.lead': 'ありがとうございました。',
+  'checkin.cancelled.title': '受付をキャンセルしました',
+  'checkin.manualFallback.title': '通常受付に切り替えます',
+  'checkin.manualFallback.lead': '手入力での受付にお進みください。',
+  'checkin.error.camera': 'カメラを使用できませんでした。通常受付でお進みいただけます。',
+  'checkin.error.scan': 'QR を読み取れませんでした。もう一度お試しいただくか、通常受付をご利用ください。',
+  'checkin.error.expired': 'この QR は有効期限が切れています。受付スタッフにお問い合わせください。',
+  'checkin.error.used': 'この QR はすでに受付に使用されています。受付スタッフにお問い合わせください。',
+  'checkin.error.revoked': 'この QR は無効化されています。受付スタッフにお問い合わせください。',
+  'checkin.error.network': '通信に失敗しました。通常受付でお進みいただけます。',
+  'checkin.error.generic': 'エラーが発生しました。',
+  'checkin.error.useManual': '通常受付へ',
+  'checkin.error.retry': 'やり直す',
 };
 
 const en: LocaleDictionary = {
@@ -468,6 +549,7 @@ const en: LocaleDictionary = {
   'voice.caption.speaking': 'Speaking…',
   'voice.caption.ducked': 'Go ahead, please speak',
   'voice.readback.confirmTarget': 'Do you mean {name}?',
+  'voice.readback.confirmDepartment': 'Would you like to be connected to {name}?',
   'voice.readback.yes': 'Yes',
   'voice.readback.no': 'No',
   'voice.fallback.touchNotice': 'Voice is unavailable. You can continue by touch',
@@ -645,6 +727,44 @@ const en: LocaleDictionary = {
   'kiosk.callStages.status.pending': 'Waiting',
   'kiosk.callStages.status.active': 'In progress',
   'kiosk.callStages.status.done': 'Done',
+  'checkin.idle.title': 'Check in with QR',
+  'checkin.idle.lead': 'If you have a reservation QR code, you can check in here.',
+  'checkin.idle.start': 'Start check-in',
+  'checkin.backToStart': 'Back to start',
+  'checkin.method.title': 'Please choose a check-in method',
+  'checkin.method.qr': 'Check in with QR',
+  'checkin.method.manual': 'Standard check-in (manual entry)',
+  'checkin.camera.title': 'Please allow camera access',
+  'checkin.camera.lead': 'The camera is used to scan the QR code. Video is not saved.',
+  'checkin.camera.grant': 'Allow camera and continue to scan',
+  'checkin.camera.deny': "Don't use the camera",
+  'checkin.scanning.title': 'Scanning QR code…',
+  'checkin.scanning.lead': 'Hold your reservation QR code up to the camera.',
+  'checkin.cancelAction': 'Cancel',
+  'checkin.resolving.title': 'Checking your reservation…',
+  'checkin.confirm.title': 'Please confirm your reservation details',
+  'checkin.confirm.name': 'Name',
+  'checkin.confirm.company': 'Company',
+  'checkin.confirm.visitAt': 'Scheduled time',
+  'checkin.confirm.notice': 'If everything is correct, press "Call with these details".',
+  'checkin.confirm.rescan': 'Rescan',
+  'checkin.confirm.submit': 'Call with these details',
+  'checkin.calling.title': 'Calling the staff member…',
+  'checkin.calling.lead': 'Please wait a moment.',
+  'checkin.completed.title': 'Check-in complete',
+  'checkin.completed.lead': 'Thank you.',
+  'checkin.cancelled.title': 'Check-in cancelled',
+  'checkin.manualFallback.title': 'Switching to standard check-in',
+  'checkin.manualFallback.lead': 'Please continue with manual check-in.',
+  'checkin.error.camera': 'The camera could not be used. You can continue with standard check-in.',
+  'checkin.error.scan': 'Could not read the QR code. Please try again or use standard check-in.',
+  'checkin.error.expired': 'This QR code has expired. Please contact reception staff.',
+  'checkin.error.used': 'This QR code has already been used for check-in. Please contact reception staff.',
+  'checkin.error.revoked': 'This QR code has been revoked. Please contact reception staff.',
+  'checkin.error.network': 'The connection failed. You can continue with standard check-in.',
+  'checkin.error.generic': 'An error occurred.',
+  'checkin.error.useManual': 'Go to standard check-in',
+  'checkin.error.retry': 'Try again',
 };
 
 const ko: LocaleDictionary = {
@@ -667,6 +787,7 @@ const ko: LocaleDictionary = {
   'voice.caption.speaking': '안내하고 있습니다',
   'voice.caption.ducked': '말씀하세요',
   'voice.readback.confirmTarget': '{name}님이 맞으신가요?',
+  'voice.readback.confirmDepartment': '{name} 부서가 맞으신가요?',
   'voice.readback.yes': '네',
   'voice.readback.no': '아니요',
   'voice.fallback.touchNotice': '음성을 사용할 수 없어 화면 터치로 접수를 이어갈 수 있습니다',
@@ -841,6 +962,44 @@ const ko: LocaleDictionary = {
   'kiosk.callStages.status.pending': '대기 중',
   'kiosk.callStages.status.active': '진행 중',
   'kiosk.callStages.status.done': '완료',
+  'checkin.idle.title': 'QR로 접수',
+  'checkin.idle.lead': '예약 QR 코드가 있으신 분은 여기에서 접수하실 수 있습니다.',
+  'checkin.idle.start': '접수 시작',
+  'checkin.backToStart': '처음으로 돌아가기',
+  'checkin.method.title': '접수 방법을 선택해 주세요',
+  'checkin.method.qr': 'QR로 접수',
+  'checkin.method.manual': '일반 접수(직접 입력)',
+  'checkin.camera.title': '카메라 사용을 허용해 주세요',
+  'checkin.camera.lead': 'QR 코드를 읽기 위해 카메라를 사용합니다. 영상은 저장되지 않습니다.',
+  'checkin.camera.grant': '카메라를 허용하고 스캔으로 이동',
+  'checkin.camera.deny': '카메라를 사용하지 않음',
+  'checkin.scanning.title': 'QR 코드를 인식하고 있습니다…',
+  'checkin.scanning.lead': '예약 QR 코드를 카메라에 비춰주세요.',
+  'checkin.cancelAction': '취소',
+  'checkin.resolving.title': '예약을 확인하고 있습니다…',
+  'checkin.confirm.title': '예약 내용을 확인해 주세요',
+  'checkin.confirm.name': '성함',
+  'checkin.confirm.company': '회사명',
+  'checkin.confirm.visitAt': '방문 예정 시간',
+  'checkin.confirm.notice': '내용에 문제가 없으면 "이 내용으로 호출하기"를 눌러주세요.',
+  'checkin.confirm.rescan': '다시 스캔',
+  'checkin.confirm.submit': '이 내용으로 호출하기',
+  'checkin.calling.title': '담당자를 호출하고 있습니다…',
+  'checkin.calling.lead': '잠시만 기다려 주세요.',
+  'checkin.completed.title': '접수가 완료되었습니다',
+  'checkin.completed.lead': '감사합니다.',
+  'checkin.cancelled.title': '접수를 취소했습니다',
+  'checkin.manualFallback.title': '일반 접수로 전환합니다',
+  'checkin.manualFallback.lead': '직접 입력으로 접수를 진행해 주세요.',
+  'checkin.error.camera': '카메라를 사용할 수 없었습니다. 일반 접수로 진행하실 수 있습니다.',
+  'checkin.error.scan': 'QR 코드를 인식하지 못했습니다. 다시 시도하시거나 일반 접수를 이용해 주세요.',
+  'checkin.error.expired': '이 QR 코드는 유효기간이 만료되었습니다. 접수 담당자에게 문의해 주세요.',
+  'checkin.error.used': '이 QR 코드는 이미 접수에 사용되었습니다. 접수 담당자에게 문의해 주세요.',
+  'checkin.error.revoked': '이 QR 코드는 무효화되었습니다. 접수 담당자에게 문의해 주세요.',
+  'checkin.error.network': '통신에 실패했습니다. 일반 접수로 진행하실 수 있습니다.',
+  'checkin.error.generic': '오류가 발생했습니다.',
+  'checkin.error.useManual': '일반 접수로 이동',
+  'checkin.error.retry': '다시 시도',
 };
 
 const zh: LocaleDictionary = {
@@ -863,6 +1022,7 @@ const zh: LocaleDictionary = {
   'voice.caption.speaking': '正在为您讲解',
   'voice.caption.ducked': '请讲',
   'voice.readback.confirmTarget': '您是找{name}吗？',
+  'voice.readback.confirmDepartment': '您要找的是{name}吗？',
   'voice.readback.yes': '是',
   'voice.readback.no': '否',
   'voice.fallback.touchNotice': '语音暂不可用，您可以通过触摸屏幕继续登记',
@@ -1033,6 +1193,44 @@ const zh: LocaleDictionary = {
   'kiosk.callStages.status.pending': '等待中',
   'kiosk.callStages.status.active': '进行中',
   'kiosk.callStages.status.done': '完成',
+  'checkin.idle.title': '扫码登记',
+  'checkin.idle.lead': '如果您有预约二维码，可以在此登记。',
+  'checkin.idle.start': '开始登记',
+  'checkin.backToStart': '返回首页',
+  'checkin.method.title': '请选择登记方式',
+  'checkin.method.qr': '扫码登记',
+  'checkin.method.manual': '常规登记（手动输入）',
+  'checkin.camera.title': '请允许使用摄像头',
+  'checkin.camera.lead': '将使用摄像头扫描二维码。视频不会被保存。',
+  'checkin.camera.grant': '允许摄像头并继续扫描',
+  'checkin.camera.deny': '不使用摄像头',
+  'checkin.scanning.title': '正在扫描二维码…',
+  'checkin.scanning.lead': '请将预约二维码对准摄像头。',
+  'checkin.cancelAction': '取消',
+  'checkin.resolving.title': '正在确认预约…',
+  'checkin.confirm.title': '请确认您的预约信息',
+  'checkin.confirm.name': '姓名',
+  'checkin.confirm.company': '公司名称',
+  'checkin.confirm.visitAt': '预约时间',
+  'checkin.confirm.notice': '如信息无误，请点击"以此内容呼叫"。',
+  'checkin.confirm.rescan': '重新扫描',
+  'checkin.confirm.submit': '以此内容呼叫',
+  'checkin.calling.title': '正在呼叫负责人…',
+  'checkin.calling.lead': '请稍候。',
+  'checkin.completed.title': '登记已完成',
+  'checkin.completed.lead': '谢谢您。',
+  'checkin.cancelled.title': '登记已取消',
+  'checkin.manualFallback.title': '正在切换到常规登记',
+  'checkin.manualFallback.lead': '请继续以手动方式登记。',
+  'checkin.error.camera': '无法使用摄像头。您可以通过常规登记继续。',
+  'checkin.error.scan': '无法识别二维码。请重试，或使用常规登记。',
+  'checkin.error.expired': '此二维码已过期。请联系前台工作人员。',
+  'checkin.error.used': '此二维码已用于登记。请联系前台工作人员。',
+  'checkin.error.revoked': '此二维码已失效。请联系前台工作人员。',
+  'checkin.error.network': '通信失败。您可以通过常规登记继续。',
+  'checkin.error.generic': '发生错误。',
+  'checkin.error.useManual': '前往常规登记',
+  'checkin.error.retry': '重试',
 };
 
 /**

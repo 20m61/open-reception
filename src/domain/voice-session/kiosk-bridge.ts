@@ -66,6 +66,10 @@ export function bridgeCommittedTurn(input: BridgeCommittedTurnInput): BridgeComm
       type: 'heardNeedsConfirmation',
       displayName: resolution.top1.displayName,
       reason: confirmation.reason,
+      // 復唱テンプレートの出し分け (issue #361 申し送り)。resolveEntities は staff/department
+      // 以外を返さないが、型上は EntityCandidateKind が広いため department 以外は 'staff' へ
+      // 正規化する（安全側デフォルト = 従来の担当者向けテンプレート）。
+      kind: resolution.top1.kind === 'department' ? 'department' : 'staff',
     },
     resolved: resolution.top1,
   };

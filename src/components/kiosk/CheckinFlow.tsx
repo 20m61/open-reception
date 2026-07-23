@@ -11,7 +11,7 @@ import type { QrScanner, ScanError } from '@/domain/checkin/scanner';
 import { CameraQrScanner } from '@/lib/checkin/camera-scanner';
 import { checkinConversationTurnFor } from '@/domain/reception/ui-contract';
 import type { MotionKey } from '@/domain/motion/types';
-import { DEFAULT_LOCALE, type Locale } from '@/lib/i18n';
+import { DEFAULT_LOCALE, makeT, type Locale, type MessageKey } from '@/lib/i18n';
 import type { KioskLayout } from './layout';
 import { AvatarGuide } from './avatar/AvatarGuide';
 
@@ -52,7 +52,8 @@ export type CheckinFlowProps = {
   defaultMotionUrl?: string;
 };
 
-type FlowData = {
+/** `renderCheckin` へ渡す描画用状態（CheckinFlow.test.tsx から直接構成してテストする）。 */
+export type FlowData = {
   state: CheckinState;
   /** 読み取った QR payload（確認後の confirm 送信に使う。完了/キャンセルで破棄）。 */
   payload?: string;
@@ -63,7 +64,8 @@ type FlowData = {
 /** ペイロードを伴うイベントは個別に持ち、それ以外は単純な type のみ。 */
 type SimpleEvent = Exclude<CheckinEvent, 'QR_DETECTED' | 'SCAN_ERROR' | 'RESERVATION_OK'>;
 
-type Action =
+/** `renderCheckin` へ渡す dispatch のアクション型（CheckinFlow.test.tsx から直接呼ぶために export）。 */
+export type Action =
   | { type: SimpleEvent }
   | { type: 'QR_DETECTED'; payload: string }
   | { type: 'SCAN_ERROR'; error: ScanError }
@@ -215,7 +217,7 @@ export function CheckinFlow({
       motionUrls={motionUrls}
       defaultMotionUrl={defaultMotionUrl}
     >
-      {renderCheckin(data, dispatch, useManual, exit)}
+      {renderCheckin(data, dispatch, useManual, exit, locale)}
     </CheckinShell>
   );
 }
@@ -345,35 +347,44 @@ const contentStackStyle: React.CSSProperties = {
   gap: 'var(--space-lg)',
 };
 
-function renderCheckin(
+/**
+ * QR 受付シェルの画面本体（issue #98 / #361 残 i18n）。
+ *
+ * `data`/`dispatch`/ハンドラのみに依存する純粋な描画関数（hooks を使わない）で、`renderToStaticMarkup`
+ * で直接レンダーしてテストできる（プロジェクトに jsdom/RTL は無いため、`VoiceReadbackConfirm` と同じ
+ * 静的マークアップ検証の流儀に合わせている）。`export` は CheckinFlow.test.tsx からの直接検証用。
+ */
+export function renderCheckin(
   data: FlowData,
   dispatch: React.Dispatch<Action>,
   useManual: () => void,
   exit: () => void,
+  locale: Locale = DEFAULT_LOCALE,
 ) {
+  const tr = makeT(locale);
   switch (data.state) {
     case 'idle':
       return (
         <CenteredCard>
-          <h1 className="screen__title">QR で受付</h1>
-          <p className="screen__lead">予約 QR をお持ちの方はこちらから受付できます。</p>
+          <h1 className="screen__title">{tr('checkin.idle.title')}</h1>
+          <p className="screen__lead">{tr('checkin.idle.lead')}</p>
           <button
             type="button"
             className="btn btn--primary"
             data-testid="checkin-start"
             onClick={() => dispatch({ type: 'START' })}
           >
-            受付を開始する
+            {tr('checkin.idle.start')}
           </button>
           <button type="button" className="btn btn--ghost" data-testid="checkin-exit" onClick={exit}>
-            最初に戻る
+            {tr('checkin.backToStart')}
           </button>
         </CenteredCard>
       );
     case 'selectingMethod':
       return (
         <CenteredCard>
-          <h1 className="screen__title">受付方法をお選びください</h1>
+          <h1 className="screen__title">{tr('checkin.method.title')}</h1>
           <div className="card-grid">
             <button
               type="button"
@@ -381,7 +392,7 @@ function renderCheckin(
               data-testid="method-qr"
               onClick={() => dispatch({ type: 'CHOOSE_QR' })}
             >
-              QR で受付
+              {tr('checkin.method.qr')}
             </button>
             <button
               type="button"
@@ -389,26 +400,26 @@ function renderCheckin(
               data-testid="method-manual"
               onClick={useManual}
             >
-              通常受付（手入力）
+              {tr('checkin.method.manual')}
             </button>
           </div>
           <button type="button" className="btn btn--ghost" data-testid="method-cancel" onClick={() => dispatch({ type: 'CANCEL' })}>
-            最初に戻る
+            {tr('checkin.backToStart')}
           </button>
         </CenteredCard>
       );
     case 'checkingCamera':
       return (
         <CenteredCard>
-          <h1 className="screen__title">カメラの使用を許可してください</h1>
-          <p className="screen__lead">QR を読み取るためにカメラを使用します。映像は保存しません。</p>
+          <h1 className="screen__title">{tr('checkin.camera.title')}</h1>
+          <p className="screen__lead">{tr('checkin.camera.lead')}</p>
           <button
             type="button"
             className="btn btn--primary"
             data-testid="camera-grant"
             onClick={() => dispatch({ type: 'CAMERA_GRANTED' })}
           >
-            カメラを許可して読み取りへ
+            {tr('checkin.camera.grant')}
           </button>
           <button
             type="button"
@@ -416,33 +427,34 @@ function renderCheckin(
             data-testid="camera-deny"
             onClick={() => dispatch({ type: 'CAMERA_DENIED' })}
           >
-            カメラを使わない
+            {tr('checkin.camera.deny')}
           </button>
           <button type="button" className="btn btn--ghost" data-testid="camera-cancel" onClick={() => dispatch({ type: 'CANCEL' })}>
-            最初に戻る
+            {tr('checkin.backToStart')}
           </button>
         </CenteredCard>
       );
     case 'scanning':
       return (
         <CenteredCard>
-          <h1 className="screen__title" data-testid="checkin-scanning">QR を読み取っています…</h1>
-          <p className="screen__lead">予約 QR をカメラにかざしてください。</p>
+          <h1 className="screen__title" data-testid="checkin-scanning">{tr('checkin.scanning.title')}</h1>
+          <p className="screen__lead">{tr('checkin.scanning.lead')}</p>
           <button type="button" className="btn btn--ghost" data-testid="scan-cancel" onClick={() => dispatch({ type: 'CANCEL' })}>
-            やめる
+            {tr('checkin.cancelAction')}
           </button>
         </CenteredCard>
       );
     case 'resolving':
       return (
         <CenteredCard>
-          <h1 className="screen__title" data-testid="checkin-resolving">予約を確認しています…</h1>
+          <h1 className="screen__title" data-testid="checkin-resolving">{tr('checkin.resolving.title')}</h1>
         </CenteredCard>
       );
     case 'confirming':
       return (
         <ConfirmReservationView
           summary={data.summary}
+          locale={locale}
           onConfirm={() => dispatch({ type: 'CONFIRM' })}
           onRescan={() => dispatch({ type: 'RESCAN' })}
           onCancel={() => dispatch({ type: 'CANCEL' })}
@@ -451,36 +463,36 @@ function renderCheckin(
     case 'calling':
       return (
         <CenteredCard>
-          <h1 className="screen__title" data-testid="checkin-calling">担当者を呼び出しています…</h1>
-          <p className="screen__lead">少々お待ちください。</p>
+          <h1 className="screen__title" data-testid="checkin-calling">{tr('checkin.calling.title')}</h1>
+          <p className="screen__lead">{tr('checkin.calling.lead')}</p>
         </CenteredCard>
       );
     case 'completed':
       return (
         <CenteredCard>
-          <h1 className="screen__title" data-testid="checkin-completed">受付が完了しました</h1>
-          <p className="screen__lead">ありがとうございました。</p>
+          <h1 className="screen__title" data-testid="checkin-completed">{tr('checkin.completed.title')}</h1>
+          <p className="screen__lead">{tr('checkin.completed.lead')}</p>
           <button type="button" className="btn btn--ghost" data-testid="checkin-reset" onClick={exit}>
-            最初に戻る
+            {tr('checkin.backToStart')}
           </button>
         </CenteredCard>
       );
     case 'cancelled':
       return (
         <CenteredCard>
-          <h1 className="screen__title" data-testid="checkin-cancelled">受付をキャンセルしました</h1>
+          <h1 className="screen__title" data-testid="checkin-cancelled">{tr('checkin.cancelled.title')}</h1>
           <button type="button" className="btn btn--ghost" data-testid="checkin-reset" onClick={exit}>
-            最初に戻る
+            {tr('checkin.backToStart')}
           </button>
         </CenteredCard>
       );
     case 'manualFallback':
       return (
         <CenteredCard>
-          <h1 className="screen__title" data-testid="checkin-manual">通常受付に切り替えます</h1>
-          <p className="screen__lead">手入力での受付にお進みください。</p>
+          <h1 className="screen__title" data-testid="checkin-manual">{tr('checkin.manualFallback.title')}</h1>
+          <p className="screen__lead">{tr('checkin.manualFallback.lead')}</p>
           <button type="button" className="btn btn--ghost" data-testid="checkin-reset" onClick={exit}>
-            最初に戻る
+            {tr('checkin.backToStart')}
           </button>
         </CenteredCard>
       );
@@ -493,6 +505,7 @@ function renderCheckin(
       return (
         <ErrorView
           state={data.state}
+          locale={locale}
           onUseManual={useManual}
           onRetry={() => dispatch({ type: 'RETRY' })}
           onReset={exit}
@@ -506,84 +519,91 @@ function renderCheckin(
 /** 予約内容確認画面（必要最小限の情報のみ）。確認操作で初めて呼び出しへ進む。 */
 function ConfirmReservationView({
   summary,
+  locale,
   onConfirm,
   onRescan,
   onCancel,
 }: {
   summary?: CheckinSummary;
+  locale: Locale;
   onConfirm: () => void;
   onRescan: () => void;
   onCancel: () => void;
 }) {
   if (!summary) return null;
+  const tr = makeT(locale);
   return (
     <>
-      <h1 className="screen__title">ご予約内容をご確認ください</h1>
+      <h1 className="screen__title">{tr('checkin.confirm.title')}</h1>
       <div className="screen__body">
         <dl style={{ display: 'grid', gridTemplateColumns: 'auto 1fr', gap: 'var(--space-md)', fontSize: 'var(--font-lg)' }}>
-          <dt className="card__sub">お名前</dt>
+          <dt className="card__sub">{tr('checkin.confirm.name')}</dt>
           <dd style={{ margin: 0 }} data-testid="checkin-confirm-name">{summary.visitorName}</dd>
           {summary.companyName ? (
             <>
-              <dt className="card__sub">会社名</dt>
+              <dt className="card__sub">{tr('checkin.confirm.company')}</dt>
               <dd style={{ margin: 0 }} data-testid="checkin-confirm-company">{summary.companyName}</dd>
             </>
           ) : null}
-          <dt className="card__sub">ご予定</dt>
-          <dd style={{ margin: 0 }} data-testid="checkin-confirm-visitat">{formatVisitAt(summary.visitAt)}</dd>
+          <dt className="card__sub">{tr('checkin.confirm.visitAt')}</dt>
+          <dd style={{ margin: 0 }} data-testid="checkin-confirm-visitat">{formatVisitAt(summary.visitAt, locale)}</dd>
         </dl>
-        <p className="card__sub">内容に間違いがなければ「この内容で呼び出す」を押してください。</p>
+        <p className="card__sub">{tr('checkin.confirm.notice')}</p>
       </div>
       <div className="screen__footer">
         <button type="button" className="btn btn--ghost" data-testid="checkin-rescan" onClick={onRescan}>
-          読み直す
+          {tr('checkin.confirm.rescan')}
         </button>
         <button type="button" className="btn btn--secondary" data-testid="checkin-cancel" onClick={onCancel}>
-          やめる
+          {tr('checkin.cancelAction')}
         </button>
         <button type="button" className="btn btn--primary" data-testid="checkin-confirm" onClick={onConfirm}>
-          この内容で呼び出す
+          {tr('checkin.confirm.submit')}
         </button>
       </div>
     </>
   );
 }
 
-/** エラー種別ごとの文言（受け入れ条件: 期限切れ/使用済み/失効/不正/通信断/カメラ不可を区別）。 */
-const ERROR_MESSAGE: Record<string, string> = {
-  cameraError: 'カメラを使用できませんでした。通常受付でお進みいただけます。',
-  scanError: 'QR を読み取れませんでした。もう一度お試しいただくか、通常受付をご利用ください。',
-  expiredError: 'この QR は有効期限が切れています。受付スタッフにお問い合わせください。',
-  usedError: 'この QR はすでに受付に使用されています。受付スタッフにお問い合わせください。',
-  revokedError: 'この QR は無効化されています。受付スタッフにお問い合わせください。',
-  networkError: '通信に失敗しました。通常受付でお進みいただけます。',
+/** エラー種別ごとの文言キー（受け入れ条件: 期限切れ/使用済み/失効/不正/通信断/カメラ不可を区別）。 */
+const ERROR_MESSAGE_KEY: Partial<Record<CheckinState, MessageKey>> = {
+  cameraError: 'checkin.error.camera',
+  scanError: 'checkin.error.scan',
+  expiredError: 'checkin.error.expired',
+  usedError: 'checkin.error.used',
+  revokedError: 'checkin.error.revoked',
+  networkError: 'checkin.error.network',
 };
 
 function ErrorView({
   state,
+  locale,
   onUseManual,
   onRetry,
   onReset,
 }: {
   state: CheckinState;
+  locale: Locale;
   onUseManual: () => void;
   onRetry: () => void;
   onReset: () => void;
 }) {
+  const tr = makeT(locale);
+  const key = ERROR_MESSAGE_KEY[state];
   return (
     <div className="screen__body" style={{ alignItems: 'center', justifyContent: 'center', textAlign: 'center' }}>
       <div className="notice notice--danger" data-testid={`checkin-error-${state}`}>
-        {ERROR_MESSAGE[state] ?? 'エラーが発生しました。'}
+        {key ? tr(key) : tr('checkin.error.generic')}
       </div>
       <div className="screen__footer" style={{ justifyContent: 'center' }}>
         <button type="button" className="btn btn--primary" data-testid="checkin-error-manual" onClick={onUseManual}>
-          通常受付へ
+          {tr('checkin.error.useManual')}
         </button>
         <button type="button" className="btn btn--secondary" data-testid="checkin-error-retry" onClick={onRetry}>
-          やり直す
+          {tr('checkin.error.retry')}
         </button>
         <button type="button" className="btn btn--ghost" data-testid="checkin-error-reset" onClick={onReset}>
-          最初に戻る
+          {tr('checkin.backToStart')}
         </button>
       </div>
     </div>
@@ -601,8 +621,17 @@ function CenteredCard({ children }: { children: React.ReactNode }) {
   );
 }
 
-function formatVisitAt(iso: string): string {
+/** 日付整形用の locale → BCP47（`OutOfHoursView` と同じ方針。TTS 用コードとは別軸）。 */
+const INTL_LOCALE: Record<Locale, string> = {
+  ja: 'ja-JP',
+  en: 'en-US',
+  ko: 'ko-KR',
+  zh: 'zh-CN',
+  'ja-simple': 'ja-JP',
+};
+
+function formatVisitAt(iso: string, locale: Locale): string {
   const t = Date.parse(iso);
   if (!Number.isFinite(t)) return iso;
-  return new Date(t).toLocaleString('ja-JP', { dateStyle: 'medium', timeStyle: 'short' });
+  return new Date(t).toLocaleString(INTL_LOCALE[locale], { dateStyle: 'medium', timeStyle: 'short' });
 }
