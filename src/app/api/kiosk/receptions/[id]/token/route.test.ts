@@ -5,8 +5,8 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 const getReception = vi.fn();
-const getVonageSessionService = vi.fn();
-const getVonagePublicConfig = vi.fn();
+const resolveVonageSessionService = vi.fn();
+const getVonagePublicConfigForTenant = vi.fn();
 const readKioskSession = vi.fn();
 const cookieGet = vi.fn(() => ({ value: 'kiosk-cookie' }));
 
@@ -17,10 +17,13 @@ vi.mock('@/lib/auth/kiosk', () => ({
 }));
 vi.mock('@/lib/data-stores/reception-store', () => ({ getReception: (...a: unknown[]) => getReception(...a) }));
 vi.mock('@/lib/call/adapter-factory', () => ({
-  getVonageSessionService: (...a: unknown[]) => getVonageSessionService(...a),
+  resolveVonageSessionService: (...a: unknown[]) => resolveVonageSessionService(...a),
 }));
 vi.mock('@/lib/call/vonage-config', () => ({
-  getVonagePublicConfig: (...a: unknown[]) => getVonagePublicConfig(...a),
+  getVonagePublicConfigForTenant: (...a: unknown[]) => getVonagePublicConfigForTenant(...a),
+}));
+vi.mock('@/lib/tenant/default-scope', () => ({
+  resolveDefaultScope: () => ({ tenantId: 'internal', siteId: 'default-site' }),
 }));
 
 import { GET } from './route';
@@ -55,31 +58,31 @@ describe('GET /api/kiosk/receptions/:id/token', () => {
     getReception.mockResolvedValue({ ok: true, value: { id: 'rec-1', kioskId: 'other-kiosk', vonageSessionId: 's' } });
     const res = await call();
     expect(res.status).toBe(403);
-    expect(getVonageSessionService).not.toHaveBeenCalled();
+    expect(resolveVonageSessionService).not.toHaveBeenCalled();
   });
 
   it('409 when vonage is unavailable or no session is established', async () => {
     getReception.mockResolvedValue({ ok: true, value: { id: 'rec-1', kioskId: 'kiosk-1', vonageSessionId: undefined } });
-    getVonageSessionService.mockReturnValue(null);
-    getVonagePublicConfig.mockReturnValue(null);
+    resolveVonageSessionService.mockReturnValue(null);
+    getVonagePublicConfigForTenant.mockReturnValue(null);
     const res = await call();
     expect(res.status).toBe(409);
   });
 
   it('409 when vonage is configured but the call session is not yet established', async () => {
     getReception.mockResolvedValue({ ok: true, value: { id: 'rec-1', kioskId: 'kiosk-1', vonageSessionId: undefined } });
-    getVonageSessionService.mockReturnValue({ issueToken: vi.fn() });
-    getVonagePublicConfig.mockReturnValue({ applicationId: 'app-123' });
+    resolveVonageSessionService.mockReturnValue({ issueToken: vi.fn() });
+    getVonagePublicConfigForTenant.mockReturnValue({ applicationId: 'app-123' });
     const res = await call();
     expect(res.status).toBe(409);
   });
 
   it('returns applicationId/sessionId/token only — never a secret', async () => {
     getReception.mockResolvedValue({ ok: true, value: { id: 'rec-1', kioskId: 'kiosk-1', vonageSessionId: 'sess-9' } });
-    getVonageSessionService.mockReturnValue({
+    resolveVonageSessionService.mockReturnValue({
       issueToken: vi.fn().mockResolvedValue({ token: 'jwt-token', role: 'publisher', expiresAt: '2026-01-01T00:00:00.000Z' }),
     });
-    getVonagePublicConfig.mockReturnValue({ applicationId: 'app-123' });
+    getVonagePublicConfigForTenant.mockReturnValue({ applicationId: 'app-123' });
 
     const res = await call();
     expect(res.status).toBe(200);
@@ -93,5 +96,8 @@ describe('GET /api/kiosk/receptions/:id/token', () => {
     });
     const keys = Object.keys(body).join(',').toLowerCase();
     expect(keys).not.toMatch(/secret|private|apikey|api_key/);
+    // テナント解決へ配線されていること（既定スコープの tenantId で解決）。
+    expect(resolveVonageSessionService).toHaveBeenCalledWith('internal');
+    expect(getVonagePublicConfigForTenant).toHaveBeenCalledWith('internal');
   });
 });

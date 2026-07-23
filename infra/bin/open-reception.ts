@@ -6,6 +6,7 @@ import { WebMonitoringStack } from '../lib/stacks/web-monitoring-stack';
 import { CloudFrontMonitoringStack } from '../lib/stacks/cloudfront-monitoring-stack';
 import { NotificationStack } from '../lib/stacks/notification-stack';
 import { MonitoringStack } from '../lib/stacks/monitoring-stack';
+import { RealtimeRuntimeStack, RealtimeRuntimeDnsConfig } from '../lib/stacks/realtime-runtime-stack';
 import { resolveEnv } from '../lib/config/environments';
 import { configureCostExplorerAccess } from '../lib/constructs/cost-explorer-access';
 import { overrideComponentTag } from '../lib/constructs/cost-tags';
@@ -22,6 +23,9 @@ import { COST_TAG_COMPONENTS } from '../lib/config/cost-components';
  *   - CloudFrontMonitoringStack : CloudFront 5xx アラーム (#303) — **us-east-1**（メトリクス発行先）
  *   - NotificationStack         : 通知サブシステム (#32/#34) — API + Lambda + Polly/Vonage
  *   - MonitoringStack           : 通知サブシステムの監視（Alarms / Dashboard / SNS）
+ *   - RealtimeRuntimeStack      : リアルタイム会話 EC2 基盤 (#366 Phase 0)。
+ *     `config.realtime.enabled`（既定 false, 全環境）が true の場合のみ app へ追加する。
+ *     ADR は `docs/adr/0003-realtime-runtime-ec2-phase0.md`。**deploy は本 increment のスコープ外**。
  *
  * デプロイ先アカウント/リージョンは CDK 既定の環境変数
  * (CDK_DEFAULT_ACCOUNT / CDK_DEFAULT_REGION) を使用する。
@@ -161,5 +165,26 @@ const monitoring = new MonitoringStack(app, `OpenReception-Monitoring-${config.e
   description: `open-reception notification monitoring (${config.environment})`,
 });
 overrideComponentTag(monitoring, COST_TAG_COMPONENTS.monitoring);
+
+// リアルタイム会話 EC2 基盤 (#366 Phase 0)。config.realtime.enabled が true の環境のみ synth 対象に
+// 含める（既定は全環境 false — 本プロジェクト初の実質的固定費のためユーザー承認後に true 化する）。
+// `-c realtimeHostedZoneId=... -c realtimeZoneName=... -c realtimeRecordName=...` で Route 53 連携を
+// 任意指定できる（未指定なら Route 53 リソースを作らない、customDomain と同じ任意 context の方針）。
+if (config.realtime.enabled) {
+  const realtimeHostedZoneId = app.node.tryGetContext('realtimeHostedZoneId') as string | undefined;
+  const realtimeZoneName = app.node.tryGetContext('realtimeZoneName') as string | undefined;
+  const realtimeRecordName = app.node.tryGetContext('realtimeRecordName') as string | undefined;
+  const realtimeDns: RealtimeRuntimeDnsConfig | undefined =
+    realtimeHostedZoneId && realtimeZoneName && realtimeRecordName
+      ? { hostedZoneId: realtimeHostedZoneId, zoneName: realtimeZoneName, recordName: realtimeRecordName }
+      : undefined;
+
+  new RealtimeRuntimeStack(app, `OpenReception-RealtimeRuntime-${config.environment}`, {
+    env: { account, region },
+    config,
+    dns: realtimeDns,
+    description: `open-reception realtime runtime EC2 (${config.environment})`,
+  });
+}
 
 app.synth();

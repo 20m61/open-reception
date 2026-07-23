@@ -1,7 +1,5 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
-  getCallAdapter,
-  getVonageSessionService,
   resolveCallAdapter,
   resolveVonageSessionService,
 } from './adapter-factory';
@@ -50,16 +48,6 @@ async function depsFor(
     secretStore,
   };
 }
-
-describe('call adapter selection — legacy env-free 既定 (#405 Inc3)', () => {
-  it('getCallAdapter は常に Mock（グローバル VONAGE_* env 経路は撤去済み）', () => {
-    expect(getCallAdapter(MOCK_STAFF)).toBeInstanceOf(MockCallAdapter);
-  });
-
-  it('getVonageSessionService は常に null（env 経路撤去・テナント解決へ移行）', () => {
-    expect(getVonageSessionService()).toBeNull();
-  });
-});
 
 describe('resolveCallAdapter — テナント設定経由 (#405 Inc3)', () => {
   it('テナント設定が無ければ Mock', async () => {
@@ -116,6 +104,32 @@ describe('resolveVonageSessionService — テナント設定経由 (#405 Inc3)',
       await depsFor(vonageConfig(), VONAGE_BUNDLE),
     );
     expect(svc).toBeInstanceOf(RestVonageSessionService);
+  });
+});
+
+describe('実発信不到達: 解決層は接続情報を返すのみ（実 HTTP/SDK に到達しない, #4）', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it('vonage+secret 完備でも resolveCallAdapter は fetch を呼ばない（解決＝接続情報のみ）', async () => {
+    const fetchSpy = vi.fn();
+    vi.stubGlobal('fetch', fetchSpy);
+    const adapter = await resolveCallAdapter(
+      'tenant-a',
+      MOCK_STAFF,
+      await depsFor(vonageConfig(), VONAGE_BUNDLE),
+    );
+    expect(adapter).toBeInstanceOf(VonageCallAdapter);
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  it('vonage+secret 完備でも resolveVonageSessionService は fetch を呼ばない', async () => {
+    const fetchSpy = vi.fn();
+    vi.stubGlobal('fetch', fetchSpy);
+    const svc = await resolveVonageSessionService('tenant-a', await depsFor(vonageConfig(), VONAGE_BUNDLE));
+    expect(svc).toBeInstanceOf(RestVonageSessionService);
+    expect(fetchSpy).not.toHaveBeenCalled();
   });
 });
 

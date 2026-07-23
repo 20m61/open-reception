@@ -6,9 +6,9 @@
  *   - `resolveCallAdapter(tenantId, staff)` … テナント解決結果に応じて Vonage / Mock。
  *   - `resolveVonageSessionService(tenantId)` … 同上（未解決なら null）。
  *
- * 旧 API（`getCallAdapter` / `getVonageSessionService`）は tenantId を取らない後方互換シムで、
- * env を一切読まず常に Mock を返す（グローバル既定 = Mock）。tenantId を持てる呼び出し点は
- * `resolve*` へ移行する（#4 の Provider 実結線でテナントコンテキストを配線）。
+ * live 呼び出し点（受付ストアの `startCall` / token・answer ルート）は tenantId を
+ * `resolveDefaultScope()` から取り、上記 `resolve*` を使う（#4 でテナントコンテキストを配線）。
+ * tenantId を取らない後方互換シム（旧 `getCallAdapter` / `getVonageSessionService`）は参照ゼロにつき撤去した。
  */
 import type { CallAdapter } from '@/adapters/call/types';
 import type { Staff } from '@/domain/staff/types';
@@ -78,20 +78,4 @@ export async function resolveVonageSessionService(
   if (resolved.provider !== 'vonage') return null;
   const config = buildVonageConfig(resolved);
   return config ? new RestVonageSessionService(config) : null;
-}
-
-/**
- * @deprecated tenantId を取らない後方互換シム。env を読まず常に Mock を返す
- *   （グローバル `VONAGE_*` env 経路は #405 Inc3 で撤去）。テナント解決には `resolveCallAdapter` を使う。
- */
-export function getCallAdapter(staff: ReadonlyArray<Staff>): CallAdapter {
-  return new MockCallAdapter(staff);
-}
-
-/**
- * @deprecated tenantId を取らない後方互換シム。env を読まず常に null を返す
- *   （グローバル `VONAGE_*` env 経路は #405 Inc3 で撤去）。テナント解決には `resolveVonageSessionService` を使う。
- */
-export function getVonageSessionService(): VonageSessionService | null {
-  return null;
 }

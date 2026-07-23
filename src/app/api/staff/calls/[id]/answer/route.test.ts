@@ -6,8 +6,8 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 const getReception = vi.fn();
 const markConnected = vi.fn();
-const getVonageSessionService = vi.fn();
-const getVonagePublicConfig = vi.fn();
+const resolveVonageSessionService = vi.fn();
+const getVonagePublicConfigForTenant = vi.fn();
 const readAnswerToken = vi.fn();
 
 vi.mock('@/lib/data-stores/reception-store', () => ({
@@ -15,10 +15,13 @@ vi.mock('@/lib/data-stores/reception-store', () => ({
   markConnected: (...a: unknown[]) => markConnected(...a),
 }));
 vi.mock('@/lib/call/adapter-factory', () => ({
-  getVonageSessionService: (...a: unknown[]) => getVonageSessionService(...a),
+  resolveVonageSessionService: (...a: unknown[]) => resolveVonageSessionService(...a),
 }));
 vi.mock('@/lib/call/vonage-config', () => ({
-  getVonagePublicConfig: (...a: unknown[]) => getVonagePublicConfig(...a),
+  getVonagePublicConfigForTenant: (...a: unknown[]) => getVonagePublicConfigForTenant(...a),
+}));
+vi.mock('@/lib/tenant/default-scope', () => ({
+  resolveDefaultScope: () => ({ tenantId: 'internal', siteId: 'default-site' }),
 }));
 vi.mock('@/lib/call/answer-token', () => ({ readAnswerToken: (...a: unknown[]) => readAnswerToken(...a) }));
 
@@ -39,10 +42,10 @@ beforeEach(() => {
   vi.clearAllMocks();
   readAnswerToken.mockResolvedValue({ receptionId: 'rec-1' });
   getReception.mockResolvedValue({ ok: true, value: { id: 'rec-1', kioskId: 'k', vonageSessionId: 'sess-9', state: 'calling' } });
-  getVonageSessionService.mockReturnValue({
+  resolveVonageSessionService.mockReturnValue({
     issueToken: vi.fn().mockResolvedValue({ token: 'sub-token', role: 'subscriber', expiresAt: '2026-01-01T00:00:00.000Z' }),
   });
-  getVonagePublicConfig.mockReturnValue({ applicationId: 'app-123' });
+  getVonagePublicConfigForTenant.mockReturnValue({ applicationId: 'app-123' });
   markConnected.mockResolvedValue({ ok: true, value: { id: 'rec-1', state: 'connected', callOutcome: 'connected' } });
 });
 
@@ -84,7 +87,7 @@ describe('POST /api/staff/calls/:id/answer', () => {
   });
 
   it('502 without changing state when token issuance fails', async () => {
-    getVonageSessionService.mockReturnValue({
+    resolveVonageSessionService.mockReturnValue({
       issueToken: vi.fn().mockRejectedValue(new Error('jwt error')),
     });
     const res = await call();
@@ -105,5 +108,8 @@ describe('POST /api/staff/calls/:id/answer', () => {
       expiresAt: '2026-01-01T00:00:00.000Z',
     });
     expect(Object.keys(data).join(',').toLowerCase()).not.toMatch(/secret|private|apikey|api_key/);
+    // テナント解決へ配線されていること（既定スコープの tenantId で解決）。
+    expect(resolveVonageSessionService).toHaveBeenCalledWith('internal');
+    expect(getVonagePublicConfigForTenant).toHaveBeenCalledWith('internal');
   });
 });

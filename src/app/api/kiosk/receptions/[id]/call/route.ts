@@ -45,7 +45,9 @@ export async function POST(
     });
     return null;
   });
-  const result = await startCall(id, routed ? routedCallAdapter(routed) : undefined);
+  // ルート未設定（fail-open）時の単発 adapter は、営業時間ガード/routing と同じ scope の
+  // tenantId で解決する（テナント設定が vonage+secret 完備なら本番 adapter。既定は Mock）。
+  const result = await startCall(id, routed ? routedCallAdapter(routed) : undefined, scope.tenantId);
 
   // エラー時、またはルート未設定（fail-open）時は従来どおりの応答（stages なし）。
   if (!result.ok || routed === null) return toResponse(result);

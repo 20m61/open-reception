@@ -72,7 +72,9 @@ export function availableActions(status: ReservationStatus): {
     canEdit: status === 'active',
     canCancel: status === 'active',
     canRevoke: status === 'active',
-    canReissue: status === 'expired' || status === 'revoked',
+    // #375: 生 token は保存されず QR は再表示できないため、有効(active)でも再発行を許す
+    // (再発行は token ローテーション = 旧 QR は無効化。QR 紛失時の唯一の復旧手段)。
+    canReissue: status === 'active' || status === 'expired' || status === 'revoked',
     canShowQr: true,
   };
 }

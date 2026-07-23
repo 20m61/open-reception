@@ -1,8 +1,9 @@
 import { NextResponse } from 'next/server';
 import { cookies } from 'next/headers';
 import { getReception } from '@/lib/data-stores/reception-store';
-import { getVonageSessionService } from '@/lib/call/adapter-factory';
-import { getVonagePublicConfig } from '@/lib/call/vonage-config';
+import { resolveVonageSessionService } from '@/lib/call/adapter-factory';
+import { getVonagePublicConfigForTenant } from '@/lib/call/vonage-config';
+import { resolveDefaultScope } from '@/lib/tenant/default-scope';
 import { KIOSK_COOKIE, readKioskSession } from '@/lib/auth/kiosk';
 
 /**
@@ -37,8 +38,10 @@ export async function GET(
     return NextResponse.json({ error: 'forbidden', message: 'reception belongs to another kiosk' }, { status: 403 });
   }
 
-  const service = getVonageSessionService();
-  const publicConfig = getVonagePublicConfig();
+  // テナント/サイト境界は営業時間ガード/routing と同じ既定スコープ規則で解決する（単一テナント既定）。
+  const { tenantId } = resolveDefaultScope();
+  const service = await resolveVonageSessionService(tenantId);
+  const publicConfig = await getVonagePublicConfigForTenant(tenantId);
   const sessionId = found.value.vonageSessionId;
   if (!service || !publicConfig || !sessionId) {
     return NextResponse.json(

@@ -27,10 +27,11 @@ import {
   asReservationId,
   type CreateReservationInput,
   type EditReservationPatch,
+  type IssuedReservation,
   type ReservationId,
   type VisitReservation,
 } from '@/domain/reservation/types';
-import { generateReservationToken } from '@/domain/reservation/token';
+import { generateReservationToken, hashReservationToken } from '@/domain/reservation/token';
 import type { ReservationRepository } from './repository';
 
 export type ServiceError = {
@@ -54,6 +55,11 @@ export type ReservationServiceDeps = {
   repo: ReservationRepository;
   appendAudit: AppendAudit;
   now?: () => Date;
+  /**
+   * token hash の pepper（server secret・#375）。省略時は pepper なし。
+   * 発行時の hash 化と、同一ストアを引く照合（CheckinService）で同一値を使う必要がある。
+   */
+  pepper?: string;
 };
 
 /** lifecycle の ReservationResult を ServiceResult へ写す。 */
@@ -65,11 +71,13 @@ export class ReservationService {
   private readonly repo: ReservationRepository;
   private readonly appendAudit: AppendAudit;
   private readonly now: () => Date;
+  private readonly pepper: string;
 
   constructor(deps: ReservationServiceDeps) {
     this.repo = deps.repo;
     this.appendAudit = deps.appendAudit;
     this.now = deps.now ?? (() => new Date());
+    this.pepper = deps.pepper ?? '';
   }
 
   /** サイト境界の認可。op は read/write。失敗時は forbidden。 */
@@ -106,17 +114,22 @@ export class ReservationService {
     return found ? { ok: true, value: found } : fail('not_found', 'reservation not found');
   }
 
-  /** 予約を作成し、token を発行する。作成と token 発行を監査に残す。 */
+  /**
+   * 予約を作成し、token を発行する。作成と token 発行を監査に残す。
+   * 生 token は保存せず hash（tokenHash）のみを永続化し、生値は**この発行応答でのみ**返す
+   * （`IssuedReservation.token`・一度きり表示・#375）。
+   */
   async create(
     actor: Actor,
     input: CreateReservationInput,
-  ): Promise<ServiceResult<VisitReservation>> {
+  ): Promise<ServiceResult<IssuedReservation>> {
     const auth = this.authorize(actor, input.tenantId, input.siteId, 'write');
     if (!auth.ok) return auth;
     const validated = validateCreateInput(input);
     if (!validated.ok) return fail(validated.error.code, validated.error.message);
 
     const nowIso = this.now().toISOString();
+    const token = generateReservationToken();
     const reservation: VisitReservation = {
       id: asReservationId(`rsv-${randomUUID()}`),
       tenantId: input.tenantId,
@@ -127,7 +140,7 @@ export class ReservationService {
       note: input.note?.trim() || undefined,
       targetType: input.targetType,
       targetId: input.targetId,
-      token: generateReservationToken(),
+      tokenHash: hashReservationToken(token, this.pepper),
       usagePolicy: input.usagePolicy,
       expiresAt: input.expiresAt,
       status: 'active',
@@ -141,7 +154,7 @@ export class ReservationService {
 
     await this.audit('reservation.created', reservation);
     await this.audit('reservation.token_issued', reservation);
-    return { ok: true, value: created.value };
+    return { ok: true, value: { ...created.value, token } };
   }
 
   async edit(
@@ -200,16 +213,18 @@ export class ReservationService {
     siteId: SiteId,
     id: ReservationId,
     newExpiresAt: string,
-  ): Promise<ServiceResult<VisitReservation>> {
+  ): Promise<ServiceResult<IssuedReservation>> {
     const current = await this.loadForWrite(actor, tenantId, siteId, id);
     if (!current.ok) return current;
+    const token = generateReservationToken();
     const reissued = fromLifecycle(
-      applyReissue(current.value, generateReservationToken(), newExpiresAt, this.now()),
+      applyReissue(current.value, hashReservationToken(token, this.pepper), newExpiresAt, this.now()),
     );
     if (!reissued.ok) return reissued;
     await this.repo.put(reissued.value);
     await this.audit('reservation.token_reissued', reissued.value);
-    return reissued;
+    // 旧トークンは新 hash 上書きで無効化。新しい生 token は発行応答でのみ返す（#375）。
+    return { ok: true, value: { ...reissued.value, token } };
   }
 
   /** write 認可 + 取得 + 期限切れ反映をまとめる。 */

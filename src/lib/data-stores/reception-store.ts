@@ -25,7 +25,8 @@ import {
   type StaffResponseAction,
   type StaffResponseResult,
 } from '@/domain/reception/staff-response';
-import { getCallAdapter } from '@/lib/call/adapter-factory';
+import { resolveCallAdapter } from '@/lib/call/adapter-factory';
+import { resolveDefaultScope } from '@/lib/tenant/default-scope';
 import {
   DataBackedReceptionSessionRepository,
   type ReceptionSessionRepository,
@@ -169,17 +170,22 @@ async function applyEvent(
  * 呼び出しを開始する。
  * 同期 adapter（Mock）は結果でセッション状態を確定する。
  * 非同期 adapter（Vonage）は calling のまま sessionId を紐づけ、応答は後続イベントで確定する。
- * adapter はテスト用に注入可能（既定は env に応じた getCallAdapter）。
+ * adapter はテスト用に注入可能。未注入時はテナント設定から解決する（`resolveCallAdapter`）。
+ * `tenantId` は呼び出し点（call ルート）の認可済みスコープ由来。未指定時は既定スコープへフォールバック。
  */
-export async function startCall(id: string, adapter?: CallAdapter): Promise<StoreResult<ReceptionSession>> {
+export async function startCall(
+  id: string,
+  adapter?: CallAdapter,
+  tenantId: string = resolveDefaultScope().tenantId,
+): Promise<StoreResult<ReceptionSession>> {
   const found = await getReception(id);
   if (!found.ok) return found;
 
   const calling = await applyEvent(found.value, 'CONFIRM');
   if (!calling.ok) return calling;
 
-  // 既定は Mock。Vonage 有効時は本番 adapter（#4）。担当者は現在のディレクトリから構成。
-  const callAdapter = adapter ?? getCallAdapter(await listStaff(true));
+  // 既定は Mock。テナント設定が vonage+secret 完備なら本番 adapter（#4）。担当者は現在のディレクトリから構成。
+  const callAdapter = adapter ?? (await resolveCallAdapter(tenantId, await listStaff(true)));
   const result: CallResult = await callAdapter.call({
     receptionId: calling.value.id,
     targetType: calling.value.targetType!,

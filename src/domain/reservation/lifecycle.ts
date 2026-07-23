@@ -176,12 +176,13 @@ export function markUsed(
 }
 
 /**
- * 新しいトークン・有効期限を適用した「再発行後の新予約」を作る純関数。
- * 旧予約は呼び出し側で revoke する（旧トークン失効）。
+ * 新しいトークン hash・有効期限を適用した「再発行後の新予約」を作る純関数。
+ * 旧予約は呼び出し側で revoke する（旧トークン失効）。生 token は保存せず、呼び出し側が
+ * 新 token を発行して hash を渡す（生値は発行応答でのみ返す・#375）。
  */
 export function applyReissue(
   reservation: VisitReservation,
-  newToken: VisitReservation['token'],
+  newTokenHash: VisitReservation['tokenHash'],
   newExpiresAt: string,
   now: Date,
 ): ReservationResult<VisitReservation> {
@@ -192,7 +193,7 @@ export function applyReissue(
     ok: true,
     value: {
       ...reservation,
-      token: newToken,
+      tokenHash: newTokenHash,
       expiresAt: newExpiresAt,
       status: 'active',
       usedAt: undefined,

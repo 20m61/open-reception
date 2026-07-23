@@ -7,8 +7,13 @@
  *   - 「QR 画像」描画ライブラリの採用は increment 2（design doc にライセンス判断を記録）。
  *     本増分は token 発行と「QR に載せる URL/payload 仕様」の定義までに留める。
  */
-import { randomBytes } from 'node:crypto';
-import { asReservationToken, type ReservationToken } from './types';
+import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
+import {
+  asReservationToken,
+  asReservationTokenHash,
+  type ReservationToken,
+  type ReservationTokenHash,
+} from './types';
 
 /**
  * トークンのバイト長。32 バイト = 256 bit。
@@ -27,6 +32,38 @@ function toBase64Url(bytes: Buffer): string {
  */
 export function generateReservationToken(): ReservationToken {
   return asReservationToken(toBase64Url(randomBytes(RESERVATION_TOKEN_BYTES)));
+}
+
+/** SHA-256 を 16 進で表した hash の文字数（32 バイト = 64 hex）。 */
+export const RESERVATION_TOKEN_HASH_HEX_LEN = 64;
+
+/**
+ * 予約トークンの一方向 hash を計算する（#375）。
+ *
+ * - 生 token は永続化せず、この hash（SHA-256・16 進）のみを保存する。
+ * - `pepper` は任意の server secret。設定すると DB 流出時の総当り耐性を上げる（keyed hash 相当）。
+ *   pepper を変更/導入すると既存 hash は無効化されるため、導入時は再発行または再 hash が要る。
+ * - 純関数（server pepper は呼び出し側が env から解決して渡す）。個人情報は入力に含めない。
+ */
+export function hashReservationToken(
+  token: ReservationToken,
+  pepper = '',
+): ReservationTokenHash {
+  const hex = createHash('sha256').update(`${pepper}:${token}`, 'utf8').digest('hex');
+  return asReservationTokenHash(hex);
+}
+
+/**
+ * 2 つの token hash を timing-safe に比較する（#375）。
+ * 長さ不一致・不正 hex でも例外を投げず false を返す（照合経路の入力ガード）。
+ */
+export function reservationTokenHashesEqual(a: string, b: string): boolean {
+  if (typeof a !== 'string' || typeof b !== 'string') return false;
+  if (a.length !== b.length || a.length === 0) return false;
+  const ba = Buffer.from(a, 'utf8');
+  const bb = Buffer.from(b, 'utf8');
+  if (ba.length !== bb.length) return false;
+  return timingSafeEqual(ba, bb);
 }
 
 /**

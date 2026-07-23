@@ -81,3 +81,28 @@ SOFTWARE.
 - 用途: 受付端末（kiosk）の既定アバター表示（issue #31）。差し替え可能（`KIOSK_DEFAULT_VRM_URL`）。
 
 > CC0 のためクレジット表記は不要だが、provenance（出所・ライセンス確認）を上記に明記する。
+
+---
+
+## AWS SDK for JavaScript v3 — `@aws-sdk/client-auto-scaling` / `@aws-sdk/client-ec2` /
+`@aws-sdk/client-route-53` / `@aws-sdk/client-ssm`
+
+- バージョン: 3.1093.0（`infra/package.json` devDependencies）
+- SPDX: Apache-2.0
+- 商用利用: 可
+- 改変 / 再配布: 可（帰属表示要・特許許諾あり）
+- 著作権: Copyright Amazon.com, Inc. or its affiliates
+- リポジトリ: https://github.com/aws/aws-sdk-js-v3
+- 用途: リアルタイム会話 EC2 基盤 (issue #366 Phase 0) の Reconciler Lambda
+  （`infra/lambda/realtime-reconciler/handler.ts`）が、営業時間ポリシーに応じて ASG の
+  DesiredCapacity を調整し（`client-auto-scaling`）、起動した EC2 の Public IPv4 を参照し
+  （`client-ec2`）、Route 53 A レコードを更新し（`client-route-53`）、緊急停止フラグ（SSM
+  Parameter）を読む（`client-ssm`）ために使う。
+- 配布形態: **devDependency**（型定義用途のみ）。実行時は Lambda Node.js 22 ランタイムに
+  同梱される AWS SDK v3 を使用するため（`NodejsFunction` の `externalModules: ['@aws-sdk/*']`
+  でバンドル対象から除外、`infra/lib/constructs/realtime-reconciler-function.ts` 参照）、
+  デプロイ artifact には含まれない。個人情報・秘密情報は扱わない（IAM 認証情報は Lambda
+  実行ロールから取得、コードへ埋め込まない）。
+- NOTICE: `aws-sdk-js-v3` の配布物には `NOTICE` ファイルが含まれない（`LICENSE`
+  （Apache-2.0 全文）のみ）。上記の帰属表示と Apache-2.0 ライセンス
+  （http://www.apache.org/licenses/LICENSE-2.0）の参照で帰属条件を満たす。

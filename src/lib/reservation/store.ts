@@ -9,16 +9,27 @@
  * actor=admin・PII なしで記録する。
  */
 import { appendAdminAudit } from '@/lib/data-stores/reception-log-store';
+import { serverSecret } from '@/lib/auth/server-secret';
 import { MemoryReservationRepository } from './memory-repository';
 import { ReservationService } from './service';
 
 let service: ReservationService | undefined;
+
+/**
+ * 予約トークン hash の pepper（#375）。発行（ReservationService）と照合（CheckinService）で
+ * 同一値を使う。未設定時は pepper なし（dev フォールバックは空・hash 自体は SHA-256 で成立）。
+ * 実デプロイでの注入は Secrets Manager（#194）に載せる。
+ */
+export function getReservationTokenPepper(): string {
+  return serverSecret('RESERVATION_TOKEN_PEPPER', '');
+}
 
 export function getReservationService(): ReservationService {
   if (!service) {
     service = new ReservationService({
       repo: new MemoryReservationRepository(),
       appendAudit: appendAdminAudit,
+      pepper: getReservationTokenPepper(),
     });
   }
   return service;

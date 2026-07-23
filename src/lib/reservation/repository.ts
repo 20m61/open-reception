@@ -13,7 +13,7 @@
 import type { SiteId, TenantId } from '@/domain/tenant/types';
 import type {
   ReservationId,
-  ReservationToken,
+  ReservationTokenHash,
   VisitReservation,
 } from '@/domain/reservation/types';
 
@@ -26,14 +26,14 @@ export interface ReservationRepository {
   /** id 取得。tenantId/siteId が一致しない場合は undefined（越境を返さない）。 */
   get(tenantId: TenantId, siteId: SiteId, id: ReservationId): Promise<VisitReservation | undefined>;
   /**
-   * token から予約を引く（受付端末のチェックイン用）。
-   * トークンは推測困難なため、tenantId/siteId はマッチ後の検証に使う想定。
-   * 越境防止のためマッチ後に境界一致しなければ undefined。
+   * token hash から予約を引く（受付端末のチェックイン用・#375）。
+   * 呼び出し側が入力 token を hash してから渡す（生 token をリポジトリへ渡さない）。
+   * 照合は timing-safe 比較で行う。越境防止のためマッチ後に境界一致しなければ undefined。
    */
-  findByToken(
+  findByTokenHash(
     tenantId: TenantId,
     siteId: SiteId,
-    token: ReservationToken,
+    tokenHash: ReservationTokenHash,
   ): Promise<VisitReservation | undefined>;
   /** 新規作成。id 重複は conflict。 */
   create(reservation: VisitReservation): Promise<RepoResult<VisitReservation>>;

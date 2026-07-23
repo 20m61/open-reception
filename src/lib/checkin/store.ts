@@ -15,6 +15,7 @@
 import { asSiteId, asTenantId, type SiteId, type TenantId } from '@/domain/tenant/types';
 import { MemoryReservationRepository } from '@/lib/reservation/memory-repository';
 import type { ReservationRepository } from '@/lib/reservation/repository';
+import { getReservationTokenPepper } from '@/lib/reservation/store';
 import { CheckinService } from './service';
 
 /** inc1 の暫定 dev scope。実 kiosk→site 解決は次増分で配線する。 */
@@ -30,7 +31,8 @@ function getRepo(): ReservationRepository {
 }
 
 export function getCheckinService(): CheckinService {
-  if (!service) service = new CheckinService({ repo: getRepo() });
+  // pepper は発行側（ReservationService）と同一値を使う（#375）。
+  if (!service) service = new CheckinService({ repo: getRepo(), pepper: getReservationTokenPepper() });
   return service;
 }
 
