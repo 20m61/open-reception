@@ -7,8 +7,8 @@
  * 通し忘れると `tokenHash` が応答へ漏れる（第 14 wave 申し送り）。
  *
  * このガードは reservations 配下の全ルートハンドラを実際に呼び、成功/エラーいずれの
- * 応答 body にも `tokenHash` が現れないことを再帰的に検証する。ルートを増やしたら
- * 下の ROUTES 表に足すこと（`.claude/rules/pii-secret-minimization.md`）。
+ * 応答 body にも `tokenHash` が現れないことを再帰的に検証する。予約ルートを増やしたら
+ * 下の describe に対応する it を 1 つ足すこと（`.claude/rules/pii-secret-minimization.md`）。
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Actor } from '@/domain/tenant/authorization';
