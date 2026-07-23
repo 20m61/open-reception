@@ -33,7 +33,7 @@
     "@pixiv/three-vrm-animation": "3.5.4",
     "cognito-srp-helper": "^2.3.5",
     "jsqr": "^1.4.0",
-    "next": "16.2.9",
+    "next": "16.2.11",
     "qrcode-generator": "^2.0.4",
     "react": "19.2.7",
     "react-dom": "19.2.7",
