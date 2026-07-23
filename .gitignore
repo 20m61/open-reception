@@ -176,3 +176,8 @@ screenshots/
 .url-quality-gate/
 .lighthouseci/
 infra/cdk-outputs-*.json
+
+# ループ検証用の一時スクリプト(リポジトリ root に置く場合の保険)
+/.w*.mjs
+/.dbg-*.mjs
+/.studio-visual-check.mjs
