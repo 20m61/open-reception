@@ -35,11 +35,18 @@ const INTL_LOCALE: Record<Locale, string> = {
 export function formatReopen(iso: string | undefined, locale: Locale, timezone?: string): string | null {
   const ms = parseReopenAt(iso);
   if (ms === null) return null;
-  const options: Intl.DateTimeFormatOptions = {
-    dateStyle: 'medium',
-    timeStyle: 'short',
-    ...(timezone ? { timeZone: timezone } : {}),
-  };
+  const options: Intl.DateTimeFormatOptions = { dateStyle: 'medium', timeStyle: 'short' };
+  if (timezone) {
+    // TZ 名はサーバ検証済みだが、ブラウザ ICU 差や検証導入前の旧ポリシー値で RangeError に
+    // なり得る。無人端末で描画を落とさないため、失敗時は端末 TZ へフォールバックする(fail-safe)。
+    try {
+      return new Intl.DateTimeFormat(INTL_LOCALE[locale], { ...options, timeZone: timezone }).format(
+        new Date(ms),
+      );
+    } catch {
+      // fall through
+    }
+  }
   return new Intl.DateTimeFormat(INTL_LOCALE[locale], options).format(new Date(ms));
 }
 

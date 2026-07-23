@@ -74,6 +74,13 @@ export class RealtimeRuntimeStack extends Stack {
     // region はこのスタックのデプロイ先 region を使う（cross-region 呼び出しは想定しない）。
     const bedrockModelArnPattern =
       props.bedrockModelArnPattern ?? `arn:aws:bedrock:${this.region}::foundation-model/anthropic.*`;
+    // context 上書きで既定の絞り込みを黙って全開放できないよう synth 時に拒否する(事故防止)。
+    if (bedrockModelArnPattern === '*' || !bedrockModelArnPattern.startsWith('arn:aws:bedrock:')) {
+      throw new Error(
+        `bedrockModelArnPattern must be a bedrock model ARN pattern (got "${bedrockModelArnPattern}") — ` +
+          "全モデル開放('*')や非 bedrock ARN は許可しない (#366 W3)",
+      );
+    }
 
     // --- コスト管理タグ (docs/cost-management-tags.md) ---
     // 既存 `applyCostTags`/`COST_TAG_COMPONENTS`（infra/lib/config/cost-components.ts）は
