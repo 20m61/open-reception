@@ -141,6 +141,12 @@ export function ReservationsManager({
       });
       if (res.ok) {
         setForm(EMPTY_FORM);
+        // 発行応答の生 token は一度きり(#375: 保存は hash のみで QR は後から再表示できない)。
+        // その場で QR を描画して提示する。
+        const issued = (await res.json()) as VisitReservation & { qrDataUrl?: string };
+        if (issued.qrDataUrl) {
+          setQrFor({ id: issued.id, dataUrl: issued.qrDataUrl });
+        }
         await load();
       } else {
         setError('予約の作成に失敗しました。');
@@ -178,8 +184,30 @@ export function ReservationsManager({
     [act],
   );
   const reissue = useCallback(
-    (r: VisitReservation) => act(`/api/admin/reservations/${r.id}/token`, 'POST'),
-    [act],
+    async (r: VisitReservation) => {
+      setBusy(true);
+      setError(null);
+      try {
+        const res = await fetch(`/api/admin/reservations/${r.id}/token`, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ tenantId, siteId }),
+        });
+        if (res.ok) {
+          // 再発行応答の生 token も一度きり(#375)。その場で新しい QR を提示する。
+          const issued = (await res.json()) as VisitReservation & { qrDataUrl?: string };
+          if (issued.qrDataUrl) {
+            setQrFor({ id: issued.id, dataUrl: issued.qrDataUrl });
+          }
+        } else {
+          setError('操作に失敗しました。');
+        }
+        await load();
+      } finally {
+        setBusy(false);
+      }
+    },
+    [tenantId, siteId, load],
   );
 
   const showQr = useCallback(
@@ -189,6 +217,9 @@ export function ReservationsManager({
       if (res.ok) {
         const { dataUrl } = (await res.json()) as { dataUrl: string };
         setQrFor({ id: r.id, dataUrl });
+      } else if (res.status === 410) {
+        // #375: token は hash のみ保存のため QR の再表示は不可。再発行を案内する。
+        setError('QR は再表示できません(トークンは保存されません)。「再発行」で新しい QR を発行してください。');
       } else {
         setError('QR の取得に失敗しました。');
       }

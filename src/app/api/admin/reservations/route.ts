@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server';
 import { readJson } from '@/lib/data-stores/result-http';
+import { renderReservationQrDataUrl } from '@/lib/reservation/qr';
 import { getReservationService } from '@/lib/reservation/store';
 import {
   parseCreateBody,
@@ -34,5 +35,14 @@ export async function POST(request: Request): Promise<NextResponse> {
   const parsed = parseCreateBody(body, scope.tenantId, scope.siteId);
   if (!parsed.ok) return NextResponse.json(parsed.error, { status: 400 });
   const result = await getReservationService().create(actor, parsed.value);
+  // 生 token は一度きり応答(#375)。UI がその場で QR を表示できるよう qrDataUrl を同梱する
+  // (サーバ側描画。以後は保存 hash から再生成できない)。
+  if (result.ok) {
+    const origin = new URL(request.url).origin;
+    return NextResponse.json(
+      { ...result.value, qrDataUrl: renderReservationQrDataUrl(origin, result.value.token) },
+      { status: 201, headers: { 'cache-control': 'private, no-store' } },
+    );
+  }
   return serviceResponse(result, 201);
 }

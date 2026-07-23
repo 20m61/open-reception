@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server';
 import { readJson } from '@/lib/data-stores/result-http';
+import { renderReservationQrDataUrl } from '@/lib/reservation/qr';
 import { getReservationService } from '@/lib/reservation/store';
 import {
   readScope,
@@ -41,5 +42,13 @@ export async function POST(request: Request, { params }: Ctx): Promise<NextRespo
     reservationId,
     expiresAt,
   );
+  // 生 token は一度きり応答(#375)。UI 即時表示用に qrDataUrl を同梱する。
+  if (result.ok) {
+    const origin = new URL(request.url).origin;
+    return NextResponse.json(
+      { ...result.value, qrDataUrl: renderReservationQrDataUrl(origin, result.value.token) },
+      { headers: { 'cache-control': 'private, no-store' } },
+    );
+  }
   return serviceResponse(result);
 }
