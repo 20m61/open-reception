@@ -12,6 +12,9 @@ export default defineConfig({
   test: {
     environment: 'node',
     globals: true,
+    // TZ 依存のテスト（例: OutOfHoursView の reopenAt 整形）はホスト TZ ではなく
+    // UTC 固定で走らせる（開発機の TZ 設定に関わらず再現性を保つ）。
+    env: { TZ: 'UTC' },
     // soak ハーネスの純ロジック（tests/soak/thresholds.ts）は unit test で高速検証する (#317)。
     // ブラウザ前提の実ループは tests/e2e/soak/*.spec.ts（vitest 対象外・playwright.soak.config.ts）。
     // 音声評価ハーネス（tests/voice-evaluation/）も合成データのみのオフライン純ロジックなので
