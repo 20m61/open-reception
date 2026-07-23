@@ -57,6 +57,18 @@ describe('bridgeCommittedTurn (#364 発話確定 → #370 Entity 解決への橋
     expect(result.resolved).not.toBeNull();
   });
 
+  it('復唱イベントに候補種別を持たせる（issue #361 申し送り: 部署復唱テンプレート分離）', () => {
+    const staffResult = bridgeCommittedTurn({ text: 'さとう', directory, sttConfidence: 0.3, t: 45 });
+    expect(staffResult.event).toMatchObject({ type: 'heardNeedsConfirmation', kind: 'staff' });
+
+    const deptResult = bridgeCommittedTurn({ text: '総務', directory, sttConfidence: 0.3, t: 46 });
+    expect(deptResult.event).toMatchObject({
+      type: 'heardNeedsConfirmation',
+      displayName: '総務部',
+      kind: 'department',
+    });
+  });
+
   it('PII を返り値へ埋め込まない（resolved は組織辞書の担当者/部門のみ・displayName は表示名）', () => {
     const result = bridgeCommittedTurn({ text: 'さとう', directory, sttConfidence: 0.3, t: 50 });
     // 返り値は担当者辞書由来の値のみ（来訪者の自由入力は含まれない）

@@ -39,7 +39,13 @@ describe('createSyntheticVoiceSession (#364 mock synthetic 駆動 / demo-studio 
     const controller = driver.factory(emit);
     driver.beginListening();
     driver.hearTurn('さとう');
-    expect(events).toContainEqual({ type: 'heardNeedsConfirmation', displayName: '佐藤', reason: 'low_stt_confidence' });
+    expect(events).toContainEqual({
+      type: 'heardNeedsConfirmation',
+      displayName: '佐藤',
+      reason: 'low_stt_confidence',
+      // 復唱テンプレート出し分け用の種別 (issue #361 申し送り)。staff 解決は 'staff'。
+      kind: 'staff',
+    });
 
     controller.confirmYes();
     expect(events).toContainEqual({ type: 'confirmYes' });

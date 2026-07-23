@@ -257,9 +257,22 @@ fixedHolidays 上限・JIT 昇格)は同 wave 内で全て修正済み。/kiosk 
 presence 表示)。検証の落とし穴: Playwright の `innerText()`/`getAttribute()` は要素不在時に
 auto-wait(既定 30s)でブロックする — ポーリングでは `count()` 先行 + 短 timeout を使うこと。
 
-**第 12 wave（次に着手する）**: #367 残(kiosk 定期再取得)／ auto-blink+部署復唱テンプレート等の
-UI polish 一括／ #361 残(VRT/axe、testing-library は #105 チェック要)／ **ユーザー判断待ち**:
-#405 Inc2 の deploy・#375 hash 化・#366 固定費・#4 外部依存(tenant threading 含む)
+**第 12 wave（2026-07-23 消化済み）** — 同ブランチ・3 トラック並行。結果:
+
+| トラック | Issue | 結果 |
+| --- | --- | --- |
+| A | **#367 定期再取得** | `createOperatingStatusPoller`(60s・hidden 中停止・fail-open=失敗時は直前値保持・abort/cleanup 固定・重複 fetch 防止)+`OperatingStatusRefresher` で SSR 初期値+クライアント追随。**実ブラウザでリロードなしの open→closed 自動切替を確認**(エンロール済み kiosk)。**残**: #18 の kiosk セッション配線後に kioskId を渡して端末個別スコープ化 |
+| B | **auto-blink(#31)** | seed 注入の決定論純関数(xorshift32・間隔 2〜6s・閉眼カーブ・NaN/時間逆行 fail-safe)を `blinkBaseWeight` に接続。感情中の抑制は既存合成に委譲。実機視認は #65 |
+| C | **文言 polish(#361/#364)** | 音声復唱を kind で出し分け(担当者=「◯◯様ですね?」/部署=「◯◯でよろしいですか?」・4 言語)+ CheckinFlow の直書き字幕を dictionary 化(40+ キー、i18n テストでキー完全一致固定) |
+
+セキュリティレビュー blocking/warning 0(info の fetch 重複は同 wave 内修正)。実ブラウザ検証:
+部署/担当者の復唱出し分け・営業状態の自動切替・checkin 英語表示を確認。
+運用メモ: サブエージェントが「ゲート完了通知待ち」で停止するパターンが頻発 — 再開指示 1 回で
+復帰しない場合は worktree の差分を検証(affected テスト+tsc)して直接コミット・引き取りが早い。
+
+**第 13 wave（次に着手する）**: #361 残(VRT/axe — testing-library/axe 導入の #105 チェックを先行)／
+#363 残(編集スタジオ UI polish: ターンチップ折返し・プレビュー見出し重なり)／ reopenAt 表示の
+ポリシー TZ 整形／ **ユーザー判断待ち**: #405 Inc2 の deploy・#375 hash 化・#366 固定費・#4 外部依存
 
 同 wave に **#366 Phase 0 ADR のみ**（`docs/adr/*.md` 新規・コスト増ゼロ）を差し込むのは安全。
 CDK 実装と deploy は分離し、Budget 見積を添えてユーザー承認を取る。

@@ -39,10 +39,22 @@ export const VOICE_KIOSK_MODES = [
 
 export type VoiceKioskMode = (typeof VOICE_KIOSK_MODES)[number];
 
+/**
+ * 復唱対象の種別（担当者 / 部門）。復唱テンプレートの出し分けに使う (issue #361 申し送り)。
+ * `EntityCandidate['kind']` は purpose/other も含むが、復唱確認は staff/department 解決結果
+ * にしか出ないため（`kiosk-bridge.ts` 参照）、UI 状態機械側はこの 2 値に絞って持つ。
+ */
+export type VoiceReadbackKind = 'staff' | 'department';
+
 export type VoiceKioskState = {
   mode: VoiceKioskMode;
   /** 復唱対象の表示名（担当者/部門名。UI 一時表示のみ・ログ/eval へ出さない）。 */
   readbackName?: string;
+  /**
+   * 復唱対象の種別 (issue #361 申し送り: 部署復唱テンプレートの分離)。
+   * 未指定（従来イベント/テスト互換）は 'staff' 相当として扱う（`captionKeyFor` 参照）。
+   */
+  readbackKind?: VoiceReadbackKind;
   /** 復唱を促した低信頼の別（表示ニュアンス切替に使う。#370 の確認理由をそのまま持つ）。 */
   readbackReason?: SttEntityConfirmationReason;
   /** 直近フォールバック源（診断用。PII なし）。 */
@@ -74,8 +86,17 @@ export type VoiceKioskEvent =
   | { type: 'hearPartial'; text: string }
   /** 発話が確定し、高信頼で自動採用された（復唱を挟まず次ターンへ）。 */
   | { type: 'heardAccepted' }
-  /** 発話が確定したが低信頼のため復唱確認が必要（#370 decideEntityConfirmation）。 */
-  | { type: 'heardNeedsConfirmation'; displayName: string; reason: SttEntityConfirmationReason }
+  /**
+   * 発話が確定したが低信頼のため復唱確認が必要（#370 decideEntityConfirmation）。
+   * `kind` は復唱対象の種別（#361 申し送り: 部署復唱テンプレート分離）。省略時は 'staff' 相当
+   * として扱う（後方互換。既存の synthetic driver/テストが省略しても退行しない）。
+   */
+  | {
+      type: 'heardNeedsConfirmation';
+      displayName: string;
+      reason: SttEntityConfirmationReason;
+      kind?: VoiceReadbackKind;
+    }
   /** 復唱確認に「はい」（タッチでも音声でも同じ入口）。 */
   | { type: 'confirmYes' }
   /** 復唱確認に「いいえ」（聞き直しへ）。 */
@@ -141,7 +162,12 @@ export function voiceKioskReducer(state: VoiceKioskState, event: VoiceKioskEvent
       return { mode: 'idle' };
 
     case 'heardNeedsConfirmation':
-      return { mode: 'readback', readbackName: event.displayName, readbackReason: event.reason };
+      return {
+        mode: 'readback',
+        readbackName: event.displayName,
+        readbackReason: event.reason,
+        readbackKind: event.kind,
+      };
 
     case 'confirmYes':
       // 復唱を確定 → 次ターンのため待機へ（復唱情報はクリア）。
@@ -176,13 +202,20 @@ export type VoiceKioskCaptionKey =
   | 'voice.caption.speaking'
   | 'voice.caption.ducked'
   | 'voice.readback.confirmTarget'
+  | 'voice.readback.confirmDepartment'
   | 'voice.fallback.touchNotice';
 
 /**
  * 現在の局面に対応する字幕キーを返す（PII を含まない意味論キーのみ）。idle/inactive は字幕なし。
  * component 層がこのキーを `t()` で locale 解決して描画する（domain → component へ依存しない）。
+ *
+ * readback は `readbackKind` で担当者用/部門用のテンプレートを出し分ける (issue #361 申し送り:
+ * 部署確定時に担当者向け「◯◯様ですね？」がそのまま使われ「営業部様ですね？」と不自然になる問題の
+ * 解消)。`readbackKind` 未指定（従来イベント/テスト互換）は 'staff' と同じ扱いにする。
  */
-export function captionKeyFor(state: Pick<VoiceKioskState, 'mode'>): VoiceKioskCaptionKey | null {
+export function captionKeyFor(
+  state: Pick<VoiceKioskState, 'mode' | 'readbackKind'>,
+): VoiceKioskCaptionKey | null {
   switch (state.mode) {
     case 'listening':
       return 'voice.caption.listening';
@@ -191,7 +224,9 @@ export function captionKeyFor(state: Pick<VoiceKioskState, 'mode'>): VoiceKioskC
     case 'ducked':
       return 'voice.caption.ducked';
     case 'readback':
-      return 'voice.readback.confirmTarget';
+      return state.readbackKind === 'department'
+        ? 'voice.readback.confirmDepartment'
+        : 'voice.readback.confirmTarget';
     case 'fallback':
       return 'voice.fallback.touchNotice';
     case 'idle':
