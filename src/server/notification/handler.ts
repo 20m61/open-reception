@@ -17,8 +17,9 @@ import type {
 } from 'aws-lambda';
 import { validateNotificationRequest } from './validation';
 import { createPollyAdapter, type PollyAdapter } from './polly-adapter';
-import { MockVonageAdapter, type VonageAdapter } from './vonage-adapter';
+import { type VonageAdapter, resolveVonageAdapterForTenant } from './vonage-adapter';
 import { createSiteConfigLoader, type SiteConfigLoader } from './site-config';
+import { resolveDefaultScope } from '@/lib/tenant/default-scope';
 import type {
   NotificationRequest,
   NotificationResult,
@@ -150,14 +151,13 @@ function rememberRequest(store: Set<string>, requestId: string): void {
   store.add(requestId);
 }
 
-// adapter / loader は warm container 間で再利用する（毎リクエスト再生成しない）。
-// 通知 adapter の既定は Mock（実発信なし）。グローバル `VONAGE_*` env 経路は #405 Inc3 で撤去。
-// テナント別の実 Vonage 通知は `resolveVonageAdapterForTenant(tenantId)` へ移行済みで、
-// 通知リクエストに tenant コンテキストが配線される #4 の実結線時に per-request 解決へ差し替える。
-const sharedDeps: NotificationDeps = {
+// loader / polly は warm container 間で再利用する（毎リクエスト再生成しない）。
+// 通知 adapter はテナント設定から per-request 解決する（#4 の実結線）。既定テナント（単一テナント運用の
+// `resolveDefaultScope`。営業時間ガード/routing と同じ規則）が vonage+secret 未設定なら Mock（実発信なし）。
+// グローバル `VONAGE_*` env 経路は #405 Inc3 で撤去済み。
+const sharedDeps: Omit<NotificationDeps, 'vonage'> = {
   loader: createSiteConfigLoader(),
   polly: createPollyAdapter(),
-  vonage: new MockVonageAdapter(),
   seen,
   log: defaultLog,
 };
@@ -184,7 +184,10 @@ export async function handler(
     return jsonResponse(400, { error: 'invalid_json' });
   }
 
-  const res = await processNotification(parsed, sharedDeps, getAuthorizedSiteId(event));
+  // 通知 adapter をテナント設定から per-request 解決する（既定スコープの tenantId）。
+  // 未設定テナントは MockVonageAdapter（実発信なし）に fail-closed。
+  const vonage = await resolveVonageAdapterForTenant(resolveDefaultScope().tenantId);
+  const res = await processNotification(parsed, { ...sharedDeps, vonage }, getAuthorizedSiteId(event));
   return jsonResponse(res.statusCode, res.body);
 }
 

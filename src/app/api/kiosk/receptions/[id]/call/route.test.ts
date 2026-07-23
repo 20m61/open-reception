@@ -80,7 +80,7 @@ describe('POST /api/kiosk/receptions/:id/call', () => {
     ]);
     // startCall は routedCallAdapter で駆動される（既定 Mock ではない）。
     expect(routedCallAdapter).toHaveBeenCalled();
-    expect(startCall).toHaveBeenCalledWith('rec-1', expect.anything());
+    expect(startCall).toHaveBeenCalledWith('rec-1', expect.anything(), 'internal');
   });
 
   it('ルート未設定（fail-open）は従来応答（stages なし）へ倒し、既定 adapter で startCall する', async () => {
@@ -93,7 +93,7 @@ describe('POST /api/kiosk/receptions/:id/call', () => {
     expect(body.state).toBe('connected');
     expect(body).not.toHaveProperty('stages');
     // 既定 adapter（undefined）で startCall する。
-    expect(startCall).toHaveBeenCalledWith('rec-1', undefined);
+    expect(startCall).toHaveBeenCalledWith('rec-1', undefined, 'internal');
     expect(routedCallAdapter).not.toHaveBeenCalled();
   });
 
@@ -105,7 +105,7 @@ describe('POST /api/kiosk/receptions/:id/call', () => {
     expect(res.status).toBe(200);
     const body = await res.json();
     expect(body).not.toHaveProperty('stages');
-    expect(startCall).toHaveBeenCalledWith('rec-1', undefined);
+    expect(startCall).toHaveBeenCalledWith('rec-1', undefined, 'internal');
   });
 
   it('startCall がエラーなら従来どおりエラー応答（stages を付さない）', async () => {

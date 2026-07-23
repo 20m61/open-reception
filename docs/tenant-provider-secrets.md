@@ -111,16 +111,33 @@ npx cdk synth -c env=prod \
 | --- | --- | --- |
 | 通話 adapter | `resolveCallAdapter(tenantId, staff)`（`src/lib/call/adapter-factory.ts`） | `VONAGE_ENABLED` ほか |
 | トークン session service | `resolveVonageSessionService(tenantId)`（同上） | 同上 |
+| 公開 applicationId | `getVonagePublicConfigForTenant(tenantId)`（`src/lib/call/vonage-config.ts`） | `VONAGE_APPLICATION_ID` |
 | 通知 adapter | `resolveVonageAdapterForTenant(tenantId)`（`src/server/notification/vonage-adapter.ts`） | `VONAGE_NOTIFY_*` / `VONAGE_SECRET_ARN` |
 | 取次 Provider（#374） | `resolveProviderForTenant`（純 mock 経路。#4 で実 Provider へ） | （env 参照なし） |
+
+live 呼び出し点の結線（#4 tenant threading）: 上記 `resolve*` を、tenantId を持てる各 live 呼び出し点へ
+配線済み（既定スコープ `resolveDefaultScope()` 由来の tenantId。営業時間ガード/routing と同じ単一テナント規則）:
+
+| live 呼び出し点 | 使う関数 |
+| --- | --- |
+| 受付ストア `startCall`（`src/lib/data-stores/reception-store.ts`。call ルートから tenantId を受領） | `resolveCallAdapter(tenantId, staff)` |
+| kiosk token ルート（`src/app/api/kiosk/receptions/[id]/token`） | `resolveVonageSessionService` + `getVonagePublicConfigForTenant` |
+| staff answer ルート（`src/app/api/staff/calls/[id]/answer`） | 同上 |
+| 通知 handler（`src/server/notification/handler.ts`。per-request 解決） | `resolveVonageAdapterForTenant(tenantId)` |
+
+実発信不到達（現段階）: 解決層（`resolve*` / `getVonagePublicConfigForTenant`）は接続情報・公開識別子を
+**返すのみ**で、実 HTTP/SDK 呼び出しは行わない（`RestVonageSessionService.createSession` 等が実際に
+ネットワークへ出るのは呼び出し時のみ）。デプロイ既定テナントは vonage 未設定のため live 経路は Mock に
+fail-closed し、実 Vonage には到達しない。実資格情報での結合検証は #65 にスタックする。
 
 secret bundle（`SecretValue` が包む JSON）の形:
 
 - 通話 / トークン: `{ "apiKey": "...", "apiSecret": "...", "privateKey": "<PEM>" }`（`applicationId` は非秘密設定側）。
 - 通知: `{ "endpoint": "https://.../notify", "token": "...", "timeoutMs": 5000 }`（`timeoutMs` 任意）。
 
-旧シム `getCallAdapter` / `getVonageSessionService`（tenantId を取らない）は env を読まず常に
-Mock / null を返す後方互換のみ。tenantId を持てる呼び出し点は `resolve*` へ移行する（#4 の実結線）。
+旧シム `getCallAdapter` / `getVonageSessionService`（tenantId を取らない）は live 呼び出し点の
+`resolve*` 移行完了により参照ゼロとなり**撤去済み**（#4 tenant threading）。旧公開値 `getVonagePublicConfig`
+（env 直読み）も `getVonagePublicConfigForTenant(tenantId)` へ置換した。
 
 ## 旧 VONAGE_* env からの移行
 
