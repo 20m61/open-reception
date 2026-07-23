@@ -53,6 +53,44 @@ export interface AuthConfig {
   adminProvider: AdminAuthProviderName;
 }
 
+/** 営業時間ポリシー (issue #366 Phase 0 ADR-002/0003)。初期値は固定時刻、DynamoDB 連携は後続 increment。 */
+export interface RealtimeScheduleConfig {
+  /** Asia/Tokyo 固定（DST 無し、offset +9h 決め打ち）。 */
+  timezone: 'Asia/Tokyo';
+  /** 起動時刻（JST, 0-23）。 */
+  startHour: number;
+  /** 停止時刻（JST, 0-23、startHour より大きい前提。日付をまたぐ営業時間は現状未対応）。 */
+  stopHour: number;
+  /** 停止前にセッション拒否へ切り替えるまでの猶予（分）。drain 自体はアプリ層 (#366 後続) が担う。 */
+  drainBeforeMinutes: number;
+  /** drain が完了しない場合に許容する最大延長（分）。 */
+  maxExtensionMinutes: number;
+}
+
+/**
+ * リアルタイム会話 EC2 基盤の環境別設定 (issue #366 Phase 0 ADR, `docs/adr/0003-*.md`)。
+ *
+ * `enabled: false` が既定。本プロジェクト初の実質的固定費（現行 AWS 実績は月 $0.0005）のため、
+ * ユーザー承認を得て `true` に切り替えるまで `RealtimeRuntimeStack` は `bin/open-reception.ts` から
+ * synth 対象に含まれない（`cdk synth` はしても deploy はしないという安全側の既定）。
+ */
+export interface RealtimeRuntimeConfig {
+  /** false の間は Stack を app へ追加しない（deploy 事故防止の既定オフ）。 */
+  enabled: boolean;
+  /** EC2 instance type 識別子 (ADR-006: 負荷試験で確定するまでの初期値は t4g.small)。 */
+  instanceType: string;
+  /** ルート EBS(gp3) サイズ (GiB)。 */
+  rootVolumeSizeGb: number;
+  /** 営業時間スケジュール。 */
+  schedule: RealtimeScheduleConfig;
+  /** Reconciler Lambda の CloudWatch Logs 保持日数。 */
+  logRetentionDays: number;
+  /** 月額 Budget 上限 (USD)。ADR-0003 の見積を上回る監視閾値。 */
+  monthlyBudgetUsd: number;
+  /** Budget 超過通知先メール（空文字なら SNS/Email 購読を作らない）。 */
+  budgetAlarmEmail: string;
+}
+
 export interface EnvConfig {
   environment: EnvironmentName;
   /** リソース名 prefix。 */
@@ -62,6 +100,8 @@ export interface EnvConfig {
   data: DataConfig;
   /** 管理画面認証 (issue #238)。 */
   auth: AuthConfig;
+  /** リアルタイム会話 EC2 基盤 (issue #366)。 */
+  realtime: RealtimeRuntimeConfig;
   /** コスト管理タグ (docs/cost-management-tags.md)。 */
   tags: {
     Project: string;
@@ -70,6 +110,15 @@ export interface EnvConfig {
     ManagedBy: string;
   };
 }
+
+/** 全環境共通の初期スケジュール (issue #366 本文の初期ポリシー)。 */
+const DEFAULT_REALTIME_SCHEDULE: RealtimeScheduleConfig = {
+  timezone: 'Asia/Tokyo',
+  startHour: 8,
+  stopHour: 23,
+  drainBeforeMinutes: 10,
+  maxExtensionMinutes: 10,
+};
 
 const PROJECT = 'open-reception';
 const OWNER = 'open-reception-team';
@@ -101,6 +150,17 @@ export const ENVIRONMENTS: Record<EnvironmentName, EnvConfig> = {
     },
     data: { pointInTimeRecovery: false, removalProtection: false },
     auth: { adminProvider: 'cognito' },
+    // issue #366 Phase 0 ADR (docs/adr/0003-*.md) の見積 (t4g.small, 15h/日) は
+    // 約 $14/月。バッファを見て Budget 上限は $20 に設定。enabled は承認まで false。
+    realtime: {
+      enabled: false,
+      instanceType: 't4g.small',
+      rootVolumeSizeGb: 20,
+      schedule: DEFAULT_REALTIME_SCHEDULE,
+      logRetentionDays: 7,
+      monthlyBudgetUsd: 20,
+      budgetAlarmEmail: '',
+    },
     tags: { ...BASE_TAGS, Environment: 'dev' },
   },
   staging: {
@@ -123,6 +183,15 @@ export const ENVIRONMENTS: Record<EnvironmentName, EnvConfig> = {
     },
     data: { pointInTimeRecovery: true, removalProtection: false },
     auth: { adminProvider: 'cognito' },
+    realtime: {
+      enabled: false,
+      instanceType: 't4g.small',
+      rootVolumeSizeGb: 20,
+      schedule: DEFAULT_REALTIME_SCHEDULE,
+      logRetentionDays: 14,
+      monthlyBudgetUsd: 25,
+      budgetAlarmEmail: '',
+    },
     tags: { ...BASE_TAGS, Environment: 'staging' },
   },
   prod: {
@@ -149,6 +218,16 @@ export const ENVIRONMENTS: Record<EnvironmentName, EnvConfig> = {
     },
     data: { pointInTimeRecovery: true, removalProtection: true },
     auth: { adminProvider: 'cognito' },
+    // prod は t4g.medium への切替（ADR-006 負荷試験後）を見込みバッファを厚めに取る。
+    realtime: {
+      enabled: false,
+      instanceType: 't4g.small',
+      rootVolumeSizeGb: 20,
+      schedule: DEFAULT_REALTIME_SCHEDULE,
+      logRetentionDays: 30,
+      monthlyBudgetUsd: 30,
+      budgetAlarmEmail: '',
+    },
     tags: { ...BASE_TAGS, Environment: 'prod' },
   },
 };

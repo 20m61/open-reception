@@ -14,17 +14,26 @@ infra/
       cloudfront-monitoring-stack.ts # CloudFront 5xx アラーム (#303): us-east-1 専用
       notification-stack.ts      # 通知サブシステム (#32/#34): HTTP API+Lambda+authorizer
       monitoring-stack.ts        # 通知の監視: CloudWatch Alarms / Dashboard / SNS
+      realtime-runtime-stack.ts  # リアルタイム会話 EC2 基盤 (#366 Phase 0): ASG+LaunchTemplate
+                                  # +EventBridge Reconciler+Budgets。config.realtime.enabled=false
+                                  # が全環境既定（deploy 未実施）。ADR: docs/adr/0003-*.md
     constructs/
       cost-tags.ts               # コスト管理タグ一括付与
       notification-function.ts   # 通知 Lambda（NodejsFunction + 最小権限 IAM）
       notification-api.ts        # HTTP API + POST /notify + 拠点 authorizer + throttle
+      realtime-reconciler-function.ts # 営業時間 Reconciler Lambda（ASG DesiredCapacity 調整）
     config/
       environments.ts            # 環境別設定（型付き）
+      realtime-schedule.ts       # 営業時間判定の純粋関数 (#366)
+  lambda/
+    realtime-reconciler/handler.ts # Reconciler Lambda ハンドラ本体（esbuild バンドル対象）
   test/
     web-stack.test.ts            # WebStack synth アサーション
     web-monitoring-stack.test.ts # WebMonitoringStack synth アサーション
     cloudfront-monitoring-stack.test.ts # CloudFrontMonitoringStack + cross-region 連携
     notification-stack.test.ts   # Notification/Monitoring synth アサーション
+    realtime-runtime-stack.test.ts # RealtimeRuntimeStack synth アサーション (#366)
+    realtime-schedule.test.ts    # 営業時間判定のユニットテスト (#366)
 ```
 
 詳細設計は [`../docs/infrastructure-design.md`](../docs/infrastructure-design.md)、
