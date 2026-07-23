@@ -27,7 +27,16 @@ const nextConfig: NextConfig = {
   reactStrictMode: true,
   poweredByHeader: false,
   async headers() {
-    return [{ source: '/:path*', headers: securityHeaders }];
+    return [
+      { source: '/:path*', headers: securityHeaders },
+      // 受付体験スタジオのプレビューのみ同一オリジン iframe を許可 (#363)。
+      // 同一 key は後勝ちで上書きされる。CSP 側の frame-ancestors は src/proxy.ts が
+      // per-request に 'self' へ切り替える（他ルートは 'none' / DENY のまま）。
+      {
+        source: '/admin/demo/preview',
+        headers: [{ key: 'X-Frame-Options', value: 'SAMEORIGIN' }],
+      },
+    ];
   },
 };
 

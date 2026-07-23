@@ -1,7 +1,8 @@
 import { NextResponse } from 'next/server';
-import { isVonageConfigured, isVonageEnabled } from '@/lib/call/vonage-config';
 import { listAuthMethodStatuses } from '@/lib/security/integration-status-store';
 import { authorizePlatform } from '@/lib/platform/request';
+import { getVonagePresenceForTenant } from '@/lib/platform/integration-presence';
+import { defaultTenantIdFrom } from '@/lib/tenant/default-scope';
 import {
   DEFAULT_TENANT_FEATURE_FLAGS,
   TENANT_FEATURE_FLAG_KEYS,
@@ -17,7 +18,7 @@ import { listTenantFeatureFlagRecords } from '@/lib/platform/feature-flag-store'
  * status:'pending' で明示する（偽の安心を与えない）。
  *
  * 実接続（プラットフォーム全体の現状）:
- *   - Vonage 電話通知（configured / enabled を env から判定。機密値は含めない）。
+ *   - Vonage 電話通知（configured / enabled をテナント設定 presence から判定。機密値は含めない, #405 Inc3）。
  *   - 管理画面ログイン方式（Entra ID / Google(Cognito) / 共有パスワード）の有効状態。
  *   - テナント別機能フラグ（音声合成・VRM/アバター受付）のサマリ（既定値 + 無効化テナント数, #83 inc5a）。
  *     テナント単位の実効値と変更は /api/platform/tenants/[tenantId]/feature-flags（変更は JIT 昇格必須）。
@@ -33,6 +34,8 @@ export async function GET(): Promise<NextResponse> {
 
   const authMethods = listAuthMethodStatuses();
   const pending = { status: 'pending' as const };
+  // Vonage の configured/enabled はテナント設定 presence（既定テナント）由来。値は含めない（#405 Inc3）。
+  const vonage = await getVonagePresenceForTenant(defaultTenantIdFrom());
 
   // テナント別フラグのサマリ: 既定値と、既定から無効へ上書きされたテナント数（#83 inc5a）。
   const records = await listTenantFeatureFlagRecords();
@@ -49,7 +52,7 @@ export async function GET(): Promise<NextResponse> {
 
   return NextResponse.json({
     flags: {
-      vonage: { configured: isVonageConfigured(), enabled: isVonageEnabled() },
+      vonage: { configured: vonage.configured, enabled: vonage.enabled },
       authMethods,
       ...tenantFlagSummary,
     },

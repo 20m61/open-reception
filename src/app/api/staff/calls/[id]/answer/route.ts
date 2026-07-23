@@ -1,7 +1,8 @@
 import { NextResponse } from 'next/server';
 import { getReception, markConnected } from '@/lib/data-stores/reception-store';
-import { getVonageSessionService } from '@/lib/call/adapter-factory';
-import { getVonagePublicConfig } from '@/lib/call/vonage-config';
+import { resolveVonageSessionService } from '@/lib/call/adapter-factory';
+import { getVonagePublicConfigForTenant } from '@/lib/call/vonage-config';
+import { resolveDefaultScope } from '@/lib/tenant/default-scope';
 import { readAnswerToken } from '@/lib/call/answer-token';
 import { readJson } from '@/lib/data-stores/result-http';
 
@@ -31,8 +32,10 @@ export async function POST(
     return NextResponse.json({ error: 'not_found', message: 'reception not found' }, { status: 404 });
   }
 
-  const service = getVonageSessionService();
-  const publicConfig = getVonagePublicConfig();
+  // テナント/サイト境界は営業時間ガード/routing と同じ既定スコープ規則で解決する（単一テナント既定）。
+  const { tenantId } = resolveDefaultScope();
+  const service = await resolveVonageSessionService(tenantId);
+  const publicConfig = await getVonagePublicConfigForTenant(tenantId);
   const sessionId = found.value.vonageSessionId;
   if (!service || !publicConfig || !sessionId) {
     return NextResponse.json(

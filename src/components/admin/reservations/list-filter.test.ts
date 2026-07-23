@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import type { VisitReservation } from '@/domain/reservation/types';
 import {
   asReservationId,
-  asReservationToken,
+  asReservationTokenHash,
 } from '@/domain/reservation/types';
 import type { SiteId, TenantId } from '@/domain/tenant/types';
 import { filterReservations, reservationsToCsv, type ReservationListFilter } from './list-filter';
@@ -17,7 +17,7 @@ function fixture(overrides: Partial<VisitReservation> = {}): VisitReservation {
     visitAt: '2026-07-01T01:00:00.000Z',
     targetType: 'staff',
     targetId: 'staff-1',
-    token: asReservationToken('tok-1'),
+    tokenHash: asReservationTokenHash('hash-1'),
     usagePolicy: 'single_use',
     expiresAt: '2026-07-02T00:00:00.000Z',
     status: 'active',

@@ -16,6 +16,7 @@ import {
   type CreateReservationInput,
   type EditReservationPatch,
   type ReservationId,
+  type VisitReservation,
 } from '@/domain/reservation/types';
 import type { ServiceResult } from './service';
 
@@ -54,9 +55,32 @@ const STATUS_BY_CODE = {
   forbidden: 403,
 } as const;
 
-/** ServiceResult を NextResponse に変換する。 */
-export function serviceResponse<T>(result: ServiceResult<T>, successStatus = 200): NextResponse {
-  if (result.ok) return NextResponse.json(result.value, { status: successStatus });
+/**
+ * HTTP 応答用の view 変換: 永続レコードの `tokenHash` を落とす (issue #375 I1)。
+ *
+ * `tokenHash` は受付照合専用の内部値で、応答/画面には不要（`.claude/rules/pii-secret-minimization.md`）。
+ * `ReservationService.get`/`list` 自体は（内部利用・既存テストの通り）`tokenHash` を含む
+ * `VisitReservation` を返し続けるが、admin API の HTTP 応答はこの view を通して露出を止める。
+ * `IssuedReservation`（`create`/`reissueToken` の一度きり応答）にも適用可能（`token` は保持される）。
+ */
+export function toReservationView<T extends VisitReservation>(r: T): Omit<T, 'tokenHash'> {
+  const { tokenHash: _tokenHash, ...view } = r;
+  return view;
+}
+
+/**
+ * ServiceResult を NextResponse に変換する。`transform` を渡すと ok 時の value をそれで
+ * 写してから応答する（tokenHash 除去などの view 変換に使う, #375 I1）。
+ */
+export function serviceResponse<T, V = T>(
+  result: ServiceResult<T>,
+  successStatus = 200,
+  transform?: (value: T) => V,
+): NextResponse {
+  if (result.ok) {
+    const body = transform ? transform(result.value) : result.value;
+    return NextResponse.json(body, { status: successStatus });
+  }
   return NextResponse.json(
     { error: result.error.code, message: result.error.message },
     { status: STATUS_BY_CODE[result.error.code] },

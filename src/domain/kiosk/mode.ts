@@ -17,15 +17,15 @@
  * 表示レイヤーを一意に決めるための写像でしかない。
  */
 import type { ReceptionState } from '@/domain/reception/state';
+import type { OperatingState } from './operating-status';
 
 export const KIOSK_MODES = [
   'signage',
   'reception',
   'qr_reception',
   'completion',
-  // 営業時間外の専用表示 (#360 の親 issue で構想されている業務時間連携の予約枠)。
-  // 現時点では業務時間を判定する入力が存在しないため resolveKioskMode は返さない
-  // （型としてのみ issue #362 の設計どおり保持し、将来の連携で埋める）。
+  // 営業時間外の専用表示 (#367 の営業時間ポリシー連携)。営業状態は外部から注入する
+  // （`operatingStatus`）。判定不能（未注入）は fail-open で通常受付に倒す。
   'out_of_hours',
   'degraded',
 ] as const;
@@ -61,17 +61,22 @@ const COMPLETION_RECEPTION_STATES: ReadonlySet<ReceptionState> = new Set([
  *   1. gate が ready でない（失効/未エンロール/PIN待ち/確認中）→ 'degraded'。
  *      技術的な利用不可は受付進行状況に関わらず最優先する。
  *   2. QR 受付モード（`mode==='checkin'`）→ 'qr_reception'。
- *   3. receptionState が 'idle' → 'signage'（待機サイネージ/待機画面）。
- *   4. 終端/結果表示ステップ → 'completion'。
- *   5. それ以外（選択/入力/確認/呼び出し中）→ 'reception'。
+ *   3. 営業時間外（`operatingStatus==='closed'`）かつ待機（idle）→ 'out_of_hours'（#367）。
+ *      受付進行中は中断しない（閉店で来訪者を放り出さない）。未指定/open は fail-open で素通り。
+ *   4. receptionState が 'idle' → 'signage'（待機サイネージ/待機画面）。
+ *   5. 終端/結果表示ステップ → 'completion'。
+ *   6. それ以外（選択/入力/確認/呼び出し中）→ 'reception'。
  */
 export function resolveKioskMode(input: {
   gate: KioskScreenGate;
   uiMode: 'normal' | 'checkin';
   receptionState: ReceptionState;
+  /** 営業状態（#367）。未指定は「判定不能」として fail-open（通常受付）に倒す。 */
+  operatingStatus?: OperatingState;
 }): KioskMode {
   if (input.gate !== 'ready') return 'degraded';
   if (input.uiMode === 'checkin') return 'qr_reception';
+  if (input.operatingStatus === 'closed' && input.receptionState === 'idle') return 'out_of_hours';
   if (input.receptionState === 'idle') return 'signage';
   if (COMPLETION_RECEPTION_STATES.has(input.receptionState)) return 'completion';
   if (IN_PROGRESS_RECEPTION_STATES.has(input.receptionState)) return 'reception';

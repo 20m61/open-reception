@@ -66,9 +66,14 @@ vi.mock('@/lib/security/integration-status-store', () => ({
   listIntegrationStatuses: () => listIntegrationStatuses(),
   listAuthMethodStatuses: () => listAuthMethodStatuses(),
 }));
-vi.mock('@/lib/call/vonage-config', () => ({
-  isVonageConfigured: () => true,
-  isVonageEnabled: () => false,
+vi.mock('@/lib/platform/integration-presence', () => ({
+  // Vonage presence はテナント設定由来（#405 Inc3）。ここでは configured/enabled を固定する。
+  getVonagePresenceForTenant: async () => ({
+    provider: 'vonage',
+    secretPresence: 'set',
+    configured: true,
+    enabled: false,
+  }),
 }));
 
 import { __resetDeviceFleetCache } from '@/lib/tenant/device-fleet';

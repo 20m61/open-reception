@@ -5,7 +5,7 @@ import {
   asReservationToken,
   type VisitReservation,
 } from '@/domain/reservation/types';
-import { buildReservationCheckinUrl } from '@/domain/reservation/token';
+import { buildReservationCheckinUrl, hashReservationToken } from '@/domain/reservation/token';
 import { MemoryReservationRepository } from '@/lib/reservation/memory-repository';
 import { CheckinService } from './service';
 
@@ -13,6 +13,7 @@ const TENANT = asTenantId('dev-tenant');
 const SITE = asSiteId('dev-site');
 const OTHER_SITE = asSiteId('other-site');
 const TOKEN = asReservationToken('reservation-token-abc');
+const TOKEN_HASH = hashReservationToken(TOKEN);
 const NOW = new Date('2026-06-20T01:00:00.000Z');
 
 function res(over: Partial<VisitReservation> = {}): VisitReservation {
@@ -26,7 +27,7 @@ function res(over: Partial<VisitReservation> = {}): VisitReservation {
     visitAt: '2026-06-20T00:30:00.000Z',
     targetType: 'staff',
     targetId: 'staff-1',
-    token: TOKEN,
+    tokenHash: TOKEN_HASH,
     usagePolicy: 'single_use',
     expiresAt: '2026-06-27T00:00:00.000Z',
     status: 'active',

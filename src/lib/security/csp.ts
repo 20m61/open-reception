@@ -40,7 +40,18 @@ export function createCspNonce(): string {
  * nonce 以外は従来の静的 CSP（#6/#31: blob/data の限定許可、ZAP 10055 の
  * スキームワイルドカード回避）を踏襲する。
  */
-export function buildCsp(nonce: string, opts?: { dev?: boolean }): string {
+export function buildCsp(
+  nonce: string,
+  opts?: {
+    dev?: boolean;
+    /**
+     * frame-ancestors の許可先。既定 'none'（全ルートで iframe 埋め込み拒否）。
+     * 受付体験スタジオのプレビュー（/admin/demo/preview を同一オリジンの
+     * /admin/demo が iframe で抱える, #363）のみ 'self' を渡す。
+     */
+    frameAncestors?: 'none' | 'self';
+  },
+): string {
   // 開発時のみ 'unsafe-eval' を許可（React がサーバエラーのスタック再構築等に
   // eval を使うため。production では React/Next.js とも eval を使わない）。
   const devEval = opts?.dev ? " 'unsafe-eval'" : '';
@@ -61,6 +72,6 @@ export function buildCsp(nonce: string, opts?: { dev?: boolean }): string {
     "object-src 'none'",
     "base-uri 'self'",
     "form-action 'self'",
-    "frame-ancestors 'none'",
+    `frame-ancestors '${opts?.frameAncestors ?? 'none'}'`,
   ].join('; ');
 }

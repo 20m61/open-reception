@@ -247,6 +247,10 @@ export type AuditAction =
   // 拠点（Site）管理 (issue #87)。テナント/サイト境界の操作のみ記録。
   | 'site.created'
   | 'site.updated'
+  // 営業時間・サービス単位の稼働ポリシー更新 (issue #367)。#367 の暫定監査
+  // （`site.updated` + metadata.resource='operating_policy'）を専用 action へ差し替える。
+  // metadata は resource/tenantId/siteId/timezone/version/件数のみ（時間帯の具体値は残さない）。
+  | 'operating_policy.updated'
   // プラットフォーム運用: テナントの有効/停止 (issue #90)。理由を metadata.reason に残す。
   | 'tenant.suspended'
   | 'tenant.activated'
@@ -272,6 +276,26 @@ export type AuditAction =
   | 'reception.staff_responded'
   // ワンタップ満足度フィードバック (issue #320)。metadata は評価値・理由コードのみ（PII なし）。
   | 'reception.feedback_submitted'
+  // 受付体験スタジオのデモ実行 (issue #363)。管理者が本番 Kiosk を Mock 注入で試走した事実を残す。
+  // metadata は scenarioId・initialMode（列挙のみ）だけ。デモは本番受付・集計に含めない（sandbox）。
+  | 'reception.demo_executed'
+  // カスタムデモシナリオの保存/削除 (issue #363 Inc2)。管理者がシナリオ内容を編集・保存した事実を残す。
+  // metadata は scenarioId・initialMode（列挙のみ）。シナリオ文言（PII でない擬似ラベル）は残さない。
+  | 'reception.demo_scenario_saved'
+  | 'reception.demo_scenario_deleted'
+  // デモ公開単位（DemoPublication）のライフサイクル管理 (issue #363 Inc3・専用 action)。
+  // #363/#367 の暫定監査（`reception.demo_scenario_saved`/`_deleted` + metadata.event での区別）を
+  // 専用 action へ差し替える。metadata は scenarioId・status・version・siteId/kioskId 等の
+  // 識別子・列挙のみ（PII・シナリオ文言・トークン値は残さない）。
+  | 'reception.demo_publication_created'
+  | 'reception.demo_publication_deleted'
+  // draft/test 間の状態遷移（published への遷移は専用の `demo_published` を使う）。
+  | 'reception.demo_status_changed'
+  | 'reception.demo_published'
+  | 'reception.demo_rolled_back'
+  // 公開（認証なし閲覧）共有トークンの発行/失効。トークン値そのものは記録しない。
+  | 'reception.demo_share_issued'
+  | 'reception.demo_share_revoked'
   // 受付端末（Device）管理 (issue #87 inc2)。token 値そのものは記録しない。
   | 'device.token_reissued'
   | 'device.disabled'
@@ -314,7 +338,15 @@ export type AuditAction =
   // テナント単位アップデートの実行 / ロールバック (issue #290 item1)。昇格必須・高重要度監査。
   // metadata は component/from/to/dryRun/result のみ（PII・秘匿値なし）。実デプロイは #195/#65 外部待ち。
   | 'platform.update.executed'
-  | 'platform.update.rolled_back';
+  | 'platform.update.rolled_back'
+  // 接続先 Endpoint・ルーティングポリシー設定 (issue #374)。address(e164/uri) は監査に残さない。
+  // 残すのは id・ownerType・channel・件数など非機微情報のみ。
+  | 'contact_endpoint.created'
+  | 'contact_endpoint.updated'
+  | 'contact_endpoint.deleted'
+  | 'routing_policy.created'
+  | 'routing_policy.updated'
+  | 'routing_policy.deleted';
 
 export type AuditLog = {
   id: string;

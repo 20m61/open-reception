@@ -5,7 +5,8 @@ import { ResourceTracker } from '@/lib/three/resource-tracker';
 import { AvatarFallbackImage } from './avatar/fallback-image';
 import { emotionExpressionValues } from './avatar/vrm-expression';
 import { resolveStatePose } from './avatar/vrm-pose';
-import { mouthOpenValue } from './avatar/lip-sync';
+import { resolveFrameExpressionWeights } from './avatar/frame-weights';
+import { createAutoBlinkState, stepAutoBlink, type AutoBlinkState } from '@/domain/avatar/auto-blink';
 import type { AvatarExpression } from './avatar/guidance';
 import type { AvatarState } from '@/domain/reception/ui-contract';
 
@@ -17,7 +18,17 @@ import type { AvatarState } from '@/domain/reception/ui-contract';
  * - 受付フローとは疎結合。実描画は実機 UAT で確認する（headless では fallback 経路を検証）。
  *
  * 状態別モーション再生（#31）: motionUrl の .vrma を AnimationMixer で切替再生する。
- * リップシンク（#5）は今後 expression(aa) と協調して接続する。
+ * リップシンク（#5）は expression(aa) と `avatar/frame-weights.ts` の合成関数
+ * （`domain/avatar/expression-blend.ts`）を通して協調する。感情付き表情中は口の開き重みを
+ * 減衰し、まばたきを抑制することで表情と口パクの破綻を避ける（#31 感情連動）。
+ *
+ * auto-blink（#31 増分）: `domain/avatar/auto-blink.ts` が計算する周期的なまばたき重みを
+ * 毎フレーム `resolveFrameExpressionWeights` の `blinkBaseWeight` へ渡す。感情中の抑制は
+ * 既存の合成（`expression-blend.ts`）がそのまま処理するため、ここでは重複制御しない。
+ * `prefers-reduced-motion` は考慮しない: まばたきは大きな動きを伴う演出アニメーションではなく
+ * 生理的な自然動作（`vrm-idle.ts` の呼吸・揺れも同様に無条件で適用している）であり、CSS の
+ * トランジション/オートプレイ動画のような「抑制すべき派手な動き」には当たらないため
+ * （既存の `globals.css` の reduced-motion 対応は UI のフェード/パルス演出が対象）。
  * 実描画・実モーションの確認は実機 UAT（#65）。
  */
 export function VrmAvatarViewer({
@@ -25,6 +36,7 @@ export function VrmAvatarViewer({
   fallbackImageUrl,
   motionUrl,
   expression,
+  expressionIntensity,
   speaking,
   avatarState,
   className,
@@ -38,6 +50,12 @@ export function VrmAvatarViewer({
   motionUrl?: string;
   /** 受付状態に応じた論理表情（#31）。VRM expressionManager に毎フレーム適用する。 */
   expression?: AvatarExpression;
+  /**
+   * 表情の強度 0..1（省略時 1 = フル適用）。現状の avatarGuidanceFor には強度概念が無いため
+   * 常に未指定 = フル適用で扱われるが、将来の強度可変入力を受けるための注入 seam
+   * （感情連動リップシンク + まばたき抑制、#31 / `docs/aituber-kit-v1-ui-reference.md` 提案 B）。
+   */
+  expressionIntensity?: number;
   /** TTS 発話中か（#5 簡易リップシンク）。true の間、口形素 `aa` を時間ベースで開閉する。 */
   speaking?: boolean;
   /** 受付アバター状態（#31）。.vrma 非再生時に状態別の手続き的ポーズ/所作を適用する。 */
@@ -51,6 +69,11 @@ export function VrmAvatarViewer({
   useEffect(() => {
     expressionRef.current = expression ?? 'neutral';
   }, [expression]);
+  // 表情強度も同様に ref 経由で渡す（#31 感情連動リップシンク + まばたき抑制の注入 seam）。
+  const expressionIntensityRef = useRef<number | undefined>(expressionIntensity);
+  useEffect(() => {
+    expressionIntensityRef.current = expressionIntensity;
+  }, [expressionIntensity]);
   // 発話中フラグもレンダーループ外から変化するため ref で渡す（#5 リップシンク）。
   const speakingRef = useRef<boolean>(speaking ?? false);
   useEffect(() => {
@@ -70,6 +93,9 @@ export function VrmAvatarViewer({
     motionUrlRef.current = motionUrl;
     loadMotionRef.current?.(motionUrl);
   }, [motionUrl]);
+  // auto-blink（#31 増分）の状態。純関数 stepAutoBlink の戻り値をそのまま次フレームへ
+  // 引き継ぐだけの ref（乱数の生成・解釈は domain 層に閉じ、viewer 側は状態を運ぶだけ）。
+  const autoBlinkStateRef = useRef<AutoBlinkState | null>(null);
 
   useEffect(() => {
     // vrmUrl が無ければ WebGL を一切初期化しない（既定の受付画面を軽量に保つ）。
@@ -113,6 +139,10 @@ export function VrmAvatarViewer({
           return;
         }
         const vrm = gltf.userData.vrm;
+        // VRM 0.x は -Z 向き（カメラから背面）規約のため、+Z 向きへ 180° 回す。
+        // VRM 1.0 には no-op。これが無いと 0.x モデルは常に後ろ姿で描画される
+        // （実描画検証 2026-07-22 で発覚。同梱 Rose は 0.x）。
+        if (vrm) VRMUtils.rotateVRM0(vrm);
         scene.add(gltf.scene);
         tracker.track({ dispose: () => VRMUtils.deepDispose(gltf.scene) });
 
@@ -146,9 +176,22 @@ export function VrmAvatarViewer({
         void loadMotion(motionUrlRef.current);
 
         const clock = new THREE.Clock();
+        // auto-blink（#31 増分）: 描画ループ開始時刻を種に初期状態を生成する。実時刻
+        // （Date.now()）を扱うのはここ（viewer 側）だけで、domain 側の純関数へは値として
+        // 渡すのみ（`domain/avatar/auto-blink.ts` は Math.random()/Date.now() を呼ばない）。
+        autoBlinkStateRef.current = createAutoBlinkState(Date.now());
         const render = () => {
           if (disposed) return;
           const dt = clock.getDelta();
+          // auto-blink を 1 フレーム進める。まばたき動作の有無に関わらず毎フレーム呼び、
+          // 経過時刻の追跡を継続する（表情合成の外側で state を進めることで、
+          // expressionManager 不在（読み込み途中等）でもスケジュールがずれない）。
+          let blinkBaseWeight = 0;
+          if (autoBlinkStateRef.current) {
+            const autoBlinkFrame = stepAutoBlink(autoBlinkStateRef.current, clock.elapsedTime * 1000);
+            autoBlinkStateRef.current = autoBlinkFrame.state;
+            blinkBaseWeight = autoBlinkFrame.weight;
+          }
           // 受付状態に応じた表情を expressionManager に適用（#31）。感情 preset のみを操作し、
           // 口形素/瞬き/視線は触らない（リップシンク #5 と非干渉）。
           const expressionManager = vrm?.expressionManager;
@@ -156,9 +199,21 @@ export function VrmAvatarViewer({
             for (const { name, value } of emotionExpressionValues(expressionRef.current)) {
               expressionManager.setValue(name, value);
             }
-            // 簡易リップシンク（#5）: 発話中は口形素 `aa` を時間ベースで開閉。感情 preset とは
-            // 別チャンネルなので共存する（口を閉じるときは 0）。
-            expressionManager.setValue('aa', mouthOpenValue(clock.elapsedTime, speakingRef.current));
+            // 簡易リップシンク（#5）+ 感情連動の重み合成（#31）: 発話中は口形素 `aa` を
+            // 時間ベースで開閉しつつ、感情付き表情中は口の開き重みを減衰させ、まばたきは
+            // 抑制する（表情と口パクの破綻回避。`domain/avatar/expression-blend` 参照）。
+            // blinkBaseWeight は auto-blink（#31 増分）が計算した周期的な生の重み。感情中の
+            // 抑制は resolveFrameExpressionWeights 内の既存合成が処理するため、ここでは
+            // 重複して抑制しない。
+            const frameWeights = resolveFrameExpressionWeights({
+              expression: expressionRef.current,
+              expressionIntensity: expressionIntensityRef.current,
+              speaking: speakingRef.current,
+              elapsedSec: clock.elapsedTime,
+              blinkBaseWeight,
+            });
+            expressionManager.setValue('aa', frameWeights.mouthAa);
+            expressionManager.setValue('blink', frameWeights.blink);
           }
           // .vrma モーションが無いときは受付状態に応じた手続き的ポーズ/所作を適用する（#31）。
           // モーション再生中は AnimationMixer がボーンを駆動するため適用しない。
@@ -186,6 +241,7 @@ export function VrmAvatarViewer({
     return () => {
       disposed = true;
       loadMotionRef.current = null;
+      autoBlinkStateRef.current = null;
       if (animationId) cancelAnimationFrame(animationId);
       tracker.disposeAll();
       try {

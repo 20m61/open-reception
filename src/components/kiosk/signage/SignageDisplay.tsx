@@ -140,10 +140,15 @@ export function SignageDisplay({
   }, [returnToReception]);
 
   return (
+    // 全面タップで受付復帰する待機画面。以前は外側 div 自身に role="button" tabIndex={0} を
+    // 付けていたが、内側に focusable な signage-start ボタンを内包するため axe の
+    // nested-interactive（no-focusable-content）に該当していた（#361 VRT/axe で serious 検出）。
+    // 解消のため外側は「非対話のコンテナ + ポインタ操作の便宜ハンドラ」に留め、キーボード/
+    // 支援技術向けの明示的な受付導線は下部の signage-start ボタン（フォーカス可能）と window の
+    // keydown リスナに一本化する。ポインタ操作（タップ/クリック）は非対話要素上でも発火するため
+    // iPad 受付端末の「どこをタップしても開始」は維持される。
     <div
       data-testid="signage-display"
-      role="button"
-      tabIndex={0}
       onClick={returnToReception}
       onTouchStart={returnToReception}
       style={{

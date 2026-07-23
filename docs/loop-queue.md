@@ -154,8 +154,163 @@
 
 第 2 wave 外の付随対応: Dependabot high 2 件（sharp<0.35 の libvips CVE）を `overrides` で解消。
 
-**第 3 wave（次に着手する）**: #374（A の後続・上位モデル推奨）／ #375 残 increment
-（token hash 化は**スキーマ破壊 → 要ユーザー確認**）／ #361（KioskFlow 大改修・単独）
+**第 3 wave（2026-07-22 消化済み）** — 同ブランチ・3 トラック並行。結果:
+
+| トラック | Issue | 結果 |
+| --- | --- | --- |
+| A | **#374** | increment 1 完了（`src/domain/routing/` 新設: ContactEndpoint union・nextOn 遷移・静的循環検出+hop 上限・冪等台帳・Orchestrator・mock provider・CallRoute 非破壊 compat・seed・日本語 describe。テスト 62 件）。**残**: 文章形式ルートビルダー UI・永続化/API 配線・tenant 越境 E2E・Vonage adapter(#4) |
+| B | **#361** | increment 1 完了（`ConversationTurnView` を ui-contract に一本化・横向き 35%/65% アバター継続レール・#123 の意図反転テストを明示改訂・`docs/character-led-kiosk-ux.md`）。横向き実ブラウザ検証 green。**残**: QR シェル統一・音声復唱 UI・displayText 多言語結線・VRT/axe |
+| C | **#369** | increment 1 完了（`src/domain/voice-transport/`+`src/lib/voice-transport/`: 短命 token(HMAC/jti リプレイ拒否/サーバ権威 claims)・有界キュー・rate limit・lifecycle・fallback イベント・#365 ハーネス適合 eval-bridge・ADR 0001。テスト 123+ 件）。**残**: 実 WSS(API GW WebSocket) infra・Kiosk fallback 配線・AudioWorklet(#65) |
+
+付随: **VRM 実描画検証で #31 の一部を de-stack**（rotateVRM0 欠落による背面向き描画を修正・
+自作 idle.vrma 同梱・SwiftShader WebGL2 で .vrma 実再生まで検証。残: 実機負荷・リップシンク #65）。
+
+**第 4 wave（2026-07-22 消化済み）** — 同ブランチ・3 トラック並行。結果:
+
+| トラック | Issue | 結果 |
+| --- | --- | --- |
+| A | **#370** | increment 1 完了（`src/domain/voice-stt/`+`src/lib/voice-stt/`: partial 安定化(LCP+debounce)・#322 接続の Entity 解決(STT/Entity confidence 分離・Top1/Top3)・低信頼確認遷移・fallback・#365 適合 eval-bridge・Transcribe 接続境界。テスト 58 件）。**残**: 実 WSS+SigV4 の ConnectionFactory・閾値の実機較正・Kiosk UI 配線(#65/次周回) |
+| B | **#371** | increment 1 完了（`src/domain/voice-tts/`+`src/lib/voice-tts/`: 生成/再生の責務分離・キャッシュキー・utterance lifecycle(停止時に口パク残存なし)・viseme 中立イベント・connected 中抑止・ADR 0002。テスト 103 件）。**残**: 実 Polly・実キャッシュ配線(S3 メタデータの PII 注記あり)・VRM viewer 配線(#65/次周回) |
+| C | **#363** | Inc1 完了（`/admin/demo` Demo Harness: 本番 Kiosk 無改変 iframe + Mock 注入・既定拒否 sandbox・9 シナリオ・監査。テスト 54 件）。**実ブラウザ検証で iframe 表示不能(X-Frame-Options/frame-ancestors/admin chrome/スケール)の統合欠陥 3 件を発見・修正**。**残**: Inc2 3ペイン編集・KioskFlow 注入点 4 件(営業時間外配線・STT アダプタ DI・QR ペイロード注入・取次段階イベント)・Inc3 公開モデル |
+
+**第 5 wave（2026-07-22 消化済み）** — 同ブランチ・3 トラック並行。結果:
+
+| トラック | Issue | 結果 |
+| --- | --- | --- |
+| A | **#372** | 完了（`src/domain/voice-turn/`: 参照 VAD・日本語ルールの動的無音閾値 turn 判定・backchannel/interruption 分類・barge-in reducer・履歴切り詰め・#365 ci プロファイル SLO 遵守を非チート実証。テスト 68 件）。**残**: `src/lib/voice-turn/` I/O 層・kiosk 配線・実 AEC(#65)。**申し送り**: `duck`/`resume` は #371 `TtsPlaybackController` に未実装（port 定義のみ） |
+| B | **#374 残** | 完了（`/admin/call-routing` 文章形式ルートビルダー・永続化 repository・API・**アドレス write-only**(応答は maskedAddress のみ)・越境/viewer 403 テスト。+59 テスト）。**残**: goto_step 遷移編集 UI・Playwright E2E・orchestrator の実行時配線。**nit**(セキュリティレビュー): 入力サイズ上限なし・UI の tenant ハードコード(internal 固定)・description の全サイト label 解決 |
+| C | **#361 残** | QR シェル統一完了（CheckinFlow を `checkinConversationTurnFor` シェルで包み、既存状態機械・API 契約は無改変。「読み取りだけで発信しない」は既存遵守を退行防止テストで固定）。**残**: checkin 字幕 i18n・レール CSS 真実源統合・実カメラ(#65) |
+
+**第 6 wave（2026-07-22 消化済み）** — 同ブランチ・3 トラック並行。結果:
+
+| トラック | Issue | 結果 |
+| --- | --- | --- |
+| A | **#363 注入点** | KioskFlow 外部注入点 4 件を additive に解消（`operatingStatus` prop→`OutOfHoursView`(idle のみ・fail-open・4言語)／`sttAdapterFactory` DI(中立 interface)／`InjectableQrScanner`+`?debugScanPayload=`(**非本番限定**: token の URL 露出防止、セキュリティレビュー W1 対応)／`/call` 応答 `stages[]` 後方互換拡張+`parseCallStages`(key 文字制限・上限8)）。**残**: #367 で ServiceOperatingPolicy 実装し operatingStatus に実データ供給・#370 実 provider を factory へ・demo-studio 側の注入点利用 |
+| B | **voice 統合** | #371 に `duck`/`resume` 追加（#372 申し送り解消）+ `voice-session` orchestrator 新設（transport/STT/turn/TTS 合成・障害の単一 fallback 正規化・close 冪等・#365 統合セッション検証 green）。**残**: kiosk UI 配線・実 WSS/Transcribe/Polly(#65) |
+| C | **#363 Inc2** | 3ペイン編集スタジオ完了（テンプレート複製→編集→保存(認可+検証+監査)→プレビュー反映・保存済み→組込の解決順・URL/スクリプト等の unsafe テキスト拒否・sandbox 維持）。実ブラウザ検証 14/15 PASS(残 1 は confirm ダイアログの自動 dismiss で非バグ)。**残**: Inc3 公開モデル・注入点(トラック A)を使ったシナリオ再現(営業時間外/STT 失敗) |
+
+第 6 wave の注記: dev モード(`next dev`)の hydration がこのリモートコンテナで不安定（HMR
+WebSocket がプロキシで失敗・React ハンドラ未アタッチ）。**実ブラウザ検証は本番ビルド
+(`npm run build` + `npm start`)で行うこと**（e2e 規約と同じ）。UI polish 候補: スタジオ左ペインの
+ターンチップが縦書き折返しで窮屈・プレビュー見出しとボタンの重なり(1440px)。
+
+**第 7 wave（2026-07-22 消化済み）** — 同ブランチ・3 トラック並行。結果:
+
+| トラック | Issue | 結果 |
+| --- | --- | --- |
+| A | **#364/#361 voice kiosk 配線+復唱 UI** | `voiceSession?: VoiceSessionFactory` prop で opt-in 配線（未注入時完全不変）。`voiceKioskReducer`+`VoiceKioskStore`+`VoiceReadbackConfirm`（復唱「◯◯様ですね?」・字幕 aria-live・タッチ縮退案内・4言語）。synthetic driver で「発話→復唱→確定」「低信頼確認」「barge-in duck→listening」「障害→縮退」を 60 テストで固定。**残**: `onResolved`→TargetView 実結線・実 duck 信号(#65)・demo-studio への synthetic 組込 |
+| B | **#363 注入点統合** | `kiosk-injection.ts` 純関数層（シナリオ→operatingStatus/sttAdapterFactory/qrScanner/`stages[]` 導出）+ preview 注入。営業時間外/STT失敗/QR期限切れ/Vonage発信失敗(段階)が preview で実 UI 再現（実ブラウザ検証済・実 Vonage SDK 非ロード維持）。`/token` は常に非 ok で `client.connect()` 不到達 |
+| C | **#374 残** | goto_step 遷移編集 UI（`transition-kind-select`→`transition-step-select`）+ 保存済みルートの orchestrator 実行時配線（`/api/kiosk/call` が段階実行 mock で `stages[]` 供給・未設定/例外は fail-open+ログ・冪等台帳有効）+ nit 3 件解消（入力上限・tenant ハードコード・label の site scope） |
+
+第 7 wave の注記・申し送り:
+- セキュリティレビュー: blocking 0。W1(fail-open 無音)は同 wave 内で修正。info: routing step id に charset 検証を掛け `stages[].key` の二重防護に／`executeRoutedCall` の endpoints 取得を `endpointsForPolicyScope` で site 絞りに揃える（いずれも低リスク・次周回の nit）
+- demo の `call-failed` は段階表示(dial/ring/connect)が描画後 1 秒未満で失敗 UI へ遷移し視認困難。mock 応答へ人工レイテンシを入れる polish 候補
+- サブエージェントが長時間 LLM 停止するケースを観測（2h 無活動）。チェックインで検知し SendMessage 再開で完走した — 再開指示は有効な復旧手段
+- **#405(テナント別 CCaaS 設定)は仕様確定済み**（Secrets Manager per tenant・env フォールバック廃止・developer 専用・漏洩/越境防止の blocking AC は issue コメント参照）。Inc1(ドメイン+mock store+CRUD)は外部認証情報不要で着手可能
+
+**第 8 wave（2026-07-22 消化済み）** — 同ブランチ・3 トラック並行。結果:
+
+| トラック | Issue | 結果 |
+| --- | --- | --- |
+| A | **#405 Inc1** | テナント別 CCaaS 設定完了（`TenantProviderConfig`+redact 済み `SecretValue`+`TenantSecretStore`(mock)+developer CRUD。blocking AC 全充足=値の非露出/write-only/越境不可/server-only を 44+ テストで固定・rules 追記）。敵対的レビュー(blocking 0)の W1 対応で **secret set/clear と config PUT は `assertElevated`(JIT 昇格)必須**に。**残**: Inc2=Secrets Manager 実装+CDK(deploy 前に再確認)・Inc3=`VONAGE_*` env 撤去+call-execution 実結線 |
+| B | **voice 実結線** | `onResolved`→`SELECT_TARGET` 実結線（競合規則=後勝ち・`voice-target-binding.ts` に明記）+ demo `voice-staff-visit` シナリオ自動再生（listening→復唱→確定→選択反映）+ call-failed の `/token` に demo 限定 1.2s レイテンシで段階視認可。**残**: selectingTarget 到達時の音声 replay トリガ(ゼロタッチ完全自動化)・department 解決デモ |
+| C | **#367 営業時間** | `evaluateOperatingStatus` 純関数(日跨ぎ・境界・休業日 66 テスト)+`/admin/operating-hours` CRUD(認可+監査)+`/api/kiosk/config`・`/kiosk` への `operatingStatus` 供給+closed 中 `/call` 409。実ブラウザで設定→エンロール済み kiosk の OutOfHoursView 表示まで確認。**残**: 専用 `AuditAction`(現状 `site.updated` 代用)・kiosk 側の定期再取得(長時間待機画面の自動切替)・reopenAt 表示を端末 TZ でなくポリシー TZ で整形する polish・#367 epic 本体(サービスレジストリ/Reconciler/EC2 制御)は未着手 |
+
+第 8 wave の注記: 自動コミットレビュー+敵対的レビューの指摘(キー衝突・fail-open 無音・
+fixedHolidays 上限・JIT 昇格)は同 wave 内で全て修正済み。/kiosk の実表示検証には
+デバイスエンロール(受付 URL 発行→`/kiosk/enroll?token=`)が必要— 手順は
+`/api/admin/devices/kiosk-dev/reissue-token`(JSON body に tenantId/siteId)→ URL を開く。
+
+**第 9 wave（2026-07-22 消化済み）** — 同ブランチ・3 トラック並行。結果:
+
+| トラック | Issue | 結果 |
+| --- | --- | --- |
+| A | **#405 Inc2** | `SecretsManagerTenantSecretStore`(backend 注入・prefix 写像・削除猶予 30 日・値非漏洩)+`PROVIDER_SECRET_BACKEND` 切替(既定 memory・fail-closed)+CDK IAM を `<prefix>/tenants/*` に限定(prefix はランタイムと同一規則で正規化)。新規依存なし。**deploy 未実施 — 実 AWS apply はユーザー確認後**(手順は `docs/tenant-provider-secrets.md`)。**残**: Inc3=`VONAGE_*` env 撤去+`resolveProviderForTenant` の call-execution 実結線・#65 実疎通 |
+| B | **#363 Inc3** | 公開モデル完了(draft/test/published 分離・公開先 Kiosk fail-closed 検証・append-only version+rollback・256bit 共有トークン(期限必須+失効+監査値なし)・未認証公開ページ `/demo/[token]` は scenario のみ返却・404 一律で列挙オラクルなし・sandbox 維持)。敵対的レビュー W1 対応でレート制限を**二層化**(トークン単位+全体窓+evict)。**残**: DemoStudio への publish/share UI パネル・専用 AuditAction(`reception.demo_published` 等)の log.ts 追加 |
+| C | **voice ゼロタッチ** | `notifyReceptionState` 中継(実 orchestrator は no-op 契約)で selectingTarget 到達時に音声シーケンスを(再)開始 — 取りこぼしゼロ。`voice-department-visit` シナリオ追加(部署解決)。full-auto(タッチ手の自動代行)は単一責務契約維持のため意図的に見送り。**残**: 部署復唱の文言 polish(「営業部様ですね?」→部署用テンプレート) |
+
+第 9 wave の注記: 実ブラウザ検証 7/7 PASS(未認証の公開ページ描画・外部リクエストゼロ・無効
+トークンのエラー表示・staff/部署の音声ゼロタッチ自動選択)。検証時の落とし穴: **ポート 3100 に
+前 wave の本番サーバが残っていると旧ビルドが応答し新 route が 404 になる** — 検証前に
+`next-server` プロセスの起動時刻を確認して kill すること。
+
+**第 10 wave（2026-07-22 消化済み）** — 同ブランチ・3 トラック並行。結果:
+
+| トラック | Issue | 結果 |
+| --- | --- | --- |
+| A | **#405 Inc3** | `resolveProviderForTenant` 新設(server-only・SecretValue 維持・fail-closed=不整合は Mock)+資格情報供給の env 直読み撤去(`VONAGE_NOTIFY_*`/`VONAGE_SECRET_ARN`/`VONAGE_API_*`/`PRIVATE_KEY`/`APPLICATION_ID`/`ENABLED`)。旧 `getCallAdapter`/`getVonageSessionService` は env-free シム(常に Mock/null)。**破壊的**: 運用で VONAGE_* を使う環境はテナント設定+Secrets Manager へ移行要(`docs/tenant-provider-secrets.md`)。**残**: `resolveCallAdapter` 等の route/store への tenant threading(#4 実装時)・presence 表示(#90/#93)の env 依存を設定 presence へ移行 |
+| B | **#363/#367 残** | 専用 AuditAction 7 種+`operating_policy.updated` へ差し替え・監査ラベル追加・DemoStudio に公開/共有パネル(draft→test/publish→version/rollback→共有リンク発行[**一度きり表示**]/失効・viewer 無効化)。セキュリティレビュー **B1**(GET 応答にトークン生値)を同 wave 内修正=GET/PATCH は presence のみ・生値は発行応答限定+回帰テスト |
+| C | **aituber-kit 調査** | v1.0.0〜v1.44.1=MIT(pixiv ChatVRM 派生)・v2.0.0 から商用独自ライセンスをファイル実物で確認。**コード移植なし・考え方の参考**方針(ユーザー指示)。`docs/aituber-kit-v1-ui-reference.md` に採用提案: 聞き取り中インジケータ+interim 逐次字幕(#361/#364)・リップシンク感情連動+まばたき抑制(#31)・実音声化時の AnalyserNode 振幅駆動(#5)。当方との本質差はリップシンク駆動源のみ |
+
+実ブラウザ検証: 公開パネルの draft→publish(kiosk-dev)→版履歴→共有リンク発行→未認証閲覧→
+失効→無効表示、リロード後のトークン非再表示、監査ラベル表示まで全 PASS。
+
+**第 11 wave（2026-07-22 消化済み）** — 同ブランチ・3 トラック並行。結果:
+
+| トラック | Issue | 結果 |
+| --- | --- | --- |
+| A | **聞き取り中 UI(#361/#364)** | 波形インジケータ(idle/speech 2 段階・reduced-motion 静止)+ interim 逐次字幕(`hearPartial`→確定で復唱へ置換・自動送信は不採用)。synthetic driver と実 orchestrator(安定化 `stt.partial` のみ写像)両対応。**残**: 実機の `listenStart`/VAD 結線(#65) |
+| B | **リップシンク感情連動(#31)** | `blendExpressionWeights` 純関数(感情中の口重み下限 0.4・blink 抑制・未知表情 fail-safe)+`resolveFrameExpressionWeights`+VRM viewer 結線(既定 neutral で不変)。**残**: auto-blink 実装・実機での係数チューニング(#65)・guidance への intensity 概念 |
+| C | **presence 移行(#90/#93×#405)** | integrations presence をテナント設定 presence(`getVonagePresenceForTenant`・値非返却)へ移行し `isVonageConfigured`/`SECRET_KEYS` の VONAGE 項目を撤去。自動レビュー対応で接続テストの presence を認可済み tenantId に一致。**残**: `getVonagePublicConfig`(公開 applicationId・kiosk/staff 供給)のテナント設定移行は #4 tenant threading と同時に |
+
+実ブラウザ検証 5/5 PASS(インジケータ段階遷移・逐次字幕・復唱置換・reduced-motion 静止・
+presence 表示)。検証の落とし穴: Playwright の `innerText()`/`getAttribute()` は要素不在時に
+auto-wait(既定 30s)でブロックする — ポーリングでは `count()` 先行 + 短 timeout を使うこと。
+
+**第 12 wave（2026-07-23 消化済み）** — 同ブランチ・3 トラック並行。結果:
+
+| トラック | Issue | 結果 |
+| --- | --- | --- |
+| A | **#367 定期再取得** | `createOperatingStatusPoller`(60s・hidden 中停止・fail-open=失敗時は直前値保持・abort/cleanup 固定・重複 fetch 防止)+`OperatingStatusRefresher` で SSR 初期値+クライアント追随。**実ブラウザでリロードなしの open→closed 自動切替を確認**(エンロール済み kiosk)。**残**: #18 の kiosk セッション配線後に kioskId を渡して端末個別スコープ化 |
+| B | **auto-blink(#31)** | seed 注入の決定論純関数(xorshift32・間隔 2〜6s・閉眼カーブ・NaN/時間逆行 fail-safe)を `blinkBaseWeight` に接続。感情中の抑制は既存合成に委譲。実機視認は #65 |
+| C | **文言 polish(#361/#364)** | 音声復唱を kind で出し分け(担当者=「◯◯様ですね?」/部署=「◯◯でよろしいですか?」・4 言語)+ CheckinFlow の直書き字幕を dictionary 化(40+ キー、i18n テストでキー完全一致固定) |
+
+セキュリティレビュー blocking/warning 0(info の fetch 重複は同 wave 内修正)。実ブラウザ検証:
+部署/担当者の復唱出し分け・営業状態の自動切替・checkin 英語表示を確認。
+運用メモ: サブエージェントが「ゲート完了通知待ち」で停止するパターンが頻発 — 再開指示 1 回で
+復帰しない場合は worktree の差分を検証(affected テスト+tsc)して直接コミット・引き取りが早い。
+
+**第 13 wave（2026-07-23 消化済み。ユーザー承認「deploy 以外は進めてよい」を受け保留 3 件を解禁）**:
+
+| トラック | Issue | 結果 |
+| --- | --- | --- |
+| A | **#375 hash 化** | reservationToken を SHA-256(+任意 pepper)の一方向 hash 保存へ移行(照合は timingSafeEqual・発行時のみ平文応答・参照系から平文除去)。QR は発行/再発行応答同梱の `qrDataUrl` で一度きり表示、再表示は 410→再発行案内、**active でも再発行可**(紛失時の唯一の復旧手段)。エンロール token は既に HMAC で対象外。**残**: デモ共有トークンの hash 化(別 issue 候補)・DynamoDB 永続化(#97 inc3)時の一括移行+pepper 確定 |
+| B | **#4 threading** | call/token/answer/通知の全 live 呼び出し点をテナント解決へ配線・旧シム撤去・公開 applicationId もテナント設定移行(env 参照ゼロ)。実発信は不到達(既定テナント未設定=Mock)。**残**: #4 MVP1 本体(実資格情報 #65) |
+| C | **#366 Phase0** | ADR-0003(代替案比較・**月額見積: t4g.small 約 $14.2/月**(8:00–23:00 稼働・37% 削減)・停止手段)+ RealtimeRuntimeStack(ASG min0/max1・Reconciler Lambda・SSM kill-switch(fail-closed+AllowedPattern)・Route53 は A レコード 1 本限定 IAM)。devDeps に AWS SDK 4 種追加(#105 済・NOTICES 記載)。**deploy 未実施 — ユーザー最終確認後** |
+
+レビュー対応済み: 自動 3 件(kill-switch fail-closed・値正規化・Route53 条件限定)+敵対的 W1/W2/W4
+(QR baseUrl のサーバ権威解決統一・Lambda handler の型検査対象化・依存説明の整合)。
+**残 follow-up**: W3=bedrock InvokeModel のモデル ARN 限定(deploy 前に)・Reconciler handler の
+単体テスト・list/get 応答からの tokenHash 除去(防御的)・migration の pepper footgun 注意。
+
+**第 14 wave（2026-07-23 消化済み）** — 同ブランチ・3 トラック並行。結果:
+
+| トラック | Issue | 結果 |
+| --- | --- | --- |
+| A | **#361 VRT/axe** | `tests/e2e/kiosk-vrt-a11y.spec.ts`: 主要 5 画面の VRT(baseline 768K・決定化済み)+axe(critical/serious ゼロ)。**依存追加なし**(axe-core は既存 devDep。MPL-2.0 の #105 記録を NOTICES へ)。baseline 更新手順は spec/報告参照。**検出**: サイネージの nested-interactive(serious)— #361 シェル再設計時に解消要 |
+| B | **#363 UI polish** | ターンチップの縦書き折返し解消(ellipsis+title)・プレビュー見出しの重なり解消(wrap)・3 ペイン minWidth 再バランス。1280px 実写で確認 |
+| C | **follow-up 4 件** | reopenAt をポリシー TZ で整形(fail-safe 付き)・bedrock IAM を anthropic foundation-model 限定(+synth ガード)・Reconciler handler 単体テスト 8 件・予約全応答から tokenHash 除去 |
+
+レビュー(blocking 0)の W1/W2 は同 wave 内修正。**残 follow-up**: signage nested-interactive の src 修正・
+新規予約エンドポイント追加時の tokenHash 除去は規約+テスト担保(型強制でない点に注意)・
+infra web-stack.test の collection 時 `.open-next` 要求(stub 手順で回避可)。
+
+**第 15 wave（2026-07-23 消化済み）** — 第 14 wave 申し送りの局所 follow-up（PR #416）。結果:
+
+| トラック | Issue | 結果 |
+| --- | --- | --- |
+| A | **#361 signage a11y** | `SignageDisplay` 外側 div の `role="button"`/`tabIndex` を撤去し非対話コンテナ化＝axe `nested-interactive`(no-focusable-content, serious) を解消。全面タップはポインタ便宜ハンドラで維持・受付導線は signage-start ボタン(focusable)+window keydown に一本化。`kiosk-vrt-a11y.spec` の `nested-interactive` 除外も撤去し serious 全ルール検査へ |
+| B | **#375 tokenHash ガード** | 予約 API 全ルート(list/get/create/edit/cancel/revoke/reissueToken/qr)を実呼び出しし応答 body の `tokenHash` 不在を再帰検証する behavioral 回帰ガード(`tokenhash-leak-guard.test`)。view 撤去で FAIL する negative check 済。第 14 申し送り「型強制でない tokenHash 除去忘れ」を捕捉 |
+
+第 15 wave の注記: **ブラウザ e2e は本コンテナで exit 144 でブロックされ実行不可**（sandbox 無効化・明示
+`PW_EXECUTABLE_PATH` でもログ生成前に kill）。a11y 変更は品質ゲート(jsx-a11y 含む lint)+ 静的推論で担保し、
+除外撤去後の e2e はマージ前 `--full` または e2e 可能な環境で確認する。**残 follow-up**（未消化）:
+infra `web-stack.test` の collection 時 `.open-next` 要求(stub 手順で回避可・別パッケージのテスト
+ergonomics で defect ではない)。**ユーザー判断待ち(deploy のみ)**: #405 Inc2 の Secrets Manager 有効化
+deploy・#366 Stack の deploy(月 $14.2 見積の最終承認)・#4 実資格情報(#65)。
+
+**次に着手する候補**: #363 Inc4 相当の残があれば issue-ac-mapping で確定／ 新規 #399(既定 VRM 導入・実機検証は
+#65)／ AI Evolution epic 群(#382〜#392, 優先順位はユーザー判断)。
 
 同 wave に **#366 Phase 0 ADR のみ**（`docs/adr/*.md` 新規・コスト増ゼロ）を差し込むのは安全。
 CDK 実装と deploy は分離し、Budget 見積を添えてユーザー承認を取る。

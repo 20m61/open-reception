@@ -4,7 +4,6 @@ import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from 'r
 import {
   RECEPTION_PURPOSES,
   type ReceptionPurposeId,
-  type ReceptionTargetType,
   type VisitorInfo,
 } from '@/domain/reception/session';
 import type { FeedbackReasonCode, SatisfactionRating } from '@/domain/reception/log';
@@ -48,7 +47,6 @@ const CheckinFlow = dynamic(() => import('./CheckinFlow').then((mod) => mod.Chec
   ssr: false,
   loading: () => null,
 });
-import { MockSttAdapter } from '@/adapters/speech/mock-stt';
 import { useStaffResponse } from './useStaffResponse';
 import type { StaffResponseResult } from '@/domain/reception/staff-response';
 import { PurposeSelector } from './custom-flow/PurposeSelector';
@@ -66,13 +64,27 @@ import {
 } from './integration';
 import type { PresenceCameraStatus } from './usePresenceCamera';
 import { resolveKioskMode } from '@/domain/kiosk/mode';
+import { operatingStateOf, type KioskOperatingStatus } from '@/domain/kiosk/operating-status';
+import { OutOfHoursView } from './OutOfHoursView';
+import { defaultSttAdapterFactory, type SttAdapterFactory } from './stt-adapter';
+import { VoiceSessionLayer } from './VoiceSessionLayer';
+import { voiceCandidateToTarget, type ReceptionTarget } from './voice-target-binding';
+import type { OnResolved, VoiceSessionFactory } from '@/lib/voice-session/kiosk-binding';
+import { debugScannerFromSearch } from './qr-injection';
+import type { QrScanner } from '@/domain/checkin/scanner';
+import { parseCallStages, type CallStage } from '@/domain/kiosk/call-stages';
 import {
   escapeHatchesFor,
   quickActionsFor,
   type EscapeHatch,
   type QuickAction,
 } from './quick-actions';
-import { deriveChatAvailability, type ReceptionAction } from '@/domain/reception/ui-contract';
+import {
+  deriveAvatarPresence,
+  deriveChatAvailability,
+  type ReceptionAction,
+} from '@/domain/reception/ui-contract';
+import type { KioskLayout } from './layout';
 import { KioskChatDrawer } from './KioskChatDrawer';
 import { buildCheckoutUrl, safeCheckoutQrDataUrl } from './checkout/credential-display';
 import Link from 'next/link';
@@ -137,10 +149,16 @@ const INACTIVITY_WARNING_MS = 10000;
 const HEARTBEAT_INTERVAL_MS = 30000;
 
 /**
- * アバター常設コンパニオン（#123）を表示する状態。中央寄せで余白のあるステータス画面に限定し、
- * 選択/入力画面（カード・フォームでコンテンツが密集）では重なりを避けて出さない。
+ * 縦向き(ipad-portrait)でアバターコンパニオンを表示する状態 (#361 / 旧 #123)。
+ *
+ * #361 は「選択/入力/確認画面でもアバターとの対話を継続する」意図反転を導入したが、縦向きは
+ * 操作が下部に密集し既存プロファイルを壊しやすい。よって縦向きでは従来どおり中央寄せで余白の
+ * あるステータス画面（呼び出し中/通話/結果/完了/中止）に限定し、控えめ表示を維持する。
+ * 横向き(ipad-landscape/large-display)は 35%/65% のレール構成で全受付ステップに継続表示する
+ * （下記 showAvatarCompanion 参照）。表示状態の意味論的真実源は ui-contract の
+ * deriveAvatarPresence（横縦非依存）で、ここはレイアウト別の描画ゲートに限る。
  */
-const AVATAR_COMPANION_STATES: ReadonlySet<ReceptionState> = new Set([
+const PORTRAIT_COMPANION_STATES: ReadonlySet<ReceptionState> = new Set([
   'calling',
   'connected',
   'timeout',
@@ -150,8 +168,16 @@ const AVATAR_COMPANION_STATES: ReadonlySet<ReceptionState> = new Set([
   'cancelled',
 ]);
 
-function showAvatarCompanion(state: ReceptionState): boolean {
-  return AVATAR_COMPANION_STATES.has(state);
+/**
+ * その状態・レイアウトでアバターコンパニオンを描画するか (#361)。
+ *  - 待機(idle)は IdleView がヒーロー(presence='primary')として大きく出すため companion は不要。
+ *  - 縦向きは PORTRAIT_COMPANION_STATES に限定（重なり回避・既存プロファイル維持）。
+ *  - 横向き/大型は presence!=='primary' の全受付ステップで会話コンパニオンを継続する（意図反転）。
+ */
+function showAvatarCompanion(state: ReceptionState, layout: KioskLayout): boolean {
+  if (deriveAvatarPresence(state) === 'primary') return false;
+  if (layout === 'ipad-portrait') return PORTRAIT_COMPANION_STATES.has(state);
+  return true;
 }
 
 /** 「動いている」演出のための定期更新の上限間隔（ms）。段階境界が近ければもっと短く刻む。 */
@@ -237,7 +263,8 @@ function callingStageMessage(
   return tr('reception.callingBody', { target });
 }
 
-type Target = { type: ReceptionTargetType; id: string; label: string };
+// 音声経路（voice-target-binding.ts）とタッチ経路で同一の相手構造を使う（後勝ち規則の前提）。
+type Target = ReceptionTarget;
 type CallOutcome = 'connected' | 'timeout' | 'failed';
 
 /**
@@ -307,8 +334,48 @@ function reducer(data: FlowData, action: Action): FlowData {
   }
 }
 
-export function KioskFlow() {
+/**
+ * KioskFlow の外部注入点 (第6wave / #363 injection points・#367 の kiosk 受け口)。
+ * すべて任意で、未指定時は従来どおり動作する（additive・既定挙動は不変）。
+ * デモ再現・テスト・将来の実 provider 接続はこれらの受け口経由で行う。
+ */
+export type KioskFlowProps = {
+  /**
+   * 営業状態 (#367)。'closed' かつ待機中のとき営業時間外表示へ切り替える。
+   * 未指定は「判定不能」= fail-open（通常受付を止めない）。ServiceOperatingPolicy の
+   * 本評価は #367 で行い、その結果をここへ注入する。
+   */
+  operatingStatus?: KioskOperatingStatus;
+  /**
+   * 音声認識(STT)アダプタの生成ファクトリ (#370)。未指定は現行 MockSttAdapter（無変更動作）。
+   * 将来の StreamingSttProvider などは中立 interface のこの受け口で接続する（直接 import しない）。
+   */
+  sttAdapterFactory?: SttAdapterFactory;
+  /**
+   * 音声対話セッションの注入 (#364)。未指定は従来どおりタッチ専用（音声 UI を一切マウントしない
+   * = 完全な無変更動作）。指定時のみ音声対話 UI（字幕・復唱確認・barge-in インジケータ・タッチ縮退
+   * 案内）を有効化する。synthetic（demo-studio 再現/テスト）でも 実 orchestrator wrapper でも、
+   * `src/lib/voice-session/kiosk-binding.ts` の中立 factory を差し込む（直接 new しない）。
+   */
+  voiceSession?: VoiceSessionFactory;
+  /**
+   * QR スキャナの注入 (#363)。CheckinFlow へ透過する。未指定でも `?debugScanPayload=` があれば
+   * カメラ無しのデバッグ用スキャナを使う。いずれも無ければ実カメラ（CameraQrScanner）のまま。
+   */
+  qrScanner?: QrScanner;
+};
+
+export function KioskFlow({ operatingStatus, sttAdapterFactory, voiceSession, qrScanner }: KioskFlowProps = {}) {
   const [data, dispatch] = useReducer(reducer, INITIAL);
+  // onResolved 実結線 (#364): 音声で確定した相手候補を、タッチ経路と同一の SELECT_TARGET へ写像して
+  // dispatch する。相手でない候補（purpose/other/なし）は null で無視。dispatch は useReducer 由来で
+  // 安定なので、この callback は安定参照（音声セッションを不要に再起動させない）。競合は「後勝ち
+  // （last-write-wins）」で解決する（voice-target-binding.ts の doc 参照）。selectingTarget 以外では
+  // reducer が遷移を無視するため、音声確定が来ても現在の受付局面を壊さない。
+  const handleVoiceResolved = useCallback<OnResolved>((candidate) => {
+    const target = voiceCandidateToTarget(candidate);
+    if (target) dispatch({ type: 'SELECT_TARGET', target });
+  }, []);
   const [directory, setDirectory] = useState<Directory>({ departments: [], staff: [] });
   // 待機画面リードの既定文言 (#324)。主指示（「ご用件をお選びください」）は見出し・アバター字幕が
   // 担うため、リードは挨拶＋安心情報（タッチだけで受付できる）のみにして指示を二重化しない。
@@ -720,12 +787,23 @@ export function KioskFlow() {
 
   // Vonage（非同期）通話のとき、ビデオビューに渡す受付 ID。Mock 同期通話では null のまま。
   const [vonageCallId, setVonageCallId] = useState<string | null>(null);
+  // 取次段階 (#363 injection point 4)。`/call` 応答が `stages[]` を返したときだけ非空になり、
+  // KioskCallView が段階表示する。旧形応答（stages 無し）は [] のまま（後方互換）。
+  const [callStages, setCallStages] = useState<CallStage[]>([]);
+  // QR スキャナの実効値 (#363)。注入 prop 最優先、無ければ `?debugScanPayload=` のデバッグ用
+  // スキャナ、いずれも無ければ undefined（CheckinFlow が実カメラ CameraQrScanner を使う）。
+  // デバッグ用スキャナはマウント時に一度だけ生成する（lazy initializer, window は client のみ）。
+  const [debugQrScanner] = useState<QrScanner | undefined>(() =>
+    typeof window !== 'undefined' ? debugScannerFromSearch(window.location.search) : undefined,
+  );
+  const effectiveQrScanner = qrScanner ?? debugQrScanner;
 
   // 呼び出し中になったら、セッション作成 → 呼び出しを実行して結果を反映する。
   useEffect(() => {
     if (data.state !== 'calling') return;
     let cancelled = false;
     setVonageCallId(null);
+    setCallStages([]);
 
     (async () => {
       try {
@@ -759,6 +837,8 @@ export function KioskFlow() {
         const callRes = await fetch(`/api/kiosk/receptions/${session.id}/call`, { method: 'POST' });
         const result = (await callRes.json()) as { state: ReceptionState };
         if (cancelled) return;
+        // 取次段階を後方互換で取り込む (#363)。旧形（stages 無し）は [] で、表示は増えない。
+        setCallStages(parseCallStages(result));
         if (result.state === 'connected') dispatch({ type: 'CALL_CONNECTED', sessionId: session.id });
         else if (result.state === 'timeout') {
           // タイムアウト直前の予告を挟んでから実遷移する (issue #323 AC3)。予告
@@ -1056,7 +1136,13 @@ export function KioskFlow() {
 
   // 現在の表示レイヤー (issue #362)。PresenceState / ReceptionState を複製せず、既存の判定材料
   // （アクセスゲート・QR受付トグル・受付状態機械）から写像するだけの純関数に委譲する。
-  const kioskMode = resolveKioskMode({ gate: view, uiMode: mode, receptionState: data.state });
+  const kioskMode = resolveKioskMode({
+    gate: view,
+    uiMode: mode,
+    receptionState: data.state,
+    // 営業状態注入 (#367)。未指定/open は operatingStateOf が undefined を返し fail-open。
+    operatingStatus: operatingStateOf(operatingStatus),
+  });
 
   // 来訪者検知カメラ (issue #79 / #362)。待機サイネージ表示中かつトグル ON のときだけ起動。
   // 未対応/拒否時は status='unavailable' に倒れ、タップ起動で完走する（非破壊）。
@@ -1119,6 +1205,9 @@ export function KioskFlow() {
       data-kiosk-motion={motionKeyForState(data.state)}
       // 画面種別レイアウトプロファイル。配置は CSS が消費する (issue #124)。
       data-kiosk-layout={layout}
+      // アバターの在り方（primary/companion/minimal）。#361 の会話継続レイアウトを CSS が消費する。
+      // 横向きの選択/入力/確認ではアバターをレール(companion)として並置し対話の連続性を保つ。
+      data-kiosk-presence={view === 'ready' ? deriveAvatarPresence(data.state) : undefined}
       // 来訪者が選べるアクセシビリティ支援モード (issue #321)。配置・配色・文字サイズの
       // 切り替えは globals.css がこれらの属性セレクタで担う（JS はスタイルを持たない）。
       data-a11y-font-scale={fontScale}
@@ -1143,6 +1232,23 @@ export function KioskFlow() {
         onSimpleJapaneseChange={(enabled) => setLocale(enabled ? 'ja-simple' : DEFAULT_LOCALE)}
         enabledModes={a11yEnabledModes}
       />
+      {/*
+        音声対話 UI レイヤ (#364 / #361)。voiceSession 注入時のみマウントする opt-in オーバーレイ。
+        既存の 35%/65% レール（アバター/操作）を壊さない画面下部の重ね描画で、字幕・復唱確認・
+        barge-in インジケータ・タッチ縮退案内を担う。未指定なら一切マウントされない（無変更動作）。
+        `receptionState={data.state}` は第9wave のゼロタッチ自動化配線: voiceSession は reception
+        状態機械を直接観測できないため、この prop 経由で現在局面（少なくとも selectingTarget か）を
+        通知する。demo-studio の synthetic driver はこれを合図に発話シーケンスを (再)開始できる
+        （実 orchestrator 経路は同 hook を実装しないため無影響 = 中立な通知口）。
+      */}
+      {voiceSession ? (
+        <VoiceSessionLayer
+          factory={voiceSession}
+          locale={locale}
+          receptionState={data.state}
+          onResolved={handleVoiceResolved}
+        />
+      ) : null}
       {inactivitySeconds !== null ? (
         <InactivityWarning
           seconds={inactivitySeconds}
@@ -1169,7 +1275,29 @@ export function KioskFlow() {
         <KioskCheckingView />
       ) : mode === 'checkin' ? (
         // QR 受付モード (issue #98)。通常受付選択 / 終了で normal へ戻す（個人情報は破棄される）。
-        <CheckinFlow onUseManual={() => setMode('normal')} onExit={() => setMode('normal')} />
+        // #361: 通常受付と同じアバター継続レール・字幕シェルで提示するため、アバター資産と
+        // locale/layout を渡す（別アプリに見せない）。表示契約は checkinConversationTurnFor。
+        <CheckinFlow
+          // QR ペイロード注入 (#363)。注入 prop / `?debugScanPayload=` があればカメラ無しで
+          // 読み取りを再現、無ければ実カメラ（CameraQrScanner）のまま（非破壊）。
+          scanner={effectiveQrScanner}
+          onUseManual={() => setMode('normal')}
+          onExit={() => setMode('normal')}
+          locale={locale}
+          layout={layout}
+          vrmUrl={vrmUrl}
+          avatarFallbackUrl={avatarFallbackUrl}
+          motionUrls={motions.motions}
+          defaultMotionUrl={motions.defaultUrl}
+        />
+      ) : kioskMode === 'out_of_hours' ? (
+        // 営業時間外の待機画面 (#367)。resolveKioskMode が closed かつ idle のときだけ到達する。
+        // 受付進行中は out_of_hours にならないため、進行中の来訪者を中断しない。
+        <OutOfHoursView
+          status={operatingStatus ?? { state: 'closed' }}
+          locale={locale}
+          onLocaleChange={setLocale}
+        />
       ) : showSignage ? (
         // 待機サイネージ (issue #101) + 来訪検知 (issue #79) + ATTRACT (issue #362)。
         // タップ/ATTRACT CTA/QR/退館で受付へ。来訪検知の自動検知は ATTRACT オーバーレイの
@@ -1247,6 +1375,10 @@ export function KioskFlow() {
               callingStageTextOverride,
               // ワンタップ満足度フィードバック (#320)。完了/未応答/失敗画面のみが使う。
               { enabled: feedbackEnabled, onSubmit: submitFeedback },
+              // STT アダプタ注入 (#370)。未指定は既定 MockSttAdapter（無変更動作）。
+              sttAdapterFactory,
+              // 取次段階 (#363)。Vonage 非同期通話ビュー（KioskCallView）が段階表示する。
+              callStages,
             )}
           </div>
           {/*
@@ -1257,7 +1389,7 @@ export function KioskFlow() {
             （呼び出し中=気遣い・完了=お見送り・失敗=お詫び）が最も活きる場面でもある。
             待機画面は IdleView 側がヒーローとして大きく表示する。
           */}
-          {showAvatarCompanion(data.state) ? (
+          {showAvatarCompanion(data.state, layout) ? (
             <div className="kiosk-avatar-companion" aria-hidden="true">
               <AvatarGuide
                 screenState={data.state}
@@ -1843,6 +1975,10 @@ function renderScreen(
    * `enabled=false`（テナント設定でオフ）のときは呼び出し側で UI ごと出さない。
    */
   feedback: { enabled: boolean; onSubmit: (rating: SatisfactionRating, reasonCodes: FeedbackReasonCode[]) => void },
+  /** STT アダプタ注入 (#370)。未指定は既定 MockSttAdapter（無変更動作）。 */
+  sttAdapterFactory: SttAdapterFactory | undefined,
+  /** 取次段階 (#363)。Vonage 非同期通話ビューが段階表示する。旧形応答では空配列。 */
+  callStages: CallStage[],
 ) {
   const tr = makeT(locale);
   switch (data.state) {
@@ -1871,6 +2007,7 @@ function renderScreen(
         <TargetView
           directory={directory}
           sttEnabled={sttEnabled}
+          sttAdapterFactory={sttAdapterFactory}
           onSelect={(target) => dispatch({ type: 'SELECT_TARGET', target })}
           onVoiceUse={onVoiceUse}
           onSearchQuery={onSearchQuery}
@@ -1916,6 +2053,8 @@ function renderScreen(
               onConnected={() => dispatch({ type: 'CALL_CONNECTED', sessionId: vonageCallId })}
               onTimeout={() => dispatch({ type: 'CALL_TIMEOUT', sessionId: vonageCallId })}
               onFallback={() => dispatch({ type: 'CALL_FAILED', sessionId: vonageCallId })}
+              stages={callStages}
+              locale={locale}
             />
           ) : (
             <CallingView
@@ -2151,6 +2290,7 @@ function PurposeView({
 function TargetView({
   directory,
   sttEnabled,
+  sttAdapterFactory,
   onSelect,
   onVoiceUse,
   onSearchQuery,
@@ -2159,6 +2299,8 @@ function TargetView({
 }: {
   directory: Directory;
   sttEnabled: boolean;
+  /** STT アダプタ注入 (#370)。未指定は既定 MockSttAdapter（無変更動作）。 */
+  sttAdapterFactory?: SttAdapterFactory;
   onSelect: (t: Target) => void;
   /** 音声候補が採用されたことを体験メトリクスへ通知する (issue #319)。 */
   onVoiceUse?: () => void;
@@ -2201,16 +2343,18 @@ function TargetView({
     if (sttListening) return;
     setSttListening(true);
     try {
-      // 実ブラウザの音声認識は実機前提（#65）。ここでは在席担当者名から候補を生成する。
+      // 候補生成元は在席担当者名。実 STT は注入ファクトリ (#370) で差し替える。既定は
+      // MockSttAdapter（実ブラウザ音声認識は実機前提 #65）。中立 interface のみに依存する。
       const phrases = directory.staff
         .filter((s) => s.available)
         .map((s) => s.kana ?? s.displayName);
-      const candidates = await new MockSttAdapter(phrases).listen();
+      const factory = sttAdapterFactory ?? defaultSttAdapterFactory;
+      const candidates = await factory(phrases).listen();
       setSttCandidates(candidates);
     } finally {
       setSttListening(false);
     }
-  }, [directory.staff, sttListening]);
+  }, [directory.staff, sttListening, sttAdapterFactory]);
 
   return (
     <>

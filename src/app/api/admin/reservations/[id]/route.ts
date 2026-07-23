@@ -7,6 +7,7 @@ import {
   resolveAdminActor,
   serviceResponse,
   toReservationId,
+  toReservationView,
 } from '@/lib/reservation/request';
 
 type Ctx = { params: Promise<{ id: string }> };
@@ -30,7 +31,8 @@ export async function GET(request: Request, { params }: Ctx): Promise<NextRespon
     scope.siteId,
     toReservationId(id),
   );
-  return serviceResponse(result);
+  // 応答から tokenHash を落とす（#375 I1）。
+  return serviceResponse(result, 200, toReservationView);
 }
 
 export async function PATCH(request: Request, { params }: Ctx): Promise<NextResponse> {
@@ -47,7 +49,7 @@ export async function PATCH(request: Request, { params }: Ctx): Promise<NextResp
     toReservationId(id),
     parseEditBody(body),
   );
-  return serviceResponse(result);
+  return serviceResponse(result, 200, toReservationView);
 }
 
 export async function DELETE(request: Request, { params }: Ctx): Promise<NextResponse> {
@@ -62,5 +64,5 @@ export async function DELETE(request: Request, { params }: Ctx): Promise<NextRes
     scope.siteId,
     toReservationId(id),
   );
-  return serviceResponse(result);
+  return serviceResponse(result, 200, toReservationView);
 }

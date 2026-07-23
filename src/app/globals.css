@@ -639,6 +639,69 @@ a {
 }
 
 /* =========================================================================
+ * #361 Character-led: 横向きの会話継続レイアウト（アバター 35% / 会話・操作 65%）
+ *
+ * 選択・入力・確認の主要ステップ（selectingPurpose / selectingTarget / inputVisitorInfo /
+ * confirming）で、アバターを左レール(companion)として並置し「同じアバターとの対話」が
+ * 途中で切れないようにする。フォームやカードは右 65% に収め、レールは pointer-events:none で
+ * 操作を妨げない。字幕を常時表示して、音声が出なくても今の問いかけが読めるようにする。
+ *
+ * 呼び出し中/通話/結果（calling/connected/…）は従来どおり中央パネル＋左下の控えめ companion の
+ * まま（映像パネル等のレイアウトを壊さない）。縦向き(ipad-portrait)は本レール構成を適用せず
+ * 既存プロファイルを維持する（重なり回避は KioskFlow の showAvatarCompanion が担う）。
+ * ======================================================================= */
+.screen[data-kiosk-layout='ipad-landscape'][data-kiosk-state='selectingPurpose'] .kiosk-avatar-companion,
+.screen[data-kiosk-layout='ipad-landscape'][data-kiosk-state='selectingTarget'] .kiosk-avatar-companion,
+.screen[data-kiosk-layout='ipad-landscape'][data-kiosk-state='inputVisitorInfo'] .kiosk-avatar-companion,
+.screen[data-kiosk-layout='ipad-landscape'][data-kiosk-state='confirming'] .kiosk-avatar-companion,
+.screen[data-kiosk-layout='large-display'][data-kiosk-state='selectingPurpose'] .kiosk-avatar-companion,
+.screen[data-kiosk-layout='large-display'][data-kiosk-state='selectingTarget'] .kiosk-avatar-companion,
+.screen[data-kiosk-layout='large-display'][data-kiosk-state='inputVisitorInfo'] .kiosk-avatar-companion,
+.screen[data-kiosk-layout='large-display'][data-kiosk-state='confirming'] .kiosk-avatar-companion {
+  position: fixed;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 35%;
+  max-width: 35vw;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: var(--space-lg);
+  z-index: 2; /* 操作カードより背面。pointer-events:none なのでタッチは貫通する。 */
+}
+
+/* 会話継続レールでは字幕を常時表示する（今の問いかけが音声無しでも読める）。 */
+.screen[data-kiosk-layout='ipad-landscape'][data-kiosk-state='selectingPurpose'] .kiosk-avatar-companion [data-testid='avatar-subtitle'],
+.screen[data-kiosk-layout='ipad-landscape'][data-kiosk-state='selectingTarget'] .kiosk-avatar-companion [data-testid='avatar-subtitle'],
+.screen[data-kiosk-layout='ipad-landscape'][data-kiosk-state='inputVisitorInfo'] .kiosk-avatar-companion [data-testid='avatar-subtitle'],
+.screen[data-kiosk-layout='ipad-landscape'][data-kiosk-state='confirming'] .kiosk-avatar-companion [data-testid='avatar-subtitle'],
+.screen[data-kiosk-layout='large-display'][data-kiosk-state='selectingPurpose'] .kiosk-avatar-companion [data-testid='avatar-subtitle'],
+.screen[data-kiosk-layout='large-display'][data-kiosk-state='selectingTarget'] .kiosk-avatar-companion [data-testid='avatar-subtitle'],
+.screen[data-kiosk-layout='large-display'][data-kiosk-state='inputVisitorInfo'] .kiosk-avatar-companion [data-testid='avatar-subtitle'],
+.screen[data-kiosk-layout='large-display'][data-kiosk-state='confirming'] .kiosk-avatar-companion [data-testid='avatar-subtitle'] {
+  display: block;
+}
+
+/* 会話・操作は右 65% に寄せる（レールと重ならない）。screen-anim が各ステップの描画枠。 */
+.screen[data-kiosk-layout='ipad-landscape'][data-kiosk-state='selectingPurpose'] .screen-anim,
+.screen[data-kiosk-layout='ipad-landscape'][data-kiosk-state='selectingTarget'] .screen-anim,
+.screen[data-kiosk-layout='ipad-landscape'][data-kiosk-state='inputVisitorInfo'] .screen-anim,
+.screen[data-kiosk-layout='ipad-landscape'][data-kiosk-state='confirming'] .screen-anim,
+.screen[data-kiosk-layout='large-display'][data-kiosk-state='selectingPurpose'] .screen-anim,
+.screen[data-kiosk-layout='large-display'][data-kiosk-state='selectingTarget'] .screen-anim,
+.screen[data-kiosk-layout='large-display'][data-kiosk-state='inputVisitorInfo'] .screen-anim,
+.screen[data-kiosk-layout='large-display'][data-kiosk-state='confirming'] .screen-anim {
+  padding-left: 37%;
+}
+
+/* 低リーチ(a11y)モードは操作を下寄せするため、レール構成でも右カラムの上詰めを避ける。 */
+.screen[data-a11y-reach='low'][data-kiosk-layout='ipad-landscape'][data-kiosk-state='inputVisitorInfo'] .screen-anim {
+  padding-left: 35%;
+}
+
+/* =========================================================================
  * 結果/待ち画面の共通レイアウト (#326 L1)
  *
  * 呼び出し中・結果（接続/タイムアウト/失敗/代替導線）・完了/キャンセルは、これまで
@@ -849,6 +912,92 @@ a {
   30% {
     opacity: 1;
     transform: translateY(-6px);
+  }
+}
+
+/* =======================================================================
+ * 聞き取り中インジケータ + interim 逐次字幕 (issue #361/#364 第11wave [C])。
+ * aituber-kit v1 の「録音中フィードバック + interim 逐次表示」の"考え方"を、受付の
+ * 復唱確認不変条件を保ったまま自前 CSS で再構成したもの（コード移植なし）。
+ * デザイントークン準拠・CSS のみ・prefers-reduced-motion 対応（静的表現へ落とす）。
+ * 2 段階: data-stage="idle"（話しかけ待ち・穏やかなパルス）/ "speech"（発話検知中・
+ * 振幅の大きい波形）。判別材料は状態内の interim の有無のみ（`voiceListeningStage`）。
+ * ======================================================================= */
+.voice-layer__indicator {
+  display: inline-flex;
+  align-items: flex-end;
+  justify-content: center;
+  gap: 5px;
+  height: 26px;
+}
+
+.voice-layer__wave {
+  display: block;
+  width: 5px;
+  height: 8px;
+  border-radius: var(--radius-pill);
+  background: var(--color-accent);
+  transform-origin: bottom center;
+  /* 待受（idle）は穏やかにゆっくり。発話検知（speech）で速く・大きく揺れる。 */
+  animation: voice-wave 1.5s var(--ease-out) infinite;
+}
+
+.voice-layer__wave:nth-child(1) {
+  animation-delay: 0s;
+}
+.voice-layer__wave:nth-child(2) {
+  animation-delay: 0.12s;
+}
+.voice-layer__wave:nth-child(3) {
+  animation-delay: 0.24s;
+}
+.voice-layer__wave:nth-child(4) {
+  animation-delay: 0.36s;
+}
+.voice-layer__wave:nth-child(5) {
+  animation-delay: 0.48s;
+}
+
+/* 発話検知中: 振幅を上げ・周期を短くして「声を拾っている」ことを強調する。 */
+.voice-layer__indicator--speech .voice-layer__wave {
+  animation-duration: 0.7s;
+  background: var(--color-accent-strong);
+}
+
+@keyframes voice-wave {
+  0%,
+  100% {
+    transform: scaleY(0.4);
+    opacity: 0.5;
+  }
+  50% {
+    transform: scaleY(2.2);
+    opacity: 1;
+  }
+}
+
+/* interim（確定前）字幕。確定前であることが分かるよう控えめなガラス地の pill に載せる。 */
+.voice-layer__interim {
+  max-width: min(80%, 40ch);
+  padding: 6px 14px;
+  border-radius: var(--radius-pill);
+  background: var(--color-scrim);
+  color: var(--color-on-scrim);
+  line-height: 1.4;
+}
+
+/* モーション抑制: バーを一定高の静的表現にする（アニメーションを止め、崩れないよう高さを固定）。
+ * 末尾の共通 prefers-reduced-motion ブロックも animation を無効化するが、静的高さをここで明示して
+ * 「無音の波形」が意味のある形（idle=低い・speech=やや高い）で止まるようにする。 */
+@media (prefers-reduced-motion: reduce) {
+  .voice-layer__wave {
+    animation: none;
+    height: 12px;
+    transform: none;
+    opacity: 0.85;
+  }
+  .voice-layer__indicator--speech .voice-layer__wave {
+    height: 20px;
   }
 }
 
@@ -1490,4 +1639,74 @@ a {
 .screen[data-a11y-contrast='high'] .a11y-menu__toggle,
 .screen[data-a11y-contrast='high'] .a11y-menu__close {
   border-color: var(--color-border-strong);
+}
+
+/* =========================================================================
+ * 受付体験スタジオ（デモ） UI polish (issue #363, 第6/14 wave 実ブラウザ検証)
+ *
+ * 1280〜1600px の 3 ペインレイアウトで見つかった 2 件を、DemoStudio.tsx 側の inline
+ * style だけでは対処しきれない（flexbox の折返し挙動・ellipsis はビューポート幅ではなく
+ * "実際に割り当てられた幅" に依存するため）ため、このスコープに限定したクラスで補う。
+ * ======================================================================= */
+
+/* 左ペイン「会話フロー」のターンチップ: 240px 程度の狭い幅でも
+ * badge + 値 + 並べ替え矢印が横並びのまま崩れない（値だけ ellipsis）ようにする。
+ * 対処前は button に min-width:0 が無く、値テキストに white-space の指定も無かったため、
+ * 狭い幅では長い値が 1 文字ずつ折り返され縦書きのように詰まっていた。
+ */
+.demo-turn-item {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex-wrap: wrap;
+}
+
+.demo-turn-chip {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.demo-turn-chip__badge {
+  flex: 0 0 auto;
+}
+
+.demo-turn-chip__value {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.demo-turn-item__actions {
+  display: inline-flex;
+  gap: 2px;
+  flex: 0 0 auto;
+}
+
+/* 右ペイン「ライブプレビュー」の見出し行: 見出しは折返し可能にしつつ、操作ボタンは
+ * 縮まず（white-space:nowrap）常に行の右側に留める。ペインの実幅が足りない場合は
+ * flex-wrap により自然にボタンが次の行へ縦積みされる（メディアクエリではなく
+ * 実際に割り当てられた幅で判定されるため、3 ペインの折返し状態にも追従する）。
+ */
+.demo-preview-header {
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+  flex-wrap: wrap;
+}
+
+.demo-preview-header__title {
+  margin: 0;
+  flex: 1 1 200px;
+  min-width: 0;
+}
+
+.demo-preview-header__action {
+  flex: 0 0 auto;
+  margin-left: auto;
+  white-space: nowrap;
 }

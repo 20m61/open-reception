@@ -6,6 +6,7 @@ import { WebMonitoringStack } from '../lib/stacks/web-monitoring-stack';
 import { CloudFrontMonitoringStack } from '../lib/stacks/cloudfront-monitoring-stack';
 import { NotificationStack } from '../lib/stacks/notification-stack';
 import { MonitoringStack } from '../lib/stacks/monitoring-stack';
+import { RealtimeRuntimeStack, RealtimeRuntimeDnsConfig } from '../lib/stacks/realtime-runtime-stack';
 import { resolveEnv } from '../lib/config/environments';
 import { configureCostExplorerAccess } from '../lib/constructs/cost-explorer-access';
 import { overrideComponentTag } from '../lib/constructs/cost-tags';
@@ -22,6 +23,9 @@ import { COST_TAG_COMPONENTS } from '../lib/config/cost-components';
  *   - CloudFrontMonitoringStack : CloudFront 5xx アラーム (#303) — **us-east-1**（メトリクス発行先）
  *   - NotificationStack         : 通知サブシステム (#32/#34) — API + Lambda + Polly/Vonage
  *   - MonitoringStack           : 通知サブシステムの監視（Alarms / Dashboard / SNS）
+ *   - RealtimeRuntimeStack      : リアルタイム会話 EC2 基盤 (#366 Phase 0)。
+ *     `config.realtime.enabled`（既定 false, 全環境）が true の場合のみ app へ追加する。
+ *     ADR は `docs/adr/0003-realtime-runtime-ec2-phase0.md`。**deploy は本 increment のスコープ外**。
  *
  * デプロイ先アカウント/リージョンは CDK 既定の環境変数
  * (CDK_DEFAULT_ACCOUNT / CDK_DEFAULT_REGION) を使用する。
@@ -63,6 +67,17 @@ const appSecretsName = app.node.tryGetContext('appSecretsName') as string | unde
 // OAC が POST ボディを署名しない制約（GET 可・POST 403）を回避する。`-c originVerifySecret=<高エントロピー値>`。
 const originVerifySecret = app.node.tryGetContext('originVerifySecret') as string | undefined;
 
+// 任意: テナント別 CCaaS プロバイダ secret を Secrets Manager で扱う (issue #405 Inc2)。
+// `-c providerSecretBackend=secrets-manager -c providerSecretPrefix=open-reception/prod`。
+// 未指定なら in-memory mock のまま（dev/test の現行動作不変）。prefix 未指定は WebStack が fail-closed。
+const providerSecretBackend = app.node.tryGetContext('providerSecretBackend') as
+  | 'memory'
+  | 'secrets-manager'
+  | undefined;
+const providerSecretPrefix =
+  (app.node.tryGetContext('providerSecretPrefix') as string | undefined) ??
+  `open-reception/${config.environment}`;
+
 // 管理ログイン認証プロバイダ (issue #238)。デプロイ環境の既定は config.auth.adminProvider（=cognito）。
 // `-c appEnv='{"ADMIN_AUTH_PROVIDER":"none"}'` で明示上書きも可能。cognito のとき WebStack が
 // Cognito User Pool/Client（USER_SRP_AUTH 有効）を作成し COGNITO_* を注入する。
@@ -80,6 +95,8 @@ const web = new WebStack(app, `OpenReception-Web-${config.environment}`, {
   appSecretsName,
   originVerifySecret,
   cognitoAuth: adminProvider === 'cognito',
+  providerSecretBackend,
+  providerSecretPrefix,
   description: `open-reception Next.js hosting (${config.environment})`,
 });
 
@@ -148,5 +165,32 @@ const monitoring = new MonitoringStack(app, `OpenReception-Monitoring-${config.e
   description: `open-reception notification monitoring (${config.environment})`,
 });
 overrideComponentTag(monitoring, COST_TAG_COMPONENTS.monitoring);
+
+// リアルタイム会話 EC2 基盤 (#366 Phase 0)。config.realtime.enabled が true の環境のみ synth 対象に
+// 含める（既定は全環境 false — 本プロジェクト初の実質的固定費のためユーザー承認後に true 化する）。
+// `-c realtimeHostedZoneId=... -c realtimeZoneName=... -c realtimeRecordName=...` で Route 53 連携を
+// 任意指定できる（未指定なら Route 53 リソースを作らない、customDomain と同じ任意 context の方針）。
+if (config.realtime.enabled) {
+  const realtimeHostedZoneId = app.node.tryGetContext('realtimeHostedZoneId') as string | undefined;
+  const realtimeZoneName = app.node.tryGetContext('realtimeZoneName') as string | undefined;
+  const realtimeRecordName = app.node.tryGetContext('realtimeRecordName') as string | undefined;
+  const realtimeDns: RealtimeRuntimeDnsConfig | undefined =
+    realtimeHostedZoneId && realtimeZoneName && realtimeRecordName
+      ? { hostedZoneId: realtimeHostedZoneId, zoneName: realtimeZoneName, recordName: realtimeRecordName }
+      : undefined;
+  // bedrock:InvokeModel の対象モデル ARN パターン (#366 W3)。未指定時は Stack 側の既定
+  // （Claude 系 foundation-model 限定）にフォールバックする。
+  const realtimeBedrockModelArnPattern = app.node.tryGetContext('realtimeBedrockModelArnPattern') as
+    | string
+    | undefined;
+
+  new RealtimeRuntimeStack(app, `OpenReception-RealtimeRuntime-${config.environment}`, {
+    env: { account, region },
+    config,
+    dns: realtimeDns,
+    bedrockModelArnPattern: realtimeBedrockModelArnPattern,
+    description: `open-reception realtime runtime EC2 (${config.environment})`,
+  });
+}
 
 app.synth();

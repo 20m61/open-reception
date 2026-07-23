@@ -22,6 +22,6 @@
     "experimentalDecorators": true,
     "typeRoots": ["./node_modules/@types"]
   },
-  "include": ["bin/**/*.ts", "lib/**/*.ts", "test/**/*.ts"],
+  "include": ["bin/**/*.ts", "lib/**/*.ts", "lambda/**/*.ts", "test/**/*.ts"],
   "exclude": ["node_modules", "cdk.out"]
 }

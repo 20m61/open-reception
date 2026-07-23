@@ -1,11 +1,14 @@
 import { NextResponse } from 'next/server';
 import { readJson } from '@/lib/data-stores/result-http';
+import { renderReservationQrDataUrl } from '@/lib/reservation/qr';
+import { resolveCheckinBaseUrl } from '@/lib/reservation/base-url';
 import { getReservationService } from '@/lib/reservation/store';
 import {
   parseCreateBody,
   readScope,
   resolveAdminActor,
   serviceResponse,
+  toReservationView,
 } from '@/lib/reservation/request';
 
 /**
@@ -22,7 +25,8 @@ export async function GET(request: Request): Promise<NextResponse> {
   const scope = readScope(new URL(request.url).searchParams);
   if (!scope.ok) return NextResponse.json(scope.error, { status: 400 });
   const result = await getReservationService().list(actor, scope.tenantId, scope.siteId);
-  return serviceResponse(result);
+  // 応答から tokenHash を落とす（#375 I1: 照合専用の内部値を admin API に露出しない）。
+  return serviceResponse(result, 200, (list) => list.map(toReservationView));
 }
 
 export async function POST(request: Request): Promise<NextResponse> {
@@ -34,5 +38,21 @@ export async function POST(request: Request): Promise<NextResponse> {
   const parsed = parseCreateBody(body, scope.tenantId, scope.siteId);
   if (!parsed.ok) return NextResponse.json(parsed.error, { status: 400 });
   const result = await getReservationService().create(actor, parsed.value);
+  // 生 token は一度きり応答(#375)。UI がその場で QR を表示できるよう qrDataUrl を同梱する
+  // (サーバ側描画。以後は保存 hash から再生成できない)。
+  if (result.ok) {
+    // QR 宛先はサーバ権威の解決器を使う(request 由来 origin を信用しない — base-url.ts の方針)。
+    const origin = resolveCheckinBaseUrl(request);
+    if (!origin) {
+      return NextResponse.json({ error: 'base_url_unresolved' }, { status: 400 });
+    }
+    return NextResponse.json(
+      {
+        ...toReservationView(result.value),
+        qrDataUrl: renderReservationQrDataUrl(origin, result.value.token),
+      },
+      { status: 201, headers: { 'cache-control': 'private, no-store' } },
+    );
+  }
   return serviceResponse(result, 201);
 }

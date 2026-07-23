@@ -98,10 +98,12 @@ dist
 
 # 受付アバターの VRM/モーション バイナリは原則リポジトリに含めない（ライセンス・サイズ, #31/#105）。
 # 配備時に public/avatar/ へ配置する。README は追跡する。
-# 例外: 同梱する CC0 の既定モデル（default.vrm）はライセンス上安全なため追跡する。
+# 例外: 同梱する CC0 の既定モデル（default.vrm）と、scripts/generate-idle-vrma.mjs で
+# 自作生成する idle モーション（idle.vrma）はライセンス上安全なため追跡する。
 public/avatar/*.vrm
 public/avatar/*.vrma
 !public/avatar/default.vrm
+!public/avatar/idle.vrma
 
 # vuepress build output
 .vuepress/dist
@@ -174,3 +176,8 @@ screenshots/
 .url-quality-gate/
 .lighthouseci/
 infra/cdk-outputs-*.json
+
+# ループ検証用の一時スクリプト(リポジトリ root に置く場合の保険)
+/.w*.mjs
+/.dbg-*.mjs
+/.studio-visual-check.mjs

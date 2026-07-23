@@ -18,9 +18,21 @@ export const asReservationId = (v: string): ReservationId => v as ReservationId;
 /**
  * 来訪者へ渡すトークン。QR に載せる唯一の参照値で、十分なエントロピーを持つ
  * ランダム値（src/domain/reservation/token.ts で生成）。個人情報は含まない。
+ *
+ * 生値（平文）は**発行時に一度だけ**呼び出し側へ返す（`IssuedReservation`）。永続レコード
+ * （`VisitReservation`）には平文を持たず、一方向 hash（`tokenHash`）のみを保存する（#375）。
  */
 export type ReservationToken = string & { readonly __brand: 'ReservationToken' };
 export const asReservationToken = (v: string): ReservationToken => v as ReservationToken;
+
+/**
+ * 予約トークンの一方向 hash（SHA-256 の 16 進表現・任意で server pepper 込み）。
+ * 永続レコードにはこの hash のみを保存し、照合は入力 token を同様に hash して timing-safe
+ * 比較する（src/domain/reservation/token.ts）。この値から生 token は復元できない（#375）。
+ */
+export type ReservationTokenHash = string & { readonly __brand: 'ReservationTokenHash' };
+export const asReservationTokenHash = (v: string): ReservationTokenHash =>
+  v as ReservationTokenHash;
 
 /**
  * 予約の状態。
@@ -71,8 +83,11 @@ export type VisitReservation = {
   /** 呼び出し先 ID（staffId / departmentId）。 */
   targetId: string;
 
-  /** 来訪者へ渡す参照トークン（QR の payload）。 */
-  token: ReservationToken;
+  /**
+   * 来訪者トークンの一方向 hash（#375）。生 token は保存しない。受付照合は入力 token を
+   * hash して timing-safe に突き合わせる。QR の再表示は不可（発行時のみ）。
+   */
+  tokenHash: ReservationTokenHash;
   /** 利用制約。 */
   usagePolicy: ReservationUsagePolicy;
   /** トークン有効期限（ISO 8601）。これを過ぎたら expired。 */
@@ -86,6 +101,21 @@ export type VisitReservation = {
 
   createdAt: string;
   updatedAt: string;
+};
+
+/**
+ * 発行結果（#375）。永続レコード（hash のみ）に、発行時だけ有効な生 token を添えた形。
+ * `create` / `reissueToken` のみが返し、来訪者へ渡す QR / URL の生成に使う。get/list など
+ * 通常の参照系は `VisitReservation`（hash のみ）を返し、生 token を再露出しない。
+ */
+export type IssuedReservation = VisitReservation & { token: ReservationToken };
+
+/**
+ * 移行前（#97 時点）の永続形（#375 移行対象）。生 token を保持し tokenHash を持たない。
+ * `migrateReservationToHashed`（./migration.ts）で `VisitReservation` へ一括変換する。
+ */
+export type LegacyVisitReservation = Omit<VisitReservation, 'tokenHash'> & {
+  token: ReservationToken;
 };
 
 /** 予約作成の入力（ドメイン用の正規化済み形）。 */
