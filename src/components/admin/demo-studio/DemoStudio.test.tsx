@@ -38,3 +38,24 @@ describe('DemoStudio 初期描画（issue #363 公開/共有パネル配線）',
     expect(html).toContain('data-testid="demo-preview-pane"');
   });
 });
+
+describe('DemoStudio UI polish（issue #363: 会話フローチップ・プレビュー見出しの幅崩れ対策）', () => {
+  it('会話フローのターンチップは badge/value を分離した構造を持つ（狭幅での ellipsis 用）', () => {
+    const html = renderToStaticMarkup(<DemoStudio siteId="tenant-demo" />);
+    // 組込テンプレート（初期選択）のターン一覧が読み取り専用で描画される。
+    expect(html).toContain('data-testid="demo-turn-0"');
+    expect(html).toContain('class="demo-turn-item"');
+    expect(html).toContain('demo-turn-chip');
+    expect(html).toContain('demo-turn-chip__badge');
+    expect(html).toContain('demo-turn-chip__value');
+    // 値を title 属性にも持たせ、ellipsis で見切れても全文が分かるようにする。
+    expect(html).toMatch(/data-testid="demo-turn-0"[^>]*title="/);
+  });
+
+  it('ライブプレビューの見出し行は wrap 可能なコンテナ + 固定寄せの操作ボタンで構成される', () => {
+    const html = renderToStaticMarkup(<DemoStudio siteId="tenant-demo" />);
+    expect(html).toContain('class="demo-preview-header"');
+    expect(html).toContain('demo-preview-header__title');
+    expect(html).toContain('demo-preview-header__action');
+  });
+});
