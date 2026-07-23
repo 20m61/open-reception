@@ -63,9 +63,9 @@ describe('label helpers (#97)', () => {
 });
 
 describe('availableActions (#97)', () => {
-  it('active は編集/キャンセル/失効でき、再発行は不可', () => {
+  it('active は編集/キャンセル/失効/再発行ができる(#375: QR 紛失時の復旧手段として再発行を許す)', () => {
     const a = availableActions('active');
-    expect(a).toMatchObject({ canEdit: true, canCancel: true, canRevoke: true, canReissue: false });
+    expect(a).toMatchObject({ canEdit: true, canCancel: true, canRevoke: true, canReissue: true });
   });
 
   it('expired/revoked は再発行でき、編集/キャンセル/失効は不可', () => {
