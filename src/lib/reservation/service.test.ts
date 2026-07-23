@@ -63,9 +63,44 @@ describe('ReservationService.create (#97)', () => {
     expect(r.ok).toBe(true);
     if (r.ok) {
       expect(r.value.status).toBe('active');
+      // 発行応答は生 token（43 文字）を一度だけ返す。
       expect(r.value.token).toHaveLength(43);
+      // 保存側は hash（64 hex）のみ。生 token と一致しない。
+      expect(r.value.tokenHash).toMatch(/^[0-9a-f]{64}$/);
+      expect(r.value.tokenHash).not.toBe(r.value.token);
     }
     expect(audits.map((a) => a.action)).toEqual(['reservation.created', 'reservation.token_issued']);
+  });
+
+  it('保存レコードには生 token を残さず、get/list は hash のみを返す（#375）', async () => {
+    const { svc } = makeService();
+    const created = await svc.create(tenantAdminA, input());
+    expect(created.ok).toBe(true);
+    const id = created.ok ? created.value.id : (undefined as never);
+    const got = await svc.get(tenantAdminA, T_A, S_1, id);
+    expect(got.ok).toBe(true);
+    if (got.ok) {
+      expect((got.value as Record<string, unknown>).token).toBeUndefined();
+      expect(got.value.tokenHash).toMatch(/^[0-9a-f]{64}$/);
+    }
+    const list = await svc.list(tenantAdminA, T_A, S_1);
+    if (list.ok) {
+      for (const r of list.value) {
+        expect((r as Record<string, unknown>).token).toBeUndefined();
+      }
+    }
+  });
+
+  it('監査 metadata に生 token / hash を残さない（#375）', async () => {
+    const { svc, audits } = makeService();
+    const created = await svc.create(tenantAdminA, input());
+    const plain = created.ok ? created.value.token : '';
+    const hash = created.ok ? created.value.tokenHash : '';
+    for (const a of audits) {
+      const json = JSON.stringify(a.metadata ?? {});
+      expect(json).not.toContain(plain);
+      expect(json).not.toContain(hash);
+    }
   });
 
   it('監査 metadata に PII（氏名/会社名/メモ）を残さない', async () => {
@@ -132,10 +167,14 @@ describe('ReservationService ライフサイクル (#97)', () => {
     const created = await svc.create(developer, input());
     const id = created.ok ? created.value.id : (undefined as never);
     const oldToken = created.ok ? created.value.token : '';
+    const oldHash = created.ok ? created.value.tokenHash : '';
     const reissued = await svc.reissueToken(developer, T_A, S_1, id, '2026-07-01T00:00:00.000Z');
     expect(reissued.ok).toBe(true);
     if (reissued.ok) {
+      // 新しい生 token を一度だけ返し、保存 hash も更新される（旧 hash 無効化）。
       expect(reissued.value.token).not.toBe(oldToken);
+      expect(reissued.value.tokenHash).not.toBe(oldHash);
+      expect(reissued.value.tokenHash).toMatch(/^[0-9a-f]{64}$/);
       expect(reissued.value.status).toBe('active');
     }
     expect(audits.map((a) => a.action)).toContain('reservation.token_reissued');

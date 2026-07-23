@@ -14,6 +14,7 @@
 import type { SiteId, TenantId } from '@/domain/tenant/types';
 import { isUsableAt, markExpiredIfNeeded, markUsed } from '@/domain/reservation/lifecycle';
 import type { VisitReservation } from '@/domain/reservation/types';
+import { hashReservationToken } from '@/domain/reservation/token';
 import type { ReservationRepository } from '@/lib/reservation/repository';
 import type {
   CheckinFailureReason,
@@ -25,6 +26,11 @@ import { extractReservationToken } from './payload';
 export type CheckinServiceDeps = {
   repo: ReservationRepository;
   now?: () => Date;
+  /**
+   * token hash の pepper（server secret・#375）。発行側（ReservationService）と同一値でなければ
+   * 照合が一致しない。省略時は pepper なし。
+   */
+  pepper?: string;
 };
 
 /** 予約から確認画面用の最小限サマリを作る（token / note / id を含めない）。 */
@@ -62,10 +68,12 @@ function reasonFor(r: VisitReservation, now: Date): CheckinFailureReason {
 export class CheckinService {
   private readonly repo: ReservationRepository;
   private readonly now: () => Date;
+  private readonly pepper: string;
 
   constructor(deps: CheckinServiceDeps) {
     this.repo = deps.repo;
     this.now = deps.now ?? (() => new Date());
+    this.pepper = deps.pepper ?? '';
   }
 
   /**
@@ -76,7 +84,12 @@ export class CheckinService {
     const token = extractReservationToken(rawPayload);
     if (!token) return { ok: false, reason: 'invalid' };
 
-    const found = await this.repo.findByToken(tenantId, siteId, token);
+    // 生 token は hash してから照合する（保存は hash のみ・#375）。
+    const found = await this.repo.findByTokenHash(
+      tenantId,
+      siteId,
+      hashReservationToken(token, this.pepper),
+    );
     if (!found) return { ok: false, reason: 'not_found' };
 
     const now = this.now();
@@ -102,7 +115,12 @@ export class CheckinService {
     const token = extractReservationToken(rawPayload);
     if (!token) return { ok: false, reason: 'invalid' };
 
-    const found = await this.repo.findByToken(tenantId, siteId, token);
+    // 生 token は hash してから照合する（保存は hash のみ・#375）。
+    const found = await this.repo.findByTokenHash(
+      tenantId,
+      siteId,
+      hashReservationToken(token, this.pepper),
+    );
     if (!found) return { ok: false, reason: 'not_found' };
 
     const now = this.now();

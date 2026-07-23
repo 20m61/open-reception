@@ -10,9 +10,10 @@
 import type { SiteId, TenantId } from '@/domain/tenant/types';
 import type {
   ReservationId,
-  ReservationToken,
+  ReservationTokenHash,
   VisitReservation,
 } from '@/domain/reservation/types';
+import { reservationTokenHashesEqual } from '@/domain/reservation/token';
 import type { ReservationRepository, RepoResult } from './repository';
 
 function clone<T>(v: T): T {
@@ -43,13 +44,14 @@ export class MemoryReservationRepository implements ReservationRepository {
     return r && inBounds(r, tenantId, siteId) ? clone(r) : undefined;
   }
 
-  async findByToken(
+  async findByTokenHash(
     tenantId: TenantId,
     siteId: SiteId,
-    token: ReservationToken,
+    tokenHash: ReservationTokenHash,
   ): Promise<VisitReservation | undefined> {
     for (const r of this.reservations.values()) {
-      if (r.token === token && inBounds(r, tenantId, siteId)) return clone(r);
+      if (reservationTokenHashesEqual(r.tokenHash, tokenHash) && inBounds(r, tenantId, siteId))
+        return clone(r);
     }
     return undefined;
   }

@@ -13,7 +13,7 @@ import {
 } from './lifecycle';
 import {
   asReservationId,
-  asReservationToken,
+  asReservationTokenHash,
   type CreateReservationInput,
   type VisitReservation,
 } from './types';
@@ -30,7 +30,7 @@ function reservation(over: Partial<VisitReservation> = {}): VisitReservation {
     visitAt: '2026-06-20T01:00:00.000Z',
     targetType: 'staff',
     targetId: 'staff-1',
-    token: asReservationToken('tok-1'),
+    tokenHash: asReservationTokenHash('hash-1'),
     usagePolicy: 'single_use',
     expiresAt: '2026-06-27T00:00:00.000Z',
     status: 'active',
@@ -125,19 +125,19 @@ describe('状態遷移 (#97)', () => {
     expect(bad.ok).toBe(false);
   });
 
-  it('applyReissue: 新トークン・期限を適用し active へ戻す', () => {
-    const revoked = reservation({ status: 'revoked', token: asReservationToken('old') });
-    const r = applyReissue(revoked, asReservationToken('new'), '2026-07-01T00:00:00.000Z', now);
+  it('applyReissue: 新トークン hash・期限を適用し active へ戻す', () => {
+    const revoked = reservation({ status: 'revoked', tokenHash: asReservationTokenHash('old-hash') });
+    const r = applyReissue(revoked, asReservationTokenHash('new-hash'), '2026-07-01T00:00:00.000Z', now);
     expect(r.ok).toBe(true);
     if (r.ok) {
-      expect(r.value.token).toBe('new');
+      expect(r.value.tokenHash).toBe('new-hash');
       expect(r.value.status).toBe('active');
       expect(r.value.usedAt).toBeUndefined();
     }
   });
 
   it('applyReissue: cancelled からは不可', () => {
-    const r = applyReissue(reservation({ status: 'cancelled' }), asReservationToken('x'), '2026-07-01T00:00:00.000Z', now);
+    const r = applyReissue(reservation({ status: 'cancelled' }), asReservationTokenHash('x'), '2026-07-01T00:00:00.000Z', now);
     expect(r.ok).toBe(false);
   });
 
