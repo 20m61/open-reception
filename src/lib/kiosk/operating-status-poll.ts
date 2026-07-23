@@ -102,6 +102,8 @@ export function createOperatingStatusPoller(deps: OperatingStatusPollerDeps): Op
 
   async function poll(): Promise<void> {
     if (deps.isHidden()) return;
+    // 可視性トグル連打などで前回 fetch が残っていれば畳む（オーバーラップ防止・orphan なし）。
+    controller?.abort();
     const local = new AbortController();
     controller = local;
     try {
