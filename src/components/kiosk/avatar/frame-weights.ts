@@ -26,10 +26,11 @@ export interface FrameExpressionWeightsInput {
   /** three.js Clock の経過秒（口の開き量の時間ベース合成に使う）。 */
   elapsedSec: number;
   /**
-   * まばたきの基準重み（減衰前）。このプロジェクトに auto-blink（周期的なまばたき駆動、
-   * `docs/aituber-kit-v1-ui-reference.md` 提案 E）はまだ無いため既定 0（未接続）。
-   * 将来 auto-blink を実装したら、その周期的な重みをここへ渡すだけで感情中の抑制が
-   * 自動的に効くようになる（本トラックで用意する注入 seam）。
+   * まばたきの基準重み（減衰前）。`VrmAvatarViewer` は `domain/avatar/auto-blink.ts`
+   * （`stepAutoBlink`）が毎フレーム計算する周期的な重みをここへ渡す（issue #31 増分）。
+   * 感情中の抑制は本関数が `blendExpressionWeights` を通して行うため、auto-blink 側は
+   * 「いつ・どれだけ閉じるか」だけを計算し抑制ロジックを重複させない。
+   * 省略時は 0（呼び出し元が auto-blink を接続しない場合の fail-safe な既定値）。
    */
   blinkBaseWeight?: number;
 }
