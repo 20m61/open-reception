@@ -24,6 +24,7 @@
  *     構成全体を落とさない。
  */
 import { useEffect, useState } from 'react';
+import { resolveConfigurationSyncInterval } from '@/domain/kiosk/configuration-sync';
 import {
   sanitizeA11yEnabledModes,
   type A11yEnabledModes,
@@ -259,8 +260,15 @@ export async function loadEffectiveConfiguration(
 }
 
 /**
- * 実効構成を一括取得するフック。`enabled=false`（移行フラグ無効）の間は要求を出さない。
- * 取得は起動時の 1 回のみ（設定変更の反映は既存 heartbeat の責務で、本増分では変えない）。
+ * 実効構成を取得するフック。`enabled=false`（移行フラグ無効）の間は要求を出さない。
+ *
+ * 起動時に 1 回取得し、以降は一定間隔で再取得する（#420「公開 → キオスク取得」。
+ * 間隔と可視性の扱いは営業状態ポーリング `src/lib/kiosk/use-operating-status.ts` に揃える:
+ * `document.hidden` の間は取得しない・再表示で即時 1 回取得する）。
+ *
+ * **取得するだけで、いつ適用するかは呼び出し側が決める**（受付進行中の差し替えを防ぐ判定は
+ * `src/domain/kiosk/configuration-sync.ts`）。取得失敗は直前の成功を捨てない
+ * （`status: 'error'` を返すのは初回取得に失敗したときだけ）。
  */
 export function useEffectiveConfiguration(enabled: boolean): EffectiveConfigurationState {
   const [state, setState] = useState<EffectiveConfigurationState>(
@@ -272,14 +280,46 @@ export function useEffectiveConfiguration(enabled: boolean): EffectiveConfigurat
       setState({ status: 'disabled' });
       return;
     }
-    const controller = new AbortController();
+    const intervalMs = resolveConfigurationSyncInterval(
+      typeof window === 'undefined' ? '' : window.location.search,
+    );
+    let controller: AbortController | null = null;
+    let stopped = false;
+
+    const load = async () => {
+      if (stopped) return;
+      if (typeof document !== 'undefined' && document.hidden) return;
+      // 可視性トグル連打などで前回取得が残っていれば畳む（オーバーラップ防止）。
+      controller?.abort();
+      const local = new AbortController();
+      controller = local;
+      const result = await loadEffectiveConfiguration(fetch, local.signal);
+      if (stopped || local.signal.aborted) return;
+      setState((prev) =>
+        // 再取得の失敗で、いま適用できている構成を「取得失敗」に落とさない
+        // （端末は last-known-good で動き続ける。ロールバック playbook の前提）。
+        result.status === 'error' && prev.status === 'ready' ? prev : result,
+      );
+    };
+
     setState({ status: 'loading' });
-    void (async () => {
-      const result = await loadEffectiveConfiguration(fetch, controller.signal);
-      if (controller.signal.aborted) return;
-      setState(result);
-    })();
-    return () => controller.abort();
+    void load();
+    const timer = setInterval(() => void load(), intervalMs);
+    const onVisibility = () => {
+      if (!document.hidden) void load();
+    };
+    if (typeof document !== 'undefined') {
+      document.addEventListener('visibilitychange', onVisibility);
+    }
+
+    return () => {
+      stopped = true;
+      clearInterval(timer);
+      if (typeof document !== 'undefined') {
+        document.removeEventListener('visibilitychange', onVisibility);
+      }
+      controller?.abort();
+    };
   }, [enabled]);
 
   return state;

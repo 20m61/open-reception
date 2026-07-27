@@ -95,6 +95,42 @@ test('実効構成の取得に失敗したら旧経路へ自動フォールバ�
   expect(requests).toContain('/api/kiosk/voice');
 });
 
+test('新経路は構成を定期的に取り直す（公開した版が端末へ届く経路, #420）', async ({ page }) => {
+  const requests = recordConfigRequests(page);
+  // `?configSyncMs=` は既存のタイマー上書き（`?inactivityMs=` 等）と同じ E2E 短縮用クエリ。
+  await page.goto('/kiosk?effectiveConfig=1&configSyncMs=400');
+  await expect(page.getByTestId('kiosk-quick-actions')).toBeVisible();
+
+  // 起動時 1 回だけで終わらず、間隔ごとに取り直している。
+  await expect
+    .poll(() => requests.filter((p) => p === '/api/configuration/effective').length, {
+      timeout: 5000,
+    })
+    .toBeGreaterThan(2);
+  // 再取得は個別 API 経路を呼び戻さない（旧経路へ勝手に落ちない）。
+  expect(requests.filter((p) => LEGACY_CONFIG_APIS.includes(p))).toEqual([]);
+});
+
+test('受付が進行中の間も取得は続くが、画面は差し替わらない (#420 AC)', async ({ page }) => {
+  const requests = recordConfigRequests(page);
+  await page.goto('/kiosk?effectiveConfig=1&configSyncMs=400');
+  await page.getByTestId('start-reception').click();
+  await expect(page.getByTestId('purpose-meeting')).toBeVisible();
+
+  // 受付中でも再取得は回る（適用だけを待たせる設計）。
+  const before = requests.filter((p) => p === '/api/configuration/effective').length;
+  await expect
+    .poll(() => requests.filter((p) => p === '/api/configuration/effective').length, {
+      timeout: 5000,
+    })
+    .toBeGreaterThan(before);
+
+  // 来訪者の居る画面は保たれたまま（再取得のたびに待機画面へ戻ったりしない）。
+  await expect(page.getByTestId('purpose-meeting')).toBeVisible();
+  await page.getByTestId('purpose-meeting').click();
+  await expect(page.getByTestId('staff-search')).toBeVisible();
+});
+
 test('?effectiveConfig=0 で端末 1 台だけ旧経路へ切り戻せる', async ({ page }) => {
   const requests = recordConfigRequests(page);
   await page.goto('/kiosk?effectiveConfig=0');
