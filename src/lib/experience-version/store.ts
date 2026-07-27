@@ -15,6 +15,7 @@ import type { ExperienceConfigurationSnapshot } from '@/domain/experience-versio
 import type { SiteId, TenantId } from '@/domain/tenant/types';
 import { createSectionLoaders } from '@/lib/product-context/section-loaders';
 import { getTenantStore } from '@/lib/tenant/store';
+import { getRoutingRepositories } from '@/lib/routing/store';
 import { DataBackedExperienceRepository } from './repository';
 import { ExperienceVersionService } from './service';
 
@@ -62,11 +63,34 @@ export async function resolveRepresentativeKioskId(
   return active[0] ?? null;
 }
 
+/**
+ * 取次到達性の検査に要る実データを読む (#420)。**実際の呼び出しが使うモデル**
+ * （`RoutingPolicy` / `ContactEndpoint`, #374。`executeRoutedCall` が解決する）だけを対象にする。
+ *
+ * 受付フローの `callRouteId` が指す旧 `CallRoute`（#88）は**現在の呼び出し経路が参照しない**ため、
+ * ここでは実在確認をしない（`knownCallRouteIds` を渡さない = 検査しない）。旧モデルのリポジトリは
+ * actor 必須のサービス経由でしか触れず、参照するためだけに新しい口を開けるのは、統合予定
+ * （移行台帳 §5 の重複概念）の側を固定してしまう。
+ */
+async function loadCallRouteContext(scope: { tenantId: TenantId; siteId: SiteId }) {
+  const repos = getRoutingRepositories();
+  const [policies, endpoints] = await Promise.all([
+    repos.policies.list(scope.tenantId, scope.siteId),
+    repos.endpoints.list(scope.tenantId, scope.siteId),
+  ]);
+  return {
+    // 無効なポリシーは解決対象外なので、到達性の検査からも外す（運用停止中の設定を咎めない）。
+    policies: policies.filter((p) => p.enabled),
+    endpointIds: new Set(endpoints.map((e) => e.id)),
+  };
+}
+
 let service: ExperienceVersionService | undefined;
 
 export function getExperienceVersionService(): ExperienceVersionService {
   service ??= new ExperienceVersionService(new DataBackedExperienceRepository(), {
     captureSnapshot: captureCurrentSnapshot,
+    loadCallRouteContext,
   });
   return service;
 }

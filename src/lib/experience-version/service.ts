@@ -28,6 +28,11 @@ import type {
   ValidationSummary,
 } from '@/domain/experience-version/types';
 import { runSnapshotChecks } from '@/domain/experience-version/snapshot-checks';
+import {
+  checkCallRoutes,
+  flowRouteIdsOf,
+  type CallRouteCheckInput,
+} from '@/domain/experience-version/call-route-checks';
 import { findForbiddenConfigurationValues } from '@/domain/product-context/payload-contract';
 import { CONFIGURATION_SECTIONS } from '@/domain/product-context/types';
 import type { SiteId, TenantId } from '@/domain/tenant/types';
@@ -102,7 +107,19 @@ export function validateSnapshot(
 export class ExperienceVersionService {
   constructor(
     private readonly repo: ExperienceRepository,
-    private readonly deps: { captureSnapshot: SnapshotCapture; now?: () => Date },
+    private readonly deps: {
+      captureSnapshot: SnapshotCapture;
+      now?: () => Date;
+      /**
+       * 取次到達性の検査に要る実データの取得 (#420)。ドメイン側の判定は純関数のままにし、
+       * I/O だけをここへ注入する。未指定なら取次検査をしない（`checkCallRoutes` は
+       * 呼ばれず、既存の検証結果だけが記録される）。
+       */
+      loadCallRouteContext?: (scope: {
+        tenantId: TenantId;
+        siteId: SiteId;
+      }) => Promise<Omit<CallRouteCheckInput, 'flowRouteIds'>>;
+    },
   ) {}
 
   private nowIso(): string {
@@ -116,6 +133,30 @@ export class ExperienceVersionService {
     };
     await this.repo.put(stored);
     return stored;
+  }
+
+  /**
+   * 取次到達性の指摘 (#420)。取得に失敗しても下書き保存は止めない（検証は補助であって、
+   * 保存できないほうが運用を止める）。取次データが読めなかったことは warning として残す。
+   */
+  private async callRouteFindings(
+    scope: Scope,
+    snapshot: ExperienceConfigurationSnapshot,
+  ): Promise<ValidationFinding[]> {
+    const load = this.deps.loadCallRouteContext;
+    if (!load) return [];
+    try {
+      const context = await load(scope);
+      return checkCallRoutes({ ...context, flowRouteIds: flowRouteIdsOf(snapshot.sections) });
+    } catch {
+      return [
+        {
+          check: 'call_route',
+          severity: 'warning',
+          message: '取次設定を取得できなかったため到達性を検証していません',
+        },
+      ];
+    }
   }
 
   async getBySite(tenantId: TenantId, siteId: SiteId): Promise<StoredExperience | undefined> {
@@ -152,6 +193,7 @@ export class ExperienceVersionService {
 
     const existing = await this.repo.findBySite(input.tenantId, input.siteId);
     const summary = validateSnapshot(snapshot, nowIso);
+    summary.findings.push(...(await this.callRouteFindings(scope, snapshot)));
 
     if (!existing) {
       const created = createExperience({
