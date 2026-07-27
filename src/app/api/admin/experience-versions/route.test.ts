@@ -7,6 +7,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 const requireActor = vi.fn();
 const requireActorWithIdentity = vi.fn();
 const appendAdminAudit = vi.fn();
+const resolveRepresentativeKioskId = vi.fn();
 const service = {
   getBySite: vi.fn(),
   saveDraft: vi.fn(),
@@ -27,6 +28,7 @@ vi.mock('@/lib/data-stores/reception-log-store', () => ({
 }));
 vi.mock('@/lib/experience-version/store', () => ({
   getExperienceVersionService: () => service,
+  resolveRepresentativeKioskId: (...a: unknown[]) => resolveRepresentativeKioskId(...a),
 }));
 
 import { GET, POST } from './route';
@@ -77,6 +79,7 @@ beforeEach(() => {
   service.saveDraft.mockResolvedValue({ ok: true, value: EXPERIENCE });
   service.rollback.mockResolvedValue({ ok: true, value: EXPERIENCE });
   service.approve.mockResolvedValue({ ok: true, value: EXPERIENCE });
+  resolveRepresentativeKioskId.mockResolvedValue('kiosk-1');
 });
 
 describe('GET', () => {
@@ -161,10 +164,22 @@ describe('POST', () => {
     expect(res.status).toBe(400);
   });
 
-  it('save-draft は構成取得のため kioskId を要求する', async () => {
+  it('kioskId 未指定なら拠点の代表端末で構成を解決する（暫定 ID を持ち込まない）', async () => {
     const res = await POST(post({ tenantId: 'tenant-a', siteId: 'site-1', action: 'save-draft' }));
 
-    expect(res.status).toBe(400);
+    expect(res.status).toBe(200);
+    expect(service.saveDraft).toHaveBeenCalledWith(
+      expect.objectContaining({ kioskId: 'kiosk-1' }),
+    );
+  });
+
+  it('拠点に端末が 1 台も無ければ 409（版を作らない）', async () => {
+    resolveRepresentativeKioskId.mockResolvedValue(null);
+
+    const res = await POST(post({ tenantId: 'tenant-a', siteId: 'site-1', action: 'save-draft' }));
+
+    expect(res.status).toBe(409);
+    await expect(res.json()).resolves.toMatchObject({ error: 'no_device_in_site' });
     expect(service.saveDraft).not.toHaveBeenCalled();
   });
 

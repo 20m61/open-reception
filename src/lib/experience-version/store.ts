@@ -14,6 +14,7 @@ import { CONFIGURATION_SECTIONS } from '@/domain/product-context/types';
 import type { ExperienceConfigurationSnapshot } from '@/domain/experience-version/types';
 import type { SiteId, TenantId } from '@/domain/tenant/types';
 import { createSectionLoaders } from '@/lib/product-context/section-loaders';
+import { getTenantStore } from '@/lib/tenant/store';
 import { DataBackedExperienceRepository } from './repository';
 import { ExperienceVersionService } from './service';
 
@@ -40,6 +41,25 @@ export async function captureCurrentSnapshot(input: {
   }
 
   return { sections, provenance, configHash: computeSectionsHash(sections) };
+}
+
+/**
+ * 下書き保存時に構成を解決するための代表端末を拠点から選ぶ。
+ *
+ * 現時点で端末ごとに値が変わるセクションは無いため、拠点の有効な端末 1 台で足りる
+ * （`./service.ts` の粒度メモ参照）。**暫定 ID をハードコードしない**ためにここで解決する
+ * （`docs/product-integration-plan.md` §6）。端末が 1 台も無ければ null。
+ */
+export async function resolveRepresentativeKioskId(
+  tenantId: TenantId,
+  siteId: SiteId,
+): Promise<string | null> {
+  const devices = await getTenantStore().devices.listDevices(tenantId, siteId);
+  const active = devices
+    .filter((d) => d.status === 'active')
+    .map((d) => String(d.id))
+    .sort();
+  return active[0] ?? null;
 }
 
 let service: ExperienceVersionService | undefined;
