@@ -108,6 +108,8 @@ import {
   type CallingStage,
   type CallingStageThresholds,
 } from '@/domain/reception/calling-experience';
+import { resolveKioskExperienceFlags } from '@/domain/kiosk/experience-flags';
+import { useEffectiveConfiguration, type Directory } from './useEffectiveConfiguration';
 
 /**
  * MVP では heartbeat・PIN 許可（初回セッション発行前）向けの端末 ID は固定。将来 kiosk
@@ -122,9 +124,6 @@ import {
  */
 const KIOSK_ID = 'kiosk-dev';
 
-type DirDepartment = { id: string; name: string };
-type DirStaff = { id: string; displayName: string; kana?: string; aliases: string[]; departmentId: string; available: boolean };
-type Directory = { departments: DirDepartment[]; staff: DirStaff[] };
 /** 完了・キャンセル後に待機画面へ自動復帰するまでの時間。 */
 const AUTO_RESET_MS = 6000;
 
@@ -570,8 +569,54 @@ export function KioskFlow({ operatingStatus, sttAdapterFactory, voiceSession, qr
     return () => clearInterval(timer);
   }, [refreshHeartbeat]);
 
+  // 構成取得の新旧経路を選ぶ移行フラグ (issue #422 / 台帳 §7)。既定は旧経路（個別 API 7 本）。
+  // `?effectiveConfig=1` で端末 1 台だけ新経路にでき、`=0` で戻せる。window はレンダー中に
+  // 読まないよう lazy initializer で 1 度だけ読む（SSR では既定＝旧経路になり、初期マークアップは
+  // どちらの経路でも同一なのでハイドレーション差分は生じない）。
+  const [experienceFlags] = useState(() =>
+    resolveKioskExperienceFlags({
+      search: typeof window === 'undefined' ? '' : window.location.search,
+      env: process.env.NEXT_PUBLIC_KIOSK_EFFECTIVE_CONFIG,
+    }),
+  );
+  const effectiveConfiguration = useEffectiveConfiguration(experienceFlags.effectiveConfiguration);
+  // 新経路が失敗したら旧経路へ自動フォールバックする（可用性優先。端末を無設定で放置しない）。
+  // 明示的なロールバックはフラグ側（`?effectiveConfig=0`）で行う。
+  const legacyConfigFetch =
+    effectiveConfiguration.status === 'disabled' || effectiveConfiguration.status === 'error';
+
+  // 実効構成の一括取得（#419 `/api/configuration/effective`）を各 state へ反映する (issue #422)。
+  // 取得できなかったセクションは触らない＝既定値を維持する（旧経路の「その API だけ失敗」と同じ挙動）。
+  useEffect(() => {
+    if (effectiveConfiguration.status !== 'ready') return;
+    const { directory: dir, voice, avatar, branding: brand, motions: motion, flows, signageCount: signage } =
+      effectiveConfiguration.sections;
+    if (dir) setDirectory(dir);
+    if (voice) {
+      if (voice.guidanceIdle) setGuidanceIdle(voice.guidanceIdle);
+      setPrivacyNoticeOverride(voice.privacyNotice);
+      setSttEnabled(voice.sttEnabled);
+      setSpeakSettings(voice.speak);
+      setCallingStageTenantOverride(voice.callingStageThresholds);
+      setCallingStageTextOverride(voice.callingStageText);
+      setFeedbackEnabled(voice.feedbackEnabled);
+      setA11yEnabledModes(voice.a11yEnabledModes);
+    }
+    if (avatar) {
+      setBackgroundUrl(avatar.backgroundUrl);
+      setVrmUrl(avatar.vrmUrl);
+      setAvatarFallbackUrl(avatar.fallbackImageUrl);
+    }
+    if (brand) setBranding(brand);
+    if (motion) setMotions(motion);
+    // フロー未取得は null のままにせず [] へ倒す（既定フローで受付を続ける, #100）。
+    setCustomFlows(flows ? [...flows] : []);
+    if (signage !== undefined) setSignageCount(signage);
+  }, [effectiveConfiguration]);
+
   // 部署・担当者を管理画面と共有のディレクトリ API から取得する (issue #3)。
   useEffect(() => {
+    if (!legacyConfigFetch) return;
     let cancelled = false;
     (async () => {
       try {
@@ -586,10 +631,11 @@ export function KioskFlow({ operatingStatus, sttAdapterFactory, voiceSession, qr
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [legacyConfigFetch]);
 
   // 音声設定の案内文言を受付画面へ反映する (issue #28)。
   useEffect(() => {
+    if (!legacyConfigFetch) return;
     let cancelled = false;
     (async () => {
       try {
@@ -640,10 +686,11 @@ export function KioskFlow({ operatingStatus, sttAdapterFactory, voiceSession, qr
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [legacyConfigFetch]);
 
   // 適用中の背景アセットを反映する (issue #27)。読み込み失敗時は背景色で fallback。
   useEffect(() => {
+    if (!legacyConfigFetch) return;
     let cancelled = false;
     (async () => {
       try {
@@ -661,10 +708,11 @@ export function KioskFlow({ operatingStatus, sttAdapterFactory, voiceSession, qr
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [legacyConfigFetch]);
 
   // テナントのブランド設定を取得（#88）。失敗時は汎用テーマのまま。
   useEffect(() => {
+    if (!legacyConfigFetch) return;
     let cancelled = false;
     (async () => {
       try {
@@ -679,10 +727,11 @@ export function KioskFlow({ operatingStatus, sttAdapterFactory, voiceSession, qr
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [legacyConfigFetch]);
 
   // 状態別モーション URL を取得する (issue #31)。未設定/失敗時は default または無効化で fallback。
   useEffect(() => {
+    if (!legacyConfigFetch) return;
     let cancelled = false;
     (async () => {
       try {
@@ -697,10 +746,11 @@ export function KioskFlow({ operatingStatus, sttAdapterFactory, voiceSession, qr
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [legacyConfigFetch]);
 
   // 有効なカスタム受付フローを取得する (issue #100)。取得失敗/無効時は既定フローへフォールバック。
   useEffect(() => {
+    if (!legacyConfigFetch) return;
     let cancelled = false;
     (async () => {
       try {
@@ -719,10 +769,11 @@ export function KioskFlow({ operatingStatus, sttAdapterFactory, voiceSession, qr
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [legacyConfigFetch]);
 
   // 待機サイネージの再生可能項目数を取得する (issue #101)。失敗/無効時は 0（既定 IdleView）。
   useEffect(() => {
+    if (!legacyConfigFetch) return;
     let cancelled = false;
     (async () => {
       try {
@@ -737,7 +788,7 @@ export function KioskFlow({ operatingStatus, sttAdapterFactory, voiceSession, qr
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [legacyConfigFetch]);
 
   // 受付体験メトリクスの計測 (issue #319)。PII を含まない所要/回数/入力手段を集計し、呼び出し作成時に
   // サーバへ同送する（現状サーバは未知フィールドとして無視。永続化は次増分）。計測は非破壊で受付挙動を
