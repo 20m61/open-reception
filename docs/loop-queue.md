@@ -8,7 +8,13 @@
 > 本書の「未実装」「外部待ち」分類が stale で、既に main に在るものを作り直しかけた。
 > 分類が実態と違ったら、その周回で本書を直す。
 
-## 現在地（2026-07-27 更新）
+## 現在地（2026-07-27 更新・第 16 wave 消化後）
+
+**統合再設計プログラム #418 は Wave 0（#425 台帳）と Wave 1 の契約 increment（#419）を消化済み。**
+次は #420（lifecycle）。詳細は「第 16 wave」節。移行状態の追跡は
+**`docs/product-integration-plan.md` が正**（本書は着手順・依存 DAG を持ち、移行台帳は持たない）。
+
+## 旧・現在地（2026-07-27 起票登録時）
 
 **2026-07-23〜26 に統合再設計プログラム #418〜#426（9 件）が起票された**（本書に未登録
 だったため 2026-07-27 に登録。下記「統合再設計プログラム」節）。#418 の issue コメントで
@@ -96,14 +102,14 @@
 | # | 種別 | 充足状況（2026-07-27 マッピング根拠） | 分類 |
 | --- | --- | --- | --- |
 | **#418** | program | 親 Epic（トラッキング）。子 = #419〜#425、Related #426 | — |
-| **#419** | architecture | **未着手（中核は greenfield）**: `ProductContext`/`EffectiveKioskConfiguration`/`configHash` は全体 0 ヒット。土台: `src/app/api/kiosk/config` + 個別設定ルート群（branding/flow/signage/voice/assets/motions = 互換アダプタ化の対象）・`src/lib/auth/kiosk-enrollment.ts`（越境 403 の既存認可）・`src/lib/reception/flow-config/`（tenant 構成 store）。暫定 `kiosk-dev` は `src/lib/kiosk/kiosk-store.ts` ほか 20+ ファイルに分散（除去は段階実施） | ローカル可。**最初の PR は型 + resolver interface + 契約テストに限定**（#418 コメント指示） |
+| **#419** | architecture | **契約 increment 完了**（第 16 wave: `src/domain/product-context/` = `ProductContext`/`EffectiveKioskConfiguration` 型・`resolveProductContext`（領域別の権威入力・越境 403）・resolver interface + 組み立て・`configHash`・ペイロード契約。52 テスト）。**残**: `/api/configuration/effective` 実装・個別設定 API の互換アダプタ化・`kiosk-dev` 除去・ローダの tenant/site 絞り込み | ローカル可（継続） |
 | **#420** | lifecycle | **未着手**: `ReceptionExperienceVersion`/`KioskConfigDeployment` は 0 ヒット。土台: `src/lib/reception/flow-config/`（draft 概念なし・即時反映）・#363 の公開モデル（`demo` 系 draft/test/published 分離が先行事例） | #419 の後 |
 | **#421** | admin ux | **未着手**（業務構造への再編）。現状は技術モジュール別ナビ。土台: `ReceptionFlowsManager.tsx`・`KiosksManager.tsx` ほか admin 画面群 | #419/#420 の後 |
 | **#422** | kiosk ux | **部分**: 会話中心化の部品は #361/#364 で先行（`ui-contract.ts`・`ConversationTurnView`・voice-session）。未達: `KioskFlow.tsx`（2900 行超）の責務分割・`EffectiveKioskConfiguration` 一括取得・feature flag 切替シェル | #419 の後（#420/#421 と並行可だが推奨 Wave は #421 の後） |
 | **#423** | nav/e2e | **部分**: e2e 資産は厚い（`tests/e2e/` 40+ spec・`journey-reception.spec.ts`）。未達: platform→admin→preview→kiosk の 10 ステップ横断シナリオ・共通コンテキストバー・TenantSwitcher 共通契約 | #419/#420/#421 の後 |
 | **#424** | ai loop | **未着手**: `docs/ai-development-loop.md` 不在。土台: 本ループ運用（CLAUDE.md/`docs/loop-workflow.md`/quality-gate）・#427 の experience 規約（draft）。初回適用対象 = #419 と明示 | 各 wave へ順次適用 |
-| **#425** | delivery | **部分**: baseline 素材は在る（VRT: `tests/e2e/kiosk-screenshot.spec.ts-snapshots`・`kiosk-vrt-a11y.spec.ts-snapshots` / E2E: journey 系 spec / KPI: `docs/reception-experience-kpi.md`）。未達: 移行台帳（migration matrix・重複概念・暫定 ID・feature flag registry・ADR index・breaking-change register・rollback playbook）= `docs/product-integration-plan.md` 不在 | **Wave 0 を最初に**（#425 本文・#418 コメントで明示） |
-| **#426** | docs | **未着手**: `docs/product-integration-plan.md`・`docs/ai-development-loop.md` とも不在（`docs/adr/` は 3 件在るが index なし） | #425/#424 と並行または直後 |
+| **#425** | delivery | **Wave 0 完了**（第 16 wave: `docs/product-integration-plan.md` = Wave 開始/終了条件・占有ファイル・route/API 移行マトリクス・重複概念・暫定 ID・feature flag registry・breaking-change register・rollback playbook・KPI baseline、`docs/adr/README.md` = ADR index）。**残**: Wave 1 以降の各 PR で状態列を更新していく運用（台帳自体の追加作業なし） | 完了 2026-07-27 |
+| **#426** | docs | **部分**: `docs/product-integration-plan.md`・`docs/adr/README.md` は第 16 wave で新設。未達: `docs/ai-development-loop.md`（#424 本体） | #424 と同時 |
 
 ### AI Evolution epic 群（2026-07-19 起票 / 2026-07-21 登録）
 
@@ -356,19 +362,27 @@ infra `web-stack.test` の collection 時 `.open-next` 要求(stub 手順で回�
 ergonomics で defect ではない)。**ユーザー判断待ち(deploy のみ)**: #405 Inc2 の Secrets Manager 有効化
 deploy・#366 Stack の deploy(月 $14.2 見積の最終承認)・#4 実資格情報(#65)。
 
-**次に着手する候補（2026-07-27 更新）**: **既定 = 統合再設計プログラムの第 16 wave**
-（下記）。代替候補: #363 Inc4 相当の残／ #399（既定 VRM は `public/avatar/default.vrm` +
-`idle.vrma` 導入済み・残は実機検証 = #65）／ AI Evolution epic 群(#382〜#392)。
+**第 16 wave（2026-07-27 消化済み）** — 統合再設計プログラム開始・2 トラック:
+
+| トラック | Issue | 結果 |
+| --- | --- | --- |
+| A | **#425 Wave 0** | `docs/product-integration-plan.md`（移行台帳）+ `docs/adr/README.md`（ADR index）新設。台帳は**現物を数えて記入**（画面 47・API 118 = admin 63/kiosk 31/platform 21/staff 2/demo 1）。**マッピングで判明**: 端末の構成取得 8 経路がスコープ解決を 4 通り（認証なし / query 直読み / セッション任意 / `resolveDefaultScope()` 固定）でやっており、これが #419 の存在理由。KPI baseline は**数値を仮置きせず「未取得」と明記**（dev に受付実績が無い。偽 baseline は「悪化していない」の誤判定を生む） |
+| B | **#419 契約** | `src/domain/product-context/` 新設（`types.ts`/`context.ts`/`resolver.ts`/`config-hash.ts`/`payload-contract.ts`、52 テスト）。ロール語彙は**新設せず** `TenantRole` + `domain/tenant/authorization.ts` へ委譲。端末実行は session 束縛が権威で query は**無視して記録**（拒否しない=可用性維持）、draft は端末へ配信しない、越境は 403。秘匿/PII 混入は resolver が **fail-closed** で拒否（規約ではなく実行時検査）。実配線なし（#418 コメントの「最初の PR は小さく」に従う） |
+
+第 16 wave の注記:
+- **TDD で実バグを 1 件捕捉**: `kiosk_device` 割り当ての actor が `canAccessTenant` を通ってしまい、
+  端末トークンで管理プレビューの構成が引けた。管理系領域では端末割り当てを間引いた actor で
+  認可判定する形に修正（`withoutDeviceAssignments`）。
+- 禁止キー判定は部分文字列ではなく**末尾の語**で一致させる（`tokenEndpoint`/`warn` の誤検出回避。
+  camelCase/snake_case/kebab-case を語分解）。
+- **#419 の残作業に「ローダの tenant/site 絞り込み」を明記**した。現行の branding/directory は
+  グローバルストアを返すため、素通しでローダにすると resolver 経由でテナント越境が起きる。
+
+**次に着手する候補（2026-07-27 更新）**: **既定 = 第 17 wave = #420**（draft/published の最小縦切り。
+#419 契約が main に入ったため開始条件を満たす）。同時に **#419 残**（`/api/configuration/effective` +
+互換アダプタ）を並行可（`src/domain/experience-version/` vs `src/app/api/configuration/` で領域独立）。
+代替候補: #363 Inc4 相当の残／ #399（実機検証 = #65）／ AI Evolution epic 群(#382〜#392)。
 エピック群の優先順位はユーザー判断（現在地の注記参照）。
-
-**第 16 wave（案・2026-07-27）** — 統合再設計プログラム開始:
-
-| トラック | Issue | 内容 | 備考 |
-| --- | --- | --- | --- |
-| A | **#425 Wave 0** | `docs/product-integration-plan.md` 新設（移行台帳: migration matrix・重複概念・暫定 ID リスト・feature flag registry・ADR index・rollback playbook・KPI baseline 参照）+ 既存 VRT/E2E/KPI 資産の baseline 固定宣言 | docs 中心・破壊なし。#426 の文書 AC と重なる分は同時に満たす |
-| B | **#419 契約 PR** | `ProductContext` 型・`EffectiveKioskConfiguration` 型・resolver interface・越境防止/秘匿混入防止の契約テスト**まで**（実配線しない） | #418 コメントの「最初の実装 PR は小さく」指示に従う。domain 純ロジック先行 |
-
-A/B はファイル領域が独立（docs vs `src/domain/`）で並行可。#420 以降は #419 マージ後。
 
 同 wave に **#366 Phase 0 ADR のみ**（`docs/adr/*.md` 新規・コスト増ゼロ）を差し込むのは安全。
 CDK 実装と deploy は分離し、Budget 見積を添えてユーザー承認を取る。
