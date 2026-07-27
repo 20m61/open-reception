@@ -117,6 +117,9 @@ test.describe('新規導線（発行/エンロール/LP）', () => {
     expect(res.ok()).toBeTruthy();
 
     await page.goto('/admin/devices');
+    // 一覧はページネーションされる。他 spec が作った端末で 2 ページ目以降へ押し出されないよう、
+    // 一意な端末名で絞り込んでから行を掴む（フルスイート実行時の決定的な失敗を防ぐ）。
+    await page.getByTestId('device-filter-keyword').fill(name);
     const row = page.getByTestId('device-table').locator('tr', { hasText: name });
     await expect(row).toBeVisible({ timeout: 15_000 });
     await row.getByTestId('device-reissue').click();

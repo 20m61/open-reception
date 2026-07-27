@@ -55,7 +55,14 @@ const FLOW_MUTATING_SPECS = /(admin-reception-flows|kiosk-flow-integration|kiosk
 // （`npm run test:soak*`）からのみ実行する (issue #317)。本設定（既定 `npm run test:e2e` /
 // `scripts/quality-gate.sh --pr|--full`）では、testDir の再帰探索に紛れ込まないよう明示的に除外する。
 const SOAK_SPECS = /\/soak\//;
-const DEFAULT_TEST_IGNORE = [FLOW_MUTATING_SPECS, SOAK_SPECS];
+
+// 既定シード状態（在館者ゼロ・担当者は seed のみ）を前提に検証する spec。他 spec が作った
+// 来訪者や担当者が残っていると、空状態の文言（checkout-empty）や画面の高さ（VRT baseline）が
+// 変わって決定的に失敗する。**本 suite より先に**単独実行して構造的に分離する
+// （逆側の分離である flow-mutation は本 suite の後。両者で前後を挟む形）。
+const PRISTINE_STATE_SPECS = /(kiosk-checkout-i18n|kiosk-vrt-a11y)\.spec\.ts$/;
+
+const DEFAULT_TEST_IGNORE = [FLOW_MUTATING_SPECS, PRISTINE_STATE_SPECS, SOAK_SPECS];
 
 // iPad (gen 7) 縦向き相当のエミュレーション設定（chromium 用）。
 const iPadPortraitViewport = {
@@ -79,9 +86,16 @@ export default defineConfig({
   },
   projects: [
     {
+      // 既定シード状態を前提にする spec を最初に流す（下記 chromium-ipad が依存）。
+      name: 'pristine-state',
+      use: { browserName: 'chromium', ...iPadPortraitViewport, launchOptions: chromiumLaunchOptions },
+      testMatch: PRISTINE_STATE_SPECS,
+    },
+    {
       name: 'chromium-ipad',
       use: { browserName: 'chromium', ...iPadPortraitViewport, launchOptions: chromiumLaunchOptions },
       testIgnore: DEFAULT_TEST_IGNORE,
+      dependencies: ['pristine-state'],
     },
     ...(includeWebkit
       ? [
