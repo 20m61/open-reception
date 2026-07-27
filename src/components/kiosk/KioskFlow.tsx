@@ -1132,6 +1132,7 @@ export function KioskFlow({ operatingStatus, sttAdapterFactory, voiceSession, qr
           <EscapeHatchBar
             barRef={escapeBarRef}
             state={data.state}
+            locale={locale}
             onAction={(action) => {
               // escapeHatchesFor が返すのは back/reset のみ（#325）。状態機械イベントへ写す。
               const eventByAction: Partial<Record<ReceptionAction, Action>> = {
@@ -1199,19 +1200,24 @@ function EscapeHatchBar({
   state,
   onAction,
   barRef,
+  locale,
 }: {
   state: ReceptionState;
   onAction: (action: ReceptionAction) => void;
   barRef?: React.Ref<HTMLElement>;
+  locale: Locale;
 }) {
   const hatches: ReadonlyArray<EscapeHatch> = escapeHatchesFor(state);
   if (hatches.length === 0) return null;
+  // 常設バーなので、ここが訳されないと受付中ずっと日本語が見え続ける (#327)。
+  const tr = makeT(locale);
   return (
     <nav
       ref={barRef}
       className="kiosk-escape-bar"
       data-testid="kiosk-escape-bar"
-      aria-label="受付の操作（戻る・最初に戻る）"
+      aria-label={tr('reception.escapeBarLabel')}
+      lang={htmlLangFor(locale)}
     >
       {hatches.map((hatch) => (
         <button
@@ -1221,7 +1227,7 @@ function EscapeHatchBar({
           data-testid={hatch.testId}
           onClick={() => onAction(hatch.action)}
         >
-          {hatch.label}
+          {tr(hatch.labelKey)}
         </button>
       ))}
     </nav>

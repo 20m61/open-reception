@@ -17,6 +17,7 @@ import {
 } from '@/domain/reception/ui-contract';
 import type { ReceptionState } from '@/domain/reception/state';
 import type { ReceptionPurposeId } from '@/domain/reception/session';
+import type { MessageKey } from '@/lib/i18n';
 
 /**
  * 待機画面に大きなカードで提示する主要 CTA（来訪者の入口）。
@@ -40,12 +41,14 @@ export const QUICK_ACTION_INTENTS = [
 
 export type QuickActionIntent = (typeof QUICK_ACTION_INTENTS)[number];
 
+/**
+ * **表示文言は持たない。** カードのラベル・説明は描画側が `intent` から i18n キーへ写す
+ * （`reception-screens.tsx` の `QUICK_ACTION_I18N`）。以前は使われない日本語の
+ * `label` / `description` を持っており、`action.label` を描画すると多言語が崩れる罠に
+ * なっていたため、型ごと落とした (#327)。
+ */
 export type QuickAction = {
   intent: QuickActionIntent;
-  /** カードのラベル（来訪者向け）。 */
-  label: string;
-  /** 補足説明（小さく添える）。 */
-  description: string;
   /**
    * この CTA が選んだあとに引き継ぐ目的（あれば）。
    * checkin は受付モード切替のため purpose を持たない。callStaff は用件未確定で目的選択へ。
@@ -66,35 +69,25 @@ export type QuickAction = {
 const QUICK_ACTIONS: ReadonlyArray<QuickAction> = [
   {
     intent: 'callStaff',
-    label: '担当者を呼ぶ',
-    description: 'お名前・ご用件をうかがって担当者をお呼びします',
     testId: 'quick-call-staff',
   },
   {
     intent: 'checkin',
-    label: 'QR で受付',
-    description: '予約 QR コードをお持ちの方はこちら',
     isCheckin: true,
     testId: 'quick-checkin',
   },
   {
     intent: 'department',
-    label: '部署から選ぶ',
-    description: '訪問先の部署が決まっている方はこちら',
     presetPurpose: 'meeting',
     testId: 'quick-department',
   },
   {
     intent: 'delivery',
-    label: '配送・納品',
-    description: 'お届け物・納品の方はこちら',
     presetPurpose: 'delivery',
     testId: 'quick-delivery',
   },
   {
     intent: 'other',
-    label: 'その他のご用件',
-    description: '上記にあてはまらない方はこちら',
     presetPurpose: 'other',
     testId: 'quick-other',
   },
@@ -136,15 +129,22 @@ type EscapeHatchAction = (typeof ESCAPE_HATCH_ACTIONS)[number];
 
 export type EscapeHatch = {
   action: ReceptionAction;
-  label: string;
+  /**
+   * 表示文言の i18n キー（**訳文そのものは持たない**）。
+   *
+   * 逃げ道バーは全画面に常設される唯一の後退導線 (#325) なので、ここが日本語固定だと
+   * 言語を選んだ来訪者が受付中ずっと日本語のボタンを見続けることになる (#327)。
+   * このモジュールは純ロジック（locale を知らない）なので、解決は描画側が行う。
+   */
+  labelKey: MessageKey;
   /** 強調度。後退系（戻る/最初に戻る）はいずれも控えめ(ghost)。 */
   variant: 'ghost' | 'secondary';
   testId: string;
 };
 
 const ESCAPE_HATCH_META: Record<EscapeHatchAction, Omit<EscapeHatch, 'action'>> = {
-  back: { label: '戻る', variant: 'ghost', testId: 'escape-back' },
-  reset: { label: '最初に戻る', variant: 'ghost', testId: 'escape-reset' },
+  back: { labelKey: 'reception.back', variant: 'ghost', testId: 'escape-back' },
+  reset: { labelKey: 'reception.reset', variant: 'ghost', testId: 'escape-reset' },
 };
 
 /**

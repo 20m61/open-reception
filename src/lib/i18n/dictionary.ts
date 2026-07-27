@@ -100,6 +100,10 @@ export type MessageKey =
   // 担当者クイック応答 (#99) の「5分お待ちください」に対する目安の再案内 (#323 AC2)。
   | 'reception.staffResponseWaitReguidance'
   | 'reception.reset'
+  // 常設の逃げ道バーの nav ラベル。読み上げにだけ使う (#327)。
+  // **ボタンを列挙しない**: 出るボタンは状態で変わる（reset だけの状態が 10 個ある）ため、
+  // 列挙すると存在しない「戻る」を案内してしまう。中身は nav 内のボタンが読み上げられる。
+  | 'reception.escapeBarLabel'
   | 'reception.fallbackBody'
   | 'reception.toDesk'
   | 'reception.cancelled'
@@ -356,6 +360,7 @@ const ja: DefaultDictionary = {
   'reception.altContact': '代替の連絡先へ',
   'reception.staffResponseWaitReguidance': '目安は数分です。担当者が向かい次第、この画面が切り替わります。',
   'reception.reset': '最初に戻る',
+  'reception.escapeBarLabel': '受付の操作',
   'reception.fallbackBody': '代表窓口にお繋ぎします。受付スタッフが対応いたしますので、しばらくお待ちください。',
   'reception.toDesk': '受付窓口へ',
   'reception.cancelled': '受付をキャンセルしました',
@@ -594,6 +599,7 @@ const en: LocaleDictionary = {
   'reception.altContact': 'Try another way',
   'reception.staffResponseWaitReguidance': "It'll be about a few minutes. This screen will update once they're on the way.",
   'reception.reset': 'Start over',
+  'reception.escapeBarLabel': 'Reception controls',
   'reception.fallbackBody': "We'll connect you to the main desk. A staff member will assist you shortly.",
   'reception.toDesk': 'Go to the main desk',
   'reception.cancelled': 'Reception cancelled',
@@ -832,6 +838,7 @@ const ko: LocaleDictionary = {
   'reception.altContact': '다른 연락 방법',
   'reception.staffResponseWaitReguidance': '예상 소요 시간은 몇 분입니다. 담당자가 출발하면 화면이 바뀝니다.',
   'reception.reset': '처음으로',
+  'reception.escapeBarLabel': '접수 컨트롤',
   'reception.fallbackBody': '대표 창구로 연결합니다. 접수 직원이 도와드리니 잠시만 기다려 주세요.',
   'reception.toDesk': '접수 창구로',
   'reception.cancelled': '접수가 취소되었습니다',
@@ -1068,6 +1075,7 @@ const zh: LocaleDictionary = {
   'reception.altContact': '其他联系方式',
   'reception.staffResponseWaitReguidance': '预计需要几分钟。负责人出发后，本画面将自动更新。',
   'reception.reset': '返回首页',
+  'reception.escapeBarLabel': '登记操作',
   'reception.fallbackBody': '正在为您转接前台，工作人员将很快为您服务，请稍候。',
   'reception.toDesk': '前往前台',
   'reception.cancelled': '登记已取消',
@@ -1311,6 +1319,7 @@ const jaSimple: LocaleDictionary = {
   'reception.altContact': 'べつの 方法で よぶ',
   'reception.cancelled': 'うけつけを やめました',
   'reception.reset': 'さいしょに もどる',
+  'reception.escapeBarLabel': 'うけつけの そうさ',
   'reception.fallbackBody': '受付の 人が おてつだい します。少し お待ち ください',
   'reception.toDesk': '受付へ',
   'common.next': 'つぎへ',

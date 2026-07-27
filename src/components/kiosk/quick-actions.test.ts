@@ -5,6 +5,7 @@ import {
   isActionAllowed,
   REQUIRES_CONFIRMATION_ACTIONS,
 } from '@/domain/reception/ui-contract';
+import { DICTIONARIES, SUPPORTED_LOCALES, makeT } from '@/lib/i18n';
 import {
   escapeHatchesFor,
   quickActionsFor,
@@ -104,6 +105,44 @@ describe('escapeHatchesFor', () => {
       for (const hatch of escapeHatchesFor(state)) {
         expect(REQUIRES_CONFIRMATION_ACTIONS.has(hatch.action)).toBe(false);
       }
+    }
+  });
+});
+
+/**
+ * 逃げ道バーは**全画面に常設**される唯一の後退導線 (#325)。ここが日本語固定だと、
+ * 言語を選んだ来訪者が受付中ずっと日本語のボタンを見続けることになる（#327 の受入条件
+ * 「English/한국어/中文 で待機→受付→退館の全導線に未翻訳文言が出ない」に反する）。
+ */
+describe('逃げ道の文言は i18n カタログ経由 (#327)', () => {
+  it('生の文字列ではなくメッセージキーを持つ', () => {
+    const hatches = escapeHatchesFor('selectingTarget');
+    expect(hatches.map((h) => h.labelKey)).toEqual(['reception.back', 'reception.reset']);
+  });
+
+  it('全ロケールに訳が実在する（ja へフォールバックしていない）', () => {
+    // `makeT` は未訳キーを ja へフォールバックするため、`tr()` の戻り値が非空でも
+    // 「訳が在る」ことにはならない。辞書を直接見る。
+    for (const locale of SUPPORTED_LOCALES) {
+      for (const hatch of escapeHatchesFor('selectingTarget')) {
+        const value = DICTIONARIES[locale][hatch.labelKey];
+        expect(value, `${locale}/${hatch.action}`).toBeTruthy();
+      }
+    }
+    // 英語で日本語が出ないことを具体値で固定する（キーの取り違えを検出する）。
+    const en = makeT('en');
+    expect(escapeHatchesFor('selectingTarget').map((h) => en(h.labelKey))).toEqual([
+      'Back',
+      'Start over',
+    ]);
+  });
+
+  it('クイックアクションは表示文言を持たない（表示は呼び出し側が i18n で解決する）', () => {
+    // 以前は未使用の日本語 label/description を持っており、`action.label` を描画すると
+    // 多言語が崩れる罠になっていた。型から消して罠ごと無くす。
+    for (const action of quickActionsFor('idle')) {
+      expect(action).not.toHaveProperty('label');
+      expect(action).not.toHaveProperty('description');
     }
   });
 });

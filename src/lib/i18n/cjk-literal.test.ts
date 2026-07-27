@@ -1,5 +1,9 @@
 import { describe, expect, it } from 'vitest';
-import { CJK_EXCEPTION_ALLOWLIST, scanKioskForRawCjk } from '../../../scripts/check-cjk-literals';
+import {
+  CJK_EXCEPTION_ALLOWLIST,
+  findCjkLiterals,
+  scanKioskForRawCjk,
+} from '../../../scripts/check-cjk-literals';
 
 /**
  * kiosk 配下の生 CJK 文字列リテラル機械検証 (issue #327)。
@@ -13,6 +17,14 @@ describe('kiosk 配下の生 CJK リテラル (#327)', () => {
   it('例外リスト（未移行ファイル）以外に生 CJK 文字列リテラルが無い', () => {
     const violations = scanKioskForRawCjk();
     expect(violations).toEqual([]);
+  });
+
+  it('例外リストに「もう移行済み」のファイルが残っていない（allowlist のドリフト検出）', () => {
+    // 移行が終わったファイルが例外に残ると、検査が実態より緩いまま気づかれない。
+    // 実際 `CheckinFlow.tsx` は 0 件になってからも例外に残っており、手作業で見つけて外した。
+    // 規律ではなく仕組みで止める: 例外なのに違反 0 のファイルはここで落とす。
+    const stale = CJK_EXCEPTION_ALLOWLIST.filter((p) => findCjkLiterals(p).length === 0);
+    expect(stale, `移行済みなので例外から外せる: ${stale.join(', ')}`).toEqual([]);
   });
 
   it('退館チェックアウト (checkout/**) は例外なしで完全に検証される', () => {
