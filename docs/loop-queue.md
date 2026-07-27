@@ -8,11 +8,11 @@
 > 本書の「未実装」「外部待ち」分類が stale で、既に main に在るものを作り直しかけた。
 > 分類が実態と違ったら、その周回で本書を直す。
 
-## 現在地（2026-07-27 更新・第 20 wave 消化後）
+## 現在地（2026-07-27 更新・第 21 wave 消化後）
 
 **統合再設計プログラム #418 の進捗**: Wave 0（#425 台帳・クローズ済）→ Wave 1（#419 契約 +
 `/api/configuration/effective` 実配線）→ Wave 2（#420 = 版ライフサイクル・永続化・スナップショット公開・管理 API・反映状況）まで消化。
-次は **#422（KioskFlow 分割・新経路への切替）** か #421（admin IA）。詳細は第 16〜20 wave の各節。
+次は **#422（KioskFlow 分割・新経路への切替）** か #421（admin IA）。詳細は第 16〜21 wave の各節。
 移行状態の追跡は **`docs/product-integration-plan.md` が正**（本書は着手順・依存 DAG を持ち、
 移行台帳は持たない）。
 
@@ -105,7 +105,7 @@
 | --- | --- | --- | --- |
 | **#418** | program | 親 Epic（トラッキング）。子 = #419〜#425、Related #426 | — |
 | **#419** | architecture | **increment 2 完了**（第 16 wave = 契約 52 テスト / 第 18 wave = `src/lib/product-context/`（fail-closed な端末束縛解決・全 11 セクションのローダ・暫定 version lookup）+ `GET /api/configuration/effective`。33 テスト）。**残**: `/kiosk` クライアントの新経路切替（#422 と同時）・`kiosk-dev` 除去・グローバルストア（branding/directory/voice/motions/avatar/languages）のテナント対応・旧個別 API の撤去（台帳 §9 B-03） | ローカル可（継続） |
-| **#420** | lifecycle | **increment 3 完了**（第 17 wave = 純ロジック 34 / 第 19 wave = 永続化・スナップショット公開・管理 API 45 / 第 20 wave = heartbeat 報告 + 反映状況 API 20。計 99 テスト）。**残**: 反映状況の**管理画面 UI**（API は在る）・実検証チェッカ（asset/motion/call route 到達性）・デモ公開モデル（#363）の統合 | ローカル可（継続） |
+| **#420** | lifecycle | **increment 4 完了**（第 17 = 純ロジック 34 / 第 19 = 永続化・スナップショット公開・管理 API 45 / 第 20 = heartbeat 報告 + 反映状況 API 20 / 第 21 = 管理画面 `/admin/experience-versions` 18。計 117 テスト）。**残**: 実検証チェッカ（asset/motion/call route 到達性）・**端末側の報告送信**（#422 のクライアント切替時）・デモ公開モデル（#363）の統合・ナビ配線（#421） | ローカル可（継続） |
 | **#421** | admin ux | **未着手**（業務構造への再編）。現状は技術モジュール別ナビ。土台: `ReceptionFlowsManager.tsx`・`KiosksManager.tsx` ほか admin 画面群 | #419/#420 の後 |
 | **#422** | kiosk ux | **部分**: 会話中心化の部品は #361/#364 で先行（`ui-contract.ts`・`ConversationTurnView`・voice-session）。未達: `KioskFlow.tsx`（2900 行超）の責務分割・`EffectiveKioskConfiguration` 一括取得・feature flag 切替シェル | #419 の後（#420/#421 と並行可だが推奨 Wave は #421 の後） |
 | **#423** | nav/e2e | **部分**: e2e 資産は厚い（`tests/e2e/` 40+ spec・`journey-reception.spec.ts`）。未達: platform→admin→preview→kiosk の 10 ステップ横断シナリオ・共通コンテキストバー・TenantSwitcher 共通契約 | #419/#420/#421 の後 |
@@ -435,9 +435,23 @@ deploy・#366 Stack の deploy(月 $14.2 見積の最終承認)・#4 実資格�
 - 端末側の報告送信（`/kiosk` から heartbeat にパラメータを付ける）も**未実装**。API は受理できるが
   実際に報告するのは #422 のクライアント切替時。それまで全端末は pending として出る。
 
-**次に着手する候補（2026-07-27 更新）**: **第 21 wave = #422 KioskFlow 分割**（新経路への切替を
+**第 21 wave（2026-07-27 消化済み）** — #420 increment 4（版管理の運用画面・単独トラック）:
+
+| トラック | Issue | 結果 |
+| --- | --- | --- |
+| A | **#420 Inc4** | `/admin/experience-versions`（`ExperienceVersionsManager` = 取得と操作 / `ExperienceVersionsView` = 純粋表示 / `domain/experience-version/deployment-view.ts` = 並び順と文言）。18 テスト。これで #420 AC「管理画面で desired/loaded 差分を表示」が閉じ、**下書き→承認→公開→反映確認**が画面から一周できる。**設計判断**: ①表示を純粋コンポーネントへ分離し `renderToStaticMarkup` でテスト（本コンテナは e2e 不可のため、表示規則を静的レンダリングで固定する）②端末は**対処が要る順**（失敗→旧版→未反映→反映済み）に並べる ③**代表端末 ID をサーバ側で解決**（`resolveRepresentativeKioskId`）— 画面に `kiosk-dev` を書くと台帳 §6 の暫定 ID を新規に増やすことになるため |
+
+第 21 wave の注記:
+- **端末が 1 台も無い拠点では下書きを作れない**（409 `no_device_in_site`）。構成解決に代表端末が
+  要るため。版だけ先に作れても意味が無いので、版を作らない側に倒した。
+- ナビゲーションへの配線はしていない（直接 URL のみ）。`navigation.ts` は #421 の IA 再編が扱う。
+- **実ブラウザ検証は未実施**（本コンテナは e2e 不可）。表示規則は静的レンダリングのテストで担保し、
+  実操作の確認は e2e 可能な環境か #65 で行う。
+
+**次に着手する候補（2026-07-27 更新）**: **第 22 wave = #422 KioskFlow 分割**（新経路への切替を
 含む。これで #419 の `kiosk-dev` 除去・#420 の端末側報告・台帳 §9 B-03〜B-05 がまとめて解禁される）。
-ただし `KioskFlow.tsx` は 2900 行超で単独 wave を要する大改修。
-代替候補: グローバルストアのテナント対応（#419 残の中核・マルチテナント運用の前提）／
-#421 admin IA 再編（反映状況 UI を含められる）／ AI Evolution epic 群(#382〜#392)。
+ただし `KioskFlow.tsx` は 2900 行超で**単独 wave を要する大改修**。
+代替候補: **グローバルストアのテナント対応**（#419 残の中核。ただし永続キーの変更 = スキーマ破壊
+なので **要ユーザー確認**）／ #421 admin IA 再編（本 wave の画面のナビ配線を含む）／
+#423 横断 E2E ／ AI Evolution epic 群(#382〜#392)。
 エピック群の優先順位はユーザー判断（現在地の注記参照）。

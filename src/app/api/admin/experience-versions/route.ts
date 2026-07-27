@@ -10,7 +10,10 @@ import { appendAdminAudit } from '@/lib/data-stores/reception-log-store';
 import { requireActorWithIdentity } from '@/lib/operating-policy/request';
 import { asSiteId, asTenantId, type SiteId, type TenantId } from '@/domain/tenant/types';
 import type { AuditAction } from '@/domain/reception/log';
-import { getExperienceVersionService } from '@/lib/experience-version/store';
+import {
+  getExperienceVersionService,
+  resolveRepresentativeKioskId,
+} from '@/lib/experience-version/store';
 import type { ServiceError, ServiceResult } from '@/lib/experience-version/service';
 
 /**
@@ -114,11 +117,14 @@ export async function POST(request: Request): Promise<NextResponse> {
   let result: ServiceResult;
 
   if (action === 'save-draft') {
-    const kioskId = typeof body.kioskId === 'string' ? body.kioskId : '';
+    // 構成解決に使う代表端末。未指定なら拠点の有効な端末から選ぶ（暫定 ID を持ち込まない）。
+    const kioskId =
+      (typeof body.kioskId === 'string' && body.kioskId) ||
+      (await resolveRepresentativeKioskId(scope.tenantId, scope.siteId));
     if (!kioskId) {
       return NextResponse.json(
-        { error: 'invalid_input', message: 'kioskId is required to capture the configuration' },
-        { status: 400 },
+        { error: 'no_device_in_site', message: 'the site has no active kiosk to resolve configuration' },
+        { status: 409 },
       );
     }
     result = await service.saveDraft({

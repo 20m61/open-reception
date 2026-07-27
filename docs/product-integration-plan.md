@@ -22,7 +22,7 @@ Issue と ADR が正で、本書はそこへの索引と移行状態を持つ。
 | --- | --- | --- | --- | --- |
 | 0 Baseline | #425 | なし（最初） | 本書が存在し、§3〜§11 の台帳が現物と一致 / baseline 資産が §2 で固定 | `docs/product-integration-plan.md`・`docs/adr/README.md` |
 | 1 Foundation | #419 | Wave 0 完了 | 契約 + `/api/configuration/effective` + 互換アダプタが在る（**進行中**: ここまで完了。残は `/kiosk` クライアントの切替と `kiosk-dev` 除去 = #422 と同時） | `src/domain/product-context/**`・`src/lib/product-context/**`・`src/app/api/configuration/**` |
-| 2 Lifecycle | #420 | #419 の型・resolver が main | draft/published の版管理と last-known-good / rollback が動く（**進行中**: 純ロジック + 永続化 + スナップショット公開 + 管理 API + 監査 + heartbeat 報告 + 反映状況 API まで完了。残は**管理画面の UI**・実検証チェッカ・デモ公開モデルの統合） | `src/domain/experience-version/**`・`src/lib/experience-version/**`・`src/app/api/admin/experience-versions/**` |
+| 2 Lifecycle | #420 | #419 の型・resolver が main | draft/published の版管理と last-known-good / rollback が動く（**進行中**: 純ロジック + 永続化 + スナップショット公開 + 管理 API + 監査 + heartbeat 報告 + 反映状況 API まで完了。残は実検証チェッカ（asset/motion/call route 到達性）・端末側の報告送信（#422）・デモ公開モデルの統合） | `src/domain/experience-version/**`・`src/lib/experience-version/**`・`src/app/api/admin/experience-versions/**` |
 | 3 Admin IA | #421 | #419 / #420 | 1 拠点・1 端末・1 受付体験の編集導線が業務対象中心に統合 | `src/app/admin/**`・`src/components/admin/**` |
 | 4 Kiosk UX | #422 | #419（推奨は #421 の後） | `KioskFlow.tsx` 分割 + 新シェルが feature flag 配下で選択可能 | `src/components/kiosk/**` |
 | 5 Cross-surface | #423 | #419 / #420 / #421 | platform → admin → preview → kiosk の横断 E2E が green | `tests/e2e/**` |
