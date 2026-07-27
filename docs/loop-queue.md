@@ -223,15 +223,14 @@
 | 34 | 2026-07-27 | #422 の前提整備: Journey / 状態モデルと実装の差分洗い出し + 対応表の機械検証 | `docs/experience/state-mapping.md` |
 | 35 | 2026-07-27 | #322 の残り: 担当者検索の 0 件計測を端末 → サーバ → KPI 集計 → 管理画面まで繋ぐ | 本書 |
 | 36 | 2026-07-27 | 通信断とサーバ失敗を同じ「呼び出しに失敗しました」で伝えていた件を是正（`failureReason`。状態は増やさない） | `docs/experience/state-mapping.md` |
-| 37 | 2026-07-27 | **差分 B を決着**（状態を 1 つも増やさず）。第 34 wave の誤判定を訂正: `visitor_detected` = `PresenceState.ATTRACT`、`recognizing` = `voiceListeningStage==='speech'` で**元から実装済み**だった | `docs/experience/state-mapping.md` |
+| 37 | 2026-07-27 | **差分 B を決着**（状態を 1 つも増やさず）。第 34 wave の誤判定を訂正: `visitor_detected` / `recognizing` / `choosing_method` は**3 つとも元から実装済み**だった。未登録語彙を検出するメタテストを追加 | `docs/experience/state-mapping.md` |
 
 
 **次に着手する候補（2026-07-27 更新・第 37 wave 消化後）**: **差分 B は決着済み**
 （`docs/experience/state-mapping.md` §5 B の表）。第 35〜37 wave で 6 項目すべてを処理し、
-**体験状態は 1 つも増やさずに済んだ**（2 つは元から実装済み、2 つは状態化不要と判断、
-2 つは計測配線と文言分岐で解決）。残る未対応は `choosing_method` / `no_match` /
-`privacy_blocked` で、いずれも「観測目的しか無い」ため状態化しない
-（`UNIMPLEMENTED_EXPERIENCE_STATES` の doc に理由を併記済み）。
+**体験状態は 1 つも増やさずに済んだ**（3 つは元から実装済み、2 つは計測配線と文言分岐で解決、
+1 つは README の定義待ち）。残る未対応は `no_match`（計測は通っているので状態化不要）と
+`privacy_blocked`（**README に定義文が無く判断できない = 要ユーザー確認**）の 2 つ。
 残る差分は **C（音声とタッチの確認を 1 状態機械へ）と D（QR 受付の統合）だけで、
 どちらも仕様判断＝要ユーザー確認**。よって体験設計まわりで境界内に残る作業は無く、
 次は #327 の i18n 移行・#421 admin IA 再編・#423 横断 E2E などへ移る。
@@ -306,11 +305,20 @@ ExperienceShell の切替**（移行フラグは ADR 0004 のとおり構成取�
   > 全て i18n 済みで、依存は無かった。**「依存がある」と書くときは参照を実際に引くこと。**
 - **「実装に無い」と書く前に、その語を実際に grep する**（第 37 wave。第 28 wave と同種の誤り）。
   第 34 wave の差分表は実装の状態語彙を `ReceptionState` / `KioskMode` / `VoiceKioskMode` の
-  3 系統と仮定したため、`visitor_detected` と `recognizing` を「状態語彙に無い」と誤判定した。
-  実際には **`src/domain/presence/state.ts` の `PresenceState`（独立した状態機械）と
-  `voiceListeningStage()`（interim の有無で 2 段階）に在り、合計 5 系統**だった。
-  **前提として立てた「系統の数」自体を疑うこと**（前提が誤ると派生した判定はまとめて誤る）。
-  以後この種の取りこぼしは `src/domain/experience/journey-map.test.ts` の網羅テストが落とす。
+  3 系統と仮定したため、`visitor_detected` / `recognizing` / `choosing_method` を「状態語彙に
+  無い」と誤判定した。実際には `PresenceState`（独立した状態機械）・`voiceListeningStage()`・
+  **`CheckinState.selectingMethod`**（`ui-contract.ts` に `chooseMethod` の文言まである）に在った。
+  **前提として立てた「語彙の数」自体を疑うこと**（前提が誤ると派生した判定はまとめて誤る）。
+  > **規律では守れなかった**: 第 37 wave はこの落とし穴を書いた当のコミットで、残り 1 件
+  > （`choosing_method`）に対して同じ誤りを犯し、独立レビュー（`change-reviewer-opus5`）に
+  > 指摘されて発覚した。**「気をつける」で止めず、仕組みで止める**こと。
+  対策として `journey-map.test.ts` が `src/domain/**` の状態語彙を**全件走査**し、採録も除外も
+  されていない語彙があれば落ちるようにした（表の内側の網羅テストでは「表に載せなかった語彙」を
+  検出できない、という第 34 wave の失敗の形をそのまま塞ぐ）。
+- **独立レビューは「自分が今書いた結論」にこそ効く**（第 37 wave）。自己レビューは自分の前提を
+  共有しているため、前提そのものの誤りを見つけられない。**分析の結論を含む変更**は
+  `change-reviewer-opus5`（読み取り専用）へ回し、「その語を実際に grep して確かめよ」と
+  明示的に指示すると、憶測ではなく事実で返ってくる。
 - **構成の「取得」と「適用」を分けて考える**（第 27 wave）。取得は 60 秒ごと（`?configSyncMs=` で
   短縮可）に回るが、**適用は待機（idle）に戻ってから**。受付進行中に差し替えると来訪者の画面が
   操作の途中で入れ替わる。判定は `src/domain/kiosk/configuration-sync.ts`。

@@ -240,7 +240,8 @@ export function captionKeyFor(
 }
 
 /** 聞き取り中インジケータの 2 段階 (issue #361/#364 第11wave)。 */
-export type VoiceListeningStage = 'idle' | 'speech';
+export const VOICE_LISTENING_STAGES = ['idle', 'speech'] as const;
+export type VoiceListeningStage = (typeof VOICE_LISTENING_STAGES)[number];
 
 /**
  * listening 局面のインジケータ段階を導出する（PII を含まない純関数）。
