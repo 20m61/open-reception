@@ -21,7 +21,7 @@ Issue と ADR が正で、本書はそこへの索引と移行状態を持つ。
 | Wave | Issue | 開始条件 | 終了条件 | 占有ファイル |
 | --- | --- | --- | --- | --- |
 | 0 Baseline | #425 | なし（最初） | 本書が存在し、§3〜§11 の台帳が現物と一致 / baseline 資産が §2 で固定 | `docs/product-integration-plan.md`・`docs/adr/README.md` |
-| 1 Foundation | #419 | Wave 0 完了 | `ProductContext` / `EffectiveKioskConfiguration` / resolver 契約 + 契約テストが main に在る → その後 `/api/configuration/effective` と互換アダプタ | `src/domain/product-context/**`・`src/app/api/configuration/**` |
+| 1 Foundation | #419 | Wave 0 完了 | 契約 + `/api/configuration/effective` + 互換アダプタが在る（**進行中**: ここまで完了。残は `/kiosk` クライアントの切替と `kiosk-dev` 除去 = #422 と同時） | `src/domain/product-context/**`・`src/lib/product-context/**`・`src/app/api/configuration/**` |
 | 2 Lifecycle | #420 | #419 の型・resolver が main | draft/published の版管理と last-known-good / rollback が動く（**進行中**: 版ライフサイクルと反映判定の純ロジックは `src/domain/experience-version/` に在る。永続化・API・heartbeat 拡張・監査は未） | `src/domain/experience-version/**`・`src/lib/reception/flow-config/**` |
 | 3 Admin IA | #421 | #419 / #420 | 1 拠点・1 端末・1 受付体験の編集導線が業務対象中心に統合 | `src/app/admin/**`・`src/components/admin/**` |
 | 4 Kiosk UX | #422 | #419（推奨は #421 の後） | `KioskFlow.tsx` 分割 + 新シェルが feature flag 配下で選択可能 | `src/components/kiosk/**` |
@@ -107,15 +107,24 @@ Wave 3 と Wave 4 は admin / kiosk でファイルが分かれるが、`Effecti
 | 現行 API | セクション | 現在のスコープ解決 | 撤去条件 | 状態 |
 | --- | --- | --- | --- | --- |
 | `GET /api/kiosk/config` | （context・active・maintenance・operatingStatus） | query `kioskId` を直読み | 新経路が active/maintenance/operatingStatus を含み、`/kiosk` が新経路のみを参照 | 未着手 |
-| `GET /api/kiosk/branding` | `branding` | **なし**（グローバルストア） | 同上 + テナント別 branding が新経路で解決される | 未着手 |
-| `GET /api/kiosk/flow` | `receptionFlow` | kiosk セッション必須 + `resolveDefaultScope()` 固定 | 同上 + 既定スコープ固定の除去（§6） | 未着手 |
-| `GET /api/kiosk/directory` | `directory` | **なし**（グローバルストア） | 同上 | 未着手 |
-| `GET /api/kiosk/signage` | `signage` | **query `tenantId`/`siteId` を信用**（認証なし） | 同上（越境指定が 403 になること） | 未着手 |
-| `GET /api/kiosk/voice` | `voice` | kiosk セッション**任意**（未認証は既定テナント） | 同上 | 未着手 |
-| `GET /api/kiosk/motions` | `motions` | kiosk セッション任意 | 同上 | 未着手 |
-| `GET /api/kiosk/assets` | `avatar` | kiosk セッション任意 | 同上 | 未着手 |
-| （新設） | `operatingPolicy` | — | `resolveKioskOperatingStatusById` を resolver のローダへ寄せる | 未着手 |
-| （新設） | `languages` / `integrations` / `featureFlags` | — | 現在は各所で個別取得。resolver のローダへ集約 | 未着手 |
+| `GET /api/kiosk/branding` | `branding` | **なし**（グローバルストア） | 同上 + テナント別 branding が新経路で解決される | 進行中 |
+| `GET /api/kiosk/flow` | `receptionFlow` | kiosk セッション必須 + `resolveDefaultScope()` 固定 | 同上 + 既定スコープ固定の除去（§6） | 進行中 |
+| `GET /api/kiosk/directory` | `directory` | **なし**（グローバルストア） | 同上 | 進行中 |
+| `GET /api/kiosk/signage` | `signage` | **query `tenantId`/`siteId` を信用**（認証なし） | 同上（越境指定が 403 になること） | 進行中 |
+| `GET /api/kiosk/voice` | `voice` | kiosk セッション**任意**（未認証は既定テナント） | 同上 | 進行中 |
+| `GET /api/kiosk/motions` | `motions` | kiosk セッション任意 | 同上 | 進行中 |
+| `GET /api/kiosk/assets` | `avatar` | kiosk セッション任意 | 同上 | 進行中 |
+| （新設） | `operatingPolicy` | — | `resolveKioskStatusFor` を resolver のローダへ寄せた（既定スコープ fallback なし） | 進行中 |
+| （新設） | `languages` / `integrations` / `featureFlags` | — | resolver のローダへ集約（`integrations` は空を返す契約 = 秘匿設定を端末へ配らない） | 進行中 |
+
+**「進行中」の意味**: 新経路 `GET /api/configuration/effective` は稼働している（全 11 セクションの
+ローダ + 越境 403 + fail-closed）。ただし **`/kiosk` クライアントはまだ旧経路を読んでいる**ため、
+旧経路の撤去条件は未達。撤去は §9 B-03 の予告どおり、クライアント切替（#422）と観測の後。
+
+> **グローバルストアの暫定ガード**: branding / directory / voice / motions / avatar / languages の
+> 各ストアはテナント次元を持たないため、ローダは**既定テナント以外の要求を fail-closed で失敗**
+> させる（`src/lib/product-context/section-loaders.ts`）。ストアのテナント対応が本来の解で、
+> それまでは「配らない」側に倒す。マルチテナント運用を始める前に解消が要る。
 
 > **この表が #419 の存在理由**: 同じ「テナント・拠点・端末」を、認証なし / query 直読み /
 > セッション任意 / 既定スコープ固定の 4 通りで解決している。1 か所（`resolveProductContext`）に
@@ -145,6 +154,7 @@ timeout / token）・`/api/kiosk/checkin/**`・`/api/kiosk/checkout/**`・`/api/
 | プレビュー | `/admin/demo/preview`（iframe + Mock 注入）と、#419 の `kiosk-preview` area | 同じ resolver を使う 1 つのプレビューへ | 未着手 |
 | 取次設定画面 | `/admin/call-routes` と `/admin/call-routing` | #421 で 1 画面へ | 未着手 |
 | 営業状態 | `ServiceOperatingPolicy`（#367）と `MaintenanceWindow`（#290）が別経路で `active` を落とす | resolver の `operatingPolicy` セクションで由来を明示して合成 | 未着手 |
+| kiosk → tenant/site 解決 | `lib/operating-policy/kiosk-gate.ts`・`lib/platform/maintenance-gate.ts`（いずれも未解決なら既定スコープへ **fail-open**）と `lib/product-context/device-binding.ts`（**fail-closed**） | 構成配信は fail-closed が正。既存 2 つを `device-binding.ts` へ寄せ、fail-open が要る呼び出し側が戻り値 null を自分で既定へ倒す | 進行中（fail-closed 版を新設。既存 2 実装の移行は未着手）|
 | ロール語彙 | `TenantRole`（`src/domain/tenant/types.ts`）と `AdminRole`（`src/domain/auth/roles.ts`, Entra 写像） | **統合しない**（責務が別）。`ProductRole = TenantRole` として #419 は前者に寄せる | 決定済 |
 
 ---

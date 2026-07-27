@@ -8,11 +8,13 @@
 > 本書の「未実装」「外部待ち」分類が stale で、既に main に在るものを作り直しかけた。
 > 分類が実態と違ったら、その周回で本書を直す。
 
-## 現在地（2026-07-27 更新・第 16 wave 消化後）
+## 現在地（2026-07-27 更新・第 18 wave 消化後）
 
-**統合再設計プログラム #418 は Wave 0（#425 台帳）と Wave 1 の契約 increment（#419）を消化済み。**
-次は #420（lifecycle）。詳細は「第 16 wave」節。移行状態の追跡は
-**`docs/product-integration-plan.md` が正**（本書は着手順・依存 DAG を持ち、移行台帳は持たない）。
+**統合再設計プログラム #418 の進捗**: Wave 0（#425 台帳・クローズ済）→ Wave 1（#419 契約 +
+`/api/configuration/effective` 実配線）→ Wave 2（#420 版ライフサイクルの純ロジック）まで消化。
+次は **#420 Inc2（版の永続化 + heartbeat + 監査）**。詳細は第 16〜18 wave の各節。
+移行状態の追跡は **`docs/product-integration-plan.md` が正**（本書は着手順・依存 DAG を持ち、
+移行台帳は持たない）。
 
 ## 旧・現在地（2026-07-27 起票登録時）
 
@@ -102,7 +104,7 @@
 | # | 種別 | 充足状況（2026-07-27 マッピング根拠） | 分類 |
 | --- | --- | --- | --- |
 | **#418** | program | 親 Epic（トラッキング）。子 = #419〜#425、Related #426 | — |
-| **#419** | architecture | **契約 increment 完了**（第 16 wave: `src/domain/product-context/` = `ProductContext`/`EffectiveKioskConfiguration` 型・`resolveProductContext`（領域別の権威入力・越境 403）・resolver interface + 組み立て・`configHash`・ペイロード契約。52 テスト）。**残**: `/api/configuration/effective` 実装・個別設定 API の互換アダプタ化・`kiosk-dev` 除去・ローダの tenant/site 絞り込み | ローカル可（継続） |
+| **#419** | architecture | **increment 2 完了**（第 16 wave = 契約 52 テスト / 第 18 wave = `src/lib/product-context/`（fail-closed な端末束縛解決・全 11 セクションのローダ・暫定 version lookup）+ `GET /api/configuration/effective`。33 テスト）。**残**: `/kiosk` クライアントの新経路切替（#422 と同時）・`kiosk-dev` 除去・グローバルストア（branding/directory/voice/motions/avatar/languages）のテナント対応・旧個別 API の撤去（台帳 §9 B-03） | ローカル可（継続） |
 | **#420** | lifecycle | **increment 1 完了**（第 17 wave: `src/domain/experience-version/` = 版ライフサイクル純ロジック（下書き→検証→承認→公開→ロールバック・revision 競合制御・append-only 履歴）+ 端末反映判定（applied/pending/stale/failed・rollout 集計・受付中は版固定）。31 テスト）。**残**: 永続化 repository・管理 API・heartbeat への loadedRevision/configHash 追加・管理画面の desired/loaded 差分表示・監査 AuditAction 追加・実検証チェッカ（asset/motion/call route）の配線 | ローカル可（継続） |
 | **#421** | admin ux | **未着手**（業務構造への再編）。現状は技術モジュール別ナビ。土台: `ReceptionFlowsManager.tsx`・`KiosksManager.tsx` ほか admin 画面群 | #419/#420 の後 |
 | **#422** | kiosk ux | **部分**: 会話中心化の部品は #361/#364 で先行（`ui-contract.ts`・`ConversationTurnView`・voice-session）。未達: `KioskFlow.tsx`（2900 行超）の責務分割・`EffectiveKioskConfiguration` 一括取得・feature flag 切替シェル | #419 の後（#420/#421 と並行可だが推奨 Wave は #421 の後） |
@@ -390,11 +392,25 @@ deploy・#366 Stack の deploy(月 $14.2 見積の最終承認)・#4 実資格�
   実際に記録する配線と同じ increment で行う（使われない列挙だけ先に足さない）。
 - 版モデルの demo-studio 側からの移行は未着手。**両方を恒久的に残さない**方針は台帳 §5 に記録済み。
 
-**次に着手する候補（2026-07-27 更新）**: **第 18 wave = #420 Inc2**（永続化 repository + 管理 API +
-heartbeat 拡張）と **#419 残**（`/api/configuration/effective` + 互換アダプタ）。両者は
-`src/lib/experience-version/` vs `src/app/api/configuration/` で領域が独立し並行可能だが、
-**#419 の resolver 実配線が #420 の desired 判定に必要**なので #419 残を先に置くのが安全。
-代替候補: #363 Inc4 相当の残／ #399（実機検証 = #65）／ AI Evolution epic 群(#382〜#392)。
+**第 18 wave（2026-07-27 消化済み）** — #419 increment 2（resolver の実配線・単独トラック）:
+
+| トラック | Issue | 結果 |
+| --- | --- | --- |
+| A | **#419 Inc2** | `src/lib/product-context/`（`device-binding.ts` / `section-loaders.ts` / `version-lookup.ts`）+ `GET /api/configuration/effective`。33 テスト。**設計判断 3 件**: ①端末束縛の解決は **fail-closed**（既存 `kiosk-gate`/`maintenance-gate` は fail-open。構成配信で既定スコープへ落とすと未登録端末に既定テナントの構成が配られる）②**グローバルストア（branding/directory/voice/motions/avatar/languages）は既定テナント以外へ fail-closed**（テナント次元を持たないストアを resolver 経由で任意テナントに配らない）③**draft は 404**（下書きストアが無いのに draft を名乗る版を返すと「プレビュー＝下書き」の誤った前提でクライアントが作られる）。`integrations` は常に空を返す契約（秘匿設定を端末構成に載せない） |
+
+第 18 wave の注記:
+- 旧個別 API は**残している**（rollback playbook の切り戻し先）。`/kiosk` クライアントの切替は
+  #422 と同時。台帳 §4.1 の状態は「進行中」= 新経路稼働・旧経路現役。
+- **グローバルストアのテナント対応はマルチテナント運用の前に必須**。現状は「配らない」側に
+  倒しているだけで、テナント別 branding は新経路でも解決できない。台帳 §4.1 の注記に記載。
+- kiosk→tenant/site 解決が 3 実装（fail-open 2 + fail-closed 1）になった。台帳 §5 に重複概念
+  として登録済み。既存 2 つの移行は未着手。
+
+**次に着手する候補（2026-07-27 更新）**: **第 19 wave = #420 Inc2**（版の永続化 repository + 管理 API +
+heartbeat への loadedRevision/configHash 追加 + 監査 AuditAction）。これが入ると
+`version-lookup.ts` の暫定実装を実データへ差し替えられ、draft プレビューが 404 でなくなる。
+代替候補: グローバルストアのテナント対応（#419 残の中核）／ #421 admin IA ／ #363 Inc4 相当の残／
+#399（実機検証 = #65）／ AI Evolution epic 群(#382〜#392)。
 エピック群の優先順位はユーザー判断（現在地の注記参照）。
 
 同 wave に **#366 Phase 0 ADR のみ**（`docs/adr/*.md` 新規・コスト増ゼロ）を差し込むのは安全。
