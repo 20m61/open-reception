@@ -8,11 +8,11 @@
 > 本書の「未実装」「外部待ち」分類が stale で、既に main に在るものを作り直しかけた。
 > 分類が実態と違ったら、その周回で本書を直す。
 
-## 現在地（2026-07-27 更新・第 19 wave 消化後）
+## 現在地（2026-07-27 更新・第 20 wave 消化後）
 
 **統合再設計プログラム #418 の進捗**: Wave 0（#425 台帳・クローズ済）→ Wave 1（#419 契約 +
-`/api/configuration/effective` 実配線）→ Wave 2（#420 版ライフサイクル + 永続化 + スナップショット公開 + 管理 API）まで消化。
-次は **#420 Inc3（heartbeat + 反映状況の可視化）**。詳細は第 16〜19 wave の各節。
+`/api/configuration/effective` 実配線）→ Wave 2（#420 = 版ライフサイクル・永続化・スナップショット公開・管理 API・反映状況）まで消化。
+次は **#422（KioskFlow 分割・新経路への切替）** か #421（admin IA）。詳細は第 16〜20 wave の各節。
 移行状態の追跡は **`docs/product-integration-plan.md` が正**（本書は着手順・依存 DAG を持ち、
 移行台帳は持たない）。
 
@@ -105,7 +105,7 @@
 | --- | --- | --- | --- |
 | **#418** | program | 親 Epic（トラッキング）。子 = #419〜#425、Related #426 | — |
 | **#419** | architecture | **increment 2 完了**（第 16 wave = 契約 52 テスト / 第 18 wave = `src/lib/product-context/`（fail-closed な端末束縛解決・全 11 セクションのローダ・暫定 version lookup）+ `GET /api/configuration/effective`。33 テスト）。**残**: `/kiosk` クライアントの新経路切替（#422 と同時）・`kiosk-dev` 除去・グローバルストア（branding/directory/voice/motions/avatar/languages）のテナント対応・旧個別 API の撤去（台帳 §9 B-03） | ローカル可（継続） |
-| **#420** | lifecycle | **increment 2 完了**（第 17 wave = 純ロジック 34 テスト / 第 19 wave = 永続化 repository・**構成スナップショット**・`ExperienceVersionService`・`GET/POST /api/admin/experience-versions`・監査 4 アクション。45 テスト）。**残**: heartbeat への loadedRevision/configHash 報告・反映状況の管理画面・実検証チェッカ（asset/motion/call route 到達性）・デモ公開モデルの統合 | ローカル可（継続） |
+| **#420** | lifecycle | **increment 3 完了**（第 17 wave = 純ロジック 34 / 第 19 wave = 永続化・スナップショット公開・管理 API 45 / 第 20 wave = heartbeat 報告 + 反映状況 API 20。計 99 テスト）。**残**: 反映状況の**管理画面 UI**（API は在る）・実検証チェッカ（asset/motion/call route 到達性）・デモ公開モデル（#363）の統合 | ローカル可（継続） |
 | **#421** | admin ux | **未着手**（業務構造への再編）。現状は技術モジュール別ナビ。土台: `ReceptionFlowsManager.tsx`・`KiosksManager.tsx` ほか admin 画面群 | #419/#420 の後 |
 | **#422** | kiosk ux | **部分**: 会話中心化の部品は #361/#364 で先行（`ui-contract.ts`・`ConversationTurnView`・voice-session）。未達: `KioskFlow.tsx`（2900 行超）の責務分割・`EffectiveKioskConfiguration` 一括取得・feature flag 切替シェル | #419 の後（#420/#421 と並行可だが推奨 Wave は #421 の後） |
 | **#423** | nav/e2e | **部分**: e2e 資産は厚い（`tests/e2e/` 40+ spec・`journey-reception.spec.ts`）。未達: platform→admin→preview→kiosk の 10 ステップ横断シナリオ・共通コンテキストバー・TenantSwitcher 共通契約 | #419/#420/#421 の後 |
@@ -421,9 +421,23 @@ deploy・#366 Stack の deploy(月 $14.2 見積の最終承認)・#4 実資格�
 - 管理 API の応答に**スナップショット（構成の中身）を含めない**。中身が要る画面はプレビュー
   （`/api/configuration/effective?version=draft`）を使う — 同じ resolver を通るので公開後と一致する。
 
-**次に着手する候補（2026-07-27 更新）**: **第 20 wave = #420 Inc3**（heartbeat への loadedRevision/
-configHash 報告 + 反映状況の管理画面 = `deployment.ts` の純ロジックを実データへ接続）。これで
-「公開後、各端末の反映済み/未反映/失敗を確認できる」AC が閉じる。
-代替候補: グローバルストアのテナント対応（#419 残の中核・マルチテナント運用の前提）／ #421 admin IA ／
-#422 KioskFlow 分割（新経路への切替を含む）／ AI Evolution epic 群(#382〜#392)。
+**第 20 wave（2026-07-27 消化済み）** — #420 increment 3（反映状況の可視化・単独トラック）:
+
+| トラック | Issue | 結果 |
+| --- | --- | --- |
+| A | **#420 Inc3** | `lib/experience-version/deployment-store.ts`（端末報告の永続化）+ heartbeat の `?loadedRevision=&loadedConfigHash=&errorCode=&errorRevision=` 受理 + `GET /api/admin/experience-versions/deployments`（端末台帳を母集合に applied/pending/stale/failed を分類・rollout 集計）。20 テスト。**設計判断**: ①端末が報告するのは**内容の指紋**（`version.contentHash`）— API 応答の `configHash` は context に端末 ID を含むため端末ごとに違い、管理側が期待値を 1 つに決められない ②報告は heartbeat と同じく**セッション紐づけ + 未登録端末は破棄**（偽報告の注入を防ぐ）③**エラー報告は稼働中の版（loaded）を消さない**（last-known-good で動き続けるため、両方が同時に意味を持つ） |
+
+第 20 wave の注記:
+- **母集合は端末台帳**。報告が無い端末を pending として出さないと「公開できた」と誤認する。
+  台帳に無い端末からの報告は集計に含めない。
+- **管理画面の UI はまだ無い**（API のみ）。#420 AC の「管理画面で desired/loaded 差分を表示」は
+  UI 実装で閉じる。#421 の admin IA 再編と同時にやるのが自然。
+- 端末側の報告送信（`/kiosk` から heartbeat にパラメータを付ける）も**未実装**。API は受理できるが
+  実際に報告するのは #422 のクライアント切替時。それまで全端末は pending として出る。
+
+**次に着手する候補（2026-07-27 更新）**: **第 21 wave = #422 KioskFlow 分割**（新経路への切替を
+含む。これで #419 の `kiosk-dev` 除去・#420 の端末側報告・台帳 §9 B-03〜B-05 がまとめて解禁される）。
+ただし `KioskFlow.tsx` は 2900 行超で単独 wave を要する大改修。
+代替候補: グローバルストアのテナント対応（#419 残の中核・マルチテナント運用の前提）／
+#421 admin IA 再編（反映状況 UI を含められる）／ AI Evolution epic 群(#382〜#392)。
 エピック群の優先順位はユーザー判断（現在地の注記参照）。

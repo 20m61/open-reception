@@ -51,6 +51,13 @@ export type ExperienceVersionRef = {
   /** 単調増加。端末側の stale 検出に使う。 */
   revision: number;
   publishedAt?: string;
+  /**
+   * 版が固定した**内容の**指紋（`computeSectionsHash`）。端末はこれを heartbeat で報告し、
+   * 管理側は公開版の同じ値と突き合わせて反映状況を判定する（#420 Inc3）。
+   * `EffectiveKioskConfiguration.configHash` は context（端末 ID）を含むため端末ごとに違い、
+   * 「期待値」を 1 つに決められない。用途を取り違えないこと。
+   */
+  contentHash?: string;
 };
 
 /**

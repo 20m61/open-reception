@@ -86,6 +86,8 @@ function refOf(
     status: version.status === 'draft' ? 'draft' : 'published',
     revision: version.revision,
     publishedAt: version.publishedAt,
+    // 端末が heartbeat で報告する値（内容の指紋）。スナップショット未設定の旧版は無し。
+    contentHash: version.snapshot?.configHash,
   };
 }
 
