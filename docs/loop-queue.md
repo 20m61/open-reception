@@ -8,7 +8,7 @@
 > 本書の「未実装」「外部待ち」分類が stale で、既に main に在るものを作り直しかけた。
 > 分類が実態と違ったら、その周回で本書を直す。
 
-## 現在地（2026-07-27 更新・第 32 wave 消化後）
+## 現在地（2026-07-27 更新・第 33 wave 消化後）
 
 > **新規セッションはまず [`docs/handoff-2026-07-27.md`](handoff-2026-07-27.md) を読むこと。**
 > 次に何をするか・再調査不要な確定事実・ユーザー判断待ちの一覧がそこにある。
@@ -24,7 +24,9 @@
 **#427 はユーザー承認を得てマージ済**（`docs/experience/README.md` が体験設計の正本、
 `.claude/rules/opus5-autonomous-loop.md` が運用規約）。次の #422 increment 5（新旧 ExperienceShell）は
 **その規約の停止境界「主要 Journey / state / fallback の意味を変える仕様判断」に該当する**ため、
-着手前にユーザー確認が要る。境界内で進められるのは #363 デモ公開モデルと版モデルの統合（台帳 §5）。
+着手前にユーザー確認が要る。#363 デモ公開モデルの統合は **ADR 0005 で方針を確定したが、実施は永続スキーマとスコープ語彙を
+動かすため要ユーザー承認**（台帳 §9 B-07）。**境界内で自律的に進められる作業が尽きた**ので、
+次はユーザー判断（ExperienceShell の着手 / B-07 の実施 / 移行フラグ既定の切替）を仰ぐ。
 **ブラウザ e2e はこのコンテナで動き、フルスイート 172/172 が安定して green**
 （第 22 wave で実行環境を是正・第 23 wave で干渉を解消）。UI に触る変更は `--e2e` を通すこと。
 移行状態の追跡は **`docs/product-integration-plan.md` が正**（本書は着手順・依存 DAG を持ち、
@@ -91,7 +93,7 @@
 | **#360** | epic | Character-led 受付・会話・低コスト基盤の統合 epic（トラッキング） | — |
 | **#361** | ux/kiosk | **部分**: `domain/reception/ui-contract.ts` に状態駆動契約・`AVATAR_STATES`・`REQUIRES_CONFIRMATION_ACTIONS`/`CHAT_FORBIDDEN_ACTIONS` 実装済（AC「音声認識だけで発信されない」ほぼ充足）。未達: `ConversationTurnView` 不在、QR が `CheckinFlow.tsx` の別シェル | ローカル可 |
 | ~~#362~~ | ux/kiosk | **クローズ済**（第 2 wave: KioskMode/attract-detector 分離・検知→START 直結廃止） | 完了 2026-07-22 |
-| **#363** | admin/demo | **未着手**: `DemoScenario`/studio/preview は 0 ヒット。土台は `ReceptionFlowsManager.tsx`・`src/lib/reception/flow-config/` | ローカル可 |
+| **#363** | admin/demo | **Inc1〜3 実装済**（シナリオ・編集/保存・下書き/テスト/本番公開・共有トークン・未認証閲覧）。第 33 wave で **#420 版モデルとの統合方針を ADR 0005 で確定**。**残**: 統合の実施（§9 B-07。永続スキーマとスコープ語彙を動かすため**要ユーザー承認**） | 要ユーザー確認 |
 | **#364** | epic | 日本語リアルタイム会話基盤 epic（トラッキング） | — |
 | ~~#365~~ | quality/voice | **クローズ済**（PR #393）。`src/domain/voice/evaluation-*` + `tests/voice-evaluation/`。**#369〜#372 の共通イベント形式が確定** — 正解は刺激側（`nearEndStimuli[]` の `atMs ± toleranceMs`）に固定し観測とマッチング、計測不能は `null`、`strict` で欠落自体を違反に。詳細は `docs/voice-evaluation-harness.md` | 完了 2026-07-22 |
 | **#366** | infra/cdk | **未着手**: `infra/lib/stacks/` に realtime 系なし。`docs/adr/` 自体が不在 | **要ユーザー判断（固定費増）**。Phase 0 ADR のみローカル可 |
@@ -215,6 +217,7 @@
 | 30 | 2026-07-27 | #419: `kiosk-dev` 固定値をクライアントから除去。**死活記録・版報告・失効検知が実端末で初めて機能するようになった**（従来は全て seed 端末の設定を見ていた） | 本書 |
 | 31 | 2026-07-27 | #427 マージ（体験設計の正本）+ #420 実検証チェッカ（asset / motion_mapping / language_fallback） | 本書 |
 | 32 | 2026-07-27 | #420 取次到達性の公開前検証（**実行時が使う `RoutingPolicy` 側**を検査。port 注入で domain は純関数のまま） | 本書 |
+| 33 | 2026-07-27 | #363 統合方針を ADR 0005 で確定 + 台帳 §5/§6/§9 B-07 へ登録（**実施は要ユーザー承認**） | `docs/adr/0005-...md` |
 
 
 **次に着手する候補（2026-07-27 更新・第 29 wave 消化後）**: **#422 increment 5 = 新旧
@@ -249,6 +252,11 @@ ExperienceShell の切替**（移行フラグは ADR 0004 のとおり構成取�
 - **kiosk 配下の新規ファイルに生 CJK リテラルを置かない**（#327 の機械検証が落ちる）。
   `KioskFlow.tsx` は allowlist 済みなので、未移行の既定文言をフックへ移すと違反になる。
   第 25 wave では待機リードの ja 既定文言を `KioskFlow` 側に残して回避した（移行本体は #327）。
+- **並行実装は「壊れている」とは限らない**（第 33 wave）。デモ公開は旧 kiosk レジストリと
+  旧スコープ語彙（`siteId` にテナント ID）で**一貫して閉じており**、UI の端末候補も同じ母集合なので
+  現時点の実害は無い。統合予定の subsystem に互換対応だけを積むと債務が深まるため、
+  **その場しのぎの修正はせず方針（ADR 0005）を固定した**。「別語彙で完結した並行実装」と
+  「壊れた実装」を区別すること。
 - **取次モデルは 2 つ並存している**（第 32 wave に確認）。実際の呼び出しが使うのは
   `RoutingPolicy`/`ContactEndpoint`（#374）で、受付フローの `callRouteId` が指す `CallRoute`（#88）は
   **admin の編集と永続化のみ**（`executeRoutedCall` は参照しない）。「取次が設定できている」ことの
