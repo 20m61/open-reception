@@ -8,7 +8,7 @@
 > 本書の「未実装」「外部待ち」分類が stale で、既に main に在るものを作り直しかけた。
 > 分類が実態と違ったら、その周回で本書を直す。
 
-## 現在地（2026-07-27 更新・第 30 wave 消化後）
+## 現在地（2026-07-27 更新・第 31 wave 消化後）
 
 > **新規セッションはまず [`docs/handoff-2026-07-27.md`](handoff-2026-07-27.md) を読むこと。**
 > 次に何をするか・再調査不要な確定事実・ユーザー判断待ちの一覧がそこにある。
@@ -20,9 +20,11 @@
 → #422 increment 3〜4（`renderScreen` の props オブジェクト化 → **受付ジャーニー画面と状態機械の
 ファイル分割**）まで消化。`KioskFlow.tsx` は 3196 → **1608 行**。
 → #419 の `kiosk-dev` 除去（**端末 ID はセッションが権威**）まで消化。詳細は第 16〜30 wave の各節。
-次は **新旧 ExperienceShell の切替**（#422 increment 5）だが、これは #427（Experience Engineering
-規約）を必須入力とする旨が #418 コメントに在り、#427 はユーザーの draft PR のまま。
-**着手前にユーザー判断が要る**。並行して進められるのは #420 の実検証チェッカ・デモ公開モデル統合。
+→ #420 の実検証チェッカ（asset / motion / language）まで消化。
+**#427 はユーザー承認を得てマージ済**（`docs/experience/README.md` が体験設計の正本、
+`.claude/rules/opus5-autonomous-loop.md` が運用規約）。次の #422 increment 5（新旧 ExperienceShell）は
+**その規約の停止境界「主要 Journey / state / fallback の意味を変える仕様判断」に該当する**ため、
+着手前にユーザー確認が要る。境界内で進められるのは #420 の残り（call_route 検証・デモ公開モデル統合）。
 **ブラウザ e2e はこのコンテナで動き、フルスイート 172/172 が安定して green**
 （第 22 wave で実行環境を是正・第 23 wave で干渉を解消）。UI に触る変更は `--e2e` を通すこと。
 移行状態の追跡は **`docs/product-integration-plan.md` が正**（本書は着手順・依存 DAG を持ち、
@@ -117,7 +119,7 @@
 | --- | --- | --- | --- |
 | **#418** | program | 親 Epic（トラッキング）。子 = #419〜#425、Related #426 | — |
 | **#419** | architecture | **increment 4 完了**（第 16 wave = 契約 52 テスト / 第 18 wave = `src/lib/product-context/` + `GET /api/configuration/effective` 33 テスト / 第 24 wave = `/kiosk` クライアントの新経路切替を移行フラグ配下で実施 19 + e2e 5 / 第 30 wave = `kiosk-dev` 除去・端末 ID をセッション権威に 9 + e2e 1）。**残**: 移行フラグ既定の切替（観測後）・グローバルストア（branding/directory/voice/motions/avatar/languages）のテナント対応・旧個別 API の撤去（台帳 §9 B-03） | ローカル可（継続） |
-| **#420** | lifecycle | **increment 6 完了**（第 17 = 純ロジック 34 / 第 19 = 永続化・スナップショット公開・管理 API 45 / 第 20 = heartbeat 受け口 + 反映状況 API 20 / 第 21 = 管理画面 18 / 第 26 = 端末側の報告送信 11 / 第 27 = **端末側の定期再取得 + 受付中は適用保留** 10 + e2e 2。計 138 テスト）。**ライフサイクル（公開 → キオスク取得 → 反映 ACK）が一周した。** **残**: 実検証チェッカ（asset/motion/call route 到達性）・デモ公開モデル（#363）の統合・ナビ配線（#421） | ローカル可（継続） |
+| **#420** | lifecycle | **increment 7 完了**（第 17 = 純ロジック 34 / 第 19 = 永続化・スナップショット公開・管理 API 45 / 第 20 = heartbeat 受け口 + 反映状況 API 20 / 第 21 = 管理画面 18 / 第 26 = 端末側の報告送信 11 / 第 27 = **端末側の定期再取得 + 受付中は適用保留** 10 + e2e 2 / 第 31 = 実検証チェッカ（asset / motion_mapping / language_fallback）18。計 156 テスト）。**ライフサイクル（公開 → キオスク取得 → 反映 ACK）が一周した。** **残**: `call_route` 到達性（**スナップショットに載らない**ため、ルートストアを引く port の注入と非同期化が要る = 設計変更）・デモ公開モデル（#363）の統合・ナビ配線（#421） | ローカル可（継続） |
 | **#421** | admin ux | **未着手**（業務構造への再編）。現状は技術モジュール別ナビ。土台: `ReceptionFlowsManager.tsx`・`KiosksManager.tsx` ほか admin 画面群 | #419/#420 の後 |
 | **#422** | kiosk ux | **increment 4 完了**（第 24 wave: `useEffectiveConfiguration` で構成取得 7 経路 → `/api/configuration/effective` 1 回取得へ一本化。移行フラグ `effectiveConfiguration`・新経路失敗時は旧経路へ自動フォールバック。19 unit + 5 e2e / 第 25 wave: `useKioskConfiguration`・`useKioskDeviceStatus`・`useExperienceMetrics` へ分離 / 第 28 wave: `renderScreen` の props オブジェクト化 / 第 29 wave: `reception-screens.tsx`・`flow-state.ts` へ分割し **3196 → 1608 行**）。会話中心化の部品は #361/#364 で先行。**残**: 新旧 ExperienceShell の切替・ステッパー最小化・常設要素の 3 領域整理・ConversationTurn への接続 | #419 の後（#420/#421 と並行可だが推奨 Wave は #421 の後） |
 | **#423** | nav/e2e | **部分**: e2e 資産は厚い（`tests/e2e/` 40+ spec・`journey-reception.spec.ts`）。未達: platform→admin→preview→kiosk の 10 ステップ横断シナリオ・共通コンテキストバー・TenantSwitcher 共通契約 | #419/#420/#421 の後 |
@@ -211,6 +213,7 @@
 | 28 | 2026-07-27 | #422 increment 3: `renderScreen` の 29 位置引数を props オブジェクト化 | 本書 |
 | 29 | 2026-07-27 | #422 increment 4: `reception-screens.tsx`（画面 1487 行）と `flow-state.ts`（状態機械 88 行）へ分割。`KioskFlow.tsx` 3196 → 1608 行 | 本書 |
 | 30 | 2026-07-27 | #419: `kiosk-dev` 固定値をクライアントから除去。**死活記録・版報告・失効検知が実端末で初めて機能するようになった**（従来は全て seed 端末の設定を見ていた） | 本書 |
+| 31 | 2026-07-27 | #427 マージ（体験設計の正本）+ #420 実検証チェッカ（asset / motion_mapping / language_fallback） | 本書 |
 
 
 **次に着手する候補（2026-07-27 更新・第 29 wave 消化後）**: **#422 increment 5 = 新旧
@@ -245,6 +248,12 @@ ExperienceShell の切替**（移行フラグは ADR 0004 のとおり構成取�
 - **kiosk 配下の新規ファイルに生 CJK リテラルを置かない**（#327 の機械検証が落ちる）。
   `KioskFlow.tsx` は allowlist 済みなので、未移行の既定文言をフックへ移すと違反になる。
   第 25 wave では待機リードの ja 既定文言を `KioskFlow` 側に残して回避した（移行本体は #327）。
+- **検証の severity は「実行時に本当に壊れるか」で決める**（第 31 wave）。`language_fallback` は
+  当初 error にしたが、`sanitizeLanguageSettings` が実行時に必ず補正するため端末は壊れない。
+  壊れないもので公開を止めると運用が理由なく止まる → 全て warning へ直した。逆に http: アセットは
+  混在コンテンツでブラウザにブロックされ**黙って表示されない**ので error のまま。
+  **常に鳴る警告も作らない**（アバター未使用の拠点で毎回モーション警告が出る形だったので、
+  アバター設定済みの拠点だけに絞った）。
 - **`kiosk-dev` 固定値は「動いているように見えて実は無効」の典型だった**（第 30 wave）。
   クライアントが `?kioskId=kiosk-dev` を送り、実エンロール端末（ランダム UUID）のセッションと
   食い違うため、**死活記録も版報告も丸ごとスキップ**され、有効性は全端末が seed 端末の設定を
