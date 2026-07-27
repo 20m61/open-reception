@@ -14,6 +14,9 @@ const NOW = '2026-07-27T00:00:00.000Z';
 function snapshotOf(hash: string, over: Record<string, unknown> = {}) {
   const sections: Record<string, unknown> = {};
   for (const s of CONFIGURATION_SECTIONS) sections[s] = { section: s };
+  // 実スナップショットのローダは languages を必ず埋める。合成値のままだと
+  // `language_fallback` チェック（#420）が正当に警告するため、健全な値を入れておく。
+  sections.languages = { enabledLocales: ['ja'], defaultLocale: 'ja' };
   return { sections: { ...sections, ...over }, configHash: hash };
 }
 
@@ -172,7 +175,10 @@ describe('validateSnapshot', () => {
   it('セクション欠落は warning（公開は止めない）', () => {
     const summary = validateSnapshot({ sections: {}, configHash: 'sha256:empty' }, NOW);
 
-    expect(summary.findings).toHaveLength(CONFIGURATION_SECTIONS.length);
+    expect(summary.findings.filter((f) => f.check === 'config_schema')).toHaveLength(
+      CONFIGURATION_SECTIONS.length,
+    );
+    // 空スナップショットでも公開を止めない（error を出さない）。
     expect(summary.findings.every((f) => f.severity === 'warning')).toBe(true);
   });
 });

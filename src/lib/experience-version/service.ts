@@ -27,6 +27,7 @@ import type {
   ValidationFinding,
   ValidationSummary,
 } from '@/domain/experience-version/types';
+import { runSnapshotChecks } from '@/domain/experience-version/snapshot-checks';
 import { findForbiddenConfigurationValues } from '@/domain/product-context/payload-contract';
 import { CONFIGURATION_SECTIONS } from '@/domain/product-context/types';
 import type { SiteId, TenantId } from '@/domain/tenant/types';
@@ -59,10 +60,14 @@ type Scope = { tenantId: TenantId; siteId: SiteId };
 
 /**
  * スナップショットの自動検証 (#420「公開前の検証」)。
- * 現時点の実チェックは 2 つだけ:
+ *
  *   - 秘匿値・PII の混入（`payload-contract`）→ error（公開を止める）
+ *   - asset / motion mapping / language fallback → `domain/experience-version/snapshot-checks.ts`
  *   - セクションの欠落 → warning（互換アダプタ未実装のセクションが在りうるため止めない）
- * asset URL / motion mapping / call route 到達性の実チェックは後続 increment。
+ *
+ * **`call_route` の到達性はまだ検査していない。** 取次先・通知ルートはスナップショットに載らない
+ * （`integrations` は空を返すのが resolver の契約で、秘匿設定を端末構成へ入れないため）。検査には
+ * ルートストアを引く port を注入して非同期化する必要があり、設計を変える判断なので別 increment。
  */
 export function validateSnapshot(
   snapshot: ExperienceConfigurationSnapshot,
@@ -78,6 +83,8 @@ export function validateSnapshot(
       message: `禁止された値が構成に含まれています: ${violation.path} (${violation.kind})`,
     });
   }
+
+  findings.push(...runSnapshotChecks(snapshot.sections));
 
   for (const section of CONFIGURATION_SECTIONS) {
     if (!(section in snapshot.sections)) {
