@@ -2,9 +2,11 @@
  * 受付体験の版管理と端末反映のドメイン型 (issue #420 / epic #418 Wave 2)。
  *
  * #419 の `EffectiveKioskConfiguration` が「いま端末に適用される構成」なら、本モジュールは
- * 「どの構成を、いつ、誰の承認で、どの端末へ配るか」を扱う。両者の接点は `configHash`
- * （`src/domain/product-context/config-hash.ts`）で、**版は構成の指紋を保持するだけで
- * 構成そのものを二重に持たない**。プレビューと公開後で同じ指紋が観測できることが AC。
+ * 「どの構成を、いつ、誰の承認で、どの端末へ配るか」を扱う。
+ *
+ * increment 1 では版は指紋（`configHash`）だけを持つ設計だったが、**それでは公開が成立しない**
+ * （指紋が指す中身＝可変ストアが動いてしまう）。increment 2 で
+ * `ExperienceConfigurationSnapshot` を導入し、版は中身ごと固定する。
  *
  * 方針（`src/domain/demo-studio/publication.ts` の先行事例に合わせる）:
  *   - すべて純関数・I/O なし・入力を破壊しない。時刻は呼び出し側が ISO で渡す。
@@ -55,12 +57,37 @@ export type ValidationSummary = {
   findings: ValidationFinding[];
 };
 
-/** 受付体験の 1 版。内容そのものではなく、内容の指紋と来歴を持つ。 */
+/**
+ * 版が固定した構成の中身 (issue #420 increment 2)。
+ *
+ * **これが無いと「下書き変更が本番へ即時反映されない」は成立しない。** 現行の設定は可変ストア
+ * （branding / voice / signage …）に live で載っており、管理画面の保存がそのまま端末へ届く。
+ * 版に指紋（`configHash`）だけを持たせても、指紋が指す中身が動いてしまうため公開の意味が無い。
+ * そこで下書き保存時に**解決済みセクション値のスナップショット**を取り、公開版はそれを配る。
+ */
+export type ExperienceConfigurationSnapshot = {
+  /** `CONFIGURATION_SECTIONS` の各セクション値（`EffectiveKioskConfiguration` と同じ形）。 */
+  sections: Record<string, unknown>;
+  /** セクションごとの由来。公開後も「どこで設定された値か」を辿れるように一緒に固定する。 */
+  provenance?: Record<string, string>;
+  /**
+   * スナップショット時点の**内容の**指紋（`computeSectionsHash`）。
+   * API 応答の `configHash`（context/version を含む）とは別物なので取り違えないこと。
+   */
+  configHash: string;
+};
+
+/** 受付体験の 1 版。内容の指紋・来歴と、固定した構成のスナップショットを持つ。 */
 export type ReceptionExperienceVersion = {
   revision: number;
   status: ExperienceVersionStatus;
   /** #419 resolver が算出した構成の指紋。 */
   configHash: string;
+  /**
+   * 固定した構成の中身。未設定の版は「その時点の live なストア」を指す旧来の挙動に倒れる
+   * （スナップショット導入前に作られた版・seed 版との互換）。
+   */
+  snapshot?: ExperienceConfigurationSnapshot;
   validationSummary?: ValidationSummary;
   createdBy: string;
   createdAt: string;

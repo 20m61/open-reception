@@ -294,6 +294,12 @@ export type AuditAction =
   | 'reception.demo_published'
   | 'reception.demo_rolled_back'
   // 公開（認証なし閲覧）共有トークンの発行/失効。トークン値そのものは記録しない。
+  // 受付体験バージョン (issue #420 Inc2)。公開・承認・切り戻しの実施者と版番号を残す。
+  // metadata は tenantId/siteId/revision/configHash のみ（構成の中身は残さない）。
+  | 'experience.draft_saved'
+  | 'experience.approved'
+  | 'experience.published'
+  | 'experience.rolled_back'
   | 'reception.demo_share_issued'
   | 'reception.demo_share_revoked'
   // 受付端末（Device）管理 (issue #87 inc2)。token 値そのものは記録しない。

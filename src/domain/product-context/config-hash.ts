@@ -40,6 +40,22 @@ function canonicalize(value: unknown): unknown {
   return out;
 }
 
+/**
+ * **内容だけ**の指紋（`sha256:<hex>`）。context も version も含めない。
+ *
+ * `computeConfigHash` との使い分け:
+ *   - `computeConfigHash` … 「その端末にその版で配られた構成」の指紋。context/version を含むので、
+ *     端末が違えば違う値になる。API 応答の `configHash` はこちら。
+ *   - `computeSectionsHash` … 「構成の中身」の指紋。版のスナップショット（#420）が持ち、
+ *     版どうしの内容比較・live ストアとのドリフト検出に使う。
+ */
+export function computeSectionsHash(
+  sections: Partial<Record<ConfigurationSectionName, unknown>>,
+): string {
+  const material = canonicalJson(sections);
+  return `sha256:${createHash('sha256').update(material, 'utf8').digest('hex')}`;
+}
+
 /** 構成内容の指紋（`sha256:<hex>`）。 */
 export function computeConfigHash(input: ConfigHashInput): string {
   const material = canonicalJson({

@@ -326,6 +326,89 @@ describe('rollbackTo', () => {
   });
 });
 
+describe('構成スナップショット（#420 Inc2）', () => {
+  const SNAP_A = { sections: { branding: { accentColor: '#aaa' } }, configHash: 'sha256:aaa' };
+  const SNAP_B = { sections: { branding: { accentColor: '#bbb' } }, configHash: 'sha256:bbb' };
+
+  /** snapshot 付きで rev1 を公開した体験。 */
+  function publishedWithSnapshot(): ReceptionExperience {
+    const exp = createExperience({
+      id: 'exp-1',
+      tenantId: asTenantId('tenant-a'),
+      siteId: asSiteId('site-1'),
+      name: '本社受付',
+      configHash: SNAP_A.configHash,
+      snapshot: SNAP_A,
+      createdBy: 'admin-1',
+      nowIso: T0,
+    });
+    const validated = recordValidation(exp, { revision: 1, summary: OK_VALIDATION, nowIso: T1 });
+    if (!validated.ok) throw new Error('setup');
+    const approved = approve(validated.value, { revision: 1, approverId: 'admin-2', nowIso: T1 });
+    if (!approved.ok) throw new Error('setup');
+    const live = publish(approved.value, { revision: 1, publisherId: 'admin-2', nowIso: T1 });
+    if (!live.ok) throw new Error('setup');
+    return live.value;
+  }
+
+  it('下書きを保存しても、公開版のスナップショットは変わらない（端末が見る中身が動かない）', () => {
+    const live = publishedWithSnapshot();
+
+    const saved = saveDraft(live, {
+      configHash: SNAP_B.configHash,
+      snapshot: SNAP_B,
+      editorId: 'admin-1',
+      nowIso: T2,
+      baseRevision: 1,
+    });
+
+    expect(saved.ok).toBe(true);
+    if (!saved.ok) return;
+    expect(publishedVersion(saved.value)?.snapshot).toEqual(SNAP_A);
+    expect(draftVersion(saved.value)?.snapshot).toEqual(SNAP_B);
+  });
+
+  it('公開はスナップショットをそのまま引き継ぐ（公開時に取り直さない）', () => {
+    const live = publishedWithSnapshot();
+
+    expect(publishedVersion(live)?.snapshot).toEqual(SNAP_A);
+    expect(publishedVersion(live)?.configHash).toBe(SNAP_A.configHash);
+  });
+
+  it('ロールバックは指紋だけでなく中身ごと戻す', () => {
+    const live = publishedWithSnapshot();
+    const saved = saveDraft(live, {
+      configHash: SNAP_B.configHash,
+      snapshot: SNAP_B,
+      editorId: 'admin-1',
+      nowIso: T2,
+      baseRevision: 1,
+    });
+    if (!saved.ok) throw new Error('setup');
+    const validated = recordValidation(saved.value, {
+      revision: 2,
+      summary: OK_VALIDATION,
+      nowIso: T2,
+    });
+    if (!validated.ok) throw new Error('setup');
+    const approved = approve(validated.value, { revision: 2, approverId: 'admin-2', nowIso: T2 });
+    if (!approved.ok) throw new Error('setup');
+    const next = publish(approved.value, { revision: 2, publisherId: 'admin-2', nowIso: T2 });
+    if (!next.ok) throw new Error('setup');
+
+    const rolled = rollbackTo(next.value, { revision: 1, actorId: 'admin-2', nowIso: T3 });
+
+    expect(rolled.ok).toBe(true);
+    if (!rolled.ok) return;
+    expect(publishedVersion(rolled.value)).toMatchObject({
+      revision: 3,
+      snapshot: SNAP_A,
+      configHash: SNAP_A.configHash,
+      rolledBackFrom: 1,
+    });
+  });
+});
+
 describe('hasBlockingFindings', () => {
   it('error のみを公開ブロックとみなす', () => {
     expect(hasBlockingFindings(OK_VALIDATION)).toBe(false);

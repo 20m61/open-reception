@@ -22,7 +22,7 @@ Issue と ADR が正で、本書はそこへの索引と移行状態を持つ。
 | --- | --- | --- | --- | --- |
 | 0 Baseline | #425 | なし（最初） | 本書が存在し、§3〜§11 の台帳が現物と一致 / baseline 資産が §2 で固定 | `docs/product-integration-plan.md`・`docs/adr/README.md` |
 | 1 Foundation | #419 | Wave 0 完了 | 契約 + `/api/configuration/effective` + 互換アダプタが在る（**進行中**: ここまで完了。残は `/kiosk` クライアントの切替と `kiosk-dev` 除去 = #422 と同時） | `src/domain/product-context/**`・`src/lib/product-context/**`・`src/app/api/configuration/**` |
-| 2 Lifecycle | #420 | #419 の型・resolver が main | draft/published の版管理と last-known-good / rollback が動く（**進行中**: 版ライフサイクルと反映判定の純ロジックは `src/domain/experience-version/` に在る。永続化・API・heartbeat 拡張・監査は未） | `src/domain/experience-version/**`・`src/lib/reception/flow-config/**` |
+| 2 Lifecycle | #420 | #419 の型・resolver が main | draft/published の版管理と last-known-good / rollback が動く（**進行中**: 純ロジック + 永続化 + スナップショット公開 + 管理 API + 監査まで完了。残は heartbeat への loaded 版報告・反映状況の管理画面・実検証チェッカ） | `src/domain/experience-version/**`・`src/lib/experience-version/**`・`src/app/api/admin/experience-versions/**` |
 | 3 Admin IA | #421 | #419 / #420 | 1 拠点・1 端末・1 受付体験の編集導線が業務対象中心に統合 | `src/app/admin/**`・`src/components/admin/**` |
 | 4 Kiosk UX | #422 | #419（推奨は #421 の後） | `KioskFlow.tsx` 分割 + 新シェルが feature flag 配下で選択可能 | `src/components/kiosk/**` |
 | 5 Cross-surface | #423 | #419 / #420 / #421 | platform → admin → preview → kiosk の横断 E2E が green | `tests/e2e/**` |
@@ -121,6 +121,12 @@ Wave 3 と Wave 4 は admin / kiosk でファイルが分かれるが、`Effecti
 ローダ + 越境 403 + fail-closed）。ただし **`/kiosk` クライアントはまだ旧経路を読んでいる**ため、
 旧経路の撤去条件は未達。撤去は §9 B-03 の予告どおり、クライアント切替（#422）と観測の後。
 
+**配信元（#420 Inc2）**: 公開版がスナップショットを持つ拠点では、新経路は**可変ストアを読まず
+スナップショットから配る**（`src/lib/product-context/configuration-plan.ts`）。版をまだ作っていない
+拠点は従来どおり live 配信で、挙動は変わらない。旧個別 API は常に live を返すため、**版管理を
+使い始めた拠点では旧経路と新経路で内容が食い違う**（これは意図した差であり、切り戻し時は
+「公開前の状態が見える」ことを意味する）。
+
 > **グローバルストアの暫定ガード**: branding / directory / voice / motions / avatar / languages の
 > 各ストアはテナント次元を持たないため、ローダは**既定テナント以外の要求を fail-closed で失敗**
 > させる（`src/lib/product-context/section-loaders.ts`）。ストアのテナント対応が本来の解で、
@@ -150,7 +156,7 @@ timeout / token）・`/api/kiosk/checkin/**`・`/api/kiosk/checkout/**`・`/api/
 | --- | --- | --- | --- |
 | テナント選択 UI | admin 側と platform 側で TenantSwitcher が別実装 | #423 で共通コンテキストバーへ | 未着手 |
 | 構成の適用単位 | `KioskConfig`（`src/domain/kiosk/types.ts`）と、branding/voice/motions/assets/signage の個別ストア | `EffectiveKioskConfiguration` に集約（§4.1） | 進行中（#419 契約のみ） |
-| 下書き / 公開 | #363 の demo 公開モデル（`domain/demo-studio/publication.ts`）と、#420 の受付体験バージョン（`domain/experience-version/`） | 版モデルは **`domain/experience-version/` へ一本化**し demo 側を寄せる。**両方を恒久的に残さない** | 進行中（#420 の版モデルを新設。demo 側の移行は未着手）|
+| 下書き / 公開 | #363 の demo 公開モデル（`domain/demo-studio/publication.ts`）と、#420 の受付体験バージョン（`domain/experience-version/` + `lib/experience-version/`） | 版モデルは **`domain/experience-version/` へ一本化**し demo 側を寄せる。**両方を恒久的に残さない** | 進行中（#420 側が永続化・スナップショット公開・管理 API まで到達。demo 側の移行は未着手）|
 | プレビュー | `/admin/demo/preview`（iframe + Mock 注入）と、#419 の `kiosk-preview` area | 同じ resolver を使う 1 つのプレビューへ | 未着手 |
 | 取次設定画面 | `/admin/call-routes` と `/admin/call-routing` | #421 で 1 画面へ | 未着手 |
 | 営業状態 | `ServiceOperatingPolicy`（#367）と `MaintenanceWindow`（#290）が別経路で `active` を落とす | resolver の `operatingPolicy` セクションで由来を明示して合成 | 未着手 |
@@ -216,6 +222,7 @@ CLAUDE.md の「重大変更時のみユーザー確認」に該当する行は 
 | B-03 | 個別設定 API（§4.1）の廃止 | 外部から直接叩いている利用者が居れば破壊 | **本書（Wave 0）** | 未 | 新経路稼働 + 2 wave 観測後 | 要確認 |
 | B-04 | `/api/kiosk/signage` の query スコープ廃止（認証必須化） | 未認証で拠点を指定していた経路が 403 になる | **本書（Wave 0）** | 未 | B-03 と同時 | 要確認 |
 | B-05 | 端末セッション未確立時の既定テナント fallback 廃止（fail-closed 化） | エンロール前端末が構成を取得できなくなる | **本書（Wave 0）** | 未 | #422 の切替と同時 | 要確認 |
+| B-06 | 受付体験の版管理を有効化した拠点で、設定ストアの編集が**公開するまで端末へ反映されなくなる** | 運用手順が変わる（保存＝反映ではなくなる）。**版を作るまでは発生しない**ため既存拠点への即時影響なし | 第 19 wave | 版を作成した拠点から順次 | 全拠点が版管理へ移行したら「予告」から外す | 要確認（拠点ごとの有効化タイミング）|
 
 ---
 

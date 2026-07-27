@@ -10,6 +10,7 @@ const requireKioskSession = vi.fn();
 const resolveDeviceBinding = vi.fn();
 const resolveAdminActorWithIdentity = vi.fn();
 const createSectionLoaders = vi.fn();
+const getBySite = vi.fn();
 
 vi.mock('@/lib/kiosk/session-guard', () => ({
   requireKioskSession: () => requireKioskSession(),
@@ -25,6 +26,9 @@ vi.mock('@/lib/auth/actor', () => ({
 }));
 vi.mock('@/lib/product-context/section-loaders', () => ({
   createSectionLoaders: () => createSectionLoaders(),
+}));
+vi.mock('@/lib/experience-version/store', () => ({
+  getExperienceVersionService: () => ({ getBySite: (...a: unknown[]) => getBySite(...a) }),
 }));
 
 import { GET } from './route';
@@ -64,6 +68,8 @@ beforeEach(() => {
   resolveDeviceBinding.mockResolvedValue(BINDING);
   resolveAdminActorWithIdentity.mockResolvedValue(null);
   createSectionLoaders.mockReturnValue(stubLoaders());
+  // 既定は「版管理をまだ使っていない拠点」= live 配信。
+  getBySite.mockResolvedValue(undefined);
 });
 
 describe('端末実行（kiosk セッション）', () => {
@@ -77,7 +83,7 @@ describe('端末実行（kiosk セッション）', () => {
     expect(res.status).toBe(200);
     const body = await res.json();
     expect(body.context).toEqual({ tenantId: 'tenant-a', siteId: 'site-1', kioskId: 'kiosk-1' });
-    expect(body.version).toMatchObject({ id: 'current', status: 'published', revision: 1 });
+    expect(body.version).toMatchObject({ id: 'live', status: 'published', revision: 0 });
     expect(body.configHash).toMatch(/^sha256:[0-9a-f]{64}$/);
     expect(Object.keys(body.provenance).sort()).toEqual([...CONFIGURATION_SECTIONS].sort());
   });
@@ -177,7 +183,7 @@ describe('管理プレビュー（admin actor）', () => {
     expect(res.status).toBe(401);
   });
 
-  it('下書き版はまだ解決できないので 404（下書きストアが無いのに draft を名乗らない）', async () => {
+  it('版管理未導入の拠点では draft を解決しない（404）', async () => {
     const res = await GET(request('?tenantId=tenant-a&siteId=site-1&kioskId=kiosk-1&version=draft'));
 
     expect(res.status).toBe(404);
@@ -193,6 +199,105 @@ describe('管理プレビュー（admin actor）', () => {
     const runtimeBody = await runtime.json();
 
     expect(previewBody.configHash).toBe(runtimeBody.configHash);
+  });
+});
+
+describe('版のスナップショット配信（#420 Inc2）', () => {
+  /** rev1 = 公開（スナップショット付き）、rev2 = 下書き。 */
+  const experience = {
+    id: 'tenant-a:site-1',
+    tenantId: asTenantId('tenant-a'),
+    siteId: asSiteId('site-1'),
+    name: '本社受付',
+    updatedAt: '2026-07-27T00:00:00.000Z',
+    versions: [
+      {
+        revision: 1,
+        status: 'published' as const,
+        configHash: 'sha256:published-content',
+        snapshot: {
+          sections: { branding: { accentColor: '#published' } },
+          provenance: { branding: 'tenant' },
+          configHash: 'sha256:published-content',
+        },
+        createdBy: 'admin-1',
+        createdAt: '2026-07-27T00:00:00.000Z',
+        publishedBy: 'admin-2',
+        publishedAt: '2026-07-27T01:00:00.000Z',
+      },
+      {
+        revision: 2,
+        status: 'draft' as const,
+        configHash: 'sha256:draft-content',
+        snapshot: {
+          sections: { branding: { accentColor: '#draft' } },
+          provenance: { branding: 'tenant' },
+          configHash: 'sha256:draft-content',
+        },
+        createdBy: 'admin-1',
+        createdAt: '2026-07-27T02:00:00.000Z',
+      },
+    ],
+  };
+
+  beforeEach(() => {
+    getBySite.mockResolvedValue(experience);
+    // live ストアは「編集後」の値を返す。スナップショット配信ならこれは出てこない。
+    createSectionLoaders.mockReturnValue(
+      stubLoaders({ branding: async () => ({ value: { accentColor: '#live-edit' }, source: 'tenant' }) }),
+    );
+  });
+
+  it('端末には公開版のスナップショットを配る（live ストアの編集は届かない）', async () => {
+    requireKioskSession.mockResolvedValue({ kioskId: 'kiosk-1' });
+
+    const res = await GET(request());
+
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.branding).toEqual({ accentColor: '#published' });
+    expect(body.version).toMatchObject({ id: 'tenant-a:site-1#1', revision: 1 });
+    expect(body.provenance.branding).toBe('tenant');
+  });
+
+  it('プレビューで draft を指定すると下書きのスナップショットが出る', async () => {
+    resolveAdminActorWithIdentity.mockResolvedValue(adminActor([tenantAdminOf('tenant-a')]));
+
+    const res = await GET(request('?tenantId=tenant-a&siteId=site-1&kioskId=kiosk-1&version=draft'));
+
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.branding).toEqual({ accentColor: '#draft' });
+    expect(body.version).toMatchObject({ revision: 2, status: 'draft' });
+  });
+
+  it('端末は draft 版を要求できない（403 のまま）', async () => {
+    requireKioskSession.mockResolvedValue({ kioskId: 'kiosk-1' });
+
+    const res = await GET(request('?version=draft'));
+
+    expect(res.status).toBe(403);
+  });
+
+  it('スナップショット取得後に増えたセクションは空で配る（欠落で全体を落とさない）', async () => {
+    requireKioskSession.mockResolvedValue({ kioskId: 'kiosk-1' });
+
+    const body = await (await GET(request())).json();
+
+    expect(body.voice).toEqual({});
+    expect(body.provenance.voice).toBe('default');
+  });
+
+  it('公開版が無く下書きだけの拠点は、公開構成として live へ倒さない（404）', async () => {
+    getBySite.mockResolvedValue({
+      ...experience,
+      versions: [{ ...experience.versions[1], revision: 1 }],
+    });
+    requireKioskSession.mockResolvedValue({ kioskId: 'kiosk-1' });
+
+    const res = await GET(request());
+
+    expect(res.status).toBe(404);
   });
 });
 
