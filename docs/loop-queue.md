@@ -8,7 +8,7 @@
 > 本書の「未実装」「外部待ち」分類が stale で、既に main に在るものを作り直しかけた。
 > 分類が実態と違ったら、その周回で本書を直す。
 
-## 現在地（2026-07-27 更新・第 28 wave 消化後）
+## 現在地（2026-07-27 更新・第 29 wave 消化後）
 
 > **新規セッションはまず [`docs/handoff-2026-07-27.md`](handoff-2026-07-27.md) を読むこと。**
 > 次に何をするか・再調査不要な確定事実・ユーザー判断待ちの一覧がそこにある。
@@ -17,9 +17,9 @@
 `/api/configuration/effective` 実配線）→ Wave 2（#420 = 版ライフサイクル・永続化・スナップショット公開・管理 API・反映状況）
 → Wave 4 の increment 1〜2（#422 = 端末の構成取得を実効構成の 1 回取得へ一本化 → 構成取得 /
 環境監視 / メトリクスのフック分離）→ #420 の端末側の版報告と定期再取得（公開 → 端末取得 → 反映 ACK が一周した）まで消化。
-→ #422 increment 3（`renderScreen` の props オブジェクト化）まで消化。
-次は **#327 の残り 13 箇所の i18n 移行**（#422 の画面分割がこれに依存することが第 28 wave で判明）。
-詳細は第 16〜28 wave の各節。
+→ #422 increment 3〜4（`renderScreen` の props オブジェクト化 → **受付ジャーニー画面と状態機械の
+ファイル分割**）まで消化。`KioskFlow.tsx` は 3196 → **1608 行**。
+次は **新旧 ExperienceShell の切替**か **#419 の `kiosk-dev` 除去**。詳細は第 16〜29 wave の各節。
 **ブラウザ e2e はこのコンテナで動き、フルスイート 172/172 が安定して green**
 （第 22 wave で実行環境を是正・第 23 wave で干渉を解消）。UI に触る変更は `--e2e` を通すこと。
 移行状態の追跡は **`docs/product-integration-plan.md` が正**（本書は着手順・依存 DAG を持ち、
@@ -116,7 +116,7 @@
 | **#419** | architecture | **increment 3 完了**（第 16 wave = 契約 52 テスト / 第 18 wave = `src/lib/product-context/` + `GET /api/configuration/effective` 33 テスト / 第 24 wave = `/kiosk` クライアントの新経路切替を移行フラグ配下で実施 19 + e2e 5）。**残**: 移行フラグ既定の切替（観測後）・`kiosk-dev` 除去・グローバルストア（branding/directory/voice/motions/avatar/languages）のテナント対応・旧個別 API の撤去（台帳 §9 B-03） | ローカル可（継続） |
 | **#420** | lifecycle | **increment 6 完了**（第 17 = 純ロジック 34 / 第 19 = 永続化・スナップショット公開・管理 API 45 / 第 20 = heartbeat 受け口 + 反映状況 API 20 / 第 21 = 管理画面 18 / 第 26 = 端末側の報告送信 11 / 第 27 = **端末側の定期再取得 + 受付中は適用保留** 10 + e2e 2。計 138 テスト）。**ライフサイクル（公開 → キオスク取得 → 反映 ACK）が一周した。** **残**: 実検証チェッカ（asset/motion/call route 到達性）・デモ公開モデル（#363）の統合・ナビ配線（#421） | ローカル可（継続） |
 | **#421** | admin ux | **未着手**（業務構造への再編）。現状は技術モジュール別ナビ。土台: `ReceptionFlowsManager.tsx`・`KiosksManager.tsx` ほか admin 画面群 | #419/#420 の後 |
-| **#422** | kiosk ux | **increment 2 完了**（第 24 wave: `useEffectiveConfiguration` で構成取得 7 経路 → `/api/configuration/effective` 1 回取得へ一本化。移行フラグ `effectiveConfiguration`・新経路失敗時は旧経路へ自動フォールバック。19 unit + 5 e2e / 第 25 wave: `useKioskConfiguration`・`useKioskDeviceStatus`・`useExperienceMetrics` へ分離し `KioskFlow.tsx` 3196 → 2938 行）。会話中心化の部品は #361/#364 で先行。**残**: 画面コンポーネントの分割・新旧 ExperienceShell の切替・ステッパー最小化・常設要素の 3 領域整理 | #419 の後（#420/#421 と並行可だが推奨 Wave は #421 の後） |
+| **#422** | kiosk ux | **increment 4 完了**（第 24 wave: `useEffectiveConfiguration` で構成取得 7 経路 → `/api/configuration/effective` 1 回取得へ一本化。移行フラグ `effectiveConfiguration`・新経路失敗時は旧経路へ自動フォールバック。19 unit + 5 e2e / 第 25 wave: `useKioskConfiguration`・`useKioskDeviceStatus`・`useExperienceMetrics` へ分離 / 第 28 wave: `renderScreen` の props オブジェクト化 / 第 29 wave: `reception-screens.tsx`・`flow-state.ts` へ分割し **3196 → 1608 行**）。会話中心化の部品は #361/#364 で先行。**残**: 新旧 ExperienceShell の切替・ステッパー最小化・常設要素の 3 領域整理・ConversationTurn への接続 | #419 の後（#420/#421 と並行可だが推奨 Wave は #421 の後） |
 | **#423** | nav/e2e | **部分**: e2e 資産は厚い（`tests/e2e/` 40+ spec・`journey-reception.spec.ts`）。未達: platform→admin→preview→kiosk の 10 ステップ横断シナリオ・共通コンテキストバー・TenantSwitcher 共通契約 | #419/#420/#421 の後 |
 | **#424** | ai loop | **未着手**: `docs/ai-development-loop.md` 不在。土台: 本ループ運用（CLAUDE.md/`docs/loop-workflow.md`/quality-gate）・#427 の experience 規約（draft）。初回適用対象 = #419 と明示 | 各 wave へ順次適用 |
 | **#425** | delivery | **Wave 0 完了**（第 16 wave: `docs/product-integration-plan.md` = Wave 開始/終了条件・占有ファイル・route/API 移行マトリクス・重複概念・暫定 ID・feature flag registry・breaking-change register・rollback playbook・KPI baseline、`docs/adr/README.md` = ADR index）。**残**: Wave 1 以降の各 PR で状態列を更新していく運用（台帳自体の追加作業なし） | 完了 2026-07-27 |
@@ -205,14 +205,13 @@
 | 25 | 2026-07-27 | #422 increment 2: 構成取得 / 環境監視 / 体験メトリクスを `KioskFlow` からフックへ分離（挙動不変・e2e 177/177 で固定） | 本書 |
 | 26 | 2026-07-27 | #420 increment 5: 端末が読み込んだ版を heartbeat で報告（反映状況画面が全台 `pending` だった片肺を解消） | 本書 |
 | 27 | 2026-07-27 | #420 increment 6: 端末が構成を定期再取得し、**受付進行中は適用を保留**して次セッションから新版を使う | 本書 |
-| 28 | 2026-07-27 | #422 increment 3: `renderScreen` の 29 位置引数を props オブジェクト化。**画面分割が #327 に依存することを実測で確認** | 本書 |
+| 28 | 2026-07-27 | #422 increment 3: `renderScreen` の 29 位置引数を props オブジェクト化 | 本書 |
+| 29 | 2026-07-27 | #422 increment 4: `reception-screens.tsx`（画面 1487 行）と `flow-state.ts`（状態機械 88 行）へ分割。`KioskFlow.tsx` 3196 → 1608 行 | 本書 |
 
 
-**次に着手する候補（2026-07-27 更新・第 28 wave 消化後）**: **#327 の残り 13 箇所の i18n 移行**
-（= #422 の画面分割の前提。下記「落とし穴」参照）。移行できれば受付ステップ系 View
-（`IdleView` 〜 `EndView`・`ResultPanel` ほか 20 個）は**すでに全て i18n 済みで抽出可能**なので、
-そのまま #422 increment 4（ファイル分割）へ続けられる。
-**#419 の `kiosk-dev` 除去**も解禁済み。台帳 §9 B-03〜B-05 は移行フラグの既定を新経路へ倒して
+**次に着手する候補（2026-07-27 更新・第 29 wave 消化後）**: **#422 increment 5 = 新旧
+ExperienceShell の切替**（移行フラグは ADR 0004 のとおり構成取得とは**別キー**にする）、または
+**#419 の `kiosk-dev` 除去**。台帳 §9 B-03〜B-05 は移行フラグの既定を新経路へ倒して
 観測してから。#420 の残り（実検証チェッカ・デモ公開モデルの統合）はいつでも着手可。
 代替候補: #421 admin IA 再編（`/admin/experience-versions` のナビ配線を含む）／
 **グローバルストアのテナント対応**（永続キー変更 = スキーマ破壊なので **要ユーザー確認**）／
@@ -242,15 +241,15 @@
 - **kiosk 配下の新規ファイルに生 CJK リテラルを置かない**（#327 の機械検証が落ちる）。
   `KioskFlow.tsx` は allowlist 済みなので、未移行の既定文言をフックへ移すと違反になる。
   第 25 wave では待機リードの ja 既定文言を `KioskFlow` 側に残して回避した（移行本体は #327）。
-- **#422 の画面分割は #327（kiosk 文言の i18n 移行）に実質依存する**（第 28 wave に実測）。
-  `KioskFlow.tsx` は CJK allowlist 済みだが**新規ファイルは例外なく検査される**ため、生 CJK を
-  含むコンポーネントを切り出すと落ちる。残る生 CJK は **13 箇所 / 5 コンポーネント**だけ:
-  `KioskAuthorizeView`(4) / `KioskUnenrolledView`(3) / `KioskCheckingView`(1) /
-  `EscapeHatchBar`(1) / `CustomVisitorInfoView`(1) と `KioskFlow` 本体(2)。
-  **受付ステップ系 View は全て i18n 済みで抽出できる**が、`renderScreen` が
-  `CustomVisitorInfoView`（CJK 有り）を参照するため、先に分割すると新ファイルと
-  `KioskFlow.tsx` が相互 import になる。**13 箇所を先に移行するのが最短路**。
-  allowlist を広げて回避しないこと（ガードの意味が失われる）。
+- **kiosk コンポーネントを切り出すときは生 CJK リテラルの有無を先に測る**（#327 の検証は
+  `KioskFlow.tsx` を allowlist する一方、**新規ファイルは例外なく検査する**）。残る生 CJK は
+  13 箇所 / 5 コンポーネント（`KioskAuthorizeView` 4 / `KioskUnenrolledView` 3 /
+  `KioskCheckingView` 1 / `EscapeHatchBar` 1 / `CustomVisitorInfoView` 1 / `KioskFlow` 本体 2）で、
+  **これらは端末ゲート系＝ KioskFlow に残す側**。受付ジャーニー画面は全て i18n 済みで、
+  第 29 wave でそのまま切り出せた。allowlist を広げて回避しないこと。
+  > 第 28 wave は「`renderScreen` が `CustomVisitorInfoView` を参照するので分割は #327 待ち」と
+  > 記録したが**誤り**だった（参照関係を確認せず仮定した）。実際には `renderScreen` の参照先は
+  > 全て i18n 済みで、依存は無かった。**「依存がある」と書くときは参照を実際に引くこと。**
 - **構成の「取得」と「適用」を分けて考える**（第 27 wave）。取得は 60 秒ごと（`?configSyncMs=` で
   短縮可）に回るが、**適用は待機（idle）に戻ってから**。受付進行中に差し替えると来訪者の画面が
   操作の途中で入れ替わる。判定は `src/domain/kiosk/configuration-sync.ts`。
