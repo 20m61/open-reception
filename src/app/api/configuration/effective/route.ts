@@ -9,8 +9,7 @@ import type { ConfigurationVersionSelector } from '@/domain/product-context/type
 import { resolveAdminActorWithIdentity } from '@/lib/auth/actor';
 import { requireKioskSession } from '@/lib/kiosk/session-guard';
 import { deviceActorFor, resolveDeviceBinding } from '@/lib/product-context/device-binding';
-import { createSectionLoaders } from '@/lib/product-context/section-loaders';
-import { createCurrentVersionLookup } from '@/lib/product-context/version-lookup';
+import { resolveConfigurationPlan } from '@/lib/product-context/configuration-plan';
 
 /**
  * GET /api/configuration/effective?tenantId=&siteId=&kioskId=&version=draft|published (issue #419)
@@ -23,6 +22,10 @@ import { createCurrentVersionLookup } from '@/lib/product-context/version-lookup
  *     信用しない。未登録・失効端末は 403（既定テナントの構成へ落とさない）。draft は配信しない。
  *   - セッションが無ければ **管理プレビュー**。actor の割り当てと query の tenant/site を照合し、
  *     さらに **kioskId が当該拠点の端末であること**を台帳で確認する（いずれも越境は 403）。
+ *
+ * 配信元（#420 increment 2）: 公開版がスナップショットを持てばそこから配り、可変ストアは読まない。
+ * 版管理をまだ使っていない拠点は live なストアから配る（従来どおり）。詳細は
+ * `src/lib/product-context/configuration-plan.ts`。
  *
  * 既存の個別設定 API（`/api/kiosk/branding` 等）は互換経路として**残す**。撤去条件は
  * `docs/product-integration-plan.md` §4.1 / §9 B-03 を参照。
@@ -95,9 +98,23 @@ export async function GET(request: Request): Promise<NextResponse> {
     }
   }
 
+  if (!context.tenantId || !context.siteId || !context.kioskId) {
+    return NextResponse.json({ error: 'scope_required' }, { status: 400 });
+  }
+
+  // 公開版がスナップショットを持つなら、可変ストアではなくスナップショットから配る（#420）。
+  const plan = await resolveConfigurationPlan({
+    tenantId: context.tenantId,
+    siteId: context.siteId,
+    selector: version,
+  });
+  if (!plan) {
+    return NextResponse.json({ error: 'version_not_found' }, { status: 404 });
+  }
+
   const resolver = createEffectiveKioskConfigurationResolver({
-    versions: createCurrentVersionLookup(),
-    loaders: createSectionLoaders(),
+    versions: { resolve: () => plan.version },
+    loaders: plan.loaders,
   });
   const result = await resolver.resolve(context, version);
 

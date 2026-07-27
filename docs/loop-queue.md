@@ -8,11 +8,11 @@
 > 本書の「未実装」「外部待ち」分類が stale で、既に main に在るものを作り直しかけた。
 > 分類が実態と違ったら、その周回で本書を直す。
 
-## 現在地（2026-07-27 更新・第 18 wave 消化後）
+## 現在地（2026-07-27 更新・第 19 wave 消化後）
 
 **統合再設計プログラム #418 の進捗**: Wave 0（#425 台帳・クローズ済）→ Wave 1（#419 契約 +
-`/api/configuration/effective` 実配線）→ Wave 2（#420 版ライフサイクルの純ロジック）まで消化。
-次は **#420 Inc2（版の永続化 + heartbeat + 監査）**。詳細は第 16〜18 wave の各節。
+`/api/configuration/effective` 実配線）→ Wave 2（#420 版ライフサイクル + 永続化 + スナップショット公開 + 管理 API）まで消化。
+次は **#420 Inc3（heartbeat + 反映状況の可視化）**。詳細は第 16〜19 wave の各節。
 移行状態の追跡は **`docs/product-integration-plan.md` が正**（本書は着手順・依存 DAG を持ち、
 移行台帳は持たない）。
 
@@ -105,7 +105,7 @@
 | --- | --- | --- | --- |
 | **#418** | program | 親 Epic（トラッキング）。子 = #419〜#425、Related #426 | — |
 | **#419** | architecture | **increment 2 完了**（第 16 wave = 契約 52 テスト / 第 18 wave = `src/lib/product-context/`（fail-closed な端末束縛解決・全 11 セクションのローダ・暫定 version lookup）+ `GET /api/configuration/effective`。33 テスト）。**残**: `/kiosk` クライアントの新経路切替（#422 と同時）・`kiosk-dev` 除去・グローバルストア（branding/directory/voice/motions/avatar/languages）のテナント対応・旧個別 API の撤去（台帳 §9 B-03） | ローカル可（継続） |
-| **#420** | lifecycle | **increment 1 完了**（第 17 wave: `src/domain/experience-version/` = 版ライフサイクル純ロジック（下書き→検証→承認→公開→ロールバック・revision 競合制御・append-only 履歴）+ 端末反映判定（applied/pending/stale/failed・rollout 集計・受付中は版固定）。31 テスト）。**残**: 永続化 repository・管理 API・heartbeat への loadedRevision/configHash 追加・管理画面の desired/loaded 差分表示・監査 AuditAction 追加・実検証チェッカ（asset/motion/call route）の配線 | ローカル可（継続） |
+| **#420** | lifecycle | **increment 2 完了**（第 17 wave = 純ロジック 34 テスト / 第 19 wave = 永続化 repository・**構成スナップショット**・`ExperienceVersionService`・`GET/POST /api/admin/experience-versions`・監査 4 アクション。45 テスト）。**残**: heartbeat への loadedRevision/configHash 報告・反映状況の管理画面・実検証チェッカ（asset/motion/call route 到達性）・デモ公開モデルの統合 | ローカル可（継続） |
 | **#421** | admin ux | **未着手**（業務構造への再編）。現状は技術モジュール別ナビ。土台: `ReceptionFlowsManager.tsx`・`KiosksManager.tsx` ほか admin 画面群 | #419/#420 の後 |
 | **#422** | kiosk ux | **部分**: 会話中心化の部品は #361/#364 で先行（`ui-contract.ts`・`ConversationTurnView`・voice-session）。未達: `KioskFlow.tsx`（2900 行超）の責務分割・`EffectiveKioskConfiguration` 一括取得・feature flag 切替シェル | #419 の後（#420/#421 と並行可だが推奨 Wave は #421 の後） |
 | **#423** | nav/e2e | **部分**: e2e 資産は厚い（`tests/e2e/` 40+ spec・`journey-reception.spec.ts`）。未達: platform→admin→preview→kiosk の 10 ステップ横断シナリオ・共通コンテキストバー・TenantSwitcher 共通契約 | #419/#420/#421 の後 |
@@ -406,69 +406,24 @@ deploy・#366 Stack の deploy(月 $14.2 見積の最終承認)・#4 実資格�
 - kiosk→tenant/site 解決が 3 実装（fail-open 2 + fail-closed 1）になった。台帳 §5 に重複概念
   として登録済み。既存 2 つの移行は未着手。
 
-**次に着手する候補（2026-07-27 更新）**: **第 19 wave = #420 Inc2**（版の永続化 repository + 管理 API +
-heartbeat への loadedRevision/configHash 追加 + 監査 AuditAction）。これが入ると
-`version-lookup.ts` の暫定実装を実データへ差し替えられ、draft プレビューが 404 でなくなる。
-代替候補: グローバルストアのテナント対応（#419 残の中核）／ #421 admin IA ／ #363 Inc4 相当の残／
-#399（実機検証 = #65）／ AI Evolution epic 群(#382〜#392)。
+**第 19 wave（2026-07-27 消化済み）** — #420 increment 2（版の永続化と公開の実体化・単独トラック）:
+
+| トラック | Issue | 結果 |
+| --- | --- | --- |
+| A | **#420 Inc2** | `src/lib/experience-version/`（repository / service / store）+ `GET,POST /api/admin/experience-versions` + 監査 4 アクション + `lib/product-context/configuration-plan.ts`。45 テスト。**設計の中核**: increment 1 の「版は指紋だけを持つ」設計では**公開が成立しない**ことが判明した — 指紋が指す中身（可変ストア）が動いてしまうため。`ExperienceConfigurationSnapshot` を導入し、**下書き保存時に解決済みセクション値ごと固定**、公開版はスナップショットから配る形に変更した。これで「管理画面の保存が端末へ即時反映されない」が初めて実体を持つ |
+
+第 19 wave の注記:
+- **指紋が 2 種類になった**。`computeConfigHash`（context+version+内容 = API 応答の `configHash`）と
+  `computeSectionsHash`（内容だけ = スナップショット・版比較・ドリフト検出用）。取り違えないこと。
+- **版を作っていない拠点の挙動は不変**（live 配信）。版管理を使い始めた拠点だけ「保存＝反映」でなくなる。
+  台帳 §9 に **B-06** として登録した（拠点ごとの有効化タイミングは要ユーザー確認）。
+- 公開版が無く下書きだけの拠点は **live へ倒さず 404**。未公開の構成を「公開版」として配らないため。
+- 管理 API の応答に**スナップショット（構成の中身）を含めない**。中身が要る画面はプレビュー
+  （`/api/configuration/effective?version=draft`）を使う — 同じ resolver を通るので公開後と一致する。
+
+**次に着手する候補（2026-07-27 更新）**: **第 20 wave = #420 Inc3**（heartbeat への loadedRevision/
+configHash 報告 + 反映状況の管理画面 = `deployment.ts` の純ロジックを実データへ接続）。これで
+「公開後、各端末の反映済み/未反映/失敗を確認できる」AC が閉じる。
+代替候補: グローバルストアのテナント対応（#419 残の中核・マルチテナント運用の前提）／ #421 admin IA ／
+#422 KioskFlow 分割（新経路への切替を含む）／ AI Evolution epic 群(#382〜#392)。
 エピック群の優先順位はユーザー判断（現在地の注記参照）。
-
-同 wave に **#366 Phase 0 ADR のみ**（`docs/adr/*.md` 新規・コスト増ゼロ）を差し込むのは安全。
-CDK 実装と deploy は分離し、Budget 見積を添えてユーザー承認を取る。
-**第 3 wave**: #361（KioskFlow 大改修・単独）／ #369
-**第 4 wave**: #370 + #371 並行 → #372、#363 Inc1
-**第 5 wave**: #366 Stack（**ユーザー承認後**）→ #367、#376 Spike → #4 → #65
-
-## 落とし穴（着手前に必読）
-
-- **#366 は本プロジェクト初の実質的な固定費**。EC2 t4g + Route 53 + EBS + CloudWatch を
-  8:00–23:00 常時稼働させる。現状 open-reception の AWS 実績は**月 $0.0005**（2026-07 実測、
-  dev のみ・ほぼ無料枠内）なので、コスト構造が質的に変わる。CLAUDE.md の重大変更条件に
-  該当 → **Phase 0 ADR で Budget 見積を出して承認を取ってから CDK を書く**。
-- **#361 は既存の意図的設計の反転**。`KioskFlow.tsx:1210-1216` のコメントが「選択/入力画面は
-  コンテンツが密集し重なるためアバターを出さない」と明記し、`avatar-companion.test.ts` で
-  テスト固定されている。#361 の AC はこれを覆すので、既存テストの意図的な書き換えと
-  レビュー合意が要る。単なる追加実装ではない。
-- **#375 の token hash 化は永続データのスキーマ破壊**。既存 `VisitReservation.token` は
-  生値保存で migration 必須 → 要ユーザー確認。ただし他 AC は充足済みなので、
-  **hash 化と 3-ref 分離だけを increment 化**すればよくモデル全体の作り直しは不要。
-- **#369〜#372 は greenfield**。既存 `src/lib/voice/` を音声パイプラインと誤認しない。
-
-## モデル割り当て指針（オーケストレータ向け）
-
-オーケストレータ（マージ判断・レビュー・競合解決・スコープ裁定）は上位モデルで実行し、
-実装トラックは `Agent` の `model` でタスク特性に合わせる:
-
-| 割り当て | 対象 | 例 |
-| --- | --- | --- |
-| **上位（opus 等）** | 設計判断を伴う UX/情報設計、横断リファクタ、スキーマ設計 | #361（画面再設計・既存設計の反転）/ #373（組織モデル）/ #374（ルーティング抽象）/ #375（招待モデル） |
-| **標準（sonnet 等）** | AC が具体的で対象ファイルが特定済みの実装 | #362（配線分離）/ #365（ハーネス）/ #367 Inc1 / #369〜#372（仕様が明確な greenfield）/ #377 |
-| **標準（sonnet 等）** | ドキュメント整備・ADR 草案 | #366 Phase 0 / #376 ADR |
-
-- レビュー/検証エージェント（読み取り専用 fan-out）は標準モデルで並行可。
-- トラック内で設計疑義が出たら実装を止めてオーケストレータへ報告（トラック側で判断しない）。
-
-## 進め方メモ
-
-- 各トラックは独立 worktree（または `isolation: "worktree"` のサブエージェント）で実装。
-- fresh worktree は `node_modules` が無いが `quality-gate.sh` の bootstrap が自己修復する。
-  worktree 内でゲートを起動するときは **その worktree 自身の `scripts/quality-gate.sh`** を叩く。
-  スクリプトは `cd "$(dirname "$0")/.."` で repo root を解決するため、**main の絶対パスを渡すと
-  main のツリーが検証され worktree の変更は一切見られない**（2026-07-19 に実際に 2 トラック空振り
-  させた）。「絶対パスで」だけでは不十分。`$(git rev-parse --show-toplevel)/scripts/quality-gate.sh`
-  の形で渡すか、出力の `repo:` 行でどのツリーで走ったかを必ず確認する。
-- コミット署名は 1Password `op-ssh-sign`（ロック中は失敗 → アンロックして再実行）。
-- マージは 1 本ずつ。ゲート green + レビュー blocking なしなら自動マージ（重大変更時のみ確認）。
-  後続トラックはマージ後 main を `git pull --ff-only` で取り込んでから整合確認。
-- 状態は本ファイルの表で更新していく。**分類が実態と違ったらその周回で直す。**
-
-## 完了アーカイブ
-
-過去フェーズの詳細は各ハンドオフに委譲する（本書には残さない — 陳腐化して誤誘導するため）。
-
-| フェーズ | 範囲 | 記録 |
-| --- | --- | --- |
-| 初期 DAG / QR チェーン / 管理画面クラスタ / 受付拡張・UX | epic #82 / #96 / #119 とその子 issue | 全クローズ |
-| platform console | epic #83（運用 ops は #290 へ切り出し） | `docs/platform-console-design.md` |
-| 2026-07-02〜03 自律ループ | #264/#275/#273/#261/#289/#274/#299/#300/#303/#308/#284/#200 | クローズ済 |
-| 2026-07-11 三層棚卸し → 07-12/13 消化 | #313〜#331・#342・#348 | `docs/handoff-2026-07-12.md` |

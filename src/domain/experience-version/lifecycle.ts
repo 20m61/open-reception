@@ -11,6 +11,7 @@
  *   - 過去版の `configHash` / `createdAt` / `revision` は書き換えない（status のみ遷移する）。
  */
 import type {
+  ExperienceConfigurationSnapshot,
   ReceptionExperience,
   ReceptionExperienceVersion,
   ValidationSummary,
@@ -62,6 +63,7 @@ export function createExperience(input: {
   siteId: SiteId;
   name: string;
   configHash: string;
+  snapshot?: ExperienceConfigurationSnapshot;
   createdBy: string;
   nowIso: string;
 }): ReceptionExperience {
@@ -75,6 +77,7 @@ export function createExperience(input: {
         revision: 1,
         status: 'draft',
         configHash: input.configHash,
+        snapshot: input.snapshot,
         createdBy: input.createdBy,
         createdAt: input.nowIso,
       },
@@ -90,7 +93,14 @@ export function createExperience(input: {
  */
 export function saveDraft(
   exp: ReceptionExperience,
-  input: { configHash: string; editorId: string; nowIso: string; baseRevision: number },
+  input: {
+    configHash: string;
+    /** 保存時点の構成スナップショット。これが公開時にそのまま端末へ配られる。 */
+    snapshot?: ExperienceConfigurationSnapshot;
+    editorId: string;
+    nowIso: string;
+    baseRevision: number;
+  },
 ): LifecycleResult<'revision_conflict'> {
   const latest = latestRevision(exp);
   if (input.baseRevision !== latest) return { ok: false, reason: 'revision_conflict' };
@@ -99,6 +109,7 @@ export function saveDraft(
     revision: latest + 1,
     status: 'draft',
     configHash: input.configHash,
+    snapshot: input.snapshot,
     createdBy: input.editorId,
     createdAt: input.nowIso,
   };
@@ -199,6 +210,8 @@ export function rollbackTo(
     revision: latestRevision(exp) + 1,
     status: 'published',
     configHash: target.configHash,
+    // 切り戻しは**中身ごと**戻す。指紋だけ戻して中身が現行ストアのままだと復旧にならない。
+    snapshot: target.snapshot,
     validationSummary: target.validationSummary,
     createdBy: input.actorId,
     createdAt: input.nowIso,
