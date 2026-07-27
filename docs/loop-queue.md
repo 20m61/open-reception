@@ -8,7 +8,7 @@
 > 本書の「未実装」「外部待ち」分類が stale で、既に main に在るものを作り直しかけた。
 > 分類が実態と違ったら、その周回で本書を直す。
 
-## 現在地（2026-07-27 更新・第 25 wave 消化後）
+## 現在地（2026-07-27 更新・第 26 wave 消化後）
 
 > **新規セッションはまず [`docs/handoff-2026-07-27.md`](handoff-2026-07-27.md) を読むこと。**
 > 次に何をするか・再調査不要な確定事実・ユーザー判断待ちの一覧がそこにある。
@@ -16,8 +16,9 @@
 **統合再設計プログラム #418 の進捗**: Wave 0（#425 台帳・クローズ済）→ Wave 1（#419 契約 +
 `/api/configuration/effective` 実配線）→ Wave 2（#420 = 版ライフサイクル・永続化・スナップショット公開・管理 API・反映状況）
 → Wave 4 の increment 1〜2（#422 = 端末の構成取得を実効構成の 1 回取得へ一本化 → 構成取得 /
-環境監視 / メトリクスのフック分離）まで消化。次は **#422 increment 3（画面コンポーネントの分割と
-新 ExperienceShell）**。詳細は第 16〜25 wave の各節。
+環境監視 / メトリクスのフック分離）→ #420 の端末側の版報告（heartbeat 相乗り）まで消化。
+次は **#420 の端末側の定期再取得**（公開した版が端末へ届く経路。現状は起動時 1 回のみ）か、
+**#422 increment 3（画面コンポーネントの分割）**。詳細は第 16〜26 wave の各節。
 **ブラウザ e2e はこのコンテナで動き、フルスイート 172/172 が安定して green**
 （第 22 wave で実行環境を是正・第 23 wave で干渉を解消）。UI に触る変更は `--e2e` を通すこと。
 移行状態の追跡は **`docs/product-integration-plan.md` が正**（本書は着手順・依存 DAG を持ち、
@@ -112,7 +113,7 @@
 | --- | --- | --- | --- |
 | **#418** | program | 親 Epic（トラッキング）。子 = #419〜#425、Related #426 | — |
 | **#419** | architecture | **increment 3 完了**（第 16 wave = 契約 52 テスト / 第 18 wave = `src/lib/product-context/` + `GET /api/configuration/effective` 33 テスト / 第 24 wave = `/kiosk` クライアントの新経路切替を移行フラグ配下で実施 19 + e2e 5）。**残**: 移行フラグ既定の切替（観測後）・`kiosk-dev` 除去・グローバルストア（branding/directory/voice/motions/avatar/languages）のテナント対応・旧個別 API の撤去（台帳 §9 B-03） | ローカル可（継続） |
-| **#420** | lifecycle | **increment 4 完了**（第 17 = 純ロジック 34 / 第 19 = 永続化・スナップショット公開・管理 API 45 / 第 20 = heartbeat 報告 + 反映状況 API 20 / 第 21 = 管理画面 `/admin/experience-versions` 18。計 117 テスト）。**残**: 実検証チェッカ（asset/motion/call route 到達性）・**端末側の報告送信**（#422 のクライアント切替時）・デモ公開モデル（#363）の統合・ナビ配線（#421） | ローカル可（継続） |
+| **#420** | lifecycle | **increment 5 完了**（第 17 = 純ロジック 34 / 第 19 = 永続化・スナップショット公開・管理 API 45 / 第 20 = heartbeat 受け口 + 反映状況 API 20 / 第 21 = 管理画面 `/admin/experience-versions` 18 / 第 26 = **端末側の報告送信** 11。計 128 テスト）。**残**: **端末側の定期再取得**（公開した版が届く経路。現状は起動時 1 回のみ取得するため、公開後の端末は再読込まで `stale` のまま）・実検証チェッカ（asset/motion/call route 到達性）・デモ公開モデル（#363）の統合・ナビ配線（#421） | ローカル可（継続） |
 | **#421** | admin ux | **未着手**（業務構造への再編）。現状は技術モジュール別ナビ。土台: `ReceptionFlowsManager.tsx`・`KiosksManager.tsx` ほか admin 画面群 | #419/#420 の後 |
 | **#422** | kiosk ux | **increment 2 完了**（第 24 wave: `useEffectiveConfiguration` で構成取得 7 経路 → `/api/configuration/effective` 1 回取得へ一本化。移行フラグ `effectiveConfiguration`・新経路失敗時は旧経路へ自動フォールバック。19 unit + 5 e2e / 第 25 wave: `useKioskConfiguration`・`useKioskDeviceStatus`・`useExperienceMetrics` へ分離し `KioskFlow.tsx` 3196 → 2938 行）。会話中心化の部品は #361/#364 で先行。**残**: 画面コンポーネントの分割・新旧 ExperienceShell の切替・ステッパー最小化・常設要素の 3 領域整理 | #419 の後（#420/#421 と並行可だが推奨 Wave は #421 の後） |
 | **#423** | nav/e2e | **部分**: e2e 資産は厚い（`tests/e2e/` 40+ spec・`journey-reception.spec.ts`）。未達: platform→admin→preview→kiosk の 10 ステップ横断シナリオ・共通コンテキストバー・TenantSwitcher 共通契約 | #419/#420/#421 の後 |
@@ -201,14 +202,21 @@
 | 16〜23 | 2026-07-27 | 統合再設計 #418 の Wave 0〜2（#425 台帳 / #419 契約と実配線 / #420 版管理・スナップショット公開・反映状況・運用画面）+ **e2e 実行環境の是正と安定化** | **`docs/handoff-2026-07-27.md`** |
 | 24 | 2026-07-27 | #422 increment 1: 端末の構成取得を `EffectiveKioskConfiguration` の 1 回取得へ一本化（移行フラグ配下・自動フォールバック付き）+ ADR 0004 | 本書 + `docs/product-integration-plan.md` §4.1 / §7 / `docs/adr/0004-kiosk-experience-migration-flag.md` |
 | 25 | 2026-07-27 | #422 increment 2: 構成取得 / 環境監視 / 体験メトリクスを `KioskFlow` からフックへ分離（挙動不変・e2e 177/177 で固定） | 本書 |
+| 26 | 2026-07-27 | #420 increment 5: 端末が読み込んだ版を heartbeat で報告（反映状況画面が全台 `pending` だった片肺を解消） | 本書 |
 
 
-**次に着手する候補（2026-07-27 更新・第 25 wave 消化後）**: **第 26 wave = #422 increment 3
-（画面コンポーネントの分割）**。副作用（構成取得・環境監視・メトリクス）がフックへ出たので、
-`renderScreen` の巨大な引数列と各 View の切り出しに進める。並行して解禁されているのは
-**#420 の端末側の版報告**（heartbeat に `contentHash` を載せる。`useKioskConfiguration` が
-`meta` として既に保持している）と **#419 の `kiosk-dev` 除去**。台帳 §9 B-03〜B-05 は
-移行フラグの既定を新経路へ倒して観測してから。
+**次に着手する候補（2026-07-27 更新・第 26 wave 消化後）**: 次の 2 つはどちらも独立に進められる。
+
+1. **#420 の端末側の定期再取得**（推奨）。端末は構成を**起動時 1 回**しか取らないため、公開した版が
+   再読込まで届かない。`nextApplicableRevision`（`domain/experience-version/deployment.ts`）が
+   「受付進行中は現在の版を維持し、次セッションから新版」の判定を純関数として既に持っている
+   ので、`useEffectiveConfiguration` の再取得と idle 時のみの適用を足せば AC
+   「受付中の来訪者が公開操作によって中断されない」まで満たせる。
+2. **#422 increment 3（画面コンポーネントの分割）**。副作用がフックへ出たので、`renderScreen` の
+   巨大な引数列と各 View の切り出しに進める。
+
+**#419 の `kiosk-dev` 除去**も解禁済み。台帳 §9 B-03〜B-05 は移行フラグの既定を新経路へ倒して
+観測してから。
 代替候補: #421 admin IA 再編（`/admin/experience-versions` のナビ配線を含む）／
 **グローバルストアのテナント対応**（永続キー変更 = スキーマ破壊なので **要ユーザー確認**）／
 #423 横断 E2E ／ AI Evolution epic 群(#382〜#392)。
@@ -237,6 +245,10 @@
 - **kiosk 配下の新規ファイルに生 CJK リテラルを置かない**（#327 の機械検証が落ちる）。
   `KioskFlow.tsx` は allowlist 済みなので、未移行の既定文言をフックへ移すと違反になる。
   第 25 wave では待機リードの ja 既定文言を `KioskFlow` 側に残して回避した（移行本体は #327）。
+- **端末の版報告は「内容の指紋を持つ版」だけ送る**（第 26 wave）。版管理未導入の拠点は
+  `LIVE_VERSION`（revision 0・指紋なし）で配信されるため、これを報告すると管理側の突き合わせが
+  常に不一致になり、正常な端末が「旧版で稼働」として並ぶ。判定は
+  `src/domain/kiosk/configuration-report.ts`。
 - **構成取得の移行フラグは既定 OFF**（第 24 wave）。`/kiosk?effectiveConfig=1` で新経路、`=0` で
   旧経路。**フラグの既定を倒す前に「新経路で全端末が構成を取れる」ことを観測する**（未エンロール
   端末は新経路が 403 になり、旧経路へ自動フォールバックして初めて構成が揃う）。

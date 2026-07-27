@@ -16,8 +16,17 @@
  * 受付画面を落とすと、実際には有効な端末が使えなくなる。失効を能動的に伝えるのはサーバの
  * `active=false` だけで、そのとき呼び出し側は受付中の個人情報を破棄して待機へ戻す
  * （`onRevoked`）。
+ *
+ * 構成の反映報告 (#420): この heartbeat に**いま読み込んでいる版**を相乗りさせる。専用の
+ * 周期を足さないのは、報告が運用情報であって受付の可用性に関わらないため（30 秒周期で十分で、
+ * 失敗しても次周期が実質リトライになる）。報告内容の決定は
+ * `src/domain/kiosk/configuration-report.ts`（純関数）。
  */
 import { useCallback, useEffect, useRef, useState } from 'react';
+import {
+  configurationReportParams,
+  type KioskConfigurationReport,
+} from '@/domain/kiosk/configuration-report';
 
 /** 端末有効性・設定変更を検知する heartbeat 間隔 (issue #30)。 */
 export const HEARTBEAT_INTERVAL_MS = 30000;
@@ -35,8 +44,10 @@ export function useKioskDeviceStatus(options: {
   kioskId: string;
   /** サーバが失効（`active=false`）を返したときの後始末（受付の破棄・待機復帰）。 */
   onRevoked: () => void;
+  /** heartbeat に相乗りさせる構成の反映報告 (#420)。省略時は報告しない。 */
+  report?: KioskConfigurationReport;
 }): KioskDeviceStatus {
-  const { kioskId, onRevoked } = options;
+  const { kioskId, onRevoked, report } = options;
   const [active, setActive] = useState<boolean | null>(null);
   const [authorized, setAuthorized] = useState<boolean | null>(null);
   const [pinRequired, setPinRequired] = useState(false);
@@ -50,9 +61,20 @@ export function useKioskDeviceStatus(options: {
     revokedRef.current = onRevoked;
   }, [onRevoked]);
 
+  // 報告内容も同様に ref 経由で読む。構成が届いたタイミングで heartbeat の周期を
+  // 刻み直すと、端末ごとに送信時刻がばらつくだけで得が無い（次周期で報告されれば足りる）。
+  const reportRef = useRef(report);
+  useEffect(() => {
+    reportRef.current = report;
+  }, [report]);
+
   const refresh = useCallback(async () => {
     try {
-      const res = await fetch(`/api/kiosk/heartbeat?kioskId=${encodeURIComponent(kioskId)}`, {
+      const params = new URLSearchParams({
+        kioskId,
+        ...(reportRef.current ? configurationReportParams(reportRef.current) : {}),
+      });
+      const res = await fetch(`/api/kiosk/heartbeat?${params.toString()}`, {
         cache: 'no-store',
       });
       if (!res.ok) {
