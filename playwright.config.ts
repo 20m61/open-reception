@@ -90,6 +90,12 @@ export default defineConfig({
       name: 'pristine-state',
       use: { browserName: 'chromium', ...iPadPortraitViewport, launchOptions: chromiumLaunchOptions },
       testMatch: PRISTINE_STATE_SPECS,
+      // VRT の baseline 名は既定で project 名を含む。project を分けただけで別名になると、
+      // **レビュー済み baseline が孤立し、その場の描画が新 baseline として自動生成される**
+      // （＝退行がそのまま「正」として焼き付く）。既存の `chromium-ipad` 名に固定して、
+      // 第 14 wave でレビューされた baseline と比較し続ける。
+      snapshotPathTemplate:
+        '{snapshotDir}/{testFileDir}/{testFileName}-snapshots/{arg}-chromium-ipad-{platform}{ext}',
     },
     {
       name: 'chromium-ipad',

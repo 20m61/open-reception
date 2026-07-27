@@ -479,8 +479,12 @@ deploy・#366 Stack の deploy(月 $14.2 見積の最終承認)・#4 実資格�
   の 3 段になった。**前後で挟む形**で共有状態の干渉を構造的に排除している。
 - `--full` を**マージゲートとして信頼できる状態になった**。UI/a11y に触る変更は
   `./scripts/quality-gate.sh --pr --e2e` を通してから PR を出すこと。
-- VRT baseline はスナップショット名に project 名を含むが、`kiosk-vrt-a11y` の baseline は
-  `chromium-ipad` 名のまま解決できている（既存ファイルの改名は不要だった）。
+- **VRT baseline の落とし穴（第 23 wave で踏んだ）**: スナップショット名は既定で project 名を
+  含む。project を分けただけで別名になり、**レビュー済み baseline が孤立してその場の描画が
+  新 baseline として自動生成された**（＝退行がそのまま「正」として焼き付く経路）。
+  `snapshotPathTemplate` で `chromium-ipad` 名に固定し、自動生成された 5 枚を削除して、
+  第 14 wave のレビュー済み baseline と比較し続ける形に是正した（比較結果は一致 = 退行なし）。
+  **VRT を別 project へ移すときは baseline の解決先を必ず確認すること。**
 
 **次に着手する候補（2026-07-27 更新）**: **第 24 wave = #422 KioskFlow 分割**。
 ブラウザ検証が使えるようになり、フルスイートも安定したので、2900 行の大改修を回帰を実測しながら
