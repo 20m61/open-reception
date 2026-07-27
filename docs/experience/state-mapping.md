@@ -42,7 +42,7 @@ README: `idle -> visitor_detected -> greeting -> choosing_method -> listening|to
 | `no_match` | 明示状態なし。検索 0 件は画面内分岐（`search-no-results-guidance` + チャット導線） | **状態が無い**。0 件復帰率（README の Outcome metrics）を状態から測れない |
 | `person_unavailable` | `ReceptionState.timeout` | **対応**（名前が違う） |
 | `contact_failed` | `ReceptionState.failed` | **対応**（名前が違う） |
-| `network_degraded` | `KioskFlow` のローカル state `online=false` + `KioskMode.degraded` | 受付状態機械の外。**進行中の通信断が受付状態として表現されない** |
+| `network_degraded` | `KioskFlow` のローカル state `online=false` + `KioskMode.degraded`。呼び出し失敗時は `failed` + `failureReason='network'` で**説明を分ける**（第 36 wave） | **部分**。状態としては `failed` に含めたまま、同じ状態の中の説明で区別する（区別のために遷移表を増やすと逃げ道・timeout・戻るの組み合わせが倍になるため） |
 | `privacy_blocked` | **無い** | PII 表示抑止は `PrivacyNotice` の常時表示で担保しており、状態としては存在しない |
 | `human_assistance` | `ReceptionState.fallback` | **部分**。fallback は「代替導線を出した」であって「有人支援へ引き継いだ」ではない |
 

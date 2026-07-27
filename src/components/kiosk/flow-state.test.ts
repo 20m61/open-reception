@@ -72,3 +72,26 @@ describe('reducer', () => {
     expect(back.target).toEqual(target);
   });
 });
+
+describe('呼び出し失敗の理由 (#422)', () => {
+  const calling: FlowData = { state: 'calling', purpose: 'meeting', target, visitor };
+
+  it('通信断とサーバ側の失敗を区別して持ち回る（状態は同じ failed）', () => {
+    const network = reducer(calling, { type: 'CALL_FAILED', reason: 'network' });
+    expect(network.state).toBe('failed');
+    expect(network.failureReason).toBe('network');
+
+    const server = reducer(calling, { type: 'CALL_FAILED', sessionId: 'r1', reason: 'server' });
+    expect(server.state).toBe('failed');
+    expect(server.failureReason).toBe('server');
+  });
+
+  it('理由を付けない失敗（担当者応答からの代替導線）は undefined のまま', () => {
+    expect(reducer(calling, { type: 'CALL_FAILED', sessionId: 'r1' }).failureReason).toBeUndefined();
+  });
+
+  it('RESET で理由も破棄される（次の来訪者へ持ち越さない）', () => {
+    const failed = reducer(calling, { type: 'CALL_FAILED', reason: 'network' });
+    expect(reducer(failed, { type: 'RESET' }).failureReason).toBeUndefined();
+  });
+});
