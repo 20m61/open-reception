@@ -22,7 +22,7 @@ Issue と ADR が正で、本書はそこへの索引と移行状態を持つ。
 | --- | --- | --- | --- | --- |
 | 0 Baseline | #425 | なし（最初） | 本書が存在し、§3〜§11 の台帳が現物と一致 / baseline 資産が §2 で固定 | `docs/product-integration-plan.md`・`docs/adr/README.md` |
 | 1 Foundation | #419 | Wave 0 完了 | `ProductContext` / `EffectiveKioskConfiguration` / resolver 契約 + 契約テストが main に在る → その後 `/api/configuration/effective` と互換アダプタ | `src/domain/product-context/**`・`src/app/api/configuration/**` |
-| 2 Lifecycle | #420 | #419 の型・resolver が main | draft/published の版管理と last-known-good / rollback が動く | `src/domain/experience-version/**`・`src/lib/reception/flow-config/**` |
+| 2 Lifecycle | #420 | #419 の型・resolver が main | draft/published の版管理と last-known-good / rollback が動く（**進行中**: 版ライフサイクルと反映判定の純ロジックは `src/domain/experience-version/` に在る。永続化・API・heartbeat 拡張・監査は未） | `src/domain/experience-version/**`・`src/lib/reception/flow-config/**` |
 | 3 Admin IA | #421 | #419 / #420 | 1 拠点・1 端末・1 受付体験の編集導線が業務対象中心に統合 | `src/app/admin/**`・`src/components/admin/**` |
 | 4 Kiosk UX | #422 | #419（推奨は #421 の後） | `KioskFlow.tsx` 分割 + 新シェルが feature flag 配下で選択可能 | `src/components/kiosk/**` |
 | 5 Cross-surface | #423 | #419 / #420 / #421 | platform → admin → preview → kiosk の横断 E2E が green | `tests/e2e/**` |
@@ -141,7 +141,7 @@ timeout / token）・`/api/kiosk/checkin/**`・`/api/kiosk/checkout/**`・`/api/
 | --- | --- | --- | --- |
 | テナント選択 UI | admin 側と platform 側で TenantSwitcher が別実装 | #423 で共通コンテキストバーへ | 未着手 |
 | 構成の適用単位 | `KioskConfig`（`src/domain/kiosk/types.ts`）と、branding/voice/motions/assets/signage の個別ストア | `EffectiveKioskConfiguration` に集約（§4.1） | 進行中（#419 契約のみ） |
-| 下書き / 公開 | #363 の demo 公開モデル（draft / test / published + version + rollback）と、#420 が定義する受付体験バージョン | #420 で 1 つの版モデルへ。demo 側は先行事例として設計を流用し、**両方を残さない** | 未着手 |
+| 下書き / 公開 | #363 の demo 公開モデル（`domain/demo-studio/publication.ts`）と、#420 の受付体験バージョン（`domain/experience-version/`） | 版モデルは **`domain/experience-version/` へ一本化**し demo 側を寄せる。**両方を恒久的に残さない** | 進行中（#420 の版モデルを新設。demo 側の移行は未着手）|
 | プレビュー | `/admin/demo/preview`（iframe + Mock 注入）と、#419 の `kiosk-preview` area | 同じ resolver を使う 1 つのプレビューへ | 未着手 |
 | 取次設定画面 | `/admin/call-routes` と `/admin/call-routing` | #421 で 1 画面へ | 未着手 |
 | 営業状態 | `ServiceOperatingPolicy`（#367）と `MaintenanceWindow`（#290）が別経路で `active` を落とす | resolver の `operatingPolicy` セクションで由来を明示して合成 | 未着手 |

@@ -103,7 +103,7 @@
 | --- | --- | --- | --- |
 | **#418** | program | 親 Epic（トラッキング）。子 = #419〜#425、Related #426 | — |
 | **#419** | architecture | **契約 increment 完了**（第 16 wave: `src/domain/product-context/` = `ProductContext`/`EffectiveKioskConfiguration` 型・`resolveProductContext`（領域別の権威入力・越境 403）・resolver interface + 組み立て・`configHash`・ペイロード契約。52 テスト）。**残**: `/api/configuration/effective` 実装・個別設定 API の互換アダプタ化・`kiosk-dev` 除去・ローダの tenant/site 絞り込み | ローカル可（継続） |
-| **#420** | lifecycle | **未着手**: `ReceptionExperienceVersion`/`KioskConfigDeployment` は 0 ヒット。土台: `src/lib/reception/flow-config/`（draft 概念なし・即時反映）・#363 の公開モデル（`demo` 系 draft/test/published 分離が先行事例） | #419 の後 |
+| **#420** | lifecycle | **increment 1 完了**（第 17 wave: `src/domain/experience-version/` = 版ライフサイクル純ロジック（下書き→検証→承認→公開→ロールバック・revision 競合制御・append-only 履歴）+ 端末反映判定（applied/pending/stale/failed・rollout 集計・受付中は版固定）。31 テスト）。**残**: 永続化 repository・管理 API・heartbeat への loadedRevision/configHash 追加・管理画面の desired/loaded 差分表示・監査 AuditAction 追加・実検証チェッカ（asset/motion/call route）の配線 | ローカル可（継続） |
 | **#421** | admin ux | **未着手**（業務構造への再編）。現状は技術モジュール別ナビ。土台: `ReceptionFlowsManager.tsx`・`KiosksManager.tsx` ほか admin 画面群 | #419/#420 の後 |
 | **#422** | kiosk ux | **部分**: 会話中心化の部品は #361/#364 で先行（`ui-contract.ts`・`ConversationTurnView`・voice-session）。未達: `KioskFlow.tsx`（2900 行超）の責務分割・`EffectiveKioskConfiguration` 一括取得・feature flag 切替シェル | #419 の後（#420/#421 と並行可だが推奨 Wave は #421 の後） |
 | **#423** | nav/e2e | **部分**: e2e 資産は厚い（`tests/e2e/` 40+ spec・`journey-reception.spec.ts`）。未達: platform→admin→preview→kiosk の 10 ステップ横断シナリオ・共通コンテキストバー・TenantSwitcher 共通契約 | #419/#420/#421 の後 |
@@ -378,9 +378,22 @@ deploy・#366 Stack の deploy(月 $14.2 見積の最終承認)・#4 実資格�
 - **#419 の残作業に「ローダの tenant/site 絞り込み」を明記**した。現行の branding/directory は
   グローバルストアを返すため、素通しでローダにすると resolver 経由でテナント越境が起きる。
 
-**次に着手する候補（2026-07-27 更新）**: **既定 = 第 17 wave = #420**（draft/published の最小縦切り。
-#419 契約が main に入ったため開始条件を満たす）。同時に **#419 残**（`/api/configuration/effective` +
-互換アダプタ）を並行可（`src/domain/experience-version/` vs `src/app/api/configuration/` で領域独立）。
+**第 17 wave（2026-07-27 消化済み）** — #420 increment 1（版ライフサイクル・単独トラック）:
+
+| トラック | Issue | 結果 |
+| --- | --- | --- |
+| A | **#420 Inc1** | `src/domain/experience-version/`（`types.ts`/`lifecycle.ts`/`deployment.ts`、31 テスト）。**設計判断 2 件**: ①下書き保存は毎回**新 revision を積む**（append-only を貫き、競合検出を revision 比較だけで成立させる）②**rollback も新規採番**（revision を巻き戻すと端末が古い版を新しいと誤認して stale 検出が壊れる）。公開時に `configHash` を再計算せず**引き継ぐ**ことで「プレビューと公開後で同一 hash」を型で担保。反映判定は版番号に加え**指紋も突き合わせ**（同じ revision を名乗る部分反映端末を applied と誤認しない）。rollout 集計は**対象 0 台を complete にしない** |
+
+第 17 wave の注記:
+- `docs/product-integration-plan.md` §1 Wave 2 行・§5 重複概念行を同 PR で更新（台帳の自己ルール）。
+- **監査は未実装**（#420 AC「公開・ロールバック・承認が監査ログに残る」）。`AuditAction` の追加は
+  実際に記録する配線と同じ increment で行う（使われない列挙だけ先に足さない）。
+- 版モデルの demo-studio 側からの移行は未着手。**両方を恒久的に残さない**方針は台帳 §5 に記録済み。
+
+**次に着手する候補（2026-07-27 更新）**: **第 18 wave = #420 Inc2**（永続化 repository + 管理 API +
+heartbeat 拡張）と **#419 残**（`/api/configuration/effective` + 互換アダプタ）。両者は
+`src/lib/experience-version/` vs `src/app/api/configuration/` で領域が独立し並行可能だが、
+**#419 の resolver 実配線が #420 の desired 判定に必要**なので #419 残を先に置くのが安全。
 代替候補: #363 Inc4 相当の残／ #399（実機検証 = #65）／ AI Evolution epic 群(#382〜#392)。
 エピック群の優先順位はユーザー判断（現在地の注記参照）。
 
