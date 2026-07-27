@@ -8,7 +8,29 @@
 > 本書の「未実装」「外部待ち」分類が stale で、既に main に在るものを作り直しかけた。
 > 分類が実態と違ったら、その周回で本書を直す。
 
-## 現在地（2026-07-21 更新）
+## 現在地（2026-07-27 更新）
+
+**2026-07-23〜26 に統合再設計プログラム #418〜#426（9 件）が起票された**（本書に未登録
+だったため 2026-07-27 に登録。下記「統合再設計プログラム」節）。#418 の issue コメントで
+**推奨開始順が明示**されている: ①#425 Wave 0（baseline 固定・移行台帳）→ ②#419
+（ProductContext 型・resolver 契約・越境防止契約テストの小 PR）→ ③#420 → ④#421 →
+⑤#422 → ⑥#423 → ⑦#424。AC マッピング済み（2026-07-27、結果は同節の表）。
+
+**ユーザーの draft PR が 2 件 open**（#427 = Opus 5 自律ループ guardrails +
+`docs/experience/README.md`、#428 = Opus 5 operating profile）。いずれもユーザー起票の
+ドキュメント PR で、#418 配下の issue は #427 の Experience Engineering 規約
+（Journey ID・状態遷移・音声タッチ等価性等）を必須入力とする旨が #418 コメントに在る。
+**マージ判断はユーザー**（本ループでは触らない）。
+
+**エピック群の優先順位（#418 統合再設計 / #382〜#392 AI Evolution / #360・#364・#368 残差）
+はユーザー判断**。ただし #418 は最新の起票でかつ #424 が AI Evolution 系の関心を包含する
+形になっており、着手順が issue 側で確定しているため、**次周回は #425 Wave 0 + #419 を
+既定候補とする**（両方ローカル可・破壊なし。異議があればユーザーが interrupt）。
+
+起点確認 2026-07-27: main = `31718c7` で `quality-gate.sh --fast` green
+（typecheck / lint / unit 3734 件 PASS）。
+
+## 旧・現在地（2026-07-21 時点）
 
 **2026-07-19 に AI Evolution epic 群（#382〜#392 の 12 件）が追加起票された**（本書に未登録
 だったため 2026-07-21 に登録。下記「AI Evolution epic 群」節）。全件 greenfield
@@ -38,7 +60,7 @@
   Increment 4（営業時間外 Kiosk UX）は EC2 非依存でローカル完結可能。#366 が要るのは
   EC2 start/stop adapter のみ。
 
-## オープン issue（35 件）
+## オープン issue（43 件・2026-07-27 時点）
 
 ### 新 epic 群（2026-07-19 起票）
 
@@ -46,7 +68,7 @@
 | --- | --- | --- | --- |
 | **#360** | epic | Character-led 受付・会話・低コスト基盤の統合 epic（トラッキング） | — |
 | **#361** | ux/kiosk | **部分**: `domain/reception/ui-contract.ts` に状態駆動契約・`AVATAR_STATES`・`REQUIRES_CONFIRMATION_ACTIONS`/`CHAT_FORBIDDEN_ACTIONS` 実装済（AC「音声認識だけで発信されない」ほぼ充足）。未達: `ConversationTurnView` 不在、QR が `CheckinFlow.tsx` の別シェル | ローカル可 |
-| **#362** | ux/kiosk | **部分**: `domain/presence/state.ts`(5状態+テスト)・`SignageDisplay.tsx`・`domain/signage/rotation.ts` 実装済。**未達 + AC 違反実在**（`KioskFlow.tsx:1055` の検知→START 直結）。`KioskMode` 型は不在 | ローカル可 |
+| ~~#362~~ | ux/kiosk | **クローズ済**（第 2 wave: KioskMode/attract-detector 分離・検知→START 直結廃止） | 完了 2026-07-22 |
 | **#363** | admin/demo | **未着手**: `DemoScenario`/studio/preview は 0 ヒット。土台は `ReceptionFlowsManager.tsx`・`src/lib/reception/flow-config/` | ローカル可 |
 | **#364** | epic | 日本語リアルタイム会話基盤 epic（トラッキング） | — |
 | ~~#365~~ | quality/voice | **クローズ済**（PR #393）。`src/domain/voice/evaluation-*` + `tests/voice-evaluation/`。**#369〜#372 の共通イベント形式が確定** — 正解は刺激側（`nearEndStimuli[]` の `atMs ± toleranceMs`）に固定し観測とマッチング、計測不能は `null`、`strict` で欠落自体を違反に。詳細は `docs/voice-evaluation-harness.md` | 完了 2026-07-22 |
@@ -62,8 +84,26 @@
 | **#375** | domain/invitation | **部分**: token/usagePolicy/expiresAt/status・`CheckinFailureReason` 実装済。未達は **生 token 保存**（`tokenHash` 0 ヒット）と 3-ref 分離 | ローカル可（hash 化は**スキーマ破壊 → 要ユーザー確認**） |
 | **#376** | spike/vonage | **部分**: `vonage-adapter.ts`・`vonage-jwt.ts`・`docs/vonage-call-design.md` 在り。実測部未着手 | ADR はローカル可 / 実測は**外部待ち**→ #65 |
 | ~~#377~~ | platform | **クローズ済**（PR #378: developer 専用 `GET /api/platform/costs`・タグ絞り込み・実績/予測・追加依存なしの SigV4 自作署名。レビューで署名を独立実装と照合し一致確認）。follow-up は **#379** | 完了 2026-07-19 |
-| **#379** | platform | #378 follow-up: 予測失敗理由の伝播（現状 AccessDenied も「履歴不足」と誤表示）・CE 課金抑制（1 view = $0.02、共有キャッシュ不在）・Component タグ回帰テスト・縮退パステスト・canonical header ソート | ローカル可 |
-| **#396** | domain/org | #394 follow-up（**#374 の配線前に潰す**）: `buildOrganizationTree` の防御的回収が発火するとクラッシュ（親の `children` から自分を外していない → 無限再帰。現状は到達不能だがミューテーションの唯一の survivor）・`AffiliationQuery.scope` と `resolveActingMembers` の scope が任意のままで越境が漏れる・`toVisitorOrganization` の `publicIds` が任意で安全でない側が既定 | ローカル可 |
+| ~~#379~~ | platform | **クローズ済**（第 2 wave: 予測失敗理由の伝播・TTL キャッシュ・回帰テスト） | 完了 2026-07-22 |
+| ~~#396~~ | domain/org | **クローズ済**（第 2 wave: 防御的回収の削除・scope/publicIds 必須化・`validateOrganizationMembership` 新設） | 完了 2026-07-22 |
+
+### 統合再設計プログラム（2026-07-23〜26 起票 / 2026-07-27 登録・AC マッピング済）
+
+キオスク・管理画面・プラットフォームを 1 つの循環（提供→構成→プレビュー→公開→実行→
+計測→評価）へ統合する親 Epic #418 と実行 issue 群。着手順は #418 コメントで確定
+（#425 Wave 0 → #419 → #420 → #421 → #422 → #423 → #424）。
+
+| # | 種別 | 充足状況（2026-07-27 マッピング根拠） | 分類 |
+| --- | --- | --- | --- |
+| **#418** | program | 親 Epic（トラッキング）。子 = #419〜#425、Related #426 | — |
+| **#419** | architecture | **未着手（中核は greenfield）**: `ProductContext`/`EffectiveKioskConfiguration`/`configHash` は全体 0 ヒット。土台: `src/app/api/kiosk/config` + 個別設定ルート群（branding/flow/signage/voice/assets/motions = 互換アダプタ化の対象）・`src/lib/auth/kiosk-enrollment.ts`（越境 403 の既存認可）・`src/lib/reception/flow-config/`（tenant 構成 store）。暫定 `kiosk-dev` は `src/lib/kiosk/kiosk-store.ts` ほか 20+ ファイルに分散（除去は段階実施） | ローカル可。**最初の PR は型 + resolver interface + 契約テストに限定**（#418 コメント指示） |
+| **#420** | lifecycle | **未着手**: `ReceptionExperienceVersion`/`KioskConfigDeployment` は 0 ヒット。土台: `src/lib/reception/flow-config/`（draft 概念なし・即時反映）・#363 の公開モデル（`demo` 系 draft/test/published 分離が先行事例） | #419 の後 |
+| **#421** | admin ux | **未着手**（業務構造への再編）。現状は技術モジュール別ナビ。土台: `ReceptionFlowsManager.tsx`・`KiosksManager.tsx` ほか admin 画面群 | #419/#420 の後 |
+| **#422** | kiosk ux | **部分**: 会話中心化の部品は #361/#364 で先行（`ui-contract.ts`・`ConversationTurnView`・voice-session）。未達: `KioskFlow.tsx`（2900 行超）の責務分割・`EffectiveKioskConfiguration` 一括取得・feature flag 切替シェル | #419 の後（#420/#421 と並行可だが推奨 Wave は #421 の後） |
+| **#423** | nav/e2e | **部分**: e2e 資産は厚い（`tests/e2e/` 40+ spec・`journey-reception.spec.ts`）。未達: platform→admin→preview→kiosk の 10 ステップ横断シナリオ・共通コンテキストバー・TenantSwitcher 共通契約 | #419/#420/#421 の後 |
+| **#424** | ai loop | **未着手**: `docs/ai-development-loop.md` 不在。土台: 本ループ運用（CLAUDE.md/`docs/loop-workflow.md`/quality-gate）・#427 の experience 規約（draft）。初回適用対象 = #419 と明示 | 各 wave へ順次適用 |
+| **#425** | delivery | **部分**: baseline 素材は在る（VRT: `tests/e2e/kiosk-screenshot.spec.ts-snapshots`・`kiosk-vrt-a11y.spec.ts-snapshots` / E2E: journey 系 spec / KPI: `docs/reception-experience-kpi.md`）。未達: 移行台帳（migration matrix・重複概念・暫定 ID・feature flag registry・ADR index・breaking-change register・rollback playbook）= `docs/product-integration-plan.md` 不在 | **Wave 0 を最初に**（#425 本文・#418 コメントで明示） |
+| **#426** | docs | **未着手**: `docs/product-integration-plan.md`・`docs/ai-development-loop.md` とも不在（`docs/adr/` は 3 件在るが index なし） | #425/#424 と並行または直後 |
 
 ### AI Evolution epic 群（2026-07-19 起票 / 2026-07-21 登録）
 
@@ -115,6 +155,13 @@
                                   #363 は #374 の Mock contract も要求
 #376 Spike ─→ #4 MVP2
 すべて ─→ #65 実機 UAT
+
+[統合再設計プログラム #418（着手順は issue コメントで確定）]
+#425 Wave0(baseline+台帳) ─→ #419 ──┬─→ #420 ──┬─→ #421 ─→ #423
+                                    │           └（#423 は #419/#420/#421 に依存）
+                                    └─→ #422（#419 のみ依存・推奨は #421 の後）
+#424 は各 wave の Issue/PR へ順次適用（初回適用対象 = #419）
+#426 は #424/#425 と並行可（Related 扱い・順序指定なし）
 
 [AI Evolution（独立トラック・優先順位はユーザー判断）]
 #392 ADR ─┐
@@ -309,8 +356,19 @@ infra `web-stack.test` の collection 時 `.open-next` 要求(stub 手順で回�
 ergonomics で defect ではない)。**ユーザー判断待ち(deploy のみ)**: #405 Inc2 の Secrets Manager 有効化
 deploy・#366 Stack の deploy(月 $14.2 見積の最終承認)・#4 実資格情報(#65)。
 
-**次に着手する候補**: #363 Inc4 相当の残があれば issue-ac-mapping で確定／ 新規 #399(既定 VRM 導入・実機検証は
-#65)／ AI Evolution epic 群(#382〜#392, 優先順位はユーザー判断)。
+**次に着手する候補（2026-07-27 更新）**: **既定 = 統合再設計プログラムの第 16 wave**
+（下記）。代替候補: #363 Inc4 相当の残／ #399（既定 VRM は `public/avatar/default.vrm` +
+`idle.vrma` 導入済み・残は実機検証 = #65）／ AI Evolution epic 群(#382〜#392)。
+エピック群の優先順位はユーザー判断（現在地の注記参照）。
+
+**第 16 wave（案・2026-07-27）** — 統合再設計プログラム開始:
+
+| トラック | Issue | 内容 | 備考 |
+| --- | --- | --- | --- |
+| A | **#425 Wave 0** | `docs/product-integration-plan.md` 新設（移行台帳: migration matrix・重複概念・暫定 ID リスト・feature flag registry・ADR index・rollback playbook・KPI baseline 参照）+ 既存 VRT/E2E/KPI 資産の baseline 固定宣言 | docs 中心・破壊なし。#426 の文書 AC と重なる分は同時に満たす |
+| B | **#419 契約 PR** | `ProductContext` 型・`EffectiveKioskConfiguration` 型・resolver interface・越境防止/秘匿混入防止の契約テスト**まで**（実配線しない） | #418 コメントの「最初の実装 PR は小さく」指示に従う。domain 純ロジック先行 |
+
+A/B はファイル領域が独立（docs vs `src/domain/`）で並行可。#420 以降は #419 マージ後。
 
 同 wave に **#366 Phase 0 ADR のみ**（`docs/adr/*.md` 新規・コスト増ゼロ）を差し込むのは安全。
 CDK 実装と deploy は分離し、Budget 見積を添えてユーザー承認を取る。
