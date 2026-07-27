@@ -15,6 +15,7 @@ import {
   type ReceptionEvent,
   type ReceptionState,
 } from '@/domain/reception/state';
+import type { CallFailureReason } from '@/domain/reception/call-failure';
 import type { ReceptionTarget } from './voice-target-binding';
 
 export type Target = ReceptionTarget;
@@ -34,6 +35,11 @@ export type FlowData = {
   sessionId?: string;
   outcome?: CallOutcome;
   /**
+   * 呼び出しが失敗した理由 (#422)。**状態は増やさず**、`failed` の中の説明にだけ使う。
+   * 通信断とサーバ側の失敗を同じ文言で伝えないため（`domain/reception/call-failure.ts`）。
+   */
+  failureReason?: CallFailureReason;
+  /**
    * クイックアクションで用件を先取りした場合の目的 (issue #121)。
    * START 直後に selectingPurpose で自動選択し、目的選択画面をスキップして担当/部署選択へ
    * 進めるためのヒント。担当者を呼ぶ（用件未確定）では undefined のまま通常の目的選択を出す。
@@ -49,7 +55,7 @@ export type Action =
   | { type: 'CONFIRM' }
   | { type: 'CALL_CONNECTED'; sessionId: string }
   | { type: 'CALL_TIMEOUT'; sessionId: string }
-  | { type: 'CALL_FAILED'; sessionId?: string }
+  | { type: 'CALL_FAILED'; sessionId?: string; reason?: CallFailureReason }
   | { type: 'USE_FALLBACK' }
   | { type: 'COMPLETE' }
   | { type: 'BACK' }
@@ -79,7 +85,13 @@ export function reducer(data: FlowData, action: Action): FlowData {
     case 'CALL_TIMEOUT':
       return { ...data, state: next, sessionId: action.sessionId, outcome: 'timeout' };
     case 'CALL_FAILED':
-      return { ...data, state: next, sessionId: action.sessionId, outcome: 'failed' };
+      return {
+        ...data,
+        state: next,
+        sessionId: action.sessionId,
+        outcome: 'failed',
+        failureReason: action.reason,
+      };
     case 'RESET':
       return INITIAL;
     default:

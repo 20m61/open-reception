@@ -13,6 +13,11 @@
 'use client';
 
 import {
+  failedMessageKeyFor,
+  shouldOfferAlternativeContact,
+  type CallFailureReason,
+} from '@/domain/reception/call-failure';
+import {
   useCallback,
   useEffect,
   useMemo,
@@ -379,6 +384,7 @@ export function renderScreen({
             outcome={data.state}
             onFallback={onFallback}
             locale={locale}
+            failureReason={data.failureReason}
           />
           {/* ワンタップ満足度フィードバック (#320)。テナント設定でオフなら UI ごと出さない。 */}
           {feedback.enabled ? <SatisfactionFeedback onSubmit={feedback.onSubmit} locale={locale} /> : null}
@@ -1208,13 +1214,20 @@ function ResultView({
   outcome,
   onFallback,
   locale,
+  failureReason,
 }: {
   outcome: 'timeout' | 'failed';
   onFallback: () => void;
   locale: Locale;
+  /** 呼び出し失敗の理由 (#422)。通信断とサーバ側の失敗を同じ文言で伝えない。 */
+  failureReason?: CallFailureReason;
 }) {
   const tr = makeT(locale);
-  const message = tr(outcome === 'timeout' ? 'reception.timeoutBody' : 'reception.failedBody');
+  const message = tr(
+    outcome === 'timeout' ? 'reception.timeoutBody' : failedMessageKeyFor(failureReason),
+  );
+  // 通信断のときは代替導線を主 CTA にしない（「お繋ぎします」を果たせないため）。
+  const offerAlternative = outcome === 'timeout' || shouldOfferAlternativeContact(failureReason);
   // 後退（最初に戻る）は逃げ道バーへ一本化 (#325)。コンテンツ側は前進の主 CTA（代替の連絡先へ＝
   // useFallback）のみ。以前あった result-reset（最初に戻る）はバーの escape-reset と重複するため撤去。
   return (
@@ -1222,7 +1235,11 @@ function ResultView({
       tone={resultToneForState(outcome)}
       testId={`result-${outcome}`}
       message={message}
-      action={{ label: tr('reception.altContact'), onClick: onFallback, testId: 'use-fallback', variant: 'secondary' }}
+      action={
+        offerAlternative
+          ? { label: tr('reception.altContact'), onClick: onFallback, testId: 'use-fallback', variant: 'secondary' as const }
+          : undefined
+      }
       locale={locale}
     />
   );

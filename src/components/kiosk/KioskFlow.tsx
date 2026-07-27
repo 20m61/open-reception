@@ -552,7 +552,8 @@ export function KioskFlow({ operatingStatus, sttAdapterFactory, voiceSession, qr
           }),
         });
         if (!createRes.ok) {
-          if (!cancelled) dispatch({ type: 'CALL_FAILED' });
+          // サーバへは届いている（HTTP 応答が返った）ので server 扱い。
+          if (!cancelled) dispatch({ type: 'CALL_FAILED', reason: 'server' });
           return;
         }
         const session = (await createRes.json()) as { id: string };
@@ -580,9 +581,10 @@ export function KioskFlow({ operatingStatus, sttAdapterFactory, voiceSession, qr
         }
         // 'calling' は Vonage（非同期）: ビデオビューが応答/未応答を確定する。
         else if (result.state === 'calling') setVonageCallId(session.id);
-        else dispatch({ type: 'CALL_FAILED', sessionId: session.id });
+        else dispatch({ type: 'CALL_FAILED', sessionId: session.id, reason: 'server' });
       } catch {
-        if (!cancelled) dispatch({ type: 'CALL_FAILED' });
+        // fetch が例外 = 端末からサーバへ到達できていない。呼び出しは行われていない。
+        if (!cancelled) dispatch({ type: 'CALL_FAILED', reason: 'network' });
       }
     })();
 
