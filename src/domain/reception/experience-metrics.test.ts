@@ -134,3 +134,31 @@ describe('recordSearchQuery (#322) — 担当者検索のヒット率/0件率フ
     expect(keys).not.toContain('results');
   });
 });
+
+describe('担当者検索の 0 件計測をサーバへ届ける (#322 / 体験設計 Outcome metrics)', () => {
+  it('検索回数と 0 件回数を finalize の結果へ載せる', () => {
+    let tracker = createTracker();
+    tracker = enterStep(tracker, 'selectingTarget', 1_000);
+    tracker = recordSearchQuery(tracker, true);
+    tracker = recordSearchQuery(tracker, false);
+    tracker = recordSearchQuery(tracker, false);
+
+    const exp = finalizeExperience(tracker, { abandoned: false, nowMs: 2_000 });
+    expect(exp.searchQueryCount).toBe(3);
+    expect(exp.searchZeroHitCount).toBe(2);
+  });
+
+  it('検索していなければ載せない（0 のキーを増やさない）', () => {
+    const exp = finalizeExperience(createTracker(), { abandoned: false, nowMs: 1_000 });
+    expect(exp.searchQueryCount).toBeUndefined();
+    expect(exp.searchZeroHitCount).toBeUndefined();
+  });
+
+  it('検索したが 0 件が無ければ 0 件回数は載せない（検索回数だけ載る）', () => {
+    let tracker = createTracker();
+    tracker = recordSearchQuery(tracker, true);
+    const exp = finalizeExperience(tracker, { abandoned: false, nowMs: 1_000 });
+    expect(exp.searchQueryCount).toBe(1);
+    expect(exp.searchZeroHitCount).toBeUndefined();
+  });
+});

@@ -118,3 +118,24 @@ describe('summarizeExperience (#319)', () => {
     expect(kpi.total).toBe(4);
   });
 });
+
+describe('担当者検索の 0 件率 (#322 / 体験設計 Outcome metrics)', () => {
+  it('検索した受付だけを分母に、0 件率を出す', () => {
+    const kpi = summarizeExperience([
+      log({ id: 'r1', outcome: 'connected' }, { searchQueryCount: 3, searchZeroHitCount: 1 }),
+      log({ id: 'r2', outcome: 'connected' }, { searchQueryCount: 1 }),
+      // 検索しなかった受付は分母に入れない。
+      log({ id: 'r3', outcome: 'connected' }, { timeToCallMs: 1_000 }),
+    ]);
+    expect(kpi.search).toEqual({ zeroHit: 1, queries: 4 });
+    expect(kpi.searchZeroHitRate).toBeCloseTo(0.25);
+  });
+
+  it('検索が 1 度も無ければ null（0% と誤読させない）', () => {
+    expect(
+      summarizeExperience([log({ id: 'r1', outcome: 'connected' }, { timeToCallMs: 1 })])
+        .searchZeroHitRate,
+    ).toBeNull();
+    expect(emptyExperienceKpi().searchZeroHitRate).toBeNull();
+  });
+});

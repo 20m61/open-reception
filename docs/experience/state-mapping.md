@@ -80,9 +80,14 @@ README の語彙を実装へ持ち込む価値は低い。**対応表（本書�
 
 **B. 状態が無く観測できない（追加の価値が高い）**:
 `visitor_detected` / `choosing_method` / `recognizing` / `no_match` / `network_degraded`。
-いずれも「画面は正しく振る舞うが、状態として記録されないので Outcome metrics を状態から
-導けない」。README の Outcome metrics（0 件復帰率・音声失敗後の復帰率・状態不明による連打）は
-**この 5 つが状態にならないと測れない**。
+いずれも「画面は正しく振る舞うが、状態として記録されない」。
+
+> **第 35 wave の訂正**: ここで「Outcome metrics が測れない」と一括りにしたが、**状態が無いことと
+> 計測できないことは別**だった。`no_match` は状態こそ無いが、担当者検索の 0 件回数は
+> `experience-metrics.ts` が既に数えていた（`searchZeroHitCount`）。欠けていたのは**サーバへ
+> 送る配線と集計**で、第 35 wave で繋いだ（端末 → `ReceptionExperience` → KPI 集計 → 管理画面）。
+> 残りの 4 つについても、状態にする前に「その指標は本当に状態が無いと測れないのか」を
+> 個別に確かめること。
 
 **C. 系統が分かれていて等価性が担保されていない（設計判断が要る）**:
 `confirming` がタッチ（`ReceptionState.confirming`）と音声（`VoiceKioskMode.readback`）で
@@ -93,11 +98,14 @@ README の語彙を実装へ持ち込む価値は低い。**対応表（本書�
 
 ## 6. 次の一手
 
-1. **B を状態にする前に、まず本書の対応を機械検証にする**（第 35 wave）。
+1. ~~B を状態にする前に、まず本書の対応を機械検証にする~~ → **第 34 wave で完了**
+   （`src/domain/experience/journey-map.ts`）。
    `ReceptionState` / `KioskMode` / `VoiceKioskMode` の各値が README のどの状態に対応するかを
    コードで持ち、網羅を型とテストで固定する。**状態を増やす前に、増えたときに漏れが落ちる
    仕組みを先に作る。**
 2. B の追加（観測できない状態を状態にする）。実装変更を伴うが Journey の意味は変えない。
+   **着手前に「状態が無いこと」と「計測できないこと」を切り分ける**（第 35 wave の訂正参照）。
+   0 件率は第 35 wave で計測が通ったので、`no_match` の状態化は**指標のためには不要**になった。
 3. C の統合（音声とタッチの確認を 1 つの状態機械へ）= **#422 ExperienceShell の中核。
    Journey / state / fallback の意味を変えるため要ユーザー確認**
    （`.claude/rules/opus5-autonomous-loop.md` 停止境界）。
