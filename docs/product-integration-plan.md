@@ -176,10 +176,11 @@ timeout / token）・`/api/kiosk/checkin/**`・`/api/kiosk/checkout/**`・`/api/
 
 | 値 | 出現箇所（本番経路） | 扱い | 状態 |
 | --- | --- | --- | --- |
-| `kiosk-dev` | `src/lib/kiosk/kiosk-store.ts`（seed）・`src/lib/tenant/store.ts`（seed device）・`src/lib/visit/store.ts`・`src/lib/platform/update-status-store.ts`・`src/components/kiosk/KioskFlow.tsx`・`src/components/admin/KiosksManager.tsx` | seed は維持。**UI/ストアの既定値としての参照を #419 後続で除去**し、端末セッション由来の kioskId に置き換える | 未着手 |
+| `kiosk-dev` | `src/lib/kiosk/kiosk-store.ts`（seed）・`src/lib/tenant/store.ts`（seed device）・`src/lib/visit/store.ts`・`src/lib/platform/update-status-store.ts`・`src/components/admin/KiosksManager.tsx` | seed は維持。**受付端末クライアントからは除去済**（第 30 wave）。heartbeat は端末 ID を送らず、サーバが kiosk セッションから権威的に解決する | **新経路稼働**（クライアント側は完了。admin 画面の既定値は残） |
 | `DEFAULT_TENANT_ID = 'internal'` | `src/lib/tenant/default-scope.ts` | 単一テナント運用の既定として維持。ただし **`/api/kiosk/flow` が端末解決の代わりに使っている**のは除去対象 | 未着手 |
 | `DEFAULT_SITE_ID = 'default-site'` | 同上 | 同上（第 2 wave にこの不一致で待機サイネージが空になる不具合が実在した） | 未着手 |
 | 端末セッション未確立時の既定テナント | `/api/kiosk/voice`・`/motions`・`/assets`（`session?.kioskId` が undefined でも応答する） | resolver では **fail-closed**（`unauthenticated`）。可用性への影響は #422 の切替時に計測して判断 | 未着手 |
+| （heartbeat の身元不明要求） | `/api/kiosk/heartbeat`（セッション無し・kioskId 無し） | **active は fail-open で true**。「失効」と「未エンロール」は別物で、身元が無いことは失効の証拠ではない。false に倒すと未エンロール端末がエンロール導線へ進めない（#239）。受付フローは `authorized=false` で塞がれ、緊急停止は別途効く | 決定済（第 30 wave）|
 
 `kiosk-dev` は上記のほかテスト 14 ファイル・E2E 5 ファイルに出現する（`rg -l 'kiosk-dev'`）。
 これらは除去対象ではない。
