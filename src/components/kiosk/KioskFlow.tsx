@@ -1086,11 +1086,11 @@ export function KioskFlow({ operatingStatus, sttAdapterFactory, voiceSession, qr
           <FlowStepper state={data.state} locale={locale} />
           {/* 画面遷移ごとに key を変え、上品な入場アニメを再生する（#119 UX 仕上げ）。 */}
           <div className="screen-anim" key={data.state}>
-            {renderScreen(
+            {renderScreen({
               data,
               dispatch,
               complete,
-              handleFallback,
+              onFallback: handleFallback,
               directory,
               guidanceIdle,
               vrmUrl,
@@ -1098,36 +1098,32 @@ export function KioskFlow({ operatingStatus, sttAdapterFactory, voiceSession, qr
               sttEnabled,
               motionUrl,
               vonageCallId,
-              () => setMode('checkin'),
+              onStartCheckin: () => setMode('checkin'),
               staffResponse,
-              handleStaffResponseFallback,
-              startWithQuickAction,
+              onStaffResponseFallback: handleStaffResponseFallback,
+              onQuickAction: startWithQuickAction,
               locale,
-              setLocale,
+              onLocaleChange: setLocale,
               branding,
-              // renderScreen は素の関数のため lint はこの引数をレンダー中の ref アクセスと誤検知する。
-              // markVoiceInput は音声候補クリック時のみ実行される（レンダー中に ref を触らない）(issue #319)。
-              // eslint-disable-next-line react-hooks/refs -- クリック時のみ実行される安定コールバック
-              markVoiceInput,
+              // 音声候補クリック時のみ実行される安定コールバック（レンダー中に ref を触らない, #319）。
+              onVoiceUse: markVoiceInput,
               // 受付完了画面に提示する退館クレデンシャル (#342)。connected 完了時のみ非 null。
               checkoutCredential,
               privacyNoticeOverride,
-              presenceEnabled,
-              // markVoiceInput と同様、レンダー中には呼ばれない安定コールバック（デバウンス後の
-              // 検索実行時のみ ref を更新する, issue #322）。
-              // eslint-disable-next-line react-hooks/refs -- クリック/検索実行時のみ実行される安定コールバック
-              markSearchQuery,
-              requestChatOpen,
+              presenceCameraEnabled: presenceEnabled,
+              // 同様に、デバウンス後の検索実行時のみ ref を更新する安定コールバック (#322)。
+              onSearchQuery: markSearchQuery,
+              onRequestChat: requestChatOpen,
               // 呼び出し中の段階的ケア (#323)。UI 層のタイマー派生（state.ts/ui-contract.ts は不変）。
               callingStageState,
               callingStageTextOverride,
               // ワンタップ満足度フィードバック (#320)。完了/未応答/失敗画面のみが使う。
-              { enabled: feedbackEnabled, onSubmit: submitFeedback },
+              feedback: { enabled: feedbackEnabled, onSubmit: submitFeedback },
               // STT アダプタ注入 (#370)。未指定は既定 MockSttAdapter（無変更動作）。
               sttAdapterFactory,
               // 取次段階 (#363)。Vonage 非同期通話ビュー（KioskCallView）が段階表示する。
               callStages,
-            )}
+            })}
           </div>
           {/*
             #123 アバター常設コンパニオン。screenState（=data.state）から表情/モーション/字幕を
@@ -1680,54 +1676,96 @@ function PrivacyNotice({
   );
 }
 
-function renderScreen(
-  data: FlowData,
-  dispatch: React.Dispatch<Action>,
-  complete: () => void,
-  onFallback: () => void,
-  directory: Directory,
-  guidanceIdle: string,
-  vrmUrl: string | undefined,
-  avatarFallbackUrl: string | undefined,
-  sttEnabled: boolean,
-  motionUrl: string | undefined,
-  vonageCallId: string | null,
-  onStartCheckin: () => void,
-  staffResponse: StaffResponseResult | null,
-  onStaffResponseFallback: () => void,
-  onQuickAction: (action: QuickAction) => void,
-  locale: Locale,
-  onLocaleChange: (next: Locale) => void,
-  branding: BrandingSettings,
+/**
+ * 受付の各画面を状態から描き分ける (issue #422 increment 3)。
+ *
+ * かつて 29 個の位置引数を取っていた。`string | undefined` や `() => void` が並ぶため、
+ * 引数を 1 つ入れ替えても型検査を通ってしまい、取り違えが実行時まで露見しない形だった。
+ * 名前付きの 1 オブジェクトにして、順序の誤りを構造的に無くしている。
+ */
+type ReceptionScreenProps = {
+  data: FlowData;
+  dispatch: React.Dispatch<Action>;
+  complete: () => void;
+  onFallback: () => void;
+  directory: Directory;
+  guidanceIdle: string;
+  vrmUrl: string | undefined;
+  avatarFallbackUrl: string | undefined;
+  sttEnabled: boolean;
+  motionUrl: string | undefined;
+  vonageCallId: string | null;
+  onStartCheckin: () => void;
+  staffResponse: StaffResponseResult | null;
+  onStaffResponseFallback: () => void;
+  onQuickAction: (action: QuickAction) => void;
+  locale: Locale;
+  onLocaleChange: (next: Locale) => void;
+  branding: BrandingSettings;
   /** 音声検索が使われたことを体験メトリクスへ通知する (issue #319)。 */
-  onVoiceUse: () => void,
+  onVoiceUse: () => void;
   /** 受付完了画面に提示する退館クレデンシャル (issue #342)。未発行なら null。 */
-  checkoutCredential: CheckoutCredential | null,
+  checkoutCredential: CheckoutCredential | null;
   /** 来訪者向けプライバシー通知の要約文言の上書き (issue #28 / #314)。未設定は既定文言。 */
-  privacyNoticeOverride: string | undefined,
+  privacyNoticeOverride: string | undefined;
   /** 来訪者検知カメラの有効状態 (issue #79)。有効時のみ通知にローカル処理・非保存の注記を足す。 */
-  presenceCameraEnabled: boolean,
+  presenceCameraEnabled: boolean;
   /** 担当者検索の実行を体験メトリクスへ通知する（ヒット有無のみ。PII なし, issue #322）。 */
-  onSearchQuery: (hasHit: boolean) => void,
+  onSearchQuery: (hasHit: boolean) => void;
   /** 検索 0 件時などから Chat-assisted ドロワーを開く合図を送る (issue #322)。 */
-  onRequestChat: () => void,
+  onRequestChat: () => void;
   /**
    * 呼び出し中の経過段階 (issue #323)。UI 層のタイマー派生（state.ts/ui-contract.ts は不変）。
    * calling 以外の画面では参照しない。
    */
-  callingStageState: { stage: CallingStage; elapsedMs: number },
+  callingStageState: { stage: CallingStage; elapsedMs: number };
   /** 呼び出し中の段階的ケアのテナント文言上書き (issue #28 / #323)。ja のみ適用。 */
-  callingStageTextOverride: { waiting?: string; notice?: string },
+  callingStageTextOverride: { waiting?: string; notice?: string };
   /**
    * ワンタップ満足度フィードバック (issue #320)。完了/未応答/失敗の終端画面のみが使う。
    * `enabled=false`（テナント設定でオフ）のときは呼び出し側で UI ごと出さない。
    */
-  feedback: { enabled: boolean; onSubmit: (rating: SatisfactionRating, reasonCodes: FeedbackReasonCode[]) => void },
+  feedback: {
+    enabled: boolean;
+    onSubmit: (rating: SatisfactionRating, reasonCodes: FeedbackReasonCode[]) => void;
+  };
   /** STT アダプタ注入 (#370)。未指定は既定 MockSttAdapter（無変更動作）。 */
-  sttAdapterFactory: SttAdapterFactory | undefined,
+  sttAdapterFactory: SttAdapterFactory | undefined;
   /** 取次段階 (#363)。Vonage 非同期通話ビューが段階表示する。旧形応答では空配列。 */
-  callStages: CallStage[],
-) {
+  callStages: CallStage[];
+};
+
+function renderScreen({
+  data,
+  dispatch,
+  complete,
+  onFallback,
+  directory,
+  guidanceIdle,
+  vrmUrl,
+  avatarFallbackUrl,
+  sttEnabled,
+  motionUrl,
+  vonageCallId,
+  onStartCheckin,
+  staffResponse,
+  onStaffResponseFallback,
+  onQuickAction,
+  locale,
+  onLocaleChange,
+  branding,
+  onVoiceUse,
+  checkoutCredential,
+  privacyNoticeOverride,
+  presenceCameraEnabled,
+  onSearchQuery,
+  onRequestChat,
+  callingStageState,
+  callingStageTextOverride,
+  feedback,
+  sttAdapterFactory,
+  callStages,
+}: ReceptionScreenProps) {
   const tr = makeT(locale);
   switch (data.state) {
     case 'idle':
