@@ -384,6 +384,7 @@ export function KioskFlow({ operatingStatus, sttAdapterFactory, voiceSession, qr
     a11yEnabledModes,
     callingStageThresholdOverride: callingStageTenantOverride,
     callingStageTextOverride,
+    report: configurationReport,
   } = useKioskConfiguration();
   // 待機画面リードの既定文言 (#324)。主指示（「ご用件をお選びください」）は見出し・アバター字幕が
   // 担うため、リードは挨拶＋安心情報（タッチだけで受付できる）のみにして指示を二重化しない。
@@ -516,6 +517,8 @@ export function KioskFlow({ operatingStatus, sttAdapterFactory, voiceSession, qr
   const { active, authorized, pinRequired, online, markAuthorized } = useKioskDeviceStatus({
     kioskId: KIOSK_ID,
     onRevoked: handleDeviceRevoked,
+    // いま読み込んでいる版を heartbeat に相乗りさせて報告する (#420)。
+    report: configurationReport,
   });
 
 

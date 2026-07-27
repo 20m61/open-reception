@@ -24,6 +24,10 @@ import {
   type A11yEnabledModes,
 } from '@/domain/kiosk/a11y-modes';
 import { resolveKioskExperienceFlags } from '@/domain/kiosk/experience-flags';
+import {
+  reportForConfiguration,
+  type KioskConfigurationReport,
+} from '@/domain/kiosk/configuration-report';
 import type { CallingStageThresholds } from '@/domain/reception/calling-experience';
 import type { BrandingSettings } from '@/domain/branding/types';
 import type { SpeakSettings } from './speech';
@@ -66,10 +70,12 @@ export type KioskConfiguration = {
   callingStageThresholdOverride: Partial<CallingStageThresholds>;
   callingStageTextOverride: { waiting?: string; notice?: string };
   /**
-   * 版・指紋・由来（新経路でのみ得られる）。#420 の端末側の版報告と
+   * 版・指紋・由来（新経路でのみ得られる）。
    * 「各設定値の由来をデバッグ出力で確認できる」(#419 AC) の入力。
    */
   meta?: KioskConfigurationMeta;
+  /** heartbeat で報告する反映状況 (#420)。旧経路・取得中・版なしの拠点では `none`。 */
+  report: KioskConfigurationReport;
 };
 
 /** 旧経路の `/api/kiosk/voice` 応答（#28 / #320 / #321 / #323 の設定を相乗り）。 */
@@ -346,5 +352,12 @@ export function useKioskConfiguration(): KioskConfiguration {
     callingStageThresholdOverride,
     callingStageTextOverride,
     meta: effective.status === 'ready' ? effective.meta : undefined,
+    // 反映状況の報告 (#420)。報告するのは版・内容の指紋・エラー分類だけ（PII なし）。
+    report: reportForConfiguration({
+      status: effective.status,
+      revision: effective.status === 'ready' ? effective.meta.revision : undefined,
+      contentHash: effective.status === 'ready' ? effective.meta.contentHash : undefined,
+      httpStatus: effective.status === 'error' ? effective.httpStatus : undefined,
+    }),
   };
 }
