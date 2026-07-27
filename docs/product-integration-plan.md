@@ -160,7 +160,7 @@ timeout / token）・`/api/kiosk/checkin/**`・`/api/kiosk/checkout/**`・`/api/
 | --- | --- | --- | --- |
 | テナント選択 UI | admin 側と platform 側で TenantSwitcher が別実装 | #423 で共通コンテキストバーへ | 未着手 |
 | 構成の適用単位 | `KioskConfig`（`src/domain/kiosk/types.ts`）と、branding/voice/motions/assets/signage の個別ストア | `EffectiveKioskConfiguration` に集約（§4.1） | 進行中（#419 契約のみ） |
-| 下書き / 公開 | #363 の demo 公開モデル（`domain/demo-studio/publication.ts`）と、#420 の受付体験バージョン（`domain/experience-version/` + `lib/experience-version/`） | 版モデルは **`domain/experience-version/` へ一本化**し demo 側を寄せる。**両方を恒久的に残さない** | 進行中（#420 側が永続化・スナップショット公開・管理 API まで到達。demo 側の移行は未着手）|
+| 下書き / 公開 | #363 の demo 公開モデル（`domain/demo-studio/publication.ts`）と、#420 の受付体験バージョン（`domain/experience-version/` + `lib/experience-version/`） | 版モデルは **`domain/experience-version/` へ一本化**し demo 側を寄せる。**両方を恒久的に残さない**。統合の形と順序は **[ADR 0005](adr/0005-demo-publication-and-experience-version.md)** で確定（demo 固有の `test` 状態・共有トークン・シナリオは「版の属性」ではなく「版の用途」として持つ） | 方針確定・**実施はユーザー承認待ち**（§9 B-07）|
 | プレビュー | `/admin/demo/preview`（iframe + Mock 注入）と、#419 の `kiosk-preview` area | 同じ resolver を使う 1 つのプレビューへ | 未着手 |
 | 取次設定画面 | `/admin/call-routes` と `/admin/call-routing` | #421 で 1 画面へ | 未着手 |
 | 取次モデル | `CallRoute`（`domain/notification/call-route.ts`, #88。受付フローの `callRouteId` が指す）と `RoutingPolicy`/`ContactEndpoint`（`domain/routing/`, #374。**実際の呼び出しはこちらだけを使う**） | `RoutingPolicy` へ一本化し、`callRouteId` は撤去するか policy 参照へ置き換える。**現状 `callRouteId` は admin の編集と永続化のみで、`executeRoutedCall` は参照しない**（第 32 wave に確認） | 未着手（公開前検証は実効モデル側だけを検査する）|
@@ -180,6 +180,7 @@ timeout / token）・`/api/kiosk/checkin/**`・`/api/kiosk/checkout/**`・`/api/
 | `kiosk-dev` | `src/lib/kiosk/kiosk-store.ts`（seed）・`src/lib/tenant/store.ts`（seed device）・`src/lib/visit/store.ts`・`src/lib/platform/update-status-store.ts`・`src/components/admin/KiosksManager.tsx` | seed は維持。**受付端末クライアントからは除去済**（第 30 wave）。heartbeat は端末 ID を送らず、サーバが kiosk セッションから権威的に解決する | **新経路稼働**（クライアント側は完了。admin 画面の既定値は残） |
 | `DEFAULT_TENANT_ID = 'internal'` | `src/lib/tenant/default-scope.ts` | 単一テナント運用の既定として維持。ただし **`/api/kiosk/flow` が端末解決の代わりに使っている**のは除去対象 | 未着手 |
 | `DEFAULT_SITE_ID = 'default-site'` | 同上 | 同上（第 2 wave にこの不一致で待機サイネージが空になる不具合が実在した） | 未着手 |
+| デモ公開の `siteId` にテナント ID を入れている | `src/app/admin/demo/page.tsx`・`src/app/api/admin/demo/publications/[id]/route.ts`（`defaultAdminTenantId()` を siteId として使う） | 単一テナント MVP の近道。**クライアント/サーバで一致しているため現時点の実害は無い**（端末候補も旧 kiosk レジストリで一貫）。ADR 0005 の移行で `ProductContext` の tenant/site へ statement 統一する | 記録済（**その場しのぎの修正はしない**。第 33 wave に検討して見送った）|
 | 端末セッション未確立時の既定テナント | `/api/kiosk/voice`・`/motions`・`/assets`（`session?.kioskId` が undefined でも応答する） | resolver では **fail-closed**（`unauthenticated`）。可用性への影響は #422 の切替時に計測して判断 | 未着手 |
 | （heartbeat の身元不明要求） | `/api/kiosk/heartbeat`（セッション無し・kioskId 無し） | **active は fail-open で true**。「失効」と「未エンロール」は別物で、身元が無いことは失効の証拠ではない。false に倒すと未エンロール端末がエンロール導線へ進めない（#239）。受付フローは `authorized=false` で塞がれ、緊急停止は別途効く | 決定済（第 30 wave）|
 
@@ -210,7 +211,7 @@ URL クエリ `?effectiveConfig=1|0`（後勝ち）」。**端末 1 台単位で
 
 一覧は [`docs/adr/README.md`](adr/README.md) が正（本書に転記して二重管理しない）。
 現在 0001 音声 Transport / 0002 TTS キャッシュ境界 / 0003 リアルタイム会話 EC2 Phase 0 /
-0004 新旧 KioskFlow の切替方式 の 4 件。
+0004 新旧 KioskFlow の切替方式 / 0005 デモ公開モデルの統合方針 の 5 件。
 
 **#418 プログラムで ADR が要る決定**（起票時に ADR インデックスへ追記する）:
 
@@ -233,6 +234,7 @@ CLAUDE.md の「重大変更時のみユーザー確認」に該当する行は 
 | B-03 | 個別設定 API（§4.1）の廃止 | 外部から直接叩いている利用者が居れば破壊 | **本書（Wave 0）** | 未 | 新経路稼働 + 2 wave 観測後 | 要確認 |
 | B-04 | `/api/kiosk/signage` の query スコープ廃止（認証必須化） | 未認証で拠点を指定していた経路が 403 になる | **本書（Wave 0）** | 未 | B-03 と同時 | 要確認 |
 | B-05 | 端末セッション未確立時の既定テナント fallback 廃止（fail-closed 化） | エンロール前端末が構成を取得できなくなる | **本書（Wave 0）** | 未 | #422 の切替と同時 | 要確認 |
+| B-07 | デモ公開を版モデル（`experience-version`）へ統合し、スコープ語彙を `ProductContext` へ揃える | 既存の公開記録の `target.siteId` の意味が変わる（テナント ID → 実サイト ID）。`/api/admin/demo/publications` の実装が入れ替わる | **第 33 wave（ADR 0005）** | 未 | 手順 4（旧モデル削除）は 2 wave 観測後 | 要確認 |
 | B-06 | 受付体験の版管理を有効化した拠点で、設定ストアの編集が**公開するまで端末へ反映されなくなる** | 運用手順が変わる（保存＝反映ではなくなる）。**版を作るまでは発生しない**ため既存拠点への即時影響なし | 第 19 wave | 版を作成した拠点から順次 | 全拠点が版管理へ移行したら「予告」から外す | 要確認（拠点ごとの有効化タイミング）|
 
 ---
