@@ -155,6 +155,60 @@ describe('rollback', () => {
   });
 });
 
+describe('取次到達性の検証 (#420)', () => {
+  const policyWithMissingEndpoint = {
+    id: 'p1',
+    tenantId: 'internal',
+    siteId: 'default-site',
+    name: 'TEST-ポリシー',
+    enabled: true,
+    steps: [{ id: 's1', endpointId: 'missing', action: 'live_bridge' as const, timeoutSeconds: 20, nextOn: {} }],
+  };
+
+  it('注入したローダの指摘が検証結果へ載る', async () => {
+    const svc = new ExperienceVersionService(new InMemoryExperienceRepository(), {
+      captureSnapshot,
+      now: () => new Date(NOW),
+      loadCallRouteContext: async () => ({
+        policies: [policyWithMissingEndpoint],
+        endpointIds: new Set<string>(),
+      }),
+    });
+
+    const result = await svc.saveDraft({ ...SCOPE, kioskId: 'kiosk-1', editorId: 'admin-1' });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    const findings = draftVersion(result.value)?.validationSummary?.findings ?? [];
+    expect(findings.some((f) => f.check === 'call_route' && f.severity === 'error')).toBe(true);
+  });
+
+  it('取次設定を読めなくても下書き保存は止めず、warning として残す', async () => {
+    const svc = new ExperienceVersionService(new InMemoryExperienceRepository(), {
+      captureSnapshot,
+      now: () => new Date(NOW),
+      loadCallRouteContext: async () => {
+        throw new Error('backend down');
+      },
+    });
+
+    const result = await svc.saveDraft({ ...SCOPE, kioskId: 'kiosk-1', editorId: 'admin-1' });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    const findings = draftVersion(result.value)?.validationSummary?.findings ?? [];
+    expect(findings).toContainEqual(
+      expect.objectContaining({ check: 'call_route', severity: 'warning' }),
+    );
+  });
+
+  it('ローダ未指定なら取次検査をしない（既存の呼び出し側を壊さない）', async () => {
+    const result = await service.saveDraft({ ...SCOPE, kioskId: 'kiosk-1', editorId: 'admin-1' });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    const findings = draftVersion(result.value)?.validationSummary?.findings ?? [];
+    expect(findings.every((f) => f.check !== 'call_route')).toBe(true);
+  });
+});
+
 describe('validateSnapshot', () => {
   it('健全な構成では指摘ゼロ', () => {
     expect(validateSnapshot(snapshotOf('sha256:aaa'), NOW).findings).toEqual([]);

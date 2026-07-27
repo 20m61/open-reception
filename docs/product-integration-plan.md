@@ -163,6 +163,7 @@ timeout / token）・`/api/kiosk/checkin/**`・`/api/kiosk/checkout/**`・`/api/
 | 下書き / 公開 | #363 の demo 公開モデル（`domain/demo-studio/publication.ts`）と、#420 の受付体験バージョン（`domain/experience-version/` + `lib/experience-version/`） | 版モデルは **`domain/experience-version/` へ一本化**し demo 側を寄せる。**両方を恒久的に残さない** | 進行中（#420 側が永続化・スナップショット公開・管理 API まで到達。demo 側の移行は未着手）|
 | プレビュー | `/admin/demo/preview`（iframe + Mock 注入）と、#419 の `kiosk-preview` area | 同じ resolver を使う 1 つのプレビューへ | 未着手 |
 | 取次設定画面 | `/admin/call-routes` と `/admin/call-routing` | #421 で 1 画面へ | 未着手 |
+| 取次モデル | `CallRoute`（`domain/notification/call-route.ts`, #88。受付フローの `callRouteId` が指す）と `RoutingPolicy`/`ContactEndpoint`（`domain/routing/`, #374。**実際の呼び出しはこちらだけを使う**） | `RoutingPolicy` へ一本化し、`callRouteId` は撤去するか policy 参照へ置き換える。**現状 `callRouteId` は admin の編集と永続化のみで、`executeRoutedCall` は参照しない**（第 32 wave に確認） | 未着手（公開前検証は実効モデル側だけを検査する）|
 | 営業状態 | `ServiceOperatingPolicy`（#367）と `MaintenanceWindow`（#290）が別経路で `active` を落とす | resolver の `operatingPolicy` セクションで由来を明示して合成 | 未着手 |
 | kiosk → tenant/site 解決 | `lib/operating-policy/kiosk-gate.ts`・`lib/platform/maintenance-gate.ts`（いずれも未解決なら既定スコープへ **fail-open**）と `lib/product-context/device-binding.ts`（**fail-closed**） | 構成配信は fail-closed が正。既存 2 つを `device-binding.ts` へ寄せ、fail-open が要る呼び出し側が戻り値 null を自分で既定へ倒す | 進行中（fail-closed 版を新設。既存 2 実装の移行は未着手）|
 | ロール語彙 | `TenantRole`（`src/domain/tenant/types.ts`）と `AdminRole`（`src/domain/auth/roles.ts`, Entra 写像） | **統合しない**（責務が別）。`ProductRole = TenantRole` として #419 は前者に寄せる | 決定済 |
