@@ -10,6 +10,7 @@
 | [0001](0001-voice-transport.md) | iPad 音声ストリーム Transport（WSS + AudioWorklet, PCM 16kHz/16bit, 20ms チャンク） | 承認（MVP・実測により見直す前提） | #369 |
 | [0002](0002-voice-tts-cache-boundaries.md) | TTS 音声キャッシュの境界（S3 → CloudFront → Service Worker → IndexedDB） | 承認（設計のみ。実配線は #65） | #371 |
 | [0003](0003-realtime-runtime-ec2-phase0.md) | リアルタイム会話 EC2 基盤 Phase 0（lifecycle・endpoint・fallback・instance type） | 承認（設計 + skeleton のみ。**deploy 未実施**） | #366 |
+| [0004](0004-kiosk-experience-migration-flag.md) | 新旧 KioskFlow の切替方式（移行フラグの粒度・解決順・自動フォールバック・撤去条件） | 承認（構成取得の切替まで実装済み） | #422 |
 
 ## 書くとき
 

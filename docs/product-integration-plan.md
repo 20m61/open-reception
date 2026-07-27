@@ -207,14 +207,15 @@ URL クエリ `?effectiveConfig=1|0`（後勝ち）」。**端末 1 台単位で
 ## 8. ADR index
 
 一覧は [`docs/adr/README.md`](adr/README.md) が正（本書に転記して二重管理しない）。
-現在 0001 音声 Transport / 0002 TTS キャッシュ境界 / 0003 リアルタイム会話 EC2 Phase 0 の 3 件。
+現在 0001 音声 Transport / 0002 TTS キャッシュ境界 / 0003 リアルタイム会話 EC2 Phase 0 /
+0004 新旧 KioskFlow の切替方式 の 4 件。
 
 **#418 プログラムで ADR が要る決定**（起票時に ADR インデックスへ追記する）:
 
 - 構成解決の権威（`ProductContext`）とセッション信頼境界 → #419（本 Wave の実装で確定した契約は
   `src/domain/product-context/*.ts` の module doc に記述。設計選択が割れたら ADR を起こす）
 - 受付体験の版モデル（draft/published・rollback 単位）→ #420
-- 新旧 KioskFlow の切替方式（feature flag の粒度・撤去条件）→ #422
+- 新旧 KioskFlow の切替方式（feature flag の粒度・撤去条件）→ #422（**[ADR 0004](adr/0004-kiosk-experience-migration-flag.md) で決定済**）
 
 ---
 
