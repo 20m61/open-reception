@@ -13,8 +13,8 @@ import {
   type ReceptionEvent,
   type ReceptionState,
 } from '@/domain/reception/state';
-import { motionKeyForState, resolveMotionUrl, type MotionKey } from '@/domain/motion/types';
-import { primeSpeech, speak, type SpeakSettings } from './speech';
+import { motionKeyForState, resolveMotionUrl } from '@/domain/motion/types';
+import { primeSpeech, speak } from './speech';
 import { AvatarGuide } from './avatar/AvatarGuide';
 import type { AvatarGuidanceOverride } from './avatar/guidance';
 import { LanguageSwitcher } from './LanguageSwitcher';
@@ -24,8 +24,6 @@ import { AccessibilityMenu } from './AccessibilityMenu';
 import {
   DEFAULT_A11Y_MODE_STATE,
   clampA11yModeState,
-  sanitizeA11yEnabledModes,
-  type A11yEnabledModes,
   type FontScale,
 } from '@/domain/kiosk/a11y-modes';
 import { FlowStepper } from './FlowStepper';
@@ -88,18 +86,7 @@ import type { KioskLayout } from './layout';
 import { KioskChatDrawer } from './KioskChatDrawer';
 import { buildCheckoutUrl, safeCheckoutQrDataUrl } from './checkout/credential-display';
 import Link from 'next/link';
-import {
-  createTracker,
-  enterStep,
-  finalizeExperience,
-  recordBack,
-  recordCancel,
-  recordInputMethod,
-  recordSearchQuery,
-  stepForState,
-  type ExperienceTracker,
-} from '@/domain/reception/experience-metrics';
-import { EXPERIENCE_STEP_ORDER } from '@/domain/reception/experience-summary';
+import { useExperienceMetrics } from './useExperienceMetrics';
 import { searchStaffScored } from '@/domain/staff/search';
 import {
   clampCallingStageThresholds,
@@ -108,8 +95,9 @@ import {
   type CallingStage,
   type CallingStageThresholds,
 } from '@/domain/reception/calling-experience';
-import { resolveKioskExperienceFlags } from '@/domain/kiosk/experience-flags';
-import { useEffectiveConfiguration, type Directory } from './useEffectiveConfiguration';
+import type { Directory } from './useEffectiveConfiguration';
+import { useKioskConfiguration } from './useKioskConfiguration';
+import { useKioskDeviceStatus } from './useKioskDeviceStatus';
 
 /**
  * MVP では heartbeat・PIN 許可（初回セッション発行前）向けの端末 ID は固定。将来 kiosk
@@ -123,6 +111,9 @@ import { useEffectiveConfiguration, type Directory } from './useEffectiveConfigu
  * 正当な同一端末の要求まで 403 にしていた。
  */
 const KIOSK_ID = 'kiosk-dev';
+
+/** 待機画面リードの ja 既定文言（テナント上書きが無いとき, #324）。i18n 移行は #327。 */
+const DEFAULT_IDLE_GUIDANCE = 'ようこそ。タッチ操作だけで受付できます。';
 
 /** 完了・キャンセル後に待機画面へ自動復帰するまでの時間。 */
 const AUTO_RESET_MS = 6000;
@@ -144,8 +135,6 @@ const CONNECTED_INACTIVITY_RESET_MS = 120000;
  * 残り WARNING ミリ秒で警告を表示し、来訪者が操作すれば延長する。
  */
 const INACTIVITY_WARNING_MS = 10000;
-/** 端末有効性・設定変更を検知する heartbeat 間隔 (issue #30)。 */
-const HEARTBEAT_INTERVAL_MS = 30000;
 
 /**
  * 縦向き(ipad-portrait)でアバターコンパニオンを表示する状態 (#361 / 旧 #123)。
@@ -375,39 +364,37 @@ export function KioskFlow({ operatingStatus, sttAdapterFactory, voiceSession, qr
     const target = voiceCandidateToTarget(candidate);
     if (target) dispatch({ type: 'SELECT_TARGET', target });
   }, []);
-  const [directory, setDirectory] = useState<Directory>({ departments: [], staff: [] });
+  // 端末に適用する構成（ディレクトリ・音声・ブランド・アセット・モーション・フロー・サイネージ）は
+  // `useKioskConfiguration` が所有する (#422 increment 2)。取得経路（実効構成の一括取得 / 個別 API）は
+  // 移行フラグで選ばれ、ここからは見えない。名前は分離前と同じにして呼び出し側を変えない。
+  const {
+    directory,
+    guidanceIdle: guidanceIdleOverride,
+    privacyNoticeOverride,
+    speakSettings,
+    sttEnabled,
+    backgroundUrl,
+    branding,
+    vrmUrl,
+    avatarFallbackUrl,
+    motions,
+    customFlows,
+    signageCount,
+    feedbackEnabled,
+    a11yEnabledModes,
+    callingStageThresholdOverride: callingStageTenantOverride,
+    callingStageTextOverride,
+  } = useKioskConfiguration();
   // 待機画面リードの既定文言 (#324)。主指示（「ご用件をお選びください」）は見出し・アバター字幕が
   // 担うため、リードは挨拶＋安心情報（タッチだけで受付できる）のみにして指示を二重化しない。
-  // ja は管理設定 (#28) で上書き可能。
-  const [guidanceIdle, setGuidanceIdle] = useState('ようこそ。タッチ操作だけで受付できます。');
-  // 来訪者向けプライバシー通知の要約文言の上書き (issue #28 / #314)。未設定なら i18n 既定文言を使う。
-  const [privacyNoticeOverride, setPrivacyNoticeOverride] = useState<string | undefined>(undefined);
+  // ja は管理設定 (#28) で上書き可能。i18n 移行は #327（本ファイルは移行前の allowlist 対象）。
+  const guidanceIdle = guidanceIdleOverride ?? DEFAULT_IDLE_GUIDANCE;
   // 受付の表示言語 (#103)。来訪者が待機画面の LanguageSwitcher で切替える（セッション内で保持）。
   const [locale, setLocale] = useState<Locale>(DEFAULT_LOCALE);
   // 無操作リセット直前のカウントダウン警告（#125 UX, "don't surprise-expire"）。null=非表示。
   const [inactivitySeconds, setInactivitySeconds] = useState<number | null>(null);
   // 「続ける」ボタンから無操作タイマーを延長するための ref（実体は inactivity effect 内で設定）。
   const extendInactivityRef = useRef<() => void>(() => {});
-  const [speakSettings, setSpeakSettings] = useState<SpeakSettings>({ ttsEnabled: false, rate: 1, volume: 1, language: 'ja-JP' });
-  const [sttEnabled, setSttEnabled] = useState(false);
-  const [backgroundUrl, setBackgroundUrl] = useState<string | undefined>(undefined);
-  // テナントのブランド設定（ロゴ/アクセント色/社名）。「会社の顔」テーマ注入 (#88)。
-  const [branding, setBranding] = useState<BrandingSettings>({});
-  const [vrmUrl, setVrmUrl] = useState<string | undefined>(undefined);
-  const [avatarFallbackUrl, setAvatarFallbackUrl] = useState<string | undefined>(undefined);
-  // 状態別モーション URL（#31）。default URL に fallback して VRM レンダラへ渡す。
-  const [motions, setMotions] = useState<{ motions: Partial<Record<MotionKey, string>>; defaultUrl?: string }>({
-    motions: {},
-  });
-  // null=取得前/取得失敗（既定で表示継続）、false=失効、true=有効。
-  const [active, setActive] = useState<boolean | null>(null);
-  // kiosk セッション保持状態 (issue #239)。null=heartbeat 取得前（楽観的に表示継続）、
-  // false=未保持（ゲートで受付フローを出さない）、true=保持。
-  const [authorized, setAuthorized] = useState<boolean | null>(null);
-  // PIN 必須設定 (issue #23)。未保持時に PIN 自己許可へ誘導するか未エンロール案内かを分ける。
-  const [pinRequired, setPinRequired] = useState(false);
-  // オンライン状態。heartbeat 失敗で false、復帰で true (issue #30)。
-  const [online, setOnline] = useState(true);
   // 受付モード。idle から「QRで受付」を選ぶと checkin へ。完了/通常受付選択で normal へ戻す (issue #98)。
   const [mode, setMode] = useState<'normal' | 'checkin'>('normal');
   // 逃げ道バーの実測高さ。チャット FAB をこの上へ確実に持ち上げ重なりを防ぐ (#121 H1)。
@@ -430,12 +417,8 @@ export function KioskFlow({ operatingStatus, sttAdapterFactory, voiceSession, qr
     return () => ro.disconnect();
   }, [data.state]);
 
-  // カスタム受付フロー (issue #100)。null=取得前/失敗、[]=無効（既定フローへフォールバック）。
-  const [customFlows, setCustomFlows] = useState<KioskCustomFlow[] | null>(null);
   // 来訪者が目的選択で選んだカスタムフロー。null のときは既定フローのまま進む。
   const [selectedFlow, setSelectedFlow] = useState<KioskCustomFlow | null>(null);
-  // 待機サイネージ (issue #101)。再生可能項目数だけ保持し、idle 中の待機表示判定に使う。
-  const [signageCount, setSignageCount] = useState(0);
   // 来訪者検知カメラの有効化トグル (issue #79)。既定 OFF（タップ起動が常に生きる）。
   const [presenceEnabled, setPresenceEnabled] = useState(false);
   // ATTRACT オーバーレイの表示状態 (issue #362)。来訪検知が ATTRACT に達したときだけ
@@ -445,19 +428,12 @@ export function KioskFlow({ operatingStatus, sttAdapterFactory, voiceSession, qr
   // 受付完了時に発行された退館クレデンシャル (issue #342)。null=未発行/発行失敗（QR 非表示で継続）。
   // 完了画面に退館 QR / 短コード / 有効期限を提示する。idle 復帰で破棄する（次の来訪者へ持ち越さない）。
   const [checkoutCredential, setCheckoutCredential] = useState<CheckoutCredential | null>(null);
-  // ワンタップ満足度フィードバック収集の有効/無効 (issue #320)。テナント設定 (#28) を尊重する。
-  // 既定 true（未取得/未設定は収集する）。false のときは終端画面から評価 UI 自体を出さない。
-  const [feedbackEnabled, setFeedbackEnabled] = useState(true);
   // 来訪者が選べるアクセシビリティ支援モード (issue #321)。文字サイズ・ハイコントラスト・
   // 低位置レイアウトの現在値。既定は無支援（DEFAULT_A11Y_MODE_STATE）で、セッション終了・
   // 無操作リセットで idle 復帰時に既定へ戻す（次の来訪者へ持ち越さない、下記 idle effect 参照）。
   const [fontScale, setFontScale] = useState<FontScale>(DEFAULT_A11Y_MODE_STATE.fontScale);
   const [a11yHighContrast, setA11yHighContrast] = useState(DEFAULT_A11Y_MODE_STATE.highContrast);
   const [a11yLowReach, setA11yLowReach] = useState(DEFAULT_A11Y_MODE_STATE.lowReach);
-  // テナント/サイト設定でのモードごとの有効/無効 (issue #321 AC)。未取得時は既定=全モード有効。
-  const [a11yEnabledModes, setA11yEnabledModes] = useState<A11yEnabledModes>(
-    sanitizeA11yEnabledModes(undefined),
-  );
   // テナント設定の取得後にモードが無効化されていた場合、既に選ばれていた値を既定へ丸める
   // （#321: 無効モードの残留表示を防ぐ。clampA11yModeState は純関数、src/domain/kiosk/a11y-modes.ts）。
   useEffect(() => {
@@ -472,15 +448,6 @@ export function KioskFlow({ operatingStatus, sttAdapterFactory, voiceSession, qr
     // setState で変わりうるため依存に含めない（a11yEnabledModes の変化にのみ反応する）。
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [a11yEnabledModes]);
-  // 呼び出し中(calling)の段階的ケア (issue #323)。しきい値・文言はテナント設定 (#28) を尊重する。
-  // 未取得時は既定値のまま（クランプ側が既定へフォールバックするため壊れない）。
-  const [callingStageTenantOverride, setCallingStageTenantOverride] = useState<
-    Partial<CallingStageThresholds>
-  >({});
-  const [callingStageTextOverride, setCallingStageTextOverride] = useState<{
-    waiting?: string;
-    notice?: string;
-  }>({});
   // E2E タイマー短縮用のクエリ上書き（`?callingStageMs=` 等、既存 `?inactivityMs=` の流儀）。
   // window 参照は SSR 不一致を避けるため effect 内でのみ行う。
   const [callingStageQueryOverride, setCallingStageQueryOverride] = useState<
@@ -540,301 +507,28 @@ export function KioskFlow({ operatingStatus, sttAdapterFactory, voiceSession, qr
     };
   }, [data.state, data.target?.label, callingStageState.stage, locale, callingStageTextOverride]);
 
-  const refreshHeartbeat = useCallback(async () => {
-    try {
-      const res = await fetch(`/api/kiosk/heartbeat?kioskId=${encodeURIComponent(KIOSK_ID)}`, { cache: 'no-store' });
-      if (!res.ok) {
-        setOnline(false);
-        return;
-      }
-      const hb = (await res.json()) as { active: boolean; pinRequired: boolean; authorized: boolean };
-      setOnline(true);
-      setActive(hb.active);
-      setAuthorized(hb.authorized);
-      setPinRequired(hb.pinRequired);
-      // 失効/緊急停止を検知したら、受付中の個人情報を破棄して待機へ戻す (issue #30)。
-      if (!hb.active) {
-        dispatch({ type: 'RESET' });
-        setMode('normal');
-      }
-    } catch {
-      setOnline(false);
-    }
+  // 端末の有効性・セッション保持・疎通は `useKioskDeviceStatus` が監視する (#422 increment 2)。
+  // 失効（active=false）を検知したら受付中の個人情報を破棄して待機へ戻す (issue #30)。
+  const handleDeviceRevoked = useCallback(() => {
+    dispatch({ type: 'RESET' });
+    setMode('normal');
   }, []);
+  const { active, authorized, pinRequired, online, markAuthorized } = useKioskDeviceStatus({
+    kioskId: KIOSK_ID,
+    onRevoked: handleDeviceRevoked,
+  });
 
-  // 起動時に確認し、以降は定期 heartbeat で長期表示中の変化を検知する (issue #30)。
-  useEffect(() => {
-    void refreshHeartbeat();
-    const timer = setInterval(() => void refreshHeartbeat(), HEARTBEAT_INTERVAL_MS);
-    return () => clearInterval(timer);
-  }, [refreshHeartbeat]);
 
-  // 構成取得の新旧経路を選ぶ移行フラグ (issue #422 / 台帳 §7)。既定は旧経路（個別 API 7 本）。
-  // `?effectiveConfig=1` で端末 1 台だけ新経路にでき、`=0` で戻せる。window はレンダー中に
-  // 読まないよう lazy initializer で 1 度だけ読む（SSR では既定＝旧経路になり、初期マークアップは
-  // どちらの経路でも同一なのでハイドレーション差分は生じない）。
-  const [experienceFlags] = useState(() =>
-    resolveKioskExperienceFlags({
-      search: typeof window === 'undefined' ? '' : window.location.search,
-      env: process.env.NEXT_PUBLIC_KIOSK_EFFECTIVE_CONFIG,
-    }),
-  );
-  const effectiveConfiguration = useEffectiveConfiguration(experienceFlags.effectiveConfiguration);
-  // 新経路が失敗したら旧経路へ自動フォールバックする（可用性優先。端末を無設定で放置しない）。
-  // 明示的なロールバックはフラグ側（`?effectiveConfig=0`）で行う。
-  const legacyConfigFetch =
-    effectiveConfiguration.status === 'disabled' || effectiveConfiguration.status === 'error';
-
-  // 実効構成の一括取得（#419 `/api/configuration/effective`）を各 state へ反映する (issue #422)。
-  // 取得できなかったセクションは触らない＝既定値を維持する（旧経路の「その API だけ失敗」と同じ挙動）。
-  useEffect(() => {
-    if (effectiveConfiguration.status !== 'ready') return;
-    const { directory: dir, voice, avatar, branding: brand, motions: motion, flows, signageCount: signage } =
-      effectiveConfiguration.sections;
-    if (dir) setDirectory(dir);
-    if (voice) {
-      if (voice.guidanceIdle) setGuidanceIdle(voice.guidanceIdle);
-      setPrivacyNoticeOverride(voice.privacyNotice);
-      setSttEnabled(voice.sttEnabled);
-      setSpeakSettings(voice.speak);
-      setCallingStageTenantOverride(voice.callingStageThresholds);
-      setCallingStageTextOverride(voice.callingStageText);
-      setFeedbackEnabled(voice.feedbackEnabled);
-      setA11yEnabledModes(voice.a11yEnabledModes);
-    }
-    if (avatar) {
-      setBackgroundUrl(avatar.backgroundUrl);
-      setVrmUrl(avatar.vrmUrl);
-      setAvatarFallbackUrl(avatar.fallbackImageUrl);
-    }
-    if (brand) setBranding(brand);
-    if (motion) setMotions(motion);
-    // フロー未取得は null のままにせず [] へ倒す（既定フローで受付を続ける, #100）。
-    setCustomFlows(flows ? [...flows] : []);
-    if (signage !== undefined) setSignageCount(signage);
-  }, [effectiveConfiguration]);
-
-  // 部署・担当者を管理画面と共有のディレクトリ API から取得する (issue #3)。
-  useEffect(() => {
-    if (!legacyConfigFetch) return;
-    let cancelled = false;
-    (async () => {
-      try {
-        const res = await fetch('/api/kiosk/directory');
-        if (!res.ok) return;
-        const dir = (await res.json()) as Directory;
-        if (!cancelled) setDirectory(dir);
-      } catch {
-        /* 取得失敗時は空のまま。受付開始ボタンは表示され、画面は壊れない */
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, [legacyConfigFetch]);
-
-  // 音声設定の案内文言を受付画面へ反映する (issue #28)。
-  useEffect(() => {
-    if (!legacyConfigFetch) return;
-    let cancelled = false;
-    (async () => {
-      try {
-        const res = await fetch('/api/kiosk/voice');
-        if (!res.ok) return;
-        const voice = (await res.json()) as {
-          guidanceIdle?: string;
-          ttsEnabled?: boolean;
-          sttEnabled?: boolean;
-          rate?: number;
-          volume?: number;
-          language?: string;
-          privacyNotice?: string;
-          callingStageWaitingAfterMs?: number;
-          callingStageNoticeAfterMs?: number;
-          guidanceCallingWaiting?: string;
-          guidanceCallingNotice?: string;
-          feedbackEnabled?: boolean;
-          a11yModesEnabled?: Partial<A11yEnabledModes>;
-        };
-        if (cancelled) return;
-        if (voice.guidanceIdle) setGuidanceIdle(voice.guidanceIdle);
-        setPrivacyNoticeOverride(voice.privacyNotice);
-        setSttEnabled(voice.sttEnabled ?? false);
-        setSpeakSettings({
-          ttsEnabled: voice.ttsEnabled ?? false,
-          rate: voice.rate ?? 1,
-          volume: voice.volume ?? 1,
-          language: voice.language ?? 'ja-JP',
-        });
-        // 呼び出し中の段階的ケア (issue #323)。テナント設定のしきい値・案内文言の上書き。
-        setCallingStageTenantOverride({
-          waitingAfterMs: voice.callingStageWaitingAfterMs,
-          noticeAfterMs: voice.callingStageNoticeAfterMs,
-        });
-        setCallingStageTextOverride({
-          waiting: voice.guidanceCallingWaiting,
-          notice: voice.guidanceCallingNotice,
-        });
-        // ワンタップ満足度フィードバック収集の有効/無効 (issue #320)。未設定は収集する（既定 true）。
-        setFeedbackEnabled(voice.feedbackEnabled ?? true);
-        // アクセシビリティ支援モードの有効/無効 (issue #321)。未設定は全モード有効扱い。
-        setA11yEnabledModes(sanitizeA11yEnabledModes(voice.a11yModesEnabled));
-      } catch {
-        /* 取得失敗時は既定文言を使う */
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, [legacyConfigFetch]);
-
-  // 適用中の背景アセットを反映する (issue #27)。読み込み失敗時は背景色で fallback。
-  useEffect(() => {
-    if (!legacyConfigFetch) return;
-    let cancelled = false;
-    (async () => {
-      try {
-        const res = await fetch('/api/kiosk/assets');
-        if (!res.ok) return;
-        const assets = (await res.json()) as { backgroundUrl?: string; vrmUrl?: string; fallbackImageUrl?: string };
-        if (cancelled) return;
-        setBackgroundUrl(assets.backgroundUrl);
-        setVrmUrl(assets.vrmUrl);
-        setAvatarFallbackUrl(assets.fallbackImageUrl);
-      } catch {
-        /* 取得失敗時は既定背景 */
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, [legacyConfigFetch]);
-
-  // テナントのブランド設定を取得（#88）。失敗時は汎用テーマのまま。
-  useEffect(() => {
-    if (!legacyConfigFetch) return;
-    let cancelled = false;
-    (async () => {
-      try {
-        const res = await fetch('/api/kiosk/branding');
-        if (!res.ok) return;
-        const data = (await res.json()) as BrandingSettings;
-        if (!cancelled) setBranding(data);
-      } catch {
-        /* 取得失敗時は汎用テーマ */
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, [legacyConfigFetch]);
-
-  // 状態別モーション URL を取得する (issue #31)。未設定/失敗時は default または無効化で fallback。
-  useEffect(() => {
-    if (!legacyConfigFetch) return;
-    let cancelled = false;
-    (async () => {
-      try {
-        const res = await fetch('/api/kiosk/motions');
-        if (!res.ok) return;
-        const m = (await res.json()) as { motions: Partial<Record<MotionKey, string>>; defaultUrl?: string };
-        if (!cancelled) setMotions({ motions: m.motions ?? {}, defaultUrl: m.defaultUrl });
-      } catch {
-        /* 取得失敗時はモーション無し（アバターは静止/ fallback のまま） */
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, [legacyConfigFetch]);
-
-  // 有効なカスタム受付フローを取得する (issue #100)。取得失敗/無効時は既定フローへフォールバック。
-  useEffect(() => {
-    if (!legacyConfigFetch) return;
-    let cancelled = false;
-    (async () => {
-      try {
-        const res = await fetch('/api/kiosk/flow', { cache: 'no-store' });
-        if (!res.ok) {
-          // 403（セッション未確立）/503（障害）等は既定フローで継続する。
-          if (!cancelled) setCustomFlows([]);
-          return;
-        }
-        const body = (await res.json()) as { flows?: KioskCustomFlow[] };
-        if (!cancelled) setCustomFlows(body.flows ?? []);
-      } catch {
-        if (!cancelled) setCustomFlows([]); // 取得失敗＝既定フロー
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, [legacyConfigFetch]);
-
-  // 待機サイネージの再生可能項目数を取得する (issue #101)。失敗/無効時は 0（既定 IdleView）。
-  useEffect(() => {
-    if (!legacyConfigFetch) return;
-    let cancelled = false;
-    (async () => {
-      try {
-        const res = await fetch('/api/kiosk/signage');
-        if (!res.ok) return;
-        const sig = (await res.json()) as { items?: unknown[] };
-        if (!cancelled) setSignageCount(Array.isArray(sig.items) ? sig.items.length : 0);
-      } catch {
-        /* 取得失敗時は 0 のまま（待機画面は既定の IdleView） */
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, [legacyConfigFetch]);
-
-  // 受付体験メトリクスの計測 (issue #319)。PII を含まない所要/回数/入力手段を集計し、呼び出し作成時に
-  // サーバへ同送する（現状サーバは未知フィールドとして無視。永続化は次増分）。計測は非破壊で受付挙動を
-  // 変えない。ref で保持し、状態遷移・戻る/キャンセル・入力手段イベントごとにイミュータブルに置換する。
-  const experienceRef = useRef<ExperienceTracker>(createTracker());
-  const prevStepRef = useRef<ReturnType<typeof stepForState>>(null);
-
-  const markInputMethod = useCallback((method: Parameters<typeof recordInputMethod>[1]) => {
-    experienceRef.current = recordInputMethod(experienceRef.current, method);
-  }, []);
-  // 音声検索の採用を主入力手段=音声として記録する安定ハンドラ (issue #319)。renderScreen は
-  // 素の関数呼び出しのため、ref を触る処理は（インライン arrow ではなく）useCallback で渡す
-  // （react-hooks/refs: レンダー中に ref を触らない）。実行はクリック時のみ。
-  const markVoiceInput = useCallback(() => markInputMethod('stt'), [markInputMethod]);
-  // 担当者検索の実行（ヒット有無のみ）をヒット率/0 件率フックへ記録する安定ハンドラ (issue #322)。
-  // クエリ文字列や検索結果自体は ref に持ち込まない（PII 最小化）。
-  const markSearchQuery = useCallback((hasHit: boolean) => {
-    experienceRef.current = recordSearchQuery(experienceRef.current, hasHit);
-  }, []);
+  // 受付体験メトリクスの計測 (issue #319 / #322) は `useExperienceMetrics` が所有する
+  // (#422 increment 2)。PII を含まない所要/回数/入力手段のみを集計し、呼び出し作成時に
+  // サーバへ同送する。計測は非破壊で受付挙動を変えない。
+  const { markInputMethod, markVoiceInput, markSearchQuery, snapshotForCall } =
+    useExperienceMetrics(data.state);
 
   // 検索 0 件時などから Chat-assisted ドロワーを外部から開く合図 (issue #322)。値の増加を
   // KioskChatDrawer 側の effect が検知して開く（ドロワーは自身の開閉状態を所有したまま）。
   const [chatOpenSignal, setChatOpenSignal] = useState(0);
   const requestChatOpen = useCallback(() => setChatOpenSignal((n) => n + 1), []);
-
-  // 状態遷移から体験メトリクスを計測する (issue #319)。ステップ滞在所要・呼び出し到達までの所要・
-  // 「戻る」回数（ステップ後退で検知）・「キャンセル」回数を記録し、idle でトラッカをリセットする。
-  // 「calling」への create 副作用より前に定義し、作成時スナップショットで timeToCall が確定するようにする。
-  useEffect(() => {
-    if (data.state === 'idle') {
-      experienceRef.current = createTracker();
-      prevStepRef.current = null;
-      return;
-    }
-    const step = stepForState(data.state);
-    if (step) {
-      const prev = prevStepRef.current;
-      if (prev && EXPERIENCE_STEP_ORDER.indexOf(step) < EXPERIENCE_STEP_ORDER.indexOf(prev)) {
-        experienceRef.current = recordBack(experienceRef.current);
-      }
-      experienceRef.current = enterStep(experienceRef.current, step, Date.now());
-      prevStepRef.current = step;
-    } else if (data.state === 'cancelled') {
-      experienceRef.current = recordCancel(experienceRef.current);
-    }
-  }, [data.state]);
 
   // Vonage（非同期）通話のとき、ビデオビューに渡す受付 ID。Mock 同期通話では null のまま。
   const [vonageCallId, setVonageCallId] = useState<string | null>(null);
@@ -874,10 +568,7 @@ export function KioskFlow({ operatingStatus, sttAdapterFactory, voiceSession, qr
             visitor: data.visitor,
             // 体験メトリクス (issue #319)。PII を含まない所要/回数/入力手段。呼び出し到達時点の
             // スナップショット（timeToCall はこの時点で確定）。サーバ未対応時は無視される（非破壊）。
-            experience: finalizeExperience(experienceRef.current, {
-              abandoned: false,
-              nowMs: Date.now(),
-            }),
+            experience: snapshotForCall(Date.now()),
           }),
         });
         if (!createRes.ok) {
@@ -1319,7 +1010,7 @@ export function KioskFlow({ operatingStatus, sttAdapterFactory, voiceSession, qr
           </div>
         </div>
       ) : view === 'authorize' ? (
-        <KioskAuthorizeView onAuthorized={() => setAuthorized(true)} />
+        <KioskAuthorizeView onAuthorized={markAuthorized} />
       ) : view === 'unenrolled' ? (
         <KioskUnenrolledView />
       ) : view === 'checking' ? (
