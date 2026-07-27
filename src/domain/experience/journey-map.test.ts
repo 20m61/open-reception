@@ -9,13 +9,16 @@
 import { describe, expect, it } from 'vitest';
 import { RECEPTION_STATES } from '@/domain/reception/state';
 import { KIOSK_MODES } from '@/domain/kiosk/mode';
+import { PRESENCE_STATES } from '@/domain/presence/state';
 import { VOICE_KIOSK_MODES } from '@/domain/voice-session/kiosk-view';
 import {
   EXPERIENCE_EXCEPTION_STATES,
   EXPERIENCE_STATES,
   JOURNEYS,
   KIOSK_MODE_TO_EXPERIENCE,
+  PRESENCE_STATE_TO_EXPERIENCE,
   RECEPTION_STATE_TO_EXPERIENCE,
+  VOICE_LISTENING_STAGE_TO_EXPERIENCE,
   UNIMPLEMENTED_EXPERIENCE_STATES,
   VOICE_MODE_TO_EXPERIENCE,
   mappedExperienceStates,
@@ -44,12 +47,22 @@ describe('実装の状態語彙をすべて対応づけている', () => {
     expect(Object.keys(KIOSK_MODE_TO_EXPERIENCE).sort()).toEqual([...KIOSK_MODES].sort());
   });
 
+  it('全 PresenceState に対応が書かれている（来訪検知は独立した状態機械）', () => {
+    expect(Object.keys(PRESENCE_STATE_TO_EXPERIENCE).sort()).toEqual([...PRESENCE_STATES].sort());
+  });
+
+  it('聞き取り段階の 2 値に対応が書かれている', () => {
+    expect(Object.keys(VOICE_LISTENING_STAGE_TO_EXPERIENCE).sort()).toEqual(['idle', 'speech']);
+  });
+
   it('対応先はすべて体験設計に定義された状態', () => {
     const known = new Set<string>(ALL_EXPERIENCE_STATES);
     for (const table of [
       RECEPTION_STATE_TO_EXPERIENCE,
       VOICE_MODE_TO_EXPERIENCE,
+      VOICE_LISTENING_STAGE_TO_EXPERIENCE,
       KIOSK_MODE_TO_EXPERIENCE,
+      PRESENCE_STATE_TO_EXPERIENCE,
     ]) {
       for (const value of Object.values(table)) {
         if (value !== null) expect(known.has(value)).toBe(true);
@@ -70,6 +83,13 @@ describe('未実装の体験状態', () => {
     for (const state of UNIMPLEMENTED_EXPERIENCE_STATES) {
       expect(known.has(state)).toBe(true);
     }
+  });
+
+  it('来訪検知・認識中は実装済み（第 34 wave の分析誤りの再発防止）', () => {
+    // 第 34 wave は「状態語彙に無い」としたが、PresenceState と voiceListeningStage に在った。
+    const mapped = mappedExperienceStates();
+    expect(mapped.has('visitor_detected')).toBe(true);
+    expect(mapped.has('recognizing')).toBe(true);
   });
 
   it('主要な受付導線（正常系の骨格）は実装済みであること', () => {

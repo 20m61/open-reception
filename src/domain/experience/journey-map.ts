@@ -7,16 +7,18 @@
  * 値が増えた時点で**型エラーとして落ちる**（対応を書かずには増やせない）。
  *
  * **この module は判定をしない。** 受付の遷移は `domain/reception/state.ts`、画面の層は
- * `domain/kiosk/mode.ts`、音声は `domain/voice-session/kiosk-view.ts` が正本で、ここは
- * その 3 系統を体験設計の 1 本のタイムラインへ写す辞書に徹する。
+ * `domain/kiosk/mode.ts`、音声は `domain/voice-session/kiosk-view.ts`、来訪検知は
+ * `domain/presence/state.ts` が正本で、ここは**その 5 系統**（受付 / 画面 / 音声モード /
+ * 聞き取り段階 / 来訪検知）を体験設計の 1 本のタイムラインへ写す辞書に徹する。
  *
  * 差分の分析は `docs/experience/state-mapping.md`。**未対応の体験状態はここで明示的に
  * 列挙する**（`UNIMPLEMENTED_EXPERIENCE_STATES`）。実装したのに列挙から外し忘れると
  * テストが落ちるので、「実装したが文書は古いまま」を防げる。
  */
 import type { KioskMode } from '@/domain/kiosk/mode';
+import type { PresenceState } from '@/domain/presence/state';
 import type { ReceptionState } from '@/domain/reception/state';
-import type { VoiceKioskMode } from '@/domain/voice-session/kiosk-view';
+import type { VoiceKioskMode, VoiceListeningStage } from '@/domain/voice-session/kiosk-view';
 
 /** 体験設計の正常系タイムライン（`docs/experience/README.md` interaction state model）。 */
 export const EXPERIENCE_STATES = [
@@ -83,6 +85,39 @@ export const VOICE_MODE_TO_EXPERIENCE: Record<VoiceKioskMode, AnyExperienceState
   fallback: 'speech_unclear',
 };
 
+/**
+ * 来訪検知 → 体験状態。**全 `PresenceState` を網羅する**。
+ *
+ * 第 34 wave の分析では「`visitor_detected` は状態語彙に無い」としたが**誤り**で、
+ * `domain/presence/state.ts` に独立した状態機械が在った（第 37 wave に訂正）。
+ * 受付状態機械とは別に動き、ATTRACT でも**受付は開始しない**（画面が反応するだけ, #362）。
+ */
+export const PRESENCE_STATE_TO_EXPERIENCE: Record<PresenceState, AnyExperienceState | null> = {
+  IDLE: 'idle',
+  // 接近しつつある段階。まだ「検知した」と断定しないので体験状態は動かさない。
+  CANDIDATE: null,
+  ATTRACT: 'visitor_detected',
+  // 受付が始まっている間は受付状態機械側が権威。
+  ACTIVE: null,
+  COOLDOWN: null,
+};
+
+/**
+ * 聞き取り中の段階 → 体験状態。**全 `VoiceListeningStage` を網羅する**。
+ *
+ * 第 34 wave の分析では「認識中と傾聴中を区別していない」としたが**誤り**で、
+ * `voiceListeningStage` が interim の有無で 2 段階に分けている（第 37 wave に訂正）。
+ */
+export const VOICE_LISTENING_STAGE_TO_EXPERIENCE: Record<
+  VoiceListeningStage,
+  AnyExperienceState | null
+> = {
+  // 話しかけ待ち（interim 未着）。
+  idle: 'listening',
+  // 発話検知中（非空の interim が来ている）= 認識中。
+  speech: 'recognizing',
+};
+
 /** 画面の層 → 体験状態。**全 `KioskMode` を網羅する**。 */
 export const KIOSK_MODE_TO_EXPERIENCE: Record<KioskMode, AnyExperienceState | null> = {
   signage: 'idle',
@@ -103,13 +138,11 @@ export const KIOSK_MODE_TO_EXPERIENCE: Record<KioskMode, AnyExperienceState | nu
  * **実装したらここから外す。** 外し忘れるとテストが落ちる（対応表と実装の乖離を検出する）。
  */
 export const UNIMPLEMENTED_EXPERIENCE_STATES: readonly AnyExperienceState[] = [
-  // 来訪検知は `attractVisible`（KioskFlow のローカル state）で表現され、状態語彙に無い。
-  'visitor_detected',
   // 「音声かタッチか」を選ぶ局面が状態として無い（idle の quick actions が兼ねる）。
+  // **観測目的しか無い**ため、状態を増やす価値は低い（第 37 wave の判断）。
   'choosing_method',
-  // 認識中と傾聴中を区別していない（interim 表示はあるが状態ではない）。
-  'recognizing',
-  // 検索 0 件は画面内の分岐で、状態ではない。
+  // 検索 0 件は画面内の分岐で、状態ではない。ただし 0 件率の計測は第 35 wave で
+  // サーバまで通っており、**指標のためには状態化を要さない**。
   'no_match',
   // PII 表示抑止は常時表示の privacy notice で担保しており、状態としては存在しない。
   'privacy_blocked',
@@ -168,7 +201,9 @@ export function mappedExperienceStates(): Set<AnyExperienceState> {
   for (const table of [
     RECEPTION_STATE_TO_EXPERIENCE,
     VOICE_MODE_TO_EXPERIENCE,
+    VOICE_LISTENING_STAGE_TO_EXPERIENCE,
     KIOSK_MODE_TO_EXPERIENCE,
+    PRESENCE_STATE_TO_EXPERIENCE,
   ]) {
     for (const value of Object.values(table)) {
       if (value !== null) mapped.add(value);
