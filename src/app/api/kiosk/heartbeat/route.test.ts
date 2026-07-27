@@ -18,6 +18,8 @@ const readKioskSession = vi.fn();
 const recordHeartbeat = vi.fn();
 const adoptKiosk = vi.fn();
 const cookieGet = vi.fn(() => ({ value: 'kiosk-cookie' }));
+const resolveDeviceBinding = vi.fn();
+const recordDeploymentReport = vi.fn();
 const SCOPE = { tenantId: 'internal', siteId: 'default-site' };
 
 vi.mock('next/headers', () => ({ cookies: async () => ({ get: cookieGet }) }));
@@ -45,10 +47,19 @@ vi.mock('@/lib/tenant/store', () => ({
   }),
 }));
 
+vi.mock('@/lib/product-context/device-binding', () => ({
+  resolveDeviceBinding: (...a: unknown[]) => resolveDeviceBinding(...a),
+}));
+vi.mock('@/lib/experience-version/deployment-store', () => ({
+  recordDeploymentReport: (...a: unknown[]) => recordDeploymentReport(...a),
+}));
+
 import { GET } from './route';
 
-function call(kioskId = 'kiosk-dev') {
-  return GET(new Request(`http://localhost/api/kiosk/heartbeat?kioskId=${kioskId}`));
+function call(kioskId = 'kiosk-dev', query = '') {
+  return GET(
+    new Request(`http://localhost/api/kiosk/heartbeat?kioskId=${kioskId}${query}`),
+  );
 }
 
 beforeEach(() => {
@@ -62,6 +73,73 @@ beforeEach(() => {
   readKioskSession.mockResolvedValue({ kioskId: 'kiosk-dev' });
   recordHeartbeat.mockResolvedValue({ matched: true });
   adoptKiosk.mockResolvedValue({ created: true });
+  resolveDeviceBinding.mockResolvedValue({
+    tenantId: 'internal',
+    siteId: 'default-site',
+    kioskId: 'kiosk-dev',
+  });
+  recordDeploymentReport.mockResolvedValue(undefined);
+});
+
+describe('GET /api/kiosk/heartbeat 構成の反映報告 (#420 Inc3)', () => {
+  it('読み込んだ版を報告すると記録する', async () => {
+    await call('kiosk-dev', '&loadedRevision=3&loadedConfigHash=sha256:content');
+
+    expect(recordDeploymentReport).toHaveBeenCalledWith(
+      expect.objectContaining({
+        kioskId: 'kiosk-dev',
+        tenantId: 'internal',
+        siteId: 'default-site',
+        loadedRevision: 3,
+        loadedConfigHash: 'sha256:content',
+      }),
+    );
+  });
+
+  it('報告が無い heartbeat では書き込まない', async () => {
+    await call('kiosk-dev');
+    expect(recordDeploymentReport).not.toHaveBeenCalled();
+  });
+
+  it('セッションが無い（または不一致の）端末の報告は受け付けない', async () => {
+    readKioskSession.mockResolvedValue(null);
+
+    await call('kiosk-dev', '&loadedRevision=3');
+
+    expect(recordDeploymentReport).not.toHaveBeenCalled();
+  });
+
+  it('未登録の端末からの報告は捨てる（任意行を作らない）', async () => {
+    resolveDeviceBinding.mockResolvedValue(null);
+
+    await call('kiosk-dev', '&loadedRevision=3');
+
+    expect(recordDeploymentReport).not.toHaveBeenCalled();
+  });
+
+  it('不正な revision / errorCode は未報告として扱う', async () => {
+    await call('kiosk-dev', '&loadedRevision=abc&errorCode=%3Cscript%3E&loadedConfigHash=sha256:x');
+
+    expect(recordDeploymentReport).toHaveBeenCalledWith(
+      expect.objectContaining({ loadedRevision: undefined, errorCode: undefined }),
+    );
+  });
+
+  it('読込エラーを報告できる', async () => {
+    await call('kiosk-dev', '&errorCode=asset_load_failed&errorRevision=4');
+
+    expect(recordDeploymentReport).toHaveBeenCalledWith(
+      expect.objectContaining({ errorCode: 'asset_load_failed', errorRevision: 4 }),
+    );
+  });
+
+  it('報告の記録に失敗しても heartbeat 応答は返る（best-effort）', async () => {
+    recordDeploymentReport.mockRejectedValue(new Error('backend down'));
+
+    const res = await call('kiosk-dev', '&loadedRevision=3');
+
+    expect(res.status).toBe(200);
+  });
 });
 
 describe('GET /api/kiosk/heartbeat (#87 inc3 Kiosk→Device)', () => {
