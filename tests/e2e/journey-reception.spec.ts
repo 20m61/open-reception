@@ -40,6 +40,9 @@ async function issueUrlViaApi(request: APIRequestContext, deviceId: string): Pro
 /** 管理 UI（J2 の実画面）で対象端末の受付URLを発行し、その URL を返す。 */
 async function issueUrlViaUi(admin: Page, deviceName: string): Promise<string> {
   await admin.goto('/admin/devices');
+  // 一覧はページネーションされる。他 spec が作った端末で 2 ページ目以降へ押し出されないよう、
+  // 一意な端末名で絞り込んでから行を掴む（フルスイート実行時の決定的な失敗を防ぐ）。
+  await admin.getByTestId('device-filter-keyword').fill(deviceName);
   const row = admin.getByTestId('device-table').locator('tr', { hasText: deviceName });
   await expect(row).toBeVisible({ timeout: 15_000 });
   await row.getByTestId('device-reissue').click();
