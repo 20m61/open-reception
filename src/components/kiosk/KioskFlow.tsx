@@ -184,18 +184,6 @@ import {
 } from './useKioskDeviceStatus';
 
 
-/**
- * MVP では heartbeat・PIN 許可（初回セッション発行前）向けの端末 ID は固定。将来 kiosk
- * config から取得する (issue #18)。
- *
- * 受付作成（`POST /api/kiosk/receptions`）はこの定数を送らない (issue #348):
- * `reception.kioskId` はサーバが認証済み kiosk セッション（cookie）から確定するため、
- * クライアントがここで何を送っても（送らなくても）権威にならない。かつてこの定数を
- * 受付作成にも使い回していたため、実際にエンロールされた端末（ランダム UUID の
- * kioskId）と 'kiosk-dev' 固定値が食い違い、以後の所有権チェック（status/stay）が
- * 正当な同一端末の要求まで 403 にしていた。
- */
-const KIOSK_ID = 'kiosk-dev';
 
 /** 待機画面リードの ja 既定文言（テナント上書きが無いとき, #324）。i18n 移行は #327。 */
 const DEFAULT_IDLE_GUIDANCE = 'ようこそ。タッチ操作だけで受付できます。';
@@ -505,7 +493,6 @@ export function KioskFlow({ operatingStatus, sttAdapterFactory, voiceSession, qr
     setMode('normal');
   }, []);
   const { active, authorized, pinRequired, online, markAuthorized } = useKioskDeviceStatus({
-    kioskId: KIOSK_ID,
     onRevoked: handleDeviceRevoked,
     // いま読み込んでいる版を heartbeat に相乗りさせて報告する (#420)。
     report: configurationReport,
@@ -1253,7 +1240,9 @@ function KioskAuthorizeView({ onAuthorized }: { onAuthorized: () => void }) {
       const res = await fetch('/api/kiosk/authorize', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ pin, kioskId: KIOSK_ID }),
+        // 端末 ID は送らない (#419)。PIN 自己許可は端末 ID を持たない初回経路で、
+        // サーバが dev 既定へ倒す。以後の端末 ID はセッションが権威になる。
+        body: JSON.stringify({ pin }),
       });
       if (res.ok) onAuthorized();
       else setError(true);

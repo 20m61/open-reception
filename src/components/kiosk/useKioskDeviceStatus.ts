@@ -41,13 +41,12 @@ export type KioskDeviceStatus = {
 };
 
 export function useKioskDeviceStatus(options: {
-  kioskId: string;
   /** サーバが失効（`active=false`）を返したときの後始末（受付の破棄・待機復帰）。 */
   onRevoked: () => void;
   /** heartbeat に相乗りさせる構成の反映報告 (#420)。省略時は報告しない。 */
   report?: KioskConfigurationReport;
 }): KioskDeviceStatus {
-  const { kioskId, onRevoked, report } = options;
+  const { onRevoked, report } = options;
   const [active, setActive] = useState<boolean | null>(null);
   const [authorized, setAuthorized] = useState<boolean | null>(null);
   const [pinRequired, setPinRequired] = useState(false);
@@ -70,11 +69,14 @@ export function useKioskDeviceStatus(options: {
 
   const refresh = useCallback(async () => {
     try {
-      const params = new URLSearchParams({
-        kioskId,
-        ...(reportRef.current ? configurationReportParams(reportRef.current) : {}),
-      });
-      const res = await fetch(`/api/kiosk/heartbeat?${params.toString()}`, {
+      // 端末 ID は送らない (#419)。サーバは kiosk セッションから権威的に解決する
+      // （クライアントが固定値 `kiosk-dev` を送っていたため、実端末では死活も反映報告も
+      // 記録されず、有効性も seed 端末の設定を読んでいた）。
+      const params = new URLSearchParams(
+        reportRef.current ? configurationReportParams(reportRef.current) : {},
+      );
+      const query = params.toString();
+      const res = await fetch(`/api/kiosk/heartbeat${query ? `?${query}` : ''}`, {
         cache: 'no-store',
       });
       if (!res.ok) {
@@ -95,7 +97,7 @@ export function useKioskDeviceStatus(options: {
     } catch {
       setOnline(false);
     }
-  }, [kioskId]);
+  }, []);
 
   // 起動時に確認し、以降は定期 heartbeat で長期表示中の変化を検知する (issue #30)。
   useEffect(() => {

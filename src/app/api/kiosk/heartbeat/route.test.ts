@@ -198,7 +198,9 @@ describe('GET /api/kiosk/heartbeat (#261 kiosk-only 端末の Device 取り込�
   });
 
   it('空 kioskId は kiosk レジストリを引かない（DynamoDB の空 SK を避ける既存規約）', async () => {
+    // 端末 ID はセッションが権威になったので (#419)、空になり得るのはセッションが無いときだけ。
     recordHeartbeat.mockResolvedValue({ matched: false });
+    readKioskSession.mockResolvedValue(null);
     await call('');
     expect(getKiosk).not.toHaveBeenCalled();
     expect(adoptKiosk).not.toHaveBeenCalled();
@@ -227,11 +229,13 @@ describe('GET /api/kiosk/heartbeat (#284 inc1 死活記録のセッション紐�
     expect(body.authorized).toBe(false);
   });
 
-  it('セッションの kioskId とクエリの kioskId が不一致なら記録をスキップする', async () => {
+  it('クエリの kioskId は無視し、セッションの端末として記録する (#419)', async () => {
+    // 旧実装は「不一致なら記録をスキップ」していた。クライアントが `kiosk-dev` 固定値を送って
+    // いたため、実エンロール端末（ランダム UUID）では**常に不一致**になり記録されなかった。
+    // クエリを信用せずセッションを権威にすることで、偽 online の注入を防ぎつつ記録が働く。
     readKioskSession.mockResolvedValue({ kioskId: 'kiosk-other' });
     const res = await call('kiosk-dev');
-    expect(recordHeartbeat).not.toHaveBeenCalled();
-    expect(adoptKiosk).not.toHaveBeenCalled();
+    expect(recordHeartbeat).toHaveBeenCalledWith('kiosk-other');
     // authorized は「有効な kiosk セッションを保持しているか」の既存意味を維持する。
     expect((await res.json()).authorized).toBe(true);
   });
@@ -248,5 +252,115 @@ describe('GET /api/kiosk/heartbeat (#284 inc1 死活記録のセッション紐�
     await call('kiosk-legacy');
     expect(getKiosk).not.toHaveBeenCalled();
     expect(adoptKiosk).not.toHaveBeenCalled();
+  });
+});
+
+describe('端末 ID はセッションが権威 (#419 kiosk-dev 除去)', () => {
+  it('セッションが在れば、クエリの kioskId を無視してセッションの端末で判定する', async () => {
+    readKioskSession.mockResolvedValue({ kioskId: 'device-uuid' });
+    resolveDeviceBinding.mockResolvedValue({
+      tenantId: 'internal',
+      siteId: 'default-site',
+      kioskId: 'device-uuid',
+    });
+
+    // クライアントが別 ID（従来の 'kiosk-dev' 固定値）を送ってきても、それでは判定しない。
+    const res = await call('kiosk-dev');
+
+    expect(await res.json()).toMatchObject({ active: true, authorized: true });
+    expect(recordHeartbeat).toHaveBeenCalledWith('device-uuid');
+  });
+
+  it('エンロール済み端末の有効性は device 台帳で判定する（旧 kiosk レジストリに無くても失効させない）', async () => {
+    // 実際のエンロール端末はランダム UUID で、旧 kiosk レジストリには存在しない。
+    // 旧レジストリだけを見ると getKioskConfig が active:false を返し、正常な端末が失効表示になる。
+    readKioskSession.mockResolvedValue({ kioskId: 'device-uuid' });
+    getKioskConfig.mockResolvedValue({ kioskId: 'device-uuid', active: false });
+    resolveDeviceBinding.mockResolvedValue({
+      tenantId: 'internal',
+      siteId: 'default-site',
+      kioskId: 'device-uuid',
+    });
+
+    expect(await (await call('kiosk-dev')).json()).toMatchObject({ active: true });
+  });
+
+  it('失効した端末は active:false（個別の失効が実端末に効く, #30）', async () => {
+    readKioskSession.mockResolvedValue({ kioskId: 'device-uuid' });
+    // resolveDeviceBinding は status!=='active' の端末に null を返す（fail-closed）。
+    resolveDeviceBinding.mockResolvedValue(null);
+    getKioskConfig.mockResolvedValue({ kioskId: 'device-uuid', active: false });
+
+    expect(await (await call('kiosk-dev')).json()).toMatchObject({ active: false });
+  });
+
+  it('緊急停止は device 台帳の有効性より優先する', async () => {
+    readKioskSession.mockResolvedValue({ kioskId: 'device-uuid' });
+    resolveDeviceBinding.mockResolvedValue({
+      tenantId: 'internal',
+      siteId: 'default-site',
+      kioskId: 'device-uuid',
+    });
+    getSecuritySettings.mockResolvedValue({ emergencyStop: true, pinRequired: false });
+
+    expect(await (await call('kiosk-dev')).json()).toMatchObject({ active: false });
+  });
+
+  it('device 台帳に無い旧レジストリ端末は従来どおり kiosk レジストリで判定する', async () => {
+    readKioskSession.mockResolvedValue({ kioskId: 'kiosk-dev' });
+    resolveDeviceBinding.mockResolvedValue(null);
+    getKioskConfig.mockResolvedValue({ kioskId: 'kiosk-dev', active: true });
+
+    expect(await (await call('kiosk-dev')).json()).toMatchObject({ active: true });
+  });
+
+  it('身元不明（セッション無し・kioskId 無し）は active を fail-open で true にする', async () => {
+    // 「失効」と「未エンロール」は別物。false に倒すと、未エンロール端末に「利用できません」を
+    // 出してしまいエンロール導線へ進めない（#239）。受付フローは authorized=false で塞がれている。
+    readKioskSession.mockResolvedValue(null);
+    const res = await GET(new Request('http://localhost/api/kiosk/heartbeat'));
+
+    expect(await res.json()).toMatchObject({ active: true, authorized: false });
+    expect(getKioskConfig).not.toHaveBeenCalled();
+  });
+
+  it('身元不明でも緊急停止は効く', async () => {
+    readKioskSession.mockResolvedValue(null);
+    getSecuritySettings.mockResolvedValue({ emergencyStop: true, pinRequired: false });
+
+    const res = await GET(new Request('http://localhost/api/kiosk/heartbeat'));
+    expect(await res.json()).toMatchObject({ active: false });
+  });
+
+  it('セッションが無ければクエリの kioskId で従来どおり判定する（未エンロール端末の失効検知）', async () => {
+    readKioskSession.mockResolvedValue(null);
+    getKioskConfig.mockResolvedValue({ kioskId: 'kiosk-dev', active: true });
+
+    expect(await (await call('kiosk-dev')).json()).toMatchObject({
+      active: true,
+      authorized: false,
+    });
+    expect(getKioskConfig).toHaveBeenCalledWith('kiosk-dev');
+    // セッションが無い以上、死活も反映報告も記録しない（偽 online の注入経路を作らない）。
+    expect(recordHeartbeat).not.toHaveBeenCalled();
+  });
+
+  it('kioskId を送らないクライアントでも、セッションが在れば記録される', async () => {
+    readKioskSession.mockResolvedValue({ kioskId: 'device-uuid' });
+    resolveDeviceBinding.mockResolvedValue({
+      tenantId: 'internal',
+      siteId: 'default-site',
+      kioskId: 'device-uuid',
+    });
+
+    const res = await GET(
+      new Request('http://localhost/api/kiosk/heartbeat?loadedRevision=3&loadedConfigHash=sha256:a'),
+    );
+
+    expect(await res.json()).toMatchObject({ authorized: true });
+    expect(recordHeartbeat).toHaveBeenCalledWith('device-uuid');
+    expect(recordDeploymentReport).toHaveBeenCalledWith(
+      expect.objectContaining({ kioskId: 'device-uuid', loadedRevision: 3 }),
+    );
   });
 });
