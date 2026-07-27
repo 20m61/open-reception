@@ -60,6 +60,14 @@ export type ReceptionExperience = {
    * 完遂（connected 到達）した受付では未設定。ファネルの離脱ステップ特定に使う。
    */
   abandonedAtStep?: ExperienceStep;
+  /**
+   * 担当者検索の実行回数と、うち 0 件だった回数 (issue #322)。
+   *
+   * 体験設計（`docs/experience/README.md`）の Outcome metrics「zero-result recovery rate」の
+   * 分母/分子。**クエリ文字列は持たない**（回数のみ。PII 最小化）。0 のときは省略する。
+   */
+  searchQueryCount?: number;
+  searchZeroHitCount?: number;
 };
 
 /** 体験メトリクスで許可するステップ列挙（サニタイズ用の網羅リスト）。 */
@@ -105,6 +113,12 @@ export function sanitizeReceptionExperience(input: unknown): ReceptionExperience
   if (isFiniteNonNegative(o.timeToCallMs)) out.timeToCallMs = o.timeToCallMs;
   if (isFiniteNonNegative(o.backCount) && o.backCount > 0) out.backCount = o.backCount;
   if (isFiniteNonNegative(o.cancelCount) && o.cancelCount > 0) out.cancelCount = o.cancelCount;
+  if (isFiniteNonNegative(o.searchQueryCount) && o.searchQueryCount > 0) {
+    out.searchQueryCount = o.searchQueryCount;
+  }
+  if (isFiniteNonNegative(o.searchZeroHitCount) && o.searchZeroHitCount > 0) {
+    out.searchZeroHitCount = o.searchZeroHitCount;
+  }
   if (
     typeof o.inputMethod === 'string' &&
     (EXPERIENCE_INPUT_METHOD_VALUES as readonly string[]).includes(o.inputMethod)

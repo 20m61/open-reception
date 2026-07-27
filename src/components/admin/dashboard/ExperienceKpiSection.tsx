@@ -60,7 +60,7 @@ export function ExperienceKpiSection({
   const kpi = selected?.kpi ?? experience;
   const periodLabel = selected?.label ?? '本日';
 
-  const { callStartWithin30s, completion, funnel, inputMethods, measured } = kpi;
+  const { callStartWithin30s, completion, funnel, inputMethods, measured, search } = kpi;
   const reachedTop = Math.max(1, funnel[0]?.reached ?? 0);
 
   return (
@@ -113,6 +113,17 @@ export function ExperienceKpiSection({
           value={seconds(kpi.medianDurationMs)}
           href="/admin/receptions"
           hint="受付開始から終了までの中央値"
+        />
+        {/*
+          担当者検索の 0 件率 (#322)。**高いほど「探せていない」**ことを示す指標なので、
+          低いほうを success にする（他のカードと逆向き）。検索が無い期間は null で「—」表示。
+        */}
+        <MetricCard
+          label="担当者検索の 0 件率"
+          value={pct(kpi.searchZeroHitRate)}
+          tone={kpi.searchZeroHitRate !== null && kpi.searchZeroHitRate <= 0.2 ? 'success' : 'neutral'}
+          href="/admin/staff"
+          hint={`0 件 ${search.zeroHit} / 検索 ${search.queries}`}
         />
       </CardGrid>
 

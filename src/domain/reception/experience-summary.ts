@@ -61,6 +61,15 @@ export type ExperienceKpi = {
   funnel: ExperienceFunnelStep[];
   /** 入力手段別の利用数（測定済み受付のみ）。 */
   inputMethods: Record<ExperienceInputMethod, number>;
+  /**
+   * 担当者検索の 0 件率（0..1）。検索が 1 度も行われなければ null (issue #322)。
+   *
+   * 体験設計（`docs/experience/README.md`）の Outcome metrics「zero-result recovery rate」の
+   * 手がかり。**高いほど「探せていない」**ことを示し、検索語彙・別名・部署導線の改善対象になる。
+   */
+  searchZeroHitRate: number | null;
+  /** 0 件率の生値（分子 zeroHit / 分母 queries）。 */
+  search: { zeroHit: number; queries: number };
 };
 
 /** ゼロ値の KPI（空履歴・未接続時のプレースホルダに使う）。 */
@@ -75,6 +84,8 @@ export function emptyExperienceKpi(): ExperienceKpi {
     medianDurationMs: null,
     funnel: EXPERIENCE_STEP_ORDER.map((step) => ({ step, reached: 0, abandoned: 0 })),
     inputMethods: { touch: 0, stt: 0, chat: 0, qr: 0 },
+    searchZeroHitRate: null,
+    search: { zeroHit: 0, queries: 0 },
   };
 }
 
@@ -112,6 +123,8 @@ export function summarizeExperience(logs: readonly ReceptionLog[]): ExperienceKp
 
   const funnelReached = new Array(EXPERIENCE_STEP_ORDER.length).fill(0);
   const funnelAbandoned = new Array(EXPERIENCE_STEP_ORDER.length).fill(0);
+  let searchQueries = 0;
+  let searchZeroHits = 0;
   let within = 0;
   let reached = 0;
   let connected = 0;
@@ -132,6 +145,12 @@ export function summarizeExperience(logs: readonly ReceptionLog[]): ExperienceKp
 
     if (exp.inputMethod) kpi.inputMethods[exp.inputMethod] += 1;
 
+    // 担当者検索の 0 件率 (#322)。検索しなかった受付は分母に入れない。
+    if (typeof exp.searchQueryCount === 'number') {
+      searchQueries += exp.searchQueryCount;
+      searchZeroHits += exp.searchZeroHitCount ?? 0;
+    }
+
     const maxIdx = reachedIndex(exp);
     for (let i = 0; i <= maxIdx; i += 1) funnelReached[i] += 1;
     if (exp.abandonedAtStep) {
@@ -140,6 +159,8 @@ export function summarizeExperience(logs: readonly ReceptionLog[]): ExperienceKp
     }
   }
 
+  kpi.search = { zeroHit: searchZeroHits, queries: searchQueries };
+  kpi.searchZeroHitRate = searchQueries > 0 ? searchZeroHits / searchQueries : null;
   kpi.callStartWithin30s = { within, reached };
   kpi.callStartWithin30sRate = reached > 0 ? within / reached : null;
   kpi.completion = { connected, total: logs.length };

@@ -48,8 +48,8 @@ export type ExperienceTracker = {
   /**
    * 担当者検索（テキスト入力）の実行回数と、うち 0 件だった回数 (issue #322)。
    * ヒット率・0 件率を後で算出できるようにするための非 PII フック。クエリ文字列そのものは
-   * 保持しない（回数のみ）。`ReceptionExperience`（log.ts）側への出力配線は次増分（#322 は
-   * 検索ロジック・UI 側の対応が主眼のため、集計スキーマの拡張はここでは行わない）。
+   * 保持しない（回数のみ）。`finalizeExperience` が `ReceptionExperience` へ載せてサーバへ送る
+   * （体験設計の Outcome metrics「zero-result recovery rate」の分母/分子）。
    */
   readonly searchQueryCount: number;
   readonly searchZeroHitCount: number;
@@ -155,5 +155,8 @@ export function finalizeExperience(
   const inputMethod = tracker.inputMethod ?? (progressed ? 'touch' : null);
   if (inputMethod !== null) exp.inputMethod = inputMethod;
   if (opts.abandoned && tracker.currentStep !== null) exp.abandonedAtStep = tracker.currentStep;
+  // 0 件率（体験設計の zero-result recovery rate）の分母/分子。回数のみで、クエリ文字列は持たない。
+  if (tracker.searchQueryCount > 0) exp.searchQueryCount = tracker.searchQueryCount;
+  if (tracker.searchZeroHitCount > 0) exp.searchZeroHitCount = tracker.searchZeroHitCount;
   return exp;
 }

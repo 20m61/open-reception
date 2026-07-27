@@ -107,3 +107,30 @@ describe('sanitizeReceptionFeedback (#320)', () => {
     expect(sanitizeReceptionFeedback({ reasonCodes: ['waitTooLong'] })).toBeUndefined();
   });
 });
+
+describe('sanitizeReceptionExperience — 検索計測 (#322)', () => {
+  it('検索回数・0 件回数を取り込む', () => {
+    expect(sanitizeReceptionExperience({ searchQueryCount: 3, searchZeroHitCount: 2 })).toEqual({
+      searchQueryCount: 3,
+      searchZeroHitCount: 2,
+    });
+  });
+
+  it('0・負数・非数は取り込まない（0 のキーを保存しない）', () => {
+    expect(
+      sanitizeReceptionExperience({ searchQueryCount: 0, searchZeroHitCount: -1 }),
+    ).toBeUndefined();
+    expect(
+      sanitizeReceptionExperience({ searchQueryCount: 'many', searchZeroHitCount: NaN }),
+    ).toBeUndefined();
+  });
+
+  it('クエリ文字列を紛れ込ませても保存しない（未知キーは破棄する既存契約）', () => {
+    const out = sanitizeReceptionExperience({
+      searchQueryCount: 1,
+      searchQuery: 'TEST-来訪者が入力した文字列',
+    });
+    expect(out).toEqual({ searchQueryCount: 1 });
+    expect(JSON.stringify(out)).not.toContain('TEST-');
+  });
+});
