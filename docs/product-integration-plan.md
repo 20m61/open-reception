@@ -21,10 +21,10 @@ Issue と ADR が正で、本書はそこへの索引と移行状態を持つ。
 | Wave | Issue | 開始条件 | 終了条件 | 占有ファイル |
 | --- | --- | --- | --- | --- |
 | 0 Baseline | #425 | なし（最初） | 本書が存在し、§3〜§11 の台帳が現物と一致 / baseline 資産が §2 で固定 | `docs/product-integration-plan.md`・`docs/adr/README.md` |
-| 1 Foundation | #419 | Wave 0 完了 | 契約 + `/api/configuration/effective` + 互換アダプタが在る（**進行中**: ここまで完了。残は `/kiosk` クライアントの切替と `kiosk-dev` 除去 = #422 と同時） | `src/domain/product-context/**`・`src/lib/product-context/**`・`src/app/api/configuration/**` |
+| 1 Foundation | #419 | Wave 0 完了 | 契約 + `/api/configuration/effective` + 互換アダプタが在る（**進行中**: ここまで完了。クライアント切替は移行フラグ配下で稼働。残はフラグ既定の切替・`kiosk-dev` 除去・グローバルストアのテナント対応） | `src/domain/product-context/**`・`src/lib/product-context/**`・`src/app/api/configuration/**` |
 | 2 Lifecycle | #420 | #419 の型・resolver が main | draft/published の版管理と last-known-good / rollback が動く（**進行中**: 純ロジック + 永続化 + スナップショット公開 + 管理 API + 監査 + heartbeat 報告 + 反映状況 API まで完了。残は実検証チェッカ（asset/motion/call route 到達性）・端末側の報告送信（#422）・デモ公開モデルの統合） | `src/domain/experience-version/**`・`src/lib/experience-version/**`・`src/app/api/admin/experience-versions/**` |
 | 3 Admin IA | #421 | #419 / #420 | 1 拠点・1 端末・1 受付体験の編集導線が業務対象中心に統合 | `src/app/admin/**`・`src/components/admin/**` |
-| 4 Kiosk UX | #422 | #419（推奨は #421 の後） | `KioskFlow.tsx` 分割 + 新シェルが feature flag 配下で選択可能 | `src/components/kiosk/**` |
+| 4 Kiosk UX | #422 | #419（推奨は #421 の後） | `KioskFlow.tsx` 分割 + 新シェルが feature flag 配下で選択可能（**進行中**: 構成取得 7 経路を `EffectiveKioskConfiguration` の 1 回取得へ一本化。コンポーネント分割は未着手） | `src/components/kiosk/**` |
 | 5 Cross-surface | #423 | #419 / #420 / #421 | platform → admin → preview → kiosk の横断 E2E が green | `tests/e2e/**` |
 | 6 AI Loop | #424 | 随時（初回適用は #419） | 各 Wave の Issue/PR/測定に手順が適用されている | `docs/ai-development-loop.md`（#426） |
 
@@ -43,13 +43,14 @@ Wave 3 と Wave 4 は admin / kiosk でファイルが分かれるが、`Effecti
 | --- | --- | --- |
 | VRT（キオスク待機） | `tests/e2e/kiosk-screenshot.spec.ts-snapshots/`（iPad 縦横・大型ディスプレイ、darwin/linux 各 1） | #361 で決定化済み |
 | VRT + axe（主要 5 画面） | `tests/e2e/kiosk-vrt-a11y.spec.ts-snapshots/`（target / purpose / confirm / qr-intro / out-of-hours、linux） | critical / serious ゼロを併せて検査（第 14・15 wave） |
-| E2E | `tests/e2e/*.spec.ts` 40 本。横断シナリオは `journey-reception.spec.ts` | #423 はこれを土台に 10 ステップ横断へ拡張する |
+| E2E | `tests/e2e/*.spec.ts` 41 本（フルスイート 177 テスト green）。横断シナリオは `journey-reception.spec.ts` | #423 はこれを土台に 10 ステップ横断へ拡張する |
 | 依存関係マップ | 本書 §3（route）・§4（API） | 生成物ではなく手記入。変更時は同じ PR で更新する |
 | KPI | `docs/reception-experience-kpi.md` の定義（分子/分母） | 実測値は §11 を参照（**dev に受付実績が無いため未取得**） |
 
-> **本コンテナの制約**: ブラウザ E2E はこの実行環境では起動できない（第 15 wave で exit 144 を確認）。
-> baseline の**再取得**は e2e を実行できる環境で行う。Wave 0 が固定するのは「どのファイルを
-> baseline とみなすか」であって、この環境での再撮影ではない。
+> **ブラウザ E2E はこのコンテナで動く**（第 22 wave で是正）。「exit 144 で起動できない」という
+> 第 15 wave の記録は誤りで、真因は Playwright が要求する chromium ビルドとプリインストール版の
+> 不一致だった（`playwright.config.ts` が `/opt/pw-browsers/chromium` を自動検出する）。
+> UI / a11y に触る変更は `./scripts/quality-gate.sh --pr --e2e` を通してから PR を出す。
 
 ---
 
@@ -62,7 +63,7 @@ Wave 3 と Wave 4 は admin / kiosk でファイルが分かれるが、`Effecti
 
 | 現行ルート | 役割 | 移行方針 | 状態 |
 | --- | --- | --- | --- |
-| `/kiosk` | 受付本体（`KioskFlow.tsx` 2900 行超） | #422 で ExperienceShell へ分割。feature flag で新旧切替 | 未着手 |
+| `/kiosk` | 受付本体（`KioskFlow.tsx` 3196 行） | #422 で ExperienceShell へ分割。feature flag で新旧切替 | 進行中（構成取得を `useEffectiveConfiguration` へ一本化。コンポーネント分割は未着手）|
 | `/kiosk/signage` | 待機サイネージ | 新シェルの待機状態へ統合（別ルート維持の是非は #422 で裁定） | 未着手 |
 | `/kiosk/checkout` | 退館 | 現状維持 | 未着手 |
 | `/kiosk/enroll` | 端末エンロール（`?token=`） | 現状維持（`ProductContext` の権威入力元） | 未着手 |
@@ -107,19 +108,22 @@ Wave 3 と Wave 4 は admin / kiosk でファイルが分かれるが、`Effecti
 | 現行 API | セクション | 現在のスコープ解決 | 撤去条件 | 状態 |
 | --- | --- | --- | --- | --- |
 | `GET /api/kiosk/config` | （context・active・maintenance・operatingStatus） | query `kioskId` を直読み | 新経路が active/maintenance/operatingStatus を含み、`/kiosk` が新経路のみを参照 | 未着手 |
-| `GET /api/kiosk/branding` | `branding` | **なし**（グローバルストア） | 同上 + テナント別 branding が新経路で解決される | 進行中 |
-| `GET /api/kiosk/flow` | `receptionFlow` | kiosk セッション必須 + `resolveDefaultScope()` 固定 | 同上 + 既定スコープ固定の除去（§6） | 進行中 |
-| `GET /api/kiosk/directory` | `directory` | **なし**（グローバルストア） | 同上 | 進行中 |
-| `GET /api/kiosk/signage` | `signage` | **query `tenantId`/`siteId` を信用**（認証なし） | 同上（越境指定が 403 になること） | 進行中 |
-| `GET /api/kiosk/voice` | `voice` | kiosk セッション**任意**（未認証は既定テナント） | 同上 | 進行中 |
-| `GET /api/kiosk/motions` | `motions` | kiosk セッション任意 | 同上 | 進行中 |
-| `GET /api/kiosk/assets` | `avatar` | kiosk セッション任意 | 同上 | 進行中 |
+| `GET /api/kiosk/branding` | `branding` | **なし**（グローバルストア） | 同上 + テナント別 branding が新経路で解決される | 進行中（端末は移行フラグ配下で新経路を読む）|
+| `GET /api/kiosk/flow` | `receptionFlow` | kiosk セッション必須 + `resolveDefaultScope()` 固定 | 同上 + 既定スコープ固定の除去（§6） | 進行中（端末は移行フラグ配下で新経路を読む）|
+| `GET /api/kiosk/directory` | `directory` | **なし**（グローバルストア） | 同上 | 進行中（端末は移行フラグ配下で新経路を読む）|
+| `GET /api/kiosk/signage` | `signage` | **query `tenantId`/`siteId` を信用**（認証なし） | 同上（越境指定が 403 になること） | 進行中（端末は移行フラグ配下で新経路を読む）|
+| `GET /api/kiosk/voice` | `voice` | kiosk セッション**任意**（未認証は既定テナント） | 同上 | 進行中（端末は移行フラグ配下で新経路を読む）|
+| `GET /api/kiosk/motions` | `motions` | kiosk セッション任意 | 同上 | 進行中（端末は移行フラグ配下で新経路を読む）|
+| `GET /api/kiosk/assets` | `avatar` | kiosk セッション任意 | 同上 | 進行中（端末は移行フラグ配下で新経路を読む）|
 | （新設） | `operatingPolicy` | — | `resolveKioskStatusFor` を resolver のローダへ寄せた（既定スコープ fallback なし） | 進行中 |
 | （新設） | `languages` / `integrations` / `featureFlags` | — | resolver のローダへ集約（`integrations` は空を返す契約 = 秘匿設定を端末へ配らない） | 進行中 |
 
-**「進行中」の意味**: 新経路 `GET /api/configuration/effective` は稼働している（全 11 セクションの
-ローダ + 越境 403 + fail-closed）。ただし **`/kiosk` クライアントはまだ旧経路を読んでいる**ため、
-旧経路の撤去条件は未達。撤去は §9 B-03 の予告どおり、クライアント切替（#422）と観測の後。
+**「進行中」の意味**: 新経路 `GET /api/configuration/effective` は稼働しており（全 11 セクションの
+ローダ + 越境 403 + fail-closed）、`/kiosk` クライアントも **移行フラグ配下で**新経路のみを読む
+（`src/components/kiosk/useEffectiveConfiguration.ts`、§7）。ただしフラグの既定は旧経路で、
+新経路が失敗した端末は旧経路へ自動フォールバックするため、**旧経路はまだ実行されうる**。
+「新経路稼働」へ進めるのはフラグ既定を新経路へ倒した後。旧経路の撤去はさらにその後
+（§9 B-03 の予告どおり 2 wave 観測後）。
 
 **配信元（#420 Inc2）**: 公開版がスナップショットを持つ拠点では、新経路は**可変ストアを読まず
 スナップショットから配る**（`src/lib/product-context/configuration-plan.ts`）。版をまだ作っていない
@@ -188,8 +192,12 @@ timeout / token）・`/api/kiosk/checkin/**`・`/api/kiosk/checkout/**`・`/api/
 | --- | --- | --- | --- | --- |
 | `voiceSynthesis` | `TENANT_FEATURE_FLAG_KEYS`（`src/domain/platform/feature-flags.ts`） | true | `/api/kiosk/voice`（`ttsEnabled` を強制 false） | 恒久（テナント機能）|
 | `avatarReception` | 同上 | true | `/api/kiosk/motions`・`/api/kiosk/assets` | 恒久（テナント機能）|
-| （予定）新 ExperienceShell 切替 | #422 で追加 | 未定 | `/kiosk` の新旧シェル選択 | **移行完了後に撤去**（§9 に撤去期限を記入する）|
-| （予定）resolver 互換経路 | #419 後続で追加 | 旧経路 | 構成取得を新旧どちらから読むか | **旧経路撤去と同時に撤去** |
+| `effectiveConfiguration` | `src/domain/kiosk/experience-flags.ts`（**移行用**） | 旧経路（false） | `/kiosk` の構成取得を `GET /api/configuration/effective` の 1 回取得へ切替 | **§9 B-03（旧個別 API 撤去）と同時に撤去**。撤去時はフラグ分岐と旧 7 経路をまとめて削除する |
+| （予定）新 ExperienceShell 切替 | #422 のコンポーネント分割時に追加 | 未定 | `/kiosk` の新旧シェル選択 | **移行完了後に撤去**（§9 に撤去期限を記入する）|
+
+`effectiveConfiguration` の解決順は「ビルド時 env `NEXT_PUBLIC_KIOSK_EFFECTIVE_CONFIG` →
+URL クエリ `?effectiveConfig=1|0`（後勝ち）」。**端末 1 台単位で切り戻せる**ことをロールバック
+手段（§10）にしているため、クエリ上書きは本番でも塞がない（秘匿値を運ばないフラグ）。
 
 管理面は `/platform/feature-flags`。テナント上書きが無ければ `DEFAULT_TENANT_FEATURE_FLAGS`。
 **移行用フラグを追加するときは、この表に撤去条件を同時に書く**（恒久フラグと区別する）。
@@ -230,7 +238,8 @@ CLAUDE.md の「重大変更時のみユーザー確認」に該当する行は 
 
 | 事象 | 検知 | 切り戻し | 前提 |
 | --- | --- | --- | --- |
-| 新 resolver が誤った構成を返す | `configHash` が版と一致しない / `countFallbackSections` の急増 | 互換フラグ（§7）を旧経路へ。個別 API は §4.1 が撤去済でない限り生きている | **B-03 を実施するまで旧経路を消さない** |
+| 新 resolver が誤った構成を返す | `configHash` が版と一致しない / `countFallbackSections` の急増 | 移行フラグ（§7 `effectiveConfiguration`）を旧経路へ。端末単位なら `?effectiveConfig=0`。個別 API は §4.1 が撤去済でない限り生きている | **B-03 を実施するまで旧経路を消さない** |
+| 新経路が応答しない（未エンロール端末・503） | `/api/configuration/effective` の 4xx/5xx | **自動**（端末が旧個別 API へフォールバックし受付を継続する）。恒久的に戻すならフラグを倒す | 旧経路が生きていること（B-03 前） |
 | 新 ExperienceShell の不具合 | VRT 差分 / axe critical / E2E red | feature flag を旧 `KioskFlow` へ戻す | #422 が新旧を同居させること |
 | 誤った受付体験を公開した | 管理画面の版一覧・KPI 急変 | #420 の rollback（last-known-good 版へ戻す） | append-only な版履歴 |
 | 構成に秘匿情報が混入 | resolver が `forbidden_value` で fail-closed（`src/domain/product-context/payload-contract.ts`） | 端末へ配信されない（そもそも組み立てない）。ローダ側を修正 | 契約テストを緩めない |
