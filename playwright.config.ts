@@ -1,3 +1,4 @@
+import { existsSync } from 'node:fs';
 import { defineConfig, devices } from '@playwright/test';
 
 const PORT = Number(process.env.PORT ?? 3000);
@@ -28,9 +29,21 @@ const includeWebkit = !!process.env.CI || process.env.E2E_WEBKIT === '1';
  * 使う（環境ガイド準拠）。`PW_EXECUTABLE_PATH` 未設定時は Playwright の既定解決に委ねるため、
  * 通常環境・CI には無影響。
  */
-const chromiumLaunchOptions = process.env.PW_EXECUTABLE_PATH
-  ? { executablePath: process.env.PW_EXECUTABLE_PATH }
-  : undefined;
+const PREINSTALLED_CHROMIUM = '/opt/pw-browsers/chromium';
+
+/**
+ * `PW_EXECUTABLE_PATH` 未設定でも、プリインストール済み Chromium が在る環境では自動でそれを使う。
+ * env を明示し忘れると「e2e はこの環境では動かない」と誤って結論づけられる（実際に第 15 wave の
+ * 申し送りがそう記録され、5 周にわたって stale なまま引き継がれた）。存在しない環境では
+ * undefined = Playwright の既定解決に委ねるため、通常環境・CI には無影響。
+ */
+function resolveChromiumExecutablePath(): string | undefined {
+  if (process.env.PW_EXECUTABLE_PATH) return process.env.PW_EXECUTABLE_PATH;
+  return existsSync(PREINSTALLED_CHROMIUM) ? PREINSTALLED_CHROMIUM : undefined;
+}
+
+const executablePath = resolveChromiumExecutablePath();
+const chromiumLaunchOptions = executablePath ? { executablePath } : undefined;
 
 // 既定スコープへカスタム受付フローを一時投入する spec (#248)、および共有シングルトン設定
 // （voice-store の a11yModesEnabled 等, #321）を一時的に無効化して検証する spec。どちらも

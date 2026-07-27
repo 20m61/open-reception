@@ -8,11 +8,12 @@
 > 本書の「未実装」「外部待ち」分類が stale で、既に main に在るものを作り直しかけた。
 > 分類が実態と違ったら、その周回で本書を直す。
 
-## 現在地（2026-07-27 更新・第 21 wave 消化後）
+## 現在地（2026-07-27 更新・第 22 wave 消化後）
 
 **統合再設計プログラム #418 の進捗**: Wave 0（#425 台帳・クローズ済）→ Wave 1（#419 契約 +
 `/api/configuration/effective` 実配線）→ Wave 2（#420 = 版ライフサイクル・永続化・スナップショット公開・管理 API・反映状況）まで消化。
-次は **#422（KioskFlow 分割・新経路への切替）** か #421（admin IA）。詳細は第 16〜21 wave の各節。
+次は **e2e flake の安定化 → #422（KioskFlow 分割）**。詳細は第 16〜22 wave の各節。
+**ブラウザ e2e はこのコンテナで動く**（第 22 wave で是正済み。第 15 wave の「実行不可」は誤り）。
 移行状態の追跡は **`docs/product-integration-plan.md` が正**（本書は着手順・依存 DAG を持ち、
 移行台帳は持たない）。
 
@@ -357,7 +358,10 @@ infra web-stack.test の collection 時 `.open-next` 要求(stub 手順で回避
 | A | **#361 signage a11y** | `SignageDisplay` 外側 div の `role="button"`/`tabIndex` を撤去し非対話コンテナ化＝axe `nested-interactive`(no-focusable-content, serious) を解消。全面タップはポインタ便宜ハンドラで維持・受付導線は signage-start ボタン(focusable)+window keydown に一本化。`kiosk-vrt-a11y.spec` の `nested-interactive` 除外も撤去し serious 全ルール検査へ |
 | B | **#375 tokenHash ガード** | 予約 API 全ルート(list/get/create/edit/cancel/revoke/reissueToken/qr)を実呼び出しし応答 body の `tokenHash` 不在を再帰検証する behavioral 回帰ガード(`tokenhash-leak-guard.test`)。view 撤去で FAIL する negative check 済。第 14 申し送り「型強制でない tokenHash 除去忘れ」を捕捉 |
 
-第 15 wave の注記: **ブラウザ e2e は本コンテナで exit 144 でブロックされ実行不可**（sandbox 無効化・明示
+第 15 wave の注記: ~~ブラウザ e2e は本コンテナで exit 144 でブロックされ実行不可~~
+**（2026-07-27 第 22 wave で誤りと判明。実際は Playwright が要求する chromium ビルド番号と
+プリインストール版の不一致で、`executablePath` を渡せば動く。この stale な申し送りが 5 周にわたって
+「UI 変更は検証できない」という誤った前提を作っていた。）** 以下は当時の記録:（sandbox 無効化・明示
 `PW_EXECUTABLE_PATH` でもログ生成前に kill）。a11y 変更は品質ゲート(jsx-a11y 含む lint)+ 静的推論で担保し、
 除外撤去後の e2e はマージ前 `--full` または e2e 可能な環境で確認する。**残 follow-up**（未消化）:
 infra `web-stack.test` の collection 時 `.open-next` 要求(stub 手順で回避可・別パッケージのテスト
@@ -448,10 +452,26 @@ deploy・#366 Stack の deploy(月 $14.2 見積の最終承認)・#4 実資格�
 - **実ブラウザ検証は未実施**（本コンテナは e2e 不可）。表示規則は静的レンダリングのテストで担保し、
   実操作の確認は e2e 可能な環境か #65 で行う。
 
-**次に着手する候補（2026-07-27 更新）**: **第 22 wave = #422 KioskFlow 分割**（新経路への切替を
-含む。これで #419 の `kiosk-dev` 除去・#420 の端末側報告・台帳 §9 B-03〜B-05 がまとめて解禁される）。
-ただし `KioskFlow.tsx` は 2900 行超で**単独 wave を要する大改修**。
-代替候補: **グローバルストアのテナント対応**（#419 残の中核。ただし永続キーの変更 = スキーマ破壊
-なので **要ユーザー確認**）／ #421 admin IA 再編（本 wave の画面のナビ配線を含む）／
+**第 22 wave（2026-07-27 消化済み）** — e2e 実行環境の是正（単独トラック）:
+
+| トラック | Issue | 結果 |
+| --- | --- | --- |
+| A | **検証基盤** | `playwright.config.ts` がプリインストール Chromium（`/opt/pw-browsers/chromium`）を自動検出するよう修正。**第 15 wave の「本コンテナで e2e 実行不可」は誤りだった** — 実際は Playwright 1.61.1 が要求する chromium ビルド（1228）とプリインストール版（1194）の不一致で、`executablePath` を渡せば動く。フルスイート実行の結果: **172 件中 160 passed / 4 failed / 8 未実行** |
+
+第 22 wave の注記（重要）:
+- **この stale な申し送りが 5 周にわたって「UI 変更はブラウザ検証できない」という誤った前提を作り、
+  #422 の着手判断を歪めていた。** 環境の制約を記録するときは、次の周回が再検証できる形
+  （再現コマンドと失敗メッセージ）で残すこと。
+- **失敗 4 件はいずれも分離実行では PASS** = 機能の壊れではなく、フルスイート時の順序/共有状態
+  依存の flake。対象: `capture-screens:109` / `journey-reception:65` / `kiosk-checkout-i18n:45` /
+  `kiosk-vrt-a11y:103`。`--full` をマージゲートとして信頼する前に安定化が要る。
+- 8 件未実行は maxFailures による打ち切り。
+
+**次に着手する候補（2026-07-27 更新）**: **第 23 wave = e2e flake 4 件の安定化**（`--full` を
+ゲートとして使えるようにする。共有シングルトン設定を触る spec の分離は
+`FLOW_MUTATING_SPECS` に前例が在る）。その後 **#422 KioskFlow 分割**（ブラウザ検証が
+使えるようになったので当初の懸念は解消。ただし 2900 行超で単独 wave を要する）。
+代替候補: #421 admin IA 再編（本 wave の画面のナビ配線を含む）／
+**グローバルストアのテナント対応**（永続キー変更 = スキーマ破壊なので **要ユーザー確認**）／
 #423 横断 E2E ／ AI Evolution epic 群(#382〜#392)。
 エピック群の優先順位はユーザー判断（現在地の注記参照）。
