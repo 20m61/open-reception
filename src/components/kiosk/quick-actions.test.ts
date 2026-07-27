@@ -5,7 +5,7 @@ import {
   isActionAllowed,
   REQUIRES_CONFIRMATION_ACTIONS,
 } from '@/domain/reception/ui-contract';
-import { SUPPORTED_LOCALES, makeT } from '@/lib/i18n';
+import { DICTIONARIES, SUPPORTED_LOCALES, makeT } from '@/lib/i18n';
 import {
   escapeHatchesFor,
   quickActionsFor,
@@ -120,11 +120,13 @@ describe('逃げ道の文言は i18n カタログ経由 (#327)', () => {
     expect(hatches.map((h) => h.labelKey)).toEqual(['reception.back', 'reception.reset']);
   });
 
-  it('全ロケールで訳が引ける（未訳のまま日本語が出ない）', () => {
+  it('全ロケールに訳が実在する（ja へフォールバックしていない）', () => {
+    // `makeT` は未訳キーを ja へフォールバックするため、`tr()` の戻り値が非空でも
+    // 「訳が在る」ことにはならない。辞書を直接見る。
     for (const locale of SUPPORTED_LOCALES) {
-      const tr = makeT(locale);
       for (const hatch of escapeHatchesFor('selectingTarget')) {
-        expect(tr(hatch.labelKey).length, `${locale}/${hatch.action}`).toBeGreaterThan(0);
+        const value = DICTIONARIES[locale][hatch.labelKey];
+        expect(value, `${locale}/${hatch.action}`).toBeTruthy();
       }
     }
     // 英語で日本語が出ないことを具体値で固定する（キーの取り違えを検出する）。
