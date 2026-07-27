@@ -385,7 +385,10 @@ export function KioskFlow({ operatingStatus, sttAdapterFactory, voiceSession, qr
     callingStageThresholdOverride: callingStageTenantOverride,
     callingStageTextOverride,
     report: configurationReport,
-  } = useKioskConfiguration();
+  } = useKioskConfiguration({
+    // 受付が進行中の間は新しい版を適用しない（公開操作で来訪者の画面を入れ替えない, #420）。
+    sessionActive: data.state !== 'idle',
+  });
   // 待機画面リードの既定文言 (#324)。主指示（「ご用件をお選びください」）は見出し・アバター字幕が
   // 担うため、リードは挨拶＋安心情報（タッチだけで受付できる）のみにして指示を二重化しない。
   // ja は管理設定 (#28) で上書き可能。i18n 移行は #327（本ファイルは移行前の allowlist 対象）。

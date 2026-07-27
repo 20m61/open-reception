@@ -18,7 +18,7 @@
  * **セクション単位の失敗はそのセクションだけ既定へ倒す**（構成全体を落とさない）のが両経路
  * 共通の契約。受付導線は構成が空でも成立する（担当者ゼロでも受付開始ボタンは出る、など）。
  */
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import {
   sanitizeA11yEnabledModes,
   type A11yEnabledModes,
@@ -28,6 +28,7 @@ import {
   reportForConfiguration,
   type KioskConfigurationReport,
 } from '@/domain/kiosk/configuration-report';
+import { shouldApplyConfiguration } from '@/domain/kiosk/configuration-sync';
 import type { CallingStageThresholds } from '@/domain/reception/calling-experience';
 import type { BrandingSettings } from '@/domain/branding/types';
 import type { SpeakSettings } from './speech';
@@ -95,7 +96,14 @@ type LegacyVoiceSettings = {
   a11yModesEnabled?: Partial<A11yEnabledModes>;
 };
 
-export function useKioskConfiguration(): KioskConfiguration {
+export function useKioskConfiguration(options?: {
+  /**
+   * 受付が進行中か（待機画面以外に居るか）。進行中は取得済みの新しい構成を**適用せず**、
+   * 待機へ戻ってから適用する（AC「受付中の来訪者が公開操作によって中断されない」）。
+   */
+  sessionActive?: boolean;
+}): KioskConfiguration {
+  const sessionActive = options?.sessionActive ?? false;
   const [directory, setDirectory] = useState<Directory>({ departments: [], staff: [] });
   const [guidanceIdle, setGuidanceIdle] = useState<string | undefined>(undefined);
   const [privacyNoticeOverride, setPrivacyNoticeOverride] = useState<string | undefined>(undefined);
@@ -136,6 +144,14 @@ export function useKioskConfiguration(): KioskConfiguration {
     }),
   );
   const effective = useEffectiveConfiguration(experienceFlags.effectiveConfiguration);
+  // **適用済み**の構成の同定情報。取得済み（effective.meta）とは別物で、受付進行中は取得だけ
+  // 進んで適用が保留されるため乖離する。heartbeat で報告するのは常にこちら（実際に動いている版）。
+  //
+  // 判定用は ref、表示・報告用は state に持つ。両方 state にして effect の依存へ入れると
+  // 「適用 → 依存が変わる → 再評価」の再入経路ができる（指紋を持たない live 配信では
+  // 毎回「変化あり」と判定されるため、これが実際に効く）。
+  const appliedRef = useRef<KioskConfigurationMeta | undefined>(undefined);
+  const [appliedMeta, setAppliedMeta] = useState<KioskConfigurationMeta | undefined>(undefined);
   // 新経路が失敗したら旧経路へ自動フォールバックする（可用性優先。端末を無設定で放置しない）。
   const legacyConfigFetch = effective.status === 'disabled' || effective.status === 'error';
 
@@ -143,6 +159,16 @@ export function useKioskConfiguration(): KioskConfiguration {
   // 取得できなかったセクションは触らない＝既定値を維持する（旧経路の「その API だけ失敗」と同じ挙動）。
   useEffect(() => {
     if (effective.status !== 'ready') return;
+    const incoming = {
+      revision: effective.meta.revision,
+      contentHash: effective.meta.contentHash,
+    };
+    // 受付進行中は差し替えない（待機へ戻ると sessionActive の変化でこの effect が再評価され、
+    // そのとき適用される）。内容が同じなら再描画も起こさない。
+    if (!shouldApplyConfiguration({ sessionActive, current: appliedRef.current, incoming })) return;
+    appliedRef.current = effective.meta;
+    setAppliedMeta(effective.meta);
+
     const { directory: dir, voice, avatar, branding: brand, motions: motion, flows, signageCount: signage } =
       effective.sections;
     if (dir) setDirectory(dir);
@@ -166,7 +192,7 @@ export function useKioskConfiguration(): KioskConfiguration {
     // フロー未取得は null のままにせず [] へ倒す（既定フローで受付を続ける, #100）。
     setCustomFlows(flows ? [...flows] : []);
     if (signage !== undefined) setSignageCount(signage);
-  }, [effective]);
+  }, [effective, sessionActive]);
 
   // 部署・担当者を管理画面と共有のディレクトリ API から取得する (issue #3)。
   useEffect(() => {
@@ -351,12 +377,13 @@ export function useKioskConfiguration(): KioskConfiguration {
     a11yEnabledModes,
     callingStageThresholdOverride,
     callingStageTextOverride,
-    meta: effective.status === 'ready' ? effective.meta : undefined,
-    // 反映状況の報告 (#420)。報告するのは版・内容の指紋・エラー分類だけ（PII なし）。
+    meta: appliedMeta,
+    // 反映状況の報告 (#420)。報告するのは**適用済み**の版（＝実際に動いている構成）で、
+    // 取得だけして保留中の版ではない。報告に載るのは版・内容の指紋・エラー分類だけ（PII なし）。
     report: reportForConfiguration({
-      status: effective.status,
-      revision: effective.status === 'ready' ? effective.meta.revision : undefined,
-      contentHash: effective.status === 'ready' ? effective.meta.contentHash : undefined,
+      status: effective.status === 'ready' && !appliedMeta ? 'loading' : effective.status,
+      revision: appliedMeta?.revision,
+      contentHash: appliedMeta?.contentHash,
       httpStatus: effective.status === 'error' ? effective.httpStatus : undefined,
     }),
   };
