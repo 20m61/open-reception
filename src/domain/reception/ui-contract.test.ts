@@ -8,6 +8,10 @@ import {
 } from '@/domain/checkin/state';
 import { motionKeyForState } from '@/domain/motion/types';
 import { avatarGuidanceFor } from '@/components/kiosk/avatar/guidance';
+// 契約の ja フォールバック文言が、画面が実際に出す訳と一致することを突き合わせるために使う
+// （本番の ui-contract.ts は i18n に依存しない。テストだけの参照）。
+import { DICTIONARIES, type MessageKey as I18nMessageKey } from '@/lib/i18n';
+
 import {
   AVATAR_EMOTIONS,
   AVATAR_PRESENCES,
@@ -42,6 +46,16 @@ import {
   requiresExplicitConfirmationFor,
   type ReceptionAction,
 } from './ui-contract';
+
+/**
+ * ja 辞書の訳文。キーが消えたら（訳の整理・リネーム）その場で落とす — undefined と
+ * 突き合わせて「一致した」ことにしないため。
+ */
+function ja(key: I18nMessageKey): string {
+  const value = DICTIONARIES.ja[key];
+  if (value === undefined) throw new Error(`ja 辞書に ${key} が無い`);
+  return value;
+}
 
 describe('reception ui-contract: availableActions / isActionAllowed', () => {
   it('availableActions は state.ts の transition と整合する（二重定義していない）', () => {
@@ -452,6 +466,61 @@ describe('reception ui-contract: conversationTurnFor (#361)', () => {
       expect(turn.escapeHatches).toEqual(escapeHatchActionsFor(state));
       expect(turn.requiresExplicitConfirmation).toBe(requiresExplicitConfirmationFor(state));
     }
+  });
+
+  // #422 地ならし: 契約の既定 answers は「component が locale 解決値を注入しない場合の
+  // ja フォールバック」（下の注入テスト参照）。フォールバックである以上、**画面が実際に
+  // 出している文言と一致していなければならない**。ズレたまま画面を ConversationTurnView へ
+  // 配線すると、注入を忘れた箇所で別の文言が出る。
+  //
+  // 逃げ道（#486）・inputModes（#481）と同じ乖離が answers にも在ったため、ここで
+  // 辞書と突き合わせて固定する。
+  it('既定 answers の ja 文言は、画面が実際に使う i18n キーの ja 訳と一致する', () => {
+    const expected: Partial<Record<ReceptionState, readonly string[]>> = {
+      selectingPurpose: [
+        ja('reception.purpose.meeting'),
+        ja('reception.purpose.delivery'),
+        ja('reception.purpose.interview'),
+        ja('reception.purpose.other'),
+      ],
+      // 確認画面の主 CTA（reception-screens.tsx の confirm-call）。
+      confirming: [ja('reception.callWithThis')],
+      // 結果画面の代替導線（use-fallback）。
+      timeout: [ja('reception.altContact')],
+      failed: [ja('reception.altContact')],
+      // 通話中の完了 CTA（complete）。
+      connected: [ja('reception.finishReception')],
+    };
+    for (const [state, labels] of Object.entries(expected)) {
+      const actual = conversationTurnFor(state as ReceptionState).answers.map((a) => a.label);
+      expect(actual, state).toEqual(labels);
+    }
+  });
+
+  it('既定 message の ja 文言は、画面の主指示（screen__title）と一致する', () => {
+    // 契約の message は「その画面の主指示（見出し相当）」（#324 の役割分担）。実装では
+    // 各画面の `<h1 className="screen__title">` がそれに当たる。ズレたまま配線すると、
+    // 注入を忘れた箇所で見出しが変わる。
+    //
+    // 主指示を持たない画面（結果系は ResultPanel の message で、`{target}` の
+    // 差し込みを含むため契約の静的文言とは対応づかない）は対象外。
+    const expected: Partial<Record<ReceptionState, string>> = {
+      idle: ja('reception.purposePrompt'),
+      selectingPurpose: ja('reception.purposeDetailPrompt'),
+      selectingTarget: ja('reception.targetPrompt'),
+      inputVisitorInfo: ja('reception.visitorInfoPrompt'),
+      confirming: ja('reception.confirm'),
+    };
+    for (const [state, text] of Object.entries(expected)) {
+      expect(conversationTurnFor(state as ReceptionState).message.displayText, state).toBe(text);
+    }
+  });
+
+  it('フォールバック画面は既定 answers を持たない（コンテンツは案内のみ・#325）', () => {
+    // FallbackView は CTA を一切持たない。後退は逃げ道バー（escape-reset）へ一本化した
+    // ため、コンテンツは代替案内メッセージのみ。契約が answers を返すと、配線した時点で
+    // 画面にボタンが増える（#325 の決定が退行する）。
+    expect(conversationTurnFor('fallback').answers).toEqual([]);
   });
 
   it('answers の intent は必ずその画面で許可されたアクション（自由文で不正操作に飛べない）', () => {

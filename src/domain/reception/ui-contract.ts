@@ -493,11 +493,14 @@ export function messageKeyForState(state: ReceptionState): MessageKey {
  * こちらは「その画面の主指示（見出し相当）」を意味論キーから供給する（#324 の役割分担）。
  */
 const MESSAGE_TEXT_JA: Record<MessageKey, string> = {
-  welcome: 'ようこそ。ご用件をお選びください',
-  choosePurpose: 'ご用件の種類をお選びください',
-  chooseTarget: 'お訪ねする担当者・部署をお選びください',
-  enterVisitorInfo: 'お名前などをご入力ください',
-  reviewAndConfirm: '内容をご確認のうえ、お呼び出しください',
+  // 主指示を持つ画面は、実装の `<h1 className="screen__title">` と ja 文言を一致させる
+  // （#422 地ならし）。ズレていると、注入を忘れた箇所で見出しが変わる。対応する i18n キーは
+  // `ui-contract.test.ts` が辞書と突き合わせて固定している。
+  welcome: 'ご用件をお選びください', // reception.purposePrompt
+  choosePurpose: 'ご用件の種類をお選びください', // reception.purposeDetailPrompt
+  chooseTarget: '担当者・部署をお選びください', // reception.targetPrompt
+  enterVisitorInfo: '来訪者情報を入力してください', // reception.visitorInfoPrompt
+  reviewAndConfirm: '内容をご確認ください', // reception.confirm
   calling: '担当者を呼び出しています。少々お待ちください',
   connected: 'おつなぎしました。担当者がまいります',
   apologyTimeout: 'ただ今応答がありません。別の方法をご案内します',
@@ -608,18 +611,26 @@ function defaultAnswersFor(state: ReceptionState): ReadonlyArray<ConversationAns
   switch (state) {
     case 'selectingPurpose':
       return RECEPTION_PURPOSES.map((p) => ({ id: p.id, label: p.label, intent: 'selectPurpose' }));
+    // ja 文言は**画面が実際に出しているもの**と一致させる（#422 地ならし）。フォールバックで
+    // ある以上ズレていると、注入を忘れた箇所で別の文言が出る。対応する i18n キーは
+    // `ui-contract.test.ts` が辞書と突き合わせて固定している。
     case 'confirming':
-      return [{ id: 'confirm', label: 'この内容で呼ぶ', intent: 'confirm' }];
+      // reception.callWithThis（confirm-call）
+      return [{ id: 'confirm', label: 'この内容で呼び出す', intent: 'confirm' }];
     case 'timeout':
     case 'failed':
-      return [{ id: 'fallback', label: '別の方法でご連絡', intent: 'useFallback' }];
+      // reception.altContact（use-fallback）
+      return [{ id: 'fallback', label: '代替の連絡先へ', intent: 'useFallback' }];
     case 'connected':
-      return [{ id: 'complete', label: '受付を終了', intent: 'complete' }];
-    case 'fallback':
-      return [{ id: 'complete', label: '受付を終了', intent: 'complete' }];
+      // reception.finishReception（complete）
+      return [{ id: 'complete', label: '受付を終える', intent: 'complete' }];
     default:
       // idle（クイックアクションが入口）/ selectingTarget・inputVisitorInfo（実行時リスト・フォーム）/
       // calling / completed / cancelled は既定の静的回答を持たない。
+      //
+      // fallback も持たない: FallbackView は CTA を一切持たず、後退は逃げ道バー
+      // （escape-reset）へ一本化されている (#325)。ここで answers を返すと、画面を
+      // ConversationTurnView へ配線した時点でボタンが増えて #325 の決定が退行する。
       return [];
   }
 }
