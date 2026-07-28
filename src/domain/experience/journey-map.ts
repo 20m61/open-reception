@@ -223,6 +223,8 @@ export const NOT_A_TIMELINE_VOCABULARY: Record<string, string> = {
   TTS_GENERATION_STATES: '読み上げ音声の生成・再生の進捗。体験状態は変えない',
   TTS_PLAYBACK_STATES: '読み上げの再生進捗。speaking / ducked の内側で、体験状態は変えない',
   VOICE_TRANSPORT_LIFECYCLE_STATES: '音声トランスポートの接続管理。来訪者からは見えない',
+  REALTIME_RUNTIME_STATUSES:
+    'リアルタイム基盤(EC2)の稼働状態。インフラ側の事実であって受付の局面ではない (#366)',
   AI_GUIDANCE_STATES: 'AI 案内の生成状況。表示内容の出所であって局面ではない',
   CHECKIN_ERROR_STATES: 'CHECKIN_STATES の部分集合（エラー種別の抽出）。二重登録を避ける',
   // 受付端末の体験タイムラインの外。
