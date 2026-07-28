@@ -78,7 +78,13 @@ export type VisitReservation = {
   /** 要件メモ（任意・PII になり得るため最小限）。 */
   note?: string;
 
-  /** 呼び出し先の種別。 */
+  /**
+   * 呼び出し先の種別。
+   *
+   * **この 1 参照は 3 つの問い（誰が発行したか / 誰を訪ねる受付か / どこへ接続するか）に
+   * 同時に答えてしまっている。** 分離した形と移行マッピングは `./invitation.ts`（#375）。
+   * MVP では 3 者が同一値なので成立しているが、代理発行・部署 QR・イベント QR で別物になる。
+   */
   targetType: ReservationTargetType;
   /** 呼び出し先 ID（staffId / departmentId）。 */
   targetId: string;
