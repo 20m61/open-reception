@@ -61,9 +61,13 @@ gate_tree_fingerprint() {
   local list existing missing hashes f
   list="$(mktemp)"; existing="$(mktemp)"; missing="$(mktemp)"; hashes="$(mktemp)"
 
+  # core.quotePath=false が必須。既定では非 ASCII パスが "\350\250\255..." 形式に
+  # エスケープされて出力され、実体が見つからず「削除済み」に分類されてしまう。
+  # 結果としてそのファイルの**中身の変更を検出できない**（＝ stale なゲートを通す）。
+  # 日本語ドキュメントを常用するリポジトリなので実際に踏み得る穴だった。
   {
-    git ls-files 2>/dev/null
-    git ls-files --others --exclude-standard 2>/dev/null
+    git -c core.quotePath=false ls-files 2>/dev/null
+    git -c core.quotePath=false ls-files --others --exclude-standard 2>/dev/null
   } | sort -u > "${list}"
 
   while IFS= read -r f; do

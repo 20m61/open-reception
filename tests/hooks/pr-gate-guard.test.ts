@@ -205,6 +205,21 @@ describe('pr-gate-guard: 記録が現在のツリーに対応しているかを�
     expect(runHook('gh pr create --fill').status).toBe(0);
   });
 
+  it('非 ASCII 名のファイルの編集も検出する', () => {
+    // git は既定 (core.quotePath=true) で非 ASCII パスを "..." にエスケープして出力する。
+    // それをそのまま扱うとファイルが見つからず「削除済み」に分類され、**中身の変更を
+    // 検出できない穴**になる。日本語ドキュメントを常用するリポジトリなので実際に踏み得る。
+    const jp = join(repo, '設計メモ.md');
+    writeFileSync(jp, '# 初版\n');
+    execFileSync('git', ['add', '-A'], { cwd: repo, stdio: 'ignore' });
+    execFileSync('git', ['commit', '-qm', 'docs: 追加'], { cwd: repo, stdio: 'ignore' });
+    writeStamp('pr');
+    expect(runHook('gh pr create --fill').status, 'ゲート直後は通る').toBe(0);
+
+    writeFileSync(jp, '# 初版\n\nゲート後に書き足した。\n');
+    expect(runHook('gh pr create --fill').status, '編集後は stale').toBe(2);
+  });
+
   it('gitignore 済みのファイル（node_modules 等）は指紋に影響しない', () => {
     writeFileSync(join(repo, '.gitignore'), 'ignored/\n');
     execFileSync('git', ['add', '.gitignore'], { cwd: repo, stdio: 'ignore' });
