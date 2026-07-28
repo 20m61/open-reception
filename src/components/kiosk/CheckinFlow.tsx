@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useEffect, useReducer, useRef } from 'react';
+import { useCallback, useEffect, useReducer, useRef, useState } from 'react';
 import {
   transition,
   type CheckinEvent,
@@ -14,6 +14,11 @@ import type { MotionKey } from '@/domain/motion/types';
 import { DEFAULT_LOCALE, makeT, type Locale, type MessageKey } from '@/lib/i18n';
 import type { KioskLayout } from './layout';
 import { AvatarGuide } from './avatar/AvatarGuide';
+import {
+  checkinCallFailureMessageKeyFor,
+  checkinCallFailureReasonFrom,
+  type CheckinCallFailureReason,
+} from '@/domain/checkin/failure';
 
 /**
  * QR チェックインフロー (issue #98, increment 2)。
@@ -116,6 +121,9 @@ export function CheckinFlow({
   defaultMotionUrl,
 }: CheckinFlowProps) {
   const [data, dispatch] = useReducer(reducer, INITIAL);
+  // 呼び出し失敗の理由。**状態は増やさず**（`networkError` のまま）、文言だけを出し分ける
+  // （第 36 wave の通常受付と同じ方針）。RESET / RETRY で消す。
+  const [callFailureReason, setCallFailureReason] = useState<CheckinCallFailureReason | null>(null);
   // 注入されたスキャナ（既定は実カメラ CameraQrScanner）。再レンダーで作り直さない。
   const scannerRef = useRef<QrScanner>(scanner ?? new CameraQrScanner());
 
@@ -186,10 +194,19 @@ export function CheckinFlow({
           body: JSON.stringify({ payload: data.payload }),
         });
         if (cancelled) return;
-        if (res.ok) dispatch({ type: 'CALL_DONE' });
-        else dispatch({ type: 'CALL_FAILED' });
+        if (res.ok) {
+          dispatch({ type: 'CALL_DONE' });
+        } else {
+          // 403 / 400 / 503 / その他を「通信に失敗しました」へ潰さない（差分 D）。
+          setCallFailureReason(checkinCallFailureReasonFrom(res.status));
+          dispatch({ type: 'CALL_FAILED' });
+        }
       } catch {
-        if (!cancelled) dispatch({ type: 'CALL_FAILED' });
+        if (!cancelled) {
+          // 応答を得られていない = 本当に通信断。
+          setCallFailureReason(checkinCallFailureReasonFrom(undefined));
+          dispatch({ type: 'CALL_FAILED' });
+        }
       }
     })();
     return () => {
@@ -217,7 +234,15 @@ export function CheckinFlow({
       motionUrls={motionUrls}
       defaultMotionUrl={defaultMotionUrl}
     >
-      {renderCheckin(data, dispatch, useManual, exit, locale)}
+      {renderCheckin({
+        data,
+        dispatch,
+        useManual,
+        exit,
+        locale,
+        callFailureReason,
+        onClearFailureReason: () => setCallFailureReason(null),
+      })}
     </CheckinShell>
   );
 }
@@ -354,13 +379,33 @@ const contentStackStyle: React.CSSProperties = {
  * で直接レンダーしてテストできる（プロジェクトに jsdom/RTL は無いため、`VoiceReadbackConfirm` と同じ
  * 静的マークアップ検証の流儀に合わせている）。`export` は CheckinFlow.test.tsx からの直接検証用。
  */
-export function renderCheckin(
-  data: FlowData,
-  dispatch: React.Dispatch<Action>,
-  useManual: () => void,
-  exit: () => void,
-  locale: Locale = DEFAULT_LOCALE,
-) {
+export type RenderCheckinProps = {
+  data: FlowData;
+  dispatch: React.Dispatch<Action>;
+  useManual: () => void;
+  exit: () => void;
+  locale?: Locale;
+  /** 呼び出し失敗の理由。読み取り段階のエラーでは null（状態から文言を引く）。 */
+  callFailureReason?: CheckinCallFailureReason | null;
+  /** 再試行時に理由を捨てる（前回の失敗の説明を次の試行へ持ち越さない）。 */
+  onClearFailureReason?: () => void;
+};
+
+/**
+ * 画面の描画（hooks を使わない純関数）。
+ *
+ * **位置引数ではなく props オブジェクトで受ける。** 第 28 wave (#445) で `renderScreen` の
+ * 位置引数が 29 個まで膨れて可読性を失った前例があるため、増える前に寄せる。
+ */
+export function renderCheckin({
+  data,
+  dispatch,
+  useManual,
+  exit,
+  locale = DEFAULT_LOCALE,
+  callFailureReason = null,
+  onClearFailureReason,
+}: RenderCheckinProps) {
   const tr = makeT(locale);
   switch (data.state) {
     case 'idle':
@@ -505,9 +550,13 @@ export function renderCheckin(
       return (
         <ErrorView
           state={data.state}
+          callFailureReason={callFailureReason}
           locale={locale}
           onUseManual={useManual}
-          onRetry={() => dispatch({ type: 'RETRY' })}
+          onRetry={() => {
+            onClearFailureReason?.();
+            dispatch({ type: 'RETRY' });
+          }}
           onReset={exit}
         />
       );
@@ -577,19 +626,27 @@ const ERROR_MESSAGE_KEY: Partial<Record<CheckinState, MessageKey>> = {
 
 function ErrorView({
   state,
+  callFailureReason,
   locale,
   onUseManual,
   onRetry,
   onReset,
 }: {
   state: CheckinState;
+  /** 呼び出し失敗の理由。読み取り段階のエラーでは null（状態から文言を引く）。 */
+  callFailureReason: CheckinCallFailureReason | null;
   locale: Locale;
   onUseManual: () => void;
   onRetry: () => void;
   onReset: () => void;
 }) {
   const tr = makeT(locale);
-  const key = ERROR_MESSAGE_KEY[state];
+  // 呼び出し失敗は理由ごとに文言を変える（差分 D）。理由が無い＝読み取り段階のエラーなので
+  // 従来どおり状態から引く。
+  const key =
+    callFailureReason === null
+      ? ERROR_MESSAGE_KEY[state]
+      : checkinCallFailureMessageKeyFor(callFailureReason);
   return (
     <div className="screen__body" style={{ alignItems: 'center', justifyContent: 'center', textAlign: 'center' }}>
       <div className="notice notice--danger" data-testid={`checkin-error-${state}`}>

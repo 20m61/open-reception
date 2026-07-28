@@ -13,7 +13,7 @@ import type { CheckinSummary } from '@/domain/checkin/types';
  */
 function html(data: FlowData, locale: Locale = 'ja') {
   return renderToStaticMarkup(
-    <>{renderCheckin(data, vi.fn(), vi.fn(), vi.fn(), locale)}</>,
+    <>{renderCheckin({ data, dispatch: vi.fn(), useManual: vi.fn(), exit: vi.fn(), locale })}</>,
   );
 }
 
@@ -135,7 +135,7 @@ describe('renderCheckin の日本語直書き解消（#361 残）: 全 CheckinSt
   });
 
   it('locale 省略時は既定 locale（ja）で描画する（後方互換）', () => {
-    expect(renderToStaticMarkup(<>{renderCheckin({ state: 'idle' }, vi.fn(), vi.fn(), vi.fn())}</>)).toContain(
+    expect(renderToStaticMarkup(<>{renderCheckin({ data: { state: 'idle' }, dispatch: vi.fn(), useManual: vi.fn(), exit: vi.fn() })}</>)).toContain(
       'QR で受付',
     );
   });
