@@ -142,7 +142,7 @@
 | **#418** | program | 親 Epic（トラッキング）。子 = #419〜#425、Related #426 | — |
 | **#419** | architecture | **increment 4 完了**（第 16 wave = 契約 52 テスト / 第 18 wave = `src/lib/product-context/` + `GET /api/configuration/effective` 33 テスト / 第 24 wave = `/kiosk` クライアントの新経路切替を移行フラグ配下で実施 19 + e2e 5 / 第 30 wave = `kiosk-dev` 除去・端末 ID をセッション権威に 9 + e2e 1）。**残**: 移行フラグ既定の切替（観測後）・グローバルストア（branding/directory/voice/motions/avatar/languages）のテナント対応・旧個別 API の撤去（台帳 §9 B-03） | ローカル可（継続） |
 | **#420** | lifecycle | **increment 7 完了**（第 17 = 純ロジック 34 / 第 19 = 永続化・スナップショット公開・管理 API 45 / 第 20 = heartbeat 受け口 + 反映状況 API 20 / 第 21 = 管理画面 18 / 第 26 = 端末側の報告送信 11 / 第 27 = **端末側の定期再取得 + 受付中は適用保留** 10 + e2e 2 / 第 31 = 実検証チェッカ（asset / motion_mapping / language_fallback）18。計 156 テスト）。**ライフサイクル（公開 → キオスク取得 → 反映 ACK）が一周した。** / 第 32 = 取次到達性の検証 13。計 169 テスト）。**残**: デモ公開モデル（#363）の統合・ナビ配線（#421） | ローカル可（継続） |
-| **#421** | admin ux | **未着手**（業務構造への再編）。現状は技術モジュール別ナビ。土台: `ReceptionFlowsManager.tsx`・`KiosksManager.tsx` ほか admin 画面群 | #419/#420 の後 |
+| **#421** | admin ux | **部分**（業務構造への再編は未着手）。第 45 wave で AC「既存管理機能を失わない」に反していた `/admin/experience-versions` の**ナビ未登録**を是正し、同種の取りこぼしを検出するメタテストを追加。**残**: 重複ナビの統合（`受付端末`/`受付端末（拠点別）`・`呼び出しルート`/`取次ルート`）は**概念一本化＝仕様判断**、業務構造への再編本体は #419/#420 の後 | 重複統合は要ユーザー確認 / 再編本体はローカル可 |
 | **#422** | kiosk ux | **increment 4 完了**（第 24 wave: `useEffectiveConfiguration` で構成取得 7 経路 → `/api/configuration/effective` 1 回取得へ一本化。移行フラグ `effectiveConfiguration`・新経路失敗時は旧経路へ自動フォールバック。19 unit + 5 e2e / 第 25 wave: `useKioskConfiguration`・`useKioskDeviceStatus`・`useExperienceMetrics` へ分離 / 第 28 wave: `renderScreen` の props オブジェクト化 / 第 29 wave: `reception-screens.tsx`・`flow-state.ts` へ分割し **3196 → 1608 行**）。会話中心化の部品は #361/#364 で先行。**残**: 新旧 ExperienceShell の切替・ステッパー最小化・常設要素の 3 領域整理・ConversationTurn への接続 | #419 の後（#420/#421 と並行可だが推奨 Wave は #421 の後） |
 | **#423** | nav/e2e | **部分**: e2e 資産は厚い（`tests/e2e/` 40+ spec・`journey-reception.spec.ts`）。未達: platform→admin→preview→kiosk の 10 ステップ横断シナリオ・共通コンテキストバー・TenantSwitcher 共通契約 | #419/#420/#421 の後 |
 | **#424** | ai loop | **未着手**: `docs/ai-development-loop.md` 不在。土台: 本ループ運用（CLAUDE.md/`docs/loop-workflow.md`/quality-gate）・#427 の experience 規約（draft）。初回適用対象 = #419 と明示 | 各 wave へ順次適用 |
@@ -249,6 +249,7 @@
 | 42 | 2026-07-28 | #375 inc1: 招待モデル（発行主体 / 受付対象 / 接続先）の分離を**型と写しだけ先行**（呼び出し元はまだ無い）。1 参照が 3 つの問いに同時に答えている構造を解いた。接続先の語彙は #374 に合わせた | `src/domain/reservation/invitation.ts` |
 | 43 | 2026-07-28 | #327 follow-up: **通話中の状態表示**（locale を受け取っていたのにここだけ日本語固定）と**カスタム受付フローの 2 画面**（locale 未受領）を多言語化。allowlist を 3 件縮小 | `scripts/check-cjk-literals.ts` |
 | 44 | 2026-07-28 | #327 follow-up: **補助チャットドロワー**を多言語化（担当者検索 0 件時に開く＝来訪者が困っている時に出る画面）。モック LLM の既定応答も対象。allowlist を 3 件縮小し、**来訪者向けの実際の翻訳漏れは解消** | `scripts/check-cjk-literals.ts` |
+| 45 | 2026-07-28 | #421 の一部: **第 21 wave で作った `/admin/experience-versions` がどこからも辿れなかった**件を是正。ナビ未登録のルートを検出するメタテストを追加（作る周回と IA を触る周回が別なので規律では抜ける） | `src/components/admin/navigation.ts` |
 
 
 **次に着手する候補（2026-07-27 更新・第 37 wave 消化後）**: **差分 B は決着済み**

@@ -91,6 +91,7 @@ export const ADMIN_NAV: readonly NavGroup[] = [
     items: [
       { href: '/admin/reception-flows', label: '受付フロー' },
       { href: '/admin/demo', label: '受付体験スタジオ' },
+      { href: '/admin/experience-versions', label: '公開と反映状況' },
       { href: '/admin/staff-response', label: '担当者応答' },
       { href: '/admin/branding', label: 'ブランド' },
       { href: '/admin/ai-guidance', label: 'AI案内' },
@@ -194,3 +195,16 @@ export function isActivePath(itemHref: string, pathname: string): boolean {
   if (isRootIndex) return false;
   return pathname.startsWith(`${itemHref}/`);
 }
+
+/**
+ * **意図的にナビへ載せない** `/admin/*` ルートと、その理由 (issue #421)。
+ *
+ * `/admin/experience-versions` は第 21 wave で画面を作ったのにここにもナビにも登録されず、
+ * **URL を直接打つ以外に開けない**まま放置されていた。画面を作る周回と IA を触る周回は
+ * 別なので、規律では抜ける。`navigation.test.ts` が実ルートを走査して、ナビ登録か
+ * 理由付きの非掲載登録かのどちらかを強制する。
+ */
+export const UNLISTED_ADMIN_ROUTES: Record<string, string> = {
+  '/admin/login': 'ログイン画面。認証前に到達する入口で、ナビ自体が出ていない',
+  '/admin/ui-catalog': '実装者向けの UI カタログ。運用者の業務導線ではない',
+};
