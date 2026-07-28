@@ -7,7 +7,8 @@ import {
   transition as checkinTransition,
 } from '@/domain/checkin/state';
 import { motionKeyForState } from '@/domain/motion/types';
-import { avatarGuidanceFor } from '@/components/kiosk/avatar/guidance';
+import { CALL_FAILURE_REASONS, shouldOfferAlternativeContact } from './call-failure';
+import { avatarGuidanceFor, type AvatarGuidanceCue } from '@/components/kiosk/avatar/guidance';
 // 契約の ja フォールバック文言が、画面が実際に出す訳と一致することを突き合わせるために使う
 // （本番の ui-contract.ts は i18n に依存しない。テストだけの参照）。
 import { DICTIONARIES, type MessageKey as I18nMessageKey } from '@/lib/i18n';
@@ -36,6 +37,8 @@ import {
   escapeHatchActionsFor,
   gazeTargetFor,
   inputModesFor,
+  REQUIRES_CONFIRMATION_ACTIONS,
+  type GazeTarget,
   INPUT_MODES,
   isActionAllowed,
   isChatActionAllowed,
@@ -407,6 +410,159 @@ describe('reception ui-contract: requiresExplicitConfirmation (#361)', () => {
         allowed.has(a as ReceptionAction),
       );
       expect(hasCritical).toBe(true);
+    }
+  });
+});
+
+// =============================================================================
+// #422 inc5-b 地ならし: 残る 3 導出（emotion / gaze / requiresExplicitConfirmation）を
+// 実挙動へ突き合わせる。
+//
+// `ConversationTurnView` の 9 導出のうち 6 つが消費者ゼロで、調べた 4 つすべてが実挙動と
+// 乖離していた（#481 #486 #487）。テストが無い契約は「在る」だけで「正しい」ではない。
+//
+// - deriveAvatarEmotion … 実挙動（AvatarGuide が描画する guidance.expression）との
+//   クロスチェックが既に在る（上の「avatar/guidance.ts の expression と一致する」）。
+//   本 increment での修正は不要。ただし #323 の呼び出し段階オーバーライド
+//   （preTimeoutNotice → 'concerned'）は screenState だけでは表現できず、component 層の
+//   `guidanceOverride` が担う。契約はあくまで段階以前の基底値を返す。
+// - gazeTarget … 下記 2 件の乖離を修正する。
+// - requiresExplicitConfirmation … 実挙動と一致していたが、それを縛るテストが無かった。
+// =============================================================================
+
+describe('reception ui-contract: gazeTarget を実在する領域へ縛る (#422 inc5-b)', () => {
+  it('視線誘導先は、その画面に実在する領域だけを指す', () => {
+    // 根拠は reception-screens.tsx の各ビュー。
+    // fallback: FallbackView は CTA を一切持たない（#325 で fallback-reset を撤去し、後退は
+    // 逃げ道バー escape-reset へ一本化した）。`defaultAnswersFor('fallback')` が [] を返すのと
+    // 同じ理由で、視線を向ける先も無い。'answers' を指したまま VRM へ配線すると、アバターが
+    // 存在しない選択肢を見つめる。
+    expect(gazeTargetFor('fallback')).toBe('none');
+    // cancelled / completed: EndView（見出しと本文のみ。満足度評価は任意で急かさない）。
+    expect(gazeTargetFor('cancelled')).toBe('none');
+    expect(gazeTargetFor('completed')).toBe('none');
+    // connected: 終了操作は secondary の任意アクション。「操作は不要」と案内する画面なので
+    // 視線でも急かさない（#324-5）。
+    expect(gazeTargetFor('connected')).toBe('none');
+  });
+
+  it('answers を指す状態は、既定または実行時注入で必ず回答領域を持つ', () => {
+    // 回答領域が実行時注入（担当者一覧・クイックアクション）の状態を明示し、それ以外で
+    // 'answers' を指すなら既定 answers が非空であることを要求する。fallback のように
+    // 「既定も注入も無い」状態が 'answers' を指して紛れ込むのを防ぐ。
+    const RUNTIME_INJECTED: ReadonlySet<ReceptionState> = new Set([
+      'idle', // IdleView の quickActionsFor('idle')
+      'selectingTarget', // 担当者/部署の実行時リスト
+    ]);
+    for (const state of RECEPTION_STATES) {
+      if (gazeTargetFor(state) !== 'answers') continue;
+      if (RUNTIME_INJECTED.has(state)) continue;
+      expect(conversationTurnFor(state).answers.length, state).toBeGreaterThan(0);
+    }
+  });
+
+  it('gazeTarget は AvatarGuide が実 DOM へ出す data-cue と矛盾しない', () => {
+    // `AvatarGuidanceCue`（guidance.ts）と `GazeTarget`（本契約）は「どこへ誘導するか」を
+    // 別語彙で二重に持っている。cue は `data-cue` として実 DOM に出る表示側で、gaze は
+    // VRM 視線適用（#65）の真実源。整合を固定しないと #486（逃げ道の二重実装）と同じ形で
+    // 静かに乖離する。cue は所作（reassure/inviteTouch）も含む superset なので、視線先へ
+    // 写せる値だけを突き合わせる。
+    const CUE_TO_GAZE: Partial<Record<AvatarGuidanceCue, GazeTarget>> = {
+      lookAtChoices: 'answers',
+      lookAtForm: 'form',
+      lookAtConfirm: 'confirmCta',
+      offerAlternative: 'fallbackCta',
+    };
+    // cue は avatarState キーなので、'guiding' が selectingTarget（選択肢あり）と
+    // fallback（CTA 無し）の両方を覆ってしまい、fallback だけは構造的に正しくできない。
+    // screenState キーの契約側が正しく、cue 側が粗い — この既知の非対称だけを許す。
+    const COARSE_CUE_STATES: ReadonlySet<ReceptionState> = new Set(['fallback']);
+    for (const state of RECEPTION_STATES) {
+      const cue = avatarGuidanceFor(deriveAvatarState(state)).cue;
+      const mapped = CUE_TO_GAZE[cue];
+      if (mapped === undefined) continue; // 所作系の cue は視線先を主張しない
+      if (COARSE_CUE_STATES.has(state)) {
+        expect(gazeTargetFor(state), state).toBe('none');
+        continue;
+      }
+      expect(gazeTargetFor(state), state).toBe(mapped);
+    }
+  });
+});
+
+describe('reception ui-contract: 通信断の failed は代替導線を約束しない (#422 inc5-b)', () => {
+  // ResultView（reception-screens.tsx）は `shouldOfferAlternativeContact(failureReason)` が
+  // false のとき use-fallback CTA を**出さない**。代替導線の文言は「代表窓口にお繋ぎします」
+  // ＝システムが取り次ぐという約束で、通信が切れている端末はそれを果たせないため。
+  // 契約が無条件に代替導線を返していると、配線した時点でその約束が通信断の画面に復活する。
+  it('通信断(network)では既定 answers に代替導線を含めない', () => {
+    expect(conversationTurnFor('failed', { callFailureReason: 'network' }).answers).toEqual([]);
+  });
+
+  it('通信断以外（server / 理由不明）では従来どおり代替導線を出す', () => {
+    expect(conversationTurnFor('failed', { callFailureReason: 'server' }).answers).toEqual([
+      { id: 'fallback', label: ja('reception.altContact'), intent: 'useFallback' },
+    ]);
+    expect(conversationTurnFor('failed').answers.map((a) => a.intent)).toEqual(['useFallback']);
+  });
+
+  it('未応答(timeout)は理由に依らず代替導線を出す（呼び出しは到達している）', () => {
+    for (const reason of [...CALL_FAILURE_REASONS, undefined] as const) {
+      const turn = conversationTurnFor('timeout', reason ? { callFailureReason: reason } : undefined);
+      expect(turn.answers.map((a) => a.intent), String(reason)).toEqual(['useFallback']);
+    }
+  });
+
+  it('代替導線を出すかの判断は shouldOfferAlternativeContact に一本化する（二重実装しない）', () => {
+    for (const reason of [...CALL_FAILURE_REASONS, undefined] as const) {
+      const turn = conversationTurnFor('failed', reason ? { callFailureReason: reason } : undefined);
+      expect(turn.answers.length > 0, String(reason)).toBe(shouldOfferAlternativeContact(reason));
+    }
+  });
+
+  it('通信断では視線も代替 CTA を指さない（存在しない CTA を見つめない）', () => {
+    expect(gazeTargetFor('failed', { callFailureReason: 'network' })).toBe('none');
+    expect(
+      conversationTurnFor('failed', { callFailureReason: 'network' }).avatar.gazeTarget,
+    ).toBeUndefined();
+    // 出す側は従来どおり代替 CTA を指す。
+    expect(gazeTargetFor('failed', { callFailureReason: 'server' })).toBe('fallbackCta');
+    expect(gazeTargetFor('failed')).toBe('fallbackCta');
+  });
+});
+
+describe('reception ui-contract: requiresExplicitConfirmation を実挙動へ縛る (#422 inc5-b)', () => {
+  it('確認必須のターンは音声入力を宣言しない（音声だけで発信・PII 確定が起きない）', () => {
+    // 音声の実結線点は selectingTarget だけ（VoiceSessionLayer → onResolved → SELECT_TARGET）。
+    // 復唱「はい」も担当者確定に閉じており、CONFIRM / SUBMIT_VISITOR_INFO を生む経路は無い。
+    for (const state of RECEPTION_STATES) {
+      if (!requiresExplicitConfirmationFor(state)) continue;
+      expect(inputModesFor(state), state).not.toContain('voice');
+    }
+  });
+
+  it('確認必須のターンは QR でも進めない（読み取りだけで発信しない）', () => {
+    for (const state of RECEPTION_STATES) {
+      if (!requiresExplicitConfirmationFor(state)) continue;
+      expect(inputModesFor(state), state).not.toContain('qr');
+    }
+  });
+
+  it('発信確定ターン(confirming)の既定 answers は確定 CTA 1 つだけ（主 CTA が一意）', () => {
+    // 画面（ConfirmView）の主 CTA は confirm-call のみ。修正は footer の confirm-back、
+    // 後退は逃げ道バーで、確定を起こす回答は 1 つに保つ。
+    const answers = conversationTurnFor('confirming').answers;
+    expect(answers.map((a) => a.intent)).toEqual(['confirm']);
+  });
+
+  it('確認必須のターン以外に確定アクションを持つ回答が現れない', () => {
+    // 既定 answers の intent が REQUIRES_CONFIRMATION_ACTIONS に触れるのは、
+    // requiresExplicitConfirmation=true のターンだけ。
+    for (const state of RECEPTION_STATES) {
+      const critical = conversationTurnFor(state).answers.filter((a) =>
+        REQUIRES_CONFIRMATION_ACTIONS.has(a.intent),
+      );
+      if (critical.length > 0) expect(requiresExplicitConfirmationFor(state), state).toBe(true);
     }
   });
 });
