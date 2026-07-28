@@ -1,0 +1,22 @@
+# gitleaks の既知・受容済み検出（#474）
+#
+# `gitleaks detect` は作業ツリーではなく **git 履歴** を走査するため、フィクスチャを
+# 現在のコードで修正しても、過去のコミットに残った文字列は検出され続ける。履歴の
+# 書き換えはしない方針なので、**該当コミットの該当行だけ**を指紋で受容する。
+#
+# 指紋の形式: <commit>:<file>:<rule>:<line>
+# ファイル単位・ルール単位の広い allowlist にはしない（実 secret を素通しさせないため）。
+#
+# 以下 2 件はいずれも退館 token のテストフィクスチャで、実 secret ではない。
+# 現在のコードでは `TEST-...` の明確な擬似値へ置換済み（`rules/pii-secret-minimization.md`:
+# 「テストに実 secret 風文字列を置かず、明確な擬似値（TEST-...）を使う」）。
+# したがって新規コミットで同種の検出は再発しない。
+#
+# 注: このファイルに検出値そのものを書かないこと。書くとこのファイル自身が新たな
+# 検出源になる（実際に一度踏んだ）。何が引っかかったかは指紋の file:line で辿れる。
+
+# 退館 token フィクスチャ（credential-display.test.ts, 2026-07-12）
+6ce134ac4c759431cadfb328ef5cc68f74e5a665:src/components/kiosk/checkout/credential-display.test.ts:generic-api-key:5
+
+# 退館 token フィクスチャ（self-id.test.ts, 2026-07-12）
+04915c88950680bd08e12679a79fcca689f15099:src/components/kiosk/checkout/self-id.test.ts:generic-api-key:81

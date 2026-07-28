@@ -18,6 +18,9 @@ const GLOBALS_CSS = fs.readFileSync(
 
 /** globals.css の :root から `--name` の生値（`;` 手前まで）を取り出す。 */
 function cssVar(name: string): string {
+  // `name` はテスト内のトークン名リテラル由来で外部入力は到達しない（ReDoS 不成立）。
+  // 走査対象もリポジトリ内の globals.css。
+  // nosemgrep: javascript.lang.security.audit.detect-non-literal-regexp.detect-non-literal-regexp
   const m = new RegExp(`--${name}\\s*:\\s*([^;]+);`).exec(GLOBALS_CSS);
   if (!m?.[1]) throw new Error(`globals.css に --${name} が見つからない`);
   return m[1].trim();

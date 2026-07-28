@@ -94,6 +94,9 @@ function withLocalImports(file: string, source: string): string {
 function exportedMethods(source: string): string[] {
   const methods = ['GET', 'POST', 'PUT', 'PATCH', 'DELETE'];
   return methods.filter((m) =>
+    // `m` は直上の固定リテラル配列の要素のみで、外部入力は到達しない（ReDoS 不成立）。
+    // 走査対象もリポジトリ内のソースファイル。
+    // nosemgrep: javascript.lang.security.audit.detect-non-literal-regexp.detect-non-literal-regexp
     new RegExp(`export\\s+(async\\s+)?function\\s+${m}\\b|export\\s*\\{[^}]*\\b${m}\\b`).test(
       source,
     ),
