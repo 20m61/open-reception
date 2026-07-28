@@ -517,9 +517,14 @@ export type InputMode = (typeof INPUT_MODES)[number];
 const SCREEN_TO_INPUT_MODES: Record<ReceptionState, ReadonlyArray<InputMode>> = {
   // 待機は QR 受付の入口を併記する（読み取りだけで発信しない導線: qr-scan→qr-confirm→calling）。
   idle: ['touch', 'qr'],
-  selectingPurpose: ['touch', 'voice', 'text'],
+  // 宣言は「実際に受け付けられる手段」に限る。実装に無い手段を宣言すると、腕が塞がっている・
+  // 視覚に頼れない来訪者に対する主張が事実でなくなる（差分 C' / ADR 0007 の独立レビューで判明）。
+  // 用件選択はカードのみ（PurposeView）。音声・文字の経路が無い。
+  selectingPurpose: ['touch'],
+  // 相手選択だけが音声の実結線点（VoiceSessionLayer → onResolved → SELECT_TARGET）。検索欄で文字も可。
   selectingTarget: ['touch', 'voice', 'text'],
-  inputVisitorInfo: ['touch', 'voice', 'text'],
+  // 氏名フォームで文字は可。音声で SUBMIT_VISITOR_INFO を生む経路は無い。
+  inputVisitorInfo: ['touch', 'text'],
   // 発信・個人情報確定は必ずタッチ確認のみ（音声だけで発信されない）。
   confirming: ['touch'],
   calling: ['touch'],
