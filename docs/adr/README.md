@@ -12,6 +12,7 @@
 | [0003](0003-realtime-runtime-ec2-phase0.md) | リアルタイム会話 EC2 基盤 Phase 0（lifecycle・endpoint・fallback・instance type） | 承認（設計 + skeleton のみ。**deploy 未実施**） | #366 |
 | [0004](0004-kiosk-experience-migration-flag.md) | 新旧 KioskFlow の切替方式（移行フラグの粒度・解決順・自動フォールバック・撤去条件） | 承認（構成取得の切替まで実装済み） | #422 |
 | [0005](0005-demo-publication-and-experience-version.md) | デモ公開モデルと受付体験版モデルの統合方針（一本化の向き・デモ固有関心の置き場・移行順） | **提案**（移行の実施はユーザー承認待ち） | #363 / #420 |
+| [0006](0006-experience-state-model-gaps.md) | 体験設計の状態モデルに残った 2 つの未定義（`privacy_blocked` の定義・QR スキャン＝第 3 の入力手段） | 承認（正本・対応表・実装へ反映済み。挙動は不変） | #422 / #98 |
 
 ## 書くとき
 

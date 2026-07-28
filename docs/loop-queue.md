@@ -255,6 +255,7 @@
 | 47 | 2026-07-28 | **`--full` ゲートを実際に通した**（10 周回 `--pr` だけで回していた手順違反の解消）。postcss の脆弱性（高・既存 override が修正版を塞いでいた）と lighthouse の Chrome 未検出を是正 | `scripts/quality-gate.sh` |
 | 48 | 2026-07-28 | dev 依存の脆弱性 3 件を semver 互換で解消（js-yaml / body-parser / brace-expansion の一部）。**brace-expansion の残りは修正版が存在せず、5.x へ寄せると eslint が壊れることを実測**して断念・記録 | `package-lock.json` |
 | 49 | 2026-07-28 | セッション・ハンドオフを作成（第 37〜48 wave）。**境界内の作業がほぼ尽きたこと**と、判断待ち 7 件が #418 Wave 4 を塞いでいることを明示 | `docs/handoff-2026-07-28.md` |
+| 50 | 2026-07-28 | **ADR 0006**: 体験設計の未定義 2 件を決定（`privacy_blocked` の定義 / QR スキャン＝第 3 の入力手段）。正本・対応表・実装へ反映。挙動は不変 | `docs/adr/0006-experience-state-model-gaps.md` |
 
 
 **次に着手する候補（2026-07-27 更新・第 37 wave 消化後）**: **差分 B は決着済み**
