@@ -91,7 +91,13 @@ export const VOICE_MODE_TO_EXPERIENCE: Record<VoiceKioskMode, AnyExperienceState
   inactive: null,
   idle: 'idle',
   listening: 'listening',
-  readback: 'confirming',
+  // **発信直前の `confirming` ではない**（ADR 0007）。readback が確認するのは「聞き取った内容」で、
+  // README の UX pattern「Recognition confirmation」に当たる＝ `recognizing` の内側の 1 局面。
+  // 音声で相手を決めても必ず inputVisitorInfo → confirming を通るため、発信前の確認ゲートは
+  // 受付状態機械に 1 つしかない。**保証の実体は `VoiceSessionHooks` が `onResolved` しか
+  // 公開していないこと**（`lib/voice-session/exposure-guard.test.ts` が固定）。
+  // `REQUIRES_CONFIRMATION_ACTIONS` はチャット経路と宣言値にしか使われておらず、音声は止めない。
+  readback: 'recognizing',
   // 読み上げ中・ダッキング中は体験状態を変えない（同じ状態の中の演出）。
   speaking: null,
   ducked: null,
@@ -278,7 +284,9 @@ export const JOURNEYS: readonly JourneyDefinition[] = [
   {
     id: 'J-OR-04',
     title: '音声認識失敗から復帰',
-    steps: ['listening', 'speech_unclear', 'confirming', 'touching'],
+    // 発信直前の `confirming` には到達しない Journey。復唱確認は `recognizing` の内側なので
+    // ここには現れない（ADR 0007 で `readback` の写し先を訂正した際に合わせた）。
+    steps: ['listening', 'speech_unclear', 'recognizing', 'touching'],
     // 文脈保持は実装済みだが、「復帰」そのものは状態になっていない。
     implementation: 'partial',
   },

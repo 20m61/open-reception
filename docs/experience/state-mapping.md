@@ -50,7 +50,7 @@ README: `idle -> visitor_detected -> greeting -> choosing_method -> listening|to
 | `touching` | 明示状態なし（既定） | 状態が無い（音声との対称性が崩れている） |
 | `scanning` | `CheckinState.scanning` | **対応**（ADR 0006 で体験設計側に追加）。加速手段であり、失敗時は必ずタッチ経路へ戻せること |
 | `recognizing` | `voiceListeningStage() === 'speech'`（非空 interim 到着） | **対応**（別系統・第 37 wave に訂正）。`'idle'`（話しかけ待ち）と 2 段階に分かれている |
-| `confirming` | タッチ = `ReceptionState.confirming` / 音声 = `VoiceKioskMode.readback` | **2 系統に分かれている**。同じ「確認」が別状態 |
+| `confirming` | `ReceptionState.confirming` のみ（**音声も必ずここを通る**） | **対応**（ADR 0007 で訂正）。`VoiceKioskMode.readback` は「聞き取った内容」の確認で別物＝ `recognizing` の内側 |
 | `contacting` | `ReceptionState.calling`（段階は `CallingStage` で派生） | 対応 |
 | `connected` | `ReceptionState.connected` | 対応 |
 | `completed` | `ReceptionState.completed` | 対応 |
@@ -59,7 +59,7 @@ README: `idle -> visitor_detected -> greeting -> choosing_method -> listening|to
 
 | README の例外状態 | 実装での実体 | 判定 |
 | --- | --- | --- |
-| `speech_unclear` | `VoiceKioskMode.readback`（`readbackReason`）→ `fallback` | 対応（別系統） |
+| `speech_unclear` | `VoiceKioskMode.fallback`（`readbackReason` は低信頼の理由として readback に付く） | 対応（別系統）。**readback 自体は `recognizing` の内側**（ADR 0007） |
 | `no_match` | 明示状態なし。検索 0 件は画面内分岐（`search-no-results-guidance` + チャット導線） | **状態は無いが計測はできる**。0 件率は `searchZeroHitCount` → KPI 集計 → 管理画面まで通っている（第 35 wave）。状態化は**しない** |
 | `person_unavailable` | `ReceptionState.timeout` | **対応**（名前が違う） |
 | `contact_failed` | `ReceptionState.failed` | **対応**（名前が違う） |
@@ -130,10 +130,27 @@ ADR 0006 で定義が決まり、`CheckinState.cameraError` へ対応が付い�
 > 走査し、採録も除外もされていない語彙があればテストが落ちる。第 34 wave の誤りは
 > 「表に載せなかった語彙」で起きたため、表の内側の網羅テストだけでは検出できなかった。
 
-**C. 系統が分かれていて等価性が担保されていない（設計判断が要る）**:
-`confirming` がタッチ（`ReceptionState.confirming`）と音声（`VoiceKioskMode.readback`）で
-別系統。README の原則 2「音声とタッチで同じ目的を達成できる」は**実装では 2 つの状態機械の
-協調**で成立しており、機械的に保証されていない。ExperienceShell の中核はここ。
+**C. 系統が分かれていて等価性が担保されていない**: ~~`confirming` がタッチと音声で別系統~~
+→ **ADR 0007 で却下（前提が誤り）**。
+
+`readback` と `confirming` は**別の対象を別の時点で**確認している。前者は「聞き取った内容」
+（相手を決める前・STT の解釈が合っているか）、後者は「受付の内容全体」（発信直前・
+取り返しのつかない操作の手前）。
+
+決定的なのは配線で、**音声が受付状態機械へ入る経路は `onResolved` の 1 本だけ**、しかも
+dispatch するのは `SELECT_TARGET` のみ。その後は必ずタッチ経路と同じ
+`inputVisitorInfo → confirming → calling` を通る。**発信前の確認ゲートは 1 つで、音声は
+それを迂回できない**（保証の実体は `VoiceSessionHooks` の露出面。
+`lib/voice-session/exposure-guard.test.ts` が固定）。
+
+**C'. 音声だけでは受付を完遂できない（差分 C の見出しは別の理由で生きている）**
+
+`SCREEN_TO_INPUT_MODES` は `selectingPurpose` / `selectingTarget` / `inputVisitorInfo` の
+3 状態で `voice` を allowed input と**宣言**しているが、実際に音声経路が在るのは
+`selectingTarget` だけ。目的選択・氏名入力・発信確認はタッチが要る。
+**宣言と実装が 3 分の 2 で食い違っている**（ADR 0007 の訂正節）。腕が塞がっている来訪者・
+視覚に頼れない来訪者・騒音下では、原則 2 が実際には満たされていない。**要ユーザー確認**
+（音声入力を増やすのは Journey の意味に触れる）。
 
 **D. 別の状態機械（統合するか否かが仕様判断）**: J-OR-03 QR 受付（`CheckinFlow`）。
 
@@ -148,9 +165,9 @@ ADR 0006 で定義が決まり、`CheckinState.cameraError` へ対応が付い�
 2. ~~B の追加（観測できない状態を状態にする）~~ → **第 35〜37 wave で決着**（§5 B の表）。
    **状態は 1 つも増やさずに済んだ**。増やしたのは計測の配線（第 35）と失敗理由の説明
    （第 36）だけで、Journey / 遷移表の意味は変えていない。
-3. C の統合（音声とタッチの確認を 1 つの状態機械へ）= **#422 ExperienceShell の中核。
-   Journey / state / fallback の意味を変えるため要ユーザー確認**
-   （`.claude/rules/opus5-autonomous-loop.md` 停止境界）。
+3. ~~C の統合（音声とタッチの確認を 1 つの状態機械へ）~~ → **ADR 0007 で却下**。前提が誤りで、
+   等価性は既に構造で保証されていた。**「ExperienceShell の中核」はここではない**ので、
+   #422 increment 5 は画面構造の再編（ステッパー最小化・常設要素の整理）へ範囲を引き直すこと。
 4. D の判断（QR 受付を同一タイムラインへ載せるか）= 同上。**対応表に載せることは第 37 wave に
    済ませた**ので、残るのは状態機械を 1 本にするかどうかの仕様判断だけ。
 5. ~~README 側で埋めるべき定義が 2 つ~~ → **ADR 0006 で決着**。`privacy_blocked` は

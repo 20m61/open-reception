@@ -144,6 +144,14 @@ describe('未実装の体験状態', () => {
     }
   });
 
+  it('音声の復唱確認は recognizing の内側（ADR 0007）', () => {
+    // readback は「聞き取った内容」の確認で、発信直前の confirming とは別物。
+    // 音声で相手を決めても必ず inputVisitorInfo → confirming を通るので、確認ゲートは 1 つしかない。
+    expect(VOICE_MODE_TO_EXPERIENCE.readback).toBe('recognizing');
+    // 発信直前の確認は受付状態機械が唯一の担い手。
+    expect(RECEPTION_STATE_TO_EXPERIENCE.confirming).toBe('confirming');
+  });
+
   it('QR スキャンと権限拒否は体験状態に写る（ADR 0006）', () => {
     // ADR 0006 で正本側の未定義 2 つを決めた結果、写す先ができた。
     // scanning = 第 3 の入力手段（加速手段。等価性の要件は音声とタッチのまま）。
