@@ -4,9 +4,15 @@
 マージは直列**（理由は workflow の「並列オーケストレーション」節）。
 
 > **本書の分類は仮説であって事実ではない。** 各周回の冒頭で必ず `/issue-ac-mapping`
-> （project skill）を通し、AC を実コードへマッピングしてから着手する。過去 3 回、
+> （project skill）を通し、AC を実コードへマッピングしてから着手する。過去 **4 回**、
 > 本書の「未実装」「外部待ち」分類が stale で、既に main に在るものを作り直しかけた。
 > 分類が実態と違ったら、その周回で本書を直す。
+>
+> **4 回目（第 41 wave）**: #367 / #369〜#372 / #374 / #375 の 4 行が「未着手」のまま
+> だったが、いずれも PR #401〜#404 / #407 / #414 で実装済みだった。加えて #327 は
+> クローズ済みなのに「次に着手」の第一候補として残っていた。
+> **stale の直接原因は、分類を書いた周回と実装した周回が別で、実装側が表を直さないこと。**
+> 消化したら必ずその周回で該当行を直す（下の「消化した wave」表に足すだけでは不十分）。
 
 ## 現在地（2026-07-27 更新・第 36 wave 消化後）
 
@@ -76,17 +82,23 @@
   AC「Vonage 以外の Provider 追加時に受付ドメインを変更しない」は設計上ほぼ達成済み。
   残差分は `RoutingStep.nextOn` の結果別遷移と Orchestrator に絞れる。
 - **#375（QR 招待）も部分充足。** 期限/使用済み/取消の区別（`CheckinFailureReason`）と
-  「QR に PII を含めない」は既に充足。残るのは token の hash 化と 3-ref 分離のみ。
+  「QR に PII を含めない」は既に充足。~~残るのは token の hash 化と 3-ref 分離のみ~~
+  → **hash 化は第 13 wave で完了。残るのは 3-ref 分離だけ**（第 41 wave 確認）。
 - **#362 は AC 違反が現物として存在する。** `KioskFlow.tsx:1055` で
   `usePresenceCamera(presenceActive, startReception)` が検知→`dispatch({type:'START'})` に
   直結している。バグ相当なので配線分離 + 回帰テストで消化できる。
-- **#369〜#372 は完全 greenfield。** `src/lib/voice/` は TTS *設定ストア*であって
-  音声パイプラインではない。既存資産と誤認しないこと。
+- ~~**#369〜#372 は完全 greenfield。**~~ → **第 41 wave に撤回**（PR #401〜#404 で実装済み。
+  本物のパイプラインは `src/domain/voice-*` と `src/lib/voice-*` に在る）。
 - **#367 の「#366 依存」は過剰記述。** Increment 1（ServiceOperatingPolicy）と
   Increment 4（営業時間外 Kiosk UX）は EC2 非依存でローカル完結可能。#366 が要るのは
-  EC2 start/stop adapter のみ。
+  EC2 start/stop adapter のみ。→ **その通りで、実際に PR #407/#414 で消化済み**（第 41 wave 確認）。
 
-## オープン issue（43 件・2026-07-27 時点）
+## オープン issue（42 件・2026-07-28 時点）
+
+> **第 41 wave の棚卸し**: 本表の分類を実コードへ突き合わせ直したところ、**4 行が実装済みを
+> 「未着手」と書いていた**（#367 / #369〜#372 / #374 / #375）。件数も 43 → 42（#327 クローズ）。
+> 本書冒頭が自ら警告している「分類は仮説であって事実ではない」の 4 回目の再発。
+> **着手前に `/issue-ac-mapping` を通すこと**（表を信じて作り直すのが最大の損失）。
 
 ### 新 epic 群（2026-07-19 起票）
 
@@ -99,19 +111,25 @@
 | **#364** | epic | 日本語リアルタイム会話基盤 epic（トラッキング） | — |
 | ~~#365~~ | quality/voice | **クローズ済**（PR #393）。`src/domain/voice/evaluation-*` + `tests/voice-evaluation/`。**#369〜#372 の共通イベント形式が確定** — 正解は刺激側（`nearEndStimuli[]` の `atMs ± toleranceMs`）に固定し観測とマッチング、計測不能は `null`、`strict` で欠落自体を違反に。詳細は `docs/voice-evaluation-harness.md` | 完了 2026-07-22 |
 | **#366** | infra/cdk | **未着手**: `infra/lib/stacks/` に realtime 系なし。`docs/adr/` 自体が不在 | **要ユーザー判断（固定費増）**。Phase 0 ADR のみローカル可 |
-| **#367** | admin/ops | **未着手**: `operatingHours`/`out_of_hours` は全体 0 ヒット。流用可: `domain/platform/maintenance-window.ts`・`feature-flags.ts` | ローカル可（EC2 adapter 部のみ #366 待ち） |
+| **#367** | admin/ops | **大部分実装済**（第 41 wave に訂正。旧「未着手・0 ヒット」は誤り）: `domain/operating-policy/{schedule,tz,text-format,types}.ts` + `lib/operating-policy/{call-guard,kiosk-gate,request,store}.ts` + `app/api/admin/operating-policy/` + `app/admin/operating-hours/` + `components/kiosk/OutOfHoursView.tsx`（PR #407/#414）。**残**: EC2 の start/stop/drain adapter | ローカル可（残りは #366 待ち＝費用増） |
 | **#368** | epic | 組織・接続先・ルーティング・QR 招待の再構築 epic（トラッキング） | — |
-| **#369** | voice | **未着手**: `domain/voice/types.ts` は `VoiceProvider = 'browser' \| 'none'`。AudioWorklet/WSS なし | ローカル可（実機計測は #65） |
-| **#370** | voice/stt | **未着手**: Transcribe 参照 0。接続先 `domain/staff/search.ts` は在る | ローカル可（mock 先行）/ 実 AWS は外部待ち |
-| **#371** | voice/tts | **未着手**: Polly 参照 0。`VrmAvatarViewer.tsx`・`avatar/vrm-pose.ts` は再利用可 | 同上 |
-| **#372** | voice/turn | **未着手**: VAD/turn detector なし | ローカル可 |
+| **#369** | voice | **実装済（純ロジック + 配線）**（第 41 wave に訂正。旧「未着手」は誤り）: `domain/voice-transport/`（token/lifecycle/queue/rate-limit/fallback/eval-bridge、7 module × 7 test）。`lib/voice-session/orchestrator.ts` から配線済 | ローカル可（実機計測は #65） |
+| **#370** | voice/stt | **実装済**（同上）: `domain/voice-stt/`（stabilizer/entity-resolver/fallback）+ **`lib/voice-stt/transcribe-adapter.ts`（`TranscribeStreamingSttProvider`）** + mock provider。旧「Transcribe 参照 0」は誤り | ローカル可 / 実 AWS 疎通は外部待ち |
+| **#371** | voice/tts | **実装済**（同上）: `domain/voice-tts/`（cache/queue/lifecycle/viseme/suppression/dynamic-utterances、9 module × 9 test）。Polly は `server/notification/polly-adapter.ts` に在る | ローカル可 / 実 AWS 疎通は外部待ち |
+| **#372** | voice/turn | **実装済**（同上）: `domain/voice-turn/`（vad/turn-detector/near-end-classifier/barge-in-controller/history-truncation/stt-integration）。旧「VAD/turn detector なし」は誤り | ローカル可 |
 | **#373** | domain/org | **increment 1 完了**（PR #394 = `src/domain/organization/` の型・階層検証・ディレクトリ・compat reader。additive 限定で既存 `Department`/`staff.departmentId` は無改変）。残: 永続化 repository → Directory API 配線 → 来訪者 UI → tenant 越境 E2E。follow-up は **#396** | ローカル可（継続） |
-| **#374** | domain/routing | **部分**: `call-route.ts` にチャネル抽象化・priority・管理 UI 実装済。未達は `ContactEndpoint` union・`nextOn` 遷移・Orchestrator・循環検出・notify/live_bridge 区別 | ローカル可 |
-| **#375** | domain/invitation | **部分**: token/usagePolicy/expiresAt/status・`CheckinFailureReason` 実装済。未達は **生 token 保存**（`tokenHash` 0 ヒット）と 3-ref 分離 | ローカル可（hash 化は**スキーマ破壊 → 要ユーザー確認**） |
+| **#374** | domain/routing | **実装済**（第 41 wave に訂正。旧「未達」列は stale）: `domain/routing/`（endpoint/policy/orchestrator/ledger/describe/compat/seed/provider/mock-provider、9 module × 7 test）。循環検出は `policy.ts`。**残**: 旧 `call-route` との重複解消（台帳 §5 の重複概念＝概念一本化は仕様判断） | 残りは要ユーザー確認 |
+| **#375** | domain/invitation | **部分**（第 41 wave に訂正）: token hash 化は**第 13 wave で完了済**（`domain/reservation/types.ts` の `tokenHash` + timing-safe 比較）。usagePolicy/expiresAt/status も実装済。**未達は 3-ref 分離のみ**（`issuedBy` / `receptionTarget` / `connectionTarget` は 0 ヒット。現状は `targetType` + `targetId` の 1 参照） | **ローカル可・次の実装候補**（MVP 制約で 3 者が同一なので additive・振る舞い不変。先例 = `reservation/migration.ts`） |
 | **#376** | spike/vonage | **部分**: `vonage-adapter.ts`・`vonage-jwt.ts`・`docs/vonage-call-design.md` 在り。実測部未着手 | ADR はローカル可 / 実測は**外部待ち**→ #65 |
+| **#399** | avatar | **本書に未登録だった**（第 41 wave に追加）。`public/avatar/` は README + provenance のみで実 VRM 資産なし。実機 UAT とライセンス条件の判定を含む | **外部待ち**→ #65 |
+| **#405** | platform | **本書のオープン表に行が無く、完了アーカイブ行にだけ現れていた**（第 41 wave に追加）。Inc1 実装済: `domain/provider-config/`（config/secret/types/secrets-manager-store + server-only 静的検証）+ `lib/platform/tenant-secret-store.ts`。**残**: Inc2 の保存先判断（Secrets Manager / KMS+DynamoDB）＝ secret 方針 + コスト | **要ユーザー確認**（issue 本文も明記） |
 | ~~#377~~ | platform | **クローズ済**（PR #378: developer 専用 `GET /api/platform/costs`・タグ絞り込み・実績/予測・追加依存なしの SigV4 自作署名。レビューで署名を独立実装と照合し一致確認）。follow-up は **#379** | 完了 2026-07-19 |
 | ~~#379~~ | platform | **クローズ済**（第 2 wave: 予測失敗理由の伝播・TTL キャッシュ・回帰テスト） | 完了 2026-07-22 |
 | ~~#396~~ | domain/org | **クローズ済**（第 2 wave: 防御的回収の削除・scope/publicIds 必須化・`validateOrganizationMembership` 新設） | 完了 2026-07-22 |
+
+> **#369〜#372 は PR #401〜#404（第 3〜6 wave）で実装済み**だった。「`src/lib/voice/` を音声
+> パイプラインと誤認しない」という旧・落とし穴は、**本物のパイプラインが `src/domain/voice-*` と
+> `src/lib/voice-*` に在る**現在では逆向きの誤誘導になるので撤去した。
 
 ### 統合再設計プログラム（2026-07-23〜26 起票 / 2026-07-27 登録・AC マッピング済）
 
@@ -227,6 +245,7 @@
 | 38 | 2026-07-27 | #327 follow-up: **常設の逃げ道バーが全画面で日本語固定**だった件を是正（English を選んだ来訪者が受付中ずっと「戻る/最初に戻る」を見ていた）。allowlist のドリフト 2 件も解消 | `scripts/check-cjk-literals.ts` |
 | 39 | 2026-07-28 | **カスタム受付フローで逃げ道が消え、行き止まりになっていた**件を是正（#455 レビューが発見）。逃げ道バーを画面分岐の外へ出し、入れ忘れの余地を構造から無くした | `docs/loop-queue.md` |
 | 40 | 2026-07-28 | #327 follow-up: **通信断バナー**（失敗時フォールバックの入口）と端末利用不可・カスタムフロー主 CTA を多言語化。`?heartbeatMs=` で通信断表示を E2E から検証できるようにした | `docs/loop-queue.md` |
+| 41 | 2026-07-28 | **キューの棚卸し**（文書のみ）。実装済みを「未着手」と書いていた 4 行（#367 / #369〜#372 / #374 / #375）を実コードで訂正。未登録だった #399 / #405 を追加。件数 43 → 42 | `docs/loop-queue.md` |
 
 
 **次に着手する候補（2026-07-27 更新・第 37 wave 消化後）**: **差分 B は決着済み**
