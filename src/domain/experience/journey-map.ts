@@ -38,6 +38,9 @@ export const EXPERIENCE_STATES = [
   'choosing_method',
   'listening',
   'touching',
+  // QR スキャン（ADR 0006）。**加速手段**であって、音声とタッチの等価性の要件には含めない
+  // （QR は予約済みの来訪者しか持たず、無くても通常受付で完遂できる）。
+  'scanning',
   'recognizing',
   'confirming',
   'contacting',
@@ -159,9 +162,8 @@ export const CHECKIN_STATE_TO_EXPERIENCE: Record<CheckinState, AnyExperienceStat
   selectingMethod: 'choosing_method',
   // 機器の準備。来訪者から見た局面が変わるわけではない。
   checkingCamera: null,
-  // QR をかざす局面。README のタイムラインは音声とタッチしか持たず、**第 3 の入力手段が
-  // 体験設計側に無い**（写す先が無いので null。README の不足であって実装の不足ではない）。
-  scanning: null,
+  // QR をかざす局面。第 3 の入力手段として ADR 0006 で体験設計側に定義した。
+  scanning: 'scanning',
   // トークン照合中。README の recognizing は音声認識の局面を指すので当てない。
   resolving: null,
   confirming: 'confirming',
@@ -170,9 +172,10 @@ export const CHECKIN_STATE_TO_EXPERIENCE: Record<CheckinState, AnyExperienceStat
   cancelled: null,
   // 通常受付フロー（別の状態機械）へ引き継ぐ局面。有人支援ではない。
   manualFallback: null,
-  // カメラ拒否。`privacy_blocked` を「プライバシー理由で先へ進めない」と読むならここが該当するが、
-  // README に定義文が無いため**決めない**（`UNIMPLEMENTED_EXPERIENCE_STATES` の注記参照）。
-  cameraError: null,
+  // カメラ拒否。ADR 0006 で `privacy_blocked` を「プライバシーに関わる権限を許可しなかったため
+  // **その入力手段では**続行できない状態」と定義した。受付自体は失敗しておらず、`RETRY` で
+  // 方法選択へ、`CHOOSE_MANUAL` で通常受付へ戻れる（行き止まりにしない）。
+  cameraError: 'privacy_blocked',
   // QR が読めない・不正。README の例外語彙に対応が無い（no_match は担当者検索 0 件を指す）。
   scanError: null,
   expiredError: null,
@@ -238,11 +241,6 @@ export const UNIMPLEMENTED_EXPERIENCE_STATES: readonly AnyExperienceState[] = [
   // 検索 0 件は画面内の分岐で、状態ではない。ただし 0 件率の計測は第 35 wave で
   // サーバまで通っており、**指標のためには状態化を要さない**。
   'no_match',
-  // **README に定義文が無い**（例外状態名の列挙のみ）。「PII 表示の抑止」と読むなら常時表示の
-  // privacy notice で担保済みで状態は不要、「プライバシー理由で先へ進めない」と読むなら
-  // `CheckinState.cameraError` が既に該当する。**解釈を勝手に決めず、README 側の定義を
-  // 待つ**（体験設計の意味を決める判断＝停止境界）。
-  'privacy_blocked',
 ];
 
 export type JourneyId = 'J-OR-01' | 'J-OR-02' | 'J-OR-03' | 'J-OR-04' | 'J-OR-05';

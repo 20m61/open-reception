@@ -62,11 +62,27 @@
 
 ## Interaction state model
 
-`idle -> visitor_detected -> greeting -> choosing_method -> listening|touching -> recognizing -> confirming -> contacting -> connected -> completed`
+`idle -> visitor_detected -> greeting -> choosing_method -> listening|touching|scanning -> recognizing -> confirming -> contacting -> connected -> completed`
+
+入力手段は 3 つある（`listening` = 音声、`touching` = タッチ、`scanning` = QR 読み取り）。
+ただし**原則 2 の等価性が要求するのは音声とタッチの 2 つだけ**で、`scanning` は加速手段。
+QR は予約済みの来訪者しか持たず、無くても通常受付で完遂できる。したがって
+「**QR でしかできないこと**」を作ってはならず、QR 経路の失敗は必ずタッチ経路へ戻せること
+（詳細と根拠は `docs/adr/0006-experience-state-model-gaps.md`）。
 
 例外状態:
 
 `speech_unclear | no_match | person_unavailable | contact_failed | network_degraded | privacy_blocked | human_assistance`
+
+| 例外状態 | 定義 |
+| --- | --- |
+| `speech_unclear` | 発話を解釈できなかった。**来訪者の落ち度として表現しない**。復唱確認かタッチへ倒す |
+| `no_match` | 指定された相手が見つからない（担当者検索 0 件）。部署一覧・相談導線へ逃がす |
+| `person_unavailable` | 相手は特定できたが応答が無い。再試行・代表窓口・伝言のいずれかを出す |
+| `contact_failed` | 呼び出しを完了できなかった（サーバ側の失敗）。代替導線を主 CTA にする |
+| `network_degraded` | 端末とサーバの疎通が不安定。**復旧待ちであることを伝える**。通信断で失敗した呼び出しは代替導線を約束しない（果たせないため） |
+| `privacy_blocked` | プライバシーに関わる権限（カメラ・マイク）を許可されず、**その入力手段では**続行できない。受付自体は失敗していない。必ず別手段へ文脈を保って戻す。権限の再要求で追い詰めない |
+| `human_assistance` | 有人対応へ引き継いだ。誰に何を引き継いだかを来訪者に見せる |
 
 各状態は次を持つ。
 - visible cue / spoken cue

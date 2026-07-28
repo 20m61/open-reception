@@ -144,6 +144,14 @@ describe('未実装の体験状態', () => {
     }
   });
 
+  it('QR スキャンと権限拒否は体験状態に写る（ADR 0006）', () => {
+    // ADR 0006 で正本側の未定義 2 つを決めた結果、写す先ができた。
+    // scanning = 第 3 の入力手段（加速手段。等価性の要件は音声とタッチのまま）。
+    // cameraError = privacy_blocked（プライバシー権限の拒否で、その手段では続行できない）。
+    expect(CHECKIN_STATE_TO_EXPERIENCE.scanning).toBe('scanning');
+    expect(CHECKIN_STATE_TO_EXPERIENCE.cameraError).toBe('privacy_blocked');
+  });
+
   it('来訪検知・認識中・受付方法の選択は実装済み（第 34 wave の分析誤りの再発防止）', () => {
     // 第 34 wave は 3 つとも「状態語彙に無い」としたが、いずれも実在した。
     // **どの表の何に在るか**まで固定する（union で見ると別表へ書き換えても通ってしまう）。

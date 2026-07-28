@@ -37,7 +37,8 @@
 
 ## 1. 正常系タイムラインの対応
 
-README: `idle -> visitor_detected -> greeting -> choosing_method -> listening|touching -> recognizing -> confirming -> contacting -> connected -> completed`
+README: `idle -> visitor_detected -> greeting -> choosing_method -> listening|touching|scanning -> recognizing -> confirming -> contacting -> connected -> completed`
+（`scanning` は ADR 0006 で追加した第 3 の入力手段。**等価性の要件は音声とタッチのまま**。）
 
 | README の状態 | 実装での実体 | 判定 |
 | --- | --- | --- |
@@ -47,6 +48,7 @@ README: `idle -> visitor_detected -> greeting -> choosing_method -> listening|to
 | `choosing_method` | QR 受付は `CheckinState.selectingMethod`（`ui-contract.ts` に `chooseMethod`）。通常受付は明示状態なしで `idle` の quick actions が兼ねる | **部分**（第 37 wave に訂正）。QR 導線には在り、通常受付導線には無い |
 | `listening` | `VoiceKioskMode.listening` | 対応（**別系統**） |
 | `touching` | 明示状態なし（既定） | 状態が無い（音声との対称性が崩れている） |
+| `scanning` | `CheckinState.scanning` | **対応**（ADR 0006 で体験設計側に追加）。加速手段であり、失敗時は必ずタッチ経路へ戻せること |
 | `recognizing` | `voiceListeningStage() === 'speech'`（非空 interim 到着） | **対応**（別系統・第 37 wave に訂正）。`'idle'`（話しかけ待ち）と 2 段階に分かれている |
 | `confirming` | タッチ = `ReceptionState.confirming` / 音声 = `VoiceKioskMode.readback` | **2 系統に分かれている**。同じ「確認」が別状態 |
 | `contacting` | `ReceptionState.calling`（段階は `CallingStage` で派生） | 対応 |
@@ -62,7 +64,7 @@ README: `idle -> visitor_detected -> greeting -> choosing_method -> listening|to
 | `person_unavailable` | `ReceptionState.timeout` | **対応**（名前が違う） |
 | `contact_failed` | `ReceptionState.failed` | **対応**（名前が違う） |
 | `network_degraded` | `KioskFlow` のローカル state `online=false` + `KioskMode.degraded`。呼び出し失敗時は `failed` + `failureReason='network'` で**説明を分ける**（第 36 wave） | **部分**。状態としては `failed` に含めたまま、同じ状態の中の説明で区別する（区別のために遷移表を増やすと逃げ道・timeout・戻るの組み合わせが倍になるため） |
-| `privacy_blocked` | 解釈次第。「PII 表示の抑止」なら `PrivacyNotice` の常時表示で担保（状態なし）、「プライバシー理由で先へ進めない」なら `CheckinState.cameraError` が該当 | **README に定義文が無く決められない**（第 37 wave）。解釈を勝手に決めず、README 側の定義を待つ＝**要ユーザー確認** |
+| `privacy_blocked` | `CheckinState.cameraError`（カメラ権限拒否）。`RETRY` → 方法選択 / `CHOOSE_MANUAL` → 通常受付で戻れる | **対応**（ADR 0006 で定義を確定）。「PII 表示の抑止」という読み方は却下した（全状態が `PII exposure rule` を持つので重複になる）。マイク側は実 `getUserMedia` 未配線のため未到達 |
 | `human_assistance` | `ReceptionState.fallback` | **部分**。fallback は「代替導線を出した」であって「有人支援へ引き継いだ」ではない |
 
 ## 3. Journey の対応
@@ -109,9 +111,8 @@ README の語彙を実装へ持ち込む価値は低い。**対応表（本書�
 | `recognizing` | **元から実装済み**（`voiceListeningStage === 'speech'`）。同上 | 37 |
 | `choosing_method` | **QR 導線には元から実装済み**（`CheckinState.selectingMethod`）。通常受付導線には無いが、体験は `idle` の quick actions で成立している | 37 |
 
-残る未対応は **`no_match` と `privacy_blocked` の 2 つだけ**。前者は計測が通っているため状態化
-不要、後者は **README に定義文が無く判断できない**（要ユーザー確認）。理由は
-`UNIMPLEMENTED_EXPERIENCE_STATES` の doc にも併記した。
+残る未対応は **`no_match` だけ**（計測が通っているため状態化不要）。`privacy_blocked` は
+ADR 0006 で定義が決まり、`CheckinState.cameraError` へ対応が付いた。
 
 > **第 35 wave の訂正**: ここで「Outcome metrics が測れない」と一括りにしたが、**状態が無いことと
 > 計測できないことは別**だった。`no_match` は状態こそ無いが、担当者検索の 0 件回数は
@@ -152,7 +153,7 @@ README の語彙を実装へ持ち込む価値は低い。**対応表（本書�
    （`.claude/rules/opus5-autonomous-loop.md` 停止境界）。
 4. D の判断（QR 受付を同一タイムラインへ載せるか）= 同上。**対応表に載せることは第 37 wave に
    済ませた**ので、残るのは状態機械を 1 本にするかどうかの仕様判断だけ。
-5. README 側で埋めるべき定義が 2 つ（**要ユーザー確認**）:
-   - `privacy_blocked` の定義文（「PII 表示の抑止」か「プライバシー理由で先へ進めない」か）
-   - **QR スキャンという第 3 の入力手段**。README の状態モデルは `listening|touching` しか
-     持たないため、`CheckinState.scanning` を写す先が無い（実装ではなく体験設計側の不足）。
+5. ~~README 側で埋めるべき定義が 2 つ~~ → **ADR 0006 で決着**。`privacy_blocked` は
+   「プライバシー権限を許可されず**その入力手段では**続行できない状態」、`scanning` は
+   **第 3 の入力手段**（ただし等価性の要件は音声とタッチのまま）。どちらも既に在る振る舞いに
+   名前と境界を与えただけで、遷移も画面も増えていない。
