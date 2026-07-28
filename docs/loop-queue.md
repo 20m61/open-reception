@@ -119,7 +119,7 @@
 | **#372** | voice/turn | **実装済**（同上）: `domain/voice-turn/`（vad/turn-detector/near-end-classifier/barge-in-controller/history-truncation/stt-integration）。旧「VAD/turn detector なし」は誤り | ローカル可 |
 | **#373** | domain/org | **increment 1 完了**（PR #394 = `src/domain/organization/` の型・階層検証・ディレクトリ・compat reader。additive 限定で既存 `Department`/`staff.departmentId` は無改変）。残: 永続化 repository → Directory API 配線 → 来訪者 UI → tenant 越境 E2E。follow-up は **#396** | ローカル可（継続） |
 | **#374** | domain/routing | **実装済**（第 41 wave に訂正。旧「未達」列は stale）: `domain/routing/`（endpoint/policy/orchestrator/ledger/describe/compat/seed/provider/mock-provider、9 module × 7 test）。循環検出は `policy.ts`。**残**: 旧 `call-route` との重複解消（台帳 §5 の重複概念＝概念一本化は仕様判断） | 残りは要ユーザー確認 |
-| **#375** | domain/invitation | **部分**（第 41 wave に訂正）: token hash 化は**第 13 wave で完了済**（`domain/reservation/types.ts` の `tokenHash` + timing-safe 比較）。usagePolicy/expiresAt/status も実装済。**未達は 3-ref 分離のみ**（`issuedBy` / `receptionTarget` / `connectionTarget` は 0 ヒット。現状は `targetType` + `targetId` の 1 参照） | **ローカル可・次の実装候補**（MVP 制約で 3 者が同一なので additive・振る舞い不変。先例 = `reservation/migration.ts`） |
+| **#375** | domain/invitation | **部分**: token hash 化は第 13 wave 完了。**3-ref 分離は第 42 wave で純ロジックを実装**（`domain/reservation/invitation.ts` = `InvitationIssuer` / `ReceptionTargetRef` / `ReceptionInvitation` + 移行マッピング + MVP 制約の機械判定）。**残**: 永続形・管理 API を 3 参照へ載せ替える（`targetType`/`targetId` は**管理 API の公開形**なので要ユーザー確認）・QR 確認画面への発行者表示・監査記録 | 残りは**要ユーザー確認**（公開 API） |
 | **#376** | spike/vonage | **部分**: `vonage-adapter.ts`・`vonage-jwt.ts`・`docs/vonage-call-design.md` 在り。実測部未着手 | ADR はローカル可 / 実測は**外部待ち**→ #65 |
 | **#399** | avatar | **本書に未登録だった**（第 41 wave に追加）。`public/avatar/` は README + provenance のみで実 VRM 資産なし。実機 UAT とライセンス条件の判定を含む | **外部待ち**→ #65 |
 | **#405** | platform | **本書のオープン表に行が無く、完了アーカイブ行にだけ現れていた**（第 41 wave に追加）。Inc1 実装済: `domain/provider-config/`（config/secret/types/secrets-manager-store + server-only 静的検証）+ `lib/platform/tenant-secret-store.ts`。**残**: Inc2 の保存先判断（Secrets Manager / KMS+DynamoDB）＝ secret 方針 + コスト | **要ユーザー確認**（issue 本文も明記） |
@@ -246,6 +246,7 @@
 | 39 | 2026-07-28 | **カスタム受付フローで逃げ道が消え、行き止まりになっていた**件を是正（#455 レビューが発見）。逃げ道バーを画面分岐の外へ出し、入れ忘れの余地を構造から無くした | `docs/loop-queue.md` |
 | 40 | 2026-07-28 | #327 follow-up: **通信断バナー**（失敗時フォールバックの入口）と端末利用不可・カスタムフロー主 CTA を多言語化。`?heartbeatMs=` で通信断表示を E2E から検証できるようにした | `docs/loop-queue.md` |
 | 41 | 2026-07-28 | **キューの棚卸し**（文書のみ）。実装済みを「未着手」と書いていた 4 行（#367 / #369〜#372 / #374 / #375）を実コードで訂正。未登録だった #399 / #405 を追加。件数 43 → 42 | `docs/loop-queue.md` |
+| 42 | 2026-07-28 | #375 inc1: 招待モデル（発行主体 / 受付対象 / 接続先）の分離を**純ロジックで先行**。1 参照が 3 つの問いに同時に答えている構造を解き、MVP 制約「本人へ接続」を機械判定にした | `src/domain/reservation/invitation.ts` |
 
 
 **次に着手する候補（2026-07-27 更新・第 37 wave 消化後）**: **差分 B は決着済み**
@@ -329,6 +330,13 @@ ExperienceShell の切替**（移行フラグは ADR 0004 のとおり構成取�
   > 第 28 wave は「`renderScreen` が `CustomVisitorInfoView` を参照するので分割は #327 待ち」と
   > 記録したが**誤り**だった（参照関係を確認せず仮定した）。実際には `renderScreen` の参照先は
   > 全て i18n 済みで、依存は無かった。**「依存がある」と書くときは参照を実際に引くこと。**
+- **生 CJK の件数を「翻訳漏れ」の指標にしない**（第 42 wave）。訳し終えた module にも ja の
+  訳文は残るので、件数は減らない。`avatar/guidance.ts` の 36 箇所は **5 ロケール × 全 9
+  AvatarState を完備した上での ja + やさしい日本語の原稿**で、漏れではなかった
+  （第 40 wave は件数だけを見て「来訪者向けの最大の翻訳漏れ」と書いた＝誤り）。
+  **判定は「その module が `locale` を受け取っているか」で行う**。受け取っていなければ
+  選んだ言語に関わらず日本語が出る＝実際の漏れ。`grep -c 'locale\|makeT\|Locale' <file>` が
+  0 のものを探すこと。
 - **「実装に無い」と書く前に、その語を実際に grep する**（第 37 wave。第 28 wave と同種の誤り）。
   第 34 wave の差分表は実装の状態語彙を `ReceptionState` / `KioskMode` / `VoiceKioskMode` の
   3 系統と仮定したため、`visitor_detected` / `recognizing` / `choosing_method` を「状態語彙に
