@@ -1154,6 +1154,7 @@ export function KioskFlow({ operatingStatus, sttAdapterFactory, voiceSession, qr
           >
             <KioskChatDrawer
               screenState={data.state}
+              locale={locale}
               available={deriveChatAvailability(data.state) === 'available'}
               // 担当者検索 0 件時の「チャットで相談する」ボタンから開く合図 (issue #322)。
               openSignal={chatOpenSignal}

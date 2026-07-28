@@ -4,9 +4,9 @@ import {
   buildGreetingMessage,
   buildTurnResult,
   clearOnComplete,
-  DEFAULT_FAQ,
+  defaultFaq,
   runChatTurn,
-  STAFF_QUICK_REPLY,
+  staffQuickReply,
   suggestionToQuickReply,
   type QuickReply,
 } from './chat-logic';
@@ -87,7 +87,7 @@ describe('buildTurnResult', () => {
     const kinds = result.quickReplies.map((q) => q.kind);
     expect(kinds).toContain('action');
     expect(kinds).not.toContain('confirm-redirect');
-    expect(result.quickReplies.at(-1)).toEqual(STAFF_QUICK_REPLY);
+    expect(result.quickReplies.at(-1)).toEqual(staffQuickReply());
   });
 
   it('現状態で到達可能な重要操作は confirm-redirect（タッチ確認誘導）に降格する', () => {
@@ -102,7 +102,7 @@ describe('buildTurnResult', () => {
     expect(result.isFallback).toBe(false);
     const kinds = result.quickReplies.map((q) => q.kind);
     expect(kinds).toContain('confirm-redirect');
-    expect(result.quickReplies.at(-1)).toEqual(STAFF_QUICK_REPLY);
+    expect(result.quickReplies.at(-1)).toEqual(staffQuickReply());
   });
 
   it('採用候補が 0 でも必ずタッチ可能な候補（スタッフ誘導）が 1 件以上残る', () => {
@@ -112,7 +112,7 @@ describe('buildTurnResult', () => {
     };
     const result = buildTurnResult('idle', response);
     expect(result.quickReplies.length).toBeGreaterThanOrEqual(1);
-    expect(result.quickReplies).toContainEqual(STAFF_QUICK_REPLY);
+    expect(result.quickReplies).toContainEqual(staffQuickReply());
   });
 
   it('response が null なら定型フォールバックへ倒す', () => {
@@ -148,8 +148,8 @@ describe('buildFallbackTurn', () => {
   it('FAQ とスタッフ誘導を候補に並べる', () => {
     const result = buildFallbackTurn();
     expect(result.isFallback).toBe(true);
-    expect(result.quickReplies.length).toBe(DEFAULT_FAQ.length + 1);
-    expect(result.quickReplies.at(-1)).toEqual(STAFF_QUICK_REPLY);
+    expect(result.quickReplies.length).toBe(defaultFaq().length + 1);
+    expect(result.quickReplies.at(-1)).toEqual(staffQuickReply());
   });
 });
 
@@ -202,7 +202,7 @@ describe('runChatTurn', () => {
     });
     const result = await runChatTurn(adapter, 'selectingTarget', 'なにか不明な入力');
     // 既定応答は suggestions 空 → スタッフ誘導が必ず付く。
-    expect(result.quickReplies).toContainEqual(STAFF_QUICK_REPLY);
+    expect(result.quickReplies).toContainEqual(staffQuickReply());
   });
 });
 

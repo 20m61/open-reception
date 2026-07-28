@@ -115,6 +115,25 @@ export type MessageKey =
   // カスタム受付フロー (#100) の画面。
   | 'customFlow.noFlows'
   | 'customFlow.selectPlaceholder'
+  // Chat-assisted ドロワー (#122/#124)。担当者検索 0 件時に開くので、来訪者が困っている時に出る。
+  | 'chat.fabLabel'
+  | 'chat.panelLabel'
+  | 'chat.title'
+  | 'chat.repliesLabel'
+  | 'chat.confirmRedirectHint'
+  | 'chat.inputPlaceholder'
+  | 'chat.inputLabel'
+  | 'chat.send'
+  | 'chat.staffHandoff'
+  | 'chat.greeting'
+  | 'chat.fallbackReply'
+  | 'chat.faq.qrForgot.q'
+  | 'chat.faq.qrForgot.a'
+  | 'chat.faq.departmentOnly.q'
+  | 'chat.faq.departmentOnly.a'
+  | 'chat.faq.purposeUnknown.q'
+  | 'chat.faq.purposeUnknown.a'
+  | 'chat.unrecognized'
   | 'reception.fallbackBody'
   | 'reception.toDesk'
   | 'reception.cancelled'
@@ -380,6 +399,24 @@ const ja: DefaultDictionary = {
   'kiosk.call.fallback': '通話を開始できませんでした。画面の案内に沿ってお進みください。',
   'customFlow.noFlows': '受付フローが設定されていません。',
   'customFlow.selectPlaceholder': '選択してください',
+  'chat.fabLabel': 'お困りですか？',
+  'chat.panelLabel': '受付のお手伝いチャット',
+  'chat.title': 'お手伝い',
+  'chat.repliesLabel': '次の操作',
+  'chat.confirmRedirectHint': '（確認画面で操作します）',
+  'chat.inputPlaceholder': '例: 山田さんに会いに来ました',
+  'chat.inputLabel': 'ご用件を入力',
+  'chat.send': '送信',
+  'chat.staffHandoff': 'スタッフに繋ぐ',
+  'chat.greeting': 'お困りですか？ ご用件を入力するか、下のボタンからお選びください。',
+  'chat.fallbackReply': 'ただ今うまくお答えできません。よくあるご質問か、スタッフ対応からお選びください。',
+  'chat.faq.qrForgot.q': 'QRコードを忘れた',
+  'chat.faq.qrForgot.a': 'QRコードが無くても受付できます。画面の案内から担当者をお選びください。',
+  'chat.faq.departmentOnly.q': '部署名しかわからない',
+  'chat.faq.departmentOnly.a': '部署からお探しいただけます。画面で部署を選び、担当者を選択してください。',
+  'chat.faq.purposeUnknown.q': '予約種別がわからない',
+  'chat.faq.purposeUnknown.a': 'ご用件（面接・配送・打ち合わせ等）からお選びいただけます。お困りの場合はスタッフにお繋ぎします。',
+  'chat.unrecognized': 'うまく聞き取れませんでした。下の項目からお選びください。',
   'reception.fallbackBody': '代表窓口にお繋ぎします。受付スタッフが対応いたしますので、しばらくお待ちください。',
   'reception.toDesk': '受付窓口へ',
   'reception.cancelled': '受付をキャンセルしました',
@@ -627,6 +664,24 @@ const en: LocaleDictionary = {
   'kiosk.call.fallback': 'The call could not be started. Please follow the on-screen guidance.',
   'customFlow.noFlows': 'No reception flow has been configured.',
   'customFlow.selectPlaceholder': 'Please select',
+  'chat.fabLabel': 'Need help?',
+  'chat.panelLabel': 'Reception help chat',
+  'chat.title': 'Help',
+  'chat.repliesLabel': 'Next steps',
+  'chat.confirmRedirectHint': '(you will confirm on the next screen)',
+  'chat.inputPlaceholder': 'e.g. I am here to see Ms. Yamada',
+  'chat.inputLabel': 'Describe your visit',
+  'chat.send': 'Send',
+  'chat.staffHandoff': 'Connect me to staff',
+  'chat.greeting': 'Need help? Describe your visit, or choose one of the buttons below.',
+  'chat.fallbackReply': 'We could not answer that just now. Please pick a common question, or ask for staff.',
+  'chat.faq.qrForgot.q': 'I forgot my QR code',
+  'chat.faq.qrForgot.a': 'You can check in without a QR code. Please choose the person you are visiting from the on-screen guidance.',
+  'chat.faq.departmentOnly.q': 'I only know the department',
+  'chat.faq.departmentOnly.a': 'You can search by department. Choose the department on screen, then choose the person.',
+  'chat.faq.purposeUnknown.q': 'I am not sure of the visit type',
+  'chat.faq.purposeUnknown.a': 'You can choose by purpose (interview, delivery, meeting and so on). If you are unsure, we will connect you to staff.',
+  'chat.unrecognized': 'We did not quite catch that. Please choose from the options below.',
   'reception.fallbackBody': "We'll connect you to the main desk. A staff member will assist you shortly.",
   'reception.toDesk': 'Go to the main desk',
   'reception.cancelled': 'Reception cancelled',
@@ -874,6 +929,24 @@ const ko: LocaleDictionary = {
   'kiosk.call.fallback': '통화를 시작할 수 없었습니다. 화면 안내에 따라 진행해 주세요.',
   'customFlow.noFlows': '접수 플로우가 설정되어 있지 않습니다.',
   'customFlow.selectPlaceholder': '선택해 주세요',
+  'chat.fabLabel': '도움이 필요하신가요?',
+  'chat.panelLabel': '접수 도움 채팅',
+  'chat.title': '도움',
+  'chat.repliesLabel': '다음 단계',
+  'chat.confirmRedirectHint': '(확인 화면에서 조작합니다)',
+  'chat.inputPlaceholder': '예: 야마다 님을 만나러 왔습니다',
+  'chat.inputLabel': '방문 목적 입력',
+  'chat.send': '보내기',
+  'chat.staffHandoff': '담당자에게 연결',
+  'chat.greeting': '도움이 필요하신가요? 방문 목적을 입력하시거나 아래 버튼에서 선택해 주세요.',
+  'chat.fallbackReply': '지금은 답변드리기 어렵습니다. 자주 묻는 질문이나 담당자 연결 중에서 선택해 주세요.',
+  'chat.faq.qrForgot.q': 'QR 코드를 잊었습니다',
+  'chat.faq.qrForgot.a': 'QR 코드가 없어도 접수할 수 있습니다. 화면 안내에서 담당자를 선택해 주세요.',
+  'chat.faq.departmentOnly.q': '부서명만 알고 있습니다',
+  'chat.faq.departmentOnly.a': '부서로 찾으실 수 있습니다. 화면에서 부서를 선택한 뒤 담당자를 선택해 주세요.',
+  'chat.faq.purposeUnknown.q': '방문 종류를 모르겠습니다',
+  'chat.faq.purposeUnknown.a': '용건(면접·배송·미팅 등)으로 선택하실 수 있습니다. 어려우시면 담당자에게 연결해 드립니다.',
+  'chat.unrecognized': '잘 알아듣지 못했습니다. 아래 항목에서 선택해 주세요.',
   'reception.fallbackBody': '대표 창구로 연결합니다. 접수 직원이 도와드리니 잠시만 기다려 주세요.',
   'reception.toDesk': '접수 창구로',
   'reception.cancelled': '접수가 취소되었습니다',
@@ -1119,6 +1192,24 @@ const zh: LocaleDictionary = {
   'kiosk.call.fallback': '无法开始通话。请按照屏幕提示继续。',
   'customFlow.noFlows': '尚未设置登记流程。',
   'customFlow.selectPlaceholder': '请选择',
+  'chat.fabLabel': '需要帮助吗？',
+  'chat.panelLabel': '登记帮助聊天',
+  'chat.title': '帮助',
+  'chat.repliesLabel': '下一步',
+  'chat.confirmRedirectHint': '（将在确认页面操作）',
+  'chat.inputPlaceholder': '例：我来拜访山田女士',
+  'chat.inputLabel': '输入来访事由',
+  'chat.send': '发送',
+  'chat.staffHandoff': '转接工作人员',
+  'chat.greeting': '需要帮助吗？请输入来访事由，或从下方按钮中选择。',
+  'chat.fallbackReply': '暂时无法回答。请从常见问题或工作人员对应中选择。',
+  'chat.faq.qrForgot.q': '忘记带二维码了',
+  'chat.faq.qrForgot.a': '没有二维码也可以登记。请按照屏幕提示选择要拜访的负责人。',
+  'chat.faq.departmentOnly.q': '只知道部门名称',
+  'chat.faq.departmentOnly.a': '可以按部门查找。请在屏幕上选择部门，然后选择负责人。',
+  'chat.faq.purposeUnknown.q': '不清楚预约类型',
+  'chat.faq.purposeUnknown.a': '可以按事由（面试、配送、洽谈等）选择。如有疑问，我们会为您转接工作人员。',
+  'chat.unrecognized': '没有听清楚。请从下面的选项中选择。',
   'reception.fallbackBody': '正在为您转接前台，工作人员将很快为您服务，请稍候。',
   'reception.toDesk': '前往前台',
   'reception.cancelled': '登记已取消',
@@ -1371,6 +1462,24 @@ const jaSimple: LocaleDictionary = {
   'kiosk.call.fallback': 'つうわを はじめられませんでした。がめんの あんないに そって すすんで ください。',
   'customFlow.noFlows': 'うけつけの ながれが せっていされて いません。',
   'customFlow.selectPlaceholder': 'えらんで ください',
+  'chat.fabLabel': 'こまって いますか？',
+  'chat.panelLabel': 'うけつけの おてつだい チャット',
+  'chat.title': 'おてつだい',
+  'chat.repliesLabel': 'つぎの そうさ',
+  'chat.confirmRedirectHint': '（かくにん がめんで そうさ します）',
+  'chat.inputPlaceholder': 'れい: 山田さんに 会いに 来ました',
+  'chat.inputLabel': 'ようけんを 入れる',
+  'chat.send': 'おくる',
+  'chat.staffHandoff': '人に つなぐ',
+  'chat.greeting': 'こまって いますか？ ようけんを 入れるか、下の ボタンから えらんで ください。',
+  'chat.fallbackReply': 'いま うまく こたえられません。よくある しつもんか、人の たいおうから えらんで ください。',
+  'chat.faq.qrForgot.q': 'QRコードを わすれた',
+  'chat.faq.qrForgot.a': 'QRコードが なくても うけつけ できます。がめんの あんないから 人を えらんで ください。',
+  'chat.faq.departmentOnly.q': 'ぶしょの 名前しか わからない',
+  'chat.faq.departmentOnly.a': 'ぶしょから さがせます。がめんで ぶしょを えらび、人を えらんで ください。',
+  'chat.faq.purposeUnknown.q': 'よやくの しゅるいが わからない',
+  'chat.faq.purposeUnknown.a': 'ようけん（めんせつ・はいそう・うちあわせ など）から えらべます。こまったら 人に つなぎます。',
+  'chat.unrecognized': 'うまく ききとれませんでした。下の こうもくから えらんで ください。',
   'reception.fallbackBody': '受付の 人が おてつだい します。少し お待ち ください',
   'reception.toDesk': '受付へ',
   'common.next': 'つぎへ',

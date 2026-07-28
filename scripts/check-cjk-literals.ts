@@ -59,12 +59,9 @@ const DEFAULT_ROOTS = [
 export const CJK_EXCEPTION_ALLOWLIST: readonly string[] = [
   // `CheckinFlow.tsx` は移行が済んで 0 件になっていたので外した（allowlist のドリフト）。
   // `quick-actions.ts` も同様（逃げ道の文言を i18n キーへ、未使用の日本語 label を削除）。
-  'src/components/kiosk/KioskChatDrawer.tsx',
   'src/components/kiosk/KioskFlow.tsx',
   'src/components/kiosk/ai-guidance/AiGuidancePanel.tsx',
   'src/components/kiosk/avatar/guidance.ts',
-  'src/components/kiosk/chat/chat-logic.ts',
-  'src/components/kiosk/chat/llm-adapter.ts',
   'src/components/kiosk/custom-flow/CustomFlowRenderer.tsx',
   'src/app/kiosk/enroll/page.tsx',
   'src/app/kiosk/layout.tsx',

@@ -34,3 +34,30 @@ test('操作中はドロワーを開閉でき、開いても逃げ道（キャ�
   await page.getByTestId('escape-reset').click();
   await expect(page.getByTestId('start-reception')).toBeVisible();
 });
+
+/**
+ * 補助ドロワーの i18n (issue #327 follow-up)。
+ *
+ * このドロワーは**担当者検索 0 件時の「チャットで相談する」から開く**導線を持つ (#322)。
+ * 訳されないと「来訪者が困っている時にだけ日本語が出る」ことになる。
+ */
+test('English を選ぶと補助ドロワーも英語になり、日本語が露出しない', async ({ page }) => {
+  await page.goto('/kiosk');
+  await page.getByRole('button', { name: 'English' }).click();
+  await page.getByTestId('start-reception').click();
+  await page.getByTestId('purpose-meeting').click();
+
+  // 呼びかけ FAB が英語（ja のままなら name で引けない）。
+  await page.getByRole('button', { name: 'Need help?' }).click();
+  const drawer = page.getByTestId('kiosk-chat-drawer');
+  await expect(drawer).toHaveAttribute('data-open', 'true');
+
+  // 開いた直後の挨拶・入力欄・送信ボタンが英語。
+  await expect(drawer).toContainText('Need help? Describe your visit');
+  await expect(drawer.getByPlaceholder('e.g. I am here to see Ms. Yamada')).toBeVisible();
+  await expect(drawer.getByRole('button', { name: 'Send' })).toBeVisible();
+
+  // ドロワー全体に日本語が露出しない（クイックリプライの固定導線を含む）。
+  const text = await drawer.innerText();
+  expect(/[぀-ヿ㐀-䶿一-鿿가-힣]/.test(text), `未翻訳の CJK が残っている: ${text}`).toBe(false);
+});
