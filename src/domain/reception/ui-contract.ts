@@ -431,6 +431,17 @@ export function deriveAvatarEmotion(state: ReceptionState): AvatarEmotion {
 export const GAZE_TARGETS = ['none', 'answers', 'form', 'confirmCta', 'fallbackCta'] as const;
 export type GazeTarget = (typeof GAZE_TARGETS)[number];
 
+/**
+ * ターンの導出に効く実行時文脈（screenState だけでは決まらない分）。
+ *
+ * 状態を増やさずに `failed` の中身を説明で分ける設計（`call-failure.ts`）に対応する。
+ * PII は持ち込まない（来訪者の氏名・会社名等はここに入れない）。
+ */
+export type TurnContext = {
+  /** 呼び出し失敗の理由。通信断では代替導線を約束しない（#422 / J-OR-05）。 */
+  callFailureReason?: CallFailureReason;
+};
+
 const SCREEN_TO_GAZE: Record<ReceptionState, GazeTarget> = {
   idle: 'answers', // IdleView のクイックアクション
   selectingPurpose: 'answers', // PurposeView のカード
@@ -611,23 +622,22 @@ export function escapeHatchActionsFor(state: ReceptionState): ReadonlyArray<Esca
   ).map((action) => ({ action }));
 }
 
-/**
- * ターンの導出に効く実行時文脈（screenState だけでは決まらない分）。
- *
- * 状態を増やさずに `failed` の中身を説明で分ける設計（`call-failure.ts`）に対応する。
- * PII は持ち込まない（来訪者の氏名・会社名等はここに入れない）。
- */
-export type TurnContext = {
-  /** 呼び出し失敗の理由。通信断では代替導線を約束しない（#422 / J-OR-05）。 */
-  callFailureReason?: CallFailureReason;
-};
-
 /** 会話ターンの回答候補（タッチ/音声/文字いずれの入力でも同じ intent へ収束させる）。 */
 export type ConversationAnswer = {
   id: string;
   label: string;
   /** 選択時に起こす許可済みアクション（既定 answers は必ず availableActions の部分集合）。 */
   intent: ReceptionAction;
+};
+
+/**
+ * 代替の連絡先へ進む回答（reception.altContact / use-fallback）。未応答と失敗の 2 経路が
+ * 同じものを返すので 1 箇所に持つ（文言が片方だけ直されて静かにズレるのを防ぐ）。
+ */
+const ALT_CONTACT_ANSWER: ConversationAnswer = {
+  id: 'fallback',
+  label: '代替の連絡先へ',
+  intent: 'useFallback',
 };
 
 /**
@@ -653,11 +663,10 @@ function defaultAnswersFor(
       // それを果たせないため（`shouldOfferAlternativeContact`）。契約が無条件に返すと、
       // 配線した時点でその果たせない約束が通信断の画面へ復活する。
       if (!shouldOfferAlternativeContact(context?.callFailureReason)) return [];
-      return [{ id: 'fallback', label: '代替の連絡先へ', intent: 'useFallback' }];
+      return [ALT_CONTACT_ANSWER];
     case 'timeout':
-      // 未応答は呼び出し自体は到達しているので、理由に依らず代替導線を出す。
-      // reception.altContact（use-fallback）
-      return [{ id: 'fallback', label: '代替の連絡先へ', intent: 'useFallback' }];
+      // 未応答は呼び出し自体が到達しているので、理由に依らず代替導線を出す。
+      return [ALT_CONTACT_ANSWER];
     case 'connected':
       // reception.finishReception（complete）
       return [{ id: 'complete', label: '受付を終える', intent: 'complete' }];
@@ -704,23 +713,23 @@ const NON_SPEAKING_STATES: ReadonlySet<ReceptionState> = new Set<ReceptionState>
 /**
  * screenState（+ component 層が locale 解決した表示値）から ConversationTurnView を組み立てる純関数。
  *
- * `overrides.message` を渡すと displayText/speechText を差し替え（多言語や人名読みの反映）、
- * `overrides.answers` を渡すと回答候補を差し替える（担当者/部署の実行時リストの注入）。
+ * `options.message` を渡すと displayText/speechText を差し替え（多言語や人名読みの反映）、
+ * `options.answers` を渡すと回答候補を差し替える（担当者/部署の実行時リストの注入）。
  * いずれも省略時は ja の意味論的既定値を使う。domain は component へ依存しない。
  *
- * `TurnContext`（現状は `callFailureReason`）は差し替えではなく**導出に効く文脈**で、
+ * `TurnContext`（現状は `callFailureReason`）だけは差し替えではなく**導出に効く文脈**で、
  * screenState だけでは決まらない分を補う。通信断の `failed` は代替導線を約束しないため、
  * 既定 answers と gazeTarget の両方がこの文脈で変わる（#422 inc5-b）。
  */
 export function conversationTurnFor(
   state: ReceptionState,
-  overrides?: {
+  options?: {
     message?: { displayText: string; speechText?: string };
     answers?: ReadonlyArray<ConversationAnswer>;
   } & TurnContext,
 ): ConversationTurnView {
   const semanticKey = messageKeyForState(state);
-  const gazeTarget = gazeTargetFor(state, overrides);
+  const gazeTarget = gazeTargetFor(state, options);
   return {
     stateKey: state,
     avatar: {
@@ -732,13 +741,13 @@ export function conversationTurnFor(
     },
     message: {
       semanticKey,
-      displayText: overrides?.message?.displayText ?? MESSAGE_TEXT_JA[semanticKey],
-      ...(overrides?.message?.speechText !== undefined
-        ? { speechText: overrides.message.speechText }
+      displayText: options?.message?.displayText ?? MESSAGE_TEXT_JA[semanticKey],
+      ...(options?.message?.speechText !== undefined
+        ? { speechText: options.message.speechText }
         : {}),
       speak: !NON_SPEAKING_STATES.has(state),
     },
-    answers: overrides?.answers ?? defaultAnswersFor(state, overrides),
+    answers: options?.answers ?? defaultAnswersFor(state, options),
     inputModes: inputModesFor(state),
     requiresExplicitConfirmation: requiresExplicitConfirmationFor(state),
     escapeHatches: escapeHatchActionsFor(state),
@@ -957,11 +966,11 @@ export type CheckinTurnView = {
 
 /**
  * CheckinState（+ component 層が locale 解決した字幕）から CheckinTurnView を組み立てる純関数。
- * `overrides.message.displayText` を渡すと字幕を差し替え（多言語対応）。省略時は ja 既定値。
+ * `options.message.displayText` を渡すと字幕を差し替え（多言語対応）。省略時は ja 既定値。
  */
 export function checkinConversationTurnFor(
   state: CheckinState,
-  overrides?: {
+  options?: {
     message?: { displayText: string };
   },
 ): CheckinTurnView {
@@ -977,7 +986,7 @@ export function checkinConversationTurnFor(
     },
     message: {
       semanticKey,
-      displayText: overrides?.message?.displayText ?? CHECKIN_MESSAGE_TEXT_JA[semanticKey],
+      displayText: options?.message?.displayText ?? CHECKIN_MESSAGE_TEXT_JA[semanticKey],
       speak: true,
     },
     inputModes: checkinInputModesFor(state),
