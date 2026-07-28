@@ -59,7 +59,7 @@ README: `idle -> visitor_detected -> greeting -> choosing_method -> listening|to
 
 | README の例外状態 | 実装での実体 | 判定 |
 | --- | --- | --- |
-| `speech_unclear` | `VoiceKioskMode.readback`（`readbackReason`）→ `fallback` | 対応（別系統） |
+| `speech_unclear` | `VoiceKioskMode.fallback`（`readbackReason` は低信頼の理由として readback に付く） | 対応（別系統）。**readback 自体は `recognizing` の内側**（ADR 0007） |
 | `no_match` | 明示状態なし。検索 0 件は画面内分岐（`search-no-results-guidance` + チャット導線） | **状態は無いが計測はできる**。0 件率は `searchZeroHitCount` → KPI 集計 → 管理画面まで通っている（第 35 wave）。状態化は**しない** |
 | `person_unavailable` | `ReceptionState.timeout` | **対応**（名前が違う） |
 | `contact_failed` | `ReceptionState.failed` | **対応**（名前が違う） |
@@ -139,12 +139,18 @@ ADR 0006 で定義が決まり、`CheckinState.cameraError` へ対応が付い�
 
 決定的なのは配線で、**音声が受付状態機械へ入る経路は `onResolved` の 1 本だけ**、しかも
 dispatch するのは `SELECT_TARGET` のみ。その後は必ずタッチ経路と同じ
-`inputVisitorInfo → confirming → calling` を通る。加えて `confirm` / `submitVisitorInfo` は
-`REQUIRES_CONFIRMATION_ACTIONS` にあり音声から直接確定できない。**原則 2 の等価性は
-「協調」ではなく構造で保証されている。**
+`inputVisitorInfo → confirming → calling` を通る。**発信前の確認ゲートは 1 つで、音声は
+それを迂回できない**（保証の実体は `VoiceSessionHooks` の露出面。
+`lib/voice-session/exposure-guard.test.ts` が固定）。
 
-統合すると、発信直前の安全弁が弱まり（認識確認と同じ状態になる）、計測が混ざる
-（聞き直しの往復と発信前の熟考が合算される）。得るものが無い。
+**C'. 音声だけでは受付を完遂できない（差分 C の見出しは別の理由で生きている）**
+
+`SCREEN_TO_INPUT_MODES` は `selectingPurpose` / `selectingTarget` / `inputVisitorInfo` の
+3 状態で `voice` を allowed input と**宣言**しているが、実際に音声経路が在るのは
+`selectingTarget` だけ。目的選択・氏名入力・発信確認はタッチが要る。
+**宣言と実装が 3 分の 2 で食い違っている**（ADR 0007 の訂正節）。腕が塞がっている来訪者・
+視覚に頼れない来訪者・騒音下では、原則 2 が実際には満たされていない。**要ユーザー確認**
+（音声入力を増やすのは Journey の意味に触れる）。
 
 **D. 別の状態機械（統合するか否かが仕様判断）**: J-OR-03 QR 受付（`CheckinFlow`）。
 
