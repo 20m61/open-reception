@@ -97,6 +97,26 @@ export type ReceptionExperienceVersion = {
   publishedAt?: string;
   /** rollback で作られた版の復元元 revision。 */
   rolledBackFrom?: number;
+  /**
+   * デモ用途 (#363 / ADR 0005 手順 1)。**省略時は通常の版**（デモ固有の制約を持たない）。
+   *
+   * 「本番の端末には出さないが実機で見たい」を、版の `status` を増やさずに表現する。
+   * status を増やすと `publishedVersion` の意味が揺れ、#420 の「公開版は 1 つ」という
+   * 不変条件が崩れるため（ADR 0005 決定 2）。配信の解決は `demo-delivery.ts`。
+   */
+  demoUse?: {
+    /**
+     * この版を受け取る端末。**空配列は「どの端末にも配らない」**（fail-closed）。
+     * 「配信対象を指定する」意図の版が指定漏れで全端末へ出るのが最悪の事故なので、
+     * 空 = 全部ではなく 空 = どこにも、に倒す。
+     */
+    targetDeviceIds: string[];
+    /**
+     * モック応答台本（`DemoScenario`）の参照。**中身は埋めない**（ADR 0005 決定 2）。
+     * 版が固定するのは構成であって台本ではない。
+     */
+    scenarioId?: string;
+  };
 };
 
 /** 受付体験（拠点ごとの編集単位）と、その版履歴。 */
