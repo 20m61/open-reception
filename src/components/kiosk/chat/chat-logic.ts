@@ -23,6 +23,7 @@ import {
   type ReceptionAction,
   type ReceptionState,
 } from '@/domain/reception/ui-contract';
+import { DEFAULT_LOCALE, makeT, type Locale } from '@/lib/i18n';
 import type {
   ChatAdapterResponse,
   ChatLlmAdapter,
@@ -52,8 +53,15 @@ export type ChatTurnResult = {
   isFallback: boolean;
 };
 
-/** 既定のスタッフ誘導（最終フォールバックとして常に出せる固定導線）。 */
-export const STAFF_QUICK_REPLY: QuickReply = { kind: 'staff', label: 'スタッフに繋ぐ' };
+/**
+ * 既定のスタッフ誘導（最終フォールバックとして常に出せる固定導線）。
+ *
+ * 表示文言は locale に従う (#327)。**ここが訳されないと、来訪者が困っている時にだけ
+ * 日本語が出る**（このドロワーは担当者検索 0 件時に開く導線を持つ）。
+ */
+export function staffQuickReply(locale: Locale = DEFAULT_LOCALE): QuickReply {
+  return { kind: 'staff', label: makeT(locale)('chat.staffHandoff') };
+}
 
 /**
  * 定型 FAQ（LLM を使わずに答えられる固定導線）。オフライン/失敗時の土台にもなる。
@@ -61,23 +69,22 @@ export const STAFF_QUICK_REPLY: QuickReply = { kind: 'staff', label: 'スタッ�
  */
 export type FaqEntry = { id: string; question: string; answer: string };
 
-export const DEFAULT_FAQ: readonly FaqEntry[] = [
-  {
-    id: 'qr-forgot',
-    question: 'QRコードを忘れた',
-    answer: 'QRコードが無くても受付できます。画面の案内から担当者をお選びください。',
-  },
-  {
-    id: 'department-only',
-    question: '部署名しかわからない',
-    answer: '部署からお探しいただけます。画面で部署を選び、担当者を選択してください。',
-  },
-  {
-    id: 'purpose-unknown',
-    question: '予約種別がわからない',
-    answer: 'ご用件（面接・配送・打ち合わせ等）からお選びいただけます。お困りの場合はスタッフにお繋ぎします。',
-  },
-];
+export function defaultFaq(locale: Locale = DEFAULT_LOCALE): readonly FaqEntry[] {
+  const tr = makeT(locale);
+  return [
+    { id: 'qr-forgot', question: tr('chat.faq.qrForgot.q'), answer: tr('chat.faq.qrForgot.a') },
+    {
+      id: 'department-only',
+      question: tr('chat.faq.departmentOnly.q'),
+      answer: tr('chat.faq.departmentOnly.a'),
+    },
+    {
+      id: 'purpose-unknown',
+      question: tr('chat.faq.purposeUnknown.q'),
+      answer: tr('chat.faq.purposeUnknown.a'),
+    },
+  ];
+}
 
 /** ラベルからのメッセージ ID 生成（衝突回避用の最小実装。PII を含めない）。 */
 function nextId(prefix: string, seq: number): string {
@@ -87,11 +94,15 @@ function nextId(prefix: string, seq: number): string {
 /**
  * 初期の呼びかけメッセージ（ドロワーを開いた直後）。控えめな補助導線。
  */
-export function buildGreetingMessage(seq = 0, createdAt = new Date(0).toISOString()): ChatMessage {
+export function buildGreetingMessage(
+  seq = 0,
+  createdAt = new Date(0).toISOString(),
+  locale: Locale = DEFAULT_LOCALE,
+): ChatMessage {
   return {
     id: nextId('chat-greeting', seq),
     role: 'assistant',
-    text: 'お困りですか？ ご用件を入力するか、下のボタンからお選びください。',
+    text: makeT(locale)('chat.greeting'),
     createdAt,
   };
 }
@@ -137,9 +148,10 @@ export function suggestionToQuickReply(
 export function buildTurnResult(
   state: ReceptionState,
   response: ChatAdapterResponse | null,
+  locale: Locale = DEFAULT_LOCALE,
 ): ChatTurnResult {
   if (response === null) {
-    return buildFallbackTurn();
+    return buildFallbackTurn(undefined, locale);
   }
   const quickReplies: QuickReply[] = [];
   for (const s of response.suggestions) {
@@ -150,20 +162,24 @@ export function buildTurnResult(
   }
   // 候補が一つも残らなかった場合でも、必ずタッチ可能な次アクションを保証する。
   if (quickReplies.length === 0) {
-    quickReplies.push(STAFF_QUICK_REPLY);
+    quickReplies.push(staffQuickReply(locale));
   } else if (!quickReplies.some((q) => q.kind === 'staff')) {
     // スタッフ誘導は常に最後尾の保険として添える。
-    quickReplies.push(STAFF_QUICK_REPLY);
+    quickReplies.push(staffQuickReply(locale));
   }
   return { reply: response.reply, quickReplies, isFallback: false };
 }
 
 /** LLM 失敗/オフライン時の定型ターン（FAQ + スタッフ誘導）。 */
-export function buildFallbackTurn(faq: readonly FaqEntry[] = DEFAULT_FAQ): ChatTurnResult {
-  const quickReplies: QuickReply[] = faq.map((f) => ({ kind: 'staff', label: f.question }));
-  quickReplies.push(STAFF_QUICK_REPLY);
+export function buildFallbackTurn(
+  faq?: readonly FaqEntry[],
+  locale: Locale = DEFAULT_LOCALE,
+): ChatTurnResult {
+  const entries = faq ?? defaultFaq(locale);
+  const quickReplies: QuickReply[] = entries.map((f) => ({ kind: 'staff', label: f.question }));
+  quickReplies.push(staffQuickReply(locale));
   return {
-    reply: 'ただ今うまくお答えできません。よくあるご質問か、スタッフ対応からお選びください。',
+    reply: makeT(locale)('chat.fallbackReply'),
     quickReplies,
     isFallback: true,
   };
@@ -180,17 +196,18 @@ export async function runChatTurn(
   adapter: ChatLlmAdapter,
   state: ReceptionState,
   utterance: string,
-  opts?: { online?: boolean },
+  opts?: { online?: boolean; locale?: Locale },
 ): Promise<ChatTurnResult> {
   const online = opts?.online ?? true;
+  const locale = opts?.locale ?? DEFAULT_LOCALE;
   if (!online) {
-    return buildFallbackTurn();
+    return buildFallbackTurn(undefined, locale);
   }
   try {
     const response = await adapter.interpret({ utterance, screenState: state });
-    return buildTurnResult(state, response);
+    return buildTurnResult(state, response, locale);
   } catch {
-    return buildFallbackTurn();
+    return buildFallbackTurn(undefined, locale);
   }
 }
 
