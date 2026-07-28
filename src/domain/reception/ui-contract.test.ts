@@ -336,12 +336,23 @@ describe('reception ui-contract: messageKey / gazeTarget / inputModes (#361)', (
     }
   });
 
-  it('選択/入力ターンは音声・文字も受け付ける', () => {
-    for (const state of ['selectingPurpose', 'selectingTarget', 'inputVisitorInfo'] as const) {
-      const modes = inputModesFor(state);
-      expect(modes).toContain('voice');
-      expect(modes).toContain('text');
-    }
+  // inputModes は「その局面で実際に受け付けられる入力手段」の宣言であり、努力目標ではない。
+  // 実装に無い手段を宣言すると、アクセシビリティ上の主張が事実でなくなる（差分 C'）。
+  // 各局面の根拠:
+  //   selectingPurpose … PurposeView はボタンのみ（reception-screens.tsx）。音声・文字の経路が無い。
+  //   selectingTarget  … 検索欄（文字）と VoiceSessionLayer の onResolved（音声で相手を確定）が有る。
+  //   inputVisitorInfo … 氏名フォーム（文字）は有るが、音声で SUBMIT_VISITOR_INFO を生む経路は無い。
+  // 音声入力を増やすこと自体は Journey の意味に関わる判断なので、実装が追いついたときに
+  // 宣言を足す（宣言を先に置かない）。
+  it('宣言する inputModes は実装されている手段だけに限る（差分 C\'）', () => {
+    expect(inputModesFor('selectingPurpose')).toEqual(['touch']);
+    expect(inputModesFor('selectingTarget')).toEqual(['touch', 'voice', 'text']);
+    expect(inputModesFor('inputVisitorInfo')).toEqual(['touch', 'text']);
+  });
+
+  it('音声で相手を確定できるのは selectingTarget だけ（唯一の実結線点）', () => {
+    const voiceStates = RECEPTION_STATES.filter((s) => inputModesFor(s).includes('voice'));
+    expect(voiceStates).toEqual(['selectingTarget']);
   });
 
   it('QR は待機ターンの入口手段として提示する（読み取りだけで発信しない導線）', () => {
