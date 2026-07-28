@@ -429,6 +429,9 @@ export function KioskFlow({ operatingStatus, sttAdapterFactory, voiceSession, qr
   }, [a11yEnabledModes]);
   // E2E タイマー短縮用のクエリ上書き（`?callingStageMs=` 等、既存 `?inactivityMs=` の流儀）。
   // window 参照は SSR 不一致を避けるため effect 内でのみ行う。
+  const [heartbeatQueryOverride, setHeartbeatQueryOverride] = useState<number | undefined>(
+    undefined,
+  );
   const [callingStageQueryOverride, setCallingStageQueryOverride] = useState<
     Partial<CallingStageThresholds>
   >({});
@@ -438,6 +441,7 @@ export function KioskFlow({ operatingStatus, sttAdapterFactory, voiceSession, qr
       const v = Number(params.get(key));
       return Number.isFinite(v) && v > 0 ? v : undefined;
     };
+    setHeartbeatQueryOverride(num('heartbeatMs'));
     setCallingStageQueryOverride({
       waitingAfterMs: num('callingStageMs'),
       noticeAfterMs: num('callingNoticeMs'),
@@ -496,6 +500,8 @@ export function KioskFlow({ operatingStatus, sttAdapterFactory, voiceSession, qr
     onRevoked: handleDeviceRevoked,
     // いま読み込んでいる版を heartbeat に相乗りさせて報告する (#420)。
     report: configurationReport,
+    // E2E から通信断表示を検証するための周期短縮（既存 `?inactivityMs=` の流儀）。
+    intervalMs: heartbeatQueryOverride,
   });
 
 
@@ -981,14 +987,21 @@ export function KioskFlow({ operatingStatus, sttAdapterFactory, voiceSession, qr
         />
       ) : null}
       {!online ? (
-        <div className="notice notice--warning" data-testid="kiosk-offline" style={{ marginBottom: 'var(--space-md)' }}>
-          通信が不安定です。復帰までしばらくお待ちください。
+        // 受付のどの局面でも出る来訪者向けのお知らせ。しかも通信断は失敗時フォールバックの
+        // 入口そのものなので、選んだ言語で出さないと最も助けが要る場面で読めなくなる (#327)。
+        <div
+          className="notice notice--warning"
+          data-testid="kiosk-offline"
+          lang={htmlLangFor(locale)}
+          style={{ marginBottom: 'var(--space-md)' }}
+        >
+          {makeT(locale)('reception.offlineNotice')}
         </div>
       ) : null}
       {view === 'revoked' ? (
         <div className="screen__body" style={{ alignItems: 'center', justifyContent: 'center', textAlign: 'center' }}>
-          <div className="notice notice--danger" data-testid="kiosk-revoked">
-            この受付端末は現在ご利用いただけません。担当者にお問い合わせください。
+          <div className="notice notice--danger" data-testid="kiosk-revoked" lang={htmlLangFor(locale)}>
+            {makeT(locale)('kiosk.deviceUnavailable')}
           </div>
         </div>
       ) : view === 'authorize' ? (
@@ -1592,7 +1605,7 @@ function CustomVisitorInfoView({
         </div>
         <div className="screen__footer">
           <button type="button" className="btn btn--primary" data-testid="custom-flow-proceed" onClick={() => onSubmit({})}>
-            確認へ進む
+            {makeT(locale)('reception.proceedConfirm')}
           </button>
         </div>
       </>
