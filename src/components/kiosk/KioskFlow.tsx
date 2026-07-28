@@ -1124,26 +1124,6 @@ export function KioskFlow({ operatingStatus, sttAdapterFactory, voiceSession, qr
           {/* 退館チェックアウト導線 (issue #102)。待機中のみ小さく常設する（非破壊）。 */}
           {data.state === 'idle' ? <CheckoutLink locale={locale} /> : null}
           {/*
-            常時見える「逃げ道」バー (issue #121 / #325)。後退系コントロールはここに一本化し、
-            戻る（1 ステップ）/ 最初に戻る（リセット）の 2 語だけを出す。出すアクションは #120 契約の
-            availableActions に従う（許可外は出さない）。各画面のコンテンツ側は前進系（主 CTA）と
-            文脈固有（修正する）に限定し、後退ボタンは置かない（同一機能ボタンの二重表示を解消）。
-          */}
-          <EscapeHatchBar
-            barRef={escapeBarRef}
-            state={data.state}
-            locale={locale}
-            onAction={(action) => {
-              // escapeHatchesFor が返すのは back/reset のみ（#325）。状態機械イベントへ写す。
-              const eventByAction: Partial<Record<ReceptionAction, Action>> = {
-                back: { type: 'BACK' },
-                reset: { type: 'RESET' },
-              };
-              const next = eventByAction[action];
-              if (next) dispatch(next);
-            }}
-          />
-          {/*
             #122 Chat-assisted ドロワー (#124 で配線)。利用可否は deriveChatAvailability(state) に従い、
             idle/終端では自動で閉じ・履歴を破棄する（ドロワー側で null を返す→スロットは :empty で非表示）。
             ドロワーは状態を所有せず、許可済みアクションのタッチ確定だけを KioskFlow のイベントへ写す。
@@ -1186,6 +1166,33 @@ export function KioskFlow({ operatingStatus, sttAdapterFactory, voiceSession, qr
           </div>
         </>
       )}
+      {/*
+        常時見える「逃げ道」バー (issue #121 / #325)。後退系コントロールはここに一本化し、
+        戻る（1 ステップ）/ 最初に戻る（リセット）の 2 語だけを出す。出すアクションは #120 契約の
+        availableActions に従う（許可外は出さない）。各画面のコンテンツ側は前進系（主 CTA）と
+        文脈固有（修正する）に限定し、後退ボタンは置かない（同一機能ボタンの二重表示を解消）。
+
+        **画面分岐の外に置く**（#455 レビュー指摘）。以前は既定受付の枝の中に在ったため、
+        カスタム受付フロー (#100) の 2 画面では逃げ道が 1 つも描画されず、来訪者は 60 秒の
+        無操作リセットを待つしかない**行き止まり**になっていた。分岐が増えるたびに
+        「バーを入れ忘れる」余地を残さないよう、構造として全画面の外側へ出す。
+        逃げ道を出さない局面（idle・端末ゲート系・QR 受付モード）は `escapeHatchesFor` が
+        空を返して null になるので、ここに置いても余計なものは出ない。
+      */}
+      <EscapeHatchBar
+        barRef={escapeBarRef}
+        state={data.state}
+        locale={locale}
+        onAction={(action) => {
+          // escapeHatchesFor が返すのは back/reset のみ（#325）。状態機械イベントへ写す。
+          const eventByAction: Partial<Record<ReceptionAction, Action>> = {
+            back: { type: 'BACK' },
+            reset: { type: 'RESET' },
+          };
+          const next = eventByAction[action];
+          if (next) dispatch(next);
+        }}
+      />
     </main>
   );
 }

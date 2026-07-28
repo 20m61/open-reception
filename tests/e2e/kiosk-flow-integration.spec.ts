@@ -86,3 +86,59 @@ test('admin で無効化したフローは受付端末に出ない', async ({ pa
   const body = (await res.json()) as { flows: { purposeKey: string }[] };
   expect(body.flows.some((f) => f.purposeKey === key)).toBe(false);
 });
+
+/**
+ * カスタム受付フロー使用時も逃げ道が消えないこと (#325 の不変条件)。
+ *
+ * `KioskFlow` は「逃げ道バーは待機以外の全画面に常設される」前提で作られており、
+ * `VisitorInfoForm` へ `onBack` を渡さない等、コンテンツ側の後退ボタンを撤去している。
+ * ところがカスタムフローの 2 画面は逃げ道バーを描画する枝の**外**で返されていたため、
+ * カスタムフローを 1 件でも持つテナントでは back も reset も無い**行き止まり**になり、
+ * 来訪者は 60 秒の無操作リセットを待つしかなかった。
+ *
+ * 「戻れない受付」は受付完遂を直接壊すので、実データ（admin で作った有効フロー）で固定する。
+ */
+test('カスタム受付フローの画面にも逃げ道バーが常設される（行き止まりを作らない）', async ({
+  page,
+}) => {
+  const key = uniq('e2e-escape');
+  const name = uniq('逃げ道フロー');
+
+  await loginAsAdmin(page);
+  const created = await page.request.post('/api/admin/reception-flows', {
+    data: {
+      tenantId: 'internal',
+      siteId: 'default-site',
+      purposeKey: key,
+      displayName: name,
+      order: 99,
+      steps: ['purpose', 'visitorInfo', 'confirm', 'call'],
+      fields: [{ key: 'name', label: 'お名前', type: 'text', required: true }],
+    },
+  });
+  expect(created.ok()).toBeTruthy();
+  createdFlowIds.push(((await created.json()) as { id: string }).id);
+
+  await establishKioskSession(page);
+  await page.goto('/kiosk');
+  await page.getByTestId('start-reception').click();
+
+  // カスタム目的選択（selectingPurpose）。
+  await expect(page.getByTestId('custom-purpose-view')).toBeVisible({ timeout: 15_000 });
+  await expect(page.getByTestId('kiosk-escape-bar')).toBeVisible();
+  await expect(page.getByTestId('escape-reset')).toBeVisible();
+
+  // カスタム目的を選ぶと相手選択へ進み、相手を決めるとカスタム入力画面へ入る
+  // （カスタムフローでも相手選択は既定画面。入力ステップだけがカスタムになる）。
+  await page.getByTestId('purpose-option').first().click();
+  await page.getByTestId('staff-staff-sato').click();
+
+  // カスタム来訪者情報入力（inputVisitorInfo）。ここが最も戻りたくなる画面。
+  await expect(page.getByTestId('custom-visitor-view')).toBeVisible({ timeout: 15_000 });
+  await expect(page.getByTestId('kiosk-escape-bar')).toBeVisible();
+  await expect(page.getByTestId('escape-back')).toBeVisible();
+
+  // 実際に戻れる（描画されているだけでなく機能する）。
+  await page.getByTestId('escape-reset').click();
+  await expect(page.getByTestId('kiosk-quick-actions')).toBeVisible();
+});
