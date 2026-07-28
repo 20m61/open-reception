@@ -12,6 +12,7 @@
  */
 import {
   availableActions,
+  escapeHatchActionsFor,
   isActionAllowed,
   type ReceptionAction,
 } from '@/domain/reception/ui-contract';
@@ -148,25 +149,18 @@ const ESCAPE_HATCH_META: Record<EscapeHatchAction, Omit<EscapeHatch, 'action'>> 
 };
 
 /**
- * 逃げ道バーに `back`（戻る）を重複表示しない状態 (#240 / #325)。確認画面（confirming）は短い要約で、
- * フッターの「修正する」(confirm-back) が常に到達可能なため、常設バーの 戻る と二重になる後退系
- * コントロールを整理する。戻る操作自体はフッターの文脈ボタン（修正する）で可能なので機能は失わない。
+ * 逃げ道バーに出すアクションと、その表示メタを返す。
  *
- * selectingTarget（担当者一覧）/ inputVisitorInfo（入力フォーム）は内容がビューポートを超え得るため
- * 除外しない。#325 でコンテンツ側の戻る（target-back/visitor-back）を撤去したため、sticky で常時可視な
- * バーの 戻る が唯一の戻る導線になる（ここで back を残さないと戻れなくなる）。
+ * **どのアクションを出すかは契約（`escapeHatchActionsFor`）が唯一の権威**で、ここは
+ * label/variant/testId を付けるだけ (#422 地ならし)。かつて判断が両方に二重実装され、
+ * `confirming` の back 抑制（#240/#325）が契約側に無いという食い違いがあった。片方を
+ * 直してももう片方に伝播しないため、判断は domain へ寄せた。
+ *
+ * 一致は `quick-actions.test.ts` のメタテストで固定している。
  */
-const STATES_WITH_CONTEXTUAL_BACK: ReadonlySet<ReceptionState> = new Set(['confirming']);
-
 export function escapeHatchesFor(state: ReceptionState): ReadonlyArray<EscapeHatch> {
-  // idle では逃げ道を出さない（クイックアクションが入口で、戻る先が無い）。
-  if (state === 'idle') return [];
-  const allowed = availableActions(state);
-  const omitBack = STATES_WITH_CONTEXTUAL_BACK.has(state);
-  return ESCAPE_HATCH_ACTIONS.filter(
-    (a) => allowed.has(a) && !(a === 'back' && omitBack),
-  ).map((action) => ({
+  return escapeHatchActionsFor(state).map(({ action }) => ({
     action,
-    ...ESCAPE_HATCH_META[action],
+    ...ESCAPE_HATCH_META[action as EscapeHatchAction],
   }));
 }

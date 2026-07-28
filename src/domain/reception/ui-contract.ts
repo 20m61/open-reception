@@ -563,13 +563,33 @@ export type EscapeHatch = { action: ReceptionAction };
 const ESCAPE_HATCH_ACTIONS: ReadonlyArray<ReceptionAction> = ['back', 'reset'];
 
 /**
+ * 逃げ道バーに `back`（戻る）を重複表示しない状態 (#240 / #325)。
+ *
+ * 確認画面（confirming）は短い要約で、フッターの「修正する」(confirm-back) が常に到達可能。
+ * 常設バーの 戻る と二重になる後退系コントロールを整理する。戻る操作自体はフッターの
+ * 文脈ボタンで可能なので機能は失わない。
+ *
+ * selectingTarget（担当者一覧）/ inputVisitorInfo（入力フォーム）は内容がビューポートを
+ * 超え得るため除外しない。#325 でコンテンツ側の戻る（target-back/visitor-back）を撤去した
+ * ため、sticky で常時可視なバーの 戻る が**唯一の戻る導線**になる。
+ */
+const STATES_WITH_CONTEXTUAL_BACK: ReadonlySet<ReceptionState> = new Set(['confirming']);
+
+/**
  * そのターンで提示する逃げ道アクション（back/reset のうち availableActions にあるもの）。
  * idle は入口画面で戻る先が無いため出さない。
+ *
+ * **どの後退アクションを出すかの判断はここが唯一の権威**（#422 地ならし）。表示のための
+ * label/variant/testId は UI 側（`components/kiosk/quick-actions.ts`）が付ける。かつて
+ * 判断が両方に二重実装され、`confirming` の back 抑制が契約側に無いという食い違いがあった。
  */
 export function escapeHatchActionsFor(state: ReceptionState): ReadonlyArray<EscapeHatch> {
   if (state === 'idle') return [];
   const allowed = availableActions(state);
-  return ESCAPE_HATCH_ACTIONS.filter((action) => allowed.has(action)).map((action) => ({ action }));
+  const omitBack = STATES_WITH_CONTEXTUAL_BACK.has(state);
+  return ESCAPE_HATCH_ACTIONS.filter(
+    (action) => allowed.has(action) && !(action === 'back' && omitBack),
+  ).map((action) => ({ action }));
 }
 
 /** 会話ターンの回答候補（タッチ/音声/文字いずれの入力でも同じ intent へ収束させる）。 */
