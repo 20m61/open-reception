@@ -37,8 +37,11 @@ test('呼び出し成功フロー: 接続 → 完了 → 待機画面へ復帰',
 test('接続画面は無操作で待機へ自動復帰する（「操作不要」案内と挙動を一致, #324）', async ({ page }) => {
   // connected は「操作は不要です」と案内する (#324-5)。指示どおり操作しないと、無操作タイムアウトで
   // 待機へ自動復帰し、前の来訪者のセッション（PII）を残して次の来訪者をブロックしないことを検証する。
-  // 本番の connected 既定は 120s。E2E では ?inactivityMs= で短縮する。
-  await page.goto('/kiosk?inactivityMs=600');
+  // 本番の connected 既定は 120s。E2E では ?connectedInactivityMs= で connected **だけ**短縮する。
+  // 一律の ?inactivityMs= だと、connected へ至る 6 ステップの操作も同じ短い上限に晒される。
+  // 上限 600ms のとき警告オーバーレイは 500ms の無操作で出るため、1 ステップでもアニメーション
+  // 待ちで遅れるとオーバーレイが click を横取りして落ちていた（負荷依存のフレーク, #476）。
+  await page.goto('/kiosk?connectedInactivityMs=600');
   await page.getByTestId('start-reception').click();
   await page.getByTestId('purpose-meeting').click();
   await page.getByTestId('staff-staff-sato').click();

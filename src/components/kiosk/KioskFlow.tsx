@@ -120,6 +120,10 @@ import {
   resolveKioskMode,
 } from '@/domain/kiosk/mode';
 import {
+  INACTIVITY_WARNING_MS,
+  resolveInactivityLimitMs,
+} from '@/domain/kiosk/inactivity';
+import {
   operatingStateOf,
   type KioskOperatingStatus,
 } from '@/domain/kiosk/operating-status';
@@ -191,23 +195,8 @@ const DEFAULT_IDLE_GUIDANCE = 'ようこそ。タッチ操作だけで受付で�
 /** 完了・キャンセル後に待機画面へ自動復帰するまでの時間。 */
 const AUTO_RESET_MS = 6000;
 
-/**
- * 操作途中で離席した場合に、無操作のまま待機画面へ戻すまでの時間 (issue #125)。
- * 公共端末に入力途中の個人情報を残さないための上限。`?inactivityMs=` で E2E から短縮できる。
- */
-const INACTIVITY_RESET_MS = 60000;
-/**
- * connected（担当者応答済み・来訪待ち）画面の無操作リセット上限 (#324)。
- * 「操作は不要です」と案内し来訪者はその場で担当者の到着を待つため、選択/入力画面より長めに取り、
- * 正当な待機中の誤リセットを避ける。離席した場合はこの時間で PII を破棄して待機へ戻す。
- * 待機中の来訪者は警告カウントダウンで「続ける」を押せば延長できる。
- */
-const CONNECTED_INACTIVITY_RESET_MS = 120000;
-/**
- * リセット前にカウントダウン警告を出す時間 (issue #125 UX, "don't surprise-expire")。
- * 残り WARNING ミリ秒で警告を表示し、来訪者が操作すれば延長する。
- */
-const INACTIVITY_WARNING_MS = 10000;
+// 無操作リセットの上限と警告時間は `src/domain/kiosk/inactivity.ts` の純ロジックに集約する
+// （E2E 上書き `?inactivityMs=` / `?connectedInactivityMs=` の解決を含む）。
 
 /**
  * 縦向き(ipad-portrait)でアバターコンパニオンを表示する状態 (#361 / 旧 #123)。
@@ -618,11 +607,11 @@ export function KioskFlow({ operatingStatus, sttAdapterFactory, voiceSession, qr
       setInactivitySeconds(null);
       return;
     }
-    const params = new URLSearchParams(window.location.search);
-    const override = Number(params.get('inactivityMs'));
-    // connected（来訪待ち）は長めの上限を使う (#324)。?inactivityMs= の明示指定は常に優先（E2E 短縮用）。
-    const base = data.state === 'connected' ? CONNECTED_INACTIVITY_RESET_MS : INACTIVITY_RESET_MS;
-    const limit = Number.isFinite(override) && override > 0 ? override : base;
+    // connected（来訪待ち）は長めの上限を使う (#324)。E2E 上書きの解決も含めて純ロジックへ委譲する。
+    const limit = resolveInactivityLimitMs({
+      search: window.location.search,
+      state: data.state,
+    });
     // 警告（カウントダウン）に割く時間は limit を超えない範囲で確保する。
     const warnMs = Math.min(INACTIVITY_WARNING_MS, Math.max(0, limit - 500));
     const warnAfter = Math.max(0, limit - warnMs);
