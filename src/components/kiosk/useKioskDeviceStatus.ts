@@ -45,8 +45,13 @@ export function useKioskDeviceStatus(options: {
   onRevoked: () => void;
   /** heartbeat に相乗りさせる構成の反映報告 (#420)。省略時は報告しない。 */
   report?: KioskConfigurationReport;
+  /**
+   * 死活確認の周期。省略時は `HEARTBEAT_INTERVAL_MS`。
+   * E2E から通信断表示を検証するための短縮用（`?heartbeatMs=`。既存 `?inactivityMs=` の流儀）。
+   */
+  intervalMs?: number;
 }): KioskDeviceStatus {
-  const { onRevoked, report } = options;
+  const { onRevoked, report, intervalMs } = options;
   const [active, setActive] = useState<boolean | null>(null);
   const [authorized, setAuthorized] = useState<boolean | null>(null);
   const [pinRequired, setPinRequired] = useState(false);
@@ -100,11 +105,12 @@ export function useKioskDeviceStatus(options: {
   }, []);
 
   // 起動時に確認し、以降は定期 heartbeat で長期表示中の変化を検知する (issue #30)。
+  const period = intervalMs && intervalMs > 0 ? intervalMs : HEARTBEAT_INTERVAL_MS;
   useEffect(() => {
     void refresh();
-    const timer = setInterval(() => void refresh(), HEARTBEAT_INTERVAL_MS);
+    const timer = setInterval(() => void refresh(), period);
     return () => clearInterval(timer);
-  }, [refresh]);
+  }, [refresh, period]);
 
   const markAuthorized = useCallback(() => setAuthorized(true), []);
 
