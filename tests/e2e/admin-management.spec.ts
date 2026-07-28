@@ -93,3 +93,25 @@ test('受付端末は管理画面の部署・担当者を取得して表示す�
   await expect(page.getByTestId('staff-staff-sato')).toBeVisible();
   await expect(page.getByTestId('dept-dept-sales')).toBeVisible();
 });
+
+/**
+ * 作った画面がナビから辿れること (issue #421)。
+ *
+ * `/admin/experience-versions`（受付体験の公開と端末への反映状況）は第 21 wave で作ったが、
+ * `ADMIN_NAV` にも他画面からのリンクにも登録されず、**URL を直打ちする以外に開けない**まま
+ * 放置されていた。運用者から見れば「作られていない」のと同じなので、実ブラウザで固定する。
+ */
+test('受付体験の公開・反映状況へサイドバーから到達できる', async ({ page }) => {
+  await loginAsAdmin(page);
+  await page.goto('/admin');
+
+  // iPad 幅ではサイドバーが畳まれている（ハンバーガーで開く）。
+  const hamburger = page.getByRole('button', { name: 'メニューを開く' });
+  if (await hamburger.isVisible()) await hamburger.click();
+
+  await page.getByRole('link', { name: '公開と反映状況' }).click();
+  await expect(page).toHaveURL(/\/admin\/experience-versions/);
+  // 版が 0 件のテナントでは表ではなく空状態が出るので、見出しで到達を判定する
+  // （このテストが固定したいのは「ナビから開ける」ことであって、版の有無ではない）。
+  await expect(page.getByRole('heading', { name: '受付体験の版' })).toBeVisible({ timeout: 15_000 });
+});
