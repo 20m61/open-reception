@@ -91,7 +91,11 @@ export const VOICE_MODE_TO_EXPERIENCE: Record<VoiceKioskMode, AnyExperienceState
   inactive: null,
   idle: 'idle',
   listening: 'listening',
-  readback: 'confirming',
+  // **発信直前の `confirming` ではない**（ADR 0007）。readback が確認するのは「聞き取った内容」で、
+  // README の UX pattern「Recognition confirmation」に当たる＝ `recognizing` の内側の 1 局面。
+  // 音声で相手を決めても必ず inputVisitorInfo → confirming を通るため、発信前の確認ゲートは
+  // 受付状態機械に 1 つしかない（`REQUIRES_CONFIRMATION_ACTIONS` が音声からの直接確定を禁じる）。
+  readback: 'recognizing',
   // 読み上げ中・ダッキング中は体験状態を変えない（同じ状態の中の演出）。
   speaking: null,
   ducked: null,
