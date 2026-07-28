@@ -10,6 +10,7 @@
  * src/domain/tenant/authorization.ts の純関数を呼び出し側で使う。
  */
 import type { SiteId, TenantId } from '@/domain/tenant/types';
+import type { InvitationIssuer } from './invitation';
 
 /** ブランド付き ID 型。予約 ID と来訪者識別子の混在を型で防ぐ。 */
 export type ReservationId = string & { readonly __brand: 'ReservationId' };
@@ -93,6 +94,15 @@ export type VisitReservation = {
    * 来訪者トークンの一方向 hash（#375）。生 token は保存しない。受付照合は入力 token を
    * hash して timing-safe に突き合わせる。QR の再表示は不可（発行時のみ）。
    */
+  /**
+   * 発行主体 (#375)。**サーバが認可済みコンテキストから導出**し、リクエスト body の値は使わない
+   * （クライアントに発行者を詐称させない）。分離モデルと写しは `./invitation.ts`。
+   *
+   * 任意なのは移行前レコードとの互換のため。未設定 = 発行者不明（`ISSUER_UNKNOWN` 相当）で、
+   * **受付対象を発行者とみなして埋めない**（代理発行が入った瞬間に嘘の監査情報になる）。
+   */
+  issuedBy?: InvitationIssuer;
+
   tokenHash: ReservationTokenHash;
   /** 利用制約。 */
   usagePolicy: ReservationUsagePolicy;

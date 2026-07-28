@@ -18,6 +18,11 @@ const resolveAdminActor = vi.fn<() => Promise<Actor | null>>();
 
 vi.mock('@/lib/auth/actor', () => ({
   resolveAdminActor: () => resolveAdminActor(),
+  // 発行主体の記録 (#375) で POST が使う。identity は監査帰属用の擬似値。
+  resolveAdminActorWithIdentity: async () => {
+    const actor = await resolveAdminActor();
+    return actor ? { actor, identity: 'TEST-admin@example.com' } : null;
+  },
   buildActorConfig: () => ({
     defaultTenantId: 'default',
     passwordRole: 'tenant_admin',

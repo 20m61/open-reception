@@ -12,6 +12,7 @@
 import { randomUUID } from 'node:crypto';
 import { canAccessSite } from '@/domain/tenant/authorization';
 import type { Actor } from '@/domain/tenant/authorization';
+import { ISSUER_UNKNOWN, type InvitationIssuer } from '@/domain/reservation/invitation';
 import type { SiteId, TenantId } from '@/domain/tenant/types';
 import type { AuditAction } from '@/domain/reception/log';
 import {
@@ -122,6 +123,11 @@ export class ReservationService {
   async create(
     actor: Actor,
     input: CreateReservationInput,
+    /**
+     * 発行主体 (#375)。**呼び出し側がサーバの認可済みコンテキストから導出して渡す**
+     * （`input` からは読まない＝クライアントに詐称させない）。省略時は発行者不明。
+     */
+    issuedBy: InvitationIssuer = ISSUER_UNKNOWN,
   ): Promise<ServiceResult<IssuedReservation>> {
     const auth = this.authorize(actor, input.tenantId, input.siteId, 'write');
     if (!auth.ok) return auth;
@@ -140,6 +146,7 @@ export class ReservationService {
       note: input.note?.trim() || undefined,
       targetType: input.targetType,
       targetId: input.targetId,
+      issuedBy,
       tokenHash: hashReservationToken(token, this.pepper),
       usagePolicy: input.usagePolicy,
       expiresAt: input.expiresAt,
@@ -253,6 +260,8 @@ export class ReservationService {
       targetType: r.targetType,
       usagePolicy: r.usagePolicy,
       status: r.status,
+      // 発行主体の**種別のみ**（identity の値は metadata に入れない。既存の PII 最小化方針）。
+      issuedByType: r.issuedBy?.actorType ?? 'unknown',
     });
   }
 }
