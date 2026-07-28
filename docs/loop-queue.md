@@ -252,6 +252,7 @@
 | 45 | 2026-07-28 | #421 の一部: **第 21 wave で作った `/admin/experience-versions` がどこからも辿れなかった**件を是正。ナビ未登録のルートを検出するメタテストを追加（作る周回と IA を触る周回が別なので規律では抜ける） | `src/components/admin/navigation.ts` |
 | 46 | 2026-07-28 | #423 の一部: **管理 API の認可ガード網羅を静的検証**。既存テストはルートを手で列挙しており、新しい admin/platform ルートを足しても気づかない構造だった（認可境界なので影響が重い） | `src/app/api/admin/authz-coverage.test.ts` |
 | 47 | 2026-07-28 | **`--full` ゲートを実際に通した**（10 周回 `--pr` だけで回していた手順違反の解消）。postcss の脆弱性（高・既存 override が修正版を塞いでいた）と lighthouse の Chrome 未検出を是正 | `scripts/quality-gate.sh` |
+| 48 | 2026-07-28 | dev 依存の脆弱性 3 件を semver 互換で解消（js-yaml / body-parser / brace-expansion の一部）。**brace-expansion の残りは修正版が存在せず、5.x へ寄せると eslint が壊れることを実測**して断念・記録 | `package-lock.json` |
 
 
 **次に着手する候補（2026-07-27 更新・第 37 wave 消化後）**: **差分 B は決着済み**
@@ -340,6 +341,14 @@ ExperienceShell の切替**（移行フラグは ADR 0004 のとおり構成取�
   postcss の高危険度脆弱性（**既存の override `>=8.5.10` が修正版 8.5.18+ の解決を塞いでいた**）と、
   lighthouse の Chrome 未検出。**重いゲートは「重いから後で」で飛ばすと、飛ばしている間に
   実際に赤くなる。**
+- **`brace-expansion` の残存脆弱性は現状「直せない」**（第 48 wave に実測）。advisory の対象は
+  `<=5.0.7` で、**2.x 系には修正版が存在しない**（最新 2.1.2 も対象内）。唯一の修正版 5.0.8 へ
+  override で寄せると、**エクスポート形が変わっていて `minimatch`（CJS）が
+  `TypeError: expand is not a function` で落ち、eslint が起動しなくなる**。
+  経路は `@opennextjs/aws` → `@node-minify/core` → `glob@9` → `minimatch@8` と
+  `typescript-eslint` で、いずれも **dev 依存**（ゲートの `npm audit --omit=dev` は 0 件）。
+  上流が 2.x 系へ patch を出すか、`minimatch` が 5.x 対応するまで待つ。**再挑戦するなら
+  まず `npx eslint .` を回すこと**（install だけでは壊れていることに気づけない）。
 - **バージョン固定の override は、あとで脆弱性修正を塞ぐ**（第 47 wave）。`overrides` は
   脆弱性対応で足すことが多いが、レンジの下限を固定したまま放置すると**次の脆弱性修正が
   入らない**。`npm audit` が override 済みパッケージを指したら、まず override 自体を疑う。
