@@ -48,7 +48,15 @@ else
   exit 0
 fi
 
-if [ "${OPEN_RECEPTION_SKIP_GATE_GUARD:-0}" = "1" ]; then
+# 明示的な迂回。フック自身の環境変数と、コマンド行に書かれたインライン代入の両方を見る。
+#
+# 後者が必須: 本フックは対象コマンドの**実行前に別プロセスとして**起動されるため、
+# `OPEN_RECEPTION_SKIP_GATE_GUARD=1 gh pr merge ...` と書いてもフック側の環境には届かない。
+# ドキュメントしている迂回方法はこの形であり、かつ迂回がコマンドとして transcript に
+# 残るぶん監査上も望ましい。判定には引用符・heredoc を落とした ${scan} を使うので、
+# 「文中で迂回方法に言及しただけ」では迂回できない。
+if [ "${OPEN_RECEPTION_SKIP_GATE_GUARD:-0}" = "1" ] ||
+   printf '%s' "${scan}" | grep -Eq '(^|[;&|[:space:]])OPEN_RECEPTION_SKIP_GATE_GUARD=1([[:space:]]|$)'; then
   exit 0
 fi
 

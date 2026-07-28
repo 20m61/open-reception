@@ -232,10 +232,33 @@ describe('pr-gate-guard: 記録が現在のツリーに対応しているかを�
 });
 
 describe('pr-gate-guard: 明示的な脱出ハッチ', () => {
-  it('OPEN_RECEPTION_SKIP_GATE_GUARD=1 で素通しできる', () => {
+  it('フックの環境に OPEN_RECEPTION_SKIP_GATE_GUARD=1 があれば素通しできる', () => {
     const { status } = runHook('gh pr create --fill', {
       env: { OPEN_RECEPTION_SKIP_GATE_GUARD: '1' },
     });
     expect(status).toBe(0);
+  });
+
+  it('コマンド行に書いた OPEN_RECEPTION_SKIP_GATE_GUARD=1 でも素通しできる', () => {
+    // フックは対象コマンドの**実行前に別プロセスとして**起動されるため、
+    // `VAR=1 gh pr merge ...` のインライン代入はフック側の環境に届かない。
+    // ドキュメントしている迂回方法はこの形なので、コマンド行そのものも見る。
+    // 迂回がコマンドとして transcript に残るぶん、監査上もこちらの方が望ましい。
+    expect(runHook('OPEN_RECEPTION_SKIP_GATE_GUARD=1 gh pr create --fill').status).toBe(0);
+    expect(runHook('OPEN_RECEPTION_SKIP_GATE_GUARD=1 gh pr merge 12 --squash').status).toBe(0);
+  });
+
+  it('迂回の言及が引用符やヒアドキュメントの中だけなら素通しさせない', () => {
+    const cmd = [
+      "git commit -q -F - <<'EOF'",
+      'docs: 迂回方法を書く',
+      '',
+      'OPEN_RECEPTION_SKIP_GATE_GUARD=1 gh pr merge で迂回できる。',
+      'EOF',
+    ].join('\n');
+    // heredoc 内なので gh pr merge 自体が判定対象外 → そもそもブロックされない
+    expect(runHook(cmd).status).toBe(0);
+    // 一方、実コマンドの gh pr merge を引用符内の言及だけで迂回はできない
+    expect(runHook('echo "OPEN_RECEPTION_SKIP_GATE_GUARD=1" && gh pr merge 12').status).toBe(2);
   });
 });
