@@ -29,6 +29,11 @@ CI は使わない。ゲートは **`./scripts/quality-gate.sh`** をローカ�
 対応する npm scripts: `verify`(typecheck+lint+test+build) / `test` / `test:e2e` /
 `lighthouse` / `secrets:scan` / `sast` / `audit:deps`。閾値は `docs/quality-gate.md`。
 
+**ゲートは機械的に強制される**。PreToolUse フック `scripts/hooks/pr-gate-guard.sh` が
+`gh pr create`（要 `--pr` 以上）/ `gh pr merge`（要 `--full`）を、現在の作業ツリーに対する
+green 記録が無ければブロックする。記録はゲートが実際に検査したツリーに紐づくので、
+**ゲート後に編集したら走らせ直す**。詳細は `docs/quality-gate.md`。
+
 ## 規約
 
 - パッケージマネージャ: **npm**（Node >=22）。

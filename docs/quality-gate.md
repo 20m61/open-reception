@@ -14,6 +14,25 @@ npm run test:e2e      # iPad viewport の E2E（axe a11y を含む）
 npm run lighthouse    # Lighthouse CI（performance / accessibility / best-practices / seo）
 ```
 
+### ゲートの強制（`pr-gate-guard` フック）
+
+CI が無い以上、「PR 前に `--pr` / マージ前に `--full`」は**規約だけでは守られない**。
+そのため Claude Code の PreToolUse フック `scripts/hooks/pr-gate-guard.sh`
+（`.claude/settings.json` で登録・チーム共通）が `gh pr create` / `gh pr merge` を
+実行直前に捕まえ、**現在の作業ツリーに対する green 記録が無ければブロック**する。
+
+- 記録（スタンプ）は `quality-gate.sh` が PASS 時に `.git/open-reception-gate-stamp`
+  へ追記する。コミットされず、**worktree ごとに独立**（並列トラックが互いの結果を
+  流用できない）。実装は `scripts/lib/gate-stamp.sh`。
+- 記録は「そのゲートが実際に検査したツリー」に紐づく。HEAD・追跡ファイルの差分・
+  未追跡（非 ignore）ファイルの内容から指紋を採るため、**ゲート後に 1 文字でも編集
+  すれば stale として無効**になり、走らせ直しが要る。`.gitignore` 済み（`node_modules`・
+  `.next` 等）は指紋に影響しない。
+- 要求 tier は `gh pr create` → `--pr` 以上、`gh pr merge` → `--full`
+  （`feedback: merge-gate`）。`--fast` だけでは PR を作れない。
+- 意図的な迂回は明示的に行う: `OPEN_RECEPTION_SKIP_GATE_GUARD=1 gh pr create ...`。
+- 振る舞いは `tests/hooks/pr-gate-guard.test.ts` で検証している（`npm test` に載る）。
+
 ### E2E のブラウザ（macOS 13 対応）
 
 E2E は iPad 受付端末を主対象とするが、ブラウザは 2 系統で回す（`playwright.config.ts`）。

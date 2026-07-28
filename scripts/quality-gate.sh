@@ -90,6 +90,15 @@ echo " quality-gate  tier=${TIER}  $(node -v 2>/dev/null)"
 echo " repo: ${ROOT}"
 echo "================================================================"
 
+# ---- green 記録（スタンプ）------------------------------------------------
+# PASS 時に「どのツリーを・どの tier で検査したか」を .git 配下に記録する。
+# scripts/hooks/pr-gate-guard.sh が gh pr create / merge の直前にこれを検証し、
+# ゲート未実施・tier 不足・実行後の編集（stale）をブロックする。
+# 指紋は**実行開始時点**で採る（実行中の編集を green として記録しないため）。
+# shellcheck source=lib/gate-stamp.sh
+. "${ROOT}/scripts/lib/gate-stamp.sh"
+GATE_FINGERPRINT="$(gate_tree_fingerprint || true)"
+
 # ---- 依存 bootstrap（fresh worktree の自己修復）---------------------------
 install_deps() { # install_deps <dir-label> <prefix-or-empty>
   local label="$1" prefix="$2" reason="$3"
@@ -180,4 +189,6 @@ if [[ "$FAILED" -eq 1 ]]; then
   echo "❌ quality-gate FAILED"
   exit 1
 fi
-echo "✅ quality-gate PASSED"
+
+gate_write_stamp "${TIER}" "${GATE_FINGERPRINT}"
+echo "✅ quality-gate PASSED  (tier=${TIER} を green として記録しました)"

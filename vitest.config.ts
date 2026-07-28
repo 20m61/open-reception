@@ -19,10 +19,13 @@ export default defineConfig({
     // ブラウザ前提の実ループは tests/e2e/soak/*.spec.ts（vitest 対象外・playwright.soak.config.ts）。
     // 音声評価ハーネス（tests/voice-evaluation/）も合成データのみのオフライン純ロジックなので
     // unit test で回す (#365)。実 provider / 実機を要する完全セットは #65 の UAT 手順側。
+    // Claude Code フック（scripts/hooks/*.sh）は使い捨ての一時 git リポジトリを相手に
+    // 実際に起動して検証する。外部 I/O は一時ディレクトリ内で閉じるので unit で回す。
     include: [
       'src/**/*.{test,spec}.{ts,tsx}',
       'tests/soak/**/*.{test,spec}.ts',
       'tests/voice-evaluation/**/*.{test,spec}.ts',
+      'tests/hooks/**/*.{test,spec}.ts',
     ],
     exclude: ['tests/e2e/**', 'node_modules/**'],
   },
