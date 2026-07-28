@@ -161,6 +161,14 @@ if [[ "$RUN_AUDIT" -eq 1 ]]; then
 fi
 
 if [[ "$RUN_LH" -eq 1 ]]; then
+  # lhci は Chrome を自力で探すが、プリインストール済み Chromium しか無い実行環境
+  # （例: Claude Code on the web の /opt/pw-browsers）では見つけられず healthcheck で落ちる。
+  # playwright.config.ts が同じ理由で同じパスを自動検出しているので、ここでも合わせる
+  # （env を明示し忘れて「この環境では lighthouse は動かない」と誤結論するのを防ぐ。
+  # e2e で実際にその誤結論が 5 周引き継がれた前例がある）。
+  if [[ -z "${CHROME_PATH:-}" && -x /opt/pw-browsers/chromium ]]; then
+    export CHROME_PATH=/opt/pw-browsers/chromium
+  fi
   if command -v lhci >/dev/null 2>&1 || npx --no-install lhci --version >/dev/null 2>&1; then
     step "lighthouse (lhci)" npm run --silent lighthouse
   else
