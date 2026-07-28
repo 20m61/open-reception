@@ -92,11 +92,11 @@ export function KioskCallView({
     <div className="kiosk-call" data-testid="kiosk-call" data-call-state={uiState}>
       {/* publisher（受付端末カメラ）の描画先。SDK が利用できないときは空のまま。 */}
       <div ref={containerRef} className="kiosk-call__video" aria-hidden={uiState !== 'connected'} />
-      <p className="kiosk-call__status" role="status">
-        {uiState === 'connecting' && '担当者を呼び出しています。少々お待ちください。'}
-        {uiState === 'connected' && '応答がありました。まもなくお越しになります。'}
-        {uiState === 'timeout' && '応答がありませんでした。'}
-        {uiState === 'fallback' && '通話を開始できませんでした。画面の案内に沿ってお進みください。'}
+      <p className="kiosk-call__status" role="status" lang={htmlLangFor(locale)}>
+        {uiState === 'connecting' && tr('kiosk.call.connecting')}
+        {uiState === 'connected' && tr('kiosk.call.connected')}
+        {uiState === 'timeout' && tr('kiosk.call.timeout')}
+        {uiState === 'fallback' && tr('kiosk.call.fallback')}
       </p>
       {stages && stages.length > 0 ? (
         <div className="kiosk-call__stages" data-testid="kiosk-call-stages" lang={htmlLangFor(locale)}>

@@ -142,3 +142,49 @@ test('カスタム受付フローの画面にも逃げ道バーが常設され�
   await page.getByTestId('escape-reset').click();
   await expect(page.getByTestId('kiosk-quick-actions')).toBeVisible();
 });
+
+/**
+ * カスタム受付フロー画面の i18n (issue #327 follow-up)。
+ *
+ * `PurposeSelector` / `VisitorInfoForm` は locale を一切受け取っておらず、English を選んでも
+ * 日本語の見出し・ボタンが出ていた。フロー名や項目ラベルはテナントが管理画面で入力した値
+ * なので翻訳しない（入力された言語のまま出す）が、**画面の固定文言は訳す**。
+ */
+test('English を選ぶとカスタム受付フローの画面も英語になる', async ({ page }) => {
+  const key = uniq('e2e-i18n');
+  const name = uniq('i18n flow');
+
+  await loginAsAdmin(page);
+  const created = await page.request.post('/api/admin/reception-flows', {
+    data: {
+      tenantId: 'internal',
+      siteId: 'default-site',
+      purposeKey: key,
+      displayName: name,
+      order: 99,
+      steps: ['purpose', 'visitorInfo', 'confirm', 'call'],
+      fields: [{ key: 'name', label: 'Full name', type: 'text', required: true }],
+    },
+  });
+  expect(created.ok()).toBeTruthy();
+  createdFlowIds.push(((await created.json()) as { id: string }).id);
+
+  await establishKioskSession(page);
+  await page.goto('/kiosk');
+  await page.getByRole('button', { name: 'English' }).click();
+  await page.getByTestId('start-reception').click();
+
+  // 目的選択の見出しが英語（フロー名はテナント入力なのでそのまま）。
+  await expect(page.getByTestId('purpose-selector')).toBeVisible({ timeout: 15_000 });
+  await expect(page.getByTestId('purpose-selector')).toHaveAttribute('lang', 'en');
+  await expect(page.getByRole('heading', { name: 'Please select the reason for your visit' })).toBeVisible();
+
+  await page.getByTestId('purpose-option').first().click();
+  await page.getByTestId('staff-staff-sato').click();
+
+  // 入力フォームの見出しと主 CTA が英語。
+  await expect(page.getByTestId('visitor-info-form')).toBeVisible({ timeout: 15_000 });
+  await expect(page.getByTestId('visitor-info-form')).toHaveAttribute('lang', 'en');
+  await expect(page.getByRole('heading', { name: 'Please enter your details' })).toBeVisible();
+  await expect(page.getByTestId('visitor-submit')).toHaveText('Continue to confirm');
+});

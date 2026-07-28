@@ -2,6 +2,7 @@
 
 import { useMemo, useState } from 'react';
 import type { FlowField } from '@/domain/reception/custom-flow';
+import { DEFAULT_LOCALE, htmlLangFor, makeT, type Locale } from '@/lib/i18n';
 import {
   areRequiredFieldsSatisfied,
   initialFieldValues,
@@ -16,16 +17,22 @@ import type { FlowFieldValues } from './types';
  * select/checkbox）に対応する。必須が満たされるまで送信を無効化する。スタンドアロン:
  * 送信値は onSubmit で呼び出し元へ渡す（KioskFlow への組み込みは後段で配線）。戻る操作は
  * onBack で目的選択へ戻せる（目的選択を間違えた場合に戻れる／通常受付へ戻せる UX 方針）。
+ *
+ * 画面の固定文言は i18n カタログ経由 (#327)。項目ラベル・選択肢はテナントが管理画面で
+ * 入力した値なので翻訳しない（入力された言語のまま出す）。
  */
 export function VisitorInfoForm({
   fields,
   onSubmit,
   onBack,
+  locale = DEFAULT_LOCALE,
 }: {
   fields: readonly FlowField[];
   onSubmit: (values: FlowFieldValues) => void;
   onBack?: () => void;
+  locale?: Locale;
 }) {
+  const tr = makeT(locale);
   const [values, setValues] = useState<FlowFieldValues>(() => initialFieldValues(fields));
 
   const invalidKeys = useMemo(() => new Set(unsatisfiedRequiredKeys(fields, values)), [fields, values]);
@@ -41,9 +48,10 @@ export function VisitorInfoForm({
         e.preventDefault();
         if (canSubmit) onSubmit(values);
       }}
+      lang={htmlLangFor(locale)}
       style={{ display: 'grid', gap: 16 }}
     >
-      <h2 style={{ margin: 0 }}>ご来訪情報をご入力ください</h2>
+      <h2 style={{ margin: 0 }}>{tr('reception.visitorInfoPrompt')}</h2>
       {fields.map((field) => (
         <label key={field.key} style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
           <span style={{ fontSize: '1rem' }}>
@@ -54,6 +62,7 @@ export function VisitorInfoForm({
             field={field}
             value={values[field.key]}
             invalid={invalidKeys.has(field.key)}
+            selectPlaceholder={tr('customFlow.selectPlaceholder')}
             onChange={(v) => setValue(field.key, v)}
           />
         </label>
@@ -62,11 +71,11 @@ export function VisitorInfoForm({
       <div style={{ display: 'flex', gap: 12, marginTop: 8 }}>
         {onBack ? (
           <button type="button" data-testid="visitor-back" onClick={onBack} style={secondaryBtn}>
-            戻る
+            {tr('reception.back')}
           </button>
         ) : null}
         <button type="submit" data-testid="visitor-submit" disabled={!canSubmit} style={primaryBtn}>
-          確認へ進む
+          {tr('reception.proceedConfirm')}
         </button>
       </div>
     </form>
@@ -77,11 +86,14 @@ function FieldControl({
   field,
   value,
   invalid,
+  selectPlaceholder,
   onChange,
 }: {
   field: FlowField;
   value: string | boolean | undefined;
   invalid: boolean;
+  /** select の未選択時プレースホルダ（訳文は呼び出し側が解決する）。 */
+  selectPlaceholder: string;
   onChange: (value: string | boolean) => void;
 }) {
   const border = invalid ? '1px solid var(--color-danger)' : '1px solid var(--color-surface-2)';
@@ -108,7 +120,7 @@ function FieldControl({
           onChange={(e) => onChange(e.target.value)}
           style={{ ...controlStyle, border }}
         >
-          <option value="">選択してください</option>
+          <option value="">{selectPlaceholder}</option>
           {(field.options ?? []).map((opt) => (
             <option key={opt} value={opt}>
               {opt}

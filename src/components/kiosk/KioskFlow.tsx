@@ -1053,6 +1053,7 @@ export function KioskFlow({ operatingStatus, sttAdapterFactory, voiceSession, qr
       ) : useCustomFlow && data.state === 'selectingPurpose' ? (
         // カスタム目的選択 (issue #100)。選択でフローを保持し、入力ステップ有無で次へ分岐。
         <CustomPurposeView
+          locale={locale}
           flows={customFlows ?? []}
           onSelect={(flow) => {
             setSelectedFlow(flow);
@@ -1565,15 +1566,17 @@ function CheckoutLink({ locale = DEFAULT_LOCALE }: { locale?: Locale }) {
 function CustomPurposeView({
   flows,
   onSelect,
+  locale,
 }: {
   flows: readonly KioskCustomFlow[];
   onSelect: (flow: KioskCustomFlow) => void;
+  locale: Locale;
 }) {
   // 「最初に戻る」は常設の逃げ道バーに一本化（画面内フッターとの二重表示を解消, #121）。
   return (
     <>
       <div className="screen__body" data-testid="custom-purpose-view">
-        <PurposeSelector flows={flows} onSelect={onSelect} />
+        <PurposeSelector flows={flows} onSelect={onSelect} locale={locale} />
       </div>
     </>
   );
@@ -1619,7 +1622,7 @@ function CustomVisitorInfoView({
         overrideSummary={privacyNoticeOverride}
         presenceCameraEnabled={presenceCameraEnabled}
       />
-      <VisitorInfoForm fields={flow.fields} onSubmit={onSubmit} />
+      <VisitorInfoForm fields={flow.fields} onSubmit={onSubmit} locale={locale} />
     </div>
   );
 }

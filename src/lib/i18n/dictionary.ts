@@ -107,6 +107,14 @@ export type MessageKey =
   // 受付進行中も画面分岐より手前で常設される来訪者向けのお知らせ (#327 follow-up)。
   | 'reception.offlineNotice'
   | 'kiosk.deviceUnavailable'
+  // 通話ビューの状態表示（#375 経路ではなく Vonage 通話の実況）。
+  | 'kiosk.call.connecting'
+  | 'kiosk.call.connected'
+  | 'kiosk.call.timeout'
+  | 'kiosk.call.fallback'
+  // カスタム受付フロー (#100) の画面。
+  | 'customFlow.noFlows'
+  | 'customFlow.selectPlaceholder'
   | 'reception.fallbackBody'
   | 'reception.toDesk'
   | 'reception.cancelled'
@@ -366,6 +374,12 @@ const ja: DefaultDictionary = {
   'reception.escapeBarLabel': '受付の操作',
   'reception.offlineNotice': '通信が不安定です。復帰までしばらくお待ちください。',
   'kiosk.deviceUnavailable': 'この受付端末は現在ご利用いただけません。担当者にお問い合わせください。',
+  'kiosk.call.connecting': '担当者を呼び出しています。少々お待ちください。',
+  'kiosk.call.connected': '応答がありました。まもなくお越しになります。',
+  'kiosk.call.timeout': '応答がありませんでした。',
+  'kiosk.call.fallback': '通話を開始できませんでした。画面の案内に沿ってお進みください。',
+  'customFlow.noFlows': '受付フローが設定されていません。',
+  'customFlow.selectPlaceholder': '選択してください',
   'reception.fallbackBody': '代表窓口にお繋ぎします。受付スタッフが対応いたしますので、しばらくお待ちください。',
   'reception.toDesk': '受付窓口へ',
   'reception.cancelled': '受付をキャンセルしました',
@@ -607,6 +621,12 @@ const en: LocaleDictionary = {
   'reception.escapeBarLabel': 'Reception controls',
   'reception.offlineNotice': 'The connection is unstable. Please wait a moment while it recovers.',
   'kiosk.deviceUnavailable': 'This reception terminal is currently unavailable. Please contact a staff member.',
+  'kiosk.call.connecting': 'Calling the person in charge. Please wait a moment.',
+  'kiosk.call.connected': 'They have responded and will be with you shortly.',
+  'kiosk.call.timeout': 'There was no response.',
+  'kiosk.call.fallback': 'The call could not be started. Please follow the on-screen guidance.',
+  'customFlow.noFlows': 'No reception flow has been configured.',
+  'customFlow.selectPlaceholder': 'Please select',
   'reception.fallbackBody': "We'll connect you to the main desk. A staff member will assist you shortly.",
   'reception.toDesk': 'Go to the main desk',
   'reception.cancelled': 'Reception cancelled',
@@ -848,6 +868,12 @@ const ko: LocaleDictionary = {
   'reception.escapeBarLabel': '접수 컨트롤',
   'reception.offlineNotice': '통신이 불안정합니다. 복구될 때까지 잠시 기다려 주세요.',
   'kiosk.deviceUnavailable': '이 접수 단말기는 현재 이용할 수 없습니다. 담당자에게 문의해 주세요.',
+  'kiosk.call.connecting': '담당자를 호출하고 있습니다. 잠시만 기다려 주세요.',
+  'kiosk.call.connected': '응답이 있었습니다. 곧 도착합니다.',
+  'kiosk.call.timeout': '응답이 없었습니다.',
+  'kiosk.call.fallback': '통화를 시작할 수 없었습니다. 화면 안내에 따라 진행해 주세요.',
+  'customFlow.noFlows': '접수 플로우가 설정되어 있지 않습니다.',
+  'customFlow.selectPlaceholder': '선택해 주세요',
   'reception.fallbackBody': '대표 창구로 연결합니다. 접수 직원이 도와드리니 잠시만 기다려 주세요.',
   'reception.toDesk': '접수 창구로',
   'reception.cancelled': '접수가 취소되었습니다',
@@ -1087,6 +1113,12 @@ const zh: LocaleDictionary = {
   'reception.escapeBarLabel': '登记操作',
   'reception.offlineNotice': '网络连接不稳定。请稍候，正在恢复。',
   'kiosk.deviceUnavailable': '此登记终端当前无法使用。请联系工作人员。',
+  'kiosk.call.connecting': '正在呼叫负责人，请稍候。',
+  'kiosk.call.connected': '已收到回应，负责人稍后就到。',
+  'kiosk.call.timeout': '没有收到回应。',
+  'kiosk.call.fallback': '无法开始通话。请按照屏幕提示继续。',
+  'customFlow.noFlows': '尚未设置登记流程。',
+  'customFlow.selectPlaceholder': '请选择',
   'reception.fallbackBody': '正在为您转接前台，工作人员将很快为您服务，请稍候。',
   'reception.toDesk': '前往前台',
   'reception.cancelled': '登记已取消',
@@ -1333,6 +1365,12 @@ const jaSimple: LocaleDictionary = {
   'reception.escapeBarLabel': 'うけつけの そうさ',
   'reception.offlineNotice': 'つうしんが ふあんていです。なおるまで すこし まってください。',
   'kiosk.deviceUnavailable': 'この うけつけたんまつは いま つかえません。かかりのひとに きいてください。',
+  'kiosk.call.connecting': '人を よんで います。少し お待ち ください。',
+  'kiosk.call.connected': 'へんじが ありました。もうすぐ きます。',
+  'kiosk.call.timeout': 'へんじが ありませんでした。',
+  'kiosk.call.fallback': 'つうわを はじめられませんでした。がめんの あんないに そって すすんで ください。',
+  'customFlow.noFlows': 'うけつけの ながれが せっていされて いません。',
+  'customFlow.selectPlaceholder': 'えらんで ください',
   'reception.fallbackBody': '受付の 人が おてつだい します。少し お待ち ください',
   'reception.toDesk': '受付へ',
   'common.next': 'つぎへ',
