@@ -16,9 +16,10 @@ import { test, expect } from './kiosk-fixtures';
  */
 
 test('呼び出し中は段階的に文言が変わり、タイムアウトは予告を経てから遷移する (#323 AC1/AC3)', async ({ page }) => {
-  await page.goto(
-    '/kiosk?callingStageMs=200&callingNoticeMs=500&callingNoticeHoldMs=300&inactivityMs=600',
-  );
+  // 無操作リセットの短縮は指定しない。calling は INACTIVITY_RESET_STATES に含まれず
+  // （state.ts）本テストの検証対象にも関わらないため、一律に短縮しても利益が無く、
+  // calling へ至る 6 ステップの操作を警告オーバーレイの横取りに晒すだけだった (#476)。
+  await page.goto('/kiosk?callingStageMs=200&callingNoticeMs=500&callingNoticeHoldMs=300');
   await page.getByTestId('start-reception').click();
   await page.getByTestId('purpose-meeting').click();
   await page.getByTestId('staff-staff-suzuki').click();

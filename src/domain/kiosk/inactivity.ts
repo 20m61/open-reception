@@ -8,13 +8,18 @@
  *     「操作は不要です」と案内しその場で待つ画面なので長めに取り、正当な待機の誤リセットを避ける。
  *
  * E2E 用のクエリ上書きは 2 段階で、**より具体的な指定が勝つ**:
- *   - `?inactivityMs=`          … 全状態に一律（既存の流儀）
- *   - `?connectedInactivityMs=` … connected のみ
+ *   - `?inactivityMs=`            … 全状態に一律（既存の流儀）
+ *   - `?inactivityMs.<state>=`    … その状態のみ（例 `?inactivityMs.connected=600`）
  *
- * connected 限定の口を用意しているのは、一律短縮だと connected へ至るまでの操作すべてが
- * 同じ短い上限に晒され、1 ステップでも遅れると警告オーバーレイが click を横取りして
- * テストが落ちるため（負荷依存のフレーク）。「フロー中は本番既定・connected だけ短縮」を
- * 表現できるようにして、競合を構造的に消す。
+ * 状態限定の口が要るのは、一律短縮だと**検証したい状態へ至るまでの操作すべて**が同じ短い
+ * 上限に晒されるため。警告表示までの猶予は `limit - warnMs` で、`warnMs` が
+ * `min(INACTIVITY_WARNING_MS, limit - 500)` に丸められる結果、**limit が 10.5 秒未満なら
+ * 猶予は常に 500ms 固定**になる。つまり `?inactivityMs=` の値を大きくしても解決しない。
+ * 1 ステップでもアニメーション待ち等で 500ms を超えると警告オーバーレイが click を
+ * 横取りしてテストが落ちる（負荷依存のフレーク）。
+ *
+ * 「そこへ至るまでは本番既定・検証したい状態だけ短縮」を表現できるようにして、競合を
+ * 構造的に消す。
  */
 
 /**
@@ -52,16 +57,13 @@ function positiveMs(raw: string | null): number | undefined {
  */
 export function resolveInactivityLimitMs(input: { search?: string; state: string }): number {
   const params = new URLSearchParams(input.search ?? '');
-  const isConnected = input.state === 'connected';
 
-  // connected 限定の指定が最優先（より具体的な指定が勝つ）。
-  if (isConnected) {
-    const connectedOverride = positiveMs(params.get('connectedInactivityMs'));
-    if (connectedOverride !== undefined) return connectedOverride;
-  }
+  // 状態限定の指定が最優先（より具体的な指定が勝つ）。
+  const scopedOverride = positiveMs(params.get(`inactivityMs.${input.state}`));
+  if (scopedOverride !== undefined) return scopedOverride;
 
   const uniformOverride = positiveMs(params.get('inactivityMs'));
   if (uniformOverride !== undefined) return uniformOverride;
 
-  return isConnected ? CONNECTED_INACTIVITY_RESET_MS : INACTIVITY_RESET_MS;
+  return input.state === 'connected' ? CONNECTED_INACTIVITY_RESET_MS : INACTIVITY_RESET_MS;
 }

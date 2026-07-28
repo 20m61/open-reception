@@ -19,7 +19,9 @@ import {
 
 describe('resolveInactivityLimitMs — 既定', () => {
   it('選択・入力画面は INACTIVITY_RESET_MS', () => {
-    expect(resolveInactivityLimitMs({ search: '', state: 'purpose' })).toBe(INACTIVITY_RESET_MS);
+    expect(resolveInactivityLimitMs({ search: '', state: 'selectingPurpose' })).toBe(
+      INACTIVITY_RESET_MS,
+    );
   });
 
   it('connected は長めの CONNECTED_INACTIVITY_RESET_MS', () => {
@@ -31,7 +33,9 @@ describe('resolveInactivityLimitMs — 既定', () => {
 
 describe('resolveInactivityLimitMs — ?inactivityMs=（全状態に効く既存の流儀）', () => {
   it('connected 以外にも効く', () => {
-    expect(resolveInactivityLimitMs({ search: '?inactivityMs=600', state: 'purpose' })).toBe(600);
+    expect(resolveInactivityLimitMs({ search: '?inactivityMs=600', state: 'selectingPurpose' })).toBe(
+      600,
+    );
   });
 
   it('connected にも効く', () => {
@@ -39,36 +43,45 @@ describe('resolveInactivityLimitMs — ?inactivityMs=（全状態に効く既存
   });
 });
 
-describe('resolveInactivityLimitMs — ?connectedInactivityMs=（connected 限定）', () => {
-  it('connected だけを短縮する', () => {
-    expect(resolveInactivityLimitMs({ search: '?connectedInactivityMs=600', state: 'connected' })).toBe(
+describe('resolveInactivityLimitMs — ?inactivityMs.<state>=（状態限定）', () => {
+  it('指定した状態だけを短縮する', () => {
+    expect(resolveInactivityLimitMs({ search: '?inactivityMs.connected=600', state: 'connected' })).toBe(
+      600,
+    );
+    expect(
+      resolveInactivityLimitMs({
+        search: '?inactivityMs.inputVisitorInfo=600',
+        state: 'inputVisitorInfo',
+      }),
+    ).toBe(600);
+  });
+
+  it('他の状態は本番既定のまま（そこへ至る操作をオーバーレイに横取りさせない）', () => {
+    for (const state of ['selectingPurpose', 'selectingTarget', 'inputVisitorInfo', 'confirming'] as const) {
+      expect(
+        resolveInactivityLimitMs({ search: '?inactivityMs.connected=600', state }),
+        state,
+      ).toBe(INACTIVITY_RESET_MS);
+    }
+    expect(resolveInactivityLimitMs({ search: '?inactivityMs.connected=600', state: 'connected' })).toBe(
       600,
     );
   });
 
-  it('フロー中の状態は本番既定のまま（オーバーレイに操作を横取りさせない）', () => {
-    for (const state of ['purpose', 'target', 'form', 'confirm', 'calling'] as const) {
-      expect(
-        resolveInactivityLimitMs({ search: '?connectedInactivityMs=600', state }),
-        state,
-      ).toBe(INACTIVITY_RESET_MS);
-    }
-  });
-
-  it('connected では ?inactivityMs= より優先する（より具体的な指定が勝つ）', () => {
+  it('一律の ?inactivityMs= より優先する（より具体的な指定が勝つ）', () => {
     expect(
       resolveInactivityLimitMs({
-        search: '?inactivityMs=5000&connectedInactivityMs=600',
+        search: '?inactivityMs=5000&inactivityMs.connected=600',
         state: 'connected',
       }),
     ).toBe(600);
   });
 
-  it('connected 以外では ?inactivityMs= の指定が残る', () => {
+  it('指定の無い状態では一律の ?inactivityMs= が残る', () => {
     expect(
       resolveInactivityLimitMs({
-        search: '?inactivityMs=5000&connectedInactivityMs=600',
-        state: 'purpose',
+        search: '?inactivityMs=5000&inactivityMs.connected=600',
+        state: 'selectingPurpose',
       }),
     ).toBe(5000);
   });
@@ -77,11 +90,12 @@ describe('resolveInactivityLimitMs — ?connectedInactivityMs=（connected 限�
 describe('resolveInactivityLimitMs — 不正値は既定へフォールバック', () => {
   it('0・負値・非数・空は無視する', () => {
     for (const raw of ['0', '-1', 'abc', '']) {
-      expect(resolveInactivityLimitMs({ search: `?inactivityMs=${raw}`, state: 'purpose' }), raw).toBe(
-        INACTIVITY_RESET_MS,
-      );
       expect(
-        resolveInactivityLimitMs({ search: `?connectedInactivityMs=${raw}`, state: 'connected' }),
+        resolveInactivityLimitMs({ search: `?inactivityMs=${raw}`, state: 'selectingPurpose' }),
+        raw,
+      ).toBe(INACTIVITY_RESET_MS);
+      expect(
+        resolveInactivityLimitMs({ search: `?inactivityMs.connected=${raw}`, state: 'connected' }),
         raw,
       ).toBe(CONNECTED_INACTIVITY_RESET_MS);
     }
