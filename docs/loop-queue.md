@@ -123,7 +123,7 @@
 | **#372** | voice/turn | **実装済**（同上）: `domain/voice-turn/`（vad/turn-detector/near-end-classifier/barge-in-controller/history-truncation/stt-integration）。旧「VAD/turn detector なし」は誤り | ローカル可 |
 | **#373** | domain/org | **increment 1 完了**（PR #394 = `src/domain/organization/` の型・階層検証・ディレクトリ・compat reader。additive 限定で既存 `Department`/`staff.departmentId` は無改変）。残: 永続化 repository → Directory API 配線 → 来訪者 UI → tenant 越境 E2E。follow-up は **#396** | ローカル可（継続） |
 | **#374** | domain/routing | **実装済**（第 41 wave に訂正。旧「未達」列は stale）: `domain/routing/`（endpoint/policy/orchestrator/ledger/describe/compat/seed/provider/mock-provider、9 module × 7 test）。循環検出は `policy.ts`。**残**: 旧 `call-route` との重複解消（台帳 §5 の重複概念＝概念一本化は仕様判断） | 残りは要ユーザー確認 |
-| **#375** | domain/invitation | **部分**: token hash 化は第 13 wave 完了。**3-ref 分離は第 42 wave で型と写しを実装**（`domain/reservation/invitation.ts`。**production の呼び出し元はまだ無い**＝制約を判定できるだけで強制はしていない）。**残**: 永続形・管理 API を 3 参照へ載せ替える（`targetType`/`targetId` は**管理 API の公開形**なので要ユーザー確認）・QR 確認画面への発行者表示・監査記録・**本人接続でない招待をどの exception state へ落とすかの体験設計**（`person_unavailable` か新規か。J-OR-03 / J-OR-05 に直結） | 残りは**要ユーザー確認**（公開 API + Journey の意味） |
+| **#375** | domain/invitation | **部分**: token hash 化は第 13 wave 完了。**3-ref 分離は第 42 wave で型と写しを実装し、第 53 wave で `issuedBy` の永続化まで到達**（任意フィールドで加算的・サーバの認可済みコンテキストから導出＝公開 API は非破壊）。**残**: `receptionTarget` / `connectionTarget` の載せ替え。MVP 制約下では `targetType`/`targetId` から導出でき**情報が増えない**ため、公開 API を動かす価値が薄い（要ユーザー確認のまま）・QR 確認画面への発行者表示・監査記録・**本人接続でない招待をどの exception state へ落とすかの体験設計**（`person_unavailable` か新規か。J-OR-03 / J-OR-05 に直結） | 残りは**要ユーザー確認**（公開 API + Journey の意味） |
 | **#376** | spike/vonage | **部分**: `vonage-adapter.ts`・`vonage-jwt.ts`・`docs/vonage-call-design.md` 在り。実測部未着手 | ADR はローカル可 / 実測は**外部待ち**→ #65 |
 | **#399** | avatar | **本書に未登録だった**（第 41 wave に追加）。`public/avatar/` は README + provenance のみで実 VRM 資産なし。実機 UAT とライセンス条件の判定を含む | **外部待ち**→ #65 |
 | **#405** | platform | **本書のオープン表に行が無く、完了アーカイブ行にだけ現れていた**（第 41 wave に追加）。Inc1 実装済: `domain/provider-config/`（config/secret/types/secrets-manager-store + server-only 静的検証）+ `lib/platform/tenant-secret-store.ts`。**残**: Inc2 の保存先判断（Secrets Manager / KMS+DynamoDB）＝ secret 方針 + コスト | **要ユーザー確認**（issue 本文も明記） |
@@ -261,6 +261,7 @@
 | 50 | 2026-07-28 | **ADR 0006**: 体験設計の未定義 2 件を決定（`privacy_blocked` の定義 / QR スキャン＝第 3 の入力手段）。正本・対応表・実装へ反映。挙動は不変 | `docs/adr/0006-experience-state-model-gaps.md` |
 | 51 | 2026-07-28 | **ADR 0007**: 差分 C の「確認の統合」を却下（前提が誤り）。ただし**等価性ギャップは別の理由で実在**（差分 C'）。音声の露出面を固定する回帰テストを追加 | `docs/adr/0007-voice-touch-confirmation-boundary.md` |
 | 52 | 2026-07-28 | **ADR 0008**: 差分 D は「今は統合しない」。並存コストを実測したら**修正の伝播漏れ**で、実害 1 件（QR 受付が 403/400/その他を「通信に失敗しました」と表示）を是正 | `src/domain/checkin/failure.ts` |
+| 53 | 2026-07-28 | #375 inc2: **QR を誰が発行したかがどこにも記録されていなかった**件を是正（レコードにも監査にも無く、`appendAdminAudit` は actor を固定値で書いていた）。加算的・サーバ導出で公開 API は非破壊 | `src/lib/reservation/service.ts` |
 
 
 **次に着手する候補（2026-07-27 更新・第 37 wave 消化後）**: **差分 B は決着済み**
