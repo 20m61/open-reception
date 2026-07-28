@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { RECEPTION_STATES, type ReceptionState } from '@/domain/reception/state';
 import {
   availableActions,
+  escapeHatchActionsFor,
   isActionAllowed,
   REQUIRES_CONFIRMATION_ACTIONS,
 } from '@/domain/reception/ui-contract';
@@ -53,6 +54,21 @@ describe('quickActionsFor', () => {
 });
 
 describe('escapeHatchesFor', () => {
+  it('どのアクションを出すかは全状態で契約と一致する（真実源は 1 つ・#422 地ならし）', () => {
+    // 層は意図的に分かれている: **どの後退アクションか**は契約（domain）、
+    // label/variant/testId は UI 側（本ファイル）。比較するのはアクションの集合だけ。
+    //
+    // かつてその「どのアクションか」の判断が二重実装され、`confirming` の back 抑制
+    // （#240/#325）が契約側に無いという食い違いがあった。片方を直してももう片方に
+    // 伝播しないため、判断を契約へ寄せたうえで一致をここで固定する。これが崩れると、
+    // 画面を ConversationTurnView へ配線した時点で挙動が変わる。
+    for (const state of RECEPTION_STATES) {
+      const ui = escapeHatchesFor(state).map((h) => h.action);
+      const contract = escapeHatchActionsFor(state).map((h) => h.action);
+      expect(ui, state).toEqual(contract);
+    }
+  });
+
   it('idle では逃げ道を出さない（戻る先が無い）', () => {
     expect(escapeHatchesFor('idle')).toHaveLength(0);
   });

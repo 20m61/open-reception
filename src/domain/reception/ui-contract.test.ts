@@ -416,6 +416,23 @@ describe('reception ui-contract: escapeHatchActionsFor (#361)', () => {
     expect(actions).toContain('back');
     expect(actions).toContain('reset');
   });
+
+  it('確認画面(confirming)では 戻る を出さない（フッターの「修正する」と二重になる・#240/#325）', () => {
+    // 確認画面は短い要約で、フッターの「修正する」(confirm-back) が常に到達可能。
+    // 常設バーの 戻る と二重になるため意図的に抑制している。契約がこれを反映していないと、
+    // 画面を ConversationTurnView へ配線した時点で #240 の dedup が退行する。
+    const actions = escapeHatchActionsFor('confirming').map((h) => h.action);
+    expect(actions).not.toContain('back');
+    expect(actions).toContain('reset');
+  });
+
+  it('内容がビューポートを超え得る画面では 戻る を残す（唯一の戻る導線・#325）', () => {
+    // selectingTarget（担当者一覧）/ inputVisitorInfo（入力フォーム）はコンテンツ側の
+    // 戻るを #325 で撤去したため、sticky な常設バーの 戻る が唯一の戻る導線になる。
+    for (const state of ['selectingTarget', 'inputVisitorInfo'] as const) {
+      expect(escapeHatchActionsFor(state).map((h) => h.action), state).toContain('back');
+    }
+  });
 });
 
 describe('reception ui-contract: conversationTurnFor (#361)', () => {
