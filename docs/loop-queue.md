@@ -29,9 +29,14 @@
 >
 > **#422 inc5 は 3 段に引き直した**（ユーザー承認済み）: inc5-a（契約を真にする・**完了**）→
 > inc5-b（画面を `ConversationTurnView` へ配線）→ inc5-c（ステッパー廃止等・**inc5 から除外**）。
-> **次は inc5-b の入口**＝残る 3 導出（`deriveAvatarEmotion` / `gazeTargetFor` /
-> `requiresExplicitConfirmationFor`）の突き合わせ。**調べた 4/4 で乖離が出ている**ので
-> 同種の問題がある前提で臨むこと。
+> **inc5-b の地ならし（残る 3 導出の突き合わせ）は完了**（第 63 wave / PR #489）。
+> `gazeTarget` に乖離 2 件（`fallback` が存在しない回答領域を指す / 通信断の `failed` が
+> 出ないはずの代替 CTA を指す）。`deriveAvatarEmotion` と
+> `requiresExplicitConfirmationFor` は**値が正しく**、縛るテストだけ足した。
+> **次は inc5-b 本体＝画面を `ConversationTurnView` へ配線する。**
+> 配線時の必須事項: `conversationTurnFor` に `TurnContext`（`callFailureReason`）を渡す。
+> 渡さないと通信断の端末に「代表窓口へお繋ぎします」という果たせない約束の CTA が出る
+> （`KioskFlow` は `data.failureReason` を保持している）。
 > 前セッション分は [`handoff-2026-07-27.md`](handoff-2026-07-27.md)。
 
 **統合再設計プログラム #418 の進捗**: Wave 0（#425 台帳・クローズ済）→ Wave 1（#419 契約 +
@@ -285,6 +290,7 @@
 | 60 | 2026-07-29 | #363: デモ用途の版を**指定端末にだけ**配る（ADR 0005 手順 1 = additive）。デモ版を publish すると本番端末の配信先が消えるため draft のまま配る | PR #485 |
 | 61 | 2026-07-29 | #422 地ならし: 逃げ道アクションの判断を契約へ一本化（二重実装 + `confirming` の食い違いを解消） | PR #486 |
 | 62 | 2026-07-29 | #422 inc5-a: 既定 answers / message を画面の実挙動に一致させる。**未消費 6 導出のうち調べた 4 つすべてで乖離**（うち 1 件は存在しない CTA を返す構造的乖離） | PR #487 |
+| 63 | 2026-07-29 | #422 inc5-b 地ならし: 残る 3 導出を実挙動へ突き合わせ。`gazeTarget` の乖離 2 件と `answers` の取りこぼし 1 件（**通信断で果たせない約束の CTA**）を修正。`deriveAvatarEmotion` / `requiresExplicitConfirmationFor` は値が正しく、縛るテストのみ追加 | PR #489 |
 
 
 **次に着手する候補（2026-07-27 更新・第 37 wave 消化後）**: **差分 B は決着済み**
