@@ -6,7 +6,9 @@ iPad 受付端末向け無人受付システム（Next.js 16 / React 19 / TypeSc
 ## 開発ループ（重要）
 
 Issue を消化するループで開発する。**手順は `docs/loop-workflow.md`、依存 DAG と並列
-トラックは `docs/loop-queue.md` に従う。**
+トラックは `docs/loop-queue.md` に従う。** 観測→仮説→検証→展開→計測というループ全体の
+位置づけ・暴走防止ガード・人間承認が必要な変更の一覧は **`docs/ai-development-loop.md`**
+（#424 / #426。未構築の部分も明記してある）。
 1 周 = ブランチ → 実装(TDD) → ローカル品質ゲート → PR → セルフ/コードレビュー →
 **ゲート green + レビュー blocking なしなら自動で squash + `--delete-branch`** → Issue
 クローズ → 次へ。**重大変更時のみユーザー確認**（破壊的変更・スキーマ/公開API・本番デプロイ・
