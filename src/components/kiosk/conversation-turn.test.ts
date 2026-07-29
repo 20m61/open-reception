@@ -103,9 +103,9 @@ describe('kiosk conversation-turn: 回答候補の解決 (#422 inc5-b 増分 2)'
     }
   });
 
-  it('表示定義を持たない回答は用件カードだけ（黙って消える回答を増やさない）', () => {
+  it('契約が返す回答はすべて表示定義を持つ（黙って消える回答が無い）', () => {
     // 契約に回答を足したのに表示定義を忘れると、その回答は画面から静かに消える。
-    // 未対応として許すのは実行時/別語彙のもの（用件カード＝増分 3 の対象）だけに限る。
+    // 増分 3a で用件カードを寄せたので、未対応はもう無い。
     const unmapped = new Set<string>();
     for (const state of RECEPTION_STATES) {
       const resolved = new Set(turnAnswersFor(state, 'ja').map((a) => a.id));
@@ -113,10 +113,53 @@ describe('kiosk conversation-turn: 回答候補の解決 (#422 inc5-b 増分 2)'
         if (!resolved.has(answer.id)) unmapped.add(answer.id);
       }
     }
-    expect([...unmapped].sort()).toEqual(RECEPTION_PURPOSES.map((p) => p.id).sort());
+    expect([...unmapped]).toEqual([]);
   });
 
   it('locale を変えると CTA の文言もその言語になる', () => {
     expect(turnAnswersFor('confirming', 'en')[0]?.label).toBe(DICTIONARIES.en['reception.callWithThis']);
+  });
+});
+
+describe('kiosk conversation-turn: 用件カードの解決 (#422 inc5-b 増分 3a)', () => {
+  it('4 つの用件を契約の順で返し、現行の testId を保つ', () => {
+    const answers = turnAnswersFor('selectingPurpose', 'ja');
+    expect(answers.map((a) => a.id)).toEqual(RECEPTION_PURPOSES.map((p) => p.id));
+    expect(answers.map((a) => a.testId)).toEqual(RECEPTION_PURPOSES.map((p) => `purpose-${p.id}`));
+    for (const answer of answers) expect(answer.intent).toBe('selectPurpose');
+  });
+
+  it('ラベルは i18n 辞書から解決する（契約の生リテラルを画面へ出さない）', () => {
+    // 契約の `RECEPTION_PURPOSES.label` は生の日本語リテラルで、画面は
+    // `reception.purpose.<id>` を引いていた。**同じ文言の二重管理**（ja では一致していたが、
+    // 辞書だけ直すとズレる形）。表示は辞書を正とする。
+    expect(turnAnswersFor('selectingPurpose', 'ja').map((a) => a.label)).toEqual([
+      ja('reception.purpose.meeting'),
+      ja('reception.purpose.delivery'),
+      ja('reception.purpose.interview'),
+      ja('reception.purpose.other'),
+    ]);
+  });
+
+  it('多言語でも用件カードが訳される（生リテラルが漏れない）', () => {
+    const en = turnAnswersFor('selectingPurpose', 'en').map((a) => a.label);
+    expect(en).toEqual([
+      DICTIONARIES.en['reception.purpose.meeting'],
+      DICTIONARIES.en['reception.purpose.delivery'],
+      DICTIONARIES.en['reception.purpose.interview'],
+      DICTIONARIES.en['reception.purpose.other'],
+    ]);
+    // 日本語リテラルがそのまま出ていないこと（#327 の翻訳漏れ検査と同じ関心）。
+    for (const label of en) {
+      expect(RECEPTION_PURPOSES.map((p) => p.label)).not.toContain(label);
+    }
+  });
+
+  it('契約の既定ラベル（ja）は辞書と一致する（二重管理のズレを検出する）', () => {
+    // 表示は辞書を正にしたが、契約側の既定ラベルが残っている以上ズレは起こりうる。
+    // #487 が message / answers でやったのと同じ突き合わせをここでも掛ける。
+    for (const purpose of RECEPTION_PURPOSES) {
+      expect(purpose.label, purpose.id).toBe(ja(`reception.purpose.${purpose.id}` as I18nMessageKey));
+    }
   });
 });

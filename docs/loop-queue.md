@@ -38,9 +38,11 @@
 > **増分 2（単一 CTA 3 画面 = 確認 / 失敗・未応答 / 通話中）も完了**（第 65 wave / PR #492）。
 > `turnAnswersFor` 経由になり、**代替導線を出すかの判断が画面から消えた**
 > （`reception-screens.tsx` の `shouldOfferAlternativeContact` import ごと削除）。
-> **次は増分 3 = 用件カード（`selectingPurpose`）とクイックアクション（`idle`）。**
-> こちらは `QuickAction`（`quick-actions.ts`）という別語彙と重なるため、**語彙の統合方針を
-> 先に決める必要がある**（契約の `ConversationAnswer` に寄せるのか、両立させるのか）。
+> **増分 3a（用件カード）も完了**（第 66 wave / PR #493）。ラベルの二重管理
+> （契約の生リテラル vs 辞書）を解消し、画面から `RECEPTION_PURPOSES` が消えた。
+> **次は増分 3b = 待機のクイックアクションを契約へ統合。方針はユーザー承認済み**
+> （`QuickAction` を契約へ寄せる）。`checkin` が状態機械を進めず別シェルへ分岐するため
+> `ConversationAnswer.intent` に素直に潰せない。設計論点はハンドオフ §0 に記載。
 > 前セッション分は [`handoff-2026-07-27.md`](handoff-2026-07-27.md)。
 
 **統合再設計プログラム #418 の進捗**: Wave 0（#425 台帳・クローズ済）→ Wave 1（#419 契約 +
@@ -297,6 +299,7 @@
 | 63 | 2026-07-29 | #422 inc5-b 地ならし: 残る 3 導出を実挙動へ突き合わせ。`gazeTarget` の乖離 2 件と `answers` の取りこぼし 1 件（**通信断で果たせない約束の CTA**）を修正。`deriveAvatarEmotion` / `requiresExplicitConfirmationFor` は値が正しく、縛るテストのみ追加 | PR #489 |
 | 64 | 2026-07-29 | #422 inc5-b 増分 1: 5 画面の主指示（`screen__title`）を契約経由へ配線。契約 `MessageKey` → i18n キーの対応が**テストの中にしか無かった**のを本番経路へ出した（`conversation-turn.ts`）。文言は不変 | PR #490 |
 | 65 | 2026-07-29 | #422 inc5-b 増分 2: 単一 CTA 3 画面（確認 / 失敗・未応答 / 通話中）を `turnAnswersFor` 経由へ。**「通信断では代替導線を出さない」判断の二重実装を解消**（画面から `shouldOfferAlternativeContact` が消えた）。ラベル・testId は不変 | PR #492 |
+| 66 | 2026-07-29 | #422 inc5-b 増分 3a: 用件カードを契約経由へ。**ラベルの二重管理**（契約の生日本語リテラル vs i18n 辞書。ja では一致していたが辞書だけ直すとズレる）を解消し、画面から `RECEPTION_PURPOSES` が消えた | PR #493 |
 
 
 **次に着手する候補（2026-07-27 更新・第 37 wave 消化後）**: **差分 B は決着済み**
