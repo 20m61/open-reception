@@ -12,9 +12,12 @@
  * 消費者ゼロの契約が静かに腐る形そのものなので、対応を本番経路へ出す。
  */
 import {
+  conversationTurnFor,
   messageKeyForState,
   type MessageKey as TurnMessageKey,
+  type ReceptionAction,
   type ReceptionState,
+  type TurnContext,
 } from '@/domain/reception/ui-contract';
 import { makeT, type Locale, type MessageKey as I18nMessageKey } from '@/lib/i18n';
 
@@ -51,4 +54,56 @@ export const STATES_WITH_SCREEN_TITLE: ReadonlySet<ReceptionState> = new Set<Rec
 export function screenTitleFor(state: ReceptionState, locale: Locale): string | null {
   const key = TURN_MESSAGE_I18N_KEY[messageKeyForState(state)];
   return key === undefined ? null : makeT(locale)(key);
+}
+
+/** 表示用に解決した回答候補。ラベルは locale 適用済み、`testId` は既存 e2e との後方互換。 */
+export type TurnAnswerView = {
+  id: string;
+  label: string;
+  intent: ReceptionAction;
+  testId: string;
+};
+
+/**
+ * 契約の回答 id → 表示（i18n キーと testId）。
+ *
+ * 強調度（primary/secondary）は含めない。**どの回答を出すかは契約が決め、どう見せるかは
+ * 画面が決める**という役割分担（`quick-actions.ts` の EscapeHatch と同じ）。
+ *
+ * 用件カード（meeting/delivery/interview/other）はここに無い。実行時リストであり
+ * `QuickAction` 側の語彙とも重なるため、増分 3 でまとめて寄せる。**表示定義の無い回答が
+ * 静かに消えないよう、対象外の集合はテストで固定している。**
+ */
+const ANSWER_DISPLAY: Record<string, { i18nKey: I18nMessageKey; testId: string }> = {
+  confirm: { i18nKey: 'reception.callWithThis', testId: 'confirm-call' },
+  fallback: { i18nKey: 'reception.altContact', testId: 'use-fallback' },
+  complete: { i18nKey: 'reception.finishReception', testId: 'complete' },
+};
+
+/**
+ * そのターンで提示する回答候補を locale 解決して返す。
+ *
+ * **出すか出さないかの判断はここに持たない。** 契約 `conversationTurnFor` が返した回答を
+ * 表示へ写すだけ。とくに「通信断では代替導線を出さない」判断（`shouldOfferAlternativeContact`）
+ * は契約側に在り、`context.callFailureReason` を渡すことで効く。**渡し忘れると、通信が
+ * 切れている端末に「代表窓口へお繋ぎします」という果たせない約束の CTA が出る。**
+ */
+export function turnAnswersFor(
+  state: ReceptionState,
+  locale: Locale,
+  context?: TurnContext,
+): ReadonlyArray<TurnAnswerView> {
+  const tr = makeT(locale);
+  const views: TurnAnswerView[] = [];
+  for (const answer of conversationTurnFor(state, context).answers) {
+    const display = ANSWER_DISPLAY[answer.id];
+    if (display === undefined) continue;
+    views.push({
+      id: answer.id,
+      label: tr(display.i18nKey),
+      intent: answer.intent,
+      testId: display.testId,
+    });
+  }
+  return views;
 }

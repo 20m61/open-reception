@@ -35,10 +35,12 @@
 > `requiresExplicitConfirmationFor` は**値が正しく**、縛るテストだけ足した。
 > **inc5-b 本体は増分に割って進める。増分 1（主指示の配線）は完了**（第 64 wave / PR #490。
 > `conversation-turn.ts` が契約 `MessageKey` → i18n キーの解決を持つ）。
-> **次は増分 2 = 回答候補（answers）の配線。** ここが本命で、CTA の集合そのものを契約から
-> 出す。必須事項: `conversationTurnFor` に `TurnContext`（`callFailureReason`）を渡すこと。
-> 渡さないと通信断の端末に「代表窓口へお繋ぎします」という果たせない約束の CTA が出る
-> （`KioskFlow` は `data.failureReason` を保持している）。
+> **増分 2（単一 CTA 3 画面 = 確認 / 失敗・未応答 / 通話中）も完了**（第 65 wave / PR #492）。
+> `turnAnswersFor` 経由になり、**代替導線を出すかの判断が画面から消えた**
+> （`reception-screens.tsx` の `shouldOfferAlternativeContact` import ごと削除）。
+> **次は増分 3 = 用件カード（`selectingPurpose`）とクイックアクション（`idle`）。**
+> こちらは `QuickAction`（`quick-actions.ts`）という別語彙と重なるため、**語彙の統合方針を
+> 先に決める必要がある**（契約の `ConversationAnswer` に寄せるのか、両立させるのか）。
 > 前セッション分は [`handoff-2026-07-27.md`](handoff-2026-07-27.md)。
 
 **統合再設計プログラム #418 の進捗**: Wave 0（#425 台帳・クローズ済）→ Wave 1（#419 契約 +
@@ -294,6 +296,7 @@
 | 62 | 2026-07-29 | #422 inc5-a: 既定 answers / message を画面の実挙動に一致させる。**未消費 6 導出のうち調べた 4 つすべてで乖離**（うち 1 件は存在しない CTA を返す構造的乖離） | PR #487 |
 | 63 | 2026-07-29 | #422 inc5-b 地ならし: 残る 3 導出を実挙動へ突き合わせ。`gazeTarget` の乖離 2 件と `answers` の取りこぼし 1 件（**通信断で果たせない約束の CTA**）を修正。`deriveAvatarEmotion` / `requiresExplicitConfirmationFor` は値が正しく、縛るテストのみ追加 | PR #489 |
 | 64 | 2026-07-29 | #422 inc5-b 増分 1: 5 画面の主指示（`screen__title`）を契約経由へ配線。契約 `MessageKey` → i18n キーの対応が**テストの中にしか無かった**のを本番経路へ出した（`conversation-turn.ts`）。文言は不変 | PR #490 |
+| 65 | 2026-07-29 | #422 inc5-b 増分 2: 単一 CTA 3 画面（確認 / 失敗・未応答 / 通話中）を `turnAnswersFor` 経由へ。**「通信断では代替導線を出さない」判断の二重実装を解消**（画面から `shouldOfferAlternativeContact` が消えた）。ラベル・testId は不変 | PR #492 |
 
 
 **次に着手する候補（2026-07-27 更新・第 37 wave 消化後）**: **差分 B は決着済み**

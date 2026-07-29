@@ -12,9 +12,11 @@
  */
 'use client';
 
+// 代替導線を出すかの判断（`shouldOfferAlternativeContact`）はここから消えた (#422 inc5-b
+// 増分 2)。契約 `conversationTurnFor` が `callFailureReason` を見て回答を返すので、画面は
+// 返ってきたものを描くだけになった。判断の二重実装を残さない。
 import {
   failedMessageKeyFor,
-  shouldOfferAlternativeContact,
   type CallFailureReason,
 } from '@/domain/reception/call-failure';
 import {
@@ -72,6 +74,7 @@ import type {
 } from './quick-actions';
 import {
   screenTitleFor,
+  turnAnswersFor,
 } from './conversation-turn';
 import type {
   ReceptionState,
@@ -960,9 +963,21 @@ function ConfirmView({
         <button type="button" className="btn btn--ghost" data-testid="confirm-back" onClick={onBack}>
           {tr('reception.editInfo')}
         </button>
-        <button type="button" className="btn btn--primary" data-testid="confirm-call" onClick={onConfirm}>
-          {tr('reception.callWithThis')}
-        </button>
+        {/*
+          発信確定の CTA は契約が決める (#422 inc5-b 増分 2)。強調度（primary）だけが画面の
+          裁量で、ラベル・testId・そもそも出すかは `turnAnswersFor` 経由。
+        */}
+        {turnAnswersFor('confirming', locale).map((answer) => (
+          <button
+            key={answer.id}
+            type="button"
+            className="btn btn--primary"
+            data-testid={answer.testId}
+            onClick={onConfirm}
+          >
+            {answer.label}
+          </button>
+        ))}
       </div>
     </>
   );
@@ -1216,13 +1231,17 @@ function ConnectedView({
       tone={resultToneForState('connected')}
       testId="result-connected"
       message={tr('reception.connectedBody', { target })}
-      action={{
-        label: tr('reception.finishReception'),
-        onClick: () => void finish(),
-        testId: 'complete',
-        variant: 'secondary',
-        disabled: busy,
-      }}
+      action={
+        // 終了操作の CTA も契約が決める (#422 inc5-b 増分 2)。強調度（secondary＝任意操作で
+        // あることを示す）と二度押しガードだけが画面の裁量。
+        turnAnswersFor('connected', locale).map((answer) => ({
+          label: answer.label,
+          onClick: () => void finish(),
+          testId: answer.testId,
+          variant: 'secondary' as const,
+          disabled: busy,
+        }))[0]
+      }
       locale={locale}
     />
   );
@@ -1244,8 +1263,11 @@ function ResultView({
   const message = tr(
     outcome === 'timeout' ? 'reception.timeoutBody' : failedMessageKeyFor(failureReason),
   );
-  // 通信断のときは代替導線を主 CTA にしない（「お繋ぎします」を果たせないため）。
-  const offerAlternative = outcome === 'timeout' || shouldOfferAlternativeContact(failureReason);
+  // 代替導線を出すかの判断は契約が持つ (#422 inc5-b 増分 2)。通信断では「代表窓口にお繋ぎ
+  // します」という約束を果たせないため出さない、という判断はかつてここと契約の両方に在り、
+  // #486 で逃げ道について潰したのと同じ二重実装だった。いまは `callFailureReason` を契約へ
+  // 渡すだけで、ここは返ってきた回答を描くだけにする。
+  const [answer] = turnAnswersFor(outcome, locale, { callFailureReason: failureReason });
   // 後退（最初に戻る）は逃げ道バーへ一本化 (#325)。コンテンツ側は前進の主 CTA（代替の連絡先へ＝
   // useFallback）のみ。以前あった result-reset（最初に戻る）はバーの escape-reset と重複するため撤去。
   return (
@@ -1254,8 +1276,8 @@ function ResultView({
       testId={`result-${outcome}`}
       message={message}
       action={
-        offerAlternative
-          ? { label: tr('reception.altContact'), onClick: onFallback, testId: 'use-fallback', variant: 'secondary' as const }
+        answer
+          ? { label: answer.label, onClick: onFallback, testId: answer.testId, variant: 'secondary' as const }
           : undefined
       }
       locale={locale}

@@ -1,7 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import { conversationTurnFor, RECEPTION_STATES } from '@/domain/reception/ui-contract';
+import { RECEPTION_PURPOSES } from '@/domain/reception/session';
 import { DICTIONARIES, type MessageKey as I18nMessageKey } from '@/lib/i18n';
-import { screenTitleFor, STATES_WITH_SCREEN_TITLE } from './conversation-turn';
+import { screenTitleFor, STATES_WITH_SCREEN_TITLE, turnAnswersFor } from './conversation-turn';
 
 function ja(key: I18nMessageKey): string {
   const value = DICTIONARIES.ja[key];
@@ -55,5 +56,67 @@ describe('kiosk conversation-turn: 主指示の解決 (#422 inc5-b)', () => {
     const en = screenTitleFor('confirming', 'en');
     expect(en).toBe(DICTIONARIES.en['reception.confirm']);
     expect(en).not.toBe(screenTitleFor('confirming', 'ja'));
+  });
+});
+
+describe('kiosk conversation-turn: 回答候補の解決 (#422 inc5-b 増分 2)', () => {
+  it('確認・通話中の CTA は現行と同じラベル / testId を返す（配線しても見た目は変わらない）', () => {
+    expect(turnAnswersFor('confirming', 'ja')).toEqual([
+      { id: 'confirm', label: ja('reception.callWithThis'), intent: 'confirm', testId: 'confirm-call' },
+    ]);
+    expect(turnAnswersFor('connected', 'ja')).toEqual([
+      { id: 'complete', label: ja('reception.finishReception'), intent: 'complete', testId: 'complete' },
+    ]);
+  });
+
+  it('未応答は理由に依らず代替導線を出す（呼び出し自体は到達している）', () => {
+    for (const reason of ['network', 'server', undefined] as const) {
+      const answers = turnAnswersFor('timeout', 'ja', reason ? { callFailureReason: reason } : undefined);
+      expect(answers.map((a) => a.testId), String(reason)).toEqual(['use-fallback']);
+    }
+  });
+
+  it('**通信断の失敗では代替導線を出さない**（果たせない約束を押させない）', () => {
+    // ここが本増分の要点。従来この判断は ResultView が自前で
+    // `shouldOfferAlternativeContact` を呼んで持っており、契約側（#489 で修正）と
+    // 二重実装だった。#486 で逃げ道について潰したのと同じ形。
+    expect(turnAnswersFor('failed', 'ja', { callFailureReason: 'network' })).toEqual([]);
+    // 通信断以外は従来どおり出す。
+    expect(turnAnswersFor('failed', 'ja', { callFailureReason: 'server' }).map((a) => a.testId)).toEqual([
+      'use-fallback',
+    ]);
+    expect(turnAnswersFor('failed', 'ja').map((a) => a.testId)).toEqual(['use-fallback']);
+  });
+
+  it('代替導線を出すかの判断は契約に従う（画面側が独自判断を持たない）', () => {
+    for (const reason of ['network', 'server', undefined] as const) {
+      const context = reason ? { callFailureReason: reason } : undefined;
+      const shown = turnAnswersFor('failed', 'ja', context).length > 0;
+      expect(shown, String(reason)).toBe(conversationTurnFor('failed', context).answers.length > 0);
+    }
+  });
+
+  it('回答を持たない画面は空配列（CTA を勝手に生やさない）', () => {
+    // fallback は #325 で CTA を撤去済み。calling / completed / cancelled も CTA を持たない。
+    for (const state of ['fallback', 'calling', 'completed', 'cancelled', 'inputVisitorInfo'] as const) {
+      expect(turnAnswersFor(state, 'ja'), state).toEqual([]);
+    }
+  });
+
+  it('表示定義を持たない回答は用件カードだけ（黙って消える回答を増やさない）', () => {
+    // 契約に回答を足したのに表示定義を忘れると、その回答は画面から静かに消える。
+    // 未対応として許すのは実行時/別語彙のもの（用件カード＝増分 3 の対象）だけに限る。
+    const unmapped = new Set<string>();
+    for (const state of RECEPTION_STATES) {
+      const resolved = new Set(turnAnswersFor(state, 'ja').map((a) => a.id));
+      for (const answer of conversationTurnFor(state).answers) {
+        if (!resolved.has(answer.id)) unmapped.add(answer.id);
+      }
+    }
+    expect([...unmapped].sort()).toEqual(RECEPTION_PURPOSES.map((p) => p.id).sort());
+  });
+
+  it('locale を変えると CTA の文言もその言語になる', () => {
+    expect(turnAnswersFor('confirming', 'en')[0]?.label).toBe(DICTIONARIES.en['reception.callWithThis']);
   });
 });
