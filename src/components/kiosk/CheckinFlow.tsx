@@ -14,6 +14,7 @@ import type { MotionKey } from '@/domain/motion/types';
 import { DEFAULT_LOCALE, makeT, type Locale, type MessageKey } from '@/lib/i18n';
 import type { KioskLayout } from './layout';
 import { AvatarGuide } from './avatar/AvatarGuide';
+import { checkinSubtitleFor } from './conversation-turn';
 import {
   checkinCallFailureMessageKeyFor,
   checkinCallFailureReasonFrom,
@@ -279,7 +280,11 @@ function CheckinShell({
   defaultMotionUrl?: string;
   children: React.ReactNode;
 }) {
-  const turn = checkinConversationTurnFor(state);
+  // 字幕は来訪者の言語で解決して注入する (#361 AC2)。渡さないと契約の ja 既定文言が出て、
+  // 見出し・リードだけが訳された「日本語で話しかけてくる英語画面」になる。
+  const turn = checkinConversationTurnFor(state, {
+    message: { displayText: checkinSubtitleFor(state, locale) },
+  });
   const isRail = layout === 'ipad-landscape' || layout === 'large-display';
 
   const avatar = (

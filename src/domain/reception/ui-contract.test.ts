@@ -455,7 +455,7 @@ describe('reception ui-contract: gazeTarget を実在する領域へ縛る (#422
     // 'answers' を指すなら既定 answers が非空であることを要求する。fallback のように
     // 「既定も注入も無い」状態が 'answers' を指して紛れ込むのを防ぐ。
     const RUNTIME_INJECTED: ReadonlySet<ReceptionState> = new Set([
-      'idle', // IdleView の quickActionsFor('idle')
+      'idle', // IdleView の入口カード（契約の既定 answers。#422 inc5-b 増分 3b で寄せた）
       'selectingTarget', // 担当者/部署の実行時リスト
     ]);
     for (const state of RECEPTION_STATES) {

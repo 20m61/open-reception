@@ -322,7 +322,25 @@ export type MessageKey =
   | 'checkin.error.server'
   | 'checkin.error.generic'
   | 'checkin.error.useManual'
-  | 'checkin.error.retry';
+  | 'checkin.error.retry'
+  // QR 受付のアバター字幕 (#361 AC2)。見出し/リードとは別スロットで、`CheckinMessageKey`
+  // 1 つにつき 1 キー。画面の見出しと矛盾しない主指示を、来訪者の言語で読み上げる/表示する。
+  | 'checkin.subtitle.intro'
+  | 'checkin.subtitle.chooseMethod'
+  | 'checkin.subtitle.cameraPermission'
+  | 'checkin.subtitle.scanning'
+  | 'checkin.subtitle.resolving'
+  | 'checkin.subtitle.reviewReservation'
+  | 'checkin.subtitle.calling'
+  | 'checkin.subtitle.completed'
+  | 'checkin.subtitle.cancelled'
+  | 'checkin.subtitle.manualFallback'
+  | 'checkin.subtitle.cameraError'
+  | 'checkin.subtitle.scanError'
+  | 'checkin.subtitle.expiredError'
+  | 'checkin.subtitle.usedError'
+  | 'checkin.subtitle.revokedError'
+  | 'checkin.subtitle.networkError';
 
 /** 既定 locale 辞書は全キー網羅必須。他 locale は Partial 可（欠落は ja へフォールバック）。 */
 type DefaultDictionary = Record<MessageKey, string>;
@@ -589,6 +607,27 @@ const ja: DefaultDictionary = {
   'checkin.error.generic': 'エラーが発生しました。',
   'checkin.error.useManual': '通常受付へ',
   'checkin.error.retry': 'やり直す',
+  // QR 受付のアバター字幕 (#361 AC2)。ja 文言は契約既定（ui-contract.ts の
+  // CHECKIN_MESSAGE_TEXT_JA）と一致させる。conversation-turn.test.ts が突き合わせて固定する。
+  'checkin.subtitle.intro': '予約 QR をお持ちの方はこちらから受付できます',
+  'checkin.subtitle.chooseMethod': '受付方法をお選びください',
+  'checkin.subtitle.cameraPermission': 'QR を読み取るためにカメラの使用を許可してください',
+  'checkin.subtitle.scanning': '予約 QR をカメラにかざしてください',
+  'checkin.subtitle.resolving': 'ご予約を確認しています。少々お待ちください',
+  'checkin.subtitle.reviewReservation': 'ご予約内容をご確認のうえ、お呼び出しください',
+  'checkin.subtitle.calling': '担当者を呼び出しています。少々お待ちください',
+  'checkin.subtitle.completed': '受付が完了しました。ご案内をお待ちください',
+  'checkin.subtitle.cancelled': '受付を中止しました',
+  'checkin.subtitle.manualFallback': '通常受付に切り替えます。手入力でお進みください',
+  'checkin.subtitle.cameraError': 'カメラを使用できませんでした。通常受付でお進みいただけます',
+  'checkin.subtitle.scanError':
+    'QR を読み取れませんでした。もう一度お試しか、通常受付をご利用ください',
+  'checkin.subtitle.expiredError':
+    'この QR は有効期限が切れています。受付スタッフにお問い合わせください',
+  'checkin.subtitle.usedError':
+    'この QR はすでに受付に使用されています。受付スタッフにお問い合わせください',
+  'checkin.subtitle.revokedError': 'この QR は無効化されています。受付スタッフにお問い合わせください',
+  'checkin.subtitle.networkError': '通信に失敗しました。通常受付でお進みいただけます',
 };
 
 const en: LocaleDictionary = {
@@ -854,6 +893,29 @@ const en: LocaleDictionary = {
   'checkin.error.generic': 'An error occurred.',
   'checkin.error.useManual': 'Go to standard check-in',
   'checkin.error.retry': 'Try again',
+  // QR 受付のアバター字幕 (#361 AC2)。同じ局面の見出し/リードと矛盾しない主指示を置く。
+  'checkin.subtitle.intro': 'If you have a reservation QR code, you can check in here.',
+  'checkin.subtitle.chooseMethod': 'Please choose a check-in method.',
+  'checkin.subtitle.cameraPermission': 'Please allow camera access so the QR code can be scanned.',
+  'checkin.subtitle.scanning': 'Hold your reservation QR code up to the camera.',
+  'checkin.subtitle.resolving': 'Checking your reservation. Please wait a moment.',
+  'checkin.subtitle.reviewReservation':
+    'Please confirm your reservation details, then place the call.',
+  'checkin.subtitle.calling': 'Calling the staff member. Please wait a moment.',
+  'checkin.subtitle.completed': 'Check-in is complete. Please wait to be shown in.',
+  'checkin.subtitle.cancelled': 'Check-in has been cancelled.',
+  'checkin.subtitle.manualFallback':
+    'Switching to standard check-in. Please continue by entering your details.',
+  'checkin.subtitle.cameraError':
+    'The camera could not be used. You can continue with standard check-in.',
+  'checkin.subtitle.scanError':
+    'Could not read the QR code. Please try again or use standard check-in.',
+  'checkin.subtitle.expiredError': 'This QR code has expired. Please contact reception staff.',
+  'checkin.subtitle.usedError':
+    'This QR code has already been used for check-in. Please contact reception staff.',
+  'checkin.subtitle.revokedError': 'This QR code has been revoked. Please contact reception staff.',
+  'checkin.subtitle.networkError':
+    'The connection failed. You can continue with standard check-in.',
 };
 
 const ko: LocaleDictionary = {
@@ -1116,6 +1178,26 @@ const ko: LocaleDictionary = {
   'checkin.error.generic': '오류가 발생했습니다.',
   'checkin.error.useManual': '일반 접수로 이동',
   'checkin.error.retry': '다시 시도',
+  // QR 受付のアバター字幕 (#361 AC2)。
+  'checkin.subtitle.intro': '예약 QR 코드가 있으신 분은 여기에서 접수하실 수 있습니다.',
+  'checkin.subtitle.chooseMethod': '접수 방법을 선택해 주세요.',
+  'checkin.subtitle.cameraPermission': 'QR 코드를 읽기 위해 카메라 사용을 허용해 주세요.',
+  'checkin.subtitle.scanning': '예약 QR 코드를 카메라에 비춰주세요.',
+  'checkin.subtitle.resolving': '예약을 확인하고 있습니다. 잠시만 기다려 주세요.',
+  'checkin.subtitle.reviewReservation': '예약 내용을 확인하신 후 호출해 주세요.',
+  'checkin.subtitle.calling': '담당자를 호출하고 있습니다. 잠시만 기다려 주세요.',
+  'checkin.subtitle.completed': '접수가 완료되었습니다. 안내를 기다려 주세요.',
+  'checkin.subtitle.cancelled': '접수를 취소했습니다.',
+  'checkin.subtitle.manualFallback': '일반 접수로 전환합니다. 직접 입력으로 진행해 주세요.',
+  'checkin.subtitle.cameraError': '카메라를 사용할 수 없었습니다. 일반 접수로 진행하실 수 있습니다.',
+  'checkin.subtitle.scanError':
+    'QR 코드를 인식하지 못했습니다. 다시 시도하시거나 일반 접수를 이용해 주세요.',
+  'checkin.subtitle.expiredError':
+    '이 QR 코드는 유효기간이 만료되었습니다. 접수 담당자에게 문의해 주세요.',
+  'checkin.subtitle.usedError':
+    '이 QR 코드는 이미 접수에 사용되었습니다. 접수 담당자에게 문의해 주세요.',
+  'checkin.subtitle.revokedError': '이 QR 코드는 무효화되었습니다. 접수 담당자에게 문의해 주세요.',
+  'checkin.subtitle.networkError': '통신에 실패했습니다. 일반 접수로 진행하실 수 있습니다.',
 };
 
 const zh: LocaleDictionary = {
@@ -1374,6 +1456,23 @@ const zh: LocaleDictionary = {
   'checkin.error.generic': '发生错误。',
   'checkin.error.useManual': '前往常规登记',
   'checkin.error.retry': '重试',
+  // QR 受付のアバター字幕 (#361 AC2)。
+  'checkin.subtitle.intro': '如果您有预约二维码，可以在此登记。',
+  'checkin.subtitle.chooseMethod': '请选择登记方式。',
+  'checkin.subtitle.cameraPermission': '请允许使用摄像头，以便扫描二维码。',
+  'checkin.subtitle.scanning': '请将预约二维码对准摄像头。',
+  'checkin.subtitle.resolving': '正在确认预约，请稍候。',
+  'checkin.subtitle.reviewReservation': '请确认预约信息后再进行呼叫。',
+  'checkin.subtitle.calling': '正在呼叫负责人，请稍候。',
+  'checkin.subtitle.completed': '登记已完成，请等待引导。',
+  'checkin.subtitle.cancelled': '已取消登记。',
+  'checkin.subtitle.manualFallback': '正在切换到常规登记，请以手动方式继续。',
+  'checkin.subtitle.cameraError': '无法使用摄像头。您可以通过常规登记继续。',
+  'checkin.subtitle.scanError': '无法识别二维码。请重试，或使用常规登记。',
+  'checkin.subtitle.expiredError': '此二维码已过期。请联系前台工作人员。',
+  'checkin.subtitle.usedError': '此二维码已用于登记。请联系前台工作人员。',
+  'checkin.subtitle.revokedError': '此二维码已失效。请联系前台工作人员。',
+  'checkin.subtitle.networkError': '通信失败。您可以通过常规登记继续。',
 };
 
 /**

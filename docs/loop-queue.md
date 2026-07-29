@@ -144,7 +144,7 @@
 | # | 種別 | 充足状況（根拠） | 分類 |
 | --- | --- | --- | --- |
 | **#360** | epic | Character-led 受付・会話・低コスト基盤の統合 epic（トラッキング） | — |
-| **#361** | ux/kiosk | **部分**: `domain/reception/ui-contract.ts` に状態駆動契約・`AVATAR_STATES`・`REQUIRES_CONFIRMATION_ACTIONS`/`CHAT_FORBIDDEN_ACTIONS` 実装済（AC「音声認識だけで発信されない」ほぼ充足）。未達: `ConversationTurnView` 不在、QR が `CheckinFlow.tsx` の別シェル | ローカル可 |
+| **#361** | ux/kiosk | **部分**（第 76 wave で再マッピング。旧「`ConversationTurnView` 不在」は **stale**）: `ConversationTurnView` は `ui-contract.ts` に在り、#422 inc5-b で**画面へ配線済み**（`components/kiosk/conversation-turn.ts` が主指示・回答・引き渡しを解決）。QR も別シェルのままではなく `CheckinShell` が `checkinConversationTurnFor` を消費して同じ `AvatarGuide`・横向き 35% レールを共有する。AC 3（音声だけで発信しない）/ 4（主指示）/ 7（真実源一本化）は充足。**残**: AC 2 の逃げ道 — QR 受付の後退操作は各画面が `CANCEL`/`exit` ボタンを手書きしており、契約の `checkinEscapeHatchesFor` は**消費者ゼロ**。通常受付は常設 `kiosk-escape-bar`（#325/#39 で画面分岐の外へ出した）なので、そこだけ体験が違う | ローカル可（次 increment = 逃げ道の統一） |
 | ~~#362~~ | ux/kiosk | **クローズ済**（第 2 wave: KioskMode/attract-detector 分離・検知→START 直結廃止） | 完了 2026-07-22 |
 | **#363** | admin/demo | **Inc1〜3 実装済**（シナリオ・編集/保存・下書き/テスト/本番公開・共有トークン・未認証閲覧）。第 33 wave で **#420 版モデルとの統合方針を ADR 0005 で確定**。**残**: 統合の実施（§9 B-07。永続スキーマとスコープ語彙を動かすため**要ユーザー承認**） | 要ユーザー確認 |
 | **#364** | epic | 日本語リアルタイム会話基盤 epic（トラッキング） | — |
@@ -318,6 +318,7 @@
 | 72 | 2026-07-29 | #422 AC「VRT で主要状態を固定」のギャップを埋める: 結果系 4 状態（通話中・未応答・失敗・代替案内）を追加し 5 → 9 状態へ。**通話中はパネルごと mask して VRT を無意味にしかけた** — PII は本文の担当者名だけなので `.result-panel__message` へ絞った。**#422 の受入条件 7 件がすべて充足** | PR #499 |
 | 73 | 2026-07-29 | #500: 常設要素の「いつ出すか」を `isPersistentVisible(key, state)` へ一本化。逃げ道・チャットは既存導出へ委譲し二重定義を作らない。**実際に移せた分岐は `CheckoutLink` の 1 箇所だけ**だったが、これまで構造に埋もれていた「言語切替・退館は待機のみ」が明示され、契約の主張を実 DOM と突き合わせる e2e が付いた | PR #502 |
 | 75 | 2026-07-30 | #501: 管理画面が受付端末向けサイズ（`--font-body` 20px 等）を継承する #330 item4 の根治。**色ではなくサイズが問題**（色は意図的に共通で、分離すると二重管理になるだけ）。`:root` は受付端末向けに据え置き、`[data-area='admin'\|platform']` が下げる**方向が重要** — 逆にすると mobile の text autosizing で `rem` 基準（html の font-size）自体が動き kiosk の実寸が変わる（実測 16px→20px。VRT が 3 度検出） | PR #504 |
+| 76 | 2026-07-30 | #361 AC2: **QR 受付のアバター字幕だけが日本語固定**だった件を是正。`CheckinShell` は見出し・リードを `makeT(locale)` で訳していたのに、字幕は契約の ja 既定文言をそのまま渡していた（English を選んだ来訪者は英語の見出しの隣で日本語の字幕を読む）。`checkinSubtitleFor` を component 層に置き 16 ターン × 4 言語を解決。**override は speech/subtitle/fallbackText を同時に置き換える**ので読み上げも直る。あわせて #361 の AC を再マッピングし、キューの「`ConversationTurnView` 不在」が stale だったのを訂正 | `docs/loop-queue.md` |
 | 74 | 2026-07-29 | #423 の一部: 対象テナント context の安全側フォールバック（存在しない id / 壊れた値 / 画面移動）を e2e で固定。純関数 `resolveActiveTenantId` は unit 済みだが**cookie → server 解決 → 画面表示の経路が未検証**だった。テナント作成 API が無いため実テナント間の越境 e2e は不可 | PR #503 |
 
 

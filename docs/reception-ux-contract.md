@@ -118,7 +118,9 @@
   は別指示で矛盾していた）。リードには主指示を置かず、「タッチだけで受付できる（音声・チャット不要）」等の
   **安心情報**のみを置く（`reception.idleReassure`）。ja のリードは管理設定の案内文言（`guidanceIdle`,
   #28）を尊重し、既定値も安心情報のみに揃える。
-- **二重質問の禁止（用件の先取り）**: 待機カード（`quickActionsFor('idle')`）は用件を**先取り**する。
+- **二重質問の禁止（用件の先取り）**: 待機の入口カード（契約の回答を解決する
+  `turnAnswersFor('idle', locale)`。QR 受付は状態機械を進めないので `turnHandoffsFor` 側）は
+  用件を**先取り**する。
   `delivery`/`department`/`other` は `presetPurpose` を持ち、`START` に初期 purpose を添えて
   `selectingPurpose` を自動スキップする（遷移の真実源 `state.ts` は不変。`SELECT_PURPOSE` を UI 側で
   自動 dispatch するだけで遷移表を分岐させない）。`callStaff` は用件未確定なので目的選択へ進むが、
