@@ -1,8 +1,14 @@
 import { describe, expect, it } from 'vitest';
-import { conversationTurnFor, RECEPTION_STATES } from '@/domain/reception/ui-contract';
+import {
+  checkinConversationTurnFor,
+  conversationTurnFor,
+  RECEPTION_STATES,
+} from '@/domain/reception/ui-contract';
+import { CHECKIN_STATES } from '@/domain/checkin/state';
 import { RECEPTION_PURPOSES } from '@/domain/reception/session';
 import { DICTIONARIES, type MessageKey as I18nMessageKey } from '@/lib/i18n';
 import {
+  checkinSubtitleFor,
   screenTitleFor,
   STATES_WITH_SCREEN_TITLE,
   turnAnswersFor,
@@ -176,6 +182,42 @@ describe('kiosk conversation-turn: 待機の入口の解決 (#422 inc5-b 増分 
     for (const state of RECEPTION_STATES) {
       if (state === 'idle') continue;
       expect(turnHandoffsFor(state, 'ja'), state).toEqual([]);
+    }
+  });
+});
+
+describe('kiosk conversation-turn: QR 受付の字幕の解決 (#361 AC2)', () => {
+  it('**来訪者が選んだ言語で字幕が出る**（QR 受付だけ日本語固定にならない）', () => {
+    // ここが本増分の要点。CheckinShell は画面の見出し/リードを `makeT(locale)` で訳して
+    // いたのに、アバター字幕だけ契約の ja 既定文言をそのまま渡していた。English を選んだ
+    // 来訪者は英語の見出しの隣で日本語の字幕を読むことになり、同じ受付体験に見えない。
+    const en = checkinSubtitleFor('scanning', 'en');
+    expect(en).toBe(DICTIONARIES.en['checkin.subtitle.scanning']);
+    expect(en).not.toBe(checkinSubtitleFor('scanning', 'ja'));
+  });
+
+  it('全 CheckinState で日本語リテラルが漏れない（読み取り前後・エラーも含む）', () => {
+    // 翻訳漏れが出やすいのは「困っている来訪者に出る画面」（期限切れ・使用済み・通信断）。
+    for (const state of CHECKIN_STATES) {
+      expect(checkinSubtitleFor(state, 'en'), state).not.toMatch(/[ぁ-んァ-ン一-龠]/);
+    }
+  });
+
+  it('ja は契約の既定字幕と一致する（配線しても日本語の文言は変わらない）', () => {
+    // 契約側 `CHECKIN_MESSAGE_TEXT_JA` と辞書の二重管理を検出する。片方だけ直すと
+    // 静かにズレる形（#493 で用件ラベルに同じ突き合わせを掛けたのと同じ関心）。
+    for (const state of CHECKIN_STATES) {
+      expect(checkinSubtitleFor(state, 'ja'), state).toBe(
+        checkinConversationTurnFor(state).message.displayText,
+      );
+    }
+  });
+
+  it('全 CheckinState が字幕を持つ（無言のターンを作らない）', () => {
+    for (const state of CHECKIN_STATES) {
+      for (const locale of ['ja', 'en', 'ko', 'zh'] as const) {
+        expect(checkinSubtitleFor(state, locale).trim().length, `${state}/${locale}`).toBeGreaterThan(0);
+      }
     }
   });
 });

@@ -12,13 +12,16 @@
  * 消費者ゼロの契約が静かに腐る形そのものなので、対応を本番経路へ出す。
  */
 import {
+  checkinMessageKeyFor,
   conversationTurnFor,
   messageKeyForState,
+  type CheckinMessageKey,
   type MessageKey as TurnMessageKey,
   type ReceptionAction,
   type ReceptionState,
   type TurnContext,
 } from '@/domain/reception/ui-contract';
+import type { CheckinState } from '@/domain/checkin/state';
 import { RECEPTION_PURPOSES, type ReceptionPurposeId } from '@/domain/reception/session';
 import { makeT, type Locale, type MessageKey as I18nMessageKey } from '@/lib/i18n';
 
@@ -55,6 +58,45 @@ export const STATES_WITH_SCREEN_TITLE: ReadonlySet<ReceptionState> = new Set<Rec
 export function screenTitleFor(state: ReceptionState, locale: Locale): string | null {
   const key = TURN_MESSAGE_I18N_KEY[messageKeyForState(state)];
   return key === undefined ? null : makeT(locale)(key);
+}
+
+/**
+ * QR 受付の字幕の意味論キー → i18n キー。**全 `CheckinMessageKey` を網羅する**（Record なので
+ * 契約にキーが増えたら型で落ちる）。
+ *
+ * なぜ要るか: `CheckinShell` は見出し・リードを `makeT(locale)` で訳していたのに、アバター
+ * 字幕だけ契約の ja 既定文言（`CHECKIN_MESSAGE_TEXT_JA`）をそのまま渡していた。English を
+ * 選んだ来訪者は、英語の見出しの隣で日本語の字幕を読むことになる。#361 AC「QR 受付が独立
+ * した別 UI に見えず、同じ受付体験として進行する」に対して、言語がそこだけ切れていた。
+ */
+const CHECKIN_MESSAGE_I18N_KEY: Record<CheckinMessageKey, I18nMessageKey> = {
+  intro: 'checkin.subtitle.intro',
+  chooseMethod: 'checkin.subtitle.chooseMethod',
+  cameraPermission: 'checkin.subtitle.cameraPermission',
+  scanning: 'checkin.subtitle.scanning',
+  resolving: 'checkin.subtitle.resolving',
+  reviewReservation: 'checkin.subtitle.reviewReservation',
+  calling: 'checkin.subtitle.calling',
+  completed: 'checkin.subtitle.completed',
+  cancelled: 'checkin.subtitle.cancelled',
+  manualFallback: 'checkin.subtitle.manualFallback',
+  cameraError: 'checkin.subtitle.cameraError',
+  scanError: 'checkin.subtitle.scanError',
+  expiredError: 'checkin.subtitle.expiredError',
+  usedError: 'checkin.subtitle.usedError',
+  revokedError: 'checkin.subtitle.revokedError',
+  networkError: 'checkin.subtitle.networkError',
+};
+
+/**
+ * QR 受付の字幕を locale 解決して返す。
+ *
+ * 受付側の `screenTitleFor` と同じ役割分担: **どの局面で何を言うかは契約が決め**、ここは
+ * 「意味論キー → その locale の文言」を解決するだけ。`CheckinShell` はこの値を
+ * `checkinConversationTurnFor(state, { message: { displayText } })` へ注入する。
+ */
+export function checkinSubtitleFor(state: CheckinState, locale: Locale): string {
+  return makeT(locale)(CHECKIN_MESSAGE_I18N_KEY[checkinMessageKeyFor(state)]);
 }
 
 /** 表示用に解決した回答候補。ラベルは locale 適用済み、`testId` は既存 e2e との後方互換。 */
