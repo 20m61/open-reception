@@ -148,6 +148,100 @@ test.describe('受付フロー画面（実 /kiosk・iPad landscape）', () => {
     expect(violations, summarize(violations)).toEqual([]);
   });
 
+  /**
+   * 結果系（呼び出し中・通話中・未応答・代替案内）の VRT + a11y (#422 AC「visual regression で
+   * 主要状態を固定」)。
+   *
+   * この 4 状態は**このセッションで契約を大きく直した箇所**（`answers` / `gazeTarget` の乖離、
+   * 代替導線を出すかの判断の一本化）なのに画像で固定されていなかった。CTA の有無や配置が
+   * 変わっても誰も気づけない状態だったので埋める。
+   *
+   * 到達手段は `reception-flow.spec.ts` と同じ seed 依存（担当者ごとに結果が分かれる）:
+   *  - staff-sato      → connected
+   *  - staff-suzuki    → timeout（`?callingStageMs=` 等で短縮）
+   *  - staff-takahashi → failed
+   */
+  async function advanceToCall(page: Page, staffTestId: string, query = ''): Promise<void> {
+    await page.goto(`/kiosk${query}`);
+    await page.getByTestId('start-reception').click();
+    await page.getByTestId('purpose-meeting').click();
+    await page.getByTestId(staffTestId).click();
+    await page.getByTestId('visitor-name').fill('来客 一郎');
+    await page.getByTestId('to-confirm').click();
+    await page.getByTestId('confirm-call').click();
+  }
+
+  test('通話中画面の VRT + a11y（終了操作は任意・急かさない）', async ({ page }) => {
+    await advanceToCall(page, 'staff-staff-sato');
+    await expect(page.getByTestId('result-connected')).toBeVisible();
+
+    await stabilize(page);
+    await expect(page).toHaveScreenshot('kiosk-landscape-connected.png', {
+      ...SHOT_BASE,
+      // 本文は `{target}`（担当者名）を含むので mask する。**パネルごと隠さない** —
+      // 終了 CTA の有無と配置がこのテストで固定したいものなので、隠すと VRT の意味が無くなる。
+      mask: [...avatarMasks(page), page.locator('.result-panel__message')],
+    });
+
+    const violations = await blockingViolations(page);
+    expect(violations, summarize(violations)).toEqual([]);
+  });
+
+  test('未応答画面の VRT + a11y（代替導線が主 CTA）', async ({ page }) => {
+    await advanceToCall(
+      page,
+      'staff-staff-suzuki',
+      '?callingStageMs=100&callingNoticeMs=200&callingNoticeHoldMs=100',
+    );
+    await expect(page.getByTestId('result-timeout')).toBeVisible();
+    // 契約が返す代替導線が実際に出ていること（#489 で通信断のとき出さないよう直した箇所の対）。
+    await expect(page.getByTestId('use-fallback')).toBeVisible();
+
+    await stabilize(page);
+    await expect(page).toHaveScreenshot('kiosk-landscape-timeout.png', {
+      ...SHOT_BASE,
+      mask: avatarMasks(page),
+    });
+
+    const violations = await blockingViolations(page);
+    expect(violations, summarize(violations)).toEqual([]);
+  });
+
+  test('失敗画面の VRT + a11y', async ({ page }) => {
+    await advanceToCall(page, 'staff-staff-takahashi');
+    await expect(page.getByTestId('result-failed')).toBeVisible();
+
+    await stabilize(page);
+    await expect(page).toHaveScreenshot('kiosk-landscape-failed.png', {
+      ...SHOT_BASE,
+      mask: avatarMasks(page),
+    });
+
+    const violations = await blockingViolations(page);
+    expect(violations, summarize(violations)).toEqual([]);
+  });
+
+  test('代替案内画面の VRT + a11y（CTA を持たず逃げ道バーだけ・#325）', async ({ page }) => {
+    await advanceToCall(
+      page,
+      'staff-staff-suzuki',
+      '?callingStageMs=100&callingNoticeMs=200&callingNoticeHoldMs=100',
+    );
+    await page.getByTestId('use-fallback').click();
+    await expect(page.getByTestId('fallback')).toBeVisible();
+    // コンテンツ側 CTA は持たない（契約 `defaultAnswersFor('fallback')` が [] を返すのと対）。
+    await expect(page.getByTestId('escape-reset')).toBeVisible();
+
+    await stabilize(page);
+    await expect(page).toHaveScreenshot('kiosk-landscape-fallback.png', {
+      ...SHOT_BASE,
+      mask: avatarMasks(page),
+    });
+
+    const violations = await blockingViolations(page);
+    expect(violations, summarize(violations)).toEqual([]);
+  });
+
   test('QR 受付導入（受付方法選択）画面の VRT + a11y', async ({ page }) => {
     await page.goto('/kiosk');
     await page.getByTestId('start-checkin').click();
