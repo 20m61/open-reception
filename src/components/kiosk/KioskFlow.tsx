@@ -156,8 +156,11 @@ import {
 import {
   escapeHatchesFor,
   type EscapeHatch,
-  type QuickAction,
 } from './quick-actions';
+import type {
+  TurnAnswerView,
+  TurnHandoffView,
+} from './conversation-turn';
 import {
   deriveAvatarPresence,
   deriveChatAvailability,
@@ -822,13 +825,16 @@ export function KioskFlow({ operatingStatus, sttAdapterFactory, voiceSession, qr
 
   // クイックアクションからの受付開始 (issue #121)。用件を先取りした目的を pendingPurpose に載せる。
   // checkin（QR 受付）はモード切替なので START を使わず、ここではなく UI 側で mode='checkin' にする。
-  const startWithQuickAction = useCallback((action: QuickAction) => {
-    if (action.isCheckin) {
-      setMode('checkin');
-      return;
-    }
+  // 待機の入口カード (#422 inc5-b 増分 3b)。受付を開始し、用件の先取りがあれば添える。
+  // 集合・並び順・用件の先取りは契約（`turnAnswersFor('idle')`）が決める。
+  const startWithEntry = useCallback((answer: TurnAnswerView) => {
     primeSpeech();
-    dispatch({ type: 'START', pendingPurpose: action.presetPurpose });
+    dispatch({ type: 'START', pendingPurpose: answer.presetPurpose });
+  }, []);
+  // 引き渡し入口 (#422 inc5-b 増分 3b)。**状態機械は進めず**別シェル（CheckinFlow）へ渡す。
+  // 回答と関数を分けているのは、押したときに起こることが違うため（取り違えを型で防ぐ）。
+  const handoffToShell = useCallback((handoff: TurnHandoffView) => {
+    setMode(handoff.to);
   }, []);
 
   // 用件先取りがあるとき、目的選択画面をスキップして担当/部署選択へ自動で進める (issue #121)。
@@ -1077,10 +1083,10 @@ export function KioskFlow({ operatingStatus, sttAdapterFactory, voiceSession, qr
               sttEnabled,
               motionUrl,
               vonageCallId,
-              onStartCheckin: () => setMode('checkin'),
               staffResponse,
               onStaffResponseFallback: handleStaffResponseFallback,
-              onQuickAction: startWithQuickAction,
+              onEntry: startWithEntry,
+              onHandoff: handoffToShell,
               locale,
               onLocaleChange: setLocale,
               branding,

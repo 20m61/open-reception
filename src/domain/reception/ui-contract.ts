@@ -29,7 +29,7 @@ import {
   type CheckinState,
 } from '@/domain/checkin/state';
 import { motionKeyForState, type MotionKey } from '@/domain/motion/types';
-import { RECEPTION_PURPOSES } from './session';
+import { RECEPTION_PURPOSES, type ReceptionPurposeId } from './session';
 import { shouldOfferAlternativeContact, type CallFailureReason } from './call-failure';
 
 // 契約モジュールの消費側（#121/#122/#123）が screenState 型を 1 箇所から import できるよう再エクスポート。
@@ -628,6 +628,31 @@ export type ConversationAnswer = {
   label: string;
   /** 選択時に起こす許可済みアクション（既定 answers は必ず availableActions の部分集合）。 */
   intent: ReceptionAction;
+  /**
+   * 目的選択を省いて先に確定する用件 (#422 inc5-b 増分 3b)。待機の入口カードだけが持つ。
+   * 「部署から選ぶ」「配送・納品」のような入口は、用件を先取りして担当者選択へ直行する。
+   * **別のアクションを作らない**（intent は 'start' のまま）。用件の先取りは受付の進み方
+   * ではなく、同じ受付開始に添える情報だから。
+   */
+  presetPurpose?: ReceptionPurposeId;
+};
+
+/**
+ * 状態機械を進めず、別のターン空間へ会話を引き渡す入口 (#422 inc5-b 増分 3b)。
+ *
+ * QR 受付は `CheckinFlow`（`domain/checkin/state.ts` の別状態機械。本契約では
+ * `checkinConversationTurnFor` が担う）へ切り替わる操作で、`ReceptionEvent` を発しない。
+ *
+ * **`answers` に混ぜない。** 回答は「このターンの問いへの答え」で、`intent` は必ず
+ * その状態で許可されたアクションでなければならない（自由文で不正操作に飛べない不変条件）。
+ * QR 受付に嘘の `intent`（'start' など）を与えるとその不変条件が意味を失う。会話そのものを
+ * 別のレールへ渡す操作なので、種類を分けて持つ。
+ */
+export type ConversationHandoff = {
+  id: string;
+  label: string;
+  /** 引き渡し先のターン空間。現状は QR 受付シェルのみ。 */
+  to: 'checkin';
 };
 
 /**
@@ -641,6 +666,31 @@ const ALT_CONTACT_ANSWER: ConversationAnswer = {
 };
 
 /**
+ * 待機画面の入口（#422 inc5-b 増分 3b）。ja ラベルは辞書 `kiosk.action.<id>.label` と
+ * 一致させる（`ui-contract.test.ts` が突き合わせて固定）。表示順がそのままカードの並び順。
+ *
+ * `callStaff` は用件を先取りしない汎用導線で、残り 3 つは用件を先取りして担当者選択へ直行する。
+ */
+const IDLE_ENTRY_ANSWERS: ReadonlyArray<ConversationAnswer> = [
+  { id: 'callStaff', label: '担当者を呼ぶ', intent: 'start' },
+  { id: 'department', label: '部署から選ぶ', intent: 'start', presetPurpose: 'meeting' },
+  { id: 'delivery', label: '配送・納品', intent: 'start', presetPurpose: 'delivery' },
+  { id: 'other', label: 'その他のご用件', intent: 'start', presetPurpose: 'other' },
+];
+
+/** QR 受付への引き渡し。待機だけが持つ（受付の途中で別シェルへ飛ばさない）。 */
+const CHECKIN_HANDOFF: ConversationHandoff = {
+  id: 'checkin',
+  label: 'QR で受付',
+  to: 'checkin',
+};
+
+/** そのターンが提示する引き渡し入口。 */
+function defaultHandoffsFor(state: ReceptionState): ReadonlyArray<ConversationHandoff> {
+  return state === 'idle' ? [CHECKIN_HANDOFF] : [];
+}
+
+/**
  * ターン既定の回答候補（ja ラベル・静的な分だけ）。担当者/部署のような実行時リストは空にし、
  * component 層が `conversationTurnFor(state, { answers })` で注入する。
  */
@@ -649,6 +699,10 @@ function defaultAnswersFor(
   context?: TurnContext,
 ): ReadonlyArray<ConversationAnswer> {
   switch (state) {
+    // 待機の入口カード (#422 inc5-b 増分 3b)。すべて受付開始で、用件の先取りだけが違う。
+    // 「いつ出すか」は availableActions('idle') に start が在ることで既に保証されている。
+    case 'idle':
+      return IDLE_ENTRY_ANSWERS;
     case 'selectingPurpose':
       return RECEPTION_PURPOSES.map((p) => ({ id: p.id, label: p.label, intent: 'selectPurpose' }));
     // ja 文言は**画面が実際に出しているもの**と一致させる（#422 地ならし）。フォールバックで
@@ -702,6 +756,8 @@ export type ConversationTurnView = {
     speak: boolean;
   };
   answers: ReadonlyArray<ConversationAnswer>;
+  /** 状態機械を進めず別のターン空間へ渡す入口（待機の QR 受付）。回答とは種類が違う。 */
+  handoffs: ReadonlyArray<ConversationHandoff>;
   inputModes: ReadonlyArray<InputMode>;
   requiresExplicitConfirmation: boolean;
   escapeHatches: ReadonlyArray<EscapeHatch>;
@@ -748,6 +804,7 @@ export function conversationTurnFor(
       speak: !NON_SPEAKING_STATES.has(state),
     },
     answers: options?.answers ?? defaultAnswersFor(state, options),
+    handoffs: defaultHandoffsFor(state),
     inputModes: inputModesFor(state),
     requiresExplicitConfirmation: requiresExplicitConfirmationFor(state),
     escapeHatches: escapeHatchActionsFor(state),

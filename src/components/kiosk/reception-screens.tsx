@@ -76,6 +76,9 @@ import type {
 import {
   screenTitleFor,
   turnAnswersFor,
+  turnHandoffsFor,
+  type TurnAnswerView,
+  type TurnHandoffView,
 } from './conversation-turn';
 import type {
   ReceptionState,
@@ -94,10 +97,6 @@ import {
 import {
   type CallStage,
 } from '@/domain/kiosk/call-stages';
-import {
-  quickActionsFor,
-  type QuickAction,
-} from './quick-actions';
 import {
   buildCheckoutUrl,
   safeCheckoutQrDataUrl,
@@ -215,10 +214,12 @@ type ReceptionScreenProps = {
   sttEnabled: boolean;
   motionUrl: string | undefined;
   vonageCallId: string | null;
-  onStartCheckin: () => void;
   staffResponse: StaffResponseResult | null;
   onStaffResponseFallback: () => void;
-  onQuickAction: (action: QuickAction) => void;
+  /** 待機の入口カード（受付開始。用件の先取りを伴うことがある）。 */
+  onEntry: (answer: TurnAnswerView) => void;
+  /** 待機の引き渡し入口（QR 受付シェルへ切替。状態機械は進めない）。 */
+  onHandoff: (handoff: TurnHandoffView) => void;
   locale: Locale;
   onLocaleChange: (next: Locale) => void;
   branding: BrandingSettings;
@@ -267,10 +268,10 @@ export function renderScreen({
   sttEnabled,
   motionUrl,
   vonageCallId,
-  onStartCheckin,
   staffResponse,
   onStaffResponseFallback,
-  onQuickAction,
+  onEntry,
+  onHandoff,
   locale,
   onLocaleChange,
   branding,
@@ -291,7 +292,8 @@ export function renderScreen({
     case 'idle':
       return (
         <IdleView
-          onQuickAction={onQuickAction}
+          onEntry={onEntry}
+          onHandoff={onHandoff}
           guidance={guidanceIdle}
           vrmUrl={vrmUrl}
           avatarFallbackUrl={avatarFallbackUrl}
@@ -441,13 +443,6 @@ export function renderScreen({
  * 付与し直して維持する。
  */
 /** クイックアクション intent → 辞書キー（label/desc）。多言語表示に使う (#103)。 */
-const QUICK_ACTION_I18N: Record<QuickActionIntent, { label: MessageKey; desc: MessageKey }> = {
-  callStaff: { label: 'kiosk.action.callStaff.label', desc: 'kiosk.action.callStaff.desc' },
-  checkin: { label: 'kiosk.action.checkin.label', desc: 'kiosk.action.checkin.desc' },
-  department: { label: 'kiosk.action.department.label', desc: 'kiosk.action.department.desc' },
-  delivery: { label: 'kiosk.action.delivery.label', desc: 'kiosk.action.delivery.desc' },
-  other: { label: 'kiosk.action.other.label', desc: 'kiosk.action.other.desc' },
-};
 
 /**
  * 画面の主指示（見出し）。文言は会話ターン契約から解決する (#422 inc5-b)。
@@ -462,7 +457,8 @@ function ScreenTitle({ state, locale }: { state: ReceptionState; locale: Locale 
 }
 
 function IdleView({
-  onQuickAction,
+  onEntry,
+  onHandoff,
   guidance,
   vrmUrl,
   avatarFallbackUrl,
@@ -471,7 +467,8 @@ function IdleView({
   onLocaleChange,
   branding,
 }: {
-  onQuickAction: (action: QuickAction) => void;
+  onEntry: (answer: TurnAnswerView) => void;
+  onHandoff: (handoff: TurnHandoffView) => void;
   guidance: string;
   vrmUrl?: string;
   avatarFallbackUrl?: string;
@@ -480,7 +477,6 @@ function IdleView({
   onLocaleChange: (next: Locale) => void;
   branding: BrandingSettings;
 }) {
-  const actions = quickActionsFor('idle');
   const tr = makeT(locale);
   // ja は管理設定で上書きできる案内文言（guidance）を使い、他言語は辞書の挨拶＋安心情報を出す (#103 / #324)。
   // リードは主指示（見出しの「ご用件をお選びください」）を重ねず、挨拶＋「タッチだけで受付できる」
@@ -491,11 +487,6 @@ function IdleView({
     locale === DEFAULT_LOCALE
       ? guidance
       : `${tr('welcome.title')}${sentenceSep}${tr('reception.idleReassure')}`;
-  // 既存 testid との後方互換（再設計後もリンク切れにしない）。
-  const legacyTestId: Partial<Record<QuickAction['intent'], string>> = {
-    callStaff: 'start-reception',
-    checkin: 'start-checkin',
-  };
   const hasBrand = hasBrandingContent(branding);
   return (
     <div
@@ -540,27 +531,47 @@ function IdleView({
           label={tr('welcome.chooseLanguage')}
         />
       </header>
+      {/*
+        待機の入口カードは契約が決める (#422 inc5-b 増分 3b)。並び順・ラベル・用件の先取りは
+        `turnAnswersFor`、QR 受付は `turnHandoffsFor`。**押したときに起こることが違う**
+        （回答は状態機械のイベント、引き渡しは別シェルへの切替）ので取得元を分けている。
+        アイコンと説明文はカードの見せ方なので画面が持つ。
+      */}
       <div className="card-grid kiosk-quick-actions" data-testid="kiosk-quick-actions">
-        {actions.map((action) => {
-          const keys = QUICK_ACTION_I18N[action.intent];
-          return (
-            <button
-              key={action.intent}
-              type="button"
-              className="card card--cta"
-              data-testid={legacyTestId[action.intent] ?? action.testId}
-              data-intent={action.intent}
-              lang={htmlLangFor(locale)}
-              onClick={() => onQuickAction(action)}
-            >
-              <span className="card__icon" aria-hidden="true">
-                {quickActionIcon(action.intent)}
-              </span>
-              {tr(keys.label)}
-              <span className="card__sub">{tr(keys.desc)}</span>
-            </button>
-          );
-        })}
+        {turnAnswersFor('idle', locale).map((answer) => (
+          <button
+            key={answer.id}
+            type="button"
+            className="card card--cta"
+            data-testid={answer.testId}
+            data-intent={answer.id}
+            lang={htmlLangFor(locale)}
+            onClick={() => onEntry(answer)}
+          >
+            <span className="card__icon" aria-hidden="true">
+              {quickActionIcon(answer.id as QuickActionIntent)}
+            </span>
+            {answer.label}
+            <span className="card__sub">{tr(`kiosk.action.${answer.id}.desc` as MessageKey)}</span>
+          </button>
+        ))}
+        {turnHandoffsFor('idle', locale).map((handoff) => (
+          <button
+            key={handoff.id}
+            type="button"
+            className="card card--cta"
+            data-testid={handoff.testId}
+            data-intent={handoff.id}
+            lang={htmlLangFor(locale)}
+            onClick={() => onHandoff(handoff)}
+          >
+            <span className="card__icon" aria-hidden="true">
+              {quickActionIcon(handoff.id as QuickActionIntent)}
+            </span>
+            {handoff.label}
+            <span className="card__sub">{tr(`kiosk.action.${handoff.id}.desc` as MessageKey)}</span>
+          </button>
+        ))}
       </div>
     </div>
   );

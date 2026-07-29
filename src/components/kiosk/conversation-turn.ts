@@ -19,7 +19,7 @@ import {
   type ReceptionState,
   type TurnContext,
 } from '@/domain/reception/ui-contract';
-import { RECEPTION_PURPOSES } from '@/domain/reception/session';
+import { RECEPTION_PURPOSES, type ReceptionPurposeId } from '@/domain/reception/session';
 import { makeT, type Locale, type MessageKey as I18nMessageKey } from '@/lib/i18n';
 
 /**
@@ -63,26 +63,67 @@ export type TurnAnswerView = {
   label: string;
   intent: ReceptionAction;
   testId: string;
+  /** 目的選択を省いて先に確定する用件（待機の入口カードのみ）。 */
+  presetPurpose?: ReceptionPurposeId;
+};
+
+/** 表示用に解決した引き渡し入口（QR 受付）。状態機械は進めない。 */
+export type TurnHandoffView = {
+  id: string;
+  label: string;
+  to: 'checkin';
+  testId: string;
+};
+
+const HANDOFF_DISPLAY: Record<string, AnswerDisplay> = {
+  checkin: { i18nKey: 'kiosk.action.checkin.label', testId: 'start-checkin' },
 };
 
 /**
- * 契約の回答 id → 表示（i18n キーと testId）。
+ * そのターンの引き渡し入口を locale 解決して返す。
+ *
+ * 回答（`turnAnswersFor`）とは別に取る。**押したときに起こることが違う**（回答は状態機械の
+ * イベントを起こし、引き渡しは別シェルへ切り替える）ので、画面が取り違えられない形にする。
+ */
+export function turnHandoffsFor(
+  state: ReceptionState,
+  locale: Locale,
+): ReadonlyArray<TurnHandoffView> {
+  const tr = makeT(locale);
+  const views: TurnHandoffView[] = [];
+  for (const handoff of conversationTurnFor(state).handoffs) {
+    const display = HANDOFF_DISPLAY[handoff.id];
+    if (display === undefined) continue;
+    views.push({ id: handoff.id, label: tr(display.i18nKey), to: handoff.to, testId: display.testId });
+  }
+  return views;
+}
+
+type AnswerDisplay = { i18nKey: I18nMessageKey; testId: string };
+
+/**
+ * 契約の回答 → 表示（i18n キーと testId）。**ターンごとに引く。**
+ *
+ * 同じ id が別のターンでは別物を意味する。待機の `delivery`（用件を先取りして担当者選択へ
+ * 直行する入口）と、用件選択の `delivery`（用件そのものの選択）は違う質問への回答で、
+ * ラベルも testId も別。id だけで引くと片方が他方に化ける。
  *
  * 強調度（primary/secondary）は含めない。**どの回答を出すかは契約が決め、どう見せるかは
  * 画面が決める**という役割分担（`quick-actions.ts` の EscapeHatch と同じ）。
- *
- * 用件カード（meeting/delivery/interview/other）はここに無い。実行時リストであり
- * `QuickAction` 側の語彙とも重なるため、増分 3 でまとめて寄せる。**表示定義の無い回答が
- * 静かに消えないよう、対象外の集合はテストで固定している。**
  */
-const ANSWER_DISPLAY: Record<string, { i18nKey: I18nMessageKey; testId: string }> = {
-  confirm: { i18nKey: 'reception.callWithThis', testId: 'confirm-call' },
-  fallback: { i18nKey: 'reception.altContact', testId: 'use-fallback' },
-  complete: { i18nKey: 'reception.finishReception', testId: 'complete' },
+const ANSWER_DISPLAY: Partial<Record<ReceptionState, Record<string, AnswerDisplay>>> = {
+  // 待機の入口カード (#422 inc5-b 増分 3b)。testId は既存 e2e との後方互換を保つ
+  // （`callStaff` だけ歴史的に `start-reception`）。
+  idle: {
+    callStaff: { i18nKey: 'kiosk.action.callStaff.label', testId: 'start-reception' },
+    department: { i18nKey: 'kiosk.action.department.label', testId: 'quick-department' },
+    delivery: { i18nKey: 'kiosk.action.delivery.label', testId: 'quick-delivery' },
+    other: { i18nKey: 'kiosk.action.other.label', testId: 'quick-other' },
+  },
   // 用件カード (#422 inc5-b 増分 3a)。契約の `RECEPTION_PURPOSES.label` は生の日本語
   // リテラルで、画面は辞書を引いていた（ja では一致していたが**同じ文言の二重管理**で、
   // 辞書だけ直すとズレる）。表示は辞書を正とする。
-  ...Object.fromEntries(
+  selectingPurpose: Object.fromEntries(
     RECEPTION_PURPOSES.map((purpose) => [
       purpose.id,
       {
@@ -91,6 +132,10 @@ const ANSWER_DISPLAY: Record<string, { i18nKey: I18nMessageKey; testId: string }
       },
     ]),
   ),
+  confirming: { confirm: { i18nKey: 'reception.callWithThis', testId: 'confirm-call' } },
+  connected: { complete: { i18nKey: 'reception.finishReception', testId: 'complete' } },
+  failed: { fallback: { i18nKey: 'reception.altContact', testId: 'use-fallback' } },
+  timeout: { fallback: { i18nKey: 'reception.altContact', testId: 'use-fallback' } },
 };
 
 /**
@@ -107,15 +152,17 @@ export function turnAnswersFor(
   context?: TurnContext,
 ): ReadonlyArray<TurnAnswerView> {
   const tr = makeT(locale);
+  const displays = ANSWER_DISPLAY[state] ?? {};
   const views: TurnAnswerView[] = [];
   for (const answer of conversationTurnFor(state, context).answers) {
-    const display = ANSWER_DISPLAY[answer.id];
+    const display = displays[answer.id];
     if (display === undefined) continue;
     views.push({
       id: answer.id,
       label: tr(display.i18nKey),
       intent: answer.intent,
       testId: display.testId,
+      ...(answer.presetPurpose === undefined ? {} : { presetPurpose: answer.presetPurpose }),
     });
   }
   return views;

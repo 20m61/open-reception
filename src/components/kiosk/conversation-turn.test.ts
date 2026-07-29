@@ -2,7 +2,12 @@ import { describe, expect, it } from 'vitest';
 import { conversationTurnFor, RECEPTION_STATES } from '@/domain/reception/ui-contract';
 import { RECEPTION_PURPOSES } from '@/domain/reception/session';
 import { DICTIONARIES, type MessageKey as I18nMessageKey } from '@/lib/i18n';
-import { screenTitleFor, STATES_WITH_SCREEN_TITLE, turnAnswersFor } from './conversation-turn';
+import {
+  screenTitleFor,
+  STATES_WITH_SCREEN_TITLE,
+  turnAnswersFor,
+  turnHandoffsFor,
+} from './conversation-turn';
 
 function ja(key: I18nMessageKey): string {
   const value = DICTIONARIES.ja[key];
@@ -118,6 +123,60 @@ describe('kiosk conversation-turn: 回答候補の解決 (#422 inc5-b 増分 2)'
 
   it('locale を変えると CTA の文言もその言語になる', () => {
     expect(turnAnswersFor('confirming', 'en')[0]?.label).toBe(DICTIONARIES.en['reception.callWithThis']);
+  });
+});
+
+describe('kiosk conversation-turn: 待機の入口の解決 (#422 inc5-b 増分 3b)', () => {
+  it('入口カードは現行の testId を保つ（callStaff だけ歴史的に start-reception）', () => {
+    expect(turnAnswersFor('idle', 'ja').map((a) => a.testId)).toEqual([
+      'start-reception',
+      'quick-department',
+      'quick-delivery',
+      'quick-other',
+    ]);
+    expect(turnHandoffsFor('idle', 'ja').map((h) => h.testId)).toEqual(['start-checkin']);
+  });
+
+  it('用件の先取りが表示側まで伝わる（部署=面会 / 配送 / その他）', () => {
+    const byId = new Map(turnAnswersFor('idle', 'ja').map((a) => [a.id, a.presetPurpose]));
+    expect(byId.get('callStaff')).toBeUndefined();
+    expect(byId.get('department')).toBe('meeting');
+    expect(byId.get('delivery')).toBe('delivery');
+    expect(byId.get('other')).toBe('other');
+  });
+
+  it('同じ id でもターンが違えば別物として解決する（待機の delivery ≠ 用件の delivery）', () => {
+    // 待機の `delivery` は「用件を先取りして担当者選択へ直行する入口」、用件選択の
+    // `delivery` は「用件そのものの選択」。id だけで表示を引くと片方が他方に化ける。
+    const entry = turnAnswersFor('idle', 'ja').find((a) => a.id === 'delivery');
+    const purpose = turnAnswersFor('selectingPurpose', 'ja').find((a) => a.id === 'delivery');
+    expect(entry?.testId).toBe('quick-delivery');
+    expect(purpose?.testId).toBe('purpose-delivery');
+    expect(entry?.label).not.toBe(purpose?.label);
+    expect(entry?.intent).toBe('start');
+    expect(purpose?.intent).toBe('selectPurpose');
+  });
+
+  it('多言語で日本語リテラルが漏れない（入口カード・QR とも）', () => {
+    const labels = [
+      ...turnAnswersFor('idle', 'en').map((a) => a.label),
+      ...turnHandoffsFor('idle', 'en').map((h) => h.label),
+    ];
+    expect(labels).toEqual([
+      DICTIONARIES.en['kiosk.action.callStaff.label'],
+      DICTIONARIES.en['kiosk.action.department.label'],
+      DICTIONARIES.en['kiosk.action.delivery.label'],
+      DICTIONARIES.en['kiosk.action.other.label'],
+      DICTIONARIES.en['kiosk.action.checkin.label'],
+    ]);
+    for (const label of labels) expect(label).not.toMatch(/[ぁ-んァ-ン一-龠]/);
+  });
+
+  it('引き渡しは待機だけが持つ（受付の途中で別シェルへ飛ばさない）', () => {
+    for (const state of RECEPTION_STATES) {
+      if (state === 'idle') continue;
+      expect(turnHandoffsFor(state, 'ja'), state).toEqual([]);
+    }
   });
 });
 
