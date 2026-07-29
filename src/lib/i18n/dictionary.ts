@@ -156,10 +156,6 @@ export type MessageKey =
   | 'reception.requiredLabel'
   | 'reception.optionalLabel'
   // 進捗ステッパーのステップ短ラベル（#121 UX）
-  | 'reception.step.purpose'
-  | 'reception.step.target'
-  | 'reception.step.info'
-  | 'reception.step.confirm'
   // 無操作タイムアウトのカウントダウン警告（#125 UX・{seconds} 補間）
   | 'reception.inactivityTitle'
   | 'reception.inactivityBody'
@@ -441,10 +437,6 @@ const ja: DefaultDictionary = {
   'reception.fieldNote': 'ご用件メモ',
   'reception.requiredLabel': '{field}（必須）',
   'reception.optionalLabel': '{field}（任意）',
-  'reception.step.purpose': '用件',
-  'reception.step.target': '相手',
-  'reception.step.info': '情報',
-  'reception.step.confirm': '確認',
   'reception.inactivityTitle': 'まだご利用中ですか？',
   'reception.inactivityBody': 'プライバシー保護のため、まもなく最初の画面に戻ります。',
   'reception.inactivityCountdown': '{seconds} 秒後にリセットします',
@@ -709,10 +701,6 @@ const en: LocaleDictionary = {
   'reception.fieldNote': 'Note',
   'reception.requiredLabel': '{field} (required)',
   'reception.optionalLabel': '{field} (optional)',
-  'reception.step.purpose': 'Purpose',
-  'reception.step.target': 'Person',
-  'reception.step.info': 'Details',
-  'reception.step.confirm': 'Confirm',
   'reception.inactivityTitle': 'Are you still there?',
   'reception.inactivityBody': 'For your privacy, this will return to the start screen shortly.',
   'reception.inactivityCountdown': 'Resetting in {seconds}s',
@@ -977,10 +965,6 @@ const ko: LocaleDictionary = {
   'reception.fieldNote': '용건 메모',
   'reception.requiredLabel': '{field}(필수)',
   'reception.optionalLabel': '{field}(선택)',
-  'reception.step.purpose': '용건',
-  'reception.step.target': '대상',
-  'reception.step.info': '정보',
-  'reception.step.confirm': '확인',
   'reception.inactivityTitle': '아직 이용 중이신가요?',
   'reception.inactivityBody': '개인정보 보호를 위해 곧 첫 화면으로 돌아갑니다.',
   'reception.inactivityCountdown': '{seconds}초 후 초기화됩니다',
@@ -1243,10 +1227,6 @@ const zh: LocaleDictionary = {
   'reception.fieldNote': '事由备注',
   'reception.requiredLabel': '{field}（必填）',
   'reception.optionalLabel': '{field}（选填）',
-  'reception.step.purpose': '事由',
-  'reception.step.target': '对象',
-  'reception.step.info': '信息',
-  'reception.step.confirm': '确认',
   'reception.inactivityTitle': '您还在吗？',
   'reception.inactivityBody': '为保护隐私，即将返回首页。',
   'reception.inactivityCountdown': '{seconds} 秒后重置',
