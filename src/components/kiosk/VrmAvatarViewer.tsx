@@ -5,10 +5,12 @@ import { ResourceTracker } from '@/lib/three/resource-tracker';
 import { AvatarFallbackImage } from './avatar/fallback-image';
 import { emotionExpressionValues } from './avatar/vrm-expression';
 import { resolveStatePose } from './avatar/vrm-pose';
+import { gazeOffsetFor, type GazeOffset } from './avatar/vrm-gaze';
 import { resolveFrameExpressionWeights } from './avatar/frame-weights';
 import { createAutoBlinkState, stepAutoBlink, type AutoBlinkState } from '@/domain/avatar/auto-blink';
 import type { AvatarExpression } from './avatar/guidance';
-import type { AvatarState } from '@/domain/reception/ui-contract';
+import type { AvatarState, GazeTarget } from '@/domain/reception/ui-contract';
+import type { KioskLayout } from './layout';
 
 /**
  * VRM アバター表示基盤 (issue #36)。
@@ -39,6 +41,8 @@ export function VrmAvatarViewer({
   expressionIntensity,
   speaking,
   avatarState,
+  gazeTarget,
+  layout,
   className,
 }: {
   vrmUrl?: string;
@@ -60,6 +64,13 @@ export function VrmAvatarViewer({
   speaking?: boolean;
   /** 受付アバター状態（#31）。.vrma 非再生時に状態別の手続き的ポーズ/所作を適用する。 */
   avatarState?: AvatarState;
+  /**
+   * 視線誘導先 (#422 inc5-c 増分 3)。契約 `gazeTargetFor(screenState)` の値。
+   * `layout` と組で向く方向が決まる（横向きは右レール、縦向きは真下）。
+   */
+  gazeTarget?: GazeTarget;
+  /** 画面レイアウト。視線の向きに効く。未指定は横向き扱い（既定プロファイル）。 */
+  layout?: KioskLayout;
   className?: string;
 }) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
@@ -81,8 +92,11 @@ export function VrmAvatarViewer({
   }, [speaking]);
   // 受付状態もレンダーループ外から変化するため ref で渡す（#31 状態別ポーズ）。
   const avatarStateRef = useRef<AvatarState>(avatarState ?? 'idle');
+  // 視線は毎フレーム参照するので ref に持つ（再マウントせず追従させる）。
+  const gazeRef = useRef<GazeOffset>(gazeOffsetFor(gazeTarget ?? 'none', layout ?? 'ipad-landscape'));
   useEffect(() => {
     avatarStateRef.current = avatarState ?? 'idle';
+    gazeRef.current = gazeOffsetFor(gazeTarget ?? 'none', layout ?? 'ipad-landscape');
   }, [avatarState]);
 
   // モーション URL も [vrmUrl] エフェクト外から変化するため ref 経由で渡す。
@@ -220,6 +234,21 @@ export function VrmAvatarViewer({
           const humanoid = vrm?.humanoid;
           if (!currentAction && humanoid) {
             const pose = resolveStatePose(avatarStateRef.current, clock.elapsedTime);
+            // 視線誘導 (#422 inc5-c 増分 3)。首と頭に分けて配分し、頭だけが不自然に回るのを
+            // 避ける。ポーズ（呼吸・頷き等）へ**加算**するので、既存の所作は失われない。
+            const gaze = gazeRef.current;
+            if (gaze.yaw !== 0 || gaze.pitch !== 0) {
+              pose.neck = {
+                ...(pose.neck ?? {}),
+                x: (pose.neck?.x ?? 0) + gaze.pitch * 0.4,
+                y: (pose.neck?.y ?? 0) + gaze.yaw * 0.4,
+              };
+              pose.head = {
+                ...(pose.head ?? {}),
+                x: (pose.head?.x ?? 0) + gaze.pitch * 0.6,
+                y: (pose.head?.y ?? 0) + gaze.yaw * 0.6,
+              };
+            }
             for (const [bone, rot] of Object.entries(pose)) {
               const node = humanoid.getNormalizedBoneNode(bone);
               if (node) node.rotation.set(rot.x ?? 0, rot.y ?? 0, rot.z ?? 0);
