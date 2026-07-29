@@ -33,8 +33,10 @@
 > `gazeTarget` に乖離 2 件（`fallback` が存在しない回答領域を指す / 通信断の `failed` が
 > 出ないはずの代替 CTA を指す）。`deriveAvatarEmotion` と
 > `requiresExplicitConfirmationFor` は**値が正しく**、縛るテストだけ足した。
-> **次は inc5-b 本体＝画面を `ConversationTurnView` へ配線する。**
-> 配線時の必須事項: `conversationTurnFor` に `TurnContext`（`callFailureReason`）を渡す。
+> **inc5-b 本体は増分に割って進める。増分 1（主指示の配線）は完了**（第 64 wave / PR #490。
+> `conversation-turn.ts` が契約 `MessageKey` → i18n キーの解決を持つ）。
+> **次は増分 2 = 回答候補（answers）の配線。** ここが本命で、CTA の集合そのものを契約から
+> 出す。必須事項: `conversationTurnFor` に `TurnContext`（`callFailureReason`）を渡すこと。
 > 渡さないと通信断の端末に「代表窓口へお繋ぎします」という果たせない約束の CTA が出る
 > （`KioskFlow` は `data.failureReason` を保持している）。
 > 前セッション分は [`handoff-2026-07-27.md`](handoff-2026-07-27.md)。
@@ -291,6 +293,7 @@
 | 61 | 2026-07-29 | #422 地ならし: 逃げ道アクションの判断を契約へ一本化（二重実装 + `confirming` の食い違いを解消） | PR #486 |
 | 62 | 2026-07-29 | #422 inc5-a: 既定 answers / message を画面の実挙動に一致させる。**未消費 6 導出のうち調べた 4 つすべてで乖離**（うち 1 件は存在しない CTA を返す構造的乖離） | PR #487 |
 | 63 | 2026-07-29 | #422 inc5-b 地ならし: 残る 3 導出を実挙動へ突き合わせ。`gazeTarget` の乖離 2 件と `answers` の取りこぼし 1 件（**通信断で果たせない約束の CTA**）を修正。`deriveAvatarEmotion` / `requiresExplicitConfirmationFor` は値が正しく、縛るテストのみ追加 | PR #489 |
+| 64 | 2026-07-29 | #422 inc5-b 増分 1: 5 画面の主指示（`screen__title`）を契約経由へ配線。契約 `MessageKey` → i18n キーの対応が**テストの中にしか無かった**のを本番経路へ出した（`conversation-turn.ts`）。文言は不変 | PR #490 |
 
 
 **次に着手する候補（2026-07-27 更新・第 37 wave 消化後）**: **差分 B は決着済み**
