@@ -7,6 +7,7 @@ import {
   type A11yEnabledModes,
   type FontScale,
 } from '@/domain/kiosk/a11y-modes';
+import { persistentRegionProps } from './persistent-regions';
 
 /**
  * 常設アクセシビリティ支援モードボタン + パネル (issue #321)。
@@ -61,7 +62,7 @@ export function AccessibilityMenu({
       <button
         type="button"
         className="a11y-menu__button"
-        data-testid="a11y-menu-button"
+        {...persistentRegionProps('a11y-menu-button')}
         aria-haspopup="dialog"
         aria-expanded={open}
         onClick={() => setOpen((v) => !v)}

@@ -45,6 +45,8 @@ import {
   MESSAGE_KEYS,
   messageKeyForState,
   passesConfirmationInvariant,
+  PERSISTENT_REGIONS,
+  regionOfTurnPart,
   RECEPTION_ACTIONS,
   requiresExplicitConfirmationFor,
   type ReceptionAction,
@@ -919,5 +921,37 @@ describe('checkin ui-contract: checkinConversationTurnFor (#361 QRシェル統�
     for (const state of CHECKIN_STATES) {
       expect(RECEPTION_STATES).toContain(checkinAvatarProxyState(state));
     }
+  });
+});
+
+describe('reception ui-contract: 常設要素の領域 (#422 inc5-c 増分 2)', () => {
+  it('領域はちょうど 3 つ（案内・回答対象・ヘルプ）', () => {
+    // #422 の AC「常設要素を原則 3 領域以内へ整理」。語彙が増えたらここで落ちる。
+    expect([...PERSISTENT_REGIONS]).toEqual(['guidance', 'answers', 'help']);
+  });
+
+  it('契約が持つターン要素はすべて領域に属する（帰属不明の要素を作らない）', () => {
+    // ConversationTurnView の各部が、来訪者から見てどの領域に出るかを宣言する。
+    // 契約が持たない常設要素（言語切替・退館リンク・アクセシビリティメニュー）は
+    // component 層の登録簿が持つ（domain は component の存在を知らない）。
+    const turn = conversationTurnFor('idle');
+    const parts = ['avatar', 'message', 'answers', 'handoffs', 'escapeHatches'] as const;
+    for (const part of parts) {
+      expect(turn[part], part).toBeDefined();
+      expect(PERSISTENT_REGIONS, part).toContain(regionOfTurnPart(part));
+    }
+  });
+
+  it('回答と引き渡しは同じ領域（来訪者には並んだカードとして見える）', () => {
+    // 待機画面では入口カードと QR 受付が同じカード列に並ぶ。押した結果は違うが
+    // （回答は状態機械、引き渡しは別シェル）、領域としては同じ「回答対象」。
+    expect(regionOfTurnPart('answers')).toBe('answers');
+    expect(regionOfTurnPart('handoffs')).toBe('answers');
+  });
+
+  it('アバターと字幕は案内、逃げ道はヘルプ', () => {
+    expect(regionOfTurnPart('avatar')).toBe('guidance');
+    expect(regionOfTurnPart('message')).toBe('guidance');
+    expect(regionOfTurnPart('escapeHatches')).toBe('help');
   });
 });

@@ -30,6 +30,7 @@ import {
 } from './chat/chat-logic';
 import { MockChatLlmAdapter, type ChatLlmAdapter } from './chat/llm-adapter';
 import { DEFAULT_LOCALE, htmlLangFor, makeT, type Locale } from '@/lib/i18n';
+import { persistentRegionProps } from './persistent-regions';
 
 export type KioskChatDrawerProps = {
   /** 現在の受付状態。許可アクション判定の文脈に使う。 */
@@ -179,7 +180,7 @@ export function KioskChatDrawer({
   }
 
   return (
-    <div className={styles.root} data-testid="kiosk-chat-drawer" data-open={open}>
+    <div className={styles.root} {...persistentRegionProps('kiosk-chat-drawer')} data-open={open}>
       {!open && (
         <button
           type="button"

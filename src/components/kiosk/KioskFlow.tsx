@@ -159,6 +159,9 @@ import type {
   TurnHandoffView,
 } from './conversation-turn';
 import {
+  persistentRegionProps,
+} from './persistent-regions';
+import {
   deriveAvatarPresence,
   deriveChatAvailability,
   type ReceptionAction,
@@ -1115,7 +1118,11 @@ export function KioskFlow({ operatingStatus, sttAdapterFactory, voiceSession, qr
             待機画面は IdleView 側がヒーローとして大きく表示する。
           */}
           {showAvatarCompanion(data.state, layout) ? (
-            <div className="kiosk-avatar-companion" aria-hidden="true">
+            <div
+              className="kiosk-avatar-companion"
+              aria-hidden="true"
+              {...persistentRegionProps('kiosk-avatar-companion')}
+            >
               <AvatarGuide
                 screenState={data.state}
                 locale={locale}
@@ -1228,7 +1235,7 @@ function EscapeHatchBar({
     <nav
       ref={barRef}
       className="kiosk-escape-bar"
-      data-testid="kiosk-escape-bar"
+      {...persistentRegionProps('kiosk-escape-bar')}
       aria-label={tr('reception.escapeBarLabel')}
       lang={htmlLangFor(locale)}
     >
@@ -1546,7 +1553,7 @@ function CheckoutLink({ locale = DEFAULT_LOCALE }: { locale?: Locale }) {
     <Link
       href={`/kiosk/checkout?locale=${locale}`}
       className="btn btn--ghost"
-      data-testid="kiosk-checkout-link"
+      {...persistentRegionProps('kiosk-checkout-link')}
       lang={htmlLangFor(locale)}
     >
       {tr('kiosk.checkoutLink')}

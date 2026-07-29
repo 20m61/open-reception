@@ -6,6 +6,7 @@ import {
   normalizeLocale,
   type Locale,
 } from '@/lib/i18n';
+import { persistentRegionProps } from './persistent-regions';
 
 /**
  * 通常の言語選択に出す locale（#321: 'ja-simple' はここには出さない）。
@@ -40,7 +41,12 @@ export function LanguageSwitcher({
 }) {
   const current = normalizeLocale(locale);
   return (
-    <div role="group" aria-label={label ?? 'Language'} style={groupStyle}>
+    <div
+      role="group"
+      aria-label={label ?? 'Language'}
+      style={groupStyle}
+      {...persistentRegionProps('kiosk-language-switcher')}
+    >
       {label ? <p style={labelStyle}>{label}</p> : null}
       <div style={listStyle}>
         {DISPLAY_LOCALES.map((value) => {
