@@ -21,6 +21,9 @@ describe('kiosk persistent-regions: 常設要素の登録簿 (#422 inc5-c 増分
     const help = PERSISTENT_ELEMENTS.filter((e) => e.region === 'help').map((e) => e.testId);
     expect(help).toEqual([
       'kiosk-escape-bar',
+      // QR 受付シェルの後退導線 (#361 AC2)。受付と同じ語彙・同じボタンを出すが、表示可否を
+      // 決めるのが checkin 状態機械側の契約なので登録は別（`key` を持たない）。
+      'checkin-escape-bar',
       'kiosk-chat-drawer',
       'a11y-menu-button',
       'kiosk-language-switcher',

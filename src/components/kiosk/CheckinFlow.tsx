@@ -15,6 +15,8 @@ import { DEFAULT_LOCALE, makeT, type Locale, type MessageKey } from '@/lib/i18n'
 import type { KioskLayout } from './layout';
 import { AvatarGuide } from './avatar/AvatarGuide';
 import { checkinSubtitleFor } from './conversation-turn';
+import { EscapeBar } from './EscapeBar';
+import { checkinEscapesFor } from './quick-actions';
 import {
   checkinCallFailureMessageKeyFor,
   checkinCallFailureReasonFrom,
@@ -234,6 +236,9 @@ export function CheckinFlow({
       avatarFallbackUrl={avatarFallbackUrl}
       motionUrls={motionUrls}
       defaultMotionUrl={defaultMotionUrl}
+      // 逃げ道は RESET のみ（契約）。`exit` が RESET + QR モード離脱を同時に行うので、
+      // 押した来訪者は kiosk 待機画面へ帰る（QR シェルの中で idle に留まらない）。
+      onEscape={exit}
     >
       {renderCheckin({
         data,
@@ -269,6 +274,7 @@ function CheckinShell({
   avatarFallbackUrl,
   motionUrls,
   defaultMotionUrl,
+  onEscape,
   children,
 }: {
   state: CheckinState;
@@ -278,6 +284,8 @@ function CheckinShell({
   avatarFallbackUrl?: string;
   motionUrls?: Partial<Record<MotionKey, string>>;
   defaultMotionUrl?: string;
+  /** 逃げ道バーの選択（現状は RESET のみ＝ kiosk 待機へ帰る）。 */
+  onEscape: (event: string) => void;
   children: React.ReactNode;
 }) {
   // 字幕は来訪者の言語で解決して注入する (#361 AC2)。渡さないと契約の ja 既定文言が出て、
@@ -314,15 +322,45 @@ function CheckinShell({
       data-testid="checkin-shell"
       data-checkin-state={turn.stateKey}
       data-checkin-presence={turn.avatar.presence}
-      style={isRail ? shellRailStyle : shellStackStyle}
+      style={shellOuterStyle}
     >
-      {avatar}
-      <div className="checkin-shell__content" style={isRail ? contentRailStyle : contentStackStyle}>
-        {children}
+      {/*
+        アバターと会話・操作の並び（横向きは 35%/65% のレール、縦向きは重ね置き）。
+        **逃げ道バーはこの内側に入れない。** バーは `position: sticky; bottom: 0` で列方向の
+        流れに乗る前提なので、行 flex の子にすると右側の縦カラムとして描かれ、右上の
+        「見やすさ設定」に重なる（VRT が実際にこの退行を捕まえた）。
+      */}
+      <div style={isRail ? shellRailStyle : shellStackStyle}>
+        {avatar}
+        <div className="checkin-shell__content" style={isRail ? contentRailStyle : contentStackStyle}>
+          {children}
+        </div>
       </div>
+      {/*
+        常設逃げ道バー (#361 AC2)。**画面分岐の外**に置く（受付側が #39 で同じ是正をした）。
+        以前は各ターンが `CANCEL`/`exit` ボタンを手書きしており、ターンが増えるたびに
+        入れ忘れる余地があった。ここに置けば構造として全ターンへ常設される。
+        出す項目は契約（`checkinEscapeHatchesFor`）由来で、受付と同じ「最初に戻る」を出す。
+      */}
+      <EscapeBar
+        regionTestId="checkin-escape-bar"
+        locale={locale}
+        items={checkinEscapesFor(state).map((escape) => ({ id: escape.event, ...escape }))}
+        onSelect={onEscape}
+      />
     </div>
   );
 }
+
+// シェルの外枠。列方向にして「アバター＋会話」の並びと常設バーを縦に積む（バーの
+// sticky bottom が効く流れを作る）。
+const shellOuterStyle: React.CSSProperties = {
+  display: 'flex',
+  flexDirection: 'column',
+  flex: 1,
+  minHeight: 0,
+  width: '100%',
+};
 
 // 横向き/大型: アバターを左レール(35%)として在席させる（#361 会話継続レイアウト）。
 const shellRailStyle: React.CSSProperties = {
@@ -426,9 +464,6 @@ export function renderCheckin({
           >
             {tr('checkin.idle.start')}
           </button>
-          <button type="button" className="btn btn--ghost" data-testid="checkin-exit" onClick={exit}>
-            {tr('checkin.backToStart')}
-          </button>
         </CenteredCard>
       );
     case 'selectingMethod':
@@ -453,9 +488,6 @@ export function renderCheckin({
               {tr('checkin.method.manual')}
             </button>
           </div>
-          <button type="button" className="btn btn--ghost" data-testid="method-cancel" onClick={() => dispatch({ type: 'CANCEL' })}>
-            {tr('checkin.backToStart')}
-          </button>
         </CenteredCard>
       );
     case 'checkingCamera':
@@ -479,9 +511,6 @@ export function renderCheckin({
           >
             {tr('checkin.camera.deny')}
           </button>
-          <button type="button" className="btn btn--ghost" data-testid="camera-cancel" onClick={() => dispatch({ type: 'CANCEL' })}>
-            {tr('checkin.backToStart')}
-          </button>
         </CenteredCard>
       );
     case 'scanning':
@@ -489,9 +518,6 @@ export function renderCheckin({
         <CenteredCard>
           <h1 className="screen__title" data-testid="checkin-scanning">{tr('checkin.scanning.title')}</h1>
           <p className="screen__lead">{tr('checkin.scanning.lead')}</p>
-          <button type="button" className="btn btn--ghost" data-testid="scan-cancel" onClick={() => dispatch({ type: 'CANCEL' })}>
-            {tr('checkin.cancelAction')}
-          </button>
         </CenteredCard>
       );
     case 'resolving':
@@ -522,18 +548,12 @@ export function renderCheckin({
         <CenteredCard>
           <h1 className="screen__title" data-testid="checkin-completed">{tr('checkin.completed.title')}</h1>
           <p className="screen__lead">{tr('checkin.completed.lead')}</p>
-          <button type="button" className="btn btn--ghost" data-testid="checkin-reset" onClick={exit}>
-            {tr('checkin.backToStart')}
-          </button>
         </CenteredCard>
       );
     case 'cancelled':
       return (
         <CenteredCard>
           <h1 className="screen__title" data-testid="checkin-cancelled">{tr('checkin.cancelled.title')}</h1>
-          <button type="button" className="btn btn--ghost" data-testid="checkin-reset" onClick={exit}>
-            {tr('checkin.backToStart')}
-          </button>
         </CenteredCard>
       );
     case 'manualFallback':
@@ -541,9 +561,6 @@ export function renderCheckin({
         <CenteredCard>
           <h1 className="screen__title" data-testid="checkin-manual">{tr('checkin.manualFallback.title')}</h1>
           <p className="screen__lead">{tr('checkin.manualFallback.lead')}</p>
-          <button type="button" className="btn btn--ghost" data-testid="checkin-reset" onClick={exit}>
-            {tr('checkin.backToStart')}
-          </button>
         </CenteredCard>
       );
     case 'cameraError':
@@ -562,7 +579,6 @@ export function renderCheckin({
             onClearFailureReason?.();
             dispatch({ type: 'RETRY' });
           }}
-          onReset={exit}
         />
       );
     default:
@@ -635,7 +651,6 @@ function ErrorView({
   locale,
   onUseManual,
   onRetry,
-  onReset,
 }: {
   state: CheckinState;
   /** 呼び出し失敗の理由。読み取り段階のエラーでは null（状態から文言を引く）。 */
@@ -643,7 +658,6 @@ function ErrorView({
   locale: Locale;
   onUseManual: () => void;
   onRetry: () => void;
-  onReset: () => void;
 }) {
   const tr = makeT(locale);
   // 呼び出し失敗は理由ごとに文言を変える（差分 D）。理由が無い＝読み取り段階のエラーなので
@@ -664,9 +678,7 @@ function ErrorView({
         <button type="button" className="btn btn--secondary" data-testid="checkin-error-retry" onClick={onRetry}>
           {tr('checkin.error.retry')}
         </button>
-        <button type="button" className="btn btn--ghost" data-testid="checkin-error-reset" onClick={onReset}>
-          {tr('checkin.backToStart')}
-        </button>
+        {/* 「最初に戻る」は常設バーへ統合した (#361 AC2)。ここは前進系だけを置く。 */}
       </div>
     </div>
   );

@@ -871,10 +871,13 @@ describe('checkin ui-contract: checkinConversationTurnFor (#361 QRシェル統�
     expect(turn.inputModes).toEqual(['touch']);
   });
 
-  it('idle は入口のため逃げ道を出さない / アバターはヒーロー(primary)', () => {
+  it('idle でもアバターはヒーロー(primary)だが、逃げ道は出す（受付の idle と違い戻る先がある）', () => {
+    // QR 受付の idle は kiosk 待機画面から `handoffs` で降りてきた**入口の 1 つ下**で、
+    // 「最初に戻る」＝ kiosk 待機へ帰る先が実在する。受付の idle（kiosk の根。戻る先が無い）と
+    // 同じ扱いにすると、QR に入った来訪者が戻れない行き止まりになる。
     const turn = checkinConversationTurnFor('idle');
-    expect(turn.escapeHatches).toEqual([]);
     expect(turn.avatar.presence).toBe('primary');
+    expect(turn.escapeHatches.map((h) => h.event)).toEqual(['RESET']);
   });
 
   it('idle 以外の全ターンでアバターは継続レール(companion)として付き添う', () => {
@@ -884,19 +887,27 @@ describe('checkin ui-contract: checkinConversationTurnFor (#361 QRシェル統�
     }
   });
 
-  it('各エラー結果(期限切れ/使用済み/取消/読取失敗/カメラ不可/通信断)は通常受付へ切替(USE_MANUAL)の逃げ道を持つ', () => {
-    for (const state of CHECKIN_ERROR_STATES) {
-      const events = checkinEscapeHatchesFor(state).map((h) => h.event);
-      expect(events).toContain('USE_MANUAL');
+  it('逃げ道は全ターンで「最初に戻る(RESET)」だけ（受付の常設バーと同じ後退語彙に揃える）', () => {
+    // 受付側は #325 で後退語彙を back/reset の 2 語へ集約した。QR 受付には BACK 遷移が
+    // 存在しないので RESET 1 語になる。**常に出す**（RESET は状態機械の安全弁として全状態から
+    // 許可されている）ので、来訪者はどのターンでも同じ場所の同じ言葉で帰れる。
+    for (const state of CHECKIN_STATES) {
+      expect(checkinEscapeHatchesFor(state).map((h) => h.event), state).toEqual(['RESET']);
     }
   });
 
-  it('受付方法選択(selectingMethod)は通常受付(CHOOSE_MANUAL)へ切替できる', () => {
-    const events = checkinEscapeHatchesFor('selectingMethod').map((h) => h.event);
-    expect(events).toContain('CHOOSE_MANUAL');
+  it('通常受付への切替(CHOOSE_MANUAL / USE_MANUAL)は逃げ道に含めない（後退ではなく別レールへの前進）', () => {
+    // #325 が `useFallback`（代替の連絡先へ）をバーから外したのと同じ理由。押すと受付が
+    // **前へ進む**（手入力受付へ移る）ものを後退バーへ混ぜると、来訪者は「戻る」と思って
+    // 別の受付方法へ移動してしまう。これらは各画面のコンテンツ側の主 CTA に置く。
+    for (const state of [...CHECKIN_ERROR_STATES, 'selectingMethod'] as const) {
+      const events = checkinEscapeHatchesFor(state).map((h) => h.event);
+      expect(events, state).not.toContain('USE_MANUAL');
+      expect(events, state).not.toContain('CHOOSE_MANUAL');
+    }
   });
 
-  it('終端(completed/cancelled/manualFallback)は最初に戻る(RESET)を提示する', () => {
+  it('終端(completed/cancelled/manualFallback)も最初に戻る(RESET)を提示する', () => {
     for (const state of CHECKIN_TERMINAL_STATES) {
       const events = checkinEscapeHatchesFor(state).map((h) => h.event);
       expect(events).toContain('RESET');

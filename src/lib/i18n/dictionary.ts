@@ -284,7 +284,6 @@ export type MessageKey =
   | 'checkin.idle.title'
   | 'checkin.idle.lead'
   | 'checkin.idle.start'
-  | 'checkin.backToStart'
   | 'checkin.method.title'
   | 'checkin.method.qr'
   | 'checkin.method.manual'
@@ -569,7 +568,6 @@ const ja: DefaultDictionary = {
   'checkin.idle.title': 'QR で受付',
   'checkin.idle.lead': '予約 QR をお持ちの方はこちらから受付できます。',
   'checkin.idle.start': '受付を開始する',
-  'checkin.backToStart': '最初に戻る',
   'checkin.method.title': '受付方法をお選びください',
   'checkin.method.qr': 'QR で受付',
   'checkin.method.manual': '通常受付（手入力）',
@@ -855,7 +853,6 @@ const en: LocaleDictionary = {
   'checkin.idle.title': 'Check in with QR',
   'checkin.idle.lead': 'If you have a reservation QR code, you can check in here.',
   'checkin.idle.start': 'Start check-in',
-  'checkin.backToStart': 'Back to start',
   'checkin.method.title': 'Please choose a check-in method',
   'checkin.method.qr': 'Check in with QR',
   'checkin.method.manual': 'Standard check-in (manual entry)',
@@ -1140,7 +1137,6 @@ const ko: LocaleDictionary = {
   'checkin.idle.title': 'QR로 접수',
   'checkin.idle.lead': '예약 QR 코드가 있으신 분은 여기에서 접수하실 수 있습니다.',
   'checkin.idle.start': '접수 시작',
-  'checkin.backToStart': '처음으로 돌아가기',
   'checkin.method.title': '접수 방법을 선택해 주세요',
   'checkin.method.qr': 'QR로 접수',
   'checkin.method.manual': '일반 접수(직접 입력)',
@@ -1418,7 +1414,6 @@ const zh: LocaleDictionary = {
   'checkin.idle.title': '扫码登记',
   'checkin.idle.lead': '如果您有预约二维码，可以在此登记。',
   'checkin.idle.start': '开始登记',
-  'checkin.backToStart': '返回首页',
   'checkin.method.title': '请选择登记方式',
   'checkin.method.qr': '扫码登记',
   'checkin.method.manual': '常规登记（手动输入）',
