@@ -3,6 +3,10 @@
 Issue を 1 件ずつ「ブランチ → 実装 → ローカル品質ゲート → PR → セルフレビュー →
 squash マージ → クリーンアップ → Issue クローズ」で消化するためのランブック。
 
+本書は**1 周の手順**を持つ。ループ全体の位置づけ（観測 → 仮説 → 実装 → 検証 → 展開 → 計測）、
+暴走防止ガード、人間承認が必要な変更の一覧、architecture fitness functions の棚卸しは
+[`docs/ai-development-loop.md`](ai-development-loop.md) を参照する（#424 / #426）。
+
 **前提方針**
 
 - **GitHub Actions は使用しない。** 品質ゲートはローカル（または Actions 以外の
