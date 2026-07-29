@@ -14,7 +14,23 @@
 > **stale の直接原因は、分類を書いた周回と実装した周回が別で、実装側が表を直さないこと。**
 > 消化したら必ずその周回で該当行を直す（下の「消化した wave」表に足すだけでは不十分）。
 
-## 現在地（2026-07-29 更新・第 62 wave 消化後）
+## 現在地（2026-07-30 更新・第 77 wave 消化後）
+
+> **#361 をクローズした**（第 76〜77 wave / PR #505・#506）。受入条件 7 件すべて充足。
+> 着手時の `/issue-ac-mapping` で **7 AC のうち 6 件が既に充足**と判明し、本書の「`ConversationTurnView`
+> 不在」が stale だった（**分類 stale の 5 回目**）。実際に足りなかったのは QR 受付側だけで、
+> (a) アバター字幕が locale を無視して ja 固定、(b) 逃げ道が各ターン手書きで契約の
+> `checkinEscapeHatchesFor` が消費者ゼロ、の 2 点。
+>
+> **「消費者ゼロ導出はもう無い」は受付側だけの話だった。** 第 71 wave でそう記録したが、同じ
+> `ui-contract.ts` の QR 受付側（`CheckinTurnView`）は一巡していなかった。**「一巡した」と書くときは
+> 契約ファイル全体で数える。** QR 側で今も未消費なのは `checkinInputModesFor` /
+> `checkinRequiresExplicitConfirmation`（値は正しく、テストで縛られている）。
+>
+> 次に着手する候補はユーザー判断（下記「次に着手する候補」節・#419 グローバルストアのテナント対応 /
+> #421 admin IA 再編 / #423 横断 E2E / AI Evolution #382〜#392）。
+
+## 旧・現在地（2026-07-29 更新・第 62 wave 消化後）
 
 > **新規セッションはまず [`docs/handoff-2026-07-29.md`](handoff-2026-07-29.md) を読むこと。**
 > 次に何をするか・再調査不要な確定事実・ユーザー判断待ちの一覧がそこにある。
@@ -144,7 +160,7 @@
 | # | 種別 | 充足状況（根拠） | 分類 |
 | --- | --- | --- | --- |
 | **#360** | epic | Character-led 受付・会話・低コスト基盤の統合 epic（トラッキング） | — |
-| **#361** | ux/kiosk | **部分**（第 76 wave で再マッピング。旧「`ConversationTurnView` 不在」は **stale**）: `ConversationTurnView` は `ui-contract.ts` に在り、#422 inc5-b で**画面へ配線済み**（`components/kiosk/conversation-turn.ts` が主指示・回答・引き渡しを解決）。QR も別シェルのままではなく `CheckinShell` が `checkinConversationTurnFor` を消費して同じ `AvatarGuide`・横向き 35% レールを共有する。AC 3（音声だけで発信しない）/ 4（主指示）/ 7（真実源一本化）は充足。**AC 2 の逃げ道も第 77 wave で統一済み**（`EscapeBar` を受付と共有し `checkin-escape-bar` として全ターンへ常設。`checkinEscapeHatchesFor` の消費者ゼロを解消）。**残**: 確認画面の `checkin-cancel`（「やめる」）をコンテンツに残しているかの判断だけ（撤去すると `cancelled` 状態がタッチから到達不能になる＝**要ユーザー確認**）。それ以外の受入条件 7 件は充足 | 残りは要ユーザー確認 |
+| ~~#361~~ | ux/kiosk | **クローズ済**（第 76〜77 wave。受入条件 7 件すべて充足）。着手時の再マッピングで旧「`ConversationTurnView` 不在」が **stale** と判明（契約は `ui-contract.ts` に在り #422 inc5-b で配線済み）。第 76 wave で QR 字幕の locale 固定を是正（PR #505）、第 77 wave で QR の逃げ道を `EscapeBar` 共有の常設バーへ統一（PR #506）。確認画面の `checkin-cancel`（「やめる」）は `cancelled` の到達性を保つためユーザー確認のうえ残した | 完了 2026-07-30 |
 | ~~#362~~ | ux/kiosk | **クローズ済**（第 2 wave: KioskMode/attract-detector 分離・検知→START 直結廃止） | 完了 2026-07-22 |
 | **#363** | admin/demo | **Inc1〜3 実装済**（シナリオ・編集/保存・下書き/テスト/本番公開・共有トークン・未認証閲覧）。第 33 wave で **#420 版モデルとの統合方針を ADR 0005 で確定**。**残**: 統合の実施（§9 B-07。永続スキーマとスコープ語彙を動かすため**要ユーザー承認**） | 要ユーザー確認 |
 | **#364** | epic | 日本語リアルタイム会話基盤 epic（トラッキング） | — |
@@ -351,10 +367,7 @@ ExperienceShell の切替**（移行フラグは ADR 0004 のとおり構成取�
   8:00–23:00 常時稼働させる。現状 open-reception の AWS 実績は**月 $0.0005**（2026-07 実測、
   dev のみ・ほぼ無料枠内）なので、コスト構造が質的に変わる。CLAUDE.md の重大変更条件に
   該当 → **Phase 0 ADR で Budget 見積を出して承認を取ってから CDK を書く**。
-- **#361 は既存の意図的設計の反転**。`KioskFlow.tsx:1210-1216` のコメントが「選択/入力画面は
-  コンテンツが密集し重なるためアバターを出さない」と明記し、`avatar-companion.test.ts` で
-  テスト固定されている。#361 の AC はこれを覆すので、既存テストの意図的な書き換えと
-  レビュー合意が要る。単なる追加実装ではない。
+- ~~#361 は既存の意図的設計の反転~~ → **決着済み**（#361 クローズ・2026-07-30）。選択/入力画面でもアバターを出す判断は `deriveAvatarPresence` の `companion` として契約に入り、`avatar-companion.test.ts` もその前提で書き換わっている。
 - ~~#375 の token hash 化~~ → **第 13 wave で消化済み**（SHA-256 + timingSafeEqual）。
   残るのは DynamoDB 永続化（#97 inc3）時の一括移行と pepper 確定。
 - **VRT を別 project へ移すと baseline が孤立する**（第 23 wave で実際に踏んだ）。スナップショット名は
