@@ -71,6 +71,12 @@ import type {
   QuickActionIntent,
 } from './quick-actions';
 import {
+  screenTitleFor,
+} from './conversation-turn';
+import type {
+  ReceptionState,
+} from '@/domain/reception/ui-contract';
+import {
   KioskCallView,
 } from './KioskCallView';
 
@@ -439,6 +445,18 @@ const QUICK_ACTION_I18N: Record<QuickActionIntent, { label: MessageKey; desc: Me
   other: { label: 'kiosk.action.other.label', desc: 'kiosk.action.other.desc' },
 };
 
+/**
+ * 画面の主指示（見出し）。文言は会話ターン契約から解決する (#422 inc5-b)。
+ *
+ * 各画面が i18n キーを直に引くのをやめ、`messageKeyForState` 経由に一本化する。契約側の
+ * 既定文言を直したのに画面が別のキーを引き続ける、という乖離を構造的に起こせなくする。
+ * 主指示を持たない画面では `null` になるので、空の `<h1>` は生えない。
+ */
+function ScreenTitle({ state, locale }: { state: ReceptionState; locale: Locale }) {
+  const title = screenTitleFor(state, locale);
+  return title === null ? null : <h1 className="screen__title">{title}</h1>;
+}
+
 function IdleView({
   onQuickAction,
   guidance,
@@ -507,7 +525,7 @@ function IdleView({
         />
       </div>
       <header className="kiosk-idle__head">
-        <h1 className="screen__title">{tr('reception.purposePrompt')}</h1>
+        <ScreenTitle state="idle" locale={locale} />
         <p className="screen__lead" data-testid="idle-guidance" lang={htmlLangFor(locale)}>
           {lead}
         </p>
@@ -559,7 +577,7 @@ function PurposeView({
   // カード自体も待機カードと同じアイコン＋説明を持たせて視覚語彙を統一する (#324-3)。
   return (
     <>
-      <h1 className="screen__title">{tr('reception.purposeDetailPrompt')}</h1>
+      <ScreenTitle state="selectingPurpose" locale={locale} />
       <div className="screen__body">
         <div className="card-grid">
           {RECEPTION_PURPOSES.map((p) => (
@@ -655,7 +673,7 @@ function TargetView({
 
   return (
     <>
-      <h1 className="screen__title">{tr('reception.targetPrompt')}</h1>
+      <ScreenTitle state="selectingTarget" locale={locale} />
       <div className="screen__body">
         <div className="field">
           <label className="field__label" htmlFor="staff-search" lang={htmlLangFor(locale)}>
@@ -832,7 +850,7 @@ function VisitorInfoView({
 
   return (
     <>
-      <h1 className="screen__title">{tr('reception.visitorInfoPrompt')}</h1>
+      <ScreenTitle state="inputVisitorInfo" locale={locale} />
       <div className="screen__body">
         {/* 用途・保存有無・保持期間・問い合わせ先を入力前に明示する (issue #314)。 */}
         <PrivacyNotice
@@ -917,7 +935,7 @@ function ConfirmView({
   const purposeLabel = data.purpose ? tr(`reception.purpose.${data.purpose}` as MessageKey) : '-';
   return (
     <>
-      <h1 className="screen__title">{tr('reception.confirm')}</h1>
+      <ScreenTitle state="confirming" locale={locale} />
       <div className="screen__body">
         <dl style={{ display: 'grid', gridTemplateColumns: 'auto 1fr', gap: 'var(--space-md)', fontSize: 'var(--font-lg)' }}>
           <dt className="card__sub" lang={htmlLangFor(locale)}>{tr('reception.fieldPurpose')}</dt>
