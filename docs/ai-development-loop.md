@@ -38,7 +38,7 @@ Observe → Diagnose → Propose → Prioritize → Plan → Implement → Verif
 | --- | --- | --- |
 | Observe | KPI 集計 / 監査ログ / コスト API / `docs/gate-runs.md` / issue・PR 履歴 | 部分（自動収集なし） |
 | Diagnose | `/issue-ac-mapping` で AC を実コードへ突き合わせ、`superpowers:systematic-debugging` | 手動 |
-| Propose | issue 本文（背景・目標・受入条件・実装タスク） | 部分（必須テンプレートなし） |
+| Propose | issue テンプレート（`improvement` / `ai-proposal`。証拠・反証条件・計測を必須欄に） | 有 |
 | Prioritize | `docs/loop-queue.md` の依存 DAG と wave 計画 | 手動（スコア式なし） |
 | Plan | `superpowers:brainstorming` / `writing-plans`、重大変更は ADR | 有 |
 | Implement | TDD（`.claude/rules/testing.md`）・increment 分割・worktree 並列 | 有 |
@@ -84,13 +84,15 @@ Observe → Diagnose → Propose → Prioritize → Plan → Implement → Verif
 
 ## 4. Propose / Prioritize / Plan
 
-提案に含める項目（issue 本文）:
+提案は issue テンプレートで形を強制する。
 
-- problem statement / evidence / affected users（Actor）/ expected outcome / non-goals
-- architecture impact（ADR が要るか。基準は `docs/adr/README.md`）
-- security / privacy / cost impact
-- rollback（撤回条件）
-- metrics（何が動けば成功か・停止条件）
+- `.github/ISSUE_TEMPLATE/improvement.md` … 改善・機能。problem statement / evidence /
+  affected users（Actor）/ expected outcome / non-goals / architecture impact /
+  security・privacy・cost impact / rollback / metrics（成功条件・停止条件）/ 受入条件 /
+  人間承認が必要か
+- `.github/ISSUE_TEMPLATE/ai-proposal.md` … `[AI Proposal]`。上記に加えて
+  **observation（出どころ付き）・hypothesis・反証条件**を必須欄にする。
+  **反証条件が埋まらない提案は、検証ではなく思い込みになる。**
 
 来訪者・運用者向けの変更は追加で、`docs/experience/README.md` から次を特定する
 （`.claude/rules/opus5-autonomous-loop.md` の Experience loop）:
@@ -212,7 +214,7 @@ wave 表）で、専用の追跡 ID は無い。
 | #424 受入条件 | 状態 |
 | --- | --- |
 | AI が 1 件の観測データから証拠付き改善 Issue を生成できる | **未**（観測の集約と Issue 生成の自動化が無い） |
-| Issue から小規模 PR と検証レポートを作成できる | **部分**（PR とゲート出力は在る。「検証レポート」の定型は無い） |
+| Issue から小規模 PR と検証レポートを作成できる | **部分**（PR テンプレートが仮説・計測・ロールバック・ゲート結果を要求する形になった。ただし「検証レポート」の生成は手書き） |
 | 高リスク変更が人間承認なしで公開されない | **有**（§6 の停止境界 + `pr-gate-guard.sh`。ただし「公開」自体は手動） |
 | 失敗時に自動停止または rollback 提案が行われる | **部分**（ゲート red で止まる。移行フラグの自動フォールバックは在る。KPI 悪化による自動停止は無い） |
 | 全判断と変更が GitHub 上で追跡可能 | **部分**（issue / PR / ADR / wave 表。プロンプトとツール実行の監査ログは GitHub 上に無い） |
@@ -220,9 +222,11 @@ wave 表）で、専用の追跡 ID は無い。
 
 ### 未構築の実装範囲（#424 のチェックリスト）
 
-- [ ] Issue の必須テンプレート（`.github/ISSUE_TEMPLATE/` が無い）
-- [ ] PR 本文への **仮説 / rollback / 計測** の必須化（現テンプレートは変更点・AC・ゲート・
-      セキュリティ/プライバシー/ライセンスまで）
+- [x] Issue の必須テンプレート … `.github/ISSUE_TEMPLATE/improvement.md`（改善・機能）と
+      `ai-proposal.md`（`[AI Proposal]`。**観測 / 仮説 / 反証条件**を必須欄にした）
+- [x] PR 本文への **仮説 / rollback / 計測** の必須化 …
+      `.github/pull_request_template.md`（仮説 / 計測・成功停止条件 / リスクと戻し方 /
+      基準文書・ADR 参照 / 人間承認が必要な変更）
 - [ ] config / API schema の diff チェック
 - [ ] change-risk classifier（現状は §6 の列挙を人間/AI が読んで判定する）
 - [ ] 提案 → Issue → PR → 計測の追跡 ID
@@ -242,7 +246,7 @@ wave 表）で、専用の追跡 ID は無い。
 
 ## 10. GitHub 運用
 
-- AI の提案 issue は `[AI Proposal]` を接頭に付ける（テンプレート導入は未）。
+- AI の提案 issue は `.github/ISSUE_TEMPLATE/ai-proposal.md`（`[AI Proposal]` 接頭）で起こす。
 - **evidence 不足のものは Issue 化しない**（観測バックログに留める）。Issue を増やすと
   キューの分類が腐りやすくなる。
 - PR タイトルは squash 後の main コミットになるので Conventional Commits で書く。
