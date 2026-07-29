@@ -103,10 +103,10 @@ type PartialAvatarLines = Partial<AvatarLines>;
 
 const ja: AvatarLines = {
   idle: 'AI受付です。ご用件をお選びください',
-  greeting: 'ようこそ。ご用件をお選びください',
+  greeting: 'ようこそ。まず、ご用件をお選びください',
   guiding: 'お訪ねする担当や部署をお選びください',
-  listening: 'お名前など、ごゆっくりご入力ください',
-  confirming: '内容をご確認のうえ、お進みください',
+  listening: 'あと少しです。お名前など、ごゆっくりご入力ください',
+  confirming: '最後に、内容をご確認のうえお進みください',
   calling: '担当者を呼び出しています。少々お待ちください',
   connected: 'おつなぎしました。どうぞお話しください',
   apologizing: '只今おつなぎできませんでした。別の方法をご案内します',
@@ -115,10 +115,10 @@ const ja: AvatarLines = {
 
 const en: PartialAvatarLines = {
   idle: 'AI reception here. Please choose your reason for visiting.',
-  greeting: 'Welcome. Please choose your reason for visiting.',
+  greeting: 'Welcome. First, please choose your reason for visiting.',
   guiding: 'Please choose the person or department to reach.',
-  listening: 'Please enter your details at your own pace.',
-  confirming: 'Please review the details and continue.',
+  listening: 'Almost done. Please enter your details at your own pace.',
+  confirming: 'Last step. Please review the details and continue.',
   calling: 'Calling the person in charge. Please wait a moment.',
   connected: "You're connected. Please go ahead.",
   apologizing: "We couldn't connect just now. Let us guide you another way.",
@@ -127,10 +127,10 @@ const en: PartialAvatarLines = {
 
 const ko: PartialAvatarLines = {
   idle: 'AI 접수입니다. 방문 목적을 선택해 주세요.',
-  greeting: '환영합니다. 방문 목적을 선택해 주세요.',
+  greeting: '환영합니다. 먼저 방문 목적을 선택해 주세요.',
   guiding: '찾으시는 담당자나 부서를 선택해 주세요.',
-  listening: '성함 등을 천천히 입력해 주세요.',
-  confirming: '내용을 확인하신 후 진행해 주세요.',
+  listening: '거의 다 됐습니다. 성함 등을 천천히 입력해 주세요.',
+  confirming: '마지막으로 내용을 확인하신 후 진행해 주세요.',
   calling: '담당자를 호출하고 있습니다. 잠시만 기다려 주세요.',
   connected: '연결되었습니다. 말씀해 주세요.',
   apologizing: '지금은 연결되지 않았습니다. 다른 방법을 안내해 드릴게요.',
@@ -139,10 +139,10 @@ const ko: PartialAvatarLines = {
 
 const zh: PartialAvatarLines = {
   idle: 'AI 接待。请选择来访事由。',
-  greeting: '欢迎。请选择来访事由。',
+  greeting: '欢迎。首先请选择来访事由。',
   guiding: '请选择要联系的负责人或部门。',
-  listening: '请放心慢慢填写您的信息。',
-  confirming: '请确认信息后继续。',
+  listening: '就快好了。请放心慢慢填写您的信息。',
+  confirming: '最后，请确认信息后继续。',
   calling: '正在呼叫负责人，请稍候。',
   connected: '已为您接通，请讲。',
   apologizing: '暂时无法接通，我们为您提供其他方式。',
@@ -155,10 +155,10 @@ const zh: PartialAvatarLines = {
  */
 const jaSimple: PartialAvatarLines = {
   idle: 'AI うけつけです。ようけんを えらんで ください',
-  greeting: 'ようこそ。ようけんを えらんで ください',
+  greeting: 'ようこそ。まず ようけんを えらんで ください',
   guiding: '会いたい 人や ぶしょを えらんで ください',
-  listening: 'お名前などを ゆっくり 入れて ください',
-  confirming: 'ないようを かくにんして すすんで ください',
+  listening: 'あと すこしです。お名前などを ゆっくり 入れて ください',
+  confirming: 'さいごに ないようを かくにんして すすんで ください',
   calling: '人を よんで います。少し お待ち ください',
   connected: 'つながりました。どうぞ お話し ください',
   apologizing: 'いま つながりませんでした。べつの 方法で ごあんない します',

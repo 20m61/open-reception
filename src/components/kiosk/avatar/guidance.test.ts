@@ -154,3 +154,50 @@ describe('avatarGuidanceFor — overrides (#323 呼び出し中の段階的ケ�
     expect(g.avatarState).toBe('calling');
   });
 });
+
+describe('avatarGuidanceFor — 受付内での位置づけ (#422 inc5-c 増分 1)', () => {
+  // ステッパー（目的→相手→情報→確認の 4 段表示）を廃止したので、「今どこか・あとどれだけか」
+  // は字幕が担う。数字ではなく会話で伝える（#422 の会話ターン中心化）。
+  //
+  // **位置づけを入れるのは screenState と 1 対 1 の avatarState だけ。**
+  // `guiding` は selectingTarget（相手選択＝ 2 番目）と fallback（代替案内＝受付失敗後）の
+  // 両方を覆うため、「つぎに」を入れると代替案内画面へ漏れる（#489 で gazeTarget と cue に
+  // ついて見つけたのと同じ粗さの問題）。
+  const POSITIONAL: ReadonlyArray<{ state: AvatarState; marker: RegExp }> = [
+    { state: 'greeting', marker: /まず/ },
+    { state: 'listening', marker: /あと少し/ },
+    { state: 'confirming', marker: /最後/ },
+  ];
+
+  it('入口・入力・確認の字幕が受付内での位置づけを含む（ja）', () => {
+    for (const { state, marker } of POSITIONAL) {
+      expect(avatarGuidanceFor(state, 'ja').subtitle, state).toMatch(marker);
+    }
+  });
+
+  it('guiding には位置づけを入れない（selectingTarget と fallback を兼ねるため）', () => {
+    // 代替案内画面（fallback）で「つぎに」と言わないことの回帰防止。
+    expect(deriveAvatarState('selectingTarget')).toBe('guiding');
+    expect(deriveAvatarState('fallback')).toBe('guiding');
+    expect(avatarGuidanceFor('guiding', 'ja').subtitle).not.toMatch(/まず|つぎ|次に|あと少し|最後/);
+  });
+
+  it('全 locale で位置づけ表現が入る（ja へ落ちるだけの locale を残さない）', () => {
+    // 字幕は常設表示の主要導線。位置づけだけ ja に落ちると、その言語の来訪者には
+    // 進捗が伝わらないまま常設要素だけ減ったことになる。
+    for (const locale of SUPPORTED_LOCALES) {
+      for (const { state } of POSITIONAL) {
+        const subtitle = avatarGuidanceFor(state, locale).subtitle;
+        const jaSubtitle = avatarGuidanceFor(state, 'ja').subtitle;
+        if (locale === 'ja') continue;
+        expect(subtitle, `${locale}/${state}`).not.toBe(jaSubtitle);
+      }
+    }
+  });
+
+  it('位置づけを足しても短文のまま（既定 locale で 60 文字以内）', () => {
+    for (const { state } of POSITIONAL) {
+      expect(avatarGuidanceFor(state, 'ja').subtitle.length, state).toBeLessThanOrEqual(60);
+    }
+  });
+});

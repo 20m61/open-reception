@@ -63,9 +63,6 @@ import {
   type FontScale,
 } from '@/domain/kiosk/a11y-modes';
 import {
-  FlowStepper,
-} from './FlowStepper';
-import {
   normalizeAccentColor,
 } from '@/domain/branding/types';
 import {
@@ -1068,7 +1065,6 @@ export function KioskFlow({ operatingStatus, sttAdapterFactory, voiceSession, qr
         />
       ) : (
         <>
-          <FlowStepper state={data.state} locale={locale} />
           {/* 画面遷移ごとに key を変え、上品な入場アニメを再生する（#119 UX 仕上げ）。 */}
           <div className="screen-anim" key={data.state}>
             {renderScreen({
