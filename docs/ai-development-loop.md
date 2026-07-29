@@ -43,7 +43,7 @@ Observe → Diagnose → Propose → Prioritize → Plan → Implement → Verif
 | Plan | `superpowers:brainstorming` / `writing-plans`、重大変更は ADR | 有 |
 | Implement | TDD（`.claude/rules/testing.md`）・increment 分割・worktree 並列 | 有 |
 | Verify | `scripts/quality-gate.sh`（9 ステップ）+ fitness テスト群（§5） | 有 |
-| Human Gate | 停止境界（§6）＋ `scripts/hooks/pr-gate-guard.sh` | 有 |
+| Human Gate | 停止境界（§6）＋ `scripts/hooks/pr-gate-guard.sh` ＋ change-risk 検出器（報告） | 有 |
 | Progressive Delivery | 版ライフサイクル（#420）/ デモ版の端末限定配布（#363）/ feature flag / 移行フラグ | 部分 |
 | Measure | KPI 画面・監査・コスト。**元 issue への書き戻しは無い** | 未構築 |
 
@@ -144,6 +144,7 @@ green 記録が無ければブロックする。記録はゲートが実際に�
 | 契約と表示層の一致（どのボタンを出すかの二重実装検出） | `src/components/kiosk/quick-actions.test.ts` ほか |
 | 常設要素が 3 領域（案内 / 回答対象 / ヘルプ）に閉じている | `src/components/kiosk/persistent-regions.ts` + e2e |
 | locale 網羅（ja/en/ko/zh 全キー・`ja-simple` は意図的な部分網羅） | `src/lib/i18n/i18n.test.ts` |
+| 停止境界に触れた変更の検出（§6 の列挙を変更パスから判定） | `src/domain/governance/change-risk.ts` |
 
 ### UX complexity budget
 
@@ -179,6 +180,13 @@ instrumentation → screenshot → video/agent → human/device。
 
 上記以外は、**ゲート green ＋ レビュー blocking なし**で自動マージしてよい
 （`docs/loop-workflow.md` 手順 8）。ユーザーはいつでも interrupt できる。
+
+この列挙は `src/domain/governance/change-risk.ts` が変更パスから機械判定し、
+`quality-gate.sh` が毎回**報告のみ**で見せる（`npm run change-risk` 単体でも実行できる）。
+ゲートを FAIL させないのは意図的で、**偽陽性のある検出器でゲートを赤くすると「赤を無視する
+習慣」がつく方が危険**だから。判定が「要る」と出たら人が見る、が正しい使い方で、
+**「要らない」と出たことを免罪符にしない**（パスから分かるのは境界を運びうる領域に触れた
+ことまでで、実際に破壊的かは分からない）。
 
 ## 7. Progressive Delivery
 
@@ -228,7 +236,9 @@ wave 表）で、専用の追跡 ID は無い。
       `.github/pull_request_template.md`（仮説 / 計測・成功停止条件 / リスクと戻し方 /
       基準文書・ADR 参照 / 人間承認が必要な変更）
 - [ ] config / API schema の diff チェック
-- [ ] change-risk classifier（現状は §6 の列挙を人間/AI が読んで判定する）
+- [x] change-risk classifier … `src/domain/governance/change-risk.ts`（純関数）+
+      `scripts/change-risk.ts`（git から集めて印字）。`quality-gate.sh` が毎回**報告のみ**で
+      呼ぶ。**検出器であって判定者ではない**（偽陽性に倒してある）ので、承認の実行は人間
 - [ ] 提案 → Issue → PR → 計測の追跡 ID
 - [ ] kill switch と 1 ループあたりの変更行数 / ファイル数 / コスト上限
 - [ ] 定期評価レポート生成コマンド
