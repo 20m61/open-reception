@@ -152,8 +152,8 @@ import {
 } from '@/domain/kiosk/call-stages';
 import {
   escapeHatchesFor,
-  type EscapeHatch,
 } from './quick-actions';
+import { EscapeBar } from './EscapeBar';
 import type {
   TurnAnswerView,
   TurnHandoffView,
@@ -1196,65 +1196,23 @@ export function KioskFlow({ operatingStatus, sttAdapterFactory, voiceSession, qr
         逃げ道を出さない局面（idle・端末ゲート系・QR 受付モード）は `escapeHatchesFor` が
         空を返して null になるので、ここに置いても余計なものは出ない。
       */}
-      <EscapeHatchBar
+      <EscapeBar
         barRef={escapeBarRef}
-        state={data.state}
+        regionTestId="kiosk-escape-bar"
         locale={locale}
-        onAction={(action) => {
+        // 出す項目は契約（`escapeHatchActionsFor`）由来。バーは描画だけを持つ。
+        items={escapeHatchesFor(data.state).map((hatch) => ({ id: hatch.action, ...hatch }))}
+        onSelect={(id) => {
           // escapeHatchesFor が返すのは back/reset のみ（#325）。状態機械イベントへ写す。
           const eventByAction: Partial<Record<ReceptionAction, Action>> = {
             back: { type: 'BACK' },
             reset: { type: 'RESET' },
           };
-          const next = eventByAction[action];
+          const next = eventByAction[id as ReceptionAction];
           if (next) dispatch(next);
         }}
       />
     </main>
-  );
-}
-
-/**
- * 常時見える逃げ道バー (issue #121)。
- *
- * `escapeHatchesFor(state)`（#120 契約の availableActions 由来）が返すアクションだけを出す。
- * idle や逃げ道が無い状態では何も描画しない。重要操作（確認必須）は含めない。
- */
-function EscapeHatchBar({
-  state,
-  onAction,
-  barRef,
-  locale,
-}: {
-  state: ReceptionState;
-  onAction: (action: ReceptionAction) => void;
-  barRef?: React.Ref<HTMLElement>;
-  locale: Locale;
-}) {
-  const hatches: ReadonlyArray<EscapeHatch> = escapeHatchesFor(state);
-  if (hatches.length === 0) return null;
-  // 常設バーなので、ここが訳されないと受付中ずっと日本語が見え続ける (#327)。
-  const tr = makeT(locale);
-  return (
-    <nav
-      ref={barRef}
-      className="kiosk-escape-bar"
-      {...persistentRegionProps('kiosk-escape-bar')}
-      aria-label={tr('reception.escapeBarLabel')}
-      lang={htmlLangFor(locale)}
-    >
-      {hatches.map((hatch) => (
-        <button
-          key={hatch.action}
-          type="button"
-          className={`btn btn--${hatch.variant}`}
-          data-testid={hatch.testId}
-          onClick={() => onAction(hatch.action)}
-        >
-          {tr(hatch.labelKey)}
-        </button>
-      ))}
-    </nav>
   );
 }
 

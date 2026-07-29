@@ -44,6 +44,12 @@ export const PERSISTENT_ELEMENTS: ReadonlyArray<PersistentElement> = [
   // --- ヘルプ: 行き詰まったときの手段 ---
   // 戻る/最初に戻るの唯一の後退導線。常時可視が設計意図 (#325)。
   { testId: 'kiosk-escape-bar', region: 'help', key: 'escapeBar' },
+  // QR 受付シェルの後退導線 (#361 AC2)。受付と同じ語彙・同じボタン（`escape-reset`）を出すが、
+  // **領域 identity は分ける**: 表示可否を決めるのは checkin 状態機械側の契約
+  // （`checkinEscapeHatchesFor`）で、`isPersistentVisible(key, ReceptionState)` では表せない。
+  // QR 受付中の受付状態は idle のままなので、同じ testId を使うと「受付 idle では逃げ道を
+  // 出さない」という契約の主張が実 DOM で偽になる。だから `key` を持たない。
+  { testId: 'checkin-escape-bar', region: 'help' },
   // 検索 0 件などで行き詰まったときの相談口 (#122 / #322)。重要操作は確定できない。
   { testId: 'kiosk-chat-drawer', region: 'help', key: 'chatDrawer' },
   // 文字サイズ・コントラスト・やさしい日本語の切替 (#321)。全画面で 1〜2 タップ。

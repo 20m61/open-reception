@@ -13,10 +13,12 @@
  * ここに残るのは、アイコン写像（`quick-action-icons.ts`）が使う入口の語彙だけ。
  */
 import {
+  checkinEscapeHatchesFor,
   escapeHatchActionsFor,
   type ReceptionAction,
 } from '@/domain/reception/ui-contract';
 import type { ReceptionState } from '@/domain/reception/state';
+import type { CheckinEvent, CheckinState } from '@/domain/checkin/state';
 import type { MessageKey } from '@/lib/i18n';
 
 /**
@@ -93,4 +95,46 @@ export function escapeHatchesFor(state: ReceptionState): ReadonlyArray<EscapeHat
     action,
     ...ESCAPE_HATCH_META[action as EscapeHatchAction],
   }));
+}
+
+/**
+ * QR 受付の逃げ道の表示メタ (#361 AC2)。受付側（`EscapeHatch`）と同じ形。
+ *
+ * `event` を持つのは、QR 受付の進行が `ReceptionAction` ではなく `CheckinEvent` で動くため
+ * （表示は共通でも状態機械は別。写像を挟んで嘘の action を作らない）。
+ */
+export type CheckinEscape = {
+  event: CheckinEvent;
+  /** 表示文言の i18n キー。**受付の逃げ道と同じキーを使う**（QR だけ別の言葉にしない）。 */
+  labelKey: MessageKey;
+  variant: 'ghost' | 'secondary';
+  testId: string;
+};
+
+/**
+ * 逃げ道イベント → 表示メタ。
+ *
+ * 受付の `ESCAPE_HATCH_META.reset` と**同じ labelKey / variant / testId** を使う。来訪者が
+ * 受付で覚えた「最初に戻る」を QR でもそのまま探せるようにするため（#361 AC2）。一致は
+ * `quick-actions.test.ts` が固定する。
+ */
+const CHECKIN_ESCAPE_META: Partial<Record<CheckinEvent, Omit<CheckinEscape, 'event'>>> = {
+  RESET: ESCAPE_HATCH_META.reset,
+};
+
+/**
+ * QR 受付の逃げ道バーに出すイベントと、その表示メタを返す。
+ *
+ * **どのイベントを出すかは契約（`checkinEscapeHatchesFor`）が唯一の権威**で、ここは
+ * label/variant/testId を付けるだけ（受付側 `escapeHatchesFor` と同じ役割分担）。
+ * 表示メタを持たないイベントは出さない（契約に足しただけで黙って描かれるのを防ぐ）。
+ */
+export function checkinEscapesFor(state: CheckinState): ReadonlyArray<CheckinEscape> {
+  const escapes: CheckinEscape[] = [];
+  for (const { event } of checkinEscapeHatchesFor(state)) {
+    const meta = CHECKIN_ESCAPE_META[event];
+    if (meta === undefined) continue;
+    escapes.push({ event, ...meta });
+  }
+  return escapes;
 }

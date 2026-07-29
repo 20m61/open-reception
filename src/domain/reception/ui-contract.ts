@@ -1048,27 +1048,35 @@ export function checkinRequiresExplicitConfirmation(state: CheckinState): boolea
   return checkinTransition(state, 'CONFIRM') === 'calling';
 }
 
-/** QR 受付シェルの逃げ道（後退・切替）。表示ラベルは component 層が担う。 */
+/** QR 受付シェルの逃げ道（後退のみ）。表示ラベルは component 層が担う。 */
 export type CheckinEscapeHatch = { event: CheckinEvent };
 
 /**
- * 逃げ道として提示しうるイベント（後退・通常受付への切替・待機へリセット）。
- * どれを実際に出すかは状態機械の許可に従う（存在しない遷移は出さない）。
+ * 逃げ道として提示するイベント。**後退だけを持つ** (#361 AC2)。
+ *
+ * 受付側 (`ESCAPE_HATCH_ACTIONS`) は #325 で後退語彙を `back`/`reset` の 2 語へ集約した。
+ * QR 受付の状態機械に 1 ステップ戻る遷移は無いので、ここは `RESET`（最初に戻る）1 語になる。
+ *
+ * 含めないものと、その理由:
+ *  - `CHOOSE_MANUAL` / `USE_MANUAL`（通常受付へ切替）… 押すと受付が**前へ進む**（手入力受付
+ *    へ移る）。後退バーへ混ぜると来訪者が「戻る」と思って別の受付方法へ移動してしまう。
+ *    #325 が `useFallback`（代替の連絡先へ）をバーから外したのと同じ判断で、各画面の
+ *    コンテンツ側の主 CTA に置く。
+ *  - `CANCEL`（中断）… 来訪者は 戻る / やめる / 最初に戻る を判別しにくい (#325)。後退の
+ *    語彙を 1 つに保つため、バーには出さない。状態機械の CANCEL 遷移自体は変更しない
+ *    （`confirming` の「やめる」は確認画面の文脈固有コントロールとして残る）。
  */
-const CHECKIN_ESCAPE_EVENTS: ReadonlyArray<CheckinEvent> = [
-  'CHOOSE_MANUAL', // 受付方法選択から通常受付へ
-  'USE_MANUAL', // エラーから通常受付へ
-  'CANCEL', // 中断
-  'RESET', // 最初に戻る（全状態から待機へ）
-];
+const CHECKIN_ESCAPE_EVENTS: ReadonlyArray<CheckinEvent> = ['RESET'];
 
 /**
- * そのターンで提示する逃げ道イベント。idle は入口で戻る先が無いため出さない。RESET は
- * 状態機械上どの状態からも idle へ戻せる安全弁のため常に許可する（idle を除く）。それ以外は
- * `checkinTransition` が非 null を返すものだけを出す（許可外は出さない）。
+ * そのターンで提示する逃げ道イベント。**全ターンで出す**。
+ *
+ * `RESET` は状態機械上どの状態からも idle へ戻せる安全弁なので、常に許可される。受付側は
+ * idle（kiosk の根＝戻る先が無い）だけ出さないが、**QR 受付の idle は kiosk 待機から
+ * `handoffs` で降りてきた 1 つ下**で「最初に戻る」先が実在する。ここを受付と同じ扱いにすると
+ * QR に入った来訪者が帰れない行き止まりになる。
  */
 export function checkinEscapeHatchesFor(state: CheckinState): ReadonlyArray<CheckinEscapeHatch> {
-  if (state === 'idle') return [];
   return CHECKIN_ESCAPE_EVENTS.filter((event) =>
     event === 'RESET' ? true : checkinTransition(state, event) !== null,
   ).map((event) => ({ event }));

@@ -1,12 +1,15 @@
 import { describe, expect, it } from 'vitest';
 import { RECEPTION_STATES, type ReceptionState } from '@/domain/reception/state';
+import { CHECKIN_STATES } from '@/domain/checkin/state';
 import {
   availableActions,
+  checkinEscapeHatchesFor,
   escapeHatchActionsFor,
   REQUIRES_CONFIRMATION_ACTIONS,
 } from '@/domain/reception/ui-contract';
 import { DICTIONARIES, SUPPORTED_LOCALES, makeT } from '@/lib/i18n';
 import {
+  checkinEscapesFor,
   escapeHatchesFor,
 } from './quick-actions';
 
@@ -110,4 +113,50 @@ describe('逃げ道の文言は i18n カタログ経由 (#327)', () => {
     ]);
   });
 
+});
+
+/**
+ * QR 受付の逃げ道 (#361 AC2)。
+ *
+ * 受付側と**同じ構造**にする: どのイベントを出すかは契約（`checkinEscapeHatchesFor`）、
+ * label/variant/testId はここ。かつて QR 側は各画面が `CANCEL`/`exit` ボタンを手書きしており、
+ * 契約の導出は消費者ゼロだった（受付側が #325/#39 で潰した「画面分岐の中に逃げ道を置くと
+ * 入れ忘れる」構造がそのまま残っていた）。
+ */
+describe('checkinEscapesFor (#361 AC2)', () => {
+  it('どのイベントを出すかは全状態で契約と一致する（真実源は 1 つ）', () => {
+    for (const state of CHECKIN_STATES) {
+      expect(checkinEscapesFor(state).map((e) => e.event), state).toEqual(
+        checkinEscapeHatchesFor(state).map((h) => h.event),
+      );
+    }
+  });
+
+  it('全ターンで「最初に戻る」が 1 つだけ出る（どのターンでも同じ場所・同じ言葉で帰れる）', () => {
+    for (const state of CHECKIN_STATES) {
+      const escapes = checkinEscapesFor(state);
+      expect(escapes.map((e) => e.testId), state).toEqual(['escape-reset']);
+      expect(escapes.map((e) => e.labelKey), state).toEqual(['reception.reset']);
+    }
+  });
+
+  it('受付の逃げ道と同じ語彙・同じ testId を使う（QR だけ別の言葉にしない）', () => {
+    // 受付で「最初に戻る」を覚えた来訪者が QR でも同じものを探せること。ここがズレると
+    // 「同じ受付体験」に見えない（#361 AC2）。
+    const reception = escapeHatchesFor('selectingTarget').find((h) => h.action === 'reset');
+    const checkin = checkinEscapesFor('scanning')[0];
+    expect(checkin?.labelKey).toBe(reception?.labelKey);
+    expect(checkin?.testId).toBe(reception?.testId);
+    expect(checkin?.variant).toBe(reception?.variant);
+  });
+
+  it('全ロケールに訳が実在する（ja へフォールバックしていない）', () => {
+    for (const locale of SUPPORTED_LOCALES) {
+      for (const escape of checkinEscapesFor('scanning')) {
+        expect(DICTIONARIES[locale][escape.labelKey], `${locale}/${escape.event}`).toBeTruthy();
+      }
+    }
+    const en = makeT('en');
+    expect(checkinEscapesFor('scanning').map((e) => en(e.labelKey))).toEqual(['Start over']);
+  });
 });
