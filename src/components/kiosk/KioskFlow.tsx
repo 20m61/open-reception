@@ -1130,6 +1130,7 @@ export function KioskFlow({ operatingStatus, sttAdapterFactory, voiceSession, qr
                 fallbackImageUrl={avatarFallbackUrl}
                 defaultMotionUrl={motionUrl}
                 guidanceOverride={callingAvatarGuidanceOverride}
+                layout={layout}
               />
             </div>
           ) : null}

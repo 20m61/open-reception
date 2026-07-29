@@ -117,11 +117,16 @@ unit のみ（描画不変）。`--full` は通すが VRT の更新は発生し�
 `gazeTarget` は #489 で実挙動と突き合わせて真にしたが、**まだ消費者がゼロ**。このセッションが
 繰り返し確認したとおり、消費者ゼロの契約は腐る。ここで消費者を作る。
 
-### 検証
+### 検証（実装後に確定した内容）
 
-- unit: 全 `GazeTarget` × 全 `KioskLayout` で妥当なオフセットを返す。`'none'` は中立
-- 実ブラウザ: `visual-checks` スキルのスクリプトで実際の見えを確認し、`ui-review-*.md` を残す
-- VRT: 視線が変わる画面のみ darwin ベースライン更新
+- unit: 全 `GazeTarget` × 全 `KioskLayout` で有限値・`'none'` は中立・入力欄/CTA は回答一覧より
+  深く見下ろす・首の可動域（横 ±0.5rad / 縦 ±0.35rad）を超えない
+- **VRT のベースライン更新は発生しない。** VRM は WebGL canvas で、VRT は非決定性のため
+  canvas とアバター領域を mask している（`kiosk-vrt-a11y.spec.ts` の `avatarMasks`）。
+  視線は mask の内側でしか動かない。
+- **実描画の確認は #65（実機 UAT）へスタックする。** `VrmAvatarViewer` は headless では
+  WebGL 不可で fallback 経路に落ちるため、視線が実際にどう見えるかはこの環境で検証できない。
+  純ロジックと配線までがローカルで担保できる範囲。
 
 ## 6. ロールバック
 

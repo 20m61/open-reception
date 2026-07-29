@@ -3,7 +3,8 @@
 import dynamic from 'next/dynamic';
 import { useEffect, useMemo, useState } from 'react';
 import type { ReceptionState } from '@/domain/reception/state';
-import { deriveAvatarState } from '@/domain/reception/ui-contract';
+import { deriveAvatarState, gazeTargetFor } from '@/domain/reception/ui-contract';
+import type { KioskLayout } from '../layout';
 import { resolveMotionUrl, type MotionKey } from '@/domain/motion/types';
 import { DEFAULT_LOCALE, htmlLangFor, type Locale } from '@/lib/i18n';
 import { speak, type SpeakSettings } from '../speech';
@@ -65,6 +66,11 @@ export type AvatarGuideProps = {
    * 提示内容（後方互換）。
    */
   guidanceOverride?: AvatarGuidanceOverride;
+  /**
+   * 画面レイアウト (#422 inc5-c 増分 3)。視線の向きに効く（横向きは右レール、縦向きは真下）。
+   * 未指定は横向き扱い＝既定プロファイル。
+   */
+  layout?: KioskLayout;
   className?: string;
 };
 
@@ -77,6 +83,7 @@ export function AvatarGuide({
   defaultMotionUrl,
   ttsSettings,
   guidanceOverride,
+  layout,
   className,
 }: AvatarGuideProps) {
   const avatarState = deriveAvatarState(screenState);
@@ -128,6 +135,10 @@ export function AvatarGuide({
             expression={guidance.expression}
             speaking={speaking}
             avatarState={avatarState}
+            // 視線誘導は契約から導出する (#422 inc5-c 増分 3)。screenState キーの
+            // `gazeTargetFor` が唯一の権威で、ここは向きの解決へ渡すだけ。
+            gazeTarget={gazeTargetFor(screenState)}
+            layout={layout}
             className={undefined}
           />
         ) : null}
