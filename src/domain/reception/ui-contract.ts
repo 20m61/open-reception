@@ -763,6 +763,39 @@ export type ConversationTurnView = {
   escapeHatches: ReadonlyArray<EscapeHatch>;
 };
 
+/**
+ * 常設要素の領域 (#422 inc5-c 増分 2)。
+ *
+ * #422 の AC「常設要素を原則『案内・回答対象・ヘルプ』の 3 領域以内へ整理」を語彙にする。
+ *  - guidance: 今どういう局面かを伝える（アバター・字幕・主指示）
+ *  - answers:  この問いに答えるための操作（回答カード・入力欄・確定 CTA）
+ *  - help:     行き詰まったときの手段（逃げ道・チャット・言語切替・アクセシビリティ）
+ *
+ * **この契約が持つのはターン要素の帰属だけ。** 言語切替やアクセシビリティメニューのような
+ * 契約の外側にある常設要素は component 層の登録簿が持つ（domain は component の存在を
+ * 知らない。知らせると依存が逆流する）。
+ */
+export const PERSISTENT_REGIONS = ['guidance', 'answers', 'help'] as const;
+export type PersistentRegion = (typeof PERSISTENT_REGIONS)[number];
+
+/** `ConversationTurnView` の各部。領域帰属の対象。 */
+export type TurnPart = 'avatar' | 'message' | 'answers' | 'handoffs' | 'escapeHatches';
+
+const TURN_PART_REGION: Record<TurnPart, PersistentRegion> = {
+  avatar: 'guidance',
+  message: 'guidance',
+  answers: 'answers',
+  // 引き渡し（QR 受付）は押した結果が回答と違う（状態機械を進めず別シェルへ）が、
+  // 来訪者には入口カードと並んだ 1 枚として見える。領域としては同じ。
+  handoffs: 'answers',
+  escapeHatches: 'help',
+};
+
+/** ターン要素がどの領域に出るか。 */
+export function regionOfTurnPart(part: TurnPart): PersistentRegion {
+  return TURN_PART_REGION[part];
+}
+
 /** 通話中はアバターが発話を止める（#361 レイアウト方針）。 */
 const NON_SPEAKING_STATES: ReadonlySet<ReceptionState> = new Set<ReceptionState>(['connected']);
 

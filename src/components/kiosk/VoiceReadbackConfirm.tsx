@@ -20,6 +20,7 @@ import {
   voiceListeningStage,
   type VoiceKioskState,
 } from '@/domain/voice-session/kiosk-view';
+import { persistentRegionProps } from './persistent-regions';
 
 export type VoiceReadbackConfirmProps = {
   state: VoiceKioskState;
@@ -51,7 +52,7 @@ export function VoiceReadbackConfirm({ state, locale, onYes, onNo }: VoiceReadba
   return (
     <div
       className="voice-layer"
-      data-testid="voice-layer"
+      {...persistentRegionProps('voice-layer')}
       data-voice-mode={state.mode}
       lang={htmlLangFor(locale)}
       style={{
