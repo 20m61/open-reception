@@ -26,8 +26,9 @@ import {
   useRef,
   useState,
 } from 'react';
+// 用件の一覧（`RECEPTION_PURPOSES`）もここから消えた (#422 inc5-b 増分 3a)。
+// どの用件をどの順で出すかは契約が決め、画面はアイコンと説明文だけを足す。
 import {
-  RECEPTION_PURPOSES,
   type ReceptionPurposeId,
   type VisitorInfo,
 } from '@/domain/reception/session';
@@ -582,21 +583,27 @@ function PurposeView({
     <>
       <ScreenTitle state="selectingPurpose" locale={locale} />
       <div className="screen__body">
+        {/*
+          用件カードの集合とラベルは契約が決める (#422 inc5-b 増分 3a)。アイコンと説明文は
+          このカードの見せ方なので画面が持つ（`quick-actions.ts` の EscapeHatch と同じ分担）。
+        */}
         <div className="card-grid">
-          {RECEPTION_PURPOSES.map((p) => (
+          {turnAnswersFor('selectingPurpose', locale).map((answer) => (
             <button
-              key={p.id}
+              key={answer.id}
               type="button"
               className="card card--cta"
-              data-testid={`purpose-${p.id}`}
+              data-testid={answer.testId}
               lang={htmlLangFor(locale)}
-              onClick={() => onSelect(p.id)}
+              onClick={() => onSelect(answer.id as ReceptionPurposeId)}
             >
               <span className="card__icon" aria-hidden="true">
-                {purposeIcon(p.id)}
+                {purposeIcon(answer.id as ReceptionPurposeId)}
               </span>
-              {tr(`reception.purpose.${p.id}` as MessageKey)}
-              <span className="card__sub">{tr(`reception.purpose.${p.id}.desc` as MessageKey)}</span>
+              {answer.label}
+              <span className="card__sub">
+                {tr(`reception.purpose.${answer.id}.desc` as MessageKey)}
+              </span>
             </button>
           ))}
         </div>

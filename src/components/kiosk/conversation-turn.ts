@@ -19,6 +19,7 @@ import {
   type ReceptionState,
   type TurnContext,
 } from '@/domain/reception/ui-contract';
+import { RECEPTION_PURPOSES } from '@/domain/reception/session';
 import { makeT, type Locale, type MessageKey as I18nMessageKey } from '@/lib/i18n';
 
 /**
@@ -78,6 +79,18 @@ const ANSWER_DISPLAY: Record<string, { i18nKey: I18nMessageKey; testId: string }
   confirm: { i18nKey: 'reception.callWithThis', testId: 'confirm-call' },
   fallback: { i18nKey: 'reception.altContact', testId: 'use-fallback' },
   complete: { i18nKey: 'reception.finishReception', testId: 'complete' },
+  // 用件カード (#422 inc5-b 増分 3a)。契約の `RECEPTION_PURPOSES.label` は生の日本語
+  // リテラルで、画面は辞書を引いていた（ja では一致していたが**同じ文言の二重管理**で、
+  // 辞書だけ直すとズレる）。表示は辞書を正とする。
+  ...Object.fromEntries(
+    RECEPTION_PURPOSES.map((purpose) => [
+      purpose.id,
+      {
+        i18nKey: `reception.purpose.${purpose.id}` as I18nMessageKey,
+        testId: `purpose-${purpose.id}`,
+      },
+    ]),
+  ),
 };
 
 /**
