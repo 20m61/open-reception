@@ -1,7 +1,7 @@
 import { test, expect } from '@playwright/test';
 import { establishKioskSession } from './helpers';
 import { PERSISTENT_ELEMENTS } from '../../src/components/kiosk/persistent-regions';
-import { PERSISTENT_REGIONS } from '../../src/domain/reception/ui-contract';
+import { isPersistentVisible, PERSISTENT_REGIONS } from '../../src/domain/reception/ui-contract';
 
 /**
  * 常設要素の領域帰属を実 DOM と突き合わせる (#422 inc5-c 増分 2)。
@@ -69,5 +69,40 @@ test.describe('常設要素の 3 領域 (#422 inc5-c)', () => {
       'data-persistent-region',
       'help',
     );
+  });
+});
+
+/**
+ * 契約が「出す/出さない」と言っている常設要素が、実ページでもそのとおりか (#500)。
+ *
+ * **契約に消費者を置くのが目的。** 判断だけ契約へ寄せても、画面が別の条件で描いていれば
+ * 意味がない（#489 で契約を直したのに `ResultView` が自前判断を続けていたのと同じ形）。
+ */
+test.describe('常設要素の表示可否が契約と一致する (#500)', () => {
+  test('待機画面: 契約の主張どおりに出る／出ない', async ({ page }) => {
+    await establishKioskSession(page);
+    await page.goto('/kiosk');
+    await expect(page.getByTestId('kiosk-idle')).toBeVisible();
+
+    for (const element of PERSISTENT_ELEMENTS) {
+      if (element.key === undefined) continue;
+      const expected = isPersistentVisible(element.key, 'idle');
+      const count = await page.getByTestId(element.testId).count();
+      expect(count > 0, `${element.testId} (契約: ${expected ? '出す' : '出さない'})`).toBe(expected);
+    }
+  });
+
+  test('用件選択画面: 待機だけの要素が消え、進行中の要素が現れる', async ({ page }) => {
+    await establishKioskSession(page);
+    await page.goto('/kiosk');
+    await page.getByTestId('start-reception').click();
+    await expect(page.getByTestId('purpose-meeting')).toBeVisible();
+
+    for (const element of PERSISTENT_ELEMENTS) {
+      if (element.key === undefined) continue;
+      const expected = isPersistentVisible(element.key, 'selectingPurpose');
+      const count = await page.getByTestId(element.testId).count();
+      expect(count > 0, `${element.testId} (契約: ${expected ? '出す' : '出さない'})`).toBe(expected);
+    }
   });
 });

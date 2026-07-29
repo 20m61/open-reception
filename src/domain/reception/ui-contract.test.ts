@@ -45,7 +45,9 @@ import {
   MESSAGE_KEYS,
   messageKeyForState,
   passesConfirmationInvariant,
+  PERSISTENT_ELEMENT_KEYS,
   PERSISTENT_REGIONS,
+  isPersistentVisible,
   regionOfTurnPart,
   RECEPTION_ACTIONS,
   requiresExplicitConfirmationFor,
@@ -953,5 +955,51 @@ describe('reception ui-contract: 常設要素の領域 (#422 inc5-c 増分 2)', 
     expect(regionOfTurnPart('avatar')).toBe('guidance');
     expect(regionOfTurnPart('message')).toBe('guidance');
     expect(regionOfTurnPart('escapeHatches')).toBe('help');
+  });
+});
+
+describe('reception ui-contract: 常設要素をいつ出すか (#500)', () => {
+  it('言語切替と退館導線は待機だけ（受付中に別の用事へ逸れさせない）', () => {
+    // 受付が始まったら、言語は選び終えている / 退館は別の用事。進行中に出すと注意が逸れる。
+    for (const state of RECEPTION_STATES) {
+      const expected = state === 'idle';
+      expect(isPersistentVisible('languageSwitcher', state), state).toBe(expected);
+      expect(isPersistentVisible('checkoutLink', state), state).toBe(expected);
+    }
+  });
+
+  it('アクセシビリティ支援は全状態で出す（#321 の「全 kiosk 画面で 1〜2 タップ」）', () => {
+    for (const state of RECEPTION_STATES) {
+      expect(isPersistentVisible('accessibilityMenu', state), state).toBe(true);
+    }
+  });
+
+  it('逃げ道バーは既存の契約（escapeHatchActionsFor）と一致する（判断を二重化しない）', () => {
+    for (const state of RECEPTION_STATES) {
+      expect(isPersistentVisible('escapeBar', state), state).toBe(
+        escapeHatchActionsFor(state).length > 0,
+      );
+    }
+  });
+
+  it('チャットは既存の契約（deriveChatAvailability）と一致する（判断を二重化しない）', () => {
+    for (const state of RECEPTION_STATES) {
+      expect(isPersistentVisible('chatDrawer', state), state).toBe(
+        deriveChatAvailability(state) === 'available',
+      );
+    }
+  });
+
+  it('待機は入口の局面なので逃げ道とチャットを出さない（戻る先も相談対象も無い）', () => {
+    expect(isPersistentVisible('escapeBar', 'idle')).toBe(false);
+    expect(isPersistentVisible('chatDrawer', 'idle')).toBe(false);
+  });
+
+  it('全ての常設要素キーが全状態で真偽を返す（判定漏れを作らない）', () => {
+    for (const key of PERSISTENT_ELEMENT_KEYS) {
+      for (const state of RECEPTION_STATES) {
+        expect(typeof isPersistentVisible(key, state), `${key}/${state}`).toBe('boolean');
+      }
+    }
   });
 });
