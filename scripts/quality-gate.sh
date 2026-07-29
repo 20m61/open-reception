@@ -76,6 +76,15 @@ step() { # step <label> <cmd...>
   fi
 }
 
+report() { # report <label> <cmd...>
+  # ゲートの PASS/FAIL に影響しない情報表示。**止めない**のが要点で、偽陽性のある検出器で
+  # ゲートを赤くすると「赤を無視する習慣」がつく方が危険（#424 増分 3）。
+  local label="$1"; shift
+  echo ""
+  echo "▶ ${label}（報告のみ・FAIL させない）"
+  "$@" || echo "  (報告に失敗しました。ゲートは続行します)"
+}
+
 skip_or_fail() { # skip_or_fail <label> <reason>
   if [[ "$STRICT" -eq 1 ]]; then
     SUMMARY+=("FAIL  $1  (${2}; --strict)")
@@ -183,6 +192,18 @@ if [[ "$RUN_LH" -eq 1 ]]; then
   else
     skip_or_fail "lighthouse (lhci)" "lhci not available"
   fi
+fi
+
+# ---- 変更リスクの報告 (#424 増分 3) ---------------------------------------
+# 停止境界（人間承認が必要な変更）に触れたかを変更パスから判定して見せる。判定ロジックは
+# src/domain/governance/change-risk.ts（純関数・ユニットテスト済）で、ここは呼ぶだけ。
+# **別系統のチェッカにしない**（誰も回さなくなる）ためゲートに同居させるが、報告専用。
+if npx --no-install tsx --version >/dev/null 2>&1; then
+  report "change-risk (停止境界)" npx --no-install tsx "${ROOT}/scripts/change-risk.ts"
+else
+  echo ""
+  echo "▶ change-risk (停止境界)（報告のみ）"
+  echo "  tsx が無いため SKIP（判定ロジック自体は unit テストで検証済み）"
 fi
 
 # ---- サマリ ---------------------------------------------------------------
