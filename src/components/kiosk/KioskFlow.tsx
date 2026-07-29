@@ -159,6 +159,7 @@ import type {
   TurnHandoffView,
 } from './conversation-turn';
 import {
+  isElementVisible,
   persistentRegionProps,
 } from './persistent-regions';
 import {
@@ -1135,7 +1136,9 @@ export function KioskFlow({ operatingStatus, sttAdapterFactory, voiceSession, qr
             </div>
           ) : null}
           {/* 退館チェックアウト導線 (issue #102)。待機中のみ小さく常設する（非破壊）。 */}
-          {data.state === 'idle' ? <CheckoutLink locale={locale} /> : null}
+          {isElementVisible('kiosk-checkout-link', data.state) ? (
+            <CheckoutLink locale={locale} />
+          ) : null}
           {/*
             #122 Chat-assisted ドロワー (#124 で配線)。利用可否は deriveChatAvailability(state) に従い、
             idle/終端では自動で閉じ・履歴を破棄する（ドロワー側で null を返す→スロットは :empty で非表示）。

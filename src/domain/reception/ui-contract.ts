@@ -796,6 +796,50 @@ export function regionOfTurnPart(part: TurnPart): PersistentRegion {
   return TURN_PART_REGION[part];
 }
 
+/**
+ * 常設要素の意味論キー (#500)。DOM の testid ではなく「何のための常設要素か」で持つ
+ * （domain は component の DOM を知らない。testid との対応は登録簿が持つ）。
+ */
+export const PERSISTENT_ELEMENT_KEYS = [
+  'escapeBar',
+  'chatDrawer',
+  'accessibilityMenu',
+  'languageSwitcher',
+  'checkoutLink',
+] as const;
+export type PersistentElementKey = (typeof PERSISTENT_ELEMENT_KEYS)[number];
+
+/**
+ * その常設要素をその局面で出すか (#500)。
+ *
+ * **「いつ出すか」の判断をここへ一本化する。** 逃げ道とチャットは既に契約が決めていたが、
+ * 言語切替・退館・アクセシビリティは component の分岐に散っていた。同じ種類の判断が二層に
+ * 分かれていると、片方だけ直してズレる（#489→#492 で実際に起きた）。
+ *
+ * 逃げ道とチャットは**既存の導出へ委譲する**（ここで再実装しない＝二重定義を作らない）。
+ */
+export function isPersistentVisible(
+  key: PersistentElementKey,
+  state: ReceptionState,
+): boolean {
+  switch (key) {
+    case 'escapeBar':
+      // 後退できる局面だけ。idle は戻る先が無い（#325）。
+      return escapeHatchActionsFor(state).length > 0;
+    case 'chatDrawer':
+      // 受付が進行中の局面だけ。待機/終端では閉じる（#122）。
+      return deriveChatAvailability(state) === 'available';
+    case 'accessibilityMenu':
+      // 全 kiosk 画面で 1〜2 タップで到達できること（#321 の AC）。
+      return true;
+    case 'languageSwitcher':
+    case 'checkoutLink':
+      // 待機だけ。受付が始まったら言語は選び終えており、退館は別の用事。
+      // 進行中に出すと来訪者の注意が本筋から逸れる（#103 / #102）。
+      return state === 'idle';
+  }
+}
+
 /** 通話中はアバターが発話を止める（#361 レイアウト方針）。 */
 const NON_SPEAKING_STATES: ReadonlySet<ReceptionState> = new Set<ReceptionState>(['connected']);
 

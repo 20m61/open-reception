@@ -10,12 +10,22 @@
  * 新しく常設するものを足すときは、ここへ登録して 3 領域のどれかに属させる。属せないなら
  * それは常設すべきものではない、という判断の足場にする。
  */
-import { type PersistentRegion } from '@/domain/reception/ui-contract';
+import {
+  isPersistentVisible,
+  type PersistentElementKey,
+  type PersistentRegion,
+  type ReceptionState,
+} from '@/domain/reception/ui-contract';
 
 export type PersistentElement = {
   /** DOM 上の `data-testid`。要素の同定に使う。 */
   testId: string;
   region: PersistentRegion;
+  /**
+   * 契約側の意味論キー (#500)。表示可否はこれ経由で契約へ委譲する。
+   * ターン要素（アバター・音声字幕）は契約が `ConversationTurnView` として直接持つので持たない。
+   */
+  key?: PersistentElementKey;
 };
 
 /**
@@ -33,15 +43,15 @@ export const PERSISTENT_ELEMENTS: ReadonlyArray<PersistentElement> = [
   { testId: 'voice-layer', region: 'guidance' },
   // --- ヘルプ: 行き詰まったときの手段 ---
   // 戻る/最初に戻るの唯一の後退導線。常時可視が設計意図 (#325)。
-  { testId: 'kiosk-escape-bar', region: 'help' },
+  { testId: 'kiosk-escape-bar', region: 'help', key: 'escapeBar' },
   // 検索 0 件などで行き詰まったときの相談口 (#122 / #322)。重要操作は確定できない。
-  { testId: 'kiosk-chat-drawer', region: 'help' },
+  { testId: 'kiosk-chat-drawer', region: 'help', key: 'chatDrawer' },
   // 文字サイズ・コントラスト・やさしい日本語の切替 (#321)。全画面で 1〜2 タップ。
-  { testId: 'a11y-menu-button', region: 'help' },
+  { testId: 'a11y-menu-button', region: 'help', key: 'accessibilityMenu' },
   // 読めない言語で詰まらないための切替 (#103)。待機画面にのみ常設する。
-  { testId: 'kiosk-language-switcher', region: 'help' },
+  { testId: 'kiosk-language-switcher', region: 'help', key: 'languageSwitcher' },
   // 受付ではなく退館の用事で来た人の逃げ道 (#102)。待機画面にのみ小さく常設する。
-  { testId: 'kiosk-checkout-link', region: 'help' },
+  { testId: 'kiosk-checkout-link', region: 'help', key: 'checkoutLink' },
 ];
 
 const REGION_BY_TEST_ID: ReadonlyMap<string, PersistentRegion> = new Map(
@@ -79,4 +89,16 @@ export function persistentRegionProps(testId: PersistentElementTestId): {
     throw new Error(`unregistered persistent element: ${testId}`);
   }
   return { 'data-testid': testId, 'data-persistent-region': region };
+}
+
+/**
+ * その常設要素をその局面で描くか (#500)。**判断は契約が持つ**（`isPersistentVisible`）。
+ * ここは testid → 意味論キーの対応を引くだけ。
+ *
+ * `key` を持たない要素（アバター・音声字幕）は、契約が `ConversationTurnView` として
+ * 直接扱うのでここでは判定しない（呼び出し側が使わない）。
+ */
+export function isElementVisible(testId: string, state: ReceptionState): boolean {
+  const key = PERSISTENT_ELEMENTS.find((e) => e.testId === testId)?.key;
+  return key === undefined ? false : isPersistentVisible(key, state);
 }
