@@ -125,6 +125,34 @@ a {
 
 /* ---- 受付端末向けユーティリティ (issue #17) ---- */
 
+/*
+ * 管理画面向けサイズトークン (#501)。
+ *
+ * **方向に注意: 既定（:root）は受付端末向けのまま据え置き、admin/platform 側が下げる。**
+ * 逆（:root を下げて kiosk が上書き）にすると kiosk の実寸が変わる。`chromium-ipad` の
+ * ような mobile 相当環境では Chrome の text autosizing が効き、**`rem` の基準である
+ * `html` の font-size 自体が周囲のフォント指定に応じて膨らむ**（実測: html 16px → 20px）。
+ * :root を下げると拡大率が変わり、kiosk 側で「同じ 1.25rem」に戻しても実寸が一致しない
+ * （VRT が検出。3 度スコープを変えても差分が消えなかった原因）。
+ *
+ * 解決する問題: 管理ナビが受付端末向けの巨大フォント（`--font-body` = 20px 相当）を
+ * body から継承し、"受付端末（拠点別）" のような長いラベルが語の途中で折り返っていた
+ * （#330 item4。`components/admin/nav-link-style.ts` が個別に打ち消していた）。
+ *
+ * `data-area` は `AdminShell` が出す（admin / platform 共通のシェル）。
+ * 拡大（--a11y-font-scale）は掛けたままにして、管理画面でも文字サイズ切替が効くようにする。
+ */
+[data-area='admin'],
+[data-area='platform'] {
+  --touch-target-min: 44px;
+  --font-body: calc(1rem * var(--a11y-font-scale));
+  --font-lg: calc(1.25rem * var(--a11y-font-scale));
+  --font-xl: calc(1.9rem * var(--a11y-font-scale));
+
+  /* `font-size` は計算値で継承されるため、変数の再定義だけでは本文サイズが変わらない。 */
+  font-size: var(--font-body);
+}
+
 .screen {
   min-height: 100vh;
   display: flex;
