@@ -3,55 +3,12 @@ import { RECEPTION_STATES, type ReceptionState } from '@/domain/reception/state'
 import {
   availableActions,
   escapeHatchActionsFor,
-  isActionAllowed,
   REQUIRES_CONFIRMATION_ACTIONS,
 } from '@/domain/reception/ui-contract';
 import { DICTIONARIES, SUPPORTED_LOCALES, makeT } from '@/lib/i18n';
 import {
   escapeHatchesFor,
-  quickActionsFor,
-  QUICK_ACTION_INTENTS,
 } from './quick-actions';
-
-describe('quickActionsFor', () => {
-  it('idle で 5 つの主要 CTA を返す（担当者を呼ぶ/QR/部署/配送・納品/その他）', () => {
-    const actions = quickActionsFor('idle');
-    expect(actions.map((a) => a.intent)).toEqual([...QUICK_ACTION_INTENTS]);
-  });
-
-  it('idle 以外ではクイックアクションを出さない（入口は idle のみ）', () => {
-    for (const state of RECEPTION_STATES) {
-      if (state === 'idle') continue;
-      expect(quickActionsFor(state)).toHaveLength(0);
-    }
-  });
-
-  it('checkin 以外の CTA は契約上 start が許可される idle でのみ出る', () => {
-    expect(isActionAllowed('idle', 'start')).toBe(true);
-    const normal = quickActionsFor('idle').filter((a) => !a.isCheckin);
-    expect(normal.length).toBeGreaterThan(0);
-  });
-
-  it('checkin CTA はモード切替（START を使わない）ので isCheckin で表現する', () => {
-    const checkin = quickActionsFor('idle').find((a) => a.intent === 'checkin');
-    expect(checkin?.isCheckin).toBe(true);
-    expect(checkin?.presetPurpose).toBeUndefined();
-  });
-
-  it('配送・納品/その他/部署は目的を preset し、目的選択を短縮できる', () => {
-    const find = (intent: string) => quickActionsFor('idle').find((a) => a.intent === intent);
-    expect(find('delivery')?.presetPurpose).toBe('delivery');
-    expect(find('other')?.presetPurpose).toBe('other');
-    expect(find('department')?.presetPurpose).toBe('meeting');
-  });
-
-  it('クイックアクションは重要操作（確認必須）を直接起こさない', () => {
-    // クイックアクションは preset/checkin/start 由来のみ。confirm/submitVisitorInfo を含まない。
-    for (const a of quickActionsFor('idle')) {
-      expect(REQUIRES_CONFIRMATION_ACTIONS.has(a.intent as never)).toBe(false);
-    }
-  });
-});
 
 describe('escapeHatchesFor', () => {
   it('どのアクションを出すかは全状態で契約と一致する（真実源は 1 つ・#422 地ならし）', () => {
@@ -153,12 +110,4 @@ describe('逃げ道の文言は i18n カタログ経由 (#327)', () => {
     ]);
   });
 
-  it('クイックアクションは表示文言を持たない（表示は呼び出し側が i18n で解決する）', () => {
-    // 以前は未使用の日本語 label/description を持っており、`action.label` を描画すると
-    // 多言語が崩れる罠になっていた。型から消して罠ごと無くす。
-    for (const action of quickActionsFor('idle')) {
-      expect(action).not.toHaveProperty('label');
-      expect(action).not.toHaveProperty('description');
-    }
-  });
 });

@@ -567,6 +567,68 @@ describe('reception ui-contract: requiresExplicitConfirmation を実挙動へ縛
   });
 });
 
+describe('reception ui-contract: 待機の入口を契約が持つ (#422 inc5-b 増分 3b)', () => {
+  // 待機画面の 5 つの入口は `components/kiosk/quick-actions.ts` の QUICK_ACTIONS が持っていた。
+  // 「いつ出すか」は既に契約（isActionAllowed(state,'start')）に従っていたが、**集合の定義と
+  // 意味（用件の先取り / QR 受付への引き渡し）は component 側にしか無かった**。
+  it('待機は用件を先取りする 3 つの入口と、先取りしない 1 つを回答に持つ', () => {
+    const answers = conversationTurnFor('idle').answers;
+    expect(answers.map((a) => a.id)).toEqual(['callStaff', 'department', 'delivery', 'other']);
+    // すべて受付開始。用件の先取りは presetPurpose で表す（別のアクションを作らない）。
+    for (const answer of answers) expect(answer.intent, answer.id).toBe('start');
+    expect(answers.map((a) => a.presetPurpose)).toEqual([
+      undefined, // callStaff: 用件は後段の目的選択で確定する汎用導線
+      'meeting', // department
+      'delivery',
+      'other',
+    ]);
+  });
+
+  it('待機以外は入口回答を持たない（受付開始は待機からだけ）', () => {
+    for (const state of RECEPTION_STATES) {
+      if (state === 'idle') continue;
+      for (const answer of conversationTurnFor(state).answers) {
+        expect(answer.presetPurpose, `${state}/${answer.id}`).toBeUndefined();
+      }
+    }
+  });
+
+  it('QR 受付は回答ではなく引き渡し（handoff）として持つ', () => {
+    // QR 受付は状態機械を進めない（START ではなく CheckinFlow へのモード切替）。
+    // `answers` に混ぜると「回答の intent は必ず許可済みアクション」という安全不変条件に
+    // 嘘の intent を通すことになる。会話そのものを別のターン空間へ渡す操作なので分けて持つ。
+    const handoffs = conversationTurnFor('idle').handoffs;
+    expect(handoffs.map((h) => h.id)).toEqual(['checkin']);
+    expect(handoffs[0]?.to).toBe('checkin');
+  });
+
+  it('引き渡しを持つのは待機だけ（受付の途中で別シェルへ飛ばさない）', () => {
+    for (const state of RECEPTION_STATES) {
+      if (state === 'idle') continue;
+      expect(conversationTurnFor(state).handoffs, state).toEqual([]);
+    }
+  });
+
+  it('待機の既定ラベルは、画面が実際に使う i18n キーの ja 訳と一致する', () => {
+    // #487 / #493 と同じ突き合わせ。契約の既定が辞書とズレると、注入を忘れた箇所で
+    // 別の文言が出る。
+    const turn = conversationTurnFor('idle');
+    expect(turn.answers.map((a) => a.label)).toEqual([
+      ja('kiosk.action.callStaff.label'),
+      ja('kiosk.action.department.label'),
+      ja('kiosk.action.delivery.label'),
+      ja('kiosk.action.other.label'),
+    ]);
+    expect(turn.handoffs.map((h) => h.label)).toEqual([ja('kiosk.action.checkin.label')]);
+  });
+
+  it('入口回答も「許可済みアクション」の不変条件に従う（待機で start が許可されている）', () => {
+    for (const answer of conversationTurnFor('idle').answers) {
+      expect(isActionAllowed('idle', answer.intent), answer.id).toBe(true);
+    }
+  });
+});
+
 describe('reception ui-contract: escapeHatchActionsFor (#361)', () => {
   it('待機(idle)では逃げ道を出さない', () => {
     expect(escapeHatchActionsFor('idle')).toEqual([]);
