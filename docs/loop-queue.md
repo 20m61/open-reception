@@ -334,6 +334,7 @@
 | 72 | 2026-07-29 | #422 AC「VRT で主要状態を固定」のギャップを埋める: 結果系 4 状態（通話中・未応答・失敗・代替案内）を追加し 5 → 9 状態へ。**通話中はパネルごと mask して VRT を無意味にしかけた** — PII は本文の担当者名だけなので `.result-panel__message` へ絞った。**#422 の受入条件 7 件がすべて充足** | PR #499 |
 | 73 | 2026-07-29 | #500: 常設要素の「いつ出すか」を `isPersistentVisible(key, state)` へ一本化。逃げ道・チャットは既存導出へ委譲し二重定義を作らない。**実際に移せた分岐は `CheckoutLink` の 1 箇所だけ**だったが、これまで構造に埋もれていた「言語切替・退館は待機のみ」が明示され、契約の主張を実 DOM と突き合わせる e2e が付いた | PR #502 |
 | 75 | 2026-07-30 | #501: 管理画面が受付端末向けサイズ（`--font-body` 20px 等）を継承する #330 item4 の根治。**色ではなくサイズが問題**（色は意図的に共通で、分離すると二重管理になるだけ）。`:root` は受付端末向けに据え置き、`[data-area='admin'\|platform']` が下げる**方向が重要** — 逆にすると mobile の text autosizing で `rem` 基準（html の font-size）自体が動き kiosk の実寸が変わる（実測 16px→20px。VRT が 3 度検出） | PR #504 |
+| 93 | 2026-07-31 | **Claude Code on the web への開発移行をリポジトリ側で成立させた**（ユーザーが「可能な限り全面移行」を決定し、claude.ai/code の環境ダイアログ側＝Network access / Setup script は実施済み）。正本は `docs/cloud-dev-environment.md`。**(a) VRT の欠落ベースラインを自動生成しない** (`updateSnapshots: 'none'`) — 既定 `'missing'` は欠落分をその場の描画で生成し、**`retries: 1` と組み合わさると「1 回目が baseline を書いて落ち、retry が通る」**ため、誰もレビューしていない描画が「正」として焼き付いたまま green になる。linux は結果系 4 状態（connected/failed/fallback/timeout）が欠けており Linux へ移した瞬間に踏む。**(b) `guard-destructive.sh` をリポジトリへ移設** — ユーザ階層 `~/.claude/` の設定は**クラウドへ引き継がれない**ので、自律ループをクラウドで回すとガードだけが消える。移植で**元実装の穴が判明**: macOS の `/Users/<user>` しか見ておらず **Linux の `/home/<user>` と `/root` を素通し**していた（実測で確認。クラウドのホームがちょうど無防備）。**(c)** SessionStart で cloud のみ `npm ci` / `.nvmrc` で Node 22 固定 / CLAUDE.md の署名規約を実態へ更新。**署名は問題にならない**ことを実測で確定 — 全て squash マージなのでブランチのコミットは破棄され、`main` の squash は GitHub が署名する（`555f64a`/`dd0df39` が `verified: true`）。⚠️ feature ブランチに署名必須の保護を掛けないこと | PR #524 |
 | 92 | 2026-07-31 | **#361 の根因を確定し、`scanning` を決定的にした。あわせて第 91 wave で自分が main へ入れた誤記 4 箇所を訂正。** 根因: headless に実カメラが無く `getUserMedia` は**約 2 秒後に**拒否される。`checkin-scanning` は**その窓の間だけ存在する過渡状態**で、負荷が高いと（`--full`）assert が窓を跨ぎ、以後ずっと `element(s) not found`。第 91 wave がこの仮説を「実測で棄却」したのは **1 点サンプリングによる誤り**（camera-grant の 1.5s 後だけを 5 回見て `scanning=1`＝ちょうど境界の内側を踏んでいた）。今回は時間軸で 35 点取り直し、素の headless で `0s,1s=scanning / 2s..34s=cameraError`、フェイクカメラ有りで `0s..30s=scanning / 31s=scanError`（31s は scan timeout）と**両条件を実測**。対策は `playwright.config.ts` へ `--use-fake-device-for-media-stream` / `--use-fake-ui-for-media-stream`（`executablePath` の解決と**マージ**すること — 置き換えると Claude Code on the web のプリインストール Chromium 解決が壊れる）。実 `CameraQrScanner` の経路はそのまま踏むので検証内容は落ちない。**教訓: 過渡状態の有無を 1 点で判定しない。時間軸で複数点を取る** | PR #523 |
 | 91 | 2026-07-31 | `kiosk-checkin-subtitle-i18n:47` の flaky を `systematic-debugging` で追った。**根因は未特定のまま、次に起きたら診断できる状態にして止めた**（当て推量の修正をしない）。棄却した仮説: 「headless にカメラが無く `CameraQrScanner.start` が `camera_denied` で即座に `scanning` から抜ける」→ **実測で棄却**（camera-grant の 1.5s 後に 5 回とも `scanning=1 / cameraError=0`。headless Chromium でも getUserMedia は成功し `scanning` は安定状態）。**⚠️ この棄却は第 92 wave で誤りと判明した（1 点サンプリング）。仮説の方が正しい — 下記第 92 wave の行を参照。**ローカル 12 連射でも 0/12 で再現せず（唯一の失敗は fixture の `/api/admin/login` ECONNRESET＝既知の別件）。調査を止めていたのは**失敗メッセージが `element(s) not found` だけで、実際どの状態に居たか分からない**こと。`checkin-shell` の `data-checkin-state`（実装済み・テストが見ていなかった）を先に表明させ、失敗時に `Expected: "scanning" / Received: "..."` が出るようにした。あわせて `kiosk-checkin.spec.ts` の「mock scanner 起動中」という**事実に反する注記 2 箇所**を訂正（e2e は scanner を注入しておらず実 CameraQrScanner が動く） | PR #522 |
 | 90 | 2026-07-30 | #424「API schema の diff チェック」。`change-risk` は「公開 API のパスを触った」ことは見るが**何が消えたか**は見ない。実際に壊れるのは削除・改名で、しかも**壊れる相手はリポジトリの外**（配布済みの受付端末が `/api/kiosk/*` を叩き続ける。同一リポジトリ内の呼び出し元は typecheck が捕まえるが端末は捕まえない）。170 経路のスナップショット（`docs/api-surface.txt`）と突き合わせ、**削除・改名で落ちる**。追加と削除を分けて報告するのが要点で、「スナップショットが違う」とだけ言うと更新が全部同じ重みになり破壊的変更がレビューで埋もれる。**走査が空を返したら落ちるトリップワイヤ付き**（0 本なら常に「差分なし」で通る検査になる）。動的セグメントは `[]` へ正規化（変数名の変更は URL 形状を変えないので差分にしない）。**config の schema diff は見送り** — 単一の宣言的定義が無く、作るなら定義の一元化が先 | PR #520 |
@@ -354,7 +355,22 @@
 | 74 | 2026-07-29 | #423 の一部: 対象テナント context の安全側フォールバック（存在しない id / 壊れた値 / 画面移動）を e2e で固定。純関数 `resolveActiveTenantId` は unit 済みだが**cookie → server 解決 → 画面表示の経路が未検証**だった。テナント作成 API が無いため実テナント間の越境 e2e は不可 | PR #503 |
 
 
-**次に着手する候補（2026-07-30 更新・第 87 wave 消化後）**
+**次に着手する候補（2026-07-31 更新・第 93 wave 消化後）**
+
+> 0. **クラウドセッションでの受入確認（ローカルからは実施不可）。** 第 93 wave で移行の
+>    リポジトリ側は揃った。残るのは**クラウドセッション内で `./scripts/quality-gate.sh --full`
+>    が green になること**＝移行の受入条件そのもの。summary に **SKIP が無いか**必ず見る
+>    （SKIP は FAIL にならないので、マージゲートが黙って弱くなる）。
+>    あわせて **linux VRT ベースラインを取り直す**: 結果系 4 状態が欠落、かつ #480 の
+>    `kiosk-idle` は #324 以前のまま。**ベースラインは実行プラットフォームでしか作れず、
+>    #480 は macOS からは原理的に閉じられない＝クラウドが唯一の手段**。
+>    `updateSnapshots: 'none'` により取り直す前は落ちて気づけるので、`--update-snapshots` で
+>    生成し**差分を見てから**コミットする。
+>    動かないものがあれば**再現コマンドと実際の失敗メッセージ**を
+>    `docs/cloud-dev-environment.md` へ追記する（「動かない」だけだと stale な制約として
+>    引き継がれる。第 15 wave の前例）。
+
+**旧・次に着手する候補（2026-07-30 更新・第 87 wave 消化後）**
 
 > **候補 1「platform e2e を実効させる」は第 87 wave で完了。** A 案（既定 config に project +
 > 2 本目の webServer）を採用。決め手は実測で、**+10s / +3.5% しか伸びない**（依存を張らないので
