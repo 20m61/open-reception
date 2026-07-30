@@ -169,7 +169,8 @@ if [[ "$SKIP_BY_SCOPE" -eq 1 ]] && npx --no-install tsx --version >/dev/null 2>&
       scope=*) GATE_SCOPE="${line#scope=}" ;;
       skip=*)  GATE_SKIPS="${GATE_SKIPS}${line#skip=} " ;;
     esac
-  done < <(npx --no-install tsx "${ROOT}/scripts/change-scope.ts" 2>/dev/null || echo "scope=code")
+  done < <(npx --no-install tsx "${ROOT}/scripts/change-scope.ts" \
+    $([[ "$STRICT" -eq 1 ]] && echo --strict) 2>/dev/null || echo "scope=code")
 fi
 
 # そのステップを変更範囲の理由で省略するか。

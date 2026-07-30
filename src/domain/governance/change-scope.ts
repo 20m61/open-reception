@@ -60,6 +60,24 @@ export function classifyChangeScope(paths: ReadonlyArray<string>): ChangeScope {
  *  - secrets (gitleaks) … 文書にも鍵は混入しうる。
  *  - audit … 2s。
  */
+/**
+ * 実行モードを反映した最終スコープ。
+ *
+ * **定期実行（`--strict`）では省略しない。** `--full --strict` は「マージ駆動では検出できない
+ * 時間経過由来の劣化」（依存 advisory の更新・ブラウザ更新・ツールのルール変更）を捕まえるための
+ * 実行で、コードが変わっていないことこそが前提（`docs/quality-gate.md` 定期運用 / #318）。
+ * それが文書のみのブランチで走ったからといって e2e や sast を省略したら、その実行が存在する
+ * 意味が無くなる。
+ *
+ * 倒す方向は一方通行（`docs` → `code` のみ。`code` を緩めることはしない）。
+ */
+export function effectiveScope(
+  scope: ChangeScope,
+  options: { strict: boolean },
+): ChangeScope {
+  return options.strict ? 'code' : scope;
+}
+
 export const SKIPPABLE_STEPS = ['build', 'e2e', 'lighthouse', 'sast'] as const;
 export type SkippableStep = (typeof SKIPPABLE_STEPS)[number];
 
