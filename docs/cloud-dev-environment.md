@@ -95,9 +95,19 @@ GitHub の署名で `verified: true` になっている（`gh api repos/:owner/:
 
 ## 5. 最初のクラウドセッションでやること（受入確認）
 
-1. `./scripts/quality-gate.sh --full` が green になること。**これが移行の受入条件そのもの**。
-   SKIP が出ていないかを summary で必ず確認する（SKIP は FAIL にならない）。
-2. VRT の欠落 4 枚と #480 を取り直す。`updateSnapshots: 'none'` により、取り直す前は
-   **落ちて気づける**はず。`--update-snapshots` で生成し、**差分を目視してから**コミットする。
+**順序が重要。逆にすると受入確認は成立しない。**
+
+1. **先に linux VRT ベースラインを作る。** 欠落 4 枚（結果系 connected/failed/fallback/
+   timeout）と #480 の `kiosk-idle`。`--update-snapshots` で生成し、**差分を目視してから**
+   コミットする。
+2. **その後で `./scripts/quality-gate.sh --full --strict`。これが移行の受入条件そのもの。**
+
+   ⚠️ 1 と 2 を逆にすると、`updateSnapshots: 'none'` が欠落ベースラインを**意図的に落とす**
+   ため `kiosk-vrt-a11y` が必ず赤くなる。これは**移行の失敗ではなく手順の誤り**なので、
+   ここで赤を見ても「クラウドでは e2e が動かない」と結論しないこと。
+
+   `--strict` を付けるのは、任意ツール（gitleaks / semgrep / lhci）が未導入のとき
+   **SKIP は FAIL にならず、マージゲートが黙って弱くなる**ため。summary の目視確認に
+   頼らず、`--strict` で機械的に落とす。
 3. 動かないものがあれば、**再現コマンドと実際の失敗メッセージ**をここへ追記する
    （「動かない」とだけ書くと次の周回が再検証できず、stale な制約として引き継がれる）。
