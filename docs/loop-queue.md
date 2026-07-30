@@ -334,6 +334,7 @@
 | 72 | 2026-07-29 | #422 AC「VRT で主要状態を固定」のギャップを埋める: 結果系 4 状態（通話中・未応答・失敗・代替案内）を追加し 5 → 9 状態へ。**通話中はパネルごと mask して VRT を無意味にしかけた** — PII は本文の担当者名だけなので `.result-panel__message` へ絞った。**#422 の受入条件 7 件がすべて充足** | PR #499 |
 | 73 | 2026-07-29 | #500: 常設要素の「いつ出すか」を `isPersistentVisible(key, state)` へ一本化。逃げ道・チャットは既存導出へ委譲し二重定義を作らない。**実際に移せた分岐は `CheckoutLink` の 1 箇所だけ**だったが、これまで構造に埋もれていた「言語切替・退館は待機のみ」が明示され、契約の主張を実 DOM と突き合わせる e2e が付いた | PR #502 |
 | 75 | 2026-07-30 | #501: 管理画面が受付端末向けサイズ（`--font-body` 20px 等）を継承する #330 item4 の根治。**色ではなくサイズが問題**（色は意図的に共通で、分離すると二重管理になるだけ）。`:root` は受付端末向けに据え置き、`[data-area='admin'\|platform']` が下げる**方向が重要** — 逆にすると mobile の text autosizing で `rem` 基準（html の font-size）自体が動き kiosk の実寸が変わる（実測 16px→20px。VRT が 3 度検出） | PR #504 |
+| 86 | 2026-07-30 | 候補 1 の AC マッピング（文書のみ）。**第 85 wave の自分の引き継ぎに誤り 2 件**を発見して訂正: (a) developer セッションは **helper では張れない**（`passwordRole` はプロセス env・email allowlist は password セッションに適用不可）→ サーバを分けるしかない。(b) 走り出すのは **4 本ではなく 3 本**（2 件目のテナントを作る API が無い＝第 74 wave の制約が有効）。実現手段（project + webServer 分離）と、A（既定 config・腐らないが重い）/ B（専用 config・軽いが腐る）の選択、および**まず `--full` の伸びを実測する**ことをキューへ記録 | `docs/loop-queue.md` |
 | 85 | 2026-07-30 | #423 の配線: platform ヘッダに「表示中テナント」を出し、契約の消費者ゼロを解消（`resolveViewingContext`）。**sticky 未選択でも URL がテナントを名指ししていれば出す** — ここを `differsFromSticky` だけで判断すると「全テナント横断」と表示しながら 1 テナントの詳細を見ている状態が残る。**e2e で既存の blind spot を発見**: platform は developer 専用で `loginAsAdmin` は developer にならないため `/platform/*` は `/admin` へリダイレクトされる。`capture-screens.spec.ts` の「platform 主要画面」は撮るだけで検証しないので**ずっと admin を撮っていた**。新規 e2e は到達不能時に理由付き skip（消して腐らせない） | `src/lib/platform/selected-tenant.ts` |
 | 84 | 2026-07-30 | #423 の一部: **context 優先順位の契約**を固めた。着手時に**実害を特定** — platform のヘッダは Cookie の選択を出すが `/platform/tenants/[tenantId]` の本文は URL のテナントを出すので、**ヘッダが本文と別のテナント（または「全テナント横断」）を示し得る**。`resolveContextScope` は `route > sticky > none` で解決し、**両方を server resolved の許可集合で濾す**（#419 の教訓）。`differsFromSticky` を返して UI が食い違いを明示できるようにし、route は sticky を書き換えない（#423 AC「画面移動で対象が暗黙に切り替わらない」）。**意図的に未配線** — 配線＝食い違い時に何を表示するかは UX 判断なので要ユーザー確認 | `src/domain/tenant/context-scope.ts` |
 | 83 | 2026-07-30 | #423 の一部: **別実装 TenantSwitcher の表示を統合**。admin と platform は母集合（actor の accessibleTenants vs developer 専用 API）・未選択の有無（admin は常に 1 つ / platform は「全テナント横断」）・永続化（server action vs **監査に残す API**）・反映（`router.refresh()` vs フルリロード）がすべて違い、**素朴に一本化すると壊れる**（第 33 wave の「別語彙で完結した並行実装 ≠ 壊れた実装」）。実際の重複は表示だけで、`AdminShell` の固定表示と admin の単一所属表示が testid・inline style・文言まで逐語的に同一、しかも**排他レンダリングなので片方を直しても気づけない**形だった。あわせて**両方が同じ `tenant-switcher` testid** だったのを分離（意味の違う 2 つに同じ selector が当たると、片方向けの e2e がもう片方に当たって通る）。再発防止の静的メタテスト付き | `docs/loop-queue.md` |
@@ -349,7 +350,37 @@
 
 **次に着手する候補（2026-07-30 更新・第 85 wave 消化後）**
 
-1. **e2e で platform エリアへ到達できるようにする**（第 85 wave で発見）。platform は developer 専用で、`loginAsAdmin` のパスワードログインは developer にならない。そのため `/platform/*` の e2e は 1 本も実効していない（`capture-screens.spec.ts` は撮るだけなので気づけなかった）。`OPEN_RECEPTION_ADMIN_PASSWORD_ROLE=developer` を e2e の webServer env に足すと admin 側の挙動も変わるため、**developer 専用セッションを別に張る helper** を作るのが筋。これが入ると `platform-viewing-context.spec.ts` の 4 本が自動で走り出す。
+1. **e2e で platform エリアへ到達できるようにする**（第 85 wave で発見・**第 86 wave で AC 再マッピング済み**）。
+   platform は developer 専用で、`loginAsAdmin` のパスワードログインは developer にならないため
+   `/platform/*` の e2e は 1 本も実効していない（`capture-screens.spec.ts` は撮るだけなので気づけなかった）。
+
+   > **第 85 wave の記述を訂正**（自分が書いた引き継ぎの誤り 2 件）。
+   > - ❌「developer 専用セッションを別に張る helper を作るのが筋」→ **helper では実現できない**。
+   >   `src/lib/auth/actor.ts:174-184` の `buildActorFromPasswordSession` が developer を返すのは
+   >   `config.passwordRole === 'developer'` のときだけで、`buildActorConfig`（205-224）はそれを
+   >   **プロセス env** から読む。email allowlist 経路（221）は email を持つ identity 専用で、
+   >   172 行が「password セッションは email を持たないため allowlist は適用できない」と明記。
+   >   → **サーバ（プロセス）を分ける**しかない。
+   > - ❌「これが入ると `platform-viewing-context.spec.ts` の 4 本が自動で走り出す」→ **3 本**。
+   >   4 本目（sticky と別のテナント）は 2 件目のテナントが必要だが**作成 API が無い**
+   >   （`src/app/api/platform/tenants/` に POST 無し・`createTenant` は repository 層のみ）。
+   >   tenant seed は `internal` の 1 件だけ（`src/lib/tenant/store.ts`。`RECEPTION_DISABLE_DEV_SEED`
+   >   は routing/flow-config にしか効かないので tenant seed 自体は生きている）。第 74 wave の
+   >   「テナント作成 API が無いため実テナント間の越境 e2e は不可」がまだ有効。
+
+   **実現手段は playwright の project + webServer 分離**（`npm run start` = `next start` なので
+   `PORT` で別ポート起動でき、`use.baseURL` は project 単位で上書きできる）。**webServer の env に
+   `OPEN_RECEPTION_ADMIN_PASSWORD_ROLE=developer` を足す案は却下** — 全 password ログインが
+   developer 化して admin 側 e2e の意味が変わる。
+
+   選択肢と未決の点:
+   - **A. 既定 config に platform project + 2 つ目の webServer** … `--full` に載る＝腐らない。
+     ただし毎回 Next サーバ 2 本（起動 ~60s + メモリ）。2017 i5/16GB に効く。
+   - **B. `playwright.platform.config.ts` + 専用 script** … 既定 e2e は無変更で軽い。ただし
+     `--full` に載らず**腐る**（soak が既に同じ形で分離されている先例はあるが、これは本書が
+     繰り返し警告してきた「別系統は誰も回さない」形そのもの）。
+   - **最初にやること: A で `--full` がどれだけ伸びるか実測する。** 体感で決めない。
+
 2. **`Site > Kiosk > Version` を context 契約へ揃える**（第 84 wave の `resolveContextScope` と同じ形。route > sticky、権威で濾す）。その後に共通コンテキストバー本体。
 3. **#421 admin IA 再編**（重複ナビの統合＝概念一本化は要ユーザー確認なので除く）。
 4. **#424 増分 4**: kill switch と 1 ループの変更量上限（純ロジック。governance モジュールに同居）。
