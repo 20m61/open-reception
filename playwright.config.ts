@@ -67,6 +67,10 @@ const executablePath = resolveChromiumExecutablePath();
  *
  * 実 `CameraQrScanner` の経路（権限要求 → track 取得 → デコードループ）はそのまま踏むので、
  * 検証内容は落ちない。映像が既知のテストパターンになるだけ。
+ *
+ * **既知の制約**: これは chromium 専用フラグで、`ipad-landscape` / `ipad-portrait`（webkit）には
+ * 効かない。両 project は macOS 13 では走らず `E2E_WEBKIT=1` の opt-in 時のみ有効なので、
+ * 現状のゲートには影響しない。webkit を常用するなら別途 QR 受付 spec の扱いを決める必要がある。
  */
 const FAKE_MEDIA_ARGS = ['--use-fake-device-for-media-stream', '--use-fake-ui-for-media-stream'];
 
