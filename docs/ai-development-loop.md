@@ -235,7 +235,14 @@ wave 表）で、専用の追跡 ID は無い。
 - [x] PR 本文への **仮説 / rollback / 計測** の必須化 …
       `.github/pull_request_template.md`（仮説 / 計測・成功停止条件 / リスクと戻し方 /
       基準文書・ADR 参照 / 人間承認が必要な変更）
-- [ ] config / API schema の diff チェック
+- [x] **API** schema の diff チェック … `src/domain/governance/api-surface.ts`（純関数）+
+      `src/app/api/api-surface.test.ts`（走査とスナップショット比較）+ `docs/api-surface.txt`
+      （170 経路）。**削除・改名でテストが落ちる**ので、スナップショット更新が diff に現れ
+      「何が消えたか」がレビューで必ず目に入る。**壊れる相手はリポジトリの外に居る** —
+      同一リポジトリ内の呼び出し元は typecheck が捕まえるが、配布済みの受付端末が叩く
+      `/api/kiosk/*` は捕まえられない。更新は `UPDATE_API_SURFACE=1 npx vitest run ...`。
+      **config（env / フロー設定）の schema diff は未実装**（単一の宣言的な定義が無いので、
+      作るなら定義の一元化が先。API と同じ手は使えない）
 - [x] change-risk classifier … `src/domain/governance/change-risk.ts`（純関数）+
       `scripts/change-risk.ts`（git から集めて印字）。`quality-gate.sh` が毎回**報告のみ**で
       呼ぶ。**検出器であって判定者ではない**（偽陽性に倒してある）ので、承認の実行は人間
