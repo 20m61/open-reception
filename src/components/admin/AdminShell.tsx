@@ -1,5 +1,6 @@
 'use client';
 
+import { TenantContextChip } from './TenantContextView';
 import { useEffect, useState, type ReactNode } from 'react';
 import type { TenantRole } from '@/domain/tenant/types';
 import type { NavGroup } from './navigation';
@@ -105,17 +106,9 @@ export function AdminShell({
           {tenantSwitcher ? (
             tenantSwitcher
           ) : tenantLabel ? (
-            <span
-              data-testid="active-tenant"
-              style={{
-                fontSize: '0.875rem',
-                padding: '4px 10px',
-                borderRadius: 999,
-                background: 'var(--color-surface-2)',
-              }}
-            >
-              対象テナント: <strong>{tenantLabel}</strong>
-            </span>
+            // 固定表示は admin TenantSwitcher の単一所属表示と同一の見た目。逐語的に
+            // 重複していて、排他レンダリングなので片方を直しても気づけなかった (#423)。
+            <TenantContextChip tenantName={tenantLabel} />
           ) : null}
         </header>
         <main className="admin-shell__content" style={{ flex: 1, padding: 'var(--space-lg)' }}>
