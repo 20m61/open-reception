@@ -4,6 +4,7 @@ import { useEffect, useState } from 'react';
 import {
   parseSelectedTenantId,
   resolveSelectedTenant,
+  resolveViewingContext,
   selectedTenantLabel,
   type NamedTenant,
 } from '@/lib/platform/selected-tenant';
@@ -26,7 +27,7 @@ import { TenantSelect } from '../TenantContextView';
  */
 type TenantsResponse = { tenants: NamedTenant[] };
 
-export function TenantSwitcher() {
+export function TenantSwitcher({ pathname = '' }: { pathname?: string }) {
   const [tenants, setTenants] = useState<NamedTenant[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
 
@@ -45,6 +46,10 @@ export function TenantSwitcher() {
   }, []);
 
   const selected = resolveSelectedTenant(tenants, selectedId);
+  // URL がテナントを名指ししている画面では「表示中」を明示する (#423)。
+  // select は sticky（選択中）を示し続ける — 変えると「このプルダウンを変えたら何が起きるか」が
+  // 嘘になるため。**route が sticky を書き換えない**（暗黙の切り替わりを作らない）。
+  const viewing = resolveViewingContext({ pathname, stickyTenantId: selectedId, tenants });
 
   async function onSelect(nextId: string | null): Promise<void> {
     const prevId = selectedId;
@@ -76,7 +81,19 @@ export function TenantSwitcher() {
       nullOptionLabel="全テナント横断"
       onSelect={(next) => void onSelect(next)}
       trailing={
-        selected ? (
+        viewing.tenantName !== null ? (
+          <span
+            data-testid="platform-viewing-tenant"
+            style={{ fontSize: '0.8125rem', opacity: 0.9 }}
+          >
+            表示中: <strong>{viewing.tenantName}</strong>
+            {viewing.differsFromSticky ? (
+              <span data-testid="platform-viewing-differs" style={{ opacity: 0.7 }}>
+                （選択中と別）
+              </span>
+            ) : null}
+          </span>
+        ) : selected ? (
           <a
             href={`/platform/tenants/${selected.id}`}
             style={{ fontSize: '0.8125rem', opacity: 0.8 }}
