@@ -122,6 +122,23 @@ export default defineConfig({
   // 稀な負荷/タイミング由来のフレークを吸収する（CI は 2 回）。フロー作成系との衝突は下記の
   // project 分離で構造的に解消済み (#248)。
   retries: process.env.CI ? 2 : 1,
+  /**
+   * **欠落した VRT ベースラインを自動生成しない。**
+   *
+   * Playwright の既定 `'missing'` は、baseline が無いとその場の描画を新 baseline として
+   * 書き込む。上の `retries` と組み合わさると **1 回目が baseline を書いて落ち、retry が
+   * 通る**ため、**誰もレビューしていない描画が「正」として焼き付いたまま suite は green**
+   * になる。`snapshotPathTemplate` の注記（project 名を固定してレビュー済み baseline を
+   * 孤立させない）と同じ事故を、別経路で起こさないための封じ手。
+   *
+   * baseline は実行プラットフォームでしか作れず、現在 linux は 4 枚欠けている
+   * （結果系 4 状態は darwin のみで生成された）。Linux 実行環境（Claude Code on the web 等）
+   * へ移した瞬間にこの経路を踏むので、黙って生成させず**落として気づかせる**。
+   *
+   * 意図的な取り直しは CLI の `--update-snapshots` が上書きするのでそちらで行い、
+   * **差分を見てからコミットする**。
+   */
+  updateSnapshots: 'none',
   reporter: process.env.CI ? 'github' : 'list',
   use: {
     baseURL,

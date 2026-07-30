@@ -26,6 +26,9 @@ export default defineConfig({
       'tests/soak/**/*.{test,spec}.ts',
       'tests/voice-evaluation/**/*.{test,spec}.ts',
       'tests/hooks/**/*.{test,spec}.ts',
+      // playwright.config.ts の「壊れても他のテストが赤くならない」設定を固定する
+      // 静的メタテスト（tests/hooks と同じく、インフラ設定を unit で押さえる位置づけ）。
+      'tests/config/**/*.{test,spec}.ts',
     ],
     exclude: ['tests/e2e/**', 'node_modules/**'],
   },
