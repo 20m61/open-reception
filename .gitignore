@@ -181,3 +181,7 @@ infra/cdk-outputs-*.json
 /.w*.mjs
 /.dbg-*.mjs
 /.studio-visual-check.mjs
+
+# ループの緊急停止フラグ (#424 増分 4)。**追跡しない** — コミットすると全員のゲートが
+# 止まる。止めたい人がローカルに置き、理由を書いて、消せば解除される運用。
+/.loop-halt

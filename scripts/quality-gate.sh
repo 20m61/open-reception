@@ -189,6 +189,31 @@ if [[ "$GATE_SCOPE" != "code" ]]; then
   echo "  省略: ${GATE_SKIPS# }"
 fi
 
+# ---- ループの停止指示と変更量 (#424 増分 4) -------------------------------
+# kill switch（.loop-halt / OPEN_RECEPTION_LOOP_HALT）が立っていれば **FAIL** させる。
+# 人間の明示操作なので偽陽性が無く、止めると決めた人が居る。**最初に**置くのが要点で、
+# 10 分のゲートを走り切ってから止めても kill switch の意味が無い。
+# 同時に 1 周回の変更量を報告する（こちらは超えても FAIL させない。理由は
+# src/domain/governance/change-budget.ts の冒頭）。判定は純関数側でユニットテスト済。
+# **その場で abort する**（step でサマリに FAIL を積むだけでは残りを走り切ってしまい、
+# 「10 分使う前に止める」目的を果たさない）。abort すると末尾の green 記録にも到達しないので、
+# 停止中のツリーが green として記録されることもない。
+if npx --no-install tsx --version >/dev/null 2>&1; then
+  echo ""
+  echo "▶ loop halt / 変更量 (#424)"
+  if ! npx --no-install tsx "${ROOT}/scripts/change-budget.ts"; then
+    echo ""
+    echo "❌ quality-gate ABORTED (ループ停止指示。green は記録しません)"
+    exit 1
+  fi
+  SUMMARY+=("PASS  loop halt / 変更量 (#424)")
+else
+  echo ""
+  echo "▶ loop halt / 変更量 (#424)"
+  echo "  tsx が無いため SKIP（判定ロジック自体は unit テストで検証済み）"
+  SUMMARY+=("SKIP  loop halt / 変更量 (#424)  (tsx not available)")
+fi
+
 # ---- 必須ステップ ---------------------------------------------------------
 [[ "$RUN_TYPECHECK" -eq 1 ]] && step "typecheck (tsc)"      npm run --silent typecheck
 [[ "$RUN_LINT"      -eq 1 ]] && step "lint (eslint)"        npm run --silent lint

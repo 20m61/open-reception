@@ -240,7 +240,13 @@ wave 表）で、専用の追跡 ID は無い。
       `scripts/change-risk.ts`（git から集めて印字）。`quality-gate.sh` が毎回**報告のみ**で
       呼ぶ。**検出器であって判定者ではない**（偽陽性に倒してある）ので、承認の実行は人間
 - [ ] 提案 → Issue → PR → 計測の追跡 ID
-- [ ] kill switch と 1 ループあたりの変更行数 / ファイル数 / コスト上限
+- [x] kill switch と 1 ループあたりの変更行数 / ファイル数 …
+      `src/domain/governance/change-budget.ts`（純関数）+ `scripts/change-budget.ts`。
+      `quality-gate.sh` が**最初に**呼ぶ。**扱いを分けてある**: kill switch
+      （`.loop-halt` / `OPEN_RECEPTION_LOOP_HALT`）は人間の明示操作で偽陽性が無いので
+      **その場で abort**（green も記録しない）、変更量は**報告のみ**（大きい変更が自動的に
+      悪いわけではなく、FAIL にすると override が習慣化して増分 3 と同じ失敗になる）。
+      **コスト上限は未実装** — 1 ループのコストを観測する経路が無い（§8 の計測書き戻しと同根）
 - [ ] 定期評価レポート生成コマンド
 - [ ] プロンプト・判断根拠・ツール実行・差分の監査ログ
 
