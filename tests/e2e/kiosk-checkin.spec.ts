@@ -1,9 +1,13 @@
-import { test, expect } from './kiosk-fixtures';
+import { test, expect, expectCheckinState } from './kiosk-fixtures';
 
 /**
  * QR 読み取りチェックインの iPad viewport smoke test (issue #98, increment 1)。
  *
- * inc1 は注入 scanner の mock 既定でフロー UI を確認する（実カメラ読み取りは #65 / inc2）。
+ * **注記の訂正 (2026-07-31)**: 「inc1 は注入 scanner の mock 既定で確認する」と書かれていたが、
+ * e2e は scanner を注入しておらず（`kiosk-fixtures.ts` は kiosk セッションだけを張る）、
+ * **実 `CameraQrScanner` が動いている**。headless Chromium でも getUserMedia は成功するため
+ * `scanning` は安定状態で、実カメラ相当の経路をそのまま踏んでいる（実測で確認）。
+ * 注入経路は `?debugScanPayload=`（#363）で、この spec は使っていない。
  * 受付待機 → QR で受付 → 受付方法選択 → カメラ権限確認 → 読み取り の導線が iPad で
  * 開始でき、カメラ拒否で通常受付へフォールバックできることを確認する。
  */
@@ -28,7 +32,10 @@ test('QR 受付 → 受付方法選択 → カメラ権限確認 → 読み取�
   await expect(page.getByTestId('camera-grant')).toBeVisible();
   await page.getByTestId('camera-grant').click();
 
-  // QR 読み取り画面（mock scanner 起動中）。
+  // QR 読み取り画面。**e2e に mock scanner は無く実 CameraQrScanner が動く**
+  // （この注記は「mock scanner 起動中」と事実に反していた）。状態を先に表明して、
+  // 失敗時に実際の状態が名指しされるようにする（kiosk-fixtures の expectCheckinState 参照）。
+  await expectCheckinState(page, 'scanning');
   await expect(page.getByTestId('checkin-scanning')).toBeVisible();
 });
 

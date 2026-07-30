@@ -1,4 +1,4 @@
-import { test, expect, type Page } from './kiosk-fixtures';
+import { test, expect, expectCheckinState, type Page } from './kiosk-fixtures';
 
 /**
  * QR 受付のアバター字幕の i18n（issue #361 AC「QR 受付が独立した別 UI に見えず、同じ受付体験と
@@ -59,6 +59,9 @@ test('English のまま読み取りまで進めても、各ターンの字幕が
   );
 
   await page.getByTestId('camera-grant').click();
+  // **状態を先に表明する。** 画面 testid だけだと失敗が `element(s) not found` としか出ず、
+  // どこへ落ちたのかが分からない（この行が入る前、実際に flaky を 2 度追えなかった）。
+  await expectCheckinState(page, 'scanning');
   await expect(page.getByTestId('checkin-scanning')).toBeVisible();
   await expect(subtitle(page)).toHaveText('Hold your reservation QR code up to the camera.');
 });
