@@ -14,6 +14,10 @@ import { describe, expect, it } from 'vitest';
  * 検出したのは **Link をクリックする e2e** で、それは developer セッションを張れず skip されていた
  * （`tests/e2e/platform-viewing-context.spec.ts` / `playwright.config.ts` の platform-developer）。
  * e2e が本体の防波堤だが、ここでも「layout から渡し直す」退行を安く塞いでおく。
+ *
+ * **正しい型は既にこのコードベースにあった**: `AdminNav.tsx` は `usePathname` を使い、
+ * 「クライアント遷移で即時反映される」と理由までコメントに書いてある。第 85 wave の配線だけが
+ * そこから外れていた。新しい規約を足したのではなく、既存の規約に戻しただけ。
  */
 const ROOT = join(import.meta.dirname, '../../..');
 const read = (rel: string) => readFileSync(join(ROOT, rel), 'utf8');

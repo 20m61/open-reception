@@ -20,6 +20,10 @@ npm run lighthouse    # Lighthouse CI（performance / accessibility / best-pract
 e2e 265s (44%) / unit 86s (14%) / lighthouse 70s (12%) / build 62s (10%) /
 sast 49s (8%) / lint 37s (6%) / typecheck 25s (4%) / secrets + audit 4s。
 
+> その後 `platform-developer` project（下記）を追加し、**e2e は 320s / 合計 733s** になった
+> （同日実測 1 回）。伸びの内訳は 2 本目の Next サーバ +10s と、それまで skip / 未実行だった
+> platform の 4 本。表中の実測値は上記平均のままなので、絶対値ではなく**比率の目安**として読む。
+
 | タイミング | 何を回すか | 実測 | なぜ |
 | --- | --- | --- | --- |
 | 1 ファイルを直している間 | `npx vitest run <path>` | **0.3〜1s** | `npm test` の 95s を払わない。red → green の確認回数がそのまま増える |
