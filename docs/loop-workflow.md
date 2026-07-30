@@ -54,6 +54,10 @@ git switch -c feat/<topic>
 
 ### 3. 実装（TDD 推奨）
 
+> **内側ループは秒で回す。** 1 ファイルを直している間は `npm test`（全 406 ファイル・**約 95 秒**）
+> ではなく `npx vitest run <path>`（**0.3〜1 秒**）を使う。実測で 100 倍以上違い、TDD の
+> red → green を確認する回数がそのまま増える。全体は `--fast` に任せる。
+
 - 失敗するテストを先に追加 → 実装 → green、の順を基本にする。
 - 既存コードの命名・コメント密度・構成に合わせる。
 - 1 Issue が大きい場合は **increment 単位**で PR を分割する
@@ -92,9 +96,21 @@ git add -A
 git commit -m "feat(reservation): 来訪予約ドメインと QR トークン発行 (#97)"
 ```
 
-> **署名の注意**: コミット署名は 1Password の `op-ssh-sign`。1Password がロック中だと
-> `git commit` が署名失敗で止まる。失敗したら 1Password をアンロックして再実行する
-> （`--no-verify` での回避はしない）。
+> **署名の注意**: コミット署名は 1Password の `op-ssh-sign`。`error: 1Password: failed to
+> fill whole buffer` で止まったときの順序は次のとおり（`--no-verify` での回避はしない）。
+>
+> 1. **まず既存の ssh-agent を見る。** `ls -la /tmp/or-agent.sock` と
+>    `SSH_AUTH_SOCK=/tmp/or-agent.sock ssh-add -l`。鍵が居れば
+>    `SSH_AUTH_SOCK=/tmp/or-agent.sock git -c gpg.ssh.program=ssh-keygen commit …` で通る。
+>    `~/.ssh/id_ed25519` は 1Password と**同一鍵**なので署名の有効性は変わらない。
+> 2. 居なければ 1 度だけ素の `git commit` を再試行する（`op-ssh-sign` はフレークで、
+>    リトライで通ることがある）。
+> 3. それでも落ちるなら agent を立てる（ソケットパスは短く。scratchpad の長いパスは
+>    `Error connecting to agent` になる）。ユーザーへ
+>    `! SSH_AUTH_SOCK=/tmp/or-agent.sock ssh-add ~/.ssh/id_ed25519` を依頼する。
+>
+> **アンロック依頼を先に出さない。** アンロック済みでも落ちることがあり（実績 3 回連続）、
+> 一方で agent は前セッションから生きていることが多い。順序を逆にすると往復が増える。
 
 ### 6. PR を作る
 

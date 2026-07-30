@@ -104,17 +104,23 @@ gate_tier_rank() {
   esac
 }
 
-# ゲート PASS を記録する。gate_write_stamp <tier> [fingerprint]
+# ゲート PASS を記録する。gate_write_stamp <tier> [fingerprint] [scope]
 #
 # fingerprint は省略可だが、**ゲート開始時に採取した値を渡すこと**を推奨する。
 # 実行中に作業ツリーが編集された場合、終了時に採り直すと「検査していないツリー」を
 # green として記録してしまうため。
+#
+# scope（任意・4 列目）は「変更範囲によるステップ省略」の記録。**有効性の担保は指紋側**で、
+# 省略はそのツリーに対してのみ成立する（コードを 1 文字でも触れば指紋が変わり記録は無効）。
+# scope は「なぜ e2e が走っていないのか」を後から追えるようにするための情報。
+# 読み取り側（gate_stamp_satisfies）は 4 列目以降を `_rest` で読み捨てるので後方互換。
 gate_write_stamp() {
-  local tier="$1" stamp fp
+  local tier="$1" stamp fp scope
   stamp="$(gate_stamp_file)" || return 0   # git 外では黙って何もしない
   fp="${2:-$(gate_tree_fingerprint)}"
+  scope="${3:-code}"
   [ -n "${fp}" ] || return 0
-  printf '%s\t%s\t%s\n' "${tier}" "${fp}" "$(date -u +"%Y-%m-%dT%H:%MZ")" >> "${stamp}"
+  printf '%s\t%s\t%s\t%s\n' "${tier}" "${fp}" "$(date -u +"%Y-%m-%dT%H:%MZ")" "${scope}" >> "${stamp}"
   # 無制限に伸びないよう末尾のみ残す。
   if [ "$(wc -l < "${stamp}")" -gt "${MAX_STAMP_LINES}" ]; then
     tail -n "${MAX_STAMP_LINES}" "${stamp}" > "${stamp}.tmp" && mv "${stamp}.tmp" "${stamp}"

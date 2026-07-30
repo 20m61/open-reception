@@ -14,6 +14,43 @@ npm run test:e2e      # iPad viewport の E2E（axe a11y を含む）
 npm run lighthouse    # Lighthouse CI（performance / accessibility / best-practices / seo）
 ```
 
+### どのタイミングでどのゲートを適用するか
+
+実測（`--full` 5 回の平均・2026-07-30）: 合計 **598s ≈ 10 分**。内訳は
+e2e 265s (44%) / unit 86s (14%) / lighthouse 70s (12%) / build 62s (10%) /
+sast 49s (8%) / lint 37s (6%) / typecheck 25s (4%) / secrets + audit 4s。
+
+| タイミング | 何を回すか | 実測 | なぜ |
+| --- | --- | --- | --- |
+| 1 ファイルを直している間 | `npx vitest run <path>` | **0.3〜1s** | `npm test` の 95s を払わない。red → green の確認回数がそのまま増える |
+| 各変更ごと | `--fast` | 148s | typecheck + lint + unit |
+| PR 前（フック必須） | `--pr` | 210s | + build |
+| UI / a11y / VRT に触れた変更 | `--pr --e2e` | 475s | VRT 差分は**閾値内でも実物を見る**（`maxDiffPixelRatio` に本物の崩れが隠れた実績あり） |
+| マージ前（フック必須） | `--full` | 598s / **152s** | 文書のみの変更では下記の省略が効く |
+| 定期 | `--full --strict` | — | SKIP を FAIL 扱い。記録は `docs/gate-runs.md`（本書「定期運用」節） |
+
+### 変更範囲による省略（docs スコープ）
+
+`build` / `e2e` / `lighthouse` / `sast` は**ソースを入力に取る**。文書だけを触った周回では
+その入力が 1 バイトも変わらないので、結果は前回と同一にしかならない。それでも毎回 10 分
+払っていた（あるセッションでは 5 PR 中 3 本が文書のみ）。`scripts/change-scope.ts` が
+「文書のみ」と判定した場合、この 4 つを SKIP する（**598s → 約 152s**）。
+
+- 判定は `src/domain/governance/change-scope.ts`（純関数・ユニットテスト済）。**省略してよい
+  ステップ名の一覧もここが唯一の真実源**で、shell は `skip=<step>` の出力を読むだけ。
+- **厳しい方へ倒す。** `docs/**`・ルートの `*.md`・`.github/**/*.md`・`LICENSE` **だけ**が
+  docs 扱い。allowlist の補集合で判定するので、未知の種類のファイルが増えたら自動的に
+  `code` 側（＝全ステップ実行）へ落ちる。変更ゼロも `code`（収集失敗の可能性があるため）。
+  起点（`origin/main`）が解決できないときも `code`。
+- **`typecheck` / `lint` / `unit` は docs でも回す。** 判定器自体のバグでソースが混ざった
+  場合の**トリップワイヤ**（148s と安い）。`secrets` も回す（文書にも鍵は混入しうる）。
+- 有効性の担保は**指紋側**。省略はそのツリーに対してのみ成立し、コードを 1 文字でも触れば
+  指紋が変わって記録は無効になる。スタンプの 4 列目に scope を残すので、後から
+  「なぜ e2e が走っていないのか」を追える。
+- `--no-skip-docs` で無効化して tier の全ステップを実行できる。
+- **残件**: 文書 PR で省略し続けた分を定期実行で必ず一度は踏む網（`--full --strict` の
+  頻度と起点の設計）は未整備。現状の担保はトリップワイヤのみ。
+
 ### ゲートの強制（`pr-gate-guard` フック）
 
 CI が無い以上、「PR 前に `--pr` / マージ前に `--full`」は**規約だけでは守られない**。

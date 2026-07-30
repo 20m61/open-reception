@@ -20,6 +20,14 @@
 #   --lighthouse     Lighthouse CI を含める
 #   --strict         任意ツールが未インストールの場合も FAIL 扱いにする
 #   --no-bootstrap   依存（node_modules / infra/node_modules）の自動インストールを行わない
+#   --no-skip-docs   変更範囲による省略を無効化し、tier の全ステップを実行する
+#
+# 変更範囲による省略（docs スコープ）:
+#   build / e2e / lighthouse / sast は**ソースを入力に取る**ため、文書だけを触った周回では
+#   結果が変わり得ない。`scripts/change-scope.ts` が「文書のみ」と判定した場合これらを SKIP
+#   する（実測 598s → 約 152s）。判定できないときは必ず code 扱い＝省略しない。
+#   typecheck / lint / unit / secrets は docs でも実行する（判定器のバグに対するトリップワイヤ
+#   と、文書への鍵混入の検出）。一覧の真実源は src/domain/governance/change-scope.ts。
 #
 # fresh な git worktree では node_modules / infra/node_modules が無いため、既定で
 # 不足を検出したら install してからゲートを実行する（並列 worktree トラックの自己修復）。
@@ -37,6 +45,7 @@ RUN_TYPECHECK=1 RUN_LINT=1 RUN_UNIT=1 RUN_BUILD=0
 RUN_E2E=0 RUN_SECRETS=0 RUN_SAST=0 RUN_AUDIT=0 RUN_LH=0
 STRICT=0
 BOOTSTRAP=1
+SKIP_BY_SCOPE=1
 TIER="fast"
 
 if [[ $# -eq 0 ]]; then set -- --fast; fi
@@ -53,6 +62,7 @@ for arg in "$@"; do
     --lighthouse) RUN_LH=1 ;;
     --strict)     STRICT=1 ;;
     --no-bootstrap) BOOTSTRAP=0 ;;
+    --no-skip-docs) SKIP_BY_SCOPE=0 ;;
     -h|--help) grep '^#' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) echo "unknown arg: $arg" >&2; exit 2 ;;
   esac
@@ -147,15 +157,50 @@ if [[ "$BOOTSTRAP" -eq 1 ]]; then
   fi
 fi
 
+# ---- 変更範囲の判定（ステップ省略）---------------------------------------
+# 判定ロジックは src/domain/governance/change-scope.ts（純関数・ユニットテスト済）。
+# **省略してよいステップ名も TS 側から受け取る**（shell に同じ一覧を持たせると二重管理）。
+# 判定できない場合は必ず code 扱い＝何も省略しない（楽観に倒すと未検証ツリーが green になる）。
+GATE_SCOPE="code"
+GATE_SKIPS=" "
+if [[ "$SKIP_BY_SCOPE" -eq 1 ]] && npx --no-install tsx --version >/dev/null 2>&1; then
+  while IFS= read -r line; do
+    case "$line" in
+      scope=*) GATE_SCOPE="${line#scope=}" ;;
+      skip=*)  GATE_SKIPS="${GATE_SKIPS}${line#skip=} " ;;
+    esac
+  done < <(npx --no-install tsx "${ROOT}/scripts/change-scope.ts" 2>/dev/null || echo "scope=code")
+fi
+
+# そのステップを変更範囲の理由で省略するか。
+scope_skips() { # scope_skips <step-key>
+  [[ "$GATE_SKIPS" == *" $1 "* ]]
+}
+
+# 省略した理由をサマリへ残す（黙って飛ばさない。何を検査していないかが見えること）。
+scope_skip() { # scope_skip <label>
+  SUMMARY+=("SKIP  $1  (${GATE_SCOPE}-scope: 入力が変わらない)")
+}
+
+if [[ "$GATE_SCOPE" != "code" ]]; then
+  echo ""
+  echo "▶ change-scope: ${GATE_SCOPE}（--no-skip-docs で全ステップ実行）"
+  echo "  省略: ${GATE_SKIPS# }"
+fi
+
 # ---- 必須ステップ ---------------------------------------------------------
 [[ "$RUN_TYPECHECK" -eq 1 ]] && step "typecheck (tsc)"      npm run --silent typecheck
 [[ "$RUN_LINT"      -eq 1 ]] && step "lint (eslint)"        npm run --silent lint
 [[ "$RUN_UNIT"      -eq 1 ]] && step "unit (vitest)"        npm run --silent test
-[[ "$RUN_BUILD"     -eq 1 ]] && step "build (next build)"   npm run --silent build
+if [[ "$RUN_BUILD" -eq 1 ]]; then
+  if scope_skips build; then scope_skip "build (next build)"
+  else step "build (next build)" npm run --silent build; fi
+fi
 
 # ---- 任意ステップ ---------------------------------------------------------
 if [[ "$RUN_E2E" -eq 1 ]]; then
-  step "e2e (playwright)" npm run --silent test:e2e
+  if scope_skips e2e; then scope_skip "e2e (playwright)"
+  else step "e2e (playwright)" npm run --silent test:e2e; fi
 fi
 
 if [[ "$RUN_SECRETS" -eq 1 ]]; then
@@ -166,7 +211,9 @@ if [[ "$RUN_SECRETS" -eq 1 ]]; then
   fi
 fi
 
-if [[ "$RUN_SAST" -eq 1 ]]; then
+if [[ "$RUN_SAST" -eq 1 ]] && scope_skips sast; then
+  scope_skip "sast (semgrep)"
+elif [[ "$RUN_SAST" -eq 1 ]]; then
   if command -v semgrep >/dev/null 2>&1; then
     step "sast (semgrep)" semgrep scan --config p/default --error
   else
@@ -178,7 +225,9 @@ if [[ "$RUN_AUDIT" -eq 1 ]]; then
   step "audit (npm audit)" npm audit --omit=dev
 fi
 
-if [[ "$RUN_LH" -eq 1 ]]; then
+if [[ "$RUN_LH" -eq 1 ]] && scope_skips lighthouse; then
+  scope_skip "lighthouse (lhci)"
+elif [[ "$RUN_LH" -eq 1 ]]; then
   # lhci は Chrome を自力で探すが、プリインストール済み Chromium しか無い実行環境
   # （例: Claude Code on the web の /opt/pw-browsers）では見つけられず healthcheck で落ちる。
   # playwright.config.ts が同じ理由で同じパスを自動検出しているので、ここでも合わせる
@@ -219,5 +268,5 @@ if [[ "$FAILED" -eq 1 ]]; then
   exit 1
 fi
 
-gate_write_stamp "${TIER}" "${GATE_FINGERPRINT}"
+gate_write_stamp "${TIER}" "${GATE_FINGERPRINT}" "${GATE_SCOPE}"
 echo "✅ quality-gate PASSED  (tier=${TIER} を green として記録しました)"
