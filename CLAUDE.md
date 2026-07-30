@@ -42,8 +42,13 @@ green 記録が無ければブロックする。記録はゲートが実際に�
 - コミット: Conventional Commits（日本語可）、本文末尾に Issue 参照。PR タイトル =
   squash 後の main コミットになるため必ず Conventional Commits で書く。
 - マージ: squash + `--delete-branch`。ブランチ名 `<type>/<topic>`。
-- **コミット署名**: 1Password `op-ssh-sign`。ロック中は commit が署名失敗で止まる →
-  アンロックして再実行（`--no-verify` で回避しない）。
+- **コミット署名**: ローカルは ssh 署名（repo-local `gpg.ssh.program=ssh-keygen`）。
+  署名に失敗しても `--no-verify` で回避しない（鍵/エージェント側を直す）。
+  **クラウドセッション（Claude Code on the web）のコミットは署名されない** — 署名鍵は
+  サンドボックスに入らない。squash マージでブランチのコミットは破棄され、`main` に残る
+  squash コミットは GitHub が署名するので履歴は verified のまま。よって
+  **feature ブランチに「署名済みコミット必須」の保護を掛けないこと**（掛けるとクラウドから
+  push できなくなる）。詳細は `docs/cloud-dev-environment.md`。
 
 ## ガード
 
