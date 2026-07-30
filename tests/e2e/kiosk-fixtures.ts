@@ -32,10 +32,21 @@ export const test = base.extend({
  * `checkin-shell` の `data-checkin-state` を先に突き合わせると、失敗時に
  * `Expected: "scanning" / Received: "cameraError"` のように**実際の状態が出る**。
  *
- * 調査の記録（誤った仮説を再学習させないため）: 当初「headless にカメラが無く
- * `CameraQrScanner.start` が `camera_denied` で即座に scanning から抜ける」と考えたが、
- * **実測で棄却**した（camera-grant の 1.5 秒後に 5 回とも `scanning=1 / cameraError=0`）。
- * headless Chromium でも getUserMedia は失敗せず、`scanning` は安定状態である。
+ * 調査の記録（誤った結論を再学習させないため）:
+ *
+ * 第 91 wave で「headless にカメラが無く `CameraQrScanner` が `camera_denied` へ落ちる」という
+ * 仮説を **実測で棄却したと書いたが、その棄却自体が誤り**だった。原因は **1 点サンプリング** —
+ * camera-grant の 1.5 秒後だけを 5 回見て `scanning=1` だったので「安定」と結論づけていた。
+ *
+ * 第 92 wave で時間軸に沿って 35 点サンプリングし直した結果（フェイクデバイス無し）:
+ * `0s=scanning 1s=scanning 2s=cameraError 3s=cameraError ... 34s=cameraError`。
+ * **`scanning` は約 2 秒だけの過渡状態**で、1 点観測はちょうど境界の内側を踏んでいた。
+ * 負荷が高い（`--full` 等）と assert が窓を跨ぎ、以後ずっと `element(s) not found` になる。
+ *
+ * 対策は `playwright.config.ts` の `FAKE_MEDIA_ARGS`（フェイクカメラ）。同じ 35 点計測で
+ * `0s..30s=scanning 31s=scanError`（31s は scan timeout）となり `scanning` は安定した。
+ *
+ * **教訓: 過渡状態の有無を 1 点で判定しない。時間軸で複数点を取る。**
  */
 export async function expectCheckinState(page: Page, state: string): Promise<void> {
   await expect(page.getByTestId('checkin-shell')).toHaveAttribute('data-checkin-state', state);

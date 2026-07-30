@@ -5,9 +5,14 @@ import { test, expect, expectCheckinState } from './kiosk-fixtures';
  *
  * **注記の訂正 (2026-07-31)**: 「inc1 は注入 scanner の mock 既定で確認する」と書かれていたが、
  * e2e は scanner を注入しておらず（`kiosk-fixtures.ts` は kiosk セッションだけを張る）、
- * **実 `CameraQrScanner` が動いている**。headless Chromium でも getUserMedia は成功するため
- * `scanning` は安定状態で、実カメラ相当の経路をそのまま踏んでいる（実測で確認）。
- * 注入経路は `?debugScanPayload=`（#363）で、この spec は使っていない。
+ * **実 `CameraQrScanner` が動いている**。注入経路は `?debugScanPayload=`（#363）で、
+ * この spec は使っていない。
+ *
+ * **再訂正 (第 92 wave)**: 上に「headless でも getUserMedia は成功するので `scanning` は
+ * 安定状態」と書いたのは**誤り**だった（1 点サンプリングによる誤結論）。素の headless では
+ * `scanning` は**約 2 秒の過渡状態**で、その後 `cameraError` に落ちる。決定的にするために
+ * `playwright.config.ts` でフェイクカメラを与えている。詳細は `kiosk-fixtures.ts` の
+ * `expectCheckinState` の doc を参照。
  * 受付待機 → QR で受付 → 受付方法選択 → カメラ権限確認 → 読み取り の導線が iPad で
  * 開始でき、カメラ拒否で通常受付へフォールバックできることを確認する。
  */

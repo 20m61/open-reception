@@ -58,7 +58,24 @@ function resolveChromiumExecutablePath(): string | undefined {
 }
 
 const executablePath = resolveChromiumExecutablePath();
-const chromiumLaunchOptions = executablePath ? { executablePath } : undefined;
+
+/**
+ * headless Chromium には実カメラが無く、`getUserMedia` は起動から **1.5〜2 秒後に**拒否される。
+ * QR 受付の `scanning` はその窓の間だけ存在する**過渡状態**になり、負荷が高いと（`--full` 等）
+ * assert が窓を跨いで `element(s) not found` で落ちる (#361)。フェイクデバイスを与えると
+ * `getUserMedia` が成功し、`scanning` は scan timeout（30s）まで安定する。
+ *
+ * 実 `CameraQrScanner` の経路（権限要求 → track 取得 → デコードループ）はそのまま踏むので、
+ * 検証内容は落ちない。映像が既知のテストパターンになるだけ。
+ */
+const FAKE_MEDIA_ARGS = ['--use-fake-device-for-media-stream', '--use-fake-ui-for-media-stream'];
+
+// executablePath の解決と**マージ**する（置き換えると Claude Code on the web の
+// プリインストール Chromium 解決が壊れる）。
+const chromiumLaunchOptions = {
+  args: FAKE_MEDIA_ARGS,
+  ...(executablePath ? { executablePath } : {}),
+};
 
 // 既定スコープへカスタム受付フローを一時投入する spec (#248)、および共有シングルトン設定
 // （voice-store の a11yModesEnabled 等, #321）を一時的に無効化して検証する spec。どちらも
