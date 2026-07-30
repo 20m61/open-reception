@@ -1,8 +1,10 @@
 'use client';
 
+import Link from 'next/link';
 import { TenantContextChip } from './TenantContextView';
 import { useEffect, useState, type ReactNode } from 'react';
 import type { TenantRole } from '@/domain/tenant/types';
+import { resolveAreaSwitch } from '@/domain/auth/area-switch';
 import type { NavGroup } from './navigation';
 import { AdminNav } from './AdminNav';
 
@@ -45,6 +47,10 @@ export function AdminShell({
 }) {
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const closeSidebar = () => setSidebarOpen(false);
+
+  // エリア切替導線 (#423)。**導線であって認可ではない** — 認可は各 layout の canEnterArea と
+  // API 側が行う。ここは「現在地は分かるのに、そこから出る手段が無い」状態を解消するだけ。
+  const areaSwitch = resolveAreaSwitch(area, roles);
 
   // モバイルのドロワーを開いている間に Esc で閉じられるようにする（A11y）。
   useEffect(() => {
@@ -99,9 +105,19 @@ export function AdminShell({
             >
               ☰
             </button>
-            <span style={{ opacity: 0.6, fontSize: '0.875rem' }}>
+            <span style={{ opacity: 0.6, fontSize: '0.875rem' }} data-testid="area-label">
               {area === 'platform' ? 'プラットフォーム運用' : 'テナント管理'}
             </span>
+            {areaSwitch ? (
+              <Link
+                href={areaSwitch.href}
+                data-testid="area-switch"
+                data-target-area={areaSwitch.area}
+                style={{ fontSize: '0.8125rem', opacity: 0.85 }}
+              >
+                {areaSwitch.label}
+              </Link>
+            ) : null}
           </div>
           {tenantSwitcher ? (
             tenantSwitcher

@@ -334,6 +334,7 @@
 | 72 | 2026-07-29 | #422 AC「VRT で主要状態を固定」のギャップを埋める: 結果系 4 状態（通話中・未応答・失敗・代替案内）を追加し 5 → 9 状態へ。**通話中はパネルごと mask して VRT を無意味にしかけた** — PII は本文の担当者名だけなので `.result-panel__message` へ絞った。**#422 の受入条件 7 件がすべて充足** | PR #499 |
 | 73 | 2026-07-29 | #500: 常設要素の「いつ出すか」を `isPersistentVisible(key, state)` へ一本化。逃げ道・チャットは既存導出へ委譲し二重定義を作らない。**実際に移せた分岐は `CheckoutLink` の 1 箇所だけ**だったが、これまで構造に埋もれていた「言語切替・退館は待機のみ」が明示され、契約の主張を実 DOM と突き合わせる e2e が付いた | PR #502 |
 | 75 | 2026-07-30 | #501: 管理画面が受付端末向けサイズ（`--font-body` 20px 等）を継承する #330 item4 の根治。**色ではなくサイズが問題**（色は意図的に共通で、分離すると二重管理になるだけ）。`:root` は受付端末向けに据え置き、`[data-area='admin'\|platform']` が下げる**方向が重要** — 逆にすると mobile の text autosizing で `rem` 基準（html の font-size）自体が動き kiosk の実寸が変わる（実測 16px→20px。VRT が 3 度検出） | PR #504 |
+| 88 | 2026-07-30 | #423「developer ロール時のみ platform への切替導線を表示」。**admin ⇄ platform を行き来する UI がどこにも無く**、developer は URL 直打ちしか手段が無かった（ヘッダは `テナント管理` / `プラットフォーム運用` と**現在地を書くだけ**）。`resolveAreaSwitch` は方向で条件を変える — admin → platform は developer のみ、**platform → admin は無条件**（platform に居る時点で developer が保証され、developer は admin にも入れる。戻り導線に条件を付けると判定ミスが**戻れない画面**を生む）。**導線は認可ではない**ので、非表示が保護でないことを e2e で明示（非 developer が URL 直打ち → `/admin` へ戻される）。肯定/否定を**別サーバで両側固定**した — 片側だけだと「常に出る」実装でも「常に出ない」実装でも通る | PR #518 |
 | 87 | 2026-07-30 | **platform e2e を実効させた**（候補 1・A 案採用）。`platform-developer` project + 2 本目の Next サーバ（`PORT+1` / `OPEN_RECEPTION_ADMIN_PASSWORD_ROLE=developer`）で developer をそのプロセスに閉じる。**実測 299s → 310s（+10s / +3.5%）** — 懸念していた「起動 ~60s」ではなく、project 間に依存を張らないので並行で吸収される。**走らせた瞬間に第 85 wave の配線の欠陥が出た**: 一覧 → 詳細は `next/link` のクライアント遷移で、**App Router は共有 layout を再レンダリングしない**ため server layout から prop で渡していた pathname が stale になり、「表示中」はハードロード時しか出ていなかった（純関数は正しく、unit では検出不能）。`usePathname` へ移し静的メタテストで固定。あわせて「platform 主要画面」のスクショを分離し、**撮る前に居場所を表明**させた（それまで admin を `platform-*.png` として撮り続けていた） | PR #517 |
 | 86 | 2026-07-30 | 候補 1 の AC マッピング（文書のみ）。**第 85 wave の自分の引き継ぎに誤り 2 件**を発見して訂正: (a) developer セッションは **helper では張れない**（`passwordRole` はプロセス env・email allowlist は password セッションに適用不可）→ サーバを分けるしかない。(b) 走り出すのは **4 本ではなく 3 本**（2 件目のテナントを作る API が無い＝第 74 wave の制約が有効）。実現手段（project + webServer 分離）と、A（既定 config・腐らないが重い）/ B（専用 config・軽いが腐る）の選択、および**まず `--full` の伸びを実測する**ことをキューへ記録 | `docs/loop-queue.md` |
 | 85 | 2026-07-30 | #423 の配線: platform ヘッダに「表示中テナント」を出し、契約の消費者ゼロを解消（`resolveViewingContext`）。**sticky 未選択でも URL がテナントを名指ししていれば出す** — ここを `differsFromSticky` だけで判断すると「全テナント横断」と表示しながら 1 テナントの詳細を見ている状態が残る。**e2e で既存の blind spot を発見**: platform は developer 専用で `loginAsAdmin` は developer にならないため `/platform/*` は `/admin` へリダイレクトされる。`capture-screens.spec.ts` の「platform 主要画面」は撮るだけで検証しないので**ずっと admin を撮っていた**。新規 e2e は到達不能時に理由付き skip（消して腐らせない） | `src/lib/platform/selected-tenant.ts` |
@@ -363,11 +364,30 @@
 > **#423 の「越境 context のエラー UX」も同じ壁の向こう**にある。テナント作成 API は
 > platform の write ＝ JIT 昇格・監査を伴う設計判断なので、着手するなら要ユーザー確認。
 
-1. **`Site > Kiosk > Version` を context 契約へ揃える**（第 84 wave の `resolveContextScope` と同じ形。route > sticky、権威で濾す）。その後に共通コンテキストバー本体。
+> **❌「`Site > Kiosk > Version` を context 契約へ揃える」は前提が成立しない**（第 88 wave の
+> AC マッピングで判明。**この行は分類 stale の 6 例目**）。`resolveContextScope` と同じ形
+> （route > sticky、権威で濾す）を site/kiosk へ広げようとしたが、**route 層も sticky 層も
+> 存在しない**:
+> - `/admin` 配下に**動的セグメントが 1 つも無い**（`/admin/sites/[siteId]`・
+>   `/admin/devices/[deviceId]` などは無く、全ページが平坦な一覧/管理画面）。
+> - site/kiosk の sticky Cookie も無い。`DevicesManager` の `siteId` は**ローカル React state**
+>   で、画面を跨ぐと消える（一覧フィルタを URL へ載せる `use-query-params`(#94) も使っていない）。
+>
+> いま契約だけ作れば**消費者ゼロの契約**になる（本書が繰り返し警告してきた形）。先に要るのは
+> 「site/kiosk を画面を跨いで保持する対象にするのか」という IA 判断で、それは **#421 の
+> テナント→拠点→端末→受付体験の再編そのもの**。順序は #421 → context 契約。
+
+1. **#421 admin IA 再編**（重複ナビの統合＝概念一本化は要ユーザー確認なので除く）。
+   ここで site/kiosk が「画面を跨ぐ対象」になって初めて context 契約に意味が出る。
    **第 87 wave の教訓を必ず持ち込む**: 共有 layout の props はクライアント遷移で更新されない。
    context の解決はクライアント側（`usePathname`）か、遷移ごとに再評価される経路で行う。
-2. **#421 admin IA 再編**（重複ナビの統合＝概念一本化は要ユーザー確認なので除く）。
-3. **#424 増分 4**: kill switch と 1 ループの変更量上限（純ロジック。governance モジュールに同居）。
+2. **#424 増分 4**: kill switch と 1 ループの変更量上限（純ロジック。governance モジュールに同居）。
+3. **#423 の残チェックリスト**（依存が軽い順）:
+   - platform のテナント詳細 → そのテナントの admin へ遷移。**admin の選択中テナントを書き換える
+     かが論点**（#423 AC「画面移動で対象が暗黙に切り替わらない」と正面から当たる）。要設計。
+   - admin の拠点・端末詳細 → draft/published プレビュー、および preview からの復路（#420 依存）。
+   - AC「視覚回帰は iPad landscape と **desktop admin** を対象にする」… **未充足**。現状 VRT は
+     kiosk のみ（`kiosk-vrt-a11y` / `kiosk-screenshot`）で admin の baseline は 1 枚も無い。
 
 **ユーザー操作待ち（継続）**: 週次 Routine の作成。`docs/gate-runs.md` の実記録は 0 件で定期実行が一度も回っていない。方式・記録形式・FAIL 時の重大度は `docs/quality-gate.md`「定期運用（#318）」に完全に文書化済みで、同節が自動作成を禁じている。**これが設定されるまで scope 省略の担保はトリップワイヤのみ。**
 

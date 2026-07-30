@@ -79,7 +79,10 @@ const PRISTINE_STATE_SPECS = /(kiosk-checkout-i18n|kiosk-vrt-a11y)\.spec\.ts$/;
 
 // developer ロール専用の platform エリアを検証する spec。上記 platformBaseURL の別プロセス
 // （passwordRole=developer）へ向けた `platform-developer` project だけが実行する。
-const PLATFORM_SPECS = /(platform-viewing-context|capture-screens-platform)\.spec\.ts$/;
+// **命名規約**: `tests/e2e/platform-*.spec.ts` は developer サーバで走る。新規に足すときは
+// この接頭辞にすれば config を触らずに済む（`capture-screens-platform` だけは撮影 spec の
+// 一群に名前を寄せたいので明示）。
+const PLATFORM_SPECS = /(platform-[a-z0-9-]+|capture-screens-platform)\.spec\.ts$/;
 
 const DEFAULT_TEST_IGNORE = [FLOW_MUTATING_SPECS, PRISTINE_STATE_SPECS, PLATFORM_SPECS, SOAK_SPECS];
 
