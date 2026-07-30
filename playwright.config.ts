@@ -10,6 +10,21 @@ const remoteBaseURL = process.env.PLAYWRIGHT_BASE_URL?.replace(/\/$/, '');
 const baseURL = remoteBaseURL ?? `http://127.0.0.1:${PORT}`;
 
 /**
+ * platform エリア（developer ロール専用）検証用の**別プロセス**。
+ *
+ * password セッションが developer になるのは `OPEN_RECEPTION_ADMIN_PASSWORD_ROLE=developer` の
+ * ときだけで、これは `buildActorConfig`（src/lib/auth/actor.ts）が**プロセス env** から読む。
+ * email allowlist 経路は email を持つ identity 専用で、password セッションには適用できない。
+ * → **テスト側の helper では developer セッションを張れない。サーバを分けるしかない。**
+ *
+ * 既定サーバの env に足す案は却下: 全 password ログインが developer 化し、admin 側 e2e の意味
+ * （TenantSwitcher の母集合、テナント境界の検証）が変わる。第 85 wave まで `/platform/*` の
+ * e2e が 1 本も実効していなかったのはこの制約が未解決だったため (#423)。
+ */
+const PLATFORM_PORT = Number(process.env.PLATFORM_PORT ?? PORT + 1);
+const platformBaseURL = `http://127.0.0.1:${PLATFORM_PORT}`;
+
+/**
  * iPad 受付端末を主対象とするため、iPad viewport を中心に E2E を回す。
  * 詳細なシナリオは issue #21 で拡充する。
  *
@@ -62,7 +77,11 @@ const SOAK_SPECS = /\/soak\//;
 // （逆側の分離である flow-mutation は本 suite の後。両者で前後を挟む形）。
 const PRISTINE_STATE_SPECS = /(kiosk-checkout-i18n|kiosk-vrt-a11y)\.spec\.ts$/;
 
-const DEFAULT_TEST_IGNORE = [FLOW_MUTATING_SPECS, PRISTINE_STATE_SPECS, SOAK_SPECS];
+// developer ロール専用の platform エリアを検証する spec。上記 platformBaseURL の別プロセス
+// （passwordRole=developer）へ向けた `platform-developer` project だけが実行する。
+const PLATFORM_SPECS = /(platform-viewing-context|capture-screens-platform)\.spec\.ts$/;
+
+const DEFAULT_TEST_IGNORE = [FLOW_MUTATING_SPECS, PRISTINE_STATE_SPECS, PLATFORM_SPECS, SOAK_SPECS];
 
 // iPad (gen 7) 縦向き相当のエミュレーション設定（chromium 用）。
 const iPadPortraitViewport = {
@@ -127,21 +146,55 @@ export default defineConfig({
       testMatch: FLOW_MUTATING_SPECS,
       dependencies: ['chromium-ipad', ...(includeWebkit ? ['ipad-landscape', 'ipad-portrait'] : [])],
     },
+    // platform は developer 専用サーバ（別ポート・別プロセス）へ向ける。実サーバを起こせない
+    // 実環境向け実行（PLAYWRIGHT_BASE_URL 指定）では passwordRole を制御できないため project ごと落とす
+    // — 走らせても admin へリダイレクトされて必ず落ちる（それは実環境の欠陥ではなく実行方法の欠陥）。
+    // 他 project とは別プロセスなので並行実行しても状態が混ざらない（依存なし＝壁時計を増やさない）。
+    ...(remoteBaseURL
+      ? []
+      : [
+          {
+            name: 'platform-developer',
+            use: {
+              browserName: 'chromium' as const,
+              baseURL: platformBaseURL,
+              viewport: { width: 1280, height: 900 },
+              launchOptions: chromiumLaunchOptions,
+            },
+            testMatch: PLATFORM_SPECS,
+          },
+        ]),
   ],
   // 実環境 URL を対象にする場合（PLAYWRIGHT_BASE_URL 指定時）はローカルサーバを起動しない。
   webServer: remoteBaseURL
     ? undefined
-    : {
-        // /kiosk セッションゲート (issue #239) により enroll 済み kiosk は seed 済みカスタムフローを
-        // 表示する。既定（組込み）受付フローを検証する e2e と衝突するため、e2e では dev seed を無効化。
-        // env を command に埋め込み、reuseExistingServer での取りこぼしを避ける。
-        command: 'RECEPTION_DISABLE_DEV_SEED=1 npm run start',
-        url: baseURL,
-        // 既存サーバを再利用しない。再利用すると dev seed 無効化フラグ無しで起動した stale サーバに
-        // 繋がり、seed 済みカスタムフローが漏れて既定フロー検証が壊れる（#239 レビュー反映）。常に
-        // env 注入済みのコマンドで起動する。
-        reuseExistingServer: false,
-        timeout: 120_000,
-        env: { RECEPTION_DISABLE_DEV_SEED: '1' },
-      },
+    : [
+        {
+          // /kiosk セッションゲート (issue #239) により enroll 済み kiosk は seed 済みカスタムフローを
+          // 表示する。既定（組込み）受付フローを検証する e2e と衝突するため、e2e では dev seed を無効化。
+          // env を command に埋め込み、reuseExistingServer での取りこぼしを避ける。
+          command: 'RECEPTION_DISABLE_DEV_SEED=1 npm run start',
+          url: baseURL,
+          // 既存サーバを再利用しない。再利用すると dev seed 無効化フラグ無しで起動した stale サーバに
+          // 繋がり、seed 済みカスタムフローが漏れて既定フロー検証が壊れる（#239 レビュー反映）。常に
+          // env 注入済みのコマンドで起動する。
+          reuseExistingServer: false,
+          timeout: 120_000,
+          env: { RECEPTION_DISABLE_DEV_SEED: '1' },
+        },
+        {
+          // platform-developer project 専用。passwordRole=developer は**このプロセスに閉じる**ので、
+          // 上の既定サーバ（= admin 側 e2e の対象）の認可の意味は一切変わらない。
+          // 上と同じく env を command にも埋め、reuse 経路での取りこぼしを避ける。
+          command: `RECEPTION_DISABLE_DEV_SEED=1 OPEN_RECEPTION_ADMIN_PASSWORD_ROLE=developer PORT=${PLATFORM_PORT} npm run start`,
+          url: platformBaseURL,
+          reuseExistingServer: false,
+          timeout: 120_000,
+          env: {
+            RECEPTION_DISABLE_DEV_SEED: '1',
+            OPEN_RECEPTION_ADMIN_PASSWORD_ROLE: 'developer',
+            PORT: String(PLATFORM_PORT),
+          },
+        },
+      ],
 });

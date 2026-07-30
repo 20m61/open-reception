@@ -20,6 +20,10 @@ npm run lighthouse    # Lighthouse CI（performance / accessibility / best-pract
 e2e 265s (44%) / unit 86s (14%) / lighthouse 70s (12%) / build 62s (10%) /
 sast 49s (8%) / lint 37s (6%) / typecheck 25s (4%) / secrets + audit 4s。
 
+> その後 `platform-developer` project（下記）を追加し、**e2e は 320s / 合計 733s** になった
+> （同日実測 1 回）。伸びの内訳は 2 本目の Next サーバ +10s と、それまで skip / 未実行だった
+> platform の 4 本。表中の実測値は上記平均のままなので、絶対値ではなく**比率の目安**として読む。
+
 | タイミング | 何を回すか | 実測 | なぜ |
 | --- | --- | --- | --- |
 | 1 ファイルを直している間 | `npx vitest run <path>` | **0.3〜1s** | `npm test` の 95s を払わない。red → green の確認回数がそのまま増える |
@@ -78,6 +82,37 @@ E2E は iPad 受付端末を主対象とするが、ブラウザは 2 系統で�
 | --- | --- | --- | --- |
 | `chromium-ipad` | chromium（iPad viewport エミュレート） | ✅ 常時 | ローカル主ゲート。全 OS で動く |
 | `ipad-landscape` / `ipad-portrait` | webkit（Safari 忠実度） | CI または `E2E_WEBKIT=1` 時のみ | 実 Safari 相当の検証 |
+| `platform-developer` | chromium（desktop 1280×900） | ✅ 常時（`PLAYWRIGHT_BASE_URL` 指定時を除く） | developer 専用の `/platform/*` 検証 |
+
+### `platform-developer` が別サーバな理由（#423）
+
+platform エリアは developer ロール専用で、password セッションが developer になるのは
+`OPEN_RECEPTION_ADMIN_PASSWORD_ROLE=developer` の**プロセス env** 指定時だけ
+（`buildActorConfig` が `process.env` から読む。email allowlist は email を持たない password
+セッションには適用できない）。**テスト側の helper では developer セッションを張れない。**
+
+そこで e2e は **Next サーバを 2 本**起こす（`playwright.config.ts` の `webServer` 配列）。
+
+| ポート | env | 対象 project |
+| --- | --- | --- |
+| `PORT`（既定 3000） | 既定（`passwordRole=tenant_admin`） | `chromium-ipad` ほか |
+| `PLATFORM_PORT`（既定 `PORT + 1` = 3001） | `OPEN_RECEPTION_ADMIN_PASSWORD_ROLE=developer` | `platform-developer` |
+
+既定サーバの env に developer を足す案は却下した — 全 password ログインが developer 化して
+admin 側 e2e（TenantSwitcher の母集合、テナント境界）の意味が変わる。**サーバを分ければ
+developer はそのプロセスに閉じる。**
+
+- 実測コスト: 全 e2e が **299s → 310s（+10s / +3.5%）**。project 間に依存を張っていないため
+  2 本目の起動は並行で吸収される。
+- **3001 が使用中だと e2e が起動に失敗する**。`PLATFORM_PORT` で退避できる。
+- `PLAYWRIGHT_BASE_URL`（実環境向け実行）では passwordRole を制御できないため、この project は
+  **設定ごと生成しない**（走らせれば必ず admin へリダイレクトされて落ちる＝実行方法の欠陥）。
+
+第 85 wave まで `/platform/*` の e2e は **1 本も実効していなかった**。`capture-screens.spec.ts` の
+「platform 主要画面」は撮るだけで検証しなかったため、**リダイレクト先の admin を
+`platform-*.png` として撮り続けていた**（撮影は成功するので誰も気づけない）。撮るだけの spec は
+「撮れた＝正しい」と読めるので、**撮る前に居場所を表明する**
+（`tests/e2e/capture-screens-platform.spec.ts`）。
 
 **Playwright は macOS 13 (Ventura) で webkit 非対応**（`playwright install webkit` が
 `does not support webkit on mac13` で失敗する）。このため macOS 13 のローカルでは
