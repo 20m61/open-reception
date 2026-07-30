@@ -63,11 +63,22 @@ function urlPathOf(file: string): string {
   );
 }
 
-/** そのルートが公開している HTTP メソッド（`export async function GET` / `export const GET`）。 */
+/**
+ * そのルートが公開している HTTP メソッド（`export async function GET` / `export const GET`）。
+ *
+ * **正規表現はリテラル 1 本**にして、メソッド名で組み立てない。メソッドごとに
+ * `new RegExp(...)` を作ると semgrep の `detect-non-literal-regexp`（ReDoS）に当たる。
+ * ここは固定配列由来で実害は無いが、**1 パスで全 export を拾って突き合わせる方が
+ * 素直で速い**ので、抑制コメントではなく書き方で解く。
+ */
+const EXPORTED_UPPER_IDENT = /export\s+(?:async\s+function|function|const)\s+([A-Z]+)\b/g;
+
 function exportedMethods(source: string): string[] {
-  return HTTP_METHODS.filter((method) =>
-    new RegExp(`export\\s+(async\\s+function|function|const)\\s+${method}\\b`).test(source),
-  );
+  const exported = new Set<string>();
+  for (const match of source.matchAll(EXPORTED_UPPER_IDENT)) {
+    if (match[1] !== undefined) exported.add(match[1]);
+  }
+  return HTTP_METHODS.filter((method) => exported.has(method));
 }
 
 function collectSurface(): ApiSurfaceEntry[] {
