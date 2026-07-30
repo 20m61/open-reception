@@ -231,6 +231,24 @@ fi
 
 if [[ "$RUN_SECRETS" -eq 1 ]]; then
   if command -v gitleaks >/dev/null 2>&1; then
+    # `gitleaks detect` は作業ツリーではなく **git 履歴** を走査し、`.gitleaksignore` の指紋は
+    # `<commit>:<file>:<rule>:<line>` の **commit SHA** で受容対象を特定する。
+    #
+    # **shallow clone だとこの指紋が原理的に一致しない。** 切り詰められた根より古い履歴が無い
+    # ため、本来 2026-07-12 のコミットで入った文字列が「grafted root で新規追加された」ものと
+    # して現れ、別の SHA で報告される。結果、受容済みのはずのテストフィクスチャが毎回
+    # 新規検出として上がり、**実 secret と見分けが付かない red** になる（Claude Code on the web
+    # は depth 50 で clone するため必ず踏む）。
+    #
+    # 履歴を完全化してから走らせる。走査対象が増える方向なので検出は弱まらない。
+    if [[ "$(git rev-parse --is-shallow-repository 2>/dev/null)" == "true" ]]; then
+      echo "  shallow clone を検出。.gitleaksignore の指紋照合に完全な履歴が要るため unshallow します"
+      git fetch --unshallow --quiet 2>/dev/null || git fetch --deepen=2147483647 --quiet 2>/dev/null || true
+      if [[ "$(git rev-parse --is-shallow-repository 2>/dev/null)" == "true" ]]; then
+        echo "  ⚠️ unshallow に失敗しました。既知フィクスチャが新規検出として報告される可能性があります"
+        echo "     手動: git fetch --unshallow"
+      fi
+    fi
     step "secrets (gitleaks)" gitleaks detect --no-banner --redact
   else
     skip_or_fail "secrets (gitleaks)" "gitleaks not installed"

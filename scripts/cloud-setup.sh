@@ -22,7 +22,13 @@ apt-get install -y gh || true
 # --- 品質ゲートの任意ツール ------------------------------------------------
 # 無いと quality-gate.sh が SKIP する。SKIP は FAIL にならないので、
 # **マージゲート（--full）が黙って弱くなる**のが怖い。入れて等価にしておく。
-pip install --break-system-packages semgrep || true &
+# ⚠️ `--ignore-installed PyJWT` が要る。イメージの PyJWT 2.7.0 は **debian パッケージ由来で
+# RECORD ファイルを持たない**ため pip が uninstall できず、semgrep の依存解決がそこで
+# 中断する（`ERROR: Cannot uninstall PyJWT 2.7.0, RECORD file not found.`）。
+# 直後の `|| true` がこれを握り潰すので、**セッションは正常に起動するのに semgrep だけ
+# 黙って入っていない**状態になり、`--full` の sast が SKIP へ落ちてマージゲートが弱くなる
+# （第 94 wave の受入確認で実際に踏んだ。docs/cloud-dev-environment.md §4）。
+pip install --break-system-packages --ignore-installed PyJWT semgrep || true &
 
 (
   GL=8.29.0
