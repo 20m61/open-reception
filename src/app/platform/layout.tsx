@@ -82,6 +82,9 @@ export default async function PlatformLayout({ children }: { children: React.Rea
   if (!canEnterArea(resolved.actor, 'platform').allowed) redirect('/admin');
 
   const elevation = await readElevationView(resolved.identity);
+  // ヘッダが「いま見ているテナント」を出せるよう pathname を渡す (#423)。
+  // URL は権威ではないので、採用の可否は許可集合で濾す（resolveViewingContext → 契約）。
+  const pathname = (await headers()).get(PATHNAME_HEADER) ?? '';
 
   return (
     <AdminShell
@@ -90,7 +93,7 @@ export default async function PlatformLayout({ children }: { children: React.Rea
       nav={PLATFORM_NAV}
       roles={['developer']}
       tenantLabel="全テナント横断"
-      tenantSwitcher={<TenantSwitcher />}
+      tenantSwitcher={<TenantSwitcher pathname={pathname} />}
     >
       <ElevationStatus initial={elevation} />
       {children}
