@@ -16,6 +16,7 @@
 import { execFileSync } from 'node:child_process';
 import {
   classifyChangeScope,
+  effectiveScope,
   isStepSkippable,
   SKIPPABLE_STEPS,
 } from '../src/domain/governance/change-scope';
@@ -59,9 +60,12 @@ function changedPaths(base: string | null): ReadonlyArray<string> {
 }
 
 function main(): void {
+  // `--strict`（定期実行）では省略しない。判断は domain 側の `effectiveScope` が持つ。
+  const strict = process.argv.includes('--strict');
   const base = resolveBase();
   // 起点が解決できないなら比較のしようがない → 省略しない。
-  const scope = base === null ? 'code' : classifyChangeScope(changedPaths(base));
+  const detected = base === null ? 'code' : classifyChangeScope(changedPaths(base));
+  const scope = effectiveScope(detected, { strict });
   console.log(`scope=${scope}`);
   for (const step of SKIPPABLE_STEPS) {
     if (isStepSkippable(step, scope)) console.log(`skip=${step}`);

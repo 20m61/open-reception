@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { classifyChangeScope, isStepSkippable } from './change-scope';
+import { classifyChangeScope, effectiveScope, isStepSkippable } from './change-scope';
 
 describe('classifyChangeScope: 変更範囲の分類 (開発速度 / #424)', () => {
   it('文書だけなら docs', () => {
@@ -88,5 +88,23 @@ describe('isStepSkippable: 省略してよいステップ', () => {
     for (const step of ['build', 'e2e', 'lighthouse', 'sast', 'typecheck', 'unit']) {
       expect(isStepSkippable(step, 'code'), step).toBe(false);
     }
+  });
+});
+
+describe('effectiveScope: 定期実行では省略しない (#318 / 開発速度)', () => {
+  it('--strict では docs でも code に倒す（全部回すことが定期実行の目的）', () => {
+    // `--full --strict` は「マージ駆動では検出できない時間経過由来の劣化」を捕まえるための
+    // 実行（`docs/quality-gate.md` 定期運用）。文書のみのブランチで走ったからといって
+    // e2e や sast を省略したら、その実行が存在する意味が無くなる。
+    expect(effectiveScope('docs', { strict: true })).toBe('code');
+  });
+
+  it('通常実行では判定をそのまま使う', () => {
+    expect(effectiveScope('docs', { strict: false })).toBe('docs');
+    expect(effectiveScope('code', { strict: false })).toBe('code');
+  });
+
+  it('code は strict でも code（倒す方向は一方通行）', () => {
+    expect(effectiveScope('code', { strict: true })).toBe('code');
   });
 });
