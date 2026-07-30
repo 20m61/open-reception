@@ -1,5 +1,6 @@
 'use client';
 
+import { usePathname } from 'next/navigation';
 import { useEffect, useState } from 'react';
 import {
   parseSelectedTenantId,
@@ -27,7 +28,19 @@ import { TenantSelect } from '../TenantContextView';
  */
 type TenantsResponse = { tenants: NamedTenant[] };
 
-export function TenantSwitcher({ pathname = '' }: { pathname?: string }) {
+export function TenantSwitcher() {
+  /**
+   * **pathname は必ずクライアントから取る (#423)。**
+   *
+   * 第 85 wave では server layout が `x-or-pathname` ヘッダから読んで prop で渡していたが、
+   * 一覧 → 詳細は `next/link` のクライアント遷移で、**共有 layout は再レンダリングされない**
+   * （App Router はセグメントを跨がない layout を保持する）。そのため prop は一覧の pathname の
+   * まま固まり、「表示中」はハードロード時しか出なかった。`usePathname` は遷移で更新される。
+   *
+   * この欠陥は e2e が **skip されていた**ため 1 周気づかれなかった（unit は純関数側だけを見ており、
+   * 純関数は正しかった）。詳細は tests/e2e/platform-viewing-context.spec.ts。
+   */
+  const pathname = usePathname() ?? '';
   const [tenants, setTenants] = useState<NamedTenant[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
 

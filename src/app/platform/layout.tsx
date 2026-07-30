@@ -82,9 +82,10 @@ export default async function PlatformLayout({ children }: { children: React.Rea
   if (!canEnterArea(resolved.actor, 'platform').allowed) redirect('/admin');
 
   const elevation = await readElevationView(resolved.identity);
-  // ヘッダが「いま見ているテナント」を出せるよう pathname を渡す (#423)。
-  // URL は権威ではないので、採用の可否は許可集合で濾す（resolveViewingContext → 契約）。
-  const pathname = (await headers()).get(PATHNAME_HEADER) ?? '';
+  // 「いま見ているテナント」の pathname は **layout から渡さない** (#423)。この layout は
+  // クライアント遷移（一覧 → 詳細の next/link）では再レンダリングされないため、渡した値は
+  // 一覧の pathname のまま固まる。`TenantSwitcher` が `usePathname` で自分で取る。
+  // （generateMetadata は遷移ごとに再評価されるのでヘッダ経由のままでよい。）
 
   return (
     <AdminShell
@@ -93,7 +94,7 @@ export default async function PlatformLayout({ children }: { children: React.Rea
       nav={PLATFORM_NAV}
       roles={['developer']}
       tenantLabel="全テナント横断"
-      tenantSwitcher={<TenantSwitcher pathname={pathname} />}
+      tenantSwitcher={<TenantSwitcher />}
     >
       <ElevationStatus initial={elevation} />
       {children}

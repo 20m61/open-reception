@@ -75,18 +75,9 @@ test.describe('管理画面（admin）', () => {
     }
   });
 
-  test('platform 主要画面', async ({ page }) => {
-    await loginAsAdmin(page);
-    for (const [name, path] of [
-      ['platform-01-dashboard', '/platform'],
-      ['platform-02-tenants', '/platform/tenants'],
-    ] as Array<[string, string]>) {
-      await page.goto(path);
-      await page.waitForLoadState('networkidle').catch(() => {});
-      await page.waitForTimeout(400);
-      await shot(page, name);
-    }
-  });
+  // platform 主要画面は `capture-screens-platform.spec.ts` へ分離した。ここ（既定サーバ）は
+  // developer になれないため /platform/* は /admin へリダイレクトされ、**admin を
+  // platform-*.png として撮り続けていた**（#423 / 第 85 wave 発見）。
 });
 
 /**

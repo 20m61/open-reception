@@ -15,26 +15,27 @@ import { loginAsAdmin } from './helpers';
  */
 
 /**
- * platform エリアは developer ロール専用。`loginAsAdmin` のパスワードログインは e2e 環境で
- * developer にならないため `/platform/*` は `/admin` へリダイレクトされる。
- * **到達できないときは理由を出して skip する**（消して腐らせず、developer セッションを
- * 張れるようになったら自動で走る）。
+ * platform エリアは developer ロール専用。password セッションが developer になるのは
+ * `OPEN_RECEPTION_ADMIN_PASSWORD_ROLE=developer` の**プロセス env** 指定時だけ
+ * （`src/lib/auth/actor.ts` の `buildActorFromPasswordSession` / `buildActorConfig`）なので、
+ * この spec は **専用の Next プロセスへ向けた `platform-developer` project からのみ**走る
+ * （`playwright.config.ts`）。既定 project からは testIgnore で外してある。
  *
- * 判明した既存の穴: `capture-screens.spec.ts` の「platform 主要画面」は撮るだけで検証しないため、
- * 同じ理由で**ずっと admin を撮っていた**（スクショは撮れるので誰も気づかない）。
+ * したがって**到達できないのは設定の破損**であり、skip ではなく失敗させる。第 85 wave までは
+ * skip にしていたが、それは developer セッションを張る手段が無かった間の措置。
+ *
+ * 直った既存の穴: 「platform 主要画面」のスクショは撮るだけで検証しなかったため、同じ理由で
+ * **ずっと admin を撮っていた**（スクショは撮れるので誰も気づかない）。
+ * → `capture-screens-platform.spec.ts` へ分離し、この project で撮る。
  */
-async function platformReachable(page: import('@playwright/test').Page): Promise<boolean> {
-  await page.goto('/platform/tenants');
-  return (await page.getByTestId('platform-tenant-switcher').count()) > 0;
-}
-
 test.describe('platform: いま見ているテナントがヘッダに出る (#423)', () => {
   test.beforeEach(async ({ page }) => {
     await loginAsAdmin(page);
-    test.skip(
-      !(await platformReachable(page)),
-      'platform は developer 専用。e2e のパスワードログインは developer にならないため到達不可',
-    );
+    await page.goto('/platform/tenants');
+    await expect(
+      page.getByTestId('platform-tenant-switcher'),
+      'platform へ到達できていない（developer セッションが張れていない）',
+    ).toBeVisible();
   });
 
   test('一覧ではテナントを名指ししないので「表示中」は出ない', async ({ page }) => {
