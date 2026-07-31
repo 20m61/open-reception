@@ -1,6 +1,8 @@
 'use client';
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useSiteScope } from './use-site-scope';
+import { SiteScopeSelect } from './SiteScopeSelect';
 import { Button, Card, Field } from '@/components/admin/ui';
 import { color, space } from '@/components/admin/ui/tokens';
 import {
@@ -68,28 +70,38 @@ type Scope = { tenantId: string; siteId: string };
 
 export function RoutingPolicyManager({
   tenantId = DEFAULT_TENANT_ID,
-  siteId = DEFAULT_SITE_ID,
+  siteId: defaultSiteId = DEFAULT_SITE_ID,
 }: {
   tenantId?: string;
+  /** サーバ (`resolveDefaultScope`) 由来の既定拠点。URL 未指定時のフォールバック。 */
   siteId?: string;
 }) {
+  // 対象拠点は URL が真実源 (#421)。以前は既定拠点に固定で、UI から別拠点の
+  // 取次ルートへ到達する手段が無かった。
+  const { sites, siteId, scopeReady, selectSite, sitePending } = useSiteScope(
+    tenantId,
+    defaultSiteId,
+  );
   const scope = useMemo<Scope>(() => ({ tenantId, siteId }), [tenantId, siteId]);
   const [endpoints, setEndpoints] = useState<EndpointView[]>([]);
   const [policies, setPolicies] = useState<PolicyView[]>([]);
 
   const loadEndpoints = useCallback(async () => {
+    // 拠点が確定するまで取得しない（#534 と同じ competition を避ける）。
+    if (!scopeReady) return;
     const res = await fetch(
       `/api/admin/routing/endpoints?tenantId=${encodeURIComponent(scope.tenantId)}&siteId=${encodeURIComponent(scope.siteId)}`,
     );
     if (res.ok) setEndpoints((await res.json()) as EndpointView[]);
-  }, [scope]);
+  }, [scope, scopeReady]);
 
   const loadPolicies = useCallback(async () => {
+    if (!scopeReady) return;
     const res = await fetch(
       `/api/admin/routing/policies?tenantId=${encodeURIComponent(scope.tenantId)}&siteId=${encodeURIComponent(scope.siteId)}`,
     );
     if (res.ok) setPolicies((await res.json()) as PolicyView[]);
-  }, [scope]);
+  }, [scope, scopeReady]);
 
   useEffect(() => {
     void loadEndpoints();
@@ -104,6 +116,17 @@ export function RoutingPolicyManager({
         「誰に・どの順で・何秒待って・繋がらなければどこへ」という文章として確認し、編集できます。
         電話番号などの接続先は機微情報のため下 4 桁のみ表示します。
       </p>
+
+      {/* 対象拠点を常時表示し、ここから切り替えられるようにする (#421)。 */}
+      <div style={{ maxWidth: 320, marginBottom: space.lg }}>
+        <SiteScopeSelect
+          sites={sites}
+          siteId={siteId}
+          onSelect={selectSite}
+          disabled={sitePending}
+          testId="call-routing-site-select"
+        />
+      </div>
 
       <EndpointsSection endpoints={endpoints} scope={scope} reload={loadEndpoints} />
       <PoliciesSection policies={policies} endpoints={endpoints} scope={scope} reload={loadPolicies} />

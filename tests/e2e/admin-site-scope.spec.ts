@@ -83,6 +83,29 @@ test.describe('管理: 拠点スコープが URL に載る (#421)', () => {
     await expect(page.getByTestId('operating-hours-site-select')).toHaveValue('branch-site');
   });
 
+  for (const screen of [
+    { path: '/admin/call-routes', testId: 'call-routes-site-select', label: '呼び出しルート' },
+    { path: '/admin/call-routing', testId: 'call-routing-site-select', label: '取次ルート' },
+  ]) {
+    test(`${screen.label}も拠点を切り替えられ、URL に載る`, async ({ page }) => {
+      // これらも resolveDefaultScope() に固定されていて、UI から別拠点へ到達できなかった。
+      test.skip(
+        !!process.env.PLAYWRIGHT_BASE_URL,
+        'branch-site は seed 由来で、dynamodb backend では seed が無視されるため実環境には存在しない',
+      );
+
+      await page.goto(screen.path);
+      const select = page.getByTestId(screen.testId);
+      await expect(select).toHaveValue('default-site');
+
+      await select.selectOption('branch-site');
+      await expect(page).toHaveURL(/siteId=branch-site/);
+
+      await page.reload();
+      await expect(page.getByTestId(screen.testId)).toHaveValue('branch-site');
+    });
+  }
+
   test('実在しない siteId は採用せず、実在する拠点へ倒す', async ({ page }) => {
     // ここが安全側の肝。存在しない id をそのまま選択状態にすると、端末一覧が空になり
     // 「この拠点には端末が無い」と**事実と異なる読み方**をされる。
