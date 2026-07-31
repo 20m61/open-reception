@@ -4,7 +4,6 @@ import { useCallback, useEffect, useState } from 'react';
 import { useSiteScope } from './use-site-scope';
 import { SiteScopeSelect } from './SiteScopeSelect';
 import type { StoredReceptionFlow } from '@/lib/reception/flow-config/types';
-import type { CallRoute } from '@/lib/notification/types';
 import {
   DEFAULT_STEPS,
   FIELD_TYPES,
@@ -68,7 +67,6 @@ export function ReceptionFlowsManager({
     defaultSiteId,
   );
   const [items, setItems] = useState<StoredReceptionFlow[]>([]);
-  const [routes, setRoutes] = useState<CallRoute[]>([]);
   /**
    * **どの拠点のデータが今画面に載っているか。**
    *
@@ -81,15 +79,8 @@ export function ReceptionFlowsManager({
    * 対象が変わったら**行を消し、変更操作も止める**。
    */
   const [flowsScopeKey, setFlowsScopeKey] = useState<string | null>(null);
-  const [routesScopeKey, setRoutesScopeKey] = useState<string | null>(null);
-  /**
-   * **フローと取次先で別々に持つ。** 両方揃うまで一括で止めると、
-   * **フローだけ先に届いた窓で行が描かれているのに操作が無反応**になる
-   * （ハンドラが早期 return する = サイレント no-op）。フローの変更操作に取次先の到着は
-   * 要らないので、依存を実際に使う側へ合わせる。取次先は割当セレクタだけが使う。
-   */
+  /** どのスコープ（テナント + 拠点）のフローが今画面に載っているか。 */
   const flowsLoaded = flowsScopeKey === scopeKey;
-  const routesLoaded = routesScopeKey === scopeKey;
   const [purposeKey, setPurposeKey] = useState('');
   const [displayName, setDisplayName] = useState('');
   const [busy, setBusy] = useState(false);
@@ -116,29 +107,13 @@ export function ReceptionFlowsManager({
     }
   }, [tenantId, siteId, scopeKey, scopeReady, isCurrentScope]);
 
-  // 目的ごとの通知ルート割り当て用に、選択肢となる通知ルート一覧を読み込む (issue #100)。
-  const loadRoutes = useCallback(async () => {
-    if (!scopeReady) return;
-    const startedWith = scopeKey;
-    const res = await fetch(
-      `/api/admin/call-routes?tenantId=${encodeURIComponent(tenantId)}&siteId=${encodeURIComponent(siteId)}`,
-    );
-    if (!isCurrentScope(startedWith)) return;
-    if (res.ok) {
-      setRoutesScopeKey(startedWith);
-      setRoutes((await res.json()) as CallRoute[]);
-    }
-  }, [tenantId, siteId, scopeKey, scopeReady, isCurrentScope]);
 
   useEffect(() => {
     // 拠点が変わった瞬間に前拠点の行を捨てる。取得完了を待つ間に古い行を触らせない。
     setFlowsScopeKey((prev) => (prev === scopeKey ? prev : null));
-    setRoutesScopeKey((prev) => (prev === scopeKey ? prev : null));
     setItems((prev) => (prev.length === 0 ? prev : []));
-    setRoutes((prev) => (prev.length === 0 ? prev : []));
     void load();
-    void loadRoutes();
-  }, [load, loadRoutes, scopeKey]);
+  }, [load, scopeKey]);
 
   const add = useCallback(async () => {
     // 拠点切替の遷移確定前は siteId が古いままなので作成しない（別拠点に作られる）。
@@ -359,27 +334,16 @@ export function ReceptionFlowsManager({
             ) : null}
 
             <FlowSummary steps={f.steps} />
-            <label
-              style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 8, fontSize: '0.9rem' }}
-            >
-              <span style={{ opacity: 0.75 }}>通知ルート</span>
-              <select
-                data-testid="flow-call-route"
-                value={f.callRouteId ?? ''}
-                // 選択肢（取次先）が届くまでは操作させない。空の一覧から選ばせない。
-                disabled={!routesLoaded}
-                onChange={(e) => patch(f.id, { callRouteId: e.target.value })}
-                style={{ padding: '4px 8px', borderRadius: 6 }}
-              >
-                <option value="">未割当（担当者選択に従う）</option>
-                {routes.map((r) => (
-                  <option key={r.id} value={r.id}>
-                    {r.name}
-                    {r.enabled ? '' : '（無効）'}
-                  </option>
-                ))}
-              </select>
-            </label>
+            {/*
+              **旧「通知ルート」割当セレクタは撤去した (#421 / 移行台帳 §5「取次モデル」)。**
+              ここで割り当てる `CallRoute`(#88) は**実際の発信が参照しない** — 発信は
+              `executeRoutedCall` → `RoutingPolicy` / `ContactEndpoint`(issue 374) が解決する。
+              設定しても実通話に効かないのに「呼び出し先を決めた」と読めてしまうため、
+              まず入口を閉じる。誰が呼ばれるかは `/admin/call-routing`（取次ルート）が決める。
+
+              保存済みの `callRouteId` は API・ドメイン側にまだ残っている（読み書きの停止と
+              型からの撤去は後続増分）。ここは**スキーマに触らない**変更。
+            */}
             <FlowFieldsEditor
               fields={f.fields}
               onSave={(fields) => saveFields(f.id, fields)}

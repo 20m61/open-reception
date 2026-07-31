@@ -85,7 +85,21 @@ const chromiumLaunchOptions = {
 // （voice-store の a11yModesEnabled 等, #321）を一時的に無効化して検証する spec。どちらも
 // グローバル状態を書き換えるため、他 kiosk テストと分離し専用 project で本 suite の後に
 // 単独実行する（テスト自身は最後に既定値へ戻すが、並行実行中の一瞬の観測を避けるため）。
-const FLOW_MUTATING_SPECS = /(admin-reception-flows|kiosk-flow-integration|kiosk-a11y-tenant-toggle)\.spec\.ts$/;
+// **フローを作る spec 同士は互いに並行させない。**
+//
+// 従来はこの 3 本を 1 つの project へまとめていたが、project 内は `fullyParallel` で
+// **並行実行される**ため、`admin-reception-flows` と `kiosk-flow-integration` が同時に
+// 既定スコープのフローを作り合っていた。結果、kiosk が他 spec のフローを掴んだり
+// （画面に `並び替えA-*` が出た）、一覧の順序検証中に他 spec の afterEach で対象が
+// 消えたり（`indexOf` が -1）する。project を分けたのは**他 project との**分離であって、
+// **project 内の**分離にはなっていなかった。
+//
+// 既存の `pristine-state → chromium-ipad → flow-mutation` と同じく `dependencies` で
+// 連鎖させ、2 本が重ならないようにする。
+const FLOW_MUTATING_SPECS = /(admin-reception-flows|kiosk-a11y-tenant-toggle)\.spec\.ts$/;
+
+/** 上記の後に**単独で**走らせるフロー変更 spec（`flow-mutation` と同時に走らせない）。 */
+const FLOW_MUTATING_KIOSK_SPECS = /kiosk-flow-integration\.spec\.ts$/;
 
 // soak（長時間連続稼働）テストは `tests/e2e/soak/` に隔離し、専用の playwright.soak.config.ts
 // （`npm run test:soak*`）からのみ実行する (issue #317)。本設定（既定 `npm run test:e2e` /
@@ -105,7 +119,13 @@ const PRISTINE_STATE_SPECS = /(kiosk-checkout-i18n|kiosk-vrt-a11y)\.spec\.ts$/;
 // 一群に名前を寄せたいので明示）。
 const PLATFORM_SPECS = /(platform-[a-z0-9-]+|capture-screens-platform)\.spec\.ts$/;
 
-const DEFAULT_TEST_IGNORE = [FLOW_MUTATING_SPECS, PRISTINE_STATE_SPECS, PLATFORM_SPECS, SOAK_SPECS];
+const DEFAULT_TEST_IGNORE = [
+  FLOW_MUTATING_SPECS,
+  FLOW_MUTATING_KIOSK_SPECS,
+  PRISTINE_STATE_SPECS,
+  PLATFORM_SPECS,
+  SOAK_SPECS,
+];
 
 // iPad (gen 7) 縦向き相当のエミュレーション設定（chromium 用）。
 const iPadPortraitViewport = {
@@ -186,6 +206,14 @@ export default defineConfig({
       use: { browserName: 'chromium', ...iPadPortraitViewport, launchOptions: chromiumLaunchOptions },
       testMatch: FLOW_MUTATING_SPECS,
       dependencies: ['chromium-ipad', ...(includeWebkit ? ['ipad-landscape', 'ipad-portrait'] : [])],
+    },
+    {
+      // **`flow-mutation` の後に単独で走る。** 同時に走らせると、双方が既定スコープへ
+      // カスタムフローを作り合って互いの検証を壊す（詳細は FLOW_MUTATING_SPECS の注記）。
+      name: 'flow-mutation-kiosk',
+      use: { browserName: 'chromium', ...iPadPortraitViewport, launchOptions: chromiumLaunchOptions },
+      testMatch: FLOW_MUTATING_KIOSK_SPECS,
+      dependencies: ['flow-mutation'],
     },
     // platform は developer 専用サーバ（別ポート・別プロセス）へ向ける。実サーバを起こせない
     // 実環境向け実行（PLAYWRIGHT_BASE_URL 指定）では passwordRole を制御できないため project ごと落とす

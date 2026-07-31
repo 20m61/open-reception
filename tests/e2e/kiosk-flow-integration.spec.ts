@@ -130,7 +130,11 @@ test('カスタム受付フローの画面にも逃げ道バーが常設され�
 
   // カスタム目的を選ぶと相手選択へ進み、相手を決めるとカスタム入力画面へ入る
   // （カスタムフローでも相手選択は既定画面。入力ステップだけがカスタムになる）。
-  await page.getByTestId('purpose-option').first().click();
+  //
+  // **`.first()` で掴まない。** flow-mutation project は複数 spec を並行実行するので、
+  // 一覧の先頭が他 spec の作ったフローになりうる（実際 `並び替えA-*` を掴んで
+  // custom-visitor-view に辿り着けず落ちた）。**自分が作ったフローを名前で選ぶ。**
+  await page.getByTestId('purpose-option').filter({ hasText: name }).click();
   await page.getByTestId('staff-staff-sato').click();
 
   // カスタム来訪者情報入力（inputVisitorInfo）。ここが最も戻りたくなる画面。
