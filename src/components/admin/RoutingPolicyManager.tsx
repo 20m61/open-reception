@@ -127,7 +127,7 @@ export function RoutingPolicyManager({
         受付フローからの参照は撤去済みだが、既存の旧ルートを確認・整理できるよう画面は残している。
       */}
       <p style={{ opacity: 0.7, marginTop: 0 }}>
-        受付フローが参照する旧「呼び出しルート」は{' '}
+        どこからも参照されなくなった旧「呼び出しルート」は{' '}
         {/*
           **siteId を落とさない。** CallRoutesManager は URL を拠点の真実源にしているので
           （増分 3）、クエリ無しで開くと既定拠点の旧ルートを編集させてしまう。
@@ -146,7 +146,7 @@ export function RoutingPolicyManager({
         ) : (
           <span data-testid="routing-legacy-call-routes-pending">呼び出しルート（旧）</span>
         )}{' '}
-        に残しています（実際の発信はこの画面の設定が決めます）。
+        に残しています（整理用。実際の発信はこの画面の設定が決めます）。
       </p>
 
       {/* 対象拠点を常時表示し、ここから切り替えられるようにする (#421)。 */}

@@ -29,6 +29,7 @@ import {
   type ReceptionFlowId,
 } from '@/domain/reception/custom-flow';
 import { canAccessSite, type Actor } from '@/domain/tenant/authorization';
+import { stripRetiredFlowFields } from './normalize';
 import type { AuditAction } from '@/domain/reception/log';
 import type { SiteId, TenantId } from '@/domain/tenant/types';
 import type { ReceptionFlowRepository } from './repository';
@@ -82,7 +83,8 @@ export class ReceptionFlowService {
   ): Promise<ServiceResult<StoredReceptionFlow[]>> {
     const all = await this.flows.listFlows(tenantId, siteId);
     const visible = all.filter((f) => canAccessSite(actor, tenantId, f.siteId, 'read'));
-    return { ok: true, value: visible };
+    // 撤去済みフィールドは境界で落とす（型消去は実行時の撤去ではない。#549 レビュー P2）。
+    return { ok: true, value: visible.map(stripRetiredFlowFields) };
   }
 
   /**
@@ -96,7 +98,7 @@ export class ReceptionFlowService {
     siteId: SiteId,
   ): Promise<StoredReceptionFlow[]> {
     const all = await this.flows.listFlows(tenantId, siteId);
-    return enabledFlowsForDisplay(all);
+    return enabledFlowsForDisplay(all).map(stripRetiredFlowFields);
   }
 
   async get(
@@ -108,7 +110,7 @@ export class ReceptionFlowService {
     if (!found) return fail('not_found', 'reception flow not found');
     if (!canAccessSite(actor, tenantId, found.siteId, 'read'))
       return fail('forbidden', 'actor cannot access this reception flow');
-    return { ok: true, value: found };
+    return { ok: true, value: stripRetiredFlowFields(found) };
   }
 
   /** フローを作成する。対象サイトへの write 認可が必要。 */
@@ -150,7 +152,8 @@ export class ReceptionFlowService {
     if (!canAccessSite(actor, tenantId, found.siteId, 'write'))
       return fail('forbidden', 'actor cannot write to this reception flow');
 
-    const next: StoredReceptionFlow = { ...found };
+    // `{ ...found }` は撤去済みフィールドも拾ってしまうので、ここでも落としてから組み立てる。
+    const next: StoredReceptionFlow = stripRetiredFlowFields({ ...found });
 
     if (patch.displayName !== undefined) {
       const v = validateDisplayName(patch.displayName);

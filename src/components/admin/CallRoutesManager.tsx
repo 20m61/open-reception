@@ -161,7 +161,8 @@ export function CallRoutesManager({
         ) : (
           <span style={{ fontWeight: 700 }}>取次ルート（/admin/call-routing）</span>
         )}{' '}
-        が決めます。この画面は受付フローが参照する旧データの編集用に残しています。
+        が決めます。受付フローからの参照は撤去済みで、この画面のデータはどこからも参照されません。
+        既存の旧ルートを確認・整理できるよう画面だけ残しています。
       </p>
 
       <p style={{ opacity: 0.7, marginTop: -8 }}>
