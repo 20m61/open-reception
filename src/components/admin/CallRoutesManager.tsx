@@ -1,5 +1,7 @@
 'use client';
 
+import type React from 'react';
+
 import { useCallback, useEffect, useState } from 'react';
 import { useSiteScope } from './use-site-scope';
 import { SiteScopeSelect } from './SiteScopeSelect';
@@ -135,7 +137,24 @@ export function CallRoutesManager({
 
   return (
     <section>
-      <h1 style={{ marginTop: 0 }}>呼び出しルート</h1>
+      <h1 style={{ marginTop: 0 }}>呼び出しルート（旧）</h1>
+
+      {/*
+        **この画面の設定は実際の発信に効かない。** 発信は executeRoutedCall →
+        RoutingPolicy / ContactEndpoint (#374) が解決し、ここで編集する CallRoute (#88) を
+        参照しない（routing/compat.ts は消費者ゼロ）。黙って並べておくと、運用者が
+        「呼び出し先を設定した」と思い込むので明示する。受付フローの callRouteId が
+        まだ参照するため画面自体は残している。モデル一本化は移行台帳 §5「取次モデル」。
+      */}
+      <p data-testid="call-routes-legacy-notice" style={legacyNoticeStyle}>
+        ⚠ <strong>この画面の設定は実際の発信には使われません。</strong> 実際に「誰へ・どの順で
+        繋ぐか」は{' '}
+        <a href="/admin/call-routing" style={{ color: 'var(--color-accent)', fontWeight: 700 }}>
+          取次ルート（/admin/call-routing）
+        </a>{' '}
+        が決めます。この画面は受付フローが参照する旧データの編集用に残しています。
+      </p>
+
       <p style={{ opacity: 0.7, marginTop: -8 }}>
         テナント <code>{tenantId}</code> / 拠点 <code>{siteId}</code> の受付通知ルートを管理します。
         ルートごとに「どのグループの誰へ、どの手段で、どの順番で通知するか」を確認できます。
@@ -267,4 +286,16 @@ const inputStyle: React.CSSProperties = {
   border: '1px solid var(--color-surface-2)',
   background: 'var(--color-surface)',
   color: 'var(--color-text)',
+};
+
+// 色は必ず CSS 変数から取る（生の色リテラルは lint で禁止・#329）。
+// 注意喚起なので既存の notice より強い枠にする。
+const legacyNoticeStyle: React.CSSProperties = {
+  margin: '0 0 24px',
+  padding: '12px 16px',
+  borderRadius: 8,
+  border: '1px solid var(--color-warning)',
+  background: 'var(--color-surface)',
+  fontSize: '0.9rem',
+  lineHeight: 1.6,
 };

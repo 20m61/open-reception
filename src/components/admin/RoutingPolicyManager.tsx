@@ -122,6 +122,18 @@ export function RoutingPolicyManager({
         電話番号などの接続先は機微情報のため下 4 桁のみ表示します。
       </p>
 
+      {/*
+        旧 /admin/call-routes はナビから外したので、ここから辿れるようにする (#421)。
+        受付フローの callRouteId がまだ参照するため画面は残している。
+      */}
+      <p style={{ opacity: 0.7, marginTop: 0 }}>
+        受付フローが参照する旧「呼び出しルート」は{' '}
+        <a href="/admin/call-routes" data-testid="routing-legacy-call-routes-link">
+          呼び出しルート（旧）
+        </a>{' '}
+        に残しています（実際の発信はこの画面の設定が決めます）。
+      </p>
+
       {/* 対象拠点を常時表示し、ここから切り替えられるようにする (#421)。 */}
       <div style={{ maxWidth: 320, marginBottom: space.lg }}>
         <SiteScopeSelect

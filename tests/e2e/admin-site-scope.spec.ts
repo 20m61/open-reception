@@ -144,3 +144,35 @@ test.describe('管理: 拠点スコープが URL に載る (#421)', () => {
     await expect(page.getByText('このサイトに登録された受付端末はありません。')).toHaveCount(0);
   });
 });
+
+/**
+ * 重複ナビの一本化 (#421)。
+ *
+ * ナビから外した旧画面が**到達不能にならない**ことを実 UI で確かめる。
+ * 「ナビから消す」だけだと、受付フローが参照する旧データ（callRouteId）や
+ * token 登録フローの編集手段が絶たれる。
+ */
+test.describe('管理: 重複ナビの一本化 (#421)', () => {
+  test.beforeEach(async ({ page }) => {
+    await loginAsAdmin(page);
+  });
+
+  test('受付端末はナビに 1 つで、旧画面へは devices から辿れる', async ({ page }) => {
+    await page.goto('/admin/devices');
+    await page.getByTestId('devices-legacy-kiosks-link').click();
+    await expect(page).toHaveURL(/\/admin\/kiosks/);
+    await expect(page.getByTestId('kiosk-devices-link')).toBeVisible();
+  });
+
+  test('旧・呼び出しルートは実発信に効かないと明示され、call-routing から辿れる', async ({
+    page,
+  }) => {
+    await page.goto('/admin/call-routing');
+    await page.getByTestId('routing-legacy-call-routes-link').click();
+    await expect(page).toHaveURL(/\/admin\/call-routes/);
+    // 誤解を生まないことがこの画面を残す条件。
+    await expect(page.getByTestId('call-routes-legacy-notice')).toContainText(
+      '実際の発信には使われません',
+    );
+  });
+});

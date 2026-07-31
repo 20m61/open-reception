@@ -356,7 +356,22 @@ export function DevicesManager({ tenantId = DEFAULT_TENANT_ID }: { tenantId?: st
   );
 
   return (
-    <Section title="受付端末管理" description="サイトを選択し、その配下の受付端末を管理します。端末トークンの値は表示しません（登録状態のみ）。">
+    <Section
+      title="受付端末管理"
+      description="サイトを選択し、その配下の受付端末を管理します。端末トークンの値は表示しません（登録状態のみ）。"
+    >
+      {/*
+        旧 /admin/kiosks はナビから外したので、ここから辿れるようにする (#421)。
+        token 登録・失効の旧フローが生きているため画面は残している。
+      */}
+      <p style={{ opacity: 0.7, marginTop: 0, marginBottom: 16 }}>
+        旧レジストリ（token 登録・失効）の画面は{' '}
+        <a href="/admin/kiosks" data-testid="devices-legacy-kiosks-link">
+          受付端末管理（旧）
+        </a>{' '}
+        に残しています。
+      </p>
+
       <div style={{ display: 'flex', gap: 8, alignItems: 'flex-end', flexWrap: 'wrap', marginBottom: 16 }}>
         <label style={labelStyle}>
           <span style={labelText}>サイト</span>
