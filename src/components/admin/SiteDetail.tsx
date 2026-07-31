@@ -22,25 +22,67 @@ import { SITE_DESTINATIONS, siteDestinationHref } from './site-destinations';
  */
 export function SiteDetail({ tenantId, siteId }: { tenantId: string; siteId: string }) {
   const [site, setSite] = useState<SiteWithDevices | null>(null);
-  const [notFound, setNotFound] = useState(false);
+  /**
+   * 'loading' | 'ok' | 'missing' | 'error' を明示的に持つ。
+   *
+   * 以前は「取得できなかった」を状態として持たず早期 return していたため、401 / 403 / 5xx の
+   * ときに **site=null のまま「それらしい詳細画面」が描かれ、設定リンクが全部出たまま**に
+   * なっていた。セッション切れや権限外テナントの直後にとくに紛らわしい（#536 レビュー P2）。
+   * 拠点が確認できるまでリンクは出さない。
+   */
+  const [status, setStatus] = useState<'loading' | 'ok' | 'missing' | 'error'>('loading');
 
   useEffect(() => {
     let cancelled = false;
     void (async () => {
-      const res = await fetch(`/api/admin/sites?tenantId=${encodeURIComponent(tenantId)}`);
-      if (!res.ok) return;
+      let res: Response;
+      try {
+        res = await fetch(`/api/admin/sites?tenantId=${encodeURIComponent(tenantId)}`);
+      } catch {
+        if (!cancelled) setStatus('error');
+        return;
+      }
+      if (cancelled) return;
+      if (!res.ok) {
+        setStatus('error');
+        return;
+      }
       const list = (await res.json()) as SiteWithDevices[];
       if (cancelled) return;
       const found = list.find((s) => s.id === siteId) ?? null;
       setSite(found);
-      setNotFound(found === null);
+      setStatus(found === null ? 'missing' : 'ok');
     })();
     return () => {
       cancelled = true;
     };
   }, [tenantId, siteId]);
 
-  if (notFound) {
+  if (status === 'loading') {
+    return (
+      <section>
+        <p style={{ color: color.muted }} data-testid="site-detail-loading">
+          読み込み中…
+        </p>
+      </section>
+    );
+  }
+
+  if (status === 'error') {
+    return (
+      <section>
+        <h1 style={{ marginTop: 0 }}>拠点を確認できませんでした</h1>
+        <p style={{ color: color.muted }}>
+          拠点情報の取得に失敗しました。再読み込みするか、ログインし直してください。
+        </p>
+        <Link href="/admin/sites" data-testid="site-detail-back">
+          拠点一覧へ戻る
+        </Link>
+      </section>
+    );
+  }
+
+  if (status === 'missing') {
     return (
       <section>
         <h1 style={{ marginTop: 0 }}>拠点が見つかりません</h1>
