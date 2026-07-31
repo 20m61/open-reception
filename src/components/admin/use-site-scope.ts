@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useEffect, useState, useTransition } from 'react';
+import { useCallback, useEffect, useRef, useState, useTransition } from 'react';
 import { useQueryParams } from './use-query-params';
 import { resolveSiteScopeState, type SelectableSite } from './site-scope';
 
@@ -26,6 +26,15 @@ export function useSiteScope(
   siteId: string;
   /** この siteId で取得を始めてよいか。false の間は fetch しない（下の解説参照）。 */
   scopeReady: boolean;
+  /**
+   * 応答を反映してよいかの判定。**取得を始めた拠点**を渡す。
+   *
+   * `scopeReady` は「確定前に投げない」ための門で、**取得中に拠点を切り替えた場合**は
+   * 守れない。A の一覧要求が飛行中に B へ切り替えると、遅れて届いた A の応答が
+   * B の状態を上書きし、見出しとセレクタは B なのに**中身は A**になる。その状態で
+   * 編集・削除すると別拠点の資源を壊す（#535 レビュー P1）。
+   */
+  isCurrentSite: (startedWith: string) => boolean;
   selectSite: (next: string) => void;
   sitePending: boolean;
 } {
@@ -55,11 +64,21 @@ export function useSiteScope(
    * `useSearchParams()` のスナップショットが差し替わるのは遷移確定後なので、その間
    * `siteId` は**古い拠点のまま**。書き込み系はこの間止める（#532 のレビュー指摘）。
    */
+  // 現在の siteId を指す参照。応答到着時（＝描画とは別のタイミング）に
+  // 「まだこの拠点を見ているか」を判定するために使う。
+  // **描画中に ref を書かない**（React の規則。lint が禁止している）ので effect で更新する。
+  // 取得も effect 内で始まるため、応答が届く時点では必ず更新済み。
+  const currentSiteRef = useRef(siteId);
+  useEffect(() => {
+    currentSiteRef.current = siteId;
+  }, [siteId]);
+  const isCurrentSite = useCallback((startedWith: string) => currentSiteRef.current === startedWith, []);
+
   const [sitePending, startSiteTransition] = useTransition();
   const selectSite = useCallback(
     (next: string) => startSiteTransition(() => setMany({ siteId: next, page: '' })),
     [setMany],
   );
 
-  return { sites, siteId, scopeReady, selectSite, sitePending };
+  return { sites, siteId, scopeReady, isCurrentSite, selectSite, sitePending };
 }

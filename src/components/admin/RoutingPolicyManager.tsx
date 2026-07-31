@@ -1,6 +1,8 @@
 'use client';
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useSiteScope } from './use-site-scope';
+import { SiteScopeSelect } from './SiteScopeSelect';
 import { Button, Card, Field } from '@/components/admin/ui';
 import { color, space } from '@/components/admin/ui/tokens';
 import {
@@ -68,28 +70,43 @@ type Scope = { tenantId: string; siteId: string };
 
 export function RoutingPolicyManager({
   tenantId = DEFAULT_TENANT_ID,
-  siteId = DEFAULT_SITE_ID,
+  siteId: defaultSiteId = DEFAULT_SITE_ID,
 }: {
   tenantId?: string;
+  /** サーバ (`resolveDefaultScope`) 由来の既定拠点。URL 未指定時のフォールバック。 */
   siteId?: string;
 }) {
+  // 対象拠点は URL が真実源 (#421)。以前は既定拠点に固定で、UI から別拠点の
+  // 取次ルートへ到達する手段が無かった。
+  const { sites, siteId, scopeReady, isCurrentSite, selectSite, sitePending } = useSiteScope(
+    tenantId,
+    defaultSiteId,
+  );
   const scope = useMemo<Scope>(() => ({ tenantId, siteId }), [tenantId, siteId]);
   const [endpoints, setEndpoints] = useState<EndpointView[]>([]);
   const [policies, setPolicies] = useState<PolicyView[]>([]);
 
   const loadEndpoints = useCallback(async () => {
+    // 拠点が確定するまで取得しない（#534 と同じ competition を避ける）。
+    if (!scopeReady) return;
+    const startedWith = scope.siteId;
     const res = await fetch(
       `/api/admin/routing/endpoints?tenantId=${encodeURIComponent(scope.tenantId)}&siteId=${encodeURIComponent(scope.siteId)}`,
     );
+    // 取得中に拠点が変わっていたら捨てる（endpoints と policies が別拠点の組み合わせになるのを防ぐ）。
+    if (!isCurrentSite(startedWith)) return;
     if (res.ok) setEndpoints((await res.json()) as EndpointView[]);
-  }, [scope]);
+  }, [scope, scopeReady, isCurrentSite]);
 
   const loadPolicies = useCallback(async () => {
+    if (!scopeReady) return;
+    const startedWith = scope.siteId;
     const res = await fetch(
       `/api/admin/routing/policies?tenantId=${encodeURIComponent(scope.tenantId)}&siteId=${encodeURIComponent(scope.siteId)}`,
     );
+    if (!isCurrentSite(startedWith)) return;
     if (res.ok) setPolicies((await res.json()) as PolicyView[]);
-  }, [scope]);
+  }, [scope, scopeReady, isCurrentSite]);
 
   useEffect(() => {
     void loadEndpoints();
@@ -105,8 +122,41 @@ export function RoutingPolicyManager({
         電話番号などの接続先は機微情報のため下 4 桁のみ表示します。
       </p>
 
-      <EndpointsSection endpoints={endpoints} scope={scope} reload={loadEndpoints} />
-      <PoliciesSection policies={policies} endpoints={endpoints} scope={scope} reload={loadPolicies} />
+      {/* 対象拠点を常時表示し、ここから切り替えられるようにする (#421)。 */}
+      <div style={{ maxWidth: 320, marginBottom: space.lg }}>
+        <SiteScopeSelect
+          sites={sites}
+          siteId={siteId}
+          onSelect={selectSite}
+          disabled={sitePending}
+          testId="call-routing-site-select"
+        />
+      </div>
+
+      {/*
+        **key に siteId を入れて拠点切替で編集中の下書きを捨てる。** これが無いと、拠点 A で
+        ポリシーを編集しかけたまま B へ切り替えたときにセクションが再マウントされず、
+        **A のポリシー ID を持ったまま siteId=B で PATCH** してしまう。routing サービスは
+        siteId の変更を受け付けるので、ポリシーが別拠点へ移動・上書きされる（#535 レビュー P1）。
+
+        writeBlocked は遷移確定前の書き込みを止める。確定前は siteId が旧拠点のままなので、
+        「接続先を追加」やポリシー保存が**前の拠点に**作られる。
+      */}
+      <EndpointsSection
+        key={`endpoints-${siteId}`}
+        endpoints={endpoints}
+        scope={scope}
+        reload={loadEndpoints}
+        writeBlocked={sitePending}
+      />
+      <PoliciesSection
+        key={`policies-${siteId}`}
+        policies={policies}
+        endpoints={endpoints}
+        scope={scope}
+        reload={loadPolicies}
+        writeBlocked={sitePending}
+      />
     </section>
   );
 }
@@ -117,8 +167,11 @@ function EndpointsSection({
   endpoints,
   scope,
   reload,
+  writeBlocked = false,
 }: {
   endpoints: EndpointView[];
+  /** 拠点切替の遷移確定前は真。scope が旧拠点のままなので書き込ませない。 */
+  writeBlocked?: boolean;
   scope: Scope;
   reload: () => Promise<void>;
 }) {
@@ -130,7 +183,8 @@ function EndpointsSection({
   const [busy, setBusy] = useState(false);
 
   const add = useCallback(async () => {
-    if (busy) return;
+    // 拠点切替の遷移確定前は scope が旧拠点のままなので書き込まない。
+    if (busy || writeBlocked) return;
     setBusy(true);
     setError(null);
     try {
@@ -210,7 +264,7 @@ function EndpointsSection({
         <Field label="担当者/組織 ID" htmlFor="ep-owner">
           <input id="ep-owner" data-testid="endpoint-owner-input" value={ownerId} onChange={(e) => setOwnerId(e.target.value)} style={inputStyle} />
         </Field>
-        <Button variant="primary" data-testid="endpoint-add" onClick={add} disabled={busy || address.trim() === ''}>
+        <Button variant="primary" data-testid="endpoint-add" onClick={add} disabled={busy || writeBlocked || address.trim() === ''}>
           接続先を追加
         </Button>
       </div>
@@ -273,8 +327,11 @@ function PoliciesSection({
   endpoints,
   scope,
   reload,
+  writeBlocked = false,
 }: {
   policies: PolicyView[];
+  /** 拠点切替の遷移確定前は真。scope が旧拠点のままなので書き込ませない。 */
+  writeBlocked?: boolean;
   endpoints: EndpointView[];
   scope: Scope;
   reload: () => Promise<void>;
@@ -405,6 +462,7 @@ function PoliciesSection({
           stepErrors={stepErrors}
           saveError={saveError}
           busy={busy}
+          writeBlocked={writeBlocked}
           onSave={save}
           onCancel={() => setDraft(null)}
         />
@@ -422,6 +480,7 @@ function PolicyEditor({
   stepErrors,
   saveError,
   busy,
+  writeBlocked,
   onSave,
   onCancel,
 }: {
@@ -433,6 +492,8 @@ function PolicyEditor({
   stepErrors: Record<string, string[]>;
   saveError: string | null;
   busy: boolean;
+  /** 拠点切替の遷移確定前は真。保存すると旧拠点へ書き込むので止める。 */
+  writeBlocked: boolean;
   onSave: () => void;
   onCancel: () => void;
 }) {
@@ -523,7 +584,7 @@ function PolicyEditor({
         <Button data-testid="policy-add-step" onClick={() => update({ steps: [...draft.steps, emptyStep()] })}>
           手順を追加
         </Button>
-        <Button variant="primary" data-testid="policy-save" onClick={onSave} disabled={busy}>
+        <Button variant="primary" data-testid="policy-save" onClick={onSave} disabled={busy || writeBlocked}>
           保存
         </Button>
         <Button data-testid="policy-cancel" onClick={onCancel}>

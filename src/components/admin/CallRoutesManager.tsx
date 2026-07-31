@@ -1,6 +1,8 @@
 'use client';
 
 import { useCallback, useEffect, useState } from 'react';
+import { useSiteScope } from './use-site-scope';
+import { SiteScopeSelect } from './SiteScopeSelect';
 import type { CallRoute, CallTargetGroup } from '@/lib/notification/types';
 import { Button, Card, Field } from '@/components/admin/ui';
 import { color, space } from '@/components/admin/ui/tokens';
@@ -39,11 +41,18 @@ function maskValue(value: string): string {
 
 export function CallRoutesManager({
   tenantId = DEFAULT_TENANT_ID,
-  siteId = DEFAULT_SITE_ID,
+  siteId: defaultSiteId = DEFAULT_SITE_ID,
 }: {
   tenantId?: string;
+  /** サーバ (`resolveDefaultScope`) 由来の既定拠点。URL 未指定時のフォールバック。 */
   siteId?: string;
 }) {
+  // 対象拠点は URL が真実源 (#421)。以前は既定拠点に固定で、UI から別拠点の
+  // 呼び出しルートへ到達する手段が無かった。
+  const { sites, siteId, scopeReady, isCurrentSite, selectSite, sitePending } = useSiteScope(
+    tenantId,
+    defaultSiteId,
+  );
   const [items, setItems] = useState<CallRoute[]>([]);
   const [name, setName] = useState('');
   const [busy, setBusy] = useState(false);
@@ -51,18 +60,26 @@ export function CallRoutesManager({
   const [editName, setEditName] = useState('');
 
   const load = useCallback(async () => {
+    // 拠点が確定するまで取得しない。確定前に投げると deep link のたびに既定拠点への
+    // 要求が先に飛び、応答順次第で選択中でない拠点の一覧が載る（#534 と同じ competition）。
+    if (!scopeReady) return;
+    const startedWith = siteId;
     const res = await fetch(
       `/api/admin/call-routes?tenantId=${encodeURIComponent(tenantId)}&siteId=${encodeURIComponent(siteId)}`,
     );
+    // 取得中に拠点が変わっていたら捨てる。反映すると見出し・セレクタは新拠点なのに
+    // 中身は旧拠点になり、その状態で編集・削除すると別拠点の資源を壊す。
+    if (!isCurrentSite(startedWith)) return;
     if (res.ok) setItems((await res.json()) as CallRoute[]);
-  }, [tenantId, siteId]);
+  }, [tenantId, siteId, scopeReady, isCurrentSite]);
 
   useEffect(() => {
     void load();
   }, [load]);
 
   const add = useCallback(async () => {
-    if (name.trim() === '' || busy) return;
+    // 拠点切替の遷移確定前は siteId が古いままなので登録しない（別拠点へ作られる）。
+    if (name.trim() === '' || busy || sitePending) return;
     setBusy(true);
     try {
       await fetch('/api/admin/call-routes', {
@@ -75,7 +92,7 @@ export function CallRoutesManager({
     } finally {
       setBusy(false);
     }
-  }, [name, busy, tenantId, siteId, load]);
+  }, [name, busy, sitePending, tenantId, siteId, load]);
 
   const patch = useCallback(
     async (id: string, body: Record<string, unknown>) => {
@@ -125,6 +142,13 @@ export function CallRoutesManager({
       </p>
 
       <div style={{ display: 'flex', gap: space.sm, alignItems: 'flex-end', flexWrap: 'wrap', marginBottom: space.lg }}>
+        {/* 対象拠点を常時表示し、ここから切り替えられるようにする (#421)。 */}
+        <SiteScopeSelect
+          sites={sites}
+          siteId={siteId}
+          onSelect={selectSite}
+          testId="call-routes-site-select"
+        />
         <Field label="ルート名" htmlFor="route-name-input">
           <input
             id="route-name-input"
