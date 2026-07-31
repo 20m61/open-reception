@@ -35,3 +35,24 @@ export function resolveSelectedSiteId(
   if (requested !== '' && sites.some((s) => s.id === requested)) return requested;
   return sites[0]?.id ?? '';
 }
+
+/**
+ * **既定拠点をサーバから受け取る画面向け**の解決（営業時間・呼び出しルート等）。
+ *
+ * これらの画面は `resolveDefaultScope()` の拠点を prop で受け取り、初回描画から取得を始める。
+ * `resolveSelectedSiteId` をそのまま使うと**拠点一覧が届くまで空文字**になり、
+ * `siteId=` 空のまま API を叩いてしまう。一覧が未取得の間は既定拠点を保つ。
+ *
+ * 一覧が届いた後の規則は `resolveSelectedSiteId` と同じ（実在しない指定は採用しない）。
+ * ただし **URL 未指定のときは先頭ではなく既定拠点を保つ** — 既定拠点が先頭とは限らず
+ * （env で上書きできる）、画面を開いただけで別拠点へ移るのは事故のもとなので。
+ */
+export function resolveSiteScope(
+  requested: string,
+  sites: readonly SelectableSite[],
+  fallbackSiteId: string,
+): string {
+  if (sites.length === 0) return fallbackSiteId;
+  if (requested !== '' && sites.some((s) => s.id === requested)) return requested;
+  return fallbackSiteId;
+}

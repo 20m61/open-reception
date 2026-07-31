@@ -2,6 +2,8 @@
 
 import { useCallback, useEffect, useState } from 'react';
 import { Button, Field, SaveFeedback, useSaveFeedback } from '@/components/admin/ui';
+import { useSiteScope } from './use-site-scope';
+import { SiteScopeSelect } from './SiteScopeSelect';
 import { color, space } from '@/components/admin/ui/tokens';
 import { WEEKDAYS, type Weekday } from '@/domain/operating-policy/tz';
 import { formatExceptionsText, formatTimeRanges, parseExceptionsText, parseTimeRangesText } from '@/domain/operating-policy/text-format';
@@ -25,7 +27,17 @@ type PolicyView = ServiceOperatingPolicy | null;
  * 保存前検証（逆転区間・オーバーラップ・不正フォーマット）は保存時にサーバ
  * （`validatePolicyInput`）が行い、`issues` をそのまま表示する — フロントでの二重実装を避ける。
  */
-export function OperatingHoursManager({ tenantId, siteId }: { tenantId: string; siteId: string }) {
+export function OperatingHoursManager({
+  tenantId,
+  siteId: defaultSiteId,
+}: {
+  tenantId: string;
+  /** サーバ (`resolveDefaultScope`) 由来の既定拠点。URL 未指定時のフォールバック。 */
+  siteId: string;
+}) {
+  // 対象拠点は URL が真実源 (#421)。以前はここが既定拠点に固定で、UI から別拠点の
+  // 営業時間へ到達する手段が無かった（env でしか変えられなかった）。
+  const { sites, siteId, selectSite, sitePending } = useSiteScope(tenantId, defaultSiteId);
   const [policy, setPolicy] = useState<PolicyView>(null);
   const [loaded, setLoaded] = useState(false);
   const [timezone, setTimezone] = useState('Asia/Tokyo');
@@ -147,6 +159,13 @@ export function OperatingHoursManager({ tenantId, siteId }: { tenantId: string; 
       ) : null}
 
       <div style={{ display: 'flex', flexDirection: 'column', gap: space.md }}>
+        {/* 対象拠点を常時表示する (#421「管理者が現在の対象を見失わない」)。 */}
+        <SiteScopeSelect
+          sites={sites}
+          siteId={siteId}
+          onSelect={selectSite}
+          testId="operating-hours-site-select"
+        />
         <Field label="タイムゾーン（IANA 名。既定 Asia/Tokyo）" htmlFor="operating-hours-timezone">
           <input
             id="operating-hours-timezone"
@@ -211,7 +230,8 @@ export function OperatingHoursManager({ tenantId, siteId }: { tenantId: string; 
         </Field>
 
         <div style={{ display: 'flex', gap: space.sm, alignItems: 'center' }}>
-          <Button variant="primary" data-testid="operating-hours-save" onClick={save} disabled={busy}>
+          {/* 拠点切替の遷移確定前は siteId が古いままなので保存しない（#532 と同じ理由）。 */}
+          <Button variant="primary" data-testid="operating-hours-save" onClick={save} disabled={busy || sitePending}>
             保存
           </Button>
           <SaveFeedback feedback={feedback} successTestId="operating-hours-saved" errorTestId="operating-hours-error" />
