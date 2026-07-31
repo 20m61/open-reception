@@ -67,7 +67,7 @@ export async function resolveRepresentativeKioskId(
  * 取次到達性の検査に要る実データを読む (#420)。**実際の呼び出しが使うモデル**
  * （`RoutingPolicy` / `ContactEndpoint`, #374。`executeRoutedCall` が解決する）だけを対象にする。
  *
- * 受付フローの `callRouteId` が指す旧 `CallRoute`（#88）は**現在の呼び出し経路が参照しない**ため、
+ * 受付フローの `callRouteId`（旧 `CallRoute` #88 への参照）は撤去済みのため、
  * ここでは実在確認をしない（`knownCallRouteIds` を渡さない = 検査しない）。旧モデルのリポジトリは
  * actor 必須のサービス経由でしか触れず、参照するためだけに新しい口を開けるのは、統合予定
  * （移行台帳 §5 の重複概念）の側を固定してしまう。

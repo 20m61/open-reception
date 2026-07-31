@@ -44,10 +44,6 @@ export type CallRouteCheckInput = {
   policies: readonly RoutingPolicy[];
   /** 実在する呼び出し先 ID の集合。 */
   endpointIds: ReadonlySet<string>;
-  /** 受付フローが参照する旧 `CallRoute` の ID（スナップショット由来）。 */
-  flowRouteIds?: readonly string[];
-  /** 実在する旧 `CallRoute` の ID。 */
-  knownCallRouteIds?: ReadonlySet<string>;
 };
 
 export function checkCallRoutes(input: CallRouteCheckInput): ValidationFinding[] {
@@ -69,35 +65,9 @@ export function checkCallRoutes(input: CallRouteCheckInput): ValidationFinding[]
     });
   }
 
-  // 旧 `CallRoute` への参照切れは **warning**。現在の呼び出し経路は `callRouteId` を参照しない
-  // ため受付は壊れないが、運用者は「この目的にこのルートを割り当てた」と考えている。
-  const known = input.knownCallRouteIds;
-  if (known) {
-    for (const routeId of new Set(input.flowRouteIds ?? [])) {
-      if (!known.has(routeId)) {
-        findings.push({
-          check: 'call_route',
-          severity: 'warning',
-          message: `受付フローが存在しない取次ルート ${routeId} を参照しています`,
-        });
-      }
-    }
-  }
+  // 旧 `CallRoute`(#88) への参照切れ検査は撤去した (#421 / 移行台帳 §5「取次モデル」)。
+  // 参照元の `callRouteId` 自体を廃止したため、検査する対象が無い。
+  // **上の 2 つ（取次契約の破れ / 有効ポリシーゼロ）は現行モデルの検査なので残す。**
 
   return findings;
-}
-
-/** スナップショットの `receptionFlow` セクションから旧 `callRouteId` を拾う。 */
-export function flowRouteIdsOf(sections: Record<string, unknown>): string[] {
-  const section = sections.receptionFlow;
-  if (typeof section !== 'object' || section === null) return [];
-  const flows = (section as { flows?: unknown }).flows;
-  if (!Array.isArray(flows)) return [];
-  return flows
-    .map((flow) =>
-      typeof flow === 'object' && flow !== null
-        ? (flow as { callRouteId?: unknown }).callRouteId
-        : undefined,
-    )
-    .filter((id): id is string => typeof id === 'string' && id.trim() !== '');
 }

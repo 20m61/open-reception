@@ -42,7 +42,6 @@ export async function POST(request: Request): Promise<NextResponse> {
     steps: o.steps,
     fields: o.fields,
     completionMessage: o.completionMessage,
-    callRouteId: o.callRouteId,
   });
   return flowResponse(result, 201);
 }

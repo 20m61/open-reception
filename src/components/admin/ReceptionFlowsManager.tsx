@@ -341,8 +341,8 @@ export function ReceptionFlowsManager({
               設定しても実通話に効かないのに「呼び出し先を決めた」と読めてしまうため、
               まず入口を閉じる。誰が呼ばれるかは `/admin/call-routing`（取次ルート）が決める。
 
-              保存済みの `callRouteId` は API・ドメイン側にまだ残っている（読み書きの停止と
-              型からの撤去は後続増分）。ここは**スキーマに触らない**変更。
+              `callRouteId` は API・ドメイン・公開前検査からも撤去済み。保存済みの値は
+              無害な余剰プロパティとして残るだけで、読み書きされない。
             */}
             <FlowFieldsEditor
               fields={f.fields}
