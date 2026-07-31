@@ -44,7 +44,22 @@ function avatarMasks(page: Page): Locator[] {
   ];
 }
 
-const SHOT_BASE = { animations: 'disabled', maxDiffPixelRatio: 0.02 } as const;
+/**
+ * `maxDiffPixelRatio` は **0.002**。かつて 0.02 だった。
+ *
+ * 0.02 は**退行を隠す幅**である。第 95 wave で `kiosk-screenshot` の待機カードが
+ * `担当者を呼ぶ → QR で受付 → …` の旧並びのまま**通り続けていた**のがその実例で、
+ * カードの位置が同じで中身の文字とアイコンだけ入れ替わる差分は実比 ~0.006 にしかならず
+ * 0.02 の内側に収まっていた（第 77 wave に続き 2 度目）。
+ *
+ * 同一プラットフォームでの再撮影は**実測でノイズ 0**（`maxDiffPixelRatio: 0` で 9 枚中 8 枚が
+ * 完全一致）。ベースラインは `{platform}` 込みの名前で OS ごとに分かれているので、
+ * フォント描画差を吸収する緩い許容値はもう要らない。
+ *
+ * 唯一 0 で落ちていた `out-of-hours` は**「次回の受付開始」の日時が毎日動く**のが原因で、
+ * これは閾値ではなく `mask` で潰した（下記）。**緩めるときは何を見逃すかを数値で確かめること。**
+ */
+const SHOT_BASE = { animations: 'disabled', maxDiffPixelRatio: 0.002 } as const;
 
 /**
  * スクショ前の決定化: フォーカス中要素を blur し、スクロール位置を最上部へ固定する。
@@ -273,7 +288,14 @@ test.describe('デモプレビュー経由の画面（営業時間外・サイ�
     await stabilize(page);
     await expect(page).toHaveScreenshot('kiosk-landscape-out-of-hours.png', {
       ...SHOT_BASE,
-      mask: avatarMasks(page),
+      // 「次回の受付開始」の**日時の値だけ**を mask する。日付が変われば必ず動くため、
+      // 唯一この 1 枚が許容値 0 で落ちていた（実測 1813px・差分は全てこのテキスト）。
+      //
+      // **ラベルや枠ごと隠さない** — 第 72 wave で通話中パネルを丸ごと mask して VRT を
+      // 無意味にしかけた反省に従い、非決定的な値のノードへ絞る。`kiosk-out-of-hours-reopen`
+      // （枠）ではなく `-reopen-time`（値）を指すのはそのため。時刻が出ない場合に描かれる
+      // `-reopen-unknown` は固定文言なので mask しない（0 件マッチは no-op）。
+      mask: [...avatarMasks(page), page.getByTestId('kiosk-out-of-hours-reopen-time')],
     });
 
     const violations = await blockingViolations(page);
