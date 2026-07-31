@@ -69,6 +69,18 @@ export function ReceptionFlowsManager({
   );
   const [items, setItems] = useState<StoredReceptionFlow[]>([]);
   const [routes, setRoutes] = useState<CallRoute[]>([]);
+  /**
+   * **どの拠点のデータが今画面に載っているか。**
+   *
+   * 応答の取りこぼし判定（`isCurrentSite`）は「古い応答を反映しない」だけで、
+   * **既に描かれている前拠点の行はそのまま残る**。PATCH / DELETE は tenant と ID でしか
+   * 対象を決めないので、見出しとセレクタが B を指している状態で A のフローを編集・削除
+   * したり、A の通知ルートを B へ割り当てたりできてしまう（#539 レビュー P1）。
+   * 拠点が変わったら**行を消し、変更操作も止める**。
+   */
+  const [flowsSiteId, setFlowsSiteId] = useState<string | null>(null);
+  const [routesSiteId, setRoutesSiteId] = useState<string | null>(null);
+  const loaded = flowsSiteId === siteId && routesSiteId === siteId;
   const [purposeKey, setPurposeKey] = useState('');
   const [displayName, setDisplayName] = useState('');
   const [busy, setBusy] = useState(false);
@@ -86,6 +98,7 @@ export function ReceptionFlowsManager({
     if (!isCurrentSite(startedWith)) return;
     if (res.ok) {
       const data = (await res.json()) as StoredReceptionFlow[];
+      setFlowsSiteId(startedWith);
       setItems(
         [...data].sort((a, b) =>
           a.order !== b.order ? a.order - b.order : a.displayName.localeCompare(b.displayName),
@@ -102,17 +115,27 @@ export function ReceptionFlowsManager({
       `/api/admin/call-routes?tenantId=${encodeURIComponent(tenantId)}&siteId=${encodeURIComponent(siteId)}`,
     );
     if (!isCurrentSite(startedWith)) return;
-    if (res.ok) setRoutes((await res.json()) as CallRoute[]);
+    if (res.ok) {
+      setRoutesSiteId(startedWith);
+      setRoutes((await res.json()) as CallRoute[]);
+    }
   }, [tenantId, siteId, scopeReady, isCurrentSite]);
 
   useEffect(() => {
+    // 拠点が変わった瞬間に前拠点の行を捨てる。取得完了を待つ間に古い行を触らせない。
+    setFlowsSiteId((prev) => (prev === siteId ? prev : null));
+    setRoutesSiteId((prev) => (prev === siteId ? prev : null));
+    setItems((prev) => (prev.length === 0 ? prev : []));
+    setRoutes((prev) => (prev.length === 0 ? prev : []));
     void load();
     void loadRoutes();
-  }, [load, loadRoutes]);
+  }, [load, loadRoutes, siteId]);
 
   const add = useCallback(async () => {
     // 拠点切替の遷移確定前は siteId が古いままなので作成しない（別拠点に作られる）。
-    if (purposeKey.trim() === '' || displayName.trim() === '' || busy || sitePending) return;
+    // 新拠点のデータが載りきるまで作らない（order の採番に前拠点の件数を使ってしまう）。
+    if (purposeKey.trim() === '' || displayName.trim() === '' || busy || sitePending || !loaded)
+      return;
     setBusy(true);
     try {
       await fetch('/api/admin/reception-flows', {
@@ -134,10 +157,12 @@ export function ReceptionFlowsManager({
     } finally {
       setBusy(false);
     }
-  }, [purposeKey, displayName, busy, sitePending, tenantId, siteId, items.length, load]);
+  }, [purposeKey, displayName, busy, sitePending, loaded, tenantId, siteId, items.length, load]);
 
   const patch = useCallback(
     async (id: string, body: Record<string, unknown>) => {
+      // 表示中の拠点のデータでなければ触らない（対象は tenant + ID でしか決まらない）。
+      if (!loaded) return;
       await fetch(`/api/admin/reception-flows/${id}`, {
         method: 'PATCH',
         headers: { 'content-type': 'application/json' },
@@ -145,7 +170,7 @@ export function ReceptionFlowsManager({
       });
       await load();
     },
-    [tenantId, load],
+    [tenantId, load, loaded],
   );
 
   const toggle = useCallback((f: StoredReceptionFlow) => patch(f.id, { enabled: !f.enabled }), [patch]);
@@ -153,6 +178,7 @@ export function ReceptionFlowsManager({
   // 並び替え (inc2): 隣と order を入れ替え、変わった項目だけ PATCH してから一度だけ再読込する。
   const reorder = useCallback(
     async (index: number, dir: -1 | 1) => {
+      if (!loaded) return;
       const { changed } = reorderBySwap(items, index, dir);
       if (changed.length === 0) return;
       await Promise.all(
@@ -166,7 +192,7 @@ export function ReceptionFlowsManager({
       );
       await load();
     },
-    [items, tenantId, load],
+    [items, tenantId, load, loaded],
   );
 
   // 入力項目の保存 (inc2): fields 配列ごと PATCH する（検証は API のドメイン層）。
@@ -187,13 +213,14 @@ export function ReceptionFlowsManager({
 
   const remove = useCallback(
     async (f: StoredReceptionFlow) => {
+      if (!loaded) return;
       if (!window.confirm(`受付フロー「${f.displayName}」を削除します。よろしいですか?`)) return;
       await fetch(`/api/admin/reception-flows/${f.id}?tenantId=${encodeURIComponent(tenantId)}`, {
         method: 'DELETE',
       });
       await load();
     },
-    [tenantId, load],
+    [tenantId, load, loaded],
   );
 
   return (
