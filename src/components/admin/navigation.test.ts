@@ -155,3 +155,31 @@ describe('管理画面のルートはナビから辿れる', () => {
     }
   });
 });
+
+describe('重複ナビの一本化 (#421)', () => {
+  const adminHrefs = ADMIN_NAV.flatMap((g) => g.items.map((i) => i.href));
+
+  it('受付端末はナビに 1 つだけ（devices を正とする）', () => {
+    // `docs/site-device-management-design.md` の確定方針: Device を正とし、
+    // /admin/devices を主管理画面、/admin/kiosks は旧 token フロー互換で当面残す。
+    // ナビにも「受付端末」「受付端末（拠点別）」と対等に 2 つ並んでいたのが方針との乖離。
+    expect(adminHrefs).toContain('/admin/devices');
+    expect(adminHrefs).not.toContain('/admin/kiosks');
+  });
+
+  it('取次はナビに 1 つだけ（call-routing を正とする）', () => {
+    // `CallRoute`(#88) は **実際の発信が参照しない**（発信は executeRoutedCall →
+    // RoutingPolicy/ContactEndpoint #374。routing/compat.ts は消費者ゼロ）。
+    // 「呼び出しルート」を設定しても実通話に効かないので、対等に並べると誤解を生む。
+    expect(adminHrefs).toContain('/admin/call-routing');
+    expect(adminHrefs).not.toContain('/admin/call-routes');
+  });
+
+  it('ナビから外した旧画面は理由付きで非掲載登録する（消しはしない）', () => {
+    // 受付フローの callRouteId が旧 CallRoute を参照しており、kiosks も token 発行フローが
+    // 生きている。**消すのではなく legacy 表示へ寄せる**（#421 AC の段階廃止）。
+    expect(Object.keys(UNLISTED_ADMIN_ROUTES)).toEqual(
+      expect.arrayContaining(['/admin/kiosks', '/admin/call-routes']),
+    );
+  });
+});

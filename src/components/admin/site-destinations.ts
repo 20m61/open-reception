@@ -37,17 +37,14 @@ export const SITE_DESTINATIONS: readonly SiteDestination[] = [
     siteScoped: true,
   },
   {
-    href: '/admin/call-routes',
-    label: '呼び出しルート',
-    description: '受付時にどのグループへ通知するか',
-    siteScoped: true,
-  },
-  {
     href: '/admin/call-routing',
     label: '取次ルート',
     description: '誰に・どの順で・何秒待って繋ぐか',
     siteScoped: true,
   },
+  // 旧 `/admin/call-routes` はここに載せない (#421)。ナビから外したのに拠点詳細から
+  // 対等なカードとして出すと、入口が変わっただけで重複は残る。旧画面へは正となる
+  // `/admin/call-routing` の中の導線から辿る。
   // --- ここから下は **まだ拠点を運べない**。画面が URL の siteId を読んでいない。 ---
   {
     href: '/admin/reception-flows',

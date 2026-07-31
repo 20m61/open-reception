@@ -76,9 +76,7 @@ export const ADMIN_NAV: readonly NavGroup[] = [
       { href: '/admin/stay', label: '在館状況' },
       { href: '/admin/sites', label: '拠点' },
       { href: '/admin/operating-hours', label: '営業時間' },
-      { href: '/admin/kiosks', label: '受付端末' },
-      { href: '/admin/devices', label: '受付端末（拠点別）' },
-      { href: '/admin/call-routes', label: '呼び出しルート' },
+      { href: '/admin/devices', label: '受付端末' },
       { href: '/admin/call-routing', label: '取次ルート' },
       { href: '/admin/departments', label: '部署' },
       { href: '/admin/staff', label: '担当者' },
@@ -204,7 +202,29 @@ export function isActivePath(itemHref: string, pathname: string): boolean {
  * 別なので、規律では抜ける。`navigation.test.ts` が実ルートを走査して、ナビ登録か
  * 理由付きの非掲載登録かのどちらかを強制する。
  */
+/**
+ * **非掲載だが到達可能な**ルートの画面名 (issue #421)。
+ *
+ * タブタイトルは `ADMIN_NAV` から導出しているため、ナビから外すとタイトルまで失われて
+ * 「管理画面」になってしまう（旧画面は意図的に残しているのに、どの画面か分からなくなる）。
+ * **サイドバーへの表示可否と画面のメタ情報は別物**なので、ここで独立に持つ。
+ */
+export const UNLISTED_ADMIN_TITLES: Record<string, string> = {
+  '/admin/login': 'ログイン',
+  '/admin/kiosks': '受付端末管理（旧）',
+  '/admin/call-routes': '呼び出しルート（旧）',
+};
+
 export const UNLISTED_ADMIN_ROUTES: Record<string, string> = {
   '/admin/login': 'ログイン画面。認証前に到達する入口で、ナビ自体が出ていない',
   '/admin/ui-catalog': '実装者向けの UI カタログ。運用者の業務導線ではない',
+  '/admin/kiosks':
+    '旧・受付端末管理 (#18)。`docs/site-device-management-design.md` の確定方針で ' +
+    'Device が正・`/admin/devices` が主管理画面。token 登録/失効の旧フローが生きているため ' +
+    '画面は残すが、ナビに対等で並べると「受付端末」が 2 つに見える。/admin/devices から辿れる',
+  '/admin/call-routes':
+    '旧・呼び出しルート (#88)。**実際の発信は参照しない**（発信は executeRoutedCall → ' +
+    'RoutingPolicy/ContactEndpoint（issue 374）。routing/compat.ts は消費者ゼロ）。設定しても実通話に ' +
+    '効かないのでナビから外す。受付フローの callRouteId がまだ参照するため画面は残し、' +
+    '/admin/call-routing から辿れる。モデル一本化は移行台帳 §5「取次モデル」',
 };
