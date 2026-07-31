@@ -49,6 +49,22 @@ const SEED_SITES: Site[] = [
     createdAt: '2026-01-01T00:00:00.000Z',
     updatedAt: '2026-01-01T00:00:00.000Z',
   },
+  /**
+   * **2 拠点目 (#421)。** 拠点が 1 件しか無いと「拠点スコープが効いている」ことを
+   * 一切検証できない — URL を見ない実装でも先頭サイトを自動選択して同じ結果になるため、
+   * 書いたテストが**必ず pass する無意味なテスト**になる（実際に増分 1 でそうなった）。
+   *
+   * 端末は意図的に 0 台。「拠点を切り替えると一覧の中身が変わる」ことが観測でき、
+   * かつ既存 spec は全て `default-site` を明示指定しているので影響しない。
+   */
+  {
+    id: asSiteId('branch-site'),
+    tenantId: asTenantId('internal'),
+    name: '別館受付',
+    status: 'active',
+    createdAt: '2026-01-01T00:00:00.000Z',
+    updatedAt: '2026-01-01T00:00:00.000Z',
+  },
 ];
 
 // 既存 kiosk-dev（src/lib/kiosk/kiosk-store.ts の SEED）に対応する Device 表現。
