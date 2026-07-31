@@ -12,18 +12,14 @@ import { loginAsAdmin } from './helpers';
  * セレクタへ反映されるか**は配線の話なので unit では見えない。第 87 wave で
  * 「純関数は正しいのに配線が stale」という同型の欠陥を踏んでいるため、実ルートで見る。
  *
- * ⚠️ **この 2 本は「回帰ガード」であって、URL 同期が効いていることの証明ではない。**
- * seed の拠点は `default-site` の 1 件だけ（`src/lib/tenant/store.ts`）なので、**URL を
- * 一切見ない旧実装（先頭サイトを自動選択）でも同じ結果になり、両方 pass する**。
- * 「URL から読んでいる」ことを実証するには**2 件目の拠点が要る**。
+ * **なぜ seed に 2 拠点目が要るか**（`src/lib/tenant/store.ts` の `branch-site`）:
+ * 拠点が 1 件だと、**URL を一切見ない実装（先頭サイトを自動選択）でも同じ結果になる**ため、
+ * ここに書くテストは何をしても pass する＝検証になっていない。増分 1 で実際にそうなった
+ * （2 本とも変更前から pass していた）。2 件目を置いて初めて「切り替えが URL に載り、
+ * リロードで保たれる」を実証できる。
  *
- * では何を守れるか: 将来 `get('siteId')` を検証せずそのまま採用する実装へ変わった場合、
- * 2 本目（実在しない id）は `no-such-site` が選択されて**落ちる**。安全側の倒し方が
- * 壊れたことは検出できる。
- *
- * 2 件目を作れば切り替えまで実証できるが、共有シードを変えると拠点一覧に依存する他 spec を
- * 不安定にするため、**専用 project への隔離とセット**でないと入れられない
- * （`playwright.config.ts` の FLOW_MUTATING_SPECS と同じ判断）。それは別増分。
+ * 既存 spec への影響が無いことは確認済み: 拠点を触る e2e は全て `default-site` を明示指定し、
+ * `capture-screens.spec.ts` は `page.screenshot()` で撮るだけ（VRT 比較をしない）。
  */
 test.describe('管理: 拠点スコープが URL に載る (#421)', () => {
   test.beforeEach(async ({ page }) => {
@@ -36,6 +32,23 @@ test.describe('管理: 拠点スコープが URL に載る (#421)', () => {
     // testid で名指しする。`locator('select').first()` だと、複数テナントに所属する
     // 管理者ではヘッダの TenantSwitcher が先に出て**テナント選択の方を掴む**。
     await expect(page.getByTestId('device-site-select')).toHaveValue('default-site');
+  });
+
+  test('拠点を切り替えると URL に載り、リロードしても保たれる', async ({ page }) => {
+    // **これが「URL が真実源」であることの実証。** 拠点が 1 件しか無いと、URL を一切見ない
+    // 旧実装（先頭サイトを自動選択）でも同じ結果になり検証にならないため、seed に 2 件目
+    // （`branch-site`）を置いてある。
+    await page.goto('/admin/devices');
+    const select = page.getByTestId('device-site-select');
+    await expect(select).toHaveValue('default-site');
+
+    await select.selectOption('branch-site');
+    await expect(page).toHaveURL(/siteId=branch-site/);
+    await expect(select).toHaveValue('branch-site');
+
+    // リロードしても選択が戻らない（component state だった頃はここで先頭へ戻っていた）。
+    await page.reload();
+    await expect(page.getByTestId('device-site-select')).toHaveValue('branch-site');
   });
 
   test('実在しない siteId は採用せず、実在する拠点へ倒す', async ({ page }) => {
