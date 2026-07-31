@@ -281,5 +281,28 @@ linux 側だけが取り残されていた。プラットフォーム差では�
 ただし PII の本文だけに絞ったように、**必要最小限へ絞る**こと)。
 
 **ただし mask は描画を変えるので linux ベースラインも取り直しになる。** macOS 側だけで
-やると linux が壊れるため、**両プラットフォームを 1 周で揃える必要がある**
-（macOS で mask 適用 + darwin 再生成 → 同じブランチをクラウドセッションで linux 再生成）。
+やると linux が壊れるため、**両プラットフォームを 1 周で揃える必要がある**。
+
+#### 進捗: macOS 側は完了・linux 側が未了（ブランチ `fix/vrt-a11y-reopen-time-mask`）
+
+macOS 側で実施済み:
+
+- `kiosk-out-of-hours-reopen-time`（**日時の値のノードだけ**）を mask に追加。
+  枠（`-reopen-time` の親 `-reopen`）ごとは隠さない — 第 72 wave の反省に従い最小へ絞る。
+  ラベル「次回の受付開始」・緊急連絡枠・言語切替は**比較対象のまま残る**。
+- `SHOT_BASE` の `maxDiffPixelRatio` を **0.02 → 0.002**。
+- darwin ベースラインは **`out-of-hours` の 1 枚だけ**再生成。
+  **残り 8 枚は再生成せずに 0.002 で PASS した**（＝ノイズが実測 0 であることの裏付け）。
+- `--repeat-each=3` で 30/30 PASS。
+
+**残り: linux ベースライン 1 枚（`kiosk-landscape-out-of-hours-chromium-ipad-linux.png`）。**
+クラウドセッションで同じブランチを checkout して:
+
+```bash
+npx playwright test tests/e2e/kiosk-vrt-a11y.spec.ts --project=pristine-state \
+  --update-snapshots=changed
+./scripts/quality-gate.sh --full --strict
+```
+
+再生成されるのは 1 枚だけのはず。**それ以上が書き換わったら止めて差分を見ること**
+（linux 側にも 0.02 が隠していた退行がある、という別の発見になる）。
