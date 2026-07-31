@@ -253,12 +253,33 @@ linux 側だけが取り残されていた。プラットフォーム差では�
 `turnHandoffsFor('idle')`（QR）を**その後**に描くため、正しい並びは
 `担当者を呼ぶ` → `部署から選ぶ` → `配送・納品` → `その他` → `QR で受付`。
 
-macOS で `npm run test:e2e` を回すと `ipad-portrait` / `ipad-landscape` の 2 件が落ちる見込み
-（`large-display` は 6.3 の理由で通ってしまう）。`{platform}` 込みの名前ゆえ
-**Linux からは原理的に取り直せない**。macOS 側の周回で:
+`{platform}` 込みの名前ゆえ **Linux からは原理的に取り直せない**。
 
-```bash
-npm run build
-rm -f tests/e2e/kiosk-screenshot.spec.ts-snapshots/kiosk-idle-*-chromium-ipad-darwin.png
-npx playwright test tests/e2e/kiosk-screenshot.spec.ts --update-snapshots=missing
-```
+> **✅ 第 95 wave（macOS 側）で対応済み。ただし上の「2 件が落ちる見込み」という予測は
+> 外れた — 実際には 3 件とも PASS していた。**
+>
+> 診断（darwin ベースラインが旧並びのまま）は**正しかった**が、`npm run test:e2e` を回しても
+> 落ちない。カードの**位置は同じで中身の文字とアイコンだけが入れ替わる**ため、差分は
+> 4900px / 4900px / 12319px（実比 ~0.006）にしかならず、当時の
+> `maxDiffPixelRatio: 0.02` の内側に収まっていた。
+>
+> **つまり VRT が退行を隠していた**（第 77 wave に続き 2 度目）。ベースラインの取り直しと
+> あわせて `kiosk-screenshot.spec.ts` の許容値を **0.002** へ下げた（同一プラットフォームの
+> 再撮影は実測ノイズ 0。12 連続 pass で確認）。
+>
+> **教訓: 「落ちる見込み」を検証せずに残さない。** 予測を残すなら実際に走らせて確かめる
+> （このリポジトリは stale な制約の引き継ぎで繰り返し損をしている）。
+
+### 6.6 残課題: `kiosk-vrt-a11y` の許容値は下げられない（両プラットフォーム同時対応が要る）
+
+`kiosk-screenshot` と違い、`kiosk-vrt-a11y.spec.ts` の `maxDiffPixelRatio: 0.02` は
+**下げると毎日落ちる**。`maxDiffPixelRatio: 0` で実測したところ 9 件中 1 件
+（`kiosk-landscape-out-of-hours`）が 1813px 差分で落ち、**差分は「次回の受付開始」の
+日時テキストだけ**だった（日付が変われば必ず動く）。
+
+筋の良い直し方は閾値ではなく**その要素の `mask`**（第 72 wave で通話中パネルに使った手法。
+ただし PII の本文だけに絞ったように、**必要最小限へ絞る**こと)。
+
+**ただし mask は描画を変えるので linux ベースラインも取り直しになる。** macOS 側だけで
+やると linux が壊れるため、**両プラットフォームを 1 周で揃える必要がある**
+（macOS で mask 適用 + darwin 再生成 → 同じブランチをクラウドセッションで linux 再生成）。
