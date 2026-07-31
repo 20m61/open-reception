@@ -1,4 +1,8 @@
-import { test, expect } from './kiosk-fixtures';
+// **kiosk-fixtures からは import しない。** あちらの `test` は毎テスト
+// `establishKioskSession` を走らせ、端末を 1 台作ってエンロールしたまま消さない。
+// この spec は管理画面の読み取りだけなのに、実行のたびに端末が増え、しかも
+// **その端末一覧を assert している**（自分で汚した対象を検査することになる）。
+import { test, expect } from '@playwright/test';
 import { loginAsAdmin } from './helpers';
 
 /**
@@ -29,8 +33,9 @@ test.describe('管理: 拠点スコープが URL に載る (#421)', () => {
   test('URL の siteId が拠点セレクタへ反映される', async ({ page }) => {
     await page.goto('/admin/devices?siteId=default-site');
 
-    const select = page.locator('select').first();
-    await expect(select).toHaveValue('default-site');
+    // testid で名指しする。`locator('select').first()` だと、複数テナントに所属する
+    // 管理者ではヘッダの TenantSwitcher が先に出て**テナント選択の方を掴む**。
+    await expect(page.getByTestId('device-site-select')).toHaveValue('default-site');
   });
 
   test('実在しない siteId は採用せず、実在する拠点へ倒す', async ({ page }) => {
@@ -38,8 +43,7 @@ test.describe('管理: 拠点スコープが URL に載る (#421)', () => {
     // 「この拠点には端末が無い」と**事実と異なる読み方**をされる。
     await page.goto('/admin/devices?siteId=no-such-site');
 
-    const select = page.locator('select').first();
-    await expect(select).toHaveValue('default-site');
+    await expect(page.getByTestId('device-site-select')).toHaveValue('default-site');
     // 実在拠点へ倒れているので、一覧は「空」ではなく実データが出る。
     await expect(page.getByText('このサイトに登録された受付端末はありません。')).toHaveCount(0);
   });

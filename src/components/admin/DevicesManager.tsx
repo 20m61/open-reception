@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState, useTransition } from 'react';
 import type { DeviceConnectivity, DeviceView } from '@/lib/tenant/device-service';
 import type { SiteWithDevices } from '@/lib/tenant/site-service';
 import type { DeviceKind } from '@/domain/tenant/types';
@@ -98,9 +98,22 @@ export function DevicesManager({ tenantId = DEFAULT_TENANT_ID }: { tenantId?: st
    * 採用すると空の一覧が「この拠点には端末が無い」と誤読される。
    */
   const siteId = resolveSelectedSiteId(get('siteId'), sites);
+
+  /**
+   * **URL 遷移が確定するまで登録を止めるためのフラグ。**
+   *
+   * `setMany` は `router.replace` を起こすだけで、`useSearchParams()` のスナップショットが
+   * 差し替わるのは遷移が確定した後。その間 `siteId` は**古い拠点のまま**なので、
+   * 端末名を入力済みの管理者が拠点を切り替えて即座に「登録」を押すと、
+   * **切り替える前の拠点に端末が作られる**（`add` が siteId を POST するため）。
+   * component state だった頃は選択が即時反映されるのでこの窓が無かった＝本増分で入った回帰。
+   *
+   * 行単位の操作（有効/無効・メンテ・改名）は deviceId で対象が一意に決まるので影響しない。
+   */
+  const [sitePending, startSiteTransition] = useTransition();
   const selectSite = useCallback(
     // 拠点を変えるとフィルタ後の母集合が変わるので、ページは 1 へ戻す（既存フィルタと同じ作法）。
-    (next: string) => setMany({ siteId: next, page: '' }),
+    (next: string) => startSiteTransition(() => setMany({ siteId: next, page: '' })),
     [setMany],
   );
 
@@ -129,7 +142,8 @@ export function DevicesManager({ tenantId = DEFAULT_TENANT_ID }: { tenantId?: st
   }, [loadDevices]);
 
   const add = useCallback(async () => {
-    if (name.trim() === '' || siteId === '' || busy) return;
+    // sitePending 中は siteId が古いスナップショットのままなので登録しない（上の解説参照）。
+    if (name.trim() === '' || siteId === '' || busy || sitePending) return;
     setBusy(true);
     try {
       await fetch('/api/admin/devices', {
@@ -144,7 +158,7 @@ export function DevicesManager({ tenantId = DEFAULT_TENANT_ID }: { tenantId?: st
     } finally {
       setBusy(false);
     }
-  }, [name, location, kind, siteId, busy, tenantId, loadDevices]);
+  }, [name, location, kind, siteId, busy, sitePending, tenantId, loadDevices]);
 
   const patch = useCallback(
     async (id: string, body: Record<string, unknown>) => {
@@ -400,7 +414,7 @@ export function DevicesManager({ tenantId = DEFAULT_TENANT_ID }: { tenantId?: st
           variant="primary"
           data-testid="device-add"
           onClick={add}
-          disabled={busy || name.trim() === '' || siteId === ''}
+          disabled={busy || name.trim() === '' || siteId === '' || sitePending}
         >
           追加
         </Button>
