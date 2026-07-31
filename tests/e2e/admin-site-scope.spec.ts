@@ -106,6 +106,34 @@ test.describe('管理: 拠点スコープが URL に載る (#421)', () => {
     });
   }
 
+  test('拠点詳細から辿ると、その拠点のまま設定画面が開く', async ({ page }) => {
+    // **これが #421 の「拠点詳細から全関連設定へ到達できる」の実証。**
+    // 増分 1〜3 で先に画面側を URL 対応させたので、ここのリンクは実際に拠点を運ぶ。
+    // 順序を逆にしていたら、リンクは付いているのに開いた先は既定拠点、になっていた。
+    test.skip(
+      !!process.env.PLAYWRIGHT_BASE_URL,
+      'branch-site は seed 由来で、dynamodb backend では seed が無視されるため実環境には存在しない',
+    );
+
+    await page.goto('/admin/sites');
+    // 一覧の名称から詳細へ入れる（URL 直打ちでしか開けない画面を作らない）。
+    await page.getByTestId('site-detail-link').filter({ hasText: '別館受付' }).click();
+    await expect(page.getByTestId('site-detail-id')).toHaveText('branch-site');
+
+    await page.getByTestId('site-dest-devices').click();
+    await expect(page).toHaveURL(/\/admin\/devices\?siteId=branch-site/);
+    await expect(page.getByTestId('device-site-select')).toHaveValue('branch-site');
+  });
+
+  test('拠点を運べない導線には siteId を付けない', async ({ page }) => {
+    // 付けても無視される先に付けると、リンクが拠点を運んでいるように見えて実際は捨てられる。
+    test.skip(!!process.env.PLAYWRIGHT_BASE_URL, 'seed 依存のため実環境では実行しない');
+
+    await page.goto('/admin/sites/branch-site');
+    const staff = page.getByTestId('site-dest-staff');
+    await expect(staff).toHaveAttribute('href', '/admin/staff');
+  });
+
   test('実在しない siteId は採用せず、実在する拠点へ倒す', async ({ page }) => {
     // ここが安全側の肝。存在しない id をそのまま選択状態にすると、端末一覧が空になり
     // 「この拠点には端末が無い」と**事実と異なる読み方**をされる。
