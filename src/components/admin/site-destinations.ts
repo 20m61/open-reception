@@ -45,13 +45,13 @@ export const SITE_DESTINATIONS: readonly SiteDestination[] = [
   // 旧 `/admin/call-routes` はここに載せない (#421)。ナビから外したのに拠点詳細から
   // 対等なカードとして出すと、入口が変わっただけで重複は残る。旧画面へは正となる
   // `/admin/call-routing` の中の導線から辿る。
-  // --- ここから下は **まだ拠点を運べない**。画面が URL の siteId を読んでいない。 ---
   {
     href: '/admin/reception-flows',
     label: '受付フロー',
-    description: '来訪目的ごとの受付ステップ（現在は既定拠点のみ）',
-    siteScoped: false,
+    description: '来訪目的ごとの受付ステップ',
+    siteScoped: true,
   },
+  // --- ここから下は **まだ拠点を運べない**。画面が URL の siteId を読んでいない。 ---
   {
     href: '/admin/departments',
     label: '部署',

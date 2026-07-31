@@ -1,6 +1,8 @@
 'use client';
 
 import { useCallback, useEffect, useState } from 'react';
+import { useSiteScope } from './use-site-scope';
+import { SiteScopeSelect } from './SiteScopeSelect';
 import type { StoredReceptionFlow } from '@/lib/reception/flow-config/types';
 import type { CallRoute } from '@/lib/notification/types';
 import {
@@ -53,11 +55,18 @@ const FIELD_TYPE_LABELS: Record<FlowField['type'], string> = {
 
 export function ReceptionFlowsManager({
   tenantId = DEFAULT_TENANT_ID,
-  siteId = DEFAULT_SITE_ID,
+  siteId: defaultSiteId = DEFAULT_SITE_ID,
 }: {
   tenantId?: string;
+  /** サーバ由来の既定拠点。URL 未指定時のフォールバック。 */
   siteId?: string;
 }) {
+  // 対象拠点は URL が真実源 (#421)。以前は既定拠点に固定で、UI から別拠点の
+  // 受付フローへ到達する手段が無かった。
+  const { sites, siteId, scopeReady, isCurrentSite, selectSite, sitePending } = useSiteScope(
+    tenantId,
+    defaultSiteId,
+  );
   const [items, setItems] = useState<StoredReceptionFlow[]>([]);
   const [routes, setRoutes] = useState<CallRoute[]>([]);
   const [purposeKey, setPurposeKey] = useState('');
@@ -67,9 +76,14 @@ export function ReceptionFlowsManager({
   const [editName, setEditName] = useState('');
 
   const load = useCallback(async () => {
+    // 拠点が確定するまで取得しない（#534 / #535 と同じ competition を避ける）。
+    if (!scopeReady) return;
+    const startedWith = siteId;
     const res = await fetch(
       `/api/admin/reception-flows?tenantId=${encodeURIComponent(tenantId)}&siteId=${encodeURIComponent(siteId)}`,
     );
+    // 取得中に拠点が変わっていたら捨てる。
+    if (!isCurrentSite(startedWith)) return;
     if (res.ok) {
       const data = (await res.json()) as StoredReceptionFlow[];
       setItems(
@@ -78,15 +92,18 @@ export function ReceptionFlowsManager({
         ),
       );
     }
-  }, [tenantId, siteId]);
+  }, [tenantId, siteId, scopeReady, isCurrentSite]);
 
   // 目的ごとの通知ルート割り当て用に、選択肢となる通知ルート一覧を読み込む (issue #100)。
   const loadRoutes = useCallback(async () => {
+    if (!scopeReady) return;
+    const startedWith = siteId;
     const res = await fetch(
       `/api/admin/call-routes?tenantId=${encodeURIComponent(tenantId)}&siteId=${encodeURIComponent(siteId)}`,
     );
+    if (!isCurrentSite(startedWith)) return;
     if (res.ok) setRoutes((await res.json()) as CallRoute[]);
-  }, [tenantId, siteId]);
+  }, [tenantId, siteId, scopeReady, isCurrentSite]);
 
   useEffect(() => {
     void load();
@@ -94,7 +111,8 @@ export function ReceptionFlowsManager({
   }, [load, loadRoutes]);
 
   const add = useCallback(async () => {
-    if (purposeKey.trim() === '' || displayName.trim() === '' || busy) return;
+    // 拠点切替の遷移確定前は siteId が古いままなので作成しない（別拠点に作られる）。
+    if (purposeKey.trim() === '' || displayName.trim() === '' || busy || sitePending) return;
     setBusy(true);
     try {
       await fetch('/api/admin/reception-flows', {
@@ -116,7 +134,7 @@ export function ReceptionFlowsManager({
     } finally {
       setBusy(false);
     }
-  }, [purposeKey, displayName, busy, tenantId, siteId, items.length, load]);
+  }, [purposeKey, displayName, busy, sitePending, tenantId, siteId, items.length, load]);
 
   const patch = useCallback(
     async (id: string, body: Record<string, unknown>) => {
@@ -187,6 +205,14 @@ export function ReceptionFlowsManager({
       </p>
 
       <div style={{ display: 'flex', gap: space.sm, alignItems: 'flex-end', flexWrap: 'wrap', marginBottom: space.lg }}>
+        {/* 対象拠点を常時表示し、ここから切り替えられるようにする (#421)。 */}
+        <SiteScopeSelect
+          sites={sites}
+          siteId={siteId}
+          onSelect={selectSite}
+          disabled={sitePending}
+          testId="reception-flows-site-select"
+        />
         <Field label="目的キー（英数）" htmlFor="flow-key-input">
           <input
             id="flow-key-input"
