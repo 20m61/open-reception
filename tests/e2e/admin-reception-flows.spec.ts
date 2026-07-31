@@ -77,6 +77,12 @@ test('受付フローに通知ルートを割り当てて永続化できる（#1
   // 既定は未割当。
   await expect(select).toHaveValue('');
 
+  // **選択肢が届くまで待つ。** 取次先の取得はフロー一覧とは別要求なので、フローが先に
+  // 届くとカードは出ているのに option が空、という瞬間がある。`toHaveValue('')` は
+  // option の増加を待たないため、ここで待たないと要求の速度差でフレークになる。
+  // 画面は取次先が揃うまでセレクタを無効にしているので、その状態を待てばよい。
+  await expect(select).toBeEnabled();
+
   // 選択肢にある実ルート（value が空でない最初の option）を割り当てる。
   const routeValue = await select
     .locator('option')
