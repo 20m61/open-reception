@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState, useTransition } from 'react';
 import type { DeviceConnectivity, DeviceView } from '@/lib/tenant/device-service';
 import type { SiteWithDevices } from '@/lib/tenant/site-service';
 import type { DeviceKind } from '@/domain/tenant/types';
@@ -18,6 +18,7 @@ import { renderTextToQrSvg } from '@/lib/reservation/qr';
 import { useQueryParams } from './use-query-params';
 import { paginate } from './list-io';
 import { filterDevices, devicesToCsv, type DeviceListFilter } from './devices-filter';
+import { resolveSelectedSiteId } from './site-scope';
 
 /**
  * 受付端末（Device）管理 (issue #87, increment 2; 検索/フィルタ/ページング/CSV は #330 item2 残増分)。
@@ -62,7 +63,6 @@ function formatLastSeen(iso: string | undefined): string {
 
 export function DevicesManager({ tenantId = DEFAULT_TENANT_ID }: { tenantId?: string }) {
   const [sites, setSites] = useState<SiteWithDevices[]>([]);
-  const [siteId, setSiteId] = useState<string>('');
   const [devices, setDevices] = useState<DeviceView[]>([]);
   const [name, setName] = useState('');
   const [location, setLocation] = useState('');
@@ -87,12 +87,40 @@ export function DevicesManager({ tenantId = DEFAULT_TENANT_ID }: { tenantId?: st
   const kindFilter = get('kind');
   const pageParam = get('page');
 
+  /**
+   * 表示中の拠点は **URL が真実源** (#421)。検索・フィルタ・ページと同じ扱いに揃える。
+   *
+   * ここが component state のままだと、リロード・共有 URL・戻る/進むでフィルタは復元される
+   * のに拠点だけ先頭へ戻る。#421 の「拠点詳細から全関連設定へ到達」も、拠点を URL で
+   * 渡せなければ**拠点を伝えられないただの画面遷移**にしかならない。
+   *
+   * 実在しない siteId を URL に書かれても採用しない（`resolveSelectedSiteId` が先頭へ倒す）。
+   * 採用すると空の一覧が「この拠点には端末が無い」と誤読される。
+   */
+  const siteId = resolveSelectedSiteId(get('siteId'), sites);
+
+  /**
+   * **URL 遷移が確定するまで登録を止めるためのフラグ。**
+   *
+   * `setMany` は `router.replace` を起こすだけで、`useSearchParams()` のスナップショットが
+   * 差し替わるのは遷移が確定した後。その間 `siteId` は**古い拠点のまま**なので、
+   * 端末名を入力済みの管理者が拠点を切り替えて即座に「登録」を押すと、
+   * **切り替える前の拠点に端末が作られる**（`add` が siteId を POST するため）。
+   * component state だった頃は選択が即時反映されるのでこの窓が無かった＝本増分で入った回帰。
+   *
+   * 行単位の操作（有効/無効・メンテ・改名）は deviceId で対象が一意に決まるので影響しない。
+   */
+  const [sitePending, startSiteTransition] = useTransition();
+  const selectSite = useCallback(
+    // 拠点を変えるとフィルタ後の母集合が変わるので、ページは 1 へ戻す（既存フィルタと同じ作法）。
+    (next: string) => startSiteTransition(() => setMany({ siteId: next, page: '' })),
+    [setMany],
+  );
+
   const loadSites = useCallback(async () => {
     const res = await fetch(`/api/admin/sites?tenantId=${encodeURIComponent(tenantId)}`);
     if (!res.ok) return;
-    const list = (await res.json()) as SiteWithDevices[];
-    setSites(list);
-    setSiteId((prev) => prev || list[0]?.id || '');
+    setSites((await res.json()) as SiteWithDevices[]);
   }, [tenantId]);
 
   const loadDevices = useCallback(async () => {
@@ -114,7 +142,8 @@ export function DevicesManager({ tenantId = DEFAULT_TENANT_ID }: { tenantId?: st
   }, [loadDevices]);
 
   const add = useCallback(async () => {
-    if (name.trim() === '' || siteId === '' || busy) return;
+    // sitePending 中は siteId が古いスナップショットのままなので登録しない（上の解説参照）。
+    if (name.trim() === '' || siteId === '' || busy || sitePending) return;
     setBusy(true);
     try {
       await fetch('/api/admin/devices', {
@@ -129,7 +158,7 @@ export function DevicesManager({ tenantId = DEFAULT_TENANT_ID }: { tenantId?: st
     } finally {
       setBusy(false);
     }
-  }, [name, location, kind, siteId, busy, tenantId, loadDevices]);
+  }, [name, location, kind, siteId, busy, sitePending, tenantId, loadDevices]);
 
   const patch = useCallback(
     async (id: string, body: Record<string, unknown>) => {
@@ -334,7 +363,7 @@ export function DevicesManager({ tenantId = DEFAULT_TENANT_ID }: { tenantId?: st
           <select
             data-testid="device-site-select"
             value={siteId}
-            onChange={(e) => setSiteId(e.target.value)}
+            onChange={(e) => selectSite(e.target.value)}
             style={inputStyle}
           >
             {sites.length === 0 && <option value="">（サイトがありません）</option>}
@@ -385,7 +414,7 @@ export function DevicesManager({ tenantId = DEFAULT_TENANT_ID }: { tenantId?: st
           variant="primary"
           data-testid="device-add"
           onClick={add}
-          disabled={busy || name.trim() === '' || siteId === ''}
+          disabled={busy || name.trim() === '' || siteId === '' || sitePending}
         >
           追加
         </Button>
