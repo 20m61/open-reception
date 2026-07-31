@@ -86,6 +86,7 @@ test.describe('管理: 拠点スコープが URL に載る (#421)', () => {
   for (const screen of [
     { path: '/admin/call-routes', testId: 'call-routes-site-select', label: '呼び出しルート' },
     { path: '/admin/call-routing', testId: 'call-routing-site-select', label: '取次ルート' },
+    { path: '/admin/reception-flows', testId: 'reception-flows-site-select', label: '受付フロー' },
   ]) {
     test(`${screen.label}も拠点を切り替えられ、URL に載る`, async ({ page }) => {
       // これらも resolveDefaultScope() に固定されていて、UI から別拠点へ到達できなかった。

@@ -34,6 +34,7 @@ describe('拠点詳細から辿る設定の登録簿 (#421)', () => {
       '/admin/call-routing',
       '/admin/devices',
       '/admin/operating-hours',
+      '/admin/reception-flows',
     ]);
   });
 });

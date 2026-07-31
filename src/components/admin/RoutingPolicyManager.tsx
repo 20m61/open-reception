@@ -131,13 +131,21 @@ export function RoutingPolicyManager({
         {/*
           **siteId を落とさない。** CallRoutesManager は URL を拠点の真実源にしているので
           （増分 3）、クエリ無しで開くと既定拠点の旧ルートを編集させてしまう。
+
+          **確定するまでリンクを出さない。** 一覧が届く前は `resolveSiteScopeState` が
+          既定拠点を返す（ready=false）ため、href が一瞬 `?siteId=default-site` になる。
+          そこを押すと別拠点の旧ルートを編集してしまう（e2e が実際に踏んだ）。
         */}
-        <a
-          href={siteId ? `/admin/call-routes?siteId=${encodeURIComponent(siteId)}` : '/admin/call-routes'}
-          data-testid="routing-legacy-call-routes-link"
-        >
-          呼び出しルート（旧）
-        </a>{' '}
+        {scopeReady ? (
+          <a
+            href={`/admin/call-routes?siteId=${encodeURIComponent(siteId)}`}
+            data-testid="routing-legacy-call-routes-link"
+          >
+            呼び出しルート（旧）
+          </a>
+        ) : (
+          <span data-testid="routing-legacy-call-routes-pending">呼び出しルート（旧）</span>
+        )}{' '}
         に残しています（実際の発信はこの画面の設定が決めます）。
       </p>
 
