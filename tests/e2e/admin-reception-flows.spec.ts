@@ -65,38 +65,10 @@ test('カスタムフローを作成し、選択肢付きの入力項目を追�
   await expect(reloaded.getByTestId('flow-field').filter({ hasText: '希望枠' })).toHaveCount(1);
 });
 
-test('受付フローに通知ルートを割り当てて永続化できる（#100）', async ({ page }) => {
-  const key = uniq('e2e-route');
-  const name = uniq('ルート割当フロー');
-  await loginAsAdmin(page);
-  await page.goto('/admin/reception-flows');
-  await createFlow(page, key, name);
-
-  const card = page.getByTestId('flow-card').filter({ hasText: name });
-  const select = card.getByTestId('flow-call-route');
-  // 既定は未割当。
-  await expect(select).toHaveValue('');
-
-  // **選択肢が届くまで待つ。** 取次先の取得はフロー一覧とは別要求なので、フローが先に
-  // 届くとカードは出ているのに option が空、という瞬間がある。`toHaveValue('')` は
-  // option の増加を待たないため、ここで待たないと要求の速度差でフレークになる。
-  // 画面は取次先が揃うまでセレクタを無効にしているので、その状態を待てばよい。
-  await expect(select).toBeEnabled();
-
-  // 選択肢にある実ルート（value が空でない最初の option）を割り当てる。
-  const routeValue = await select
-    .locator('option')
-    .evaluateAll((opts) =>
-      (opts as HTMLOptionElement[]).map((o) => o.value).find((v) => v !== ''),
-    );
-  expect(routeValue, '通知ルートのシードが必要').toBeTruthy();
-  await select.selectOption(routeValue!);
-
-  // 再読込しても割り当てが永続している（PATCH callRouteId が保存された）。
-  await page.reload();
-  const reloaded = page.getByTestId('flow-card').filter({ hasText: name });
-  await expect(reloaded.getByTestId('flow-call-route')).toHaveValue(routeValue!);
-});
+// **「通知ルート割当」の e2e は撤去した (#421 / 移行台帳 §5「取次モデル」)。**
+// 画面から割当セレクタを外したため、この導線自体が存在しない。機能を消したことに伴う
+// 削除であって、落ちるテストを消して green にしたわけではない。
+// 保存済みの callRouteId は API・ドメイン側にまだ残っており、その撤去は後続増分。
 
 test('上下ボタンで隣接フローの並び順を入れ替えられる（永続化される）', async ({ page }) => {
   await loginAsAdmin(page);
