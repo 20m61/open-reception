@@ -82,7 +82,14 @@ export function ReceptionFlowsManager({
    */
   const [flowsScopeKey, setFlowsScopeKey] = useState<string | null>(null);
   const [routesScopeKey, setRoutesScopeKey] = useState<string | null>(null);
-  const loaded = flowsScopeKey === scopeKey && routesScopeKey === scopeKey;
+  /**
+   * **フローと取次先で別々に持つ。** 両方揃うまで一括で止めると、
+   * **フローだけ先に届いた窓で行が描かれているのに操作が無反応**になる
+   * （ハンドラが早期 return する = サイレント no-op）。フローの変更操作に取次先の到着は
+   * 要らないので、依存を実際に使う側へ合わせる。取次先は割当セレクタだけが使う。
+   */
+  const flowsLoaded = flowsScopeKey === scopeKey;
+  const routesLoaded = routesScopeKey === scopeKey;
   const [purposeKey, setPurposeKey] = useState('');
   const [displayName, setDisplayName] = useState('');
   const [busy, setBusy] = useState(false);
@@ -136,7 +143,7 @@ export function ReceptionFlowsManager({
   const add = useCallback(async () => {
     // 拠点切替の遷移確定前は siteId が古いままなので作成しない（別拠点に作られる）。
     // 新拠点のデータが載りきるまで作らない（order の採番に前拠点の件数を使ってしまう）。
-    if (purposeKey.trim() === '' || displayName.trim() === '' || busy || sitePending || !loaded)
+    if (purposeKey.trim() === '' || displayName.trim() === '' || busy || sitePending || !flowsLoaded)
       return;
     setBusy(true);
     try {
@@ -159,12 +166,12 @@ export function ReceptionFlowsManager({
     } finally {
       setBusy(false);
     }
-  }, [purposeKey, displayName, busy, sitePending, loaded, tenantId, siteId, items.length, load]);
+  }, [purposeKey, displayName, busy, sitePending, flowsLoaded, tenantId, siteId, items.length, load]);
 
   const patch = useCallback(
     async (id: string, body: Record<string, unknown>) => {
-      // 表示中の拠点のデータでなければ触らない（対象は tenant + ID でしか決まらない）。
-      if (!loaded) return;
+      // 表示中のスコープのデータでなければ触らない（対象は tenant + ID でしか決まらない）。
+      if (!flowsLoaded) return;
       await fetch(`/api/admin/reception-flows/${id}`, {
         method: 'PATCH',
         headers: { 'content-type': 'application/json' },
@@ -172,7 +179,7 @@ export function ReceptionFlowsManager({
       });
       await load();
     },
-    [tenantId, load, loaded],
+    [tenantId, load, flowsLoaded],
   );
 
   const toggle = useCallback((f: StoredReceptionFlow) => patch(f.id, { enabled: !f.enabled }), [patch]);
@@ -180,7 +187,7 @@ export function ReceptionFlowsManager({
   // 並び替え (inc2): 隣と order を入れ替え、変わった項目だけ PATCH してから一度だけ再読込する。
   const reorder = useCallback(
     async (index: number, dir: -1 | 1) => {
-      if (!loaded) return;
+      if (!flowsLoaded) return;
       const { changed } = reorderBySwap(items, index, dir);
       if (changed.length === 0) return;
       await Promise.all(
@@ -194,7 +201,7 @@ export function ReceptionFlowsManager({
       );
       await load();
     },
-    [items, tenantId, load, loaded],
+    [items, tenantId, load, flowsLoaded],
   );
 
   // 入力項目の保存 (inc2): fields 配列ごと PATCH する（検証は API のドメイン層）。
@@ -215,14 +222,14 @@ export function ReceptionFlowsManager({
 
   const remove = useCallback(
     async (f: StoredReceptionFlow) => {
-      if (!loaded) return;
+      if (!flowsLoaded) return;
       if (!window.confirm(`受付フロー「${f.displayName}」を削除します。よろしいですか?`)) return;
       await fetch(`/api/admin/reception-flows/${f.id}?tenantId=${encodeURIComponent(tenantId)}`, {
         method: 'DELETE',
       });
       await load();
     },
-    [tenantId, load, loaded],
+    [tenantId, load, flowsLoaded],
   );
 
   return (
@@ -269,7 +276,7 @@ export function ReceptionFlowsManager({
           // **無効化を loaded にも連動させる。** ハンドラ側だけ止めると、押せるボタンが
           // 黙って何もしない（サイレント no-op）。実際 e2e が「押したのに増えない」で
           // 不安定になった。無効にしておけば利用者にも分かり、Playwright も待てる。
-          disabled={busy || sitePending || !loaded || purposeKey.trim() === '' || displayName.trim() === ''}
+          disabled={busy || sitePending || !flowsLoaded || purposeKey.trim() === '' || displayName.trim() === ''}
         >
           追加
         </Button>
@@ -359,6 +366,8 @@ export function ReceptionFlowsManager({
               <select
                 data-testid="flow-call-route"
                 value={f.callRouteId ?? ''}
+                // 選択肢（取次先）が届くまでは操作させない。空の一覧から選ばせない。
+                disabled={!routesLoaded}
                 onChange={(e) => patch(f.id, { callRouteId: e.target.value })}
                 style={{ padding: '4px 8px', borderRadius: 6 }}
               >

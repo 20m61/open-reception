@@ -244,7 +244,7 @@ function EndpointsSection({
     } finally {
       setBusy(false);
     }
-  }, [busy, scope, ownerId, channel, address, label, reload]);
+  }, [busy, writeBlocked, scope, ownerId, channel, address, label, reload]);
 
   const removeEndpoint = useCallback(
     async (e: EndpointView) => {
@@ -393,7 +393,9 @@ function PoliciesSection({
   );
 
   const save = useCallback(async () => {
-    if (!draft || busy) return;
+    // ボタン側は writeBlocked で無効化しているが、ハンドラをボタンより弱くしない
+    // （拠点切替の遷移確定前は scope が旧拠点のまま）。
+    if (!draft || busy || writeBlocked) return;
     setBusy(true);
     setPolicyErrors([]);
     setStepErrors({});
@@ -431,7 +433,7 @@ function PoliciesSection({
     } finally {
       setBusy(false);
     }
-  }, [draft, busy, scope, reload]);
+  }, [draft, busy, writeBlocked, scope, reload]);
 
   return (
     <div>
