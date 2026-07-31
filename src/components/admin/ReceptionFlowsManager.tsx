@@ -266,7 +266,10 @@ export function ReceptionFlowsManager({
           variant="primary"
           data-testid="flow-add"
           onClick={add}
-          disabled={busy || purposeKey.trim() === '' || displayName.trim() === ''}
+          // **無効化を loaded にも連動させる。** ハンドラ側だけ止めると、押せるボタンが
+          // 黙って何もしない（サイレント no-op）。実際 e2e が「押したのに増えない」で
+          // 不安定になった。無効にしておけば利用者にも分かり、Playwright も待てる。
+          disabled={busy || sitePending || !loaded || purposeKey.trim() === '' || displayName.trim() === ''}
         >
           追加
         </Button>

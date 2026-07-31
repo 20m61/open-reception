@@ -186,7 +186,13 @@ export function CallRoutesManager({
             style={inputStyle}
           />
         </Field>
-        <Button variant="primary" data-testid="route-add" onClick={add} disabled={busy || name.trim() === ''}>
+        <Button
+          variant="primary"
+          data-testid="route-add"
+          onClick={add}
+          // ハンドラ側だけ止めると押せるボタンが黙って何もしない（サイレント no-op）。
+          disabled={busy || sitePending || name.trim() === ''}
+        >
           追加
         </Button>
       </div>
