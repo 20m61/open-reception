@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { resolveSelectedSiteId, resolveSiteScope } from './site-scope';
+import { resolveSelectedSiteId, resolveSiteScopeState } from './site-scope';
 
 const sites = [{ id: 'site-a' }, { id: 'site-b' }];
 
@@ -25,28 +25,45 @@ describe('resolveSelectedSiteId: URL の siteId と実在サイトの突き合�
   });
 });
 
-describe('resolveSiteScope: 既定拠点を持つ画面向け (#421)', () => {
-  it('拠点一覧の取得前は既定拠点へ倒す（空 id で取得しに行かない）', () => {
-    // 営業時間・呼び出しルートの画面はサーバから既定拠点を prop で受け取り、初回描画で
-    // すぐ取得を始める。一覧が届くまで '' を返すと **siteId 空のまま API を叩く**退行になる。
-    expect(resolveSiteScope('', [], 'default-site')).toBe('default-site');
-    expect(resolveSiteScope('branch-site', [], 'default-site')).toBe('default-site');
+describe('resolveSiteScopeState: 既定拠点を持つ画面向け (#421)', () => {
+  const sites = [{ id: 'default-site' }, { id: 'branch-site' }];
+
+  it('URL 未指定なら一覧を待たずに既定拠点で確定する', () => {
+    // 曖昧さが無いので待つ必要が無い。ここで ready=false にすると初期表示が遅れる。
+    expect(resolveSiteScopeState('', [], 'default-site')).toEqual({
+      siteId: 'default-site',
+      ready: true,
+    });
   });
 
-  it('一覧が届いたら URL の指定を採用する', () => {
-    const sites = [{ id: 'default-site' }, { id: 'branch-site' }];
-    expect(resolveSiteScope('branch-site', sites, 'default-site')).toBe('branch-site');
+  it('URL 指定があり一覧が未取得なら **まだ確定しない**', () => {
+    // ここで既定拠点を返して取得を始めると、deep link (?siteId=branch-site) のたびに
+    // **間違った拠点への要求が先に飛ぶ**。応答順が入れ替わると、branch を選んでいるのに
+    // default の内容が最後に届いて画面へ載る（そのまま保存すると他拠点の設定を壊す）。
+    expect(resolveSiteScopeState('branch-site', [], 'default-site')).toEqual({
+      siteId: 'default-site',
+      ready: false,
+    });
+  });
+
+  it('一覧が届いたら URL の指定を採用して確定する', () => {
+    expect(resolveSiteScopeState('branch-site', sites, 'default-site')).toEqual({
+      siteId: 'branch-site',
+      ready: true,
+    });
   });
 
   it('一覧が届いた後も、実在しない指定は採用しない', () => {
-    const sites = [{ id: 'default-site' }, { id: 'branch-site' }];
-    expect(resolveSiteScope('no-such-site', sites, 'default-site')).toBe('default-site');
+    expect(resolveSiteScopeState('no-such-site', sites, 'default-site')).toEqual({
+      siteId: 'default-site',
+      ready: true,
+    });
   });
 
   it('URL 未指定なら既定拠点を保つ（先頭へ勝手に動かさない）', () => {
-    // 先頭は default-site だが、既定拠点が branch-site の環境（env 上書き）でも
-    // 画面が勝手に別拠点へ切り替わらないことを固定する。
-    const sites = [{ id: 'default-site' }, { id: 'branch-site' }];
-    expect(resolveSiteScope('', sites, 'branch-site')).toBe('branch-site');
+    expect(resolveSiteScopeState('', sites, 'branch-site')).toEqual({
+      siteId: 'branch-site',
+      ready: true,
+    });
   });
 });

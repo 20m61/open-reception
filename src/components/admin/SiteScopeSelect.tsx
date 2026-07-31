@@ -24,8 +24,12 @@ export function SiteScopeSelect({
   testId?: string;
 }) {
   return (
-    <Field label="対象拠点">
+    // Field に htmlFor を渡し select に同じ id を付ける。これが無いと「対象拠点」の
+    // ラベルが支援技術からコンボボックスの名前として結び付かず、ラベルクリックでも
+    // フォーカスが移らない（#534 レビュー P2）。
+    <Field label="対象拠点" htmlFor={testId}>
       <select
+        id={testId}
         data-testid={testId}
         value={siteId}
         disabled={disabled || sites.length === 0}

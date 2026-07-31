@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useState, useTransition } from 'react';
 import { useQueryParams } from './use-query-params';
-import { resolveSiteScope, type SelectableSite } from './site-scope';
+import { resolveSiteScopeState, type SelectableSite } from './site-scope';
 
 /**
  * 拠点スコープを URL と同期する共有フック (issue #421)。
@@ -24,6 +24,8 @@ export function useSiteScope(
 ): {
   sites: SelectableSite[];
   siteId: string;
+  /** この siteId で取得を始めてよいか。false の間は fetch しない（下の解説参照）。 */
+  scopeReady: boolean;
   selectSite: (next: string) => void;
   sitePending: boolean;
 } {
@@ -43,7 +45,10 @@ export function useSiteScope(
     };
   }, [tenantId]);
 
-  const siteId = resolveSiteScope(get('siteId'), sites, fallbackSiteId);
+  const { siteId, scopeReady } = (() => {
+    const r = resolveSiteScopeState(get('siteId'), sites, fallbackSiteId);
+    return { siteId: r.siteId, scopeReady: r.ready };
+  })();
 
   /**
    * URL 遷移が確定するまで真。`setMany` は `router.replace` を起こすだけで、
@@ -56,5 +61,5 @@ export function useSiteScope(
     [setMany],
   );
 
-  return { sites, siteId, selectSite, sitePending };
+  return { sites, siteId, scopeReady, selectSite, sitePending };
 }
