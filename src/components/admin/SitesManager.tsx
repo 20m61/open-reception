@@ -1,5 +1,6 @@
 'use client';
 
+import Link from 'next/link';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import type { SiteStatus } from '@/domain/tenant/types';
 import type { SiteWithDevices } from '@/lib/tenant/site-service';
@@ -104,7 +105,10 @@ export function SitesManager({ tenantId = DEFAULT_TENANT_ID }: { tenantId?: stri
               style={inputStyle}
             />
           ) : (
-            s.name
+            // 名称から拠点詳細へ入る (#421)。詳細はこの拠点の設定への結節点。
+            <Link href={`/admin/sites/${encodeURIComponent(s.id)}`} data-testid="site-detail-link">
+              {s.name}
+            </Link>
           ),
       },
       {
