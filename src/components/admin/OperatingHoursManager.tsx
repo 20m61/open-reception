@@ -37,18 +37,21 @@ export function OperatingHoursManager({
 }) {
   // 対象拠点は URL が真実源 (#421)。以前はここが既定拠点に固定で、UI から別拠点の
   // 営業時間へ到達する手段が無かった（env でしか変えられなかった）。
-  const { sites, siteId, scopeReady, isCurrentSite, selectSite, sitePending } = useSiteScope(
+  const { sites, siteId, scopeKey, scopeReady, isCurrentScope, selectSite, sitePending } = useSiteScope(
     tenantId,
     defaultSiteId,
   );
   const [policy, setPolicy] = useState<PolicyView>(null);
   /**
-   * **どの拠点の内容が今フォームに載っているか。** 単なる真偽値だと、拠点を切り替えた直後に
-   * 「前の拠点の値が入ったまま loaded=true」の窓ができ、そこで保存すると
-   * **新しい拠点の設定を前の拠点の値で上書きする**（#534 レビュー P1）。
+   * **どのスコープ（テナント + 拠点）の内容が今フォームに載っているか。**
+   *
+   * 単なる真偽値だと、切り替えた直後に「前のスコープの値が入ったまま loaded=true」の窓が
+   * でき、そこで保存すると**新しい対象の設定を前の対象の値で上書きする**（#534 レビュー P1）。
+   * 拠点だけで識別すると、**同じ拠点 ID を持つ別テナント**へ切り替えたときに守れない
+   * （#541 レビュー P1）。
    */
-  const [loadedSiteId, setLoadedSiteId] = useState<string | null>(null);
-  const loaded = loadedSiteId === siteId;
+  const [loadedScopeKey, setLoadedScopeKey] = useState<string | null>(null);
+  const loaded = loadedScopeKey === scopeKey;
   const [timezone, setTimezone] = useState('Asia/Tokyo');
   const [weeklyText, setWeeklyText] = useState<Record<Weekday, string>>(
     () => Object.fromEntries(WEEKDAYS.map((d) => [d, ''])) as Record<Weekday, string>,
@@ -80,24 +83,24 @@ export function OperatingHoursManager({
     // 拠点が確定するまで取得しない。確定前に投げると deep link のたびに
     // 既定拠点への要求が先に飛び、応答順次第で選択中でない拠点の内容が載る。
     if (!scopeReady) return;
-    const requestedSiteId = siteId;
+    const requestedScope = scopeKey;
     const res = await fetch(`/api/admin/operating-policy?${qs}`);
     // 取得中に拠点が変わっていたら捨てる。反映すると、セレクタは新拠点なのにフォームは
     // 旧拠点の値、という状態になる（保存は loadedSiteId 不一致で止まるが表示が嘘になる）。
-    if (!isCurrentSite(requestedSiteId)) return;
+    if (!isCurrentScope(requestedScope)) return;
     if (res.ok) {
       const body = (await res.json()) as { policy: PolicyView };
       applyPolicy(body.policy);
     }
-    setLoadedSiteId(requestedSiteId);
-  }, [qs, siteId, scopeReady, isCurrentSite, applyPolicy]);
+    setLoadedScopeKey(requestedScope);
+  }, [qs, siteId, scopeKey, scopeReady, isCurrentScope, applyPolicy]);
 
   useEffect(() => {
     // 拠点が変わったら「まだ読めていない」へ戻す。これを忘れると前拠点の値のまま
     // 保存できてしまう。
-    setLoadedSiteId((prev) => (prev === siteId ? prev : null));
+    setLoadedScopeKey((prev) => (prev === scopeKey ? prev : null));
     void load();
-  }, [load, siteId]);
+  }, [load, scopeKey]);
 
   const save = useCallback(async () => {
     // 選択中の拠点の内容が載りきるまで保存させない（載っているのは別拠点の値かもしれない）。

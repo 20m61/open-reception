@@ -63,7 +63,7 @@ export function ReceptionFlowsManager({
 }) {
   // 対象拠点は URL が真実源 (#421)。以前は既定拠点に固定で、UI から別拠点の
   // 受付フローへ到達する手段が無かった。
-  const { sites, siteId, scopeReady, isCurrentSite, selectSite, sitePending } = useSiteScope(
+  const { sites, siteId, scopeKey, scopeReady, isCurrentScope, selectSite, sitePending } = useSiteScope(
     tenantId,
     defaultSiteId,
   );
@@ -72,15 +72,17 @@ export function ReceptionFlowsManager({
   /**
    * **どの拠点のデータが今画面に載っているか。**
    *
-   * 応答の取りこぼし判定（`isCurrentSite`）は「古い応答を反映しない」だけで、
+   * 応答の取りこぼし判定（`isCurrentScope`）は「古い応答を反映しない」だけで、
    * **既に描かれている前拠点の行はそのまま残る**。PATCH / DELETE は tenant と ID でしか
    * 対象を決めないので、見出しとセレクタが B を指している状態で A のフローを編集・削除
    * したり、A の通知ルートを B へ割り当てたりできてしまう（#539 レビュー P1）。
-   * 拠点が変わったら**行を消し、変更操作も止める**。
+   * 拠点だけで識別すると、**同じ拠点 ID を持つ別テナント**へ切り替えたときに守れない
+   * （#541 レビュー P1）ので、テナントを含む `scopeKey` で持つ。
+   * 対象が変わったら**行を消し、変更操作も止める**。
    */
-  const [flowsSiteId, setFlowsSiteId] = useState<string | null>(null);
-  const [routesSiteId, setRoutesSiteId] = useState<string | null>(null);
-  const loaded = flowsSiteId === siteId && routesSiteId === siteId;
+  const [flowsScopeKey, setFlowsScopeKey] = useState<string | null>(null);
+  const [routesScopeKey, setRoutesScopeKey] = useState<string | null>(null);
+  const loaded = flowsScopeKey === scopeKey && routesScopeKey === scopeKey;
   const [purposeKey, setPurposeKey] = useState('');
   const [displayName, setDisplayName] = useState('');
   const [busy, setBusy] = useState(false);
@@ -90,46 +92,46 @@ export function ReceptionFlowsManager({
   const load = useCallback(async () => {
     // 拠点が確定するまで取得しない（#534 / #535 と同じ competition を避ける）。
     if (!scopeReady) return;
-    const startedWith = siteId;
+    const startedWith = scopeKey;
     const res = await fetch(
       `/api/admin/reception-flows?tenantId=${encodeURIComponent(tenantId)}&siteId=${encodeURIComponent(siteId)}`,
     );
     // 取得中に拠点が変わっていたら捨てる。
-    if (!isCurrentSite(startedWith)) return;
+    if (!isCurrentScope(startedWith)) return;
     if (res.ok) {
       const data = (await res.json()) as StoredReceptionFlow[];
-      setFlowsSiteId(startedWith);
+      setFlowsScopeKey(startedWith);
       setItems(
         [...data].sort((a, b) =>
           a.order !== b.order ? a.order - b.order : a.displayName.localeCompare(b.displayName),
         ),
       );
     }
-  }, [tenantId, siteId, scopeReady, isCurrentSite]);
+  }, [tenantId, siteId, scopeKey, scopeReady, isCurrentScope]);
 
   // 目的ごとの通知ルート割り当て用に、選択肢となる通知ルート一覧を読み込む (issue #100)。
   const loadRoutes = useCallback(async () => {
     if (!scopeReady) return;
-    const startedWith = siteId;
+    const startedWith = scopeKey;
     const res = await fetch(
       `/api/admin/call-routes?tenantId=${encodeURIComponent(tenantId)}&siteId=${encodeURIComponent(siteId)}`,
     );
-    if (!isCurrentSite(startedWith)) return;
+    if (!isCurrentScope(startedWith)) return;
     if (res.ok) {
-      setRoutesSiteId(startedWith);
+      setRoutesScopeKey(startedWith);
       setRoutes((await res.json()) as CallRoute[]);
     }
-  }, [tenantId, siteId, scopeReady, isCurrentSite]);
+  }, [tenantId, siteId, scopeKey, scopeReady, isCurrentScope]);
 
   useEffect(() => {
     // 拠点が変わった瞬間に前拠点の行を捨てる。取得完了を待つ間に古い行を触らせない。
-    setFlowsSiteId((prev) => (prev === siteId ? prev : null));
-    setRoutesSiteId((prev) => (prev === siteId ? prev : null));
+    setFlowsScopeKey((prev) => (prev === scopeKey ? prev : null));
+    setRoutesScopeKey((prev) => (prev === scopeKey ? prev : null));
     setItems((prev) => (prev.length === 0 ? prev : []));
     setRoutes((prev) => (prev.length === 0 ? prev : []));
     void load();
     void loadRoutes();
-  }, [load, loadRoutes, siteId]);
+  }, [load, loadRoutes, scopeKey]);
 
   const add = useCallback(async () => {
     // 拠点切替の遷移確定前は siteId が古いままなので作成しない（別拠点に作られる）。
@@ -264,7 +266,10 @@ export function ReceptionFlowsManager({
           variant="primary"
           data-testid="flow-add"
           onClick={add}
-          disabled={busy || purposeKey.trim() === '' || displayName.trim() === ''}
+          // **無効化を loaded にも連動させる。** ハンドラ側だけ止めると、押せるボタンが
+          // 黙って何もしない（サイレント no-op）。実際 e2e が「押したのに増えない」で
+          // 不安定になった。無効にしておけば利用者にも分かり、Playwright も待てる。
+          disabled={busy || sitePending || !loaded || purposeKey.trim() === '' || displayName.trim() === ''}
         >
           追加
         </Button>

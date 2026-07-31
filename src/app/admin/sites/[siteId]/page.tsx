@@ -1,7 +1,5 @@
 import { SiteDetail } from '@/components/admin/SiteDetail';
-import { requireActor } from '@/lib/admin/guard';
-import { resolveActiveTenant } from '@/lib/tenant/active-tenant';
-import { resolveDefaultScope } from '@/lib/tenant/default-scope';
+import { resolveAdminTenantId } from '@/lib/tenant/admin-tenant-scope';
 
 export const dynamic = 'force-dynamic';
 
@@ -12,7 +10,7 @@ export const dynamic = 'force-dynamic';
  * ここから到達できるようにする。拠点を運べる導線には `?siteId=` が付く
  * （`src/components/admin/site-destinations.ts` が登録簿）。
  *
- * **テナントは `resolveDefaultScope()` ではなく選択中テナントで解決する。**
+ * **テナントは選択中テナントで解決する**（`resolveAdminTenantId`）。
  * 拠点 ID はテナント内でのスコープなので、既定テナント固定にすると、テナントを切り替えた
  * developer / 複数テナント管理者に対して「その拠点は無い」と誤表示するか、**同じ ID が
  * 既定テナントにも在れば別テナントの設定を表示・リンクしてしまう**（#536 レビュー P1）。
@@ -28,9 +26,6 @@ export default async function AdminSiteDetailPage({
   params: Promise<{ siteId: string }>;
 }) {
   const { siteId } = await params;
-  const actor = await requireActor();
-  const { activeTenantId } = await resolveActiveTenant(actor);
-  // 所属テナントが解決できない場合のみ既定スコープへ倒す（未所属・初期状態）。
-  const tenantId = activeTenantId ?? resolveDefaultScope().tenantId;
-  return <SiteDetail tenantId={String(tenantId)} siteId={siteId} />;
+  const tenantId = await resolveAdminTenantId();
+  return <SiteDetail tenantId={tenantId} siteId={siteId} />;
 }

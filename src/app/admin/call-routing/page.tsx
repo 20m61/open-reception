@@ -1,5 +1,6 @@
 import { RoutingPolicyManager } from '@/components/admin/RoutingPolicyManager';
 import { resolveDefaultScope } from '@/lib/tenant/default-scope';
+import { resolveAdminTenantId } from '@/lib/tenant/admin-tenant-scope';
 
 export const dynamic = 'force-dynamic';
 
@@ -10,7 +11,10 @@ export const dynamic = 'force-dynamic';
  * これまで `RoutingPolicyManager` 側に 'internal' / 'default-site' をハードコードしていた
  * （第5wave 申し送り nit）のを解消し、単一テナント運用でも env で切り替えられるようにする。
  */
-export default function AdminCallRoutingPage() {
+export default async function AdminCallRoutingPage() {
+  // 拠点の既定値は resolveDefaultScope のままでよいが、**テナントは選択中テナント**で
+  // 解決する (#421)。既定固定だと TenantSwitcher の選択から外れる。
   const scope = resolveDefaultScope();
-  return <RoutingPolicyManager tenantId={String(scope.tenantId)} siteId={String(scope.siteId)} />;
+  const tenantId = await resolveAdminTenantId();
+  return <RoutingPolicyManager tenantId={tenantId} siteId={String(scope.siteId)} />;
 }

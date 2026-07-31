@@ -1,5 +1,6 @@
 import { OperatingHoursManager } from '@/components/admin/OperatingHoursManager';
 import { resolveDefaultScope } from '@/lib/tenant/default-scope';
+import { resolveAdminTenantId } from '@/lib/tenant/admin-tenant-scope';
 
 export const dynamic = 'force-dynamic';
 
@@ -11,7 +12,10 @@ export const dynamic = 'force-dynamic';
  * ナビ配線: `src/components/admin/navigation.ts`（他トラック占有・オーケストレータが後で配線）。
  * このページ自体は直接 URL（/admin/operating-hours）でアクセス可能。
  */
-export default function AdminOperatingHoursPage() {
+export default async function AdminOperatingHoursPage() {
+  // 拠点の既定値は resolveDefaultScope のままでよいが、**テナントは選択中テナント**で
+  // 解決する (#421)。既定固定だと TenantSwitcher の選択から外れる。
   const scope = resolveDefaultScope();
-  return <OperatingHoursManager tenantId={String(scope.tenantId)} siteId={String(scope.siteId)} />;
+  const tenantId = await resolveAdminTenantId();
+  return <OperatingHoursManager tenantId={tenantId} siteId={String(scope.siteId)} />;
 }
