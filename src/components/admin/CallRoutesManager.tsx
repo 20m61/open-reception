@@ -51,7 +51,7 @@ export function CallRoutesManager({
 }) {
   // 対象拠点は URL が真実源 (#421)。以前は既定拠点に固定で、UI から別拠点の
   // 呼び出しルートへ到達する手段が無かった。
-  const { sites, siteId, scopeReady, isCurrentSite, selectSite, sitePending } = useSiteScope(
+  const { sites, siteId, scopeKey, scopeReady, isCurrentScope, selectSite, sitePending } = useSiteScope(
     tenantId,
     defaultSiteId,
   );
@@ -65,15 +65,15 @@ export function CallRoutesManager({
     // 拠点が確定するまで取得しない。確定前に投げると deep link のたびに既定拠点への
     // 要求が先に飛び、応答順次第で選択中でない拠点の一覧が載る（#534 と同じ competition）。
     if (!scopeReady) return;
-    const startedWith = siteId;
+    const startedWith = scopeKey;
     const res = await fetch(
       `/api/admin/call-routes?tenantId=${encodeURIComponent(tenantId)}&siteId=${encodeURIComponent(siteId)}`,
     );
     // 取得中に拠点が変わっていたら捨てる。反映すると見出し・セレクタは新拠点なのに
     // 中身は旧拠点になり、その状態で編集・削除すると別拠点の資源を壊す。
-    if (!isCurrentSite(startedWith)) return;
+    if (!isCurrentScope(startedWith)) return;
     if (res.ok) setItems((await res.json()) as CallRoute[]);
-  }, [tenantId, siteId, scopeReady, isCurrentSite]);
+  }, [tenantId, siteId, scopeKey, scopeReady, isCurrentScope]);
 
   useEffect(() => {
     void load();

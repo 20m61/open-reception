@@ -78,7 +78,7 @@ export function RoutingPolicyManager({
 }) {
   // 対象拠点は URL が真実源 (#421)。以前は既定拠点に固定で、UI から別拠点の
   // 取次ルートへ到達する手段が無かった。
-  const { sites, siteId, scopeReady, isCurrentSite, selectSite, sitePending } = useSiteScope(
+  const { sites, siteId, scopeKey, scopeReady, isCurrentScope, selectSite, sitePending } = useSiteScope(
     tenantId,
     defaultSiteId,
   );
@@ -89,24 +89,24 @@ export function RoutingPolicyManager({
   const loadEndpoints = useCallback(async () => {
     // 拠点が確定するまで取得しない（#534 と同じ competition を避ける）。
     if (!scopeReady) return;
-    const startedWith = scope.siteId;
+    const startedWith = scopeKey;
     const res = await fetch(
       `/api/admin/routing/endpoints?tenantId=${encodeURIComponent(scope.tenantId)}&siteId=${encodeURIComponent(scope.siteId)}`,
     );
     // 取得中に拠点が変わっていたら捨てる（endpoints と policies が別拠点の組み合わせになるのを防ぐ）。
-    if (!isCurrentSite(startedWith)) return;
+    if (!isCurrentScope(startedWith)) return;
     if (res.ok) setEndpoints((await res.json()) as EndpointView[]);
-  }, [scope, scopeReady, isCurrentSite]);
+  }, [scope, scopeKey, scopeReady, isCurrentScope]);
 
   const loadPolicies = useCallback(async () => {
     if (!scopeReady) return;
-    const startedWith = scope.siteId;
+    const startedWith = scopeKey;
     const res = await fetch(
       `/api/admin/routing/policies?tenantId=${encodeURIComponent(scope.tenantId)}&siteId=${encodeURIComponent(scope.siteId)}`,
     );
-    if (!isCurrentSite(startedWith)) return;
+    if (!isCurrentScope(startedWith)) return;
     if (res.ok) setPolicies((await res.json()) as PolicyView[]);
-  }, [scope, scopeReady, isCurrentSite]);
+  }, [scope, scopeKey, scopeReady, isCurrentScope]);
 
   useEffect(() => {
     void loadEndpoints();
@@ -161,7 +161,7 @@ export function RoutingPolicyManager({
       </div>
 
       {/*
-        **key に siteId を入れて拠点切替で編集中の下書きを捨てる。** これが無いと、拠点 A で
+        **key に scopeKey（テナント + 拠点）を入れて、切替で編集中の下書きを捨てる。** これが無いと、拠点 A で
         ポリシーを編集しかけたまま B へ切り替えたときにセクションが再マウントされず、
         **A のポリシー ID を持ったまま siteId=B で PATCH** してしまう。routing サービスは
         siteId の変更を受け付けるので、ポリシーが別拠点へ移動・上書きされる（#535 レビュー P1）。
@@ -170,14 +170,14 @@ export function RoutingPolicyManager({
         「接続先を追加」やポリシー保存が**前の拠点に**作られる。
       */}
       <EndpointsSection
-        key={`endpoints-${siteId}`}
+        key={`endpoints-${scopeKey}`}
         endpoints={endpoints}
         scope={scope}
         reload={loadEndpoints}
         writeBlocked={sitePending}
       />
       <PoliciesSection
-        key={`policies-${siteId}`}
+        key={`policies-${scopeKey}`}
         policies={policies}
         endpoints={endpoints}
         scope={scope}

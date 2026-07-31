@@ -28,18 +28,18 @@ describe('resolveSelectedSiteId: URL の siteId と実在サイトの突き合�
 describe('resolveSiteScopeState: 既定拠点を持つ画面向け (#421)', () => {
   const sites = [{ id: 'default-site' }, { id: 'branch-site' }];
 
-  it('URL 未指定なら一覧を待たずに既定拠点で確定する', () => {
-    // 曖昧さが無いので待つ必要が無い。ここで ready=false にすると初期表示が遅れる。
+  it('URL 指定が無くても、一覧が届くまでは確定しない', () => {
+    // **既定拠点が選択中テナントに在るとは限らない。** `resolveDefaultScope()` は env 由来の
+    // グローバル既定なので、テナントを切り替えると存在しない拠点を指しうる。そのまま
+    // 確定させると `<選択中テナント>/default-site` を読み書きし、developer / tenant_admin は
+    // 任意の siteId を通せるため**実在しない拠点の下にデータを作れてしまう**。
     expect(resolveSiteScopeState('', [], 'default-site')).toEqual({
       siteId: 'default-site',
-      ready: true,
+      ready: false,
     });
   });
 
-  it('URL 指定があり一覧が未取得なら **まだ確定しない**', () => {
-    // ここで既定拠点を返して取得を始めると、deep link (?siteId=branch-site) のたびに
-    // **間違った拠点への要求が先に飛ぶ**。応答順が入れ替わると、branch を選んでいるのに
-    // default の内容が最後に届いて画面へ載る（そのまま保存すると他拠点の設定を壊す）。
+  it('URL 指定があり一覧が未取得なら確定しない', () => {
     expect(resolveSiteScopeState('branch-site', [], 'default-site')).toEqual({
       siteId: 'default-site',
       ready: false,
@@ -65,5 +65,18 @@ describe('resolveSiteScopeState: 既定拠点を持つ画面向け (#421)', () =
       siteId: 'branch-site',
       ready: true,
     });
+  });
+
+  it('既定拠点が選択中テナントに無ければ、そのテナントの先頭へ倒す', () => {
+    // 実在しない拠点を掴んだままにしない。
+    const other = [{ id: 'tenant-b-site-1' }, { id: 'tenant-b-site-2' }];
+    expect(resolveSiteScopeState('', other, 'default-site')).toEqual({
+      siteId: 'tenant-b-site-1',
+      ready: true,
+    });
+  });
+
+  it('サイトが 1 件も無いテナントでは確定しない（空 id で読み書きさせない）', () => {
+    expect(resolveSiteScopeState('', [], '')).toEqual({ siteId: '', ready: false });
   });
 });

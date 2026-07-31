@@ -53,14 +53,17 @@ export function resolveSiteScopeState(
   sites: readonly SelectableSite[],
   fallbackSiteId: string,
 ): { siteId: string; ready: boolean } {
-  // URL 指定が無ければ曖昧さが無い。一覧を待たずに確定してよい。
-  if (requested === '') return { siteId: fallbackSiteId, ready: true };
-
-  // 指定があるのに一覧が未取得＝**まだ検証できない**。ここで既定拠点を返して取得を
-  // 始めてしまうと、deep link のたびに間違った拠点への要求が先に飛び、応答順が入れ替わると
-  // 選択中でない拠点の内容が最後に画面へ載る（そのまま保存すれば他拠点の設定を壊す）。
+  // **一覧が届くまでは確定しない**（URL 指定の有無に関わらず）。
+  //
+  // 既定拠点は `resolveDefaultScope()` 由来の**グローバル既定**で、選択中テナントに
+  // 在るとは限らない。URL 未指定のときに即確定すると、テナントを切り替えた先で
+  // `<選択中テナント>/default-site` を読み書きしてしまう。developer / tenant_admin は
+  // 任意の siteId を通せるため、**実在しない拠点の下にデータを作れてしまう**。
   if (sites.length === 0) return { siteId: fallbackSiteId, ready: false };
 
-  if (sites.some((s) => s.id === requested)) return { siteId: requested, ready: true };
-  return { siteId: fallbackSiteId, ready: true };
+  if (requested !== '' && sites.some((s) => s.id === requested)) return { siteId: requested, ready: true };
+  // 既定拠点がこのテナントに在ればそれを保つ（先頭へ勝手に動かさない。env で上書きできる）。
+  if (sites.some((s) => s.id === fallbackSiteId)) return { siteId: fallbackSiteId, ready: true };
+  // 在庫が無ければこのテナントの先頭へ倒す。実在しない拠点を掴んだままにしない。
+  return { siteId: sites[0]?.id ?? '', ready: true };
 }
