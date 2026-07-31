@@ -35,3 +35,32 @@ export function resolveSelectedSiteId(
   if (requested !== '' && sites.some((s) => s.id === requested)) return requested;
   return sites[0]?.id ?? '';
 }
+
+/**
+ * **既定拠点をサーバから受け取る画面向け**の解決（営業時間・呼び出しルート等）。
+ *
+ * `siteId` に加えて **`ready`（この拠点で取得を始めてよいか）** を返すのが要点。
+ * 「一覧が未取得の間は既定拠点を返す」だけにすると、`?siteId=branch-site` を開いたときに
+ * **default → branch の順で 2 本の要求が飛ぶ**。両者を突き合わせないと、遅れて届いた
+ * default の応答が branch の内容を上書きし、**選択中の拠点と画面の中身がずれる**。
+ * その状態で保存すれば他拠点の設定を壊す。だから確定するまで取得させない。
+ *
+ * **URL 未指定のときは先頭ではなく既定拠点を保つ** — 既定拠点が先頭とは限らず
+ * （env で上書きできる）、画面を開いただけで別拠点へ移るのは事故のもとなので。
+ */
+export function resolveSiteScopeState(
+  requested: string,
+  sites: readonly SelectableSite[],
+  fallbackSiteId: string,
+): { siteId: string; ready: boolean } {
+  // URL 指定が無ければ曖昧さが無い。一覧を待たずに確定してよい。
+  if (requested === '') return { siteId: fallbackSiteId, ready: true };
+
+  // 指定があるのに一覧が未取得＝**まだ検証できない**。ここで既定拠点を返して取得を
+  // 始めてしまうと、deep link のたびに間違った拠点への要求が先に飛び、応答順が入れ替わると
+  // 選択中でない拠点の内容が最後に画面へ載る（そのまま保存すれば他拠点の設定を壊す）。
+  if (sites.length === 0) return { siteId: fallbackSiteId, ready: false };
+
+  if (sites.some((s) => s.id === requested)) return { siteId: requested, ready: true };
+  return { siteId: fallbackSiteId, ready: true };
+}

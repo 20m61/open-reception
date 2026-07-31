@@ -63,6 +63,26 @@ test.describe('管理: 拠点スコープが URL に載る (#421)', () => {
     await expect(page.getByTestId('device-site-select')).toHaveValue('branch-site');
   });
 
+  test('営業時間も拠点を切り替えられ、URL に載る', async ({ page }) => {
+    // 以前この画面は resolveDefaultScope() に**固定**で、UI から別拠点の営業時間へ到達する
+    // 手段が無かった（env でしか変えられない）。#421「拠点詳細から全関連設定へ到達」は
+    // ここが直らないと成立しない。
+    test.skip(
+      !!process.env.PLAYWRIGHT_BASE_URL,
+      'branch-site は seed 由来で、dynamodb backend では seed が無視されるため実環境には存在しない',
+    );
+
+    await page.goto('/admin/operating-hours');
+    const select = page.getByTestId('operating-hours-site-select');
+    await expect(select).toHaveValue('default-site');
+
+    await select.selectOption('branch-site');
+    await expect(page).toHaveURL(/siteId=branch-site/);
+
+    await page.reload();
+    await expect(page.getByTestId('operating-hours-site-select')).toHaveValue('branch-site');
+  });
+
   test('実在しない siteId は採用せず、実在する拠点へ倒す', async ({ page }) => {
     // ここが安全側の肝。存在しない id をそのまま選択状態にすると、端末一覧が空になり
     // 「この拠点には端末が無い」と**事実と異なる読み方**をされる。
