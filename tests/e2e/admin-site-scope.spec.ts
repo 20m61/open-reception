@@ -35,6 +35,18 @@ test.describe('管理: 拠点スコープが URL に載る (#421)', () => {
   });
 
   test('拠点を切り替えると URL に載り、リロードしても保たれる', async ({ page }) => {
+    // **実環境 URL 実行では落とす。** `branch-site` は `store.ts` の SEED 由来だが、
+    // **dynamodb backend は seed を無視する**（`data-repository.ts` の CollectionOpts 契約）。
+    // 投入経路は `npm run seed:dynamodb` だけで、これは初期プロビジョニング時にしか走らない。
+    // よって既存デプロイ環境には `branch-site` が無く、selectOption がタイムアウトする。
+    // これは実環境の欠陥ではなく実行方法の欠陥なので、`playwright.config.ts` が
+    // platform project を remote 実行から外しているのと同じ判断で skip する。
+    // （実環境でも確認したい場合は `seed:dynamodb` を再実行すれば投入される。同じ SEED を共有。）
+    test.skip(
+      !!process.env.PLAYWRIGHT_BASE_URL,
+      'branch-site は seed 由来で、dynamodb backend では seed が無視されるため実環境には存在しない',
+    );
+
     // **これが「URL が真実源」であることの実証。** 拠点が 1 件しか無いと、URL を一切見ない
     // 旧実装（先頭サイトを自動選択）でも同じ結果になり検証にならないため、seed に 2 件目
     // （`branch-site`）を置いてある。
