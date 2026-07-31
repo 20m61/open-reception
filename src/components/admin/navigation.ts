@@ -202,6 +202,19 @@ export function isActivePath(itemHref: string, pathname: string): boolean {
  * 別なので、規律では抜ける。`navigation.test.ts` が実ルートを走査して、ナビ登録か
  * 理由付きの非掲載登録かのどちらかを強制する。
  */
+/**
+ * **非掲載だが到達可能な**ルートの画面名 (issue #421)。
+ *
+ * タブタイトルは `ADMIN_NAV` から導出しているため、ナビから外すとタイトルまで失われて
+ * 「管理画面」になってしまう（旧画面は意図的に残しているのに、どの画面か分からなくなる）。
+ * **サイドバーへの表示可否と画面のメタ情報は別物**なので、ここで独立に持つ。
+ */
+export const UNLISTED_ADMIN_TITLES: Record<string, string> = {
+  '/admin/login': 'ログイン',
+  '/admin/kiosks': '受付端末管理（旧）',
+  '/admin/call-routes': '呼び出しルート（旧）',
+};
+
 export const UNLISTED_ADMIN_ROUTES: Record<string, string> = {
   '/admin/login': 'ログイン画面。認証前に到達する入口で、ナビ自体が出ていない',
   '/admin/ui-catalog': '実装者向けの UI カタログ。運用者の業務導線ではない',

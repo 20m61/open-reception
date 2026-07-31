@@ -31,10 +31,19 @@ describe('拠点詳細から辿る設定の登録簿 (#421)', () => {
     // ここを更新するときは**実装を確認してから**にする。登録簿だけ先に増やすと
     // リンクが嘘になる。2026-07-31 時点で対応済みなのは以下の 4 つ。
     expect(SITE_DESTINATIONS.filter((d) => d.siteScoped).map((d) => d.href).sort()).toEqual([
-      '/admin/call-routes',
       '/admin/call-routing',
       '/admin/devices',
       '/admin/operating-hours',
     ]);
+  });
+});
+
+describe('旧画面は拠点詳細に並べない (#421)', () => {
+  it('ナビから外した旧ルートは登録簿にも載せない', () => {
+    // ナビだけ一本化しても、拠点詳細から対等なカードとして出していれば
+    // **入口が変わっただけで重複は残る**。旧画面へは正となる画面の中の導線から辿る。
+    const hrefs = SITE_DESTINATIONS.map((d) => d.href);
+    expect(hrefs).not.toContain('/admin/call-routes');
+    expect(hrefs).not.toContain('/admin/kiosks');
   });
 });

@@ -5,7 +5,7 @@ import type { TenantRole } from '@/domain/tenant/types';
 import type { Actor } from '@/domain/tenant/authorization';
 import { AdminShell } from '@/components/admin/AdminShell';
 import { TenantSwitcher } from '@/components/admin/TenantSwitcher';
-import { ADMIN_NAV, isActivePath } from '@/components/admin/navigation';
+import { ADMIN_NAV, UNLISTED_ADMIN_TITLES, isActivePath } from '@/components/admin/navigation';
 import { resolveAdminActor } from '@/lib/auth/actor';
 import { resolveActiveTenant } from '@/lib/tenant/active-tenant';
 import { canEnterArea } from '@/domain/auth/route-guard';
@@ -37,7 +37,9 @@ function rolesFromActor(actor: Actor): readonly TenantRole[] {
  * 「受付履歴 | open-reception」のように画面ごとに区別できるタイトルになる。
  */
 const ADMIN_TITLE_ENTRIES: readonly { href: string; label: string }[] = [
-  { href: '/admin/login', label: 'ログイン' },
+  // ナビから外した旧画面（#421）も画面名を持つ。表示可否とメタ情報は別物で、
+  // ADMIN_NAV だけから導出すると旧画面のタイトルが「管理画面」に落ちる。
+  ...Object.entries(UNLISTED_ADMIN_TITLES).map(([href, label]) => ({ href, label })),
   ...ADMIN_NAV.flatMap((group) => group.items),
 ];
 

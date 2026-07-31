@@ -128,7 +128,14 @@ export function RoutingPolicyManager({
       */}
       <p style={{ opacity: 0.7, marginTop: 0 }}>
         受付フローが参照する旧「呼び出しルート」は{' '}
-        <a href="/admin/call-routes" data-testid="routing-legacy-call-routes-link">
+        {/*
+          **siteId を落とさない。** CallRoutesManager は URL を拠点の真実源にしているので
+          （増分 3）、クエリ無しで開くと既定拠点の旧ルートを編集させてしまう。
+        */}
+        <a
+          href={siteId ? `/admin/call-routes?siteId=${encodeURIComponent(siteId)}` : '/admin/call-routes'}
+          data-testid="routing-legacy-call-routes-link"
+        >
           呼び出しルート（旧）
         </a>{' '}
         に残しています（実際の発信はこの画面の設定が決めます）。

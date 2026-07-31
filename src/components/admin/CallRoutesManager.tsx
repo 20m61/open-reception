@@ -149,7 +149,11 @@ export function CallRoutesManager({
       <p data-testid="call-routes-legacy-notice" style={legacyNoticeStyle}>
         ⚠ <strong>この画面の設定は実際の発信には使われません。</strong> 実際に「誰へ・どの順で
         繋ぐか」は{' '}
-        <a href="/admin/call-routing" style={{ color: 'var(--color-accent)', fontWeight: 700 }}>
+        <a
+          href={siteId ? `/admin/call-routing?siteId=${encodeURIComponent(siteId)}` : '/admin/call-routing'}
+          data-testid="call-routes-canonical-link"
+          style={{ color: 'var(--color-accent)', fontWeight: 700 }}
+        >
           取次ルート（/admin/call-routing）
         </a>{' '}
         が決めます。この画面は受付フローが参照する旧データの編集用に残しています。

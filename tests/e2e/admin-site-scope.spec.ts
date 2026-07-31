@@ -175,4 +175,18 @@ test.describe('管理: 重複ナビの一本化 (#421)', () => {
       '実際の発信には使われません',
     );
   });
+
+  test('旧画面への導線は選択中の拠点を落とさない', async ({ page }) => {
+    // **既定拠点だけを見ていると気づけない欠陥。** CallRoutesManager は URL を拠点の
+    // 真実源にしているので、クエリ無しのリンクだと既定拠点の旧ルートを編集させてしまう。
+    test.skip(!!process.env.PLAYWRIGHT_BASE_URL, 'seed 依存のため実環境では実行しない');
+
+    await page.goto('/admin/call-routing?siteId=branch-site');
+    await page.getByTestId('routing-legacy-call-routes-link').click();
+    await expect(page).toHaveURL(/\/admin\/call-routes\?siteId=branch-site/);
+
+    // 戻りの導線も同様に拠点を保つ。
+    await page.getByTestId('call-routes-canonical-link').click();
+    await expect(page).toHaveURL(/\/admin\/call-routing\?siteId=branch-site/);
+  });
 });
