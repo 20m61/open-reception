@@ -37,7 +37,10 @@ export function OperatingHoursManager({
 }) {
   // 対象拠点は URL が真実源 (#421)。以前はここが既定拠点に固定で、UI から別拠点の
   // 営業時間へ到達する手段が無かった（env でしか変えられなかった）。
-  const { sites, siteId, scopeReady, selectSite, sitePending } = useSiteScope(tenantId, defaultSiteId);
+  const { sites, siteId, scopeReady, isCurrentSite, selectSite, sitePending } = useSiteScope(
+    tenantId,
+    defaultSiteId,
+  );
   const [policy, setPolicy] = useState<PolicyView>(null);
   /**
    * **どの拠点の内容が今フォームに載っているか。** 単なる真偽値だと、拠点を切り替えた直後に
@@ -79,12 +82,15 @@ export function OperatingHoursManager({
     if (!scopeReady) return;
     const requestedSiteId = siteId;
     const res = await fetch(`/api/admin/operating-policy?${qs}`);
+    // 取得中に拠点が変わっていたら捨てる。反映すると、セレクタは新拠点なのにフォームは
+    // 旧拠点の値、という状態になる（保存は loadedSiteId 不一致で止まるが表示が嘘になる）。
+    if (!isCurrentSite(requestedSiteId)) return;
     if (res.ok) {
       const body = (await res.json()) as { policy: PolicyView };
       applyPolicy(body.policy);
     }
     setLoadedSiteId(requestedSiteId);
-  }, [qs, siteId, scopeReady, applyPolicy]);
+  }, [qs, siteId, scopeReady, isCurrentSite, applyPolicy]);
 
   useEffect(() => {
     // 拠点が変わったら「まだ読めていない」へ戻す。これを忘れると前拠点の値のまま
