@@ -24,3 +24,5 @@
 | 日時 (UTC) | コミット SHA | tier | 結果 | SKIP 項目 | 起票 Issue / 備考 |
 | --- | --- | --- | --- | --- | --- |
 | 2026-01-05T09:00Z | `abcdef1` | full | PASS | なし | **EXAMPLE 行**（実データではない。実運用の最初の行はこの下に追記する） |
+| 2026-07-31T19:22Z | `ba60889` | full | FAIL | なし | 要 issue 起票（docs/quality-gate.md の FAIL 時ハンドリング参照） |
+| 2026-07-31T22:58Z | `3bc6f50` | full | PASS | なし | semgrep 導入済みで再実行し green を確認（#545 クローズ） |
