@@ -225,6 +225,7 @@ export const UNLISTED_ADMIN_ROUTES: Record<string, string> = {
   '/admin/call-routes':
     '旧・呼び出しルート (#88)。**実際の発信は参照しない**（発信は executeRoutedCall → ' +
     'RoutingPolicy/ContactEndpoint（issue 374）。routing/compat.ts は消費者ゼロ）。設定しても実通話に ' +
-    '効かないのでナビから外す。受付フローの callRouteId がまだ参照するため画面は残し、' +
+    '効かないのでナビから外す。受付フローからの参照（callRouteId）は撤去済みだが、既存の ' +
+    '旧ルートを確認・整理できるよう画面自体は残し、' +
     '/admin/call-routing から辿れる。モデル一本化は移行台帳 §5「取次モデル」',
 };

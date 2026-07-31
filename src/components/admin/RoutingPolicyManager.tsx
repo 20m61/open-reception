@@ -124,7 +124,7 @@ export function RoutingPolicyManager({
 
       {/*
         旧 /admin/call-routes はナビから外したので、ここから辿れるようにする (#421)。
-        受付フローの callRouteId がまだ参照するため画面は残している。
+        受付フローからの参照は撤去済みだが、既存の旧ルートを確認・整理できるよう画面は残している。
       */}
       <p style={{ opacity: 0.7, marginTop: 0 }}>
         受付フローが参照する旧「呼び出しルート」は{' '}

@@ -30,7 +30,6 @@ import type {
 import { runSnapshotChecks } from '@/domain/experience-version/snapshot-checks';
 import {
   checkCallRoutes,
-  flowRouteIdsOf,
   type CallRouteCheckInput,
 } from '@/domain/experience-version/call-route-checks';
 import { findForbiddenConfigurationValues } from '@/domain/product-context/payload-contract';
@@ -147,7 +146,7 @@ export class ExperienceVersionService {
     if (!load) return [];
     try {
       const context = await load(scope);
-      return checkCallRoutes({ ...context, flowRouteIds: flowRouteIdsOf(snapshot.sections) });
+      return checkCallRoutes(context);
     } catch {
       return [
         {

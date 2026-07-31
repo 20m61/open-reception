@@ -143,8 +143,8 @@ export function CallRoutesManager({
         **この画面の設定は実際の発信に効かない。** 発信は executeRoutedCall →
         RoutingPolicy / ContactEndpoint (#374) が解決し、ここで編集する CallRoute (#88) を
         参照しない（routing/compat.ts は消費者ゼロ）。黙って並べておくと、運用者が
-        「呼び出し先を設定した」と思い込むので明示する。受付フローの callRouteId が
-        まだ参照するため画面自体は残している。モデル一本化は移行台帳 §5「取次モデル」。
+        「呼び出し先を設定した」と思い込むので明示する。受付フローからの参照は撤去済みだが、
+        既存の旧ルートを確認・整理できるよう画面自体は残している。モデル一本化は移行台帳 §5「取次モデル」。
       */}
       <p data-testid="call-routes-legacy-notice" style={legacyNoticeStyle}>
         ⚠ <strong>この画面の設定は実際の発信には使われません。</strong> 実際に「誰へ・どの順で

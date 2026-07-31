@@ -62,7 +62,8 @@ function parseUpdateBody(body: unknown): UpdateReceptionFlowPatch {
   if ('steps' in o) patch.steps = o.steps;
   if ('fields' in o) patch.fields = o.fields;
   if ('completionMessage' in o) patch.completionMessage = o.completionMessage;
-  if ('callRouteId' in o) patch.callRouteId = o.callRouteId;
+  // `callRouteId` は受け取らない (#421 / 移行台帳 §5「取次モデル」)。旧 CallRoute(#88) は
+  // 実際の発信が参照せず、割当 UI も撤去済み。保存済みの値は無害な余剰プロパティとして残る。
   if (typeof o.enabled === 'boolean') patch.enabled = o.enabled;
   return patch;
 }

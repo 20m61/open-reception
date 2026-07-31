@@ -8,7 +8,7 @@
  */
 import { describe, expect, it } from 'vitest';
 import type { RoutingPolicy } from '@/domain/routing/policy';
-import { checkCallRoutes, flowRouteIdsOf } from './call-route-checks';
+import { checkCallRoutes } from './call-route-checks';
 
 function policy(over: Partial<RoutingPolicy> = {}): RoutingPolicy {
   return {
@@ -59,43 +59,6 @@ describe('checkCallRoutes', () => {
     ]);
   });
 
-  it('旧 callRouteId の参照切れは warning（現 runtime は参照しない）', () => {
-    const findings = checkCallRoutes({
-      policies: [policy()],
-      endpointIds: endpoints,
-      flowRouteIds: ['route-gone'],
-      knownCallRouteIds: new Set(['route-1']),
-    });
-    expect(findings).toHaveLength(1);
-    expect(findings[0]).toMatchObject({ check: 'call_route', severity: 'warning' });
-    expect(findings[0]?.message).toContain('route-gone');
-  });
-
-  it('旧 callRouteId が実在すれば指摘しない。同じ ID の重複も 1 回だけ', () => {
-    expect(
-      checkCallRoutes({
-        policies: [policy()],
-        endpointIds: endpoints,
-        flowRouteIds: ['route-1', 'route-1'],
-        knownCallRouteIds: new Set(['route-1']),
-      }),
-    ).toEqual([]);
-
-    const dup = checkCallRoutes({
-      policies: [policy()],
-      endpointIds: endpoints,
-      flowRouteIds: ['gone', 'gone'],
-      knownCallRouteIds: new Set(),
-    });
-    expect(dup).toHaveLength(1);
-  });
-
-  it('旧ルートの実在集合が未提供なら参照は検査しない（取得できない環境で誤検知しない）', () => {
-    expect(
-      checkCallRoutes({ policies: [policy()], endpointIds: endpoints, flowRouteIds: ['gone'] }),
-    ).toEqual([]);
-  });
-
   it('指摘メッセージに宛先（電話番号・URI）を載せない', () => {
     const findings = checkCallRoutes({
       policies: [policy({
@@ -105,26 +68,5 @@ describe('checkCallRoutes', () => {
     });
     // 載るのは ID だけ。宛先は endpoint 側に閉じている（EndpointRef の設計と同じ扱い）。
     expect(findings[0]?.message).not.toMatch(/\+\d|sip:|tel:/);
-  });
-});
-
-describe('flowRouteIdsOf', () => {
-  it('受付フローの callRouteId を集める', () => {
-    expect(
-      flowRouteIdsOf({
-        receptionFlow: { flows: [{ id: 'f1', callRouteId: 'r1' }, { id: 'f2', callRouteId: 'r2' }] },
-      }),
-    ).toEqual(['r1', 'r2']);
-  });
-
-  it('未設定・空文字・型不正は無視する', () => {
-    expect(
-      flowRouteIdsOf({
-        receptionFlow: { flows: [{ id: 'f1' }, { id: 'f2', callRouteId: '' }, { id: 'f3', callRouteId: 42 }] },
-      }),
-    ).toEqual([]);
-    expect(flowRouteIdsOf({})).toEqual([]);
-    expect(flowRouteIdsOf({ receptionFlow: null })).toEqual([]);
-    expect(flowRouteIdsOf({ receptionFlow: { flows: 'nope' } })).toEqual([]);
   });
 });
