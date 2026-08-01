@@ -2,6 +2,9 @@
 
 import { useCallback, useEffect, useState } from 'react';
 import { Button, Card, Field, SaveFeedback, useSaveFeedback } from '@/components/admin/ui';
+import { useSiteScope } from './use-site-scope';
+import { SiteScopeSelect } from './SiteScopeSelect';
+import { resolveScopeGate } from './scope-gate';
 import { color, space } from '@/components/admin/ui/tokens';
 import type {
   ResolvedStaffResponseDefinition,
@@ -21,9 +24,6 @@ import type {
  * 保存/失敗フィードバックは共有プリミティブ（`SaveFeedback`/`useSaveFeedback`）を使う
  * （#330 item6 と同方針。これまで本画面は結果を一切表示しておらず操作後の無反応が課題だった）。
  */
-const DEFAULT_TENANT_ID = 'internal';
-const DEFAULT_SITE_ID = 'default-site';
-
 type ConfigView = {
   tenantId: string;
   siteId: string;
@@ -32,35 +32,80 @@ type ConfigView = {
 };
 
 export function StaffResponseManager({
-  tenantId = DEFAULT_TENANT_ID,
-  siteId = DEFAULT_SITE_ID,
+  tenantId,
+  siteId: defaultSiteId,
 }: {
-  tenantId?: string;
-  siteId?: string;
+  tenantId: string;
+  /** サーバが解決した既定拠点（`resolveDefaultScope().siteId`）。ヘッダの対象拠点と同じ出所。 */
+  siteId: string;
 }) {
+  const { sites, siteId, scopeKey, scopeReady, isCurrentScope, selectSite, sitePending, listStatus, reloadSites } =
+    useSiteScope(tenantId, defaultSiteId);
   const [definitions, setDefinitions] = useState<ResolvedStaffResponseDefinition[]>([]);
+  /**
+   * **どのスコープの設定が今画面に載っているか。** 有効/無効の切替と文言の上書きは
+   * `action` でしか対象を決めないので、これが無いと見出しが B を指したまま A の設定を
+   * 書き換えられる（#539 / #541 と同型）。
+   */
+  const [definitionsScopeKey, setDefinitionsScopeKey] = useState<string | null>(null);
+  const dataLoaded = definitionsScopeKey === scopeKey;
   const [busy, setBusy] = useState(false);
+  const [loadFailed, setLoadFailed] = useState(false);
   const [editingAction, setEditingAction] = useState<StaffResponseAction | null>(null);
   const [editMessage, setEditMessage] = useState('');
   const { feedback, success, failure, clear } = useSaveFeedback();
 
+  /** 可否の判断は 1 箇所。ハンドラもボタンの `disabled` もこの値を見る。 */
+  const gate = resolveScopeGate({
+    scopeReady,
+    dataLoaded,
+    sitePending,
+    busy,
+    listStatus,
+    loadFailed,
+  });
+
   const load = useCallback(async () => {
-    const res = await fetch(
-      `/api/admin/staff-response?tenantId=${encodeURIComponent(tenantId)}&siteId=${encodeURIComponent(siteId)}`,
-    );
+    // 拠点が確定するまで取得しない。
+    if (!scopeReady) return;
+    const startedWith = scopeKey;
+    let res: Response;
+    try {
+      res = await fetch(
+        `/api/admin/staff-response?tenantId=${encodeURIComponent(tenantId)}&siteId=${encodeURIComponent(siteId)}`,
+      );
+    } catch {
+      if (!isCurrentScope(startedWith)) return;
+      setLoadFailed(true);
+      return;
+    }
+    // 取得中に拠点／テナントが変わっていたら捨てる。
+    if (!isCurrentScope(startedWith)) return;
     if (res.ok) {
       const data = (await res.json()) as ConfigView;
+      setLoadFailed(false);
+      setDefinitionsScopeKey(startedWith);
       setDefinitions(data.definitions);
+    } else {
+      // **失敗を握り潰さない。** 以前は `if (res.ok)` だけで、401/403/5xx のとき
+      // 画面は空のまま何も言わなかった（未設定と区別が付かない）。
+      setLoadFailed(true);
     }
-  }, [tenantId, siteId]);
+  }, [tenantId, siteId, scopeKey, scopeReady, isCurrentScope]);
 
   useEffect(() => {
+    // 拠点が変わった瞬間に前拠点の設定を捨てる。編集中の文言も閉じる。
+    setDefinitionsScopeKey((prev) => (prev === scopeKey ? prev : null));
+    setDefinitions((prev) => (prev.length === 0 ? prev : []));
+    setLoadFailed(false);
+    setEditingAction(null);
     void load();
-  }, [load]);
+  }, [load, scopeKey]);
 
   const patch = useCallback(
     async (action: StaffResponseAction, body: Record<string, unknown>, successMessage?: string) => {
-      if (busy) return;
+      // 載っている設定に対する変更。ボタンと同じ 1 つの値を見る。
+      if (!gate.canMutate) return;
       setBusy(true);
       clear();
       try {
@@ -82,7 +127,7 @@ export function StaffResponseManager({
         setBusy(false);
       }
     },
-    [busy, tenantId, siteId, clear, success, failure],
+    [gate.canMutate, tenantId, siteId, clear, success, failure],
   );
 
   const toggle = useCallback(
@@ -115,10 +160,34 @@ export function StaffResponseManager({
     <section>
       <h1 style={{ marginTop: 0 }}>担当者応答アクション</h1>
       <p style={{ opacity: 0.7, marginTop: -8 }}>
-        テナント <code>{tenantId}</code> / 拠点 <code>{siteId}</code> で、担当者が選べる応答
-        アクションの有効/無効と、来訪者向けに表示する文言を設定します。無効にした応答は担当者
-        画面に表示されず、文言の上書きは受付端末の来訪者表示に反映されます。
+        担当者が選べる応答アクションの有効/無効と、来訪者向けに表示する文言を拠点ごとに
+        設定します。無効にした応答は担当者画面に表示されず、文言の上書きは受付端末の
+        来訪者表示に反映されます。
       </p>
+
+      {/* 拠点は本文で名指しせずセレクタに委ねる（ヘッダの対象拠点と二重に言わない）。 */}
+      <div style={{ marginBottom: space.md, maxWidth: 320 }}>
+        <SiteScopeSelect
+          sites={sites}
+          siteId={siteId}
+          onSelect={selectSite}
+          onRetry={reloadSites}
+          disabled={sitePending}
+          testId="staff-response-site-select"
+          status={listStatus}
+        />
+      </div>
+
+      {/* 取得できていないことを「設定が無い」と誤読させない。 */}
+      {gate.unavailable !== null ? (
+        <p data-testid="staff-response-config-unavailable" style={{ color: color.muted }}>
+          {gate.unavailable === 'site-list-error'
+            ? '拠点を確認できないため、応答アクションを表示できません。'
+            : gate.unavailable === 'load-failed'
+              ? '応答アクションを取得できませんでした。'
+              : '読み込み中…'}
+        </p>
+      ) : null}
 
       <div style={{ marginBottom: space.sm }}>
         <SaveFeedback
@@ -151,7 +220,7 @@ export function StaffResponseManager({
                   <Button
                     data-testid="staff-response-config-toggle"
                     onClick={() => toggle(d)}
-                    disabled={busy}
+                    disabled={!gate.canMutate}
                   >
                     {d.enabled ? '無効化' : '有効化'}
                   </Button>
@@ -178,11 +247,11 @@ export function StaffResponseManager({
                       variant="primary"
                       data-testid="staff-response-config-message-save"
                       onClick={() => saveMessage(d.action)}
-                      disabled={busy}
+                      disabled={!gate.canMutate}
                     >
                       保存
                     </Button>
-                    <Button onClick={() => setEditingAction(null)} disabled={busy}>
+                    <Button onClick={() => setEditingAction(null)} disabled={!gate.canMutate}>
                       取消
                     </Button>
                   </div>
@@ -200,7 +269,7 @@ export function StaffResponseManager({
                         setEditingAction(d.action);
                         setEditMessage(d.isMessageOverridden ? d.visitorMessage : '');
                       }}
-                      disabled={busy}
+                      disabled={!gate.canMutate}
                     >
                       文言を編集
                     </Button>
@@ -208,7 +277,7 @@ export function StaffResponseManager({
                       <Button
                         data-testid="staff-response-config-message-reset"
                         onClick={() => resetMessage(d.action)}
-                        disabled={busy}
+                        disabled={!gate.canMutate}
                       >
                         既定に戻す
                       </Button>
