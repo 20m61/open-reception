@@ -87,6 +87,12 @@ test.describe('管理: 拠点スコープが URL に載る (#421)', () => {
     { path: '/admin/call-routes', testId: 'call-routes-site-select', label: '呼び出しルート' },
     { path: '/admin/call-routing', testId: 'call-routing-site-select', label: '取次ルート' },
     { path: '/admin/reception-flows', testId: 'reception-flows-site-select', label: '受付フロー' },
+    // #554 で移行。版は拠点別なのに既定拠点固定で、UI から別拠点へ到達できなかった。
+    {
+      path: '/admin/experience-versions',
+      testId: 'experience-versions-site-select',
+      label: '受付体験の版管理',
+    },
   ]) {
     test(`${screen.label}も拠点を切り替えられ、URL に載る`, async ({ page }) => {
       // これらも resolveDefaultScope() に固定されていて、UI から別拠点へ到達できなかった。
@@ -211,6 +217,14 @@ test.describe('管理: ヘッダに対象拠点が常設される (#423)', () =>
     const chip = page.getByTestId('active-site');
     await expect(chip).toContainText('本社受付');
     await expect(chip).toHaveAttribute('data-site-id', 'default-site');
+    await expect(chip).toHaveAttribute('data-site-source', 'query');
+  });
+
+  test('受付体験の版管理でもヘッダに対象拠点が出る (#554)', async ({ page }) => {
+    await page.goto('/admin/experience-versions?siteId=default-site');
+
+    const chip = page.getByTestId('active-site');
+    await expect(chip).toContainText('本社受付');
     await expect(chip).toHaveAttribute('data-site-source', 'query');
   });
 

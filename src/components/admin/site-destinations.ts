@@ -88,6 +88,11 @@ export const SITE_SCOPED_PATHS: readonly string[] = [
    * `tests/config/admin-site-context.test.ts` が実ファイルを走査して漏れを落とす。
    */
   '/admin/call-routes',
+  /**
+   * 受付体験の版管理。拠点詳細のカードには載せていない（#420 のライフサイクル画面で、
+   * 拠点別設定というより公開操作）が、`?siteId=` で拠点別に版を持つ (#554)。
+   */
+  '/admin/experience-versions',
 ];
 
 /**
