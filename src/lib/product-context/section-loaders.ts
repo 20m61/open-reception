@@ -73,9 +73,14 @@ export function createSectionLoaders(now: () => Date = () => new Date()): Config
       return section(await getKioskDirectory(), 'tenant');
     },
 
+    /**
+     * **テナント対応済み** (#419 残増分)。`assertGlobalStoreScope` は外してある —
+     * ストアがテナント別にキーを持つようになったので、既定以外のテナントへ配っても
+     * 越境しない。残りのセクション（directory / voice / motions / assets）は
+     * まだ単一テナントのストアなので guard を残す。
+     */
     async branding(input) {
-      assertGlobalStoreScope(input);
-      return section(await getBrandingSettings(), 'tenant');
+      return section(await getBrandingSettings(String(input.tenantId)), 'tenant');
     },
 
     async voice(input) {
