@@ -46,6 +46,32 @@ describe('resolveScopeGate', () => {
     );
   });
 
+  /**
+   * **読みの失敗で書きを殺さない** (#552 で実際に P1 になった形)。
+   *
+   * 一覧に依存しない書き込み（新規作成）は、一覧が取れなくても実行できなければならない。
+   * 作成ゲートに一覧の取得状態を混ぜたせいで、**GET が 1 回失敗しただけで登録が永久に
+   * 無効化**され、端末交換の復旧経路が止まった。
+   */
+  it('一覧が取れなくても新規作成は止めない', () => {
+    const g = resolveScopeGate({ ...loaded, dataLoaded: false, loadFailed: true });
+    expect(g.canCreate).toBe(true);
+    // 既存行への操作は別。載っているのが前スコープの行かもしれないので止める。
+    expect(g.canMutate).toBe(false);
+  });
+
+  it('拠点が確定していなければ新規作成は止める', () => {
+    // どの拠点に作るか決まっていない状態で作らせると、既定拠点に紛れ込む。
+    expect(resolveScopeGate({ ...loaded, scopeReady: false, dataLoaded: false }).canCreate).toBe(
+      false,
+    );
+  });
+
+  it('拠点切替の遷移中と実行中は新規作成も止める', () => {
+    expect(resolveScopeGate({ ...loaded, sitePending: true }).canCreate).toBe(false);
+    expect(resolveScopeGate({ ...loaded, busy: true }).canCreate).toBe(false);
+  });
+
   it('取得に失敗しても再取得は止めない（復帰手段を残す）', () => {
     // ここを止めると画面リロード以外に抜ける道が無くなる。
     const g = resolveScopeGate({ ...loaded, dataLoaded: false, loadFailed: true });

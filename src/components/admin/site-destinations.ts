@@ -102,6 +102,10 @@ export const SITE_SCOPED_PATHS: readonly string[] = [
    * 待機中サイネージ。受付端末の待機画面は拠点ごとに変える（#554）。
    */
   '/admin/signage',
+  /**
+   * 来訪予約。予約と QR 招待は拠点内スコープ（#375 の招待モデル）なので拠点別に扱う (#554)。
+   */
+  '/admin/reservations',
 ];
 
 /**
