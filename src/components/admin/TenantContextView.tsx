@@ -50,17 +50,50 @@ const SELECT_STYLE: React.CSSProperties = {
 };
 
 /**
+ * ヘッダの「いま何を対象にしているか」チップの共通表示 (#423)。
+ *
+ * テナント・拠点で別々に組むと、見た目も文言の形もずれる（実際にテナント側は
+ * `AdminShell` と `TenantSwitcher` で逐語的に重複していた）。次元が増えても
+ * ここ 1 箇所を直せば揃うようにする。
+ */
+export function ContextChip({
+  testId,
+  label,
+  value,
+  /** 対象が確認できないときの弱い見た目。値そのものは隠さない。 */
+  muted = false,
+  note,
+  ...rest
+}: {
+  testId: string;
+  label: string;
+  value: string;
+  muted?: boolean;
+  /** 「（見つかりません）」等の補足。値の隣に小さく添える。 */
+  note?: string;
+} & Record<`data-${string}`, string | undefined>) {
+  return (
+    <span
+      data-testid={testId}
+      style={muted ? { ...CHIP_STYLE, opacity: 0.7 } : CHIP_STYLE}
+      {...rest}
+    >
+      {label}: <strong>{value}</strong>
+      {note === undefined ? null : (
+        <span style={{ marginLeft: 4, fontSize: '0.8125rem', opacity: 0.8 }}>{note}</span>
+      )}
+    </span>
+  );
+}
+
+/**
  * 切り替えできない場合の固定表示。
  *
  * `data-testid="active-tenant"` は既存 e2e（`tests/e2e/admin-tenant-context.spec.ts`）が
  * 引いているので変えない。
  */
 export function TenantContextChip({ tenantName }: { tenantName: string }) {
-  return (
-    <span data-testid="active-tenant" style={CHIP_STYLE}>
-      {TENANT_CONTEXT_LABEL}: <strong>{tenantName}</strong>
-    </span>
-  );
+  return <ContextChip testId="active-tenant" label={TENANT_CONTEXT_LABEL} value={tenantName} />;
 }
 
 /**

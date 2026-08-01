@@ -191,3 +191,78 @@ test.describe('管理: 重複ナビの一本化 (#421)', () => {
     await expect(page).toHaveURL(/\/admin\/call-routing\?siteId=branch-site/);
   });
 });
+
+/**
+ * ヘッダの対象拠点常設表示 (#423 受入条件「主要画面で現在の tenant/site が常に確認できる」)。
+ *
+ * **ヘッダと本文がずれないこと**が肝。platform では実際にヘッダ（Cookie の選択）と本文
+ * （URL のテナント）が別の対象を示す状態が在った（第 84 wave）。純関数側
+ * （`site-context.test.ts`）は本文と同じ解決に委譲することを固定しているが、
+ * **クライアント遷移で追従するか**は配線の話なので実ブラウザで見る。
+ */
+test.describe('管理: ヘッダに対象拠点が常設される (#423)', () => {
+  test.beforeEach(async ({ page }) => {
+    await loginAsAdmin(page);
+  });
+
+  test('拠点別画面では対象拠点が出る', async ({ page }) => {
+    await page.goto('/admin/devices?siteId=default-site');
+
+    const chip = page.getByTestId('active-site');
+    await expect(chip).toContainText('本社受付');
+    await expect(chip).toHaveAttribute('data-site-id', 'default-site');
+    await expect(chip).toHaveAttribute('data-site-source', 'query');
+  });
+
+  test('拠点次元を持たない画面では出さない', async ({ page }) => {
+    // 部署はテナント全体の設定。ここで「対象拠点: 本社受付」と出すと、拠点別に
+    // 分かれているように読める（無い区別を作らない）。
+    await page.goto('/admin/departments');
+
+    await expect(page.getByTestId('active-site')).toHaveCount(0);
+    // 対象テナントは（拠点と違って）どの画面でも出続ける。ここが 0 になっていたら
+    // 「拠点を出さない」ではなくヘッダごと壊している。単一所属は固定表示、複数所属は
+    // セレクタになるのでどちらでも良い。
+    await expect(
+      page.locator('[data-testid="active-tenant"], [data-testid="admin-tenant-switcher"]'),
+    ).toHaveCount(1);
+  });
+
+  test('拠点詳細では URL の拠点をそのまま出す', async ({ page }) => {
+    test.skip(
+      !!process.env.PLAYWRIGHT_BASE_URL,
+      'branch-site は seed 由来で、dynamodb backend では seed が無視されるため実環境には存在しない',
+    );
+
+    await page.goto('/admin/sites/branch-site');
+
+    const chip = page.getByTestId('active-site');
+    await expect(chip).toContainText('別館受付');
+    await expect(chip).toHaveAttribute('data-site-source', 'route');
+  });
+
+  test('実在しない拠点は既定へ倒さず「見つかりません」と出す', async ({ page }) => {
+    // **黙って既定拠点へ倒さない。** 倒すと、別拠点の情報を見ているのに気づけない。
+    await page.goto('/admin/sites/no-such-site');
+
+    const chip = page.getByTestId('active-site');
+    await expect(chip).toHaveAttribute('data-site-state', 'unknown');
+    await expect(chip).toContainText('no-such-site');
+  });
+
+  test('本文で拠点を切り替えるとヘッダも追従する（リロード無し）', async ({ page }) => {
+    test.skip(
+      !!process.env.PLAYWRIGHT_BASE_URL,
+      'branch-site は seed 由来で、dynamodb backend では seed が無視されるため実環境には存在しない',
+    );
+
+    await page.goto('/admin/devices');
+    await expect(page.getByTestId('active-site')).toContainText('本社受付');
+
+    await page.getByTestId('device-site-select').selectOption('branch-site');
+
+    // 共有 layout の props はクライアント遷移で更新されない（第 87 wave）。
+    // サーバから拠点を渡す実装だと、ここで「本社受付」のまま固まる。
+    await expect(page.getByTestId('active-site')).toContainText('別館受付');
+  });
+});

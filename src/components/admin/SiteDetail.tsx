@@ -1,11 +1,10 @@
 'use client';
 
-import { useEffect, useState } from 'react';
 import Link from 'next/link';
 import { Card, Section, StatusBadge } from '@/components/admin/ui';
 import { color, font, space } from '@/components/admin/ui/tokens';
-import type { SiteWithDevices } from '@/lib/tenant/site-service';
 import { SITE_DESTINATIONS, siteDestinationHref } from './site-destinations';
+import { useSiteList } from './use-site-list';
 
 /**
  * 拠点詳細 (issue #421)。
@@ -21,7 +20,10 @@ import { SITE_DESTINATIONS, siteDestinationHref } from './site-destinations';
  * 「ここは拠点別ではない」と分かる方が誤解が少ない。
  */
 export function SiteDetail({ tenantId, siteId }: { tenantId: string; siteId: string }) {
-  const [site, setSite] = useState<SiteWithDevices | null>(null);
+  // 一覧の取得はヘッダの対象拠点表示と共通のフックへ寄せた (#423)。
+  const { sites, status: listStatus } = useSiteList(tenantId);
+  const site = sites.find((s) => s.id === siteId) ?? null;
+
   /**
    * 'loading' | 'ok' | 'missing' | 'error' を明示的に持つ。
    *
@@ -30,33 +32,14 @@ export function SiteDetail({ tenantId, siteId }: { tenantId: string; siteId: str
    * なっていた。セッション切れや権限外テナントの直後にとくに紛らわしい（#536 レビュー P2）。
    * 拠点が確認できるまでリンクは出さない。
    */
-  const [status, setStatus] = useState<'loading' | 'ok' | 'missing' | 'error'>('loading');
-
-  useEffect(() => {
-    let cancelled = false;
-    void (async () => {
-      let res: Response;
-      try {
-        res = await fetch(`/api/admin/sites?tenantId=${encodeURIComponent(tenantId)}`);
-      } catch {
-        if (!cancelled) setStatus('error');
-        return;
-      }
-      if (cancelled) return;
-      if (!res.ok) {
-        setStatus('error');
-        return;
-      }
-      const list = (await res.json()) as SiteWithDevices[];
-      if (cancelled) return;
-      const found = list.find((s) => s.id === siteId) ?? null;
-      setSite(found);
-      setStatus(found === null ? 'missing' : 'ok');
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, [tenantId, siteId]);
+  const status: 'loading' | 'ok' | 'missing' | 'error' =
+    listStatus === 'loading'
+      ? 'loading'
+      : listStatus === 'error'
+        ? 'error'
+        : site === null
+          ? 'missing'
+          : 'ok';
 
   if (status === 'loading') {
     return (

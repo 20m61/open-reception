@@ -1,8 +1,10 @@
 'use client';
 
-import { useCallback, useEffect, useRef, useState, useTransition } from 'react';
+import { useCallback, useEffect, useRef, useTransition } from 'react';
 import { useQueryParams } from './use-query-params';
-import { resolveSiteScopeState, type SelectableSite } from './site-scope';
+import { resolveSiteScopeState } from './site-scope';
+import { useSiteList } from './use-site-list';
+import type { SiteWithDevices } from '@/lib/tenant/site-service';
 
 /**
  * 拠点スコープを URL と同期する共有フック (issue #421)。
@@ -22,7 +24,7 @@ export function useSiteScope(
   tenantId: string,
   fallbackSiteId: string,
 ): {
-  sites: SelectableSite[];
+  sites: SiteWithDevices[];
   siteId: string;
   /** この siteId で取得を始めてよいか。false の間は fetch しない（下の解説参照）。 */
   scopeReady: boolean;
@@ -48,20 +50,9 @@ export function useSiteScope(
   sitePending: boolean;
 } {
   const { get, setMany } = useQueryParams();
-  const [sites, setSites] = useState<SelectableSite[]>([]);
-
-  useEffect(() => {
-    let cancelled = false;
-    void (async () => {
-      const res = await fetch(`/api/admin/sites?tenantId=${encodeURIComponent(tenantId)}`);
-      if (!res.ok) return;
-      const list = (await res.json()) as SelectableSite[];
-      if (!cancelled) setSites(list);
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, [tenantId]);
+  // 取得はヘッダの対象拠点表示と同じ共有フックへ寄せる (#423)。取得失敗を空一覧に
+  // 潰さないので、「拠点が無い」と「一覧を取れていない」が区別できる。
+  const { sites } = useSiteList(tenantId);
 
   const { siteId, scopeReady } = (() => {
     const r = resolveSiteScopeState(get('siteId'), sites, fallbackSiteId);

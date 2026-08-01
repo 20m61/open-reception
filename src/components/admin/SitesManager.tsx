@@ -1,12 +1,13 @@
 'use client';
 
 import Link from 'next/link';
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useMemo, useState } from 'react';
 import type { SiteStatus } from '@/domain/tenant/types';
 import type { SiteWithDevices } from '@/lib/tenant/site-service';
 import { Button, DataTable, Field, type Column } from '@/components/admin/ui';
 import { color, font, space } from '@/components/admin/ui/tokens';
 import { useQueryParams } from './use-query-params';
+import { useSiteList } from './use-site-list';
 import { paginate } from './list-io';
 import { filterSites, sitesToCsv, type SiteListFilter } from './sites-filter';
 
@@ -27,7 +28,8 @@ const DEFAULT_TENANT_ID = 'internal';
 const PAGE_SIZE = 20;
 
 export function SitesManager({ tenantId = DEFAULT_TENANT_ID }: { tenantId?: string }) {
-  const [items, setItems] = useState<SiteWithDevices[]>([]);
+  // 一覧の取得は共有フックへ寄せる (#423)。作成・更新後は `reload()` で取り直す。
+  const { sites: items, reload: load } = useSiteList(tenantId);
   const [name, setName] = useState('');
   const [busy, setBusy] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
@@ -37,15 +39,6 @@ export function SitesManager({ tenantId = DEFAULT_TENANT_ID }: { tenantId?: stri
   const keyword = get('q');
   const filterStatus = get('status');
   const pageParam = get('page');
-
-  const load = useCallback(async () => {
-    const res = await fetch(`/api/admin/sites?tenantId=${encodeURIComponent(tenantId)}`);
-    if (res.ok) setItems((await res.json()) as SiteWithDevices[]);
-  }, [tenantId]);
-
-  useEffect(() => {
-    void load();
-  }, [load]);
 
   const add = useCallback(async () => {
     if (name.trim() === '' || busy) return;

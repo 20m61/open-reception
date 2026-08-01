@@ -1,8 +1,7 @@
 'use client';
 
-import { useCallback, useEffect, useMemo, useState, useTransition } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import type { DeviceConnectivity, DeviceView } from '@/lib/tenant/device-service';
-import type { SiteWithDevices } from '@/lib/tenant/site-service';
 import type { DeviceKind } from '@/domain/tenant/types';
 import {
   Button,
@@ -16,9 +15,9 @@ import {
 import { font, space } from '@/components/admin/ui/tokens';
 import { renderTextToQrSvg } from '@/lib/reservation/qr';
 import { useQueryParams } from './use-query-params';
+import { useSiteScope } from './use-site-scope';
 import { paginate } from './list-io';
 import { filterDevices, devicesToCsv, type DeviceListFilter } from './devices-filter';
-import { resolveSelectedSiteId } from './site-scope';
 
 /**
  * 受付端末（Device）管理 (issue #87, increment 2; 検索/フィルタ/ページング/CSV は #330 item2 残増分)。
@@ -61,8 +60,25 @@ function formatLastSeen(iso: string | undefined): string {
   return d.toLocaleString('ja-JP');
 }
 
-export function DevicesManager({ tenantId = DEFAULT_TENANT_ID }: { tenantId?: string }) {
-  const [sites, setSites] = useState<SiteWithDevices[]>([]);
+export function DevicesManager({
+  tenantId = DEFAULT_TENANT_ID,
+  siteId: defaultSiteId,
+}: {
+  tenantId?: string;
+  /** サーバ (`resolveDefaultScope`) 由来の既定拠点。URL 未指定時のフォールバック。 */
+  siteId: string;
+}) {
+  /**
+   * 表示中の拠点は **URL が真実源** (#421)。拠点別設定画面（営業時間・取次ルート等）と
+   * **同じ `useSiteScope`** を使う (#423)。
+   *
+   * 以前はここだけ `resolveSelectedSiteId`（URL 未指定なら**一覧の先頭**）で、他の 4 画面は
+   * `resolveSiteScopeState`（URL 未指定なら**既定拠点**）だった。既定拠点が一覧の先頭でない
+   * テナントでは同じ URL でも画面ごとに別の拠点を開き、ヘッダの対象拠点表示（#423）とも
+   * 食い違う。**同じ問いには同じ答えを返す**ようにここへ寄せた。
+   */
+  const { sites, siteId, scopeKey, scopeReady, isCurrentScope, selectSite, sitePending } =
+    useSiteScope(tenantId, defaultSiteId);
   const [devices, setDevices] = useState<DeviceView[]>([]);
   const [name, setName] = useState('');
   const [location, setLocation] = useState('');
@@ -87,56 +103,21 @@ export function DevicesManager({ tenantId = DEFAULT_TENANT_ID }: { tenantId?: st
   const kindFilter = get('kind');
   const pageParam = get('page');
 
-  /**
-   * 表示中の拠点は **URL が真実源** (#421)。検索・フィルタ・ページと同じ扱いに揃える。
-   *
-   * ここが component state のままだと、リロード・共有 URL・戻る/進むでフィルタは復元される
-   * のに拠点だけ先頭へ戻る。#421 の「拠点詳細から全関連設定へ到達」も、拠点を URL で
-   * 渡せなければ**拠点を伝えられないただの画面遷移**にしかならない。
-   *
-   * 実在しない siteId を URL に書かれても採用しない（`resolveSelectedSiteId` が先頭へ倒す）。
-   * 採用すると空の一覧が「この拠点には端末が無い」と誤読される。
-   */
-  const siteId = resolveSelectedSiteId(get('siteId'), sites);
-
-  /**
-   * **URL 遷移が確定するまで登録を止めるためのフラグ。**
-   *
-   * `setMany` は `router.replace` を起こすだけで、`useSearchParams()` のスナップショットが
-   * 差し替わるのは遷移が確定した後。その間 `siteId` は**古い拠点のまま**なので、
-   * 端末名を入力済みの管理者が拠点を切り替えて即座に「登録」を押すと、
-   * **切り替える前の拠点に端末が作られる**（`add` が siteId を POST するため）。
-   * component state だった頃は選択が即時反映されるのでこの窓が無かった＝本増分で入った回帰。
-   *
-   * 行単位の操作（有効/無効・メンテ・改名）は deviceId で対象が一意に決まるので影響しない。
-   */
-  const [sitePending, startSiteTransition] = useTransition();
-  const selectSite = useCallback(
-    // 拠点を変えるとフィルタ後の母集合が変わるので、ページは 1 へ戻す（既存フィルタと同じ作法）。
-    (next: string) => startSiteTransition(() => setMany({ siteId: next, page: '' })),
-    [setMany],
-  );
-
-  const loadSites = useCallback(async () => {
-    const res = await fetch(`/api/admin/sites?tenantId=${encodeURIComponent(tenantId)}`);
-    if (!res.ok) return;
-    setSites((await res.json()) as SiteWithDevices[]);
-  }, [tenantId]);
-
   const loadDevices = useCallback(async () => {
-    if (!siteId) {
+    // 拠点が確定するまで取りに行かない。確定前の暫定拠点で投げると、遅れて届いた応答が
+    // 別拠点の一覧を上書きし、**表示は A なのに中身は B** になる（#535 レビュー P1 と同型）。
+    if (!scopeReady || !siteId) {
       setDevices([]);
       return;
     }
+    const startedWith = scopeKey;
     const res = await fetch(
       `/api/admin/devices?tenantId=${encodeURIComponent(tenantId)}&siteId=${encodeURIComponent(siteId)}`,
     );
-    if (res.ok) setDevices((await res.json()) as DeviceView[]);
-  }, [tenantId, siteId]);
+    if (!res.ok || !isCurrentScope(startedWith)) return;
+    setDevices((await res.json()) as DeviceView[]);
+  }, [tenantId, siteId, scopeReady, scopeKey, isCurrentScope]);
 
-  useEffect(() => {
-    void loadSites();
-  }, [loadSites]);
   useEffect(() => {
     void loadDevices();
   }, [loadDevices]);

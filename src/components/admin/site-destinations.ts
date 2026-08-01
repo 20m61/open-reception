@@ -66,6 +66,30 @@ export const SITE_DESTINATIONS: readonly SiteDestination[] = [
   },
 ];
 
+/** 拠点詳細のルート。動的セグメントを持つ唯一の拠点別画面。 */
+export const SITE_DETAIL_PATH_PATTERN = '/admin/sites/[siteId]';
+
+/**
+ * 「その画面が拠点 1 つにスコープされているか」の単一情報源 (#423)。
+ *
+ * ヘッダの対象拠点表示（`SiteContextChip`）と、拠点別画面の構造テスト
+ * （`tests/config/admin-tenant-scope.test.ts`）が**同じ集合**を見る。別々に列挙すると、
+ * 画面を足したときに片方だけ更新されて「本文は拠点別なのにヘッダは何も出さない」
+ * （またはその逆）になる — 本リポジトリが繰り返してきた
+ * 「ある次元で解いた対策を別の次元へ写していない」形そのもの。
+ */
+export const SITE_SCOPED_PATHS: readonly string[] = [
+  ...SITE_DESTINATIONS.filter((d) => d.siteScoped).map((d) => d.href),
+  SITE_DETAIL_PATH_PATTERN,
+  /**
+   * 旧・呼び出しルート。**拠点詳細のカードには載せない**（入口を増やすと重複が残る）が、
+   * 画面自体は `?siteId=` を読んで拠点別に編集する。「ハブから辿れるか」と「拠点別か」は
+   * 別の問いなので、登録簿の派生だけにすると**この画面だけヘッダが黙る**。
+   * `tests/config/admin-site-context.test.ts` が実ファイルを走査して漏れを落とす。
+   */
+  '/admin/call-routes',
+];
+
 /**
  * 導線の遷移先 URL を組み立てる。
  * **拠点を運べる導線にだけ** `?siteId=` を付ける（付けても無視される先には付けない）。

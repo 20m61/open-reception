@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { SITE_DESTINATIONS } from '../../src/components/admin/site-destinations';
+import { SITE_SCOPED_PATHS } from '../../src/components/admin/site-destinations';
 
 /**
  * **拠点別画面が「選択中テナント」を使っていることを構造的に強制する** (issue #421)。
@@ -16,11 +16,14 @@ import { SITE_DESTINATIONS } from '../../src/components/admin/site-destinations'
  * を強制しているのと同じ考え方。
  */
 
-/** 拠点別画面（`site-destinations.ts` で拠点を運ぶと宣言しているもの）＋拠点詳細。 */
-const SITE_SCOPED_PAGES = [
-  ...SITE_DESTINATIONS.filter((d) => d.siteScoped).map((d) => d.href),
-  '/admin/sites/[siteId]',
-];
+/**
+ * 拠点別画面（`site-destinations.ts` で拠点を運ぶと宣言しているもの）＋拠点詳細。
+ *
+ * **本番コードの `SITE_SCOPED_PATHS` を借りる** (#423)。ここで独自に列挙すると、
+ * ヘッダの対象拠点表示（`site-context.ts`）が見る集合と食い違い、「本文は拠点別なのに
+ * ヘッダは何も出さない」画面が検査をすり抜ける。
+ */
+const SITE_SCOPED_PAGES = SITE_SCOPED_PATHS;
 
 function pageSource(href: string): string {
   const rel = href.replace(/^\/admin\//, '');
