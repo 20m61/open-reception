@@ -144,6 +144,16 @@ export function SignageManager({
     // **ボタンと同じ 1 つの値を見る。** `config` の有無だけで判断すると、拠点切替中に
     // 前拠点の内容を現在の `siteId` へ書き込める（越境保存）。
     if (!config || !gate.canMutate) return;
+    /**
+     * **応答を適用する側にも門が要る。**
+     *
+     * 入口（`gate.canMutate`）は「押した瞬間」しか守らない。PUT が飛行中に拠点を切り替えると、
+     * 遅れて届いた A の応答が B の状態を上書きし、**セレクタは B・中身は A** になる。
+     * `configScopeKey` は B のままなので `canMutate` は真、そこで保存すると **A の内容が
+     * B の待機画面として保存される**（来訪者に他拠点の案内が出る）。
+     * 読み（`load`）には写してあった守りを、書きにも写す。
+     */
+    const startedWith = scopeKey;
     setBusy(true);
     setError(null);
     setFieldErrors([]);
@@ -159,7 +169,14 @@ export function SignageManager({
         items: config.items,
       }),
     });
+    // 応答が届いた時点で別スコープを見ていたら、結果を画面へ載せない。
+    if (!isCurrentScope(startedWith)) {
+      setBusy(false);
+      return;
+    }
     if (res.ok) {
+      // 載せるスコープも同時に更新する（「載っているデータのスコープ」を嘘にしない）。
+      setConfigScopeKey(startedWith);
       setConfig((await res.json()) as SignageConfig);
       success(`保存しました（${new Date().toLocaleTimeString()}）`);
     } else {
@@ -171,7 +188,7 @@ export function SignageManager({
       setFieldErrors(data.fields ?? []);
     }
     setBusy(false);
-  }, [config, tenantId, siteId, success, failure, clear, gate.canMutate]);
+  }, [config, tenantId, siteId, scopeKey, isCurrentScope, success, failure, clear, gate.canMutate]);
 
   const errorFor = useCallback(
     (field: string) => fieldErrors.find((e) => e.field === field)?.message,
@@ -194,7 +211,7 @@ export function SignageManager({
           siteId={siteId}
           onSelect={selectSite}
           onRetry={reloadSites}
-          disabled={sitePending}
+          disabled={sitePending || busy}
           testId="signage-site-select"
           status={listStatus}
         />

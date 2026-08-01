@@ -237,7 +237,7 @@ export function StayManager({
           siteId={siteId}
           onSelect={selectSite}
           onRetry={reloadSites}
-          disabled={sitePending}
+          disabled={sitePending || busy}
           testId="stay-site-select"
           status={listStatus}
         />

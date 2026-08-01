@@ -106,6 +106,10 @@ export function StaffResponseManager({
     async (action: StaffResponseAction, body: Record<string, unknown>, successMessage?: string) => {
       // 載っている設定に対する変更。ボタンと同じ 1 つの値を見る。
       if (!gate.canMutate) return;
+      // **応答の適用にも同じ門が要る。** PATCH が飛行中に拠点を切り替えると、遅れて届いた
+      // A の応答が B の画面へ載り、無効化したはずの応答が有効に戻る・来訪者向け文言が
+      // 別拠点のものに置き換わる（読みに写した守りを書きにも写す）。
+      const startedWith = scopeKey;
       setBusy(true);
       clear();
       try {
@@ -114,8 +118,10 @@ export function StaffResponseManager({
           headers: { 'content-type': 'application/json' },
           body: JSON.stringify({ tenantId, siteId, action, ...body }),
         });
+        if (!isCurrentScope(startedWith)) return;
         if (res.ok) {
           const data = (await res.json()) as ConfigView;
+          setDefinitionsScopeKey(startedWith);
           setDefinitions(data.definitions);
           success(successMessage);
         } else {
@@ -127,7 +133,7 @@ export function StaffResponseManager({
         setBusy(false);
       }
     },
-    [gate.canMutate, tenantId, siteId, clear, success, failure],
+    [gate.canMutate, tenantId, siteId, scopeKey, isCurrentScope, clear, success, failure],
   );
 
   const toggle = useCallback(
@@ -172,7 +178,7 @@ export function StaffResponseManager({
           siteId={siteId}
           onSelect={selectSite}
           onRetry={reloadSites}
-          disabled={sitePending}
+          disabled={sitePending || busy}
           testId="staff-response-site-select"
           status={listStatus}
         />
