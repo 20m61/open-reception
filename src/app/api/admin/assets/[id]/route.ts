@@ -4,10 +4,11 @@ import { readJson, resultResponse } from '@/lib/data-stores/result-http';
 import { appendAdminAudit } from '@/lib/data-stores/reception-log-store';
 import {
   assertCanWrite,
-  defaultAdminTenantId,
   requireActor,
   toGuardResponse,
 } from '@/lib/admin/guard';
+import { resolveAdminTenantId } from '@/lib/tenant/admin-tenant-scope';
+import { asTenantId } from '@/domain/tenant/types';
 
 /**
  * PATCH /api/admin/assets/:id — アセットの有効/無効・アクティブ設定 (issue #27)。
@@ -19,9 +20,11 @@ export async function PATCH(
   request: Request,
   { params }: { params: Promise<{ id: string }> },
 ): Promise<NextResponse> {
+  let tenantId: string;
   try {
     const actor = await requireActor();
-    assertCanWrite(actor, defaultAdminTenantId());
+    tenantId = await resolveAdminTenantId();
+    assertCanWrite(actor, asTenantId(tenantId));
   } catch (err) {
     return toGuardResponse(err);
   }
@@ -29,12 +32,12 @@ export async function PATCH(
   const body = (await readJson(request)) as { enabled?: unknown; active?: unknown } | null;
 
   if (body && typeof body.enabled === 'boolean') {
-    const r = await setAssetEnabled(id, body.enabled);
+    const r = await setAssetEnabled(tenantId, id, body.enabled);
     if (r.ok) await appendAdminAudit('asset.updated', { type: 'asset', id }, { enabled: String(body.enabled) });
     return resultResponse(r);
   }
   if (body && body.active === true) {
-    const r = await setActiveAsset(id);
+    const r = await setActiveAsset(tenantId, id);
     if (r.ok) await appendAdminAudit('asset.updated', { type: 'asset', id }, { active: 'true' });
     return resultResponse(r);
   }

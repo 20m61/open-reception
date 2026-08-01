@@ -28,7 +28,7 @@ export async function GET(): Promise<NextResponse> {
   }
   return NextResponse.json({
     ...(await getMotionMapping(tenantId)),
-    assets: await listAssets('motion'),
+    assets: await listAssets(tenantId, 'motion'),
   });
 }
 

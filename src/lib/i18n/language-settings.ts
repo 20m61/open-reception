@@ -10,6 +10,8 @@
  *   - defaultLocale は必ず enabledLocales に含まれる（含まれなければ先頭へ補正）。
  */
 import { getBackend } from '@/lib/data';
+import { tenantScopedStoreKey } from '@/domain/tenant/store-key';
+import { defaultTenantIdFrom } from '@/lib/tenant/default-scope';
 import {
   DEFAULT_LOCALE,
   SUPPORTED_LOCALES,
@@ -52,19 +54,24 @@ export function sanitizeLanguageSettings(input: unknown, base: LanguageSettings 
   return { enabledLocales, defaultLocale };
 }
 
-const store = () => getBackend().singleton<LanguageSettings>('language-settings', { default: defaults });
+/** **テナント別に保持する** (#419 残増分)。既定テナントは従来キー据え置き。 */
+const store = (tenantId: string) =>
+  getBackend().singleton<LanguageSettings>(
+    tenantScopedStoreKey('language-settings', tenantId, defaultTenantIdFrom()),
+    { default: defaults },
+  );
 
-export async function getLanguageSettings(): Promise<LanguageSettings> {
-  return sanitizeLanguageSettings(await store().get());
+export async function getLanguageSettings(tenantId: string): Promise<LanguageSettings> {
+  return sanitizeLanguageSettings(await store(tenantId).get());
 }
 
-export async function updateLanguageSettings(patch: unknown): Promise<LanguageSettings> {
-  const next = sanitizeLanguageSettings(patch, await getLanguageSettings());
-  await store().put(next);
+export async function updateLanguageSettings(tenantId: string, patch: unknown): Promise<LanguageSettings> {
+  const next = sanitizeLanguageSettings(patch, await getLanguageSettings(tenantId));
+  await store(tenantId).put(next);
   return next;
 }
 
 /** テスト用: 既定へ戻す。 */
-export async function __resetLanguageSettings(): Promise<void> {
-  await store().reset();
+export async function __resetLanguageSettings(tenantId: string = defaultTenantIdFrom()): Promise<void> {
+  await store(tenantId).reset();
 }
