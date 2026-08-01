@@ -45,7 +45,6 @@ const SITE_DIMENSION_WITHOUT_HEADER: readonly { route: string; reason: 'todo' | 
   { route: '/admin/reservations', reason: 'todo' },
   { route: '/admin/signage', reason: 'todo' },
   { route: '/admin/staff-response', reason: 'todo' },
-  { route: '/admin/stay', reason: 'todo' },
   // `n/a` = そもそも対象が 1 拠点に絞られない画面。ヘッダに出すべきではない。
   { route: '/admin/sites', reason: 'n/a' },
 ];

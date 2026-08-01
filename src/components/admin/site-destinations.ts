@@ -93,6 +93,11 @@ export const SITE_SCOPED_PATHS: readonly string[] = [
    * 拠点別設定というより公開操作）が、`?siteId=` で拠点別に版を持つ (#554)。
    */
   '/admin/experience-versions',
+  /**
+   * 在館状況。拠点詳細のカードには載せていない（設定ではなく日々の運用画面）が、
+   * 滞在は拠点内スコープなので `?siteId=` で拠点別に見る (#554)。
+   */
+  '/admin/stay',
 ];
 
 /**
