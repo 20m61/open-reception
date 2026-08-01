@@ -105,6 +105,9 @@ export function OperatingHoursManager({
   const save = useCallback(async () => {
     // 選択中の拠点の内容が載りきるまで保存させない（載っているのは別拠点の値かもしれない）。
     if (busy || !loaded || sitePending) return;
+    // **応答の適用にも同じ門が要る** (#554 レビュー B1 と同型)。PUT が飛行中に拠点を
+    // 切り替えると、遅れて届いた A の応答が B の画面へ載り、以後 B として保存できてしまう。
+    const startedWith = scopeKey;
     setBusy(true);
     clear();
     setIssues([]);
@@ -133,9 +136,11 @@ export function OperatingHoursManager({
           ...(emergencyContactLabel.trim() ? { emergencyContactLabel: emergencyContactLabel.trim() } : {}),
         }),
       });
+      if (!isCurrentScope(startedWith)) return;
       if (res.ok) {
         const body = (await res.json()) as { policy: PolicyView };
         applyPolicy(body.policy);
+        setLoadedScopeKey(startedWith);
         success();
       } else {
         const body = (await res.json().catch(() => null)) as { issues?: { field: string; message: string }[] } | null;
@@ -145,7 +150,7 @@ export function OperatingHoursManager({
     } finally {
       setBusy(false);
     }
-  }, [busy, loaded, sitePending, clear, weeklyText, fixedHolidaysText, exceptionsText, timezone, emergencyContactLabel, tenantId, siteId, applyPolicy, success, failure]);
+  }, [busy, loaded, sitePending, scopeKey, isCurrentScope, clear, weeklyText, fixedHolidaysText, exceptionsText, timezone, emergencyContactLabel, tenantId, siteId, applyPolicy, success, failure]);
 
   if (!loaded) {
     return (

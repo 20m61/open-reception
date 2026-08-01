@@ -99,7 +99,11 @@ export function ReservationsManager({
   const [error, setError] = useState<string | null>(null);
   /** 取得の失敗だけを別に持つ（`error` は作成・操作の失敗にも使うため理由がすり替わる）。 */
   const [loadFailed, setLoadFailed] = useState(false);
-  const [qrFor, setQrFor] = useState<{ id: string; dataUrl: string } | null>(null);
+  /**
+   * 発行済み QR。**どのスコープで発行したか**を一緒に持つ (#554 レビュー M2)。
+   * 拠点をまたいで表示すると、運用者が別拠点の招待を来訪者へ渡してしまう。
+   */
+  const [qrFor, setQrFor] = useState<{ id: string; dataUrl: string; scopeKey: string } | null>(null);
 
   /** 可否の判断は 1 箇所。ハンドラもボタンの `disabled` もこの値を見る。 */
   const gate = resolveScopeGate({
@@ -156,6 +160,15 @@ export function ReservationsManager({
     setLoadFailed(false);
     // 発行済み QR は拠点をまたいで見せない（別拠点の招待を提示しない）。
     setQrFor(null);
+    /**
+     * **入力中のフォームも捨てる** (#554 レビュー M6)。
+     *
+     * `canCreate` は `dataLoaded` を要求しない（読みの失敗で書きを殺さないため）ので、
+     * 拠点を切り替えた直後でも「作成」は押せる。フォームを残すと、A 向けに入力した
+     * 来訪者情報がそのまま B の予約として作られる — 来訪者は A の端末で QR が通らず
+     * 受付を完遂できないうえ、氏名・会社名・メモという PII が意図しない拠点へ入る。
+     */
+    setForm(EMPTY_FORM);
     void load();
   }, [load, scopeKey]);
 
@@ -167,6 +180,8 @@ export function ReservationsManager({
       setError('来訪者名・予定日時・呼び出し先 ID は必須です。');
       return;
     }
+    // 応答（＝発行された QR）を載せてよいスコープを記録しておく。
+    const startedWith = scopeKey;
     setBusy(true);
     setError(null);
     try {
@@ -190,8 +205,11 @@ export function ReservationsManager({
         // 発行応答の生 token は一度きり(#375: 保存は hash のみで QR は後から再表示できない)。
         // その場で QR を描画して提示する。
         const issued = (await res.json()) as VisitReservation & { qrDataUrl?: string };
-        if (issued.qrDataUrl) {
-          setQrFor({ id: issued.id, dataUrl: issued.qrDataUrl });
+        // **発行中に拠点を切り替えていたら QR を出さない。** 出すと、見出しは B なのに
+        // A の予約の QR が表示される。QR は 1 回しか出ないので、運用者が「B の予約の QR」と
+        // 誤認して来訪者へ渡すと、その来訪者は B の端末で受付できない（＝入館トークンの誤配布）。
+        if (issued.qrDataUrl && isCurrentScope(startedWith)) {
+          setQrFor({ id: issued.id, dataUrl: issued.qrDataUrl, scopeKey: startedWith });
         }
         await load();
       } else {
@@ -200,7 +218,7 @@ export function ReservationsManager({
     } finally {
       setBusy(false);
     }
-  }, [gate.canCreate, form, tenantId, siteId, load]);
+  }, [gate.canCreate, form, tenantId, siteId, scopeKey, isCurrentScope, load]);
 
   const act = useCallback(
     async (path: string, method: 'DELETE' | 'POST') => {
@@ -236,6 +254,7 @@ export function ReservationsManager({
       // `act` を通らない独自の fetch なので、ここにも同じ門が要る（写し忘れると
       // 再発行だけが拠点切替中に通る）。
       if (!gate.canMutate) return;
+      const startedWith = scopeKey;
       setBusy(true);
       setError(null);
       try {
@@ -247,8 +266,8 @@ export function ReservationsManager({
         if (res.ok) {
           // 再発行応答の生 token も一度きり(#375)。その場で新しい QR を提示する。
           const issued = (await res.json()) as VisitReservation & { qrDataUrl?: string };
-          if (issued.qrDataUrl) {
-            setQrFor({ id: issued.id, dataUrl: issued.qrDataUrl });
+          if (issued.qrDataUrl && isCurrentScope(startedWith)) {
+            setQrFor({ id: issued.id, dataUrl: issued.qrDataUrl, scopeKey: startedWith });
           }
         } else {
           setError('操作に失敗しました。');
@@ -258,16 +277,22 @@ export function ReservationsManager({
         setBusy(false);
       }
     },
-    [tenantId, siteId, load, gate.canMutate],
+    [tenantId, siteId, scopeKey, isCurrentScope, load, gate.canMutate],
   );
 
   const showQr = useCallback(
     async (r: VisitReservation) => {
+      // **兄弟のハンドラに写す。** 独自 fetch を持つのに門が無いと、拠点切替直後の
+      // 1 フレームで前拠点の行の QR を要求できる。他が全部無効な中でこれだけ押せて
+      // 失敗するので、運用者は原因を取り違える。
+      if (!gate.canMutate) return;
+      const startedWith = scopeKey;
       setError(null);
       const res = await fetch(`/api/admin/reservations/${r.id}/qr?${scopeQuery}&format=json`);
+      if (!isCurrentScope(startedWith)) return;
       if (res.ok) {
         const { dataUrl } = (await res.json()) as { dataUrl: string };
-        setQrFor({ id: r.id, dataUrl });
+        setQrFor({ id: r.id, dataUrl, scopeKey: startedWith });
       } else if (res.status === 410) {
         // #375: token は hash のみ保存のため QR の再表示は不可。再発行を案内する。
         setError('QR は再表示できません(トークンは保存されません)。「再発行」で新しい QR を発行してください。');
@@ -275,7 +300,7 @@ export function ReservationsManager({
         setError('QR の取得に失敗しました。');
       }
     },
-    [scopeQuery],
+    [scopeQuery, scopeKey, isCurrentScope, gate.canMutate],
   );
 
   const summary = useMemo(() => summarize(items), [items]);
@@ -359,7 +384,7 @@ export function ReservationsManager({
           siteId={siteId}
           onSelect={selectSite}
           onRetry={reloadSites}
-          disabled={sitePending}
+          disabled={sitePending || busy}
           testId="reservation-site-select"
           status={listStatus}
         />
@@ -545,7 +570,7 @@ export function ReservationsManager({
         ) : null}
       </Section>
 
-      {qrFor ? (
+      {qrFor !== null && qrFor.scopeKey === scopeKey ? (
         <QrPanel
           dataUrl={qrFor.dataUrl}
           fileName={qrFileName(qrFor.id)}
@@ -576,7 +601,7 @@ function RowActions({
   return (
     <div style={{ display: 'inline-flex', gap: space.xs, flexWrap: 'wrap', justifyContent: 'flex-end' }}>
       {actions.canShowQr ? (
-        <Button data-testid="rsv-qr" onClick={() => onShowQr(reservation)}>
+        <Button data-testid="rsv-qr" onClick={() => onShowQr(reservation)} disabled={!canMutate}>
           QR
         </Button>
       ) : null}
