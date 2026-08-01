@@ -44,7 +44,21 @@ export type ScopeUnavailableKind = 'site-list-error' | 'load-failed' | 'loading'
 export type ScopeGate = {
   /** 再取得してよいか。偽ならボタンも無効にする。 */
   canRefresh: boolean;
-  /** 変更（保存・削除・状態変更）してよいか。ハンドラとボタンが**同じこの値**を見る。 */
+  /**
+   * **一覧に依存しない書き込み**（新規作成）をしてよいか。
+   *
+   * `canMutate` と分けているのが要点。作成は「どの拠点に作るか」さえ決まっていれば
+   * 実行でき、一覧が取れているかとは無関係。ここに一覧の取得状態を混ぜると、
+   * **GET が 1 回失敗しただけで登録が永久に無効化**され、復旧経路ごと止まる
+   * （#552 で実際に P1 になった）。
+   */
+  canCreate: boolean;
+  /**
+   * **載っている行に対する操作**（保存・削除・状態変更）をしてよいか。
+   *
+   * こちらは `dataLoaded` を要求する。前スコープの行が残ったまま操作させると、
+   * 見出しは B なのに A の資源を壊す。
+   */
   canMutate: boolean;
   /** 載っているデータを事実として扱ってよいか（集計・件数・「0 件です」の断定）。 */
   dataTrusted: boolean;
@@ -60,6 +74,8 @@ export function resolveScopeGate(input: ScopeGateInput): ScopeGate {
     // 作らないため、ボタン側も同じ条件で止める。**取得失敗では止めない** —
     // 止めると失敗から復帰する手段が画面リロードだけになる。
     canRefresh: scopeReady && !sitePending && !busy,
+    // **`dataLoaded` を含めない。** 読みの失敗で書きを殺さないため（#552）。
+    canCreate: scopeReady && !sitePending && !busy,
     canMutate: dataLoaded && !sitePending && !busy,
     // **`busy` は含めない。** 操作中でも載っているデータの正しさは変わらないので、
     // 消すと操作のたびに画面が点滅する。

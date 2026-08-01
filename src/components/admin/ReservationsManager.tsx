@@ -20,6 +20,9 @@ import {
 } from '@/components/admin/ui';
 import { color, radius, space, font } from '@/components/admin/ui/tokens';
 import { useQueryParams } from './use-query-params';
+import { useSiteScope } from './use-site-scope';
+import { SiteScopeSelect } from './SiteScopeSelect';
+import { resolveScopeGate } from './scope-gate';
 import { paginate } from './list-io';
 import { filterReservations, reservationsToCsv, type ReservationListFilter } from './reservations/list-filter';
 import {
@@ -47,12 +50,11 @@ import type { ReservationStatus } from '@/domain/reservation/types';
  * 検索/フィルタ/ページ状態は監査ログ・受付履歴と同じく URL クエリを真実源にする（issue #94）。
  * CSV エクスポートは来訪者名・会社名等の PII を含めない（`reservations/list-filter.ts` 参照）。
  *
- * actor の実テナント解決は #80 配線に依存する。inc2 は単一テナント運用の互換シード
- * `internal` を既定にする（SitesManager と同方針）。siteId は運用上の必須スコープのため、
- * 画面上部で選択（暫定は手入力 + 既定値）する。
+ * **対象拠点は URL が真実源** (#554)。以前は component state ＋自由入力で、既定は
+ * ローカル定数の `'default'` だった（**実在する既定拠点は `'default-site'`**）ため、
+ * 画面を開いただけで実在しない拠点の予約を読み書きしていた。テナントも `'internal'`
+ * 固定で、テナントを切り替えても同じ予約を見ていた。どちらもサーバ解決の値を props で受け取る。
  */
-const DEFAULT_TENANT_ID = 'internal';
-const DEFAULT_SITE_ID = 'default';
 const PAGE_SIZE = 20;
 
 type CreateForm = {
@@ -76,18 +78,38 @@ const EMPTY_FORM: CreateForm = {
 };
 
 export function ReservationsManager({
-  tenantId = DEFAULT_TENANT_ID,
-  initialSiteId = DEFAULT_SITE_ID,
+  tenantId,
+  siteId: defaultSiteId,
 }: {
-  tenantId?: string;
-  initialSiteId?: string;
+  tenantId: string;
+  /** サーバが解決した既定拠点（`resolveDefaultScope().siteId`）。ヘッダの対象拠点と同じ出所。 */
+  siteId: string;
 }) {
-  const [siteId, setSiteId] = useState(initialSiteId);
+  const { sites, siteId, scopeKey, scopeReady, isCurrentScope, selectSite, sitePending, listStatus, reloadSites } =
+    useSiteScope(tenantId, defaultSiteId);
   const [items, setItems] = useState<VisitReservation[]>([]);
+  /**
+   * **どのスコープの予約が今画面に載っているか。** 取消・再発行は予約 ID でしか対象を
+   * 決めないので、これが無いと見出しが B を指したまま A の予約を取り消せる（#539 / #541 と同型）。
+   */
+  const [itemsScopeKey, setItemsScopeKey] = useState<string | null>(null);
+  const dataLoaded = itemsScopeKey === scopeKey;
   const [form, setForm] = useState<CreateForm>(EMPTY_FORM);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  /** 取得の失敗だけを別に持つ（`error` は作成・操作の失敗にも使うため理由がすり替わる）。 */
+  const [loadFailed, setLoadFailed] = useState(false);
   const [qrFor, setQrFor] = useState<{ id: string; dataUrl: string } | null>(null);
+
+  /** 可否の判断は 1 箇所。ハンドラもボタンの `disabled` もこの値を見る。 */
+  const gate = resolveScopeGate({
+    scopeReady,
+    dataLoaded,
+    sitePending,
+    busy,
+    listStatus,
+    loadFailed,
+  });
 
   const { get, setMany } = useQueryParams();
   const filterStart = get('start');
@@ -102,21 +124,45 @@ export function ReservationsManager({
   );
 
   const load = useCallback(async () => {
+    // 拠点が確定するまで取得しない（既定拠点と URL 指定で 2 本飛ばさない）。
+    if (!scopeReady) return;
+    const startedWith = scopeKey;
     setError(null);
-    const res = await fetch(`/api/admin/reservations?${scopeQuery}`);
+    let res: Response;
+    try {
+      res = await fetch(`/api/admin/reservations?${scopeQuery}`);
+    } catch {
+      if (!isCurrentScope(startedWith)) return;
+      setLoadFailed(true);
+      setError('予約の取得に失敗しました。');
+      return;
+    }
+    // 取得中に拠点／テナントが変わっていたら捨てる。
+    if (!isCurrentScope(startedWith)) return;
     if (res.ok) {
+      setLoadFailed(false);
+      setItemsScopeKey(startedWith);
       setItems((await res.json()) as VisitReservation[]);
     } else {
+      setLoadFailed(true);
       setError('予約の取得に失敗しました。');
     }
-  }, [scopeQuery]);
+  }, [scopeQuery, scopeKey, scopeReady, isCurrentScope]);
 
   useEffect(() => {
+    // 拠点が変わった瞬間に前拠点の行を捨てる。届くまでの間、古い行を触らせない。
+    setItemsScopeKey((prev) => (prev === scopeKey ? prev : null));
+    setItems((prev) => (prev.length === 0 ? prev : []));
+    setLoadFailed(false);
+    // 発行済み QR は拠点をまたいで見せない（別拠点の招待を提示しない）。
+    setQrFor(null);
     void load();
-  }, [load]);
+  }, [load, scopeKey]);
 
   const create = useCallback(async () => {
-    if (busy) return;
+    // **一覧の取得状態は混ぜない。** 読み（GET）の失敗で書き（作成）を殺すと、
+    // 一覧が 1 回取れないだけで予約を登録できなくなる（#552 の P1）。
+    if (!gate.canCreate) return;
     if (form.visitorName.trim() === '' || form.visitAt.trim() === '' || form.targetId.trim() === '') {
       setError('来訪者名・予定日時・呼び出し先 ID は必須です。');
       return;
@@ -154,10 +200,12 @@ export function ReservationsManager({
     } finally {
       setBusy(false);
     }
-  }, [busy, form, tenantId, siteId, load]);
+  }, [gate.canCreate, form, tenantId, siteId, load]);
 
   const act = useCallback(
     async (path: string, method: 'DELETE' | 'POST') => {
+      // 既存の行に対する操作。前拠点の行が残ったまま取消・再発行させない。
+      if (!gate.canMutate) return;
       setBusy(true);
       setError(null);
       try {
@@ -175,7 +223,7 @@ export function ReservationsManager({
         setBusy(false);
       }
     },
-    [scopeQuery, tenantId, siteId, load],
+    [scopeQuery, tenantId, siteId, load, gate.canMutate],
   );
 
   const cancel = useCallback((r: VisitReservation) => act(`/api/admin/reservations/${r.id}`, 'DELETE'), [act]);
@@ -185,6 +233,9 @@ export function ReservationsManager({
   );
   const reissue = useCallback(
     async (r: VisitReservation) => {
+      // `act` を通らない独自の fetch なので、ここにも同じ門が要る（写し忘れると
+      // 再発行だけが拠点切替中に通る）。
+      if (!gate.canMutate) return;
       setBusy(true);
       setError(null);
       try {
@@ -207,7 +258,7 @@ export function ReservationsManager({
         setBusy(false);
       }
     },
-    [tenantId, siteId, load],
+    [tenantId, siteId, load, gate.canMutate],
   );
 
   const showQr = useCallback(
@@ -288,7 +339,7 @@ export function ReservationsManager({
       key: 'actions',
       header: '操作',
       align: 'right',
-      cell: (r) => <RowActions reservation={r} onShowQr={showQr} onCancel={cancel} onRevoke={revoke} onReissue={reissue} busy={busy} />,
+      cell: (r) => <RowActions reservation={r} onShowQr={showQr} onCancel={cancel} onRevoke={revoke} onReissue={reissue} canMutate={gate.canMutate} />,
     },
   ];
 
@@ -303,26 +354,37 @@ export function ReservationsManager({
       </div>
 
       <div style={{ display: 'flex', gap: space.sm, alignItems: 'flex-end', flexWrap: 'wrap' }}>
-        <Field label="拠点 ID" htmlFor="reservation-site-id" hint="この拠点スコープで予約を扱います。">
-          <input
-            id="reservation-site-id"
-            data-testid="reservation-site-id"
-            value={siteId}
-            onChange={(e) => setSiteId(e.target.value)}
-            style={inputStyle}
-          />
-        </Field>
+        <SiteScopeSelect
+          sites={sites}
+          siteId={siteId}
+          onSelect={selectSite}
+          onRetry={reloadSites}
+          disabled={sitePending}
+          testId="reservation-site-select"
+          status={listStatus}
+        />
       </div>
 
       <Section title="状況" description="現在の予約をステータス別に集計しています。">
-        <CardGrid minWidth={150}>
-          <MetricCard label="合計" value={summary.total} />
-          <MetricCard label="有効" value={summary.active} tone="success" />
-          <MetricCard label="使用済み" value={summary.used} tone="accent" />
-          <MetricCard label="期限切れ" value={summary.expired} tone="warning" />
-          <MetricCard label="失効" value={summary.revoked} tone="danger" />
-          <MetricCard label="キャンセル" value={summary.cancelled} />
-        </CardGrid>
+        {/* 取得できていない一覧の集計は出さない（0 件と断定しない）。 */}
+        {gate.dataTrusted ? (
+          <CardGrid minWidth={150}>
+            <MetricCard label="合計" value={summary.total} />
+            <MetricCard label="有効" value={summary.active} tone="success" />
+            <MetricCard label="使用済み" value={summary.used} tone="accent" />
+            <MetricCard label="期限切れ" value={summary.expired} tone="warning" />
+            <MetricCard label="失効" value={summary.revoked} tone="danger" />
+            <MetricCard label="キャンセル" value={summary.cancelled} />
+          </CardGrid>
+        ) : (
+          <p data-testid="reservation-summary-unavailable" style={{ opacity: 0.7, margin: 0 }}>
+            {gate.unavailable === 'site-list-error'
+              ? '拠点を確認できないため、予約を表示できません。'
+              : gate.unavailable === 'load-failed'
+                ? '予約を取得できませんでした。'
+                : '読み込み中…'}
+          </p>
+        )}
       </Section>
 
       <Section title="予約を作成" description="作成と同時に QR トークンを発行します。">
@@ -360,7 +422,7 @@ export function ReservationsManager({
               <input id="rsv-note" data-testid="rsv-note" value={form.note} onChange={(e) => setForm({ ...form, note: e.target.value })} style={inputStyle} />
             </Field>
             <div>
-              <Button variant="primary" data-testid="rsv-create" onClick={create} disabled={busy}>
+              <Button variant="primary" data-testid="rsv-create" onClick={create} disabled={!gate.canCreate}>
                 予約を作成
               </Button>
             </div>
@@ -500,14 +562,15 @@ function RowActions({
   onCancel,
   onRevoke,
   onReissue,
-  busy,
+  canMutate,
 }: {
   reservation: VisitReservation;
   onShowQr: (r: VisitReservation) => void;
   onCancel: (r: VisitReservation) => void;
   onRevoke: (r: VisitReservation) => void;
   onReissue: (r: VisitReservation) => void;
-  busy: boolean;
+  /** ハンドラ側と**同じ値**。別々に判断するとサイレント no-op か素通りのどちらかになる。 */
+  canMutate: boolean;
 }) {
   const actions = availableActions(reservation.status);
   return (
@@ -518,17 +581,17 @@ function RowActions({
         </Button>
       ) : null}
       {actions.canReissue ? (
-        <Button data-testid="rsv-reissue" onClick={() => onReissue(reservation)} disabled={busy}>
+        <Button data-testid="rsv-reissue" onClick={() => onReissue(reservation)} disabled={!canMutate}>
           再発行
         </Button>
       ) : null}
       {actions.canRevoke ? (
-        <Button variant="danger" data-testid="rsv-revoke" onClick={() => onRevoke(reservation)} disabled={busy}>
+        <Button variant="danger" data-testid="rsv-revoke" onClick={() => onRevoke(reservation)} disabled={!canMutate}>
           失効
         </Button>
       ) : null}
       {actions.canCancel ? (
-        <Button variant="danger" data-testid="rsv-cancel" onClick={() => onCancel(reservation)} disabled={busy}>
+        <Button variant="danger" data-testid="rsv-cancel" onClick={() => onCancel(reservation)} disabled={!canMutate}>
           取消
         </Button>
       ) : null}

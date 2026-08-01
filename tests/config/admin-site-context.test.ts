@@ -42,7 +42,6 @@ const HANDLES_SITE = /siteId/;
 const SITE_DIMENSION_WITHOUT_HEADER: readonly { route: string; reason: 'todo' | 'n/a' }[] = [
   // `todo` = 拠点次元を持つが URL に載っていない。#554 の対象（直したらここから外す）。
   { route: '/admin/demo', reason: 'todo' },
-  { route: '/admin/reservations', reason: 'todo' },
   { route: '/admin/staff-response', reason: 'todo' },
   // `n/a` = そもそも対象が 1 拠点に絞られない画面。ヘッダに出すべきではない。
   { route: '/admin/sites', reason: 'n/a' },
