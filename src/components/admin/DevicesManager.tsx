@@ -115,12 +115,15 @@ export function DevicesManager({
   const loadDevices = useCallback(async () => {
     // 拠点が確定するまで取りに行かない。確定前の暫定拠点で投げると、遅れて届いた応答が
     // 別拠点の一覧を上書きし、**表示は A なのに中身は B** になる（#535 レビュー P1 と同型）。
+    // **早期 return より前でクリアする。** 後ろに置くと、スコープ未確定へ落ちたときに
+    // 旧スコープの赤字が残り、再試行ボタンが「押せるのに何も起きない」状態になる
+    // （#552 レビュー P2）。
+    setListError(null);
     if (!scopeReady || !siteId) {
       setDevices([]);
       setLoadedScope(null);
       return;
     }
-    setListError(null);
     const startedWith = scopeKey;
     let res: Response;
     try {
@@ -189,11 +192,17 @@ export function DevicesManager({
     if (!canCreate || name.trim() === '' || busy) return;
     setBusy(true);
     try {
-      const res = await fetch('/api/admin/devices', {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ tenantId, siteId, name, location, kind }),
-      });
+      let res: Response;
+      try {
+        res = await fetch('/api/admin/devices', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ tenantId, siteId, name, location, kind }),
+        });
+      } catch {
+        setAddError('端末を登録できませんでした（通信エラー）。接続を確認して再試行してください。');
+        return;
+      }
       if (!res.ok) {
         // 失敗しても入力を消してフォームを空にすると、成功と見分けが付かない。
         const detail = (await res.json().catch(() => null)) as { message?: string } | null;
@@ -219,24 +228,53 @@ export function DevicesManager({
       // 表示中の行が現在の拠点のものだと確認できるまで行操作を通さない（上の解説）。
       // ボタン側も同じ条件で disabled にしてある（片方だけ止めるとサイレント no-op になる）。
       if (!canMutateRows) return false;
-      const res = await fetch(`/api/admin/devices/${id}`, {
-        method: 'PATCH',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ tenantId, ...body }),
-      });
+      let res: Response;
+      try {
+        res = await fetch(`/api/admin/devices/${id}`, {
+          method: 'PATCH',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ tenantId, ...body }),
+        });
+      } catch {
+        // 通信断。**throw させない** — 呼び出し側の「失敗を必ず言う」が効かなくなる
+        // （編集モードが開いたまま無言になる。#552 レビュー P2）。
+        return false;
+      }
       await loadDevices();
       return res.ok;
     },
     [canMutateRows, tenantId, loadDevices],
   );
 
-  const toggleEnabled = useCallback(
-    (d: DeviceView) => patch(d.id, { enabled: d.status !== 'active' }),
+  /**
+   * 行操作の共通ラッパ。**成否を捨てない** — `saveEdit` にだけ入れた「失敗を必ず言う」を
+   * 兄弟の呼び出し元へ写していなかった（#552 レビュー P2。この repo が繰り返している型）。
+   */
+  const mutateRow = useCallback(
+    async (id: string, body: Record<string, unknown>, failure: string) => {
+      const ok = await patch(id, body);
+      setRowError(ok ? null : failure);
+    },
     [patch],
   );
+
+  const toggleEnabled = useCallback(
+    (d: DeviceView) =>
+      void mutateRow(
+        d.id,
+        { enabled: d.status !== 'active' },
+        `${d.status === 'active' ? '無効化' : '有効化'}できませんでした。接続・権限を確認してください。`,
+      ),
+    [mutateRow],
+  );
   const toggleMaintenance = useCallback(
-    (d: DeviceView) => patch(d.id, { maintenance: !d.maintenance }),
-    [patch],
+    (d: DeviceView) =>
+      void mutateRow(
+        d.id,
+        { maintenance: !d.maintenance },
+        'メンテナンス表示を切り替えられませんでした。接続・権限を確認してください。',
+      ),
+    [mutateRow],
   );
 
   const saveEdit = useCallback(
@@ -588,7 +626,11 @@ export function DevicesManager({
       {listError === null ? null : (
         <p data-testid="device-list-error" role="alert" style={{ color: 'var(--color-danger)' }}>
           {listError}{' '}
-          <Button data-testid="device-list-retry" onClick={() => void loadDevices()}>
+          <Button
+            data-testid="device-list-retry"
+            disabled={!scopeReady}
+            onClick={() => void loadDevices()}
+          >
             再試行
           </Button>
         </p>
@@ -599,9 +641,12 @@ export function DevicesManager({
         </p>
       )}
 
-      <p data-testid="device-count" style={{ opacity: 0.7, fontSize: font.small, margin: 0, marginBottom: space.sm }}>
-        {devicesLoaded ? devices.length : 0} 件中 {filtered.length} 件を表示
-      </p>
+      {/* 未確定のときに「0 件中 0 件」と断定しない（0 件と読めてしまう）。 */}
+      {devicesLoaded ? (
+        <p data-testid="device-count" style={{ opacity: 0.7, fontSize: font.small, margin: 0, marginBottom: space.sm }}>
+          {devices.length} 件中 {filtered.length} 件を表示
+        </p>
+      ) : null}
 
       <DataTable
         testId="device-table"
@@ -609,8 +654,9 @@ export function DevicesManager({
         rows={paged.items}
         rowKey={(d) => d.id}
         emptyMessage={
+          // 失敗の詳細は上のバナーに出しているので、ここでは短く（二重表示にしない）。
           listError !== null
-            ? listError
+            ? '端末一覧を表示できません。'
             : !devicesLoaded
               ? '読み込み中…'
               : hasFilter

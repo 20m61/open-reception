@@ -61,6 +61,16 @@ const SELECT_STYLE: React.CSSProperties = {
 /** 表示できる長さに収める。URL 由来の値がそのまま入るとヘッダが壊れる。 */
 const MAX_VALUE_CHARS = 32;
 
+/** 目には出さないが読み上げには載せる。切り詰めた全文を添えるのに使う。 */
+const VISUALLY_HIDDEN: React.CSSProperties = {
+  position: 'absolute',
+  width: 1,
+  height: 1,
+  overflow: 'hidden',
+  clip: 'rect(0 0 0 0)',
+  whiteSpace: 'nowrap',
+};
+
 export function ContextChip({
   testId,
   label,
@@ -91,13 +101,14 @@ export function ContextChip({
           ? { ...CHIP_STYLE, borderColor: 'var(--color-warning, var(--color-border-strong))' }
           : CHIP_STYLE
       }
-      // `title` はホバーの無い iPad では出ない。支援技術と実機の両方で全文へ到達できるよう
-      // `aria-label` も付ける（#552 レビュー N4）。
+      // `title` はホバーの無い iPad では出ない。全文は視覚的非表示のテキストで添える。
+      // **`aria-label` は使わない** — `note`（「見つかりません」等）を読み上げから落とすうえ、
+      // 汎用 span への `aria-label` は AT が無視しうる（#552 レビュー）。
       title={value === shown ? undefined : value}
-      aria-label={value === shown ? undefined : `${label}: ${value}`}
       {...rest}
     >
       {label}: <strong>{shown}</strong>
+      {value === shown ? null : <span style={VISUALLY_HIDDEN}>{value}</span>}
       {note === undefined ? null : <span style={{ marginLeft: 4 }}>{note}</span>}
     </span>
   );
