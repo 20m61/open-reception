@@ -31,6 +31,14 @@ export type ScopeGateInput = {
   listStatus: SiteListStatus;
   /** その画面のデータ取得に失敗したか。 */
   loadFailed: boolean;
+  /**
+   * このテナントに拠点が 1 つでも在るか。
+   *
+   * 0 件は**正常な運用状態**（まだ拠点を登録していないテナント）なのに、
+   * `resolveSiteScopeState` が `ready:false` を返すため、素朴に扱うと
+   * 「終わらない読み込み中」に化ける (#554 レビュー M7)。
+   */
+  hasSites: boolean;
 };
 
 /**
@@ -39,7 +47,12 @@ export type ScopeGateInput = {
  * 文言そのものは画面ごとに違う（在館状況とサイネージ設定では言うべきことが違う）ので、
  * ここでは**理由の種別だけ**を返し、表示は画面側が決める。
  */
-export type ScopeUnavailableKind = 'site-list-error' | 'load-failed' | 'loading';
+export type ScopeUnavailableKind =
+  | 'site-list-error'
+  /** 拠点が 1 つも無い。エラーではなく「まず拠点を登録する」へ案内すべき状態。 */
+  | 'no-site'
+  | 'load-failed'
+  | 'loading';
 
 export type ScopeGate = {
   /** 再取得してよいか。偽ならボタンも無効にする。 */
@@ -67,7 +80,31 @@ export type ScopeGate = {
 };
 
 export function resolveScopeGate(input: ScopeGateInput): ScopeGate {
-  const { scopeReady, dataLoaded, sitePending, busy, listStatus, loadFailed } = input;
+  const { scopeReady, dataLoaded, sitePending, busy, listStatus, loadFailed, hasSites } = input;
+
+  /**
+   * 拠点そのものが信用できない／存在しない状態では**書き込みを許さない**。
+   *
+   * ここは「読みの失敗で書きを殺すな」の例外にあたる。拠点一覧は**書き込み先そのものを
+   * 決める読み**なので、確認できないなら安全な書き込み先が無い（無関係な読みを書きの
+   * ゲートに混ぜた #552 の罠とは別物）。復帰は `canRefresh` に残してある。
+   * これが無いと「拠点を確認できないため変更できません」と表示しながら保存ボタンが
+   * 押せる状態になる（レビュー N6）。
+   */
+  const scopeUnusable = listStatus === 'error' || !hasSites;
+
+  /**
+   * 出せない理由。**拠点側を優先する** — 拠点が確認できていないのに「データを取得
+   * できませんでした」と出すと、原因を取り違えてその画面の API を疑うことになる。
+   */
+  const unavailable = (): ScopeUnavailableKind | null => {
+    if (dataLoaded) return null;
+    if (listStatus === 'error') return 'site-list-error';
+    // `loading` / `idle` の間の 0 件は「まだ分からない」であって「無い」ではない。
+    if (!hasSites && listStatus === 'ready') return 'no-site';
+    if (loadFailed) return 'load-failed';
+    return 'loading';
+  };
 
   return {
     // 拠点が確定していないと取得処理は早期 return する。押せるのに何も起きない状態を
@@ -75,19 +112,11 @@ export function resolveScopeGate(input: ScopeGateInput): ScopeGate {
     // 止めると失敗から復帰する手段が画面リロードだけになる。
     canRefresh: scopeReady && !sitePending && !busy,
     // **`dataLoaded` を含めない。** 読みの失敗で書きを殺さないため（#552）。
-    canCreate: scopeReady && !sitePending && !busy,
-    canMutate: dataLoaded && !sitePending && !busy,
+    canCreate: scopeReady && !sitePending && !busy && !scopeUnusable,
+    canMutate: dataLoaded && !sitePending && !busy && !scopeUnusable,
     // **`busy` は含めない。** 操作中でも載っているデータの正しさは変わらないので、
     // 消すと操作のたびに画面が点滅する。
     dataTrusted: dataLoaded,
-    unavailable: dataLoaded
-      ? null
-      : // 拠点が確認できていないのに「データを取得できませんでした」と出すと、
-        // 原因を取り違えてその画面の API を疑うことになる。拠点側を優先する。
-        listStatus === 'error'
-        ? 'site-list-error'
-        : loadFailed
-          ? 'load-failed'
-          : 'loading',
+    unavailable: unavailable(),
   };
 }

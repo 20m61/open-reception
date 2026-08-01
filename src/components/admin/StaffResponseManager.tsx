@@ -63,6 +63,7 @@ export function StaffResponseManager({
     busy,
     listStatus,
     loadFailed,
+    hasSites: sites.length > 0,
   });
 
   const load = useCallback(async () => {
@@ -103,9 +104,9 @@ export function StaffResponseManager({
   }, [load, scopeKey]);
 
   const patch = useCallback(
-    async (action: StaffResponseAction, body: Record<string, unknown>, successMessage?: string) => {
+    async (action: StaffResponseAction, body: Record<string, unknown>, successMessage?: string): Promise<boolean> => {
       // 載っている設定に対する変更。ボタンと同じ 1 つの値を見る。
-      if (!gate.canMutate) return;
+      if (!gate.canMutate) return false;
       // **応答の適用にも同じ門が要る。** PATCH が飛行中に拠点を切り替えると、遅れて届いた
       // A の応答が B の画面へ載り、無効化したはずの応答が有効に戻る・来訪者向け文言が
       // 別拠点のものに置き換わる（読みに写した守りを書きにも写す）。
@@ -118,17 +119,19 @@ export function StaffResponseManager({
           headers: { 'content-type': 'application/json' },
           body: JSON.stringify({ tenantId, siteId, action, ...body }),
         });
-        if (!isCurrentScope(startedWith)) return;
+        if (!isCurrentScope(startedWith)) return false;
         if (res.ok) {
           const data = (await res.json()) as ConfigView;
           setDefinitionsScopeKey(startedWith);
           setDefinitions(data.definitions);
           success(successMessage);
-        } else {
-          failure();
+          return true;
         }
+        failure();
+        return false;
       } catch {
         failure('通信エラーのため保存に失敗しました。');
+        return false;
       } finally {
         setBusy(false);
       }
@@ -146,11 +149,14 @@ export function StaffResponseManager({
     async (action: StaffResponseAction) => {
       // 空文字を渡すと上書きを解除して既定へ戻す。
       const trimmed = editMessage.trim();
-      await patch(
+      const saved = await patch(
         action,
         { messageOverride: trimmed.length === 0 ? null : trimmed },
         '表示文言を保存しました',
       );
+      // **成功したときだけ閉じる** (#554 レビュー N1)。失敗しても閉じていたので、
+      // 打ち込んだ文言が消えて打ち直しになっていた（トーストだけ残る）。
+      if (!saved) return;
       setEditingAction(null);
       setEditMessage('');
     },
@@ -186,13 +192,28 @@ export function StaffResponseManager({
 
       {/* 取得できていないことを「設定が無い」と誤読させない。 */}
       {gate.unavailable !== null ? (
-        <p data-testid="staff-response-config-unavailable" style={{ color: color.muted }}>
-          {gate.unavailable === 'site-list-error'
-            ? '拠点を確認できないため、応答アクションを表示できません。'
-            : gate.unavailable === 'load-failed'
-              ? '応答アクションを取得できませんでした。'
-              : '読み込み中…'}
-        </p>
+        <div style={{ display: 'flex', alignItems: 'center', gap: space.sm }}>
+          <p data-testid="staff-response-config-unavailable" style={{ color: color.muted, margin: 0 }}>
+            {gate.unavailable === 'site-list-error'
+              ? '拠点を確認できないため、応答アクションを表示できません。'
+              : gate.unavailable === 'no-site'
+                ? 'このテナントにはまだ拠点がありません。拠点を登録すると設定できます。'
+                : gate.unavailable === 'load-failed'
+                  ? '応答アクションを取得できませんでした。'
+                  : '読み込み中…'}
+          </p>
+          {/* 自画面の取得失敗から復帰する導線（拠点一覧の再試行とは別物）。 */}
+          {gate.unavailable === 'load-failed' ? (
+            <Button
+              variant="secondary"
+              onClick={() => void load()}
+              disabled={!gate.canRefresh}
+              data-testid="staff-response-retry"
+            >
+              再試行
+            </Button>
+          ) : null}
+        </div>
       ) : null}
 
       <div style={{ marginBottom: space.sm }}>
@@ -257,7 +278,12 @@ export function StaffResponseManager({
                     >
                       保存
                     </Button>
-                    <Button onClick={() => setEditingAction(null)} disabled={!gate.canMutate}>
+                    {/*
+                      編集モードを閉じるだけのローカル操作なので門を掛けない (#554 レビュー N2)。
+                      掛けると保存中や取得失敗中に**編集から抜けられなくなる**。
+                      門は「サーバの状態を変える操作」に対して掛けるもの。
+                    */}
+                    <Button onClick={() => setEditingAction(null)} disabled={busy}>
                       取消
                     </Button>
                   </div>

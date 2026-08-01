@@ -16,6 +16,7 @@ const loaded = {
   busy: false,
   listStatus: 'ready',
   loadFailed: false,
+  hasSites: true,
 } as const;
 
 describe('resolveStayScopeActions', () => {

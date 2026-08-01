@@ -113,6 +113,43 @@ describe('拠点一覧の取得状態の消費 (#554)', () => {
   });
 });
 
+/**
+ * **共有の門を使う画面は、自画面の取得失敗から復帰できること** (#554 レビュー M3)。
+ *
+ * `SiteScopeSelect` の「再試行」は**拠点一覧**の失敗にしか出ない。拠点一覧は正常で
+ * その画面の GET だけが 401/403/5xx のとき、`canRefresh` を消費していない画面は
+ * **押せるものが 1 つも無くなり、ブラウザリロードしか復帰手段が残らない**。
+ * `scope-gate.ts` がわざわざ `canRefresh` を用意しているのに 4 画面中 3 画面が
+ * 捨てていた（＝この repo が繰り返す「別の画面へ写していない」型）ので機械で止める。
+ */
+describe('取得失敗からの復帰導線 (#554)', () => {
+  /**
+   * 共有の門の利用者。直接使う形と、画面固有の文言を足すラッパ経由の形がある
+   * （`stay/scope-actions.ts` が後者）。ラッパを足したらここへ追記する。
+   */
+  const USES_GATE = /resolveScopeGate\(|resolveStayScopeActions\(/;
+  const GATE_USERS = adminComponents().filter((c) => USES_GATE.test(c.src));
+
+  it('走査が空振りしていない', () => {
+    expect(GATE_USERS.length).toBeGreaterThanOrEqual(4);
+  });
+
+  it('共有の門を使う画面は canRefresh を消費している', () => {
+    const dropped = GATE_USERS.filter((c) => !/canRefresh/.test(c.src)).map((c) => c.name);
+    expect(dropped, '自画面の取得失敗から復帰する手段が無い').toEqual([]);
+  });
+
+  it('共有の門を使う画面は取得できない理由を出し分けている', () => {
+    // 失敗を「読み込み中…」と出すと、運用者は終わらない待ちに入る。
+    // ラッパ経由の画面は文言をラッパ側で決めており、その分岐は
+    // `stay/scope-actions.test.ts` が固定している。
+    const dropped = GATE_USERS.filter(
+      (c) => !/\.unavailable|resolveStayScopeActions\(/.test(c.src),
+    ).map((c) => c.name);
+    expect(dropped, '取得できない理由を伝えていない').toEqual([]);
+  });
+});
+
 describe('拠点一覧の取得に締切がある (#554 N8)', () => {
   it('fetch に AbortSignal を渡している', () => {
     // 締切が無いと、応答が返らないときだけ `error` にすら遷移できず、

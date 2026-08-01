@@ -92,6 +92,7 @@ export function StayManager({
     busy,
     listStatus,
     loadFailed,
+    hasSites: sites.length > 0,
   });
 
   const { get, setMany } = useQueryParams();
@@ -327,9 +328,11 @@ export function StayManager({
           </Button>
         </div>
 
-        <p data-testid="stay-count" style={{ opacity: 0.7, fontSize: font.small, margin: 0, marginBottom: space.sm }}>
-          {sorted.length} 件中 {filtered.length} 件を表示
-        </p>
+        {actions.showSummary ? (
+          <p data-testid="stay-count" style={{ opacity: 0.7, fontSize: font.small, margin: 0, marginBottom: space.sm }}>
+            {sorted.length} 件中 {filtered.length} 件を表示
+          </p>
+        ) : null}
 
         <DataTable
           columns={columns}
