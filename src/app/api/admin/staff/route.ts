@@ -5,10 +5,11 @@ import { appendAdminAudit } from '@/lib/data-stores/reception-log-store';
 import {
   assertCanRead,
   assertCanWrite,
-  defaultAdminTenantId,
   requireActor,
   toGuardResponse,
 } from '@/lib/admin/guard';
+import { resolveAdminTenantId } from '@/lib/tenant/admin-tenant-scope';
+import { asTenantId } from '@/domain/tenant/types';
 
 /**
  * GET /api/admin/staff — 担当者一覧（無効含む） (issue #3, #26)。
@@ -18,23 +19,27 @@ import {
  * で最終認可を行う（フロントで隠した操作でも 403）。
  */
 export async function GET(): Promise<NextResponse> {
+  let tenantId: string;
   try {
     const actor = await requireActor();
-    assertCanRead(actor, defaultAdminTenantId());
+    tenantId = await resolveAdminTenantId();
+    assertCanRead(actor, asTenantId(tenantId));
   } catch (err) {
     return toGuardResponse(err);
   }
-  return NextResponse.json({ items: await listStaff(true) });
+  return NextResponse.json({ items: await listStaff(tenantId, true) });
 }
 
 export async function POST(request: Request): Promise<NextResponse> {
+  let tenantId: string;
   try {
     const actor = await requireActor();
-    assertCanWrite(actor, defaultAdminTenantId());
+    tenantId = await resolveAdminTenantId();
+    assertCanWrite(actor, asTenantId(tenantId));
   } catch (err) {
     return toGuardResponse(err);
   }
-  const result = await createStaff(await readJson(request));
+  const result = await createStaff(tenantId, await readJson(request));
   if (result.ok) await appendAdminAudit('staff.created', { type: 'staff', id: result.value.id });
   return resultResponse(result, 201);
 }

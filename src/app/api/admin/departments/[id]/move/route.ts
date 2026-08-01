@@ -4,10 +4,11 @@ import { readJson, resultResponse } from '@/lib/data-stores/result-http';
 import { appendAdminAudit } from '@/lib/data-stores/reception-log-store';
 import {
   assertCanWrite,
-  defaultAdminTenantId,
   requireActor,
   toGuardResponse,
 } from '@/lib/admin/guard';
+import { resolveAdminTenantId } from '@/lib/tenant/admin-tenant-scope';
+import { asTenantId } from '@/domain/tenant/types';
 
 /**
  * POST /api/admin/departments/:id/move — 部署の表示順を1つ上/下へ移動 (issue #25)。
@@ -19,9 +20,11 @@ export async function POST(
   request: Request,
   { params }: { params: Promise<{ id: string }> },
 ): Promise<NextResponse> {
+  let tenantId: string;
   try {
     const actor = await requireActor();
-    assertCanWrite(actor, defaultAdminTenantId());
+    tenantId = await resolveAdminTenantId();
+    assertCanWrite(actor, asTenantId(tenantId));
   } catch (err) {
     return toGuardResponse(err);
   }
@@ -31,7 +34,7 @@ export async function POST(
   if (direction !== 'up' && direction !== 'down') {
     return NextResponse.json({ error: 'invalid_input', message: 'direction must be up or down' }, { status: 400 });
   }
-  const result = await moveDepartment(id, direction);
+  const result = await moveDepartment(tenantId, id, direction);
   if (result.ok) await appendAdminAudit('department.reordered', { type: 'department', id }, { direction });
   return resultResponse(result);
 }
