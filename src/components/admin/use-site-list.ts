@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import type { SiteWithDevices } from '@/lib/tenant/site-service';
 import type { SiteListStatus } from './site-context';
 
@@ -11,13 +11,47 @@ import type { SiteListStatus } from './site-context';
  */
 const inFlight = new Map<string, Promise<Response>>();
 
-export function fetchSiteList(tenantId: string, fresh: boolean): Promise<Response> {
+/**
+ * 拠点一覧取得の締切 (#554 レビュー N8)。
+ *
+ * これが無いと、**応答が返らないときだけ失敗にすら遷移できない**。`useSiteList` の
+ * `status` は `loading` のまま、`resolveSiteScopeState` は `ready:false` を返し続けるので
+ * 本文は 1 本も取得を始められず、再試行の手段も無い（＝画面ごと復帰不能）。
+ * 失敗にさえ落ちれば、あとはエラー表示と再試行で運用者が抜けられる。
+ */
+export const SITE_LIST_TIMEOUT_MS = 10_000;
+
+/** body 抜きの応答（`new Response(body, {status})` が投げる status）。 */
+const NULL_BODY_STATUS = new Set([204, 205, 304]);
+
+/**
+ * 締切付きで 1 本投げ、**body まで読み切ってから**返す。
+ *
+ * ヘッダ到着で締切を解除すると、body が止まった場合に同じ永久 loading へ戻る
+ * （`useSiteList` は `await res.json()` で待つ）。だから buffer し切るまで締切を効かせる。
+ * 読み切った応答を返すので、相乗り側の `clone()` も安全になる。
+ */
+function fetchWithDeadline(url: string): Promise<Response> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), SITE_LIST_TIMEOUT_MS);
+  return fetch(url, { signal: controller.signal })
+    .then(async (res) => {
+      const body = NULL_BODY_STATUS.has(res.status) ? null : await res.text();
+      // 読み切った本文は元の転送表現と一致しない（圧縮されていた場合、長さも符号化も違う）。
+      // その 2 つだけ落として付け替える。
+      const headers = new Headers(res.headers);
+      headers.delete('content-length');
+      headers.delete('content-encoding');
+      return new Response(body, { status: res.status, statusText: res.statusText, headers });
+    })
+    .finally(() => clearTimeout(timer));
+}
+
+export function fetchSiteList(tenantId: string): Promise<Response> {
   const url = `/api/admin/sites?tenantId=${encodeURIComponent(tenantId)}`;
-  // 作成・改名の直後は相乗りしない（変更前に飛んだ要求の応答を掴む可能性がある）。
-  if (fresh) return fetch(url);
   const pending = inFlight.get(tenantId);
   if (pending !== undefined) return pending.then((res) => res.clone());
-  const started = fetch(url);
+  const started = fetchWithDeadline(url);
   inFlight.set(tenantId, started);
   // **`finally` の戻り値を捨てない。** `p.finally(cb)` は p と同じ理由で reject する新しい
   // promise を返すので、`void` で捨てるとオフライン時に unhandled rejection になる
@@ -28,6 +62,42 @@ export function fetchSiteList(tenantId: string, fresh: boolean): Promise<Respons
   started.then(forget, forget);
   // 相乗り側が body を読めるよう、自分も clone を読む。
   return started.then((res) => res.clone());
+}
+
+/**
+ * マウント中の `useSiteList` を再取得のために登録する。
+ *
+ * ヘッダの対象拠点チップと本文のマネージャは**別インスタンスで別々の状態**を持つ。
+ * 初回は in-flight 相乗りで同じ結果になるが、その後の再取得（再試行・拠点の作成）は
+ * 自分の状態しか更新しない。そのままだと**本文で再試行が成功してもヘッダは
+ * 「確認できません」のまま**になり、直したのに直っていないように見える。
+ */
+type SiteListListener = () => Promise<void>;
+const listeners = new Map<string, Set<SiteListListener>>();
+
+export function subscribeSiteList(tenantId: string, listener: SiteListListener): () => void {
+  const forTenant = listeners.get(tenantId) ?? new Set<SiteListListener>();
+  listeners.set(tenantId, forTenant);
+  forTenant.add(listener);
+  return () => {
+    forTenant.delete(listener);
+    if (forTenant.size === 0) listeners.delete(tenantId);
+  };
+}
+
+/**
+ * そのテナントの一覧を持つ**全インスタンス**に取り直させ、全部の反映を待つ。
+ *
+ * 先に飛行中の記録を落とすのが要点。落とさないと、**書き込み前に飛んだ要求**や
+ * **打ち切り済みの要求**に相乗りして、再試行が永久に効かない。落としたあとは
+ * 各インスタンスがほぼ同時に投げるので、新しい 1 本へ相乗りして収まる。
+ */
+export function invalidateSiteList(tenantId: string): Promise<void> {
+  inFlight.delete(tenantId);
+  return Promise.all(
+    // 1 つが投げても他を巻き添えにしない（各インスタンスは自分で `error` を持つ）。
+    [...(listeners.get(tenantId) ?? [])].map((listener) => listener().catch(() => undefined)),
+  ).then(() => undefined);
 }
 
 /**
@@ -50,33 +120,53 @@ export function useSiteList(
 ): {
   sites: SiteWithDevices[];
   status: SiteListStatus;
-  /** 作成・更新のあとに呼ぶ。 */
+  /**
+   * 作成・更新のあと、および取得失敗からの再試行で呼ぶ。
+   * **同じテナントの他のインスタンスも一緒に取り直す**（ヘッダと本文をずらさない）。
+   */
   reload: () => Promise<void>;
 } {
   const [sites, setSites] = useState<SiteWithDevices[]>([]);
   const [status, setStatus] = useState<SiteListStatus>(enabled ? 'loading' : 'idle');
+  /** この instance が最後に始めた取得の番号（古い応答を捨てるため）。 */
+  const latestRequest = useRef(0);
 
   /**
    * `cancelled` を呼び出し側から渡せる形にしておく（アンマウント後の setState を避ける）。
    * 明示的な `reload()` では常に反映してよいので既定は「反映する」。
    */
   const fetchSites = useCallback(
-    async (isStale: () => boolean = () => false, fresh = false) => {
+    async (isStale: () => boolean = () => false) => {
+      /**
+       * **後から始めた取得が先に返ることがある。**
+       *
+       * 作成直後の取り直し（`invalidateSiteList`）は初回の取得が飛行中でも始まるので、
+       * 遅れて届いた**古い応答が新しい一覧を上書き**し得る（作った拠点が消えて見える）。
+       * この repo が #535 / #541 で P1 を出したのと同じ形なので、同じ守り方をする —
+       * 自分より新しい取得が始まっていたら、その応答は捨てる。
+       */
+      const mine = ++latestRequest.current;
+      const superseded = () => isStale() || latestRequest.current !== mine;
+
+      // **失敗から再試行したときだけ** loading へ戻す。押しても何も変わらないと
+      // 「再試行が効かない」に見えるため。すでに一覧を出せているとき（`ready`）に
+      // 戻すと、作成のたびに一覧が「読み込み中」へ点滅する。
+      if (!superseded()) setStatus((prev) => (prev === 'error' ? 'loading' : prev));
       let res: Response;
       try {
-        res = await fetchSiteList(tenantId, fresh);
+        res = await fetchSiteList(tenantId);
       } catch {
-        // オフライン・DNS 失敗など。**空一覧にしない** — 「拠点が 1 つも無い」と区別が付かない。
-        if (!isStale()) setStatus('error');
+        // オフライン・DNS 失敗・締切。**空一覧にしない** — 「拠点が 1 つも無い」と区別が付かない。
+        if (!superseded()) setStatus('error');
         return;
       }
-      if (isStale()) return;
+      if (superseded()) return;
       if (!res.ok) {
         setStatus('error');
         return;
       }
       const list = (await res.json()) as SiteWithDevices[];
-      if (isStale()) return;
+      if (superseded()) return;
       setSites(list);
       setStatus('ready');
     },
@@ -92,13 +182,17 @@ export function useSiteList(
       return;
     }
     setStatus('loading');
-    void fetchSites(() => cancelled);
+    const isStale = () => cancelled;
+    // 他のインスタンスが起こした取り直しにも追随する（ヘッダだけ古いまま、を作らない）。
+    const unsubscribe = subscribeSiteList(tenantId, () => fetchSites(isStale));
+    void fetchSites(isStale);
     return () => {
       cancelled = true;
+      unsubscribe();
     };
-  }, [fetchSites, enabled]);
+  }, [fetchSites, enabled, tenantId]);
 
-  const reload = useCallback(() => fetchSites(() => false, true), [fetchSites]);
+  const reload = useCallback(() => invalidateSiteList(tenantId), [tenantId]);
 
   return { sites, status, reload };
 }

@@ -50,7 +50,7 @@ export function CallRoutesManager({
 }) {
   // 対象拠点は URL が真実源 (#421)。以前は既定拠点に固定で、UI から別拠点の
   // 呼び出しルートへ到達する手段が無かった。
-  const { sites, siteId, scopeKey, scopeReady, isCurrentScope, selectSite, sitePending, listStatus } = useSiteScope(
+  const { sites, siteId, scopeKey, scopeReady, isCurrentScope, selectSite, sitePending, listStatus, reloadSites } = useSiteScope(
     tenantId,
     defaultSiteId,
   );
@@ -179,6 +179,7 @@ export function CallRoutesManager({
           disabled={sitePending}
           testId="call-routes-site-select"
           status={listStatus}
+          onRetry={reloadSites}
         />
         <Field label="ルート名" htmlFor="route-name-input">
           <input

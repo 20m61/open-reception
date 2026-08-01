@@ -78,7 +78,7 @@ export function DevicesManager({
    * テナントでは同じ URL でも画面ごとに別の拠点を開き、ヘッダの対象拠点表示（#423）とも
    * 食い違う。**同じ問いには同じ答えを返す**ようにここへ寄せた。
    */
-  const { sites, siteId, scopeKey, scopeReady, isCurrentScope, selectSite, sitePending, listStatus } =
+  const { sites, siteId, scopeKey, scopeReady, isCurrentScope, selectSite, sitePending, listStatus, reloadSites } =
     useSiteScope(tenantId, defaultSiteId);
   const [devices, setDevices] = useState<DeviceView[]>([]);
   /** `devices` がどのスコープ（テナント+拠点）の内容か。null = 未取得。 */
@@ -504,6 +504,7 @@ export function DevicesManager({
           disabled={sitePending}
           testId="device-site-select"
           status={listStatus}
+          onRetry={reloadSites}
         />
       </div>
 

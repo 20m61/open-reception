@@ -1,7 +1,7 @@
 'use client';
 
 import Link from 'next/link';
-import { Card, Section, StatusBadge } from '@/components/admin/ui';
+import { Button, Card, Section, StatusBadge } from '@/components/admin/ui';
 import { color, font, space } from '@/components/admin/ui/tokens';
 import { SITE_DESTINATIONS, siteDestinationHref } from './site-destinations';
 import { useSiteList } from './use-site-list';
@@ -21,7 +21,7 @@ import { useSiteList } from './use-site-list';
  */
 export function SiteDetail({ tenantId, siteId }: { tenantId: string; siteId: string }) {
   // 一覧の取得はヘッダの対象拠点表示と共通のフックへ寄せた (#423)。
-  const { sites, status: listStatus } = useSiteList(tenantId);
+  const { sites, status: listStatus, reload } = useSiteList(tenantId);
   const site = sites.find((s) => s.id === siteId) ?? null;
 
   /**
@@ -56,11 +56,21 @@ export function SiteDetail({ tenantId, siteId }: { tenantId: string; siteId: str
       <section>
         <h1 style={{ marginTop: 0 }}>拠点を確認できませんでした</h1>
         <p style={{ color: color.muted }}>
-          拠点情報の取得に失敗しました。再読み込みするか、ログインし直してください。
+          拠点情報の取得に失敗しました。再試行しても直らない場合はログインし直してください。
         </p>
-        <Link href="/admin/sites" data-testid="site-detail-back">
-          拠点一覧へ戻る
-        </Link>
+        {/*
+          再試行を置く (#554 M3)。文章で「再読み込みするか」と言うだけでは、運用者にできる
+          ことが**画面全体のリロードしか無い**。取り直しはヘッダの対象拠点チップにも配られる
+          （`invalidateSiteList`）ので、本文だけ直ってヘッダが古いまま、にはならない。
+        */}
+        <div style={{ display: 'flex', alignItems: 'center', gap: space.sm }}>
+          <Button variant="secondary" onClick={() => void reload()} data-testid="site-detail-retry">
+            再試行
+          </Button>
+          <Link href="/admin/sites" data-testid="site-detail-back">
+            拠点一覧へ戻る
+          </Link>
+        </div>
       </section>
     );
   }

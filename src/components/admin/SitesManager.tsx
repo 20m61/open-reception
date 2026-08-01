@@ -10,6 +10,7 @@ import { useQueryParams } from './use-query-params';
 import { useSiteList } from './use-site-list';
 import { paginate } from './list-io';
 import { filterSites, sitesToCsv, type SiteListFilter } from './sites-filter';
+import { resolveSiteListFeedback } from './site-list-feedback';
 
 /**
  * 拠点管理 (issue #87, increment 1; 検索/フィルタ/ページング/CSV は #330 item2 残増分)。
@@ -28,7 +29,9 @@ const PAGE_SIZE = 20;
 
 export function SitesManager({ tenantId }: { tenantId: string }) {
   // 一覧の取得は共有フックへ寄せる (#423)。作成・更新後は `reload()` で取り直す。
-  const { sites: items, reload: load } = useSiteList(tenantId);
+  // **`status` を捨てない** — 捨てると 401/403/5xx やオフラインが「拠点が 1 つも無い」と
+  // 同じ見た目になる (#554 M3)。
+  const { sites: items, status: listStatus, reload: load } = useSiteList(tenantId);
   const [name, setName] = useState('');
   const [busy, setBusy] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
@@ -157,6 +160,7 @@ export function SitesManager({ tenantId }: { tenantId: string }) {
   const filtered = useMemo(() => filterSites(items, filter), [items, filter]);
   const paged = useMemo(() => paginate(filtered, Number(pageParam) || 1, PAGE_SIZE), [filtered, pageParam]);
   const hasFilter = Boolean(keyword || filterStatus);
+  const feedback = resolveSiteListFeedback(listStatus, hasFilter);
 
   // フィルタ変更時はページを 1 に戻す（絞り込み後に空ページへ迷い込まないようにする）。
   const updateFilter = (updates: Record<string, string>) => setMany({ ...updates, page: '' });
@@ -190,6 +194,11 @@ export function SitesManager({ tenantId }: { tenantId: string }) {
             style={inputStyle}
           />
         </Field>
+        {/*
+          **一覧の取得状態をここに混ぜない。** 読み（GET）の失敗で書き（作成）を殺すと、
+          一覧が 1 回取れないだけで拠点を追加できなくなる（#552 で実際に P1 になった形）。
+          作成の可否は入力と実行中かどうかだけで決める。
+        */}
         <Button variant="primary" data-testid="site-add" onClick={add} disabled={busy || name.trim() === ''}>
           追加
         </Button>
@@ -236,9 +245,30 @@ export function SitesManager({ tenantId }: { tenantId: string }) {
         </Button>
       </div>
 
-      <p data-testid="site-count" style={{ opacity: 0.7, fontSize: font.small, margin: 0, marginBottom: space.sm }}>
-        {items.length} 件中 {filtered.length} 件を表示
-      </p>
+      {feedback.showRetry ? (
+        <div
+          data-testid="site-list-error"
+          style={{
+            display: 'flex',
+            alignItems: 'center',
+            gap: space.sm,
+            marginBottom: space.sm,
+            color: color.danger,
+            fontSize: font.small,
+          }}
+        >
+          <span>拠点一覧を取得できませんでした。表示は最新ではありません。</span>
+          <Button variant="secondary" onClick={() => void load()} data-testid="site-list-retry">
+            再試行
+          </Button>
+        </div>
+      ) : null}
+
+      {feedback.showCount ? (
+        <p data-testid="site-count" style={{ opacity: 0.7, fontSize: font.small, margin: 0, marginBottom: space.sm }}>
+          {items.length} 件中 {filtered.length} 件を表示
+        </p>
+      ) : null}
 
       <DataTable
         testId="site-table"
@@ -246,7 +276,7 @@ export function SitesManager({ tenantId }: { tenantId: string }) {
         rows={paged.items}
         rowKey={(s) => s.id}
         rowTestId={() => 'site-row'}
-        emptyMessage={hasFilter ? '条件に一致する拠点はありません。' : 'このテナントに登録された拠点はありません。'}
+        emptyMessage={feedback.emptyMessage}
       />
 
       {paged.pageCount > 1 ? (
