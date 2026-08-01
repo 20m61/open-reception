@@ -98,6 +98,10 @@ export const SITE_SCOPED_PATHS: readonly string[] = [
    * 滞在は拠点内スコープなので `?siteId=` で拠点別に見る (#554)。
    */
   '/admin/stay',
+  /**
+   * 待機中サイネージ。受付端末の待機画面は拠点ごとに変える（#554）。
+   */
+  '/admin/signage',
 ];
 
 /**

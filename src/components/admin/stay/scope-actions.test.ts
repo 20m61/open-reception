@@ -11,7 +11,7 @@ import { resolveStayScopeActions } from './scope-actions';
 
 const loaded = {
   scopeReady: true,
-  staysLoaded: true,
+  dataLoaded: true,
   sitePending: false,
   busy: false,
   listStatus: 'ready',
@@ -29,14 +29,14 @@ describe('resolveStayScopeActions', () => {
   it('拠点切替中は「在館 0 人」と言わない', () => {
     // 前拠点の行を捨ててから新しい一覧が届くまでの窓。ここで 0 を出すと、
     // 「この拠点には誰も居ない」と読めてしまう。
-    const a = resolveStayScopeActions({ ...loaded, staysLoaded: false });
+    const a = resolveStayScopeActions({ ...loaded, dataLoaded: false });
     expect(a.showSummary).toBe(false);
     expect(a.emptyMessage).not.toContain('在館者はいません');
   });
 
   it('拠点切替中は退館・取消を止める', () => {
     // 見出しが B を指しているのに A の滞在を退館させない。
-    expect(resolveStayScopeActions({ ...loaded, staysLoaded: false }).canMutate).toBe(false);
+    expect(resolveStayScopeActions({ ...loaded, dataLoaded: false }).canMutate).toBe(false);
     expect(resolveStayScopeActions({ ...loaded, sitePending: true }).canMutate).toBe(false);
   });
 
@@ -47,7 +47,7 @@ describe('resolveStayScopeActions', () => {
   it('拠点が確定していなければ更新も止める', () => {
     // `load()` が早期 return するので、押せるのに何も起きない
     // **サイレント no-op** になる（この repo の既知 P1 パターン）。
-    const a = resolveStayScopeActions({ ...loaded, scopeReady: false, staysLoaded: false });
+    const a = resolveStayScopeActions({ ...loaded, scopeReady: false, dataLoaded: false });
     expect(a.canRefresh).toBe(false);
     expect(a.canMutate).toBe(false);
   });
@@ -56,7 +56,7 @@ describe('resolveStayScopeActions', () => {
     const a = resolveStayScopeActions({
       ...loaded,
       scopeReady: false,
-      staysLoaded: false,
+      dataLoaded: false,
       listStatus: 'error',
     });
     expect(a.emptyMessage).toContain('拠点');
@@ -70,9 +70,9 @@ describe('resolveStayScopeActions', () => {
   });
 
   it('滞在の取得に失敗したら「読み込み中」のままにしない', () => {
-    // 失敗しても `staysLoaded` は偽のままなので、素朴に書くと**永久に「読み込み中…」**を
+    // 失敗しても `dataLoaded` は偽のままなので、素朴に書くと**永久に「読み込み中…」**を
     // 出し続ける。正常系で潰した食い違いが失敗系に残る、この repo の頻出パターン。
-    const a = resolveStayScopeActions({ ...loaded, staysLoaded: false, loadFailed: true });
+    const a = resolveStayScopeActions({ ...loaded, dataLoaded: false, loadFailed: true });
     expect(a.emptyMessage).not.toContain('読み込み中');
     expect(a.emptyMessage).toContain('取得できませんでした');
     expect(a.showSummary).toBe(false);
@@ -80,7 +80,7 @@ describe('resolveStayScopeActions', () => {
 
   it('滞在の取得に失敗しても再取得はできる', () => {
     // ここを止めると失敗から復帰する手段が無くなる（画面リロードしか残らない）。
-    expect(resolveStayScopeActions({ ...loaded, staysLoaded: false, loadFailed: true }).canRefresh).toBe(
+    expect(resolveStayScopeActions({ ...loaded, dataLoaded: false, loadFailed: true }).canRefresh).toBe(
       true,
     );
   });
@@ -90,7 +90,7 @@ describe('resolveStayScopeActions', () => {
     const a = resolveStayScopeActions({
       ...loaded,
       scopeReady: false,
-      staysLoaded: false,
+      dataLoaded: false,
       loadFailed: true,
       listStatus: 'error',
     });
