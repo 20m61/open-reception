@@ -40,10 +40,23 @@ const HANDLES_SITE = /siteId/;
  *  - 新しい画面はどちらにも無いので落ちる（見逃さない）
  */
 const SITE_DIMENSION_WITHOUT_HEADER: readonly { route: string; reason: 'todo' | 'n/a' }[] = [
-  // `todo` = 拠点次元を持つが URL に載っていない。#554 の対象（直したらここから外す）。
-  { route: '/admin/demo', reason: 'todo' },
   // `n/a` = そもそも対象が 1 拠点に絞られない画面。ヘッダに出すべきではない。
   { route: '/admin/sites', reason: 'n/a' },
+  /**
+   * 受付体験スタジオ (#363)。**意図的に単一拠点**なので拠点次元を持たない。
+   *
+   * `siteId={String(tenantId)}` は打ち間違いではなく、ページの doc コメントが
+   * #363 Inc3 の単一テナント MVP として明記している。デモ API は全て
+   * `defaultAdminTenantId()` で認可し、`siteId` は `validatePublishTarget` の
+   * fail-closed 照合にしか使われない（その許可集合も同じ値から組まれる）。
+   * `publication-store` も `demo-delivery` も参照しないので、**下流に消費者がいない**。
+   *
+   * 拠点スコープへ移すには「拠点にスコープされたデモ公開とは何か」を決める必要があり、
+   * #419（ProductContext）/ #420（受付体験ライフサイクル）と絡む仕様判断。
+   * **今移すと消費者ゼロの契約を新設することになる**ので、決まるまでは `n/a` として
+   * 「拠点次元を持たない」と宣言する。#419/#420 で意味が決まったら `todo` へ戻す。
+   */
+  { route: '/admin/demo', reason: 'n/a' },
 ];
 
 /** `src/app/admin` 配下の全 page.tsx を（ネストも含め）集める。 */
