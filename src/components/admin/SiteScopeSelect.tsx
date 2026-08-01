@@ -1,7 +1,7 @@
 'use client';
 
 import { Button, Field } from '@/components/admin/ui';
-import { color, font, space } from '@/components/admin/ui/tokens';
+import { space } from '@/components/admin/ui/tokens';
 import type { SelectableSite } from './site-scope';
 
 /**
@@ -42,7 +42,16 @@ export function SiteScopeSelect({
 }) {
   if (status === 'error') {
     return (
-      <Field label="対象拠点" htmlFor={testId}>
+      /*
+        拠点別画面は一覧が確定するまで本文の取得を始めない（`resolveSiteScopeState` の
+        `ready`）。つまり一覧の失敗は**この画面の機能を全部止めている**。黙って空にせず、
+        何が起きているかと、そこから抜ける手段を出す。
+      */
+      <Field
+        label="対象拠点"
+        htmlFor={testId}
+        error="拠点を確認できないため、この画面の設定は表示・変更できません。"
+      >
         <div style={{ display: 'flex', alignItems: 'center', gap: space.sm }}>
           {/* select は残す（ラベルとの結び付きを保つ）が、実在しない拠点を選ばせない。 */}
           <select id={testId} data-testid={testId} value="" disabled onChange={() => {}}>
@@ -52,14 +61,6 @@ export function SiteScopeSelect({
             再試行
           </Button>
         </div>
-        {/*
-          拠点別画面は一覧が確定するまで本文の取得を始めない（`resolveSiteScopeState` の
-          `ready`）。つまり一覧の失敗はこの画面の機能全部を止めている。黙って空にせず、
-          何が起きているかを言う。
-        */}
-        <p style={{ margin: 0, color: color.muted, fontSize: font.small }}>
-          拠点を確認できないため、この画面の設定は表示・変更できません。
-        </p>
       </Field>
     );
   }

@@ -30,6 +30,13 @@ describe('SiteScopeSelect', () => {
     expect(html).toContain('再試行');
   });
 
+  it('取得に失敗したら、その画面が使えないことを言う', () => {
+    // 「取得できません」だけだと、設定欄が空なのは拠点が無いからだと読める。
+    const html = render({ sites: [], status: 'error' });
+    expect(html).toContain('ui-field-error');
+    expect(html).toContain('表示・変更できません');
+  });
+
   it('取得に失敗したとき拠点 ID を名指ししない', () => {
     // ヘッダは「確認できません」と言っているのに本文が拠点を名指しすると、
     // どちらが本当か分からなくなる（#552 レビュー P2）。
