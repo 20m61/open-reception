@@ -10,6 +10,8 @@ import {
   type DeploymentRowView,
 } from './ExperienceVersionsView';
 import type { RolloutCounts } from '@/domain/experience-version/deployment-view';
+import { useSiteScope } from './use-site-scope';
+import { SiteScopeSelect } from './SiteScopeSelect';
 
 type Rollout = {
   desired: { revision: number; publishedAt?: string } | null;
@@ -36,11 +38,19 @@ const EMPTY_ROLLOUT: Rollout = { desired: null, deployments: [], summary: null }
  */
 export function ExperienceVersionsManager({
   tenantId,
-  siteId,
+  siteId: defaultSiteId,
 }: {
   tenantId: string;
+  /** サーバ (`resolveDefaultScope`) 由来の既定拠点。URL 未指定時のフォールバック。 */
   siteId: string;
 }) {
+  /**
+   * 対象拠点は URL が真実源 (#554)。以前は既定拠点に固定で、**UI から別拠点の版管理へ
+   * 到達する手段が無く**、ヘッダの対象拠点表示（#423）も黙っていた。拠点別 5 画面と
+   * 同じ `useSiteScope` に揃える。
+   */
+  const { sites, siteId, scopeKey, scopeReady, isCurrentScope, selectSite, sitePending, listStatus } =
+    useSiteScope(tenantId, defaultSiteId);
   const [versions, setVersions] = useState<ReceptionExperienceVersion[]>([]);
   const [rollout, setRollout] = useState<Rollout>(EMPTY_ROLLOUT);
   const [busy, setBusy] = useState(false);
@@ -49,17 +59,22 @@ export function ExperienceVersionsManager({
   const qs = `tenantId=${encodeURIComponent(tenantId)}&siteId=${encodeURIComponent(siteId)}`;
 
   const load = useCallback(async () => {
+    // 拠点が確定するまで取りに行かない。確定前の暫定拠点で投げると、遅れて届いた応答が
+    // 別拠点の版一覧を上書きし、**表示は A なのに中身は B** になる（#535 レビュー P1 と同型）。
+    if (!scopeReady) return;
+    const startedWith = scopeKey;
     const [versionsRes, rolloutRes] = await Promise.all([
       fetch(`/api/admin/experience-versions?${qs}`),
       fetch(`/api/admin/experience-versions/deployments?${qs}`),
     ]);
+    if (!isCurrentScope(startedWith)) return;
     if (versionsRes.ok) {
       const body = await versionsRes.json();
       setVersions(body.experience?.versions ?? []);
     }
     // 反映状況は補助情報。取得できなくても版一覧は出す。
     setRollout(rolloutRes.ok ? await rolloutRes.json() : EMPTY_ROLLOUT);
-  }, [qs]);
+  }, [qs, scopeReady, scopeKey, isCurrentScope]);
 
   useEffect(() => {
     void load();
@@ -67,6 +82,9 @@ export function ExperienceVersionsManager({
 
   const act = useCallback(
     async (action: string, extra: Record<string, unknown> = {}) => {
+      // 拠点が確定するまで・切替が確定するまで書き込まない。ここを開けると
+      // **別拠点の版を公開・ロールバック**できてしまう（body に siteId を載せるため）。
+      if (!scopeReady || sitePending) return;
       setBusy(true);
       clear();
       try {
@@ -89,7 +107,7 @@ export function ExperienceVersionsManager({
         setBusy(false);
       }
     },
-    [clear, failure, load, siteId, success, tenantId],
+    [clear, failure, load, scopeReady, sitePending, siteId, success, tenantId],
   );
 
   const draft = versions.find((v) => v.status === 'draft');
@@ -100,6 +118,15 @@ export function ExperienceVersionsManager({
 
   return (
     <div style={{ display: 'grid', gap: space.lg }}>
+      {/* 対象拠点を常時表示し、ここから切り替えられるようにする (#554)。 */}
+      <SiteScopeSelect
+        sites={sites}
+        siteId={siteId}
+        onSelect={selectSite}
+        disabled={sitePending}
+        status={listStatus}
+        testId="experience-versions-site-select"
+      />
       <Section title="操作">
         <div style={{ display: 'flex', flexWrap: 'wrap', gap: space.sm }}>
           <Button onClick={() => void act('save-draft')} disabled={busy}>
