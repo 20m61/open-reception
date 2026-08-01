@@ -81,13 +81,21 @@ test.describe('管理画面（desktop）の VRT + a11y (#423)', () => {
   });
 
   test('拠点次元を持たない画面ではヘッダに対象拠点が出ない', async ({ page }) => {
-    // #423 の「無い区別を作らない」を**画像でも**固定する。ヘッダの構成が変わったときに
-    // 拠点チップが漏れ出していれば差分になる。
+    // #423 の「無い区別を作らない」を固定する。
+    //
+    // **ここは VRT にしない。** 部署一覧は `admin-dnd.spec.ts` が
+    // `POST /api/admin/departments/reorder` で並び替える共有フィクスチャで、同じ project 内で
+    // 並行実行されるため、撮影中に行が動く（実際にリトライごとに差分が 5012 → 12365 → 13790 px
+    // と増えた）。**他 spec が触る共有状態を画像で固定しない** — 閾値を緩めて通すのは
+    // 「退行を隠す幅」を作るだけなので、検証を DOM 側の断定に絞る。
     await page.goto('/admin/departments');
+    await expect(page.getByTestId('dept-row').first()).toBeVisible();
     await expect(page.getByTestId('active-site')).toHaveCount(0);
-
-    await stabilize(page);
-    await expect(page).toHaveScreenshot('admin-desktop-departments.png', SHOT_BASE);
+    // ヘッダ自体は生きている（拠点だけが出ない）ことも確かめる。両方見ないと
+    // 「ヘッダごと壊れた」を「拠点が出ない」と読み違える。
+    await expect(
+      page.locator('[data-testid="active-tenant"], [data-testid="admin-tenant-switcher"]'),
+    ).toHaveCount(1);
 
     const violations = await blockingViolations(page);
     expect(violations, summarize(violations)).toEqual([]);
