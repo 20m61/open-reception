@@ -101,19 +101,19 @@ export function createSectionLoaders(now: () => Date = () => new Date()): Config
       return section(await getKioskMotions(String(input.tenantId)), 'tenant');
     },
 
+    /** テナント対応済み (#419 残増分)。guard は外してある。 */
     async avatar(input) {
-      assertGlobalStoreScope(input);
       const [assets, enabled] = await Promise.all([
-        getKioskAssets(),
+        getKioskAssets(String(input.tenantId)),
         isKioskFeatureEnabled('avatarReception', input.kioskId),
       ]);
       // アバター無効時は VRM / fallback 画像を落とす（背景はアバター機能ではないので維持）。
       return section(enabled ? assets : { backgroundUrl: assets.backgroundUrl }, 'tenant');
     },
 
+    /** テナント対応済み (#419 残増分)。guard は外してある。 */
     async languages(input) {
-      assertGlobalStoreScope(input);
-      return section(await getLanguageSettings(), 'tenant');
+      return section(await getLanguageSettings(String(input.tenantId)), 'tenant');
     },
 
     async featureFlags(input) {

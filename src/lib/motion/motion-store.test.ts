@@ -10,7 +10,7 @@ beforeEach(async () => {
 });
 
 async function addMotionAsset() {
-  const r = await createAsset({ kind: 'motion', name: '挨拶モーション', url: 'https://cdn/greet.vrma' });
+  const r = await createAsset(T, { kind: 'motion', name: '挨拶モーション', url: 'https://cdn/greet.vrma' });
   if (!r.ok) throw new Error('asset create failed');
   return r.value.id;
 }

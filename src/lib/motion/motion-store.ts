@@ -27,8 +27,8 @@ async function getConfig(tenantId: string): Promise<MotionConfig> {
   return (await motion(tenantId).get()) ?? { mapping: {} };
 }
 
-async function isMotionAsset(assetId: string): Promise<boolean> {
-  return (await listAssets('motion')).some((a) => a.id === assetId && a.enabled);
+async function isMotionAsset(tenantId: string, assetId: string): Promise<boolean> {
+  return (await listAssets(tenantId, 'motion')).some((a) => a.id === assetId && a.enabled);
 }
 
 export async function getMotionMapping(tenantId: string): Promise<{ mapping: MotionMapping; defaultMotionAssetId?: string }> {
@@ -45,7 +45,7 @@ export async function setMotion(tenantId: string, key: string, assetId: string |
     await motion(tenantId).put(config);
     return { ok: true, value: { ...config.mapping } };
   }
-  if (!(await isMotionAsset(assetId))) {
+  if (!(await isMotionAsset(tenantId, assetId))) {
     return { ok: false, error: { code: 'invalid_input', message: 'assetId is not an enabled motion asset' } };
   }
   config.mapping[key] = assetId;
@@ -60,7 +60,7 @@ export async function setDefaultMotion(tenantId: string, assetId: string | null)
     await motion(tenantId).put(config);
     return { ok: true, value: undefined };
   }
-  if (!(await isMotionAsset(assetId))) {
+  if (!(await isMotionAsset(tenantId, assetId))) {
     return { ok: false, error: { code: 'invalid_input', message: 'assetId is not an enabled motion asset' } };
   }
   config.defaultMotionAssetId = assetId;
@@ -72,7 +72,7 @@ export async function setDefaultMotion(tenantId: string, assetId: string | null)
 export async function getKioskMotions(tenantId: string): Promise<{ motions: Partial<Record<MotionKey, string>>; defaultUrl?: string }> {
   const [config, motionAssets] = await Promise.all([
     getConfig(tenantId),
-    listAssets('motion').then((list) => list.filter((a) => a.enabled)),
+    listAssets(tenantId, 'motion').then((list) => list.filter((a) => a.enabled)),
   ]);
   const urlOf = (assetId?: string) => motionAssets.find((a) => a.id === assetId)?.url;
   const motions: Partial<Record<MotionKey, string>> = {};

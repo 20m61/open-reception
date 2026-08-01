@@ -40,9 +40,11 @@ vi.mock('@/lib/voice/voice-store', () => ({
 vi.mock('@/lib/motion/motion-store', () => ({
   getKioskMotions: (tenantId: string) => getKioskMotions(tenantId),
 }));
-vi.mock('@/lib/assets/asset-store', () => ({ getKioskAssets: () => getKioskAssets() }));
+vi.mock('@/lib/assets/asset-store', () => ({
+  getKioskAssets: (tenantId: string) => getKioskAssets(tenantId),
+}));
 vi.mock('@/lib/i18n/language-settings', () => ({
-  getLanguageSettings: () => getLanguageSettings(),
+  getLanguageSettings: (tenantId: string) => getLanguageSettings(tenantId),
 }));
 vi.mock('@/lib/signage/kiosk-signage', () => ({
   getKioskSignage: (...a: unknown[]) => getKioskSignage(...a),
@@ -143,7 +145,7 @@ describe('createSectionLoaders / グローバルストアの越境防止', () =>
    * ここから外してある（下の別 describe で「テナント別に引ける」ことを固定する）。
    * 残りを対応させたら 1 つずつここから外す — **空になったら guard 自体を撤去する**。
    */
-  const globalSections = ['directory', 'avatar'] as const;
+  const globalSections = ['directory'] as const;
 
   it('既定テナントの要求では従来どおり値を返す', async () => {
     const loaders = createSectionLoaders();
@@ -184,17 +186,21 @@ describe('createSectionLoaders / グローバルストアの越境防止', () =>
     expect(other.value).not.toMatchObject({ companyName: 'AVITA' });
   });
 
-  it('voice / motions も別テナントで失敗せず、ストアへテナントを渡している', async () => {
+  it('テナント対応済みのセクションは別テナントで失敗せず、ストアへテナントを渡している', async () => {
     const loaders = createSectionLoaders();
 
     await expect(loaders.voice(loadInput('tenant-other'))).resolves.toMatchObject({
       source: 'tenant',
     });
     await expect(loaders.motions(loadInput('tenant-other'))).resolves.toBeDefined();
+    await expect(loaders.avatar(loadInput('tenant-other'))).resolves.toBeDefined();
+    await expect(loaders.languages(loadInput('tenant-other'))).resolves.toBeDefined();
 
     // 渡し忘れると既定テナントの設定が別テナントへ出る。呼び出し引数で固定する。
     expect(getVoiceSettings).toHaveBeenCalledWith('tenant-other');
     expect(getKioskMotions).toHaveBeenCalledWith('tenant-other');
+    expect(getKioskAssets).toHaveBeenCalledWith('tenant-other');
+    expect(getLanguageSettings).toHaveBeenCalledWith('tenant-other');
   });
 
   it('越境要求ではグローバルストアを読みにいかない', async () => {
