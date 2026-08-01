@@ -19,8 +19,14 @@ const resolveKioskStatusFor = vi.fn();
 const listEnabledForKiosk = vi.fn();
 const isKioskFeatureEnabled = vi.fn();
 
+/**
+ * **モックもテナント引数を受ける** (#419 残増分)。
+ *
+ * 引数を無視するモックのままだと、loader が `tenantId` を渡し忘れても検査が緑になる
+ * （＝越境の退行を捕まえられない）。実ストアと同じく「テナントごとに別の値」を返させる。
+ */
 vi.mock('@/lib/branding/branding-store', () => ({
-  getBrandingSettings: () => getBrandingSettings(),
+  getBrandingSettings: (tenantId: string) => getBrandingSettings(tenantId),
 }));
 vi.mock('@/lib/data-stores/directory-store', () => ({
   getKioskDirectory: () => getKioskDirectory(),
@@ -63,7 +69,10 @@ function loadInput(tenantId = DEFAULT_TENANT_ID) {
 
 beforeEach(() => {
   vi.clearAllMocks();
-  getBrandingSettings.mockResolvedValue({ companyName: 'AVITA', accentColor: '#123456' });
+  // 既定テナントだけ値を持ち、他テナントは未設定（＝実ストアのテナント別キーと同じ形）。
+  getBrandingSettings.mockImplementation(async (tenantId: string) =>
+    tenantId === DEFAULT_TENANT_ID ? { companyName: 'AVITA', accentColor: '#123456' } : {},
+  );
   getKioskDirectory.mockResolvedValue({ departments: [], staff: [] });
   getVoiceSettings.mockResolvedValue({ ttsEnabled: true, rate: 1 });
   getKioskMotions.mockResolvedValue({ motions: { idle: '/idle.vrma' } });
@@ -122,7 +131,12 @@ describe('createSectionLoaders / テナント次元を持つストア', () => {
 });
 
 describe('createSectionLoaders / グローバルストアの越境防止', () => {
-  const globalSections = ['branding', 'directory', 'voice', 'motions', 'avatar'] as const;
+  /**
+   * **まだテナント次元を持たないストア。** branding は #419 残増分でテナント対応したので
+   * ここから外してある（下の別 describe で「テナント別に引ける」ことを固定する）。
+   * 残りを対応させたら 1 つずつここから外す — **空になったら guard 自体を撤去する**。
+   */
+  const globalSections = ['directory', 'voice', 'motions', 'avatar'] as const;
 
   it('既定テナントの要求では従来どおり値を返す', async () => {
     const loaders = createSectionLoaders();
@@ -139,6 +153,28 @@ describe('createSectionLoaders / グローバルストアの越境防止', () =>
     await expect(loaders[section](loadInput('tenant-other'))).rejects.toThrow(
       /not tenant-scoped/,
     );
+  });
+
+  /**
+   * **fail-closed を外した代わりに、越境しないことを直接固定する** (#419 残増分)。
+   *
+   * guard を消すだけだと「別テナントへ既定テナントの値を配る」退行に気づけない。
+   * ストアがテナント別キーを持つようになったことを、loader の側からも確認する。
+   */
+  it('branding は別テナントでも失敗せず、そのテナントの値を返す', async () => {
+    const loaders = createSectionLoaders();
+
+    await expect(loaders.branding(loadInput('tenant-other'))).resolves.toMatchObject({
+      source: 'tenant',
+    });
+  });
+
+  it('branding は別テナントへ既定テナントの値を配らない', async () => {
+    const loaders = createSectionLoaders();
+
+    const other = await loaders.branding(loadInput('tenant-other'));
+    // 既定テナントは mock で `AVITA` を返す。それが別テナントに出たら越境。
+    expect(other.value).not.toMatchObject({ companyName: 'AVITA' });
   });
 
   it('越境要求ではグローバルストアを読みにいかない', async () => {
