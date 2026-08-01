@@ -69,7 +69,7 @@ export function StayManager({
    * 拠点だけで識別すると**同じ拠点 ID を持つ別テナント**で守れないので `scopeKey` で持つ。
    */
   const [staysScopeKey, setStaysScopeKey] = useState<string | null>(null);
-  const staysLoaded = staysScopeKey === scopeKey;
+  const dataLoaded = staysScopeKey === scopeKey;
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   /**
@@ -87,7 +87,7 @@ export function StayManager({
    */
   const actions = resolveStayScopeActions({
     scopeReady,
-    staysLoaded,
+    dataLoaded,
     sitePending,
     busy,
     listStatus,
