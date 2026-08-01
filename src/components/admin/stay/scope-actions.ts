@@ -30,6 +30,8 @@ export type StayScopeActions = {
 
 const UNAVAILABLE_MESSAGE = {
   'site-list-error': '拠点を確認できないため、在館状況を表示できません。',
+  // 「拠点が無い」は障害ではなく未設定。次の行動（拠点の登録）へ誘導する。
+  'no-site': 'このテナントにはまだ拠点がありません。拠点を登録すると在館状況を確認できます。',
   'load-failed': '在館状況を取得できませんでした。',
   loading: '読み込み中…',
 } as const;

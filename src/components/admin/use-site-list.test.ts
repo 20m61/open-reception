@@ -240,6 +240,20 @@ describe('subscribeSiteList / invalidateSiteList', () => {
     expect(other).not.toHaveBeenCalled();
   });
 
+  it('本文が JSON でなくても解釈失敗として観測できる（永久 loading へ戻らない）', async () => {
+    // 認証切れで HTML が 200 で返る構成では実際に起こる。`useSiteList` 側はこの reject を
+    // try/catch で拾って `error` に落とす（素通しにすると `loading` のまま固まる）。
+    globalThis.fetch = (async () =>
+      new Response('<html>login</html>', {
+        status: 200,
+        headers: { 'content-type': 'text/html' },
+      })) as typeof fetch;
+
+    const res = await fetchSiteList('html-body');
+    expect(res.ok).toBe(true);
+    await expect(res.json()).rejects.toThrow();
+  });
+
   it('1 つが失敗しても他のインスタンスは取り直す', async () => {
     // ヘッダの取り直しが投げたせいで本文が更新されない、を作らない。
     const failing = vi.fn(async () => {

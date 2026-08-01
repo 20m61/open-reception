@@ -113,6 +113,7 @@ export function ReservationsManager({
     busy,
     listStatus,
     loadFailed,
+    hasSites: sites.length > 0,
   });
 
   const { get, setMany } = useQueryParams();
@@ -402,13 +403,28 @@ export function ReservationsManager({
             <MetricCard label="キャンセル" value={summary.cancelled} />
           </CardGrid>
         ) : (
-          <p data-testid="reservation-summary-unavailable" style={{ opacity: 0.7, margin: 0 }}>
-            {gate.unavailable === 'site-list-error'
-              ? '拠点を確認できないため、予約を表示できません。'
-              : gate.unavailable === 'load-failed'
-                ? '予約を取得できませんでした。'
-                : '読み込み中…'}
-          </p>
+          <div style={{ display: 'flex', alignItems: 'center', gap: space.sm }}>
+            <p data-testid="reservation-summary-unavailable" style={{ opacity: 0.7, margin: 0 }}>
+              {gate.unavailable === 'site-list-error'
+                ? '拠点を確認できないため、予約を表示できません。'
+                : gate.unavailable === 'no-site'
+                  ? 'このテナントにはまだ拠点がありません。拠点を登録すると予約を扱えます。'
+                  : gate.unavailable === 'load-failed'
+                    ? '予約を取得できませんでした。'
+                    : '読み込み中…'}
+            </p>
+            {/* 自画面の取得失敗から復帰する導線。拠点一覧の再試行（セレクタ側）とは別物。 */}
+            {gate.unavailable === 'load-failed' ? (
+              <Button
+                variant="secondary"
+                onClick={() => void load()}
+                disabled={!gate.canRefresh}
+                data-testid="reservation-retry"
+              >
+                再試行
+              </Button>
+            ) : null}
+          </div>
         )}
       </Section>
 
@@ -530,15 +546,25 @@ export function ReservationsManager({
           </Button>
         </div>
 
-        <p data-testid="reservation-count" style={{ opacity: 0.7, fontSize: font.small, margin: 0, marginBottom: space.sm }}>
-          {sorted.length} 件中 {filtered.length} 件を表示
-        </p>
+        {/* 取得できていない一覧の件数は意味を持たない（0 件と断定しない）。 */}
+        {gate.dataTrusted ? (
+          <p data-testid="reservation-count" style={{ opacity: 0.7, fontSize: font.small, margin: 0, marginBottom: space.sm }}>
+            {sorted.length} 件中 {filtered.length} 件を表示
+          </p>
+        ) : null}
 
         <DataTable
           columns={columns}
           rows={paged.items}
           rowKey={(r) => r.id}
-          emptyMessage={hasFilter ? '条件に一致する来訪予約はありません。' : 'この拠点の来訪予約はまだありません。'}
+          emptyMessage={
+            // 取得できていない間は「まだありません」と断定しない。
+            !gate.dataTrusted
+              ? '読み込み中…'
+              : hasFilter
+                ? '条件に一致する来訪予約はありません。'
+                : 'この拠点の来訪予約はまだありません。'
+          }
           testId="reservation-table"
         />
 

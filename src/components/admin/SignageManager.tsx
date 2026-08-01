@@ -82,6 +82,7 @@ export function SignageManager({
     busy,
     listStatus,
     loadFailed,
+    hasSites: sites.length > 0,
   });
 
   const load = useCallback(async () => {
@@ -283,7 +284,29 @@ export function SignageManager({
           </div>
         </>
       ) : (
-        <p>読み込み中…</p>
+        // **理由で出し分ける。** 失敗を「読み込み中…」と出すと運用者は終わらない待ちに入る
+        // （他 3 画面は出し分けているのにここだけ写し忘れていた。レビュー M4）。
+        <div style={{ display: 'flex', alignItems: 'center', gap: space.sm }}>
+          <p data-testid="signage-unavailable" style={{ margin: 0, color: color.muted }}>
+            {gate.unavailable === 'site-list-error'
+              ? '拠点を確認できないため、サイネージ設定を表示できません。'
+              : gate.unavailable === 'no-site'
+                ? 'このテナントにはまだ拠点がありません。拠点を登録すると設定できます。'
+                : gate.unavailable === 'load-failed'
+                  ? 'サイネージ設定を取得できませんでした。'
+                  : '読み込み中…'}
+          </p>
+          {gate.unavailable === 'load-failed' ? (
+            <Button
+              variant="secondary"
+              onClick={() => void load()}
+              disabled={!gate.canRefresh}
+              data-testid="signage-retry"
+            >
+              再試行
+            </Button>
+          ) : null}
+        </div>
       )}
     </Section>
   );

@@ -165,9 +165,27 @@ export function useSiteList(
         setStatus('error');
         return;
       }
-      const list = (await res.json()) as SiteWithDevices[];
+      /**
+       * **本文の解釈失敗も `error` に落とす** (#554 レビュー M8)。
+       *
+       * ここを `try` の外に置くと、`res.json()` が投げた瞬間 `fetchSites` が reject し、
+       * `status` は `loading` のまま固まる（＝締切で塞いだはずの永久 loading へ別経路で
+       * 戻る）。認証切れの HTML が 200 で返る構成では実際に起こり得る。
+       * 配列であることも確認する — 型アサーションだけだと、描画中に `sites.some` が投げる。
+       */
+      let list: unknown;
+      try {
+        list = await res.json();
+      } catch {
+        if (!superseded()) setStatus('error');
+        return;
+      }
       if (superseded()) return;
-      setSites(list);
+      if (!Array.isArray(list)) {
+        setStatus('error');
+        return;
+      }
+      setSites(list as SiteWithDevices[]);
       setStatus('ready');
     },
     [tenantId],

@@ -16,6 +16,7 @@ const loaded = {
   busy: false,
   listStatus: 'ready',
   loadFailed: false,
+  hasSites: true,
 } as const;
 
 describe('resolveScopeGate', () => {
@@ -93,6 +94,57 @@ describe('resolveScopeGate', () => {
 
   it('まだ失敗していなければ「読み込み中」と言う', () => {
     expect(resolveScopeGate({ ...loaded, dataLoaded: false }).unavailable).toBe('loading');
+  });
+
+  /**
+   * **拠点が 1 つも無いテナントを「終わらない読み込み」にしない** (#554 レビュー M7)。
+   *
+   * `resolveSiteScopeState` は拠点 0 件のとき `ready:false` を返す（どの拠点を指すか
+   * 決まらないので正しい）。これを素朴に `loading` へ落とすと、**拠点をまだ登録して
+   * いないテナント**という正常な運用状態が、永久に回るスピナーに化ける。
+   */
+  it('拠点が 1 つも無いときは「読み込み中」と言わない', () => {
+    const g = resolveScopeGate({
+      ...loaded,
+      scopeReady: false,
+      dataLoaded: false,
+      hasSites: false,
+    });
+    expect(g.unavailable).toBe('no-site');
+  });
+
+  it('拠点が 1 つも無いときは作成も変更もさせない', () => {
+    // どの拠点に作るか決まらない。まず拠点を登録してもらう。
+    const g = resolveScopeGate({ ...loaded, scopeReady: false, dataLoaded: false, hasSites: false });
+    expect(g.canCreate).toBe(false);
+    expect(g.canMutate).toBe(false);
+  });
+
+  it('一覧をまだ取得中なら「拠点が無い」と断定しない', () => {
+    // `loading` の間は `hasSites` が偽でも、それは「まだ分からない」であって 0 件ではない。
+    const g = resolveScopeGate({
+      ...loaded,
+      scopeReady: false,
+      dataLoaded: false,
+      hasSites: false,
+      listStatus: 'loading',
+    });
+    expect(g.unavailable).toBe('loading');
+  });
+
+  /**
+   * **言っていることと押せることを食い違わせない** (#554 レビュー N6)。
+   *
+   * 一度 ready になったあとの再取得が失敗すると、`sites` は残るので `scopeReady` は真のまま
+   * `listStatus` だけ `error` になる。このとき画面は「拠点を確認できないため変更できません」と
+   * 出すのに、門が `listStatus` を見ていないと**保存ボタンは有効なまま**になる。
+   */
+  it('拠点一覧を確認できないときは、データが載っていても変更させない', () => {
+    const g = resolveScopeGate({ ...loaded, listStatus: 'error' });
+    expect(g.canMutate).toBe(false);
+    expect(g.canCreate).toBe(false);
+    // 再取得は止めない（復帰手段を残す）。
+    expect(g.canRefresh).toBe(true);
   });
 
   it('操作中でも載っているデータは信じてよい（画面が点滅しない）', () => {
