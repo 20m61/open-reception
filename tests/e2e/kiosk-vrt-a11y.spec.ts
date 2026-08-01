@@ -68,6 +68,12 @@ const SHOT_BASE = { animations: 'disabled', maxDiffPixelRatio: 0.002 } as const;
  * 縦にずれて画像差分をフレークさせる。blur + scrollTo(0,0) で毎回同じ最上部を撮る。
  */
 async function stabilize(page: Page): Promise<void> {
+  // **マウスを画面外へ退避する。** クリックで進んだ直後はカーソルがその座標に残り、
+  // 次画面のカードが同じ位置に来ると Chromium が `:hover`（`globals.css` の `.card:hover` =
+  // ボーダー + `translateY(-3px)` + グロー）を再評価する。**再評価がスクショ前か後かは
+  // 非決定的**で、これが `kiosk-landscape-purpose` の flaky の正体だった（#553）。
+  // blur / scroll と同じく「撮る前に状態を 1 つに決める」次元をもう 1 つ塞ぐ。
+  await page.mouse.move(0, 0);
   await page.evaluate(() => {
     const el = document.activeElement as HTMLElement | null;
     if (el && typeof el.blur === 'function') el.blur();
