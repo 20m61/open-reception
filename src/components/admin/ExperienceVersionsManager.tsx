@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { Button, SaveFeedback, Section, useSaveFeedback } from '@/components/admin/ui';
 import { space } from '@/components/admin/ui/tokens';
-import { hasValidationErrors } from '@/domain/experience-version/deployment-view';
+import { resolveVersionActions, type VersionAction } from './experience-version-actions';
 import type { ReceptionExperienceVersion } from '@/domain/experience-version/types';
 import {
   ExperienceVersionsView,
@@ -52,6 +52,10 @@ export function ExperienceVersionsManager({
   const { sites, siteId, scopeKey, scopeReady, isCurrentScope, selectSite, sitePending, listStatus } =
     useSiteScope(tenantId, defaultSiteId);
   const [versions, setVersions] = useState<ReceptionExperienceVersion[]>([]);
+  /** `versions` / `rollout` がどのスコープの内容か。null = 未取得。 */
+  const [loadedScope, setLoadedScope] = useState<string | null>(null);
+  /** 版一覧の取得失敗（null = 失敗していない）。「版が 1 つも無い」と区別する。 */
+  const [loadError, setLoadError] = useState<string | null>(null);
   const [rollout, setRollout] = useState<Rollout>(EMPTY_ROLLOUT);
   const [busy, setBusy] = useState(false);
   const { feedback, success, failure, clear } = useSaveFeedback();
@@ -63,15 +67,28 @@ export function ExperienceVersionsManager({
     // 別拠点の版一覧を上書きし、**表示は A なのに中身は B** になる（#535 レビュー P1 と同型）。
     if (!scopeReady) return;
     const startedWith = scopeKey;
-    const [versionsRes, rolloutRes] = await Promise.all([
-      fetch(`/api/admin/experience-versions?${qs}`),
-      fetch(`/api/admin/experience-versions/deployments?${qs}`),
-    ]);
-    if (!isCurrentScope(startedWith)) return;
-    if (versionsRes.ok) {
-      const body = await versionsRes.json();
-      setVersions(body.experience?.versions ?? []);
+    let versionsRes: Response;
+    let rolloutRes: Response;
+    try {
+      [versionsRes, rolloutRes] = await Promise.all([
+        fetch(`/api/admin/experience-versions?${qs}`),
+        fetch(`/api/admin/experience-versions/deployments?${qs}`),
+      ]);
+    } catch {
+      // 握り潰すと unhandled rejection になり、画面には「まだ版がありません」という
+      // **事実と異なる断定**だけが残る（#552 レビュー P2 と同型）。
+      if (isCurrentScope(startedWith)) setLoadError('版一覧を取得できませんでした（通信エラー）。');
+      return;
     }
+    if (!isCurrentScope(startedWith)) return;
+    if (!versionsRes.ok) {
+      setLoadError(`版一覧を取得できませんでした（${versionsRes.status}）。`);
+      return;
+    }
+    const body = await versionsRes.json();
+    setVersions(body.experience?.versions ?? []);
+    setLoadedScope(startedWith);
+    setLoadError(null);
     // 反映状況は補助情報。取得できなくても版一覧は出す。
     setRollout(rolloutRes.ok ? await rolloutRes.json() : EMPTY_ROLLOUT);
   }, [qs, scopeReady, scopeKey, isCurrentScope]);
@@ -80,11 +97,45 @@ export function ExperienceVersionsManager({
     void load();
   }, [load]);
 
+  /**
+   * **いま出している版が、いま選んでいる拠点のものか。**
+   *
+   * `isCurrentScope` は「古い応答を反映しない」だけで、**すでに描かれている版**は守らない。
+   * 拠点 A → B へ切り替えると B の応答が届くまで A の版が残り、その間に「公開」や
+   * 「ロールバック」を押せてしまう。これらは body に `siteId` と `revision` を載せるので、
+   * **B の拠点に対して A の revision を指定する**ことになる（#552 レビュー P1 と同型）。
+   */
+  const versionsLoaded = loadedScope === scopeKey;
+  const scopedVersions = versionsLoaded ? versions : [];
+
+  const draft = scopedVersions.find((v) => v.status === 'draft');
+  const published = scopedVersions.find((v) => v.status === 'published');
+  const rollbackTarget = scopedVersions
+    .filter((v) => v.publishedAt && v.status !== 'published')
+    .sort((a, b) => b.revision - a.revision)[0];
+
+  /**
+   * **ハンドラとボタンが同じ 1 つの値を見る。** 別々に書くと必ずどちらかだけ直され、
+   * 「押せるのに何も起きない」サイレント no-op になる（#552 レビュー P1）。
+   * 判定は純関数（`experience-version-actions.ts`）が持ち、テストで固定してある。
+   *
+   * **`save-draft` だけ版の取得状態に依存しない** — 一覧 GET の失敗で「現在の設定を版として
+   * 固定する」復旧経路が永久に止まるのを避ける（読み取りの失敗で書き込みを殺さない）。
+   */
+  const actions = resolveVersionActions({
+    scopeReady,
+    sitePending,
+    busy,
+    versionsLoaded,
+    draft,
+    published,
+    rollbackTarget,
+  });
+
   const act = useCallback(
-    async (action: string, extra: Record<string, unknown> = {}) => {
-      // 拠点が確定するまで・切替が確定するまで書き込まない。ここを開けると
-      // **別拠点の版を公開・ロールバック**できてしまう（body に siteId を載せるため）。
-      if (!scopeReady || sitePending) return;
+    async (action: VersionAction, extra: Record<string, unknown> = {}) => {
+      // ボタンと同じ判定を通す（二重化は意図的。ボタン以外の経路も塞ぐ）。
+      if (!actions[action]) return;
       setBusy(true);
       clear();
       try {
@@ -107,14 +158,8 @@ export function ExperienceVersionsManager({
         setBusy(false);
       }
     },
-    [clear, failure, load, scopeReady, sitePending, siteId, success, tenantId],
+    [actions, clear, failure, load, siteId, success, tenantId],
   );
-
-  const draft = versions.find((v) => v.status === 'draft');
-  const published = versions.find((v) => v.status === 'published');
-  const rollbackTarget = versions
-    .filter((v) => v.publishedAt && v.status !== 'published')
-    .sort((a, b) => b.revision - a.revision)[0];
 
   return (
     <div style={{ display: 'grid', gap: space.lg }}>
@@ -127,28 +172,44 @@ export function ExperienceVersionsManager({
         status={listStatus}
         testId="experience-versions-site-select"
       />
+      {loadError === null ? null : (
+        <p
+          data-testid="experience-versions-load-error"
+          role="alert"
+          style={{ color: 'var(--color-danger)' }}
+        >
+          {loadError}{' '}
+          <Button
+            data-testid="experience-versions-retry"
+            disabled={!scopeReady}
+            onClick={() => void load()}
+          >
+            再試行
+          </Button>
+        </p>
+      )}
       <Section title="操作">
         <div style={{ display: 'flex', flexWrap: 'wrap', gap: space.sm }}>
-          <Button onClick={() => void act('save-draft')} disabled={busy}>
+          <Button onClick={() => void act('save-draft')} disabled={!actions['save-draft']}>
             現在の設定を下書きにする
           </Button>
           <Button
             variant="secondary"
             onClick={() => void act('approve', { revision: draft?.revision })}
-            disabled={busy || !draft || draft.approvedBy !== undefined || hasValidationErrors(draft)}
+            disabled={!actions.approve}
           >
             下書きを承認
           </Button>
           <Button
             onClick={() => void act('publish', { revision: draft?.revision })}
-            disabled={busy || !draft || draft.approvedBy === undefined}
+            disabled={!actions.publish}
           >
             公開する
           </Button>
           <Button
             variant="secondary"
             onClick={() => void act('rollback', { revision: rollbackTarget?.revision })}
-            disabled={busy || !rollbackTarget || !published}
+            disabled={!actions.rollback}
           >
             {rollbackTarget ? `rev.${rollbackTarget.revision} へ切り戻す` : '切り戻す'}
           </Button>
@@ -157,7 +218,7 @@ export function ExperienceVersionsManager({
       </Section>
 
       <ExperienceVersionsView
-        versions={versions}
+        versions={scopedVersions}
         desired={rollout.desired}
         deployments={rollout.deployments}
         summary={rollout.summary}
