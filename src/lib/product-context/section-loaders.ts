@@ -83,22 +83,22 @@ export function createSectionLoaders(now: () => Date = () => new Date()): Config
       return section(await getBrandingSettings(String(input.tenantId)), 'tenant');
     },
 
+    /** テナント対応済み (#419 残増分)。guard は外してある。 */
     async voice(input) {
-      assertGlobalStoreScope(input);
       const [settings, enabled] = await Promise.all([
-        getVoiceSettings(),
+        getVoiceSettings(String(input.tenantId)),
         isKioskFeatureEnabled('voiceSynthesis', input.kioskId),
       ]);
       // フラグ無効時も応答スキーマは保つ（既存 `/api/kiosk/voice` と同じ契約）。
       return section(enabled ? settings : { ...settings, ttsEnabled: false }, 'tenant');
     },
 
+    /** テナント対応済み (#419 残増分)。guard は外してある。 */
     async motions(input) {
-      assertGlobalStoreScope(input);
       if (!(await isKioskFeatureEnabled('avatarReception', input.kioskId))) {
         return section({ motions: {} }, 'default');
       }
-      return section(await getKioskMotions(), 'tenant');
+      return section(await getKioskMotions(String(input.tenantId)), 'tenant');
     },
 
     async avatar(input) {

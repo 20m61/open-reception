@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server';
 import { isKioskFeatureEnabled } from '@/lib/platform/feature-flag-gate';
 import { requireKioskSession } from '@/lib/kiosk/session-guard';
 import { getVoiceSettings } from '@/lib/voice/voice-store';
+import { defaultTenantIdFrom } from '@/lib/tenant/default-scope';
 
 /**
  * GET /api/kiosk/voice — 受付端末向けの音声設定・案内文言 (issue #28)。
@@ -15,7 +16,10 @@ import { getVoiceSettings } from '@/lib/voice/voice-store';
 export async function GET(): Promise<NextResponse> {
   const session = await requireKioskSession();
   const [settings, voiceSynthesisEnabled] = await Promise.all([
-    getVoiceSettings(),
+    // 旧・個別 API。端末セッションを要求しない公開経路なので既定テナント固定のまま
+    // 据え置く（テナントを受け取る形にすると無認証で任意テナントの設定を引ける）。
+    // 正規経路は GET /api/configuration/effective。撤去対象（#419 台帳 §9 B-03）。
+    getVoiceSettings(defaultTenantIdFrom()),
     isKioskFeatureEnabled('voiceSynthesis', session?.kioskId),
   ]);
   if (!voiceSynthesisEnabled) {
