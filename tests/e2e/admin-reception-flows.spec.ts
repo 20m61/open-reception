@@ -13,6 +13,18 @@ function uniq(prefix: string) {
 // このスペックが既定スコープ（internal/default-site）へ作成した有効フローは、/kiosk セッションゲート
 // (issue #239) 導入後は他の kiosk テストの /api/kiosk/flow に漏れ出し既定受付フローの検証を壊す。
 // 各テスト後に purposeKey で引いて削除し、共有 in-memory バックエンドの汚染を残さない。
+/**
+ * **ファイル内でも直列化する。**
+ *
+ * `playwright.config.ts` は「既定スコープのフローを作り合う spec 同士」を project 分離で
+ * 直列化しているが、`fullyParallel: true` は**同一ファイル内のテストも並列化する**ため、
+ * その対策がファイル内の次元へ写っていなかった。並び替え検証は「A と B が隣接している」
+ * ことを前提にするので、兄弟テストが作ったフローが間に挟まると `[A, 面接フロー, B]` になり、
+ * `flow-move-up`（直前の行と入れ替え）では A と B の相対順が永久に入れ替わらず、
+ * `toPass()` が 30s タイムアウトまで回り続ける（PR #552 の `--full` で実観測）。
+ */
+test.describe.configure({ mode: 'serial' });
+
 const createdKeys: string[] = [];
 
 async function createFlow(page: Page, key: string, name: string) {

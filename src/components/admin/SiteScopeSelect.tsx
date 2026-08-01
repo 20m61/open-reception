@@ -16,12 +16,19 @@ export function SiteScopeSelect({
   onSelect,
   disabled = false,
   testId = 'site-scope-select',
+  status = 'ready',
 }: {
   sites: readonly (SelectableSite & { name?: string })[];
   siteId: string;
   onSelect: (next: string) => void;
   disabled?: boolean;
   testId?: string;
+  /**
+   * 拠点一覧の取得状態。`error` のとき**選択中らしき拠点 ID を出さない**
+   * （ヘッダは「確認できません」と言っているのに本文が拠点を名指しすると、
+   * どちらが本当か分からなくなる。#552 レビュー P2）。
+   */
+  status?: 'idle' | 'loading' | 'ready' | 'error';
 }) {
   return (
     // Field に htmlFor を渡し select に同じ id を付ける。これが無いと「対象拠点」の
@@ -37,7 +44,9 @@ export function SiteScopeSelect({
       >
         {/* 一覧取得前は現在の siteId だけを出す（空 select にして選択が消えるのを避ける）。 */}
         {sites.length === 0 ? (
-          <option value={siteId}>{siteId}</option>
+          <option value={siteId}>
+            {status === 'error' ? '拠点一覧を取得できません' : siteId}
+          </option>
         ) : (
           sites.map((s) => (
             <option key={s.id} value={s.id}>

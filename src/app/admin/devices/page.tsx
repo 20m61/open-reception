@@ -1,5 +1,6 @@
 import { DevicesManager } from '@/components/admin/DevicesManager';
 import { resolveAdminTenantId } from '@/lib/tenant/admin-tenant-scope';
+import { resolveDefaultScope } from '@/lib/tenant/default-scope';
 
 export const dynamic = 'force-dynamic';
 
@@ -10,6 +11,7 @@ export const dynamic = 'force-dynamic';
  * 切り替えた developer に別テナントの設定を見せうる（拠点 ID はテナント内スコープ）。
  */
 export default async function AdminPage() {
+  // 既定拠点は他の拠点別画面と同じ `resolveDefaultScope`（`?siteId=` 未指定時の対象）。
   const tenantId = await resolveAdminTenantId();
-  return <DevicesManager tenantId={tenantId} />;
+  return <DevicesManager tenantId={tenantId} siteId={String(resolveDefaultScope().siteId)} />;
 }

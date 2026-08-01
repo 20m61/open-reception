@@ -38,6 +38,8 @@ const CHIP_STYLE: React.CSSProperties = {
   padding: '4px 10px',
   borderRadius: 999,
   background: 'var(--color-surface-2)',
+  // `attention` で border を足したときに 2px ずれないよう、既定でも枠の場所を確保する。
+  border: '1px solid transparent',
 };
 
 const SELECT_STYLE: React.CSSProperties = {
@@ -50,17 +52,76 @@ const SELECT_STYLE: React.CSSProperties = {
 };
 
 /**
+ * ヘッダの「いま何を対象にしているか」チップの共通表示 (#423)。
+ *
+ * テナント・拠点で別々に組むと、見た目も文言の形もずれる（実際にテナント側は
+ * `AdminShell` と `TenantSwitcher` で逐語的に重複していた）。次元が増えても
+ * ここ 1 箇所を直せば揃うようにする。
+ */
+/** 表示できる長さに収める。URL 由来の値がそのまま入るとヘッダが壊れる。 */
+const MAX_VALUE_CHARS = 32;
+
+/** 目には出さないが読み上げには載せる。切り詰めた全文を添えるのに使う。 */
+const VISUALLY_HIDDEN: React.CSSProperties = {
+  position: 'absolute',
+  width: 1,
+  height: 1,
+  overflow: 'hidden',
+  clip: 'rect(0 0 0 0)',
+  whiteSpace: 'nowrap',
+};
+
+export function ContextChip({
+  testId,
+  label,
+  value,
+  /**
+   * 対象が確認できない状態。**文字は薄くしない** — 「確認できません」は最も読ませたい
+   * 文言なので、弱い見た目にすると一番読みにくくなる（#552 レビュー N4）。
+   * 代わりに枠線で注意を示す。
+   */
+  attention = false,
+  note,
+  ...rest
+}: {
+  testId: string;
+  label: string;
+  value: string;
+  attention?: boolean;
+  /** 「（見つかりません）」等の補足。値の隣に添える。 */
+  note?: string;
+} & Record<`data-${string}`, string | undefined>) {
+  const shown = value.length > MAX_VALUE_CHARS ? `${value.slice(0, MAX_VALUE_CHARS)}…` : value;
+  return (
+    <span
+      data-testid={testId}
+      // 値が長いときにヘッダを押し広げない。
+      style={
+        attention
+          ? { ...CHIP_STYLE, borderColor: 'var(--color-warning, var(--color-border-strong))' }
+          : CHIP_STYLE
+      }
+      // `title` はホバーの無い iPad では出ない。全文は視覚的非表示のテキストで添える。
+      // **`aria-label` は使わない** — `note`（「見つかりません」等）を読み上げから落とすうえ、
+      // 汎用 span への `aria-label` は AT が無視しうる（#552 レビュー）。
+      title={value === shown ? undefined : value}
+      {...rest}
+    >
+      {label}: <strong>{shown}</strong>
+      {value === shown ? null : <span style={VISUALLY_HIDDEN}>{value}</span>}
+      {note === undefined ? null : <span style={{ marginLeft: 4 }}>{note}</span>}
+    </span>
+  );
+}
+
+/**
  * 切り替えできない場合の固定表示。
  *
  * `data-testid="active-tenant"` は既存 e2e（`tests/e2e/admin-tenant-context.spec.ts`）が
  * 引いているので変えない。
  */
 export function TenantContextChip({ tenantName }: { tenantName: string }) {
-  return (
-    <span data-testid="active-tenant" style={CHIP_STYLE}>
-      {TENANT_CONTEXT_LABEL}: <strong>{tenantName}</strong>
-    </span>
-  );
+  return <ContextChip testId="active-tenant" label={TENANT_CONTEXT_LABEL} value={tenantName} />;
 }
 
 /**

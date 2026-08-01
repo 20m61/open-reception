@@ -35,7 +35,6 @@ import {
  *   - 一覧では表示順（order）→ 表示名の安定順で並べる。tenant 切り替え UI は次増分。
  */
 const DEFAULT_TENANT_ID = 'internal';
-const DEFAULT_SITE_ID = 'default-site';
 
 const STEP_LABELS: Record<FlowStepKind, string> = {
   purpose: '目的選択',
@@ -54,15 +53,15 @@ const FIELD_TYPE_LABELS: Record<FlowField['type'], string> = {
 
 export function ReceptionFlowsManager({
   tenantId = DEFAULT_TENANT_ID,
-  siteId: defaultSiteId = DEFAULT_SITE_ID,
+  siteId: defaultSiteId,
 }: {
   tenantId?: string;
-  /** サーバ由来の既定拠点。URL 未指定時のフォールバック。 */
-  siteId?: string;
+  /** サーバ (`resolveDefaultScope`) 由来の既定拠点。URL 未指定時のフォールバック。 */
+  siteId: string;
 }) {
   // 対象拠点は URL が真実源 (#421)。以前は既定拠点に固定で、UI から別拠点の
   // 受付フローへ到達する手段が無かった。
-  const { sites, siteId, scopeKey, scopeReady, isCurrentScope, selectSite, sitePending } = useSiteScope(
+  const { sites, siteId, scopeKey, scopeReady, isCurrentScope, selectSite, sitePending, listStatus } = useSiteScope(
     tenantId,
     defaultSiteId,
   );
@@ -223,6 +222,7 @@ export function ReceptionFlowsManager({
           onSelect={selectSite}
           disabled={sitePending}
           testId="reception-flows-site-select"
+          status={listStatus}
         />
         <Field label="目的キー（英数）" htmlFor="flow-key-input">
           <input

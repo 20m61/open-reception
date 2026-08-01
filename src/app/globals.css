@@ -1271,6 +1271,9 @@ a {
   display: flex;
   align-items: center;
   justify-content: space-between;
+  /* 対象テナント + 対象拠点 (#423) が並ぶので、狭い幅では折り返す（横スクロールを出さない）。 */
+  flex-wrap: wrap;
+  gap: var(--space-sm);
   padding: var(--space-md) var(--space-lg);
   border-bottom: 1px solid rgba(255, 255, 255, 0.1);
 }

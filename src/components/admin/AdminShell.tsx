@@ -35,6 +35,11 @@ export function AdminShell({
    * TenantSwitcher を想定するが、AdminShell は actor 解決に依存しないよう ReactNode で受ける。
    */
   tenantSwitcher,
+  /**
+   * 対象拠点の常設表示 (#423)。テナントの隣に置く。拠点次元を持たない画面では
+   * 中身が `null` を返す（出す/出さないの判定は表示側が持つ）。
+   */
+  siteContext,
   children,
 }: {
   area: 'admin' | 'platform';
@@ -43,6 +48,7 @@ export function AdminShell({
   roles: readonly TenantRole[];
   tenantLabel?: string;
   tenantSwitcher?: ReactNode;
+  siteContext?: ReactNode;
   children: ReactNode;
 }) {
   const [sidebarOpen, setSidebarOpen] = useState(false);
@@ -119,13 +125,23 @@ export function AdminShell({
               </Link>
             ) : null}
           </div>
-          {tenantSwitcher ? (
-            tenantSwitcher
-          ) : tenantLabel ? (
-            // 固定表示は admin TenantSwitcher の単一所属表示と同一の見た目。逐語的に
-            // 重複していて、排他レンダリングなので片方を直しても気づけなかった (#423)。
-            <TenantContextChip tenantName={tenantLabel} />
-          ) : null}
+          <div
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              gap: 'var(--space-sm)',
+              flexWrap: 'wrap',
+            }}
+          >
+            {tenantSwitcher ? (
+              tenantSwitcher
+            ) : tenantLabel ? (
+              // 固定表示は admin TenantSwitcher の単一所属表示と同一の見た目。逐語的に
+              // 重複していて、排他レンダリングなので片方を直しても気づけなかった (#423)。
+              <TenantContextChip tenantName={tenantLabel} />
+            ) : null}
+            {siteContext}
+          </div>
         </header>
         <main className="admin-shell__content" style={{ flex: 1, padding: 'var(--space-lg)' }}>
           {children}
