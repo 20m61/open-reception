@@ -380,6 +380,43 @@
 | 74 | 2026-07-29 | #423 の一部: 対象テナント context の安全側フォールバック（存在しない id / 壊れた値 / 画面移動）を e2e で固定。純関数 `resolveActiveTenantId` は unit 済みだが**cookie → server 解決 → 画面表示の経路が未検証**だった。テナント作成 API が無いため実テナント間の越境 e2e は不可 | PR #503 |
 
 
+**次に着手する候補（更新・#419 グローバルストアのテナント対応 3/5 完了時点）**
+
+> ### #419 残増分「グローバルストアのテナント対応」— 残り 2 ストア（調査済み・着手可能）
+>
+> 済: `branding`（PR #572）/ `voice`・`motionMapping`（PR #573）。
+> `section-loaders` の `assertGlobalStoreScope` は **`directory` / `avatar` の 2 セクションのみ**が
+> 使用中。**両方対応したら guard 自体を撤去する**（`section-loaders.test.ts` に明記済み）。
+>
+> 共通の型（branding で確立、そのまま写す）:
+> 1. `tenantScopedStoreKey('<name>', tenantId, defaultTenantIdFrom())` でキーを分ける。
+>    **既定テナントは従来キー据え置き**＝移行不要・永続スキーマの非互換にならない
+> 2. 対応する admin ルートを `resolveAdminTenantId()`（選択中テナント）へ。
+>    **ストアだけ直しても多テナントにならない**（3 ストアとも `defaultAdminTenantId()` 固定だった）
+> 3. 旧・個別 kiosk API は**既定固定のまま据え置く**。端末セッション不要の公開経路に
+>    テナントを受け取らせると**無認証で任意テナントの設定を引ける**入口になる。撤去が正しい
+> 4. `section-loaders` の該当セクションから guard を外し、**代わりに「別テナントへ既定
+>    テナントの値を配らない」を直接固定**する（guard を消すだけだと退行に気づけない）
+> 5. **モックが引数を捨てていないか確認する**。`getX: () => getX()` の形だと `tenantId` の
+>    渡し忘れで緑になる。`toHaveBeenCalledWith('tenant-other')` で固定する
+> 6. **`legacy-routes-guard.test.ts` の対象に入っているか確認する**。branding は入っておらず、
+>    認可の出所を変えたのに検査ゼロでマージしていた（第 2 増分で追加）
+>
+> #### 次: `assets`（機械的に同型・小）
+> `collection('asset')` + `singleton('activeAssets')` の 2 キー。**`collection(name)` も
+> `singleton(name)` と同じ名前キー**なので branding と同じ扱いで済む。
+> エクスポート 8 / 呼び出し元 6 ファイル。
+>
+> #### 最後: `directory`（最大・設計判断あり）
+> `DataBackedDirectoryRepository` が `collection('department')` + `collection('staff')` を持ち、
+> **`directory-store.ts` が repository をプロセス単位で memo 化している**（`let repository`）。
+> ここだけ形が違うので先に方式を決めること:
+> - (a) `getDirectoryRepository(tenantId)` を**テナント単位で memo 化**（`Map<tenantId, repo>`）
+> - (b) 各メソッドが tenantId を取り、呼び出しごとに collection を解決する
+>
+> どちらでも**エクスポート 16 / 呼び出し元 10 ファイル**に tenantId を通す必要がある。
+> (a) の方が変更が局所的。CSV インポート・kiosk directory も呼び出し元に含まれる。
+
 **次に着手する候補（2026-08-01 更新・第 118 wave 消化後）**
 
 > **#554 / #557 とも完了。** `/admin/demo` は**意図的な単一拠点**と判明したので allowlist の
