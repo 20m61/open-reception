@@ -17,6 +17,7 @@ import {
   classifyChangeRisk,
   type DependencyManifest,
 } from '../src/domain/governance/change-risk';
+import { resolveBase } from '../src/domain/governance/git-base';
 
 /** 停止境界の日本語ラベル（`docs/ai-development-loop.md` §6 の文言に合わせる）。 */
 const BOUNDARY_LABEL = {
@@ -43,16 +44,13 @@ function tryGit(args: ReadonlyArray<string>): string | null {
   }
 }
 
-/** 比較起点。`origin/main` → `main` の順に探し、無ければ null（作業ツリーだけ見る）。 */
-function resolveBase(): string | null {
-  for (const ref of ['origin/main', 'main']) {
-    if (tryGit(['rev-parse', '--verify', '--quiet', ref]) !== null) {
-      const mergeBase = tryGit(['merge-base', ref, 'HEAD']);
-      if (mergeBase !== null) return mergeBase.trim();
-    }
-  }
-  return null;
-}
+/**
+ * 比較起点。**`change-budget.ts` と同じ実装を共有する** (#557)。
+ *
+ * 同じ問いに 2 つの実装があると、同一実行の中で違う数字を出しても気づけない
+ * （#557 では 1 番目が 47 ファイル、末尾のここが 7 件だった）。
+ */
+const resolveBaseRef = (): string | null => resolveBase(tryGit);
 
 /**
  * 変更パスを集める。**ゲートが実際に検査するのは作業ツリー**なので、
@@ -99,7 +97,7 @@ function currentManifest(path: string): DependencyManifest {
 }
 
 function main(): void {
-  const base = resolveBase();
+  const base = resolveBaseRef();
   const paths = changedPaths(base);
   const added = [
     ...addedDependencyNames(manifestAt(base, 'package.json'), currentManifest('package.json')),

@@ -20,6 +20,7 @@ import {
   resolveKillSwitch,
   type ChangeStat,
 } from '../src/domain/governance/change-budget';
+import { resolveBase } from '../src/domain/governance/git-base';
 
 /** 停止ファイル。追跡しない（コミットすると全員のゲートを止めてしまう）。 */
 const HALT_FILE = '.loop-halt';
@@ -35,16 +36,14 @@ function tryGit(args: ReadonlyArray<string>): string | null {
   }
 }
 
-/** 比較起点。`origin/main` → `main` の順（`change-risk.ts` と同じ解決）。 */
-function resolveBase(): string | null {
-  for (const ref of ['origin/main', 'main']) {
-    if (tryGit(['rev-parse', '--verify', '--quiet', ref]) !== null) {
-      const mergeBase = tryGit(['merge-base', ref, 'HEAD']);
-      if (mergeBase !== null) return mergeBase.trim();
-    }
-  }
-  return null;
-}
+/**
+ * 比較起点。**`change-risk.ts` と同じ実装を共有する** (#557)。
+ *
+ * かつては両者が同じ解決を別々に書いていて、同一実行の中で「47 ファイル / 2365 行」と
+ * 「7 件」が併記された。起点が新しいかどうか（浅い clone 対策）は `quality-gate.sh` が
+ * 先に保証する — 測る側でこっそり fetch しない。
+ */
+const resolveBaseRef = (): string | null => resolveBase(tryGit);
 
 /**
  * 変更量を集める。**ゲートが検査するのは作業ツリー**なので、`git diff <base>`（HEAD を挟まず
@@ -98,7 +97,7 @@ if (kill.halted) {
   process.exit(1);
 }
 
-const base = resolveBase();
+const base = resolveBaseRef();
 const verdict = evaluateChangeBudget(collectStat(base), DEFAULT_CHANGE_BUDGET);
 
 console.log(`  停止指示なし（${HALT_FILE} / ${HALT_ENV} のいずれも立っていません）`);

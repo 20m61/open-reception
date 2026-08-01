@@ -189,6 +189,33 @@ if [[ "$GATE_SCOPE" != "code" ]]; then
   echo "  省略: ${GATE_SKIPS# }"
 fi
 
+# ---- 比較起点の解決（浅い clone 対策・#557）------------------------------
+# 変更量チェック（この直後）と change-risk（末尾）は同じ `origin/main` を起点に測るのに、
+# **走る時刻が違う**。浅い clone では `origin/main` がステールで、しかも unshallow は
+# secrets ステップまで走らないため、**同一実行の中で 1 番目と最後で数字が食い違っていた**
+# （#557 で実測: 47 ファイル / 2365 行 vs 7 件）。report のみなので実害は無いが、
+# 「目安を超えました」が常態化すると本当に超えたときに気づけない（狼少年）。
+#
+# 起点は**測る前に**確定させる。fetch は浅いときだけ行う（通常のローカル実行に
+# ネットワーク往復を足さない）。オフライン等で失敗しても止めない — 起点が古いまま
+# 報告するのは、ゲートを落とすほどの問題ではない。
+if [[ "$(git rev-parse --is-shallow-repository 2>/dev/null)" == "true" ]]; then
+  echo ""
+  echo "▶ 比較起点の解決（shallow clone を検出・#557）"
+  git fetch --quiet origin main 2>/dev/null || true
+  # ref を取り直しても、切り詰められた履歴では共通祖先へ届かないことがある。
+  # 届かないと起点が `main`（同じくステール）や「起点不明」へ落ちて、今度は**過小**に出る。
+  if ! git merge-base origin/main HEAD >/dev/null 2>&1; then
+    git fetch --quiet --deepen=100 origin main 2>/dev/null || true
+  fi
+  if BASE_SHA="$(git merge-base origin/main HEAD 2>/dev/null)"; then
+    echo "  起点: ${BASE_SHA:0:8}（origin/main を更新しました）"
+  else
+    echo "  ⚠️ 共通祖先へ到達できませんでした。変更量・変更リスクは作業ツリーのみで測られます"
+    echo "     手動: git fetch --unshallow"
+  fi
+fi
+
 # ---- ループの停止指示と変更量 (#424 増分 4) -------------------------------
 # kill switch（.loop-halt / OPEN_RECEPTION_LOOP_HALT）が立っていれば **FAIL** させる。
 # 人間の明示操作なので偽陽性が無く、止めると決めた人が居る。**最初に**置くのが要点で、
