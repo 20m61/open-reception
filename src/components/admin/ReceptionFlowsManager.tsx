@@ -61,7 +61,7 @@ export function ReceptionFlowsManager({
 }) {
   // 対象拠点は URL が真実源 (#421)。以前は既定拠点に固定で、UI から別拠点の
   // 受付フローへ到達する手段が無かった。
-  const { sites, siteId, scopeKey, scopeReady, isCurrentScope, selectSite, sitePending, listStatus } = useSiteScope(
+  const { sites, siteId, scopeKey, scopeReady, isCurrentScope, selectSite, sitePending, listStatus, reloadSites } = useSiteScope(
     tenantId,
     defaultSiteId,
   );
@@ -223,6 +223,7 @@ export function ReceptionFlowsManager({
           disabled={sitePending}
           testId="reception-flows-site-select"
           status={listStatus}
+          onRetry={reloadSites}
         />
         <Field label="目的キー（英数）" htmlFor="flow-key-input">
           <input

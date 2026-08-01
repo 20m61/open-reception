@@ -55,11 +55,19 @@ export function useSiteScope(
    * 本文のセレクタは実在するかのような拠点 ID を表示し、表は「端末 0 件」と断定する。
    */
   listStatus: SiteListStatus;
+  /**
+   * 拠点一覧の取得をやり直す (#554 M3)。
+   *
+   * 一覧が取れないと `scopeReady` が立たず、その画面は**何も取得できず何も保存できない**。
+   * 画面全体のリロード以外に復帰手段が無い状態を作らないための導線。
+   * ヘッダの対象拠点チップも一緒に取り直る（`invalidateSiteList` が全インスタンスへ配る）。
+   */
+  reloadSites: () => void;
 } {
   const { get, setMany } = useQueryParams();
   // 取得はヘッダの対象拠点表示と同じ共有フックへ寄せる (#423)。取得失敗を空一覧に
   // 潰さないので、「拠点が無い」と「一覧を取れていない」が区別できる。
-  const { sites, status: listStatus } = useSiteList(tenantId);
+  const { sites, status: listStatus, reload } = useSiteList(tenantId);
 
   const { siteId, scopeReady } = (() => {
     const r = resolveSiteScopeState(get('siteId'), sites, fallbackSiteId);
@@ -87,6 +95,11 @@ export function useSiteScope(
     [],
   );
 
+  // 失敗の表示は各画面が `listStatus` で出す。ここは取り直しの起点だけを配る。
+  const reloadSites = useCallback(() => {
+    void reload();
+  }, [reload]);
+
   const [sitePending, startSiteTransition] = useTransition();
   const selectSite = useCallback(
     (next: string) => startSiteTransition(() => setMany({ siteId: next, page: '' })),
@@ -102,5 +115,6 @@ export function useSiteScope(
     selectSite,
     sitePending,
     listStatus,
+    reloadSites,
   };
 }

@@ -49,7 +49,7 @@ export function ExperienceVersionsManager({
    * 到達する手段が無く**、ヘッダの対象拠点表示（#423）も黙っていた。拠点別 5 画面と
    * 同じ `useSiteScope` に揃える。
    */
-  const { sites, siteId, scopeKey, scopeReady, isCurrentScope, selectSite, sitePending, listStatus } =
+  const { sites, siteId, scopeKey, scopeReady, isCurrentScope, selectSite, sitePending, listStatus, reloadSites } =
     useSiteScope(tenantId, defaultSiteId);
   const [versions, setVersions] = useState<ReceptionExperienceVersion[]>([]);
   /** `versions` / `rollout` がどのスコープの内容か。null = 未取得。 */
@@ -170,6 +170,7 @@ export function ExperienceVersionsManager({
         onSelect={selectSite}
         disabled={sitePending}
         status={listStatus}
+        onRetry={reloadSites}
         testId="experience-versions-site-select"
       />
       {loadError === null ? null : (
