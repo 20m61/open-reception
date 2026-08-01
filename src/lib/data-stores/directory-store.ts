@@ -15,6 +15,7 @@ import { normalizeCallTargets, type MockCallOutcome, type Staff } from '@/domain
 import { MOCK_DEPARTMENTS, MOCK_STAFF } from '@/domain/staff/mock-data';
 import { searchStaff } from '@/domain/staff/search';
 import { DataBackedDirectoryRepository, type DirectoryRepository } from './directory-repository';
+import { defaultTenantIdFrom } from '@/lib/tenant/default-scope';
 
 export type StoreError = { code: 'not_found' | 'invalid_input'; message: string };
 export type Result<T> = { ok: true; value: T } | { ok: false; error: StoreError };
@@ -42,15 +43,15 @@ function nextId(prefix: string): string {
 
 /* ---------- 部署 ---------- */
 
-export async function listDepartments(includeDisabled = false): Promise<Department[]> {
-  const all = await getDirectoryRepository().listDepartments();
+export async function listDepartments(tenantId: string, includeDisabled = false): Promise<Department[]> {
+  const all = await getDirectoryRepository().listDepartments(tenantId);
   return all
     .filter((d) => includeDisabled || d.enabled)
     .sort((a, b) => a.displayOrder - b.displayOrder);
 }
 
-export async function getDepartment(id: string): Promise<Result<Department>> {
-  const found = await getDirectoryRepository().getDepartment(id);
+export async function getDepartment(tenantId: string, id: string): Promise<Result<Department>> {
+  const found = await getDirectoryRepository().getDepartment(tenantId, id);
   return found ? { ok: true, value: found } : err('not_found', 'department not found');
 }
 
@@ -70,11 +71,11 @@ function validateDepartmentInput(input: unknown): Result<DepartmentInput> {
   };
 }
 
-export async function createDepartment(input: unknown): Promise<Result<Department>> {
+export async function createDepartment(tenantId: string, input: unknown): Promise<Result<Department>> {
   const v = validateDepartmentInput(input);
   if (!v.ok) return v;
   const repo = getDirectoryRepository();
-  const all = await repo.listDepartments();
+  const all = await repo.listDepartments(tenantId);
   const maxOrder = all.reduce((m, d) => Math.max(m, d.displayOrder), 0);
   const dept: Department = {
     id: nextId('dept'),
@@ -83,13 +84,13 @@ export async function createDepartment(input: unknown): Promise<Result<Departmen
     displayOrder: maxOrder + 1,
     enabled: v.value.enabled ?? true,
   };
-  await repo.putDepartment(dept);
+  await repo.putDepartment(tenantId, dept);
   return { ok: true, value: dept };
 }
 
-export async function updateDepartment(id: string, patch: unknown): Promise<Result<Department>> {
+export async function updateDepartment(tenantId: string, id: string, patch: unknown): Promise<Result<Department>> {
   const repo = getDirectoryRepository();
-  const found = await repo.getDepartment(id);
+  const found = await repo.getDepartment(tenantId, id);
   if (!found) return err('not_found', 'department not found');
   if (typeof patch !== 'object' || patch === null) return err('invalid_input', 'body must be an object');
   const o = patch as Record<string, unknown>;
@@ -106,17 +107,17 @@ export async function updateDepartment(id: string, patch: unknown): Promise<Resu
     if (typeof o.displayOrder !== 'number') return err('invalid_input', 'displayOrder must be a number');
     found.displayOrder = o.displayOrder;
   }
-  await repo.putDepartment(found);
+  await repo.putDepartment(tenantId, found);
   return { ok: true, value: found };
 }
 
 /** 指定した順序で部署の表示順を一括設定する（DnD 並び替え用） (issue #25)。 */
-export async function reorderDepartments(orderedIds: unknown): Promise<Result<Department[]>> {
+export async function reorderDepartments(tenantId: string, orderedIds: unknown): Promise<Result<Department[]>> {
   if (!Array.isArray(orderedIds) || !orderedIds.every((id): id is string => typeof id === 'string')) {
     return err('invalid_input', 'orderedIds must be an array of string');
   }
   const repo = getDirectoryRepository();
-  const all = await repo.listDepartments();
+  const all = await repo.listDepartments(tenantId);
   const known = new Set(all.map((d) => d.id));
   if (!orderedIds.every((id) => known.has(id))) {
     return err('invalid_input', 'orderedIds contains unknown department id');
@@ -125,15 +126,15 @@ export async function reorderDepartments(orderedIds: unknown): Promise<Result<De
     const dept = all.find((d) => d.id === id);
     if (dept) {
       dept.displayOrder = index + 1;
-      await repo.putDepartment(dept);
+      await repo.putDepartment(tenantId, dept);
     }
   }
-  return { ok: true, value: await listDepartments(true) };
+  return { ok: true, value: await listDepartments(tenantId, true) };
 }
 
 /** 部署を1つ上/下へ並び替える (issue #25)。 */
-export async function moveDepartment(id: string, direction: 'up' | 'down'): Promise<Result<Department[]>> {
-  const ordered = await listDepartments(true);
+export async function moveDepartment(tenantId: string, id: string, direction: 'up' | 'down'): Promise<Result<Department[]>> {
+  const ordered = await listDepartments(tenantId, true);
   const index = ordered.findIndex((d) => d.id === id);
   if (index === -1) return err('not_found', 'department not found');
   const swapWith = direction === 'up' ? index - 1 : index + 1;
@@ -144,25 +145,25 @@ export async function moveDepartment(id: string, direction: 'up' | 'down'): Prom
   a.displayOrder = b.displayOrder;
   b.displayOrder = tmp;
   const repo = getDirectoryRepository();
-  await repo.putDepartment(a);
-  await repo.putDepartment(b);
-  return { ok: true, value: await listDepartments(true) };
+  await repo.putDepartment(tenantId, a);
+  await repo.putDepartment(tenantId, b);
+  return { ok: true, value: await listDepartments(tenantId, true) };
 }
 
 /* ---------- 担当者 ---------- */
 
-export async function listStaff(includeDisabled = false): Promise<Staff[]> {
-  const all = await getDirectoryRepository().listStaff();
+export async function listStaff(tenantId: string, includeDisabled = false): Promise<Staff[]> {
+  const all = await getDirectoryRepository().listStaff(tenantId);
   return all.filter((s) => includeDisabled || s.enabled);
 }
 
-export async function getStaff(id: string): Promise<Result<Staff>> {
-  const found = await getDirectoryRepository().getStaff(id);
+export async function getStaff(tenantId: string, id: string): Promise<Result<Staff>> {
+  const found = await getDirectoryRepository().getStaff(tenantId, id);
   return found ? { ok: true, value: found } : err('not_found', 'staff not found');
 }
 
-export async function searchEnabledStaff(query: string): Promise<Staff[]> {
-  return searchStaff(await getDirectoryRepository().listStaff(), query);
+export async function searchEnabledStaff(tenantId: string, query: string): Promise<Staff[]> {
+  return searchStaff(await getDirectoryRepository().listStaff(tenantId), query);
 }
 
 export type StaffInput = {
@@ -196,9 +197,9 @@ function validateStaffInput(input: unknown, knownDeptIds: Set<string>): Result<S
   };
 }
 
-export async function createStaff(input: unknown): Promise<Result<Staff>> {
+export async function createStaff(tenantId: string, input: unknown): Promise<Result<Staff>> {
   const repo = getDirectoryRepository();
-  const deptIds = new Set((await repo.listDepartments()).map((d) => d.id));
+  const deptIds = new Set((await repo.listDepartments(tenantId)).map((d) => d.id));
   const v = validateStaffInput(input, deptIds);
   if (!v.ok) return v;
   const member: Staff = {
@@ -212,13 +213,13 @@ export async function createStaff(input: unknown): Promise<Result<Staff>> {
     callTargets: [],
     fallbackStaffIds: [],
   };
-  await repo.putStaff(member);
+  await repo.putStaff(tenantId, member);
   return { ok: true, value: member };
 }
 
-export async function updateStaff(id: string, patch: unknown): Promise<Result<Staff>> {
+export async function updateStaff(tenantId: string, id: string, patch: unknown): Promise<Result<Staff>> {
   const repo = getDirectoryRepository();
-  const found = await repo.getStaff(id);
+  const found = await repo.getStaff(tenantId, id);
   if (!found) return err('not_found', 'staff not found');
   if (typeof patch !== 'object' || patch === null) return err('invalid_input', 'body must be an object');
   const o = patch as Record<string, unknown>;
@@ -229,7 +230,7 @@ export async function updateStaff(id: string, patch: unknown): Promise<Result<St
   }
   if (o.kana !== undefined) found.kana = typeof o.kana === 'string' ? o.kana : undefined;
   if (o.departmentId !== undefined) {
-    const deptIds = new Set((await repo.listDepartments()).map((d) => d.id));
+    const deptIds = new Set((await repo.listDepartments(tenantId)).map((d) => d.id));
     if (typeof o.departmentId !== 'string' || !deptIds.has(o.departmentId))
       return err('invalid_input', 'departmentId is invalid');
     found.departmentId = o.departmentId;
@@ -248,13 +249,13 @@ export async function updateStaff(id: string, patch: unknown): Promise<Result<St
   }
   if (o.fallbackStaffIds !== undefined) {
     if (!Array.isArray(o.fallbackStaffIds)) return err('invalid_input', 'fallbackStaffIds must be an array');
-    const allStaff = await repo.listStaff();
+    const allStaff = await repo.listStaff(tenantId);
     const valid = o.fallbackStaffIds
       .filter((sid): sid is string => typeof sid === 'string')
       .filter((sid) => sid !== id && allStaff.some((s) => s.id === sid));
     found.fallbackStaffIds = valid;
   }
-  await repo.putStaff(found);
+  await repo.putStaff(tenantId, found);
   return { ok: true, value: found };
 }
 
@@ -274,12 +275,13 @@ function parseBool(value: string | undefined, fallback: boolean): boolean {
 
 /** 部署 CSV（department_id,name,kana,display_order,enabled）を取り込む。 */
 export async function importDepartments(
+  tenantId: string,
   records: Record<string, string>[],
   mode: 'preview' | 'apply',
 ): Promise<ImportSummary> {
   const summary: ImportSummary = { mode, created: 0, updated: 0, invalid: [] };
   const repo = getDirectoryRepository();
-  const current = await repo.listDepartments();
+  const current = await repo.listDepartments(tenantId);
   let maxOrder = current.reduce((m, d) => Math.max(m, d.displayOrder), 0);
   for (const [i, rec] of records.entries()) {
     const name = (rec.name ?? '').trim();
@@ -296,7 +298,7 @@ export async function importDepartments(
         existing.kana = rec.kana?.trim() || undefined;
         if (rec.display_order) existing.displayOrder = Number(rec.display_order) || existing.displayOrder;
         existing.enabled = parseBool(rec.enabled, existing.enabled);
-        await repo.putDepartment(existing);
+        await repo.putDepartment(tenantId, existing);
       }
     } else {
       summary.created++;
@@ -310,7 +312,7 @@ export async function importDepartments(
           enabled: parseBool(rec.enabled, true),
         };
         current.push(dept);
-        await repo.putDepartment(dept);
+        await repo.putDepartment(tenantId, dept);
       }
     }
   }
@@ -319,13 +321,14 @@ export async function importDepartments(
 
 /** 担当者 CSV（staff_id,display_name,kana,aliases,department_id,enabled,available）を取り込む。 */
 export async function importStaff(
+  tenantId: string,
   records: Record<string, string>[],
   mode: 'preview' | 'apply',
 ): Promise<ImportSummary> {
   const summary: ImportSummary = { mode, created: 0, updated: 0, invalid: [] };
   const repo = getDirectoryRepository();
-  const deptIds = new Set((await repo.listDepartments()).map((d) => d.id));
-  const current = await repo.listStaff();
+  const deptIds = new Set((await repo.listDepartments(tenantId)).map((d) => d.id));
+  const current = await repo.listStaff(tenantId);
   for (const [i, rec] of records.entries()) {
     const displayName = (rec.display_name ?? '').trim();
     const departmentId = (rec.department_id ?? '').trim();
@@ -352,7 +355,7 @@ export async function importStaff(
         existing.departmentId = departmentId;
         existing.enabled = parseBool(rec.enabled, existing.enabled);
         existing.available = parseBool(rec.available, existing.available);
-        await repo.putStaff(existing);
+        await repo.putStaff(tenantId, existing);
       }
     } else {
       summary.created++;
@@ -373,7 +376,7 @@ export async function importStaff(
           fallbackStaffIds,
         };
         current.push(member);
-        await repo.putStaff(member);
+        await repo.putStaff(tenantId, member);
       }
     }
   }
@@ -389,8 +392,8 @@ export type KioskDirectory = {
   staff: KioskStaff[];
 };
 
-export async function getKioskDirectory(): Promise<KioskDirectory> {
-  const [departments, staff] = await Promise.all([listDepartments(false), listStaff(false)]);
+export async function getKioskDirectory(tenantId: string): Promise<KioskDirectory> {
+  const [departments, staff] = await Promise.all([listDepartments(tenantId, false), listStaff(tenantId, false)]);
   return {
     departments: departments.map((d) => ({ id: d.id, name: d.name })),
     // 検索に必要な kana/aliases は含めるが、内部用の mockCallOutcome/available は含めない。
@@ -406,6 +409,6 @@ export async function getKioskDirectory(): Promise<KioskDirectory> {
 }
 
 /** テスト用: ストアを seed 状態に戻す。 */
-export async function __resetDirectory(): Promise<void> {
-  await getDirectoryRepository().reset();
+export async function __resetDirectory(tenantId: string = defaultTenantIdFrom()): Promise<void> {
+  await getDirectoryRepository().reset(tenantId);
 }

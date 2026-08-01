@@ -4,12 +4,13 @@
  * `docs/product-integration-plan.md` §4.1 の移行対象 API と 1:1 に対応する。ここが埋まっても
  * 個別 API は**残す**（rollback playbook の切り戻し先）。撤去は台帳 §9 B-03 の予告どおり別途行う。
  *
- * **グローバルストアの扱い（重要）**: branding / directory / voice / motions / assets の各ストアは
- * テナント次元を持たない（単一テナント運用の名残）。resolver 経由で任意テナントの構成を引けるように
- * なる分、素通しにすると「テナント A の管理者がテナント B の端末をプレビューしたら A の branding が
- * 出る」ような越境が起きる。そこで**既定テナント以外の要求では fail-closed で失敗**させる
- * （resolver が `section_unavailable` に写像する）。ストアをテナント対応にするのが本来の解で、
- * それまでは配らない側に倒す。
+ * **グローバルストアはすべてテナント対応済み** (#419 残増分)。かつて branding / directory /
+ * voice / motions / assets / languages は単一テナント運用の名残でテナント次元を持たず、
+ * 越境（テナント A の管理者が B の端末をプレビューすると A の branding が出る）を避けるため
+ * **既定テナント以外を fail-closed で落として**いた。安全側ではあるが、その結果
+ * **2 つ目以降のテナントはこれらの機能を一切使えなかった**。
+ * 各ストアが `tenantScopedStoreKey` でテナント別キーを持つようになったので guard は撤去した。
+ * 越境しないことは「別テナントへ既定テナントの値を配らない」検査で直接固定している。
  */
 import type {
   ConfigurationSectionLoaders,
@@ -28,19 +29,6 @@ import { resolveKioskStatusFor } from '@/lib/operating-policy/store';
 import { getReceptionFlowService } from '@/lib/reception/flow-config/store';
 import { isKioskFeatureEnabled } from '@/lib/platform/feature-flag-gate';
 import { defaultTenantIdFrom } from '@/lib/tenant/default-scope';
-
-/**
- * テナント次元を持たないストアを読む前のガード。既定テナント以外なら投げる
- * （呼び出し側 resolver が fail-closed で構成組み立てを中止する）。
- */
-function assertGlobalStoreScope(input: ConfigurationLoadInput): void {
-  const defaultTenantId = defaultTenantIdFrom();
-  if (String(input.tenantId) !== defaultTenantId) {
-    throw new Error(
-      `configuration store is not tenant-scoped: refusing to serve tenant ${String(input.tenantId)}`,
-    );
-  }
-}
 
 const section = <T>(value: T, source: ConfigurationSectionResult['source']) => ({ value, source });
 
@@ -68,9 +56,9 @@ export function createSectionLoaders(now: () => Date = () => new Date()): Config
       return section(await getKioskSignage(input.tenantId, input.siteId), 'site');
     },
 
+    /** テナント対応済み (#419 残増分)。これで全セクションが対応し、guard は撤去した。 */
     async directory(input) {
-      assertGlobalStoreScope(input);
-      return section(await getKioskDirectory(), 'tenant');
+      return section(await getKioskDirectory(String(input.tenantId)), 'tenant');
     },
 
     /**

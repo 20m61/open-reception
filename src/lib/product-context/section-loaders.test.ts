@@ -3,10 +3,9 @@
  *
  * 要点は 2 つ:
  *   1. テナント次元を持つストア（signage / flow / operating policy）には解決済みスコープを渡す。
- *   2. **まだテナント次元を持たないストア**（directory / assets）は、既定テナント以外の要求に
- *      対して fail-closed で失敗させる（他テナントへ配らない）。
- *   3. **テナント対応済みのストア**（branding / voice / motions・#419 残増分）は、別テナントでも
- *      失敗せず、かつ既定テナントの値を配らないことを固定する。
+ *   2. **全ストアがテナント対応済み**（#419 残増分）。かつて fail-closed で落としていた
+ *      branding / directory / voice / motions / avatar / languages は、別テナントでも失敗せず、
+ *      かつ**そのテナントのキーで読む**ことを引数で固定する（渡し忘れると越境する）。
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -31,7 +30,7 @@ vi.mock('@/lib/branding/branding-store', () => ({
   getBrandingSettings: (tenantId: string) => getBrandingSettings(tenantId),
 }));
 vi.mock('@/lib/data-stores/directory-store', () => ({
-  getKioskDirectory: () => getKioskDirectory(),
+  getKioskDirectory: (tenantId: string) => getKioskDirectory(tenantId),
 }));
 // モックもテナント引数を受ける（捨てると渡し忘れを検出できない）。
 vi.mock('@/lib/voice/voice-store', () => ({
@@ -141,11 +140,21 @@ describe('createSectionLoaders / テナント次元を持つストア', () => {
 
 describe('createSectionLoaders / グローバルストアの越境防止', () => {
   /**
-   * **まだテナント次元を持たないストア。** branding は #419 残増分でテナント対応したので
-   * ここから外してある（下の別 describe で「テナント別に引ける」ことを固定する）。
-   * 残りを対応させたら 1 つずつここから外す — **空になったら guard 自体を撤去する**。
+   * **かつてテナント次元を持たなかったストア** (#419 残増分)。
+   *
+   * 以前は既定テナント以外を fail-closed で落としていた（安全側だが、その結果
+   * **2 つ目以降のテナントは機能を使えなかった**）。全ストアがテナント別キーを持つように
+   * なったので guard は撤去し、代わりに**「別テナントへ既定テナントの値を配らない」**を
+   * 直接固定する。guard を消すだけだと退行に気づけない。
    */
-  const globalSections = ['directory'] as const;
+  const tenantScopedSections = [
+    'branding',
+    'directory',
+    'voice',
+    'motions',
+    'avatar',
+    'languages',
+  ] as const;
 
   it('既定テナントの要求では従来どおり値を返す', async () => {
     const loaders = createSectionLoaders();
@@ -156,12 +165,10 @@ describe('createSectionLoaders / グローバルストアの越境防止', () =>
     });
   });
 
-  it.each(globalSections)('別テナントの要求では %s を fail-closed で失敗させる', async (section) => {
+  it.each(tenantScopedSections)('%s は別テナントでも fail-closed で落ちない', async (section) => {
     const loaders = createSectionLoaders();
 
-    await expect(loaders[section](loadInput('tenant-other'))).rejects.toThrow(
-      /not tenant-scoped/,
-    );
+    await expect(loaders[section](loadInput('tenant-other'))).resolves.toBeDefined();
   });
 
   /**
@@ -203,11 +210,16 @@ describe('createSectionLoaders / グローバルストアの越境防止', () =>
     expect(getLanguageSettings).toHaveBeenCalledWith('tenant-other');
   });
 
-  it('越境要求ではグローバルストアを読みにいかない', async () => {
+  /**
+   * 旧「越境要求ではストアを読みにいかない」の置き換え。**読みには行くが、必ず
+   * そのテナントのキーで読む**形になったので、引数で固定する（渡し忘れると
+   * 既定テナントの値が別テナントへ出る）。
+   */
+  it('directory も別テナントで失敗せず、ストアへテナントを渡している', async () => {
     const loaders = createSectionLoaders();
 
-    await expect(loaders.directory(loadInput('tenant-other'))).rejects.toThrow();
-    expect(getKioskDirectory).not.toHaveBeenCalled();
+    await expect(loaders.directory(loadInput('tenant-other'))).resolves.toBeDefined();
+    expect(getKioskDirectory).toHaveBeenCalledWith('tenant-other');
   });
 });
 

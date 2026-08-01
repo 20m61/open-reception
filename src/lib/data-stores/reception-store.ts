@@ -185,7 +185,7 @@ export async function startCall(
   if (!calling.ok) return calling;
 
   // 既定は Mock。テナント設定が vonage+secret 完備なら本番 adapter（#4）。担当者は現在のディレクトリから構成。
-  const callAdapter = adapter ?? (await resolveCallAdapter(tenantId, await listStaff(true)));
+  const callAdapter = adapter ?? (await resolveCallAdapter(tenantId, await listStaff(tenantId, true)));
   const result: CallResult = await callAdapter.call({
     receptionId: calling.value.id,
     targetType: calling.value.targetType!,

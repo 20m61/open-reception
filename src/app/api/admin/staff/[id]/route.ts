@@ -4,10 +4,11 @@ import { readJson, resultResponse } from '@/lib/data-stores/result-http';
 import { appendAdminAudit } from '@/lib/data-stores/reception-log-store';
 import {
   assertCanWrite,
-  defaultAdminTenantId,
   requireActor,
   toGuardResponse,
 } from '@/lib/admin/guard';
+import { resolveAdminTenantId } from '@/lib/tenant/admin-tenant-scope';
+import { asTenantId } from '@/domain/tenant/types';
 
 /**
  * PATCH /api/admin/staff/:id — 担当者更新（名称・部署・有効/無効・在席） (issue #26)。
@@ -18,14 +19,16 @@ export async function PATCH(
   request: Request,
   { params }: { params: Promise<{ id: string }> },
 ): Promise<NextResponse> {
+  let tenantId: string;
   try {
     const actor = await requireActor();
-    assertCanWrite(actor, defaultAdminTenantId());
+    tenantId = await resolveAdminTenantId();
+    assertCanWrite(actor, asTenantId(tenantId));
   } catch (err) {
     return toGuardResponse(err);
   }
   const { id } = await params;
-  const result = await updateStaff(id, await readJson(request));
+  const result = await updateStaff(tenantId, id, await readJson(request));
   if (result.ok) await appendAdminAudit('staff.updated', { type: 'staff', id });
   return resultResponse(result);
 }
