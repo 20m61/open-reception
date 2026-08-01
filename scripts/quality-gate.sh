@@ -157,6 +157,48 @@ if [[ "$BOOTSTRAP" -eq 1 ]]; then
   fi
 fi
 
+# ---- 比較起点の解決（浅い clone 対策・#557）------------------------------
+# 変更量・変更範囲・停止境界の 3 つは同じ `origin/main` を起点に測るのに、**走る時刻が
+# 違う**。浅い clone では `origin/main` がステールで、unshallow は secrets ステップまで
+# 走らないため、同一実行の中で数字が食い違っていた（#557: 47 ファイル vs 7 件）。
+#
+# **起点は 1 度だけここで確定し、`GATE_BASE_SHA` で全消費者へ配る。** 各自が再解決すると
+# 整合が「たまたま同時刻に同じ」という時間的性質に戻る（共有実装にしただけでは閉じない）。
+# 変更範囲の判定より前に置くこと — あれだけが唯一ステップを省略できる消費者なので、
+# 起点がずれると docs 判定で build / e2e / sast / lighthouse が飛ぶ。
+if [[ "$(git rev-parse --is-shallow-repository 2>/dev/null)" == "true" ]]; then
+  echo ""
+  echo "▶ 比較起点の解決（shallow clone を検出・#557）"
+  # **宛先 ref を明示する。** `git fetch origin main` は、PR ブランチだけを
+  # `--single-branch` で clone した環境（クラウドサンドボックス）では refspec に main が
+  # 無いため **`refs/remotes/origin/main` を作らない**（FETCH_HEAD に落とすだけ）。
+  # 明示しないと修正が黙って空振りし、無駄な fetch が 2 回増えるだけになる。
+  #
+  # `GIT_TERMINAL_PROMPT=0` … 資格情報ヘルパが無い環境で入力待ちに入らせない。
+  # `http.lowSpeed*` … TCP が落ちない proxy 環境で無限に待たせない。
+  # ここは kill switch より前なので、**止まらないことがゲートを止められることより優先**。
+  if GIT_TERMINAL_PROMPT=0 git -c http.lowSpeedLimit=1000 -c http.lowSpeedTime=10 \
+       fetch --quiet origin '+refs/heads/main:refs/remotes/origin/main' 2>/dev/null; then
+    echo "  origin/main を更新しました"
+  else
+    echo "  ⚠️ origin/main を更新できませんでした（オフライン / 認証 / 到達不能）"
+  fi
+  if ! git merge-base origin/main HEAD >/dev/null 2>&1; then
+    # 切り詰められた履歴では共通祖先へ届かないことがある。届かないと起点が
+    # ステールな `main` や「起点不明」へ落ち、今度は**過小**に報告する。
+    GIT_TERMINAL_PROMPT=0 git fetch --quiet --deepen=100 origin main 2>/dev/null || true
+  fi
+fi
+# shallow でなくても、ここで 1 度だけ解決して全消費者へ配る（起点を実行内で固定する）。
+GATE_BASE_SHA="$(git merge-base origin/main HEAD 2>/dev/null || git merge-base main HEAD 2>/dev/null || true)"
+export GATE_BASE_SHA
+if [[ -n "$GATE_BASE_SHA" ]]; then
+  echo "  起点: ${GATE_BASE_SHA:0:8}（この実行の全ステップで共有）"
+else
+  echo "  ⚠️ 共通祖先へ到達できません。変更量・変更範囲・停止境界は作業ツリーのみで測られます"
+  echo "     手動: git fetch --unshallow"
+fi
+
 # ---- 変更範囲の判定（ステップ省略）---------------------------------------
 # 判定ロジックは src/domain/governance/change-scope.ts（純関数・ユニットテスト済）。
 # **省略してよいステップ名も TS 側から受け取る**（shell に同じ一覧を持たせると二重管理）。
@@ -187,33 +229,6 @@ if [[ "$GATE_SCOPE" != "code" ]]; then
   echo ""
   echo "▶ change-scope: ${GATE_SCOPE}（--no-skip-docs で全ステップ実行）"
   echo "  省略: ${GATE_SKIPS# }"
-fi
-
-# ---- 比較起点の解決（浅い clone 対策・#557）------------------------------
-# 変更量チェック（この直後）と change-risk（末尾）は同じ `origin/main` を起点に測るのに、
-# **走る時刻が違う**。浅い clone では `origin/main` がステールで、しかも unshallow は
-# secrets ステップまで走らないため、**同一実行の中で 1 番目と最後で数字が食い違っていた**
-# （#557 で実測: 47 ファイル / 2365 行 vs 7 件）。report のみなので実害は無いが、
-# 「目安を超えました」が常態化すると本当に超えたときに気づけない（狼少年）。
-#
-# 起点は**測る前に**確定させる。fetch は浅いときだけ行う（通常のローカル実行に
-# ネットワーク往復を足さない）。オフライン等で失敗しても止めない — 起点が古いまま
-# 報告するのは、ゲートを落とすほどの問題ではない。
-if [[ "$(git rev-parse --is-shallow-repository 2>/dev/null)" == "true" ]]; then
-  echo ""
-  echo "▶ 比較起点の解決（shallow clone を検出・#557）"
-  git fetch --quiet origin main 2>/dev/null || true
-  # ref を取り直しても、切り詰められた履歴では共通祖先へ届かないことがある。
-  # 届かないと起点が `main`（同じくステール）や「起点不明」へ落ちて、今度は**過小**に出る。
-  if ! git merge-base origin/main HEAD >/dev/null 2>&1; then
-    git fetch --quiet --deepen=100 origin main 2>/dev/null || true
-  fi
-  if BASE_SHA="$(git merge-base origin/main HEAD 2>/dev/null)"; then
-    echo "  起点: ${BASE_SHA:0:8}（origin/main を更新しました）"
-  else
-    echo "  ⚠️ 共通祖先へ到達できませんでした。変更量・変更リスクは作業ツリーのみで測られます"
-    echo "     手動: git fetch --unshallow"
-  fi
 fi
 
 # ---- ループの停止指示と変更量 (#424 増分 4) -------------------------------

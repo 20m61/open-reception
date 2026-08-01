@@ -20,6 +20,7 @@ import {
   isStepSkippable,
   SKIPPABLE_STEPS,
 } from '../src/domain/governance/change-scope';
+import { resolveBase } from '../src/domain/governance/git-base';
 
 function tryGit(args: ReadonlyArray<string>): string | null {
   try {
@@ -29,16 +30,13 @@ function tryGit(args: ReadonlyArray<string>): string | null {
   }
 }
 
-/** 比較起点。`origin/main` → `main` の順。無ければ null。 */
-function resolveBase(): string | null {
-  for (const ref of ['origin/main', 'main']) {
-    if (tryGit(['rev-parse', '--verify', '--quiet', ref]) !== null) {
-      const mergeBase = tryGit(['merge-base', ref, 'HEAD']);
-      if (mergeBase !== null) return mergeBase.trim();
-    }
-  }
-  return null;
-}
+/**
+ * 比較起点。**`change-budget.ts` / `change-risk.ts` と同じ実装を共有する** (#557 follow-up)。
+ *
+ * ここは唯一**ステップを省略できる**消費者なので、起点がずれると docs 判定になって
+ * build / e2e / sast / lighthouse が飛ぶ。3 つ目の写しを残さない。
+ */
+const resolveBaseRef = (): string | null => resolveBase(tryGit, process.env.GATE_BASE_SHA);
 
 /**
  * 変更パス。ゲートが検査するのは作業ツリーなので、ブランチのコミット分と未コミット分の両方。
@@ -62,7 +60,7 @@ function changedPaths(base: string | null): ReadonlyArray<string> {
 function main(): void {
   // `--strict`（定期実行）では省略しない。判断は domain 側の `effectiveScope` が持つ。
   const strict = process.argv.includes('--strict');
-  const base = resolveBase();
+  const base = resolveBaseRef();
   // 起点が解決できないなら比較のしようがない → 省略しない。
   const detected = base === null ? 'code' : classifyChangeScope(changedPaths(base));
   const scope = effectiveScope(detected, { strict });

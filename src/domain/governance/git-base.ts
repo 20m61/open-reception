@@ -20,7 +20,16 @@ export type GitRunner = (args: ReadonlyArray<string>) => string | null;
  * **到達できる**ことは別で、浅い clone では前者だけ真になり得る。到達できなければ次の
  * 候補へ進み、どれも駄目なら `null`（＝作業ツリーだけ見る）。
  */
-export function resolveBase(run: GitRunner): string | null {
+export function resolveBase(run: GitRunner, pinned?: string | undefined): string | null {
+  /**
+   * **シェルが確定した起点を最優先する** (#557 follow-up)。
+   *
+   * 各消費者が独立に再解決すると、整合の担保が「両方の時点で ref がたまたま同じ」という
+   * 時間的性質に戻ってしまう。#557 の症状（同一実行で 47 ファイルと 7 件）はまさにそれで、
+   * 共有実装にしただけでは閉じない。`quality-gate.sh` が 1 度だけ解決して
+   * `GATE_BASE_SHA` で配り、全員がそれを使うことで**構造的に**同じ起点になる。
+   */
+  if (pinned !== undefined && pinned.trim() !== '') return pinned.trim();
   for (const ref of BASE_REF_PREFERENCE) {
     if (run(['rev-parse', '--verify', '--quiet', ref]) === null) continue;
     const mergeBase = run(['merge-base', ref, 'HEAD']);

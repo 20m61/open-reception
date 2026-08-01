@@ -43,7 +43,7 @@ function tryGit(args: ReadonlyArray<string>): string | null {
  * 「7 件」が併記された。起点が新しいかどうか（浅い clone 対策）は `quality-gate.sh` が
  * 先に保証する — 測る側でこっそり fetch しない。
  */
-const resolveBaseRef = (): string | null => resolveBase(tryGit);
+const resolveBaseRef = (): string | null => resolveBase(tryGit, process.env.GATE_BASE_SHA);
 
 /**
  * 変更量を集める。**ゲートが検査するのは作業ツリー**なので、`git diff <base>`（HEAD を挟まず
