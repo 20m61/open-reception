@@ -106,6 +106,10 @@ export const SITE_SCOPED_PATHS: readonly string[] = [
    * 来訪予約。予約と QR 招待は拠点内スコープ（#375 の招待モデル）なので拠点別に扱う (#554)。
    */
   '/admin/reservations',
+  /**
+   * 担当者応答アクション。有効/無効と来訪者向け文言は拠点ごとに設定する (#554)。
+   */
+  '/admin/staff-response',
 ];
 
 /**
