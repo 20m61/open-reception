@@ -41,6 +41,9 @@ export function SiteContextChip({
 
   // 拠点が変わったことをスクリーンリーダーへ伝える。切替は運用者が「いま何を編集して
   // いるか」を見失う瞬間なので、視覚だけの変化にしない (#552 レビュー N5)。
+  //
+  // **live region は常設する。** 中身ごと DOM から消す形にすると、領域が中身入りで
+  // 挿入される遷移（非拠点画面 → 拠点画面）は多くのスクリーンリーダーが読まない。
   const live = (chip: React.ReactNode) => (
     <span aria-live="polite" aria-atomic="true">
       {chip}
@@ -52,7 +55,7 @@ export function SiteContextChip({
     // 取得中に既定拠点を先に出すと、確定後に別拠点へ書き換わって「勝手に切り替わった」
     // ように見える。確定するまで出さない（本文の `scopeReady` と同じ考え方）。
     case 'loading':
-      return null;
+      return live(null);
     case 'unavailable':
       return live(
         <ContextChip

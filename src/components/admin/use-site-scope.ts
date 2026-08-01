@@ -4,6 +4,7 @@ import { useCallback, useEffect, useRef, useTransition } from 'react';
 import { useQueryParams } from './use-query-params';
 import { resolveSiteScopeState } from './site-scope';
 import { useSiteList } from './use-site-list';
+import type { SiteListStatus } from './site-context';
 import type { SiteWithDevices } from '@/lib/tenant/site-service';
 
 /**
@@ -48,11 +49,17 @@ export function useSiteScope(
   isCurrentScope: (startedWith: string) => boolean;
   selectSite: (next: string) => void;
   sitePending: boolean;
+  /**
+   * 拠点一覧の取得状態。**画面が「拠点が無い」と「一覧を取れていない」を区別できるように
+   * 返す**（#552 レビュー P2）。捨てると、取得失敗時にヘッダは「確認できません」と出すのに
+   * 本文のセレクタは実在するかのような拠点 ID を表示し、表は「端末 0 件」と断定する。
+   */
+  listStatus: SiteListStatus;
 } {
   const { get, setMany } = useQueryParams();
   // 取得はヘッダの対象拠点表示と同じ共有フックへ寄せる (#423)。取得失敗を空一覧に
   // 潰さないので、「拠点が無い」と「一覧を取れていない」が区別できる。
-  const { sites } = useSiteList(tenantId);
+  const { sites, status: listStatus } = useSiteList(tenantId);
 
   const { siteId, scopeReady } = (() => {
     const r = resolveSiteScopeState(get('siteId'), sites, fallbackSiteId);
@@ -86,5 +93,14 @@ export function useSiteScope(
     [setMany],
   );
 
-  return { sites, siteId, scopeKey, scopeReady, isCurrentScope, selectSite, sitePending };
+  return {
+    sites,
+    siteId,
+    scopeKey,
+    scopeReady,
+    isCurrentScope,
+    selectSite,
+    sitePending,
+    listStatus,
+  };
 }

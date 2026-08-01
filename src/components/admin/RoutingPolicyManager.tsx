@@ -78,7 +78,7 @@ export function RoutingPolicyManager({
 }) {
   // 対象拠点は URL が真実源 (#421)。以前は既定拠点に固定で、UI から別拠点の
   // 取次ルートへ到達する手段が無かった。
-  const { sites, siteId, scopeKey, scopeReady, isCurrentScope, selectSite, sitePending } = useSiteScope(
+  const { sites, siteId, scopeKey, scopeReady, isCurrentScope, selectSite, sitePending, listStatus } = useSiteScope(
     tenantId,
     defaultSiteId,
   );
@@ -157,6 +157,7 @@ export function RoutingPolicyManager({
           onSelect={selectSite}
           disabled={sitePending}
           testId="call-routing-site-select"
+          status={listStatus}
         />
       </div>
 

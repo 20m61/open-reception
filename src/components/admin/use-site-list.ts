@@ -11,7 +11,7 @@ import type { SiteListStatus } from './site-context';
  */
 const inFlight = new Map<string, Promise<Response>>();
 
-function fetchSiteList(tenantId: string, fresh: boolean): Promise<Response> {
+export function fetchSiteList(tenantId: string, fresh: boolean): Promise<Response> {
   const url = `/api/admin/sites?tenantId=${encodeURIComponent(tenantId)}`;
   // 作成・改名の直後は相乗りしない（変更前に飛んだ要求の応答を掴む可能性がある）。
   if (fresh) return fetch(url);
@@ -19,9 +19,13 @@ function fetchSiteList(tenantId: string, fresh: boolean): Promise<Response> {
   if (pending !== undefined) return pending.then((res) => res.clone());
   const started = fetch(url);
   inFlight.set(tenantId, started);
-  void started.finally(() => {
+  // **`finally` の戻り値を捨てない。** `p.finally(cb)` は p と同じ理由で reject する新しい
+  // promise を返すので、`void` で捨てるとオフライン時に unhandled rejection になる
+  // （#552 レビュー P2。dev のエラーオーバーレイや e2e のノイズ源になる）。
+  const forget = () => {
     if (inFlight.get(tenantId) === started) inFlight.delete(tenantId);
-  });
+  };
+  started.then(forget, forget);
   // 相乗り側が body を読めるよう、自分も clone を読む。
   return started.then((res) => res.clone());
 }

@@ -39,14 +39,16 @@ const HANDLES_SITE = /siteId/;
  *  - 拠点を扱わなくなったパスが残っても落ちる（腐らせない）
  *  - 新しい画面はどちらにも無いので落ちる（見逃さない）
  */
-const SITE_DIMENSION_WITHOUT_HEADER: readonly string[] = [
-  '/admin/demo',
-  '/admin/experience-versions',
-  '/admin/reservations',
-  '/admin/signage',
-  '/admin/sites',
-  '/admin/staff-response',
-  '/admin/stay',
+const SITE_DIMENSION_WITHOUT_HEADER: readonly { route: string; reason: 'todo' | 'n/a' }[] = [
+  // `todo` = 拠点次元を持つが URL に載っていない。#554 の対象（直したらここから外す）。
+  { route: '/admin/demo', reason: 'todo' },
+  { route: '/admin/experience-versions', reason: 'todo' },
+  { route: '/admin/reservations', reason: 'todo' },
+  { route: '/admin/signage', reason: 'todo' },
+  { route: '/admin/staff-response', reason: 'todo' },
+  { route: '/admin/stay', reason: 'todo' },
+  // `n/a` = そもそも対象が 1 拠点に絞られない画面。ヘッダに出すべきではない。
+  { route: '/admin/sites', reason: 'n/a' },
 ];
 
 /** `src/app/admin` 配下の全 page.tsx を（ネストも含め）集める。 */
@@ -63,11 +65,19 @@ function adminPages(dir = ADMIN_APP_DIR, route = '/admin'): { route: string; fil
   return found;
 }
 
-/** `@/components/admin/...` からの import を辿って、その画面が読むソースを集める。 */
+/**
+ * `@/components/admin/...` からの import を辿って、その画面が読むソースを集める。
+ *
+ * **深さ 1 まで**（page.tsx と、それが直接描画する component）。深く辿ると共有部品
+ * （`use-site-list` → `site-context`）の型 import だけで `siteId` にヒットし、
+ * 拠点次元を持たない画面まで検出されてしまう（#552 レビュー P2 で `/admin/sites` が実際に
+ * 誤検出されていた）。誤検出が混じると allowlist が「本当の残作業」と「そもそも対象外」を
+ * 同じ袋に入れることになり、腐り検出も実質的に落ちなくなる。
+ */
 function sourcesOfScreen(file: string): string {
   const seen = new Set<string>();
   const collect = (path: string, depth: number): string => {
-    if (depth > 3 || seen.has(path)) return '';
+    if (depth > 1 || seen.has(path)) return '';
     seen.add(path);
     let src: string;
     try {
@@ -108,11 +118,11 @@ describe('拠点別画面の登録漏れ検出 (#423)', () => {
     );
 
     // 走査が壊れて 0 件になれば「常に緑」の無意味な検査になる。
-    expect(handlesSite.length).toBeGreaterThanOrEqual(12);
+    expect(handlesSite.length).toBeGreaterThanOrEqual(11);
 
+    const accounted = new Set(SITE_DIMENSION_WITHOUT_HEADER.map((e) => e.route));
     const unaccounted = handlesSite.filter(
-      (route) =>
-        !SITE_SCOPED_PATHS.includes(route) && !SITE_DIMENSION_WITHOUT_HEADER.includes(route),
+      (route) => !SITE_SCOPED_PATHS.includes(route) && !accounted.has(route),
     );
     expect(unaccounted).toEqual([]);
   });
@@ -121,11 +131,16 @@ describe('拠点別画面の登録漏れ検出 (#423)', () => {
     const handlesSite = new Set(
       SCREENS.filter(({ file }) => HANDLES_SITE.test(sourcesOfScreen(file))).map(({ route }) => route),
     );
-    for (const route of SITE_DIMENSION_WITHOUT_HEADER) {
+    for (const { route, reason } of SITE_DIMENSION_WITHOUT_HEADER) {
       // 直したのにリストへ残っている（＝ヘッダ対応済みなのに未対応と書いてある）
       expect(SITE_SCOPED_PATHS.includes(route), `${route} は対応済みなのでリストから外す`).toBe(false);
-      // 拠点を扱わなくなったのに残っている
-      expect(handlesSite.has(route), `${route} はもう拠点を扱っていないのでリストから外す`).toBe(true);
+      // 拠点を扱わなくなったのに `todo` として残っている。`n/a` は「対象外」の宣言なので
+      // 拠点を扱っているかどうかを問わない。
+      if (reason === 'todo') {
+        expect(handlesSite.has(route), `${route} はもう拠点を扱っていないのでリストから外す`).toBe(
+          true,
+        );
+      }
     }
   });
 

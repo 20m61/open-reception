@@ -38,6 +38,8 @@ const CHIP_STYLE: React.CSSProperties = {
   padding: '4px 10px',
   borderRadius: 999,
   background: 'var(--color-surface-2)',
+  // `attention` で border を足したときに 2px ずれないよう、既定でも枠の場所を確保する。
+  border: '1px solid transparent',
 };
 
 const SELECT_STYLE: React.CSSProperties = {
@@ -86,10 +88,13 @@ export function ContextChip({
       // 値が長いときにヘッダを押し広げない。
       style={
         attention
-          ? { ...CHIP_STYLE, border: '1px solid var(--color-warning, var(--color-border-strong))' }
+          ? { ...CHIP_STYLE, borderColor: 'var(--color-warning, var(--color-border-strong))' }
           : CHIP_STYLE
       }
+      // `title` はホバーの無い iPad では出ない。支援技術と実機の両方で全文へ到達できるよう
+      // `aria-label` も付ける（#552 レビュー N4）。
       title={value === shown ? undefined : value}
+      aria-label={value === shown ? undefined : `${label}: ${value}`}
       {...rest}
     >
       {label}: <strong>{shown}</strong>

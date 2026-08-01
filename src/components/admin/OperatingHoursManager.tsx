@@ -37,7 +37,7 @@ export function OperatingHoursManager({
 }) {
   // 対象拠点は URL が真実源 (#421)。以前はここが既定拠点に固定で、UI から別拠点の
   // 営業時間へ到達する手段が無かった（env でしか変えられなかった）。
-  const { sites, siteId, scopeKey, scopeReady, isCurrentScope, selectSite, sitePending } = useSiteScope(
+  const { sites, siteId, scopeKey, scopeReady, isCurrentScope, selectSite, sitePending, listStatus } = useSiteScope(
     tenantId,
     defaultSiteId,
   );
@@ -190,6 +190,7 @@ export function OperatingHoursManager({
           // 切替が確定するまで触らせない（他 2 画面と揃える。#552 レビュー N2）。
           disabled={sitePending}
           testId="operating-hours-site-select"
+          status={listStatus}
         />
         <Field label="タイムゾーン（IANA 名。既定 Asia/Tokyo）" htmlFor="operating-hours-timezone">
           <input

@@ -46,12 +46,11 @@ export function CallRoutesManager({
 }: {
   tenantId?: string;
   /** サーバ (`resolveDefaultScope`) 由来の既定拠点。URL 未指定時のフォールバック。 */
-  /** サーバ (`resolveDefaultScope`) 由来の既定拠点。URL 未指定時のフォールバック。 */
   siteId: string;
 }) {
   // 対象拠点は URL が真実源 (#421)。以前は既定拠点に固定で、UI から別拠点の
   // 呼び出しルートへ到達する手段が無かった。
-  const { sites, siteId, scopeKey, scopeReady, isCurrentScope, selectSite, sitePending } = useSiteScope(
+  const { sites, siteId, scopeKey, scopeReady, isCurrentScope, selectSite, sitePending, listStatus } = useSiteScope(
     tenantId,
     defaultSiteId,
   );
@@ -179,6 +178,7 @@ export function CallRoutesManager({
           // 切替が確定するまで触らせない（他 2 画面と揃える。#552 レビュー N2）。
           disabled={sitePending}
           testId="call-routes-site-select"
+          status={listStatus}
         />
         <Field label="ルート名" htmlFor="route-name-input">
           <input

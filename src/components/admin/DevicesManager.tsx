@@ -78,11 +78,15 @@ export function DevicesManager({
    * テナントでは同じ URL でも画面ごとに別の拠点を開き、ヘッダの対象拠点表示（#423）とも
    * 食い違う。**同じ問いには同じ答えを返す**ようにここへ寄せた。
    */
-  const { sites, siteId, scopeKey, scopeReady, isCurrentScope, selectSite, sitePending } =
+  const { sites, siteId, scopeKey, scopeReady, isCurrentScope, selectSite, sitePending, listStatus } =
     useSiteScope(tenantId, defaultSiteId);
   const [devices, setDevices] = useState<DeviceView[]>([]);
   /** `devices` がどのスコープ（テナント+拠点）の内容か。null = 未取得。 */
   const [loadedScope, setLoadedScope] = useState<string | null>(null);
+  /** 一覧取得の失敗（null = 失敗していない）。空一覧と区別する。 */
+  const [listError, setListError] = useState<string | null>(null);
+  /** 行操作（保存等）の失敗メッセージ。 */
+  const [rowError, setRowError] = useState<string | null>(null);
   const [name, setName] = useState('');
   const [location, setLocation] = useState('');
   const [kind, setKind] = useState<DeviceKind>('kiosk');
@@ -116,13 +120,27 @@ export function DevicesManager({
       setLoadedScope(null);
       return;
     }
+    setListError(null);
     const startedWith = scopeKey;
-    const res = await fetch(
-      `/api/admin/devices?tenantId=${encodeURIComponent(tenantId)}&siteId=${encodeURIComponent(siteId)}`,
-    );
-    if (!res.ok || !isCurrentScope(startedWith)) return;
+    let res: Response;
+    try {
+      res = await fetch(
+        `/api/admin/devices?tenantId=${encodeURIComponent(tenantId)}&siteId=${encodeURIComponent(siteId)}`,
+      );
+    } catch {
+      // **取得できなかったことを状態として持つ。** 握り潰すと表は「この拠点に端末はありません」
+      // と**事実と異なる断定**を出したまま、原因も再試行手段も画面に出ない（#552 レビュー P1）。
+      if (isCurrentScope(startedWith)) setListError('端末一覧を取得できませんでした（通信エラー）。');
+      return;
+    }
+    if (!isCurrentScope(startedWith)) return;
+    if (!res.ok) {
+      setListError(`端末一覧を取得できませんでした（${res.status}）。`);
+      return;
+    }
     setDevices((await res.json()) as DeviceView[]);
     setLoadedScope(startedWith);
+    setListError(null);
   }, [tenantId, siteId, scopeReady, scopeKey, isCurrentScope]);
 
   /**
@@ -136,19 +154,39 @@ export function DevicesManager({
    */
   const devicesLoaded = loadedScope === scopeKey;
 
-  /** 対象拠点が確定していて、かつ画面が実際にその拠点の内容を描いているか。 */
-  const canWriteScope = scopeReady && !sitePending && devicesLoaded && siteId !== '';
+  /**
+   * **作成できるか**（POST の body に `siteId` を載せるので、拠点が確定している必要がある）。
+   *
+   * ここに `devicesLoaded` を含めない。含めると**一覧 GET が 1 回失敗しただけで登録が
+   * 永久に無効化**され、壊れた端末を入れ替えて受付URLを発行し直す復旧経路がその場で止まる
+   * （#552 レビュー P1。読み取りの失敗で書き込みを殺さない）。
+   */
+  const canCreate = scopeReady && !sitePending && siteId !== '';
+
+  /**
+   * **行を操作できるか**。行は deviceId で対象が一意に決まるので `sitePending` は関係ない。
+   * 必要なのは「いま描いている行が現在の拠点のものだ」という保証だけ。
+   * ここに `sitePending` を混ぜると、切替中に押した「無効化」が**サイレント no-op**になる
+   * （ボタンは押せるのに何も起きない。#552 レビュー P1）。
+   */
+  const canMutateRows = devicesLoaded;
 
   useEffect(() => {
     void loadDevices();
   }, [loadDevices]);
+
+  // 別の拠点へ移ったら、前の拠点で出した失敗メッセージを残さない（無関係な画面に赤字が残る）。
+  useEffect(() => {
+    setAddError(null);
+    setRowError(null);
+  }, [scopeKey]);
 
   const add = useCallback(async () => {
     // **`scopeReady` を見る**。一覧が届く前の `siteId` は既定拠点の暫定値なので、
     // `?siteId=branch-site` の deep link を開いた直後に登録すると**既定拠点に端末が作られる**
     // （#552 レビュー P1。旧実装は一覧未着で `siteId=''` になり偶然守られていた）。
     // sitePending 中も siteId が古いスナップショットのままなので登録しない。
-    if (!canWriteScope || name.trim() === '' || busy) return;
+    if (!canCreate || name.trim() === '' || busy) return;
     setBusy(true);
     try {
       const res = await fetch('/api/admin/devices', {
@@ -160,7 +198,9 @@ export function DevicesManager({
         // 失敗しても入力を消してフォームを空にすると、成功と見分けが付かない。
         const detail = (await res.json().catch(() => null)) as { message?: string } | null;
         setAddError(
-          `端末の登録に失敗しました（${res.status}）。${detail?.message ?? '権限・接続を確認してください。'}`,
+          res.status === 401
+            ? 'セッションが切れています。ログインし直してから再試行してください。'
+            : `端末の登録に失敗しました（${res.status}）。${detail?.message ?? '権限・接続を確認してください。'}`,
         );
         return;
       }
@@ -172,20 +212,22 @@ export function DevicesManager({
     } finally {
       setBusy(false);
     }
-  }, [canWriteScope, name, location, kind, siteId, busy, tenantId, loadDevices]);
+  }, [canCreate, name, location, kind, siteId, busy, tenantId, loadDevices]);
 
   const patch = useCallback(
-    async (id: string, body: Record<string, unknown>) => {
+    async (id: string, body: Record<string, unknown>): Promise<boolean> => {
       // 表示中の行が現在の拠点のものだと確認できるまで行操作を通さない（上の解説）。
-      if (!canWriteScope) return;
-      await fetch(`/api/admin/devices/${id}`, {
+      // ボタン側も同じ条件で disabled にしてある（片方だけ止めるとサイレント no-op になる）。
+      if (!canMutateRows) return false;
+      const res = await fetch(`/api/admin/devices/${id}`, {
         method: 'PATCH',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ tenantId, ...body }),
       });
       await loadDevices();
+      return res.ok;
     },
-    [canWriteScope, tenantId, loadDevices],
+    [canMutateRows, tenantId, loadDevices],
   );
 
   const toggleEnabled = useCallback(
@@ -200,15 +242,28 @@ export function DevicesManager({
   const saveEdit = useCallback(
     async (id: string) => {
       if (editName.trim() === '') return;
-      await patch(id, { name: editName, location: editLocation });
+      // 失敗しても編集モードを閉じると、保存できていないのに保存できたように見える
+      // （表示は再取得で旧値へ戻るが、理由はどこにも出ない。#552 レビュー P2）。
+      const ok = await patch(id, { name: editName, location: editLocation });
+      if (!ok) {
+        setRowError('保存できませんでした。接続・権限を確認して再試行してください。');
+        return;
+      }
+      setRowError(null);
       setEditingId(null);
     },
     [editName, editLocation, patch],
   );
 
   const confirmReissue = useCallback(async () => {
-    if (!reissueTarget || !canWriteScope) return;
+    if (!reissueTarget) return;
     const target = reissueTarget;
+    if (!canMutateRows) {
+      // ダイアログを開いたまま無反応にしない（取消しか効かない状態を作らない）。
+      setReissueTarget(null);
+      setIssueError('対象拠点が確定していないため発行できません。読み込み後に再試行してください。');
+      return;
+    }
     setReissueTarget(null);
     setIssueError(null);
     try {
@@ -231,7 +286,7 @@ export function DevicesManager({
       setIssueError('受付URLの発行に失敗しました（通信エラー）。接続を確認して再試行してください。');
     }
     await loadDevices();
-  }, [reissueTarget, canWriteScope, tenantId, loadDevices]);
+  }, [reissueTarget, canMutateRows, tenantId, loadDevices]);
 
   const copyUrl = useCallback(async () => {
     if (!issued) return;
@@ -332,7 +387,8 @@ export function DevicesManager({
           <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
             {editingId === d.id ? (
               <>
-                <Button variant="primary" data-testid="device-save" onClick={() => saveEdit(d.id)}>
+                <Button variant="primary" data-testid="device-save"
+                  disabled={!canMutateRows} onClick={() => saveEdit(d.id)}>
                   保存
                 </Button>
                 <Button onClick={() => setEditingId(null)}>取消</Button>
@@ -341,6 +397,7 @@ export function DevicesManager({
               <>
                 <Button
                   data-testid="device-edit"
+                  disabled={!canMutateRows}
                   onClick={() => {
                     setEditingId(d.id);
                     setEditName(d.name);
@@ -349,12 +406,14 @@ export function DevicesManager({
                 >
                   編集
                 </Button>
-                <Button data-testid="device-maintenance" onClick={() => toggleMaintenance(d)}>
+                <Button data-testid="device-maintenance"
+                  disabled={!canMutateRows} onClick={() => toggleMaintenance(d)}>
                   {d.maintenance ? 'メンテ解除' : 'メンテ表示'}
                 </Button>
                 <Button
                   variant="danger"
                   data-testid="device-toggle-enabled"
+                  disabled={!canMutateRows}
                   onClick={() => toggleEnabled(d)}
                 >
                   {d.status === 'active' ? '無効化' : '有効化'}
@@ -362,6 +421,7 @@ export function DevicesManager({
                 <Button
                   variant="primary"
                   data-testid="device-reissue"
+                  disabled={!canMutateRows}
                   onClick={() => setReissueTarget(d)}
                 >
                   受付URLを発行
@@ -372,7 +432,7 @@ export function DevicesManager({
         ),
       },
     ],
-    [editingId, editName, editLocation, saveEdit, toggleEnabled, toggleMaintenance],
+    [editingId, editName, editLocation, canMutateRows, saveEdit, toggleEnabled, toggleMaintenance],
   );
 
   return (
@@ -405,6 +465,7 @@ export function DevicesManager({
           onSelect={selectSite}
           disabled={sitePending}
           testId="device-site-select"
+          status={listStatus}
         />
       </div>
 
@@ -446,7 +507,7 @@ export function DevicesManager({
           variant="primary"
           data-testid="device-add"
           onClick={add}
-          disabled={busy || name.trim() === '' || !canWriteScope}
+          disabled={busy || name.trim() === '' || !canCreate}
         >
           追加
         </Button>
@@ -524,8 +585,22 @@ export function DevicesManager({
         </Button>
       </div>
 
+      {listError === null ? null : (
+        <p data-testid="device-list-error" role="alert" style={{ color: 'var(--color-danger)' }}>
+          {listError}{' '}
+          <Button data-testid="device-list-retry" onClick={() => void loadDevices()}>
+            再試行
+          </Button>
+        </p>
+      )}
+      {rowError === null ? null : (
+        <p data-testid="device-row-error" role="alert" style={{ color: 'var(--color-danger)' }}>
+          {rowError}
+        </p>
+      )}
+
       <p data-testid="device-count" style={{ opacity: 0.7, fontSize: font.small, margin: 0, marginBottom: space.sm }}>
-        {devices.length} 件中 {filtered.length} 件を表示
+        {devicesLoaded ? devices.length : 0} 件中 {filtered.length} 件を表示
       </p>
 
       <DataTable
@@ -533,7 +608,15 @@ export function DevicesManager({
         columns={columns}
         rows={paged.items}
         rowKey={(d) => d.id}
-        emptyMessage={hasFilter ? '条件に一致する受付端末はありません。' : 'このサイトに登録された受付端末はありません。'}
+        emptyMessage={
+          listError !== null
+            ? listError
+            : !devicesLoaded
+              ? '読み込み中…'
+              : hasFilter
+                ? '条件に一致する受付端末はありません。'
+                : 'このサイトに登録された受付端末はありません。'
+        }
       />
 
       {paged.pageCount > 1 ? (
