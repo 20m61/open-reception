@@ -25,7 +25,6 @@ import { color, space } from '@/components/admin/ui/tokens';
  * 電話番号・メール等の通知先 value は機微情報のため一覧では伏せ字表示する。
  */
 const DEFAULT_TENANT_ID = 'internal';
-const DEFAULT_SITE_ID = 'default-site';
 
 const CHANNEL_LABELS: Record<string, string> = {
   phone: '電話',
@@ -43,11 +42,12 @@ function maskValue(value: string): string {
 
 export function CallRoutesManager({
   tenantId = DEFAULT_TENANT_ID,
-  siteId: defaultSiteId = DEFAULT_SITE_ID,
+  siteId: defaultSiteId,
 }: {
   tenantId?: string;
   /** サーバ (`resolveDefaultScope`) 由来の既定拠点。URL 未指定時のフォールバック。 */
-  siteId?: string;
+  /** サーバ (`resolveDefaultScope`) 由来の既定拠点。URL 未指定時のフォールバック。 */
+  siteId: string;
 }) {
   // 対象拠点は URL が真実源 (#421)。以前は既定拠点に固定で、UI から別拠点の
   // 呼び出しルートへ到達する手段が無かった。
@@ -176,6 +176,8 @@ export function CallRoutesManager({
           sites={sites}
           siteId={siteId}
           onSelect={selectSite}
+          // 切替が確定するまで触らせない（他 2 画面と揃える。#552 レビュー N2）。
+          disabled={sitePending}
           testId="call-routes-site-select"
         />
         <Field label="ルート名" htmlFor="route-name-input">

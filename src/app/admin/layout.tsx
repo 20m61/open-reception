@@ -10,7 +10,6 @@ import { SiteContextChip } from '@/components/admin/SiteContextChip';
 import { ADMIN_NAV, UNLISTED_ADMIN_TITLES, isActivePath } from '@/components/admin/navigation';
 import { resolveAdminActor } from '@/lib/auth/actor';
 import { resolveActiveTenant } from '@/lib/tenant/active-tenant';
-import { resolveAdminTenantId } from '@/lib/tenant/admin-tenant-scope';
 import { resolveDefaultScope } from '@/lib/tenant/default-scope';
 import { canEnterArea } from '@/domain/auth/route-guard';
 import { PATHNAME_HEADER } from '@/proxy';
@@ -91,7 +90,8 @@ export default async function AdminLayout({ children }: { children: React.ReactN
   const siteContext = (
     <Suspense fallback={null}>
       <SiteContextChip
-        tenantId={await resolveAdminTenantId(actor)}
+        // 上で解決済みの選択中テナントを使う（`resolveAdminTenantId` と同じ倒し方）。
+        tenantId={String(activeTenantId ?? resolveDefaultScope().tenantId)}
         fallbackSiteId={String(resolveDefaultScope().siteId)}
       />
     </Suspense>

@@ -39,6 +39,14 @@ export function SiteContextChip({
     fallbackSiteId,
   });
 
+  // 拠点が変わったことをスクリーンリーダーへ伝える。切替は運用者が「いま何を編集して
+  // いるか」を見失う瞬間なので、視覚だけの変化にしない (#552 レビュー N5)。
+  const live = (chip: React.ReactNode) => (
+    <span aria-live="polite" aria-atomic="true">
+      {chip}
+    </span>
+  );
+
   switch (context.kind) {
     case 'not-scoped':
     // 取得中に既定拠点を先に出すと、確定後に別拠点へ書き換わって「勝手に切り替わった」
@@ -46,29 +54,29 @@ export function SiteContextChip({
     case 'loading':
       return null;
     case 'unavailable':
-      return (
+      return live(
         <ContextChip
           testId="active-site"
           label={SITE_CONTEXT_LABEL}
           value="確認できません"
-          muted
+          attention
           data-site-state="unavailable"
         />
       );
     case 'unknown':
-      return (
+      return live(
         <ContextChip
           testId="active-site"
           label={SITE_CONTEXT_LABEL}
           value={context.siteId}
-          muted
+          attention
           note="（この拠点は見つかりません）"
           data-site-state="unknown"
           data-site-id={context.siteId}
         />
       );
     case 'resolved':
-      return (
+      return live(
         <ContextChip
           testId="active-site"
           label={SITE_CONTEXT_LABEL}

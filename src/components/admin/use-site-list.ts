@@ -5,6 +5,28 @@ import type { SiteWithDevices } from '@/lib/tenant/site-service';
 import type { SiteListStatus } from './site-context';
 
 /**
+ * **同一テナントに対する飛行中の要求**。ヘッダのチップと本文のマネージャは別インスタンスの
+ * フックなので、素朴に書くと 1 画面あたり同じ GET が 2 本飛ぶ（#552 レビュー P2）。
+ * 解決済みの結果はキャッシュしない（古い一覧を見せない）— **飛行中のものだけ相乗りする**。
+ */
+const inFlight = new Map<string, Promise<Response>>();
+
+function fetchSiteList(tenantId: string, fresh: boolean): Promise<Response> {
+  const url = `/api/admin/sites?tenantId=${encodeURIComponent(tenantId)}`;
+  // 作成・改名の直後は相乗りしない（変更前に飛んだ要求の応答を掴む可能性がある）。
+  if (fresh) return fetch(url);
+  const pending = inFlight.get(tenantId);
+  if (pending !== undefined) return pending.then((res) => res.clone());
+  const started = fetch(url);
+  inFlight.set(tenantId, started);
+  void started.finally(() => {
+    if (inFlight.get(tenantId) === started) inFlight.delete(tenantId);
+  });
+  // 相乗り側が body を読めるよう、自分も clone を読む。
+  return started.then((res) => res.clone());
+}
+
+/**
  * テナント配下の拠点一覧を取る共有フック (issue #423)。
  *
  * 同じ `GET /api/admin/sites?tenantId=` が **4 箇所に別々の形で**書かれていた
@@ -35,10 +57,10 @@ export function useSiteList(
    * 明示的な `reload()` では常に反映してよいので既定は「反映する」。
    */
   const fetchSites = useCallback(
-    async (isStale: () => boolean = () => false) => {
+    async (isStale: () => boolean = () => false, fresh = false) => {
       let res: Response;
       try {
-        res = await fetch(`/api/admin/sites?tenantId=${encodeURIComponent(tenantId)}`);
+        res = await fetchSiteList(tenantId, fresh);
       } catch {
         // オフライン・DNS 失敗など。**空一覧にしない** — 「拠点が 1 つも無い」と区別が付かない。
         if (!isStale()) setStatus('error');
@@ -72,7 +94,7 @@ export function useSiteList(
     };
   }, [fetchSites, enabled]);
 
-  const reload = useCallback(() => fetchSites(), [fetchSites]);
+  const reload = useCallback(() => fetchSites(() => false, true), [fetchSites]);
 
   return { sites, status, reload };
 }

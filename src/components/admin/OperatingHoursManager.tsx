@@ -187,6 +187,8 @@ export function OperatingHoursManager({
           sites={sites}
           siteId={siteId}
           onSelect={selectSite}
+          // 切替が確定するまで触らせない（他 2 画面と揃える。#552 レビュー N2）。
+          disabled={sitePending}
           testId="operating-hours-site-select"
         />
         <Field label="タイムゾーン（IANA 名。既定 Asia/Tokyo）" htmlFor="operating-hours-timezone">

@@ -56,32 +56,44 @@ const SELECT_STYLE: React.CSSProperties = {
  * `AdminShell` と `TenantSwitcher` で逐語的に重複していた）。次元が増えても
  * ここ 1 箇所を直せば揃うようにする。
  */
+/** 表示できる長さに収める。URL 由来の値がそのまま入るとヘッダが壊れる。 */
+const MAX_VALUE_CHARS = 32;
+
 export function ContextChip({
   testId,
   label,
   value,
-  /** 対象が確認できないときの弱い見た目。値そのものは隠さない。 */
-  muted = false,
+  /**
+   * 対象が確認できない状態。**文字は薄くしない** — 「確認できません」は最も読ませたい
+   * 文言なので、弱い見た目にすると一番読みにくくなる（#552 レビュー N4）。
+   * 代わりに枠線で注意を示す。
+   */
+  attention = false,
   note,
   ...rest
 }: {
   testId: string;
   label: string;
   value: string;
-  muted?: boolean;
-  /** 「（見つかりません）」等の補足。値の隣に小さく添える。 */
+  attention?: boolean;
+  /** 「（見つかりません）」等の補足。値の隣に添える。 */
   note?: string;
 } & Record<`data-${string}`, string | undefined>) {
+  const shown = value.length > MAX_VALUE_CHARS ? `${value.slice(0, MAX_VALUE_CHARS)}…` : value;
   return (
     <span
       data-testid={testId}
-      style={muted ? { ...CHIP_STYLE, opacity: 0.7 } : CHIP_STYLE}
+      // 値が長いときにヘッダを押し広げない。
+      style={
+        attention
+          ? { ...CHIP_STYLE, border: '1px solid var(--color-warning, var(--color-border-strong))' }
+          : CHIP_STYLE
+      }
+      title={value === shown ? undefined : value}
       {...rest}
     >
-      {label}: <strong>{value}</strong>
-      {note === undefined ? null : (
-        <span style={{ marginLeft: 4, fontSize: '0.8125rem', opacity: 0.8 }}>{note}</span>
-      )}
+      {label}: <strong>{shown}</strong>
+      {note === undefined ? null : <span style={{ marginLeft: 4 }}>{note}</span>}
     </span>
   );
 }

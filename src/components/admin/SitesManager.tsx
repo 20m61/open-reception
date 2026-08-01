@@ -24,10 +24,9 @@ import { filterSites, sitesToCsv, type SiteListFilter } from './sites-filter';
  * Tenant 切り替え UI は次増分（docs/site-device-management-design.md §次増分）。
  * inc1 は単一テナント運用の互換シード `internal` を既定テナントとして扱う。
  */
-const DEFAULT_TENANT_ID = 'internal';
 const PAGE_SIZE = 20;
 
-export function SitesManager({ tenantId = DEFAULT_TENANT_ID }: { tenantId?: string }) {
+export function SitesManager({ tenantId }: { tenantId: string }) {
   // 一覧の取得は共有フックへ寄せる (#423)。作成・更新後は `reload()` で取り直す。
   const { sites: items, reload: load } = useSiteList(tenantId);
   const [name, setName] = useState('');

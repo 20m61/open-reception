@@ -16,6 +16,7 @@ import { font, space } from '@/components/admin/ui/tokens';
 import { renderTextToQrSvg } from '@/lib/reservation/qr';
 import { useQueryParams } from './use-query-params';
 import { useSiteScope } from './use-site-scope';
+import { SiteScopeSelect } from './SiteScopeSelect';
 import { paginate } from './list-io';
 import { filterDevices, devicesToCsv, type DeviceListFilter } from './devices-filter';
 
@@ -80,6 +81,8 @@ export function DevicesManager({
   const { sites, siteId, scopeKey, scopeReady, isCurrentScope, selectSite, sitePending } =
     useSiteScope(tenantId, defaultSiteId);
   const [devices, setDevices] = useState<DeviceView[]>([]);
+  /** `devices` がどのスコープ（テナント+拠点）の内容か。null = 未取得。 */
+  const [loadedScope, setLoadedScope] = useState<string | null>(null);
   const [name, setName] = useState('');
   const [location, setLocation] = useState('');
   const [kind, setKind] = useState<DeviceKind>('kiosk');
@@ -96,6 +99,8 @@ export function DevicesManager({
   const [copied, setCopied] = useState(false);
   /** 発行失敗時のメッセージ（null=非表示）。無反応を避けるため必ず表示する。 */
   const [issueError, setIssueError] = useState<string | null>(null);
+  /** 端末登録の失敗メッセージ。フォームの隣に出す（発行失敗のダイアログとは別物）。 */
+  const [addError, setAddError] = useState<string | null>(null);
 
   const { get, setMany } = useQueryParams();
   const keyword = get('q');
@@ -108,6 +113,7 @@ export function DevicesManager({
     // 別拠点の一覧を上書きし、**表示は A なのに中身は B** になる（#535 レビュー P1 と同型）。
     if (!scopeReady || !siteId) {
       setDevices([]);
+      setLoadedScope(null);
       return;
     }
     const startedWith = scopeKey;
@@ -116,22 +122,49 @@ export function DevicesManager({
     );
     if (!res.ok || !isCurrentScope(startedWith)) return;
     setDevices((await res.json()) as DeviceView[]);
+    setLoadedScope(startedWith);
   }, [tenantId, siteId, scopeReady, scopeKey, isCurrentScope]);
+
+  /**
+   * **いま描いている行が、いま選んでいる拠点のものか。**
+   *
+   * `isCurrentScope` は「古い応答を反映しない」ためのもので、**すでに描かれている行**は
+   * 守らない。拠点 A → B へ切り替えると、B の応答が届くまで A の端末行が残り、その間
+   * 「受付URLを発行」を押せてしまう。発行は現行 URL を失効させるので、**ヘッダもセレクタも
+   * B を指した状態で、A で稼働中の iPad を受付不能にできる**（#552 レビュー P1）。
+   * `ReceptionFlowsManager` の `flowsLoaded` と同型の対策をここにも置く。
+   */
+  const devicesLoaded = loadedScope === scopeKey;
+
+  /** 対象拠点が確定していて、かつ画面が実際にその拠点の内容を描いているか。 */
+  const canWriteScope = scopeReady && !sitePending && devicesLoaded && siteId !== '';
 
   useEffect(() => {
     void loadDevices();
   }, [loadDevices]);
 
   const add = useCallback(async () => {
-    // sitePending 中は siteId が古いスナップショットのままなので登録しない（上の解説参照）。
-    if (name.trim() === '' || siteId === '' || busy || sitePending) return;
+    // **`scopeReady` を見る**。一覧が届く前の `siteId` は既定拠点の暫定値なので、
+    // `?siteId=branch-site` の deep link を開いた直後に登録すると**既定拠点に端末が作られる**
+    // （#552 レビュー P1。旧実装は一覧未着で `siteId=''` になり偶然守られていた）。
+    // sitePending 中も siteId が古いスナップショットのままなので登録しない。
+    if (!canWriteScope || name.trim() === '' || busy) return;
     setBusy(true);
     try {
-      await fetch('/api/admin/devices', {
+      const res = await fetch('/api/admin/devices', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ tenantId, siteId, name, location, kind }),
       });
+      if (!res.ok) {
+        // 失敗しても入力を消してフォームを空にすると、成功と見分けが付かない。
+        const detail = (await res.json().catch(() => null)) as { message?: string } | null;
+        setAddError(
+          `端末の登録に失敗しました（${res.status}）。${detail?.message ?? '権限・接続を確認してください。'}`,
+        );
+        return;
+      }
+      setAddError(null);
       setName('');
       setLocation('');
       setKind('kiosk');
@@ -139,10 +172,12 @@ export function DevicesManager({
     } finally {
       setBusy(false);
     }
-  }, [name, location, kind, siteId, busy, sitePending, tenantId, loadDevices]);
+  }, [canWriteScope, name, location, kind, siteId, busy, tenantId, loadDevices]);
 
   const patch = useCallback(
     async (id: string, body: Record<string, unknown>) => {
+      // 表示中の行が現在の拠点のものだと確認できるまで行操作を通さない（上の解説）。
+      if (!canWriteScope) return;
       await fetch(`/api/admin/devices/${id}`, {
         method: 'PATCH',
         headers: { 'content-type': 'application/json' },
@@ -150,7 +185,7 @@ export function DevicesManager({
       });
       await loadDevices();
     },
-    [tenantId, loadDevices],
+    [canWriteScope, tenantId, loadDevices],
   );
 
   const toggleEnabled = useCallback(
@@ -172,7 +207,7 @@ export function DevicesManager({
   );
 
   const confirmReissue = useCallback(async () => {
-    if (!reissueTarget) return;
+    if (!reissueTarget || !canWriteScope) return;
     const target = reissueTarget;
     setReissueTarget(null);
     setIssueError(null);
@@ -196,7 +231,7 @@ export function DevicesManager({
       setIssueError('受付URLの発行に失敗しました（通信エラー）。接続を確認して再試行してください。');
     }
     await loadDevices();
-  }, [reissueTarget, tenantId, loadDevices]);
+  }, [reissueTarget, canWriteScope, tenantId, loadDevices]);
 
   const copyUrl = useCallback(async () => {
     if (!issued) return;
@@ -216,7 +251,11 @@ export function DevicesManager({
     }),
     [keyword, connectivityFilter, kindFilter],
   );
-  const filtered = useMemo(() => filterDevices(devices, filter), [devices, filter]);
+  // 別拠点の行を描かない（描くと押せてしまう）。切替中は空表示にする。
+  const filtered = useMemo(
+    () => filterDevices(devicesLoaded ? devices : [], filter),
+    [devicesLoaded, devices, filter],
+  );
   const paged = useMemo(() => paginate(filtered, Number(pageParam) || 1, PAGE_SIZE), [filtered, pageParam]);
   const hasFilter = Boolean(keyword || connectivityFilter || kindFilter);
 
@@ -354,22 +393,19 @@ export function DevicesManager({
       </p>
 
       <div style={{ display: 'flex', gap: 8, alignItems: 'flex-end', flexWrap: 'wrap', marginBottom: 16 }}>
-        <label style={labelStyle}>
-          <span style={labelText}>サイト</span>
-          <select
-            data-testid="device-site-select"
-            value={siteId}
-            onChange={(e) => selectSite(e.target.value)}
-            style={inputStyle}
-          >
-            {sites.length === 0 && <option value="">（サイトがありません）</option>}
-            {sites.map((s) => (
-              <option key={s.id} value={s.id}>
-                {s.name}
-              </option>
-            ))}
-          </select>
-        </label>
+        {/*
+          共有部品へ寄せる (#552 レビュー N1)。ここだけ独自 select だったため、
+          (a) 見出しが「サイト」で他 4 画面とヘッダの「対象拠点」と用語がずれ、
+          (b) 一覧未取得のとき選択中の拠点があるのに「（サイトがありません）」と出し、
+          (c) 切替中（`sitePending`）に disabled にならない、の 3 点がずれていた。
+        */}
+        <SiteScopeSelect
+          sites={sites}
+          siteId={siteId}
+          onSelect={selectSite}
+          disabled={sitePending}
+          testId="device-site-select"
+        />
       </div>
 
       <div style={{ display: 'flex', gap: 8, alignItems: 'flex-end', flexWrap: 'wrap', marginBottom: 24 }}>
@@ -410,10 +446,19 @@ export function DevicesManager({
           variant="primary"
           data-testid="device-add"
           onClick={add}
-          disabled={busy || name.trim() === '' || siteId === '' || sitePending}
+          disabled={busy || name.trim() === '' || !canWriteScope}
         >
           追加
         </Button>
+        {addError === null ? null : (
+          <p
+            data-testid="device-add-error"
+            role="alert"
+            style={{ color: 'var(--color-danger)', margin: 0, alignSelf: 'center' }}
+          >
+            {addError}
+          </p>
+        )}
       </div>
 
       <div
