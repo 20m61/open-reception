@@ -75,7 +75,25 @@ describe('evaluateGateRuns: 事前定義した停止条件で評価する (#424)
     expect(evaluateGateRuns(runs, now).some((x) => x.code === 'fail_without_issue')).toBe(false);
   });
 
-  it('**後続の行**が issue を参照していればハンドリング済みとみなす', () => {
+  it('無関係な issue 参照が過去の FAIL をまとめて解決扱いにしない', () => {
+    // 「以降のどこかに #N があれば解決」だと、**別件の参照で古い FAIL まで消える**。
+    // 参照が無い FAIL が 2 件あり、最後の PASS が片方だけに言及している場合、
+    // 両方が解決済みに見えてしまう。解決は**直後の 1 行**に限定する。
+    const runs = parseGateRuns(
+      doc(
+        EXAMPLE,
+        '| 2026-08-01T09:00Z | `aaa` | full | FAIL | なし | 調査中 |',
+        '| 2026-08-02T09:00Z | `bbb` | full | FAIL | なし | まだ調査中 |',
+        '| 2026-08-03T09:00Z | `ccc` | full | PASS | なし | 2 件目を直した（#900） |',
+      ),
+    );
+    const unresolved = evaluateGateRuns(runs, now).filter((x) => x.code === 'fail_without_issue');
+    // 1 件目は直後の行に参照が無いので未解決のまま残る。
+    expect(unresolved).toHaveLength(1);
+    expect(unresolved[0]?.message).toContain('2026-08-01');
+  });
+
+  it('**直後の行**が issue を参照していればハンドリング済みとみなす', () => {
     // `record-gate-run.sh` は issue 起票の**前**に行を書くので、FAIL 行の備考は必ず
     // プレースホルダになる。かつ記録は append-only で後から追記できない。
     // FAIL 行だけを見て判定すると**永久に消えない指摘**になり、検査が狼少年になる。
@@ -89,6 +107,30 @@ describe('evaluateGateRuns: 事前定義した停止条件で評価する (#424)
       ),
     );
     expect(evaluateGateRuns(runs, now).some((x) => x.code === 'fail_without_issue')).toBe(false);
+  });
+
+  it('SKIP は「その後の full PASS かつ SKIP 無し」で解決とみなす', () => {
+    // **FAIL で直したのと同じ罠。** append-only なので過去の SKIP 行は消せず、
+    // 既定が exit 1 のままだと**評価器が二度と緑にならない**。ツールが復旧したことは
+    // 「後の --full --strict が SKIP 無しで PASS した」ことで証明できる。
+    const runs = parseGateRuns(
+      doc(
+        EXAMPLE,
+        '| 2026-08-03T09:00Z | `aaa` | full | PASS | sast (semgrep) |  |',
+        '| 2026-08-04T09:00Z | `bbb` | full | PASS | なし | 復旧確認 |',
+      ),
+    );
+    expect(evaluateGateRuns(runs, now).some((x) => x.code === 'skipped_steps')).toBe(false);
+  });
+
+  it('full 以外の記録は定期実行の証跡として数えない', () => {
+    // 設定を誤った Routine や手入力が `fast`/`pr` の PASS を積むと、**定期実行の
+    // --full --strict が回っていないのに stale が解除され、報告も緑になる**。
+    const runs = parseGateRuns(doc(EXAMPLE, '| 2026-08-04T09:00Z | `aaa` | pr | PASS | なし |  |'));
+    const f = evaluateGateRuns(runs, now);
+    expect(f.some((x) => x.code === 'non_full_record')).toBe(true);
+    // full の記録がゼロなので「回っていない」扱いにする。
+    expect(f.some((x) => x.code === 'never_run')).toBe(true);
   });
 
   it('SKIP が記録されていれば指摘する（--strict 下では出ないはず＝設定劣化）', () => {
