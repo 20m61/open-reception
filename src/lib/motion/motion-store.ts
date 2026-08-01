@@ -6,64 +6,72 @@
 import { isMotionKey, type MotionKey, type MotionMapping } from '@/domain/motion/types';
 import { listAssets } from '@/lib/assets/asset-store';
 import { getBackend } from '@/lib/data';
+import { tenantScopedStoreKey } from '@/domain/tenant/store-key';
+import { defaultTenantIdFrom } from '@/lib/tenant/default-scope';
 
 export type StoreError = { code: 'not_found' | 'invalid_input'; message: string };
 export type Result<T> = { ok: true; value: T } | { ok: false; error: StoreError };
 
 type MotionConfig = { mapping: MotionMapping; defaultMotionAssetId?: string };
 
-const motion = () =>
-  getBackend().singleton<MotionConfig>('motionMapping', { default: () => ({ mapping: {} }) });
+/**
+ * **テナント別に保持する** (#419 残増分)。既定テナントは従来キー据え置きなので移行不要。
+ */
+const motion = (tenantId: string) =>
+  getBackend().singleton<MotionConfig>(
+    tenantScopedStoreKey('motionMapping', tenantId, defaultTenantIdFrom()),
+    { default: () => ({ mapping: {} }) },
+  );
 
-async function getConfig(): Promise<MotionConfig> {
-  return (await motion().get()) ?? { mapping: {} };
+async function getConfig(tenantId: string): Promise<MotionConfig> {
+  return (await motion(tenantId).get()) ?? { mapping: {} };
 }
 
 async function isMotionAsset(assetId: string): Promise<boolean> {
   return (await listAssets('motion')).some((a) => a.id === assetId && a.enabled);
 }
 
-export async function getMotionMapping(): Promise<{ mapping: MotionMapping; defaultMotionAssetId?: string }> {
-  const config = await getConfig();
+export async function getMotionMapping(tenantId: string): Promise<{ mapping: MotionMapping; defaultMotionAssetId?: string }> {
+  const config = await getConfig(tenantId);
   return { mapping: { ...config.mapping }, defaultMotionAssetId: config.defaultMotionAssetId };
 }
 
 /** キーにモーションアセットを割り当てる（null で解除）。 */
-export async function setMotion(key: string, assetId: string | null): Promise<Result<MotionMapping>> {
+export async function setMotion(tenantId: string, key: string, assetId: string | null): Promise<Result<MotionMapping>> {
   if (!isMotionKey(key)) return { ok: false, error: { code: 'invalid_input', message: 'invalid motion key' } };
-  const config = await getConfig();
+  const config = await getConfig(tenantId);
   if (assetId === null) {
     delete config.mapping[key];
-    await motion().put(config);
+    await motion(tenantId).put(config);
     return { ok: true, value: { ...config.mapping } };
   }
   if (!(await isMotionAsset(assetId))) {
     return { ok: false, error: { code: 'invalid_input', message: 'assetId is not an enabled motion asset' } };
   }
   config.mapping[key] = assetId;
-  await motion().put(config);
+  await motion(tenantId).put(config);
   return { ok: true, value: { ...config.mapping } };
 }
 
-export async function setDefaultMotion(assetId: string | null): Promise<Result<void>> {
-  const config = await getConfig();
+export async function setDefaultMotion(tenantId: string, assetId: string | null): Promise<Result<void>> {
+  const config = await getConfig(tenantId);
   if (assetId === null) {
     config.defaultMotionAssetId = undefined;
-    await motion().put(config);
+    await motion(tenantId).put(config);
     return { ok: true, value: undefined };
   }
   if (!(await isMotionAsset(assetId))) {
     return { ok: false, error: { code: 'invalid_input', message: 'assetId is not an enabled motion asset' } };
   }
   config.defaultMotionAssetId = assetId;
-  await motion().put(config);
+  await motion(tenantId).put(config);
   return { ok: true, value: undefined };
 }
 
 /** 受付端末向け: キー→アセット URL の解決済みマップを返す。 */
-export async function getKioskMotions(): Promise<{ motions: Partial<Record<MotionKey, string>>; defaultUrl?: string }> {
+export async function getKioskMotions(tenantId: string): Promise<{ motions: Partial<Record<MotionKey, string>>; defaultUrl?: string }> {
   const [config, motionAssets] = await Promise.all([
-    getConfig(),
+    getConfig(tenantId),
     listAssets('motion').then((list) => list.filter((a) => a.enabled)),
   ]);
   const urlOf = (assetId?: string) => motionAssets.find((a) => a.id === assetId)?.url;
@@ -76,6 +84,6 @@ export async function getKioskMotions(): Promise<{ motions: Partial<Record<Motio
 }
 
 /** テスト用: 初期化する。 */
-export async function __resetMotions(): Promise<void> {
-  await motion().reset();
+export async function __resetMotions(tenantId: string = defaultTenantIdFrom()): Promise<void> {
+  await motion(tenantId).reset();
 }

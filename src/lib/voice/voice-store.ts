@@ -5,6 +5,8 @@
 import { clampRate, clampVolume, type VoiceProvider, type VoiceSettings } from '@/domain/voice/types';
 import { sanitizeA11yEnabledModes } from '@/domain/kiosk/a11y-modes';
 import { getBackend } from '@/lib/data';
+import { tenantScopedStoreKey } from '@/domain/tenant/store-key';
+import { defaultTenantIdFrom } from '@/lib/tenant/default-scope';
 
 function defaults(): VoiceSettings {
   return {
@@ -24,22 +26,32 @@ function defaults(): VoiceSettings {
   };
 }
 
-const voice = () => getBackend().singleton<VoiceSettings>('voice', { default: defaults });
+/**
+ * **テナント別に保持する** (#419 残増分)。既定テナントは従来キー据え置きなので移行不要。
+ */
+const voice = (tenantId: string) =>
+  getBackend().singleton<VoiceSettings>(
+    tenantScopedStoreKey('voice', tenantId, defaultTenantIdFrom()),
+    { default: defaults },
+  );
 
-async function current(): Promise<VoiceSettings> {
-  return (await voice().get()) ?? defaults();
+async function current(tenantId: string): Promise<VoiceSettings> {
+  return (await voice(tenantId).get()) ?? defaults();
 }
 
-export async function getVoiceSettings(): Promise<VoiceSettings> {
-  return { ...(await current()) };
+export async function getVoiceSettings(tenantId: string): Promise<VoiceSettings> {
+  return { ...(await current(tenantId)) };
 }
 
 function asProvider(value: unknown, fallback: VoiceProvider): VoiceProvider {
   return value === 'browser' || value === 'none' ? value : fallback;
 }
 
-export async function updateVoiceSettings(patch: unknown): Promise<VoiceSettings> {
-  const settings = await current();
+export async function updateVoiceSettings(
+  tenantId: string,
+  patch: unknown,
+): Promise<VoiceSettings> {
+  const settings = await current(tenantId);
   if (typeof patch === 'object' && patch !== null) {
     const o = patch as Record<string, unknown>;
     if (typeof o.ttsEnabled === 'boolean') settings.ttsEnabled = o.ttsEnabled;
@@ -74,11 +86,11 @@ export async function updateVoiceSettings(patch: unknown): Promise<VoiceSettings
       settings.a11yModesEnabled = sanitizeA11yEnabledModes(o.a11yModesEnabled);
     }
   }
-  await voice().put(settings);
+  await voice(tenantId).put(settings);
   return { ...settings };
 }
 
 /** テスト用: 既定へ戻す。 */
-export async function __resetVoice(): Promise<void> {
-  await voice().reset();
+export async function __resetVoice(tenantId: string = defaultTenantIdFrom()): Promise<void> {
+  await voice(tenantId).reset();
 }

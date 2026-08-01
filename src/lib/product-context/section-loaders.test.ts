@@ -3,8 +3,10 @@
  *
  * 要点は 2 つ:
  *   1. テナント次元を持つストア（signage / flow / operating policy）には解決済みスコープを渡す。
- *   2. **テナント次元を持たないグローバルストア**（branding / directory / voice / motions / assets）は、
- *      既定テナント以外の要求に対して fail-closed で失敗させる（他テナントへ配らない）。
+ *   2. **まだテナント次元を持たないストア**（directory / assets）は、既定テナント以外の要求に
+ *      対して fail-closed で失敗させる（他テナントへ配らない）。
+ *   3. **テナント対応済みのストア**（branding / voice / motions・#419 残増分）は、別テナントでも
+ *      失敗せず、かつ既定テナントの値を配らないことを固定する。
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -31,8 +33,13 @@ vi.mock('@/lib/branding/branding-store', () => ({
 vi.mock('@/lib/data-stores/directory-store', () => ({
   getKioskDirectory: () => getKioskDirectory(),
 }));
-vi.mock('@/lib/voice/voice-store', () => ({ getVoiceSettings: () => getVoiceSettings() }));
-vi.mock('@/lib/motion/motion-store', () => ({ getKioskMotions: () => getKioskMotions() }));
+// モックもテナント引数を受ける（捨てると渡し忘れを検出できない）。
+vi.mock('@/lib/voice/voice-store', () => ({
+  getVoiceSettings: (tenantId: string) => getVoiceSettings(tenantId),
+}));
+vi.mock('@/lib/motion/motion-store', () => ({
+  getKioskMotions: (tenantId: string) => getKioskMotions(tenantId),
+}));
 vi.mock('@/lib/assets/asset-store', () => ({ getKioskAssets: () => getKioskAssets() }));
 vi.mock('@/lib/i18n/language-settings', () => ({
   getLanguageSettings: () => getLanguageSettings(),
@@ -136,7 +143,7 @@ describe('createSectionLoaders / グローバルストアの越境防止', () =>
    * ここから外してある（下の別 describe で「テナント別に引ける」ことを固定する）。
    * 残りを対応させたら 1 つずつここから外す — **空になったら guard 自体を撤去する**。
    */
-  const globalSections = ['directory', 'voice', 'motions', 'avatar'] as const;
+  const globalSections = ['directory', 'avatar'] as const;
 
   it('既定テナントの要求では従来どおり値を返す', async () => {
     const loaders = createSectionLoaders();
@@ -175,6 +182,19 @@ describe('createSectionLoaders / グローバルストアの越境防止', () =>
     const other = await loaders.branding(loadInput('tenant-other'));
     // 既定テナントは mock で `AVITA` を返す。それが別テナントに出たら越境。
     expect(other.value).not.toMatchObject({ companyName: 'AVITA' });
+  });
+
+  it('voice / motions も別テナントで失敗せず、ストアへテナントを渡している', async () => {
+    const loaders = createSectionLoaders();
+
+    await expect(loaders.voice(loadInput('tenant-other'))).resolves.toMatchObject({
+      source: 'tenant',
+    });
+    await expect(loaders.motions(loadInput('tenant-other'))).resolves.toBeDefined();
+
+    // 渡し忘れると既定テナントの設定が別テナントへ出る。呼び出し引数で固定する。
+    expect(getVoiceSettings).toHaveBeenCalledWith('tenant-other');
+    expect(getKioskMotions).toHaveBeenCalledWith('tenant-other');
   });
 
   it('越境要求ではグローバルストアを読みにいかない', async () => {
