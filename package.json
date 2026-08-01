@@ -9,6 +9,7 @@
     "start": "next start",
     "build:open-next": "open-next build",
     "seed:dynamodb": "tsx scripts/seed-dynamodb.ts",
+    "evaluate:gate-runs": "tsx scripts/evaluate-gate-runs.ts",
     "change-risk": "tsx scripts/change-risk.ts",
     "lint": "eslint .",
     "typecheck": "tsc --noEmit",
