@@ -49,6 +49,20 @@ describe('resolveBase', () => {
     expect(resolveBase(gitWith({}))).toBeNull();
   });
 
+  it('シェルが確定した起点があればそれを使う（全消費者で同じ起点になる）', () => {
+    // 各消費者が独立に再解決すると、整合は「たまたま同時刻に同じ」に依存する。
+    // #557 の症状（同一実行で 47 ファイルと 7 件）はそれ。固定値で構造的に閉じる。
+    const git = gitWith({ 'origin/main': 'aaa\n' });
+    expect(resolveBase(git, 'pinned-sha')).toBe('pinned-sha');
+    expect(git).not.toHaveBeenCalled();
+  });
+
+  it('固定値が空なら通常の解決へ落ちる（未設定の env を掴まない）', () => {
+    expect(resolveBase(gitWith({ 'origin/main': 'aaa\n' }), '')).toBe('aaa');
+    expect(resolveBase(gitWith({ 'origin/main': 'aaa\n' }), '   ')).toBe('aaa');
+    expect(resolveBase(gitWith({ 'origin/main': 'aaa\n' }), undefined)).toBe('aaa');
+  });
+
   it('候補は origin/main → main の順で、それ以外を勝手に見ない', () => {
     // 起点が増えると「どこからの差分か」が実行ごとに変わり、数字の意味が揺れる。
     expect(BASE_REF_PREFERENCE).toEqual(['origin/main', 'main']);

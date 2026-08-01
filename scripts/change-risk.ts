@@ -50,7 +50,7 @@ function tryGit(args: ReadonlyArray<string>): string | null {
  * 同じ問いに 2 つの実装があると、同一実行の中で違う数字を出しても気づけない
  * （#557 では 1 番目が 47 ファイル、末尾のここが 7 件だった）。
  */
-const resolveBaseRef = (): string | null => resolveBase(tryGit);
+const resolveBaseRef = (): string | null => resolveBase(tryGit, process.env.GATE_BASE_SHA);
 
 /**
  * 変更パスを集める。**ゲートが実際に検査するのは作業ツリー**なので、
@@ -109,6 +109,20 @@ function main(): void {
   const assessment = classifyChangeRisk({ paths, addedDependencies: added });
 
   console.log(`  変更ファイル: ${paths.length} 件（起点: ${base?.slice(0, 8) ?? 'なし'}）`);
+  /**
+   * **測れていないのに「安全」と言わない** (#557 follow-up レビュー M2)。
+   *
+   * 起点が無いと `changedPaths` はブランチのコミット済み変更を全部見落とす（未コミット分
+   * しか見ない）。クリーンなツリーなら「0 件」→「停止境界に触れていません」と出てしまい、
+   * **認証境界・PII・本番デプロイの検出器が測れていないのに安全宣言をする**。
+   * report-only なのでゲートは赤くならず、レビューは「機械が触れていないと言った」を
+   * 根拠にしかねない。過小報告は過大報告より危険な方向なので、黙って断定しない。
+   */
+  if (base === null) {
+    console.log('  ⚠ 起点を解決できないため、停止境界の判定はできていません');
+    console.log('    （未コミット分しか見ていません。コミット済みの変更は判定対象外です）');
+    return;
+  }
   if (!assessment.requiresHumanApproval) {
     console.log('  停止境界に触れていません（人間承認は不要）');
     return;
