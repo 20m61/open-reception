@@ -10,7 +10,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const getBrandingSettings = vi.fn();
-const getKioskDirectory = vi.fn();
+const getVisitorDirectory = vi.fn();
 const getVoiceSettings = vi.fn();
 const getKioskMotions = vi.fn();
 const getKioskAssets = vi.fn();
@@ -29,8 +29,8 @@ const isKioskFeatureEnabled = vi.fn();
 vi.mock('@/lib/branding/branding-store', () => ({
   getBrandingSettings: (tenantId: string) => getBrandingSettings(tenantId),
 }));
-vi.mock('@/lib/data-stores/directory-store', () => ({
-  getKioskDirectory: (tenantId: string) => getKioskDirectory(tenantId),
+vi.mock('@/lib/organization/organization-service', () => ({
+  getVisitorDirectory: (scope: unknown) => getVisitorDirectory(scope),
 }));
 // モックもテナント引数を受ける（捨てると渡し忘れを検出できない）。
 vi.mock('@/lib/voice/voice-store', () => ({
@@ -81,7 +81,7 @@ beforeEach(() => {
   getBrandingSettings.mockImplementation(async (tenantId: string) =>
     tenantId === DEFAULT_TENANT_ID ? { companyName: 'AVITA', accentColor: '#123456' } : {},
   );
-  getKioskDirectory.mockResolvedValue({ departments: [], staff: [] });
+  getVisitorDirectory.mockResolvedValue({ departments: [], staff: [] });
   getVoiceSettings.mockResolvedValue({ ttsEnabled: true, rate: 1 });
   getKioskMotions.mockResolvedValue({ motions: { idle: '/idle.vrma' } });
   getKioskAssets.mockResolvedValue({ backgroundUrl: '/bg.png', vrmUrl: '/a.vrm' });
@@ -219,7 +219,9 @@ describe('createSectionLoaders / グローバルストアの越境防止', () =>
     const loaders = createSectionLoaders();
 
     await expect(loaders.directory(loadInput('tenant-other'))).resolves.toBeDefined();
-    expect(getKioskDirectory).toHaveBeenCalledWith('tenant-other');
+    // scope ごと渡すようになった (#373 増分 4)。テナントが載っていることを引き続き固定する
+    // （素の tenantId を落とすと越境に気づけない）。
+    expect(getVisitorDirectory).toHaveBeenCalledWith({ kind: 'tenant', tenantId: 'tenant-other' });
   });
 });
 

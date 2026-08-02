@@ -27,6 +27,8 @@ import type {
   OrganizationScope,
   OrganizationUnit,
 } from '@/domain/organization/types';
+import { listVisitorOrganizations } from '@/domain/organization/directory';
+import type { KioskDirectory } from '@/lib/data-stores/directory-store';
 import { listDepartments, listStaff } from '@/lib/data-stores/directory-store';
 import {
   listOrganizationMemberships,
@@ -67,5 +69,38 @@ export async function getOrganizationView(scope: OrganizationScope): Promise<Org
     units: mergeOrganizationUnits(compat.units, storedUnits, scope),
     memberships: mergeOrganizationMemberships(compat.memberships, storedMemberships),
     unresolvedStaffIds: compat.unresolvedStaffIds,
+  };
+}
+
+/**
+ * 来訪者向けディレクトリを組織モデルから導出する (#373 増分 4)。
+ *
+ * ## 呼び出し可否は組織の有効/無効に波及させない（規則 A・2026-08-02 ユーザー判断）
+ *
+ * 現行の `getKioskDirectory` は担当者を `staff.enabled` **だけ**で絞っており、所属部署が
+ * 無効でも担当者個人は呼べる（`departments[]` に出ないだけ）。組織モデルへ切り替えるときに
+ * `unit.enabled` を担当者へ波及させると、**いま到達できている担当者が到達できなくなる**。
+ * これは J-OR-01 / J-OR-02 の成功条件（担当者へ到達できる）に直結するため、
+ * **後方互換を採る**。「部署は閉じたが人は在席」という運用にも沿う。
+ *
+ * 組織一覧（来訪者に見せる部署）は従来どおり公開・有効なものだけを出す。
+ * つまり「閉じた部署は選べないが、その部署の担当者は名前で呼べる」状態を維持する。
+ */
+export async function getVisitorDirectory(scope: OrganizationScope): Promise<KioskDirectory> {
+  const view = await getOrganizationView(scope);
+  // 担当者は **staff.enabled のみ**で絞る（規則 A）。組織の有効/無効は見ない。
+  const staff = await listStaff(scope.tenantId, false);
+  return {
+    departments: listVisitorOrganizations(view.units, scope).map((o) => ({ id: o.id, name: o.name })),
+    // 検索に必要な kana/aliases は含めるが、内部用の mockCallOutcome/available は含めない
+    // （既存 `getKioskDirectory` と同じ公開範囲を保つ）。
+    staff: staff.map((s) => ({
+      id: s.id,
+      displayName: s.displayName,
+      kana: s.kana,
+      aliases: s.aliases,
+      departmentId: s.departmentId,
+      available: s.available,
+    })),
   };
 }
