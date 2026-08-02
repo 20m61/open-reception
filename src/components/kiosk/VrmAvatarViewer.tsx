@@ -1,6 +1,11 @@
 'use client';
 
 import { useEffect, useRef, useState } from 'react';
+import {
+  resolveVrmSpecVersion,
+  vrmVersionAttribute,
+  type VrmSpecVersion,
+} from '@/domain/avatar/vrm-version';
 import { ResourceTracker } from '@/lib/three/resource-tracker';
 import { AvatarFallbackImage } from './avatar/fallback-image';
 import { emotionExpressionValues } from './avatar/vrm-expression';
@@ -75,6 +80,14 @@ export function VrmAvatarViewer({
 }) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const [failed, setFailed] = useState(false);
+  /**
+   * 読み込んだ VRM の仕様版 (#578 増分 1)。**診断のためだけ**に持つ。
+   *
+   * 実機で「モーションが変」と分かっても、版が出ていないとモデル版・モーション・カメラの
+   * どれに帰属するのか切り分けられない。`data-vrm-version` として観測可能にする。
+   */
+  const [vrmVersion, setVrmVersion] = useState<VrmSpecVersion>('unknown');
+  const [vrmLoaded, setVrmLoaded] = useState(false);
   // 表情はレンダーループ（[vrmUrl] 依存）の外から更新されるため ref で最新値を渡す。
   const expressionRef = useRef<AvatarExpression>(expression ?? 'neutral');
   useEffect(() => {
@@ -157,6 +170,10 @@ export function VrmAvatarViewer({
         // VRM 1.0 には no-op。これが無いと 0.x モデルは常に後ろ姿で描画される
         // （実描画検証 2026-07-22 で発覚。同梱 Rose は 0.x）。
         if (vrm) VRMUtils.rotateVRM0(vrm);
+        // 版を観測可能にする (#578 増分 1)。rotateVRM0 が「何に対して」効いたのかを
+        // 実機から確認できるようにする（推測で既定へ倒さない。判別不能は unknown）。
+        setVrmVersion(resolveVrmSpecVersion(vrm?.meta));
+        setVrmLoaded(Boolean(vrm));
         scene.add(gltf.scene);
         tracker.track({ dispose: () => VRMUtils.deepDispose(gltf.scene) });
 
@@ -263,7 +280,11 @@ export function VrmAvatarViewer({
         render();
       } catch {
         // WebGL 不可 / VRM 読み込み失敗 → fallback。受付フローは継続。
-        if (!disposed) setFailed(true);
+        if (!disposed) {
+          setFailed(true);
+          // 「読めていない」を版不明（unknown）と混同させない。
+          setVrmLoaded(false);
+        }
       }
     })();
 
@@ -291,5 +312,14 @@ export function VrmAvatarViewer({
   }
 
   // data-motion-url: 現在再生中のモーション URL（#31。AnimationMixer で再生、実描画確認は #65）。
-  return <canvas ref={canvasRef} className={className} data-testid="vrm-canvas" data-motion-url={motionUrl} />;
+  return (
+    <canvas
+      ref={canvasRef}
+      className={className}
+      data-testid="vrm-canvas"
+      data-motion-url={motionUrl}
+      // 読み込んだ VRM の仕様版 (#578 増分 1)。`none`=未読込/失敗、`unknown`=読めたが版不明。
+      data-vrm-version={vrmVersionAttribute({ loaded: vrmLoaded, version: vrmVersion })}
+    />
+  );
 }
