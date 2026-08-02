@@ -11,6 +11,7 @@ import {
   resolveMotionObservation,
   type MotionObservation,
 } from '@/domain/avatar/motion-state';
+import { resolveCameraFraming } from '@/domain/avatar/camera-framing';
 import { ResourceTracker } from '@/lib/three/resource-tracker';
 import { AvatarFallbackImage } from './avatar/fallback-image';
 import { emotionExpressionValues } from './avatar/vrm-expression';
@@ -159,12 +160,34 @@ export function VrmAvatarViewer({
         const gl = new THREE.WebGLRenderer({ canvas, alpha: true, antialias: false });
         // iPad 向け軽量モード: pixelRatio を抑制。
         gl.setPixelRatio(Math.min(globalThis.devicePixelRatio || 1, 1.5));
-        gl.setSize(canvas.clientWidth || 320, canvas.clientHeight || 480, false);
         renderer = gl;
 
         const scene = new THREE.Scene();
-        const camera = new THREE.PerspectiveCamera(30, (canvas.clientWidth || 320) / (canvas.clientHeight || 480), 0.1, 20);
-        camera.position.set(0, 1.3, 2.2);
+        // 画角はモデルの背丈から決めるので、ここでは器だけ作る（#578 増分 3）。
+        // 実際の位置・注視点・aspect は VRM 読込後の applyFraming で確定する。
+        const camera = new THREE.PerspectiveCamera(30, 1, 0.1, 20);
+
+        /**
+         * 画角をモデルと描画領域から決め直す (#578 増分 3)。
+         *
+         * 従来は `position.set(0, 1.3, 2.2)` の決め打ちで、**モデルの背丈に依存しなかった**
+         * （VRM は身長差が大きい）。さらに `aspect` は読込時 1 回だけで
+         * `updateProjectionMatrix()` も呼ばれておらず、**横向き iPad で回転すると歪んで**いた。
+         */
+        let headHeight: number | undefined;
+        const applyFraming = () => {
+          const w = canvas.clientWidth || 320;
+          const h = canvas.clientHeight || 480;
+          gl.setSize(w, h, false);
+          const framing = resolveCameraFraming({ headHeight, aspect: w / h });
+          camera.aspect = w / h;
+          camera.fov = framing.fov;
+          camera.position.set(framing.position.x, framing.position.y, framing.position.z);
+          camera.lookAt(framing.target.x, framing.target.y, framing.target.z);
+          // これを忘れると aspect / fov の変更が反映されない（歪んだまま）。
+          camera.updateProjectionMatrix();
+        };
+        applyFraming();
         const light = new THREE.DirectionalLight(0xffffff, 1.2);
         light.position.set(1, 1, 1);
         scene.add(light);
@@ -186,6 +209,15 @@ export function VrmAvatarViewer({
         setVrmVersion(resolveVrmSpecVersion(vrm?.meta));
         setVrmLoaded(Boolean(vrm));
         scene.add(gltf.scene);
+        // humanoid から頭の高さを取り、画角を決め直す（背丈の違うモデルでも顔が切れない）。
+        // 取れなければ undefined のまま＝既定へ倒す（0 を渡してカメラを原点に埋めない）。
+        const headNode = vrm?.humanoid?.getNormalizedBoneNode?.('head');
+        if (headNode) {
+          const worldPos = new THREE.Vector3();
+          headNode.getWorldPosition(worldPos);
+          if (Number.isFinite(worldPos.y) && worldPos.y > 0) headHeight = worldPos.y;
+        }
+        applyFraming();
         tracker.track({ dispose: () => VRMUtils.deepDispose(gltf.scene) });
 
         // --- 状態別モーション（.vrma）再生 (#31) ---
@@ -310,6 +342,22 @@ export function VrmAvatarViewer({
           animationId = requestAnimationFrame(render);
         };
         tracker.track({ dispose: () => mixer.stopAllAction() });
+
+        /**
+         * 描画領域の変化に追従する (#578 増分 3)。
+         *
+         * これが無いと `aspect` は読込時の 1 回きりで、**横向き iPad を回転させると
+         * 縦横比がずれたまま描画され続ける**（`updateProjectionMatrix()` も未呼び出しだった）。
+         * `ResizeObserver` は canvas 自身の実寸変化を見るので、`orientationchange` や
+         * CSS レイアウト由来の変化も同じ経路で拾える。
+         */
+        if (typeof ResizeObserver !== 'undefined') {
+          const observer = new ResizeObserver(() => {
+            if (!disposed) applyFraming();
+          });
+          observer.observe(canvas);
+          tracker.track({ dispose: () => observer.disconnect() });
+        }
         render();
       } catch {
         // WebGL 不可 / VRM 読み込み失敗 → fallback。受付フローは継続。
