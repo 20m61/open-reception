@@ -42,7 +42,7 @@ ROOT="$(pwd)"
 
 # ---- 引数解析 -------------------------------------------------------------
 RUN_TYPECHECK=1 RUN_LINT=1 RUN_UNIT=1 RUN_BUILD=0
-RUN_E2E=0 RUN_SECRETS=0 RUN_SAST=0 RUN_AUDIT=0 RUN_LH=0
+RUN_E2E=0 RUN_SECRETS=0 RUN_SAST=0 RUN_AUDIT=0 RUN_LH=0 RUN_VRM=0
 STRICT=0
 BOOTSTRAP=1
 SKIP_BY_SCOPE=1
@@ -53,10 +53,11 @@ for arg in "$@"; do
   case "$arg" in
     --fast) TIER="fast"; RUN_BUILD=0 ;;
     --pr)   TIER="pr";   RUN_BUILD=1 ;;
-    --full) TIER="full"; RUN_BUILD=1; RUN_SECRETS=1; RUN_SAST=1; RUN_AUDIT=1; RUN_E2E=1; RUN_LH=1 ;;
+    --full) TIER="full"; RUN_BUILD=1; RUN_SECRETS=1; RUN_SAST=1; RUN_AUDIT=1; RUN_E2E=1; RUN_LH=1; RUN_VRM=1 ;;
     --no-build)   RUN_BUILD=0 ;;
     --e2e)        RUN_E2E=1 ;;
     --secrets)    RUN_SECRETS=1 ;;
+    --vrm)        RUN_VRM=1 ;;
     --sast)       RUN_SAST=1 ;;
     --audit)      RUN_AUDIT=1 ;;
     --lighthouse) RUN_LH=1 ;;
@@ -327,6 +328,21 @@ elif [[ "$RUN_LH" -eq 1 ]]; then
   else
     skip_or_fail "lighthouse (lhci)" "lhci not available"
   fi
+fi
+
+# ---- VRM 実描画検査 -------------------------------------------------------
+# #578 で入れた ResizeObserver の暴走ループ（DPR>1 で canvas が指数的に肥大し、実機 iPad が
+# 落ちる）は **ローカルゲート 10 項目すべてが green のまま素通り**した。VRM 専用の検査は
+# 存在したが `deviceScaleFactor: 1` で構造的に盲目だったうえ、手動実行だった。
+# **手動の検査は回すのを忘れる**ので、機械が回す側へ置く。
+#
+# サーバは専用ポートで別に立てる（`scripts/vrm-check.sh`）。e2e サーバへ
+# `KIOSK_DEFAULT_VRM_URL` を足すと全 e2e でアバターが描画され VRT ベースラインが総入れ替えに
+# なるため、そちらへは相乗りさせない。
+if [[ "$RUN_VRM" -eq 1 ]] && scope_skips vrm; then
+  scope_skip "vrm (real render)"
+elif [[ "$RUN_VRM" -eq 1 ]]; then
+  step "vrm (real render)" npm run --silent vrm:check
 fi
 
 # ---- 変更リスクの報告 (#424 増分 3) ---------------------------------------

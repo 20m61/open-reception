@@ -125,20 +125,36 @@ if (canvasShown) {
    * **canvas の実寸が安定しているか** (#578 レビュー B1 の回帰固定)。
    *
    * `gl.setSize` の書き戻しを自分で観測して発散すると、数百 ms で上限まで肥大して
-   * GPU が落ちる。読込直後と待機後で backing store が同オーダーに留まることを見る。
-   * 「描画されているか」だけを見る検査では、この形の破綻を捕まえられない。
+   * GPU が落ちる。「描画されているか」だけを見る検査ではこの形の破綻を捕まえられない。
+   *
+   * **観測は「落ち着いてから」始める。** canvas は CSS 適用前の intrinsic 300x150 から
+   * `applyFraming` 後の実寸へ**正常に一度だけ**成長する。その途中で 1 枚目を撮ると
+   * 正常な初期化を暴走と誤検知する（負荷がかかると再現する過渡状態の 1 点サンプリング）。
+   * 連続 2 回同じ値になるまで待ってから基準を取り、以後**変わらない**ことを見る。
    */
-  const sizeBefore = await canvas.evaluate((el) => ({ w: el.width, h: el.height }));
+  const readSize = () => canvas.evaluate((el) => ({ w: el.width, h: el.height }));
+  let settled = await readSize();
+  let settleOk = false;
+  for (let i = 0; i < 30; i += 1) {
+    await page.waitForTimeout(500);
+    const next = await readSize();
+    if (next.w === settled.w && next.h === settled.h) { settleOk = true; break; }
+    settled = next;
+  }
+  note(
+    `vrm: canvas backing store settles (${settled.w}x${settled.h})`,
+    settleOk && settled.w > 0 && settled.h > 0,
+    settleOk ? '' : 'never stopped changing (runaway resize?)',
+  );
 
   // モデル読込 + 初回描画待ち(SwiftShader は遅い)
   await page.waitForTimeout(12000);
 
-  const sizeAfter = await canvas.evaluate((el) => ({ w: el.width, h: el.height }));
-  // 画角の再適用で多少変わるのは許すが、桁が変わったら暴走。
-  const grew = sizeAfter.w > sizeBefore.w * 4 || sizeAfter.h > sizeBefore.h * 4;
+  const sizeAfter = await readSize();
+  // 落ち着いた後に動いたら暴走。等値で見る（正常なら再適用しても同じ値になる）。
   note(
-    `vrm: canvas backing store stable (${sizeBefore.w}x${sizeBefore.h} -> ${sizeAfter.w}x${sizeAfter.h})`,
-    !grew && sizeAfter.w > 0 && sizeAfter.h > 0,
+    `vrm: canvas backing store stays stable (${settled.w}x${settled.h} -> ${sizeAfter.w}x${sizeAfter.h})`,
+    sizeAfter.w === settled.w && sizeAfter.h === settled.h,
   );
 
   // 観測属性（#578 増分 1・2）。実機で「モーションが変」を切り分ける入口。
