@@ -1,4 +1,5 @@
 import { NextResponse } from 'next/server';
+import { requireKioskSession } from '@/lib/kiosk/session-guard';
 import { getKioskConfig } from '@/lib/kiosk/kiosk-store';
 import { getSecuritySettings } from '@/lib/security/security-store';
 import { effectiveKioskActive } from '@/domain/security/types';
@@ -23,8 +24,17 @@ import { resolveKioskOperatingStatusById } from '@/lib/operating-policy/kiosk-ga
  * 営業中→時間外の切替は、この応答を再取得するたびに反映される（KioskFlow 側の既存ポーリング/
  * 再取得周期に委ねる。専用のプッシュ通知は本 increment のスコープ外）。
  */
-export async function GET(request: Request): Promise<NextResponse> {
-  const kioskId = new URL(request.url).searchParams.get('kioskId') ?? '';
+export async function GET(): Promise<NextResponse> {
+  const session = await requireKioskSession();
+  if (!session) {
+    return NextResponse.json(
+      { error: 'forbidden', message: 'kiosk session required' },
+      { status: 403 },
+    );
+  }
+  // **端末は自分の設定しか読めない** (#601)。以前は kioskId をクエリで受けており、
+  // 無認証と相まって **任意端末の設定・メンテナンス状態・営業状態が列挙できた**。
+  const kioskId = session.kioskId;
   const [config, security, maintenance, operatingStatus] = await Promise.all([
     getKioskConfig(kioskId),
     getSecuritySettings(),

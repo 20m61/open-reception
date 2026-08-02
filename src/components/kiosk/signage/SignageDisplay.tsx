@@ -26,15 +26,11 @@ import { SignageClock } from './SignageClock';
  * 次増分（kiosk/config の active と統合）。本増分は待機中の純粋なサイネージ表示に限る。
  */
 export function SignageDisplay({
-  tenantId = DEFAULT_TENANT_ID,
-  siteId = DEFAULT_SITE_ID,
   onStart,
   locale,
   paused = false,
   bottomInsetPx = 0,
 }: {
-  tenantId?: string;
-  siteId?: string;
   /**
    * 画面下端に確保する追い出し量 (px)。KioskFlow 埋め込みでは絶対配置のフッター
    * （QR受付/退館/来訪検知）が重なるため、その実測高さを渡して受付開始 CTA と
@@ -91,7 +87,9 @@ export function SignageDisplay({
 
   useEffect(() => {
     let cancelled = false;
-    void fetch(`/api/kiosk/signage?tenantId=${encodeURIComponent(tenantId)}&siteId=${encodeURIComponent(siteId)}`)
+    // **スコープを渡さない** (#601)。サーバがセッション（端末レジストリ）から導出する。
+    // クライアントから渡せる形にしておくと、その値が信頼できるかの判断が端末側へ漏れる。
+    void fetch('/api/kiosk/signage')
       .then((res) => (res.ok ? res.json() : null))
       .then((data) => {
         if (!cancelled && data) setSignage(data as KioskSignage);
@@ -102,7 +100,7 @@ export function SignageDisplay({
     return () => {
       cancelled = true;
     };
-  }, [tenantId, siteId]);
+  }, []);
 
   // ブランド設定を取得する (#88 / #326)。失敗時は汎用フォールバックのまま。
   useEffect(() => {
