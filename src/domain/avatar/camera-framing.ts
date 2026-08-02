@@ -1,0 +1,75 @@
+/**
+ * アバターの画角をモデルから導出する (#578 増分 3)。
+ *
+ * ## なぜ要るか
+ *
+ * `VrmAvatarViewer` のカメラは固定値の決め打ちだった:
+ *
+ * ```ts
+ * new THREE.PerspectiveCamera(30, w / h, 0.1, 20);
+ * camera.position.set(0, 1.3, 2.2);   // lookAt() は呼ばれていない
+ * ```
+ *
+ * VRM は身長差が大きい（子供キャラと成人キャラでは頭の高さが 50cm 以上違う）のに、
+ * 目線の高さも距離も決め打ちなので、**モデルを差し替えると顔が切れる / 遠すぎる**。
+ * humanoid から頭の高さが取れるのだから、そこから決める。
+ *
+ * ここは three.js に依存しない純粋な算術だけを持つ（GPU 無しでテストできる）。
+ * 実際に自然に見えるかは実機 UAT（#65）。
+ */
+
+/** 画角の算出結果。three.js の PerspectiveCamera へそのまま流す。 */
+export type CameraFraming = {
+  /** カメラ位置。モデルは原点に立ち、+Z を向いている前提（`rotateVRM0` 適用後）。 */
+  position: { x: number; y: number; z: number };
+  /** 注視点。`lookAt` へ渡す。 */
+  target: { x: number; y: number; z: number };
+  /** 垂直画角（度）。 */
+  fov: number;
+};
+
+/** 既定の頭の高さ（m）。humanoid から取れなかったときだけ使う成人相当の値。 */
+const FALLBACK_HEAD_HEIGHT = 1.35;
+
+/** 垂直画角。狭いほど望遠的で歪みが少ない。上半身の対話距離としてこの辺り。 */
+const DEFAULT_FOV = 30;
+
+/**
+ * 顔をどれだけ画面の上寄りに置くか（0=中央、正=上寄り）。
+ * 受付では顔の下に UI が載るので、やや上に置くと収まりがよい。
+ */
+const HEAD_OFFSET_RATIO = 0.08;
+
+/**
+ * 画角を決める。
+ *
+ * **縦横比で距離を変えるのが要点。** 横長（横向き iPad）では垂直方向に余裕が無く、
+ * 同じ距離だと顔が切れる。`fov` は固定のまま距離で調整する — `fov` を動かすと
+ * パースの付き方が変わって印象が安定しない。
+ */
+export function resolveCameraFraming(input: {
+  /** humanoid の頭のワールド高さ（m）。取れなければ undefined。 */
+  headHeight?: number;
+  /** 描画領域の縦横比（幅 / 高さ）。0 以下や非有限値は既定の縦長として扱う。 */
+  aspect: number;
+}): CameraFraming {
+  const headHeight =
+    Number.isFinite(input.headHeight) && (input.headHeight ?? 0) > 0
+      ? (input.headHeight as number)
+      : FALLBACK_HEAD_HEIGHT;
+  const aspect = Number.isFinite(input.aspect) && input.aspect > 0 ? input.aspect : 3 / 4;
+
+  /**
+   * 頭の高さに対して何倍の距離を取るか。縦長（aspect<1）は垂直に余裕があるので寄れる。
+   * 横長になるほど引かないと顔が切れる。
+   */
+  const distanceRatio = aspect >= 1 ? 1.6 + (aspect - 1) * 0.55 : 1.6;
+  const eyeY = headHeight;
+
+  return {
+    position: { x: 0, y: eyeY, z: headHeight * distanceRatio },
+    // 注視点を頭よりわずかに下げる＝顔が画面のやや上に来る。
+    target: { x: 0, y: eyeY - headHeight * HEAD_OFFSET_RATIO, z: 0 },
+    fov: DEFAULT_FOV,
+  };
+}
