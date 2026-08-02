@@ -40,6 +40,53 @@ async function enrollKiosk(page) {
   }
 }
 
+
+/**
+ * canvas 内でモデルが占める領域を求める (#578 レビュー M2/M7 の自動検証)。
+ *
+ * 画角の妥当性（顔が切れていないか・遠すぎないか・中央にいるか）は「実機で見るしかない」と
+ * していたが、**画素を見れば機械的に判定できる**。背景色に依存しないよう、四隅の画素を
+ * 背景の基準としてサンプルし、そこから十分離れた画素をモデルとみなす。
+ * （canvas は `alpha: true` で背景を描かないが、要素スクショでは背後のページ背景が
+ *   合成されるため、透明度ではなく「四隅との差」で見る。）
+ */
+async function measureModelBounds(pngBuffer) {
+  const { data, info } = await sharp(pngBuffer)
+    .ensureAlpha()
+    .raw()
+    .toBuffer({ resolveWithObject: true });
+  const { width, height, channels } = info;
+  const at = (x, y) => {
+    const i = (y * width + x) * channels;
+    return [data[i], data[i + 1], data[i + 2]];
+  };
+  // 四隅＝背景の基準（モデルは中央に立つ前提）。
+  const corners = [at(0, 0), at(width - 1, 0), at(0, height - 1), at(width - 1, height - 1)];
+  const isBackground = (px) =>
+    corners.some((c) => Math.abs(px[0] - c[0]) + Math.abs(px[1] - c[1]) + Math.abs(px[2] - c[2]) < 30);
+
+  let minX = width, minY = height, maxX = -1, maxY = -1, count = 0;
+  for (let y = 0; y < height; y += 1) {
+    for (let x = 0; x < width; x += 1) {
+      if (isBackground(at(x, y))) continue;
+      count += 1;
+      if (x < minX) minX = x;
+      if (x > maxX) maxX = x;
+      if (y < minY) minY = y;
+      if (y > maxY) maxY = y;
+    }
+  }
+  if (maxX < 0) return { found: false, width, height };
+  return {
+    found: true,
+    width,
+    height,
+    minX, minY, maxX, maxY,
+    coverage: count / (width * height),
+    centerX: (minX + maxX) / 2 / width,
+  };
+}
+
 const browser = await chromium.launch({
   executablePath: process.env.PW_EXECUTABLE_PATH || undefined,
   args: ['--enable-unsafe-swiftshader'],
@@ -108,6 +155,31 @@ if (canvasShown) {
   const maxStd = Math.max(...stats1.channels.map((c) => c.stdev));
   note('vrm: canvas has non-blank pixels (model rendered)', maxStd > 8, `max stdev=${maxStd.toFixed(1)}`);
   await sharp(shot1).toFile(`${outDir}/vrm-01-idle.png`);
+
+  // --- 2b. 画角の妥当性を機械的に判定する (#578 レビュー M2/M7)
+  const bounds = await measureModelBounds(shot1);
+  if (!bounds.found) {
+    note('vrm: model occupies pixels (framing measurable)', false, 'no non-background pixels');
+  } else {
+    const { minY, maxY, minX, maxX, coverage, centerX, width: cw, height: ch } = bounds;
+    console.log(
+      `  [vrm] bounds x=[${minX},${maxX}] y=[${minY},${maxY}] coverage=${(coverage * 100).toFixed(1)}% centerX=${centerX.toFixed(2)}`,
+    );
+    // 顔が切れていないか: 上端に張り付いていたら頭が画面外へ出ている疑い。
+    note('vrm: head not clipped at top', minY > 1, `minY=${minY}`);
+    // 遠すぎ/近すぎ: 画面に対して極端な占有率でない。
+    note(
+      'vrm: model coverage within sane band (2%..80%)',
+      coverage > 0.02 && coverage < 0.8,
+      `coverage=${(coverage * 100).toFixed(1)}%`,
+    );
+    // 縦方向に潰れていない（far 平面外や near クリップの兆候）。
+    note('vrm: model spans a meaningful height', maxY - minY > ch * 0.15, `h=${maxY - minY}/${ch}`);
+    // 左右中央から大きく外れていない。
+    note('vrm: model roughly centered horizontally', Math.abs(centerX - 0.5) < 0.2, `centerX=${centerX.toFixed(2)}`);
+    // 左右が両端に張り付いていない（横方向にはみ出していない）。
+    note('vrm: model not clipped horizontally', minX > 0 && maxX < cw - 1, `x=[${minX},${maxX}]`);
+  }
 
   // --- 3. 手続き的アイドル(呼吸)で動いているか: 2.5 秒空けて差分
   await page.waitForTimeout(2500);
