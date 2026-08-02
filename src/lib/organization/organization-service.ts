@@ -34,6 +34,7 @@ import {
 } from '@/domain/organization/directory';
 import type { KioskDirectory } from '@/lib/data-stores/directory-store';
 import { listDepartments, listStaff } from '@/lib/data-stores/directory-store';
+import { canSetParent } from '@/domain/organization/hierarchy';
 import {
   validateOrganizationUnitPatch,
   type OrganizationUnitPatch,
@@ -280,7 +281,33 @@ export async function updateOrganizationUnit(
   }
 
   const patch: OrganizationUnitPatch = validated.value;
-  const next: OrganizationUnit = { ...current, ...patch };
+
+  // 親の付け替えは**他の組織との関係**で可否が決まる（循環・深度上限・tenant/site 境界）。
+  // 判定は `canSetParent` に委ね、ここでは結果を HTTP へ写すだけ。
+  // 循環を作らせないのは、祖先を辿る処理（`ancestorsOf`）が終わらなくなり、
+  // 来訪者画面の描画ごと巻き込むため。
+  if (patch.parentId !== undefined) {
+    const nextParentId = patch.parentId === null ? undefined : patch.parentId;
+    const allowed = canSetParent(view.units, id, nextParentId);
+    if (!allowed.ok) {
+      return {
+        ok: false,
+        error: {
+          code: 'invalid_input',
+          message: `parentId is not allowed: ${allowed.issues.map((i) => i.kind).join(', ')}`,
+        },
+      };
+    }
+  }
+
+  // `null`（外す）は `OrganizationUnit.parentId` の `undefined` へ写す。patch を丸ごと
+  // 展開すると `null` がそのまま入るので、親だけ明示的に組み立てる。
+  const { parentId, ...rest } = patch;
+  const next: OrganizationUnit = {
+    ...current,
+    ...rest,
+    ...(parentId === undefined ? {} : { parentId: parentId ?? undefined }),
+  };
   await putOrganizationUnit(scope.tenantId, next);
   return { ok: true, value: next };
 }
