@@ -754,7 +754,25 @@ kiosk の音声入力は `MockSttAdapter` 直結（`components/kiosk/stt-adapter
 - `history-truncation` は別の前提でブロック ── **本番に会話履歴そのものが存在しない**。
   履歴を持つ設計は「来訪者の発話＝PII をどこにどれだけ保持するか」の判断を伴う
 
-#### ローカルで積める候補（要判断）
+#### 実施済み: 実 orchestrator のローカル起動（PR #607）
+
+`?voiceOrchestrator=1` で mock provider 駆動の実 `VoiceSessionOrchestrator` が起動する
+（`lib/voice-session/local-mode.ts`）。**既定はオフ**で、既存の受付挙動は変わらない。
+
+実装中に判明した設計上の欠落: orchestrator は `pushMicChunk` / `reportSpeechStarted` /
+`reportSilenceTick` を**外部から駆動される**設計で、seam はそれを露出しない。実機ではマイクと
+VAD が駆動するが、ローカルには無いので**素直に繋いでも「起動はするが何も起きない」**。
+合成音声で駆動する層を足して解決した。
+
+**⚠ これは実音声の代替ではない。** 以下は依然として未検証:
+
+- 実マイク入力での VAD の妥当性
+- **自己音声エコーの誤検出**（`echoLikelihood` を**計測する実装がまだ無い**。
+  `classifyNearEnd` は入力として受け取るだけ）
+- 実 STT の partial/final タイミングに対するターン検出の挙動
+- 騒音下・距離のある発話
+
+#### 残りのローカル候補（要判断）
 
 `createOrchestratorVoiceSession` を Mock STT 駆動で KioskFlow へ配線し、実 orchestrator を
 ローカルで起動できるようにする。turn detection と barge-in が実 UI で動き、e2e で検証できる

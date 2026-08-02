@@ -5,7 +5,14 @@ import { describe, expect, it, vi } from 'vitest';
  *
  * ここに書くのは「壊れても他のテストが赤くならない」種類の設定だけ。どちらも
  * 実際に一度壊れた（あるいは壊れる寸前だった）ものを対象にしている。
+ *
+ * ## タイムアウトを伸ばしてある
+ *
+ * `playwright.config.ts` の import は依存が重く、**vitest 既定の 5 秒に収まらないことがある**。
+ * 単独実行でも 3 回に 1 回落ちる実在のフレークだった（負荷時はさらに落ちやすい）。
+ * ゲートが「実装と無関係に赤くなる」と、赤の意味が薄れて無視されるようになるので固定する。
  */
+const IMPORT_TIMEOUT_MS = 30_000;
 describe('playwright.config.ts', () => {
   it('欠落した VRT ベースラインを黙って生成しない (updateSnapshots: none)', async () => {
     const config = (await import('../../playwright.config')).default;
@@ -17,7 +24,7 @@ describe('playwright.config.ts', () => {
     // Linux 実行環境（Claude Code on the web 等）へ移ると即座にこの罠を踏む。
     // 意図的な取り直しは CLI の `--update-snapshots` が config を上書きするのでそちらで行う。
     expect(config.updateSnapshots).toBe('none');
-  });
+  }, IMPORT_TIMEOUT_MS);
 
   it('chromium 系 project にフェイクカメラを渡す (#361)', async () => {
     const config = (await import('../../playwright.config')).default;
@@ -33,7 +40,7 @@ describe('playwright.config.ts', () => {
       expect(args).toContain('--use-fake-device-for-media-stream');
       expect(args).toContain('--use-fake-ui-for-media-stream');
     }
-  });
+  }, IMPORT_TIMEOUT_MS);
 
   it('PW_EXECUTABLE_PATH 指定時もフェイクカメラ引数を失わない（置換ではなくマージ）', async () => {
     vi.resetModules();
