@@ -9,22 +9,29 @@ import {
 } from './experience-flags';
 
 describe('resolveKioskExperienceFlags', () => {
-  it('未指定なら旧経路（既定 false）', () => {
+  it('未指定なら新経路（既定 true・台帳 B-02 で切替）', () => {
+    // 旧個別 API を撤去する前提として既定を新経路へ倒した。切り戻しは env / クエリで行う。
     expect(resolveKioskExperienceFlags({})).toEqual(DEFAULT_KIOSK_EXPERIENCE_FLAGS);
     expect(resolveKioskExperienceFlags({ search: '', env: undefined }).effectiveConfiguration).toBe(
-      false,
+      true,
     );
   });
 
-  it('ビルド時 env で既定を新経路にできる', () => {
+  it('ビルド時 env で明示的に新経路にできる', () => {
     for (const env of ['1', 'true', 'on', 'TRUE', ' 1 ']) {
       expect(resolveKioskExperienceFlags({ env }).effectiveConfiguration).toBe(true);
     }
   });
 
-  it('env の偽値・不正値は旧経路のまま', () => {
-    for (const env of ['0', 'false', 'off', '', 'yes', 'enabled']) {
+  it('ビルド時 env で環境ごと旧経路へ戻せる（撤去前の退避経路）', () => {
+    for (const env of ['0', 'false', 'off']) {
       expect(resolveKioskExperienceFlags({ env }).effectiveConfiguration).toBe(false);
+    }
+  });
+
+  it('env の不正値は既定（新経路）のまま — 誤入力で黙って旧経路へ落とさない', () => {
+    for (const env of ['', 'yes', 'enabled']) {
+      expect(resolveKioskExperienceFlags({ env }).effectiveConfiguration).toBe(true);
     }
   });
 
@@ -50,8 +57,14 @@ describe('resolveKioskExperienceFlags', () => {
       resolveKioskExperienceFlags({ search: '?effectiveConfig=maybe', env: '1' })
         .effectiveConfiguration,
     ).toBe(true);
+    // env 未指定なら既定（新経路）へ。不正なクエリで黙って旧経路へ落とさない。
     expect(
       resolveKioskExperienceFlags({ search: '?effectiveConfig=maybe' }).effectiveConfiguration,
+    ).toBe(true);
+    // 明示的な env=0 は不正クエリでも保たれる（切り戻しが誤入力で解除されない）。
+    expect(
+      resolveKioskExperienceFlags({ search: '?effectiveConfig=maybe', env: '0' })
+        .effectiveConfiguration,
     ).toBe(false);
   });
 });

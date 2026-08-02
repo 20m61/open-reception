@@ -9,7 +9,7 @@
  * 経路は 2 つあり、移行フラグ（`src/domain/kiosk/experience-flags.ts` / ADR 0004）で選ぶ:
  *
  *   - **新経路**: `GET /api/configuration/effective` の 1 回取得（#419）。
- *   - **旧経路**: 個別設定 API 7 本（`/api/kiosk/directory` ほか）。既定。
+ *   - **旧経路**: 個別設定 API 7 本（`/api/kiosk/directory` ほか）。撤去予定（台帳 B-03）。
  *
  * 新経路が失敗した端末は旧経路へ自動フォールバックする（可用性優先。端末を無設定で
  * 放置しない）。恒久的な切り戻しはフラグ側で行う。撤去条件は
@@ -133,10 +133,10 @@ export function useKioskConfiguration(options?: {
     notice?: string;
   }>({});
 
-  // 構成取得の新旧経路を選ぶ移行フラグ (ADR 0004 / 台帳 §7)。既定は旧経路。
-  // `?effectiveConfig=1` で端末 1 台だけ新経路にでき、`=0` で戻せる。window はレンダー中に
-  // 読まないよう lazy initializer で 1 度だけ読む（SSR では既定＝旧経路になり、初期マークアップは
-  // どちらの経路でも同一なのでハイドレーション差分は生じない）。
+  // 構成取得の新旧経路を選ぶ移行フラグ (ADR 0004 / 台帳 §7)。**既定は新経路**（台帳 B-02）。
+  // `?effectiveConfig=0` で端末 1 台だけ旧経路へ戻せる。window はレンダー中に読まないよう
+  // lazy initializer で 1 度だけ読む（初期マークアップはどちらの経路でも同一なので
+  // ハイドレーション差分は生じない）。
   const [experienceFlags] = useState(() =>
     resolveKioskExperienceFlags({
       search: typeof window === 'undefined' ? '' : window.location.search,

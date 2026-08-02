@@ -50,13 +50,13 @@ test('新経路では実効構成を 1 回だけ取得し、個別設定 API を
   expect(requests.filter((p) => LEGACY_CONFIG_APIS.includes(p))).toEqual([]);
 });
 
-test('旧経路（フラグ無し）は従来どおり個別設定 API から取得する', async ({ page }) => {
+test('既定（フラグ無し）は新経路を使う（台帳 B-02 で切替）', async ({ page }) => {
   const requests = recordConfigRequests(page);
   await page.goto('/kiosk');
   await expect(page.getByTestId('kiosk-quick-actions')).toBeVisible();
 
-  expect(requests).not.toContain('/api/configuration/effective');
-  expect(requests).toContain('/api/kiosk/directory');
+  // 既定が新経路になったので、フラグ無しでも実効構成を取りに行く。
+  expect(requests).toContain('/api/configuration/effective');
 });
 
 test('新経路でも待機画面の文言・目的選択・担当者検索が同じように出る', async ({ page }) => {
@@ -131,6 +131,10 @@ test('受付が進行中の間も取得は続くが、画面は差し替わら�
   await expect(page.getByTestId('staff-search')).toBeVisible();
 });
 
+/**
+ * **旧経路は撤去（台帳 B-03）まで生きている**ので、明示的な切り戻しの検査を残す。
+ * これが落ちたら、撤去前に退避経路が壊れているということ。
+ */
 test('?effectiveConfig=0 で端末 1 台だけ旧経路へ切り戻せる', async ({ page }) => {
   const requests = recordConfigRequests(page);
   await page.goto('/kiosk?effectiveConfig=0');

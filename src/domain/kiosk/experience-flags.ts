@@ -23,9 +23,22 @@ export type KioskExperienceFlags = {
   effectiveConfiguration: boolean;
 };
 
-/** 既定は旧経路。移行フラグは「明示的に入れる」まで倒れない。 */
+/**
+ * **既定を新経路へ倒した**（台帳 §9 B-02。旧個別 API 撤去 B-03 の前提）。
+ *
+ * #419 で `/api/configuration/effective` を実装し、第 24 wave で `/kiosk` の切替経路を
+ * フラグ配下に入れてから据え置いていた。旧個別 API を撤去するには、まず**新経路が既定**に
+ * なっている必要がある（フラグが旧経路のまま撤去すると、既定経路そのものが消える）。
+ *
+ * **崖にはならない**: 新経路が失敗した端末は旧経路へ自動フォールバックする
+ * （`useKioskConfiguration` の `legacyConfigFetch`）。個別に戻すなら `?effectiveConfig=0`、
+ * 環境ごとなら `NEXT_PUBLIC_KIOSK_EFFECTIVE_CONFIG=0`。
+ *
+ * **撤去（B-03）はこのフォールバックも一緒に外すこと** — 旧 API を消しつつ
+ * フォールバック経路を残すと、失敗時に 404 を踏みに行くだけになる。
+ */
 export const DEFAULT_KIOSK_EXPERIENCE_FLAGS: KioskExperienceFlags = {
-  effectiveConfiguration: false,
+  effectiveConfiguration: true,
 };
 
 /** `1` / `true` / `on` を真、`0` / `false` / `off` を偽とみなす。それ以外は未指定扱い。 */
