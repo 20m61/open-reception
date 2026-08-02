@@ -67,6 +67,41 @@ function routeFiles(dir: string, found: string[] = []): string[] {
  * （`api/admin/integrations/*`）。マーカーを route 本体だけで探すと、それらを「ガード無し」と
  * 誤判定する。**「無い」と判定する前に、実際にそのモジュールを開く。**
  */
+/**
+ * コメントを落とす。
+ *
+ * **doc コメントがガードの代わりになってはいけない。** この検査はソースを文字列走査するので、
+ * `requireActor` と書いた doc コメントが在るだけで「ガードを参照している」と判定されていた。
+ * 実際、認可ガードを 1 行も持たない route が本検査を通ることを実測した（#373 増分 5）。
+ * 規約を説明するコメントほど識別子を書くので、**ガードの説明が丁寧な route ほど素通りする**
+ * という逆向きの穴になっていた。
+ */
+function stripComments(source: string): string {
+  return source.replace(/\/\*[\s\S]*?\*\//g, ' ').replace(/(^|[^:])\/\/[^\n]*/g, '$1');
+}
+
+/**
+ * そのモジュールがガード関数を**定義**しているか（＝呼び出し側ではない）。
+ *
+ * 動的な `new RegExp` を避けて文字列一致で書く。マーカ名は固定配列由来で外部入力は
+ * 到達しないが、抑制コメントを足すより regex を使わない方が素直（SAST の指摘も消える）。
+ */
+function definesGuard(source: string): boolean {
+  const decls = (m: string) => [
+    `export function ${m}`,
+    `export async function ${m}`,
+    `export const ${m}`,
+  ];
+  return GUARD_MARKERS.some((m) =>
+    decls(m).some((decl) => {
+      const at = source.indexOf(decl);
+      if (at === -1) return false;
+      // 後続が識別子文字なら別名（`requireActorSomething`）。取り違えない。
+      return !/[A-Za-z0-9_$]/.test(source[at + decl.length] ?? '');
+    }),
+  );
+}
+
 function withLocalImports(file: string, source: string): string {
   let combined = source;
   for (const match of source.matchAll(/from\s+'([^']+)'/g)) {
@@ -80,7 +115,15 @@ function withLocalImports(file: string, source: string): string {
     if (path === null) continue;
     for (const candidate of [`${path}.ts`, join(path, 'index.ts')]) {
       try {
-        combined += readFileSync(candidate, 'utf8');
+        const imported = readFileSync(candidate, 'utf8');
+        // **ガードを「定義している」モジュールは連結しない。**
+        //
+        // 連結の目的は「route が委譲した先でガードしている」場合を拾うこと。しかし
+        // `@/lib/admin/guard` からは `toGuardResponse`（エラー整形だけの関数）も import する。
+        // 全文を連結すると、そこに在る `requireActor` の**定義**が識別子として拾われ、
+        // **ガードを 1 行も呼ばない route が本検査を通る**。実測で確認した（#373 増分 5）。
+        // 委譲先ヘルパはガードを**呼ぶ**ので、定義側だけ落とせば検出力は落ちない。
+        if (!definesGuard(imported)) combined += imported;
         break;
       } catch {
         // 解決できない import（型のみ・存在しない）は無視する。
@@ -118,7 +161,8 @@ describe('管理 API は例外なく認可ガードを通る', () => {
     for (const file of files) {
       const source = readFileSync(file, 'utf8');
       if (exportedMethods(source).length === 0) continue;
-      if (GUARD_MARKERS.some((m) => withLocalImports(file, source).includes(m))) continue;
+      const scanned = stripComments(withLocalImports(file, source));
+      if (GUARD_MARKERS.some((m) => scanned.includes(m))) continue;
       if (Object.hasOwn(UNGUARDED_ROUTES, file)) continue;
       unguarded.push(file);
     }

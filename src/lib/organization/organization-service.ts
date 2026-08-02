@@ -35,8 +35,13 @@ import {
 import type { KioskDirectory } from '@/lib/data-stores/directory-store';
 import { listDepartments, listStaff } from '@/lib/data-stores/directory-store';
 import {
+  validateOrganizationUnitPatch,
+  type OrganizationUnitPatch,
+} from '@/domain/organization/update';
+import {
   listOrganizationMemberships,
   listOrganizationUnits,
+  putOrganizationUnit,
 } from './organization-repository';
 
 export type OrganizationView = {
@@ -204,4 +209,46 @@ export async function getVisitorDirectory(scope: TenantScope): Promise<KioskDire
         affiliation: affiliationFor(s.id),
       })),
   };
+}
+
+export type UpdateOrganizationResult =
+  | { ok: true; value: OrganizationUnit }
+  | { ok: false; error: { code: 'invalid_input' | 'not_found'; message: string } };
+
+/**
+ * 組織を編集する (#373 増分 5)。
+ *
+ * ## 合成ビューから引く（保存済みだけを見ない）
+ *
+ * 編集対象の大半は**まだ保存されていない互換組織**（`Department` 由来）。保存済みだけを
+ * 探すと「一覧に出ているのに編集できない」になる。合成ビューから現在値を取り、
+ * patch を当てて丸ごと保存する ＝ **その組織の初回編集が、そのまま新モデルへの載せ替え**になる。
+ *
+ * ## 全体を保存する理由
+ *
+ * `putOrganizationUnit` は置換なので、patch だけを保存すると他フィールドが消える。
+ * 合成後の値を土台にすることで、旧 UI で編集した名称なども保たれる。
+ *
+ * `tenantId` は**呼び出し側で解決済みの値**を渡すこと（`resolveAdminTenantId()` 等）。
+ */
+export async function updateOrganizationUnit(
+  scope: OrganizationScope,
+  id: string,
+  input: unknown,
+): Promise<UpdateOrganizationResult> {
+  const validated = validateOrganizationUnitPatch(input);
+  if (!validated.ok) return validated;
+
+  const view = await getOrganizationView(scope);
+  const current = view.units.find((u) => u.id === id);
+  // scope 外・存在しない id は同じ `not_found` にする。「在るが見えない」と「無い」を
+  // 区別できると、他テナントの組織 id の実在を当てられる。
+  if (current === undefined) {
+    return { ok: false, error: { code: 'not_found', message: 'organization not found' } };
+  }
+
+  const patch: OrganizationUnitPatch = validated.value;
+  const next: OrganizationUnit = { ...current, ...patch };
+  await putOrganizationUnit(scope.tenantId, next);
+  return { ok: true, value: next };
 }

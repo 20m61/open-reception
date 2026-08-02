@@ -239,6 +239,8 @@ export type AuditAction =
   // 管理操作 (issue #22)
   | 'department.created'
   | 'department.updated'
+  // 階層組織の編集 (#373)。値は残さず「誰がどの組織を編集したか」まで。
+  | 'organization.updated'
   | 'department.reordered'
   | 'staff.created'
   | 'staff.updated'
