@@ -6,6 +6,11 @@ import {
   vrmVersionAttribute,
   type VrmSpecVersion,
 } from '@/domain/avatar/vrm-version';
+import {
+  motionStateAttribute,
+  resolveMotionObservation,
+  type MotionObservation,
+} from '@/domain/avatar/motion-state';
 import { ResourceTracker } from '@/lib/three/resource-tracker';
 import { AvatarFallbackImage } from './avatar/fallback-image';
 import { emotionExpressionValues } from './avatar/vrm-expression';
@@ -88,6 +93,12 @@ export function VrmAvatarViewer({
    */
   const [vrmVersion, setVrmVersion] = useState<VrmSpecVersion>('unknown');
   const [vrmLoaded, setVrmLoaded] = useState(false);
+  /**
+   * モーション適用の**結果** (#578 増分 2)。`data-motion-url` は要求した URL を出すだけで、
+   * 実際に再生されたかは分からなかった。「再生されていない」と「再生されているが見た目が
+   * 変」を実機で区別できるようにする。
+   */
+  const [motionObservation, setMotionObservation] = useState<MotionObservation>({ state: 'none' });
   // 表情はレンダーループ（[vrmUrl] 依存）の外から更新されるため ref で最新値を渡す。
   const expressionRef = useRef<AvatarExpression>(expression ?? 'neutral');
   useEffect(() => {
@@ -184,23 +195,45 @@ export function VrmAvatarViewer({
         let currentAction: { fadeOut: (d: number) => void } | null = null;
         let motionToken = 0;
         const loadMotion = async (url: string | undefined): Promise<void> => {
-          if (!url) return;
+          // **黙って return しない** (#578 増分 2)。以前はここも catch も無言だったため、
+          // 「再生されていない」ことが `data-motion-url` からは判別できなかった。
+          const observe = (o: MotionObservation) => {
+            if (!disposed) setMotionObservation(o);
+          };
+          if (!url) {
+            observe({ state: 'none' });
+            return;
+          }
           const token = ++motionToken;
+          observe(resolveMotionObservation({ requestedUrl: url, vrmLoaded: Boolean(vrm) }));
           try {
             const animLoader = new GLTFLoader();
             animLoader.register((parser) => new VRMAnimationLoaderPlugin(parser));
             const vrma = await animLoader.loadAsync(url);
             // 破棄済み or 後発のモーション要求が来ていれば破棄（古い読込を捨てる）。
+            // **観測も更新しない** — 後発の要求が既に自分の状態を書いているため。
             if (disposed || token !== motionToken) return;
             const vrmAnimation = vrma.userData.vrmAnimations?.[0];
-            if (!vrmAnimation || !vrm) return;
+            const observation = resolveMotionObservation({
+              requestedUrl: url,
+              vrmLoaded: Boolean(vrm),
+              loaded: true,
+              hasAnimation: Boolean(vrmAnimation),
+            });
+            observe(observation);
+            if (observation.state !== 'playing' || !vrmAnimation || !vrm) return;
+            // 版差（0.x の 180° 反転）は createVRMAnimationClip が `vrm.meta.metaVersion` を
+            // 見て補正する。ここで独自に判定すると二重補正になるので触らない。
             const clip = createVRMAnimationClip(vrmAnimation, vrm);
             const action = mixer.clipAction(clip);
             action.reset().setLoop(THREE.LoopRepeat, Infinity).fadeIn(0.3).play();
             currentAction?.fadeOut(0.3);
             currentAction = action;
           } catch {
-            // モーション読込失敗は受付フローを止めない（idle 継続）。
+            // モーション読込失敗は受付フローを止めない（idle 継続）。ただし黙らない。
+            if (token === motionToken) {
+              observe(resolveMotionObservation({ requestedUrl: url, vrmLoaded: Boolean(vrm), loaded: false }));
+            }
           }
         };
         loadMotionRef.current = (url) => void loadMotion(url);
@@ -320,6 +353,8 @@ export function VrmAvatarViewer({
       data-motion-url={motionUrl}
       // 読み込んだ VRM の仕様版 (#578 増分 1)。`none`=未読込/失敗、`unknown`=読めたが版不明。
       data-vrm-version={vrmVersionAttribute({ loaded: vrmLoaded, version: vrmVersion })}
+      // モーション適用の結果 (#578 増分 2)。失敗は理由まで出す（failed:no-animation 等）。
+      data-motion-state={motionStateAttribute(motionObservation)}
     />
   );
 }
