@@ -8,6 +8,10 @@ import {
   useRef,
   useState,
 } from 'react';
+import {
+  createLocalVoiceSessionFactory,
+  shouldUseLocalVoiceOrchestrator,
+} from '@/lib/voice-session/local-mode';
 import type {
   FeedbackReasonCode,
   SatisfactionRating,
@@ -322,6 +326,20 @@ export type KioskFlowProps = {
 };
 
 export function KioskFlow({ operatingStatus, sttAdapterFactory, voiceSession, qrScanner }: KioskFlowProps = {}) {
+  /*
+   * 実 orchestrator のローカル起動 (#372 配線)。**既定はオフ。**
+   *
+   * `VoiceSessionOrchestrator`（ターン検出・barge-in・TTS duck/stop・VRM 同期）は実装も
+   * テストも揃っているのに**本番呼び出し元がゼロ**で、一度も起動していなかった。実音声
+   * （#369/#370）を繋ぐ前に、mock provider で通る経路を用意して実 UI で確かめられるようにする。
+   *
+   * 受付端末の音声挙動を変えるので `?voiceOrchestrator=1` を付けた端末だけ。明示注入
+   * （`voiceSession` prop = demo-studio 等）があればそちらを優先する ── 呼び出し側の
+   * 意図を URL が上書きしない。
+   */
+  const [localVoiceEnabled] = useState(() =>
+    typeof window === 'undefined' ? false : shouldUseLocalVoiceOrchestrator(window.location.search),
+  );
   const [data, dispatch] = useReducer(reducer, INITIAL);
   // onResolved 実結線 (#364): 音声で確定した相手候補を、タッチ経路と同一の SELECT_TARGET へ写像して
   // dispatch する。相手でない候補（purpose/other/なし）は null で無視。dispatch は useReducer 由来で
@@ -425,6 +443,23 @@ export function KioskFlow({ operatingStatus, sttAdapterFactory, voiceSession, qr
   const [heartbeatQueryOverride, setHeartbeatQueryOverride] = useState<number | undefined>(
     undefined,
   );
+
+  /**
+   * 実 orchestrator のローカル起動 (#372 配線)。**既定はオフ。**
+   *
+   * mock STT はここで渡した候補から確定文を返すので、画面に居る担当者を渡す
+   * （渡さないと解決できない候補ばかりになり、確認導線の検証にならない）。
+   * 明示注入（`voiceSession` prop = demo-studio 等）が最優先 ── URL フラグが呼び出し側の
+   * 意図を上書きしない。
+   */
+  const localVoiceSession = useMemo(() => {
+    if (!localVoiceEnabled) return undefined;
+    return createLocalVoiceSessionFactory(
+      { staff: [], departments: [] },
+      directory.staff.filter((s) => s.available).map((s) => s.displayName),
+    );
+  }, [localVoiceEnabled, directory.staff]);
+  const effectiveVoiceSession = voiceSession ?? localVoiceSession;
   const [callingStageQueryOverride, setCallingStageQueryOverride] = useState<
     Partial<CallingStageThresholds>
   >({});
@@ -967,9 +1002,9 @@ export function KioskFlow({ operatingStatus, sttAdapterFactory, voiceSession, qr
         通知する。demo-studio の synthetic driver はこれを合図に発話シーケンスを (再)開始できる
         （実 orchestrator 経路は同 hook を実装しないため無影響 = 中立な通知口）。
       */}
-      {voiceSession ? (
+      {effectiveVoiceSession ? (
         <VoiceSessionLayer
-          factory={voiceSession}
+          factory={effectiveVoiceSession}
           locale={locale}
           receptionState={data.state}
           onResolved={handleVoiceResolved}
