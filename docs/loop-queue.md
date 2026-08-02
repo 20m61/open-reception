@@ -726,6 +726,40 @@ ExperienceShell の切替**（移行フラグは ADR 0004 のとおり構成取�
   端末は新経路が 403 になり、旧経路へ自動フォールバックして初めて構成が揃う）。
 - **#369〜#372 は greenfield**。既存 `src/lib/voice/` を音声パイプラインと誤認しない。
 
+### 音声スタック（#369〜#372）は「ドメイン完成・実音声未接続」（2026-08-03 実測）
+
+キューは #369〜#372 を「ローカル可」に置いていたが、実態は違う。**ドメインと seam は
+完成していて、ローカルで積める差分がほぼ無い。**
+
+本番呼び出し元がゼロのもの（＝作ってあるが誰も起動しない）:
+
+| 対象 | 本番消費者 |
+| --- | --- |
+| `reportNearEndOnset` / `reportNearEndUpdate`（barge-in の入口） | **0** |
+| `createOrchestratorVoiceSession`（実 orchestrator を束ねる seam） | **0** |
+| `domain/voice-turn/vad.ts` | 0 |
+| `domain/voice-turn/stt-integration.ts` | 0 |
+| `domain/voice-turn/history-truncation.ts` | 0 |
+
+一方 `turn-detector` / `near-end-classifier` / `barge-in-controller` / `eval-bridge` は
+orchestrator まで配線済み。**つまり barge-in の機構は在るが、信号を供給する側が無いので
+本番では一度も起動しない。**
+
+kiosk の音声入力は `MockSttAdapter` 直結（`components/kiosk/stt-adapter.ts`）。
+
+#### 何がブロッカーか
+
+- **実音声の入力経路**（ブラウザのマイク → transport → STT provider）。#369 / #370 の本体で、
+  実 AWS・実機が要る（#65）
+- `history-truncation` は別の前提でブロック ── **本番に会話履歴そのものが存在しない**。
+  履歴を持つ設計は「来訪者の発話＝PII をどこにどれだけ保持するか」の判断を伴う
+
+#### ローカルで積める候補（要判断）
+
+`createOrchestratorVoiceSession` を Mock STT 駆動で KioskFlow へ配線し、実 orchestrator を
+ローカルで起動できるようにする。turn detection と barge-in が実 UI で動き、e2e で検証できる
+ようになる。ただし**受付端末の音声挙動を変える**のでフラグ運用と体験設計の判断が要る。
+
 ### テストが在ることは安全の証明にならない（2026-08-02〜03 実例）
 
 セキュリティ 4 件（#589 / #595 / #597 / #601）を潰したが、**いずれも「テストもゲートも
