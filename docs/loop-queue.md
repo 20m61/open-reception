@@ -172,7 +172,7 @@
 | **#370** | voice/stt | **実装済**（同上）: `domain/voice-stt/`（stabilizer/entity-resolver/fallback）+ **`lib/voice-stt/transcribe-adapter.ts`（`TranscribeStreamingSttProvider`）** + mock provider。旧「Transcribe 参照 0」は誤り | ローカル可 / 実 AWS 疎通は外部待ち |
 | **#371** | voice/tts | **実装済**（同上）: `domain/voice-tts/`（cache/queue/lifecycle/viseme/suppression/dynamic-utterances、9 module × 9 test）。Polly は `server/notification/polly-adapter.ts` に在る | ローカル可 / 実 AWS 疎通は外部待ち |
 | **#372** | voice/turn | **実装済**（同上）: `domain/voice-turn/`（vad/turn-detector/near-end-classifier/barge-in-controller/history-truncation/stt-integration）。旧「VAD/turn detector なし」は誤り | ローカル可 |
-| **#373** | domain/org | **increment 1 完了**（PR #394 = `src/domain/organization/` の型・階層検証・ディレクトリ・compat reader。additive 限定で既存 `Department`/`staff.departmentId` は無改変）。残: 永続化 repository → Directory API 配線 → 来訪者 UI → tenant 越境 E2E。follow-up は **#396** | ローカル可（継続） |
+| **#373** | domain/org | **increment 1〜4 完了**。inc1 = 型・階層検証・ディレクトリ・compat reader（PR #394）／inc2 = 永続化 repository ＋ `membershipStoreId`／inc3 = 互換と保存済みの合成ビュー（`getOrganizationView`）／**inc4 = 来訪者ディレクトリの導出一本化（PR #588）と同姓同名の識別ラベル（PR #590 / #592）**。**規則 A（2026-08-02 ユーザー判断）: 組織の有効/無効は担当者の呼び出し可否へ波及させない。ただし所属単位の `callable`/`publicInDirectory` は効く。** 残: 組織編集 UI と書き込み API（＝現状 `putOrganizationUnit` の本番呼び出し元がゼロで、この増分群は**本番では観測可能な効果を持たない**）・代理担当の来訪者面表現・site scope 化（`section-loaders` は `{kind:'tenant'}` 固定で、site を渡すと担当者が全サイト分漏れるため型で塞いである）。follow-up は **#396** / **#589**（無認証の `/api/kiosk/directory`。組織書き込み API より前に塞ぐ） | ローカル可（継続） |
 | **#374** | domain/routing | **実装済**（第 41 wave に訂正。旧「未達」列は stale）: `domain/routing/`（endpoint/policy/orchestrator/ledger/describe/compat/seed/provider/mock-provider、9 module × 7 test）。循環検出は `policy.ts`。**残**: 旧 `call-route` との重複解消（台帳 §5 の重複概念＝概念一本化は仕様判断） | 残りは要ユーザー確認 |
 | **#375** | domain/invitation | **部分**: token hash 化は第 13 wave 完了。**3-ref 分離は第 42 wave で型と写しを実装し、第 53 wave で `issuedBy` の永続化まで到達**（任意フィールドで加算的・サーバの認可済みコンテキストから導出＝公開 API は非破壊）。**残**: `receptionTarget` / `connectionTarget` の載せ替え。MVP 制約下では `targetType`/`targetId` から導出でき**情報が増えない**ため、公開 API を動かす価値が薄い（要ユーザー確認のまま）・QR 確認画面への発行者表示・監査記録・**本人接続でない招待をどの exception state へ落とすかの体験設計**（`person_unavailable` か新規か。J-OR-03 / J-OR-05 に直結） | 残りは**要ユーザー確認**（公開 API + Journey の意味） |
 | **#376** | spike/vonage | **部分**: `vonage-adapter.ts`・`vonage-jwt.ts`・`docs/vonage-call-design.md` 在り。実測部未着手 | ADR はローカル可 / 実測は**外部待ち**→ #65 |
@@ -725,6 +725,29 @@ ExperienceShell の切替**（移行フラグは ADR 0004 のとおり構成取�
   旧経路。**フラグの既定を倒す前に「新経路で全端末が構成を取れる」ことを観測する**（未エンロール
   端末は新経路が 403 になり、旧経路へ自動フォールバックして初めて構成が揃う）。
 - **#369〜#372 は greenfield**。既存 `src/lib/voice/` を音声パイプラインと誤認しない。
+
+### ゲートの FAIL がコードの退行とは限らない（2026-08-02 実例）
+
+`--full` の vrm が FAIL したが、原因は**検査自身がリークした `next-server`** がポート 3102 を
+握っていたことだった。`npm run start` は `next start` を子プロセスとして起動するので、
+`cleanup` が npm を殺しても next-server は孤児として生き残る。次回の実行は**古いサーバ**に
+繋がり、再ビルド後は chunk が食い違って `ChunkLoadError` を出す。
+
+この症状は**コードの退行と見分けがつかない**。実際「自分の変更が VRM を壊した」と誤認し、
+main との比較・クリーンビルドで数回のビルドを浪費した。逆に古い build が健全なら**偽 PASS**
+にもなる。`scripts/vrm-check.sh` に (1) 起動前のポート検査 (2) ポート保持者を名指しで殺す
+cleanup を入れて塞いだ。
+
+**教訓**: 検査が FAIL したら、まず「検査対象は本当に今のコードか」を確かめる。
+切り分けの初手は `lsof -i tcp:<port>`。**背景実行に `tail -N` を噛ませない**（失敗理由を
+捨てる。今回も一度失った）。ログはファイルへ落として全文を残す。
+
+### mask されている領域は VRT で守られていない
+
+VRT の `mask` は要素の**矩形**を覆う。よって (1) 要素が高くなれば mask 矩形も変わり
+**baseline は影響を受ける**（「mask してあるから影響なし」は誤り）、(2) mask 下の**中身は
+何も検証されない**。PII のため mask している領域に機能を足したら、テキスト検査を別に足すこと。
+`confirm-target` の所属表示（#591）がこれに該当する。
 
 ## モデル割り当て指針（オーケストレータ向け）
 
