@@ -14,6 +14,7 @@ DELETE /api/admin/reception-flows/[]
 DELETE /api/admin/reservations/[]
 DELETE /api/admin/routing/endpoints/[]
 DELETE /api/admin/routing/policies/[]
+DELETE /api/admin/staff/[]/memberships
 DELETE /api/platform/integrations/provider-config/secret
 GET /api/admin/ai-guidance
 GET /api/admin/assets
@@ -42,6 +43,7 @@ GET /api/admin/languages
 GET /api/admin/motions
 GET /api/admin/operating-policy
 GET /api/admin/organizations
+GET /api/admin/organizations/memberships
 GET /api/admin/reception-flows
 GET /api/admin/reception-flows/[]
 GET /api/admin/receptions
@@ -132,6 +134,7 @@ POST /api/admin/routing/endpoints
 POST /api/admin/routing/policies
 POST /api/admin/sites
 POST /api/admin/staff
+POST /api/admin/staff/[]/memberships
 POST /api/admin/staff/import
 POST /api/admin/stay
 POST /api/admin/stay/[]/cancel
