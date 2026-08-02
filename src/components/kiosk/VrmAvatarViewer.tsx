@@ -142,6 +142,12 @@ export function VrmAvatarViewer({
     const canvas = canvasRef.current;
     if (!canvas) return;
 
+    // **前モデルの観測を持ち越さない** (#578 レビュー M6)。リセットしないと、新モデルの
+    // ダウンロード中（実機で数秒）に前モデルの版・再生状態を報告し続ける。
+    setVrmVersion('unknown');
+    setVrmLoaded(false);
+    setMotionObservation({ state: 'none' });
+
     let disposed = false;
     let animationId = 0;
     const tracker = new ResourceTracker();
@@ -175,9 +181,16 @@ export function VrmAvatarViewer({
          * `updateProjectionMatrix()` も呼ばれておらず、**横向き iPad で回転すると歪んで**いた。
          */
         let headHeight: number | undefined;
+        let headHeightApplied: number | undefined;
+        /** 直前に適用した実寸。同値なら何もしない（自己参照フィードバックの再発防止）。 */
+        let appliedSize: { w: number; h: number } | null = null;
         const applyFraming = () => {
           const w = canvas.clientWidth || 320;
           const h = canvas.clientHeight || 480;
+          // **冪等にする。** 万一寸法が自分の書き込みで揺れても、同値なら再適用しない。
+          if (appliedSize?.w === w && appliedSize.h === h && headHeightApplied === headHeight) return;
+          appliedSize = { w, h };
+          headHeightApplied = headHeight;
           gl.setSize(w, h, false);
           const framing = resolveCameraFraming({ headHeight, aspect: w / h });
           camera.aspect = w / h;
@@ -233,6 +246,14 @@ export function VrmAvatarViewer({
             if (!disposed) setMotionObservation(o);
           };
           if (!url) {
+            // **token を進める。** 進めないと、飛行中だった前の要求が「まだ現役」と誤判定して
+            // 後から再生され、`data-motion-url` は空なのに `data-motion-state=playing` になる。
+            ++motionToken;
+            // **再生中の .vrma を止める。** 止めないと `state:'none'`（＝手続き的ポーズで
+            // 動く正常状態）と報告しながら前状態のモーションが回り続け、しかも
+            // `if (!currentAction)` の内側にある**視線誘導ごと無効化**される。
+            currentAction?.fadeOut(0.3);
+            currentAction = null;
             observe({ state: 'none' });
             return;
           }
@@ -253,7 +274,13 @@ export function VrmAvatarViewer({
               hasAnimation: Boolean(vrmAnimation),
             });
             observe(observation);
-            if (observation.state !== 'playing' || !vrmAnimation || !vrm) return;
+            if (observation.state !== 'playing' || !vrmAnimation || !vrm) {
+              // 失敗を報告する以上、前のモーションを回し続けない
+              // （`failed:*` を見た運用者は「再生されていない」と読む）。
+              currentAction?.fadeOut(0.3);
+              currentAction = null;
+              return;
+            }
             // 版差（0.x の 180° 反転）は createVRMAnimationClip が `vrm.meta.metaVersion` を
             // 見て補正する。ここで独自に判定すると二重補正になるので触らない。
             const clip = createVRMAnimationClip(vrmAnimation, vrm);
@@ -264,6 +291,8 @@ export function VrmAvatarViewer({
           } catch {
             // モーション読込失敗は受付フローを止めない（idle 継続）。ただし黙らない。
             if (token === motionToken) {
+              currentAction?.fadeOut(0.3);
+              currentAction = null;
               observe(resolveMotionObservation({ requestedUrl: url, vrmLoaded: Boolean(vrm), loaded: false }));
             }
           }
@@ -355,17 +384,19 @@ export function VrmAvatarViewer({
           const observer = new ResizeObserver(() => {
             if (!disposed) applyFraming();
           });
-          observer.observe(canvas);
+          // **canvas ではなく親を観測する。** canvas を観測すると、`gl.setSize` が書いた
+          // backing store の変化を自分で拾って発散し得る（上の style で切り離してはいるが、
+          // 観測対象を親にしておけば構造的にその経路が存在しない）。
+          observer.observe(canvas.parentElement ?? canvas);
           tracker.track({ dispose: () => observer.disconnect() });
         }
         render();
       } catch {
         // WebGL 不可 / VRM 読み込み失敗 → fallback。受付フローは継続。
-        if (!disposed) {
-          setFailed(true);
-          // 「読めていない」を版不明（unknown）と混同させない。
-          setVrmLoaded(false);
-        }
+        // `setFailed(true)` で `showFallback` が真になり canvas 自体が描かれなくなるため、
+        // ここで観測属性を触っても誰も読めない（#578 レビュー m9）。状態は effect 冒頭の
+        // リセットで既に初期化済み。
+        if (!disposed) setFailed(true);
       }
     })();
 
@@ -397,6 +428,17 @@ export function VrmAvatarViewer({
     <canvas
       ref={canvasRef}
       className={className}
+      /**
+       * **レイアウト寸法を CSS で確定させる**（#578 増分 3 の退行修正）。
+       *
+       * これが無いと canvas のレイアウト寸法＝`width`/`height` **属性**（intrinsic size）に
+       * なる。`gl.setSize(w, h, false)` は属性へ `w * pixelRatio` を書くので、
+       * **自分が書いた値が次の `clientWidth` になる**。それを `ResizeObserver` で観測すると
+       * 1 フレームごとに `pixelRatio` 倍へ発散し、DPR>1（＝実機 iPad）で canvas が
+       * 数百 ms のうちに上限まで肥大して GPU が落ちる。
+       * CSS で寸法を決めれば属性を書き換えてもレイアウトは動かない。
+       */
+      style={{ display: 'block', width: '100%', height: '100%' }}
       data-testid="vrm-canvas"
       data-motion-url={motionUrl}
       // 読み込んだ VRM の仕様版 (#578 増分 1)。`none`=未読込/失敗、`unknown`=読めたが版不明。

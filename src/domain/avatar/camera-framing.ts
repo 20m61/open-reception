@@ -31,6 +31,18 @@ export type CameraFraming = {
 /** 既定の頭の高さ（m）。humanoid から取れなかったときだけ使う成人相当の値。 */
 const FALLBACK_HEAD_HEIGHT = 1.35;
 
+/**
+ * 頭の高さの妥当域（m）。
+ *
+ * **スケールの怪しいモデルこそがこの機能の主対象**なので、有限でも非現実的な値を
+ * そのまま使わない。cm スケール（135）や dm スケール（13）の VRM を渡されると
+ * `distanceRatio` 倍した距離が far 平面（20）を越え、**モデル全体が描画されず真っ黒**になる。
+ * 逆に極小（0.05）だと near 平面（0.1）の内側に頭が入ってクリップされる。
+ * どちらも「読めているのに何も映らない」ため、観測からは切り分けられない。
+ */
+const MIN_HEAD_HEIGHT = 0.4;
+const MAX_HEAD_HEIGHT = 2.5;
+
 /** 垂直画角。狭いほど望遠的で歪みが少ない。上半身の対話距離としてこの辺り。 */
 const DEFAULT_FOV = 30;
 
@@ -53,10 +65,12 @@ export function resolveCameraFraming(input: {
   /** 描画領域の縦横比（幅 / 高さ）。0 以下や非有限値は既定の縦長として扱う。 */
   aspect: number;
 }): CameraFraming {
-  const headHeight =
+  const rawHeadHeight =
     Number.isFinite(input.headHeight) && (input.headHeight ?? 0) > 0
       ? (input.headHeight as number)
       : FALLBACK_HEAD_HEIGHT;
+  // 有限でも非現実的な値は妥当域へ寄せる（cm/dm スケールのモデルで真っ黒にしない）。
+  const headHeight = Math.min(Math.max(rawHeadHeight, MIN_HEAD_HEIGHT), MAX_HEAD_HEIGHT);
   const aspect = Number.isFinite(input.aspect) && input.aspect > 0 ? input.aspect : 3 / 4;
 
   /**

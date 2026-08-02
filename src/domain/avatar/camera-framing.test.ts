@@ -76,3 +76,37 @@ describe('resolveCameraFraming', () => {
     }
   });
 });
+
+/**
+ * **有限だが非現実的なスケール** (#578 レビュー M7)。
+ *
+ * 従来のテストは `0 / -1 / NaN / Infinity`（すべて fallback へ落ちる経路）しか突いておらず、
+ * **実際に壊れる値を 1 つも通していなかった**。cm/dm スケールの VRM は far 平面（20）の外へ
+ * 出て真っ黒になり、極小モデルは near 平面（0.1）の内側でクリップされる。
+ * どちらも「読めているのに何も映らない」ので観測から切り分けられない。
+ */
+describe('resolveCameraFraming / 非現実的なスケール (#578 レビュー M7)', () => {
+  const NEAR = 0.1;
+  const FAR = 20;
+
+  it('cm スケール（135）でも far 平面の内側に収まる', () => {
+    const f = resolveCameraFraming({ headHeight: 135, aspect: 3 / 4 });
+    expect(f.position.z).toBeLessThan(FAR);
+  });
+
+  it('dm スケール（13）でも far 平面の内側に収まる', () => {
+    const f = resolveCameraFraming({ headHeight: 13, aspect: 16 / 9 });
+    expect(f.position.z).toBeLessThan(FAR);
+  });
+
+  it('極小モデル（0.05）でも near 平面の外側に立つ', () => {
+    const f = resolveCameraFraming({ headHeight: 0.05, aspect: 3 / 4 });
+    expect(f.position.z).toBeGreaterThan(NEAR);
+  });
+
+  it('実測の既定モデル（1.3035m）は素通しする（クランプが常用域を歪めない）', () => {
+    // public/avatar/default.vrm の head ワールド Y を実測した値。
+    const f = resolveCameraFraming({ headHeight: 1.3035, aspect: 3 / 4 });
+    expect(f.position.y).toBeCloseTo(1.3035, 4);
+  });
+});

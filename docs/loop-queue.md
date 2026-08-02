@@ -380,6 +380,29 @@
 | 74 | 2026-07-29 | #423 の一部: 対象テナント context の安全側フォールバック（存在しない id / 壊れた値 / 画面移動）を e2e で固定。純関数 `resolveActiveTenantId` は unit 済みだが**cookie → server 解決 → 画面表示の経路が未検証**だった。テナント作成 API が無いため実テナント間の越境 e2e は不可 | PR #503 |
 
 
+**#578 VRM の観測性とカメラ（完了・実機 UAT 待ち）**
+
+> 「モーションが変」というユーザー報告に対し、**まず観測可能にしてから直す**方針で 3 増分。
+> PR #579（`data-vrm-version`）/ #580（`data-motion-state`）/ #581（カメラ画角）。
+>
+> **🔴 ユーザー提案の「0.0/1.0 を判定してモーション適用」は入れなかった。**
+> `@pixiv/three-vrm-animation` が既に `vrm.meta.metaVersion` を見て `.vrma` のトラック値を
+> 0.x 用に反転している（`createVRMAnimationHumanoidTracks(.., metaVersion)`）。
+> **独自の版判定を足すと二重補正になって逆に壊す。** 提案を受けたら実装前にライブラリ側の
+> 責務を確認すること。
+>
+> **単独で成立していたバグ 2 件を修正**: (a) `aspect` が読込時 1 回きりで
+> `updateProjectionMatrix()` も未呼び出し → **横向き iPad を回転させると歪む**。
+> (b) `position.set(0, 1.3, 2.2)` の決め打ちで VRM の身長差（子供/成人で頭の高さが 50cm 以上
+> 違う）に非対応 → モデル差し替えで顔が切れる。
+>
+> **モーション読込は失敗しても完全に黙っていた**（`if (!vrmAnimation || !vrm) return;` /
+> `catch {}`）。`data-motion-url` は要求 URL を出すだけなので、**「再生されていない」ことすら
+> 分からなかった**。実機での切り分けは `data-motion-state`（`failed:load-error` /
+> `failed:no-animation` / `failed:no-vrm`）→ `data-vrm-version`（`unknown` なら補正が空振り）の順。
+>
+> **残**: 視覚的な妥当性（距離比 1.6・注視点の下げ幅 0.08 等の係数）は実機 UAT #65。
+
 **次に着手する候補（更新・#419 グローバルストアのテナント対応 3/5 完了時点）**
 
 > ### #419 残増分「グローバルストアのテナント対応」— 残り 2 ストア（調査済み・着手可能）

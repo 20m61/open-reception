@@ -88,10 +88,18 @@ export function resolveMotionObservation(input: {
   hasAnimation?: boolean;
 }): MotionObservation {
   if (input.requestedUrl === undefined || input.requestedUrl === '') return { state: 'none' };
+  /**
+   * **VRM 未読込を最初に見る** (#578 レビュー m8)。
+   *
+   * 以前は `loading` / `load-error` を先に判定していたため、doc が主張する順序と実装が
+   * 食い違っていた（`vrmLoaded:false, loaded:false` が `no-vrm` ではなく `load-error` に
+   * なる）。さらに `.vrma` の読込完了を待たないと `no-vrm` が表に出ず、`.vrma` が先に
+   * 失敗すると**より根本的な原因が永久に隠れる**。適用先が無いことは読込結果と無関係に
+   * 確定しているので、最初に出す。
+   */
+  if (!input.vrmLoaded) return { state: 'failed', failure: 'no-vrm' };
   if (input.loaded === undefined) return { state: 'loading' };
   if (input.loaded === false) return { state: 'failed', failure: 'load-error' };
-  // VRM が無ければ、`.vrma` が正常でも適用先が無い。モーション側の問題と誤診しない。
-  if (!input.vrmLoaded) return { state: 'failed', failure: 'no-vrm' };
   if (input.hasAnimation !== true) return { state: 'failed', failure: 'no-animation' };
   return { state: 'playing' };
 }
