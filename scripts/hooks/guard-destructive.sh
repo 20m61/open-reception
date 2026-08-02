@@ -76,4 +76,29 @@ if printf '%s' "$scan" | grep -Eq '(curl|wget)[[:space:]]+[^|]*\|\s*(sh|bash|zsh
   block "curl/wget piped to a shell — inspect the script first"
 fi
 
+# 8. `rg -r` を「再帰」と誤用する（`-r` は --replace）。
+#
+#    `rg -rn 'pat' path` は**マッチを文字列 "n" へ置換して出力する**。結果は一見すると
+#    grep の出力に見えるので、**リポジトリ側のバグに見える誤読**を生む。実際にこの周回で
+#    5 回踏み、うち 1 回は「props が改名されている」と誤診した。
+#    再帰は既定なのでフラグ自体が不要。行番号は `-n`、置換したいときだけ `--replace` と書く。
+if printf '%s' "$scan" | grep -Eq '(^|[|;&[:space:]])rg[[:space:]]+(-[a-qs-zA-Z]*r|--replace([[:space:]]|=))'; then
+  block "rg -r is --replace (not recursive) and rewrites matches; recursion is the default — drop -r, use -n for line numbers"
+fi
+
+# 9. 背景実行の出力を tail で切り詰める。
+#
+#    `run_in_background` の出力は**失敗時に読む唯一の材料**。`| tail -N` を噛ませると
+#    要約だけが残り、原因（スタックトレース・どのステップで落ちたか）を捨てることになる。
+#    実際にこの周回で VRM 検査の失敗理由を一度失い、切り分けに数回のビルドを浪費した。
+#    ログはファイルへ落とし（`> file 2>&1`）、必要な部分をあとから読むこと。
+#    **ファイルへ落としてから読むのは正しい**（`cmd > log 2>&1` のあと `tail log`）。
+#    リダイレクトが 1 つも無い場合だけを止める ── 広く止めるとこの正しい手順まで
+#    ブロックされ、摩擦でガードごと無効化される（実際に最初の実装がそうなった）。
+if [ "$(printf '%s' "$payload" | grep -c '"run_in_background"[[:space:]]*:[[:space:]]*true')" -gt 0 ] \
+  && printf '%s' "$scan" | grep -Eq '\|[[:space:]]*(tail|head)([[:space:]]|$)' \
+  && ! printf '%s' "$scan" | grep -Eq '>[[:space:]]*[^|&[:space:]]+'; then
+  block "background output piped to tail/head discards the failure reason; redirect to a file (> log 2>&1) instead"
+fi
+
 exit 0
