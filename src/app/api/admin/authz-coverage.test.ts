@@ -80,10 +80,25 @@ function stripComments(source: string): string {
   return source.replace(/\/\*[\s\S]*?\*\//g, ' ').replace(/(^|[^:])\/\/[^\n]*/g, '$1');
 }
 
-/** そのモジュールがガード関数を**定義**しているか（＝呼び出し側ではない）。 */
+/**
+ * そのモジュールがガード関数を**定義**しているか（＝呼び出し側ではない）。
+ *
+ * 動的な `new RegExp` を避けて文字列一致で書く。マーカ名は固定配列由来で外部入力は
+ * 到達しないが、抑制コメントを足すより regex を使わない方が素直（SAST の指摘も消える）。
+ */
 function definesGuard(source: string): boolean {
+  const decls = (m: string) => [
+    `export function ${m}`,
+    `export async function ${m}`,
+    `export const ${m}`,
+  ];
   return GUARD_MARKERS.some((m) =>
-    new RegExp(`export\\s+(async\\s+)?(function|const)\\s+${m}\\b`).test(source),
+    decls(m).some((decl) => {
+      const at = source.indexOf(decl);
+      if (at === -1) return false;
+      // 後続が識別子文字なら別名（`requireActorSomething`）。取り違えない。
+      return !/[A-Za-z0-9_$]/.test(source[at + decl.length] ?? '');
+    }),
   );
 }
 
