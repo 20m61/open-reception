@@ -172,7 +172,7 @@
 | **#370** | voice/stt | **実装済**（同上）: `domain/voice-stt/`（stabilizer/entity-resolver/fallback）+ **`lib/voice-stt/transcribe-adapter.ts`（`TranscribeStreamingSttProvider`）** + mock provider。旧「Transcribe 参照 0」は誤り | ローカル可 / 実 AWS 疎通は外部待ち |
 | **#371** | voice/tts | **実装済**（同上）: `domain/voice-tts/`（cache/queue/lifecycle/viseme/suppression/dynamic-utterances、9 module × 9 test）。Polly は `server/notification/polly-adapter.ts` に在る | ローカル可 / 実 AWS 疎通は外部待ち |
 | **#372** | voice/turn | **実装済**（同上）: `domain/voice-turn/`（vad/turn-detector/near-end-classifier/barge-in-controller/history-truncation/stt-integration）。旧「VAD/turn detector なし」は誤り | ローカル可 |
-| **#373** | domain/org | **increment 1〜4 完了**。inc1 = 型・階層検証・ディレクトリ・compat reader（PR #394）／inc2 = 永続化 repository ＋ `membershipStoreId`／inc3 = 互換と保存済みの合成ビュー（`getOrganizationView`）／**inc4 = 来訪者ディレクトリの導出一本化（PR #588）と同姓同名の識別ラベル（PR #590 / #592）**。**規則 A（2026-08-02 ユーザー判断）: 組織の有効/無効は担当者の呼び出し可否へ波及させない。ただし所属単位の `callable`/`publicInDirectory` は効く。** 残: 組織編集 UI と書き込み API（＝現状 `putOrganizationUnit` の本番呼び出し元がゼロで、この増分群は**本番では観測可能な効果を持たない**）・代理担当の来訪者面表現・site scope 化（`section-loaders` は `{kind:'tenant'}` 固定で、site を渡すと担当者が全サイト分漏れるため型で塞いである）。follow-up は **#396** / **#589**（無認証の `/api/kiosk/directory`。組織書き込み API より前に塞ぐ） | ローカル可（継続） |
+| **#373** | domain/org | **increment 1〜7 完了。読み→書き→画面の一巡が閉じた。** inc1 型・階層検証／inc2 永続化／inc3 合成ビュー／inc4 来訪者ディレクトリ導出＋同姓同名ラベル（PR #588/#590/#592）／inc5 編集 API（#596）／inc6 管理画面 `/admin/organizations`（#598）／inc7 階層編集（#603）。**規則 A（2026-08-02 ユーザー判断）: 組織の有効/無効は担当者の呼び出し可否へ波及させない。ただし所属単位の `callable`/`publicInDirectory` は効く。** 残: **代理担当を来訪者面に出すか（仕様判断・要ユーザー確認）**のみ。**site scope 化は実装不能と判明**（`Department`/`Staff` に `siteId` が無く、互換ユニットは要求スコープの siteId を継承するので no-op。前提はスキーマ変更＝停止境界。実測の根拠は #373 コメント） | 残りは要ユーザー確認 |
 | **#374** | domain/routing | **実装済**（第 41 wave に訂正。旧「未達」列は stale）: `domain/routing/`（endpoint/policy/orchestrator/ledger/describe/compat/seed/provider/mock-provider、9 module × 7 test）。循環検出は `policy.ts`。**残**: 旧 `call-route` との重複解消（台帳 §5 の重複概念＝概念一本化は仕様判断） | 残りは要ユーザー確認 |
 | **#375** | domain/invitation | **部分**: token hash 化は第 13 wave 完了。**3-ref 分離は第 42 wave で型と写しを実装し、第 53 wave で `issuedBy` の永続化まで到達**（任意フィールドで加算的・サーバの認可済みコンテキストから導出＝公開 API は非破壊）。**残**: `receptionTarget` / `connectionTarget` の載せ替え。MVP 制約下では `targetType`/`targetId` から導出でき**情報が増えない**ため、公開 API を動かす価値が薄い（要ユーザー確認のまま）・QR 確認画面への発行者表示・監査記録・**本人接続でない招待をどの exception state へ落とすかの体験設計**（`person_unavailable` か新規か。J-OR-03 / J-OR-05 に直結） | 残りは**要ユーザー確認**（公開 API + Journey の意味） |
 | **#376** | spike/vonage | **部分**: `vonage-adapter.ts`・`vonage-jwt.ts`・`docs/vonage-call-design.md` 在り。実測部未着手 | ADR はローカル可 / 実測は**外部待ち**→ #65 |
@@ -725,6 +725,36 @@ ExperienceShell の切替**（移行フラグは ADR 0004 のとおり構成取�
   旧経路。**フラグの既定を倒す前に「新経路で全端末が構成を取れる」ことを観測する**（未エンロール
   端末は新経路が 403 になり、旧経路へ自動フォールバックして初めて構成が揃う）。
 - **#369〜#372 は greenfield**。既存 `src/lib/voice/` を音声パイプラインと誤認しない。
+
+### テストが在ることは安全の証明にならない（2026-08-02〜03 実例）
+
+セキュリティ 4 件（#589 / #595 / #597 / #601）を潰したが、**いずれも「テストもゲートも
+green だが安全ではない」**形だった。通常のテスト実行では見つからず、**変異させて初めて**分かった。
+
+- **#589** … セッションガードが取り残されていたが、e2e には「kiosk API は認証なしで利用できる
+  （公開）」という**意図を明示したテスト**が在った。履歴を辿ると #24（admin 認証境界）当時の
+  「admin 認証の背後に置かない」という別の意図で、**タイトルが陳腐化**していた
+- **#595** … 認可カバレッジ検査が、**doc コメントに `requireActor` と書いてあるだけ**で通った。
+  ガードの説明が丁寧な route ほど素通りする逆向きの穴。`@/lib/admin/guard` から
+  `toGuardResponse` を import するだけでも通った（連結先に定義が在るため）
+- **#597** … 縮退経路が組織モデルの編集を無視し、**隠したはずの組織が縮退中だけ露出**していた
+- **#601** … `it('クエリ指定時はその tenantId / siteId で取得する')` が、**脆弱な挙動を
+  そのまま仕様として固定**していた
+
+**教訓**: 書いたテストは必ず変異させて落ちることを確かめる。既存テストのタイトルは意図の
+スナップショットで陳腐化する。**「拒否側テストが通っている」は、正しい理由で通っているとは限らない**
+（#603 では `parentId` が編集不可キーとして弾かれていたため、循環検証が無くても通っていた）。
+
+### 調査の粗さによる誤報を 2 度出した（2026-08-03）
+
+- 「トークン API 2 本が無認証の可能性」→ **誤り**。`readKioskSession` ＋所有権チェック済み。
+  最初の調査が `denyWithoutKioskSession|requireKioskSession` だけを検索していた
+- 「更新系 30 route が未監査」→ **誤り**。全 67 route を精査して穴はゼロ。マーカを `marker(` と
+  括弧付きで探して `authorizePlatformWithIdentity` を取りこぼし、`--glob` がディレクトリ名に
+  効かず委譲先の判定も誤った
+
+**教訓**: 結論を出す前に**検索条件そのものを疑う**。`rg --glob "*name*"` はパスではなく
+basename に効く。`rg -r` は `--replace`（recursive ではない。**この周回でも 1 度踏んだ**）。
 
 ### ゲートの FAIL がコードの退行とは限らない（2026-08-02 実例）
 
