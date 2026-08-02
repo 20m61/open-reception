@@ -86,6 +86,30 @@ function stripComments(source: string): string {
  * 動的な `new RegExp` を避けて文字列一致で書く。マーカ名は固定配列由来で外部入力は
  * 到達しないが、抑制コメントを足すより regex を使わない方が素直（SAST の指摘も消える）。
  */
+/**
+ * `name` が**呼ばれている**か（import されているだけでは false）。
+ *
+ * ジェネリック引数を挟む呼び出し（`handlePlatformDangerCreate<A, B>(...)`）を取りこぼさない。
+ * また `authorizePlatform` を探して `authorizePlatformWithIdentity` に当たらないよう、
+ * 前後が識別子文字でないことを確かめる（別関数を「呼んでいる」と誤認しない）。
+ */
+function callsFunction(source: string, name: string): boolean {
+  let from = 0;
+  for (;;) {
+    const at = source.indexOf(name, from);
+    if (at === -1) return false;
+    from = at + name.length;
+    if (/[A-Za-z0-9_$.]/.test(source[at - 1] ?? '')) continue;
+    let rest = source.slice(from);
+    if (rest.startsWith('<')) {
+      const close = rest.indexOf('>(');
+      if (close === -1) continue;
+      rest = rest.slice(close + 1);
+    }
+    if (rest.startsWith('(')) return true;
+  }
+}
+
 function definesGuard(source: string): boolean {
   const decls = (m: string) => [
     `export function ${m}`,
@@ -167,6 +191,81 @@ describe('管理 API は例外なく認可ガードを通る', () => {
       unguarded.push(file);
     }
     expect(unguarded, `認可ガードを通していない管理 API: ${unguarded.join(', ')}`).toEqual([]);
+  });
+
+  /**
+   * **書き込みは「認証済み」では足りない** (#595)。
+   *
+   * 上の検査は `GUARD_MARKERS` のどれか 1 つを参照していれば通す。しかし
+   * `resolveAdminTenantId`（ほぼ全ての admin route が呼ぶ）が内部で `requireActor` を
+   * 呼ぶため、**テナントを解決する route は自動的に「ガードあり」判定になる**。
+   * 結果、`assertCanWrite` を書き忘れた更新系 route が素通りする ＝ 読み取り専用の actor が
+   * 書ける穴に気づけない。`.claude/rules/admin-api-authz.md` が要求しているのは認証ではなく
+   * **認可**なので、更新系には書き込み判定を要求する。
+   *
+   * ## 委譲パターンを認める
+   *
+   * 本リポジトリの更新系には 2 つの正当な形がある。
+   *
+   * 1. route 内で `assertCanWrite` 等を呼ぶ
+   * 2. `actor` を**サービスへ渡し、サービス側が `authorize(actor, …, 'write')` する**
+   *
+   * 2 を機械的に「認可なし」と断じると誤検出になる（2026-08-02 の監査で 67 route を
+   * 全数確認し、**穴はゼロ・33 route が 2 の形**だった）。そこで、認可することを
+   * **実際に確認したサービス**を列挙し、そのいずれかへ委譲していれば通す。
+   *
+   * ## 新しいサービスを足すときは、ここへの追記が要る
+   *
+   * それが狙い。無自覚に「どちらでもない更新系 route」が増えるのを構造的に止める。
+   * 追記する前に、そのサービスが本当に `'write'` で認可しているか確かめること。
+   */
+  const WRITE_MARKERS = [
+    'assertCanWrite',
+    'assertCanWriteSite',
+    'authorizePlatform',
+    'assertElevated',
+    'handlePlatformDangerCreate',
+    // `authorizePlatform` とは別関数。前方一致では拾えないので明示する。
+    'authorizePlatformWithIdentity',
+    // integrations 配下のローカルヘルパ。`canAccessTenant(actor, tenantId, op)` を行う。
+    'authorize',
+  ];
+
+  /**
+   * `actor` を受け取り `'write'` で認可することを**確認済み**のサービス生成子。
+   * 確認日 2026-08-02（#595 の全数監査）。
+   */
+  const AUTHORIZING_SERVICES = [
+    'getSiteService',
+    'getDeviceService',
+    'getRoutingService',
+    'getSignageService',
+    'getStayService',
+    'getReceptionFlowService',
+    'getStaffResponseConfigService',
+    'getCallRouteService',
+    'getReservationService',
+    'getExperienceVersionService',
+  ];
+
+  it('更新系メソッドを公開するルートは書き込み認可を経ている', () => {
+    const WRITE_METHODS = ['POST', 'PUT', 'PATCH', 'DELETE'];
+    const missing: string[] = [];
+    for (const file of files) {
+      const source = readFileSync(file, 'utf8');
+      if (!exportedMethods(source).some((m) => WRITE_METHODS.includes(m))) continue;
+      if (Object.hasOwn(UNGUARDED_ROUTES, file)) continue;
+      // **route 自身のソースだけ**を見る。import 先を連結すると、上の検査と同じ経路で
+      // 他人のガードを借りてしまう。
+      const own = stripComments(source);
+      if (WRITE_MARKERS.some((m) => callsFunction(own, m))) continue;
+      if (AUTHORIZING_SERVICES.some((svc) => callsFunction(own, svc))) continue;
+      missing.push(file);
+    }
+    expect(
+      missing,
+      `書き込み認可を経ていない更新系 API: ${missing.join(', ')}`,
+    ).toEqual([]);
   });
 
   it('例外の理由が空文字で誤魔化されていない', () => {
