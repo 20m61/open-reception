@@ -79,6 +79,8 @@ export const ADMIN_NAV: readonly NavGroup[] = [
       { href: '/admin/devices', label: '受付端末' },
       { href: '/admin/call-routing', label: '取次ルート' },
       { href: '/admin/departments', label: '部署' },
+      // 部署そのものの管理とは分ける。ここは「来訪者にどう見せるか」(#373)。
+      { href: '/admin/organizations', label: '組織の見せ方' },
       { href: '/admin/staff', label: '担当者' },
     ],
   },
