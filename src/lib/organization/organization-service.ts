@@ -28,7 +28,6 @@ import type {
   OrganizationUnit,
 } from '@/domain/organization/types';
 import {
-  affiliationSummaryLabel,
   listVisitorOrganizations,
   resolveStaffAffiliations,
   toVisitorAffiliations,
@@ -133,11 +132,20 @@ export async function getVisitorDirectory(scope: TenantScope): Promise<KioskDire
   const compatBackedIds = new Set(inputs.departments.map((d) => d.id));
   const visitorUnits = view.units.filter((u) => compatBackedIds.has(u.id));
 
-  const membershipsByStaff = new Map<string, boolean>();
+  // 所属を staffId で索引する。担当者ごとに全所属を線形走査すると O(担当者 × 所属) になり、
+  // 担当者の上限（1000）付近で構成取得の CPU 時間が跳ねる。呼び出し可否とラベルで
+  // 同じ索引を使う。
+  const scopedMemberships = new Map<string, OrganizationMembership[]>();
   for (const membership of view.memberships) {
-    membershipsByStaff.set(
-      membership.staffId,
-      (membershipsByStaff.get(membership.staffId) ?? false) || membership.callable,
+    const list = scopedMemberships.get(membership.staffId);
+    if (list === undefined) scopedMemberships.set(membership.staffId, [membership]);
+    else list.push(membership);
+  }
+  const callableByStaff = new Map<string, boolean>();
+  for (const [staffId, list] of scopedMemberships) {
+    callableByStaff.set(
+      staffId,
+      list.some((m) => m.callable),
     );
   }
 
@@ -152,12 +160,27 @@ export async function getVisitorDirectory(scope: TenantScope): Promise<KioskDire
   // 「期限切れ代理担当がラベルに出ないこと」で検査しようとしても、常に通る空のテストになる。
   // 代理担当を来訪者面へ出すようにするときに、初めて意味を持つ検査が書ける。
   const now = new Date().toISOString();
-  const labelFor = (staffId: string): string =>
-    affiliationSummaryLabel(
-      toVisitorAffiliations(
-        resolveStaffAffiliations(view.memberships, view.units, staffId, { now, scope }),
-      ),
+  //
+  // 渡すのは `visitorUnits`（互換に裏付けられた組織）であって `view.units` ではない。
+  // departments 一覧に出ない組織名がラベルにだけ現れると、来訪者は選べない組織名を
+  // 目にすることになる。**「departments に出る集合 ⊇ ラベルに出る組織名の集合」**を保つ。
+  //
+  // `includeAncestors: false` は性能のため。`affiliationSummaryLabel` を options 無しで
+  // 呼ぶので祖先は使われない。付けたままだと担当者 × 所属の回数だけ全組織の索引が
+  // 作り直され、1000 名規模で構成取得が二桁 ms から三桁 ms へ跳ねる。
+  const affiliationFor = (staffId: string): { primary?: string; secondary: string[] } => {
+    const visitor = toVisitorAffiliations(
+      resolveStaffAffiliations(scopedMemberships.get(staffId) ?? [], visitorUnits, staffId, {
+        now,
+        scope,
+        includeAncestors: false,
+      }),
     );
+    return {
+      ...(visitor.primary === undefined ? {} : { primary: visitor.primary.unit.name }),
+      secondary: visitor.secondary.map((a) => a.unit.name),
+    };
+  };
 
   return {
     departments: listVisitorOrganizations(visitorUnits, scope).map((o) => ({
@@ -167,19 +190,18 @@ export async function getVisitorDirectory(scope: TenantScope): Promise<KioskDire
     // 検索に必要な kana/aliases は含めるが、内部用の mockCallOutcome/available は含めない
     // （既存 `getKioskDirectory` と同じ公開範囲を保つ）。
     staff: inputs.staff
-      .filter((s) => s.enabled && (membershipsByStaff.get(s.id) ?? true))
-      .map((s) => {
-        const affiliationLabel = labelFor(s.id);
-        return {
-          id: s.id,
-          displayName: s.displayName,
-          kana: s.kana,
-          aliases: s.aliases,
-          departmentId: s.departmentId,
-          available: s.available,
-          // 空文字はキーごと落とす（「所属なし」と「ラベルが空」を区別させない）。
-          ...(affiliationLabel === '' ? {} : { affiliationLabel }),
-        };
-      }),
+      .filter((s) => s.enabled && (callableByStaff.get(s.id) ?? true))
+      .map((s) => ({
+        id: s.id,
+        displayName: s.displayName,
+        kana: s.kana,
+        aliases: s.aliases,
+        departmentId: s.departmentId,
+        available: s.available,
+        // **空でも必ず入れる。** キーごと落とすと、画面側が「この経路は出すものが
+        // 無いと判断した」と「旧経路なのでキーを持たない」を区別できず、非公開に
+        // したはずの所属が部署名として出戻る。空の構造＝「出すものは無い」を明示する。
+        affiliation: affiliationFor(s.id),
+      })),
   };
 }

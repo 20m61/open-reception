@@ -182,6 +182,14 @@ export type AffiliationQuery = {
    */
   now: string;
   /**
+   * 祖先（パンくず）を組み立てるか。既定 true（従来の挙動）。
+   *
+   * **false にすると劇的に速い。** `ancestorsOf` は所属 1 件ごとに全組織の索引を作り直すため、
+   * 担当者 × 所属の回数だけ全走査が走る。ラベル用途（`affiliationSummaryLabel` を
+   * `includeAncestors` 無しで呼ぶ）では結果が 100% 捨てられるので、明示的に切ること。
+   */
+  includeAncestors?: boolean;
+  /**
    * 参照可能な tenant/site 境界。**必須**。任意にすると呼び忘れで境界が漏れ、他テナント組織の
    * ラベルが出たり（`resolveStaffAffiliations`）、他テナント staff が呼び出し候補へ混ざる
    * （`listCallableMembers`）。`now` と同じく「安全でない側が既定」を避けるため必須にする。
@@ -214,7 +222,7 @@ export function resolveStaffAffiliations(
     const affiliation: StaffAffiliation = {
       unit,
       membership,
-      ancestors: ancestorsOf(visible, unit.id),
+      ancestors: query.includeAncestors === false ? [] : ancestorsOf(visible, unit.id),
     };
     if (membership.relation === 'primary') {
       // 主所属は最大 1 件。既に在る場合は最初のものを正とする。
@@ -243,7 +251,10 @@ export type VisitorStaffAffiliations = {
 };
 
 function isPublic(unit: OrganizationUnit): boolean {
-  return unit.enabled && unit.publicInDirectory;
+  // 公開表示名が空なら出さない。`publicUnitsInScope` と**同じ前提**を所属ラベル経路にも
+  // 効かせる（保存済み組織は生の collection から読むので書き込み時検証を通っていない）。
+  // 片方だけに入れると `営業部（兼:    ）` のような壊れたラベルが出る。
+  return unit.enabled && unit.publicInDirectory && unit.publicDisplayName.trim() !== '';
 }
 
 function toVisitorAffiliation(affiliation: StaffAffiliation): VisitorStaffAffiliation | undefined {

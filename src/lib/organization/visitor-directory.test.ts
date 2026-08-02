@@ -54,9 +54,9 @@ describe('getVisitorDirectory (#373 増分 4)', () => {
 
     // 段階移行の前提: 新モデルへ何も保存していない状態では**見えるものが変わらない**。
     expect(derived.departments).toEqual(current.departments);
-    // `affiliationLabel` だけは新規追加（上位互換）。旧経路は組織モデルを読まないので
+    // `affiliation` だけは新規追加（上位互換）。旧経路は組織モデルを読まないので
     // 持たない。それ以外のフィールドが 1 つでも変わったら移行の前提が崩れている。
-    expect(derived.staff.map(({ affiliationLabel: _label, ...rest }) => rest)).toEqual(
+    expect(derived.staff.map(({ affiliation: _affiliation, ...rest }) => rest)).toEqual(
       current.staff,
     );
   });
@@ -65,16 +65,14 @@ describe('getVisitorDirectory (#373 増分 4)', () => {
    * 追加は**上位互換**であること。旧経路の消費者（縮退時の `/api/kiosk/directory`）は
    * このキーを持たないので、必須として扱われていないことを固定する。
    */
-  it('affiliationLabel は追加フィールドで、旧経路の形は壊さない', async () => {
+  it('affiliation は追加フィールドで、旧経路の形は壊さない', async () => {
     const dept = await createDepartment(T, { name: '営業部' });
     if (!dept.ok) throw new Error('fixture failed');
     const staff = await createStaff(T, { displayName: '山田 太郎', departmentId: dept.value.id });
     if (!staff.ok) throw new Error('fixture failed');
 
     const current = await getKioskDirectory(T);
-    expect(current.staff.find((s) => s.id === staff.value.id)).not.toHaveProperty(
-      'affiliationLabel',
-    );
+    expect(current.staff.find((s) => s.id === staff.value.id)).not.toHaveProperty('affiliation');
   });
 
   /**
@@ -264,7 +262,10 @@ describe('getVisitorDirectory / 所属ラベル', () => {
     if (!staff.ok) throw new Error('fixture failed');
 
     const directory = await getVisitorDirectory(SCOPE);
-    expect(directory.staff.find((s) => s.id === staff.value.id)?.affiliationLabel).toBe('営業部');
+    expect(directory.staff.find((s) => s.id === staff.value.id)?.affiliation).toEqual({
+      primary: '営業部',
+      secondary: [],
+    });
   });
 
   it('兼務があれば併記される（同姓同名の識別に効く情報を落とさない）', async () => {
@@ -283,9 +284,11 @@ describe('getVisitorDirectory / 所属ラベル', () => {
     });
 
     const directory = await getVisitorDirectory(SCOPE);
-    expect(directory.staff.find((s) => s.id === staff.value.id)?.affiliationLabel).toBe(
-      '営業部（兼: 技術部）',
-    );
+    // **構造で返す**（整形は locale を知るクライアント側）。
+    expect(directory.staff.find((s) => s.id === staff.value.id)?.affiliation).toEqual({
+      primary: '営業部',
+      secondary: ['技術部'],
+    });
   });
 
   /**
@@ -307,8 +310,96 @@ describe('getVisitorDirectory / 所属ラベル', () => {
     const entry = directory.staff.find((s) => s.id === staff.value.id);
     // 担当者自身は呼べる（規則 A）。
     expect(entry).toBeDefined();
-    expect(entry?.affiliationLabel ?? '').toBe('');
+    // **空の構造であってキー欠落ではない。** 欠落させると画面側が旧経路と誤認して
+    // 部署名を出し戻す（非公開にしたはずの所属が出る）。
+    expect(entry?.affiliation).toEqual({ secondary: [] });
     // 組織名が別経路で紛れ込んでいないことも見る。
     expect(JSON.stringify(directory)).not.toContain('内部監査室');
   });
 });
+
+describe('getVisitorDirectory / 所属ラベルの露出範囲', () => {
+  /**
+   * 運用者が所属単位で「来訪者に出さない」と決めた場合。組織自体は公開・有効なので、
+   * ラベル生成が落とさなければ組織名がそのまま出る。データ層で空文字になることと、
+   * 画面がそれを部署名で埋め戻さないこと（`staffAffiliationText`）の両方が要る。
+   */
+  it('所属を非公開にしたらラベルは空になる', async () => {
+    const dept = await createDepartment(T, { name: '営業部' });
+    if (!dept.ok) throw new Error('fixture failed');
+    const staff = await createStaff(T, { displayName: '山田 太郎', departmentId: dept.value.id });
+    if (!staff.ok) throw new Error('fixture failed');
+
+    const membership = (await getOrganizationView(SCOPE)).memberships.find(
+      (m) => m.staffId === staff.value.id,
+    );
+    if (membership === undefined) throw new Error('fixture failed');
+    await putOrganizationMembership(T, { ...membership, publicInDirectory: false });
+
+    const directory = await getVisitorDirectory(SCOPE);
+    expect(directory.staff.find((s) => s.id === staff.value.id)?.affiliation).toEqual({
+      secondary: [],
+    });
+  });
+
+  /**
+   * **不変条件: departments に出る組織名 ⊇ ラベルに出る組織名。**
+   * ラベルにだけ現れる組織は、来訪者が目にしても選べない。#588 で決めた
+   * 「来訪者へ出す組織は Department 実体に裏付けられたものだけ」が、
+   * departments 側だけで守られてラベル側で破られていた。
+   */
+  it('departments に出ない組織名はラベルにも出ない', async () => {
+    const dept = await createDepartment(T, { name: '営業部' });
+    if (!dept.ok) throw new Error('fixture failed');
+    const staff = await createStaff(T, { displayName: '山田 太郎', departmentId: dept.value.id });
+    if (!staff.ok) throw new Error('fixture failed');
+
+    const seed = (await getOrganizationView(SCOPE)).units.find((u) => u.id === dept.value.id);
+    if (seed === undefined) throw new Error('fixture failed');
+    await putOrganizationUnit(T, {
+      ...seed,
+      id: 'org-standalone',
+      officialName: '特命プロジェクト室',
+      publicDisplayName: '特命プロジェクト室',
+      enabled: true,
+      publicInDirectory: true,
+    });
+    await putOrganizationMembership(T, {
+      staffId: staff.value.id,
+      organizationId: 'org-standalone',
+      relation: 'secondary',
+      publicInDirectory: true,
+      callable: true,
+    });
+
+    const directory = await getVisitorDirectory(SCOPE);
+    expect(directory.departments.some((d) => d.name === '特命プロジェクト室')).toBe(false);
+    expect(JSON.stringify(directory)).not.toContain('特命プロジェクト室');
+  });
+
+  it('公開表示名が空の組織は兼務ラベルにも現れない', async () => {
+    const main = await createDepartment(T, { name: '営業部' });
+    const blank = await createDepartment(T, { name: '技術部' });
+    if (!main.ok || !blank.ok) throw new Error('fixture failed');
+    const staff = await createStaff(T, { displayName: '山田 太郎', departmentId: main.value.id });
+    if (!staff.ok) throw new Error('fixture failed');
+
+    const unit = (await getOrganizationView(SCOPE)).units.find((u) => u.id === blank.value.id);
+    if (unit === undefined) throw new Error('fixture failed');
+    await putOrganizationUnit(T, { ...unit, publicDisplayName: '   ' });
+    await putOrganizationMembership(T, {
+      staffId: staff.value.id,
+      organizationId: blank.value.id,
+      relation: 'secondary',
+      publicInDirectory: true,
+      callable: true,
+    });
+
+    const directory = await getVisitorDirectory(SCOPE);
+    expect(directory.staff.find((s) => s.id === staff.value.id)?.affiliation).toEqual({
+      primary: '営業部',
+      secondary: [],
+    });
+  });
+});
+

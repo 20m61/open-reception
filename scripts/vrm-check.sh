@@ -31,6 +31,18 @@ trap cleanup EXIT INT TERM
 
 mkdir -p "${OUT}"
 
+# **起動前にポートを確認する。** 前回の実行が残っていると `next start` は EADDRINUSE で
+# 即死し、検査は「生き残った古いサーバ」に繋がる。古いサーバは boot 時の build manifest を
+# 握ったままなので、再ビルド後は chunk が食い違い ChunkLoadError で FAIL する ——
+# **コードの退行と見分けがつかない**。逆に古い build がたまたま健全なら偽 PASS になる。
+# 実際にこれで「自分の変更が VRM を壊した」と誤認し、切り分けに数回のビルドを浪費した。
+if lsof -ti "tcp:${PORT}" >/dev/null 2>&1; then
+  echo "  ERROR: ポート ${PORT} は既に使用中です（前回の実行が残っている可能性）。" >&2
+  echo "         検査が古いサーバに繋がると、コードの退行と区別できない結果になります。" >&2
+  echo "         解放してから再実行してください: lsof -ti tcp:${PORT} | xargs kill" >&2
+  exit 1
+fi
+
 echo "  VRM 有効のサーバを ${PORT} で起動します（e2e/VRT へ影響させないため専用プロセス）"
 (
   cd "${ROOT}" || exit 1

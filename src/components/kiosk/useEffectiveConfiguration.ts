@@ -46,11 +46,12 @@ export type DirStaff = {
   departmentId: string;
   available: boolean;
   /**
-   * 同姓同名の候補を識別するための所属ラベル（例: `営業部（兼: 技術部）`）。公開組織の
-   * 表示名だけで構成される。**省略され得る** — 旧経路（縮退時の `/api/kiosk/directory`）は
-   * 組織モデルを読まないので持たない。呼び出し側はフォールバックを用意すること。
+   * 同姓同名の候補を識別するための所属（主所属と兼務）。公開組織の表示名だけで構成される。
+   * 整形は locale を知るクライアント側の責務（`staffAffiliationText`）。
+   * **省略され得る** — 旧経路（縮退時の `/api/kiosk/directory`）は組織モデルを読まないので
+   * 持たない。呼び出し側はフォールバックを用意すること。
    */
-  affiliationLabel?: string;
+  affiliation?: { primary?: string; secondary: string[] };
 };
 export type Directory = { departments: DirDepartment[]; staff: DirStaff[] };
 
@@ -138,7 +139,17 @@ function selectDirectory(value: unknown): Directory | undefined {
   if (!record) return undefined;
   const { departments, staff } = record;
   if (!Array.isArray(departments) || !Array.isArray(staff)) return undefined;
-  return { departments, staff } as Directory;
+  // `affiliationLabel` は string か「無い」かのどちらかへ正規化する。ここは検証なしの
+  // キャストで、版スナップショットとして永続化された過去の構成もそのまま通る
+  // （`experience-version` は `sections[name]` を verbatim 保存する）。string 以外が
+  // 混ざると `staffAffiliationText` の判定が崩れ、非公開の所属が部署名として出戻る。
+  const normalizedStaff = (staff as unknown[]).map((entry) => {
+    const record = asRecord(entry);
+    if (!record) return entry;
+    const { affiliationLabel, ...rest } = record;
+    return typeof affiliationLabel === 'string' ? { ...rest, affiliationLabel } : rest;
+  });
+  return { departments, staff: normalizedStaff } as Directory;
 }
 
 function selectVoice(value: unknown): KioskVoiceConfiguration | undefined {

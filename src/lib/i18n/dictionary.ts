@@ -243,6 +243,8 @@ export type MessageKey =
   | 'reception.searchNoResultsGuidance'
   | 'reception.searchNoResultsChatCta'
   | 'reception.searchMaybeMatch'
+  | 'reception.affiliationWithSecondary'
+  | 'reception.affiliationSeparator'
   // ワンタップ満足度フィードバック（完了/未応答/失敗の終端画面, #320）。自由記述は無く、
   // 評価（happy/neutral/unhappy）の aria-label と定型理由チップの文言のみ。
   | 'reception.feedback.prompt'
@@ -535,6 +537,8 @@ const ja: DefaultDictionary = {
     'お探しの方が見つかりませんか？ 部署から選ぶか、チャットで受付係に相談できます。',
   'reception.searchNoResultsChatCta': 'チャットで受付係に相談する',
   'reception.searchMaybeMatch': 'もしかして',
+  'reception.affiliationWithSecondary': '{primary}（兼: {secondary}）',
+  'reception.affiliationSeparator': '・',
   'reception.feedback.prompt': '今回の受付はいかがでしたか？',
   'reception.feedback.happy': '満足',
   'reception.feedback.neutral': '普通',
@@ -820,6 +824,8 @@ const en: LocaleDictionary = {
     "Can't find them? Try browsing by department, or chat with the reception desk.",
   'reception.searchNoResultsChatCta': 'Chat with the reception desk',
   'reception.searchMaybeMatch': 'Did you mean',
+  'reception.affiliationWithSecondary': '{primary} (also {secondary})',
+  'reception.affiliationSeparator': ', ',
   'reception.feedback.prompt': 'How was your visit today?',
   'reception.feedback.happy': 'Satisfied',
   'reception.feedback.neutral': 'Okay',
@@ -1104,6 +1110,8 @@ const ko: LocaleDictionary = {
   'reception.searchNoResultsGuidance': '찾으시는 분이 없나요? 부서에서 선택하거나 채팅으로 접수 담당자와 상담해 보세요.',
   'reception.searchNoResultsChatCta': '채팅으로 접수 담당자와 상담하기',
   'reception.searchMaybeMatch': '혹시 이 분인가요',
+  'reception.affiliationWithSecondary': '{primary}(겸직: {secondary})',
+  'reception.affiliationSeparator': ', ',
   'reception.feedback.prompt': '오늘 접수는 어떠셨나요?',
   'reception.feedback.happy': '만족',
   'reception.feedback.neutral': '보통',
@@ -1381,6 +1389,8 @@ const zh: LocaleDictionary = {
   'reception.searchNoResultsGuidance': '找不到对方？可以从部门中选择，或通过聊天与前台工作人员咨询。',
   'reception.searchNoResultsChatCta': '通过聊天咨询前台工作人员',
   'reception.searchMaybeMatch': '是否是这位',
+  'reception.affiliationWithSecondary': '{primary}（兼任: {secondary}）',
+  'reception.affiliationSeparator': '、',
   'reception.feedback.prompt': '这次接待您感觉如何？',
   'reception.feedback.happy': '满意',
   'reception.feedback.neutral': '一般',
