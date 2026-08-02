@@ -44,9 +44,18 @@ const browser = await chromium.launch({
   executablePath: process.env.PW_EXECUTABLE_PATH || undefined,
   args: ['--enable-unsafe-swiftshader'],
 });
+/**
+ * **実機条件（DPR 2）で回す** (#578 レビュー B1)。
+ *
+ * ここが `deviceScaleFactor: 1` だったため、DPR>1 でしか起きない欠陥に**構造的に盲目**
+ * だった。実際、`gl.setSize` が書いた backing store を ResizeObserver が拾って canvas が
+ * 指数的に肥大する退行を、この検査は 1 度も検出できなかった（DPR=1 では
+ * `pixelRatio=1` になり、書き戻しても寸法が変わらないため発火しない）。
+ * 受付端末の iPad は DPR=2。**検査は実機の条件に寄せる。**
+ */
 const ctx = await browser.newContext({
   viewport: { width: 810, height: 1080 },
-  deviceScaleFactor: 1,
+  deviceScaleFactor: Number(process.env.VRM_CHECK_DPR ?? 2),
   hasTouch: true,
 });
 const page = await ctx.newPage();
@@ -65,8 +74,33 @@ try {
 note('vrm: canvas visible (VRM enabled, not placeholder)', canvasShown);
 
 if (canvasShown) {
+  /**
+   * **canvas の実寸が安定しているか** (#578 レビュー B1 の回帰固定)。
+   *
+   * `gl.setSize` の書き戻しを自分で観測して発散すると、数百 ms で上限まで肥大して
+   * GPU が落ちる。読込直後と待機後で backing store が同オーダーに留まることを見る。
+   * 「描画されているか」だけを見る検査では、この形の破綻を捕まえられない。
+   */
+  const sizeBefore = await canvas.evaluate((el) => ({ w: el.width, h: el.height }));
+
   // モデル読込 + 初回描画待ち(SwiftShader は遅い)
   await page.waitForTimeout(12000);
+
+  const sizeAfter = await canvas.evaluate((el) => ({ w: el.width, h: el.height }));
+  // 画角の再適用で多少変わるのは許すが、桁が変わったら暴走。
+  const grew = sizeAfter.w > sizeBefore.w * 4 || sizeAfter.h > sizeBefore.h * 4;
+  note(
+    `vrm: canvas backing store stable (${sizeBefore.w}x${sizeBefore.h} -> ${sizeAfter.w}x${sizeAfter.h})`,
+    !grew && sizeAfter.w > 0 && sizeAfter.h > 0,
+  );
+
+  // 観測属性（#578 増分 1・2）。実機で「モーションが変」を切り分ける入口。
+  const observed = await canvas.evaluate((el) => ({
+    version: el.getAttribute('data-vrm-version'),
+    motion: el.getAttribute('data-motion-state'),
+  }));
+  console.log(`  [vrm] data-vrm-version=${observed.version} data-motion-state=${observed.motion}`);
+  note('vrm: spec version observable (not none/null)', observed.version !== null && observed.version !== 'none');
 
   // --- 2. 実際に描画されているか(黒/空でない): canvas 要素のスクショの画素分散
   const shot1 = await canvas.screenshot();
