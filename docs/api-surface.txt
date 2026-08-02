@@ -41,6 +41,7 @@ GET /api/admin/kiosks
 GET /api/admin/languages
 GET /api/admin/motions
 GET /api/admin/operating-policy
+GET /api/admin/organizations
 GET /api/admin/reception-flows
 GET /api/admin/reception-flows/[]
 GET /api/admin/receptions
@@ -94,6 +95,7 @@ PATCH /api/admin/call-routes/[]
 PATCH /api/admin/demo/publications/[]
 PATCH /api/admin/departments/[]
 PATCH /api/admin/devices/[]
+PATCH /api/admin/organizations/[]
 PATCH /api/admin/reception-flows/[]
 PATCH /api/admin/reservations/[]
 PATCH /api/admin/routing/endpoints/[]
