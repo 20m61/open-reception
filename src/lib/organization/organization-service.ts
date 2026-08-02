@@ -73,17 +73,42 @@ export async function getOrganizationView(scope: OrganizationScope): Promise<Org
  * 2 つの読みの**間に管理者が担当者を無効化すると、ビューと返却内容が食い違う**窓ができる。
  * 担当者は一番大きいパーティションなので、重複読みは起動レイテンシにも効く。
  */
-async function readOrganizationInputs(scope: OrganizationScope) {
+async function readOrganizationInputs(
+  scope: OrganizationScope,
+  options: { toleratePartialRead?: boolean } = {},
+) {
   const { tenantId } = scope;
   // 互換元（旧 UI が編集する実体）と保存済み（新 UI が編集する実体）を両方読む。
   // 無効なものも含めて読み、除外は合成規則へ委ねる（ここで先に落とすと AND が効かない）。
-  const [departments, staff, storedUnits, storedMemberships] = await Promise.all([
+  const [departments, staff, stored] = await Promise.all([
     listDepartments(tenantId, true),
     listStaff(tenantId, true),
-    listOrganizationUnits(tenantId),
-    listOrganizationMemberships(tenantId),
+    readStoredOrganization(tenantId, options.toleratePartialRead === true),
   ]);
-  return { departments, staff, storedUnits, storedMemberships };
+  return { departments, staff, ...stored };
+}
+
+async function readStoredOrganization(
+  tenantId: string,
+  tolerate: boolean,
+): Promise<{ storedUnits: OrganizationUnit[]; storedMemberships: OrganizationMembership[] }> {
+  try {
+    const [storedUnits, storedMemberships] = await Promise.all([
+      listOrganizationUnits(tenantId),
+      listOrganizationMemberships(tenantId),
+    ]);
+    return { storedUnits, storedMemberships };
+  } catch (error) {
+    if (!tolerate) throw error;
+    // **黙って縮退しない。** 保存済み組織を読めない間は「運用者が隠したはずの組織が
+    // 露出している」状態。記録が無ければ誰も気づかないまま放置される。
+    console.warn(
+      '[organization] 保存済み組織を読めませんでした。互換（部署）由来のみで縮退します。' +
+        'この間、来訪者への公開可否・公開表示名・表示順の編集は反映されません。',
+      error,
+    );
+    return { storedUnits: [], storedMemberships: [] };
+  }
 }
 
 function composeOrganizationView(
@@ -130,7 +155,14 @@ type TenantScope = Extract<OrganizationScope, { kind: 'tenant' }>;
  * (#374) が入るまで出さない。
  */
 export async function getVisitorDirectory(scope: TenantScope): Promise<KioskDirectory> {
-  const inputs = await readOrganizationInputs(scope);
+  return buildVisitorDirectory(scope, {});
+}
+
+async function buildVisitorDirectory(
+  scope: TenantScope,
+  options: { toleratePartialRead?: boolean },
+): Promise<KioskDirectory> {
+  const inputs = await readOrganizationInputs(scope, options);
   const view = composeOrganizationView(inputs, scope);
 
   // 互換（Department 実体）に裏付けられた組織だけを来訪者へ出す。
@@ -251,4 +283,25 @@ export async function updateOrganizationUnit(
   const next: OrganizationUnit = { ...current, ...patch };
   await putOrganizationUnit(scope.tenantId, next);
   return { ok: true, value: next };
+}
+
+/**
+ * 縮退経路（`/api/kiosk/directory`）向けのディレクトリ導出 (#597)。
+ *
+ * ## なぜ専用の入口があるか
+ *
+ * この経路は `/api/configuration/effective` が落ちたときの逃げ道。**受付を止めないことが
+ * 最優先**なので、保存済み組織を読めなくても互換（部署）由来だけで応答を返す。
+ * `getVisitorDirectory` と同じにすると、組織コレクションの読み失敗で実効構成も縮退経路も
+ * 同時に落ち、来訪者が誰も選べない行き止まりになる。
+ *
+ * ## 残る fail-open
+ *
+ * 保存済み組織を読めない間は、運用者が「来訪者に出さない」と設定した組織が**出る**。
+ * そこで隠し続けようとすると「部署が 1 つも出ない受付端末」になり受付そのものが止まるため、
+ * 可用性を採る。**ゼロにはできない**が、従来（縮退中は常に編集を無視）に比べて
+ * fail-open の範囲は「組織の読みが失敗したときだけ」へ狭まる。縮退したことは必ずログに残す。
+ */
+export async function getVisitorDirectoryForFallback(scope: TenantScope): Promise<KioskDirectory> {
+  return buildVisitorDirectory(scope, { toleratePartialRead: true });
 }

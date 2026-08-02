@@ -79,3 +79,45 @@ test('来訪者に出さない設定にすると、理由付きで「見えな�
     expect((await visitorDepartments(page)).some((d) => d.id === id)).toBe(false);
   }).toPass({ timeout: 10_000 });
 });
+
+/**
+ * **縮退中も「来訪者に出さない」が尊重されること** (#597)。
+ *
+ * `/api/kiosk/directory` は実効構成が落ちたときの逃げ道。かつてここだけ組織モデルを
+ * 読まなかったため、**構成取得が落ちている間だけ隠したはずの組織が再び出て**いた。
+ * 管理画面は「見えない」と表示しているので、運用者からは気づけない fail-open だった。
+ */
+test('縮退経路でも「来訪者に出さない」が尊重される', async ({ page }) => {
+  await loginAsAdmin(page);
+  const id = await createOwnDepartment(page, uniq('縮退時非公開'));
+
+  await page.goto('/admin/organizations');
+  await page.getByTestId(`org-toggle-public-${id}`).click();
+  await expect(page.getByTestId(`org-hidden-${id}`)).toBeVisible();
+
+  // 縮退経路を直接叩く（実効構成が落ちたときに端末が使う経路そのもの）。
+  await expect(async () => {
+    const res = await page.request.get('/api/kiosk/directory');
+    expect(res.ok()).toBeTruthy();
+    const body = (await res.json()) as { departments: { id: string }[] };
+    expect(body.departments.some((d) => d.id === id)).toBe(false);
+  }).toPass({ timeout: 10_000 });
+});
+
+/** 縮退経路でも公開表示名の編集が反映される（管理画面と食い違わない）。 */
+test('縮退経路でも公開表示名の編集が反映される', async ({ page }) => {
+  await loginAsAdmin(page);
+  const id = await createOwnDepartment(page, uniq('縮退時改名'));
+
+  await page.goto('/admin/organizations');
+  const renamed = uniq('縮退窓口');
+  await page.getByTestId(`org-public-name-${id}`).fill(renamed);
+  await page.getByTestId(`org-save-${id}`).click();
+
+  await expect(async () => {
+    const res = await page.request.get('/api/kiosk/directory');
+    const body = (await res.json()) as { departments: { id: string; name: string }[] };
+    expect(body.departments.find((d) => d.id === id)?.name).toBe(renamed);
+  }).toPass({ timeout: 10_000 });
+});
+
