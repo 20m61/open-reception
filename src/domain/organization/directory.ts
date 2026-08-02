@@ -89,7 +89,16 @@ function publicUnitsInScope(
   units: ReadonlyArray<OrganizationUnit>,
   scope: OrganizationScope,
 ): OrganizationUnit[] {
-  return scopeOrganizationUnits(units, scope).filter((u) => u.enabled && u.publicInDirectory);
+  return scopeOrganizationUnits(units, scope).filter(
+    (u) =>
+      u.enabled &&
+      u.publicInDirectory &&
+      // **公開表示名が空の組織は来訪者へ出さない。** 旧経路は書き込み時の
+      // `validateDepartmentInput` が非空を保証していたが、保存済み組織は生の
+      // collection から読むので検証を通らない。落とさないと iPad に
+      // 「ラベルの無い押せるカード」が並ぶ（押すと行き先の分からない取次になる）。
+      u.publicDisplayName.trim() !== '',
+  );
 }
 
 function toVisitorList(units: ReadonlyArray<OrganizationUnit>): VisitorOrganization[] {
@@ -97,12 +106,31 @@ function toVisitorList(units: ReadonlyArray<OrganizationUnit>): VisitorOrganizat
   return units.map((u) => toVisitorOrganization(u, publicIds));
 }
 
-/** 来訪者向け組織一覧。 */
+/**
+ * 来訪者向け組織一覧。
+ *
+ * **`displayOrder` 昇順で返す。** 来訪者の画面はこの配列順にそのまま並ぶので、順序は
+ * 見た目そのもの。運用者が並べ替えた意図（先頭に来る 2〜3 件で視線を誘導する）が
+ * 効かないと、順序を持たせている意味が無くなる。
+ *
+ * 同値のときは**入力順を保つ**（安定ソート）。`displayOrder` が重複する既存データで
+ * 並びが揺れると、旧経路（`listDepartments` の displayOrder ソート）と食い違う。
+ *
+ * `displayOrder` は**階層を跨いだ平坦な順序**として扱う。来訪者の組織一覧は今のところ
+ * 平坦に描画され（`reception-screens.tsx` の部署カード）、親子を隣接させる規則を持たない。
+ * 階層を見せる UI を作るときは、そのときの描画規則に合わせた並べ替えをその層で行うこと
+ * （ここで木構造を前提にすると、平坦描画側が勝手に並べ替えられて意図が二重になる）。
+ */
 export function listVisitorOrganizations(
   units: ReadonlyArray<OrganizationUnit>,
   scope: OrganizationScope,
 ): VisitorOrganization[] {
-  return toVisitorList(publicUnitsInScope(units, scope));
+  const inScope = publicUnitsInScope(units, scope);
+  const ordered = inScope
+    .map((unit, index) => ({ unit, index }))
+    .sort((a, b) => a.unit.displayOrder - b.unit.displayOrder || a.index - b.index)
+    .map((entry) => entry.unit);
+  return toVisitorList(ordered);
 }
 
 /**

@@ -19,7 +19,7 @@ import type {
 import type { ConfigurationSectionResult } from '@/domain/product-context/types';
 import { TENANT_FEATURE_FLAG_KEYS } from '@/domain/platform/feature-flags';
 import { getBrandingSettings } from '@/lib/branding/branding-store';
-import { getKioskDirectory } from '@/lib/data-stores/directory-store';
+import { getVisitorDirectory } from '@/lib/organization/organization-service';
 import { getVoiceSettings } from '@/lib/voice/voice-store';
 import { getKioskMotions } from '@/lib/motion/motion-store';
 import { getKioskAssets } from '@/lib/assets/asset-store';
@@ -56,9 +56,21 @@ export function createSectionLoaders(now: () => Date = () => new Date()): Config
       return section(await getKioskSignage(input.tenantId, input.siteId), 'site');
     },
 
-    /** テナント対応済み (#419 残増分)。これで全セクションが対応し、guard は撤去した。 */
+    /**
+     * テナント対応済み (#419 残増分)。これで全セクションが対応し、guard は撤去した。
+     *
+     * 導出は組織モデル側 (`getVisitorDirectory`, #373 増分 4) に一本化してある。
+     * **担当者の呼び出し可否は組織の有効/無効に波及しない**（規則 A）— 詳細と根拠は
+     * `getVisitorDirectory` の doc コメントを見ること。
+     *
+     * scope は当面テナント全体。サイト別の組織スコープ（`{ kind: 'site' }`）へ寄せるかは
+     * セクションのキャッシュ次元（'tenant' → 'site'）も変わるため別増分で判断する。
+     */
     async directory(input) {
-      return section(await getKioskDirectory(String(input.tenantId)), 'tenant');
+      return section(
+        await getVisitorDirectory({ kind: 'tenant', tenantId: String(input.tenantId) }),
+        'tenant',
+      );
     },
 
     /**
