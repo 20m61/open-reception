@@ -21,7 +21,20 @@ import type { ReceptionTargetType } from '@/domain/reception/session';
 import type { EntityCandidate } from '@/domain/voice-stt/entity-resolver';
 
 /** 受付フローが呼び出す相手（KioskFlow の `SELECT_TARGET` が要求する構造）。 */
-export type ReceptionTarget = { type: ReceptionTargetType; id: string; label: string };
+export type ReceptionTarget = {
+  type: ReceptionTargetType;
+  id: string;
+  label: string;
+  /**
+   * 表示専用の副題（担当者の所属など）。同姓同名を**発信直前に**確認するために出す (#591)。
+   *
+   * **`label` に混ぜないこと。** `label` は読み上げ（`KioskFlow` の TTS）と監査
+   * （`domain/routing/compat.ts` の `targetLabel`）にも流れる。所属を混ぜると
+   * 「営業部（兼: 技術部）の山田太郎さんをお呼びしています」のような不自然な読み上げになり、
+   * 監査レコードにも表示都合の文字列が入る。表示だけに使う値はここへ置く。
+   */
+  sublabel?: string;
+};
 
 /** EntityCandidate.kind のうち、実際に呼び出せる相手種別（staff / department）へ絞る。 */
 function toTargetType(kind: EntityCandidate['kind']): ReceptionTargetType | null {

@@ -20,6 +20,7 @@ import {
   type CallFailureReason,
 } from '@/domain/reception/call-failure';
 import { staffAffiliationText } from './staff-affiliation-text';
+import { staffTargetFor } from './staff-target';
 import {
   useCallback,
   useEffect,
@@ -762,7 +763,7 @@ function TargetView({
                   type="button"
                   className="card"
                   data-testid={`staff-${s.id}`}
-                  onClick={() => onSelect({ type: 'staff', id: s.id, label: s.displayName })}
+                  onClick={() => onSelect(staffTargetFor(s, directory.departments, tr))}
                 >
                   {tierById.get(s.id) === 'fuzzy' ? (
                     // あいまい一致（1 文字 typo・表記ゆれ由来）は「もしかして」と明示し、
@@ -975,6 +976,20 @@ function ConfirmView({
           <dt className="card__sub" lang={htmlLangFor(locale)}>{tr('reception.fieldTarget')}</dt>
           <dd style={{ margin: 0 }} data-testid="confirm-target">
             {data.target?.label}
+            {/*
+              同姓同名は**ここで**区別できないと意味がない。後戻りできない画面なので、
+              一覧で見せたのと同じ所属をもう一度出す (#591)。読み上げ・監査へは流さない
+              （`sublabel` は表示専用）。
+            */}
+            {data.target?.sublabel === undefined ? null : (
+              <span
+                className="card__sub"
+                data-testid="confirm-target-affiliation"
+                style={{ display: 'block' }}
+              >
+                {data.target.sublabel}
+              </span>
+            )}
           </dd>
           <dt className="card__sub" lang={htmlLangFor(locale)}>{tr('reception.fieldName')}</dt>
           <dd style={{ margin: 0 }} data-testid="confirm-name">
