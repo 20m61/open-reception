@@ -78,7 +78,7 @@ export function effectiveScope(
   return options.strict ? 'code' : scope;
 }
 
-export const SKIPPABLE_STEPS = ['build', 'e2e', 'lighthouse', 'sast'] as const;
+export const SKIPPABLE_STEPS = ['build', 'e2e', 'lighthouse', 'sast', 'vrm'] as const;
 export type SkippableStep = (typeof SKIPPABLE_STEPS)[number];
 
 /**
