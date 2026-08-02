@@ -1,6 +1,10 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 import { getVisitorDirectory } from './organization-service';
-import { __resetOrganization, putOrganizationUnit } from './organization-repository';
+import {
+  __resetOrganization,
+  putOrganizationMembership,
+  putOrganizationUnit,
+} from './organization-repository';
 import {
   __resetDirectory,
   createDepartment,
@@ -121,8 +125,106 @@ describe('getVisitorDirectory (#373 増分 4)', () => {
     await __resetOrganization('acme');
     const dept = await createDepartment(T, { name: '営業部' });
     if (!dept.ok) throw new Error('fixture failed');
+    const staff = await createStaff(T, { displayName: '山田 太郎', departmentId: dept.value.id });
+    if (!staff.ok) throw new Error('fixture failed');
 
     const other = await getVisitorDirectory({ kind: 'tenant', tenantId: 'acme' });
     expect(other.departments.some((d) => d.id === dept.value.id)).toBe(false);
+    // **担当者も検査する。** 組織だけ絞られて人が絞られない漏れ方は気づきにくい。
+    expect(other.staff.some((s) => s.id === staff.value.id)).toBe(false);
+  });
+});
+
+/**
+ * 保存済み組織が**在る**状態の振る舞い。移行前（保存済みゼロ）の等価性だけを固定しても、
+ * 組織編集 UI が入った瞬間に来訪者面へ出るものは何も守られない。
+ */
+describe('getVisitorDirectory / 保存済み組織が在るとき', () => {
+  /**
+   * 規則 A は *組織の* 有効/無効を波及させない判断であって、運用者が所属単位で明示した
+   * 「呼ばせない」まで無効化してよいという意味ではない。ここが効かないと
+   * `mergeOrganizationMemberships` の AND は来訪者面へ永遠に届かない。
+   */
+  it('所属を全て callable:false にした担当者は呼べなくなる', async () => {
+    const dept = await createDepartment(T, { name: '営業部' });
+    if (!dept.ok) throw new Error('fixture failed');
+    const staff = await createStaff(T, { displayName: '山田 太郎', departmentId: dept.value.id });
+    if (!staff.ok) throw new Error('fixture failed');
+
+    const membership = (await getOrganizationView(SCOPE)).memberships.find(
+      (m) => m.staffId === staff.value.id,
+    );
+    if (membership === undefined) throw new Error('fixture failed');
+    await putOrganizationMembership(T, { ...membership, callable: false });
+
+    const directory = await getVisitorDirectory(SCOPE);
+    expect(directory.staff.some((s) => s.id === staff.value.id)).toBe(false);
+  });
+
+  /** 兼務のうち 1 件でも呼べるなら呼べる（片方を閉じただけで到達不能にしない）。 */
+  it('所属が 1 件でも callable なら呼べるまま', async () => {
+    const a = await createDepartment(T, { name: '営業部' });
+    const b = await createDepartment(T, { name: '技術部' });
+    if (!a.ok || !b.ok) throw new Error('fixture failed');
+    const staff = await createStaff(T, { displayName: '山田 太郎', departmentId: a.value.id });
+    if (!staff.ok) throw new Error('fixture failed');
+
+    const primary = (await getOrganizationView(SCOPE)).memberships.find(
+      (m) => m.staffId === staff.value.id,
+    );
+    if (primary === undefined) throw new Error('fixture failed');
+    await putOrganizationMembership(T, { ...primary, callable: false });
+    await putOrganizationMembership(T, {
+      staffId: staff.value.id,
+      organizationId: b.value.id,
+      relation: 'secondary',
+      publicInDirectory: true,
+      callable: true,
+    });
+
+    const directory = await getVisitorDirectory(SCOPE);
+    expect(directory.staff.some((s) => s.id === staff.value.id)).toBe(true);
+  });
+
+  /**
+   * `Department` 実体を持たない組織には、`validateStaffInput` の制約により**担当者を
+   * 原理的に紐づけられない**。出すと「タップ →『おつなぎしています』→ 誰も来ない」に
+   * なる（失敗が失敗として見えない）。取次先を決める #374 が入るまで出さない。
+   */
+  it('Department 実体を持たない保存済み組織は来訪者へ出さない', async () => {
+    const dept = await createDepartment(T, { name: '営業部' });
+    if (!dept.ok) throw new Error('fixture failed');
+    const seed = (await getOrganizationView(SCOPE)).units.find((u) => u.id === dept.value.id);
+    if (seed === undefined) throw new Error('fixture failed');
+
+    await putOrganizationUnit(T, {
+      ...seed,
+      id: 'org-standalone',
+      officialName: '新設室',
+      publicDisplayName: '新設室',
+      enabled: true,
+      publicInDirectory: true,
+    });
+
+    const directory = await getVisitorDirectory(SCOPE);
+    expect(directory.departments.some((d) => d.id === 'org-standalone')).toBe(false);
+    // 既存の部署は影響を受けない。
+    expect(directory.departments.some((d) => d.id === dept.value.id)).toBe(true);
+  });
+
+  /** 運用者が新 UI で並べ替えた意図が来訪者の画面順に効かないと、順序を持つ意味が無い。 */
+  it('保存済みの displayOrder が来訪者の並び順に効く', async () => {
+    const first = await createDepartment(T, { name: '営業部' });
+    const second = await createDepartment(T, { name: '技術部' });
+    if (!first.ok || !second.ok) throw new Error('fixture failed');
+
+    const view = await getOrganizationView(SCOPE);
+    const unit = view.units.find((u) => u.id === second.value.id);
+    if (unit === undefined) throw new Error('fixture failed');
+    await putOrganizationUnit(T, { ...unit, displayOrder: -1 });
+
+    const directory = await getVisitorDirectory(SCOPE);
+    const ids = directory.departments.map((d) => d.id);
+    expect(ids.indexOf(second.value.id)).toBeLessThan(ids.indexOf(first.value.id));
   });
 });

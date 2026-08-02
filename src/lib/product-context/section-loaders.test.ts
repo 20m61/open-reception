@@ -31,6 +31,12 @@ vi.mock('@/lib/branding/branding-store', () => ({
 }));
 vi.mock('@/lib/organization/organization-service', () => ({
   getVisitorDirectory: (scope: unknown) => getVisitorDirectory(scope),
+  // モジュール全体を差し替えるので、同モジュールの他 export も置いておく。落とすと
+  // 将来 section-loaders がそちらを触った瞬間に `undefined is not a function` という
+  // 原因の読めない失敗になる。
+  getOrganizationView: () => {
+    throw new Error('getOrganizationView は section-loaders から使わない想定');
+  },
 }));
 // モックもテナント引数を受ける（捨てると渡し忘れを検出できない）。
 vi.mock('@/lib/voice/voice-store', () => ({
