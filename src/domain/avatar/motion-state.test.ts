@@ -86,3 +86,24 @@ describe('motionStateAttribute', () => {
     expect(motionStateAttribute({ state: 'playing' })).toBe('playing');
   });
 });
+
+/**
+ * **判定順** (#578 レビュー m8)。doc と実装が食い違っていたのを実装側へ揃えた。
+ * 適用先（VRM）が無いことは読込結果と無関係に確定しているので最初に出す。
+ */
+describe('resolveMotionObservation / 判定順', () => {
+  it('VRM 未読込は、.vrma の読込結果より優先して no-vrm を出す', () => {
+    // 以前は load-error になり、より根本的な原因（適用先が無い）が隠れていた。
+    expect(
+      resolveMotionObservation({ requestedUrl: '/m.vrma', vrmLoaded: false, loaded: false }),
+    ).toEqual({ state: 'failed', failure: 'no-vrm' });
+  });
+
+  it('VRM 未読込は、読込完了を待たずに no-vrm を出す', () => {
+    // 待つと、.vrma が先に失敗した場合に no-vrm が永久に表へ出ない。
+    expect(resolveMotionObservation({ requestedUrl: '/m.vrma', vrmLoaded: false })).toEqual({
+      state: 'failed',
+      failure: 'no-vrm',
+    });
+  });
+});
