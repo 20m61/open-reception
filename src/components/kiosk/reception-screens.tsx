@@ -771,7 +771,15 @@ function TargetView({
                     </span>
                   ) : null}
                   {s.displayName}
-                  <span className="card__sub">{directory.departments.find((d) => d.id === s.departmentId)?.name}</span>
+                  {/*
+                    同姓同名の識別に効く所属を出す。`affiliationLabel` は兼務まで含み
+                    （例: 営業部（兼: 技術部））、公開組織の表示名だけで構成されている。
+                    旧経路（縮退時の /api/kiosk/directory）はラベルを持たないので、
+                    従来どおり部署名を引くフォールバックを残す。
+                  */}
+                  <span className="card__sub" data-testid={`staff-${s.id}-affiliation`}>
+                    {s.affiliationLabel ?? directory.departments.find((d) => d.id === s.departmentId)?.name}
+                  </span>
                 </button>
               ) : (
                 // 不在の担当者は呼び出せない。部署/代表窓口へ誘導する (issue #26)。

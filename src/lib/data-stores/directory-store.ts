@@ -386,7 +386,22 @@ export async function importStaff(
 /* ---------- kiosk 公開ビュー ---------- */
 
 /** 受付端末向けの最小情報（mockCallOutcome 等の内部情報は含めない）。 */
-export type KioskStaff = { id: string; displayName: string; kana?: string; aliases: string[]; departmentId: string; available: boolean };
+export type KioskStaff = {
+  id: string;
+  displayName: string;
+  kana?: string;
+  aliases: string[];
+  departmentId: string;
+  available: boolean;
+  /**
+   * 同姓同名の候補を識別するための所属ラベル（例: `営業部（兼: 技術部）`）。
+   *
+   * **公開組織の表示名だけで構成される**（`toVisitorAffiliations` を必ず通す）。出せる情報が
+   * 無いときは省略され、そのとき画面は所属を出さない。旧経路 `getKioskDirectory` は組織モデルを
+   * 読まないので常に省略される（呼び出し側はフォールバックを持つこと）。
+   */
+  affiliationLabel?: string;
+};
 export type KioskDirectory = {
   departments: Array<Pick<Department, 'id' | 'name'>>;
   staff: KioskStaff[];

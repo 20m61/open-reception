@@ -45,6 +45,12 @@ export type DirStaff = {
   aliases: string[];
   departmentId: string;
   available: boolean;
+  /**
+   * 同姓同名の候補を識別するための所属ラベル（例: `営業部（兼: 技術部）`）。公開組織の
+   * 表示名だけで構成される。**省略され得る** — 旧経路（縮退時の `/api/kiosk/directory`）は
+   * 組織モデルを読まないので持たない。呼び出し側はフォールバックを用意すること。
+   */
+  affiliationLabel?: string;
 };
 export type Directory = { departments: DirDepartment[]; staff: DirStaff[] };
 

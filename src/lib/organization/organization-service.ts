@@ -27,7 +27,12 @@ import type {
   OrganizationScope,
   OrganizationUnit,
 } from '@/domain/organization/types';
-import { listVisitorOrganizations } from '@/domain/organization/directory';
+import {
+  affiliationSummaryLabel,
+  listVisitorOrganizations,
+  resolveStaffAffiliations,
+  toVisitorAffiliations,
+} from '@/domain/organization/directory';
 import type { KioskDirectory } from '@/lib/data-stores/directory-store';
 import { listDepartments, listStaff } from '@/lib/data-stores/directory-store';
 import {
@@ -136,6 +141,24 @@ export async function getVisitorDirectory(scope: TenantScope): Promise<KioskDire
     );
   }
 
+  // 所属ラベルは**公開組織の表示名だけ**で構成する。`toVisitorAffiliations` を通した
+  // 時点で内部正式名称は型として持てなくなり、非公開・無効な組織はここで落ちる。
+  // 同姓同名の識別のためにラベルを出すのであって、その代償に内部組織の存在を
+  // 漏らしてよいわけではない（出せる情報が無ければ空のまま）。
+  // `AffiliationQuery.now` は ISO 8601 文字列（Date ではない）。
+  //
+  // ただし **今の時点では `now` はラベルの出力に影響しない** — `affiliationSummaryLabel` は
+  // 主所属と兼務しか使わず、期間を持つのは代理担当（acting）だけだから。ここを
+  // 「期限切れ代理担当がラベルに出ないこと」で検査しようとしても、常に通る空のテストになる。
+  // 代理担当を来訪者面へ出すようにするときに、初めて意味を持つ検査が書ける。
+  const now = new Date().toISOString();
+  const labelFor = (staffId: string): string =>
+    affiliationSummaryLabel(
+      toVisitorAffiliations(
+        resolveStaffAffiliations(view.memberships, view.units, staffId, { now, scope }),
+      ),
+    );
+
   return {
     departments: listVisitorOrganizations(visitorUnits, scope).map((o) => ({
       id: o.id,
@@ -145,13 +168,18 @@ export async function getVisitorDirectory(scope: TenantScope): Promise<KioskDire
     // （既存 `getKioskDirectory` と同じ公開範囲を保つ）。
     staff: inputs.staff
       .filter((s) => s.enabled && (membershipsByStaff.get(s.id) ?? true))
-      .map((s) => ({
-        id: s.id,
-        displayName: s.displayName,
-        kana: s.kana,
-        aliases: s.aliases,
-        departmentId: s.departmentId,
-        available: s.available,
-      })),
+      .map((s) => {
+        const affiliationLabel = labelFor(s.id);
+        return {
+          id: s.id,
+          displayName: s.displayName,
+          kana: s.kana,
+          aliases: s.aliases,
+          departmentId: s.departmentId,
+          available: s.available,
+          // 空文字はキーごと落とす（「所属なし」と「ラベルが空」を区別させない）。
+          ...(affiliationLabel === '' ? {} : { affiliationLabel }),
+        };
+      }),
   };
 }
