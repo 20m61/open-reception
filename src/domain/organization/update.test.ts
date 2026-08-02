@@ -42,14 +42,34 @@ describe('validateOrganizationUnitPatch', () => {
   });
 
   /**
-   * **id / tenantId / parentId は編集させない。** id/tenantId を書き換えられると別テナントの
-   * 組織を作れてしまう。parentId は階層の循環検証（`hierarchy.ts`）を伴うので、
-   * この増分では扱わない（黙って無視せず拒否する — 送ったのに効かない方が危険）。
+   * **id / tenantId は編集させない。** 書き換えられると別テナントの組織を作れてしまう。
+   * 黙って無視せず拒否する（送ったのに効かない方が危険）。
    */
-  it('id・tenantId・parentId を含む入力は拒否する', () => {
+  it('id・tenantId を含む入力は拒否する', () => {
     expect(validateOrganizationUnitPatch({ id: 'x' }).ok).toBe(false);
     expect(validateOrganizationUnitPatch({ tenantId: 'other' }).ok).toBe(false);
-    expect(validateOrganizationUnitPatch({ parentId: 'p' }).ok).toBe(false);
+  });
+
+  /**
+   * `parentId` はここでは**形だけ**を見る (#373 増分 7)。循環・深度上限・tenant/site 境界は
+   * 他の組織との関係が要るので純粋な入力検証では決められない（`canSetParent` が行う）。
+   */
+  it('parentId は文字列か null を受ける', () => {
+    expect(validateOrganizationUnitPatch({ parentId: 'org-1' }).ok).toBe(true);
+    expect(validateOrganizationUnitPatch({ parentId: null }).ok).toBe(true);
+  });
+
+  /** `null`（外す）と `undefined`（触らない）を同一視しない。空文字は id として不正。 */
+  it('parentId が空文字・数値なら拒否する', () => {
+    expect(validateOrganizationUnitPatch({ parentId: '' }).ok).toBe(false);
+    expect(validateOrganizationUnitPatch({ parentId: '  ' }).ok).toBe(false);
+    expect(validateOrganizationUnitPatch({ parentId: 1 }).ok).toBe(false);
+  });
+
+  it('parentId: null は「外す」として値に残る（キー欠落と区別する）', () => {
+    const r = validateOrganizationUnitPatch({ parentId: null });
+    expect(r.ok && 'parentId' in r.value).toBe(true);
+    expect(r.ok && r.value.parentId).toBeNull();
   });
 
   it('編集対象が 1 つも無ければ拒否する（無音の成功を作らない）', () => {

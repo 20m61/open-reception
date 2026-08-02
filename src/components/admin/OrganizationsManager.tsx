@@ -27,6 +27,23 @@ import { color, space } from '@/components/admin/ui/tokens';
  * 来訪者への出し方はここ、と役割を分ける。
  */
 
+/**
+ * `id` の子孫 id 集合。上位組織の候補から外すために使う。
+ *
+ * サーバ側（`canSetParent`）が最終判定を持つので、ここは **UI の親切**に過ぎない。
+ * それでも出さないのは、選べてしまうと運用者が「なぜ保存できないのか」を考える羽目になるため。
+ */
+function descendantIds(units: ReadonlyArray<OrganizationUnit>, id: string): Set<string> {
+  const found = new Set<string>();
+  let frontier = [id];
+  while (frontier.length > 0) {
+    const children = units.filter((u) => u.parentId !== undefined && frontier.includes(u.parentId));
+    frontier = children.map((c) => c.id).filter((c) => !found.has(c));
+    frontier.forEach((c) => found.add(c));
+  }
+  return found;
+}
+
 const HIDDEN_REASON_LABEL: Record<
   Extract<ReturnType<typeof organizationVisibility>, { kind: 'hidden' }>['reason'],
   string
@@ -119,6 +136,29 @@ export function OrganizationsManager() {
           </span>
         );
       },
+    },
+    {
+      key: 'parent',
+      header: '上位組織',
+      cell: (u) => (
+        // 自分と自分の子孫は選ばせない（循環になる）。サーバも `canSetParent` で拒否するが、
+        // **選べてしまう UI は運用者に「なぜ保存できないのか」を考えさせる**ので出さない。
+        <select
+          data-testid={`org-parent-${u.id}`}
+          value={u.parentId ?? ''}
+          disabled={busyId === u.id}
+          onChange={(e) => void patch(u.id, { parentId: e.target.value === '' ? null : e.target.value })}
+        >
+          <option value="">（トップレベル）</option>
+          {items
+            .filter((candidate) => candidate.id !== u.id && !descendantIds(items, u.id).has(candidate.id))
+            .map((candidate) => (
+              <option key={candidate.id} value={candidate.id}>
+                {candidate.publicDisplayName}
+              </option>
+            ))}
+        </select>
+      ),
     },
     {
       key: 'visibility',

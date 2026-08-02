@@ -121,3 +121,30 @@ test('縮退経路でも公開表示名の編集が反映される', async ({ pa
   }).toPass({ timeout: 10_000 });
 });
 
+/**
+ * 階層（上位組織）の編集 (#373 増分 7)。
+ *
+ * 循環した階層は祖先を辿る処理が終わらず、来訪者画面の描画ごと巻き込む。サーバは
+ * `canSetParent` で拒否するが、**選べてしまう UI は運用者に「なぜ保存できないのか」を
+ * 考えさせる**ので、候補からも外れていることを確認する。
+ */
+test('上位組織を設定でき、循環になる候補は選べない', async ({ page }) => {
+  await loginAsAdmin(page);
+  const parent = await createOwnDepartment(page, uniq('本部'));
+  const child = await createOwnDepartment(page, uniq('一課'));
+
+  await page.goto('/admin/organizations');
+  await expect(page.getByTestId('org-table')).toBeVisible();
+
+  await page.getByTestId(`org-parent-${child}`).selectOption(parent);
+  await expect(page.getByTestId(`org-parent-${child}`)).toHaveValue(parent);
+
+  // 親の側から見ると、子は候補に出ない（選ぶと循環になる）。
+  const parentOptions = page.getByTestId(`org-parent-${parent}`).locator('option');
+  await expect(parentOptions.filter({ hasText: new RegExp(child) })).toHaveCount(0);
+
+  // 自分自身も候補に出ない。
+  const childOptions = page.getByTestId(`org-parent-${child}`).locator('option');
+  await expect(childOptions.filter({ hasText: new RegExp(child) })).toHaveCount(0);
+});
+
