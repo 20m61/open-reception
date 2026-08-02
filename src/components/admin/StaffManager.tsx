@@ -18,6 +18,8 @@ import { color, space } from '@/components/admin/ui/tokens';
 export function StaffManager() {
   const [items, setItems] = useState<Staff[]>([]);
   const [departments, setDepartments] = useState<Department[]>([]);
+  /** 担当者 id → 兼務している組織 id。主所属（`staff.departmentId`）は含まない (#373 増分 8)。 */
+  const [secondary, setSecondary] = useState<Record<string, string[]>>({});
   const [displayName, setDisplayName] = useState('');
   const [kana, setKana] = useState('');
   const [departmentId, setDepartmentId] = useState('');
@@ -30,7 +32,22 @@ export function StaffManager() {
   const status = get('status');
 
   const load = useCallback(async () => {
-    const [sRes, dRes] = await Promise.all([fetch('/api/admin/staff'), fetch('/api/admin/departments')]);
+    const [sRes, dRes, oRes] = await Promise.all([
+      fetch('/api/admin/staff'),
+      fetch('/api/admin/departments'),
+      // 兼務は組織ビュー（互換 + 保存済みの合成）から読む。保存済みだけを見ると
+      // 「一覧に出ているのに設定できない」になる。
+      fetch('/api/admin/organizations/memberships'),
+    ]);
+    if (oRes.ok) {
+      const body = (await oRes.json()) as { items: { staffId: string; organizationId: string; relation: string }[] };
+      const map: Record<string, string[]> = {};
+      for (const m of body.items) {
+        if (m.relation !== 'secondary') continue;
+        (map[m.staffId] ??= []).push(m.organizationId);
+      }
+      setSecondary(map);
+    }
     if (sRes.ok) setItems(((await sRes.json()) as { items: Staff[] }).items);
     if (dRes.ok) {
       const depts = ((await dRes.json()) as { items: Department[] }).items;
@@ -86,6 +103,18 @@ export function StaffManager() {
       }),
     [items, keyword, filterDeptId, status],
   );
+  const changeSecondary = useCallback(
+    async (staffId: string, organizationId: string, method: 'POST' | 'DELETE') => {
+      await fetch(`/api/admin/staff/${staffId}/memberships`, {
+        method,
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ organizationId }),
+      });
+      await load();
+    },
+    [load],
+  );
+
   const hasFilter = Boolean(keyword || filterDeptId || status);
 
   const columns = useMemo<Column<Staff>[]>(
@@ -102,6 +131,46 @@ export function StaffManager() {
         ),
       },
       { key: 'dept', header: '部署', cell: (s) => deptName(s.departmentId) },
+      {
+        key: 'secondary',
+        header: '兼務',
+        // 兼務は来訪者の候補カードに「営業部（兼: 技術部）」として出る (#590)。
+        // 設定経路が無いとその表示は永久に空のままなので、ここで足し引きできるようにする。
+        cell: (s) => (
+          <span style={{ display: 'inline-flex', gap: '0.5rem', flexWrap: 'wrap', alignItems: 'center' }}>
+            {(secondary[s.id] ?? []).map((orgId) => (
+              <span key={orgId} data-testid={`staff-${s.id}-secondary-${orgId}`}>
+                {deptName(orgId)}
+                <button
+                  type="button"
+                  data-testid={`staff-${s.id}-secondary-remove-${orgId}`}
+                  onClick={() => void changeSecondary(s.id, orgId, 'DELETE')}
+                  aria-label={`${deptName(orgId)} の兼務を外す`}
+                >
+                  ×
+                </button>
+              </span>
+            ))}
+            <select
+              data-testid={`staff-${s.id}-secondary-add`}
+              value=""
+              onChange={(e) => {
+                if (e.target.value !== '') void changeSecondary(s.id, e.target.value, 'POST');
+              }}
+            >
+              <option value="">兼務を追加…</option>
+              {departments
+                // 主所属と既存の兼務は候補から外す（追加しても 400 になるだけ）。
+                .filter((d) => d.id !== s.departmentId && !(secondary[s.id] ?? []).includes(d.id))
+                .map((d) => (
+                  <option key={d.id} value={d.id}>
+                    {d.name}
+                  </option>
+                ))}
+            </select>
+          </span>
+        ),
+      },
       {
         key: 'status',
         header: '状態',
@@ -148,7 +217,7 @@ export function StaffManager() {
         ),
       },
     ],
-    [deptName, patch, editingId, items, load],
+    [deptName, patch, editingId, items, load, secondary, departments, changeSecondary],
   );
 
   return (

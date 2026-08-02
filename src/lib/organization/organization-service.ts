@@ -40,8 +40,10 @@ import {
   type OrganizationUnitPatch,
 } from '@/domain/organization/update';
 import {
+  deleteOrganizationMembership,
   listOrganizationMemberships,
   listOrganizationUnits,
+  putOrganizationMembership,
   putOrganizationUnit,
 } from './organization-repository';
 
@@ -331,4 +333,77 @@ export async function updateOrganizationUnit(
  */
 export async function getVisitorDirectoryForFallback(scope: TenantScope): Promise<KioskDirectory> {
   return buildVisitorDirectory(scope, { toleratePartialRead: true });
+}
+
+export type MembershipResult =
+  | { ok: true }
+  | { ok: false; error: { code: 'invalid_input' | 'not_found'; message: string } };
+
+/**
+ * 兼務を追加する (#373 増分 8)。
+ *
+ * ## 主所属は触らない
+ *
+ * 主所属の真実源は `staff.departmentId`（既存の担当者管理が編集する）。ここで主所属も
+ * 持てるようにすると真実源が二重になり、「どちらが正か」を毎回考えることになる。
+ * 主所属と同じ組織を兼務として渡されたら拒否する。
+ *
+ * ## 代理担当は扱わない
+ *
+ * 来訪者面に出さない決定（(A)）により消費者が無い。生産者だけ作っても確かめようがないので、
+ * #374 の RoutingPolicy が消費者になった時点で足す。
+ */
+export async function addSecondaryMembership(
+  scope: OrganizationScope,
+  staffId: string,
+  organizationId: string,
+): Promise<MembershipResult> {
+  const inputs = await readOrganizationInputs(scope);
+  const staff = inputs.staff.find((s) => s.id === staffId);
+  if (staff === undefined) {
+    return { ok: false, error: { code: 'not_found', message: 'staff not found' } };
+  }
+  // scope 外・存在しない組織は同じ `not_found` にする（他テナントの id の実在を漏らさない）。
+  const view = composeOrganizationView(inputs, scope);
+  const unit = view.units.find((u) => u.id === organizationId);
+  if (unit === undefined) {
+    return { ok: false, error: { code: 'not_found', message: 'organization not found' } };
+  }
+  if (staff.departmentId === organizationId) {
+    return {
+      ok: false,
+      error: { code: 'invalid_input', message: 'already the primary organization' },
+    };
+  }
+
+  // 同じ組み合わせは `membershipStoreId` が同じキーになるので、二重追加は上書きになる。
+  await putOrganizationMembership(scope.tenantId, {
+    staffId,
+    organizationId,
+    relation: 'secondary',
+    publicInDirectory: true,
+    callable: true,
+  });
+  return { ok: true };
+}
+
+/** 兼務を外す。主所属は対象外（`staff.departmentId` を編集すること）。 */
+export async function removeSecondaryMembership(
+  scope: OrganizationScope,
+  staffId: string,
+  organizationId: string,
+): Promise<MembershipResult> {
+  const inputs = await readOrganizationInputs(scope);
+  const staff = inputs.staff.find((s) => s.id === staffId);
+  if (staff === undefined) {
+    return { ok: false, error: { code: 'not_found', message: 'staff not found' } };
+  }
+  if (staff.departmentId === organizationId) {
+    return {
+      ok: false,
+      error: { code: 'invalid_input', message: 'primary organization is not a secondary' },
+    };
+  }
+  await deleteOrganizationMembership(scope.tenantId, staffId, organizationId);
+  return { ok: true };
 }

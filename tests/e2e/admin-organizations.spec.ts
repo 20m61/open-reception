@@ -148,3 +148,40 @@ test('上位組織を設定でき、循環になる候補は選べない', async
   await expect(childOptions.filter({ hasText: new RegExp(child) })).toHaveCount(0);
 });
 
+/**
+ * 兼務の設定 (#373 増分 8)。
+ *
+ * 同姓同名の識別ラベルは兼務を「営業部（兼: 技術部）」と表示するが、**兼務を作る経路が
+ * 本番に 1 つも無かった**。表示側だけ在って生産者が無い契約は腐るので、管理画面で設定し
+ * 来訪者面へ届くところまでを通しで検査する。
+ */
+test('兼務を設定すると来訪者の所属表示に併記される', async ({ page }) => {
+  await loginAsAdmin(page);
+  const mainId = await createOwnDepartment(page, uniq('主所属'));
+  const alsoId = await createOwnDepartment(page, uniq('兼務先'));
+
+  const created = await page.request.post('/api/admin/staff', {
+    data: { displayName: uniq('兼務太郎'), departmentId: mainId },
+  });
+  expect(created.ok()).toBeTruthy();
+  const staffId = ((await created.json()) as { id: string }).id;
+
+  await page.goto('/admin/staff');
+  await page.getByTestId(`staff-${staffId}-secondary-add`).selectOption(alsoId);
+  await expect(page.getByTestId(`staff-${staffId}-secondary-${alsoId}`)).toBeVisible();
+
+  // 来訪者向けの応答に兼務が載る。ここが通らなければ設定経路を作った意味がない。
+  await expect(async () => {
+    const res = await page.request.get('/api/configuration/effective');
+    const body = (await res.json()) as {
+      directory?: { staff?: { id: string; affiliation?: { secondary: string[] } }[] };
+    };
+    const entry = body.directory?.staff?.find((s) => s.id === staffId);
+    expect(entry?.affiliation?.secondary).toHaveLength(1);
+  }).toPass({ timeout: 10_000 });
+
+  // 外すと消える。
+  await page.getByTestId(`staff-${staffId}-secondary-remove-${alsoId}`).click();
+  await expect(page.getByTestId(`staff-${staffId}-secondary-${alsoId}`)).toHaveCount(0);
+});
+
