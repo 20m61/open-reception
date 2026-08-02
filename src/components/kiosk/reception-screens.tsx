@@ -19,6 +19,7 @@ import {
   failedMessageKeyFor,
   type CallFailureReason,
 } from '@/domain/reception/call-failure';
+import { staffAffiliationText } from './staff-affiliation-text';
 import {
   useCallback,
   useEffect,
@@ -771,7 +772,15 @@ function TargetView({
                     </span>
                   ) : null}
                   {s.displayName}
-                  <span className="card__sub">{directory.departments.find((d) => d.id === s.departmentId)?.name}</span>
+                  {/*
+                    同姓同名の識別に効く所属を出す。サーバは構造（主所属・兼務の名前）だけを
+                    返し、整形は locale を知るここで行う。規則は `staffAffiliationText` に
+                    集約してある（空＝「出すものが無い」と、旧経路＝「キーを持たない」を
+                    取り違えると、非公開にした所属が部署名として出戻る）。
+                  */}
+                  <span className="card__sub" data-testid={`staff-${s.id}-affiliation`}>
+                    {staffAffiliationText(s, directory.departments, tr)}
+                  </span>
                 </button>
               ) : (
                 // 不在の担当者は呼び出せない。部署/代表窓口へ誘導する (issue #26)。

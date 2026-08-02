@@ -386,7 +386,28 @@ export async function importStaff(
 /* ---------- kiosk 公開ビュー ---------- */
 
 /** 受付端末向けの最小情報（mockCallOutcome 等の内部情報は含めない）。 */
-export type KioskStaff = { id: string; displayName: string; kana?: string; aliases: string[]; departmentId: string; available: boolean };
+export type KioskStaff = {
+  id: string;
+  displayName: string;
+  kana?: string;
+  aliases: string[];
+  departmentId: string;
+  available: boolean;
+  /**
+   * 同姓同名の候補を識別するための所属（主所属と兼務）。
+   *
+   * **整形済みの文字列ではなく構造で返す。** 表示は locale 依存（`（兼: …）` / `(also …)`）だが、
+   * ここはサーバ側で、端末の locale を持たない。しかもこの構成は版スナップショットとして
+   * **永続化され後から再検証されない**ので、文字列を焼き込むと日本語が固定される。
+   * 整形は locale を知っているクライアント側で行う。
+   *
+   * 値は**公開組織の表示名だけ**で構成される（`toVisitorAffiliations` を必ず通す）。
+   * 出せる情報が無ければ `{ secondary: [] }`（＝所属を出さない、という結論）。
+   * 旧経路 `getKioskDirectory` は組織モデルを読まないので**キーごと持たない**
+   * （呼び出し側はフォールバックを持つこと）。
+   */
+  affiliation?: { primary?: string; secondary: string[] };
+};
 export type KioskDirectory = {
   departments: Array<Pick<Department, 'id' | 'name'>>;
   staff: KioskStaff[];

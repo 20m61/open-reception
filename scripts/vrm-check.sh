@@ -23,13 +23,43 @@ BASE="http://127.0.0.1:${PORT}"
 OUT="${VRM_CHECK_OUT:-${ROOT}/.vrm-check}"
 
 SERVER_PID=""
+# 自分がこのポートのサーバを起動したか。起動前にガードで弾かれた場合は、他人が握っている
+# ポートを勝手に殺さない（ガードの意味が消える）。
+OWNS_PORT=0
 cleanup() {
   # **必ず落とす。** 残すとポートを掴んだままになり、次回の実行が別プロセスに繋がる。
   if [[ -n "${SERVER_PID}" ]]; then kill "${SERVER_PID}" 2>/dev/null || true; fi
+
+  # ここまでで足りなかった。`npm run start` は `next start` を**子プロセス**として起動するので、
+  # npm を殺しても `next-server` は孤児として生き残り、ポートを握り続ける。実際にこれが残り、
+  # 次回の実行が古いサーバに繋がって ChunkLoadError を出し、**コードの退行と誤認した**。
+  # PID を辿るのではなくポートの保持者を名指しで落とす（孤児化しても確実に届く）。
+  if [[ "${OWNS_PORT}" -eq 1 ]]; then
+    local holders
+    holders="$(lsof -ti "tcp:${PORT}" 2>/dev/null || true)"
+    if [[ -n "${holders}" ]]; then
+      echo "${holders}" | xargs kill 2>/dev/null || true
+      sleep 1
+      holders="$(lsof -ti "tcp:${PORT}" 2>/dev/null || true)"
+      if [[ -n "${holders}" ]]; then echo "${holders}" | xargs kill -9 2>/dev/null || true; fi
+    fi
+  fi
 }
 trap cleanup EXIT INT TERM
 
 mkdir -p "${OUT}"
+
+# **起動前にポートを確認する。** 前回の実行が残っていると `next start` は EADDRINUSE で
+# 即死し、検査は「生き残った古いサーバ」に繋がる。古いサーバは boot 時の build manifest を
+# 握ったままなので、再ビルド後は chunk が食い違い ChunkLoadError で FAIL する ——
+# **コードの退行と見分けがつかない**。逆に古い build がたまたま健全なら偽 PASS になる。
+# 実際にこれで「自分の変更が VRM を壊した」と誤認し、切り分けに数回のビルドを浪費した。
+if lsof -ti "tcp:${PORT}" >/dev/null 2>&1; then
+  echo "  ERROR: ポート ${PORT} は既に使用中です（前回の実行が残っている可能性）。" >&2
+  echo "         検査が古いサーバに繋がると、コードの退行と区別できない結果になります。" >&2
+  echo "         解放してから再実行してください: lsof -ti tcp:${PORT} | xargs kill" >&2
+  exit 1
+fi
 
 echo "  VRM 有効のサーバを ${PORT} で起動します（e2e/VRT へ影響させないため専用プロセス）"
 (
@@ -40,6 +70,7 @@ echo "  VRM 有効のサーバを ${PORT} で起動します（e2e/VRT へ影響
   npm run --silent start > "${OUT}/server.log" 2>&1
 ) &
 SERVER_PID=$!
+OWNS_PORT=1
 
 # 起動待ち。ビルド済み前提（ゲートは build ステップの後にここへ来る）。
 ready=0
