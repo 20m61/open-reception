@@ -154,6 +154,11 @@ test.describe('受付フロー画面（実 /kiosk・iPad landscape）', () => {
     await page.getByTestId('to-confirm').click();
     await expect(page.getByTestId('confirm-call')).toBeVisible();
 
+    // 発信直前に同姓同名を区別できることが J-OR-01 の成功条件 (#591)。宛先セルは下で mask
+    // するので **VRT では中身を検証できない**。テキストとして確認する。
+    // 「選んだ担当者の所属が、発信の直前にもう一度出ている」ことがここで担保される。
+    await expect(page.getByTestId('confirm-target-affiliation')).toHaveText(/\S/);
+
     // 氏名・宛先セルは PII を baseline へ焼き込まないため mask（値は合成データだが厳密に沿う）。
     await stabilize(page);
     await expect(page).toHaveScreenshot('kiosk-landscape-confirm.png', {
