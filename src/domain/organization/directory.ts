@@ -13,6 +13,7 @@
  */
 import { searchStaffScored } from '@/domain/staff/search';
 import { ancestorsOf } from './hierarchy';
+import { isVisibleToVisitor } from './visibility';
 import type {
   OrganizationMembership,
   OrganizationRelation,
@@ -89,16 +90,10 @@ function publicUnitsInScope(
   units: ReadonlyArray<OrganizationUnit>,
   scope: OrganizationScope,
 ): OrganizationUnit[] {
-  return scopeOrganizationUnits(units, scope).filter(
-    (u) =>
-      u.enabled &&
-      u.publicInDirectory &&
-      // **公開表示名が空の組織は来訪者へ出さない。** 旧経路は書き込み時の
-      // `validateDepartmentInput` が非空を保証していたが、保存済み組織は生の
-      // collection から読むので検証を通らない。落とさないと iPad に
-      // 「ラベルの無い押せるカード」が並ぶ（押すと行き先の分からない取次になる）。
-      u.publicDisplayName.trim() !== '',
-  );
+  // 判定は `isVisibleToVisitor` に一本化する。管理画面は同じ判定で「なぜ出ないか」を
+  // 運用者へ説明するので、ここに条件を書き足すと**管理画面が「見える」と言っているのに
+  // 来訪者には出ない**という食い違いが生まれる。
+  return scopeOrganizationUnits(units, scope).filter(isVisibleToVisitor);
 }
 
 function toVisitorList(units: ReadonlyArray<OrganizationUnit>): VisitorOrganization[] {
@@ -250,12 +245,9 @@ export type VisitorStaffAffiliations = {
   acting: VisitorStaffAffiliation[];
 };
 
-function isPublic(unit: OrganizationUnit): boolean {
-  // 公開表示名が空なら出さない。`publicUnitsInScope` と**同じ前提**を所属ラベル経路にも
-  // 効かせる（保存済み組織は生の collection から読むので書き込み時検証を通っていない）。
-  // 片方だけに入れると `営業部（兼:    ）` のような壊れたラベルが出る。
-  return unit.enabled && unit.publicInDirectory && unit.publicDisplayName.trim() !== '';
-}
+// 所属ラベル経路も来訪者向け一覧と**同じ判定**を使う。片方だけに条件を足すと
+// `営業部（兼:    ）` のような壊れたラベルが出る（実際に一度そうなった）。
+const isPublic = isVisibleToVisitor;
 
 function toVisitorAffiliation(affiliation: StaffAffiliation): VisitorStaffAffiliation | undefined {
   if (!isPublic(affiliation.unit)) return undefined;
