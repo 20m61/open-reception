@@ -573,5 +573,48 @@ export class WebStack extends Stack {
           `Run \`npm run build:open-next\` at the repo root before \`cdk synth\`/\`deploy\`.`,
       );
     }
+    this.assertBuildArtifactsAreFresh();
   }
+
+  /**
+   * `.open-next/` が `src/` より**新しい**か検証する。
+   *
+   * ## なぜ「存在するか」だけでは足りないのか
+   *
+   * 2026-08-04、**11 日前の成果物をそのままデプロイした**。存在検証は通り、`cdk deploy` も
+   * 成功し、CloudFormation も green。しかし配られたのは古いコードで、その間に入れた
+   * セキュリティ修正 4 件がすべて欠けていた。
+   *
+   * 実 URL を叩いて初めて気づいた ── **デプロイの成功は「今のコードが動いている」ことを
+   * 意味しない**。`.next` は毎回のビルドで更新されるが `.open-next` は
+   * `npm run build:open-next` を明示的に叩いたときだけ更新されるため、この乖離は
+   * 気づかないうちに開く。
+   *
+   * 判定は mtime の単純比較。厳密な内容一致ではないが、**「ビルドし忘れ」という実際に
+   * 起きた事故**はこれで止まる。
+   */
+  private assertBuildArtifactsAreFresh(): void {
+    const artifact = fs.statSync(path.join(OPEN_NEXT_DIR, 'open-next.output.json')).mtimeMs;
+    const newest = newestMtimeUnder(path.join(REPO_ROOT, 'src'));
+    if (newest === undefined || newest <= artifact) return;
+    throw new Error(
+      `OpenNext build artifacts are older than src/:\n` +
+        `  .open-next: ${new Date(artifact).toISOString()}\n` +
+        `  newest src: ${new Date(newest).toISOString()}\n` +
+        `Run \`npm run build:open-next\` — deploying now would ship stale code ` +
+        `(this actually happened on 2026-08-04 and shipped a build missing 4 security fixes).`,
+    );
+  }
+}
+
+/** `dir` 配下で最も新しいファイルの mtime（ミリ秒）。見つからなければ undefined。 */
+function newestMtimeUnder(dir: string): number | undefined {
+  if (!fs.existsSync(dir)) return undefined;
+  let newest: number | undefined;
+  for (const entry of fs.readdirSync(dir, { withFileTypes: true, recursive: true })) {
+    if (!entry.isFile()) continue;
+    const stat = fs.statSync(path.join(entry.parentPath ?? dir, entry.name));
+    if (newest === undefined || stat.mtimeMs > newest) newest = stat.mtimeMs;
+  }
+  return newest;
 }
