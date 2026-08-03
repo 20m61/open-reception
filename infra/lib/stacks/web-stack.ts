@@ -300,6 +300,19 @@ export class WebStack extends Stack {
       serverFn.addEnvironment('COGNITO_REGION', this.region);
       serverFn.addEnvironment('COGNITO_ISSUER', issuer);
 
+      // **dev のみ**: AdminUser レコードが無い SSO ユーザーへ env 既定のロールを与える。
+      //
+      // 既定は最小権限（`resolveActorFromStore` が未登録を拒否）で、それが正しい。しかし
+      // 新規環境には AdminUser を作る経路が無く（#83 の JIT プロビジョニングが未配線）、
+      // **Cognito 認証は通るのに管理 API が全て 401** という手詰まりになる。
+      //
+      // dev で受付導線を実際に通すために限って緩める。`config.environment !== 'dev'` では
+      // 一切設定しない ── **本番でこれが有効になると「登録されていない人が入れる」**。
+      // 恒久策は JIT プロビジョニング（#83）。
+      if (config.environment === 'dev') {
+        serverFn.addEnvironment('OPEN_RECEPTION_ENTRA_UNREGISTERED', 'env_roles');
+      }
+
       new CfnOutput(this, 'AdminUserPoolId', {
         value: userPool.userPoolId,
         description: '管理ログイン Cognito User Pool ID（管理者ユーザー作成に使用）',

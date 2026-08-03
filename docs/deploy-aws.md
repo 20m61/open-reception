@@ -183,6 +183,98 @@ cd infra && npx cdk deploy OpenReception-Web-prod -c env=prod -c appEnv.<...>
 静的アセットは immutable（ハッシュ付き）。動的レスポンスは CloudFront でキャッシュ無効
 （`CACHING_DISABLED`）のため、ページ更新の即時反映に手動 invalidation は不要。
 
+## dev をゼロから立ち上げる手順（2026-08-04 実測）
+
+**この節は実際に一度通した記録。** 抜けると必ず詰まる箇所が 4 つあり、いずれも
+「デプロイは成功するのに使えない」形で現れる。
+
+### 1. 成果物をビルドし直す
+
+```sh
+npm run build:open-next
+```
+
+`cdk deploy` は `.open-next/` を取り込むが、**これは `npm run build:open-next` を明示的に
+叩いたときだけ更新される**。`.next` は品質ゲートの度に更新されるので、両者は気づかないうちに
+乖離する。2026-08-04 に**11 日前の成果物を配り、セキュリティ修正 4 件が欠けた状態**で動いた。
+
+現在は `WebStack.assertBuildArtifactsAreFresh()` が `src/` より古い成果物を止める（#611）。
+
+### 2. アプリシークレットを Secrets Manager に置く
+
+```sh
+# ADMIN_SESSION_SECRET / KIOSK_SESSION_SECRET / KIOSK_ENROLLMENT_SECRET を含む JSON
+aws secretsmanager create-secret --name open-reception/dev/app-v2 --secret-string file://secrets.json
+```
+
+未設定だと**端末エンロールが 500 で失敗する**。アプリが
+「開発用の既定シークレットを deployed 環境で使うことを拒否」して安全側に倒れるため
+（`src/lib/auth/kiosk-enrollment.ts`）。**これは正しい挙動**なので、シークレットを与える。
+
+### 3. デプロイ（context 2 つが必須）
+
+```sh
+cd infra
+npx cdk deploy OpenReception-Web-dev --require-approval never \
+  -c originVerifySecret=<高エントロピー値> \
+  -c appSecretsName=open-reception/dev/app-v2
+```
+
+**`originVerifySecret` を省くと POST が全滅する。** CloudFront OAC は Lambda Function URL への
+リクエスト**ボディを署名しない**ため、Function URL の SigV4 検証が必ず失敗する
+（GET は通り、POST/PUT/PATCH/DELETE だけ 403）。指定すると Function URL が `NONE` になり、
+CloudFront が `x-origin-verify` を付与、`src/proxy.ts` が照合して直叩きを拒否する。
+本番でのシークレット供給方法は **#612**。
+
+**どちらの context も次回デプロイで指定を忘れると壊れる。** 指定を省いた `cdk deploy` は
+成功するが、POST が 403 に戻り、エンロールが 500 に戻る。
+
+### 4. 管理者を作る
+
+```sh
+POOL=<AdminUserPoolId>   # スタック出力
+aws cognito-idp create-group --user-pool-id $POOL --group-name Admin
+aws cognito-idp admin-create-user --user-pool-id $POOL --username admin --message-action SUPPRESS
+aws cognito-idp admin-set-user-password --user-pool-id $POOL --username admin --password <値> --permanent
+aws cognito-idp admin-add-user-to-group --user-pool-id $POOL --username admin --group-name Admin
+```
+
+グループ名は `Admin` / `SiteManager` / `Viewer`（または `OpenReception.` 接頭辞付き）。
+`src/domain/auth/roles.ts` の `APP_ROLE_TO_ADMIN_ROLE` が真実源。
+
+**Cognito ユーザーだけでは管理 API に入れない。** `resolveActorFromStore` が
+AdminUser レコードの無い SSO ユーザーを既定で拒否するため（最小権限。設計として正しい）。
+新規環境には AdminUser を作る経路が無い（#83 の JIT プロビジョニングが未配線）ので、
+**dev のみ** `OPEN_RECEPTION_ENTRA_UNREGISTERED=env_roles` を CDK が設定する（#613）。
+
+### 5. 端末をエンロールする
+
+```sh
+# 管理セッションで
+POST /api/admin/kiosks                      {"displayName":"dev端末1"}
+POST /api/admin/devices/<kioskId>/reissue-token   {"tenantId":"internal"}
+#   → {"device":..., "enrollmentUrl":"https://.../kiosk/enroll?token=...", "expiresAt":...}
+```
+
+**トークンは 15 分で失効し、単回使用。** iPad で開く直前に発行する。
+エンロール URL を開くと `kiosk_session` cookie が付き、受付画面が使えるようになる。
+
+未エンロールの端末は「受付端末の設定が必要です」で止まる（#239 のセッションゲート。正しい挙動）。
+
+### 6. 初期データ
+
+新規 DynamoDB は空。`/api/admin/departments` と `/api/admin/staff` で部署・担当者を作る。
+作らないと受付端末に呼び出す相手が居ない。
+
+### 通し確認（2026-08-04 実測）
+
+管理画面で公開表示名を変更し、担当者に兼務を設定した結果が、来訪者向けの実効構成へ届く:
+
+```
+部署: ['営業（お客さま窓口）', '技術部', '総務部']
+担当者: 鈴木 花子 / affiliation: {primary: '営業（お客さま窓口）', secondary: ['技術部']}
+```
+
 ## カスタムドメイン（既存サブドメインの紐付け・任意） (issue #189)
 
 DNS 委譲・サブドメイン作成が**別管理で完了済み**の既存 FQDN を CloudFront に紐付ける。
