@@ -66,6 +66,11 @@ const appSecretsName = app.node.tryGetContext('appSecretsName') as string | unde
 // 任意: CloudFront 経由検証用シークレット。指定すると Function URL を NONE + 秘密ヘッダ方式にし、
 // OAC が POST ボディを署名しない制約（GET 可・POST 403）を回避する。`-c originVerifySecret=<高エントロピー値>`。
 const originVerifySecret = app.node.tryGetContext('originVerifySecret') as string | undefined;
+// 発行 URL（端末エンロール QR / checkin QR）の基底オリジン。カスタムドメインが無い環境では
+// CloudFront のドメインを CDK 内から参照できない（循環依存）ため、デプロイ後に判明した値を
+// `-c publicOriginOverride=https://xxxx.cloudfront.net` で渡す。
+// **渡さないと Function URL のホストで QR が発行され、誰も使えない**（middleware が forbidden）。
+const publicOriginOverride = app.node.tryGetContext('publicOriginOverride') as string | undefined;
 
 // 任意: テナント別 CCaaS プロバイダ secret を Secrets Manager で扱う (issue #405 Inc2)。
 // `-c providerSecretBackend=secrets-manager -c providerSecretPrefix=open-reception/prod`。
@@ -94,6 +99,7 @@ const web = new WebStack(app, `OpenReception-Web-${config.environment}`, {
   customDomain,
   appSecretsName,
   originVerifySecret,
+  publicOriginOverride,
   cognitoAuth: adminProvider === 'cognito',
   providerSecretBackend,
   providerSecretPrefix,

@@ -81,6 +81,13 @@ export interface WebStackProps extends StackProps {
    */
   readonly originVerifySecret?: string;
   /**
+   * 発行 URL（QR）の基底オリジンの明示指定。
+   *
+   * カスタムドメインが無い環境では CloudFront のドメインを CDK 内から参照できない
+   * （循環依存になる）。デプロイ後に判明したドメインをここへ渡す。
+   */
+  readonly publicOriginOverride?: string;
+  /**
    * 管理ログインに Cognito（埋め込み SRP）を使う場合 true (issue #238)。指定すると Cognito
    * User Pool + App Client（USER_SRP_AUTH 有効・client secret 無し・Hosted UI 無し）を作成し、
    * server Lambda に `COGNITO_USER_POOL_ID/COGNITO_CLIENT_ID/COGNITO_REGION/COGNITO_ISSUER` を注入する。
@@ -136,6 +143,7 @@ export class WebStack extends Stack {
       customDomain,
       appSecretsName,
       originVerifySecret,
+      publicOriginOverride,
       cognitoAuth,
       providerSecretBackend,
       providerSecretPrefix,
@@ -497,6 +505,30 @@ export class WebStack extends Stack {
       },
     });
     this.distribution = distribution;
+
+    /*
+     * 発行 URL（端末エンロール QR / 来訪予約 checkin QR）の基底オリジン。
+     *
+     * **明示しないと使えない URL が発行される。** `resolveCheckinBaseUrl` は環境変数が無ければ
+     * リクエストの Host から推定するが、CloudFront → Lambda Function URL 構成では Host が
+     * **Function URL** になる。その URL を開くと CloudFront を経由しないため
+     * `x-origin-verify` が付かず、middleware が `forbidden` を返す ── **発行された QR を
+     * 誰も使えない**（2026-08-04 に実測）。
+     *
+     * ## CloudFront のドメインは渡せない
+     *
+     * `distribution.distributionDomainName` を Lambda の env へ入れると、Distribution が
+     * server Lambda（オリジン）に依存しているため**循環依存**になり deploy が失敗する
+     * （実際に踏んだ）。カスタムドメインは Distribution と独立なので渡せる。
+     *
+     * カスタムドメインが無い環境（dev 等）は、デプロイ後に判明する CloudFront ドメインを
+     * `-c publicOriginOverride=...` で渡す（`infra/bin` 参照）。
+     */
+    const primaryDomain = customDomainNames?.[0];
+    const publicOrigin = primaryDomain ? `https://${primaryDomain}` : publicOriginOverride;
+    if (publicOrigin) {
+      serverFn.addEnvironment('NEXT_PUBLIC_APP_URL', publicOrigin);
+    }
 
     // CloudFront OAC → Lambda Function URL の invoke 権限 (issue #192)。OAC 方式のときのみ必要。
     // `FunctionUrlOrigin.withOriginAccessControl` は `lambda:InvokeFunctionUrl` のみを付与するが、

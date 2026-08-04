@@ -25,7 +25,8 @@
     "vrm:check": "bash scripts/vrm-check.sh",
     "audit:deps": "npm audit --omit=dev",
     "sast": "semgrep scan --config p/default --error",
-    "secrets:scan": "gitleaks detect --no-banner --redact"
+    "secrets:scan": "gitleaks detect --no-banner --redact",
+    "test:e2e:live": "bash scripts/e2e-live.sh"
   },
   "dependencies": {
     "@aws-sdk/client-cognito-identity-provider": "^3.1076.0",
