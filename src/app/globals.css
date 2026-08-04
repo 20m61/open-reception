@@ -174,10 +174,21 @@ a {
  * なった（以前はステッパーがこの帯を占めていた。VRT が検出）。見出しの前にボタン 1 つ分の
  * 余白を確保して衝突を防ぐ。
  *
- * 待機画面の見出しは `.kiosk-idle__head` の中にあり、ヒーロー独自のレイアウトを持つため
- * 対象外（直下セレクタで自然に外れる）。
+ * 待機画面の見出しは `.kiosk-idle__head` の中にあるためこのセレクタから外れる。当初は
+ * 「ヒーロー独自のレイアウトなので対象外」と判断したが、**iPad 横置きでは同じ衝突が起きていた**
+ * （#617）。横置きは `grid-template-areas: 'avatar head'` で head が右カラム上段＝まさに
+ * ボタンの真下に来る。縦置き・大型横画面では見出しがはるか下（実測 titleTop≈628）へ来るため
+ * 衝突しない。よって横置きにだけ、同じ量の余白を同じ理由で入れる。
+ *
+ * 見出しを**横に**狭める案（`padding-inline-end`）は採らない。実測では日本語が 2 行・英語が
+ * 3 行に折れ、`.kiosk-idle__head` 側に入れると言語ボタン 4 つが折り返した。ヒーローの
+ * 可読性を落とさずに避けるには縦方向の退避しかない。
  */
 .screen-anim > .screen__title {
+  margin-top: calc(var(--touch-target-min) + var(--space-sm));
+}
+
+.screen[data-kiosk-layout='ipad-landscape'] .kiosk-idle__head > .screen__title {
   margin-top: calc(var(--touch-target-min) + var(--space-sm));
 }
 
