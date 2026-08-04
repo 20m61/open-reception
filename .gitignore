@@ -190,3 +190,4 @@ infra/cdk-outputs-*.json
 # **ignore しないとゲートが自分のスタンプを壊す** — 検査が repo 内へ出力を書いた時点で
 # ツリー指紋が変わり、直前に記録した green が stale 扱いになる（実際に踏んだ）。
 .vrm-check/
+.live-capture/
