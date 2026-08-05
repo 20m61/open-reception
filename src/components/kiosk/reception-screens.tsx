@@ -460,6 +460,20 @@ function ScreenTitle({ state, locale }: { state: ReceptionState; locale: Locale 
   return title === null ? null : <h1 className="screen__title">{title}</h1>;
 }
 
+/**
+ * 待機画面で**大きいまま残す**入口 (#620)。ここに無い回答と引き渡しは開示の下へ畳まれる。
+ *
+ * 契約（`turnAnswersFor`）が返す集合・順序は変えない。畳んでも押したときに起こることは同じで、
+ * これは純粋に見せ方の分岐である（強調度を契約に持たせない設計に沿う）。
+ *
+ * `checkin`（QR 受付）を畳むのは再訪者にとって 1 タップ増える後退なので、開示のラベルには
+ * 「その他」ではなく **QR と配送を明示**して、畳まれている中身が分かるようにしている。
+ */
+const PRIMARY_IDLE_ANSWERS: readonly string[] = ['callStaff', 'department'];
+
+/** 開示パネルの id。`aria-controls` で参照するため定数で持つ。 */
+const MORE_PANEL_ID = 'kiosk-more-actions';
+
 function IdleView({
   onEntry,
   onHandoff,
@@ -482,6 +496,7 @@ function IdleView({
   branding: BrandingSettings;
 }) {
   const tr = makeT(locale);
+  const [moreOpen, setMoreOpen] = useState(false);
   // ja は管理設定で上書きできる案内文言（guidance）を使い、他言語は辞書の挨拶＋安心情報を出す (#103 / #324)。
   // リードは主指示（見出しの「ご用件をお選びください」）を重ねず、挨拶＋「タッチだけで受付できる」
   // 安心情報に限定して二重指示を避ける (#324)。文の区切りは locale に合わせる（CJK は「。」、他は「. 」）。
@@ -492,6 +507,33 @@ function IdleView({
       ? guidance
       : `${tr('welcome.title')}${sentenceSep}${tr('reception.idleReassure')}`;
   const hasBrand = hasBrandingContent(branding);
+
+  // 受付端末はスクロールしない前提の画面なのに、入口カードを全部並べると縦が viewport を
+  // 大きく超えていた（実測 landscape 859px / portrait 1038px / large-display 1049px 超過, #620）。
+  // 主要 2 枚だけを大きく残し、残りは開示の下へ畳んで初期表示に収める。
+  const answers = turnAnswersFor('idle', locale);
+  const primaryAnswers = answers.filter((a) => PRIMARY_IDLE_ANSWERS.includes(a.id));
+  const foldedAnswers = answers.filter((a) => !PRIMARY_IDLE_ANSWERS.includes(a.id));
+  const handoffs = turnHandoffsFor('idle', locale);
+
+  const renderActionCard = (view: TurnAnswerView | TurnHandoffView, onClick: () => void) => (
+    <button
+      key={view.id}
+      type="button"
+      className="card card--cta"
+      data-testid={view.testId}
+      data-intent={view.id}
+      lang={htmlLangFor(locale)}
+      onClick={onClick}
+    >
+      <span className="card__icon" aria-hidden="true">
+        {quickActionIcon(view.id as QuickActionIntent)}
+      </span>
+      {view.label}
+      <span className="card__sub">{tr(`kiosk.action.${view.id}.desc` as MessageKey)}</span>
+    </button>
+  );
+
   return (
     <div
       className={`screen__body kiosk-idle${hasBrand ? ' kiosk-idle--branded' : ''}`}
@@ -540,42 +582,40 @@ function IdleView({
         `turnAnswersFor`、QR 受付は `turnHandoffsFor`。**押したときに起こることが違う**
         （回答は状態機械のイベント、引き渡しは別シェルへの切替）ので取得元を分けている。
         アイコンと説明文はカードの見せ方なので画面が持つ。
+
+        **どれを大きく出し、どれを畳むかは画面の裁量** (#620)。契約は「強調度を含めない
+        ＝出すか出さないかだけを決める」設計（conversation-turn.ts のコメント参照）なので、
+        ここで primary / それ以外に振り分けても契約の意味は変わらず、押したときに起こる
+        ことも変わらない。畳んだ側も同じ `onEntry` / `onHandoff` を呼ぶ。
       */}
-      <div className="card-grid kiosk-quick-actions" data-testid="kiosk-quick-actions">
-        {turnAnswersFor('idle', locale).map((answer) => (
-          <button
-            key={answer.id}
-            type="button"
-            className="card card--cta"
-            data-testid={answer.testId}
-            data-intent={answer.id}
-            lang={htmlLangFor(locale)}
-            onClick={() => onEntry(answer)}
-          >
-            <span className="card__icon" aria-hidden="true">
-              {quickActionIcon(answer.id as QuickActionIntent)}
-            </span>
-            {answer.label}
-            <span className="card__sub">{tr(`kiosk.action.${answer.id}.desc` as MessageKey)}</span>
-          </button>
-        ))}
-        {turnHandoffsFor('idle', locale).map((handoff) => (
-          <button
-            key={handoff.id}
-            type="button"
-            className="card card--cta"
-            data-testid={handoff.testId}
-            data-intent={handoff.id}
-            lang={htmlLangFor(locale)}
-            onClick={() => onHandoff(handoff)}
-          >
-            <span className="card__icon" aria-hidden="true">
-              {quickActionIcon(handoff.id as QuickActionIntent)}
-            </span>
-            {handoff.label}
-            <span className="card__sub">{tr(`kiosk.action.${handoff.id}.desc` as MessageKey)}</span>
-          </button>
-        ))}
+      <div className="kiosk-quick-actions" data-testid="kiosk-quick-actions">
+        <div className="card-grid kiosk-quick-actions__primary">
+          {primaryAnswers.map((answer) => renderActionCard(answer, () => onEntry(answer)))}
+        </div>
+        {foldedAnswers.length + handoffs.length > 0 ? (
+          <>
+            <button
+              type="button"
+              className="kiosk-quick-actions__more"
+              data-testid="kiosk-more-toggle"
+              aria-expanded={moreOpen}
+              aria-controls={MORE_PANEL_ID}
+              lang={htmlLangFor(locale)}
+              onClick={() => setMoreOpen((v) => !v)}
+            >
+              {moreOpen ? tr('kiosk.action.more.hide') : tr('kiosk.action.more.label')}
+            </button>
+            <div
+              id={MORE_PANEL_ID}
+              className="card-grid kiosk-quick-actions__panel"
+              data-testid="kiosk-more-actions"
+              hidden={!moreOpen}
+            >
+              {foldedAnswers.map((answer) => renderActionCard(answer, () => onEntry(answer)))}
+              {handoffs.map((handoff) => renderActionCard(handoff, () => onHandoff(handoff)))}
+            </div>
+          </>
+        ) : null}
       </div>
     </div>
   );

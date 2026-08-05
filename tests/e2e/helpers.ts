@@ -60,3 +60,24 @@ export async function establishKioskSession(page: Page): Promise<void> {
     await admin.dispose();
   }
 }
+
+/**
+ * 待機画面の「ほかのご用件」開示を開く (issue #620)。
+ *
+ * 受付端末はスクロールしない前提の画面なので、入口カードのうち主要 2 枚
+ * （`callStaff` / `department`）だけを大きく出し、`delivery` / `other` / QR 受付（`checkin`）は
+ * 開示の下へ畳んだ。**畳まれた入口を押す spec は、先にこれを呼ぶ必要がある。**
+ *
+ * 畳んだのは見せ方だけで、押したときに起こることは変えていない（契約 `turnAnswersFor` /
+ * `turnHandoffsFor` の集合・順序・挙動は不変）。よって開いた後の操作は従来どおり書ける。
+ *
+ * 既に開いている場合は何もしない（冪等）。
+ */
+export async function openMoreIdleActions(page: Page): Promise<void> {
+  const toggle = page.getByTestId('kiosk-more-toggle');
+  await expect(toggle).toBeVisible();
+  if ((await toggle.getAttribute('aria-expanded')) === 'true') return;
+  await toggle.click();
+  await expect(toggle).toHaveAttribute('aria-expanded', 'true');
+  await expect(page.getByTestId('kiosk-more-actions')).toBeVisible();
+}

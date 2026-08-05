@@ -69,6 +69,10 @@ export type MessageKey =
   | 'kiosk.action.delivery.desc'
   | 'kiosk.action.other.label'
   | 'kiosk.action.other.desc'
+  // 待機画面の「ほかのご用件」開示 (#620)。ラベルに中身（QR・配送）を出すのは、
+  // 単なる「その他」だと QR 受付が畳まれていることに再訪者が気づけないため。
+  | 'kiosk.action.more.label'
+  | 'kiosk.action.more.hide'
   // 受付フロー画面の見出し・目的・主要ボタン（#103 increment 3）
   | 'reception.targetPrompt'
   | 'reception.visitorInfoPrompt'
@@ -384,6 +388,8 @@ const ja: DefaultDictionary = {
   'kiosk.action.delivery.desc': 'お届け物・納品の方はこちら',
   'kiosk.action.other.label': 'その他のご用件',
   'kiosk.action.other.desc': '上記にあてはまらない方はこちら',
+  'kiosk.action.more.label': 'QR・配送・その他のご用件',
+  'kiosk.action.more.hide': '閉じる',
   'reception.targetPrompt': '担当者・部署をお選びください',
   'reception.visitorInfoPrompt': '来訪者情報を入力してください',
   'reception.purpose.meeting': '面会',
@@ -669,6 +675,8 @@ const en: LocaleDictionary = {
   'kiosk.action.delivery.desc': 'For deliveries and drop-offs',
   'kiosk.action.other.label': 'Other inquiry',
   'kiosk.action.other.desc': 'If none of the above apply',
+  'kiosk.action.more.label': 'QR code, delivery & other',
+  'kiosk.action.more.hide': 'Close',
   'reception.targetPrompt': 'Choose a person or department',
   'reception.visitorInfoPrompt': 'Please enter your details',
   'reception.purpose.meeting': 'Visit',
@@ -958,6 +966,8 @@ const ko: LocaleDictionary = {
   'kiosk.action.delivery.desc': '배송·납품하시는 분',
   'kiosk.action.other.label': '기타 용건',
   'kiosk.action.other.desc': '위에 해당하지 않는 분',
+  'kiosk.action.more.label': 'QR·배송·기타 용건',
+  'kiosk.action.more.hide': '닫기',
   'reception.targetPrompt': '담당자·부서를 선택해 주세요',
   'reception.visitorInfoPrompt': '방문자 정보를 입력해 주세요',
   'reception.purpose.meeting': '면회',
@@ -1241,6 +1251,8 @@ const zh: LocaleDictionary = {
   'kiosk.action.delivery.desc': '送货·快递请走这里',
   'kiosk.action.other.label': '其他事由',
   'kiosk.action.other.desc': '不属于以上情况的访客',
+  'kiosk.action.more.label': 'QR・配送・其他事由',
+  'kiosk.action.more.hide': '关闭',
   'reception.targetPrompt': '请选择负责人或部门',
   'reception.visitorInfoPrompt': '请输入来访者信息',
   'reception.purpose.meeting': '会面',
@@ -1517,6 +1529,8 @@ const jaSimple: LocaleDictionary = {
   'kiosk.action.delivery.desc': 'にもつを とどける 方は こちら',
   'kiosk.action.other.label': 'その他',
   'kiosk.action.other.desc': '上に ない 方は こちら',
+  'kiosk.action.more.label': 'QR・はいそう・そのほかの ごようけん',
+  'kiosk.action.more.hide': 'とじる',
   'reception.targetPrompt': '会いたい 人・ぶしょを えらんで ください',
   'reception.searchStaff': '名前で さがす',
   'reception.searchPlaceholder': '例: さとう',

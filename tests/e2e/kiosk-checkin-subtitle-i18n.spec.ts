@@ -1,4 +1,5 @@
 import { test, expect, expectCheckinState, type Page } from './kiosk-fixtures';
+import { openMoreIdleActions } from './helpers';
 
 /**
  * QR 受付のアバター字幕の i18n（issue #361 AC「QR 受付が独立した別 UI に見えず、同じ受付体験と
@@ -26,6 +27,7 @@ function subtitle(page: Page) {
 
 test('既定 (ja) の QR 受付字幕は日本語で表示される（回帰の固定）', async ({ page }) => {
   await page.goto('/kiosk');
+  await openMoreIdleActions(page);
   await page.getByTestId('start-checkin').click();
 
   await expect(subtitle(page)).toHaveText('予約 QR をお持ちの方はこちらから受付できます');
@@ -34,6 +36,7 @@ test('既定 (ja) の QR 受付字幕は日本語で表示される（回帰の�
 test('English を選ぶと QR 受付の字幕も英語になり、日本語が露出しない', async ({ page }) => {
   await page.goto('/kiosk');
   await page.getByRole('button', { name: 'English' }).click();
+  await openMoreIdleActions(page);
   await page.getByTestId('start-checkin').click();
 
   await expect(subtitle(page)).toHaveText(
@@ -47,6 +50,7 @@ test('English を選ぶと QR 受付の字幕も英語になり、日本語が�
 test('English のまま読み取りまで進めても、各ターンの字幕が英語で追随する', async ({ page }) => {
   await page.goto('/kiosk');
   await page.getByRole('button', { name: 'English' }).click();
+  await openMoreIdleActions(page);
   await page.getByTestId('start-checkin').click();
 
   // 受付方法選択 → カメラ許可 → 読み取り。ターンが変わるたび字幕が切り替わる。
@@ -71,6 +75,7 @@ test('English のままエラー画面へ落ちても字幕が英語で出る（
 }) => {
   await page.goto('/kiosk');
   await page.getByRole('button', { name: 'English' }).click();
+  await openMoreIdleActions(page);
   await page.getByTestId('start-checkin').click();
   await page.getByTestId('checkin-start').click();
   await page.getByTestId('method-qr').click();

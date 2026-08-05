@@ -1026,6 +1026,44 @@ a {
 .kiosk-quick-actions {
   width: 100%;
   max-width: 1100px;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-sm);
+}
+
+/*
+ * 「ほかのご用件」開示 (#620)。
+ *
+ * 受付端末はスクロールしない前提なのに、入口カード 5 枚を全部並べると
+ * `.kiosk-quick-actions` だけで 1152px（コンテンツ全高の 69%）を占め、全レイアウトで
+ * viewport を超えていた。主要 2 枚を大きいまま残し、残りをこの下へ畳む。
+ *
+ * リンクではなくボタンにして `aria-expanded` / `aria-controls` を持たせる。畳んだ中身が
+ * 「無い」ではなく「隠れている」ことを支援技術に伝えるため。タッチ領域は他の CTA と同じ
+ * 下限（--touch-target-min）を割らない。
+ */
+.kiosk-quick-actions__more {
+  width: 100%;
+  min-height: var(--touch-target-min);
+  padding: var(--space-sm) var(--space-md);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  background: var(--color-glass);
+  color: var(--color-text);
+  font-size: var(--font-md);
+  font-weight: 700;
+  cursor: pointer;
+  transition:
+    border-color var(--dur-base) var(--ease-out),
+    background var(--dur-base) var(--ease-out);
+}
+
+.kiosk-quick-actions__more:hover {
+  border-color: var(--color-accent);
+}
+
+.kiosk-quick-actions__panel[hidden] {
+  display: none;
 }
 
 /* CTA カードは中央寄せ・主目的が読み取りやすい配置にする（通常カードより縦を強調）。
@@ -1046,8 +1084,9 @@ a {
     var(--color-glass);
 }
 
-/* L2: catch-all（その他のご用件）は全幅にし、5 枚で最終行が片寄る不揃いを解消する。 */
-.kiosk-quick-actions .card[data-intent='other'] {
+/* L2: catch-all（その他のご用件）は全幅にし、最終行が片寄る不揃いを解消する。
+   #620 以降 `other` は開示パネル側に居るので、パネル内のグリッドに効かせる。 */
+.kiosk-quick-actions__panel .card[data-intent='other'] {
   grid-column: 1 / -1;
 }
 
@@ -1159,9 +1198,53 @@ a {
   --font-xl-max: 3.25rem;
 }
 
+/*
+ * 待機画面だけ画面外周の余白と段間を詰める (#620)。
+ *
+ * `.screen` は上下 var(--space-xl) ずつ＝80px を外周に使い、段間にも --space-lg(24px) を置く。
+ * 他の画面は要素が少ないので効いていなかったが、待機画面はアバター・見出し・言語切替・
+ * 入口カード・開示・逃げ道バーが縦に積まれるため、この外周だけで予算の 13% を食っていた。
+ *
+ * **絞り込みは「待機画面の中身を持っているか」で行う。** `data-kiosk-state='idle'` で絞ると
+ * QR 受付導入画面まで巻き込む（あの画面は別シェルへ切り替わるが state は idle のまま）。
+ * レイアウトで絞ったときに用件選択まで縮んだのと同じ失敗なので、**実体で絞る**。
+ */
+.screen:has(.kiosk-idle) {
+  padding-block: var(--space-md);
+  gap: var(--space-md);
+}
+
 /* iPad 縦置き（既定）: 上アバター → 中央案内 → 下に大きな操作。.kiosk-idle の縦積みを踏襲。 */
 .screen[data-kiosk-layout='ipad-portrait'] .kiosk-idle {
   justify-content: flex-start;
+}
+
+/*
+ * 縦置き・大型横画面のアバターを抑える (#620)。
+ *
+ * 横置きは `grid-template-areas: 'avatar head' / 'avatar actions'` でアバターが**横に**並ぶため
+ * 高さを決めていない（実測 511px に対し右カラムが 647px）。一方、縦置き・大型は縦積みなので
+ * **アバターが総高を支配する**（実測 564px。head 201 + actions 283 を足すと予算 889 を超える）。
+ * カードをゼロにしても収まらないので、ここだけはアバター側を抑えるしかない。
+ *
+ * 高さではなく `max-width` で抑えるのは、アバターの**高さは中身のアスペクト比が決めている**ため
+ * （max-height だけ掛けると縮まずに切れる）。
+ *
+ * **絞るのは視覚部分だけで、字幕は絞らない。** ガイドごと `max-width` を掛けると、同じ中に
+ * 居る字幕（#123 の「AI受付です」）まで狭まって 3 行に折れる。視覚の上限は
+ * `AvatarGuide` が `--kiosk-avatar-visual-max` で受けるようにしてある
+ * （インラインスタイルは CSS より優先されるため、変数で渡さないと外から絞れない）。
+ */
+.screen[data-kiosk-layout='ipad-portrait'] .kiosk-idle__avatar,
+.screen[data-kiosk-layout='large-display'] .kiosk-idle__avatar {
+  --kiosk-avatar-visual-max: 200px;
+}
+
+/* 視覚を変数で独立させたので、ガイドを広げてもアバターは大きくならない。字幕が
+   「…お選びくださ／い」と 1 文字だけ折れるのを防ぐ幅を与える（字幕自身の上限は 480px）。 */
+.screen[data-kiosk-layout='ipad-portrait'] .kiosk-idle__avatar .kiosk-avatar-guide,
+.screen[data-kiosk-layout='large-display'] .kiosk-idle__avatar .kiosk-avatar-guide {
+  max-width: 480px;
 }
 
 /* iPad 横置き: 左アバター / 右に案内文+操作カードを同時に見せる。 */
@@ -1213,9 +1296,54 @@ a {
  * 列数を明示的に 2×2 + 全幅（other は既存の grid-column:1/-1）へ固定し、カード幅を
  * 常に十分（コンテナの約半分）確保する。
  */
-.screen[data-kiosk-layout='ipad-landscape'] .kiosk-quick-actions,
-.screen[data-kiosk-layout='large-display'] .kiosk-quick-actions {
+.screen[data-kiosk-layout='ipad-landscape'] .kiosk-quick-actions__primary,
+.screen[data-kiosk-layout='ipad-landscape'] .kiosk-quick-actions__panel,
+.screen[data-kiosk-layout='large-display'] .kiosk-quick-actions__primary,
+.screen[data-kiosk-layout='large-display'] .kiosk-quick-actions__panel {
   grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+/*
+ * 縦の予算に収める (#620)。
+ *
+ * 横置き 810px の内訳は `810 − 40(上pad) − 40(下pad) − 24(gap) − 87(逃げ道バー) = 619px` が
+ * `.screen-anim` の上限。右カラムは head(302) + gap(24) + actions なので **actions は 293px**
+ * しか使えない。既定の CTA カードは 232〜308px/枚あるため、そのままでは 1 枚も入らない。
+ *
+ * カードの縦を決めているのは `min-height:168px` ではなく**中身**（font-size: clamp の 40px、
+ * 上下 padding 24px、説明文）だったので、そこを詰める。タップ領域は
+ * `--touch-target-min` を下限として割らない。
+ */
+/* **待機画面の入口カードだけ**に効かせる。`.card--cta` は用件選択・相手選択でも使われており、
+   レイアウト指定だけで絞ると、収めたい画面以外まで一緒に縮んで VRT が落ちる（実際に踏んだ）。
+
+   横置きだけでなく縦置き・大型横画面でも超過していた（実測 portrait 1038 / large-display 1049）
+   ため、待機の入口カードは全レイアウトで詰める。`large-display` は下の
+   `min-height: clamp(160px, 18vh, 260px)` を持つので、後段で上書きする。 */
+.kiosk-quick-actions .card--cta {
+  min-height: var(--touch-target-min);
+  padding-block: 8px;
+  font-size: clamp(1.5rem, 2.2vw, 2rem);
+  gap: 4px;
+}
+
+.kiosk-quick-actions .card--cta .card__icon {
+  margin-bottom: 0;
+  /* 既定 48px。待機の入口は 2 枚に絞ったぶん 1 枚が縦に効くので、アイコンも詰める。 */
+  height: 32px;
+}
+
+/*
+ * 説明文がカードの縦を最も食っている (#620 実測: 横置きで 114px = 4 行)。横置きは 2 列で
+ * 1 枚が細くなるため、同じ文でも縦置きより行数が増える。文言は削らず、字だけ詰める
+ * （何の入口かを説明する情報は残す）。
+ */
+.kiosk-quick-actions .card--cta .card__sub {
+  /* `.card--cta` の font-size(30px) を継承させない。**明示しないと継承で拡大する**
+     （`var(--font-sm)` のような未定義トークンを書くと無効値になり継承が効く。実際に踏んだ）。
+     受付端末は視認距離があるので、説明文は既定の --font-body より小さくしない。 */
+  font-size: calc(1.125rem * var(--a11y-font-scale));
+  line-height: 1.3;
 }
 
 /* 4K/大型横画面: 主要操作を画面全体に散らさず、触れる範囲（中央寄せ・幅上限）へ集約する。 */
@@ -1233,6 +1361,13 @@ a {
 .screen[data-kiosk-layout='large-display'] .card--cta {
   font-size: clamp(var(--font-lg), 2.5vw, var(--font-xl-max));
   min-height: clamp(160px, 18vh, 260px);
+}
+
+/* 待機の入口カードは上の大型指定より詰める (#620)。上のセレクタの方が詳細度が高いので明示で戻す。
+   用件選択など他画面のカードは大型指定のまま（大きく出したいのはそちら）。 */
+.screen[data-kiosk-layout='large-display'] .kiosk-quick-actions .card--cta {
+  font-size: clamp(1.5rem, 1.6vw, 2.25rem);
+  min-height: var(--touch-target-min);
 }
 
 .screen[data-kiosk-layout='large-display'] .btn {
