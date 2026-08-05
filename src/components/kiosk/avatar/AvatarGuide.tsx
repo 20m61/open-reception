@@ -182,7 +182,15 @@ const containerStyle: React.CSSProperties = {
 const viewerStyle: React.CSSProperties = {
   position: 'relative',
   width: '100%',
-  maxWidth: 360,
+  /*
+   * 上限を CSS 変数で受ける (#620)。縦置き・大型の待機画面はアバターが縦積みで総高を支配する
+   * ため、視覚だけを小さくしたい。**インラインスタイルは CSS より優先される**ので、
+   * ここを固定値にしていると外側のスタイルシートから絞れない（実際に効かず、原因を
+   * 「高さが幅で決まっていない」と誤診した）。高さは下の aspect-ratio が幅から導く。
+   *
+   * 字幕は兄弟要素なのでこの上限に巻き込まれない。ガイドごと絞ると字幕まで狭まって折り返す。
+   */
+  maxWidth: 'var(--kiosk-avatar-visual-max, 360px)',
   aspectRatio: '3 / 4',
 };
 

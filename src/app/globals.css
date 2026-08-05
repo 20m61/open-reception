@@ -1230,14 +1230,21 @@ a {
  * 高さではなく `max-width` で抑えるのは、アバターの**高さは中身のアスペクト比が決めている**ため
  * （max-height だけ掛けると縮まずに切れる）。
  *
- * 絞る対象はガイド全体。視覚部分（`> :first-child`）だけを絞る案は**効かなかった**（高さが
- * その要素の幅で決まっていないため縮まず、超過が戻った）。副作用として同じ中に居る字幕
- * （#123 の「AI受付です」）も狭まり 3 行に折れるが、可読性は保てているので許容する。
- * 字幕の幅だけ戻すのは別途の課題。
+ * **絞るのは視覚部分だけで、字幕は絞らない。** ガイドごと `max-width` を掛けると、同じ中に
+ * 居る字幕（#123 の「AI受付です」）まで狭まって 3 行に折れる。視覚の上限は
+ * `AvatarGuide` が `--kiosk-avatar-visual-max` で受けるようにしてある
+ * （インラインスタイルは CSS より優先されるため、変数で渡さないと外から絞れない）。
  */
+.screen[data-kiosk-layout='ipad-portrait'] .kiosk-idle__avatar,
+.screen[data-kiosk-layout='large-display'] .kiosk-idle__avatar {
+  --kiosk-avatar-visual-max: 200px;
+}
+
+/* 視覚を変数で独立させたので、ガイドを広げてもアバターは大きくならない。字幕が
+   「…お選びくださ／い」と 1 文字だけ折れるのを防ぐ幅を与える（字幕自身の上限は 480px）。 */
 .screen[data-kiosk-layout='ipad-portrait'] .kiosk-idle__avatar .kiosk-avatar-guide,
 .screen[data-kiosk-layout='large-display'] .kiosk-idle__avatar .kiosk-avatar-guide {
-  max-width: 200px;
+  max-width: 480px;
 }
 
 /* iPad 横置き: 左アバター / 右に案内文+操作カードを同時に見せる。 */
