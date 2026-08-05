@@ -1,4 +1,5 @@
 import { test, expect, expectCheckinState } from './kiosk-fixtures';
+import { openMoreIdleActions } from './helpers';
 
 /**
  * QR 読み取りチェックインの iPad viewport smoke test (issue #98, increment 1)。
@@ -20,11 +21,13 @@ import { test, expect, expectCheckinState } from './kiosk-fixtures';
 test('待機画面から QR 受付の導線が表示される', async ({ page }) => {
   await page.goto('/kiosk');
   await expect(page.getByTestId('start-reception')).toBeVisible();
+  await openMoreIdleActions(page);
   await expect(page.getByTestId('start-checkin')).toBeVisible();
 });
 
 test('QR 受付 → 受付方法選択 → カメラ権限確認 → 読み取り へ進める', async ({ page }) => {
   await page.goto('/kiosk');
+  await openMoreIdleActions(page);
   await page.getByTestId('start-checkin').click();
   await page.getByTestId('checkin-start').click();
 
@@ -46,6 +49,7 @@ test('QR 受付 → 受付方法選択 → カメラ権限確認 → 読み取�
 
 test('カメラ拒否でも通常受付へフォールバックできる', async ({ page }) => {
   await page.goto('/kiosk');
+  await openMoreIdleActions(page);
   await page.getByTestId('start-checkin').click();
   await page.getByTestId('checkin-start').click();
   await page.getByTestId('method-qr').click();
@@ -64,6 +68,7 @@ test('カメラ拒否でも通常受付へフォールバックできる', async
 
 test('受付方法選択から直接通常受付へ切り替えられる', async ({ page }) => {
   await page.goto('/kiosk');
+  await openMoreIdleActions(page);
   await page.getByTestId('start-checkin').click();
   await page.getByTestId('checkin-start').click();
   await page.getByTestId('method-manual').click();

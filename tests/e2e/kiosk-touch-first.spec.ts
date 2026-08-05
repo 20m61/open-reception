@@ -1,4 +1,5 @@
 import { test, expect } from './kiosk-fixtures';
+import { openMoreIdleActions } from './helpers';
 
 /**
  * タッチファースト受付導線の iPad viewport E2E (issue #121 / Epic #119)。
@@ -11,10 +12,19 @@ import { test, expect } from './kiosk-fixtures';
 test('初期画面に主要クイックアクションが大きなカードで表示される', async ({ page }) => {
   await page.goto('/kiosk');
   await expect(page.getByTestId('kiosk-quick-actions')).toBeVisible();
-  // 担当者を呼ぶ（後方互換 testid）/ QR で受付 / 部署 / 配送・納品 / その他。
+  // 主要 2 枚は開示を開かずに押せる（担当者を呼ぶ は後方互換 testid）。
   await expect(page.getByTestId('start-reception')).toBeVisible();
-  await expect(page.getByTestId('start-checkin')).toBeVisible();
   await expect(page.getByTestId('quick-department')).toBeVisible();
+  // 残りは畳まれている。**「無い」ではなく「隠れている」**ことを支援技術に伝える (#620)。
+  await expect(page.getByTestId('kiosk-more-toggle')).toHaveAttribute('aria-expanded', 'false');
+  await expect(page.getByTestId('start-checkin')).toBeHidden();
+});
+
+test('畳まれた入口は「ほかのご用件」を開くとタッチだけで到達できる (#620)', async ({ page }) => {
+  await page.goto('/kiosk');
+  await openMoreIdleActions(page);
+  // QR 受付 / 配送・納品 / その他。押したときに起こることは畳む前と変えていない。
+  await expect(page.getByTestId('start-checkin')).toBeVisible();
   await expect(page.getByTestId('quick-delivery')).toBeVisible();
   await expect(page.getByTestId('quick-other')).toBeVisible();
 });
@@ -42,6 +52,7 @@ test('担当者を呼ぶ から 1 タップで目的選択へ進む（音声・�
 
 test('配送・納品 は目的を先取りして担当/部署選択へ直行する', async ({ page }) => {
   await page.goto('/kiosk');
+  await openMoreIdleActions(page);
   await page.getByTestId('quick-delivery').click();
   // 目的選択をスキップし、担当者・部署選択へ進む（担当者検索欄の出現で判定）。
   await expect(page.getByTestId('staff-search')).toBeVisible();

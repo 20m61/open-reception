@@ -1,4 +1,5 @@
 import { test, expect, type Page } from './kiosk-fixtures';
+import { openMoreIdleActions } from './helpers';
 
 /**
  * QR 受付の常設逃げ道バー (issue #361 AC「QR 受付が独立した別 UI に見えず、同じ受付体験と
@@ -39,6 +40,7 @@ test('QR 受付の入口から逃げ道バーが常設される（受付の idle
   page,
 }) => {
   await page.goto('/kiosk');
+  await openMoreIdleActions(page);
   await page.getByTestId('start-checkin').click();
 
   await expect(bar(page)).toBeVisible();
@@ -48,6 +50,7 @@ test('QR 受付の入口から逃げ道バーが常設される（受付の idle
 
 test('バーはヘルプ領域として登録されている（常設要素の 3 領域・#422 inc5-c）', async ({ page }) => {
   await page.goto('/kiosk');
+  await openMoreIdleActions(page);
   await page.getByTestId('start-checkin').click();
 
   await expect(bar(page)).toHaveAttribute('data-persistent-region', 'help');
@@ -55,6 +58,7 @@ test('バーはヘルプ領域として登録されている（常設要素の 3
 
 test('読み取りまで進んでも全ターンでバーが消えない（分岐の外に在る）', async ({ page }) => {
   await page.goto('/kiosk');
+  await openMoreIdleActions(page);
   await page.getByTestId('start-checkin').click();
   await expect(bar(page)).toBeVisible();
 
@@ -73,6 +77,7 @@ test('読み取りまで進んでも全ターンでバーが消えない（分�
 
 test('エラーへ落ちてもバーが在り、通常受付への切替はコンテンツ側に残る', async ({ page }) => {
   await page.goto('/kiosk');
+  await openMoreIdleActions(page);
   await page.getByTestId('start-checkin').click();
   await page.getByTestId('checkin-start').click();
   await page.getByTestId('method-qr').click();
@@ -89,6 +94,7 @@ test('最初に戻るを押すと kiosk 待機画面へ帰る（QR に入って�
   page,
 }) => {
   await page.goto('/kiosk');
+  await openMoreIdleActions(page);
   await page.getByTestId('start-checkin').click();
   await page.getByTestId('checkin-start').click();
   await page.getByTestId('method-qr').click();
@@ -103,6 +109,7 @@ test('最初に戻るを押すと kiosk 待機画面へ帰る（QR に入って�
 test('English を選ぶとバーの文言も英語になる（受付と同じ語彙・同じ訳）', async ({ page }) => {
   await page.goto('/kiosk');
   await page.getByRole('button', { name: 'English' }).click();
+  await openMoreIdleActions(page);
   await page.getByTestId('start-checkin').click();
 
   await expect(bar(page).getByTestId('escape-reset')).toHaveText('Start over');

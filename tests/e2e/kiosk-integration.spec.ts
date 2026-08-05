@@ -1,4 +1,5 @@
 import { test, expect } from './kiosk-fixtures';
+import { openMoreIdleActions } from './helpers';
 
 /**
  * Kiosk 統合 inc1 の iPad viewport smoke test (issue #96 / #79 / #100 / #101 / #102)。
@@ -14,6 +15,7 @@ test('待機画面は既定の受付フローへフォールバックする（�
   await page.goto('/kiosk');
   // フロー未設定でも従来どおり受付開始/QR 受付の導線が出る。
   await expect(page.getByTestId('start-reception')).toBeVisible();
+  await openMoreIdleActions(page);
   await expect(page.getByTestId('start-checkin')).toBeVisible();
 });
 

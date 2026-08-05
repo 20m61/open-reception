@@ -1,6 +1,6 @@
 import { test, expect, type Page, type Locator } from '@playwright/test';
 import AxeBuilder from '@axe-core/playwright';
-import { establishKioskSession, loginAsAdmin } from './helpers';
+import { establishKioskSession, loginAsAdmin, openMoreIdleActions } from './helpers';
 
 /**
  * Character-led 受付 UX の Visual Regression（VRT）+ アクセシビリティ（axe）検査
@@ -270,6 +270,7 @@ test.describe('受付フロー画面（実 /kiosk・iPad landscape）', () => {
 
   test('QR 受付導入（受付方法選択）画面の VRT + a11y', async ({ page }) => {
     await page.goto('/kiosk');
+    await openMoreIdleActions(page);
     await page.getByTestId('start-checkin').click();
     await page.getByTestId('checkin-start').click();
     await expect(page.getByTestId('method-qr')).toBeVisible();
