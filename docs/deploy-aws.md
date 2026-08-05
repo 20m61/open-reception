@@ -124,10 +124,11 @@ npx cdk deploy OpenReception-Web-prod -c env=prod \
 
 CloudFront 越しに **POST/フォーム/受付発行が機能する**ために、次の 2 つは実質必須:
 
-1. **`-c originVerifySecret=<高エントロピー値>`**: 未指定だと Function URL=AWS_IAM+OAC のままで、
+1. **origin-verify シークレット**: 未指定だと Function URL=AWS_IAM+OAC のままで、
    CloudFront OAC が **POST ボディを署名しないため全 POST が 403**（login / 受付URL発行 /
    `/api/kiosk/enroll` が動かない）。指定すると Function URL=NONE + CloudFront `x-origin-verify`
-   秘密ヘッダ方式に切替わり、`proxy.ts` が照合する（直叩きは 403）。
+   秘密ヘッダ方式に切替わり、`proxy.ts` が照合する（直叩きは 403）。渡し方は 2 通りで、
+   **prod では Secrets Manager 方式が必須**（下記「origin-verify シークレットの供給」）。
 2. **`appEnv` に公開オリジン**: `NEXT_PUBLIC_APP_URL` と `RESERVATION_CHECKIN_BASE_URL` を
    **公開 CloudFront ドメイン（またはカスタムドメイン）**に設定する。未設定だと
    `resolveCheckinBaseUrl` がリクエスト host にフォールバックし、発行する受付URL/予約QRの host が
@@ -135,6 +136,33 @@ CloudFront 越しに **POST/フォーム/受付発行が機能する**ために�
 
 > 機密 `KIOSK_ENROLLMENT_SECRET`（受付URL署名鍵）も忘れず secret JSON に含める（手順 5 参照。
 > 未設定だと未認証 `/api/kiosk/enroll` が fail-closed で 500）。
+
+#### origin-verify シークレットの供給 (#612)
+
+| | context | CFN テンプレート | Lambda 環境変数 | 使う環境 |
+| --- | --- | --- | --- | --- |
+| 生値 | `-c originVerifySecret=<値>` | **平文** | **平文** | dev のみ |
+| Secrets Manager | `-c originVerifySecretName=<シークレット名>` | 動的参照 | ARN のみ | **prod** |
+
+Secrets Manager 方式では、シークレット JSON の **`ORIGIN_VERIFY_SECRET` キー**を参照する。
+`appSecretsName` と同じシークレットで良い（手順 5 の JSON にキーを 1 つ足すだけ）。
+
+- CloudFront の origin custom header には CFN 動的参照
+  （`{{resolve:secretsmanager:<name>:SecretString:ORIGIN_VERIFY_SECRET}}`）が入るため、
+  **合成される CFN テンプレートに平文は載らない**。
+- server Lambda には `ORIGIN_VERIFY_SECRET_ARN` だけを渡し、値は起動時に
+  `src/instrumentation.ts` が解決する（**Lambda 環境変数にも平文は載らない**）。
+  シークレットが取れない／キーが無いときは **起動を止める**（検証無しで公開しないため）。
+- 両モードとも `ORIGIN_VERIFY_REQUIRED=1`（非機密）を渡す。これが立っていてシークレットが
+  未解決なら `proxy.ts` は **全リクエストを 403**（fail-closed）。「未設定だから検証しない」へ
+  落ちて迂回が素通りするのを防ぐ。
+- **prod で `-c originVerifySecret=<生値>` を渡すと `cdk synth` が失敗する**（WebStack が拒否）。
+  併用も不可。
+
+**残る露出**: 解決後の値は CloudFront Distribution の設定として保持されるため、
+`cloudfront:GetDistributionConfig` 権限を持つ主体からは読める。これは CloudFront が origin へ
+リテラル値を送る方式である以上避けられない。**このヘッダが守るのは「エッジを迂回されない」
+ことだけ**で、管理は Cognito セッション、端末は kiosk セッションが別途認可する（#612 の判断記録）。
 
 ### 6. デプロイ
 
@@ -224,7 +252,10 @@ npx cdk deploy OpenReception-Web-dev --require-approval never \
 リクエスト**ボディを署名しない**ため、Function URL の SigV4 検証が必ず失敗する
 （GET は通り、POST/PUT/PATCH/DELETE だけ 403）。指定すると Function URL が `NONE` になり、
 CloudFront が `x-origin-verify` を付与、`src/proxy.ts` が照合して直叩きを拒否する。
-本番でのシークレット供給方法は **#612**。
+
+**prod では生値ではなく `-c originVerifySecretName=<シークレット名>`**（同じシークレットの
+`ORIGIN_VERIFY_SECRET` キー）。生値は prod では `cdk synth` が拒否する。
+詳細は上の「origin-verify シークレットの供給 (#612)」。
 
 **どちらの context も次回デプロイで指定を忘れると壊れる。** 指定を省いた `cdk deploy` は
 成功するが、POST が 403 に戻り、エンロールが 500 に戻る。

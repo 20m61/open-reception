@@ -397,13 +397,14 @@ describe.runIf(OPEN_NEXT_READY)('WebStack tenant provider secrets (#405 Inc2)', 
 
 // originVerifySecret 方式（CloudFront OAC の POST 署名問題回避）:
 // Function URL を NONE にし、CloudFront origin custom header x-origin-verify で保護する。
+// **生値は dev 専用** (issue #612)。prod は Secrets Manager 方式（下の describe）。
 describe.runIf(OPEN_NEXT_READY)('WebStack origin-verify secret (#OAC-POST)', () => {
   const SECRET = 'test-origin-verify-secret-高エントロピー';
   const template = (() => {
     const app = new cdk.App();
     const stack = new WebStack(app, 'TestWebOriginVerify', {
       env: { account: '123456789012', region: 'ap-northeast-1' },
-      config: resolveEnv('prod'),
+      config: resolveEnv('dev'),
       appEnv: { ADMIN_AUTH_PROVIDER: 'none' },
       originVerifySecret: SECRET,
     });
@@ -450,6 +451,133 @@ describe.runIf(OPEN_NEXT_READY)('WebStack origin-verify secret (#OAC-POST)', () 
       Environment: { Variables: Match.objectLike({ ORIGIN_VERIFY_SECRET: SECRET }) },
     });
   }, 30000);
+
+  it('marks the deployment as origin-verify (proxy が fail-closed に倒せる) (#612)', () => {
+    template.hasResourceProperties('AWS::Lambda::Function', {
+      Environment: { Variables: Match.objectLike({ ORIGIN_VERIFY_REQUIRED: '1' }) },
+    });
+  }, 30000);
+});
+
+// origin-verify シークレットを Secrets Manager から供給する (issue #612)。
+// 目的は「CFN テンプレートにも Lambda 環境変数にも平文を載せないこと」。
+describe.runIf(OPEN_NEXT_READY)('WebStack origin-verify via Secrets Manager (#612)', () => {
+  const SECRET_NAME = 'open-reception/test/app';
+  const synth = (envName: 'dev' | 'prod') => {
+    const app = new cdk.App();
+    const stack = new WebStack(app, `TestWebOriginVerifySm${envName}`, {
+      env: { account: '123456789012', region: 'ap-northeast-1' },
+      config: resolveEnv(envName),
+      appEnv: { ADMIN_AUTH_PROVIDER: 'none' },
+      originVerifySecretName: SECRET_NAME,
+    });
+    return Template.fromStack(stack);
+  };
+  const template = synth('prod');
+  const rendered = JSON.stringify(template.toJSON());
+
+  it('keeps the Function URL public + header protected, exactly as the raw-value mode', () => {
+    template.hasResourceProperties('AWS::Lambda::Url', { AuthType: 'NONE' });
+    template.resourceCountIs('AWS::CloudFront::OriginAccessControl', 1);
+  }, 30000);
+
+  it('puts a CFN dynamic reference (not a literal) in the CloudFront custom header', () => {
+    template.hasResourceProperties('AWS::CloudFront::Distribution', {
+      DistributionConfig: Match.objectLike({
+        Origins: Match.arrayWith([
+          Match.objectLike({
+            OriginCustomHeaders: Match.arrayWith([
+              Match.objectLike({
+                HeaderName: 'x-origin-verify',
+                // 末尾の `::` は version-stage / version-id 省略（= AWSCURRENT）。
+                HeaderValue: `{{resolve:secretsmanager:${SECRET_NAME}:SecretString:ORIGIN_VERIFY_SECRET::}}`,
+              }),
+            ]),
+          }),
+        ]),
+      }),
+    });
+  }, 30000);
+
+  it('passes only the ARN to the server function (no plaintext env var)', () => {
+    template.hasResourceProperties('AWS::Lambda::Function', {
+      Environment: {
+        Variables: Match.objectLike({
+          ORIGIN_VERIFY_SECRET_ARN: Match.anyValue(),
+          ORIGIN_VERIFY_REQUIRED: '1',
+        }),
+      },
+    });
+    // 平文 env は一切設定しない（設定すると Lambda コンソールから読める）。
+    template.resourcePropertiesCountIs(
+      'AWS::Lambda::Function',
+      { Environment: { Variables: Match.objectLike({ ORIGIN_VERIFY_SECRET: Match.anyValue() }) } },
+      0,
+    );
+  }, 30000);
+
+  it('grants the server function read access to that secret', () => {
+    template.hasResourceProperties('AWS::IAM::Policy', {
+      PolicyDocument: Match.objectLike({
+        Statement: Match.arrayWith([
+          Match.objectLike({
+            Action: Match.arrayWith(['secretsmanager:GetSecretValue']),
+            Effect: 'Allow',
+          }),
+        ]),
+      }),
+    });
+  }, 30000);
+
+  it('never renders a resolved secret value anywhere in the template', () => {
+    // 動的参照のトークン以外に "ORIGIN_VERIFY_SECRET" の値が現れないこと。
+    expect(rendered).toContain('{{resolve:secretsmanager:');
+    expect(rendered).not.toMatch(/"ORIGIN_VERIFY_SECRET"\s*:\s*"(?!\{\{resolve)/);
+  }, 30000);
+
+  it('works in dev too (方式は環境で分岐しない)', () => {
+    expect(() => synth('dev')).not.toThrow();
+  }, 30000);
+});
+
+// prod で生値を渡す経路を塞ぐ (issue #612)。ここが無いと「dev で通ったから」で本番に載る。
+describe.runIf(OPEN_NEXT_READY)('WebStack origin-verify fail-closed guards (#612)', () => {
+  const build = (props: { originVerifySecret?: string; originVerifySecretName?: string }) => () => {
+    const app = new cdk.App();
+    return new WebStack(app, 'TestWebOriginVerifyGuard', {
+      env: { account: '123456789012', region: 'ap-northeast-1' },
+      config: resolveEnv('prod'),
+      appEnv: { ADMIN_AUTH_PROVIDER: 'none' },
+      ...props,
+    });
+  };
+
+  it('rejects the raw-value mode in prod', () => {
+    expect(build({ originVerifySecret: 'TEST-raw' })).toThrow(/prod では使えません/);
+  }, 30000);
+
+  it('rejects passing both (どちらがヘッダに載るか曖昧にしない)', () => {
+    expect(
+      build({ originVerifySecret: 'TEST-raw', originVerifySecretName: 'open-reception/x' }),
+    ).toThrow(/併用できません/);
+  }, 30000);
+});
+
+// infra/ は別 tsconfig で src/ を import できないため、env / ヘッダ名の定数を二重管理している。
+// アプリ側の正本 (src/lib/security/origin-verify.ts) とのドリフトをここで固定する (issue #612)。
+describe('origin-verify contract names stay in sync with the app (#612)', () => {
+  const source = fs.readFileSync(
+    path.join(__dirname, '..', '..', 'src', 'lib', 'security', 'origin-verify.ts'),
+    'utf8',
+  );
+
+  it.each([
+    ["export const ORIGIN_VERIFY_HEADER = 'x-origin-verify'", 'ヘッダ名'],
+    ["export const ORIGIN_VERIFY_SECRET_ENV = 'ORIGIN_VERIFY_SECRET'", 'シークレット JSON キー'],
+    ["export const ORIGIN_VERIFY_REQUIRED_ENV = 'ORIGIN_VERIFY_REQUIRED'", '方式表明フラグ'],
+  ])('%s (%s)', (declaration) => {
+    expect(source).toContain(declaration);
+  });
 });
 
 // コスト微最適化 (issue #300): 全環境 PriceClass_200 + アセットバケットの安全なライフサイクル。

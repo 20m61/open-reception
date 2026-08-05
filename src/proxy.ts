@@ -6,6 +6,11 @@ import { ADMIN_COOKIE, ENTRA_TOKEN_COOKIE, getAdminSecret } from '@/lib/auth/adm
 import { getAdminAuthConfig, validateAdminAuthConfig } from '@/lib/auth/admin-auth-config';
 import { verifyOidcToken, createJwksResolver } from '@/lib/auth/entra';
 import { canWrite } from '@/domain/auth/roles';
+import {
+  ORIGIN_VERIFY_HEADER,
+  evaluateOriginVerify,
+  readOriginVerifyConfig,
+} from '@/lib/security/origin-verify';
 
 /**
  * 認可境界 (issue #24, #70)。
@@ -22,19 +27,15 @@ const PUBLIC_PATHS = new Set<string>([
 ]);
 
 /**
- * CloudFront 経由アクセスの検証 (OAC POST 署名問題の回避方式)。
+ * CloudFront 経由アクセスの検証 (OAC POST 署名問題の回避方式。判定は origin-verify.ts)。
  * Function URL を authType=NONE で公開する代わり、CloudFront が origin custom header
  * `x-origin-verify` に高エントロピーのシークレットを付与する。これと一致しないリクエスト
  * （= Function URL 直叩き / CloudFront 迂回）は全ルートで 403 拒否する。
- * `ORIGIN_VERIFY_SECRET` 未設定（ローカル / OAC 方式）なら検証しない（後方互換）。
+ * `ORIGIN_VERIFY_SECRET` 未設定でも `ORIGIN_VERIFY_REQUIRED` が立っていれば fail-closed (#612)。
  */
-const ORIGIN_VERIFY_HEADER = 'x-origin-verify';
-
 function isFromTrustedOrigin(req: NextRequest): boolean {
-  const expected = process.env.ORIGIN_VERIFY_SECRET;
-  if (!expected) return true;
-  // シークレットは高エントロピーのため単純比較で十分（タイミング攻撃は非現実的）。
-  return req.headers.get(ORIGIN_VERIFY_HEADER) === expected;
+  const config = readOriginVerifyConfig(process.env);
+  return evaluateOriginVerify(config, req.headers.get(ORIGIN_VERIFY_HEADER)).ok;
 }
 
 /** 状態変更系メソッドか（Viewer に拒否する対象）。 */

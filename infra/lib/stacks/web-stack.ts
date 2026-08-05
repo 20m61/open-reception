@@ -1,6 +1,6 @@
 import * as path from 'node:path';
 import * as fs from 'node:fs';
-import { Stack, StackProps, Duration, CfnOutput } from 'aws-cdk-lib';
+import { Stack, StackProps, Duration, CfnOutput, SecretValue } from 'aws-cdk-lib';
 import { Construct } from 'constructs';
 import * as lambda from 'aws-cdk-lib/aws-lambda';
 import * as iam from 'aws-cdk-lib/aws-iam';
@@ -21,6 +21,17 @@ import { applyCostTags } from '../constructs/cost-tags';
 
 /** リポジトリルート（infra/ の 1 つ上）。 */
 const REPO_ROOT = path.join(__dirname, '..', '..', '..');
+
+/**
+ * CloudFront が付与する origin custom header 名と、Secrets Manager JSON のキー名 (issue #612)。
+ *
+ * アプリ側の正本は `src/lib/security/origin-verify.ts`。infra/ は別 tsconfig で `src/` を
+ * 参照できないため同じ値をここに置く。**ドリフトは `infra/test/web-stack.test.ts` が
+ * 正本ファイルを読んで固定する。**
+ */
+const ORIGIN_VERIFY_HEADER = 'x-origin-verify';
+const ORIGIN_VERIFY_SECRET_KEY = 'ORIGIN_VERIFY_SECRET';
+const ORIGIN_VERIFY_REQUIRED_KEY = 'ORIGIN_VERIFY_REQUIRED';
 const OPEN_NEXT_DIR = path.join(REPO_ROOT, '.open-next');
 
 /**
@@ -78,8 +89,23 @@ export interface WebStackProps extends StackProps {
    * 一致を検証し、Function URL 直叩き（CloudFront 迂回）を拒否する。
    * CloudFront OAC は POST/PUT のボディを署名せず Lambda(IAM) が拒否する制約を回避するための方式。
    * 未指定なら従来どおり OAC + IAM 署名（GET は通るが POST は 403 になる既知問題）。
+   *
+   * **この方式は生値が CFN テンプレートと Lambda 環境変数に平文で載る。dev 専用** (issue #612)。
+   * prod では `originVerifySecretName`（Secrets Manager）を使うこと。WebStack が fail-closed で強制する。
    */
   readonly originVerifySecret?: string;
+  /**
+   * origin-verify シークレットを収めた Secrets Manager シークレットの名前 (issue #612)。
+   * JSON の `ORIGIN_VERIFY_SECRET` キーを参照する（`appSecretsName` と同じシークレットで良い）。
+   *
+   * - CloudFront の origin custom header には **CFN 動的参照**（`{{resolve:secretsmanager:...}}`）を
+   *   埋めるため、生成される CFN テンプレートに平文は載らない。
+   * - server Lambda には ARN のみを渡し、値は起動時に `src/instrumentation.ts` が解決する
+   *   （= Lambda 環境変数にも平文は載らない）。
+   *
+   * `originVerifySecret`（生値）との併用は不可。
+   */
+  readonly originVerifySecretName?: string;
   /**
    * 発行 URL（QR）の基底オリジンの明示指定。
    *
@@ -143,11 +169,38 @@ export class WebStack extends Stack {
       customDomain,
       appSecretsName,
       originVerifySecret,
+      originVerifySecretName,
       publicOriginOverride,
       cognitoAuth,
       providerSecretBackend,
       providerSecretPrefix,
     } = props;
+    // --- origin-verify 方式の供給元を決める (issue #612) ---
+    // 生値（dev 専用）と Secrets Manager（prod）は排他。prod で生値を渡したら synth 時点で止める。
+    if (originVerifySecret && originVerifySecretName) {
+      throw new Error(
+        'originVerifySecret と originVerifySecretName は併用できません' +
+          '（どちらが CloudFront ヘッダに載るか曖昧になるため）。prod は originVerifySecretName を使ってください。',
+      );
+    }
+    if (originVerifySecret && config.environment === 'prod') {
+      throw new Error(
+        'originVerifySecret（生値）は prod では使えません (issue #612)。' +
+          '生値は CFN テンプレートと Lambda 環境変数に平文で載ります。' +
+          '`-c originVerifySecretName=<Secrets Manager シークレット名>` を使ってください。',
+      );
+    }
+    const originVerifyEnabled = Boolean(originVerifySecret || originVerifySecretName);
+    // CloudFront は origin custom header に「値」を必要とする。Secrets Manager 方式では CFN 動的参照を
+    // 埋め、テンプレートには `{{resolve:secretsmanager:...}}` だけが残る（平文は載らない）。
+    // 注: 解決後の値は CloudFront の Distribution 設定として保持されるため、
+    // cloudfront:GetDistributionConfig 権限を持つ主体からは見える（docs/deploy-aws.md に明記）。
+    const originVerifyHeaderValue = originVerifySecretName
+      ? SecretValue.secretsManager(originVerifySecretName, {
+          jsonField: ORIGIN_VERIFY_SECRET_KEY,
+        }).unsafeUnwrap()
+      : originVerifySecret;
+
     const retention = toRetentionDays(config.web.logRetentionDays);
     const removalPolicy = prodRemovalPolicy(config.environment);
 
@@ -274,8 +327,23 @@ export class WebStack extends Stack {
     }
 
     // CloudFront 経由検証（直叩き拒否）。middleware(proxy.ts) が x-origin-verify を照合する。
-    if (originVerifySecret) {
-      serverFn.addEnvironment('ORIGIN_VERIFY_SECRET', originVerifySecret);
+    if (originVerifyEnabled) {
+      // 非機密フラグ。これが立っていてシークレットが解決できなければ proxy は fail-closed で
+      // 全リクエストを 403 にする（未設定＝検証しない、と区別するため必須）(issue #612)。
+      serverFn.addEnvironment(ORIGIN_VERIFY_REQUIRED_KEY, '1');
+    }
+    if (originVerifySecretName) {
+      // 値は渡さず ARN のみ。起動時に instrumentation register() が解決する (issue #612)。
+      const originVerifySecretRef = secretsmanager.Secret.fromSecretNameV2(
+        this,
+        'OriginVerifySecret',
+        originVerifySecretName,
+      );
+      originVerifySecretRef.grantRead(serverFn);
+      serverFn.addEnvironment(`${ORIGIN_VERIFY_SECRET_KEY}_ARN`, originVerifySecretRef.secretArn);
+    } else if (originVerifySecret) {
+      // dev 専用の平文注入（prod は上の fail-closed で到達しない）。
+      serverFn.addEnvironment(ORIGIN_VERIFY_SECRET_KEY, originVerifySecret);
     }
 
     // --- 管理ログイン Cognito（埋め込み SRP・Hosted UI 無し） (issue #238) ---
@@ -331,9 +399,9 @@ export class WebStack extends Stack {
       });
     }
 
-    // Function URL の認証方式。originVerifySecret 指定時は NONE（CloudFront 秘密ヘッダで保護）に切替え、
+    // Function URL の認証方式。origin-verify 方式では NONE（CloudFront 秘密ヘッダで保護）に切替え、
     // OAC が POST ボディを署名しない制約を回避する。未指定時は従来の AWS_IAM(+OAC)。
-    const functionUrlAuthType = originVerifySecret
+    const functionUrlAuthType = originVerifyEnabled
       ? lambda.FunctionUrlAuthType.NONE
       : lambda.FunctionUrlAuthType.AWS_IAM;
 
@@ -370,16 +438,16 @@ export class WebStack extends Stack {
     const s3Origin = origins.S3BucketOrigin.withOriginAccessControl(assetBucket, {
       originPath: '/_assets',
     });
-    // originVerifySecret 指定時: OAC を使わず、CloudFront が origin custom header に秘密値を付与する。
+    // origin-verify 方式: OAC を使わず、CloudFront が origin custom header に秘密値を付与する。
     //   → server(middleware) が照合し直叩きを拒否。POST も含め全メソッドが通る。
     // 未指定時: 従来の OAC（withOriginAccessControl）。
-    const originVerifyHeaders = originVerifySecret
-      ? { 'x-origin-verify': originVerifySecret }
+    const originVerifyHeaders = originVerifyHeaderValue
+      ? { [ORIGIN_VERIFY_HEADER]: originVerifyHeaderValue }
       : undefined;
-    const serverOrigin = originVerifySecret
+    const serverOrigin = originVerifyEnabled
       ? new origins.FunctionUrlOrigin(serverFnUrl, { customHeaders: originVerifyHeaders })
       : origins.FunctionUrlOrigin.withOriginAccessControl(serverFnUrl);
-    const imageOrigin = originVerifySecret
+    const imageOrigin = originVerifyEnabled
       ? new origins.FunctionUrlOrigin(imageFnUrl, { customHeaders: originVerifyHeaders })
       : origins.FunctionUrlOrigin.withOriginAccessControl(imageFnUrl);
 
@@ -535,8 +603,8 @@ export class WebStack extends Stack {
     // 2025-10 以降 AWS は OAC 経由の呼び出しに **`lambda:InvokeFunction` も必須**としており、
     // これが無いと CloudFront → Function URL が 403（AccessDeniedException）になる。
     // 参照: aws-samples/remote-swe-agents#361。両 Lambda（server/image）へ明示的に付与する。
-    // originVerifySecret 方式（authType=NONE）では Function URL が公開のため invoke 権限は不要。
-    if (!originVerifySecret) {
+    // origin-verify 方式（authType=NONE）では Function URL が公開のため invoke 権限は不要。
+    if (!originVerifyEnabled) {
       const cloudfrontPrincipal = new iam.ServicePrincipal('cloudfront.amazonaws.com');
       const distributionArn = `arn:aws:cloudfront::${this.account}:distribution/${distribution.distributionId}`;
       serverFn.addPermission('CloudFrontOacInvokeFunction', {
