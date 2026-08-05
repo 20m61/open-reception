@@ -106,11 +106,37 @@ const FLOW_MUTATING_KIOSK_SPECS = /kiosk-flow-integration\.spec\.ts$/;
 // `scripts/quality-gate.sh --pr|--full`）では、testDir の再帰探索に紛れ込まないよう明示的に除外する。
 const SOAK_SPECS = /\/soak\//;
 
+/**
+ * スクリーンショット比較（VRT）を持つ spec の**全部** (issue #621)。
+ *
+ * `toHaveScreenshot` を使うのはこの 3 本だけで、linux/darwin 各 14 枚の baseline を持つ。
+ *
+ * ## なぜ 1 つの project に集めるのか
+ *
+ * 以前は `kiosk-vrt-a11y` だけが `pristine-state`、`kiosk-screenshot` と `admin-vrt-a11y` は
+ * `chromium-ipad` に居た。`chromium-ipad` は `dependencies: ['pristine-state']` を持つため、
+ * **`kiosk-vrt-a11y` が 1 枚でも落ちると残り 5 枚が実行されない**。結果、stale な baseline は
+ * 常に 1 枚ずつしか表面化せず、「直す→再実行→次の 1 枚」を繰り返すことになっていた
+ * （#610 では実際に 4 枚 stale だったのにゲートの報告は 1 件だった）。
+ *
+ * 同じ project 内のテストは互いに独立して走るので、ここへ集めれば **1 回の実行で 14 枚すべての
+ * 差分が出る**。
+ *
+ * ## 描画は変わらない
+ *
+ * 3 本とも spec 側で viewport を指定している（`test.use` / `setViewportSize`）ので、
+ * project の viewport 設定に依存しない。baseline のファイル名も下の `snapshotPathTemplate`
+ * が `chromium-ipad` を固定しているため不変。
+ */
+const VRT_SPECS = /(kiosk-vrt-a11y|kiosk-screenshot|admin-vrt-a11y)\.spec\.ts$/;
+
 // 既定シード状態（在館者ゼロ・担当者は seed のみ）を前提に検証する spec。他 spec が作った
 // 来訪者や担当者が残っていると、空状態の文言（checkout-empty）や画面の高さ（VRT baseline）が
 // 変わって決定的に失敗する。**本 suite より先に**単独実行して構造的に分離する
 // （逆側の分離である flow-mutation は本 suite の後。両者で前後を挟む形）。
-const PRISTINE_STATE_SPECS = /(kiosk-checkout-i18n|kiosk-vrt-a11y)\.spec\.ts$/;
+// VRT は全部ここに含める（上記 VRT_SPECS 参照）。撮影対象が seed 状態に依存するので、
+// 先に単独で走らせる方針とも合っている。
+const PRISTINE_STATE_SPECS = new RegExp(`(kiosk-checkout-i18n\\.spec\\.ts$)|(${VRT_SPECS.source})`);
 
 // developer ロール専用の platform エリアを検証する spec。上記 platformBaseURL の別プロセス
 // （passwordRole=developer）へ向けた `platform-developer` project だけが実行する。
