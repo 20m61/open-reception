@@ -10,9 +10,12 @@ describe('readOriginVerifyConfig (#612)', () => {
     expect(readOriginVerifyConfig({})).toEqual({ secret: undefined, required: false });
   });
 
-  it('ORIGIN_VERIFY_REQUIRED は "1" のときだけ真（誤設定で fail-open しない側へ倒さない）', () => {
+  it('ORIGIN_VERIFY_REQUIRED は空文字と "0" 以外を真とする（曖昧な値は fail-closed 側へ倒す）', () => {
     expect(readOriginVerifyConfig({ ORIGIN_VERIFY_REQUIRED: '1' }).required).toBe(true);
+    // CDK が渡すのは常に '1'。それ以外の綴りで「立てたつもりが立っていない」を作らない。
     expect(readOriginVerifyConfig({ ORIGIN_VERIFY_REQUIRED: 'true' }).required).toBe(true);
+    expect(readOriginVerifyConfig({ ORIGIN_VERIFY_REQUIRED: 'yes' }).required).toBe(true);
+    // 明示的な無効化の 2 通りだけが偽。
     expect(readOriginVerifyConfig({ ORIGIN_VERIFY_REQUIRED: '0' }).required).toBe(false);
     expect(readOriginVerifyConfig({ ORIGIN_VERIFY_REQUIRED: '' }).required).toBe(false);
   });
