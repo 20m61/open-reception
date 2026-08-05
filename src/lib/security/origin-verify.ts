@@ -12,7 +12,8 @@
  * シークレットの有無では決めない。理由は 2 つある。
  *
  * 1. 「シークレットが無ければ検証しない」だと、解決に失敗したときにも成立してしまい、
- *    そのとき CloudFront 迂回が全ルートで素通りする（これが #612 が塞いだ穴）。
+ *    そのとき CloudFront 迂回が全ルートで素通りする（#612 の runtime 解決案で実際に踏みかけた分岐。
+ *    `main` の生値方式では CDK が同じ値をヘッダと env へ 1 箇所で書くので到達しなかった）。
  * 2. 逆に「シークレットが在れば検証する」だと、`appSecretsName` の JSON に
  *    `ORIGIN_VERIFY_SECRET` を同居させた配備で `-c originVerifySecretName=` を渡し忘れたとき、
  *    **CloudFront はヘッダを送らないのに Lambda 側だけ値を持つ**状態になり全ルートが 403 になる。
@@ -41,12 +42,21 @@ export type OriginVerifyOutcome =
   | { readonly ok: true; readonly reason: 'disabled' | 'matched' }
   | { readonly ok: false; readonly reason: 'missing-secret' | 'mismatch' };
 
+/**
+ * 未置換の CFN 動的参照。CloudFormation が解決に失敗するとこの**リテラル**が
+ * CloudFront ヘッダにも Lambda env にも入る。両側が同じ文字列なので `matched` になり、
+ * **テンプレートから導ける公開文字列が共有シークレットになる**（＝防御ゼロ）のに、
+ * システムは完全に健康だと報告する。解決失敗として扱い fail-closed に倒す。
+ */
+const UNRESOLVED_DYNAMIC_REFERENCE = '{{resolve:';
+
 export function readOriginVerifyConfig(env: Record<string, string | undefined>): OriginVerifyConfig {
-  const raw = env[ORIGIN_VERIFY_SECRET_ENV];
+  // 空白のみは「解決できなかった」。Secrets Manager の JSON 値が `'   '` でも通さない。
+  const raw = env[ORIGIN_VERIFY_SECRET_ENV]?.trim();
   const required = env[ORIGIN_VERIFY_REQUIRED_ENV];
   return {
     // 空文字は「解決できなかった」であって「空のシークレットと一致すべき」ではない。
-    secret: raw ? raw : undefined,
+    secret: raw && !raw.startsWith(UNRESOLVED_DYNAMIC_REFERENCE) ? raw : undefined,
     required: Boolean(required) && required !== '0',
   };
 }

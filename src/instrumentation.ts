@@ -9,9 +9,17 @@
  * - 既に `process.env` に存在するキーは上書きしない（明示注入を優先）。
  * - 取得失敗時は **throw**（fail-fast）。本番で機密未解決のまま dev 既定値で稼働するのを防ぐ。
  *
- * register() は Next.js が SSR / Route Handler / middleware を処理する前に await する。
- * 本アプリの middleware(proxy) は単一 server function に内包される（open-next.config.ts）ため、
- * 同一プロセスの process.env が満たされた状態で middleware も実行される。
+ * 🔴 **register() は middleware より後に走る。middleware が読む値をここで注入してはいけない** (#612)。
+ *
+ * register() が起動するのは Next サーバが最初のリクエストを処理するとき
+ * （`base-server.js` の `handleRequest` → `prepare()` → `runInstrumentationHookIfAvailable`）。
+ * 一方 middleware(proxy) は **OpenNext の routing 層から、それより前に**呼ばれる
+ * （`@opennextjs/aws` は instrumentation を一切参照しない）。しかも middleware が応答を返すと
+ * routing 層はその場で返し、Next サーバへ到達しない ＝ register() が走らない。
+ *
+ * したがってここで解決してよいのは **SSR / Route Handler だけが読む値**（`getAdminSecret()` 等）。
+ * middleware が読む値（`ORIGIN_VERIFY_SECRET`）は CDK が Lambda 環境変数として渡す。
+ * 詳細は `infra/lib/stacks/web-stack.ts` の origin-verify 節。
  */
 export async function register(): Promise<void> {
   const secretId = process.env.APP_SECRETS_ARN;
@@ -48,8 +56,8 @@ export async function register(): Promise<void> {
   try {
     parsed = JSON.parse(secretString);
   } catch {
-    // **cause を連結しない (#612)。** Node の JSON.parse は失敗時のメッセージに入力の先頭
-    // 10 文字を含める（`Unexpected token 'T', "TEST-super"... is not valid JSON`）。
+    // **cause を連結しない (#612)。** V8 は JSON.parse 失敗時のメッセージに入力を埋め込む
+    // （**20 文字以下なら全体**、超えると先頭 10 文字 + `...`）。短いシークレットは丸ごと出る。
     // シークレットを JSON ではなく生文字列で保存する設定ミスは起きやすく、そのとき
     // cause チェーンが console.error 経由で CloudWatch へシークレットの先頭を書き出す。
     // SDK エラー（上の catch）は値を含まないので cause を残してよい。

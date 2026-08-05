@@ -24,6 +24,28 @@ describe('readOriginVerifyConfig (#612)', () => {
     expect(readOriginVerifyConfig({ ORIGIN_VERIFY_SECRET: '' }).secret).toBeUndefined();
   });
 
+  it('空白のみのシークレットも「未解決」として扱う', () => {
+    expect(readOriginVerifyConfig({ ORIGIN_VERIFY_SECRET: '   ' }).secret).toBeUndefined();
+  });
+
+  // 🔴 CFN が動的参照を置換し損ねると、CloudFront も Lambda も同じリテラルを持つので
+  // 「一致して通る」。テンプレートから導ける公開文字列が共有シークレットになり防御がゼロになるのに、
+  // 503 もログも出ず全て健康に見える。解決失敗として扱う。
+  it('未置換の CFN 動的参照を有効なシークレットとして受け入れない', () => {
+    const unresolved =
+      '{{resolve:secretsmanager:open-reception/prod/app:SecretString:ORIGIN_VERIFY_SECRET::}}';
+    const config = readOriginVerifyConfig({
+      ORIGIN_VERIFY_SECRET: unresolved,
+      ORIGIN_VERIFY_REQUIRED: '1',
+    });
+    expect(config.secret).toBeUndefined();
+    // 同じリテラルを送られても「一致」にしない。
+    expect(evaluateOriginVerify(config, unresolved)).toEqual({
+      ok: false,
+      reason: 'missing-secret',
+    });
+  });
+
   it('シークレットが解決済みならそのまま持つ', () => {
     expect(readOriginVerifyConfig({ ORIGIN_VERIFY_SECRET: 'TEST-origin-verify' }).secret).toBe(
       'TEST-origin-verify',

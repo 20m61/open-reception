@@ -1,6 +1,6 @@
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { NextRequest, type NextResponse } from 'next/server';
-import { proxy } from './proxy';
+import { __resetOriginVerifyLogState, proxy } from './proxy';
 
 /**
  * proxy の CSP 付与（issue #200）。
@@ -72,9 +72,15 @@ describe('proxy origin-verify (#612)', () => {
     });
   }
 
+  beforeEach(() => {
+    // ログ状態は module scope なので、テスト順序に依存させないため毎回初期化する。
+    __resetOriginVerifyLogState();
+  });
+
   afterEach(() => {
     delete process.env.ORIGIN_VERIFY_SECRET;
     delete process.env.ORIGIN_VERIFY_REQUIRED;
+    vi.restoreAllMocks();
   });
 
   /** pass-through した証拠（403/503/401 のいずれでもなく、実際に素通りしている）。 */
@@ -137,6 +143,56 @@ describe('proxy origin-verify (#612)', () => {
     const res = await proxy(reqWith('/kiosk', 'wrong'));
     expect(res.status).toBe(status);
     expect(res.headers.get('content-type')).toBe('text/plain; charset=utf-8');
+  });
+
+  // 🔴 ログが無いと、ローテーションで CloudFront と Lambda がずれた全断（全リクエスト mismatch）が
+  // アプリログ 0 行・アラーム無し（#630）で進行し、直叩きスキャンと区別できない。
+  it('mismatch を沈黙させない（ただし毎リクエストは出さない）', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    process.env.ORIGIN_VERIFY_SECRET = SECRET;
+    process.env.ORIGIN_VERIFY_REQUIRED = '1';
+
+    for (let i = 0; i < 5; i++) await proxy(reqWith('/kiosk', 'wrong'));
+
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(warn.mock.calls[0]?.[0]).toContain('[origin-verify]');
+  });
+
+  it('復旧してから再発したら再びログする（一方通行のラッチにしない）', async () => {
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    process.env.ORIGIN_VERIFY_REQUIRED = '1';
+
+    await proxy(reqWith('/kiosk', SECRET)); // missing-secret
+    expect(error).toHaveBeenCalledTimes(1);
+
+    process.env.ORIGIN_VERIFY_SECRET = SECRET; // 復旧（matcher 除外パスが register() を走らせた等）
+    await proxy(reqWith('/kiosk', SECRET));
+
+    delete process.env.ORIGIN_VERIFY_SECRET; // 再発
+    await proxy(reqWith('/kiosk', SECRET));
+    expect(error).toHaveBeenCalledTimes(2);
+  });
+
+  it('シークレットが在るのに方式が表明されていなければ警告する（配備の降格）', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    process.env.ORIGIN_VERIFY_SECRET = SECRET;
+
+    await proxy(reqWith('/kiosk'));
+
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(warn.mock.calls[0]?.[0]).toContain('DISABLED');
+  });
+
+  it('ログにシークレットを含めない', async () => {
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    process.env.ORIGIN_VERIFY_SECRET = SECRET;
+    process.env.ORIGIN_VERIFY_REQUIRED = '1';
+    await proxy(reqWith('/kiosk', 'wrong'));
+
+    const logged = [...error.mock.calls, ...warn.mock.calls].flat().join(' ');
+    expect(logged).not.toContain(SECRET);
   });
 
   it('拒否応答の本文・ヘッダにシークレットを一切含めない', async () => {

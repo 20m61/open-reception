@@ -187,14 +187,26 @@ export class WebStack extends Stack {
       ['originVerifySecretName', originVerifySecretName],
     ] as const) {
       if (value === undefined) continue;
-      // `-c name`（`=` なし）は CDK context でブール `true` になり、型宣言とすり抜ける。
+      // 非文字列は `cdk.json` の `context` ブロックから実 JSON として届きうる（例 `true` / 数値）。
+      // なお `-c name`（`=` なし）は CDK CLI が警告して**捨てる**ので undefined になり、ここには来ない。
       if (typeof value !== 'string' || value.trim() === '') {
         throw new Error(
           `${name} に空文字/非文字列が渡されました (issue #612。received: ${JSON.stringify(value)})。` +
-            'デプロイスクリプトの変数が未設定か、`-c name=value` の `=` が抜けている可能性があります。' +
+            'デプロイスクリプトの変数が未設定（`-c name=$UNSET_VAR`）か、cdk.json の値が文字列でない可能性があります。' +
             'このまま続行すると origin-verify が無効化され、CloudFront OAC の POST 署名問題で全 POST が 403 になります。',
         );
       }
+    }
+    // `appEnv` から origin-verify の env を渡させない。origin-verify 無効構成で
+    // `-c appEnv='{"ORIGIN_VERIFY_REQUIRED":"1"}'` を渡すと、下の addEnvironment による上書きが
+    // 走らないため **REQUIRED=1 かつ SECRET 無し**で確定し、全リクエストが恒久 503 になる。
+    const forbiddenAppEnvKeys = Object.keys(appEnv).filter((k) => k.startsWith('ORIGIN_VERIFY'));
+    if (forbiddenAppEnvKeys.length > 0) {
+      throw new Error(
+        `appEnv に ${forbiddenAppEnvKeys.join(', ')} を渡せません (issue #612)。` +
+          'origin-verify の env は originVerifySecret / originVerifySecretName から WebStack が組み立てます。' +
+          '手で渡すと「検証を要求するが値が無い」状態を作れてしまい、全リクエストが 503 になります。',
+      );
     }
     // 生値（dev 専用）と Secrets Manager は排他。
     if (originVerifySecret && originVerifySecretName) {
@@ -227,6 +239,8 @@ export class WebStack extends Stack {
       : originVerifySecret;
     const originVerifyEnabled = originVerifyHeaderValue !== undefined;
 
+    // **引数ガード（上）より後であること。理由は上の「引数の検証はビルド成果物の確認より先」。**
+    // ここを上へ戻すと、クリーンな checkout でガードのテストが「成果物が無い」で落ちる。
     this.assertBuildArtifacts();
 
     const retention = toRetentionDays(config.web.logRetentionDays);
@@ -364,8 +378,10 @@ export class WebStack extends Stack {
       //
       // **ARN を渡して runtime 解決する形へ戻さないこと。** middleware(proxy.ts) は OpenNext の
       // routing 層から instrumentation の register() より **先** に呼ばれる。しかも middleware が
-      // 拒否応答を返すと Next サーバへ到達しないので register() は永久に走らず、そのインスタンスは
-      // 恒久的に落ちる。値はプロセス開始時から env に在る必要がある。
+      // 拒否応答を返すと routing 層がその場で返し、Next サーバへ到達しないので register() が走らない。
+      // 回復するのは matcher 除外パス（`/favicon.ico` 等）が同じインスタンスに当たったときだけで、
+      // **回復の有無がリクエスト順に依存する**（＝断続的で切り分けが難しい）。
+      // よって値はプロセス開始時から env に在る必要がある。
       serverFn.addEnvironment(ORIGIN_VERIFY_SECRET_KEY, originVerifyHeaderValue);
     }
 
@@ -422,14 +438,20 @@ export class WebStack extends Stack {
       });
     }
 
-    // Function URL の認証方式。origin-verify 方式では NONE（CloudFront 秘密ヘッダで保護）に切替え、
-    // OAC が POST ボディを署名しない制約を回避する。未指定時は従来の AWS_IAM(+OAC)。
-    const functionUrlAuthType = originVerifyEnabled
+    // server Function URL の認証方式。origin-verify 方式では NONE（CloudFront 秘密ヘッダで保護）に
+    // 切替え、OAC が POST ボディを署名しない制約を回避する。未指定時は従来の AWS_IAM(+OAC)。
+    //
+    // **image には適用しない (issue #631)。** 回避したい制約は「OAC が POST ボディを署名しない」
+    // ことだが、`/_next/image*` の behavior は GET/HEAD/OPTIONS のみなので image origin には
+    // そもそも当たらない。一方 image Lambda は middleware を通らず `x-origin-verify` を誰も
+    // 検証しないため、NONE にすると**無認証・無検証の公開エンドポイント**になる
+    // （URL を知れば `_assets/` 配下を画像として引け、変換の従量課金も開放される）。
+    const serverFnUrlAuthType = originVerifyEnabled
       ? lambda.FunctionUrlAuthType.NONE
       : lambda.FunctionUrlAuthType.AWS_IAM;
 
     const serverFnUrl = serverFn.addFunctionUrl({
-      authType: functionUrlAuthType,
+      authType: serverFnUrlAuthType,
       invokeMode: lambda.InvokeMode.BUFFERED,
     });
 
@@ -452,8 +474,10 @@ export class WebStack extends Stack {
     // image 最適化は元画像を S3 から読む。
     assetBucket.grantRead(imageFn);
 
+    // **image は origin-verify 方式でも常に OAC + AWS_IAM (issue #631)。**
+    // GET のみなので OAC の POST 署名問題に当たらず、NONE にする理由が無い。
     const imageFnUrl = imageFn.addFunctionUrl({
-      authType: functionUrlAuthType,
+      authType: lambda.FunctionUrlAuthType.AWS_IAM,
       invokeMode: lambda.InvokeMode.BUFFERED,
     });
 
@@ -470,9 +494,9 @@ export class WebStack extends Stack {
     const serverOrigin = originVerifyEnabled
       ? new origins.FunctionUrlOrigin(serverFnUrl, { customHeaders: originVerifyHeaders })
       : origins.FunctionUrlOrigin.withOriginAccessControl(serverFnUrl);
-    const imageOrigin = originVerifyEnabled
-      ? new origins.FunctionUrlOrigin(imageFnUrl, { customHeaders: originVerifyHeaders })
-      : origins.FunctionUrlOrigin.withOriginAccessControl(imageFnUrl);
+    // image は常に OAC。秘密ヘッダは付けない（検証する者が居ないので意味が無く、
+    // 「守られている」という誤解だけを生む）(issue #631)。
+    const imageOrigin = origins.FunctionUrlOrigin.withOriginAccessControl(imageFnUrl);
 
     // SSR/Route Handler はクッキー（管理セッション）・クエリ・メソッドに依存するため
     // キャッシュは無効化し、Host 以外の viewer 情報を origin へ転送する。
@@ -626,21 +650,22 @@ export class WebStack extends Stack {
     // 2025-10 以降 AWS は OAC 経由の呼び出しに **`lambda:InvokeFunction` も必須**としており、
     // これが無いと CloudFront → Function URL が 403（AccessDeniedException）になる。
     // 参照: aws-samples/remote-swe-agents#361。両 Lambda（server/image）へ明示的に付与する。
-    // origin-verify 方式（authType=NONE）では Function URL が公開のため invoke 権限は不要。
+    // origin-verify 方式（authType=NONE）では server の Function URL が公開のため invoke 権限は不要。
+    // **image は常に OAC なので、方式に関わらず必要** (issue #631)。
+    const cloudfrontPrincipal = new iam.ServicePrincipal('cloudfront.amazonaws.com');
+    const distributionArn = `arn:aws:cloudfront::${this.account}:distribution/${distribution.distributionId}`;
     if (!originVerifyEnabled) {
-      const cloudfrontPrincipal = new iam.ServicePrincipal('cloudfront.amazonaws.com');
-      const distributionArn = `arn:aws:cloudfront::${this.account}:distribution/${distribution.distributionId}`;
       serverFn.addPermission('CloudFrontOacInvokeFunction', {
         principal: cloudfrontPrincipal,
         action: 'lambda:InvokeFunction',
         sourceArn: distributionArn,
       });
-      imageFn.addPermission('CloudFrontOacInvokeFunction', {
-        principal: cloudfrontPrincipal,
-        action: 'lambda:InvokeFunction',
-        sourceArn: distributionArn,
-      });
     }
+    imageFn.addPermission('CloudFrontOacInvokeFunction', {
+      principal: cloudfrontPrincipal,
+      action: 'lambda:InvokeFunction',
+      sourceArn: distributionArn,
+    });
 
     // Route53 管理下なら alias A/AAAA を作成して FQDN を Distribution に向ける (issue #189)。
     // 管理外・手動管理の場合は createDnsRecord=false にして、CloudFront 側の紐付けだけ行う。

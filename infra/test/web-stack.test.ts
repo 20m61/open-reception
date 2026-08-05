@@ -1,6 +1,6 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
-import { describe, it, expect } from 'vitest';
+import { beforeAll, describe, it, expect } from 'vitest';
 import * as cdk from 'aws-cdk-lib';
 import { Template, Match } from 'aws-cdk-lib/assertions';
 import { WebStack } from '../lib/stacks/web-stack';
@@ -28,14 +28,24 @@ const OPEN_NEXT_READY = fs.existsSync(
 );
 
 // WebStack の synth は `.open-next/` 成果物を要求するため、未ビルド環境では skip する。
+//
+// 🔴 **describe ボディ直下で `new WebStack(...)` しないこと。** vitest は `runIf(false)` でも
+// describe のコールバックを **collect 時に実行する**ので、そこで throw すると
+// **ファイル全体の収集が死に、`runIf` を付けていない他の describe まで巻き添えで走らなくなる**。
+// 実際にそれで引数ガードの suite が 1 度も実行されていなかった（#612 の再レビューで判明）。
+// 構築は `beforeAll` へ置く。
 describe.runIf(OPEN_NEXT_READY)('WebStack synthesis', () => {
-  const app = new cdk.App();
-  const stack = new WebStack(app, 'TestWeb', {
-    env: { account: '123456789012', region: 'ap-northeast-1' },
-    config: resolveEnv('dev'),
-    appEnv: { ADMIN_AUTH_PROVIDER: 'none' },
-  });
-  const template = Template.fromStack(stack);
+  let template: Template;
+  beforeAll(() => {
+    const app = new cdk.App();
+    template = Template.fromStack(
+      new WebStack(app, 'TestWeb', {
+        env: { account: '123456789012', region: 'ap-northeast-1' },
+        config: resolveEnv('dev'),
+        appEnv: { ADMIN_AUTH_PROVIDER: 'none' },
+      }),
+    );
+  }, 60000);
 
   it('provisions a private asset bucket', () => {
     template.hasResourceProperties('AWS::S3::Bucket', {
@@ -400,29 +410,32 @@ describe.runIf(OPEN_NEXT_READY)('WebStack tenant provider secrets (#405 Inc2)', 
 // **生値は dev 専用** (issue #612)。prod は Secrets Manager 方式（下の describe）。
 describe.runIf(OPEN_NEXT_READY)('WebStack origin-verify secret (#OAC-POST)', () => {
   const SECRET = 'test-origin-verify-secret-高エントロピー';
-  const template = (() => {
+  let template: Template;
+  beforeAll(() => {
     const app = new cdk.App();
-    const stack = new WebStack(app, 'TestWebOriginVerify', {
-      env: { account: '123456789012', region: 'ap-northeast-1' },
-      config: resolveEnv('dev'),
-      appEnv: { ADMIN_AUTH_PROVIDER: 'none' },
-      originVerifySecret: SECRET,
-    });
-    return Template.fromStack(stack);
-  })();
+    template = Template.fromStack(
+      new WebStack(app, 'TestWebOriginVerify', {
+        env: { account: '123456789012', region: 'ap-northeast-1' },
+        config: resolveEnv('dev'),
+        appEnv: { ADMIN_AUTH_PROVIDER: 'none' },
+        originVerifySecret: SECRET,
+      }),
+    );
+  }, 60000);
 
   it('uses Function URL authType NONE (public, protected by header)', () => {
     template.resourceCountIs('AWS::Lambda::Url', 2);
     // **件数で固定する。** hasResourceProperties は 1 つでも一致すれば通るので、
-    // server だけ NONE・image は AWS_IAM という状態を見逃す（#631 で image を戻すときは 1 になる）。
-    template.resourcePropertiesCountIs('AWS::Lambda::Url', { AuthType: 'NONE' }, 2);
+    // 「片方だけ NONE」を見逃す。**NONE は server だけ**（image は常に OAC + AWS_IAM。#631）。
+    template.resourcePropertiesCountIs('AWS::Lambda::Url', { AuthType: 'NONE' }, 1);
+    template.resourcePropertiesCountIs('AWS::Lambda::Url', { AuthType: 'AWS_IAM' }, 1);
   }, 30000);
 
-  it('does not create OAC for the Lambda origins (only S3 OAC remains)', () => {
-    template.resourceCountIs('AWS::CloudFront::OriginAccessControl', 1);
+  it('drops OAC for the server origin only (S3 と image の OAC は残る) (#631)', () => {
+    template.resourceCountIs('AWS::CloudFront::OriginAccessControl', 2);
   }, 30000);
 
-  it('does not grant lambda:InvokeFunction to CloudFront (no OAC invoke needed)', () => {
+  it('grants lambda:InvokeFunction only to the image function (server は公開のため不要) (#631)', () => {
     template.resourcePropertiesCountIs(
       'AWS::Lambda::Permission',
       {
@@ -430,7 +443,7 @@ describe.runIf(OPEN_NEXT_READY)('WebStack origin-verify secret (#OAC-POST)', () 
         Principal: 'cloudfront.amazonaws.com',
         SourceArn: Match.anyValue(),
       },
-      0,
+      1,
     );
   }, 30000);
 
@@ -475,12 +488,18 @@ describe.runIf(OPEN_NEXT_READY)('WebStack origin-verify via Secrets Manager (#61
     });
     return Template.fromStack(stack);
   };
-  const template = synth('prod');
-  const rendered = JSON.stringify(template.toJSON());
+  let template: Template;
+  let rendered: string;
+  beforeAll(() => {
+    template = synth('prod');
+    rendered = JSON.stringify(template.toJSON());
+  }, 60000);
 
   it('keeps the Function URL public + header protected, exactly as the raw-value mode', () => {
-    template.resourcePropertiesCountIs('AWS::Lambda::Url', { AuthType: 'NONE' }, 2);
-    template.resourceCountIs('AWS::CloudFront::OriginAccessControl', 1);
+    // server のみ NONE。image は OAC のままなので OAC は S3 + image の 2 つ残る（#631）。
+    template.resourcePropertiesCountIs('AWS::Lambda::Url', { AuthType: 'NONE' }, 1);
+    template.resourcePropertiesCountIs('AWS::Lambda::Url', { AuthType: 'AWS_IAM' }, 1);
+    template.resourceCountIs('AWS::CloudFront::OriginAccessControl', 2);
   }, 30000);
 
   it('puts a CFN dynamic reference (not a literal) in the CloudFront custom header', () => {
@@ -504,7 +523,7 @@ describe.runIf(OPEN_NEXT_READY)('WebStack origin-verify via Secrets Manager (#61
   it('puts the same dynamic reference in the server function env (no ARN indirection)', () => {
     // **runtime 解決に戻さないこと。** middleware は OpenNext の routing 層から instrumentation の
     // register() より先に呼ばれ、しかも拒否応答を返すと Next サーバへ到達しないので register() は
-    // 永久に走らない。値はプロセス開始時から env に在る必要がある（#612 のレビューで実測）。
+    // 走らない（回復は matcher 除外パス頼みで順序依存）。値は env に在る必要がある。
     template.hasResourceProperties('AWS::Lambda::Function', {
       Environment: {
         Variables: Match.objectLike({
@@ -593,10 +612,24 @@ describe('WebStack origin-verify argument guards (#612)', () => {
     expect(build('prod', props)).toThrow(/空文字\/非文字列/);
   });
 
-  it('rejects a non-string context value (`-c name` を `=` 無しで書くと true になる)', () => {
+  it('rejects a non-string context value (cdk.json の context に実 JSON で書ける)', () => {
     expect(
       build('prod', { originVerifySecretName: true as unknown as string }),
     ).toThrow(/空文字\/非文字列/);
+  });
+
+  // 🔴 appEnv 経由の自爆経路。origin-verify 無効構成では addEnvironment による上書きが走らないので、
+  // REQUIRED=1 だけが残って全リクエストが恒久 503 になる。
+  it('rejects ORIGIN_VERIFY_* passed through appEnv', () => {
+    const app = new cdk.App();
+    expect(
+      () =>
+        new WebStack(app, 'TestWebOriginVerifyAppEnv', {
+          env: { account: '123456789012', region: 'ap-northeast-1' },
+          config: resolveEnv('prod'),
+          appEnv: { ADMIN_AUTH_PROVIDER: 'none', ORIGIN_VERIFY_REQUIRED: '1' },
+        }),
+    ).toThrow(/appEnv に ORIGIN_VERIFY_REQUIRED を渡せません/);
   });
 
   it('accepts the Secrets Manager mode in every environment', () => {
@@ -612,5 +645,110 @@ describe('WebStack origin-verify argument guards (#612)', () => {
         }
       }).not.toThrow();
     }
+  });
+});
+
+
+// コスト微最適化 (issue #300): 全環境 PriceClass_200 + アセットバケットの安全なライフサイクル。
+describe.runIf(OPEN_NEXT_READY)('WebStack cost optimization (#300)', () => {
+  const synth = (envName: 'dev' | 'prod') => {
+    const app = new cdk.App();
+    const stack = new WebStack(app, `TestWebCost${envName}`, {
+      env: { account: '123456789012', region: 'ap-northeast-1' },
+      config: resolveEnv(envName),
+      appEnv: { ADMIN_AUTH_PROVIDER: 'none' },
+    });
+    return Template.fromStack(stack);
+  };
+
+  it.each(['dev', 'prod'] as const)(
+    'uses PriceClass_200 in %s (国内 iPad 端末向けのため全世界エッジは不要)',
+    (envName) => {
+      synth(envName).hasResourceProperties('AWS::CloudFront::Distribution', {
+        DistributionConfig: Match.objectLike({ PriceClass: 'PriceClass_200' }),
+      });
+    },
+    30000,
+  );
+
+  it('asset bucket cleans up incomplete multipart uploads via lifecycle', () => {
+    synth('prod').hasResourceProperties('AWS::S3::Bucket', {
+      LifecycleConfiguration: {
+        Rules: Match.arrayWith([
+          Match.objectLike({
+            AbortIncompleteMultipartUpload: { DaysAfterInitiation: 7 },
+            Status: 'Enabled',
+          }),
+        ]),
+      },
+    });
+  }, 30000);
+
+  it('asset bucket does NOT expire objects by age (可用性をデプロイ頻度に依存させない)', () => {
+    // BucketDeployment(s3 sync) は「アセットが変わったデプロイ時」しか LastModified を
+    // 更新しないため、作成日時基準の Expiration は無デプロイ期間が続くと現役アセットを
+    // 失効させ得る。年齢ベースの失効ルールを持たないことを設計判断として固定する。
+    synth('prod').hasResourceProperties('AWS::S3::Bucket', {
+      LifecycleConfiguration: {
+        Rules: [Match.objectLike({ ExpirationInDays: Match.absent() })],
+      },
+    });
+  }, 30000);
+});
+
+// 管理ログイン Cognito（埋め込み SRP）(issue #238)。
+describe.runIf(OPEN_NEXT_READY)('WebStack admin Cognito auth', () => {
+  // describe ボディ直下で構築しない理由はファイル冒頭の注意書きを参照。
+  let template: Template;
+  beforeAll(() => {
+    const app = new cdk.App();
+    template = Template.fromStack(
+      new WebStack(app, 'TestWebCognito', {
+        env: { account: '123456789012', region: 'ap-northeast-1' },
+        config: resolveEnv('prod'),
+        appEnv: { ADMIN_AUTH_PROVIDER: 'cognito' },
+        cognitoAuth: true,
+      }),
+    );
+  }, 60000);
+
+  it('provisions a Cognito User Pool with self sign-up disabled', () => {
+    template.resourceCountIs('AWS::Cognito::UserPool', 1);
+    template.hasResourceProperties('AWS::Cognito::UserPool', {
+      AdminCreateUserConfig: { AllowAdminCreateUserOnly: true },
+    });
+  });
+
+  it('App Client enables USER_SRP_AUTH only and no client secret / no hosted UI', () => {
+    template.hasResourceProperties('AWS::Cognito::UserPoolClient', {
+      ExplicitAuthFlows: Match.arrayWith(['ALLOW_USER_SRP_AUTH']),
+      GenerateSecret: false,
+    });
+    // Hosted UI を使わないため UserPoolDomain は作らない。
+    template.resourceCountIs('AWS::Cognito::UserPoolDomain', 0);
+  });
+
+  it('injects COGNITO_* env into the server function', () => {
+    template.hasResourceProperties('AWS::Lambda::Function', {
+      Environment: {
+        Variables: Match.objectLike({
+          ADMIN_AUTH_PROVIDER: 'cognito',
+          COGNITO_USER_POOL_ID: Match.anyValue(),
+          COGNITO_CLIENT_ID: Match.anyValue(),
+          COGNITO_REGION: 'ap-northeast-1',
+          COGNITO_ISSUER: Match.anyValue(),
+        }),
+      },
+    });
+  }, 30000);
+
+  it('does NOT create Cognito when cognitoAuth is unset', () => {
+    const app2 = new cdk.App();
+    const noCog = new WebStack(app2, 'TestWebNoCognito', {
+      env: { account: '123456789012', region: 'ap-northeast-1' },
+      config: resolveEnv('dev'),
+      appEnv: { ADMIN_AUTH_PROVIDER: 'none' },
+    });
+    Template.fromStack(noCog).resourceCountIs('AWS::Cognito::UserPool', 0);
   });
 });

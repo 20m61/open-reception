@@ -57,7 +57,8 @@ describe('origin-verify の定数が CDK と一致する (#612)', () => {
   it('CDK が origin-verify シークレットを ARN 経由の runtime 解決に戻していない', () => {
     // middleware は OpenNext の routing 層から instrumentation の register() より **先** に呼ばれ、
     // しかも拒否応答を返すと Next サーバへ到達しないので register() は永久に走らない。
-    // 実測: コールドスタート直後の正当なリクエストが 403、warm な 2 回目から 200（#612 のレビュー）。
+    // 結果、コールドスタート直後の正当なリクエストが落ちる。回復は matcher 除外パスが
+    // 同じインスタンスに当たったときだけなので、リクエスト順に依存する断続障害になる。
     // よって ARN を渡して runtime 解決する形へ戻す変更をここで止める。
     //
     // **リテラル 'ORIGIN_VERIFY_SECRET_ARN' だけを見ないこと。** 実際の記述は

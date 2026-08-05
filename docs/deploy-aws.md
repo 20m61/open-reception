@@ -158,14 +158,33 @@ Secrets Manager 方式では、シークレット JSON の **`ORIGIN_VERIFY_SECR
   **503 を返す**（`mismatch` の 403 とは別。前者は配備側の障害、後者は直叩き）。
 - **dev 以外で `-c originVerifySecret=<生値>` を渡すと `cdk synth` が失敗する**（WebStack が拒否）。
   併用も、**空文字も**不可（`-c originVerifySecret=$UNSET_VAR` を黙って無効化に落とさないため）。
+- `ORIGIN_VERIFY_*` を `appEnv` から渡すことはできない（synth で拒否）。「検証を要求するが値が無い」
+  状態を手で作れてしまい、全リクエストが恒久 503 になるため。
+- `ORIGIN_VERIFY_REQUIRED` で**偽になるのは `0` と空文字だけ**。`false` は真（曖昧な値は
+  fail-closed 側へ倒す）。無効化するときは env ごと外すこと。
+
+> **🔴 prod で有効化する前に必要なこと**
+>
+> - **dev で 1 度 Secrets Manager 方式をデプロイして live 検証する**（この方式は未実測。#65）。
+>   確認する 3 点: (a) `aws cloudfront get-distribution-config` の `HeaderValue` が
+>   `{{resolve:` で始まって**いない**（解決されずリテラルのまま送られていると、共有シークレットが
+>   公開文字列になり防御がゼロになる）、(b) Function URL 直叩きが 403、(c) CloudFront 経由の
+>   POST が 200。あわせて `curl -H 'x-origin-verify: junk' https://<cf-domain>/kiosk` が 200 に
+>   なること（CloudFront が custom header を**置換**し追記でないこと）も見る。
+> - **#630（403 のアラーム）を閉じる**。この方式の全断は `Errors` に出ず、403 は 4xx アラームが
+>   無いので検知経路が「来訪者の申告」だけになる。
+> - **モード切替・値変更は受付停止時間帯に**。Lambda env と Distribution は原子的に更新されず、
+>   Distribution の伝播に数分かかる。その間 `mismatch` で 403 になる。
 
 > **なぜ Lambda 環境変数に値が入るのか（runtime 取得にしない理由）**
 >
 > middleware（`src/proxy.ts`）は OpenNext の routing 層から呼ばれ、**`src/instrumentation.ts` の
-> `register()` より先に走る**。しかも middleware が拒否応答を返すと Next サーバへ到達しないため
-> `register()` は永久に走らない。ARN を渡して起動時解決にすると、**コールドスタート直後の正当な
-> リクエストが 403 になり、そのインスタンスは寿命まで回復しない**（#612 のレビューで実測）。
-> よって値はプロセス開始時から環境変数に在る必要がある。
+> `register()` より先に走る**。しかも middleware が拒否応答を返すと routing 層がその場で返し、
+> Next サーバへ到達しないため `register()` が走らない。ARN を渡して起動時解決にすると、
+> **コールドスタート直後の正当なリクエストが落ちる**。回復するのは matcher 除外パス
+> （`/favicon.ico` 等）が同じインスタンスに当たったときだけで、**回復の有無がリクエスト順に
+> 依存する断続障害**になる（#612 のレビューで判明）。よって値はプロセス開始時から
+> 環境変数に在る必要がある。
 
 **残る露出**: 解決後の値は CloudFront Distribution 設定（`cloudfront:GetDistribution*`）と
 Lambda 環境変数（`lambda:GetFunctionConfiguration`）として保持される。CloudFront が origin へ
@@ -174,18 +193,33 @@ Lambda 環境変数（`lambda:GetFunctionConfiguration`）として保持され�
 
 **適用範囲の穴（未修正）**:
 
-- **image 最適化 Function URL は検証していない**（#631）。この方式では image Lambda も
-  `authType=NONE` になるが、middleware を通らないので `x-origin-verify` を誰も見ない。
-  直叩きで `_assets/` 配下を画像として引ける。
-- **403 / 503 に来訪者向けの画面が無い**（#629）。iPad に `forbidden` の 1 語が出る。
-- **この全断はアラームに引っかからない**（#630）。middleware の 403/503 は Lambda としては
-  成功呼び出しなので `Errors` メトリクスに出ない。
+- **403 / 503 に来訪者向けの画面が無い**（#629）。iPad に `forbidden` /
+  `service unavailable` の素の文字列が出る。
+- **403 の全断はアラームに引っかからない**（#630）。middleware の応答は Lambda としては
+  成功呼び出しなので `Errors` メトリクスに出ず、4xx アラームは意図的に置いていない
+  （`infra/lib/stacks/cloudfront-monitoring-stack.ts`）。**503 は CloudFront の
+  `5xxErrorRate` アラーム（#303・1%/15分）に乗る** — これも 403/503 を分けた理由の 1 つ。
 
-**⚠️ ローテーションは単独で行わない。** CloudFront 側の値は `cdk deploy` 時に CFN が解決して
-Distribution 設定に固定される一方、Lambda 側は再デプロイまで古い環境変数を持つ。Secrets Manager
-の値だけを差し替えても**どちらも更新されない**（テンプレート文字列が変わらないので差分が出ない）。
-無停止ローテーションには「新旧 2 値を受理する期間」が要る。**未実装（#612 増分 2）** なので、
-現時点では「値の差し替え → 即 `cdk deploy`」をセットで行い、切替中の 403 を許容すること。
+> image 最適化 Function URL の無検証公開（#631）は**この PR で解消済み**。image は GET のみで
+> OAC の POST 署名問題に当たらないため、origin-verify 方式でも常に OAC + `AWS_IAM` に据え置く。
+
+**🔴 このシークレットをローテーションしないこと（#612 増分 2 まで手段が無い）。**
+
+CFN が動的参照を再解決するのは「**その参照を含むリソースが更新対象になったとき**」だけ
+（[AWS ドキュメント](https://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/dynamic-references-secretsmanager.html)）。
+CloudFront ヘッダと Lambda 環境変数はどちらも同じ文字列 `{{resolve:secretsmanager:...}}` なので、
+Secrets Manager の値を差し替えてもテンプレートに差分は出ない。ここから **2 通りに転ぶ**:
+
+| 状況 | 何が起きるか |
+| --- | --- |
+| 値だけ差し替えて `cdk deploy`（アプリ変更なし） | 差分ゼロ＝**何も更新されない**。403 も起きないので運用者は「ローテーション完了・旧鍵失効」と信じるが、**旧鍵が現役で有効**なまま |
+| 値を差し替えた後にアプリ変更を伴う `cdk deploy` | server Lambda は code asset のハッシュが変わるので**更新対象になり、env が新しい値に再解決される**。一方 Distribution はプロパティ不変で**更新されない＝古い値を送り続ける** → **全リクエストが `mismatch` で 403。デプロイ完了後も回復しない** |
+
+2 つ目が危険で、**アプリの通常デプロイが引き金になる**（ローテーションの直後とは限らない）。
+来訪者に見えるのは `forbidden` の 1 語だけで（#629）、403 はアラームにも出ない（#630）。
+
+手段を用意するには動的参照の文字列自体を可変にする必要がある（`versionId` を含める等）。
+**未実装。**
 
 ### 6. デプロイ
 

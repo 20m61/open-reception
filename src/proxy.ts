@@ -10,6 +10,7 @@ import {
   ORIGIN_VERIFY_HEADER,
   evaluateOriginVerify,
   readOriginVerifyConfig,
+  type OriginVerifyOutcome,
 } from '@/lib/security/origin-verify';
 
 /**
@@ -34,29 +35,64 @@ const PUBLIC_PATHS = new Set<string>([
  *
  * **拒否の 2 種類を区別する (#612)。** どちらも「拒否」だが運用上は正反対で、混ぜると
  * 障害時に「攻撃されている」と「自分が壊れている」を切り分けられない。
- * - `mismatch`      … 直叩き。方式が意図どおり働いている。403（クライアント責）・ログ無し
- *                     （攻撃者が任意に発火できるのでログを出すと溢れる）
- * - `missing-secret`… 配備側の障害。全リクエストが落ちる。503 ＋ プロセス 1 回だけ error ログ
+ * - `mismatch`      … 直叩き（正常動作）。**または**ローテーションで CloudFront と Lambda が
+ *                     ずれた状態（全断）。403 を返す
+ * - `missing-secret`… 配備側の障害。全リクエストが落ちる。503 を返す
  */
-let warnedOriginVerifyUnresolved = false;
+let lastOriginVerifyReason: OriginVerifyOutcome['reason'] | 'initial' = 'initial';
+
+/** テスト用にログ状態を初期化する（module scope なのでテスト順序に依存させない）。 */
+export function __resetOriginVerifyLogState(): void {
+  lastOriginVerifyReason = 'initial';
+}
+
+/**
+ * **状態が変わったときだけ**ログする。
+ *
+ * 「プロセスにつき 1 回」のラッチは一方通行で、復旧してから再発したときに何も出ない。
+ * `missing-secret` は matcher 除外パス（`/favicon.ico` 等）が `register()` を走らせると
+ * 実際に復旧しうるので、これは机上の話ではない。出力量はラッチとほぼ変わらないまま、
+ * 復旧と再発の両方が記録される。**値は一切出さない**（rules/pii-secret-minimization.md）。
+ */
+function logOriginVerifyTransition(reason: OriginVerifyOutcome['reason'], secret?: string): void {
+  if (reason === lastOriginVerifyReason) return;
+  lastOriginVerifyReason = reason;
+  switch (reason) {
+    case 'missing-secret':
+      console.error(
+        '[origin-verify] ORIGIN_VERIFY_REQUIRED is set but ORIGIN_VERIFY_SECRET is unresolved ' +
+          '(unset, blank, or an unsubstituted {{resolve:...}}); rejecting every request.',
+      );
+      break;
+    case 'mismatch':
+      // 攻撃者が任意に発火できるので**毎リクエストは出さない**が、ゼロにもしない。
+      // ローテーションで CloudFront と Lambda がずれると全リクエストがここへ落ちるため、
+      // 「一部インスタンスに数行」＝スキャン、「全インスタンスに 1 行」＝配備破損、と切り分けられる。
+      console.warn('[origin-verify] header mismatch; rejecting requests that bypass CloudFront.');
+      break;
+    case 'disabled':
+      // シークレットが在るのに方式が表明されていない＝配備が降格された強い兆候。
+      // 旧仕様ではこの組合せが「検証有効」を意味していた。
+      if (secret) {
+        console.warn(
+          '[origin-verify] ORIGIN_VERIFY_SECRET is present but ORIGIN_VERIFY_REQUIRED is not set; ' +
+            'origin verification is DISABLED.',
+        );
+      }
+      break;
+    case 'matched':
+      break;
+  }
+}
 
 function checkTrustedOrigin(req: NextRequest): NextResponse | null {
   const config = readOriginVerifyConfig(process.env);
   const outcome = evaluateOriginVerify(config, req.headers.get(ORIGIN_VERIFY_HEADER));
+  logOriginVerifyTransition(outcome.reason, config.secret);
   if (outcome.ok) return null;
-
-  if (outcome.reason === 'missing-secret') {
-    if (!warnedOriginVerifyUnresolved) {
-      warnedOriginVerifyUnresolved = true;
-      // 値は出さない。出すと迂回の手がかりになる（rules/pii-secret-minimization.md）。
-      console.error(
-        '[origin-verify] ORIGIN_VERIFY_REQUIRED is set but ORIGIN_VERIFY_SECRET is unresolved; ' +
-          'rejecting every request until the deployment is fixed.',
-      );
-    }
-    return denyOriginVerify('service unavailable', 503);
-  }
-  return denyOriginVerify('forbidden', 403);
+  return outcome.reason === 'missing-secret'
+    ? denyOriginVerify('service unavailable', 503)
+    : denyOriginVerify('forbidden', 403);
 }
 
 /**
