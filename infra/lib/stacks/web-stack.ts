@@ -26,8 +26,9 @@ const REPO_ROOT = path.join(__dirname, '..', '..', '..');
  * CloudFront が付与する origin custom header 名と、Secrets Manager JSON のキー名 (issue #612)。
  *
  * アプリ側の正本は `src/lib/security/origin-verify.ts`。infra/ は別 tsconfig で `src/` を
- * 参照できないため同じ値をここに置く。**ドリフトは `infra/test/web-stack.test.ts` が
- * 正本ファイルを読んで固定する。**
+ * 参照できないため同じ値をここに置く。ドリフトは
+ * `src/lib/security/origin-verify.contract.test.ts` が**このファイルを読んで**固定する。
+ * 検査を `src/` 側に置いているのは、`infra/test/**` が品質ゲートで実行されないため（issue #628）。
  */
 const ORIGIN_VERIFY_HEADER = 'x-origin-verify';
 const ORIGIN_VERIFY_SECRET_KEY = 'ORIGIN_VERIFY_SECRET';
@@ -90,20 +91,21 @@ export interface WebStackProps extends StackProps {
    * CloudFront OAC は POST/PUT のボディを署名せず Lambda(IAM) が拒否する制約を回避するための方式。
    * 未指定なら従来どおり OAC + IAM 署名（GET は通るが POST は 403 になる既知問題）。
    *
-   * **この方式は生値が CFN テンプレートと Lambda 環境変数に平文で載る。dev 専用** (issue #612)。
-   * prod では `originVerifySecretName`（Secrets Manager）を使うこと。WebStack が fail-closed で強制する。
+   * **この方式は生値が CFN テンプレートに平文で載る。dev 専用** (issue #612)。
+   * dev 以外では `originVerifySecretName`（Secrets Manager）を使うこと。
+   * 生値を dev 以外へ渡すと **synth 時点で throw する**。空文字も同様。
    */
   readonly originVerifySecret?: string;
   /**
    * origin-verify シークレットを収めた Secrets Manager シークレットの名前 (issue #612)。
    * JSON の `ORIGIN_VERIFY_SECRET` キーを参照する（`appSecretsName` と同じシークレットで良い）。
    *
-   * - CloudFront の origin custom header には **CFN 動的参照**（`{{resolve:secretsmanager:...}}`）を
-   *   埋めるため、生成される CFN テンプレートに平文は載らない。
-   * - server Lambda には ARN のみを渡し、値は起動時に `src/instrumentation.ts` が解決する
-   *   （= Lambda 環境変数にも平文は載らない）。
+   * CloudFront の origin custom header と server Lambda の env の**両方**に
+   * **CFN 動的参照**（`{{resolve:secretsmanager:...}}`）を埋めるので、生成される CFN
+   * テンプレートに平文は載らない。ただし **CFN が解決した値は Lambda 環境変数として保持される**
+   * （runtime 取得は middleware に間に合わない。理由は下の実装コメント）。
    *
-   * `originVerifySecret`（生値）との併用は不可。
+   * `originVerifySecret`（生値）との併用は不可。空文字も不可。
    */
   readonly originVerifySecretName?: string;
   /**
@@ -161,8 +163,6 @@ export class WebStack extends Stack {
   constructor(scope: Construct, id: string, props: WebStackProps) {
     super(scope, id, props);
 
-    this.assertBuildArtifacts();
-
     const {
       config,
       appEnv = {},
@@ -175,31 +175,59 @@ export class WebStack extends Stack {
       providerSecretBackend,
       providerSecretPrefix,
     } = props;
+
+    // **引数の検証はビルド成果物の確認より先**。順序を逆にすると、`.open-next/` が無い環境では
+    // 引数ガードのテストが「成果物が無い」で落ち、ガード自体を検証できなくなる（issue #612）。
     // --- origin-verify 方式の供給元を決める (issue #612) ---
-    // 生値（dev 専用）と Secrets Manager（prod）は排他。prod で生値を渡したら synth 時点で止める。
+    // **空文字を「未指定」に落とさない。** `-c originVerifySecret=$UNSET_VAR` は `''` を渡すので、
+    // falsy 判定に任せると origin-verify が黙って OFF になり、OAC+IAM に戻って全 POST が 403 になる
+    // （この方式が回避しようとしていた障害そのもの）。synth 時点で明示的に止める。
+    for (const [name, value] of [
+      ['originVerifySecret', originVerifySecret],
+      ['originVerifySecretName', originVerifySecretName],
+    ] as const) {
+      if (value === undefined) continue;
+      // `-c name`（`=` なし）は CDK context でブール `true` になり、型宣言とすり抜ける。
+      if (typeof value !== 'string' || value.trim() === '') {
+        throw new Error(
+          `${name} に空文字/非文字列が渡されました (issue #612。received: ${JSON.stringify(value)})。` +
+            'デプロイスクリプトの変数が未設定か、`-c name=value` の `=` が抜けている可能性があります。' +
+            'このまま続行すると origin-verify が無効化され、CloudFront OAC の POST 署名問題で全 POST が 403 になります。',
+        );
+      }
+    }
+    // 生値（dev 専用）と Secrets Manager は排他。
     if (originVerifySecret && originVerifySecretName) {
       throw new Error(
         'originVerifySecret と originVerifySecretName は併用できません' +
-          '（どちらが CloudFront ヘッダに載るか曖昧になるため）。prod は originVerifySecretName を使ってください。',
+          '（どちらが CloudFront ヘッダに載るか曖昧になるため）。dev 以外は originVerifySecretName を使ってください。',
       );
     }
-    if (originVerifySecret && config.environment === 'prod') {
+    // **許可リストで判定する（`!== 'dev'`）。** `=== 'prod'` だと staging が素通りし、
+    // 環境を足したときの既定が「平文可」に倒れる。
+    if (originVerifySecret && config.environment !== 'dev') {
       throw new Error(
-        'originVerifySecret（生値）は prod では使えません (issue #612)。' +
-          '生値は CFN テンプレートと Lambda 環境変数に平文で載ります。' +
+        `originVerifySecret（生値）は dev 以外では使えません (issue #612。指定環境: ${config.environment})。` +
+          '生値は CFN テンプレートに平文で載ります。' +
           '`-c originVerifySecretName=<Secrets Manager シークレット名>` を使ってください。',
       );
     }
-    const originVerifyEnabled = Boolean(originVerifySecret || originVerifySecretName);
+    // NOTE: 「方式が有効か」は下の `originVerifyHeaderValue` **1 つから導く**。別々に導出すると、
+    // 片方だけ壊れたときに **Function URL は公開なのに CloudFront がヘッダを付けない** origin
+    // （= 認証なしの公開エンドポイント）が組み上がる。
     // CloudFront は origin custom header に「値」を必要とする。Secrets Manager 方式では CFN 動的参照を
     // 埋め、テンプレートには `{{resolve:secretsmanager:...}}` だけが残る（平文は載らない）。
-    // 注: 解決後の値は CloudFront の Distribution 設定として保持されるため、
-    // cloudfront:GetDistributionConfig 権限を持つ主体からは見える（docs/deploy-aws.md に明記）。
+    // 注: 解決後の値は CloudFront の Distribution 設定と Lambda 環境変数として保持されるため、
+    // `cloudfront:GetDistribution*` / `lambda:GetFunctionConfiguration` 権限を持つ主体からは
+    // 見える（docs/deploy-aws.md の「残る露出」に明記）。
     const originVerifyHeaderValue = originVerifySecretName
       ? SecretValue.secretsManager(originVerifySecretName, {
           jsonField: ORIGIN_VERIFY_SECRET_KEY,
         }).unsafeUnwrap()
       : originVerifySecret;
+    const originVerifyEnabled = originVerifyHeaderValue !== undefined;
+
+    this.assertBuildArtifacts();
 
     const retention = toRetentionDays(config.web.logRetentionDays);
     const removalPolicy = prodRemovalPolicy(config.environment);
@@ -327,23 +355,18 @@ export class WebStack extends Stack {
     }
 
     // CloudFront 経由検証（直叩き拒否）。middleware(proxy.ts) が x-origin-verify を照合する。
-    if (originVerifyEnabled) {
-      // 非機密フラグ。これが立っていてシークレットが解決できなければ proxy は fail-closed で
-      // 全リクエストを 403 にする（未設定＝検証しない、と区別するため必須）(issue #612)。
+    if (originVerifyHeaderValue) {
+      // **検証の ON/OFF はこのフラグだけが決める**（シークレットの有無では決めない）。
+      // 非機密。proxy.ts はこれが立っていて値が解決できないとき 503 を返す (issue #612)。
       serverFn.addEnvironment(ORIGIN_VERIFY_REQUIRED_KEY, '1');
-    }
-    if (originVerifySecretName) {
-      // 値は渡さず ARN のみ。起動時に instrumentation register() が解決する (issue #612)。
-      const originVerifySecretRef = secretsmanager.Secret.fromSecretNameV2(
-        this,
-        'OriginVerifySecret',
-        originVerifySecretName,
-      );
-      originVerifySecretRef.grantRead(serverFn);
-      serverFn.addEnvironment(`${ORIGIN_VERIFY_SECRET_KEY}_ARN`, originVerifySecretRef.secretArn);
-    } else if (originVerifySecret) {
-      // dev 専用の平文注入（prod は上の fail-closed で到達しない）。
-      serverFn.addEnvironment(ORIGIN_VERIFY_SECRET_KEY, originVerifySecret);
+      // CloudFront が送る値と同じものを env にも入れる。Secrets Manager 方式ではどちらも
+      // CFN 動的参照なので、テンプレート上は同じ `{{resolve:...}}` で、平文は現れない。
+      //
+      // **ARN を渡して runtime 解決する形へ戻さないこと。** middleware(proxy.ts) は OpenNext の
+      // routing 層から instrumentation の register() より **先** に呼ばれる。しかも middleware が
+      // 拒否応答を返すと Next サーバへ到達しないので register() は永久に走らず、そのインスタンスは
+      // 恒久的に落ちる。値はプロセス開始時から env に在る必要がある。
+      serverFn.addEnvironment(ORIGIN_VERIFY_SECRET_KEY, originVerifyHeaderValue);
     }
 
     // --- 管理ログイン Cognito（埋め込み SRP・Hosted UI 無し） (issue #238) ---

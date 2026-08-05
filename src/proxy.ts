@@ -30,12 +30,45 @@ const PUBLIC_PATHS = new Set<string>([
  * CloudFront 経由アクセスの検証 (OAC POST 署名問題の回避方式。判定は origin-verify.ts)。
  * Function URL を authType=NONE で公開する代わり、CloudFront が origin custom header
  * `x-origin-verify` に高エントロピーのシークレットを付与する。これと一致しないリクエスト
- * （= Function URL 直叩き / CloudFront 迂回）は全ルートで 403 拒否する。
- * `ORIGIN_VERIFY_SECRET` 未設定でも `ORIGIN_VERIFY_REQUIRED` が立っていれば fail-closed (#612)。
+ * （= Function URL 直叩き / CloudFront 迂回）は server function の全ルートで拒否する。
+ *
+ * **拒否の 2 種類を区別する (#612)。** どちらも「拒否」だが運用上は正反対で、混ぜると
+ * 障害時に「攻撃されている」と「自分が壊れている」を切り分けられない。
+ * - `mismatch`      … 直叩き。方式が意図どおり働いている。403（クライアント責）・ログ無し
+ *                     （攻撃者が任意に発火できるのでログを出すと溢れる）
+ * - `missing-secret`… 配備側の障害。全リクエストが落ちる。503 ＋ プロセス 1 回だけ error ログ
  */
-function isFromTrustedOrigin(req: NextRequest): boolean {
+let warnedOriginVerifyUnresolved = false;
+
+function checkTrustedOrigin(req: NextRequest): NextResponse | null {
   const config = readOriginVerifyConfig(process.env);
-  return evaluateOriginVerify(config, req.headers.get(ORIGIN_VERIFY_HEADER)).ok;
+  const outcome = evaluateOriginVerify(config, req.headers.get(ORIGIN_VERIFY_HEADER));
+  if (outcome.ok) return null;
+
+  if (outcome.reason === 'missing-secret') {
+    if (!warnedOriginVerifyUnresolved) {
+      warnedOriginVerifyUnresolved = true;
+      // 値は出さない。出すと迂回の手がかりになる（rules/pii-secret-minimization.md）。
+      console.error(
+        '[origin-verify] ORIGIN_VERIFY_REQUIRED is set but ORIGIN_VERIFY_SECRET is unresolved; ' +
+          'rejecting every request until the deployment is fixed.',
+      );
+    }
+    return denyOriginVerify('service unavailable', 503);
+  }
+  return denyOriginVerify('forbidden', 403);
+}
+
+/**
+ * origin-verify の拒否応答。`Content-Type` を明示する（ZAP 10019。`denyApiOrRedirect` の
+ * リダイレクト応答と同じ理由で、この経路だけ欠落していた）。
+ * 本文は理由を区別しない固定文言 ── `missing-secret` を外部に伝えると迂回可能な時間帯を教える。
+ */
+function denyOriginVerify(body: string, status: 403 | 503): NextResponse {
+  return new NextResponse(body, {
+    status,
+    headers: { 'Content-Type': 'text/plain; charset=utf-8' },
+  });
 }
 
 /** 状態変更系メソッドか（Viewer に拒否する対象）。 */
@@ -101,9 +134,8 @@ export async function proxy(req: NextRequest): Promise<NextResponse> {
 
 async function route(req: NextRequest, csp: CspContext): Promise<NextResponse> {
   // CloudFront 迂回（Function URL 直叩き）を全ルートで拒否する（origin-verify 方式時のみ）。
-  if (!isFromTrustedOrigin(req)) {
-    return new NextResponse('forbidden', { status: 403 });
-  }
+  const originVerifyDenial = checkTrustedOrigin(req);
+  if (originVerifyDenial) return originVerifyDenial;
 
   const { pathname } = req.nextUrl;
   if (PUBLIC_PATHS.has(pathname)) return passThrough(req, csp);

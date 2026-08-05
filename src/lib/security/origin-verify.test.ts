@@ -41,6 +41,15 @@ describe('evaluateOriginVerify (#612)', () => {
     });
   });
 
+  // 🔴 これが無いと、appSecretsName の JSON に ORIGIN_VERIFY_SECRET を同居させた配備で
+  // `-c originVerifySecretName=` を渡し忘れたとき、CloudFront はヘッダを送らないのに
+  // Lambda 側だけ値を持ち、全ルートが 403 になる。シークレットの存在は方式の証拠ではない。
+  it('方式を表明していなければ、シークレットが env に在っても検証しない', () => {
+    const strayEnvSecret = { secret: 'TEST-origin-verify', required: false };
+    expect(evaluateOriginVerify(strayEnvSecret, null)).toEqual({ ok: true, reason: 'disabled' });
+    expect(evaluateOriginVerify(strayEnvSecret, 'wrong')).toEqual({ ok: true, reason: 'disabled' });
+  });
+
   it('一致すれば通す', () => {
     expect(evaluateOriginVerify(enabled, 'TEST-origin-verify')).toEqual({
       ok: true,
@@ -63,12 +72,6 @@ describe('evaluateOriginVerify (#612)', () => {
       ok: false,
       reason: 'missing-secret',
     });
-  });
-
-  it('required でなくてもシークレットが在れば検証する（既存の dev 挙動を維持）', () => {
-    const legacy = { secret: 'TEST-origin-verify', required: false };
-    expect(evaluateOriginVerify(legacy, 'TEST-origin-verify').ok).toBe(true);
-    expect(evaluateOriginVerify(legacy, 'wrong').ok).toBe(false);
   });
 
   it('ヘッダ名は CloudFront の origin custom header と同じ', () => {

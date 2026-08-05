@@ -141,28 +141,51 @@ CloudFront 越しに **POST/フォーム/受付発行が機能する**ために�
 
 | | context | CFN テンプレート | Lambda 環境変数 | 使う環境 |
 | --- | --- | --- | --- | --- |
-| 生値 | `-c originVerifySecret=<値>` | **平文** | **平文** | dev のみ |
-| Secrets Manager | `-c originVerifySecretName=<シークレット名>` | 動的参照 | ARN のみ | **prod** |
+| 生値 | `-c originVerifySecret=<値>` | **平文** | 解決済みの値 | **dev のみ** |
+| Secrets Manager | `-c originVerifySecretName=<シークレット名>` | 動的参照 | 解決済みの値 | dev 以外は必須 |
 
 Secrets Manager 方式では、シークレット JSON の **`ORIGIN_VERIFY_SECRET` キー**を参照する。
 `appSecretsName` と同じシークレットで良い（手順 5 の JSON にキーを 1 つ足すだけ）。
 
-- CloudFront の origin custom header には CFN 動的参照
-  （`{{resolve:secretsmanager:<name>:SecretString:ORIGIN_VERIFY_SECRET}}`）が入るため、
-  **合成される CFN テンプレートに平文は載らない**。
-- server Lambda には `ORIGIN_VERIFY_SECRET_ARN` だけを渡し、値は起動時に
-  `src/instrumentation.ts` が解決する（**Lambda 環境変数にも平文は載らない**）。
-  シークレットが取れない／キーが無いときは **起動を止める**（検証無しで公開しないため）。
-- 両モードとも `ORIGIN_VERIFY_REQUIRED=1`（非機密）を渡す。これが立っていてシークレットが
-  未解決なら `proxy.ts` は **全リクエストを 403**（fail-closed）。「未設定だから検証しない」へ
-  落ちて迂回が素通りするのを防ぐ。
-- **prod で `-c originVerifySecret=<生値>` を渡すと `cdk synth` が失敗する**（WebStack が拒否）。
-  併用も不可。
+- CloudFront の origin custom header と server Lambda の環境変数の**両方**に CFN 動的参照
+  （`{{resolve:secretsmanager:<name>:SecretString:ORIGIN_VERIFY_SECRET::}}`）が入るため、
+  **合成される CFN テンプレートに平文は載らない**。末尾の `::` は version-stage / version-id
+  省略（= `AWSCURRENT`）で、CDK が実際に出力する形。
+- **`cdk deploy` 実行ロールに `secretsmanager:GetSecretValue` が必要**（CFN が動的参照を
+  解決するため）。無いと初回デプロイが不可解なエラーで落ちる。
+- 両モードとも `ORIGIN_VERIFY_REQUIRED=1`（非機密）を渡す。**検証の ON/OFF はこのフラグだけが
+  決める**（シークレットの有無では決めない）。これが立っていて値が未解決なら `proxy.ts` は
+  **503 を返す**（`mismatch` の 403 とは別。前者は配備側の障害、後者は直叩き）。
+- **dev 以外で `-c originVerifySecret=<生値>` を渡すと `cdk synth` が失敗する**（WebStack が拒否）。
+  併用も、**空文字も**不可（`-c originVerifySecret=$UNSET_VAR` を黙って無効化に落とさないため）。
 
-**残る露出**: 解決後の値は CloudFront Distribution の設定として保持されるため、
-`cloudfront:GetDistributionConfig` 権限を持つ主体からは読める。これは CloudFront が origin へ
-リテラル値を送る方式である以上避けられない。**このヘッダが守るのは「エッジを迂回されない」
+> **なぜ Lambda 環境変数に値が入るのか（runtime 取得にしない理由）**
+>
+> middleware（`src/proxy.ts`）は OpenNext の routing 層から呼ばれ、**`src/instrumentation.ts` の
+> `register()` より先に走る**。しかも middleware が拒否応答を返すと Next サーバへ到達しないため
+> `register()` は永久に走らない。ARN を渡して起動時解決にすると、**コールドスタート直後の正当な
+> リクエストが 403 になり、そのインスタンスは寿命まで回復しない**（#612 のレビューで実測）。
+> よって値はプロセス開始時から環境変数に在る必要がある。
+
+**残る露出**: 解決後の値は CloudFront Distribution 設定（`cloudfront:GetDistribution*`）と
+Lambda 環境変数（`lambda:GetFunctionConfiguration`）として保持される。CloudFront が origin へ
+リテラル値を送る方式である以上、前者は避けられない。**このヘッダが守るのは「エッジを迂回されない」
 ことだけ**で、管理は Cognito セッション、端末は kiosk セッションが別途認可する（#612 の判断記録）。
+
+**適用範囲の穴（未修正）**:
+
+- **image 最適化 Function URL は検証していない**（#631）。この方式では image Lambda も
+  `authType=NONE` になるが、middleware を通らないので `x-origin-verify` を誰も見ない。
+  直叩きで `_assets/` 配下を画像として引ける。
+- **403 / 503 に来訪者向けの画面が無い**（#629）。iPad に `forbidden` の 1 語が出る。
+- **この全断はアラームに引っかからない**（#630）。middleware の 403/503 は Lambda としては
+  成功呼び出しなので `Errors` メトリクスに出ない。
+
+**⚠️ ローテーションは単独で行わない。** CloudFront 側の値は `cdk deploy` 時に CFN が解決して
+Distribution 設定に固定される一方、Lambda 側は再デプロイまで古い環境変数を持つ。Secrets Manager
+の値だけを差し替えても**どちらも更新されない**（テンプレート文字列が変わらないので差分が出ない）。
+無停止ローテーションには「新旧 2 値を受理する期間」が要る。**未実装（#612 増分 2）** なので、
+現時点では「値の差し替え → 即 `cdk deploy`」をセットで行い、切替中の 403 を許容すること。
 
 ### 6. デプロイ
 

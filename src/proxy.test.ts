@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from 'vitest';
-import { NextRequest } from 'next/server';
+import { NextRequest, type NextResponse } from 'next/server';
 import { proxy } from './proxy';
 
 /**
@@ -77,30 +77,66 @@ describe('proxy origin-verify (#612)', () => {
     delete process.env.ORIGIN_VERIFY_REQUIRED;
   });
 
+  /** pass-through した証拠（403/503/401 のいずれでもなく、実際に素通りしている）。 */
+  function expectPassedThrough(res: NextResponse): void {
+    expect(res.status).toBe(200);
+    expect(res.headers.get('x-middleware-request-x-or-pathname')).toBeTruthy();
+  }
+
   it('シークレット未設定（ローカル / OAC 方式）では検証しない', async () => {
-    const res = await proxy(reqWith('/kiosk'));
-    expect(res.status).not.toBe(403);
+    expectPassedThrough(await proxy(reqWith('/kiosk')));
   });
 
   it('一致するヘッダを持つリクエストは通す', async () => {
     process.env.ORIGIN_VERIFY_SECRET = SECRET;
     process.env.ORIGIN_VERIFY_REQUIRED = '1';
-    const res = await proxy(reqWith('/kiosk', SECRET));
-    expect(res.status).not.toBe(403);
+    expectPassedThrough(await proxy(reqWith('/kiosk', SECRET)));
   });
 
-  it('ヘッダ欠落（Function URL 直叩き）は公開ルートでも 403 で拒否する', async () => {
+  // 検証は PUBLIC_PATHS の判定より **前** に走る。この順序が崩れると、認証エントリだけが
+  // 迂回可能になったり、未信頼の呼び出し元に 401/200 を返して情報源になったりする。
+  it.each(['/kiosk', '/admin', '/admin/login', '/api/admin/login', '/api/admin/receptions'])(
+    'ヘッダ欠落（直叩き）は %s でも 403（公開ルート・認証エントリを含む）',
+    async (pathname) => {
+      process.env.ORIGIN_VERIFY_SECRET = SECRET;
+      process.env.ORIGIN_VERIFY_REQUIRED = '1';
+      const res = await proxy(reqWith(pathname));
+      expect(res.status).toBe(403);
+    },
+  );
+
+  it('方式を表明していなければ、シークレットが env に在っても検証しない', async () => {
+    // appSecretsName の JSON に鍵を同居させ、context を渡し忘れた配備を想定。
+    // CloudFront はヘッダを送らないので、ここで検証すると全ルートが 403 になる。
     process.env.ORIGIN_VERIFY_SECRET = SECRET;
-    process.env.ORIGIN_VERIFY_REQUIRED = '1';
-    const res = await proxy(reqWith('/kiosk'));
-    expect(res.status).toBe(403);
+    expectPassedThrough(await proxy(reqWith('/kiosk')));
   });
 
-  it('origin-verify 方式なのにシークレットが未解決なら fail-closed で 403', async () => {
-    // Secrets Manager の解決失敗・JSON キー欠落を想定。ここで通すと迂回が素通りする。
+  it('origin-verify 方式なのにシークレットが未解決なら 503（403 ではない）', async () => {
+    // 配備側の障害であってクライアントの問題ではないので、意味的にも監視上も 5xx が正しい。
     process.env.ORIGIN_VERIFY_REQUIRED = '1';
     const res = await proxy(reqWith('/kiosk', SECRET));
-    expect(res.status).toBe(403);
+    expect(res.status).toBe(503);
+  });
+
+  it('直叩き（mismatch）と配備障害（missing-secret）を別ステータスで返す', async () => {
+    process.env.ORIGIN_VERIFY_REQUIRED = '1';
+    process.env.ORIGIN_VERIFY_SECRET = SECRET;
+    expect((await proxy(reqWith('/kiosk', 'wrong'))).status).toBe(403);
+
+    delete process.env.ORIGIN_VERIFY_SECRET;
+    expect((await proxy(reqWith('/kiosk', 'wrong'))).status).toBe(503);
+  });
+
+  it.each([
+    ['mismatch', SECRET, 403],
+    ['missing-secret', undefined, 503],
+  ] as const)('%s の拒否応答にも Content-Type を付ける（ZAP 10019）', async (_l, secret, status) => {
+    process.env.ORIGIN_VERIFY_REQUIRED = '1';
+    if (secret) process.env.ORIGIN_VERIFY_SECRET = secret;
+    const res = await proxy(reqWith('/kiosk', 'wrong'));
+    expect(res.status).toBe(status);
+    expect(res.headers.get('content-type')).toBe('text/plain; charset=utf-8');
   });
 
   it('拒否応答の本文・ヘッダにシークレットを一切含めない', async () => {
