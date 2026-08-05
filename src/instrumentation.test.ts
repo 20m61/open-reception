@@ -123,10 +123,29 @@ describe('instrumentation register() — Secrets Manager preload (#194)', () => 
     expect(chain.join('\n')).not.toContain('TEST-raw');
   });
 
-  it('throws when the secret string is absent', async () => {
+  // 🔴 空文字は Secrets Manager の実在する設定ミス（作成時に値を入れ忘れる等）。
+  // `!secretString` を `=== undefined` に狭められても気づけるよう、両方を固定する。
+  it.each([
+    ['undefined', undefined],
+    ['空文字', ''],
+  ])('throws when the secret string is %s', async (_label, value) => {
     process.env.APP_SECRETS_ARN = 'arn:secret';
-    sendMock.mockResolvedValue({ SecretString: undefined });
+    sendMock.mockResolvedValue({ SecretString: value });
 
     await expect(register()).rejects.toThrow(/no SecretString/);
+  });
+
+  // 🔴 明示注入された空文字を Secrets Manager の値で上書きしない。
+  // `=== undefined` を `!process.env[key]` に緩めると、意図的に空にした env が黙って埋まる。
+  it('明示注入された空文字の env を上書きしない', async () => {
+    process.env.APP_SECRETS_ARN = 'arn:secret';
+    process.env.ADMIN_SESSION_SECRET = '';
+    sendMock.mockResolvedValue({
+      SecretString: JSON.stringify({ ADMIN_SESSION_SECRET: 'from-sm-admin' }),
+    });
+
+    await register();
+
+    expect(process.env.ADMIN_SESSION_SECRET).toBe('');
   });
 });
