@@ -23,7 +23,7 @@
     "verify": "npm run typecheck && npm run lint && npm test && npm run build",
     "lighthouse": "lhci autorun",
     "vrm:check": "bash scripts/vrm-check.sh",
-    "audit:deps": "npm audit --omit=dev",
+    "audit:deps": "tsx scripts/audit-deps.ts",
     "sast": "semgrep scan --config p/default --error",
     "secrets:scan": "gitleaks detect --no-banner --redact",
     "test:e2e:live": "bash scripts/e2e-live.sh"

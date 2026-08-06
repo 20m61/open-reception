@@ -1,0 +1,11 @@
+{
+  "$comment": "依存監査で期限付きに受容する advisory。判定は src/domain/governance/audit-allowlist.ts。期限を過ぎたら自動で blocking へ戻る。理由には『対応中』ではなく“こちらでは直せない手段的な理由”を書く (#634)。",
+  "entries": [
+    {
+      "id": "GHSA-rgw5-rvv9-x895",
+      "module": "brace-expansion",
+      "reason": "aws-cdk-lib の bundleDependencies に同梱されており、npm の overrides でも audit fix でも到達できない（tarball 内に含まれるため）。上流が再バンドルするまで手段が無い。aws-cdk-lib は synth 時にしか動かず Lambda へは配られないため、外部入力がこの経路へ届かない。2.263.0 への更新で他 5 件は解消済み。",
+      "expires": "2026-11-01"
+    }
+  ]
+}

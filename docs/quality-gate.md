@@ -54,6 +54,37 @@ sast 49s (8%) / lint 37s (6%) / typecheck 25s (4%) / secrets + audit 4s。
 summary へ `SKIP  infra WebStack synth  (理由)` を必ず出す。**黙って 0 件にしない**ことが
 #628 の要点で、`npm run build:open-next` を打てば `fresh` に戻って実行される。
 
+### 依存監査はどの manifest を見るか（#634）
+
+`audit` ステップ（`npm run audit:deps` → `scripts/audit-deps.ts`）は **root と `infra/` の
+両方**を `npm audit --omit=dev` で監査する。
+
+元は root だけを見ていたため、**`infra/` が 1 度も監査されていなかった**。Dependabot が
+報告していた 6 high はすべて `infra/package-lock.json` 由来で、ゲートの `PASS audit` と
+食い違っていた（どちらも正しく、見ている manifest が違った）。#628 と同じ構造の穴。
+
+#### 期限付き allowlist（`audit-allowlist.json`）
+
+`npm audit` は 1 件でも見つかれば非ゼロで終わる。**上流が直すまでこちらでは直せない**
+advisory が 1 件あるだけでゲートが恒久的に赤になり、「赤を無視する習慣」がつく。かといって
+`--audit-level` で緩めるとその severity 全体が盲点になる。よって **advisory 単位・理由付き・
+期限付き**で受容する。判定は `src/domain/governance/audit-allowlist.ts`（純関数・unit test 済み）。
+
+| 状態 | 挙動 |
+| --- | --- |
+| allowlist に無い | **FAIL** |
+| 期限内の entry に一致 | 受容（ログに出す） |
+| **期限切れ** | **FAIL**（放置すると必ず表面化する） |
+| 期限内だが該当なし | ⚠ 未使用として警告（＝上流が直した合図。entry を消す） |
+
+`reason` には「対応中」ではなく**こちらでは直せない手段的な理由**を書く。現在の唯一の entry
+（`GHSA-rgw5-rvv9-x895` / `brace-expansion`）は、`aws-cdk-lib` の **`bundleDependencies`** に
+同梱されていて `overrides` でも `npm audit fix` でも到達できないことが理由。
+
+> 💡 `npm audit fix` が「fix available」と言うのに lockfile が変わらないときは、bundled
+> dependency を疑う。**上流のバージョンを上げる以外に手段が無い**（実際 `aws-cdk-lib`
+> 2.260.0 → 2.263.0 で 6 件中 5 件が解消した）。
+
 ### 実行計画の確認（`QUALITY_GATE_DRY_RUN=1`）
 
 ```sh
