@@ -4,6 +4,7 @@ import { beforeAll, describe, it, expect } from 'vitest';
 import * as cdk from 'aws-cdk-lib';
 import { Template, Match } from 'aws-cdk-lib/assertions';
 import { WebStack } from '../lib/stacks/web-stack';
+import { openNextArtifactState, describeArtifactState } from '../lib/build-artifacts';
 import { resolveEnv, ENVIRONMENTS } from '../lib/config/environments';
 
 describe('environments config', () => {
@@ -23,9 +24,15 @@ describe('environments config', () => {
   });
 });
 
-const OPEN_NEXT_READY = fs.existsSync(
-  path.join(__dirname, '..', '..', '.open-next', 'open-next.output.json'),
-);
+// `.open-next/` が **在るだけ**では足りない（古いと synth が凍結ガードで throw する）。
+// `fresh` のときだけ synth し、absent / stale は理由付きで skip する (#628)。
+const ARTIFACTS = openNextArtifactState(path.join(__dirname, '..', '..'));
+const OPEN_NEXT_READY = ARTIFACTS.state === 'fresh';
+if (!OPEN_NEXT_READY) {
+  // 黙って 0 件にしない。vitest の "skipped" だけでは**なぜ**が残らず、
+  // 「ゲートで走っているつもりで実は 1 度も走っていない」#628 の再演になる。
+  console.warn(`[infra] WebStack synth suites skipped: ${describeArtifactState(ARTIFACTS)}`);
+}
 
 // WebStack の synth は `.open-next/` 成果物を要求するため、未ビルド環境では skip する。
 //

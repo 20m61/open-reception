@@ -8,11 +8,13 @@
 #
 # 段階（tier）:
 #   --fast   typecheck + lint + unit            （各変更ごとの高速チェック・デフォルト）
-#   --pr     fast + build                        （PR 作成前の必須ゲート）
+#   --pr     fast + build + infra                （PR 作成前の必須ゲート）
 #   --full   pr + secrets + sast + audit + e2e + lighthouse （マージ前/定期の重ゲート）
 #
 # 個別トグル（tier に追加・除外）:
 #   --no-build       build を省く
+#   --infra          infra/test/** の CDK アサーションを含める（--pr 以上は既定で ON）
+#   --no-infra       infra/test/** を省く
 #   --e2e            Playwright E2E を含める
 #   --secrets        gitleaks による秘密情報スキャンを含める
 #   --sast           semgrep による SAST を含める
@@ -42,7 +44,7 @@ ROOT="$(pwd)"
 
 # ---- 引数解析 -------------------------------------------------------------
 RUN_TYPECHECK=1 RUN_LINT=1 RUN_UNIT=1 RUN_BUILD=0
-RUN_E2E=0 RUN_SECRETS=0 RUN_SAST=0 RUN_AUDIT=0 RUN_LH=0 RUN_VRM=0
+RUN_E2E=0 RUN_SECRETS=0 RUN_SAST=0 RUN_AUDIT=0 RUN_LH=0 RUN_VRM=0 RUN_INFRA=0
 STRICT=0
 BOOTSTRAP=1
 SKIP_BY_SCOPE=1
@@ -52,9 +54,11 @@ if [[ $# -eq 0 ]]; then set -- --fast; fi
 for arg in "$@"; do
   case "$arg" in
     --fast) TIER="fast"; RUN_BUILD=0 ;;
-    --pr)   TIER="pr";   RUN_BUILD=1 ;;
-    --full) TIER="full"; RUN_BUILD=1; RUN_SECRETS=1; RUN_SAST=1; RUN_AUDIT=1; RUN_E2E=1; RUN_LH=1; RUN_VRM=1 ;;
+    --pr)   TIER="pr";   RUN_BUILD=1; RUN_INFRA=1 ;;
+    --full) TIER="full"; RUN_BUILD=1; RUN_SECRETS=1; RUN_SAST=1; RUN_AUDIT=1; RUN_E2E=1; RUN_LH=1; RUN_VRM=1; RUN_INFRA=1 ;;
     --no-build)   RUN_BUILD=0 ;;
+    --infra)      RUN_INFRA=1 ;;
+    --no-infra)   RUN_INFRA=0 ;;
     --e2e)        RUN_E2E=1 ;;
     --secrets)    RUN_SECRETS=1 ;;
     --vrm)        RUN_VRM=1 ;;
@@ -68,6 +72,22 @@ for arg in "$@"; do
     *) echo "unknown arg: $arg" >&2; exit 2 ;;
   esac
 done
+
+# ---- 解決した実行計画の出力（--dry-run） ----------------------------------
+# ステップを 1 つも起動せず、tier がどのステップに解決したかだけを出す。
+#
+# これが無いと「--pr で infra が走るか」を確かめる手段が**スクリプトを目で読むこと**
+# しか無くなる。#628（infra/test が 1 度も実行されていなかった）はまさに、
+# 走っていないことを機械が誰も見ていなかったために 数ヶ月 表面化しなかった。
+if [[ "${QUALITY_GATE_DRY_RUN:-0}" == "1" ]]; then
+  echo "tier=${TIER}"
+  for pair in "typecheck:$RUN_TYPECHECK" "lint:$RUN_LINT" "unit:$RUN_UNIT" "build:$RUN_BUILD" \
+              "infra:$RUN_INFRA" "e2e:$RUN_E2E" "secrets:$RUN_SECRETS" "sast:$RUN_SAST" \
+              "audit:$RUN_AUDIT" "lighthouse:$RUN_LH" "vrm:$RUN_VRM"; do
+    echo "${pair%%:*}=${pair##*:}"
+  done
+  exit 0
+fi
 
 # ---- 実行ヘルパ -----------------------------------------------------------
 declare -a SUMMARY
@@ -264,6 +284,33 @@ fi
 if [[ "$RUN_BUILD" -eq 1 ]]; then
   if scope_skips build; then scope_skip "build (next build)"
   else step "build (next build)" npm run --silent build; fi
+fi
+
+# CDK スタックのアサーション (#628)。
+#
+# root の `npm test` は root vitest の include（`src/**` ほか）しか走らせないため、
+# **`infra/test/**` は 1 度も実行されていなかった**。合成されるテンプレートの中身は
+# `tsc --noEmit` では見えない（型は通るがリソースの中身は誰も見ない）。
+#
+# root vitest の include に足すのではなく別ステップにしてある: infra は別の node_modules
+# （aws-cdk-lib）を要し、synth が重い（~80s）ので `--fast` に載せたくない。加えて
+# **独立ステップなら summary に自分の行を持てる** — これが「黙って 0 件にしない」の実体。
+if [[ "$RUN_INFRA" -eq 1 ]]; then
+  if scope_skips unit; then scope_skip "infra (cdk vitest)"
+  elif [[ ! -d infra ]]; then skip_or_fail "infra (cdk vitest)" "infra/ が無い"
+  else
+    # `.open-next/` が fresh でないと WebStack の synth suite は自分で skip する。
+    # **その事実を summary へ出す**（vitest の "skipped N" だけでは理由が残らない）。
+    if npx --no-install tsx --version >/dev/null 2>&1; then
+      artifact_reason="$(npx --no-install tsx -e '
+        import { openNextArtifactState, describeArtifactState } from "./infra/lib/build-artifacts";
+        process.stdout.write(describeArtifactState(openNextArtifactState(process.cwd())));
+      ' 2>/dev/null || true)"
+      [[ -n "$artifact_reason" ]] &&
+        skip_or_fail "infra WebStack synth" "$artifact_reason"
+    fi
+    step "infra (cdk vitest)" npm --prefix infra test
+  fi
 fi
 
 # ---- 任意ステップ ---------------------------------------------------------

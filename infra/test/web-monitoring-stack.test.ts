@@ -8,6 +8,7 @@ import * as dynamodb from 'aws-cdk-lib/aws-dynamodb';
 import { WebMonitoringStack } from '../lib/stacks/web-monitoring-stack';
 import { WebStack } from '../lib/stacks/web-stack';
 import { resolveEnv, EnvConfig } from '../lib/config/environments';
+import { openNextArtifactState, describeArtifactState } from '../lib/build-artifacts';
 
 const ENV = { account: '123456789012', region: 'ap-northeast-1' };
 
@@ -183,9 +184,12 @@ describe('WebMonitoringStack (#299)', () => {
   });
 });
 
-const OPEN_NEXT_READY = fs.existsSync(
-  path.join(__dirname, '..', '..', '.open-next', 'open-next.output.json'),
-);
+// `web-stack.test.ts` と同じ判定を使う。存在だけを見ると stale で synth が throw する (#628)。
+const ARTIFACTS = openNextArtifactState(path.join(__dirname, '..', '..'));
+const OPEN_NEXT_READY = ARTIFACTS.state === 'fresh';
+if (!OPEN_NEXT_READY) {
+  console.warn(`[infra] WebStack wiring suite skipped: ${describeArtifactState(ARTIFACTS)}`);
+}
 
 // 実 WebStack との配線（public メンバ公開）を end-to-end で検証する。
 describe.runIf(OPEN_NEXT_READY)('WebStack -> WebMonitoringStack wiring (#299)', () => {

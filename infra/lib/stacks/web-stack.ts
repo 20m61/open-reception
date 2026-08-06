@@ -18,6 +18,7 @@ import * as cognito from 'aws-cdk-lib/aws-cognito';
 import { EnvConfig } from '../config/environments';
 import { toRetentionDays, prodRemovalPolicy } from '../config/aws-helpers';
 import { applyCostTags } from '../constructs/cost-tags';
+import { openNextArtifactState } from '../build-artifacts';
 
 /** リポジトリルート（infra/ の 1 つ上）。 */
 const REPO_ROOT = path.join(__dirname, '..', '..', '..');
@@ -719,63 +720,32 @@ export class WebStack extends Stack {
     });
   }
 
-  /** `.open-next/` 成果物が存在するか検証（未ビルドでの synth/deploy を早期に止める）。 */
+  /**
+   * `.open-next/` 成果物が存在し、かつ `src/` より新しいか検証する
+   * （未ビルド・stale での synth/deploy を早期に止める）。
+   *
+   * 判定そのものは `lib/build-artifacts.ts` に一本化してある (#628)。**synth は absent と
+   * stale をどちらも例外にする**が、CDK テストとゲートは 2 つを区別して「理由付きスキップ」
+   * に使う。同じ問いに 2 つの実装を置くと、片方だけ直して食い違うため（#557 で実際に起きた）。
+   */
   private assertBuildArtifacts(): void {
-    const required = [
-      path.join(OPEN_NEXT_DIR, 'open-next.output.json'),
-      path.join(OPEN_NEXT_DIR, 'assets'),
-      path.join(OPEN_NEXT_DIR, 'server-functions', 'default', 'index.mjs'),
-      path.join(OPEN_NEXT_DIR, 'image-optimization-function', 'index.mjs'),
-    ];
-    const missing = required.filter((p) => !fs.existsSync(p));
-    if (missing.length > 0) {
+    const status = openNextArtifactState(REPO_ROOT);
+    if (status.state === 'fresh') return;
+    if (status.state === 'absent') {
       throw new Error(
-        `OpenNext build artifacts not found:\n  ${missing.join('\n  ')}\n` +
+        `OpenNext build artifacts not found:\n  ${status.missing
+          .map((rel) => path.join(OPEN_NEXT_DIR, rel))
+          .join('\n  ')}\n` +
           `Run \`npm run build:open-next\` at the repo root before \`cdk synth\`/\`deploy\`.`,
       );
     }
-    this.assertBuildArtifactsAreFresh();
-  }
-
-  /**
-   * `.open-next/` が `src/` より**新しい**か検証する。
-   *
-   * ## なぜ「存在するか」だけでは足りないのか
-   *
-   * 2026-08-04、**11 日前の成果物をそのままデプロイした**。存在検証は通り、`cdk deploy` も
-   * 成功し、CloudFormation も green。しかし配られたのは古いコードで、その間に入れた
-   * セキュリティ修正 4 件がすべて欠けていた。
-   *
-   * 実 URL を叩いて初めて気づいた ── **デプロイの成功は「今のコードが動いている」ことを
-   * 意味しない**。`.next` は毎回のビルドで更新されるが `.open-next` は
-   * `npm run build:open-next` を明示的に叩いたときだけ更新されるため、この乖離は
-   * 気づかないうちに開く。
-   *
-   * 判定は mtime の単純比較。厳密な内容一致ではないが、**「ビルドし忘れ」という実際に
-   * 起きた事故**はこれで止まる。
-   */
-  private assertBuildArtifactsAreFresh(): void {
-    const artifact = fs.statSync(path.join(OPEN_NEXT_DIR, 'open-next.output.json')).mtimeMs;
-    const newest = newestMtimeUnder(path.join(REPO_ROOT, 'src'));
-    if (newest === undefined || newest <= artifact) return;
     throw new Error(
       `OpenNext build artifacts are older than src/:\n` +
-        `  .open-next: ${new Date(artifact).toISOString()}\n` +
-        `  newest src: ${new Date(newest).toISOString()}\n` +
+        `  .open-next: ${new Date(status.artifactMtime!).toISOString()}\n` +
+        `  newest src: ${new Date(status.newestSrcMtime!).toISOString()}\n` +
         `Run \`npm run build:open-next\` — deploying now would ship stale code ` +
         `(this actually happened on 2026-08-04 and shipped a build missing 4 security fixes).`,
     );
   }
-}
 
-/** `dir` 配下で最も新しいファイルの mtime（ミリ秒）。見つからなければ undefined。 */
-function newestMtimeUnder(dir: string): number | undefined {
-  if (!fs.existsSync(dir)) return undefined;
-  let newest: number | undefined;
-  for (const entry of fs.readdirSync(dir, { withFileTypes: true, recursive: true })) {
-    if (!entry.isFile()) continue;
-    const stat = fs.statSync(path.join(entry.parentPath ?? dir, entry.name));
-    if (newest === undefined || stat.mtimeMs > newest) newest = stat.mtimeMs;
-  }
-  return newest;
 }
