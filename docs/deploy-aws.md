@@ -171,8 +171,10 @@ Secrets Manager 方式では、シークレット JSON の **`ORIGIN_VERIFY_SECR
 >   公開文字列になり防御がゼロになる）、(b) Function URL 直叩きが 403、(c) CloudFront 経由の
 >   POST が 200。あわせて `curl -H 'x-origin-verify: junk' https://<cf-domain>/kiosk` が 200 に
 >   なること（CloudFront が custom header を**置換**し追記でないこと）も見る。
-> - **#630（403 のアラーム）を閉じる**。この方式の全断は `Errors` に出ず、403 は 4xx アラームが
->   無いので検知経路が「来訪者の申告」だけになる。
+> - ~~#630（403 のアラーム）を閉じる~~ … **解消済み**。`WebMonitoringStack` が拒否ログ由来の
+>   `OriginVerifyMissingSecret` / `OriginVerifyMismatch` を監視する（上記「解消済み」節）。
+>   ただし**アラームは `OpenReception-WebMonitoring-<env>` をデプロイして初めて効く**。
+>   WebStack だけ入れて監視スタックを入れないと、検知経路は従来どおり「来訪者の申告」のまま。
 > - **モード切替・値変更は受付停止時間帯に**。Lambda env と Distribution は原子的に更新されず、
 >   Distribution の伝播に数分かかる。その間 `mismatch` で 403 になる。
 
@@ -195,10 +197,24 @@ Lambda 環境変数（`lambda:GetFunctionConfiguration`）として保持され�
 
 - **403 / 503 に来訪者向けの画面が無い**（#629）。iPad に `forbidden` /
   `service unavailable` の素の文字列が出る。
-- **403 の全断はアラームに引っかからない**（#630）。middleware の応答は Lambda としては
-  成功呼び出しなので `Errors` メトリクスに出ず、4xx アラームは意図的に置いていない
-  （`infra/lib/stacks/cloudfront-monitoring-stack.ts`）。**503 は CloudFront の
-  `5xxErrorRate` アラーム（#303・1%/15分）に乗る** — これも 403/503 を分けた理由の 1 つ。
+**解消済み**:
+
+- ~~403 の全断はアラームに引っかからない~~（#630 で解消）。middleware の応答は Lambda としては
+  成功呼び出しなので `Errors` に出ず、CloudFront の 4xx アラームは**今も意図的に置いていない**
+  （ボットのパス探索で恒常的に発生し、「直叩き」と「配備破損」を分離できないため）。代わりに
+  **アプリの拒否ログをメトリクス化**して `WebMonitoringStack` にアラームを 2 本置いた:
+
+  | メトリクス | しきい値 | 意味 |
+  | --- | --- | --- |
+  | `OriginVerifyMissingSecret` | **1 件 / 5 分** | 配備側の自損。全リクエストが 503。即対応 |
+  | `OriginVerifyMismatch` | 10 件 / 5 分 × 3 | ローテーションずれの疑い。単発は直叩き＝正常動作 |
+
+  検索文字列は `ORIGIN_VERIFY_LOG_MARKERS`（`src/lib/security/origin-verify.ts`）を
+  **アプリと CDK で共有**する。ログ文言を書き換えるとアラームが黙って外れるため、
+  定数を 1 箇所に置き、両側からの乖離をテストで固定してある。
+
+  なお **503 は CloudFront の `5xxErrorRate` アラーム（#303・1%/15分）にも乗る**が、あちらは
+  率なので低トラフィックの受付端末では分母が小さく暴れる。件数で見る本アラームと併用する。
 
 > image 最適化 Function URL の無検証公開（#631）は**この PR で解消済み**。image は GET のみで
 > OAC の POST 署名問題に当たらないため、origin-verify 方式でも常に OAC + `AWS_IAM` に据え置く。
@@ -429,12 +445,14 @@ npx cdk deploy OpenReception-Web-prod OpenReception-WebMonitoring-prod -c env=pr
   -c alarmEmail=ops@example.com   # 任意: アラーム通知先（下記参照）
 ```
 
-- **アラーム（9 個、5 分 period / missing data は notBreaching）**:
+- **アラーム（11 個、5 分 period / missing data は notBreaching）**:
   - server Lambda: Errors / Throttles / Duration p95（タイムアウトの 80% 超・3 期間）/
     ConcurrentExecutions（アカウント既定上限 1000 の 80% = 800 到達で暴走/攻撃の兆候）
   - Lambda リージョン全体: ConcurrentExecutions（次元なし、同じく 800 到達）。上限 1000 は
     アカウント × リージョン共有のため、per-function だけでは合計での枯渇を過小検知する (#303)
   - image Lambda: Errors / Duration p95
+  - origin-verify (#630): `OriginVerifyMissingSecret`（1 件で即）/ `OriginVerifyMismatch`
+    （10 件 × 3 期間）。ログ由来のメトリクスフィルタで、middleware の 403/503 を拾う
   - DynamoDB: ThrottledRequests（read 系 / write 系オペレーション別。オンデマンドでも
     テーブル/パーティション上限超過でスロットルは起こり得る）
 - **ダッシュボード** `open-reception-<env>-web`: Lambda invocations/errors/duration p95、
