@@ -1,4 +1,5 @@
 import { execFileSync } from 'node:child_process';
+import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
@@ -61,6 +62,20 @@ describe('quality-gate tier → ステップ解決 (#628)', () => {
     expect(pr).toMatchObject({ typecheck: '1', lint: '1', unit: '1', build: '1', e2e: '0' });
     const full = plan('--full');
     expect(full).toMatchObject({ e2e: '1', secrets: '1', sast: '1', lighthouse: '1', vrm: '1' });
+  });
+
+  it('audit ステップは audit:deps 経由（`npm audit` 直呼びは root しか見ない）', () => {
+    // #634 で実際に踏んだ: package.json の audit:deps を差し替えただけで「ゲートも infra を
+    // 監査するようになった」と書いたが、ゲートは `npm audit --omit=dev` を**直接**呼んでいた。
+    // --full は green のまま infra の穴が開いたままだった。
+    //
+    // これは字面の退行なので字面で押さえる（実行して確かめるには audit だけを回す手段が要る）。
+    const src = readFileSync(SCRIPT, 'utf8');
+    const stepLines = src.split('\n').filter((l) => l.includes('step "audit'));
+    expect(stepLines).toHaveLength(1);
+    expect(stepLines[0]).toContain('audit:deps');
+    // 直呼びが復活していないこと（コメント中の言及は除くため step 行だけを見る）
+    expect(stepLines[0]).not.toMatch(/npm audit/);
   });
 
   it('--dry-run はステップを 1 つも起動しない（起動していれば数秒では返らない）', () => {

@@ -369,7 +369,9 @@ elif [[ "$RUN_SAST" -eq 1 ]]; then
 fi
 
 if [[ "$RUN_AUDIT" -eq 1 ]]; then
-  step "audit (npm audit)" npm audit --omit=dev
+  # `npm audit` を直接呼ばない。**root しか見ないため infra/ が監査されない** (#634)。
+  # `scripts/audit-deps.ts` が root と infra の両方を監査し、期限付き allowlist で判定する。
+  step "audit (deps)" npm run --silent audit:deps
 fi
 
 if [[ "$RUN_LH" -eq 1 ]] && scope_skips lighthouse; then
