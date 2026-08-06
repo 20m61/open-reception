@@ -48,9 +48,9 @@ describe('buildConfirmationNcco — 第 1 段（DTMF 確認前） (#4)', () => {
     expect(input).toMatchObject({ eventUrl: [EVENT_URL] });
   });
 
-  it('確認は 1 桁だけ受け付ける（誤入力で長く待たない）', () => {
+  it('確認は 1 桁だけ受け付け、猶予は指定どおり（担当者の入力時間を勝手に縮めない）', () => {
     const input = ncco.find((a) => a.action === 'input');
-    expect(input).toMatchObject({ dtmf: { maxDigits: 1 } });
+    expect(input).toMatchObject({ dtmf: { maxDigits: 1, timeOut: 20 } });
   });
 
   it('案内の読み上げ中も押せる（bargeIn）', () => {
@@ -104,6 +104,18 @@ describe('resolveStaffChoice — DTMF の写像 (#4)', () => {
 
   it.each(['', '0', '5', '9', '#', '*', '11', 'abc'])('未定義の入力 %s は undefined', (digit) => {
     expect(resolveStaffChoice(digit)).toBeUndefined();
+  });
+
+  // 🔴 digit↔choice だけを見ると、**label の入れ替え**が素通りする
+  // （「1、対応できない」と案内されて 1 を押すと accept になる）。
+  // 実装から導出せず、意図をテスト側にハードコードして突き合わせる。
+  it.each([
+    ['1', '来訪者と話す'],
+    ['2', 'まもなく向かう'],
+    ['3', '対応できない'],
+    ['4', '代理担当へ'],
+  ])('%s の案内文が %s であること', (digit, label) => {
+    expect(DTMF_CHOICES.find((c) => c.digit === digit)?.label).toBe(label);
   });
 
   it('DTMF_CHOICES と resolveStaffChoice が同じ表から導かれている', () => {

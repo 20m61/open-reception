@@ -19,7 +19,14 @@
 import { idempotencyKey } from './ledger';
 import { isTerminalSuccess, nextTransition, type RouteResult, type RoutingPolicy, type RoutingStep } from './policy';
 
-/** 取次のハング防止上限。`orchestrator.ts` と同じ既定。 */
+/**
+ * 取次のハング防止上限。
+ *
+ * **`orchestrator.ts` の既定（16）とは別**。あちらは同期実行 1 回で撃ち切る前提だが、
+ * こちらは webhook 1 件で 1 手なので、暴走したときに鳴り続ける電話の本数がそのまま
+ * 上限になる。担当者・代理・部門代表・総合受付を想定して 10 に置く。
+ * **どちらかに寄せるなら値ではなく実装を統合すること**（値だけ揃えると二重の真実が残る）。
+ */
 export const DEFAULT_MAX_HOPS = 10;
 
 /**

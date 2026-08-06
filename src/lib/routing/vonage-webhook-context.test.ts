@@ -56,7 +56,10 @@ let repo: DataBackedCallCorrelationRepository;
 function deps(secret: string | undefined) {
   return {
     correlations: repo,
-    loadSignatureSecret: async () => secret,
+    // **引数を無視しない。** 無視すると「correlation.tenantId を使っているか」を
+    // 一切検査できず、別テナントの鍵を引く変異が素通りする（実際に素通りした）。
+    loadSignatureSecret: async (tenantId: string) =>
+      tenantId === CORRELATION.tenantId ? secret : undefined,
     nowSec: NOW,
   };
 }
@@ -82,7 +85,42 @@ describe('resolveVerifiedWebhook — 正常系 (#4)', () => {
     expect(result.ok && result.correlation.receptionId).toBe('TEST-reception-1');
   });
 
-  it('署名検証はそのテナントの secret で行う（テナントを跨がない）', async () => {
+  // 🔴 相関のテナント以外の鍵を引きにいくと検証できない＝拒否になる。
+  // これが無いと「secret 解決をグローバルへ戻す」リファクタでテナント境界が静かに消える。
+  it('署名検証は correlation.tenantId の鍵で行う（別テナントの鍵を引かない）', async () => {
+    const raw = body();
+    // このテナントにだけ鍵がある依存。実装が別テナントを渡すと undefined になり拒否される。
+    const onlyThisTenant = {
+      correlations: repo,
+      loadSignatureSecret: async (tenantId: string) =>
+        tenantId === 'internal' ? SIGNATURE_SECRET : undefined,
+      nowSec: NOW,
+    };
+    const result = await resolveVerifiedWebhook(
+      { rawBody: raw, authorization: bearer(raw) },
+      onlyThisTenant,
+    );
+    expect(result.ok).toBe(true);
+  });
+
+  it('渡されるテナントは相関のものと一致する', async () => {
+    const seen: string[] = [];
+    const raw = body();
+    await resolveVerifiedWebhook(
+      { rawBody: raw, authorization: bearer(raw) },
+      {
+        correlations: repo,
+        loadSignatureSecret: async (tenantId: string) => {
+          seen.push(tenantId);
+          return SIGNATURE_SECRET;
+        },
+        nowSec: NOW,
+      },
+    );
+    expect(seen).toEqual([CORRELATION.tenantId]);
+  });
+
+  it('別の secret で署名されたトークンは通らない', async () => {
     const raw = body();
     const wrongTenantSecret = await resolveVerifiedWebhook(
       { rawBody: raw, authorization: bearer(raw, 'TEST-another-tenant-secret') },
@@ -124,10 +162,25 @@ describe('拒否は一様であること (#4)', () => {
       const raw = JSON.stringify({ status: 'answered' });
       return resolveVerifiedWebhook({ rawBody: raw, authorization: bearer(raw) }, okDeps());
     }],
-  ])('%s は同じ結果になる', async (_label, run) => {
+  ])('%s は拒否され、理由はログ専用フィールドにだけ載る', async (_label, run) => {
     const result = await run();
-    // 失敗はすべて同じ形（理由を持たない）。呼び出し側が理由で応答を分けられないようにする。
-    expect(result).toEqual({ ok: false });
+    expect(result.ok).toBe(false);
+    // 理由は持つが、**応答へ載せる意図で書けない名前**にしてある（logOnly）。
+    // 応答の一様性は route 側（`webhook-routes.test.ts`）が本文と status で固定する。
+    expect(result).toHaveProperty('logOnly');
+    expect(Object.keys(result).sort()).toEqual(['logOnly', 'ok']);
+  });
+
+  it('理由コードに値・本文・トークンを含めない（ログへ出しても安全）', async () => {
+    const raw = body();
+    const result = await resolveVerifiedWebhook(
+      { rawBody: raw, authorization: bearer(raw, 'TEST-bad') },
+      okDeps(),
+    );
+    const serialized = JSON.stringify(result);
+    for (const forbidden of ['TEST-signature-secret', 'TEST-bad', PROVIDER_CALL_ID]) {
+      expect(serialized).not.toContain(forbidden);
+    }
   });
 });
 

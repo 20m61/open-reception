@@ -166,6 +166,7 @@ POST /api/platform/notices
 POST /api/platform/reconcile/devices
 POST /api/platform/updates/[]/execute
 POST /api/providers/vonage/answer
+POST /api/providers/vonage/choice
 POST /api/providers/vonage/dtmf
 POST /api/providers/vonage/events
 POST /api/staff/calls/[]/answer

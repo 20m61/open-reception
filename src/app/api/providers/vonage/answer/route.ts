@@ -1,6 +1,6 @@
 import { NextResponse } from 'next/server';
 import { buildConfirmationNcco } from '@/domain/call/voice-announcement';
-import { rejectWebhook, verifyRequest } from '@/lib/routing/vonage-webhook-route';
+import { logWebhookRejection, rejectWebhook, verifyRequest, webhookUrl } from '@/lib/routing/vonage-webhook-route';
 
 /**
  * POST /api/providers/vonage/answer — 担当者が応答したときの NCCO を返す (issue #4 MVP 1)。
@@ -14,9 +14,12 @@ const DTMF_TIMEOUT_SECONDS = 20;
 
 export async function POST(request: Request): Promise<NextResponse> {
   const { verified } = await verifyRequest(request);
-  if (!verified.ok) return rejectWebhook();
+  if (!verified.ok) {
+    logWebhookRejection('answer', verified.logOnly);
+    return rejectWebhook();
+  }
 
-  const eventUrl = new URL('/api/providers/vonage/dtmf', request.url).toString();
+  const eventUrl = webhookUrl(request, '/api/providers/vonage/dtmf');
   return NextResponse.json(
     buildConfirmationNcco({ eventUrl, timeoutSeconds: DTMF_TIMEOUT_SECONDS }),
   );

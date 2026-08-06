@@ -1,14 +1,16 @@
 import { NextResponse } from 'next/server';
 import { buildDetailsNcco, resolveStaffChoice } from '@/domain/call/voice-announcement';
-import { rejectWebhook, verifyRequest } from '@/lib/routing/vonage-webhook-route';
+import { logWebhookRejection, rejectWebhook, verifyRequest, webhookUrl } from '@/lib/routing/vonage-webhook-route';
 
 /**
- * POST /api/providers/vonage/dtmf — 担当者の DTMF 入力 (issue #4 MVP 1)。
+ * POST /api/providers/vonage/dtmf — **第 1 段**（本人確認）の DTMF (issue #4 MVP 1)。
  *
- * 第 1 段で「1」が押された＝**担当者本人が応答した**ので、ここで初めて来訪者情報を
- * 含む第 2 段の NCCO を返す。それ以外の入力では詳細を返さない。
+ * 「1」が押された＝担当者本人が応答した、とみなして初めて来訪者情報を返す。
  *
- * 来訪者情報の供給は Inc D（相関 → 受付 → 来訪者）で繋ぐ。現状は本人確認までを配線する。
+ * **段階はエンドポイントで持つ。** 第 2 段（選択）の `eventUrl` は `/choice` を指し、
+ * ここへは戻らない。同じ URL を使い回すと第 2 段の「1」がここへ届き、来訪者情報を
+ * 無限に読み上げ続ける（実際にそうなっていた）。クエリで段階を渡す案は採らない ──
+ * POST では `payload_hash` の対象外で、付け替えられる。
  */
 const DTMF_TIMEOUT_SECONDS = 20;
 
@@ -27,18 +29,20 @@ function readDigits(rawBody: string): string | undefined {
 
 export async function POST(request: Request): Promise<NextResponse> {
   const { verified, rawBody } = await verifyRequest(request);
-  if (!verified.ok) return rejectWebhook();
+  if (!verified.ok) {
+    logWebhookRejection('dtmf', verified.logOnly);
+    return rejectWebhook();
+  }
 
   const choice = resolveStaffChoice(readDigits(rawBody) ?? '');
   // 本人確認（1）以外では来訪者情報を返さない。無入力・誤入力もここに落ちる。
   if (choice !== 'accept') return new NextResponse(null, { status: 204 });
 
-  const eventUrl = new URL('/api/providers/vonage/dtmf', request.url).toString();
   return NextResponse.json(
     buildDetailsNcco({
       // Inc D で相関 → 受付から実データを供給する。現時点では PII を出さない定型値。
       visitor: { visitorName: 'ご来訪の方', companyName: 'お客様' },
-      eventUrl,
+      eventUrl: webhookUrl(request, '/api/providers/vonage/choice'),
       timeoutSeconds: DTMF_TIMEOUT_SECONDS,
     }),
   );

@@ -65,8 +65,9 @@ describe('terminal から巻き戻さない (#4)', () => {
 describe('順不同イベントを許容する (#4)', () => {
   it('answered より先に completed が来ても、後続の answered で巻き戻らない', () => {
     // at-least-once 配信では順序が保証されない。
-    const state = apply(completed, answered);
-    expect(isTerminalVoiceState(state)).toBe(true);
+    // 「terminal である」だけの assert だと、どの terminal かを変える変異が素通りする。
+    expect(apply(completed, answered)).toBe('no_answer');
+    expect(isTerminalVoiceState(apply(completed, answered))).toBe(true);
   });
 
   it('ringing が応答後に遅れて届いても awaiting_acceptance を保つ', () => {

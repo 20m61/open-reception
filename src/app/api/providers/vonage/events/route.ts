@@ -1,6 +1,6 @@
 import { NextResponse } from 'next/server';
 import { applyVoiceEvent, voiceStateToRouteResult, type VonageCallStatus } from '@/domain/call/voice-call-state';
-import { rejectWebhook, verifyRequest } from '@/lib/routing/vonage-webhook-route';
+import { logWebhookRejection, rejectWebhook, verifyRequest } from '@/lib/routing/vonage-webhook-route';
 
 /**
  * POST /api/providers/vonage/events — 通話ステータスの webhook (issue #4 MVP 1)。
@@ -35,7 +35,10 @@ function readStatus(rawBody: string): VonageCallStatus | undefined {
 
 export async function POST(request: Request): Promise<NextResponse> {
   const { verified, rawBody } = await verifyRequest(request);
-  if (!verified.ok) return rejectWebhook();
+  if (!verified.ok) {
+    logWebhookRejection('events', verified.logOnly);
+    return rejectWebhook();
+  }
 
   const status = readStatus(rawBody);
   // 未知のステータスは黙って受け取る（Vonage 側の追加で 4xx を返すと再送が走り続ける）。

@@ -18,6 +18,13 @@ import type { Collection } from '@/lib/data/backend';
 
 const CALL_CORRELATION_COLLECTION = 'call-correlations';
 
+/**
+ * 保存期間。通話 1 本の寿命しか意味を持たないレコードなので短く切る
+ * （`CLAUDE.md` ガード「保存期間明示」。無期限だと単一 PK に無限に積む）。
+ * 取次の最長（hop 上限 × 呼出タイムアウト）に対して十分な余裕を取った 6 時間。
+ */
+const CALL_CORRELATION_TTL_SECONDS = 6 * 60 * 60;
+
 /** 取次が進行中か、確定済みか。確定後の webhook で取次を進めないための材料。 */
 export type CallCorrelationStatus = 'in_flight' | 'settled';
 
@@ -45,7 +52,9 @@ export class DataBackedCallCorrelationRepository implements CallCorrelationRepos
 
   constructor() {
     this.col = () =>
-      getBackend().collection<StoredCallCorrelation & { id: string }>(CALL_CORRELATION_COLLECTION);
+      getBackend().collection<StoredCallCorrelation & { id: string }>(CALL_CORRELATION_COLLECTION, {
+        ttlSeconds: CALL_CORRELATION_TTL_SECONDS,
+      });
   }
 
   async get(providerCallId: string): Promise<StoredCallCorrelation | undefined> {

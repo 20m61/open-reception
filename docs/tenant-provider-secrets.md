@@ -133,6 +133,12 @@ fail-closed し、実 Vonage には到達しない。実資格情報での結合
 secret bundle（`SecretValue` が包む JSON）の形:
 
 - 通話 / トークン: `{ "apiKey": "...", "apiSecret": "...", "privateKey": "<PEM>" }`（`applicationId` は非秘密設定側）。
+- **webhook 署名検証 (#4)**: `{ "signatureSecret": "..." }` を**同じ bundle に追加**する。
+  Vonage の signed webhook を検証する鍵で、**`apiSecret` とは別物**（Vonage ダッシュボードの
+  「Signature secret」）。取り違えると `resolveVonageSignatureSecret` が `undefined` を返し、
+  **全 webhook が 403 になる**。拒否応答は理由を持たないので、症状は「担当者の電話が鳴らない」
+  だけになる ── まずここを疑うこと（拒否理由は `vonage_webhook_rejected` として
+  CloudWatch に構造化ログで出る）。
 - 通知: `{ "endpoint": "https://.../notify", "token": "...", "timeoutMs": 5000 }`（`timeoutMs` 任意）。
 
 旧シム `getCallAdapter` / `getVonageSessionService`（tenantId を取らない）は live 呼び出し点の

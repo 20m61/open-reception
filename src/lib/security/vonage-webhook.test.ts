@@ -119,6 +119,18 @@ describe('リプレイ防止 iat (#4)', () => {
     expect(verify(signJwt(validClaims()), BODY, NOW + REPLAY_WINDOW_SECONDS - 1).verified).toBe(true);
   });
 
+  // 🔴 境界ちょうどが未検証で、`>` を `>=` にする変異が素通りしていた。
+  it('窓のちょうど境界は通す（両端で挙動を固定する）', () => {
+    expect(verify(signJwt(validClaims()), BODY, NOW + REPLAY_WINDOW_SECONDS).verified).toBe(true);
+    expect(verify(signJwt(validClaims()), BODY, NOW - REPLAY_WINDOW_SECONDS).verified).toBe(true);
+  });
+
+  // 定数そのものを固定する。テストが定数を import して相対比較しているだけだと、
+  // 窓幅を 1 年に広げる変異が素通りする（リプレイ防止が実質無効になる）。
+  it('再送窓は 5 分（リプレイ防止として意味のある幅）', () => {
+    expect(REPLAY_WINDOW_SECONDS).toBe(300);
+  });
+
   it('古すぎるトークンを拒否する（記録された正規リクエストの再送）', () => {
     expect(verify(signJwt(validClaims()), BODY, NOW + REPLAY_WINDOW_SECONDS + 1)).toMatchObject({
       verified: false,

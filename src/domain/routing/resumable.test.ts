@@ -137,6 +137,24 @@ describe('ハングしない上限 (#4)', () => {
     expect(settled).toBe('max_hops_exceeded');
   });
 
+  // 🔴 何手目で止まるかを固定する。`>=` を `>` にする変異が素通りしていた
+  // （50 回ループして最後に settled になることしか見ていなかった）。
+  // 1 手 = 実在の人の携帯が 1 回鳴る + PSTN 1 通話ぶんの課金。
+  it('maxHops=2 なら dial は 1 回だけ、2 回目で確定する', () => {
+    const loop: RoutingPolicy = {
+      ...POLICY,
+      steps: [step('s1', 'e1', { nextOn: { no_answer: { kind: 'goto_step', stepId: 's1' } } })],
+    };
+    const start = expectDial(startRouting([loop], 'p1', CALL));
+    const second = advanceRouting(start.position, [loop], 'no_answer', 'ev-1', { maxHops: 2 });
+    expect(second.kind).toBe('dial');
+    if (second.kind !== 'dial') throw new Error('expected dial');
+    expect(advanceRouting(second.position, [loop], 'no_answer', 'ev-2', { maxHops: 2 })).toMatchObject({
+      kind: 'settled',
+      reason: 'max_hops_exceeded',
+    });
+  });
+
   // 🔴 上限判定より先に「繋がった」を確定させないと、最後の 1 手で応答したときに
   // max_hops_exceeded になり、**担当者が出たのに未達として扱われる**。
   it('上限に達した手で繋がったら、上限ではなく成功として確定する', () => {
