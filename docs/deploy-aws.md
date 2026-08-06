@@ -124,10 +124,11 @@ npx cdk deploy OpenReception-Web-prod -c env=prod \
 
 CloudFront 越しに **POST/フォーム/受付発行が機能する**ために、次の 2 つは実質必須:
 
-1. **`-c originVerifySecret=<高エントロピー値>`**: 未指定だと Function URL=AWS_IAM+OAC のままで、
+1. **origin-verify シークレット**: 未指定だと Function URL=AWS_IAM+OAC のままで、
    CloudFront OAC が **POST ボディを署名しないため全 POST が 403**（login / 受付URL発行 /
    `/api/kiosk/enroll` が動かない）。指定すると Function URL=NONE + CloudFront `x-origin-verify`
-   秘密ヘッダ方式に切替わり、`proxy.ts` が照合する（直叩きは 403）。
+   秘密ヘッダ方式に切替わり、`proxy.ts` が照合する（直叩きは 403）。渡し方は 2 通りで、
+   **prod では Secrets Manager 方式が必須**（下記「origin-verify シークレットの供給」）。
 2. **`appEnv` に公開オリジン**: `NEXT_PUBLIC_APP_URL` と `RESERVATION_CHECKIN_BASE_URL` を
    **公開 CloudFront ドメイン（またはカスタムドメイン）**に設定する。未設定だと
    `resolveCheckinBaseUrl` がリクエスト host にフォールバックし、発行する受付URL/予約QRの host が
@@ -135,6 +136,90 @@ CloudFront 越しに **POST/フォーム/受付発行が機能する**ために�
 
 > 機密 `KIOSK_ENROLLMENT_SECRET`（受付URL署名鍵）も忘れず secret JSON に含める（手順 5 参照。
 > 未設定だと未認証 `/api/kiosk/enroll` が fail-closed で 500）。
+
+#### origin-verify シークレットの供給 (#612)
+
+| | context | CFN テンプレート | Lambda 環境変数 | 使う環境 |
+| --- | --- | --- | --- | --- |
+| 生値 | `-c originVerifySecret=<値>` | **平文** | 解決済みの値 | **dev のみ** |
+| Secrets Manager | `-c originVerifySecretName=<シークレット名>` | 動的参照 | 解決済みの値 | dev 以外は必須 |
+
+Secrets Manager 方式では、シークレット JSON の **`ORIGIN_VERIFY_SECRET` キー**を参照する。
+`appSecretsName` と同じシークレットで良い（手順 5 の JSON にキーを 1 つ足すだけ）。
+
+- CloudFront の origin custom header と server Lambda の環境変数の**両方**に CFN 動的参照
+  （`{{resolve:secretsmanager:<name>:SecretString:ORIGIN_VERIFY_SECRET::}}`）が入るため、
+  **合成される CFN テンプレートに平文は載らない**。末尾の `::` は version-stage / version-id
+  省略（= `AWSCURRENT`）で、CDK が実際に出力する形。
+- **`cdk deploy` 実行ロールに `secretsmanager:GetSecretValue` が必要**（CFN が動的参照を
+  解決するため）。無いと初回デプロイが不可解なエラーで落ちる。
+- 両モードとも `ORIGIN_VERIFY_REQUIRED=1`（非機密）を渡す。**検証の ON/OFF はこのフラグだけが
+  決める**（シークレットの有無では決めない）。これが立っていて値が未解決なら `proxy.ts` は
+  **503 を返す**（`mismatch` の 403 とは別。前者は配備側の障害、後者は直叩き）。
+- **dev 以外で `-c originVerifySecret=<生値>` を渡すと `cdk synth` が失敗する**（WebStack が拒否）。
+  併用も、**空文字も**不可（`-c originVerifySecret=$UNSET_VAR` を黙って無効化に落とさないため）。
+- `ORIGIN_VERIFY_*` を `appEnv` から渡すことはできない（synth で拒否）。「検証を要求するが値が無い」
+  状態を手で作れてしまい、全リクエストが恒久 503 になるため。
+- `ORIGIN_VERIFY_REQUIRED` で**偽になるのは `0` と空文字だけ**。`false` は真（曖昧な値は
+  fail-closed 側へ倒す）。無効化するときは env ごと外すこと。
+
+> **🔴 prod で有効化する前に必要なこと**
+>
+> - **dev で 1 度 Secrets Manager 方式をデプロイして live 検証する**（この方式は未実測。#65）。
+>   確認する 3 点: (a) `aws cloudfront get-distribution-config` の `HeaderValue` が
+>   `{{resolve:` で始まって**いない**（解決されずリテラルのまま送られていると、共有シークレットが
+>   公開文字列になり防御がゼロになる）、(b) Function URL 直叩きが 403、(c) CloudFront 経由の
+>   POST が 200。あわせて `curl -H 'x-origin-verify: junk' https://<cf-domain>/kiosk` が 200 に
+>   なること（CloudFront が custom header を**置換**し追記でないこと）も見る。
+> - **#630（403 のアラーム）を閉じる**。この方式の全断は `Errors` に出ず、403 は 4xx アラームが
+>   無いので検知経路が「来訪者の申告」だけになる。
+> - **モード切替・値変更は受付停止時間帯に**。Lambda env と Distribution は原子的に更新されず、
+>   Distribution の伝播に数分かかる。その間 `mismatch` で 403 になる。
+
+> **なぜ Lambda 環境変数に値が入るのか（runtime 取得にしない理由）**
+>
+> middleware（`src/proxy.ts`）は OpenNext の routing 層から呼ばれ、**`src/instrumentation.ts` の
+> `register()` より先に走る**。しかも middleware が拒否応答を返すと routing 層がその場で返し、
+> Next サーバへ到達しないため `register()` が走らない。ARN を渡して起動時解決にすると、
+> **コールドスタート直後の正当なリクエストが落ちる**。回復するのは matcher 除外パス
+> （`/favicon.ico` 等）が同じインスタンスに当たったときだけで、**回復の有無がリクエスト順に
+> 依存する断続障害**になる（#612 のレビューで判明）。よって値はプロセス開始時から
+> 環境変数に在る必要がある。
+
+**残る露出**: 解決後の値は CloudFront Distribution 設定（`cloudfront:GetDistribution*`）と
+Lambda 環境変数（`lambda:GetFunctionConfiguration`）として保持される。CloudFront が origin へ
+リテラル値を送る方式である以上、前者は避けられない。**このヘッダが守るのは「エッジを迂回されない」
+ことだけ**で、管理は Cognito セッション、端末は kiosk セッションが別途認可する（#612 の判断記録）。
+
+**適用範囲の穴（未修正）**:
+
+- **403 / 503 に来訪者向けの画面が無い**（#629）。iPad に `forbidden` /
+  `service unavailable` の素の文字列が出る。
+- **403 の全断はアラームに引っかからない**（#630）。middleware の応答は Lambda としては
+  成功呼び出しなので `Errors` メトリクスに出ず、4xx アラームは意図的に置いていない
+  （`infra/lib/stacks/cloudfront-monitoring-stack.ts`）。**503 は CloudFront の
+  `5xxErrorRate` アラーム（#303・1%/15分）に乗る** — これも 403/503 を分けた理由の 1 つ。
+
+> image 最適化 Function URL の無検証公開（#631）は**この PR で解消済み**。image は GET のみで
+> OAC の POST 署名問題に当たらないため、origin-verify 方式でも常に OAC + `AWS_IAM` に据え置く。
+
+**🔴 このシークレットをローテーションしないこと（#612 増分 2 まで手段が無い）。**
+
+CFN が動的参照を再解決するのは「**その参照を含むリソースが更新対象になったとき**」だけ
+（[AWS ドキュメント](https://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/dynamic-references-secretsmanager.html)）。
+CloudFront ヘッダと Lambda 環境変数はどちらも同じ文字列 `{{resolve:secretsmanager:...}}` なので、
+Secrets Manager の値を差し替えてもテンプレートに差分は出ない。ここから **2 通りに転ぶ**:
+
+| 状況 | 何が起きるか |
+| --- | --- |
+| 値だけ差し替えて `cdk deploy`（アプリ変更なし） | 差分ゼロ＝**何も更新されない**。403 も起きないので運用者は「ローテーション完了・旧鍵失効」と信じるが、**旧鍵が現役で有効**なまま |
+| 値を差し替えた後にアプリ変更を伴う `cdk deploy` | server Lambda は code asset のハッシュが変わるので**更新対象になり、env が新しい値に再解決される**。一方 Distribution はプロパティ不変で**更新されない＝古い値を送り続ける** → **全リクエストが `mismatch` で 403。デプロイ完了後も回復しない** |
+
+2 つ目が危険で、**アプリの通常デプロイが引き金になる**（ローテーションの直後とは限らない）。
+来訪者に見えるのは `forbidden` の 1 語だけで（#629）、403 はアラームにも出ない（#630）。
+
+手段を用意するには動的参照の文字列自体を可変にする必要がある（`versionId` を含める等）。
+**未実装。**
 
 ### 6. デプロイ
 
@@ -224,7 +309,10 @@ npx cdk deploy OpenReception-Web-dev --require-approval never \
 リクエスト**ボディを署名しない**ため、Function URL の SigV4 検証が必ず失敗する
 （GET は通り、POST/PUT/PATCH/DELETE だけ 403）。指定すると Function URL が `NONE` になり、
 CloudFront が `x-origin-verify` を付与、`src/proxy.ts` が照合して直叩きを拒否する。
-本番でのシークレット供給方法は **#612**。
+
+**prod では生値ではなく `-c originVerifySecretName=<シークレット名>`**（同じシークレットの
+`ORIGIN_VERIFY_SECRET` キー）。生値は prod では `cdk synth` が拒否する。
+詳細は上の「origin-verify シークレットの供給 (#612)」。
 
 **どちらの context も次回デプロイで指定を忘れると壊れる。** 指定を省いた `cdk deploy` は
 成功するが、POST が 403 に戻り、エンロールが 500 に戻る。
