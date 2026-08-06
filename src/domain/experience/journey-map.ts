@@ -215,6 +215,9 @@ export const NOT_A_TIMELINE_VOCABULARY: Record<string, string> = {
   CALLING_STAGES: 'contacting の内側の段階（呼出中 → 応答待ち → 長期化）',
   AVATAR_STATES: '各状態の中でのアバターの見え方。状態そのものではない',
   CALL_STATUSES: '呼び出し 1 件の進捗。contacting / connected の内側',
+  TERMINAL_VOICE_STATES:
+    '担当者への外線通話 1 本の終端結果 (#4)。contacting の内側で、来訪者の局面は変えない' +
+    '（取次全体の結果は RouteResult → CallResultStatus 経由で写る）',
   KIOSK_WAIT_STATUSES: '担当者応答の待ち表示。contacting の内側',
   PRIVACY_STATES: 'PII の保持状況（none / collecting / retained）。局面ではなく属性',
   INPUT_MODES: '入力手段（touch / voice）。状態ではなく、状態が許す入力の種類',

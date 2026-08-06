@@ -20,6 +20,11 @@ const FORBIDDEN_IMPORTS = [
   '@/lib/platform/tenant-secret-store',
   '@/lib/platform/provider-resolution',
   'domain/provider-config/secret',
+  // Vonage webhook の署名検証 (#4)。signature secret を引数に取り node:crypto を使う。
+  '@/lib/security/vonage-webhook',
+  // secret を実際に reveal() する末端と、それを引き込む webhook ルート共通処理 (#4)。
+  '@/lib/call/vonage-signature',
+  '@/lib/routing/vonage-webhook-route',
 ];
 
 function listSourceFiles(dir: string): string[] {

@@ -161,6 +161,46 @@ iPad(受付) --confirm--> /api/kiosk/receptions/:id/call (server)
   connected/completed の監査とは別イベント。管理画面の監査一覧にラベル追加。
 - **要ライブ検証**: ビデオ参加（StaffCallView の実 SDK 接続）は実 Vonage 認証情報・実機が前提。
 
+### MVP1 Voice/PSTN（#4）— **Video とは別トラック**
+
+> **§10 までは Vonage *Video* API（遠隔「顔合わせ」）の設計。** #4 が求める
+> 「担当者の携帯・部門代表電話への外線取次」は **Voice API / PSTN** で、別製品・別実装。
+> 既存の `VonageCallAdapter` は Video 側で、#4 の実装ではない。
+
+increment（PR #632 で A〜C・G を実装。**実発信は #65**）:
+
+- **A** 二段階 NCCO（`domain/call/voice-announcement.ts`）。第 1 段は「受付からの電話」＋DTMF のみで
+  **来訪者情報を引数に取れない**。第 2 段で初めて案内する（留守電・第三者への読み上げ防止）
+- **B** 通話状態機械（`domain/call/voice-call-state.ts`）。順不同・terminal 巻き戻り拒否
+- **C** signed webhook 検証（`lib/security/vonage-webhook.ts`）＋ 4 ルート
+  （`/answer` `/dtmf` `/choice` `/events`）。**段はエンドポイントで持つ**（同じ URL に戻すと
+  第 2 段の「1」が本人確認として再解釈され、来訪者情報を無限に読み上げる）
+- **G** provider 通話 ID → 受付 の相関（`lib/routing/call-correlation.ts`）
+- 再開可能な取次（`domain/routing/resumable.ts`）。実 PSTN は 1 手 20〜30 秒で結果は webhook
+  なので、同期実行の `orchestrator.ts` では成立しない
+
+確定した設計判断:
+
+- **署名済み本文だけを権威にする。** URL のクエリで通話 ID や段階を渡さない（POST では
+  `payload_hash` の対象外で付け替えられる）
+- **拒否は一様**（403・固定文言・ヘッダも同一）。理由で分けると通話 ID の総当たりで
+  「その通話は存在する」が漏れる。**理由は構造化ログにのみ出す**
+- **代理先は Provider が選ばない。** `declined`/`delegate` はどちらも取次語彙の `declined` で、
+  次に誰へ行くかは RoutingPolicy / Orchestrator が決める
+
+**Vonage 側の必須設定（#65 のチェックリスト）**:
+
+1. アカウントで **signed webhooks を有効化**する
+2. Application の **`answer_method` / `event_method` を `POST`** にする
+   （既定は GET。GET だと本文が無く通話 ID を取れないので、この実装は成立しない）
+3. 資格情報 bundle に **`signatureSecret`** を入れる（`apiSecret` とは別物）
+4. webhook URL は **CloudFront のドメイン**を登録する（Function URL を直接登録すると
+   `x-origin-verify` で 403 になる。#612）
+
+**未了（Inc D）**: 相関を書く本番コードがまだ無いため、**現状 4 ルートは常に 403 を返す**。
+発信（`VonageVoiceProvider`）と相関の書き込みが入って初めて機能する。
+あわせて `jti` によるリプレイ防止と、`correlation.status === 'settled'` での打ち切りも Inc D。
+
 ### 全体の残（ライブ検証フェーズ）
 
 - 実 Vonage 認証情報・実機で REST/JWT/client SDK（グローバル名・URL・API 差異）を結合検証。
