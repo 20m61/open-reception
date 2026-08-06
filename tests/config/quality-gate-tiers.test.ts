@@ -78,6 +78,17 @@ describe('quality-gate tier → ステップ解決 (#628)', () => {
     expect(stepLines[0]).not.toMatch(/npm audit/);
   });
 
+  it('infra ステップは vitest だけでなく infra 自身の typecheck も回す', () => {
+    // root tsconfig は noUnusedLocals を持たないが infra/tsconfig.json は持つ。
+    // cdk synth/deploy が使う ts-node の方が厳しいので、root typecheck + vitest が
+    // 両方 green でも cdk deploy がコンパイルエラーで落ちる（#630 で実際に踏んだ）。
+    const src = readFileSync(SCRIPT, 'utf8');
+    const stepLines = src.split('\n').filter((l) => l.includes('step "infra'));
+    expect(stepLines).toHaveLength(2);
+    expect(stepLines.some((l) => l.includes('typecheck'))).toBe(true);
+    expect(stepLines.some((l) => l.includes('infra test'))).toBe(true);
+  });
+
   it('--dry-run はステップを 1 つも起動しない（起動していれば数秒では返らない）', () => {
     const started = process.hrtime.bigint();
     plan('--full');

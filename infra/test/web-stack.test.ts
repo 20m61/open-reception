@@ -1,4 +1,3 @@
-import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { beforeAll, describe, it, expect } from 'vitest';
 import * as cdk from 'aws-cdk-lib';
