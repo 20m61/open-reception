@@ -296,18 +296,31 @@ fi
 # （aws-cdk-lib）を要し、synth が重い（~80s）ので `--fast` に載せたくない。加えて
 # **独立ステップなら summary に自分の行を持てる** — これが「黙って 0 件にしない」の実体。
 if [[ "$RUN_INFRA" -eq 1 ]]; then
-  if scope_skips unit; then scope_skip "infra (cdk vitest)"
+  if scope_skips infra; then scope_skip "infra (cdk vitest)"
   elif [[ ! -d infra ]]; then skip_or_fail "infra (cdk vitest)" "infra/ が無い"
   else
     # `.open-next/` が fresh でないと WebStack の synth suite は自分で skip する。
     # **その事実を summary へ出す**（vitest の "skipped N" だけでは理由が残らない）。
+    #
+    # 🔴 **判定できなかったときに黙って先へ進まないこと。** 理由が空＝fresh と解釈すると、
+    # tsx が無い・import が壊れた場合に「SKIP 行が出ないまま synth テストも走らない」
+    # という #628 そのものの状態へ戻る。ここは 3 分岐で扱う。
     if npx --no-install tsx --version >/dev/null 2>&1; then
+      probe_err="$(mktemp)"
       artifact_reason="$(npx --no-install tsx -e '
         import { openNextArtifactState, describeArtifactState } from "./infra/lib/build-artifacts";
         process.stdout.write(describeArtifactState(openNextArtifactState(process.cwd())));
-      ' 2>/dev/null || true)"
-      [[ -n "$artifact_reason" ]] &&
+      ' 2>"$probe_err")"
+      probe_status=$?
+      if [[ "$probe_status" -ne 0 ]]; then
+        skip_or_fail "infra WebStack synth" \
+          "状態を判定できなかった（tsx 失敗: $(tr '\n' ' ' < "$probe_err" | cut -c1-120)）"
+      elif [[ -n "$artifact_reason" ]]; then
         skip_or_fail "infra WebStack synth" "$artifact_reason"
+      fi
+      rm -f "$probe_err"
+    else
+      skip_or_fail "infra WebStack synth" "tsx が無いため .open-next の状態を判定できない"
     fi
     step "infra (cdk vitest)" npm --prefix infra test
   fi
