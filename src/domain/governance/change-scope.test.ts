@@ -66,7 +66,9 @@ describe('classifyChangeScope: 変更範囲の分類 (開発速度 / #424)', () 
 
 describe('isStepSkippable: 省略してよいステップ', () => {
   it('docs ではソースを入力に取る重いステップだけ省略する', () => {
-    for (const step of ['build', 'e2e', 'lighthouse', 'sast']) {
+    // infra: CDK テンプレートの合成は src/ と infra/ を入力に取るので、文書だけの周回では
+    // 結果が変わり得ない (#628)。約 75s あるので docs PR で毎回払う理由が無い。
+    for (const step of ['build', 'e2e', 'lighthouse', 'sast', 'infra']) {
       expect(isStepSkippable(step, 'docs'), step).toBe(true);
     }
   });

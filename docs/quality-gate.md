@@ -28,10 +28,41 @@ sast 49s (8%) / lint 37s (6%) / typecheck 25s (4%) / secrets + audit 4s。
 | --- | --- | --- | --- |
 | 1 ファイルを直している間 | `npx vitest run <path>` | **0.3〜1s** | `npm test` の 95s を払わない。red → green の確認回数がそのまま増える |
 | 各変更ごと | `--fast` | 148s | typecheck + lint + unit |
-| PR 前（フック必須） | `--pr` | 210s | + build |
+| PR 前（フック必須） | `--pr` | 210s + 約 75s | + build + **infra**（CDK テンプレートのアサーション、#628） |
 | UI / a11y / VRT に触れた変更 | `--pr --e2e` | 475s | VRT 差分は**閾値内でも実物を見る**（`maxDiffPixelRatio` に本物の崩れが隠れた実績あり） |
 | マージ前（フック必須） | `--full` | 598s / **152s** | 文書のみの変更では下記の省略が効く |
 | 定期 | `--full --strict` | — | SKIP を FAIL 扱い。記録は `docs/gate-runs.md`（本書「定期運用」節） |
+
+### infra ステップと `.open-next` の状態（#628）
+
+`infra (cdk vitest)` は `npm --prefix infra test` を回す。root の `npm test` は root
+`vitest.config.ts` の include（`src/**` ほか）しか走らせないため、**`infra/test/**` は
+#628 まで 1 度も実行されていなかった**。型は `tsc --noEmit` が見ているが、合成される
+テンプレートの中身は誰も見ていない状態だった。
+
+`WebStack` の synth は `.open-next/` 成果物を要求する。状態は 3 値で、扱いが違う
+（判定の実装は `infra/lib/build-artifacts.ts` に一本化。synth ガードとテストが同じ関数を使う）:
+
+| 状態 | 意味 | ゲートの挙動 |
+| --- | --- | --- |
+| `fresh` | 成果物が揃い、`src/` より新しい | synth suite を実行 |
+| `stale` | 成果物はあるが `src/` の方が新しい | **SKIP（理由付き）**。`--strict` で FAIL |
+| `absent` | 未ビルド（4 つの必須成果物のいずれかが無い） | 同上 |
+
+`stale` を FAIL にしていない理由: `src/` を触れば毎回 `stale` になるため、赤にすると
+**ゲートが常時赤になり「赤を無視する習慣」がつく**（#424 増分 3 と同じ理屈）。代わりに
+summary へ `SKIP  infra WebStack synth  (理由)` を必ず出す。**黙って 0 件にしない**ことが
+#628 の要点で、`npm run build:open-next` を打てば `fresh` に戻って実行される。
+
+### 実行計画の確認（`QUALITY_GATE_DRY_RUN=1`）
+
+```sh
+QUALITY_GATE_DRY_RUN=1 ./scripts/quality-gate.sh --pr   # tier=pr … infra=1 … を出して終了
+```
+
+ステップを 1 つも起動せず、tier がどのステップに解決したかだけを出す。tier の中身は
+`tests/config/quality-gate-tiers.test.ts` がこれを**実際に起動して**固定している
+（字面の grep ではリファクタで簡単に嘘になる）。
 
 ### ループの緊急停止（kill switch, #424 増分 4）
 
