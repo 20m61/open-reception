@@ -322,6 +322,12 @@ if [[ "$RUN_INFRA" -eq 1 ]]; then
     else
       skip_or_fail "infra WebStack synth" "tsx が無いため .open-next の状態を判定できない"
     fi
+    # 🔴 **root の typecheck では infra を検査しきれない。** root tsconfig は
+    # `noUnusedLocals` を持たないが `infra/tsconfig.json` は持つため、`cdk synth` /
+    # `cdk deploy` が使う ts-node の方が**厳しい**。vitest は esbuild で型を落とすので
+    # ここも通らない。結果、**ゲート 12 段すべて green のまま `cdk deploy` が
+    # コンパイルエラーで落ちる**状態が実在した（#630 のデプロイ直前に踏んだ）。
+    step "infra typecheck (tsc)" npm --prefix infra run --silent typecheck
     step "infra (cdk vitest)" npm --prefix infra test
   fi
 fi
