@@ -8,6 +8,7 @@ import { verifyOidcToken, createJwksResolver } from '@/lib/auth/entra';
 import { canWrite } from '@/domain/auth/roles';
 import {
   ORIGIN_VERIFY_HEADER,
+  ORIGIN_VERIFY_LOG_MARKERS,
   evaluateOriginVerify,
   readOriginVerifyConfig,
   type OriginVerifyOutcome,
@@ -59,8 +60,9 @@ function logOriginVerifyTransition(reason: OriginVerifyOutcome['reason'], secret
   lastOriginVerifyReason = reason;
   switch (reason) {
     case 'missing-secret':
+      // 先頭は必ず共有マーカー。CDK のメトリクスフィルタがこの文字列を検索する (#630)。
       console.error(
-        '[origin-verify] ORIGIN_VERIFY_REQUIRED is set but ORIGIN_VERIFY_SECRET is unresolved ' +
+        `${ORIGIN_VERIFY_LOG_MARKERS.missingSecret} but ORIGIN_VERIFY_SECRET is unresolved ` +
           '(unset, blank, or an unsubstituted {{resolve:...}}); rejecting every request.',
       );
       break;
@@ -68,7 +70,9 @@ function logOriginVerifyTransition(reason: OriginVerifyOutcome['reason'], secret
       // 攻撃者が任意に発火できるので**毎リクエストは出さない**が、ゼロにもしない。
       // ローテーションで CloudFront と Lambda がずれると全リクエストがここへ落ちるため、
       // 「一部インスタンスに数行」＝スキャン、「全インスタンスに 1 行」＝配備破損、と切り分けられる。
-      console.warn('[origin-verify] header mismatch; rejecting requests that bypass CloudFront.');
+      console.warn(
+        `${ORIGIN_VERIFY_LOG_MARKERS.mismatch}; rejecting requests that bypass CloudFront.`,
+      );
       break;
     case 'disabled':
       // シークレットが在るのに方式が表明されていない＝配備が降格された強い兆候。

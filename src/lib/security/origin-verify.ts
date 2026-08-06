@@ -31,6 +31,23 @@ export const ORIGIN_VERIFY_SECRET_ENV = 'ORIGIN_VERIFY_SECRET';
 /** origin-verify 方式で配備されていることの表明（値は機密でない）。 */
 export const ORIGIN_VERIFY_REQUIRED_ENV = 'ORIGIN_VERIFY_REQUIRED';
 
+/**
+ * 拒否ログの先頭マーカー (#630)。
+ *
+ * **CloudWatch Logs のメトリクスフィルタがこの文字列で検索する**ため、アプリと CDK が
+ * 同じ定数を使う。ログ文言を書き換えるとアラームが**黙って鳴らなくなる**のが最大のリスクで、
+ * 文字列を 2 箇所に持つとそれが起こる（同じ構図で #634 は「npm script を差し替えたのに
+ * ゲートは直呼びのまま」を踏んだ）。構造上ずれないように 1 箇所へ置く。
+ *
+ * 値そのものは機密でない（理由の種別だけで、シークレットは一切含まない）。
+ */
+export const ORIGIN_VERIFY_LOG_MARKERS = {
+  /** 配備側の自損。全リクエストが 503。**1 度でも出たら異常**。 */
+  missingSecret: '[origin-verify] ORIGIN_VERIFY_REQUIRED is set',
+  /** 直叩き（正常）または ローテーションずれ（全断）。403。 */
+  mismatch: '[origin-verify] header mismatch',
+} as const;
+
 export type OriginVerifyConfig = {
   /** CloudFront が付与する想定のシークレット。未解決なら undefined。 */
   readonly secret: string | undefined;

@@ -6,13 +6,30 @@ import * as sns from 'aws-cdk-lib/aws-sns';
 import * as subscriptions from 'aws-cdk-lib/aws-sns-subscriptions';
 import * as lambda from 'aws-cdk-lib/aws-lambda';
 import * as dynamodb from 'aws-cdk-lib/aws-dynamodb';
+import * as logs from 'aws-cdk-lib/aws-logs';
 import { EnvConfig } from '../config/environments';
 import { applyCostTags } from '../constructs/cost-tags';
+import { ORIGIN_VERIFY_LOG_MARKERS } from '../../../src/lib/security/origin-verify';
+
+/**
+ * mismatch アラームのしきい値（5 分あたりの遷移ログ件数）(#630)。
+ *
+ * ログは**状態遷移時のみ**出るので、平常時のスキャンでは 1 インスタンスあたり数行に留まる。
+ * ローテーションずれで全インスタンスが落ちると桁が変わる。単発で鳴らさないのが要点。
+ */
+const ORIGIN_VERIFY_MISMATCH_THRESHOLD = 10;
 
 export interface WebMonitoringStackProps extends StackProps {
   readonly config: EnvConfig;
-  /** WebStack の server Lambda（SSR / Route Handlers）。 */
-  readonly serverFn: lambda.IFunction;
+  /**
+   * WebStack の server Lambda（SSR / Route Handlers）。
+   *
+   * **`IFunction` ではなく具象 `Function`**。origin-verify のメトリクスフィルタ (#630) が
+   * `logGroup` を要求するが、`IFunction` はこれを公開していない。WebStack は
+   * `logGroup` を明示生成して渡しているので（`makeLogGroup('ServerFnLogs')`）、
+   * 具象で受ければ「ログググループが確実に存在する」ことも型で担保できる。
+   */
+  readonly serverFn: lambda.Function;
   /** WebStack の image optimization Lambda。 */
   readonly imageFn: lambda.IFunction;
   /** WebStack の業務データ DynamoDB テーブル。 */
@@ -203,6 +220,66 @@ export class WebMonitoringStack extends Stack {
 
     // --- ダッシュボード ---
     // CloudFront メトリクス (AWS/CloudFront) は us-east-1 にのみ発行される。アラームは同一
+    // ---- origin-verify の拒否 (#630) --------------------------------------
+    //
+    // middleware が返す 403/503 は **Lambda としては成功した呼び出し**なので、
+    // Errors / Throttles / Duration のどれにも現れない。origin-verify は fail-closed で、
+    // 条件が揃うと全リクエストが落ちるのに、その全断が既存のアラームに一切かからなかった。
+    //
+    // **CloudFront の 4xx レートは使わない。** ボットのパス探索や誤リンクで恒常的に発生する
+    // ノイズ源で（`CloudFrontMonitoringStack` が 4xx アラームを持たないのも同じ理由）、
+    // 「直叩きされた」と「配備が壊れた」を分離できない。代わりに**アプリが出す拒否ログ**を
+    // メトリクス化する。文言は `ORIGIN_VERIFY_LOG_MARKERS` をアプリと共有しているので、
+    // 書き換えてもフィルタが黙って外れることはない。
+    //
+    // なお `missing-secret` は 503 を返すため CloudFront 5xxErrorRate アラームにも部分的に
+    // かかるが、あちらは率（1%/15 分）なので**低トラフィックの受付端末では分母が小さく暴れる**。
+    // ここでは件数で見て、種別も分ける。
+    const originVerifyNamespace = `OpenReception/${config.environment}/OriginVerify`;
+    const originVerifyMetric = (id: string, marker: string, metricName: string) =>
+      new logs.MetricFilter(this, id, {
+        logGroup: serverFn.logGroup,
+        // CloudWatch Logs のフィルタパターンは、引用符で囲むと部分一致検索になる。
+        filterPattern: logs.FilterPattern.literal(`"${marker}"`),
+        metricNamespace: originVerifyNamespace,
+        metricName,
+        metricValue: '1',
+      }).metric({ statistic: 'Sum', period: Duration.minutes(5) });
+
+    // 配備側の自損。**1 行でも出たら全リクエストが 503** なので即座に上げる。
+    const missingSecretAlarm = new cloudwatch.Alarm(this, 'OriginVerifyMissingSecret', {
+      metric: originVerifyMetric(
+        'OriginVerifyMissingSecretFilter',
+        ORIGIN_VERIFY_LOG_MARKERS.missingSecret,
+        'OriginVerifyMissingSecret',
+      ),
+      threshold: 1,
+      evaluationPeriods: 1,
+      comparisonOperator: cloudwatch.ComparisonOperator.GREATER_THAN_OR_EQUAL_TO_THRESHOLD,
+      treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
+      alarmDescription:
+        'origin-verify のシークレットが未解決。全リクエストが 503（配備側の障害・即対応）',
+    });
+    missingSecretAlarm.addAlarmAction(action);
+
+    // 直叩きは**正常動作**で、攻撃者が任意に発火できる。単発で鳴らすと無視する習慣がつく。
+    // ログは状態遷移時のみ出るので、平常時のスキャンでは「一部インスタンスに数行」に留まる。
+    // 全インスタンスがローテーションずれで落ちると桁が変わるため、件数で切り分ける。
+    const mismatchAlarm = new cloudwatch.Alarm(this, 'OriginVerifyMismatch', {
+      metric: originVerifyMetric(
+        'OriginVerifyMismatchFilter',
+        ORIGIN_VERIFY_LOG_MARKERS.mismatch,
+        'OriginVerifyMismatch',
+      ),
+      threshold: ORIGIN_VERIFY_MISMATCH_THRESHOLD,
+      evaluationPeriods: 3,
+      comparisonOperator: cloudwatch.ComparisonOperator.GREATER_THAN_OR_EQUAL_TO_THRESHOLD,
+      treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
+      alarmDescription:
+        'origin-verify の mismatch が継続。ローテーションで CloudFront と Lambda がずれた疑い',
+    });
+    mismatchAlarm.addAlarmAction(action);
+
     // リージョン制約があるが、ダッシュボード widget はリージョン跨ぎ参照が可能なので
     // region を明示して表示する。
     const cloudFrontMetric = (metricName: string, statistic: string): cloudwatch.Metric =>

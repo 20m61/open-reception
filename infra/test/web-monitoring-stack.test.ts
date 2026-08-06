@@ -2,13 +2,14 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { describe, it, expect } from 'vitest';
 import * as cdk from 'aws-cdk-lib';
-import { Template } from 'aws-cdk-lib/assertions';
+import { Template, Match } from 'aws-cdk-lib/assertions';
 import * as lambda from 'aws-cdk-lib/aws-lambda';
 import * as dynamodb from 'aws-cdk-lib/aws-dynamodb';
 import { WebMonitoringStack } from '../lib/stacks/web-monitoring-stack';
 import { WebStack } from '../lib/stacks/web-stack';
 import { resolveEnv, EnvConfig } from '../lib/config/environments';
 import { openNextArtifactState, describeArtifactState } from '../lib/build-artifacts';
+import { ORIGIN_VERIFY_LOG_MARKERS } from '../../src/lib/security/origin-verify';
 
 const ENV = { account: '123456789012', region: 'ap-northeast-1' };
 
@@ -64,8 +65,10 @@ describe('WebMonitoringStack (#299)', () => {
     });
   });
 
-  it('creates 9 alarms: server(Errors/Throttles/Duration/Concurrent) + image(Errors/Duration) + ddb(read/write) + account concurrent', () => {
-    template.resourceCountIs('AWS::CloudWatch::Alarm', 9);
+  it('creates 11 alarms: server(Errors/Throttles/Duration/Concurrent) + image(Errors/Duration) + ddb(read/write) + account concurrent + origin-verify(missing-secret/mismatch)', () => {
+    // #630 で origin-verify の 2 本を追加（9 → 11）。件数を固定しているのは、
+    // アラームが**黙って消える**のを検出するため（増やす側は必ずここを更新する）。
+    template.resourceCountIs('AWS::CloudWatch::Alarm', 11);
   });
 
   it('alarms notify the SNS topic and treat missing data as notBreaching', () => {
@@ -184,6 +187,71 @@ describe('WebMonitoringStack (#299)', () => {
   });
 });
 
+
+describe('origin-verify の拒否をアラームへ載せる (#630)', () => {
+  // middleware が返す 403/503 は Lambda としては**成功した呼び出し**なので、
+  // Errors / Throttles / Duration のどれにも現れない。ログ由来のメトリクスで拾う。
+  const template = synth(configWithAlarmEmail('ops@example.com'));
+
+  it('missing-secret と mismatch を別々のメトリクスにする', () => {
+    // 混ぜると「攻撃されている」と「自分が壊れている」を切り分けられない。
+    template.resourceCountIs('AWS::Logs::MetricFilter', 2);
+  });
+
+  it('メトリクスフィルタは実際のログ文言（共有定数）で検索する', () => {
+    // 🔴 ここがこの機能の急所。文言がずれるとアラームは**黙って鳴らなくなる**。
+    for (const marker of [
+      ORIGIN_VERIFY_LOG_MARKERS.missingSecret,
+      ORIGIN_VERIFY_LOG_MARKERS.mismatch,
+    ]) {
+      template.hasResourceProperties('AWS::Logs::MetricFilter', {
+        FilterPattern: Match.stringLikeRegexp(escapeForRegexp(marker)),
+      });
+    }
+  });
+
+  it('missing-secret は 1 件でもアラームにする（配備側の自損で全断）', () => {
+    template.hasResourceProperties('AWS::CloudWatch::Alarm', {
+      MetricName: 'OriginVerifyMissingSecret',
+      Threshold: 1,
+      EvaluationPeriods: 1,
+      ComparisonOperator: 'GreaterThanOrEqualToThreshold',
+      // 欠測を「異常」にすると、平常時（ログ 0 行）に鳴り続ける。
+      TreatMissingData: 'notBreaching',
+    });
+  });
+
+  it('mismatch は単発では鳴らさない（直叩きは正常動作で、攻撃者が任意に発火できる）', () => {
+    template.hasResourceProperties('AWS::CloudWatch::Alarm', {
+      MetricName: 'OriginVerifyMismatch',
+      TreatMissingData: 'notBreaching',
+    });
+    const alarms = template.findResources('AWS::CloudWatch::Alarm', {
+      Properties: { MetricName: 'OriginVerifyMismatch' },
+    });
+    const [alarm] = Object.values(alarms);
+    if (!alarm) throw new Error('OriginVerifyMismatch alarm not found');
+    expect(alarm.Properties.Threshold).toBeGreaterThan(1);
+  });
+
+  it('両アラームとも SNS トピックへ通知する（作っただけで届かないのを防ぐ）', () => {
+    for (const metric of ['OriginVerifyMissingSecret', 'OriginVerifyMismatch']) {
+      const alarms = template.findResources('AWS::CloudWatch::Alarm', {
+        Properties: { MetricName: metric },
+      });
+      const [alarm] = Object.values(alarms);
+      if (!alarm) throw new Error(`alarm not found: ${metric}`);
+      expect(alarm.Properties.AlarmActions, metric).toBeDefined();
+      expect(alarm.Properties.AlarmActions.length, metric).toBeGreaterThan(0);
+    }
+  });
+});
+
+/** 正規表現メタ文字を含むマーカー（`[origin-verify]`）をそのまま検索するため。 */
+function escapeForRegexp(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
 // `web-stack.test.ts` と同じ判定を使う。存在だけを見ると stale で synth が throw する (#628)。
 const ARTIFACTS = openNextArtifactState(path.join(__dirname, '..', '..'));
 const OPEN_NEXT_READY = ARTIFACTS.state === 'fresh';
@@ -209,7 +277,10 @@ describe.runIf(OPEN_NEXT_READY)('WebStack -> WebMonitoringStack wiring (#299)', 
       distributionId: web.distribution.distributionId,
     });
     const template = Template.fromStack(monitoring);
-    template.resourceCountIs('AWS::CloudWatch::Alarm', 9);
+    // #630 で origin-verify の 2 本を追加（9 → 11）。**実 WebStack の serverFn を渡す経路**なので、
+    // ここが通ることは「メトリクスフィルタが実 Lambda のロググループに着く」ことの確認でもある。
+    template.resourceCountIs('AWS::CloudWatch::Alarm', 11);
+    template.resourceCountIs('AWS::Logs::MetricFilter', 2);
     template.resourceCountIs('AWS::CloudWatch::Dashboard', 1);
   }, 60000);
 });

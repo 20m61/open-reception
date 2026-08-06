@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { NextRequest, type NextResponse } from 'next/server';
 import { __resetOriginVerifyLogState, proxy } from './proxy';
+import { ORIGIN_VERIFY_LOG_MARKERS } from '@/lib/security/origin-verify';
 
 /**
  * proxy の CSP 付与（issue #200）。
@@ -156,6 +157,21 @@ describe('proxy origin-verify (#612)', () => {
 
     expect(warn).toHaveBeenCalledTimes(1);
     expect(warn.mock.calls[0]?.[0]).toContain('[origin-verify]');
+  });
+
+  // 🔴 CDK のメトリクスフィルタ (#630) はこのマーカーで検索する。ログ文言を書き換えると
+  // **アラームが黙って鳴らなくなる**ので、実際の出力がマーカーで始まることを固定する。
+  it('拒否ログは CDK と共有するマーカーで始まる (#630)', async () => {
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    process.env.ORIGIN_VERIFY_REQUIRED = '1';
+
+    await proxy(reqWith('/kiosk', SECRET)); // missing-secret
+    expect(String(error.mock.calls[0]?.[0])).toContain(ORIGIN_VERIFY_LOG_MARKERS.missingSecret);
+
+    process.env.ORIGIN_VERIFY_SECRET = SECRET;
+    await proxy(reqWith('/kiosk', 'wrong')); // mismatch
+    expect(String(warn.mock.calls[0]?.[0])).toContain(ORIGIN_VERIFY_LOG_MARKERS.mismatch);
   });
 
   it('復旧してから再発したら再びログする（一方通行のラッチにしない）', async () => {
