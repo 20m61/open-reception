@@ -228,3 +228,102 @@ describe('拒否は一様だが、理由はログに残る (#4)', () => {
     }
   });
 });
+
+describe('/events — 取次の進行を実際に保存する (#4 Inc D-2)', () => {
+  async function stored() {
+    const found = await getCallCorrelationRepository().get(PROVIDER_CALL_ID);
+    if (found === undefined) throw new Error('correlation missing');
+    return found;
+  }
+
+  it('通話状態を保存する（毎回 queued から畳み直さない）', async () => {
+    // 🔴 Inc D-1 の /events は applyVoiceEvent('queued', …) を毎回畳んで void で捨てて
+    // いた。保存されなければ次のイベントも 'queued' から畳まれ、巻き戻し保護が消える。
+    await events(signed(body({ status: 'ringing' })));
+    expect((await stored()).voiceState).toBe('ringing');
+  });
+
+  it('結果が未確定のうちは in_flight のまま（確定扱いにしない）', async () => {
+    await events(signed(body({ status: 'ringing' })));
+    expect((await stored()).status).toBe('in_flight');
+  });
+
+  it('取次結果が確定したら settled にする', async () => {
+    // busy は取次語彙で確定。保存済みポリシー（p1）が無いので次の手も無く、確定で終わる。
+    await events(signed(body({ status: 'busy' })));
+    const s = await stored();
+    expect(s.status).toBe('settled');
+    expect(s.voiceState).toBe('busy');
+  });
+
+  it('確定後に遅れて届いたイベントで状態を書き換えない', async () => {
+    // 担当者が向かっているのに、遅延イベントで取次が再開して部門代表まで鳴る事故を防ぐ。
+    await getCallCorrelationRepository().put({
+      providerCallId: PROVIDER_CALL_ID,
+      receptionId: 'TEST-reception-1',
+      tenantId: 'internal',
+      siteId: 'default-site',
+      position: { callUuid: 'TEST-call-1', policyId: 'p1', stepId: 's1', hops: 0, ledger: [] },
+      voiceState: 'staff_coming',
+      status: 'settled',
+      updatedAt: '2026-01-01T00:00:00.000Z',
+    });
+    await events(signed(body({ status: 'completed' })));
+    const s = await stored();
+    expect(s.voiceState).toBe('staff_coming');
+    expect(s.status).toBe('settled');
+  });
+
+  it('未知のステータスでは何も書き換えない', async () => {
+    await events(signed(body({ status: 'TEST-unknown-status' })));
+    const s = await stored();
+    expect(s.voiceState).toBeUndefined();
+    expect(s.status).toBe('in_flight');
+  });
+});
+
+describe('/events — 発信できない間は位置を動かさない (#4 Inc D-2 項目 2 待ち)', () => {
+  /**
+   * 🔴 次の手を撃つべきと判断されても、provider 選択（実送信の停止境界）が未配線なので
+   * **発信していない**。にもかかわらず位置を進めると「撃ったことになっている手が
+   * 実際には鳴っていない」不整合になり、担当者を飛ばして取次が終わる。
+   *
+   * seed 取次（personal → acting → department）の先頭に居る相関を作り、
+   * 未応答で「次は acting」と判断される状況を踏ませる。
+   */
+  const SEED_POLICY = 'seed-personal-acting-department';
+
+  beforeEach(async () => {
+    await getCallCorrelationRepository().put({
+      providerCallId: PROVIDER_CALL_ID,
+      receptionId: 'TEST-reception-1',
+      tenantId: 'internal',
+      siteId: 'default-site',
+      position: { callUuid: 'TEST-call-1', policyId: SEED_POLICY, stepId: 'personal', hops: 0, ledger: [] },
+      status: 'in_flight',
+      updatedAt: '2026-01-01T00:00:00.000Z',
+    });
+  });
+
+  it('次の手があっても位置を進めない（発信していないため）', async () => {
+    await events(signed(body({ status: 'unanswered' })));
+    const s = await getCallCorrelationRepository().get(PROVIDER_CALL_ID);
+    expect(s?.position.stepId).toBe('personal');
+    expect(s?.position.hops).toBe(0);
+  });
+
+  it('通話状態は記録し、確定扱いにはしない', async () => {
+    await events(signed(body({ status: 'unanswered' })));
+    const s = await getCallCorrelationRepository().get(PROVIDER_CALL_ID);
+    expect(s?.voiceState).toBe('no_answer');
+    expect(s?.status).toBe('in_flight');
+  });
+
+  it('保留であることを構造化ログで可観測にする（黙って止まらない）', async () => {
+    const info = vi.spyOn(console, 'info').mockImplementation(() => {});
+    await events(signed(body({ status: 'unanswered' })));
+    const logged = info.mock.calls.map((c) => String(c[0])).join('\n');
+    expect(logged).toContain('vonage_routing_dial_pending');
+    expect(logged).toContain('acting');
+  });
+});
