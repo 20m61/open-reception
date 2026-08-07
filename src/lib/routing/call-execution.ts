@@ -175,6 +175,15 @@ export async function runRoutedCall(
  * 実発信経路の失敗理由。**固定コードのみ**（provider のエラーメッセージを載せると
  * 電話番号や URL が来訪者向け応答・ログへ漏れる）。
  */
+/**
+ * 呼出予算に足す余裕（秒） (#647)。
+ *
+ * 期限は「呼出タイムアウト（`ringing_timer`）＋ webhook の配送遅延」を見込む。短すぎると
+ * **鳴っている最中に打ち切る**。長すぎると来訪者が無駄に待つ。Vonage の呼出は数十秒なので
+ * 30 秒あれば配送遅延を吸収できる。
+ */
+const DIAL_BUDGET_MARGIN_SECONDS = 30;
+
 type VoiceDialFailure =
   | 'no_entry_step'
   | 'endpoint_unavailable'
@@ -256,6 +265,7 @@ export async function runVoiceRoutedCall(
 
   // 🔴 相関は**発信の後**にしか書けない（鍵になる provider 通話 ID は発信して初めて分かる）。
   // answer webhook 側が短時間リトライすることでこの順序逆転を吸収する（Inc D の設計判断）。
+  const dialedAt = deps.now?.() ?? new Date();
   try {
     await deps.saveCorrelation({
       providerCallId,
@@ -266,7 +276,10 @@ export async function runVoiceRoutedCall(
       voiceState: 'queued',
       eventCount: 0,
       status: 'in_flight',
-      updatedAt: (deps.now?.() ?? new Date()).toISOString(),
+      dialExpiresAt: new Date(
+        dialedAt.getTime() + (start.step.timeoutSeconds + DIAL_BUDGET_MARGIN_SECONDS) * 1000,
+      ).toISOString(),
+      updatedAt: dialedAt.toISOString(),
     });
   } catch {
     // 相関が無いと 4 webhook とも 403 になり取次は永久に進まない。'calling' で返すと
@@ -345,7 +358,13 @@ export async function executeRoutedCall(
 export function routedCallAdapter(routed: RoutedCallResult): CallAdapter {
   return {
     async call(): Promise<CallResult> {
-      return { status: routed.status, reason: routed.reason };
+      // 実発信経路では provider 通話 ID を受付へ渡す。**これが無いと `/status` が
+      // 相関を引けず、結果を確定できない**（来訪者が呼び出し中画面で待ち続ける。#647）。
+      return {
+        status: routed.status,
+        reason: routed.reason,
+        providerCallId: routed.providerCallId,
+      };
     },
   };
 }

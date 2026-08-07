@@ -311,9 +311,21 @@ PROVIDER_WEBHOOKS_DISABLED=1
 #### 発信後の挙動
 
 1 手目を撃った時点で `'calling'` を返し、受付は `calling` のまま待つ。応答・未応答は
-provider webhook が `applyVoiceEventToCorrelation` 経由で確定する。
-**次の手（代理・部門代表）への自動エスカレーションはまだ配線されていない** — webhook は
+provider webhook が `applyVoiceEventToCorrelation` 経由で相関へ書く。
+
+**受付の状態を確定させるのは `GET /api/kiosk/receptions/:id/status` の読み時** (#647)。
+受付端末が呼び出し中に 3 秒間隔でポーリングし、その中で相関を見て
+`connected` / `timeout` / `failed` へ倒す。**定期 sweeper は持たない**（継続的な AWS 費用を
+増やさないため）ので、確定の機会はこの読み取りだけ。
+
+webhook が一度も来ない場合（Vonage 側障害・署名失敗・相関不整合）でも、発信時に置いた
+**呼出予算**（`dialExpiresAt` = 1 手目の `timeoutSeconds` + 30 秒）を過ぎていれば
+`timeout` として確定する。**タイムアウトの権威はサーバ**で、端末のタイマー（#323）は
+段階的ケアの表示を進めるだけ。
+
+**次の手（代理・部門代表）への自動エスカレーションはまだ配線されていない** (#646) — webhook は
 通話状態を記録するが発信はしない（`vonage_routing_dial_pending` をログに出す）。
+よって現状の実発信は「1 人だけ鳴らして、出なければ代替導線」という挙動になる。
 
 失敗時のログ（いずれも PII を含まない固定コード）:
 

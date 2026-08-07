@@ -195,7 +195,12 @@ export async function startCall(
   // 非同期 adapter（Vonage）: セッション確立 → 応答待ち。calling のまま sessionId を紐づけ、
   // 応答/未応答は /connected・/timeout（markConnected/markTimeout）で確定する (increment 2)。
   if (result.status === 'calling') {
-    const withSession: ReceptionSession = { ...calling.value, vonageSessionId: result.sessionId };
+    // 媒体は排他: ビデオは sessionId、実 PSTN は providerCallId。両方入ることは無い。
+    const withSession: ReceptionSession = {
+      ...calling.value,
+      vonageSessionId: result.sessionId,
+      providerCallId: result.providerCallId,
+    };
     await sessions().put(withSession);
     return { ok: true, value: withSession };
   }
@@ -365,6 +370,32 @@ export async function markTimeout(id: string): Promise<StoreResult<ReceptionSess
   await sessions().put(timed);
   await recordReceptionOutcome(timed);
   return { ok: true, value: timed };
+}
+
+/**
+ * 非同期通話の失敗を記録する（calling → failed）(#647)。
+ *
+ * 実 PSTN 発信で provider が失敗を返した場合に使う。体験モデルの `contact_failed`
+ * （呼び出しを完了できなかった）に対応し、代替導線を主 CTA にする。
+ * `reason` は**非機微の固定コードのみ**（番号・URL・資格情報を載せない）。
+ */
+export async function markCallFailed(
+  id: string,
+  reason?: string,
+): Promise<StoreResult<ReceptionSession>> {
+  const found = await getReception(id);
+  if (!found.ok) return found;
+  const result = await applyEvent(found.value, 'CALL_FAILED');
+  if (!result.ok) return result;
+  const failed: ReceptionSession = {
+    ...result.value,
+    callOutcome: 'failed',
+    failureReason: reason,
+    completedAt: now(),
+  };
+  await sessions().put(failed);
+  await recordReceptionOutcome(failed);
+  return { ok: true, value: failed };
 }
 
 /** 失敗/未応答後の代替導線利用を記録する (issue #19)。状態は failed/timeout → fallback。 */

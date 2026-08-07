@@ -32,6 +32,14 @@ export type ReceptionSession = {
   /** Vonage 通話セッション ID（本番 adapter 利用時に紐づく。issue #4 increment 2）。 */
   vonageSessionId?: string;
   /**
+   * provider 側の通話 ID（実 PSTN 発信時のみ。#647）。相関
+   * （`StoredCallCorrelation`）を引く鍵で、`/status` が結果を確定するのに使う。
+   *
+   * `vonageSessionId`（Video セッション）とは**別物**。両方持つ受付は無い
+   * （媒体が排他なので）。**任意**＝この項目が入る前のレコードには無い。
+   */
+  providerCallId?: string;
+  /**
    * 担当者の最新応答（来訪者向け）。受付端末が短時間ポーリングで反映する (issue #99)。
    * PII を含めない（応答種別・来訪者向けメッセージ・時刻のみ）。
    */

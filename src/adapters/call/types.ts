@@ -21,6 +21,14 @@ export type CallResult = {
   reason?: string;
   /** 'calling' 時に確立した通話セッション ID（受付に紐づけ、トークン発行に使う）。 */
   sessionId?: string;
+  /**
+   * 'calling' 時の provider 側通話 ID（実 PSTN 発信のみ。#647）。
+   *
+   * `sessionId`（Vonage **Video** のセッション）とは**別物**。相関
+   * （`StoredCallCorrelation`）は provider 通話 ID をキーに保存されるので、
+   * 受付側がこれを持たないと `/status` から結果を引けない。
+   */
+  providerCallId?: string;
 };
 
 export interface CallAdapter {
