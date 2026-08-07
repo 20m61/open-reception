@@ -91,6 +91,7 @@ fi
 
 # ---- 実行ヘルパ -----------------------------------------------------------
 declare -a SUMMARY
+declare -a UNVERIFIED
 FAILED=0
 
 step() { # step <label> <cmd...>
@@ -125,6 +126,23 @@ skip_or_fail() { # skip_or_fail <label> <reason>
   fi
 }
 
+# skip_unverified <label> <reason>
+#
+# **「検査できなかった」SKIP。** skip_or_fail（任意ツール未導入）とは意味が違う。
+#
+# 任意ツールが無いのは「その検査を持っていない」だけで、docs/quality-gate.md の既定として
+# 許容している。一方こちらは**やるはずの検査が前提の破損で走らなかった**ので、
+# 「落ちなかった」だけであり「通った」の根拠が無い。
+#
+# 🔴 これを skip_or_fail で扱っていたために #640 が起きた — `infra WebStack synth` が
+# 45 件 SKIP されたまま exit 0 で `✅ PASSED (tier=full)` と記録され、
+# pr-gate-guard がそれを根拠にマージを許した。**FAILED は立てず、記録だけ拒否する**
+# （赤ではないが green でもない、という状態を正しく表す）。
+skip_unverified() { # skip_unverified <label> <reason>
+  SUMMARY+=("SKIP  $1  (${2})")
+  UNVERIFIED+=("$1")
+}
+
 echo "================================================================"
 echo " quality-gate  tier=${TIER}  $(node -v 2>/dev/null)"
 echo " repo: ${ROOT}"
@@ -138,6 +156,55 @@ echo "================================================================"
 # shellcheck source=lib/gate-stamp.sh
 . "${ROOT}/scripts/lib/gate-stamp.sh"
 GATE_FINGERPRINT="$(gate_tree_fingerprint || true)"
+
+# ---- 終了処理（summary → 判定 → 記録）------------------------------------
+# **関数にしてあるのは、判定と記録の経路を 1 本にするため。** 呼び出し口が増えても
+# 「記録を書く条件」がここ以外に散らない。
+finish() {
+  echo "================================================================"
+  echo " summary (tier=${TIER})"
+  echo "----------------------------------------------------------------"
+  for line in "${SUMMARY[@]}"; do echo "  ${line}"; done
+  echo "================================================================"
+
+  if [[ "$FAILED" -eq 1 ]]; then
+    echo "❌ quality-gate FAILED"
+    exit 1
+  fi
+
+  # 🔴 検査できなかったステップがあるなら green として記録しない (#640)。
+  # ここで記録してしまうと pr-gate-guard が「検査済み」と判断してマージを通す。
+  # `${#UNVERIFIED[@]}` は使わない。**bash 5.x は `set -u` 下で「宣言済みだが要素ゼロ」の
+  # 配列を unbound として落とす**（3.2 は 0 を返す。新しい方が厳しいという逆転がある）。
+  # 実際にこれで落として気づいた。`${arr[*]:-}` は両方で安全。
+  if [[ -n "${UNVERIFIED[*]:-}" ]]; then
+    echo "⚠️  quality-gate は green として記録しません（tier=${TIER}）"
+    echo "    検査できなかったステップ: ${UNVERIFIED[*]}"
+    echo "    落ちてはいませんが「通った」根拠がありません。前提を整えて再実行してください。"
+    echo "    よくある原因: .open-next/ が src/ より古い → npm run build:open-next"
+    exit 1
+  fi
+
+  gate_write_stamp "${TIER}" "${GATE_FINGERPRINT}" "${GATE_SCOPE:-code}"
+  echo "✅ quality-gate PASSED  (tier=${TIER} を green として記録しました)"
+  # **finish は必ず終端する。** 呼び出し口が複数あるので、戻ると呼び出し元の続きが
+  # 走ってしまう（seam から呼んだときに全ステップが実行された）。
+  exit 0
+}
+
+# ---- 自己テスト用の seam --------------------------------------------------
+# `tests/config/quality-gate-stamp.test.ts` が「検査できなかったステップがあると
+# green として記録しない」ことを**実際に起動して**確かめるための入口。
+# ステップは 1 つも実行せず finish() の判定だけを通す（QUALITY_GATE_DRY_RUN と同性格）。
+if [[ -n "${QUALITY_GATE_SELFTEST:-}" ]]; then
+  case "${QUALITY_GATE_SELFTEST}" in
+    unverified) skip_unverified "selftest step" "前提が壊れていて検査できなかった" ;;
+    optional)   skip_or_fail    "selftest step" "selftest tool not installed" ;;
+    pass)       SUMMARY+=("PASS  selftest step") ;;
+    *) echo "unknown QUALITY_GATE_SELFTEST: ${QUALITY_GATE_SELFTEST}" >&2; exit 2 ;;
+  esac
+  finish
+fi
 
 # ---- 依存 bootstrap（fresh worktree の自己修復）---------------------------
 install_deps() { # install_deps <dir-label> <prefix-or-empty>
@@ -313,14 +380,14 @@ if [[ "$RUN_INFRA" -eq 1 ]]; then
       ' 2>"$probe_err")"
       probe_status=$?
       if [[ "$probe_status" -ne 0 ]]; then
-        skip_or_fail "infra WebStack synth" \
+        skip_unverified "infra WebStack synth" \
           "状態を判定できなかった（tsx 失敗: $(tr '\n' ' ' < "$probe_err" | cut -c1-120)）"
       elif [[ -n "$artifact_reason" ]]; then
-        skip_or_fail "infra WebStack synth" "$artifact_reason"
+        skip_unverified "infra WebStack synth" "$artifact_reason"
       fi
       rm -f "$probe_err"
     else
-      skip_or_fail "infra WebStack synth" "tsx が無いため .open-next の状態を判定できない"
+      skip_unverified "infra WebStack synth" "tsx が無いため .open-next の状態を判定できない"
     fi
     # 🔴 **root の typecheck では infra を検査しきれない。** root tsconfig は
     # `noUnusedLocals` を持たないが `infra/tsconfig.json` は持つため、`cdk synth` /
@@ -427,16 +494,4 @@ fi
 
 # ---- サマリ ---------------------------------------------------------------
 echo ""
-echo "================================================================"
-echo " summary (tier=${TIER})"
-echo "----------------------------------------------------------------"
-for line in "${SUMMARY[@]}"; do echo "  ${line}"; done
-echo "================================================================"
-
-if [[ "$FAILED" -eq 1 ]]; then
-  echo "❌ quality-gate FAILED"
-  exit 1
-fi
-
-gate_write_stamp "${TIER}" "${GATE_FINGERPRINT}" "${GATE_SCOPE}"
-echo "✅ quality-gate PASSED  (tier=${TIER} を green として記録しました)"
+finish
