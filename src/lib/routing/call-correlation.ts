@@ -12,6 +12,7 @@
  *
  * 永続化は他のリポジトリと同じ `getBackend()`（DATA_BACKEND=memory|dynamodb）へ委譲する。
  */
+import type { VoiceCallState } from '@/domain/call/voice-call-state';
 import type { RoutingPosition } from '@/domain/routing/resumable';
 import { getBackend } from '@/lib/data';
 import type { Collection } from '@/lib/data/backend';
@@ -36,6 +37,17 @@ export type StoredCallCorrelation = {
   readonly siteId: string;
   /** 取次の現在位置。webhook 1 件で 1 歩進めるために保存する。 */
   readonly position: RoutingPosition;
+  /**
+   * 通話の状態。**取次の位置とは別物**（位置＝どこまで撃ったか / 状態＝相手がどう応じたか）。
+   *
+   * これを保存しないと webhook のたびに `'queued'` から畳み直すことになり、
+   * `applyVoiceEvent` の巻き戻し保護が消える（#4 Inc D-2。詳細は
+   * `@/domain/routing/webhook-advance` の doc コメント）。
+   *
+   * **任意**にしてあるのは後方互換のため ── この項目が入る前に書かれたレコードには
+   * 無い。読み側は `'queued'` を既定にする（TTL 6 時間なので旧レコードはすぐ消える）。
+   */
+  readonly voiceState?: VoiceCallState;
   readonly status: CallCorrelationStatus;
   readonly updatedAt: string;
 };
