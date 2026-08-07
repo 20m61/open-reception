@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server';
 import { buildDetailsNcco, resolveStaffChoice } from '@/domain/call/voice-announcement';
 import { logWebhookRejection, rejectWebhook, verifyRequest, webhookUrl } from '@/lib/routing/vonage-webhook-route';
+import { denyIfProviderWebhooksDisabled } from '@/lib/routing/provider-webhook-switch';
 
 /**
  * POST /api/providers/vonage/dtmf — **第 1 段**（本人確認）の DTMF (issue #4 MVP 1)。
@@ -28,6 +29,9 @@ function readDigits(rawBody: string): string | undefined {
 }
 
 export async function POST(request: Request): Promise<NextResponse> {
+  // 停止スイッチは署名検証より前（止めたい状況では検証の計算もさせない）。
+  const disabled = denyIfProviderWebhooksDisabled();
+  if (disabled) return disabled;
   const { verified, rawBody } = await verifyRequest(request);
   if (!verified.ok) {
     logWebhookRejection('dtmf', verified.logOnly);

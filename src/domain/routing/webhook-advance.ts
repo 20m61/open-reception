@@ -53,11 +53,33 @@ export type CallProgress = {
   readonly voiceState: VoiceCallState;
   /** 取次が確定済みか。確定後のイベントで進めないための材料。 */
   readonly settled: boolean;
+  /** この通話で処理したイベント数。上限（`maxEvents`）の判定に使う。 */
+  readonly eventCount: number;
+};
+
+/**
+ * 1 通話あたりのイベント上限 (issue #4 Inc D-2 項目 7)。
+ *
+ * webhook は**認証を持たない公開エンドポイント**。署名が正当でも同一通話へイベントを
+ * 流し続けられると `position.ledger` が無制限に伸びる。ledger は相関ごと DynamoDB へ
+ * 書かれるので **item サイズ上限（400KB）へ向かって育ち**、しかも 1 件ごとに書き込みが走る。
+ *
+ * 正常な通話は数手 × 数イベント（ringing / answered / dtmf / completed）で収まる。
+ * hop 上限 10 と併せても 100 は十分に余裕がある。
+ */
+export const DEFAULT_MAX_EVENTS = 100;
+
+export type WebhookAdvanceOptions = AdvanceOptions & {
+  /** 1 通話あたりのイベント上限。既定 `DEFAULT_MAX_EVENTS`。 */
+  readonly maxEvents?: number;
 };
 
 export type WebhookAdvance =
   /** 何もしない。**保存もしない**（duplicate で保存すると位置が余計に進む）。 */
-  | { readonly kind: 'ignored'; readonly reason: 'already_settled' | 'duplicate' }
+  | {
+      readonly kind: 'ignored';
+      readonly reason: 'already_settled' | 'duplicate' | 'rate_limited';
+    }
   /** 結果は未確定。通話状態だけ保存して発信はしない。 */
   | { readonly kind: 'in_progress'; readonly next: CallProgress }
   /** 次の 1 手を発信する。呼び出し側は next を保存してから発信すること。 */
@@ -75,10 +97,16 @@ export function advanceFromWebhook(
   event: VoiceCallEvent,
   providerEventId: string,
   policies: ReadonlyArray<RoutingPolicy>,
-  options: AdvanceOptions = {},
+  options: WebhookAdvanceOptions = {},
 ): WebhookAdvance {
   // 確定済みなら通話状態すら触らない。確定は取次の終わりで、以降の配信は記録以外の意味を持たない。
   if (progress.settled) return { kind: 'ignored', reason: 'already_settled' };
+
+  // 上限超過は**保存もしない**（書き込み自体が資源消費なので、弾くなら書く前に弾く）。
+  if (progress.eventCount >= (options.maxEvents ?? DEFAULT_MAX_EVENTS)) {
+    return { kind: 'ignored', reason: 'rate_limited' };
+  }
+  const eventCount = progress.eventCount + 1;
 
   // **保存済みの状態から畳む。** ここを 'queued' に固定すると巻き戻し保護が消える（上記）。
   const voiceState = applyVoiceEvent(progress.voiceState, event);
@@ -86,7 +114,7 @@ export function advanceFromWebhook(
 
   // 未確定（呼出中・応答待ち）。位置は据え置き ── 進めると鳴っている最中に次へ発信する。
   if (result === undefined) {
-    return { kind: 'in_progress', next: { ...progress, voiceState } };
+    return { kind: 'in_progress', next: { ...progress, voiceState, eventCount } };
   }
 
   // 冪等キーは **provider のイベント ID**（webhook の jti）。at-least-once 配信の
@@ -99,14 +127,14 @@ export function advanceFromWebhook(
     case 'dial':
       return {
         kind: 'dial',
-        next: { position: advance.position, voiceState, settled: false },
+        next: { position: advance.position, voiceState, settled: false, eventCount },
         step: advance.step,
       };
     case 'settled':
       return {
         kind: 'settled',
         // 確定時は位置を据え置く（次の発信が無いので進める意味が無い）。
-        next: { position: progress.position, voiceState, settled: true },
+        next: { position: progress.position, voiceState, settled: true, eventCount },
         ...(advance.result !== undefined ? { result: advance.result } : {}),
         reason: advance.reason,
       };

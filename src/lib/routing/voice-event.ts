@@ -44,12 +44,21 @@ export async function applyVoiceEventToCorrelation(
     // 旧レコード（voiceState 導入前）は 'queued' 扱い。TTL 6 時間ですぐ入れ替わる。
     voiceState: correlation.voiceState ?? 'queued',
     settled: correlation.status === 'settled',
+    eventCount: correlation.eventCount ?? 0,
   };
 
   const advance = advanceFromWebhook(progress, event, providerEventId, await policiesFor(correlation));
 
-  // 無視（確定済み・重複配信）では**保存しない**。重複で保存すると位置が余計に進む。
-  if (advance.kind === 'ignored') return;
+  // 無視（確定済み・重複配信・上限超過）では**保存しない**。
+  // 重複で保存すると位置が余計に進み、上限超過で保存すると弾いた意味が無い（書き込みが資源消費）。
+  if (advance.kind === 'ignored') {
+    if (advance.reason === 'rate_limited') {
+      console.warn(
+        JSON.stringify({ event: 'vonage_webhook_rate_limited', providerCallId: correlation.providerCallId }),
+      );
+    }
+    return;
+  }
 
   if (advance.kind === 'dial') {
     // 発信できないので位置は動かさず、通話状態だけ記録する（上記 doc 参照）。
@@ -62,12 +71,16 @@ export async function applyVoiceEventToCorrelation(
     );
   }
 
-  const next = advance.kind === 'dial' ? { ...progress, voiceState: advance.next.voiceState } : advance.next;
+  const next =
+    advance.kind === 'dial'
+      ? { ...progress, voiceState: advance.next.voiceState, eventCount: advance.next.eventCount }
+      : advance.next;
 
   await getCallCorrelationRepository().put({
     ...correlation,
     position: next.position,
     voiceState: next.voiceState,
+    eventCount: next.eventCount,
     status: next.settled ? 'settled' : 'in_flight',
     updatedAt: new Date().toISOString(),
   });

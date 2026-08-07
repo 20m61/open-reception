@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server';
 import { DTMF_CHOICES, resolveStaffChoice, staffChoiceToRouteResult } from '@/domain/call/voice-announcement';
 import { logWebhookRejection, rejectWebhook, verifyRequest } from '@/lib/routing/vonage-webhook-route';
+import { denyIfProviderWebhooksDisabled } from '@/lib/routing/provider-webhook-switch';
 
 /**
  * POST /api/providers/vonage/choice — **第 2 段**（意思表示）の DTMF (issue #4 MVP 1)。
@@ -33,6 +34,9 @@ function acknowledgement(text: string): NextResponse {
 }
 
 export async function POST(request: Request): Promise<NextResponse> {
+  // 停止スイッチは署名検証より前（止めたい状況では検証の計算もさせない）。
+  const disabled = denyIfProviderWebhooksDisabled();
+  if (disabled) return disabled;
   const { verified, rawBody } = await verifyRequest(request);
   if (!verified.ok) {
     logWebhookRejection('choice', verified.logOnly);

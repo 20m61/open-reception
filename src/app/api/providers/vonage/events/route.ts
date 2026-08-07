@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server';
 import type { VonageCallStatus } from '@/domain/call/voice-call-state';
 import { logWebhookRejection, rejectWebhook, verifyRequest } from '@/lib/routing/vonage-webhook-route';
+import { denyIfProviderWebhooksDisabled } from '@/lib/routing/provider-webhook-switch';
 import { applyVoiceEventToCorrelation } from '@/lib/routing/voice-event';
 
 /**
@@ -35,6 +36,9 @@ function readStatus(rawBody: string): VonageCallStatus | undefined {
 }
 
 export async function POST(request: Request): Promise<NextResponse> {
+  // 停止スイッチは署名検証より前（止めたい状況では検証の計算もさせない）。
+  const disabled = denyIfProviderWebhooksDisabled();
+  if (disabled) return disabled;
   const { verified, rawBody } = await verifyRequest(request);
   if (!verified.ok) {
     logWebhookRejection('events', verified.logOnly);

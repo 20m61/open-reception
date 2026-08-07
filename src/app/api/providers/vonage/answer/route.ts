@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server';
 import { buildConfirmationNcco } from '@/domain/call/voice-announcement';
 import { logWebhookRejection, rejectWebhook, verifyRequest, webhookUrl } from '@/lib/routing/vonage-webhook-route';
+import { denyIfProviderWebhooksDisabled } from '@/lib/routing/provider-webhook-switch';
 
 /**
  * POST /api/providers/vonage/answer — 担当者が応答したときの NCCO を返す (issue #4 MVP 1)。
@@ -13,6 +14,9 @@ import { logWebhookRejection, rejectWebhook, verifyRequest, webhookUrl } from '@
 const DTMF_TIMEOUT_SECONDS = 20;
 
 export async function POST(request: Request): Promise<NextResponse> {
+  // 停止スイッチは署名検証より前（止めたい状況では検証の計算もさせない）。
+  const disabled = denyIfProviderWebhooksDisabled();
+  if (disabled) return disabled;
   const { verified } = await verifyRequest(request);
   if (!verified.ok) {
     logWebhookRejection('answer', verified.logOnly);
