@@ -188,6 +188,7 @@ import {
   type CallingStage,
   type CallingStageThresholds,
 } from '@/domain/reception/calling-experience';
+import { shouldOpenVideoView } from '@/domain/reception/call-medium';
 import {
   useKioskConfiguration,
 } from './useKioskConfiguration';
@@ -592,7 +593,10 @@ export function KioskFlow({ operatingStatus, sttAdapterFactory, voiceSession, qr
         }
         const session = (await createRes.json()) as { id: string };
         const callRes = await fetch(`/api/kiosk/receptions/${session.id}/call`, { method: 'POST' });
-        const result = (await callRes.json()) as { state: ReceptionState };
+        const result = (await callRes.json()) as {
+          state: ReceptionState;
+          vonageSessionId?: string | null;
+        };
         if (cancelled) return;
         // 取次段階を後方互換で取り込む (#363)。旧形（stages 無し）は [] で、表示は増えない。
         setCallStages(parseCallStages(result));
@@ -613,8 +617,16 @@ export function KioskFlow({ operatingStatus, sttAdapterFactory, voiceSession, qr
             }, delayMs);
           }
         }
-        // 'calling' は Vonage（非同期）: ビデオビューが応答/未応答を確定する。
-        else if (result.state === 'calling') setVonageCallId(session.id);
+        // 'calling' は非同期の待ち。**媒体が 2 つある** (#4 Inc D-2 項目 2):
+        //   - ビデオ: セッションが確立済み。ビデオビューが応答/未応答を確定する
+        //   - PSTN:  電話を鳴らした直後。セッションは無く、結果は provider webhook で届く
+        // セッションが無いのにビデオビューを開くと、存在しないトークンを取りに行って失敗する。
+        else if (shouldOpenVideoView(result)) setVonageCallId(session.id);
+        else if (result.state === 'calling') {
+          // PSTN 発信中は呼び出し中画面（段階的ケア #323）のまま待つ。
+          // ⚠️ 端末側で結果を取りに行く経路はまだ無い（#647）。
+          setVonageCallId(null);
+        }
         else dispatch({ type: 'CALL_FAILED', sessionId: session.id, reason: 'server' });
       } catch {
         // fetch が例外 = 端末からサーバへ到達できていない。呼び出しは行われていない。
