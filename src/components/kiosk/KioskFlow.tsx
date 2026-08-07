@@ -190,6 +190,11 @@ import {
 } from '@/domain/reception/calling-experience';
 import { shouldOpenVideoView } from '@/domain/reception/call-medium';
 import {
+  CALL_STATUS_POLL_INTERVAL_MS,
+  CALL_STATUS_POLL_MAX_MS,
+  decidePollAction,
+} from '@/domain/reception/call-poll';
+import {
   useKioskConfiguration,
 } from './useKioskConfiguration';
 import {
@@ -547,6 +552,9 @@ export function KioskFlow({ operatingStatus, sttAdapterFactory, voiceSession, qr
 
   // Vonage（非同期）通話のとき、ビデオビューに渡す受付 ID。Mock 同期通話では null のまま。
   const [vonageCallId, setVonageCallId] = useState<string | null>(null);
+  // 実 PSTN 発信中の受付 ID (#647)。ビデオと違いセッションが無いので、端末が
+  // `/status` を取りに行って結果を確定させる（サーバ側の遅延確定に合流する）。
+  const [pstnCallId, setPstnCallId] = useState<string | null>(null);
   // 取次段階 (#363 injection point 4)。`/call` 応答が `stages[]` を返したときだけ非空になり、
   // KioskCallView が段階表示する。旧形応答（stages 無し）は [] のまま（後方互換）。
   const [callStages, setCallStages] = useState<CallStage[]>([]);
@@ -563,6 +571,7 @@ export function KioskFlow({ operatingStatus, sttAdapterFactory, voiceSession, qr
     if (data.state !== 'calling') return;
     let cancelled = false;
     setVonageCallId(null);
+    setPstnCallId(null);
     setCallStages([]);
 
     (async () => {
@@ -623,9 +632,9 @@ export function KioskFlow({ operatingStatus, sttAdapterFactory, voiceSession, qr
         // セッションが無いのにビデオビューを開くと、存在しないトークンを取りに行って失敗する。
         else if (shouldOpenVideoView(result)) setVonageCallId(session.id);
         else if (result.state === 'calling') {
-          // PSTN 発信中は呼び出し中画面（段階的ケア #323）のまま待つ。
-          // ⚠️ 端末側で結果を取りに行く経路はまだ無い（#647）。
+          // PSTN 発信中は呼び出し中画面（段階的ケア #323）のまま、`/status` を取りに行く。
           setVonageCallId(null);
+          setPstnCallId(session.id);
         }
         else dispatch({ type: 'CALL_FAILED', sessionId: session.id, reason: 'server' });
       } catch {
@@ -642,6 +651,57 @@ export function KioskFlow({ operatingStatus, sttAdapterFactory, voiceSession, qr
       }
     };
   }, [data.state, data.purpose, data.target, data.visitor, selectedFlow]);
+
+  // 実 PSTN 発信中は `/status` をポーリングして結果を確定させる (#647)。
+  //
+  // ビデオ経路（`vonageCallId`）はビデオビューが確定するのでここは走らない。判定は純関数
+  // `decidePollAction` に閉じてあり、この effect はタイマーと fetch だけを持つ。
+  //
+  // 🔴 **経過時間で結果を作らない。** 状態を決めるのはサーバの応答だけ（権威はサーバ）。
+  // 上限到達（`give_up`）は「判定できなかった」の表明で、未応答とは別物として
+  // `contact_failed` へ倒す。
+  useEffect(() => {
+    if (pstnCallId === null) return;
+    let cancelled = false;
+    const startedAt = Date.now();
+    let timer: number | null = null;
+
+    const poll = async () => {
+      try {
+        const res = await fetch(`/api/kiosk/receptions/${pstnCallId}/status`);
+        if (cancelled) return;
+        if (!res.ok) throw new Error('status unavailable');
+        const body = (await res.json()) as { state: string };
+        if (cancelled) return;
+
+        const action = decidePollAction(body.state, Date.now() - startedAt);
+        if (action.kind === 'resolved') {
+          dispatch({ type: action.event, sessionId: pstnCallId });
+          return;
+        }
+        if (action.kind === 'give_up') {
+          // 結果を断定しない。呼び出しを完了できなかった（contact_failed）として代替導線へ。
+          dispatch({ type: 'CALL_FAILED', sessionId: pstnCallId, reason: 'server' });
+          return;
+        }
+      } catch {
+        // 単発の取得失敗では諦めない（電話は鳴り続けている）。上限に達したら give_up 側で倒れる。
+        if (cancelled) return;
+        if (Date.now() - startedAt > CALL_STATUS_POLL_MAX_MS) {
+          dispatch({ type: 'CALL_FAILED', sessionId: pstnCallId, reason: 'network' });
+          return;
+        }
+      }
+      timer = window.setTimeout(() => void poll(), CALL_STATUS_POLL_INTERVAL_MS);
+    };
+
+    timer = window.setTimeout(() => void poll(), CALL_STATUS_POLL_INTERVAL_MS);
+
+    return () => {
+      cancelled = true;
+      if (timer !== null) window.clearTimeout(timer);
+    };
+  }, [pstnCallId]);
 
   // 完了・キャンセル後は一定時間で待機画面へ自動復帰する。個人情報も破棄される。
   useEffect(() => {

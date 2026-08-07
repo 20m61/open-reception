@@ -421,3 +421,54 @@ describe('executeRoutedCall の mock/vonage 分岐', () => {
     expect(stored?.status).toBe('in_flight');
   });
 });
+
+/**
+ * 呼出予算 (#647)。
+ *
+ * webhook が一度も来なくても `/status` の読み時に確定できるよう、発信時に期限を置く。
+ * 置き忘れると「webhook が来ない通話が永久に calling」に戻る。
+ */
+describe('runVoiceRoutedCall — 呼出予算 dialExpiresAt (#647)', () => {
+  const at = new Date('2026-08-08T12:00:00.000Z');
+
+  function depsWithClock() {
+    const saved: StoredCallCorrelation[] = [];
+    return {
+      saved,
+      deps: {
+        scope: { tenantId: 'internal', siteId: 'default-site' },
+        policies: [policy({ id: 'p1' })],
+        endpoints: seedEndpoints,
+        initiator: {
+          key: 'vonage-voice',
+          initiate: async () => ({ providerCallId: 'TEST-provider-call-id' }),
+        },
+        saveCorrelation: async (c: StoredCallCorrelation) => {
+          saved.push(c);
+        },
+        now: () => at,
+      },
+    };
+  }
+
+  it('🔴 発信時に呼出予算の期限を置く（無いと遅延確定ができない）', async () => {
+    const d = depsWithClock();
+    await runVoiceRoutedCall('rec-1', d.deps);
+    expect(d.saved[0]?.dialExpiresAt).toBeDefined();
+  });
+
+  it('期限は 1 手目の timeoutSeconds より後（鳴っている最中に打ち切らない）', async () => {
+    const d = depsWithClock();
+    await runVoiceRoutedCall('rec-1', d.deps);
+    const expiresAt = Date.parse(d.saved[0]!.dialExpiresAt!);
+    // 1 手目 personal は timeoutSeconds=20。webhook の配送遅延ぶんの余裕も要る。
+    expect(expiresAt).toBeGreaterThan(at.getTime() + 20_000);
+  });
+
+  it('期限は青天井にしない（確定しない通話を作らない）', async () => {
+    const d = depsWithClock();
+    await runVoiceRoutedCall('rec-1', d.deps);
+    const expiresAt = Date.parse(d.saved[0]!.dialExpiresAt!);
+    expect(expiresAt).toBeLessThan(at.getTime() + 10 * 60_000);
+  });
+});

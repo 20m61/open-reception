@@ -54,6 +54,17 @@ export type StoredCallCorrelation = {
    * **任意**＝ voiceState と同じ後方互換の扱いで、読み側は 0 を既定にする。
    */
   readonly eventCount?: number;
+  /**
+   * この発信の呼出予算の期限（ISO） (#647)。
+   *
+   * webhook が一度も来ない場合（Vonage 側障害・署名失敗・相関不整合）でも、
+   * `/status` の**読み時に遅延評価**して確定させるための材料。定期 sweeper を持たない
+   * （継続的な AWS 費用を増やさない）ぶん、期限は発信時に置いておく必要がある。
+   *
+   * **任意**＝ `voiceState` と同じ後方互換の扱い。**無いことを「期限切れ」と読まないこと**
+   * （鳴っている最中に打ち切る）。判定は `resolveCallResolution` に閉じている。
+   */
+  readonly dialExpiresAt?: string;
   readonly status: CallCorrelationStatus;
   readonly updatedAt: string;
 };
