@@ -668,7 +668,12 @@ export function KioskFlow({ operatingStatus, sttAdapterFactory, voiceSession, qr
 
     const poll = async () => {
       try {
-        const res = await fetch(`/api/kiosk/receptions/${pstnCallId}/status`);
+        // `cache: 'no-store'` は必須 — 同一 URL の GET なのでブラウザの HTTP キャッシュに
+        // 当たると、状態が変わってもポーリングが永久に古い応答を読み続ける
+        // （`useStaffResponse` も同じ理由で付けている）。
+        const res = await fetch(`/api/kiosk/receptions/${pstnCallId}/status`, {
+          cache: 'no-store',
+        });
         if (cancelled) return;
         if (!res.ok) throw new Error('status unavailable');
         const body = (await res.json()) as { state: string };
