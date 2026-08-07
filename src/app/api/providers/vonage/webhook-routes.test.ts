@@ -1,4 +1,7 @@
 import { createHash, createHmac } from 'node:crypto';
+import { existsSync, readdirSync } from 'node:fs';
+import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const SIGNATURE_SECRET = 'TEST-signature-secret';
@@ -14,12 +17,29 @@ import { POST as choice } from './choice/route';
 import { POST as dtmf } from './dtmf/route';
 import { POST as events } from './events/route';
 
-const ROUTES = [
-  ['answer', answer],
-  ['events', events],
-  ['dtmf', dtmf],
-  ['choice', choice],
-] as const;
+/**
+ * 🔴 **列挙ではなくディレクトリ走査でルートを集める** (#4 Inc D-2 項目 8)。
+ *
+ * ここは元々 `const ROUTES = [['answer', answer], …]` の**列挙**だった。列挙だと
+ * 新しい provider ルートを足したとき、**一様な拒否・停止スイッチの検査を黙って逃れる**
+ * （#628「infra/test が 1 度も実行されていなかった」と同じ型 ── 不在は赤にならない）。
+ *
+ * 個別の振る舞いを見るテストは静的 import した handler を使い、
+ * **全ルートに課す不変条件**はこの走査結果に対して回す。
+ */
+const ROUTE_DIR = fileURLToPath(new URL('.', import.meta.url));
+const ROUTE_NAMES = readdirSync(ROUTE_DIR, { withFileTypes: true })
+  .filter((e) => e.isDirectory() && existsSync(join(ROUTE_DIR, e.name, 'route.ts')))
+  .map((e) => e.name)
+  .sort();
+
+type RouteHandler = (request: Request) => Promise<Response>;
+const ROUTES: ReadonlyArray<readonly [string, RouteHandler]> = await Promise.all(
+  ROUTE_NAMES.map(async (name) => {
+    const mod = (await import(`./${name}/route`)) as { POST: RouteHandler };
+    return [name, mod.POST] as const;
+  }),
+);
 
 function signed(rawBody: string, secret = SIGNATURE_SECRET): Request {
   const header = Buffer.from(JSON.stringify({ alg: 'HS256', typ: 'JWT' })).toString('base64url');
@@ -325,5 +345,111 @@ describe('/events — 発信できない間は位置を動かさない (#4 Inc D
     const logged = info.mock.calls.map((c) => String(c[0])).join('\n');
     expect(logged).toContain('vonage_routing_dial_pending');
     expect(logged).toContain('acting');
+  });
+});
+
+describe('ルート集合は走査で集める (#4 Inc D-2 項目 8)', () => {
+  it('🔴 走査が実際にルートを見つけている（空なら全 it.each が素通りする）', () => {
+    // 走査が 0 件でも it.each は静かに 0 回走るだけで緑になる。
+    // 「空は問題なしではない」ので、見つかったことを明示的に固定する。
+    expect(ROUTE_NAMES).toEqual(expect.arrayContaining(['answer', 'choice', 'dtmf', 'events']));
+    expect(ROUTES.length).toBe(ROUTE_NAMES.length);
+    expect(ROUTES.length).toBeGreaterThanOrEqual(4);
+  });
+
+  it('走査した全ルートが POST handler を公開している', () => {
+    for (const [name, handler] of ROUTES) {
+      expect(typeof handler, `${name} の POST`).toBe('function');
+    }
+  });
+});
+
+describe('停止スイッチ (#4 Inc D-2 項目 7)', () => {
+  afterEach(() => {
+    delete process.env.PROVIDER_WEBHOOKS_DISABLED;
+  });
+
+  it.each(ROUTES)('%s は停止中に 503 を返す（走査した全ルート）', async (_name, handler) => {
+    process.env.PROVIDER_WEBHOOKS_DISABLED = '1';
+    const res = await handler(signed(body()));
+    expect(res.status).toBe(503);
+  });
+
+  it.each(ROUTES)('%s は停止中、署名が正しくても処理しない', async (_name, handler) => {
+    process.env.PROVIDER_WEBHOOKS_DISABLED = '1';
+    const res = await handler(signed(body({ status: 'busy' })));
+    expect(res.status).toBe(503);
+    // 相関に触れていないこと（検証も処理もしていない）。
+    const s = await getCallCorrelationRepository().get(PROVIDER_CALL_ID);
+    expect(s?.voiceState).toBeUndefined();
+    expect(s?.status).toBe('in_flight');
+  });
+
+  it('再送してほしいので 4xx ではなく 5xx ＋ Retry-After', async () => {
+    // Vonage は 4xx を恒久的失敗として再送を諦める。停止は一時的な運用操作なので、
+    // 復旧後にイベントを取り戻せる 5xx でなければならない。
+    process.env.PROVIDER_WEBHOOKS_DISABLED = '1';
+    const res = await events(signed(body({ status: 'busy' })));
+    expect(res.status).toBeGreaterThanOrEqual(500);
+    expect(res.headers.get('retry-after')).toBe('60');
+  });
+
+  it('既定（未設定）では稼働する', async () => {
+    expect(process.env.PROVIDER_WEBHOOKS_DISABLED).toBeUndefined();
+    const res = await events(signed(body({ status: 'ringing' })));
+    expect(res.status).not.toBe(503);
+  });
+
+  it('空文字・想定外の値では止めない（誤記で全断させない）', async () => {
+    for (const raw of ['', ' ', 'no', 'false', '0']) {
+      process.env.PROVIDER_WEBHOOKS_DISABLED = raw;
+      const res = await events(signed(body({ status: 'ringing' })));
+      expect(res.status, `PROVIDER_WEBHOOKS_DISABLED=${JSON.stringify(raw)}`).not.toBe(503);
+    }
+  });
+});
+
+describe('レート制限 — 1 通話あたりのイベント上限 (#4 Inc D-2 項目 7)', () => {
+  it('イベント数を相関へ数え上げる（数えないと上限に永久に到達しない）', async () => {
+    await events(signed(body({ status: 'ringing' })));
+    await events(signed(body({ status: 'ringing' })));
+    const s = await getCallCorrelationRepository().get(PROVIDER_CALL_ID);
+    expect(s?.eventCount).toBe(2);
+  });
+
+  it('上限に達したら書き込まない（弾くなら書く前に弾く）', async () => {
+    await getCallCorrelationRepository().put({
+      providerCallId: PROVIDER_CALL_ID,
+      receptionId: 'TEST-reception-1',
+      tenantId: 'internal',
+      siteId: 'default-site',
+      position: { callUuid: 'TEST-call-1', policyId: 'p1', stepId: 's1', hops: 0, ledger: [] },
+      voiceState: 'ringing',
+      eventCount: 100,
+      status: 'in_flight',
+      updatedAt: '2026-01-01T00:00:00.000Z',
+    });
+    const res = await events(signed(body({ status: 'answered' })));
+    // Vonage 側には正常応答（再送を誘発しない）。
+    expect(res.status).toBeLessThan(300);
+    const s = await getCallCorrelationRepository().get(PROVIDER_CALL_ID);
+    expect(s?.eventCount).toBe(100);
+    expect(s?.voiceState).toBe('ringing');
+  });
+
+  it('上限で弾いたことを構造化ログに残す（黙って捨てない）', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    await getCallCorrelationRepository().put({
+      providerCallId: PROVIDER_CALL_ID,
+      receptionId: 'TEST-reception-1',
+      tenantId: 'internal',
+      siteId: 'default-site',
+      position: { callUuid: 'TEST-call-1', policyId: 'p1', stepId: 's1', hops: 0, ledger: [] },
+      eventCount: 100,
+      status: 'in_flight',
+      updatedAt: '2026-01-01T00:00:00.000Z',
+    });
+    await events(signed(body({ status: 'answered' })));
+    expect(warn.mock.calls.map((c) => String(c[0])).join('\n')).toContain('vonage_webhook_rate_limited');
   });
 });

@@ -254,6 +254,24 @@ npx cdk deploy OpenReception-Web-prod -c env=prod -c appEnv="$APP_ENV"
 - `AssetBucketName` … 静的アセットバケット
 - `DataTableName` … 業務データ DynamoDB テーブル名（seed/運用に使用）
 
+### provider webhook の停止スイッチ (#4)
+
+`/api/providers/vonage/**` の 4 本は**認証を持たない公開エンドポイント**（正当性は署名で担保）。
+異常時に配線を切るため、server Lambda の環境変数で全断できる:
+
+```
+PROVIDER_WEBHOOKS_DISABLED=1
+```
+
+- 真値は `1` / `true` / `on` / `yes`（大文字小文字・前後空白は無視）。**それ以外は稼働**
+  （誤記で意図せず全断しないよう、既定を稼働に倒してある）
+- 応答は **503 ＋ `Retry-After: 60`**。403 にしてはいけない — Vonage は 4xx を恒久的失敗として
+  再送を諦めるが、5xx なら後で再送する。停止は一時的な運用操作なので、復旧後に
+  イベントを取り戻せる必要がある
+- 判定は**署名検証より前**。止めたい状況では検証の計算もさせない
+- **env に置く理由**: DynamoDB 由来の設定にすると、止めたい状況（データ層の異常・高負荷）で
+  こそ読めない。止めるための判断材料が、止めたい対象に依存してはいけない
+
 > `DATA_BACKEND=dynamodb` と `TABLE_NAME` は WebStack が server Lambda に自動設定する
 > （`-c appEnv` での指定は不要）。テーブルへの読み書き権限も付与済み。
 

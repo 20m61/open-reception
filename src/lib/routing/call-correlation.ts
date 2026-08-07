@@ -48,6 +48,12 @@ export type StoredCallCorrelation = {
    * 無い。読み側は `'queued'` を既定にする（TTL 6 時間なので旧レコードはすぐ消える）。
    */
   readonly voiceState?: VoiceCallState;
+  /**
+   * この通話で処理した webhook イベント数。1 通話あたりの上限判定に使う
+   * （#4 Inc D-2 項目 7。無制限だと ledger が DynamoDB item 上限へ向かって育つ）。
+   * **任意**＝ voiceState と同じ後方互換の扱いで、読み側は 0 を既定にする。
+   */
+  readonly eventCount?: number;
   readonly status: CallCorrelationStatus;
   readonly updatedAt: string;
 };

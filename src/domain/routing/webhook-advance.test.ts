@@ -24,7 +24,7 @@ function firstPosition(): RoutingPosition {
 }
 
 function progress(over: Partial<CallProgress> = {}): CallProgress {
-  return { position: firstPosition(), voiceState: 'queued', settled: false, ...over };
+  return { position: firstPosition(), voiceState: 'queued', settled: false, eventCount: 0, ...over };
 }
 
 describe('advanceFromWebhook — webhook 1 件で取次を 1 歩進める (#4 Inc D-2)', () => {
@@ -136,5 +136,45 @@ describe('advanceFromWebhook — webhook 1 件で取次を 1 歩進める (#4 In
     if (capped.kind !== 'settled') throw new Error('unreachable');
     expect(capped.reason).toBe('max_hops_exceeded');
     expect(capped.next.settled).toBe(true);
+  });
+
+  it('1 通話あたりのイベント数に上限を設ける（ledger の無制限な伸びを止める）', () => {
+    // 署名が正当でも、同一通話へイベントを流し続けられると position.ledger が
+    // 無制限に伸びる。ledger は相関ごと DynamoDB へ書かれるので item サイズ上限
+    // （400KB）に向かって育ち、書き込みも 1 件ずつ発生する。上限で打ち切る。
+    const r = advanceFromWebhook(
+      progress({ eventCount: 100 }),
+      { kind: 'status', status: 'ringing' },
+      'ev-flood',
+      POLICIES,
+      { maxEvents: 100 },
+    );
+    expect(r).toEqual({ kind: 'ignored', reason: 'rate_limited' });
+  });
+
+  it('上限内なら処理し、イベント数を数える', () => {
+    const r = advanceFromWebhook(
+      progress({ eventCount: 3 }),
+      { kind: 'status', status: 'ringing' },
+      'ev-1',
+      POLICIES,
+      { maxEvents: 100 },
+    );
+    expect(r.kind).toBe('in_progress');
+    if (r.kind !== 'in_progress') throw new Error('unreachable');
+    // 数えていないと上限に永久に到達せず、制限が無いのと同じになる。
+    expect(r.next.eventCount).toBe(4);
+  });
+
+  it('確定するイベントも数える（確定経路だけ数え漏らさない）', () => {
+    const r = advanceFromWebhook(
+      progress({ eventCount: 1 }),
+      { kind: 'dtmf', choice: 'coming' },
+      'ev-1',
+      POLICIES,
+    );
+    expect(r.kind).toBe('settled');
+    if (r.kind !== 'settled') throw new Error('unreachable');
+    expect(r.next.eventCount).toBe(2);
   });
 });
