@@ -73,7 +73,17 @@ export async function applyVoiceEventToCorrelation(
 
   const next =
     advance.kind === 'dial'
-      ? { ...progress, voiceState: advance.next.voiceState, eventCount: advance.next.eventCount }
+      ? {
+          ...progress,
+          // 位置（stepId / hops）は進めない ── 撃っていない手を撃ったことにしない。
+          // 🔴 ただし **ledger は残す**（#645）。ledger は `advance.next.position` に載って
+          // いるので、position ごと捨てると `jti` 冪等キーが永久に保存されず、
+          // at-least-once の再配信で**同じ手の dial 判断が何度でも出る**。
+          // 実発信を配線した経路ではそれが同一担当者への二重発信になる。
+          position: { ...progress.position, ledger: advance.next.position.ledger },
+          voiceState: advance.next.voiceState,
+          eventCount: advance.next.eventCount,
+        }
       : advance.next;
 
   await getCallCorrelationRepository().put({

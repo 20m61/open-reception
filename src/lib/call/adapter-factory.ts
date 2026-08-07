@@ -51,7 +51,12 @@ function buildVonageConfig(resolved: Extract<ResolvedProvider, { provider: 'vona
 
 /**
  * テナント設定に基づく通話 adapter を解決する。vonage 解決かつ bundle 完備なら本番 adapter、
- * それ以外は Mock（既定）。**外部実発信は #4 の外部待ち**（本層は資格情報の供給源のみ切替）。
+ * それ以外は Mock（既定）。
+ *
+ * ⚠️ **ここは PSTN 発信ではない。** `VonageCallAdapter` が作るのは Video セッション
+ * （遠隔顔合わせ）で、電話は鳴らない。実 PSTN 発信は別契約 `VoiceCallInitiator`
+ * （`src/lib/routing/voice-dial.ts` → `runVoiceRoutedCall`）で、保存済みルートがある場合の経路。
+ * 本層はルート未設定テナントの fail-open 用の単発 adapter を供給する。
  */
 export async function resolveCallAdapter(
   tenantId: string,

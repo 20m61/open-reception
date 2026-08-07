@@ -25,6 +25,8 @@ const FORBIDDEN_IMPORTS = [
   // secret を実際に reveal() する末端と、それを引き込む webhook ルート共通処理 (#4)。
   '@/lib/call/vonage-signature',
   '@/lib/routing/vonage-webhook-route',
+  // 実 PSTN 発信の資格情報を組む末端。`buildVoiceCredentials` が reveal() する (#4 Inc D-2)。
+  '@/lib/routing/voice-dial',
 ];
 
 function listSourceFiles(dir: string): string[] {

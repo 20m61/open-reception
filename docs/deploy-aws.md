@@ -273,6 +273,56 @@ PROVIDER_WEBHOOKS_DISABLED=1
   こそ読めない。止めるための判断材料が、止めたい対象に依存してはいけない
 
 > `DATA_BACKEND=dynamodb` と `TABLE_NAME` は WebStack が server Lambda に自動設定する
+
+### 実 PSTN 発信が起こる条件 (#4 Inc D-2 項目 2)
+
+実際に電話が鳴るのは、**次がすべて揃ったテナントだけ**。1 つでも欠ければ従来どおり mock で、
+外部送信は起こらない（fail-closed）。
+
+| # | 条件 | 判定箇所 |
+| --- | --- | --- |
+| 1 | 保存済みルート（`RoutingPolicy`）が有効 | `selectEntryPolicy` |
+| 2 | webhook 基底 URL が解決できる | `resolveWebhookBaseUrl`（call route が渡す） |
+| 3 | テナント設定が `provider=vonage` かつ `enabled` かつ secret 設定済み | `resolveProviderForTenant` |
+| 4 | `applicationId` / `fromNumber` / secret 内 `privateKey` が揃う | `buildVoiceCredentials` |
+| 5 | 1 手目の接続先が存在し `enabled` かつ `channel=pstn` | `runVoiceRoutedCall` / `resolveVoiceInitiator` |
+
+**つまり、テナント設定に vonage の資格情報を入れた瞬間から本番で電話が鳴る。**
+検証は必ず自分の番号を接続先にしたテナントで行うこと。
+
+#### 止め方は 2 つあり、止まる範囲が違う
+
+| env | 止まるもの | 止まらないもの |
+| --- | --- | --- |
+| `VOICE_DIALING_DISABLED=1` | **新しく電話を鳴らすこと**（全経路が mock へ倒れる） | 発信済み通話の webhook 進行 |
+| `PROVIDER_WEBHOOKS_DISABLED=1` | provider webhook 4 本（503 + `Retry-After`） | **新規発信** |
+
+**誤発信を今すぐ止めたいなら `VOICE_DIALING_DISABLED=1`。** webhook 側だけ止めても
+新しい電話は鳴り続ける。逆に発信だけ止めても、既に鳴っている通話の webhook は届く。
+**両方止めるなら両方立てる。**
+
+- 真値の扱いは停止スイッチ共通（`1` / `true` / `on` / `yes`、それ以外は稼働）
+- 判定は**資格情報の解決より前**。止めたい状況で secret を読ませない
+- 止めても**受付そのものは完遂する**（mock 経路へ倒れるだけで、来訪者を締め出さない）
+
+恒久的に外したい場合はテナント設定の `enabled` を落とすか secret を消す
+（env はデプロイ単位、テナント設定はテナント単位）。
+
+#### 発信後の挙動
+
+1 手目を撃った時点で `'calling'` を返し、受付は `calling` のまま待つ。応答・未応答は
+provider webhook が `applyVoiceEventToCorrelation` 経由で確定する。
+**次の手（代理・部門代表）への自動エスカレーションはまだ配線されていない** — webhook は
+通話状態を記録するが発信はしない（`vonage_routing_dial_pending` をログに出す）。
+
+失敗時のログ（いずれも PII を含まない固定コード）:
+
+```
+voice_dial_failed  reason=no_entry_step|endpoint_unavailable|dial_failed|correlation_write_failed
+```
+
+`correlation_write_failed` は**電話が 1 回鳴った後で相関を書けなかった**状態。以後の webhook は
+相関を引けず 403 になるので、受付は失敗として扱われる（来訪者は有人支援へ倒れる）。
 > （`-c appEnv` での指定は不要）。テーブルへの読み書き権限も付与済み。
 
 ### 7. 初期データ投入（seed・初回のみ）

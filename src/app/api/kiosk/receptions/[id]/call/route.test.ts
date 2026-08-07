@@ -158,3 +158,65 @@ describe('POST /api/kiosk/receptions/:id/call — 営業時間外ガード (#367
     expect(evaluateCallGuard).not.toHaveBeenCalled();
   });
 });
+
+/**
+ * 実発信の配線 (#4 Inc D-2 項目 2)。
+ *
+ * 🔴 `webhookBaseUrl` を渡し忘れても**すべてのテストが緑のまま通る** — `executeRoutedCall` は
+ * 分からなければ mock へ倒すので、症状は「実発信が永久に起きない」という**沈黙**だけになる。
+ * このリポジトリが繰り返し踏んできた「緑の要約が未配線を隠す」形なので、引数そのものを固定する。
+ */
+describe('POST /api/kiosk/receptions/:id/call — 実発信の配線 (#4 Inc D-2)', () => {
+  it('🔴 executeRoutedCall へ webhookBaseUrl を渡す（渡さないと実発信が起きない）', async () => {
+    executeRoutedCall.mockResolvedValue(null);
+    startCall.mockResolvedValue({ ok: true, value: { id: 'rec-1', state: 'connected' } });
+
+    await call();
+
+    expect(executeRoutedCall).toHaveBeenCalledWith(
+      { tenantId: 'internal', siteId: 'default-site' },
+      'rec-1',
+      expect.objectContaining({ webhookBaseUrl: expect.stringMatching(/^https?:\/\//) }),
+    );
+  });
+
+  it('CloudFront 経由なら x-forwarded-host を基底にする（Function URL を渡さない）', async () => {
+    executeRoutedCall.mockResolvedValue(null);
+    startCall.mockResolvedValue({ ok: true, value: { id: 'rec-1', state: 'connected' } });
+
+    await POST(
+      new Request('http://some-fn-url.lambda-url.ap-northeast-1.on.aws/api/kiosk/receptions/rec-1/call', {
+        method: 'POST',
+        headers: { 'x-forwarded-host': 'kiosk.example.test', 'x-forwarded-proto': 'https' },
+      }),
+      { params: Promise.resolve({ id: 'rec-1' }) },
+    );
+
+    const options = executeRoutedCall.mock.calls[0]?.[2] as { webhookBaseUrl: string };
+    // Function URL のホストを渡すと Vonage の webhook が origin-verify で 403 になる（#612 同型）。
+    expect(options.webhookBaseUrl).not.toContain('lambda-url');
+  });
+
+  it("実発信（calling）でも stages を返し、結果を同期で確定しない", async () => {
+    executeRoutedCall.mockResolvedValue({
+      status: 'calling',
+      stages: [
+        { key: 'personal', status: 'active' },
+        { key: 'department', status: 'pending' },
+      ],
+      providerCallId: 'TEST-provider-call-id',
+    });
+    startCall.mockResolvedValue({ ok: true, value: { id: 'rec-1', state: 'calling' } });
+
+    const res = await call();
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.state).toBe('calling');
+    expect(body.stages).toEqual([
+      { key: 'personal', status: 'active' },
+      { key: 'department', status: 'pending' },
+    ]);
+    // 応答に provider 通話 ID を出さない（相関キーは来訪者端末へ渡さない）。
+    expect(JSON.stringify(body)).not.toContain('TEST-provider-call-id');
+  });
+});
