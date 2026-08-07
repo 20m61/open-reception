@@ -135,6 +135,10 @@ export async function resolveVoiceInitiator(
     signJwt: deps.signJwt ?? generateAppJwt,
     baseUrl: deps.apiBaseUrl ?? VONAGE_VOICE_API_BASE_URL,
     webhookBaseUrl,
-    fetch: deps.fetch ?? globalThis.fetch,
+    // 🔴 `globalThis` へ束縛する。裸の `globalThis.fetch` を渡すと、呼び出し側では
+    // `deps.fetch(...)` ＝ deps オブジェクトを `this` として呼ぶことになり、`this` を
+    // 検査する実装（ブラウザの `window.fetch` や一部 polyfill）で Illegal invocation になる。
+    // **テストは必ず fetch を注入するので、この経路はテストでは一度も通らない。**
+    fetch: deps.fetch ?? globalThis.fetch.bind(globalThis),
   });
 }
