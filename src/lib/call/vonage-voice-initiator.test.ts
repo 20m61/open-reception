@@ -57,10 +57,31 @@ describe('createVonageVoiceInitiator (#4 Inc D)', () => {
   });
 
   it('本文に来訪者情報を載せない（PII 境界）', async () => {
+    // 🔴 否定条件ではなく**キーの許可リスト**で固定する（理由は voice-initiator.test.ts）。
     const d = deps();
     await createVonageVoiceInitiator(d).initiate(COMMAND);
     const [, init] = (d.fetch as ReturnType<typeof vi.fn>).mock.calls[0] as [string, RequestInit];
-    expect(String(init.body)).not.toMatch(/visitor|purpose|company/i);
+    const body = JSON.parse(String(init.body)) as Record<string, unknown>;
+    expect(Object.keys(body).sort()).toEqual([
+      'answer_method',
+      'answer_url',
+      'event_method',
+      'event_url',
+      'from',
+      'ringing_timer',
+      'to',
+    ]);
+  });
+
+  it('JWT は注入された資格情報で署名する', async () => {
+    // 署名先を固定しないと、資格情報の取り違え（別テナントの鍵で署名）が素通りする。
+    const signJwt = vi.fn(() => 'TEST-JWT');
+    const d = deps({ signJwt });
+    await createVonageVoiceInitiator(d).initiate(COMMAND);
+    expect(signJwt).toHaveBeenCalledWith({
+      applicationId: 'APP-1',
+      privateKeyPem: 'TEST-KEY',
+    });
   });
 
   it('2xx 以外は失敗にする（発信したつもりで進めない）', async () => {

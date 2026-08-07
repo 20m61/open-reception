@@ -45,9 +45,21 @@ describe('buildCreateCallRequest (#4 Inc D)', () => {
 
   it('来訪者情報を一切含めない（PII 境界）', () => {
     // 第 1 段の案内は NCCO 側で組み立てる。発信リクエストに PII を載せない。
+    //
+    // 🔴 **キーの許可リストで固定する。** `not.toMatch(/visitor|name|.../)` の否定条件だと、
+    // 名指ししていない PII は素通りする。とくに案内文は日本語（`ncco: [{ text: '田中様が
+    // お見えです' }]`）で入りうるので、英単語の否定では**一切止まらない**。
+    // 項目を増やすときはここを更新し、その項目が PII でないことを明示的に判断すること。
     const body = buildCreateCallRequest(BASE);
-    const serialized = JSON.stringify(body);
-    expect(serialized).not.toMatch(/visitor|name|company|purpose/i);
+    expect(Object.keys(body).sort()).toEqual([
+      'answer_method',
+      'answer_url',
+      'event_method',
+      'event_url',
+      'from',
+      'ringing_timer',
+      'to',
+    ]);
   });
 
   it('http(s) 以外の answer_url を拒否する', () => {
