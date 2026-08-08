@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { BASE_REF_PREFERENCE, resolveBase, resolveDefaultBranchName, type GitRunner } from './git-base';
+import { BASE_REF_PREFERENCE, parseLsRemoteSymref, resolveBase } from './git-base';
 
 /**
  * 比較起点の解決 (#557)。
@@ -69,43 +69,51 @@ describe('resolveBase', () => {
   });
 });
 
-describe('resolveDefaultBranchName: 既定ブランチ名を gh 無しで解決する (#656)', () => {
-  // クラウドの週次ゲート環境で `gh repo view --json defaultBranchRef` が落ち、
-  // orphan ブランチ検査が `branch_check_unverified` のまま到達しなかった（PR #661 の実走で判明）。
-  // 同じセッションで `gh pr create` / `gh pr merge` は成功していたので、落ちたのは
-  // gh のリポジトリ解決だけ。クローン済みリポジトリなら remote HEAD から取れる。
+describe('parseLsRemoteSymref: 既定ブランチと全ブランチを 1 回の問い合わせで取る (#656)', () => {
+  // **ローカルの remote 追跡状態に依存しない**のが要点。クラウドの clone には
+  // `refs/remotes/origin/HEAD` が無く、`git symbolic-ref` も `gh repo view` も失敗して
+  // orphan ブランチ検査が到達しなかった（PR #661 / #663 の実走で 2 度確認）。
+  // `git ls-remote --symref origin` は**リモートに HEAD を尋ねる**ので、ローカルに
+  // 何も無くても答えが返る（リポジトリ外から明示 URL で実測して確認済み）。
 
-  const runner =
-    (result: string | null): GitRunner =>
-    (args) =>
-      args.join(' ') === 'symbolic-ref --short refs/remotes/origin/HEAD' ? result : null;
+  const OUTPUT = [
+    'ref: refs/heads/main\tHEAD',
+    '13074eb\tHEAD',
+    '6e74c6e\trefs/heads/docs/opus-5-loop-profile',
+    '13074eb\trefs/heads/main',
+    '375ad5a\trefs/pull/106/head',
+    'abc1234\trefs/tags/v1.0.0',
+  ].join('\n');
 
-  it('remote HEAD から既定ブランチ名を取る', () => {
-    expect(resolveDefaultBranchName(runner('origin/main'))).toBe('main');
+  it('HEAD の symref から既定ブランチを取る', () => {
+    expect(parseLsRemoteSymref(OUTPUT).defaultBranch).toBe('main');
   });
 
-  it('main 以外でも取れる', () => {
-    expect(resolveDefaultBranchName(runner('origin/develop'))).toBe('develop');
+  it('refs/heads/ のブランチだけを列挙する', () => {
+    // `refs/pull/*` を混ぜると、PR ごとに存在する擬似 ref が全部 orphan 候補になる。
+    expect(parseLsRemoteSymref(OUTPUT).branches).toEqual([
+      'docs/opus-5-loop-profile',
+      'main',
+    ]);
   });
 
-  it('剥がすのは先頭の origin/ 1 回だけ', () => {
-    expect(resolveDefaultBranchName(runner('origin/feature/origin/x'))).toBe('feature/origin/x');
+  it('スラッシュを含むブランチ名を壊さない', () => {
+    expect(parseLsRemoteSymref('aaa\trefs/heads/feat/a/b').branches).toEqual(['feat/a/b']);
   });
 
-  it('git が失敗したら undefined（推測で埋めない）', () => {
-    expect(resolveDefaultBranchName(runner(null))).toBeUndefined();
+  it('symref 行が無ければ既定ブランチは undefined（推測で埋めない）', () => {
+    // 誤った既定ブランチ名で判定すると、実在する既定ブランチが orphan に誤検出される。
+    const r = parseLsRemoteSymref('13074eb\trefs/heads/main');
+    expect(r.defaultBranch).toBeUndefined();
+    expect(r.branches).toEqual(['main']);
   });
 
-  it('空文字を名前として通さない', () => {
-    // **空文字は「問題なし」ではない。** 通すと既定ブランチ名が '' になり、
-    // 全リモートブランチが「既定ではない」＝ orphan 候補として誤検出される。
-    expect(resolveDefaultBranchName(runner(''))).toBeUndefined();
-    expect(resolveDefaultBranchName(runner('origin/'))).toBeUndefined();
+  it('symref が refs/heads/ 以外を指していたら undefined', () => {
+    expect(parseLsRemoteSymref('ref: refs/something/odd\tHEAD').defaultBranch).toBeUndefined();
   });
 
-  it('予期しない形は不明に倒す（origin/ が付いていない）', () => {
-    // remote HEAD が未設定だと別の形が返り得る。読めない形を推測で名前扱いすると、
-    // 誤った既定ブランチ名で orphan を誤検出する。呼び出し側の fallback へ落とす。
-    expect(resolveDefaultBranchName(runner('main'))).toBeUndefined();
+  it('空出力は「ブランチ 0 本」として返す（呼び出し側が未検査に倒せるように）', () => {
+    // **空を「問題なし」と読ませない。** 呼び出し側は branches が空なら未検査扱いにする。
+    expect(parseLsRemoteSymref('')).toEqual({ defaultBranch: undefined, branches: [] });
   });
 });

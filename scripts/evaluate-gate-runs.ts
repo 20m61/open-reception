@@ -24,7 +24,7 @@ import {
   type BranchPullRequest,
   type GateRunFinding,
 } from '../src/domain/governance/gate-run-evaluation';
-import { resolveDefaultBranchName, type GitRunner } from '../src/domain/governance/git-base';
+import { parseLsRemoteSymref } from '../src/domain/governance/git-base';
 
 const REPORT_ONLY = process.argv.includes('--report');
 const GATE_RUNS = resolve(import.meta.dirname, '..', 'docs', 'gate-runs.md');
@@ -49,48 +49,37 @@ function run(cmd: string, args: string[]): string {
  * fresh と読む類）。
  */
 function evaluateBranches(): GateRunFinding[] {
-  let defaultBranch: string;
+  let defaultBranch: string | undefined;
   let branchNames: string[];
   try {
     /**
-     * **既定ブランチ名は git を先に見る** (#656)。
+     * **既定ブランチもブランチ一覧も `ls-remote` 1 回から取る** (#656)。
      *
-     * 当初は `gh repo view` だけだったが、**クラウドの週次ゲート環境で落ちて検査が
-     * 到達しなかった**（PR #661 の実走。同じセッションで `gh pr create` /
-     * `gh pr merge` は成功していたので、落ちたのは gh のリポジトリ解決だけ）。
-     * remote 追跡 HEAD ならクローン済みリポジトリで完結し、追加の権限も要らない。
-     * gh は fallback に回す。
+     * ここは 2 度外している。`gh repo view` はクラウドで失敗し（PR #661 の実走）、
+     * `git symbolic-ref refs/remotes/origin/HEAD` は**その clone に remote 追跡 HEAD が
+     * 無く**やはり失敗した（PR #663 の実走）。`ls-remote --symref` は**リモートに
+     * HEAD を尋ねる**のでローカル状態に依存しない。
      */
-    const gitRunner: GitRunner = (args) => {
-      try {
-        return run('git', [...args]);
-      } catch {
-        return null;
-      }
-    };
-    defaultBranch =
-      resolveDefaultBranchName(gitRunner) ??
-      run('gh', ['repo', 'view', '--json', 'defaultBranchRef', '--jq', '.defaultBranchRef.name']);
-    branchNames = run('git', ['ls-remote', '--heads', 'origin'])
-      .split('\n')
-      .map((line) => line.split('refs/heads/')[1] ?? '')
-      .filter((name) => name !== '');
+    const refs = parseLsRemoteSymref(run('git', ['ls-remote', '--symref', 'origin']));
+    defaultBranch = refs.defaultBranch;
+    branchNames = refs.branches;
   } catch (e) {
     return [
       {
         code: 'branch_check_unverified',
         severity: 'warning',
-        message: `リモートブランチの検査を実行できませんでした（${e instanceof Error ? e.message.split('\n')[0] : String(e)}）。git の remote 追跡と、PR 問い合わせ用の gh・ネットワークが要ります。**「取りこぼし無し」ではなく「未検査」です。**`,
+        message: `リモートブランチの検査を実行できませんでした（${e instanceof Error ? e.message.split('\n')[0] : String(e)}）。git のネットワーク到達と、PR 問い合わせ用の gh が要ります。**「取りこぼし無し」ではなく「未検査」です。**`,
       },
     ];
   }
-  if (defaultBranch === '' || branchNames.length === 0) {
+  // **空を「取りこぼし無し」と読ませない。** 既定ブランチが読めなければ全ブランチが
+  // 「既定ではない」＝ orphan 候補になり、ブランチ 0 本なら検査が成立していない。
+  if (defaultBranch === undefined || branchNames.length === 0) {
     return [
       {
         code: 'branch_check_unverified',
         severity: 'warning',
-        message:
-          'リモートブランチの一覧または既定ブランチ名が空でした。**「取りこぼし無し」ではなく「未検査」です。**',
+        message: `リモートの ref を読み取れませんでした（既定ブランチ: ${defaultBranch ?? '不明'} / ブランチ ${branchNames.length} 本）。**「取りこぼし無し」ではなく「未検査」です。**`,
       },
     ];
   }
