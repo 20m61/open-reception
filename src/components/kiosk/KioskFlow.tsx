@@ -665,8 +665,16 @@ export function KioskFlow({ operatingStatus, sttAdapterFactory, voiceSession, qr
   // 🔴 **経過時間で結果を作らない。** 状態を決めるのはサーバの応答だけ（権威はサーバ）。
   // 上限到達（`give_up`）は「判定できなかった」の表明で、未応答とは別物として
   // `contact_failed` へ倒す。
+  //
+  // 🔴 **`calling` の間だけ回す** (#652)。`pstnCallId` を null に戻すのは次に `calling` へ
+  // 入ったときだけなので、`pstnCallId` だけを見ていると**来訪者が呼び出し中から抜けても
+  // 最大 5 分（`CALL_STATUS_POLL_MAX_MS`）回り続ける**。抜ける経路は逃げ道バーの「最初に戻る」
+  // (RESET)・CANCEL・担当者応答からの代替導線の 3 つあり、いずれも #652 以前から到達可能だった。
+  // 状態機械が終端状態で `CALL_*` を不正遷移として無視するため**画面は壊れず、テストもゲートも
+  // 緑のまま通る**種類の欠陥。`data.state` を条件と deps の両方に入れることで、抜けた時点で
+  // cleanup が走ってタイマーが止まる（3 経路すべてが同時に閉じる）。
   useEffect(() => {
-    if (pstnCallId === null) return;
+    if (pstnCallId === null || data.state !== 'calling') return;
     let cancelled = false;
     const startedAt = Date.now();
     let timer: number | null = null;
@@ -711,7 +719,7 @@ export function KioskFlow({ operatingStatus, sttAdapterFactory, voiceSession, qr
       cancelled = true;
       if (timer !== null) window.clearTimeout(timer);
     };
-  }, [pstnCallId]);
+  }, [pstnCallId, data.state]);
 
   // 完了・キャンセル後は一定時間で待機画面へ自動復帰する。個人情報も破棄される。
   useEffect(() => {
