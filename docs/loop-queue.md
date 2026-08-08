@@ -14,7 +14,54 @@
 > **stale の直接原因は、分類を書いた周回と実装した周回が別で、実装側が表を直さないこと。**
 > 消化したら必ずその周回で該当行を直す（下の「消化した wave」表に足すだけでは不十分）。
 
-## 現在地（2026-07-30 更新・第 77 wave 消化後）
+## 現在地（2026-08-08 更新・第 131〜137 wave 消化後）
+
+> **この日の周回は「観測を直す」に尽きた。** #656（週次ゲート routine が FAIL を記録しても
+> PR を作らない）の外側の網を作る過程で、**クラウドで検査が到達しない原因を 3 周にわたって
+> 当て推量で差し替えた**（`gh repo view` → `git symbolic-ref` → `git ls-remote --symref`）。
+> 毎回クラウドで実走させて事実は持ち帰ったのに、そこに書かれていたのは常に
+> `Command failed: <コマンド>` だけだった — `execFileSync` の例外は `message` が
+> そこまでで、**理由は `stderr` にある**。拾っていなかった。
+>
+> stderr を 1 行載せた途端（PR #665）、原因も対処法もエラー本文が教えてくれた:
+> 「クラウドのサンドボックスは GitHub GraphQL を絞っており、`gh pr list` は 403。
+> REST via `gh api repos/{owner}/{repo}/...` を使え」。
+> **直すべきは 4 つ目のコマンドではなく観測だった。同じ対象で 2 回外したら、3 つ目の候補を
+> 試す前に「診断が原因を含んでいるか」を見る。**
+>
+> **分類 stale の 6 回目**: #578 の増分 2・3 は既に main に在り、しかも**増分 2 は issue の
+> 提案とは違う形で解決済み**だった（版差は `createVRMAnimationClip` が補正するので、
+> issue が提案した `resolveMotionApplicability` を足すと**二重補正**になると実コードが記録
+> していた）。残っていたのは増分 1 の後半（カメラの観測可能化）だけ。
+>
+> **自分が入れた検出器で狼少年を作りかけた。** `orphan_branch`（PR にならなかった push）は
+> **push 済み・PR 作成前**という正常な窓を error にしていた（自分の作業ブランチ 2 本を実際に
+> 誤検出）。FAIL / SKIP で 2 度踏んだ型の 3 回目。猶予 24 時間で分けたが、**日時が分からない
+> ときは指摘する側に倒す** — ローカルに無いオブジェクト＝一度も fetch していないブランチで、
+> まさに #656 が起きた形だから。
+>
+> **非停止境界で残っているもの**:
+> - **#656 の AC1 本体 / AC2** … routine 自身が PR 作成失敗に気づいて失敗終了すること。
+>   **週次 routine の指示文が読めずブロック中** — `RemoteTrigger` の `list` は新しい 20 件しか
+>   返さず cursor を受け付けない。routine ID を控えるか https://claude.ai/code/routines を開く
+> - **`BranchPullRequest.state` の simplify** … 運んでいるだけで判定に読まれていない
+>   （消費者ゼロのフィールド）。「open/merged/closed はいずれも指摘しない」という 3 本の
+>   テストは、状態を検証しているように見えて素通りしている
+>
+> **停止境界・外部待ち**: #629（下記）/ #646（2 手目以降の実発信）/ #638（origin-verify の
+> ローテーション手段・**今やると全断する**）/ #625（実機 UAT）/ #424 の残 2 項目。
+>
+> 🔴 **#629 は「やること節どおりに実装すると壊れる」ことが判明した**（実装せず issue に記録）。
+> CloudFront の custom error response は**ディストリビューション単位で cache behavior に
+> 絞れない**ので、403/503 を割り当てると **API の 403/503 応答を全部 HTML に差し替える**。
+> 本番 31 ファイルが 403 を返し、`PROVIDER_WEBHOOKS_DISABLED` の 503 + `Retry-After` は
+> Vonage の再送に効いている運用スイッチ。解決策は 3 通りあって fallback の意味が変わるため
+> **停止境界（Journey / fallback の仕様判断）**。
+>
+> **#612 は受入条件 1（Secrets Manager 供給）と 3（漏洩確認）が充足済みで、残るのは
+> 2（ローテーション手順）= #638 だけ。** それが解けるまでクローズできない。
+
+## 旧・現在地（2026-07-30 更新・第 77 wave 消化後）
 
 > **#361 をクローズした**（第 76〜77 wave / PR #505・#506）。受入条件 7 件すべて充足。
 > 着手時の `/issue-ac-mapping` で **7 AC のうち 6 件が既に充足**と判明し、本書の「`ConversationTurnView`
@@ -148,7 +195,7 @@
   Increment 4（営業時間外 Kiosk UX）は EC2 非依存でローカル完結可能。#366 が要るのは
   EC2 start/stop adapter のみ。→ **その通りで、実際に PR #407/#414 で消化済み**（第 41 wave 確認）。
 
-## オープン issue（42 件・2026-07-28 時点）
+## オープン issue（46 件・2026-08-08 時点）
 
 > **第 41 wave の棚卸し**: 本表の分類を実コードへ突き合わせ直したところ、**4 行が実装済みを
 > 「未着手」と書いていた**（#367 / #369〜#372 / #374 / #375）。件数も 43 → 42（#327 クローズ）。
@@ -340,6 +387,13 @@
 | 128 | 2026-08-07 | **#4 Inc D-2 項目 2: 実 PSTN 発信を本番経路へ配線した（停止境界・ユーザー承認済み）。** `executeRoutedCall` が mock / 実発信を選ぶ。**2 つの経路は形が違う** — mock は 1 リクエストで取次を最後まで回して確定するが、実 PSTN は **1 手撃って `'calling'` を返し、結果は webhook で後から届く**（`runVoiceRoutedCall`）。`RoutedCallResult.status` から `'calling'` を除外していた型を外し、`outcome` は mock 経路のみの任意項目にした。**実発信は 5 条件がすべて揃ったときだけ**（有効ルート / webhook 基底 URL / テナントが vonage+enabled+secret / applicationId・fromNumber・privateKey / 1 手目の接続先が pstn かつ enabled）。1 つでも欠ければ mock へ倒れる。🔴 **失敗を例外にしない** — call route は `executeRoutedCall` の例外を捕まえて単発 mock へ fail-open するので、投げると**鳴っていないのに「繋がった」と来訪者へ表示しうる**。実発信経路の失敗は `failed` ＋ 固定コード（`dial_failed` 等。provider のエラー文言は 番号・URL が混ざるので載せない）で返す。相関を書けなかったときも `'calling'` にせず `failed` — 相関が無いと webhook が全部 403 になり **来訪者が無限に待つ**ので、有人支援へ倒す。🔴 **停止スイッチの穴を塞いだ** — `PROVIDER_WEBHOOKS_DISABLED` は webhook（発信後の進行）しか止めず、**新規発信は止まらない**。配線前は何も鳴らないので十分だったが、いまは違う。`VOICE_DIALING_DISABLED` を新設し、発信の入口 1 箇所（`resolveVoiceInitiator`）で**資格情報の解決より前**に倒す。あわせて **#645 を修正** — dial 分岐が `advance.next.position` を丸ごと捨てており `jti` 冪等の ledger まで捨てていた（同一 jti の再配信が `duplicate` にならない）。位置は据え置いたまま ledger だけ保存する。配線テストは**引数そのもの**を固定した（`webhookBaseUrl` を渡し忘れても全テストが緑のまま通り、症状は「実発信が永久に起きない」沈黙だけになる）。変異で 3 件 kill 確認。🔴 **配線して初めて見えた欠陥を 1 件自分で捕まえた** — `'calling'` はもともと **Vonage Video 専用の意味**（セッション確立済み・担当者の参加待ち）で、端末は `calling` を見るとビデオビューを開く。PSTN 経路にはセッションが無いので、**存在しないトークンを取りに行って失敗する**。媒体の判定を純関数 `shouldOpenVideoView` へ出した（空文字を「セッションあり」に化けさせない）。**残: 2 手目以降の発信は未配線（#646）／端末が PSTN の結果を確定できない（#647・Journey 仕様判断＝停止境界）**・項目 6（`/dtmf` の PII 供給）は停止境界のまま | PR #648 |
 | 129 | 2026-08-08 | **#647: 実 PSTN 通話の結果を端末が確定できるようにした。** 実発信 (#4 Inc D-2 項目 2) の受付は `'calling'` で止まり、webhook は相関を進めるが**受付状態を動かす者が居なかった**＝来訪者が呼び出し中画面で待ち続ける。**ユーザー判断で 4 点を確定**（issue #647 のコメントが正本）: 方式は `/status` ポーリング（push/SSE は Lambda で長時間接続が未検証・費用リスク）／**タイムアウトの権威はサーバ**／**未着の確定は読み時の遅延評価**（EventBridge sweeper は**継続的 AWS 費用**になるので採らない。実績は月 $0.0005 なのでコスト構造を変えない）／1 本の PR。🔴 **着手時の調査で自分の前提が 1 つ誤りと判明** — 「UI とサーバでタイムアウトが二重」と書いていたが、`KioskFlow` は**サーバが返した timeout の表示を #323 で遅らせているだけ**で権威はサーバ側にあった。端末が発明するタイムアウトは `KioskCallView` の 30 秒だけで、これは**ビデオ媒体**＝ PSTN は通らない。よって「権威をサーバへ寄せる」ために外す配線は無く、サーバが結果を**産む**ようにするだけでよかった。入れたもの: 純関数 `resolveCallResolution`（通話状態→結果の写像 ＋ 呼出予算超過の遅延タイムアウト。**通話状態が先・予算は後** — 逆にすると応答済みなのに時間切れで代替導線を出す）／相関の `dialExpiresAt`（任意・互換）／受付の `providerCallId`（任意・互換。相関は provider 通話 ID をキーに保存されるので受付側が鍵を持たないと引けない）／`markCallFailed`／`/status` の遅延確定（**認可の後**に行う＝越境要求で他人の通話を進めない。**例外を投げない**＝相関が読めなくても状態取得を巻き添えにしない）／純関数 `decidePollAction`（**サーバの結果を経過時間で上書きしない**・上限到達は「判定できなかった」の表明で未応答とは別物として `contact_failed` へ）／端末のポーリング effect。体験モデル（`docs/experience/README.md`）との対応も確認 — 未応答/話中/辞退→`person_unavailable`、発信失敗→`contact_failed`。変異 5 件すべて kill。**残: #646（2 手目以降の発信）**。🔴 **調査中に既存欠陥を 1 件発見 → #649**: #99 の担当者応答ポーリングが **`calling` 中に 1 度も走っていない**（`sessionId` を立てるのは `CALL_CONNECTED`/`TIMEOUT`/`FAILED` の 3 つだけで `CONFIRM → calling` では立たず、`useStaffResponse` の第 1 引数が `null` になる）。`handleStaffResponseFallback` の calling 分岐も到達不能。🔴 **自分の実装の実バグも 1 件**: ポーリングの `fetch` に `cache: 'no-store'` が無く、同一 URL の GET なのでブラウザ HTTP キャッシュに当たると状態が変わっても古い応答を読み続ける（テスト環境にキャッシュが無いので**ゲートも全テストも緑のまま通る**）。あわせて新規 advisory **GHSA-2v37-7h3g-55p8 (nanoid, high)** が `main` でもゲートを塞いでいたため lockfile の patch 更新 6 件で解消（`package.json` 無変更） | PR #650 |
 | 130 | 2026-08-08 | **#649: 呼び出し中に担当者応答が画面へ出るようにした。** #99 の `useStaffResponse` は「呼び出し中・応答後にポーリングする」意図だったが、受付 ID を立てるのが `CALL_CONNECTED`/`CALL_TIMEOUT`/`CALL_FAILED` の 3 つだけで `CONFIRM → calling` では立たないため、**`calling` の間は 1 度も走っていなかった**（第 1 引数が null）。実際に走り始めるのは `connected` になった後＝すでに応答が確定した後だけ。表示側（`StaffResponseBanner` を calling で描画する配線・testid）は最初から在り、**壊れていたのは受付 ID の供給だけ**だった。issue の選択肢 1（ID を先に立てる）を採用し、**状態を動かさない** action `SESSION_CREATED` を追加（遷移表を引く**前**に処理するので `domain/reception/state.ts` は不変・`ReceptionEvent` を増やしていない）。`calling` 以外で届いた ID は無視する（キャンセル後に届いた作成応答で立て直さない＝「不正遷移は現状維持」と同じ考え方）。🔴 **自分の変更が作りかけた regression を 1 件、実装中に自分で捕まえた** — ID を先に立てた結果、`/call` が例外で落ちたときの `CALL_FAILED`（ID を持たない）が `sessionId: action.sessionId` で既存 ID を undefined に上書きし、終端画面からの `/fallback`・`/feedback` の宛先が消える形になっていた。「action が ID を持たない」と「受付が存在しない」は**別物**（[[lesson-empty-vs-missing-fallback]] と同型）。検証: e2e 2 件を**実装前に本番ビルドで red 実測**（バナーが calling 中に一度も出ない）→ 実装 → 再ビルドで 23 passed。guard は**変異させて kill を確認**。`--full` は 13 ステップ全 PASS・SKIP ゼロ（infra `138 passed (138)` ＝ #642 の偽 green 形ではない）。🔴 **セルフレビューで範囲外の既存欠陥を 1 件発見 → #652**: `pstnCallId` を null に戻すのが calling の effect 先頭だけなので、**`calling` を抜けても #647 の結果ポーリングが最大 5 分止まらない**（逃げ道バーの「最初に戻る」= RESET・CANCEL で **#649 以前から到達可能**）。状態機械が不正遷移として無視するので**画面は壊れずテストもゲートも緑のまま通る**種類。あわせて `/status` を 2 経路（`useStaffResponse` 3s ＋ #647 3s）で叩く形の 1 本化も #652 に含めた。本番稼働直後の #647 の結果確定ロジックを同じ増分で触らない判断 | PR #651 |
+| 131 | 2026-08-08 | **#656: 記録の穴（AC3）と、PR にならなかった push を検出。** `stale` は**直近 1 件の経過日数しか見ない**ので、週次の途中で 1 回分が main に載らなくても次の回が載った時点で永久に見えなくなる（2026-08-03 がこの形）。隣接する `full` 記録の間隔で `record_gap` を検出し、解決手段は「抜けた回の行を追記する」（並びは日時で決まるので後から挿せる＝永久に消えない指摘にしない）。あわせて**リモートに在るのに PR が 1 つも無いブランチ**を `orphan_branch` で検出。**squash マージなので ancestry では判定できず**、材料は「そのブランチ名を head に持つ PR が在るか」だけ | PR #660 / #661 |
+| 132 | 2026-08-08 | **#578 増分 1 の残り: 実効画角を観測可能にした。** 版（`data-vrm-version`）とモーション（`data-motion-state`）は観測できるのに**カメラだけが出ておらず**、実機で「顔が切れる/真っ黒」を見ても帰属先を絞れなかった。`resolveCameraFraming` は頭の高さを**黙って既定へ倒し、黙って妥当域へ寄せる**ので、その事実を `headHeightSource`（measured/fallback/clamped）として返し `data-camera-framing` に載せる。**値は丸めて出す** — `ResizeObserver` は 1px 未満でも発火し、生の浮動小数だと属性が毎フレーム変わって増分 3 で踏んだ発散の入口になる。**AC マッピングで増分 2・3 が既に main に在ると判明**（stale 6 回目） | PR #662 |
+| 133 | 2026-08-08 | **#656: 既定ブランチ名を gh に頼らず解決（2 度目の当て推量・仮説は外れた）。** `git symbolic-ref --short refs/remotes/origin/HEAD` へ移したが、**クラウドの clone には remote 追跡 HEAD が無く**失敗。gh fallback も従来どおり落ち、`branch_check_unverified` は消えなかった。routine が緑に見せず事実を持ち帰ったのは設計どおり | PR #663 |
+| 134 | 2026-08-08 | **#656: リモートの ref を `ls-remote --symref` 1 回から取る（3 度目の当て推量）。** `symbolic-ref` が効かなかったので、**リモートに HEAD を尋ねる** `ls-remote --symref` へ。リポジトリ外から明示 URL で叩いて ref が返ることを実測してから採用した（前回欠けていた検証）。既定ブランチとブランチ一覧が 1 回で揃い往復も減る。**この経路自体はクラウドで成功したが、失敗が `gh pr list` へ移っただけだった** | PR #664 |
+| 135 | 2026-08-08 | 🔴 **#656: 外部コマンド失敗の理由（stderr）を診断に載せた。この日いちばん効いた増分。** `execFileSync` の例外は `message` が `Command failed: <cmd>` までで、**理由は `stderr`**。拾っていなかったため、クラウドで検査が到達しない原因を**一度も見ないまま 3 周**（wave 132〜134）当て推量を重ねた。1 行載せた途端、原因（GraphQL 403）も対処法（REST を使え）もエラー本文が教えてくれた。**あわせて URL 埋め込みの資格情報を伏字化** — クラウドの remote は `https://x-access-token:<token>@…` の形で、git の stderr はその URL を echo し、この説明文は PR 本文へ運ばれる | PR #665 |
+| 136 | 2026-08-08 | **#612: origin-verify の秘密漏洩テストの隙間を埋めた。** 🔴 **当初「テストが 1 本も無い」と判断しかけたが誤り** — `rg` を `secret` で絞ったが実際のテスト名は「シークレット」で、既存 2 本を見落としていた（変異を当てたら既存テストが落ちて発覚）。本物の隙間は 3 つ: (a) **`disabled` 経路** — `logOriginVerifyTransition` が `secret` を実際に受け取って読むのはこの分岐だけなのに未被覆、(b) `console.log`/`info`/`debug`（既存 spy は error/warn だけ）、(c) **`missing-secret` の 503 経路** — 未解決でも env には未置換の `{{resolve:secretsmanager:<名前>:...}}` が入っており**保管場所の名前**を含む。実装は元から正しく、3 つの漏らし方を埋め込んで対応テストが死ぬことを確認した | PR #666 |
+| 137 | 2026-08-08 | **#656: orphan 検査を REST 経路にし、PR 作成前の窓を殺さない。** `gh pr list` は GraphQL を叩き、クラウドのサンドボックスがそれを絞っているため 403（PR #665 の stderr で判明）。`gh api repos/<owner>/<repo>/pulls?state=all&head=<owner>:<branch>` へ移し、owner/repo は remote URL からローカルに取る（**読めない形は推測で組み立てない** — 誤った owner/repo だと 404 が「PR が無い」と誤読される）。あわせて**猶予 24 時間**を入れ、push 済み・PR 作成前を error にしないようにした。**日時が分からなければ指摘する側に倒す**（ローカルに無いオブジェクト＝一度も fetch していないブランチ＝ #656 が起きた形）。REST が実際に PR #428 を見つけること、かつそのブランチの先端が猶予外であることを実測して「除外理由が猶予ではなく PR」だと確認 | 本書 |
 | 124 | 2026-08-07 | **#630: middleware の 403/503 による全断をアラームに載せた。** middleware の応答は **Lambda としては成功した呼び出し**なので `Errors`/`Throttles`/`Duration` のどれにも出ず、origin-verify の fail-closed 全断が**誰にも通知されなかった**。🔴 **着手時の調査で issue の前提が2 つ崩れた**: (a) `missing-secret` は **503＝5xx** なので CloudFront `5xxErrorRate` アラーム(#303)に**既に部分的に乗っていた**（「一切引っかからない」は半分だけ正しい）、(b) issue の第 1 案「4xx アラームを足す」は`CloudFrontMonitoringStack` の**明示的な設計判断に反する**（ボットのパス探索で恒常的に発生し、「直叩き」と「配備破損」を分離できない）。よって 4xx 率ではなく**アプリの拒否ログをメトリクス化**し、`missing-secret`（1 件で即・配備側の自損）と `mismatch`（10 件×3 期間・単発は正常動作）を**別メトリクスに分けた**。🔴 **この機能の急所はアラームではなく文言のドリフト** — ログを書き換えるとフィルタが黙って外れる。`ORIGIN_VERIFY_LOG_MARKERS` を `origin-verify.ts` に置き **アプリと CDK が同じ定数を使う**形にし、両側から変異させて kill を確認した（当初は CDK だけが定数を使い proxy.ts は直書きのままで、「共有している」というコメントが**嘘だった**のを自分で見つけて直した）。**デプロイはしていない** — アラーム 2 本の課金は `OpenReception-WebMonitoring-<env>` の適用時に発生する | PR #636 |
 | 123 | 2026-08-06 | **#634: audit ステップが `infra/` を監査していなかったのを塞ぎ、依存を更新した。** #633 のマージ後、`git push` が返した Dependabot「6 high」とゲートの `PASS audit` が食い違っていたことから調査。**どちらも正しく、見ている manifest が違った** — `audit:deps` は root の `npm audit` だけで、**`infra/` は 1 度も監査されていなかった**（#628 と同じ構造の穴で、対象がテストか監査かの違いしかない）。6 件はすべて `aws-cdk-lib` の推移依存（`ajv → fast-uri` / `brace-expansion`）。🔴 **`overrides` と `npm audit fix` は原理的に効かない** — `table`/`minimatch` が `aws-cdk-lib` の **`bundleDependencies`** で tarball 内に同梱されているため。実際 `npm audit fix` は「fix available」と言いながら lockfile を 1 バイトも変えなかった（＝**効いていないのに効いたように見える**）。唯一の手段である `aws-cdk-lib` 2.260.0 → 2.263.0 で **6 → 1** へ。残る 1 件は上流の再バンドル待ちなので、**advisory 単位・理由付き・期限付きの allowlist**（`audit-allowlist.json`）で受容する（`--audit-level` で緩めると severity 全体が盲点になる。期限切れは自動でFAIL へ戻り、上流が直せば unused として警告される）。CDK 更新の安全性は**実測**: dev WebStack の合成テンプレートが更新前後で **42,809 バイト完全一致**、infra 133 テスト green。新規 10 テスト、変異 5 件すべて kill、失敗経路 3 通り（未登録・期限切れ・未使用）も実際に走らせて exit 1 を確認 | PR #635 |
 | 122 | 2026-08-06 | **#628: `infra/test/**` がゲートで 1 度も実行されていなかったのを配線した。** root の `npm test` は root vitest の include しか走らせず、CDK テンプレートのアサーション 9 ファイルが**誰にも見られていなかった**（`tsc --noEmit` は型しか見ない）。着手時の AC マッピングで **AC3（`describe` 直下の `new WebStack`）は #627 で既に充足**と判明し、実装対象は 2 つに絞れた。🔴 **実測して初めて分かった重要な事実**: 当時の main で `npm --prefix infra test` を回すと **17 failed**。`.open-next` の状態は「有る/無い」の 2 値ではなく **absent / stale / fresh の 3 値**で、#632 のマージで `src` の mtime が進んだ結果 stale になり凍結ガードが発火していた。つまり **AC2 を「無言スキップ」だけの問題として実装すると外す**。判定を `infra/lib/build-artifacts.ts` へ一本化し（synth ガードとテストが同じ関数を使う。二重実装は #557 で食い違った実績がある）、stale は**赤ではなく理由付き SKIP**へ（`src` を触れば毎回 stale になるので、赤にすると常時赤＝赤を無視する習慣がつく。#424 増分 3 と同じ理屈）。ゲートは `--pr` 以上で `infra (cdk vitest)` を独立ステップとして持ち、fresh でなければ `SKIP  infra WebStack synth  (理由)` を summary へ出す（`--strict` で FAIL）。**「黙って 0 件にしない」の実体は「独立ステップが summary に自分の行を持つこと」**。あわせて `QUALITY_GATE_DRY_RUN=1` を足し、tier → ステップの解決を**実際にスクリプトを起動して**固定するテストを置いた（字面の grep はリファクタで簡単に嘘になる）。新規 17 テスト、変異 8 件すべて kill | PR #633 |
