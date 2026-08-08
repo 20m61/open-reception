@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { BASE_REF_PREFERENCE, resolveBase } from './git-base';
+import { BASE_REF_PREFERENCE, resolveBase, resolveDefaultBranchName, type GitRunner } from './git-base';
 
 /**
  * 比較起点の解決 (#557)。
@@ -66,5 +66,46 @@ describe('resolveBase', () => {
   it('候補は origin/main → main の順で、それ以外を勝手に見ない', () => {
     // 起点が増えると「どこからの差分か」が実行ごとに変わり、数字の意味が揺れる。
     expect(BASE_REF_PREFERENCE).toEqual(['origin/main', 'main']);
+  });
+});
+
+describe('resolveDefaultBranchName: 既定ブランチ名を gh 無しで解決する (#656)', () => {
+  // クラウドの週次ゲート環境で `gh repo view --json defaultBranchRef` が落ち、
+  // orphan ブランチ検査が `branch_check_unverified` のまま到達しなかった（PR #661 の実走で判明）。
+  // 同じセッションで `gh pr create` / `gh pr merge` は成功していたので、落ちたのは
+  // gh のリポジトリ解決だけ。クローン済みリポジトリなら remote HEAD から取れる。
+
+  const runner =
+    (result: string | null): GitRunner =>
+    (args) =>
+      args.join(' ') === 'symbolic-ref --short refs/remotes/origin/HEAD' ? result : null;
+
+  it('remote HEAD から既定ブランチ名を取る', () => {
+    expect(resolveDefaultBranchName(runner('origin/main'))).toBe('main');
+  });
+
+  it('main 以外でも取れる', () => {
+    expect(resolveDefaultBranchName(runner('origin/develop'))).toBe('develop');
+  });
+
+  it('剥がすのは先頭の origin/ 1 回だけ', () => {
+    expect(resolveDefaultBranchName(runner('origin/feature/origin/x'))).toBe('feature/origin/x');
+  });
+
+  it('git が失敗したら undefined（推測で埋めない）', () => {
+    expect(resolveDefaultBranchName(runner(null))).toBeUndefined();
+  });
+
+  it('空文字を名前として通さない', () => {
+    // **空文字は「問題なし」ではない。** 通すと既定ブランチ名が '' になり、
+    // 全リモートブランチが「既定ではない」＝ orphan 候補として誤検出される。
+    expect(resolveDefaultBranchName(runner(''))).toBeUndefined();
+    expect(resolveDefaultBranchName(runner('origin/'))).toBeUndefined();
+  });
+
+  it('予期しない形は不明に倒す（origin/ が付いていない）', () => {
+    // remote HEAD が未設定だと別の形が返り得る。読めない形を推測で名前扱いすると、
+    // 誤った既定ブランチ名で orphan を誤検出する。呼び出し側の fallback へ落とす。
+    expect(resolveDefaultBranchName(runner('main'))).toBeUndefined();
   });
 });
