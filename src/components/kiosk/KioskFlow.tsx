@@ -87,6 +87,7 @@ const CheckinFlow = dynamic(() => import('./CheckinFlow').then((mod) => mod.Chec
 
 import {
   useStaffResponse,
+  type ReceptionStatusPoll,
 } from './useStaffResponse';
 import {
   PurposeSelector,
@@ -673,53 +674,13 @@ export function KioskFlow({ operatingStatus, sttAdapterFactory, voiceSession, qr
   // 状態機械が終端状態で `CALL_*` を不正遷移として無視するため**画面は壊れず、テストもゲートも
   // 緑のまま通る**種類の欠陥。`data.state` を条件と deps の両方に入れることで、抜けた時点で
   // cleanup が走ってタイマーが止まる（3 経路すべてが同時に閉じる）。
+  // 🔴 **`give_up` 予算の起点は「PSTN 発信が確定した時刻」** (#652)。ポーリングのループは
+  // 受付作成の時点から回っている（担当者応答と共有しているため）が、予算の起点をループ側に
+  // 持たせると 1 往復ぶん早まって意味が変わる。ここで別に持つ。
+  const pstnPollStartedAtRef = useRef<number | null>(null);
   useEffect(() => {
-    if (pstnCallId === null || data.state !== 'calling') return;
-    let cancelled = false;
-    const startedAt = Date.now();
-    let timer: number | null = null;
-
-    const poll = async () => {
-      try {
-        // `cache: 'no-store'` は必須 — 同一 URL の GET なのでブラウザの HTTP キャッシュに
-        // 当たると、状態が変わってもポーリングが永久に古い応答を読み続ける
-        // （`useStaffResponse` も同じ理由で付けている）。
-        const res = await fetch(`/api/kiosk/receptions/${pstnCallId}/status`, {
-          cache: 'no-store',
-        });
-        if (cancelled) return;
-        if (!res.ok) throw new Error('status unavailable');
-        const body = (await res.json()) as { state: string };
-        if (cancelled) return;
-
-        const action = decidePollAction(body.state, Date.now() - startedAt);
-        if (action.kind === 'resolved') {
-          dispatch({ type: action.event, sessionId: pstnCallId });
-          return;
-        }
-        if (action.kind === 'give_up') {
-          // 結果を断定しない。呼び出しを完了できなかった（contact_failed）として代替導線へ。
-          dispatch({ type: 'CALL_FAILED', sessionId: pstnCallId, reason: 'server' });
-          return;
-        }
-      } catch {
-        // 単発の取得失敗では諦めない（電話は鳴り続けている）。上限に達したら give_up 側で倒れる。
-        if (cancelled) return;
-        if (Date.now() - startedAt > CALL_STATUS_POLL_MAX_MS) {
-          dispatch({ type: 'CALL_FAILED', sessionId: pstnCallId, reason: 'network' });
-          return;
-        }
-      }
-      timer = window.setTimeout(() => void poll(), CALL_STATUS_POLL_INTERVAL_MS);
-    };
-
-    timer = window.setTimeout(() => void poll(), CALL_STATUS_POLL_INTERVAL_MS);
-
-    return () => {
-      cancelled = true;
-      if (timer !== null) window.clearTimeout(timer);
-    };
-  }, [pstnCallId, data.state]);
+    pstnPollStartedAtRef.current = pstnCallId === null ? null : Date.now();
+  }, [pstnCallId]);
 
   // 完了・キャンセル後は一定時間で待機画面へ自動復帰する。個人情報も破棄される。
   useEffect(() => {
@@ -930,8 +891,56 @@ export function KioskFlow({ operatingStatus, sttAdapterFactory, voiceSession, qr
 
   // 担当者の応答アクションを短時間ポーリングで取得する (issue #99)。
   // 呼び出し中・応答後（calling/connected）のみ。終端状態では停止し、個人情報は持ち越さない。
+  //
+  // **`/status` を叩くのはこの 1 本だけ** (#652)。実 PSTN の結果確定（#647）も同じ応答から
+  // 導出する（`onPoll`）。かつては別々に 3 秒間隔で叩いており、サーバ側の `resolvePendingCall`
+  // が丸ごと 2 倍走っていた。
   const pollResponseEnabled = data.state === 'calling' || data.state === 'connected';
-  const staffResponse = useStaffResponse(data.sessionId ?? null, { enabled: pollResponseEnabled });
+
+  /**
+   * 毎ポーリングの結果から実 PSTN の呼び出し結果を確定させる (#647 / #652)。
+   *
+   * 🔴 **経過時間で結果を作らない。** 状態を決めるのはサーバの応答だけ（権威はサーバ）。
+   * 上限到達（`give_up`）は「判定できなかった」の表明で、未応答とは別物として
+   * `contact_failed` へ倒す。
+   *
+   * 🔴 **`calling` の間だけ判断する。** 抜ける経路は逃げ道バーの「最初に戻る」(RESET)・
+   * CANCEL・担当者応答からの代替導線の 3 つ。状態機械は終端状態で `CALL_*` を不正遷移として
+   * 無視するので画面は壊れないが、来訪者が居なくなった後に結果を作らない。
+   *
+   * ビデオ経路（`vonageCallId`）はビデオビューが確定するので、ここは `pstnCallId` が
+   * 立っているときだけ働く。
+   */
+  const handleStatusPoll = (result: ReceptionStatusPoll) => {
+    const id = pstnCallId;
+    const startedAt = pstnPollStartedAtRef.current;
+    if (id === null || startedAt === null || data.state !== 'calling') return;
+    const elapsedMs = Date.now() - startedAt;
+
+    if (!result.ok) {
+      // 単発の取得失敗では諦めない（電話は鳴り続けている）。上限に達したときだけ倒す。
+      if (elapsedMs > CALL_STATUS_POLL_MAX_MS) {
+        dispatch({ type: 'CALL_FAILED', sessionId: id, reason: 'network' });
+      }
+      return;
+    }
+
+    const action = decidePollAction(result.status.state, elapsedMs);
+    if (action.kind === 'resolved') {
+      dispatch({ type: action.event, sessionId: id });
+      return;
+    }
+    if (action.kind === 'give_up') {
+      // 結果を断定しない。呼び出しを完了できなかった（contact_failed）として代替導線へ。
+      dispatch({ type: 'CALL_FAILED', sessionId: id, reason: 'server' });
+    }
+  };
+
+  const staffResponse = useStaffResponse(data.sessionId ?? null, {
+    enabled: pollResponseEnabled,
+    intervalMs: CALL_STATUS_POLL_INTERVAL_MS,
+    onPoll: handleStatusPoll,
+  });
 
   // 拒否・別チャネル誘導（offersFallback）応答からの代替導線。calling からは USE_FALLBACK が
   // 不正遷移のため、まず failed へ落としてから既存の代替導線フロー（ResultView）へ繋ぐ。
