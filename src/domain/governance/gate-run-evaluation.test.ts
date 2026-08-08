@@ -243,32 +243,14 @@ describe('evaluateRecordBranches: PR にならなかった push を捕まえる 
     expect(evaluateRecordBranches([{ name: 'main' }], [], main, OPTS)).toEqual([]);
   });
 
-  it('open な PR があるブランチは指摘しない（進行中）', () => {
+  it('PR が在るブランチは指摘しない', () => {
+    // **状態は問わない。** open なら進行中、merged なら内容は main に載っており、
+    // closed なら捨てる判断が見えている — いずれも一度は人間の目を通っている。
+    // だから状態はモデルに持たない（持っても判定に読まれず、腐るだけ）。
+    // 「全状態を数える」を保証するのはスクリプト側の `state=all` の問い合わせ。
     const f = evaluateRecordBranches(
       [{ name: 'main' }, { name: 'feat/x', tipCommittedAt: OLD }],
-      [{ headRefName: 'feat/x', state: 'OPEN' }],
-      main,
-      OPTS,
-    );
-    expect(f).toEqual([]);
-  });
-
-  it('merged な PR があるブランチは指摘しない（マージ後に消し忘れただけ）', () => {
-    // クラウドの squash マージ後にブランチが残るのは既知（CLAUDE.md）。**内容は main に
-    // 載っている**ので、これを error にすると本物の取りこぼしが埋もれる。
-    const f = evaluateRecordBranches(
-      [{ name: 'main' }, { name: 'feat/x', tipCommittedAt: OLD }],
-      [{ headRefName: 'feat/x', state: 'MERGED' }],
-      main,
-      OPTS,
-    );
-    expect(f).toEqual([]);
-  });
-
-  it('closed な PR があるブランチは指摘しない（捨てた判断が見えている）', () => {
-    const f = evaluateRecordBranches(
-      [{ name: 'main' }, { name: 'feat/x', tipCommittedAt: OLD }],
-      [{ headRefName: 'feat/x', state: 'CLOSED' }],
+      ['feat/x'],
       main,
       OPTS,
     );
@@ -283,7 +265,7 @@ describe('evaluateRecordBranches: PR にならなかった push を捕まえる 
         { name: 'chore/gate-run-20260803', tipCommittedAt: OLD },
         { name: 'feat/x', tipCommittedAt: OLD },
       ],
-      [{ headRefName: 'feat/x', state: 'MERGED' }],
+      ['feat/x'],
       main,
       OPTS,
     );

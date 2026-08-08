@@ -211,9 +211,6 @@ export type RecordBranchOptions = {
   graceHours: number;
 };
 
-/** ブランチに紐づく PR。`state` は GitHub の値をそのまま使う。 */
-export type BranchPullRequest = { headRefName: string; state: 'OPEN' | 'MERGED' | 'CLOSED' };
-
 /**
  * **push されたが PR にならなかったブランチ**を捕まえる (#656)。
  *
@@ -226,6 +223,11 @@ export type BranchPullRequest = { headRefName: string; state: 'OPEN' | 'MERGED' 
  * 判定材料は「そのブランチ名の PR が在るか」だけにする。PR が在れば、open なら進行中、
  * merged なら内容は main に載っており、closed なら捨てる判断が見えている — いずれも
  * **人間の目を一度は通っている**。PR が 1 つも無いものだけが、誰にも見られずに消える。
+ *
+ * **PR の状態はモデルに持たない。** 上のとおり全状態が同じ結論に落ちるので、持っても
+ * 判定に読まれず腐る（「open/merged/closed それぞれで指摘しない」というテストは、状態を
+ * 検証しているように見えて素通りする）。「全状態を数える」を保証するのは呼び出し側の
+ * 問い合わせ（`state=all`）であって、この関数ではない。
  *
  * これは routine 側の修正の**代わりではない**（routine 自身が PR 作成失敗に気づいて
  * 失敗終了するのが本筋）。routine の挙動がどうであれ外側から取りこぼしを拾う網である。
@@ -243,12 +245,13 @@ export type BranchPullRequest = { headRefName: string; state: 'OPEN' | 'MERGED' 
  */
 export function evaluateRecordBranches(
   branches: readonly RemoteBranch[],
-  pullRequests: readonly BranchPullRequest[],
+  /** PR を持つブランチ名。**状態は問わない**（上記のとおり全状態が同じ結論に落ちる）。 */
+  branchesWithPullRequest: readonly string[],
   defaultBranch: string,
   options: RecordBranchOptions,
 ): GateRunFinding[] {
   // **「PR が 1 件でもあれば良し」にしない。** 無関係な PR が全ブランチを緑にしてしまう。
-  const branchesWithPr = new Set(pullRequests.map((pr) => pr.headRefName));
+  const branchesWithPr = new Set(branchesWithPullRequest);
   const graceMs = options.graceHours * 3_600_000;
   const withinGrace = (b: RemoteBranch): boolean => {
     if (b.tipCommittedAt === undefined) return false;
