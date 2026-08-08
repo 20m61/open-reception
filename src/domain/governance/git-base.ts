@@ -40,3 +40,31 @@ export function resolveBase(run: GitRunner, pinned?: string | undefined): string
 
 /** 起点に使う ref の優先順。remote 追跡を先に見る（ローカル `main` は遅れていることがある）。 */
 export const BASE_REF_PREFERENCE: readonly string[] = ['origin/main', 'main'];
+
+/** remote 追跡 HEAD の短縮 ref に付く接頭辞。 */
+const ORIGIN_PREFIX = 'origin/';
+
+/**
+ * 既定ブランチ名を **gh に頼らず** 解決する (#656)。
+ *
+ * orphan ブランチ検査（`evaluateRecordBranches`）は「既定ブランチを除く、PR が 1 つも
+ * 無いブランチ」を探すので、既定ブランチ名が要る。当初これを
+ * `gh repo view --json defaultBranchRef` で取っていたが、**クラウドの週次ゲート環境で
+ * 落ちて検査が到達しなかった**（PR #661 の実走で判明。同じセッションで `gh pr create` /
+ * `gh pr merge` は成功していたので、落ちたのは gh のリポジトリ解決だけ）。
+ *
+ * クローン済みリポジトリなら remote 追跡 HEAD から取れる。追加の権限もネットワークも要らない。
+ *
+ * **読めない形を推測で名前にしない。** 誤った既定ブランチ名で判定すると、実在する既定
+ * ブランチが「既定ではない」＝ orphan 候補として誤検出される。読めなければ `undefined` を
+ * 返し、呼び出し側の fallback（gh）へ落とす。
+ */
+export function resolveDefaultBranchName(run: GitRunner): string | undefined {
+  const shortRef = run(['symbolic-ref', '--short', 'refs/remotes/origin/HEAD']);
+  if (shortRef === null) return undefined;
+  const trimmed = shortRef.trim();
+  if (!trimmed.startsWith(ORIGIN_PREFIX)) return undefined;
+  const name = trimmed.slice(ORIGIN_PREFIX.length);
+  // 空文字は「問題なし」ではない。通すと全ブランチが「既定ではない」扱いになる。
+  return name === '' ? undefined : name;
+}
