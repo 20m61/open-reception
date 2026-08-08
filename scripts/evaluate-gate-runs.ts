@@ -23,8 +23,9 @@ import {
   parseGateRuns,
   type BranchPullRequest,
   type GateRunFinding,
+  type RemoteBranch,
 } from '../src/domain/governance/gate-run-evaluation';
-import { parseLsRemoteSymref } from '../src/domain/governance/git-base';
+import { parseGitHubRepo, parseLsRemoteSymref } from '../src/domain/governance/git-base';
 import { describeCommandFailure } from '../src/domain/governance/command-failure';
 
 const REPORT_ONLY = process.argv.includes('--report');
@@ -60,67 +61,93 @@ function run(cmd: string, args: string[]): string {
  * 読むのは、この検査が塞ごうとしている穴そのものと同じ失敗（`|| true` の空文字を
  * fresh と読む類）。
  */
+/** PR 作成から間もないブランチを取りこぼし扱いしないための猶予。 */
+const ORPHAN_GRACE_HOURS = 24;
+
+/** REST の PR 表現から、この検査が使う状態へ落とす。 */
+function toPullRequestState(pr: { state?: string; merged_at?: string | null }): BranchPullRequest['state'] {
+  if (pr.merged_at) return 'MERGED';
+  return pr.state === 'open' ? 'OPEN' : 'CLOSED';
+}
+
+function unverified(message: string): GateRunFinding[] {
+  return [{ code: 'branch_check_unverified', severity: 'warning', message }];
+}
+
 function evaluateBranches(): GateRunFinding[] {
   let defaultBranch: string | undefined;
-  let branchNames: string[];
+  let branchRefs: { name: string; sha: string }[];
+  let repo: { owner: string; repo: string } | undefined;
   try {
     /**
      * **既定ブランチもブランチ一覧も `ls-remote` 1 回から取る** (#656)。
      *
-     * ここは 2 度外している。`gh repo view` はクラウドで失敗し（PR #661 の実走）、
-     * `git symbolic-ref refs/remotes/origin/HEAD` は**その clone に remote 追跡 HEAD が
-     * 無く**やはり失敗した（PR #663 の実走）。`ls-remote --symref` は**リモートに
-     * HEAD を尋ねる**のでローカル状態に依存しない。
+     * `gh repo view` はクラウドで失敗し（PR #661）、`git symbolic-ref
+     * refs/remotes/origin/HEAD` もその clone に remote 追跡 HEAD が無く失敗した（PR #663）。
+     * `ls-remote --symref` は**リモートに HEAD を尋ねる**のでローカル状態に依存しない。
      */
     const refs = parseLsRemoteSymref(run('git', ['ls-remote', '--symref', 'origin']));
     defaultBranch = refs.defaultBranch;
-    branchNames = refs.branches;
+    branchRefs = refs.branches;
+    // `--get-url` はローカルの設定を読むだけ（ネットワークを使わない）。
+    repo = parseGitHubRepo(run('git', ['ls-remote', '--get-url', 'origin']));
   } catch (e) {
-    return [
-      {
-        code: 'branch_check_unverified',
-        severity: 'warning',
-        message: `リモートブランチの検査を実行できませんでした（${e instanceof Error ? e.message : String(e)}）。git のネットワーク到達と、PR 問い合わせ用の gh が要ります。**「取りこぼし無し」ではなく「未検査」です。**`,
-      },
-    ];
+    return unverified(
+      `リモートブランチの検査を実行できませんでした（${e instanceof Error ? e.message : String(e)}）。` +
+        'git のネットワーク到達と、PR 問い合わせ用の gh が要ります。**「取りこぼし無し」ではなく「未検査」です。**',
+    );
   }
-  // **空を「取りこぼし無し」と読ませない。** 既定ブランチが読めなければ全ブランチが
-  // 「既定ではない」＝ orphan 候補になり、ブランチ 0 本なら検査が成立していない。
-  if (defaultBranch === undefined || branchNames.length === 0) {
-    return [
-      {
-        code: 'branch_check_unverified',
-        severity: 'warning',
-        message: `リモートの ref を読み取れませんでした（既定ブランチ: ${defaultBranch ?? '不明'} / ブランチ ${branchNames.length} 本）。**「取りこぼし無し」ではなく「未検査」です。**`,
-      },
-    ];
+  // **空を「取りこぼし無し」と読ませない。**
+  if (defaultBranch === undefined || branchRefs.length === 0 || repo === undefined) {
+    return unverified(
+      `リモートの情報を読み取れませんでした（既定ブランチ: ${defaultBranch ?? '不明'} / ` +
+        `ブランチ ${branchRefs.length} 本 / owner-repo: ${repo ? `${repo.owner}/${repo.repo}` : '不明'}）。` +
+        '**「取りこぼし無し」ではなく「未検査」です。**',
+    );
   }
 
   const pullRequests: BranchPullRequest[] = [];
-  for (const name of branchNames) {
-    if (name === defaultBranch) continue;
+  const branches: RemoteBranch[] = [];
+  for (const ref of branchRefs) {
+    // 先端コミットの日時。**ローカルに無ければ省く**（省略は「猶予の外」として扱われる）。
+    let tipCommittedAt: string | undefined;
+    try {
+      tipCommittedAt = run('git', ['show', '-s', '--format=%cI', ref.sha]);
+    } catch {
+      tipCommittedAt = undefined;
+    }
+    branches.push({ name: ref.name, tipCommittedAt });
+    if (ref.name === defaultBranch) continue;
+    /**
+     * **PR の問い合わせは REST を使う** (#656)。
+     *
+     * `gh pr list` は GraphQL を叩き、クラウドのサンドボックスでは 403 になる:
+     * 「only the pinned set of PR-review operations is served.
+     *   Use REST via `gh api repos/{owner}/{repo}/...` instead.」
+     * 一括ではなくブランチ 1 本ずつ引くのは、`--limit` を超えた古い PR が落ちると
+     * **そのブランチが orphan に誤検出される**ため。
+     */
     let json: string;
     try {
-      json = run('gh', ['pr', 'list', '--head', name, '--state', 'all', '--limit', '1', '--json', 'state']);
+      json = run('gh', [
+        'api',
+        `repos/${repo.owner}/${repo.repo}/pulls?state=all&per_page=1&head=${repo.owner}:${ref.name}`,
+      ]);
     } catch (e) {
-      return [
-        {
-          code: 'branch_check_unverified',
-          severity: 'warning',
-          message: `ブランチ '${name}' の PR を問い合わせられませんでした（${e instanceof Error ? e.message : String(e)}）。**「取りこぼし無し」ではなく「未検査」です。**`,
-        },
-      ];
+      return unverified(
+        `ブランチ '${ref.name}' の PR を問い合わせられませんでした（${e instanceof Error ? e.message : String(e)}）。` +
+          '**「取りこぼし無し」ではなく「未検査」です。**',
+      );
     }
-    const parsed = JSON.parse(json) as { state: BranchPullRequest['state'] }[];
-    const state = parsed[0]?.state;
-    if (state) pullRequests.push({ headRefName: name, state });
+    const parsed = JSON.parse(json) as { state?: string; merged_at?: string | null }[];
+    const first = parsed[0];
+    if (first) pullRequests.push({ headRefName: ref.name, state: toPullRequestState(first) });
   }
 
-  return evaluateRecordBranches(
-    branchNames.map((name) => ({ name })),
-    pullRequests,
-    defaultBranch,
-  );
+  return evaluateRecordBranches(branches, pullRequests, defaultBranch, {
+    now: new Date(),
+    graceHours: ORPHAN_GRACE_HOURS,
+  });
 }
 
 function main(): number {

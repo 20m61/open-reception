@@ -222,26 +222,33 @@ describe('evaluateRecordBranches: PR にならなかった push を捕まえる 
   // 紐づく PR が 1 つも無かった）。**squash マージなので ancestry では判定できない** —
   // 見るのは「そのブランチに PR が在るか」だけ。
   const main = 'main';
+  const NOW = new Date('2026-08-08T12:00:00Z');
+  /** 既定の猶予。これを超えて PR が無いものだけを取りこぼしとみなす。 */
+  const OPTS = { now: NOW, graceHours: 24 };
+  /** 猶予の外（十分に古い）＝ 本物の取りこぼし相当。 */
+  const OLD = '2026-08-01T12:00:00Z';
 
   it('PR が 1 つも無いリモートブランチを指摘する', () => {
     const f = evaluateRecordBranches(
-      [{ name: 'main' }, { name: 'chore/gate-run-20260803' }],
+      [{ name: 'main' }, { name: 'chore/gate-run-20260803', tipCommittedAt: OLD }],
       [],
       main,
+      OPTS,
     );
     expect(f.some((x) => x.code === 'orphan_branch' && x.severity === 'error')).toBe(true);
     expect(f[0]?.message).toContain('chore/gate-run-20260803');
   });
 
   it('既定ブランチ自身は指摘しない', () => {
-    expect(evaluateRecordBranches([{ name: 'main' }], [], main)).toEqual([]);
+    expect(evaluateRecordBranches([{ name: 'main' }], [], main, OPTS)).toEqual([]);
   });
 
   it('open な PR があるブランチは指摘しない（進行中）', () => {
     const f = evaluateRecordBranches(
-      [{ name: 'main' }, { name: 'feat/x' }],
+      [{ name: 'main' }, { name: 'feat/x', tipCommittedAt: OLD }],
       [{ headRefName: 'feat/x', state: 'OPEN' }],
       main,
+      OPTS,
     );
     expect(f).toEqual([]);
   });
@@ -250,18 +257,20 @@ describe('evaluateRecordBranches: PR にならなかった push を捕まえる 
     // クラウドの squash マージ後にブランチが残るのは既知（CLAUDE.md）。**内容は main に
     // 載っている**ので、これを error にすると本物の取りこぼしが埋もれる。
     const f = evaluateRecordBranches(
-      [{ name: 'main' }, { name: 'feat/x' }],
+      [{ name: 'main' }, { name: 'feat/x', tipCommittedAt: OLD }],
       [{ headRefName: 'feat/x', state: 'MERGED' }],
       main,
+      OPTS,
     );
     expect(f).toEqual([]);
   });
 
   it('closed な PR があるブランチは指摘しない（捨てた判断が見えている）', () => {
     const f = evaluateRecordBranches(
-      [{ name: 'main' }, { name: 'feat/x' }],
+      [{ name: 'main' }, { name: 'feat/x', tipCommittedAt: OLD }],
       [{ headRefName: 'feat/x', state: 'CLOSED' }],
       main,
+      OPTS,
     );
     expect(f).toEqual([]);
   });
@@ -269,11 +278,62 @@ describe('evaluateRecordBranches: PR にならなかった push を捕まえる 
   it('別のブランチの PR で orphan を打ち消さない', () => {
     // 「PR が 1 件でもあれば良し」にすると、**無関係な PR が全ブランチを緑にする**。
     const f = evaluateRecordBranches(
-      [{ name: 'main' }, { name: 'chore/gate-run-20260803' }, { name: 'feat/x' }],
+      [
+        { name: 'main' },
+        { name: 'chore/gate-run-20260803', tipCommittedAt: OLD },
+        { name: 'feat/x', tipCommittedAt: OLD },
+      ],
       [{ headRefName: 'feat/x', state: 'MERGED' }],
       main,
+      OPTS,
     );
     expect(f.map((x) => x.code)).toEqual(['orphan_branch']);
     expect(f[0]?.message).toContain('chore/gate-run-20260803');
+  });
+
+  describe('PR 作成前の窓を殺さない（猶予期間）', () => {
+    // 🔴 **push 済みで PR をまだ作っていない**のは完全に正常な状態。これを error にすると、
+    // 週次 routine が回るたび進行中のブランチが全部並び、検査が狼少年になる
+    // （FAIL / SKIP で 2 度踏んだのと同じ形）。実際 2026-08-08 に自分の作業ブランチ 2 本が
+    // 誤検出された。本物（#656 の `chore/gate-run-20260803`）は **5 日間**放置されていた。
+
+    it('数分前に push されたブランチは指摘しない', () => {
+      const justNow = '2026-08-08T11:55:00Z';
+      const f = evaluateRecordBranches(
+        [{ name: 'main' }, { name: 'feat/wip', tipCommittedAt: justNow }],
+        [],
+        main,
+        OPTS,
+      );
+      expect(f).toEqual([]);
+    });
+
+    it('猶予を超えて PR が無ければ指摘する', () => {
+      const f = evaluateRecordBranches(
+        [{ name: 'main' }, { name: 'feat/wip', tipCommittedAt: OLD }],
+        [],
+        main,
+        OPTS,
+      );
+      expect(f.map((x) => x.code)).toEqual(['orphan_branch']);
+    });
+
+    it('日時が分からなければ指摘する側に倒す', () => {
+      // **極性が肝心。** ローカルに無いオブジェクト＝一度も fetch していないブランチで、
+      // まさに #656 が起きた形（クラウド routine が push し、こちらは知らないまま）。
+      // 「不明だから見逃す」にすると、捕まえたい相手だけが漏れる。
+      const f = evaluateRecordBranches([{ name: 'main' }, { name: 'feat/wip' }], [], main, OPTS);
+      expect(f.map((x) => x.code)).toEqual(['orphan_branch']);
+    });
+
+    it('読めない日時も指摘する側に倒す', () => {
+      const f = evaluateRecordBranches(
+        [{ name: 'main' }, { name: 'feat/wip', tipCommittedAt: 'not-a-date' }],
+        [],
+        main,
+        OPTS,
+      );
+      expect(f.map((x) => x.code)).toEqual(['orphan_branch']);
+    });
   });
 });

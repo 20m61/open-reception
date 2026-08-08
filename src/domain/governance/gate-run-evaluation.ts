@@ -194,7 +194,22 @@ export function evaluateGateRuns(runs: readonly GateRun[], now: Date): GateRunFi
 }
 
 /** リモートに実在するブランチ。 */
-export type RemoteBranch = { name: string };
+export type RemoteBranch = {
+  name: string;
+  /**
+   * 先端コミットの日時（ISO 8601）。**取れなければ省く。**
+   *
+   * 「PR がまだ無い」だけでは取りこぼしと正常な作業中を区別できないので、経過時間で分ける。
+   */
+  tipCommittedAt?: string;
+};
+
+/** 取りこぼし判定の窓。 */
+export type RecordBranchOptions = {
+  now: Date;
+  /** これを超えて PR が付かないものだけを取りこぼしとみなす。 */
+  graceHours: number;
+};
 
 /** ブランチに紐づく PR。`state` は GitHub の値をそのまま使う。 */
 export type BranchPullRequest = { headRefName: string; state: 'OPEN' | 'MERGED' | 'CLOSED' };
@@ -214,16 +229,35 @@ export type BranchPullRequest = { headRefName: string; state: 'OPEN' | 'MERGED' 
  *
  * これは routine 側の修正の**代わりではない**（routine 自身が PR 作成失敗に気づいて
  * 失敗終了するのが本筋）。routine の挙動がどうであれ外側から取りこぼしを拾う網である。
+ *
+ * ## PR 作成前の窓を殺さない
+ *
+ * **push 済みで PR をまだ作っていない**のは完全に正常な状態で、これを指摘すると週次
+ * routine が回るたび進行中のブランチが全部並ぶ（2026-08-08 に実際に誤検出した）。
+ * FAIL / SKIP で 2 度踏んだ「解決手段のない指摘は狼少年になる」と同じ形なので、
+ * **経過時間で分ける** — 本物（`chore/gate-run-20260803`）は 5 日間放置されていた。
+ *
+ * **日時が分からなければ指摘する側に倒す。** ローカルに無いオブジェクト＝一度も fetch して
+ * いないブランチで、まさに #656 が起きた形（クラウド routine が push し、こちらは知らない
+ * まま）。「不明だから見逃す」にすると、捕まえたい相手だけが漏れる。
  */
 export function evaluateRecordBranches(
   branches: readonly RemoteBranch[],
   pullRequests: readonly BranchPullRequest[],
   defaultBranch: string,
+  options: RecordBranchOptions,
 ): GateRunFinding[] {
   // **「PR が 1 件でもあれば良し」にしない。** 無関係な PR が全ブランチを緑にしてしまう。
   const branchesWithPr = new Set(pullRequests.map((pr) => pr.headRefName));
+  const graceMs = options.graceHours * 3_600_000;
+  const withinGrace = (b: RemoteBranch): boolean => {
+    if (b.tipCommittedAt === undefined) return false;
+    const at = Date.parse(b.tipCommittedAt);
+    if (Number.isNaN(at)) return false;
+    return options.now.getTime() - at < graceMs;
+  };
   return branches
-    .filter((b) => b.name !== defaultBranch && !branchesWithPr.has(b.name))
+    .filter((b) => b.name !== defaultBranch && !branchesWithPr.has(b.name) && !withinGrace(b))
     .map((b) => ({
       code: 'orphan_branch' as const,
       severity: 'error' as const,
