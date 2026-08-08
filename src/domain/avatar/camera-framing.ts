@@ -18,6 +18,22 @@
  * 実際に自然に見えるかは実機 UAT（#65）。
  */
 
+/**
+ * 頭の高さをどこから得たか (#578 増分 1)。
+ *
+ * **黙って倒す・黙って寄せるのをやめるため**に返す。cm スケールの VRM を渡されたときの
+ * 画角は、正常なモデルの画角と**外からは見分けがつかない**（どちらも「それらしい数値」）。
+ * 倒したこと・寄せたこと自体が観測できないと、実機で顔が切れたときにモデル・モーション・
+ * カメラのどれに帰属するのかを絞れない。
+ */
+export type HeadHeightSource =
+  /** humanoid から実測できた値をそのまま使った。 */
+  | 'measured'
+  /** 実測できず既定値へ倒した。 */
+  | 'fallback'
+  /** 実測できたが非現実的な値だったので妥当域へ寄せた（cm/dm スケールのモデル）。 */
+  | 'clamped';
+
 /** 画角の算出結果。three.js の PerspectiveCamera へそのまま流す。 */
 export type CameraFraming = {
   /** カメラ位置。モデルは原点に立ち、+Z を向いている前提（`rotateVRM0` 適用後）。 */
@@ -26,6 +42,8 @@ export type CameraFraming = {
   target: { x: number; y: number; z: number };
   /** 垂直画角（度）。 */
   fov: number;
+  /** 頭の高さの出どころ。描画には使わず、観測のためだけに持つ。 */
+  headHeightSource: HeadHeightSource;
 };
 
 /** 既定の頭の高さ（m）。humanoid から取れなかったときだけ使う成人相当の値。 */
@@ -65,12 +83,16 @@ export function resolveCameraFraming(input: {
   /** 描画領域の縦横比（幅 / 高さ）。0 以下や非有限値は既定の縦長として扱う。 */
   aspect: number;
 }): CameraFraming {
-  const rawHeadHeight =
-    Number.isFinite(input.headHeight) && (input.headHeight ?? 0) > 0
-      ? (input.headHeight as number)
-      : FALLBACK_HEAD_HEIGHT;
+  const measured = Number.isFinite(input.headHeight) && (input.headHeight ?? 0) > 0;
+  const rawHeadHeight = measured ? (input.headHeight as number) : FALLBACK_HEAD_HEIGHT;
   // 有限でも非現実的な値は妥当域へ寄せる（cm/dm スケールのモデルで真っ黒にしない）。
   const headHeight = Math.min(Math.max(rawHeadHeight, MIN_HEAD_HEIGHT), MAX_HEAD_HEIGHT);
+  // 倒した／寄せたを区別する。既定値は妥当域の内側なので `fallback` が `clamped` に化けない。
+  const headHeightSource: HeadHeightSource = !measured
+    ? 'fallback'
+    : headHeight !== rawHeadHeight
+      ? 'clamped'
+      : 'measured';
   const aspect = Number.isFinite(input.aspect) && input.aspect > 0 ? input.aspect : 3 / 4;
 
   /**
@@ -85,5 +107,29 @@ export function resolveCameraFraming(input: {
     // 注視点を頭よりわずかに下げる＝顔が画面のやや上に来る。
     target: { x: 0, y: eyeY - headHeight * HEAD_OFFSET_RATIO, z: 0 },
     fov: DEFAULT_FOV,
+    headHeightSource,
   };
+}
+
+/**
+ * 実効画角を `data-camera-framing` に載せる表示値 (#578 増分 1 の残り)。
+ *
+ * 版（`data-vrm-version`）とモーション（`data-motion-state`）は観測できるのに
+ * **カメラだけが出ていなかった**ため、実機で「顔が切れる / 真っ黒」を見ても帰属先を
+ * 絞れなかった。ここを埋めて切り分けの三角形を閉じる。
+ *
+ * **丸めて出す。** `ResizeObserver` は 1px 未満の変化でも発火するので、生の浮動小数を
+ * 載せると属性が毎フレーム変わる。属性の変化が再レンダリングを呼び、それが canvas の
+ * 実寸を揺らす — 増分 3 で踏んだ発散と同じ入口になる。
+ */
+export function cameraFramingAttribute(framing: CameraFraming | undefined): string {
+  // 未確定を空文字にしない。「属性が無い」のか「まだ決まっていない」のかが実機で
+  // 区別できなくなる（`data-vrm-version` の `none` と揃える）。
+  if (!framing) return 'none';
+  return [
+    `fov=${framing.fov}`,
+    `eye=${framing.position.y.toFixed(2)}`,
+    `dist=${framing.position.z.toFixed(2)}`,
+    `src=${framing.headHeightSource}`,
+  ].join(';');
 }

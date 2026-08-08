@@ -11,7 +11,7 @@ import {
   resolveMotionObservation,
   type MotionObservation,
 } from '@/domain/avatar/motion-state';
-import { resolveCameraFraming } from '@/domain/avatar/camera-framing';
+import { cameraFramingAttribute, resolveCameraFraming } from '@/domain/avatar/camera-framing';
 import { ResourceTracker } from '@/lib/three/resource-tracker';
 import { AvatarFallbackImage } from './avatar/fallback-image';
 import { emotionExpressionValues } from './avatar/vrm-expression';
@@ -100,6 +100,14 @@ export function VrmAvatarViewer({
    * 変」を実機で区別できるようにする。
    */
   const [motionObservation, setMotionObservation] = useState<MotionObservation>({ state: 'none' });
+  /**
+   * 実効画角 (#578 増分 1 の残り)。**診断のためだけ**に持つ（描画は three.js 側が持つ値で行う）。
+   *
+   * 版とモーションは観測できるようになったのに**カメラだけが出ていない**ため、実機で
+   * 「顔が切れる / 真っ黒」を見ても帰属先を絞れなかった。とくに頭の高さは黙って既定へ
+   * 倒され、黙って妥当域へ寄せられるので、その事実（`src=`）まで載せる。
+   */
+  const [cameraFramingAttr, setCameraFramingAttr] = useState<string>('none');
   // 表情はレンダーループ（[vrmUrl] 依存）の外から更新されるため ref で最新値を渡す。
   const expressionRef = useRef<AvatarExpression>(expression ?? 'neutral');
   useEffect(() => {
@@ -199,6 +207,15 @@ export function VrmAvatarViewer({
           camera.lookAt(framing.target.x, framing.target.y, framing.target.z);
           // これを忘れると aspect / fov の変更が反映されない（歪んだまま）。
           camera.updateProjectionMatrix();
+          /**
+           * 実効画角を観測可能にする (#578 増分 1 の残り)。
+           *
+           * **同値なら前の値を返して React に bail out させる。** applyFraming 自体は
+           * 冪等だが、状態更新は再レンダリングを呼び、再レンダリングは canvas の実寸に
+           * 触れうる。増分 3 で踏んだ自己参照フィードバックの入口をここにも作らない。
+           */
+          const attr = cameraFramingAttribute(framing);
+          if (!disposed) setCameraFramingAttr((prev) => (prev === attr ? prev : attr));
         };
         applyFraming();
         const light = new THREE.DirectionalLight(0xffffff, 1.2);
@@ -445,6 +462,9 @@ export function VrmAvatarViewer({
       data-vrm-version={vrmVersionAttribute({ loaded: vrmLoaded, version: vrmVersion })}
       // モーション適用の結果 (#578 増分 2)。失敗は理由まで出す（failed:no-animation 等）。
       data-motion-state={motionStateAttribute(motionObservation)}
+      // 実効画角 (#578 増分 1)。`none`=未確定。`src=fallback|clamped` は頭の高さを
+      // 実測できなかった／妥当域へ寄せたことを表す（黙って倒さない）。
+      data-camera-framing={cameraFramingAttr}
     />
   );
 }

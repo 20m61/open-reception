@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { resolveCameraFraming } from './camera-framing';
+import { cameraFramingAttribute, resolveCameraFraming } from './camera-framing';
 
 /**
  * 画角の算出 (#578 増分 3)。
@@ -108,5 +108,57 @@ describe('resolveCameraFraming / 非現実的なスケール (#578 レビュー 
     // public/avatar/default.vrm の head ワールド Y を実測した値。
     const f = resolveCameraFraming({ headHeight: 1.3035, aspect: 3 / 4 });
     expect(f.position.y).toBeCloseTo(1.3035, 4);
+  });
+});
+
+describe('画角を観測可能にする (#578 増分 1 の残り)', () => {
+  // 版（`data-vrm-version`）とモーション（`data-motion-state`）は観測できるようになったが、
+  // **カメラだけが出ていない**ため、実機で「顔が切れる / 真っ黒」を見ても帰属先を絞れない。
+  //
+  // とくに `resolveCameraFraming` は**黙って既定へ倒し、黙ってクランプする**。
+  // cm スケール（135）のモデルを渡されたときの出力は、正常なモデルの出力と**外からは
+  // 見分けがつかない**。倒したこと・寄せたこと自体を観測できないと切り分けにならない。
+
+  it('頭の高さを実測できたときは measured と報告する', () => {
+    expect(resolveCameraFraming({ headHeight: 1.3, aspect: 0.75 }).headHeightSource).toBe(
+      'measured',
+    );
+  });
+
+  it('頭の高さが取れず既定へ倒したことを報告する', () => {
+    expect(resolveCameraFraming({ aspect: 0.75 }).headHeightSource).toBe('fallback');
+  });
+
+  it('妥当域へ寄せたことを報告する（cm スケールを黙って飲まない）', () => {
+    // 135m の頭は cm スケールの VRM。クランプ自体は正しいが、**黙ると
+    // 「そういうモデルを渡された」事実が消える**。
+    expect(resolveCameraFraming({ headHeight: 135, aspect: 0.75 }).headHeightSource).toBe(
+      'clamped',
+    );
+  });
+
+  it('まだ画角が決まっていなければ none', () => {
+    // VRM 読込前は `data-vrm-version=none` と揃う。空文字にすると
+    // 「属性が無い」のか「未確定」なのかが実機で区別できない。
+    expect(cameraFramingAttribute(undefined)).toBe('none');
+  });
+
+  it('fov・距離・目線の高さ・頭の高さの出どころを載せる', () => {
+    const attr = cameraFramingAttribute(resolveCameraFraming({ headHeight: 1.3, aspect: 4 / 3 }));
+    expect(attr).toContain('fov=30');
+    expect(attr).toContain('eye=1.30');
+    expect(attr).toContain('src=measured');
+    // 距離は aspect で変わる唯一の値なので、回転追従が効いているかの判定に使う。
+    // 1.3 * (1.6 + (4/3 - 1) * 0.55) = 2.3183…
+    expect(attr).toContain('dist=2.32');
+  });
+
+  it('丸めて出す（微小な浮動小数差で毎フレーム変わらない）', () => {
+    // ResizeObserver は 1px 未満の変化でも発火する。丸めずに出すと属性が毎フレーム
+    // 変わり、**React の再レンダリングが canvas の実寸を揺らす**ループの燃料になる
+    // （増分 3 で踏んだ発散と同じ入口）。
+    const a = cameraFramingAttribute(resolveCameraFraming({ headHeight: 1.3, aspect: 1.333333 }));
+    const b = cameraFramingAttribute(resolveCameraFraming({ headHeight: 1.3, aspect: 1.333334 }));
+    expect(a).toBe(b);
   });
 });
