@@ -73,6 +73,34 @@ describe('reducer', () => {
   });
 });
 
+describe('受付 ID の確定 (#649)', () => {
+  const calling: FlowData = { state: 'calling', purpose: 'meeting', target, visitor };
+
+  it('呼び出し中に受付が作られたら sessionId を立てる（状態は calling のまま）', () => {
+    // これが無いと #99 の担当者応答ポーリングが calling 中に 1 度も走らない。
+    const next = reducer(calling, { type: 'SESSION_CREATED', sessionId: 'r1' });
+    expect(next.sessionId).toBe('r1');
+    expect(next.state).toBe('calling');
+    // 結果はまだ出ていない。outcome を先に埋めない。
+    expect(next.outcome).toBeUndefined();
+  });
+
+  it('呼び出し中以外に届いた受付 ID は無視する（キャンセル後の作成応答を拾わない）', () => {
+    const cancelled: FlowData = { state: 'cancelled', purpose: 'meeting', target };
+    expect(reducer(cancelled, { type: 'SESSION_CREATED', sessionId: 'r1' })).toBe(cancelled);
+    expect(reducer(INITIAL, { type: 'SESSION_CREATED', sessionId: 'r1' })).toBe(INITIAL);
+  });
+
+  it('ID を伴わない失敗でも、確定済みの受付 ID は消さない', () => {
+    // `/call` が例外で落ちたときの CALL_FAILED は sessionId を持たない。ここで消すと
+    // 終端画面からの /fallback・/feedback の送信先が失われる。
+    const withSession = reducer(calling, { type: 'SESSION_CREATED', sessionId: 'r1' });
+    const failed = reducer(withSession, { type: 'CALL_FAILED', reason: 'network' });
+    expect(failed.state).toBe('failed');
+    expect(failed.sessionId).toBe('r1');
+  });
+});
+
 describe('呼び出し失敗の理由 (#422)', () => {
   const calling: FlowData = { state: 'calling', purpose: 'meeting', target, visitor };
 

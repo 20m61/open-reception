@@ -601,6 +601,11 @@ export function KioskFlow({ operatingStatus, sttAdapterFactory, voiceSession, qr
           return;
         }
         const session = (await createRes.json()) as { id: string };
+        // 受付 ID が確定した時点で状態機械へ載せる (#649)。`/call` の結果を待たないのは、
+        // **呼び出し中**の担当者応答ポーリング（#99 `useStaffResponse`）が受付 ID を必要と
+        // するため。結果と一緒にしか立たなかった頃は calling 中に 1 度も走っていなかった。
+        // 状態は動かさない（calling のまま）。
+        if (!cancelled) dispatch({ type: 'SESSION_CREATED', sessionId: session.id });
         const callRes = await fetch(`/api/kiosk/receptions/${session.id}/call`, { method: 'POST' });
         const result = (await callRes.json()) as {
           state: ReceptionState;
