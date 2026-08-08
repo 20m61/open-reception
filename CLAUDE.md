@@ -9,7 +9,7 @@ Issue を消化するループで開発する。**手順は `docs/loop-workflow.
 トラックは `docs/loop-queue.md` に従う。** 観測→仮説→検証→展開→計測というループ全体の
 位置づけ・暴走防止ガード・人間承認が必要な変更の一覧は **`docs/ai-development-loop.md`**
 （#424 / #426。未構築の部分も明記してある）。
-1 周 = ブランチ → 実装(TDD) → ローカル品質ゲート → PR → セルフ/コードレビュー →
+1 周 = ブランチ → 実装(TDD) → 品質ゲート（`--pr`/`--full` はクラウド）→ PR → セルフ/コードレビュー →
 **ゲート green + レビュー blocking なしなら自動で squash + `--delete-branch`** → Issue
 クローズ → 次へ。**重大変更時のみユーザー確認**（破壊的変更・スキーマ/公開API・本番デプロイ・
 外部送信・依存/ライセンス追加(#105)・secret/PII 取り扱い変更）。詳細は `docs/loop-workflow.md` 手順 8。
@@ -21,7 +21,8 @@ Issue を消化するループで開発する。**手順は `docs/loop-workflow.
 
 ## 品質ゲート（GitHub Actions を使わない方針）
 
-CI は使わない。ゲートは **`./scripts/quality-gate.sh`** をローカル実行して担保する。
+CI は使わない。ゲートは **`./scripts/quality-gate.sh`** の実行で担保する（GitHub Actions では
+なく、開発者の手元またはクラウド環境で走らせる。**どこで回すかは後述**）。
 
 - `--fast` … typecheck + lint + unit（各変更ごと）
 - `--pr`   … fast + build（**PR 前必須**）
@@ -35,6 +36,41 @@ CI は使わない。ゲートは **`./scripts/quality-gate.sh`** をローカ�
 `gh pr create`（要 `--pr` 以上）/ `gh pr merge`（要 `--full`）を、現在の作業ツリーに対する
 green 記録が無ければブロックする。記録はゲートが実際に検査したツリーに紐づくので、
 **ゲート後に編集したら走らせ直す**。詳細は `docs/quality-gate.md`。
+
+### どこで回すか: `--pr` / `--full` は**クラウド既定**（2026-08-08 決定）
+
+ローカル macOS は 16GB を他プロジェクトと共有しており、相手が重いテストを回すと
+**メモリ枯渇 → swap thrash** でゲートが完走できない。同じツリーの実測:
+
+| ステップ | クラウド | ローカル macOS（load 350〜480） |
+| --- | --- | --- |
+| lint | 32s | 212s |
+| unit (5115 tests) | **43s 全 PASS** | **377s ＋ 偽の赤** |
+
+- **ローカルで回すのは `--fast` まで。** 実装・TDD の内側ループはローカルで回してよい
+- **`--pr` / `--full` はクラウド routine へ委譲する。** ブランチを push し、
+  `Skill` で `schedule` を呼んで一度限りの routine を作る（環境 ID は
+  `env_012h7PiJKNb4EYzKRSuBwpX3`）。手順と既知の罠は `docs/cloud-dev-environment.md`
+- 🔴 **PR 作成とマージまでクラウド内で完結させる。** ゲートスタンプは `.git` 配下の
+  **ローカル記録**なので、クラウドで green を取ってもローカルの `gh pr merge` は
+  フックにブロックされる。マージまで向こうでやらせれば持ち運びを考えずに済む
+- routine 作成直後は**接続済み MCP コネクタが全部自動アタッチされる**（`mcp_connections: []`
+  を送っても効かない）。**毎回 `clear_mcp_connections` で外すこと**
+- squash マージ後の**ブランチは自動削除されない**。マージした側（クラウドならクラウド
+  セッション自身）が `git push origin --delete <branch>` でリモートを消す。手元に同じ
+  ブランチの clone があれば、そちらでは別途 `git branch -D <branch>`（`-d` は squash なので
+  失敗する）
+
+**ローカル macOS でしかできないこと（クラウドへ出さない）**:
+
+1. **darwin の VRT ベースライン** … `{platform}` 込みのファイル名なので linux から取り直せない
+2. **AWS デプロイ** … 対話型 SSO がクラウドで通らない。元々**停止境界**でユーザー確認が要るため
+   ループの自動化範囲は狭まらない
+
+ゲートが赤いとき、**コードを疑う前に負荷を見る**。macOS の load average は CPU ではなく
+**メモリ枯渇**を映していることがある（`top -l 1` の `PhysMem` の空きと swapins を見る。
+20% idle なのに load 480 という実例がある）。`Test timed out in Nms` のように
+**アサーションに到達する前**に落ちたものは、まず偽の赤を疑う。
 
 ## 規約
 
