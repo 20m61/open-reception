@@ -21,7 +21,6 @@ import {
   evaluateGateRuns,
   evaluateRecordBranches,
   parseGateRuns,
-  type BranchPullRequest,
   type GateRunFinding,
   type RemoteBranch,
 } from '../src/domain/governance/gate-run-evaluation';
@@ -64,12 +63,6 @@ function run(cmd: string, args: string[]): string {
 /** PR 作成から間もないブランチを取りこぼし扱いしないための猶予。 */
 const ORPHAN_GRACE_HOURS = 24;
 
-/** REST の PR 表現から、この検査が使う状態へ落とす。 */
-function toPullRequestState(pr: { state?: string; merged_at?: string | null }): BranchPullRequest['state'] {
-  if (pr.merged_at) return 'MERGED';
-  return pr.state === 'open' ? 'OPEN' : 'CLOSED';
-}
-
 function unverified(message: string): GateRunFinding[] {
   return [{ code: 'branch_check_unverified', severity: 'warning', message }];
 }
@@ -106,7 +99,8 @@ function evaluateBranches(): GateRunFinding[] {
     );
   }
 
-  const pullRequests: BranchPullRequest[] = [];
+  /** PR を持つブランチ名。**状態は見ない** — open / merged / closed のいずれも「人間の目を通った」。 */
+  const branchesWithPullRequest: string[] = [];
   const branches: RemoteBranch[] = [];
   for (const ref of branchRefs) {
     // 先端コミットの日時。**ローカルに無ければ省く**（省略は「猶予の外」として扱われる）。
@@ -139,12 +133,12 @@ function evaluateBranches(): GateRunFinding[] {
           '**「取りこぼし無し」ではなく「未検査」です。**',
       );
     }
-    const parsed = JSON.parse(json) as { state?: string; merged_at?: string | null }[];
-    const first = parsed[0];
-    if (first) pullRequests.push({ headRefName: ref.name, state: toPullRequestState(first) });
+    // `state=all` で引いているので、1 件でも返れば「PR が在る」。
+    const parsed = JSON.parse(json) as unknown[];
+    if (parsed.length > 0) branchesWithPullRequest.push(ref.name);
   }
 
-  return evaluateRecordBranches(branches, pullRequests, defaultBranch, {
+  return evaluateRecordBranches(branches, branchesWithPullRequest, defaultBranch, {
     now: new Date(),
     graceHours: ORPHAN_GRACE_HOURS,
   });
