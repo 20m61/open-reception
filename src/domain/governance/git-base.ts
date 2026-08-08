@@ -44,12 +44,15 @@ export const BASE_REF_PREFERENCE: readonly string[] = ['origin/main', 'main'];
 /** ブランチ ref の接頭辞。`refs/pull/*` や `refs/tags/*` を混ぜないために使う。 */
 const HEADS_PREFIX = 'refs/heads/';
 
+/** リモートに実在するブランチ 1 本。`sha` は先端コミット（日時の引き当てに使う）。 */
+export type RemoteBranchRef = { name: string; sha: string };
+
 /** リモートの ref 一覧。`git ls-remote --symref origin` 1 回分。 */
 export type RemoteRefs = {
   /** 既定ブランチ名。読み取れなければ `undefined`（推測で埋めない）。 */
   defaultBranch: string | undefined;
-  /** リモートに実在するブランチ名。 */
-  branches: string[];
+  /** リモートに実在するブランチ。 */
+  branches: RemoteBranchRef[];
 };
 
 /**
@@ -83,7 +86,7 @@ export type RemoteRefs = {
  */
 export function parseLsRemoteSymref(output: string): RemoteRefs {
   let defaultBranch: string | undefined;
-  const branches: string[] = [];
+  const branches: RemoteBranchRef[] = [];
   for (const line of output.split('\n')) {
     const trimmed = line.trim();
     if (trimmed === '') continue;
@@ -98,7 +101,39 @@ export function parseLsRemoteSymref(output: string): RemoteRefs {
     }
     if (!right.startsWith(HEADS_PREFIX)) continue;
     const name = right.slice(HEADS_PREFIX.length);
-    if (name !== '') branches.push(name);
+    if (name !== '') branches.push({ name, sha: left });
   }
   return { defaultBranch, branches };
+}
+
+/** GitHub の remote URL から取り出した所有者とリポジトリ名。 */
+export type GitHubRepo = { owner: string; repo: string };
+
+/**
+ * remote URL から `owner` / `repo` を取り出す (#656)。
+ *
+ * ## なぜ要るか
+ *
+ * クラウドのサンドボックスは GitHub GraphQL を絞っており、`gh pr list` は 403 になる:
+ *
+ * ```
+ * HTTP 403: This GraphQL query is not enabled for this session — only the pinned set of
+ * PR-review operations is served. Use REST via `gh api repos/{owner}/{repo}/...` instead.
+ * ```
+ *
+ * REST へ移るには `owner` / `repo` が要る。remote URL から取れば**追加のネットワークは要らない**。
+ *
+ * **読めなければ推測で組み立てない。** 誤った `owner/repo` で REST を叩くと 404 が返り、
+ * 「PR が無い」と誤読して健全なブランチを取りこぼし扱いにしかねない。
+ */
+export function parseGitHubRepo(remoteUrl: string): GitHubRepo | undefined {
+  const trimmed = remoteUrl.trim();
+  if (trimmed === '') return undefined;
+  // `scp` 風（`git@github.com:o/r.git`）と URL 形（`https://…@github.com/o/r.git`）の両方。
+  // 資格情報部（`user:pass@`）は捨てる — クラウドの remote はこの形を取る。
+  const match = /(?:^|@|\/\/)github\.com[:/]([^/\s]+)\/([^/\s]+?)(?:\.git)?$/.exec(trimmed);
+  const owner = match?.[1];
+  const repo = match?.[2];
+  if (owner === undefined || repo === undefined) return undefined;
+  return { owner, repo };
 }

@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { BASE_REF_PREFERENCE, parseLsRemoteSymref, resolveBase } from './git-base';
+import { BASE_REF_PREFERENCE, parseGitHubRepo, parseLsRemoteSymref, resolveBase } from './git-base';
 
 /**
  * 比較起点の解決 (#557)。
@@ -92,20 +92,22 @@ describe('parseLsRemoteSymref: 既定ブランチと全ブランチを 1 回の�
   it('refs/heads/ のブランチだけを列挙する', () => {
     // `refs/pull/*` を混ぜると、PR ごとに存在する擬似 ref が全部 orphan 候補になる。
     expect(parseLsRemoteSymref(OUTPUT).branches).toEqual([
-      'docs/opus-5-loop-profile',
-      'main',
+      { name: 'docs/opus-5-loop-profile', sha: '6e74c6e' },
+      { name: 'main', sha: '13074eb' },
     ]);
   });
 
   it('スラッシュを含むブランチ名を壊さない', () => {
-    expect(parseLsRemoteSymref('aaa\trefs/heads/feat/a/b').branches).toEqual(['feat/a/b']);
+    expect(parseLsRemoteSymref('aaa\trefs/heads/feat/a/b').branches).toEqual([
+      { name: 'feat/a/b', sha: 'aaa' },
+    ]);
   });
 
   it('symref 行が無ければ既定ブランチは undefined（推測で埋めない）', () => {
     // 誤った既定ブランチ名で判定すると、実在する既定ブランチが orphan に誤検出される。
     const r = parseLsRemoteSymref('13074eb\trefs/heads/main');
     expect(r.defaultBranch).toBeUndefined();
-    expect(r.branches).toEqual(['main']);
+    expect(r.branches).toEqual([{ name: 'main', sha: '13074eb' }]);
   });
 
   it('symref が refs/heads/ 以外を指していたら undefined', () => {
@@ -115,5 +117,34 @@ describe('parseLsRemoteSymref: 既定ブランチと全ブランチを 1 回の�
   it('空出力は「ブランチ 0 本」として返す（呼び出し側が未検査に倒せるように）', () => {
     // **空を「問題なし」と読ませない。** 呼び出し側は branches が空なら未検査扱いにする。
     expect(parseLsRemoteSymref('')).toEqual({ defaultBranch: undefined, branches: [] });
+  });
+});
+
+describe('parseGitHubRepo: remote URL から owner/repo を取る (#656)', () => {
+  // クラウドのサンドボックスは GitHub GraphQL を絞っており、`gh pr list` は 403 になる:
+  //   HTTP 403: This GraphQL query is not enabled for this session — only the pinned set of
+  //   PR-review operations is served. Use REST via `gh api repos/{owner}/{repo}/...` instead.
+  // REST へ移るには owner/repo が要る。remote URL から取れば追加のネットワークは要らない。
+
+  it.each([
+    ['https://github.com/20m61/open-reception.git'],
+    ['https://github.com/20m61/open-reception'],
+    ['git@github.com:20m61/open-reception.git'],
+    ['ssh://git@github.com/20m61/open-reception.git'],
+  ])('%s から取れる', (url) => {
+    expect(parseGitHubRepo(url)).toEqual({ owner: '20m61', repo: 'open-reception' });
+  });
+
+  it('資格情報が埋まった URL でも取れる', () => {
+    // クラウドの remote はこの形。ここで落ちると REST へ行けない。
+    expect(parseGitHubRepo('https://x-access-token:ghs_XXX@github.com/20m61/open-reception.git'))
+      .toEqual({ owner: '20m61', repo: 'open-reception' });
+  });
+
+  it('GitHub 以外・読めない形は undefined（推測で組み立てない）', () => {
+    // 誤った owner/repo で REST を叩くと 404 になり、「PR が無い」と誤読しかねない。
+    expect(parseGitHubRepo('https://gitlab.com/o/r.git')).toBeUndefined();
+    expect(parseGitHubRepo('https://github.com/only-owner')).toBeUndefined();
+    expect(parseGitHubRepo('')).toBeUndefined();
   });
 });
