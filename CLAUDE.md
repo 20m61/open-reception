@@ -56,8 +56,10 @@ green 記録が無ければブロックする。記録はゲートが実際に�
   フックにブロックされる。マージまで向こうでやらせれば持ち運びを考えずに済む
 - routine 作成直後は**接続済み MCP コネクタが全部自動アタッチされる**（`mcp_connections: []`
   を送っても効かない）。**毎回 `clear_mcp_connections` で外すこと**
-- squash マージ後の**ブランチは自動削除されない**。ローカルで
-  `git push origin --delete <branch>` ＋ `git branch -D <branch>`（`-d` は squash なので失敗する）
+- squash マージ後の**ブランチは自動削除されない**。マージした側（クラウドならクラウド
+  セッション自身）が `git push origin --delete <branch>` でリモートを消す。手元に同じ
+  ブランチの clone があれば、そちらでは別途 `git branch -D <branch>`（`-d` は squash なので
+  失敗する）
 
 **ローカル macOS でしかできないこと（クラウドへ出さない）**:
 
