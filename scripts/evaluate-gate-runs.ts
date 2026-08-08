@@ -25,6 +25,7 @@ import {
   type GateRunFinding,
 } from '../src/domain/governance/gate-run-evaluation';
 import { parseLsRemoteSymref } from '../src/domain/governance/git-base';
+import { describeCommandFailure } from '../src/domain/governance/command-failure';
 
 const REPORT_ONLY = process.argv.includes('--report');
 const GATE_RUNS = resolve(import.meta.dirname, '..', 'docs', 'gate-runs.md');
@@ -33,8 +34,19 @@ function icon(f: GateRunFinding): string {
   return f.severity === 'error' ? '❌' : '⚠️ ';
 }
 
+/**
+ * 外部コマンドを実行する。**失敗したら理由（stderr）まで載せて投げ直す** (#656)。
+ *
+ * `execFileSync` の例外は `message` が `Command failed: <cmd>` までで、理由は `stderr` に
+ * 在る。拾わないまま報告していたため、クラウドで検査が到達しない原因を**一度も見ずに**
+ * 3 周かけて当て推量を重ねた。資格情報の伏字化は `describeCommandFailure` が行う。
+ */
 function run(cmd: string, args: string[]): string {
-  return execFileSync(cmd, args, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim();
+  try {
+    return execFileSync(cmd, args, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim();
+  } catch (e) {
+    throw new Error(describeCommandFailure(`${cmd} ${args.join(' ')}`, e));
+  }
 }
 
 /**
@@ -68,7 +80,7 @@ function evaluateBranches(): GateRunFinding[] {
       {
         code: 'branch_check_unverified',
         severity: 'warning',
-        message: `リモートブランチの検査を実行できませんでした（${e instanceof Error ? e.message.split('\n')[0] : String(e)}）。git のネットワーク到達と、PR 問い合わせ用の gh が要ります。**「取りこぼし無し」ではなく「未検査」です。**`,
+        message: `リモートブランチの検査を実行できませんでした（${e instanceof Error ? e.message : String(e)}）。git のネットワーク到達と、PR 問い合わせ用の gh が要ります。**「取りこぼし無し」ではなく「未検査」です。**`,
       },
     ];
   }
@@ -95,7 +107,7 @@ function evaluateBranches(): GateRunFinding[] {
         {
           code: 'branch_check_unverified',
           severity: 'warning',
-          message: `ブランチ '${name}' の PR を問い合わせられませんでした（${e instanceof Error ? e.message.split('\n')[0] : String(e)}）。**「取りこぼし無し」ではなく「未検査」です。**`,
+          message: `ブランチ '${name}' の PR を問い合わせられませんでした（${e instanceof Error ? e.message : String(e)}）。**「取りこぼし無し」ではなく「未検査」です。**`,
         },
       ];
     }
