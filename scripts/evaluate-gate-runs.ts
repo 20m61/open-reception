@@ -14,11 +14,14 @@
  * こちらは「運用が回っているか」の点検。混ぜると、Routine が止まっている間ずっと
  * 開発者のローカルゲートが赤くなり、override が習慣化する（#424 増分 4 と同じ判断）。
  */
+import { execFileSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import {
   evaluateGateRuns,
+  evaluateRecordBranches,
   parseGateRuns,
+  type BranchPullRequest,
   type GateRunFinding,
 } from '../src/domain/governance/gate-run-evaluation';
 
@@ -27,6 +30,77 @@ const GATE_RUNS = resolve(import.meta.dirname, '..', 'docs', 'gate-runs.md');
 
 function icon(f: GateRunFinding): string {
   return f.severity === 'error' ? '❌' : '⚠️ ';
+}
+
+function run(cmd: string, args: string[]): string {
+  return execFileSync(cmd, args, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim();
+}
+
+/**
+ * リモートのブランチと PR の対応を集め、PR にならなかった push を検出する (#656)。
+ *
+ * **PR は「そのブランチを head に持つもの」を 1 本ずつ問い合わせる。** `gh pr list` を
+ * 一括で引くと `--limit` を超えた古い PR が落ち、**その PR を持つブランチが orphan に
+ * 誤検出される**。ブランチは通常数本なので、正確な方を選ぶ。
+ *
+ * **収集に失敗したら「穴なし」ではなく「未検査」を返す。** 空の結果を「問題なし」と
+ * 読むのは、この検査が塞ごうとしている穴そのものと同じ失敗（`|| true` の空文字を
+ * fresh と読む類）。
+ */
+function evaluateBranches(): GateRunFinding[] {
+  let defaultBranch: string;
+  let branchNames: string[];
+  try {
+    defaultBranch = run('gh', ['repo', 'view', '--json', 'defaultBranchRef', '--jq', '.defaultBranchRef.name']);
+    branchNames = run('git', ['ls-remote', '--heads', 'origin'])
+      .split('\n')
+      .map((line) => line.split('refs/heads/')[1] ?? '')
+      .filter((name) => name !== '');
+  } catch (e) {
+    return [
+      {
+        code: 'branch_check_unverified',
+        severity: 'warning',
+        message: `リモートブランチの検査を実行できませんでした（${e instanceof Error ? e.message.split('\n')[0] : String(e)}）。gh とネットワークが要ります。**「取りこぼし無し」ではなく「未検査」です。**`,
+      },
+    ];
+  }
+  if (defaultBranch === '' || branchNames.length === 0) {
+    return [
+      {
+        code: 'branch_check_unverified',
+        severity: 'warning',
+        message:
+          'リモートブランチの一覧または既定ブランチ名が空でした。**「取りこぼし無し」ではなく「未検査」です。**',
+      },
+    ];
+  }
+
+  const pullRequests: BranchPullRequest[] = [];
+  for (const name of branchNames) {
+    if (name === defaultBranch) continue;
+    let json: string;
+    try {
+      json = run('gh', ['pr', 'list', '--head', name, '--state', 'all', '--limit', '1', '--json', 'state']);
+    } catch (e) {
+      return [
+        {
+          code: 'branch_check_unverified',
+          severity: 'warning',
+          message: `ブランチ '${name}' の PR を問い合わせられませんでした（${e instanceof Error ? e.message.split('\n')[0] : String(e)}）。**「取りこぼし無し」ではなく「未検査」です。**`,
+        },
+      ];
+    }
+    const parsed = JSON.parse(json) as { state: BranchPullRequest['state'] }[];
+    const state = parsed[0]?.state;
+    if (state) pullRequests.push({ headRefName: name, state });
+  }
+
+  return evaluateRecordBranches(
+    branchNames.map((name) => ({ name })),
+    pullRequests,
+    defaultBranch,
+  );
 }
 
 function main(): number {
@@ -39,7 +113,7 @@ function main(): number {
   }
 
   const runs = parseGateRuns(markdown);
-  const findings = evaluateGateRuns(runs, new Date());
+  const findings = [...evaluateGateRuns(runs, new Date()), ...evaluateBranches()];
 
   console.log('▶ 定期ゲート実行記録の評価 (#424)');
   console.log(`  記録件数: ${runs.length}`);
@@ -52,7 +126,9 @@ function main(): number {
   }
 
   if (findings.length === 0) {
-    console.log('✅ 指摘はありません（定期実行が回っており、直近も green）');
+    console.log(
+      '✅ 指摘はありません（定期実行が回っており、直近も green。記録に穴が無く、PR にならず残ったブランチも無い）',
+    );
     return 0;
   }
 
