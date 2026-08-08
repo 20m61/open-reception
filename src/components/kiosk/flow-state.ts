@@ -53,6 +53,13 @@ export type Action =
   | { type: 'SELECT_TARGET'; target: Target }
   | { type: 'SUBMIT_VISITOR_INFO'; visitor: VisitorInfo }
   | { type: 'CONFIRM' }
+  /**
+   * 受付が作られ、受付 ID が確定した (#649)。**状態は動かさない**（`calling` のまま）。
+   * 呼び出し中から担当者応答（`useStaffResponse`）や結果ポーリングが受付 ID を必要とするため、
+   * 「ID は結果と一緒に来る」旧設計を、ID だけ先に立てる形へ改める。
+   * `ReceptionEvent` ではないので遷移表（`domain/reception/state.ts`）は不変。
+   */
+  | { type: 'SESSION_CREATED'; sessionId: string }
   | { type: 'CALL_CONNECTED'; sessionId: string }
   | { type: 'CALL_TIMEOUT'; sessionId: string }
   | { type: 'CALL_FAILED'; sessionId?: string; reason?: CallFailureReason }
@@ -65,6 +72,14 @@ export type Action =
 export const INITIAL: FlowData = { state: 'idle' };
 
 export function reducer(data: FlowData, action: Action): FlowData {
+  // 状態を動かさない action は遷移表を引く前に処理する (#649)。呼び出し中に限るのは、
+  // 来訪者がキャンセルした後に届いた受付作成の応答で ID を立て直さないため
+  // （「不正遷移は現状維持」と同じ考え方）。
+  if (action.type === 'SESSION_CREATED') {
+    if (data.state !== 'calling') return data;
+    return { ...data, sessionId: action.sessionId };
+  }
+
   const next = transition(data.state, action.type as ReceptionEvent);
   // 不正遷移は無視して現状維持（受付画面を壊さない）。
   if (next === null) return data;
@@ -88,7 +103,10 @@ export function reducer(data: FlowData, action: Action): FlowData {
       return {
         ...data,
         state: next,
-        sessionId: action.sessionId,
+        // ID を伴わない失敗（`/call` が例外で落ちた等）で、確定済みの受付 ID を消さない (#649)。
+        // 「action が ID を持たない」と「受付が存在しない」は別物。消すと終端画面からの
+        // /fallback・/feedback の送信先が失われる。
+        sessionId: action.sessionId ?? data.sessionId,
         outcome: 'failed',
         failureReason: action.reason,
       };
