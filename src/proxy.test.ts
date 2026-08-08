@@ -221,4 +221,84 @@ describe('proxy origin-verify (#612)', () => {
       expect(value).not.toContain(SECRET);
     }
   });
+
+  /**
+   * 既存の 2 本（`ログにシークレットを含めない` / `拒否応答の本文・ヘッダに…`）が塞いでいない
+   * 隙間を埋める (#612 受入条件 3 つ目)。**既存は `mismatch` の 403 経路だけ**を、しかも
+   * `console.error` と `console.warn` だけを見ている。埋めるのは次の 3 点:
+   *
+   * 1. **`disabled` 経路** — `logOriginVerifyTransition` が `secret` を実際に受け取って
+   *    読むのはここだけなのに、未被覆だった（値を混ぜる変異を既存テストは 1 つも殺さない）
+   * 2. **`console.log` / `info` / `debug`** — デバッグで足すならまずこの 3 つ。既存の spy を
+   *    素通りする
+   * 3. **`missing-secret` の 503 応答** — 既存は 403 しか見ていない
+   *
+   * 漏れると迂回できる: 値を知れば CloudFront を通さず直叩きできる
+   * （`.claude/rules/pii-secret-minimization.md`）。
+   */
+  describe('シークレットの値を外へ出さない（既存被覆の隙間）', () => {
+    /** 実 secret と紛れない目印。部分一致で偽陰性にならないよう十分に特異な値にする。 */
+    const CANARY = 'TEST-canary-9f3a2b7c-origin-verify';
+
+    /** console の**全レベル**を 1 本に集める。既存は error/warn しか見ていない。 */
+    function captureConsole(): () => string {
+      const chunks: string[] = [];
+      const sink = (...args: unknown[]) => {
+        chunks.push(args.map((a) => String(a)).join(' '));
+      };
+      for (const level of ['error', 'warn', 'log', 'info', 'debug'] as const) {
+        vi.spyOn(console, level).mockImplementation(sink);
+      }
+      return () => chunks.join('\n');
+    }
+
+    it.each([
+      // secret が env に在る経路を網羅する。**`disabled` が主目的**（唯一 secret を読む分岐）。
+      ['disabled', CANARY, CANARY, undefined],
+      ['matched', CANARY, CANARY, '1'],
+      ['mismatch', CANARY, 'wrong-header', '1'],
+    ] as const)('%s でどのログレベルにも値が出ない', async (_label, envSecret, header, required) => {
+      const readLog = captureConsole();
+      process.env.ORIGIN_VERIFY_SECRET = envSecret;
+      if (required !== undefined) process.env.ORIGIN_VERIFY_REQUIRED = required;
+
+      await proxy(reqWith('/kiosk', header));
+
+      expect(readLog()).not.toContain(CANARY);
+    });
+
+    it('missing-secret では未置換の CFN 参照（シークレット名）も出さない', async () => {
+      // 既存は 403（mismatch）だけ。503 は配備障害の経路で env の状態が違う。
+      // **未解決でも env には値が入っている** — `{{resolve:secretsmanager:<名前>:...}}` の
+      // 生文字列で、シークレットの**保管場所の名前**を含む。これを吐くと攻撃者に
+      // 「どこを狙えばよいか」を教える。デバッグで生 env を出す変異はここでしか捕まらない。
+      const readLog = captureConsole();
+      const UNRESOLVED =
+        '{{resolve:secretsmanager:open-reception/TEST-canary-path:SecretString:ORIGIN_VERIFY_SECRET::}}';
+      process.env.ORIGIN_VERIFY_REQUIRED = '1';
+      process.env.ORIGIN_VERIFY_SECRET = UNRESOLVED;
+
+      const res = await proxy(reqWith('/kiosk', CANARY));
+
+      expect(res.status).toBe(503);
+      const body = await res.text();
+      expect(readLog()).not.toContain('TEST-canary-path');
+      expect(body).not.toContain('TEST-canary-path');
+      expect(body).not.toContain(CANARY);
+      expect(JSON.stringify([...res.headers.entries()])).not.toContain(CANARY);
+    });
+
+    it('送られてきたヘッダの値を応答へ反射しない', async () => {
+      // 攻撃者が任意に選べる値を echo すると、それ自体が反射の足場になる。
+      captureConsole();
+      process.env.ORIGIN_VERIFY_SECRET = CANARY;
+      process.env.ORIGIN_VERIFY_REQUIRED = '1';
+      const attacker = 'ATTACKER-SUPPLIED-abc123';
+
+      const res = await proxy(reqWith('/kiosk', attacker));
+
+      expect(await res.text()).not.toContain(attacker);
+      expect(JSON.stringify([...res.headers.entries()])).not.toContain(attacker);
+    });
+  });
 });
