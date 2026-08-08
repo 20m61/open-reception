@@ -1,5 +1,11 @@
 import { describe, expect, it, vi } from 'vitest';
-import { BASE_REF_PREFERENCE, parseGitHubRepo, parseLsRemoteSymref, resolveBase } from './git-base';
+import {
+  BASE_REF_PREFERENCE,
+  parseGitHubRepo,
+  parseLsRemoteSymref,
+  pullsQueryPath,
+  resolveBase,
+} from './git-base';
 
 /**
  * 比較起点の解決 (#557)。
@@ -146,5 +152,36 @@ describe('parseGitHubRepo: remote URL から owner/repo を取る (#656)', () =>
     expect(parseGitHubRepo('https://gitlab.com/o/r.git')).toBeUndefined();
     expect(parseGitHubRepo('https://github.com/only-owner')).toBeUndefined();
     expect(parseGitHubRepo('')).toBeUndefined();
+  });
+});
+
+describe('pullsQueryPath: ブランチ名でクエリを壊さない (#656)', () => {
+  // 🔴 **壊れ方が安全でない向きに倒れる。** `head` が落ちた問い合わせは
+  // `pulls?state=all&per_page=1` になり、**無関係な PR が 1 件返る**（実測）。
+  // 呼び出し側はそれを「PR が在る」と読むので、**本物の取りこぼしを見逃す**。
+  // git のブランチ名は `&` `#` `%` を許すので、生で埋めてよい文字ではない。
+
+  it('通常のブランチ名を owner:branch の形で載せる', () => {
+    const q = pullsQueryPath({ owner: '20m61', repo: 'open-reception' }, 'main');
+    expect(q).toContain('repos/20m61/open-reception/pulls');
+    expect(q).toContain('state=all');
+    expect(q).toContain('head=20m61%3Amain');
+  });
+
+  it('スラッシュを含むブランチ名をエンコードする', () => {
+    // `%2F` でも生の `/` と同じ結果になることは GitHub API で実測済み。
+    const q = pullsQueryPath({ owner: '20m61', repo: 'open-reception' }, 'docs/opus-5-loop-profile');
+    expect(q).toContain('head=20m61%3Adocs%2Fopus-5-loop-profile');
+  });
+
+  it('クエリを割る文字を通さない', () => {
+    // `&` はパラメータを割り、`#` は以降を捨てる。どちらも git のブランチ名として合法。
+    const q = pullsQueryPath({ owner: 'o', repo: 'r' }, 'feat/a&head=o:main');
+    expect(q).not.toContain('&head=o:main');
+    expect(q).toContain('%26head%3Do%3Amain');
+  });
+
+  it('owner と repo もエンコードする', () => {
+    expect(pullsQueryPath({ owner: 'o w', repo: 'r&x' }, 'b')).toContain('repos/o%20w/r%26x/pulls');
   });
 });

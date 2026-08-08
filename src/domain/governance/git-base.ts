@@ -137,3 +137,22 @@ export function parseGitHubRepo(remoteUrl: string): GitHubRepo | undefined {
   if (owner === undefined || repo === undefined) return undefined;
   return { owner, repo };
 }
+
+/**
+ * ブランチを head に持つ PR を引く REST パスを組み立てる (#656)。
+ *
+ * **壊れ方が安全でない向きに倒れるので、生で埋めない。** `head` が落ちた問い合わせは
+ * `pulls?state=all&per_page=1` になり、**無関係な PR が 1 件返る**（GitHub API で実測）。
+ * 呼び出し側はそれを「PR が在る」と読むため、**本物の取りこぼしを見逃す**。
+ * git のブランチ名は `&`（パラメータを割る）も `#`（以降を捨てる）も許すので、
+ * エンコードは必須。`%2F` が生の `/` と同じ結果になることも実測で確認済み。
+ *
+ * `gh pr list` ではなく REST なのは、クラウドのサンドボックスが GraphQL を絞っており
+ * 403 になるため（PR #665 の stderr で判明）。
+ */
+export function pullsQueryPath(repo: GitHubRepo, branch: string): string {
+  const owner = encodeURIComponent(repo.owner);
+  const name = encodeURIComponent(repo.repo);
+  const head = encodeURIComponent(`${repo.owner}:${branch}`);
+  return `repos/${owner}/${name}/pulls?state=all&per_page=1&head=${head}`;
+}

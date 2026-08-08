@@ -24,7 +24,7 @@ import {
   type GateRunFinding,
   type RemoteBranch,
 } from '../src/domain/governance/gate-run-evaluation';
-import { parseGitHubRepo, parseLsRemoteSymref } from '../src/domain/governance/git-base';
+import { parseGitHubRepo, parseLsRemoteSymref, pullsQueryPath } from '../src/domain/governance/git-base';
 import { describeCommandFailure } from '../src/domain/governance/command-failure';
 
 const REPORT_ONLY = process.argv.includes('--report');
@@ -49,6 +49,13 @@ function run(cmd: string, args: string[]): string {
   }
 }
 
+/** PR 作成から間もないブランチを取りこぼし扱いしないための猶予。 */
+const ORPHAN_GRACE_HOURS = 24;
+
+function unverified(message: string): GateRunFinding[] {
+  return [{ code: 'branch_check_unverified', severity: 'warning', message }];
+}
+
 /**
  * リモートのブランチと PR の対応を集め、PR にならなかった push を検出する (#656)。
  *
@@ -60,13 +67,6 @@ function run(cmd: string, args: string[]): string {
  * 読むのは、この検査が塞ごうとしている穴そのものと同じ失敗（`|| true` の空文字を
  * fresh と読む類）。
  */
-/** PR 作成から間もないブランチを取りこぼし扱いしないための猶予。 */
-const ORPHAN_GRACE_HOURS = 24;
-
-function unverified(message: string): GateRunFinding[] {
-  return [{ code: 'branch_check_unverified', severity: 'warning', message }];
-}
-
 function evaluateBranches(): GateRunFinding[] {
   let defaultBranch: string | undefined;
   let branchRefs: { name: string; sha: string }[];
@@ -123,10 +123,7 @@ function evaluateBranches(): GateRunFinding[] {
      */
     let json: string;
     try {
-      json = run('gh', [
-        'api',
-        `repos/${repo.owner}/${repo.repo}/pulls?state=all&per_page=1&head=${repo.owner}:${ref.name}`,
-      ]);
+      json = run('gh', ['api', pullsQueryPath(repo, ref.name)]);
     } catch (e) {
       return unverified(
         `ブランチ '${ref.name}' の PR を問い合わせられませんでした（${e instanceof Error ? e.message : String(e)}）。` +
