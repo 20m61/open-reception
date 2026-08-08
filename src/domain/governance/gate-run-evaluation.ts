@@ -37,7 +37,9 @@ export type GateRunFinding = {
     | 'fail_without_issue'
     | 'skipped_steps'
     | 'non_full_record'
-    | 'record_gap';
+    | 'record_gap'
+    | 'orphan_branch'
+    | 'branch_check_unverified';
   severity: 'error' | 'warning';
   message: string;
 };
@@ -189,4 +191,42 @@ export function evaluateGateRuns(runs: readonly GateRun[], now: Date): GateRunFi
   }
 
   return findings;
+}
+
+/** リモートに実在するブランチ。 */
+export type RemoteBranch = { name: string };
+
+/** ブランチに紐づく PR。`state` は GitHub の値をそのまま使う。 */
+export type BranchPullRequest = { headRefName: string; state: 'OPEN' | 'MERGED' | 'CLOSED' };
+
+/**
+ * **push されたが PR にならなかったブランチ**を捕まえる (#656)。
+ *
+ * `docs/gate-runs.md` の穴（`record_gap`）は「記録が main に無い」ことを事後に検出するが、
+ * **穴が空いた理由**まではわからない。#656 の実例は「週次 routine が記録を commit・push した
+ * のに PR を作らずに終わった」で、`chore/gate-run-20260803` は**紐づく PR が 1 つも無い**まま
+ * 5 日間放置された。これは記録の中身を見ずに、ブランチと PR の対応だけで検出できる。
+ *
+ * **squash マージなので ancestry では判定できない**（main に同じ commit は存在しない）。
+ * 判定材料は「そのブランチ名の PR が在るか」だけにする。PR が在れば、open なら進行中、
+ * merged なら内容は main に載っており、closed なら捨てる判断が見えている — いずれも
+ * **人間の目を一度は通っている**。PR が 1 つも無いものだけが、誰にも見られずに消える。
+ *
+ * これは routine 側の修正の**代わりではない**（routine 自身が PR 作成失敗に気づいて
+ * 失敗終了するのが本筋）。routine の挙動がどうであれ外側から取りこぼしを拾う網である。
+ */
+export function evaluateRecordBranches(
+  branches: readonly RemoteBranch[],
+  pullRequests: readonly BranchPullRequest[],
+  defaultBranch: string,
+): GateRunFinding[] {
+  // **「PR が 1 件でもあれば良し」にしない。** 無関係な PR が全ブランチを緑にしてしまう。
+  const branchesWithPr = new Set(pullRequests.map((pr) => pr.headRefName));
+  return branches
+    .filter((b) => b.name !== defaultBranch && !branchesWithPr.has(b.name))
+    .map((b) => ({
+      code: 'orphan_branch' as const,
+      severity: 'error' as const,
+      message: `リモートブランチ '${b.name}' に紐づく PR がありません。push された内容が ${defaultBranch} に載らないまま失われる可能性があります（#656 の 2026-08-03 がこの形）。中身を確認し、PR を作るか、不要なら削除してください。`,
+    }));
 }

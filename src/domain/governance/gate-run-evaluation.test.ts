@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { evaluateGateRuns, parseGateRuns } from './gate-run-evaluation';
+import { evaluateGateRuns, evaluateRecordBranches, parseGateRuns } from './gate-run-evaluation';
 
 const HEADER = `| 日時 (UTC) | コミット SHA | tier | 結果 | SKIP 項目 | 起票 Issue / 備考 |
 | --- | --- | --- | --- | --- | --- |`;
@@ -213,5 +213,67 @@ describe('evaluateGateRuns: 事前定義した停止条件で評価する (#424)
       );
       expect(evaluateGateRuns(runs, now).some((x) => x.code === 'record_gap')).toBe(true);
     });
+  });
+});
+
+describe('evaluateRecordBranches: PR にならなかった push を捕まえる (#656)', () => {
+  // **記録を push しても PR が作られなければ、内容は main に載らない。** 2026-08-03 の
+  // 週次ゲートはこれで FAIL の記録を 5 日間失った（`chore/gate-run-20260803` は
+  // 紐づく PR が 1 つも無かった）。**squash マージなので ancestry では判定できない** —
+  // 見るのは「そのブランチに PR が在るか」だけ。
+  const main = 'main';
+
+  it('PR が 1 つも無いリモートブランチを指摘する', () => {
+    const f = evaluateRecordBranches(
+      [{ name: 'main' }, { name: 'chore/gate-run-20260803' }],
+      [],
+      main,
+    );
+    expect(f.some((x) => x.code === 'orphan_branch' && x.severity === 'error')).toBe(true);
+    expect(f[0]?.message).toContain('chore/gate-run-20260803');
+  });
+
+  it('既定ブランチ自身は指摘しない', () => {
+    expect(evaluateRecordBranches([{ name: 'main' }], [], main)).toEqual([]);
+  });
+
+  it('open な PR があるブランチは指摘しない（進行中）', () => {
+    const f = evaluateRecordBranches(
+      [{ name: 'main' }, { name: 'feat/x' }],
+      [{ headRefName: 'feat/x', state: 'OPEN' }],
+      main,
+    );
+    expect(f).toEqual([]);
+  });
+
+  it('merged な PR があるブランチは指摘しない（マージ後に消し忘れただけ）', () => {
+    // クラウドの squash マージ後にブランチが残るのは既知（CLAUDE.md）。**内容は main に
+    // 載っている**ので、これを error にすると本物の取りこぼしが埋もれる。
+    const f = evaluateRecordBranches(
+      [{ name: 'main' }, { name: 'feat/x' }],
+      [{ headRefName: 'feat/x', state: 'MERGED' }],
+      main,
+    );
+    expect(f).toEqual([]);
+  });
+
+  it('closed な PR があるブランチは指摘しない（捨てた判断が見えている）', () => {
+    const f = evaluateRecordBranches(
+      [{ name: 'main' }, { name: 'feat/x' }],
+      [{ headRefName: 'feat/x', state: 'CLOSED' }],
+      main,
+    );
+    expect(f).toEqual([]);
+  });
+
+  it('別のブランチの PR で orphan を打ち消さない', () => {
+    // 「PR が 1 件でもあれば良し」にすると、**無関係な PR が全ブランチを緑にする**。
+    const f = evaluateRecordBranches(
+      [{ name: 'main' }, { name: 'chore/gate-run-20260803' }, { name: 'feat/x' }],
+      [{ headRefName: 'feat/x', state: 'MERGED' }],
+      main,
+    );
+    expect(f.map((x) => x.code)).toEqual(['orphan_branch']);
+    expect(f[0]?.message).toContain('chore/gate-run-20260803');
   });
 });
