@@ -36,7 +36,8 @@ export type GateRunFinding = {
     | 'latest_failed'
     | 'fail_without_issue'
     | 'skipped_steps'
-    | 'non_full_record';
+    | 'non_full_record'
+    | 'record_gap';
   severity: 'error' | 'warning';
   message: string;
 };
@@ -131,6 +132,25 @@ export function evaluateGateRuns(runs: readonly GateRun[], now: Date): GateRunFi
       code: 'latest_failed',
       severity: 'error',
       message: `直近の定期ゲート（${latest.at} / ${latest.sha}）が FAIL のままです。`,
+    });
+  }
+
+  // **`stale` は直近 1 件の経過日数しか見ない**ので、記録の**途中**の穴は次の回が
+  // 載った時点で見えなくなる。#656 で実際に起きたのがこれ（routine は記録を push したが
+  // PR を作らず、FAIL の記録が 5 日間 main に無かった）。穴は隣接する記録の間隔で捕まえる。
+  //
+  // **解決手段はある** — 抜けた回の行を追記すれば消える（並び順は `at` で決まるので
+  // 後から挿せる）。ゲート出力が復元不能でも、経緯を備考に書いた行で連続性は取り戻せる。
+  for (let i = 0; i + 1 < fullRuns.length; i += 1) {
+    const newer = fullRuns[i];
+    const older = fullRuns[i + 1];
+    if (!newer || !older) continue;
+    const gapDays = (Date.parse(newer.at) - Date.parse(older.at)) / 86_400_000;
+    if (gapDays <= STALE_AFTER_DAYS) continue;
+    findings.push({
+      code: 'record_gap',
+      severity: 'error',
+      message: `${older.at} と ${newer.at} の間が ${Math.floor(gapDays)} 日空いています（週次運用の想定は ${STALE_AFTER_DAYS} 日以内）。その間の定期実行の記録が main に載っていない可能性があります（#656）。抜けた回の行を追記してください。`,
     });
   }
 

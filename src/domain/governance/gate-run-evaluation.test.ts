@@ -146,4 +146,72 @@ describe('evaluateGateRuns: 事前定義した停止条件で評価する (#424)
     const runs = parseGateRuns(doc(EXAMPLE, '| 2026-08-04T09:00Z | `aaa` | full | PASS | なし |  |'));
     expect(evaluateGateRuns(runs, now)).toEqual([]);
   });
+
+  describe('記録の穴 (#656)', () => {
+    // **`stale` は直近 1 件の経過日数しか見ない。** 週次の途中で 1 回分の記録が
+    // main に載らなくても、**次の週の記録が載った時点で永久に見えなくなる**。
+    // #656 で実際に起きたのはこれ（routine は記録を push したが PR を作らず、
+    // FAIL の記録が 5 日間 main に無かった）。穴は隣接する記録の間隔で捕まえる。
+
+    it('週次記録の途中が抜けていれば、直近が新しくても指摘する', () => {
+      const runs = parseGateRuns(
+        doc(
+          EXAMPLE,
+          '| 2026-07-20T09:00Z | `aaa` | full | PASS | なし |  |',
+          // 2026-07-27 の記録が無い（= 14 日空く）
+          '| 2026-08-03T09:00Z | `ccc` | full | PASS | なし |  |',
+        ),
+      );
+      const f = evaluateGateRuns(runs, now);
+      expect(f.some((x) => x.code === 'stale')).toBe(false);
+      expect(f.some((x) => x.code === 'record_gap' && x.severity === 'error')).toBe(true);
+    });
+
+    it('週次どおり並んでいれば穴としない', () => {
+      const runs = parseGateRuns(
+        doc(
+          EXAMPLE,
+          '| 2026-07-20T09:00Z | `aaa` | full | PASS | なし |  |',
+          '| 2026-07-27T09:00Z | `bbb` | full | PASS | なし |  |',
+          '| 2026-08-03T09:00Z | `ccc` | full | PASS | なし |  |',
+        ),
+      );
+      expect(evaluateGateRuns(runs, now).some((x) => x.code === 'record_gap')).toBe(false);
+    });
+
+    it('抜けていた記録を後から追記すれば指摘が消える', () => {
+      // **解決手段のない指摘は狼少年になる**（FAIL / SKIP で既に踏んだ罠）。
+      // 穴の解決は「その回の行を追記する」こと。実際 2026-08-03 の行は 5 日後に
+      // 回収して追記した（PR #657）。ゲート出力が復元できなくても、経緯を備考に
+      // 書いた行を追記すれば記録の連続性は取り戻せる。
+      const runs = parseGateRuns(
+        doc(
+          EXAMPLE,
+          '| 2026-07-20T09:00Z | `aaa` | full | PASS | なし |  |',
+          '| 2026-08-03T09:00Z | `ccc` | full | PASS | なし |  |',
+          '| 2026-07-27T09:00Z | `bbb` | full | FAIL | なし | 回収（原因未記録・#656） |',
+        ),
+      );
+      expect(evaluateGateRuns(runs, now).some((x) => x.code === 'record_gap')).toBe(false);
+    });
+
+    it('最初の記録より前は穴としない', () => {
+      // routine が存在しなかった期間まで遡って指摘すると、初回から永久に赤くなる。
+      const runs = parseGateRuns(doc(EXAMPLE, '| 2026-08-03T09:00Z | `ccc` | full | PASS | なし |  |'));
+      expect(evaluateGateRuns(runs, now).some((x) => x.code === 'record_gap')).toBe(false);
+    });
+
+    it('full 以外の記録は穴を埋めない', () => {
+      // `pr` の記録が間に挟まっても、定期実行（--full --strict）の証跡にはならない。
+      const runs = parseGateRuns(
+        doc(
+          EXAMPLE,
+          '| 2026-07-20T09:00Z | `aaa` | full | PASS | なし |  |',
+          '| 2026-07-27T09:00Z | `bbb` | pr | PASS | なし |  |',
+          '| 2026-08-03T09:00Z | `ccc` | full | PASS | なし |  |',
+        ),
+      );
+      expect(evaluateGateRuns(runs, now).some((x) => x.code === 'record_gap')).toBe(true);
+    });
+  });
 });
