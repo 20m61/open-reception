@@ -41,30 +41,64 @@ export function resolveBase(run: GitRunner, pinned?: string | undefined): string
 /** 起点に使う ref の優先順。remote 追跡を先に見る（ローカル `main` は遅れていることがある）。 */
 export const BASE_REF_PREFERENCE: readonly string[] = ['origin/main', 'main'];
 
-/** remote 追跡 HEAD の短縮 ref に付く接頭辞。 */
-const ORIGIN_PREFIX = 'origin/';
+/** ブランチ ref の接頭辞。`refs/pull/*` や `refs/tags/*` を混ぜないために使う。 */
+const HEADS_PREFIX = 'refs/heads/';
+
+/** リモートの ref 一覧。`git ls-remote --symref origin` 1 回分。 */
+export type RemoteRefs = {
+  /** 既定ブランチ名。読み取れなければ `undefined`（推測で埋めない）。 */
+  defaultBranch: string | undefined;
+  /** リモートに実在するブランチ名。 */
+  branches: string[];
+};
 
 /**
- * 既定ブランチ名を **gh に頼らず** 解決する (#656)。
+ * `git ls-remote --symref origin` の出力を読む (#656)。
  *
- * orphan ブランチ検査（`evaluateRecordBranches`）は「既定ブランチを除く、PR が 1 つも
- * 無いブランチ」を探すので、既定ブランチ名が要る。当初これを
- * `gh repo view --json defaultBranchRef` で取っていたが、**クラウドの週次ゲート環境で
- * 落ちて検査が到達しなかった**（PR #661 の実走で判明。同じセッションで `gh pr create` /
- * `gh pr merge` は成功していたので、落ちたのは gh のリポジトリ解決だけ）。
+ * ## なぜこの経路か（2 度外した末に確かめた）
  *
- * クローン済みリポジトリなら remote 追跡 HEAD から取れる。追加の権限もネットワークも要らない。
+ * orphan ブランチ検査は「既定ブランチを除く、PR が 1 つも無いブランチ」を探すので、
+ * 既定ブランチ名とブランチ一覧が要る。クラウドの週次ゲート環境では:
+ *
+ * 1. `gh repo view --json defaultBranchRef` … 失敗（PR #661 の実走）
+ * 2. `git symbolic-ref --short refs/remotes/origin/HEAD` … **その clone に remote 追跡
+ *    HEAD が無く**失敗（PR #663 の実走。gh fallback も従来どおり失敗し、結局到達しなかった）
+ *
+ * `git ls-remote --symref origin` は**リモートに HEAD を尋ねる**ので、ローカルに
+ * remote 追跡状態が無くても答えが返る（リポジトリ外から明示 URL で実測して確認）。
+ * しかも既定ブランチとブランチ一覧が**1 回の問い合わせ**で揃う。同じクラウドで
+ * `git ls-remote --heads origin` は既に成功していた実績もある。
+ *
+ * ## 読み方
+ *
+ * ```
+ * ref: refs/heads/main<TAB>HEAD      ← 既定ブランチ
+ * <sha><TAB>HEAD
+ * <sha><TAB>refs/heads/main          ← ブランチ
+ * <sha><TAB>refs/pull/106/head       ← 混ぜない
+ * ```
  *
  * **読めない形を推測で名前にしない。** 誤った既定ブランチ名で判定すると、実在する既定
- * ブランチが「既定ではない」＝ orphan 候補として誤検出される。読めなければ `undefined` を
- * 返し、呼び出し側の fallback（gh）へ落とす。
+ * ブランチが「既定ではない」＝ orphan 候補として誤検出される。
  */
-export function resolveDefaultBranchName(run: GitRunner): string | undefined {
-  const shortRef = run(['symbolic-ref', '--short', 'refs/remotes/origin/HEAD']);
-  if (shortRef === null) return undefined;
-  const trimmed = shortRef.trim();
-  if (!trimmed.startsWith(ORIGIN_PREFIX)) return undefined;
-  const name = trimmed.slice(ORIGIN_PREFIX.length);
-  // 空文字は「問題なし」ではない。通すと全ブランチが「既定ではない」扱いになる。
-  return name === '' ? undefined : name;
+export function parseLsRemoteSymref(output: string): RemoteRefs {
+  let defaultBranch: string | undefined;
+  const branches: string[] = [];
+  for (const line of output.split('\n')) {
+    const trimmed = line.trim();
+    if (trimmed === '') continue;
+    const [left, right] = trimmed.split('\t');
+    if (left === undefined || right === undefined) continue;
+    if (left.startsWith('ref: ') && right === 'HEAD') {
+      const target = left.slice('ref: '.length);
+      if (!target.startsWith(HEADS_PREFIX)) continue;
+      const name = target.slice(HEADS_PREFIX.length);
+      if (name !== '') defaultBranch = name;
+      continue;
+    }
+    if (!right.startsWith(HEADS_PREFIX)) continue;
+    const name = right.slice(HEADS_PREFIX.length);
+    if (name !== '') branches.push(name);
+  }
+  return { defaultBranch, branches };
 }
