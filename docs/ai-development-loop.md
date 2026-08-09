@@ -145,6 +145,8 @@ green 記録が無ければブロックする。記録はゲートが実際に�
 | 常設要素が 3 領域（案内 / 回答対象 / ヘルプ）に閉じている | `src/components/kiosk/persistent-regions.ts` + e2e |
 | locale 網羅（ja/en/ko/zh 全キー・`ja-simple` は意図的な部分網羅） | `src/lib/i18n/i18n.test.ts` |
 | 停止境界に触れた変更の検出（§6 の列挙を変更パスから判定） | `src/domain/governance/change-risk.ts` |
+| **検査そのものが走っているか**（作っただけで誰も呼んでいない状態の検出） | `scripts/check-script-wiring.ts` |
+| **マージが squash で行われたか**（指示どおり実行されたかの検証） | `scripts/check-merge-method.ts` |
 
 ### UX complexity budget
 
