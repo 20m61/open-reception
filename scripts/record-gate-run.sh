@@ -12,6 +12,7 @@
 # 終了コード: quality-gate.sh --full --strict の終了コードをそのまま返す。
 #            FAIL 時は docs/quality-gate.md の FAIL 時ハンドリングに従い issue を起票すること
 #            （本スクリプトは issue 起票までは行わない）。
+#            記録の健全性の点検（#656）は報告のみで、終了コードには混ぜない。
 #
 set -uo pipefail
 
@@ -56,6 +57,31 @@ if [[ -f "${GATE_RUNS}" ]]; then
 else
   echo "⚠️  ${GATE_RUNS} が見つかりません。手動で以下を追記してください:" >&2
   echo "  ${ROW}" >&2
+fi
+
+# --- 記録が健全かを、記録した直後に点検する (#656) ---
+#
+# **この呼び出しが無いと、検査は誰も走らせないまま腐る。** `record_gap`（週次記録の穴）も
+# `orphan_branch`（PR にならなかった push）も `latest_failed` も、実装しただけでは
+# 何も見ていない。2026-08-08 時点で `evaluate-gate-runs.ts` を呼ぶものは**リポジトリ内に
+# 1 つも無かった** — #656 は「FAIL が誰にも見えないまま消える」issue なので、
+# 誰も走らせない検出器では閉じない。
+#
+# **`quality-gate.sh` 側には入れない。** あちらはコード品質の門で、こちらは「運用が
+# 回っているか」の点検。混ぜると Routine が止まっている間ずっと開発者のローカルゲートが
+# 赤くなり override が習慣化する（`evaluate-gate-runs.ts` の docblock が正本）。
+# 週次運用の入口である本スクリプトなら、その判断を壊さずに配線できる。
+#
+# **`--report`（exit 0）で呼び、終了コードは変えない。** 本スクリプトの終了コードは
+# ゲートの結果という契約で、そこへ記録の健全性を混ぜると意味が二重になる。加えて
+# 「解決手段のない指摘で永久に赤くなる」罠を FAIL / SKIP / orphan で既に 3 度踏んでいる。
+echo ""
+echo "▶ 記録の健全性を点検します（報告のみ・終了コードは変えません）"
+npm run --silent evaluate:gate-runs -- --report
+EVAL_STATUS=$?
+if [[ "${EVAL_STATUS}" -ne 0 ]]; then
+  # `--report` は指摘があっても 0 で返す。0 以外は**検査自体が実行できなかった**印。
+  echo "⚠️  記録の健全性を点検できませんでした（exit ${EVAL_STATUS}）。指摘の有無は不明です。" >&2
 fi
 
 if [[ "${RESULT}" == "FAIL" ]]; then
