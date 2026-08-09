@@ -26,7 +26,8 @@
     "audit:deps": "tsx scripts/audit-deps.ts",
     "sast": "semgrep scan --config p/default --error",
     "secrets:scan": "gitleaks detect --no-banner --redact",
-    "test:e2e:live": "bash scripts/e2e-live.sh"
+    "test:e2e:live": "bash scripts/e2e-live.sh",
+    "delegate:prompt": "tsx scripts/delegate-gate-prompt.ts"
   },
   "dependencies": {
     "@aws-sdk/client-cognito-identity-provider": "^3.1076.0",
