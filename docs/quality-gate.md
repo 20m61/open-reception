@@ -297,9 +297,24 @@ secret 混入・ライセンス問題（#105 方針）は時間経過だけで�
 
 - **推奨**: Claude Code の Routine（`create_trigger`、cron 週次、例:
   毎週月曜 09:00 JST）で `./scripts/quality-gate.sh --full --strict` を実行させる。
-  Routine のプロンプトには「実行後、結果を下記フォーマットで `docs/gate-runs.md` に追記し、
-  FAIL があれば下記の FAIL 時ハンドリングに従って issue を起票する」まで含める
-  （`scripts/record-gate-run.sh` を使うと記録部分を自動化できる）。
+  🔴 **Routine のプロンプトは `./scripts/record-gate-run.sh --publish` を呼ぶだけにする**（#656）。
+  ゲート実行・記録の追記・ブランチ/commit/push・**PR 作成とその実在確認**まで全部この
+  スクリプトが持つ。FAIL 時の issue 起票だけは人間（FAIL 時ハンドリング参照）。
+
+  **散文の手順に頼らない**のが要点。2026-08-03 の週次ゲートは記録を push したのに
+  **PR を作らずに終わり**、FAIL が 5 日間 main に載らなかった（#656）。当時この手順は
+  Routine の指示文に散文で書かれていて、抜けても誰も気づかなかった。
+  `docs/ai-development-loop.md` の「規律で守るものを機械検証へ移す」に従い、保証を
+  version 管理されたコードへ移してある。
+
+  - `--publish` を付けずに実行すると「push も PR 作成もしていない」旨を **stderr へ警告**する
+    （黙って終わらせない）。
+  - `gh pr create` の終了コードだけを信じず、**返された URL を REST で引き直して実在を確認**し、
+    確認できなければ非ゼロで落ちる。「ブランチが出来たこと＝PR が出来たことではない」が
+    #656 そのものなので。
+  - 確認に `gh pr list` / `gh pr view` は使わない。**クラウドのサンドボックスは GitHub GraphQL を
+    絞っており 403 になる**（PR #665 で実測）。REST の `gh api repos/.../pulls/<n>` を使う。
+  - `--publish --dry-run` でゲートも副作用も実行せず、公開手順だけを歩ける。
   - 本 Issue (#318) 自体はこの仕組みを**文書化**するのみで、実際の Routine 作成は
     ユーザーの判断で行う（自動では作成しない）。
 - **代替**: Claude Code Routine が使えない環境では、開発マシンのローカル cron/launchd で
