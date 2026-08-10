@@ -27,3 +27,4 @@
 | 2026-07-31T19:22Z | `ba60889` | full | FAIL | なし | 要 issue 起票（docs/quality-gate.md の FAIL 時ハンドリング参照） |
 | 2026-07-31T22:58Z | `3bc6f50` | full | PASS | なし | semgrep 導入済みで再実行し green を確認（#545 クローズ） |
 | 2026-08-03T00:01Z | `8fe2756` | full | FAIL | なし | 🔴 **原因未記録**。週次 routine はこの行を `chore/gate-run-20260803` に commit したが **PR を作らなかった**ため、記録が 5 日間 main に載らなかった（2026-08-08 のブランチ棚卸しで発見し、本 PR で回収）。失敗内容は routine のセッションログにしか残っておらず復元できない。追跡: #656 |
+| 2026-08-10T00:04Z | `b5c4529` | full | FAIL | infra WebStack synth  (.open-next/ が未ビルド（不足: open-next.output.json, assets, server-functions/default/index.mjs, image-optimization-function/index.mjs）— `npm run build:open-next` で作成) | 要 issue 起票（docs/quality-gate.md の FAIL 時ハンドリング参照） |
