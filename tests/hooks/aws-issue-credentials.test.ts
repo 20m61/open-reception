@@ -12,11 +12,12 @@ import { describe, expect, it } from 'vitest';
 const SCRIPT = resolve(process.cwd(), 'scripts/aws-issue-credentials.sh');
 const source = readFileSync(SCRIPT, 'utf8');
 
-function run(args: ReadonlyArray<string>) {
+function run(args: ReadonlyArray<string>, env: Record<string, string> = {}) {
   try {
     const stdout = execFileSync('bash', [SCRIPT, ...args], {
       encoding: 'utf8',
       stdio: ['ignore', 'pipe', 'pipe'],
+      env: { ...process.env, ...env },
     });
     return { status: 0, stdout, stderr: '' };
   } catch (e) {
@@ -74,8 +75,29 @@ describe('VITEST 実行中は AWS を呼ばない（実測で見つかった事�
   // 追加し、それが実際に境界チェックより後・aws 呼び出しより前で機能することを固定する。
   // このプロセス自身が vitest 配下で動いているため `VITEST` は子プロセスへ継承される
   // （上書きしない）。
+  //
+  // 🔴 **このテストが検査しているのは VITEST インターロックそのものなので、
+  // インターロックが機能していることに依存して安全を確保してはいけない。** もし将来
+  // 誰かがこのガードを削除したら、このテストは「落ちて事故を検出する」だけでなく、
+  // その検出のために**実際に STS 呼び出しを成立させてしまう**危険がある — 実行環境は
+  // このスクリプトが対象とするローカル Mac そのもので、`OpenReceptionClaudeDeploy-dev`
+  // の信頼ポリシーが唯一許可する principal（`user/CDK`、AdministratorAccess）の資格情報を
+  // 持ち得る。実際に Step 5 の変異テストで一度この事故（実 STS 呼び出し）を踏んでいる
+  // （`docs` ではなく `.superpowers/sdd/.../task-6-report.md` に実測ログあり）。
+  // そこで `tests/hooks/aws-cloud-deploy.test.ts`（「AWS 認証情報が無い」テスト）と同じ
+  // 方針で、インターロックが外れても実資格情報に到達できないよう、拾われ得る資格情報源を
+  // すべて明らかに偽の値で上書き・無効化する。インターロックが健在ならこれらの上書きは
+  // 使われずに終わる（AWS へ到達する前に止まるため）。
   it('妥当な --hours でも VITEST 配下では AWS を呼ばずに止まる', () => {
-    const { status, stderr } = run(['--hours', '1']);
+    const { status, stderr } = run(['--hours', '1'], {
+      AWS_ACCESS_KEY_ID: 'AKIAFAKEFAKEFAKEFAKE',
+      AWS_SECRET_ACCESS_KEY: 'fakefakefakefakefakefakefakefakefakefake',
+      AWS_SESSION_TOKEN: 'fake-session-token-fake-session-token-fake',
+      AWS_PROFILE: 'definitely-not-a-real-profile',
+      AWS_CONFIG_FILE: '/dev/null',
+      AWS_SHARED_CREDENTIALS_FILE: '/dev/null',
+      AWS_EC2_METADATA_DISABLED: 'true',
+    });
     expect(status).not.toBe(0);
     expect(stderr).toContain('VITEST');
   });
