@@ -115,4 +115,41 @@ describe('「変更なし」の FAILED は誤検出しない（自己申告し�
     expect(stderr).toContain('CREATE_COMPLETE');
     expect(stdout).not.toContain('変更なし');
   });
+
+  // 🔴 LOW fail-open（2026-08-12 レビュー第 3 ラウンド）: no-op 早期 return は
+  // evaluateDeployChangeSet を経由しないため、Task 1 由来の unexpectedStack 検証を
+  // スキップしてしまっていた。foreign スタックを名乗る「変更なし」ペイロードを拒否する
+  // ことを固定する。
+  it('foreign スタックを名乗る「変更なし」ペイロードは拒否する（unexpectedStack のスキップを許さない）', () => {
+    const path = writeChangeSet({
+      StackName: 'nodi-dev-app',
+      Status: 'FAILED',
+      StatusReason: "The submitted information didn't contain changes.",
+      Changes: [],
+    });
+    const { status, stderr, stdout } = run(path, 'nodi-dev-app');
+    expect(status).not.toBe(0);
+    expect(stderr).toContain('許可パターン');
+    expect(stdout).not.toContain('変更なし');
+    expect(stdout).not.toContain('危険な変更はありません');
+  });
+
+  // no-op 理由文字列を持ちながら実は Changes が空でない（本来ありえないが、入力を
+  // 信頼しない）ペイロードは、isNoOpChangeSet が false を返して通常のハードストップへ
+  // 落ちることを固定する。
+  it('no-op 理由文字列を持ちながら Changes が空でないペイロードは拒否する', () => {
+    const path = writeChangeSet({
+      StackName: STACK,
+      Status: 'FAILED',
+      StatusReason: "The submitted information didn't contain changes.",
+      Changes: [
+        { ResourceChange: { Action: 'Add', ResourceType: 'AWS::Lambda::Function', LogicalResourceId: 'Fn' } },
+      ],
+    });
+    const { status, stderr, stdout } = run(path);
+    expect(status).not.toBe(0);
+    expect(stderr).toContain('CREATE_COMPLETE');
+    expect(stdout).not.toContain('変更なし');
+    expect(stdout).not.toContain('危険な変更はありません');
+  });
 });

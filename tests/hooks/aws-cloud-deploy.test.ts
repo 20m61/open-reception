@@ -227,6 +227,43 @@ describe('gate_stamp_satisfies の cwd 固定 (Important 3 の回帰テスト、
   });
 });
 
+describe('cdk / aws 呼び出しに必須フラグが揃っている (round 3 の回帰テスト)', () => {
+  // 🔴 レビュー指摘: ラウンド 2 で入った wrapper の変更（--region 修正・
+  // --change-set-name の統一・--toolkit-stack-name 追加）には 1 つもテストが
+  // 無かった。`tests/hooks/aws-negative-tests-source.test.ts` と同じ「ソースを読んで
+  // マーカーが見つからなければ throw する」パターンで固定する。
+  const source = readFileSync(WRAPPER, 'utf8');
+
+  function windowAfter(marker: string, size: number): string {
+    const idx = source.indexOf(marker);
+    if (idx === -1) throw new Error(`ソース中にマーカーが見つかりません: ${marker}`);
+    return source.slice(idx, idx + marker.length + size);
+  }
+
+  it('describe-change-set は --region を渡す（Important D の回帰テスト）', () => {
+    const block = windowAfter('aws cloudformation describe-change-set', 150);
+    expect(block).toContain('--region');
+  });
+
+  it('deploy ケースの最終 cdk deploy は --change-set-name を渡す（Important A.1 の回帰テスト）', () => {
+    const block = windowAfter('npx cdk deploy "${STACK_NAMES[@]}"', 250);
+    expect(block).toContain('--change-set-name');
+  });
+
+  it('すべての cdk deploy 呼び出しが --toolkit-stack-name を渡す（項目 4 の回帰テスト）', () => {
+    const occurrences = [...source.matchAll(/npx cdk deploy/g)];
+    // 🔴 マーカーが 1 つも見つからなければ即座に throw する（無言で PASS にしない）。
+    if (occurrences.length === 0) {
+      throw new Error('ソース中に "npx cdk deploy" 呼び出しが見つかりません');
+    }
+    for (const m of occurrences) {
+      const idx = m.index ?? -1;
+      const block = source.slice(idx, idx + 300);
+      expect(block).toContain('--toolkit-stack-name');
+    }
+  });
+});
+
 describe('危険な既定を持たない', () => {
   it('スクリプト本文に --force / --require-approval never を含まない', () => {
     const source = readFileSync(WRAPPER, 'utf8');

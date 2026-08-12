@@ -118,7 +118,8 @@ const SIMULATED_CHECKS: ReadonlyArray<{
  * 🔴 **stderr を診断に載せる。** `execFileSync` の例外は `message` がコマンド行までで、
  * 理由は `stderr` にある。載せないと 3 周にわたって当て推量で直すことになる（2026-08-08 の実例）。
  *
- * ここで実行するのは**評価対象の操作そのもの**（N1〜N8）。だから `classifyAwsError` を
+ * ここで実行するのは**評価対象の操作そのもの**（N1〜N7。旧 N8 は Important B で
+ * `SIMULATED_CHECKS` の `S11` へ移動済み）。だから `classifyAwsError` を
  * 使ってよい ―― この呼び出しへの AccessDenied は、まさにその操作が denied だったことを
  * 意味する。`simulate()`（別の API を呼ぶ）と混同しないこと。
  */

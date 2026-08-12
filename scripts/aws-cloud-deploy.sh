@@ -14,6 +14,15 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 QUALIFIER="orcloud01"
+# 🔴 **`--toolkit-stack-name` を明示する。** bootstrap は
+# `--toolkit-stack-name CDKToolkit-orcloud01` で行った（既定の `CDKToolkit` ではない）。
+# これを渡さずに `cdk deploy` すると、CDK の toolkit 参照（staging bucket 名の解決等）が
+# 既定の `CDKToolkit` を探しにいき、`claude-deploy-role-restriction.json` の
+# allowlist（`CDKToolkit-orcloud01` のみ）に無い名前なので Deny に当たる。
+# これらの参照は try/catch で握りつぶされ致命的にはならない（レビューで確認済み）が、
+# 握りつぶされた権限エラーに依存する状態を放置しない。渡せば
+# `CDKToolkit-orcloud01` を正しく参照し、allowlist の当該エントリも実際に使われる。
+TOOLKIT_STACK_NAME="CDKToolkit-${QUALIFIER}"
 DEPLOY_ENV="${OR_DEPLOY_ENV:-dev}"
 REGION="${AWS_REGION:-ap-northeast-1}"
 # 🔴 **スタックごとにリージョンを持つ。** `OpenReception-CfMonitoring-*` は
@@ -182,13 +191,26 @@ EOF
   npx tsx "${ROOT}/scripts/aws-preflight.ts" "${out}" "${min_seconds}"
 }
 
-# 🔴 **diff と deploy で同じ change set 名を使う。** `diff` が承認するのは
-# `changeset_name()` が返す名前の change set であり、`deploy` の `cdk deploy` にも
-# 同じ `--change-set-name` を渡すことで、「gate が承認した change set」と
-# 「実際に実行される change set」を同じ名前で揃える（以前のレビューが指摘した
-# 「gate が承認した change set と cdk deploy が実行する change set が別物」というギャップを
-# 狭める。CDK CLI の公開インターフェース上、既存の named change set を無条件に
-# 再利用させる保証までは無いため「狭める」であって「閉じる」ではない）。
+# 🔴 **diff と deploy で同じ change set 名を使う。ただし「gate が承認した change set が
+# そのまま実行される」わけではない ―― CDK のソースで確認済み。**
+#
+# `infra/node_modules/aws-cdk/lib/index.js` の `createChangeSetAndCleanup()` は、
+# 指定した名前の change set が既に存在すれば `cleanupOldChangeset()` →
+# `cfn.deleteChangeSet()` で**無条件に削除してから**、`cfn.createChangeSet()` で
+# 新しく作り直す（`options.exists` が true のときの分岐。CDK は「既存の named change
+# set を再利用する」という API を公開していない）。つまり `deploy` の `cdk deploy
+# --change-set-name X` は、`diff` が承認したのと同じ名前 `X` の change set を
+# **必ず削除して作り直す**。gate が見た内容と実際に実行される内容は、
+# ワーキングツリーが gate 通過後に一切変わっていなければ同一のはずだが、
+# 「同じ change set オブジェクトを承認して実行している」という保証はどこにも無い。
+#
+# **それでも同じ名前を使う理由は別にある。** changeSet ARN は stack 名を埋め込まないため
+# （`arn:...:changeSet/<name>/<id>`）、IAM 側は名前でしかスコープできない。
+# `claude-deploy-entry.json` / `claude-deploy-role-restriction.json` はどちらも
+# `changeSet/claude-gate-*/*` という名前パターンで Allow / NotResource を絞っている
+# （Important A）。名前を固定していなければ、この IAM スコープ自体が機能しない。
+# **「実行される change set を gate が承認したものに固定する」という保証は、この
+# 仕組みには無い。**
 changeset_name() {
   echo "claude-gate-$(git -C "${ROOT}" rev-parse --short HEAD)"
 }
@@ -205,6 +227,7 @@ run_diff_gate() {
   if ! ( cd "${ROOT}/infra" && npx cdk deploy "${stack}" \
       -c env="${DEPLOY_ENV}" \
       -c "@aws-cdk/core:bootstrapQualifier=${QUALIFIER}" \
+      --toolkit-stack-name "${TOOLKIT_STACK_NAME}" \
       --change-set-name "${cs_name}" --no-execute ); then
     echo "  ⛔ ${stack}（${region}）の change set 作成（cdk deploy --no-execute）に失敗しました" >&2
     echo "     （直前の cdk 出力を参照。cdk 側のエラーメッセージがそのまま上に表示されているはずです）" >&2
@@ -246,6 +269,7 @@ case "${SUB}" in
     ( cd "${ROOT}/infra" && npx cdk deploy "${STACK_NAMES[@]}" \
         -c env="${DEPLOY_ENV}" \
         -c "@aws-cdk/core:bootstrapQualifier=${QUALIFIER}" \
+        --toolkit-stack-name "${TOOLKIT_STACK_NAME}" \
         --change-set-name "${cs_name}" \
         --require-approval broadening )
     ;;

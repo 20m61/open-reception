@@ -10,6 +10,7 @@
  */
 import { readFileSync } from 'node:fs';
 import {
+  ALLOWED_STACK_PATTERN,
   evaluateDeployChangeSet,
   type ChangeSetResourceChange,
   type ChangeSetSummary,
@@ -62,9 +63,20 @@ const NO_OP_STATUS_REASON_PREFIXES = [
  * `Status` 自体の欠落）は、引き続き無条件で止める。**「変更なしに見えるが実は違う」を
  * 拾わないよう、接頭辞一致に限定し、部分一致や大小無視はしない
  * （CloudFormation が返す文言はサービス側の固定文字列であり、揺れを許容する理由が無い）。
+ *
+ * 🔴 **LOW fail-open（2026-08-12 レビュー第 3 ラウンド）: `StatusReason` の一致だけでは
+ * 不十分だった。** `evaluateDeployChangeSet` を呼ばずに早期 return すると、
+ * Task 1 が確立した `unexpectedStack`（許可されていないスタック名）チェックも一緒に
+ * スキップしてしまう。「foreign スタックを名乗りつつ no-op 理由文字列を持つ `FAILED`」や
+ * 「no-op 理由文字列を持ちながら実は `Changes` が空でない `FAILED`」（本来ありえない
+ * 組み合わせだが、入力を信頼しない）を通してしまわないよう、ここで
+ * `Changes` が実際に空であることも条件に含める。**スタック名の検証は呼び出し側
+ * （`main()`）で `ALLOWED_STACK_PATTERN` に対して行う**（`evaluateDeployChangeSet` と
+ * 同じ検証を、通常経路を経由せずに行う必要があるため）。
  */
 function isNoOpChangeSet(raw: RawChangeSet): boolean {
   if (raw.Status !== 'FAILED') return false;
+  if ((raw.Changes ?? []).length > 0) return false;
   const reason = raw.StatusReason ?? '';
   return NO_OP_STATUS_REASON_PREFIXES.some((prefix) => reason.startsWith(prefix));
 }
@@ -104,7 +116,19 @@ function main(): void {
   // FAILED（isNoOpChangeSet）は例外で、安全側に倒しつつ実行を継続する。
   if (raw.Status !== 'CREATE_COMPLETE') {
     if (isNoOpChangeSet(raw)) {
-      console.log(`  stack: ${raw.StackName ?? stackName} / 変更なし（${raw.StatusReason}）`);
+      const noOpStackName = raw.StackName ?? stackName;
+      // 🔴 no-op 早期 return は `evaluateDeployChangeSet` を経由しないため、
+      // Task 1 由来の `unexpectedStack` 検証をここで代わりに行う。省略すると、
+      // 許可されていないスタック名を名乗る「変更なし」ペイロードを素通りさせてしまう。
+      if (!ALLOWED_STACK_PATTERN.test(noOpStackName)) {
+        console.error(
+          `  ⛔ change set は「変更なし」ですが、stack=${noOpStackName} は許可パターン` +
+            ` (${ALLOWED_STACK_PATTERN.source}) に一致しません。`,
+        );
+        console.error('  → 人間が確認してください。');
+        process.exit(1);
+      }
+      console.log(`  stack: ${noOpStackName} / 変更なし（${raw.StatusReason}）`);
       console.log('  ✅ 危険な変更はありません（自動デプロイ可）');
       return;
     }
