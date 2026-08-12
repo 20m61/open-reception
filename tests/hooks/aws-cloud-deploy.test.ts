@@ -23,6 +23,21 @@ import { chmodSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
+/**
+ * 🔴 **検査前にコメント（と、必要なら文字列リテラル）を落とす。**
+ *
+ * この wrapper はコメントが本文より長く、日本語のエラーメッセージが本物のコマンドと
+ * ほぼ同じ文字列を含む。素の `indexOf` は両方に一致するので、**本物の呼び出しを
+ * 削除しても緑のまま**になる。本ブランチはこの型の欠陥を繰り返し踏んでいる。
+ *
+ * 実装は `src/domain/governance/bash-source.ts`（純関数・co-located テスト付き）。
+ * `tests/hooks/aws-issue-credentials.test.ts` も同じものを使う ―― 写経すると
+ * 片方だけ直る（#680 R5）。
+ */
+import {
+  stripBashComments,
+  stripBashCommentsAndStrings,
+} from '../../src/domain/governance/bash-source';
 
 const WRAPPER = resolve(process.cwd(), 'scripts/aws-cloud-deploy.sh');
 
@@ -227,24 +242,6 @@ describe('gate_stamp_satisfies の cwd 固定 (Important 3 の回帰テスト、
   });
 });
 
-/**
- * bash の**行コメント**（先頭が `#` の行）を落とす。
- *
- * 🔴 **変異実験で判明した弱さ（2026-08-12 全体レビューの修正時に実測）**: この wrapper は
- * コメントが本文より長い。素の `indexOf('run_diff_gate')` は、`deploy` ケースの直上に
- * 書いた解説コメント（「直前の `run_diff_gate` ループが承認機構であり…」）に一致するため、
- * **実際の呼び出しを削除しても緑のまま**だった。同じ型の欠陥（コメントアウトで
- * すり抜ける）を infra 側の配線テストでも踏んでいる。検索前にコメントを落とす。
- *
- * 行頭 `#` の行だけを対象にする（文字列中の `#` を巻き込まない）。
- */
-function stripBashComments(source: string): string {
-  return source
-    .split('\n')
-    .filter((line) => !line.trimStart().startsWith('#'))
-    .join('\n');
-}
-
 describe('cdk / aws 呼び出しに必須フラグが揃っている (round 3 の回帰テスト)', () => {
   // 🔴 レビュー指摘: ラウンド 2 で入った wrapper の変更（--region 修正・
   // --change-set-name の統一・--toolkit-stack-name 追加）には 1 つもテストが
@@ -328,12 +325,25 @@ describe('collect_observation が集める観測 (Minor 9 / Important 7)', () =>
     expect(code).toContain('"headCommitPushed": ${pushed}');
   });
 
+  /**
+   * 🔴 **R5（#680 残件）: このアサーションはコメントを落としていたが、文字列は
+   * 落としていなかった。** wrapper には
+   * `echo "git branch -r --contains HEAD を実行できませんでした（判定不能）" >&2`
+   * というエラー文言があり、`branch -r --contains HEAD` は**本物のコマンドと
+   * エラー文言の 2 箇所**に現れる。本物（`git -C "${ROOT}" …`）を削除しても
+   * エラー文言だけが残り、その直後には当然 `return 1` があるので、
+   * **fail-closed を丸ごと壊しても緑のまま**になりうる。文字列も落として探す。
+   */
+  const codeNoStrings = stripBashCommentsAndStrings(readFileSync(WRAPPER, 'utf8'));
+
   it('git branch が失敗したら fail-closed する（判定不能を true に丸めない）', () => {
     const marker = 'branch -r --contains HEAD';
-    const idx = code.indexOf(marker);
-    if (idx === -1) throw new Error(`ソース中にマーカーが見つかりません: ${marker}`);
+    const occurrences = [...codeNoStrings.matchAll(/branch -r --contains HEAD/g)];
+    // 文字列を落とせば残るのは**本物のコマンド 1 箇所だけ**。0 でも 2 以上でも異常。
+    expect(occurrences.map(() => marker)).toEqual([marker]);
+    const idx = occurrences[0]!.index;
     // 直後のブロックに非ゼロ復帰があること。
-    expect(code.slice(idx, idx + 300)).toContain('return 1');
+    expect(codeNoStrings.slice(idx, idx + 300)).toContain('return 1');
   });
 
   it('verify が品質ゲート --pr を呼ぶ（preflight が要求するスタンプを書くのはここだけ）', () => {
@@ -389,9 +399,18 @@ describe('危険な既定を持たない', () => {
     expect(code.slice(fn, end)).toContain('scripts/aws-diff-gate.ts');
   });
 
+  /**
+   * 🔴 **R5（#680 残件）: `toContain('orcloud01')` は生ソースに対して行っていた。**
+   * wrapper には `orcloud01` を説明するコメントが 3 行あるので、`QUALIFIER="orcloud01"`
+   * という**実際の設定行を消してもコメントだけで一致し、緑のまま**だった。
+   * 肯定側はコメントを落として探す。
+   *
+   * 否定側（`hnb659fds` を含まない）は**生ソースのまま**にする ―― コメントを落とすと
+   * 検査が緩くなる方向であり、「コメントで言及することすら許さない」現状の方が強い。
+   */
   it('既定 qualifier hnb659fds を使わない', () => {
     const source = readFileSync(WRAPPER, 'utf8');
-    expect(source).toContain('orcloud01');
+    expect(stripBashComments(source)).toContain('orcloud01');
     expect(source).not.toContain('hnb659fds');
   });
 });

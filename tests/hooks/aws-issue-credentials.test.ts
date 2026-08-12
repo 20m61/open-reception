@@ -8,9 +8,24 @@ import { execFileSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
+/**
+ * 🔴 **R5（#680 残件）: このファイルにはコメント除去が 1 つも無かった。**
+ * `--print` は usage コメント（5 行目）と 2 本の `echo` 文言にも現れ、
+ * `OpenReceptionClaudeDeploy-dev` は説明コメント（7 行目）にも現れる。
+ * どちらも**実装行を消してもコメントだけで一致する**状態だった。
+ * `aws-cloud-deploy.test.ts` と**同じ実装**を共有する（写経すると片方だけ直る）。
+ */
+import {
+  stripBashComments,
+  stripBashCommentsAndStrings,
+} from '../../src/domain/governance/bash-source';
 
 const SCRIPT = resolve(process.cwd(), 'scripts/aws-issue-credentials.sh');
 const source = readFileSync(SCRIPT, 'utf8');
+/** コメントのみ除去。**文字列の中身が本体**であるもの（ARN 代入など）を探すのに使う。 */
+const code = stripBashComments(source);
+/** コメント＋文字列除去。エラー文言・usage に同じ語句があるもの（`--print`）を探すのに使う。 */
+const codeNoStrings = stripBashCommentsAndStrings(source);
 
 function run(args: ReadonlyArray<string>, env: Record<string, string> = {}) {
   try {
@@ -33,7 +48,9 @@ describe('値を残さない', () => {
   });
 
   it('既定では値を標準出力へ出さない（--print を明示したときだけ）', () => {
-    expect(source).toContain('--print');
+    // usage コメントと 2 本のエラー文言にも `--print` があるので、両方落として探す。
+    // 残るのは引数パーサの `--print)` ケースだけ。
+    expect(codeNoStrings).toContain('--print');
     // echo で SecretAccessKey を直接出す行が無いこと
     expect(source).not.toMatch(/echo\s+.*SecretAccessKey/);
   });
@@ -57,11 +74,12 @@ describe('引数の検証', () => {
 
 describe('チェーンを固定する', () => {
   it('専用 entry role を assume する', () => {
-    expect(source).toContain('OpenReceptionClaudeDeploy-dev');
+    // ARN は文字列リテラルそのものなので、コメントだけを落として探す。
+    expect(code).toContain('OpenReceptionClaudeDeploy-dev');
   });
 
   it('ExternalId を渡す', () => {
-    expect(source).toContain('--external-id');
+    expect(code).toContain('--external-id');
   });
 });
 
