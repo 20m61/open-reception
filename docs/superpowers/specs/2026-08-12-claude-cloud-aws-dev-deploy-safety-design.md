@@ -209,16 +209,23 @@ CDK の全操作は CloudFormation を通る。deploy role の
 `DeleteStack` 等を
 
 ```
-arn:aws:cloudformation:ap-northeast-1:822063948773:stack/OpenReception-*-dev/*
-arn:aws:cloudformation:us-east-1:822063948773:stack/OpenReception-*-dev/*
+arn:aws:cloudformation:ap-northeast-1:822063948773:stack/OpenReception-Web-dev/*
+arn:aws:cloudformation:ap-northeast-1:822063948773:stack/OpenReception-WebMonitoring-dev/*
+arn:aws:cloudformation:us-east-1:822063948773:stack/OpenReception-CfMonitoring-dev/*
 arn:aws:cloudformation:ap-northeast-1:822063948773:stack/CDKToolkit-orcloud01/*
 arn:aws:cloudformation:us-east-1:822063948773:stack/CDKToolkit-orcloud01/*
+arn:aws:cloudformation:ap-northeast-1:822063948773:changeSet/claude-gate-*/*
+arn:aws:cloudformation:us-east-1:822063948773:changeSet/claude-gate-*/*
 ```
 
-（リージョンは 2 つを列挙する。出荷している `claude-deploy-role-restriction.json` の
-`NotResource` も同じ 2 行で、`*` ワイルドカードは使っていない ―― 許可リスト側の
-ワイルドカードは「広すぎる」方向に壊れるため、`aws-policy-shape.test.ts` が
-各エントリの形を正規表現で固定している。）
+（**これは `claude-deploy-role-restriction.json` の `NotResource` の全 7 行そのままである。**
+スタックは `OpenReception-*-dev` のようなワイルドカードではなく**3 つを実名で、
+それぞれ所属リージョンにピン留めして**列挙する ―― `CfMonitoring-dev` は us-east-1
+にしか無いので、`OpenReception-*-dev` を両リージョンに書くと存在しない組み合わせまで
+許可することになる。許可リスト側のワイルドカードは「広すぎる」方向に壊れるため、
+`aws-policy-shape.test.ts` が各エントリの形を正規表現で固定している。
+唯一の `*` は changeSet 名の `claude-gate-*` で、これは changeSet ARN が
+スタック名を埋め込まないという IAM 側の制約による ―― その残存ギャップは §13。）
 
 に限定する。**これが迂回不能な主境界。** 名前 prefix ではなく ARN パターンであり、
 CloudFormation スタック名は CDK が `bin/open-reception.ts` で決定論的に付ける
@@ -349,17 +356,97 @@ OpenReception-*-staging  /  OpenReception-*-prod
 > 追加した（`AllowDevRuntimeCostExplorerReads`）。read-only であり、boundary は天井
 > なので**これ自体は誰にも権限を与えない**。`aws-policy-shape.test.ts` が固定している。
 
-Deny するもの:
+**明示 Deny ステートメントとして出荷しているもの**（Sid は `claude-boundary.json`）:
 
-- `iam:CreateRole` / `PutRolePolicy` / `AttachRolePolicy` で
-  `iam:PermissionsBoundary` condition が `OpenReceptionClaudeBoundary` でないもの
-- `arn:aws:iam::aws:policy/AdministratorAccess` 等の広域 policy の attach
-- `iam:DeleteRolePermissionsBoundary` / `PutRolePermissionsBoundary`（差し替え）
-- boundary 自身（`policy/OpenReceptionClaudeBoundary`）への `CreatePolicyVersion` /
-  `DeletePolicy` / `SetDefaultPolicyVersion`
-- 鎖の外への `iam:PassRole` / `sts:AssumeRole`
-- `route53:*` / `acm:*`（全面。human-only）
-- `organizations:*` / `account:*` / `iam:CreateUser` / `iam:CreateAccessKey`
+- `DenyRoleCreationWithoutThisBoundary`: `iam:CreateRole` / `PutRolePolicy` /
+  `AttachRolePolicy` で `iam:PermissionsBoundary` condition が
+  `OpenReceptionClaudeBoundary` でないもの（下記 carve-out を `NotResource` で除外）
+- `DenyBoundaryEscape`: `iam:DeleteRolePermissionsBoundary` / `PutRolePermissionsBoundary`
+- `DenyTamperingWithTheBoundaryPolicyItself`: boundary 自身
+  （`policy/OpenReceptionClaudeBoundary`）への `CreatePolicyVersion` / `DeletePolicy` /
+  `DeletePolicyVersion` / `SetDefaultPolicyVersion`
+- `DenySharedBootstrapRoles`: `cdk-hnb659fds-*` / `cdk-staging-*` への
+  `sts:AssumeRole` / `iam:PassRole`
+- `DenySharedDnsAndCertificates`: `route53:*` / `acm:*` / `route53domains:*`（全面。human-only）
+- `DenyPrincipalCreationAndOrgChanges`: `organizations:*` / `account:*` /
+  `iam:CreateUser` / `iam:CreateAccessKey` / `iam:CreateLoginProfile` /
+  `iam:UpdateAssumeRolePolicy`
+- `DenySecretsAndKeyDestruction`: `secretsmanager:*` / `kms:ScheduleKeyDeletion` /
+  `kms:DisableKey` / `kms:PutKeyPolicy`
+
+> 🔴 **かつてこの節は、出荷していない 2 つの Deny を「Deny するもの」として挙げていた
+> （2026-08-12 残件レビュー R7）。** 実装と読み合わせて訂正する。効果は別の仕組みで
+> 得ているので、その仕組みを書く。
+>
+> - **「`arn:aws:iam::aws:policy/AdministratorAccess` 等の広域 policy の attach」**:
+>   policy ARN を指定して Deny するステートメントは**無い**。効果は
+>   「`iam:AttachRolePolicy` は boundary 付きのロールにしか行えない」ことから来る ——
+>   boundary は**天井**なので、AdministratorAccess を attach しても実効権限は
+>   `claude-boundary.json` の Allow を超えない。加えて `DenyIamWriteOnForeignPrincipals`
+>   が他プロジェクト・自分のチェーンのロールへの attach を名前で塞ぐ。
+>   **この論法が成立しないのは carve-out されたロールだけである**（下記・§13）。
+> - **「鎖の外への `iam:PassRole` / `sts:AssumeRole`」**: 「鎖の外」を一般に表す Deny は
+>   **無い**（そのようなステートメントは書けない ―― 「鎖」は ARN の集合として
+>   列挙できない）。実際に効いているのは 3 つ: `DenySharedBootstrapRoles`（共有 bootstrap
+>   の 2 系統）、`AllowPassRoleOnlyToTaggedDevWorkloads` の 3 条件 AND
+>   （`iam:PassedToService` = `lambda.amazonaws.com` ＋ `Project`/`Environment` タグ）、
+>   そして exec role の trust policy（`cloudformation.amazonaws.com` のみが assume 可）。
+>   **タグの付かないロールへは、そもそも Allow が成立しないので PassRole できない**
+>   ―― Deny ではなく「Allow が無い」ことで塞いでいる。
+
+##### carve-out: CDK custom-resource provider role（#680 R1/R2/R3）
+
+`iam:CreateRole` / `PutRolePolicy` / `AttachRolePolicy` の boundary 強制と、
+`DenyIamRoleWriteOutsideProject` のタグ条件には、**1 つだけ名前による例外**がある:
+
+```
+arn:aws:iam::822063948773:role/OpenReception-*-dev-Custom*
+```
+
+理由。CDK の `CustomResourceProvider`（`crossRegionReferences: true` と
+`autoDeleteObjects: true` が使う）は、`iam.Role` construct ではなく**生の
+`AWS::IAM::Role`** をテンプレートへ吐く。したがって
+
+- `ITaggable` ではない → `Tags.of()`（`applyCostTags`）が届かず `Project`/`Environment`
+  タグが**付かない**
+- cross-region の 2 本は `prepareApp`（`app.synth()` の内側）で materialise される →
+  `Stack.addPermissionsBoundaryAspect()` の Aspect が走った**後**に生えるので
+  `PermissionsBoundary` も**付かない**
+
+dev で実際に生えるのは 3 本（`infra/test/claude-deploy-boundary.test.ts` が synth で実測）:
+
+| ロール | boundary | Project/Environment |
+| --- | --- | --- |
+| `CustomS3AutoDeleteObjects…`（Web-dev） | **付く** | 付かない |
+| `CustomCrossRegionExportWriter…`（Web-dev） | 付かない | 付かない |
+| `CustomCrossRegionExportReader…`（CfMonitoring-dev / us-east-1） | 付かない | 付かない |
+
+carve-out が無いと初回デプロイはこう壊れる: `iam:CreateRole` が
+`DenyRoleCreationWithoutBoundary` に当たり AccessDenied → rollback →
+rollback の `iam:DeleteRole` がタグ条件 Deny に当たって **`ROLLBACK_FAILED`**。
+さらに provider Lambda への `iam:PassRole` もタグ条件で Deny される。
+
+**Deny は Allow に勝つ**ので、Allow を足すだけでは解けない。該当の 2 つの Deny は
+`Resource` を `NotResource` へ変えて carve-out を除外してある。
+
+**なぜこのパターンか（より狭いものを選ばなかった理由）。** CloudFormation の生成名は
+`<スタック名>-<論理 ID を 64 文字に収まるまで切り詰めたもの>-<12 文字の乱数>` で、
+切り詰め量が**スタック名の長さで変わる**。実在する 2 本
+（`OpenReception-Web-dev-CustomCrossRegionExportWriter-mWjZeIPYdVgw` /
+`OpenReception-Web-dev-CustomS3AutoDeleteObjectsCust-yIrNw85NvcWP`、どちらもちょうど
+64 文字）から、`OpenReception-Web-dev` では論理 ID の取り分が 29 文字、
+`OpenReception-CfMonitoring-dev` では 20 文字と求まる。したがって
+
+- `…-Custom*CustomResourceProviderRole*` は**どの 1 本にも一致しない**
+  （`CustomResourceProviderRole` は切り詰めで消える）
+- `…-CustomCrossRegionExport*` は us-east-1 の Reader に一致しない
+  （そこでは `CustomCrossRegionExp` で切れる）
+
+3 本すべてに当たり、かつスタック名の長さに依存しないのは `Custom` の 6 文字だけである。
+名前の導出は `src/domain/governance/cfn-generated-name.ts`（実在名 2 本を ground truth に
+テストで固定）、パターンとの照合は `infra/test/claude-deploy-boundary.test.ts` が
+**出荷 JSON からパターンを読んで** synth 結果に当てている。
+残存リスクは §13。
 
 > 🔴 **実装上の注意: boundary 条件は専用ステートメントに分離し、素の `StringEquals` を使う。**
 > `claude-boundary.json` と `claude-cfn-exec.json` は、`iam:CreateRole` / `PutRolePolicy` /
@@ -541,34 +628,68 @@ entry role は `DenyEverythingElseOutsideTheChain` で 4 アクション以外�
 S6（PassRole）・S1/S3/S10 が問うているのは `cdk-orcloud01-cfn-exec-role-*` の権限であり、
 その principal は本ブランチのどこでも一度もシミュレートされていなかった。
 
-対処は文書ではなく構造で行う: `SIMULATED_CHECKS` の各エントリが `principals`
-（`entry` / `deploy` / `exec`）を持ち、スクリプトは対応する ARN
-（`SIMULATE_ENTRY_ROLE_ARN` / `SIMULATE_DEPLOY_ROLE_ARN` / `SIMULATE_EXEC_ROLE_ARN`）が
-**供給されていなければ実行を拒否**する（既定値で埋めない）。旧 `SIMULATE_PRINCIPAL_ARN` は
-設定されていると `exit 2` で止まる。結果は principal ARN を同じ行に印字する。
-`summarizeNegativeTests` は、意図した principal と異なる principal で評価された結果を
-**採点せず棄却**する（`denied` でも PASS にしない）。
+🔴 **各 check は「どのリージョンで評価するか」も宣言する（2026-08-12 残件レビュー R4）。**
+旧実装は `SIMULATED_CHECKS` のリソース ARN を**全部 `ap-northeast-1` にハードコード**し、
+principal ARN も 1 リージョン分しか受け取らなかった。runbook は「us-east-1 側も
+`-us-east-1` 版で 1 度実行する」と指示していたが、それで変わるのは
+`--policy-source-arn` だけで**評価されるリソースは ap-northeast-1 のまま** ――
+運用者は「us-east-1 検証済み」と記録するのに、us-east-1 のリソースは一度も
+シミュレートされていなかった。**ステップ 4 は初回デプロイを認可するゲート**である。
 
-| # | 操作 | principal | 期待 |
-| --- | --- | --- | --- |
-| S1 | `dynamodb:DeleteTable` on nodi のテーブル | exec | DENY |
-| S2 | `cloudformation:DeleteStack` on `nodi-*` | deploy, exec | DENY |
-| S3 | `secretsmanager:GetSecretValue` on 他プロジェクトの secret | exec | DENY |
-| S4 | `iam:CreateRole` (boundary 指定なし) | exec | DENY |
-| S5 | `iam:AttachRolePolicy` | exec | DENY |
-| S6 | `iam:PassRole` → `cdk-hnb659fds-cfn-exec-role-*` | deploy, exec | DENY |
-| S7 | `iam:DeleteRolePermissionsBoundary` | exec | DENY |
-| S8 | `route53:ChangeResourceRecordSets` | exec | DENY |
-| S9 | `cloudformation:UpdateStack` on `OpenReception-*-prod`（将来） | deploy, exec | DENY |
-| S10 | `kms:ScheduleKeyDeletion` | exec | DENY |
-| S11 | `iam:CreateAccessKey` on `user/CDK`（旧 N8） | entry, exec | DENY |
-| S12 | `sts:AssumeRole` → `cdk-orcloud01-lookup-role-*`（Critical 1） | entry | DENY |
-| S13 | `iam:DeleteRolePolicy` on `cdk-orcloud01-deploy-role-*`（Important 5。自分のチェーン） | exec | DENY |
-| S14 | `iam:CreatePolicyVersion` on 他プロジェクトのポリシー（Important 5） | exec | DENY |
+対処は文書ではなく構造で行う。
+
+- `SIMULATED_CHECKS` の各エントリが `principals`（`entry` / `deploy` / `exec`）と
+  `coverage`（`both` または `only` ＋**理由の文字列（型が必須にしている）**）を持つ
+- `resource` は**リージョンを引数に取る関数**である（ハードコードを
+  `tests/hooks/aws-negative-tests-source.test.ts` が禁止している）
+- principal ARN は**リージョンごとに別の環境変数**（`entry` だけは IAM ロール 1 本なので
+  リージョンを持たない）:
+  `SIMULATE_ENTRY_ROLE_ARN` /
+  `SIMULATE_{DEPLOY,EXEC}_ROLE_ARN_{AP_NORTHEAST_1,US_EAST_1}`。
+  1 つでも**供給されていなければ実行を拒否**する（既定値で埋めない）
+- 旧 `SIMULATE_PRINCIPAL_ARN` / `SIMULATE_DEPLOY_ROLE_ARN` / `SIMULATE_EXEC_ROLE_ARN`
+  （リージョン無し）は設定されていると `exit 2` で止まる
+- 結果行に principal ARN・リージョン・**実際に評価したリソース ARN**を印字する。
+  覆っていないリージョンは結果より**前**に理由つきで印字する
+- `summarizeNegativeTests` は、意図した principal と異なる principal で評価された結果を
+  **採点せず棄却**する（`denied` でも PASS にしない）
+
+| # | 操作 | principal | region | 期待 |
+| --- | --- | --- | --- | --- |
+| S1 | `dynamodb:DeleteTable` on nodi のテーブル | exec | 両方 | DENY |
+| S2 | `cloudformation:DeleteStack` on `nodi-*` | deploy, exec | 両方 | DENY |
+| S3 | `secretsmanager:GetSecretValue` on 他プロジェクトの secret | exec | 両方 | DENY |
+| S4 | `iam:CreateRole` (boundary 指定なし) | exec | 両方 | DENY |
+| S5 | `iam:AttachRolePolicy` | exec | 両方 | DENY |
+| S6 | `iam:PassRole` → `cdk-hnb659fds-cfn-exec-role-*` | deploy, exec | 両方 | DENY |
+| S7 | `iam:DeleteRolePermissionsBoundary` | exec | 両方 | DENY |
+| S8 | `route53:ChangeResourceRecordSets` | exec | 両方 | DENY |
+| S9 | `cloudformation:UpdateStack` on `OpenReception-*-prod`（将来） | deploy, exec | 両方 | DENY |
+| S10 | `kms:ScheduleKeyDeletion` | exec | 両方 | DENY |
+| S11 | `iam:CreateAccessKey` on `user/CDK`（旧 N8） | entry, exec | 両方 | DENY |
+| S12 | `sts:AssumeRole` → `cdk-orcloud01-lookup-role-*`（Critical 1） | entry | 両方 | DENY |
+| S13 | `iam:DeleteRolePolicy` on `cdk-orcloud01-deploy-role-*`（Important 5。自分のチェーン） | exec | 両方 | DENY |
+| S14 | `iam:CreatePolicyVersion` on 他プロジェクトのポリシー（Important 5） | exec | 両方 | DENY |
+| S15 | `cloudformation:DescribeStacks` on `OpenReception-CfMonitoring-dev` | entry | us-east-1 のみ | **ALLOW** |
+| S16 | `cloudformation:DescribeChangeSet` on `claude-gate-*`（us-east-1） | entry | us-east-1 のみ | **ALLOW** |
+| S17 | `iam:CreateRole` on carve-out のロール名（boundary なし。#680 R2） | exec | 両方 | **ALLOW** |
+| S18 | `iam:CreateRole` on carve-out**外**のロール名（boundary なし） | exec | 両方 | DENY |
+| S19 | `iam:DeleteRole` on carve-out のロール名（rollback 経路。#680 R3） | exec | 両方 | **ALLOW** |
+| S20 | `iam:DeleteRole` on タグの無い別のロール | exec | 両方 | DENY |
+
+**S17〜S20 は 2 対で 1 つの主張である。** 片方だけ見ると、carve-out を消しても
+（S18/S20 が緑）carve-out を `*` へ広げても（S17/S19 が緑）気づけない。
+`tests/hooks/aws-negative-tests-source.test.ts` が「対で存在すること」を固定している。
+
+> **`iam:PassRole` の carve-out は S 系に入っていない。** `iam:PassedToService` は
+> リクエスト側の context key なので `--context-entries` 無しでは評価できず、
+> 渡さないと「実際には通る呼び出し」が `denied` に見える。runbook 4b の 14〜16 で
+> 人間が手動確認する。**覆っていないことを書いておく。**
 
 `principals` を配列にしてあるのは、同じ問いが層をまたいで二重に守られている場合
 （例: foreign stack への操作は deploy role の層 1 と cfn-exec role の層 3 の両方）、
-どちらか一方を選ぶのが恣意的で片方の退行を見逃すため。各 principal ごとに 1 件として採点する。
+どちらか一方を選ぶのが恣意的で片方の退行を見逃すため。各 principal × region ごとに
+1 件として採点する。
 
 **「policy を読む限り安全」で終わらせない**（spec 原文 §9）。S 系は
 `SimulatePrincipalPolicy` の実 API 応答を根拠とし、結果を PR 本文へ貼る。
@@ -669,7 +790,7 @@ spec 原文 STOP CONDITIONS の「既存 production deploy 経路を壊す可能
 | `src/domain/governance/aws-policy-shape.ts` + `.test.ts` | ポリシー JSON の構造検証（**純関数**） |
 | `infra/lib/config/claude-deploy-boundary.ts` + `infra/test/claude-deploy-boundary.test.ts` | 層 4 の Permissions Boundary を CDK アプリ側で適用する（§4.2 層 4 の注記。bootstrap だけでは付かない） |
 | `scripts/aws-diff-gate.ts` | 上記を呼ぶ薄い CLI |
-| `scripts/aws-negative-tests.ts` | N1-N7 + N9 実試行（`--live-only`）/ S1-S14 シミュレーション（`--simulate-only`。principal ごとに評価。旧 N8 は S11 へ移動済み） |
+| `scripts/aws-negative-tests.ts` | N1-N7 + N9 実試行（`--live-only`）/ S1-S20 シミュレーション（`--simulate-only`。principal × region ごとに評価。旧 N8 は S11 へ移動済み） |
 | `scripts/aws-issue-credentials.sh` | 人間が窓を開ける（ローカル Mac） |
 | `tests/hooks/aws-cloud-deploy.test.ts` | wrapper の preflight を実起動して検証 |
 | `docs/runbook-cloud-aws-deploy.md` | runbook（§12 の 10 ステップ） |
@@ -746,6 +867,53 @@ spec 原文 STOP CONDITIONS の「既存 production deploy 経路を壊す可能
 | changeSet 名スコープの account-wide 露出 | **deploy role 単体の層では構造的に閉じられない。** 詳細は下記 |
 | 列挙から漏れた第三者 IAM ポリシーの書き換え | **タグでは閉じられない。** 下記 |
 | `iam:PassRole` のタグ条件が実 IAM でどう評価されるか | **未検証。** 初回デプロイで AccessDenied になる最有力候補。runbook 4b の 14〜16 |
+| carve-out された名前空間に境界の無いロールを作られる | **閉じられない。** サンドボックスがテンプレートを書くため。下記 |
+| `claude-boundary.json` のサイズが上限に近い | 5,682 / 6,144 文字（残り 462）。次に足す人が壁にぶつかる。runbook ステップ 1 に注記 |
+
+### carve-out された名前空間の残存ギャップ（#680 R1/R2/R3 の実装限界）
+
+§4.2 層 4 の carve-out は
+`arn:aws:iam::822063948773:role/OpenReception-*-dev-Custom*` に対して
+
+1. `iam:CreateRole` / `PutRolePolicy` / `AttachRolePolicy` を **boundary 条件なしで**許し
+2. `iam:PassRole` を（`lambda.amazonaws.com` 限定で）タグ条件なしで許し
+3. `DenyIamRoleWriteOutsideProject`（タグ条件）から除外する
+
+**覆えないこと（正直に書く）。** テンプレートを書くのは、脅威モデル（§3）が侵害を
+仮定している当のサンドボックス自身である。したがってサンドボックスは、construct の
+id を `Custom…` で始めるだけで、**この名前空間に入る Permissions Boundary の無い
+IAM ロールを意図的に作れる**。そのロールへ `iam:PutRolePolicy` で任意のインライン
+ポリシー（実質 Admin）を載せ、`iam:PassRole` で Lambda に渡して実行できる。
+これは carve-out が新たに開いた経路であり、carve-out 前は `iam:CreateRole` の
+boundary 条件で塞がっていた。
+
+**それでも残っている制約**（＝この経路は無制限ではない）:
+
+- ロールを作れるのは **CloudFormation 経由**、それも層 1 の allowlist にある
+  dev 3 スタックのデプロイの中だけである。deploy role は他のスタックを触れない
+- そのデプロイは `scripts/aws-cloud-deploy.sh deploy` を通り、**§6 の diff gate が
+  `AWS::IAM::Role` の Add/Modify を記録する**（`IAM_PRINCIPAL_TYPES`）。止めはしないが
+  change set に痕跡が残る
+- `iam:PassRole` は carve-out でも `iam:PassedToService = lambda.amazonaws.com` の
+  ままである（EC2 インスタンスプロファイルや他サービスへは渡せない）
+- 作られたロールは boundary が無いだけで、**そのロールが何をできるかは
+  そのロール自身のポリシー次第**。だが exec role が付けられるポリシーに上限は無いので、
+  **これは実質的な緩和ではない**（緩和として数えない）
+- credential の有効期限（§8 のデプロイ窓）の内側でしか起こせない
+
+**やらなかったこと。** `iam:AttachRolePolicy` に `iam:PolicyARN =
+…/service-role/AWSLambdaBasicExecutionRole`（provider role が実際に attach する唯一の
+managed policy。synth で確認）の条件を足せば「AdministratorAccess を attach する」
+経路だけは塞げる。**足していない** —— `iam:PutRolePolicy` によるインラインポリシーの
+経路が同じ強さで開いたままなので、防御としては見かけ倒しになり、その一方で
+provider の実装が変わったときに**初回デプロイを AccessDenied で壊す**副作用がある。
+「実装した以上のカバレッジを主張しない」方針に従い、条件を足すのではなくここに書く。
+
+**再評価の条件**: dev の 3 スタックに `Custom` で始まる construct id を人が意図的に
+足したくなったとき（carve-out と衝突する）、または carve-out の名前空間に
+provider 以外のロールが現れたとき。`infra/test/claude-deploy-boundary.test.ts` の
+「carve-out が必要なロールが実在し、かつ carve-out はそれ以外を覆っていない」が
+論理 ID の完全一致で固定しているので、増えれば赤くなる。
 
 ### 第三者 IAM ポリシー書き換えの残存ギャップ（Important 5 の実装限界）
 

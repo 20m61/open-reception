@@ -202,14 +202,26 @@ CloudFormation スタック・DynamoDB/S3 データ・`cdk-*` ロールへの
 
 対処は 2 段構え（`DenyIamWriteOnForeignPrincipals` / `DenyIamRoleWriteOutsideProject`）。
 
-1. **名前による明示 Deny**（確実に効く）: `cdk-hnb659fds-*` / `cdk-staging-*` /
-   `cdk-orcloud01-*`（**自分のチェーン**も含む。deploy role の層 1 インライン
-   ポリシーを `iam:DeleteRolePolicy` で剥がされたら主境界が消える）/
-   `OpenReceptionClaudeDeploy-dev` / `nodi-*` / `salon-loop-*` / `Kiaff*` /
-   `SalonLoop*` / `Nodi*` の role・policy、および全 `user/*`。
-2. **タグ条件による一般化**（role にだけ効く）: `iam:DeleteRole` /
-   `DeleteRolePolicy` / `DetachRolePolicy` / `UpdateAssumeRolePolicy` を
-   `aws:ResourceTag/Project != open-reception` で Deny する。
+1. **名前による明示 Deny**（確実に効く）。🔴 **role 側と policy 側の列挙は対称ではない**
+   —— 対称であるかのように 1 行で書くと、実装が覆っていない範囲を覆っていると
+   読ませてしまう（2026-08-12 残件レビュー R7 での訂正）。出荷している 16 エントリの内訳:
+
+   | 種別 | 列挙している名前 |
+   | --- | --- |
+   | `role/` | `cdk-hnb659fds-*` / `cdk-staging-*` / `cdk-orcloud01-*` / `OpenReceptionClaudeDeploy-dev` / `nodi-*` / `salon-loop-*` / `Kiaff*` |
+   | `policy/` | `cdk-hnb659fds-*` / `cdk-staging-*` / `nodi-*` / `salon-loop-*` / `Kiaff*` / `SalonLoop*` / `Nodi*` / `OpenReceptionClaude*` |
+   | `user/` | `*`（全ユーザー） |
+
+   `cdk-orcloud01-*`（**自分のチェーン**。deploy role の層 1 インラインポリシーを
+   `iam:DeleteRolePolicy` で剥がされたら主境界が消える）は role 側だけ、
+   `SalonLoop*` / `Nodi*` / `OpenReceptionClaude*`（**exec ポリシー・boundary 自身の
+   書き換えを塞ぐ**）は policy 側だけにある。片方の欄にあるものがもう片方にもあると
+   仮定しないこと。
+2. **タグ条件による一般化**（role にだけ効く）: `iam:DeleteRole` / `UpdateRole` /
+   `UpdateAssumeRolePolicy` / `DeleteRolePolicy` / `DetachRolePolicy` の **5 つ**を
+   `aws:ResourceTag/Project != open-reception` で Deny する
+   （`iam:UpdateRole` が抜けていたのも R7 での訂正）。
+   ただし #680 R3 の carve-out（決定 8）を `NotResource` で除外する。
 
 🔴 **タグ条件は一般解にならない。** `AWS::IAM::ManagedPolicy` は CloudFormation の
 リソース仕様に `Tags` プロパティを持たないため、CDK が作るマネージドポリシーは
@@ -219,11 +231,50 @@ CloudFormation スタック・DynamoDB/S3 データ・`cdk-*` ロールへの
 名前による明示 Deny のみが頼りであり、**列挙から漏れた第三者ポリシーは覆えない**。
 これは残存ギャップとして spec §13 に記載する（「実装した以上のカバレッジを主張しない」）。
 
+### 決定 8: CDK custom-resource provider role を**名前で** carve-out する
+
+`crossRegionReferences: true`（#303 の us-east-1 監視スタック）と
+`autoDeleteObjects: true`（dev の S3）は、CDK の `CustomResourceProvider` 経由で
+**生の `AWS::IAM::Role`** をテンプレートへ吐く。これは `iam.Role` construct ではないので
+`ITaggable` ではなく（`applyCostTags` が届かない）、cross-region のものは
+`prepareApp`（synth 中）で materialise されるため boundary Aspect よりも**後**に生える。
+synth での実測（`infra/test/claude-deploy-boundary.test.ts`）:
+
+| ロール | boundary | Project/Environment |
+| --- | --- | --- |
+| `CustomS3AutoDeleteObjects…`（Web-dev） | **付く** | 付かない |
+| `CustomCrossRegionExportWriter…`（Web-dev） | 付かない | 付かない |
+| `CustomCrossRegionExportReader…`（CfMonitoring-dev） | 付かない | 付かない |
+
+このままだと初回デプロイは `iam:CreateRole` の AccessDenied → rollback →
+rollback の `iam:DeleteRole` がタグ条件 Deny に当たって **`ROLLBACK_FAILED`** になる。
+
+**決定**: `arn:aws:iam::822063948773:role/OpenReception-*-dev-Custom*` を carve-out する。
+`iam:CreateRole` / `PutRolePolicy` / `AttachRolePolicy` の boundary 条件なし Allow、
+`iam:PassRole`（`lambda.amazonaws.com` 縛りは維持、タグ条件のみ外す）、そして
+**Deny が Allow に勝つ**ため `DenyRoleCreationWithoutBoundary` /
+`DenyRoleCreationWithoutThisBoundary` / `DenyIamRoleWriteOutsideProject` を
+`Resource` から `NotResource` へ変えて除外する。
+
+**なぜこの粒度か**: 物理名は論理 ID を**スタック名の長さに応じて切り詰める**ため、
+`CustomResourceProviderRole` も `CustomCrossRegionExport` も物理名には残らない
+（実在名 2 本が ground truth。`src/domain/governance/cfn-generated-name.ts`）。
+3 本すべてに当たり、かつスタック名の長さに依存しないのは `Custom` の 6 文字だけ。
+
+🔴 **残存リスク（spec §13 に詳細）**: テンプレートを書くのはサンドボックス自身なので、
+construct id を `Custom…` にするだけで**境界の無いロールを意図的に作れる**。
+制約として残るのは「CloudFormation 経由・層 1 の dev 3 スタックの中でしか作れない」
+「diff gate が `AWS::IAM::Role` の変更を記録する」「`iam:PassRole` は
+`lambda.amazonaws.com` 限定のまま」「デプロイ窓の内側だけ」の 4 点であり、
+**boundary が無いこと自体は緩和されない**。
+
 ## 未検証事項・撤回条件
 
 - **`iam:SimulatePrincipalPolicy` による実 API 検証（`docs/runbook-cloud-aws-deploy.md`
-  ステップ 4a の S1〜S14 と、ステップ 4b・4c の 20 コマンド）は本サイクルで一度も
-  実行されていない。** 実装の正しさは静的な構造検証（`auditPolicyDocument`）と
+  ステップ 4a の S1〜S20 と、ステップ 4b・4c の 19 コマンド）は本サイクルで一度も
+  実行されていない。**（番号は 1〜20 まで振ってあるが、**10 番はコマンドではなく
+  「1〜9 を us-east-1 で繰り返せ」という指示**なので実コマンドは 19 本。
+  「20 コマンド」は誤記だった ―― 2026-08-12 残件レビュー R7） 実装の正しさは静的な構造検証（`auditPolicyDocument`）と
   CDK synth（`infra/test/claude-deploy-boundary.test.ts`）でのみ確認済み。
   **これらが全て期待どおりの結果を返すことが、初回デプロイへ進む前提条件である。**
   1 本でも違えば設計を見直す。

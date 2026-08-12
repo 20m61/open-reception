@@ -8,6 +8,29 @@
 
 **Tech Stack:** TypeScript / vitest / bash / AWS CLI v2 / AWS CDK (v2, `infra/`)
 
+---
+
+## 🔴 この計画書は実行済みであり、一部は出荷物に置き換わっている（2026-08-12）
+
+**この計画書は「何をどう作るか」の記録であって、現在の実装の正本ではない。**
+実装後に 2 度のレビュー（全体レビュー / 残件レビュー #680）で設計が変わった箇所があり、
+**ここに書かれたコマンド・アサーションをそのまま実行・引用すると誤る**。
+Task 3 / 4 / 5 / 7 の冒頭に個別のバナーを置いた。
+
+現在の正本:
+
+| 知りたいこと | 見る場所 |
+| --- | --- |
+| 設計 | `docs/superpowers/specs/2026-08-12-claude-cloud-aws-dev-deploy-safety-design.md` |
+| 人間の手順 | `docs/runbook-cloud-aws-deploy.md` |
+| 決定と理由 | `docs/adr/0009-claude-cloud-aws-dev-deploy-boundary.md` |
+| 出荷している IAM ポリシー | `scripts/aws-policies/*.json` |
+| 実際のアサーション | `tests/hooks/aws-*.test.ts` / `src/domain/governance/*.test.ts` / `infra/test/claude-deploy-boundary.test.ts` |
+
+**この計画書に第 2 のコピーを維持しない。** 差分は上記を見ること。
+
+---
+
 ## Global Constraints
 
 - 設計の正本は `docs/superpowers/specs/2026-08-12-claude-cloud-aws-dev-deploy-safety-design.md`。**矛盾したら spec が正**。
@@ -669,6 +692,15 @@ git commit -m "feat(governance): デプロイ preflight の判定を純関数と
 ---
 
 ### Task 3: IAM ポリシー JSON と構造検証
+
+> 🔴 **SUPERSEDED（一部）。** 出荷している JSON は、その後のレビューで
+> `AllowPassRoleOnlyToTaggedDevWorkloads`（Important 4）・
+> `DenyIamWriteOnForeignPrincipals` / `DenyIamRoleWriteOutsideProject`（Important 5）・
+> **CDK custom-resource provider role の carve-out**（#680 R1/R2/R3。2 つの Deny が
+> `Resource` から `NotResource` に変わった）を追加している。
+> **正本は `scripts/aws-policies/*.json` と `src/domain/governance/aws-policy-shape.test.ts`。**
+> `claude-boundary.json` は 6,144 文字上限に対して残り 462 文字しかない
+> （runbook ステップ 1 の注記を読むこと）。
 
 **Files:**
 - Create: `scripts/aws-policies/claude-boundary.json`（層 4）
@@ -1431,6 +1463,18 @@ git commit -m "feat(infra): Claude Cloud 専用 IAM ポリシーと構造検証�
 
 ### Task 4: CLI 2 本と配線登録
 
+> 🔴 **SUPERSEDED（一部）。** `scripts/aws-negative-tests.ts` の principal / region の
+> 受け取り方が 2 度変わっている。
+>
+> - **`SIMULATE_PRINCIPAL_ARN` は廃止**（Critical 3。1 本の ARN で全 S 系を評価すると
+>   entry role に対して boundary 脱出を聞くことになり、検査が常に PASS した）
+> - **`SIMULATE_DEPLOY_ROLE_ARN` / `SIMULATE_EXEC_ROLE_ARN`（region 無し）も廃止**
+>   （#680 R4。bootstrap は region ごとに別のロールを作るので、片方だけ渡して
+>   「両 region 検証済み」と記録できてしまった）
+>
+> いずれも設定されていると `exit 2` で止まる。**現在の変数一覧と実行方法は
+> `docs/runbook-cloud-aws-deploy.md` ステップ 4a。**
+
 **Files:**
 - Create: `scripts/aws-diff-gate.ts`
 - Create: `scripts/aws-negative-tests.ts`
@@ -1624,6 +1668,18 @@ Expected: エラーなし（**コミットは Task 5 の末尾でまとめて行
 ---
 
 ### Task 5: deploy wrapper と配線登録
+
+> 🔴 **SUPERSEDED（一部）。** 承認まわりが**逆向きに**変わった。この節は
+> 「`--require-approval never` を**含まない**こと」をアサーションとして書き、
+> wrapper 例では `--require-approval broadening` を渡している。**どちらも出荷物では
+> 反対である**（Important 6）—— TTY の無いサンドボックスでは CDK の承認プロンプトが
+> 必ず `TtyNotAttached` で落ち、しかも投げる**前**に `cleanupChangeSet()` で
+> gate が見た change set を消す。出荷している wrapper は diff / deploy の両方に
+> **`--require-approval never` を渡し**、承認機構は `run_diff_gate`
+> （`src/domain/governance/deploy-diff-gate.ts`）が担う。
+> あわせて全 `cdk` 呼び出しが `-c claudeBoundary=` を渡す（Critical 2）。
+> **正本は `scripts/aws-cloud-deploy.sh` と `tests/hooks/aws-cloud-deploy.test.ts`、
+> 理由は ADR 0009 決定 5。**
 
 **Files:**
 - Create: `scripts/aws-preflight.ts`
@@ -2210,6 +2266,13 @@ git commit -m "feat(infra): デプロイ窓を開ける短命 STS 発行スク�
 ---
 
 ### Task 7: runbook・ADR・既存ドキュメントの訂正
+
+> 🔴 **SUPERSEDED。** ここに書かれた runbook の骨子（とくに Step 4 の
+> `SIMULATE_PRINCIPAL_ARN=... npm run aws:negative-tests -- --simulate-only`）は
+> **もう動かない**（Task 4 のバナー参照）。手順は 2 度書き換わり、
+> verify → preflight → diff → deploy → smoke の順序、carve-out の承認節（4d）、
+> boundary のサイズ余白の注記が加わっている。
+> **正本は `docs/runbook-cloud-aws-deploy.md` と `docs/adr/0009-…md` そのもの。**
 
 **Files:**
 - Create: `docs/runbook-cloud-aws-deploy.md`

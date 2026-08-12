@@ -44,6 +44,23 @@ qualifier: `orcloud01`。
 3 つのマネージドポリシー/ロールを、リポジトリの `scripts/aws-policies/*.json` から作る。
 **人間が Admin 権限を持つ IAM user（`user/CDK`）で実行する。**
 
+> 🔴 **`claude-boundary.json` は managed policy の 6,144 文字上限に近い。**
+> 2026-08-12 時点で **5,682 文字（空白を除いた実サイズ。残り 462 文字）**。
+> #680 R1 の carve-out を入れる前は 5,148 文字だったので、**1 回の増分で 534 文字
+> 使った**。次にステートメントを足す人は、まず余白を測ること:
+>
+> ```bash
+> node -e "const n=JSON.stringify(JSON.parse(require('fs').readFileSync('scripts/aws-policies/claude-boundary.json','utf8'))).length;console.log(n,'/ 6144  残り',6144-n)"
+> ```
+>
+> 上限を超えると `create-policy` / `create-policy-version` が
+> `LimitExceeded: Maximum policy size of 6144 bytes exceeded` で失敗する。
+> 溢れそうなときは、ステートメントを削るのではなく **boundary を 2 本に分けて
+> どちらも attach する**（IAM は 1 プリンシパルに boundary を 1 本しか付けられないので、
+> **分割はできない**）—— つまり実質的には**アクションの列挙を整理するしかない**。
+> 「入らないから Deny を削る」は境界の後退なので、必ず人間の承認を取ること。
+> `claude-cfn-exec.json` は 4,813 / 6,144（残り 1,331）で余裕がある。
+
 ```bash
 # 1) Permissions Boundary（層 4）を作成
 aws iam create-policy \
@@ -227,14 +244,18 @@ SIMULATE_EXEC_ROLE_ARN_US_EAST_1=arn:aws:iam::822063948773:role/cdk-orcloud01-cf
 `unknown`（＝ FAIL 扱い）になる。クラウド側は `scripts/aws-cloud-deploy.sh` 経由で常に
 `--live-only` が渡り、S 系は自動的にスキップされる。
 
-### 4b. 🔴 手動でしか検証できない分（changeSet ARN スコープほか、16 コマンド + 4c の 4 本）
+### 4b. 🔴 手動でしか検証できない分（changeSet ARN スコープほか、実コマンド 15 本 + 4c の 4 本 = 19）
 
 **このサイクルで一度も実行されていない。** AWS 認証情報が無く、`aws` コマンドの実行も
 禁止されていたため、実装の正しさは `auditPolicyDocument` による**静的構造検証のみ**で
 確認済みであり、**IAM の実際の評価結果は未証明**である。
 
-**次の 16 本（および 4c の 17〜20）を実行し、コメントに書かれた期待どおりの `EvalDecision` が返ることを確認する。
-1 本でも期待と違ったら、初回デプロイへ進まない。** `--policy-source-arn` は実在の IAM ロール
+**下記 1〜16（および 4c の 17〜20）を実行し、コメントに書かれた期待どおりの `EvalDecision` が返ることを確認する。
+1 本でも期待と違ったら、初回デプロイへ進まない。**
+
+> **番号は 20 まで振ってあるが、実行するコマンドは 19 本である。** 10 番はコマンドでは
+> なく「1〜9 を us-east-1 で繰り返せ」という指示（したがって実際には 9 本増える）。
+> 以前このページと ADR は「20 コマンド」と書いていた —— 2026-08-12 残件レビュー R7 で訂正。 `--policy-source-arn` は実在の IAM ロール
 でなければならない点に注意（存在しない ARN を渡すとシミュレーションが別のエラーで失敗する）。
 
 🔴 **14〜16（`iam:PassRole` の条件付き Allow）が、初回デプロイで AccessDenied になる
@@ -460,6 +481,32 @@ aws iam simulate-principal-policy \
 - `claude-gate` 以外の名前が Deny されること（9）
 - `DeleteChangeSet`（11、2 回目以降のデプロイで `cleanupOldChangeset` が必要とする）
 - `DeleteStack`（12、`--no-execute` の no-op が残した `REVIEW_IN_PROGRESS` スタックの掃除用）
+
+### 4d. 🔴 承認する前に読むこと — carve-out が開けている穴（#680 R1/R2/R3）
+
+ステップ 4 を PASS させて初回デプロイを認可するとき、**あなたは次のことも一緒に
+承認している**。
+
+`arn:aws:iam::822063948773:role/OpenReception-*-dev-Custom*` は Permissions Boundary の
+強制とタグ条件 Deny から**除外されている**（CDK の `crossRegionReferences` /
+`autoDeleteObjects` が作る provider role にはどちらも付かないため。理由と実測は
+ADR 0009 決定 8 と spec §4.2 層 4）。
+
+**サンドボックスはテンプレートを書く。** したがって construct の id を `Custom…` で
+始めるだけで、**この名前空間に境界の無い IAM ロールを意図的に作り**、
+`iam:PutRolePolicy` で任意のインラインポリシーを載せ、`iam:PassRole` で Lambda に
+渡して実行できる。carve-out 前は `iam:CreateRole` の boundary 条件で塞がっていた経路である。
+
+残る制約は 4 つだけ。**これらは緩和であって、boundary の代わりではない**:
+
+1. ロールを作れるのは CloudFormation 経由、層 1 の allowlist にある dev 3 スタックの中だけ
+2. その change set には `AWS::IAM::Role` の Add/Modify が**記録される**（diff gate。止めはしない）
+3. `iam:PassRole` は carve-out でも `lambda.amazonaws.com` 限定のまま
+4. デプロイ窓（STS の有効期限）の内側でしか起こせない
+
+**受け入れられないなら、初回デプロイへ進む前に設計判断へ差し戻すこと。**
+選択肢は「`crossRegionReferences` をやめて CfMonitoring-dev の distributionId を
+context で渡す」「`autoDeleteObjects` をやめてバケットの手動削除を運用に載せる」など。
 
 ---
 
