@@ -533,6 +533,86 @@ describe('A: 論理 ID を騙っても中身で弾く（allowlist だけでは�
     expect(verdict.blocks.map((b) => b.reason)).toEqual(['carveOutRoleShape']);
   });
 
+  /**
+   * 🔴 **広い `Resource` を「正当な statement の隣」へ隠す**移設（変異ドリル P1〜P3）。
+   * action と resource を平らに集めていると、この 3 通りはどれも
+   * 「許可された action の集合」と「閉じた Resource の集合」に見えてしまう。
+   */
+  it.each<[string, ReadonlyArray<unknown>]>([
+    [
+      '2 つ目の statement だけ Resource:*',
+      [
+        {
+          PolicyName: 'Inline',
+          PolicyDocument: {
+            Version: '2012-10-17',
+            Statement: [
+              { Effect: 'Allow', Action: 'ssm:GetParameters', Resource: SSM_EXPORTS_ARN('*') },
+              { Effect: 'Allow', Action: 'ssm:DeleteParameters', Resource: '*' },
+            ],
+          },
+        },
+      ],
+    ],
+    [
+      '1 つの statement の Resource 配列に * を混ぜる',
+      [
+        {
+          PolicyName: 'Inline',
+          PolicyDocument: {
+            Version: '2012-10-17',
+            Statement: [
+              { Effect: 'Allow', Action: 'ssm:DeleteParameters', Resource: [SSM_EXPORTS_ARN('*'), '*'] },
+            ],
+          },
+        },
+      ],
+    ],
+    [
+      'Policies 配列の 2 本目だけ広い',
+      [
+        {
+          PolicyName: 'Ok',
+          PolicyDocument: {
+            Version: '2012-10-17',
+            Statement: [{ Effect: 'Allow', Action: 'ssm:GetParameters', Resource: SSM_EXPORTS_ARN('*') }],
+          },
+        },
+        {
+          PolicyName: 'Wide',
+          PolicyDocument: {
+            Version: '2012-10-17',
+            Statement: [{ Effect: 'Allow', Action: 'ssm:DeleteParameters', Resource: '*' }],
+          },
+        },
+      ],
+    ],
+  ])('広い Resource を正当な statement の隣に隠す: %s → 止める', (_name, policies) => {
+    const verdict = evaluateRoleFixture(EXPORT_WRITER_ROLE!, providerRole({ Policies: policies }));
+    expect(verdict.blocks.map((b) => b.reason)).toEqual(['carveOutRoleShape']);
+  });
+
+  it('Deny statement の広い Resource は止めない（権限を与えないので）', () => {
+    const verdict = evaluateRoleFixture(
+      EXPORT_WRITER_ROLE!,
+      providerRole({
+        Policies: [
+          {
+            PolicyName: 'Inline',
+            PolicyDocument: {
+              Version: '2012-10-17',
+              Statement: [
+                { Effect: 'Allow', Action: 'ssm:GetParameters', Resource: SSM_EXPORTS_ARN('*') },
+                { Effect: 'Deny', Action: '*', Resource: '*' },
+              ],
+            },
+          },
+        ],
+      }),
+    );
+    expect(verdict.blocks).toEqual([]);
+  });
+
   // 🔴 Modify を見る理由そのもの。物理名は変わらないので A の名前判定だけでは素通りする。
   it('Modify で既存 provider role の trust policy を外部アカウントへ向けるのも止める', () => {
     const verdict = evaluateRoleFixture(
