@@ -129,6 +129,47 @@ describe('push-secret-guard: コマンド位置の git push を捕まえる', ()
   });
 });
 
+describe('push-secret-guard: git push をサブコマンド位置で検出する（global option を挟んでも）', () => {
+  // 単純な `git\s+push` 正規表現だと `git -C <path> push` のように global option を挟んだ
+  // 呼び出しを取りこぼす。worktree 作業では `-C` を素直に使う（実際にこのセッションで
+  // 複数回使った）。差分テスト: 秘密情報を含むコミットを積んだ上で、各種の書き方が
+  // ブロックされるか（＝ git push として認識されるか）を確認する。
+  const GIT_PUSH_FORMS = [
+    'git push origin HEAD',
+    'git -C REPO push origin HEAD',
+    'git --git-dir=REPO/.git --work-tree=REPO push origin HEAD',
+    '/usr/bin/git push origin HEAD',
+    './git push origin HEAD',
+    'git -c foo=bar push origin HEAD',
+    'git --no-pager push origin HEAD',
+    'git -c foo=bar -C REPO --no-pager push origin HEAD',
+  ];
+
+  // 「push」という語がコマンドのどこかに現れるだけで、実際のサブコマンドは push ではない
+  // ケース。誤検出するとガードが回避されるようになる（false positive は false negative より
+  // 悪い）ので、こちらも同じ条件（秘密情報あり）で green のままであることを固定する。
+  const MERE_MENTIONS = [
+    'git log --grep push',
+    'git config --get remote.origin.pushurl',
+    'echo "git push"',
+    'cat git-push-notes.txt',
+    'git remote add origin git@github.com:x/push.git',
+    'git -c foo=bar log --grep push',
+    'git --version',
+  ];
+
+  it.each(GIT_PUSH_FORMS)('検出する: %s', (form) => {
+    commit(repo, 'leak.env', `AWS_ACCESS_KEY_ID=${FAKE_AWS_KEY}\n`, 'oops: leak');
+    const cmd = form.replaceAll('REPO', repo);
+    expect(runHook(cmd).status, cmd).toBe(2);
+  });
+
+  it.each(MERE_MENTIONS)('誤検出しない: %s', (cmd) => {
+    commit(repo, 'leak.env', `AWS_ACCESS_KEY_ID=${FAKE_AWS_KEY}\n`, 'oops: leak');
+    expect(runHook(cmd).status, cmd).toBe(0);
+  });
+});
+
 describe('push-secret-guard: 秘密情報を検出したらブロックする', () => {
   it('push しようとしている範囲に AWS アクセスキー ID があればブロックする', () => {
     commit(repo, 'leak.env', `AWS_ACCESS_KEY_ID=${FAKE_AWS_KEY}\n`, 'oops: leak');

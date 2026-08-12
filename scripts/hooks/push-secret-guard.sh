@@ -41,6 +41,15 @@
 #
 # 明示的に迂回する場合のみ:
 #   OPEN_RECEPTION_SKIP_SECRET_SCAN=1 git push ...
+#
+# ## 検出できない経路（正直に書く。詳細は #682 の報告参照）
+#
+# 本フックは Claude Code の Bash ツール呼び出しに対する**文字列パターンマッチ**であり、
+# `.git/hooks/pre-push` のような git 自体のフックでも OS レベルの強制でもない。以下は
+# 塞いでいない: (1) シェル間接（`eval`、変数に入れたコマンド、push する別スクリプトの実行）
+# — コマンド文字列に `git ... push` がそのまま現れないため、(2) 別バイナリの中で内部的に
+# spawn される `git push` 子プロセス（例: `gh` が内部で push するケース）、(3) このセッションを
+# 経由しない push（別ターミナル・別セッション・gitleaks 未導入のクラウド環境）。
 
 set -u
 
@@ -63,7 +72,44 @@ scan="$(printf '%s' "${cmd}" | perl -0777 -pe "
   s/(^|\s)#[^\n]*//g;
 " | tr '\n' ' ')"
 
-printf '%s' "${scan}" | grep -Eq '(^|[;&|[:space:]])git[[:space:]]+push([[:space:]]|$)' || exit 0
+# `git push` を「サブコマンド位置」で検出する。単純な `git\s+push` 正規表現だと
+# `git -C <path> push` / `git --git-dir=... push` のように **global option を挟んだ**
+# 呼び出しを取りこぼす（worktree 作業では `-C` を素直に使う）。一方で `git log --grep push`
+# や `git config --get remote.origin.pushurl` のように「push」という語が引数として現れる
+# だけのコマンドは誤検出したくない（誤検出はガードの回避を誘発し、検出漏れより悪い）。
+#
+# トークン単位で判定する: 先頭が git バイナリ（`git` そのもの、または `/path/to/git` の
+# ように `/git` で終わるパス）であることを確認し、そこから先を左から読み、
+# 値を separate 引数で取る global option（`-C`・`-c`・`--git-dir`・`--work-tree`・
+# `--namespace`・`--exec-path`・`--super-prefix`）は 2 トークン、それ以外の `-` 始まりの
+# トークン（`--git-dir=...` のような `=` 付き・`--no-pager` のような単体フラグ）は 1 トークン
+# 読み飛ばす。最初に現れた非オプション・トークンが「サブコマンド」で、それが `push` なら
+# 一致、`push` 以外（`log` 等）ならそのコマンドはそこで打ち切り、以降の引数（`--grep push`
+# の `push` 等）は見ない。
+is_git_push() {
+  printf '%s' "$1" | perl -e '
+    my $text = do { local $/; <STDIN> };
+    my $found = 0;
+    for my $stmt (split /[;&|]+/, $text) {
+      my @tok = split " ", $stmt;
+      next unless @tok;
+      my $bin = $tok[0];
+      next unless $bin eq "git" || $bin =~ m{/git\z};
+      my $i = 1;
+      while ($i <= $#tok) {
+        my $t = $tok[$i];
+        if ($t eq "push") { $found = 1; last; }
+        last unless $t =~ /^-/;
+        if ($t =~ /\A(?:-C|-c|--git-dir|--work-tree|--namespace|--exec-path|--super-prefix)\z/) { $i += 2; }
+        else { $i += 1; }
+      }
+      last if $found;
+    }
+    exit($found ? 0 : 1);
+  '
+}
+
+is_git_push "${scan}" || exit 0
 
 # 明示的な迂回。フック自身の環境変数と、コマンド行に書かれたインライン代入の両方を見る
 # （フックは対象コマンドの**実行前に別プロセスとして**起動されるため、
