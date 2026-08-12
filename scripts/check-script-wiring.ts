@@ -43,6 +43,7 @@ const WIRING_SOURCES: readonly string[] = [
   'package.json',
   'scripts/quality-gate.sh',
   'scripts/record-gate-run.sh',
+  'scripts/aws-cloud-deploy.sh',
 ];
 
 /** 再帰的に探索して配線元とみなすディレクトリ。 */
@@ -58,7 +59,6 @@ export const MANUAL_ONLY_ALLOWLIST: Readonly<Record<string, string>> = {
   'record-gate-run.sh':
     '週次 routine（リポジトリ外）から呼ばれる入口そのもの。リポジトリ内に呼び出し元は無くて正しい。',
   'cloud-setup.sh': 'クラウド開発環境の初期化。人が環境を作るときだけ走る。',
-  'url-quality-gate.sh': 'デプロイ済み URL に対する検査。実環境が要るので自動化しない（#65）。',
   'generate-idle-vrma.mjs': 'アセット生成の一回限りツール。成果物は commit 済み。',
   'install_pkgs.sh': 'サンドボックス環境の準備。実行主体は環境側。',
   'demo-studio-check.mjs': '実ブラウザが要る（visual-checks skill から手動）。',
@@ -66,6 +66,8 @@ export const MANUAL_ONLY_ALLOWLIST: Readonly<Record<string, string>> = {
   'kiosk-visual-check.mjs': '実ブラウザが要る（visual-checks skill から手動）。',
   'qr-routing-check.mjs': '実ブラウザが要る（visual-checks skill から手動）。',
   'vrm-visual-check.mjs': '実ブラウザが要る（visual-checks skill から手動）。',
+  'aws-cloud-deploy.sh':
+    'クラウドセッション / routine から呼ぶ入口そのもの。リポジトリ内に呼び出し元は無くて正しい。',
 };
 
 /** 検査対象にしないもの（スクリプトではなく共有ライブラリ）。 */
