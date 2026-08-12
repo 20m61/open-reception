@@ -3,7 +3,7 @@
 2026-08-12 / 対象: `open-reception` / 状態: 設計承認済み・実装前
 
 Claude Code on the cloud（クラウドセッション / cron routine）から、AWS の **dev 環境のみ**へ
-`preflight → verify → diff → deploy → smoke` を実行できる安全境界を作る。
+`verify → preflight → diff → deploy → smoke` を実行できる安全境界を作る。
 
 **開発速度より他プロジェクト・本番相当リソースの保護を優先する。**
 
@@ -373,10 +373,27 @@ Deny するもの:
 | qualifier | `orcloud01` |
 | credential 残時間 | > 20 分（`deploy` は > 40 分） |
 | working tree | clean |
-| branch / commit | 現在の HEAD が push 済みであること |
+| branch / commit | 現在の HEAD が push 済みであること（`headCommitPushed`。`git branch -r --contains HEAD` で判定し、**ネットワークへは出ない**） |
 | 環境 | `-c env=dev` 以外を拒否 |
 | 品質ゲート | 現ツリーに対する green スタンプ（既存 `pr-gate-guard.sh` と同じ記録を読む） |
 | negative tests | 全 PASS（§7） |
+
+> 🔴 **`branch / commit` は Minor 9（2026-08-12 全体レビュー）まで、この表にあるだけで
+> 実装が無かった。** `DEFAULT_PREFLIGHT_REQUIREMENT` にも `collect_observation` にも
+> 対応する項目が存在しなかった。**削除ではなく実装した**: 無人デプロイでは
+> 「dev に何が載っているか」が後から復元できなければならず、`workingTreeClean` は
+> 「ツリーとコミットが一致している」ことしか言わず、gate スタンプは**ツリーの指紋**に
+> 紐づくのでコミットを特定しない。両方 green でもローカルにしか無い commit をデプロイでき、
+> サンドボックスが消えれば追跡不能になる。
+>
+> 判定はローカルの remote-tracking ref だけで行う（`git fetch` は preflight に外部依存と
+> 新しい失敗モードを持ち込む）。ref が古い場合の誤りは「push 済みなのに未 push と言う」
+> 方向＝fail-closed で、対処は `git push` を打つだけである。
+>
+> 🔴 **`品質ゲート` のスタンプは `verify` だけが書く。** スタンプは
+> `git rev-parse --absolute-git-dir` の下（`.git` 配下）のローカルファイルで、
+> **clone にも push にも付いてこない**。fresh なクラウドサンドボックスでは
+> `verify` を先に走らせない限り preflight は必ず落ちる（§12 / Important 7）。
 
 ### 各サブコマンド
 
@@ -572,7 +589,7 @@ S6（PassRole）・S1/S3/S10 が問うているのは `cdk-orcloud01-cfn-exec-ro
 
 - 窓の外 … 実装・品質ゲート・PR までを通常どおり回す。デプロイ段は
   「credential 無しのためスキップ」と**明示的に記録して**正常終了する
-- 窓の中 … preflight → verify → diff → deploy → smoke を無人で完走する
+- 窓の中 … verify → preflight → diff → deploy → smoke を無人で完走する
 
 ---
 
@@ -677,10 +694,23 @@ spec 原文 STOP CONDITIONS の「既存 production deploy 経路を壊す可能
 4. negative test（S 系シミュレーション）を Admin から実行し全 DENY を確認
 5. `aws-issue-credentials.sh` で短命 STS を発行（窓を開ける）
 6. claude.ai/code の環境ダイアログへ変数名 5 つを登録
-7. クラウドセッションで `aws-cloud-deploy.sh preflight`（N 系実試行がここで走る）
-8. `aws-cloud-deploy.sh diff`
-9. `aws-cloud-deploy.sh deploy` → `smoke`
-10. 窓を閉じる（環境変数を削除）／期限切れ後の再発行
+7. 🔴 クラウドセッションで **`aws-cloud-deploy.sh verify`**（`quality-gate.sh --pr` ＋
+   `build:open-next`）
+8. `aws-cloud-deploy.sh preflight`（N 系実試行がここで走る）
+9. `aws-cloud-deploy.sh diff`
+10. `aws-cloud-deploy.sh deploy` → `smoke`
+11. 窓を閉じる（環境変数を削除）／期限切れ後の再発行
+
+> 🔴 **`verify` が `preflight` より先である（2026-08-12 全体レビュー Important 7）。**
+> preflight は「現ツリーに対する品質ゲート green のスタンプ」を要求するが、**スタンプは
+> `git rev-parse --absolute-git-dir` の下（`.git` 配下）のローカルファイル**であり
+> （`scripts/lib/gate-stamp.sh`）、**clone にも push にも付いてこない**。
+> 新しいクラウドサンドボックスには存在しないので、`verify` が書くまで green の記録は無い。
+> **そのスタンプを書く手順は `verify` だけである。**
+> 本 spec と runbook は以前この順序を逆に書いており（§12 は 6 → 7=preflight、
+> runbook も 5 → 6 → 7=preflight）、`verify` はどの手順からも呼ばれていなかった。
+> 結果として、fresh なサンドボックスの preflight は `gateStampSatisfied` で必ず落ち、
+> 直し方がどこにも書かれていない状態だった。
 
 ---
 
@@ -778,7 +808,7 @@ stack を特定しない）。**この意味で、deploy role 単体の層では
 ## 15. Definition of Done
 
 **Claude Code on the cloud が他プロジェクトと prod 相当リソースへ到達できないことを
-テストで確認した上で、dev へ `preflight → verify → diff → deploy → smoke` を
+テストで確認した上で、dev へ `verify → preflight → diff → deploy → smoke` を
 無人実行できる。** ただし本サイクルでは **deploy を実行しない**。
 scripts / policies / tests / runbook を完成させ、人間が短命 credential を
 投入できる直前で停止し、§10 を含めて報告する。

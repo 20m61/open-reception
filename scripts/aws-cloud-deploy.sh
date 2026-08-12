@@ -117,7 +117,7 @@ json_field() {
 
 collect_observation() {
   local out="$1" min_seconds="$2"
-  local identity account arn expiry remaining porcelain clean stamp neg
+  local identity account arn expiry remaining porcelain clean remote_refs pushed stamp neg
 
   # 🔴 **VITEST 実行中は絶対に AWS へ到達しない。** `tests/hooks/aws-cloud-deploy.test.ts` は
   # この wrapper を実際に起動して振る舞いを確認する（`tests/hooks/guard-destructive.test.ts`
@@ -174,6 +174,21 @@ collect_observation() {
   fi
   if [ -z "${porcelain}" ]; then clean=true; else clean=false; fi
 
+  # 🔴 **デプロイした commit が後から復元できること**（spec §5 の「branch / commit」行。
+  # 従来この行は表にあるだけで実装が無かった ―― Minor 9）。
+  # `workingTreeClean` は「ツリーとコミットが一致している」ことしか言わず、gate スタンプは
+  # ツリーの**指紋**に紐づくのでコミットを特定しない。両方 green でも、ローカルにしか無い
+  # commit をデプロイしたら、サンドボックスが消えた時点で dev に何が載っているか分からなくなる。
+  #
+  # **ネットワークへは出ない。** ローカルの remote-tracking ref だけで判定する
+  # （`git fetch` は preflight に外部依存と新しい失敗モードを持ち込む）。ref が古い場合の
+  # 誤りは「push 済みなのに未 push と言う」方向＝fail-closed で、対処は `git push` だけ。
+  if ! remote_refs="$(git -C "${ROOT}" branch -r --contains HEAD --format='%(refname)')"; then
+    echo "git branch -r --contains HEAD を実行できませんでした（判定不能）" >&2
+    return 1
+  fi
+  if [ -n "${remote_refs}" ]; then pushed=true; else pushed=false; fi
+
   # 品質ゲートのスタンプ（既存の scripts/lib/gate-stamp.sh を使う）。
   # shellcheck source=lib/gate-stamp.sh
   . "${ROOT}/scripts/lib/gate-stamp.sh"
@@ -199,6 +214,7 @@ collect_observation() {
   "environment": "${DEPLOY_ENV}",
   "credentialSecondsRemaining": ${remaining},
   "workingTreeClean": ${clean},
+  "headCommitPushed": ${pushed},
   "gateStampSatisfied": ${stamp},
   "negativeTestsPassed": ${neg}
 }

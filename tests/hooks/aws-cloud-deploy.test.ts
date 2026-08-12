@@ -312,6 +312,41 @@ describe('cdk / aws 呼び出しに必須フラグが揃っている (round 3 �
   });
 });
 
+/**
+ * 🔴 Minor 9 / Important 7（2026-08-12 全体レビュー）。
+ *
+ * spec §5 の preflight 表にある「branch / commit — 現在の HEAD が push 済みであること」は、
+ * 表にあるだけで `DEFAULT_PREFLIGHT_REQUIREMENT` にも `collect_observation` にも
+ * 実装が無かった。実装したので、**観測を集める側の配線**を固定する
+ * （純関数側の判定は `deploy-preflight.test.ts`、CLI の形式検証は `aws-preflight.test.ts`）。
+ */
+describe('collect_observation が集める観測 (Minor 9 / Important 7)', () => {
+  const code = stripBashComments(readFileSync(WRAPPER, 'utf8'));
+
+  it('headCommitPushed を remote-tracking ref から求めて観測に載せる', () => {
+    expect(code).toContain('git -C "${ROOT}" branch -r --contains HEAD');
+    expect(code).toContain('"headCommitPushed": ${pushed}');
+  });
+
+  it('git branch が失敗したら fail-closed する（判定不能を true に丸めない）', () => {
+    const marker = 'branch -r --contains HEAD';
+    const idx = code.indexOf(marker);
+    if (idx === -1) throw new Error(`ソース中にマーカーが見つかりません: ${marker}`);
+    // 直後のブロックに非ゼロ復帰があること。
+    expect(code.slice(idx, idx + 300)).toContain('return 1');
+  });
+
+  it('verify が品質ゲート --pr を呼ぶ（preflight が要求するスタンプを書くのはここだけ）', () => {
+    const caseStart = code.indexOf('\n  verify)');
+    if (caseStart === -1) throw new Error('wrapper に verify) ケースが見つかりません');
+    const caseEnd = code.indexOf('\n  diff)', caseStart);
+    if (caseEnd === -1) throw new Error('wrapper に diff) ケースが見つかりません（verify ケースの終端）');
+    const block = code.slice(caseStart, caseEnd);
+    expect(block).toContain('quality-gate.sh');
+    expect(block).toContain('--pr');
+  });
+});
+
 describe('危険な既定を持たない', () => {
   it('スクリプト本文に --force / --no-verify を含まない', () => {
     const source = readFileSync(WRAPPER, 'utf8');

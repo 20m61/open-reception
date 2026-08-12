@@ -19,6 +19,23 @@ export type PreflightObservation = {
   /** credential の残り秒数。取得できなければ null。 */
   readonly credentialSecondsRemaining: number | null;
   readonly workingTreeClean: boolean;
+  /**
+   * 現在の HEAD が push 済みか (spec §5 の「branch / commit」行)。
+   *
+   * 🔴 **無人デプロイでは「何をデプロイしたか」が後から復元できなければならない。**
+   * `workingTreeClean` は「ツリーとコミットが一致している」ことしか言わず、
+   * gate スタンプは**ツリーの指紋**に紐づくのでコミットを特定しない。両方 green でも、
+   * ローカルにしか無いコミットをデプロイしたら、サンドボックスが消えた時点で
+   * **本番相当環境に何が載っているか誰にも分からなくなる**。
+   *
+   * 判定はローカルの remote-tracking ref（`git branch -r --contains HEAD`）で行い、
+   * ネットワークへは出ない。fetch しないので ref が古い可能性はあるが、その場合の
+   * 誤りは「push 済みなのに未 push と言う」方向（fail-closed）で、対処は
+   * `git push` を打つだけ。逆向きの誤り（未 push を push 済みと読む）は、
+   * remote-tracking ref がその commit を含んでいる＝一度は remote にあった、
+   * という場合にしか起きない。
+   */
+  readonly headCommitPushed: boolean;
   /** 現ツリーに対する品質ゲート green 記録があるか（`scripts/lib/gate-stamp.sh`）。 */
   readonly gateStampSatisfied: boolean;
   readonly negativeTestsPassed: boolean;
@@ -96,6 +113,12 @@ export function evaluatePreflight(
     );
   }
   if (!observed.workingTreeClean) fail('workingTreeClean', '作業ツリーに未コミットの変更があります');
+  if (!observed.headCommitPushed) {
+    fail(
+      'headCommitPushed',
+      '現在の HEAD を含む remote-tracking ref がありません（デプロイした commit を後から復元できません。git push してください）',
+    );
+  }
   if (!observed.gateStampSatisfied) {
     fail('gateStampSatisfied', '現ツリーに対する品質ゲート green の記録がありません');
   }

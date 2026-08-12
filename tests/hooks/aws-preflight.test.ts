@@ -24,6 +24,7 @@ const validObservation = {
   environment: 'dev',
   credentialSecondsRemaining: 3600,
   workingTreeClean: true,
+  headCommitPushed: true,
   gateStampSatisfied: true,
   negativeTestsPassed: true,
 };
@@ -75,6 +76,19 @@ describe('observation の形式検証（公開された argv 契約）', () => {
     const { status, stderr } = run([path]);
     expect(status).not.toBe(0);
     expect(stderr).toContain('workingTreeClean');
+  });
+
+  // 🔴 Minor 9（2026-08-12 全体レビュー）: 新しい boolean を型に足しただけでは、
+  // フィールドが丸ごと欠落した観測 JSON を CLI が素通りさせてしまう
+  // （`deploy-preflight.ts` 側の `!observed.headCommitPushed` は undefined を拾うが、
+  // 「形式が不正」と「値が false」は診断として別物）。境界でも拒否することを固定する。
+  it('headCommitPushed が欠落していれば形式エラーとして拒否する', () => {
+    const { headCommitPushed: _drop, ...rest } = validObservation;
+    const path = writeObservation(rest);
+    const { status, stderr } = run([path]);
+    expect(status).not.toBe(0);
+    expect(stderr).toContain('observation の形式が不正です');
+    expect(stderr).toContain('headCommitPushed');
   });
 
   it('credentialSecondsRemaining が欠落していれば拒否する（undefined を通さない）', () => {

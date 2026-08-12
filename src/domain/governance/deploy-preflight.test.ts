@@ -19,6 +19,7 @@ const ok = (over: Partial<PreflightObservation> = {}): PreflightObservation => (
   environment: 'dev',
   credentialSecondsRemaining: 3600,
   workingTreeClean: true,
+  headCommitPushed: true,
   gateStampSatisfied: true,
   negativeTestsPassed: true,
   ...over,
@@ -53,6 +54,10 @@ describe('1 つでも不一致なら止める', () => {
       'callerArn',
     ],
     ['作業ツリーが dirty', { workingTreeClean: false }, 'workingTreeClean'],
+    // Minor 9（2026-08-12 全体レビュー）: spec §5 の「branch / commit — 現在の HEAD が
+    // push 済みであること」は表にあるだけで実装が無かった。無人デプロイでは
+    // 「dev に何が載っているか」が後から復元できなければならない。
+    ['HEAD が未 push', { headCommitPushed: false }, 'headCommitPushed'],
     ['ゲート未実行', { gateStampSatisfied: false }, 'gateStampSatisfied'],
     ['negative test 未通過', { negativeTestsPassed: false }, 'negativeTestsPassed'],
     ['credential 残り 5 分', { credentialSecondsRemaining: 300 }, 'credentialSecondsRemaining'],

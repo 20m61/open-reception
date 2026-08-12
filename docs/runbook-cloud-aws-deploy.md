@@ -1,12 +1,12 @@
 # runbook: クラウドから AWS dev へのデプロイ
 
 Claude Code on the cloud（クラウドセッション / cron routine）から、AWS の **dev 環境のみ**へ
-`preflight → verify → diff → deploy → smoke` を無人実行できるようにするための、**人間が実行する**
+`verify → preflight → diff → deploy → smoke` を無人実行できるようにするための、**人間が実行する**
 手順。設計は `docs/superpowers/specs/2026-08-12-claude-cloud-aws-dev-deploy-safety-design.md`、
 決定事項は `docs/adr/0009-claude-cloud-aws-dev-deploy-boundary.md` を参照する。
 
 🔴 **本書を書いている時点で、この runbook のステップは 1 度も実行されていない。IAM は未適用、
-dev への `cdk deploy` も未実施。** ステップ 1〜9 は人間が実際に手を動かして初めて検証される。
+dev への `cdk deploy` も未実施。** ステップ 1〜11 は人間が実際に手を動かして初めて検証される。
 
 対象アカウント: `822063948773`（open-reception 以外に nodi / salon-loop / Kiaff が同居）。
 リージョン: `ap-northeast-1`（主）+ `us-east-1`（`OpenReception-CfMonitoring-dev` のみ）。
@@ -456,7 +456,31 @@ claude.ai/code の環境ダイアログへ、次の**変数名 5 つ**を登録�
 
 ---
 
-## ステップ 7: preflight
+## ステップ 7: 🔴 verify（**preflight より先に実行する**）
+
+```bash
+bash scripts/aws-cloud-deploy.sh verify
+```
+
+`./scripts/quality-gate.sh --pr` ＋ `npm run build:open-next` を実行する。
+
+🔴 **これを先に走らせないと preflight は必ず失敗する（Important 7）。** preflight は
+「現ツリーに対する品質ゲート green の記録（スタンプ）」を要求するが、**スタンプは
+`git rev-parse --absolute-git-dir` の下、つまり `.git` 配下のローカルファイル**であり
+（`scripts/lib/gate-stamp.sh`）、**clone にもブランチにも push にも付いてこない**。
+新しいクラウドサンドボックスには存在しないので、`verify` が書くまで green の記録は無い。
+**そのスタンプを書く手順は `verify` だけである。**
+
+順序は `verify → preflight → diff → deploy → smoke`。
+（本 runbook は以前 5 → 6 → 7=preflight と並べており、`verify` はどの手順からも
+呼ばれていなかった。spec §12 / §15 も同じ誤りを持っていた。）
+
+スタンプはゲートが検査した**ツリーの指紋**に紐づく。**`verify` の後にファイルを 1 文字でも
+編集したら、走らせ直すこと。**
+
+---
+
+## ステップ 8: preflight
 
 クラウドセッションから:
 
@@ -465,13 +489,15 @@ bash scripts/aws-cloud-deploy.sh preflight
 ```
 
 caller identity / account / region / qualifier / environment / credential 残時間
-（`deploy` は 40 分以上、それ以外は 20 分以上）/ working tree clean / 品質ゲート green スタンプ
-（`--pr` 相当）/ negative test（N 系のみ、`--live-only`）を検査する。1 つでも不一致なら
-非ゼロで終了する。
+（`deploy` は 40 分以上、それ以外は 20 分以上）/ working tree clean /
+**HEAD が push 済み**（`headCommitPushed`。remote-tracking ref で判定。ネットワークへは
+出ないので、必要なら先に `git push` しておく）/ 品質ゲート green スタンプ（`--pr` 相当。
+ステップ 7 が書く）/ negative test（N 系のみ、`--live-only`）を検査する。
+1 つでも不一致なら非ゼロで終了する。
 
 ---
 
-## ステップ 8: diff
+## ステップ 9: diff
 
 ```bash
 bash scripts/aws-cloud-deploy.sh diff
@@ -490,7 +516,7 @@ SecurityGroup・IAM プリンシパルの変更 等）を検出したら非ゼ�
 
 ---
 
-## ステップ 9: deploy → smoke
+## ステップ 10: deploy → smoke
 
 ```bash
 bash scripts/aws-cloud-deploy.sh deploy
@@ -512,7 +538,7 @@ OR_SMOKE_URL=https://<デプロイ後のドメイン> bash scripts/aws-cloud-dep
 
 ---
 
-## ステップ 10: 窓を閉じる／再発行
+## ステップ 11: 窓を閉じる／再発行
 
 デプロイが終わったら、claude.ai/code の環境ダイアログから 5 つの環境変数を削除する
 （credential の有効期限＝窓なので、削除しなくても期限が来れば自動的に無効化されるが、

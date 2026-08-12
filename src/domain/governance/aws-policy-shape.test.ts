@@ -573,10 +573,27 @@ describe('claude-deploy-role-restriction.json（層 1・主境界）', () => {
 describe('claude-deploy-entry-trust.json', () => {
   const doc = load('claude-deploy-entry-trust.json');
 
-  it('user/CDK だけを信頼し ExternalId を要求する', () => {
+  it('user/CDK だけを信頼する', () => {
     const raw = JSON.stringify(doc);
     expect(raw).toContain('arn:aws:iam::822063948773:user/CDK');
-    expect(raw).toContain('sts:ExternalId');
+  });
+
+  /**
+   * 🔴 Minor 10（2026-08-12 全体レビュー）: 旧アサーションは
+   * `expect(raw).toContain('sts:ExternalId')` だけだった。
+   * `StringEqualsIfExists` は **ExternalId を渡さないリクエストに対して無条件で true を
+   * 返す**ため、この形でも文字列としては一致し、**ExternalId を任意にしても緑のまま**になる。
+   * ラウンド 2 で `iam:PermissionsBoundary` について直したのと同じ欠陥である。
+   * 演算子と値を両方固定する。
+   */
+  it('ExternalId は素の StringEquals で必須化されている（*IfExists / Null を許さない）', () => {
+    const stmt = doc.Statement[0];
+    expect(stmt).toBeDefined();
+    expect(conditionOperatorsForKey(stmt!, 'sts:ExternalId')).toEqual(['StringEquals']);
+    expect(strictConditionKeys(stmt!)).toContain('sts:externalid');
+    expect(stmt!.Condition).toEqual({
+      StringEquals: { 'sts:ExternalId': 'open-reception-claude-cloud-dev' },
+    });
   });
 
   it('Principal が * でない', () => {

@@ -13,7 +13,12 @@ import {
 } from '../src/domain/governance/deploy-preflight';
 
 const STRING_FIELDS = ['callerArn', 'accountId', 'region', 'qualifier', 'environment'] as const;
-const BOOLEAN_FIELDS = ['workingTreeClean', 'gateStampSatisfied', 'negativeTestsPassed'] as const;
+const BOOLEAN_FIELDS = [
+  'workingTreeClean',
+  'headCommitPushed',
+  'gateStampSatisfied',
+  'negativeTestsPassed',
+] as const;
 
 /**
  * 🔴 **これはセキュリティ CLI で、入力は「公開された argv 契約」である。** `JSON.parse(...)
