@@ -144,7 +144,7 @@ open-reception の実構成では **Cognito / CloudFront / IAM Policy につい�
     明示 Deny  : cdk-hnb659fds-* / cdk-staging-* への sts:AssumeRole
       │  AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY / AWS_SESSION_TOKEN
       ▼
-[Claude Cloud サンドボックス]   scripts/aws/cloud-deploy.sh 経由でのみ cdk を実行
+[Claude Cloud サンドボックス]   scripts/aws-cloud-deploy.sh 経由でのみ cdk を実行
       │  cdk deploy -c env=dev -c @aws-cdk/core:bootstrapQualifier=orcloud01
       ▼
   role/cdk-orcloud01-deploy-role-822063948773-{ap-northeast-1,us-east-1}   ★新規
@@ -282,7 +282,7 @@ Deny するもの:
 
 ## 5. deploy wrapper
 
-`scripts/aws/cloud-deploy.sh <preflight|verify|diff|deploy|smoke>`。
+`scripts/aws-cloud-deploy.sh <preflight|verify|diff|deploy|smoke>`。
 **クラウドから素の `cdk deploy` を打たない**（打っても §4.1 の fail-closed で失敗する）。
 
 ### preflight が検査するもの（1 つでも不一致なら非ゼロ終了）
@@ -316,7 +316,8 @@ Deny するもの:
 **`cdk diff` のテキストを parse しない。** 取りこぼす。
 `cloudformation describe-change-set` の JSON を判定する。
 
-停止条件（`scripts/aws/diff-gate.ts` の純関数として実装し、unit テストで固定）:
+停止条件（`src/domain/governance/deploy-diff-gate.ts` の純関数として実装し、unit テストで固定。
+`scripts/aws-diff-gate.ts` は上記を呼ぶ薄い CLI）:
 
 **停止（deploy させない）**
 
@@ -358,7 +359,7 @@ Deny するもの:
 
 ## 7. Negative security tests
 
-`scripts/aws/negative-tests.ts`。**preflight から必ず呼ぶ**
+`scripts/aws-negative-tests.ts`。**preflight から必ず呼ぶ**
 （`scripts/check-script-wiring.ts` が「作っただけで誰も呼ばない」状態を検出する既存の
 仕組みに載せる — #656 / PR #671 で実際に起きた失敗）。
 
@@ -422,15 +423,19 @@ Deny するもの:
 
 ### 発行スクリプト
 
-`scripts/aws/issue-cloud-credentials.sh`（ローカル Mac の Admin 環境で人間が実行）
+`scripts/aws-issue-credentials.sh`（ローカル Mac の Admin 環境で人間が実行）
 
 - `aws sts assume-role` で短命 credential を取得
 - **端末へ表示するのは環境変数名と有効期限のみ。値は表示しない**
 - 値は macOS のクリップボードへ直接入れる（`pbcopy`）か、`--print` を明示したときのみ表示
 - Git / artifact / log / docs へ値を書かない。`.gitignore` に頼らず**そもそもファイルに書かない**
 
-登録先は claude.ai/code の環境ダイアログ。**変数名のみ** runbook に記載する:
-`AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` / `AWS_SESSION_TOKEN` / `AWS_REGION`。
+登録先は claude.ai/code の環境ダイアログ。**変数名のみ** runbook に記載する（5 つ）:
+`AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` / `AWS_SESSION_TOKEN` / `AWS_REGION` /
+`AWS_CREDENTIAL_EXPIRATION`。`scripts/aws-cloud-deploy.sh` は `AWS_CREDENTIAL_EXPIRATION`
+から credential の残時間を計算し、パースできなければ fail-closed する
+（`credentialSecondsRemaining` が `null` になり preflight が停止する）ため、5 つ目を
+登録し忘れると原因の分かりにくい preflight 失敗になる。
 
 ### 窓の外の routine の振る舞い
 
@@ -498,7 +503,7 @@ spec 原文 STOP CONDITIONS の「既存 production deploy 経路を壊す可能
 | `src/domain/governance/deploy-preflight.ts` + `.test.ts` | preflight の判定ロジック（**純関数**） |
 | `src/domain/governance/aws-policy-shape.ts` + `.test.ts` | ポリシー JSON の構造検証（**純関数**） |
 | `scripts/aws-diff-gate.ts` | 上記を呼ぶ薄い CLI |
-| `scripts/aws-negative-tests.ts` | N1-N8 実試行 / S1-S10 シミュレーション |
+| `scripts/aws-negative-tests.ts` | N1-N7 実試行（`--live-only`）/ S1-S11 シミュレーション（`--simulate-only`。旧 N8 は S11 へ移動済み） |
 | `scripts/aws-issue-credentials.sh` | 人間が窓を開ける（ローカル Mac） |
 | `tests/hooks/aws-cloud-deploy.test.ts` | wrapper の preflight を実起動して検証 |
 | `docs/runbook-cloud-aws-deploy.md` | runbook（§12 の 10 ステップ） |
@@ -541,11 +546,11 @@ spec 原文 STOP CONDITIONS の「既存 production deploy 経路を壊す可能
    と `--cloudformation-execution-policies` を明示、`--toolkit-stack-name CDKToolkit-orcloud01`）
 3. deploy role への層 1 制限の適用
 4. negative test（S 系シミュレーション）を Admin から実行し全 DENY を確認
-5. `issue-cloud-credentials.sh` で短命 STS を発行（窓を開ける）
-6. claude.ai/code の環境ダイアログへ変数名 4 つを登録
-7. クラウドセッションで `cloud-deploy.sh preflight`（N 系実試行がここで走る）
-8. `cloud-deploy.sh diff`
-9. `cloud-deploy.sh deploy` → `smoke`
+5. `aws-issue-credentials.sh` で短命 STS を発行（窓を開ける）
+6. claude.ai/code の環境ダイアログへ変数名 5 つを登録
+7. クラウドセッションで `aws-cloud-deploy.sh preflight`（N 系実試行がここで走る）
+8. `aws-cloud-deploy.sh diff`
+9. `aws-cloud-deploy.sh deploy` → `smoke`
 10. 窓を閉じる（環境変数を削除）／期限切れ後の再発行
 
 ---

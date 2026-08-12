@@ -992,6 +992,15 @@ export function auditPolicyDocument(doc: PolicyDocument): PolicyAudit {
 
 `scripts/aws-policies/claude-deploy-entry.json`（entry role の権限）:
 
+> 🔴 **Task 7 補記（実装で判明。IMPORTANT A）**: `cloudformation:DescribeChangeSet` /
+> `ExecuteChangeSet` / `DeleteChangeSet` は stack ARN ではなく **changeSet リソースタイプ**
+> （`arn:...:changeSet/<name>/<id>`、stack 名を含まない）で認可される。当初案は
+> `ReadOwnDevStacksForDiffGate` に `cloudformation:DescribeStacks` しか含めておらず、
+> `run_diff_gate` が実際に呼ぶ `describe-change-set` が構造的に Deny され続けていた。
+> `ReadOwnChangeSetsForDiffGate` を追加し、changeSet 名（`claude-gate-*`）でスコープする。
+> `DenyEverythingElseOutsideTheChain` の `NotAction` にも `cloudformation:DescribeStacks` /
+> `cloudformation:DescribeChangeSet` を加えてある。詳細は spec §4.2 層 1 と §13。
+
 ```json
 {
   "Version": "2012-10-17",
@@ -1021,9 +1030,33 @@ export function auditPolicyDocument(doc: PolicyDocument): PolicyAudit {
       ]
     },
     {
+      "Sid": "ReadOwnDevStacksForDiffGate",
+      "Effect": "Allow",
+      "Action": "cloudformation:DescribeStacks",
+      "Resource": [
+        "arn:aws:cloudformation:ap-northeast-1:822063948773:stack/OpenReception-Web-dev/*",
+        "arn:aws:cloudformation:ap-northeast-1:822063948773:stack/OpenReception-WebMonitoring-dev/*",
+        "arn:aws:cloudformation:us-east-1:822063948773:stack/OpenReception-CfMonitoring-dev/*"
+      ]
+    },
+    {
+      "Sid": "ReadOwnChangeSetsForDiffGate",
+      "Effect": "Allow",
+      "Action": "cloudformation:DescribeChangeSet",
+      "Resource": [
+        "arn:aws:cloudformation:ap-northeast-1:822063948773:changeSet/claude-gate-*/*",
+        "arn:aws:cloudformation:us-east-1:822063948773:changeSet/claude-gate-*/*"
+      ]
+    },
+    {
       "Sid": "DenyEverythingElseOutsideTheChain",
       "Effect": "Deny",
-      "NotAction": ["sts:AssumeRole", "sts:GetCallerIdentity"],
+      "NotAction": [
+        "sts:AssumeRole",
+        "sts:GetCallerIdentity",
+        "cloudformation:DescribeStacks",
+        "cloudformation:DescribeChangeSet"
+      ],
       "Resource": "*"
     }
   ]
@@ -1317,6 +1350,12 @@ export function auditPolicyDocument(doc: PolicyDocument): PolicyAudit {
 `cdk-orcloud01-deploy-role-*` へ**インラインポリシーとして上乗せする Deny のみ**。
 Deny は Allow に優先するので、bootstrap 既定の `cloudformation:*` をここで削り取る）:
 
+> 🔴 **Task 7 補記（実装で判明。IMPORTANT A）**: `claude-deploy-entry.json` と同じ理由で、
+> `NotResource` に `changeSet/claude-gate-*/*` の 2 エントリ（ap-northeast-1 / us-east-1）を
+> 追加してある。これが無いと `DenyCloudFormationOutsideDevStacks` が changeset 系アクション
+> （`DescribeChangeSet`/`ExecuteChangeSet`/`DeleteChangeSet`）まで巻き添えにし、
+> `cdk deploy` 自体が動かなくなる。この名前スコープが生む残存ギャップは spec §13 を参照。
+
 ```json
 {
   "Version": "2012-10-17",
@@ -1330,7 +1369,9 @@ Deny は Allow に優先するので、bootstrap 既定の `cloudformation:*` �
         "arn:aws:cloudformation:ap-northeast-1:822063948773:stack/OpenReception-WebMonitoring-dev/*",
         "arn:aws:cloudformation:us-east-1:822063948773:stack/OpenReception-CfMonitoring-dev/*",
         "arn:aws:cloudformation:ap-northeast-1:822063948773:stack/CDKToolkit-orcloud01/*",
-        "arn:aws:cloudformation:us-east-1:822063948773:stack/CDKToolkit-orcloud01/*"
+        "arn:aws:cloudformation:us-east-1:822063948773:stack/CDKToolkit-orcloud01/*",
+        "arn:aws:cloudformation:ap-northeast-1:822063948773:changeSet/claude-gate-*/*",
+        "arn:aws:cloudformation:us-east-1:822063948773:changeSet/claude-gate-*/*"
       ]
     },
     {
@@ -1933,7 +1974,12 @@ collect_observation() {
   . "${ROOT}/scripts/lib/gate-stamp.sh"
   if gate_stamp_satisfies "pr"; then stamp=true; else stamp=false; fi
 
-  if npx tsx "${ROOT}/scripts/aws-negative-tests.ts"; then neg=true; else neg=false; fi
+  # 🔴 Task 7 補記: 実装は `--live-only` を渡す。S 系（SimulatePrincipalPolicy）は
+  # `OpenReceptionClaudeDeploy-dev` がその権限を持たない前提のためここでは実行せず、
+  # 人間が Admin 環境の runbook（`--simulate-only`）で別途実施する（Important 5b）。
+  # フラグ無しの `npm run aws:negative-tests` は両方を走らせるため Admin 専用であり、
+  # クラウドの preflight から呼ぶと S 系が全部 unknown（＝ FAIL 扱い）になる。
+  if npx tsx "${ROOT}/scripts/aws-negative-tests.ts" --live-only; then neg=true; else neg=false; fi
 
   cat > "${out}" <<EOF
 {
