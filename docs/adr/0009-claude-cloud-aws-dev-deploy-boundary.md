@@ -259,14 +259,48 @@ rollback の `iam:DeleteRole` がタグ条件 Deny に当たって **`ROLLBACK_F
 **なぜこの粒度か**: 物理名は論理 ID を**スタック名の長さに応じて切り詰める**ため、
 `CustomResourceProviderRole` も `CustomCrossRegionExport` も物理名には残らない
 （実在名 2 本が ground truth。`src/domain/governance/cfn-generated-name.ts`）。
-3 本すべてに当たり、かつスタック名の長さに依存しないのは `Custom` の 6 文字だけ。
+3 本すべてに当たり、かつスタック名の長さに依存しないのは `Custom` の 6 文字だけである。
 
-🔴 **残存リスク（spec §13 に詳細）**: テンプレートを書くのはサンドボックス自身なので、
-construct id を `Custom…` にするだけで**境界の無いロールを意図的に作れる**。
-制約として残るのは「CloudFormation 経由・層 1 の dev 3 スタックの中でしか作れない」
-「diff gate が `AWS::IAM::Role` の変更を記録する」「`iam:PassRole` は
-`lambda.amazonaws.com` 限定のまま」「デプロイ窓の内側だけ」の 4 点であり、
-**boundary が無いこと自体は緩和されない**。
+🔴 **「取りうる最も狭いパターン」だとは主張しない（訂正: #680 R10）。** 2 本に分ければ
+（`…-CustomCrossRegion*` ＋ `…-CustomS3AutoDelete*`）より狭く、`claude-boundary.json` の
+残り 462 文字にも収まる。1 本を選んだ本当の理由は「**どのみち名前グロブでは
+敵対的なテンプレートを防げない**」ことである —— 論理 ID・`RoleName`・`Path` はすべて
+テンプレート側が決められ、切り詰めで区別できるサフィックスは物理名から消える。
+狭さが買えるのは**事故耐性だけ**であり、それと引き換えにスタック名の長さ変更で
+壊れる脆いパターンを選ぶ価値は無い。
+
+### 決定 8b: carve-out の制動は IAM ではなく diff gate に置く（#680 R10）
+
+**問題**: 決定 8 は boundary の強制を「名前」で外した。名前は守れない。とくに
+**IAM のリソース ARN グロブでは `*` が `/` を跨ぐ**ので、`Path` を
+`/OpenReception-x-dev-Custom/` にするだけで論理 ID に関わらず carve-out へ入る。
+「名前を見ればおかしいと分かる」は成り立たない。
+
+**影響範囲**: carve-out 前の上限は boundary（他プロジェクト不可・Secrets Manager 不可・
+KMS 破壊不可・IAM 昇格不可）。carve-out 後の上限は**アカウント全体の Admin** であり、
+うち 2 経路は**デプロイ窓を越えて残る**: (1) trust policy を外部アカウントや
+`"AWS":"*"` に向けたロール（IAM に trust policy を縛る条件キーは存在しない。
+`iam:PassRole` の `lambda.amazonaws.com` 縛りは**この経路の制約にならない** ——
+PassRole を通る必要が無い）、(2) `AuthType: NONE` の `AWS::Lambda::Url`。
+
+**決定**: carve-out は維持し、**`deploy-diff-gate.ts` で制動する**。gate は change set と
+synth テンプレートを、1 バイトも AWS へ適用される前に読める我々自身のコードである。
+停止理由は `carveOutRoleNamespace`（名前空間に入る未知のロール。物理名は生成名・
+`RoleName`・`Path` を IAM と同じ規則で組む）／`carveOutRoleShape`（既知 3 本を名乗った
+だけの実体。Add だけでなく **Modify** も見る）／`roleTrustPolicyEscape`／
+`functionUrlExposure`／`publicInvokePermission`／`opaqueResourceShape`。
+allowlist は `REVIEWED_CDK_GENERATED_LOGICAL_IDS` の 1 か所で、**載せることは
+「CDK が決定論的に生成し、中身をレビューした」という主張**である。
+
+**代替案とその却下理由**: IAM 側で `iam:AttachRolePolicy` に `iam:PolicyARN` 条件を
+足す案は、`iam:PutRolePolicy` の経路が同じ強さで開いたままなので見かけ倒しであり、
+provider 実装の変更で**初回デプロイを AccessDenied で壊す**。同じ性質を、壊しても
+停止するだけの gate 側で固定した。
+
+🔴 **gate は制動であって境界ではない。** `scripts/aws-cloud-deploy.sh` を迂回して
+`cdk deploy` を直接叩けば動かず、IAM 側にそれを強制する手段は無い。
+**迂回された場合の上限は Admin のままである。** 残存の一覧は spec §13、
+承認者への説明は runbook 4d。
 
 ## 未検証事項・撤回条件
 
@@ -290,6 +324,12 @@ construct id を `Custom…` にするだけで**境界の無いロールを意�
   `ROLLBACK_FAILED` になる。S18 / S20 が `allowed` なら carve-out が広すぎる。**
   synth 側の前提（どのロールに boundary / タグが付かないか）は
   `infra/test/claude-deploy-boundary.test.ts` が実測で固定している。
+  なお simulate 側は **boundary 文書を `--permissions-boundary-policy-input-list` で
+  明示的に渡す**ようにした（#680 R10）。carve-out は cfn-exec ポリシーと boundary の
+  2 枚で成立しており、`SimulatePrincipalPolicy` がアタッチ済み boundary を自動で
+  含めるかどうかを AWS 抜きで確かめられない以上、**曖昧なまま「検証済み」と
+  記録しない**ため。`iam:PassRole` の対（S21/S22）も `--context-entries` で
+  `iam:PassedToService` を供給して追加した。
 - 🔴 **決定 7 のポリシー系 Deny は名前の列挙のみである。** `AWS::IAM::ManagedPolicy` は
   CloudFormation に `Tags` を持たずタグ条件が使えないため、**列挙から漏れた第三者
   ポリシーは覆えない**。この account に新しいプロジェクトが増えたら列挙を見直すこと。

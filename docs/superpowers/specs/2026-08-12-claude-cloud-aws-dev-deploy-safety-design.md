@@ -545,12 +545,26 @@ rollback の `iam:DeleteRole` がタグ条件 Deny に当たって **`ROLLBACK_F
 | `AWS::Route53::*` / `AWS::CertificateManager::*` の任意の操作 | 共有 DNS / 証明書。human-only |
 | `AWS::EC2::SecurityGroup*` の任意の操作 | ネットワーク境界 |
 | `AWS::IAM::User` / `AccessKey` / `Group` / `LoginProfile` の任意の操作 | dev スタックが IAM プリンシパルを作る正当な理由が無い |
+| carve-out の名前空間に入る `AWS::IAM::Role` で、既知の provider role 3 本以外（`carveOutRoleNamespace`。#680 R10） | **この名前空間には boundary が掛からない。** 物理名は生成名・`RoleName`・`Path` を IAM と同じ規則で組んで判定する（ARN グロブの `*` は `/` を跨ぐ） |
+| 既知 3 本を名乗るが実体が CDK の生成する形と違う（`carveOutRoleShape`） | 論理 ID はテンプレート側が決められる。trust は `lambda.amazonaws.com` のみ／managed policy は基本実行ロールのみ／インラインに `iam:` `sts:` `kms:` `secretsmanager:` `organizations:` と `*` を許さない。**Add だけでなく Modify も見る** |
+| 外部アカウント／`"AWS":"*"`／`Federated` を信頼する trust policy（`roleTrustPolicyEscape`） | IAM に trust policy を縛る条件キーが無く、boundary も効かない。**デプロイ窓を越えて残る** |
+| WebStack の 2 本以外の `AWS::Lambda::Url`、および image URL の `AuthType != AWS_IAM`（`functionUrlExposure`） | 公開 HTTPS の入口は資格情報の失効を越えて残る。image を `NONE` にすると無認証・無検証になる (#631) |
+| 未知の `Principal:"*"` invoke 許可・別アカウントへの invoke 許可（`publicInvokePermission`） | リソースポリシーとして残り、失効後も外から呼べる |
+| 上記の判定に必要な synth テンプレートを読めない（`opaqueResourceShape`） | **読めなかったを問題なしに落とさない** |
+
+🔴 **上の 6 行のために、gate は change set だけでなく synth テンプレート
+（`infra/cdk.out/<stack>.template.json`）も入力に取る（必須。#680 R10）。**
+`describe-change-set` は「どの property が変わったか」の**名前**しか返さず値を返さないので、
+`RoleName` / `Path` / `AssumeRolePolicyDocument` / `Principal` / `AuthType` は
+テンプレートからしか読めない。optional にすると「渡し忘れ = 検査なしで green」という
+最悪の既定になるため、CLI はテンプレートを読めなければ非ゼロで終わる。
 
 **記録のみ（deploy は進める）**
 
 | 条件 | なぜ止めないか |
 | --- | --- |
-| `AWS::IAM::Role` / `Policy` / `ManagedPolicy` の Add・Modify | — |
+| carve-out の**外**の `AWS::IAM::Role` / `Policy` / `ManagedPolicy` の Add・Modify（`iamPolicyChange`） | boundary が強制される（下記） |
+| trust policy が組み込み関数で静的に読み切れない（`opaqueRoleTrustPolicy`。carve-out の外のみ） | CDK は自アカウントの ARN を `Fn::Join` で組む。ここを止めると正当な初回デプロイが通らない。**代わりに 4d の人間へ必ず見せる** |
 
 > 🔴 **ここは意図的に spec 原文 §8 の「IAM を検出したら停止」より緩めている。**
 > `OpenReception-Web-dev` は IAM Role 4 個・Policy 3 個を含み、Lambda の権限が変わるたびに
@@ -560,6 +574,13 @@ rollback の `iam:DeleteRole` がタグ条件 Deny に当たって **`ROLLBACK_F
 > 止めなくてよい根拠は **§4.2 層 4 の Permissions Boundary**にある。exec role が作る
 > Role には boundary が強制されるので、**新しい Role が boundary を超える権限を持つことは
 > 構造的に不可能**。差分レビューより強い保証である。Remove / Replace は上表で止まる。
+>
+> 🔴 **この根拠は carve-out の名前空間には及ばない（#680 R10）。** そこには boundary が
+> 掛からないので「差分レビューより強い保証」が存在しない。だから carve-out に入る
+> ロールだけは、記録ではなく**停止**にしてある（上表の `carveOutRoleNamespace` /
+> `carveOutRoleShape`）。**その名前空間に入るかどうかは名前を眺めても分からない** ——
+> IAM のリソース ARN グロブでは `*` が `/` を跨ぐので、`Path` を細工すれば
+> 論理 ID が何であれ入る。判定は `iamArnGlobMatchesGeneratedName` が IAM と同じ規則で行う。
 >
 > 🔴 **この根拠は 2026-08-12 全体レビュー（Critical 2）の時点では成立していなかった。**
 > `--custom-permissions-boundary` は cfn-exec role 1 つにしか boundary を付けず、
@@ -676,6 +697,8 @@ principal ARN も 1 リージョン分しか受け取らなかった。runbook �
 | S18 | `iam:CreateRole` on carve-out**外**のロール名（boundary なし） | exec | 両方 | DENY |
 | S19 | `iam:DeleteRole` on carve-out のロール名（rollback 経路。#680 R3） | exec | 両方 | **ALLOW** |
 | S20 | `iam:DeleteRole` on タグの無い別のロール | exec | 両方 | DENY |
+| S21 | `iam:PassRole` on carve-out のロール（`iam:PassedToService=lambda.amazonaws.com` を供給。#680 R10） | exec | 両方 | **ALLOW** |
+| S22 | `iam:PassRole` on タグの無い別のロール（同じ context を供給） | exec | 両方 | DENY |
 
 **S17〜S20 は 2 対で 1 つの主張である。** 片方だけ見ると、carve-out を消しても
 （S18/S20 が緑）carve-out を `*` へ広げても（S17/S19 が緑）気づけない。
@@ -793,7 +816,7 @@ spec 原文 STOP CONDITIONS の「既存 production deploy 経路を壊す可能
 | `src/domain/governance/bash-source.ts` + `.test.ts` | シェルソースからコメント／文字列リテラルを落とす（**純関数**。ソース検査が偽の緑にならないように。#680 R5） |
 | `infra/lib/config/claude-deploy-boundary.ts` + `infra/test/claude-deploy-boundary.test.ts` | 層 4 の Permissions Boundary を CDK アプリ側で適用する（§4.2 層 4 の注記。bootstrap だけでは付かない） |
 | `scripts/aws-diff-gate.ts` | 上記を呼ぶ薄い CLI |
-| `scripts/aws-negative-tests.ts` | N1-N7 + N9 実試行（`--live-only`）/ S1-S20 シミュレーション（`--simulate-only`。principal × region ごとに評価。旧 N8 は S11 へ移動済み） |
+| `scripts/aws-negative-tests.ts` | N1-N7 + N9 実試行（`--live-only`）/ S1-S22 シミュレーション（`--simulate-only`。principal × region ごとに評価。旧 N8 は S11 へ移動済み） |
 | `scripts/aws-issue-credentials.sh` | 人間が窓を開ける（ローカル Mac） |
 | `tests/hooks/aws-cloud-deploy.test.ts` | wrapper の preflight を実起動して検証 |
 | `docs/runbook-cloud-aws-deploy.md` | runbook（§12 の 10 ステップ） |
@@ -869,8 +892,11 @@ spec 原文 STOP CONDITIONS の「既存 production deploy 経路を壊す可能
 | staging / prod を作るとき境界の拡張が要る | 意図的。そのとき改めて承認する |
 | changeSet 名スコープの account-wide 露出 | **deploy role 単体の層では構造的に閉じられない。** 詳細は下記 |
 | 列挙から漏れた第三者 IAM ポリシーの書き換え | **タグでは閉じられない。** 下記 |
-| `iam:PassRole` のタグ条件が実 IAM でどう評価されるか | **未検証。** 初回デプロイで AccessDenied になる最有力候補。runbook 4b の 14〜16 |
-| carve-out された名前空間に境界の無いロールを作られる | **閉じられない。** サンドボックスがテンプレートを書くため。下記 |
+| `iam:PassRole` のタグ条件が実 IAM でどう評価されるか | **未検証。** 初回デプロイで AccessDenied になる最有力候補。runbook 4b の 14〜16。simulate 側は S21/S22 が `--context-entries` で `iam:PassedToService` を供給して問う（#680 R10） |
+| carve-out された名前空間に境界の無いロールを作られる | **IAM では閉じられない**（サンドボックスがテンプレートを書き、名前グロブは論理 ID / `RoleName` / `Path` を縛れない）。**diff gate で制動している。** 到達しうる上限はアカウント Admin。下記 |
+| 境界の無いロールの trust policy を外部アカウントへ向けられる | **IAM に trust policy を縛る条件キーが無い。** デプロイ窓を越えて残る。gate の `carveOutRoleShape` / `roleTrustPolicyEscape` が止める。下記 |
+| `AuthType: NONE` の Function URL で公開入口を残される | 同上。gate の `functionUrlExposure` / `publicInvokePermission` が止める。下記 |
+| gate 自身がサンドボックス内で動く | **`aws-cloud-deploy.sh` を迂回されれば効かない。** gate は制動であって境界ではない。下記 |
 | `claude-boundary.json` のサイズが上限に近い | 5,682 / 6,144 文字（残り 462）。次に足す人が壁にぶつかる。runbook ステップ 1 に注記 |
 
 ### carve-out された名前空間の残存ギャップ（#680 R1/R2/R3 の実装限界）
@@ -890,33 +916,88 @@ IAM ロールを意図的に作れる**。そのロールへ `iam:PutRolePolicy`
 これは carve-out が新たに開いた経路であり、carve-out 前は `iam:CreateRole` の
 boundary 条件で塞がっていた。
 
-**それでも残っている制約**（＝この経路は無制限ではない）:
+🔴 **名前グロブでは防げない（訂正: #680 R10）。** 「construct の id を `Custom…` で
+始めるだけ」よりも入口は広い。物理名を決めるのは 3 つとも**テンプレート側**である:
 
-- ロールを作れるのは **CloudFormation 経由**、それも層 1 の allowlist にある
-  dev 3 スタックのデプロイの中だけである。deploy role は他のスタックを触れない
-- そのデプロイは `scripts/aws-cloud-deploy.sh deploy` を通り、**§6 の diff gate が
-  `AWS::IAM::Role` の Add/Modify を記録する**（`IAM_PRINCIPAL_TYPES`）。止めはしないが
-  change set に痕跡が残る
-- `iam:PassRole` は carve-out でも `iam:PassedToService = lambda.amazonaws.com` の
-  ままである（EC2 インスタンスプロファイルや他サービスへは渡せない）
-- 作られたロールは boundary が無いだけで、**そのロールが何をできるかは
-  そのロール自身のポリシー次第**。だが exec role が付けられるポリシーに上限は無いので、
-  **これは実質的な緩和ではない**（緩和として数えない）
-- credential の有効期限（§8 のデプロイ窓）の内側でしか起こせない
+1. 論理 ID（切り詰められて生成名になる）
+2. `RoleName` の明示（切り詰めすら起きない）
+3. `Path` の明示 —— **IAM のリソース ARN グロブでは `*` が `/` を跨ぐ**ので、
+   `Path: '/OpenReception-x-dev-Custom/'` を付ければ論理 ID が何であれ
+   `role/OpenReception-x-dev-Custom/<名前>` になり carve-out に入る。
+   **「名前を見ればおかしいと分かる」は成り立たない。**
+
+同じ理由で、**carve-out を 2 本に分けて狭くしても防御にはならない**
+（`…-CustomCrossRegion*` ＋ `…-CustomS3AutoDelete*` は文字数的には収まる）。
+狭さが買えるのは事故耐性だけである。以前ここに書いていた
+「3 本すべてに当たる中で最も狭い」という説明は、**選定理由としては誤り**だった。
+
+### 影響範囲（丸めない）
+
+carve-out **前**、敵対的なデプロイの上限は boundary だった（他プロジェクト不可・
+Secrets Manager 不可・KMS 破壊不可・IAM 昇格不可）。carve-out **後**の上限は
+**アカウント全体の Admin** である（`nodi` / `salon-loop` / prod を含む）。
+しかも次の 2 経路は**デプロイ窓（§8）が閉じたあとも残る**:
+
+1. **trust policy はテンプレート側が決める。** IAM には trust policy の中身を縛る
+   条件キーが存在しない。外部アカウントや `"AWS":"*"` を信頼するロールは、
+   資格情報の失効後も外から assume できる。したがって
+   **`iam:PassRole` が `lambda.amazonaws.com` 限定であることは、この経路に対して
+   制約になっていない**（PassRole を通る必要が無い）
+2. **`AWS::Lambda::Url` の `AuthType: NONE`。** boundary の無いロールを持つ Lambda に
+   公開 HTTPS の入口が付く。これも失効を越えて残る
+
+### 実際に抑えているのは diff gate である（§6）
+
+**boundary ではなく `deploy-diff-gate.ts` がこの名前空間の主たる制御である。**
+gate は change set と synth テンプレートを、1 バイトも AWS へ適用される前に読む:
+
+| 停止理由 | 何を止めるか |
+| --- | --- |
+| `carveOutRoleNamespace` | carve-out に入る `AWS::IAM::Role` のうち、既知の provider role 3 本以外。物理名は生成名・`RoleName`・`Path` を IAM と同じ規則で組んで判定する |
+| `carveOutRoleShape` | 既知 3 本を**名乗った**だけの実体。trust は `lambda.amazonaws.com` のみ／managed policy は基本実行ロールのみ／インラインに `iam:` `sts:` `kms:` `secretsmanager:` `organizations:` と `*` を許さない。**Add だけでなく Modify も見る**（trust policy は物理名を変えずに書き換えられる） |
+| `roleTrustPolicyEscape` | carve-out の**外**でも、外部アカウント／`"AWS":"*"`／`Federated` を信頼する trust policy |
+| `functionUrlExposure` | WebStack の 2 本以外の `AWS::Lambda::Url`。image は常に `AWS_IAM`（#631） |
+| `publicInvokePermission` | origin-verify 方式で CDK が足す 2 本以外の `Principal:"*"` invoke 許可、および別アカウントへの invoke 許可 |
+| `opaqueResourceShape` | 上の判定に必要なテンプレートを読めなかった場合（読めなかったを問題なしに落とさない） |
+
+allowlist は `REVIEWED_CDK_GENERATED_LOGICAL_IDS` 1 か所。**論理 ID を載せることは
+「この ID の実体は CDK が決定論的に生成するもので、中身をレビューした」という主張**で
+あって便宜ではない。だから論理 ID だけでなく形も固定してある。
+
+### それでも残ること（gate を通り抜けられるもの）
+
+- **gate はサンドボックスの中で走る。** `scripts/aws-cloud-deploy.sh` を迂回して
+  `cdk deploy` を直接叩けば gate は動かない。IAM 側にこれを強制する手段は無い
+  （層 1 は「どのスタックか」しか見ない）。**gate は制動であって境界ではない**
+- gate が固定しているのは trust policy・managed policy・インライン `Action` の 3 点で、
+  インラインの `Resource` は見ていない。`ssm:` `s3:` `logs:` などの action は
+  provider が実際に使うため通る。**boundary の無いロールにそれらが載ることは起こりうる**
+- carve-out の外のロールの trust policy が組み込み関数で書かれていると gate は
+  読み切れず、**止めずに記録する**（`opaqueRoleTrustPolicy`）。ここを止めると
+  正当な初回デプロイが通らない
 
 **やらなかったこと。** `iam:AttachRolePolicy` に `iam:PolicyARN =
 …/service-role/AWSLambdaBasicExecutionRole`（provider role が実際に attach する唯一の
 managed policy。synth で確認）の条件を足せば「AdministratorAccess を attach する」
-経路だけは塞げる。**足していない** —— `iam:PutRolePolicy` によるインラインポリシーの
-経路が同じ強さで開いたままなので、防御としては見かけ倒しになり、その一方で
-provider の実装が変わったときに**初回デプロイを AccessDenied で壊す**副作用がある。
-「実装した以上のカバレッジを主張しない」方針に従い、条件を足すのではなくここに書く。
+経路だけは IAM 側でも塞げる。**足していない** —— `iam:PutRolePolicy` による
+インラインポリシーの経路が同じ強さで開いたままなので IAM 側の防御としては
+見かけ倒しになり、その一方で provider の実装が変わったときに
+**初回デプロイを AccessDenied で壊す**副作用がある。同じ性質を gate 側で
+（壊しても停止するだけの場所で）固定した。
 
 **再評価の条件**: dev の 3 スタックに `Custom` で始まる construct id を人が意図的に
-足したくなったとき（carve-out と衝突する）、または carve-out の名前空間に
-provider 以外のロールが現れたとき。`infra/test/claude-deploy-boundary.test.ts` の
-「carve-out が必要なロールが実在し、かつ carve-out はそれ以外を覆っていない」が
-論理 ID の完全一致で固定しているので、増えれば赤くなる。
+足したくなったとき、または carve-out の名前空間に provider 以外のロールが現れたとき。
+
+🔴 **その検出は回帰テストではなく gate が担う（訂正: #680 R10）。** 以前ここには
+「`infra/test/claude-deploy-boundary.test.ts` が論理 ID の完全一致で固定しているので
+増えれば赤くなる」と書いていたが、**誤りだった**。あの fixture は手で組んだ
+2 スタックのモデルであって実アプリではないので、`web-stack.ts` に `Custom…` の
+construct を足しても fixture の synth 結果は変わらない（実際 `web-stack.ts` は既に
+`CustomDomainHostedZone` / `CustomDomainAliasA` / `CustomDomainUrl` を construct id に
+使っている。いずれも IAM ロールを作らないので今は無害だが、「赤くなるはず」の
+主張は既に成り立っていない）。実アプリの synth を assert する案は
+`.open-next/` の鮮度に依存して**大半の実行でスキップされる**（#628 / #612 で
+実害が出た形）ため採らない。**deploy のたびに無条件で走る gate が検出する。**
 
 ### 第三者 IAM ポリシー書き換えの残存ギャップ（Important 5 の実装限界）
 

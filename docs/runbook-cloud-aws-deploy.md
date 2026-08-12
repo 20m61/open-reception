@@ -175,7 +175,7 @@ aws iam put-role-policy \
 効くかを確認する。**Admin 権限を持つ人間の環境から実行する**
 （`OpenReceptionClaudeDeploy-dev` は `iam:SimulatePrincipalPolicy` を持たない前提のため）。
 
-### 4a. 自動化されている分（S1〜S20）
+### 4a. 自動化されている分（S1〜S22）
 
 🔴 **各 check は「どのロールに対して」「どのリージョンで」評価するかを自分で宣言している。
 5 つの ARN をすべて渡すこと。1 つでも欠けていると、スクリプトは既定値で埋めずに
@@ -223,10 +223,30 @@ SIMULATE_EXEC_ROLE_ARN_US_EAST_1=arn:aws:iam::822063948773:role/cdk-orcloud01-cf
 `ROLLBACK_FAILED` になる。** S18 / S20 が `allowed` なら carve-out が広すぎる。
 **対の片方だけを見て進まないこと。**
 
-> **`iam:PassRole` の carve-out は S 系に入っていない。** `iam:PassedToService` は
-> リクエスト側の context key なので、`simulate-principal-policy` に
-> `--context-entries` を渡さないと評価できない（渡さないと Allow の条件が成立せず、
-> 実際には通る呼び出しが `denied` に見える）。ステップ 4b の 14〜16 で手動確認する。
+**S21 / S22 は `iam:PassRole` の対である（#680 R10 で追加）。**
+
+| id | 期待 | 意味 |
+| --- | --- | --- |
+| S21 | **allowed** | carve-out の provider role へは、タグ無しでも `lambda.amazonaws.com` として渡せる |
+| S22 | denied | carve-out の外はタグ条件が残るので、タグの無いロールは渡せない |
+
+> 以前ここには「`iam:PassRole` は S 系に入っていない。`iam:PassedToService` は
+> リクエスト側の context key なので評価できない」と書いていた。**渡せる。**
+> `--context-entries ContextKeyName=iam:PassedToService,ContextKeyValues=lambda.amazonaws.com,ContextKeyType=string`
+> をスクリプトが供給する。**対の両方に同じ context を与えている**ので、S22 の
+> `denied` が「タグ条件が効いた」ためであって「context が無かった」ためでないと言える。
+> ステップ 4b の 14〜16 は引き続き実経路での確認として残す。
+
+🔴 **Permissions Boundary は simulate へ明示的に渡している（#680 R10）。**
+carve-out は `claude-cfn-exec.json` の Allow と `claude-boundary.json` の `NotResource` の
+**2 枚**で成立しており、壊れると初回デプロイが Deny で落ちるのは boundary の方である。
+`SimulatePrincipalPolicy` がアタッチ済み boundary を自動で含めるかどうかは AWS を
+呼ばずには確かめられないので、`exec` の評価では
+`--permissions-boundary-policy-input-list` で `scripts/aws-policies/claude-boundary.json`
+を明示的に渡す。**何を込みで評価したかは結果行の `boundary=` / `context=` に出る** ——
+「boundary 込みで検証した」と記録する前にその 2 行を見ること。
+boundary を渡すのは `exec` だけである（`--custom-permissions-boundary` が boundary を
+付けるのは cfn-exec role 1 つだけ。entry / deploy に渡すと偽の `denied` になる）。
 
 > 🔴 **なぜ 3 つに分かれたか（2026-08-12 全体レビュー Critical 3）。** 旧手順は
 > `SIMULATE_PRINCIPAL_ARN` に **entry role だけ**を渡していた。entry role は
@@ -484,7 +504,7 @@ aws iam simulate-principal-policy \
 - `DeleteChangeSet`（11、2 回目以降のデプロイで `cleanupOldChangeset` が必要とする）
 - `DeleteStack`（12、`--no-execute` の no-op が残した `REVIEW_IN_PROGRESS` スタックの掃除用）
 
-### 4d. 🔴 承認する前に読むこと — carve-out が開けている穴（#680 R1/R2/R3）
+### 4d. 🔴 承認する前に読むこと — carve-out の影響範囲と、それを抑えているもの（#680 R1/R2/R3/R10）
 
 ステップ 4 を PASS させて初回デプロイを認可するとき、**あなたは次のことも一緒に
 承認している**。
@@ -494,21 +514,72 @@ aws iam simulate-principal-policy \
 `autoDeleteObjects` が作る provider role にはどちらも付かないため。理由と実測は
 ADR 0009 決定 8 と spec §4.2 層 4）。
 
-**サンドボックスはテンプレートを書く。** したがって construct の id を `Custom…` で
-始めるだけで、**この名前空間に境界の無い IAM ロールを意図的に作り**、
-`iam:PutRolePolicy` で任意のインラインポリシーを載せ、`iam:PassRole` で Lambda に
-渡して実行できる。carve-out 前は `iam:CreateRole` の boundary 条件で塞がっていた経路である。
+**サンドボックスはテンプレートを書く。** 名前グロブはそれを防げない ——
+論理 ID も `RoleName` も `Path` もテンプレート側が決められ、しかも
+**IAM のリソース ARN グロブでは `*` が `/` を跨ぐ**ので、`Path` を
+`/OpenReception-x-dev-Custom/` にするだけでこの名前空間に入る。
+「名前を見ればおかしいと分かる」は**成り立たない**。
 
-残る制約は 4 つだけ。**これらは緩和であって、boundary の代わりではない**:
+#### 影響範囲（丸めずに書く）
 
-1. ロールを作れるのは CloudFormation 経由、層 1 の allowlist にある dev 3 スタックの中だけ
-2. その change set には `AWS::IAM::Role` の Add/Modify が**記録される**（diff gate。止めはしない）
-3. `iam:PassRole` は carve-out でも `lambda.amazonaws.com` 限定のまま
-4. デプロイ窓（STS の有効期限）の内側でしか起こせない
+carve-out **前**は、敵対的なデプロイは boundary で頭打ちだった（他プロジェクト不可・
+Secrets Manager 不可・KMS 破壊不可・IAM 昇格不可）。carve-out **後**は、
+この名前空間に作られたロールに boundary が無いため、**到達しうる上限は
+アカウント全体の Admin** である。`nodi` / `salon-loop` / prod も含む。
+さらに 2 つの経路は**デプロイ窓が閉じたあとも残る**:
+
+1. **trust policy はテンプレート側が決める。** IAM には trust policy の中身を縛る
+   条件キーが無い。外部アカウント（あるいは `"AWS":"*"`）を信頼するロールは、
+   資格情報が失効したあとも外から assume できる。`iam:PassRole` が
+   `lambda.amazonaws.com` 限定であることは**この経路に対して何の制約にもならない**
+   （PassRole を使う必要が無い）
+2. **`AWS::Lambda::Url` の `AuthType: NONE`。** 境界の無いロールを持つ Lambda に
+   公開 HTTPS の入口が付く。これも資格情報の失効を越えて残る
+
+#### いま抑えているのは boundary ではなく diff gate である
+
+**この 2 経路と名前空間への侵入を止めているのは `scripts/aws-diff-gate.ts`**
+（`src/domain/governance/deploy-diff-gate.ts`）であり、Permissions Boundary ではない。
+gate は change set と synth テンプレートを、**1 バイトも AWS に適用される前に**読む:
+
+- carve-out の名前空間に入る `AWS::IAM::Role` は、既知の CDK provider role 3 本以外
+  **停止**（`carveOutRoleNamespace`）。物理名は IAM が見るとおりに組む
+  （生成名の切り詰め・明示 `RoleName`・`Path`）
+- その 3 本を**名乗った**だけのロールも、実体が CDK の生成する形と違えば**停止**
+  （`carveOutRoleShape`。trust は `lambda.amazonaws.com` のみ／managed policy は
+  基本実行ロールのみ／インラインに `iam:` `sts:` `kms:` `secretsmanager:`
+  `organizations:` と `*` を許さない）。**Add だけでなく Modify も見る** ——
+  trust policy は物理名を変えずに書き換えられる
+- carve-out の**外**のロールでも、外部アカウント／`"AWS":"*"`／`Federated` を信頼する
+  trust policy は**停止**（`roleTrustPolicyEscape`）
+- `AWS::Lambda::Url` は WebStack の 2 本（server / image）以外**停止**
+  （`functionUrlExposure`）。image は常に `AWS_IAM`（#631）
+- `Principal: "*"` の invoke 許可は origin-verify 方式で CDK が足す 2 本以外**停止**、
+  別アカウントへの invoke 許可も**停止**（`publicInvokePermission`）
+- 上のどれも「テンプレートを読めた」ことが前提なので、**読めなければ停止**
+  （`opaqueResourceShape`）
+
+#### それでも残ること（gate を通り抜けられるもの）
+
+- **gate はサンドボックスの中で走る。** `scripts/aws-cloud-deploy.sh` を迂回して
+  `cdk deploy` を直接叩けば gate は動かない。IAM 側にこれを強制する仕組みは無い
+  （層 1 は「どのスタックか」しか見ない）
+- **既知の 3 本を名乗りつつ、gate が固定していない性質を変える**ことはできる。
+  gate が見ているのは trust policy・managed policy・インライン action の 3 点で、
+  インラインの `Resource` は見ていない。`ssm:*` 系や `s3:` `logs:` などの
+  action は通る（provider が実際に使うため）。**boundary の無いロールに
+  `s3:GetObject` 相当が載る**ことは起こりうる
+- **carve-out の外のロール**は boundary で頭打ちだが、trust policy が
+  組み込み関数で書かれていると gate は読み切れず、**止めずに記録する**
+  （`opaqueRoleTrustPolicy`。ここを止めると正当な初回デプロイが通らない）
+
+**要するに: carve-out の爆発半径はアカウント全体であり、それを実際に抑えているのは
+境界ではなく diff gate である。** gate を迂回された場合の上限は Admin のままである。
 
 **受け入れられないなら、初回デプロイへ進む前に設計判断へ差し戻すこと。**
 選択肢は「`crossRegionReferences` をやめて CfMonitoring-dev の distributionId を
 context で渡す」「`autoDeleteObjects` をやめてバケットの手動削除を運用に載せる」など。
+どちらも carve-out 自体を不要にする（＝gate に依存しなくなる）。
 
 ---
 
