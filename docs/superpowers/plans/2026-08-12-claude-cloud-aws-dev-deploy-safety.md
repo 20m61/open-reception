@@ -1457,6 +1457,19 @@ main();
 
 - [ ] **Step 3: `scripts/aws-negative-tests.ts` を実装する**
 
+> 🔴 **判定部分は純関数に切り出してテストする。** このスクリプト全体は AWS 認証情報が
+> 無いと動かず、本サイクルでは一度も実走しない。**実走しないコードをテスト無しで置かない。**
+> `src/domain/governance/negative-test-outcome.ts` に
+> `classifyAwsError(stderr: string): 'denied' | 'unknown'` と
+> `summarizeNegativeTests(results: ReadonlyArray<{id: string; expected: 'allowed'|'denied'; actual: 'allowed'|'denied'|'unknown'}>): {failed: number}`
+> を置き、同居テストで固定する。とくに:
+>
+> - `AccessDenied` / `not authorized` / `explicit deny` を `denied` と判定する（大小無視）
+> - **`unknown` は期待が `denied` でも PASS にしない**（判定不能を PASS にしない）
+> - stderr が空文字のときも `unknown`（[[空文字は「問題なし」ではない]] の型）
+>
+> 下記の `aws()` / `simulate()` はこの純関数を呼ぶだけにする。
+
 ```ts
 /**
  * Negative security tests (spec §7)。
