@@ -65,8 +65,14 @@ aws iam create-role \
   --assume-role-policy-document file://scripts/aws-policies/claude-deploy-entry-trust.json \
   --max-session-duration 43200
 
-# 4) entry role の権限（cdk-orcloud01-* への sts:AssumeRole と、
-#    diff gate 自身が使う DescribeStacks / DescribeChangeSet のみ）
+# 4) entry role の権限。内訳:
+#      - sts:AssumeRole → cdk-orcloud01-{deploy,file-publishing,image-publishing}-role-*
+#      - cloudformation:DescribeStacks / DescribeChangeSet（diff gate 自身が使う読み取り）
+#    🔴 **cdk-orcloud01-lookup-role-* は入っていない（明示 Deny もしてある）。**
+#    bootstrap テンプレートは lookup role に AWS 管理の ReadOnlyAccess を付け、
+#    boundary は付けない。assume できるとアカウント全体（nodi / salon-loop / Kiaff）の
+#    DynamoDB・S3・Lambda env・Cognito を読めてしまい、主境界を丸ごと迂回する。
+#    dev は context provider（fromLookup 等）を一切使わないので不要である。
 aws iam put-role-policy \
   --role-name OpenReceptionClaudeDeploy-dev \
   --policy-name OpenReceptionClaudeDeployEntry \
@@ -149,15 +155,18 @@ SIMULATE_PRINCIPAL_ARN=arn:aws:iam::822063948773:role/OpenReceptionClaudeDeploy-
 `unknown`（＝ FAIL 扱い）になる。クラウド側は `scripts/aws-cloud-deploy.sh` 経由で常に
 `--live-only` が渡り、S 系は自動的にスキップされる。
 
-### 4b. 🔴 手動でしか検証できない分（changeSet ARN スコープ、12 コマンド）
+### 4b. 🔴 手動でしか検証できない分（changeSet ARN スコープほか、16 コマンド）
 
 **このサイクルで一度も実行されていない。** AWS 認証情報が無く、`aws` コマンドの実行も
 禁止されていたため、実装の正しさは `auditPolicyDocument` による**静的構造検証のみ**で
 確認済みであり、**IAM の実際の評価結果は未証明**である。
 
-**次の 12 本を実行し、コメントに書かれた期待どおりの `EvalDecision` が返ることを確認する。
+**次の 16 本を実行し、コメントに書かれた期待どおりの `EvalDecision` が返ることを確認する。
 1 本でも期待と違ったら、初回デプロイへ進まない。** `--policy-source-arn` は実在の IAM ロール
 でなければならない点に注意（存在しない ARN を渡すとシミュレーションが別のエラーで失敗する）。
+
+🔴 **14〜16（`iam:PassRole` の条件付き Allow）が、初回デプロイで AccessDenied になる
+最有力候補である。** 詳細はそのコメントを読むこと。
 
 ```bash
 # 1) entry role: DescribeStacks（自分の dev スタック） → allowed 期待
@@ -247,6 +256,17 @@ aws iam simulate-principal-policy \
   --policy-source-arn arn:aws:iam::822063948773:role/cdk-orcloud01-deploy-role-822063948773-ap-northeast-1 \
   --action-names cloudformation:DeleteStack \
   --resource-arns arn:aws:cloudformation:ap-northeast-1:822063948773:stack/OpenReception-Web-dev/dummy-id \
+  --query 'EvaluationResults[0].EvalDecision' --output text
+
+# 13) 🔴 entry role: lookup role への AssumeRole → denied 期待
+#     （bootstrap テンプレートは lookup role に AWS 管理 ReadOnlyAccess を付け、
+#     `--custom-permissions-boundary` は cfn-exec role にしか boundary を付けない。
+#     ここが allowed だと、窓の間に nodi / salon-loop / Kiaff の DynamoDB・S3・
+#     Lambda 環境変数・Cognito をアカウント全体で読める＝主境界の完全な迂回）
+aws iam simulate-principal-policy \
+  --policy-source-arn arn:aws:iam::822063948773:role/OpenReceptionClaudeDeploy-dev \
+  --action-names sts:AssumeRole \
+  --resource-arns arn:aws:iam::822063948773:role/cdk-orcloud01-lookup-role-822063948773-ap-northeast-1 \
   --query 'EvaluationResults[0].EvalDecision' --output text
 ```
 

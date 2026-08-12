@@ -91,6 +91,27 @@ const LIVE_CHECKS: ReadonlyArray<Check & { readonly run: () => Outcome }> = [
     expected: 'denied',
     run: () => aws(['secretsmanager', 'list-secrets', '--max-results', '1']),
   },
+  // N8 は欠番（旧 `iam:CreateAccessKey`。副作用があるため `SIMULATED_CHECKS` の S11 へ移動）。
+  {
+    // 🔴 **Critical 1（2026-08-12 全体レビュー）: lookup role は「読み取り専用の無害な
+    // ロール」ではない。** `cdk bootstrap` のテンプレート
+    // （`infra/node_modules/aws-cdk/lib/api/bootstrap/bootstrap-template.yaml:495-506`）は
+    // lookup role に AWS 管理ポリシー `ReadOnlyAccess` を付け、インラインで拒否するのは
+    // `kms:Decrypt` **だけ**である。さらに `--custom-permissions-boundary` が boundary を
+    // 付けるのは cfn-exec role **1 つだけ**（同ファイル 740 行目）なので、lookup role には
+    // boundary も付かない。entry role がこれを assume できると、窓が開いている間に
+    // nodi / salon-loop の DynamoDB・S3・Lambda 環境変数・Cognito ユーザーを
+    // アカウント全体で読めてしまう ―― 主境界（層 1・3）を完全に迂回する。
+    //
+    // dev は context provider を一切使わない（`infra/` の `fromLookup` は
+    // `web-stack.ts` の `HostedZone.fromLookup` 1 箇所のみで、`customDomain.createDnsRecord`
+    // が真のときだけ実行される。dev は `-c customDomain=` を渡さない）ため、
+    // lookup role は allowlist から外し、明示 Deny も重ねてある。
+    id: 'N9',
+    description: '専用 bootstrap (orcloud01) の lookup role を assume（ReadOnlyAccess 経由の迂回）',
+    expected: 'denied',
+    run: () => assumeRole(`arn:aws:iam::${ACCOUNT}:role/cdk-orcloud01-lookup-role-${ACCOUNT}-ap-northeast-1`),
+  },
 ];
 
 /** 実試行しない。`SimulatePrincipalPolicy` で判定する（人間の Admin 環境から実行）。 */

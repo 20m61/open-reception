@@ -205,6 +205,23 @@ describe('claude-deploy-entry.json', () => {
     expect(allowed).not.toContain('cdk-hnb659fds-');
   });
 
+  // 🔴 Critical 1（2026-08-12 全体レビュー）: bootstrap の lookup role には AWS 管理の
+  // `ReadOnlyAccess` が付き（`bootstrap-template.yaml:495-496`）、インライン Deny は
+  // `kms:Decrypt` のみ。`--custom-permissions-boundary` が boundary を付けるのは
+  // cfn-exec role だけ（同 740 行目）なので lookup role は境界の外にある。
+  // entry role がこれを assume できると、層 1・3 の主境界を丸ごと迂回して
+  // アカウント全体（nodi / salon-loop / Kiaff）を読めてしまう。
+  // dev は context provider を使わないため、allowlist に入れてはならない。
+  it('allowlist に lookup role を含まない（ReadOnlyAccess 経由でアカウント全体を読めてしまう）', () => {
+    for (const pattern of audit.allowedResourcePatterns) {
+      expect(pattern).not.toContain('lookup-role');
+    }
+  });
+
+  it('lookup role への AssumeRole を明示 Deny している（allowlist へ再追加されても Deny が勝つ）', () => {
+    expect(audit.deniedResourcePatterns.join('\n')).toContain('lookup-role');
+  });
+
   // Important 5a（2026-08-12 レビュー）: `run_diff_gate` が
   // `cloudformation:DescribeStacks` / `DescribeChangeSet` を呼ぶには、entry role 自身に
   // 読み取り専用の Allow が要る（さもないと N4 の live check「OpenReception-Web-dev を

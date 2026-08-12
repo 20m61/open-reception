@@ -140,8 +140,15 @@ open-reception の実構成では **Cognito / CloudFront / IAM Policy につい�
   role/OpenReceptionClaudeDeploy-dev                        ★新規
     trust      : arn:aws:iam::822063948773:user/CDK のみ / ExternalId 必須
     MaxSession : 43200 (12h) — 実際の発行は既定 4h
-    権限        : cdk-orcloud01-* への sts:AssumeRole のみ
-    明示 Deny  : cdk-hnb659fds-* / cdk-staging-* への sts:AssumeRole
+    権限        : (a) sts:AssumeRole → cdk-orcloud01-{deploy,file-publishing,
+                      image-publishing}-role-*（**lookup-role は含めない。下記参照**）
+                  (b) cloudformation:DescribeStacks → OpenReception-*-dev の 3 スタック
+                  (c) cloudformation:DescribeChangeSet → changeSet/claude-gate-*
+                  ※ (b)(c) は diff gate 自身（`run_diff_gate`）が呼ぶ読み取り。
+                    これ以外は DenyEverythingElseOutsideTheChain の NotAction
+                    （sts:AssumeRole / sts:GetCallerIdentity / 上記 2 つ）で全 Deny
+    明示 Deny  : cdk-hnb659fds-* / cdk-staging-* / **cdk-*-lookup-role-*** への
+                 sts:AssumeRole
       │  AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY / AWS_SESSION_TOKEN /
       │  AWS_REGION / AWS_CREDENTIAL_EXPIRATION
       ▼
@@ -164,6 +171,25 @@ open-reception の実構成では **Cognito / CloudFront / IAM Policy につい�
 収まる必要があり、10 文字だと 63 文字で余裕が無いため）。
 Toolkit スタック名は `CDKToolkit-orcloud01`。
 
+> 🔴 **lookup role を entry role の allowlist に入れてはならない（2026-08-12 全体レビュー
+> Critical 1）。** `cdk bootstrap` のテンプレート
+> （`infra/node_modules/aws-cdk/lib/api/bootstrap/bootstrap-template.yaml:493-506`）は
+> `cdk-<q>-lookup-role-*` に AWS 管理ポリシー **`ReadOnlyAccess`** を付け、インラインで
+> Deny するのは `kms:Decrypt` **だけ**である。さらに `--custom-permissions-boundary` が
+> Permissions Boundary を付けるのは `CloudFormationExecutionRole` **1 つだけ**
+> （同ファイル 738-744 行目）なので、lookup role は層 4 の外側にいる。**entry role が
+> これを assume できると、層 1（スタック ARN allowlist）も層 3（他プロジェクト Deny）も
+> 一切通らずに、nodi / salon-loop / Kiaff の DynamoDB・S3 オブジェクト・全 Lambda の
+> 環境変数・Cognito ユーザーをアカウント全体で読める。** 本設計の主境界を丸ごと迂回する。
+>
+> dev はこのロールを必要としない。`infra/` 全体で context provider を呼ぶ箇所は
+> `infra/lib/stacks/web-stack.ts` の `route53.HostedZone.fromLookup` **1 箇所のみ**で、
+> `customDomain?.createDnsRecord` が真のときだけ実行される。`customDomain` は
+> `-c customDomain=...` からしか来ず、dev のデプロイ経路（`scripts/aws-cloud-deploy.sh`）は
+> これを渡さない。よって allowlist から外し、`DenyBootstrapLookupRole` で明示 Deny も
+> 重ねてある（allowlist へ誤って戻されても Deny が勝つ）。検証は N9（live）と
+> `aws-policy-shape.test.ts` の 2 本、および runbook ステップ 4b-13。
+
 **専用 qualifier が必須である理由**: `hnb659fds` は 4 プロジェクト共有かつ
 cfn-exec-role が `AdministratorAccess`。ここへ到達できると CloudFormation 経由で
 アカウント全体に届く。専用 qualifier は assets バケット・trust・exec policy が
@@ -185,8 +211,14 @@ CDK の全操作は CloudFormation を通る。deploy role の
 ```
 arn:aws:cloudformation:ap-northeast-1:822063948773:stack/OpenReception-*-dev/*
 arn:aws:cloudformation:us-east-1:822063948773:stack/OpenReception-*-dev/*
-arn:aws:cloudformation:*:822063948773:stack/CDKToolkit-orcloud01/*
+arn:aws:cloudformation:ap-northeast-1:822063948773:stack/CDKToolkit-orcloud01/*
+arn:aws:cloudformation:us-east-1:822063948773:stack/CDKToolkit-orcloud01/*
 ```
+
+（リージョンは 2 つを列挙する。出荷している `claude-deploy-role-restriction.json` の
+`NotResource` も同じ 2 行で、`*` ワイルドカードは使っていない ―― 許可リスト側の
+ワイルドカードは「広すぎる」方向に壊れるため、`aws-policy-shape.test.ts` が
+各エントリの形を正規表現で固定している。）
 
 に限定する。**これが迂回不能な主境界。** 名前 prefix ではなく ARN パターンであり、
 CloudFormation スタック名は CDK が `bin/open-reception.ts` で決定論的に付ける
@@ -380,6 +412,8 @@ Deny するもの:
 | N5 | `cloudformation:DescribeStacks` → `nodi-dev-app` | **DENY** |
 | N6 | `cloudformation:DescribeStacks` → `salon-loop-staging-data` | **DENY** |
 | N7 | `secretsmanager:ListSecrets` | **DENY**（列挙させない） |
+| N8 | — | **欠番**（旧 `iam:CreateAccessKey`。副作用があるため下表 S11 へ移動） |
+| N9 | `sts:AssumeRole` → `cdk-orcloud01-lookup-role-*` | **DENY**（§4.1 の Critical 1。lookup role は `ReadOnlyAccess` 付きで boundary の外） |
 
 > 🔴 **N8（`iam:CreateAccessKey` on `user/CDK`）はここに置かない。** 当初案は
 > 「実試行してよい」に分類していたが、これは誤りだった。**Deny が効いていない場合
