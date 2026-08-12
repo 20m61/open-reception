@@ -1,0 +1,111 @@
+/**
+ * `scripts/aws-preflight.ts` の振る舞い検証。
+ *
+ * このスクリプトは（`aws-negative-tests.ts` や wrapper と違い）AWS 資格情報を必要としない
+ * ―― 入力は JSON ファイル 1 つで、判定は `deploy-preflight.ts` の純関数に委譲するだけの
+ * 薄い CLI。**実行に AWS が要らないので、直接子プロセスとして実行してテストできる**
+ * （「実走しないコードをテスト無しで置かない」の裏返し: 実走できるものはテストする）。
+ *
+ * Important 4（2026-08-12 レビュー）で追加した「公開された argv 契約」の実行時検証を固定する。
+ */
+import { spawnSync } from 'node:child_process';
+import { writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join, resolve } from 'node:path';
+import { describe, expect, it } from 'vitest';
+
+const CLI = resolve(process.cwd(), 'scripts/aws-preflight.ts');
+
+const validObservation = {
+  callerArn: 'arn:aws:sts::822063948773:assumed-role/OpenReceptionClaudeDeploy-dev/cloud-session',
+  accountId: '822063948773',
+  region: 'ap-northeast-1',
+  qualifier: 'orcloud01',
+  environment: 'dev',
+  credentialSecondsRemaining: 3600,
+  workingTreeClean: true,
+  gateStampSatisfied: true,
+  negativeTestsPassed: true,
+};
+
+function writeObservation(value: unknown): string {
+  const path = join(tmpdir(), `aws-preflight-test-${process.pid}-${Math.random().toString(36).slice(2)}.json`);
+  writeFileSync(path, JSON.stringify(value));
+  return path;
+}
+
+function run(args: ReadonlyArray<string>) {
+  const result = spawnSync('npx', ['tsx', CLI, ...args], { encoding: 'utf8' });
+  return { status: result.status ?? -1, stdout: result.stdout ?? '', stderr: result.stderr ?? '' };
+}
+
+describe('引数の検証', () => {
+  it('observation パスが無いと usage を出して非ゼロ', () => {
+    const { status, stderr } = run([]);
+    expect(status).not.toBe(0);
+    expect(stderr).toContain('Usage');
+  });
+
+  it('minCredentialSeconds が数値でないと拒否する（NaN で閾値チェックを無効化させない）', () => {
+    const path = writeObservation(validObservation);
+    const { status, stderr } = run([path, 'not-a-number']);
+    expect(status).not.toBe(0);
+    expect(stderr).toContain('minCredentialSeconds');
+  });
+});
+
+describe('observation の形式検証（公開された argv 契約）', () => {
+  it('JSON オブジェクトでなければ拒否する', () => {
+    const path = writeObservation('just a string');
+    const { status, stderr } = run([path]);
+    expect(status).not.toBe(0);
+    expect(stderr).toContain('observation の形式が不正です');
+  });
+
+  it('文字列フィールドが欠落していれば拒否する', () => {
+    const { callerArn: _drop, ...rest } = validObservation;
+    const path = writeObservation(rest);
+    const { status, stderr } = run([path]);
+    expect(status).not.toBe(0);
+    expect(stderr).toContain('callerArn');
+  });
+
+  it('boolean フィールドが文字列だと拒否する', () => {
+    const path = writeObservation({ ...validObservation, workingTreeClean: 'true' });
+    const { status, stderr } = run([path]);
+    expect(status).not.toBe(0);
+    expect(stderr).toContain('workingTreeClean');
+  });
+
+  it('credentialSecondsRemaining が欠落していれば拒否する（undefined を通さない）', () => {
+    const { credentialSecondsRemaining: _drop, ...rest } = validObservation;
+    const path = writeObservation(rest);
+    const { status, stderr } = run([path]);
+    expect(status).not.toBe(0);
+    expect(stderr).toContain('credentialSecondsRemaining');
+  });
+
+  it('credentialSecondsRemaining が null なら形式としては正当（判定不能として preflight 側で止まる）', () => {
+    const path = writeObservation({ ...validObservation, credentialSecondsRemaining: null });
+    const { status, stderr } = run([path]);
+    expect(status).not.toBe(0);
+    expect(stderr).not.toContain('observation の形式が不正です');
+    expect(stderr).toContain('credentialSecondsRemaining');
+  });
+});
+
+describe('正常系', () => {
+  it('全項目そろっていれば exit 0', () => {
+    const path = writeObservation(validObservation);
+    const { status, stdout } = run([path]);
+    expect(status).toBe(0);
+    expect(stdout).toContain('PASS');
+  });
+
+  it('不一致があれば非ゼロで理由を出す', () => {
+    const path = writeObservation({ ...validObservation, workingTreeClean: false });
+    const { status, stderr } = run([path]);
+    expect(status).not.toBe(0);
+    expect(stderr).toContain('workingTreeClean');
+  });
+});

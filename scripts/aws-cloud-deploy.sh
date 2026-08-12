@@ -85,7 +85,18 @@ json_field() {
 
 collect_observation() {
   local out="$1" min_seconds="$2"
-  local identity account arn expiry remaining clean stamp neg
+  local identity account arn expiry remaining porcelain clean stamp neg
+
+  # 🔴 **VITEST 実行中は絶対に AWS へ到達しない。** `tests/hooks/aws-cloud-deploy.test.ts` は
+  # この wrapper を実際に起動して振る舞いを確認する（`tests/hooks/guard-destructive.test.ts`
+  # と同じ方針）。テストは意図的に壊れた資格情報を渡しているが、クラウド box の
+  # デプロイウィンドウ中に `npm test` が走った場合、周囲の環境変数には**本物の**資格情報が
+  # 残っている可能性がある。「1 つの文字列アサーションだけがネットワークとの間に立つ」
+  # 状態を避けるため、テストランタイムであること自体をここで検知して先に止める。
+  if [ -n "${VITEST:-}" ]; then
+    echo "VITEST 実行中のため collect_observation は AWS を呼びません（テストの安全装置）" >&2
+    return 1
+  fi
 
   if ! identity="$(aws sts get-caller-identity --output json 2>&1)"; then
     echo "AWS 認証情報を解決できません: ${identity}" >&2
@@ -108,26 +119,44 @@ collect_observation() {
   # 既存の「取得できなければ null」経路へ合流させる。
   expiry="${AWS_CREDENTIAL_EXPIRATION:-}"
   if [ -n "${expiry}" ]; then
+    # 🔴 **明示的な `process.exit(0)` を置かない。** stdout はコマンド置換
+    # （パイプ）で捕捉されるため非同期で書き出される。`console.log` の直後に
+    # `process.exit()` を呼ぶと、書き込みが完了する前にプロセスが終了して出力が
+    # 欠ける可能性がある（Node の既知の落とし穴）。ここでは 1 行の三項演算子に
+    # まとめ、node の自然終了に任せる。
     remaining="$(node -e '
       const ms = Date.parse(process.argv[1]);
-      if (Number.isNaN(ms)) {
-        console.log("null");
-        process.exit(0);
-      }
-      console.log(Math.floor((ms - Date.now()) / 1000));
+      console.log(Number.isNaN(ms) ? "null" : Math.floor((ms - Date.now()) / 1000));
     ' "${expiry}")"
   else
     remaining="null"
   fi
 
-  if [ -z "$(git -C "${ROOT}" status --porcelain -uall)" ]; then clean=true; else clean=false; fi
+  # 🔴 **workingTreeClean は fail-closed でなければならない。** `git status` 自体が
+  # 失敗した場合（壊れた worktree・権限エラー等）、`[ -z "$(git status ...)" ]` は
+  # 標準出力が空という理由で `clean=true` を返してしまう ―― 「判定できない」が
+  # 「問題なし」に化ける（Important 2）。`git status` の終了コードを明示的に見る。
+  if ! porcelain="$(git -C "${ROOT}" status --porcelain -uall)"; then
+    echo "git status を実行できませんでした（判定不能）" >&2
+    return 1
+  fi
+  if [ -z "${porcelain}" ]; then clean=true; else clean=false; fi
 
   # 品質ゲートのスタンプ（既存の scripts/lib/gate-stamp.sh を使う）。
   # shellcheck source=lib/gate-stamp.sh
   . "${ROOT}/scripts/lib/gate-stamp.sh"
-  if gate_stamp_satisfies "pr"; then stamp=true; else stamp=false; fi
+  # 🔴 **cwd を ROOT に固定してから呼ぶ。** `gate_stamp_satisfies` → `gate_tree_fingerprint`
+  # は `git ls-files` をプロセスの cwd に対して実行する。他のすべての git 呼び出しは
+  # `git -C "${ROOT}"` で明示しているのに、ここだけ暗黙の cwd に依存すると、
+  # `infra/` などから起動されたときに `quality-gate.sh`（cd ROOT 後にスタンプを書く）
+  # と指紋が食い違い、スタンプがあるのに偽の FAIL になる（Important 3。本リポジトリに
+  # 同種の罠の既知インシデントあり）。
+  if ( cd "${ROOT}" && gate_stamp_satisfies "pr" ); then stamp=true; else stamp=false; fi
 
-  if npx tsx "${ROOT}/scripts/aws-negative-tests.ts"; then neg=true; else neg=false; fi
+  # --live-only: S 系（SimulatePrincipalPolicy）はここでは実行しない。
+  # OpenReceptionClaudeDeploy-dev は iam:SimulatePrincipalPolicy を持たない前提であり、
+  # S 系は人間が Admin 環境の runbook で別途実施する（Important 5b）。
+  if npx tsx "${ROOT}/scripts/aws-negative-tests.ts" --live-only; then neg=true; else neg=false; fi
 
   cat > "${out}" <<EOF
 {

@@ -117,4 +117,17 @@ describe('観測できていない値を PASS にしない', () => {
     expect(verdict.ok).toBe(false);
     expect(verdict.failures.map((f) => f.field)).toContain('credentialSecondsRemaining');
   });
+
+  // 🔴 Important 4（2026-08-12 レビュー）: `credentialSecondsRemaining` フィールドが
+  // JSON に丸ごと欠落しているケース（`null` ではなく `undefined`）。呼び出し側
+  // （`scripts/aws-preflight.ts`）は `JSON.parse(...) as PreflightObservation` で
+  // 実行時の形を保証していないため、型定義上あり得ないはずの `undefined` が実際には
+  // 起こり得る。厳密等価 `=== null` のままだと `undefined < required.minCredentialSeconds`
+  // が常に false になり、判定不能が無条件で PASS してしまう。`== null` で拾えることを固定する。
+  it('credentialSecondsRemaining キー自体が欠落（undefined）していても止める', () => {
+    const { credentialSecondsRemaining: _drop, ...withoutKey } = ok();
+    const verdict = evaluatePreflight(withoutKey as PreflightObservation, DEFAULT_PREFLIGHT_REQUIREMENT);
+    expect(verdict.ok).toBe(false);
+    expect(verdict.failures.map((f) => f.field)).toContain('credentialSecondsRemaining');
+  });
 });

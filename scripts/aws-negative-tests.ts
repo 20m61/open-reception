@@ -13,7 +13,13 @@
  * このファイル自体はテストしない（AWS 認証情報が無いと動かないため）。
  */
 import { execFileSync } from 'node:child_process';
-import { classifyAwsError, summarizeNegativeTests, type Outcome } from '../src/domain/governance/negative-test-outcome';
+import {
+  classifyAwsError,
+  classifySimulationError,
+  resolveExecutionScope,
+  summarizeNegativeTests,
+  type Outcome,
+} from '../src/domain/governance/negative-test-outcome';
 
 const ACCOUNT = '822063948773';
 
@@ -21,6 +27,12 @@ type Check = { readonly id: string; readonly description: string; readonly expec
 
 /** 実試行する（副作用なし）。 */
 const LIVE_CHECKS: ReadonlyArray<Check & { readonly run: () => Outcome }> = [
+  {
+    id: 'N1',
+    description: '専用 bootstrap (orcloud01) の deploy role を assume',
+    expected: 'allowed',
+    run: () => assumeRole(`arn:aws:iam::${ACCOUNT}:role/cdk-orcloud01-deploy-role-${ACCOUNT}-ap-northeast-1`),
+  },
   {
     id: 'N2',
     description: '共有 bootstrap (hnb659fds) の deploy role を assume',
@@ -52,6 +64,12 @@ const LIVE_CHECKS: ReadonlyArray<Check & { readonly run: () => Outcome }> = [
     expected: 'denied',
     run: () => aws(['secretsmanager', 'list-secrets', '--max-results', '1']),
   },
+  {
+    id: 'N8',
+    description: 'user/CDK に AccessKey を作成',
+    expected: 'denied',
+    run: () => aws(['iam', 'create-access-key', '--user-name', 'CDK']),
+  },
 ];
 
 /** 実試行しない。`SimulatePrincipalPolicy` で判定する（人間の Admin 環境から実行）。 */
@@ -63,6 +81,7 @@ const SIMULATED_CHECKS: ReadonlyArray<{
   { id: 'S1', action: 'dynamodb:DeleteTable', resource: `arn:aws:dynamodb:ap-northeast-1:${ACCOUNT}:table/nodi-dev-anything` },
   { id: 'S2', action: 'cloudformation:DeleteStack', resource: `arn:aws:cloudformation:ap-northeast-1:${ACCOUNT}:stack/nodi-dev-app/*` },
   { id: 'S3', action: 'secretsmanager:GetSecretValue', resource: `arn:aws:secretsmanager:ap-northeast-1:${ACCOUNT}:secret:salon-loop/*` },
+  { id: 'S4', action: 'iam:CreateRole', resource: `arn:aws:iam::${ACCOUNT}:role/any-new-role` },
   { id: 'S5', action: 'iam:AttachRolePolicy', resource: `arn:aws:iam::${ACCOUNT}:role/any-role` },
   { id: 'S6', action: 'iam:PassRole', resource: `arn:aws:iam::${ACCOUNT}:role/cdk-hnb659fds-cfn-exec-role-${ACCOUNT}-ap-northeast-1` },
   { id: 'S7', action: 'iam:DeleteRolePermissionsBoundary', resource: `arn:aws:iam::${ACCOUNT}:role/any-role` },
@@ -74,6 +93,10 @@ const SIMULATED_CHECKS: ReadonlyArray<{
 /**
  * 🔴 **stderr を診断に載せる。** `execFileSync` の例外は `message` がコマンド行までで、
  * 理由は `stderr` にある。載せないと 3 周にわたって当て推量で直すことになる（2026-08-08 の実例）。
+ *
+ * ここで実行するのは**評価対象の操作そのもの**（N1〜N8）。だから `classifyAwsError` を
+ * 使ってよい ―― この呼び出しへの AccessDenied は、まさにその操作が denied だったことを
+ * 意味する。`simulate()`（別の API を呼ぶ）と混同しないこと。
  */
 function aws(args: ReadonlyArray<string>): Outcome {
   try {
@@ -83,7 +106,7 @@ function aws(args: ReadonlyArray<string>): Outcome {
     const stderr = (e as { stderr?: Buffer }).stderr?.toString() ?? '';
     const outcome = classifyAwsError(stderr);
     if (outcome === 'unknown') {
-      console.error(`      (判定不能) ${stderr.trim().split('\n')[0] ?? '(stderr 空)'}`);
+      console.error(`      (判定不能) ${stderr.trim().split('\n')[0] || '(stderr 空)'}`);
     }
     return outcome;
   }
@@ -95,6 +118,17 @@ const assumeRole = (arn: string): Outcome =>
 const describeStack = (name: string): Outcome =>
   aws(['cloudformation', 'describe-stacks', '--stack-name', name]);
 
+/**
+ * `iam:SimulatePrincipalPolicy` **という別の API** を呼んで評価する。
+ *
+ * 🔴 **CRITICAL: catch で `classifyAwsError` を呼ばない。** この呼び出し自体への
+ * AccessDenied は「`SimulatePrincipalPolicy` を呼ぶ権限が無かった」ことしか意味せず、
+ * 評価対象アクション（`action`/`resource`）が denied かどうかには何も語らない。
+ * `classifyAwsError` を使うと、principal が `iam:SimulatePrincipalPolicy` を持たない
+ * だけで S1〜S10 が軒並み「denied（＝PASS）」に見えてしまう
+ * （2026-08-12 レビューで検出。詳細は `classifySimulationError` のコメント参照）。
+ * 常に `classifySimulationError` を使い、`'unknown'` として扱う。
+ */
 function simulate(principalArn: string, action: string, resource: string): Outcome {
   try {
     const out = execFileSync(
@@ -115,20 +149,35 @@ function simulate(principalArn: string, action: string, resource: string): Outco
     return 'unknown';
   } catch (e) {
     const stderr = (e as { stderr?: Buffer }).stderr?.toString() ?? '';
-    const outcome = classifyAwsError(stderr);
-    if (outcome === 'unknown') {
-      console.error(`      (判定不能) ${stderr.trim().split('\n')[0] ?? '(stderr 空)'}`);
-    }
+    const outcome = classifySimulationError(stderr);
+    console.error(`      (判定不能: SimulatePrincipalPolicy 自体を呼べなかった) ${stderr.trim().split('\n')[0] || '(stderr 空)'}`);
     return outcome;
   }
 }
 
+/**
+ * `--live-only`: S 系（`SimulatePrincipalPolicy`）をスキップする。
+ * `scripts/aws-cloud-deploy.sh` の `collect_observation` が常にこのフラグ付きで呼ぶ
+ * （`OpenReceptionClaudeDeploy-dev` は `iam:SimulatePrincipalPolicy` を持たない前提のため。
+ * S 系は人間が Admin 環境の runbook で別途実施する。Important 5b）。
+ *
+ * `--simulate-only`: 逆に S 系だけを実行する（人間が Admin 環境から使う）。
+ *
+ * 両方の同時指定は矛盾するので `resolveExecutionScope` が `null` を返し、非ゼロで終わる。
+ */
 function main(): void {
   const simulateOnly = process.argv.includes('--simulate-only');
+  const liveOnly = process.argv.includes('--live-only');
+  const scope = resolveExecutionScope(simulateOnly, liveOnly);
+  if (scope === null) {
+    console.error('  ⛔ --simulate-only と --live-only は同時に指定できません');
+    process.exit(2);
+  }
+
   const principalArn = process.env.SIMULATE_PRINCIPAL_ARN ?? `arn:aws:iam::${ACCOUNT}:role/OpenReceptionClaudeDeploy-dev`;
   const results: Array<{ id: string; expected: 'allowed' | 'denied'; actual: Outcome }> = [];
 
-  if (!simulateOnly) {
+  if (scope !== 'simulate') {
     console.log('  実試行（副作用なし）:');
     for (const check of LIVE_CHECKS) {
       const actual = check.run();
@@ -138,20 +187,33 @@ function main(): void {
     }
   }
 
-  console.log('  シミュレーション（破壊系は実試行しない）:');
-  for (const check of SIMULATED_CHECKS) {
-    const actual = simulate(principalArn, check.action, check.resource);
-    results.push({ id: check.id, expected: 'denied', actual });
-    const pass = actual === 'denied';
-    console.log(`    ${pass ? '✅' : '❌'} ${check.id} ${check.action} → ${actual}（期待 denied）`);
+  if (scope !== 'live') {
+    console.log('  シミュレーション（破壊系は実試行しない）:');
+    for (const check of SIMULATED_CHECKS) {
+      const actual = simulate(principalArn, check.action, check.resource);
+      results.push({ id: check.id, expected: 'denied', actual });
+      const pass = actual === 'denied';
+      console.log(`    ${pass ? '✅' : '❌'} ${check.id} ${check.action} → ${actual}（期待 denied）`);
+    }
+  } else {
+    console.log('  シミュレーション（S 系）はスキップします（--live-only）。人間が Admin 環境の runbook で別途実施してください。');
   }
+
+  // 🔴 **実行範囲を明示する。** live-only で走らせた結果を「全件 PASS」と読み違えると、
+  // S 系（破壊系）が一度も評価されていないのに評価済みだと誤認する。
+  const scopeLabel =
+    scope === 'live'
+      ? 'live のみ（S 系は未実施・人間の Admin runbook で別途実施すること）'
+      : scope === 'simulate'
+        ? 'simulate のみ（N 系は未実施）'
+        : 'live + simulate（全件）';
 
   const { failed } = summarizeNegativeTests(results);
   if (failed > 0) {
-    console.error(`  ⛔ negative security test: ${failed} 件が期待どおりでない`);
+    console.error(`  ⛔ negative security test: ${failed} 件が期待どおりでない（実行範囲: ${scopeLabel}）`);
     process.exit(1);
   }
-  console.log('  ✅ negative security test 全件 PASS');
+  console.log(`  ✅ negative security test PASS（実行範囲: ${scopeLabel}）`);
 }
 
 main();

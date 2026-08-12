@@ -17,6 +17,19 @@ import {
 
 type RawChangeSet = {
   readonly StackName?: string;
+  /**
+   * `describe-change-set` のトップレベル `Status`。
+   *
+   * 🔴 **`Changes` が空だから安全とは限らない。** change set の作成自体が
+   * `FAILED` になった場合（例: 作成中のエラー、あるいは「差分なし」以外の理由での
+   * 失敗）でも `Changes` は空配列になり得る。`Status` を見ずに `Changes` だけで
+   * 判定すると、`evaluateDeployChangeSet` は変更 0 件として `blocked: false` を返し、
+   * 「危険な変更はありません」と誤って印字してしまう（fail-open。Important smaller
+   * items, 2026-08-12 レビュー）。`CREATE_COMPLETE` 以外は内容を判定できないものとして
+   * 保守的に止める。
+   */
+  readonly Status?: string;
+  readonly StatusReason?: string;
   readonly Changes?: ReadonlyArray<{
     readonly ResourceChange?: {
       readonly Action?: string;
@@ -55,6 +68,19 @@ function main(): void {
   }
 
   const raw = JSON.parse(readFileSync(jsonPath, 'utf8')) as RawChangeSet;
+
+  // Status を見ずに Changes だけを見ると、change set 作成そのものが FAILED でも
+  // 「変更 0 件 → 安全」に見えてしまう（上記コメント参照）。CREATE_COMPLETE 以外は
+  // 内容を安全に判定できないものとして止める。
+  if (raw.Status !== 'CREATE_COMPLETE') {
+    console.error(
+      `  ⛔ change set の Status が CREATE_COMPLETE ではありません（Status=${raw.Status ?? 'Unknown'}` +
+        `${raw.StatusReason ? `: ${raw.StatusReason}` : ''}）。`,
+    );
+    console.error('  → 変更内容を安全に判定できないため自動デプロイを停止します。人間が確認してください。');
+    process.exit(1);
+  }
+
   const summary = toSummary(raw, stackName);
   const verdict = evaluateDeployChangeSet(summary);
 

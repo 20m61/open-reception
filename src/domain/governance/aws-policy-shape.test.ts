@@ -204,6 +204,50 @@ describe('claude-deploy-entry.json', () => {
     expect(allowed).toContain('cdk-orcloud01-');
     expect(allowed).not.toContain('cdk-hnb659fds-');
   });
+
+  // Important 5a（2026-08-12 レビュー）: `run_diff_gate` が
+  // `cloudformation:DescribeStacks` / `DescribeChangeSet` を呼ぶには、entry role 自身に
+  // 読み取り専用の Allow が要る（さもないと N4 の live check「OpenReception-Web-dev を
+  // describe → expect allowed」が構造的に絶対通らない）。この Allow は
+  // OpenReception-*-dev の 3 スタックだけに絞られていなければならない
+  // ―― 広すぎると他プロジェクト（nodi/salon-loop 等）や prod/staging の
+  // CloudFormation を読めてしまい、主境界の外側に穴を開ける。
+  it('read-only 診断用 Allow (ReadOwnDevStacksForDiffGate) は OpenReception-*-dev の CloudFormation だけを対象にしている', () => {
+    const list = (v: string | ReadonlyArray<string> | undefined): ReadonlyArray<string> =>
+      v === undefined ? [] : typeof v === 'string' ? [v] : v;
+    const stmt = doc.Statement.find(
+      (s) => s.Effect === 'Allow' && list(s.Action).includes('cloudformation:DescribeStacks'),
+    );
+    expect(stmt).toBeDefined();
+    const resources = list(stmt!.Resource);
+    expect(resources.length).toBeGreaterThan(0);
+    for (const r of resources) {
+      expect(r).toMatch(/^arn:aws:cloudformation:[a-z0-9-]+:822063948773:stack\/OpenReception-[A-Za-z0-9]+-dev\/\*$/);
+    }
+    // 他プロジェクト・他環境が紛れ込んでいないことも明示的に確認する。
+    const joined = resources.join('\n');
+    for (const foreign of ['nodi-', 'salon-loop-', '-prod/', '-staging/']) {
+      expect(joined).not.toContain(foreign);
+    }
+  });
+
+  it('DenyEverythingElseOutsideTheChain の NotAction は診断用 Allow と同じ範囲だけを許容する', () => {
+    const denyAll = doc.Statement.find(
+      (s) => (s as unknown as { Sid?: string }).Sid === 'DenyEverythingElseOutsideTheChain',
+    );
+    expect(denyAll).toBeDefined();
+    const notAction = denyAll!.NotAction;
+    const list = (v: string | ReadonlyArray<string> | undefined): ReadonlyArray<string> =>
+      v === undefined ? [] : typeof v === 'string' ? [v] : v;
+    expect(list(notAction)).toEqual(
+      expect.arrayContaining([
+        'sts:AssumeRole',
+        'sts:GetCallerIdentity',
+        'cloudformation:DescribeStacks',
+        'cloudformation:DescribeChangeSet',
+      ]),
+    );
+  });
 });
 
 describe('claude-deploy-role-restriction.json（層 1・主境界）', () => {

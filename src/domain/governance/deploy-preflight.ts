@@ -79,7 +79,15 @@ export function evaluatePreflight(
   if (observed.environment !== required.environment) {
     fail('environment', `env=${observed.environment} 期待=${required.environment}`);
   }
-  if (observed.credentialSecondsRemaining === null) {
+  // 🔴 **`=== null` ではなく `== null` で null と undefined の両方を拾う。**
+  // 型定義上 `credentialSecondsRemaining` は `number | null` で `undefined` は無いはずだが、
+  // 呼び出し側（`scripts/aws-preflight.ts`）は `JSON.parse` の結果を `as PreflightObservation`
+  // で キャストしているだけで実行時の形は保証されない。フィールドが丸ごと欠落した JSON では
+  // 実行時の値は `undefined` になる。厳密等価 `=== null` だとこれを素通りさせてしまい、
+  // 次の分岐で `undefined < required.minCredentialSeconds` が（NaN 比較と同様に）常に
+  // `false` になるため、**判定不能なのに failure が 1 件も記録されない**（Important 4）。
+  // ここは意図的に緩い等価（`== null`）を使う。
+  if (observed.credentialSecondsRemaining == null) {
     fail('credentialSecondsRemaining', 'credential の残時間を取得できませんでした（判定不能）');
   } else if (observed.credentialSecondsRemaining < required.minCredentialSeconds) {
     fail(

@@ -26,9 +26,24 @@
       ]
     },
     {
+      "Sid": "ReadOwnDevStacksForDiffGate",
+      "Effect": "Allow",
+      "Action": ["cloudformation:DescribeStacks", "cloudformation:DescribeChangeSet"],
+      "Resource": [
+        "arn:aws:cloudformation:ap-northeast-1:822063948773:stack/OpenReception-Web-dev/*",
+        "arn:aws:cloudformation:ap-northeast-1:822063948773:stack/OpenReception-WebMonitoring-dev/*",
+        "arn:aws:cloudformation:us-east-1:822063948773:stack/OpenReception-CfMonitoring-dev/*"
+      ]
+    },
+    {
       "Sid": "DenyEverythingElseOutsideTheChain",
       "Effect": "Deny",
-      "NotAction": ["sts:AssumeRole", "sts:GetCallerIdentity"],
+      "NotAction": [
+        "sts:AssumeRole",
+        "sts:GetCallerIdentity",
+        "cloudformation:DescribeStacks",
+        "cloudformation:DescribeChangeSet"
+      ],
       "Resource": "*"
     }
   ]
