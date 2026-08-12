@@ -54,6 +54,7 @@ AWS 認証情報などは置かないこと。
 | `.claude/settings.json` | プラグイン宣言・許可リスト・フック。**クラウドへ引き継がれる** |
 | `scripts/hooks/pr-gate-guard.sh` | ゲート未実行の PR / マージをブロック |
 | `scripts/hooks/guard-destructive.sh` | 破壊的コマンドをブロック（下記） |
+| `scripts/hooks/push-secret-guard.sh` | `git push` 直前に push しようとしている範囲だけ gitleaks でスキャンし、秘密情報を検出したらブロック（#682） |
 | `scripts/install_pkgs.sh` | SessionStart で `npm ci`（クラウドのみ） |
 | `.nvmrc` | Node 22 を固定。クラウドの nvm は 20 / 21 / 22 を持ち、既定が 22 とは限らない |
 
