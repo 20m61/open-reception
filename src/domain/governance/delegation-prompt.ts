@@ -42,6 +42,19 @@ export type DelegationInput = {
   extraProhibitions?: readonly string[];
   /** 関連 issue 番号（`Refs #N` に使う）。 */
   refs: readonly number[];
+  /**
+   * どこで止めるか（既定 `'merge'`）。
+   *
+   * - `'merge'`: 品質ゲート → PR → **squash マージまで**このセッション内で完結させる（従来どおり）。
+   * - `'pr'`: 品質ゲート → **PR 作成まで**で止める。マージ可否は人間が判断する
+   *   （例: マージ直後に人間が実 IAM を作る等、停止境界に隣接する変更）。
+   *
+   * 🔴 手書きで `extraProhibitions` に「マージしないこと」を入れても、既定
+   * （`'merge'`）では手順側の `gh pr merge` はそのまま残り、1 つのプロンプトの中で
+   * 手順と禁止事項が矛盾する（#680 で実際に起きた）。`'pr'` を使えば手順自体が
+   * 変わり、マージ禁止も自動で禁止事項へ入るので、呼び出し側が手で書く必要が無い。
+   */
+  stopAfter?: 'pr' | 'merge';
 };
 
 /** Conventional Commits の形か。`type(scope): 説明` / `type: 説明` を許す。 */
@@ -69,6 +82,24 @@ const DEFAULT_PROHIBITIONS: readonly string[] = [
 ];
 
 /**
+ * `stopAfter: 'pr'` のとき、呼び出し側の代わりに自動で足すマージ禁止の一文。
+ *
+ * 🔴 **`gh pr merge` という文字列を書かない。** `stopAfter: 'pr'` の出力には
+ * `gh pr merge` がどこにも現れないことをテストで固定している。この文でリテラルに
+ * コマンド名を書くと、禁止のつもりの一文自体がその制約を破ってしまう。
+ */
+const MERGE_PROHIBITION = 'マージしないこと。PR 作成までで止め、マージ可否は人間が判断する。';
+
+/**
+ * 禁止事項の中に「マージするな」という趣旨の一文が既にあるかを判定する。
+ *
+ * `MERGE_PROHIBITION` 自身の文言（マージしない）に加え、呼び出し側が独自に書きうる
+ * 表現（マージするな／マージ禁止）も拾う。手順に `gh pr merge` が残ったまま
+ * これに一致する禁止事項が入っていたら矛盾（#680 で実際に起きた状態）。
+ */
+const MENTIONS_MERGE_PROHIBITION = /マージ(しない|するな|禁止)/;
+
+/**
  * 委譲プロンプト本文を組み立てる。
  *
  * **タイトルが Conventional Commits でなければ投げる。** squash 後の main コミットに
@@ -82,18 +113,70 @@ export function buildDelegationPrompt(input: DelegationInput): string {
   }
   if (input.headSha.trim() === '') throw new Error('headSha は必須です（ブランチ取り違えの検出に使います）');
 
+  const stopAfter = input.stopAfter ?? 'merge';
+
   const stepCheckout = `\`git fetch origin && git checkout ${input.branch}\` し、\`git rev-parse HEAD\` が \`${input.headSha}\` で始まることを確認する。違えば**そこで止めて報告**する。`;
   // 追加検証は**ビルドとゲートの前**に置く（この周回の目的の確認を先に済ませる）。
   const ordered = [stepCheckout, STEP_NPM_CI, ...(input.extraVerification ?? []), STEP_BUILD, STEP_GATE];
 
-  const numbered = ordered.map((s, i) => `${i + 1}. ${s}`).join('\n');
   const refs = input.refs.map((n) => `#${n}`).join(' ');
-  const prohibitions = [...(input.extraProhibitions ?? []), ...DEFAULT_PROHIBITIONS]
-    .map((p) => `- ${p}`)
-    .join('\n');
   const files = input.changedFiles.map((f) => `\`${f}\``).join(' / ');
 
-  return `リポジトリ 20m61/open-reception のブランチ \`${input.branch}\`（head = \`${input.headSha}\`、base = main \`${input.baseSha}\`）を、品質ゲート → PR → マージまで**このセッション内で完結**させてください。
+  // 手順 11〜12（PR 作成後の扱い）。**名前で持ち、名前で並べる**（配列添字での組み立ては
+  // 過去に手順を黙って落とした実績がある。冒頭の doc comment を参照）。
+  const stepPrCreate = `green なら \`gh pr create --base main --head ${input.branch}\` で PR を作る。タイトル:
+   \`${input.title}\`
+   本文には次を必ず含める:
+   - 何を変えたか（上記背景の要約）
+   - **ゲート結果**: \`--full\` の summary をそのまま貼る
+   - **人間承認が必要な変更**: 該当の有無を明記する
+   - 末尾に \`Refs ${refs}\``;
+  const stepConfirmPr =
+    '🔴 **PR が実際に作成されたことを `gh pr view --json number,url` で確認して番号を報告する。** 作成に失敗した場合は**黙って終わらせず、エラー全文を報告**すること。**ブランチが出来たこと＝PR が出来たことではない**（#656 はこれで FAIL の記録を 5 日間失った）。';
+  const stepMergeOrStop =
+    stopAfter === 'merge'
+      ? 'PR が出来たら `gh pr merge <番号> --squash --delete-branch` でマージする。ブランチが残っても構いません（ローカル側で後始末します）。'
+      : '🔴 **ここで止める。マージコマンドを実行しないこと。** マージ可否は人間が判断するため、PR を作成した時点でこの委譲の作業は完了。';
+  const stepFinalReport =
+    stopAfter === 'merge'
+      ? '最後に次を 1 つずつはっきり報告する: (a) ゲートの結果、(b) PR 番号と URL、(c) マージできたか、(d) リモートブランチが消えたか。'
+      : '最後に次を 1 つずつはっきり報告する: (a) ゲートの結果、(b) PR 番号と URL、(c) マージしていないこと。';
+
+  const allSteps = [...ordered, stepPrCreate, stepConfirmPr, stepMergeOrStop, stepFinalReport];
+  const numbered = allSteps.map((s, i) => `${i + 1}. ${s}`).join('\n');
+
+  // `stopAfter: 'pr'` なら呼び出し側が書かなくてもマージ禁止を自動で足す。
+  const autoProhibitions = stopAfter === 'pr' ? [MERGE_PROHIBITION] : [];
+  const allProhibitions = [...(input.extraProhibitions ?? []), ...autoProhibitions, ...DEFAULT_PROHIBITIONS];
+
+  // **矛盾検出**: 手順に `gh pr merge` があるのに禁止事項へマージ禁止が入っている
+  // 組み合わせを投げる（PR タイトルの Conventional Commits 検査と同じ扱い）。
+  // `stopAfter: 'pr'` では手順側に `gh pr merge` を置かない設計なので、判定は文字列一致
+  // ではなく `stopAfter` そのもので行う（手順の文言を変えても判定がずれない）。
+  const stepsContainMerge = stopAfter === 'merge';
+  const prohibitionsContainMergeBan = allProhibitions.some((p) => MENTIONS_MERGE_PROHIBITION.test(p));
+  if (stepsContainMerge && prohibitionsContainMergeBan) {
+    throw new Error(
+      '委譲プロンプトが自己矛盾しています: 手順に `gh pr merge` があるのに、禁止事項にマージ禁止が含まれています。' +
+        " `extraProhibitions` へマージ禁止を手書きする代わりに `stopAfter: 'pr'` を指定してください。",
+    );
+  }
+
+  const prohibitions = allProhibitions.map((p) => `- ${p}`).join('\n');
+
+  const openingGoal =
+    stopAfter === 'merge'
+      ? '品質ゲート → PR → マージまで**このセッション内で完結**させてください。'
+      : '品質ゲート → PR 作成まで**このセッション内で完結**させてください（マージはしないこと。マージ可否は人間が判断します）。';
+
+  // `gh pr merge` への言及は `stopAfter: 'merge'` のときだけ（'pr' の出力には
+  // `gh pr merge` がどこにも現れないことをテストで固定している）。
+  const graphqlNote =
+    stopAfter === 'merge'
+      ? '`gh pr create` / `gh pr merge` は通る。'
+      : '`gh pr create` は通る（マージはしない）。';
+
+  return `リポジトリ 20m61/open-reception のブランチ \`${input.branch}\`（head = \`${input.headSha}\`、base = main \`${input.baseSha}\`）を、${openingGoal}
 
 ## 背景（自己完結・追加調査は不要）
 
@@ -104,20 +187,10 @@ ${input.summary}
 ## 手順
 
 ${numbered}
-${ordered.length + 1}. green なら \`gh pr create --base main --head ${input.branch}\` で PR を作る。タイトル:
-   \`${input.title}\`
-   本文には次を必ず含める:
-   - 何を変えたか（上記背景の要約）
-   - **ゲート結果**: \`--full\` の summary をそのまま貼る
-   - **人間承認が必要な変更**: 該当の有無を明記する
-   - 末尾に \`Refs ${refs}\`
-${ordered.length + 2}. 🔴 **PR が実際に作成されたことを \`gh pr view --json number,url\` で確認して番号を報告する。** 作成に失敗した場合は**黙って終わらせず、エラー全文を報告**すること。**ブランチが出来たこと＝PR が出来たことではない**（#656 はこれで FAIL の記録を 5 日間失った）。
-${ordered.length + 3}. PR が出来たら \`gh pr merge <番号> --squash --delete-branch\` でマージする。ブランチが残っても構いません（ローカル側で後始末します）。
-${ordered.length + 4}. 最後に次を 1 つずつはっきり報告する: (a) ゲートの結果、(b) PR 番号と URL、(c) マージできたか、(d) リモートブランチが消えたか。
 
 ## 環境の既知の制約
 
-- **クラウドのサンドボックスは GitHub GraphQL を絞っている。** \`gh pr list\` / \`gh pr view --head\` は 403 になる（PR #665 で実測）。PR を探すなら REST（\`gh api repos/{owner}/{repo}/pulls?...\`）を使うこと。\`gh pr create\` / \`gh pr merge\` は通る。
+- **クラウドのサンドボックスは GitHub GraphQL を絞っている。** \`gh pr list\` / \`gh pr view --head\` は 403 になる（PR #665 で実測）。PR を探すなら REST（\`gh api repos/{owner}/{repo}/pulls?...\`）を使うこと。${graphqlNote}
 
 ## 禁止事項
 
