@@ -160,7 +160,7 @@ const PROVIDER_TRUST_ACTION = 'sts:assumerole';
  * AccessDenied ではなく停止なので復旧は容易で、増えた action を人間が
  * 見てから足すことになる。逆向き（見落として通す）よりこちらが正しい。
  */
-const CARVE_OUT_ALLOWED_ACTIONS: ReadonlySet<string> = new Set([
+export const CARVE_OUT_ALLOWED_ACTIONS: ReadonlySet<string> = new Set([
   'ssm:deleteparameters',
   'ssm:listtagsforresource',
   'ssm:getparameters',

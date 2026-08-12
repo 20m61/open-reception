@@ -546,16 +546,34 @@ gate は change set と synth テンプレートを、**1 バイトも AWS に�
   **停止**（`carveOutRoleNamespace`）。物理名は IAM が見るとおりに組む
   （生成名の切り詰め・明示 `RoleName`・`Path`）
 - その 3 本を**名乗った**だけのロールも、実体が CDK の生成する形と違えば**停止**
-  （`carveOutRoleShape`。trust は `lambda.amazonaws.com` のみ／managed policy は
-  基本実行ロールのみ／インラインに `iam:` `sts:` `kms:` `secretsmanager:`
-  `organizations:` と `*` を許さない）。**Add だけでなく Modify も見る** ——
-  trust policy は物理名を変えずに書き換えられる
+  （`carveOutRoleShape`）。固定しているのは
+  **trust policy の Principal（`lambda.amazonaws.com` のみ）と Action
+  （`sts:AssumeRole` のみ）／managed policy（基本実行ロールのみ）／
+  action の許可リスト**の 3 点。action は **synth で実測した 6 つの `ssm:`
+  アクションだけを許す**（否認リストではない —— `iam:` のような
+  コロン込みの接頭辞で禁じても `iam*` `sts*` `*:*` `*:CreateRole` が
+  すり抜けるので、2026-08-13 に許可リストへ反転した）。
+  **Add だけでなく Modify も見る** —— trust policy は物理名を変えずに書き換えられる
+- 🔴 **権限は「ロールの Properties」以外からも届く。** `AWS::IAM::Policy` /
+  `ManagedPolicy` / `RolePolicy` が `Roles` / `RoleName` で carve-out のロールを
+  指していれば、**同じ action 許可リスト**を掛けて**停止**する（IAM 側は
+  `AllowCdkProviderRoleMutationWithoutBoundary` で `iam:PutRolePolicy` /
+  `AttachRolePolicy` を carve-out ARN に対し無条件に許しているので、ここを見ないと
+  「インラインを 1 つ左のリソースへ移す」だけで迂回できる）。付与先が静的に
+  決まらなければ**通さない**。`Users` / `Groups` への付与も停止
 - carve-out の**外**のロールでも、外部アカウント／`"AWS":"*"`／`Federated` を信頼する
   trust policy は**停止**（`roleTrustPolicyEscape`）
 - `AWS::Lambda::Url` は WebStack の 2 本（server / image）以外**停止**
-  （`functionUrlExposure`）。image は常に `AWS_IAM`（#631）
-- `Principal: "*"` の invoke 許可は origin-verify 方式で CDK が足す 2 本以外**停止**、
-  別アカウントへの invoke 許可も**停止**（`publicInvokePermission`）
+  （`functionUrlExposure`）。image は常に `AWS_IAM`（#631）。
+  **論理 ID だけでなく `TargetFunctionArn` の向き先も固定する** ——
+  初回デプロイでは全リソースが `Add` なので、allowlist の論理 ID を本物の
+  `ServerFn` / `ImageFn` へ結び付けているものは他に何も無い
+- `Principal: "*"` の invoke 許可は origin-verify 方式で CDK が足す 2 本以外**停止**
+  （こちらも `FunctionName` の向き先を固定する）。別アカウントへの invoke 許可、
+  および**自アカウントを名指しする `SourceAccount` / `SourceArn` を持たない
+  サービスプリンシパル宛の許可**も**停止**（`publicInvokePermission`）——
+  source 条件の無い `apigateway.amazonaws.com` は別アカウントの API から
+  呼べる、実在する越境経路である
 - 上のどれも「テンプレートを読めた」ことが前提なので、**読めなければ停止**
   （`opaqueResourceShape`）
 
@@ -565,10 +583,12 @@ gate は change set と synth テンプレートを、**1 バイトも AWS に�
   `cdk deploy` を直接叩けば gate は動かない。IAM 側にこれを強制する仕組みは無い
   （層 1 は「どのスタックか」しか見ない）
 - **既知の 3 本を名乗りつつ、gate が固定していない性質を変える**ことはできる。
-  gate が見ているのは trust policy・managed policy・インライン action の 3 点で、
-  インラインの `Resource` は見ていない。`ssm:*` 系や `s3:` `logs:` などの
-  action は通る（provider が実際に使うため）。**boundary の無いロールに
-  `s3:GetObject` 相当が載る**ことは起こりうる
+  gate は action の**名前**を許可リストで縛るが、`Resource` と `Condition` は
+  見ていない。したがって **`ssm:GetParameters` on `*`**（本来は
+  `parameter/cdk/exports/*` に限られる）のような「許可リストの action を
+  広い Resource で」は通る。到達範囲はこのアカウントの SSM パラメータ
+  （cdk exports 以外を含む）であり、`s3:` `dynamodb:` `logs:` などは
+  2026-08-13 の許可リスト化で**通らなくなった**
 - **carve-out の外のロール**は boundary で頭打ちだが、trust policy が
   組み込み関数で書かれていると gate は読み切れず、**止めずに記録する**
   （`opaqueRoleTrustPolicy`。ここを止めると正当な初回デプロイが通らない）

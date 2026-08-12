@@ -16,6 +16,7 @@ import {
   type PolicyStatement,
 } from './aws-policy-shape';
 import { CARVE_OUT_ROLE_ARN_PATTERN, iamArnGlobMatches } from './cfn-generated-name';
+import { CARVE_OUT_ALLOWED_ACTIONS } from './deploy-diff-gate';
 
 const load = (name: string): PolicyDocument =>
   JSON.parse(readFileSync(resolve(process.cwd(), 'scripts/aws-policies', name), 'utf8')) as PolicyDocument;
@@ -735,6 +736,40 @@ describe('ドキュメントが出荷ポリシーと一致している (#680 R6/
       .deniedNotResourcePatterns;
     expect(shipped.length).toBeGreaterThan(0);
     expect(fencedBlockAfter(readDoc(SPEC), '#### 層 1（主境界）')).toEqual([...shipped]);
+  });
+
+  /**
+   * 🔴 **gate の残余説明を出荷物へ縛る（2026-08-13 レビュー）。**
+   *
+   * このラウンドで指摘された欠陥は「runbook と spec が gate の固定範囲を
+   * **実装より強く**書いていた」ことだった（`iam*` は弾けていないのに
+   * 「IAM 昇格は塞いだ」と書いてあった）。**説明が実装より強い文書は、
+   * 停止境界の判断を誤らせる。** 数と語彙を機械で縛る。
+   */
+  describe('gate の carve-out action 許可リスト', () => {
+    const normalize = (s: string): string => s.replace(/\s+/g, '');
+
+    it.each([SPEC, RUNBOOK])('%s が許可リストの本数を正しく書いている', (doc) => {
+      const count = CARVE_OUT_ALLOWED_ACTIONS.size;
+      expect(count).toBeGreaterThan(0);
+      expect(normalize(readDoc(doc))).toContain(normalize(`${count} つの \`ssm:\` アクション`));
+    });
+
+    it('許可リストは ssm: だけで構成されている（文書の「6 つの ssm」が真であること）', () => {
+      expect([...CARVE_OUT_ALLOWED_ACTIONS].filter((a) => !a.startsWith('ssm:'))).toEqual([]);
+    });
+
+    it('🔴 撤回した否認リストの語彙が gate の説明に残っていない', () => {
+      // 否認リスト（`iam:` `sts:` `kms:` … を弾く）は 2026-08-13 に許可リストへ
+      // 反転した。古い語彙が残っていると「塞いである」と誤読される。
+      for (const doc of [SPEC, RUNBOOK]) {
+        const gateSections = readDoc(doc)
+          .split('\n')
+          .filter((line) => line.includes('carveOutRoleShape'));
+        expect(gateSections.length).toBeGreaterThan(0);
+        expect(gateSections.join('\n')).not.toContain('organizations:');
+      }
+    });
   });
 
   /**

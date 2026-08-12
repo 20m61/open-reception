@@ -546,10 +546,11 @@ rollback の `iam:DeleteRole` がタグ条件 Deny に当たって **`ROLLBACK_F
 | `AWS::EC2::SecurityGroup*` の任意の操作 | ネットワーク境界 |
 | `AWS::IAM::User` / `AccessKey` / `Group` / `LoginProfile` の任意の操作 | dev スタックが IAM プリンシパルを作る正当な理由が無い |
 | carve-out の名前空間に入る `AWS::IAM::Role` で、既知の provider role 3 本以外（`carveOutRoleNamespace`。#680 R10） | **この名前空間には boundary が掛からない。** 物理名は生成名・`RoleName`・`Path` を IAM と同じ規則で組んで判定する（ARN グロブの `*` は `/` を跨ぐ） |
-| 既知 3 本を名乗るが実体が CDK の生成する形と違う（`carveOutRoleShape`） | 論理 ID はテンプレート側が決められる。trust は `lambda.amazonaws.com` のみ／managed policy は基本実行ロールのみ／インラインに `iam:` `sts:` `kms:` `secretsmanager:` `organizations:` と `*` を許さない。**Add だけでなく Modify も見る** |
+| 既知 3 本を名乗るが実体が CDK の生成する形と違う（`carveOutRoleShape`） | 論理 ID はテンプレート側が決められる。trust の Principal は `lambda.amazonaws.com` のみ／trust の Action は `sts:AssumeRole` のみ／managed policy は基本実行ロールのみ／action は **synth で実測した 6 つの `ssm:` アクションの許可リスト**（否認リストでは `iam*` `*:*` `*:CreateRole` がすり抜ける）。**Add だけでなく Modify も見る** |
+| `AWS::IAM::Policy` / `ManagedPolicy` / `RolePolicy` が carve-out のロールへ許可リスト外の action を付ける（`carveOutRoleShape`） | 権限はロールの `Properties` 以外からも届く。IAM 側は carve-out ARN への `iam:PutRolePolicy` / `AttachRolePolicy` を無条件に許しているので、**ここを見ないとインラインを 1 つ左のリソースへ移すだけで迂回できる**。付与先が静的に決まらなければ通さない |
 | 外部アカウント／`"AWS":"*"`／`Federated` を信頼する trust policy（`roleTrustPolicyEscape`） | IAM に trust policy を縛る条件キーが無く、boundary も効かない。**デプロイ窓を越えて残る** |
-| WebStack の 2 本以外の `AWS::Lambda::Url`、および image URL の `AuthType != AWS_IAM`（`functionUrlExposure`） | 公開 HTTPS の入口は資格情報の失効を越えて残る。image を `NONE` にすると無認証・無検証になる (#631) |
-| 未知の `Principal:"*"` invoke 許可・別アカウントへの invoke 許可（`publicInvokePermission`） | リソースポリシーとして残り、失効後も外から呼べる |
+| WebStack の 2 本以外の `AWS::Lambda::Url`、`TargetFunctionArn` が期待した関数を指さないもの、および image URL の `AuthType != AWS_IAM`（`functionUrlExposure`） | 公開 HTTPS の入口は資格情報の失効を越えて残る。image を `NONE` にすると無認証・無検証になる (#631)。**初回デプロイでは全リソースが `Add`** なので、allowlist の論理 ID を本物の `ServerFn` / `ImageFn` へ結び付けるものは向き先の固定しかない |
+| 未知の `Principal:"*"` invoke 許可（向き先違いを含む）・別アカウントへの invoke 許可・**source 条件がこのアカウントを名指ししないサービスプリンシパル宛の許可**（`publicInvokePermission`） | リソースポリシーとして残り、失効後も外から呼べる。`SourceAccount` / `SourceArn` の無い `apigateway.amazonaws.com` は別アカウントの API から呼べる |
 | 上記の判定に必要な synth テンプレートを読めない（`opaqueResourceShape`） | **読めなかったを問題なしに落とさない** |
 
 🔴 **上の 6 行のために、gate は change set だけでなく synth テンプレート
@@ -563,7 +564,7 @@ rollback の `iam:DeleteRole` がタグ条件 Deny に当たって **`ROLLBACK_F
 
 | 条件 | なぜ止めないか |
 | --- | --- |
-| carve-out の**外**の `AWS::IAM::Role` / `Policy` / `ManagedPolicy` の Add・Modify（`iamPolicyChange`） | boundary が強制される（下記） |
+| carve-out の**外**の `AWS::IAM::Role` / `Policy` / `ManagedPolicy` / `RolePolicy` の Add・Modify（`iamPolicyChange`） | boundary が強制される（下記）。**内／外の区別は実装にある**（2026-08-13）—— `Policy` 系は `Roles` / `RoleName` を解決し、carve-out に入るものだけ停止側へ回す。解決できないものは停止 |
 | trust policy が組み込み関数で静的に読み切れない（`opaqueRoleTrustPolicy`。carve-out の外のみ） | CDK は自アカウントの ARN を `Fn::Join` で組む。ここを止めると正当な初回デプロイが通らない。**代わりに 4d の人間へ必ず見せる** |
 
 > 🔴 **ここは意図的に spec 原文 §8 の「IAM を検出したら停止」より緩めている。**
@@ -954,7 +955,7 @@ gate は change set と synth テンプレートを、1 バイトも AWS へ適�
 | 停止理由 | 何を止めるか |
 | --- | --- |
 | `carveOutRoleNamespace` | carve-out に入る `AWS::IAM::Role` のうち、既知の provider role 3 本以外。物理名は生成名・`RoleName`・`Path` を IAM と同じ規則で組んで判定する |
-| `carveOutRoleShape` | 既知 3 本を**名乗った**だけの実体。trust は `lambda.amazonaws.com` のみ／managed policy は基本実行ロールのみ／インラインに `iam:` `sts:` `kms:` `secretsmanager:` `organizations:` と `*` を許さない。**Add だけでなく Modify も見る**（trust policy は物理名を変えずに書き換えられる） |
+| `carveOutRoleShape` | 既知 3 本を**名乗った**だけの実体、および `AWS::IAM::Policy` / `ManagedPolicy` / `RolePolicy` から carve-out のロールへ届く許可。trust の Principal は `lambda.amazonaws.com`・Action は `sts:AssumeRole` のみ／managed policy は基本実行ロールのみ／action は実測 6 つの `ssm:` の**許可リスト**。**Add だけでなく Modify も見る**（trust policy もインラインも物理名を変えずに書き換えられ、後者はロールが change set に現れない） |
 | `roleTrustPolicyEscape` | carve-out の**外**でも、外部アカウント／`"AWS":"*"`／`Federated` を信頼する trust policy |
 | `functionUrlExposure` | WebStack の 2 本以外の `AWS::Lambda::Url`。image は常に `AWS_IAM`（#631） |
 | `publicInvokePermission` | origin-verify 方式で CDK が足す 2 本以外の `Principal:"*"` invoke 許可、および別アカウントへの invoke 許可 |
@@ -969,9 +970,14 @@ allowlist は `REVIEWED_CDK_GENERATED_LOGICAL_IDS` 1 か所。**論理 ID を載
 - **gate はサンドボックスの中で走る。** `scripts/aws-cloud-deploy.sh` を迂回して
   `cdk deploy` を直接叩けば gate は動かない。IAM 側にこれを強制する手段は無い
   （層 1 は「どのスタックか」しか見ない）。**gate は制動であって境界ではない**
-- gate が固定しているのは trust policy・managed policy・インライン `Action` の 3 点で、
-  インラインの `Resource` は見ていない。`ssm:` `s3:` `logs:` などの action は
-  provider が実際に使うため通る。**boundary の無いロールにそれらが載ることは起こりうる**
+- gate は action の**名前**を許可リストで縛るが、`Resource` と `Condition` は
+  見ていない。`ssm:GetParameters` on `*`（本来は `parameter/cdk/exports/*` 限定）は
+  通る。**boundary の無いロールがこのアカウントの SSM パラメータ全体を読めることは
+  起こりうる**。`s3:` `dynamodb:` `logs:` は許可リスト化（2026-08-13）で通らなくなった
+- `AWS::IAM::OIDCProvider` / `SAMLProvider` の Add は止めない。プロバイダ単体では
+  誰にも何も許さないためで、**この判断は「`Federated` を信頼するロールが必ず止まる」
+  ことに依存している**（carve-out の内は `carveOutRoleShape`、外は
+  `roleTrustPolicyEscape`。どちらもテストで固定済み）
 - carve-out の外のロールの trust policy が組み込み関数で書かれていると gate は
   読み切れず、**止めずに記録する**（`opaqueRoleTrustPolicy`）。ここを止めると
   正当な初回デプロイが通らない
