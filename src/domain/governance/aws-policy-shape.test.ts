@@ -774,7 +774,6 @@ describe('ドキュメントが出荷ポリシーと一致している (#680 R6/
       const quoted = `\`${CARVE_OUT_ALLOWED_RESOURCE_PREFIX}\``;
       expect(normalize(readDoc(doc))).toContain(normalize(quoted));
     });
-    });
 
     it('🔴 撤回した否認リストの語彙が gate の説明に残っていない', () => {
       // 否認リスト（`iam:` `sts:` `kms:` … を弾く）は 2026-08-13 に許可リストへ
