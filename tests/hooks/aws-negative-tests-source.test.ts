@@ -139,8 +139,20 @@ describe('simulate() は boundary と context を明示的に渡す (#680 R10 / 
     expect(decl).not.toContain("'deploy'");
   });
 
+  /**
+   * 🔴 **この検査は最初 `toContain('assertBoundaryPolicyReadable()')` と書き、
+   * 変異ドリルで「呼び出しを消しても緑」だった。** 関数**定義**の
+   * `function assertBoundaryPolicyReadable(): void` にも同じ文字列が含まれるためである
+   * （`CLAUDE.md`「調査の作法」の「識別子を括弧付きで探す」の裏返し）。
+   * 呼び出しだけに現れる `;` まで含め、かつ探す範囲を simulate ループの直前に限る。
+   */
   it('boundary ファイルが読めなければ実行しない（読まずに「検証済み」と記録させない）', () => {
-    expect(stripTsComments(SOURCE)).toContain('assertBoundaryPolicyReadable()');
+    const loopSetup = extractFunctionBody(
+      stripTsComments(SOURCE),
+      "if (scope !== 'live') {",
+      'for (const { check, principal, region, key } of plan)',
+    );
+    expect(loopSetup).toContain('assertBoundaryPolicyReadable();');
   });
 });
 
