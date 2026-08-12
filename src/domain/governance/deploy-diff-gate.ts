@@ -16,6 +16,7 @@
 export const DEPLOY_BLOCK_REASONS = [
   'unexpectedStack',
   'resourceRemoval',
+  'unknownAction',
   'resourceReplacement',
   'kmsChange',
   'secretsChange',
@@ -31,7 +32,11 @@ export type DeployFlagReason = (typeof DEPLOY_FLAG_REASONS)[number];
 
 /** `describe-change-set` の `Changes[].ResourceChange` から必要な項目だけ。 */
 export type ChangeSetResourceChange = {
-  /** 'Add' | 'Modify' | 'Remove' | 'Import' | 'Dynamic'。未知の値は保守的に扱う。 */
+  /**
+   * CloudFormation の変更操作。'Add' と 'Modify' だけが既知で安全。
+   * 'Remove', 'Import', 'Dynamic' や将来の値は gate で止める（保守的に扱う）。
+   * 既知の無害は Add と Modify のみ。他は詳細が判明するまで deploy を許可しない。
+   */
   readonly action: string;
   readonly resourceType: string;
   readonly logicalResourceId: string;
@@ -76,6 +81,14 @@ const BLOCKED_TYPE_PREFIXES: ReadonlyArray<[string, DeployBlockReason]> = [
   ['AWS::EC2::SecurityGroup', 'networkBoundaryChange'],
 ];
 
+/**
+ * deploy で許可する action。これら以外（Remove, Import, Dynamic, 未知の値）は
+ * 詳細が判明するまで保守的に stop する。
+ *  - 'Add': リソース新規作成。仕様が明確。
+ *  - 'Modify': リソース更新。replacement フィールドで置き換え判定。
+ */
+const SAFE_ACTIONS = new Set(['Add', 'Modify']);
+
 const describeChange = (c: ChangeSetResourceChange): string =>
   `${c.logicalResourceId} (${c.resourceType}) action=${c.action} replacement=${c.replacement ?? '-'}`;
 
@@ -99,6 +112,11 @@ export function evaluateDeployChangeSet(summary: ChangeSetSummary): DeployGateVe
 
     if (c.action === 'Remove') {
       blocks.push({ reason: 'resourceRemoval', evidence });
+    }
+    // Remove 以外で安全でない action（Import, Dynamic, 未知の値）は止める。
+    // Add と Modify だけが既知で安全。
+    if (!SAFE_ACTIONS.has(c.action) && c.action !== 'Remove') {
+      blocks.push({ reason: 'unknownAction', evidence });
     }
     // 'Conditional' は実行時条件で決まる＝安全だと証明できないので止める側に倒す。
     if (c.replacement === 'True' || c.replacement === 'Conditional') {

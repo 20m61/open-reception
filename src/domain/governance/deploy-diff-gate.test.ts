@@ -42,6 +42,13 @@ describe('通すべきものを通す', () => {
       false,
     );
   });
+
+  it('Modify で replacement=False は通る（安全な Update を許可する）', () => {
+    expect(
+      evaluateDeployChangeSet(summary({ changes: [change({ action: 'Modify', replacement: 'False' })] }))
+        .blocked,
+    ).toBe(false);
+  });
 });
 
 describe('停止する', () => {
@@ -105,6 +112,26 @@ describe('停止する', () => {
       'IAM AccessKey の作成',
       { changes: [change({ action: 'Add', resourceType: 'AWS::IAM::AccessKey' })] },
       'iamPrincipalChange',
+    ],
+    [
+      'IAM Group の作成',
+      { changes: [change({ action: 'Add', resourceType: 'AWS::IAM::Group' })] },
+      'iamPrincipalChange',
+    ],
+    [
+      'IAM UserToGroupAddition の作成',
+      { changes: [change({ action: 'Add', resourceType: 'AWS::IAM::UserToGroupAddition' })] },
+      'iamPrincipalChange',
+    ],
+    [
+      'Dynamic action は未知なので止める',
+      { changes: [change({ action: 'Dynamic' })] },
+      'unknownAction',
+    ],
+    [
+      'Import action は未知なので止める',
+      { changes: [change({ action: 'Import' })] },
+      'unknownAction',
     ],
   ])('%s', (_name, over, reason) => {
     const verdict = evaluateDeployChangeSet(summary(over));
