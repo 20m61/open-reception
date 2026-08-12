@@ -185,7 +185,7 @@ export const CARVE_OUT_ALLOWED_ACTIONS: ReadonlySet<string> = new Set([
  *
  * 前者が後者を含むので、確認するのは **`parameter/cdk/exports/` の下**であること。
  */
-const CARVE_OUT_ALLOWED_RESOURCE_PREFIX = 'parameter/cdk/exports/';
+export const CARVE_OUT_ALLOWED_RESOURCE_PREFIX = 'parameter/cdk/exports/';
 
 /**
  * ARN のリージョン欄。**`*` を拒む**ためにパターンで確かめる。

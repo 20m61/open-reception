@@ -16,7 +16,10 @@ import {
   type PolicyStatement,
 } from './aws-policy-shape';
 import { CARVE_OUT_ROLE_ARN_PATTERN, iamArnGlobMatches } from './cfn-generated-name';
-import { CARVE_OUT_ALLOWED_ACTIONS } from './deploy-diff-gate';
+import {
+  CARVE_OUT_ALLOWED_ACTIONS,
+  CARVE_OUT_ALLOWED_RESOURCE_PREFIX,
+} from './deploy-diff-gate';
 
 const load = (name: string): PolicyDocument =>
   JSON.parse(readFileSync(resolve(process.cwd(), 'scripts/aws-policies', name), 'utf8')) as PolicyDocument;
@@ -765,7 +768,12 @@ describe('ドキュメントが出荷ポリシーと一致している (#680 R6/
      * アカウント全体の SSM を消せる）。両方が書かれていることを縛る。
      */
     it.each([SPEC, RUNBOOK])('%s が Resource の閉じ込め先を書いている', (doc) => {
-      expect(normalize(readDoc(doc))).toContain(normalize('parameter/cdk/exports/'));
+      // 🔴 **コードの定数から引き、バッククォート込みで探す。** 素の部分一致だと
+      // 定数を `parameter/` へ広げても文書の `parameter/cdk/exports/` が
+      // 部分文字列として一致してしまい、**実装だけ広がって文書が置き去り**でも緑になる。
+      const quoted = `\`${CARVE_OUT_ALLOWED_RESOURCE_PREFIX}\``;
+      expect(normalize(readDoc(doc))).toContain(normalize(quoted));
+    });
     });
 
     it('🔴 撤回した否認リストの語彙が gate の説明に残っていない', () => {
