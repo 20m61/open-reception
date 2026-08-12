@@ -280,7 +280,14 @@ run_diff_gate() {
     return 1
   fi
 
-  npx tsx "${ROOT}/scripts/aws-diff-gate.ts" "${cs_json}" "${stack}"
+  # 🔴 **synth テンプレートも渡す (#680 R10)。**
+  # `describe-change-set` は「どの property が変わったか」の名前しか返さず、値を返さない。
+  # carve-out の名前空間に入るロール・Function URL・`Principal:"*"` の invoke 許可は
+  # **値を見ないと判定できない**ので、`cdk deploy --no-execute` が書いた
+  # `cdk.out/<stack>.template.json` を gate へ渡す。無ければ gate は非ゼロで終わる
+  # （読めなかったを問題なしに落とさない）。
+  npx tsx "${ROOT}/scripts/aws-diff-gate.ts" "${cs_json}" "${stack}" \
+    "${ROOT}/infra/cdk.out/${stack}.template.json"
 }
 
 case "${SUB}" in

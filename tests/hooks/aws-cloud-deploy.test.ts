@@ -400,6 +400,21 @@ describe('危険な既定を持たない', () => {
   });
 
   /**
+   * 🔴 #680 R10。**gate に synth テンプレートを渡していること**を配線として固定する。
+   * 渡さなければ CLI は非ゼロで終わるので運用が止まって気づける…と思いたくなるが、
+   * 「引数を減らして gate をゆるめる」変更は静かに入りうる。判定側（純関数）が
+   * どれだけ厳しくても、入力が来なければ何も検査していないのと同じ
+   * （`lesson-green-summary-hides-unwired-step`）。
+   */
+  it('run_diff_gate は cdk.out の synth テンプレートを gate へ渡している (#680 R10)', () => {
+    const code = stripBashComments(readFileSync(WRAPPER, 'utf8'));
+    const fn = code.indexOf('run_diff_gate() {');
+    const end = code.indexOf('\ncase "${SUB}" in', fn);
+    const body = code.slice(fn, end);
+    expect(body).toContain('cdk.out/${stack}.template.json');
+  });
+
+  /**
    * 🔴 **R5（#680 残件）: `toContain('orcloud01')` は生ソースに対して行っていた。**
    * wrapper には `orcloud01` を説明するコメントが 3 行あるので、`QUALIFIER="orcloud01"`
    * という**実際の設定行を消してもコメントだけで一致し、緑のまま**だった。

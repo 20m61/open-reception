@@ -7,10 +7,13 @@
  */
 import { describe, expect, it } from 'vitest';
 import {
+  CARVE_OUT_ACCOUNT_ID,
+  CARVE_OUT_ROLE_ARN_PATTERN,
   CFN_GENERATED_NAME_SUFFIX_LENGTH,
   IAM_ROLE_NAME_MAX_LENGTH,
   cfnGeneratedNamePrefix,
   iamArnGlobMatches,
+  iamArnGlobMatchesGeneratedName,
 } from './cfn-generated-name';
 
 /** アカウント上で実測した物理名（brief で提示され、長さ 64 であることをここで固定する）。 */
@@ -98,5 +101,61 @@ describe('iamArnGlobMatches', () => {
 
   it('部分一致では真にならない（前後に錨を打つ）', () => {
     expect(iamArnGlobMatches('role/Custom', 'role/CustomThing')).toBe(false);
+  });
+
+  /**
+   * 🔴 **これが `Path` 細工を捕まえられる理由。** IAM のリソース ARN グロブでは
+   * `*` が `/` を跨ぐ。人間は `role/OpenReception-x-dev-Custom/Innocent` を見て
+   * 「Custom で始まる名前ではない」と読むが、IAM はそう読まない。
+   */
+  it('* は / を跨ぐ（人間の直感と違う。Path 細工がここに掛かる）', () => {
+    expect(
+      iamArnGlobMatches(CARVE_OUT_ROLE_ARN_PATTERN, `arn:aws:iam::${CARVE_OUT_ACCOUNT_ID}:role/OpenReception-x-dev-Custom/Innocent`),
+    ).toBe(true);
+  });
+});
+
+describe('iamArnGlobMatchesGeneratedName（末尾 12 文字が未確定）', () => {
+  const arn = (name: string) => `arn:aws:iam::${CARVE_OUT_ACCOUNT_ID}:role/${name}`;
+
+  it('carve-out に入る生成名の接頭辞に一致する', () => {
+    expect(
+      iamArnGlobMatchesGeneratedName(
+        CARVE_OUT_ROLE_ARN_PATTERN,
+        arn(cfnGeneratedNamePrefix('OpenReception-Web-dev', LOGICAL_IDS.crossRegionWriter)),
+      ),
+    ).toBe(true);
+  });
+
+  it('carve-out の外の生成名には一致しない', () => {
+    expect(
+      iamArnGlobMatchesGeneratedName(
+        CARVE_OUT_ROLE_ARN_PATTERN,
+        arn(cfnGeneratedNamePrefix('OpenReception-Web-dev', 'ServerFnServiceRole')),
+      ),
+    ).toBe(false);
+  });
+
+  /**
+   * 🔴 **ダミーのサフィックスを 1 つ当てる実装との差が出るところ。**
+   * パターン末尾が `*` でなければ、残りは固定長でなければならない。
+   * 「接頭辞を食えたら一致しうる」と丸める実装はここで false を返せない。
+   */
+  it('パターン末尾が * でないとき、残りの長さが合わなければ一致しない', () => {
+    // 未確定部分は 12 文字。パターン側の残りは `??` の 2 文字しか受け付けない。
+    expect(iamArnGlobMatchesGeneratedName('role/abc??', 'role/abc')).toBe(false);
+    expect(iamArnGlobMatchesGeneratedName('role/abc??', 'role/abc', 2)).toBe(true);
+  });
+
+  it('未確定部分は英数字なので、パターン側のリテラル記号には一致しない', () => {
+    // `-` は乱数サフィックスに現れない。
+    expect(iamArnGlobMatchesGeneratedName('role/abc-*', 'role/abc', 1)).toBe(false);
+    expect(iamArnGlobMatchesGeneratedName('role/abc?*', 'role/abc', 1)).toBe(true);
+  });
+});
+
+describe('carve-out パターンの定数', () => {
+  it('アカウント ID はパターン自身から取り出している（二重管理しない）', () => {
+    expect(CARVE_OUT_ROLE_ARN_PATTERN).toContain(`::${CARVE_OUT_ACCOUNT_ID}:`);
   });
 });

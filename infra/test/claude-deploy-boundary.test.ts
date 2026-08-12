@@ -32,8 +32,9 @@ import { applyCostTags } from '../lib/constructs/cost-tags';
 import { resolveEnv } from '../lib/config/environments';
 import {
   cfnGeneratedNamePrefix,
-  iamArnGlobMatches,
+  iamArnGlobMatchesGeneratedName,
 } from '../../src/domain/governance/cfn-generated-name';
+import { REVIEWED_CDK_GENERATED_LOGICAL_IDS } from '../../src/domain/governance/deploy-diff-gate';
 
 const ACCOUNT = '822063948773';
 /**
@@ -270,11 +271,16 @@ function carveOutPattern(): string {
   return exec;
 }
 
-/** そのロールが carve-out に一致するか（CloudFormation が生成する物理名を予測して判定）。 */
+/**
+ * そのロールが carve-out に一致するか（CloudFormation が生成する物理名を予測して判定）。
+ *
+ * 乱数サフィックスは未確定なので、**ダミーを 1 つ当てるのではなく**
+ * 「英数字が 12 文字」として厳密に評価する（`iamArnGlobMatchesGeneratedName`）。
+ * ダミー方式はパターン末尾が `*` でなくなった日に静かに fail-open する。
+ */
 function matchesCarveOut(pattern: string, role: RoleFacts): boolean {
   const prefix = cfnGeneratedNamePrefix(role.stackName, role.logicalId);
-  // 乱数サフィックスは未知なので、パターン側の `*` に吸わせるダミーを付ける。
-  return iamArnGlobMatches(pattern, `${ACCOUNT_ROLE_ARN_PREFIX}${prefix}aBcDeFgHiJkL`);
+  return iamArnGlobMatchesGeneratedName(pattern, `${ACCOUNT_ROLE_ARN_PREFIX}${prefix}`);
 }
 
 describe('CustomResourceProvider 系ロール (#680 R1)', () => {
@@ -322,15 +328,51 @@ describe('CustomResourceProvider 系ロール (#680 R1)', () => {
    * 「収まっている」は無内容だし、逆に carve-out が全ロールを覆っていたら
    * 主境界が消えていることになる。
    */
+  /**
+   * 🔴 **diff gate の allowlist と同じ 1 本を使う (#680 R10)。**
+   * 「synth すると 3 本生える」と「gate が 3 本を通す」が別々の文字列で書かれていると、
+   * CDK 更新で論理 ID のハッシュが変わったとき **gate 側だけが古いまま**になり、
+   * 初回デプロイが gate で止まる（あるいは逆に、新しい ID が素通りする）。
+   */
   it('carve-out が必要なロールが実在し、かつ carve-out はそれ以外を覆っていない', () => {
     const pattern = carveOutPattern();
     const roles = allRoles();
     const covered = roles.filter((r) => matchesCarveOut(pattern, r)).map((r) => r.logicalId);
-    expect(covered).toEqual([
-      'CustomS3AutoDeleteObjectsCustomResourceProviderRole3B1BD092',
-      'CustomCrossRegionExportWriterCustomResourceProviderRoleC951B1E1',
-      'CustomCrossRegionExportReaderCustomResourceProviderRole10531BBD',
-    ]);
+    expect(covered).toEqual([...REVIEWED_CDK_GENERATED_LOGICAL_IDS.carveOutProviderRoles]);
+  });
+
+  /**
+   * 🔴 **gate の allowlist が「レビュー済み」と主張している中身を、synth で裏取りする。**
+   * 論理 ID を allowlist に載せるだけでは、その ID を騙る実体を通してしまう。
+   * gate 側（`carveOutRoleShape`）が固定している形 —— trust は
+   * `lambda.amazonaws.com` だけ、managed policy は基本実行ロールだけ ——
+   * が**実物にも当てはまる**ことをここで確かめる。片方だけ変わったら赤くなる。
+   */
+  it('allowlist に載せた 3 本の実体は、gate が固定している形と一致する', () => {
+    const { producer, consumer } = synthCrossRegionPair();
+    const shapes: Array<{ id: string; trust: unknown; managed: unknown }> = [];
+    for (const template of [producer, consumer]) {
+      const roles = template.findResources('AWS::IAM::Role');
+      for (const id of Object.keys(roles)) {
+        if (!(REVIEWED_CDK_GENERATED_LOGICAL_IDS.carveOutProviderRoles as ReadonlyArray<string>).includes(id)) {
+          continue;
+        }
+        const props = propertiesOf(roles, id);
+        shapes.push({ id, trust: props.AssumeRolePolicyDocument, managed: props.ManagedPolicyArns });
+      }
+    }
+    expect(shapes).toHaveLength(REVIEWED_CDK_GENERATED_LOGICAL_IDS.carveOutProviderRoles.length);
+    for (const shape of shapes) {
+      expect(shape.trust).toEqual({
+        Version: '2012-10-17',
+        Statement: [
+          { Action: 'sts:AssumeRole', Effect: 'Allow', Principal: { Service: 'lambda.amazonaws.com' } },
+        ],
+      });
+      expect(shape.managed).toEqual([
+        { 'Fn::Sub': 'arn:${AWS::Partition}:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole' },
+      ]);
+    }
   });
 
   /**
@@ -361,6 +403,67 @@ describe('CustomResourceProvider 系ロール (#680 R1)', () => {
         { id: role.logicalId, boundary: true, carved: false },
       );
     }
+  });
+});
+
+/**
+ * 🔴 **B（#680 R10）の allowlist を synth で裏取りする。**
+ *
+ * `AWS::Lambda::Url` の論理 ID は**スタック内の construct パスだけ**で決まる
+ * （`<Fn>/FunctionUrl/Resource` の md5 先頭 8 桁）。コード資産の中身にも
+ * スタック名にも依存しない。だから `.open-next/` を要求する実 `WebStack` を
+ * synth しなくても、**同じ construct パスを作れば同じ論理 ID が出る**。
+ *
+ * 実 `WebStack`（`web-stack.ts`）の構築パスは `ServerFn` / `ImageFn` を scope=this で
+ * 作り、それぞれに `addFunctionUrl()` を呼ぶ形なので、ここの fixture と同一である。
+ * ハッシュの由来は独立にも確認した: `md5('ServerFn/FunctionUrl/Resource')` の先頭 8 桁が
+ * `FFF9E3E1`、`md5('ImageFn/FunctionUrl/Resource')` が `BBD47D3E`。
+ */
+describe('Function URL の allowlist (#680 R10 / B)', () => {
+  it('WebStack と同じ construct パスから、gate の allowlist と同じ論理 ID が出る', () => {
+    const app = new cdk.App();
+    const stack = new cdk.Stack(app, 'OpenReception-Web-dev', {
+      env: { account: ACCOUNT, region: 'ap-northeast-1' },
+    });
+    const code = lambda.Code.fromInline('exports.handler = async () => ({});');
+    const serverFn = new lambda.Function(stack, 'ServerFn', {
+      runtime: lambda.Runtime.NODEJS_22_X,
+      handler: 'index.handler',
+      code,
+    });
+    serverFn.addFunctionUrl({ authType: lambda.FunctionUrlAuthType.AWS_IAM });
+    const imageFn = new lambda.Function(stack, 'ImageFn', {
+      runtime: lambda.Runtime.NODEJS_22_X,
+      handler: 'index.handler',
+      code,
+    });
+    imageFn.addFunctionUrl({ authType: lambda.FunctionUrlAuthType.AWS_IAM });
+
+    const urls = Object.keys(Template.fromStack(stack).findResources('AWS::Lambda::Url'));
+    expect(urls).toEqual([...REVIEWED_CDK_GENERATED_LOGICAL_IDS.functionUrls]);
+  });
+
+  /**
+   * origin-verify 方式（`authType: NONE`）で CDK が自動追加する `Principal: "*"` の
+   * Permission 2 本。gate はこの 2 本だけを通す。
+   */
+  it('authType NONE のとき CDK が足す公開 invoke 許可は、gate の allowlist と一致する', () => {
+    const app = new cdk.App();
+    const stack = new cdk.Stack(app, 'OpenReception-Web-dev', {
+      env: { account: ACCOUNT, region: 'ap-northeast-1' },
+    });
+    const serverFn = new lambda.Function(stack, 'ServerFn', {
+      runtime: lambda.Runtime.NODEJS_22_X,
+      handler: 'index.handler',
+      code: lambda.Code.fromInline('exports.handler = async () => ({});'),
+    });
+    serverFn.addFunctionUrl({ authType: lambda.FunctionUrlAuthType.NONE });
+
+    const permissions = Template.fromStack(stack).findResources('AWS::Lambda::Permission');
+    const wildcard = Object.entries(permissions)
+      .filter(([, r]) => (r as { Properties?: { Principal?: unknown } }).Properties?.Principal === '*')
+      .map(([id]) => id);
+    expect(wildcard).toEqual([...REVIEWED_CDK_GENERATED_LOGICAL_IDS.publicInvokePermissions]);
   });
 });
 

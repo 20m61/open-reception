@@ -15,7 +15,7 @@ import {
   type PolicyDocument,
   type PolicyStatement,
 } from './aws-policy-shape';
-import { iamArnGlobMatches } from './cfn-generated-name';
+import { CARVE_OUT_ROLE_ARN_PATTERN, iamArnGlobMatches } from './cfn-generated-name';
 
 const load = (name: string): PolicyDocument =>
   JSON.parse(readFileSync(resolve(process.cwd(), 'scripts/aws-policies', name), 'utf8')) as PolicyDocument;
@@ -25,7 +25,7 @@ const ROLE_ARN_PREFIX = 'arn:aws:iam::822063948773:role/';
 /**
  * CDK の `CustomResourceProvider` が作るロールだけを外す carve-out (#680 R1/R2/R3)。
  *
- * **なぜこの形か（より狭いものを選ばなかった理由）**: 物理名は
+ * **なぜこの形か**: 物理名は
  * `<スタック名>-<論理 ID を 64 文字に収まるまで切り詰めたもの>-<12 文字の乱数>` で、
  * 切り詰め量が**スタック名の長さで変わる**。`OpenReception-Web-dev` では
  * `CustomCrossRegionExportWriter` まで残るが、`OpenReception-CfMonitoring-dev` では
@@ -33,10 +33,21 @@ const ROLE_ARN_PREFIX = 'arn:aws:iam::822063948773:role/';
  * `…-Custom*CustomResourceProviderRole*` も `…-CustomCrossRegionExport*` も
  * **us-east-1 側に一致しない**（`cfn-generated-name.test.ts` が実在名 2 本で固定）。
  * 一致しなければ `iam:CreateRole` が Deny され、初回デプロイが ROLLBACK_FAILED になる。
- * 共通して残るのは `Custom` の 6 文字だけなので、`-dev-Custom*` が
- * 「3 本すべてに当たる中で最も狭い、スタック名の長さに依存しない」形になる。
+ *
+ * 🔴 **「これが取りうる最も狭いパターンである」とは主張しない（訂正。#680 R10）。**
+ * 2 本に分ければ（`…-CustomCrossRegion*` ＋ `…-CustomS3AutoDelete*`）より狭く、
+ * `claude-boundary.json` の残り文字数にも収まる。1 本にしてあるのは、
+ * **どのみち名前グロブでは敵対的なテンプレートを防げない**からである ——
+ * 論理 ID はテンプレートを書く側が決められ、切り詰めで区別できるサフィックスは
+ * 物理名から消える。狭さが買えるのは**事故耐性だけ**で、それを理由に
+ * スタック名の長さ変更で壊れる脆いパターンを選ぶ価値は無い。
+ * 敵対的なテンプレートを止めるのは `deploy-diff-gate.ts` である。
+ *
+ * 定数は `cfn-generated-name.ts` に一本化してある —— gate とポリシーが別々の
+ * 文字列を持つと「ポリシーは carve-out しているが gate は別の名前空間を見ている」
+ * というずれが黙って生まれる。ここではその 1 本が出荷 JSON と一致することを固定する。
  */
-const PROVIDER_ROLE_CARVE_OUT = `${ROLE_ARN_PREFIX}OpenReception-*-dev-Custom*`;
+const PROVIDER_ROLE_CARVE_OUT = CARVE_OUT_ROLE_ARN_PATTERN;
 
 /** Sid で 1 ステートメントを取り出す。見つからなければ throw（無言 PASS を作らない）。 */
 function bySid(doc: PolicyDocument, sid: string): PolicyStatement {

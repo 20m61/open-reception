@@ -14,6 +14,7 @@ import {
   evaluateDeployChangeSet,
   type ChangeSetResourceChange,
   type ChangeSetSummary,
+  type StackTemplateResources,
 } from '../src/domain/governance/deploy-diff-gate';
 
 type RawChangeSet = {
@@ -86,7 +87,11 @@ function isNoOpChangeSet(raw: RawChangeSet): boolean {
  * evaluateDeployChangeSet の `unknownAction` ブロックに掛かるようにする
  * （Add/Modify 以外は保守的に stop する。§6 の SAFE_ACTIONS 参照）。
  */
-function toSummary(raw: RawChangeSet, stackNameArg: string): ChangeSetSummary {
+function toSummary(
+  raw: RawChangeSet,
+  stackNameArg: string,
+  templateResources: StackTemplateResources,
+): ChangeSetSummary {
   const changes: ChangeSetResourceChange[] = [];
   for (const entry of raw.Changes ?? []) {
     const rc = entry.ResourceChange;
@@ -98,13 +103,58 @@ function toSummary(raw: RawChangeSet, stackNameArg: string): ChangeSetSummary {
       replacement: rc.Replacement,
     });
   }
-  return { stackName: raw.StackName ?? stackNameArg, changes };
+  return { stackName: raw.StackName ?? stackNameArg, changes, templateResources };
+}
+
+/**
+ * synth 済みテンプレート（`infra/cdk.out/<stack>.template.json`）の `Resources` から
+ * 「論理 ID → Properties」を作る。
+ *
+ * 🔴 **読めなければ空 `{}` を返さない。** `describe-change-set` はプロパティの値を
+ * 返さないので、テンプレートが読めないと #680 R10 の検査（carve-out の名前空間・
+ * Function URL・公開 invoke）が**まるごと空振りしたまま green になる**。
+ * 「読めなかった」を「問題なかった」に落とすのは、このリポジトリが何度も
+ * 踏んでいる形（`lesson-empty-string-means-unknown`）なので、throw する。
+ */
+function readTemplateResources(path: string): StackTemplateResources {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(readFileSync(path, 'utf8'));
+  } catch (e) {
+    throw new Error(`synth テンプレートを読めません: ${path} (${(e as Error).message})`);
+  }
+  const resources =
+    typeof parsed === 'object' && parsed !== null
+      ? (parsed as { Resources?: unknown }).Resources
+      : undefined;
+  if (typeof resources !== 'object' || resources === null) {
+    throw new Error(`synth テンプレートに Resources がありません: ${path}`);
+  }
+  const out: Record<string, Readonly<Record<string, unknown>>> = {};
+  for (const [logicalId, resource] of Object.entries(resources as Record<string, unknown>)) {
+    const props =
+      typeof resource === 'object' && resource !== null
+        ? (resource as { Properties?: unknown }).Properties
+        : undefined;
+    out[logicalId] =
+      typeof props === 'object' && props !== null
+        ? (props as Readonly<Record<string, unknown>>)
+        : {};
+  }
+  return out;
 }
 
 function main(): void {
-  const [jsonPath, stackName] = process.argv.slice(2);
-  if (jsonPath === undefined || stackName === undefined) {
-    console.error('Usage: tsx scripts/aws-diff-gate.ts <change-set-json> <stack-name>');
+  const [jsonPath, stackName, templatePath] = process.argv.slice(2);
+  if (jsonPath === undefined || stackName === undefined || templatePath === undefined) {
+    console.error(
+      'Usage: tsx scripts/aws-diff-gate.ts <change-set-json> <stack-name> <synth-template-json>',
+    );
+    console.error(
+      '  <synth-template-json> は infra/cdk.out/<stack-name>.template.json。' +
+        'describe-change-set はプロパティの値を返さないため、これが無いと IAM ロールや' +
+        ' Function URL の中身を検査できません（#680 R10）。',
+    );
     process.exit(2);
   }
 
@@ -140,7 +190,18 @@ function main(): void {
     process.exit(1);
   }
 
-  const summary = toSummary(raw, stackName);
+  // 🔴 no-op 早期 return より**後**で読む。「変更なし」の change set には
+  // 検査対象が 1 件も無いので、テンプレートの有無で運用を止める理由が無い。
+  let templateResources: StackTemplateResources;
+  try {
+    templateResources = readTemplateResources(templatePath);
+  } catch (e) {
+    console.error(`  ⛔ ${(e as Error).message}`);
+    console.error('  → 中身を検査できないため自動デプロイを停止します（#680 R10）。');
+    process.exit(1);
+  }
+
+  const summary = toSummary(raw, stackName, templateResources);
   const verdict = evaluateDeployChangeSet(summary);
 
   console.log(`  stack: ${summary.stackName} / 変更 ${summary.changes.length} 件`);

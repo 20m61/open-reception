@@ -15,14 +15,21 @@ import { describe, expect, it } from 'vitest';
 const CLI = resolve(process.cwd(), 'scripts/aws-diff-gate.ts');
 const STACK = 'OpenReception-Web-dev';
 
-function writeChangeSet(value: unknown): string {
+function writeJson(value: unknown): string {
   const path = join(tmpdir(), `aws-diff-gate-test-${process.pid}-${Math.random().toString(36).slice(2)}.json`);
   writeFileSync(path, JSON.stringify(value));
   return path;
 }
 
-function run(jsonPath: string, stack: string = STACK) {
-  const result = spawnSync('npx', ['tsx', CLI, jsonPath, stack], { encoding: 'utf8' });
+const writeChangeSet = writeJson;
+
+/** `cdk.out/<stack>.template.json` の最小形。 */
+const writeTemplate = (resources: Record<string, unknown> = {}): string =>
+  writeJson({ Resources: resources });
+
+function run(jsonPath: string, stack: string = STACK, templatePath?: string) {
+  const args = [CLI, jsonPath, stack, templatePath ?? writeTemplate()];
+  const result = spawnSync('npx', ['tsx', ...args], { encoding: 'utf8' });
   return { status: result.status ?? -1, stdout: result.stdout ?? '', stderr: result.stderr ?? '' };
 }
 
@@ -151,5 +158,78 @@ describe('「変更なし」の FAILED は誤検出しない（自己申告し�
     expect(stderr).toContain('CREATE_COMPLETE');
     expect(stdout).not.toContain('変更なし');
     expect(stdout).not.toContain('危険な変更はありません');
+  });
+});
+
+/**
+ * #680 R10。**gate が実際にテンプレートを読んで止めていること**を、純関数ではなく
+ * CLI の実起動で確かめる。純関数側が正しくても、CLI がテンプレートを渡していなければ
+ * 何も検査されない（「緑の要約は配線の証明ではない」の再演を避ける）。
+ */
+describe('synth テンプレートを読んで carve-out を制動する (#680 R10)', () => {
+  const roleChangeSet = (logicalId: string) => ({
+    StackName: STACK,
+    Status: 'CREATE_COMPLETE',
+    Changes: [
+      { ResourceChange: { Action: 'Add', ResourceType: 'AWS::IAM::Role', LogicalResourceId: logicalId } },
+    ],
+  });
+
+  const providerRoleProps = {
+    AssumeRolePolicyDocument: {
+      Version: '2012-10-17',
+      Statement: [
+        { Action: 'sts:AssumeRole', Effect: 'Allow', Principal: { Service: 'lambda.amazonaws.com' } },
+      ],
+    },
+    ManagedPolicyArns: [
+      { 'Fn::Sub': 'arn:${AWS::Partition}:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole' },
+    ],
+  };
+
+  it('テンプレート引数が無ければ使い方を出して非ゼロで終わる（省略を許さない）', () => {
+    const path = writeChangeSet(roleChangeSet('CustomEvilRole'));
+    const result = spawnSync('npx', ['tsx', CLI, path, STACK], { encoding: 'utf8' });
+    expect(result.status).not.toBe(0);
+    expect(result.stderr ?? '').toContain('synth-template-json');
+  });
+
+  it('🔴 テンプレートが読めなければ「検査なしで green」ではなく停止する', () => {
+    const path = writeChangeSet(roleChangeSet('CustomEvilRole'));
+    const { status, stderr, stdout } = run(path, STACK, join(tmpdir(), 'no-such-template.json'));
+    expect(status).not.toBe(0);
+    expect(stderr).toContain('synth テンプレートを読めません');
+    expect(stdout).not.toContain('危険な変更はありません');
+  });
+
+  it('carve-out の名前空間に入る未知のロールを実際に止める', () => {
+    const path = writeChangeSet(roleChangeSet('CustomEvilRole'));
+    const template = writeTemplate({
+      CustomEvilRole: { Type: 'AWS::IAM::Role', Properties: providerRoleProps },
+    });
+    const { status, stderr } = run(path, STACK, template);
+    expect(status).not.toBe(0);
+    expect(stderr).toContain('carveOutRoleNamespace');
+  });
+
+  it('既知の provider role は通す（初回デプロイを壊さない）', () => {
+    const id = 'CustomCrossRegionExportWriterCustomResourceProviderRoleC951B1E1';
+    const path = writeChangeSet(roleChangeSet(id));
+    const template = writeTemplate({ [id]: { Type: 'AWS::IAM::Role', Properties: providerRoleProps } });
+    const { status, stdout } = run(path, STACK, template);
+    expect(status).toBe(0);
+    expect(stdout).toContain('危険な変更はありません');
+  });
+
+  it('「変更なし」の change set はテンプレートが無くても通る（検査対象が 0 件のため）', () => {
+    const path = writeChangeSet({
+      StackName: STACK,
+      Status: 'FAILED',
+      StatusReason: "The submitted information didn't contain changes.",
+      Changes: [],
+    });
+    const { status, stdout } = run(path, STACK, join(tmpdir(), 'no-such-template.json'));
+    expect(status).toBe(0);
+    expect(stdout).toContain('変更なし');
   });
 });
