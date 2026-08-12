@@ -292,6 +292,16 @@ synth テンプレートを、1 バイトも AWS へ適用される前に読め�
 allowlist は `REVIEWED_CDK_GENERATED_LOGICAL_IDS` の 1 か所で、**載せることは
 「CDK が決定論的に生成し、中身をレビューした」という主張**である。
 
+🔴 **論理 ID の allowlist だけでは足りない、を隣の種別まで徹底する（2026-08-13 訂正）。**
+当初の実装はロール本体しか見ておらず、**同じ権限が
+`AWS::IAM::Policy` / `ManagedPolicy` / `RolePolicy` から別リソースとして届く**経路と、
+`AWS::Lambda::Url` / `Permission` の**向き先**（`TargetFunctionArn` / `FunctionName`）が
+未検査だった。どちらも allowlist 済みの名前を名乗るだけで迂回できたので、
+`carveOutRoleShape` は付与リソース 3 種にも掛け、URL / Permission は
+GetAtt 先を関数の論理 ID に固定する。carve-out に載せてよい action は
+**synth で実測した 6 つの `ssm:` の許可リスト**（否認リストではワイルドカードが
+サービス部分を跨ぐ書き方を列挙し切れない）。
+
 **代替案とその却下理由**: IAM 側で `iam:AttachRolePolicy` に `iam:PolicyARN` 条件を
 足す案は、`iam:PutRolePolicy` の経路が同じ強さで開いたままなので見かけ倒しであり、
 provider 実装の変更で**初回デプロイを AccessDenied で壊す**。同じ性質を、壊しても
