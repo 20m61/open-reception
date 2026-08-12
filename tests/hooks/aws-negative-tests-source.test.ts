@@ -89,6 +89,62 @@ describe('aws() と simulate() の catch が正しい判定関数を呼んでい
 });
 
 /**
+ * TypeScript のコメントを落とす。
+ *
+ * 🔴 **R5 の教訓（#680）**: このファイルのアサーションは生ソースに対して行っていた。
+ * `--context-entries` はコメントにも 2 箇所現れるので、**実装行を消してもコメントだけで
+ * 一致し、緑のまま**になる。探す前にコメントを落とす。
+ */
+function stripTsComments(source: string): string {
+  return source
+    .replace(/\/\*[\s\S]*?\*\//g, '')
+    .split('\n')
+    .filter((line) => !line.trimStart().startsWith('//'))
+    .join('\n');
+}
+
+/**
+ * 🔴 **#680 R10 / D: carve-out は 2 枚のポリシーで成立している。**
+ *
+ * `claude-cfn-exec.json` の Allow だけを評価しても、`claude-boundary.json` 側の
+ * `NotResource` が壊れていれば**初回デプロイは Deny で落ちる**。
+ * `SimulatePrincipalPolicy` がアタッチ済み boundary を自動で含めるかどうかは
+ * AWS を呼ばずには確かめられないので、明示的に渡していることを構造で固定する。
+ */
+describe('simulate() は boundary と context を明示的に渡す (#680 R10 / D)', () => {
+  const body = stripTsComments(extractFunctionBody(SOURCE, 'function simulate(', 'function main('));
+
+  it('boundary ポリシー文書を --permissions-boundary-policy-input-list で渡す', () => {
+    expect(body).toContain('--permissions-boundary-policy-input-list');
+    expect(body).toContain('BOUNDARY_POLICY_PATH');
+  });
+
+  it('リクエスト側 context key を --context-entries で渡す', () => {
+    expect(body).toContain('--context-entries');
+  });
+
+  /**
+   * boundary が付くのは cfn-exec role **だけ**（`--custom-permissions-boundary` の仕様。
+   * runbook ステップ 2）。entry / deploy にも渡すと、実際には通る呼び出しが denied に
+   * 見えて偽の PASS になる。
+   */
+  it('boundary を渡すのは exec だけ', () => {
+    const decl = extractFunctionBody(
+      stripTsComments(SOURCE),
+      'const BOUNDARY_BEARING_PRINCIPALS',
+      'function assertBoundaryPolicyReadable',
+    );
+    expect(decl).toContain("'exec'");
+    expect(decl).not.toContain("'entry'");
+    expect(decl).not.toContain("'deploy'");
+  });
+
+  it('boundary ファイルが読めなければ実行しない（読まずに「検証済み」と記録させない）', () => {
+    expect(stripTsComments(SOURCE)).toContain('assertBoundaryPolicyReadable()');
+  });
+});
+
+/**
  * 🔴 **Critical 3（2026-08-12 全体レビュー）: S 系は「落ちようのない検査」だった。**
  *
  * 旧実装は principal ARN を 1 本だけ受け取り、既定を entry role にしていた。
@@ -243,6 +299,36 @@ describe('SIMULATED_CHECKS は全件が principal と region を宣言してい�
       'denied',
       'allowed',
       'denied',
+    ]);
+  });
+
+  /**
+   * 🔴 **#680 R10 / D: `iam:PassRole` の対を足した。**
+   *
+   * これまで「`iam:PassedToService` は `--context-entries` 無しでは渡せない」という
+   * 理由で S 系から落とし、runbook に「覆っていない」と書いていた。実際には渡せる。
+   * **対の両方が同じ context を渡している**ことも固定する ―― denied の側だけ context を
+   * 落とすと、「タグ条件が効いた」のか「context が無かった」のか区別できなくなる。
+   */
+  it('PassRole は同じ context を渡した allowed / denied の対で検査している', () => {
+    const entryOf = (id: string): string => {
+      const start = block.indexOf(`id: '${id}',`);
+      if (start === -1) throw new Error(`SIMULATED_CHECKS に ${id} が見つかりません`);
+      return block.slice(start, block.indexOf('guards:', start));
+    };
+    const facts = ['S21', 'S22'].map((id) => {
+      const entry = entryOf(id);
+      return {
+        id,
+        action: /action: '([^']+)'/.exec(entry)?.[1],
+        expected: /expected: '(allowed|denied)'/.exec(entry)?.[1],
+        hasPassedToService: entry.includes('ContextKeyName=iam:PassedToService'),
+        hasLambdaValue: entry.includes('ContextKeyValues=lambda.amazonaws.com'),
+      };
+    });
+    expect(facts).toEqual([
+      { id: 'S21', action: 'iam:PassRole', expected: 'allowed', hasPassedToService: true, hasLambdaValue: true },
+      { id: 'S22', action: 'iam:PassRole', expected: 'denied', hasPassedToService: true, hasLambdaValue: true },
     ]);
   });
 

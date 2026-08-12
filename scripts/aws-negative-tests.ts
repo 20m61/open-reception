@@ -13,6 +13,8 @@
  * このファイル自体はテストしない（AWS 認証情報が無いと動かないため）。
  */
 import { execFileSync } from 'node:child_process';
+import { existsSync, statSync } from 'node:fs';
+import { join } from 'node:path';
 import {
   classifyAwsError,
   classifySimulationError,
@@ -32,6 +34,41 @@ import {
 } from '../src/domain/governance/negative-test-outcome';
 
 const ACCOUNT = '822063948773';
+
+/**
+ * 🔴 **Permissions Boundary を simulate へ明示的に渡す (#680 R10 / D)。**
+ *
+ * carve-out は **2 枚**（`claude-cfn-exec.json` の Allow と `claude-boundary.json` の
+ * `NotResource`）で成立している。boundary 側が抜けていれば `iam:CreateRole` は
+ * **初回デプロイで Deny される** —— つまり carve-out の「壊れると一番痛い半分」は
+ * boundary の方である。
+ *
+ * `SimulatePrincipalPolicy` に principal のアタッチ済み boundary が自動で含まれるか
+ * どうかは、**AWS を呼ばずには確かめられない**。含まれていなければ S17〜S20 は
+ * `claude-cfn-exec.json` だけを見ていることになり、runbook には「検証済み」と
+ * 記録される。**曖昧なまま「検証済み」と書かない**ため、明示的に渡す
+ * （含まれている場合でも同じ文書を 2 度評価するだけで結果は変わらない）。
+ *
+ * 渡すのは `exec` だけ。`cdk bootstrap --custom-permissions-boundary` が boundary を
+ * 付けるのは **cfn-exec role 1 つだけ**であり（runbook ステップ 2）、entry / deploy に
+ * 付けると「実際には通る呼び出し」が denied に見える。
+ */
+const BOUNDARY_POLICY_PATH = join(__dirname, 'aws-policies', 'claude-boundary.json');
+
+/** boundary が付く principal。ここを増やすときは runbook ステップ 2 の実配布と揃える。 */
+const BOUNDARY_BEARING_PRINCIPALS: ReadonlySet<SimulationPrincipal> = new Set(['exec']);
+
+/**
+ * boundary ファイルが実在し、空でないことを確かめる。
+ * **読めないまま「boundary 込みで検証した」と記録させない**（fail-closed）。
+ */
+function assertBoundaryPolicyReadable(): void {
+  if (!existsSync(BOUNDARY_POLICY_PATH) || statSync(BOUNDARY_POLICY_PATH).size === 0) {
+    console.error(`  ⛔ boundary ポリシーが読めません: ${BOUNDARY_POLICY_PATH}`);
+    console.error('    boundary を含めずに simulate すると carve-out の半分しか検証できません（#680 R10）。');
+    process.exit(2);
+  }
+}
 
 type Check = { readonly id: string; readonly description: string; readonly expected: Exclude<Outcome, 'unknown'> };
 
@@ -165,6 +202,15 @@ type SimulatedCheck = {
   readonly expected: 'allowed' | 'denied';
   /** どの層／どのステートメントを問うているか（結果の読み手向け）。 */
   readonly guards: string;
+  /**
+   * リクエスト側の context key（`--context-entries` の値そのまま）。
+   *
+   * `iam:PassedToService` のように**リクエストにしか現れない**キーを条件に持つ
+   * ステートメントは、これを渡さないと「実際には通る呼び出し」が `denied` に見える。
+   * 渡さないまま `expected: 'denied'` を書くと、**条件が効いているのか
+   * context が無いだけなのか区別できない偽の PASS** になる。
+   */
+  readonly contextEntries?: ReadonlyArray<string>;
 };
 
 const BOTH: RegionCoverage = { kind: 'both' };
@@ -391,6 +437,36 @@ const SIMULATED_CHECKS: ReadonlyArray<SimulatedCheck> = [
     expected: 'denied',
     guards: '層 3・4 DenyIamRoleWriteOutsideProject（carve-out の外は従来どおり）',
   },
+  // ---- #680 R10: PassRole の対（`iam:PassedToService` を実際に供給して問う） ----
+  {
+    // 🔴 これまで S 系に無かった。`iam:PassedToService` を渡せないから、という理由で
+    // 落としていたが、`--context-entries` で渡せる。渡さずに諦めると
+    // 「carve-out の PassRole が本当に通るのか」を初回デプロイまで誰も知らない。
+    id: 'S21',
+    action: 'iam:PassRole',
+    resource: (r) => `arn:aws:iam::${ACCOUNT}:role/${CARVED_OUT_PROVIDER_ROLE[r]}`,
+    principals: ['exec'],
+    coverage: BOTH,
+    expected: 'allowed',
+    contextEntries: [
+      'ContextKeyName=iam:PassedToService,ContextKeyValues=lambda.amazonaws.com,ContextKeyType=string',
+    ],
+    guards: '層 3・4 AllowPassRoleToCdkProviderRoles（タグ条件を外し PassedToService は維持）',
+  },
+  {
+    // S21 の対。carve-out の外はタグ条件が残るので、タグの無いロールは渡せない。
+    // **同じ context を渡している**ので、denied の理由が「context 不足」でないと言える。
+    id: 'S22',
+    action: 'iam:PassRole',
+    resource: () => `arn:aws:iam::${ACCOUNT}:role/some-untagged-role`,
+    principals: ['exec'],
+    coverage: BOTH,
+    expected: 'denied',
+    contextEntries: [
+      'ContextKeyName=iam:PassedToService,ContextKeyValues=lambda.amazonaws.com,ContextKeyType=string',
+    ],
+    guards: '層 3 AllowPassRoleOnlyToTaggedDevWorkloads（タグ条件が残る＝Allow が成立しない）',
+  },
 ];
 
 /**
@@ -491,7 +567,17 @@ const describeStack = (name: string): Outcome =>
  * （2026-08-12 レビューで検出。詳細は `classifySimulationError` のコメント参照）。
  * 常に `classifySimulationError` を使い、`'unknown'` として扱う。
  */
-function simulate(principalArn: string, action: string, resource: string): Outcome {
+function simulate(
+  principalArn: string,
+  action: string,
+  resource: string,
+  options: {
+    /** principal に Permissions Boundary が付いているか（`exec` だけ true）。 */
+    readonly withBoundary: boolean;
+    /** `iam:PassedToService` のようなリクエスト側 context key。 */
+    readonly contextEntries?: ReadonlyArray<string>;
+  },
+): Outcome {
   refuseUnderTestRuntime(`iam simulate-principal-policy (${action})`);
   try {
     const out = execFileSync(
@@ -501,6 +587,14 @@ function simulate(principalArn: string, action: string, resource: string): Outco
         '--policy-source-arn', principalArn,
         '--action-names', action,
         '--resource-arns', resource,
+        // 🔴 boundary は carve-out の「壊れると初回デプロイが落ちる方の半分」。
+        // 自動で含まれるかを AWS 抜きで確かめられない以上、明示的に渡す。
+        ...(options.withBoundary
+          ? ['--permissions-boundary-policy-input-list', `file://${BOUNDARY_POLICY_PATH}`]
+          : []),
+        ...(options.contextEntries && options.contextEntries.length > 0
+          ? ['--context-entries', ...options.contextEntries]
+          : []),
         '--query', 'EvaluationResults[0].EvalDecision',
         '--output', 'text',
       ],
@@ -591,6 +685,7 @@ function main(): void {
       process.exit(2);
     }
 
+    assertBoundaryPolicyReadable();
     console.log('  シミュレーション（破壊系は実試行しない）:');
     // 🔴 **覆っていない region を先に印字する。** 「全件 PASS」を「両 region 検証済み」と
     // 読み違えさせないため、スキップした範囲とその理由を結果より前に出す（#680 R4）。
@@ -603,7 +698,11 @@ function main(): void {
       // `missing` チェックを通っているのでここには来ないが、型を絞るために残す。
       if (arn === null) continue;
       const resource = check.resource(region);
-      const actual = simulate(arn, check.action, resource);
+      const withBoundary = BOUNDARY_BEARING_PRINCIPALS.has(principal);
+      const actual = simulate(arn, check.action, resource, {
+        withBoundary,
+        ...(check.contextEntries === undefined ? {} : { contextEntries: check.contextEntries }),
+      });
       results.push({
         id: `${check.id}[${key}]`,
         expected: check.expected,
@@ -619,6 +718,10 @@ function main(): void {
         `    ${pass ? '✅' : '❌'} ${check.id} [${principal}@${region}] ${check.action} → ${actual}（期待 ${check.expected}）\n` +
           `        principal=${arn}\n` +
           `        resource=${resource}\n` +
+          // 🔴 **何を込みで評価したのかを結果と同じ行に出す。** boundary 抜きの評価を
+          // 「boundary 込みで検証済み」と記録させないため（#680 R10 / D）。
+          `        boundary=${withBoundary ? BOUNDARY_POLICY_PATH : '(なし: この principal に boundary は付かない)'}\n` +
+          `        context=${check.contextEntries?.join(' ') ?? '(なし)'}\n` +
           `        guards=${check.guards}`,
       );
     }
