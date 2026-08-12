@@ -523,8 +523,10 @@ function collectPolicyDocumentStatements(doc: unknown): ReadonlyArray<AllowState
     if (stmt.NotAction !== undefined || stmt.NotResource !== undefined) return null;
     const actions = asStringList(stmt.Action);
     if (actions === null) return null;
-    // `Resource` の無い Allow は IAM 的には不正だが、**無いことを「無害」にしない**。
-    if (stmt.Resource === undefined) return null;
+    // `Resource` が無い Allow は IAM 的には不正だが、**無いことを「無害」にしない** ——
+    // `[undefined]` として下流の解決に渡し、`UNRESOLVED_MARKER` になって停止する。
+    // （専用の早期 return は置かない。同じ結果を返す枝は変異で区別できず、
+    //   「一度も落ちたことのない分岐」になる。変異ドリル R5 で確認した）
     out.push({
       actions,
       resources: Array.isArray(stmt.Resource) ? stmt.Resource : [stmt.Resource],

@@ -474,6 +474,31 @@ describe('A: 論理 ID を騙っても中身で弾く（allowlist だけでは�
       }),
     ],
     [
+      // 🔴 変異ドリル R4 が生き残って判明: 上の fixture は `Resource` も無いので
+      // 「読めない」側で止まっており、**NotResource の検査自体は一度も効いていなかった**。
+      // IAM は両方を持つ statement を拒むが、**gate が IAM の検証に依存してはいけない**
+      // （テンプレートは適用前に読む）。無害に見える Resource と併記した形で固定する。
+      '閉じた Resource と NotResource を併記する',
+      providerRole({
+        Policies: [
+          {
+            PolicyName: 'Inline',
+            PolicyDocument: {
+              Version: '2012-10-17',
+              Statement: [
+                {
+                  Effect: 'Allow',
+                  Action: 'ssm:GetParameters',
+                  Resource: SSM_EXPORTS_ARN('*'),
+                  NotResource: 'arn:aws:ssm:us-east-1:822063948773:parameter/nothing',
+                },
+              ],
+            },
+          },
+        ],
+      }),
+    ],
+    [
       'Resource を書かない',
       providerRole({
         Policies: [
