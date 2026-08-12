@@ -274,7 +274,8 @@ construct id を `Custom…` にするだけで**境界の無いロールを意�
   ステップ 4a の S1〜S20 と、ステップ 4b・4c の 19 コマンド）は本サイクルで一度も
   実行されていない。**（番号は 1〜20 まで振ってあるが、**10 番はコマンドではなく
   「1〜9 を us-east-1 で繰り返せ」という指示**なので実コマンドは 19 本。
-  「20 コマンド」は誤記だった ―― 2026-08-12 残件レビュー R7） 実装の正しさは静的な構造検証（`auditPolicyDocument`）と
+  「20 コマンド」は誤記だった ―― 2026-08-12 残件レビュー R7）
+  実装の正しさは静的な構造検証（`auditPolicyDocument`）と
   CDK synth（`infra/test/claude-deploy-boundary.test.ts`）でのみ確認済み。
   **これらが全て期待どおりの結果を返すことが、初回デプロイへ進む前提条件である。**
   1 本でも違えば設計を見直す。
@@ -282,6 +283,13 @@ construct id を `Custom…` にするだけで**境界の無いロールを意�
   条件は「渡される IAM Role に `Project`/`Environment` タグが実際に付いていること」に
   依存する。タグが付くこと自体は synth テストで確認済みだが、**IAM がそう評価するかは
   未検証**。切り分け順序は runbook ステップ 4b の 14〜16 のコメントに書いた。
+- 🔴 **決定 8 の carve-out は実 IAM で一度も評価していない。** `NotResource` による
+  Deny の除外が期待どおり働くか（＝carve-out に一致するロールの `iam:CreateRole` /
+  `iam:DeleteRole` が allowed になるか）は、runbook ステップ 4a の **S17〜S20**
+  （allowed / denied の 2 対）で確かめる。**S17 / S19 が `denied` なら初回デプロイは
+  `ROLLBACK_FAILED` になる。S18 / S20 が `allowed` なら carve-out が広すぎる。**
+  synth 側の前提（どのロールに boundary / タグが付かないか）は
+  `infra/test/claude-deploy-boundary.test.ts` が実測で固定している。
 - 🔴 **決定 7 のポリシー系 Deny は名前の列挙のみである。** `AWS::IAM::ManagedPolicy` は
   CloudFormation に `Tags` を持たずタグ条件が使えないため、**列挙から漏れた第三者
   ポリシーは覆えない**。この account に新しいプロジェクトが増えたら列挙を見直すこと。

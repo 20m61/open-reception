@@ -787,7 +787,10 @@ spec 原文 STOP CONDITIONS の「既存 production deploy 経路を壊す可能
 | `scripts/aws-cloud-deploy.sh` | wrapper（preflight / verify / diff / deploy / smoke） |
 | `src/domain/governance/deploy-diff-gate.ts` + `.test.ts` | change set の危険判定（**純関数**） |
 | `src/domain/governance/deploy-preflight.ts` + `.test.ts` | preflight の判定ロジック（**純関数**） |
-| `src/domain/governance/aws-policy-shape.ts` + `.test.ts` | ポリシー JSON の構造検証（**純関数**） |
+| `src/domain/governance/aws-policy-shape.ts` + `.test.ts` | ポリシー JSON の構造検証（**純関数**）。ドキュメントと出荷 JSON の一致もここで固定する（#680 R6/R9） |
+| `src/domain/governance/negative-test-outcome.ts` + `.test.ts` | S/N 系の判定・principal × region の解決（**純関数**） |
+| `src/domain/governance/cfn-generated-name.ts` + `.test.ts` | CloudFormation 生成名の予測と IAM グロブ照合（**純関数**。carve-out の ARN パターンが実在名に当たることの根拠。#680 R1） |
+| `src/domain/governance/bash-source.ts` + `.test.ts` | シェルソースからコメント／文字列リテラルを落とす（**純関数**。ソース検査が偽の緑にならないように。#680 R5） |
 | `infra/lib/config/claude-deploy-boundary.ts` + `infra/test/claude-deploy-boundary.test.ts` | 層 4 の Permissions Boundary を CDK アプリ側で適用する（§4.2 層 4 の注記。bootstrap だけでは付かない） |
 | `scripts/aws-diff-gate.ts` | 上記を呼ぶ薄い CLI |
 | `scripts/aws-negative-tests.ts` | N1-N7 + N9 実試行（`--live-only`）/ S1-S20 シミュレーション（`--simulate-only`。principal × region ごとに評価。旧 N8 は S11 へ移動済み） |
