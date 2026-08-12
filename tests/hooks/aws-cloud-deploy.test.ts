@@ -227,6 +227,24 @@ describe('gate_stamp_satisfies の cwd 固定 (Important 3 の回帰テスト、
   });
 });
 
+/**
+ * bash の**行コメント**（先頭が `#` の行）を落とす。
+ *
+ * 🔴 **変異実験で判明した弱さ（2026-08-12 全体レビューの修正時に実測）**: この wrapper は
+ * コメントが本文より長い。素の `indexOf('run_diff_gate')` は、`deploy` ケースの直上に
+ * 書いた解説コメント（「直前の `run_diff_gate` ループが承認機構であり…」）に一致するため、
+ * **実際の呼び出しを削除しても緑のまま**だった。同じ型の欠陥（コメントアウトで
+ * すり抜ける）を infra 側の配線テストでも踏んでいる。検索前にコメントを落とす。
+ *
+ * 行頭 `#` の行だけを対象にする（文字列中の `#` を巻き込まない）。
+ */
+function stripBashComments(source: string): string {
+  return source
+    .split('\n')
+    .filter((line) => !line.trimStart().startsWith('#'))
+    .join('\n');
+}
+
 describe('cdk / aws 呼び出しに必須フラグが揃っている (round 3 の回帰テスト)', () => {
   // 🔴 レビュー指摘: ラウンド 2 で入った wrapper の変更（--region 修正・
   // --change-set-name の統一・--toolkit-stack-name 追加）には 1 つもテストが
@@ -250,26 +268,90 @@ describe('cdk / aws 呼び出しに必須フラグが揃っている (round 3 �
     expect(block).toContain('--change-set-name');
   });
 
-  it('すべての cdk deploy 呼び出しが --toolkit-stack-name を渡す（項目 4 の回帰テスト）', () => {
-    const occurrences = [...source.matchAll(/npx cdk deploy/g)];
-    // 🔴 マーカーが 1 つも見つからなければ即座に throw する（無言で PASS にしない）。
+  /**
+   * すべての `npx cdk` 呼び出しの位置。1 つも無ければ throw する（無言で PASS にしない）。
+   * 呼び出しは複数行にまたがる（行継続 `\`）ため、次の `npx cdk` か case 区切りまでを窓とする。
+   */
+  function everyCdkInvocation(): ReadonlyArray<string> {
+    const code = stripBashComments(source);
+    const occurrences = [...code.matchAll(/npx cdk\b/g)];
     if (occurrences.length === 0) {
-      throw new Error('ソース中に "npx cdk deploy" 呼び出しが見つかりません');
+      throw new Error('ソース中に "npx cdk" 呼び出しが見つかりません');
     }
-    for (const m of occurrences) {
-      const idx = m.index ?? -1;
-      const block = source.slice(idx, idx + 300);
+    return occurrences.map((m) => code.slice(m.index ?? 0, (m.index ?? 0) + 400));
+  }
+
+  it('すべての cdk deploy 呼び出しが --toolkit-stack-name を渡す（項目 4 の回帰テスト）', () => {
+    for (const block of everyCdkInvocation()) {
       expect(block).toContain('--toolkit-stack-name');
+    }
+  });
+
+  // 🔴 Critical 2（2026-08-12 全体レビュー）: `cdk bootstrap --custom-permissions-boundary`
+  // は cfn-exec role **1 つ**にしか boundary を付けない
+  // （`infra/node_modules/aws-cdk/lib/api/bootstrap/bootstrap-template.yaml` の
+  // `CloudFormationExecutionRole.Properties.PermissionsBoundary`）。CDK アプリが作る Role には
+  // 何も付かないので、`claude-cfn-exec.json` の `DenyRoleCreationWithoutBoundary` により
+  // 初回 CREATE が AccessDenied になる。**全 `cdk` 呼び出し**が boundary context を
+  // 渡していることを固定する（diff 側だけ抜けても deploy 直前まで気づけない）。
+  it('すべての cdk 呼び出しが Permissions Boundary の context を渡す (Critical 2)', () => {
+    for (const block of everyCdkInvocation()) {
+      expect(block).toContain('claudeBoundary=');
+    }
+  });
+
+  // 🔴 Important 6（2026-08-12 全体レビュー）: CDK CLI の既定は `broadening`
+  // （`options.requireApproval ?? RequireApproval.BROADENING`）。TTY の無いサンドボックスでは
+  // 権限が広がる差分で `TtyNotAttached` を投げ、しかも投げる**前**に `cleanupChangeSet()` で
+  // gate が見た change set を消す。ADR 決定 4 が前提にしている「Lambda 権限変更のたびの
+  // IAM Add/Modify」がまさに broadening なので、これは例外ではなく通常運用。
+  it('すべての cdk deploy 呼び出しが --require-approval never を渡す (Important 6)', () => {
+    for (const block of everyCdkInvocation()) {
+      expect(block).toContain('--require-approval never');
     }
   });
 });
 
 describe('危険な既定を持たない', () => {
-  it('スクリプト本文に --force / --require-approval never を含まない', () => {
+  it('スクリプト本文に --force / --no-verify を含まない', () => {
     const source = readFileSync(WRAPPER, 'utf8');
     expect(source).not.toContain('--force');
-    expect(source).not.toContain('--require-approval never');
     expect(source).not.toContain('--no-verify');
+  });
+
+  /**
+   * 🔴 **`--require-approval never` を許すからには、承認者が別に居ることを固定する
+   * （Important 6）。**
+   *
+   * 旧テストは `--require-approval never` を**含まないこと**を主張していたが、
+   * これは無人実行と矛盾していた（TTY が無いので CDK のプロンプトは必ず落ちる）。
+   * 承認機構は `run_diff_gate`（`src/domain/governance/deploy-diff-gate.ts`）であり、
+   * CDK の「権限が広がったら聞く」より厳しい。よって `never` は妥当だが、
+   * **gate を外したら `never` が丸裸で残る**という失敗の型がある。
+   * `deploy` ケースの中で gate が cdk deploy より**前**に走ることを直接固定する。
+   */
+  it('deploy ケースは cdk deploy の前に diff gate を通す（never を丸裸にしない）', () => {
+    const code = stripBashComments(readFileSync(WRAPPER, 'utf8'));
+    const caseStart = code.indexOf('\n  deploy)');
+    if (caseStart === -1) throw new Error('wrapper に deploy) ケースが見つかりません');
+    const caseEnd = code.indexOf('\n  smoke)', caseStart);
+    if (caseEnd === -1) throw new Error('wrapper に smoke) ケースが見つかりません（deploy ケースの終端）');
+    const block = code.slice(caseStart, caseEnd);
+
+    const gate = block.indexOf('run_diff_gate');
+    const deploy = block.indexOf('npx cdk deploy');
+    if (gate === -1) throw new Error('deploy ケースが run_diff_gate を呼んでいません');
+    if (deploy === -1) throw new Error('deploy ケースに npx cdk deploy がありません');
+    expect(gate).toBeLessThan(deploy);
+  });
+
+  it('run_diff_gate は判定を aws-diff-gate.ts（純関数の CLI）へ渡している', () => {
+    const code = stripBashComments(readFileSync(WRAPPER, 'utf8'));
+    const fn = code.indexOf('run_diff_gate() {');
+    if (fn === -1) throw new Error('wrapper に run_diff_gate() の定義が見つかりません');
+    const end = code.indexOf('\ncase "${SUB}" in', fn);
+    if (end === -1) throw new Error('run_diff_gate() の終端が見つかりません');
+    expect(code.slice(fn, end)).toContain('scripts/aws-diff-gate.ts');
   });
 
   it('既定 qualifier hnb659fds を使わない', () => {

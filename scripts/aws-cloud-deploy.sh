@@ -23,6 +23,21 @@ QUALIFIER="orcloud01"
 # 握りつぶされた権限エラーに依存する状態を放置しない。渡せば
 # `CDKToolkit-orcloud01` を正しく参照し、allowlist の当該エントリも実際に使われる。
 TOOLKIT_STACK_NAME="CDKToolkit-${QUALIFIER}"
+# 🔴 **Permissions Boundary をアプリ側にも適用する（層 4 / Critical 2）。**
+# `cdk bootstrap --custom-permissions-boundary` が boundary を付けるのは cfn-exec role
+# **1 つだけ**（`infra/node_modules/aws-cdk/lib/api/bootstrap/bootstrap-template.yaml:738-744`）。
+# CDK アプリが作る `AWS::IAM::Role` には何も付かない。一方 `claude-cfn-exec.json` は
+# boundary 無しの `iam:CreateRole` / `PutRolePolicy` / `AttachRolePolicy` を Deny するので、
+# これを渡さないと**初回 CREATE で必ず AccessDenied になる**
+# （`OpenReception-CfMonitoring-dev` は `crossRegionReferences: true` の custom resource
+# Lambda ＋ `AWS::IAM::Role` を含む CREATE）。
+#
+# 値は「ポリシー**名**」の素の文字列。CDK CLI は `-c key=value` の value を JSON へ
+# パースせず生の文字列のまま渡すため、`-c @aws-cdk/core:permissionsBoundary={"name":...}`
+# は**無言で no-op になる**（`Stack.permissionsBoundaryArn` が `context.name` を
+# プロパティとして読むため）。`infra/bin/open-reception.ts` がこの名前を受け取り、
+# CDK が内部で使うのと同じ `{ name }` 形へ変換して App の context に据える。
+BOUNDARY_POLICY_NAME="OpenReceptionClaudeBoundary"
 DEPLOY_ENV="${OR_DEPLOY_ENV:-dev}"
 REGION="${AWS_REGION:-ap-northeast-1}"
 # 🔴 **スタックごとにリージョンを持つ。** `OpenReception-CfMonitoring-*` は
@@ -227,8 +242,10 @@ run_diff_gate() {
   if ! ( cd "${ROOT}/infra" && npx cdk deploy "${stack}" \
       -c env="${DEPLOY_ENV}" \
       -c "@aws-cdk/core:bootstrapQualifier=${QUALIFIER}" \
+      -c "claudeBoundary=${BOUNDARY_POLICY_NAME}" \
       --toolkit-stack-name "${TOOLKIT_STACK_NAME}" \
-      --change-set-name "${cs_name}" --no-execute ); then
+      --change-set-name "${cs_name}" --no-execute \
+      --require-approval never ); then
     echo "  ⛔ ${stack}（${region}）の change set 作成（cdk deploy --no-execute）に失敗しました" >&2
     echo "     （直前の cdk 出力を参照。cdk 側のエラーメッセージがそのまま上に表示されているはずです）" >&2
     return 1
@@ -266,12 +283,21 @@ case "${SUB}" in
     collect_observation "$(mktemp)" 2400
     for entry in "${STACKS[@]}"; do run_diff_gate "${entry%%:*}" "${entry##*:}"; done
     cs_name="$(changeset_name)"
+    # 🔴 **`--require-approval never` は「承認を捨てた」のではない（Important 6 / ADR 決定 5）。**
+    # 直前の `run_diff_gate` ループが承認機構であり、CDK の対話プロンプトより**厳しい**。
+    # CDK 側の既定（`broadening`）のままだと、TTY の無いクラウドサンドボックスでは
+    # 権限が広がる差分に当たった瞬間 `TtyNotAttached` を投げる。しかも投げる前に
+    # `cleanupChangeSet()` を呼んで **gate が見た change set を削除する**
+    # （`infra/node_modules/aws-cdk/lib/index.js` の approval ブロックの catch）。
+    # ADR 決定 4 は Lambda 権限変更のたびに IAM の Add/Modify が出ることを前提にしており、
+    # つまり broadening は例外ではなく**通常運用**である。
     ( cd "${ROOT}/infra" && npx cdk deploy "${STACK_NAMES[@]}" \
         -c env="${DEPLOY_ENV}" \
         -c "@aws-cdk/core:bootstrapQualifier=${QUALIFIER}" \
+        -c "claudeBoundary=${BOUNDARY_POLICY_NAME}" \
         --toolkit-stack-name "${TOOLKIT_STACK_NAME}" \
         --change-set-name "${cs_name}" \
-        --require-approval broadening )
+        --require-approval never )
     ;;
   smoke)
     if [ -z "${OR_SMOKE_URL:-}" ]; then

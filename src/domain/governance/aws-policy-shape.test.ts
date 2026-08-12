@@ -8,7 +8,12 @@
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { auditPolicyDocument, type PolicyDocument } from './aws-policy-shape';
+import {
+  auditPolicyDocument,
+  conditionOperatorsForKey,
+  strictConditionKeys,
+  type PolicyDocument,
+} from './aws-policy-shape';
 
 const load = (name: string): PolicyDocument =>
   JSON.parse(readFileSync(resolve(process.cwd(), 'scripts/aws-policies', name), 'utf8')) as PolicyDocument;
@@ -111,6 +116,124 @@ describe('auditPolicyDocument', () => {
     expect(audit.deniedResourcePatterns).toContain('arn:aws:s3:::nodi-*');
   });
 
+  // 🔴 Minor 11（2026-08-12 全体レビュー）: 検出器は `Action:*`+`Resource:*` と
+  // 無条件 `iam:CreateRole` しか見ておらず、Finding 4/5 の昇格プリミティブ
+  // （`iam:PassRole` on `*` / `iam:CreatePolicyVersion` on `*` / `iam:DeleteRole` on `*`）を
+  // 素通りさせていた。
+  describe('IAM 昇格プリミティブの検出', () => {
+    it('iam:PassRole を Resource:* で無条件に Allow していたら検出する', () => {
+      const audit = auditPolicyDocument({
+        Version: '2012-10-17',
+        Statement: [{ Effect: 'Allow', Action: 'iam:PassRole', Resource: '*' }],
+      });
+      expect(audit.unscopedPassRole).toBe(true);
+    });
+
+    it('lambda:* のような prefix ワイルドカードでなく iam:* でも検出する', () => {
+      const audit = auditPolicyDocument({
+        Version: '2012-10-17',
+        Statement: [{ Effect: 'Allow', Action: 'iam:*', Resource: '*' }],
+      });
+      expect(audit.unscopedPassRole).toBe(true);
+    });
+
+    it('iam:PassedToService で絞ってあれば検出しない', () => {
+      const audit = auditPolicyDocument({
+        Version: '2012-10-17',
+        Statement: [
+          {
+            Effect: 'Allow',
+            Action: 'iam:PassRole',
+            Resource: '*',
+            Condition: { StringEquals: { 'iam:PassedToService': 'lambda.amazonaws.com' } },
+          },
+        ],
+      });
+      expect(audit.unscopedPassRole).toBe(false);
+    });
+
+    it('aws:ResourceTag で絞ってあれば検出しない', () => {
+      const audit = auditPolicyDocument({
+        Version: '2012-10-17',
+        Statement: [
+          {
+            Effect: 'Allow',
+            Action: 'iam:PassRole',
+            Resource: '*',
+            Condition: { StringEquals: { 'aws:ResourceTag/Project': 'open-reception' } },
+          },
+        ],
+      });
+      expect(audit.unscopedPassRole).toBe(false);
+    });
+
+    // boundary 条件で踏んだのと同じ罠。`*IfExists` はキー欠如時に無条件で true を返すので
+    // 「絞っている」ことにならない。
+    it('StringEqualsIfExists の PassedToService は「絞っている」と認めない', () => {
+      const audit = auditPolicyDocument({
+        Version: '2012-10-17',
+        Statement: [
+          {
+            Effect: 'Allow',
+            Action: 'iam:PassRole',
+            Resource: '*',
+            Condition: { StringEqualsIfExists: { 'iam:PassedToService': 'lambda.amazonaws.com' } },
+          },
+        ],
+      });
+      expect(audit.unscopedPassRole).toBe(true);
+    });
+
+    it('iam:CreatePolicyVersion を Resource:* で Allow していたら検出する', () => {
+      const audit = auditPolicyDocument({
+        Version: '2012-10-17',
+        Statement: [{ Effect: 'Allow', Action: ['iam:CreatePolicyVersion'], Resource: '*' }],
+      });
+      expect(audit.unscopedPolicyRewrite).toBe(true);
+      expect(audit.unscopedRoleWrite).toBe(false);
+    });
+
+    it('iam:DeleteRole を Resource:* で Allow していたら検出する', () => {
+      const audit = auditPolicyDocument({
+        Version: '2012-10-17',
+        Statement: [{ Effect: 'Allow', Action: ['iam:DeleteRole'], Resource: '*' }],
+      });
+      expect(audit.unscopedRoleWrite).toBe(true);
+      expect(audit.unscopedPolicyRewrite).toBe(false);
+    });
+
+    it('Resource が絞られていれば昇格プリミティブとして検出しない', () => {
+      const audit = auditPolicyDocument({
+        Version: '2012-10-17',
+        Statement: [
+          {
+            Effect: 'Allow',
+            Action: ['iam:DeleteRole', 'iam:CreatePolicyVersion'],
+            Resource: 'arn:aws:iam::822063948773:role/OpenReception-*',
+          },
+        ],
+      });
+      expect(audit.unscopedRoleWrite).toBe(false);
+      expect(audit.unscopedPolicyRewrite).toBe(false);
+    });
+
+    it('IAM 書き込み系の Deny に列挙された ARN パターンを別集計する', () => {
+      const audit = auditPolicyDocument({
+        Version: '2012-10-17',
+        Statement: [
+          {
+            Effect: 'Deny',
+            Action: ['iam:DeleteRole'],
+            Resource: ['arn:aws:iam::822063948773:role/cdk-hnb659fds-*'],
+          },
+          // IAM 書き込みと無関係な Deny は混ざらない。
+          { Effect: 'Deny', Action: ['s3:*'], Resource: ['arn:aws:s3:::nodi-*'] },
+        ],
+      });
+      expect(audit.iamWriteDenyPatterns).toEqual(['arn:aws:iam::822063948773:role/cdk-hnb659fds-*']);
+    });
+  });
+
   it('Deny の NotResource を Resource とは別に集計する', () => {
     const audit = auditPolicyDocument({
       Version: '2012-10-17',
@@ -131,6 +254,82 @@ describe('auditPolicyDocument', () => {
 
 /** 他プロジェクトの列挙。spec の Global Constraints と 1:1。 */
 const FOREIGN_PATTERNS = ['nodi-', 'salon-loop-', 'Kiaff', 'cdk-hnb659fds-', 'cdk-staging-'];
+
+/**
+ * 層 2・層 4 の**主体**となる 2 ポリシー（exec role の権限と、その天井）。
+ * 両方に同じ性質を要求する ―― 片方だけ直すと、もう片方が抜け道になる。
+ */
+const ESCALATION_SCOPED_POLICIES = ['claude-boundary.json', 'claude-cfn-exec.json'] as const;
+
+/**
+ * Important 5（2026-08-12 全体レビュー）で塞いだ、名前で列挙できる IAM 書き込み先。
+ * `cdk-orcloud01-*` と `OpenReceptionClaudeDeploy-dev` を含むのが重要 —— **自分の
+ * チェーン**を書き換えられると主境界そのものが外れる（`iam:DeleteRolePolicy` で
+ * deploy role から層 1 のインラインポリシーを剥がす、など）。
+ */
+const IAM_WRITE_DENY_REQUIRED = [
+  'role/cdk-hnb659fds-',
+  'role/cdk-staging-',
+  'role/cdk-orcloud01-',
+  'role/OpenReceptionClaudeDeploy-dev',
+  'role/nodi-',
+  'role/salon-loop-',
+  'role/Kiaff',
+  'policy/cdk-hnb659fds-',
+  'policy/nodi-',
+  'policy/salon-loop-',
+  'policy/SalonLoop',
+  'policy/OpenReceptionClaude',
+  'user/*',
+];
+
+describe.each(ESCALATION_SCOPED_POLICIES)('%s の IAM 昇格経路', (name) => {
+  const audit = auditPolicyDocument(load(name));
+
+  // 🔴 Important 4: 層 2 の論拠は「広い grant は dev スタックのテンプレートが要求した
+  // ときにしか行使されない」だったが、そのテンプレートを書くのは脅威モデル（spec §3）が
+  // 侵害を仮定しているサンドボックス自身である。`Role.fromRoleArn(<既存の別ロール>)` を
+  // Lambda に渡す変更は change set 上 `AWS::Lambda::Function` の `Add`（SAFE_ACTION）に
+  // しか見えず、gate は止めも記録もしない。PassRole 側で絞るしかない。
+  it('iam:PassRole を Resource:* で無条件に Allow していない (Important 4)', () => {
+    expect(audit.unscopedPassRole).toBe(false);
+  });
+
+  it('iam:PassRole の Allow は PassedToService とタグの両方で絞っている', () => {
+    const stmt = load(name).Statement.find(
+      (s) => s.Effect === 'Allow' && JSON.stringify(s.Action).includes('iam:PassRole'),
+    );
+    expect(stmt).toBeDefined();
+    const keys = strictConditionKeys(stmt!);
+    expect(keys).toContain('iam:passedtoservice');
+    expect(keys).toContain('aws:resourcetag/project');
+    expect(keys).toContain('aws:resourcetag/environment');
+  });
+
+  // 🔴 Important 5: 出荷しているポリシーは `iam:DeleteRole` / `CreatePolicyVersion` 等を
+  // `Resource: "*"` で Allow している（CDK が自分のロール・ポリシーを更新するのに要る）。
+  // よって「広くないこと」は主張できない。**広いなら、名前による明示 Deny が揃っている
+  // こと**を要求する。実装した以上のカバレッジを主張しないための形。
+  it('ロール/ポリシーの破壊系が広いなら、外部プリンシパルへの明示 Deny が揃っている (Important 5)', () => {
+    if (!audit.unscopedRoleWrite && !audit.unscopedPolicyRewrite) return;
+    const patterns = audit.iamWriteDenyPatterns.join('\n');
+    for (const required of IAM_WRITE_DENY_REQUIRED) {
+      expect(patterns).toContain(required);
+    }
+  });
+
+  it('タグで絞れる範囲（role）については Project タグ以外への書き込みも Deny している', () => {
+    const stmt = load(name).Statement.find(
+      (s) => (s as unknown as { Sid?: string }).Sid === 'DenyIamRoleWriteOutsideProject',
+    );
+    expect(stmt).toBeDefined();
+    expect(stmt!.Effect).toBe('Deny');
+    // `StringNotEquals`（キー欠如時に真＝fail-closed）であることまで固定する。
+    // `StringNotEqualsIfExists` にするとタグ無しロールを素通りさせてしまう。
+    expect(conditionOperatorsForKey(stmt!, 'aws:ResourceTag/Project')).toEqual(['StringNotEquals']);
+    expect(JSON.stringify(stmt!.Action)).toContain('iam:DeleteRole');
+  });
+});
 
 describe('claude-boundary.json', () => {
   const doc = load('claude-boundary.json');
@@ -162,6 +361,21 @@ describe('claude-boundary.json', () => {
   it('boundary 自身の書き換えを Deny している', () => {
     const denied = auditPolicyDocument(doc).deniedResourcePatterns.join('\n');
     expect(denied).toContain('policy/OpenReceptionClaudeBoundary');
+  });
+
+  // 🔴 Critical 2（2026-08-12 全体レビュー）の副作用: boundary は cfn-exec role だけの
+  // 天井ではなくなった。`infra/bin/open-reception.ts` が `-c claudeBoundary=` を受けて
+  // **アプリが作る全 Role**（server Lambda / image Lambda / custom resource）にも付ける。
+  // Permissions Boundary は天井なので、ここに無いアクションは identity policy が
+  // 許可していても実行時に効かない ―― **デプロイは成功するのに機能だけ壊れる**。
+  //
+  // dev の server Lambda は `infra/lib/constructs/cost-explorer-access.ts` で
+  // `ce:GetCostAndUsage` / `ce:GetCostForecast` を持つ（developer コスト画面 #377）。
+  // これを天井から落とすと画面が実行時 AccessDenied になる。
+  it('dev の実行ロールが必要とする Cost Explorer read を天井に含む（#377 を壊さない）', () => {
+    const allowed = auditPolicyDocument(doc).allowedActions;
+    expect(allowed).toContain('ce:GetCostAndUsage');
+    expect(allowed).toContain('ce:GetCostForecast');
   });
 });
 

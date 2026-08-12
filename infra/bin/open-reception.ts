@@ -8,6 +8,7 @@ import { NotificationStack } from '../lib/stacks/notification-stack';
 import { MonitoringStack } from '../lib/stacks/monitoring-stack';
 import { RealtimeRuntimeStack, RealtimeRuntimeDnsConfig } from '../lib/stacks/realtime-runtime-stack';
 import { resolveEnv } from '../lib/config/environments';
+import { applyClaudeDeployBoundary } from '../lib/config/claude-deploy-boundary';
 import { configureCostExplorerAccess } from '../lib/constructs/cost-explorer-access';
 import { overrideComponentTag } from '../lib/constructs/cost-tags';
 import { COST_TAG_COMPONENTS } from '../lib/config/cost-components';
@@ -31,6 +32,15 @@ import { COST_TAG_COMPONENTS } from '../lib/config/cost-components';
  * (CDK_DEFAULT_ACCOUNT / CDK_DEFAULT_REGION) を使用する。
  */
 const app = new cdk.App();
+
+// 🔴 **Claude Cloud からの無人 dev デプロイ用 Permissions Boundary (#680 / ADR 0009 層 4)。**
+// `-c claudeBoundary=<ポリシー名>` が渡されたときだけ、App 配下の全 Role / User へ
+// boundary を強制する。`cdk bootstrap --custom-permissions-boundary` は cfn-exec role
+// 1 つにしか boundary を付けないため、これが無いと初回 CREATE で `iam:CreateRole` が
+// Deny されて AccessDenied になる。理由と落とし穴の全文は
+// `../lib/config/claude-deploy-boundary.ts` の doc コメント。
+// **Stack を 1 つでも作る前に呼ぶこと**（`Stack` の constructor が context を読む）。
+applyClaudeDeployBoundary(app);
 
 const envName = app.node.tryGetContext('env') as string | undefined;
 const config = resolveEnv(envName);

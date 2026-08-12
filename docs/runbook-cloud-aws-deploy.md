@@ -105,6 +105,22 @@ npx cdk bootstrap aws://822063948773/ap-northeast-1 aws://822063948773/us-east-1
 `cdk-orcloud01-cfn-exec-role-822063948773-<region>` / file-publishing / image-publishing /
 lookup の各ロールが作成され、boundary と exec policy が結びつく。
 
+🔴 **`--custom-permissions-boundary` が boundary を付けるのは cfn-exec role 1 つだけである。**
+bootstrap テンプレートで `PermissionsBoundary` プロパティを持つのは
+`CloudFormationExecutionRole` のみ
+（`infra/node_modules/aws-cdk/lib/api/bootstrap/bootstrap-template.yaml`）。
+deploy / file-publishing / image-publishing / **lookup** には付かない。とくに lookup role は
+AWS 管理の `ReadOnlyAccess` 付き・boundary 無しなので、entry role から到達させてはいけない
+（ステップ 1 の 4 と 4b-13 を参照）。
+
+そして **CDK アプリが作る Role にも付かない。** これは `infra/bin/open-reception.ts` の
+`applyClaudeDeployBoundary(app)` が担当し、`scripts/aws-cloud-deploy.sh` が全 `cdk` 呼び出しで
+`-c claudeBoundary=OpenReceptionClaudeBoundary` を渡すことで有効になる。
+**これが無いと初回デプロイは必ず AccessDenied になる**
+（`claude-cfn-exec.json` の `DenyRoleCreationWithoutBoundary` が boundary 無しの
+`iam:CreateRole` を Deny し、`OpenReception-CfMonitoring-dev` の CREATE がまさにそれを呼ぶ）。
+人間が `cdk` を直接叩いて dev を触るときも同じ context を渡すこと。
+
 🔴 **`--toolkit-stack-name CDKToolkit-orcloud01` を必ず明示する。** `scripts/aws-cloud-deploy.sh`
 側も全 `cdk deploy` 呼び出しで同じ `--toolkit-stack-name` を渡している
 （`TOOLKIT_STACK_NAME="CDKToolkit-${QUALIFIER}"`）。**bootstrap と wrapper でこの名前が
@@ -155,13 +171,13 @@ SIMULATE_PRINCIPAL_ARN=arn:aws:iam::822063948773:role/OpenReceptionClaudeDeploy-
 `unknown`（＝ FAIL 扱い）になる。クラウド側は `scripts/aws-cloud-deploy.sh` 経由で常に
 `--live-only` が渡り、S 系は自動的にスキップされる。
 
-### 4b. 🔴 手動でしか検証できない分（changeSet ARN スコープほか、16 コマンド）
+### 4b. 🔴 手動でしか検証できない分（changeSet ARN スコープほか、16 コマンド + 4c の 4 本）
 
 **このサイクルで一度も実行されていない。** AWS 認証情報が無く、`aws` コマンドの実行も
 禁止されていたため、実装の正しさは `auditPolicyDocument` による**静的構造検証のみ**で
 確認済みであり、**IAM の実際の評価結果は未証明**である。
 
-**次の 16 本を実行し、コメントに書かれた期待どおりの `EvalDecision` が返ることを確認する。
+**次の 16 本（および 4c の 17〜20）を実行し、コメントに書かれた期待どおりの `EvalDecision` が返ることを確認する。
 1 本でも期待と違ったら、初回デプロイへ進まない。** `--policy-source-arn` は実在の IAM ロール
 でなければならない点に注意（存在しない ARN を渡すとシミュレーションが別のエラーで失敗する）。
 
@@ -268,7 +284,116 @@ aws iam simulate-principal-policy \
   --action-names sts:AssumeRole \
   --resource-arns arn:aws:iam::822063948773:role/cdk-orcloud01-lookup-role-822063948773-ap-northeast-1 \
   --query 'EvaluationResults[0].EvalDecision' --output text
+
+# ---------------------------------------------------------------------------
+# 🔴 14〜16: iam:PassRole の条件付き Allow（ADR 決定 6 / Important 4）。
+#
+# **初回デプロイが AccessDenied になるなら、まずここを疑う。** `iam:PassRole` を
+# `Resource: "*"` の無条件 Allow から
+#   iam:PassedToService = lambda.amazonaws.com
+#   aws:ResourceTag/Project = open-reception
+#   aws:ResourceTag/Environment = dev
+# の条件付きへ絞った。この 3 条件は AND であり、**渡される Role に 2 つのタグが
+# 実際に付いていること**に依存する（`applyCostTags` が `Tags.of(stack)` で付与。
+# タグが付くこと自体は `infra/test/claude-deploy-boundary.test.ts` が synth で
+# 確認済みだが、**IAM が実際にそう評価するかは未検証**）。
+#
+# 14 が denied だった場合の切り分け順序:
+#   1) タグ条件（`aws:ResourceTag/*` の 2 行）を外して `iam:PassedToService` だけに緩める
+#   2) それでも denied なら `iam:PassedToService` の値を増やす
+#      （`edgelambda.amazonaws.com` / `apigateway.amazonaws.com` 等）
+#   3) 最後の手段として `Resource: "*"` の無条件 Allow に戻す。**戻したら
+#      ADR 決定 6 を「撤回」として更新すること**（黙って戻さない）
+# ---------------------------------------------------------------------------
+
+# 14) cfn-exec role: dev の Lambda 実行ロール（タグ付き）への PassRole → allowed 期待
+#     --context-entries で条件キーの値を明示しないと simulate はキー未設定として
+#     評価するため、必ず 3 つとも渡す。
+aws iam simulate-principal-policy \
+  --policy-source-arn arn:aws:iam::822063948773:role/cdk-orcloud01-cfn-exec-role-822063948773-ap-northeast-1 \
+  --action-names iam:PassRole \
+  --resource-arns 'arn:aws:iam::822063948773:role/OpenReception-Web-dev-ServerFnServiceRoleDUMMY' \
+  --context-entries \
+      'ContextKeyName=iam:PassedToService,ContextKeyValues=lambda.amazonaws.com,ContextKeyType=string' \
+      'ContextKeyName=aws:ResourceTag/Project,ContextKeyValues=open-reception,ContextKeyType=string' \
+      'ContextKeyName=aws:ResourceTag/Environment,ContextKeyValues=dev,ContextKeyType=string' \
+  --query 'EvaluationResults[0].EvalDecision' --output text
+
+# 15) cfn-exec role: 別プロジェクトのタグが付いたロールへの PassRole → denied 期待
+#     （タグ条件が実際に効いていることの直接確認。ここが allowed なら
+#      `aws:ResourceTag` 条件が機能しておらず、Important 4 は塞げていない）
+aws iam simulate-principal-policy \
+  --policy-source-arn arn:aws:iam::822063948773:role/cdk-orcloud01-cfn-exec-role-822063948773-ap-northeast-1 \
+  --action-names iam:PassRole \
+  --resource-arns 'arn:aws:iam::822063948773:role/salon-loop-staging-SomeRole' \
+  --context-entries \
+      'ContextKeyName=iam:PassedToService,ContextKeyValues=lambda.amazonaws.com,ContextKeyType=string' \
+      'ContextKeyName=aws:ResourceTag/Project,ContextKeyValues=salon-loop,ContextKeyType=string' \
+      'ContextKeyName=aws:ResourceTag/Environment,ContextKeyValues=staging,ContextKeyType=string' \
+  --query 'EvaluationResults[0].EvalDecision' --output text
+
+# 16) cfn-exec role: lambda 以外のサービスへの PassRole → denied 期待
+#     （PassedToService 条件が効いていることの直接確認）
+aws iam simulate-principal-policy \
+  --policy-source-arn arn:aws:iam::822063948773:role/cdk-orcloud01-cfn-exec-role-822063948773-ap-northeast-1 \
+  --action-names iam:PassRole \
+  --resource-arns 'arn:aws:iam::822063948773:role/OpenReception-Web-dev-ServerFnServiceRoleDUMMY' \
+  --context-entries \
+      'ContextKeyName=iam:PassedToService,ContextKeyValues=ec2.amazonaws.com,ContextKeyType=string' \
+      'ContextKeyName=aws:ResourceTag/Project,ContextKeyValues=open-reception,ContextKeyType=string' \
+      'ContextKeyName=aws:ResourceTag/Environment,ContextKeyValues=dev,ContextKeyType=string' \
+  --query 'EvaluationResults[0].EvalDecision' --output text
 ```
+
+### 4c. 他プロジェクトの IAM への書き込みが塞がっているか（ADR 決定 7 / Important 5）
+
+`claude-cfn-exec.json` は `iam:DeleteRole` / `CreatePolicyVersion` 等を `Resource: "*"` で
+Allow している（CDK が自分のロール・ポリシーを更新するのに要る）。塞いでいるのは
+`DenyIamWriteOnForeignPrincipals`（**名前による明示 Deny**）と
+`DenyIamRoleWriteOutsideProject`（**タグ条件。role にだけ効く**）の 2 つ。
+
+```bash
+# 17) cfn-exec role: 共有 bootstrap の cfn-exec role を削除 → denied 期待
+#     （allowed だと 4 プロジェクト全部のデプロイを壊せる）
+aws iam simulate-principal-policy \
+  --policy-source-arn arn:aws:iam::822063948773:role/cdk-orcloud01-cfn-exec-role-822063948773-ap-northeast-1 \
+  --action-names iam:DeleteRole \
+  --resource-arns arn:aws:iam::822063948773:role/cdk-hnb659fds-cfn-exec-role-822063948773-ap-northeast-1 \
+  --query 'EvaluationResults[0].EvalDecision' --output text
+
+# 18) cfn-exec role: 別プロジェクトの実行ポリシーを書き換える → denied 期待
+#     （`--set-as-default` 付きの CreatePolicyVersion は中身を丸ごと差し替えられる）
+aws iam simulate-principal-policy \
+  --policy-source-arn arn:aws:iam::822063948773:role/cdk-orcloud01-cfn-exec-role-822063948773-ap-northeast-1 \
+  --action-names iam:CreatePolicyVersion iam:SetDefaultPolicyVersion \
+  --resource-arns arn:aws:iam::822063948773:policy/SalonLoopStagingCfnExecution \
+  --query 'EvaluationResults[*].EvalDecision' --output text
+
+# 19) cfn-exec role: **自分のチェーン**（deploy role）から層 1 のインラインポリシーを
+#     剥がす → denied 期待。これが allowed だと主境界そのものを外せる
+aws iam simulate-principal-policy \
+  --policy-source-arn arn:aws:iam::822063948773:role/cdk-orcloud01-cfn-exec-role-822063948773-ap-northeast-1 \
+  --action-names iam:DeleteRolePolicy \
+  --resource-arns arn:aws:iam::822063948773:role/cdk-orcloud01-deploy-role-822063948773-ap-northeast-1 \
+  --query 'EvaluationResults[0].EvalDecision' --output text
+
+# 20) cfn-exec role: 自分の（タグ付き）dev ロールの削除 → allowed 期待
+#     （19 の Deny が広すぎて通常のスタック更新まで壊していないことの対照）
+aws iam simulate-principal-policy \
+  --policy-source-arn arn:aws:iam::822063948773:role/cdk-orcloud01-cfn-exec-role-822063948773-ap-northeast-1 \
+  --action-names iam:DeleteRole \
+  --resource-arns 'arn:aws:iam::822063948773:role/OpenReception-Web-dev-ServerFnServiceRoleDUMMY' \
+  --context-entries \
+      'ContextKeyName=aws:ResourceTag/Project,ContextKeyValues=open-reception,ContextKeyType=string' \
+  --query 'EvaluationResults[0].EvalDecision' --output text
+```
+
+🔴 **タグ条件は一般解ではない。** `AWS::IAM::ManagedPolicy` は CloudFormation の
+リソース仕様に `Tags` を持たないため、CDK が作るマネージドポリシーは必ず untagged になる。
+`iam:CreatePolicyVersion` に `StringNotEquals aws:ResourceTag/Project` を掛けると
+（キー欠如時に真なので）**自分自身のポリシー更新まで Deny される**。よって
+ポリシー系アクションは**名前による明示 Deny のみ**が頼りであり、列挙から漏れた
+第三者ポリシーは覆えない（spec §13 の残存リスクに記載）。
 
 `DeleteStack`（12 番目）は 3 つの dev スタック全部（`OpenReception-Web-dev` /
 `OpenReception-WebMonitoring-dev` / `OpenReception-CfMonitoring-dev`、最後のみ us-east-1）に

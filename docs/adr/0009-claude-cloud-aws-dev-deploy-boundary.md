@@ -129,6 +129,95 @@ Permissions Boundary にある。`cdk-orcloud01-cfn-exec-role-*` が新規作成
 `*IfExists` 系および `Null` 演算子を boundary 条件と認めないことで機械的に検証している。
 Remove や Replacement は決定 4 の対象外で、通常どおり停止側に倒す。
 
+🔴 **2026-08-12 全体レビューでの訂正 — この根拠は当初、事実として成立していなかった。**
+`cdk bootstrap --custom-permissions-boundary` が boundary を付けるのは
+`CloudFormationExecutionRole` **1 リソースだけ**であり
+（`infra/node_modules/aws-cdk/lib/api/bootstrap/bootstrap-template.yaml`）、
+**CDK アプリが作る Role には何も付いていなかった**（`infra/` に
+`PermissionsBoundary.of(...)` は無く、`infra/cdk.json` にも
+`@aws-cdk/core:permissionsBoundary` は無く、wrapper も渡していなかった）。
+つまり「新しい Role は構造的に boundary を超えられない」は偽であり、同時に初回の
+CREATE（`OpenReception-CfMonitoring-dev`）が `iam:CreateRole` の Deny で
+AccessDenied になる状態でもあった。`infra/lib/config/claude-deploy-boundary.ts` の
+`applyClaudeDeployBoundary(app)` を配線し、wrapper が全 `cdk` 呼び出しで
+`-c claudeBoundary=OpenReceptionClaudeBoundary` を渡すようにして初めて真になる。
+
+🔴 **さらに `iam:PassRole` の抜け道があった（同レビュー Important 4）。** boundary を
+強制しても、テンプレートが `Role.fromRoleArn('<既存の別ロール>')` を Lambda へ渡せば、
+その Lambda は boundary の外で動く。change set 上は `AWS::Lambda::Function` の
+`Add`（`SAFE_ACTION`）にしか見えず、gate は止めも記録もしない。決定 4 を維持するには
+PassRole 側の制約が要るため、`iam:PassRole` を `iam:PassedToService` ＋
+`aws:ResourceTag/Project` ＋ `aws:ResourceTag/Environment` で絞った（決定 6）。
+
+### 決定 5: CDK の承認プロンプトを使わず、diff gate を唯一の承認者にする
+
+`scripts/aws-cloud-deploy.sh` の **すべての** `cdk` 呼び出し（`diff` の
+`--no-execute` と `deploy` の両方）に `--require-approval never` を渡す。
+
+| 案 | Pros | Cons | 採否 |
+| --- | --- | --- | --- |
+| **`--require-approval never` ＋ diff gate が承認者**（採用） | 無人実行が成立する。承認基準がコード（`deploy-diff-gate.ts`）として読め、テストで固定でき、CDK の「権限が広がったか」より広い条件（Remove / 未知 action / Replacement / KMS / Secrets / Route53 / SecurityGroup / IAM プリンシパル）で止める | CDK 本体が持つ二重チェックを失う | ○ |
+| 既定（`broadening`）のまま | CDK の安全網が残る | **クラウドサンドボックスには TTY が無い**ので、権限が広がる差分に当たった瞬間 `TtyNotAttached` を投げて必ず失敗する。しかも投げる**前**に `cleanupChangeSet()` を呼び、gate が判定に使った change set を削除する。決定 4 は「Lambda 権限変更のたびに IAM の Add/Modify が出る」ことを前提にしており、broadening は例外ではなく**通常運用**。つまりこの案では無人デプロイが原理的に成立しない | ✗ |
+
+**理由**: `deploy-diff-gate.ts` の停止条件は CDK の `broadening` 判定より**厳しい**。
+CDK が聞くのは「IAM/セキュリティグループの権限が広がったか」だけだが、gate は
+リソース削除・replacement・未知の action・KMS/Secrets/DNS/SG/IAM プリンシパルの
+出現でも止める。したがって承認機構を失ってはいない。
+
+**この決定に付随する失敗の型**: gate を外すと `never` だけが丸裸で残る。
+`tests/hooks/aws-cloud-deploy.test.ts` は「全 `cdk` 呼び出しが `never` を渡すこと」と
+「`deploy` ケースが `cdk deploy` の**前**に `run_diff_gate` を通すこと」を**対で**
+固定してある（前者だけだと、gate 削除に気づけない）。
+
+### 決定 6: `iam:PassRole` は「渡す先のサービス」と「タグ」で絞る
+
+`claude-cfn-exec.json` / `claude-boundary.json` の `iam:PassRole` を
+`Resource: "*"` の無条件 Allow から、次の条件付き Allow へ変更する。
+
+- `iam:PassedToService` が dev スタックが実際に必要とするサービスであること
+- `aws:ResourceTag/Project` = `open-reception` かつ `aws:ResourceTag/Environment` = `dev`
+
+| 案 | Pros | Cons | 採否 |
+| --- | --- | --- | --- |
+| **PassedToService ＋ タグ条件**（採用） | 「テンプレートが要求したときにしか行使されない」という層 2 の論拠に依存しなくなる。テンプレートを書くのは**脅威モデルが侵害を仮定しているサンドボックス自身**（spec §3）なので、その論拠だけでは弱い | 全 dev リソースにタグが付いていることに依存する（`applyCostTags` が `Tags.of(stack)` で `Project`/`Environment` を全 taggable リソースへ付与しているので成立するが、**AWS 認証情報が無いため実測で確認できていない**） | ○ |
+| `Resource: "*"` のまま | 壊れない | `Role.fromRoleArn('<lambda.amazonaws.com を信頼する既存ロール>')` を足すだけで boundary の外に出られる。diff gate からは `AWS::Lambda::Function` の `Add` にしか見えない | ✗ |
+
+🔴 **これが初回デプロイで AccessDenied になる最有力候補である。** 検証は
+`docs/runbook-cloud-aws-deploy.md` ステップ 4b の 14〜16 で行う。
+1 本でも denied なら、タグ条件（`aws:ResourceTag/*`）を外して
+`iam:PassedToService` だけに緩めるのが最初の切り分けである。
+
+### 決定 7: 他プロジェクトの IAM ロール / ポリシーへの書き込みを明示 Deny する
+
+`claude-cfn-exec.json` は `iam:DeleteRole` / `CreatePolicy` / `DeletePolicy` /
+`CreatePolicyVersion` / `DeletePolicyVersion` / `DeleteRolePolicy` /
+`DetachRolePolicy` を `Resource: "*"` で Allow している。層 3 の denylist は
+CloudFormation スタック・DynamoDB/S3 データ・`cdk-*` ロールへの
+`sts:AssumeRole`/`iam:PassRole` は覆うが、**他プロジェクトの IAM ロールと
+ポリシーそのものは覆っていなかった**。`iam:CreatePolicyVersion --policy-arn
+.../SalonLoopStagingCfnExecution --set-as-default` で別プロジェクトの実行ポリシーを
+書き換えられ、`iam:DeleteRole` で `cdk-hnb659fds-cfn-exec-role-*` を消せば
+4 プロジェクト全部のデプロイが壊れる。
+
+対処は 2 段構え（`DenyIamWriteOnForeignPrincipals` / `DenyIamRoleWriteOutsideProject`）。
+
+1. **名前による明示 Deny**（確実に効く）: `cdk-hnb659fds-*` / `cdk-staging-*` /
+   `cdk-orcloud01-*`（**自分のチェーン**も含む。deploy role の層 1 インライン
+   ポリシーを `iam:DeleteRolePolicy` で剥がされたら主境界が消える）/
+   `OpenReceptionClaudeDeploy-dev` / `nodi-*` / `salon-loop-*` / `Kiaff*` /
+   `SalonLoop*` / `Nodi*` の role・policy、および全 `user/*`。
+2. **タグ条件による一般化**（role にだけ効く）: `iam:DeleteRole` /
+   `DeleteRolePolicy` / `DetachRolePolicy` / `UpdateAssumeRolePolicy` を
+   `aws:ResourceTag/Project != open-reception` で Deny する。
+
+🔴 **タグ条件は一般解にならない。** `AWS::IAM::ManagedPolicy` は CloudFormation の
+リソース仕様に `Tags` プロパティを持たないため、CDK が作るマネージドポリシーは
+**必ず untagged になる**。`iam:CreatePolicyVersion` に
+`StringNotEquals aws:ResourceTag/Project` を掛けると（キー欠如時に真なので）
+**自分自身のポリシー更新まで Deny される**。よってポリシー系アクションは
+名前による明示 Deny のみが頼りであり、**列挙から漏れた第三者ポリシーは覆えない**。
+これは残存ギャップとして spec §13 に記載する（「実装した以上のカバレッジを主張しない」）。
+
 ## 未検証事項・撤回条件
 
 - **`iam:SimulatePrincipalPolicy` による実 API 検証（12 コマンド、`docs/runbook-cloud-aws-deploy.md`

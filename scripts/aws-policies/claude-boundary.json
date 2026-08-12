@@ -20,7 +20,6 @@
         "iam:GetRolePolicy",
         "iam:ListRolePolicies",
         "iam:ListAttachedRolePolicies",
-        "iam:PassRole",
         "iam:DeleteRole",
         "iam:TagRole",
         "iam:UntagRole",
@@ -39,6 +38,25 @@
       "Resource": "*"
     },
     {
+      "Sid": "AllowPassRoleOnlyToTaggedDevWorkloads",
+      "Effect": "Allow",
+      "Action": "iam:PassRole",
+      "Resource": "*",
+      "Condition": {
+        "StringEquals": {
+          "iam:PassedToService": ["lambda.amazonaws.com"],
+          "aws:ResourceTag/Project": "open-reception",
+          "aws:ResourceTag/Environment": "dev"
+        }
+      }
+    },
+    {
+      "Sid": "AllowDevRuntimeCostExplorerReads",
+      "Effect": "Allow",
+      "Action": ["ce:GetCostAndUsage", "ce:GetCostForecast"],
+      "Resource": "*"
+    },
+    {
       "Sid": "AllowRoleMutationOnlyWithBoundary",
       "Effect": "Allow",
       "Action": ["iam:CreateRole", "iam:PutRolePolicy", "iam:AttachRolePolicy"],
@@ -47,6 +65,64 @@
         "StringEquals": {
           "iam:PermissionsBoundary": "arn:aws:iam::822063948773:policy/OpenReceptionClaudeBoundary"
         }
+      }
+    },
+    {
+      "Sid": "DenyIamWriteOnForeignPrincipals",
+      "Effect": "Deny",
+      "Action": [
+        "iam:CreateRole",
+        "iam:DeleteRole",
+        "iam:UpdateRole",
+        "iam:UpdateAssumeRolePolicy",
+        "iam:PutRolePolicy",
+        "iam:DeleteRolePolicy",
+        "iam:AttachRolePolicy",
+        "iam:DetachRolePolicy",
+        "iam:TagRole",
+        "iam:UntagRole",
+        "iam:PutRolePermissionsBoundary",
+        "iam:DeleteRolePermissionsBoundary",
+        "iam:CreatePolicy",
+        "iam:DeletePolicy",
+        "iam:CreatePolicyVersion",
+        "iam:DeletePolicyVersion",
+        "iam:SetDefaultPolicyVersion",
+        "iam:TagPolicy",
+        "iam:UntagPolicy"
+      ],
+      "Resource": [
+        "arn:aws:iam::822063948773:role/cdk-hnb659fds-*",
+        "arn:aws:iam::822063948773:role/cdk-staging-*",
+        "arn:aws:iam::822063948773:role/cdk-orcloud01-*",
+        "arn:aws:iam::822063948773:role/OpenReceptionClaudeDeploy-dev",
+        "arn:aws:iam::822063948773:role/nodi-*",
+        "arn:aws:iam::822063948773:role/salon-loop-*",
+        "arn:aws:iam::822063948773:role/Kiaff*",
+        "arn:aws:iam::822063948773:policy/cdk-hnb659fds-*",
+        "arn:aws:iam::822063948773:policy/cdk-staging-*",
+        "arn:aws:iam::822063948773:policy/nodi-*",
+        "arn:aws:iam::822063948773:policy/salon-loop-*",
+        "arn:aws:iam::822063948773:policy/Kiaff*",
+        "arn:aws:iam::822063948773:policy/SalonLoop*",
+        "arn:aws:iam::822063948773:policy/Nodi*",
+        "arn:aws:iam::822063948773:policy/OpenReceptionClaude*",
+        "arn:aws:iam::822063948773:user/*"
+      ]
+    },
+    {
+      "Sid": "DenyIamRoleWriteOutsideProject",
+      "Effect": "Deny",
+      "Action": [
+        "iam:DeleteRole",
+        "iam:UpdateRole",
+        "iam:UpdateAssumeRolePolicy",
+        "iam:DeleteRolePolicy",
+        "iam:DetachRolePolicy"
+      ],
+      "Resource": "arn:aws:iam::822063948773:role/*",
+      "Condition": {
+        "StringNotEquals": { "aws:ResourceTag/Project": "open-reception" }
       }
     },
     {
