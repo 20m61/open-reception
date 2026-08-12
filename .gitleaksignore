@@ -20,3 +20,10 @@
 
 # 退館 token フィクスチャ（self-id.test.ts, 2026-07-12）
 04915c88950680bd08e12679a79fcca689f15099:src/components/kiosk/checkout/self-id.test.ts:generic-api-key:81
+
+# push-secret-guard.sh の変異テスト用フィクスチャ（push-secret-guard.test.ts, 2026-08-12）。
+# 構文上は有効な AWS アクセスキー ID 形式（AKIA + [A-Z2-7]{16}）だが実 secret ではない。
+# AWS 公式のサンプルキー `AKIAIOSFODNN7EXAMPLE` は gitleaks 自身の allowlist
+# （`aws-access-token` ルールの `.+EXAMPLE$`）で検出されないため、代わりに `TESTFAKEKEY`
+# を含む別の偽値を使っている（#682）。
+9f7dcf6e32d83ca0d19b0e507c4ab9af5d94ac62:tests/hooks/push-secret-guard.test.ts:aws-access-token:85
