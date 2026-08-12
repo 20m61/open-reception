@@ -87,12 +87,22 @@ describe('環境の固定', () => {
       // VITEST インターロックを意図的に迂回する（上記ファイル冒頭のコメント参照）。
       // 迂回しても AWS_PROFILE が実在しないため、資格情報解決の時点でローカルに失敗し、
       // ネットワークには出ない。
+      //
+      // 🔴 item (iii)（2026-08-12 レビュー）: 従来は「AWS_PROFILE が存在しない」という
+      // 1 つの機構だけがネットワークとの間に立っていた。profile 解決の実装が将来
+      // 変わっても迂回できないよう、資格情報の解決経路そのものを塞ぐ環境変数を
+      // 追加する: 設定ファイル／認証情報ファイルを /dev/null に固定し（このマシンの
+      // 実ファイルを読ませない）、EC2 メタデータサービス（IMDS）へのフォールバックも
+      // 明示的に無効化する。
       const { status, stderr } = run(['preflight'], {
         VITEST: '',
         AWS_ACCESS_KEY_ID: '',
         AWS_SECRET_ACCESS_KEY: '',
         AWS_SESSION_TOKEN: '',
         AWS_PROFILE: 'definitely-not-a-real-profile',
+        AWS_CONFIG_FILE: '/dev/null',
+        AWS_SHARED_CREDENTIALS_FILE: '/dev/null',
+        AWS_EC2_METADATA_DISABLED: 'true',
       });
       expect(status).not.toBe(0);
       expect(stderr).toContain('AWS 認証情報を解決できません');
@@ -194,6 +204,27 @@ describe('workingTreeClean は git status 失敗時に fail-closed する (Impor
     // テストは新旧いずれの経路でも複数回のサブプロセス起動を伴う。20 秒の余裕を持たせる。
     20_000,
   );
+});
+
+describe('gate_stamp_satisfies の cwd 固定 (Important 3 の回帰テスト、item (i))', () => {
+  // 🔴 Important 3（2026-08-12 レビュー第 2 ラウンド）: 前回の対応時、修正だけ入れて
+  // 専用の回帰テストを追加しなかったことを自己申告した。「壊れた git を用意せずに
+  // テストできるか」を再検討したところ、`tests/hooks/aws-negative-tests-source.test.ts`
+  // で使った「ソースを読んで呼び出し箇所の配線を固定する」パターンがそのまま使える
+  // （実際に品質ゲートのスタンプを書く必要が無い＝`pr-gate-guard.sh` に影響しない）。
+  it('gate_stamp_satisfies "pr" の呼び出しは cd "${ROOT}" のサブシェルでラップされている', () => {
+    const source = readFileSync(WRAPPER, 'utf8');
+    const marker = 'gate_stamp_satisfies "pr"';
+    const idx = source.indexOf(marker);
+    // 🔴 マーカーが見つからなければ即座に throw する（無言で PASS にしない）。
+    // 呼び出し箇所そのものが将来リネームされた場合に、このテストが「何も検査せずに
+    // 通り続ける」ことを防ぐ。
+    if (idx === -1) {
+      throw new Error(`ソース中に呼び出し箇所が見つかりません: ${marker}`);
+    }
+    const before = source.slice(Math.max(0, idx - 60), idx);
+    expect(before).toMatch(/\(\s*cd "\$\{ROOT\}"\s*&&\s*$/);
+  });
 });
 
 describe('危険な既定を持たない', () => {

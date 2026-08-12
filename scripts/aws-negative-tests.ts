@@ -25,7 +25,34 @@ const ACCOUNT = '822063948773';
 
 type Check = { readonly id: string; readonly description: string; readonly expected: Exclude<Outcome, 'unknown'> };
 
-/** 実試行する（副作用なし）。 */
+/**
+ * 実試行する（副作用なし）。
+ *
+ * 🔴 **Important B（2026-08-12 レビュー）: 副作用の無さを個別に確認する。**
+ * ここに置いてよいのは「呼んでも状態を変えない」操作だけ。各エントリの副作用有無:
+ *
+ * - N1/N2/N3（`sts:assume-role`）: 成功すると一時クレデンシャル（AccessKeyId /
+ *   SecretAccessKey / SessionToken）が返る。`aws()` は `execFileSync` の戻り値
+ *   （stdout の内容）を**変数に代入せず捨てている**ため、クレデンシャルはどこにも
+ *   ログ出力・保存・送信されない（`console.log`/`console.error` は check の
+ *   id/description/結果ラベルしか出さない）。子プロセスの stdout として一時的に
+ *   Node 側のバッファへ載った後、関数を抜けると同時に GC 対象になる。呼び出し自体は
+ *   AWS 側に何のリソースも作らない（`AssumeRole` は既存ロールの一時的な権限委譲であり、
+ *   IAM オブジェクトを新規作成しない）。**この後段でその一時クレデンシャルを使って
+ *   何かを実行することは一切無い。**
+ * - N4/N5/N6（`cloudformation describe-stacks`）: 読み取り専用。
+ * - N7（`secretsmanager list-secrets --max-results 1`）: シークレットの**メタデータ**
+ *   （名前・ARN 等）だけを列挙する読み取り専用 API。値は取得しない
+ *   （`GetSecretValue` ではない）。
+ *
+ * **N8（`iam:create-access-key`）はここに置いてはいけなかった。** Deny が効いていない
+ * 場合（＝この検査が検出しようとしているまさにそのケース）、
+ * `AdministratorAccess` 相当の principal 上に**本物の長期 access key を実際に発行して
+ * しまう**。鍵 ID の記録も破棄の仕組みも無いため、検査を実行するたびに使われない
+ * 長期クレデンシャルが account に残り得る。ファイル冒頭の「破壊系を実試行しない」
+ * 原則そのものへの違反であり、spec §7 の表が N8 として分類していたのは誤りだった
+ * （Task 7 で spec 側を修正すること）。`SIMULATED_CHECKS` の `S11` へ移動した。
+ */
 const LIVE_CHECKS: ReadonlyArray<Check & { readonly run: () => Outcome }> = [
   {
     id: 'N1',
@@ -64,12 +91,6 @@ const LIVE_CHECKS: ReadonlyArray<Check & { readonly run: () => Outcome }> = [
     expected: 'denied',
     run: () => aws(['secretsmanager', 'list-secrets', '--max-results', '1']),
   },
-  {
-    id: 'N8',
-    description: 'user/CDK に AccessKey を作成',
-    expected: 'denied',
-    run: () => aws(['iam', 'create-access-key', '--user-name', 'CDK']),
-  },
 ];
 
 /** 実試行しない。`SimulatePrincipalPolicy` で判定する（人間の Admin 環境から実行）。 */
@@ -88,6 +109,9 @@ const SIMULATED_CHECKS: ReadonlyArray<{
   { id: 'S8', action: 'route53:ChangeResourceRecordSets', resource: 'arn:aws:route53:::hostedzone/ANY' },
   { id: 'S9', action: 'cloudformation:UpdateStack', resource: `arn:aws:cloudformation:ap-northeast-1:${ACCOUNT}:stack/OpenReception-Web-prod/*` },
   { id: 'S10', action: 'kms:ScheduleKeyDeletion', resource: `arn:aws:kms:ap-northeast-1:${ACCOUNT}:key/any` },
+  // 旧 N8（Important B で live check から移動）。長期 access key を実際に発行しかねない
+  // ため、実試行せず SimulatePrincipalPolicy で判定する。
+  { id: 'S11', action: 'iam:CreateAccessKey', resource: `arn:aws:iam::${ACCOUNT}:user/CDK` },
 ];
 
 /**

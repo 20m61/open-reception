@@ -16,11 +16,19 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 QUALIFIER="orcloud01"
 DEPLOY_ENV="${OR_DEPLOY_ENV:-dev}"
 REGION="${AWS_REGION:-ap-northeast-1}"
+# 🔴 **スタックごとにリージョンを持つ。** `OpenReception-CfMonitoring-*` は
+# cross-region 参照の都合で us-east-1 固定（`infra/bin/open-reception.ts`）。他の 2 つは
+# 既定リージョン（ap-northeast-1）。`<name>:<region>` の形で 1 つの配列にまとめ、
+# `${entry%%:*}` / `${entry##*:}` で分解する（Important D）。
 STACKS=(
-  "OpenReception-Web-${DEPLOY_ENV}"
-  "OpenReception-WebMonitoring-${DEPLOY_ENV}"
-  "OpenReception-CfMonitoring-${DEPLOY_ENV}"
+  "OpenReception-Web-${DEPLOY_ENV}:${REGION}"
+  "OpenReception-WebMonitoring-${DEPLOY_ENV}:${REGION}"
+  "OpenReception-CfMonitoring-${DEPLOY_ENV}:us-east-1"
 )
+STACK_NAMES=()
+for _entry in "${STACKS[@]}"; do
+  STACK_NAMES+=("${_entry%%:*}")
+done
 
 usage() {
   echo "Usage: $0 <preflight|verify|diff|deploy|smoke>" >&2
@@ -174,19 +182,47 @@ EOF
   npx tsx "${ROOT}/scripts/aws-preflight.ts" "${out}" "${min_seconds}"
 }
 
+# 🔴 **diff と deploy で同じ change set 名を使う。** `diff` が承認するのは
+# `changeset_name()` が返す名前の change set であり、`deploy` の `cdk deploy` にも
+# 同じ `--change-set-name` を渡すことで、「gate が承認した change set」と
+# 「実際に実行される change set」を同じ名前で揃える（以前のレビューが指摘した
+# 「gate が承認した change set と cdk deploy が実行する change set が別物」というギャップを
+# 狭める。CDK CLI の公開インターフェース上、既存の named change set を無条件に
+# 再利用させる保証までは無いため「狭める」であって「閉じる」ではない）。
+changeset_name() {
+  echo "claude-gate-$(git -C "${ROOT}" rev-parse --short HEAD)"
+}
+
 run_diff_gate() {
-  local stack="$1" cs_name cs_json
-  cs_name="claude-gate-$(git -C "${ROOT}" rev-parse --short HEAD)"
+  local stack="$1" region="$2" cs_name cs_json
+  cs_name="$(changeset_name)"
   cs_json="$(mktemp)"
 
   # cdk が change set を作る。--no-execute で実行しない。
-  ( cd "${ROOT}/infra" && npx cdk deploy "${stack}" \
+  # スタックがまだ存在しない場合（初回デプロイ）、CDK は自動的に CREATE 型の change set を
+  # 作る。全リソースが Add として現れるだけで、以降の判定ロジックは通常の diff と同じに
+  # 扱われる（Important D の「初回デプロイの挙動」）。
+  if ! ( cd "${ROOT}/infra" && npx cdk deploy "${stack}" \
       -c env="${DEPLOY_ENV}" \
       -c "@aws-cdk/core:bootstrapQualifier=${QUALIFIER}" \
-      --change-set-name "${cs_name}" --no-execute )
+      --change-set-name "${cs_name}" --no-execute ); then
+    echo "  ⛔ ${stack}（${region}）の change set 作成（cdk deploy --no-execute）に失敗しました" >&2
+    echo "     （直前の cdk 出力を参照。cdk 側のエラーメッセージがそのまま上に表示されているはずです）" >&2
+    return 1
+  fi
 
-  aws cloudformation describe-change-set \
-    --stack-name "${stack}" --change-set-name "${cs_name}" --output json > "${cs_json}"
+  # 🔴 **--region を明示する。** `OpenReception-CfMonitoring-dev` は us-east-1
+  # （`infra/bin/open-reception.ts`）だが、AWS CLI の既定リージョンは `${REGION}`
+  # （通常 ap-northeast-1）。`--region` を渡さないと `describe-change-set` が
+  # 誤ったリージョンへ飛び、「スタックが存在しない」という不可解な ValidationError で
+  # `set -e` によりループごと落ちる（Important D）。
+  if ! aws cloudformation describe-change-set \
+      --stack-name "${stack}" --change-set-name "${cs_name}" --region "${region}" \
+      --output json > "${cs_json}"; then
+    echo "  ⛔ ${stack}（${region}）の change set を取得できませんでした（describe-change-set 失敗）" >&2
+    echo "     （直前の aws 出力を参照。region 指定・change set 名・権限を確認してください）" >&2
+    return 1
+  fi
 
   npx tsx "${ROOT}/scripts/aws-diff-gate.ts" "${cs_json}" "${stack}"
 }
@@ -201,14 +237,16 @@ case "${SUB}" in
     ;;
   diff)
     collect_observation "$(mktemp)" 1200
-    for stack in "${STACKS[@]}"; do run_diff_gate "${stack}"; done
+    for entry in "${STACKS[@]}"; do run_diff_gate "${entry%%:*}" "${entry##*:}"; done
     ;;
   deploy)
     collect_observation "$(mktemp)" 2400
-    for stack in "${STACKS[@]}"; do run_diff_gate "${stack}"; done
-    ( cd "${ROOT}/infra" && npx cdk deploy "${STACKS[@]}" \
+    for entry in "${STACKS[@]}"; do run_diff_gate "${entry%%:*}" "${entry##*:}"; done
+    cs_name="$(changeset_name)"
+    ( cd "${ROOT}/infra" && npx cdk deploy "${STACK_NAMES[@]}" \
         -c env="${DEPLOY_ENV}" \
         -c "@aws-cdk/core:bootstrapQualifier=${QUALIFIER}" \
+        --change-set-name "${cs_name}" \
         --require-approval broadening )
     ;;
   smoke)

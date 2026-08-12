@@ -83,3 +83,36 @@ describe('change set の Status を無視しない (fail-open の修正)', () =>
     expect(stderr).toContain('resourceReplacement');
   });
 });
+
+describe('「変更なし」の FAILED は誤検出しない（自己申告した留保事項の修正、2026-08-12 レビュー）', () => {
+  // CDK 自身が全く同じ判定をしている: infra/node_modules/aws-cdk/lib/index.js の
+  // changeSetHasNoChanges() で確認済み（Status === 'FAILED' かつ StatusReason が
+  // 次の 2 文字列のどちらかで始まる）。3 スタックをループする diff/deploy では、
+  // 少なくとも 1 つが「変更なし」なのが通常運用であり、これを毎回ハードストップに
+  // すると自動デプロイが実質使えなくなる。
+  it.each([
+    ["The submitted information didn't contain changes.", '通常テンプレートの無変更'],
+    ['No updates are to be performed.', 'Transform を含むテンプレートの無変更（#10650）'],
+    // 接頭辞一致であることも確認する（完全一致ではなく startsWith）。
+    ["The submitted information didn't contain changes. (詳細な補足が続く場合)", '接頭辞一致（末尾に補足がある場合）'],
+  ])('StatusReason=%s は変更なしとして通す（%s）', (statusReason) => {
+    const path = writeChangeSet({ StackName: STACK, Status: 'FAILED', StatusReason: statusReason, Changes: [] });
+    const { status, stdout } = run(path);
+    expect(status).toBe(0);
+    expect(stdout).toContain('変更なし');
+    expect(stdout).toContain('危険な変更はありません');
+  });
+
+  it('接頭辞に一致しない FAILED は引き続きハードストップする（無関係なエラーまで通さない）', () => {
+    const path = writeChangeSet({
+      StackName: STACK,
+      Status: 'FAILED',
+      StatusReason: 'Unable to fetch parameters',
+      Changes: [],
+    });
+    const { status, stderr, stdout } = run(path);
+    expect(status).not.toBe(0);
+    expect(stderr).toContain('CREATE_COMPLETE');
+    expect(stdout).not.toContain('変更なし');
+  });
+});

@@ -41,6 +41,35 @@ type RawChangeSet = {
 };
 
 /**
+ * CloudFormation が「変更なし」を伝えるときの `StatusReason` の接頭辞。
+ *
+ * CDK には全く同じ判定を行う名前付き述語がある
+ * （`infra/node_modules/aws-cdk/lib/index.js` を `didn't contain changes` で検索）。
+ * `--no-execute` 付きで change set を作ると、この「変更なし」の場合も CloudFormation は
+ * 空の change set を `Status: 'FAILED'` のまま残す。`diff`/`deploy` は 3 スタックを
+ * ループし、そのうち少なくとも 1 つは変更が無いのが通常運用なので、これを
+ * 「判定不能」と一律に止めると**ほぼ毎回**実行が止まってしまう
+ * （2026-08-12 レビューで指摘。以前の実装は自己申告の留保事項だった）。
+ */
+const NO_OP_STATUS_REASON_PREFIXES = [
+  "The submitted information didn't contain changes.",
+  'No updates are to be performed.',
+] as const;
+
+/**
+ * `Status: 'FAILED'` が「本当に危険で判定不能」ではなく「単に変更が無かった」ことを
+ * `StatusReason` の接頭辞から判定する。**この 2 パターン以外の `FAILED`（あるいは
+ * `Status` 自体の欠落）は、引き続き無条件で止める。**「変更なしに見えるが実は違う」を
+ * 拾わないよう、接頭辞一致に限定し、部分一致や大小無視はしない
+ * （CloudFormation が返す文言はサービス側の固定文字列であり、揺れを許容する理由が無い）。
+ */
+function isNoOpChangeSet(raw: RawChangeSet): boolean {
+  if (raw.Status !== 'FAILED') return false;
+  const reason = raw.StatusReason ?? '';
+  return NO_OP_STATUS_REASON_PREFIXES.some((prefix) => reason.startsWith(prefix));
+}
+
+/**
  * 欠落を「問題なし」に落とさない。`Action` が読めなければ `'Unknown'` として扱い、
  * evaluateDeployChangeSet の `unknownAction` ブロックに掛かるようにする
  * （Add/Modify 以外は保守的に stop する。§6 の SAFE_ACTIONS 参照）。
@@ -71,8 +100,14 @@ function main(): void {
 
   // Status を見ずに Changes だけを見ると、change set 作成そのものが FAILED でも
   // 「変更 0 件 → 安全」に見えてしまう（上記コメント参照）。CREATE_COMPLETE 以外は
-  // 内容を安全に判定できないものとして止める。
+  // 内容を安全に判定できないものとして止める ―― ただし「変更が無かっただけ」の
+  // FAILED（isNoOpChangeSet）は例外で、安全側に倒しつつ実行を継続する。
   if (raw.Status !== 'CREATE_COMPLETE') {
+    if (isNoOpChangeSet(raw)) {
+      console.log(`  stack: ${raw.StackName ?? stackName} / 変更なし（${raw.StatusReason}）`);
+      console.log('  ✅ 危険な変更はありません（自動デプロイ可）');
+      return;
+    }
     console.error(
       `  ⛔ change set の Status が CREATE_COMPLETE ではありません（Status=${raw.Status ?? 'Unknown'}` +
         `${raw.StatusReason ? `: ${raw.StatusReason}` : ''}）。`,
