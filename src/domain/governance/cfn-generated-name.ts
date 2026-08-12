@@ -90,30 +90,23 @@ export function cfnGeneratedNamePrefix(
 }
 
 /**
- * グロブ 1 文字を正規表現ソースへ変換する。
+ * 🔴 **動的 `RegExp` で組み立てない。** 以前は `iamArnGlobMatches` がグロブ 1 文字ずつを
+ * 正規表現ソースへ変換し `new RegExp(...)` していた（`.*` は 0 文字以上、`?` は `.` ）。
+ * semgrep の `detect-non-literal-regexp`（ReDoS 監査）が指す通り、パターンが動的な
+ * `RegExp()` の引数になっていること自体が疑わしい形であり、加えて実際の意味も
+ * ズレていた —— JS の `.` は `s` フラグなしでは `\n` に一致しないが、下の NFA は
+ * `*` を任意の 1 文字として扱う。IAM のリソース ARN グロブは正規表現ではなく
+ * 文字クラス的な意味（`*` に改行の例外はない）なので、NFA 側が本来の意味に近い。
+ * `iamArnGlobMatches` は今は下の `globNfaMatches` へ全文字を `literal` として渡す
+ * だけの薄いラッパーになっている（動的 RegExp を経由しない）。
  *
- * 🔴 **番兵文字を使わない実装にしてある。** 以前は `*` をいったん `\0STAR\0` へ
- * 置換してから戻す実装だった。動きはするが、**ソースに NUL バイトが入るので
- * ripgrep がこのファイルを binary と見なして走査対象から外す** ——
+ * （旧 `globCharToRegexSource` は番兵文字を使わない実装にしてあった。以前は `*` を
+ * いったん `\0STAR\0` へ置換してから戻す実装で、動きはするがソースに NUL バイトが
+ * 入るため ripgrep がこのファイルを binary と見なして走査対象から外す ——
  * `CLAUDE.md`「調査の作法」が繰り返し戒めている「その条件では見つからなかっただけ」を
- * ファイル単位で起こす。検索から消えるコードは、無いのと同じ扱いをされる。
+ * ファイル単位で起こす、という理由で番兵無しに書き直された。動的 RegExp 自体を
+ * 廃止した今もその教訓は当てはまる箇所があるかもしれないので、ここに残す。）
  */
-function globCharToRegexSource(ch: string): string {
-  if (ch === '*') return '.*';
-  if (ch === '?') return '.';
-  return ch.replace(/[.*+?^${}()|[\]\\]/g, (c) => `\\${c}`);
-}
-
-/**
- * IAM のリソース ARN グロブ (`*` = 0 文字以上、`?` = 1 文字) と照合する。
- *
- * 大小文字は区別する（IAM のリソース ARN 照合と同じ）。ここを緩めると
- * 「carve-out が意図より広い」ことをテストが見逃す。
- */
-export function iamArnGlobMatches(pattern: string, value: string): boolean {
-  const source = [...pattern].map(globCharToRegexSource).join('');
-  return new RegExp(`^${source}$`).test(value);
-}
 
 /** CloudFormation の乱数サフィックスに現れる文字。 */
 const CFN_SUFFIX_ALPHABET = /[A-Za-z0-9]/;
@@ -125,6 +118,12 @@ type GlobValueChar = { readonly kind: 'literal'; readonly ch: string } | { reado
  * グロブを NFA として走らせる。**バックトラックではなく到達集合**で持つ
  * （値側に「英数字のどれか」という未確定の文字が混ざるため、素朴な貪欲照合では
  * 分岐を取りこぼす）。
+ *
+ * `*` は改行を含む任意の 1 文字に一致する（正規表現の `.` と違い、`s` フラグ相当の
+ * 例外を持たない）。IAM のリソース ARN グロブ照合に「改行だけは特別」という規則は
+ * ない —— ここを狭めると、値に改行を含む細工で carve-out の判定をすり抜けさせ、
+ * `resolvePolicyRoleTarget`（`deploy-diff-gate.ts`）が本来 `carveOut` へ分類して
+ * 掛けるはずの追加検査（`carveOutRoleShape`）を skip させてしまう（fail-open）。
  */
 function globNfaMatches(pattern: string, value: ReadonlyArray<GlobValueChar>): boolean {
   const closure = (seed: Iterable<number>): Set<number> => {
@@ -160,6 +159,20 @@ function globNfaMatches(pattern: string, value: ReadonlyArray<GlobValueChar>): b
     if (current.size === 0) return false;
   }
   return current.has(pattern.length);
+}
+
+/**
+ * IAM のリソース ARN グロブ (`*` = 0 文字以上、`?` = 1 文字) と照合する。
+ *
+ * 大小文字は区別する（IAM のリソース ARN 照合と同じ）。ここを緩めると
+ * 「carve-out が意図より広い」ことをテストが見逃す。
+ *
+ * `value` の全文字を `literal` として `globNfaMatches` へ委譲する
+ * （`iamArnGlobMatchesGeneratedName` と同じ NFA・同じ意味論。動的 `RegExp` を経由しない）。
+ */
+export function iamArnGlobMatches(pattern: string, value: string): boolean {
+  const chars: GlobValueChar[] = [...value].map((ch) => ({ kind: 'literal', ch }) as const);
+  return globNfaMatches(pattern, chars);
 }
 
 /**

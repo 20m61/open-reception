@@ -113,6 +113,26 @@ describe('iamArnGlobMatches', () => {
       iamArnGlobMatches(CARVE_OUT_ROLE_ARN_PATTERN, `arn:aws:iam::${CARVE_OUT_ACCOUNT_ID}:role/OpenReception-x-dev-Custom/Innocent`),
     ).toBe(true);
   });
+
+  /**
+   * 🔴 **NFA への一本化 (#680) が正規表現版と意味を変えた点。** JS の正規表現 `.` は
+   * `s` フラグなしでは `\n` に一致しないが、ここでの `*` は改行を含む任意の 1 文字に
+   * 一致する。安全な向きはこちら —— `iamArnGlobMatches` が真を返すと呼び出し元
+   * （`resolvePolicyRoleTarget`, `deploy-diff-gate.ts`）は対象を `carveOut` に分類し、
+   * `carveOutRoleShape` の追加検査（Permissions Boundary が掛からない分の埋め合わせ）を
+   * 掛ける。false を返すと `outside` 扱いでこの追加検査を skip する。よって
+   * 「一致すると判定されない」方が fail-open（見逃し）であり、`\n` を理由に不一致へ
+   * 倒す（旧 RegExp の挙動）のは危険な向きだった。
+   */
+  it('* は改行を含む任意の 1 文字に一致する（旧 RegExp 版は不一致だった）', () => {
+    expect(iamArnGlobMatches('a*c', 'a\nc')).toBe(true);
+    expect(
+      iamArnGlobMatches(
+        CARVE_OUT_ROLE_ARN_PATTERN,
+        `arn:aws:iam::${CARVE_OUT_ACCOUNT_ID}:role/OpenReception-\n-dev-Custom-x`,
+      ),
+    ).toBe(true);
+  });
 });
 
 describe('iamArnGlobMatchesGeneratedName（末尾 12 文字が未確定）', () => {
