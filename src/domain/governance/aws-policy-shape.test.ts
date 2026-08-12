@@ -687,6 +687,63 @@ describe('claude-deploy-role-restriction.json（層 1・主境界）', () => {
   });
 });
 
+/**
+ * 🔴 **ドキュメントと出荷ポリシーの一致を機械で押さえる (#680 R6/R9)。**
+ *
+ * このレビューが拾った欠陥の型は「**出荷物と食い違う説明**」だった ——
+ * spec §4.2 は `stack/OpenReception-*-dev/*` を層 1 の allowlist として示しつつ
+ * すぐ下で「`*` ワイルドカードは使っていない」と書き、実際の JSON は 3 スタックを
+ * 実名で列挙していた。人が読んで気づくまで誰も落ちなかった。
+ * **数字と列挙は、書いた瞬間に腐る。テストで縛る。**
+ */
+describe('ドキュメントが出荷ポリシーと一致している (#680 R6/R9)', () => {
+  const readDoc = (relative: string): string =>
+    readFileSync(resolve(process.cwd(), relative), 'utf8');
+
+  const SPEC = 'docs/superpowers/specs/2026-08-12-claude-cloud-aws-dev-deploy-safety-design.md';
+  const RUNBOOK = 'docs/runbook-cloud-aws-deploy.md';
+
+  /** 見出しの直後に現れる最初のフェンス済みコードブロックの中身を返す。 */
+  function fencedBlockAfter(markdown: string, heading: string): ReadonlyArray<string> {
+    const at = markdown.indexOf(heading);
+    if (at === -1) throw new Error(`見出しが見つかりません: ${heading}`);
+    const open = markdown.indexOf('```', at);
+    if (open === -1) throw new Error(`${heading} の後にコードブロックがありません`);
+    const bodyStart = markdown.indexOf('\n', open) + 1;
+    const close = markdown.indexOf('```', bodyStart);
+    if (close === -1) throw new Error(`${heading} のコードブロックが閉じていません`);
+    return markdown
+      .slice(bodyStart, close)
+      .split('\n')
+      .map((l) => l.trim())
+      .filter((l) => l !== '');
+  }
+
+  it('spec §4.2 層 1 のコード塊は claude-deploy-role-restriction.json の NotResource そのもの', () => {
+    const shipped = auditPolicyDocument(load('claude-deploy-role-restriction.json'))
+      .deniedNotResourcePatterns;
+    expect(shipped.length).toBeGreaterThan(0);
+    expect(fencedBlockAfter(readDoc(SPEC), '#### 層 1（主境界）')).toEqual([...shipped]);
+  });
+
+  /**
+   * managed policy の 6,144 文字上限に対する余白。**runbook に書いた数字が実測と
+   * ずれたら落とす** —— 「まだ余裕がある」と思って足した人が
+   * `LimitExceeded` を初回適用で踏むのを防ぐ。
+   */
+  it.each(['claude-boundary.json', 'claude-cfn-exec.json'] as const)(
+    'runbook ステップ 1 が %s の実サイズと残り文字数を正しく書いている',
+    (name) => {
+      const size = JSON.stringify(load(name)).length;
+      expect(size).toBeLessThanOrEqual(6144);
+      const runbook = readDoc(RUNBOOK);
+      const fmt = (n: number): string => n.toLocaleString('en-US');
+      expect(runbook).toContain(fmt(size));
+      expect(runbook).toContain(fmt(6144 - size));
+    },
+  );
+});
+
 describe('claude-deploy-entry-trust.json', () => {
   const doc = load('claude-deploy-entry-trust.json');
 
