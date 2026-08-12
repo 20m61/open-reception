@@ -12,6 +12,7 @@ import {
   type ChangeSetResourceChange,
   type ChangeSetSummary,
   type TemplateProperties,
+  type TemplateResource,
 } from './deploy-diff-gate';
 
 const change = (over: Partial<ChangeSetResourceChange> = {}): ChangeSetResourceChange => ({
@@ -27,6 +28,12 @@ const summary = (over: Partial<ChangeSetSummary> = {}): ChangeSetSummary => ({
   changes: [change()],
   templateResources: {},
   ...over,
+});
+
+/** synth テンプレートの 1 リソース（`Type` + `Properties`）。 */
+const res = (type: string, properties: TemplateProperties): TemplateResource => ({
+  type,
+  properties,
 });
 
 describe('通すべきものを通す', () => {
@@ -157,7 +164,7 @@ describe('記録のみ（止めない）', () => {
     const verdict = evaluateDeployChangeSet(
       summary({
         changes: [change({ resourceType: 'AWS::IAM::Role', logicalResourceId: 'ServerFnServiceRole' })],
-        templateResources: { ServerFnServiceRole: lambdaServiceRole() },
+        templateResources: { ServerFnServiceRole: res('AWS::IAM::Role', lambdaServiceRole()) },
       }),
     );
     expect(verdict.blocked).toBe(false);
@@ -206,6 +213,37 @@ const PROVIDER_INLINE = [
   },
 ];
 
+/**
+ * 実測した cross-region ExportReader のインラインポリシー（**Writer と action が違う**）。
+ * allowlist は 2 本ぶんの実測の和集合でなければ初回デプロイを止めてしまう。
+ */
+const PROVIDER_INLINE_READER = [
+  {
+    PolicyName: 'Inline',
+    PolicyDocument: {
+      Version: '2012-10-17',
+      Statement: [
+        {
+          Effect: 'Allow',
+          Resource: 'arn:aws:ssm:us-east-1:822063948773:parameter/cdk/exports/OpenReception-CfMonitoring-dev/*',
+          Action: ['ssm:AddTagsToResource', 'ssm:RemoveTagsFromResource', 'ssm:GetParameters'],
+        },
+      ],
+    },
+  },
+];
+
+/** 任意の action 1 つを持つインラインポリシー。 */
+const inlineWith = (action: string): ReadonlyArray<unknown> => [
+  {
+    PolicyName: 'Inline',
+    PolicyDocument: {
+      Version: '2012-10-17',
+      Statement: [{ Effect: 'Allow', Action: action, Resource: '*' }],
+    },
+  },
+];
+
 const providerRole = (over: TemplateProperties = {}): TemplateProperties => ({
   AssumeRolePolicyDocument: PROVIDER_TRUST,
   ManagedPolicyArns: PROVIDER_MANAGED,
@@ -232,12 +270,22 @@ const evaluateRoleFixture = (
     summary({
       ...(opts.stackName === undefined ? {} : { stackName: opts.stackName }),
       changes: [roleChange(logicalId, opts.action)],
-      templateResources: { [logicalId]: props },
+      templateResources: { [logicalId]: res('AWS::IAM::Role', props) },
     }),
   );
 
 const [S3_AUTO_DELETE_ROLE, EXPORT_WRITER_ROLE, EXPORT_READER_ROLE] =
   REVIEWED_CDK_GENERATED_LOGICAL_IDS.carveOutProviderRoles;
+
+const ACCOUNT = '822063948773';
+
+const URL_TARGETS: Readonly<Record<string, string>> =
+  REVIEWED_CDK_GENERATED_LOGICAL_IDS.functionUrls;
+const PERMISSION_TARGETS: Readonly<Record<string, string>> =
+  REVIEWED_CDK_GENERATED_LOGICAL_IDS.publicInvokePermissions;
+
+const [SERVER_URL, IMAGE_URL] = Object.keys(URL_TARGETS) as [string, string];
+const SERVER_FN = URL_TARGETS[SERVER_URL]!;
 
 describe('A: carve-out の名前空間に入るロールを止める (#680 R10)', () => {
   it('🔴 空虚に真になっていないことの対照: 既知の 3 本は 3 本とも通る', () => {
@@ -245,7 +293,7 @@ describe('A: carve-out の名前空間に入るロールを止める (#680 R10)'
     const passed = [
       evaluateRoleFixture(S3_AUTO_DELETE_ROLE!, providerRole({ Policies: undefined })),
       evaluateRoleFixture(EXPORT_WRITER_ROLE!, providerRole()),
-      evaluateRoleFixture(EXPORT_READER_ROLE!, providerRole(), {
+      evaluateRoleFixture(EXPORT_READER_ROLE!, providerRole({ Policies: PROVIDER_INLINE_READER }), {
         stackName: 'OpenReception-CfMonitoring-dev',
       }),
     ];
@@ -352,16 +400,29 @@ describe('A: 論理 ID を騙っても中身で弾く（allowlist だけでは�
     ],
     [
       'インラインで Action:* を許可する',
+      providerRole({ Policies: inlineWith('*') }),
+    ],
+    // 🔴 レビュー Blocking 2: 旧実装は `iam:` のように**コロン込みの接頭辞**で
+    // `startsWith` していたので、下の 4 つはどれも素通りしていた。どれも IAM が
+    // 受け付ける正当な action 文字列であり、指している操作は同じである。
+    ['インラインで iam* を許可する（コロン無し）', providerRole({ Policies: inlineWith('iam*') })],
+    ['インラインで sts* を許可する', providerRole({ Policies: inlineWith('sts*') })],
+    ['インラインで *:* を許可する', providerRole({ Policies: inlineWith('*:*') })],
+    ['インラインで *:CreateRole を許可する', providerRole({ Policies: inlineWith('*:CreateRole') })],
+    // 🔴 レビュー「classifyTrustPolicy が Action を見ていない」。
+    [
+      'trust policy の Action を AssumeRoleWithWebIdentity にする',
       providerRole({
-        Policies: [
-          {
-            PolicyName: 'Inline',
-            PolicyDocument: {
-              Version: '2012-10-17',
-              Statement: [{ Effect: 'Allow', Action: '*', Resource: '*' }],
+        AssumeRolePolicyDocument: {
+          Version: '2012-10-17',
+          Statement: [
+            {
+              Action: 'sts:AssumeRoleWithWebIdentity',
+              Effect: 'Allow',
+              Principal: { Service: 'lambda.amazonaws.com' },
             },
-          },
-        ],
+          ],
+        },
       }),
     ],
   ])('既知の provider role の論理 ID を名乗って %s → 止める', (_name, props) => {
@@ -384,6 +445,170 @@ describe('A: 論理 ID を騙っても中身で弾く（allowlist だけでは�
       { action: 'Modify' },
     );
     expect(verdict.blocks.map((b) => b.reason)).toEqual(['carveOutRoleShape']);
+  });
+});
+
+/**
+ * 🔴 **#680 R10 フォローアップ（レビュー Blocking 1）。**
+ *
+ * 「論理 ID だけの allowlist はほぼ無価値」という洞察を、**隣のリソース種別へ
+ * 持ち越していなかった**。ロールの形をいくら固定しても、権限は
+ * `AWS::IAM::Policy` / `ManagedPolicy` / `RolePolicy` から**別リソースとして**
+ * 同じロールに届く。IAM 側も `AllowCdkProviderRoleMutationWithoutBoundary` で
+ * `iam:PutRolePolicy` / `AttachRolePolicy` を carve-out ARN に対して無条件に許している。
+ */
+describe('A: 権限は隣のリソース種別から carve-out ロールへ届く (#680 R10 フォローアップ)', () => {
+  const adminDocument = {
+    Version: '2012-10-17',
+    Statement: [{ Effect: 'Allow', Action: '*', Resource: '*' }],
+  };
+  const ssmDocument = {
+    Version: '2012-10-17',
+    Statement: [{ Effect: 'Allow', Action: ['ssm:GetParameters'], Resource: '*' }],
+  };
+
+  /** provider role 本体 + それを狙う別リソース、という 2 リソースの change set。 */
+  const attachmentVerdict = (
+    type: string,
+    attachmentProps: TemplateProperties,
+    opts: { readonly action?: string; readonly includeRole?: boolean } = {},
+  ) => {
+    const includeRole = opts.includeRole ?? true;
+    return evaluateDeployChangeSet(
+      summary({
+        changes: [
+          ...(includeRole ? [roleChange(EXPORT_WRITER_ROLE!)] : []),
+          change({
+            action: opts.action ?? 'Add',
+            resourceType: type,
+            logicalResourceId: 'Attachment',
+            replacement: undefined,
+          }),
+        ],
+        templateResources: {
+          [EXPORT_WRITER_ROLE!]: res('AWS::IAM::Role', providerRole()),
+          Attachment: res(type, attachmentProps),
+        },
+      }),
+    );
+  };
+
+  it.each(['AWS::IAM::Policy', 'AWS::IAM::ManagedPolicy'] as const)(
+    '%s が Ref で carve-out ロールへ Action:* を付けるのは止める',
+    (type) => {
+      const verdict = attachmentVerdict(type, {
+        PolicyDocument: adminDocument,
+        Roles: [{ Ref: EXPORT_WRITER_ROLE }],
+      });
+      expect(verdict.blocks.map((b) => b.reason)).toEqual(['carveOutRoleShape']);
+    },
+  );
+
+  it('AWS::IAM::RolePolicy（3 つ目の綴り）も同じ場所で覆う', () => {
+    const verdict = attachmentVerdict('AWS::IAM::RolePolicy', {
+      PolicyName: 'Evil',
+      PolicyDocument: adminDocument,
+      RoleName: { Ref: EXPORT_WRITER_ROLE },
+    });
+    expect(verdict.blocks.map((b) => b.reason)).toEqual(['carveOutRoleShape']);
+  });
+
+  it('🔴 ロールが change set に一度も現れなくても止める（承認済みロールへの後付け）', () => {
+    // Modify のみ。既に承認済みの provider role を、後日のデプロイで Admin にする経路。
+    const verdict = attachmentVerdict(
+      'AWS::IAM::ManagedPolicy',
+      { PolicyDocument: adminDocument, Roles: [{ Ref: EXPORT_WRITER_ROLE }] },
+      { action: 'Modify', includeRole: false },
+    );
+    expect(verdict.blocks.map((b) => b.reason)).toEqual(['carveOutRoleShape']);
+  });
+
+  it('carve-out ロールへ provider が実際に使う ssm アクションだけを付けるのは通る', () => {
+    const verdict = attachmentVerdict('AWS::IAM::Policy', {
+      PolicyDocument: ssmDocument,
+      Roles: [{ Ref: EXPORT_WRITER_ROLE }],
+    });
+    expect(verdict.blocks).toEqual([]);
+  });
+
+  it('🔴 空虚に真になっていないことの対照: carve-out の外のロールへの Policy は通る', () => {
+    const verdict = evaluateDeployChangeSet(
+      summary({
+        changes: [
+          change({
+            action: 'Add',
+            resourceType: 'AWS::IAM::Policy',
+            logicalResourceId: 'Attachment',
+            replacement: undefined,
+          }),
+        ],
+        templateResources: {
+          ServerFnServiceRole: res('AWS::IAM::Role', lambdaServiceRole()),
+          Attachment: res('AWS::IAM::Policy', {
+            PolicyDocument: adminDocument,
+            Roles: [{ Ref: 'ServerFnServiceRole' }],
+          }),
+        },
+      }),
+    );
+    // boundary が天井になるので止めない（記録だけ）。
+    expect(verdict.blocked).toBe(false);
+    expect(verdict.flags.map((f) => f.reason)).toContain('iamPolicyChange');
+  });
+
+  it('🔴 Ref 先がロールでない（別種別に role 名を持たせる）なら止める', () => {
+    // `Ref` は SSM Parameter の `Name` を返す。carve-out の実在ロール名を書けば
+    // 「ロールの形」検査を一切通らずに権限が届く。**Type を見ないと防げない。**
+    const verdict = evaluateDeployChangeSet(
+      summary({
+        changes: [
+          change({
+            action: 'Add',
+            resourceType: 'AWS::IAM::Policy',
+            logicalResourceId: 'Attachment',
+            replacement: undefined,
+          }),
+        ],
+        templateResources: {
+          Decoy: res('AWS::SSM::Parameter', {
+            Name: 'OpenReception-Web-dev-CustomCrossRegionExportWriter-mWjZeIPYdVgw',
+          }),
+          Attachment: res('AWS::IAM::Policy', {
+            PolicyDocument: adminDocument,
+            Roles: [{ Ref: 'Decoy' }],
+          }),
+        },
+      }),
+    );
+    expect(verdict.blocks.map((b) => b.reason)).toEqual(['opaqueResourceShape']);
+  });
+
+  it('🔴 リテラルのロール名は「carve-out の外」だと証明できないので同じ検査を掛ける', () => {
+    // `Path` が分からない以上、名前だけでは非所属を示せない（グロブの `*` は `/` を跨ぐ）。
+    const verdict = attachmentVerdict(
+      'AWS::IAM::Policy',
+      { PolicyDocument: adminDocument, Roles: ['SomePreexistingRole'] },
+      { includeRole: false },
+    );
+    expect(verdict.blocks.map((b) => b.reason)).toEqual(['carveOutRoleShape']);
+  });
+
+  it('Roles が静的に解決できない（Fn::Join）なら止める', () => {
+    const verdict = attachmentVerdict(
+      'AWS::IAM::Policy',
+      { PolicyDocument: ssmDocument, Roles: [{ 'Fn::Join': ['', ['a', 'b']] }] },
+      { includeRole: false },
+    );
+    expect(verdict.blocks.map((b) => b.reason)).toEqual(['opaqueResourceShape']);
+  });
+
+  it('Users / Groups へポリシーを付けるのは止める（dev に IAM プリンシパルは無い）', () => {
+    const verdict = attachmentVerdict(
+      'AWS::IAM::ManagedPolicy',
+      { PolicyDocument: ssmDocument, Users: ['someone'] },
+      { includeRole: false },
+    );
+    expect(verdict.blocks.map((b) => b.reason)).toEqual(['iamPrincipalChange']);
   });
 });
 
@@ -425,23 +650,40 @@ describe('carve-out の外のロールの trust policy (#680 R10)', () => {
 });
 
 describe('B: Function URL と公開 invoke (#680 R10)', () => {
-  const [SERVER_URL, IMAGE_URL] = REVIEWED_CDK_GENERATED_LOGICAL_IDS.functionUrls;
-
-  const urlVerdict = (logicalId: string, authType: unknown, action = 'Add') =>
+  const urlVerdict = (
+    logicalId: string,
+    authType: unknown,
+    action = 'Add',
+    target: unknown = { 'Fn::GetAtt': [URL_TARGETS[logicalId] ?? 'EvilFn', 'Arn'] },
+  ) =>
     evaluateDeployChangeSet(
       summary({
         changes: [
           change({ action, resourceType: 'AWS::Lambda::Url', logicalResourceId: logicalId, replacement: undefined }),
         ],
-        templateResources: { [logicalId]: { AuthType: authType } },
+        templateResources: {
+          [logicalId]: res('AWS::Lambda::Url', { AuthType: authType, TargetFunctionArn: target }),
+        },
       }),
     );
 
+  it('🔴 論理 ID だけ allowlist を名乗り、実体は別の関数へ向ける URL は止める', () => {
+    // 初回デプロイでは全リソースが Add なので、この論理 ID を本物の ServerFn に
+    // 付けることを強制するものが他に無い。名前ではなく**向き先**を固定する。
+    const verdict = urlVerdict(SERVER_URL, 'NONE', 'Add', { 'Fn::GetAtt': ['EvilFn', 'Arn'] });
+    expect(verdict.blocks.map((b) => b.reason)).toEqual(['functionUrlExposure']);
+  });
+
+  it('TargetFunctionArn が GetAtt でなければ止める（リテラル ARN も含む）', () => {
+    const verdict = urlVerdict(SERVER_URL, 'NONE', 'Add', 'arn:aws:lambda:ap-northeast-1:111122223333:function:evil');
+    expect(verdict.blocks.map((b) => b.reason)).toEqual(['functionUrlExposure']);
+  });
+
   it('🔴 空虚に真になっていないことの対照: WebStack の 2 本は両方式とも通る', () => {
     // `Web-dev` の作り直し（全リソースが Add）が gate で止まってはならない。
-    expect(urlVerdict(SERVER_URL!, 'AWS_IAM').blocks).toEqual([]); // OAC 方式
-    expect(urlVerdict(SERVER_URL!, 'NONE').blocks).toEqual([]); // origin-verify 方式
-    expect(urlVerdict(IMAGE_URL!, 'AWS_IAM').blocks).toEqual([]);
+    expect(urlVerdict(SERVER_URL, 'AWS_IAM').blocks).toEqual([]); // OAC 方式
+    expect(urlVerdict(SERVER_URL, 'NONE').blocks).toEqual([]); // origin-verify 方式
+    expect(urlVerdict(IMAGE_URL, 'AWS_IAM').blocks).toEqual([]);
   });
 
   it('未知の Function URL の Add は止める（無条件許可でも無条件停止でもない）', () => {
@@ -450,16 +692,16 @@ describe('B: Function URL と公開 invoke (#680 R10)', () => {
   });
 
   it('image の Function URL を NONE へ倒す Modify は止める (#631)', () => {
-    const verdict = urlVerdict(IMAGE_URL!, 'NONE', 'Modify');
+    const verdict = urlVerdict(IMAGE_URL, 'NONE', 'Modify');
     expect(verdict.blocks.map((b) => b.reason)).toEqual(['functionUrlExposure']);
   });
 
   it('AuthType がリテラルでなければ止める', () => {
-    const verdict = urlVerdict(SERVER_URL!, { Ref: 'AuthParam' });
+    const verdict = urlVerdict(SERVER_URL, { Ref: 'AuthParam' });
     expect(verdict.blocks.map((b) => b.reason)).toEqual(['opaqueResourceShape']);
   });
 
-  const permVerdict = (logicalId: string, principal: unknown) =>
+  const permVerdict = (logicalId: string, principal: unknown, over: TemplateProperties = {}) =>
     evaluateDeployChangeSet(
       summary({
         changes: [
@@ -470,7 +712,15 @@ describe('B: Function URL と公開 invoke (#680 R10)', () => {
             replacement: undefined,
           }),
         ],
-        templateResources: { [logicalId]: { Principal: principal, Action: 'lambda:InvokeFunctionUrl' } },
+        templateResources: {
+          [logicalId]: res('AWS::Lambda::Permission', {
+            Principal: principal,
+            Action: 'lambda:InvokeFunctionUrl',
+            FunctionName: { 'Fn::GetAtt': [PERMISSION_TARGETS[logicalId] ?? SERVER_FN, 'Arn'] },
+            SourceArn: `arn:aws:cloudfront::${ACCOUNT}:distribution/E123`,
+            ...over,
+          }),
+        },
       }),
     );
 
@@ -478,8 +728,51 @@ describe('B: Function URL と公開 invoke (#680 R10)', () => {
     expect(permVerdict('DistributionOacPermission', 'cloudfront.amazonaws.com').blocks).toEqual([]);
   });
 
+  it('CDK が組む擬似パラメータ入りの SourceArn（Fn::Join）も通る', () => {
+    // 実測: `arn:` + Ref(AWS::Partition) + `:cloudfront::` + Ref(AWS::AccountId) + …
+    const verdict = permVerdict('DistributionOriginInvoke', 'cloudfront.amazonaws.com', {
+      SourceArn: {
+        'Fn::Join': [
+          '',
+          [
+            'arn:',
+            { Ref: 'AWS::Partition' },
+            ':cloudfront::',
+            { Ref: 'AWS::AccountId' },
+            ':distribution/',
+            { Ref: 'Distribution830FAC52' },
+          ],
+        ],
+      },
+    });
+    expect(verdict.blocks).toEqual([]);
+  });
+
+  it('🔴 サービスプリンシパルでも source 条件が無ければ止める（別アカウントの API から呼べる）', () => {
+    const verdict = permVerdict('ApiGatewayInvoke', 'apigateway.amazonaws.com', {
+      SourceArn: undefined,
+      SourceAccount: undefined,
+    });
+    expect(verdict.blocks.map((b) => b.reason)).toEqual(['publicInvokePermission']);
+  });
+
+  it('🔴 source 条件が別アカウントを名指ししていれば止める', () => {
+    const verdict = permVerdict('ForeignSourceInvoke', 'cloudfront.amazonaws.com', {
+      SourceArn: 'arn:aws:cloudfront::111122223333:distribution/E999',
+    });
+    expect(verdict.blocks.map((b) => b.reason)).toEqual(['publicInvokePermission']);
+  });
+
+  it('SourceAccount で自アカウントを名指しするのも通る', () => {
+    const verdict = permVerdict('S3NotifyInvoke', 's3.amazonaws.com', {
+      SourceArn: undefined,
+      SourceAccount: ACCOUNT,
+    });
+    expect(verdict.blocks).toEqual([]);
+  });
+
   it('origin-verify 方式で CDK が足す Principal:"*" の 2 本は通る', () => {
-    for (const id of REVIEWED_CDK_GENERATED_LOGICAL_IDS.publicInvokePermissions) {
+    for (const id of Object.keys(REVIEWED_CDK_GENERATED_LOGICAL_IDS.publicInvokePermissions)) {
       expect(permVerdict(id, '*').blocks).toEqual([]);
     }
   });
@@ -488,6 +781,12 @@ describe('B: Function URL と公開 invoke (#680 R10)', () => {
     expect(permVerdict('EvilPublicInvoke', '*').blocks.map((b) => b.reason)).toEqual([
       'publicInvokePermission',
     ]);
+  });
+
+  it('🔴 allowlist 済みの論理 ID を名乗る Principal:"*" でも、別の関数を指していれば止める', () => {
+    const [known] = Object.keys(REVIEWED_CDK_GENERATED_LOGICAL_IDS.publicInvokePermissions);
+    const verdict = permVerdict(known!, '*', { FunctionName: { 'Fn::GetAtt': ['EvilFn', 'Arn'] } });
+    expect(verdict.blocks.map((b) => b.reason)).toEqual(['publicInvokePermission']);
   });
 
   it('別アカウントへの invoke 許可も止める', () => {

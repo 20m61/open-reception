@@ -73,6 +73,18 @@ export type DeployFlagReason = (typeof DEPLOY_FLAG_REASONS)[number];
  *  - `publicInvokePermissions` … origin-verify 方式（`authType: NONE`）のとき CDK が
  *    自動で足す 2 本。`Principal: '*'` を持つのはこの 2 本**だけ**である
  *    （OAC 方式の Permission は `cloudfront.amazonaws.com`）
+ *
+ * 🔴 **URL と Permission は「論理 ID」ではなく「どの関数を指しているか」まで固定する。**
+ * 初回デプロイでは全リソースが `Add` なので、**この論理 ID が本物の `ServerFn` /
+ * `ImageFn` に付いていることを強制するものが他に無い**。`AuthType: NONE` の
+ * `AWS::Lambda::Url` に allowlist 済みの論理 ID を付けて `TargetFunctionArn` だけ
+ * 攻撃者の関数へ向ければ、名前だけの検査は素通りする。だから値は
+ * **その URL / 許可が向いてよい Lambda 関数の論理 ID**にしてある。
+ *
+ * 関数側の論理 ID の出所も 2 通り（`CLAUDE.md`「調査の作法」）:
+ *  1. synth 実測（`ServerFn4F3A536E` / `ImageFnCD541B83`）
+ *  2. md5（`ServerFn/Resource` → `4F3A536E` / `ImageFn/Resource` → `CD541B83`）。
+ *     論理 ID はスタック内の construct パスだけで決まる
  */
 export const REVIEWED_CDK_GENERATED_LOGICAL_IDS = {
   carveOutProviderRoles: [
@@ -80,9 +92,25 @@ export const REVIEWED_CDK_GENERATED_LOGICAL_IDS = {
     'CustomCrossRegionExportWriterCustomResourceProviderRoleC951B1E1',
     'CustomCrossRegionExportReaderCustomResourceProviderRole10531BBD',
   ],
-  functionUrls: ['ServerFnFunctionUrlFFF9E3E1', 'ImageFnFunctionUrlBBD47D3E'],
-  publicInvokePermissions: ['ServerFninvokefunctionurl715820CF', 'ServerFninvokefunctionA3A7399A'],
+  /** Function URL の論理 ID → その URL が向いてよい Lambda 関数の論理 ID。 */
+  functionUrls: {
+    ServerFnFunctionUrlFFF9E3E1: 'ServerFn4F3A536E',
+    ImageFnFunctionUrlBBD47D3E: 'ImageFnCD541B83',
+  },
+  /** `Principal:"*"` invoke 許可の論理 ID → その許可が向いてよい Lambda 関数の論理 ID。 */
+  publicInvokePermissions: {
+    ServerFninvokefunctionurl715820CF: 'ServerFn4F3A536E',
+    ServerFninvokefunctionA3A7399A: 'ServerFn4F3A536E',
+  },
 } as const;
+
+/** allowlist の写像を「未知のキーなら `undefined`」として引く。 */
+function expectedTargetFunction(
+  map: Readonly<Record<string, string>>,
+  logicalId: string,
+): string | undefined {
+  return Object.prototype.hasOwnProperty.call(map, logicalId) ? map[logicalId] : undefined;
+}
 
 /**
  * 「常に OAC + AWS_IAM」と決めてある Function URL の論理 ID (#631)。
@@ -102,15 +130,44 @@ const PROVIDER_MANAGED_POLICY_SUFFIX = ':iam::aws:policy/service-role/AWSLambdaB
 /** carve-out されたロールの trust policy が指してよい唯一の principal。 */
 const PROVIDER_TRUST_SERVICE = 'lambda.amazonaws.com';
 
+/** carve-out されたロールの trust policy が許してよい唯一の action。 */
+const PROVIDER_TRUST_ACTION = 'sts:assumerole';
+
 /**
- * carve-out されたロールのインラインポリシーに現れてはいけない action。
+ * carve-out されたロール（＝Permissions Boundary が掛からないロール）に載ってよい
+ * action の**許可リスト**。ここに無い action は 1 つでもあれば止める。
  *
- * 実測した provider role のインラインは `ssm:` の 3〜4 アクションだけである。
- * ここで挙げるのは**境界そのものが守っている領域**（IAM の書き換え・別 principal への
- * 成り代わり・鍵・secret）で、boundary の掛からないロールにこれらが載ると
- * 「boundary を外した」ではなく「boundary を無意味にした」になる。
+ * 🔴 **以前は「禁止する接頭辞」の否認リストだった。それは壊れていた**
+ * （レビュー Blocking 2）。`lower.startsWith('iam:')` はコロン込みで比較するので、
+ * `iam*` / `sts*` / `kms*` / `*:*` / `*:CreateRole` は**どれも素通り**する ——
+ * どれも IAM が受け付ける正当な action 文字列で、指している操作は同じである。
+ * ワイルドカードがサービス部分を跨げる以上、否認リストは列挙し切れない。
+ *
+ * **許可リストを選べるのは、通ってよい集合を実測できているから**である
+ * （否認リストは「まだ思いついていない書き方」に対して常に負ける）。
+ * 出所は in-process synth（`aws-cdk-lib` の `CustomResourceProvider` を
+ * `crossRegionReferences` / `autoDeleteObjects` で生やした 2 スタック 2 リージョン）:
+ *
+ *  - `CustomCrossRegionExportWriter…` … `ssm:DeleteParameters` /
+ *    `ssm:ListTagsForResource` / `ssm:GetParameters` / `ssm:PutParameter`
+ *  - `CustomCrossRegionExportReader…` … `ssm:AddTagsToResource` /
+ *    `ssm:RemoveTagsFromResource` / `ssm:GetParameters`
+ *  - `CustomS3AutoDeleteObjects…` … **インラインポリシーを持たない**
+ *    （バケット側のリソースポリシーで許可される）。`logs:` は managed policy
+ *    （`AWSLambdaBasicExecutionRole`）側なのでここには現れない
+ *
+ * 外れ方の向き: CDK が action を増やすと**初回デプロイが gate で止まる**。
+ * AccessDenied ではなく停止なので復旧は容易で、増えた action を人間が
+ * 見てから足すことになる。逆向き（見落として通す）よりこちらが正しい。
  */
-const CARVE_OUT_FORBIDDEN_ACTION_PREFIXES = ['iam:', 'sts:', 'kms:', 'secretsmanager:', 'organizations:'];
+const CARVE_OUT_ALLOWED_ACTIONS: ReadonlySet<string> = new Set([
+  'ssm:deleteparameters',
+  'ssm:listtagsforresource',
+  'ssm:getparameters',
+  'ssm:putparameter',
+  'ssm:addtagstoresource',
+  'ssm:removetagsfromresource',
+]);
 
 /** `describe-change-set` の `Changes[].ResourceChange` から必要な項目だけ。 */
 export type ChangeSetResourceChange = {
@@ -129,8 +186,22 @@ export type ChangeSetResourceChange = {
 /** synth 済みテンプレートの 1 リソースの `Properties`。 */
 export type TemplateProperties = Readonly<Record<string, unknown>>;
 
-/** 論理 ID → `Properties`。`cdk.out/<stack>.template.json` の `Resources` から作る。 */
-export type StackTemplateResources = Readonly<Record<string, TemplateProperties>>;
+/**
+ * synth 済みテンプレートの 1 リソース。
+ *
+ * 🔴 **`Type` を落とさない。** `AWS::IAM::Policy` の `Roles: [{ Ref: X }]` を
+ * 検査するには「X が本当に `AWS::IAM::Role` か」を知る必要がある。`Properties` だけ
+ * 持っていると、`Ref` が**ロール以外**（例: `AWS::SSM::Parameter` の `Name` に
+ * carve-out のロール名を書いたもの）を指していても「生成名を予測する」経路へ落ちて
+ * carve-out の外だと誤判定する ―― 別リソース種別へ payload を移すだけで抜けられる。
+ */
+export type TemplateResource = {
+  readonly type: string;
+  readonly properties: TemplateProperties;
+};
+
+/** 論理 ID → リソース。`cdk.out/<stack>.template.json` の `Resources` から作る。 */
+export type StackTemplateResources = Readonly<Record<string, TemplateResource>>;
 
 export type ChangeSetSummary = {
   readonly stackName: string;
@@ -190,6 +261,25 @@ const BLOCKED_TYPE_PREFIXES: ReadonlyArray<[string, DeployBlockReason]> = [
  */
 const SAFE_ACTIONS = new Set(['Add', 'Modify']);
 
+/**
+ * 権限を**別リソースとして**ロールへ足す 3 つの綴り。
+ * `AWS::IAM::Policy`（インライン）/ `ManagedPolicy`（アタッチ）/ `RolePolicy`（インライン）は
+ * 名前も形も違うが、carve-out のロールに対しては**同じ結果**をもたらす。
+ */
+const POLICY_ATTACHMENT_TYPES: ReadonlySet<string> = new Set([
+  'AWS::IAM::Policy',
+  'AWS::IAM::ManagedPolicy',
+  'AWS::IAM::RolePolicy',
+]);
+
+/** テンプレートの実体まで見て判定するリソース種別。 */
+const WATCHED_RESOURCE_TYPES: ReadonlySet<string> = new Set([
+  'AWS::IAM::Role',
+  'AWS::Lambda::Url',
+  'AWS::Lambda::Permission',
+  ...POLICY_ATTACHMENT_TYPES,
+]);
+
 const describeChange = (c: ChangeSetResourceChange): string =>
   `${c.logicalResourceId} (${c.resourceType}) action=${c.action} replacement=${c.replacement ?? '-'}`;
 
@@ -204,6 +294,19 @@ const describeChange = (c: ChangeSetResourceChange): string =>
 
 const isRecord = (v: unknown): v is Readonly<Record<string, unknown>> =>
   typeof v === 'object' && v !== null && !Array.isArray(v);
+
+/**
+ * 論理 ID でテンプレートを引く。**プロトタイプ由来のキー**（`constructor` など）で
+ * 「存在する」ことにしないよう `hasOwnProperty` で確かめる。
+ */
+function lookupResource(
+  resources: StackTemplateResources,
+  logicalId: string,
+): TemplateResource | undefined {
+  return Object.prototype.hasOwnProperty.call(resources, logicalId)
+    ? resources[logicalId]
+    : undefined;
+}
 
 /** `string | string[]` を配列に均す。それ以外は `null`（＝判定不能）。 */
 function asStringList(v: unknown): ReadonlyArray<string> | null {
@@ -260,7 +363,18 @@ function resolveRoleArn(
 }
 
 type TrustVerdict =
-  | { readonly kind: 'serviceOnly'; readonly services: ReadonlyArray<string> }
+  | {
+      readonly kind: 'serviceOnly';
+      readonly services: ReadonlyArray<string>;
+      /**
+       * Allow 側の statement に現れた action（小文字）。**`Principal` だけを見て
+       * `Action` を見ないと、`lambda.amazonaws.com` を信頼したまま
+       * `sts:AssumeRoleWithWebIdentity` を許すロールが通る**（レビュー指摘）。
+       * carve-out の外では CDK が `sts:TagSession` 等を足すことがあるので、
+       * この値を**強制するのは carve-out の中だけ**にしてある。
+       */
+      readonly actions: ReadonlyArray<string>;
+    }
   | { readonly kind: 'external'; readonly detail: string }
   | { readonly kind: 'opaque'; readonly detail: string };
 
@@ -278,12 +392,20 @@ function classifyTrustPolicy(doc: unknown): TrustVerdict {
   if (!Array.isArray(statements)) return { kind: 'opaque', detail: 'Statement が配列でない' };
 
   const services: string[] = [];
+  const actions: string[] = [];
   let opaque: string | null = null;
 
   for (const raw of statements) {
     if (!isRecord(raw)) return { kind: 'opaque', detail: 'Statement の要素がオブジェクトでない' };
     // Deny は権限を与えないので、信頼先の判定には効かない。
     if (raw.Effect === 'Deny') continue;
+
+    const statementActions = asStringList(raw.Action);
+    if (statementActions === null) {
+      opaque ??= 'trust policy の Action が文字列リテラルでない';
+    } else {
+      actions.push(...statementActions.map((a) => a.toLowerCase()));
+    }
 
     const principal = raw.Principal;
     if (principal === '*') return { kind: 'external', detail: 'Principal: "*"（誰でも assume できる）' };
@@ -327,7 +449,7 @@ function classifyTrustPolicy(doc: unknown): TrustVerdict {
   }
 
   if (opaque !== null) return { kind: 'opaque', detail: opaque };
-  return { kind: 'serviceOnly', services };
+  return { kind: 'serviceOnly', services, actions };
 }
 
 /** managed policy ARN のリテラル表現を取り出す（`Fn::Sub` の文字列形も許す）。 */
@@ -337,24 +459,43 @@ function managedPolicyArnLiteral(v: unknown): string | null {
   return null;
 }
 
-/** インラインポリシーに現れる action を集める。読めないものがあれば `null`。 */
+/** 1 つの `PolicyDocument` の Allow 側 action を集める。読めなければ `null`。 */
+function collectPolicyDocumentActions(doc: unknown): ReadonlyArray<string> | null {
+  if (!isRecord(doc) || !Array.isArray(doc.Statement)) return null;
+  const actions: string[] = [];
+  for (const stmt of doc.Statement) {
+    if (!isRecord(stmt)) return null;
+    if (stmt.Effect === 'Deny') continue;
+    // `NotAction` は「これ以外すべて」＝ carve-out では必ず許可外を含む。
+    if (stmt.NotAction !== undefined) return null;
+    const list = asStringList(stmt.Action);
+    if (list === null) return null;
+    actions.push(...list);
+  }
+  return actions;
+}
+
+/** インラインポリシー（`Policies`）に現れる action を集める。読めないものがあれば `null`。 */
 function collectInlineActions(policies: unknown): ReadonlyArray<string> | null {
   if (policies === undefined) return [];
   if (!Array.isArray(policies)) return null;
   const actions: string[] = [];
   for (const policy of policies) {
     if (!isRecord(policy)) return null;
-    const doc = policy.PolicyDocument;
-    if (!isRecord(doc) || !Array.isArray(doc.Statement)) return null;
-    for (const stmt of doc.Statement) {
-      if (!isRecord(stmt)) return null;
-      if (stmt.Effect === 'Deny') continue;
-      const list = asStringList(stmt.Action);
-      if (list === null) return null;
-      actions.push(...list);
-    }
+    const list = collectPolicyDocumentActions(policy.PolicyDocument);
+    if (list === null) return null;
+    actions.push(...list);
   }
   return actions;
+}
+
+/**
+ * carve-out のロールに載せてよい action の許可リストから外れたものを返す。
+ * **`*` を含む書き方は素の文字列比較で自動的に外れる**（`iam*` も `*:*` も
+ * 許可リストのどの項目とも一致しない）。
+ */
+function disallowedCarveOutActions(actions: ReadonlyArray<string>): ReadonlyArray<string> {
+  return actions.filter((a) => !CARVE_OUT_ALLOWED_ACTIONS.has(a.toLowerCase()));
 }
 
 /**
@@ -370,8 +511,15 @@ function carveOutShapeViolations(props: TemplateProperties): ReadonlyArray<strin
   const trust = classifyTrustPolicy(props.AssumeRolePolicyDocument);
   if (trust.kind !== 'serviceOnly') {
     violations.push(`trust policy: ${trust.detail}`);
-  } else if (trust.services.length !== 1 || trust.services[0] !== PROVIDER_TRUST_SERVICE) {
-    violations.push(`trust policy が ${PROVIDER_TRUST_SERVICE} 以外を信頼している: ${trust.services.join(', ') || '(なし)'}`);
+  } else {
+    if (trust.services.length !== 1 || trust.services[0] !== PROVIDER_TRUST_SERVICE) {
+      violations.push(`trust policy が ${PROVIDER_TRUST_SERVICE} 以外を信頼している: ${trust.services.join(', ') || '(なし)'}`);
+    }
+    // Principal だけでなく **Action も**固定する。`sts:AssumeRoleWithWebIdentity` を
+    // 許すと OIDC 経由で外部から assume できる形になりうる。
+    if (trust.actions.length !== 1 || trust.actions[0] !== PROVIDER_TRUST_ACTION) {
+      violations.push(`trust policy の Action が sts:AssumeRole 以外を含む: ${trust.actions.join(', ') || '(なし)'}`);
+    }
   }
 
   const managed = props.ManagedPolicyArns;
@@ -392,22 +540,108 @@ function carveOutShapeViolations(props: TemplateProperties): ReadonlyArray<strin
   if (actions === null) {
     violations.push('インラインポリシーの Action を読み取れない');
   } else {
-    for (const action of actions) {
-      const lower = action.toLowerCase();
-      if (action === '*' || CARVE_OUT_FORBIDDEN_ACTION_PREFIXES.some((p) => lower.startsWith(p))) {
-        violations.push(`boundary の無いロールに載せてはいけない action: ${action}`);
-      }
+    for (const action of disallowedCarveOutActions(actions)) {
+      violations.push(`boundary の無いロールに載せてよい action の許可リストに無い: ${action}`);
     }
   }
 
   return violations;
 }
 
-/** `AWS::Lambda::Permission` の `Principal` が、この account 内 / AWS サービスに閉じているか。 */
-function isContainedPermissionPrincipal(principal: string): boolean {
-  if (principal.endsWith('.amazonaws.com')) return true;
+// ---------------------------------------------------------------------------
+// テンプレートの組み込み関数を、判定に必要な範囲だけ解決する
+// ---------------------------------------------------------------------------
+
+/**
+ * 解決できなかった部分を表す印。**ARN のどのフィールドにも現れ得ない文字**を使う
+ * （NUL 番兵は ripgrep がファイルを binary と見なすので使わない。`cfn-generated-name.ts`
+ * で同じ轍を踏んでいる）。
+ */
+const UNRESOLVED_MARKER = '<unresolved>';
+
+/** テンプレートで値が決まっている擬似パラメータ。 */
+const PSEUDO_PARAMETERS: Readonly<Record<string, string>> = {
+  'AWS::Partition': 'aws',
+  'AWS::AccountId': CARVE_OUT_ACCOUNT_ID,
+  'AWS::URLSuffix': 'amazonaws.com',
+};
+
+/**
+ * `Fn::Join` / `Fn::Sub` / 擬似パラメータの `Ref` を、判定できる範囲で文字列へ潰す。
+ *
+ * 実測: CDK は同じ distribution ARN を **2 通り**で書く ——
+ * `arn:aws:cloudfront::822063948773:distribution/` + `Ref`（アカウントがリテラル）と、
+ * `arn:` + `Ref(AWS::Partition)` + `:cloudfront::` + `Ref(AWS::AccountId)` + …。
+ * どちらも通さないと初回デプロイが止まるので、両方を扱う。
+ * 解決できない部分は `UNRESOLVED_MARKER` になり、**アカウント一致には決してならない**。
+ */
+function resolveTemplateString(v: unknown): string {
+  if (typeof v === 'string') return v;
+  if (isRecord(v)) {
+    const ref = v.Ref;
+    if (typeof ref === 'string') return PSEUDO_PARAMETERS[ref] ?? UNRESOLVED_MARKER;
+    const join = v['Fn::Join'];
+    if (Array.isArray(join) && join.length === 2 && typeof join[0] === 'string' && Array.isArray(join[1])) {
+      return join[1].map(resolveTemplateString).join(join[0]);
+    }
+    const sub = v['Fn::Sub'];
+    if (typeof sub === 'string') {
+      return sub.replace(/\$\{([^}]+)\}/g, (_m, name: string) => PSEUDO_PARAMETERS[name] ?? UNRESOLVED_MARKER);
+    }
+  }
+  return UNRESOLVED_MARKER;
+}
+
+/** ARN のアカウント欄（5 番目）がこのアカウントか。 */
+function arnNamesThisAccount(arn: string): boolean {
+  const fields = arn.split(':');
+  return fields.length >= 5 && fields[4] === CARVE_OUT_ACCOUNT_ID;
+}
+
+/**
+ * `{ 'Fn::GetAtt': [<論理 ID>, <属性>] }` から論理 ID を取り出す。
+ * CloudFormation は `"A.Arn"` という短縮形も受け付けるので両方扱う
+ * （**同じ意味の別の綴りで検査を迂回させない**）。
+ */
+function getAttLogicalId(v: unknown, attribute: string): string | null {
+  if (!isRecord(v)) return null;
+  const g = v['Fn::GetAtt'];
+  if (Array.isArray(g) && g.length === 2 && typeof g[0] === 'string' && g[1] === attribute) {
+    return g[0];
+  }
+  if (typeof g === 'string') {
+    const dot = g.indexOf('.');
+    if (dot > 0 && g.slice(dot + 1) === attribute) return g.slice(0, dot);
+  }
+  return null;
+}
+
+/**
+ * `AWS::Lambda::Permission` の `Principal` が、この account 内 / AWS サービスに閉じているか。
+ *
+ * 🔴 サービスプリンシパルを無条件に通してよいわけではない。`SourceAccount` /
+ * `SourceArn` の無い `apigateway.amazonaws.com` 宛の許可は、**別アカウントの API から
+ * この Lambda を呼べる**という意味になる。閉じているかは `permissionSourceNamesThisAccount`
+ * が別途見る。
+ */
+function isServicePrincipal(principal: string): boolean {
+  return principal.endsWith('.amazonaws.com');
+}
+
+function isSameAccountPrincipal(principal: string): boolean {
   if (principal === CARVE_OUT_ACCOUNT_ID) return true;
   return principal.startsWith(`arn:aws:iam::${CARVE_OUT_ACCOUNT_ID}:`);
+}
+
+/** `SourceAccount` / `SourceArn` が**このアカウント**を名指ししているか。 */
+function permissionSourceNamesThisAccount(props: TemplateProperties): boolean {
+  if (props.SourceAccount !== undefined) {
+    if (resolveTemplateString(props.SourceAccount) === CARVE_OUT_ACCOUNT_ID) return true;
+  }
+  if (props.SourceArn !== undefined) {
+    if (arnNamesThisAccount(resolveTemplateString(props.SourceArn))) return true;
+  }
+  return false;
 }
 
 /**
@@ -473,14 +707,16 @@ function evaluateSensitiveResource(
   blocks: DeployBlock[],
   flags: DeployFlag[],
 ): void {
+  const resource = lookupResource(summary.templateResources, c.logicalResourceId);
+  // 🔴 **change set 側の種別だけで watched を決めない。** テンプレート側の `Type` も
+  // 見る（両者が食い違ったら止める）。片方の綴りだけを見る検査は、payload を
+  // 隣の種別へ移すだけで抜けられる。
   const watched =
-    c.resourceType === 'AWS::IAM::Role' ||
-    c.resourceType === 'AWS::Lambda::Url' ||
-    c.resourceType === 'AWS::Lambda::Permission';
+    WATCHED_RESOURCE_TYPES.has(c.resourceType) ||
+    (resource !== undefined && WATCHED_RESOURCE_TYPES.has(resource.type));
   if (!watched) return;
 
-  const props = summary.templateResources[c.logicalResourceId];
-  if (props === undefined) {
+  if (resource === undefined) {
     // 🔴 「テンプレートに無い＝無害」ではない。読めなかっただけである。
     blocks.push({
       reason: 'opaqueResourceShape',
@@ -488,63 +724,265 @@ function evaluateSensitiveResource(
     });
     return;
   }
+  if (resource.type !== c.resourceType) {
+    blocks.push({
+      reason: 'opaqueResourceShape',
+      evidence: `${evidence} — change set と synth テンプレートで種別が食い違います（テンプレート側は ${resource.type}）`,
+    });
+    return;
+  }
+  const props = resource.properties;
 
   if (c.resourceType === 'AWS::IAM::Role') {
     evaluateRole(summary.stackName, c, props, evidence, blocks, flags);
     return;
   }
 
-  if (c.resourceType === 'AWS::Lambda::Url') {
-    const known = (REVIEWED_CDK_GENERATED_LOGICAL_IDS.functionUrls as ReadonlyArray<string>).includes(
-      c.logicalResourceId,
-    );
-    if (!known) {
-      blocks.push({
-        reason: 'functionUrlExposure',
-        evidence:
-          `${evidence} — WebStack が作る Function URL は 2 本` +
-          `（${REVIEWED_CDK_GENERATED_LOGICAL_IDS.functionUrls.join(' / ')}）だけです。` +
-          '未知の Function URL は、資格情報が切れたあとも残る公開 HTTPS 入口になります',
-      });
-      return;
-    }
-    const authType = props.AuthType;
-    if (typeof authType !== 'string') {
-      blocks.push({ reason: 'opaqueResourceShape', evidence: `${evidence} — AuthType がリテラルでない` });
-      return;
-    }
-    if (c.logicalResourceId === AWS_IAM_ONLY_FUNCTION_URL && authType !== 'AWS_IAM') {
-      blocks.push({
-        reason: 'functionUrlExposure',
-        evidence:
-          `${evidence} — image の Function URL は常に AWS_IAM です (#631)。AuthType=${authType} は` +
-          '無認証・無検証の公開エンドポイントになります',
-      });
-    }
+  if (POLICY_ATTACHMENT_TYPES.has(c.resourceType)) {
+    evaluatePolicyAttachment(summary, c, props, evidence, blocks);
     return;
   }
 
-  // AWS::Lambda::Permission
+  if (c.resourceType === 'AWS::Lambda::Url') {
+    evaluateFunctionUrl(c, props, evidence, blocks);
+    return;
+  }
+
+  evaluatePermission(c, props, evidence, blocks);
+}
+
+/**
+ * 🔴 **権限は「ロールの Properties」以外からも carve-out のロールへ届く
+ * （レビュー Blocking 1）。**
+ *
+ * `AWS::IAM::Policy` / `AWS::IAM::ManagedPolicy` / `AWS::IAM::RolePolicy` は
+ * **別リソース**でありながら `Roles` / `RoleName` で既存ロールへ権限を足す。
+ * IAM 側の `AllowCdkProviderRoleMutationWithoutBoundary` は carve-out ARN に対する
+ * `iam:PutRolePolicy` / `iam:AttachRolePolicy` を**無条件で**許しているので、
+ * ここを見ないと `carveOutRoleShape` は「インラインを 1 つ左のリソースへ移す」だけで
+ * 迂回できる。change set にロールが 1 件も現れない Modify でも同じことが起きる。
+ */
+function evaluatePolicyAttachment(
+  summary: ChangeSetSummary,
+  c: ChangeSetResourceChange,
+  props: TemplateProperties,
+  evidence: string,
+  blocks: DeployBlock[],
+): void {
+  if (props.Users !== undefined || props.Groups !== undefined) {
+    blocks.push({
+      reason: 'iamPrincipalChange',
+      evidence: `${evidence} — IAM ユーザー / グループへポリシーを付けています。dev スタックにその理由はありません`,
+    });
+    return;
+  }
+
+  const rawTargets =
+    c.resourceType === 'AWS::IAM::RolePolicy'
+      ? props.RoleName === undefined
+        ? []
+        : [props.RoleName]
+      : props.Roles === undefined
+        ? []
+        : props.Roles;
+  if (!Array.isArray(rawTargets)) {
+    blocks.push({
+      reason: 'opaqueResourceShape',
+      evidence: `${evidence} — 付与先ロールの指定が配列でなく、carve-out に入らないと証明できません`,
+    });
+    return;
+  }
+
+  const carveOutTargets: string[] = [];
+  for (const target of rawTargets) {
+    const resolved = resolvePolicyRoleTarget(summary, target);
+    if (resolved.kind === 'opaque') {
+      blocks.push({
+        reason: 'opaqueResourceShape',
+        evidence: `${evidence} — 付与先ロールを静的に決定できません: ${resolved.detail}`,
+      });
+      return;
+    }
+    if (resolved.kind === 'carveOut') carveOutTargets.push(resolved.detail);
+  }
+  if (carveOutTargets.length === 0) return;
+
+  const actions = collectPolicyDocumentActions(props.PolicyDocument);
+  if (actions === null) {
+    blocks.push({
+      reason: 'carveOutRoleShape',
+      evidence: `${evidence} — carve-out のロール（${carveOutTargets.join(' / ')}）へ付ける PolicyDocument の Action を読み取れません`,
+    });
+    return;
+  }
+  const disallowed = disallowedCarveOutActions(actions);
+  if (disallowed.length > 0) {
+    blocks.push({
+      reason: 'carveOutRoleShape',
+      evidence:
+        `${evidence} — carve-out のロール（${carveOutTargets.join(' / ')}）に Permissions Boundary は` +
+        `掛かりません。許可リストに無い action: ${disallowed.join(', ')}`,
+    });
+  }
+}
+
+type PolicyRoleTarget =
+  | { readonly kind: 'carveOut'; readonly detail: string }
+  | { readonly kind: 'outside' }
+  | { readonly kind: 'opaque'; readonly detail: string };
+
+/**
+ * `Roles: [...]` / `RoleName` の 1 要素が、carve-out のロールを指すかを解決する。
+ *
+ * - `Ref` / `Fn::GetAtt` … テンプレート内の**論理 ID**を引き、`Type` が
+ *   `AWS::IAM::Role` であることまで確かめる。ここで `Type` を見ないと、
+ *   `Ref` が返す文字列が role 名になる**別種別**（`AWS::SSM::Parameter` の `Name` 等）へ
+ *   carve-out の実在ロール名を書くだけで抜けられる
+ * - リテラルの role 名 … ARN の `Path` が分からない以上「carve-out の**外**である」と
+ *   証明できない（グロブの `*` は `/` を跨ぐ）。**通さず、carve-out 扱いで検査する**
+ * - それ以外（`Fn::Join` など） … 判定不能として止める
+ */
+function resolvePolicyRoleTarget(summary: ChangeSetSummary, target: unknown): PolicyRoleTarget {
+  const referenced =
+    isRecord(target) && typeof target.Ref === 'string'
+      ? target.Ref
+      : (getAttLogicalId(target, 'Arn') ?? getAttLogicalId(target, 'RoleName'));
+
+  if (referenced !== null && referenced !== undefined) {
+    const resource = lookupResource(summary.templateResources, referenced);
+    if (resource === undefined) {
+      return { kind: 'opaque', detail: `参照先 ${referenced} が synth テンプレートにありません` };
+    }
+    if (resource.type !== 'AWS::IAM::Role') {
+      return {
+        kind: 'opaque',
+        detail: `参照先 ${referenced} は AWS::IAM::Role ではなく ${resource.type} です`,
+      };
+    }
+    const resolved = resolveRoleArn(summary.stackName, referenced, resource.properties);
+    if (resolved.kind === 'opaque') return { kind: 'opaque', detail: resolved.detail };
+    const inCarveOut =
+      resolved.kind === 'exact'
+        ? iamArnGlobMatches(CARVE_OUT_ROLE_ARN_PATTERN, resolved.arn)
+        : iamArnGlobMatchesGeneratedName(CARVE_OUT_ROLE_ARN_PATTERN, resolved.arnPrefix);
+    return inCarveOut ? { kind: 'carveOut', detail: referenced } : { kind: 'outside' };
+  }
+
+  if (typeof target === 'string') {
+    return {
+      kind: 'carveOut',
+      detail: `${target}（リテラル名。Path が不明なので carve-out の外だと証明できません）`,
+    };
+  }
+
+  return { kind: 'opaque', detail: '付与先が Ref / Fn::GetAtt / リテラル名のいずれでもありません' };
+}
+
+function evaluateFunctionUrl(
+  c: ChangeSetResourceChange,
+  props: TemplateProperties,
+  evidence: string,
+  blocks: DeployBlock[],
+): void {
+  const expectedFunction = expectedTargetFunction(
+    REVIEWED_CDK_GENERATED_LOGICAL_IDS.functionUrls,
+    c.logicalResourceId,
+  );
+  if (expectedFunction === undefined) {
+    blocks.push({
+      reason: 'functionUrlExposure',
+      evidence:
+        `${evidence} — WebStack が作る Function URL は 2 本` +
+        `（${Object.keys(REVIEWED_CDK_GENERATED_LOGICAL_IDS.functionUrls).join(' / ')}）だけです。` +
+        '未知の Function URL は、資格情報が切れたあとも残る公開 HTTPS 入口になります',
+    });
+    return;
+  }
+
+  // 🔴 論理 ID が allowlist にあることは「その URL が本物の関数に付いている」ことを
+  // 意味しない。**初回デプロイでは全リソースが Add** なので、この論理 ID を
+  // ServerFn / ImageFn へ結び付けているものは他に何も無い。向き先を固定する。
+  const target = getAttLogicalId(props.TargetFunctionArn, 'Arn');
+  if (target !== expectedFunction) {
+    blocks.push({
+      reason: 'functionUrlExposure',
+      evidence:
+        `${evidence} — ${c.logicalResourceId} は ${expectedFunction} の Function URL のはずですが、` +
+        `TargetFunctionArn が ${target ?? '静的に読めない値'} を指しています`,
+    });
+    return;
+  }
+
+  const authType = props.AuthType;
+  if (typeof authType !== 'string') {
+    blocks.push({ reason: 'opaqueResourceShape', evidence: `${evidence} — AuthType がリテラルでない` });
+    return;
+  }
+  if (c.logicalResourceId === AWS_IAM_ONLY_FUNCTION_URL && authType !== 'AWS_IAM') {
+    blocks.push({
+      reason: 'functionUrlExposure',
+      evidence:
+        `${evidence} — image の Function URL は常に AWS_IAM です (#631)。AuthType=${authType} は` +
+        '無認証・無検証の公開エンドポイントになります',
+    });
+  }
+}
+
+function evaluatePermission(
+  c: ChangeSetResourceChange,
+  props: TemplateProperties,
+  evidence: string,
+  blocks: DeployBlock[],
+): void {
   const principal = props.Principal;
   if (typeof principal !== 'string') {
     blocks.push({ reason: 'opaqueResourceShape', evidence: `${evidence} — Principal がリテラルでない` });
     return;
   }
+
   if (principal === '*') {
-    const known = (
-      REVIEWED_CDK_GENERATED_LOGICAL_IDS.publicInvokePermissions as ReadonlyArray<string>
-    ).includes(c.logicalResourceId);
-    if (!known) {
+    const expectedFunction = expectedTargetFunction(
+      REVIEWED_CDK_GENERATED_LOGICAL_IDS.publicInvokePermissions,
+      c.logicalResourceId,
+    );
+    if (expectedFunction === undefined) {
       blocks.push({
         reason: 'publicInvokePermission',
         evidence:
           `${evidence} — Principal:"*" の invoke 許可はリソースポリシーとして残り、` +
           'デプロイ窓が閉じても消えません',
       });
+      return;
+    }
+    // URL と同じ理由で**向き先**まで固定する（論理 ID は攻撃者が選べる）。
+    const target = getAttLogicalId(props.FunctionName, 'Arn');
+    if (target !== expectedFunction) {
+      blocks.push({
+        reason: 'publicInvokePermission',
+        evidence:
+          `${evidence} — CDK が足す Principal:"*" の許可は ${expectedFunction} 宛のはずですが、` +
+          `FunctionName が ${target ?? '静的に読めない値'} を指しています`,
+      });
     }
     return;
   }
-  if (!isContainedPermissionPrincipal(principal)) {
+
+  if (isServicePrincipal(principal)) {
+    // 🔴 `*.amazonaws.com` を無条件に通すと、`apigateway.amazonaws.com` へ
+    // source 条件無しで許可する形が通ってしまう ―― **別アカウント**の API から
+    // この Lambda を呼べる、実在する越境経路である。
+    if (!permissionSourceNamesThisAccount(props)) {
+      blocks.push({
+        reason: 'publicInvokePermission',
+        evidence:
+          `${evidence} — サービスプリンシパル ${principal} への invoke 許可に、このアカウントを` +
+          '名指しする SourceAccount / SourceArn がありません（別アカウント経由で呼べます）',
+      });
+    }
+    return;
+  }
+
+  if (!isSameAccountPrincipal(principal)) {
     blocks.push({
       reason: 'publicInvokePermission',
       evidence: `${evidence} — Principal=${principal} はこのアカウント外です（永続する外部からの invoke 経路）`,

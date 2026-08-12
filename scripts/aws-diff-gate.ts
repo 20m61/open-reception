@@ -130,16 +130,22 @@ function readTemplateResources(path: string): StackTemplateResources {
   if (typeof resources !== 'object' || resources === null) {
     throw new Error(`synth テンプレートに Resources がありません: ${path}`);
   }
-  const out: Record<string, Readonly<Record<string, unknown>>> = {};
+  const out: Record<string, { type: string; properties: Readonly<Record<string, unknown>> }> = {};
   for (const [logicalId, resource] of Object.entries(resources as Record<string, unknown>)) {
-    const props =
+    const entry =
       typeof resource === 'object' && resource !== null
-        ? (resource as { Properties?: unknown }).Properties
-        : undefined;
-    out[logicalId] =
-      typeof props === 'object' && props !== null
-        ? (props as Readonly<Record<string, unknown>>)
+        ? (resource as { Type?: unknown; Properties?: unknown })
         : {};
+    // 🔴 `Type` が読めないときに `''` で埋めない。gate 側は「Ref 先が
+    // AWS::IAM::Role である」ことを Type で確かめるので、未知は未知として渡し、
+    // 判定不能（＝停止）に落ちるようにする。
+    out[logicalId] = {
+      type: typeof entry.Type === 'string' ? entry.Type : 'Unknown',
+      properties:
+        typeof entry.Properties === 'object' && entry.Properties !== null
+          ? (entry.Properties as Readonly<Record<string, unknown>>)
+          : {},
+    };
   }
   return out;
 }

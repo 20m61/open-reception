@@ -439,8 +439,12 @@ describe('Function URL の allowlist (#680 R10 / B)', () => {
     });
     imageFn.addFunctionUrl({ authType: lambda.FunctionUrlAuthType.AWS_IAM });
 
-    const urls = Object.keys(Template.fromStack(stack).findResources('AWS::Lambda::Url'));
-    expect(urls).toEqual([...REVIEWED_CDK_GENERATED_LOGICAL_IDS.functionUrls]);
+    // 🔴 **論理 ID の集合だけでなく「どの関数を指すか」まで固定する。**
+    // gate は `TargetFunctionArn` の GetAtt 先を allowlist と突き合わせて止めるので、
+    // この対応表が実 synth とずれると初回デプロイが gate で止まる。
+    expect(targetsOf(Template.fromStack(stack), 'AWS::Lambda::Url', 'TargetFunctionArn')).toEqual(
+      REVIEWED_CDK_GENERATED_LOGICAL_IDS.functionUrls,
+    );
   });
 
   /**
@@ -459,13 +463,40 @@ describe('Function URL の allowlist (#680 R10 / B)', () => {
     });
     serverFn.addFunctionUrl({ authType: lambda.FunctionUrlAuthType.NONE });
 
-    const permissions = Template.fromStack(stack).findResources('AWS::Lambda::Permission');
-    const wildcard = Object.entries(permissions)
-      .filter(([, r]) => (r as { Properties?: { Principal?: unknown } }).Properties?.Principal === '*')
-      .map(([id]) => id);
-    expect(wildcard).toEqual([...REVIEWED_CDK_GENERATED_LOGICAL_IDS.publicInvokePermissions]);
+    const template = Template.fromStack(stack);
+    const wildcard = new Set(
+      Object.entries(template.findResources('AWS::Lambda::Permission'))
+        .filter(([, r]) => (r as { Properties?: { Principal?: unknown } }).Properties?.Principal === '*')
+        .map(([id]) => id),
+    );
+    const targets = targetsOf(template, 'AWS::Lambda::Permission', 'FunctionName');
+    expect(
+      Object.fromEntries(Object.entries(targets).filter(([id]) => wildcard.has(id))),
+    ).toEqual(REVIEWED_CDK_GENERATED_LOGICAL_IDS.publicInvokePermissions);
   });
 });
+
+/**
+ * 「論理 ID → その属性が `Fn::GetAtt` で指している論理 ID」を取り出す。
+ * GetAtt でないものは `'(GetAtt でない)'` として現れる（黙って落とさない）。
+ */
+function targetsOf(
+  template: Template,
+  resourceType: string,
+  property: string,
+): Readonly<Record<string, string>> {
+  const out: Record<string, string> = {};
+  for (const [logicalId, resource] of Object.entries(template.findResources(resourceType))) {
+    const value = (resource as { Properties?: Record<string, unknown> }).Properties?.[property];
+    const getAtt =
+      typeof value === 'object' && value !== null
+        ? (value as { 'Fn::GetAtt'?: unknown })['Fn::GetAtt']
+        : undefined;
+    out[logicalId] =
+      Array.isArray(getAtt) && typeof getAtt[0] === 'string' ? getAtt[0] : '(GetAtt でない)';
+  }
+  return out;
+}
 
 /**
  * コメントを取り除く。
