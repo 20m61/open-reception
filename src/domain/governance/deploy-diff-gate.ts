@@ -748,7 +748,18 @@ function evaluateSensitiveResource(
     return;
   }
 
-  evaluatePermission(c, props, evidence, blocks);
+  if (c.resourceType === 'AWS::Lambda::Permission') {
+    evaluatePermission(c, props, evidence, blocks);
+    return;
+  }
+
+  // 🔴 **fall-through で最後の検査へ流さない。** `WATCHED_RESOURCE_TYPES` に
+  // 種別を足して dispatch を足し忘れたときに、無関係な検査が偶然通す／偶然止める
+  // （＝理由の違う緑・赤）ことを防ぐ。
+  blocks.push({
+    reason: 'opaqueResourceShape',
+    evidence: `${evidence} — 検査対象の種別ですが、対応する検査が実装されていません`,
+  });
 }
 
 /**

@@ -347,6 +347,9 @@ describe('A: carve-out の名前空間に入るロールを止める (#680 R10)'
       }),
     );
     expect(verdict.blocks.map((b) => b.reason)).toEqual(['opaqueResourceShape']);
+    // 🔴 理由コードだけでは足りない（M38 の再ドリルで判明）。食い違い検査を外しても
+    // 別経路が同じ `opaqueResourceShape` を返して緑のままだった。**根拠まで固定する。**
+    expect(verdict.blocks[0]!.evidence).toContain('種別が食い違います');
   });
 
   it('change set にあるのに synth テンプレートに無いロールは止める（読めなかったを問題なしにしない）', () => {
@@ -789,10 +792,17 @@ describe('B: Function URL と公開 invoke (#680 R10)', () => {
   it('🔴 source 条件が静的に読めなければ止める（読めなかったを「自アカウント」に落とさない）', () => {
     // 変異ドリル M36 が生き残って見つけた穴。解決できない値をアカウント一致に
     // 丸めると、`SourceArn` に任意の組み込み関数を書くだけで source 条件を無効化できる。
-    const verdict = permVerdict('OpaqueSourceInvoke', 'cloudfront.amazonaws.com', {
-      SourceArn: { 'Fn::GetAtt': ['SomethingElse', 'Arn'] },
-    });
-    expect(verdict.blocks.map((b) => b.reason)).toEqual(['publicInvokePermission']);
+    for (const sourceArn of [
+      // 値ごと読めない
+      { 'Fn::GetAtt': ['SomethingElse', 'Arn'] },
+      // 🔴 ARN の形はしているが**アカウント欄だけ**が読めない（M38 の再ドリルで追加）。
+      // テンプレートパラメータで後から差し込む形。ここを「一致」に丸めると
+      // source 条件は名ばかりになる。
+      { 'Fn::Join': ['', ['arn:aws:cloudfront::', { Ref: 'AccountParam' }, ':distribution/E1']] },
+    ]) {
+      const verdict = permVerdict('OpaqueSourceInvoke', 'cloudfront.amazonaws.com', { SourceArn: sourceArn });
+      expect(verdict.blocks.map((b) => b.reason)).toEqual(['publicInvokePermission']);
+    }
   });
 
   it('🔴 source 条件が別アカウントを名指ししていれば止める', () => {
