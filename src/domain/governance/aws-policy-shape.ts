@@ -32,6 +32,17 @@ export type PolicyAudit = {
   readonly grantsAdmin: boolean;
   /** PermissionsBoundary 条件の無い `iam:CreateRole` の Allow を含むか。 */
   readonly unboundedRoleCreation: boolean;
+  /**
+   * PermissionsBoundary 条件の無い `iam:CreateRole` Allow の **Resource パターン**。
+   *
+   * 🔴 出荷しているポリシーには**意図的な例外が 1 つある**（#680 R1）。CDK の
+   * `CustomResourceProvider`（`crossRegionReferences` / `autoDeleteObjects`）が吐く
+   * 生の `AWS::IAM::Role` には Aspect が届かず boundary が付かないため、その名前
+   * パターンだけを carve-out してある。よって「boundary 無し CreateRole が**無い**」は
+   * もう主張できない ―― 代わりに「**どの Resource に対して**例外を認めたか」を
+   * 見えるようにして、テストが `*` や `role/*` への拡大を検出できるようにする。
+   */
+  readonly unboundedRoleCreationResources: ReadonlyArray<string>;
   readonly deniedActions: ReadonlyArray<string>;
   /**
    * Allow ステートメントに現れるアクション。
@@ -179,6 +190,7 @@ const matchesAction = (actions: ReadonlyArray<string>, wanted: string): boolean 
 export function auditPolicyDocument(doc: PolicyDocument): PolicyAudit {
   let grantsAdmin = false;
   let unboundedRoleCreation = false;
+  const unboundedRoleCreationResources: string[] = [];
   let unscopedPassRole = false;
   let unscopedPolicyRewrite = false;
   let unscopedRoleWrite = false;
@@ -208,6 +220,7 @@ export function auditPolicyDocument(doc: PolicyDocument): PolicyAudit {
     if (actions.includes('*') && resources.includes('*')) grantsAdmin = true;
     if (matchesAction(actions, 'iam:CreateRole') && !hasBoundaryCondition(s)) {
       unboundedRoleCreation = true;
+      unboundedRoleCreationResources.push(...resources);
     }
     if (
       matchesAction(actions, 'iam:PassRole') &&
@@ -225,6 +238,7 @@ export function auditPolicyDocument(doc: PolicyDocument): PolicyAudit {
   return {
     grantsAdmin,
     unboundedRoleCreation,
+    unboundedRoleCreationResources,
     unscopedPassRole,
     unscopedPolicyRewrite,
     unscopedRoleWrite,

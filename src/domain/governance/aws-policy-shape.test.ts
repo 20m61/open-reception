@@ -13,10 +13,37 @@ import {
   conditionOperatorsForKey,
   strictConditionKeys,
   type PolicyDocument,
+  type PolicyStatement,
 } from './aws-policy-shape';
+import { iamArnGlobMatches } from './cfn-generated-name';
 
 const load = (name: string): PolicyDocument =>
   JSON.parse(readFileSync(resolve(process.cwd(), 'scripts/aws-policies', name), 'utf8')) as PolicyDocument;
+
+const ROLE_ARN_PREFIX = 'arn:aws:iam::822063948773:role/';
+
+/**
+ * CDK の `CustomResourceProvider` が作るロールだけを外す carve-out (#680 R1/R2/R3)。
+ *
+ * **なぜこの形か（より狭いものを選ばなかった理由）**: 物理名は
+ * `<スタック名>-<論理 ID を 64 文字に収まるまで切り詰めたもの>-<12 文字の乱数>` で、
+ * 切り詰め量が**スタック名の長さで変わる**。`OpenReception-Web-dev` では
+ * `CustomCrossRegionExportWriter` まで残るが、`OpenReception-CfMonitoring-dev` では
+ * `CustomCrossRegionExp` で切れる。したがって
+ * `…-Custom*CustomResourceProviderRole*` も `…-CustomCrossRegionExport*` も
+ * **us-east-1 側に一致しない**（`cfn-generated-name.test.ts` が実在名 2 本で固定）。
+ * 一致しなければ `iam:CreateRole` が Deny され、初回デプロイが ROLLBACK_FAILED になる。
+ * 共通して残るのは `Custom` の 6 文字だけなので、`-dev-Custom*` が
+ * 「3 本すべてに当たる中で最も狭い、スタック名の長さに依存しない」形になる。
+ */
+const PROVIDER_ROLE_CARVE_OUT = `${ROLE_ARN_PREFIX}OpenReception-*-dev-Custom*`;
+
+/** Sid で 1 ステートメントを取り出す。見つからなければ throw（無言 PASS を作らない）。 */
+function bySid(doc: PolicyDocument, sid: string): PolicyStatement {
+  const stmt = doc.Statement.find((s) => (s as unknown as { Sid?: string }).Sid === sid);
+  if (stmt === undefined) throw new Error(`Sid が見つかりません: ${sid}`);
+  return stmt;
+}
 
 describe('auditPolicyDocument', () => {
   it('Allow の Action:* + Resource:* を管理者権限として検出する', () => {
@@ -296,11 +323,9 @@ describe.each(ESCALATION_SCOPED_POLICIES)('%s の IAM 昇格経路', (name) => {
   });
 
   it('iam:PassRole の Allow は PassedToService とタグの両方で絞っている', () => {
-    const stmt = load(name).Statement.find(
-      (s) => s.Effect === 'Allow' && JSON.stringify(s.Action).includes('iam:PassRole'),
-    );
-    expect(stmt).toBeDefined();
-    const keys = strictConditionKeys(stmt!);
+    // 🔴 Sid で取る。`find(Action に iam:PassRole を含む最初の Allow)` だと、#680 R2 で
+    // 追加した carve-out（タグ条件を意図的に持たない）を掴んで意味が反転しうる。
+    const keys = strictConditionKeys(bySid(load(name), 'AllowPassRoleOnlyToTaggedDevWorkloads'));
     expect(keys).toContain('iam:passedtoservice');
     expect(keys).toContain('aws:resourcetag/project');
     expect(keys).toContain('aws:resourcetag/environment');
@@ -319,15 +344,105 @@ describe.each(ESCALATION_SCOPED_POLICIES)('%s の IAM 昇格経路', (name) => {
   });
 
   it('タグで絞れる範囲（role）については Project タグ以外への書き込みも Deny している', () => {
-    const stmt = load(name).Statement.find(
-      (s) => (s as unknown as { Sid?: string }).Sid === 'DenyIamRoleWriteOutsideProject',
-    );
-    expect(stmt).toBeDefined();
-    expect(stmt!.Effect).toBe('Deny');
+    const stmt = bySid(load(name), 'DenyIamRoleWriteOutsideProject');
+    expect(stmt.Effect).toBe('Deny');
     // `StringNotEquals`（キー欠如時に真＝fail-closed）であることまで固定する。
     // `StringNotEqualsIfExists` にするとタグ無しロールを素通りさせてしまう。
-    expect(conditionOperatorsForKey(stmt!, 'aws:ResourceTag/Project')).toEqual(['StringNotEquals']);
-    expect(JSON.stringify(stmt!.Action)).toContain('iam:DeleteRole');
+    expect(conditionOperatorsForKey(stmt, 'aws:ResourceTag/Project')).toEqual(['StringNotEquals']);
+    expect(JSON.stringify(stmt.Action)).toContain('iam:DeleteRole');
+  });
+
+  /**
+   * 🔴 **R1/R2/R3（2026-08-12 残件レビュー / #680）: CDK custom-resource provider role の
+   * carve-out。**
+   *
+   * `crossRegionReferences` / `autoDeleteObjects` の provider role は生の
+   * `AWS::IAM::Role` として吐かれ、cross-region の 2 本には `PermissionsBoundary` が
+   * 付かず、3 本とも `Project` / `Environment` タグが付かない
+   * （`infra/test/claude-deploy-boundary.test.ts` が synth で実測して固定している）。
+   * その結果 —— carve-out を入れないと ——
+   *
+   *  1. 初回デプロイの `iam:CreateRole` が `DenyRoleCreationWithoutBoundary` に当たって
+   *     AccessDenied → rollback
+   *  2. rollback の `iam:DeleteRole` が `DenyIamRoleWriteOutsideProject`（タグ条件）に
+   *     当たって **ROLLBACK_FAILED**
+   *  3. provider Lambda への `iam:PassRole` が `aws:ResourceTag/Project` 条件で Deny
+   *
+   * **Deny は Allow に勝つ**ので、Allow を足すだけでは 1 も 2 も解けない。
+   * Deny 側を `NotResource` へ変えて carve-out を除外してある。ここではその 5 点
+   * （Allow 2 本・Deny 2 本の `NotResource`・パターンが広すぎないこと）を固定する。
+   */
+  describe('CDK custom-resource provider role の carve-out (#680 R1/R2/R3)', () => {
+    const doc = () => load(name);
+
+    it('boundary 条件なしの CreateRole Allow は carve-out パターン 1 本だけ', () => {
+      // 「無い」ではなく「これだけ」。`*` や `role/*` へ広げたら落ちる。
+      expect(auditPolicyDocument(doc()).unboundedRoleCreationResources).toEqual([PROVIDER_ROLE_CARVE_OUT]);
+    });
+
+    it('carve-out の Allow は Create/Put/Attach の 3 つだけで、Condition を持たない', () => {
+      const stmt = bySid(doc(), 'AllowCdkProviderRoleMutationWithoutBoundary');
+      expect(stmt.Effect).toBe('Allow');
+      expect(stmt.Action).toEqual(['iam:CreateRole', 'iam:PutRolePolicy', 'iam:AttachRolePolicy']);
+      expect(stmt.Resource).toBe(PROVIDER_ROLE_CARVE_OUT);
+    });
+
+    it('carve-out の PassRole は lambda.amazonaws.com へのみ、素の StringEquals で絞る', () => {
+      const stmt = bySid(doc(), 'AllowPassRoleToCdkProviderRoles');
+      expect(stmt.Resource).toBe(PROVIDER_ROLE_CARVE_OUT);
+      expect(stmt.Condition).toEqual({
+        StringEquals: { 'iam:PassedToService': 'lambda.amazonaws.com' },
+      });
+      // タグ条件は落としてよいが、渡し先の縛りは落とさない（#680 R2 の明示条件）。
+      expect(strictConditionKeys(stmt)).toEqual(['iam:passedtoservice']);
+    });
+
+    it.each([
+      // 層 4 の boundary 強制。carve-out 以外の**すべて**を Deny し続ける。
+      name === 'claude-boundary.json'
+        ? 'DenyRoleCreationWithoutThisBoundary'
+        : 'DenyRoleCreationWithoutBoundary',
+      // 層 3 のタグ条件 Deny。rollback / teardown の DeleteRole を通すために除外する。
+      'DenyIamRoleWriteOutsideProject',
+    ])('%s は Resource:* ではなく NotResource で carve-out だけを除外している', (sid) => {
+      const stmt = bySid(doc(), sid);
+      expect(stmt.Effect).toBe('Deny');
+      // 🔴 `Resource` が残っていたら carve-out は効かない（Deny が Allow に勝つ）。
+      expect(stmt.Resource).toBeUndefined();
+      expect(stmt.NotResource).toBe(PROVIDER_ROLE_CARVE_OUT);
+    });
+  });
+});
+
+/**
+ * carve-out が「意図より広いものに一致しない」ことを、グロブ照合で直接確かめる。
+ * ARN パターンは目視で安全かどうか分からない —— 実際に当ててみる。
+ */
+describe('carve-out パターンの広がり (#680 R1/R2/R3)', () => {
+  it.each([
+    // 実在する 2 本（アカウント上で確認済み）と、us-east-1 側の予測名。
+    'OpenReception-Web-dev-CustomCrossRegionExportWriter-mWjZeIPYdVgw',
+    'OpenReception-Web-dev-CustomS3AutoDeleteObjectsCust-yIrNw85NvcWP',
+    'OpenReception-CfMonitoring-dev-CustomCrossRegionExp-aBcDeFgHiJkL',
+  ])('%s に一致する', (roleName) => {
+    expect(iamArnGlobMatches(PROVIDER_ROLE_CARVE_OUT, `${ROLE_ARN_PREFIX}${roleName}`)).toBe(true);
+  });
+
+  it.each([
+    // アプリの通常ロール（boundary もタグも付く）。免除してはならない。
+    'OpenReception-Web-dev-ServerFnServiceRoleABCD-aBcDeFgHiJkL',
+    // 環境違い。carve-out は dev 専用。
+    'OpenReception-Web-prod-CustomCrossRegionExportWriter-aBcDeFgHiJkL',
+    'OpenReception-Web-staging-CustomCrossRegionExportWriter-aBcDeFgHiJkL',
+    // 自分のチェーン・他プロジェクト・エントリロール。
+    'cdk-orcloud01-cfn-exec-role-822063948773-ap-northeast-1',
+    'cdk-hnb659fds-cfn-exec-role-822063948773-ap-northeast-1',
+    'nodi-dev-CustomSomething-aBcDeFgHiJkL',
+    'OpenReceptionClaudeDeploy-dev',
+    // 大小文字を変えただけの名前も一致しない。
+    'openreception-web-dev-customcrossregionexportwriter-aBcDeFgHiJkL',
+  ])('%s に一致しない', (roleName) => {
+    expect(iamArnGlobMatches(PROVIDER_ROLE_CARVE_OUT, `${ROLE_ARN_PREFIX}${roleName}`)).toBe(false);
   });
 });
 
@@ -338,8 +453,9 @@ describe('claude-boundary.json', () => {
     expect(auditPolicyDocument(doc).grantsAdmin).toBe(false);
   });
 
-  it('boundary 条件の無い Role 作成を許さない', () => {
-    expect(auditPolicyDocument(doc).unboundedRoleCreation).toBe(false);
+  // #680 R1: 「無い」ではなく「carve-out だけ」。詳細は carve-out describe を参照。
+  it('boundary 条件の無い Role 作成は carve-out 以外に無い', () => {
+    expect(auditPolicyDocument(doc).unboundedRoleCreationResources).toEqual([PROVIDER_ROLE_CARVE_OUT]);
   });
 
   it.each(FOREIGN_PATTERNS)('%s を Deny している', (pattern) => {
@@ -390,8 +506,9 @@ describe('claude-cfn-exec.json', () => {
     expect(auditPolicyDocument(doc).deniedActions).toContain('secretsmanager:*');
   });
 
-  it('boundary 条件の無い Role 作成を許さない', () => {
-    expect(auditPolicyDocument(doc).unboundedRoleCreation).toBe(false);
+  // #680 R1: 「無い」ではなく「carve-out だけ」。詳細は carve-out describe を参照。
+  it('boundary 条件の無い Role 作成は carve-out 以外に無い', () => {
+    expect(auditPolicyDocument(doc).unboundedRoleCreationResources).toEqual([PROVIDER_ROLE_CARVE_OUT]);
   });
 
   it.each(FOREIGN_PATTERNS)('%s を Deny している', (pattern) => {

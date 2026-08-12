@@ -1,8 +1,8 @@
 /**
  * Claude Cloud 経路の Permissions Boundary 適用 (#680 / ADR 0009 層 4 / Critical 2)。
  *
- * ここで固定したいのは 3 つ:
- *  1. context を渡したとき、App 配下の **すべての `AWS::IAM::Role`** に
+ * ここで固定したいのは 4 つ:
+ *  1. context を渡したとき、**construct として作られる** `AWS::IAM::Role` に
  *     `PermissionsBoundary` が付く（＝`claude-cfn-exec.json` の
  *     `DenyRoleCreationWithoutBoundary` に当たらない）
  *  2. context を渡さないとき（人間の staging / prod デプロイ）は付かない
@@ -10,12 +10,18 @@
  *     `-c @aws-cdk/core:permissionsBoundary={"name":"..."}` はまさにこれをやるので
  *     使えない。この性質が変わったら（＝CDK が文字列も解釈するようになったら）
  *     このテストが落ちて、実装を単純化してよいことに気づける。
+ *  4. 🔴 **R1（#680 残件）: `CustomResourceProvider` が吐く生の `AWS::IAM::Role` は
+ *     この Aspect の外にいる。** boundary もタグも付かないものが残るので、契約は
+ *     「全部に付く」ではなく「付かないものは carve-out の名前パターンに収まる」。
+ *     `CustomResourceProvider 系ロール (#680 R1)` describe を参照。
  */
 import { describe, it, expect } from 'vitest';
 import * as cdk from 'aws-cdk-lib';
 import { Template } from 'aws-cdk-lib/assertions';
 import * as iam from 'aws-cdk-lib/aws-iam';
 import * as lambda from 'aws-cdk-lib/aws-lambda';
+import * as s3 from 'aws-cdk-lib/aws-s3';
+import * as cloudwatch from 'aws-cdk-lib/aws-cloudwatch';
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import {
@@ -24,6 +30,10 @@ import {
 } from '../lib/config/claude-deploy-boundary';
 import { applyCostTags } from '../lib/constructs/cost-tags';
 import { resolveEnv } from '../lib/config/environments';
+import {
+  cfnGeneratedNamePrefix,
+  iamArnGlobMatches,
+} from '../../src/domain/governance/cfn-generated-name';
 
 const ACCOUNT = '822063948773';
 /**
@@ -42,8 +52,14 @@ const BOUNDARY_ARN = {
 /**
  * boundary 適用後に「Role を作る典型的なもの」を 2 種類置いたスタックを synth する。
  * - 明示的な `iam.Role`
- * - `lambda.Function`（実行ロールが暗黙に作られる。初回 CREATE で問題になるのはこちら
- *   ―― `crossRegionReferences: true` の custom resource が同じ形で Role を作る）
+ * - `lambda.Function`（実行ロールが暗黙に作られる）
+ *
+ * 🔴 **この fixture は `CustomResourceProvider` 系のロールを含まない。**
+ * `crossRegionReferences` / `autoDeleteObjects` の provider role は
+ * `AWS::IAM::Role` を**生の CloudFormation リソースとして**吐き、`ITaggable` でもなく、
+ * cross-region のものは `prepareApp`（synth 中）で materialise されるため
+ * `Stack.addPermissionsBoundaryAspect()` の Aspect より**後**に生える。
+ * その等価性が無いことは下の `CustomResourceProvider 系ロール` describe が固定する。
  */
 function synth(context?: Record<string, unknown>): Template {
   const app = new cdk.App({ context });
@@ -137,6 +153,214 @@ describe('applyClaudeDeployBoundary (#680 Critical 2)', () => {
     });
     new iam.Role(stack, 'Role', { assumedBy: new iam.ServicePrincipal('lambda.amazonaws.com') });
     expect(onlyRoleProperties(Template.fromStack(stack)).PermissionsBoundary).toEqual(BOUNDARY_ARN);
+  });
+});
+
+/**
+ * 🔴 **R1（2026-08-12 全体レビュー残件 / #680）: 上の fixture が取り逃していたクラス。**
+ *
+ * `crossRegionReferences: true` と `autoDeleteObjects: true` は、CDK の
+ * `CustomResourceProvider` を経由して **生の `AWS::IAM::Role`** をテンプレートへ吐く。
+ * これは `iam.Role` construct ではないので:
+ *
+ *  - `ITaggable` ではない → `Tags.of()`（`applyCostTags`）が届かない
+ *    → `Project` / `Environment` が付かない
+ *  - cross-region のものは `prepareApp`（`app.synth()` の内側）で materialise される
+ *    → `Stack.addPermissionsBoundaryAspect()` の Aspect が既に走った**後**なので
+ *      `PermissionsBoundary` も付かない
+ *
+ * dev で実際に生えるのは 3 本（うち 2 本は既にアカウント上に存在する）。
+ */
+const ACCOUNT_ROLE_ARN_PREFIX = `arn:aws:iam::${ACCOUNT}:role/`;
+
+/** 2 スタック 2 リージョン + 実際の cross-region 参照 + autoDeleteObjects。 */
+function synthCrossRegionPair(): {
+  readonly producer: Template;
+  readonly consumer: Template;
+  readonly producerStackName: string;
+  readonly consumerStackName: string;
+} {
+  const app = new cdk.App({
+    context: { [CLAUDE_BOUNDARY_CONTEXT_KEY]: 'OpenReceptionClaudeBoundary' },
+  });
+  applyClaudeDeployBoundary(app);
+
+  const producerStackName = 'OpenReception-Web-dev';
+  const consumerStackName = 'OpenReception-CfMonitoring-dev';
+
+  const producer = new cdk.Stack(app, producerStackName, {
+    env: { account: ACCOUNT, region: 'ap-northeast-1' },
+    crossRegionReferences: true,
+  });
+  applyCostTags(producer, resolveEnv('dev'), 'web');
+  // `web-stack.ts` の `autoDeleteObjects: config.environment !== 'prod'` と同じ形。
+  const bucket = new s3.Bucket(producer, 'Assets', {
+    removalPolicy: cdk.RemovalPolicy.DESTROY,
+    autoDeleteObjects: true,
+  });
+
+  const consumer = new cdk.Stack(app, consumerStackName, {
+    env: { account: ACCOUNT, region: 'us-east-1' },
+    crossRegionReferences: true,
+  });
+  applyCostTags(consumer, resolveEnv('dev'), 'cloudfront-monitoring');
+  // 実際に別リージョンの値を参照する（これが ExportWriter / ExportReader を生む）。
+  new cloudwatch.Alarm(consumer, 'Alarm', {
+    metric: new cloudwatch.Metric({
+      namespace: 'AWS/CloudFront',
+      metricName: '5xxErrorRate',
+      dimensionsMap: { DistributionId: bucket.bucketName },
+    }),
+    threshold: 1,
+    evaluationPeriods: 1,
+  });
+
+  return {
+    producer: Template.fromStack(producer),
+    consumer: Template.fromStack(consumer),
+    producerStackName,
+    consumerStackName,
+  };
+}
+
+type RoleFacts = {
+  readonly stackName: string;
+  readonly logicalId: string;
+  readonly hasBoundary: boolean;
+  readonly tags: Readonly<Record<string, string>>;
+};
+
+function rolesOf(template: Template, stackName: string): ReadonlyArray<RoleFacts> {
+  const roles = template.findResources('AWS::IAM::Role');
+  return Object.keys(roles).map((logicalId) => {
+    const props = propertiesOf(roles, logicalId);
+    const tags = (props.Tags ?? []) as ReadonlyArray<{ Key: string; Value: string }>;
+    return {
+      stackName,
+      logicalId,
+      hasBoundary: props.PermissionsBoundary !== undefined,
+      tags: Object.fromEntries(tags.map((t) => [t.Key, t.Value])),
+    };
+  });
+}
+
+function allRoles(): ReadonlyArray<RoleFacts> {
+  const { producer, consumer, producerStackName, consumerStackName } = synthCrossRegionPair();
+  return [...rolesOf(producer, producerStackName), ...rolesOf(consumer, consumerStackName)];
+}
+
+/**
+ * 出荷ポリシーから carve-out の ARN パターンを**読み出す**（テスト側に写経しない）。
+ * 2 ファイルで一致していることも同時に固定する ―― 片方だけ直すと、cfn-exec role が
+ * 許されても天井（boundary）が Deny する / その逆、という形で初回デプロイが落ちる。
+ */
+function carveOutPattern(): string {
+  const read = (file: string): string => {
+    const doc = JSON.parse(
+      readFileSync(resolve(__dirname, '..', '..', 'scripts', 'aws-policies', file), 'utf8'),
+    ) as { Statement: ReadonlyArray<{ Sid?: string; Resource?: string }> };
+    const stmt = doc.Statement.find((s) => s.Sid === 'AllowCdkProviderRoleMutationWithoutBoundary');
+    if (stmt?.Resource === undefined) {
+      throw new Error(`${file} に AllowCdkProviderRoleMutationWithoutBoundary の Resource がありません`);
+    }
+    return stmt.Resource;
+  };
+  const exec = read('claude-cfn-exec.json');
+  expect(read('claude-boundary.json')).toBe(exec);
+  return exec;
+}
+
+/** そのロールが carve-out に一致するか（CloudFormation が生成する物理名を予測して判定）。 */
+function matchesCarveOut(pattern: string, role: RoleFacts): boolean {
+  const prefix = cfnGeneratedNamePrefix(role.stackName, role.logicalId);
+  // 乱数サフィックスは未知なので、パターン側の `*` に吸わせるダミーを付ける。
+  return iamArnGlobMatches(pattern, `${ACCOUNT_ROLE_ARN_PREFIX}${prefix}aBcDeFgHiJkL`);
+}
+
+describe('CustomResourceProvider 系ロール (#680 R1)', () => {
+  /**
+   * 🔴 **最初はこれを「全ロールに boundary とタグが付く」として書き、赤を見た。**
+   * 実測（`git log` の R1 コミット / residual-fix-report）:
+   *
+   * | 論理 ID | boundary | Project/Environment |
+   * | --- | --- | --- |
+   * | `CustomS3AutoDeleteObjectsCustomResourceProviderRole…` | **付く** | 付かない |
+   * | `CustomCrossRegionExportWriterCustomResourceProviderRole…` | 付かない | 付かない |
+   * | `CustomCrossRegionExportReaderCustomResourceProviderRole…` | 付かない | 付かない |
+   *
+   * auto-delete の provider は construct 構築時に materialise されるので Aspect が届き
+   * boundary は付く。cross-region の 2 本は `prepareApp` で後から生えるので届かない。
+   * どれも `ITaggable` ではないのでタグは 3 本とも付かない。
+   *
+   * よって出荷している契約は「**全部に付く**」ではなく「**付かないものは carve-out の
+   * 名前パターンに収まっている**」である。ここではその契約を固定する。
+   */
+  it('boundary が付かないロールは carve-out の ARN パターンに収まっている', () => {
+    const pattern = carveOutPattern();
+    const roles = allRoles();
+    expect(roles.length).toBeGreaterThanOrEqual(3);
+    const offenders = roles
+      .filter((r) => !r.hasBoundary && !matchesCarveOut(pattern, r))
+      .map((r) => `${r.stackName}/${r.logicalId}`);
+    expect(offenders).toEqual([]);
+  });
+
+  it('Project/Environment タグが付かないロールも carve-out の ARN パターンに収まっている', () => {
+    const pattern = carveOutPattern();
+    const offenders = allRoles()
+      .filter(
+        (r) =>
+          (r.tags.Project !== 'open-reception' || r.tags.Environment !== 'dev') &&
+          !matchesCarveOut(pattern, r),
+      )
+      .map((r) => `${r.stackName}/${r.logicalId}`);
+    expect(offenders).toEqual([]);
+  });
+
+  /**
+   * 🔴 **上の 2 件が空虚に真になっていないことを別途固定する。** 対象が 0 本なら
+   * 「収まっている」は無内容だし、逆に carve-out が全ロールを覆っていたら
+   * 主境界が消えていることになる。
+   */
+  it('carve-out が必要なロールが実在し、かつ carve-out はそれ以外を覆っていない', () => {
+    const pattern = carveOutPattern();
+    const roles = allRoles();
+    const covered = roles.filter((r) => matchesCarveOut(pattern, r)).map((r) => r.logicalId);
+    expect(covered).toEqual([
+      'CustomS3AutoDeleteObjectsCustomResourceProviderRole3B1BD092',
+      'CustomCrossRegionExportWriterCustomResourceProviderRoleC951B1E1',
+      'CustomCrossRegionExportReaderCustomResourceProviderRole10531BBD',
+    ]);
+  });
+
+  /**
+   * carve-out が「アプリの普通のロール」まで拾わないことを、実際に synth した
+   * Lambda 実行ロールで確かめる。これらは boundary もタグも付くので、
+   * carve-out から外れていなければならない（外れていないと
+   * `DenyIamRoleWriteOutsideProject` の免除が本番ロールへ広がる）。
+   */
+  it('boundary とタグが付く通常のロールは carve-out に一致しない', () => {
+    const pattern = carveOutPattern();
+    const app = new cdk.App({
+      context: { [CLAUDE_BOUNDARY_CONTEXT_KEY]: 'OpenReceptionClaudeBoundary' },
+    });
+    applyClaudeDeployBoundary(app);
+    const stack = new cdk.Stack(app, 'OpenReception-Web-dev', {
+      env: { account: ACCOUNT, region: 'ap-northeast-1' },
+    });
+    applyCostTags(stack, resolveEnv('dev'), 'web');
+    new lambda.Function(stack, 'ServerFn', {
+      runtime: lambda.Runtime.NODEJS_22_X,
+      handler: 'index.handler',
+      code: lambda.Code.fromInline('exports.handler = async () => ({});'),
+    });
+    const roles = rolesOf(Template.fromStack(stack), 'OpenReception-Web-dev');
+    expect(roles.length).toBeGreaterThan(0);
+    for (const role of roles) {
+      expect({ id: role.logicalId, boundary: role.hasBoundary, carved: matchesCarveOut(pattern, role) }).toEqual(
+        { id: role.logicalId, boundary: true, carved: false },
+      );
+    }
   });
 });
 

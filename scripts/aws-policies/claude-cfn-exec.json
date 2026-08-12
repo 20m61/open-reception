@@ -49,6 +49,15 @@
       }
     },
     {
+      "Sid": "AllowPassRoleToCdkProviderRoles",
+      "Effect": "Allow",
+      "Action": "iam:PassRole",
+      "Resource": "arn:aws:iam::822063948773:role/OpenReception-*-dev-Custom*",
+      "Condition": {
+        "StringEquals": { "iam:PassedToService": "lambda.amazonaws.com" }
+      }
+    },
+    {
       "Sid": "AllowRoleMutationOnlyWithBoundary",
       "Effect": "Allow",
       "Action": ["iam:CreateRole", "iam:PutRolePolicy", "iam:AttachRolePolicy"],
@@ -58,6 +67,12 @@
           "iam:PermissionsBoundary": "arn:aws:iam::822063948773:policy/OpenReceptionClaudeBoundary"
         }
       }
+    },
+    {
+      "Sid": "AllowCdkProviderRoleMutationWithoutBoundary",
+      "Effect": "Allow",
+      "Action": ["iam:CreateRole", "iam:PutRolePolicy", "iam:AttachRolePolicy"],
+      "Resource": "arn:aws:iam::822063948773:role/OpenReception-*-dev-Custom*"
     },
     {
       "Sid": "DenyIamWriteOnForeignPrincipals",
@@ -112,7 +127,7 @@
         "iam:DeleteRolePolicy",
         "iam:DetachRolePolicy"
       ],
-      "Resource": "arn:aws:iam::822063948773:role/*",
+      "NotResource": "arn:aws:iam::822063948773:role/OpenReception-*-dev-Custom*",
       "Condition": {
         "StringNotEquals": { "aws:ResourceTag/Project": "open-reception" }
       }
@@ -161,7 +176,7 @@
       "Sid": "DenyRoleCreationWithoutBoundary",
       "Effect": "Deny",
       "Action": ["iam:CreateRole", "iam:PutRolePolicy", "iam:AttachRolePolicy"],
-      "Resource": "*",
+      "NotResource": "arn:aws:iam::822063948773:role/OpenReception-*-dev-Custom*",
       "Condition": {
         "StringNotEquals": {
           "iam:PermissionsBoundary": "arn:aws:iam::822063948773:policy/OpenReceptionClaudeBoundary"
