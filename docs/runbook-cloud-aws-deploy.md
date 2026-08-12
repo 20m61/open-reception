@@ -158,12 +158,34 @@ aws iam put-role-policy \
 効くかを確認する。**Admin 権限を持つ人間の環境から実行する**
 （`OpenReceptionClaudeDeploy-dev` は `iam:SimulatePrincipalPolicy` を持たない前提のため）。
 
-### 4a. 自動化されている分（S1〜S11）
+### 4a. 自動化されている分（S1〜S14）
+
+🔴 **各 check は「どのロールに対して評価するか」を自分で宣言している。3 つの ARN を
+すべて渡すこと。1 つでも欠けていると、スクリプトは既定値で埋めずに `exit 2` で拒否する。**
 
 ```bash
-SIMULATE_PRINCIPAL_ARN=arn:aws:iam::822063948773:role/OpenReceptionClaudeDeploy-dev \
+SIMULATE_ENTRY_ROLE_ARN=arn:aws:iam::822063948773:role/OpenReceptionClaudeDeploy-dev \
+SIMULATE_DEPLOY_ROLE_ARN=arn:aws:iam::822063948773:role/cdk-orcloud01-deploy-role-822063948773-ap-northeast-1 \
+SIMULATE_EXEC_ROLE_ARN=arn:aws:iam::822063948773:role/cdk-orcloud01-cfn-exec-role-822063948773-ap-northeast-1 \
   npm run aws:negative-tests -- --simulate-only
 ```
+
+出力は 1 件ごとに `S4 [exec] iam:CreateRole → denied（期待 denied）` と
+`principal=<ARN>` / `guards=<どの層のどの Deny を問うているか>` を並べて印字する。
+**どのロールを検査したのかを読み違えられない形にしてある。**
+
+us-east-1 側も同じ 3 変数の `-us-east-1` 版で 1 度実行する
+（`OpenReception-CfMonitoring-dev` のリージョン）。
+
+> 🔴 **なぜ 3 つに分かれたか（2026-08-12 全体レビュー Critical 3）。** 旧手順は
+> `SIMULATE_PRINCIPAL_ARN` に **entry role だけ**を渡していた。entry role は
+> `DenyEverythingElseOutsideTheChain` で 4 アクション以外を最初から全 Deny するので、
+> **S1〜S11 は `claude-boundary.json` と `claude-cfn-exec.json` が作られていようがいまいが
+> 全部 `denied` を返す** —— つまり「絶対に落ちない検査」を、ADR が初回デプロイの
+> 前提条件と呼んでいた。S4/S5/S7（boundary 脱出）・S6（PassRole）・S1/S3/S10 が
+> 実際に問うているのは `cdk-orcloud01-cfn-exec-role-*` の権限である。
+> `SIMULATE_PRINCIPAL_ARN` は**廃止**され、設定されていると `exit 2` で止まる
+> （古い手順を無言で受け付けない）。
 
 `npm run aws:negative-tests`（フラグ無し）は N 系（実試行）と S 系（シミュレーション）の**両方**を
 走らせるので **Admin 専用**である。クラウドセッションからこのコマンドを叩くと、

@@ -495,19 +495,43 @@ Deny するもの:
 
 **実試行しない（`iam:SimulatePrincipalPolicy` で判定 / 人間側 Admin から実行）**
 
-| # | 操作 | 期待 |
-| --- | --- | --- |
-| S1 | `dynamodb:DeleteTable` on nodi / salon-loop のテーブル | DENY |
-| S2 | `cloudformation:DeleteStack` on `nodi-*` / `salon-loop-*` | DENY |
-| S3 | `secretsmanager:GetSecretValue` on 他プロジェクトの secret | DENY |
-| S4 | `iam:CreateRole` (boundary 指定なし) | DENY |
-| S5 | `iam:AttachRolePolicy` (AdministratorAccess) | DENY |
-| S6 | `iam:PassRole` → `cdk-hnb659fds-cfn-exec-role-*` | DENY |
-| S7 | `iam:DeleteRolePermissionsBoundary` | DENY |
-| S8 | `route53:ChangeResourceRecordSets` | DENY |
-| S9 | `cloudformation:UpdateStack` on `OpenReception-*-prod`（将来） | DENY |
-| S10 | `kms:ScheduleKeyDeletion` | DENY |
-| S11 | `iam:CreateAccessKey` on `user/CDK`（旧 N8） | DENY |
+🔴 **各 check は「どの principal に対して評価するか」を宣言する（2026-08-12 全体レビュー
+Critical 3）。** 旧実装は principal ARN を 1 本だけ受け取り、既定を entry role
+（`OpenReceptionClaudeDeploy-dev`）にしていた。runbook ステップ 4a もその ARN を渡していた。
+entry role は `DenyEverythingElseOutsideTheChain` で 4 アクション以外を最初から全 Deny
+するので、**S1〜S11 は `claude-boundary.json` / `claude-cfn-exec.json` が存在するか否かに
+関係なくすべて `denied` を返す ―― 落ちようのない検査だった。** 本来 S4/S5/S7（boundary 脱出）・
+S6（PassRole）・S1/S3/S10 が問うているのは `cdk-orcloud01-cfn-exec-role-*` の権限であり、
+その principal は本ブランチのどこでも一度もシミュレートされていなかった。
+
+対処は文書ではなく構造で行う: `SIMULATED_CHECKS` の各エントリが `principals`
+（`entry` / `deploy` / `exec`）を持ち、スクリプトは対応する ARN
+（`SIMULATE_ENTRY_ROLE_ARN` / `SIMULATE_DEPLOY_ROLE_ARN` / `SIMULATE_EXEC_ROLE_ARN`）が
+**供給されていなければ実行を拒否**する（既定値で埋めない）。旧 `SIMULATE_PRINCIPAL_ARN` は
+設定されていると `exit 2` で止まる。結果は principal ARN を同じ行に印字する。
+`summarizeNegativeTests` は、意図した principal と異なる principal で評価された結果を
+**採点せず棄却**する（`denied` でも PASS にしない）。
+
+| # | 操作 | principal | 期待 |
+| --- | --- | --- | --- |
+| S1 | `dynamodb:DeleteTable` on nodi のテーブル | exec | DENY |
+| S2 | `cloudformation:DeleteStack` on `nodi-*` | deploy, exec | DENY |
+| S3 | `secretsmanager:GetSecretValue` on 他プロジェクトの secret | exec | DENY |
+| S4 | `iam:CreateRole` (boundary 指定なし) | exec | DENY |
+| S5 | `iam:AttachRolePolicy` | exec | DENY |
+| S6 | `iam:PassRole` → `cdk-hnb659fds-cfn-exec-role-*` | deploy, exec | DENY |
+| S7 | `iam:DeleteRolePermissionsBoundary` | exec | DENY |
+| S8 | `route53:ChangeResourceRecordSets` | exec | DENY |
+| S9 | `cloudformation:UpdateStack` on `OpenReception-*-prod`（将来） | deploy, exec | DENY |
+| S10 | `kms:ScheduleKeyDeletion` | exec | DENY |
+| S11 | `iam:CreateAccessKey` on `user/CDK`（旧 N8） | entry, exec | DENY |
+| S12 | `sts:AssumeRole` → `cdk-orcloud01-lookup-role-*`（Critical 1） | entry | DENY |
+| S13 | `iam:DeleteRolePolicy` on `cdk-orcloud01-deploy-role-*`（Important 5。自分のチェーン） | exec | DENY |
+| S14 | `iam:CreatePolicyVersion` on 他プロジェクトのポリシー（Important 5） | exec | DENY |
+
+`principals` を配列にしてあるのは、同じ問いが層をまたいで二重に守られている場合
+（例: foreign stack への操作は deploy role の層 1 と cfn-exec role の層 3 の両方）、
+どちらか一方を選ぶのが恣意的で片方の退行を見逃すため。各 principal ごとに 1 件として採点する。
 
 **「policy を読む限り安全」で終わらせない**（spec 原文 §9）。S 系は
 `SimulatePrincipalPolicy` の実 API 応答を根拠とし、結果を PR 本文へ貼る。
@@ -608,7 +632,7 @@ spec 原文 STOP CONDITIONS の「既存 production deploy 経路を壊す可能
 | `src/domain/governance/aws-policy-shape.ts` + `.test.ts` | ポリシー JSON の構造検証（**純関数**） |
 | `infra/lib/config/claude-deploy-boundary.ts` + `infra/test/claude-deploy-boundary.test.ts` | 層 4 の Permissions Boundary を CDK アプリ側で適用する（§4.2 層 4 の注記。bootstrap だけでは付かない） |
 | `scripts/aws-diff-gate.ts` | 上記を呼ぶ薄い CLI |
-| `scripts/aws-negative-tests.ts` | N1-N7 実試行（`--live-only`）/ S1-S11 シミュレーション（`--simulate-only`。旧 N8 は S11 へ移動済み） |
+| `scripts/aws-negative-tests.ts` | N1-N7 + N9 実試行（`--live-only`）/ S1-S14 シミュレーション（`--simulate-only`。principal ごとに評価。旧 N8 は S11 へ移動済み） |
 | `scripts/aws-issue-credentials.sh` | 人間が窓を開ける（ローカル Mac） |
 | `tests/hooks/aws-cloud-deploy.test.ts` | wrapper の preflight を実起動して検証 |
 | `docs/runbook-cloud-aws-deploy.md` | runbook（§12 の 10 ステップ） |
