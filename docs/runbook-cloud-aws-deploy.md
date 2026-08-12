@@ -549,14 +549,19 @@ gate は change set と synth テンプレートを、**1 バイトも AWS に�
   （`carveOutRoleShape`）。固定しているのは
   **trust policy の Principal（`lambda.amazonaws.com` のみ）と Action
   （`sts:AssumeRole` のみ）／managed policy（基本実行ロールのみ）／
-  action の許可リスト**の 3 点。action は **synth で実測した 6 つの `ssm:`
-  アクションだけを許す**（否認リストではない —— `iam:` のような
-  コロン込みの接頭辞で禁じても `iam*` `sts*` `*:*` `*:CreateRole` が
-  すり抜けるので、2026-08-13 に許可リストへ反転した）。
+  action と Resource の許可リスト**の 4 点。
+  action は **synth で実測した 6 つの `ssm:` アクションだけを許す**（否認リストでは
+  ない —— `iam:` のようなコロン込みの接頭辞で禁じても `iam*` `sts*` `*:*`
+  `*:CreateRole` がすり抜けるので、2026-08-13 に許可リストへ反転した）。
+  `Resource` も**実測どおり `parameter/cdk/exports/` の下**に閉じていることを要求する
+  （自アカウント固定、リージョンは具体値。`*` や `parameter/*` は停止）——
+  action だけを縛っても `ssm:DeleteParameters` on `*` は
+  **アカウント全体の SSM パラメータを静かに消せる**。`Condition` は権限を
+  狭める方向にしか働かないので見ない。
   **Add だけでなく Modify も見る** —— trust policy は物理名を変えずに書き換えられる
 - 🔴 **権限は「ロールの Properties」以外からも届く。** `AWS::IAM::Policy` /
   `ManagedPolicy` / `RolePolicy` が `Roles` / `RoleName` で carve-out のロールを
-  指していれば、**同じ action 許可リスト**を掛けて**停止**する（IAM 側は
+  指していれば、**同じ action / Resource 許可リスト**を掛けて**停止**する（IAM 側は
   `AllowCdkProviderRoleMutationWithoutBoundary` で `iam:PutRolePolicy` /
   `AttachRolePolicy` を carve-out ARN に対し無条件に許しているので、ここを見ないと
   「インラインを 1 つ左のリソースへ移す」だけで迂回できる）。付与先が静的に
@@ -582,13 +587,17 @@ gate は change set と synth テンプレートを、**1 バイトも AWS に�
 - **gate はサンドボックスの中で走る。** `scripts/aws-cloud-deploy.sh` を迂回して
   `cdk deploy` を直接叩けば gate は動かない。IAM 側にこれを強制する仕組みは無い
   （層 1 は「どのスタックか」しか見ない）
-- **既知の 3 本を名乗りつつ、gate が固定していない性質を変える**ことはできる。
-  gate は action の**名前**を許可リストで縛るが、`Resource` と `Condition` は
-  見ていない。したがって **`ssm:GetParameters` on `*`**（本来は
-  `parameter/cdk/exports/*` に限られる）のような「許可リストの action を
-  広い Resource で」は通る。到達範囲はこのアカウントの SSM パラメータ
-  （cdk exports 以外を含む）であり、`s3:` `dynamodb:` `logs:` などは
-  2026-08-13 の許可リスト化で**通らなくなった**
+- **既知の 3 本を名乗りつつ、許可リストの中で振る舞う**ことはできる。
+  boundary の無いロールに `ssm:PutParameter` / `DeleteParameters` を
+  **`parameter/cdk/exports/` の下**で持たせることは通る（provider が実際に
+  そうするため）。到達範囲は**このアカウントの CDK cross-region export
+  パラメータ**であり、他の CDK アプリのものを**上書き・削除**して
+  そのスタックのデプロイを壊すことはできる。`Resource` を `*` や
+  `parameter/*` へ広げる経路と、`s3:` `dynamodb:` `logs:` `iam:` などの
+  action は 2026-08-13 の 2 段の許可リスト化で**通らなくなった**
+- `Condition` は見ていない。condition は権限を**狭める**方向にしか働かないので、
+  無視しても安全側に外れる（provider が付ける condition を要求すると、
+  CDK 実装の変更で初回デプロイを止める側の risk だけが増える）
 - **carve-out の外のロール**は boundary で頭打ちだが、trust policy が
   組み込み関数で書かれていると gate は読み切れず、**止めずに記録する**
   （`opaqueRoleTrustPolicy`。ここを止めると正当な初回デプロイが通らない）

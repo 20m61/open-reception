@@ -759,6 +759,15 @@ describe('ドキュメントが出荷ポリシーと一致している (#680 R6/
       expect([...CARVE_OUT_ALLOWED_ACTIONS].filter((a) => !a.startsWith('ssm:'))).toEqual([]);
     });
 
+    /**
+     * 🔴 action の許可リストだけを書いて `Resource` の閉じ込めに触れない文書は、
+     * **残余を実際より狭く見せる**（`ssm:DeleteParameters` on `*` は
+     * アカウント全体の SSM を消せる）。両方が書かれていることを縛る。
+     */
+    it.each([SPEC, RUNBOOK])('%s が Resource の閉じ込め先を書いている', (doc) => {
+      expect(normalize(readDoc(doc))).toContain(normalize('parameter/cdk/exports/'));
+    });
+
     it('🔴 撤回した否認リストの語彙が gate の説明に残っていない', () => {
       // 否認リスト（`iam:` `sts:` `kms:` … を弾く）は 2026-08-13 に許可リストへ
       // 反転した。古い語彙が残っていると「塞いである」と誤読される。
