@@ -335,6 +335,20 @@ describe('A: carve-out の名前空間に入るロールを止める (#680 R10)'
     expect(verdict.blocks.map((b) => b.reason)).toEqual(['opaqueResourceShape']);
   });
 
+  it('🔴 change set の種別とテンプレートの種別が食い違えば止める', () => {
+    // 変異ドリル M38 が生き残って見つけた穴。change set 側の綴りだけで検査対象を
+    // 決めていると、テンプレート側が Role でも「Lambda の変更」として素通りしうる。
+    const verdict = evaluateDeployChangeSet(
+      summary({
+        changes: [
+          change({ action: 'Add', resourceType: 'AWS::Lambda::Function', logicalResourceId: 'Disguised' }),
+        ],
+        templateResources: { Disguised: res('AWS::IAM::Role', providerRole()) },
+      }),
+    );
+    expect(verdict.blocks.map((b) => b.reason)).toEqual(['opaqueResourceShape']);
+  });
+
   it('change set にあるのに synth テンプレートに無いロールは止める（読めなかったを問題なしにしない）', () => {
     const verdict = evaluateDeployChangeSet(
       summary({ changes: [roleChange('GhostRole')], templateResources: {} }),
@@ -679,6 +693,22 @@ describe('B: Function URL と公開 invoke (#680 R10)', () => {
     expect(verdict.blocks.map((b) => b.reason)).toEqual(['functionUrlExposure']);
   });
 
+  it('🔴 GetAtt の属性が Arn でなければ止める（同じ関数を指していても）', () => {
+    // 変異ドリル M39 が生き残って見つけた穴。属性を見ないと
+    // `Fn::GetAtt: [X, 'FunctionName']` のような別物が Arn として通る。
+    const verdict = urlVerdict(SERVER_URL, 'NONE', 'Add', {
+      'Fn::GetAtt': [SERVER_FN, 'FunctionName'],
+    });
+    expect(verdict.blocks.map((b) => b.reason)).toEqual(['functionUrlExposure']);
+  });
+
+  it('GetAtt の短縮形（"論理 ID.Arn"）も同じ 1 本として通す', () => {
+    // CloudFormation が受け付ける別の綴り。片方だけ扱うと検査を迂回させられる。
+    expect(urlVerdict(SERVER_URL, 'NONE', 'Add', { 'Fn::GetAtt': `${SERVER_FN}.Arn` }).blocks).toEqual(
+      [],
+    );
+  });
+
   it('🔴 空虚に真になっていないことの対照: WebStack の 2 本は両方式とも通る', () => {
     // `Web-dev` の作り直し（全リソースが Add）が gate で止まってはならない。
     expect(urlVerdict(SERVER_URL, 'AWS_IAM').blocks).toEqual([]); // OAC 方式
@@ -752,6 +782,15 @@ describe('B: Function URL と公開 invoke (#680 R10)', () => {
     const verdict = permVerdict('ApiGatewayInvoke', 'apigateway.amazonaws.com', {
       SourceArn: undefined,
       SourceAccount: undefined,
+    });
+    expect(verdict.blocks.map((b) => b.reason)).toEqual(['publicInvokePermission']);
+  });
+
+  it('🔴 source 条件が静的に読めなければ止める（読めなかったを「自アカウント」に落とさない）', () => {
+    // 変異ドリル M36 が生き残って見つけた穴。解決できない値をアカウント一致に
+    // 丸めると、`SourceArn` に任意の組み込み関数を書くだけで source 条件を無効化できる。
+    const verdict = permVerdict('OpaqueSourceInvoke', 'cloudfront.amazonaws.com', {
+      SourceArn: { 'Fn::GetAtt': ['SomethingElse', 'Arn'] },
     });
     expect(verdict.blocks.map((b) => b.reason)).toEqual(['publicInvokePermission']);
   });
