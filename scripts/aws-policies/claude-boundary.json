@@ -1,0 +1,143 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "AllowServicesNeededByDevStacks",
+      "Effect": "Allow",
+      "Action": [
+        "cloudformation:*",
+        "lambda:*",
+        "s3:*",
+        "dynamodb:*",
+        "cloudfront:*",
+        "cognito-idp:*",
+        "logs:*",
+        "cloudwatch:*",
+        "sns:*",
+        "ssm:*",
+        "apigateway:*",
+        "iam:GetRole",
+        "iam:GetRolePolicy",
+        "iam:ListRolePolicies",
+        "iam:ListAttachedRolePolicies",
+        "iam:PassRole",
+        "iam:CreateRole",
+        "iam:DeleteRole",
+        "iam:TagRole",
+        "iam:UntagRole",
+        "iam:PutRolePolicy",
+        "iam:DeleteRolePolicy",
+        "iam:AttachRolePolicy",
+        "iam:DetachRolePolicy",
+        "iam:CreatePolicy",
+        "iam:DeletePolicy",
+        "iam:CreatePolicyVersion",
+        "iam:DeletePolicyVersion",
+        "iam:GetPolicy",
+        "iam:GetPolicyVersion",
+        "iam:ListPolicyVersions",
+        "sts:AssumeRole",
+        "sts:GetCallerIdentity"
+      ],
+      "Resource": "*",
+      "Condition": {
+        "StringEqualsIfExists": {
+          "iam:PermissionsBoundary": "arn:aws:iam::822063948773:policy/OpenReceptionClaudeBoundary"
+        }
+      }
+    },
+    {
+      "Sid": "DenyForeignProjectStacks",
+      "Effect": "Deny",
+      "Action": "cloudformation:*",
+      "Resource": [
+        "arn:aws:cloudformation:*:822063948773:stack/nodi-*/*",
+        "arn:aws:cloudformation:*:822063948773:stack/salon-loop-*/*",
+        "arn:aws:cloudformation:*:822063948773:stack/Kiaff*/*",
+        "arn:aws:cloudformation:*:822063948773:stack/CDKToolkit/*",
+        "arn:aws:cloudformation:*:822063948773:stack/CDKToolkit-staging/*",
+        "arn:aws:cloudformation:*:822063948773:stack/OpenReception-*-staging/*",
+        "arn:aws:cloudformation:*:822063948773:stack/OpenReception-*-prod/*"
+      ]
+    },
+    {
+      "Sid": "DenyForeignProjectData",
+      "Effect": "Deny",
+      "Action": ["dynamodb:*", "s3:*"],
+      "Resource": [
+        "arn:aws:dynamodb:*:822063948773:table/nodi-*",
+        "arn:aws:dynamodb:*:822063948773:table/salon-loop-*",
+        "arn:aws:s3:::nodi-*",
+        "arn:aws:s3:::nodi-*/*",
+        "arn:aws:s3:::salon-loop-*",
+        "arn:aws:s3:::salon-loop-*/*",
+        "arn:aws:s3:::cdk-hnb659fds-*",
+        "arn:aws:s3:::cdk-hnb659fds-*/*",
+        "arn:aws:s3:::cdk-staging-*",
+        "arn:aws:s3:::cdk-staging-*/*"
+      ]
+    },
+    {
+      "Sid": "DenySharedBootstrapRoles",
+      "Effect": "Deny",
+      "Action": ["sts:AssumeRole", "iam:PassRole"],
+      "Resource": [
+        "arn:aws:iam::822063948773:role/cdk-hnb659fds-*",
+        "arn:aws:iam::822063948773:role/cdk-staging-*"
+      ]
+    },
+    {
+      "Sid": "DenyRoleCreationWithoutThisBoundary",
+      "Effect": "Deny",
+      "Action": ["iam:CreateRole", "iam:PutRolePolicy", "iam:AttachRolePolicy"],
+      "Resource": "*",
+      "Condition": {
+        "StringNotEquals": {
+          "iam:PermissionsBoundary": "arn:aws:iam::822063948773:policy/OpenReceptionClaudeBoundary"
+        }
+      }
+    },
+    {
+      "Sid": "DenyBoundaryEscape",
+      "Effect": "Deny",
+      "Action": ["iam:DeleteRolePermissionsBoundary", "iam:PutRolePermissionsBoundary"],
+      "Resource": "*"
+    },
+    {
+      "Sid": "DenyTamperingWithTheBoundaryPolicyItself",
+      "Effect": "Deny",
+      "Action": [
+        "iam:CreatePolicyVersion",
+        "iam:DeletePolicyVersion",
+        "iam:SetDefaultPolicyVersion",
+        "iam:DeletePolicy"
+      ],
+      "Resource": "arn:aws:iam::822063948773:policy/OpenReceptionClaudeBoundary"
+    },
+    {
+      "Sid": "DenyPrincipalCreationAndOrgChanges",
+      "Effect": "Deny",
+      "Action": [
+        "iam:CreateUser",
+        "iam:CreateAccessKey",
+        "iam:CreateLoginProfile",
+        "iam:UpdateAssumeRolePolicy",
+        "organizations:*",
+        "account:*"
+      ],
+      "Resource": "*"
+    },
+    {
+      "Sid": "DenySharedDnsAndCertificates",
+      "Effect": "Deny",
+      "Action": ["route53:*", "acm:*", "route53domains:*"],
+      "Resource": "*"
+    },
+    {
+      "Sid": "DenySecretsAndKeyDestruction",
+      "Effect": "Deny",
+      "Action": ["secretsmanager:*", "kms:ScheduleKeyDeletion", "kms:DisableKey", "kms:PutKeyPolicy"],
+      "Resource": "*"
+    }
+  ]
+}

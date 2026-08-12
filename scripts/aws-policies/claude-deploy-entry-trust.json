@@ -1,0 +1,14 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "OnlyHumanCdkUserWithExternalId",
+      "Effect": "Allow",
+      "Principal": { "AWS": "arn:aws:iam::822063948773:user/CDK" },
+      "Action": "sts:AssumeRole",
+      "Condition": {
+        "StringEquals": { "sts:ExternalId": "open-reception-claude-cloud-dev" }
+      }
+    }
+  ]
+}

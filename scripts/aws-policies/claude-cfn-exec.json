@@ -1,0 +1,108 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "AllowDevStackResourceManagement",
+      "Effect": "Allow",
+      "Action": [
+        "cloudformation:*",
+        "lambda:*",
+        "s3:*",
+        "dynamodb:*",
+        "cloudfront:*",
+        "cognito-idp:*",
+        "logs:*",
+        "cloudwatch:*",
+        "sns:*",
+        "ssm:*",
+        "apigateway:*",
+        "iam:GetRole",
+        "iam:GetRolePolicy",
+        "iam:ListRolePolicies",
+        "iam:ListAttachedRolePolicies",
+        "iam:PassRole",
+        "iam:CreateRole",
+        "iam:DeleteRole",
+        "iam:TagRole",
+        "iam:UntagRole",
+        "iam:PutRolePolicy",
+        "iam:DeleteRolePolicy",
+        "iam:AttachRolePolicy",
+        "iam:DetachRolePolicy",
+        "iam:CreatePolicy",
+        "iam:DeletePolicy",
+        "iam:CreatePolicyVersion",
+        "iam:DeletePolicyVersion",
+        "iam:GetPolicy",
+        "iam:GetPolicyVersion",
+        "iam:ListPolicyVersions"
+      ],
+      "Resource": "*"
+    },
+    {
+      "Sid": "DenyForeignProjectStacks",
+      "Effect": "Deny",
+      "Action": "cloudformation:*",
+      "Resource": [
+        "arn:aws:cloudformation:*:822063948773:stack/nodi-*/*",
+        "arn:aws:cloudformation:*:822063948773:stack/salon-loop-*/*",
+        "arn:aws:cloudformation:*:822063948773:stack/Kiaff*/*",
+        "arn:aws:cloudformation:*:822063948773:stack/CDKToolkit/*",
+        "arn:aws:cloudformation:*:822063948773:stack/CDKToolkit-staging/*",
+        "arn:aws:cloudformation:*:822063948773:stack/OpenReception-*-staging/*",
+        "arn:aws:cloudformation:*:822063948773:stack/OpenReception-*-prod/*"
+      ]
+    },
+    {
+      "Sid": "DenyForeignProjectData",
+      "Effect": "Deny",
+      "Action": ["dynamodb:*", "s3:*"],
+      "Resource": [
+        "arn:aws:dynamodb:*:822063948773:table/nodi-*",
+        "arn:aws:dynamodb:*:822063948773:table/salon-loop-*",
+        "arn:aws:s3:::nodi-*",
+        "arn:aws:s3:::nodi-*/*",
+        "arn:aws:s3:::salon-loop-*",
+        "arn:aws:s3:::salon-loop-*/*",
+        "arn:aws:s3:::cdk-hnb659fds-*",
+        "arn:aws:s3:::cdk-hnb659fds-*/*",
+        "arn:aws:s3:::cdk-staging-*",
+        "arn:aws:s3:::cdk-staging-*/*"
+      ]
+    },
+    {
+      "Sid": "DenySharedBootstrapRoles",
+      "Effect": "Deny",
+      "Action": ["sts:AssumeRole", "iam:PassRole"],
+      "Resource": [
+        "arn:aws:iam::822063948773:role/cdk-hnb659fds-*",
+        "arn:aws:iam::822063948773:role/cdk-staging-*"
+      ]
+    },
+    {
+      "Sid": "DenyRoleCreationWithoutBoundary",
+      "Effect": "Deny",
+      "Action": ["iam:CreateRole", "iam:PutRolePolicy", "iam:AttachRolePolicy"],
+      "Resource": "*",
+      "Condition": {
+        "StringNotEquals": {
+          "iam:PermissionsBoundary": "arn:aws:iam::822063948773:policy/OpenReceptionClaudeBoundary"
+        }
+      }
+    },
+    {
+      "Sid": "DenySecretsDnsAndPrincipals",
+      "Effect": "Deny",
+      "Action": [
+        "secretsmanager:*",
+        "route53:*",
+        "acm:*",
+        "iam:CreateUser",
+        "iam:CreateAccessKey",
+        "organizations:*",
+        "account:*"
+      ],
+      "Resource": "*"
+    }
+  ]
+}
