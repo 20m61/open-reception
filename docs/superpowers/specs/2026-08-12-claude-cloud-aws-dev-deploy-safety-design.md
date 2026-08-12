@@ -191,6 +191,33 @@ arn:aws:cloudformation:*:822063948773:stack/CDKToolkit-orcloud01/*
 CloudFormation スタック名は CDK が `bin/open-reception.ts` で決定論的に付ける
 （`OpenReception-<Stack>-<env>`）ため信頼できる。
 
+> 🔴 **`DescribeChangeSet` / `ExecuteChangeSet` / `DeleteChangeSet` は stack ではなく
+> changeSet リソースタイプで認可される。** AWS Service Authorization Reference 上、この
+> 3 アクションは `arn:aws:cloudformation:<region>:<acct>:changeSet/<name>/<id>` という
+> **changeSet ARN**（スタック名を埋め込まない）に対して認可される。stack ARN で認可
+> されるのは `CreateChangeSet` / `DescribeStacks` 等のみ。当初の実装はこれを見落としており、
+> `claude-deploy-entry.json`（diff gate 自身が呼ぶ `describe-change-set`）が構造的に
+> Deny され続け、`claude-deploy-role-restriction.json` の `NotResource`（stack ARN のみの
+> allowlist）が `Deny cloudformation:*` で changeset 系アクションまで巻き添えにして
+> **`cdk deploy` 自体が動かない**状態になっていた。changeSet ARN は stack 名を含まないため、
+> stack 単位では絞れず、**名前**（`claude-gate-*`）でスコープする。`claude-deploy-entry.json`
+> は `ReadOwnChangeSetsForDiffGate` として `DescribeChangeSet` を `changeSet/claude-gate-*/*`
+> に限定し、`claude-deploy-role-restriction.json` の `NotResource` にも同じパターンを
+> 追加してある。この名前スコープが生む残存ギャップは §13 を参照。
+
+> 🔴 **gate が承認した change set と、実際に実行される change set は別物である。**
+> `scripts/aws-cloud-deploy.sh` の `diff` と `deploy` は同じ change set 名
+> （`claude-gate-<short-sha>`）を使うが、これは「同じ change set オブジェクトを承認して
+> 実行する」ことを保証するためではない。CDK（`infra/node_modules/aws-cdk/lib/index.js` の
+> `createChangeSetAndCleanup()`）は、指定した名前の change set が既に存在すれば
+> `cleanupOldChangeset()` → `cfn.deleteChangeSet()` で**無条件に削除してから**
+> `cfn.createChangeSet()` で新しく作り直す。「既存の named change set を再利用する」という
+> 経路は CDK の実装に存在しない。**したがって `deploy` の `cdk deploy --change-set-name X`
+> は、`diff` が承認したのと同じ名前 `X` の change set を必ず削除して作り直す。** 同じ名前を
+> 使う理由は、changeSet ARN が stack 名を埋め込まないため IAM 側が名前でしかスコープできず、
+> 名前を固定しないと上記の changeSet ARN allowlist 自体が機能しないからである。ワーキング
+> ツリーが gate 通過後に変わっていなければ内容は同一のはずだが、それを保証する仕組みはない。
+
 #### 層 2: exec role の resource 制限（ARN + タグ）
 
 exec role の resource スコープが広くならざるを得ないサービス（Cognito / CloudFront /
@@ -235,6 +262,21 @@ Deny するもの:
 - 鎖の外への `iam:PassRole` / `sts:AssumeRole`
 - `route53:*` / `acm:*`（全面。human-only）
 - `organizations:*` / `account:*` / `iam:CreateUser` / `iam:CreateAccessKey`
+
+> 🔴 **実装上の注意: boundary 条件は専用ステートメントに分離し、素の `StringEquals` を使う。**
+> `claude-boundary.json` と `claude-cfn-exec.json` は、`iam:CreateRole` / `PutRolePolicy` /
+> `AttachRolePolicy` を `lambda:*` 等を含む大きな `Allow` から分離した専用ステートメント
+> `AllowRoleMutationOnlyWithBoundary` として持ち、`Condition: { StringEquals: {
+> "iam:PermissionsBoundary": "arn:...:policy/OpenReceptionClaudeBoundary" } }` で要求する。
+> 当初案はこの 3 アクションを他の 30 アクションと同じ Allow に束ねていたが、そのままだと
+> boundary 条件を掛けた瞬間に無関係な全アクションを巻き添えにする。また
+> `StringEqualsIfExists` での代用は**キー欠如時に無条件で true を返す**ため、boundary
+> パラメータ無しの `iam:CreateRole` 呼び出しをすり抜けさせてしまい、lint だけ緑になって
+> 実効しない（実際に一度この形で実装され、レビューで差し戻した）。
+> `src/domain/governance/aws-policy-shape.ts` の `hasBoundaryCondition` は、演算子名が
+> `ifexists` で終わるもの、および `Null` 演算子（`{ Null: { "iam:PermissionsBoundary":
+> "true" } }` で「このキーが存在しないこと」を主張できてしまう）を boundary 条件として
+> **認めない**ことで、この種の実効性の無い条件を機械的に検出する。
 
 ---
 
@@ -282,6 +324,7 @@ Deny するもの:
 | --- | --- |
 | スタック名が `OpenReception-<Stack>-dev` 以外 | 環境判定ミス |
 | `Action: Remove` | リソース削除（Cognito UserPool / DynamoDB Table / CloudFront Distribution はここで捕まる） |
+| `Action` が `Add` / `Modify` / `Remove` のいずれでもない（`Import` / `Dynamic` / 将来 AWS が増やす値） | 🔴 実装は `SAFE_ACTIONS = {'Add', 'Modify'}` の**許可リスト**で判定しており、`Remove` は上の行、それ以外の未知の値はこの行（`unknownAction`）で止める。CloudFormation の `Dynamic` は実行時まで影響が確定しないため、未知の action を安全側（見逃す方向）に倒すと、無人デプロイを認可するはずの gate が向きとして逆になる |
 | `Replacement: True` または `Conditional` | 再作成＝データ消失・ダウンタイム |
 | `AWS::KMS::*` / `AWS::SecretsManager::*` の任意の操作 | dev には現状 1 つも無い（§2.3 の実測）。**出現すること自体が想定外** |
 | `AWS::Route53::*` / `AWS::CertificateManager::*` の任意の操作 | 共有 DNS / 証明書。human-only |
@@ -335,7 +378,15 @@ Deny するもの:
 | N5 | `cloudformation:DescribeStacks` → `nodi-dev-app` | **DENY** |
 | N6 | `cloudformation:DescribeStacks` → `salon-loop-staging-data` | **DENY** |
 | N7 | `secretsmanager:ListSecrets` | **DENY**（列挙させない） |
-| N8 | `iam:CreateAccessKey` on `user/CDK` | **DENY** |
+
+> 🔴 **N8（`iam:CreateAccessKey` on `user/CDK`）はここに置かない。** 当初案は
+> 「実試行してよい」に分類していたが、これは誤りだった。**Deny が効いていない場合
+> （＝このチェックが検出したい唯一の状況）に、`AdministratorAccess` principal 上へ
+> 本物の長期アクセスキーを実際に作ってしまう。** 回収も報告もされない。「実試行してよい
+> ＝副作用なし」の定義を明示すると、`sts:assume-role`（N1〜N3）が返す一時 credential を
+> **変数に束縛も記録も再利用もしない**（実装は `execFileSync` の戻り値を捨てる）ことが
+> 条件になる。`iam:CreateAccessKey` はこの条件を満たさないため、実装では下表の `S11` へ
+> 移した。
 
 **実試行しない（`iam:SimulatePrincipalPolicy` で判定 / 人間側 Admin から実行）**
 
@@ -351,6 +402,7 @@ Deny するもの:
 | S8 | `route53:ChangeResourceRecordSets` | DENY |
 | S9 | `cloudformation:UpdateStack` on `OpenReception-*-prod`（将来） | DENY |
 | S10 | `kms:ScheduleKeyDeletion` | DENY |
+| S11 | `iam:CreateAccessKey` on `user/CDK`（旧 N8） | DENY |
 
 **「policy を読む限り安全」で終わらせない**（spec 原文 §9）。S 系は
 `SimulatePrincipalPolicy` の実 API 応答を根拠とし、結果を PR 本文へ貼る。
@@ -507,6 +559,55 @@ spec 原文 STOP CONDITIONS の「既存 production deploy 経路を壊す可能
 | `user/CDK` の Admin 長期キー | §10。本設計の外 |
 | `Replacement: Conditional` の過検出 | 安全側。人間が承認して通す運用 |
 | staging / prod を作るとき境界の拡張が要る | 意図的。そのとき改めて承認する |
+| changeSet 名スコープの account-wide 露出 | **deploy role 単体の層では構造的に閉じられない。** 詳細は下記 |
+
+### changeSet 名スコープの account-wide 露出（詳細）
+
+changeSet ARN は stack 名を埋め込まない
+（`arn:aws:cloudformation:<region>:<acct>:changeSet/<name>/<id>` — stack 名は含まれない）。
+そのため `claude-deploy-role-restriction.json` の `DenyCloudFormationOutsideDevStacks` に
+追加した `changeSet/claude-gate-*/*` という `NotResource` エントリは、**changeSet の
+「名前」だけでスコープしており、その changeSet がどの stack に属するかを一切見ない。**
+結果として、`DescribeChangeSet` / `ExecuteChangeSet` / `DeleteChangeSet` の 3 アクションは
+**account 全体**で `claude-gate-*` という名前の changeSet に対して許可される
+（`DenyForeignAndNonDevStacksExplicitly` は stack ARN の列挙であり、changeSet ARN を
+一切見ないので、ここでの再 Deny は起こらない）。AWS 側にも stack を絞る手段は無い
+（`cloudformation:ChangeSetName` という条件キーはあるが、これも名前ベースであり
+stack を特定しない）。**この意味で、deploy role 単体の層では構造的に閉じられない
+ギャップである。**
+
+ただし、悪用の実現可能性は限定的である。以下をすべて含めて正確に書く:
+
+1. **前提条件が重い**: 悪用が成立するには、`nodi-*` / `salon-loop-*` /
+   `OpenReception-*-prod`（あるいは他の foreign stack）上に、**あらかじめ**
+   `claude-gate-` で始まる名前の changeSet が存在している必要がある。偶然にせよ
+   意図的にせよ、この命名の changeSet が foreign stack 側に存在すること自体が前提。
+2. **deploy role はそのような changeSet を自分で作れない**: `cloudformation:
+   CreateChangeSet` は **stack ARN** に対して認可されるアクションであり、
+   `DenyForeignAndNonDevStacksExplicitly` が `nodi-*` / `salon-loop-*` /
+   `OpenReception-*-prod` 等の stack ARN を明示的に Deny している。つまり deploy role
+   が foreign stack 上に `claude-gate-*` という名前の changeSet を新規作成すること
+   自体ができない。
+3. **仮に誰か・何かが（この経路の外で）そのような changeSet を作っていたとしても、
+   実行（`ExecuteChangeSet`）は第二層で止まる**: change set の実行はその stack に
+   対するスタック操作（作成/更新/削除）を引き起こし、これは cfn-exec role
+   （`claude-cfn-exec.json`）の権限で実行される。`claude-cfn-exec.json` の
+   `DenyForeignProjectStacks`（同種の stack ARN allowlist）が foreign stack への
+   操作を別途 Deny するため、**実際にスタックへ影響を与える操作は cfn-exec role 側の
+   第二の防波堤で止まる**。
+
+したがって、現実的な露出範囲は次の 2 点に限定される（この 2 点だけが実際に成立し得る）:
+
+- `cloudformation:DescribeChangeSet` による**情報漏洩**: 万一 foreign stack 上に
+  `claude-gate-*` という名前の changeSet が存在すれば、その内容（提案されているリソース
+  変更の詳細）を読める。
+- `cloudformation:DeleteChangeSet` による**該当 changeSet への denial-of-service**:
+  同条件下で、その changeSet を削除できてしまう（stack 自体やその他のリソースには
+  影響しない。あくまで「その 1 つの changeSet オブジェクト」に対する妨害）。
+
+「閉じられる」と誤って書かない一方、「使われている」と誇張しても書かない（前提条件が
+満たされる可能性は現状ゼロに近い —— foreign project 側で `claude-gate-` という命名規則を
+使う理由が無い）。
 
 ## 14. 非スコープ
 

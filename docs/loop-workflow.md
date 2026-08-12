@@ -112,21 +112,24 @@ git add -A
 git commit -m "feat(reservation): 来訪予約ドメインと QR トークン発行 (#97)"
 ```
 
-> **署名の注意**: コミット署名は 1Password の `op-ssh-sign`。`error: 1Password: failed to
-> fill whole buffer` で止まったときの順序は次のとおり（`--no-verify` での回避はしない）。
+> **署名の注意**: コミット署名は repo-local のローカル鍵 ssh 署名
+> （`gpg.ssh.program=ssh-keygen`、鍵は `~/.ssh/id_ed25519`、Apple の ssh-agent 経由。
+> 1Password には依存しない — 2026-07-31 に恒久移行済み）。`git commit` が無出力のまま
+> 止まったときの真因は、**agent 上に鍵が載っていないと `ssh-keygen -Y sign` が秘密鍵
+> ファイルを直接読みに行き、パスフレーズ入力待ちで固まる**こと。順序は次のとおり
+> （`--no-verify` での回避はしない）:
 >
-> 1. **まず既存の ssh-agent を見る。** `ls -la /tmp/or-agent.sock` と
->    `SSH_AUTH_SOCK=/tmp/or-agent.sock ssh-add -l`。鍵が居れば
->    `SSH_AUTH_SOCK=/tmp/or-agent.sock git -c gpg.ssh.program=ssh-keygen commit …` で通る。
->    `~/.ssh/id_ed25519` は 1Password と**同一鍵**なので署名の有効性は変わらない。
-> 2. 居なければ 1 度だけ素の `git commit` を再試行する（`op-ssh-sign` はフレークで、
->    リトライで通ることがある）。
-> 3. それでも落ちるなら agent を立てる（ソケットパスは短く。scratchpad の長いパスは
->    `Error connecting to agent` になる）。ユーザーへ
->    `! SSH_AUTH_SOCK=/tmp/or-agent.sock ssh-add ~/.ssh/id_ed25519` を依頼する。
+> 1. **まず `ssh-add -l` で agent の中身を見る。** 鍵が既に載っていれば固まらないはずなので、
+>    素の `git commit` をそのまま試す。
+> 2. **空（`The agent has no identities.`）なら `ssh-add --apple-load-keychain` を実行し、
+>    再試行する。** login Keychain にパスフレーズが登録済みなら無入力で鍵が載る
+>    （実測: これで通ることがほとんど）。
+> 3. それでも失敗する、またはパスフレーズがまだ Keychain に登録されていない場合のみ、
+>    ユーザーへ `ssh-add --apple-use-keychain ~/.ssh/id_ed25519` を依頼する
+>    （初回のみ・以後は 2. で無入力になる）。
 >
-> **アンロック依頼を先に出さない。** アンロック済みでも落ちることがあり（実績 3 回連続）、
-> 一方で agent は前セッションから生きていることが多い。順序を逆にすると往復が増える。
+> **診断を先に出す。** `ssh-add -l` は無害な読み取りなので、ユーザーへ依頼する前に
+> 1〜2 を自分で実行して埋まるか確認する。
 
 ### 6. PR を作る
 

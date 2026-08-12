@@ -44,8 +44,9 @@ Trusted の既定許可リストに**入っていない**。Trusted のままだ
 
 ### 環境変数
 
-**設定しない。** 環境変数はその環境を使う全員が読めて、専用の secrets store が無い。
-AWS 認証情報などは置かないこと。
+**長期 secret を置かない。** 環境変数はその環境を使う全員が読めて、専用の secrets store が
+無い。有効期限付きの STS credential のみ可とし、窓を閉じたら削除する（`docs/runbook-cloud-aws-deploy.md`）。
+長期アクセスキー・API キー・秘密鍵は置かない。
 
 ## 2. リポジトリ側（クローンに含まれ、自動で効く）
 
@@ -87,7 +88,7 @@ GitHub の署名で `verified: true` になっている（`gh api repos/:owner/:
 
 | 事項 | 状態 |
 | --- | --- |
-| **AWS デプロイ** | 不可。対話型 SSO がクラウドセッションで使えない。そもそも本番/dev デプロイは CLAUDE.md の**停止境界**でユーザー確認が要るため、ローカルに残す |
+| **AWS デプロイ** | wrapper（`scripts/aws-cloud-deploy.sh`）経由で **dev のみ**可。当初「対話型 SSO がクラウドセッションで使えない」としていたが、これは**誤りだった**（実体は SSO ではなく `user/CDK` という IAM user + 静的キー）。手順は `docs/runbook-cloud-aws-deploy.md`。IAM の実適用・bootstrap・短命 credential 発行は人間がローカルで行う |
 | **VRT ベースライン（linux）** | ✅ 解消（第 94 wave）。欠落 4 枚を生成し、stale だった 5 枚を取り直した。詳細は §6 |
 | **VRT ベースライン（darwin）** | ⚠️ 逆に darwin 側が stale になった。`kiosk-idle` 3 枚が待機カードの並び順を #422 inc5-b 以前のまま持つ。**macOS でしか取り直せない**。詳細は §6 |
 | **VRT の自動生成** | `playwright.config.ts` で `updateSnapshots: 'none'` にしてある。既定の `'missing'` は欠落分をその場の描画で自動生成し、`retries: 1` と組み合わさると**1 回目が書いて落ち retry が通る**ため、レビューされていない描画が「正」として焼き付く。取り直すときは `--update-snapshots` を明示し、**差分を見てからコミットする** |

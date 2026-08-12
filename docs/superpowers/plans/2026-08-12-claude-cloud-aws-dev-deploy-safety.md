@@ -262,6 +262,7 @@ Expected: FAIL — `Failed to resolve import "./deploy-diff-gate"`
 export const DEPLOY_BLOCK_REASONS = [
   'unexpectedStack',
   'resourceRemoval',
+  'unknownAction',
   'resourceReplacement',
   'kmsChange',
   'secretsChange',
@@ -277,7 +278,11 @@ export type DeployFlagReason = (typeof DEPLOY_FLAG_REASONS)[number];
 
 /** `describe-change-set` の `Changes[].ResourceChange` から必要な項目だけ。 */
 export type ChangeSetResourceChange = {
-  /** 'Add' | 'Modify' | 'Remove' | 'Import' | 'Dynamic'。未知の値は保守的に扱う。 */
+  /**
+   * CloudFormation の変更操作。'Add' と 'Modify' だけが既知で安全。
+   * 'Remove', 'Import', 'Dynamic' や将来の値は gate で止める（保守的に扱う）。
+   * 既知の無害は Add と Modify のみ。他は詳細が判明するまで deploy を許可しない。
+   */
   readonly action: string;
   readonly resourceType: string;
   readonly logicalResourceId: string;
@@ -322,6 +327,14 @@ const BLOCKED_TYPE_PREFIXES: ReadonlyArray<[string, DeployBlockReason]> = [
   ['AWS::EC2::SecurityGroup', 'networkBoundaryChange'],
 ];
 
+/**
+ * deploy で許可する action。これら以外（Remove, Import, Dynamic, 未知の値）は
+ * 詳細が判明するまで保守的に stop する。
+ *  - 'Add': リソース新規作成。仕様が明確。
+ *  - 'Modify': リソース更新。replacement フィールドで置き換え判定。
+ */
+const SAFE_ACTIONS = new Set(['Add', 'Modify']);
+
 const describeChange = (c: ChangeSetResourceChange): string =>
   `${c.logicalResourceId} (${c.resourceType}) action=${c.action} replacement=${c.replacement ?? '-'}`;
 
@@ -345,6 +358,11 @@ export function evaluateDeployChangeSet(summary: ChangeSetSummary): DeployGateVe
 
     if (c.action === 'Remove') {
       blocks.push({ reason: 'resourceRemoval', evidence });
+    }
+    // Remove 以外で安全でない action（Import, Dynamic, 未知の値）は止める。
+    // Add と Modify だけが既知で安全。
+    if (!SAFE_ACTIONS.has(c.action) && c.action !== 'Remove') {
+      blocks.push({ reason: 'unknownAction', evidence });
     }
     // 'Conditional' は実行時条件で決まる＝安全だと証明できないので止める側に倒す。
     if (c.replacement === 'True' || c.replacement === 'Conditional') {
@@ -1014,6 +1032,13 @@ export function auditPolicyDocument(doc: PolicyDocument): PolicyAudit {
 
 `scripts/aws-policies/claude-boundary.json`（Permissions Boundary）:
 
+> 🔴 **Task 7 補記（実装で判明）**: `iam:CreateRole` / `PutRolePolicy` / `AttachRolePolicy`
+> は、`lambda:*` 等を含む大きな `AllowServicesNeededByDevStacks` から分離した専用の
+> `AllowRoleMutationOnlyWithBoundary` ステートメントで持ち、素の `StringEquals` で
+> `iam:PermissionsBoundary` を要求する（`DenyRoleCreationWithoutThisBoundary` の
+> `StringNotEquals` と対になる）。同じ Allow に束ねると boundary 条件を掛けた瞬間に
+> 無関係な 30 アクションを巻き添えにするため。詳細は spec §4.2 層 4 を参照。
+
 ```json
 {
   "Version": "2012-10-17",
@@ -1038,13 +1063,10 @@ export function auditPolicyDocument(doc: PolicyDocument): PolicyAudit {
         "iam:ListRolePolicies",
         "iam:ListAttachedRolePolicies",
         "iam:PassRole",
-        "iam:CreateRole",
         "iam:DeleteRole",
         "iam:TagRole",
         "iam:UntagRole",
-        "iam:PutRolePolicy",
         "iam:DeleteRolePolicy",
-        "iam:AttachRolePolicy",
         "iam:DetachRolePolicy",
         "iam:CreatePolicy",
         "iam:DeletePolicy",
@@ -1057,6 +1079,17 @@ export function auditPolicyDocument(doc: PolicyDocument): PolicyAudit {
         "sts:GetCallerIdentity"
       ],
       "Resource": "*"
+    },
+    {
+      "Sid": "AllowRoleMutationOnlyWithBoundary",
+      "Effect": "Allow",
+      "Action": ["iam:CreateRole", "iam:PutRolePolicy", "iam:AttachRolePolicy"],
+      "Resource": "*",
+      "Condition": {
+        "StringEquals": {
+          "iam:PermissionsBoundary": "arn:aws:iam::822063948773:policy/OpenReceptionClaudeBoundary"
+        }
+      }
     },
     {
       "Sid": "DenyForeignProjectStacks",
@@ -1157,6 +1190,10 @@ export function auditPolicyDocument(doc: PolicyDocument): PolicyAudit {
 
 `scripts/aws-policies/claude-cfn-exec.json`（CloudFormation 実行ロールのポリシー）:
 
+> 🔴 **Task 7 補記（実装で判明）**: `claude-boundary.json` と同じ理由で、
+> `iam:CreateRole` / `PutRolePolicy` / `AttachRolePolicy` を専用の
+> `AllowRoleMutationOnlyWithBoundary` ステートメントへ分離してある。
+
 ```json
 {
   "Version": "2012-10-17",
@@ -1181,13 +1218,10 @@ export function auditPolicyDocument(doc: PolicyDocument): PolicyAudit {
         "iam:ListRolePolicies",
         "iam:ListAttachedRolePolicies",
         "iam:PassRole",
-        "iam:CreateRole",
         "iam:DeleteRole",
         "iam:TagRole",
         "iam:UntagRole",
-        "iam:PutRolePolicy",
         "iam:DeleteRolePolicy",
-        "iam:AttachRolePolicy",
         "iam:DetachRolePolicy",
         "iam:CreatePolicy",
         "iam:DeletePolicy",
@@ -1198,6 +1232,17 @@ export function auditPolicyDocument(doc: PolicyDocument): PolicyAudit {
         "iam:ListPolicyVersions"
       ],
       "Resource": "*"
+    },
+    {
+      "Sid": "AllowRoleMutationOnlyWithBoundary",
+      "Effect": "Allow",
+      "Action": ["iam:CreateRole", "iam:PutRolePolicy", "iam:AttachRolePolicy"],
+      "Resource": "*",
+      "Condition": {
+        "StringEquals": {
+          "iam:PermissionsBoundary": "arn:aws:iam::822063948773:policy/OpenReceptionClaudeBoundary"
+        }
+      }
     },
     {
       "Sid": "DenyForeignProjectStacks",
