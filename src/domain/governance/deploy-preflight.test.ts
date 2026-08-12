@@ -104,4 +104,17 @@ describe('観測できていない値を PASS にしない', () => {
     expect(verdict.ok).toBe(false);
     expect(verdict.failures.map((f) => f.field)).toContain('credentialSecondsRemaining');
   });
+
+  // null 判定が閾値と独立していることを固定する。
+  // `(observed.credentialSecondsRemaining ?? 0) < required.minCredentialSeconds` のような
+  // 退化を許さない — そうなると minCredentialSeconds: 0 のケースで null が通ってしまい、
+  // 「判定できていない」と「時間が足りた」の区別が失われる。
+  it('minCredentialSeconds が 0 でも null は止める（?? 0 への退化を許さない）', () => {
+    const verdict = evaluatePreflight(ok({ credentialSecondsRemaining: null }), {
+      ...DEFAULT_PREFLIGHT_REQUIREMENT,
+      minCredentialSeconds: 0,
+    });
+    expect(verdict.ok).toBe(false);
+    expect(verdict.failures.map((f) => f.field)).toContain('credentialSecondsRemaining');
+  });
 });
