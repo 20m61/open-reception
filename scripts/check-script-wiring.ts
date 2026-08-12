@@ -68,6 +68,8 @@ export const MANUAL_ONLY_ALLOWLIST: Readonly<Record<string, string>> = {
   'vrm-visual-check.mjs': '実ブラウザが要る（visual-checks skill から手動）。',
   'aws-cloud-deploy.sh':
     'クラウドセッション / routine から呼ぶ入口そのもの。リポジトリ内に呼び出し元は無くて正しい。',
+  'aws-issue-credentials.sh':
+    '人間がローカル Mac の Admin 環境でデプロイ窓を開けるときだけ走る（値をリポジトリに残さない）。',
 };
 
 /** 検査対象にしないもの（スクリプトではなく共有ライブラリ）。 */
