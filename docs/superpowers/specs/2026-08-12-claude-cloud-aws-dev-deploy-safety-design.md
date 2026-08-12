@@ -276,22 +276,37 @@ Deny するもの:
 
 停止条件（`scripts/aws/diff-gate.ts` の純関数として実装し、unit テストで固定）:
 
+**停止（deploy させない）**
+
 | 条件 | 理由 |
 | --- | --- |
-| `Action: Remove` を含む | リソース削除 |
-| `Replacement: True` / `Conditional` を含む | 再作成＝データ消失・ダウンタイム |
-| `ResourceType` が `AWS::IAM::*` | 権限変更 |
-| `AWS::KMS::*` / `AWS::SecretsManager::*` | 鍵・秘密 |
-| `AWS::Route53::*` / `AWS::CertificateManager::*` | 共有 DNS / 証明書 |
-| `AWS::Cognito::UserPool` の Remove / Replace | 利用者アカウント消失 |
-| `AWS::DynamoDB::Table` の Remove / Replace | 業務データ消失 |
-| `AWS::CloudFront::Distribution` の Remove | 公開停止 |
-| `AWS::EC2::SecurityGroup*` | ネットワーク境界 |
-| スタック名が `OpenReception-*-dev` 以外 | 環境判定ミス |
+| スタック名が `OpenReception-<Stack>-dev` 以外 | 環境判定ミス |
+| `Action: Remove` | リソース削除（Cognito UserPool / DynamoDB Table / CloudFront Distribution はここで捕まる） |
+| `Replacement: True` または `Conditional` | 再作成＝データ消失・ダウンタイム |
+| `AWS::KMS::*` / `AWS::SecretsManager::*` の任意の操作 | dev には現状 1 つも無い（§2.3 の実測）。**出現すること自体が想定外** |
+| `AWS::Route53::*` / `AWS::CertificateManager::*` の任意の操作 | 共有 DNS / 証明書。human-only |
+| `AWS::EC2::SecurityGroup*` の任意の操作 | ネットワーク境界 |
+| `AWS::IAM::User` / `AccessKey` / `Group` / `LoginProfile` の任意の操作 | dev スタックが IAM プリンシパルを作る正当な理由が無い |
 
-`Replacement: Conditional` も停止側に倒す（**日時や実行時条件で決まるものは
-「安全である」と証明できないため、指摘する側に倒す**。`orphan_branch` 検出で同じ
-判断をした前例がある）。
+**記録のみ（deploy は進める）**
+
+| 条件 | なぜ止めないか |
+| --- | --- |
+| `AWS::IAM::Role` / `Policy` / `ManagedPolicy` の Add・Modify | — |
+
+> 🔴 **ここは意図的に spec 原文 §8 の「IAM を検出したら停止」より緩めている。**
+> `OpenReception-Web-dev` は IAM Role 4 個・Policy 3 個を含み、Lambda の権限が変わるたびに
+> Modify が出る。一律停止にすると **gate が恒常的に赤くなり、赤を無視する習慣がつく**
+> 方が危険（`change-risk.ts` が report-only である理由と同じ判断）。
+>
+> 止めなくてよい根拠は **§4.2 層 4 の Permissions Boundary**にある。exec role が作る
+> Role には boundary が強制されるので、**新しい Role が boundary を超える権限を持つことは
+> 構造的に不可能**。差分レビューより強い保証である。Remove / Replace は上表で止まる。
+>
+> この判断に同意できない場合は `DEPLOY_BLOCK_RULES` の 1 行で停止側へ移せる。
+
+`Replacement: Conditional` は停止側に倒す（**実行時条件で決まるものは「安全である」と
+証明できないため、指摘する側に倒す**。`orphan_branch` 検出で同じ判断をした前例がある）。
 
 停止したときは **黙って終わらない**。gate の判定内容を PR コメント/記録に残して
 非ゼロ終了する（#656 の型: 何もせず正常終了するのが最悪）。
@@ -425,19 +440,33 @@ spec 原文 STOP CONDITIONS の「既存 production deploy 経路を壊す可能
 
 | パス | 内容 |
 | --- | --- |
-| `scripts/aws/policies/claude-boundary.json` | Permissions Boundary（層 4） |
-| `scripts/aws/policies/claude-deploy-entry.json` | `OpenReceptionClaudeDeploy-dev` の権限 + trust |
-| `scripts/aws/policies/claude-cfn-exec.json` | 専用 CFN 実行ポリシー（層 2・3） |
-| `scripts/aws/policies/claude-deploy-role.json` | bootstrap deploy role の追加制限（層 1） |
-| `scripts/aws/cloud-deploy.sh` | wrapper（preflight / verify / diff / deploy / smoke） |
+| `scripts/aws-policies/*.json` | boundary（層 4）/ entry role の権限 / entry role の trust / cfn exec（層 2・3）/ deploy role への上乗せ Deny（**層 1・主境界**）の 5 ポリシー |
+| `scripts/aws-cloud-deploy.sh` | wrapper（preflight / verify / diff / deploy / smoke） |
 | `src/domain/governance/deploy-diff-gate.ts` + `.test.ts` | change set の危険判定（**純関数**） |
 | `src/domain/governance/deploy-preflight.ts` + `.test.ts` | preflight の判定ロジック（**純関数**） |
-| `scripts/aws/diff-gate.ts` | 上記を呼ぶ薄い CLI |
-| `scripts/aws/negative-tests.ts` | N1-N8 実試行 / S1-S10 シミュレーション |
-| `scripts/aws/issue-cloud-credentials.sh` | 人間が窓を開ける（ローカル Mac） |
+| `src/domain/governance/aws-policy-shape.ts` + `.test.ts` | ポリシー JSON の構造検証（**純関数**） |
+| `scripts/aws-diff-gate.ts` | 上記を呼ぶ薄い CLI |
+| `scripts/aws-negative-tests.ts` | N1-N8 実試行 / S1-S10 シミュレーション |
+| `scripts/aws-issue-credentials.sh` | 人間が窓を開ける（ローカル Mac） |
+| `tests/hooks/aws-cloud-deploy.test.ts` | wrapper の preflight を実起動して検証 |
 | `docs/runbook-cloud-aws-deploy.md` | runbook（§12 の 10 ステップ） |
 | `docs/adr/0009-claude-cloud-aws-dev-deploy-boundary.md` | ADR |
 | `docs/cloud-dev-environment.md` / `CLAUDE.md` | §1 の訂正・§9.1 の改訂 |
+
+### 🔴 スクリプトは `scripts/` 直下へフラットに置く（`scripts/aws/` にしない）
+
+`scripts/check-script-wiring.ts` の `listScripts()` は `readdirSync(...).filter(e => e.isFile())`
+であり、**サブディレクトリを走査しない**。`scripts/aws/` に置くと「誰も呼んでいない
+スクリプト」の検査対象から丸ごと外れる —— #656 の再現そのものになる。
+`aws-` prefix のフラット配置にし、配線を明示する:
+
+- `scripts/aws-cloud-deploy.sh` を `check-script-wiring.ts` の **`WIRING_SOURCES` へ追加**する
+  （これは実際の入口であり、ここからの参照は配線と数えてよい）
+- `aws-cloud-deploy.sh` 自身と `aws-issue-credentials.sh` は **`MANUAL_ONLY_ALLOWLIST`** へ
+  （前者はクラウド routine から、後者は人間がローカルで叩く入口）
+
+なお `listScripts()` がサブディレクトリを見ない件自体は既存の穴だが、`scripts/hooks/**` を
+検査対象に含めると別途 allowlist 整理が要るため**本サイクルでは直さず、別 issue にする**。
 
 ### テスト方針
 
