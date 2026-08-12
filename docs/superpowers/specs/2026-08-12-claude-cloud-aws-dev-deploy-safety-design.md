@@ -113,7 +113,7 @@ open-reception の実構成では **Cognito / CloudFront / IAM Policy につい�
 | T1 | **他プロジェクト（nodi / salon-loop / Kiaff）の破壊** | スタック ARN allowlist（§4.2 層1）＋ 他プロジェクト名の明示 Deny（層3） | — |
 | T2 | open-reception **prod / staging** への誤デプロイ | 同上。`OpenReception-*-dev` 以外のスタック ARN は Deny | prod は未存在。作成時に境界拡張の承認が要る |
 | T3 | **`hnb659fds` / `staging` bootstrap 経由の権限昇格** | 専用 qualifier `orcloud01`。既定 qualifier ロールへの `sts:AssumeRole` を明示 Deny。trust policy 側でも弾かれる（**二重**） | — |
-| T4 | **`iam:PassRole` 経由の昇格** | PassRole 先を `cdk-orcloud01-cfn-exec-role-*` に限定 | — |
+| T4 | **`iam:PassRole` 経由の昇格** | deploy role の PassRole 先は `cdk-orcloud01-cfn-exec-role-*` に限定。**exec role の PassRole は `iam:PassedToService` ＋ `aws:ResourceTag/Project`・`/Environment` で限定**（Important 4。旧実装は `Resource: "*"` の無条件 Allow で、テンプレートに `Role.fromRoleArn(<既存ロール>)` を足すだけで boundary の外へ出られた） | タグ条件が実 IAM でどう評価されるかは**未検証**。runbook 4b の 14〜16 |
 | T5 | **CFN 実行ロール経由の昇格** | 専用 exec policy（AdministratorAccess を使わない）＋ Permissions Boundary | — |
 | T6 | **Boundary 外し** | boundary 無し Role 作成 Deny / boundary の Put・Delete Deny / policy 版数変更 Deny | — |
 | T7 | **credential 漏洩** | 短命 STS のみ（最大 12h、既定 4h）。長期キーをクラウドへ置かない。ExternalId 必須 | 窓の間は有効。境界が実質的な防御 |
@@ -264,6 +264,26 @@ IAM Policy）については、**層 1 と層 4 の組み合わせで担保す�
 **`OpenReception-*-dev` スタックのテンプレートがそれを要求したときにしか行使されない**。
 これが安全性の主論拠である。ARN / `aws:ResourceTag` で絞れるサービス
 （DynamoDB / Lambda / S3 / Logs / SNS / CloudWatch）は絞る。
+
+> 🔴 **この論拠を `iam:PassRole` に適用してはいけなかった（2026-08-12 全体レビュー
+> Important 4）。** 「テンプレートが要求したときにしか行使されない」が安全と言えるのは、
+> テンプレートが信頼できるときだけである。**そのテンプレートを書くのは、脅威モデル
+> （§3）が侵害を仮定している当のサンドボックス自身**であり、`iam:PassRole` は他の広い
+> grant と違って**境界そのものを外せる**: `lambda.Function` に
+> `Role.fromRoleArn('<lambda.amazonaws.com を信頼する既存のアカウント内ロール>')` を渡せば、
+> その Lambda は Permissions Boundary の**外**で動く。change set 上は
+> `AWS::Lambda::Function` の `Add`（§6 の `SAFE_ACTION`）にしか見えず、gate は止めも
+> 記録もしない。
+>
+> よって `claude-cfn-exec.json` / `claude-boundary.json` の `iam:PassRole` は
+> `Resource: "*"` の無条件 Allow をやめ、
+> `iam:PassedToService`（dev が実際に必要とする `lambda.amazonaws.com` のみ）＋
+> `aws:ResourceTag/Project` = `open-reception` ＋ `aws:ResourceTag/Environment` = `dev`
+> の 3 条件（AND）に絞った。タグは `applyCostTags` が `Tags.of(stack)` で全 taggable
+> リソースへ付与しており、**IAM Role に実際に付くことは
+> `infra/test/claude-deploy-boundary.test.ts` の synth テストで確認済み**。
+> ただし **IAM がこの条件をどう評価するかは未検証**であり、初回デプロイで
+> AccessDenied になる最有力候補である（runbook ステップ 4b の 14〜16 で人間が確認する）。
 
 #### 層 3: 他プロジェクトへの明示 Deny（列挙可能で安定）
 

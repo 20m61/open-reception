@@ -9,7 +9,8 @@
 - 実装: `scripts/aws-policies/*.json`（5 ポリシー）、`scripts/aws-cloud-deploy.sh`（wrapper）、
   `scripts/aws-negative-tests.ts`、`scripts/aws-issue-credentials.sh`、
   `src/domain/governance/deploy-diff-gate.ts` / `deploy-preflight.ts` / `aws-policy-shape.ts` /
-  `negative-test-outcome.ts`
+  `negative-test-outcome.ts`、`infra/lib/config/claude-deploy-boundary.ts`（層 4 の
+  アプリ側適用。決定 4 の訂正を参照）
 
 ## 背景
 
@@ -220,10 +221,28 @@ CloudFormation スタック・DynamoDB/S3 データ・`cdk-*` ロールへの
 
 ## 未検証事項・撤回条件
 
-- **`iam:SimulatePrincipalPolicy` による実 API 検証（12 コマンド、`docs/runbook-cloud-aws-deploy.md`
-  ステップ 4b）は本サイクルで一度も実行されていない。** 実装の正しさは静的な構造検証
-  （`auditPolicyDocument`）でのみ確認済み。**この 12 本が全て期待どおりの結果を返すことが、
-  初回デプロイへ進む前提条件である。** 1 本でも違えば設計を見直す。
+- **`iam:SimulatePrincipalPolicy` による実 API 検証（`docs/runbook-cloud-aws-deploy.md`
+  ステップ 4a の S1〜S14 と、ステップ 4b・4c の 20 コマンド）は本サイクルで一度も
+  実行されていない。** 実装の正しさは静的な構造検証（`auditPolicyDocument`）と
+  CDK synth（`infra/test/claude-deploy-boundary.test.ts`）でのみ確認済み。
+  **これらが全て期待どおりの結果を返すことが、初回デプロイへ進む前提条件である。**
+  1 本でも違えば設計を見直す。
+- 🔴 **決定 6（PassRole のタグ条件）が初回デプロイで AccessDenied になる最有力候補である。**
+  条件は「渡される IAM Role に `Project`/`Environment` タグが実際に付いていること」に
+  依存する。タグが付くこと自体は synth テストで確認済みだが、**IAM がそう評価するかは
+  未検証**。切り分け順序は runbook ステップ 4b の 14〜16 のコメントに書いた。
+- 🔴 **決定 7 のポリシー系 Deny は名前の列挙のみである。** `AWS::IAM::ManagedPolicy` は
+  CloudFormation に `Tags` を持たずタグ条件が使えないため、**列挙から漏れた第三者
+  ポリシーは覆えない**。この account に新しいプロジェクトが増えたら列挙を見直すこと。
+- **層 4 の boundary をアプリのロールへ適用する経路（`applyClaudeDeployBoundary`）は
+  synth でしか検証していない。** 実際に `iam:CreateRole` が boundary 付きで呼ばれ、
+  `AllowRoleMutationOnlyWithBoundary` の `StringEquals` に一致するかは初回デプロイで
+  初めて分かる。boundary が Deny 側に当たる場合、`OpenReception-CfMonitoring-dev` の
+  CREATE が AccessDenied で止まる（決定 4 の訂正を参照）。
+- **boundary はアプリの実行ロールの天井でもある。** dev が新しい AWS サービスを使い
+  始めたら（`secretsmanager` / `bedrock` / `polly` 等）、`claude-boundary.json` の
+  Allow を広げないと**デプロイは成功するのに機能だけ実行時に壊れる**。
+  現状の既知の追加は `ce:GetCostAndUsage` / `ce:GetCostForecast`（#377）のみ。
 - dev が Secrets Manager や KMS を使い始めたら、`secretsmanager:*` / `kms:*` の全面 Deny
   （T8 対応）を見直す必要がある。意図的に fail-closed にしてあるため、境界の拡張が要る。
 - open-reception の staging / prod スタックを新規作成するときは、層 1・3 の allowlist/denylist

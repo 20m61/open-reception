@@ -553,7 +553,7 @@ OR_SMOKE_URL=https://<デプロイ後のドメイン> bash scripts/aws-cloud-dep
 - **クラウド側**: `scripts/aws-cloud-deploy.sh` の `collect_observation` は常に
   `aws-negative-tests.ts --live-only` を呼ぶ。N 系（実試行・副作用なし）だけが走る。
 - **人間の Admin 側**: `--simulate-only` で S 系（`iam:SimulatePrincipalPolicy` によるシミュレーション、
-  破壊系は実試行しない）を走らせる（ステップ 4a）。
+  破壊系は実試行しない）を走らせる（ステップ 4a）。**principal ごとの ARN を 3 つ渡す。**
 - `npm run aws:negative-tests`（フラグ無し）は両方を走らせるので **Admin 専用**である。
   クラウドから叩くと `OpenReceptionClaudeDeploy-dev` が `iam:SimulatePrincipalPolicy` を
   持たないため S 系が全部 `unknown`（＝ FAIL 扱い）になる。
