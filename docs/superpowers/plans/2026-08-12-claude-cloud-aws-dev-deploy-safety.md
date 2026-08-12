@@ -1556,154 +1556,41 @@ main();
 >
 > 下記の `aws()` / `simulate()` はこの純関数を呼ぶだけにする。
 
-```ts
-/**
- * Negative security tests (spec §7)。
- *
- * 🔴 **破壊系を実試行しない。** 「AccessDenied を期待して DeleteTable を実行する」テストは、
- * Deny が効いていなかった場合に**本当に消す**。副作用の無い操作だけ実試行し、
- * 破壊系は `iam:SimulatePrincipalPolicy` で判定する。
- *
- * `scripts/aws-cloud-deploy.sh preflight` が呼ぶ。**1 件でも期待外れなら非ゼロで終わる**
- * （判定不能も期待外れとして扱う。`--strict` の思想: 測れていないものを PASS にしない）。
- */
-import { execFileSync } from 'node:child_process';
-
-const ACCOUNT = '822063948773';
-
-type Outcome = 'allowed' | 'denied' | 'unknown';
-type Check = { readonly id: string; readonly description: string; readonly expected: Exclude<Outcome, 'unknown'> };
-
-/** 実試行する（副作用なし）。 */
-const LIVE_CHECKS: ReadonlyArray<Check & { readonly run: () => Outcome }> = [
-  {
-    id: 'N2',
-    description: '共有 bootstrap (hnb659fds) の deploy role を assume',
-    expected: 'denied',
-    run: () => assumeRole(`arn:aws:iam::${ACCOUNT}:role/cdk-hnb659fds-deploy-role-${ACCOUNT}-ap-northeast-1`),
-  },
-  {
-    id: 'N3',
-    description: '共有 bootstrap (staging) の deploy role を assume',
-    expected: 'denied',
-    run: () => assumeRole(`arn:aws:iam::${ACCOUNT}:role/cdk-staging-deploy-role-${ACCOUNT}-ap-northeast-1`),
-  },
-  {
-    id: 'N4',
-    description: 'OpenReception-Web-dev を describe',
-    expected: 'allowed',
-    run: () => describeStack('OpenReception-Web-dev'),
-  },
-  { id: 'N5', description: 'nodi-dev-app を describe', expected: 'denied', run: () => describeStack('nodi-dev-app') },
-  {
-    id: 'N6',
-    description: 'salon-loop-staging-data を describe',
-    expected: 'denied',
-    run: () => describeStack('salon-loop-staging-data'),
-  },
-  {
-    id: 'N7',
-    description: 'Secrets Manager の列挙',
-    expected: 'denied',
-    run: () => aws(['secretsmanager', 'list-secrets', '--max-results', '1']),
-  },
-];
-
-/** 実試行しない。`SimulatePrincipalPolicy` で判定する（人間の Admin 環境から実行）。 */
-const SIMULATED_CHECKS: ReadonlyArray<{
-  readonly id: string;
-  readonly action: string;
-  readonly resource: string;
-}> = [
-  { id: 'S1', action: 'dynamodb:DeleteTable', resource: `arn:aws:dynamodb:ap-northeast-1:${ACCOUNT}:table/nodi-dev-anything` },
-  { id: 'S2', action: 'cloudformation:DeleteStack', resource: `arn:aws:cloudformation:ap-northeast-1:${ACCOUNT}:stack/nodi-dev-app/*` },
-  { id: 'S3', action: 'secretsmanager:GetSecretValue', resource: `arn:aws:secretsmanager:ap-northeast-1:${ACCOUNT}:secret:salon-loop/*` },
-  { id: 'S5', action: 'iam:AttachRolePolicy', resource: `arn:aws:iam::${ACCOUNT}:role/any-role` },
-  { id: 'S6', action: 'iam:PassRole', resource: `arn:aws:iam::${ACCOUNT}:role/cdk-hnb659fds-cfn-exec-role-${ACCOUNT}-ap-northeast-1` },
-  { id: 'S7', action: 'iam:DeleteRolePermissionsBoundary', resource: `arn:aws:iam::${ACCOUNT}:role/any-role` },
-  { id: 'S8', action: 'route53:ChangeResourceRecordSets', resource: 'arn:aws:route53:::hostedzone/ANY' },
-  { id: 'S9', action: 'cloudformation:UpdateStack', resource: `arn:aws:cloudformation:ap-northeast-1:${ACCOUNT}:stack/OpenReception-Web-prod/*` },
-  { id: 'S10', action: 'kms:ScheduleKeyDeletion', resource: `arn:aws:kms:ap-northeast-1:${ACCOUNT}:key/any` },
-];
-
-/**
- * 🔴 **stderr を診断に載せる。** `execFileSync` の例外は `message` がコマンド行までで、
- * 理由は `stderr` にある。載せないと 3 周にわたって当て推量で直すことになる（2026-08-08 の実例）。
- */
-function aws(args: ReadonlyArray<string>): Outcome {
-  try {
-    execFileSync('aws', [...args], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
-    return 'allowed';
-  } catch (e) {
-    const stderr = (e as { stderr?: Buffer }).stderr?.toString() ?? '';
-    if (/AccessDenied|not authorized|ExplicitDeny/i.test(stderr)) return 'denied';
-    console.error(`      (判定不能) ${stderr.trim().split('\n')[0] ?? '(stderr 空)'}`);
-    return 'unknown';
-  }
-}
-
-const assumeRole = (arn: string): Outcome =>
-  aws(['sts', 'assume-role', '--role-arn', arn, '--role-session-name', 'negative-test']);
-
-const describeStack = (name: string): Outcome =>
-  aws(['cloudformation', 'describe-stacks', '--stack-name', name]);
-
-function simulate(principalArn: string, action: string, resource: string): Outcome {
-  try {
-    const out = execFileSync(
-      'aws',
-      [
-        'iam', 'simulate-principal-policy',
-        '--policy-source-arn', principalArn,
-        '--action-names', action,
-        '--resource-arns', resource,
-        '--query', 'EvaluationResults[0].EvalDecision',
-        '--output', 'text',
-      ],
-      { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] },
-    ).trim();
-    if (out === 'allowed') return 'allowed';
-    if (out.endsWith('Deny')) return 'denied';
-    return 'unknown';
-  } catch (e) {
-    const stderr = (e as { stderr?: Buffer }).stderr?.toString() ?? '';
-    console.error(`      (判定不能) ${stderr.trim().split('\n')[0] ?? '(stderr 空)'}`);
-    return 'unknown';
-  }
-}
-
-function main(): void {
-  const simulateOnly = process.argv.includes('--simulate-only');
-  const principalArn = process.env.SIMULATE_PRINCIPAL_ARN ?? `arn:aws:iam::${ACCOUNT}:role/OpenReceptionClaudeDeploy-dev`;
-  let failed = 0;
-
-  if (!simulateOnly) {
-    console.log('  実試行（副作用なし）:');
-    for (const check of LIVE_CHECKS) {
-      const actual = check.run();
-      const pass = actual === check.expected;
-      if (!pass) failed += 1;
-      console.log(`    ${pass ? '✅' : '❌'} ${check.id} ${check.description} → ${actual}（期待 ${check.expected}）`);
-    }
-  }
-
-  console.log('  シミュレーション（破壊系は実試行しない）:');
-  for (const check of SIMULATED_CHECKS) {
-    const actual = simulate(principalArn, check.action, check.resource);
-    const pass = actual === 'denied';
-    if (!pass) failed += 1;
-    console.log(`    ${pass ? '✅' : '❌'} ${check.id} ${check.action} → ${actual}（期待 denied）`);
-  }
-
-  if (failed > 0) {
-    console.error(`  ⛔ negative security test: ${failed} 件が期待どおりでない`);
-    process.exit(1);
-  }
-  console.log('  ✅ negative security test 全件 PASS');
-}
-
-main();
-```
+> 🔴 **Task 7 補記: この節に元々あったコードスケッチは削除した。** 実装は
+> ラウンド 2・3 のレビュー（`task-4-report.md` 追記 2・追記 3）を経て、ここに
+> 書かれていた最小実装から**構造ごと**作り替えられており、単に `main()` へ分岐を
+> 1 つ足せば揃う差分ではなかった。見つかった相違点:
+>
+> - `N1`（専用 bootstrap `orcloud01` の deploy role を assume）が欠落していた。
+> - `S4`（`iam:CreateRole` を boundary 指定なしで試す）が欠落していた。
+> - `N8`（`iam:CreateAccessKey` on `user/CDK`）を「実試行してよい」側に置いていたが、
+>   Deny が効いていない場合に本物の長期キーを発行してしまうため `S11` へ移した
+>   （spec §7 の A-3 修正と同じ理由）。
+> - `aws()` / `simulate()` の判定が、直前のコメントの意図（純関数へ委譲する）に
+>   反してインラインの正規表現のままだった。実装では両者を明確に分離し
+>   （`simulate()` の catch には**絶対に `classifyAwsError` を使わない** —
+>   `SimulatePrincipalPolicy` 自体への AccessDenied を「評価対象アクションが
+>   denied だった」と誤読する CRITICAL バグになるため、専用の
+>   `classifySimulationError` を新設した）、`src/domain/governance/
+>   negative-test-outcome.ts` へ切り出した。
+> - `main()` は `--simulate-only` の単独判定しかできず、`--live-only` の分岐も、
+>   両方同時指定を拒否する `resolveExecutionScope()` も無かった
+>   （`OpenReceptionClaudeDeploy-dev` が `iam:SimulatePrincipalPolicy` を持たない
+>   前提のため、クラウド側は必ず `--live-only` を渡す設計に後から変わった）。
+>
+> ここまで差分が大きい状態で JSON ポリシーのように「本文を実装へ合わせて
+> 書き直す」を選ぶと、実質的に `scripts/aws-negative-tests.ts` の全文
+> （約 245 行）を第二のコピーとしてこの計画書へ複製することになり、
+> **複製そのものが将来また同じように drift する**。plan は実装済みタスクの
+> 実行記録であり実コードが正本なので（`task-7-handover.md` の「正本の優先順位:
+> 実コード > handover > spec / plan」と同じ判断）、ここは実装の要点だけを書き、
+> 本文は次のファイルを直接読むことを前提にする:
+>
+> - `scripts/aws-negative-tests.ts` — CLI 本体（`LIVE_CHECKS` N1〜N7、
+>   `SIMULATED_CHECKS` S1〜S11、`main()` の `--live-only`/`--simulate-only` 分岐）
+> - `src/domain/governance/negative-test-outcome.ts` — `classifyAwsError` /
+>   `classifySimulationError` / `resolveExecutionScope` / `summarizeNegativeTests`
+>   の純関数（`negative-test-outcome.test.ts` で同居テスト固定、26 tests）
 
 - [ ] **Step 4: `package.json` に npm script を追加する**
 

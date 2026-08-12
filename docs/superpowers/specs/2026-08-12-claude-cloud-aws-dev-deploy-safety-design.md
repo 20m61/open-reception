@@ -142,7 +142,8 @@ open-reception の実構成では **Cognito / CloudFront / IAM Policy につい�
     MaxSession : 43200 (12h) — 実際の発行は既定 4h
     権限        : cdk-orcloud01-* への sts:AssumeRole のみ
     明示 Deny  : cdk-hnb659fds-* / cdk-staging-* への sts:AssumeRole
-      │  AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY / AWS_SESSION_TOKEN
+      │  AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY / AWS_SESSION_TOKEN /
+      │  AWS_REGION / AWS_CREDENTIAL_EXPIRATION
       ▼
 [Claude Cloud サンドボックス]   scripts/aws-cloud-deploy.sh 経由でのみ cdk を実行
       │  cdk deploy -c env=dev -c @aws-cdk/core:bootstrapQualifier=orcloud01
