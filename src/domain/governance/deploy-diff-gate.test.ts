@@ -619,6 +619,73 @@ describe('A: 権限は隣のリソース種別から carve-out ロールへ届�
     expect(verdict.blocks.map((b) => b.reason)).toEqual(['opaqueResourceShape']);
   });
 
+  // 以下 4 件は「payload を隣の綴りへ移す」変異ドリル（N1/N2/N4/N5）から昇格した。
+  it('role.ManagedPolicyArns がテンプレート内の ManagedPolicy への Ref でも止める', () => {
+    const verdict = evaluateRoleFixture(
+      EXPORT_WRITER_ROLE!,
+      providerRole({ ManagedPolicyArns: [{ Ref: 'EvilManagedPolicy' }] }),
+    );
+    expect(verdict.blocks.map((b) => b.reason)).toEqual(['carveOutRoleShape']);
+  });
+
+  it('付与ポリシーを NotAction（これ以外すべて）で書いても止める', () => {
+    const verdict = attachmentVerdict('AWS::IAM::Policy', {
+      PolicyDocument: {
+        Version: '2012-10-17',
+        Statement: [{ Effect: 'Allow', NotAction: 'ec2:*', Resource: '*' }],
+      },
+      Roles: [{ Ref: EXPORT_WRITER_ROLE }],
+    });
+    expect(verdict.blocks.map((b) => b.reason)).toEqual(['carveOutRoleShape']);
+  });
+
+  it('Path で carve-out に入れたロールへ別リソースから付与するのも止める（2 経路の合わせ技）', () => {
+    const verdict = evaluateDeployChangeSet(
+      summary({
+        changes: [
+          change({
+            action: 'Add',
+            resourceType: 'AWS::IAM::Policy',
+            logicalResourceId: 'Attachment',
+            replacement: undefined,
+          }),
+        ],
+        templateResources: {
+          Innocent: res('AWS::IAM::Role', providerRole({ Path: '/OpenReception-x-dev-Custom/' })),
+          Attachment: res('AWS::IAM::Policy', {
+            PolicyDocument: adminDocument,
+            Roles: [{ Ref: 'Innocent' }],
+          }),
+        },
+      }),
+    );
+    expect(verdict.blocks.map((b) => b.reason)).toEqual(['carveOutRoleShape']);
+  });
+
+  it('carve-out の内と外へ 1 つの Policy でまとめて付けても、内側を見落とさない', () => {
+    const verdict = evaluateDeployChangeSet(
+      summary({
+        changes: [
+          change({
+            action: 'Add',
+            resourceType: 'AWS::IAM::Policy',
+            logicalResourceId: 'Attachment',
+            replacement: undefined,
+          }),
+        ],
+        templateResources: {
+          [EXPORT_WRITER_ROLE!]: res('AWS::IAM::Role', providerRole()),
+          ServerFnServiceRole: res('AWS::IAM::Role', lambdaServiceRole()),
+          Attachment: res('AWS::IAM::Policy', {
+            PolicyDocument: adminDocument,
+            Roles: [{ Ref: 'ServerFnServiceRole' }, { Ref: EXPORT_WRITER_ROLE }],
+          }),
+        },
+      }),
+    );
+    expect(verdict.blocks.map((b) => b.reason)).toEqual(['carveOutRoleShape']);
+  });
+
   it('Users / Groups へポリシーを付けるのは止める（dev に IAM プリンシパルは無い）', () => {
     const verdict = attachmentVerdict(
       'AWS::IAM::ManagedPolicy',
@@ -638,6 +705,33 @@ describe('carve-out の外のロールの trust policy (#680 R10)', () => {
           Version: '2012-10-17',
           Statement: [
             { Action: 'sts:AssumeRole', Effect: 'Allow', Principal: { AWS: 'arn:aws:iam::111122223333:root' } },
+          ],
+        },
+      }),
+    );
+    expect(verdict.blocks.map((b) => b.reason)).toEqual(['roleTrustPolicyEscape']);
+  });
+
+  /**
+   * 🔴 **`AWS::IAM::OIDCProvider` の Add は gate を通る**（変異ドリル N6）。
+   * 通してよいのは「プロバイダ単体では誰にも何も許さない」からで、その前提は
+   * **`Federated` を信頼するロールが必ず止まること**に全面的に依存している。
+   * 依存先をここで固定する（carve-out の中は `carveOutRoleShape` が別途固定済み）。
+   */
+  it('carve-out の外でも Federated を信頼するロールは止める（OIDC プロバイダを無害にしている前提）', () => {
+    const verdict = evaluateRoleFixture(
+      'ServerFnServiceRole',
+      lambdaServiceRole({
+        AssumeRolePolicyDocument: {
+          Version: '2012-10-17',
+          Statement: [
+            {
+              Action: 'sts:AssumeRoleWithWebIdentity',
+              Effect: 'Allow',
+              Principal: {
+                Federated: 'arn:aws:iam::822063948773:oidc-provider/token.actions.githubusercontent.com',
+              },
+            },
           ],
         },
       }),
