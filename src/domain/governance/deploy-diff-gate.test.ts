@@ -196,7 +196,20 @@ const PROVIDER_MANAGED = [
   { 'Fn::Sub': 'arn:${AWS::Partition}:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole' },
 ];
 
-/** 実測した cross-region ExportWriter のインラインポリシー。 */
+/**
+ * 実測した cross-region ExportWriter のインラインポリシー。
+ *
+ * 🔴 **`Resource` は synth 出力そのまま（`Fn::Join` ＋ `Ref: AWS::Partition`）にしてある。**
+ * ここを手書きのリテラル ARN に「読みやすく」直すと、**実テンプレートを止めてしまう
+ * 実装でもテストが緑になる**（gate は組み込み関数を解決できなければ通さない）。
+ */
+const SSM_EXPORTS_ARN = (suffix: string): unknown => ({
+  'Fn::Join': [
+    '',
+    ['arn:', { Ref: 'AWS::Partition' }, `:ssm:us-east-1:822063948773:parameter/cdk/exports/${suffix}`],
+  ],
+});
+
 const PROVIDER_INLINE = [
   {
     PolicyName: 'Inline',
@@ -205,7 +218,7 @@ const PROVIDER_INLINE = [
       Statement: [
         {
           Effect: 'Allow',
-          Resource: ['arn:aws:ssm:us-east-1:822063948773:parameter/cdk/exports/*'],
+          Resource: [SSM_EXPORTS_ARN('*')],
           Action: ['ssm:DeleteParameters', 'ssm:ListTagsForResource', 'ssm:GetParameters', 'ssm:PutParameter'],
         },
       ],
@@ -225,7 +238,8 @@ const PROVIDER_INLINE_READER = [
       Statement: [
         {
           Effect: 'Allow',
-          Resource: 'arn:aws:ssm:us-east-1:822063948773:parameter/cdk/exports/OpenReception-CfMonitoring-dev/*',
+          // Reader は配列でなく単一の値（実測）。両方の形を通す必要がある。
+          Resource: SSM_EXPORTS_ARN('OpenReception-CfMonitoring-dev/*'),
           Action: ['ssm:AddTagsToResource', 'ssm:RemoveTagsFromResource', 'ssm:GetParameters'],
         },
       ],
@@ -233,13 +247,17 @@ const PROVIDER_INLINE_READER = [
   },
 ];
 
-/** 任意の action 1 つを持つインラインポリシー。 */
-const inlineWith = (action: string): ReadonlyArray<unknown> => [
+/**
+ * 任意の action 1 つを持つインラインポリシー。
+ * **`Resource` は許可リスト内**にしてある —— そうしないと「action の検査が効いた」のか
+ * 「Resource の検査が効いた」のか区別できず、action 側の変異を検出できない。
+ */
+const inlineWith = (action: string, resource: unknown = SSM_EXPORTS_ARN('*')): ReadonlyArray<unknown> => [
   {
     PolicyName: 'Inline',
     PolicyDocument: {
       Version: '2012-10-17',
-      Statement: [{ Effect: 'Allow', Action: action, Resource: '*' }],
+      Statement: [{ Effect: 'Allow', Action: action, Resource: resource }],
     },
   },
 ];
@@ -401,20 +419,7 @@ describe('A: 論理 ID を騙っても中身で弾く（allowlist だけでは�
       'AdministratorAccess を attach する',
       providerRole({ ManagedPolicyArns: ['arn:aws:iam::aws:policy/AdministratorAccess'] }),
     ],
-    [
-      'インラインで iam: を許可する',
-      providerRole({
-        Policies: [
-          {
-            PolicyName: 'Inline',
-            PolicyDocument: {
-              Version: '2012-10-17',
-              Statement: [{ Effect: 'Allow', Action: ['iam:PutRolePolicy'], Resource: '*' }],
-            },
-          },
-        ],
-      }),
-    ],
+    ['インラインで iam: を許可する', providerRole({ Policies: inlineWith('iam:PutRolePolicy') })],
     [
       'インラインで Action:* を許可する',
       providerRole({ Policies: inlineWith('*') }),
@@ -426,6 +431,62 @@ describe('A: 論理 ID を騙っても中身で弾く（allowlist だけでは�
     ['インラインで sts* を許可する', providerRole({ Policies: inlineWith('sts*') })],
     ['インラインで *:* を許可する', providerRole({ Policies: inlineWith('*:*') })],
     ['インラインで *:CreateRole を許可する', providerRole({ Policies: inlineWith('*:CreateRole') })],
+    // 🔴 レビュー（2026-08-13）: action の許可リストだけでは残余が
+    // 「アカウント全体の SSM 読み書き削除」だった。`Resource` も実測へ閉じ込める。
+    [
+      '許可リストの action を Resource:* で載せる（ssm:DeleteParameters が account 全体に効く）',
+      providerRole({ Policies: inlineWith('ssm:DeleteParameters', '*') }),
+    ],
+    [
+      '許可リストの action を parameter/* で載せる（cdk/exports の外へ出る）',
+      providerRole({
+        Policies: inlineWith('ssm:GetParameters', 'arn:aws:ssm:us-east-1:822063948773:parameter/*'),
+      }),
+    ],
+    [
+      'Resource のリージョンとアカウントを * にする',
+      providerRole({ Policies: inlineWith('ssm:GetParameters', 'arn:aws:ssm:*:*:parameter/cdk/exports/*') }),
+    ],
+    [
+      'Resource のアカウントだけ別アカウントにする',
+      providerRole({
+        Policies: inlineWith('ssm:GetParameters', 'arn:aws:ssm:us-east-1:111122223333:parameter/cdk/exports/*'),
+      }),
+    ],
+    [
+      'Resource を静的に読めない値にする',
+      providerRole({ Policies: inlineWith('ssm:GetParameters', { 'Fn::GetAtt': ['X', 'Arn'] }) }),
+    ],
+    [
+      'Resource を NotResource（これ以外すべて）で書く',
+      providerRole({
+        Policies: [
+          {
+            PolicyName: 'Inline',
+            PolicyDocument: {
+              Version: '2012-10-17',
+              Statement: [
+                { Effect: 'Allow', Action: 'ssm:GetParameters', NotResource: 'arn:aws:ssm:us-east-1:822063948773:parameter/nothing' },
+              ],
+            },
+          },
+        ],
+      }),
+    ],
+    [
+      'Resource を書かない',
+      providerRole({
+        Policies: [
+          {
+            PolicyName: 'Inline',
+            PolicyDocument: {
+              Version: '2012-10-17',
+              Statement: [{ Effect: 'Allow', Action: 'ssm:GetParameters' }],
+            },
+          },
+        ],
+      }),
+    ],
     // 🔴 レビュー「classifyTrustPolicy が Action を見ていない」。
     [
       'trust policy の Action を AssumeRoleWithWebIdentity にする',
@@ -479,9 +540,15 @@ describe('A: 権限は隣のリソース種別から carve-out ロールへ届�
     Version: '2012-10-17',
     Statement: [{ Effect: 'Allow', Action: '*', Resource: '*' }],
   };
+  /** provider が実際に使う形（action も Resource も実測どおり）。 */
   const ssmDocument = {
     Version: '2012-10-17',
-    Statement: [{ Effect: 'Allow', Action: ['ssm:GetParameters'], Resource: '*' }],
+    Statement: [{ Effect: 'Allow', Action: ['ssm:GetParameters'], Resource: SSM_EXPORTS_ARN('*') }],
+  };
+  /** action は許可リスト内だが Resource が account 全体に開いている。 */
+  const wideSsmDocument = {
+    Version: '2012-10-17',
+    Statement: [{ Effect: 'Allow', Action: ['ssm:DeleteParameters'], Resource: '*' }],
   };
 
   /** provider role 本体 + それを狙う別リソース、という 2 リソースの change set。 */
@@ -537,6 +604,29 @@ describe('A: 権限は隣のリソース種別から carve-out ロールへ届�
       { PolicyDocument: adminDocument, Roles: [{ Ref: EXPORT_WRITER_ROLE }] },
       { action: 'Modify', includeRole: false },
     );
+    expect(verdict.blocks.map((b) => b.reason)).toEqual(['carveOutRoleShape']);
+  });
+
+  // 🔴 隣のリソース種別への移設（このラウンドで足した `Resource` 検査が、
+  // ロール本体の `Policies` だけでなくここにも掛かっていることの確認）。
+  it.each(['AWS::IAM::Policy', 'AWS::IAM::ManagedPolicy'] as const)(
+    '%s が carve-out ロールへ「許可 action ＋ Resource:*」を付けるのも止める',
+    (type) => {
+      const verdict = attachmentVerdict(type, {
+        PolicyDocument: wideSsmDocument,
+        Roles: [{ Ref: EXPORT_WRITER_ROLE }],
+      });
+      expect(verdict.blocks.map((b) => b.reason)).toEqual(['carveOutRoleShape']);
+      expect(verdict.blocks[0]!.evidence).toContain('許可リストの外の Resource');
+    },
+  );
+
+  it('AWS::IAM::RolePolicy 経由でも Resource:* は止める', () => {
+    const verdict = attachmentVerdict('AWS::IAM::RolePolicy', {
+      PolicyName: 'Wide',
+      PolicyDocument: wideSsmDocument,
+      RoleName: { Ref: EXPORT_WRITER_ROLE },
+    });
     expect(verdict.blocks.map((b) => b.reason)).toEqual(['carveOutRoleShape']);
   });
 

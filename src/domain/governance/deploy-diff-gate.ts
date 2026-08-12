@@ -169,6 +169,48 @@ export const CARVE_OUT_ALLOWED_ACTIONS: ReadonlySet<string> = new Set([
   'ssm:removetagsfromresource',
 ]);
 
+/**
+ * carve-out のロールに載ってよい `Resource` の接頭辞（ARN のリソース部分）。
+ *
+ * 🔴 **action だけを許可リストにしても、`Resource: "*"` を許すと意味が薄い**
+ * （2026-08-13 レビュー）。許可している 6 つは無害な名前に見えるが、
+ * `ssm:DeleteParameters` を `*` で持つロールは**このアカウントの SSM パラメータを
+ * 全部消せる** —— 静かで、アカウント全体で、他プロジェクトの設定が入っている。
+ *
+ * action と同じく **synth の実測**から取った。両 provider とも `Fn::Join` で
+ * 次を組む（`Ref: AWS::Partition` を含む。リテラル ARN ではない）:
+ *
+ *  - Writer … `arn:${AWS::Partition}:ssm:us-east-1:822063948773:parameter/cdk/exports/*`
+ *  - Reader … `arn:${AWS::Partition}:ssm:us-east-1:822063948773:parameter/cdk/exports/OpenReception-CfMonitoring-dev/*`
+ *
+ * 前者が後者を含むので、確認するのは **`parameter/cdk/exports/` の下**であること。
+ */
+const CARVE_OUT_ALLOWED_RESOURCE_PREFIX = 'parameter/cdk/exports/';
+
+/**
+ * ARN のリージョン欄。**`*` を拒む**ためにパターンで確かめる。
+ * 実測値は両 provider とも `us-east-1`（consumer スタックのリージョン）だが、
+ * 安全性を担っているのは**アカウント欄とリソース接頭辞**であってリージョンではないので、
+ * ここは「具体的なリージョンであること」までに留める（cross-region の相手が
+ * 変わっただけで初回デプロイを止めない）。
+ */
+const CONCRETE_AWS_REGION = /^[a-z]{2}(?:-[a-z]+)+-\d$/;
+
+/**
+ * その `Resource` が、実測した SSM の名前空間に**閉じている**か。
+ *
+ * `*` / `arn:aws:ssm:*:*:parameter/*` / `…:parameter/*` はいずれも false。
+ * 解決できなかった部分は `UNRESOLVED_MARKER` になるので、どのフィールドとも一致しない。
+ */
+function isConfinedCarveOutResource(resolvedArn: string): boolean {
+  const fields = resolvedArn.split(':');
+  if (fields.length < 6) return false;
+  if (fields[0] !== 'arn' || fields[1] !== 'aws' || fields[2] !== 'ssm') return false;
+  if (!CONCRETE_AWS_REGION.test(fields[3] ?? '')) return false;
+  if (fields[4] !== CARVE_OUT_ACCOUNT_ID) return false;
+  return fields.slice(5).join(':').startsWith(CARVE_OUT_ALLOWED_RESOURCE_PREFIX);
+}
+
 /** `describe-change-set` の `Changes[].ResourceChange` から必要な項目だけ。 */
 export type ChangeSetResourceChange = {
   /**
@@ -459,43 +501,81 @@ function managedPolicyArnLiteral(v: unknown): string | null {
   return null;
 }
 
-/** 1 つの `PolicyDocument` の Allow 側 action を集める。読めなければ `null`。 */
-function collectPolicyDocumentActions(doc: unknown): ReadonlyArray<string> | null {
+/**
+ * ポリシーの Allow 側 statement を、**action と resource を対にしたまま**集める。
+ *
+ * 🔴 **action だけを平らに集めない。** 平らにすると「許可された action」と
+ * 「広い `Resource`」が別々の statement に見えて、対で評価できない。
+ */
+type AllowStatement = {
+  readonly actions: ReadonlyArray<string>;
+  readonly resources: ReadonlyArray<unknown>;
+};
+
+/** 1 つの `PolicyDocument` の Allow statement を集める。読めなければ `null`。 */
+function collectPolicyDocumentStatements(doc: unknown): ReadonlyArray<AllowStatement> | null {
   if (!isRecord(doc) || !Array.isArray(doc.Statement)) return null;
-  const actions: string[] = [];
+  const out: AllowStatement[] = [];
   for (const stmt of doc.Statement) {
     if (!isRecord(stmt)) return null;
     if (stmt.Effect === 'Deny') continue;
-    // `NotAction` は「これ以外すべて」＝ carve-out では必ず許可外を含む。
-    if (stmt.NotAction !== undefined) return null;
-    const list = asStringList(stmt.Action);
-    if (list === null) return null;
-    actions.push(...list);
+    // `NotAction` / `NotResource` は「これ以外すべて」＝ carve-out では必ず許可外を含む。
+    if (stmt.NotAction !== undefined || stmt.NotResource !== undefined) return null;
+    const actions = asStringList(stmt.Action);
+    if (actions === null) return null;
+    // `Resource` の無い Allow は IAM 的には不正だが、**無いことを「無害」にしない**。
+    if (stmt.Resource === undefined) return null;
+    out.push({
+      actions,
+      resources: Array.isArray(stmt.Resource) ? stmt.Resource : [stmt.Resource],
+    });
   }
-  return actions;
+  return out;
 }
 
-/** インラインポリシー（`Policies`）に現れる action を集める。読めないものがあれば `null`。 */
-function collectInlineActions(policies: unknown): ReadonlyArray<string> | null {
+/** インラインポリシー（`Policies`）の Allow statement を集める。読めなければ `null`。 */
+function collectInlineStatements(policies: unknown): ReadonlyArray<AllowStatement> | null {
   if (policies === undefined) return [];
   if (!Array.isArray(policies)) return null;
-  const actions: string[] = [];
+  const out: AllowStatement[] = [];
   for (const policy of policies) {
     if (!isRecord(policy)) return null;
-    const list = collectPolicyDocumentActions(policy.PolicyDocument);
-    if (list === null) return null;
-    actions.push(...list);
+    const statements = collectPolicyDocumentStatements(policy.PolicyDocument);
+    if (statements === null) return null;
+    out.push(...statements);
   }
-  return actions;
+  return out;
 }
 
 /**
- * carve-out のロールに載せてよい action の許可リストから外れたものを返す。
- * **`*` を含む書き方は素の文字列比較で自動的に外れる**（`iam*` も `*:*` も
- * 許可リストのどの項目とも一致しない）。
+ * carve-out のロールに載る statement のうち、許可リストから外れているものを述べる。
+ *
+ * action は**名前**の許可リスト（`*` を含む書き方は素の文字列比較で自動的に外れる ——
+ * `iam*` も `*:*` も許可リストのどの項目とも一致しない）、`Resource` は
+ * **実測した SSM の名前空間**に閉じていること。`Condition` は見ない ——
+ * condition は権限を**狭める**方向にしか働かないので、無視しても安全側である。
  */
-function disallowedCarveOutActions(actions: ReadonlyArray<string>): ReadonlyArray<string> {
-  return actions.filter((a) => !CARVE_OUT_ALLOWED_ACTIONS.has(a.toLowerCase()));
+function carveOutStatementViolations(
+  statements: ReadonlyArray<AllowStatement>,
+): ReadonlyArray<string> {
+  const violations: string[] = [];
+  for (const stmt of statements) {
+    for (const action of stmt.actions) {
+      if (!CARVE_OUT_ALLOWED_ACTIONS.has(action.toLowerCase())) {
+        violations.push(`許可リストに無い action: ${action}`);
+      }
+    }
+    for (const resource of stmt.resources) {
+      const resolved = resolveTemplateString(resource);
+      if (!isConfinedCarveOutResource(resolved)) {
+        violations.push(
+          `許可リストの外の Resource: ${resolved}` +
+            `（${CARVE_OUT_ALLOWED_RESOURCE_PREFIX} の下に閉じている必要があります）`,
+        );
+      }
+    }
+  }
+  return violations;
 }
 
 /**
@@ -536,13 +616,11 @@ function carveOutShapeViolations(props: TemplateProperties): ReadonlyArray<strin
     }
   }
 
-  const actions = collectInlineActions(props.Policies);
-  if (actions === null) {
-    violations.push('インラインポリシーの Action を読み取れない');
+  const statements = collectInlineStatements(props.Policies);
+  if (statements === null) {
+    violations.push('インラインポリシーの Action / Resource を読み取れない');
   } else {
-    for (const action of disallowedCarveOutActions(actions)) {
-      violations.push(`boundary の無いロールに載せてよい action の許可リストに無い: ${action}`);
-    }
+    violations.push(...carveOutStatementViolations(statements).map((v) => `boundary の無いロール: ${v}`));
   }
 
   return violations;
@@ -818,21 +896,24 @@ function evaluatePolicyAttachment(
   }
   if (carveOutTargets.length === 0) return;
 
-  const actions = collectPolicyDocumentActions(props.PolicyDocument);
-  if (actions === null) {
+  // 🔴 ロール本体の `Policies` と**同じ**検査を掛ける（action の許可リストだけでなく
+  // `Resource` の閉じ込めも）。片方だけに掛けると、payload を隣のリソースへ移すだけで
+  // 広い `Resource` が通ってしまう ―― Blocking 1 とまったく同じ形の穴になる。
+  const statements = collectPolicyDocumentStatements(props.PolicyDocument);
+  if (statements === null) {
     blocks.push({
       reason: 'carveOutRoleShape',
-      evidence: `${evidence} — carve-out のロール（${carveOutTargets.join(' / ')}）へ付ける PolicyDocument の Action を読み取れません`,
+      evidence: `${evidence} — carve-out のロール（${carveOutTargets.join(' / ')}）へ付ける PolicyDocument の Action / Resource を読み取れません`,
     });
     return;
   }
-  const disallowed = disallowedCarveOutActions(actions);
-  if (disallowed.length > 0) {
+  const violations = carveOutStatementViolations(statements);
+  if (violations.length > 0) {
     blocks.push({
       reason: 'carveOutRoleShape',
       evidence:
         `${evidence} — carve-out のロール（${carveOutTargets.join(' / ')}）に Permissions Boundary は` +
-        `掛かりません。許可リストに無い action: ${disallowed.join(', ')}`,
+        `掛かりません。${violations.join(' / ')}`,
     });
   }
 }
