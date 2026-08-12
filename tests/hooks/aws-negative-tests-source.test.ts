@@ -45,10 +45,22 @@ function run(args: ReadonlyArray<string>, env: Record<string, string | undefined
   return { status: r.status ?? -1, stdout: r.stdout ?? '', stderr: r.stderr ?? '' };
 }
 
-const FAKE_ARNS = {
-  SIMULATE_ENTRY_ROLE_ARN: 'arn:aws:iam::822063948773:role/OpenReceptionClaudeDeploy-dev',
-  SIMULATE_DEPLOY_ROLE_ARN: 'arn:aws:iam::822063948773:role/cdk-orcloud01-deploy-role-822063948773-ap-northeast-1',
-  SIMULATE_EXEC_ROLE_ARN: 'arn:aws:iam::822063948773:role/cdk-orcloud01-cfn-exec-role-822063948773-ap-northeast-1',
+const ROLE = (name: string) => `arn:aws:iam::822063948773:role/${name}`;
+
+/** #680 R4: deploy / exec は region ごとに別のロールなので、鍵も環境変数も region ごと。 */
+const FAKE_ARNS: Record<string, string | undefined> = {
+  SIMULATE_ENTRY_ROLE_ARN: ROLE('OpenReceptionClaudeDeploy-dev'),
+  SIMULATE_DEPLOY_ROLE_ARN_AP_NORTHEAST_1: ROLE('cdk-orcloud01-deploy-role-822063948773-ap-northeast-1'),
+  SIMULATE_DEPLOY_ROLE_ARN_US_EAST_1: ROLE('cdk-orcloud01-deploy-role-822063948773-us-east-1'),
+  SIMULATE_EXEC_ROLE_ARN_AP_NORTHEAST_1: ROLE('cdk-orcloud01-cfn-exec-role-822063948773-ap-northeast-1'),
+  SIMULATE_EXEC_ROLE_ARN_US_EAST_1: ROLE('cdk-orcloud01-cfn-exec-role-822063948773-us-east-1'),
+};
+
+/** 廃止された変数。テストの env に混ざると `exit 2` になるので明示的に落とす。 */
+const NO_RETIRED_ARNS = {
+  SIMULATE_PRINCIPAL_ARN: undefined,
+  SIMULATE_DEPLOY_ROLE_ARN: undefined,
+  SIMULATE_EXEC_ROLE_ARN: undefined,
 };
 
 function extractFunctionBody(source: string, functionSignature: string, nextMarker: string): string {
@@ -90,31 +102,27 @@ describe('S 系は principal ARN が供給されないと実行を拒否する (
   it(
     'principal ARN が 1 つも無ければ非ゼロで終わり、どの環境変数が要るかを列挙する',
     () => {
-      const { status, stderr } = run(['--simulate-only'], {
-        SIMULATE_ENTRY_ROLE_ARN: undefined,
-        SIMULATE_DEPLOY_ROLE_ARN: undefined,
-        SIMULATE_EXEC_ROLE_ARN: undefined,
-        SIMULATE_PRINCIPAL_ARN: undefined,
-      });
+      const cleared = Object.fromEntries(Object.keys(FAKE_ARNS).map((k) => [k, undefined]));
+      const { status, stderr } = run(['--simulate-only'], { ...cleared, ...NO_RETIRED_ARNS });
       expect(status).toBe(2);
-      expect(stderr).toContain('SIMULATE_ENTRY_ROLE_ARN');
-      expect(stderr).toContain('SIMULATE_DEPLOY_ROLE_ARN');
-      expect(stderr).toContain('SIMULATE_EXEC_ROLE_ARN');
+      for (const name of Object.keys(FAKE_ARNS)) expect(stderr).toContain(name);
     },
     60_000,
   );
 
   it(
-    '一部だけ供給されていても走らない（exec だけ欠けている場合）',
+    '一部だけ供給されていても走らない（us-east-1 の exec だけ欠けている場合）',
     () => {
       const { status, stderr } = run(['--simulate-only'], {
         ...FAKE_ARNS,
-        SIMULATE_EXEC_ROLE_ARN: undefined,
-        SIMULATE_PRINCIPAL_ARN: undefined,
+        ...NO_RETIRED_ARNS,
+        SIMULATE_EXEC_ROLE_ARN_US_EAST_1: undefined,
       });
       expect(status).toBe(2);
-      expect(stderr).toContain('SIMULATE_EXEC_ROLE_ARN');
-      expect(stderr).not.toContain('SIMULATE_DEPLOY_ROLE_ARN');
+      expect(stderr).toContain('SIMULATE_EXEC_ROLE_ARN_US_EAST_1');
+      // 🔴 R4 の中心。region ごとに鍵が分かれていなければ、ap-northeast-1 の exec を
+      // 渡しただけで「exec は供給済み」になり、us-east-1 が未検証のまま通ってしまう。
+      expect(stderr).not.toContain('SIMULATE_EXEC_ROLE_ARN_AP_NORTHEAST_1');
     },
     60_000,
   );
@@ -125,24 +133,31 @@ describe('S 系は principal ARN が供給されないと実行を拒否する (
     () => {
       const { status, stderr } = run(['--simulate-only'], {
         ...FAKE_ARNS,
-        SIMULATE_EXEC_ROLE_ARN: '',
-        SIMULATE_PRINCIPAL_ARN: undefined,
+        ...NO_RETIRED_ARNS,
+        SIMULATE_EXEC_ROLE_ARN_US_EAST_1: '',
       });
       expect(status).toBe(2);
-      expect(stderr).toContain('SIMULATE_EXEC_ROLE_ARN');
+      expect(stderr).toContain('SIMULATE_EXEC_ROLE_ARN_US_EAST_1');
     },
     60_000,
   );
 
-  it(
-    '廃止された SIMULATE_PRINCIPAL_ARN が設定されていたら明示的に止める',
-    () => {
+  it.each([
+    ['SIMULATE_PRINCIPAL_ARN', 'arn:aws:iam::822063948773:role/OpenReceptionClaudeDeploy-dev'],
+    // #680 R4: region 無しの旧変数も廃止。渡したまま走らせて「両 region 検証済み」と
+    // 記録できないようにする。
+    ['SIMULATE_DEPLOY_ROLE_ARN', 'arn:aws:iam::822063948773:role/x'],
+    ['SIMULATE_EXEC_ROLE_ARN', 'arn:aws:iam::822063948773:role/y'],
+  ])(
+    '廃止された %s が設定されていたら明示的に止める',
+    (name, value) => {
       const { status, stderr } = run(['--simulate-only'], {
         ...FAKE_ARNS,
-        SIMULATE_PRINCIPAL_ARN: 'arn:aws:iam::822063948773:role/OpenReceptionClaudeDeploy-dev',
+        ...NO_RETIRED_ARNS,
+        [name]: value,
       });
       expect(status).toBe(2);
-      expect(stderr).toContain('SIMULATE_PRINCIPAL_ARN は廃止されました');
+      expect(stderr).toContain(`${name} は廃止されました`);
     },
     60_000,
   );
@@ -150,10 +165,7 @@ describe('S 系は principal ARN が供給されないと実行を拒否する (
   it(
     'principal が揃っていれば検証を通過し、AWS 呼び出しの直前でインターロックが止める',
     () => {
-      const { status, stderr } = run(['--simulate-only'], {
-        ...FAKE_ARNS,
-        SIMULATE_PRINCIPAL_ARN: undefined,
-      });
+      const { status, stderr } = run(['--simulate-only'], { ...FAKE_ARNS, ...NO_RETIRED_ARNS });
       // exit 3 = インターロック専用（2 = 引数エラー / 1 = 検査 FAIL と区別する）。
       // ここが 2 のままなら、principal 検証が「揃っている」を認識できていない。
       expect(status).toBe(3);
@@ -163,15 +175,16 @@ describe('S 系は principal ARN が供給されないと実行を拒否する (
   );
 });
 
-describe('SIMULATED_CHECKS は全件が principal を宣言している (Critical 3)', () => {
+describe('SIMULATED_CHECKS は全件が principal と region を宣言している (Critical 3 / #680 R4)', () => {
   const block = extractFunctionBody(SOURCE, 'const SIMULATED_CHECKS', 'const PRINCIPAL_ENV_VARS');
+  const ids = [...block.matchAll(/^\s*id: '(S\d+)',/gm)].map((m) => m[1]!);
 
-  it('各 check が principals を持つ（id の数と principals の数が一致する）', () => {
-    const ids = [...block.matchAll(/^\s*id: '(S\d+)',/gm)].map((m) => m[1]);
-    const principals = [...block.matchAll(/^\s*principals: \[/gm)];
+  it('各 check が principals / coverage / expected を持つ（id と同数）', () => {
     // 🔴 0 件なら空虚に真になる。抽出できていることを先に固定する。
-    expect(ids.length).toBeGreaterThanOrEqual(12);
-    expect(principals.length).toBe(ids.length);
+    expect(ids.length).toBeGreaterThanOrEqual(20);
+    for (const field of [/^\s*principals: \[/gm, /^\s*coverage: /gm, /^\s*expected: /gm]) {
+      expect([...block.matchAll(field)].length).toBe(ids.length);
+    }
   });
 
   it('boundary 脱出系（S4/S5/S7）は exec に対して評価される', () => {
@@ -181,6 +194,56 @@ describe('SIMULATED_CHECKS は全件が principal を宣言している (Critica
       const entry = block.slice(start, block.indexOf('},', start));
       expect(entry).toContain("'exec'");
     }
+  });
+
+  /**
+   * 🔴 **R4 の中心。** リソース ARN に region がハードコードされていると、
+   * `--policy-source-arn` を us-east-1 版に差し替えても評価対象は ap-northeast-1 のまま
+   * になる（「us-east-1 検証済み」という嘘の記録がここから生まれた）。
+   * region を持つリソース ARN は必ず `resource: (r) => ...` のテンプレートで組む。
+   */
+  it('リソース ARN に region をハードコードしていない（region 関数から組む）', () => {
+    // `coverage: { kind: 'only', region: ... }` の宣言行は対象外（そこは region そのもの）。
+    const resourceLines = block
+      .split('\n')
+      .filter((l) => /resource: /.test(l) || /^\s+`arn:aws:/.test(l));
+    expect(resourceLines.length).toBeGreaterThan(0);
+    for (const line of resourceLines) {
+      // 例外は「us-east-1 にしか無いリソース」を明示している S15 / S16 のみ。
+      if (line.includes('CfMonitoring-dev') || line.includes('claude-gate-')) continue;
+      expect(line).not.toContain('ap-northeast-1');
+      expect(line).not.toContain('us-east-1');
+    }
+  });
+
+  it('片 region しか覆わない check は理由を書いている', () => {
+    for (const m of block.matchAll(/kind: 'only',/g)) {
+      const entry = block.slice(m.index, m.index + 400);
+      expect(entry).toMatch(/reason: /);
+    }
+  });
+
+  /**
+   * carve-out（#680 R2）は **allowed を期待する対**が無いと意味を成さない。
+   * 「carve-out が効いている（S17/S19 = allowed）」と「広すぎない（S18/S20 = denied）」の
+   * 両方が揃っていることを固定する ―― 片方だけだと、carve-out を消しても
+   * carve-out を `*` に広げても、どちらかが緑のままになる。
+   */
+  it('carve-out は allowed / denied の対で検査している', () => {
+    const expectationOf = (id: string): string => {
+      const start = block.indexOf(`id: '${id}',`);
+      if (start === -1) throw new Error(`SIMULATED_CHECKS に ${id} が見つかりません`);
+      const entry = block.slice(start, block.indexOf('guards:', start));
+      const m = /expected: '(allowed|denied)'/.exec(entry);
+      if (m === null) throw new Error(`${id} に expected がありません`);
+      return m[1]!;
+    };
+    expect(['S17', 'S18', 'S19', 'S20'].map(expectationOf)).toEqual([
+      'allowed',
+      'denied',
+      'allowed',
+      'denied',
+    ]);
   });
 
   it('既定の principal ARN をソース中に持たない（1 本で全部を評価する形へ戻さない）', () => {

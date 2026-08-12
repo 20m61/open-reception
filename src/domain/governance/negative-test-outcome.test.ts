@@ -1,11 +1,16 @@
 import { describe, expect, it } from 'vitest';
 import {
-  findUnsuppliedPrincipals,
-  resolvePrincipalArn,
+  coveredRegions,
+  findUnsuppliedPrincipalKeys,
+  isRegionalPrincipal,
+  principalArnKey,
+  resolvePrincipalArnByKey,
+  uncoveredRegionNote,
   classifyAwsError,
   classifySimulationError,
   resolveExecutionScope,
   summarizeNegativeTests,
+  SIMULATION_REGIONS,
 } from './negative-test-outcome';
 
 /**
@@ -127,34 +132,100 @@ describe('summarizeNegativeTests', () => {
  * `claude-boundary.json` / `claude-cfn-exec.json` が存在しなくても S1〜S11 は全部
  * `denied` を返した ―― **落ちようのない検査**だった。
  */
-describe('S 系の principal 解決 (Critical 3)', () => {
-  it('供給されていない principal を列挙する', () => {
-    expect(findUnsuppliedPrincipals(['entry', 'deploy', 'exec'], { entry: 'arn:aws:iam::1:role/e' })).toEqual([
-      'deploy',
-      'exec',
+describe('S 系の principal 解決 (Critical 3 / #680 R4)', () => {
+  const KEYS = ['entry', 'deploy@ap-northeast-1', 'exec@us-east-1'];
+
+  it('供給されていない鍵を列挙する', () => {
+    expect(findUnsuppliedPrincipalKeys(KEYS, { entry: 'arn:aws:iam::1:role/e' })).toEqual([
+      'deploy@ap-northeast-1',
+      'exec@us-east-1',
     ]);
   });
 
-  it('必要としていない principal は欠けていても列挙しない', () => {
-    expect(findUnsuppliedPrincipals(['exec'], { exec: 'arn:aws:iam::1:role/x' })).toEqual([]);
+  it('必要としていない鍵は欠けていても列挙しない', () => {
+    expect(
+      findUnsuppliedPrincipalKeys(['exec@us-east-1'], { 'exec@us-east-1': 'arn:aws:iam::1:role/x' }),
+    ).toEqual([]);
   });
 
-  it('重複した要求は 1 件にまとめる', () => {
-    expect(findUnsuppliedPrincipals(['exec', 'exec', 'deploy'], {})).toEqual(['deploy', 'exec']);
+  it('重複した要求は 1 件にまとめ、宣言順を保つ', () => {
+    expect(
+      findUnsuppliedPrincipalKeys(['exec@us-east-1', 'exec@us-east-1', 'deploy@ap-northeast-1'], {}),
+    ).toEqual(['exec@us-east-1', 'deploy@ap-northeast-1']);
   });
 
   // [[空文字は「問題なし」ではない]]: 未展開の環境変数を「供給された」と読まない。
   it.each(['', '   '])('空文字・空白のみの ARN は「供給されていない」と扱う: %j', (arn) => {
-    expect(findUnsuppliedPrincipals(['exec'], { exec: arn })).toEqual(['exec']);
-    expect(resolvePrincipalArn('exec', { exec: arn })).toBeNull();
+    expect(findUnsuppliedPrincipalKeys(['exec@us-east-1'], { 'exec@us-east-1': arn })).toEqual([
+      'exec@us-east-1',
+    ]);
+    expect(resolvePrincipalArnByKey('exec@us-east-1', { 'exec@us-east-1': arn })).toBeNull();
   });
 
   it('供給されていれば trim した ARN を返す', () => {
-    expect(resolvePrincipalArn('deploy', { deploy: ' arn:aws:iam::1:role/d ' })).toBe('arn:aws:iam::1:role/d');
+    expect(
+      resolvePrincipalArnByKey('deploy@us-east-1', { 'deploy@us-east-1': ' arn:aws:iam::1:role/d ' }),
+    ).toBe('arn:aws:iam::1:role/d');
   });
 
   it('供給されていなければ null を返す（既定値で埋めない）', () => {
-    expect(resolvePrincipalArn('deploy', {})).toBeNull();
+    expect(resolvePrincipalArnByKey('deploy@us-east-1', {})).toBeNull();
+  });
+
+  /**
+   * 🔴 **R4 の中心。** `entry` は IAM ロール 1 本なので region で分けない。
+   * `deploy` / `exec` は bootstrap が region ごとに作る別のロールなので、
+   * **鍵が region を含まなければ片方しか検証していないことに気づけない**。
+   */
+  it('deploy / exec は region ごとに別の鍵になり、entry は region で分かれない', () => {
+    expect(SIMULATION_REGIONS.map((r) => principalArnKey('entry', r))).toEqual(['entry', 'entry']);
+    expect(SIMULATION_REGIONS.map((r) => principalArnKey('deploy', r))).toEqual([
+      'deploy@ap-northeast-1',
+      'deploy@us-east-1',
+    ]);
+    expect(SIMULATION_REGIONS.map((r) => principalArnKey('exec', r))).toEqual([
+      'exec@ap-northeast-1',
+      'exec@us-east-1',
+    ]);
+    expect(isRegionalPrincipal('entry')).toBe(false);
+    expect(isRegionalPrincipal('deploy')).toBe(true);
+    expect(isRegionalPrincipal('exec')).toBe(true);
+  });
+});
+
+/**
+ * 🔴 **R4（#680 残件レビュー）: 「us-east-1 も検証した」という嘘を構造で防ぐ。**
+ *
+ * 旧 runbook 4a は `-us-east-1` 版の ARN で 2 回目を走らせろと指示していたが、
+ * リソース ARN は全部 ap-northeast-1 にハードコードされていたため、変わるのは
+ * `--policy-source-arn` だけだった。覆っていない region は**出力に理由つきで現れる**。
+ */
+describe('region coverage (#680 R4)', () => {
+  it('both は両 region を返し、未評価の注記を出さない', () => {
+    expect(coveredRegions({ kind: 'both' })).toEqual(['ap-northeast-1', 'us-east-1']);
+    expect(uncoveredRegionNote({ kind: 'both' })).toBeNull();
+  });
+
+  it('only は 1 region だけを返し、覆っていない region と理由を注記する', () => {
+    const coverage = {
+      kind: 'only',
+      region: 'us-east-1',
+      reason: 'CfMonitoring-dev は us-east-1 にしか無い',
+    } as const;
+    expect(coveredRegions(coverage)).toEqual(['us-east-1']);
+    expect(uncoveredRegionNote(coverage)).toBe(
+      'ap-northeast-1 は未評価: CfMonitoring-dev は us-east-1 にしか無い',
+    );
+  });
+
+  it('注記には理由がそのまま含まれる（「未評価」とだけ書いて済ませない）', () => {
+    const note = uncoveredRegionNote({
+      kind: 'only',
+      region: 'ap-northeast-1',
+      reason: 'nodi は ap-northeast-1 にしか存在しない',
+    });
+    expect(note).toContain('us-east-1 は未評価');
+    expect(note).toContain('nodi は ap-northeast-1 にしか存在しない');
   });
 });
 

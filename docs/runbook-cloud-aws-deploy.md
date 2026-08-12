@@ -158,24 +158,58 @@ aws iam put-role-policy \
 効くかを確認する。**Admin 権限を持つ人間の環境から実行する**
 （`OpenReceptionClaudeDeploy-dev` は `iam:SimulatePrincipalPolicy` を持たない前提のため）。
 
-### 4a. 自動化されている分（S1〜S14）
+### 4a. 自動化されている分（S1〜S20）
 
-🔴 **各 check は「どのロールに対して評価するか」を自分で宣言している。3 つの ARN を
-すべて渡すこと。1 つでも欠けていると、スクリプトは既定値で埋めずに `exit 2` で拒否する。**
+🔴 **各 check は「どのロールに対して」「どのリージョンで」評価するかを自分で宣言している。
+5 つの ARN をすべて渡すこと。1 つでも欠けていると、スクリプトは既定値で埋めずに
+`exit 2` で拒否する。** 実行は 1 回でよい（両リージョンを 1 回で回す）。
 
 ```bash
 SIMULATE_ENTRY_ROLE_ARN=arn:aws:iam::822063948773:role/OpenReceptionClaudeDeploy-dev \
-SIMULATE_DEPLOY_ROLE_ARN=arn:aws:iam::822063948773:role/cdk-orcloud01-deploy-role-822063948773-ap-northeast-1 \
-SIMULATE_EXEC_ROLE_ARN=arn:aws:iam::822063948773:role/cdk-orcloud01-cfn-exec-role-822063948773-ap-northeast-1 \
+SIMULATE_DEPLOY_ROLE_ARN_AP_NORTHEAST_1=arn:aws:iam::822063948773:role/cdk-orcloud01-deploy-role-822063948773-ap-northeast-1 \
+SIMULATE_DEPLOY_ROLE_ARN_US_EAST_1=arn:aws:iam::822063948773:role/cdk-orcloud01-deploy-role-822063948773-us-east-1 \
+SIMULATE_EXEC_ROLE_ARN_AP_NORTHEAST_1=arn:aws:iam::822063948773:role/cdk-orcloud01-cfn-exec-role-822063948773-ap-northeast-1 \
+SIMULATE_EXEC_ROLE_ARN_US_EAST_1=arn:aws:iam::822063948773:role/cdk-orcloud01-cfn-exec-role-822063948773-us-east-1 \
   npm run aws:negative-tests -- --simulate-only
 ```
 
-出力は 1 件ごとに `S4 [exec] iam:CreateRole → denied（期待 denied）` と
-`principal=<ARN>` / `guards=<どの層のどの Deny を問うているか>` を並べて印字する。
-**どのロールを検査したのかを読み違えられない形にしてある。**
+出力は 1 件ごとに `S4 [exec@us-east-1] iam:CreateRole → denied（期待 denied）` と
+`principal=<ARN>` / `resource=<評価した ARN>` / `guards=<どの層のどの Deny を問うているか>` を
+並べて印字する。**どのロールを・どのリージョンの何に対して検査したのかを読み違えられない
+形にしてある。** 片リージョンしか覆っていない check（S15/S16）は、結果より**前**に
+`ℹ️ S15: ap-northeast-1 は未評価: <理由>` として理由つきで印字される。
 
-us-east-1 側も同じ 3 変数の `-us-east-1` 版で 1 度実行する
-（`OpenReception-CfMonitoring-dev` のリージョン）。
+> 🔴 **なぜ「`-us-east-1` 版でもう 1 度実行する」を廃止したか（2026-08-12 残件レビュー R4）。**
+> 旧手順は「us-east-1 側も同じ 3 変数の `-us-east-1` 版で 1 度実行する」と指示していたが、
+> `SIMULATED_CHECKS` のリソース ARN は**全部 `ap-northeast-1` にハードコード**されており、
+> us-east-1 の entry-role 変種も存在しなかった。2 回目の実行で変わるのは
+> `--policy-source-arn` だけで、**評価されるリソースは ap-northeast-1 のまま**である。
+> つまり運用者は「us-east-1 検証済み」と記録するのに、us-east-1 のリソースは一度も
+> シミュレートされていなかった。**ステップ 4 は初回デプロイを認可するゲート**なので、
+> ここでの偽 PASS は本ブランチが繰り返し踏んでいる欠陥そのものだった。
+> リソース ARN を region の関数にし、check ごとに `coverage`（両方 / 片方＋理由）を
+> 宣言させ、principal も region ごとに別の変数へ分けた。
+> 旧変数 `SIMULATE_DEPLOY_ROLE_ARN` / `SIMULATE_EXEC_ROLE_ARN` /
+> `SIMULATE_PRINCIPAL_ARN` は設定されていると `exit 2` で止まる（古い手順を無言で
+> 受け付けない）。
+
+**S17〜S20 は carve-out（#680 R1/R2/R3）そのものを問う 2 対である。**
+
+| id | 期待 | 意味 |
+| --- | --- | --- |
+| S17 | **allowed** | carve-out に一致する provider role は boundary 無しで `CreateRole` できる |
+| S18 | denied | carve-out に一致しない役割名は従来どおり Deny |
+| S19 | **allowed** | rollback / teardown が provider role を `DeleteRole` できる |
+| S20 | denied | タグの無い他のロールは従来どおり削除できない |
+
+🔴 **S17 / S19 が `denied` なら、初回デプロイは AccessDenied → rollback →
+`ROLLBACK_FAILED` になる。** S18 / S20 が `allowed` なら carve-out が広すぎる。
+**対の片方だけを見て進まないこと。**
+
+> **`iam:PassRole` の carve-out は S 系に入っていない。** `iam:PassedToService` は
+> リクエスト側の context key なので、`simulate-principal-policy` に
+> `--context-entries` を渡さないと評価できない（渡さないと Allow の条件が成立せず、
+> 実際には通る呼び出しが `denied` に見える）。ステップ 4b の 14〜16 で手動確認する。
 
 > 🔴 **なぜ 3 つに分かれたか（2026-08-12 全体レビュー Critical 3）。** 旧手順は
 > `SIMULATE_PRINCIPAL_ARN` に **entry role だけ**を渡していた。entry role は

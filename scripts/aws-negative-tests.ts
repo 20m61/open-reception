@@ -16,14 +16,19 @@ import { execFileSync } from 'node:child_process';
 import {
   classifyAwsError,
   classifySimulationError,
-  findUnsuppliedPrincipals,
+  coveredRegions,
+  findUnsuppliedPrincipalKeys,
+  principalArnKey,
   resolveExecutionScope,
-  resolvePrincipalArn,
+  resolvePrincipalArnByKey,
   summarizeNegativeTests,
+  uncoveredRegionNote,
   type NegativeTestResult,
   type Outcome,
   type PrincipalArnMap,
+  type RegionCoverage,
   type SimulationPrincipal,
+  type SimulationRegion,
 } from '../src/domain/governance/negative-test-outcome';
 
 const ACCOUNT = '822063948773';
@@ -138,85 +143,135 @@ const LIVE_CHECKS: ReadonlyArray<Check & { readonly run: () => Outcome }> = [
  * （例: foreign stack への操作は deploy role の層 1 と cfn-exec role の層 3 の両方で
  * Deny されるはず）、どちらか一方を選ぶのは恣意的で、片方の退行を見逃す。
  * 各 principal ごとに 1 件として採点する。
+ *
+ * 🔴 **R4（2026-08-12 残件レビュー / #680）: region も宣言する。**
+ *
+ * 旧実装はリソース ARN を全部 `ap-northeast-1` にハードコードし、principal ARN も
+ * 1 region 分しか受け取らなかった。runbook ステップ 4a は「us-east-1 側も
+ * `-us-east-1` 版で 1 度実行する」と書いていたが、それで変わるのは
+ * `--policy-source-arn` だけで、**評価されるリソースは ap-northeast-1 のまま**。
+ * 運用者は「us-east-1 検証済み」と記録するのに、us-east-1 のリソースは一度も
+ * シミュレートされていなかった。`resource` を region の関数にし、
+ * `coverage` で「両方か、片方だけか（＋その理由）」を宣言させる。
  */
 type SimulatedCheck = {
   readonly id: string;
   readonly action: string;
-  readonly resource: string;
+  /** リソース ARN。region を持たないリソース（IAM 等）は引数を無視する。 */
+  readonly resource: (region: SimulationRegion) => string;
   readonly principals: ReadonlyArray<SimulationPrincipal>;
+  readonly coverage: RegionCoverage;
+  /** 期待する評価結果。carve-out（#680 R2）だけが `allowed` を期待する。 */
+  readonly expected: 'allowed' | 'denied';
   /** どの層／どのステートメントを問うているか（結果の読み手向け）。 */
   readonly guards: string;
+};
+
+const BOTH: RegionCoverage = { kind: 'both' };
+
+/**
+ * carve-out（#680 R1/R2/R3）に一致する provider role の**実在／予測物理名**。
+ * region ごとに違う ―― ap-northeast-1 では Web-dev の ExportWriter、
+ * us-east-1 では CfMonitoring-dev の ExportReader が作られる。
+ * 名前の導出は `src/domain/governance/cfn-generated-name.ts`、
+ * 実測との突き合わせは `infra/test/claude-deploy-boundary.test.ts`。
+ */
+const CARVED_OUT_PROVIDER_ROLE: Readonly<Record<SimulationRegion, string>> = {
+  'ap-northeast-1': 'OpenReception-Web-dev-CustomCrossRegionExportWriter-mWjZeIPYdVgw',
+  'us-east-1': 'OpenReception-CfMonitoring-dev-CustomCrossRegionExp-aBcDeFgHiJkL',
 };
 
 const SIMULATED_CHECKS: ReadonlyArray<SimulatedCheck> = [
   {
     id: 'S1',
     action: 'dynamodb:DeleteTable',
-    resource: `arn:aws:dynamodb:ap-northeast-1:${ACCOUNT}:table/nodi-dev-anything`,
+    resource: (r) => `arn:aws:dynamodb:${r}:${ACCOUNT}:table/nodi-dev-anything`,
     principals: ['exec'],
+    coverage: BOTH,
+    expected: 'denied',
     guards: '層 3 DenyForeignProjectData',
   },
   {
     id: 'S2',
     action: 'cloudformation:DeleteStack',
-    resource: `arn:aws:cloudformation:ap-northeast-1:${ACCOUNT}:stack/nodi-dev-app/*`,
+    resource: (r) => `arn:aws:cloudformation:${r}:${ACCOUNT}:stack/nodi-dev-app/*`,
     principals: ['deploy', 'exec'],
+    coverage: BOTH,
+    expected: 'denied',
     guards: '層 1 DenyCloudFormationOutsideDevStacks / 層 3 DenyForeignProjectStacks',
   },
   {
     id: 'S3',
     action: 'secretsmanager:GetSecretValue',
-    resource: `arn:aws:secretsmanager:ap-northeast-1:${ACCOUNT}:secret:salon-loop/*`,
+    resource: (r) => `arn:aws:secretsmanager:${r}:${ACCOUNT}:secret:salon-loop/*`,
     principals: ['exec'],
+    coverage: BOTH,
+    expected: 'denied',
     guards: '層 3 DenySecretsDnsAndPrincipals（T8 の全面 Deny）',
   },
   {
     id: 'S4',
     action: 'iam:CreateRole',
-    resource: `arn:aws:iam::${ACCOUNT}:role/any-new-role`,
+    // IAM はグローバル。region が効くのは principal 側（bootstrap は region ごとに
+    // 別の cfn-exec role を作る）。
+    resource: () => `arn:aws:iam::${ACCOUNT}:role/any-new-role`,
     principals: ['exec'],
+    coverage: BOTH,
+    expected: 'denied',
     guards: '層 4 DenyRoleCreationWithoutBoundary（boundary 指定なしの呼び出し）',
   },
   {
     id: 'S5',
     action: 'iam:AttachRolePolicy',
-    resource: `arn:aws:iam::${ACCOUNT}:role/any-role`,
+    resource: () => `arn:aws:iam::${ACCOUNT}:role/any-role`,
     principals: ['exec'],
+    coverage: BOTH,
+    expected: 'denied',
     guards: '層 4 DenyRoleCreationWithoutBoundary',
   },
   {
     id: 'S6',
     action: 'iam:PassRole',
-    resource: `arn:aws:iam::${ACCOUNT}:role/cdk-hnb659fds-cfn-exec-role-${ACCOUNT}-ap-northeast-1`,
+    resource: (r) => `arn:aws:iam::${ACCOUNT}:role/cdk-hnb659fds-cfn-exec-role-${ACCOUNT}-${r}`,
     principals: ['deploy', 'exec'],
+    coverage: BOTH,
+    expected: 'denied',
     guards: '層 1 DenyPassingSharedExecRoles / 層 3 DenySharedBootstrapRoles',
   },
   {
     id: 'S7',
     action: 'iam:DeleteRolePermissionsBoundary',
-    resource: `arn:aws:iam::${ACCOUNT}:role/any-role`,
+    resource: () => `arn:aws:iam::${ACCOUNT}:role/any-role`,
     principals: ['exec'],
+    coverage: BOTH,
+    expected: 'denied',
     guards: '層 4 DenyBoundaryEscape',
   },
   {
     id: 'S8',
     action: 'route53:ChangeResourceRecordSets',
-    resource: 'arn:aws:route53:::hostedzone/ANY',
+    resource: () => 'arn:aws:route53:::hostedzone/ANY',
     principals: ['exec'],
+    coverage: BOTH,
+    expected: 'denied',
     guards: '層 3 DenySecretsDnsAndPrincipals（T9）',
   },
   {
     id: 'S9',
     action: 'cloudformation:UpdateStack',
-    resource: `arn:aws:cloudformation:ap-northeast-1:${ACCOUNT}:stack/OpenReception-Web-prod/*`,
+    resource: (r) => `arn:aws:cloudformation:${r}:${ACCOUNT}:stack/OpenReception-Web-prod/*`,
     principals: ['deploy', 'exec'],
+    coverage: BOTH,
+    expected: 'denied',
     guards: '層 1・3 の OpenReception-*-prod Deny（T2）',
   },
   {
     id: 'S10',
     action: 'kms:ScheduleKeyDeletion',
-    resource: `arn:aws:kms:ap-northeast-1:${ACCOUNT}:key/any`,
+    resource: (r) => `arn:aws:kms:${r}:${ACCOUNT}:key/any`,
     principals: ['exec'],
+    coverage: BOTH,
+    expected: 'denied',
     guards: '層 4 DenySecretsAndKeyDestruction',
   },
   // 旧 N8（Important B で live check から移動）。長期 access key を実際に発行しかねない
@@ -224,42 +279,157 @@ const SIMULATED_CHECKS: ReadonlyArray<SimulatedCheck> = [
   {
     id: 'S11',
     action: 'iam:CreateAccessKey',
-    resource: `arn:aws:iam::${ACCOUNT}:user/CDK`,
+    resource: () => `arn:aws:iam::${ACCOUNT}:user/CDK`,
     principals: ['entry', 'exec'],
+    coverage: BOTH,
+    expected: 'denied',
     guards: 'entry の DenyEverythingElseOutsideTheChain / 層 4 DenyPrincipalCreationAndOrgChanges',
   },
   // Critical 1（同レビュー）: lookup role は ReadOnlyAccess 付き・boundary 無し。
-  // live check N9 と対になる simulate 版。
+  // live check N9 と対になる simulate 版。bootstrap は両 region に lookup role を作るので
+  // 両方問う（runbook ステップ 2 が `aws://…/ap-northeast-1 aws://…/us-east-1` を渡している）。
   {
     id: 'S12',
     action: 'sts:AssumeRole',
-    resource: `arn:aws:iam::${ACCOUNT}:role/cdk-orcloud01-lookup-role-${ACCOUNT}-ap-northeast-1`,
+    resource: (r) => `arn:aws:iam::${ACCOUNT}:role/cdk-orcloud01-lookup-role-${ACCOUNT}-${r}`,
     principals: ['entry'],
+    coverage: BOTH,
+    expected: 'denied',
     guards: 'entry の DenyBootstrapLookupRole（Critical 1）',
   },
   // Important 5（同レビュー）: 自分のチェーンから層 1 のインラインポリシーを剥がせないこと。
   {
     id: 'S13',
     action: 'iam:DeleteRolePolicy',
-    resource: `arn:aws:iam::${ACCOUNT}:role/cdk-orcloud01-deploy-role-${ACCOUNT}-ap-northeast-1`,
+    resource: (r) => `arn:aws:iam::${ACCOUNT}:role/cdk-orcloud01-deploy-role-${ACCOUNT}-${r}`,
     principals: ['exec'],
+    coverage: BOTH,
+    expected: 'denied',
     guards: '層 3 DenyIamWriteOnForeignPrincipals（自分のチェーンを含む。Important 5）',
   },
   {
     id: 'S14',
     action: 'iam:CreatePolicyVersion',
-    resource: `arn:aws:iam::${ACCOUNT}:policy/SalonLoopStagingCfnExecution`,
+    resource: () => `arn:aws:iam::${ACCOUNT}:policy/SalonLoopStagingCfnExecution`,
     principals: ['exec'],
+    coverage: BOTH,
+    expected: 'denied',
     guards: '層 3 DenyIamWriteOnForeignPrincipals（他プロジェクトのポリシー。Important 5）',
+  },
+  // ---- #680 R4: us-east-1 にしか存在しないリソースを実際に問う ----
+  {
+    id: 'S15',
+    action: 'cloudformation:DescribeStacks',
+    resource: () =>
+      `arn:aws:cloudformation:us-east-1:${ACCOUNT}:stack/OpenReception-CfMonitoring-dev/dummy-id`,
+    principals: ['entry'],
+    coverage: {
+      kind: 'only',
+      region: 'us-east-1',
+      reason: 'OpenReception-CfMonitoring-dev は us-east-1 にしか存在しない（CloudFront メトリクスの制約）',
+    },
+    expected: 'allowed',
+    guards: 'entry の ReadOwnDevStacksForDiffGate（us-east-1 の stack ARN が許可リストにあるか）',
+  },
+  {
+    id: 'S16',
+    action: 'cloudformation:DescribeChangeSet',
+    resource: () =>
+      `arn:aws:cloudformation:us-east-1:${ACCOUNT}:changeSet/claude-gate-abc1234/dummy-id`,
+    principals: ['entry'],
+    coverage: {
+      kind: 'only',
+      region: 'us-east-1',
+      reason: 'ap-northeast-1 側は S15 と対になる既存の手動確認（runbook 4b-2）で覆っている',
+    },
+    expected: 'allowed',
+    guards: 'entry の ReadOwnChangeSetsForDiffGate（us-east-1 の changeSet ARN）',
+  },
+  // ---- #680 R2: carve-out そのものを問う対（片方だけでは意味を成さない） ----
+  {
+    // 🔴 boundary を渡さずに CreateRole する ―― `iam:PermissionsBoundary` context key を
+    // 供給しないので、IAM 側では「boundary なしの CreateRole」として評価される。
+    // carve-out が効いていれば **allowed**。効いていなければ初回デプロイが
+    // AccessDenied → rollback → ROLLBACK_FAILED になる。
+    id: 'S17',
+    action: 'iam:CreateRole',
+    resource: (r) => `arn:aws:iam::${ACCOUNT}:role/${CARVED_OUT_PROVIDER_ROLE[r]}`,
+    principals: ['exec'],
+    coverage: BOTH,
+    expected: 'allowed',
+    guards: '層 3・4 AllowCdkProviderRoleMutationWithoutBoundary（#680 R1）',
+  },
+  {
+    // S17 の対。carve-out が広すぎないこと。S4 と違い「carve-out に**似ているが
+    // 一致しない**名前」を使う ―― `-dev-Custom` で始まらないアプリの通常ロール。
+    id: 'S18',
+    action: 'iam:CreateRole',
+    resource: () => `arn:aws:iam::${ACCOUNT}:role/OpenReception-Web-dev-ServerFnServiceRole-xxxx`,
+    principals: ['exec'],
+    coverage: BOTH,
+    expected: 'denied',
+    guards: '層 3・4 DenyRoleCreationWithoutBoundary（carve-out の外は従来どおり）',
+  },
+  {
+    // rollback / teardown が provider role を消せること（タグが無いので
+    // `DenyIamRoleWriteOutsideProject` に当たっていた）。
+    id: 'S19',
+    action: 'iam:DeleteRole',
+    resource: (r) => `arn:aws:iam::${ACCOUNT}:role/${CARVED_OUT_PROVIDER_ROLE[r]}`,
+    principals: ['exec'],
+    coverage: BOTH,
+    expected: 'allowed',
+    guards: '層 3・4 DenyIamRoleWriteOutsideProject の NotResource 除外（#680 R3）',
+  },
+  {
+    // S19 の対。タグの無い**別の**ロールは従来どおり消せない。
+    id: 'S20',
+    action: 'iam:DeleteRole',
+    resource: () => `arn:aws:iam::${ACCOUNT}:role/some-untagged-role`,
+    principals: ['exec'],
+    coverage: BOTH,
+    expected: 'denied',
+    guards: '層 3・4 DenyIamRoleWriteOutsideProject（carve-out の外は従来どおり）',
   },
 ];
 
-/** 環境変数名 → principal。**既定値は持たない**（Critical 3）。 */
-const PRINCIPAL_ENV_VARS: Readonly<Record<SimulationPrincipal, string>> = {
+/**
+ * principal 鍵 → 環境変数名。**既定値は持たない**（Critical 3）。
+ *
+ * `entry` は IAM ロール 1 本なので region を持たない。`deploy` / `exec` は
+ * bootstrap が region ごとに別のロールを作るので、**region ごとに別の変数**である
+ * （#680 R4。片方だけ渡して「両方検証した」と記録できないようにする）。
+ */
+const PRINCIPAL_ENV_VARS: Readonly<Record<string, string>> = {
   entry: 'SIMULATE_ENTRY_ROLE_ARN',
-  deploy: 'SIMULATE_DEPLOY_ROLE_ARN',
-  exec: 'SIMULATE_EXEC_ROLE_ARN',
+  'deploy@ap-northeast-1': 'SIMULATE_DEPLOY_ROLE_ARN_AP_NORTHEAST_1',
+  'deploy@us-east-1': 'SIMULATE_DEPLOY_ROLE_ARN_US_EAST_1',
+  'exec@ap-northeast-1': 'SIMULATE_EXEC_ROLE_ARN_AP_NORTHEAST_1',
+  'exec@us-east-1': 'SIMULATE_EXEC_ROLE_ARN_US_EAST_1',
 };
+
+/**
+ * 廃止された環境変数。設定されていたら実行を拒否する。
+ *
+ * `SIMULATE_PRINCIPAL_ARN` は Critical 3（1 本で全 S 系を評価する形）、
+ * `SIMULATE_{DEPLOY,EXEC}_ROLE_ARN` は R4（region 無しの 1 本）。どちらも
+ * **古い手順のまま実行して「検証済み」と記録できてしまう**形なので、無言で
+ * 無視せず止める。
+ */
+const RETIRED_ENV_VARS: ReadonlyArray<readonly [string, string]> = [
+  [
+    'SIMULATE_PRINCIPAL_ARN',
+    '1 本の ARN で全 S 系を評価すると、entry role に対して boundary 脱出を聞くことになり検査が常に PASS します',
+  ],
+  [
+    'SIMULATE_DEPLOY_ROLE_ARN',
+    'deploy role は region ごとに別物です。_AP_NORTHEAST_1 / _US_EAST_1 を使ってください',
+  ],
+  [
+    'SIMULATE_EXEC_ROLE_ARN',
+    'cfn-exec role は region ごとに別物です。_AP_NORTHEAST_1 / _US_EAST_1 を使ってください',
+  ],
+];
 
 /**
  * 🔴 **stderr を診断に載せる。** `execFileSync` の例外は `message` がコマンド行までで、
@@ -367,16 +537,16 @@ function main(): void {
     process.exit(2);
   }
 
-  // 🔴 **旧変数を黙って無視しない。** `SIMULATE_PRINCIPAL_ARN` は「1 本の ARN を全 check に
-  // 使う」という Critical 3 そのものの形。設定されたまま新実装を走らせると、runbook や
+  // 🔴 **旧変数を黙って無視しない。** 設定されたまま新実装を走らせると、runbook や
   // 手癖が古いままであることに誰も気づけない。明示的に止める。
-  if (process.env.SIMULATE_PRINCIPAL_ARN !== undefined) {
-    console.error(
-      '  ⛔ SIMULATE_PRINCIPAL_ARN は廃止されました（1 本の ARN で全 S 系を評価すると、' +
-        'entry role に対して boundary 脱出を聞くことになり検査が常に PASS します）。' +
-        `代わりに ${Object.values(PRINCIPAL_ENV_VARS).join(' / ')} を設定してください。`,
-    );
-    process.exit(2);
+  for (const [name, why] of RETIRED_ENV_VARS) {
+    if (process.env[name] !== undefined) {
+      console.error(
+        `  ⛔ ${name} は廃止されました（${why}）。` +
+          `代わりに ${Object.values(PRINCIPAL_ENV_VARS).join(' / ')} を設定してください。`,
+      );
+      process.exit(2);
+    }
   }
 
   const results: NegativeTestResult[] = [];
@@ -392,47 +562,65 @@ function main(): void {
   }
 
   if (scope !== 'live') {
-    const arns: PrincipalArnMap = {
-      entry: process.env[PRINCIPAL_ENV_VARS.entry],
-      deploy: process.env[PRINCIPAL_ENV_VARS.deploy],
-      exec: process.env[PRINCIPAL_ENV_VARS.exec],
-    };
-    const required = SIMULATED_CHECKS.flatMap((c) => c.principals);
-    const missing = findUnsuppliedPrincipals(required, arns);
+    const arns: PrincipalArnMap = Object.fromEntries(
+      Object.entries(PRINCIPAL_ENV_VARS).map(([key, envVar]) => [key, process.env[envVar]]),
+    );
+    /** 実際に評価する (check, principal, region) の全組み合わせ。 */
+    const plan = SIMULATED_CHECKS.flatMap((check) =>
+      coveredRegions(check.coverage).flatMap((region) =>
+        check.principals.map((principal) => ({
+          check,
+          principal,
+          region,
+          key: principalArnKey(principal, region),
+        })),
+      ),
+    );
+    const missing = findUnsuppliedPrincipalKeys(
+      plan.map((p) => p.key),
+      arns,
+    );
     // 🔴 **供給されていない principal があれば実行しない。** 既定値で埋めると
     // 「どのロールを検査したのか」が呼び出し側から見えなくなり、Critical 3 が再演する。
     if (missing.length > 0) {
       console.error('  ⛔ S 系の評価に必要な principal ARN が供給されていません:');
-      for (const p of missing) {
-        console.error(`    - ${p}: 環境変数 ${PRINCIPAL_ENV_VARS[p]} を設定してください`);
+      for (const key of missing) {
+        console.error(`    - ${key}: 環境変数 ${PRINCIPAL_ENV_VARS[key]} を設定してください`);
       }
       console.error('    （docs/runbook-cloud-aws-deploy.md ステップ 4a を参照）');
       process.exit(2);
     }
 
     console.log('  シミュレーション（破壊系は実試行しない）:');
+    // 🔴 **覆っていない region を先に印字する。** 「全件 PASS」を「両 region 検証済み」と
+    // 読み違えさせないため、スキップした範囲とその理由を結果より前に出す（#680 R4）。
     for (const check of SIMULATED_CHECKS) {
-      for (const principal of check.principals) {
-        const arn = resolvePrincipalArn(principal, arns);
-        // `missing` チェックを通っているのでここには来ないが、型を絞るために残す。
-        if (arn === null) continue;
-        const actual = simulate(arn, check.action, check.resource);
-        results.push({
-          id: `${check.id}[${principal}]`,
-          expected: 'denied',
-          actual,
-          requiredPrincipalArn: arn,
-          evaluatedPrincipalArn: arn,
-        });
-        const pass = actual === 'denied';
-        // 🔴 **principal を結果と同じ行に出す。** どのロールを検査したのかを読み手が
-        // 取り違えられないようにする（Critical 3 の再演防止は型だけでは足りない）。
-        console.log(
-          `    ${pass ? '✅' : '❌'} ${check.id} [${principal}] ${check.action} → ${actual}（期待 denied）\n` +
-            `        principal=${arn}\n` +
-            `        guards=${check.guards}`,
-        );
-      }
+      const note = uncoveredRegionNote(check.coverage);
+      if (note !== null) console.log(`    ℹ️  ${check.id}: ${note}`);
+    }
+    for (const { check, principal, region, key } of plan) {
+      const arn = resolvePrincipalArnByKey(key, arns);
+      // `missing` チェックを通っているのでここには来ないが、型を絞るために残す。
+      if (arn === null) continue;
+      const resource = check.resource(region);
+      const actual = simulate(arn, check.action, resource);
+      results.push({
+        id: `${check.id}[${key}]`,
+        expected: check.expected,
+        actual,
+        requiredPrincipalArn: arn,
+        evaluatedPrincipalArn: arn,
+      });
+      const pass = actual === check.expected;
+      // 🔴 **principal・region・リソースを結果と同じ行に出す。** どのロールを・どの
+      // region の何に対して検査したのかを読み手が取り違えられないようにする
+      // （Critical 3 / R4 の再演防止は型だけでは足りない）。
+      console.log(
+        `    ${pass ? '✅' : '❌'} ${check.id} [${principal}@${region}] ${check.action} → ${actual}（期待 ${check.expected}）\n` +
+          `        principal=${arn}\n` +
+          `        resource=${resource}\n` +
+          `        guards=${check.guards}`,
+      );
     }
   } else {
     console.log('  シミュレーション（S 系）はスキップします（--live-only）。人間が Admin 環境の runbook で別途実施してください。');

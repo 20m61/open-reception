@@ -68,34 +68,93 @@ export type SimulationPrincipal = 'entry' | 'deploy' | 'exec';
 
 export const SIMULATION_PRINCIPALS: ReadonlyArray<SimulationPrincipal> = ['entry', 'deploy', 'exec'];
 
-/** principal 名 → 実在の IAM ロール ARN。**既定値を持たない**（供給されなければ実行しない）。 */
-export type PrincipalArnMap = Readonly<Partial<Record<SimulationPrincipal, string>>>;
+/**
+ * S 系を評価するリージョン (#680 R4)。
+ *
+ * 🔴 **なぜ region が型に要るか。** 旧実装は `SIMULATED_CHECKS` のリソース ARN を
+ * すべて `ap-northeast-1` にハードコードし、principal ARN も 1 region 分しか
+ * 受け取らなかった。runbook ステップ 4a は「us-east-1 側も `-us-east-1` 版で 1 度
+ * 実行する」と指示していたが、それで変わるのは `--policy-source-arn` だけで、
+ * **評価されるリソースは ap-northeast-1 のまま**である。つまり運用者は
+ * 「us-east-1 を検証した」と記録するのに、us-east-1 のリソースは一度も
+ * シミュレートされていなかった。ステップ 4 は初回デプロイを認可するゲートなので、
+ * ここでの偽 PASS は本ブランチが繰り返し踏んでいる欠陥そのものである。
+ */
+export type SimulationRegion = 'ap-northeast-1' | 'us-east-1';
+
+export const SIMULATION_REGIONS: ReadonlyArray<SimulationRegion> = ['ap-northeast-1', 'us-east-1'];
 
 /**
- * 供給されていない（または空文字の）principal を返す。
+ * その principal は region ごとに別のロールか。
  *
- * 空文字を「供給された」と読まない ―― `SIMULATE_EXEC_ROLE_ARN=` のような未展開の
- * 環境変数は「判定不能」であって「問題なし」ではない
+ * `entry`（`OpenReceptionClaudeDeploy-dev`）は IAM ロールなのでグローバルに 1 本。
+ * `deploy` / `exec` は CDK bootstrap が region ごとに作る
+ * （`cdk-orcloud01-{deploy,cfn-exec}-role-<account>-<region>`）ので別物であり、
+ * **片方だけ検証しても、もう片方が同じポリシーで bootstrap された保証は無い**。
+ */
+export function isRegionalPrincipal(principal: SimulationPrincipal): boolean {
+  return principal !== 'entry';
+}
+
+/** principal（＋ region）を一意に指す鍵。 */
+export function principalArnKey(principal: SimulationPrincipal, region: SimulationRegion): string {
+  return isRegionalPrincipal(principal) ? `${principal}@${region}` : principal;
+}
+
+/** 鍵 → 実在の IAM ロール ARN。**既定値を持たない**（供給されなければ実行しない）。 */
+export type PrincipalArnMap = Readonly<Record<string, string | undefined>>;
+
+const supplied = (arn: string | undefined): boolean => typeof arn === 'string' && arn.trim() !== '';
+
+/**
+ * 供給されていない（または空文字の）鍵を、重複を除いて宣言順で返す。
+ *
+ * 空文字を「供給された」と読まない ―― `SIMULATE_EXEC_ROLE_ARN_US_EAST_1=` のような
+ * 未展開の環境変数は「判定不能」であって「問題なし」ではない
  * （[[空文字は「問題なし」ではない]] と同じ型の穴）。
  */
-export function findUnsuppliedPrincipals(
-  required: ReadonlyArray<SimulationPrincipal>,
+export function findUnsuppliedPrincipalKeys(
+  required: ReadonlyArray<string>,
   arns: PrincipalArnMap,
-): ReadonlyArray<SimulationPrincipal> {
-  const unique = SIMULATION_PRINCIPALS.filter((p) => required.includes(p));
-  return unique.filter((p) => {
-    const arn = arns[p];
-    return typeof arn !== 'string' || arn.trim() === '';
-  });
+): ReadonlyArray<string> {
+  const seen = new Set<string>();
+  const missing: string[] = [];
+  for (const key of required) {
+    if (seen.has(key)) continue;
+    seen.add(key);
+    if (!supplied(arns[key])) missing.push(key);
+  }
+  return missing;
 }
 
 /** 供給されていれば ARN を、されていなければ `null` を返す。 */
-export function resolvePrincipalArn(
-  principal: SimulationPrincipal,
-  arns: PrincipalArnMap,
-): string | null {
-  const arn = arns[principal];
-  return typeof arn === 'string' && arn.trim() !== '' ? arn.trim() : null;
+export function resolvePrincipalArnByKey(key: string, arns: PrincipalArnMap): string | null {
+  const arn = arns[key];
+  return supplied(arn) ? arn!.trim() : null;
+}
+
+/**
+ * その check をどの region で評価するか (#680 R4)。
+ *
+ * 🔴 **`only` には理由を必ず書かせる。** 「us-east-1 では評価していない」ことを
+ * 黙って落とすと、運用者は全件 PASS を「両 region で検証済み」と読む。
+ * 型で理由を要求し、実行時に結果行へ印字することで、**覆っていない範囲が
+ * 出力に現れる**ようにする。
+ */
+export type RegionCoverage =
+  | { readonly kind: 'both' }
+  | { readonly kind: 'only'; readonly region: SimulationRegion; readonly reason: string };
+
+/** 評価対象の region を返す。 */
+export function coveredRegions(coverage: RegionCoverage): ReadonlyArray<SimulationRegion> {
+  return coverage.kind === 'both' ? SIMULATION_REGIONS : [coverage.region];
+}
+
+/** 覆っていない region と、その理由（出力に載せる）。無ければ `null`。 */
+export function uncoveredRegionNote(coverage: RegionCoverage): string | null {
+  if (coverage.kind === 'both') return null;
+  const skipped = SIMULATION_REGIONS.filter((r) => r !== coverage.region);
+  return `${skipped.join(' / ')} は未評価: ${coverage.reason}`;
 }
 
 export type NegativeTestResult = {
