@@ -21,13 +21,10 @@
         "iam:ListRolePolicies",
         "iam:ListAttachedRolePolicies",
         "iam:PassRole",
-        "iam:CreateRole",
         "iam:DeleteRole",
         "iam:TagRole",
         "iam:UntagRole",
-        "iam:PutRolePolicy",
         "iam:DeleteRolePolicy",
-        "iam:AttachRolePolicy",
         "iam:DetachRolePolicy",
         "iam:CreatePolicy",
         "iam:DeletePolicy",
@@ -38,6 +35,17 @@
         "iam:ListPolicyVersions"
       ],
       "Resource": "*"
+    },
+    {
+      "Sid": "AllowRoleMutationOnlyWithBoundary",
+      "Effect": "Allow",
+      "Action": ["iam:CreateRole", "iam:PutRolePolicy", "iam:AttachRolePolicy"],
+      "Resource": "*",
+      "Condition": {
+        "StringEquals": {
+          "iam:PermissionsBoundary": "arn:aws:iam::822063948773:policy/OpenReceptionClaudeBoundary"
+        }
+      }
     },
     {
       "Sid": "DenyForeignProjectStacks",

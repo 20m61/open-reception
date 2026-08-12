@@ -75,6 +75,23 @@ describe('auditPolicyDocument', () => {
     });
     expect(audit.deniedResourcePatterns).toContain('arn:aws:s3:::nodi-*');
   });
+
+  it('Deny の NotResource を Resource とは別に集計する', () => {
+    const audit = auditPolicyDocument({
+      Version: '2012-10-17',
+      Statement: [
+        {
+          Effect: 'Deny',
+          Action: 'cloudformation:*',
+          NotResource: ['arn:aws:cloudformation:*:*:stack/OpenReception-Web-dev/*'],
+        },
+      ],
+    });
+    expect(audit.deniedNotResourcePatterns).toContain(
+      'arn:aws:cloudformation:*:*:stack/OpenReception-Web-dev/*',
+    );
+    expect(audit.deniedResourcePatterns).toEqual([]);
+  });
 });
 
 /** 他プロジェクトの列挙。spec の Global Constraints と 1:1。 */
@@ -124,6 +141,10 @@ describe('claude-cfn-exec.json', () => {
     expect(auditPolicyDocument(doc).deniedActions).toContain('secretsmanager:*');
   });
 
+  it('boundary 条件の無い Role 作成を許さない', () => {
+    expect(auditPolicyDocument(doc).unboundedRoleCreation).toBe(false);
+  });
+
   it.each(FOREIGN_PATTERNS)('%s を Deny している', (pattern) => {
     expect(auditPolicyDocument(doc).deniedResourcePatterns.join('\n')).toContain(pattern);
   });
@@ -169,6 +190,21 @@ describe('claude-deploy-role-restriction.json（層 1・主境界）', () => {
   it('共有 bootstrap の cfn-exec-role への PassRole を Deny している', () => {
     expect(audit.deniedActions).toContain('iam:PassRole');
     expect(audit.deniedResourcePatterns.join('\n')).toContain('cdk-hnb659fds-');
+  });
+
+  it('NotResource 許可リストが dev の 3 スタックと専用 Toolkit を挙げている', () => {
+    const patterns = audit.deniedNotResourcePatterns.join('\n');
+    expect(patterns).toContain('stack/OpenReception-Web-dev/');
+    expect(patterns).toContain('stack/OpenReception-WebMonitoring-dev/');
+    expect(patterns).toContain('stack/OpenReception-CfMonitoring-dev/');
+    expect(patterns).toContain('stack/CDKToolkit-orcloud01/');
+  });
+
+  it('NotResource 許可リストにワイルドカード単体を含まない（主境界を無効化する）', () => {
+    expect(audit.deniedNotResourcePatterns).not.toContain('*');
+    for (const p of audit.deniedNotResourcePatterns) {
+      expect(p).toMatch(/^arn:aws:cloudformation:/);
+    }
   });
 });
 
