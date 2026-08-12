@@ -68,6 +68,41 @@ describe('auditPolicyDocument', () => {
     expect(audit.unboundedRoleCreation).toBe(false);
   });
 
+  it('StringEqualsIfExists は boundary 条件と認めない（キー欠如時に true になる）', () => {
+    const audit = auditPolicyDocument({
+      Version: '2012-10-17',
+      Statement: [
+        {
+          Effect: 'Allow',
+          Action: 'iam:CreateRole',
+          Resource: '*',
+          Condition: {
+            StringEqualsIfExists: {
+              'iam:PermissionsBoundary':
+                'arn:aws:iam::822063948773:policy/OpenReceptionClaudeBoundary',
+            },
+          },
+        },
+      ],
+    });
+    expect(audit.unboundedRoleCreation).toBe(true);
+  });
+
+  it('Null 演算子は boundary 条件と認めない（キーの不在を主張しうる）', () => {
+    const audit = auditPolicyDocument({
+      Version: '2012-10-17',
+      Statement: [
+        {
+          Effect: 'Allow',
+          Action: 'iam:CreateRole',
+          Resource: '*',
+          Condition: { Null: { 'iam:PermissionsBoundary': 'true' } },
+        },
+      ],
+    });
+    expect(audit.unboundedRoleCreation).toBe(true);
+  });
+
   it('Action / Resource が配列でも文字列でも同じに扱う', () => {
     const audit = auditPolicyDocument({
       Version: '2012-10-17',

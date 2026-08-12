@@ -42,10 +42,25 @@ export type PolicyAudit = {
 const list = (v: string | ReadonlyArray<string> | undefined): ReadonlyArray<string> =>
   v === undefined ? [] : typeof v === 'string' ? [v] : v;
 
-/** `iam:PermissionsBoundary` 条件が付いているか。キー名は大小差を吸収する。 */
+/**
+ * `iam:PermissionsBoundary` 条件が付いているか。キー名は大小差を吸収する。
+ *
+ * **演算子も見る。キーが存在するだけでは不十分。** `...IfExists` 系の演算子は、
+ * 対象 context key が存在しないリクエストに対して無条件で true を返す
+ * （比較を試みない）。`iam:CreateRole` が boundary パラメータ無しで呼ばれた場合、
+ * まさにそのケースが起きる——つまり `StringEqualsIfExists` は「boundary 条件が
+ * 付いている」ように見えて実際には何も強制していない。`Null` 演算子も同様に
+ * 危険で、`{ Null: { 'iam:PermissionsBoundary': 'true' } }` は「このキーが
+ * **存在しない**こと」を主張できてしまう。どちらを許容すると、この直前の
+ * コミットで塞いだのと同じ穴（lint は green だが実効性が無い）を検出器自身が
+ * 再現する。よって演算子名が `ifexists` で終わるもの、および `null` は
+ * boundary 条件として認めない。
+ */
 function hasBoundaryCondition(s: PolicyStatement): boolean {
   if (s.Condition === undefined) return false;
-  for (const values of Object.values(s.Condition)) {
+  for (const [operator, values] of Object.entries(s.Condition)) {
+    const op = operator.toLowerCase();
+    if (op.endsWith('ifexists') || op === 'null') continue;
     for (const key of Object.keys(values)) {
       if (key.toLowerCase() === 'iam:permissionsboundary') return true;
     }
