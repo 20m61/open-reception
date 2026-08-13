@@ -183,6 +183,27 @@ CI が無い以上、「PR 前に `--pr` / マージ前に `--full`」は**規�
 - 意図的な迂回は明示的に行う: `OPEN_RECEPTION_SKIP_GATE_GUARD=1 gh pr create ...`。
 - 振る舞いは `tests/hooks/pr-gate-guard.test.ts` で検証している（`npm test` に載る）。
 
+### push 前の秘密情報スキャン（`push-secret-guard` フック）
+
+`--secrets`（gitleaks）が走るのは `--full` のときだけで、`--pr` / `--full` は既定でクラウド
+委譲（本ドキュメント冒頭）。つまり「実装 → `--fast` → `git push` → クラウドで `--full`」の
+**push が実際に外部へ出る境界**の手前に、ローカルで秘密情報を見る検査が無かった（#682）。
+
+`scripts/hooks/push-secret-guard.sh`（PreToolUse:Bash、`.claude/settings.json` で登録）が
+`git push` を実行直前に捕まえ、**push しようとしているコミット範囲**（`<base>..HEAD`。base は
+`origin/main` → `main` → `origin/master` → `master` の順で見つかったもの）だけを
+`gitleaks detect --log-opts` で走査する。
+
+- 範囲を絞ったコミットベースの走査なので、`.gitleaksignore` の commit SHA ベースの指紋が
+  そのまま使える（`--no-git` のように指紋形式が変わらない）。全履歴の unshallow も不要。
+- `--fast` には足していない（内側ループを毎回スキャンで重くしない）。push は低頻度の境界
+  アクションなので、そこでだけ発火する。
+- gitleaks 未導入時は**既定で SKIP**（警告を出した上で push は通す）。
+  `OPEN_RECEPTION_STRICT_SECRET_SCAN=1` で未スキャンの push 自体をブロックする
+  （`--strict` と同じ考え方）。
+- 意図的な迂回: `OPEN_RECEPTION_SKIP_SECRET_SCAN=1 git push ...`。
+- 振る舞いは `tests/hooks/push-secret-guard.test.ts` で検証している（`npm test` に載る）。
+
 ### E2E のブラウザ（macOS 13 対応）
 
 E2E は iPad 受付端末を主対象とするが、ブラウザは 2 系統で回す（`playwright.config.ts`）。

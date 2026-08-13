@@ -96,4 +96,59 @@ describe('buildDelegationPrompt', () => {
   it('Refs に全 issue 番号を載せる', () => {
     expect(buildDelegationPrompt({ ...BASE, refs: [656, 612] })).toContain('Refs #656 #612');
   });
+
+  describe('stopAfter', () => {
+    it('既定（省略時）は現行どおり gh pr merge を手順に含める', () => {
+      // 既定の振る舞いは 1 バイトも変えない。
+      const p = buildDelegationPrompt(BASE);
+      expect(p).toContain('gh pr merge <番号> --squash --delete-branch');
+      expect(p).toContain('マージまで**このセッション内で完結**させてください');
+    });
+
+    it("stopAfter: 'merge' を明示しても既定と同じ出力になる", () => {
+      expect(buildDelegationPrompt({ ...BASE, stopAfter: 'merge' })).toBe(buildDelegationPrompt(BASE));
+    });
+
+    it("stopAfter: 'pr' の出力に gh pr merge がどこにも現れない", () => {
+      // #680 で実際に起きた自己矛盾（手順は merge、禁止事項も merge 禁止）の再発防止。
+      const p = buildDelegationPrompt({ ...BASE, stopAfter: 'pr' });
+      expect(p).not.toContain('gh pr merge');
+    });
+
+    it("stopAfter: 'pr' は冒頭の「マージまで完結」文言も出さない", () => {
+      const p = buildDelegationPrompt({ ...BASE, stopAfter: 'pr' });
+      expect(p).not.toContain('マージまで**このセッション内で完結**させてください');
+    });
+
+    it("stopAfter: 'pr' はマージ禁止を呼び出し側が書かなくても禁止事項へ自動で入れる", () => {
+      const p = buildDelegationPrompt({ ...BASE, stopAfter: 'pr' });
+      expect(p).toMatch(/マージ(しない|するな|禁止)/);
+    });
+
+    it("stopAfter: 'pr' でも PR 作成の手順・PR 実在確認は残る", () => {
+      const p = buildDelegationPrompt({ ...BASE, stopAfter: 'pr' });
+      expect(p).toContain('gh pr create --base main');
+      expect(p).toContain('gh pr view --json number,url');
+    });
+
+    it('手順に gh pr merge が残ったまま、禁止事項に手書きのマージ禁止を足すと矛盾として投げる', () => {
+      // #680 で実際にやってしまったこと: extraProhibitions に「マージしないこと」を
+      // 手で入れても、既定（stopAfter 省略 = 'merge'）では手順11に gh pr merge が残る。
+      // 1 つのプロンプトの中で手順と禁止事項が矛盾する状態を、投げて防ぐ。
+      expect(() =>
+        buildDelegationPrompt({ ...BASE, extraProhibitions: ['マージしないこと'] }),
+      ).toThrow(/矛盾|マージ/);
+    });
+
+    it("stopAfter: 'pr' なら extraProhibitions にマージ禁止を書いても（自動追加と重複しても）矛盾にならない", () => {
+      // 'pr' では手順側に gh pr merge が無いので、同じ趣旨の禁止事項が重複しても矛盾ではない。
+      expect(() =>
+        buildDelegationPrompt({
+          ...BASE,
+          stopAfter: 'pr',
+          extraProhibitions: ['マージしないこと'],
+        }),
+      ).not.toThrow();
+    });
+  });
 });
