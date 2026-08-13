@@ -1,0 +1,42 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "DenyCloudFormationOutsideDevStacks",
+      "Effect": "Deny",
+      "Action": "cloudformation:*",
+      "NotResource": [
+        "arn:aws:cloudformation:ap-northeast-1:822063948773:stack/OpenReception-Web-dev/*",
+        "arn:aws:cloudformation:ap-northeast-1:822063948773:stack/OpenReception-WebMonitoring-dev/*",
+        "arn:aws:cloudformation:us-east-1:822063948773:stack/OpenReception-CfMonitoring-dev/*",
+        "arn:aws:cloudformation:ap-northeast-1:822063948773:stack/CDKToolkit-orcloud01/*",
+        "arn:aws:cloudformation:us-east-1:822063948773:stack/CDKToolkit-orcloud01/*",
+        "arn:aws:cloudformation:ap-northeast-1:822063948773:changeSet/claude-gate-*/*",
+        "arn:aws:cloudformation:us-east-1:822063948773:changeSet/claude-gate-*/*"
+      ]
+    },
+    {
+      "Sid": "DenyForeignAndNonDevStacksExplicitly",
+      "Effect": "Deny",
+      "Action": "cloudformation:*",
+      "Resource": [
+        "arn:aws:cloudformation:*:822063948773:stack/nodi-*/*",
+        "arn:aws:cloudformation:*:822063948773:stack/salon-loop-*/*",
+        "arn:aws:cloudformation:*:822063948773:stack/Kiaff*/*",
+        "arn:aws:cloudformation:*:822063948773:stack/CDKToolkit/*",
+        "arn:aws:cloudformation:*:822063948773:stack/CDKToolkit-staging/*",
+        "arn:aws:cloudformation:*:822063948773:stack/OpenReception-*-staging/*",
+        "arn:aws:cloudformation:*:822063948773:stack/OpenReception-*-prod/*"
+      ]
+    },
+    {
+      "Sid": "DenyPassingSharedExecRoles",
+      "Effect": "Deny",
+      "Action": ["iam:PassRole", "sts:AssumeRole"],
+      "Resource": [
+        "arn:aws:iam::822063948773:role/cdk-hnb659fds-*",
+        "arn:aws:iam::822063948773:role/cdk-staging-*"
+      ]
+    }
+  ]
+}

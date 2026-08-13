@@ -1,0 +1,63 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "AssumeDedicatedBootstrapRolesOnly",
+      "Effect": "Allow",
+      "Action": "sts:AssumeRole",
+      "Resource": [
+        "arn:aws:iam::822063948773:role/cdk-orcloud01-deploy-role-822063948773-ap-northeast-1",
+        "arn:aws:iam::822063948773:role/cdk-orcloud01-deploy-role-822063948773-us-east-1",
+        "arn:aws:iam::822063948773:role/cdk-orcloud01-file-publishing-role-822063948773-ap-northeast-1",
+        "arn:aws:iam::822063948773:role/cdk-orcloud01-file-publishing-role-822063948773-us-east-1",
+        "arn:aws:iam::822063948773:role/cdk-orcloud01-image-publishing-role-822063948773-ap-northeast-1",
+        "arn:aws:iam::822063948773:role/cdk-orcloud01-image-publishing-role-822063948773-us-east-1"
+      ]
+    },
+    {
+      "Sid": "DenySharedBootstrapRoles",
+      "Effect": "Deny",
+      "Action": "sts:AssumeRole",
+      "Resource": [
+        "arn:aws:iam::822063948773:role/cdk-hnb659fds-*",
+        "arn:aws:iam::822063948773:role/cdk-staging-*"
+      ]
+    },
+    {
+      "Sid": "DenyBootstrapLookupRole",
+      "Effect": "Deny",
+      "Action": "sts:AssumeRole",
+      "Resource": ["arn:aws:iam::822063948773:role/cdk-*-lookup-role-*"]
+    },
+    {
+      "Sid": "ReadOwnDevStacksForDiffGate",
+      "Effect": "Allow",
+      "Action": "cloudformation:DescribeStacks",
+      "Resource": [
+        "arn:aws:cloudformation:ap-northeast-1:822063948773:stack/OpenReception-Web-dev/*",
+        "arn:aws:cloudformation:ap-northeast-1:822063948773:stack/OpenReception-WebMonitoring-dev/*",
+        "arn:aws:cloudformation:us-east-1:822063948773:stack/OpenReception-CfMonitoring-dev/*"
+      ]
+    },
+    {
+      "Sid": "ReadOwnChangeSetsForDiffGate",
+      "Effect": "Allow",
+      "Action": "cloudformation:DescribeChangeSet",
+      "Resource": [
+        "arn:aws:cloudformation:ap-northeast-1:822063948773:changeSet/claude-gate-*/*",
+        "arn:aws:cloudformation:us-east-1:822063948773:changeSet/claude-gate-*/*"
+      ]
+    },
+    {
+      "Sid": "DenyEverythingElseOutsideTheChain",
+      "Effect": "Deny",
+      "NotAction": [
+        "sts:AssumeRole",
+        "sts:GetCallerIdentity",
+        "cloudformation:DescribeStacks",
+        "cloudformation:DescribeChangeSet"
+      ],
+      "Resource": "*"
+    }
+  ]
+}

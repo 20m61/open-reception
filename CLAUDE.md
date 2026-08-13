@@ -69,8 +69,9 @@ green 記録が無ければブロックする。記録はゲートが実際に�
 **ローカル macOS でしかできないこと（クラウドへ出さない）**:
 
 1. **darwin の VRT ベースライン** … `{platform}` 込みのファイル名なので linux から取り直せない
-2. **AWS デプロイ** … 対話型 SSO がクラウドで通らない。元々**停止境界**でユーザー確認が要るため
-   ループの自動化範囲は狭まらない
+2. **デプロイ窓を開けること** … 短命 STS の発行（`scripts/aws-issue-credentials.sh`）だけが
+   ローカル。デプロイ自体はクラウドから wrapper（`scripts/aws-cloud-deploy.sh`）経由で行う
+   （`docs/runbook-cloud-aws-deploy.md`）
 
 ゲートが赤いとき、**コードを疑う前に負荷を見る**。macOS の load average は CPU ではなく
 **メモリ枯渇**を映していることがある（`top -l 1` の `PhysMem` の空きと swapins を見る。
