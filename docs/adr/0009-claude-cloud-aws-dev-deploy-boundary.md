@@ -83,6 +83,20 @@ cfn-exec role 側の `DenyForeignProjectStacks`（層 3 相当）が第二の防
 現実的な露出は `DescribeChangeSet` による内容の閲覧と `DeleteChangeSet` による妨害に限定される
 （詳細は `docs/runbook-cloud-aws-deploy.md` および spec §13）。
 
+🔴 **この changeSet スコープの authorisation は `iam:SimulatePrincipalPolicy` で確認できない
+（2026-08-13 実測、#680 フォローアップ）。** AWS の IAM ポリシーシミュレータは
+CloudFormation の `changeset` リソース種別自体を評価できず、`Resource: "*"` の
+最小 Allow を与えても `implicitDeny` を返す（`claude-deploy-entry.json` 側の欠陥ではない
+―― デプロイ済みインラインポリシーと本リポジトリのファイルはバイト一致で確認済み）。
+したがって「S1〜S22 が全部期待どおり」を初回デプロイの前提条件と書くことはできない
+（`S15`/`S16` は構造的に一致し得ない）。この 2 件は `negative-test-outcome.ts` の
+`isUnexplainedImplicitDeny` / `classifyProbeVerdict` による自動 probe で
+「ℹ️ シミュレーション不能」と測定され、pass/fail の集計から除外される。
+changeSet スコープの authorisation を**実際に**検証するのは
+`bash scripts/aws-cloud-deploy.sh diff`（`--no-execute` で change set を作り
+`describe-change-set` を呼ぶ）である ―― 誤ったスコープはここで初めて AccessDenied
+として現れる。詳細は `docs/runbook-cloud-aws-deploy.md` ステップ 4 と §13。
+
 ### 決定 3: 短命 STS の有効期限そのものをデプロイ窓とする
 
 「デプロイ窓が開いている/閉じている」という状態を表す専用のファイルやフラグを別に持たない。
@@ -315,14 +329,22 @@ provider 実装の変更で**初回デプロイを AccessDenied で壊す**。�
 ## 未検証事項・撤回条件
 
 - **`iam:SimulatePrincipalPolicy` による実 API 検証（`docs/runbook-cloud-aws-deploy.md`
-  ステップ 4a の S1〜S20 と、ステップ 4b・4c の 19 コマンド）は本サイクルで一度も
-  実行されていない。**（番号は 1〜20 まで振ってあるが、**10 番はコマンドではなく
+  ステップ 4a の S1〜S22 と、ステップ 4b・4c の 19 コマンド）を 2026-08-13 に実 IAM へ
+  向けて初めて実行した。** 49/50 件が期待どおりで、残り 1 件（`S16`）は
+  `claude-deploy-entry.json` の欠陥ではなく、**IAM のポリシーシミュレータが
+  CloudFormation の `changeset` リソース種別を評価できない**という道具側の限界だった
+  （`Resource: "*"` の最小 Allow を与えても `implicitDeny`。詳細は決定 2 の残存ギャップ）。
+  🔴 **したがって「S1〜S22 が全件期待どおりの結果を返すこと」を初回デプロイの前提条件
+  と書くことはできない ―― `S15`/`S16` は構造的に一致し得ない。** 代わりに、この 2 件は
+  `negative-test-outcome.ts` の probe（`isUnexplainedImplicitDeny` →
+  `classifyProbeVerdict`）で「シミュレーション不能」と測定され、pass/fail の集計から
+  除外される。**それ以外の全件が期待どおりであること**が前提条件であり、
+  changeSet スコープの authorisation は `bash scripts/aws-cloud-deploy.sh diff`
+  （`--no-execute` の change set 作成 → `describe-change-set`）で実際に検証する。
+  1 件でも（notSimulatable 以外で）期待と違えば設計を見直す。
+  （番号は 1〜20 まで振ってあるが、ステップ 4b の**10 番はコマンドではなく
   「1〜9 を us-east-1 で繰り返せ」という指示**なので実コマンドは 19 本。
   「20 コマンド」は誤記だった ―― 2026-08-12 残件レビュー R7）
-  実装の正しさは静的な構造検証（`auditPolicyDocument`）と
-  CDK synth（`infra/test/claude-deploy-boundary.test.ts`）でのみ確認済み。
-  **これらが全て期待どおりの結果を返すことが、初回デプロイへ進む前提条件である。**
-  1 本でも違えば設計を見直す。
 - 🔴 **決定 6（PassRole のタグ条件）が初回デプロイで AccessDenied になる最有力候補である。**
   条件は「渡される IAM Role に `Project`/`Environment` タグが実際に付いていること」に
   依存する。タグが付くこと自体は synth テストで確認済みだが、**IAM がそう評価するかは

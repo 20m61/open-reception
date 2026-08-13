@@ -175,6 +175,35 @@ aws iam put-role-policy \
 効くかを確認する。**Admin 権限を持つ人間の環境から実行する**
 （`OpenReceptionClaudeDeploy-dev` は `iam:SimulatePrincipalPolicy` を持たない前提のため）。
 
+🔴 **このステップが確認できないことが 1 つある: changeSet スコープの authorisation。**
+2026-08-13 に実 IAM へ向けて初めてステップ 4a を実行した結果、49/50 件が期待どおりで、
+残り 1 件（`S16`）は `implicitDeny` を返し続けた。`simulate-custom-policy` で単離すると:
+
+| 呼び出し | 結果 |
+| --- | --- |
+| `DescribeChangeSet`, リソース ARN 無し | `allowed`（アクション自体は認識される） |
+| `DescribeStacks`, stack ARN, `Resource: "*"` | `allowed`（stack 型は機能する） |
+| `DescribeChangeSet`, changeSet ARN, `Resource: "*"` | `implicitDeny`（最小 Allow でも！） |
+| `ExecuteChangeSet`, changeSet ARN, `Resource: "*"` | `implicitDeny`（同上） |
+
+`Resource: "*"` の最小 Allow ですら `implicitDeny` なので、これは `claude-deploy-entry.json`
+の欠陥ではなく **AWS の IAM ポリシーシミュレータが CloudFormation の `changeset`
+リソース種別を評価できない**という道具側の限界である（デプロイ済みインラインポリシーと
+リポジトリのファイルはバイト一致で確認済み）。**したがって「ステップ 4 の全件 PASS」を
+changeSet スコープの authorisation が安全であることの証拠にはできない。**
+
+`scripts/aws-negative-tests.ts` は `S15`/`S16` をハードコードで除外するのではなく、
+`expected: 'allowed'` の check が `implicitDeny` を返したときだけ probe
+（無関係の最小 Allow ポリシーで同じ action/resource を評価し直す）を打ち、それでも
+`implicitDeny` なら「ℹ️ シミュレーション不能」として pass/fail の集計から除外する
+（出力に根拠が印字される。詳細は 4a の該当箇所）。AWS がいつか `changeset` リソース種別へ
+対応すれば probe が `allowed` を返すようになり、check は自動的に通常の採点へ戻る。
+
+**changeSet スコープの authorisation を実際に検証するのはステップ 9 (`diff`)** である
+（`cdk deploy --no-execute` で change set を作成し `describe-change-set` を呼ぶ ――
+誤ったスコープが AccessDenied として最初に現れる地点）。`diff` は何も適用しないため
+安全側のまま、ステップ 4 が確認できないこの leg の実質的なゲートになる。
+
 ### 4a. 自動化されている分（S1〜S22）
 
 🔴 **各 check は「どのロールに対して」「どのリージョンで」評価するかを自分で宣言している。
@@ -195,6 +224,15 @@ SIMULATE_EXEC_ROLE_ARN_US_EAST_1=arn:aws:iam::822063948773:role/cdk-orcloud01-cf
 並べて印字する。**どのロールを・どのリージョンの何に対して検査したのかを読み違えられない
 形にしてある。** 片リージョンしか覆っていない check（S15/S16）は、結果より**前**に
 `ℹ️ S15: ap-northeast-1 は未評価: <理由>` として理由つきで印字される。
+
+🔴 **`S16` は `ℹ️ シミュレーション不能` として出て、pass/fail の集計から除外される。**
+（`S15` は通常どおり `✅`/`❌` として出る。stack ARN の型はシミュレータが機能するため。）
+`S16` の行の前に probe の実行ログ（`probe raw EvalDecision=...` → `verdict=...`）が出て、
+その根拠と「実際の認可検証は `bash scripts/aws-cloud-deploy.sh diff`」という注記が続く。
+**この 1 件を除いた残り全部が期待どおりであることが、初回デプロイへ進む前提条件**である
+（詳細と実測値はステップ 4 冒頭の表を参照）。実行結果の最終行は
+`passed=<N> failed=<N> notSimulatable=<N>` を分けて表示するため、`notSimulatable` が
+0 でないことは見落とせない（`⚠️` 付きの行になり、無条件の `✅ PASS` としては出ない）。
 
 > 🔴 **なぜ「`-us-east-1` 版でもう 1 度実行する」を廃止したか（2026-08-12 残件レビュー R4）。**
 > 旧手順は「us-east-1 側も同じ 3 変数の `-us-east-1` 版で 1 度実行する」と指示していたが、
@@ -276,6 +314,18 @@ boundary を渡すのは `exec` だけである（`--custom-permissions-boundary
 > **番号は 20 まで振ってあるが、実行するコマンドは 19 本である。** 10 番はコマンドでは
 > なく「1〜9 を us-east-1 で繰り返せ」という指示（したがって実際には 9 本増える）。
 > 以前このページと ADR は「20 コマンド」と書いていた —— 2026-08-12 残件レビュー R7 で訂正。
+
+> 🔴 **2・6・7（changeSet ARN に対する `allowed` 期待）は、この手順では確定的な結果に
+> ならない可能性がある（2026-08-13 実測、#680 フォローアップ）。** ステップ 4 冒頭に
+> 書いたとおり、IAM のポリシーシミュレータは CloudFormation の `changeset`
+> リソース種別を評価できず、`Resource: "*"` の最小 Allow ですら `implicitDeny` を返す。
+> 2・6・7 で `implicitDeny` が返っても、それは「ポリシーが間違っている」ではなく
+> 「シミュレータが評価できていない」可能性がある ―— この手順（生の
+> `simulate-principal-policy` 呼び出し）には自動 probe（ステップ 4a のスクリプトが
+> `S16` に対して行うもの）が無いため、人間が見分ける手立てが無い。
+> **changeSet スコープの authorisation を実際に確定させるのはステップ 9 (`diff`) である。**
+> 2・6・7・9・11 の結果は参考情報として記録しつつ、**確定的な合否判定はステップ 9 まで
+> 持ち越すこと。**
 
 `--policy-source-arn` は実在の IAM ロールでなければならない点に注意
 （存在しない ARN を渡すとシミュレーションが別のエラーで失敗する）。
@@ -496,13 +546,20 @@ aws iam simulate-principal-policy \
 
 `DeleteStack`（12 番目）は 3 つの dev スタック全部（`OpenReception-Web-dev` /
 `OpenReception-WebMonitoring-dev` / `OpenReception-CfMonitoring-dev`、最後のみ us-east-1）に
-対して確認すること。**これが本設計で唯一、机上でしか確認できていない部分である。**
-とくに重要な確認対象:
+対して確認すること。とくに重要な確認対象:
 
 - deploy role の `DescribeChangeSet` / `ExecuteChangeSet` on `changeSet/claude-gate-*/*`（6・7）
 - `claude-gate` 以外の名前が Deny されること（9）
 - `DeleteChangeSet`（11、2 回目以降のデプロイで `cleanupOldChangeset` が必要とする）
 - `DeleteStack`（12、`--no-execute` の no-op が残した `REVIEW_IN_PROGRESS` スタックの掃除用）
+
+🔴 **このうち 6・7・11（changeSet ARN に対する `allowed` 期待）は、ステップ 4 冒頭で
+書いたシミュレータ未対応と同じ形の限界にぶつかる可能性が高い。** `changeSet ARN` は
+`S16` と同じリソース種別であり、`simulate-principal-policy` を人間が手で叩いても
+`implicitDeny` が返り得る（ポリシーの正しさとは無関係に）。**この 3 本を含む
+changeSet スコープの authorisation を確定させるのはステップ 9 (`diff`) であり、
+「本設計で唯一、机上でしか確認できていない部分」なのは `DeleteStack`（12）だけである
+（changeSet 関連は「机上」どころか実 API でも確認しきれない）。**
 
 ### 4d. 🔴 承認する前に読むこと — carve-out の影響範囲と、それを抑えているもの（#680 R1/R2/R3/R10）
 
@@ -692,6 +749,15 @@ claude-gate-<short-sha>` で change set を作り、`describe-change-set` の JS
 `src/domain/governance/deploy-diff-gate.ts` の危険判定に掛ける。危険な変更（`Remove` /
 `Import` / `Dynamic` などの未知の action / replacement / KMS・Secrets・Route53・
 SecurityGroup・IAM プリンシパルの変更 等）を検出したら非ゼロで終了し、`deploy` へ進まない。
+
+🔴 **ここが changeSet スコープの authorisation を実際に確認する唯一の地点である。**
+ステップ 4 の `iam:SimulatePrincipalPolicy` は CloudFormation の `changeset` リソース
+種別を評価できない（`S16`、実測はステップ 4 冒頭を参照）。`--no-execute` の
+change set 作成は**何も適用しない**ので安全側のまま、`entry` role → `deploy` role の
+`CreateChangeSet`/`DescribeChangeSet` 呼び出しを実際に発生させる ―― 誤った changeSet
+スコープ（stack 名を埋め込めないことに起因するもの含む）は、ここで初めて
+`AccessDenied` として現れる。ステップ 4 が「PASS」と言えなかった leg を、`diff` が
+実データで埋める。
 
 **`OpenReception-CfMonitoring-dev` は現時点でアカウントに存在しない**（`Web-dev` と
 `WebMonitoring-dev` のみ）。初回はここが CREATE 型の change set になり、全リソースが

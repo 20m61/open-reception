@@ -8,6 +8,10 @@ import {
   uncoveredRegionNote,
   classifyAwsError,
   classifySimulationError,
+  classifyProbeVerdict,
+  evalDecisionToOutcome,
+  isUnexplainedImplicitDeny,
+  parseEvalDecision,
   resolveExecutionScope,
   summarizeNegativeTests,
   SIMULATION_REGIONS,
@@ -292,5 +296,91 @@ describe('resolveExecutionScope', () => {
 
   it('両方同時指定は矛盾として null を返す（呼び出し側が非ゼロで終了する）', () => {
     expect(resolveExecutionScope(true, true)).toBeNull();
+  });
+});
+
+/**
+ * 🔴 defect 2（#680 フォローアップ）: `S16`（changeSet ARN への `DescribeChangeSet`、
+ * `expected: 'allowed'`）は実測で常に `implicitDeny` を返す ―― `claude-deploy-entry.json`
+ * ではなく、IAM のポリシーシミュレータが CloudFormation の `changeset` リソース種別を
+ * 評価できないため（`Resource: "*"` の最小 Allow でも `implicitDeny`）。
+ * `S15`/`S16` へのハードコードした exemption ではなく、`expected: 'allowed'` の check が
+ * `implicitDeny` を返したときだけ probe を打つ、という測定に落とす。
+ */
+describe('parseEvalDecision', () => {
+  it.each(['allowed', 'explicitDeny', 'implicitDeny'] as const)(
+    '3 値のいずれかはそのまま返す: %s',
+    (v) => {
+      expect(parseEvalDecision(v)).toBe(v);
+    },
+  );
+
+  it('前後の空白は trim する', () => {
+    expect(parseEvalDecision('  allowed\n')).toBe('allowed');
+  });
+
+  it('空文字は null（denied 相当に丸めない）', () => {
+    expect(parseEvalDecision('')).toBeNull();
+  });
+
+  it('想定外の値は null', () => {
+    expect(parseEvalDecision('maybe')).toBeNull();
+  });
+});
+
+describe('evalDecisionToOutcome', () => {
+  it('allowed → allowed', () => {
+    expect(evalDecisionToOutcome('allowed')).toBe('allowed');
+  });
+
+  it.each(['explicitDeny', 'implicitDeny'] as const)('%s → denied（どちらも denied に写像する）', (d) => {
+    expect(evalDecisionToOutcome(d)).toBe('denied');
+  });
+
+  it('null → unknown', () => {
+    expect(evalDecisionToOutcome(null)).toBe('unknown');
+  });
+});
+
+describe('isUnexplainedImplicitDeny（probe を打つべきかどうかのゲート）', () => {
+  it('expected=allowed かつ implicitDeny のときだけ true', () => {
+    expect(isUnexplainedImplicitDeny('allowed', 'implicitDeny')).toBe(true);
+  });
+
+  it('expected=denied なら implicitDeny でも false（正当な PASS であり probe は無意味）', () => {
+    expect(isUnexplainedImplicitDeny('denied', 'implicitDeny')).toBe(false);
+  });
+
+  it('expected=allowed でも explicitDeny なら false（一致するステートメントがあった）', () => {
+    expect(isUnexplainedImplicitDeny('allowed', 'explicitDeny')).toBe(false);
+  });
+
+  it('expected=allowed でも allowed 自体なら false（そのまま PASS）', () => {
+    expect(isUnexplainedImplicitDeny('allowed', 'allowed')).toBe(false);
+  });
+
+  it('decision が null（判定不能の API 失敗）なら false（unknown を probe の入口にしない）', () => {
+    expect(isUnexplainedImplicitDeny('allowed', null)).toBe(false);
+  });
+});
+
+describe('classifyProbeVerdict', () => {
+  it('probe が implicitDeny なら unsimulatable（最小 Allow でも一致しない＝シミュレータ未対応）', () => {
+    expect(classifyProbeVerdict('implicitDeny')).toBe('unsimulatable');
+  });
+
+  it('probe が allowed なら supported（シミュレータは機能している。通常どおり FAIL 採点へ戻す）', () => {
+    expect(classifyProbeVerdict('allowed')).toBe('supported');
+  });
+
+  it('probe が explicitDeny なら supported（一致するステートメントがあった＝評価できている）', () => {
+    expect(classifyProbeVerdict('explicitDeny')).toBe('supported');
+  });
+
+  it('probe 自体が失敗した（null）なら supported ―― unsimulatable 側へ倒さない', () => {
+    // 🔴 ここが「一般的な逃げ道」にならないための核心。probe の API 呼び出しが
+    // 失敗しただけなのに「シミュレータの限界」に化けさせると、本物の権限不足を
+    // 隠す一般的な逃げ道になる。probe が失敗したら通常の FAIL 採点へフォールバックする。
+    expect(classifyProbeVerdict(null)).toBe('supported');
   });
 });

@@ -226,3 +226,110 @@ export function resolveExecutionScope(simulateOnly: boolean, liveOnly: boolean):
   if (liveOnly) return 'live';
   return 'all';
 }
+
+/**
+ * シミュレータ未対応リソース種別 (#680 フォローアップ / defect 2)。
+ *
+ * `S15`/`S16` は `cloudformation:DescribeChangeSet` を changeSet ARN に対して評価し、
+ * `expected: 'allowed'` を宣言している。実測（2026-08-13、`simulate-custom-policy` で
+ * 単離）:
+ *
+ * | 呼び出し | 結果 |
+ * | --- | --- |
+ * | `DescribeChangeSet`, リソース ARN 無し | `allowed`（アクション自体は認識される） |
+ * | `DescribeStacks`, stack ARN, `Resource: "*"` | `allowed`（stack 型は機能する） |
+ * | `DescribeChangeSet`, changeSet ARN, `Resource: "*"` | `implicitDeny`（最小 Allow でも！） |
+ * | `ExecuteChangeSet`, changeSet ARN, `Resource: "*"` | `implicitDeny`（同上） |
+ *
+ * `Resource: "*"` の最小 Allow ですら `implicitDeny` を返すのは、ポリシーの中身が
+ * 悪いのではなく **IAM のポリシーシミュレータが CloudFormation の `changeset`
+ * リソース種別を評価できない**ことを意味する。この事実は `claude-deploy-entry.json`
+ * には何の欠陥も無い（デプロイ済みインラインポリシーとリポジトリのファイルは
+ * バイト一致）。
+ *
+ * 🔴 **これを `S15`/`S16` へのハードコードした exemption にしない。** 「落ちようのない
+ * 検査」を作る側の欠陥は、このブランチが何度も踏んできた（Critical 3・R4）。代わりに、
+ * **`expected: 'allowed'` の check が `implicitDeny`（他の何にも一致しなかった）を
+ * 返したときだけ**、最小 Allow による probe を打って「シミュレータが本当に評価できて
+ * いないのか」を都度測る。AWS がいつか changeset リソース種別へ対応すれば、probe が
+ * `allowed` を返すようになり、check は自動的に通常の採点へ戻る（`isUnexplainedImplicitDeny`
+ * → `classifyProbeVerdict` の合成）。
+ */
+
+/**
+ * `iam:SimulatePrincipalPolicy` / `iam:SimulateCustomPolicy` が返す `EvalDecision` の生の値。
+ *
+ * AWS はこの 3 値しか返さない。旧実装は `endsWith('Deny')` で `explicitDeny` と
+ * `implicitDeny` を一括りに `Outcome` の `'denied'` へ潰しており、
+ * 「ポリシーが明示的に拒否した」ケースと「何にも一致しなかった」ケースを
+ * 区別できなかった。probe を打つべきかどうかの判定にはこの区別が要る
+ * （`implicitDeny` だけが「シミュレータ未対応」の兆候になり得る。`explicitDeny` は
+ * 実際に一致するステートメントがあったことの証拠であり、シミュレータは機能している）。
+ */
+export type EvalDecision = 'allowed' | 'explicitDeny' | 'implicitDeny';
+
+/**
+ * `EvalDecision` の生テキストを解析する。3 値のどれとも一致しなければ `null`
+ * （空文字・前後空白・想定外の文字列すべて含む）。`null` をどう扱うかは呼び出し側の
+ * 責務 —— ここでは「denied 相当に丸める」ような親切をしない
+ * （[[空文字は「問題なし」ではない]] と同じ理由）。
+ */
+export function parseEvalDecision(raw: string): EvalDecision | null {
+  const trimmed = raw.trim();
+  if (trimmed === 'allowed' || trimmed === 'explicitDeny' || trimmed === 'implicitDeny') return trimmed;
+  return null;
+}
+
+/** `EvalDecision` を既存の粗い `Outcome` へ写像する。`explicitDeny`/`implicitDeny` はどちらも `'denied'`。 */
+export function evalDecisionToOutcome(decision: EvalDecision | null): Outcome {
+  if (decision === 'allowed') return 'allowed';
+  if (decision === 'explicitDeny' || decision === 'implicitDeny') return 'denied';
+  return 'unknown';
+}
+
+/**
+ * probe（simulate-custom-policy による測定）を打つべきかどうか。
+ *
+ * 🔴 **これが「escape hatch にしない」ための唯一のゲートである。** 条件は 2 つとも
+ * 満たす必要がある:
+ *
+ * 1. `expected === 'allowed'` —— `expected: 'denied'` の check にとって `implicitDeny`
+ *    はまさに期待どおりの正当な PASS であり、シミュレータ未対応を疑う理由が無い
+ * 2. `decision === 'implicitDeny'` —— 「他のどのステートメントにも一致しなかった」
+ *    ことの直接的な兆候。`explicitDeny`（一致するステートメントがあった）や
+ *    `allowed`（そのまま PASS）では probe を打つ意味が無い
+ *
+ * check の ID や resource の中身（`changeSet` を含むかどうか等）では判定しない。
+ * ID で判定すると「新しい check が同じ限界にぶつかったときに気づけない」
+ * ハードコードへ逆戻りする。
+ */
+export function isUnexplainedImplicitDeny(
+  expected: 'allowed' | 'denied',
+  decision: EvalDecision | null,
+): boolean {
+  return expected === 'allowed' && decision === 'implicitDeny';
+}
+
+/** probe の判定結果。 */
+export type ProbeVerdict = 'unsimulatable' | 'supported';
+
+/**
+ * probe（`simulate-custom-policy` に action を `Resource: "*"` で Allow するだけの、
+ * 評価対象 principal とは無関係な最小ポリシーを渡し、同じ resource ARN に対して評価
+ * させたもの）の結果を解釈する。
+ *
+ * 🔴 **`'unsimulatable'` を返すのは `probeDecision === 'implicitDeny'` のときだけ。**
+ * 最小限の Allow ですら一致しないなら、principal のポリシーの中身に関係なく
+ * 評価できていない ―― シミュレータがこのリソース種別を認識していないという直接証拠になる。
+ *
+ * それ以外は全部 `'supported'`（`allowed` はもちろん、`explicitDeny` や、probe 自体が
+ * 例外を投げて呼び出し側が `null` を渡してきた場合も含む）。
+ * **`'supported'` は「シミュレータは機能している」ことを意味し、元の check は
+ * 通常どおり FAIL として採点される。** probe が失敗した（`null`）ケースを
+ * `'unsimulatable'` 側へ倒すと、「probe 自体が呼べなかった」という別の障害が
+ * 「シミュレータの限界」にすり替わり、本物の権限不足を隠す一般的な逃げ道になる
+ * （要件: 判定不能を都合よく読み替えない。`unknown` は FAIL のまま）。
+ */
+export function classifyProbeVerdict(probeDecision: EvalDecision | null): ProbeVerdict {
+  return probeDecision === 'implicitDeny' ? 'unsimulatable' : 'supported';
+}

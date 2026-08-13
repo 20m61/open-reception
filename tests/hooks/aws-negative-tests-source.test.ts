@@ -183,6 +183,104 @@ describe('simulate() は boundary を readFileSync で渡す（file:// を渡さ
 });
 
 /**
+ * 🔴 **Defect 2（#680 フォローアップ）: `S15`/`S16` は実測で `implicitDeny` を返す ――
+ * `claude-deploy-entry.json` の欠陥ではなく、IAM のポリシーシミュレータが
+ * CloudFormation の `changeset` リソース種別を評価できないため（`Resource: "*"` の
+ * 最小 Allow でも `implicitDeny`）。**
+ *
+ * probe（`probeSimulatorSupport`）は「measurement であって assertion ではない」
+ * ―― `isUnexplainedImplicitDeny` のゲートの外では絶対に呼ばれず、`S15`/`S16` の
+ * ID をハードコードして特別扱いしてもいない。これらを source 上で固定する。
+ */
+describe('probe は isUnexplainedImplicitDeny のゲートの内側でしか呼ばれない (#680 フォローアップ / defect 2)', () => {
+  const mainBody = stripTsComments(extractFunctionBody(SOURCE, 'function main(', 'main();'));
+
+  it('probeSimulatorSupport の呼び出しは 1 箇所だけ', () => {
+    const calls = [...mainBody.matchAll(/probeSimulatorSupport\(/g)];
+    expect(calls.length).toBe(1);
+  });
+
+  it('probeSimulatorSupport の呼び出しは isUnexplainedImplicitDeny の if ブロックの中、かつ results.push より前にある', () => {
+    const gateIndex = mainBody.indexOf('if (isUnexplainedImplicitDeny(');
+    const callIndex = mainBody.indexOf('probeSimulatorSupport(');
+    // 🔴 `results.push({` は live check の分岐にも現れる（`gateIndex` より前）。
+    // 探すのは S 系ループの中の 1 件なので、`gateIndex` より後を探す。
+    const pushIndex = mainBody.indexOf('results.push({', gateIndex);
+    expect(gateIndex).toBeGreaterThan(-1);
+    expect(callIndex).toBeGreaterThan(gateIndex);
+    expect(callIndex).toBeLessThan(pushIndex);
+  });
+
+  it('probe の raw 結果と verdict を、使う前に必ず console.log で印字する（黙って適用しない）', () => {
+    const gateBody = extractFunctionBody(mainBody, 'if (isUnexplainedImplicitDeny(', 'results.push({');
+    const printIndex = gateBody.indexOf('probe raw EvalDecision=');
+    const verdictUseIndex = gateBody.indexOf("verdict === 'unsimulatable'");
+    expect(printIndex).toBeGreaterThan(-1);
+    expect(printIndex).toBeLessThan(verdictUseIndex);
+  });
+
+  it('unsimulatable と判定した check は continue し、results.push（採点対象）に到達しない', () => {
+    const gateBody = extractFunctionBody(mainBody, 'if (isUnexplainedImplicitDeny(', 'results.push({');
+    const verdictBlock = gateBody.slice(gateBody.indexOf("verdict === 'unsimulatable'"));
+    expect(verdictBlock).toContain('continue;');
+  });
+
+  /**
+   * 🔴 **「これは 12/19 の一部だけ許す exemption ではなく measurement である」**ことの
+   * 直接的な回帰テスト。`check.id`（または `id`）を `'S15'`/`'S16'` と比較して
+   * スキップするような分岐を書いた瞬間に、この検査は落ちる。
+   */
+  it('S15/S16（または他の check）を id で特別扱いするハードコードされた分岐が無い', () => {
+    expect(mainBody).not.toMatch(/\bid\s*===\s*'S1[56]'/);
+    expect(mainBody).not.toMatch(/check\.id\s*===\s*'S/);
+  });
+});
+
+/**
+ * 🔴 **サマリ行の要件（#680 フォローアップ）: passed / failed / notSimulatable を
+ * 分けて書く。unsimulatable が混ざった実行を「無条件の成功」として印字しない。**
+ */
+describe('サマリ行は passed/failed/notSimulatable を分け、unsimulatable を無条件の成功に見せない (#680 フォローアップ)', () => {
+  const tail = stripTsComments(
+    extractFunctionBody(SOURCE, 'const { failed, misdirected } = summarizeNegativeTests', 'main();'),
+  );
+  const notSimIdx = tail.indexOf('if (notSimulatableCount > 0) {');
+
+  it('passed は results.length - failed から算出する（notSimulatable を混ぜない）', () => {
+    expect(tail).toContain('results.length - failed');
+  });
+
+  it('notSimulatable 件数をログの counts に含める', () => {
+    expect(tail).toContain('notSimulatable=${notSimulatableCount}');
+  });
+
+  it('notSimulatableCount > 0 の分岐が存在する', () => {
+    expect(notSimIdx).toBeGreaterThan(-1);
+  });
+
+  it('failed > 0 の分岐は notSimulatable の有無に関わらず process.exit(1) を呼ぶ', () => {
+    const failedBranch = tail.slice(tail.indexOf('if (failed > 0) {'), notSimIdx);
+    expect(failedBranch).toContain('process.exit(1);');
+  });
+
+  it('notSimulatable のみ（failed=0）の分岐は process.exit を呼ばない（ゼロ終了のまま）', () => {
+    const notSimBranch = tail.slice(notSimIdx);
+    expect(notSimBranch).not.toContain('process.exit');
+  });
+
+  it('notSimulatable が有るときは無条件の ✅ PASS 行を出さない（⚠️ を使う）', () => {
+    const notSimBranch = tail.slice(notSimIdx);
+    // else 節（notSimulatableCount === 0 のとき）にだけ ✅ が現れることを確認する。
+    const elseIdx = notSimBranch.indexOf('} else {');
+    const beforeElse = notSimBranch.slice(0, elseIdx);
+    const afterElse = notSimBranch.slice(elseIdx);
+    expect(beforeElse).not.toContain('✅');
+    expect(beforeElse).toContain('⚠️');
+    expect(afterElse).toContain('✅');
+  });
+});
+
+/**
  * 🔴 **Critical 3（2026-08-12 全体レビュー）: S 系は「落ちようのない検査」だった。**
  *
  * 旧実装は principal ARN を 1 本だけ受け取り、既定を entry role にしていた。

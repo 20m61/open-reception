@@ -693,7 +693,7 @@ principal ARN も 1 リージョン分しか受け取らなかった。runbook �
 | S13 | `iam:DeleteRolePolicy` on `cdk-orcloud01-deploy-role-*`（Important 5。自分のチェーン） | exec | 両方 | DENY |
 | S14 | `iam:CreatePolicyVersion` on 他プロジェクトのポリシー（Important 5） | exec | 両方 | DENY |
 | S15 | `cloudformation:DescribeStacks` on `OpenReception-CfMonitoring-dev` | entry | us-east-1 のみ | **ALLOW** |
-| S16 | `cloudformation:DescribeChangeSet` on `claude-gate-*`（us-east-1） | entry | us-east-1 のみ | **ALLOW** |
+| S16 | `cloudformation:DescribeChangeSet` on `claude-gate-*`（us-east-1） | entry | us-east-1 のみ | **ALLOW**（🔴 シミュレーション不能。下記参照） |
 | S17 | `iam:CreateRole` on carve-out のロール名（boundary なし。#680 R2） | exec | 両方 | **ALLOW** |
 | S18 | `iam:CreateRole` on carve-out**外**のロール名（boundary なし） | exec | 両方 | DENY |
 | S19 | `iam:DeleteRole` on carve-out のロール名（rollback 経路。#680 R3） | exec | 両方 | **ALLOW** |
@@ -717,6 +717,41 @@ principal ARN も 1 リージョン分しか受け取らなかった。runbook �
 
 **「policy を読む限り安全」で終わらせない**（spec 原文 §9）。S 系は
 `SimulatePrincipalPolicy` の実 API 応答を根拠とし、結果を PR 本文へ貼る。
+
+### 🔴 S15/S16 はシミュレーション不能（2026-08-13 実測、#680 フォローアップ）
+
+`--simulate-only` を実 IAM に対して初めて実行した結果、49/50 件が期待どおりで、
+残り 1 件（`S16`）は `implicitDeny` を返し続けた。`simulate-custom-policy` で単離した
+実測:
+
+| 呼び出し | 結果 |
+| --- | --- |
+| `DescribeChangeSet`, リソース ARN 無し | `allowed`（アクション自体は認識される） |
+| `DescribeStacks`, stack ARN, `Resource: "*"` | `allowed`（stack 型は機能する） |
+| `DescribeChangeSet`, changeSet ARN, `Resource: "*"` | `implicitDeny`（最小 Allow でも！） |
+| `ExecuteChangeSet`, changeSet ARN, `Resource: "*"` | `implicitDeny`（同上） |
+
+`Resource: "*"` の最小 Allow ですら `implicitDeny` が返るのは、ポリシーの中身が
+悪いのではなく **AWS の IAM ポリシーシミュレータが CloudFormation の `changeset`
+リソース種別を評価できない**ことを意味する。`claude-deploy-entry.json` に欠陥は無い
+（デプロイ済みインラインポリシーとリポジトリのファイルはバイト一致）。
+
+🔴 **`S15`/`S16` へのハードコードした exemption にはしない。** 「落ちようのない検査」を
+作る側の欠陥は、本設計が Critical 3・R4 で繰り返し踏んできた。代わりに、
+`expected: 'allowed'` の check が `implicitDeny`（他の何にも一致しなかった）を返した
+ときだけ、`negative-test-outcome.ts` が同じ action/resource に対して
+`simulate-custom-policy`（無関係の最小 Allow, `Resource: "*"`）で probe を打つ
+（`isUnexplainedImplicitDeny` → `classifyProbeVerdict`）。probe も `implicitDeny` を
+返せば「ℹ️ シミュレーション不能」として集計から除外し、根拠と実際の検証先を印字する。
+probe が `allowed`（＝将来 AWS が changeset リソース種別に対応した場合）を返せば、
+check は自動的に通常の pass/fail 採点へ戻る ―― 文書を書き換える必要が無い。
+
+**changeSet スコープの authorisation を実際に検証するのは
+`bash scripts/aws-cloud-deploy.sh diff`** である（`--no-execute` で change set を
+作成し `describe-change-set` を呼ぶ。誤ったスコープが AccessDenied として最初に
+現れる地点）。`diff` は何も適用しないため安全側のまま、ステップ 4 が確認できない
+leg（changeSet 認可）の実質的なゲートになる。詳細は
+`docs/runbook-cloud-aws-deploy.md` ステップ 4 と §13。
 
 ---
 
@@ -892,6 +927,7 @@ spec 原文 STOP CONDITIONS の「既存 production deploy 経路を壊す可能
 | `Replacement: Conditional` の過検出 | 安全側。人間が承認して通す運用 |
 | staging / prod を作るとき境界の拡張が要る | 意図的。そのとき改めて承認する |
 | changeSet 名スコープの account-wide 露出 | **deploy role 単体の層では構造的に閉じられない。** 詳細は下記 |
+| IAM シミュレータが changeSet リソース種別を評価できない（`S15`/`S16`） | **`iam:SimulatePrincipalPolicy` では検証不能（2026-08-13 実測）。** `negative-test-outcome.ts` の probe が「シミュレーション不能」として測定・除外する。changeSet スコープの authorisation は `bash scripts/aws-cloud-deploy.sh diff` で実証する。詳細は §7 |
 | 列挙から漏れた第三者 IAM ポリシーの書き換え | **タグでは閉じられない。** 下記 |
 | `iam:PassRole` のタグ条件が実 IAM でどう評価されるか | **未検証。** 初回デプロイで AccessDenied になる最有力候補。runbook 4b の 14〜16。simulate 側は S21/S22 が `--context-entries` で `iam:PassedToService` を供給して問う（#680 R10） |
 | carve-out された名前空間に境界の無いロールを作られる | **IAM では閉じられない**（サンドボックスがテンプレートを書き、名前グロブは論理 ID / `RoleName` / `Path` を縛れない）。**diff gate で制動している。** 到達しうる上限はアカウント Admin。下記 |
@@ -1078,6 +1114,14 @@ stack を特定しない）。**この意味で、deploy role 単体の層では
 「閉じられる」と誤って書かない一方、「使われている」と誇張しても書かない（前提条件が
 満たされる可能性は現状ゼロに近い —— foreign project 側で `claude-gate-` という命名規則を
 使う理由が無い）。
+
+🔴 **この changeSet スコープの authorisation 自体は `iam:SimulatePrincipalPolicy` で
+確認できない（2026-08-13 実測）。** IAM のポリシーシミュレータが CloudFormation の
+`changeset` リソース種別を評価できないため、`S15`/`S16` は `Resource: "*"` の最小 Allow
+でも `implicitDeny` を返す（詳細は §7「S15/S16 はシミュレーション不能」）。
+「ステップ 4 が全件 PASS したので changeSet スコープも安全」とは読めない。
+実際の authorisation は `bash scripts/aws-cloud-deploy.sh diff`（`--no-execute` の
+change set 作成 → `describe-change-set`）が最初の実証地点になる。
 
 ## 14. 非スコープ
 
