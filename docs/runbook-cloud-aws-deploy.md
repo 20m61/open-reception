@@ -702,7 +702,15 @@ claude.ai/code の環境ダイアログへ、次の**変数名 5 つ**を登録�
 bash scripts/aws-cloud-deploy.sh verify
 ```
 
-`./scripts/quality-gate.sh --pr` ＋ `npm run build:open-next` を実行する。
+`npm run build:open-next` → `./scripts/quality-gate.sh --pr` の順で実行する。
+
+🔴 **この順序を逆にしない（#680）。** フレッシュな clone には `.open-next/` が無い。
+逆順（gate → build）だと、`quality-gate.sh --pr` が「infra WebStack synth」等を検査
+できず green スタンプを書かずに非ゼロで終わり（#640。検査できなかったステップを green
+として記録しない設計そのもの）、`set -e` によって `verify` がそこで打ち切られる。
+`.open-next/` を作る唯一の手段である `npm run build:open-next` が一度も実行されず、
+**何回 `verify` を再実行しても green スタンプが書けないデッドロック**になる（クラウドの
+実セッションで踏んだ）。ゲートへの入力を作るステップは、ゲートより前に置く。
 
 🔴 **これを先に走らせないと preflight は必ず失敗する（Important 7）。** preflight は
 「現ツリーに対する品質ゲート green の記録（スタンプ）」を要求するが、**スタンプは
@@ -721,6 +729,13 @@ bash scripts/aws-cloud-deploy.sh verify
 ---
 
 ## ステップ 8: preflight
+
+🔴 **前提: `aws` CLI が cloud sandbox に入っていること。** `scripts/cloud-setup.sh`
+（環境ダイアログの Setup script）が入れる。入っていないと、直後の
+`aws sts get-caller-identity` が失敗する。ここは `command -v aws` による確認
+（`src/domain/governance/command-preflight.ts`）を `collect_observation` の先頭に
+入れてあるので、資格情報を誤って疑わせない具体的なメッセージ（`aws` が無いこと・
+`scripts/cloud-setup.sh` を確認すること）が出る（#680。詳細はトラブルシュート参照）。
 
 クラウドセッションから:
 
@@ -825,6 +840,65 @@ OR_SMOKE_URL=https://<デプロイ後のドメイン> bash scripts/aws-cloud-dep
 ---
 
 ## トラブルシュート
+
+### 🔴 実際に踏んだ: `aws` CLI がクラウドサンドボックスに無かった（#680）
+
+verify → preflight → diff を初めて通しで実行した試行が 61 秒で死んだ。
+`collect_observation` の `aws sts get-caller-identity` が
+`/bin/bash: line 1: aws: command not found` で失敗し、その時点の実装はこれを
+そのまま「AWS 認証情報を解決できません」と報告していた。`AWS_CREDENTIAL_EXPIRATION` は
+未設定、`~/.aws/config` には `[default]` に `s3.payload_signing_enabled` しか無い ――
+資格情報側を疑わせる材料が並ぶが、**実際の原因は `aws` バイナリそのものが
+入っていなかったこと**だった。`scripts/cloud-setup.sh`（環境ダイアログへ貼る Setup
+script）は当時 `gh` / `gitleaks` / `semgrep` / Playwright しか入れておらず、
+`grep aws scripts/cloud-setup.sh` は何も返さなかった。
+
+対処（反映済み）:
+
+- `scripts/cloud-setup.sh` に AWS CLI v2 のインストールを追加（`command -v aws` で
+  ガード、`|| true` で非必須化）。**環境ダイアログ側の Setup script 欄も貼り替えること**
+  ―― このファイルは実行されない、貼る内容の正本でしかない（ファイル冒頭の注記）。
+- `scripts/aws-cloud-deploy.sh` の `collect_observation` に、`aws` の有無を
+  `aws sts get-caller-identity` より**前**に確認する preflight を追加
+  （`src/domain/governance/command-preflight.ts`）。誤って資格情報を疑わせるメッセージを
+  出さず、「`aws` が見つからない・`scripts/cloud-setup.sh` を確認せよ」と名指しする。
+- Network access の許可ドメインに `awscli.amazonaws.com` の追加が必要
+  （`docs/cloud-dev-environment.md` §1。Trusted の既定リストに入っていない可能性が高い、
+  Playwright の `cdn.playwright.dev` と同型）。
+
+### 🔴 実際に踏んだ: `verify` がフレッシュな clone でデッドロックしていた（#680）
+
+上の対処後、実際にクラウドセッションで `verify` を単発実行したところ、`npm ci` までは
+通ったのに `verify` が exit 1 で終わり、`preflight`/`diff` に一度も到達しなかった。
+旧実装は `quality-gate.sh --pr` を先に呼び、`npm run build:open-next` を後に呼んでいた:
+
+```bash
+  verify)
+    "${ROOT}/scripts/quality-gate.sh" --pr        # ← 先に走る
+    ( cd "${ROOT}" && npm run build:open-next )   # ← 到達しない
+    ;;
+```
+
+フレッシュな clone には `.open-next/` が無い。`set -euo pipefail` の下では:
+
+1. `quality-gate.sh --pr` が「infra WebStack synth」等を検査できず SKIP を報告し、
+   green スタンプを書かずに非ゼロで終わる（#640。検査できなかったステップを green として
+   記録しない設計そのもの）。
+2. `set -e` がここで `verify` を打ち切る。
+3. `.open-next/` を作る唯一の手段である `npm run build:open-next` が**一度も実行されない**。
+4. 次に `verify` を再実行しても `.open-next/` は相変わらず無いので 1) から繰り返す ――
+   **何回リトライしても green スタンプが書けない。**
+
+クラウドエージェント自身の言葉: 「フレッシュな clone で `verify` を単発実行すると、
+①が必ず先に失敗し②に到達しないため、この手順の記載通りでは絶対に green スタンプが
+書けません」。エージェントはこれを正しく検知し、回避策で誤魔化さずに報告した。
+
+対処（反映済み）: `scripts/aws-cloud-deploy.sh` の `verify)` ケースの順序を
+`build:open-next` → `quality-gate.sh --pr` へ反転（ステップ 7 冒頭の記載も合わせて
+訂正済み）。ゲートへの入力を**作る**ステップは、ゲートより前に置く。加えて、この
+リポジトリがクラウドセッションへ送る委譲プロンプトは元々この順（build → gate）で
+書いてきており、wrapper だけが逆順だった ―― フレッシュな container で初めて実行される
+まで気づかれなかった。
 
 ### クラウドセッションの `gh` 制約
 

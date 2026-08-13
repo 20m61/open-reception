@@ -19,7 +19,7 @@
  *   インターロックが `aws` 呼び出しより先に止めることを固定する。
  */
 import { spawnSync } from 'node:child_process';
-import { chmodSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
@@ -127,6 +127,65 @@ describe('環境の固定', () => {
     // 20 秒の余裕を持たせる。
     20_000,
   );
+});
+
+describe('依存コマンドの有無を AWS 呼び出し前に検査する (#680)', () => {
+  /**
+   * `aws` が cloud sandbox に無く、`aws sts get-caller-identity` が
+   * `command not found` で失敗した実インシデントの再現。旧実装はこれをそのまま
+   * 「AWS 認証情報を解決できません」と報告していた ―― 資格情報は無関係で、
+   * 実際にはバイナリが無いだけだった（`docs/runbook-cloud-aws-deploy.md`
+   * トラブルシュート「実際に踏んだ」参照）。
+   *
+   * `aws` を「存在しない」ことにするため、PATH から `aws` 実行ファイルを含む
+   * ディレクトリだけを取り除く（`node`/`npx`/`git` は別ディレクトリにあるので
+   * 影響しない ―― この開発機で実測済み）。
+   */
+  function pathWithoutAws(): string {
+    const dirs = (process.env.PATH ?? '').split(':');
+    const filtered = dirs.filter((dir) => {
+      if (dir === '') return true;
+      try {
+        return !existsSync(join(dir, 'aws'));
+      } catch {
+        return true;
+      }
+    });
+    return filtered.join(':');
+  }
+
+  it(
+    'aws が PATH に無ければ、認証情報のせいにせず「aws が見つからない」を報告する',
+    () => {
+      const pathWithoutAwsValue = pathWithoutAws();
+      // 変異検証その 1（欠落方向）: この PATH には実際に aws が無いことを確認してから使う。
+      // このガードが無いと、テスト環境の PATH レイアウトが変わったときに
+      // 「常に PASS するが何も検査していない」テストへ静かに劣化する。
+      const probe = spawnSync('bash', ['-c', 'command -v aws'], {
+        encoding: 'utf8',
+        env: { ...process.env, PATH: pathWithoutAwsValue },
+      });
+      expect(probe.status).not.toBe(0);
+
+      const { status, stderr } = run(['preflight'], {
+        VITEST: '',
+        PATH: pathWithoutAwsValue,
+      });
+      expect(status).not.toBe(0);
+      expect(stderr).toContain('aws');
+      expect(stderr).toContain('cloud-setup.sh');
+      // 🔴 これが本 Issue の核心。層を取り違えた旧メッセージを出さないことを固定する。
+      expect(stderr).not.toContain('AWS 認証情報を解決できません');
+    },
+    20_000,
+  );
+
+  // 変異検証その 2（存在方向）: 直前の「環境の固定」ブロックにある
+  // 「AWS 認証情報が無い状態で成功と報告しない」テストが、この対照そのものを与える ――
+  // そちらは実 `aws` バイナリが PATH に存在する前提で、資格情報エラーの文言
+  // （「AWS 認証情報を解決できません」）まで到達することを固定している。つまり
+  // command-preflight は「aws が有るときは黙って通過し、無いときだけ止める」ことが、
+  // 本ブロックのテストと合わせて両方向とも実測されている。
 });
 
 describe('VITEST 実行中は AWS 呼び出しより先に止まる (Important 7)', () => {
@@ -354,6 +413,30 @@ describe('collect_observation が集める観測 (Minor 9 / Important 7)', () =>
     const block = code.slice(caseStart, caseEnd);
     expect(block).toContain('quality-gate.sh');
     expect(block).toContain('--pr');
+  });
+
+  /**
+   * 🔴 **verify は build:open-next を quality-gate.sh --pr より先に呼ぶ (#680)。**
+   *
+   * フレッシュな clone には `.open-next/` が無い。旧順序（gate → build）だと、
+   * `set -euo pipefail` の下で `quality-gate.sh --pr` が「検査できなかった」ことを
+   * 理由に green スタンプを書かず非ゼロで終わり（#640 の設計そのもの）、`set -e` が
+   * `verify` をそこで打ち切るため、`.open-next/` を作る唯一の手段である
+   * `npm run build:open-next` が一度も実行されない。**何回リトライしても green
+   * スタンプが書けないデッドロック**になる（クラウドの実セッションで踏んだ）。
+   * ゲートへの入力を作るステップは、ゲートより前に置く。
+   */
+  it('verify は build:open-next を quality-gate.sh より前に呼ぶ（フレッシュ clone のデッドロック回避）', () => {
+    const caseStart = code.indexOf('\n  verify)');
+    if (caseStart === -1) throw new Error('wrapper に verify) ケースが見つかりません');
+    const caseEnd = code.indexOf('\n  diff)', caseStart);
+    if (caseEnd === -1) throw new Error('wrapper に diff) ケースが見つかりません（verify ケースの終端）');
+    const block = code.slice(caseStart, caseEnd);
+    const buildIdx = block.indexOf('build:open-next');
+    const gateIdx = block.indexOf('quality-gate.sh');
+    if (buildIdx === -1) throw new Error('verify ケースに build:open-next が見つかりません');
+    if (gateIdx === -1) throw new Error('verify ケースに quality-gate.sh が見つかりません');
+    expect(buildIdx).toBeLessThan(gateIdx);
   });
 });
 

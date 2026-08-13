@@ -130,6 +130,25 @@ collect_observation() {
     return 1
   fi
 
+  # 🔴 **依存コマンドの有無を、AWS へ触れる前に確認する (#680)。** `aws` が cloud
+  # sandbox に入っていないと、直後の `aws sts get-caller-identity` はシェルの
+  # 「command not found」で失敗する。それをそのまま資格情報エラーとして扱うと
+  # 「AWS 認証情報を解決できません」という**誤った層**を報告してしまう ―― 実際に
+  # 2026-08 の初回試行でこれが起きた（`docs/cloud-dev-environment.md` §1）。
+  # 判定ロジックは src/domain/governance/command-preflight.ts（純関数）に置き、
+  # ここは `command -v` で存在を集めて渡すだけの I/O 層にとどめる。
+  local cmd cmd_args=()
+  for cmd in aws; do
+    if command -v "${cmd}" >/dev/null 2>&1; then
+      cmd_args+=("${cmd}=true")
+    else
+      cmd_args+=("${cmd}=false")
+    fi
+  done
+  if ! npx tsx "${ROOT}/scripts/aws-command-preflight.ts" "${cmd_args[@]}"; then
+    return 1
+  fi
+
   if ! identity="$(aws sts get-caller-identity --output json 2>&1)"; then
     echo "AWS 認証情報を解決できません: ${identity}" >&2
     return 1
@@ -295,8 +314,23 @@ case "${SUB}" in
     collect_observation "$(mktemp)" 1200
     ;;
   verify)
-    "${ROOT}/scripts/quality-gate.sh" --pr
+    # 🔴 **`build:open-next` を `quality-gate.sh --pr` より先に走らせる (#680)。**
+    # フレッシュな clone には `.open-next/` が無く、旧順序（gate → build）だと
+    # `set -euo pipefail` の下で次のように必ずデッドロックする:
+    #   1) `quality-gate.sh --pr` が「infra WebStack synth」等を検査できず
+    #      SKIP を報告し、green スタンプを書かずに非ゼロで終わる（#640。検査できなかった
+    #      ステップを green として記録しない設計そのもの）。
+    #   2) `set -e` がここで `verify` を打ち切る。
+    #   3) `.open-next/` を作る唯一の手段である `npm run build:open-next` が
+    #      **一度も実行されない**。
+    #   4) 次に `verify` を再実行しても `.open-next/` は相変わらず無いので 1) から
+    #      繰り返す ―― 何回リトライしても green スタンプが書けない。
+    # ゲートは「検査できないものを green にしない」設計なので、ゲートへの入力を
+    # **作る**ステップは必ずゲートより前に置く。また、クラウドセッションへの委譲
+    # プロンプトは元々 `build:open-next` → `quality-gate.sh` の順で書いてきており
+    # （運用側が実際に踏んでいる手順）、この wrapper だけが逆順だった。
     ( cd "${ROOT}" && npm run build:open-next )
+    "${ROOT}/scripts/quality-gate.sh" --pr
     ;;
   diff)
     collect_observation "$(mktemp)" 1200
