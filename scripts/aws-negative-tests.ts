@@ -368,6 +368,9 @@ const SIMULATED_CHECKS: ReadonlyArray<SimulatedCheck> = [
     guards: '層 3 DenyIamWriteOnForeignPrincipals（他プロジェクトのポリシー。Important 5）',
   },
   // ---- #680 R4: us-east-1 にしか存在しないリソースを実際に問う ----
+  // 🔴 S15/S16 はどちらも stack ARN を対象にする（2026-08-13 実測で訂正。S16 の
+  // コメント参照）。両方とも通常どおりシミュレータで評価できる ―― もはや probe を
+  // 発火させる check ではない。
   {
     id: 'S15',
     action: 'cloudformation:DescribeStacks',
@@ -383,18 +386,33 @@ const SIMULATED_CHECKS: ReadonlyArray<SimulatedCheck> = [
     guards: 'entry の ReadOwnDevStacksForDiffGate（us-east-1 の stack ARN が許可リストにあるか）',
   },
   {
+    // 🔴 **2026-08-13 の `cdk deploy --no-execute` 実測で訂正（#680 フォローアップ）。**
+    // 以前はここに changeSet ARN（`changeSet/claude-gate-*/*`）を渡し、シミュレータが
+    // `implicitDeny` を返し続けることを「シミュレータが changeset リソース種別を
+    // 評価できない」という道具側の限界として扱っていた。しかし実 API の AccessDenied は
+    // `resource: arn:...:stack/OpenReception-Web-dev/<id>` ―― **stack ARN** を名指しした。
+    // `DescribeChangeSet` は changeSet ARN ではなく stack ARN に対して認可される。
+    // シミュレータの `implicitDeny` は道具の限界ではなく、当時のポリシーが stack ARN の
+    // Allow に `DescribeChangeSet` を含めていなかったこと（ドキュメント読解に基づく
+    // 誤った設計）を正しく示していた。`claude-deploy-entry.json` 側を
+    // `ReadOwnDevStacksForDiffGate` へ統合したので、ここも stack ARN へ向け直す。
+    // probe 機構自体（`isUnexplainedImplicitDeny` / `classifyProbeVerdict`）は
+    // 汎用のまま残す ―— 別のリソース種別で同じ限界に当たったときのために。
     id: 'S16',
     action: 'cloudformation:DescribeChangeSet',
     resource: () =>
-      `arn:aws:cloudformation:us-east-1:${ACCOUNT}:changeSet/claude-gate-abc1234/dummy-id`,
+      `arn:aws:cloudformation:us-east-1:${ACCOUNT}:stack/OpenReception-CfMonitoring-dev/dummy-id`,
     principals: ['entry'],
     coverage: {
       kind: 'only',
       region: 'us-east-1',
-      reason: 'ap-northeast-1 側は S15 と対になる既存の手動確認（runbook 4b-2）で覆っている',
+      reason: 'OpenReception-CfMonitoring-dev は us-east-1 にしか存在しない（S15 と同じ理由）',
     },
     expected: 'allowed',
-    guards: 'entry の ReadOwnChangeSetsForDiffGate（us-east-1 の changeSet ARN）',
+    guards:
+      'entry の ReadOwnDevStacksForDiffGate（DescribeStacks と同じ stack ARN Allow に ' +
+      'DescribeChangeSet も含む。2026-08-13 実測: 実 API の AccessDenied resource が ' +
+      'stack ARN だったため changeSet ARN scoping は誤りと判明）',
   },
   // ---- #680 R2: carve-out そのものを問う対（片方だけでは意味を成さない） ----
   {
@@ -635,17 +653,27 @@ function simulate(
 }
 
 /**
- * 🔴 **probe: シミュレータがこのアクション／リソース種別を評価できているかを測定する
- * （#680 フォローアップ / defect 2）。**
+ * 🔴 **probe: このアクション／リソース種別の組み合わせが評価可能かを測定する
+ * （#680 フォローアップ / defect 2。2026-08-13 の実 API 実測で解釈を訂正 ―
+ * 詳細は ADR 0009 決定 2 の「認可の資源型は実 API 応答で確認する」）。**
  *
  * `iam:SimulateCustomPolicy` に、評価対象の principal とは無関係な**最小ポリシー**
  * （`action` を `Resource: "*"` で Allow するだけの 1 ステートメント）を渡し、同じ
  * `resource` ARN に対して評価させる。**最小限の Allow ですら `implicitDeny` が返るなら、
- * principal 側のポリシーの中身に関係なく評価できていない** ―― IAM のポリシー
- * シミュレータがそのリソース種別（例: CloudFormation changeSet ARN）を認識していない
- * ことの直接証拠になる（実測: `DescribeChangeSet`/`ExecuteChangeSet` を changeSet ARN
- * ＋ `Resource: "*"` で評価しても `implicitDeny`。`DescribeStacks` を stack ARN で
- * 同様に評価すると `allowed` ―― stack 型は機能する）。
+ * principal 側のポリシーの中身に関係なく評価できていない。**
+ *
+ * 🔴 **当初「IAM のポリシーシミュレータがそのリソース種別を認識していない」という
+ * 道具側の限界だと解釈したが、これは誤りだった。** 実際の `cdk deploy --no-execute` が
+ * 返した `AccessDenied` の `resource` は **stack ARN**（`arn:...:stack/OpenReception-Web-dev/<id>`）
+ * であり、changeSet ARN ではなかった。`DescribeChangeSet` は changeSet ARN ではなく
+ * **stack ARN** に対して認可される ―― つまり「changeSet ARN ＋ `Resource: "*"` の
+ * `DescribeChangeSet` を評価すると `implicitDeny`」という実測は、シミュレータの限界の
+ * 証拠ではなく、**その資源型スコープではこのアクションが本来一致し得ない**ことを
+ * シミュレータが正しく答えていた結果だった（`DescribeStacks` を stack ARN で評価すると
+ * `allowed` になる ―― stack 型そのものは機能している）。この probe 機構は今もこの
+ * check（S15/S16）を発火させないが、**別のアクション／リソース種別の組み合わせで
+ * 同じ形の `implicitDeny` に出会ったとき**、それが道具の限界なのか資源型の想定違いなのかを
+ * 見分ける最初の一歩として汎用的に残す。
  *
  * 呼び出し元は `isUnexplainedImplicitDeny(check.expected, decision)` が true の場合
  * （= `expected: 'allowed'` の check が `implicitDeny` を返した場合）**だけ**これを呼ぶ。

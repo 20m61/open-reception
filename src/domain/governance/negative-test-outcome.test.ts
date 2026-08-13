@@ -300,12 +300,16 @@ describe('resolveExecutionScope', () => {
 });
 
 /**
- * 🔴 defect 2（#680 フォローアップ）: `S16`（changeSet ARN への `DescribeChangeSet`、
- * `expected: 'allowed'`）は実測で常に `implicitDeny` を返す ―― `claude-deploy-entry.json`
- * ではなく、IAM のポリシーシミュレータが CloudFormation の `changeset` リソース種別を
- * 評価できないため（`Resource: "*"` の最小 Allow でも `implicitDeny`）。
- * `S15`/`S16` へのハードコードした exemption ではなく、`expected: 'allowed'` の check が
- * `implicitDeny` を返したときだけ probe を打つ、という測定に落とす。
+ * 🔴 defect 2（#680 フォローアップ）: `S16`（当時は changeSet ARN への
+ * `DescribeChangeSet`、`expected: 'allowed'`）が実測で常に `implicitDeny` を返した。
+ * 2026-08-13 の実 API（`cdk deploy --no-execute`）の `AccessDenied` は stack ARN を
+ * 名指ししており、`DescribeChangeSet` は changeSet ARN ではなく stack ARN に対して
+ * 認可されると判明した ―― `implicitDeny` はシミュレータの限界ではなく、changeSet ARN
+ * スコープでは本来一致し得ないという正しい応答だった（`negative-test-outcome.ts` の
+ * コメント参照）。`S16` は stack ARN へ訂正済みでこの probe を発火させないが、
+ * 「ハードコードした exemption ではなく `expected: 'allowed'` の check が `implicitDeny`
+ * を返したときだけ probe を打つ」という測定の仕組み自体は、別の未知の資源型に出会った
+ * ときのために汎用のまま残す。
  */
 describe('parseEvalDecision', () => {
   it.each(['allowed', 'explicitDeny', 'implicitDeny'] as const)(

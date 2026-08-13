@@ -228,11 +228,11 @@ export function resolveExecutionScope(simulateOnly: boolean, liveOnly: boolean):
 }
 
 /**
- * シミュレータ未対応リソース種別 (#680 フォローアップ / defect 2)。
+ * probe の仕組み: 「シミュレーション不能」を自動測定する (#680 フォローアップ / defect 2)。
  *
- * `S15`/`S16` は `cloudformation:DescribeChangeSet` を changeSet ARN に対して評価し、
- * `expected: 'allowed'` を宣言している。実測（2026-08-13、`simulate-custom-policy` で
- * 単離）:
+ * `S16`（`cloudformation:DescribeChangeSet` を changeSet ARN に対して評価し
+ * `expected: 'allowed'`）が `implicitDeny` を返し続けた（2026-08-13、`simulate-custom-policy`
+ * で単離）:
  *
  * | 呼び出し | 結果 |
  * | --- | --- |
@@ -241,19 +241,29 @@ export function resolveExecutionScope(simulateOnly: boolean, liveOnly: boolean):
  * | `DescribeChangeSet`, changeSet ARN, `Resource: "*"` | `implicitDeny`（最小 Allow でも！） |
  * | `ExecuteChangeSet`, changeSet ARN, `Resource: "*"` | `implicitDeny`（同上） |
  *
- * `Resource: "*"` の最小 Allow ですら `implicitDeny` を返すのは、ポリシーの中身が
- * 悪いのではなく **IAM のポリシーシミュレータが CloudFormation の `changeset`
- * リソース種別を評価できない**ことを意味する。この事実は `claude-deploy-entry.json`
- * には何の欠陥も無い（デプロイ済みインラインポリシーとリポジトリのファイルは
- * バイト一致）。
+ * 当初はこれを「IAM のポリシーシミュレータが CloudFormation の `changeset` リソース種別を
+ * 評価できない」という**道具側の限界**と解釈した。
  *
- * 🔴 **これを `S15`/`S16` へのハードコードした exemption にしない。** 「落ちようのない
- * 検査」を作る側の欠陥は、このブランチが何度も踏んできた（Critical 3・R4）。代わりに、
- * **`expected: 'allowed'` の check が `implicitDeny`（他の何にも一致しなかった）を
- * 返したときだけ**、最小 Allow による probe を打って「シミュレータが本当に評価できて
- * いないのか」を都度測る。AWS がいつか changeset リソース種別へ対応すれば、probe が
- * `allowed` を返すようになり、check は自動的に通常の採点へ戻る（`isUnexplainedImplicitDeny`
- * → `classifyProbeVerdict` の合成）。
+ * 🔴 **この解釈は誤りだった（2026-08-13、`cdk deploy --no-execute` の実 API 実測で訂正）。**
+ * 実際の `AccessDenied` は `resource: arn:...:stack/OpenReception-Web-dev/<id>` ――
+ * **stack ARN** を名指しした。`DescribeChangeSet` は changeSet ARN ではなく stack ARN に
+ * 対して認可される。つまり上表の `implicitDeny` は、シミュレータが評価できていないのでは
+ * なく、**「changeSet ARN スコープの Allow では `DescribeChangeSet` は本来一致し得ない」**
+ * という正しい答えを返していた。ポリシー側の設計が AWS Service Authorization Reference の
+ * 読解に基づいて誤っていた（`ReadOwnChangeSetsForDiffGate` を changeSet ARN にスコープして
+ * いた）ことが原因であり、`claude-deploy-entry.json` は `ReadOwnDevStacksForDiffGate` へ
+ * `DescribeChangeSet` を統合する形へ訂正済み（詳細: ADR 0009 決定 2）。**S15/S16 とも
+ * stack ARN を対象にした結果、もはやこの probe を発火させない。**
+ *
+ * 🔴 **それでもこの機構自体は汎用のまま残す。** 「落ちようのない検査」を作る側の欠陥は
+ * このブランチが何度も踏んできた（Critical 3・R4）。**`expected: 'allowed'` の check が
+ * `implicitDeny`（他の何にも一致しなかった）を返したときだけ**、最小 Allow による probe を
+ * 打って「本当に評価できていないのか」を都度測る。教訓は「ドキュメントの読解ではなく
+ * 実 API 応答で資源型を確認する」ことであり、`implicitDeny` を安易に道具の限界だと
+ * 決め打たない ―― 今回のケースでは probe と当初の解釈がどちらも同じ誤読の上に立っていた。
+ * AWS が将来 changeset リソース種別へ実際に対応する、または別のアクションで真にシミュレータが
+ * 未対応な資源型に出会えば、probe が `allowed` を返すようになり、check は自動的に通常の
+ * 採点へ戻る（`isUnexplainedImplicitDeny` → `classifyProbeVerdict` の合成）。
  */
 
 /**

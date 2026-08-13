@@ -183,14 +183,18 @@ describe('simulate() は boundary を readFileSync で渡す（file:// を渡さ
 });
 
 /**
- * 🔴 **Defect 2（#680 フォローアップ）: `S15`/`S16` は実測で `implicitDeny` を返す ――
- * `claude-deploy-entry.json` の欠陥ではなく、IAM のポリシーシミュレータが
- * CloudFormation の `changeset` リソース種別を評価できないため（`Resource: "*"` の
- * 最小 Allow でも `implicitDeny`）。**
+ * 🔴 **Defect 2（#680 フォローアップ）: `S16` は当時（changeSet ARN スコープだった頃）
+ * 実測で `implicitDeny` を返し続けた。** 2026-08-13 の `cdk deploy --no-execute` 実測で、
+ * これは `claude-deploy-entry.json` の欠陥でもシミュレータの限界でもなく、
+ * `DescribeChangeSet` が changeSet ではなく stack リソースタイプに対して認可される
+ * ことを正しく示していたと判明した（詳細: `negative-test-outcome.ts` のコメント、
+ * ADR 0009 決定 2）。`S16` は stack ARN へ訂正済みで、もはやこの `implicitDeny` を
+ * 踏まない。
  *
- * probe（`probeSimulatorSupport`）は「measurement であって assertion ではない」
- * ―― `isUnexplainedImplicitDeny` のゲートの外では絶対に呼ばれず、`S15`/`S16` の
- * ID をハードコードして特別扱いしてもいない。これらを source 上で固定する。
+ * probe（`probeSimulatorSupport`）は「measurement であって assertion ではない」―
+ * `isUnexplainedImplicitDeny` のゲートの外では絶対に呼ばれず、check の ID を
+ * ハードコードして特別扱いもしていない。この機構自体は、別の未知の資源型に出会った
+ * ときのために汎用のまま残っている。これらを source 上で固定する。
  */
 describe('probe は isUnexplainedImplicitDeny のゲートの内側でしか呼ばれない (#680 フォローアップ / defect 2)', () => {
   const mainBody = stripTsComments(extractFunctionBody(SOURCE, 'function main(', 'main();'));

@@ -71,31 +71,63 @@ pass できるのは層 1 の allowlist に入るスタック操作のときだ�
 担保する設計にした。「exec role が `cloudfront:DeleteDistribution` を resource `*` で持つ」
 ことは、`OpenReception-*-dev` スタックのテンプレートがそれを要求したときにしか行使されない。
 
-**副作用と残存ギャップ**: changeSet ARN（`arn:...:changeSet/<name>/<id>`）は stack 名を
-埋め込まない。そのため `DescribeChangeSet` / `ExecuteChangeSet` / `DeleteChangeSet` の
-3 アクションは、stack ARN ではなく changeSet の**名前**（`claude-gate-*`）でしかスコープ
-できない。結果として、この 3 アクションは deploy role 単体の層では**アカウント全体**で
-`claude-gate-*` という名前の changeSet に対して許可されており、**構造的に閉じられない**。
+**副作用と残存ギャップ（2026-08-13 の実測で訂正）**: 当初はここに「changeSet ARN は
+stack 名を埋め込まないため、`DescribeChangeSet` / `ExecuteChangeSet` / `DeleteChangeSet`
+の 3 アクションは stack ARN ではなく changeSet の**名前**でしかスコープできず、この
+3 アクションはアカウント全体で `claude-gate-*` という名前の changeSet に対して許可されて
+おり構造的に閉じられない」と書いていた。**この前提は `DescribeChangeSet` については
+誤りだったと実測で判明した**（次段落）。
+
+🔴 **認可の資源型はドキュメントの読解ではなく実 API 応答で確認する ―― この設計が
+踏んだ失敗（教訓）。** AWS Service Authorization Reference の読解を根拠に
+「`DescribeChangeSet` / `ExecuteChangeSet` / `DeleteChangeSet` は changeSet リソース
+タイプに対して認可される」と結論し、主境界を changeSet **名前**スコープへ再設計した
+（`ReadOwnDevStacksForDiffGate` から `DescribeChangeSet` を切り出し、`changeSet/claude-gate-*/*`
+の別 Allow へ分離した）。ところが 2026-08-13 の実 `cdk deploy --no-execute` が返した
+`AccessDenied` は次のとおり ―― **`resource` が `stack/...` ARN であり、`changeSet/...`
+ARN ではない**（denial message は原文のまま記録する。これが唯一の証拠である）:
+
+```
+AccessDenied: User: arn:aws:sts::822063948773:assumed-role/OpenReceptionClaudeDeploy-dev/claude-cloud-20260814-0352
+is not authorized to perform: cloudformation:DescribeChangeSet
+on resource: arn:aws:cloudformation:ap-northeast-1:822063948773:stack/OpenReception-Web-dev/f9c7aab0-8f6f-11f1-be9b-0a2cf2440d9f
+because no identity-based policy allows the cloudformation:DescribeChangeSet action
+```
+
+**`DescribeChangeSet` は stack ARN に対して認可される。** `iam:SimulatePrincipalPolicy` で
+changeSet ARN ＋ `Resource: "*"` の最小 Allow を与えても `implicitDeny` になっていた実測
+（`S16`、後述）は、道具の限界の証拠ではなく、**「changeSet ARN スコープの Allow では
+このアクションは本来一致し得ない」という正しい応答**だった。この誤読を、シミュレータの
+`implicitDeny` を「道具側の限界」と決め打ったことが後押しした ―― 本来なら「そもそも
+この資源型で認可されているのか」を先に疑うべきだった。
+
+> 🔴 **教訓**: An IAM action's authorisation resource type must be confirmed against a
+> real API response, not inferred from documentation. A documentation reading
+> redesigned the primary boundary around the wrong resource type; the simulator's
+> inability to evaluate that type was evidence pointing at the error and was misread
+> as a tooling limitation.
+
+**対処**: `claude-deploy-entry.json` の `DescribeChangeSet` を `ReadOwnDevStacksForDiffGate`
+（stack ARN の Allow）へ統合し、changeSet ARN スコープの `ReadOwnChangeSetsForDiffGate` は
+削除した（一度も実際の権限として機能していなかった死んだステートメントだったため）。
+`scripts/aws-negative-tests.ts` の `S16` も stack ARN へ向け直し、`S15` と同じ形で通常どおり
+シミュレートできるようにした。
+
+**`ExecuteChangeSet` / `DeleteChangeSet` はまだ未証明である。** これらは deploy 段の実行
+（`cdk deploy`、`--no-execute` の diff 実行時の cleanup）でしか呼ばれず、今回の
+`diff --no-execute` 実行では発火していない。stack ARN で認可されるのか changeSet 名前
+スコープが必要なのかは実測していない。**推測で決めない**ため、
+`claude-deploy-role-restriction.json` の deploy role 上乗せ Deny には、既存の stack ARN
+許可リスト（`CreateChangeSet`/`DescribeChangeSet` を証明済みでカバーする）に加えて、
+changeSet 名前スコープ（`claude-gate-*`）の許可エントリを**予防的な安全網として残して
+ある**（次に `deploy` を実行して壊さないため）。この 2 アクションが実際にどちらの
+資源型で評価されるかは、`bash scripts/aws-cloud-deploy.sh deploy` を実行して初めて
+分かる。分かるまでは「`claude-gate-*` という名前の changeSet に対してアカウント全体で
+許可されている可能性」という同じ形の残存ギャップが残る（詳細は spec §13）。
 悪用には foreign stack 上にあらかじめ `claude-gate-*` という名前の changeSet が存在している
 ことが前提で、かつ deploy role はそのような changeSet を自分で作れない（`CreateChangeSet`
 は stack ARN で認可され、foreign stack は層 1・3 で Deny 済み）。実行を伴う操作は
 cfn-exec role 側の `DenyForeignProjectStacks`（層 3 相当）が第二の防波堤として止める。
-現実的な露出は `DescribeChangeSet` による内容の閲覧と `DeleteChangeSet` による妨害に限定される
-（詳細は `docs/runbook-cloud-aws-deploy.md` および spec §13）。
-
-🔴 **この changeSet スコープの authorisation は `iam:SimulatePrincipalPolicy` で確認できない
-（2026-08-13 実測、#680 フォローアップ）。** AWS の IAM ポリシーシミュレータは
-CloudFormation の `changeset` リソース種別自体を評価できず、`Resource: "*"` の
-最小 Allow を与えても `implicitDeny` を返す（`claude-deploy-entry.json` 側の欠陥ではない
-―― デプロイ済みインラインポリシーと本リポジトリのファイルはバイト一致で確認済み）。
-したがって「S1〜S22 が全部期待どおり」を初回デプロイの前提条件と書くことはできない
-（`S15`/`S16` は構造的に一致し得ない）。この 2 件は `negative-test-outcome.ts` の
-`isUnexplainedImplicitDeny` / `classifyProbeVerdict` による自動 probe で
-「ℹ️ シミュレーション不能」と測定され、pass/fail の集計から除外される。
-changeSet スコープの authorisation を**実際に**検証するのは
-`bash scripts/aws-cloud-deploy.sh diff`（`--no-execute` で change set を作り
-`describe-change-set` を呼ぶ）である ―― 誤ったスコープはここで初めて AccessDenied
-として現れる。詳細は `docs/runbook-cloud-aws-deploy.md` ステップ 4 と §13。
 
 ### 決定 3: 短命 STS の有効期限そのものをデプロイ窓とする
 
@@ -330,18 +362,25 @@ provider 実装の変更で**初回デプロイを AccessDenied で壊す**。�
 
 - **`iam:SimulatePrincipalPolicy` による実 API 検証（`docs/runbook-cloud-aws-deploy.md`
   ステップ 4a の S1〜S22 と、ステップ 4b・4c の 19 コマンド）を 2026-08-13 に実 IAM へ
-  向けて初めて実行した。** 49/50 件が期待どおりで、残り 1 件（`S16`）は
-  `claude-deploy-entry.json` の欠陥ではなく、**IAM のポリシーシミュレータが
-  CloudFormation の `changeset` リソース種別を評価できない**という道具側の限界だった
-  （`Resource: "*"` の最小 Allow を与えても `implicitDeny`。詳細は決定 2 の残存ギャップ）。
-  🔴 **したがって「S1〜S22 が全件期待どおりの結果を返すこと」を初回デプロイの前提条件
-  と書くことはできない ―― `S15`/`S16` は構造的に一致し得ない。** 代わりに、この 2 件は
-  `negative-test-outcome.ts` の probe（`isUnexplainedImplicitDeny` →
-  `classifyProbeVerdict`）で「シミュレーション不能」と測定され、pass/fail の集計から
-  除外される。**それ以外の全件が期待どおりであること**が前提条件であり、
-  changeSet スコープの authorisation は `bash scripts/aws-cloud-deploy.sh diff`
-  （`--no-execute` の change set 作成 → `describe-change-set`）で実際に検証する。
-  1 件でも（notSimulatable 以外で）期待と違えば設計を見直す。
+  向けて初めて実行した。** 49/50 件が期待どおりで、残り 1 件（`S16`）は当時
+  `implicitDeny` を返し続けた。
+  🔴 **当初は「IAM のポリシーシミュレータが CloudFormation の `changeset` リソース種別を
+  評価できない」という道具側の限界と解釈したが、この解釈自体が誤りだった。** 同日、
+  実 `cdk deploy --no-execute` の `AccessDenied` が `resource: stack/OpenReception-Web-dev/<id>`
+  ―― stack ARN ―― を名指しした（原文は決定 2 参照）。`DescribeChangeSet` は
+  changeSet ARN ではなく stack ARN に対して認可される。`S16` の `implicitDeny` は
+  シミュレータの限界の証拠ではなく、「changeSet ARN スコープでは本来一致し得ない」と
+  いう正しい応答だった。**教訓: 認可の資源型はドキュメント読解ではなく実 API 応答で
+  確認する**（詳細と原文は決定 2）。
+  `claude-deploy-entry.json` を stack ARN の Allow へ統合し、`S16` も stack ARN へ
+  向け直したことで、`S15`/`S16` はどちらも通常どおりシミュレートできるようになった
+  （**この訂正後の値でステップ 4a を再実行してはいない** ―― IAM 側の変更適用は
+  ユーザーが行う。次回実行時に両方 `allowed` になることを確認すること）。
+  一方 `ExecuteChangeSet` / `DeleteChangeSet` がどちらの資源型で認可されるかは
+  まだ実測していない（決定 2 の対処欄を参照）。**それ以外の全件が期待どおりであること**
+  が前提条件であり、`ExecuteChangeSet`/`DeleteChangeSet` の資源型は
+  `bash scripts/aws-cloud-deploy.sh deploy` を実行して初めて確定する。
+  1 件でも期待と違えば設計を見直す。
   （番号は 1〜20 まで振ってあるが、ステップ 4b の**10 番はコマンドではなく
   「1〜9 を us-east-1 で繰り返せ」という指示**なので実コマンドは 19 本。
   「20 コマンド」は誤記だった ―― 2026-08-12 残件レビュー R7）
