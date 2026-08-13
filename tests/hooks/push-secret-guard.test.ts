@@ -98,7 +98,11 @@ describe('push-secret-guard: 対象外は素通しする', () => {
     expect(runHook('git push', { tool: 'Edit' }).status).toBe(0);
   });
 
-  it('git push を含まないコマンドは素通しする', () => {
+  it('git push を含まないコマンドは push として分類されない（秘密情報があっても通す）', () => {
+    // 🔴 秘密情報が無いリポジトリで status===0 を見るだけでは、「push として認識されな
+    // かったから通った」のか「push だと認識されたが検査対象が空だったから通った」のか
+    // 区別できない（レビュー指摘）。秘密情報を先に積み、それでも通ることを固定する。
+    commit(repo, 'leak.env', `AWS_ACCESS_KEY_ID=${FAKE_AWS_KEY}\n`, 'oops: leak');
     for (const cmd of ['git status', 'git commit -m "x"', 'git log', 'npm test']) {
       expect(runHook(cmd).status, cmd).toBe(0);
     }
@@ -120,12 +124,46 @@ describe('push-secret-guard: 対象外は素通しする', () => {
 });
 
 describe('push-secret-guard: コマンド位置の git push を捕まえる', () => {
-  it('連結されていても捕まえる', () => {
-    commit(repo, 'clean.txt', 'nothing secret here\n', 'feat: clean');
+  it('連結されていても捕まえる（秘密情報ありで差分テスト）', () => {
+    // 🔴 秘密情報が無いリポジトリで status===0 を見るだけでは「push として捕まえた上で
+    // 許可した」のか「そもそも push として認識していない」のか区別できない
+    // （レビュー指摘）。秘密情報を積み、ブロックされる（status 2）ことで
+    // 「捕まえている」ことそのものを固定する。
+    commit(repo, 'leak.env', `AWS_ACCESS_KEY_ID=${FAKE_AWS_KEY}\n`, 'oops: leak');
     for (const cmd of ['npm run build && git push', 'git push; echo done', 'true | true && git push origin HEAD']) {
-      // 秘密情報が無いので通るが、少なくとも「対象コマンドとして扱われる」ことを別テストで検証する
-      expect(runHook(cmd).status, cmd).toBe(0);
+      expect(runHook(cmd).status, cmd).toBe(2);
     }
+  });
+
+  it('改行区切りの複数行コマンドでも捕まえる（先頭行が git で始まらなくても）', () => {
+    // 🔴 実際に見逃していたバグ（レビュー指摘）: サニタイズの `tr '\n' ' '` を
+    // is_git_push の文分割より先にかけていたため、改行がすべて空白に潰れ、
+    // 「先頭行が git で始まらない」複数行コマンドが 1 つの非マッチな文へ結合されて
+    // push が一度もスキャンされなかった。これは回避手口ではなく、Bash ツール呼び出し
+    // のごく普通の形（このセッションで実際に使われた形）。
+    commit(repo, 'leak.env', `AWS_ACCESS_KEY_ID=${FAKE_AWS_KEY}\n`, 'oops: leak');
+    const multiline = ['echo hi', 'git push origin HEAD'].join('\n');
+    expect(runHook(multiline).status, multiline).toBe(2);
+  });
+
+  it('push が先頭行で、後に別の行が続いても捕まえる', () => {
+    commit(repo, 'leak.env', `AWS_ACCESS_KEY_ID=${FAKE_AWS_KEY}\n`, 'oops: leak');
+    const multiline = ['git push origin HEAD', 'echo done'].join('\n');
+    expect(runHook(multiline).status, multiline).toBe(2);
+  });
+
+  it('ヒアドキュメントの後に push が続いても捕まえる', () => {
+    commit(repo, 'leak.env', `AWS_ACCESS_KEY_ID=${FAKE_AWS_KEY}\n`, 'oops: leak');
+    const multiline = ["cat <<EOF", "some notes here, mentions push casually", "EOF", "git push origin HEAD"].join(
+      '\n',
+    );
+    expect(runHook(multiline).status, multiline).toBe(2);
+  });
+
+  it('改行区切りでも、実際に push を含まない複数行コマンドは通す', () => {
+    commit(repo, 'leak.env', `AWS_ACCESS_KEY_ID=${FAKE_AWS_KEY}\n`, 'oops: leak');
+    const multiline = ['echo hi', 'git log --grep push'].join('\n');
+    expect(runHook(multiline).status, multiline).toBe(0);
   });
 });
 
