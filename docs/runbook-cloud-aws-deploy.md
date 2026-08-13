@@ -638,19 +638,28 @@ Secrets Manager 不可・KMS 破壊不可・IAM 昇格不可）。carve-out **�
 （`src/domain/governance/deploy-diff-gate.ts`）であり、Permissions Boundary ではない。
 gate は change set と synth テンプレートを、**1 バイトも AWS に適用される前に**読む:
 
-- carve-out の名前空間に入る `AWS::IAM::Role` は、既知の CDK provider role 3 本以外
+- carve-out の名前空間に入る `AWS::IAM::Role` は、既知の CDK provider role 4 本以外
   **停止**（`carveOutRoleNamespace`）。物理名は IAM が見るとおりに組む
-  （生成名の切り詰め・明示 `RoleName`・`Path`）
-- その 3 本を**名乗った**だけのロールも、実体が CDK の生成する形と違えば**停止**
+  （生成名の切り詰め・明示 `RoleName`・`Path`）。4 本目は `s3deploy.BucketDeployment`
+  （`web-stack.ts` の `AssetDeployment`）が使う `SingletonFunction` の ServiceRole
+  （#680 続報。`.open-next/` を build 済みで実 `WebStack` を synth して実測した）
+- その 4 本を**名乗った**だけのロールも、実体が CDK の生成する形と違えば**停止**
   （`carveOutRoleShape`）。固定しているのは
   **trust policy の Principal（`lambda.amazonaws.com` のみ）と Action
   （`sts:AssumeRole` のみ）／managed policy（基本実行ロールのみ）／
   action と Resource の許可リスト**の 4 点。
-  action は **synth で実測した 6 つの `ssm:` アクションだけを許す**（否認リストでは
-  ない —— `iam:` のようなコロン込みの接頭辞で禁じても `iam*` `sts*` `*:*`
-  `*:CreateRole` がすり抜けるので、2026-08-13 に許可リストへ反転した）。
-  `Resource` も**実測どおり `parameter/cdk/exports/` の下**に閉じていることを要求する
-  （自アカウント固定、リージョンは具体値。`*` や `parameter/*` は停止）——
+  action は **synth で実測した 16 個の許可リストだけを許す**（`ssm:` が 6 個 /
+  `s3:` が 10 個。否認リストではない —— `iam:` のようなコロン込みの接頭辞で禁じても
+  `iam*` `sts*` `*:*` `*:CreateRole` がすり抜けるので、2026-08-13 に許可リストへ
+  反転した）。
+  `Resource` は action ごとに閉じ込め先が違う: `ssm:` は**実測どおり
+  `parameter/cdk/exports/` の下**（自アカウント固定、リージョンは具体値）、
+  `s3:` は **CDK 資産ステージングバケット（`cdk-orcloud01-assets-*`。既定
+  qualifier `hnb659fds` は含めない —— 層 3 の Deny と矛盾するため）と、
+  `BucketDeployment` の宛先である自前 `AssetBucket`（論理 ID `AssetBucket1D025086`
+  を `Fn::GetAtt` で照合し、`Type` が `AWS::S3::Bucket` であることまで確かめる。
+  物理名は「ハイフン無しの別綴り」で prefix 照合が成立しないため、物理名では
+  照合しない）**。`*` や `parameter/*` は停止——
   action だけを縛っても `ssm:DeleteParameters` on `*` は
   **アカウント全体の SSM パラメータを静かに消せる**。`Condition` は権限を
   狭める方向にしか働かないので見ない。
@@ -683,14 +692,24 @@ gate は change set と synth テンプレートを、**1 バイトも AWS に�
 - **gate はサンドボックスの中で走る。** `scripts/aws-cloud-deploy.sh` を迂回して
   `cdk deploy` を直接叩けば gate は動かない。IAM 側にこれを強制する仕組みは無い
   （層 1 は「どのスタックか」しか見ない）
-- **既知の 3 本を名乗りつつ、許可リストの中で振る舞う**ことはできる。
+- **既知の 4 本を名乗りつつ、許可リストの中で振る舞う**ことはできる。
   boundary の無いロールに `ssm:PutParameter` / `DeleteParameters` を
   **`parameter/cdk/exports/` の下**で持たせることは通る（provider が実際に
   そうするため）。到達範囲は**このアカウントの CDK cross-region export
   パラメータ**であり、他の CDK アプリのものを**上書き・削除**して
-  そのスタックのデプロイを壊すことはできる。`Resource` を `*` や
-  `parameter/*` へ広げる経路と、`s3:` `dynamodb:` `logs:` `iam:` などの
-  action は 2026-08-13 の 2 段の許可リスト化で**通らなくなった**
+  そのスタックのデプロイを壊すことはできる。同様に、`BucketDeployment` の
+  ServiceRole を名乗れば `s3:PutObject` / `DeleteObject*` などを**自前
+  `AssetBucket` の中**（`OpenReception-Web-dev` 自身の静的アセット）で
+  振る舞える —— 到達範囲はこのバケット 1 つに閉じる。`Resource` を `*` や
+  `parameter/*` へ広げる経路、`dynamodb:` `logs:` `iam:` などの action、
+  および許可リストに無い `s3:` action（`s3:DeleteBucket` 等）は
+  2026-08-13 / #680 続報の許可リスト化で**通らなくなった**。**4 本のうち
+  どれを名乗っても、他の 3 本の action/Resource へは広がらない** ——
+  許可リストは 4 本の**和集合**なので、例えば `EXPORT_WRITER` を名乗った
+  ロールが `s3:PutObject` を自前 `AssetBucket` へ持つことも許可リスト上は
+  通る（action は共通の一枚岩）。狭めているのは「未知の action / Resource
+  を通さない」ことであって「どの 4 本を名乗ったかで許可を分ける」ことでは
+  ない。実害は 4 本それぞれの実測範囲を超えない
 - `Condition` は見ていない。condition は権限を**狭める**方向にしか働かないので、
   無視しても安全側に外れる（provider が付ける condition を要求すると、
   CDK 実装の変更で初回デプロイを止める側の risk だけが増える）

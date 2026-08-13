@@ -750,14 +750,29 @@ describe('ドキュメントが出荷ポリシーと一致している (#680 R6/
   describe('gate の carve-out action 許可リスト', () => {
     const normalize = (s: string): string => s.replace(/\s+/g, '');
 
-    it.each([SPEC, RUNBOOK])('%s が許可リストの本数を正しく書いている', (doc) => {
-      const count = CARVE_OUT_ALLOWED_ACTIONS.size;
-      expect(count).toBeGreaterThan(0);
-      expect(normalize(readDoc(doc))).toContain(normalize(`${count} つの \`ssm:\` アクション`));
+    /**
+     * 🔴 **#680 続報: 4 本目（BucketDeployment）で `s3:` アクションが加わり、
+     * 「6 つの `ssm:` アクション」という単一プレフィックスの表現が偽になった。**
+     * 総数だけでなく、`ssm:` / `s3:` それぞれの内訳もコードから引いて文書と突き合わせる
+     * （手で書いた数字は書いた瞬間に腐る）。
+     */
+    it.each([SPEC, RUNBOOK])('%s が許可リストの本数（ssm/s3 の内訳込み）を正しく書いている', (doc) => {
+      const all = [...CARVE_OUT_ALLOWED_ACTIONS];
+      const ssmCount = all.filter((a) => a.startsWith('ssm:')).length;
+      const s3Count = all.filter((a) => a.startsWith('s3:')).length;
+      expect(ssmCount + s3Count).toBe(all.length);
+      expect(ssmCount).toBeGreaterThan(0);
+      expect(s3Count).toBeGreaterThan(0);
+      const text = normalize(readDoc(doc));
+      expect(text).toContain(normalize(`${all.length} 個`));
+      expect(text).toContain(normalize(`\`ssm:\` が ${ssmCount} 個`));
+      expect(text).toContain(normalize(`\`s3:\` が ${s3Count} 個`));
     });
 
-    it('許可リストは ssm: だけで構成されている（文書の「6 つの ssm」が真であること）', () => {
-      expect([...CARVE_OUT_ALLOWED_ACTIONS].filter((a) => !a.startsWith('ssm:'))).toEqual([]);
+    it('許可リストは ssm: と s3: だけで構成されている（4 本の carve-out ロールの実測どおり）', () => {
+      expect(
+        [...CARVE_OUT_ALLOWED_ACTIONS].filter((a) => !a.startsWith('ssm:') && !a.startsWith('s3:')),
+      ).toEqual([]);
     });
 
     /**

@@ -11,6 +11,7 @@ import {
   evaluateDeployChangeSet,
   type ChangeSetResourceChange,
   type ChangeSetSummary,
+  type StackTemplateResources,
   type TemplateProperties,
   type TemplateResource,
 } from './deploy-diff-gate';
@@ -282,18 +283,97 @@ const roleChange = (logicalId: string, action = 'Add'): ChangeSetResourceChange 
 const evaluateRoleFixture = (
   logicalId: string,
   props: TemplateProperties,
-  opts: { readonly action?: string; readonly stackName?: string } = {},
+  opts: {
+    readonly action?: string;
+    readonly stackName?: string;
+    /** ロール本体に加えて templateResources へ足す論理 ID（BucketDeployment の宛先バケット等）。 */
+    readonly extraTemplateResources?: StackTemplateResources;
+  } = {},
 ) =>
   evaluateDeployChangeSet(
     summary({
       ...(opts.stackName === undefined ? {} : { stackName: opts.stackName }),
       changes: [roleChange(logicalId, opts.action)],
-      templateResources: { [logicalId]: res('AWS::IAM::Role', props) },
+      templateResources: {
+        [logicalId]: res('AWS::IAM::Role', props),
+        ...(opts.extraTemplateResources ?? {}),
+      },
     }),
   );
 
-const [S3_AUTO_DELETE_ROLE, EXPORT_WRITER_ROLE, EXPORT_READER_ROLE] =
+const [S3_AUTO_DELETE_ROLE, EXPORT_WRITER_ROLE, EXPORT_READER_ROLE, BUCKET_DEPLOYMENT_ROLE] =
   REVIEWED_CDK_GENERATED_LOGICAL_IDS.carveOutProviderRoles;
+
+/**
+ * `BucketDeployment` の ServiceRoleDefaultPolicy（synth 実測。`infra/tmp-synth-measure.ts` で
+ * `@aws-cdk/core:bootstrapQualifier=orcloud01` を渡して `WebStack` を synth した）。
+ *
+ * 🔴 **`Resource` は synth 出力そのまま**にしてある。1 つ目の statement は CDK 資産
+ * ステージングバケット（`Fn::Join` ＋ `Ref: AWS::Partition`）、2 つ目は自前
+ * `AssetBucket`（`Fn::GetAtt` / `Fn::Join(GetAtt, '/*')`）。手書きのリテラル ARN に
+ * 直すと、実テンプレートを止めてしまう実装でもテストが緑になる。
+ */
+const CDK_ASSET_BUCKET_ARN = (suffix: string): unknown => ({
+  'Fn::Join': [
+    '',
+    ['arn:', { Ref: 'AWS::Partition' }, `:s3:::cdk-orcloud01-assets-822063948773-ap-northeast-1${suffix}`],
+  ],
+});
+
+/** `web-stack.ts` の `new s3.Bucket(this, 'AssetBucket', ...)` の論理 ID（synth 実測）。 */
+const ASSET_BUCKET_LOGICAL_ID = 'AssetBucket1D025086';
+const ASSET_BUCKET_ARN = { 'Fn::GetAtt': [ASSET_BUCKET_LOGICAL_ID, 'Arn'] };
+const ASSET_BUCKET_OBJECTS_ARN = { 'Fn::Join': ['', [ASSET_BUCKET_ARN, '/*']] };
+
+const BUCKET_DEPLOYMENT_INLINE = [
+  {
+    PolicyName: 'Inline',
+    PolicyDocument: {
+      Version: '2012-10-17',
+      Statement: [
+        {
+          Effect: 'Allow',
+          Action: ['s3:GetObject*', 's3:GetBucket*', 's3:List*'],
+          Resource: [CDK_ASSET_BUCKET_ARN(''), CDK_ASSET_BUCKET_ARN('/*')],
+        },
+        {
+          Effect: 'Allow',
+          Action: [
+            's3:GetObject*',
+            's3:GetBucket*',
+            's3:List*',
+            's3:DeleteObject*',
+            's3:PutObject',
+            's3:PutObjectLegalHold',
+            's3:PutObjectRetention',
+            's3:PutObjectTagging',
+            's3:PutObjectVersionTagging',
+            's3:Abort*',
+          ],
+          Resource: [ASSET_BUCKET_ARN, ASSET_BUCKET_OBJECTS_ARN],
+        },
+      ],
+    },
+  },
+];
+
+/** ロール本体 + 宛先 `AssetBucket`（デフォルトで `AWS::S3::Bucket`）を含む fixture。 */
+const bucketDeploymentRoleFixture = (
+  props: TemplateProperties = {},
+  opts: {
+    readonly includeBucket?: boolean;
+    readonly bucketType?: string;
+    readonly bucketLogicalId?: string;
+  } = {},
+) =>
+  evaluateRoleFixture(BUCKET_DEPLOYMENT_ROLE!, providerRole({ Policies: BUCKET_DEPLOYMENT_INLINE, ...props }), {
+    extraTemplateResources:
+      (opts.includeBucket ?? true)
+        ? {
+            [opts.bucketLogicalId ?? ASSET_BUCKET_LOGICAL_ID]: res(opts.bucketType ?? 'AWS::S3::Bucket', {}),
+          }
+        : {},
+  });
 
 const ACCOUNT = '822063948773';
 
@@ -306,7 +386,7 @@ const [SERVER_URL, IMAGE_URL] = Object.keys(URL_TARGETS) as [string, string];
 const SERVER_FN = URL_TARGETS[SERVER_URL]!;
 
 describe('A: carve-out の名前空間に入るロールを止める (#680 R10)', () => {
-  it('🔴 空虚に真になっていないことの対照: 既知の 3 本は 3 本とも通る', () => {
+  it('🔴 空虚に真になっていないことの対照: 既知の 4 本は 4 本とも通る', () => {
     // 通らなければ**初回デプロイが gate で止まる**（carve-out を足した意味が消える）。
     const passed = [
       evaluateRoleFixture(S3_AUTO_DELETE_ROLE!, providerRole({ Policies: undefined })),
@@ -314,8 +394,9 @@ describe('A: carve-out の名前空間に入るロールを止める (#680 R10)'
       evaluateRoleFixture(EXPORT_READER_ROLE!, providerRole({ Policies: PROVIDER_INLINE_READER }), {
         stackName: 'OpenReception-CfMonitoring-dev',
       }),
+      bucketDeploymentRoleFixture(),
     ];
-    expect(passed.map((v) => v.blocks.map((b) => b.reason))).toEqual([[], [], []]);
+    expect(passed.map((v) => v.blocks.map((b) => b.reason))).toEqual([[], [], [], []]);
   });
 
   it('carve-out に入る未知の論理 ID は止める（construct の id を Custom… にするだけの経路）', () => {
@@ -888,6 +969,146 @@ describe('A: 権限は隣のリソース種別から carve-out ロールへ届�
       { includeRole: false },
     );
     expect(verdict.blocks.map((b) => b.reason)).toEqual(['iamPrincipalChange']);
+  });
+});
+
+/**
+ * 🔴 **A: BucketDeployment の ServiceRole（4 本目の carve-out ロール）(#680 続報)。**
+ *
+ * この論理 ID は synth 実測（`infra/tmp-synth-measure.ts`）で新しく allowlist に足した。
+ * 「既知の 4 本は通る」（上の describe）が正の対照で、ここは**同じ論理 ID を騙る**
+ * 敵対的なテンプレートが実際に弾かれることを固定する ―— 論理 ID の allowlist だけでは
+ * 足りない、というこのファイル全体の原則をこのロールにも適用する。
+ */
+describe('A: BucketDeployment の ServiceRole (#680 続報)', () => {
+  it('🔴 ロールが carve-out の外（普通の provider role の隣）に生えても、隣接ロール検査は無関係', () => {
+    // 対照: 論理 ID を骗らず、carve-out の外に同名資産バケット参照を持つロールは、
+    // 普通の Lambda 実行ロールとして boundary の下で通る（flag のみ）。
+    const verdict = evaluateRoleFixture('ServerFnServiceRole', lambdaServiceRole());
+    expect(verdict.blocked).toBe(false);
+  });
+
+  it('CDK 資産バケットが既定 qualifier（hnb659fds）だと止める（層 3 の Deny と矛盾する allowlist を作らない）', () => {
+    // 🔴 これがトラップ 1 そのもの。AWS から読んだ実デプロイ済みロールは
+    // `cdk-hnb659fds-assets-*` を指していたが、それは orcloud01 を使わない
+    // 過去のデプロイの痕跡であり、gate の allowlist に hnb659fds を含めてはいけない。
+    const verdict = bucketDeploymentRoleFixture({
+      Policies: [
+        {
+          PolicyName: 'Inline',
+          PolicyDocument: {
+            Version: '2012-10-17',
+            Statement: [
+              {
+                Effect: 'Allow',
+                Action: ['s3:GetObject*'],
+                Resource: [
+                  {
+                    'Fn::Join': [
+                      '',
+                      ['arn:', { Ref: 'AWS::Partition' }, ':s3:::cdk-hnb659fds-assets-822063948773-ap-northeast-1'],
+                    ],
+                  },
+                ],
+              },
+            ],
+          },
+        },
+      ],
+    });
+    expect(verdict.blocks.map((b) => b.reason)).toEqual(['carveOutRoleShape']);
+    expect(verdict.blocks[0]!.evidence).toContain('許可リストの外の Resource');
+  });
+
+  it('宛先バケットを別の論理 ID（攻撃者の別バケット）に向けると止める', () => {
+    const verdict = bucketDeploymentRoleFixture(
+      {
+        Policies: [
+          {
+            PolicyName: 'Inline',
+            PolicyDocument: {
+              Version: '2012-10-17',
+              Statement: [
+                { Effect: 'Allow', Action: ['s3:PutObject'], Resource: [{ 'Fn::GetAtt': ['EvilBucket', 'Arn'] }] },
+              ],
+            },
+          },
+        ],
+      },
+      { bucketLogicalId: 'EvilBucket' },
+    );
+    expect(verdict.blocks.map((b) => b.reason)).toEqual(['carveOutRoleShape']);
+  });
+
+  it('🔴 論理 ID は正しいが Type が AWS::S3::Bucket でない（差し替え）なら止める', () => {
+    // `AssetBucket1D025086` という論理 ID を、実体は別種別のリソースへ差し替える経路。
+    // 論理 ID の一致だけでは防げない ―— Ref/GetAtt 先の Type を見て初めて防げる
+    // （`resolvePolicyRoleTarget` が Ref 先の Type を確かめているのと同じ理由）。
+    const verdict = bucketDeploymentRoleFixture(undefined, { bucketType: 'AWS::SNS::Topic' });
+    expect(verdict.blocks.map((b) => b.reason)).toEqual(['carveOutRoleShape']);
+  });
+
+  it('宛先バケットが synth テンプレートに存在しない（読めなかった）なら止める', () => {
+    const verdict = bucketDeploymentRoleFixture(undefined, { includeBucket: false });
+    expect(verdict.blocks.map((b) => b.reason)).toEqual(['carveOutRoleShape']);
+  });
+
+  it('許可リストに無い S3 action（s3:DeleteBucket）は止める', () => {
+    const verdict = bucketDeploymentRoleFixture({
+      Policies: [
+        {
+          PolicyName: 'Inline',
+          PolicyDocument: {
+            Version: '2012-10-17',
+            Statement: [{ Effect: 'Allow', Action: ['s3:DeleteBucket'], Resource: [ASSET_BUCKET_ARN] }],
+          },
+        },
+      ],
+    });
+    expect(verdict.blocks.map((b) => b.reason)).toEqual(['carveOutRoleShape']);
+  });
+
+  it('許可リストの action を Resource:* に広げるのは止める（自前バケットの隣に潜ませても同じ）', () => {
+    const verdict = bucketDeploymentRoleFixture({
+      Policies: [
+        {
+          PolicyName: 'Inline',
+          PolicyDocument: {
+            Version: '2012-10-17',
+            Statement: [{ Effect: 'Allow', Action: ['s3:PutObject'], Resource: '*' }],
+          },
+        },
+      ],
+    });
+    expect(verdict.blocks.map((b) => b.reason)).toEqual(['carveOutRoleShape']);
+  });
+
+  it('隣接リソース種別（AWS::IAM::Policy）からバケット権限を付けても、同じ Resource 検査が掛かる', () => {
+    const verdict = evaluateDeployChangeSet(
+      summary({
+        changes: [
+          roleChange(BUCKET_DEPLOYMENT_ROLE!),
+          change({
+            action: 'Add',
+            resourceType: 'AWS::IAM::Policy',
+            logicalResourceId: 'Attachment',
+            replacement: undefined,
+          }),
+        ],
+        templateResources: {
+          [BUCKET_DEPLOYMENT_ROLE!]: res('AWS::IAM::Role', providerRole({ Policies: undefined })),
+          [ASSET_BUCKET_LOGICAL_ID]: res('AWS::S3::Bucket', {}),
+          Attachment: res('AWS::IAM::Policy', {
+            PolicyDocument: {
+              Version: '2012-10-17',
+              Statement: [{ Effect: 'Allow', Action: ['s3:PutObject'], Resource: '*' }],
+            },
+            Roles: [{ Ref: BUCKET_DEPLOYMENT_ROLE }],
+          }),
+        },
+      }),
+    );
+    expect(verdict.blocks.map((b) => b.reason)).toEqual(['carveOutRoleShape']);
   });
 });
 

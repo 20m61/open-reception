@@ -334,10 +334,32 @@ case "${SUB}" in
     ;;
   diff)
     collect_observation "$(mktemp)" 1200
-    for entry in "${STACKS[@]}"; do run_diff_gate "${entry%%:*}" "${entry##*:}"; done
+    # 🔴 **全スタックを評価してから終える。** かつてはここも `deploy` と同じ「裸の
+    # 呼び出し」で、`run_diff_gate` が非ゼロを返した瞬間 `set -e` がループごと打ち切って
+    # いた。`OpenReception-CfMonitoring-dev`（us-east-1・初回 CREATE）のような
+    # 3 番目のスタックは、1・2 番目のどちらかがブロックされると**一度も評価されない**。
+    # 運用者は「1 つ直して再実行 → 次のブロックで初めて気づく」を人数ぶん繰り返す羽目になる。
+    #
+    # `if ! run_diff_gate; then …; fi` で呼ぶと、bash は `if` の条件式として評価される
+    # コマンド（および関数内のすべてのコマンド）に対して `errexit` を適用しない
+    # （bash(1) の `set -e` の項）。そのため `run_diff_gate` が失敗しても即座には
+    # 終了せず、`diff_failed` に記録してから次のスタックへ進める。全スタックぶんの
+    # findings を出し切ったあと、1 つでもブロックがあれば非ゼロで終える。
+    #
+    # `deploy` は**逆に**最初のブロックで即座に止める（下記、裸の呼び出しのまま）。
+    # gate を通っていない変更を後続スタックへ適用させない安全弁であり、意図的な
+    # 非対称性なので、ここを真似て `deploy` 側まで「全部見てから」に弱めない。
+    diff_failed=0
+    for entry in "${STACKS[@]}"; do
+      if ! run_diff_gate "${entry%%:*}" "${entry##*:}"; then
+        diff_failed=1
+      fi
+    done
+    exit "${diff_failed}"
     ;;
   deploy)
     collect_observation "$(mktemp)" 2400
+    # diff と違い、ここは最初のブロックで即座に止める（unwrap しない。上のコメント参照）。
     for entry in "${STACKS[@]}"; do run_diff_gate "${entry%%:*}" "${entry##*:}"; done
     cs_name="$(changeset_name)"
     # 🔴 **`--require-approval never` は「承認を捨てた」のではない（Important 6 / ADR 決定 5）。**
