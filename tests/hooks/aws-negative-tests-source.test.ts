@@ -157,6 +157,32 @@ describe('simulate() は boundary と context を明示的に渡す (#680 R10 / 
 });
 
 /**
+ * 🔴 **Defect 1（#680 フォローアップ、2026-08-13 に実 AWS で実測して発見）:
+ * `file://${BOUNDARY_POLICY_PATH}` を渡すと壊れる。**
+ *
+ * `--permissions-boundary-policy-input-list` は**リスト**を取るオプションである。
+ * `file://<path>` を渡すと CLI はファイルの中身（JSON **オブジェクト**）を
+ * 「リストそのもの」として解釈しようとし、`ValidationError: 1 validation error
+ * detected: Value '[{,` で落ちる。boundary を渡す全 check（= exec ロールの 38 件）が
+ * 丸ごと `unknown`（＝ FAIL）になり、「ポリシーが悪い」ように見えるが、実際は
+ * CLI 呼び出しの組み方の誤りだった。正しくは `readFileSync` で文書の中身を読み、
+ * argv の 1 要素としてそのまま渡す（`execFileSync` はシェルを経由しないので、
+ * 値の中身に関わらず 1 引数として扱われる）。
+ */
+describe('simulate() は boundary を readFileSync で渡す（file:// を渡さない） (#680 フォローアップ / defect 1)', () => {
+  const body = stripTsComments(extractFunctionBody(SOURCE, 'function simulate(', 'function main('));
+
+  it('readFileSync(BOUNDARY_POLICY_PATH, ...) で文書の中身を渡す', () => {
+    expect(body).toContain('readFileSync(BOUNDARY_POLICY_PATH');
+  });
+
+  it('壊れた file://${BOUNDARY_POLICY_PATH} の形へ戻さない', () => {
+    expect(body).not.toContain('file://${BOUNDARY_POLICY_PATH}');
+    expect(body).not.toContain('`file://');
+  });
+});
+
+/**
  * 🔴 **Critical 3（2026-08-12 全体レビュー）: S 系は「落ちようのない検査」だった。**
  *
  * 旧実装は principal ARN を 1 本だけ受け取り、既定を entry role にしていた。

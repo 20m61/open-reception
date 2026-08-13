@@ -13,7 +13,7 @@
  * このファイル自体はテストしない（AWS 認証情報が無いと動かないため）。
  */
 import { execFileSync } from 'node:child_process';
-import { existsSync, statSync } from 'node:fs';
+import { existsSync, readFileSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import {
   classifyAwsError,
@@ -589,8 +589,19 @@ function simulate(
         '--resource-arns', resource,
         // 🔴 boundary は carve-out の「壊れると初回デプロイが落ちる方の半分」。
         // 自動で含まれるかを AWS 抜きで確かめられない以上、明示的に渡す。
+        //
+        // 🔴 **`file://` を渡してはいけない。** このオプションは *リスト* を取るので、
+        // CLI は `file://` の中身を「リストそのもの」として解釈しようとする。ポリシー文書は
+        // 配列ではなくオブジェクトなので `ValidationError: Value '[{,` で落ち、boundary を
+        // 渡す全 check（= exec ロールの 38 件）が丸ごと `unknown` になる。
+        // **`unknown` は期待が denied でも PASS にしないため FAIL として出はするが、
+        // 「ポリシーが悪い」ようにしか見えず、原因がツール側だと分からない**（2026-08-13 に実測）。
+        // 文書の中身を argv の 1 要素として渡すのが正しい（`execFileSync` なのでシェル解釈は無い）。
         ...(options.withBoundary
-          ? ['--permissions-boundary-policy-input-list', `file://${BOUNDARY_POLICY_PATH}`]
+          ? [
+              '--permissions-boundary-policy-input-list',
+              readFileSync(BOUNDARY_POLICY_PATH, 'utf8'),
+            ]
           : []),
         ...(options.contextEntries && options.contextEntries.length > 0
           ? ['--context-entries', ...options.contextEntries]
