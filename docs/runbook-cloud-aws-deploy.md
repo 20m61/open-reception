@@ -857,6 +857,48 @@ ADR 0009 決定 2）。`claude-deploy-entry.json` は `DescribeChangeSet` を
 
 ---
 
+## ステップ 9b: 🔴 ゲートがブロックしたときの承認手順（#680）
+
+diff gate は `resourceReplacement` / `resourceRemoval` などを見つけると**必ず止まる**。
+これは設計どおりの停止境界であって、不具合ではない。
+
+**ここで `scripts/aws-cloud-deploy.sh` を迂回して素の `cdk deploy` を打ってはいけない。**
+迂回すると preflight（資格情報の残時間・品質ゲート記録・ツリーの清潔さ・HEAD が push
+済みか）と negative security test 8 本が**まるごと省略される**。要件は
+「gate を skip して deploy を成功させることは禁止」である。
+
+代わりに**承認トークン**を使う。`diff` はブロック時に必ず次を印字する:
+
+```
+  ⛔ 危険な変更を検出したため自動デプロイを停止します:
+    - [resourceReplacement] ServerFnFunctionUrlFFF9E3E1 (AWS::Lambda::Url) action=Modify ...
+    - [resourceRemoval] ServerFninvokefunctionA3A7399A (AWS::Lambda::Permission) action=Remove
+  承認トークン: OpenReception-Web-dev:1a2b3c4d5e6f7890
+```
+
+1. **人間が findings を読む。** 何が置換・削除されるのか、可用性・認可にどう影響するのかを
+   実際に確かめる（`aws cloudformation get-template` で現行と synth を突き合わせる等）
+2. 承認するなら、そのトークンを `OR_APPROVED_DIFF` に渡して deploy する。
+   複数スタックぶんはカンマ区切り
+
+```bash
+OR_APPROVED_DIFF="OpenReception-Web-dev:1a2b3c4d5e6f7890" \
+  bash scripts/aws-cloud-deploy.sh deploy
+```
+
+**トークンはその findings 集合に固定される**（`src/domain/governance/deploy-approval-token.ts`）。
+findings が 1 件でも増減・変化すれば値が変わり、**古い承認は自動的に無効になる**。
+つまり「前回承認したから」で別の差分を流すことはできない。
+
+- 承認が効くのは **`deploy` のときだけ**。`diff` は素の判定を見せる場所なので
+  `OR_APPROVED_DIFF` を無視する
+- ワイルドカード（`*` など）は効かない。完全一致のみ
+- 承認が効いたときは、何を承認したのかが **findings ごとログに残る**
+- トークンは秘密ではない（誰でも計算できる）。これは*認証*ではなく**取り違え防止**であり、
+  実行を止める力は IAM 境界（boundary / restriction ポリシー）が持っている
+
+---
+
 ## ステップ 10: deploy → smoke
 
 ```bash

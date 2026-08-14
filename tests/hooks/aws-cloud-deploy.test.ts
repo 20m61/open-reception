@@ -324,6 +324,43 @@ describe('cdk / aws 呼び出しに必須フラグが揃っている (round 3 �
     expect(block).toContain('--change-set-name');
   });
 
+  describe('承認トークンのモードが配線されている (#680)', () => {
+    /**
+     * `run_diff_gate` の呼び出しをすべて拾う。1 つも無ければ throw する
+     * （名前を変えたのにテストだけ無言で PASS、を防ぐ）。
+     */
+    function everyRunDiffGateCall(): ReadonlyArray<string> {
+      const calls = [...source.matchAll(/run_diff_gate "\$\{entry%%:\*\}" "\$\{entry##\*:\}"[^\n;]*/g)].map(
+        (m) => m[0],
+      );
+      if (calls.length === 0) throw new Error('run_diff_gate の呼び出しが 1 つも見つかりません');
+      return calls;
+    }
+
+    it('gate を呼ぶ箇所はすべてモードを明示している（既定任せにしない）', () => {
+      for (const call of everyRunDiffGateCall()) {
+        expect(call, `モード未指定の呼び出し: ${call}`).toMatch(/\s(diff|deploy)$/);
+      }
+    });
+
+    it('🔴 diff ケースは diff モード、deploy ケースは deploy モードで呼ぶ', () => {
+      const calls = everyRunDiffGateCall();
+      expect(calls.filter((c) => c.endsWith(' diff'))).toHaveLength(1);
+      expect(calls.filter((c) => c.endsWith(' deploy'))).toHaveLength(1);
+    });
+
+    it('gate CLI へモードを引数として渡している', () => {
+      // 🔴 ファイル冒頭のコメントにも同じパスが出てくるので、実際の呼び出し行に錨を打つ。
+      const block = windowAfter('npx tsx "${ROOT}/scripts/aws-diff-gate.ts"', 250);
+      expect(block).toContain('${mode}');
+    });
+
+    it('🔴 run_diff_gate のモード既定値は diff（承認を無視する側）', () => {
+      const block = windowAfter('run_diff_gate() {', 200);
+      expect(block).toContain('mode="${3:-diff}"');
+    });
+  });
+
   /**
    * すべての `npx cdk` 呼び出しの位置。1 つも無ければ throw する（無言で PASS にしない）。
    * 呼び出しは複数行にまたがる（行継続 `\`）ため、次の `npx cdk` か case 区切りまでを窓とする。
@@ -554,7 +591,10 @@ describe('diff は全スタックを評価してから終える (#680 続報)', 
     const block = caseBody('\n  deploy)', '\n  smoke)');
     // "if ! run_diff_gate" ではなく、`for ... ; do run_diff_gate ...; done` のまま。
     expect(block).not.toContain('if ! run_diff_gate');
-    expect(block).toContain('for entry in "${STACKS[@]}"; do run_diff_gate "${entry%%:*}" "${entry##*:}"; done');
+    // 第 3 引数はモード（#680 の承認トークン）。`deploy` でだけ OR_APPROVED_DIFF が効く。
+    expect(block).toContain(
+      'for entry in "${STACKS[@]}"; do run_diff_gate "${entry%%:*}" "${entry##*:}" deploy; done',
+    );
   });
 
   /**
