@@ -585,6 +585,33 @@ describe('permissions boundary の付け外し (#680 実地デプロイの回帰
     }
   });
 
+  /**
+   * 🔴 **Permissions Boundary は denylist ではなく「天井」である。**
+   * 実効権限は `identity policy ∩ boundary` なので、**boundary が Allow していない action は
+   * identity policy が許しても実行時に 403 になる**（`no permissions boundary allows the ...`）。
+   *
+   * 2026-08-14 の 2 回目のデプロイはここで落ちた。1 回目の修正で `DenyBoundaryEscape` を
+   * 条件付きへ直したが、boundary 側の **Allow を足し忘れた**ため
+   * 「Deny には当たらないが Allow も無い」状態になっていた。
+   * Deny を直したら Allow も対で確かめること。
+   */
+  it('🔴 boundary 自身も Put を「我々の境界のときだけ」Allow している（天井に無い action は通らない）', () => {
+    const allows = boundary.Statement.filter(
+      (s) => s.Effect === 'Allow' && actionsOf(s).includes('iam:PutRolePermissionsBoundary'),
+    );
+    expect(allows.length).toBeGreaterThan(0);
+    for (const s of allows) {
+      expect(s.Condition?.StringEquals?.['iam:PermissionsBoundary']).toBe(BOUNDARY_ARN);
+    }
+  });
+
+  it('🔴 boundary は Delete を Allow していない（天井にも外す経路を作らない）', () => {
+    const allows = boundary.Statement.filter(
+      (s) => s.Effect === 'Allow' && actionsOf(s).includes('iam:DeleteRolePermissionsBoundary'),
+    );
+    expect(allows).toEqual([]);
+  });
+
   it('🔴 cfn-exec は Delete を Allow していない（外す経路を作らない）', () => {
     const allows = cfnExec.Statement.filter(
       (s) => s.Effect === 'Allow' && actionsOf(s).includes('iam:DeleteRolePermissionsBoundary'),
