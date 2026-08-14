@@ -175,6 +175,53 @@ aws iam put-role-policy \
 効くかを確認する。**Admin 権限を持つ人間の環境から実行する**
 （`OpenReceptionClaudeDeploy-dev` は `iam:SimulatePrincipalPolicy` を持たない前提のため）。
 
+🔴 **2026-08-13 にこのステップ（4a）を実 IAM へ向けて初めて実行した結果、49/50 件が
+期待どおりで、残り 1 件（`S16`、当時は changeSet ARN スコープ）は `implicitDeny` を
+返し続けた。** 当初はこれを「AWS の IAM ポリシーシミュレータが CloudFormation の
+`changeset` リソース種別を評価できない」という**道具側の限界**と解釈した。
+
+🔴 **この解釈は誤りだった（同日、`cdk deploy --no-execute` の実 API 実測で訂正）。**
+実際の `cloudformation:DescribeChangeSet` に対する `AccessDenied` は次を返した
+（原文のまま記録する ―― これが唯一の証拠である）:
+
+```
+AccessDenied: User: arn:aws:sts::822063948773:assumed-role/OpenReceptionClaudeDeploy-dev/claude-cloud-20260814-0352
+is not authorized to perform: cloudformation:DescribeChangeSet
+on resource: arn:aws:cloudformation:ap-northeast-1:822063948773:stack/OpenReception-Web-dev/f9c7aab0-8f6f-11f1-be9b-0a2cf2440d9f
+because no identity-based policy allows the cloudformation:DescribeChangeSet action
+```
+
+`resource` は **`stack/...` ARN であり、`changeSet/...` ARN ではない**。
+`DescribeChangeSet` は changeSet ではなく **stack** リソースタイプに対して認可される。
+`S16` の `implicitDeny`（changeSet ARN ＋ `Resource: "*"` の最小 Allow でも一致しない）は
+シミュレータの限界の証拠ではなく、**「changeSet ARN スコープの Allow ではこのアクションは
+本来一致し得ない」という正しい応答**だった。
+
+> 🔴 **教訓（本設計が踏んだ失敗そのもの）**: An IAM action's authorisation resource type
+> must be confirmed against a real API response, not inferred from documentation. A
+> documentation reading redesigned the primary boundary around the wrong resource
+> type; the simulator's inability to evaluate that type was evidence pointing at the
+> error and was misread as a tooling limitation. 詳細は ADR 0009 決定 2。
+
+**対処**: `claude-deploy-entry.json` の `DescribeChangeSet` を、changeSet ARN スコープの
+別ステートメント（`ReadOwnChangeSetsForDiffGate`、一度も実効しなかった死んだ許可）から
+`ReadOwnDevStacksForDiffGate`（`DescribeStacks` と同じ stack ARN の Allow）へ統合した。
+`scripts/aws-negative-tests.ts` の `S16` も stack ARN へ向け直し、`S15` と同じ形で
+通常どおりシミュレートできるようにした。**この訂正はまだ実 IAM に適用・再実行して
+いない**（IAM の適用は人間が行う。次にステップ 4a を実行したとき、`S15`/`S16` とも
+`✅ allowed` になることを確認すること ―― `ℹ️ シミュレーション不能` の probe 機構
+自体は汎用のまま残っており、別のアクション／資源型の組み合わせで同じ形の
+`implicitDeny` に出会えば引き続き働く）。
+
+**`ExecuteChangeSet` / `DeleteChangeSet` はまだ未証明である。** これらは `deploy` 段の
+実行でしか呼ばれず、今回の `--no-execute` diff では発火していない。stack ARN で認可
+されるのか changeSet 名前スコープ（`claude-gate-*`）が必要なのかは実測していないため、
+`claude-deploy-role-restriction.json` には両方の許可エントリを残してある（4b の該当箇所
+参照）。**この 2 アクションの authorisation を実際に検証するのは、実際に `deploy` を
+実行したとき**である。`diff`（本ステップ）は何も適用しないため安全側のまま、
+すでに証明済みの `DescribeChangeSet`/`DescribeStacks`/`CreateChangeSet` の実質的な
+確認地点になる。
+
 ### 4a. 自動化されている分（S1〜S22）
 
 🔴 **各 check は「どのロールに対して」「どのリージョンで」評価するかを自分で宣言している。
@@ -195,6 +242,17 @@ SIMULATE_EXEC_ROLE_ARN_US_EAST_1=arn:aws:iam::822063948773:role/cdk-orcloud01-cf
 並べて印字する。**どのロールを・どのリージョンの何に対して検査したのかを読み違えられない
 形にしてある。** 片リージョンしか覆っていない check（S15/S16）は、結果より**前**に
 `ℹ️ S15: ap-northeast-1 は未評価: <理由>` として理由つきで印字される。
+
+🔴 **`S16` は 2026-08-13 の実測当時は `ℹ️ シミュレーション不能` として出ていた
+（changeSet ARN スコープだったため）。ステップ 4 冒頭の訂正のとおり、`S16` は
+stack ARN へ向け直したので、次回実行時からは `S15` と同じく通常どおり `✅`/`❌` として
+出るはずである（この訂正後の再実行はまだ行っていない ―― IAM 側の適用後に確認する）。**
+万一 probe（`ℹ️ シミュレーション不能`）が別の check で発火した場合は、`probe raw
+EvalDecision=...` → `verdict=...` というログとその根拠が続く ―― この機構自体は
+汎用のまま残っている（詳細は `negative-test-outcome.ts` のコメント）。
+**全件が期待どおりであることが、初回デプロイへ進む前提条件**である。実行結果の最終行は
+`passed=<N> failed=<N> notSimulatable=<N>` を分けて表示するため、`notSimulatable` が
+0 でないことは見落とせない（`⚠️` 付きの行になり、無条件の `✅ PASS` としては出ない）。
 
 > 🔴 **なぜ「`-us-east-1` 版でもう 1 度実行する」を廃止したか（2026-08-12 残件レビュー R4）。**
 > 旧手順は「us-east-1 側も同じ 3 変数の `-us-east-1` 版で 1 度実行する」と指示していたが、
@@ -277,6 +335,21 @@ boundary を渡すのは `exec` だけである（`--custom-permissions-boundary
 > なく「1〜9 を us-east-1 で繰り返せ」という指示（したがって実際には 9 本増える）。
 > 以前このページと ADR は「20 コマンド」と書いていた —— 2026-08-12 残件レビュー R7 で訂正。
 
+> 🔴 **2・6 は訂正済み（2026-08-13 実測、#680 フォローアップ）。** `DescribeChangeSet` は
+> changeSet ARN ではなく **stack ARN** に対して認可されると実 API で確認した（原文と
+> 経緯はステップ 4 冒頭・ADR 0009 決定 2）。下記コマンドはすでに stack ARN を渡す形へ
+> 訂正してあるので、そのまま実行して `allowed` を確認すればよい（changeSet ARN で
+> 試す必要はない）。
+>
+> **7（`ExecuteChangeSet`）は引き続き未証明である。** `deploy` 段の実行でしか呼ばれず、
+> stack ARN と changeSet 名前スコープ（`claude-gate-*`）のどちらで認可されるかを
+> この手順は確定できない。`implicitDeny` が返っても「ポリシーが間違っている」のか
+> 「そもそもこの資源型では一致し得ない」のか、生の `simulate-principal-policy` 呼び出し
+> だけでは区別できない（4a のスクリプトが行う自動 probe はこの手動手順には無い）。
+> **`ExecuteChangeSet`/`DeleteChangeSet` の authorisation を実際に確定させるのは
+> 実際の `deploy` 実行である。** 7・9・11 の結果は参考情報として記録しつつ、
+> **確定的な合否判定は実際に deploy を実行するまで持ち越すこと。**
+
 `--policy-source-arn` は実在の IAM ロールでなければならない点に注意
 （存在しない ARN を渡すとシミュレーションが別のエラーで失敗する）。
 
@@ -291,11 +364,12 @@ aws iam simulate-principal-policy \
   --resource-arns arn:aws:cloudformation:ap-northeast-1:822063948773:stack/OpenReception-Web-dev/dummy-id \
   --query 'EvaluationResults[0].EvalDecision' --output text
 
-# 2) entry role: DescribeChangeSet（自分の changeSet, claude-gate-*） → allowed 期待
+# 2) entry role: DescribeChangeSet（自分の dev スタック。stack ARN で認可される。
+#    2026-08-13 実測で訂正 ―― 以前は changeSet ARN で叩いていた） → allowed 期待
 aws iam simulate-principal-policy \
   --policy-source-arn arn:aws:iam::822063948773:role/OpenReceptionClaudeDeploy-dev \
   --action-names cloudformation:DescribeChangeSet \
-  --resource-arns arn:aws:cloudformation:ap-northeast-1:822063948773:changeSet/claude-gate-abc1234/dummy-id \
+  --resource-arns arn:aws:cloudformation:ap-northeast-1:822063948773:stack/OpenReception-Web-dev/dummy-id \
   --query 'EvaluationResults[0].EvalDecision' --output text
 
 # 3) entry role: CreateChangeSet（entry role 自身は持つべきではない） → denied 期待
@@ -322,11 +396,12 @@ aws iam simulate-principal-policy \
   --resource-arns arn:aws:cloudformation:ap-northeast-1:822063948773:stack/OpenReception-Web-dev/dummy-id \
   --query 'EvaluationResults[0].EvalDecision' --output text
 
-# 6) CDK deploy role: DescribeChangeSet（自分の changeSet） → allowed 期待（IMPORTANT A の主眼）
+# 6) CDK deploy role: DescribeChangeSet（自分の dev スタック。stack ARN で認可される。
+#    2026-08-13 実測で訂正） → allowed 期待
 aws iam simulate-principal-policy \
   --policy-source-arn arn:aws:iam::822063948773:role/cdk-orcloud01-deploy-role-822063948773-ap-northeast-1 \
   --action-names cloudformation:DescribeChangeSet \
-  --resource-arns arn:aws:cloudformation:ap-northeast-1:822063948773:changeSet/claude-gate-abc1234/dummy-id \
+  --resource-arns arn:aws:cloudformation:ap-northeast-1:822063948773:stack/OpenReception-Web-dev/dummy-id \
   --query 'EvaluationResults[0].EvalDecision' --output text
 
 # 7) CDK deploy role: ExecuteChangeSet（自分の changeSet） → allowed 期待（IMPORTANT A の主眼）
@@ -343,11 +418,16 @@ aws iam simulate-principal-policy \
   --resource-arns arn:aws:cloudformation:ap-northeast-1:822063948773:stack/OpenReception-Web-dev/dummy-id \
   --query 'EvaluationResults[0].EvalDecision' --output text
 
-# 9) CDK deploy role: DescribeChangeSet を claude-gate-* 以外の名前で試す → denied 期待
+# 9) CDK deploy role: ExecuteChangeSet を claude-gate-* 以外の名前で試す → denied 期待
 #    （NotResource allowlist が claude-gate-* にしか一致しないことの直接確認）
+#    🔴 2026-08-13 実測での訂正: 元は DescribeChangeSet で書いていたが、そのアクションは
+#    stack ARN で認可されると判明したため changeSet 名前スコープでは何も検証できない
+#    （常に implicitDeny になり、claude-gate-* かどうかに関わらず情報が無い）。
+#    changeSet **名前**スコープの Deny が実際に効いているかを問う意味があるのは、
+#    まだ資源型が未証明の ExecuteChangeSet（7 の対）である。
 aws iam simulate-principal-policy \
   --policy-source-arn arn:aws:iam::822063948773:role/cdk-orcloud01-deploy-role-822063948773-ap-northeast-1 \
-  --action-names cloudformation:DescribeChangeSet \
+  --action-names cloudformation:ExecuteChangeSet \
   --resource-arns arn:aws:cloudformation:ap-northeast-1:822063948773:changeSet/some-other-name/dummy-id \
   --query 'EvaluationResults[0].EvalDecision' --output text
 
@@ -496,13 +576,29 @@ aws iam simulate-principal-policy \
 
 `DeleteStack`（12 番目）は 3 つの dev スタック全部（`OpenReception-Web-dev` /
 `OpenReception-WebMonitoring-dev` / `OpenReception-CfMonitoring-dev`、最後のみ us-east-1）に
-対して確認すること。**これが本設計で唯一、机上でしか確認できていない部分である。**
-とくに重要な確認対象:
+対して確認すること。とくに重要な確認対象:
 
-- deploy role の `DescribeChangeSet` / `ExecuteChangeSet` on `changeSet/claude-gate-*/*`（6・7）
+- deploy role の `DescribeChangeSet`（6、**stack ARN で認可されると 2026-08-13 実測で
+  証明済み**。ADR 0009 決定 2 参照）
+- deploy role の `ExecuteChangeSet`（7、**未証明**。`changeSet/claude-gate-*/*` は
+  次回 deploy を壊さないための予防的な安全網であり、実際にこの資源型で認可されるかは
+  未確認）
 - `claude-gate` 以外の名前が Deny されること（9）
-- `DeleteChangeSet`（11、2 回目以降のデプロイで `cleanupOldChangeset` が必要とする）
+- `DeleteChangeSet`（11、2 回目以降のデプロイで `cleanupOldChangeset` が必要とする。
+  `ExecuteChangeSet` と同じく資源型は未証明）
 - `DeleteStack`（12、`--no-execute` の no-op が残した `REVIEW_IN_PROGRESS` スタックの掃除用）
+
+🔴 **6（`DescribeChangeSet`）はもう「机上でしか確認できていない部分」ではない。**
+2026-08-13 の実 `cdk deploy --no-execute` が `resource: stack/OpenReception-Web-dev/<id>`
+を名指しした `AccessDenied` を返し、`DescribeChangeSet` は stack ARN で認可されることが
+実測で確定した（原文は ADR 0009 決定 2）。したがって 6 の `--resource-arns` は
+（1 と同じ）stack ARN で叩けば足り、`allowed` を期待してよい。
+
+**7・11（`ExecuteChangeSet`/`DeleteChangeSet`）は引き続き未証明である。** これらは
+`deploy` 段の実行でしか呼ばれず、今回の `diff --no-execute` では発火していない。
+stack ARN と changeSet 名前スコープのどちらで認可されるかを確定させるのはステップ 9
+（実際には `deploy` の実行）であり、「本設計で唯一、机上でしか確認できていない部分」は
+この 2 本と `DeleteStack`（12）である。
 
 ### 4d. 🔴 承認する前に読むこと — carve-out の影響範囲と、それを抑えているもの（#680 R1/R2/R3/R10）
 
@@ -542,19 +638,28 @@ Secrets Manager 不可・KMS 破壊不可・IAM 昇格不可）。carve-out **�
 （`src/domain/governance/deploy-diff-gate.ts`）であり、Permissions Boundary ではない。
 gate は change set と synth テンプレートを、**1 バイトも AWS に適用される前に**読む:
 
-- carve-out の名前空間に入る `AWS::IAM::Role` は、既知の CDK provider role 3 本以外
+- carve-out の名前空間に入る `AWS::IAM::Role` は、既知の CDK provider role 4 本以外
   **停止**（`carveOutRoleNamespace`）。物理名は IAM が見るとおりに組む
-  （生成名の切り詰め・明示 `RoleName`・`Path`）
-- その 3 本を**名乗った**だけのロールも、実体が CDK の生成する形と違えば**停止**
+  （生成名の切り詰め・明示 `RoleName`・`Path`）。4 本目は `s3deploy.BucketDeployment`
+  （`web-stack.ts` の `AssetDeployment`）が使う `SingletonFunction` の ServiceRole
+  （#680 続報。`.open-next/` を build 済みで実 `WebStack` を synth して実測した）
+- その 4 本を**名乗った**だけのロールも、実体が CDK の生成する形と違えば**停止**
   （`carveOutRoleShape`）。固定しているのは
   **trust policy の Principal（`lambda.amazonaws.com` のみ）と Action
   （`sts:AssumeRole` のみ）／managed policy（基本実行ロールのみ）／
   action と Resource の許可リスト**の 4 点。
-  action は **synth で実測した 6 つの `ssm:` アクションだけを許す**（否認リストでは
-  ない —— `iam:` のようなコロン込みの接頭辞で禁じても `iam*` `sts*` `*:*`
-  `*:CreateRole` がすり抜けるので、2026-08-13 に許可リストへ反転した）。
-  `Resource` も**実測どおり `parameter/cdk/exports/` の下**に閉じていることを要求する
-  （自アカウント固定、リージョンは具体値。`*` や `parameter/*` は停止）——
+  action は **synth で実測した 16 個の許可リストだけを許す**（`ssm:` が 6 個 /
+  `s3:` が 10 個。否認リストではない —— `iam:` のようなコロン込みの接頭辞で禁じても
+  `iam*` `sts*` `*:*` `*:CreateRole` がすり抜けるので、2026-08-13 に許可リストへ
+  反転した）。
+  `Resource` は action ごとに閉じ込め先が違う: `ssm:` は**実測どおり
+  `parameter/cdk/exports/` の下**（自アカウント固定、リージョンは具体値）、
+  `s3:` は **CDK 資産ステージングバケット（`cdk-orcloud01-assets-*`。既定
+  qualifier `hnb659fds` は含めない —— 層 3 の Deny と矛盾するため）と、
+  `BucketDeployment` の宛先である自前 `AssetBucket`（論理 ID `AssetBucket1D025086`
+  を `Fn::GetAtt` で照合し、`Type` が `AWS::S3::Bucket` であることまで確かめる。
+  物理名は「ハイフン無しの別綴り」で prefix 照合が成立しないため、物理名では
+  照合しない）**。`*` や `parameter/*` は停止——
   action だけを縛っても `ssm:DeleteParameters` on `*` は
   **アカウント全体の SSM パラメータを静かに消せる**。`Condition` は権限を
   狭める方向にしか働かないので見ない。
@@ -587,14 +692,24 @@ gate は change set と synth テンプレートを、**1 バイトも AWS に�
 - **gate はサンドボックスの中で走る。** `scripts/aws-cloud-deploy.sh` を迂回して
   `cdk deploy` を直接叩けば gate は動かない。IAM 側にこれを強制する仕組みは無い
   （層 1 は「どのスタックか」しか見ない）
-- **既知の 3 本を名乗りつつ、許可リストの中で振る舞う**ことはできる。
+- **既知の 4 本を名乗りつつ、許可リストの中で振る舞う**ことはできる。
   boundary の無いロールに `ssm:PutParameter` / `DeleteParameters` を
   **`parameter/cdk/exports/` の下**で持たせることは通る（provider が実際に
   そうするため）。到達範囲は**このアカウントの CDK cross-region export
   パラメータ**であり、他の CDK アプリのものを**上書き・削除**して
-  そのスタックのデプロイを壊すことはできる。`Resource` を `*` や
-  `parameter/*` へ広げる経路と、`s3:` `dynamodb:` `logs:` `iam:` などの
-  action は 2026-08-13 の 2 段の許可リスト化で**通らなくなった**
+  そのスタックのデプロイを壊すことはできる。同様に、`BucketDeployment` の
+  ServiceRole を名乗れば `s3:PutObject` / `DeleteObject*` などを**自前
+  `AssetBucket` の中**（`OpenReception-Web-dev` 自身の静的アセット）で
+  振る舞える —— 到達範囲はこのバケット 1 つに閉じる。`Resource` を `*` や
+  `parameter/*` へ広げる経路、`dynamodb:` `logs:` `iam:` などの action、
+  および許可リストに無い `s3:` action（`s3:DeleteBucket` 等）は
+  2026-08-13 / #680 続報の許可リスト化で**通らなくなった**。**4 本のうち
+  どれを名乗っても、他の 3 本の action/Resource へは広がらない** ——
+  許可リストは 4 本の**和集合**なので、例えば `EXPORT_WRITER` を名乗った
+  ロールが `s3:PutObject` を自前 `AssetBucket` へ持つことも許可リスト上は
+  通る（action は共通の一枚岩）。狭めているのは「未知の action / Resource
+  を通さない」ことであって「どの 4 本を名乗ったかで許可を分ける」ことでは
+  ない。実害は 4 本それぞれの実測範囲を超えない
 - `Condition` は見ていない。condition は権限を**狭める**方向にしか働かないので、
   無視しても安全側に外れる（provider が付ける condition を要求すると、
   CDK 実装の変更で初回デプロイを止める側の risk だけが増える）
@@ -645,7 +760,15 @@ claude.ai/code の環境ダイアログへ、次の**変数名 5 つ**を登録�
 bash scripts/aws-cloud-deploy.sh verify
 ```
 
-`./scripts/quality-gate.sh --pr` ＋ `npm run build:open-next` を実行する。
+`npm run build:open-next` → `./scripts/quality-gate.sh --pr` の順で実行する。
+
+🔴 **この順序を逆にしない（#680）。** フレッシュな clone には `.open-next/` が無い。
+逆順（gate → build）だと、`quality-gate.sh --pr` が「infra WebStack synth」等を検査
+できず green スタンプを書かずに非ゼロで終わり（#640。検査できなかったステップを green
+として記録しない設計そのもの）、`set -e` によって `verify` がそこで打ち切られる。
+`.open-next/` を作る唯一の手段である `npm run build:open-next` が一度も実行されず、
+**何回 `verify` を再実行しても green スタンプが書けないデッドロック**になる（クラウドの
+実セッションで踏んだ）。ゲートへの入力を作るステップは、ゲートより前に置く。
 
 🔴 **これを先に走らせないと preflight は必ず失敗する（Important 7）。** preflight は
 「現ツリーに対する品質ゲート green の記録（スタンプ）」を要求するが、**スタンプは
@@ -664,6 +787,13 @@ bash scripts/aws-cloud-deploy.sh verify
 ---
 
 ## ステップ 8: preflight
+
+🔴 **前提: `aws` CLI が cloud sandbox に入っていること。** `scripts/cloud-setup.sh`
+（環境ダイアログの Setup script）が入れる。入っていないと、直後の
+`aws sts get-caller-identity` が失敗する。ここは `command -v aws` による確認
+（`src/domain/governance/command-preflight.ts`）を `collect_observation` の先頭に
+入れてあるので、資格情報を誤って疑わせない具体的なメッセージ（`aws` が無いこと・
+`scripts/cloud-setup.sh` を確認すること）が出る（#680。詳細はトラブルシュート参照）。
 
 クラウドセッションから:
 
@@ -692,6 +822,34 @@ claude-gate-<short-sha>` で change set を作り、`describe-change-set` の JS
 `src/domain/governance/deploy-diff-gate.ts` の危険判定に掛ける。危険な変更（`Remove` /
 `Import` / `Dynamic` などの未知の action / replacement / KMS・Secrets・Route53・
 SecurityGroup・IAM プリンシパルの変更 等）を検出したら非ゼロで終了し、`deploy` へ進まない。
+
+🔴 **ここが認可の資源型を実際に確認する地点である ―― そして 2026-08-13 に実際に
+それが起きた。** `--no-execute` の change set 作成は**何も適用しない**ので安全側の
+まま、`entry` role → `deploy` role の `CreateChangeSet`/`DescribeChangeSet` 呼び出しを
+実際に発生させる。この実行で `cloudformation:DescribeChangeSet` が `AccessDenied` を
+返し、その `resource` は次のとおり **stack ARN** を名指しした（原文のまま記録する）:
+
+```
+AccessDenied: User: arn:aws:sts::822063948773:assumed-role/OpenReceptionClaudeDeploy-dev/claude-cloud-20260814-0352
+is not authorized to perform: cloudformation:DescribeChangeSet
+on resource: arn:aws:cloudformation:ap-northeast-1:822063948773:stack/OpenReception-Web-dev/f9c7aab0-8f6f-11f1-be9b-0a2cf2440d9f
+because no identity-based policy allows the cloudformation:DescribeChangeSet action
+```
+
+**この denial message そのものが証拠である。** `DescribeChangeSet` は changeSet では
+なく stack リソースタイプに対して認可される ―― ステップ 4 冒頭で書いた「S16 は
+シミュレータの限界」という当時の解釈は誤りで、`claude-deploy-entry.json` の
+`ReadOwnChangeSetsForDiffGate`（changeSet ARN スコープ）が実際に stack ARN しか
+評価しないこのアクションを一度も認可できていなかったことが原因だった（詳細は
+ADR 0009 決定 2）。`claude-deploy-entry.json` は `DescribeChangeSet` を
+`ReadOwnDevStacksForDiffGate`（stack ARN の Allow）へ統合する形で訂正済みだが、
+**この訂正はまだ実 IAM に適用していない**（ステップ 1 のインラインポリシー再適用が
+必要。適用後にステップ 4a と本ステップを再実行し、`DescribeChangeSet` が
+`AccessDenied` にならないことを確認すること）。
+
+`ExecuteChangeSet` / `DeleteChangeSet` はこの実行（`--no-execute`）では発火しない
+（`deploy` 段の実行でしか呼ばれない）。この 2 アクションの資源型は引き続き未証明
+であり、実際に `deploy` を実行して初めて確定する。
 
 **`OpenReception-CfMonitoring-dev` は現時点でアカウントに存在しない**（`Web-dev` と
 `WebMonitoring-dev` のみ）。初回はここが CREATE 型の change set になり、全リソースが
@@ -759,6 +917,65 @@ OR_SMOKE_URL=https://<デプロイ後のドメイン> bash scripts/aws-cloud-dep
 ---
 
 ## トラブルシュート
+
+### 🔴 実際に踏んだ: `aws` CLI がクラウドサンドボックスに無かった（#680）
+
+verify → preflight → diff を初めて通しで実行した試行が 61 秒で死んだ。
+`collect_observation` の `aws sts get-caller-identity` が
+`/bin/bash: line 1: aws: command not found` で失敗し、その時点の実装はこれを
+そのまま「AWS 認証情報を解決できません」と報告していた。`AWS_CREDENTIAL_EXPIRATION` は
+未設定、`~/.aws/config` には `[default]` に `s3.payload_signing_enabled` しか無い ――
+資格情報側を疑わせる材料が並ぶが、**実際の原因は `aws` バイナリそのものが
+入っていなかったこと**だった。`scripts/cloud-setup.sh`（環境ダイアログへ貼る Setup
+script）は当時 `gh` / `gitleaks` / `semgrep` / Playwright しか入れておらず、
+`grep aws scripts/cloud-setup.sh` は何も返さなかった。
+
+対処（反映済み）:
+
+- `scripts/cloud-setup.sh` に AWS CLI v2 のインストールを追加（`command -v aws` で
+  ガード、`|| true` で非必須化）。**環境ダイアログ側の Setup script 欄も貼り替えること**
+  ―― このファイルは実行されない、貼る内容の正本でしかない（ファイル冒頭の注記）。
+- `scripts/aws-cloud-deploy.sh` の `collect_observation` に、`aws` の有無を
+  `aws sts get-caller-identity` より**前**に確認する preflight を追加
+  （`src/domain/governance/command-preflight.ts`）。誤って資格情報を疑わせるメッセージを
+  出さず、「`aws` が見つからない・`scripts/cloud-setup.sh` を確認せよ」と名指しする。
+- Network access の許可ドメインに `awscli.amazonaws.com` の追加が必要
+  （`docs/cloud-dev-environment.md` §1。Trusted の既定リストに入っていない可能性が高い、
+  Playwright の `cdn.playwright.dev` と同型）。
+
+### 🔴 実際に踏んだ: `verify` がフレッシュな clone でデッドロックしていた（#680）
+
+上の対処後、実際にクラウドセッションで `verify` を単発実行したところ、`npm ci` までは
+通ったのに `verify` が exit 1 で終わり、`preflight`/`diff` に一度も到達しなかった。
+旧実装は `quality-gate.sh --pr` を先に呼び、`npm run build:open-next` を後に呼んでいた:
+
+```bash
+  verify)
+    "${ROOT}/scripts/quality-gate.sh" --pr        # ← 先に走る
+    ( cd "${ROOT}" && npm run build:open-next )   # ← 到達しない
+    ;;
+```
+
+フレッシュな clone には `.open-next/` が無い。`set -euo pipefail` の下では:
+
+1. `quality-gate.sh --pr` が「infra WebStack synth」等を検査できず SKIP を報告し、
+   green スタンプを書かずに非ゼロで終わる（#640。検査できなかったステップを green として
+   記録しない設計そのもの）。
+2. `set -e` がここで `verify` を打ち切る。
+3. `.open-next/` を作る唯一の手段である `npm run build:open-next` が**一度も実行されない**。
+4. 次に `verify` を再実行しても `.open-next/` は相変わらず無いので 1) から繰り返す ――
+   **何回リトライしても green スタンプが書けない。**
+
+クラウドエージェント自身の言葉: 「フレッシュな clone で `verify` を単発実行すると、
+①が必ず先に失敗し②に到達しないため、この手順の記載通りでは絶対に green スタンプが
+書けません」。エージェントはこれを正しく検知し、回避策で誤魔化さずに報告した。
+
+対処（反映済み）: `scripts/aws-cloud-deploy.sh` の `verify)` ケースの順序を
+`build:open-next` → `quality-gate.sh --pr` へ反転（ステップ 7 冒頭の記載も合わせて
+訂正済み）。ゲートへの入力を**作る**ステップは、ゲートより前に置く。加えて、この
+リポジトリがクラウドセッションへ送る委譲プロンプトは元々この順（build → gate）で
+書いてきており、wrapper だけが逆順だった ―― フレッシュな container で初めて実行される
+まで気づかれなかった。
 
 ### クラウドセッションの `gh` 制約
 

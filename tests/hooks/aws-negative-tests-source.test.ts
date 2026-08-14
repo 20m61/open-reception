@@ -157,6 +157,134 @@ describe('simulate() は boundary と context を明示的に渡す (#680 R10 / 
 });
 
 /**
+ * 🔴 **Defect 1（#680 フォローアップ、2026-08-13 に実 AWS で実測して発見）:
+ * `file://${BOUNDARY_POLICY_PATH}` を渡すと壊れる。**
+ *
+ * `--permissions-boundary-policy-input-list` は**リスト**を取るオプションである。
+ * `file://<path>` を渡すと CLI はファイルの中身（JSON **オブジェクト**）を
+ * 「リストそのもの」として解釈しようとし、`ValidationError: 1 validation error
+ * detected: Value '[{,` で落ちる。boundary を渡す全 check（= exec ロールの 38 件）が
+ * 丸ごと `unknown`（＝ FAIL）になり、「ポリシーが悪い」ように見えるが、実際は
+ * CLI 呼び出しの組み方の誤りだった。正しくは `readFileSync` で文書の中身を読み、
+ * argv の 1 要素としてそのまま渡す（`execFileSync` はシェルを経由しないので、
+ * 値の中身に関わらず 1 引数として扱われる）。
+ */
+describe('simulate() は boundary を readFileSync で渡す（file:// を渡さない） (#680 フォローアップ / defect 1)', () => {
+  const body = stripTsComments(extractFunctionBody(SOURCE, 'function simulate(', 'function main('));
+
+  it('readFileSync(BOUNDARY_POLICY_PATH, ...) で文書の中身を渡す', () => {
+    expect(body).toContain('readFileSync(BOUNDARY_POLICY_PATH');
+  });
+
+  it('壊れた file://${BOUNDARY_POLICY_PATH} の形へ戻さない', () => {
+    expect(body).not.toContain('file://${BOUNDARY_POLICY_PATH}');
+    expect(body).not.toContain('`file://');
+  });
+});
+
+/**
+ * 🔴 **Defect 2（#680 フォローアップ）: `S16` は当時（changeSet ARN スコープだった頃）
+ * 実測で `implicitDeny` を返し続けた。** 2026-08-13 の `cdk deploy --no-execute` 実測で、
+ * これは `claude-deploy-entry.json` の欠陥でもシミュレータの限界でもなく、
+ * `DescribeChangeSet` が changeSet ではなく stack リソースタイプに対して認可される
+ * ことを正しく示していたと判明した（詳細: `negative-test-outcome.ts` のコメント、
+ * ADR 0009 決定 2）。`S16` は stack ARN へ訂正済みで、もはやこの `implicitDeny` を
+ * 踏まない。
+ *
+ * probe（`probeSimulatorSupport`）は「measurement であって assertion ではない」―
+ * `isUnexplainedImplicitDeny` のゲートの外では絶対に呼ばれず、check の ID を
+ * ハードコードして特別扱いもしていない。この機構自体は、別の未知の資源型に出会った
+ * ときのために汎用のまま残っている。これらを source 上で固定する。
+ */
+describe('probe は isUnexplainedImplicitDeny のゲートの内側でしか呼ばれない (#680 フォローアップ / defect 2)', () => {
+  const mainBody = stripTsComments(extractFunctionBody(SOURCE, 'function main(', 'main();'));
+
+  it('probeSimulatorSupport の呼び出しは 1 箇所だけ', () => {
+    const calls = [...mainBody.matchAll(/probeSimulatorSupport\(/g)];
+    expect(calls.length).toBe(1);
+  });
+
+  it('probeSimulatorSupport の呼び出しは isUnexplainedImplicitDeny の if ブロックの中、かつ results.push より前にある', () => {
+    const gateIndex = mainBody.indexOf('if (isUnexplainedImplicitDeny(');
+    const callIndex = mainBody.indexOf('probeSimulatorSupport(');
+    // 🔴 `results.push({` は live check の分岐にも現れる（`gateIndex` より前）。
+    // 探すのは S 系ループの中の 1 件なので、`gateIndex` より後を探す。
+    const pushIndex = mainBody.indexOf('results.push({', gateIndex);
+    expect(gateIndex).toBeGreaterThan(-1);
+    expect(callIndex).toBeGreaterThan(gateIndex);
+    expect(callIndex).toBeLessThan(pushIndex);
+  });
+
+  it('probe の raw 結果と verdict を、使う前に必ず console.log で印字する（黙って適用しない）', () => {
+    const gateBody = extractFunctionBody(mainBody, 'if (isUnexplainedImplicitDeny(', 'results.push({');
+    const printIndex = gateBody.indexOf('probe raw EvalDecision=');
+    const verdictUseIndex = gateBody.indexOf("verdict === 'unsimulatable'");
+    expect(printIndex).toBeGreaterThan(-1);
+    expect(printIndex).toBeLessThan(verdictUseIndex);
+  });
+
+  it('unsimulatable と判定した check は continue し、results.push（採点対象）に到達しない', () => {
+    const gateBody = extractFunctionBody(mainBody, 'if (isUnexplainedImplicitDeny(', 'results.push({');
+    const verdictBlock = gateBody.slice(gateBody.indexOf("verdict === 'unsimulatable'"));
+    expect(verdictBlock).toContain('continue;');
+  });
+
+  /**
+   * 🔴 **「これは 12/19 の一部だけ許す exemption ではなく measurement である」**ことの
+   * 直接的な回帰テスト。`check.id`（または `id`）を `'S15'`/`'S16'` と比較して
+   * スキップするような分岐を書いた瞬間に、この検査は落ちる。
+   */
+  it('S15/S16（または他の check）を id で特別扱いするハードコードされた分岐が無い', () => {
+    expect(mainBody).not.toMatch(/\bid\s*===\s*'S1[56]'/);
+    expect(mainBody).not.toMatch(/check\.id\s*===\s*'S/);
+  });
+});
+
+/**
+ * 🔴 **サマリ行の要件（#680 フォローアップ）: passed / failed / notSimulatable を
+ * 分けて書く。unsimulatable が混ざった実行を「無条件の成功」として印字しない。**
+ */
+describe('サマリ行は passed/failed/notSimulatable を分け、unsimulatable を無条件の成功に見せない (#680 フォローアップ)', () => {
+  const tail = stripTsComments(
+    extractFunctionBody(SOURCE, 'const { failed, misdirected } = summarizeNegativeTests', 'main();'),
+  );
+  const notSimIdx = tail.indexOf('if (notSimulatableCount > 0) {');
+
+  it('passed は results.length - failed から算出する（notSimulatable を混ぜない）', () => {
+    expect(tail).toContain('results.length - failed');
+  });
+
+  it('notSimulatable 件数をログの counts に含める', () => {
+    expect(tail).toContain('notSimulatable=${notSimulatableCount}');
+  });
+
+  it('notSimulatableCount > 0 の分岐が存在する', () => {
+    expect(notSimIdx).toBeGreaterThan(-1);
+  });
+
+  it('failed > 0 の分岐は notSimulatable の有無に関わらず process.exit(1) を呼ぶ', () => {
+    const failedBranch = tail.slice(tail.indexOf('if (failed > 0) {'), notSimIdx);
+    expect(failedBranch).toContain('process.exit(1);');
+  });
+
+  it('notSimulatable のみ（failed=0）の分岐は process.exit を呼ばない（ゼロ終了のまま）', () => {
+    const notSimBranch = tail.slice(notSimIdx);
+    expect(notSimBranch).not.toContain('process.exit');
+  });
+
+  it('notSimulatable が有るときは無条件の ✅ PASS 行を出さない（⚠️ を使う）', () => {
+    const notSimBranch = tail.slice(notSimIdx);
+    // else 節（notSimulatableCount === 0 のとき）にだけ ✅ が現れることを確認する。
+    const elseIdx = notSimBranch.indexOf('} else {');
+    const beforeElse = notSimBranch.slice(0, elseIdx);
+    const afterElse = notSimBranch.slice(elseIdx);
+    expect(beforeElse).not.toContain('✅');
+    expect(beforeElse).toContain('⚠️');
+    expect(afterElse).toContain('✅');
+  });
+});
+
+/**
  * 🔴 **Critical 3（2026-08-12 全体レビュー）: S 系は「落ちようのない検査」だった。**
  *
  * 旧実装は principal ARN を 1 本だけ受け取り、既定を entry role にしていた。

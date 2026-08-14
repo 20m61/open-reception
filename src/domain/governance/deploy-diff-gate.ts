@@ -66,7 +66,13 @@ export type DeployFlagReason = (typeof DEPLOY_FLAG_REASONS)[number];
  *
  * 出所:
  *  - `carveOutProviderRoles` … `infra/test/claude-deploy-boundary.test.ts` の
- *    2 スタック 2 リージョン fixture を synth して実測した 3 本
+ *    2 スタック 2 リージョン fixture を synth して実測した 3 本 +
+ *    `s3deploy.BucketDeployment`（`web-stack.ts` の `AssetDeployment`）が使う
+ *    `SingletonFunction` の ServiceRole 1 本（#680 続報 / carve-out へ 4 本目）。
+ *    この 4 本目は上の fixture には含まれないため、実 `WebStack` を synth して別途
+ *    測った（論理 ID のハッシュ `8693BB64968944B69AAFB0CC9EB8756C` は
+ *    `aws-cdk-lib` の `BucketDeployment` が使うシングルトン UUID に由来し、
+ *    アプリのコード内容には依存しない）
  *  - `functionUrls` … `infra/lib/stacks/web-stack.ts` の `ServerFn` / `ImageFn` に
  *    対する `addFunctionUrl()`。論理 ID は構築パス（`<Fn>/FunctionUrl/Resource`）の
  *    md5 先頭 8 桁で決まり、コード資産の中身には依存しない
@@ -91,6 +97,7 @@ export const REVIEWED_CDK_GENERATED_LOGICAL_IDS = {
     'CustomS3AutoDeleteObjectsCustomResourceProviderRole3B1BD092',
     'CustomCrossRegionExportWriterCustomResourceProviderRoleC951B1E1',
     'CustomCrossRegionExportReaderCustomResourceProviderRole10531BBD',
+    'CustomCDKBucketDeployment8693BB64968944B69AAFB0CC9EB8756CServiceRole89A01265',
   ],
   /** Function URL の論理 ID → その URL が向いてよい Lambda 関数の論理 ID。 */
   functionUrls: {
@@ -155,6 +162,15 @@ const PROVIDER_TRUST_ACTION = 'sts:assumerole';
  *  - `CustomS3AutoDeleteObjects…` … **インラインポリシーを持たない**
  *    （バケット側のリソースポリシーで許可される）。`logs:` は managed policy
  *    （`AWSLambdaBasicExecutionRole`）側なのでここには現れない
+ *  - `CustomCDKBucketDeployment…`（#680 続報。4 本目）… `.open-next/` を build 済みで
+ *    実 `WebStack` を synth して実測（`infra/lib/stacks/web-stack.ts` の
+ *    `AssetDeployment`）。2 つの statement に分かれる:
+ *      - CDK 資産ステージングバケット（`cdk-<qualifier>-assets-*`）からの読み取りだけ:
+ *        `s3:GetObject*` / `s3:GetBucket*` / `s3:List*`
+ *      - デプロイ先の自前 `AssetBucket` への読み書き:
+ *        上記 3 つに加えて `s3:DeleteObject*` / `s3:PutObject` /
+ *        `s3:PutObjectLegalHold` / `s3:PutObjectRetention` / `s3:PutObjectTagging` /
+ *        `s3:PutObjectVersionTagging` / `s3:Abort*`
  *
  * 外れ方の向き: CDK が action を増やすと**初回デプロイが gate で止まる**。
  * AccessDenied ではなく停止なので復旧は容易で、増えた action を人間が
@@ -167,6 +183,17 @@ export const CARVE_OUT_ALLOWED_ACTIONS: ReadonlySet<string> = new Set([
   'ssm:putparameter',
   'ssm:addtagstoresource',
   'ssm:removetagsfromresource',
+  // #680 続報: BucketDeployment の ServiceRoleDefaultPolicy（synth 実測）。
+  's3:getobject*',
+  's3:getbucket*',
+  's3:list*',
+  's3:deleteobject*',
+  's3:putobject',
+  's3:putobjectlegalhold',
+  's3:putobjectretention',
+  's3:putobjecttagging',
+  's3:putobjectversiontagging',
+  's3:abort*',
 ]);
 
 /**
@@ -209,6 +236,101 @@ function isConfinedCarveOutResource(resolvedArn: string): boolean {
   if (!CONCRETE_AWS_REGION.test(fields[3] ?? '')) return false;
   if (fields[4] !== CARVE_OUT_ACCOUNT_ID) return false;
   return fields.slice(5).join(':').startsWith(CARVE_OUT_ALLOWED_RESOURCE_PREFIX);
+}
+
+/**
+ * BucketDeployment のロールが CDK 資産ステージングバケットを読んでよい bootstrap qualifier。
+ *
+ * 🔴 **`hnb659fds`（既定 qualifier）を意図的に含めない。** AWS から読んだ実デプロイ済み
+ * ロールは `cdk-hnb659fds-assets-*` を指していたが、それは過去に既定 qualifier で
+ * （＝この gate の外で）行われた人間のデプロイの痕跡である。`scripts/aws-cloud-deploy.sh`
+ * の `QUALIFIER="orcloud01"` が実際に使う唯一の qualifier で、層 3 の IAM Deny は
+ * `cdk-hnb659fds-*` への `s3:*` を明示的に禁止している（spec §4.2 T3）。ここで
+ * `hnb659fds` も許すと、主境界が禁じている ARN を diff gate の allowlist だけが
+ * 許すという矛盾した状態になる。値は `infra/cdk.json` の
+ * `@aws-cdk/core:bootstrapQualifier` / wrapper の `QUALIFIER` と一致させること。
+ */
+const CDK_ASSET_BUCKET_QUALIFIER = 'orcloud01';
+
+/**
+ * その ARN 文字列が、CDK 資産ステージングバケット（`cdk-orcloud01-assets-<account>-<region>`
+ * とその配下）に**閉じている**か。S3 の ARN は region/account 欄を持たない
+ * （`arn:aws:s3:::<bucket>[/<key>]`）ので、SSM とは別の形で確かめる。
+ *
+ * synth 実測（`infra/tmp-synth-measure.ts` で `@aws-cdk/core:bootstrapQualifier=orcloud01`
+ * を渡して synth）: `arn:${AWS::Partition}:s3:::cdk-orcloud01-assets-822063948773-ap-northeast-1`
+ * と同じ ARN に `/*` を足したもの。
+ */
+function isConfinedCdkAssetBucketArn(resolvedArn: string): boolean {
+  const prefix = `arn:aws:s3:::cdk-${CDK_ASSET_BUCKET_QUALIFIER}-assets-${CARVE_OUT_ACCOUNT_ID}-`;
+  if (!resolvedArn.startsWith(prefix)) return false;
+  const rest = resolvedArn.slice(prefix.length);
+  const region = rest.endsWith('/*') ? rest.slice(0, -2) : rest;
+  return CONCRETE_AWS_REGION.test(region);
+}
+
+/**
+ * `BucketDeployment` の ServiceRole が読み書きしてよい**唯一の**デプロイ先バケットの論理 ID。
+ *
+ * `web-stack.ts` の `new s3.Bucket(this, 'AssetBucket', ...)` から CDK が構築パスの
+ * ハッシュで決める（`md5('AssetBucket/Resource')` の先頭 8 桁 = `1D025086`。
+ * `ServerFn4F3A536E` / `ImageFnCD541B83` と同じ由来で、コード資産の中身にもスタック名にも
+ * 依存しない）。
+ *
+ * 🔴 **物理名（`openreception-web-dev-assetbucket…`）を予測・照合しない。** spec §2.3 の
+ * とおり、この物理名は「ハイフン無しの別綴り」で prefix 照合が成立しない
+ * （`OpenReception` ↔ `openreception` はハイフンで割れず、他のリソースの物理名パターンを
+ * 使い回すと静かに一致しなくなる）。ここでは物理名ではなく**論理 ID を `Fn::GetAtt` で
+ * 照合し、その先の `Type` が `AWS::S3::Bucket` であること**まで確かめる ―— 物理名予測の
+ * 罠を経由しない代わりに、`REVIEWED_CDK_GENERATED_LOGICAL_IDS.functionUrls` と同じ
+ * 「向き先を論理 ID で固定する」手法を使う。
+ */
+const BUCKET_DEPLOYMENT_TARGET_BUCKET_LOGICAL_ID = 'AssetBucket1D025086';
+
+/**
+ * `{ 'Fn::Join': ['', [{ 'Fn::GetAtt': [id, attribute] }, suffix]] }` から `id` を取り出す。
+ * `<bucket>/*` のように「GetAtt の直後にリテラル接尾辞を連結する」形だけを対象にする
+ * （それ以外の Join は判定不能として `null`）。
+ */
+function getAttArnJoinSuffix(v: unknown, attribute: string, suffix: string): string | null {
+  if (!isRecord(v)) return null;
+  const join = v['Fn::Join'];
+  if (!Array.isArray(join) || join.length !== 2 || join[0] !== '' || !Array.isArray(join[1])) {
+    return null;
+  }
+  const parts = join[1];
+  if (parts.length !== 2 || parts[1] !== suffix) return null;
+  return getAttLogicalId(parts[0], attribute);
+}
+
+/**
+ * `Resource` の 1 要素が、carve-out のロールに許してよい形に**閉じている**かを判定する。
+ *
+ * `templateResources` を受け取るのはここだけ ―— `Fn::GetAtt` で参照する論理 ID の
+ * `Type` を、同じ synth テンプレートの中で確かめる必要があるため（`resolvePolicyRoleTarget`
+ * が `Ref` 先の `Type` を確かめているのと同じ理由）。`Type` を見ないと、
+ * `AssetBucket1D025086` という論理 ID を**別種別のリソース**に付け替えるだけで
+ * 「向き先の固定」を迂回できてしまう。
+ */
+function isConfinedCarveOutStatementResource(
+  raw: unknown,
+  templateResources: StackTemplateResources,
+): boolean {
+  const isReviewedAssetBucket = (logicalId: string): boolean =>
+    logicalId === BUCKET_DEPLOYMENT_TARGET_BUCKET_LOGICAL_ID &&
+    lookupResource(templateResources, logicalId)?.type === 'AWS::S3::Bucket';
+
+  // バケット本体の ARN（`{ Fn::GetAtt: [id, 'Arn'] }`）。
+  const bareBucket = getAttLogicalId(raw, 'Arn');
+  if (bareBucket !== null) return isReviewedAssetBucket(bareBucket);
+
+  // バケット配下オブジェクトの ARN（`Fn::Join(['', [GetAtt, '/*']])`）。
+  const objectsUnderBucket = getAttArnJoinSuffix(raw, 'Arn', '/*');
+  if (objectsUnderBucket !== null) return isReviewedAssetBucket(objectsUnderBucket);
+
+  // 文字列へ解決できる形（Ref の擬似パラメータ・Fn::Join・Fn::Sub・リテラル）。
+  const resolved = resolveTemplateString(raw);
+  return isConfinedCarveOutResource(resolved) || isConfinedCdkAssetBucketArn(resolved);
 }
 
 /** `describe-change-set` の `Changes[].ResourceChange` から必要な項目だけ。 */
@@ -554,11 +676,16 @@ function collectInlineStatements(policies: unknown): ReadonlyArray<AllowStatemen
  *
  * action は**名前**の許可リスト（`*` を含む書き方は素の文字列比較で自動的に外れる ——
  * `iam*` も `*:*` も許可リストのどの項目とも一致しない）、`Resource` は
- * **実測した SSM の名前空間**に閉じていること。`Condition` は見ない ——
+ * **実測した SSM / CDK 資産バケット / 自前 AssetBucket の名前空間**に閉じていること
+ * （`isConfinedCarveOutStatementResource`）。`Condition` は見ない ——
  * condition は権限を**狭める**方向にしか働かないので、無視しても安全側である。
+ *
+ * `templateResources` を要求するのは `Fn::GetAtt` で参照する論理 ID の `Type` を
+ * 確かめる必要があるため（`isConfinedCarveOutStatementResource` 参照）。
  */
 function carveOutStatementViolations(
   statements: ReadonlyArray<AllowStatement>,
+  templateResources: StackTemplateResources,
 ): ReadonlyArray<string> {
   const violations: string[] = [];
   for (const stmt of statements) {
@@ -568,12 +695,9 @@ function carveOutStatementViolations(
       }
     }
     for (const resource of stmt.resources) {
-      const resolved = resolveTemplateString(resource);
-      if (!isConfinedCarveOutResource(resolved)) {
-        violations.push(
-          `許可リストの外の Resource: ${resolved}` +
-            `（${CARVE_OUT_ALLOWED_RESOURCE_PREFIX} の下に閉じている必要があります）`,
-        );
+      if (!isConfinedCarveOutStatementResource(resource, templateResources)) {
+        const described = getAttLogicalId(resource, 'Arn') ?? resolveTemplateString(resource);
+        violations.push(`許可リストの外の Resource: ${described}`);
       }
     }
   }
@@ -587,7 +711,10 @@ function carveOutStatementViolations(
  * 名乗りつつ、trust policy を外部アカウントへ向け、インラインで `iam:*` を積む
  * テンプレートは簡単に書ける。**名前ではなく中身を固定する。**
  */
-function carveOutShapeViolations(props: TemplateProperties): ReadonlyArray<string> {
+function carveOutShapeViolations(
+  props: TemplateProperties,
+  templateResources: StackTemplateResources,
+): ReadonlyArray<string> {
   const violations: string[] = [];
 
   const trust = classifyTrustPolicy(props.AssumeRolePolicyDocument);
@@ -622,7 +749,11 @@ function carveOutShapeViolations(props: TemplateProperties): ReadonlyArray<strin
   if (statements === null) {
     violations.push('インラインポリシーの Action / Resource を読み取れない');
   } else {
-    violations.push(...carveOutStatementViolations(statements).map((v) => `boundary の無いロール: ${v}`));
+    violations.push(
+      ...carveOutStatementViolations(statements, templateResources).map(
+        (v) => `boundary の無いロール: ${v}`,
+      ),
+    );
   }
 
   return violations;
@@ -814,7 +945,7 @@ function evaluateSensitiveResource(
   const props = resource.properties;
 
   if (c.resourceType === 'AWS::IAM::Role') {
-    evaluateRole(summary.stackName, c, props, evidence, blocks, flags);
+    evaluateRole(summary.stackName, c, props, evidence, blocks, flags, summary.templateResources);
     return;
   }
 
@@ -909,7 +1040,7 @@ function evaluatePolicyAttachment(
     });
     return;
   }
-  const violations = carveOutStatementViolations(statements);
+  const violations = carveOutStatementViolations(statements, summary.templateResources);
   if (violations.length > 0) {
     blocks.push({
       reason: 'carveOutRoleShape',
@@ -1091,6 +1222,7 @@ function evaluateRole(
   evidence: string,
   blocks: DeployBlock[],
   flags: DeployFlag[],
+  templateResources: StackTemplateResources,
 ): void {
   const resolved = resolveRoleArn(stackName, c.logicalResourceId, props);
   if (resolved.kind === 'opaque') {
@@ -1142,7 +1274,7 @@ function evaluateRole(
     return;
   }
 
-  const violations = carveOutShapeViolations(props);
+  const violations = carveOutShapeViolations(props, templateResources);
   if (violations.length > 0) {
     blocks.push({
       reason: 'carveOutRoleShape',

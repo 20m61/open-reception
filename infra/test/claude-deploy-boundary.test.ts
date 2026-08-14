@@ -20,8 +20,6 @@ import * as cdk from 'aws-cdk-lib';
 import { Template } from 'aws-cdk-lib/assertions';
 import * as iam from 'aws-cdk-lib/aws-iam';
 import * as lambda from 'aws-cdk-lib/aws-lambda';
-import * as s3 from 'aws-cdk-lib/aws-s3';
-import * as cloudwatch from 'aws-cdk-lib/aws-cloudwatch';
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import {
@@ -30,11 +28,25 @@ import {
 } from '../lib/config/claude-deploy-boundary';
 import { applyCostTags } from '../lib/constructs/cost-tags';
 import { resolveEnv } from '../lib/config/environments';
+import { openNextArtifactState, describeArtifactState } from '../lib/build-artifacts';
+import { WebStack } from '../lib/stacks/web-stack';
+import { CloudFrontMonitoringStack } from '../lib/stacks/cloudfront-monitoring-stack';
 import {
   cfnGeneratedNamePrefix,
   iamArnGlobMatchesGeneratedName,
 } from '../../src/domain/governance/cfn-generated-name';
 import { REVIEWED_CDK_GENERATED_LOGICAL_IDS } from '../../src/domain/governance/deploy-diff-gate';
+
+// `.open-next/` が **在るだけ**では足りない（古いと WebStack の synth が凍結ガードで throw
+// する）。`fresh` のときだけ実 WebStack を synth し、それ以外は理由付きで describe ごと
+// skip する（test/web-stack.test.ts (#628) と同じパターン）。
+const ARTIFACTS = openNextArtifactState(resolve(__dirname, '..', '..'));
+const OPEN_NEXT_READY = ARTIFACTS.state === 'fresh';
+if (!OPEN_NEXT_READY) {
+  console.warn(
+    `[infra] CustomResourceProvider 系ロール (#680 R1) suite skipped: ${describeArtifactState(ARTIFACTS)}`,
+  );
+}
 
 const ACCOUNT = '822063948773';
 /**
@@ -158,7 +170,7 @@ describe('applyClaudeDeployBoundary (#680 Critical 2)', () => {
 });
 
 /**
- * 🔴 **R1（2026-08-12 全体レビュー残件 / #680）: 上の fixture が取り逃していたクラス。**
+ * 🔴 **R1（2026-08-12 全体レビュー残件 / #680）: 手書きモデルの fixture が取り逃していたクラス。**
  *
  * `crossRegionReferences: true` と `autoDeleteObjects: true` は、CDK の
  * `CustomResourceProvider` を経由して **生の `AWS::IAM::Role`** をテンプレートへ吐く。
@@ -170,17 +182,41 @@ describe('applyClaudeDeployBoundary (#680 Critical 2)', () => {
  *    → `Stack.addPermissionsBoundaryAspect()` の Aspect が既に走った**後**なので
  *      `PermissionsBoundary` も付かない
  *
- * dev で実際に生えるのは 3 本（うち 2 本は既にアカウント上に存在する）。
+ * 🔴 **さらに、`s3deploy.BucketDeployment`（`web-stack.ts` の `AssetDeployment`）が使う
+ * `SingletonFunction` の ServiceRole は「上と同じクラス」でありながら、手書きの
+ * `s3.Bucket` + `cloudwatch.Alarm` モデルには**そもそも存在しない**（`BucketDeployment` を
+ * construct していないので生えようがない）。2026-08-14 に実 `WebStack` を synth して
+ * 初めて計測でき（`0cada16`）、この fixture がそれを再現できないという限界が
+ * `carve-out が必要なロールが実在し、かつ carve-out はそれ以外を覆っていない` を
+ * 赤くした。**モデルは「完全性」を主張できる形をしていなかった** ―― 直すのはモデルの側。
+ *
+ * よって以降は手書きモデルではなく、**実 `WebStack`（producer, ap-northeast-1）+
+ * 実 `CloudFrontMonitoringStack`（consumer, us-east-1）** を `bin/open-reception.ts` と
+ * 同じ crossRegionReferences 配線で synth する。`.open-next/` を要求するため、fresh でない
+ * 環境ではこの describe ブロックごと skip する（`OPEN_NEXT_READY`）。
+ *
+ * dev で実際に生えるのは 4 本（うち 2 本は既にアカウント上に存在する）。
  */
 const ACCOUNT_ROLE_ARN_PREFIX = `arn:aws:iam::${ACCOUNT}:role/`;
 
-/** 2 スタック 2 リージョン + 実際の cross-region 参照 + autoDeleteObjects。 */
-function synthCrossRegionPair(): {
-  readonly producer: Template;
-  readonly consumer: Template;
-  readonly producerStackName: string;
-  readonly consumerStackName: string;
-} {
+/**
+ * 実 `WebStack` + 実 `CloudFrontMonitoringStack` の 2 スタック 2 リージョン synth 結果を
+ * キャッシュする。`it()` ごとに毎回 synth すると（実測 ~9s/回）4 本の it が約 36s に
+ * 膨らむため、1 度だけ synth して使い回す。
+ */
+let cachedPair:
+  | {
+      readonly producer: Template;
+      readonly consumer: Template;
+      readonly producerStackName: string;
+      readonly consumerStackName: string;
+    }
+  | undefined;
+
+/** 実 `WebStack`（producer）+ 実 `CloudFrontMonitoringStack`（consumer）を synth する。 */
+function synthCrossRegionPair(): NonNullable<typeof cachedPair> {
+  if (cachedPair !== undefined) return cachedPair;
+
   const app = new cdk.App({
     context: { [CLAUDE_BOUNDARY_CONTEXT_KEY]: 'OpenReceptionClaudeBoundary' },
   });
@@ -188,40 +224,32 @@ function synthCrossRegionPair(): {
 
   const producerStackName = 'OpenReception-Web-dev';
   const consumerStackName = 'OpenReception-CfMonitoring-dev';
+  const config = resolveEnv('dev');
 
-  const producer = new cdk.Stack(app, producerStackName, {
+  // `bin/open-reception.ts` と同じ構築（WebStack 自身が `applyCostTags` を呼ぶ）。
+  const producer = new WebStack(app, producerStackName, {
     env: { account: ACCOUNT, region: 'ap-northeast-1' },
     crossRegionReferences: true,
-  });
-  applyCostTags(producer, resolveEnv('dev'), 'web');
-  // `web-stack.ts` の `autoDeleteObjects: config.environment !== 'prod'` と同じ形。
-  const bucket = new s3.Bucket(producer, 'Assets', {
-    removalPolicy: cdk.RemovalPolicy.DESTROY,
-    autoDeleteObjects: true,
+    config,
+    appEnv: {},
+    cognitoAuth: config.auth.adminProvider === 'cognito',
   });
 
-  const consumer = new cdk.Stack(app, consumerStackName, {
+  // 実際に別リージョンの値（distributionId）を参照する（これが ExportWriter / ExportReader を生む）。
+  const consumer = new CloudFrontMonitoringStack(app, consumerStackName, {
     env: { account: ACCOUNT, region: 'us-east-1' },
     crossRegionReferences: true,
-  });
-  applyCostTags(consumer, resolveEnv('dev'), 'cloudfront-monitoring');
-  // 実際に別リージョンの値を参照する（これが ExportWriter / ExportReader を生む）。
-  new cloudwatch.Alarm(consumer, 'Alarm', {
-    metric: new cloudwatch.Metric({
-      namespace: 'AWS/CloudFront',
-      metricName: '5xxErrorRate',
-      dimensionsMap: { DistributionId: bucket.bucketName },
-    }),
-    threshold: 1,
-    evaluationPeriods: 1,
+    config,
+    distributionId: producer.distribution.distributionId,
   });
 
-  return {
+  cachedPair = {
     producer: Template.fromStack(producer),
     consumer: Template.fromStack(consumer),
     producerStackName,
     consumerStackName,
   };
+  return cachedPair;
 }
 
 type RoleFacts = {
@@ -283,23 +311,31 @@ function matchesCarveOut(pattern: string, role: RoleFacts): boolean {
   return iamArnGlobMatchesGeneratedName(pattern, `${ACCOUNT_ROLE_ARN_PREFIX}${prefix}`);
 }
 
-describe('CustomResourceProvider 系ロール (#680 R1)', () => {
+describe.runIf(OPEN_NEXT_READY)('CustomResourceProvider 系ロール (#680 R1)', () => {
   /**
    * 🔴 **最初はこれを「全ロールに boundary とタグが付く」として書き、赤を見た。**
-   * 実測（`git log` の R1 コミット / residual-fix-report）:
+   * 実測（`git log` の R1 コミット / residual-fix-report、および 2026-08-14 の実 `WebStack`
+   * synth）:
    *
    * | 論理 ID | boundary | Project/Environment |
    * | --- | --- | --- |
    * | `CustomS3AutoDeleteObjectsCustomResourceProviderRole…` | **付く** | 付かない |
    * | `CustomCrossRegionExportWriterCustomResourceProviderRole…` | 付かない | 付かない |
    * | `CustomCrossRegionExportReaderCustomResourceProviderRole…` | 付かない | 付かない |
+   * | `CustomCDKBucketDeployment…ServiceRole…` | **付く** | **付く** |
    *
    * auto-delete の provider は construct 構築時に materialise されるので Aspect が届き
    * boundary は付く。cross-region の 2 本は `prepareApp` で後から生えるので届かない。
-   * どれも `ITaggable` ではないのでタグは 3 本とも付かない。
+   * `BucketDeployment` の `SingletonFunction` は（前者 3 本と違い）`ITaggable` な construct
+   * であり Aspect にも届くため、boundary・タグとも通常のロールと同じく付く。
+   * それでも carve-out に載せているのは、この describe の「boundary/タグが付くか」ではなく
+   * **`deploy-diff-gate.ts` 側が別に検査する「CFN 変更セット上の inline policy が
+   * CDK 資産バケット / 自前 `AssetBucket` へ閉じ込められているか」**という別レイヤーの理由
+   * による（`src/domain/governance/deploy-diff-gate.ts` の `carveOutShapeViolations` 参照）。
    *
    * よって出荷している契約は「**全部に付く**」ではなく「**付かないものは carve-out の
-   * 名前パターンに収まっている**」である。ここではその契約を固定する。
+   * 名前パターンに収まっている**」である。ここではその契約を固定する
+   * （`BucketDeployment` は付くので、そもそもこの offenders 判定には現れない）。
    */
   it('boundary が付かないロールは carve-out の ARN パターンに収まっている', () => {
     const pattern = carveOutPattern();
@@ -330,15 +366,24 @@ describe('CustomResourceProvider 系ロール (#680 R1)', () => {
    */
   /**
    * 🔴 **diff gate の allowlist と同じ 1 本を使う (#680 R10)。**
-   * 「synth すると 3 本生える」と「gate が 3 本を通す」が別々の文字列で書かれていると、
+   * 「synth すると 4 本生える」と「gate が 4 本を通す」が別々の文字列で書かれていると、
    * CDK 更新で論理 ID のハッシュが変わったとき **gate 側だけが古いまま**になり、
    * 初回デプロイが gate で止まる（あるいは逆に、新しい ID が素通りする）。
+   *
+   * 🔴 **集合として比較する（順序を固定しない）。** `REVIEWED_CDK_GENERATED_LOGICAL_IDS
+   * .carveOutProviderRoles` の並びは「足した順」（S3AutoDelete → ExportWriter →
+   * ExportReader → BucketDeployment）で、実 synth の `findResources()` が返す順序
+   * （construct 構築順 = AssetBucket → AssetDeployment(BucketDeployment) → … →
+   * ExportWriter/Reader）とは一致しない。順序は CDK の内部実装詳細であり、この契約が
+   * 固定したいのは「carve-out が指す集合」であって「列挙順」ではないので、ソートして比較する。
    */
   it('carve-out が必要なロールが実在し、かつ carve-out はそれ以外を覆っていない', () => {
     const pattern = carveOutPattern();
     const roles = allRoles();
     const covered = roles.filter((r) => matchesCarveOut(pattern, r)).map((r) => r.logicalId);
-    expect(covered).toEqual([...REVIEWED_CDK_GENERATED_LOGICAL_IDS.carveOutProviderRoles]);
+    expect([...covered].sort()).toEqual(
+      [...REVIEWED_CDK_GENERATED_LOGICAL_IDS.carveOutProviderRoles].sort(),
+    );
   });
 
   /**
@@ -347,8 +392,15 @@ describe('CustomResourceProvider 系ロール (#680 R1)', () => {
    * gate 側（`carveOutRoleShape`）が固定している形 —— trust は
    * `lambda.amazonaws.com` だけ、managed policy は基本実行ロールだけ ——
    * が**実物にも当てはまる**ことをここで確かめる。片方だけ変わったら赤くなる。
+   *
+   * 🔴 **managed policy の CFN 表現は 2 種類ある。** `S3AutoDelete` /
+   * `ExportWriter` / `ExportReader` は CDK の `CustomResourceProvider` フレームワークが
+   * 生成し、ARN を `Fn::Sub` で組む。`BucketDeployment` の `SingletonFunction` はフレーム
+   * ワーク経由ではなく通常の `role.addManagedPolicy()` 相当の経路を使うため、**同じ ARN**
+   * を `Fn::Join` で組む（`gate` 側の `managedPolicyArnLiteral()` はどちらも同じリテラル
+   * ARN へ解決するので実害はない。ここではテンプレート上の形そのものを固定する）。
    */
-  it('allowlist に載せた 3 本の実体は、gate が固定している形と一致する', () => {
+  it('allowlist に載せた 4 本の実体は、gate が固定している形と一致する', () => {
     const { producer, consumer } = synthCrossRegionPair();
     const shapes: Array<{ id: string; trust: unknown; managed: unknown }> = [];
     for (const template of [producer, consumer]) {
@@ -362,6 +414,17 @@ describe('CustomResourceProvider 系ロール (#680 R1)', () => {
       }
     }
     expect(shapes).toHaveLength(REVIEWED_CDK_GENERATED_LOGICAL_IDS.carveOutProviderRoles.length);
+    const managedViaSub = [
+      { 'Fn::Sub': 'arn:${AWS::Partition}:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole' },
+    ];
+    const managedViaJoin = [
+      {
+        'Fn::Join': [
+          '',
+          ['arn:', { Ref: 'AWS::Partition' }, ':iam::aws:policy/service-role/AWSLambdaBasicExecutionRole'],
+        ],
+      },
+    ];
     for (const shape of shapes) {
       expect(shape.trust).toEqual({
         Version: '2012-10-17',
@@ -369,9 +432,8 @@ describe('CustomResourceProvider 系ロール (#680 R1)', () => {
           { Action: 'sts:AssumeRole', Effect: 'Allow', Principal: { Service: 'lambda.amazonaws.com' } },
         ],
       });
-      expect(shape.managed).toEqual([
-        { 'Fn::Sub': 'arn:${AWS::Partition}:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole' },
-      ]);
+      // `BucketDeployment` の SingletonFunction だけ Fn::Join 形（上のコメント参照）。
+      expect(shape.managed).toEqual(shape.id.startsWith('CustomCDKBucketDeployment') ? managedViaJoin : managedViaSub);
     }
   });
 

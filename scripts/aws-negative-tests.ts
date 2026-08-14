@@ -13,18 +13,23 @@
  * このファイル自体はテストしない（AWS 認証情報が無いと動かないため）。
  */
 import { execFileSync } from 'node:child_process';
-import { existsSync, statSync } from 'node:fs';
+import { existsSync, readFileSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import {
   classifyAwsError,
+  classifyProbeVerdict,
   classifySimulationError,
   coveredRegions,
+  evalDecisionToOutcome,
   findUnsuppliedPrincipalKeys,
+  isUnexplainedImplicitDeny,
+  parseEvalDecision,
   principalArnKey,
   resolveExecutionScope,
   resolvePrincipalArnByKey,
   summarizeNegativeTests,
   uncoveredRegionNote,
+  type EvalDecision,
   type NegativeTestResult,
   type Outcome,
   type PrincipalArnMap,
@@ -363,6 +368,9 @@ const SIMULATED_CHECKS: ReadonlyArray<SimulatedCheck> = [
     guards: '層 3 DenyIamWriteOnForeignPrincipals（他プロジェクトのポリシー。Important 5）',
   },
   // ---- #680 R4: us-east-1 にしか存在しないリソースを実際に問う ----
+  // 🔴 S15/S16 はどちらも stack ARN を対象にする（2026-08-13 実測で訂正。S16 の
+  // コメント参照）。両方とも通常どおりシミュレータで評価できる ―― もはや probe を
+  // 発火させる check ではない。
   {
     id: 'S15',
     action: 'cloudformation:DescribeStacks',
@@ -378,18 +386,33 @@ const SIMULATED_CHECKS: ReadonlyArray<SimulatedCheck> = [
     guards: 'entry の ReadOwnDevStacksForDiffGate（us-east-1 の stack ARN が許可リストにあるか）',
   },
   {
+    // 🔴 **2026-08-13 の `cdk deploy --no-execute` 実測で訂正（#680 フォローアップ）。**
+    // 以前はここに changeSet ARN（`changeSet/claude-gate-*/*`）を渡し、シミュレータが
+    // `implicitDeny` を返し続けることを「シミュレータが changeset リソース種別を
+    // 評価できない」という道具側の限界として扱っていた。しかし実 API の AccessDenied は
+    // `resource: arn:...:stack/OpenReception-Web-dev/<id>` ―― **stack ARN** を名指しした。
+    // `DescribeChangeSet` は changeSet ARN ではなく stack ARN に対して認可される。
+    // シミュレータの `implicitDeny` は道具の限界ではなく、当時のポリシーが stack ARN の
+    // Allow に `DescribeChangeSet` を含めていなかったこと（ドキュメント読解に基づく
+    // 誤った設計）を正しく示していた。`claude-deploy-entry.json` 側を
+    // `ReadOwnDevStacksForDiffGate` へ統合したので、ここも stack ARN へ向け直す。
+    // probe 機構自体（`isUnexplainedImplicitDeny` / `classifyProbeVerdict`）は
+    // 汎用のまま残す ―— 別のリソース種別で同じ限界に当たったときのために。
     id: 'S16',
     action: 'cloudformation:DescribeChangeSet',
     resource: () =>
-      `arn:aws:cloudformation:us-east-1:${ACCOUNT}:changeSet/claude-gate-abc1234/dummy-id`,
+      `arn:aws:cloudformation:us-east-1:${ACCOUNT}:stack/OpenReception-CfMonitoring-dev/dummy-id`,
     principals: ['entry'],
     coverage: {
       kind: 'only',
       region: 'us-east-1',
-      reason: 'ap-northeast-1 側は S15 と対になる既存の手動確認（runbook 4b-2）で覆っている',
+      reason: 'OpenReception-CfMonitoring-dev は us-east-1 にしか存在しない（S15 と同じ理由）',
     },
     expected: 'allowed',
-    guards: 'entry の ReadOwnChangeSetsForDiffGate（us-east-1 の changeSet ARN）',
+    guards:
+      'entry の ReadOwnDevStacksForDiffGate（DescribeStacks と同じ stack ARN Allow に ' +
+      'DescribeChangeSet も含む。2026-08-13 実測: 実 API の AccessDenied resource が ' +
+      'stack ARN だったため changeSet ARN scoping は誤りと判明）',
   },
   // ---- #680 R2: carve-out そのものを問う対（片方だけでは意味を成さない） ----
   {
@@ -556,6 +579,9 @@ const assumeRole = (arn: string): Outcome =>
 const describeStack = (name: string): Outcome =>
   aws(['cloudformation', 'describe-stacks', '--stack-name', name]);
 
+/** `simulate()` の戻り値。`decision` は probe を打つべきか判定するための生の 3 値（判定不能なら `null`）。 */
+type SimulateResult = { readonly outcome: Outcome; readonly decision: EvalDecision | null };
+
 /**
  * `iam:SimulatePrincipalPolicy` **という別の API** を呼んで評価する。
  *
@@ -566,6 +592,10 @@ const describeStack = (name: string): Outcome =>
  * だけで S1〜S10 が軒並み「denied（＝PASS）」に見えてしまう
  * （2026-08-12 レビューで検出。詳細は `classifySimulationError` のコメント参照）。
  * 常に `classifySimulationError` を使い、`'unknown'` として扱う。
+ *
+ * `decision` も一緒に返す（#680 フォローアップ / defect 2）。`explicitDeny` と
+ * `implicitDeny` はどちらも `outcome: 'denied'` に写像されるが、
+ * `isUnexplainedImplicitDeny` が probe を打つべきか判定するにはこの区別が要る。
  */
 function simulate(
   principalArn: string,
@@ -577,7 +607,7 @@ function simulate(
     /** `iam:PassedToService` のようなリクエスト側 context key。 */
     readonly contextEntries?: ReadonlyArray<string>;
   },
-): Outcome {
+): SimulateResult {
   refuseUnderTestRuntime(`iam simulate-principal-policy (${action})`);
   try {
     const out = execFileSync(
@@ -589,8 +619,19 @@ function simulate(
         '--resource-arns', resource,
         // 🔴 boundary は carve-out の「壊れると初回デプロイが落ちる方の半分」。
         // 自動で含まれるかを AWS 抜きで確かめられない以上、明示的に渡す。
+        //
+        // 🔴 **`file://` を渡してはいけない。** このオプションは *リスト* を取るので、
+        // CLI は `file://` の中身を「リストそのもの」として解釈しようとする。ポリシー文書は
+        // 配列ではなくオブジェクトなので `ValidationError: Value '[{,` で落ち、boundary を
+        // 渡す全 check（= exec ロールの 38 件）が丸ごと `unknown` になる。
+        // **`unknown` は期待が denied でも PASS にしないため FAIL として出はするが、
+        // 「ポリシーが悪い」ようにしか見えず、原因がツール側だと分からない**（2026-08-13 に実測）。
+        // 文書の中身を argv の 1 要素として渡すのが正しい（`execFileSync` なのでシェル解釈は無い）。
         ...(options.withBoundary
-          ? ['--permissions-boundary-policy-input-list', `file://${BOUNDARY_POLICY_PATH}`]
+          ? [
+              '--permissions-boundary-policy-input-list',
+              readFileSync(BOUNDARY_POLICY_PATH, 'utf8'),
+            ]
           : []),
         ...(options.contextEntries && options.contextEntries.length > 0
           ? ['--context-entries', ...options.contextEntries]
@@ -600,17 +641,86 @@ function simulate(
       ],
       { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] },
     ).trim();
-    if (out === 'allowed') return 'allowed';
-    if (out.endsWith('Deny')) return 'denied';
-    console.error(`      (判定不能) EvalDecision=${out || '(空)'}`);
-    return 'unknown';
+    const decision = parseEvalDecision(out);
+    if (decision === null) console.error(`      (判定不能) EvalDecision=${out || '(空)'}`);
+    return { outcome: evalDecisionToOutcome(decision), decision };
   } catch (e) {
     const stderr = (e as { stderr?: Buffer }).stderr?.toString() ?? '';
     const outcome = classifySimulationError(stderr);
     console.error(`      (判定不能: SimulatePrincipalPolicy 自体を呼べなかった) ${stderr.trim().split('\n')[0] || '(stderr 空)'}`);
-    return outcome;
+    return { outcome, decision: null };
   }
 }
+
+/**
+ * 🔴 **probe: このアクション／リソース種別の組み合わせが評価可能かを測定する
+ * （#680 フォローアップ / defect 2。2026-08-13 の実 API 実測で解釈を訂正 ―
+ * 詳細は ADR 0009 決定 2 の「認可の資源型は実 API 応答で確認する」）。**
+ *
+ * `iam:SimulateCustomPolicy` に、評価対象の principal とは無関係な**最小ポリシー**
+ * （`action` を `Resource: "*"` で Allow するだけの 1 ステートメント）を渡し、同じ
+ * `resource` ARN に対して評価させる。**最小限の Allow ですら `implicitDeny` が返るなら、
+ * principal 側のポリシーの中身に関係なく評価できていない。**
+ *
+ * 🔴 **当初「IAM のポリシーシミュレータがそのリソース種別を認識していない」という
+ * 道具側の限界だと解釈したが、これは誤りだった。** 実際の `cdk deploy --no-execute` が
+ * 返した `AccessDenied` の `resource` は **stack ARN**（`arn:...:stack/OpenReception-Web-dev/<id>`）
+ * であり、changeSet ARN ではなかった。`DescribeChangeSet` は changeSet ARN ではなく
+ * **stack ARN** に対して認可される ―― つまり「changeSet ARN ＋ `Resource: "*"` の
+ * `DescribeChangeSet` を評価すると `implicitDeny`」という実測は、シミュレータの限界の
+ * 証拠ではなく、**その資源型スコープではこのアクションが本来一致し得ない**ことを
+ * シミュレータが正しく答えていた結果だった（`DescribeStacks` を stack ARN で評価すると
+ * `allowed` になる ―― stack 型そのものは機能している）。この probe 機構は今もこの
+ * check（S15/S16）を発火させないが、**別のアクション／リソース種別の組み合わせで
+ * 同じ形の `implicitDeny` に出会ったとき**、それが道具の限界なのか資源型の想定違いなのかを
+ * 見分ける最初の一歩として汎用的に残す。
+ *
+ * 呼び出し元は `isUnexplainedImplicitDeny(check.expected, decision)` が true の場合
+ * （= `expected: 'allowed'` の check が `implicitDeny` を返した場合）**だけ**これを呼ぶ。
+ * 常時は呼ばない ―― 呼ぶこと自体が「escape hatch」になってしまうため。
+ *
+ * 例外（`simulate-custom-policy` 自体が呼べなかった）は `null` を返す。`null` は
+ * `classifyProbeVerdict` で `'supported'`（＝通常どおり FAIL 採点へフォールバック）に
+ * 解釈される ―― probe 自身の失敗を「シミュレータの限界」にすり替えない。
+ */
+function probeSimulatorSupport(action: string, resource: string): EvalDecision | null {
+  refuseUnderTestRuntime(`iam simulate-custom-policy probe (${action})`);
+  const minimalAllowPolicy = JSON.stringify({
+    Version: '2012-10-17',
+    Statement: [{ Effect: 'Allow', Action: action, Resource: '*' }],
+  });
+  try {
+    const out = execFileSync(
+      'aws',
+      [
+        'iam', 'simulate-custom-policy',
+        '--policy-input-list', minimalAllowPolicy,
+        '--action-names', action,
+        '--resource-arns', resource,
+        '--query', 'EvaluationResults[0].EvalDecision',
+        '--output', 'text',
+      ],
+      { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] },
+    ).trim();
+    const decision = parseEvalDecision(out);
+    if (decision === null) console.error(`      (probe 判定不能) EvalDecision=${out || '(空)'}`);
+    return decision;
+  } catch (e) {
+    const stderr = (e as { stderr?: Buffer }).stderr?.toString() ?? '';
+    console.error(
+      `      (probe 失敗: simulate-custom-policy 自体を呼べなかった。判定不能として扱い、元の結果を通常どおり FAIL 採点する) ${
+        stderr.trim().split('\n')[0] || '(stderr 空)'
+      }`,
+    );
+    return null;
+  }
+}
+
+/** unsimulatable と判定した check について、実際の認可がどこで検証されるかを示す注記。 */
+const UNSIMULATABLE_VERIFICATION_NOTE =
+  '実際の認可はこのアクションを実行する経路で検証される（changeSet 関連なら ' +
+  '`bash scripts/aws-cloud-deploy.sh diff` の `--no-execute` change set 作成 → ' +
+  '`describe-change-set` が、誤ったスコープが AccessDenied として最初に現れる地点）。';
 
 /**
  * `--live-only`: S 系（`SimulatePrincipalPolicy`）をスキップする。
@@ -644,6 +754,9 @@ function main(): void {
   }
 
   const results: NegativeTestResult[] = [];
+  // 🔴 **`unsimulatable` と判定された check は `results` へ一切入れない。** これにより
+  // `summarizeNegativeTests` の pass/fail 集計から自動的に除外される（別バケツを混ぜない）。
+  let notSimulatableCount = 0;
 
   if (scope !== 'simulate') {
     console.log('  実試行（副作用なし・caller の資格情報そのものを評価）:');
@@ -699,10 +812,40 @@ function main(): void {
       if (arn === null) continue;
       const resource = check.resource(region);
       const withBoundary = BOUNDARY_BEARING_PRINCIPALS.has(principal);
-      const actual = simulate(arn, check.action, resource, {
+      const { outcome: actual, decision } = simulate(arn, check.action, resource, {
         withBoundary,
         ...(check.contextEntries === undefined ? {} : { contextEntries: check.contextEntries }),
       });
+
+      // 🔴 **probe: 「シミュレータがそもそも評価できていない」可能性を測る
+      // （#680 フォローアップ / defect 2）。** `expected: 'allowed'` の check が
+      // `implicitDeny`（他の何にも一致しなかった）を返したときだけ、この check とは
+      // 無関係の最小 Allow ポリシーで同じ action/resource を評価し直す。
+      // **ここで判定を「決め打ち」しない** ―― probe の結果を印字し、
+      // `classifyProbeVerdict` の判定どおりに振る舞う。
+      if (isUnexplainedImplicitDeny(check.expected, decision)) {
+        console.log(
+          `    ℹ️  probe: ${check.id} [${principal}@${region}] は expected=allowed なのに implicitDeny でした。` +
+            'シミュレータが評価できているか、最小 Allow (Resource: "*") で測ります…',
+        );
+        const probeDecision = probeSimulatorSupport(check.action, resource);
+        const verdict = classifyProbeVerdict(probeDecision);
+        console.log(`      probe raw EvalDecision=${probeDecision ?? '(判定不能)'} → verdict=${verdict}`);
+        if (verdict === 'unsimulatable') {
+          notSimulatableCount += 1;
+          console.log(
+            `    ℹ️  ${check.id} [${principal}@${region}] ${check.action} → シミュレーション不能` +
+              '（集計から除外）\n' +
+              `        resource=${resource}\n` +
+              '        根拠: 無関係の最小 Allow (Resource: "*") でも implicitDeny だった' +
+              '（principal のポリシーの中身に関係なく評価できていない）\n' +
+              `        ${UNSIMULATABLE_VERIFICATION_NOTE}`,
+          );
+          continue; // results へ push しない = summarizeNegativeTests の pass/fail から除外する。
+        }
+        console.log('      → シミュレータは評価できると判断（probe が implicitDeny 以外）。通常どおり FAIL として採点します。');
+      }
+
       results.push({
         id: `${check.id}[${key}]`,
         expected: check.expected,
@@ -739,14 +882,34 @@ function main(): void {
         : 'live + simulate（全件）';
 
   const { failed, misdirected } = summarizeNegativeTests(results);
+  // 🔴 **`passed` は `results` から算出する。** `notSimulatableCount` は `results` に
+  // 入っていないので、ここには一切混ざらない（pass/fail の集計から除外済み）。
+  const passed = results.length - failed;
+  const counts = `passed=${passed} failed=${failed} notSimulatable=${notSimulatableCount}`;
   if (failed > 0) {
-    console.error(`  ⛔ negative security test: ${failed} 件が期待どおりでない（実行範囲: ${scopeLabel}）`);
+    console.error(`  ⛔ negative security test: ${failed} 件が期待どおりでない（実行範囲: ${scopeLabel} / ${counts}）`);
     if (misdirected > 0) {
       console.error(`     うち ${misdirected} 件は意図しない principal に対する評価のため棄却（採点していない）`);
     }
+    // exit code の決定（#680 フォローアップ / defect 2）:
+    // 実際に FAIL した check が 1 件でもあれば非ゼロで終了する。
+    // notSimulatable のみ（failed === 0）なら、この分岐には入らずゼロで終了する ——
+    // 「測定不能」は「デプロイを止める理由」ではない。実際の認可検証は診断行が指す
+    // 場所（多くは diff step）で行われる。
     process.exit(1);
   }
-  console.log(`  ✅ negative security test PASS（実行範囲: ${scopeLabel}）`);
+  // 🔴 **notSimulatable が 1 件でもあれば「無条件の成功」として印字しない。** `--strict`
+  // の思想（測れていないものを PASS にしない）と同じ理由 —— 全件 ✅ に見える行の下に
+  // 「実は測れていない check がある」ことを埋もれさせない。
+  if (notSimulatableCount > 0) {
+    console.log(
+      `  ⚠️  negative security test: FAIL 無し・ただし ${notSimulatableCount} 件は測定不能として除外` +
+        `（実行範囲: ${scopeLabel} / ${counts}）`,
+    );
+    console.log('     除外した check の根拠・実際の検証先は上記 ℹ️ 行を参照。');
+  } else {
+    console.log(`  ✅ negative security test PASS（実行範囲: ${scopeLabel} / ${counts}）`);
+  }
 }
 
 main();

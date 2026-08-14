@@ -19,7 +19,7 @@
  *   インターロックが `aws` 呼び出しより先に止めることを固定する。
  */
 import { spawnSync } from 'node:child_process';
-import { chmodSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
@@ -127,6 +127,65 @@ describe('環境の固定', () => {
     // 20 秒の余裕を持たせる。
     20_000,
   );
+});
+
+describe('依存コマンドの有無を AWS 呼び出し前に検査する (#680)', () => {
+  /**
+   * `aws` が cloud sandbox に無く、`aws sts get-caller-identity` が
+   * `command not found` で失敗した実インシデントの再現。旧実装はこれをそのまま
+   * 「AWS 認証情報を解決できません」と報告していた ―― 資格情報は無関係で、
+   * 実際にはバイナリが無いだけだった（`docs/runbook-cloud-aws-deploy.md`
+   * トラブルシュート「実際に踏んだ」参照）。
+   *
+   * `aws` を「存在しない」ことにするため、PATH から `aws` 実行ファイルを含む
+   * ディレクトリだけを取り除く（`node`/`npx`/`git` は別ディレクトリにあるので
+   * 影響しない ―― この開発機で実測済み）。
+   */
+  function pathWithoutAws(): string {
+    const dirs = (process.env.PATH ?? '').split(':');
+    const filtered = dirs.filter((dir) => {
+      if (dir === '') return true;
+      try {
+        return !existsSync(join(dir, 'aws'));
+      } catch {
+        return true;
+      }
+    });
+    return filtered.join(':');
+  }
+
+  it(
+    'aws が PATH に無ければ、認証情報のせいにせず「aws が見つからない」を報告する',
+    () => {
+      const pathWithoutAwsValue = pathWithoutAws();
+      // 変異検証その 1（欠落方向）: この PATH には実際に aws が無いことを確認してから使う。
+      // このガードが無いと、テスト環境の PATH レイアウトが変わったときに
+      // 「常に PASS するが何も検査していない」テストへ静かに劣化する。
+      const probe = spawnSync('bash', ['-c', 'command -v aws'], {
+        encoding: 'utf8',
+        env: { ...process.env, PATH: pathWithoutAwsValue },
+      });
+      expect(probe.status).not.toBe(0);
+
+      const { status, stderr } = run(['preflight'], {
+        VITEST: '',
+        PATH: pathWithoutAwsValue,
+      });
+      expect(status).not.toBe(0);
+      expect(stderr).toContain('aws');
+      expect(stderr).toContain('cloud-setup.sh');
+      // 🔴 これが本 Issue の核心。層を取り違えた旧メッセージを出さないことを固定する。
+      expect(stderr).not.toContain('AWS 認証情報を解決できません');
+    },
+    20_000,
+  );
+
+  // 変異検証その 2（存在方向）: 直前の「環境の固定」ブロックにある
+  // 「AWS 認証情報が無い状態で成功と報告しない」テストが、この対照そのものを与える ――
+  // そちらは実 `aws` バイナリが PATH に存在する前提で、資格情報エラーの文言
+  // （「AWS 認証情報を解決できません」）まで到達することを固定している。つまり
+  // command-preflight は「aws が有るときは黙って通過し、無いときだけ止める」ことが、
+  // 本ブロックのテストと合わせて両方向とも実測されている。
 });
 
 describe('VITEST 実行中は AWS 呼び出しより先に止まる (Important 7)', () => {
@@ -355,6 +414,30 @@ describe('collect_observation が集める観測 (Minor 9 / Important 7)', () =>
     expect(block).toContain('quality-gate.sh');
     expect(block).toContain('--pr');
   });
+
+  /**
+   * 🔴 **verify は build:open-next を quality-gate.sh --pr より先に呼ぶ (#680)。**
+   *
+   * フレッシュな clone には `.open-next/` が無い。旧順序（gate → build）だと、
+   * `set -euo pipefail` の下で `quality-gate.sh --pr` が「検査できなかった」ことを
+   * 理由に green スタンプを書かず非ゼロで終わり（#640 の設計そのもの）、`set -e` が
+   * `verify` をそこで打ち切るため、`.open-next/` を作る唯一の手段である
+   * `npm run build:open-next` が一度も実行されない。**何回リトライしても green
+   * スタンプが書けないデッドロック**になる（クラウドの実セッションで踏んだ）。
+   * ゲートへの入力を作るステップは、ゲートより前に置く。
+   */
+  it('verify は build:open-next を quality-gate.sh より前に呼ぶ（フレッシュ clone のデッドロック回避）', () => {
+    const caseStart = code.indexOf('\n  verify)');
+    if (caseStart === -1) throw new Error('wrapper に verify) ケースが見つかりません');
+    const caseEnd = code.indexOf('\n  diff)', caseStart);
+    if (caseEnd === -1) throw new Error('wrapper に diff) ケースが見つかりません（verify ケースの終端）');
+    const block = code.slice(caseStart, caseEnd);
+    const buildIdx = block.indexOf('build:open-next');
+    const gateIdx = block.indexOf('quality-gate.sh');
+    if (buildIdx === -1) throw new Error('verify ケースに build:open-next が見つかりません');
+    if (gateIdx === -1) throw new Error('verify ケースに quality-gate.sh が見つかりません');
+    expect(buildIdx).toBeLessThan(gateIdx);
+  });
 });
 
 describe('危険な既定を持たない', () => {
@@ -427,5 +510,117 @@ describe('危険な既定を持たない', () => {
     const source = readFileSync(WRAPPER, 'utf8');
     expect(stripBashComments(source)).toContain('orcloud01');
     expect(source).not.toContain('hnb659fds');
+  });
+});
+
+/**
+ * 🔴 **diff は全スタックを評価してから終える。deploy は最初のブロックで即座に止める
+ * （非対称、意図的）(#680 続報)。**
+ *
+ * かつて `diff` も `deploy` と同じ「裸の `for` ループ」で `run_diff_gate` を呼んでいた。
+ * `set -euo pipefail` の下では、ループ内で保護されていないコマンドが失敗すると
+ * シェル全体が即座に終了する ―― `OpenReception-Web-dev` がブロックされた時点で
+ * `OpenReception-CfMonitoring-dev`（us-east-1・初回 CREATE）が一度も評価されなかった
+ * のはこれが原因。運用者は「1 つ直して再実行 → 次のブロックで初めて気づく」を
+ * スタック数だけ繰り返すはめになる。
+ *
+ * ここでは 2 通りの検査をする:
+ *  1. ソースを読んで、`diff` ケースが `run_diff_gate` を `if !` で包み、`deploy` ケースは
+ *     裸のままであることを固定する（構造）。
+ *  2. **wrapper から `diff` ケースの実コードそのもの**（コメント無しの生テキストを
+ *     `bash -c` へそのまま渡す）を、スタブ `run_diff_gate`（1 番目のスタックだけ
+ *     失敗する）と共に実行し、3 スタックとも呼ばれること・非ゼロで終わることを固定する
+ *     （振る舞い。実装を書き写したテストではなく、実際のソース片を実行する）。
+ */
+describe('diff は全スタックを評価してから終える (#680 続報)', () => {
+  const code = stripBashComments(readFileSync(WRAPPER, 'utf8'));
+
+  function caseBody(marker: string, endMarker: string): string {
+    const start = code.indexOf(marker);
+    if (start === -1) throw new Error(`wrapper に ${marker} ケースが見つかりません`);
+    const end = code.indexOf(endMarker, start);
+    if (end === -1) throw new Error(`wrapper に ${endMarker} ケースが見つかりません（終端探索用）`);
+    return code.slice(start, end);
+  }
+
+  it('diff ケースは run_diff_gate を if ! で包み、失敗をループの外まで持ち越さない', () => {
+    const block = caseBody('\n  diff)', '\n  deploy)');
+    expect(block).toContain('if ! run_diff_gate');
+    expect(block).toMatch(/diff_failed=1/);
+    expect(block).toContain('exit "${diff_failed}"');
+  });
+
+  it('deploy ケースは run_diff_gate を裸の for ループで呼ぶ（unwrap しない。fail-closed を弱めない）', () => {
+    const block = caseBody('\n  deploy)', '\n  smoke)');
+    // "if ! run_diff_gate" ではなく、`for ... ; do run_diff_gate ...; done` のまま。
+    expect(block).not.toContain('if ! run_diff_gate');
+    expect(block).toContain('for entry in "${STACKS[@]}"; do run_diff_gate "${entry%%:*}" "${entry##*:}"; done');
+  });
+
+  /**
+   * 🔴 **振る舞いそのものを確かめる。** 上の 2 件は「その文字列がある」ことしか見ておらず、
+   * `if !` の中身を書き換えても（例: `diff_failed` を更新しない）緑のままになりうる。
+   * ここでは `diff` ケースの本文を実際に `bash -c` で実行し、スタブ `run_diff_gate` を
+   * 3 回とも呼び、かつ非ゼロで終わることを固定する。
+   */
+  it('実際に実行すると、1 番目のスタックが失敗しても 2・3 番目も評価され、最後に非ゼロで終わる', () => {
+    const block = caseBody('\n  diff)', '\n  deploy)')
+      // ケースラベル行 "  diff)" と実 AWS を呼ぶ collect_observation を取り除き、
+      // ループ本体だけを実行する。
+      .replace(/^\s*diff\)\s*$/m, '')
+      .replace(/^\s*collect_observation.*$/m, '');
+    const script = [
+      'set -euo pipefail',
+      'STACKS=("OpenReception-Web-dev:ap-northeast-1" "OpenReception-WebMonitoring-dev:ap-northeast-1" "OpenReception-CfMonitoring-dev:us-east-1")',
+      'run_diff_gate() {',
+      '  echo "called:$1"',
+      '  if [ "$1" = "OpenReception-Web-dev" ]; then',
+      '    return 1',
+      '  fi',
+      '  return 0',
+      '}',
+      block,
+    ].join('\n');
+    const result = spawnSync('bash', ['-c', script], { encoding: 'utf8' });
+    const calledStacks = (result.stdout ?? '')
+      .split('\n')
+      .filter((line) => line.startsWith('called:'));
+    expect(calledStacks).toEqual([
+      'called:OpenReception-Web-dev',
+      'called:OpenReception-WebMonitoring-dev',
+      'called:OpenReception-CfMonitoring-dev',
+    ]);
+    expect(result.status).not.toBe(0);
+  });
+
+  /**
+   * 対照（deploy 側）: 同じスタブで deploy ケースの本文を実行すると、
+   * 1 番目のスタックで即座に止まり、2・3 番目は**呼ばれない**。
+   */
+  it('対照: deploy ケースの本文は 1 番目のスタックで即座に止まる（2・3 番目は呼ばれない）', () => {
+    const block = caseBody('\n  deploy)', '\n  smoke)')
+      .replace(/^\s*deploy\)\s*$/m, '')
+      .replace(/^\s*collect_observation.*$/m, '')
+      // deploy ケースはこの後 cdk deploy 本体まで続くが、run_diff_gate ループだけを
+      // 取り出したいので cs_name の代入以降は使わない。
+      .split('cs_name=')[0]!;
+    const script = [
+      'set -euo pipefail',
+      'STACKS=("OpenReception-Web-dev:ap-northeast-1" "OpenReception-WebMonitoring-dev:ap-northeast-1" "OpenReception-CfMonitoring-dev:us-east-1")',
+      'run_diff_gate() {',
+      '  echo "called:$1"',
+      '  if [ "$1" = "OpenReception-Web-dev" ]; then',
+      '    return 1',
+      '  fi',
+      '  return 0',
+      '}',
+      block,
+    ].join('\n');
+    const result = spawnSync('bash', ['-c', script], { encoding: 'utf8' });
+    const calledStacks = (result.stdout ?? '')
+      .split('\n')
+      .filter((line) => line.startsWith('called:'));
+    expect(calledStacks).toEqual(['called:OpenReception-Web-dev']);
+    expect(result.status).not.toBe(0);
   });
 });

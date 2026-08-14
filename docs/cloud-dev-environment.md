@@ -16,11 +16,19 @@ claude.ai/code の環境ダイアログにあり、リポジトリからは触�
 
 ```
 cdn.playwright.dev
+awscli.amazonaws.com
 ```
 
 **理由**: Playwright はブラウザバイナリを `cdn.playwright.dev` から取る。このホストは
 Trusted の既定許可リストに**入っていない**。Trusted のままだと `playwright install` が
 失敗し、**e2e / VRT / `--full` が丸ごと回らない**。
+
+`awscli.amazonaws.com` は AWS CLI v2 の公式インストーラ配布元。`apt`/`pip`/`npm` のような
+「よくあるパッケージマネージャ」には含まれないため、同じく既定の許可リストに**入っていない**
+可能性が高い（Playwright と同型の罠）。許可しないと `scripts/cloud-setup.sh` の AWS CLI
+インストールが `curl` の時点で失敗し、`|| true` に握り潰されて**セッションは正常に起動する
+のに `aws` だけ黙って入っていない**状態になる（semgrep の PyJWT 罠・gitleaks と同型。
+§4 参照）。
 
 > このリポジトリは過去に「e2e はこの環境では動かない」という**誤った結論を 5 周にわたって
 > 引き継いだ**ことがある（真因は Playwright のビルド番号不一致で、`executablePath` を渡せば
@@ -30,13 +38,14 @@ Trusted の既定許可リストに**入っていない**。Trusted のままだ
 ### Setup script
 
 `scripts/cloud-setup.sh` の内容をそのまま貼る（あちらが正本。変更したら両方更新する）。
-入れているのは 3 つ:
+入れているのは 4 つ:
 
 | 対象 | なぜ要るか |
 | --- | --- |
 | `gh` CLI | プリインストールされていない。ループ workflow が `gh pr create` / `gh pr merge` に全面依存する |
 | `gitleaks` / `semgrep` | 無いと `quality-gate.sh` が SKIP する。SKIP は FAIL にならないので**マージゲートが黙って弱くなる** |
 | Playwright chromium | イメージに同梱されない場合の保険（同梱時は `playwright.config.ts` が `/opt/pw-browsers` を自動検出する） |
+| `aws` CLI v2（#680） | プリインストールされていない。`scripts/aws-cloud-deploy.sh`（`docs/runbook-cloud-aws-deploy.md` の verify → preflight → diff → deploy → smoke）が preflight/diff/deploy の全経路で直接シェルアウトする。無いと `aws: command not found` で失敗し、しかも旧実装はそれを「AWS 認証情報を解決できません」という**誤った層**のせいにしていた ―― 実際に初回の cloud deploy 試行で踏んだ。今は `scripts/aws-cloud-deploy.sh` 側に `aws` の有無を先に確認する preflight（`src/domain/governance/command-preflight.ts`）を入れてあるので、入れ忘れても診断メッセージは正しい層を指す（が、動かないことに変わりはない） |
 
 制約: 非ゼロ終了すると**セッションごと起動しない**ので非必須は `|| true`。5 分以内。
 初回だけ実行され、以後はファイルシステムのスナップショットとしてキャッシュされる

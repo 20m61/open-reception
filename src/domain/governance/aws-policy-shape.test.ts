@@ -575,21 +575,36 @@ describe('claude-deploy-entry.json', () => {
   // OpenReception-*-dev の 3 スタックだけに絞られていなければならない
   // ―― 広すぎると他プロジェクト（nodi/salon-loop 等）や prod/staging の
   // CloudFormation を読めてしまい、主境界の外側に穴を開ける。
-  it('read-only 診断用 Allow (ReadOwnDevStacksForDiffGate) は OpenReception-*-dev の CloudFormation だけを対象にしている', () => {
+  //
+  // 🔴 **訂正（2026-08-13、`cdk deploy --no-execute` の実 API 実測。ADR 0009 決定 2）:
+  // `cloudformation:DescribeChangeSet` は changeSet ではなく stack リソースタイプに
+  // 対して認可される。** 実際の `AccessDenied` は
+  // `resource: arn:...:stack/OpenReception-Web-dev/<id>` を名指しした（changeSet ARN
+  // ではない）。旧実装は AWS Service Authorization Reference の読解だけを根拠に
+  // `DescribeChangeSet` を別ステートメント（`ReadOwnChangeSetsForDiffGate`、changeSet
+  // ARN スコープ）へ分離していたが、これは実 API の動作と食い違っていた
+  // （`run_diff_gate` の `describe-change-set` が構造的に Deny され続けていたはず）。
+  // `DescribeChangeSet` を本ステートメントへ統合し、`ReadOwnChangeSetsForDiffGate` は
+  // 一度も実際の権限として機能していなかった（entry role がこのアクションを呼ぶ経路は
+  // 常に stack ARN でしか評価されない）死んだステートメントとして削除した。
+  it('read-only 診断用 Allow (ReadOwnDevStacksForDiffGate) は OpenReception-*-dev の CloudFormation だけを対象にしている（DescribeStacks と DescribeChangeSet の両方）', () => {
     const list = (v: string | ReadonlyArray<string> | undefined): ReadonlyArray<string> =>
       v === undefined ? [] : typeof v === 'string' ? [v] : v;
     const stmt = doc.Statement.find(
       (s) => s.Effect === 'Allow' && list(s.Action).includes('cloudformation:DescribeStacks'),
     );
     expect(stmt).toBeDefined();
+    // 🔴 DescribeChangeSet は別ステートメントに分離せず、同じ stack ARN Allow に含める
+    // （changeSet ARN スコープの `ReadOwnChangeSetsForDiffGate` は削除済み。上のコメント参照）。
+    expect(list(stmt!.Action)).toContain('cloudformation:DescribeChangeSet');
     const resources = list(stmt!.Resource);
     expect(resources.length).toBeGreaterThan(0);
     for (const r of resources) {
       expect(r).toMatch(/^arn:aws:cloudformation:[a-z0-9-]+:822063948773:stack\/OpenReception-[A-Za-z0-9]+-dev\/\*$/);
     }
-    // 他プロジェクト・他環境が紛れ込んでいないことも明示的に確認する。
+    // 他プロジェクト・他環境・changeSet ARN が紛れ込んでいないことも明示的に確認する。
     const joined = resources.join('\n');
-    for (const foreign of ['nodi-', 'salon-loop-', '-prod/', '-staging/']) {
+    for (const foreign of ['nodi-', 'salon-loop-', '-prod/', '-staging/', 'changeSet/']) {
       expect(joined).not.toContain(foreign);
     }
   });
@@ -614,33 +629,6 @@ describe('claude-deploy-entry.json', () => {
       'cloudformation:DescribeStacks',
       'cloudformation:DescribeChangeSet',
     ]);
-  });
-
-  // Important A（2026-08-12 レビュー）: `cloudformation:DescribeChangeSet` は
-  // AWS Service Authorization Reference 上 `changeset` リソースタイプに対して認可される
-  // （`stack` ではない）。`ReadOwnDevStacksForDiffGate` に混ぜていた旧実装は
-  // stack ARN しか Allow しておらず、`run_diff_gate` が実際に呼ぶ
-  // `describe-change-set` が構造的に Deny され続けていた。`ReadOwnChangeSetsForDiffGate`
-  // を別ステートメントへ分離し、changeSet ARN（`claude-gate-*` という名前のものだけ）に
-  // 絞ったことを固定する。
-  it('read-only 診断用 Allow (ReadOwnChangeSetsForDiffGate) は claude-gate-* の changeSet だけを対象にしている', () => {
-    const list = (v: string | ReadonlyArray<string> | undefined): ReadonlyArray<string> =>
-      v === undefined ? [] : typeof v === 'string' ? [v] : v;
-    const stmt = doc.Statement.find(
-      (s) => s.Effect === 'Allow' && list(s.Action).includes('cloudformation:DescribeChangeSet'),
-    );
-    expect(stmt).toBeDefined();
-    // stack リソースタイプの Allow に紛れ込んでいない（別ステートメントである）ことも確認する。
-    expect(list(stmt!.Action)).not.toContain('cloudformation:DescribeStacks');
-    const resources = list(stmt!.Resource);
-    expect(resources.length).toBeGreaterThan(0);
-    for (const r of resources) {
-      expect(r).toMatch(/^arn:aws:cloudformation:[a-z0-9-]+:822063948773:changeSet\/claude-gate-\*\/\*$/);
-    }
-    const joined = resources.join('\n');
-    for (const foreign of ['nodi-', 'salon-loop-', '-prod/', '-staging/', 'stack/']) {
-      expect(joined).not.toContain(foreign);
-    }
   });
 });
 
@@ -680,15 +668,25 @@ describe('claude-deploy-role-restriction.json（層 1・主境界）', () => {
     }
   });
 
-  // Important A（2026-08-12 レビュー）: このファイルは deploy role（`cdk-orcloud01-*`）に
-  // 上乗せする Deny。`cloudformation:*` の Deny を `NotResource`（許可リスト）で除外して
-  // いるが、`cloudformation:DescribeChangeSet` / `ExecuteChangeSet` / `DeleteChangeSet` は
-  // changeSet リソースタイプに対して認可されるため、stack ARN しか列挙していないと
-  // それらのアクションが**常に** Deny に一致してしまい、`cdk deploy` 自体が構造的に
-  // 動かなくなる。dev の 3 スタック・専用 Toolkit・自分の change set（`claude-gate-*`）
+  // Important A（2026-08-12 レビュー。2026-08-13 の実 API 実測で範囲を訂正）: このファイルは
+  // deploy role（`cdk-orcloud01-*`）に上乗せする Deny。`cloudformation:*` の Deny を
+  // `NotResource`（許可リスト）で除外している。
+  //
+  // 🔴 **`cloudformation:DescribeChangeSet` は changeSet ではなく stack リソースタイプに
+  // 対して認可されると実測で判明した**（`cdk deploy --no-execute` の `AccessDenied` が
+  // stack ARN を名指し。ADR 0009 決定 2）。したがって `DescribeChangeSet` / `CreateChangeSet`
+  // は stack の許可リストだけで足りる（`CreateChangeSet` はこのラウンドの実行で実際に
+  // change set を作れており **証明済み**）。
+  //
+  // **`ExecuteChangeSet` / `DeleteChangeSet` は deploy 段の実行でしか呼ばれないため、
+  // このアクション 2 つがどちらのリソースタイプで認可されるかは 2026-08-13 時点でまだ
+  // 実測していない（未証明）。** 誤って早々に外すと次の `deploy` 実行を壊しかねないため、
+  // changeSet ARN（`claude-gate-*`）の許可エントリは予防的に残してある。**dev の 3 スタック・
+  // 専用 Toolkit（証明済み: DescribeChangeSet/CreateChangeSet/DescribeStacks 等）・自分の
+  // change set（`claude-gate-*`、未証明: ExecuteChangeSet/DeleteChangeSet 用の安全網）**
   // だけを許可リストへ加えたことを、各エントリの形として固定する
   // （`claude-deploy-entry.json` の同種テストと対になる「equivalent assertion」）。
-  it('NotResource 許可リストの各エントリは stack（dev/専用 Toolkit）か changeSet（claude-gate-*）のいずれかの正しい形をしている', () => {
+  it('NotResource 許可リストの各エントリは stack（dev/専用 Toolkit・証明済み）か changeSet（claude-gate-*・Execute/Delete 用の未証明の安全網）のいずれかの正しい形をしている', () => {
     const stackOrChangeSet =
       /^arn:aws:cloudformation:[a-z0-9-]+:822063948773:(stack\/(OpenReception-[A-Za-z0-9]+-dev|CDKToolkit-orcloud01)\/\*|changeSet\/claude-gate-\*\/\*)$/;
     expect(audit.deniedNotResourcePatterns.length).toBeGreaterThan(0);
@@ -752,14 +750,29 @@ describe('ドキュメントが出荷ポリシーと一致している (#680 R6/
   describe('gate の carve-out action 許可リスト', () => {
     const normalize = (s: string): string => s.replace(/\s+/g, '');
 
-    it.each([SPEC, RUNBOOK])('%s が許可リストの本数を正しく書いている', (doc) => {
-      const count = CARVE_OUT_ALLOWED_ACTIONS.size;
-      expect(count).toBeGreaterThan(0);
-      expect(normalize(readDoc(doc))).toContain(normalize(`${count} つの \`ssm:\` アクション`));
+    /**
+     * 🔴 **#680 続報: 4 本目（BucketDeployment）で `s3:` アクションが加わり、
+     * 「6 つの `ssm:` アクション」という単一プレフィックスの表現が偽になった。**
+     * 総数だけでなく、`ssm:` / `s3:` それぞれの内訳もコードから引いて文書と突き合わせる
+     * （手で書いた数字は書いた瞬間に腐る）。
+     */
+    it.each([SPEC, RUNBOOK])('%s が許可リストの本数（ssm/s3 の内訳込み）を正しく書いている', (doc) => {
+      const all = [...CARVE_OUT_ALLOWED_ACTIONS];
+      const ssmCount = all.filter((a) => a.startsWith('ssm:')).length;
+      const s3Count = all.filter((a) => a.startsWith('s3:')).length;
+      expect(ssmCount + s3Count).toBe(all.length);
+      expect(ssmCount).toBeGreaterThan(0);
+      expect(s3Count).toBeGreaterThan(0);
+      const text = normalize(readDoc(doc));
+      expect(text).toContain(normalize(`${all.length} 個`));
+      expect(text).toContain(normalize(`\`ssm:\` が ${ssmCount} 個`));
+      expect(text).toContain(normalize(`\`s3:\` が ${s3Count} 個`));
     });
 
-    it('許可リストは ssm: だけで構成されている（文書の「6 つの ssm」が真であること）', () => {
-      expect([...CARVE_OUT_ALLOWED_ACTIONS].filter((a) => !a.startsWith('ssm:'))).toEqual([]);
+    it('許可リストは ssm: と s3: だけで構成されている（4 本の carve-out ロールの実測どおり）', () => {
+      expect(
+        [...CARVE_OUT_ALLOWED_ACTIONS].filter((a) => !a.startsWith('ssm:') && !a.startsWith('s3:')),
+      ).toEqual([]);
     });
 
     /**
