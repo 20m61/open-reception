@@ -265,8 +265,11 @@ changeset_name() {
   echo "claude-gate-$(git -C "${ROOT}" rev-parse --short HEAD)"
 }
 
+# 第 3 引数は gate のモード（`diff` / `deploy`）。
+# 🔴 **既定は `diff`**（＝ `OR_APPROVED_DIFF` による人間の承認を無視する）。
+# 渡し忘れが「承認が効く」側へ倒れると、gate の停止が黙って無効化されうる。
 run_diff_gate() {
-  local stack="$1" region="$2" cs_name cs_json
+  local stack="$1" region="$2" mode="${3:-diff}" cs_name cs_json
   cs_name="$(changeset_name)"
   cs_json="$(mktemp)"
 
@@ -306,7 +309,7 @@ run_diff_gate() {
   # `cdk.out/<stack>.template.json` を gate へ渡す。無ければ gate は非ゼロで終わる
   # （読めなかったを問題なしに落とさない）。
   npx tsx "${ROOT}/scripts/aws-diff-gate.ts" "${cs_json}" "${stack}" \
-    "${ROOT}/infra/cdk.out/${stack}.template.json"
+    "${ROOT}/infra/cdk.out/${stack}.template.json" "${mode}"
 }
 
 case "${SUB}" in
@@ -351,7 +354,7 @@ case "${SUB}" in
     # 非対称性なので、ここを真似て `deploy` 側まで「全部見てから」に弱めない。
     diff_failed=0
     for entry in "${STACKS[@]}"; do
-      if ! run_diff_gate "${entry%%:*}" "${entry##*:}"; then
+      if ! run_diff_gate "${entry%%:*}" "${entry##*:}" diff; then
         diff_failed=1
       fi
     done
@@ -360,7 +363,7 @@ case "${SUB}" in
   deploy)
     collect_observation "$(mktemp)" 2400
     # diff と違い、ここは最初のブロックで即座に止める（unwrap しない。上のコメント参照）。
-    for entry in "${STACKS[@]}"; do run_diff_gate "${entry%%:*}" "${entry##*:}"; done
+    for entry in "${STACKS[@]}"; do run_diff_gate "${entry%%:*}" "${entry##*:}" deploy; done
     cs_name="$(changeset_name)"
     # 🔴 **`--require-approval never` は「承認を捨てた」のではない（Important 6 / ADR 決定 5）。**
     # 直前の `run_diff_gate` ループが承認機構であり、CDK の対話プロンプトより**厳しい**。

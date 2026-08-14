@@ -33,6 +33,26 @@ function run(jsonPath: string, stack: string = STACK, templatePath?: string) {
   return { status: result.status ?? -1, stdout: result.stdout ?? '', stderr: result.stderr ?? '' };
 }
 
+/**
+ * モード（`diff` / `deploy`）と環境変数を明示して実行する。
+ *
+ * 承認トークン（#680）は **`deploy` モードでだけ**効く。`diff` は素の判定を見せる場所なので、
+ * 同じ入力でも承認を無視して止まらなければならない。
+ */
+function runMode(
+  jsonPath: string,
+  mode: 'diff' | 'deploy',
+  env: Record<string, string> = {},
+  stack: string = STACK,
+) {
+  const args = [CLI, jsonPath, stack, writeTemplate(), mode];
+  const result = spawnSync('npx', ['tsx', ...args], {
+    encoding: 'utf8',
+    env: { ...process.env, ...env },
+  });
+  return { status: result.status ?? -1, stdout: result.stdout ?? '', stderr: result.stderr ?? '' };
+}
+
 describe('change set の Status を無視しない (fail-open の修正)', () => {
   it('Status が FAILED（Changes は空）だと、変更 0 件でも安全とは判定しない', () => {
     // 現実の CloudFormation はまさにこの形を返しうる: 作成失敗で Changes が空のまま。
@@ -88,6 +108,100 @@ describe('change set の Status を無視しない (fail-open の修正)', () =>
     const { status, stderr } = run(path);
     expect(status).not.toBe(0);
     expect(stderr).toContain('resourceReplacement');
+  });
+});
+
+describe('人間の承認トークン (#680)', () => {
+  /** 危険な変更を 1 件だけ含む change set。 */
+  function blockedChangeSet(): string {
+    return writeChangeSet({
+      StackName: STACK,
+      Status: 'CREATE_COMPLETE',
+      Changes: [
+        {
+          ResourceChange: {
+            Action: 'Modify',
+            ResourceType: 'AWS::DynamoDB::Table',
+            LogicalResourceId: 'DataTable',
+            Replacement: 'True',
+          },
+        },
+      ],
+    });
+  }
+
+  /** ブロック時に印字される承認トークンを取り出す。 */
+  function tokenOf(path: string): string {
+    const { stderr } = runMode(path, 'diff');
+    const match = /承認トークン: (\S+)/.exec(stderr);
+    expect(match, `承認トークンが印字されていない:\n${stderr}`).not.toBeNull();
+    return match![1]!;
+  }
+
+  it('ブロックしたら承認トークンを印字する（承認の手順が分かる）', () => {
+    const { status, stderr } = runMode(blockedChangeSet(), 'diff');
+    expect(status).not.toBe(0);
+    expect(stderr).toMatch(/承認トークン: OpenReception-Web-dev:[0-9a-f]{16}/);
+    expect(stderr).toContain('OR_APPROVED_DIFF');
+  });
+
+  it('deploy モードで一致するトークンを渡すと通す（承認したことがログに残る）', () => {
+    const path = blockedChangeSet();
+    const { status, stderr } = runMode(path, 'deploy', { OR_APPROVED_DIFF: tokenOf(path) });
+    expect(status).toBe(0);
+    expect(stderr).toContain('人間の承認により');
+    // 何を承認したのかが必ず残る（黙って通さない）。
+    expect(stderr).toContain('resourceReplacement');
+  });
+
+  it('🔴 diff モードでは承認トークンを渡しても通さない（diff は素の判定を見せる場所）', () => {
+    const path = blockedChangeSet();
+    const { status } = runMode(path, 'diff', { OR_APPROVED_DIFF: tokenOf(path) });
+    expect(status).not.toBe(0);
+  });
+
+  it('🔴 モード未指定なら承認は効かない（fail-closed）', () => {
+    const path = blockedChangeSet();
+    const token = tokenOf(path);
+    const args = [CLI, path, STACK, writeTemplate()];
+    const result = spawnSync('npx', ['tsx', ...args], {
+      encoding: 'utf8',
+      env: { ...process.env, OR_APPROVED_DIFF: token },
+    });
+    expect(result.status).not.toBe(0);
+  });
+
+  it('🔴 OR_APPROVED_DIFF が未設定なら deploy モードでも止める', () => {
+    const { status } = runMode(blockedChangeSet(), 'deploy');
+    expect(status).not.toBe(0);
+  });
+
+  it('🔴 一致しないトークンでは止める（別の差分の承認を使い回せない）', () => {
+    const { status } = runMode(blockedChangeSet(), 'deploy', {
+      OR_APPROVED_DIFF: 'OpenReception-Web-dev:0123456789abcdef',
+    });
+    expect(status).not.toBe(0);
+  });
+
+  it('🔴 ワイルドカードでは承認できない', () => {
+    for (const wild of ['*', 'OpenReception-Web-dev:*']) {
+      const { status } = runMode(blockedChangeSet(), 'deploy', { OR_APPROVED_DIFF: wild });
+      expect(status, `wildcard "${wild}" が通ってしまった`).not.toBe(0);
+    }
+  });
+
+  it('ブロックが無いときは承認ログを出さない（正常系に承認の痕跡を混ぜない）', () => {
+    const path = writeChangeSet({
+      StackName: STACK,
+      Status: 'CREATE_COMPLETE',
+      Changes: [
+        { ResourceChange: { Action: 'Add', ResourceType: 'AWS::Lambda::Function', LogicalResourceId: 'Fn' } },
+      ],
+    });
+    const { status, stdout, stderr } = runMode(path, 'deploy', { OR_APPROVED_DIFF: 'なんでもよい' });
+    expect(status).toBe(0);
+    expect(stdout).toContain('危険な変更はありません');
+    expect(stderr).not.toContain('人間の承認により');
   });
 });
 

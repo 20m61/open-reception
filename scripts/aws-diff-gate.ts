@@ -9,6 +9,7 @@
  * 実際にデプロイを止める必要がある）。
  */
 import { readFileSync } from 'node:fs';
+import { approvalToken, isApproved } from '../src/domain/governance/deploy-approval-token';
 import {
   ALLOWED_STACK_PATTERN,
   evaluateDeployChangeSet,
@@ -150,11 +151,22 @@ function readTemplateResources(path: string): StackTemplateResources {
   return out;
 }
 
+/**
+ * 承認（`OR_APPROVED_DIFF`）が効くモード。
+ *
+ * 🔴 **既定は `diff`（＝承認を無視する）。** モードを渡し忘れた呼び出しが「承認が効く」側に
+ * 倒れると、gate の停止が黙って無効化されうる。未知の値も `diff` として扱う。
+ */
+function parseMode(raw: string | undefined): 'diff' | 'deploy' {
+  return raw === 'deploy' ? 'deploy' : 'diff';
+}
+
 function main(): void {
-  const [jsonPath, stackName, templatePath] = process.argv.slice(2);
+  const [jsonPath, stackName, templatePath, modeArg] = process.argv.slice(2);
+  const mode = parseMode(modeArg);
   if (jsonPath === undefined || stackName === undefined || templatePath === undefined) {
     console.error(
-      'Usage: tsx scripts/aws-diff-gate.ts <change-set-json> <stack-name> <synth-template-json>',
+      'Usage: tsx scripts/aws-diff-gate.ts <change-set-json> <stack-name> <synth-template-json> [diff|deploy]',
     );
     console.error(
       '  <synth-template-json> は infra/cdk.out/<stack-name>.template.json。' +
@@ -218,11 +230,30 @@ function main(): void {
     console.log('  ✅ 危険な変更はありません（自動デプロイ可）');
     return;
   }
+  const token = approvalToken(summary.stackName, verdict.blocks);
+
+  // 🔴 **承認が効くのは `deploy` のときだけ。** `diff` は素の判定を見せる場所であり、
+  // ここで承認を効かせると「承認済みだから差分が無いように見える」状態を作ってしまう。
+  if (mode === 'deploy' && isApproved(summary.stackName, verdict.blocks, process.env.OR_APPROVED_DIFF)) {
+    console.error(
+      `  ⚠️ 人間の承認により ${verdict.blocks.length} 件のブロックを通過します（トークン一致）: ${token}`,
+    );
+    // 何を承認したのかを必ず残す。「承認した」だけのログは後から検証できない。
+    for (const block of verdict.blocks) {
+      console.error(`    - [${block.reason}] ${block.evidence}`);
+    }
+    return;
+  }
+
   console.error('  ⛔ 危険な変更を検出したため自動デプロイを停止します:');
   for (const block of verdict.blocks) {
     console.error(`    - [${block.reason}] ${block.evidence}`);
   }
-  console.error('  → 人間が差分を確認し、必要なら手動でデプロイしてください');
+  console.error(`  承認トークン: ${token}`);
+  console.error(
+    '  → 内容を確認のうえ承認する場合は、このトークンを OR_APPROVED_DIFF に渡して deploy してください' +
+      '（トークンはこの差分に固定されており、差分が変われば無効になります）',
+  );
   process.exit(1);
 }
 
