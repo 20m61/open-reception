@@ -21,9 +21,20 @@
 # 退館 token フィクスチャ（self-id.test.ts, 2026-07-12）
 04915c88950680bd08e12679a79fcca689f15099:src/components/kiosk/checkout/self-id.test.ts:generic-api-key:81
 
-# push-secret-guard.sh の変異テスト用フィクスチャ（push-secret-guard.test.ts, 2026-08-12）。
+# push-secret-guard.sh の変異テスト用フィクスチャ（push-secret-guard.test.ts）。
 # 構文上は有効な AWS アクセスキー ID 形式（AKIA + [A-Z2-7]{16}）だが実 secret ではない。
-# AWS 公式のサンプルキー `AKIAIOSFODNN7EXAMPLE` は gitleaks 自身の allowlist
-# （`aws-access-token` ルールの `.+EXAMPLE$`）で検出されないため、代わりに `TESTFAKEKEY`
-# を含む別の偽値を使っている（#682）。
-9f7dcf6e32d83ca0d19b0e507c4ab9af5d94ac62:tests/hooks/push-secret-guard.test.ts:aws-access-token:85
+#
+# 🔴 **#680 続報: この指紋は「都度貼り替え」ではなく「一度きりで恒久」であるべき区別が
+# ある。** PR #684 は同じフィクスチャを `9f7dcf6e...`（**マージ前のブランチコミット**）で
+# 指紋登録した。squash マージはブランチのコミット鎖を丸ごと捨てて main 上に新しい
+# 1 コミットを作るため、`9f7dcf6e` は main の履歴に一度も現れず、代わりに現れた
+# `5ef205c3...`（現在の main）が指紋不一致で再検出された。
+#
+# 以下の指紋はその `5ef205c3...`（**既に main の一部として確定した、書き換えられない
+# コミット**）を指しており、9f7dcf6e のときとは違い、以後のどの squash マージでも
+# この SHA 自体が変わることはない。加えて `push-secret-guard.test.ts` 側は以後
+# `AKIA` 形式のリテラルをランタイム構築へ変更した（このコミットより後）ので、
+# **今後の新規コミットでこの検出が再発することはない** —— この 1 行は
+# `5ef205c3` という過去の 1 点だけを恒久的に受容するためのものであり、
+# 都度貼り替えが必要になる性質のものではない。
+5ef205c3216164192387da33ba039733bf22bac0:tests/hooks/push-secret-guard.test.ts:aws-access-token:85
