@@ -45,9 +45,10 @@ qualifier: `orcloud01`。
 **人間が Admin 権限を持つ IAM user（`user/CDK`）で実行する。**
 
 > 🔴 **`claude-boundary.json` は managed policy の 6,144 文字上限に近い。**
-> 2026-08-12 時点で **5,682 文字（空白を除いた実サイズ。残り 462 文字）**。
-> #680 R1 の carve-out を入れる前は 5,148 文字だったので、**1 回の増分で 534 文字
-> 使った**。次にステートメントを足す人は、まず余白を測ること:
+> 2026-08-14 時点で **5,876 文字（空白を除いた実サイズ。残り 268 文字）**。
+> #680 R1 の carve-out で 5,148 → 5,682（+534）、2026-08-14 の
+> `DenyBoundaryEscape` 分割で 5,682 → 5,876（+194）。**残りはもう 268 文字しかない。**
+> 次にステートメントを足す人は、まず余白を測ること:
 >
 > ```bash
 > node -e "const n=JSON.stringify(JSON.parse(require('fs').readFileSync('scripts/aws-policies/claude-boundary.json','utf8'))).length;console.log(n,'/ 6144  残り',6144-n)"
@@ -59,7 +60,13 @@ qualifier: `orcloud01`。
 > どちらも attach する**（IAM は 1 プリンシパルに boundary を 1 本しか付けられないので、
 > **分割はできない**）—— つまり実質的には**アクションの列挙を整理するしかない**。
 > 「入らないから Deny を削る」は境界の後退なので、必ず人間の承認を取ること。
-> `claude-cfn-exec.json` は 4,813 / 6,144（残り 1,331）で余裕がある。
+> `claude-cfn-exec.json` は 4,846 / 6,144（残り 1,298）で余裕がある。
+>
+> 🔴 **`DenyBoundaryEscape` を 1 文で書いていた頃の失敗を繰り返さないこと。**
+> `iam:PutRolePermissionsBoundary` を条件なし・`Resource:"*"` で Deny すると、
+> 「既存ロールに**我々の**境界を付ける」正当な操作まで死に、初回デプロイが
+> `UPDATE_ROLLBACK_FAILED` に落ちる（2026-08-14 に実際に踏んだ。ステップ 9c 参照）。
+> 禁じたいのは動詞ではなく**遷移の向き**（外す・弱いものへ差し替える）である。
 
 ```bash
 # 1) Permissions Boundary（層 4）を作成
@@ -896,6 +903,52 @@ findings が 1 件でも増減・変化すれば値が変わり、**古い承認
 - 承認が効いたときは、何を承認したのかが **findings ごとログに残る**
 - トークンは秘密ではない（誰でも計算できる）。これは*認証*ではなく**取り違え防止**であり、
   実行を止める力は IAM 境界（boundary / restriction ポリシー）が持っている
+
+---
+
+## ステップ 9c: 🔴 `UPDATE_ROLLBACK_FAILED` からの復旧（2026-08-14 に実際に起きた）
+
+初回デプロイは **permissions boundary の自縄自縛**で失敗した。記録として残す。
+
+**何が起きたか**: `claude-boundary.json` の `DenyBoundaryEscape` が
+`iam:PutRolePermissionsBoundary` を**条件なし・`Resource:"*"`** で Deny していた。
+dev の Lambda 実行ロールは境界の仕組みが入る前（2026-08-06）に**境界なしで**作られており、
+初回デプロイは「既存ロールに境界を**付ける**」＝ `PutRolePermissionsBoundary` を必要とする。
+自分の境界に自分で止められ、続く rollback も `DeleteRolePermissionsBoundary` が Deny されて
+失敗し、`OpenReception-Web-dev` が `UPDATE_ROLLBACK_FAILED` に落ちた。
+
+**`CreateRole` は通る**（境界は CreateRole のパラメータとして渡る）。つまり
+「新規ロールなら通るが、既存ロールへの後付けだけ通らない」という穴だった。
+
+**復旧**: Put も Delete も拒否されたロールは**一度も変更されていない**ので、実体は更新前の
+ままである。rollback から除外するのが事実に合致する。**admin（`user/CDK`）で実行する**
+（deploy role に `ContinueUpdateRollback` は無い）:
+
+```bash
+aws cloudformation continue-update-rollback \
+  --stack-name OpenReception-Web-dev --region ap-northeast-1 \
+  --resources-to-skip <失敗した論理 ID を列挙>
+```
+
+失敗した論理 ID は次で拾える:
+
+```bash
+aws cloudformation describe-stack-events --stack-name OpenReception-Web-dev \
+  --region ap-northeast-1 --output json \
+  | jq -r '.StackEvents[] | select(.ResourceStatus=="UPDATE_FAILED") | .LogicalResourceId' | sort -u
+```
+
+**恒久対策**（適用済み）: `DenyBoundaryEscape` を 2 文へ割った。
+`iam:DeleteRolePermissionsBoundary` は無条件 Deny のまま（外させない）、
+`iam:PutRolePermissionsBoundary` は `StringNotEquals iam:PermissionsBoundary = 我々の境界`
+のときだけ Deny（＝我々の境界だけは付けられる）。`claude-cfn-exec.json` の
+`AllowRoleMutationOnlyWithBoundary` にも `iam:PutRolePermissionsBoundary` を足した。
+`src/domain/governance/aws-policy-shape.test.ts` の
+「permissions boundary の付け外し」describe がこの性質を固定している。
+
+**残るリスク**: 一度 boundary を付けたあとの更新が失敗すると、rollback が
+「boundary を外す」を試みて再び `DeleteRolePermissionsBoundary` で失敗しうる。
+これは意図的な受容（外せることの方が危険）で、対処は上記の `--resources-to-skip`。
 
 ---
 

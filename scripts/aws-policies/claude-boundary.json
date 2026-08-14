@@ -192,10 +192,21 @@
       }
     },
     {
-      "Sid": "DenyBoundaryEscape",
+      "Sid": "DenyBoundaryRemoval",
       "Effect": "Deny",
-      "Action": ["iam:DeleteRolePermissionsBoundary", "iam:PutRolePermissionsBoundary"],
+      "Action": "iam:DeleteRolePermissionsBoundary",
       "Resource": "*"
+    },
+    {
+      "Sid": "DenyBoundaryWeakening",
+      "Effect": "Deny",
+      "Action": "iam:PutRolePermissionsBoundary",
+      "Resource": "*",
+      "Condition": {
+        "StringNotEquals": {
+          "iam:PermissionsBoundary": "arn:aws:iam::822063948773:policy/OpenReceptionClaudeBoundary"
+        }
+      }
     },
     {
       "Sid": "DenyTamperingWithTheBoundaryPolicyItself",

@@ -384,6 +384,38 @@ provider 実装の変更で**初回デプロイを AccessDenied で壊す**。�
 **迂回された場合の上限は Admin のままである。** 残存の一覧は spec §13、
 承認者への説明は runbook 4d。
 
+### 決定 8c: 脱出防止は「動詞」ではなく「遷移の向き」で書く（2026-08-14 の実地失敗）
+
+当初 `claude-boundary.json` は `DenyBoundaryEscape` 1 文で
+`iam:PutRolePermissionsBoundary` と `iam:DeleteRolePermissionsBoundary` を
+**条件なし・`Resource:"*"`** で Deny していた。これが初回デプロイを止めた。
+
+dev の Lambda 実行ロールは境界の仕組みが入る前（2026-08-06）に境界なしで作られており、
+初回デプロイは「既存ロールに**我々の**境界を付ける」＝ `PutRolePermissionsBoundary` を
+必要とする。自分の境界に自分で止められ、rollback も `Delete` が Deny されて失敗し、
+`OpenReception-Web-dev` が `UPDATE_ROLLBACK_FAILED` に落ちた（runbook ステップ 9c）。
+
+| 案 | Pros | Cons | 採否 |
+| --- | --- | --- | --- |
+| **遷移の向きで分ける（採用）** … `Delete` は無条件 Deny のまま、`Put` は「我々の境界 ARN 以外なら Deny」 | 脱出防止は完全に保たれる（付けられるのは我々の境界だけ・外すのは不可）。既存ロールへの後付けが通る | boundary が +194 文字（5,876 / 6,144。残り 268） | ○ |
+| アプリロールに境界を付けない | IAM を触らない | 層 4（Permissions Boundary）がアプリロールに効かなくなる。Critical 2 の対策が無効化される | ✗ |
+| 既存ロールを作り直す | IAM を触らない | ロール置換は Lambda 実行に波及し dev が落ちる。影響範囲が当初の差分より大きい | ✗ |
+
+**理由**: 脱出防止で本当に禁じたいのは「**外す**」と「**弱いものへ差し替える**」であって、
+「付ける」ではない。動詞（Put / Delete）で Deny を書くと、仕組み自身が必要とする操作まで殺す。
+
+**この決定に付随する失敗の型**: 既存の「`deniedActions` に含まれる」テストは**条件付き
+Deny でも通る**ため、この性質を固定できない。`aws-policy-shape.test.ts` の
+「permissions boundary の付け外し」describe がドキュメントを直接見て、
+(1) Delete の無条件 Deny、(2) Put の包括 Deny が無いこと、(3) Put の Deny が我々の境界以外に
+限定されていること、(4) cfn-exec の Allow が境界限定であること、を固定する。
+他プロジェクトのロールに対する条件なし Deny（`DenyIamWriteOnForeignPrincipals`）は
+資源リスト付きなので数えない ―― あれは正当で残すべきもの。
+
+**残るリスク（受容）**: 一度 boundary を付けたあとの更新が失敗すると、rollback が
+「boundary を外す」を試みて再び `Delete` で失敗しうる。外せることの方が危険なので受容し、
+対処は `continue-update-rollback --resources-to-skip`（runbook ステップ 9c）。
+
 ## 未検証事項・撤回条件
 
 - **`iam:SimulatePrincipalPolicy` による実 API 検証（`docs/runbook-cloud-aws-deploy.md`

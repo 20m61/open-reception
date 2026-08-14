@@ -510,6 +510,93 @@ describe('claude-boundary.json', () => {
   });
 });
 
+/**
+ * 🔴 **2026-08-14 の実地デプロイで踏んだ欠陥の回帰テスト。**
+ *
+ * 脱出防止のつもりで `iam:PutRolePermissionsBoundary` を**条件なし**で Deny していたため、
+ * 「既存ロールに**我々の**境界を付ける」という正当な操作まで死んでいた。dev の Lambda
+ * 実行ロールは境界が仕組みに入る前に作られており、初回デプロイはまさにこれを必要とする。
+ * 結果 `OpenReception-Web-dev` が `UPDATE_ROLLBACK_FAILED` に落ちた
+ * （rollback 側は `DeleteRolePermissionsBoundary` が Deny されて失敗）。
+ *
+ * 禁じたいのは動詞（Put / Delete）ではなく**遷移の向き**である:
+ *
+ * - **外す** … 一切不可（`Delete` は無条件 Deny のまま）
+ * - **弱いものへ差し替える** … 不可（`Put` は我々の境界 ARN 以外なら Deny）
+ * - **我々の境界を付ける** … 可（これを塞いでいたのが欠陥）
+ *
+ * 既存の「Deny している」テスト（`deniedActions` に含まれる）は、条件付き Deny でも
+ * 通ってしまうため**この性質を固定できない**。ここで直接ドキュメントを見る。
+ */
+describe('permissions boundary の付け外し (#680 実地デプロイの回帰)', () => {
+  const boundary = load('claude-boundary.json');
+  const cfnExec = load('claude-cfn-exec.json');
+  const BOUNDARY_ARN = 'arn:aws:iam::822063948773:policy/OpenReceptionClaudeBoundary';
+
+  const actionsOf = (s: PolicyStatement): ReadonlyArray<string> =>
+    typeof s.Action === 'string' ? [s.Action] : (s.Action ?? []);
+
+  /**
+   * その action を **条件なし・`Resource:"*"`** で Deny している文（＝逃げ場のない包括禁止）。
+   *
+   * 🔴 **`Resource` が資源リストの Deny は数えない。** `DenyIamWriteOnForeignPrincipals` は
+   * 他プロジェクトのロール（`nodi-*` / `salon-loop-*` / `cdk-*` 等）に対して条件なしで
+   * Put も Delete も Deny しており、これは**正当で残すべき**もの。我々のアプリロール
+   * （`OpenReception-*-dev-*`）はそのリストに含まれない。ここで見たいのは
+   * 「アプリロールにも及ぶ包括 Deny があるか」だけである。
+   */
+  const unconditionalDenies = (doc: PolicyDocument, action: string): ReadonlyArray<PolicyStatement> =>
+    doc.Statement.filter(
+      (s) =>
+        s.Effect === 'Deny' &&
+        actionsOf(s).includes(action) &&
+        s.Condition === undefined &&
+        s.Resource === '*',
+    );
+
+  const conditionalDenies = (doc: PolicyDocument, action: string): ReadonlyArray<PolicyStatement> =>
+    doc.Statement.filter(
+      (s) => s.Effect === 'Deny' && actionsOf(s).includes(action) && s.Condition !== undefined,
+    );
+
+  it('🔴 境界を外す（Delete）は無条件で Deny されている', () => {
+    expect(unconditionalDenies(boundary, 'iam:DeleteRolePermissionsBoundary').length).toBeGreaterThan(0);
+  });
+
+  it('🔴 境界を付ける（Put）を無条件で Deny していない（既存ロールへ後付けできる）', () => {
+    expect(unconditionalDenies(boundary, 'iam:PutRolePermissionsBoundary')).toEqual([]);
+  });
+
+  it('🔴 Put の Deny は「我々の境界 ARN 以外」に限定されている（弱いものへ差し替えさせない）', () => {
+    const denies = conditionalDenies(boundary, 'iam:PutRolePermissionsBoundary');
+    expect(denies.length).toBeGreaterThan(0);
+    for (const s of denies) {
+      expect(s.Condition?.StringNotEquals?.['iam:PermissionsBoundary']).toBe(BOUNDARY_ARN);
+    }
+  });
+
+  it('🔴 cfn-exec が Put を「我々の境界のときだけ」Allow している', () => {
+    const allows = cfnExec.Statement.filter(
+      (s) => s.Effect === 'Allow' && actionsOf(s).includes('iam:PutRolePermissionsBoundary'),
+    );
+    expect(allows.length).toBeGreaterThan(0);
+    for (const s of allows) {
+      expect(s.Condition?.StringEquals?.['iam:PermissionsBoundary']).toBe(BOUNDARY_ARN);
+    }
+  });
+
+  it('🔴 cfn-exec は Delete を Allow していない（外す経路を作らない）', () => {
+    const allows = cfnExec.Statement.filter(
+      (s) => s.Effect === 'Allow' && actionsOf(s).includes('iam:DeleteRolePermissionsBoundary'),
+    );
+    expect(allows).toEqual([]);
+  });
+
+  it('boundary は IAM の 6144 文字上限に収まる', () => {
+    expect(JSON.stringify(boundary).length).toBeLessThanOrEqual(6144);
+  });
+});
+
 describe('claude-cfn-exec.json', () => {
   const doc = load('claude-cfn-exec.json');
 

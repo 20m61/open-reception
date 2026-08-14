@@ -60,7 +60,12 @@
     {
       "Sid": "AllowRoleMutationOnlyWithBoundary",
       "Effect": "Allow",
-      "Action": ["iam:CreateRole", "iam:PutRolePolicy", "iam:AttachRolePolicy"],
+      "Action": [
+        "iam:CreateRole",
+        "iam:PutRolePolicy",
+        "iam:AttachRolePolicy",
+        "iam:PutRolePermissionsBoundary"
+      ],
       "Resource": "*",
       "Condition": {
         "StringEquals": {
