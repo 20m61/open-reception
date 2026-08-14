@@ -616,11 +616,20 @@ function classifyTrustPolicy(doc: unknown): TrustVerdict {
   return { kind: 'serviceOnly', services, actions };
 }
 
-/** managed policy ARN のリテラル表現を取り出す（`Fn::Sub` の文字列形も許す）。 */
+/**
+ * managed policy ARN のリテラル表現を取り出す。
+ *
+ * 🔴 実測 (#680 続報 2026-08-14): CDK が生成する provider role の `ManagedPolicyArns` は
+ * `Fn::Sub` 文字列形だけでなく **`Fn::Join` + `Ref: AWS::Partition` 形もある**
+ * （`s3deploy.BucketDeployment` の `SingletonFunction` ServiceRole）。解決後の ARN は
+ * 同一なので、`resolveTemplateString`（下）に委譲して両方を文字列へ潰す —— 新しい
+ * パーサは書かない。`resolveTemplateString` は解決できない部分を `UNRESOLVED_MARKER`
+ * にするので、それが混じっていれば非リテラル（`null`）として扱い、
+ * 「解決できなかった」を「問題なし」にはしない。
+ */
 function managedPolicyArnLiteral(v: unknown): string | null {
-  if (typeof v === 'string') return v;
-  if (isRecord(v) && typeof v['Fn::Sub'] === 'string') return v['Fn::Sub'];
-  return null;
+  const resolved = resolveTemplateString(v);
+  return resolved.includes(UNRESOLVED_MARKER) ? null : resolved;
 }
 
 /**

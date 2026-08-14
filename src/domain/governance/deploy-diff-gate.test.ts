@@ -198,6 +198,21 @@ const PROVIDER_MANAGED = [
 ];
 
 /**
+ * 実測した `s3deploy.BucketDeployment` の `SingletonFunction` ServiceRole の
+ * `ManagedPolicyArns`（`Fn::Join` 形。#680 続報、2026-08-14 に dev の実 synth で観測）。
+ * 他 3 本の provider role は上の `PROVIDER_MANAGED`（`Fn::Sub` 形）だが、この 1 本だけ違う。
+ * 解決後の ARN は同一。
+ */
+const PROVIDER_MANAGED_JOIN = [
+  {
+    'Fn::Join': [
+      '',
+      ['arn:', { Ref: 'AWS::Partition' }, ':iam::aws:policy/service-role/AWSLambdaBasicExecutionRole'],
+    ],
+  },
+];
+
+/**
  * 実測した cross-region ExportWriter のインラインポリシー。
  *
  * 🔴 **`Resource` は synth 出力そのまま（`Fn::Join` ＋ `Ref: AWS::Partition`）にしてある。**
@@ -1109,6 +1124,43 @@ describe('A: BucketDeployment の ServiceRole (#680 続報)', () => {
       }),
     );
     expect(verdict.blocks.map((b) => b.reason)).toEqual(['carveOutRoleShape']);
+  });
+
+  // ---------------------------------------------------------------------------
+  // #680 続報 (2026-08-14): dev の実 synth で観測した ManagedPolicyArns の Fn::Join 形。
+  // 他 3 本の provider role は Fn::Sub 文字列形だが、この 1 本（s3deploy.BucketDeployment
+  // の SingletonFunction）だけ Fn::Join + Ref(AWS::Partition) で書かれる。解決後の ARN は
+  // 同一なので、形の違いだけでリテラルでない扱いにして弾いてはいけない。
+  // ---------------------------------------------------------------------------
+
+  it('🔴 ManagedPolicyArns が Fn::Join 形（実測: BucketDeployment の ServiceRole）でも通す', () => {
+    const verdict = bucketDeploymentRoleFixture({ ManagedPolicyArns: PROVIDER_MANAGED_JOIN });
+    expect(verdict.blocks).toEqual([]);
+  });
+
+  it('ManagedPolicyArns が Fn::Join 形でも許可リスト外の ARN（AdministratorAccess）なら止める', () => {
+    const verdict = bucketDeploymentRoleFixture({
+      ManagedPolicyArns: [
+        {
+          'Fn::Join': ['', ['arn:', { Ref: 'AWS::Partition' }, ':iam::aws:policy/AdministratorAccess']],
+        },
+      ],
+    });
+    expect(verdict.blocks.map((b) => b.reason)).toEqual(['carveOutRoleShape']);
+    // 🔴 解決後の ARN 文字列そのものを固定する（プレフィックスだけだと「解決できず
+    // (リテラルでない) になった」場合と見分けが付かず、解決が実際に効いたことを
+    // 検出できない変異ドリルになってしまう）。
+    expect(verdict.blocks[0]!.evidence).toContain(
+      '想定外の ManagedPolicyArn: arn:aws:iam::aws:policy/AdministratorAccess',
+    );
+  });
+
+  it('ManagedPolicyArns が解決不能な組み込み関数（Fn::GetAtt）なら従来どおり「リテラルでない」で止める', () => {
+    const verdict = bucketDeploymentRoleFixture({
+      ManagedPolicyArns: [{ 'Fn::GetAtt': ['SomeResource', 'Arn'] }],
+    });
+    expect(verdict.blocks.map((b) => b.reason)).toEqual(['carveOutRoleShape']);
+    expect(verdict.blocks[0]!.evidence).toContain('(リテラルでない)');
   });
 });
 
