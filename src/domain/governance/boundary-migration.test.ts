@@ -24,8 +24,15 @@ import type { PolicyDocument, PolicyStatement } from './aws-policy-shape';
 const load = (name: string): PolicyDocument =>
   JSON.parse(readFileSync(resolve(process.cwd(), 'scripts/aws-policies', name), 'utf8'));
 
-const NORMAL = load('claude-boundary.json');
-const MIGRATION = load('claude-boundary-migration.json');
+/**
+ * 🔴 **境界と cfn-exec の両方に同じ穴を開ける。** 片方だけ開けても、もう片方の Deny が
+ * 効いて通らない（2026-08-15 に実際に境界だけ開けて `explicitDeny` のままだった）。
+ * 既存の `ESCALATION_SCOPED_POLICIES` が「両方に同じ性質を要求する」としているのと同じ理屈。
+ */
+const POLICY_PAIRS = [
+  ["claude-boundary.json", "claude-boundary-migration.json"],
+  ["claude-cfn-exec.json", "claude-cfn-exec-migration.json"],
+] as const;
 
 /** 移行ポリシーだけが持つ文の Sid。ここに挙がっていない差分は許さない。 */
 const MIGRATION_ONLY_SID = 'AllowSharedAssetsReadDuringMigration';
@@ -37,7 +44,10 @@ const bySid = (doc: PolicyDocument, sid: string): PolicyStatement | undefined =>
 const listOf = (v: string | ReadonlyArray<string> | undefined): ReadonlyArray<string> =>
   typeof v === 'string' ? [v] : (v ?? []);
 
-describe('claude-boundary-migration.json', () => {
+describe.each(POLICY_PAIRS)('%s → %s', (normalName, migrationName) => {
+  const NORMAL = load(normalName);
+  const MIGRATION = load(migrationName);
+
   it('🔴 通常の境界との差分は「1 文の追加」と「共有 assets オブジェクトの Deny 除外」だけ', () => {
     // 追加された Sid はちょうど 1 つ。
     const added = sidsOf(MIGRATION).filter((sid) => !sidsOf(NORMAL).includes(sid));
