@@ -169,7 +169,6 @@
         "arn:aws:s3:::nodi-*/*",
         "arn:aws:s3:::salon-loop-*",
         "arn:aws:s3:::salon-loop-*/*",
-        "arn:aws:s3:::cdk-hnb659fds-*",
         "arn:aws:s3:::cdk-staging-*",
         "arn:aws:s3:::cdk-staging-*/*"
       ]
@@ -178,7 +177,7 @@
       "Sid": "AllowSharedAssetsReadDuringMigration",
       "Effect": "Deny",
       "NotAction": "s3:GetObject",
-      "Resource": "arn:aws:s3:::cdk-hnb659fds-*/*"
+      "Resource": "arn:aws:s3:::cdk-hnb659fds-*"
     },
     {
       "Sid": "DenySharedBootstrapRoles",
