@@ -113,9 +113,8 @@
         "iam:UntagPolicy"
       ],
       "Resource": [
-        "arn:aws:iam::822063948773:*/cdk-hnb659fds-*",
-        "arn:aws:iam::822063948773:*/cdk-staging-*",
-        "arn:aws:iam::822063948773:role/cdk-orcloud01-*",
+        "arn:aws:iam::822063948773:role/cdk-*",
+        "arn:aws:iam::822063948773:policy/cdk-*",
         "arn:aws:iam::822063948773:role/OpenReceptionClaudeDeploy-dev",
         "arn:aws:iam::822063948773:role/nodi-*",
         "arn:aws:iam::822063948773:role/salon-loop-*",

@@ -746,6 +746,47 @@ describe('dev ランタイムが必要とする読み取りが天井にある (#
     );
   });
 
+  /**
+   * 🔴 **IAM 自身の検証規則に通ることまで見る（2026-08-15 にすり抜けた層）。**
+   *
+   * 6144 文字に収めるため `role/cdk-hnb659fds-*` + `policy/cdk-hnb659fds-*` を
+   * `*` + `/cdk-hnb659fds-*` へ畳んだところ、構造テストも被覆テストも通ったのに
+   * **`create-policy-version` が `MalformedPolicyDocument` で落ちた**:
+   *
+   * > IAM resource path must either be "*", root, or start with user/, federated-user/,
+   * > role/, group/, instance-profile/, mfa/, server-certificate/, policy/, ...
+   *
+   * 「テストは通るが AWS が受け取らない」ポリシーを二度と出さないために固定する。
+   */
+  it('🔴 すべての IAM 資源 ARN が IAM の許すパスで始まる（AWS が受け取れる形）', () => {
+    const VALID_PREFIXES = [
+      'user/',
+      'federated-user/',
+      'role/',
+      'group/',
+      'instance-profile/',
+      'mfa/',
+      'server-certificate/',
+      'policy/',
+      'sms-mfa/',
+      'saml-provider/',
+      'oidc-provider/',
+      'report/',
+      'access-report/',
+    ];
+    const iamArns = boundary.Statement.flatMap((s) => [
+      ...(typeof s.Resource === 'string' ? [s.Resource] : (s.Resource ?? [])),
+      ...(typeof s.NotResource === 'string' ? [s.NotResource] : (s.NotResource ?? [])),
+    ]).filter((arn) => arn.startsWith('arn:aws:iam:'));
+    expect(iamArns.length).toBeGreaterThan(0);
+    for (const arn of iamArns) {
+      // `arn:aws:iam::<account>:<path>` の <path> 部分を取り出す。
+      const path = arn.split(':').slice(5).join(':');
+      const ok = path === '*' || path === 'root' || VALID_PREFIXES.some((p) => path.startsWith(p));
+      expect(ok, `IAM が受け取らない資源パス: ${arn}`).toBe(true);
+    }
+  });
+
   it('KMS の破壊系は引き続き Deny されている（分割で落とさない）', () => {
     const denied = auditPolicyDocument(boundary).deniedActions;
     for (const a of ['kms:ScheduleKeyDeletion', 'kms:DisableKey', 'kms:PutKeyPolicy']) {
