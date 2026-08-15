@@ -113,21 +113,39 @@ changeSet ARN ＋ `Resource: "*"` の最小 Allow を与えても `implicitDeny`
 `scripts/aws-negative-tests.ts` の `S16` も stack ARN へ向け直し、`S15` と同じ形で通常どおり
 シミュレートできるようにした。
 
-**`ExecuteChangeSet` / `DeleteChangeSet` はまだ未証明である。** これらは deploy 段の実行
-（`cdk deploy`、`--no-execute` の diff 実行時の cleanup）でしか呼ばれず、今回の
-`diff --no-execute` 実行では発火していない。stack ARN で認可されるのか changeSet 名前
-スコープが必要なのかは実測していない。**推測で決めない**ため、
-`claude-deploy-role-restriction.json` の deploy role 上乗せ Deny には、既存の stack ARN
-許可リスト（`CreateChangeSet`/`DescribeChangeSet` を証明済みでカバーする）に加えて、
-changeSet 名前スコープ（`claude-gate-*`）の許可エントリを**予防的な安全網として残して
-ある**（次に `deploy` を実行して壊さないため）。この 2 アクションが実際にどちらの
-資源型で評価されるかは、`bash scripts/aws-cloud-deploy.sh deploy` を実行して初めて
-分かる。分かるまでは「`claude-gate-*` という名前の changeSet に対してアカウント全体で
-許可されている可能性」という同じ形の残存ギャップが残る（詳細は spec §13）。
-悪用には foreign stack 上にあらかじめ `claude-gate-*` という名前の changeSet が存在している
-ことが前提で、かつ deploy role はそのような changeSet を自分で作れない（`CreateChangeSet`
-は stack ARN で認可され、foreign stack は層 1・3 で Deny 済み）。実行を伴う操作は
-cfn-exec role 側の `DenyForeignProjectStacks`（層 3 相当）が第二の防波堤として止める。
+🔴 **続報（2026-08-15）: `ExecuteChangeSet` / `DeleteChangeSet` も stack ARN 認可だと
+確定した。changeSet 名前スコープの許可エントリは削除した。残存ギャップは解消。**
+
+2026-08-13 時点ではこの 2 つは deploy 段（`cdk deploy`、`--no-execute` diff 実行時の
+cleanup）でしか呼ばれず未証明だった。**推測で決めない**ため、
+`claude-deploy-role-restriction.json` に changeSet 名前スコープ（`claude-gate-*`）の
+許可エントリを予防的な安全網として残していた。
+
+runbook ステップ 4b を実施して 3 通りで測った（`CLAUDE.md`「調査の作法」に従い、
+否定的な結論を 1 つの条件で出さない）:
+
+| 測り方 | `ExecuteChangeSet` | `DeleteChangeSet` |
+| --- | --- | --- |
+| 無関係の最小 Allow（`Resource: "*"`）を changeSet ARN で評価 | `implicitDeny` | `implicitDeny` |
+| 同じ最小 Allow を stack ARN で評価 | `allowed` | `allowed` |
+| deploy role の実ポリシーを stack ARN で評価 | `allowed` | `allowed` |
+
+**`Resource: "*"` ですら changeSet ARN に一致しない**＝資源型が違う。加えて
+2026-08-15 の初回デプロイが実際に成功しており（`cdk deploy` は `ExecuteChangeSet` を、
+`cleanupOldChangeset` は `DeleteChangeSet` を必ず呼ぶ）、stack ARN 側の Allow だけで
+実運用が成立することが実地で確認された。
+
+よって changeSet 名前スコープの 2 エントリは**一度も実効しなかった死んだエントリ**であり、
+`ReadOwnChangeSetsForDiffGate` と同じ理由で削除した。「`claude-gate-*` という名前の
+changeSet に対してアカウント全体で許可されている可能性」という残存ギャップは、
+そもそもその資源型で認可が成立しないため**成立しない**（spec §13 から除外済み）。
+
+🔴 **この訂正は runbook 4b の 9 番が偽 PASS だったことも明らかにした。**
+「`claude-gate-*` 以外の名前は Deny される」は、名前 allowlist が効いていたのではなく
+資源型が一致しないので常に `implicitDeny` だっただけだった。4b の 9 番は
+foreign stack を問う形へ置き換え、`explicitDeny`（主境界の Deny が実際に発火）を
+確認するようにした。実行を伴う操作は引き続き cfn-exec role 側の
+`DenyForeignProjectStacks`（層 3 相当）が第二の防波堤として止める。
 
 ### 決定 3: 短命 STS の有効期限そのものをデプロイ窓とする
 
@@ -431,13 +449,11 @@ Deny でも通る**ため、この性質を固定できない。`aws-policy-shap
   いう正しい応答だった。**教訓: 認可の資源型はドキュメント読解ではなく実 API 応答で
   確認する**（詳細と原文は決定 2）。
   `claude-deploy-entry.json` を stack ARN の Allow へ統合し、`S16` も stack ARN へ
-  向け直したことで、`S15`/`S16` はどちらも通常どおりシミュレートできるようになった
-  （**この訂正後の値でステップ 4a を再実行してはいない** ―― IAM 側の変更適用は
-  ユーザーが行う。次回実行時に両方 `allowed` になることを確認すること）。
-  一方 `ExecuteChangeSet` / `DeleteChangeSet` がどちらの資源型で認可されるかは
-  まだ実測していない（決定 2 の対処欄を参照）。**それ以外の全件が期待どおりであること**
-  が前提条件であり、`ExecuteChangeSet`/`DeleteChangeSet` の資源型は
-  `bash scripts/aws-cloud-deploy.sh deploy` を実行して初めて確定する。
+  向け直したことで、`S15`/`S16` はどちらも通常どおりシミュレートできるようになった。
+  ✅ **2026-08-15 に訂正後の値で 4a を再実行し、`S15`/`S16` とも `allowed` を確認した
+  （`passed=50 failed=0 notSimulatable=0`）。** 同日 4b・4c も実施し、
+  `ExecuteChangeSet` / `DeleteChangeSet` も **stack ARN 認可**だと 3 通りで確定した
+  （決定 2 の続報を参照）。**change set 系に未証明の資源型は残っていない。**
   1 件でも期待と違えば設計を見直す。
   （番号は 1〜20 まで振ってあるが、ステップ 4b の**10 番はコマンドではなく
   「1〜9 を us-east-1 で繰り返せ」という指示**なので実コマンドは 19 本。
