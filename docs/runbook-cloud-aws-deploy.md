@@ -76,7 +76,13 @@ qualifier: `orcloud01`。
 > どちらも attach する**（IAM は 1 プリンシパルに boundary を 1 本しか付けられないので、
 > **分割はできない**）—— つまり実質的には**アクションの列挙を整理するしかない**。
 > 「入らないから Deny を削る」は境界の後退なので、必ず人間の承認を取ること。
-> `claude-cfn-exec.json` は 4,846 / 6,144（残り 1,298）で余裕がある。
+> `claude-cfn-exec.json` は 5,141 / 6,144（残り 1,003）で余裕がある。
+>
+> 🔴 **層 2（cfn-exec）と層 4（boundary）は同じ規則の 2 つの写しである。** 実効権限は
+> `identity ∩ boundary` なので、**片方だけ直しても効かない**。2026-08-15 にこれで 2 度落ちた
+> （移行の窓を境界にだけ開けた / dev の secret 読み取りを境界にだけ足した）。
+> dev が必要とする能力は `src/domain/governance/policy-parity.test.ts` に列挙してあり、
+> `deploy` 区分のものは**両方のポリシーに要求される**。片側だけの修正はそこで落ちる。
 >
 > 🔴 **`DenyBoundaryEscape` を 1 文で書いていた頃の失敗を繰り返さないこと。**
 > `iam:PutRolePermissionsBoundary` を条件なし・`Resource:"*"` で Deny すると、

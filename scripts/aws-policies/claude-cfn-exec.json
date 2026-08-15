@@ -189,10 +189,9 @@
       }
     },
     {
-      "Sid": "DenySecretsDnsAndPrincipals",
+      "Sid": "DenyDnsAndPrincipals",
       "Effect": "Deny",
       "Action": [
-        "secretsmanager:*",
         "route53:*",
         "acm:*",
         "iam:CreateUser",
@@ -201,6 +200,18 @@
         "account:*"
       ],
       "Resource": "*"
+    },
+    {
+      "Sid": "DenySecretsOutside",
+      "Effect": "Deny",
+      "Action": "secretsmanager:*",
+      "NotResource": "arn:aws:secretsmanager:*:822063948773:secret:open-reception/dev/*"
+    },
+    {
+      "Sid": "AllowDevSecretRead",
+      "Effect": "Allow",
+      "Action": "secretsmanager:GetSecretValue",
+      "Resource": "arn:aws:secretsmanager:*:822063948773:secret:open-reception/dev/*"
     }
   ]
 }
