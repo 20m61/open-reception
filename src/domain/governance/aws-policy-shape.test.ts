@@ -350,11 +350,31 @@ describe.each(ESCALATION_SCOPED_POLICIES)('%s の IAM 昇格経路', (name) => {
   // `Resource: "*"` で Allow している（CDK が自分のロール・ポリシーを更新するのに要る）。
   // よって「広くないこと」は主張できない。**広いなら、名前による明示 Deny が揃っている
   // こと**を要求する。実装した以上のカバレッジを主張しないための形。
+  /**
+   * 🔴 **綴りではなく被覆で見る。** かつてはパターン文字列に
+   * `role/cdk-hnb659fds-` が**含まれるか**を見ていたが、それは*形*であって*意味*ではない。
+   * 2026-08-15 に 6144 文字上限へ収めるため `role/cdk-hnb659fds-*` と
+   * `policy/cdk-hnb659fds-*` を `*` + `/cdk-hnb659fds-*` へ畳んだところ、
+   * **被覆は広がったのにこのテストだけが落ちた**。
+   *
+   * 実 ARN を組み立てて「どれかの Deny 資源に一致するか」を見れば、
+   * 書き方を変えても意味が保たれていることを固定できる。
+   */
   it('ロール/ポリシーの破壊系が広いなら、外部プリンシパルへの明示 Deny が揃っている (Important 5)', () => {
     if (!audit.unscopedRoleWrite && !audit.unscopedPolicyRewrite) return;
-    const patterns = audit.iamWriteDenyPatterns.join('\n');
     for (const required of IAM_WRITE_DENY_REQUIRED) {
-      expect(patterns).toContain(required);
+      // 実 ARN を組み立てる。エントリは 3 種類ある:
+      //   `user/*`                            … ワイルドカード → 具体名へ差し替え
+      //   `role/cdk-hnb659fds-`               … 接頭辞         → 続きを足す
+      //   `role/OpenReceptionClaudeDeploy-dev` … 完全名        → そのまま
+      const suffix = required.endsWith('*')
+        ? `${required.slice(0, -1)}example`
+        : required.endsWith('-')
+          ? `${required}example`
+          : required;
+      const arn = `arn:aws:iam::822063948773:${suffix}`;
+      const covered = audit.iamWriteDenyPatterns.some((p) => iamArnGlobMatches(p, arn));
+      expect(covered, `${arn} を覆う Deny 資源が無い（${name}）`).toBe(true);
     }
   });
 
@@ -621,6 +641,116 @@ describe('permissions boundary の付け外し (#680 実地デプロイの回帰
 
   it('boundary は IAM の 6144 文字上限に収まる', () => {
     expect(JSON.stringify(boundary).length).toBeLessThanOrEqual(6144);
+  });
+});
+
+/**
+ * 🔴 **天井はランタイムにも効く（2026-08-15 のインシデント）。**
+ *
+ * boundary はアプリが作る実行ロールにも付くので、**dev の Lambda が実行時に必要とする
+ * 読み取りが天井に無いと、デプロイは成功するのに機能だけ壊れる**。
+ * #194 で app secret が Secrets Manager へ移ったのに天井が追随しておらず、
+ * `secretsmanager:*` を丸ごと Deny していたため ServerFn が起動時に secret を読めず
+ * fail-closed で中断し、dev が 500 になった。
+ *
+ * 直し方は「Deny を消す」ではなく「**Deny を自分の名前空間の外に絞り、
+ * 中では読み取りだけを Allow する**」。破壊系（削除・書き換え）は名前空間の中でも
+ * Allow していないので implicit deny のまま止まる。
+ */
+describe('dev ランタイムが必要とする読み取りが天井にある (#680 / 2026-08-15)', () => {
+  const boundary = load('claude-boundary.json');
+  const DEV_SECRETS = 'arn:aws:secretsmanager:*:822063948773:secret:open-reception/dev/*';
+
+  const actionsOf = (s: PolicyStatement): ReadonlyArray<string> =>
+    typeof s.Action === 'string' ? [s.Action] : (s.Action ?? []);
+  const resourcesOf = (s: PolicyStatement): ReadonlyArray<string> =>
+    typeof s.Resource === 'string' ? [s.Resource] : (s.Resource ?? []);
+
+  it('🔴 dev の app secret を読める（GetSecretValue が天井にある）', () => {
+    const allows = boundary.Statement.filter(
+      (s) => s.Effect === 'Allow' && actionsOf(s).includes('secretsmanager:GetSecretValue'),
+    );
+    expect(allows.length).toBeGreaterThan(0);
+    // `Resource:"*"` で通すと他プロジェクトの secret まで読めてしまう。
+    for (const s of allows) {
+      expect(resourcesOf(s)).toContain(DEV_SECRETS);
+      expect(resourcesOf(s)).not.toContain('*');
+    }
+  });
+
+  it('🔴 dev 名前空間の外の secret は Deny のまま', () => {
+    const denies = boundary.Statement.filter(
+      (s) => s.Effect === 'Deny' && actionsOf(s).includes('secretsmanager:*'),
+    );
+    expect(denies.length).toBeGreaterThan(0);
+    // NotResource で「dev 以外すべて」を Deny する形にしていること。
+    for (const s of denies) {
+      const notResource = typeof s.NotResource === 'string' ? [s.NotResource] : (s.NotResource ?? []);
+      expect(notResource).toContain(DEV_SECRETS);
+    }
+  });
+
+  it('🔴 dev 名前空間の中でも破壊系は Allow していない（implicit deny のまま）', () => {
+    const destructive = [
+      'secretsmanager:DeleteSecret',
+      'secretsmanager:PutSecretValue',
+      'secretsmanager:UpdateSecret',
+      'secretsmanager:PutResourcePolicy',
+    ];
+    for (const action of destructive) {
+      const allows = boundary.Statement.filter(
+        (s) =>
+          s.Effect === 'Allow' &&
+          (actionsOf(s).includes(action) || actionsOf(s).includes('secretsmanager:*')),
+      );
+      expect(allows, `${action} を Allow している文がある`).toEqual([]);
+    }
+  });
+
+  /**
+   * 6144 文字上限に収めるため `iam:UpdateAssumeRolePolicy` の**重複掲載**を外した。
+   * 実効的な禁止は落ちていない ―― `Resource:"*"` の無条件 Deny が 1 本あり、
+   * それがすべてを覆うため。スコープ付き Deny への再掲は文字数を食うだけだった。
+   * **この前提が崩れたら（無条件 Deny が消えたら）ここで落ちる。**
+   */
+  it('🔴 iam:UpdateAssumeRolePolicy は無条件・Resource:* で Deny されている（重複を外した根拠）', () => {
+    const blanket = boundary.Statement.filter(
+      (s) =>
+        s.Effect === 'Deny' &&
+        actionsOf(s).includes('iam:UpdateAssumeRolePolicy') &&
+        s.Resource === '*' &&
+        s.Condition === undefined,
+    );
+    expect(blanket.length).toBeGreaterThan(0);
+  });
+
+  /**
+   * 6144 文字上限に収めるため、共有 bootstrap の Deny 資源を
+   * `role/cdk-hnb659fds-*` + `policy/cdk-hnb659fds-*` の 2 本から
+   * `*\/cdk-hnb659fds-*` の 1 本へ畳んだ（staging も同様）。
+   *
+   * **Deny が覆う範囲は減っていない。むしろ増えている**（`instance-profile/` など
+   * 他の資源型にも及ぶ）。ここでは畳んだあとも元の 2 つを実際に覆うことを固定する。
+   */
+  it.each([
+    ['arn:aws:iam::822063948773:role/cdk-hnb659fds-deploy-role-822063948773-ap-northeast-1'],
+    ['arn:aws:iam::822063948773:policy/cdk-hnb659fds-something'],
+    ['arn:aws:iam::822063948773:role/cdk-staging-deploy-role-822063948773-ap-northeast-1'],
+    ['arn:aws:iam::822063948773:policy/cdk-staging-something'],
+  ])('🔴 %s は依然として Deny の資源に一致する', (arn) => {
+    const patterns = boundary.Statement.filter(
+      (s) => s.Effect === 'Deny' && actionsOf(s).includes('iam:PutRolePolicy'),
+    ).flatMap((s) => resourcesOf(s));
+    expect(patterns.some((p) => iamArnGlobMatches(p, arn)), `どの Deny 資源にも一致しない: ${arn}`).toBe(
+      true,
+    );
+  });
+
+  it('KMS の破壊系は引き続き Deny されている（分割で落とさない）', () => {
+    const denied = auditPolicyDocument(boundary).deniedActions;
+    for (const a of ['kms:ScheduleKeyDeletion', 'kms:DisableKey', 'kms:PutKeyPolicy']) {
+      expect(denied).toContain(a);
+    }
   });
 });
 

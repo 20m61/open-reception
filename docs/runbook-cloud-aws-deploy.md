@@ -45,11 +45,19 @@ qualifier: `orcloud01`。
 **人間が Admin 権限を持つ IAM user（`user/CDK`）で実行する。**
 
 > 🔴 **`claude-boundary.json` は managed policy の 6,144 文字上限に近い。**
-> 2026-08-14 時点で **5,909 文字（空白を除いた実サイズ。残り 235 文字）**。
-> #680 R1 の carve-out で 5,148 → 5,682（+534）、2026-08-14 の
-> `DenyBoundaryEscape` 分割で 5,682 → 5,876（+194）、同日の
-> `PutRolePermissionsBoundary` の Allow 追加で 5,876 → 5,909（+33）。
-> **残りはもう 235 文字しかない。**
+> 2026-08-15 時点で **6,037 文字（空白を除いた実サイズ。残り 107 文字）**。
+> 変遷: carve-out で 5,148 → 5,682（+534）、`DenyBoundaryEscape` 分割で 5,876（+194）、
+> `PutRolePermissionsBoundary` の Allow で 5,909（+33）、Secrets Manager の
+> 読み取り許可で 6,240 相当まで膨らんだが、**Deny を削らずに詰めて** 6,037 まで戻した。
+>
+> 🔴 **詰め方の正解（2026-08-15）**: 「入らないから Deny を削る」ではなく
+> **(a) 実効的に重複している列挙を外す**（`iam:UpdateAssumeRolePolicy` は
+> `Resource:"*"` の無条件 Deny が別にあり、スコープ付き Deny への再掲は無意味だった）、
+> **(b) 資源パターンを畳む**（`role/cdk-hnb659fds-*` + `policy/cdk-hnb659fds-*` を
+> `*` + `/cdk-hnb659fds-*` の 1 本へ。Deny なので**覆う範囲は増える**＝安全側）。
+> どちらも `aws-policy-shape.test.ts` が被覆で固定している。
+>
+> **残りは 107 文字。**
 > 次にステートメントを足す人は、まず余白を測ること:
 >
 > ```bash
@@ -905,6 +913,37 @@ findings が 1 件でも増減・変化すれば値が変わり、**古い承認
 - 承認が効いたときは、何を承認したのかが **findings ごとログに残る**
 - トークンは秘密ではない（誰でも計算できる）。これは*認証*ではなく**取り違え防止**であり、
   実行を止める力は IAM 境界（boundary / restriction ポリシー）が持っている
+
+---
+
+## ステップ 8b: 🔴 デプロイに必須の context（未設定だと `diff` / `deploy` が止まる）
+
+`infra/bin/open-reception.ts` の次の 3 つは **未指定でも synth が通る**。通るが、出来上がるのは
+**別構成のスタック**で、Secrets Manager 連携も QR の基底オリジンも落ちる。
+2026-08-15 に wrapper がこれらを渡しておらず、dev の ServerFn から
+`secretsmanager:GetSecretValue` の付与が消えて **dev が 500** になった（ステップ 9c）。
+
+**diff gate では止められない。** `describe-change-set` は「どの property が変わったか」の名前しか
+返さず、消えた IAM 文や環境変数を**値として見せない**ので、差分は「26 件の変更」にしか見えない。
+したがって防波堤は wrapper に置いてある ―― **未指定なら始めない**。
+
+| 環境変数 | 渡る context | 省くとどうなるか |
+| --- | --- | --- |
+| `OR_APP_SECRETS_NAME` | `appSecretsName` | Secrets Manager 連携が落ち、**起動が 500** |
+| `OR_ORIGIN_VERIFY_SECRET` | `originVerifySecret` | CloudFront 経由の **POST が全滅**（403） |
+| `OR_PUBLIC_ORIGIN_OVERRIDE` | `publicOriginOverride` | 発行される **QR が誰にも使えない** |
+
+dev の値は `docs/deploy-aws.md`「dev をゼロから立ち上げる手順」を参照
+（**リポジトリには置かない**。`originVerifySecret` は秘密の値そのもの）。
+
+```bash
+export OR_APP_SECRETS_NAME=open-reception/dev/app-v2
+export OR_ORIGIN_VERIFY_SECRET=...        # 高エントロピー値。履歴・ログに残さない
+export OR_PUBLIC_ORIGIN_OVERRIDE=https://dvxkh8nfwl334.cloudfront.net
+```
+
+⚠️ `originVerifySecret` は `cdk` の argv に載る＝プロセステーブルから見える。CDK context の
+仕組み上避けられないので、**本筋は `originVerifySecretName`（Secrets Manager 名）への移行**（#612）。
 
 ---
 
