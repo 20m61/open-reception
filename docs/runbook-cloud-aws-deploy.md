@@ -194,6 +194,29 @@ aws iam put-role-policy \
   --policy-document file://scripts/aws-policies/claude-deploy-role-restriction.json
 ```
 
+🔴 **更新のときも 2 本とも必ず適用する。** 初期構築だけでなく、スタック名を変えた・
+allowlist を足した等で `claude-deploy-role-restriction.json` を直したときも同じ。
+2026-08-15 のスタック改名では ap-northeast-1 側にしか反映せず、us-east-1 側が旧名のままで
+`DescribeStacks` が Deny され、`CfMon-dev` の change set 作成が失敗した。
+
+反映されたことは**両方**で確かめる:
+
+```bash
+for r in ap-northeast-1 us-east-1; do
+  printf "%s: " "$r"
+  aws iam get-role-policy \
+    --role-name "cdk-orcloud01-deploy-role-822063948773-$r" \
+    --policy-name OpenReceptionClaudeDeployRestriction \
+    --query PolicyDocument --output json | rg -c 'CfMon-dev'
+done
+```
+
+> **同じ規則の写しが複数ある所は、必ず片方だけ直る。** 今日だけで 3 度起きた ――
+> 層 2 と層 4（identity ∩ boundary）、移行用ポリシーの対、そしてこのリージョン別ロール。
+> 「両方に同じ性質を要求する」テスト（`policy-parity.test.ts` /
+> `boundary-migration.test.ts`）が効くのは repo 内の写しだけで、**実 IAM 側の写しは
+> 人間の手順が守るしかない**。だからここに書いてある。
+
 ---
 
 ## ステップ 4: 🔴 初回デプロイ前の必須ステップ — IAM の実 API 検証
@@ -956,6 +979,40 @@ export OR_PUBLIC_ORIGIN_OVERRIDE=https://dvxkh8nfwl334.cloudfront.net
 
 ⚠️ `originVerifySecret` は `cdk` の argv に載る＝プロセステーブルから見える。CDK context の
 仕組み上避けられないので、**本筋は `originVerifySecretName`（Secrets Manager 名）への移行**（#612）。
+
+---
+
+## ステップ 9e: 🔴 新規の消費側スタックは生産側を先にデプロイする
+
+cross-region 参照は「生産側（`Web-dev` / ap-northeast-1）が us-east-1 の SSM へ
+`/cdk/exports/<消費側スタック名>/...` を書き、消費側（`CfMon-dev`）が読む」形で実現されている。
+
+したがって**新規の消費側スタックは、生産側がデプロイされるまで change set を作れない**:
+
+```
+Parameters: [ssm:/cdk/exports/OpenReception-CfMon-dev/OpenReceptionWebdev...] cannot be found.
+```
+
+wrapper は 3 スタックすべてを gate してからまとめてデプロイするので、消費側の gate が
+失敗すると**生産側のデプロイにも到達しない**。2026-08-15 の改名後にこれを踏んだ
+（消費側スタック名が変わると SSM のパスも変わるため、旧パスしか書かれていなかった）。
+
+🔴 **「gate できないものを黙って通す」で解決しない。** gate の意味が消える。
+代わりに `--only` で**順序を運用者が決める**:
+
+```bash
+# 1) 生産側だけ先にデプロイ（新しい SSM export が書かれる）
+bash scripts/aws-cloud-deploy.sh diff --only OpenReception-Web-dev
+OR_APPROVED_DIFF="..." bash scripts/aws-cloud-deploy.sh deploy --only OpenReception-Web-dev
+
+# 2) そのあと全体（消費側の change set が作れるようになっている）
+bash scripts/aws-cloud-deploy.sh diff
+OR_APPROVED_DIFF="..." bash scripts/aws-cloud-deploy.sh deploy
+```
+
+`--only` は**許可リストの部分集合に限る**（`src/domain/governance/deploy-stack-selection.ts`）。
+任意の名前を渡せると層 1（スタック ARN allowlist）を引数で迂回できるため、
+許可リスト外は拒否し、解決結果が空でも止める。
 
 ---
 

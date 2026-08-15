@@ -333,6 +333,47 @@ describe('cdk / aws 呼び出しに必須フラグが揃っている (round 3 �
    * `secretsmanager:GetSecretValue` の付与が消えて **dev が 500** になった。
    * これらは**未指定でも synth が通る**ので、渡し忘れは静かに壊す。
    */
+  /**
+   * 🔴 **`--only` は層 1 を引数で迂回させない（#680 / 2026-08-15）。**
+   *
+   * 新規の消費側スタックは生産側がデプロイされるまで gate できないため、順序を
+   * 運用者が決められるようにした。ただし任意の名前を渡せると、CloudFormation の
+   * スタック ARN allowlist が守っている「触れるのは dev の 3 本だけ」を破れる。
+   */
+  describe('--only は許可リストの部分集合に限る (#680 / 2026-08-15)', () => {
+    it('🔴 判定を純関数へ委ね、wrapper 内で自前に照合しない', () => {
+      const block = windowAfter('ONLY=""', 900);
+      expect(block).toContain('scripts/aws-stack-selection.ts');
+      // 失敗したら止める（fail-closed）。
+      expect(block).toContain('exit 2');
+    });
+
+    it('🔴 解決結果が空でも止める（黙って全スタックへ戻さない）', () => {
+      const block = windowAfter('ONLY=""', 900);
+      expect(block).toContain('-eq 0');
+    });
+
+    it('許可リスト外を渡すと非ゼロで終わる（実行して確かめる）', () => {
+      const result = spawnSync('bash', [WRAPPER, 'diff', '--only', 'nodi-dev-app'], {
+        encoding: 'utf8',
+        env: { ...process.env, VITEST: '1' },
+      });
+      expect(result.status).not.toBe(0);
+      expect(`${result.stdout}${result.stderr}`).toContain('許可されていないスタック名');
+    });
+
+    it('許可リスト内を渡すと対象が絞られる（実行して確かめる）', () => {
+      const result = spawnSync('bash', [WRAPPER, 'diff', '--only', 'OpenReception-Web-dev'], {
+        encoding: 'utf8',
+        env: { ...process.env, VITEST: '1' },
+      });
+      const out = `${result.stdout}${result.stderr}`;
+      expect(out).toContain('対象スタックを絞りました: OpenReception-Web-dev');
+      // 絞ったのに他のスタックが残っていないこと。
+      expect(out).not.toContain('OpenReception-CfMon-dev');
+    });
+  });
+
   describe('必須 context が配線されている (#680 / 2026-08-15)', () => {
     it('🔴 すべての cdk deploy 呼び出しが DEPLOY_CONTEXT_ARGS を渡す', () => {
       const invocations = everyCdkInvocation();

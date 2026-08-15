@@ -55,7 +55,10 @@ for _entry in "${STACKS[@]}"; do
 done
 
 usage() {
-  echo "Usage: $0 <preflight|verify|diff|deploy|smoke>" >&2
+  echo "Usage: $0 <preflight|verify|diff|deploy|smoke> [--only <stack>[,<stack>...]]" >&2
+  echo "  --only: 対象スタックを絞る。許可リストの部分集合のみ。" >&2
+  echo "          新規の消費側スタックは生産側がデプロイされるまで gate できないため" >&2
+  echo "          （cross-region の SSM export）、順序を運用者が決められるようにしてある。" >&2
 }
 
 if [ $# -lt 1 ]; then
@@ -84,6 +87,46 @@ fi
 if [ "${1:-}" = "--help" ]; then
   usage
   exit 0
+fi
+
+# 🔴 **`--only` は許可リストの部分集合に限る（#680 / 2026-08-15）。**
+#
+# 新規の消費側スタック（cross-region の SSM export を読む側）は、生産側がデプロイ
+# されるまで change set を作れない。3 スタックを一括で gate する作りだと、消費側の
+# gate 失敗で生産側のデプロイにも到達しない ―― `OpenReception-CfMon-dev` の新規作成で
+# 実際に踏んだ。「gate できないものを黙って通す」のではなく、**順序を運用者が決められる**
+# ようにする。
+#
+# 任意の名前を渡せると層 1（スタック ARN allowlist）を引数で迂回できるので、
+# 判定は `src/domain/governance/deploy-stack-selection.ts`（純関数）へ委ね、
+# 許可リスト外は**拒否**する。
+ONLY=""
+if [ "${1:-}" = "--only" ]; then
+  ONLY="${2:-}"
+  shift 2 || true
+fi
+if [ -n "${ONLY}" ]; then
+  if ! _selected="$(npx tsx "${ROOT}/scripts/aws-stack-selection.ts" "${ONLY}" "${STACK_NAMES[@]}")"; then
+    echo "  ⛔ --only の指定が不正なため中止します（上の診断を参照）" >&2
+    exit 2
+  fi
+  _filtered=()
+  while IFS= read -r _name; do
+    [ -z "${_name}" ] && continue
+    for _entry in "${STACKS[@]}"; do
+      [ "${_entry%%:*}" = "${_name}" ] && _filtered+=("${_entry}")
+    done
+  done <<< "${_selected}"
+  if [ "${#_filtered[@]}" -eq 0 ]; then
+    echo "  ⛔ --only の解決結果が空でした（判定不能なので止めます）" >&2
+    exit 2
+  fi
+  STACKS=("${_filtered[@]}")
+  STACK_NAMES=()
+  for _entry in "${STACKS[@]}"; do
+    STACK_NAMES+=("${_entry%%:*}")
+  done
+  echo "  ℹ 対象スタックを絞りました: ${STACK_NAMES[*]}"
 fi
 
 # `identity` (JSON 文字列) から 1 フィールドを取り出す。
