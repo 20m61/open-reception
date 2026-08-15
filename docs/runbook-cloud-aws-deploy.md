@@ -974,23 +974,46 @@ Your access has been denied by S3 ... permission to GetObject for cdk-hnb659fds-
 他プロジェクトのデータは通常どおり Deny する（`NotAction: s3:GetObject` の Deny で塞ぐ）。
 差分が 1 箇所であることは `src/domain/governance/boundary-migration.test.ts` が固定している。
 
+🔴 **境界と cfn-exec の両方を差し替える。** 同じ Deny が両方にあり、**片方だけ開けても
+`explicitDeny` のまま**通らない（2026-08-15 に境界だけ開けて実際に踏んだ）。
+
 ```bash
-# 1) 一時ポリシーを適用（ここから窓が開く）
+# 1) 一時ポリシーを適用（ここから窓が開く）。**2 本とも**必要。
 aws iam create-policy-version \
   --policy-arn arn:aws:iam::822063948773:policy/OpenReceptionClaudeBoundary \
   --policy-document file://scripts/aws-policies/claude-boundary-migration.json \
   --set-as-default
+aws iam create-policy-version \
+  --policy-arn arn:aws:iam::822063948773:policy/OpenReceptionClaudeCfnExec-dev \
+  --policy-document file://scripts/aws-policies/claude-cfn-exec-migration.json \
+  --set-as-default
+
+# 窓が開いたことを必ず確認する（開いていないまま deploy して二度手間になる）
+aws iam simulate-principal-policy \
+  --policy-source-arn arn:aws:iam::822063948773:role/cdk-orcloud01-cfn-exec-role-822063948773-ap-northeast-1 \
+  --action-names s3:GetObject \
+  --resource-arns "arn:aws:s3:::cdk-hnb659fds-assets-822063948773-ap-northeast-1/x.zip" \
+  --query 'EvaluationResults[0].EvalDecision' --output text   # → allowed
 
 # 2) 移行デプロイ（必須 context はステップ 8b）
 bash scripts/aws-cloud-deploy.sh diff
 OR_APPROVED_DIFF="..." bash scripts/aws-cloud-deploy.sh deploy
 
-# 3) 🔴 成功したら必ず通常の境界へ戻す（窓を閉じる）
+# 3) 🔴 成功したら必ず通常へ戻す（窓を閉じる）。**2 本とも**戻す。
 aws iam create-policy-version \
   --policy-arn arn:aws:iam::822063948773:policy/OpenReceptionClaudeBoundary \
   --policy-document file://scripts/aws-policies/claude-boundary.json \
   --set-as-default
+aws iam create-policy-version \
+  --policy-arn arn:aws:iam::822063948773:policy/OpenReceptionClaudeCfnExec-dev \
+  --policy-document file://scripts/aws-policies/claude-cfn-exec.json \
+  --set-as-default
+
+# 閉じたことを確認する（上と同じ simulate が explicitDeny に戻る）
 ```
+
+⚠️ managed policy は**バージョンを 5 個までしか保持できない**。窓の開閉を繰り返すと
+`LimitExceeded` になるので、古いバージョンは `aws iam delete-policy-version` で掃除する。
 
 **窓の間に何が起きうるか**: サンドボックスが侵害されていた場合、他プロジェクト
 （nodi / salon-loop）の Lambda バンドルや CFN テンプレートを**読める**。書き込みはできない。

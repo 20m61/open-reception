@@ -2,7 +2,7 @@
   "Version": "2012-10-17",
   "Statement": [
     {
-      "Sid": "AllowServicesNeededByDevStacks",
+      "Sid": "AllowDevStackResourceManagement",
       "Effect": "Allow",
       "Action": [
         "cloudformation:*",
@@ -31,9 +31,7 @@
         "iam:DeletePolicyVersion",
         "iam:GetPolicy",
         "iam:GetPolicyVersion",
-        "iam:ListPolicyVersions",
-        "sts:AssumeRole",
-        "sts:GetCallerIdentity"
+        "iam:ListPolicyVersions"
       ],
       "Resource": "*"
     },
@@ -56,22 +54,8 @@
       "Action": "iam:PassRole",
       "Resource": "arn:aws:iam::822063948773:role/OpenReception-*-dev-Custom*",
       "Condition": {
-        "StringEquals": {
-          "iam:PassedToService": "lambda.amazonaws.com"
-        }
+        "StringEquals": { "iam:PassedToService": "lambda.amazonaws.com" }
       }
-    },
-    {
-      "Sid": "AllowCdkProviderRoleMutationWithoutBoundary",
-      "Effect": "Allow",
-      "Action": ["iam:CreateRole", "iam:PutRolePolicy", "iam:AttachRolePolicy"],
-      "Resource": "arn:aws:iam::822063948773:role/OpenReception-*-dev-Custom*"
-    },
-    {
-      "Sid": "AllowDevRuntimeCostExplorerReads",
-      "Effect": "Allow",
-      "Action": ["ce:GetCostAndUsage", "ce:GetCostForecast"],
-      "Resource": "*"
     },
     {
       "Sid": "AllowRoleMutationOnlyWithBoundary",
@@ -90,12 +74,19 @@
       }
     },
     {
+      "Sid": "AllowCdkProviderRoleMutationWithoutBoundary",
+      "Effect": "Allow",
+      "Action": ["iam:CreateRole", "iam:PutRolePolicy", "iam:AttachRolePolicy"],
+      "Resource": "arn:aws:iam::822063948773:role/OpenReception-*-dev-Custom*"
+    },
+    {
       "Sid": "DenyIamWriteOnForeignPrincipals",
       "Effect": "Deny",
       "Action": [
         "iam:CreateRole",
         "iam:DeleteRole",
         "iam:UpdateRole",
+        "iam:UpdateAssumeRolePolicy",
         "iam:PutRolePolicy",
         "iam:DeleteRolePolicy",
         "iam:AttachRolePolicy",
@@ -113,12 +104,15 @@
         "iam:UntagPolicy"
       ],
       "Resource": [
-        "arn:aws:iam::822063948773:role/cdk-*",
-        "arn:aws:iam::822063948773:policy/cdk-*",
+        "arn:aws:iam::822063948773:role/cdk-hnb659fds-*",
+        "arn:aws:iam::822063948773:role/cdk-staging-*",
+        "arn:aws:iam::822063948773:role/cdk-orcloud01-*",
         "arn:aws:iam::822063948773:role/OpenReceptionClaudeDeploy-dev",
         "arn:aws:iam::822063948773:role/nodi-*",
         "arn:aws:iam::822063948773:role/salon-loop-*",
         "arn:aws:iam::822063948773:role/Kiaff*",
+        "arn:aws:iam::822063948773:policy/cdk-hnb659fds-*",
+        "arn:aws:iam::822063948773:policy/cdk-staging-*",
         "arn:aws:iam::822063948773:policy/nodi-*",
         "arn:aws:iam::822063948773:policy/salon-loop-*",
         "arn:aws:iam::822063948773:policy/Kiaff*",
@@ -134,14 +128,13 @@
       "Action": [
         "iam:DeleteRole",
         "iam:UpdateRole",
+        "iam:UpdateAssumeRolePolicy",
         "iam:DeleteRolePolicy",
         "iam:DetachRolePolicy"
       ],
       "NotResource": "arn:aws:iam::822063948773:role/OpenReception-*-dev-Custom*",
       "Condition": {
-        "StringNotEquals": {
-          "aws:ResourceTag/Project": "open-reception"
-        }
+        "StringNotEquals": { "aws:ResourceTag/Project": "open-reception" }
       }
     },
     {
@@ -189,7 +182,7 @@
       ]
     },
     {
-      "Sid": "DenyRoleCreationWithoutThisBoundary",
+      "Sid": "DenyRoleCreationWithoutBoundary",
       "Effect": "Deny",
       "Action": ["iam:CreateRole", "iam:PutRolePolicy", "iam:AttachRolePolicy"],
       "NotResource": "arn:aws:iam::822063948773:role/OpenReception-*-dev-Custom*",
@@ -200,73 +193,18 @@
       }
     },
     {
-      "Sid": "DenyBoundaryRemoval",
-      "Effect": "Deny",
-      "Action": "iam:DeleteRolePermissionsBoundary",
-      "Resource": "*"
-    },
-    {
-      "Sid": "DenyBoundaryWeakening",
-      "Effect": "Deny",
-      "Action": "iam:PutRolePermissionsBoundary",
-      "Resource": "*",
-      "Condition": {
-        "StringNotEquals": {
-          "iam:PermissionsBoundary": "arn:aws:iam::822063948773:policy/OpenReceptionClaudeBoundary"
-        }
-      }
-    },
-    {
-      "Sid": "DenyTamperingWithTheBoundaryPolicyItself",
+      "Sid": "DenySecretsDnsAndPrincipals",
       "Effect": "Deny",
       "Action": [
-        "iam:CreatePolicyVersion",
-        "iam:DeletePolicyVersion",
-        "iam:SetDefaultPolicyVersion",
-        "iam:DeletePolicy"
-      ],
-      "Resource": "arn:aws:iam::822063948773:policy/OpenReceptionClaudeBoundary"
-    },
-    {
-      "Sid": "DenyPrincipalCreationAndOrgChanges",
-      "Effect": "Deny",
-      "Action": [
+        "secretsmanager:*",
+        "route53:*",
+        "acm:*",
         "iam:CreateUser",
         "iam:CreateAccessKey",
-        "iam:CreateLoginProfile",
-        "iam:UpdateAssumeRolePolicy",
         "organizations:*",
         "account:*"
       ],
       "Resource": "*"
-    },
-    {
-      "Sid": "DenySharedDnsAndCertificates",
-      "Effect": "Deny",
-      "Action": ["route53:*", "acm:*", "route53domains:*"],
-      "Resource": "*"
-    },
-    {
-      "Sid": "DenyKeyDestruction",
-      "Effect": "Deny",
-      "Action": [
-        "kms:ScheduleKeyDeletion",
-        "kms:DisableKey",
-        "kms:PutKeyPolicy"
-      ],
-      "Resource": "*"
-    },
-    {
-      "Sid": "DenySecretsOutside",
-      "Effect": "Deny",
-      "Action": "secretsmanager:*",
-      "NotResource": "arn:aws:secretsmanager:*:822063948773:secret:open-reception/dev/*"
-    },
-    {
-      "Sid": "AllowDevSecretRead",
-      "Effect": "Allow",
-      "Action": "secretsmanager:GetSecretValue",
-      "Resource": "arn:aws:secretsmanager:*:822063948773:secret:open-reception/dev/*"
     }
   ]
 }

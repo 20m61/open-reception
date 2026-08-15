@@ -24,8 +24,15 @@ import type { PolicyDocument, PolicyStatement } from './aws-policy-shape';
 const load = (name: string): PolicyDocument =>
   JSON.parse(readFileSync(resolve(process.cwd(), 'scripts/aws-policies', name), 'utf8'));
 
-const NORMAL = load('claude-boundary.json');
-const MIGRATION = load('claude-boundary-migration.json');
+/**
+ * 🔴 **境界と cfn-exec の両方に同じ穴を開ける。** 片方だけ開けても、もう片方の Deny が
+ * 効いて通らない（2026-08-15 に実際に境界だけ開けて `explicitDeny` のままだった）。
+ * 既存の `ESCALATION_SCOPED_POLICIES` が「両方に同じ性質を要求する」としているのと同じ理屈。
+ */
+const POLICY_PAIRS = [
+  ["claude-boundary.json", "claude-boundary-migration.json"],
+  ["claude-cfn-exec.json", "claude-cfn-exec-migration.json"],
+] as const;
 
 /** 移行ポリシーだけが持つ文の Sid。ここに挙がっていない差分は許さない。 */
 const MIGRATION_ONLY_SID = 'AllowSharedAssetsReadDuringMigration';
@@ -37,7 +44,10 @@ const bySid = (doc: PolicyDocument, sid: string): PolicyStatement | undefined =>
 const listOf = (v: string | ReadonlyArray<string> | undefined): ReadonlyArray<string> =>
   typeof v === 'string' ? [v] : (v ?? []);
 
-describe('claude-boundary-migration.json', () => {
+describe.each(POLICY_PAIRS)('%s → %s', (normalName, migrationName) => {
+  const NORMAL = load(normalName);
+  const MIGRATION = load(migrationName);
+
   it('🔴 通常の境界との差分は「1 文の追加」と「共有 assets オブジェクトの Deny 除外」だけ', () => {
     // 追加された Sid はちょうど 1 つ。
     const added = sidsOf(MIGRATION).filter((sid) => !sidsOf(NORMAL).includes(sid));
@@ -57,13 +67,24 @@ describe('claude-boundary-migration.json', () => {
     }
   });
 
-  it('🔴 共有 assets の「オブジェクト」だけを Deny から外している（バケット自体は Deny のまま）', () => {
+  /**
+   * 🔴 **S3 ARN のワイルドカードは `/` を越える。**
+   * `arn:aws:s3:::cdk-hnb659fds-*` は「バケットだけ」ではなく
+   * `.../assets-xxx/abc.zip` のような**オブジェクト ARN にも一致する**。
+   * そのため `cdk-hnb659fds-*\/*` だけを Deny から外しても窓は開かない
+   * （2026-08-15 に実際に開かず `explicitDeny` のままだった）。
+   * 両方を外し、`NotAction` の Deny 側でまとめて塞ぎ直すのが正しい。
+   */
+  it('🔴 共有 bootstrap の S3 は Deny 列挙から完全に外し、NotAction 側へ移している', () => {
     const normal = listOf(bySid(NORMAL, 'DenyForeignProjectData')?.Resource);
     const migrated = listOf(bySid(MIGRATION, 'DenyForeignProjectData')?.Resource);
     const dropped = normal.filter((r) => !migrated.includes(r));
-    expect(dropped).toEqual(['arn:aws:s3:::cdk-hnb659fds-*/*']);
-    // バケット ARN（ListBucket 等）は落としていない。
-    expect(migrated).toContain('arn:aws:s3:::cdk-hnb659fds-*');
+    expect([...dropped].sort()).toEqual([
+      'arn:aws:s3:::cdk-hnb659fds-*',
+      'arn:aws:s3:::cdk-hnb659fds-*/*',
+    ]);
+    // 外したぶんは 1 つも Deny 列挙に残っていない。
+    expect(migrated.filter((r) => r.includes('cdk-hnb659fds'))).toEqual([]);
   });
 
   it('🔴 落とした穴は「GetObject 以外は Deny」で塞いである', () => {
@@ -72,7 +93,8 @@ describe('claude-boundary-migration.json', () => {
     expect(stmt?.Effect).toBe('Deny');
     // NotAction: GetObject 以外のすべてを Deny する（書き込み・削除は通さない）。
     expect(listOf(stmt?.NotAction)).toEqual(['s3:GetObject']);
-    expect(listOf(stmt?.Resource)).toEqual(['arn:aws:s3:::cdk-hnb659fds-*/*']);
+    // バケットもオブジェクトも 1 本で覆う（`*` は `/` を越えるため）。
+    expect(listOf(stmt?.Resource)).toEqual(['arn:aws:s3:::cdk-hnb659fds-*']);
   });
 
   it('🔴 他プロジェクトのデータは移行中も一切通さない', () => {
