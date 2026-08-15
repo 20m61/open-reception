@@ -45,7 +45,7 @@ qualifier: `orcloud01`。
 **人間が Admin 権限を持つ IAM user（`user/CDK`）で実行する。**
 
 > 🔴 **`claude-boundary.json` は managed policy の 6,144 文字上限に近い。**
-> 2026-08-15 時点で **6,037 文字（空白を除いた実サイズ。残り 107 文字）**。
+> 2026-08-15 時点で **5,978 文字（空白を除いた実サイズ。残り 166 文字）**。
 > 変遷: carve-out で 5,148 → 5,682（+534）、`DenyBoundaryEscape` 分割で 5,876（+194）、
 > `PutRolePermissionsBoundary` の Allow で 5,909（+33）、Secrets Manager の
 > 読み取り許可で 6,240 相当まで膨らんだが、**Deny を削らずに詰めて** 6,037 まで戻した。
@@ -53,9 +53,15 @@ qualifier: `orcloud01`。
 > 🔴 **詰め方の正解（2026-08-15）**: 「入らないから Deny を削る」ではなく
 > **(a) 実効的に重複している列挙を外す**（`iam:UpdateAssumeRolePolicy` は
 > `Resource:"*"` の無条件 Deny が別にあり、スコープ付き Deny への再掲は無意味だった）、
-> **(b) 資源パターンを畳む**（`role/cdk-hnb659fds-*` + `policy/cdk-hnb659fds-*` を
-> `*` + `/cdk-hnb659fds-*` の 1 本へ。Deny なので**覆う範囲は増える**＝安全側）。
-> どちらも `aws-policy-shape.test.ts` が被覆で固定している。
+> **(b) 資源パターンを畳む**（`cdk-hnb659fds-*` / `cdk-staging-*` / `cdk-orcloud01-*` の
+> role・policy 計 5 本を `role/cdk-*` + `policy/cdk-*` の 2 本へ。Deny なので
+> **覆う範囲は増える**＝安全側）。どちらも `aws-policy-shape.test.ts` が被覆で固定している。
+>
+> 🔴 **`*` + `/cdk-*` のように資源パスの型を丸ごとワイルドカードにしてはいけない。**
+> IAM が `MalformedPolicyDocument` で拒否する（`resource path must ... start with
+> user/, role/, policy/, ...`）。**構造テストも被覆テストも通るのに AWS が受け取らない**
+> ポリシーになるので、`aws-policy-shape.test.ts` の「IAM の許すパスで始まる」テストで
+> 固定してある。2026-08-15 に実際にこれで `create-policy-version` が落ちた。
 >
 > **残りは 107 文字。**
 > 次にステートメントを足す人は、まず余白を測ること:
