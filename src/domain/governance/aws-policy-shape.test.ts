@@ -953,35 +953,62 @@ describe('claude-deploy-role-restriction.json（層 1・主境界）', () => {
     }
   });
 
-  // Important A（2026-08-12 レビュー。2026-08-13 の実 API 実測で範囲を訂正）: このファイルは
-  // deploy role（`cdk-orcloud01-*`）に上乗せする Deny。`cloudformation:*` の Deny を
-  // `NotResource`（許可リスト）で除外している。
+  // Important A（2026-08-12 レビュー。2026-08-13 / 2026-08-15 の実 API 実測で 2 度訂正）:
+  // このファイルは deploy role（`cdk-orcloud01-*`）に上乗せする Deny。`cloudformation:*` の
+  // Deny を `NotResource`（許可リスト）で除外している。
   //
-  // 🔴 **`cloudformation:DescribeChangeSet` は changeSet ではなく stack リソースタイプに
-  // 対して認可されると実測で判明した**（`cdk deploy --no-execute` の `AccessDenied` が
-  // stack ARN を名指し。ADR 0009 決定 2）。したがって `DescribeChangeSet` / `CreateChangeSet`
-  // は stack の許可リストだけで足りる（`CreateChangeSet` はこのラウンドの実行で実際に
-  // change set を作れており **証明済み**）。
+  // 🔴 **CloudFormation の change set 系アクションは 3 つとも stack リソースタイプに対して
+  // 認可される。`changeSet` ARN スコープの許可エントリは一致し得ない＝死んでいる。**
   //
-  // **`ExecuteChangeSet` / `DeleteChangeSet` は deploy 段の実行でしか呼ばれないため、
-  // このアクション 2 つがどちらのリソースタイプで認可されるかは 2026-08-13 時点でまだ
-  // 実測していない（未証明）。** 誤って早々に外すと次の `deploy` 実行を壊しかねないため、
-  // changeSet ARN（`claude-gate-*`）の許可エントリは予防的に残してある。**dev の 3 スタック・
-  // 専用 Toolkit（証明済み: DescribeChangeSet/CreateChangeSet/DescribeStacks 等）・自分の
-  // change set（`claude-gate-*`、未証明: ExecuteChangeSet/DeleteChangeSet 用の安全網）**
-  // だけを許可リストへ加えたことを、各エントリの形として固定する
-  // （`claude-deploy-entry.json` の同種テストと対になる「equivalent assertion」）。
-  it('NotResource 許可リストの各エントリは stack（dev/専用 Toolkit・証明済み）か changeSet（claude-gate-*・Execute/Delete 用の未証明の安全網）のいずれかの正しい形をしている', () => {
-    const stackOrChangeSet =
-      /^arn:aws:cloudformation:[a-z0-9-]+:822063948773:(stack\/(OpenReception-[A-Za-z0-9]+-dev|CDKToolkit-orcloud01)\/\*|changeSet\/claude-gate-\*\/\*)$/;
+  // 2026-08-13 に `DescribeChangeSet` だけがそうだと分かった（`cdk deploy --no-execute` の
+  // `AccessDenied` が stack ARN を名指し。ADR 0009 決定 2）。このとき
+  // `ExecuteChangeSet` / `DeleteChangeSet` は「deploy 段でしか呼ばれず未証明」として
+  // changeSet ARN の許可エントリを予防的に残した。
+  //
+  // 2026-08-15 に runbook ステップ 4b を実施して**残り 2 つも測った**。
+  // `simulate-custom-policy` に**無関係の最小 Allow**（`{Effect: Allow, Action: <act>,
+  // Resource: "*"}`）を渡して同じ ARN を評価させた結果:
+  //
+  // | action | changeSet ARN | stack ARN |
+  // | --- | --- | --- |
+  // | `ExecuteChangeSet` | `implicitDeny` | `allowed` |
+  // | `DeleteChangeSet`  | `implicitDeny` | `allowed` |
+  // | `DescribeChangeSet`| `implicitDeny` | `allowed` |
+  //
+  // **`Resource: "*"` ですら changeSet ARN に一致しない**＝リソースタイプが違う。
+  // よって `changeSet/claude-gate-*/*` の 2 エントリは何も許可しておらず、
+  // 「`claude-gate-*` 以外の change set 名は Deny される」という runbook 4b の 9 番は
+  // **偽 PASS** だった（名前 allowlist が効いたのではなく、資源型が一致しないので
+  // 常に `implicitDeny` になっていただけ）。
+  //
+  // 🔴 **inert なだけでなく latent な穴でもある。** `NotResource` は Deny からの
+  // 除外リストなので、将来 AWS が changeSet ARN での認可を導入したら、
+  // **他プロジェクトのスタック上の** `claude-gate-*` という名前の change set まで
+  // 主境界の Deny を素通りする。実効権限は deploy role の実ポリシー側（stack ARN で
+  // `ExecuteChangeSet`/`DeleteChangeSet` とも `allowed` を実測済み）で足りているので、
+  // 消して困るものは無い。
+  it('NotResource 許可リストの各エントリは stack ARN である（changeSet ARN は資源型が一致せず死んでいる）', () => {
+    const stackOnly =
+      /^arn:aws:cloudformation:[a-z0-9-]+:822063948773:stack\/(OpenReception-[A-Za-z0-9]+-dev|CDKToolkit-orcloud01)\/\*$/;
     expect(audit.deniedNotResourcePatterns.length).toBeGreaterThan(0);
     for (const p of audit.deniedNotResourcePatterns) {
-      expect(p).toMatch(stackOrChangeSet);
+      expect(p).toMatch(stackOnly);
     }
     const joined = audit.deniedNotResourcePatterns.join('\n');
     for (const foreign of ['nodi-', 'salon-loop-', 'Kiaff', '-prod/', '-staging/']) {
       expect(joined).not.toContain(foreign);
     }
+  });
+
+  // 上のテストは「各エントリが stack ARN の形をしている」ことしか言わない。`changeSet`
+  // という語がこのファイルのどこか別の場所（Deny 側の `Resource` など）に紛れ込んでも
+  // 落ちないので、**ファイル全体に対する禁止**を別のアサーションとして置く。
+  it('ファイル全体のどこにも changeSet ARN スコープを含まない', () => {
+    const raw = readFileSync(
+      resolve(process.cwd(), 'scripts/aws-policies/claude-deploy-role-restriction.json'),
+      'utf8',
+    );
+    expect(raw).not.toContain(':changeSet/');
   });
 });
 

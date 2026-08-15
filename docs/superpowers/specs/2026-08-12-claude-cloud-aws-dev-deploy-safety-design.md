@@ -218,18 +218,16 @@ arn:aws:cloudformation:ap-northeast-1:822063948773:stack/OpenReception-WebMonito
 arn:aws:cloudformation:us-east-1:822063948773:stack/OpenReception-CfMon-dev/*
 arn:aws:cloudformation:ap-northeast-1:822063948773:stack/CDKToolkit-orcloud01/*
 arn:aws:cloudformation:us-east-1:822063948773:stack/CDKToolkit-orcloud01/*
-arn:aws:cloudformation:ap-northeast-1:822063948773:changeSet/claude-gate-*/*
-arn:aws:cloudformation:us-east-1:822063948773:changeSet/claude-gate-*/*
 ```
 
-（**これは `claude-deploy-role-restriction.json` の `NotResource` の全 7 行そのままである。**
+（**これは `claude-deploy-role-restriction.json` の `NotResource` の全 5 行そのままである。**
 スタックは `OpenReception-*-dev` のようなワイルドカードではなく**3 つを実名で、
 それぞれ所属リージョンにピン留めして**列挙する ―― `CfMonitoring-dev` は us-east-1
 にしか無いので、`OpenReception-*-dev` を両リージョンに書くと存在しない組み合わせまで
 許可することになる。許可リスト側のワイルドカードは「広すぎる」方向に壊れるため、
 `aws-policy-shape.test.ts` が各エントリの形を正規表現で固定している。
-唯一の `*` は changeSet 名の `claude-gate-*` で、これは changeSet ARN が
-スタック名を埋め込まないという IAM 側の制約による ―― その残存ギャップは §13。）
+**全エントリが stack ARN である** ―― changeSet ARN のエントリは 2026-08-15 の実測で
+死んでいると分かったため削除した（すぐ下の訂正を参照）。）
 
 に限定する。**これが迂回不能な主境界。** 名前 prefix ではなく ARN パターンであり、
 CloudFormation スタック名は CDK が `bin/open-reception.ts` で決定論的に付ける
@@ -253,15 +251,38 @@ CloudFormation スタック名は CDK が `bin/open-reception.ts` で決定論�
 > inability to evaluate that type was evidence pointing at the error and was misread
 > as a tooling limitation.
 >
-> **`CreateChangeSet` / `ExecuteChangeSet` / `DeleteChangeSet` の扱いは変わらない。**
-> `CreateChangeSet` は stack ARN で認可され（このラウンドの実行で実際に change set を
-> 作れており証明済み）、layer 1 の stack allowlist だけで足りる。`ExecuteChangeSet` /
-> `DeleteChangeSet` は `deploy` 段の実行でしか呼ばれず、今回は発火していないため
-> **stack ARN と changeSet 名前スコープのどちらで認可されるかは未証明のまま**。
-> 誤って早々に外すと次の `deploy` を壊しかねないため、`claude-deploy-role-restriction.json`
-> の `NotResource` には changeSet 名（`claude-gate-*`）の許可エントリを予防的な安全網
-> として残してある。この 2 アクションが実際にどちらの資源型で評価されるかは、実際に
-> `deploy` を実行して初めて分かる。その残存ギャップは §13。
+> 🔴 **続報（2026-08-15、runbook ステップ 4b の実施。残り 2 アクションも測った）:
+> `ExecuteChangeSet` / `DeleteChangeSet` も stack ARN で認可される。changeSet ARN の
+> 許可エントリは死んでいたので削除した。**
+>
+> 2026-08-13 時点では `CreateChangeSet` のみ証明済みで、`ExecuteChangeSet` /
+> `DeleteChangeSet` は「`deploy` 段でしか呼ばれず未証明」として changeSet 名
+> （`claude-gate-*`）の許可エントリを予防的に残していた。4b を実施し、
+> `simulate-custom-policy` に**無関係の最小 Allow**（`{Effect: Allow, Action: <act>,
+> Resource: "*"}`）を渡して同じ ARN を評価させた結果:
+>
+> | action | changeSet ARN | stack ARN |
+> | --- | --- | --- |
+> | `ExecuteChangeSet` | `implicitDeny` | `allowed` |
+> | `DeleteChangeSet` | `implicitDeny` | `allowed` |
+> | `DescribeChangeSet` | `implicitDeny` | `allowed` |
+>
+> **`Resource: "*"` ですら changeSet ARN に一致しない**＝資源型が違う。deploy role の
+> 実ポリシーを stack ARN で評価すると `ExecuteChangeSet` / `DeleteChangeSet` とも
+> `allowed`（実測）。したがって changeSet ARN の 2 エントリは何も許可しておらず、
+> **消しても実効権限は変わらない**。3 通り目の裏付けとして、2026-08-15 の初回デプロイは
+> 実際に成功しており（`cdk deploy` は `ExecuteChangeSet` を必ず呼ぶ）、stack ARN 側の
+> Allow だけで実運用が成立することが実地で確認されている。
+>
+> 🔴 **消した理由は inert だからではなく、latent な穴だからである。** `NotResource` は
+> Deny からの除外リストなので、将来 AWS が changeSet ARN での認可を導入した場合、
+> **他プロジェクトのスタック上の** `claude-gate-*` という名前の change set まで主境界の
+> Deny を素通りする。
+>
+> 🔴 **この訂正は runbook ステップ 4b の 9 番が「偽 PASS」だったことも意味する。**
+> 「`claude-gate-*` 以外の change set 名は Deny される」は、名前 allowlist が効いていた
+> のではなく、資源型が一致しないので常に `implicitDeny` だっただけだった。4b は
+> stack ARN を問う形へ訂正した。
 
 > 🔴 **gate が承認した change set と、実際に実行される change set は別物である。**
 > `scripts/aws-cloud-deploy.sh` の `diff` と `deploy` は同じ change set 名
@@ -271,10 +292,15 @@ CloudFormation スタック名は CDK が `bin/open-reception.ts` で決定論�
 > `cleanupOldChangeset()` → `cfn.deleteChangeSet()` で**無条件に削除してから**
 > `cfn.createChangeSet()` で新しく作り直す。「既存の named change set を再利用する」という
 > 経路は CDK の実装に存在しない。**したがって `deploy` の `cdk deploy --change-set-name X`
-> は、`diff` が承認したのと同じ名前 `X` の change set を必ず削除して作り直す。** 同じ名前を
-> 使う理由は、changeSet ARN が stack 名を埋め込まないため IAM 側が名前でしかスコープできず、
-> 名前を固定しないと上記の changeSet ARN allowlist 自体が機能しないからである。ワーキング
+> は、`diff` が承認したのと同じ名前 `X` の change set を必ず削除して作り直す。** ワーキング
 > ツリーが gate 通過後に変わっていなければ内容は同一のはずだが、それを保証する仕組みはない。
+>
+> 🔴 **訂正（2026-08-15）**: 以前ここには「同じ名前を使う理由は、changeSet ARN が stack 名を
+> 埋め込まないため IAM 側が名前でしかスコープできず、名前を固定しないと changeSet ARN
+> allowlist が機能しないから」と書いていた。**その allowlist は存在しない**（change set 系
+> アクションは stack ARN で認可されるため、changeSet ARN のエントリは一致し得ず削除した）。
+> 名前を固定しているのは `diff` と `deploy` が同じ change set を指すという運用上の意図の
+> ためであって、IAM のスコープ手段としてではない。
 
 #### 層 2: exec role の resource 制限（ARN + タグ）
 
@@ -779,14 +805,22 @@ changeSet ARN ではなく stack ARN に対して認可される。上表の `im
 教訓は「probe が `implicitDeny` を返したこと」自体が誤っていたのではなく、それを
 **道具の限界だと決め打った解釈**が誤っていたことである。
 
-**`ExecuteChangeSet` / `DeleteChangeSet` は引き続き未証明である。** これらは `deploy`
-段の実行でしか呼ばれず、`diff --no-execute` では発火していない。stack ARN と changeSet
-名前スコープ（`claude-gate-*`）のどちらで認可されるかは未確認のため、
-`claude-deploy-role-restriction.json` には changeSet 名前スコープの許可エントリを
-予防的な安全網として残してある。**この 2 アクションの authorisation を実際に検証するのは
-`deploy` の実行そのもの**である。`diff`（`--no-execute` で change set を作成し
-`describe-change-set` を呼ぶ）は何も適用しないため安全側のまま、すでに証明済みの
-`DescribeChangeSet`/`DescribeStacks`/`CreateChangeSet` の実質的な確認地点になる。
+🔴 **`ExecuteChangeSet` / `DeleteChangeSet` も 2026-08-15 に証明された（stack ARN 認可）。
+未証明の資源型は残っていない。**
+
+2026-08-13 時点ではこの 2 つは `deploy` 段でしか呼ばれず未証明だったため、
+`claude-deploy-role-restriction.json` に changeSet 名前スコープの許可エントリを
+予防的に残していた。runbook ステップ 4b の実施で 3 通りに測り、いずれも一致した:
+
+1. **最小 Allow probe**: `Resource: "*"` の Allow ですら changeSet ARN には
+   `implicitDeny`（＝資源型が一致しない）。stack ARN では `allowed`
+2. **実ポリシー評価**: deploy role を stack ARN で評価すると 2 アクションとも `allowed`
+3. **実運用**: 2026-08-15 の初回デプロイが成功した（`cdk deploy` は `ExecuteChangeSet` を
+   必ず呼び、`cleanupOldChangeset` は `DeleteChangeSet` を呼ぶ）
+
+したがって changeSet ARN の許可エントリは**一度も実効しなかった死んだエントリ**であり、
+`ReadOwnChangeSetsForDiffGate` と同じ理由で削除した。`diff`（`--no-execute`）は何も
+適用しないため引き続き安全側のままである。
 詳細は `docs/runbook-cloud-aws-deploy.md` ステップ 4 と §13。
 
 ---
@@ -962,7 +996,7 @@ spec 原文 STOP CONDITIONS の「既存 production deploy 経路を壊す可能
 | `user/CDK` の Admin 長期キー | §10。本設計の外 |
 | `Replacement: Conditional` の過検出 | 安全側。人間が承認して通す運用 |
 | staging / prod を作るとき境界の拡張が要る | 意図的。そのとき改めて承認する |
-| `ExecuteChangeSet`/`DeleteChangeSet` の資源型が未証明・changeSet 名スコープの潜在的な account-wide 露出 | `DescribeChangeSet`/`CreateChangeSet` は 2026-08-13 実測で stack ARN 認可と証明済み（残存リスクから除外）。**`ExecuteChangeSet`/`DeleteChangeSet` はまだ未検証。** 名前スコープが必要だった場合、deploy role 単体の層では構造的に閉じられない。詳細は下記 |
+| ~~`ExecuteChangeSet`/`DeleteChangeSet` の資源型が未証明・changeSet 名スコープの潜在的な account-wide 露出~~ | 🔴 **解消（2026-08-15）。** change set 系 3 アクションは**すべて stack ARN で認可される**と 3 通りで実測（最小 Allow probe / 実ポリシー評価 / 初回デプロイ成功）。changeSet 名スコープの許可エントリは一度も実効しない死んだエントリだったので削除した。名前スコープに依存していないため、account-wide 露出の懸念そのものが成立しない。詳細は §4.2 層 1 の訂正 |
 | 列挙から漏れた第三者 IAM ポリシーの書き換え | **タグでは閉じられない。** 下記 |
 | `iam:PassRole` のタグ条件が実 IAM でどう評価されるか | **未検証。** 初回デプロイで AccessDenied になる最有力候補。runbook 4b の 14〜16。simulate 側は S21/S22 が `--context-entries` で `iam:PassedToService` を供給して問う（#680 R10） |
 | carve-out された名前空間に境界の無いロールを作られる | **IAM では閉じられない**（サンドボックスがテンプレートを書き、名前グロブは論理 ID / `RoleName` / `Path` を縛れない）。**diff gate で制動している。** 到達しうる上限はアカウント Admin。下記 |
