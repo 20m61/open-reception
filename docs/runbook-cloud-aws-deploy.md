@@ -916,6 +916,37 @@ findings が 1 件でも増減・変化すれば値が変わり、**古い承認
 
 ---
 
+## ステップ 8b: 🔴 デプロイに必須の context（未設定だと `diff` / `deploy` が止まる）
+
+`infra/bin/open-reception.ts` の次の 3 つは **未指定でも synth が通る**。通るが、出来上がるのは
+**別構成のスタック**で、Secrets Manager 連携も QR の基底オリジンも落ちる。
+2026-08-15 に wrapper がこれらを渡しておらず、dev の ServerFn から
+`secretsmanager:GetSecretValue` の付与が消えて **dev が 500** になった（ステップ 9c）。
+
+**diff gate では止められない。** `describe-change-set` は「どの property が変わったか」の名前しか
+返さず、消えた IAM 文や環境変数を**値として見せない**ので、差分は「26 件の変更」にしか見えない。
+したがって防波堤は wrapper に置いてある ―― **未指定なら始めない**。
+
+| 環境変数 | 渡る context | 省くとどうなるか |
+| --- | --- | --- |
+| `OR_APP_SECRETS_NAME` | `appSecretsName` | Secrets Manager 連携が落ち、**起動が 500** |
+| `OR_ORIGIN_VERIFY_SECRET` | `originVerifySecret` | CloudFront 経由の **POST が全滅**（403） |
+| `OR_PUBLIC_ORIGIN_OVERRIDE` | `publicOriginOverride` | 発行される **QR が誰にも使えない** |
+
+dev の値は `docs/deploy-aws.md`「dev をゼロから立ち上げる手順」を参照
+（**リポジトリには置かない**。`originVerifySecret` は秘密の値そのもの）。
+
+```bash
+export OR_APP_SECRETS_NAME=open-reception/dev/app-v2
+export OR_ORIGIN_VERIFY_SECRET=...        # 高エントロピー値。履歴・ログに残さない
+export OR_PUBLIC_ORIGIN_OVERRIDE=https://dvxkh8nfwl334.cloudfront.net
+```
+
+⚠️ `originVerifySecret` は `cdk` の argv に載る＝プロセステーブルから見える。CDK context の
+仕組み上避けられないので、**本筋は `originVerifySecretName`（Secrets Manager 名）への移行**（#612）。
+
+---
+
 ## ステップ 9c: 🔴 `UPDATE_ROLLBACK_FAILED` からの復旧（2026-08-14 に実際に起きた）
 
 初回デプロイは **permissions boundary の自縄自縛**で失敗した。記録として残す。

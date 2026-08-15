@@ -265,6 +265,40 @@ changeset_name() {
   echo "claude-gate-$(git -C "${ROOT}" rev-parse --short HEAD)"
 }
 
+# 🔴 **デプロイに必須の CDK context を解決する（#680 / 2026-08-15 のインシデント）。**
+#
+# `appSecretsName` / `originVerifySecret` / `publicOriginOverride` は **未指定でも
+# synth が通る**。通るが、出来上がるのは別構成のスタックで、Secrets Manager 連携も
+# QR の基底オリジンも落ちる。2026-08-15 にこの wrapper がこれらを渡していなかったため、
+# dev の ServerFn から `secretsmanager:GetSecretValue` の付与が消え、起動時に secret を
+# 読めず fail-closed で中断して **dev が 500** になった。
+#
+# **diff gate では止められない。** `describe-change-set` は「どの property が変わったか」の
+# 名前しか返さず、消えた IAM 文や環境変数を**値として見せない**ので、差分は
+# 「26 件の変更」にしか見えなかった。防波堤はここに置く ―― 未指定なら始めさせない。
+#
+# 判定は `src/domain/governance/deploy-context.ts`（純関数）に持つ。ここは受け取るだけ。
+#
+# ⚠️ `originVerifySecret` は秘密の値そのものであり、`cdk` の argv に載る＝プロセステーブルに
+# 見える。CDK context の仕組み上避けられない（`originVerifySecretName` へ移行するのが
+# 本筋。#612）。**ログには出さない**。
+DEPLOY_CONTEXT_ARGS=()
+resolve_deploy_context() {
+  local out
+  if ! out="$(npx tsx "${ROOT}/scripts/aws-deploy-context.ts")"; then
+    echo "  ⛔ 必須 context が揃っていないため中止します（上の診断を参照）" >&2
+    return 1
+  fi
+  DEPLOY_CONTEXT_ARGS=()
+  while IFS= read -r line; do
+    [ -n "${line}" ] && DEPLOY_CONTEXT_ARGS+=("${line}")
+  done <<< "${out}"
+  if [ "${#DEPLOY_CONTEXT_ARGS[@]}" -eq 0 ]; then
+    echo "  ⛔ context 解決の出力が空でした（判定不能なので止めます）" >&2
+    return 1
+  fi
+}
+
 # 第 3 引数は gate のモード（`diff` / `deploy`）。
 # 🔴 **既定は `diff`**（＝ `OR_APPROVED_DIFF` による人間の承認を無視する）。
 # 渡し忘れが「承認が効く」側へ倒れると、gate の停止が黙って無効化されうる。
@@ -281,6 +315,7 @@ run_diff_gate() {
       -c env="${DEPLOY_ENV}" \
       -c "@aws-cdk/core:bootstrapQualifier=${QUALIFIER}" \
       -c "claudeBoundary=${BOUNDARY_POLICY_NAME}" \
+      "${DEPLOY_CONTEXT_ARGS[@]}" \
       --toolkit-stack-name "${TOOLKIT_STACK_NAME}" \
       --change-set-name "${cs_name}" --no-execute \
       --require-approval never ); then
@@ -336,6 +371,9 @@ case "${SUB}" in
     "${ROOT}/scripts/quality-gate.sh" --pr
     ;;
   diff)
+    # 🔴 **観測より先に context を解決する。** 揃っていないまま diff を回すと、
+    # 別構成の synth と実スタックを比べた「差分」を人間へ見せることになる。
+    resolve_deploy_context
     collect_observation "$(mktemp)" 1200
     # 🔴 **全スタックを評価してから終える。** かつてはここも `deploy` と同じ「裸の
     # 呼び出し」で、`run_diff_gate` が非ゼロを返した瞬間 `set -e` がループごと打ち切って
@@ -361,6 +399,7 @@ case "${SUB}" in
     exit "${diff_failed}"
     ;;
   deploy)
+    resolve_deploy_context
     collect_observation "$(mktemp)" 2400
     # diff と違い、ここは最初のブロックで即座に止める（unwrap しない。上のコメント参照）。
     for entry in "${STACKS[@]}"; do run_diff_gate "${entry%%:*}" "${entry##*:}" deploy; done
@@ -377,6 +416,7 @@ case "${SUB}" in
         -c env="${DEPLOY_ENV}" \
         -c "@aws-cdk/core:bootstrapQualifier=${QUALIFIER}" \
         -c "claudeBoundary=${BOUNDARY_POLICY_NAME}" \
+        "${DEPLOY_CONTEXT_ARGS[@]}" \
         --toolkit-stack-name "${TOOLKIT_STACK_NAME}" \
         --change-set-name "${cs_name}" \
         --require-approval never )

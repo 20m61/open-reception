@@ -320,8 +320,57 @@ describe('cdk / aws 呼び出しに必須フラグが揃っている (round 3 �
   });
 
   it('deploy ケースの最終 cdk deploy は --change-set-name を渡す（Important A.1 の回帰テスト）', () => {
-    const block = windowAfter('npx cdk deploy "${STACK_NAMES[@]}"', 250);
+    // 窓は行数ではなく文字数。必須 context の行が増えたぶん広げてある（#680 / 2026-08-15）。
+    const block = windowAfter('npx cdk deploy "${STACK_NAMES[@]}"', 400);
     expect(block).toContain('--change-set-name');
+  });
+
+  /**
+   * 🔴 **2026-08-15 のインシデントの回帰テスト。**
+   *
+   * wrapper が `appSecretsName` / `originVerifySecret` / `publicOriginOverride` を
+   * 渡していなかったため、別構成のスタックが synth され、dev の ServerFn から
+   * `secretsmanager:GetSecretValue` の付与が消えて **dev が 500** になった。
+   * これらは**未指定でも synth が通る**ので、渡し忘れは静かに壊す。
+   */
+  describe('必須 context が配線されている (#680 / 2026-08-15)', () => {
+    it('🔴 すべての cdk deploy 呼び出しが DEPLOY_CONTEXT_ARGS を渡す', () => {
+      const invocations = everyCdkInvocation();
+      expect(invocations.length).toBeGreaterThan(0);
+      for (const inv of invocations) {
+        expect(inv, `context を渡していない cdk 呼び出しがある:\n${inv}`).toContain(
+          '"${DEPLOY_CONTEXT_ARGS[@]}"',
+        );
+      }
+    });
+
+    it('🔴 diff / deploy は AWS を触る前に context を解決する', () => {
+      for (const [label, from, to] of [
+        ['diff', '\n  diff)', '\n  deploy)'],
+        ['deploy', '\n  deploy)', '\n  smoke)'],
+      ] as const) {
+        const start = source.indexOf(from);
+        const end = source.indexOf(to);
+        if (start === -1 || end === -1) throw new Error(`ケース本文が見つかりません: ${label}`);
+        const body = source.slice(start, end);
+        const ctxAt = body.indexOf('resolve_deploy_context');
+        const obsAt = body.indexOf('collect_observation');
+        expect(ctxAt, `${label} が resolve_deploy_context を呼んでいない`).toBeGreaterThanOrEqual(0);
+        expect(obsAt, `${label} が collect_observation を呼んでいない`).toBeGreaterThanOrEqual(0);
+        expect(ctxAt, `${label}: context 解決が観測より後になっている`).toBeLessThan(obsAt);
+      }
+    });
+
+    it('🔴 解決失敗時に空の配列で先へ進まない（fail-closed）', () => {
+      const source = readFileSync(WRAPPER, 'utf8');
+      const fn = source.slice(
+        source.indexOf('resolve_deploy_context() {'),
+        source.indexOf('# 第 3 引数は gate のモード'),
+      );
+      expect(fn).toContain('return 1');
+      // 出力が空だったときも止める（「解決できなかった」を「context 不要」に落とさない）。
+      expect(fn).toContain('-eq 0');
+    });
   });
 
   describe('承認トークンのモードが配線されている (#680)', () => {
@@ -608,7 +657,9 @@ describe('diff は全スタックを評価してから終える (#680 続報)', 
       // ケースラベル行 "  diff)" と実 AWS を呼ぶ collect_observation を取り除き、
       // ループ本体だけを実行する。
       .replace(/^\s*diff\)\s*$/m, '')
-      .replace(/^\s*collect_observation.*$/m, '');
+      .replace(/^\s*collect_observation.*$/m, '')
+      // 実 AWS を触らないので、同じく前段の context 解決も外す（#680 / 2026-08-15）。
+      .replace(/^\s*resolve_deploy_context.*$/m, '');
     const script = [
       'set -euo pipefail',
       'STACKS=("OpenReception-Web-dev:ap-northeast-1" "OpenReception-WebMonitoring-dev:ap-northeast-1" "OpenReception-CfMonitoring-dev:us-east-1")',
@@ -641,6 +692,8 @@ describe('diff は全スタックを評価してから終える (#680 続報)', 
     const block = caseBody('\n  deploy)', '\n  smoke)')
       .replace(/^\s*deploy\)\s*$/m, '')
       .replace(/^\s*collect_observation.*$/m, '')
+      // 実 AWS を触らないので、同じく前段の context 解決も外す（#680 / 2026-08-15）。
+      .replace(/^\s*resolve_deploy_context.*$/m, '')
       // deploy ケースはこの後 cdk deploy 本体まで続くが、run_diff_gate ループだけを
       // 取り出したいので cs_name の代入以降は使わない。
       .split('cs_name=')[0]!;
