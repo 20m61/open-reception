@@ -29,7 +29,7 @@ TOOLKIT_STACK_NAME="CDKToolkit-${QUALIFIER}"
 # CDK アプリが作る `AWS::IAM::Role` には何も付かない。一方 `claude-cfn-exec.json` は
 # boundary 無しの `iam:CreateRole` / `PutRolePolicy` / `AttachRolePolicy` を Deny するので、
 # これを渡さないと**初回 CREATE で必ず AccessDenied になる**
-# （`OpenReception-CfMonitoring-dev` は `crossRegionReferences: true` の custom resource
+# （`OpenReception-CfMon-dev` は `crossRegionReferences: true` の custom resource
 # Lambda ＋ `AWS::IAM::Role` を含む CREATE）。
 #
 # 値は「ポリシー**名**」の素の文字列。CDK CLI は `-c key=value` の value を JSON へ
@@ -40,14 +40,14 @@ TOOLKIT_STACK_NAME="CDKToolkit-${QUALIFIER}"
 BOUNDARY_POLICY_NAME="OpenReceptionClaudeBoundary"
 DEPLOY_ENV="${OR_DEPLOY_ENV:-dev}"
 REGION="${AWS_REGION:-ap-northeast-1}"
-# 🔴 **スタックごとにリージョンを持つ。** `OpenReception-CfMonitoring-*` は
+# 🔴 **スタックごとにリージョンを持つ。** `OpenReception-CfMon-*` は
 # cross-region 参照の都合で us-east-1 固定（`infra/bin/open-reception.ts`）。他の 2 つは
 # 既定リージョン（ap-northeast-1）。`<name>:<region>` の形で 1 つの配列にまとめ、
 # `${entry%%:*}` / `${entry##*:}` で分解する（Important D）。
 STACKS=(
   "OpenReception-Web-${DEPLOY_ENV}:${REGION}"
   "OpenReception-WebMonitoring-${DEPLOY_ENV}:${REGION}"
-  "OpenReception-CfMonitoring-${DEPLOY_ENV}:us-east-1"
+  "OpenReception-CfMon-${DEPLOY_ENV}:us-east-1"
 )
 STACK_NAMES=()
 for _entry in "${STACKS[@]}"; do
@@ -324,7 +324,7 @@ run_diff_gate() {
     return 1
   fi
 
-  # 🔴 **--region を明示する。** `OpenReception-CfMonitoring-dev` は us-east-1
+  # 🔴 **--region を明示する。** `OpenReception-CfMon-dev` は us-east-1
   # （`infra/bin/open-reception.ts`）だが、AWS CLI の既定リージョンは `${REGION}`
   # （通常 ap-northeast-1）。`--region` を渡さないと `describe-change-set` が
   # 誤ったリージョンへ飛び、「スタックが存在しない」という不可解な ValidationError で
@@ -377,7 +377,7 @@ case "${SUB}" in
     collect_observation "$(mktemp)" 1200
     # 🔴 **全スタックを評価してから終える。** かつてはここも `deploy` と同じ「裸の
     # 呼び出し」で、`run_diff_gate` が非ゼロを返した瞬間 `set -e` がループごと打ち切って
-    # いた。`OpenReception-CfMonitoring-dev`（us-east-1・初回 CREATE）のような
+    # いた。`OpenReception-CfMon-dev`（us-east-1・初回 CREATE）のような
     # 3 番目のスタックは、1・2 番目のどちらかがブロックされると**一度も評価されない**。
     # 運用者は「1 つ直して再実行 → 次のブロックで初めて気づく」を人数ぶん繰り返す羽目になる。
     #

@@ -20,6 +20,26 @@ import {
 const REAL_NAMES = {
   crossRegionWriter: 'OpenReception-Web-dev-CustomCrossRegionExportWriter-mWjZeIPYdVgw',
   s3AutoDelete: 'OpenReception-Web-dev-CustomS3AutoDeleteObjectsCust-yIrNw85NvcWP',
+  /**
+   * 🔴 **2026-08-15 の実デプロイで観測（旧スタック名 `OpenReception-CfMonitoring-dev` のとき）。**
+   *
+   * それまでのモデル（スタック名は切られない）は
+   * `OpenReception-CfMonitoring-dev-CustomCrossRegionExp-` を**予測していたが外れた**。
+   * 実際は**スタック名も切られ**（30 → 25 文字）、`-dev` が消えた。この 1 本が
+   * carve-out の欠落を暴いた ―― `iam:CreateRole` が Deny されスタック作成が失敗した。
+   *
+   * **この観測を受けてスタック名を `OpenReception-CfMon-dev`（23 文字）へ改名した。**
+   * 実測値は歴史的事実なのでそのまま残し、切り詰め規則の ground truth として使う。
+   */
+  crossRegionReaderOldStackName: 'OpenReception-CfMonitorin-CustomCrossRegionExportRe-ox5R3SHQowPX',
+} as const;
+
+/** 改名前後のスタック名。切り詰めが起きる／起きないの境界を跨ぐ。 */
+const STACK_NAMES = {
+  /** 30 文字。25 文字へ切られ `-dev` が消えていた。 */
+  cfMonitoringOld: 'OpenReception-CfMonitoring-dev',
+  /** 23 文字。切られないので `-dev` が残り carve-out に一致する。 */
+  cfMonNew: 'OpenReception-CfMon-dev',
 } as const;
 
 /** synth で実際に得られる論理 ID（`infra/test/claude-deploy-boundary.test.ts` と同じもの）。 */
@@ -51,30 +71,76 @@ describe('cfnGeneratedNamePrefix', () => {
   });
 
   /**
-   * 🔴 **carve-out の設計を決める事実。** スタック名が 9 文字長くなると論理 ID の
-   * 取り分が 9 文字減り、`...ExportWriter` どころか `...Export` すら残らない。
-   * 「`CustomCrossRegionExport*`」のようなパターンを書くと us-east-1 側だけ一致せず、
-   * ExportReader の `iam:CreateRole` が Deny される。
+   * 🔴 **スタック名も切られる（2026-08-15 の実測で判明）。**
+   *
+   * 旧モデルは「切られるのは論理 ID だけ」と仮定し
+   * `OpenReception-CfMonitoring-dev-CustomCrossRegionExp-` を予測していたが、
+   * 実際は `OpenReception-CfMonitorin-CustomCrossRegionExportRe-` だった。
+   *
+   * 規則: 予算 `maxLength - suffix - 2` を半分ずつに配り、**半分を超えた側だけ**切る。
+   * 64 - 12 - 2 = 50 → 各 25。`OpenReception-Web-dev`(21) は無傷、
+   * 旧 `OpenReception-CfMonitoring-dev`(30) は 25 へ切られる。
    */
-  it('スタック名が長い CfMonitoring では ExportReader が Export の途中で切れる', () => {
-    expect(cfnGeneratedNamePrefix('OpenReception-CfMonitoring-dev', LOGICAL_IDS.crossRegionReader)).toBe(
-      'OpenReception-CfMonitoring-dev-CustomCrossRegionExp-',
-    );
+  it('🔴 旧スタック名での実測を再現する（スタック名も切られる）', () => {
+    const prefix = cfnGeneratedNamePrefix(STACK_NAMES.cfMonitoringOld, LOGICAL_IDS.crossRegionReader);
+    expect(prefix).toBe('OpenReception-CfMonitorin-CustomCrossRegionExportRe-');
+    expect(REAL_NAMES.crossRegionReaderOldStackName.startsWith(prefix)).toBe(true);
+    expect(REAL_NAMES.crossRegionReaderOldStackName).toHaveLength(IAM_ROLE_NAME_MAX_LENGTH);
+  });
+
+  /**
+   * 🔴 **改名の根拠。** 23 文字なら半分（25）を超えないので切られず、`-dev` が残る。
+   * これが `OpenReception-*-dev-Custom*` の carve-out に一致する唯一の条件である。
+   * ここが赤くなったら、スタック名がまた 25 文字を超えている。
+   */
+  it('🔴 新スタック名は切り詰められず -dev が残る', () => {
+    expect(STACK_NAMES.cfMonNew.length).toBeLessThanOrEqual(25);
+    const prefix = cfnGeneratedNamePrefix(STACK_NAMES.cfMonNew, LOGICAL_IDS.crossRegionReader);
+    expect(prefix.startsWith('OpenReception-CfMon-dev-Custom')).toBe(true);
+  });
+
+  it('🔴 切り詰められた物理名が carve-out に一致する（一致しないと CreateRole が Deny される）', () => {
+    for (const [stack, logicalId] of [
+      ['OpenReception-Web-dev', LOGICAL_IDS.crossRegionWriter],
+      ['OpenReception-Web-dev', LOGICAL_IDS.s3AutoDelete],
+      [STACK_NAMES.cfMonNew, LOGICAL_IDS.crossRegionReader],
+    ] as const) {
+      const prefix = cfnGeneratedNamePrefix(stack, logicalId);
+      const arn = `arn:aws:iam::${CARVE_OUT_ACCOUNT_ID}:role/${prefix}`;
+      expect(
+        iamArnGlobMatchesGeneratedName(CARVE_OUT_ROLE_ARN_PATTERN, arn),
+        `carve-out に一致しない: ${prefix}`,
+      ).toBe(true);
+    }
   });
 
   it('論理 ID に含まれる CustomResourceProviderRole は物理名に残らない', () => {
     for (const [stack, logicalId] of [
       ['OpenReception-Web-dev', LOGICAL_IDS.crossRegionWriter],
       ['OpenReception-Web-dev', LOGICAL_IDS.s3AutoDelete],
-      ['OpenReception-CfMonitoring-dev', LOGICAL_IDS.crossRegionReader],
+      [STACK_NAMES.cfMonNew, LOGICAL_IDS.crossRegionReader],
     ] as const) {
       expect(logicalId).toContain('CustomResourceProviderRole');
       expect(cfnGeneratedNamePrefix(stack, logicalId)).not.toContain('CustomResourceProviderRole');
     }
   });
 
-  it('予算が残らないスタック名は throw する（空文字で素通りさせない）', () => {
-    expect(() => cfnGeneratedNamePrefix('x'.repeat(52), 'CustomThing')).toThrow(/予算/);
+  /**
+   * 旧モデルは「スタック名が長すぎると予算が尽きる」として throw していたが、
+   * 実際の CloudFormation は**スタック名を切り詰めて必ず収める**（2026-08-15 の実測）。
+   * したがって長いスタック名は throw せず、切り詰めた結果を返すのが正しい。
+   */
+  it('長いスタック名は throw せず切り詰める（実測の挙動）', () => {
+    const prefix = cfnGeneratedNamePrefix('x'.repeat(52), 'CustomThing');
+    expect(prefix.length).toBeLessThan(IAM_ROLE_NAME_MAX_LENGTH);
+    // 論理 ID 側にも必ず 1 文字以上残る（空文字で素通りさせない）。
+    expect(prefix).toMatch(/-C/);
+  });
+
+  it('極端に小さい予算では throw する（空文字で素通りさせない）', () => {
+    expect(() =>
+      cfnGeneratedNamePrefix('stack', 'CustomThing', { maxLength: 13, suffixLength: 12 }),
+    ).toThrow(/予算/);
   });
 });
 

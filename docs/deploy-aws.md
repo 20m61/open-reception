@@ -554,7 +554,7 @@ notBreaching）のアラームを **us-east-1** に置く小さな Stack。SNS T
 
 ```bash
 cd infra
-npx cdk deploy OpenReception-CfMonitoring-prod -c env=prod \
+npx cdk deploy OpenReception-CfMon-prod -c env=prod \
   -c appEnv="$APP_ENV" \
   -c alarmEmail=ops@example.com   # 任意: アラーム通知先
 ```
@@ -564,7 +564,7 @@ npx cdk deploy OpenReception-CfMonitoring-prod -c env=prod \
   ExportWriter、本 Stack 側に ExportReader）で連携されるため、既存 WebStack には writer
   リソースが追加されるだけで既存リソースの変更・置換はない。
 - 初回は WebStack 側に ExportWriter が追加されるため、`cdk deploy --all` か
-  `OpenReception-Web-<env> OpenReception-CfMonitoring-<env>` の順でデプロイする。
+  `OpenReception-Web-<env> OpenReception-CfMon-<env>` の順でデプロイする。
 - **destroy の順序**: 参照の consumer である本 Stack を **WebStack より先に** destroy する
   （cross-region 参照が残っていると WebStack 側の export 削除がブロックされる）。
 - 4xxErrorRate のアラームは持たない（ボット由来のノイズ源。可用性は 5xx + Lambda Errors で
@@ -640,7 +640,7 @@ npx cdk deploy OpenReception-Notification-prod OpenReception-Monitoring-prod -c 
 
 ```bash
 # CfMonitoring (us-east-1) は WebStack の distributionId を cross-region 参照しているため先に destroy する
-cd infra && npx cdk destroy OpenReception-CfMonitoring-dev -c env=dev
+cd infra && npx cdk destroy OpenReception-CfMon-dev -c env=dev
 cd infra && npx cdk destroy OpenReception-WebMonitoring-dev OpenReception-Web-dev -c env=dev
 cd infra && npx cdk destroy OpenReception-Monitoring-dev OpenReception-Notification-dev -c env=dev
 ```

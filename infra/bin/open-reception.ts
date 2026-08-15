@@ -158,7 +158,7 @@ overrideComponentTag(webMonitoring, COST_TAG_COMPONENTS.webMonitoring);
 if (account) {
   const cloudFrontMonitoring = new CloudFrontMonitoringStack(
     app,
-    `OpenReception-CfMonitoring-${config.environment}`,
+    `OpenReception-CfMon-${config.environment}`,
     {
       env: { account, region: 'us-east-1' },
       crossRegionReferences: true,
@@ -170,7 +170,7 @@ if (account) {
   overrideComponentTag(cloudFrontMonitoring, COST_TAG_COMPONENTS.cloudFrontMonitoring);
 } else {
   console.warn(
-    '[open-reception] CDK_DEFAULT_ACCOUNT が未解決のため OpenReception-CfMonitoring-* を synth 対象から除外しました（cross-region 参照には concrete account が必要）。',
+    '[open-reception] CDK_DEFAULT_ACCOUNT が未解決のため OpenReception-CfMon-* を synth 対象から除外しました（cross-region 参照には concrete account が必要）。',
   );
 }
 

@@ -8,7 +8,7 @@
       "NotResource": [
         "arn:aws:cloudformation:ap-northeast-1:822063948773:stack/OpenReception-Web-dev/*",
         "arn:aws:cloudformation:ap-northeast-1:822063948773:stack/OpenReception-WebMonitoring-dev/*",
-        "arn:aws:cloudformation:us-east-1:822063948773:stack/OpenReception-CfMonitoring-dev/*",
+        "arn:aws:cloudformation:us-east-1:822063948773:stack/OpenReception-CfMon-dev/*",
         "arn:aws:cloudformation:ap-northeast-1:822063948773:stack/CDKToolkit-orcloud01/*",
         "arn:aws:cloudformation:us-east-1:822063948773:stack/CDKToolkit-orcloud01/*",
         "arn:aws:cloudformation:ap-northeast-1:822063948773:changeSet/claude-gate-*/*",

@@ -51,7 +51,7 @@ describe('isApproved', () => {
   });
 
   it('複数スタックぶんをカンマ区切りで渡せる（空白は許容）', () => {
-    const other = approvalToken('OpenReception-CfMonitoring-dev', BLOCKS);
+    const other = approvalToken('OpenReception-CfMon-dev', BLOCKS);
     expect(isApproved(STACK, BLOCKS, ` ${other} , ${token} `)).toBe(true);
   });
 

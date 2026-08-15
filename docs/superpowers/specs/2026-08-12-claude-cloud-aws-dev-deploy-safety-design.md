@@ -92,7 +92,7 @@ open-reception の実構成では **Cognito / CloudFront / IAM Policy につい�
 
 ### 2.4 その他
 
-- リージョンは **ap-northeast-1 と us-east-1 の 2 つ**（`OpenReception-CfMonitoring-*` が
+- リージョンは **ap-northeast-1 と us-east-1 の 2 つ**（`OpenReception-CfMon-*` が
   CloudFront メトリクスの制約で us-east-1。`bin/open-reception.ts:148`）
 - 環境の切り替えは CDK context `-c env=dev|staging|prod` のみ。**アカウント分離も
   リージョン分離もしていない**（`infra/lib/config/environments.ts`）
@@ -215,7 +215,7 @@ CDK の全操作は CloudFormation を通る。deploy role の
 ```
 arn:aws:cloudformation:ap-northeast-1:822063948773:stack/OpenReception-Web-dev/*
 arn:aws:cloudformation:ap-northeast-1:822063948773:stack/OpenReception-WebMonitoring-dev/*
-arn:aws:cloudformation:us-east-1:822063948773:stack/OpenReception-CfMonitoring-dev/*
+arn:aws:cloudformation:us-east-1:822063948773:stack/OpenReception-CfMon-dev/*
 arn:aws:cloudformation:ap-northeast-1:822063948773:stack/CDKToolkit-orcloud01/*
 arn:aws:cloudformation:us-east-1:822063948773:stack/CDKToolkit-orcloud01/*
 arn:aws:cloudformation:ap-northeast-1:822063948773:changeSet/claude-gate-*/*
@@ -343,7 +343,7 @@ OpenReception-*-staging  /  OpenReception-*-prod
 > `iam:CreateRole` / `PutRolePolicy` / `AttachRolePolicy` を boundary 条件付きでしか
 > 許さず、`StringNotEquals`（キー欠如時に真）で明示 Deny する。したがって
 > **runbook ステップ 10 の初回デプロイは必ず AccessDenied になる**:
-> `OpenReception-CfMonitoring-dev` は新規 CREATE であり、`crossRegionReferences: true`
+> `OpenReception-CfMon-dev` は新規 CREATE であり、`crossRegionReferences: true`
 > が custom resource Lambda ＋ `AWS::IAM::Role` を持ち込むため、CloudFormation が
 > boundary 無しで `iam:CreateRole` を呼ぶ。これは同時に、**§6 で IAM の Add/Modify を
 > 止めない根拠（「新しい Role は構造的に boundary を超えられない」）が成立していなかった**
@@ -453,7 +453,7 @@ rollback の `iam:DeleteRole` がタグ条件 Deny に当たって **`ROLLBACK_F
 （`OpenReception-Web-dev-CustomCrossRegionExportWriter-mWjZeIPYdVgw` /
 `OpenReception-Web-dev-CustomS3AutoDeleteObjectsCust-yIrNw85NvcWP`、どちらもちょうど
 64 文字）から、`OpenReception-Web-dev` では論理 ID の取り分が 29 文字、
-`OpenReception-CfMonitoring-dev` では 20 文字と求まる。したがって
+`OpenReception-CfMon-dev` では 20 文字と求まる。したがって
 
 - `…-Custom*CustomResourceProviderRole*` は**どの 1 本にも一致しない**
   （`CustomResourceProviderRole` は切り詰めで消える）
@@ -710,8 +710,8 @@ principal ARN も 1 リージョン分しか受け取らなかった。runbook �
 | S12 | `sts:AssumeRole` → `cdk-orcloud01-lookup-role-*`（Critical 1） | entry | 両方 | DENY |
 | S13 | `iam:DeleteRolePolicy` on `cdk-orcloud01-deploy-role-*`（Important 5。自分のチェーン） | exec | 両方 | DENY |
 | S14 | `iam:CreatePolicyVersion` on 他プロジェクトのポリシー（Important 5） | exec | 両方 | DENY |
-| S15 | `cloudformation:DescribeStacks` on `OpenReception-CfMonitoring-dev` | entry | us-east-1 のみ | **ALLOW** |
-| S16 | `cloudformation:DescribeChangeSet` on `OpenReception-CfMonitoring-dev`（stack ARN、us-east-1。2026-08-13 実測で訂正 ―― 元は changeSet ARN） | entry | us-east-1 のみ | **ALLOW** |
+| S15 | `cloudformation:DescribeStacks` on `OpenReception-CfMon-dev` | entry | us-east-1 のみ | **ALLOW** |
+| S16 | `cloudformation:DescribeChangeSet` on `OpenReception-CfMon-dev`（stack ARN、us-east-1。2026-08-13 実測で訂正 ―― 元は changeSet ARN） | entry | us-east-1 のみ | **ALLOW** |
 | S17 | `iam:CreateRole` on carve-out のロール名（boundary なし。#680 R2） | exec | 両方 | **ALLOW** |
 | S18 | `iam:CreateRole` on carve-out**外**のロール名（boundary なし） | exec | 両方 | DENY |
 | S19 | `iam:DeleteRole` on carve-out のロール名（rollback 経路。#680 R3） | exec | 両方 | **ALLOW** |
@@ -766,7 +766,7 @@ changeSet ARN ではなく stack ARN に対して認可される。上表の `im
 > as a tooling limitation.
 
 **対処**: `claude-deploy-entry.json` を stack ARN の Allow へ統合し、`S16` も
-`OpenReception-CfMonitoring-dev` の stack ARN へ向け直した。**`S15`/`S16` はどちらも
+`OpenReception-CfMon-dev` の stack ARN へ向け直した。**`S15`/`S16` はどちらも
 通常どおりシミュレートできる**（この訂正後の実 IAM への再適用・再実行はまだ行って
 いない ―― IAM の適用は人間が行う）。
 
