@@ -13,6 +13,8 @@
  */
 
 export type PolicyStatement = {
+  /** 文の識別子。出荷しているポリシーは全文に付けており、テストはこれで文を特定する。 */
+  readonly Sid?: string;
   readonly Effect: 'Allow' | 'Deny';
   readonly Action?: string | ReadonlyArray<string>;
   readonly NotAction?: string | ReadonlyArray<string>;

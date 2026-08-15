@@ -953,6 +953,55 @@ export OR_PUBLIC_ORIGIN_OVERRIDE=https://dvxkh8nfwl334.cloudfront.net
 
 ---
 
+## ステップ 9d: 🔴 共有 bootstrap で作られた既存スタックの移行（一度きり）
+
+**`OpenReception-Web-dev` は共有 bootstrap（`hnb659fds`）でデプロイされたスタック。**
+`orcloud01` の制限ロールで更新すると、失敗時のロールバックが**旧アセットを
+`cdk-hnb659fds-assets-*` から取り直そうとし**、層 3（他プロジェクト遮断）がそれを Deny する。
+
+```
+Your access has been denied by S3 ... permission to GetObject for cdk-hnb659fds-...
+```
+
+つまり**ロールバックが原理的に完了できない**。#680 の設計は「orcloud01 で新規に作る
+スタック」前提だった。2026-08-15 にこれを踏み、`UPDATE_ROLLBACK_FAILED` から
+抜けられなくなった。
+
+### 手順（移行の間だけ穴を開け、成功したら閉じる）
+
+`scripts/aws-policies/claude-boundary-migration.json` は**通常の境界と 1 箇所だけ違う**
+一時ポリシー。共有 assets の**オブジェクト読み取りだけ**を通し、書き込み・削除・
+他プロジェクトのデータは通常どおり Deny する（`NotAction: s3:GetObject` の Deny で塞ぐ）。
+差分が 1 箇所であることは `src/domain/governance/boundary-migration.test.ts` が固定している。
+
+```bash
+# 1) 一時ポリシーを適用（ここから窓が開く）
+aws iam create-policy-version \
+  --policy-arn arn:aws:iam::822063948773:policy/OpenReceptionClaudeBoundary \
+  --policy-document file://scripts/aws-policies/claude-boundary-migration.json \
+  --set-as-default
+
+# 2) 移行デプロイ（必須 context はステップ 8b）
+bash scripts/aws-cloud-deploy.sh diff
+OR_APPROVED_DIFF="..." bash scripts/aws-cloud-deploy.sh deploy
+
+# 3) 🔴 成功したら必ず通常の境界へ戻す（窓を閉じる）
+aws iam create-policy-version \
+  --policy-arn arn:aws:iam::822063948773:policy/OpenReceptionClaudeBoundary \
+  --policy-document file://scripts/aws-policies/claude-boundary.json \
+  --set-as-default
+```
+
+**窓の間に何が起きうるか**: サンドボックスが侵害されていた場合、他プロジェクト
+（nodi / salon-loop）の Lambda バンドルや CFN テンプレートを**読める**。書き込みはできない。
+だから**移行が終わったら即座に閉じる**。閉じたことは `simulate-principal-policy` で
+`s3:GetObject` on `cdk-hnb659fds-assets-*/*` が `explicitDeny` に戻ることで確かめる。
+
+**なぜ一度きりで済むか**: 成功したデプロイ以降、スタックは `orcloud01` の assets を参照する
+ので、次からのロールバックは共有バケットを見ない。
+
+---
+
 ## ステップ 9c: 🔴 `UPDATE_ROLLBACK_FAILED` からの復旧（2026-08-14 に実際に起きた）
 
 初回デプロイは **permissions boundary の自縄自縛**で失敗した。記録として残す。
