@@ -45,11 +45,19 @@ qualifier: `orcloud01`。
 **人間が Admin 権限を持つ IAM user（`user/CDK`）で実行する。**
 
 > 🔴 **`claude-boundary.json` は managed policy の 6,144 文字上限に近い。**
-> 2026-08-14 時点で **5,909 文字（空白を除いた実サイズ。残り 235 文字）**。
-> #680 R1 の carve-out で 5,148 → 5,682（+534）、2026-08-14 の
-> `DenyBoundaryEscape` 分割で 5,682 → 5,876（+194）、同日の
-> `PutRolePermissionsBoundary` の Allow 追加で 5,876 → 5,909（+33）。
-> **残りはもう 235 文字しかない。**
+> 2026-08-15 時点で **6,037 文字（空白を除いた実サイズ。残り 107 文字）**。
+> 変遷: carve-out で 5,148 → 5,682（+534）、`DenyBoundaryEscape` 分割で 5,876（+194）、
+> `PutRolePermissionsBoundary` の Allow で 5,909（+33）、Secrets Manager の
+> 読み取り許可で 6,240 相当まで膨らんだが、**Deny を削らずに詰めて** 6,037 まで戻した。
+>
+> 🔴 **詰め方の正解（2026-08-15）**: 「入らないから Deny を削る」ではなく
+> **(a) 実効的に重複している列挙を外す**（`iam:UpdateAssumeRolePolicy` は
+> `Resource:"*"` の無条件 Deny が別にあり、スコープ付き Deny への再掲は無意味だった）、
+> **(b) 資源パターンを畳む**（`role/cdk-hnb659fds-*` + `policy/cdk-hnb659fds-*` を
+> `*` + `/cdk-hnb659fds-*` の 1 本へ。Deny なので**覆う範囲は増える**＝安全側）。
+> どちらも `aws-policy-shape.test.ts` が被覆で固定している。
+>
+> **残りは 107 文字。**
 > 次にステートメントを足す人は、まず余白を測ること:
 >
 > ```bash

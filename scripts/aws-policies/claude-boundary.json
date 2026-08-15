@@ -56,7 +56,9 @@
       "Action": "iam:PassRole",
       "Resource": "arn:aws:iam::822063948773:role/OpenReception-*-dev-Custom*",
       "Condition": {
-        "StringEquals": { "iam:PassedToService": "lambda.amazonaws.com" }
+        "StringEquals": {
+          "iam:PassedToService": "lambda.amazonaws.com"
+        }
       }
     },
     {
@@ -94,7 +96,6 @@
         "iam:CreateRole",
         "iam:DeleteRole",
         "iam:UpdateRole",
-        "iam:UpdateAssumeRolePolicy",
         "iam:PutRolePolicy",
         "iam:DeleteRolePolicy",
         "iam:AttachRolePolicy",
@@ -112,15 +113,13 @@
         "iam:UntagPolicy"
       ],
       "Resource": [
-        "arn:aws:iam::822063948773:role/cdk-hnb659fds-*",
-        "arn:aws:iam::822063948773:role/cdk-staging-*",
+        "arn:aws:iam::822063948773:*/cdk-hnb659fds-*",
+        "arn:aws:iam::822063948773:*/cdk-staging-*",
         "arn:aws:iam::822063948773:role/cdk-orcloud01-*",
         "arn:aws:iam::822063948773:role/OpenReceptionClaudeDeploy-dev",
         "arn:aws:iam::822063948773:role/nodi-*",
         "arn:aws:iam::822063948773:role/salon-loop-*",
         "arn:aws:iam::822063948773:role/Kiaff*",
-        "arn:aws:iam::822063948773:policy/cdk-hnb659fds-*",
-        "arn:aws:iam::822063948773:policy/cdk-staging-*",
         "arn:aws:iam::822063948773:policy/nodi-*",
         "arn:aws:iam::822063948773:policy/salon-loop-*",
         "arn:aws:iam::822063948773:policy/Kiaff*",
@@ -136,13 +135,14 @@
       "Action": [
         "iam:DeleteRole",
         "iam:UpdateRole",
-        "iam:UpdateAssumeRolePolicy",
         "iam:DeleteRolePolicy",
         "iam:DetachRolePolicy"
       ],
       "NotResource": "arn:aws:iam::822063948773:role/OpenReception-*-dev-Custom*",
       "Condition": {
-        "StringNotEquals": { "aws:ResourceTag/Project": "open-reception" }
+        "StringNotEquals": {
+          "aws:ResourceTag/Project": "open-reception"
+        }
       }
     },
     {
@@ -244,10 +244,26 @@
       "Resource": "*"
     },
     {
-      "Sid": "DenySecretsAndKeyDestruction",
+      "Sid": "DenyKeyDestruction",
       "Effect": "Deny",
-      "Action": ["secretsmanager:*", "kms:ScheduleKeyDeletion", "kms:DisableKey", "kms:PutKeyPolicy"],
+      "Action": [
+        "kms:ScheduleKeyDeletion",
+        "kms:DisableKey",
+        "kms:PutKeyPolicy"
+      ],
       "Resource": "*"
+    },
+    {
+      "Sid": "DenySecretsOutside",
+      "Effect": "Deny",
+      "Action": "secretsmanager:*",
+      "NotResource": "arn:aws:secretsmanager:*:822063948773:secret:open-reception/dev/*"
+    },
+    {
+      "Sid": "AllowDevSecretRead",
+      "Effect": "Allow",
+      "Action": "secretsmanager:GetSecretValue",
+      "Resource": "arn:aws:secretsmanager:*:822063948773:secret:open-reception/dev/*"
     }
   ]
 }
