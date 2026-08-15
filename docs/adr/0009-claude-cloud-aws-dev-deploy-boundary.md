@@ -184,7 +184,7 @@ Remove や Replacement は決定 4 の対象外で、通常どおり停止側に
 `PermissionsBoundary.of(...)` は無く、`infra/cdk.json` にも
 `@aws-cdk/core:permissionsBoundary` は無く、wrapper も渡していなかった）。
 つまり「新しい Role は構造的に boundary を超えられない」は偽であり、同時に初回の
-CREATE（`OpenReception-CfMonitoring-dev`）が `iam:CreateRole` の Deny で
+CREATE（`OpenReception-CfMon-dev`）が `iam:CreateRole` の Deny で
 AccessDenied になる状態でもあった。`infra/lib/config/claude-deploy-boundary.ts` の
 `applyClaudeDeployBoundary(app)` を配線し、wrapper が全 `cdk` 呼び出しで
 `-c claudeBoundary=OpenReceptionClaudeBoundary` を渡すようにして初めて真になる。
@@ -465,7 +465,7 @@ Deny でも通る**ため、この性質を固定できない。`aws-policy-shap
 - **層 4 の boundary をアプリのロールへ適用する経路（`applyClaudeDeployBoundary`）は
   synth でしか検証していない。** 実際に `iam:CreateRole` が boundary 付きで呼ばれ、
   `AllowRoleMutationOnlyWithBoundary` の `StringEquals` に一致するかは初回デプロイで
-  初めて分かる。boundary が Deny 側に当たる場合、`OpenReception-CfMonitoring-dev` の
+  初めて分かる。boundary が Deny 側に当たる場合、`OpenReception-CfMon-dev` の
   CREATE が AccessDenied で止まる（決定 4 の訂正を参照）。
 - **boundary はアプリの実行ロールの天井でもある。** dev が新しい AWS サービスを使い
   始めたら（`secretsmanager` / `bedrock` / `polly` 等）、`claude-boundary.json` の

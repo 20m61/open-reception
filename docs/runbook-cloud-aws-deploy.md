@@ -9,7 +9,7 @@ Claude Code on the cloud（クラウドセッション / cron routine）から�
 dev への `cdk deploy` も未実施。** ステップ 1〜11 は人間が実際に手を動かして初めて検証される。
 
 対象アカウント: `822063948773`（open-reception 以外に nodi / salon-loop / Kiaff が同居）。
-リージョン: `ap-northeast-1`（主）+ `us-east-1`（`OpenReception-CfMonitoring-dev` のみ）。
+リージョン: `ap-northeast-1`（主）+ `us-east-1`（`OpenReception-CfMon-dev` のみ）。
 qualifier: `orcloud01`。
 
 ---
@@ -164,7 +164,7 @@ AWS 管理の `ReadOnlyAccess` 付き・boundary 無しなので、entry role �
 `-c claudeBoundary=OpenReceptionClaudeBoundary` を渡すことで有効になる。
 **これが無いと初回デプロイは必ず AccessDenied になる**
 （`claude-cfn-exec.json` の `DenyRoleCreationWithoutBoundary` が boundary 無しの
-`iam:CreateRole` を Deny し、`OpenReception-CfMonitoring-dev` の CREATE がまさにそれを呼ぶ）。
+`iam:CreateRole` を Deny し、`OpenReception-CfMon-dev` の CREATE がまさにそれを呼ぶ）。
 人間が `cdk` を直接叩いて dev を触るときも同じ context を渡すこと。
 
 🔴 **`--toolkit-stack-name CDKToolkit-orcloud01` を必ず明示する。** `scripts/aws-cloud-deploy.sh`
@@ -461,8 +461,8 @@ aws iam simulate-principal-policy \
   --query 'EvaluationResults[0].EvalDecision' --output text
 
 # 10) 上記 1〜9 のうち us-east-1 が関係するもの（stack/changeSet の region 部分を
-#     us-east-1、stack 名を OpenReception-CfMonitoring-dev に置き換えて）も同様に確認する
-#     （OpenReception-CfMonitoring-dev は cross-region 参照のため us-east-1 固定）。
+#     us-east-1、stack 名を OpenReception-CfMon-dev に置き換えて）も同様に確認する
+#     （OpenReception-CfMon-dev は cross-region 参照のため us-east-1 固定）。
 
 # 11) CDK deploy role: DeleteChangeSet（自分の changeSet） → allowed 期待
 #     （`cleanupOldChangeset` が実行時の deploy で必ず呼ぶため必須。名前が衝突した
@@ -604,7 +604,7 @@ aws iam simulate-principal-policy \
 第三者ポリシーは覆えない（spec §13 の残存リスクに記載）。
 
 `DeleteStack`（12 番目）は 3 つの dev スタック全部（`OpenReception-Web-dev` /
-`OpenReception-WebMonitoring-dev` / `OpenReception-CfMonitoring-dev`、最後のみ us-east-1）に
+`OpenReception-WebMonitoring-dev` / `OpenReception-CfMon-dev`、最後のみ us-east-1）に
 対して確認すること。とくに重要な確認対象:
 
 - deploy role の `DescribeChangeSet`（6、**stack ARN で認可されると 2026-08-13 実測で
@@ -846,7 +846,7 @@ bash scripts/aws-cloud-deploy.sh diff
 ```
 
 3 つの dev スタック（`OpenReception-Web-dev` / `OpenReception-WebMonitoring-dev` /
-`OpenReception-CfMonitoring-dev`）それぞれについて `cdk deploy --no-execute --change-set-name
+`OpenReception-CfMon-dev`）それぞれについて `cdk deploy --no-execute --change-set-name
 claude-gate-<short-sha>` で change set を作り、`describe-change-set` の JSON を
 `src/domain/governance/deploy-diff-gate.ts` の危険判定に掛ける。危険な変更（`Remove` /
 `Import` / `Dynamic` などの未知の action / replacement / KMS・Secrets・Route53・
@@ -880,7 +880,7 @@ ADR 0009 決定 2）。`claude-deploy-entry.json` は `DescribeChangeSet` を
 （`deploy` 段の実行でしか呼ばれない）。この 2 アクションの資源型は引き続き未証明
 であり、実際に `deploy` を実行して初めて確定する。
 
-**`OpenReception-CfMonitoring-dev` は現時点でアカウントに存在しない**（`Web-dev` と
+**`OpenReception-CfMon-dev` は現時点でアカウントに存在しない**（`Web-dev` と
 `WebMonitoring-dev` のみ）。初回はここが CREATE 型の change set になり、全リソースが
 `Add` として現れる。
 
@@ -1131,7 +1131,7 @@ OR_SMOKE_URL=https://<デプロイ後のドメイン> bash scripts/aws-cloud-dep
   人間が Admin から `aws cloudformation delete-change-set` で個別に消す必要がある。
 - 未作成のスタックに対して `--no-execute` を実行すると、**`REVIEW_IN_PROGRESS` のスタック殻**
   が残る。ステップ 4b の 12 番目（`DeleteStack`）はこの掃除のために deploy role へ確認する。
-- **`OpenReception-CfMonitoring-dev` は現時点でアカウントに存在しない**（`Web-dev` と
+- **`OpenReception-CfMon-dev` は現時点でアカウントに存在しない**（`Web-dev` と
   `WebMonitoring-dev` のみ）。初回デプロイはこのスタックが CREATE 型の change set になる。
 
 ---

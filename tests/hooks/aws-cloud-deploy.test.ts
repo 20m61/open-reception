@@ -606,7 +606,7 @@ describe('危険な既定を持たない', () => {
  * かつて `diff` も `deploy` と同じ「裸の `for` ループ」で `run_diff_gate` を呼んでいた。
  * `set -euo pipefail` の下では、ループ内で保護されていないコマンドが失敗すると
  * シェル全体が即座に終了する ―― `OpenReception-Web-dev` がブロックされた時点で
- * `OpenReception-CfMonitoring-dev`（us-east-1・初回 CREATE）が一度も評価されなかった
+ * `OpenReception-CfMon-dev`（us-east-1・初回 CREATE）が一度も評価されなかった
  * のはこれが原因。運用者は「1 つ直して再実行 → 次のブロックで初めて気づく」を
  * スタック数だけ繰り返すはめになる。
  *
@@ -662,7 +662,7 @@ describe('diff は全スタックを評価してから終える (#680 続報)', 
       .replace(/^\s*resolve_deploy_context.*$/m, '');
     const script = [
       'set -euo pipefail',
-      'STACKS=("OpenReception-Web-dev:ap-northeast-1" "OpenReception-WebMonitoring-dev:ap-northeast-1" "OpenReception-CfMonitoring-dev:us-east-1")',
+      'STACKS=("OpenReception-Web-dev:ap-northeast-1" "OpenReception-WebMonitoring-dev:ap-northeast-1" "OpenReception-CfMon-dev:us-east-1")',
       'run_diff_gate() {',
       '  echo "called:$1"',
       '  if [ "$1" = "OpenReception-Web-dev" ]; then',
@@ -679,7 +679,7 @@ describe('diff は全スタックを評価してから終える (#680 続報)', 
     expect(calledStacks).toEqual([
       'called:OpenReception-Web-dev',
       'called:OpenReception-WebMonitoring-dev',
-      'called:OpenReception-CfMonitoring-dev',
+      'called:OpenReception-CfMon-dev',
     ]);
     expect(result.status).not.toBe(0);
   });
@@ -699,7 +699,7 @@ describe('diff は全スタックを評価してから終える (#680 続報)', 
       .split('cs_name=')[0]!;
     const script = [
       'set -euo pipefail',
-      'STACKS=("OpenReception-Web-dev:ap-northeast-1" "OpenReception-WebMonitoring-dev:ap-northeast-1" "OpenReception-CfMonitoring-dev:us-east-1")',
+      'STACKS=("OpenReception-Web-dev:ap-northeast-1" "OpenReception-WebMonitoring-dev:ap-northeast-1" "OpenReception-CfMon-dev:us-east-1")',
       'run_diff_gate() {',
       '  echo "called:$1"',
       '  if [ "$1" = "OpenReception-Web-dev" ]; then',

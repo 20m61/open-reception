@@ -223,7 +223,7 @@ function synthCrossRegionPair(): NonNullable<typeof cachedPair> {
   applyClaudeDeployBoundary(app);
 
   const producerStackName = 'OpenReception-Web-dev';
-  const consumerStackName = 'OpenReception-CfMonitoring-dev';
+  const consumerStackName = 'OpenReception-CfMon-dev';
   const config = resolveEnv('dev');
 
   // `bin/open-reception.ts` と同じ構築（WebStack 自身が `applyCostTags` を呼ぶ）。

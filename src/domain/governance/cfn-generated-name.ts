@@ -37,6 +37,19 @@
  * 出荷している `scripts/aws-policies/claude-cfn-exec.json` /
  * `claude-boundary.json` と一致していることは `aws-policy-shape.test.ts` が固定する。
  */
+/**
+ * 🔴 **`-dev-` を要求できるのは、スタック名が 25 文字以内のときだけ（2026-08-15 の実測）。**
+ *
+ * CloudFormation は**スタック名も切り詰める**。旧 `OpenReception-CfMonitoring-dev`(30) は
+ * `OpenReception-CfMonitorin` になり **`-dev` が消え**、このパターンに一致せず
+ * `iam:CreateRole` が Deny されてスタック作成が失敗した。
+ *
+ * パターンを広げて `-dev-` を落とすと、prod / staging を除外できなくなる
+ * （切り詰めで環境名が消えるため、名前だけでは区別できない）。したがって
+ * **スタック名側を短くする**方を選び、`OpenReception-CfMon-dev`(23) へ改名した。
+ * `cfn-generated-name.test.ts` の「新スタック名は切り詰められず -dev が残る」が
+ * この前提を固定している ―― 25 文字を超えた瞬間に赤くなる。
+ */
 export const CARVE_OUT_ROLE_ARN_PATTERN = 'arn:aws:iam::822063948773:role/OpenReception-*-dev-Custom*';
 
 /**
@@ -79,14 +92,25 @@ export function cfnGeneratedNamePrefix(
 ): string {
   const maxLength = options.maxLength ?? IAM_ROLE_NAME_MAX_LENGTH;
   const suffixLength = options.suffixLength ?? CFN_GENERATED_NAME_SUFFIX_LENGTH;
-  // `<stack>` + `-` + `<logicalId 切り詰め>` + `-` + `<suffix>`
-  const budget = maxLength - stackName.length - 2 - suffixLength;
-  if (budget <= 0) {
+  // `<stack>` + `-` + `<logicalId>` + `-` + `<suffix>` で maxLength に収める。
+  const budget = maxLength - 2 - suffixLength;
+  if (budget <= 1) {
     throw new Error(
-      `物理名の予算が足りません: stackName=${stackName} (maxLength=${maxLength}, suffixLength=${suffixLength})`,
+      `物理名の予算が足りません: maxLength=${maxLength}, suffixLength=${suffixLength}`,
     );
   }
-  return `${stackName}-${logicalId.slice(0, budget)}-`;
+
+  // 🔴 **スタック名も切られる（2026-08-15 の実測）。**
+  // 旧実装は「切られるのは論理 ID だけ」と仮定していたが、
+  // `OpenReception-CfMon-dev`(30) は実際には 25 文字へ切られていた。
+  // 予算を半分ずつ配り、**半分を超えた側だけ**切る。使われなかった余りは相手へ回る。
+  //   64 - 12 - 2 = 50 → 各 25
+  //   OpenReception-Web-dev(21)          → 無傷。論理 ID の取り分は 50 - 21 = 29
+  //   旧 OpenReception-CfMonitoring-dev(30) → 25 へ切断。論理 ID の取り分は 25
+  const half = Math.floor(budget / 2);
+  const stackPart = stackName.length <= half ? stackName : stackName.slice(0, half);
+  const logicalBudget = budget - stackPart.length;
+  return `${stackPart}-${logicalId.slice(0, logicalBudget)}-`;
 }
 
 /**

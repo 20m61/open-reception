@@ -18,7 +18,7 @@ import * as cdk from 'aws-cdk-lib';
  * 条件を満たさないものは `StringNotEquals`（キー欠如時に true）で明示 Deny する。
  * したがってアプリ側で boundary を適用しないと、**最初の CREATE で
  * `iam:CreateRole` が Deny されて AccessDenied → ロールバックする**
- * （`OpenReception-CfMonitoring-dev` は `crossRegionReferences: true` の
+ * （`OpenReception-CfMon-dev` は `crossRegionReferences: true` の
  * custom resource Lambda ＋ `AWS::IAM::Role` を含む新規スタック）。
  *
  * ## なぜ `-c @aws-cdk/core:permissionsBoundary={"name":"..."}` ではだめか

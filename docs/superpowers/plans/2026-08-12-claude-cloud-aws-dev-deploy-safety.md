@@ -242,7 +242,7 @@ describe('記録のみ（止めない）', () => {
 });
 
 describe('ALLOWED_STACK_PATTERN', () => {
-  it.each(['OpenReception-Web-dev', 'OpenReception-WebMonitoring-dev', 'OpenReception-CfMonitoring-dev'])(
+  it.each(['OpenReception-Web-dev', 'OpenReception-WebMonitoring-dev', 'OpenReception-CfMon-dev'])(
     '%s は許可',
     (name) => expect(ALLOWED_STACK_PATTERN.test(name)).toBe(true),
   );
@@ -1068,7 +1068,7 @@ export function auditPolicyDocument(doc: PolicyDocument): PolicyAudit {
       "Resource": [
         "arn:aws:cloudformation:ap-northeast-1:822063948773:stack/OpenReception-Web-dev/*",
         "arn:aws:cloudformation:ap-northeast-1:822063948773:stack/OpenReception-WebMonitoring-dev/*",
-        "arn:aws:cloudformation:us-east-1:822063948773:stack/OpenReception-CfMonitoring-dev/*"
+        "arn:aws:cloudformation:us-east-1:822063948773:stack/OpenReception-CfMon-dev/*"
       ]
     },
     {
@@ -1399,7 +1399,7 @@ Deny は Allow に優先するので、bootstrap 既定の `cloudformation:*` �
       "NotResource": [
         "arn:aws:cloudformation:ap-northeast-1:822063948773:stack/OpenReception-Web-dev/*",
         "arn:aws:cloudformation:ap-northeast-1:822063948773:stack/OpenReception-WebMonitoring-dev/*",
-        "arn:aws:cloudformation:us-east-1:822063948773:stack/OpenReception-CfMonitoring-dev/*",
+        "arn:aws:cloudformation:us-east-1:822063948773:stack/OpenReception-CfMon-dev/*",
         "arn:aws:cloudformation:ap-northeast-1:822063948773:stack/CDKToolkit-orcloud01/*",
         "arn:aws:cloudformation:us-east-1:822063948773:stack/CDKToolkit-orcloud01/*",
         "arn:aws:cloudformation:ap-northeast-1:822063948773:changeSet/claude-gate-*/*",
@@ -1856,7 +1856,7 @@ REGION="${AWS_REGION:-ap-northeast-1}"
 STACKS=(
   "OpenReception-Web-${DEPLOY_ENV}"
   "OpenReception-WebMonitoring-${DEPLOY_ENV}"
-  "OpenReception-CfMonitoring-${DEPLOY_ENV}"
+  "OpenReception-CfMon-${DEPLOY_ENV}"
 )
 
 usage() {

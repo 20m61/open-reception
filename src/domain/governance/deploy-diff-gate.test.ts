@@ -255,7 +255,7 @@ const PROVIDER_INLINE_READER = [
         {
           Effect: 'Allow',
           // Reader は配列でなく単一の値（実測）。両方の形を通す必要がある。
-          Resource: SSM_EXPORTS_ARN('OpenReception-CfMonitoring-dev/*'),
+          Resource: SSM_EXPORTS_ARN('OpenReception-CfMon-dev/*'),
           Action: ['ssm:AddTagsToResource', 'ssm:RemoveTagsFromResource', 'ssm:GetParameters'],
         },
       ],
@@ -407,7 +407,7 @@ describe('A: carve-out の名前空間に入るロールを止める (#680 R10)'
       evaluateRoleFixture(S3_AUTO_DELETE_ROLE!, providerRole({ Policies: undefined })),
       evaluateRoleFixture(EXPORT_WRITER_ROLE!, providerRole()),
       evaluateRoleFixture(EXPORT_READER_ROLE!, providerRole({ Policies: PROVIDER_INLINE_READER }), {
-        stackName: 'OpenReception-CfMonitoring-dev',
+        stackName: 'OpenReception-CfMon-dev',
       }),
       bucketDeploymentRoleFixture(),
     ];
@@ -1408,7 +1408,7 @@ describe('B: Function URL と公開 invoke (#680 R10)', () => {
 });
 
 describe('ALLOWED_STACK_PATTERN', () => {
-  it.each(['OpenReception-Web-dev', 'OpenReception-WebMonitoring-dev', 'OpenReception-CfMonitoring-dev'])(
+  it.each(['OpenReception-Web-dev', 'OpenReception-WebMonitoring-dev', 'OpenReception-CfMon-dev'])(
     '%s は許可',
     (name) => expect(ALLOWED_STACK_PATTERN.test(name)).toBe(true),
   );

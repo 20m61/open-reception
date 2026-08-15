@@ -208,7 +208,7 @@ export const CARVE_OUT_ALLOWED_ACTIONS: ReadonlySet<string> = new Set([
  * 次を組む（`Ref: AWS::Partition` を含む。リテラル ARN ではない）:
  *
  *  - Writer … `arn:${AWS::Partition}:ssm:us-east-1:822063948773:parameter/cdk/exports/*`
- *  - Reader … `arn:${AWS::Partition}:ssm:us-east-1:822063948773:parameter/cdk/exports/OpenReception-CfMonitoring-dev/*`
+ *  - Reader … `arn:${AWS::Partition}:ssm:us-east-1:822063948773:parameter/cdk/exports/OpenReception-CfMon-dev/*`
  *
  * 前者が後者を含むので、確認するのは **`parameter/cdk/exports/` の下**であること。
  */

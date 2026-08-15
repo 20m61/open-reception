@@ -32,7 +32,7 @@ const ROLE_ARN_PREFIX = 'arn:aws:iam::822063948773:role/';
  * **なぜこの形か**: 物理名は
  * `<スタック名>-<論理 ID を 64 文字に収まるまで切り詰めたもの>-<12 文字の乱数>` で、
  * 切り詰め量が**スタック名の長さで変わる**。`OpenReception-Web-dev` では
- * `CustomCrossRegionExportWriter` まで残るが、`OpenReception-CfMonitoring-dev` では
+ * `CustomCrossRegionExportWriter` まで残るが、`OpenReception-CfMon-dev` では
  * `CustomCrossRegionExp` で切れる。したがって
  * `…-Custom*CustomResourceProviderRole*` も `…-CustomCrossRegionExport*` も
  * **us-east-1 側に一致しない**（`cfn-generated-name.test.ts` が実在名 2 本で固定）。
@@ -458,7 +458,7 @@ describe('carve-out パターンの広がり (#680 R1/R2/R3)', () => {
     // 実在する 2 本（アカウント上で確認済み）と、us-east-1 側の予測名。
     'OpenReception-Web-dev-CustomCrossRegionExportWriter-mWjZeIPYdVgw',
     'OpenReception-Web-dev-CustomS3AutoDeleteObjectsCust-yIrNw85NvcWP',
-    'OpenReception-CfMonitoring-dev-CustomCrossRegionExp-aBcDeFgHiJkL',
+    'OpenReception-CfMon-dev-CustomCrossRegionExp-aBcDeFgHiJkL',
   ])('%s に一致する', (roleName) => {
     expect(iamArnGlobMatches(PROVIDER_ROLE_CARVE_OUT, `${ROLE_ARN_PREFIX}${roleName}`)).toBe(true);
   });
@@ -942,7 +942,7 @@ describe('claude-deploy-role-restriction.json（層 1・主境界）', () => {
     const patterns = audit.deniedNotResourcePatterns.join('\n');
     expect(patterns).toContain('stack/OpenReception-Web-dev/');
     expect(patterns).toContain('stack/OpenReception-WebMonitoring-dev/');
-    expect(patterns).toContain('stack/OpenReception-CfMonitoring-dev/');
+    expect(patterns).toContain('stack/OpenReception-CfMon-dev/');
     expect(patterns).toContain('stack/CDKToolkit-orcloud01/');
   });
 

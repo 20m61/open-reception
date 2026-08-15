@@ -229,7 +229,7 @@ const BOTH: RegionCoverage = { kind: 'both' };
  */
 const CARVED_OUT_PROVIDER_ROLE: Readonly<Record<SimulationRegion, string>> = {
   'ap-northeast-1': 'OpenReception-Web-dev-CustomCrossRegionExportWriter-mWjZeIPYdVgw',
-  'us-east-1': 'OpenReception-CfMonitoring-dev-CustomCrossRegionExp-aBcDeFgHiJkL',
+  'us-east-1': 'OpenReception-CfMon-dev-CustomCrossRegionExportRead-aBcDeFgHiJkL',
 };
 
 const SIMULATED_CHECKS: ReadonlyArray<SimulatedCheck> = [
@@ -375,12 +375,12 @@ const SIMULATED_CHECKS: ReadonlyArray<SimulatedCheck> = [
     id: 'S15',
     action: 'cloudformation:DescribeStacks',
     resource: () =>
-      `arn:aws:cloudformation:us-east-1:${ACCOUNT}:stack/OpenReception-CfMonitoring-dev/dummy-id`,
+      `arn:aws:cloudformation:us-east-1:${ACCOUNT}:stack/OpenReception-CfMon-dev/dummy-id`,
     principals: ['entry'],
     coverage: {
       kind: 'only',
       region: 'us-east-1',
-      reason: 'OpenReception-CfMonitoring-dev は us-east-1 にしか存在しない（CloudFront メトリクスの制約）',
+      reason: 'OpenReception-CfMon-dev は us-east-1 にしか存在しない（CloudFront メトリクスの制約）',
     },
     expected: 'allowed',
     guards: 'entry の ReadOwnDevStacksForDiffGate（us-east-1 の stack ARN が許可リストにあるか）',
@@ -401,12 +401,12 @@ const SIMULATED_CHECKS: ReadonlyArray<SimulatedCheck> = [
     id: 'S16',
     action: 'cloudformation:DescribeChangeSet',
     resource: () =>
-      `arn:aws:cloudformation:us-east-1:${ACCOUNT}:stack/OpenReception-CfMonitoring-dev/dummy-id`,
+      `arn:aws:cloudformation:us-east-1:${ACCOUNT}:stack/OpenReception-CfMon-dev/dummy-id`,
     principals: ['entry'],
     coverage: {
       kind: 'only',
       region: 'us-east-1',
-      reason: 'OpenReception-CfMonitoring-dev は us-east-1 にしか存在しない（S15 と同じ理由）',
+      reason: 'OpenReception-CfMon-dev は us-east-1 にしか存在しない（S15 と同じ理由）',
     },
     expected: 'allowed',
     guards:

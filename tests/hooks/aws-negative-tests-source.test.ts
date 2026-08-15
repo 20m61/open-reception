@@ -406,7 +406,11 @@ describe('SIMULATED_CHECKS は全件が principal と region を宣言してい�
     expect(resourceLines.length).toBeGreaterThan(0);
     for (const line of resourceLines) {
       // 例外は「us-east-1 にしか無いリソース」を明示している S15 / S16 のみ。
-      if (line.includes('CfMonitoring-dev') || line.includes('claude-gate-')) continue;
+      // 🔴 スタック名のリテラルで判定しない ―― 2026-08-15 の改名
+      // （`CfMonitoring-dev` → `CfMon-dev`）でこの除外が黙って外れた。
+      // CloudFront メトリクスの制約で us-east-1 固定なのは CfMon スタックだけなので、
+      // 変わらない部分（`CfMon`）で判定する。
+      if (line.includes('CfMon') || line.includes('claude-gate-')) continue;
       expect(line).not.toContain('ap-northeast-1');
       expect(line).not.toContain('us-east-1');
     }
