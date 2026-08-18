@@ -21,6 +21,7 @@ import {
   evaluateGateRuns,
   evaluateRecordBranches,
   parseGateRuns,
+  pendingDispatchBranches,
   type GateRunFinding,
   type RemoteBranch,
 } from '../src/domain/governance/gate-run-evaluation';
@@ -52,8 +53,10 @@ function run(cmd: string, args: string[]): string {
 /** PR 作成から間もないブランチを取りこぼし扱いしないための猶予。 */
 const ORPHAN_GRACE_HOURS = 24;
 
-function unverified(message: string): GateRunFinding[] {
-  return [{ code: 'branch_check_unverified', severity: 'warning', message }];
+function unverified(message: string): { findings: GateRunFinding[]; pending: string[] } {
+  // **未検査のときは判定保留も 0 件として返す。** 「保留 0 件」と「保留を数えられなかった」を
+  // 混ぜないため、未検査であること自体は findings 側の warning が伝える。
+  return { findings: [{ code: 'branch_check_unverified', severity: 'warning', message }], pending: [] };
 }
 
 /**
@@ -67,7 +70,7 @@ function unverified(message: string): GateRunFinding[] {
  * 読むのは、この検査が塞ごうとしている穴そのものと同じ失敗（`|| true` の空文字を
  * fresh と読む類）。
  */
-function evaluateBranches(): GateRunFinding[] {
+function evaluateBranches(): { findings: GateRunFinding[]; pending: string[] } {
   let defaultBranch: string | undefined;
   let branchRefs: { name: string; sha: string }[];
   let repo: { owner: string; repo: string } | undefined;
@@ -135,10 +138,13 @@ function evaluateBranches(): GateRunFinding[] {
     if (parsed.length > 0) branchesWithPullRequest.push(ref.name);
   }
 
-  return evaluateRecordBranches(branches, branchesWithPullRequest, defaultBranch, {
-    now: new Date(),
-    graceHours: ORPHAN_GRACE_HOURS,
-  });
+  const options = { now: new Date(), graceHours: ORPHAN_GRACE_HOURS };
+  return {
+    findings: evaluateRecordBranches(branches, branchesWithPullRequest, defaultBranch, options),
+    // **「指摘なし」と「まだ分からない」を混ぜない (#675)。** 猶予内のブランチは指摘しないが、
+    // 黙って落とすとレポートが「全部片づいた」ように読める。数として出す。
+    pending: pendingDispatchBranches(branches, branchesWithPullRequest, defaultBranch, options),
+  };
 }
 
 function main(): number {
@@ -151,7 +157,8 @@ function main(): number {
   }
 
   const runs = parseGateRuns(markdown);
-  const findings = [...evaluateGateRuns(runs, new Date()), ...evaluateBranches()];
+  const branchCheck = evaluateBranches();
+  const findings = [...evaluateGateRuns(runs, new Date()), ...branchCheck.findings];
 
   console.log('▶ 定期ゲート実行記録の評価 (#424)');
   console.log(`  記録件数: ${runs.length}`);
@@ -161,6 +168,17 @@ function main(): number {
     const recent = runs.slice(0, 5);
     const pass = recent.filter((r) => r.result === 'PASS').length;
     console.log(`  直近 ${recent.length} 回: PASS ${pass} / FAIL ${recent.length - pass}`);
+  }
+
+  // 🔴 **「まだ分からない」を「問題なし」に混ぜない (#675)。**
+  // 猶予内（push 済み・PR 未作成）は指摘しないが、黙って落とすと「全部片づいた」に見える。
+  // 2026-08-15、この情報が無いために routine を「死んだ」と誤診して再投入し、PR を二重に作った。
+  if (branchCheck.pending.length > 0) {
+    console.log(
+      `  判定保留: ${branchCheck.pending.length} 本（push 済み・PR 未作成・猶予内）: ` +
+        `${branchCheck.pending.join(', ')}`,
+    );
+    console.log('    まだ進行中なのか止まったのかは、この情報だけでは決まりません（指摘ではありません）。');
   }
 
   if (findings.length === 0) {

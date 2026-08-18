@@ -101,4 +101,31 @@ if [ "$(printf '%s' "$payload" | grep -c '"run_in_background"[[:space:]]*:[[:spa
   block "background output piped to tail/head discards the failure reason; redirect to a file (> log 2>&1) instead"
 fi
 
+# 10. 実行レーン: クラウドで走らせてはいけない作業 (#675)。
+#
+#     開発は Claude Code on the web が既定（2026-08-18）。ほとんどはクラウドで回してよいが、
+#     **短命 STS の発行だけはローカル macOS 限定**である ―― 出力に資格情報そのものを含み、
+#     使い捨て VM の記録に残しうる。
+#
+#     🔴 **安いリテラル一致で先に絞る。** 本フックは全 Bash 呼び出しで起動されるので、
+#     毎回 tsx を起動したら開発が体感で遅くなる（配線検査がゲートで 5 秒タイムアウトして
+#     偽の赤を仕込みかけた前例がある）。該当パスに触れたときだけ判定 CLI を呼ぶ。
+#     ここに並ぶリテラルは `LOCAL_REQUIRED_RULES[].matches` と一致していなければならず、
+#     ドリフトは `src/domain/governance/execution-lane.test.ts` が検出する。
+#
+#     判定（どの platform で止めるか・理由・代替手段）は CLI 側が正本。CLI が動かない
+#     ときは**止める** ―― ここまで来ている時点で資格情報を扱うコマンドだと分かっており、
+#     「判定できなかったから通す」は塞ぎたい穴をそのまま開ける（"検査できなかった" を
+#     PASS にしないという quality-gate の判断と同じ）。
+if printf '%s' "$scan" | grep -q 'aws-issue-credentials\.sh'; then
+  ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+  lane_out=$(npx --no-install tsx "${ROOT_DIR}/scripts/check-execution-lane.ts" "$scan" 2>&1)
+  lane_status=$?
+  if [ "$lane_status" -eq 2 ]; then
+    block "$lane_out"
+  elif [ "$lane_status" -ne 0 ]; then
+    block "実行レーンを判定できませんでした（#675）。判定 CLI の出力: ${lane_out}"
+  fi
+fi
+
 exit 0
