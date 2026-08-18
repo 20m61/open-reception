@@ -136,7 +136,7 @@ GitHub の署名で `verified: true` になっている（`gh api repos/:owner/:
 | **VRT ベースライン（linux）** | ✅ 解消（第 94 wave）。欠落 4 枚を生成し、stale だった 5 枚を取り直した。詳細は §6 |
 | **VRT ベースライン（darwin）** | ⚠️ 逆に darwin 側が stale になった。`kiosk-idle` 3 枚が待機カードの並び順を #422 inc5-b 以前のまま持つ。**macOS でしか取り直せない**。詳細は §6 |
 | **VRT の自動生成** | `playwright.config.ts` で `updateSnapshots: 'none'` にしてある。既定の `'missing'` は欠落分をその場の描画で自動生成し、`retries: 1` と組み合わさると**1 回目が書いて落ち retry が通る**ため、レビューされていない描画が「正」として焼き付く。取り直すときは `--update-snapshots` を明示し、**差分を見てからコミットする** |
-| **`gh` の GraphQL** | 🔴 **PR レビュー用の pinned な操作セットしか通らない。** `gh pr list` / `gh pr view` に加えて **`gh pr create` も 403**（repo info preamble の `RepositoryInfo` クエリ。2026-08-10 の週次ゲートで実測 / #678）。PR 作成は `npx tsx scripts/create-pull-request.ts --head … --title …`（REST のみ）を使う。照会は `gh api repos/{owner}/{repo}/…` |
+| **`gh` の GraphQL** | 🔴 **PR レビュー用の pinned な操作セットしか通らない。** `gh pr list` / `gh pr view` に加えて **`gh pr create`（2026-08-10 実測 / #678）も `gh pr merge`（2026-08-18・PR #701 で実測 / #702）も 403**。PR #665 の時点では作成もマージも通っていた ―― **通っていたことを根拠に残さない**。作成は `npx tsx scripts/create-pull-request.ts --head … --title …`、マージは `npx tsx scripts/merge-pull-request.ts --number …`、照会は `gh api repos/{owner}/{repo}/…`（すべて REST のみ） |
 | **`git push`** | セッションの作業ブランチに対してのみ可。force push と remote 削除は不可（非 fast-forward を作らない運用で回避する）。**マージ後のブランチ削除もできない**（`git push origin --delete` が HTTP 403）ので、ローカルの後始末として扱う |
 | **`.open-next/`** | fresh checkout には無い。以前は `infra WebStack synth` が SKIP → `--strict` で FAIL になっていたが、**`quality-gate.sh` が自分でビルドするようになった**（#677）。手で `npm run build:open-next` を先に打つ必要はもう無い |
 | **lighthouse** | `lhci` は npm 依存なので `npm ci` で入る。Chrome は `playwright.config.ts` と同じ理由で `quality-gate.sh` が `CHROME_PATH` を補完する |

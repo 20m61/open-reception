@@ -42,6 +42,16 @@ required=""
 action=""
 if printf '%s' "${scan}" | grep -Eq '(^|[;&|[:space:]])gh[[:space:]]+pr[[:space:]]+merge([[:space:]]|$)'; then
   required="full"; action="gh pr merge"
+elif printf '%s' "${scan}" | grep -q 'scripts/merge-pull-request\.ts'; then
+  # 🔴 **マージの主経路も REST へ移った (#702)。**
+  # クラウドでは `gh pr merge` が GraphQL 403 になるため、実際に使われるのはこちら。
+  # 見ていないと**移した先がそのままゲートの抜け道**になる（#678 で作成側に開けかけた穴と同型）。
+  required="full"; action="scripts/merge-pull-request.ts"
+elif printf '%s' "${scan}" | grep -Eq 'repos/[^[:space:]]+/pulls/[0-9]+/merge'; then
+  # スクリプトを経由しない生の REST マージ（`gh api .../pulls/<n>/merge -X PUT`）。
+  # **PR の照会（`.../pulls/<n>` や `.../pulls?...`）は止めない** —— 日常的に使うので、
+  # ここを広く取ると誤検出でガードごと迂回される。`/merge` で終わる形だけを見る。
+  required="full"; action="REST でのマージ (gh api .../pulls/<n>/merge)"
 elif printf '%s' "${scan}" | grep -Eq '(^|[;&|[:space:]])gh[[:space:]]+pr[[:space:]]+create([[:space:]]|$)'; then
   required="pr"; action="gh pr create"
 elif printf '%s' "${scan}" | grep -q 'scripts/create-pull-request\.ts'; then

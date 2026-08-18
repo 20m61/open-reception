@@ -142,13 +142,17 @@ export function buildDelegationPrompt(input: DelegationInput): string {
    - 末尾に \`Refs ${refs}\``;
   const stepConfirmPr =
     '🔴 **PR の実在は上のコマンドが REST で引き直して確認する**（0 で終われば実在確認済み）。**その URL を報告する。** 非ゼロで終わったら**黙って終わらせず、出力全文を報告**すること。**ブランチが出来たこと＝PR が出来たことではない**（#656 はこれで FAIL の記録を 5 日間失った）。';
+  // 🔴 **`gh pr merge` を指示しない (#702)。** クラウドでは GraphQL 403 になる
+  // （2026-08-18 / PR #701 で実測。委譲先が現場で REST への回避策を考える羽目になった）。
+  // ブランチ削除も proxy が write を拒否するので**指示しない** —— できないことを指示すると、
+  // 委譲先はそれを失敗として扱うか、迂回のために余計な判断をする。
   const stepMergeOrStop =
     stopAfter === 'merge'
-      ? 'PR が出来たら `gh pr merge <番号> --squash --delete-branch` でマージする。ブランチが残っても構いません（ローカル側で後始末します）。'
+      ? 'PR が出来たら `npx tsx scripts/merge-pull-request.ts --number <番号>` で squash マージする（**`gh pr merge` は使わないこと** — このセッションでは GraphQL が 403 になる / #702）。マージできたかは同コマンドが REST で引き直して確認する。**リモートブランチの削除は試さなくてよい**（proxy が write を拒否する。ローカル側で後始末します）。'
       : '🔴 **ここで止める。マージコマンドを実行しないこと。** マージ可否は人間が判断するため、PR を作成した時点でこの委譲の作業は完了。';
   const stepFinalReport =
     stopAfter === 'merge'
-      ? '最後に次を 1 つずつはっきり報告する: (a) ゲートの結果、(b) PR 番号と URL、(c) マージできたか、(d) リモートブランチが消えたか。'
+      ? '最後に次を 1 つずつはっきり報告する: (a) ゲートの結果、(b) PR 番号と URL、(c) マージできたか（`merged=true` を確認したか）。'
       : '最後に次を 1 つずつはっきり報告する: (a) ゲートの結果、(b) PR 番号と URL、(c) マージしていないこと。';
 
   const allSteps = [...ordered, stepPrCreate, stepConfirmPr, stepMergeOrStop, stepFinalReport];
@@ -180,12 +184,13 @@ export function buildDelegationPrompt(input: DelegationInput): string {
 
   // `gh pr merge` への言及は `stopAfter: 'merge'` のときだけ（'pr' の出力には
   // `gh pr merge` がどこにも現れないことをテストで固定している）。
-  // 🔴 **`gh pr create` も 403 になる (#678)。** PR #665 の時点では通っていたが、
-  // 2026-08-10 の週次ゲートで repo info preamble（`RepositoryInfo`）が拒否された。
-  // 作成は `scripts/create-pull-request.ts`（REST のみ）へ寄せてある。
+  // 🔴 **`gh pr create` も `gh pr merge` も 403 になる (#678 / #702)。**
+  // PR #665 の時点では両方通っていた（当時の記述は正しく、今は誤り）。
+  // 2026-08-10 に作成が、2026-08-18 にマージが拒否されるのを実測した。
+  // **通っていたことを根拠に残さない** —— 実測が変わったら記述を変える。
   const graphqlNote =
     stopAfter === 'merge'
-      ? '**`gh pr create` も 403 になる**ので PR 作成は `scripts/create-pull-request.ts` を使う。`gh pr merge` は通る。'
+      ? '**`gh pr create` / `gh pr merge` も 403 になる**ので、作成は `scripts/create-pull-request.ts`、マージは `scripts/merge-pull-request.ts`（どちらも REST のみ）を使う。'
       : '**`gh pr create` も 403 になる**ので PR 作成は `scripts/create-pull-request.ts` を使う（マージはしない）。';
 
   return `リポジトリ 20m61/open-reception のブランチ \`${input.branch}\`（head = \`${input.headSha}\`、base = main \`${input.baseSha}\`）を、${openingGoal}

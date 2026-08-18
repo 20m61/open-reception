@@ -3,6 +3,7 @@ import {
   BASE_REF_PREFERENCE,
   parseGitHubRepo,
   pullCreateArgs,
+  pullMergeArgs,
   parseLsRemoteSymref,
   pullsQueryPath,
   resolveBase,
@@ -250,5 +251,45 @@ describe('pullCreateArgs: PR 作成も REST で行う (#678)', () => {
 
   it('本文が空でも作れる（本文は無くても PR の意味は壊れない）', () => {
     expect(pullCreateArgs(repo, { ...draft, body: '' })).toContain('body=');
+  });
+});
+
+
+describe('pullMergeArgs: マージも REST で行う (#702)', () => {
+  // 🔴 **`gh pr merge` も 403 になる。** 2026-08-18 の PR #701 で実測:
+  //   non-200 OK status code: 403 Forbidden
+  //   "This GraphQL query is not enabled for this session — only the pinned set of
+  //    PR-review operations is served. Use REST via `gh api repos/{owner}/{repo}/...` instead."
+  // #678 で作成側を REST へ移したのと同じ理由が、マージ側にも当てはまる。
+
+  const repo = { owner: '20m61', repo: 'open-reception' };
+
+  it('GraphQL を撃つ経路（gh pr merge）ではなく REST の PUT を組み立てる', () => {
+    const args = pullMergeArgs(repo, 701);
+    expect(args.slice(0, 4)).toEqual([
+      'api',
+      '--method',
+      'PUT',
+      'repos/20m61/open-reception/pulls/701/merge',
+    ]);
+    expect(args).not.toContain('pr');
+  });
+
+  it('squash を明示する（このリポジトリのマージ方法は squash 固定）', () => {
+    // **既定に任せない。** GitHub の既定は merge commit で、履歴の方針が変わってしまう。
+    // squash されたかは `scripts/check-merge-method.ts` が別途見ているが、
+    // ここで明示しないとそもそも間違った方法で入る。
+    expect(pullMergeArgs(repo, 701)).toContain('merge_method=squash');
+  });
+
+  it('PR 番号は数値として扱う（パスに任意文字列を埋めない）', () => {
+    // 文字列をそのまま埋めると `701/../../other` のような値でパスを曲げられる。
+    expect(() => pullMergeArgs(repo, Number.NaN)).toThrow();
+    expect(() => pullMergeArgs(repo, 0)).toThrow();
+    expect(() => pullMergeArgs(repo, 1.5)).toThrow();
+  });
+
+  it('owner / repo をエンコードして埋める', () => {
+    expect(pullMergeArgs({ owner: 'o w', repo: 'r&x' }, 12)).toContain('repos/o%20w/r%26x/pulls/12/merge');
   });
 });

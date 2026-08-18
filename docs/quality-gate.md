@@ -194,6 +194,10 @@ CI が無い以上、「PR 前に `--pr` / マージ前に `--full`」は**規�
 - 🔴 **REST 経由の PR 作成（`scripts/create-pull-request.ts`）も `--pr` を要求する (#678)。**
   クラウドでは `gh pr create` が GraphQL 403 で使えず、そちらが PR 作成の主経路になる。
   見ていないと**移した先がそのままゲートの抜け道**になる。
+- 🔴 **REST 経由のマージも `--full` を要求する (#702)。** `gh pr merge` も 403 になるため、
+  マージの主経路は `scripts/merge-pull-request.ts` と生の `gh api .../pulls/<n>/merge`。
+  **両方**を見る。PR の照会（`.../pulls/<n>`）は止めない — 日常的に使うので、広く取ると
+  誤検出でガードごと迂回される。
 - 意図的な迂回は明示的に行う: `OPEN_RECEPTION_SKIP_GATE_GUARD=1 gh pr create ...`。
 - 振る舞いは `tests/hooks/pr-gate-guard.test.ts` で検証している（`npm test` に載る）。
 
