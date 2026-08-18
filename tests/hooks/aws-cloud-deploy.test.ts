@@ -22,7 +22,7 @@ import { spawnSync } from 'node:child_process';
 import { chmodSync, existsSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 /**
  * 🔴 **検査前にコメント（と、必要なら文字列リテラル）を落とす。**
  *
@@ -61,6 +61,19 @@ function run(args: ReadonlyArray<string>, env: Record<string, string> = {}) {
     stderr: result.stderr ?? '',
   };
 }
+
+
+/**
+ * 🔴 **既定の 5s では足りない。** このファイルのテストは `tsx` を子プロセスとして起動する
+ * （1 件あたり素の状態でも 1〜2 秒）。ゲート実行中はマシンの負荷が上がるため ―― `--fast` 自身が
+ * load を押し上げる ―― **5.1〜7.8s でタイムアウトし、アサーションに到達する前に落ちる**。
+ * 2026-08-18 の 1 セッションで 6 回観測し、毎回**別のテスト**が落ちた（＝内容ではなく時間）。
+ * 単独実行では全 PASS する。
+ *
+ * これは検査の弱体化ではない。**同じアサーションに、到達するまでの時間を与えるだけ**。
+ * 実際に壊れているものは 30s あっても落ちる。
+ */
+vi.setConfig({ testTimeout: 30_000 });
 
 describe('引数の検証', () => {
   it('サブコマンド無しは usage を出して非ゼロ', () => {
