@@ -112,4 +112,29 @@ describe('guard-destructive.sh: 実行レーン (#675)', () => {
     const cmd = 'echo "手順: ./scripts/aws-issue-credentials.sh をローカルで実行"';
     expect(runHook(cmd, 'Bash', { OR_LANE_PLATFORM: 'linux' }).status).toBe(0);
   });
+
+  it('🔴 heredoc 本文の言及では止めない（PR 本文・文書生成で実際に踏んだ）', () => {
+    // 2026-08-18、PR #703 のクラウドセッションで**実際に誤検出した**。
+    // PR 本文を heredoc で書き出す `cat > body.md <<'EOF' … EOF` が、本文に
+    // `aws-issue-credentials.sh` という**文字列を含んでいただけ**でブロックされた。
+    // 委譲先は Write ツールへ迂回して切り抜けたが、これはガードが信用を失う経路そのもの。
+    // `pr-gate-guard.sh` は同じ理由で heredoc 本文を先に落としている。
+    const cmd = [
+      "cat > /tmp/pr-body.md <<'EOF'",
+      '## 変更',
+      '`aws-issue-credentials.sh` はローカル限定になりました。',
+      'EOF',
+    ].join('\n');
+    const { status, stderr } = runHook(cmd, 'Bash', { OR_LANE_PLATFORM: 'linux' });
+    expect(stderr).not.toContain('#675');
+    expect(status).toBe(0);
+  });
+
+  it('heredoc を挟んでも本物の呼び出しは止める（落としすぎない）', () => {
+    // 本文を落とす処理が広すぎると、同じコマンド行の**外**にある本物まで消える。
+    const cmd = ["cat > /tmp/note.md <<'EOF'", 'ただのメモ', 'EOF', './scripts/aws-issue-credentials.sh'].join(
+      '\n',
+    );
+    expect(runHook(cmd, 'Bash', { OR_LANE_PLATFORM: 'linux' }).status).toBe(2);
+  });
 });

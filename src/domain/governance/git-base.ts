@@ -223,3 +223,44 @@ export function pullCreateArgs(repo: GitHubRepo, draft: PullRequestDraft): strin
     '.html_url',
   ];
 }
+
+/**
+ * PR を **REST で squash マージする** `gh` の引数列を組み立てる (#702)。
+ *
+ * ## なぜ `gh pr merge` を使えないのか
+ *
+ * `pullCreateArgs` が作成側で踏んだ制約（#678）は、**マージ側にも当てはまる**。
+ * 2026-08-18 の PR #701 のマージで実測:
+ *
+ * ```
+ * gh pr merge 701 --squash --delete-branch
+ * non-200 OK status code: 403 Forbidden
+ * body: "This GraphQL query is not enabled for this session — only the pinned set of
+ *        PR-review operations is served. Use REST via `gh api repos/{owner}/{repo}/...` instead."
+ * ```
+ *
+ * PR #665 の時点では `gh pr merge` は通っていた（当時の記述は正しく、今は誤り）。
+ * **通っていたことを根拠に残さない** ―― 実測が変わったら記述を変える。
+ *
+ * ## 気をつけていること
+ *
+ * - **`merge_method=squash` を明示する。** GitHub の既定は merge commit で、
+ *   本リポジトリの履歴方針（squash 固定）と食い違う。
+ * - **PR 番号は正の整数だけを通す。** 文字列をそのまま埋めると
+ *   `701/../../other` のような値でパスを曲げられる。
+ */
+export function pullMergeArgs(repo: GitHubRepo, pullNumber: number): string[] {
+  if (!Number.isInteger(pullNumber) || pullNumber <= 0) {
+    throw new Error(`PR 番号が正の整数ではありません: ${pullNumber}`);
+  }
+  const owner = encodeURIComponent(repo.owner);
+  const name = encodeURIComponent(repo.repo);
+  return [
+    'api',
+    '--method',
+    'PUT',
+    `repos/${owner}/${name}/pulls/${pullNumber}/merge`,
+    '-f',
+    'merge_method=squash',
+  ];
+}

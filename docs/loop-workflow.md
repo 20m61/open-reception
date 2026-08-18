@@ -181,6 +181,18 @@ PR タイトルは squash 後の main コミットになるため、Conventional
 gh pr merge --squash --delete-branch
 ```
 
+🔴 **クラウドセッションでは `gh pr merge` も 403 になる (#702)。** PR 作成と同じ GraphQL 制約で、
+2026-08-18 の PR #701 で実測した。**開発の既定はクラウドなので、そちらでは次を使う**:
+
+```bash
+npx tsx scripts/merge-pull-request.ts --number <番号>
+```
+
+squash を明示し、マージ後に `merged === true` を REST で引き直して確認する。
+`pr-gate-guard.sh` はこの経路と生の `gh api .../merge` の**両方**に `--full` を要求する。
+**リモートブランチはクラウドから消せない**（proxy が write を拒否する）ので、
+ローカルの後始末として扱う: `git push origin --delete <branch>` ＋ `git branch -D <branch>`。
+
 ただし次のいずれかに該当する場合は**マージ前にユーザー確認する**:
 重大な設計判断 / 破壊的変更（スキーマ・公開 API・移行）/ 外部影響（本番デプロイ・
 外部サービスへの送信）/ 依存・ライセンス追加（#105）/ secret・PII の取り扱い変更。

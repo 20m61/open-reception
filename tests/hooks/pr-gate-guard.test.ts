@@ -153,6 +153,31 @@ describe('pr-gate-guard: ゲート記録が無ければブロックする', () =
     expect(status).toBe(2);
     expect(stderr).toContain('--pr');
   });
+
+  // 🔴 **マージも REST へ移った (#702)。** クラウドでは `gh pr merge` が GraphQL 403 に
+  // なるため、マージの主経路は `scripts/merge-pull-request.ts` と生の
+  // `gh api .../merge` である。ここを見ていないと **`--full` の green 記録が無いまま
+  // マージできる** —— 作成側で #678 のときに塞いだのと同じ穴が、マージ側に開く。
+  it('merge-pull-request.ts をブロックし --full を案内する', () => {
+    const { status, stderr } = runHook('npx tsx scripts/merge-pull-request.ts --number 12');
+    expect(status).toBe(2);
+    expect(stderr).toContain('--full');
+  });
+
+  it('生の REST マージ（gh api .../merge -X PUT）もブロックする', () => {
+    // スクリプトを経由せず直接叩く形が抜け道になってはいけない。
+    const { status, stderr } = runHook(
+      'gh api repos/20m61/open-reception/pulls/12/merge -X PUT -f merge_method=squash',
+    );
+    expect(status).toBe(2);
+    expect(stderr).toContain('--full');
+  });
+
+  it('マージではない gh api 呼び出しは通す（誤検出はガードを無意味にする）', () => {
+    // PR の照会は REST で日常的に行う。ここを止めると運用が回らない。
+    expect(runHook('gh api repos/20m61/open-reception/pulls/12 --jq .merged').status).toBe(0);
+    expect(runHook('gh api repos/20m61/open-reception/pulls?state=all').status).toBe(0);
+  });
 });
 
 describe('pr-gate-guard: tier の充足を判定する', () => {

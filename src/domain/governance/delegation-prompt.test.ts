@@ -43,6 +43,14 @@ describe('buildDelegationPrompt', () => {
     expect(p).toContain('ブランチが出来たこと＝PR が出来たことではない');
   });
 
+  it('マージにも GraphQL を撃つコマンドを指示しない (#702)', () => {
+    // 🔴 `gh pr merge` も 403 になる（2026-08-18 / PR #701 で実測）。生成器がこれを
+    // 配り続けると、委譲のたびに委譲先が現場で回避策を考える羽目になる（実際そうなった）。
+    const p = buildDelegationPrompt(BASE);
+    expect(p).not.toContain('gh pr merge <番号>');
+    expect(p).toContain('scripts/merge-pull-request.ts');
+  });
+
   it('PR 作成に GraphQL を撃つコマンドを指示しない (#678)', () => {
     // 🔴 **委譲先はクラウドなので、ここで `gh pr create` / `gh pr view` を指示すると
     // 必ず 403 で詰まる。** 2026-08-10 の週次ゲートが実際にこれで落ちた。
@@ -111,10 +119,11 @@ describe('buildDelegationPrompt', () => {
   });
 
   describe('stopAfter', () => {
-    it('既定（省略時）は現行どおり gh pr merge を手順に含める', () => {
-      // 既定の振る舞いは 1 バイトも変えない。
+    it('既定（省略時）はマージ手順を含める', () => {
+      // 既定は「マージまで完結させる」。**手段は REST へ移った (#702)** が、
+      // 「既定でマージまで行く」という契約そのものは変えない。
       const p = buildDelegationPrompt(BASE);
-      expect(p).toContain('gh pr merge <番号> --squash --delete-branch');
+      expect(p).toContain('scripts/merge-pull-request.ts');
       expect(p).toContain('マージまで**このセッション内で完結**させてください');
     });
 
