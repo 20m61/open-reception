@@ -1,5 +1,10 @@
 import { describe, expect, it } from 'vitest';
-import { evaluateGateRuns, evaluateRecordBranches, parseGateRuns } from './gate-run-evaluation';
+import {
+  evaluateGateRuns,
+  evaluateRecordBranches,
+  parseGateRuns,
+  pendingDispatchBranches,
+} from './gate-run-evaluation';
 
 const HEADER = `| 日時 (UTC) | コミット SHA | tier | 結果 | SKIP 項目 | 起票 Issue / 備考 |
 | --- | --- | --- | --- | --- | --- |`;
@@ -317,5 +322,63 @@ describe('evaluateRecordBranches: PR にならなかった push を捕まえる 
       );
       expect(f.map((x) => x.code)).toEqual(['orphan_branch']);
     });
+  });
+});
+
+
+describe('pendingDispatchBranches: 証拠が無いものを「判定保留」として出す (#675)', () => {
+  /**
+   * 🔴 **「不明」を「問題なし」として黙らせない。**
+   *
+   * `evaluateRecordBranches` は猶予内のブランチを**指摘しない**。それは正しい（PR 作成前の
+   * 窓を赤にすると狼少年になる）。しかし黙って除外すると、レポートは
+   * 「指摘はありません」＝**全部片づいた**ように読める。
+   *
+   * 2026-08-15、まさにこの情報が無いために「クラウド routine は死んだ」と誤診して再投入し、
+   * PR を 2 本（#698 / #699）作って main に空コミットを残した。**走っているのか止まったのか
+   * 分からない**という状態が、そう表示されていれば起きなかった。
+   *
+   * #675 の「evidence 無しで running/completed へ遷移しない」はここに対応する。
+   * warning にはしない ―― 猶予内は正常な窓であり、赤くする理由が無い。**数として出すだけ。**
+   */
+  const OPTS = { now: new Date('2026-08-18T12:00:00Z'), graceHours: 24 };
+
+  it('PR がまだ無く猶予内のブランチを返す', () => {
+    const branches = [
+      { name: 'feat/a', tipCommittedAt: '2026-08-18T11:00:00Z' },
+      { name: 'main', tipCommittedAt: '2026-08-18T11:00:00Z' },
+    ];
+    expect(pendingDispatchBranches(branches, [], 'main', OPTS)).toEqual(['feat/a']);
+  });
+
+  it('PR が在るブランチは判定保留ではない（証拠がある）', () => {
+    const branches = [{ name: 'feat/a', tipCommittedAt: '2026-08-18T11:00:00Z' }];
+    expect(pendingDispatchBranches(branches, ['feat/a'], 'main', OPTS)).toEqual([]);
+  });
+
+  it('猶予を超えたものは判定保留ではない（そちらは orphan_branch が指摘する）', () => {
+    const branches = [{ name: 'feat/a', tipCommittedAt: '2026-08-15T11:00:00Z' }];
+    expect(pendingDispatchBranches(branches, [], 'main', OPTS)).toEqual([]);
+  });
+
+  it('🔴 orphan と判定保留は排他かつ網羅（PR の無いブランチは必ずどちらか一方）', () => {
+    // **これが本体のアサーション。** 2 つの関数が別々に窓を判定するので、片方の条件を
+    // 変えるともう片方との間に穴（どちらにも出ない＝黙って消えるブランチ）か
+    // 二重計上ができる。境界そのものを固定する。
+    const branches = [
+      { name: 'fresh', tipCommittedAt: '2026-08-18T11:59:00Z' },
+      { name: 'boundary', tipCommittedAt: '2026-08-17T12:00:00Z' },
+      { name: 'old', tipCommittedAt: '2026-08-01T00:00:00Z' },
+      { name: 'unknown-date' },
+    ];
+    const orphans = evaluateRecordBranches(branches, [], 'main', OPTS).map((f) =>
+      branches.find((b) => f.message.includes(`'${b.name}'`))!.name,
+    );
+    const pending = pendingDispatchBranches(branches, [], 'main', OPTS);
+
+    expect([...orphans, ...pending].sort()).toEqual(
+      branches.map((b) => b.name).sort(),
+    );
+    expect(orphans.filter((n) => pending.includes(n))).toEqual([]);
   });
 });

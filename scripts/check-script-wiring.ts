@@ -213,6 +213,36 @@ export function stripComments(filePath: string, content: string): string {
   return content;
 }
 
+
+/** co-located テストファイル（`src/**` 配下にあるので配線元として走査される）。 */
+const TEST_FILE = /\.test\.(ts|tsx)$/;
+
+/**
+ * テストファイルは **import 行だけ**を配線元として読む (#675)。
+ *
+ * 🔴 **「テストが在ること」と「テストが実行主体であること」は違う。**
+ *
+ * `check-cjk-literals.ts` / `check-merge-method.ts` / この検査自身は、co-located の
+ * テストが **import して実際に走らせている** ―― ゲートの `unit` ステップがその検査の
+ * 実行経路そのものなので、配線済みで正しい。
+ *
+ * 一方、テストが**データとしてスクリプト名を書く**ことがある。`execution-lane.test.ts` は
+ * 「このコマンドを止める」ことを確かめるために `./scripts/aws-issue-credentials.sh` を
+ * 入力値として持つが、**呼んではいない**。これを配線と数えると、allowlist に書かれた
+ * 「なぜ手動なのか」という記録が「もう自動配線された」として消える方向へ倒れる
+ * （`url-quality-gate.sh` で実際に失われたのと同じ形 / #681）。
+ *
+ * 区別は「import しているか」で付く。テスト本文の文字列は落とし、import / require の行だけ残す。
+ */
+function importLinesOnly(text: string): string {
+  return text
+    .split('\n')
+    // **複数行 import を落とさない。** `} from '../../scripts/x';` のように、
+    // モジュール指定子だけが別行に来るのが本リポジトリの書き方。
+    .filter((line) => /(^|\s)(import|require)\b/.test(line) || /\bfrom\s*['"]/.test(line))
+    .join('\n');
+}
+
 /**
  * `scripts/<name>` の形で現れる参照。**1 ファイル 1 パス**で拾う。
  *
@@ -261,7 +291,8 @@ function collectWiredNames(scriptNames: readonly string[]): Set<string> {
     // 🔴 **手動でしか走らないスクリプトは配線元にしない (#681 defect 2)。**
     // 「自動では一度も走らないものから呼ばれている」ことは配線ではない。
     if (selfRel !== null && selfRel in MANUAL_ONLY_ALLOWLIST) return;
-    scanText(stripComments(abs, fs.readFileSync(abs, 'utf8')), selfRel);
+    const text = stripComments(abs, fs.readFileSync(abs, 'utf8'));
+    scanText(TEST_FILE.test(abs) ? importLinesOnly(text) : text, selfRel);
   };
 
   for (const rel of WIRING_SOURCES) scan(path.join(ROOT, rel));

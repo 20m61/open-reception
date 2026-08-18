@@ -14,10 +14,18 @@ import { describe, expect, it } from 'vitest';
 
 const HOOK = resolve(process.cwd(), 'scripts/hooks/guard-destructive.sh');
 
-function runHook(command: string, tool = 'Bash'): { status: number; stderr: string } {
+function runHook(
+  command: string,
+  tool = 'Bash',
+  env: Record<string, string> = {},
+): { status: number; stderr: string } {
   const payload = JSON.stringify({ tool_name: tool, tool_input: { command } });
   try {
-    execFileSync('bash', [HOOK], { input: payload, stdio: ['pipe', 'pipe', 'pipe'] });
+    execFileSync('bash', [HOOK], {
+      input: payload,
+      stdio: ['pipe', 'pipe', 'pipe'],
+      env: { ...process.env, ...env },
+    });
     return { status: 0, stderr: '' };
   } catch (e) {
     const err = e as { status?: number; stderr?: Buffer };
@@ -66,5 +74,42 @@ describe('guard-destructive.sh が通す（誤検出しない）', () => {
 
   it('Bash 以外のツールには介入しない', () => {
     expect(runHook('rm -rf ~', 'Read').status).toBe(0);
+  });
+});
+
+/**
+ * 実行レーンの分離 (#675)。
+ *
+ * 開発は Claude Code on the web が既定になった（2026-08-18）。ほとんどの作業はクラウドで
+ * 回るが、**短命 STS の発行だけはローカル macOS 限定**である ―― 出力に資格情報そのものを
+ * 含むため、使い捨て VM の記録に残しうる。判定の正本は
+ * `src/domain/governance/execution-lane.ts`（純関数・unit test 済み）で、ここはその配線が
+ * 実際に効いていることを**フックを起動して**確かめる。
+ *
+ * platform は `OR_LANE_PLATFORM` で差し替えられる（クラウドを macOS 上で再現するため）。
+ */
+describe('guard-destructive.sh: 実行レーン (#675)', () => {
+  const CMD = './scripts/aws-issue-credentials.sh --minutes 60';
+
+  it('クラウド（darwin 以外）では STS 発行を止め、理由と代替手段を出す', () => {
+    const { status, stderr } = runHook(CMD, 'Bash', { OR_LANE_PLATFORM: 'linux' });
+    expect(status).toBe(2);
+    expect(stderr).toContain('#675');
+    // 「ではどこでやるのか」が無いブロックは迂回されるか意味を失って残る。
+    expect(stderr).toContain('どこでやるか');
+  });
+
+  it('ローカル macOS では通す（そこが正しい実行場所）', () => {
+    // **通すべきものを通す**方が難しい。ここを止めるとデプロイ窓が開けられなくなる。
+    expect(runHook(CMD, 'Bash', { OR_LANE_PLATFORM: 'darwin' }).status).toBe(0);
+  });
+
+  it('クラウドでも無関係なコマンドは通す（既定は cloud-eligible）', () => {
+    expect(runHook('npm test', 'Bash', { OR_LANE_PLATFORM: 'linux' }).status).toBe(0);
+  });
+
+  it('引用符の中の言及では止めない（誤検出はガードを無意味にする）', () => {
+    const cmd = 'echo "手順: ./scripts/aws-issue-credentials.sh をローカルで実行"';
+    expect(runHook(cmd, 'Bash', { OR_LANE_PLATFORM: 'linux' }).status).toBe(0);
   });
 });

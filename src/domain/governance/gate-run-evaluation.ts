@@ -243,6 +243,38 @@ export type RecordBranchOptions = {
  * いないブランチで、まさに #656 が起きた形（クラウド routine が push し、こちらは知らない
  * まま）。「不明だから見逃す」にすると、捕まえたい相手だけが漏れる。
  */
+
+/**
+ * PR を持たないブランチ（既定ブランチを除く）。
+ *
+ * **「PR が 1 件でもあれば良し」にしない。** 無関係な PR が全ブランチを緑にしてしまう。
+ */
+function branchesWithoutPullRequest(
+  branches: readonly RemoteBranch[],
+  branchesWithPullRequest: readonly string[],
+  defaultBranch: string,
+): RemoteBranch[] {
+  const withPr = new Set(branchesWithPullRequest);
+  return branches.filter((b) => b.name !== defaultBranch && !withPr.has(b.name));
+}
+
+/**
+ * PR 作成前の正常な窓の内側か。
+ *
+ * **日時が分からなければ窓の外に倒す**（＝指摘する側）。ローカルに無いオブジェクト＝
+ * 一度も fetch していないブランチで、まさに #656 が起きた形。
+ *
+ * 🔴 **この述語は `evaluateRecordBranches` と `pendingDispatchBranches` の共有物である。**
+ * 別々に書くと、片方の条件を変えたときに「どちらにも出ないブランチ」（黙って消える）か
+ * 二重計上ができる。排他かつ網羅であることは unit テストが固定している。
+ */
+function withinGrace(b: RemoteBranch, options: RecordBranchOptions): boolean {
+  if (b.tipCommittedAt === undefined) return false;
+  const at = Date.parse(b.tipCommittedAt);
+  if (Number.isNaN(at)) return false;
+  return options.now.getTime() - at < options.graceHours * 3_600_000;
+}
+
 export function evaluateRecordBranches(
   branches: readonly RemoteBranch[],
   /** PR を持つブランチ名。**状態は問わない**（上記のとおり全状態が同じ結論に落ちる）。 */
@@ -250,20 +282,41 @@ export function evaluateRecordBranches(
   defaultBranch: string,
   options: RecordBranchOptions,
 ): GateRunFinding[] {
-  // **「PR が 1 件でもあれば良し」にしない。** 無関係な PR が全ブランチを緑にしてしまう。
-  const branchesWithPr = new Set(branchesWithPullRequest);
-  const graceMs = options.graceHours * 3_600_000;
-  const withinGrace = (b: RemoteBranch): boolean => {
-    if (b.tipCommittedAt === undefined) return false;
-    const at = Date.parse(b.tipCommittedAt);
-    if (Number.isNaN(at)) return false;
-    return options.now.getTime() - at < graceMs;
-  };
-  return branches
-    .filter((b) => b.name !== defaultBranch && !branchesWithPr.has(b.name) && !withinGrace(b))
+  return branchesWithoutPullRequest(branches, branchesWithPullRequest, defaultBranch)
+    .filter((b) => !withinGrace(b, options))
     .map((b) => ({
       code: 'orphan_branch' as const,
       severity: 'error' as const,
       message: `リモートブランチ '${b.name}' に紐づく PR がありません。push された内容が ${defaultBranch} に載らないまま失われる可能性があります（#656 の 2026-08-03 がこの形）。中身を確認し、PR を作るか、不要なら削除してください。`,
     }));
+}
+
+/**
+ * **まだ判定できないブランチ**を返す（push 済み・PR 未作成・猶予内）(#675)。
+ *
+ * ## なぜ「指摘しない」だけでは足りないのか
+ *
+ * `evaluateRecordBranches` はこの窓を**指摘しない**。それは正しい ―― PR 作成前は完全に
+ * 正常な状態で、赤くすると週次のたびに進行中のブランチが並び、狼少年になる。
+ * しかし黙って除外すると、レポートは「指摘はありません」＝**全部片づいた**ように読める。
+ *
+ * 2026-08-15、まさにこの情報が無いために「クラウド routine は死んだ」と誤診して同じ作業を
+ * 再投入し、PR が 2 本（#698 / #699）でき、main に空コミットが残った。
+ * **走っているのか止まったのか分からない**という状態が、そう表示されていれば起きなかった。
+ *
+ * #675 の必須原則「evidence 無しで running/completed へ遷移しない」「無限待機禁止」は、
+ * この運用形（人が web セッションで直接作業する）では**受け取り側の表示**として実装される。
+ * PR という receipt が無いものを「完了」とも「失敗」とも書かず、**判定保留として数える。**
+ *
+ * severity は付けない ―― これは指摘ではなく、状態の報告である。
+ */
+export function pendingDispatchBranches(
+  branches: readonly RemoteBranch[],
+  branchesWithPullRequest: readonly string[],
+  defaultBranch: string,
+  options: RecordBranchOptions,
+): string[] {
+  return branchesWithoutPullRequest(branches, branchesWithPullRequest, defaultBranch)
+    .filter((b) => withinGrace(b, options))
+    .map((b) => b.name);
 }
