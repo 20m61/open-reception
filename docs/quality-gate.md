@@ -192,7 +192,8 @@ CI が無い以上、「PR 前に `--pr` / マージ前に `--full`」は**規�
 - 要求 tier は `gh pr create` → `--pr` 以上、`gh pr merge` → `--full`
   （`feedback: merge-gate`）。`--fast` だけでは PR を作れない。
 - 🔴 **REST 経由の PR 作成（`scripts/create-pull-request.ts`）も `--pr` を要求する (#678)。**
-  クラウドでは `gh pr create` が GraphQL 403 で使えず、そちらが PR 作成の主経路になる。
+  クラウドの routine セッションでは `gh pr create` が GraphQL 403 で使えず、そちらが PR 作成の
+  主経路になる（web セッションでの挙動は未検証。`docs/cloud-dev-environment.md` §4）。
   見ていないと**移した先がそのままゲートの抜け道**になる。
 - 🔴 **REST 経由のマージも `--full` を要求する (#702)。** `gh pr merge` も 403 になるため、
   マージの主経路は `scripts/merge-pull-request.ts` と生の `gh api .../pulls/<n>/merge`。

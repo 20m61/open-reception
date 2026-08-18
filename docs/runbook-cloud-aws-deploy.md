@@ -889,6 +889,12 @@ bash scripts/aws-cloud-deploy.sh verify
 **何回 `verify` を再実行しても green スタンプが書けないデッドロック**になる（クラウドの
 実セッションで踏んだ）。ゲートへの入力を作るステップは、ゲートより前に置く。
 
+> **補足（#677 / 2026-08-18）**: このデッドロック自体は解消済み ―― `quality-gate.sh` が
+> `.open-next/` の不在を検出したら**自分で `npm run build:open-next` して復旧する**ように
+> なった（`PASS build (open-next)` が summary に出る）。よって順序を守らなくても詰まらない。
+> **それでも `verify` は build → gate のままにしてある**: デプロイ直前の手順としては
+> 「成果物を作ってから検査する」方が意図が明快で、ゲート側の自動復旧は保険として二重に効く。
+
 🔴 **これを先に走らせないと preflight は必ず失敗する（Important 7）。** preflight は
 「現ツリーに対する品質ゲート green の記録（スタンプ）」を要求するが、**スタンプは
 `git rev-parse --absolute-git-dir` の下、つまり `.git` 配下のローカルファイル**であり
