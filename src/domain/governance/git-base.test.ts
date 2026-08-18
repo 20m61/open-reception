@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 import {
   BASE_REF_PREFERENCE,
   parseGitHubRepo,
+  pullCreateArgs,
   parseLsRemoteSymref,
   pullsQueryPath,
   resolveBase,
@@ -183,5 +184,71 @@ describe('pullsQueryPath: ブランチ名でクエリを壊さない (#656)', ()
 
   it('owner と repo もエンコードする', () => {
     expect(pullsQueryPath({ owner: 'o w', repo: 'r&x' }, 'b')).toContain('repos/o%20w/r%26x/pulls');
+  });
+});
+
+describe('pullCreateArgs: PR 作成も REST で行う (#678)', () => {
+  // 🔴 **`gh pr create` は使えない。** クラウド Routine セッションの `gh` は PR レビュー用の
+  // pinned な操作セットしか許されておらず、`gh pr create` が内部で撃つ GraphQL クエリ
+  // （`RepositoryInfo` = repo info preamble）が 403 で拒否される。2026-08-10 の週次ゲートで実測:
+  //   HTTP 403: This GraphQL query (RepositoryInfo, sent by gh pr create/view (repo info preamble))
+  //   is not enabled for this session ... Use REST via `gh api repos/{owner}/{repo}/...` instead.
+  // 記録は push 済みなのに PR が無い状態＝#656 そのものが再生産される。
+
+  const repo = { owner: '20m61', repo: 'open-reception' };
+  const draft = {
+    head: 'chore/gate-run-20260810',
+    base: 'main',
+    title: 'docs(gate-runs): 週次定期ゲート実行結果を記録する（#318）',
+    body: '複数行の\n本文（#656）',
+  };
+
+  it('GraphQL を撃つ経路（gh pr create）ではなく REST の POST を組み立てる', () => {
+    const args = pullCreateArgs(repo, draft);
+    expect(args.slice(0, 4)).toEqual(['api', '--method', 'POST', 'repos/20m61/open-reception/pulls']);
+    // `gh pr ...` のサブコマンドへ退行していないこと。ここが 403 の入口だった。
+    expect(args).not.toContain('pr');
+  });
+
+  it('head / base / title / body の値がそのまま載る', () => {
+    // 落ちても 422 にならず「別のブランチへ向いた PR」が出来る向きがあるので、値で確かめる。
+    const args = pullCreateArgs(repo, draft);
+    expect(args).toContain(`head=${draft.head}`);
+    expect(args).toContain(`base=${draft.base}`);
+    expect(args).toContain(`title=${draft.title}`);
+    expect(args).toContain(`body=${draft.body}`);
+  });
+
+  it('値は 1 つの argv 要素に収める（改行・空白でシェルに割らせない）', () => {
+    // `-f body=...` を分割して渡すと本文が引数として散り、gh は残りを未知の引数として拒否する。
+    const args = pullCreateArgs(repo, draft);
+    const body = args.find((a) => a.startsWith('body='));
+    expect(body).toBe(`body=${draft.body}`);
+    expect(body).toContain('\n');
+  });
+
+  it('作成した PR の URL を取り出せる形で返す（実在確認へ渡すため）', () => {
+    // #656 の要点は「作成できたと言われても信じない」。呼び出し側は返った URL を
+    // REST で引き直す。URL が取れない出力形式にすると、その確認自体ができない。
+    const args = pullCreateArgs(repo, draft);
+    expect(args).toContain('--jq');
+    expect(args).toContain('.html_url');
+  });
+
+  it('owner / repo をパスにエンコードして埋める', () => {
+    const args = pullCreateArgs({ owner: 'o w', repo: 'r&x' }, draft);
+    expect(args).toContain('repos/o%20w/r%26x/pulls');
+  });
+
+  it('head / base / title が空なら組み立てない（推測で PR を作らない）', () => {
+    // parseGitHubRepo と同じ思想。空の head を渡すと GitHub は 422 を返すが、
+    // 空の base は既定ブランチへ倒れうる ―― 意図しない先へ向いた PR は検知しにくい。
+    expect(() => pullCreateArgs(repo, { ...draft, head: '' })).toThrow();
+    expect(() => pullCreateArgs(repo, { ...draft, base: '  ' })).toThrow();
+    expect(() => pullCreateArgs(repo, { ...draft, title: '' })).toThrow();
+  });
+
+  it('本文が空でも作れる（本文は無くても PR の意味は壊れない）', () => {
+    expect(pullCreateArgs(repo, { ...draft, body: '' })).toContain('body=');
   });
 });

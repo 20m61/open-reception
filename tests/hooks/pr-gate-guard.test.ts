@@ -143,6 +143,16 @@ describe('pr-gate-guard: ゲート記録が無ければブロックする', () =
     expect(status).toBe(2);
     expect(stderr).toContain('--full');
   });
+
+  // 🔴 **REST 経由の PR 作成もゲートの対象 (#678)。**
+  // クラウドでは `gh pr create` が GraphQL 403 で使えないため、PR 作成は
+  // `scripts/create-pull-request.ts` へ移した。ここを見ていないと、**移した先が
+  // そのままゲートの抜け道になる** —— 開発をクラウドへ移した後は、そちらが主経路である。
+  it('create-pull-request.ts をブロックし --pr を案内する', () => {
+    const { status, stderr } = runHook('npx tsx scripts/create-pull-request.ts --head x --title y');
+    expect(status).toBe(2);
+    expect(stderr).toContain('--pr');
+  });
 });
 
 describe('pr-gate-guard: tier の充足を判定する', () => {

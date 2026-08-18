@@ -139,6 +139,24 @@ gh pr create --fill --base main \
   --body-file .github/pull_request_template.md   # テンプレを編集して使う
 ```
 
+🔴 **クラウドセッション（Claude Code on the web / Routine）では `gh pr create` が使えない (#678)。**
+サンドボックスの `gh` は PR レビュー用の pinned な操作セットしか GraphQL を通さず、
+`gh pr create` が本体の POST の前に撃つ repo info preamble（`RepositoryInfo`）が 403 になる。
+**開発の既定はクラウドなので、そちらでは次を使う**（REST だけで完結する）:
+
+```bash
+git push -u origin HEAD
+npx tsx scripts/create-pull-request.ts \
+  --head "$(git branch --show-current)" --base main \
+  --title "feat: ..." --body "Closes #<N> ..."
+```
+
+作成後に**そのブランチを head に持つ PR を REST で引き直して実在を確認**し、
+確認できなければ非ゼロで落ちる（「ブランチが出来た＝PR が出来た」ではない、が #656）。
+既に PR が在れば成功として扱う（同名ブランチでの再実行）。
+`pr-gate-guard.sh` はこの経路も `--pr` 以上の green 記録を要求する ―― **PR 作成の主経路を
+移したことがゲートの抜け道にならないようにするため**。
+
 PR タイトルは squash 後の main コミットになるため、Conventional Commits で書く。
 本文には `Closes #<N>` を入れ、Issue の受け入れ条件をチェックリストとして転記する。
 

@@ -28,12 +28,14 @@
 # 抜けても誰も気づかなかった。`docs/ai-development-loop.md` の「規律で守るものを機械検証へ
 # 移す」に従い、保証を version 管理されたコードへ移す。
 #
-# **`gh pr create` の終了コードだけを信じない。** 「ブランチが出来たこと＝PR が出来たこと
-# ではない」が #656 そのものなので、作成後に**返された URL を REST で引き直して実在を確認**する。
-# 確認できなければ非ゼロで落ちる（サイレントに終わらせない）。
+# **作成の終了コードだけを信じない。** 「ブランチが出来たこと＝PR が出来たことではない」が
+# #656 そのものなので、作成後に**そのブランチを head に持つ PR を REST で引き直して実在を確認**
+# する。確認できなければ非ゼロで落ちる（サイレントに終わらせない）。
 #
-# **PR の確認に `gh pr list` / `gh pr view` を使わない。** クラウドのサンドボックスは GitHub
-# GraphQL を絞っており 403 になる（PR #665 で実測）。REST の `gh api repos/.../pulls/<n>` を使う。
+# **PR 作成にも確認にも `gh pr ...` を使わない (#678)。** クラウドのサンドボックスは GitHub
+# GraphQL を絞っており、`gh pr list` / `gh pr view` だけでなく **`gh pr create` も** repo info
+# preamble の GraphQL で 403 になる（2026-08-10 の週次ゲートで実測）。作成・確認とも
+# `scripts/create-pull-request.ts` 経由の REST（`gh api repos/{owner}/{repo}/pulls`）で行う。
 #
 set -uo pipefail
 
@@ -154,38 +156,29 @@ if [[ "${PUBLISH}" -eq 1 ]]; then
   }
   run_or_echo git push -u origin "${BRANCH}" || { echo "❌ push に失敗しました。" >&2; exit 3; }
 
+  # 🔴 **`gh pr create` は使わない (#678)。** クラウド Routine セッションの `gh` は
+  # PR レビュー用の pinned な操作セットしか GraphQL を通さず、`gh pr create` が本体の
+  # POST の前に撃つ repo info preamble（`RepositoryInfo`）が 403 で拒否される。
+  # 2026-08-10 の週次ゲートが実際にここで落ち、記録は push 済みなのに PR が無い
+  # ―― まさに #656 の形 ―― になった。作成・実在確認とも REST に寄せる。
+  PR_BODY="週次の \`--full --strict\` の結果を \`docs/gate-runs.md\` へ記録します（結果: ${RESULT}）。
+
+\`scripts/record-gate-run.sh --publish\` による自動作成です（#656 / #678）。
+
+Refs #318 #656"
+
   if [[ "${DRY_RUN}" -eq 1 ]]; then
-    echo "  [dry-run] gh pr create --base main --head ${BRANCH} --title ... --body ..."
-    echo "  [dry-run] 作成後、返された URL を REST（gh api repos/<owner>/<repo>/pulls/<n>）で引き直して実在を確認"
+    echo "  [dry-run] npx tsx scripts/create-pull-request.ts --head ${BRANCH} --base main --title ... --body ..."
+    echo "  [dry-run] 作成後、ブランチを head に持つ PR を REST で引き直して実在を確認（gh pr create は使わない）"
   else
-    PR_URL="$(gh pr create --base main --head "${BRANCH}" \
+    PR_URL="$(npx --no-install tsx "${ROOT}/scripts/create-pull-request.ts" \
+      --head "${BRANCH}" --base main \
       --title "docs(gate-runs): 週次定期ゲート実行結果を記録する（#318）" \
-      --body "週次の \`--full --strict\` の結果を \`docs/gate-runs.md\` へ記録します（結果: ${RESULT}）。
-
-\`scripts/record-gate-run.sh --publish\` による自動作成です（#656）。
-
-Refs #318 #656" 2>&1)" || {
-      echo "❌ PR を作成できませんでした。出力:" >&2
-      echo "${PR_URL}" >&2
+      --body "${PR_BODY}")" || {
       echo "   **記録は push 済みですが main には載っていません。** これが #656 の形です。" >&2
       exit 4
     }
     echo "${PR_URL}"
-
-    # **作成できたと言われても信じない。** URL を REST で引き直して実在を確認する。
-    # `gh pr list` / `gh pr view` は GraphQL でクラウドでは 403 になるので使わない。
-    PR_PATH="$(printf '%s' "${PR_URL}" | grep -oE 'https://github\.com/[^/]+/[^/]+/pull/[0-9]+' | tail -1 \
-      | sed -E 's|https://github\.com/([^/]+)/([^/]+)/pull/([0-9]+)|repos/\1/\2/pulls/\3|')"
-    if [[ -z "${PR_PATH}" ]]; then
-      echo "❌ PR 作成の出力から PR の URL を読み取れませんでした。実在を確認できません。" >&2
-      exit 4
-    fi
-    if ! gh api "${PR_PATH}" --jq '.number' > /dev/null 2>&1; then
-      echo "❌ 作成したはずの PR（${PR_PATH}）を REST で確認できませんでした。" >&2
-      echo "   **記録は push 済みですが main には載っていません。** これが #656 の形です。" >&2
-      exit 4
-    fi
-    echo "✅ PR の実在を REST で確認しました（${PR_PATH}）"
   fi
 else
   # **黙って終わらせない。** 公開していないこと自体を出す（#656 AC1）。

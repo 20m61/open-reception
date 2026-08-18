@@ -374,16 +374,40 @@ if [[ "$RUN_INFRA" -eq 1 ]]; then
     # という #628 そのものの状態へ戻る。ここは 3 分岐で扱う。
     if npx --no-install tsx --version >/dev/null 2>&1; then
       probe_err="$(mktemp)"
-      artifact_reason="$(npx --no-install tsx -e '
-        import { openNextArtifactState, describeArtifactState } from "./infra/lib/build-artifacts";
-        process.stdout.write(describeArtifactState(openNextArtifactState(process.cwd())));
-      ' 2>"$probe_err")"
+      probe_open_next() { # 標準出力に「検査できない理由」。空なら fresh。
+        npx --no-install tsx -e '
+          import { openNextArtifactState, describeArtifactState } from "./infra/lib/build-artifacts";
+          process.stdout.write(describeArtifactState(openNextArtifactState(process.cwd())));
+        ' 2>"$probe_err"
+      }
+      artifact_reason="$(probe_open_next)"
       probe_status=$?
       if [[ "$probe_status" -ne 0 ]]; then
         skip_unverified "infra WebStack synth" \
           "状態を判定できなかった（tsx 失敗: $(tr '\n' ' ' < "$probe_err" | cut -c1-120)）"
       elif [[ -n "$artifact_reason" ]]; then
-        skip_unverified "infra WebStack synth" "$artifact_reason"
+        # 🔴 **前提が無いなら自分で揃える (#677)。**
+        #
+        # ここは以前そのまま `skip_unverified` にしていた。fresh checkout は
+        # **クラウドセッションの既定の姿**なので、週次ゲートは毎回この枝に落ちて
+        # 恒常的に赤くなり（2026-08-10 の #318 実行）、`--pr` / `--full` も毎回
+        # 「SKIP → 手でビルド → 再実行」の 2 パスを強いていた。復旧できる前提の欠落を
+        # 人間の再実行に頼るのをやめる。
+        #
+        # **ビルドの失敗は SKIP ではなく FAIL。** ビルドが通らないツリーは synth も
+        # デプロイもできないので「検査を省いた」ではなく「壊れている」。
+        echo ""
+        echo "  ↳ .open-next/: ${artifact_reason}"
+        step "build (open-next)" npm run --silent build:open-next
+        artifact_reason="$(probe_open_next)"
+        probe_status=$?
+        if [[ "$probe_status" -ne 0 ]]; then
+          skip_unverified "infra WebStack synth" \
+            "ビルド後に状態を判定できなかった（tsx 失敗: $(tr '\n' ' ' < "$probe_err" | cut -c1-120)）"
+        elif [[ -n "$artifact_reason" ]]; then
+          # **「復旧を試みた」は「検査できた」ではない。** #640 の保護をここで緩めない。
+          skip_unverified "infra WebStack synth" "ビルド後も揃いませんでした: ${artifact_reason}"
+        fi
       fi
       rm -f "$probe_err"
     else

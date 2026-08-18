@@ -44,6 +44,13 @@ if printf '%s' "${scan}" | grep -Eq '(^|[;&|[:space:]])gh[[:space:]]+pr[[:space:
   required="full"; action="gh pr merge"
 elif printf '%s' "${scan}" | grep -Eq '(^|[;&|[:space:]])gh[[:space:]]+pr[[:space:]]+create([[:space:]]|$)'; then
   required="pr"; action="gh pr create"
+elif printf '%s' "${scan}" | grep -q 'scripts/create-pull-request\.ts'; then
+  # 🔴 **REST 経由の PR 作成も同じ門を通す (#678)。**
+  # クラウドセッションでは `gh pr create` が GraphQL 403 で使えないため PR 作成を
+  # `scripts/create-pull-request.ts` へ移した。ここを見ていないと、**移した先が
+  # そのままゲートの抜け道になる** —— 開発をクラウドへ移した後はそちらが主経路なので、
+  # 抜け道の方が既定になってしまう。
+  required="pr"; action="scripts/create-pull-request.ts"
 else
   exit 0
 fi
