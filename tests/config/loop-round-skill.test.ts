@@ -1,7 +1,10 @@
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { buildDelegationPrompt } from '../../src/domain/governance/delegation-prompt';
+import {
+  LOCAL_FAST_GATE_VALUES,
+  buildDelegationPrompt,
+} from '../../src/domain/governance/delegation-prompt';
 
 /**
  * 1 周の手順が**入口ごとに食い違わない**ことを固定する。
@@ -79,5 +82,20 @@ describe('loop-round スキルと委譲プロンプトの整合', () => {
   it('スキルが完了の証拠を要求する（idle や「終わりました」で完了にしない）', () => {
     expect(skill).toContain('ブランチが出来た');
     expect(skill).toContain('idle');
+  });
+  describe('ローカルゲートの申告 (#705)', () => {
+    /**
+     * `localFastGate` は**呼び出し側が申告する**必須項目。web セッションで人が spec を
+     * 書くときの唯一の案内が SKILL.md なので、**そこに書いていなければ気づけない**
+     * （実行時に落ちて初めて分かる）。散文と実装がずれる型をここで止める。
+     */
+    it('スキルが localFastGate を名指ししている', () => {
+      expect(skill).toContain('localFastGate');
+    });
+
+    it.each(LOCAL_FAST_GATE_VALUES)('スキルが申告値 %s を書いている', (value) => {
+      // 値を増やしたら doc の更新を強制する（union に足しただけでは通らない）。
+      expect(skill, `スキルが ${value} を書いていない`).toContain(value);
+    });
   });
 });

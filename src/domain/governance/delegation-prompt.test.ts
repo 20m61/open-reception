@@ -186,21 +186,32 @@ describe('buildDelegationPrompt', () => {
       expect(buildDelegationPrompt({ ...BASE, localFastGate: 'green' })).toContain(ASSERTION);
     });
 
-    it.each(['not-run', 'failed'] as const)(
-      '%s のとき green という断定が出力に現れない',
-      (state) => {
-        const p = buildDelegationPrompt({
-          ...BASE,
-          localFastGate: state,
-          localFastGateNote: '負荷でゲートが完走しなかった',
-        });
-        expect(p).not.toContain(ASSERTION);
-        // 委譲先が「ローカルで通っていたのだから環境要因か」と誤読しないよう、
-        // 何が唯一の根拠なのかを明示する。
-        expect(p).toContain('唯一の根拠');
-        expect(p).toContain('負荷でゲートが完走しなかった');
-      },
-    );
+    /**
+     * 🔴 **`'唯一の根拠'` だけを見てはいけない。** 同じ語は手順 5（change-risk）にも出るので、
+     * それだけだと**ローカルゲートの一文が丸ごと消えても通る**（レビューの変異で実証された）。
+     * **この行にしか現れない文字列**で縛る。
+     */
+    const SOLE_EVIDENCE = 'このクラウド実行の `--full` が唯一の根拠です';
+
+    it.each([
+      ['not-run', '実行されていません'],
+      ['failed', '失敗しました'],
+    ] as const)('%s のとき green という断定が出力に現れない', (state, wording) => {
+      const p = buildDelegationPrompt({
+        ...BASE,
+        localFastGate: state,
+        localFastGateNote: '負荷でゲートが完走しなかった',
+      });
+      expect(p).not.toContain(ASSERTION);
+      // 委譲先が「ローカルで通っていたのだから環境要因か」と誤読しないよう、
+      // 何が唯一の根拠なのかを明示する。
+      expect(p).toContain(SOLE_EVIDENCE);
+      expect(p).toContain('推測をしないこと');
+      expect(p).toContain('負荷でゲートが完走しなかった');
+      // **state ごとの語を固定する。** 取り違え（落ちた／実行していない）は委譲先の初動を
+      // 変える（既知の赤の再現確認 vs 初回実行）ので、入れ替わっても通ってはいけない。
+      expect(p).toContain(wording);
+    });
 
     it('failed で理由が無ければ投げる', () => {
       // Conventional Commits 検査と同じ扱い。理由なしの「失敗」は委譲先が判断に使えない。
@@ -212,10 +223,12 @@ describe('buildDelegationPrompt', () => {
       ).toThrow(/localFastGateNote|理由/);
     });
 
-    it('not-run は理由が無くても投げないが、green とは書かない', () => {
+    it('not-run は理由が無くても投げないが、green とは書かず「理由の申告なし」と明示する', () => {
       const p = buildDelegationPrompt({ ...BASE, localFastGate: 'not-run' });
       expect(p).not.toContain(ASSERTION);
-      expect(p).toContain('唯一の根拠');
+      expect(p).toContain(SOLE_EVIDENCE);
+      // **空欄で濁さない。** 理由が無いこと自体を書く（測れなかったものを黙って空にしない）。
+      expect(p).toContain('理由の申告なし');
     });
 
     it('申告が欠けている spec（JSON 経由）は実行時に投げる', () => {
@@ -225,6 +238,14 @@ describe('buildDelegationPrompt', () => {
       const { localFastGate: _omitted, ...withoutDeclaration } = BASE;
       expect(() =>
         buildDelegationPrompt(withoutDeclaration as unknown as DelegationInput),
+      ).toThrow(/localFastGate/);
+      // 🔴 **AC1（省略すると型エラー）を機械で固定する。** 上の実行時チェックは
+      // `as unknown as` で型を迂回しているので、将来 `localFastGate?:` と任意化されても
+      // typecheck もテストも通ってしまう。`@ts-expect-error` を置くと、任意化した瞬間に
+      // 「エラーが出るはずの箇所でエラーが出ない」で typecheck が落ちる。
+      expect(() =>
+        // @ts-expect-error localFastGate は必須（省略できない / #705）
+        buildDelegationPrompt(withoutDeclaration),
       ).toThrow(/localFastGate/);
       expect(() =>
         buildDelegationPrompt({ ...BASE, localFastGate: 'GREEN' as unknown as 'green' }),

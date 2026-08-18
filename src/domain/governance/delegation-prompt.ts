@@ -31,7 +31,7 @@
  */
 export type LocalFastGate = 'green' | 'not-run' | 'failed';
 
-const LOCAL_FAST_GATE_VALUES: readonly LocalFastGate[] = ['green', 'not-run', 'failed'];
+export const LOCAL_FAST_GATE_VALUES: readonly LocalFastGate[] = ['green', 'not-run', 'failed'];
 
 /** 委譲 1 件分の可変部分。 */
 export type DelegationInput = {
