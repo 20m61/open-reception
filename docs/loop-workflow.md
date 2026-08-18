@@ -139,10 +139,13 @@ gh pr create --fill --base main \
   --body-file .github/pull_request_template.md   # テンプレを編集して使う
 ```
 
-🔴 **クラウドセッション（Claude Code on the web / Routine）では `gh pr create` が使えない (#678)。**
+🔴 **クラウドの routine セッションでは `gh pr create` が使えない (#678)。**
 サンドボックスの `gh` は PR レビュー用の pinned な操作セットしか GraphQL を通さず、
 `gh pr create` が本体の POST の前に撃つ repo info preamble（`RepositoryInfo`）が 403 になる。
-**開発の既定はクラウドなので、そちらでは次を使う**（REST だけで完結する）:
+
+⚠️ **人が claude.ai/code で開く web セッションで同じ制限がかかるかは未検証**（403 の観測は
+すべて routine 側。`docs/cloud-dev-environment.md` §4）。**どちらであれ次は動く**ので、
+判別が付くまではこちらを既定にする（REST だけで完結する）:
 
 ```bash
 git push -u origin HEAD
@@ -181,8 +184,8 @@ PR タイトルは squash 後の main コミットになるため、Conventional
 gh pr merge --squash --delete-branch
 ```
 
-🔴 **クラウドセッションでは `gh pr merge` も 403 になる (#702)。** PR 作成と同じ GraphQL 制約で、
-2026-08-18 の PR #701 で実測した。**開発の既定はクラウドなので、そちらでは次を使う**:
+🔴 **routine セッションでは `gh pr merge` も 403 になる (#702)。** PR 作成と同じ GraphQL 制約で、
+2026-08-18 の PR #701 で実測した（web セッションは未検証。上と同じ）。次を使う:
 
 ```bash
 npx tsx scripts/merge-pull-request.ts --number <番号>

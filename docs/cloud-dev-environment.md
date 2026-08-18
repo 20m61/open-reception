@@ -7,6 +7,110 @@ claude.ai/code の環境ダイアログにあり、リポジトリからは触�
 セッションは Ubuntu 24.04 の使い捨て VM（4 vCPU / 16 GB RAM / 30 GB ディスク）で、
 リポジトリはクローンされた状態で始まる。
 
+## 0. 人がやる手順（チェックリスト）
+
+**このファイルの残りは「なぜそうなっているか」の記録。ここは「あなたが何をするか」だけ。**
+
+### 0-A. 環境の初期設定 — 1 回だけ（✅ 2026-08-18 時点で設定済み）
+
+claude.ai/code の環境 **open-reception**（`env_012h7PiJKNb4EYzKRSuBwpX3`）に対して:
+
+1. **Network access を Custom** にし、「Also include default list of common package managers」に
+   チェックを入れたうえで `cdn.playwright.dev` と `awscli.amazonaws.com` を足す（§1）
+2. **Setup script 欄**に `scripts/cloud-setup.sh` の**中身をそのまま貼る**。
+   🔴 **このファイル自体は実行されない。** 実体は貼られた文字列なので、
+   `cloud-setup.sh` を変更したら**環境ダイアログ側も貼り替える**
+
+**済んでいるかの判定は §0-E の点検で付く**（設定を眺めるより、実物を見る方が確実）。
+
+### 0-B. 毎回 — web セッションで 1 周回す
+
+1. claude.ai/code で環境 **open-reception** のセッションを開く
+2. 最初にこれを渡す:
+
+   ```
+   issue #<N> を 1 周してください。手順は docs/loop-workflow.md、
+   着手前に .claude/skills/issue-ac-mapping に従って AC を実コードへマッピングすること。
+   PR 作成は `npx tsx scripts/create-pull-request.ts`、
+   マージは `npx tsx scripts/merge-pull-request.ts --number <番号>`。
+   ```
+
+3. **完了は実物で確かめる。** 「終わりました」を信じない ―― PR の URL と、
+   `merged=true` の確認結果を報告させる（**ブランチが出来たこと≠PR が出来たこと**。#656 は
+   これで FAIL の記録を 5 日間失った）
+4. マージ後、**ローカル macOS で**後始末する（クラウドからは ref を消せない）:
+
+   ```bash
+   git switch main && git pull --ff-only
+   git push origin --delete <branch> && git branch -D <branch>
+   ```
+
+### 0-C. AWS の窓を開ける／閉じる — デプロイのときだけ
+
+**短命 STS の発行はローカル macOS 限定**（`guard-destructive.sh` がクラウドでブロックする / #675）。
+
+1. **ローカル**で `./scripts/aws-issue-credentials.sh`（既定 4h・最大 12h）。値はクリップボードへ
+2. 環境ダイアログの**環境変数**へ 5 つ登録:
+   `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` / `AWS_SESSION_TOKEN` / `AWS_REGION` /
+   `AWS_CREDENTIAL_EXPIRATION`
+3. クラウドから `docs/runbook-cloud-aws-deploy.md` の手順（verify → preflight → diff → deploy → smoke）
+4. 🔴 **終わったら 5 つとも削除して窓を閉じる**（runbook ステップ 11）
+
+> **実例**: 2026-08-18 の点検で、**8/13〜15 のデプロイ時の 5 変数が残ったまま**だった。
+> STS は最大 12 時間なので値は失効していたが、**閉じる手順が実施されていなかった**。
+> 期限切れに頼らず、明示的に消す。
+
+### 0-D. 週次ゲート routine（`docs/gate-runs.md` を埋めるもの）
+
+https://claude.ai/code/routines を開き、本文を **`./scripts/record-gate-run.sh --publish` を
+呼ぶだけ**の形にする。PR 作成まで完結する（#678 で REST 化済み）。
+
+🔴 **これは人にしかできない。** `RemoteTrigger` の `list` は新しい 20 件しか返さず cursor も
+受け付けないため、one-shot routine を作るほど古い cron routine が読めなくなる（#656 のブロッカー）。
+
+### 0-E. 環境の健康診断 — たまに／ゲートの結果が不審なとき
+
+web セッションでこれを流す。**値は出さない**（名前だけ）:
+
+```bash
+for c in gh aws gitleaks semgrep; do printf '%-10s %s\n' "$c" "$(command -v $c || echo MISSING)"; done
+ls /opt/pw-browsers 2>/dev/null | head -3
+env | grep -o '^AWS_[A-Z_]*' || echo "AWS 変数なし（正常）"
+gh api graphql -f query='query{viewer{login}}' >/dev/null 2>&1 \
+  && echo "GraphQL OK" || echo "GraphQL 403（REST スクリプトを使う）"
+```
+
+見るべきは 3 点:
+
+| 見るところ | 期待 | 外れていたら |
+| --- | --- | --- |
+| 4 コマンド | 全部パスがある | Setup script が古い or 貼られていない → §0-A 2. を貼り直す |
+| `AWS_*` | **なし** | 窓が開けっぱなし → §0-C 4. で削除 |
+| GraphQL | どちらでもよい | 403 なら REST スクリプト必須（routine は 403 と実測済み。§4） |
+
+> **なぜ「4 コマンドが入っていること」を気にするのか**: `gitleaks` / `semgrep` が無いと
+> `quality-gate.sh` は **FAIL ではなく SKIP** する。SKIP は赤くならないので、
+> **マージゲートが黙って弱くなる**（#545 で実際に踏んだ）。
+
+### 0-F. 実測の記録（2026-08-18）
+
+環境が実際にどうなっているかを read-only の probe で確認した結果:
+
+```
+Setup script cached from previous run          ← 貼られている（環境ログ）
+gh 2.45.0 /usr/bin/gh        aws-cli 2.36.22 /usr/local/bin/aws
+gitleaks 8.29.0              semgrep 1.173.0
+/opt/pw-browsers: chromium-1194 / chromium-1228 （イメージ同梱）
+cdn.playwright.dev 400 / awscli.amazonaws.com 301   ← どちらも到達＝許可済み
+AWS_* が 5 つ残存                                    ← 窓が開けっぱなしだった
+```
+
+`aws` の mtime = `2026-08-13 18:59`、`semgrep` = `19:02` ―― #680 で AWS CLI を
+`cloud-setup.sh` へ足した時期と一致する。**素のイメージでは説明が付かない**ので、
+Setup script は貼られていると判断できる。
+
+---
+
 ## 1. 環境ダイアログ側の設定（claude.ai/code）
 
 ### Network access: **Custom**
@@ -136,7 +240,8 @@ GitHub の署名で `verified: true` になっている（`gh api repos/:owner/:
 | **VRT ベースライン（linux）** | ✅ 解消（第 94 wave）。欠落 4 枚を生成し、stale だった 5 枚を取り直した。詳細は §6 |
 | **VRT ベースライン（darwin）** | ⚠️ 逆に darwin 側が stale になった。`kiosk-idle` 3 枚が待機カードの並び順を #422 inc5-b 以前のまま持つ。**macOS でしか取り直せない**。詳細は §6 |
 | **VRT の自動生成** | `playwright.config.ts` で `updateSnapshots: 'none'` にしてある。既定の `'missing'` は欠落分をその場の描画で自動生成し、`retries: 1` と組み合わさると**1 回目が書いて落ち retry が通る**ため、レビューされていない描画が「正」として焼き付く。取り直すときは `--update-snapshots` を明示し、**差分を見てからコミットする** |
-| **`gh` の GraphQL** | 🔴 **PR レビュー用の pinned な操作セットしか通らない。** `gh pr list` / `gh pr view` に加えて **`gh pr create`（2026-08-10 実測 / #678）も `gh pr merge`（2026-08-18・PR #701 で実測 / #702）も 403**。PR #665 の時点では作成もマージも通っていた ―― **通っていたことを根拠に残さない**。作成は `npx tsx scripts/create-pull-request.ts --head … --title …`、マージは `npx tsx scripts/merge-pull-request.ts --number …`、照会は `gh api repos/{owner}/{repo}/…`（すべて REST のみ） |
+| **`gh` の GraphQL**（routine セッション） | 🔴 **PR レビュー用の pinned な操作セットしか通らない。** `gh pr list` / `gh pr view` に加えて **`gh pr create`（2026-08-10 実測 / #678）も `gh pr merge`（2026-08-18・PR #701 で実測 / #702）も 403**。PR #665 の時点では作成もマージも通っていた ―― **通っていたことを根拠に残さない**。作成は `npx tsx scripts/create-pull-request.ts --head … --title …`、マージは `npx tsx scripts/merge-pull-request.ts --number …`、照会は `gh api repos/{owner}/{repo}/…`（すべて REST のみ） |
+| **`gh` の GraphQL**（web セッション） | ⚠️ **未検証。** 上の 403 はすべて **routine セッション**での観測で、人が claude.ai/code で開くインタラクティブなセッションで同じ制限がかかるかは**測っていない**。§0 の手順 3 で判別する。**どちらであれ REST 経路（上記スクリプト）は動く**ので、迷ったらそちらを使う |
 | **`git push`** | セッションの作業ブランチに対してのみ可。force push と remote 削除は不可（非 fast-forward を作らない運用で回避する）。**マージ後のブランチ削除もできない**（`git push origin --delete` が HTTP 403）ので、ローカルの後始末として扱う |
 | **`.open-next/`** | fresh checkout には無い。以前は `infra WebStack synth` が SKIP → `--strict` で FAIL になっていたが、**`quality-gate.sh` が自分でビルドするようになった**（#677）。手で `npm run build:open-next` を先に打つ必要はもう無い |
 | **lighthouse** | `lhci` は npm 依存なので `npm ci` で入る。Chrome は `playwright.config.ts` と同じ理由で `quality-gate.sh` が `CHROME_PATH` を補完する |
