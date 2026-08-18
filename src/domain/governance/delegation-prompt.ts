@@ -131,7 +131,9 @@ export function buildDelegationPrompt(input: DelegationInput): string {
 
   // 手順 11〜12（PR 作成後の扱い）。**名前で持ち、名前で並べる**（配列添字での組み立ては
   // 過去に手順を黙って落とした実績がある。冒頭の doc comment を参照）。
-  const stepPrCreate = `green なら \`gh pr create --base main --head ${input.branch}\` で PR を作る。タイトル:
+  const stepPrCreate = `green なら次で PR を作る（**\`gh pr create\` は使わないこと** — このセッションでは GraphQL の repo info preamble が 403 になる / #678）:
+   \`npx tsx scripts/create-pull-request.ts --head ${input.branch} --base main --title "<下記>" --body "<下記>"\`
+   タイトル:
    \`${input.title}\`
    本文には次を必ず含める:
    - 何を変えたか（上記背景の要約）
@@ -139,7 +141,7 @@ export function buildDelegationPrompt(input: DelegationInput): string {
    - **人間承認が必要な変更**: 該当の有無を明記する
    - 末尾に \`Refs ${refs}\``;
   const stepConfirmPr =
-    '🔴 **PR が実際に作成されたことを `gh pr view --json number,url` で確認して番号を報告する。** 作成に失敗した場合は**黙って終わらせず、エラー全文を報告**すること。**ブランチが出来たこと＝PR が出来たことではない**（#656 はこれで FAIL の記録を 5 日間失った）。';
+    '🔴 **PR の実在は上のコマンドが REST で引き直して確認する**（0 で終われば実在確認済み）。**その URL を報告する。** 非ゼロで終わったら**黙って終わらせず、出力全文を報告**すること。**ブランチが出来たこと＝PR が出来たことではない**（#656 はこれで FAIL の記録を 5 日間失った）。';
   const stepMergeOrStop =
     stopAfter === 'merge'
       ? 'PR が出来たら `gh pr merge <番号> --squash --delete-branch` でマージする。ブランチが残っても構いません（ローカル側で後始末します）。'
@@ -178,10 +180,13 @@ export function buildDelegationPrompt(input: DelegationInput): string {
 
   // `gh pr merge` への言及は `stopAfter: 'merge'` のときだけ（'pr' の出力には
   // `gh pr merge` がどこにも現れないことをテストで固定している）。
+  // 🔴 **`gh pr create` も 403 になる (#678)。** PR #665 の時点では通っていたが、
+  // 2026-08-10 の週次ゲートで repo info preamble（`RepositoryInfo`）が拒否された。
+  // 作成は `scripts/create-pull-request.ts`（REST のみ）へ寄せてある。
   const graphqlNote =
     stopAfter === 'merge'
-      ? '`gh pr create` / `gh pr merge` は通る。'
-      : '`gh pr create` は通る（マージはしない）。';
+      ? '**`gh pr create` も 403 になる**ので PR 作成は `scripts/create-pull-request.ts` を使う。`gh pr merge` は通る。'
+      : '**`gh pr create` も 403 になる**ので PR 作成は `scripts/create-pull-request.ts` を使う（マージはしない）。';
 
   return `リポジトリ 20m61/open-reception のブランチ \`${input.branch}\`（head = \`${input.headSha}\`、base = main \`${input.baseSha}\`）を、${openingGoal}
 

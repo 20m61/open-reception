@@ -156,3 +156,70 @@ export function pullsQueryPath(repo: GitHubRepo, branch: string): string {
   const head = encodeURIComponent(`${repo.owner}:${branch}`);
   return `repos/${owner}/${name}/pulls?state=all&per_page=1&head=${head}`;
 }
+
+/** PR を 1 本作るのに要る最小の内容。 */
+export interface PullRequestDraft {
+  readonly head: string;
+  readonly base: string;
+  readonly title: string;
+  readonly body: string;
+}
+
+/**
+ * PR を **REST で作る** `gh` の引数列を組み立てる (#678)。
+ *
+ * ## なぜ `gh pr create` を使えないのか
+ *
+ * `pullsQueryPath` が照会側で踏んだ制約（PR #665）は、**作成側にも当てはまる**。
+ * 2026-08-10 の週次ゲート（`record-gate-run.sh --publish`）で実測:
+ *
+ * ```
+ * HTTP 403: This GraphQL query (RepositoryInfo, sent by gh pr create/view (repo info preamble))
+ * is not enabled for this session — only the pinned set of PR-review operations is served.
+ * Use REST via `gh api repos/{owner}/{repo}/...` instead.
+ * ```
+ *
+ * `gh pr create` は本体の POST の前に repo info の GraphQL preamble を撃つため、
+ * **PR 本文が正しくても作成に到達しない**。このとき記録は push 済みで PR だけ無い
+ * ―― #656（FAIL が main に載らない）がそのまま再生産される。
+ *
+ * ## 組み立てで気をつけていること
+ *
+ * - **値は `-f key=value` の 1 argv 要素**に収める。分割して渡すと本文が引数として散り、
+ *   改行を含む body が壊れる（`gh` は `=` の**最初の 1 個**で key と value を割るので、
+ *   値の中の `=` は安全）。
+ * - **空の head / base / title では組み立てない。** 空 head は 422 で気づけるが、
+ *   **空 base は既定ブランチへ倒れうる** ―― 意図しない先へ向いた PR は後から気づきにくい。
+ *   `parseGitHubRepo` と同じく「読めなければ推測しない」に倒す。
+ * - `--jq .html_url` で URL だけを返す。呼び出し側は #656 の作法に従い、
+ *   **返った URL を REST で引き直して実在を確認する**（作成できたという申告を信じない）。
+ */
+export function pullCreateArgs(repo: GitHubRepo, draft: PullRequestDraft): string[] {
+  for (const [label, value] of [
+    ['head', draft.head],
+    ['base', draft.base],
+    ['title', draft.title],
+  ] as const) {
+    if (value.trim() === '') {
+      throw new Error(`PR の ${label} が空です（推測で PR を作らないため組み立てを中止します）`);
+    }
+  }
+  const owner = encodeURIComponent(repo.owner);
+  const name = encodeURIComponent(repo.repo);
+  return [
+    'api',
+    '--method',
+    'POST',
+    `repos/${owner}/${name}/pulls`,
+    '-f',
+    `title=${draft.title}`,
+    '-f',
+    `head=${draft.head}`,
+    '-f',
+    `base=${draft.base}`,
+    '-f',
+    `body=${draft.body}`,
+    '--jq',
+    '.html_url',
+  ];
+}

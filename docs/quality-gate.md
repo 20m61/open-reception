@@ -46,16 +46,27 @@ sast 49s (8%) / lint 37s (6%) / typecheck 25s (4%) / secrets + audit 4s。
 | 状態 | 意味 | ゲートの挙動 |
 | --- | --- | --- |
 | `fresh` | 成果物が揃い、`src/` より新しい | synth suite を実行 |
-| `stale` | 成果物はあるが `src/` の方が新しい | **SKIP（理由付き）＋ green として記録しない** |
+| `stale` | 成果物はあるが `src/` の方が新しい | **`npm run build:open-next` を実行して揃えてから** synth suite を実行（#677） |
 | `absent` | 未ビルド（4 つの必須成果物のいずれかが無い） | 同上 |
 
-`stale` を **FAIL にしていない**理由: `src/` を触れば毎回 `stale` になるため、赤にすると
-**ゲートが常時赤になり「赤を無視する習慣」がつく**（#424 増分 3 と同じ理屈）。代わりに
-summary へ `SKIP  infra WebStack synth  (理由)` を必ず出す。**黙って 0 件にしない**ことが
-#628 の要点で、`npm run build:open-next` を打てば `fresh` に戻って実行される。
+**`fresh` 以外はゲートが自分でビルドして復旧する (#677)。** 以前は SKIP（理由付き）で
+人間の再実行に委ねていたが、fresh checkout は**クラウドセッションの既定の姿**なので、
+2026-08-10 の週次ゲート（#318）が `.open-next/` 未ビルドのまま SKIP → `--strict` で FAIL に
+なった。`--pr` / `--full` も毎回「SKIP → 手でビルド → 再実行」の 2 パスを強いていた。
 
-**ただし green としても記録しない (#640)。** ここが「FAIL にしない」との両立点で、
-`--fast` は infra を含まないため各変更ごとの高速チェックは赤くならず、
+- **ビルドの失敗は FAIL**（SKIP ではない）。ビルドが通らないツリーは synth もデプロイも
+  できないので「検査を省いた」ではなく「壊れている」。
+- **ビルドしても揃わなければ従来どおり `skip_unverified`。** 「復旧を試みた」ことは
+  「検査できた」ことではない（#640 の保護をここで緩めない）。
+- `--fast` は infra を含まないので、この自動ビルドが走るのは `--pr` / `--full` だけ。
+
+`stale` それ自体を **FAIL にしていない**理由: `src/` を触れば毎回 `stale` になるため、赤にすると
+**ゲートが常時赤になり「赤を無視する習慣」がつく**（#424 増分 3 と同じ理屈）。復旧できる
+前提の欠落は復旧し、復旧できなかったときだけ summary へ
+`SKIP  infra WebStack synth  (理由)` を出す。**黙って 0 件にしない**ことが #628 の要点。
+
+**復旧できなかったときは green としても記録しない (#640)。** ここが「FAIL にしない」との
+両立点で、`--fast` は infra を含まないため各変更ごとの高速チェックは赤くならず、
 影響を受けるのは **PR / マージの直前**（`--pr` / `--full`）だけになる。
 
 ### SKIP には 2 種類ある（#640）
@@ -65,7 +76,7 @@ summary へ `SKIP  infra WebStack synth  (理由)` を必ず出す。**黙って
 | 種類 | 例 | 実装 | 記録 |
 | --- | --- | --- | --- |
 | 任意ツール未導入 | gitleaks / semgrep / lhci が無い | `skip_or_fail` | **green として記録する**（`--strict` で FAIL にできる） |
-| 検査できなかった | `.open-next` が stale / 状態を判定できない | `skip_unverified` | **記録しない**（exit 1） |
+| 検査できなかった | `.open-next` がビルド後も揃わない / 状態を判定できない | `skip_unverified` | **記録しない**（exit 1） |
 
 前者は「その検査を持っていない」だけだが、後者は**やるはずの検査が前提の破損で走らなかった**
 状態で、「落ちなかった」だけであり「通った」根拠が無い。
@@ -180,6 +191,9 @@ CI が無い以上、「PR 前に `--pr` / マージ前に `--full`」は**規�
   `.next` 等）は指紋に影響しない。
 - 要求 tier は `gh pr create` → `--pr` 以上、`gh pr merge` → `--full`
   （`feedback: merge-gate`）。`--fast` だけでは PR を作れない。
+- 🔴 **REST 経由の PR 作成（`scripts/create-pull-request.ts`）も `--pr` を要求する (#678)。**
+  クラウドでは `gh pr create` が GraphQL 403 で使えず、そちらが PR 作成の主経路になる。
+  見ていないと**移した先がそのままゲートの抜け道**になる。
 - 意図的な迂回は明示的に行う: `OPEN_RECEPTION_SKIP_GATE_GUARD=1 gh pr create ...`。
 - 振る舞いは `tests/hooks/pr-gate-guard.test.ts` で検証している（`npm test` に載る）。
 

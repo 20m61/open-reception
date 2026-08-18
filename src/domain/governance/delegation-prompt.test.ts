@@ -40,8 +40,21 @@ describe('buildDelegationPrompt', () => {
   it('PR の実在確認を必ず含める（#656 の再発防止）', () => {
     // **これが抜けると #656 そのもの。** ブランチが出来たこと＝PR が出来たことではない。
     const p = buildDelegationPrompt(BASE);
-    expect(p).toContain('gh pr view --json number,url');
     expect(p).toContain('ブランチが出来たこと＝PR が出来たことではない');
+  });
+
+  it('PR 作成に GraphQL を撃つコマンドを指示しない (#678)', () => {
+    // 🔴 **委譲先はクラウドなので、ここで `gh pr create` / `gh pr view` を指示すると
+    // 必ず 403 で詰まる。** 2026-08-10 の週次ゲートが実際にこれで落ちた。
+    // 生成器が壊れたコマンドを配り続けると、委譲のたびに同じ失敗を再生産する。
+    // **配っていた実行形そのものを禁ずる。** 「`gh pr create` は使わないこと」という
+    // 注意書きや「`gh pr view --head` は 403」という制約の説明は**残す必要がある**ので、
+    // 素の文字列で禁ずると説明ごと消す羽目になる
+    // （`bash-source.ts` が扱っているのと同じ「言及 vs 本物」の区別）。
+    const p = buildDelegationPrompt(BASE);
+    expect(p).not.toContain('gh pr create --base');
+    expect(p).not.toContain('gh pr view --json');
+    expect(p).toContain('scripts/create-pull-request.ts');
   });
 
   it('クラウドの GraphQL 制約を必ず伝える', () => {
@@ -127,8 +140,8 @@ describe('buildDelegationPrompt', () => {
 
     it("stopAfter: 'pr' でも PR 作成の手順・PR 実在確認は残る", () => {
       const p = buildDelegationPrompt({ ...BASE, stopAfter: 'pr' });
-      expect(p).toContain('gh pr create --base main');
-      expect(p).toContain('gh pr view --json number,url');
+      expect(p).toContain('scripts/create-pull-request.ts');
+      expect(p).toContain('ブランチが出来たこと＝PR が出来たことではない');
     });
 
     it('手順に gh pr merge が残ったまま、禁止事項に手書きのマージ禁止を足すと矛盾として投げる', () => {

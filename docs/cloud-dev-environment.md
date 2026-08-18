@@ -42,7 +42,7 @@ Trusted の既定許可リストに**入っていない**。Trusted のままだ
 
 | 対象 | なぜ要るか |
 | --- | --- |
-| `gh` CLI | プリインストールされていない。ループ workflow が `gh pr create` / `gh pr merge` に全面依存する |
+| `gh` CLI | プリインストールされていない。ループ workflow が PR 作成（REST 経由・§4）と `gh pr merge` に全面依存する |
 | `gitleaks` / `semgrep` | 無いと `quality-gate.sh` が SKIP する。SKIP は FAIL にならないので**マージゲートが黙って弱くなる** |
 | Playwright chromium | イメージに同梱されない場合の保険（同梱時は `playwright.config.ts` が `/opt/pw-browsers` を自動検出する） |
 | `aws` CLI v2（#680） | プリインストールされていない。`scripts/aws-cloud-deploy.sh`（`docs/runbook-cloud-aws-deploy.md` の verify → preflight → diff → deploy → smoke）が preflight/diff/deploy の全経路で直接シェルアウトする。無いと `aws: command not found` で失敗し、しかも旧実装はそれを「AWS 認証情報を解決できません」という**誤った層**のせいにしていた ―― 実際に初回の cloud deploy 試行で踏んだ。今は `scripts/aws-cloud-deploy.sh` 側に `aws` の有無を先に確認する preflight（`src/domain/governance/command-preflight.ts`）を入れてあるので、入れ忘れても診断メッセージは正しい層を指す（が、動かないことに変わりはない） |
@@ -102,7 +102,9 @@ GitHub の署名で `verified: true` になっている（`gh api repos/:owner/:
 | **VRT ベースライン（linux）** | ✅ 解消（第 94 wave）。欠落 4 枚を生成し、stale だった 5 枚を取り直した。詳細は §6 |
 | **VRT ベースライン（darwin）** | ⚠️ 逆に darwin 側が stale になった。`kiosk-idle` 3 枚が待機カードの並び順を #422 inc5-b 以前のまま持つ。**macOS でしか取り直せない**。詳細は §6 |
 | **VRT の自動生成** | `playwright.config.ts` で `updateSnapshots: 'none'` にしてある。既定の `'missing'` は欠落分をその場の描画で自動生成し、`retries: 1` と組み合わさると**1 回目が書いて落ち retry が通る**ため、レビューされていない描画が「正」として焼き付く。取り直すときは `--update-snapshots` を明示し、**差分を見てからコミットする** |
-| **`git push`** | セッションの作業ブランチに対してのみ可。force push と remote 削除は不可（非 fast-forward を作らない運用で回避する） |
+| **`gh` の GraphQL** | 🔴 **PR レビュー用の pinned な操作セットしか通らない。** `gh pr list` / `gh pr view` に加えて **`gh pr create` も 403**（repo info preamble の `RepositoryInfo` クエリ。2026-08-10 の週次ゲートで実測 / #678）。PR 作成は `npx tsx scripts/create-pull-request.ts --head … --title …`（REST のみ）を使う。照会は `gh api repos/{owner}/{repo}/…` |
+| **`git push`** | セッションの作業ブランチに対してのみ可。force push と remote 削除は不可（非 fast-forward を作らない運用で回避する）。**マージ後のブランチ削除もできない**（`git push origin --delete` が HTTP 403）ので、ローカルの後始末として扱う |
+| **`.open-next/`** | fresh checkout には無い。以前は `infra WebStack synth` が SKIP → `--strict` で FAIL になっていたが、**`quality-gate.sh` が自分でビルドするようになった**（#677）。手で `npm run build:open-next` を先に打つ必要はもう無い |
 | **lighthouse** | `lhci` は npm 依存なので `npm ci` で入る。Chrome は `playwright.config.ts` と同じ理由で `quality-gate.sh` が `CHROME_PATH` を補完する |
 
 ## 5. 最初のクラウドセッションでやること（受入確認）
