@@ -129,6 +129,11 @@ green 記録が無ければブロックする。記録はゲートが実際に�
 - `agents/loop-track.md` … 並行トラック実装用の subagent（ループ規約を内蔵。`Agent` の
   `subagent_type: "loop-track"` + `isolation: "worktree"` で使う）。
 - `rules/` … パススコープ付き制約（admin/platform API 認可、PII/secret 最小化、TDD）。
+- `skills/loop-round` … `/loop-round`。**1 周の入口**（AC マッピング → ブランチ → TDD →
+  ゲート → PR → マージ → 後始末）。**routine / web セッション / ローカルのどこで走っていても
+  同じ手順**で、場所で変わる部分（回せるゲートの範囲・ブランチ削除）だけを明示する。
+  委譲プロンプト生成器と同じコマンドを名指ししていることは
+  `tests/config/loop-round-skill.test.ts` が縛る（散文が実測から遅れる型を機械で止める）。
 - `skills/quality-gate` … `/quality-gate` で `scripts/quality-gate.sh` を起動する project skill。
 - `skills/issue-ac-mapping` … `/issue-ac-mapping`。**各周回の冒頭で必ず通す**。issue の AC を
   実コードへマッピングし、未充足の AC だけを increment 化する。キューの分類は仮説であって

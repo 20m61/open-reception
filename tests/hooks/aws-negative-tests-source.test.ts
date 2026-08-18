@@ -16,7 +16,7 @@
 import { spawnSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 const SCRIPT = resolve(process.cwd(), 'scripts/aws-negative-tests.ts');
 const SOURCE = readFileSync(SCRIPT, 'utf8');
@@ -70,6 +70,19 @@ function extractFunctionBody(source: string, functionSignature: string, nextMark
   if (end === -1) throw new Error(`next marker not found after ${functionSignature}: ${nextMarker}`);
   return source.slice(start, end);
 }
+
+
+/**
+ * 🔴 **既定の 5s では足りない。** このファイルのテストは `tsx` を子プロセスとして起動する
+ * （1 件あたり素の状態でも 1〜2 秒）。ゲート実行中はマシンの負荷が上がるため ―― `--fast` 自身が
+ * load を押し上げる ―― **5.1〜7.8s でタイムアウトし、アサーションに到達する前に落ちる**。
+ * 2026-08-18 の 1 セッションで 6 回観測し、毎回**別のテスト**が落ちた（＝内容ではなく時間）。
+ * 単独実行では全 PASS する。
+ *
+ * これは検査の弱体化ではない。**同じアサーションに、到達するまでの時間を与えるだけ**。
+ * 実際に壊れているものは 30s あっても落ちる。
+ */
+vi.setConfig({ testTimeout: 30_000 });
 
 describe('aws() と simulate() の catch が正しい判定関数を呼んでいる', () => {
   it('aws()（対象アクションを直接実試行）の catch は classifyAwsError を使う', () => {

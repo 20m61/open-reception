@@ -7,6 +7,11 @@ squash マージ → クリーンアップ → Issue クローズ」で消化す
 暴走防止ガード、人間承認が必要な変更の一覧、architecture fitness functions の棚卸しは
 [`docs/ai-development-loop.md`](ai-development-loop.md) を参照する（#424 / #426）。
 
+> **入口**: この手順を実際に回すときは **`/loop-round`**（`.claude/skills/loop-round/`）を使う。
+> **routine セッションでも、claude.ai/code の web セッションでも、ローカルでも同じ手順**で、
+> 場所によって変わるのは「回せるゲートの範囲」と「ブランチ削除をどこでやるか」だけ。
+> 本書はその**正本**（なぜそうするかを含む詳細）。
+
 **前提方針**
 
 - **GitHub Actions は使用しない。** 品質ゲートは `scripts/quality-gate.sh` の実行で担保する。
