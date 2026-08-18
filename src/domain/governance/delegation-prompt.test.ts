@@ -16,6 +16,7 @@ const BASE: DelegationInput = {
   summary: '説明。',
   changedFiles: ['src/a.ts'],
   refs: [656],
+  localFastGate: 'green',
 };
 
 describe('buildDelegationPrompt', () => {
@@ -171,6 +172,91 @@ describe('buildDelegationPrompt', () => {
           extraProhibitions: ['マージしないこと'],
         }),
       ).not.toThrow();
+    });
+  });
+  describe('ローカル --fast の申告 (#705)', () => {
+    /**
+     * 生成器は「ローカル `--fast` は green」を**無条件で**出していた。入力に無い、
+     * 生成器には確かめようがない事実で、2026-08-18 にメモリ枯渇で `--fast` が完走
+     * しなかった周回でも「green」と書いた。**断定してよいのは入力から導けることだけ。**
+     */
+    const ASSERTION = 'ローカル `--fast` は green';
+
+    it('green を申告したときだけ「ローカル --fast は green」と書く', () => {
+      expect(buildDelegationPrompt({ ...BASE, localFastGate: 'green' })).toContain(ASSERTION);
+    });
+
+    it.each(['not-run', 'failed'] as const)(
+      '%s のとき green という断定が出力に現れない',
+      (state) => {
+        const p = buildDelegationPrompt({
+          ...BASE,
+          localFastGate: state,
+          localFastGateNote: '負荷でゲートが完走しなかった',
+        });
+        expect(p).not.toContain(ASSERTION);
+        // 委譲先が「ローカルで通っていたのだから環境要因か」と誤読しないよう、
+        // 何が唯一の根拠なのかを明示する。
+        expect(p).toContain('唯一の根拠');
+        expect(p).toContain('負荷でゲートが完走しなかった');
+      },
+    );
+
+    it('failed で理由が無ければ投げる', () => {
+      // Conventional Commits 検査と同じ扱い。理由なしの「失敗」は委譲先が判断に使えない。
+      expect(() =>
+        buildDelegationPrompt({ ...BASE, localFastGate: 'failed' }),
+      ).toThrow(/localFastGateNote|理由/);
+      expect(() =>
+        buildDelegationPrompt({ ...BASE, localFastGate: 'failed', localFastGateNote: '   ' }),
+      ).toThrow(/localFastGateNote|理由/);
+    });
+
+    it('not-run は理由が無くても投げないが、green とは書かない', () => {
+      const p = buildDelegationPrompt({ ...BASE, localFastGate: 'not-run' });
+      expect(p).not.toContain(ASSERTION);
+      expect(p).toContain('唯一の根拠');
+    });
+
+    it('申告が欠けている spec（JSON 経由）は実行時に投げる', () => {
+      // `scripts/delegate-gate-prompt.ts` は spec.json を `as DelegationInput` で
+      // キャストするだけなので、型だけでは欠落を止められない。**実際の呼び出し経路が
+      // JSON である以上、実行時にも縛る。**
+      const { localFastGate: _omitted, ...withoutDeclaration } = BASE;
+      expect(() =>
+        buildDelegationPrompt(withoutDeclaration as unknown as DelegationInput),
+      ).toThrow(/localFastGate/);
+      expect(() =>
+        buildDelegationPrompt({ ...BASE, localFastGate: 'GREEN' as unknown as 'green' }),
+      ).toThrow(/localFastGate/);
+    });
+  });
+
+  describe('停止境界を断定しない (#705)', () => {
+    it('「停止境界には触れていません」と断定しない', () => {
+      // 生成器は変更が停止境界に触れるかを判断できない。入力にも無い。
+      for (const state of ['green', 'not-run', 'failed'] as const) {
+        const p = buildDelegationPrompt({
+          ...BASE,
+          localFastGate: state,
+          localFastGateNote: '理由',
+        });
+        expect(p).not.toContain('停止境界には触れていません');
+      }
+    });
+
+    it('代わりに change-risk の報告を求める手順が入る', () => {
+      // 憶測をやめ、実行したセッションだけが持つ事実（ゲート出力）を根拠にする。
+      //
+      // 🔴 **`'change-risk'` だけを見てはいけない。** PR 本文の指示にも同じ語が出るので、
+      // それだけだと**手順が丸ごと消えてもテストが通る**（変異で実際に生き残った）。
+      // 手順にしか現れない文字列で縛る。
+      const p = buildDelegationPrompt(BASE);
+      expect(p).toContain('`change-risk (停止境界)` 節');
+      // 手順として（番号付きで）入っていること。
+      expect(p).toMatch(/^\d+\. ゲート出力の `change-risk \(停止境界\)` 節/m);
+      // PR 本文側にも貼らせること。
+      expect(p).toContain('人間承認が必要な変更');
     });
   });
 });

@@ -34,6 +34,8 @@ const BASE = {
   summary: '説明。',
   changedFiles: ['src/a.ts'],
   refs: [675],
+  // #705: ローカルゲートの結果は**申告が必須**（生成器は確かめられない）。
+  localFastGate: 'green' as const,
 };
 
 describe('loop-round スキルと委譲プロンプトの整合', () => {
