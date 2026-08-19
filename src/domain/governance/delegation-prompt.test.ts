@@ -1,5 +1,12 @@
 import { describe, expect, it } from 'vitest';
-import { buildDelegationPrompt, type DelegationInput } from './delegation-prompt';
+import {
+  GRAPHQL_OBSERVATION,
+  GRAPHQL_REST_ROUTE,
+  OBSERVATION_CAVEAT,
+  REST_UNCONDITIONAL,
+  buildDelegationPrompt,
+  type DelegationInput,
+} from './delegation-prompt';
 
 /**
  * 委譲プロンプトの生成。
@@ -32,10 +39,36 @@ describe('buildDelegationPrompt', () => {
     expect(buildDelegationPrompt(BASE)).toContain('build:open-next');
   });
 
-  it('「要約の緑だけを信じるな」と infra の偽 green を必ず含める', () => {
+  it('「要約の緑だけを信じるな」と infra の偽 green の見分け方を必ず含める', () => {
     const p = buildDelegationPrompt(BASE);
     expect(p).toContain('要約の緑だけを信じず');
-    expect(p).toContain('138 passed (138)');
+    // 見分け方は残す（#642 の偽 green を検出するために置いた一文）。
+    expect(p).toContain('skipped');
+  });
+
+  /**
+   * 🔴 **実測値を焼き込まない (#710)。** 生成器はテスト件数を数えていない（`DelegationInput`
+   * に無い）のに `138 passed (138)` が本物だと書いていた。**単調に増える値**なので放置すれば
+   * 必ず陳腐化し、実際に 2026-08-18 の PR #708 では `153 passed (153)` が出ていた。
+   * 委譲先は「本物の green を偽と疑う」か「skip 混じりで偶然 138 になった出力を本物と読む」
+   * のどちらにも倒れうる —— **検出器として置いた一文が検出器でなくなっていた。**
+   *
+   * 数値ではなく**性質**（`N passed (N)` の形＝ skip が 0）で書けば、数えなくて済む。
+   */
+  it('🔴 テスト件数を焼き込まない（数えていない値を断定しない）', () => {
+    const p = buildDelegationPrompt(BASE);
+    expect(p, '生成器が数えていないテスト件数を本文に書いている').not.toMatch(/\d+ passed/);
+    // 置き換えた中身（本物の形と「数えるな」）も残す。片方だけ消えても落ちるように。
+    expect(p, '本物の形が書かれていない').toContain('N passed (N)');
+    expect(p, '件数を数えるなと言っていない').toMatch(/件数[^。]*数えない/);
+  });
+
+  it('🔴 所要時間も焼き込まない（生成器は測っていない）', () => {
+    // `3〜5 分` も `DelegationInput` に無く測っていない値。実測が伸びたとき、
+    // 委譲先が hang と誤認して kill すると**ゲートが走らないまま終わる**。
+    const p = buildDelegationPrompt(BASE);
+    expect(p, '測っていない所要時間を書いている').not.toMatch(/\d+\s*〜\s*\d+\s*分/);
+    expect(p).toContain('時間の長さで失敗と判断しないこと');
   });
 
   it('PR の実在確認を必ず含める（#656 の再発防止）', () => {
@@ -69,6 +102,144 @@ describe('buildDelegationPrompt', () => {
   it('クラウドの GraphQL 制約を必ず伝える', () => {
     // 知らないと `gh pr list` を使って 403 で詰まる（今日 4 周分を失った経路）。
     expect(buildDelegationPrompt(BASE)).toContain('GraphQL');
+  });
+
+  /**
+   * 🔴 **委譲先の権限状態を断定しない (#710)。** 403 は `DelegationInput` に無く、生成器は
+   * 確かめていない。**同じファイルの数行上に、この危険が自分の言葉で書いてあった** ——
+   * 「PR #665 の時点では両方通っていた（当時の記述は正しく、今は誤り）。**通っていたことを
+   * 根拠に残さない**」。原則が片方向にしか適用されていなかった。
+   *
+   * 観測の範囲つきにすれば、次に実測が変わったとき**委譲先が気づいて報告できる**。
+   * 一方で**コマンドの指示は無条件のまま**でよい —— REST だけを使う経路は権限状態に
+   * よらず通るので、弱める理由が無い（#678 / #702 の損失はここを配り損ねた結果）。
+   */
+  /** 「環境の既知の制約」節を切り出す。取れなければ落とす（黙って全文を見ない）。 */
+  const constraintSection = (stopAfter: 'pr' | 'merge'): string => {
+    const p = buildDelegationPrompt({ ...BASE, stopAfter });
+    const from = p.indexOf('## 環境の既知の制約');
+    const to = p.indexOf('## 禁止事項');
+    expect(from, '環境の既知の制約 節が無い').toBeGreaterThan(-1);
+    expect(to, '禁止事項 節が 環境の既知の制約 より後ろに無い').toBeGreaterThan(from);
+    return p.slice(from, to).trim();
+  };
+
+  /**
+   * 🔴 **語彙ではなく構造で縛る (#710 レビュー MAJOR-2)。**
+   *
+   * 最初は「`403 になる` と書かない」「`このセッションでは` と書かない」という*語彙*で
+   * 縛ったが、**言い換えた再断定が素通りした** ——「あなたの環境でも必ず 403 です」を
+   * 挿しても `時点の観測` と `違っていたら` は前後に残るので通り、
+   * 「必ず 403 です —— 違っていたら報告してください」という**自己矛盾した本文が
+   * 無検出で出荷可能**だった（レビューの変異で実証）。
+   *
+   * `gate-stamp-check.ts` に同じ教訓が既に書いてある（語彙リストを足すのではなく
+   * 形を変える）。節本文を部品の連結だけで組み立て、**部品から組み直した文字列との
+   * 完全一致**で縛る。期待値を `renderEnvironmentConstraints` から作らないこと ——
+   * 描画関数どうしの比較はトートロジーで、両辺が同時に動いて通ってしまう（#711 で踏んだ）。
+   */
+  it.each(['merge', 'pr'] as const)('🔴 stopAfter: %s の制約節は部品の連結だけで出来ている', (stopAfter) => {
+    const expected =
+      GRAPHQL_OBSERVATION + OBSERVATION_CAVEAT + GRAPHQL_REST_ROUTE[stopAfter] + REST_UNCONDITIONAL;
+    // 期待値は**部品から組み直す**。描画関数と比べるとトートロジー（両辺が同時に動く）。
+    expect(constraintSection(stopAfter)).toBe(`## 環境の既知の制約\n\n${expected}`);
+  });
+
+  /**
+   * 🔴 **等式は部品の「中身」を守らない (#710 レビュー MAJOR-A)。** 期待値も実物も同じ
+   * 定数から出来ているので、定数の中へ断定や逃げ道を書き足す変異は**両辺が同時に動いて
+   * 通る**。実測で 6 通りの言い換えが素通りした（`あなたの環境でも 403 です` /
+   * `とはいえ実際には例外なく 403 です` / `403 は必ず返ります`（語順で正規表現を回避）/
+   * `GRAPHQL_REST_ROUTE` を空にする、等）。中身は正の pin と文単位の規則で守る。
+   */
+  it.each(['merge', 'pr'] as const)('🔴 stopAfter: %s の REST 経路の部品が骨抜きにされていない', (stopAfter) => {
+    // 手順節にも同じ文字列が出るので、**定数そのもの**に対して要求する
+    // （本文への `toContain` では手順 6 / 11 が満たしてしまい、部品が空でも通った）。
+    expect(GRAPHQL_REST_ROUTE[stopAfter]).toContain('scripts/create-pull-request.ts');
+    if (stopAfter === 'merge') {
+      expect(GRAPHQL_REST_ROUTE[stopAfter]).toContain('scripts/merge-pull-request.ts');
+    }
+  });
+
+  it.each(['merge', 'pr'] as const)(
+    '🔴 stopAfter: %s の制約節で、403 を語る文には必ず観測時点が同居する',
+    (stopAfter) => {
+      // 🔴 **語彙の禁止では足りない。** `必ず 403` を禁じても `403 は必ず返ります` は
+      // 語順で抜ける。「403 を主張するなら、いつの観測かを添える」という**文単位の規則**
+      // なら語順に依存しない。断定を書き足すには日付を偽るしかなくなる。
+      const sentences = constraintSection(stopAfter)
+        .split('。')
+        .filter((t) => t.includes('403'));
+      expect(sentences.length, '403 に触れる文が 1 つも無い').toBeGreaterThan(0);
+      for (const sentence of sentences) {
+        expect(sentence, `観測時点の無いまま 403 を語っている: ${sentence}`).toMatch(
+          /\d{4}-\d{2}-\d{2}|時点の観測|#\d+/,
+        );
+      }
+    },
+  );
+
+  it('🔴 但し書きが報告を求めている（限定しすぎてもいない）', () => {
+    // REST の失敗は理由を問わず報告してもらう。「403 以外」と書くと、
+    // 「REST は権限状態によらず通る」を反証する唯一の観測を報告対象から外すことになる。
+    expect(OBSERVATION_CAVEAT).toMatch(/報告してください/);
+    expect(OBSERVATION_CAVEAT, 'REST の 403 を報告対象から外している').not.toContain('403 以外');
+  });
+
+  it('🔴 観測の部品は観測時点を持ち、但し書きは保証でないと言う', () => {
+    expect(GRAPHQL_OBSERVATION, '観測時点が書かれていない').toContain('時点の観測');
+    expect(OBSERVATION_CAVEAT).toContain('保証ではありません');
+    // 「確かめに行け」と読ませない。全経路を REST に寄せている以上、「通った」を観測できる
+    // のは委譲先がわざわざ GraphQL を撃ったときだけになる（レビュー Minor-3）。
+    expect(OBSERVATION_CAVEAT).toContain('確かめに行く必要はありません');
+  });
+
+  it.each(['merge', 'pr'] as const)('🔴 stopAfter: %s で現在形の断定が残っていない', (stopAfter) => {
+    const p = buildDelegationPrompt({ ...BASE, stopAfter });
+    expect(p).not.toMatch(/403 に(なる|なります)/);
+    expect(p, '委譲先のセッションについて断定している').not.toContain('このセッションでは');
+    // 言い換えによる再断定も、節スコープでは意味の側から塞ぐ（構造の縛りとの二重）。
+    expect(constraintSection(stopAfter)).not.toMatch(/(必ず|常に|確実に)\s*403/);
+  });
+
+  /**
+   * 🔴 **禁止文そのものを縛る (#710 レビュー MAJOR-1)。**
+   *
+   * 前版は `toContain('scripts/create-pull-request.ts')` と
+   * `not.toContain('gh pr create --base')` の 2 本で、**どちらも既存テストの真部分集合**
+   * だった（＝単独では構造上ほぼ絶対に落ちない）。実際、手順 6 の「使わないこと」を
+   * 「もし通るならそれでもよいが」へ弱めても全テストが green のままだった。
+   * #678 / #702 の実損（壊れたコマンドを配る）と**対称の欠陥**で、しかも周囲の文言を
+   * 書き換えたこの周回こそ、この保護が要るタイミングだった。
+   */
+  it.each(['merge', 'pr'] as const)('🔴 stopAfter: %s で REST 経路の指示が無条件に残る', (stopAfter) => {
+    const p = buildDelegationPrompt({ ...BASE, stopAfter });
+    expect(p, 'gh pr create の禁止文が消えている').toContain('`gh pr create` は使わないこと');
+    if (stopAfter === 'merge') {
+      expect(p, 'gh pr merge の禁止文が消えている').toContain('`gh pr merge` は使わないこと');
+      expect(p).toContain('scripts/merge-pull-request.ts');
+    }
+    expect(p).toContain('scripts/create-pull-request.ts');
+    // 断定をやめても指示は弱まらない、という根拠の一文（レビュー Minor-2）。
+    expect(constraintSection(stopAfter)).toContain('権限状態によらず通る');
+    // 🔴 **緩和語彙は本文全文で禁じ、て/で の両方を拾う (#710 レビュー MAJOR-B)。**
+    // 前版は手順節だけを見て `でもよい` を禁じていたので、日本語で最も自然な緩和形
+    // `使ってもよい`（**て**）も、制約節や末尾へ足した「通る環境なら使ってもよいです」も
+    // 素通りした。禁止文を**残したまま同じ文中で**骨抜きにできる状態だった。
+    expect(p, '緩和語彙で禁止文が骨抜きにされている').not.toMatch(
+      /(て|で)もよい|(て|で)も構いません|問題ありません|差し支え|可能なら|推奨します|任意です/,
+    );
+    // 🔴 **`gh pr create` / `gh pr merge` に触れてよいのは「禁じる」か「観測を述べる」
+    // ときだけ。** 3 つ目の文脈（勧める・許す）が増えたら落ちる。件数で縛ると正当な
+    // 言及（手順の禁止文＋制約節の観測）まで巻き込むので、文ごとの役割で縛る。
+    for (const cmd of ['gh pr create', 'gh pr merge']) {
+      const mentions = p.split(/[。\n]/).filter((t) => t.includes(cmd));
+      for (const sentence of mentions) {
+        expect(sentence, `${cmd} を禁止でも観測でもない文脈で挙げている: ${sentence}`).toMatch(
+          /使わないこと|403/,
+        );
+      }
+    }
   });
 
   it('既定の禁止事項を必ず含める', () => {
@@ -333,5 +504,22 @@ describe('branch の検証 (#711 レビュー Minor-4)', () => {
     const { branch: _omitted, ...withoutBranch } = BASE;
     expect(() => buildDelegationPrompt(withoutBranch as unknown as typeof BASE)).toThrow(/branch/);
     expect(() => buildDelegationPrompt({ ...BASE, branch: '  ' })).toThrow(/branch/);
+  });
+});
+
+describe('stopAfter の検証 (#710 レビュー Minor-2)', () => {
+  it('🔴 不正な stopAfter を弾く（リテラル undefined が本文へ出る回帰）', () => {
+    // 🔴 実経路は spec.json の `as DelegationInput` キャストなので、型では止まらない。
+    // `Record` 引きにした結果、未知の値だと**リテラル `undefined` が本文に出て
+    // REST 経路の一文が消える**（三項演算子だった頃は `pr` 側へ縮退していた）。
+    expect(() =>
+      buildDelegationPrompt({ ...BASE, stopAfter: 'PR' as unknown as 'pr' }),
+    ).toThrow(/stopAfter/);
+  });
+
+  it('🔴 どの stopAfter でも本文にリテラル undefined が出ない', () => {
+    for (const stopAfter of ['pr', 'merge'] as const) {
+      expect(buildDelegationPrompt({ ...BASE, stopAfter })).not.toContain('undefined');
+    }
   });
 });
