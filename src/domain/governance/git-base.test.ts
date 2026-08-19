@@ -317,8 +317,10 @@ describe('collectChangedPaths: 収集失敗を空集合と区別する (#709)', 
 
   // 🔴 **`-z` を使う** (#718)。既定の git は非 ASCII パスを `"\\346\\227\\245..."` と
   // エスケープするので、`docs/日本語.md` が `docs/` に一致しなくなる。
-  const DIFF = 'diff --name-only -z abc123 HEAD';
-  const STATUS = 'status --porcelain -uall -z';
+  // 🔴 **`--no-renames`** (#719)。リネーム検出が効いていると git は新側しか返さないので、
+  // ガード対象からの持ち出し（`git mv infra/... docs/...`）が見えなくなる。
+  const DIFF = 'diff --name-only --no-renames -z abc123 HEAD';
+  const STATUS = 'status --porcelain --no-renames -uall -z';
 
   it('両方成功したら failures は空で、コミット済みと未コミットを合わせて返す', () => {
     const run = runnerFailing([], {
@@ -380,7 +382,7 @@ describe('collectChangedPaths: 収集失敗を空集合と区別する (#709)', 
     // **status 側も見る。** DIFF 側だけだと `record.slice(3).trim()` にする変異が
     // 素通りする（porcelain のパース経路が縛られない）。
     const run = runnerFailing([], {
-      [DIFF]: '  src/a.ts  \0\0',
+      [DIFF]: '  src/a.ts  \0',
       [STATUS]: ' M   src/b.ts  \0 M \0',
     });
     expect([...collectChangedPaths(run, 'abc123').paths].sort()).toEqual([
@@ -389,19 +391,33 @@ describe('collectChangedPaths: 収集失敗を空集合と区別する (#709)', 
     ]);
   });
 
-  it('リネーム元の旧パスは、3 文字目が空白でも読み飛ばす (#718)', () => {
-    // `R  <新>\0<旧>\0` の旧側が `ab cd.ts` のようなパスだと、3 文字目の空白だけを見る
-    // 判定では状態レコードと誤認し、**旧パスを変更パスとして数えてしまう**。
-    // 状態コードの集合（`ab` は該当しない）まで見て弾く。
-    const run = runnerFailing([], { [STATUS]: 'R  new/a.ts\0ab cd.ts\0' });
-    expect(collectChangedPaths(run, null).paths).toEqual(['new/a.ts']);
+  it('🔴 リネーム検出を切って呼ぶ（切らないと持ち出しが見えない / #719）', () => {
+    // `--no-renames` が無いと git は新側しか返さず、
+    // `git mv infra/lib/stacks/認証.ts docs/x.md` の旧側が消える。
+    // **この引数が落ちると #719 がそのまま再発する**ので、引数そのものを縛る。
+    const calls: string[] = [];
+    const run = (args: ReadonlyArray<string>): string | null => {
+      calls.push(key(args));
+      return '';
+    };
+    collectChangedPaths(run, 'abc123');
+    expect(calls).toContain(DIFF);
+    expect(calls).toContain(STATUS);
+    for (const call of calls) expect(call).toContain('--no-renames');
   });
 
-  it('旧パスが続かない壊れた出力でも、実在するパスを捨てない (#718)', () => {
-    // 前提（R/C には必ず旧パスが続く）が崩れたとき、無条件に読み飛ばすと**次の実在する
-    // パスを黙って捨てる**＝停止境界の偽陰性へ倒れる。状態レコードの形なら飛ばさない。
-    const run = runnerFailing([], { [STATUS]: 'R  new/a.ts\0 M src/b.ts\0' });
-    expect([...collectChangedPaths(run, null).paths].sort()).toEqual(['new/a.ts', 'src/b.ts']);
+  it('リネームは削除 + 追加として両方返る (#719)', () => {
+    // `--no-renames` を付けた git の実出力の形（実測）。R/C レコードは出ない。
+    const run = runnerFailing([], {
+      [DIFF]: 'docs/移動.md\0infra/lib/stacks/認証.ts\0',
+      [STATUS]: 'A  docs/新.md\0D  src/app/page.tsx\0',
+    });
+    expect([...collectChangedPaths(run, 'abc123').paths].sort()).toEqual([
+      'docs/新.md',
+      'docs/移動.md',
+      'infra/lib/stacks/認証.ts',
+      'src/app/page.tsx',
+    ]);
   });
 
   it('非 ASCII パスがエスケープされない形で読める (#718)', () => {
@@ -423,17 +439,15 @@ describe('collectChangedPaths: 収集失敗を空集合と区別する (#709)', 
     expect(collectChangedPaths(run, 'abc123').paths).toEqual(['変な"名前.txt']);
   });
 
-  it('リネームは新しい側を取り、未追跡ディレクトリの畳み込みを防ぐ -uall を使う', () => {
-    // 🔴 **`-z` のリネームは `R  <新>\0<旧>\0` で、既定の `<旧> -> <新>` と順序が逆。**
-    // 旧側は独立したレコードとして続くので、読み飛ばさないとパスとして混入する。
+  it('未追跡ディレクトリの畳み込みを防ぐ -uall を使う', () => {
+    // `-uall` が抜けると未追跡ディレクトリが `src/foo/` の 1 行へ畳まれ、
+    // 中のファイルがまるごと判定から消える（実際に踏んだ）。
     const calls: string[] = [];
     const run = (args: ReadonlyArray<string>): string | null => {
       calls.push(key(args));
-      return key(args) === STATUS ? 'R  new/a.ts\0old/a.ts\0' : '';
+      return key(args) === STATUS ? '?? src/foo/a.ts\0' : '';
     };
-    const result = collectChangedPaths(run, null);
-    expect(result.paths).toEqual(['new/a.ts']);
-    // `-uall` が抜けると未追跡ディレクトリが 1 行に畳まれ、中のファイルが判定から消える。
+    expect(collectChangedPaths(run, null).paths).toEqual(['src/foo/a.ts']);
     expect(calls).toContain(STATUS);
   });
 });

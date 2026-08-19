@@ -39,6 +39,10 @@ function tempDir(prefix: string): string {
 }
 
 export function git(cwd: string, args: ReadonlyArray<string>): string {
+  // `git mv a b/c` は b が無いと失敗する。テスト側の意図は「移動」なので先に掘る。
+  if (args[0] === 'mv' && args[2] !== undefined) {
+    mkdirSync(dirname(join(cwd, args[2])), { recursive: true });
+  }
   return execFileSync(REAL_GIT, [...args], { cwd, encoding: 'utf8' });
 }
 
@@ -49,6 +53,35 @@ export function writeFile(root: string, relative: string, content = 'x\n'): void
 }
 
 export type TempRepo = { root: string; base: string };
+
+/**
+ * 起点コミットの後にリネームを 1 件だけ入れたリポジトリを作る (#719)。
+ *
+ * `commit` が true ならリネームをコミットする（`git diff` 経路）。false なら未コミットの
+ * まま残す（`git status` 経路）。**両方で効くことを確かめる**ため引数にしてある。
+ */
+export function makeRenameRepo(
+  from: string,
+  to: string,
+  options: { commit: boolean },
+  prefix = 'gate-rename-',
+): TempRepo {
+  // 🔴 **`from` は起点コミットに入れる。** 起点の後にコミットすると、起点から見た HEAD は
+  // 「`to` が新規追加された」だけになり、**git はリネームとして報告しない**（実際に踏んだ）。
+  // 検査したいのは「起点にあったものが持ち出された」ケースなので、この順序が要る。
+  const root = tempDir(prefix);
+  git(root, ['init', '--quiet', '--initial-branch=main']);
+  git(root, ['config', 'user.email', 'test@example.com']);
+  git(root, ['config', 'user.name', 'test']);
+  git(root, ['config', 'commit.gpgsign', 'false']);
+  writeFile(root, from);
+  git(root, ['add', '-A']);
+  git(root, ['commit', '--quiet', '-m', 'base']);
+  const base = git(root, ['rev-parse', 'HEAD']).trim();
+  git(root, ['mv', from, to]);
+  if (options.commit) git(root, ['commit', '--quiet', '-m', 'rename']);
+  return { root, base };
+}
 
 /**
  * 「起点コミット + `committed` をコミットした状態」のリポジトリを作る。

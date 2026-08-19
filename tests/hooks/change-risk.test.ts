@@ -21,6 +21,10 @@ import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:f
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { afterAll, describe, expect, it } from 'vitest';
+// 🔴 **リネーム構築だけは共有ヘルパを使う** (#719 レビュー m-4)。
+// 「起点コミットに移動元を入れる」という肝を 2 箇所に複製すると、片方だけ直したときに
+// 素通りするテストへ戻る（今回まさに一度踏んだ型）。
+import { makeRenameRepo } from './helpers/git-repo';
 
 const CLI = resolve(process.cwd(), 'scripts/change-risk.ts');
 
@@ -197,6 +201,20 @@ describe('scripts/change-risk.ts: 測れていないことを断定しない (#7
     expect(stdout).toContain('人間承認が必要な変更に触れています');
     expect(stdout).toContain('infra/lib/stacks/認証.ts');
   }, 60_000);
+
+  describe('ガード対象からの持ち出しリネーム (#719)', () => {
+    it.each([
+      ['コミット済み（git diff 経路）', true],
+      ['未コミット（git status 経路）', false],
+    ])('🔴 %s: infra から docs へ動かしても停止境界として検出する', (_label, commit) => {
+      // 新側しか見ないと `docs/移動.md` だけになり、**「停止境界に触れていません」**と
+      // 報告していた（実測）。停止境界の偽陰性なので倒れる向きが安全側でない。
+      const repo = makeRenameRepo('infra/lib/stacks/認証.ts', 'docs/移動.md', { commit });
+      const { stdout } = run(repo);
+      expect(stdout).toContain('人間承認が必要な変更に触れています');
+      expect(stdout).toContain('infra/lib/stacks/認証.ts');
+    }, 60_000);
+  });
 
   it('git が正常で当たりがあれば、根拠パス付きで承認が要ると出す', () => {
     const repo = makeRepo(['infra/lib/stacks/web.ts']);

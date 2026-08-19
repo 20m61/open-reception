@@ -26,6 +26,7 @@ import {
   cleanupTempDirs,
   failingGitShim,
   git,
+  makeRenameRepo,
   makeRepo,
   runScript,
   writeFile,
@@ -93,6 +94,32 @@ describe('scripts/change-scope.ts: 測れていないのに検証を省略しな
     expect(stdout).toMatch(/^note=/m);
     expect(stdout).toContain('git diff --name-only');
   }, 60_000);
+
+  describe('ガード対象からの持ち出しリネーム (#719)', () => {
+    it.each([
+      ['コミット済み（git diff 経路）', true],
+      ['未コミット（git status 経路）', false],
+    ])('🔴 %s: src → docs へ動かしたら docs と判定しない', (_label, commit) => {
+      // 新側しか見ないと `docs/page.md` だけになり、**build / e2e / sast / lighthouse が
+      // 飛んだまま green が記録される**（実測）。
+      const repo = makeRenameRepo('src/app/page.tsx', 'docs/page.md', { commit });
+      const stdout = run(repo);
+      expect(stdout).toContain('scope=code');
+      expect(stdout).not.toContain('skip=');
+    }, 60_000);
+
+    it.each([
+      ['コミット済み', true],
+      ['未コミット', false],
+    ])('%s: docs 内のリネームは docs のままで、過剰に code へ倒れない', (_label, commit) => {
+      // **倒しすぎない。** 持ち出しでないリネームまで code にすると、docs 判定が
+      // 事実上死んで「当てにならない」という不信になる。
+      const repo = makeRenameRepo('docs/古い.md', 'docs/新しい.md', { commit });
+      const stdout = run(repo);
+      expect(stdout).toContain('scope=docs');
+      expect(stdout).toContain('skip=build');
+    }, 60_000);
+  });
 
   it('起点を解決できなければ code（既存のガードを壊さない）', () => {
     // 🔴 **未コミットに docs だけを置く。** クリーンなツリーだと収集結果が空になり、
