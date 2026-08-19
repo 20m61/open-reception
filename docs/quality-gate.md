@@ -281,6 +281,12 @@ CI が無い以上、「PR 前に `--pr` / マージ前に `--full`」は**規�
   マージの主経路は `scripts/merge-pull-request.ts` と生の `gh api .../pulls/<n>/merge`。
   **両方**を見る。PR の照会（`.../pulls/<n>`）は止めない — 日常的に使うので、広く取ると
   誤検出でガードごと迂回される。
+- 🔴 **委譲プロンプト生成器（`scripts/delegate-gate-prompt.ts`）もスタンプを読む (#711)。**
+  spec の `localFastGate: "green"` という**申告**を、現ツリーに一致する記録で裏取りする。
+  一致しなければ非 0 で止まる（本文を出さない）。記録ファイルがまだ無い／git 外は
+  **判定不能として通す**（警告のみ）—— 「測れなかった」を「嘘だった」に倒さない。
+  spec は**リポジトリ外か `.delegate-*.json`**（gitignore 済）へ置くこと。未追跡ファイルも
+  指紋に入るため、repo 内へ書くと正直な green 申告が落ちる。
 - 意図的な迂回は明示的に行う: `OPEN_RECEPTION_SKIP_GATE_GUARD=1 gh pr create ...`。
 - 振る舞いは `tests/hooks/pr-gate-guard.test.ts` で検証している（`npm test` に載る）。
 

@@ -63,8 +63,12 @@ repo info preamble が 403 になる（#678 / #702 で実測）。web セッシ�
 ## 5. ローカルに居て `--pr` / `--full` が要るとき（委譲）
 
 ```bash
-npx tsx scripts/delegate-gate-prompt.ts <spec.json>   # 委譲プロンプトを生成（手書きしない）
+npx tsx scripts/delegate-gate-prompt.ts .delegate-spec.json   # 委譲プロンプトを生成（手書きしない）
 ```
+
+🔴 **spec はリポジトリ外か `.delegate-*.json`（gitignore 済）へ置く。** 未追跡（非 ignore）
+ファイルもツリー指紋に入るので、repo 内の追跡対象になる場所へ spec を書くと**直前の green が
+stale 扱いになり、正直な申告が下の裏取りで落ちる**（`.vrm-check/` と同じ理由）。
 
 `RemoteTrigger` で `run_once_at` を 2〜4 分後に置いた one-shot routine を作り、**直後に
 `clear_mcp_connections`**（MCP コネクタが全部自動アタッチされる）。`run` は使わない（二重発火）。
@@ -77,8 +81,11 @@ npx tsx scripts/delegate-gate-prompt.ts <spec.json>   # 委譲プロンプトを
 かつては「ローカル `--fast` は green」を無条件で出しており、実際に完走していない周回でも
 そう書いて委譲先へ渡していた（#705）。**`green` の申告はゲートスタンプで裏取りされる**
 （#711）—— 現ツリーに一致する記録が無ければ生成器が非 0 で止まる。記録がまだ無い
-（一度も走らせていない / 別 worktree）ときは**判定不能として通す**。同じ理由で**停止境界も断定しない** — 生成される
-手順が `change-risk (停止境界)` の報告を求めるので、その報告が唯一の根拠になる。
+（一度も走らせていない / 別 worktree）ときは**判定不能として通す** ——「測れなかった」を
+「嘘だった」に倒さない。
+
+**停止境界も同様に断定しない。** 生成される手順が `change-risk (停止境界)` の報告を求めるので、
+その報告が唯一の根拠になる。
 
 ## 6. PR とマージ
 

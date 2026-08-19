@@ -27,9 +27,13 @@ export type StampVerdict = 'satisfied' | 'unsatisfied' | 'unknown';
  *
  * 0 = 満たす / 1 = 満たさない / 2 = 判定不能（git 外）/ 3 = 記録がまだ無い。
  *
- * 🔴 **3 を分けているのは呼び出し側の都合。** `gate_stamp_satisfies` は「記録が無い」も
- * 「別ツリーの記録しかない」も 1 に潰すが、前者は**判定不能**（ゲートを一度も走らせて
- * いない / 別 worktree で走らせた）であって「申告が嘘」ではない。
+ * 🔴 **2 / 3 は `gate_stamp_satisfies` の戻り値ではなく、呼び出し側が被せる約束。**
+ * `gate_stamp_satisfies` は 0 / 1 しか返さず、「記録ファイルが無い」も「記録はあるが
+ * 現ツリーと一致しない（＝この worktree でゲートを通した後に編集した / そもそも
+ * 通していない）」も 1 に潰す。前者は**判定不能**（一度も走らせていない / 別 worktree で
+ * 走らせた）であって「申告が嘘」ではないので、呼び出し側がファイルの有無を先に見て
+ * 3 を、`gate_stamp_file` 自体が失敗（git 外）したら 2 を返す
+ * （`scripts/delegate-gate-prompt.ts` の `readStampVerdict`）。
  *
  * **それ以外（起動失敗・シグナル・null）も判定不能**へ倒す —— 落とす側へ倒すと、
  * bash やライブラリが無いだけの環境で委譲が組み立てられなくなる。
@@ -53,20 +57,31 @@ export type DeclarationCheck = {
  * **検証できるのは `green` の申告だけ。** `not-run` / `failed` は「green ではない」と
  * 言っているだけなので、裏取りする対象が無い（スタンプが在っても矛盾ではない ——
  * 手元で走らせた後にコミットした、等はふつうに起こる）。
+ *
+ * `readVerdict` を**遅延**で受けるのはそのため。裏取りしない申告でスタンプを読みに行くと、
+ * 「green だけを検証する」という規則が呼び出し側にも複製され、片方だけ変わりうる。
  */
 export function checkLocalFastGateDeclaration(
   declared: LocalFastGate,
-  verdict: StampVerdict,
+  readVerdict: () => StampVerdict,
 ): DeclarationCheck {
   if (declared !== 'green') return { ok: true };
+  const verdict = readVerdict();
   if (verdict === 'satisfied') return { ok: true };
   if (verdict === 'unsatisfied') {
     return {
       ok: false,
       message:
         'localFastGate に green と申告されていますが、**現ツリーに一致するゲートの green 記録がありません**。' +
-        '記録はゲートが実際に検査したツリーに紐づくので、ゲート後に編集した場合も一致しません。' +
-        '`./scripts/quality-gate.sh --fast` を走らせ直すか、申告を not-run / failed へ直してください (#711)。',
+        '記録はゲートが実際に検査したツリーに紐づくので、ゲート後に 1 文字でも編集した場合のほか、' +
+        '**spec などの未追跡（非 ignore）ファイルをリポジトリ内へ書いた**だけでも一致しなくなります。' +
+        'spec はリポジトリ外か `.delegate-*.json`（gitignore 済）へ置き、' +
+        '`./scripts/quality-gate.sh --fast` を走らせ直してください。' +
+        // 🔴 **ここで「申告を not-run / failed へ直せ」と言わない。** ゲートは実際に
+        // green だったのに指紋がずれただけ、という状況が上の 2 通りで普通に起こる。
+        // そこで申告の書き換えを勧めると**嘘の申告を書かせる** —— #705 と同じ病を逆向きに
+        // 再生産する。申告が誤りであるケースは「事実の指摘」に留め、指示にしない。
+        'なお、そもそもローカル `--fast` を通していなかったのであれば、直すべきは申告の方です (#711)。',
     };
   }
   return {
