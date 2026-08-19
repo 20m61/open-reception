@@ -48,6 +48,25 @@ describe('scripts/change-scope.ts: 測れていないのに検証を省略しな
     expect(stdout).toContain('skip=e2e');
   }, 60_000);
 
+  it('🔴 非 ASCII 名の文書だけの変更も docs と判定する (#718)', () => {
+    // エスケープされると `/^docs\\//` に一致せず、文書だけ触った周回でも
+    // build / e2e / lighthouse が毎回走っていた（倒れる向きは安全側だが、
+    // 日本語主体のリポジトリでは「docs 判定は当てにならない」という不信になる）。
+    const stdout = run(makeRepo(['docs/日本語メモ.md']));
+    expect(stdout).toContain('scope=docs');
+    expect(stdout).toContain('skip=build');
+  }, 60_000);
+
+  it('🔴 未コミットの非 ASCII 文書だけでも docs と判定する（status 経路 / #718）', () => {
+    // `makeRepo` は必ずコミットするので、コミット済みだけを見るテストは `git diff` 経路
+    // しか通らない。ゲートは作業ツリーが dirty な状態で回るのが常態。
+    const repo = makeRepo(['docs/既存.md']);
+    writeFile(repo.root, 'docs/未コミット日本語.md');
+    const stdout = run(repo);
+    expect(stdout).toContain('scope=docs');
+    expect(stdout).toContain('skip=build');
+  }, 60_000);
+
   it('コード変更があれば code で、何も省略しない', () => {
     const stdout = run(makeRepo(['src/app/page.tsx']));
     expect(stdout).toContain('scope=code');

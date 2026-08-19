@@ -74,10 +74,13 @@ function collectStat(base: string | null): ChangeStat & { failures: string[] } {
     deletions += Number.parseInt(del ?? '', 10) || 0;
   }
 
-  const untracked = tryGit(['ls-files', '--others', '--exclude-standard']);
-  if (untracked === null) failures.push('git ls-files --others --exclude-standard');
-  for (const line of (untracked ?? '').split('\n')) {
-    const path = line.trim();
+  // 🔴 **`-z` が要る** (#718)。既定の git は非 ASCII のパスを
+  // `"docs/\\346\\227\\245..."` とエスケープするため、そのまま `readFileSync` すると
+  // ENOENT になり**行数が数えられない**（ファイル数だけ増えて行数が過小になる）。
+  // `--numstat` の方はパス欄を読まない（加減算の 2 列しか使わない）ので影響を受けない。
+  const untracked = tryGit(['ls-files', '--others', '--exclude-standard', '-z']);
+  if (untracked === null) failures.push('git ls-files --others --exclude-standard -z');
+  for (const path of (untracked ?? '').split('\0')) {
     if (path === '' || path === HALT_FILE) continue;
     files += 1;
     try {
