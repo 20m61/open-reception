@@ -58,40 +58,74 @@ _gate_sha256() {
 gate_tree_fingerprint() {
   git rev-parse --git-dir >/dev/null 2>&1 || return 1
 
-  local list existing missing hashes f
-  list="$(mktemp)"; existing="$(mktemp)"; missing="$(mktemp)"; hashes="$(mktemp)"
+  local list existing special missing hashes f
+  list="$(mktemp)"; existing="$(mktemp)"; special="$(mktemp)"
+  missing="$(mktemp)"; hashes="$(mktemp)"
 
-  # core.quotePath=false が必須。既定では非 ASCII パスが "\350\250\255..." 形式に
-  # エスケープされて出力され、実体が見つからず「削除済み」に分類されてしまう。
-  # 結果としてそのファイルの**中身の変更を検出できない**（＝ stale なゲートを通す）。
-  # 日本語ドキュメントを常用するリポジトリなので実際に踏み得る穴だった。
+  # 🔴 **`-z`（NUL 区切り）で列挙する** (#720)。`core.quotePath=false` は非 ASCII を
+  # 素通しするが、**`"` / 改行 / バックスラッシュを含むパスはそれでも引用・エスケープ
+  # される**（`"quo\"te.md"`）。引用された文字列は実体として見つからず「削除済み」に
+  # 分類され、**そのファイルの中身の変更が指紋に入らない** —— つまりゲート実行後に
+  # 書き換えても stale と判定されず、`pr-gate-guard` がマージを通す。実測で再現済み。
+  #
+  # 🔴 **レコード列は最後に `LC_ALL=C sort -u` で畳む。** 列挙順に依存させると、
+  # 内容が 1 バイトも変わっていなくても **`git add` しただけで指紋が変わる**
+  # （新規ファイルが追跡ブロック側へ移り、行の順序が変わるため）。これは
+  # 「コミットしただけで stale にしない」というこのファイルの設計意図に反する。
+  # 改行は `\001` へ潰してあるので**行単位ソートが安全に使え**、`sort -z` の
+  # BSD 可搬性問題も避けられる。ロケール差を持ち込まないよう `LC_ALL=C`。
+  #
+  # `-u` も要る: コンフリクト中（merge / rebase / cherry-pick）の `git ls-files` は
+  # **unmerged パスをステージ 1/2/3 の 3 行**出す。「追跡と未追跡が素集合」なのは
+  # 両リスト間の話で、追跡リスト内に重複が無いという意味ではない。
   {
-    git -c core.quotePath=false ls-files 2>/dev/null
-    git -c core.quotePath=false ls-files --others --exclude-standard 2>/dev/null
-  } | sort -u > "${list}"
+    git ls-files -z 2>/dev/null
+    git ls-files --others --exclude-standard -z 2>/dev/null
+  } > "${list}"
 
-  while IFS= read -r f; do
-    if [ -f "${f}" ]; then
-      printf '%s\n' "${f}" >> "${existing}"
+  while IFS= read -r -d '' f; do
+    if [ ! -f "${f}" ]; then
+      printf 'missing %s\n' "${f//$'\n'/$'\001'}" >> "${missing}"
+    elif [ "${f}" != "${f%%$'\n'*}" ] || [ "${f#\"}" != "${f}" ]; then
+      # 🔴 **一括ハッシュへ渡せないパスは 1 件ずつ叩く。**
+      #
+      #  - 改行を含む … `--stdin-paths` は行区切りなので渡せない
+      #  - **行頭が `"`** … `git hash-object --stdin-paths` は行頭 `"` を C-quote として
+      #    **復号する**。`"a.md"` という名前のファイルが `a.md` に化け、**別ファイルの
+      #    ハッシュ**が記録される（exit 0 で行数も合うので `wc -l` の検査も素通りする）。
+      #    引用が閉じていない `"broken.md` では `fatal: line is badly quoted` で 128 終了し、
+      #    毎回フォールバック（実測 50 秒）へ落ちる。
+      #
+      # 記録側では改行を \001 へ潰して行を壊さない。
+      local blob
+      blob="$(git hash-object -- "${f}" 2>/dev/null)"
+      # ハッシュを採れなかったものを黙って空にしない（#720 と同じ穴になる）。
+      [ -n "${blob}" ] || { rm -f "${list}" "${existing}" "${special}" "${missing}" "${hashes}"; return 1; }
+      printf '%s %s\n' "${blob}" "${f//$'\n'/$'\001'}" >> "${special}"
     else
-      printf 'missing %s\n' "${f}" >> "${missing}"
+      printf '%s\n' "${f}" >> "${existing}"
     fi
   done < "${list}"
 
   if git hash-object --stdin-paths < "${existing}" > "${hashes}" 2>/dev/null &&
      [ "$(wc -l < "${hashes}")" -eq "$(wc -l < "${existing}")" ]; then
-    { paste -d' ' "${hashes}" "${existing}"; cat "${missing}"; } | _gate_sha256 | awk '{print $1}'
+    {
+      paste -d' ' "${hashes}" "${existing}"
+      cat "${special}"
+      cat "${missing}"
+    } | LC_ALL=C sort -u | _gate_sha256 | awk '{print $1}'
   else
-    # フォールバック: 一括ハッシュが使えない場合（特殊文字を含むパス等）。
+    # フォールバック: 一括ハッシュが使えない場合。低速だが確実。
     {
       while IFS= read -r f; do
         printf '%s %s\n' "$(_gate_sha256 < "${f}" | awk '{print $1}')" "${f}"
       done < "${existing}"
+      cat "${special}"
       cat "${missing}"
-    } | _gate_sha256 | awk '{print $1}'
+    } | LC_ALL=C sort -u | _gate_sha256 | awk '{print $1}'
   fi
 
-  rm -f "${list}" "${existing}" "${missing}" "${hashes}"
+  rm -f "${list}" "${existing}" "${special}" "${missing}" "${hashes}"
 }
 
 # tier を数値化する（比較用）。未知の tier は 0。
