@@ -270,7 +270,7 @@ finish() {
     exit 1
   fi
 
-  gate_write_stamp "${TIER}" "${GATE_FINGERPRINT}" "${GATE_SCOPE:-code}"
+  gate_write_stamp "${TIER}" "${GATE_FINGERPRINT}" "${GATE_SCOPE_RECORD:-${GATE_SCOPE:-code}}"
   echo "✅ quality-gate PASSED  (tier=${TIER} を green として記録しました)"
   # **finish は必ず終端する。** 呼び出し口が複数あるので、戻ると呼び出し元の続きが
   # 走ってしまう（seam から呼んだときに全ステップが実行された）。
@@ -342,6 +342,11 @@ fi
 #
 # **起点は 1 度だけここで確定し、`GATE_BASE_SHA` で全消費者へ配る。** 各自が再解決すると
 # 整合が「たまたま同時刻に同じ」という時間的性質に戻る（共有実装にしただけでは閉じない）。
+# 表示済み／未表示を問わず「測れなかった」ことを記録する入れ物 (#717)。
+# **宣言はここ**（起点解決より前）でなければ `set -u` 下で unbound になる。
+declare -a GATE_SCOPE_NOTES
+declare -a GATE_SCOPE_RECORD_NOTES
+
 # 変更範囲の判定より前に置くこと — あれだけが唯一ステップを省略できる消費者なので、
 # 起点がずれると docs 判定で build / e2e / sast / lighthouse が飛ぶ。
 if [[ "$(git rev-parse --is-shallow-repository 2>/dev/null)" == "true" ]]; then
@@ -375,6 +380,12 @@ if [[ -n "$GATE_BASE_SHA" ]]; then
 else
   echo "  ⚠️ 共通祖先へ到達できません。変更量・変更範囲・停止境界は作業ツリーのみで測られます"
   echo "     手動: git fetch --unshallow"
+  # 🔴 **これも「測れなかった」実行として記録する** (#717 レビュー M3)。
+  # クラウドは浅い clone なので**本命はこの経路**。ここを数えないと、カウンタが 0 の
+  # ことが「測れている」証拠として読まれる（偽の安心）。
+  # **表示はここで済んでいる**ので、上の ⚠ を二重に出さないよう記録専用の配列へ入れる
+  # （#712 レビュー m2 が嫌った重複を作らない）。
+  GATE_SCOPE_RECORD_NOTES+=("共通祖先へ到達できないため変更範囲を測れていません（浅い clone / オフライン）")
 fi
 
 # ---- 変更範囲の判定（ステップ省略）---------------------------------------
@@ -383,7 +394,6 @@ fi
 # 判定できない場合は必ず code 扱い＝何も省略しない（楽観に倒すと未検証ツリーが green になる）。
 GATE_SCOPE="code"
 GATE_SKIPS=" "
-declare -a GATE_SCOPE_NOTES
 if [[ "$SKIP_BY_SCOPE" -eq 1 ]] && npx --no-install tsx --version >/dev/null 2>&1; then
   while IFS= read -r line; do
     case "$line" in
@@ -424,7 +434,24 @@ fi
 if [[ -n "${GATE_SCOPE_NOTES[*]:-}" ]]; then
   echo ""
   echo "▶ change-scope: 判定の但し書き"
-  for note in "${GATE_SCOPE_NOTES[@]}"; do echo "  ⚠ ${note}"; done
+  for note in "${GATE_SCOPE_NOTES[@]}"; do
+    echo "  ⚠ ${note}"
+    # 🔴 **サマリにも残す** (#717)。`--full` は 10 分以上走り、この ⚠ は先頭付近に出て
+    # **末尾のサマリからは消える**。`scope_skip` は「省略した理由をサマリへ残す」方針
+    # なのに、「測れなかった」側だけ非対称に扱われていた。
+    # 接頭辞は `SKIP` ではなく `NOTE` —— `record-gate-run.sh` は `^  SKIP  ` を拾うので、
+    # SKIP にすると「任意ツール未導入」と同じ列へ混ざる。
+    SUMMARY+=("NOTE  change-scope  (${note})")
+  done
+fi
+# 表示済みのものと、表示しないが記録するものの**両方**を summary / スタンプへ載せる。
+for note in ${GATE_SCOPE_RECORD_NOTES[@]+"${GATE_SCOPE_RECORD_NOTES[@]}"}; do
+  SUMMARY+=("NOTE  change-scope  (${note})")
+done
+if [[ -n "${GATE_SCOPE_NOTES[*]:-}" ]] || [[ -n "${GATE_SCOPE_RECORD_NOTES[*]:-}" ]]; then
+  # スタンプの scope 列にも残す。クラウドは浅い clone なので、恒常的に起きていても
+  # **後から数える手段が無い**のがこの issue の本体。
+  GATE_SCOPE_RECORD="${GATE_SCOPE}(unmeasured)"
 fi
 
 # ---- ループの停止指示と変更量 (#424 増分 4) -------------------------------

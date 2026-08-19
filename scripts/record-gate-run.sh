@@ -96,6 +96,16 @@ if [[ "${RESULT}" == "FAIL" ]]; then
   NOTE="要 issue 起票（docs/quality-gate.md の FAIL 時ハンドリング参照）"
 fi
 
+# 🔴 **「測れなかった」実行を後から数えられるようにする** (#717)。
+# クラウド（`--pr` / `--full` の既定実行環境）は浅い clone なので、変更範囲を測れずに
+# 全ステップを走らせる状態が**恒常的に起きていても気づけない**。その場で出る ⚠ は
+# 流れて消えるので、コミットされる記録（`docs/gate-runs.md`）に印を残す。
+# 列は増やさない（`gate-run-evaluation.ts` は位置で読む）。備考へ足す。
+UNMEASURED="$(grep -oE '^  NOTE  change-scope  .*' "${OUTPUT_FILE}" | sed -E 's/^  NOTE  change-scope  //' | paste -sd ';' - || true)"
+if [[ -n "${UNMEASURED}" ]]; then
+  NOTE="${NOTE} / 未測定: ${UNMEASURED}"
+fi
+
 ROW="| ${TS} | \`${SHA}\` | full | ${RESULT} | ${SKIP_ITEMS} | ${NOTE} |"
 
 if [[ "${DRY_RUN}" -eq 1 ]]; then

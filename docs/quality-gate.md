@@ -119,6 +119,15 @@ infra テストは `TMPDIR` を周回ごとの一時 root へ向けて後始末�
 閉じている。`change-budget` は分類せず行数を数えるだけだが、パスでファイルを読むので
 同じく `-z` を使う。`-z` はエスケープも引用も一切しないので `"` を含むパスも壊れない。
 
+**測れなかった実行は後から数えられる (#717)。** 変更範囲を測れずに `code` へ倒した実行は、
+その場の ⚠ だけでなく **summary の `NOTE  change-scope` 行**・**スタンプの scope 列
+（`code(unmeasured)`）**・**`docs/gate-runs.md` の備考（`未測定:`）** に残る。
+`npm run evaluate:gate-runs` が件数を `unmeasured_scope`（warning）として報告する。
+
+**error ではなく warning。** 測れないときは `code` へ倒して全ステップ走らせるので
+検証は省略されていない。ただし恒常的に出るなら clone の深さや起点解決を直す合図。
+クラウドは浅い clone なので、**気づけないことこそが問題**だった。
+
 **リネーム検出は切る (#719)。** 検出が効いていると git は**新側しか返さない**ので、
 `git mv infra/lib/stacks/認証.ts docs/x.md` のような**ガード対象からの持ち出し**が
 見えなくなる。実測では change-risk が「停止境界に触れていません」と言い、change-scope は

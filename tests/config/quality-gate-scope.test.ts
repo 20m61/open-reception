@@ -11,7 +11,7 @@
  * 伝わる経路が黙って落ちる」。落ちたときの症状は**検証を飛ばしたまま green**。
  */
 import { execFileSync } from 'node:child_process';
-import { cpSync, mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
@@ -24,16 +24,28 @@ const REPO = process.cwd();
  * `exitCode` を非 0 にすると、`quality-gate.sh` のフォールバック（`|| echo "scope=code"`）が
  * **後から**流れる状況を作れる。
  */
-function runGate(options: { scopeOutput: string; exitCode?: number }): {
+function runGate(options: { scopeOutput: string; exitCode?: number; withBase?: boolean }): {
   status: number;
   stdout: string;
+  stamp: string;
 } {
   const dir = mkdtempSync(join(tmpdir(), 'gate-scope-'));
   mkdirSync(join(dir, 'scripts', 'lib'), { recursive: true });
   mkdirSync(join(dir, 'bin'), { recursive: true });
   cpSync(resolve(REPO, 'scripts/quality-gate.sh'), join(dir, 'scripts/quality-gate.sh'));
   cpSync(resolve(REPO, 'scripts/lib/gate-stamp.sh'), join(dir, 'scripts/lib/gate-stamp.sh'));
-  execFileSync('git', ['init', '-q'], { cwd: dir });
+  execFileSync('git', ['init', '-q', '--initial-branch=main'], { cwd: dir });
+  // 🔴 **既定では起点が解決できる状態にする。** コミットが無いと `merge-base` が失敗し、
+  // ゲートは「変更範囲を測れていない」と判断する（#717）。それは正しい挙動なので、
+  // 「測れた」経路を検査したいテストは起点を用意しなければならない。
+  if (options.withBase !== false) {
+    execFileSync('git', ['config', 'user.email', 'test@example.com'], { cwd: dir });
+    execFileSync('git', ['config', 'user.name', 'test'], { cwd: dir });
+    execFileSync('git', ['config', 'commit.gpgsign', 'false'], { cwd: dir });
+    writeFileSync(join(dir, 'seed.txt'), 'seed\n');
+    execFileSync('git', ['add', '-A'], { cwd: dir });
+    execFileSync('git', ['commit', '-q', '-m', 'base'], { cwd: dir });
+  }
 
   writeFileSync(
     join(dir, 'bin', 'npx'),
@@ -62,7 +74,8 @@ esac
     status = err.status ?? -1;
     stdout = err.stdout ?? '';
   }
-  return { status, stdout };
+  const stampPath = join(dir, '.git', 'open-reception-gate-stamp');
+  return { status, stdout, stamp: existsSync(stampPath) ? readFileSync(stampPath, 'utf8') : '' };
 }
 
 describe('quality-gate: 変更範囲の読み取り配線 (#712)', () => {
@@ -87,6 +100,34 @@ describe('quality-gate: 変更範囲の読み取り配線 (#712)', () => {
     const { stdout } = runGate({ scopeOutput: 'scope=code\nnote=収集に失敗しました' });
     expect(stdout).toContain('判定の但し書き');
     expect(stdout).toContain('収集に失敗しました');
+  });
+
+  it('🔴 note があれば summary にも残す（10 分後まで届かせる / #717）', () => {
+    // `--full` は 10 分以上走り、この ⚠ は先頭付近に出て**末尾のサマリからは消える**。
+    // `scope_skip` は「省略した理由をサマリへ残す」方針なのに、「測れなかった」側だけ
+    // 非対称に扱われていた。
+    const { stdout } = runGate({ scopeOutput: 'scope=code\nnote=収集に失敗しました' });
+    expect(stdout).toMatch(/^ {2}NOTE {2}change-scope/m);
+    expect(stdout).toContain('収集に失敗しました');
+  });
+
+  it('🔴 測れなかった実行はスタンプの scope 列にも残る (#717)', () => {
+    // クラウドは浅い clone。恒常的に起きていても**後から数える手段が無い**のが問題。
+    const { stamp } = runGate({ scopeOutput: 'scope=code\nnote=収集に失敗しました' });
+    expect(stamp).toContain('code(unmeasured)');
+  });
+
+  it('測れた実行の scope 列は従来どおり（常態化させない）', () => {
+    expect(runGate({ scopeOutput: 'scope=docs\nskip=build' }).stamp).toMatch(/\tdocs\n?$/);
+  });
+
+  it('🔴 起点を解決できない実行も「測れなかった」として記録する (#717)', () => {
+    // クラウドは浅い clone なので**本命はこの経路**。ここを数えないと、
+    // カウンタが 0 のことが「測れている」証拠として読まれる（偽の安心）。
+    // 表示は起点解決の節で済んでいるので、⚠ は二重に出さない。
+    const r = runGate({ scopeOutput: 'scope=code', withBase: false });
+    expect(r.stdout).toMatch(/^ {2}NOTE {2}change-scope {2}\(共通祖先/m);
+    expect(r.stamp).toContain('(unmeasured)');
   });
 
   it('note が無ければ但し書きの節を出さない（常態化させない）', () => {
