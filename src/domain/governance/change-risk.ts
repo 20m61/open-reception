@@ -43,7 +43,22 @@ export type ChangeSignals = {
    * 渡さなくても `package.json` の変更自体は `dependency` に当たる（版上げも #105 の対象）。
    */
   addedDependencies?: ReadonlyArray<string>;
+  /**
+   * 変更パスの収集が**完了したか**の申告 (#709)。
+   *
+   * `git diff` / `git status` は環境で失敗しうる。失敗を空文字に落とすと、呼び出し側は
+   * 「変更 0 件」と区別できず、この関数は「停止境界に触れていません（人間承認は不要）」を
+   * 返してしまう —— **測れていないのに安全宣言をする**。report-only なのでゲートは
+   * 赤くならず、レビューは「機械が触れていないと言った」を根拠にしかねない。
+   *
+   * 省略時は `paths` と `addedDependencies` の**両方が空なら未測定**と読む
+   * （`change-scope.ts` の「変更ゼロは収集失敗の可能性がある」と同じ倒し方）。
+   */
+  measurement?: MeasurementState;
 };
+
+/** 変更パスを集めきれたか。 */
+export type MeasurementState = 'complete' | 'incomplete';
 
 /** 当たった境界と、その根拠（人が確認できないと判定を信用できない）。 */
 export type BoundaryHit = {
@@ -54,8 +69,18 @@ export type BoundaryHit = {
 export type ChangeRiskAssessment = {
   /** 当たった境界。`CHANGE_BOUNDARIES` の順に並ぶ（出力の順序を安定させる）。 */
   hits: ReadonlyArray<BoundaryHit>;
-  /** 1 つでも当たれば true。 */
+  /**
+   * 1 つでも当たれば true。**判定不能（`assessable === false`）のときも true** ——
+   * 測れていないものを「承認不要」と言わない (#709)。
+   */
   requiresHumanApproval: boolean;
+  /**
+   * 判定が成立したか (#709)。
+   *
+   * `false` のとき、`hits` が空でも「境界に触れていない」を意味しない（測れなかっただけ）。
+   * **`hits.length === 0` を「安全」と読み替える前に、必ずここを見ること。**
+   */
+  assessable: boolean;
 };
 
 /**
@@ -128,7 +153,23 @@ export function classifyChangeRisk(signals: ChangeSignals): ChangeRiskAssessment
     if (evidence.length === 0 && added.length === 0) continue;
     hits.push({ boundary, evidence: [...evidence, ...added] });
   }
-  return { hits, requiresHumanApproval: hits.length > 0 };
+  // **測れたかどうかを、当たったかどうかより先に決める** (#709)。
+  const assessable = resolveMeasurement(signals) === 'complete';
+  return { hits, requiresHumanApproval: hits.length > 0 || !assessable, assessable };
+}
+
+/**
+ * 収集が完了したかを決める (#709)。
+ *
+ * 申告があればそれに従う。無いときは「入力が空＝収集に失敗した可能性がある」と読む。
+ * ただし**依存名が採れているなら測れている**（マニフェストは読めている）ので、パスが
+ * 空でも未測定とは限らない。
+ */
+function resolveMeasurement(signals: ChangeSignals): MeasurementState {
+  if (signals.measurement !== undefined) return signals.measurement;
+  const nothingCollected =
+    signals.paths.length === 0 && (signals.addedDependencies ?? []).length === 0;
+  return nothingCollected ? 'incomplete' : 'complete';
 }
 
 /** `package.json` の依存フィールド（欠けていてよい）。 */

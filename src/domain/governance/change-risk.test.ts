@@ -16,10 +16,62 @@ function boundaries(paths: ReadonlyArray<string>): ReadonlyArray<ChangeBoundary>
 }
 
 describe('classifyChangeRisk: 停止境界の機械判定 (#424)', () => {
-  it('変更が無ければ何も当たらず承認も要らない', () => {
-    const assessment = classifyChangeRisk({ paths: [] });
+  it('収集できたうえで変更が無ければ、何も当たらず承認も要らない', () => {
+    // **`measurement: 'complete'` の申告が要る。** 申告が無い空集合は「収集に失敗した
+    // 可能性」と読む（下の #709 の describe を参照）。
+    const assessment = classifyChangeRisk({ paths: [], measurement: 'complete' });
     expect(assessment.hits).toEqual([]);
     expect(assessment.requiresHumanApproval).toBe(false);
+    expect(assessment.assessable).toBe(true);
+  });
+
+  describe('測れていないことを「触れていない」と言わない (#709)', () => {
+    /**
+     * `change-scope.ts:50` は同じ状況に明示的なガードを持つ:
+     *
+     * > 変更ゼロは `code` にする。「何も変わっていない」のではなく「収集に失敗した」
+     * > 可能性があり、そこで検証を省くと最悪の方向へ倒れる。
+     *
+     * `change-risk` にはこれが無く、`git diff` が失敗して空集合になっても
+     * 「停止境界に触れていません（人間承認は不要）」と断定していた。
+     */
+    it('収集失敗を申告したら、判定不能として承認が要る側へ倒れる', () => {
+      const assessment = classifyChangeRisk({ paths: [], measurement: 'incomplete' });
+      expect(assessment.assessable).toBe(false);
+      // 偽陰性は境界を素通りさせる。測れていないなら人へ回す。
+      expect(assessment.requiresHumanApproval).toBe(true);
+    });
+
+    it('申告が無い空集合は判定不能として扱う（既定で安全側）', () => {
+      // 呼び出し側が申告を忘れても、黙って「触れていない」にはしない。
+      const assessment = classifyChangeRisk({ paths: [] });
+      expect(assessment.assessable).toBe(false);
+      expect(assessment.requiresHumanApproval).toBe(true);
+    });
+
+    it('部分的にでも集まったパスは、判定不能でも根拠として残す', () => {
+      // 測れた分は捨てない。「判定は不完全だが、少なくともこれには当たっている」を伝える。
+      const assessment = classifyChangeRisk({
+        paths: ['src/domain/reception/state.ts'],
+        measurement: 'incomplete',
+      });
+      expect(assessment.assessable).toBe(false);
+      expect(assessment.requiresHumanApproval).toBe(true);
+      expect(assessment.hits.map((h) => h.boundary)).toContain('journeyOrStateModel');
+    });
+
+    it('申告が無くてもパスがあれば判定できたものとして扱う（既存の呼び出しを壊さない）', () => {
+      const assessment = classifyChangeRisk({ paths: ['docs/scope.md'] });
+      expect(assessment.assessable).toBe(true);
+      expect(assessment.requiresHumanApproval).toBe(false);
+    });
+
+    it('パスが空でも依存の追加を検出できていれば、判定できたものとして扱う', () => {
+      // 依存名が採れている＝マニフェストは読めている。空集合＝未測定とは限らない。
+      const assessment = classifyChangeRisk({ paths: [], addedDependencies: ['new-lib'] });
+      expect(assessment.assessable).toBe(true);
+      expect(assessment.hits.map((h) => h.boundary)).toContain('dependency');
+    });
   });
 
   it('文書だけの変更は境界に当たらない（この判定が緩すぎると毎回承認待ちになる）', () => {

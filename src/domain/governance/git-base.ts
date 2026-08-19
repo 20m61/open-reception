@@ -264,3 +264,58 @@ export function pullMergeArgs(repo: GitHubRepo, pullNumber: number): string[] {
     'merge_method=squash',
   ];
 }
+
+/** 変更パスの収集結果 (#709)。**失敗を空集合と混ぜない。** */
+export type ChangedPathsCollection = {
+  /** 集まった変更パス（重複排除済み）。 */
+  paths: ReadonlyArray<string>;
+  /**
+   * 失敗した git コマンド。**空でなければ `paths` は不完全**で、
+   * 「変更が無い」と読んではいけない。
+   */
+  failures: ReadonlyArray<string>;
+};
+
+/**
+ * 変更パスを集める (#709。`scripts/change-risk.ts` から移設)。
+ *
+ * ゲートが実際に検査するのは**作業ツリー**なので、ブランチのコミット分と未コミット分の
+ * 両方を見る。
+ *
+ * 🔴 **失敗を `?? ''` で空文字へ落とさない。** 以前はそう書いていたため、`git diff` が
+ * 失敗すると**コミット済みの変更が丸ごと消え**、クリーンなツリーでは「変更 0 件」→
+ * 「停止境界に触れていません」と断定されていた。浅い clone や `--single-branch` clone で
+ * pin された起点の object へ到達できない場合に実際に起こりうる。
+ * `change-scope.ts` は同じ状況に既にガードを持っており、こちらだけ無かった。
+ */
+export function collectChangedPaths(run: GitRunner, base: string | null): ChangedPathsCollection {
+  const paths = new Set<string>();
+  const failures: string[] = [];
+
+  if (base !== null) {
+    const diff = run(['diff', '--name-only', base, 'HEAD']);
+    if (diff === null) failures.push(`git diff --name-only ${base} HEAD`);
+    else for (const line of diff.split('\n')) addIfPresent(paths, line);
+  }
+
+  // 未コミット（staged / unstaged / untracked）。porcelain の先頭 2 桁は状態コード。
+  // **`-uall` が必須**: 既定の porcelain は未追跡ディレクトリを `src/foo/` の 1 行へ畳むので、
+  // 新しいディレクトリに置いたファイルがまるごと判定から消える（実際に踏んだ）。
+  const status = run(['status', '--porcelain', '-uall']);
+  if (status === null) failures.push('git status --porcelain -uall');
+  else {
+    for (const line of status.split('\n')) {
+      if (line.trim() === '') continue;
+      const path = line.slice(3).trim();
+      // リネームは "old -> new" 形式。新しい側を見る。
+      addIfPresent(paths, path.includes(' -> ') ? path.split(' -> ')[1]! : path);
+    }
+  }
+
+  return { paths: [...paths], failures };
+}
+
+function addIfPresent(into: Set<string>, value: string): void {
+  const trimmed = value.trim();
+  if (trimmed !== '') into.add(trimmed);
+}

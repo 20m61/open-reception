@@ -1,10 +1,11 @@
 import { describe, expect, it, vi } from 'vitest';
 import {
   BASE_REF_PREFERENCE,
+  collectChangedPaths,
   parseGitHubRepo,
+  parseLsRemoteSymref,
   pullCreateArgs,
   pullMergeArgs,
-  parseLsRemoteSymref,
   pullsQueryPath,
   resolveBase,
 } from './git-base';
@@ -291,5 +292,103 @@ describe('pullMergeArgs: マージも REST で行う (#702)', () => {
 
   it('owner / repo をエンコードして埋める', () => {
     expect(pullMergeArgs({ owner: 'o w', repo: 'r&x' }, 12)).toContain('repos/o%20w/r%26x/pulls/12/merge');
+  });
+});
+
+/**
+ * 変更パスの収集 (#709)。
+ *
+ * 収集が**失敗した**ことと、**変更が無かった**ことを区別できないと、`change-risk` は
+ * 「停止境界に触れていません」と断定してしまう（測れていないのに安全宣言をする）。
+ * ここでは失敗が `failures` として必ず表に出ることを固定する。
+ */
+describe('collectChangedPaths: 収集失敗を空集合と区別する (#709)', () => {
+  /** 引数の配列を 1 本の文字列にして、期待した git 呼び出しかを見る。 */
+  const key = (args: ReadonlyArray<string>) => args.join(' ');
+
+  /** 指定したコマンドだけ失敗する runner。 */
+  function runnerFailing(failing: ReadonlyArray<string>, outputs: Record<string, string> = {}) {
+    return (args: ReadonlyArray<string>): string | null => {
+      const k = key(args);
+      if (failing.includes(k)) return null;
+      return outputs[k] ?? '';
+    };
+  }
+
+  const DIFF = 'diff --name-only abc123 HEAD';
+  const STATUS = 'status --porcelain -uall';
+
+  it('両方成功したら failures は空で、コミット済みと未コミットを合わせて返す', () => {
+    const run = runnerFailing([], {
+      [DIFF]: 'src/a.ts\nsrc/b.ts\n',
+      [STATUS]: ' M src/c.ts\n?? src/d.ts\n',
+    });
+    const result = collectChangedPaths(run, 'abc123');
+    expect(result.failures).toEqual([]);
+    expect([...result.paths].sort()).toEqual(['src/a.ts', 'src/b.ts', 'src/c.ts', 'src/d.ts']);
+  });
+
+  it('🔴 git diff が失敗したら failures に出る（黙って 0 件にしない）', () => {
+    // これが #709 の本体。`?? ''` で空文字に落ちると、クリーンなツリーでは
+    // 「変更 0 件 → 停止境界に触れていません」と断定されてしまう。
+    const run = runnerFailing([DIFF], { [STATUS]: '' });
+    const result = collectChangedPaths(run, 'abc123');
+    expect(result.paths).toEqual([]);
+    expect(result.failures).toHaveLength(1);
+    expect(result.failures[0]).toContain('diff');
+  });
+
+  it('🔴 git status が失敗しても failures に出る', () => {
+    const run = runnerFailing([STATUS], { [DIFF]: 'src/a.ts\n' });
+    const result = collectChangedPaths(run, 'abc123');
+    expect(result.paths).toEqual(['src/a.ts']);
+    expect(result.failures).toHaveLength(1);
+    expect(result.failures[0]).toContain('status');
+  });
+
+  it('両方失敗したら failures が 2 件（片方だけ報告して安心させない）', () => {
+    const result = collectChangedPaths(runnerFailing([DIFF, STATUS]), 'abc123');
+    expect(result.failures).toHaveLength(2);
+  });
+
+  it('起点が無ければ diff は試さず、status の失敗だけを見る', () => {
+    const calls: string[] = [];
+    const run = (args: ReadonlyArray<string>): string | null => {
+      calls.push(key(args));
+      return '';
+    };
+    const result = collectChangedPaths(run, null);
+    expect(calls.some((c) => c.startsWith('diff'))).toBe(false);
+    expect(result.failures).toEqual([]);
+  });
+
+  it('diff と status に同じパスが出ても 1 件にまとめる', () => {
+    // 同じファイルをコミットしてさらに手で直した場合に両方へ出る。二重に数えない。
+    const run = runnerFailing([], {
+      [DIFF]: 'src/a.ts\n',
+      [STATUS]: ' M src/a.ts\n',
+    });
+    expect(collectChangedPaths(run, 'abc123').paths).toEqual(['src/a.ts']);
+  });
+
+  it('前後の空白と空行は落とす（空文字をパスとして混ぜない）', () => {
+    // 移設前の実装は trim していた。**挙動保存の対象**なので固定する。
+    const run = runnerFailing([], {
+      [DIFF]: '  src/a.ts  \n\n',
+      [STATUS]: ' M   \n',
+    });
+    expect(collectChangedPaths(run, 'abc123').paths).toEqual(['src/a.ts']);
+  });
+
+  it('リネームは新しい側を取り、未追跡ディレクトリの畳み込みを防ぐ -uall を使う', () => {
+    const calls: string[] = [];
+    const run = (args: ReadonlyArray<string>): string | null => {
+      calls.push(key(args));
+      return key(args) === STATUS ? 'R  old/a.ts -> new/a.ts\n' : '';
+    };
+    const result = collectChangedPaths(run, null);
+    expect(result.paths).toEqual(['new/a.ts']);
+    // `-uall` が抜けると未追跡ディレクトリが 1 行に畳まれ、中のファイルが判定から消える。
+    expect(calls).toContain(STATUS);
   });
 });

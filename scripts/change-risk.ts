@@ -14,10 +14,11 @@
 import { execFileSync } from 'node:child_process';
 import {
   addedDependencyNames,
+  type ChangeRiskAssessment,
   classifyChangeRisk,
   type DependencyManifest,
 } from '../src/domain/governance/change-risk';
-import { resolveBase } from '../src/domain/governance/git-base';
+import { collectChangedPaths, resolveBase } from '../src/domain/governance/git-base';
 
 /** 停止境界の日本語ラベル（`docs/ai-development-loop.md` §6 の文言に合わせる）。 */
 const BOUNDARY_LABEL = {
@@ -52,29 +53,6 @@ function tryGit(args: ReadonlyArray<string>): string | null {
  */
 const resolveBaseRef = (): string | null => resolveBase(tryGit, process.env.GATE_BASE_SHA);
 
-/**
- * 変更パスを集める。**ゲートが実際に検査するのは作業ツリー**なので、
- * ブランチのコミット分と未コミット分の両方を見る。
- */
-function changedPaths(base: string | null): ReadonlyArray<string> {
-  const paths = new Set<string>();
-  if (base !== null) {
-    for (const line of (tryGit(['diff', '--name-only', base, 'HEAD']) ?? '').split('\n')) {
-      if (line.trim() !== '') paths.add(line.trim());
-    }
-  }
-  // 未コミット（staged / unstaged / untracked）。porcelain の先頭 2 桁は状態コード。
-  // **`-uall` が必須**: 既定の porcelain は未追跡ディレクトリを `src/foo/` の 1 行へ畳むので、
-  // 新しいディレクトリに置いたファイルがまるごと判定から消える（実際に踏んだ）。
-  for (const line of (tryGit(['status', '--porcelain', '-uall']) ?? '').split('\n')) {
-    if (line.trim() === '') continue;
-    const path = line.slice(3).trim();
-    // リネームは "old -> new" 形式。新しい側を見る。
-    paths.add(path.includes(' -> ') ? path.split(' -> ')[1]! : path);
-  }
-  return [...paths];
-}
-
 function manifestAt(ref: string | null, path: string): DependencyManifest {
   const raw = ref === null ? null : tryGit(['show', `${ref}:${path}`]);
   if (raw === null) return {};
@@ -98,7 +76,8 @@ function currentManifest(path: string): DependencyManifest {
 
 function main(): void {
   const base = resolveBaseRef();
-  const paths = changedPaths(base);
+  const collected = collectChangedPaths(tryGit, base);
+  const paths = collected.paths;
   const added = [
     ...addedDependencyNames(manifestAt(base, 'package.json'), currentManifest('package.json')),
     ...addedDependencyNames(
@@ -106,21 +85,45 @@ function main(): void {
       currentManifest('infra/package.json'),
     ),
   ];
-  const assessment = classifyChangeRisk({ paths, addedDependencies: added });
+  const assessment = classifyChangeRisk({
+    paths,
+    addedDependencies: added,
+    // **収集が失敗していたら「完了」と申告しない** (#709)。ここを黙って complete にすると
+    // 判定不能が「触れていません」に化ける —— それがこの issue そのもの。
+    //
+    // 起点が無い場合も未測定に含める。**判定不能の理由は 2 つある**（起点が無い /
+    // コマンドが失敗した）が、ドメインへ片方しか伝えないと `assessable` が「測れたか」の
+    // 単一の真実源にならず、将来の消費者が誤った安全を受け取る（#709 レビュー m-3）。
+    measurement: base === null || collected.failures.length > 0 ? 'incomplete' : 'complete',
+  });
 
   console.log(`  変更ファイル: ${paths.length} 件（起点: ${base?.slice(0, 8) ?? 'なし'}）`);
   /**
-   * **測れていないのに「安全」と言わない** (#557 follow-up レビュー M2)。
+   * **測れていないのに「安全」と言わない** (#557 follow-up レビュー M2 / #709)。
    *
-   * 起点が無いと `changedPaths` はブランチのコミット済み変更を全部見落とす（未コミット分
-   * しか見ない）。クリーンなツリーなら「0 件」→「停止境界に触れていません」と出てしまい、
-   * **認証境界・PII・本番デプロイの検出器が測れていないのに安全宣言をする**。
+   * 判定不能の理由は 2 つある:
+   *
+   *  - 起点を解決できない … コミット済みの変更を丸ごと見落とす
+   *  - git コマンドが失敗した … その系統の変更が落ちる（浅い clone・メモリ枯渇など）
+   *
+   * どちらでも「0 件だから触れていない」と読める出力になるので、**断定せず理由を名指しする**。
    * report-only なのでゲートは赤くならず、レビューは「機械が触れていないと言った」を
-   * 根拠にしかねない。過小報告は過大報告より危険な方向なので、黙って断定しない。
+   * 根拠にしかねない。過小報告は過大報告より危険な方向。
    */
-  if (base === null) {
-    console.log('  ⚠ 起点を解決できないため、停止境界の判定はできていません');
-    console.log('    （未コミット分しか見ていません。コミット済みの変更は判定対象外です）');
+  if (!assessment.assessable) {
+    console.log('  ⚠ 停止境界の判定はできていません');
+    if (base === null) {
+      console.log('    起点を解決できないため、コミット済みの変更は判定対象外です');
+    }
+    for (const failed of collected.failures) {
+      console.log(`    失敗したコマンド: ${failed}`);
+    }
+    // 🔴 **測れた分は捨てない** (#709 レビュー m-1)。保留にしたせいで根拠と行動指示が
+    // 消えると、修正前より情報が減る（当たりがあるのに何も出ない）。
+    if (assessment.hits.length > 0) {
+      console.log('    （集まった範囲では次に当たっています。判定は不完全です）');
+      printHits(assessment.hits);
+    }
     return;
   }
   if (!assessment.requiresHumanApproval) {
@@ -129,7 +132,17 @@ function main(): void {
   }
 
   console.log('  ⚠ 人間承認が必要な変更に触れています:');
-  for (const { boundary, evidence } of assessment.hits) {
+  printHits(assessment.hits);
+}
+
+/**
+ * 当たった境界と根拠を印字する。
+ *
+ * **判定保留のときも同じものを出す** (#709 レビュー m-1)。保留は「測れた範囲が不完全」で
+ * あって「根拠が無い」ではないので、当たりを隠すと修正前より情報が減る。
+ */
+function printHits(hits: ChangeRiskAssessment['hits']): void {
+  for (const { boundary, evidence } of hits) {
     console.log(`    - ${BOUNDARY_LABEL[boundary]}`);
     for (const item of evidence.slice(0, 5)) console.log(`        ${item}`);
     if (evidence.length > 5) console.log(`        … 他 ${evidence.length - 5} 件`);
