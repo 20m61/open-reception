@@ -52,7 +52,8 @@ function write(dir: string, name: string, content: string): void {
 
 describe('gate_tree_fingerprint: 特殊文字を含むパスを取りこぼさない (#720)', () => {
   it.each([
-    ['引用符', 'quo"te.md'],
+    ['引用符（中間）', 'quo"te.md'],
+    ['引用符（先頭）', '"quoted.md'],
     ['改行', 'new\nline.md'],
     ['バックスラッシュ', 'back\\slash.md'],
     ['非 ASCII', '日本語.md'],
@@ -66,6 +67,23 @@ describe('gate_tree_fingerprint: 特殊文字を含むパスを取りこぼさ�
     expect(before).toMatch(/^[0-9a-f]{64}$/);
 
     write(dir, name, 'after\n');
+    expect(fingerprint(dir)).not.toBe(before);
+  });
+
+  it('🔴 行頭が引用符のパスが、復号先の同名ファイルにすり替わらない', () => {
+    // 🔴 **`git hash-object --stdin-paths` は行頭 `"` を C-quote として復号する。**
+    // `"a.md"` という名前のファイルは `a.md` に化け、**別ファイルのハッシュ**が
+    // 記録される（exit 0 で行数も合うので `wc -l` の検査も素通りする）。
+    //
+    // 引用が閉じていない `"quoted.md` では `fatal: line is badly quoted` で 128 終了し
+    // **フォールバックへ落ちて正しく動く**ので、そちらでは踏めない（変異で実証）。
+    // **復号先が実在する**形でなければ検出できない。
+    const dir = makeRepo();
+    write(dir, 'a.md', 'DECOY\n');
+    write(dir, '"a.md"', 'before\n');
+    const before = fingerprint(dir);
+
+    write(dir, '"a.md"', 'after\n');
     expect(fingerprint(dir)).not.toBe(before);
   });
 
@@ -93,10 +111,7 @@ describe('gate_tree_fingerprint: 特殊文字を含むパスを取りこぼさ�
     expect(fingerprint(dir)).not.toBe(edited);
   });
 
-  it('🔴 追跡済みファイルを消しても指紋が変わる（削除を「変更なし」にしない）', () => {
-    // **コミットしてから消す。** 未追跡のまま消すと `ls-files --others` から単に
-    // 消えるだけで、「追跡済みだが作業ツリーに無い」= `missing` の経路を通らない
-    // （変異で実証: `missing` を最終ハッシュから外しても素通りしていた）。
+  it('追跡済みファイルを消しても指紋が変わる（削除を「変更なし」にしない）', () => {
     const dir = makeRepo();
     write(dir, 'quo"te.md', 'x\n');
     write(dir, 'keep.md', 'y\n');
@@ -106,5 +121,42 @@ describe('gate_tree_fingerprint: 特殊文字を含むパスを取りこぼさ�
 
     rmSync(join(dir, 'quo"te.md'));
     expect(fingerprint(dir)).not.toBe(before);
+  });
+
+  it('🔴 「追跡済みだが作業ツリーに無い」を「最初から無い」と区別する', () => {
+    // 🔴 **上の削除テストは `missing` を固定しない。** 追跡ファイルを消すと `existing`
+    // からも 1 行消えるので、`missing` セクションが無くても指紋は変わってしまう
+    // （変異で実証: `missing` を落としても 8 件すべて素通りした）。
+    // **ディスク上の内容が同一で index だけが違う 2 つの木**で初めて効く。
+    const withMissing = makeRepo();
+    write(withMissing, 'keep.md', 'y\n');
+    write(withMissing, 'gone.md', 'x\n');
+    execFileSync('git', ['add', '-A'], { cwd: withMissing });
+    execFileSync('git', ['commit', '-q', '-m', 'base'], { cwd: withMissing });
+    rmSync(join(withMissing, 'gone.md'));
+
+    const neverHad = makeRepo();
+    write(neverHad, 'keep.md', 'y\n');
+    execFileSync('git', ['add', '-A'], { cwd: neverHad });
+    execFileSync('git', ['commit', '-q', '-m', 'base'], { cwd: neverHad });
+
+    // ディスク上は両方 keep.md だけ。index が違う。
+    expect(fingerprint(withMissing)).not.toBe(fingerprint(neverHad));
+  });
+
+  it('🔴 git add しただけでは指紋が変わらない（コミットで stale にしない）', () => {
+    // 列挙順に依存させると、新規ファイルが追跡ブロック側へ移って行の順序が変わり、
+    // **内容が 1 バイトも変わっていないのに指紋が変わる**。ループの実際の順序は
+    // 「ゲート green → コミット → PR 作成」なので、これは毎周回で再実行を強いる。
+    const dir = makeRepo();
+    write(dir, 'z-existing.ts', 'z\n');
+    execFileSync('git', ['add', '-A'], { cwd: dir });
+    execFileSync('git', ['commit', '-q', '-m', 'base'], { cwd: dir });
+
+    // 追跡済みより手前にソートされる名前を選ぶ（順序依存を踏む形）。
+    write(dir, 'a-new.ts', 'a\n');
+    const beforeAdd = fingerprint(dir);
+    execFileSync('git', ['add', 'a-new.ts'], { cwd: dir });
+    expect(fingerprint(dir)).toBe(beforeAdd);
   });
 });

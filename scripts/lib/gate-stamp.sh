@@ -68,9 +68,16 @@ gate_tree_fingerprint() {
   # 分類され、**そのファイルの中身の変更が指紋に入らない** —— つまりゲート実行後に
   # 書き換えても stale と判定されず、`pr-gate-guard` がマージを通す。実測で再現済み。
   #
-  # 順序は「追跡 → 未追跡」。どちらも git が path 順で出すので、`sort` を挟まなくても
-  # 決定的になる（`sort -z` は BSD sort で使えないことがあるので避ける）。
-  # 両者は定義上素集合なので重複排除も要らない。
+  # 🔴 **レコード列は最後に `LC_ALL=C sort -u` で畳む。** 列挙順に依存させると、
+  # 内容が 1 バイトも変わっていなくても **`git add` しただけで指紋が変わる**
+  # （新規ファイルが追跡ブロック側へ移り、行の順序が変わるため）。これは
+  # 「コミットしただけで stale にしない」というこのファイルの設計意図に反する。
+  # 改行は `\001` へ潰してあるので**行単位ソートが安全に使え**、`sort -z` の
+  # BSD 可搬性問題も避けられる。ロケール差を持ち込まないよう `LC_ALL=C`。
+  #
+  # `-u` も要る: コンフリクト中（merge / rebase / cherry-pick）の `git ls-files` は
+  # **unmerged パスをステージ 1/2/3 の 3 行**出す。「追跡と未追跡が素集合」なのは
+  # 両リスト間の話で、追跡リスト内に重複が無いという意味ではない。
   {
     git ls-files -z 2>/dev/null
     git ls-files --others --exclude-standard -z 2>/dev/null
@@ -79,10 +86,22 @@ gate_tree_fingerprint() {
   while IFS= read -r -d '' f; do
     if [ ! -f "${f}" ]; then
       printf 'missing %s\n' "${f//$'\n'/$'\001'}" >> "${missing}"
-    elif [ "${f}" != "${f%%$'\n'*}" ]; then
-      # 改行を含むパスは `git hash-object --stdin-paths`（行区切り）へ渡せない。
-      # 稀なので 1 件ずつ叩く。記録側では改行を \001 へ潰して行を壊さない。
-      printf '%s %s\n' "$(git hash-object -- "${f}" 2>/dev/null)" "${f//$'\n'/$'\001'}" >> "${special}"
+    elif [ "${f}" != "${f%%$'\n'*}" ] || [ "${f#\"}" != "${f}" ]; then
+      # 🔴 **一括ハッシュへ渡せないパスは 1 件ずつ叩く。**
+      #
+      #  - 改行を含む … `--stdin-paths` は行区切りなので渡せない
+      #  - **行頭が `"`** … `git hash-object --stdin-paths` は行頭 `"` を C-quote として
+      #    **復号する**。`"a.md"` という名前のファイルが `a.md` に化け、**別ファイルの
+      #    ハッシュ**が記録される（exit 0 で行数も合うので `wc -l` の検査も素通りする）。
+      #    引用が閉じていない `"broken.md` では `fatal: line is badly quoted` で 128 終了し、
+      #    毎回フォールバック（実測 50 秒）へ落ちる。
+      #
+      # 記録側では改行を \001 へ潰して行を壊さない。
+      local blob
+      blob="$(git hash-object -- "${f}" 2>/dev/null)"
+      # ハッシュを採れなかったものを黙って空にしない（#720 と同じ穴になる）。
+      [ -n "${blob}" ] || { rm -f "${list}" "${existing}" "${special}" "${missing}" "${hashes}"; return 1; }
+      printf '%s %s\n' "${blob}" "${f//$'\n'/$'\001'}" >> "${special}"
     else
       printf '%s\n' "${f}" >> "${existing}"
     fi
@@ -94,7 +113,7 @@ gate_tree_fingerprint() {
       paste -d' ' "${hashes}" "${existing}"
       cat "${special}"
       cat "${missing}"
-    } | _gate_sha256 | awk '{print $1}'
+    } | LC_ALL=C sort -u | _gate_sha256 | awk '{print $1}'
   else
     # フォールバック: 一括ハッシュが使えない場合。低速だが確実。
     {
@@ -103,7 +122,7 @@ gate_tree_fingerprint() {
       done < "${existing}"
       cat "${special}"
       cat "${missing}"
-    } | _gate_sha256 | awk '{print $1}'
+    } | LC_ALL=C sort -u | _gate_sha256 | awk '{print $1}'
   fi
 
   rm -f "${list}" "${existing}" "${special}" "${missing}" "${hashes}"
