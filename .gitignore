@@ -191,3 +191,9 @@ infra/cdk-outputs-*.json
 # ツリー指紋が変わり、直前に記録した green が stale 扱いになる（実際に踏んだ）。
 .vrm-check/
 .live-capture/
+
+# 委譲プロンプトの spec（`scripts/delegate-gate-prompt.ts <spec.json>`）。
+# **ignore しないと正直な green 申告が落ちる** — 未追跡（非 ignore）ファイルも
+# ツリー指紋に入るので、repo 内へ spec を書いた時点で直前の green が stale 扱いになり、
+# `--fast` を実際に通していても裏取り (#711) が FAIL する。repo 外へ置いてもよい。
+/.delegate-*.json

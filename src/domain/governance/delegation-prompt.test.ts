@@ -193,6 +193,33 @@ describe('buildDelegationPrompt', () => {
      */
     const SOLE_EVIDENCE = 'このクラウド実行の `--full` が唯一の根拠です';
 
+    /**
+     * 🔴 **「裏取り済みの green」と「測れなかった green」を同じ本文にしない (#711)。**
+     * スタンプは worktree ごとに独立で、新しい worktree では**必ず**記録が無い＝判定不能。
+     * そこで出力が 1 バイトも変わらなければ、#705 の事象（走らせていないのに green と
+     * 申告して委譲する）はその経路で今も無傷のまま通る。fail-open は保つが、
+     * **測れなかったことは数える**（#726 の原則）。
+     */
+    const UNVERIFIED = 'ゲートスタンプでは裏取りできませんでした';
+
+    it('🔴 裏取りできていない green は、その旨と「--full が唯一の根拠」を本文に出す', () => {
+      const p = buildDelegationPrompt({ ...BASE, localFastGate: 'green' }, 'unverified');
+      expect(p).toContain(UNVERIFIED);
+      expect(p).toContain(SOLE_EVIDENCE);
+    });
+
+    it('裏取り済みの green はその旨を書き、裏取り不能の警告を出さない', () => {
+      const p = buildDelegationPrompt({ ...BASE, localFastGate: 'green' }, 'verified');
+      expect(p).toContain('ゲートスタンプで裏取り済み');
+      expect(p).not.toContain(UNVERIFIED);
+    });
+
+    it('🔴 渡し忘れは「裏取り済み」ではなく「裏取りしていない」へ倒す', () => {
+      // 既定を verified にすると、呼び出し側の配線が外れた瞬間に**黙って**
+      // 「裏取り済み」と書き始める。安全側は unverified。
+      expect(buildDelegationPrompt({ ...BASE, localFastGate: 'green' })).toContain(UNVERIFIED);
+    });
+
     it.each([
       ['not-run', '実行されていません'],
       ['failed', '失敗しました'],
@@ -279,5 +306,32 @@ describe('buildDelegationPrompt', () => {
       // PR 本文側にも貼らせること。
       expect(p).toContain('人間承認が必要な変更');
     });
+  });
+});
+
+describe('headSha の形 (#711 レビュー Minor-3)', () => {
+  it('🔴 短すぎる headSha を弾く（委譲先の取り違え検出まで弱まる）', () => {
+    // 生成される手順 1 は `git rev-parse HEAD` が headSha で「始まる」ことを見るので、
+    // 1 文字なら 16 分の 1 の確率で別コミットでも通ってしまう。
+    expect(() => buildDelegationPrompt({ ...BASE, headSha: 'c' })).toThrow(/16 進|7〜64/);
+  });
+
+  it('🔴 16 進でない headSha を弾く', () => {
+    expect(() => buildDelegationPrompt({ ...BASE, headSha: 'not-a-sha' })).toThrow(/16 進|7〜64/);
+  });
+
+  it('7 桁以上の 16 進は通す（大文字も）', () => {
+    expect(() => buildDelegationPrompt({ ...BASE, headSha: 'C70EA47' })).not.toThrow();
+  });
+});
+
+describe('branch の検証 (#711 レビュー Minor-4)', () => {
+  it('🔴 branch が欠けたら投げる（委譲先が checkout する対象）', () => {
+    // 欠けたまま通すと、委譲先の手順 1 が `git checkout undefined` になり、
+    // 裏取りも `origin/undefined` を引いて「まだ push していない」という
+    // **誤った理由**で格下げする。headSha より load-bearing。
+    const { branch: _omitted, ...withoutBranch } = BASE;
+    expect(() => buildDelegationPrompt(withoutBranch as unknown as typeof BASE)).toThrow(/branch/);
+    expect(() => buildDelegationPrompt({ ...BASE, branch: '  ' })).toThrow(/branch/);
   });
 });

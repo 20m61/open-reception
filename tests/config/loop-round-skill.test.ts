@@ -57,6 +57,34 @@ describe('loop-round スキルと委譲プロンプトの整合', () => {
     expect(prompt, `委譲プロンプトが ${cmd} を名指ししていない`).toContain(cmd);
   });
 
+  /**
+   * 🔴 **push は委譲の前提** (#711)。委譲先は `git fetch origin && git checkout` で
+   * **リモートの**コミットを取るので、push していないツリーは手に入らない。裏取りも
+   * `origin/<branch>` まで一致して初めて「裏取り済み」と言うため、SKILL がこの 1 行を
+   * 落とすと**毎回「裏取りできませんでした」になり、警告が意味を失う**（レビューで実測）。
+   *
+   * 委譲プロンプト側には出ない（push するのはローカルで、委譲先ではない）ので
+   * `SHARED_COMMANDS` ではなくここで縛る。
+   */
+  it('🔴 委譲の手順が、生成の前にコミット→push することを名指ししている', () => {
+    const from = skill.indexOf('## 5.');
+    const to = skill.indexOf('## 6.');
+    // 見出しを改名すると `slice(from, -1)` で節が黙って広がる。節が取れないことを先に落とす。
+    expect(from, '## 5. が見つからない').toBeGreaterThan(-1);
+    expect(to, '## 6. が ## 5. より後ろに無い').toBeGreaterThan(from);
+    const section = skill.slice(from, to);
+    // 裏取りは「HEAD == spec の headSha」「clean」「origin/<branch> == HEAD」まで見るので、
+    // **コミットと push の両方**が前提。片方だけ書いても毎回 unverified になる。
+    for (const cmd of ['git add -A && git commit', 'git push -u origin HEAD']) {
+      expect(section, `委譲の節が ${cmd} を名指ししていない`).toContain(cmd);
+    }
+    const commit = section.indexOf('git add -A && git commit');
+    const push = section.indexOf('git push -u origin HEAD');
+    const generate = section.indexOf('delegate-gate-prompt.ts');
+    expect(commit, 'コミットが push より後ろに書かれている').toBeLessThan(push);
+    expect(push, 'push が生成器より後ろに書かれている').toBeLessThan(generate);
+  });
+
   it.each([
     ['gh pr create --base'],
     ['gh pr create --fill'],

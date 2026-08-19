@@ -148,18 +148,48 @@ const MERGE_PROHIBITION = 'マージしないこと。PR 作成までで止め�
 const MENTIONS_MERGE_PROHIBITION = /マージ(しない|するな|禁止)/;
 
 /**
- * 委譲プロンプト本文を組み立てる。
+ * 申告をゲートスタンプで裏取りできたか (#711)。
  *
- * **タイトルが Conventional Commits でなければ投げる。** squash 後の main コミットに
- * なるので、ここを間違えると履歴が汚れ、後から直せない（`CLAUDE.md` 規約）。
+ * 🔴 **`DelegationInput` に置かない。** spec.json から読む値にすると、裏取りの結果まで
+ * 申告者が書けることになり、裏取りそのものが自己申告に戻る。**生成器が測って渡す**。
+ * 既定は `unverified` —— 渡し忘れは「裏取り済み」ではなく「裏取りしていない」へ倒す。
  */
-export function buildDelegationPrompt(input: DelegationInput): string {
+export type StampAttestation = 'verified' | 'unverified';
+
+/** `headSha` として受け付ける形。短すぎる値は委譲先の取り違え検出まで弱める。 */
+// 下限 7 に意味がある（短いと前方一致が別コミットを拾う）。上限は SHA-256 リポジトリの 64。
+const SHA_PREFIX = /^[0-9a-f]{7,64}$/i;
+
+/**
+ * spec の内容を検証する。不正なら投げる。
+ *
+ * 🔴 **`buildDelegationPrompt` から切り出してあるのは、呼び出し側が
+ * 「本文を組む前」に走らせるため。** `scripts/delegate-gate-prompt.ts` は本文を組む前に
+ * `input.headSha` をスタンプ照合で使うので、検証が本文組み立ての中にしか無いと、
+ * 欠けた spec が**検証に届く前に TypeError で落ちる**（#711 レビュー MAJOR-3。実際に
+ * 踏んで、読める「headSha は必須です」が Node のスタックトレースに化けた）。
+ */
+export function validateDelegationInput(input: DelegationInput): void {
   if (!CONVENTIONAL.test(input.title)) {
     throw new Error(
       `PR タイトルが Conventional Commits ではありません（squash 後の main コミットになります）: ${input.title}`,
     );
   }
-  if (input.headSha.trim() === '') throw new Error('headSha は必須です（ブランチ取り違えの検出に使います）');
+  const headSha = (input.headSha ?? '').trim();
+  if (headSha === '') throw new Error('headSha は必須です（ブランチ取り違えの検出に使います）');
+  if (!SHA_PREFIX.test(headSha)) {
+    throw new Error(
+      `headSha は 7〜64 桁の 16 進（コミット SHA の先頭）で書いてください` +
+        `（短すぎる値は委譲先の取り違え検出も弱めます / #711）: ${input.headSha}`,
+    );
+  }
+
+  // 🔴 **`branch` は `headSha` より load-bearing。** 欠けると委譲先の手順 1 が
+  // `git checkout undefined` になり、裏取りも `origin/undefined` を引いて
+  // 「まだ push していない」という**誤った理由**で格下げする（#711 レビュー Minor-4）。
+  if ((input.branch ?? '').trim() === '') {
+    throw new Error('branch は必須です（委譲先が checkout する対象です）');
+  }
 
   // 🔴 **型だけでは止まらない。** 実際の呼び出し経路は `scripts/delegate-gate-prompt.ts`
   // が spec.json を `as DelegationInput` でキャストするところで、欠けていれば `undefined`
@@ -176,6 +206,19 @@ export function buildDelegationPrompt(input: DelegationInput): string {
         '（理由の無い「失敗」は委譲先が判断に使えません / #705）',
     );
   }
+}
+
+/**
+ * 委譲プロンプト本文を組み立てる。
+ *
+ * **タイトルが Conventional Commits でなければ投げる。** squash 後の main コミットに
+ * なるので、ここを間違えると履歴が汚れ、後から直せない（`CLAUDE.md` 規約）。
+ */
+export function buildDelegationPrompt(
+  input: DelegationInput,
+  attestation: StampAttestation = 'unverified',
+): string {
+  validateDelegationInput(input);
 
   const stopAfter = input.stopAfter ?? 'merge';
 
@@ -196,9 +239,16 @@ export function buildDelegationPrompt(input: DelegationInput): string {
   // **申告をそのまま書く。生成器は補わない。** `green` 以外では「green」という断定が
   // 出力のどこにも現れないことをテストで固定している。
   const note = (input.localFastGateNote ?? '').trim();
+  // 🔴 **裏取りできなかったことを本文に残す (#711 レビュー)。** スタンプは worktree ごとに
+  // 独立で、新しい worktree では**必ず**記録が無い＝判定不能になる。そこで本文が
+  // 「裏取り済み」と同じ 1 バイトを出すと、#705 の事象（走らせていないのに green と申告）は
+  // その経路で今も無傷のまま通る。fail-open は保ちつつ、**測れなかったことは数える**
+  // （#726 が summary・スタンプ・週次記録で確立した原則）。
   const localGateLine =
     input.localFastGate === 'green'
-      ? `ローカル \`--fast\` は green（呼び出し側の申告${note === '' ? '' : ` / ${note}`}）。`
+      ? attestation === 'verified'
+        ? `ローカル \`--fast\` は green（呼び出し側の申告${note === '' ? '' : ` / ${note}`} / **ゲートスタンプで裏取り済み**）。`
+        : `ローカル \`--fast\` は green（呼び出し側の申告${note === '' ? '' : ` / ${note}`}）。🔴 **ただしゲートスタンプでは裏取りできませんでした**（理由は生成時の警告を参照）。**このクラウド実行の \`--full\` が唯一の根拠です。**`
       : `🔴 **ローカル \`--fast\` は${input.localFastGate === 'failed' ? '失敗しました' : '実行されていません'}**（${note === '' ? '理由の申告なし' : note}）。**このクラウド実行の \`--full\` が唯一の根拠です。** 「ローカルでは通っていたのだから環境要因だろう」という推測をしないこと。`;
 
   // 手順 11〜12（PR 作成後の扱い）。**名前で持ち、名前で並べる**（配列添字での組み立ては

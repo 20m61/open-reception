@@ -281,8 +281,35 @@ CI が無い以上、「PR 前に `--pr` / マージ前に `--full`」は**規�
   マージの主経路は `scripts/merge-pull-request.ts` と生の `gh api .../pulls/<n>/merge`。
   **両方**を見る。PR の照会（`.../pulls/<n>`）は止めない — 日常的に使うので、広く取ると
   誤検出でガードごと迂回される。
+- 🔴 **委譲プロンプト生成器（`scripts/delegate-gate-prompt.ts`）もスタンプを読む (#711)。**
+  spec の `localFastGate: "green"` という**申告**を、現ツリーに一致する記録で裏取りする。
+  一致しなければ非 0 で止まる（本文を出さない）。記録ファイルがまだ無い／git 外は
+  **判定不能として通す**（警告のみ）—— 「測れなかった」を「嘘だった」に倒さない。
+  spec は**リポジトリ外か `.delegate-*.json`**（gitignore 済）へ置くこと。未追跡ファイルも
+  指紋に入るため、repo 内へ書くと正直な green 申告が落ちる。
+  🔴 **生成の前に `git push -u origin HEAD`。** 裏取りは「指紋が一致する」だけでなく
+  「HEAD が spec の headSha」「ワークツリーが clean」「`origin/<branch>` が HEAD と同じ」
+  まで見る —— 委譲先は `git fetch origin && git checkout` で**リモートの**コミットを取るので、
+  push 前のツリーに「裏取り済み」と言えば、委譲先が手に入れられないものを保証したことになる。
+  push 前に生成すると毎回「裏取りできませんでした」になる（fail-open なので止まりはしない）。
+  ⚠ **これは誠実さの補助であって強制ではない。** スタンプは `.git` 配下の平文なので手で
+  書けるし、`localFastGate` を実態どおり `not-run` にすれば裏取りの対象外になる（その場合
+  本文は「ローカル未実行 / `--full` が唯一の根拠」と**過小に**出るので、#705 の逆
+  ＝過大な断定にはならない）。防いでいるのは**うっかり**であって、意図的な迂回ではない。
+- スタンプを読む側は**フックだけではない**。契約（`gate_stamp_satisfies` /
+  `gate_tree_fingerprint` / `gate_write_stamp`）に触れるのは:
+  `scripts/quality-gate.sh`（**書き手**。PASS 時に指紋を採って記録する）/
+  `scripts/hooks/pr-gate-guard.sh`（PR 作成 / マージのブロック）/
+  `scripts/aws-cloud-deploy.sh`（デプロイ前に `--pr` を確認。判定は
+  `src/domain/governance/deploy-preflight.ts`）/
+  `scripts/delegate-gate-prompt.ts`（委譲の green 申告の裏取り。意味づけは
+  `src/domain/governance/gate-stamp-check.ts`）。
+  **指紋の採り方を変えるときは全部確かめる**（書き手と読み手が食い違うと、記録が
+  常に stale になるか、逆に stale を見逃す）。この一覧は
+  `tests/config/gate-stamp-consumers.test.ts` が実測と突き合わせる（散文だけにしない）。
 - 意図的な迂回は明示的に行う: `OPEN_RECEPTION_SKIP_GATE_GUARD=1 gh pr create ...`。
-- 振る舞いは `tests/hooks/pr-gate-guard.test.ts` で検証している（`npm test` に載る）。
+- 振る舞いは `tests/hooks/pr-gate-guard.test.ts` と `tests/hooks/delegate-gate-prompt.test.ts`
+  で検証している（`npm test` に載る）。
 
 ### push 前の秘密情報スキャン（`push-secret-guard` フック）
 
