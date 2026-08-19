@@ -362,6 +362,24 @@ describe('collectChangedPaths: 収集失敗を空集合と区別する (#709)', 
     expect(result.failures).toEqual([]);
   });
 
+  it('diff と status に同じパスが出ても 1 件にまとめる', () => {
+    // 同じファイルをコミットしてさらに手で直した場合に両方へ出る。二重に数えない。
+    const run = runnerFailing([], {
+      [DIFF]: 'src/a.ts\n',
+      [STATUS]: ' M src/a.ts\n',
+    });
+    expect(collectChangedPaths(run, 'abc123').paths).toEqual(['src/a.ts']);
+  });
+
+  it('前後の空白と空行は落とす（空文字をパスとして混ぜない）', () => {
+    // 移設前の実装は trim していた。**挙動保存の対象**なので固定する。
+    const run = runnerFailing([], {
+      [DIFF]: '  src/a.ts  \n\n',
+      [STATUS]: ' M   \n',
+    });
+    expect(collectChangedPaths(run, 'abc123').paths).toEqual(['src/a.ts']);
+  });
+
   it('リネームは新しい側を取り、未追跡ディレクトリの畳み込みを防ぐ -uall を使う', () => {
     const calls: string[] = [];
     const run = (args: ReadonlyArray<string>): string | null => {
