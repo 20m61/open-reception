@@ -286,7 +286,9 @@ export type ChangedPathsCollection = {
  * 失敗すると**コミット済みの変更が丸ごと消え**、クリーンなツリーでは「変更 0 件」→
  * 「停止境界に触れていません」と断定されていた。浅い clone や `--single-branch` clone で
  * pin された起点の object へ到達できない場合に実際に起こりうる。
- * `change-scope.ts` は同じ状況に既にガードを持っており、こちらだけ無かった。
+ * `change-scope.ts` は同じ状況にガードを持っていたが、**それは全滅ケースについてだけ**
+ * だった（`paths.length === 0` の 1 ビットでは部分失敗を検出できない）。#712 でそちらも
+ * この関数の `failures` を使うように直してある。
  */
 export function collectChangedPaths(run: GitRunner, base: string | null): ChangedPathsCollection {
   const paths = new Set<string>();

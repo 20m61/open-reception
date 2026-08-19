@@ -340,11 +340,15 @@ fi
 # 判定できない場合は必ず code 扱い＝何も省略しない（楽観に倒すと未検証ツリーが green になる）。
 GATE_SCOPE="code"
 GATE_SKIPS=" "
+declare -a GATE_SCOPE_NOTES
 if [[ "$SKIP_BY_SCOPE" -eq 1 ]] && npx --no-install tsx --version >/dev/null 2>&1; then
   while IFS= read -r line; do
     case "$line" in
       scope=*) GATE_SCOPE="${line#scope=}" ;;
       skip=*)  GATE_SKIPS="${GATE_SKIPS}${line#skip=} " ;;
+      # #712: 「測れなかったので省略しない」等の理由。**黙って安全側へ倒さない**
+      # （scope が code のときシェルは何も表示しないので、ここで拾わないと見えない）。
+      note=*)  GATE_SCOPE_NOTES+=("${line#note=}") ;;
     esac
   done < <(npx --no-install tsx "${ROOT}/scripts/change-scope.ts" \
     $([[ "$STRICT" -eq 1 ]] && echo --strict) 2>/dev/null || echo "scope=code")
@@ -352,7 +356,13 @@ fi
 
 # そのステップを変更範囲の理由で省略するか。
 scope_skips() { # scope_skips <step-key>
-  [[ "$GATE_SKIPS" == *" $1 "* ]]
+  # 🔴 **`code` なら何も省略しない、をここで閉じる** (#712 レビュー M1)。
+  # `change-scope.ts` が `scope=docs` と `skip=build` を印字した**後**に死ぬと、
+  # フォールバックの `|| echo "scope=code"` が後から流れて `GATE_SCOPE` は `code` に戻るが、
+  # `GATE_SKIPS` は積まれたまま残る。scope だけを見て判断すると
+  # 「code なのに build を省略した」まま green になる —— #712 が塞ごうとした被害そのもの。
+  # 原則を 1 箇所に閉じるため、行の読み取り側ではなくここで縛る。
+  [[ "$GATE_SCOPE" != "code" ]] && [[ "$GATE_SKIPS" == *" $1 "* ]]
 }
 
 # 省略した理由をサマリへ残す（黙って飛ばさない。何を検査していないかが見えること）。
@@ -364,6 +374,14 @@ if [[ "$GATE_SCOPE" != "code" ]]; then
   echo ""
   echo "▶ change-scope: ${GATE_SCOPE}（--no-skip-docs で全ステップ実行）"
   echo "  省略: ${GATE_SKIPS# }"
+fi
+# 🔴 **省略しなかった理由も見せる** (#712)。`code` のときは上のブロックが出ないので、
+# ここで拾わないと「測れなかったから全部走らせた」が完全に不可視になる。
+# `${arr[*]:-}` を使うのは、bash 5.x が `set -u` 下で要素ゼロの配列を unbound とするため。
+if [[ -n "${GATE_SCOPE_NOTES[*]:-}" ]]; then
+  echo ""
+  echo "▶ change-scope: 判定の但し書き"
+  for note in "${GATE_SCOPE_NOTES[@]}"; do echo "  ⚠ ${note}"; done
 fi
 
 # ---- ループの停止指示と変更量 (#424 増分 4) -------------------------------
