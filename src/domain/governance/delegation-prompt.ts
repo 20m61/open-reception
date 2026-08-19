@@ -156,12 +156,6 @@ const MENTIONS_MERGE_PROHIBITION = /マージ(しない|するな|禁止)/;
  */
 export type StampAttestation = 'verified' | 'unverified';
 
-/**
- * 委譲プロンプト本文を組み立てる。
- *
- * **タイトルが Conventional Commits でなければ投げる。** squash 後の main コミットに
- * なるので、ここを間違えると履歴が汚れ、後から直せない（`CLAUDE.md` 規約）。
- */
 /** `headSha` として受け付ける形。短すぎる値は委譲先の取り違え検出まで弱める。 */
 // 下限 7 に意味がある（短いと前方一致が別コミットを拾う）。上限は SHA-256 リポジトリの 64。
 const SHA_PREFIX = /^[0-9a-f]{7,64}$/i;
@@ -214,6 +208,12 @@ export function validateDelegationInput(input: DelegationInput): void {
   }
 }
 
+/**
+ * 委譲プロンプト本文を組み立てる。
+ *
+ * **タイトルが Conventional Commits でなければ投げる。** squash 後の main コミットに
+ * なるので、ここを間違えると履歴が汚れ、後から直せない（`CLAUDE.md` 規約）。
+ */
 export function buildDelegationPrompt(
   input: DelegationInput,
   attestation: StampAttestation = 'unverified',

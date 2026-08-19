@@ -101,6 +101,7 @@ function collectScopeFacts(root: string): ScopeFacts {
     // `refs/heads/origin/<branch>` やタグに先に当たりうる（gitrevisions の解決順）。
     // そちらに当たると warning つき exit 0 で**別コミットを「push 済み」と誤認**する。
     remoteHead: git(root, ['rev-parse', '--verify', '--quiet', `refs/remotes/origin/${input.branch}`]),
+    currentBranch: git(root, ['rev-parse', '--abbrev-ref', 'HEAD']),
     headSha: input.headSha,
     branch: input.branch,
   };

@@ -63,14 +63,18 @@ repo info preamble が 403 になる（#678 / #702 で実測）。web セッシ�
 ## 5. ローカルに居て `--pr` / `--full` が要るとき（委譲）
 
 ```bash
-git push -u origin HEAD                                       # 先に push する（下記）
+git add -A && git commit                                      # 先にコミット（下記）
+git push -u origin HEAD                                       # 先に push（下記）
+git rev-parse --short HEAD                                    # spec の headSha はこれ
 npx tsx scripts/delegate-gate-prompt.ts .delegate-spec.json   # 委譲プロンプトを生成（手書きしない）
 ```
 
-🔴 **生成の前に push する。** 委譲先は `git fetch origin && git checkout` で**リモートの**
-コミットを取るので、push していないツリーは委譲先が手に入れられない。裏取り (#711) も
-`origin/<branch>` まで一致して初めて「裏取り済み」と言うので、**push 前に生成すると
-毎回「裏取りできませんでした」になる**。
+🔴 **コミットして push してから生成する。** 委譲先は `git fetch origin && git checkout` で
+**リモートの**コミットを取るので、手元にしか無いツリーは委譲先が手に入れられない。
+裏取り (#711) は「指紋が一致する」だけでなく **HEAD が spec の `headSha` / ワークツリーが
+clean / `origin/<branch>` が HEAD と同じ**まで見るので、**この順序を外すと毎回
+「裏取りできませんでした」になる**（fail-open なので止まりはしないが、常時出る警告は
+読まれなくなる）。
 
 🔴 **spec はリポジトリ直下の `.delegate-*.json`（gitignore 済）かリポジトリ外へ置く。**
 未追跡（非 ignore）ファイルもツリー指紋に入るので、repo 内に ignore されないまま spec を書くと

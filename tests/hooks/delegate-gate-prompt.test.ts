@@ -58,10 +58,12 @@ function run(options: {
   specInRepo?: string;
   /** コミット後にツリーを汚す（指紋は汚した後に採るので**一致したまま**になる）。 */
   dirty?: boolean;
+  /** spec の branch を、実際に居るブランチと違う値にする。 */
+  branch?: string;
   /** spec の headSha を実 HEAD ではなくこの値にする。 */
   headSha?: string;
   /** `origin/<branch>` の作り方。既定は HEAD と同じ（= push 済み）。 */
-  remote?: 'same' | 'stale' | 'missing';
+  remote?: 'same' | 'stale' | 'missing' | 'dwim-decoy';
   /** spec から headSha キーごと落とす（`''` ではなく **欠落**。TypeError の再現に要る）。 */
   omitHeadSha?: boolean;
 }): { status: number; stderr: string; stdout: string } {
@@ -87,6 +89,10 @@ function run(options: {
       cwd: dir,
       encoding: 'utf8',
     }).trim();
+  // 🔴 **spec の branch に居ること。** 裏取りは spec の branch と現在のブランチの一致まで
+  // 見る（打ち間違いを「未 push」と誤診しないため）。`git init` の既定ブランチ名のままだと
+  // 全ケースがそこで格下げされる。
+  git('checkout', '-q', '-b', SPEC.branch);
   git('add', '-A');
   git('commit', '-q', '-m', 'init', '--no-gpg-sign');
   const realHead = git('rev-parse', 'HEAD');
@@ -94,7 +100,17 @@ function run(options: {
   // 委譲先は `git fetch origin && git checkout` で**リモートの**コミットを取るので、
   // 裏取りは origin の ref まで見る。ネットワークは要らない（ref を直に置く）。
   const remote = options.remote ?? 'same';
-  if (remote !== 'missing') {
+  if (remote === 'dwim-decoy') {
+    // 🔴 **`origin/<branch>` は remote-tracking ref とは限らない。** ローカルブランチ
+    // `refs/heads/origin/<branch>` があると、`git rev-parse origin/<branch>` は
+    // DWIM 解決でそちらを返す（warning つき exit 0）。完全修飾＋`--verify` で引かないと、
+    // **別コミットを「push 済み」と誤認する**。`refs/remotes` の方は作らない。
+    writeFileSync(join(dir, 'DECOY.md'), 'decoy\n');
+    git('add', '-A');
+    git('commit', '-q', '-m', 'decoy', '--no-gpg-sign');
+    git('branch', `origin/${SPEC.branch}`, git('rev-parse', 'HEAD'));
+    git('reset', '-q', '--hard', realHead);
+  } else if (remote !== 'missing') {
     if (remote === 'stale') {
       writeFileSync(join(dir, 'STALE.md'), 'stale\n');
       git('add', '-A');
@@ -126,7 +142,12 @@ function run(options: {
 
   // 🔴 **spec を repo 内の非 ignore な場所へ置くと指紋が変わる**（未追跡ファイルも
   // 指紋に入るため）。既定は repo 外。`specInRepo` を渡したときだけ中へ置く。
-  const specBody = { ...SPEC, headSha, localFastGate: options.localFastGate } as Record<string, unknown>;
+  const specBody = {
+    ...SPEC,
+    ...(options.branch === undefined ? {} : { branch: options.branch }),
+    headSha,
+    localFastGate: options.localFastGate,
+  } as Record<string, unknown>;
   // 🔴 **`''` ではなくキーごと落とす。** 空文字は `startsWith('')` が真になるので
   // 照合を素通りし、**検証をスタンプ照合の後ろへ戻す変異を検出できない**（実際に踏んだ）。
   // 実際に落ちたのは `undefined.trim()` の TypeError なので、欠落で再現する。
@@ -250,6 +271,28 @@ describe('delegate-gate-prompt.ts: 委譲先が取れないツリーを保証し
     // 「見つかりません」（未 push）と混ざらない文字列で縛る —— `origin/` だけだと
     // 不一致の分岐を未 push へ潰す変異が落ちない。
     expect(r.stderr).toContain('古いか別物');
+  }, 120_000);
+});
+
+describe('delegate-gate-prompt.ts: 満たしようのない助言を出さない (#711 レビュー M1)', () => {
+  it('🔴 spec の branch を打ち間違えたとき、「未 push」と誤診しない', () => {
+    // `git push -u origin HEAD` は**現在の**ブランチを押すので、branch の誤記に対して
+    // それを促すと何度やっても解消しない。本当の原因を言う。
+    const r = run({ localFastGate: 'green', stamp: 'matching', branch: 'fix/topci' });
+    expect(r.status, r.stderr).toBe(0);
+    expect(r.stdout).not.toContain('ゲートスタンプで裏取り済み');
+    expect(r.stderr).toContain('現在のブランチ');
+    expect(r.stderr).not.toContain('git push -u origin HEAD');
+  }, 120_000);
+});
+
+describe('delegate-gate-prompt.ts: origin の引き方 (#711 レビュー Minor-1)', () => {
+  it('🔴 ローカルブランチ `origin/<branch>` を remote-tracking と取り違えない', () => {
+    // 完全修飾をやめると、この囮のコミットを「push 済み」と誤認して verified を名乗る。
+    const r = run({ localFastGate: 'green', stamp: 'matching', remote: 'dwim-decoy' });
+    expect(r.status, r.stderr).toBe(0);
+    expect(r.stdout).not.toContain('ゲートスタンプで裏取り済み');
+    expect(r.stderr).toContain('見つかりません');
   }, 120_000);
 });
 

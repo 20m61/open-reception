@@ -70,7 +70,7 @@ export function verdictFromExitCode(code: number | null): StampVerdict {
  * 読まないこと —— 次に強くするなら語彙リストを足すのではなく、値を構造化するか
  * 長さ上限を課すこと（語彙の追撃は同じ変異クラスを次の周回へ持ち越すだけ）。
  */
-export const RECOVERY_ACTIONS = ['move-spec', 'rerun-gate'] as const;
+export const RECOVERY_ACTIONS = ['remove-stray-untracked', 'move-spec', 'rerun-gate'] as const;
 export type RecoveryAction = (typeof RECOVERY_ACTIONS)[number];
 
 /** ブロック時の原因説明（回復手段より前に置く固定文）。 */
@@ -80,6 +80,10 @@ export const UNSATISFIED_CAUSE =
   '**spec などの未追跡（非 ignore）ファイルをリポジトリ内へ書いた**だけでも一致しなくなります。';
 
 export const RECOVERY_TEXT: Record<RecoveryAction, string> = {
+  // 実測で最も起こりやすい原因。生成器の出力を repo 内へリダイレクトしただけでも
+  // 未追跡（非 ignore）ファイルが増えて指紋が変わる（#711 レビュー M5）。
+  'remove-stray-untracked':
+    'まず `git status --porcelain -uall` を見て、ゲート後に増えた未追跡（非 ignore）ファイルがあれば消すか ignore してください。',
   'move-spec':
     'spec はリポジトリ**直下**の `.delegate-*.json`（gitignore 済）かリポジトリ外へ置いてください。',
   'rerun-gate': '`./scripts/quality-gate.sh --fast` を走らせ直してください。',
@@ -168,6 +172,8 @@ export type ScopeFacts = {
   readonly scriptToplevel: string | null;
   /** `git rev-parse origin/<branch>`。未 push なら `null`。 */
   readonly remoteHead: string | null;
+  /** `git rev-parse --abbrev-ref HEAD`。読めなければ `null`。 */
+  readonly currentBranch: string | null;
   /** spec の申告値。 */
   readonly headSha: string;
   /** spec のブランチ名（メッセージ用）。 */
@@ -200,6 +206,13 @@ export function stampScopeMismatch(facts: ScopeFacts): string | null {
   // 生成する順序はふつう）。見るのは**ローカルの remote-tracking ref** だけで fetch は
   // しないので、リモートの実体との乖離までは保証しない（そこは生成される手順 1 の
   // `git rev-parse HEAD` 突き合わせが最終防衛線）。
+  // 🔴 **ブランチ名の食い違いを「未 push」と誤診しない。** spec の branch を打ち間違えると
+  // `origin/<誤記>` は当然見つからず、`git push -u origin HEAD` を促すことになるが、
+  // それは**現在の**ブランチを押すので何度やっても解消しない —— 満たしようのない助言に
+  // なる（#711 レビュー M1。MAJOR-1 と同じクラス）。先に本当の原因を言う。
+  if (facts.currentBranch !== null && facts.currentBranch !== facts.branch) {
+    return `spec の branch (${facts.branch}) が現在のブランチ (${facts.currentBranch}) と違います`;
+  }
   if (facts.remoteHead === null) {
     return `origin/${facts.branch} が見つかりません —— \`git push -u origin HEAD\` してから生成し直してください`;
   }

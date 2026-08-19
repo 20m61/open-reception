@@ -54,8 +54,10 @@ describe('checkLocalFastGateDeclaration (#711)', () => {
    * ここで「列挙の中身」と「メッセージが描画結果と完全一致すること」を縛る。
    * どんな言い換えも、型か列挙かこの等式のいずれかを壊さないと入らない。
    */
-  it('🔴 提示できる回復手段は、ゲート再実行と spec の置き場所だけ', () => {
-    expect([...RECOVERY_ACTIONS]).toEqual(['move-spec', 'rerun-gate']);
+  it('🔴 提示できる回復手段は、紛れ込んだ未追跡ファイル・spec の置き場所・ゲート再実行だけ', () => {
+    // 申告そのものを下げる選択肢はここに無い。増やすには型と列挙とこのテストを
+    // 同時に変えることになり、黙って足せない。
+    expect([...RECOVERY_ACTIONS]).toEqual(['remove-stray-untracked', 'move-spec', 'rerun-gate']);
   });
 
   it('🔴 ブロック時の文面は原因＋回復手段の描画だけで出来ている（自由文を足せない）', () => {
@@ -72,6 +74,7 @@ describe('checkLocalFastGateDeclaration (#711)', () => {
   it('回復手段の文面はゲートと spec の置き場所を指す（申告の書き換えを勧めない）', () => {
     expect(RECOVERY_TEXT['rerun-gate']).toContain('--fast');
     expect(RECOVERY_TEXT['move-spec']).toContain('.delegate-');
+    expect(RECOVERY_TEXT['remove-stray-untracked']).toContain('git status');
     const rendered = renderUnsatisfiedMessage(RECOVERY_ACTIONS);
     for (const value of LOCAL_FAST_GATE_VALUES) {
       if (value === 'green') continue;
@@ -134,6 +137,7 @@ describe('stampScopeMismatch (#711)', () => {
     callerToplevel: '/repo',
     scriptToplevel: '/repo',
     remoteHead: HEAD,
+    currentBranch: 'fix/x',
     headSha: HEAD.slice(0, 7),
     branch: 'fix/x',
   };
@@ -147,7 +151,10 @@ describe('stampScopeMismatch (#711)', () => {
     ['headSha が違う', { headSha: 'deadbee' }, 'headSha'],
     ['ワークツリーを読めない', { porcelain: null }, 'ワークツリー'],
     ['未コミットの変更がある', { porcelain: ' M a.ts' }, '未コミット'],
-    ['まだ push していない', { remoteHead: null }, 'push'],
+    ['まだ push していない', { remoteHead: null }, '見つかりません'],
+    // 🔴 **未 push より前に言う。** ブランチ名の食い違いを「未 push」と診断すると、
+    // `git push -u origin HEAD` は現在のブランチを押すので**何度やっても解消しない**。
+    ['spec の branch が現在のブランチと違う', { currentBranch: 'other' }, '現在のブランチ'],
     ['origin が古い', { remoteHead: 'a'.repeat(40) }, 'origin/fix/x'],
     ['呼び出し元の root を解決できない', { callerToplevel: null }, 'root'],
     ['スクリプト側の root を解決できない', { scriptToplevel: null }, 'root'],
