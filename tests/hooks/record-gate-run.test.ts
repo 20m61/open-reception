@@ -1,6 +1,14 @@
-import { readFileSync } from 'node:fs';
-import { resolve } from 'node:path';
-import { describe, expect, it } from 'vitest';
+import { execFileSync, spawnSync } from 'node:child_process';
+import { cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join, resolve } from 'node:path';
+import { afterAll, describe, expect, it } from 'vitest';
+
+/** 後始末する一時ディレクトリ。 */
+const created: string[] = [];
+afterAll(() => {
+  for (const dir of created) rmSync(dir, { recursive: true, force: true });
+});
 import { stripBashComments, stripBashStringLiterals } from '../../src/domain/governance/bash-source';
 
 /**
@@ -63,18 +71,52 @@ describe('record-gate-run.sh: PR 作成は REST 経由 (#678)', () => {
  * この issue の本体。危ないのは判定ではなく**配線**なので、そこを縛る。
  */
 describe('record-gate-run.sh: 未測定の印を備考へ残す (#717)', () => {
-  const body = stripBashComments(readFileSync(SCRIPT, 'utf8'));
+  /**
+   * 🔴 **ソース文字列を grep するテストでは足りない。**
+   * 最初 `expect(body).toContain('NOTE  change-scope')` で縛っていたが、
+   * **抽出の正規表現を壊す変異（`NOTE  change-scopeZZZ`）が素通り**した
+   * （sed 側のリテラルに当たってしまう）。`未測定:` を SKIP 列へ混ぜる変異も通った。
+   * 実際に走らせて、**出来上がる行**を見る。
+   */
+  function runRecord(summary: string): string {
+    const dir = mkdtempSync(join(tmpdir(), 'record-gate-run-'));
+    created.push(dir);
+    mkdirSync(join(dir, 'scripts'), { recursive: true });
+    mkdirSync(join(dir, 'docs'), { recursive: true });
+    cpSync(SCRIPT, join(dir, 'scripts/record-gate-run.sh'));
+    // ゲートは 25 分かかるのでスタブ。**サマリだけ**出す。
+    writeFileSync(
+      join(dir, 'scripts/quality-gate.sh'),
+      `#!/usr/bin/env bash\ncat <<'EOF'\n${summary}\nEOF\nexit 0\n`,
+      { mode: 0o755 },
+    );
+    writeFileSync(join(dir, 'docs/gate-runs.md'), '| 日時 | SHA | tier | 結果 | SKIP | 備考 |\n');
+    execFileSync('git', ['init', '-q'], { cwd: dir });
+    spawnSync('bash', [join(dir, 'scripts/record-gate-run.sh')], { cwd: dir, encoding: 'utf8' });
+    return readFileSync(join(dir, 'docs/gate-runs.md'), 'utf8');
+  }
 
-  it('NOTE 行を拾って備考へ足す', () => {
-    expect(body).toContain('NOTE  change-scope');
-    expect(body).toContain('未測定:');
+  it('🔴 NOTE 行があれば備考へ「未測定:」として残る', () => {
+    const rows = runRecord(
+      ['  PASS  typecheck (tsc)  (13s)', '  NOTE  change-scope  (収集に失敗しました)'].join('\n'),
+    );
+    expect(rows).toContain('未測定:');
+    expect(rows).toContain('収集に失敗しました');
   });
 
   it('🔴 SKIP 列へ混ぜない（既存の記録処理を壊さない）', () => {
-    // `gate-run-evaluation.ts` は列を位置で読むので、列を足すと既存行が全部ずれる。
-    // SKIP 列へ混ぜると「任意ツール未導入」と同じ意味になってしまう。
-    const skipExtraction = /grep -oE '\^ {2}SKIP {2}\.\*'/.test(body);
-    expect(skipExtraction, 'SKIP 抽出が変わっている').toBe(true);
-    expect(body).not.toMatch(/SKIP_ITEMS=.*NOTE/);
+    // `gate-run-evaluation.ts` は列を位置で読む。SKIP 列へ混ぜると
+    // 「任意ツール未導入」と同じ意味になり、`skipped_steps` が毎週誤発火する。
+    const rows = runRecord('  NOTE  change-scope  (収集に失敗しました)');
+    const row = rows.trim().split('\n').pop()!;
+    const cells = row.split('|').map((c) => c.trim());
+    // | 日時 | SHA | tier | 結果 | SKIP | 備考 |
+    expect(cells[5], `SKIP 列: ${cells[5]}`).toBe('なし');
+    expect(cells[6]).toContain('未測定:');
+  });
+
+  it('NOTE 行が無ければ備考は従来どおり（常態化させない）', () => {
+    const rows = runRecord('  PASS  typecheck (tsc)  (13s)');
+    expect(rows).not.toContain('未測定:');
   });
 });

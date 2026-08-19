@@ -388,6 +388,42 @@ describe('測れなかった実行を数える (#717)', () => {
   const row = (at: string, note: string) =>
     `| ${at} | \`abc1234\` | full | PASS | なし | ${note} |`;
 
+  it('🔴 件数と「直近」を正しく出す', () => {
+    // 🔴 `1 件` 決め打ちでも通ってしまう形にしない（変異で実証）。**2 件**置く。
+    // `parseGateRuns` は**新しい順**に返すので、直近は先頭。末尾を出すと最古になる。
+    const findings = evaluateGateRuns(
+      parseGateRuns(
+        [
+          row('2026-08-19T00:00Z', '自動記録 / 未測定: 新しい方'),
+          row('2026-08-18T00:00Z', '自動記録 / 未測定: 古い方'),
+          row('2026-08-17T00:00Z', '自動記録（record-gate-run.sh）'),
+        ].join('\n'),
+      ),
+      new Date('2026-08-19T01:00Z'),
+    );
+    const found = findings.find((f) => f.code === 'unmeasured_scope');
+    expect(found, JSON.stringify(findings)).toBeDefined();
+    expect(found!.message).toContain('2 件');
+    expect(found!.message).toContain('2026-08-19T00:00Z');
+    expect(found!.message).not.toContain('2026-08-18T00:00Z');
+  });
+
+  it('🔴 その後に未測定なしの full PASS があれば解決とみなす', () => {
+    // append-only なので過去の行は消せない。解決条件が無いと**永久に消えない指摘**に
+    // なり、`evaluate:gate-runs` が二度と 0 件にならず狼少年になる
+    // （`fail_without_issue` / `skipped_steps` が同じ理由で解決条件を持っている）。
+    const findings = evaluateGateRuns(
+      parseGateRuns(
+        [
+          row('2026-08-19T00:00Z', '自動記録（record-gate-run.sh）'),
+          row('2026-08-18T00:00Z', '自動記録 / 未測定: 直った'),
+        ].join('\n'),
+      ),
+      new Date('2026-08-19T01:00Z'),
+    );
+    expect(findings.some((f) => f.code === 'unmeasured_scope')).toBe(false);
+  });
+
   it('🔴 未測定の印が付いた行を数える', () => {
     // クラウドは浅い clone。恒常的に起きていても**後から数える手段が無い**のが本体。
     const findings = evaluateGateRuns(

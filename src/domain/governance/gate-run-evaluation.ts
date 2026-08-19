@@ -203,19 +203,37 @@ export function evaluateGateRuns(runs: readonly GateRun[], now: Date): GateRunFi
   // **恒常的に起きていても気づけない**。その場の ⚠ は流れて消えるので、
   // コミットされる記録に付いた印をここで拾う。
   //
+  // 🔴 **解決条件を持たせる。** append-only なので過去の行は消せず、単純に全履歴を
+  // 数えると**永久に消えない指摘**になって検査が狼少年になる（`fail_without_issue` と
+  // `skipped_steps` が同じ理由で解決条件を持っている）。**その後に未測定なしの `full`
+  // PASS があれば解決**とみなす —— 環境が直ったことはそれで証明できる。
+  //
   // **error ではなく warning。** 測れなかったときは `code` へ倒して全ステップ走らせる
   // （＝検証は省略されていない）ので、ゲートの健全性としては赤ではない。
-  // ただし毎回起きているなら環境（clone の深さ・起点解決）を直す合図になる。
-  const unmeasured = runs.filter((run) => run.note.includes(UNMEASURED_MARK));
-  if (unmeasured.length > 0) {
+  // ただし続いているなら環境（clone の深さ・起点解決）を直す合図になる。
+  //
+  // 母集団は `fullRuns`（`record-gate-run.sh` は `full` しか書かない）。他の判定と揃える。
+  const unmeasured = fullRuns.filter((run) => run.note.includes(UNMEASURED_MARK));
+  // `parseGateRuns` は**新しい順**に返すので、直近は先頭。
+  const latestUnmeasured = unmeasured[0];
+  const recovered =
+    latestUnmeasured !== undefined &&
+    fullRuns.some(
+      (run) =>
+        run.result === 'PASS' &&
+        !run.note.includes(UNMEASURED_MARK) &&
+        run.at > latestUnmeasured.at,
+    );
+  if (latestUnmeasured !== undefined && !recovered) {
     findings.push({
       code: 'unmeasured_scope',
       severity: 'warning',
       message:
         `変更範囲を測れなかった実行が ${unmeasured.length} 件あります` +
-        `（直近: ${unmeasured[unmeasured.length - 1]!.at}）。` +
-        '検証は省略されていません（測れないときは code へ倒す）が、恒常的なら ' +
-        'clone の深さや起点解決を直す合図です。',
+        `（直近: ${latestUnmeasured.at}）。` +
+        '検証は省略されていません（測れないときは code へ倒す）が、' +
+        'clone の深さや起点解決を直す合図です。' +
+        '未測定なしの full PASS が 1 度記録されれば解決とみなします。',
     });
   }
 

@@ -24,7 +24,7 @@ const REPO = process.cwd();
  * `exitCode` を非 0 にすると、`quality-gate.sh` のフォールバック（`|| echo "scope=code"`）が
  * **後から**流れる状況を作れる。
  */
-function runGate(options: { scopeOutput: string; exitCode?: number }): {
+function runGate(options: { scopeOutput: string; exitCode?: number; withBase?: boolean }): {
   status: number;
   stdout: string;
   stamp: string;
@@ -34,7 +34,18 @@ function runGate(options: { scopeOutput: string; exitCode?: number }): {
   mkdirSync(join(dir, 'bin'), { recursive: true });
   cpSync(resolve(REPO, 'scripts/quality-gate.sh'), join(dir, 'scripts/quality-gate.sh'));
   cpSync(resolve(REPO, 'scripts/lib/gate-stamp.sh'), join(dir, 'scripts/lib/gate-stamp.sh'));
-  execFileSync('git', ['init', '-q'], { cwd: dir });
+  execFileSync('git', ['init', '-q', '--initial-branch=main'], { cwd: dir });
+  // 🔴 **既定では起点が解決できる状態にする。** コミットが無いと `merge-base` が失敗し、
+  // ゲートは「変更範囲を測れていない」と判断する（#717）。それは正しい挙動なので、
+  // 「測れた」経路を検査したいテストは起点を用意しなければならない。
+  if (options.withBase !== false) {
+    execFileSync('git', ['config', 'user.email', 'test@example.com'], { cwd: dir });
+    execFileSync('git', ['config', 'user.name', 'test'], { cwd: dir });
+    execFileSync('git', ['config', 'commit.gpgsign', 'false'], { cwd: dir });
+    writeFileSync(join(dir, 'seed.txt'), 'seed\n');
+    execFileSync('git', ['add', '-A'], { cwd: dir });
+    execFileSync('git', ['commit', '-q', '-m', 'base'], { cwd: dir });
+  }
 
   writeFileSync(
     join(dir, 'bin', 'npx'),
@@ -108,6 +119,15 @@ describe('quality-gate: 変更範囲の読み取り配線 (#712)', () => {
 
   it('測れた実行の scope 列は従来どおり（常態化させない）', () => {
     expect(runGate({ scopeOutput: 'scope=docs\nskip=build' }).stamp).toMatch(/\tdocs\n?$/);
+  });
+
+  it('🔴 起点を解決できない実行も「測れなかった」として記録する (#717)', () => {
+    // クラウドは浅い clone なので**本命はこの経路**。ここを数えないと、
+    // カウンタが 0 のことが「測れている」証拠として読まれる（偽の安心）。
+    // 表示は起点解決の節で済んでいるので、⚠ は二重に出さない。
+    const r = runGate({ scopeOutput: 'scope=code', withBase: false });
+    expect(r.stdout).toMatch(/^ {2}NOTE {2}change-scope {2}\(共通祖先/m);
+    expect(r.stamp).toContain('(unmeasured)');
   });
 
   it('note が無ければ但し書きの節を出さない（常態化させない）', () => {
