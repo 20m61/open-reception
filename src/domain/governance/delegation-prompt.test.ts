@@ -324,3 +324,14 @@ describe('headSha の形 (#711 レビュー Minor-3)', () => {
     expect(() => buildDelegationPrompt({ ...BASE, headSha: 'C70EA47' })).not.toThrow();
   });
 });
+
+describe('branch の検証 (#711 レビュー Minor-4)', () => {
+  it('🔴 branch が欠けたら投げる（委譲先が checkout する対象）', () => {
+    // 欠けたまま通すと、委譲先の手順 1 が `git checkout undefined` になり、
+    // 裏取りも `origin/undefined` を引いて「まだ push していない」という
+    // **誤った理由**で格下げする。headSha より load-bearing。
+    const { branch: _omitted, ...withoutBranch } = BASE;
+    expect(() => buildDelegationPrompt(withoutBranch as unknown as typeof BASE)).toThrow(/branch/);
+    expect(() => buildDelegationPrompt({ ...BASE, branch: '  ' })).toThrow(/branch/);
+  });
+});

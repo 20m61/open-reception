@@ -163,7 +163,8 @@ export type StampAttestation = 'verified' | 'unverified';
  * なるので、ここを間違えると履歴が汚れ、後から直せない（`CLAUDE.md` 規約）。
  */
 /** `headSha` として受け付ける形。短すぎる値は委譲先の取り違え検出まで弱める。 */
-const SHA_PREFIX = /^[0-9a-f]{7,40}$/i;
+// 下限 7 に意味がある（短いと前方一致が別コミットを拾う）。上限は SHA-256 リポジトリの 64。
+const SHA_PREFIX = /^[0-9a-f]{7,64}$/i;
 
 /**
  * spec の内容を検証する。不正なら投げる。
@@ -184,9 +185,16 @@ export function validateDelegationInput(input: DelegationInput): void {
   if (headSha === '') throw new Error('headSha は必須です（ブランチ取り違えの検出に使います）');
   if (!SHA_PREFIX.test(headSha)) {
     throw new Error(
-      `headSha は 7〜40 桁の 16 進（コミット SHA の先頭）で書いてください` +
+      `headSha は 7〜64 桁の 16 進（コミット SHA の先頭）で書いてください` +
         `（短すぎる値は委譲先の取り違え検出も弱めます / #711）: ${input.headSha}`,
     );
+  }
+
+  // 🔴 **`branch` は `headSha` より load-bearing。** 欠けると委譲先の手順 1 が
+  // `git checkout undefined` になり、裏取りも `origin/undefined` を引いて
+  // 「まだ push していない」という**誤った理由**で格下げする（#711 レビュー Minor-4）。
+  if ((input.branch ?? '').trim() === '') {
+    throw new Error('branch は必須です（委譲先が checkout する対象です）');
   }
 
   // 🔴 **型だけでは止まらない。** 実際の呼び出し経路は `scripts/delegate-gate-prompt.ts`

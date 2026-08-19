@@ -150,6 +150,7 @@ describe('stampScopeMismatch (#711)', () => {
     ['まだ push していない', { remoteHead: null }, 'push'],
     ['origin が古い', { remoteHead: 'a'.repeat(40) }, 'origin/fix/x'],
     ['呼び出し元の root を解決できない', { callerToplevel: null }, 'root'],
+    ['スクリプト側の root を解決できない', { scriptToplevel: null }, 'root'],
     // 🔴 **この分岐はスクリプト内のクロージャだった間、テストが 1 件も無かった**
     // （レビュー Minor-9）。判定を純関数へ出したので分岐ごとに縛れる。
     ['別 worktree から呼ばれた', { callerToplevel: '/other' }, '違います'],

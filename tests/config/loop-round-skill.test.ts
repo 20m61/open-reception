@@ -57,6 +57,24 @@ describe('loop-round スキルと委譲プロンプトの整合', () => {
     expect(prompt, `委譲プロンプトが ${cmd} を名指ししていない`).toContain(cmd);
   });
 
+  /**
+   * 🔴 **push は委譲の前提** (#711)。委譲先は `git fetch origin && git checkout` で
+   * **リモートの**コミットを取るので、push していないツリーは手に入らない。裏取りも
+   * `origin/<branch>` まで一致して初めて「裏取り済み」と言うため、SKILL がこの 1 行を
+   * 落とすと**毎回「裏取りできませんでした」になり、警告が意味を失う**（レビューで実測）。
+   *
+   * 委譲プロンプト側には出ない（push するのはローカルで、委譲先ではない）ので
+   * `SHARED_COMMANDS` ではなくここで縛る。
+   */
+  it('🔴 委譲の手順が、生成の前に push することを名指ししている', () => {
+    const section = skill.slice(skill.indexOf('## 5.'), skill.indexOf('## 6.'));
+    expect(section, '委譲の節が push を名指ししていない').toContain('git push -u origin HEAD');
+    expect(
+      section.indexOf('git push -u origin HEAD'),
+      'push が生成器より後ろに書かれている',
+    ).toBeLessThan(section.indexOf('delegate-gate-prompt.ts'));
+  });
+
   it.each([
     ['gh pr create --base'],
     ['gh pr create --fill'],

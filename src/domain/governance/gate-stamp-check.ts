@@ -97,6 +97,8 @@ export type DeclarationCheck = {
   readonly message?: string;
   /**
    * ブロックしたときに提示した回復手段。通ったときは空。
+   * **現時点の本番消費者は無い**（露出は意図的 —— 呼び出し側が文面ではなく選択肢を
+   * 読めるようにしてある。構造の保証自体は `message` の等式テストが担う）。
    * **文面はこれの描画だけ**で出来ている（自由文で逃げ道を名指しできないようにするため）。
    */
   readonly recovery?: readonly RecoveryAction[];
@@ -195,9 +197,11 @@ export function stampScopeMismatch(facts: ScopeFacts): string | null {
   // **リモートの**コミットを取る。ローカルにしか無いツリーに対して「裏取り済み」と
   // 断定すると、委譲先が絶対に手に入れられないものを保証したことになる
   // （#711 レビュー MAJOR-2。dirty より起こりやすい —— commit してから push する前に
-  // 生成する順序はふつう）。ref を見るだけで fetch はしない。
+  // 生成する順序はふつう）。見るのは**ローカルの remote-tracking ref** だけで fetch は
+  // しないので、リモートの実体との乖離までは保証しない（そこは生成される手順 1 の
+  // `git rev-parse HEAD` 突き合わせが最終防衛線）。
   if (facts.remoteHead === null) {
-    return `origin/${facts.branch} が見つかりません（まだ push していない）`;
+    return `origin/${facts.branch} が見つかりません —— \`git push -u origin HEAD\` してから生成し直してください`;
   }
   if (facts.remoteHead.toLowerCase() !== facts.head.toLowerCase()) {
     return `origin/${facts.branch} (${facts.remoteHead.slice(0, 7)}) が HEAD (${facts.head.slice(0, 7)}) より古いか別物です`;

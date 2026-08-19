@@ -58,13 +58,6 @@ try {
   process.exit(3); // 3 = 入力が不正（裏取りの失敗 = 1 と区別する）
 }
 
-/**
- * ゲートスタンプで `localFastGate` の申告を裏取りする (#711)。
- *
- * 判定はシェル側（`gate_stamp_satisfies`）に 1 つだけ在る。**TS 側に同じ判定を
- * 書き直さない**（同じ問いに 2 つの実装があると食い違いに気づけない / #557）。
- * ここは終了コードを受け取るだけで、意味づけは `gate-stamp-check.ts` の純関数が持つ。
- */
 /** probe の生の終了コード。⚠ の原因（git 外 / 記録なし）を人へ渡すために保持する。 */
 let probeExit: number | null = null;
 /** `satisfied` を名乗れなかった理由（裏取り対象のツリーが spec と違う等）。 */
@@ -104,7 +97,10 @@ function collectScopeFacts(root: string): ScopeFacts {
     porcelain: git(root, ['status', '--porcelain']),
     callerToplevel: caller === null ? null : realpathOrNull(git(caller, ['rev-parse', '--show-toplevel'])),
     scriptToplevel: realpathOrNull(git(root, ['rev-parse', '--show-toplevel'])),
-    remoteHead: git(root, ['rev-parse', `origin/${input.branch}`]),
+    // 🔴 **完全修飾＋`--verify`。** `origin/<branch>` は DWIM 解決で
+    // `refs/heads/origin/<branch>` やタグに先に当たりうる（gitrevisions の解決順）。
+    // そちらに当たると warning つき exit 0 で**別コミットを「push 済み」と誤認**する。
+    remoteHead: git(root, ['rev-parse', '--verify', '--quiet', `refs/remotes/origin/${input.branch}`]),
     headSha: input.headSha,
     branch: input.branch,
   };

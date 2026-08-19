@@ -240,14 +240,16 @@ describe('delegate-gate-prompt.ts: 委譲先が取れないツリーを保証し
     const r = run({ localFastGate: 'green', stamp: 'matching', remote: 'missing' });
     expect(r.status, r.stderr).toBe(0); // fail-open は維持する
     expect(r.stdout).not.toContain('ゲートスタンプで裏取り済み');
-    expect(r.stderr).toContain('push');
+    expect(r.stderr).toContain('見つかりません');
   }, 120_000);
 
   it('🔴 origin が HEAD より古いときは verified を名乗らない', () => {
     const r = run({ localFastGate: 'green', stamp: 'matching', remote: 'stale' });
     expect(r.status, r.stderr).toBe(0);
     expect(r.stdout).not.toContain('ゲートスタンプで裏取り済み');
-    expect(r.stderr).toContain('origin/');
+    // 「見つかりません」（未 push）と混ざらない文字列で縛る —— `origin/` だけだと
+    // 不一致の分岐を未 push へ潰す変異が落ちない。
+    expect(r.stderr).toContain('古いか別物');
   }, 120_000);
 });
 

@@ -287,6 +287,11 @@ CI が無い以上、「PR 前に `--pr` / マージ前に `--full`」は**規�
   **判定不能として通す**（警告のみ）—— 「測れなかった」を「嘘だった」に倒さない。
   spec は**リポジトリ外か `.delegate-*.json`**（gitignore 済）へ置くこと。未追跡ファイルも
   指紋に入るため、repo 内へ書くと正直な green 申告が落ちる。
+  🔴 **生成の前に `git push -u origin HEAD`。** 裏取りは「指紋が一致する」だけでなく
+  「HEAD が spec の headSha」「ワークツリーが clean」「`origin/<branch>` が HEAD と同じ」
+  まで見る —— 委譲先は `git fetch origin && git checkout` で**リモートの**コミットを取るので、
+  push 前のツリーに「裏取り済み」と言えば、委譲先が手に入れられないものを保証したことになる。
+  push 前に生成すると毎回「裏取りできませんでした」になる（fail-open なので止まりはしない）。
 - スタンプを読む側は**フックだけではない**。契約（`gate_stamp_satisfies` /
   `gate_tree_fingerprint` / `gate_write_stamp`）に触れるのは:
   `scripts/quality-gate.sh`（**書き手**。PASS 時に指紋を採って記録する）/
