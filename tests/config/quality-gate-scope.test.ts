@@ -11,7 +11,7 @@
  * 伝わる経路が黙って落ちる」。落ちたときの症状は**検証を飛ばしたまま green**。
  */
 import { execFileSync } from 'node:child_process';
-import { cpSync, mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
@@ -27,6 +27,7 @@ const REPO = process.cwd();
 function runGate(options: { scopeOutput: string; exitCode?: number }): {
   status: number;
   stdout: string;
+  stamp: string;
 } {
   const dir = mkdtempSync(join(tmpdir(), 'gate-scope-'));
   mkdirSync(join(dir, 'scripts', 'lib'), { recursive: true });
@@ -62,7 +63,8 @@ esac
     status = err.status ?? -1;
     stdout = err.stdout ?? '';
   }
-  return { status, stdout };
+  const stampPath = join(dir, '.git', 'open-reception-gate-stamp');
+  return { status, stdout, stamp: existsSync(stampPath) ? readFileSync(stampPath, 'utf8') : '' };
 }
 
 describe('quality-gate: 変更範囲の読み取り配線 (#712)', () => {
@@ -87,6 +89,25 @@ describe('quality-gate: 変更範囲の読み取り配線 (#712)', () => {
     const { stdout } = runGate({ scopeOutput: 'scope=code\nnote=収集に失敗しました' });
     expect(stdout).toContain('判定の但し書き');
     expect(stdout).toContain('収集に失敗しました');
+  });
+
+  it('🔴 note があれば summary にも残す（10 分後まで届かせる / #717）', () => {
+    // `--full` は 10 分以上走り、この ⚠ は先頭付近に出て**末尾のサマリからは消える**。
+    // `scope_skip` は「省略した理由をサマリへ残す」方針なのに、「測れなかった」側だけ
+    // 非対称に扱われていた。
+    const { stdout } = runGate({ scopeOutput: 'scope=code\nnote=収集に失敗しました' });
+    expect(stdout).toMatch(/^ {2}NOTE {2}change-scope/m);
+    expect(stdout).toContain('収集に失敗しました');
+  });
+
+  it('🔴 測れなかった実行はスタンプの scope 列にも残る (#717)', () => {
+    // クラウドは浅い clone。恒常的に起きていても**後から数える手段が無い**のが問題。
+    const { stamp } = runGate({ scopeOutput: 'scope=code\nnote=収集に失敗しました' });
+    expect(stamp).toContain('code(unmeasured)');
+  });
+
+  it('測れた実行の scope 列は従来どおり（常態化させない）', () => {
+    expect(runGate({ scopeOutput: 'scope=docs\nskip=build' }).stamp).toMatch(/\tdocs\n?$/);
   });
 
   it('note が無ければ但し書きの節を出さない（常態化させない）', () => {

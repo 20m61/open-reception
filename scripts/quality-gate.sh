@@ -270,7 +270,7 @@ finish() {
     exit 1
   fi
 
-  gate_write_stamp "${TIER}" "${GATE_FINGERPRINT}" "${GATE_SCOPE:-code}"
+  gate_write_stamp "${TIER}" "${GATE_FINGERPRINT}" "${GATE_SCOPE_RECORD:-${GATE_SCOPE:-code}}"
   echo "✅ quality-gate PASSED  (tier=${TIER} を green として記録しました)"
   # **finish は必ず終端する。** 呼び出し口が複数あるので、戻ると呼び出し元の続きが
   # 走ってしまう（seam から呼んだときに全ステップが実行された）。
@@ -424,7 +424,18 @@ fi
 if [[ -n "${GATE_SCOPE_NOTES[*]:-}" ]]; then
   echo ""
   echo "▶ change-scope: 判定の但し書き"
-  for note in "${GATE_SCOPE_NOTES[@]}"; do echo "  ⚠ ${note}"; done
+  for note in "${GATE_SCOPE_NOTES[@]}"; do
+    echo "  ⚠ ${note}"
+    # 🔴 **サマリにも残す** (#717)。`--full` は 10 分以上走り、この ⚠ は先頭付近に出て
+    # **末尾のサマリからは消える**。`scope_skip` は「省略した理由をサマリへ残す」方針
+    # なのに、「測れなかった」側だけ非対称に扱われていた。
+    # 接頭辞は `SKIP` ではなく `NOTE` —— `record-gate-run.sh` は `^  SKIP  ` を拾うので、
+    # SKIP にすると「任意ツール未導入」と同じ列へ混ざる。
+    SUMMARY+=("NOTE  change-scope  (${note})")
+  done
+  # スタンプの scope 列にも残す。クラウドは浅い clone なので、恒常的に起きていても
+  # **後から数える手段が無い**のがこの issue の本体。
+  GATE_SCOPE_RECORD="${GATE_SCOPE}(unmeasured)"
 fi
 
 # ---- ループの停止指示と変更量 (#424 増分 4) -------------------------------

@@ -54,3 +54,27 @@ describe('record-gate-run.sh: PR 作成は REST 経由 (#678)', () => {
     expect(body).toMatch(/exit 4/);
   });
 });
+
+/**
+ * 「測れなかった」実行が**コミットされる記録**へ届くことを固定する (#717)。
+ *
+ * その場で出る ⚠ は流れて消える。クラウド（`--pr` / `--full` の既定実行環境）は
+ * 浅い clone なので、変更範囲を測れない状態が**恒常的に起きていても気づけない**のが
+ * この issue の本体。危ないのは判定ではなく**配線**なので、そこを縛る。
+ */
+describe('record-gate-run.sh: 未測定の印を備考へ残す (#717)', () => {
+  const body = stripBashComments(readFileSync(SCRIPT, 'utf8'));
+
+  it('NOTE 行を拾って備考へ足す', () => {
+    expect(body).toContain('NOTE  change-scope');
+    expect(body).toContain('未測定:');
+  });
+
+  it('🔴 SKIP 列へ混ぜない（既存の記録処理を壊さない）', () => {
+    // `gate-run-evaluation.ts` は列を位置で読むので、列を足すと既存行が全部ずれる。
+    // SKIP 列へ混ぜると「任意ツール未導入」と同じ意味になってしまう。
+    const skipExtraction = /grep -oE '\^ {2}SKIP {2}\.\*'/.test(body);
+    expect(skipExtraction, 'SKIP 抽出が変わっている').toBe(true);
+    expect(body).not.toMatch(/SKIP_ITEMS=.*NOTE/);
+  });
+});

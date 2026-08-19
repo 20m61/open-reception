@@ -39,10 +39,18 @@ export type GateRunFinding = {
     | 'non_full_record'
     | 'record_gap'
     | 'orphan_branch'
-    | 'branch_check_unverified';
+    | 'branch_check_unverified'
+    | 'unmeasured_scope';
   severity: 'error' | 'warning';
   message: string;
 };
+
+/**
+ * 「変更範囲を測れなかった」印 (#717)。`scripts/record-gate-run.sh` が備考へ書く。
+ *
+ * **列は増やさない。** `parseGateRuns` は位置で読むので、列を足すと既存行が全部ずれる。
+ */
+export const UNMEASURED_MARK = '未測定:';
 
 /** 週次運用なので、これを超えたら「止まっている」とみなす。 */
 const STALE_AFTER_DAYS = 8;
@@ -187,6 +195,27 @@ export function evaluateGateRuns(runs: readonly GateRun[], now: Date): GateRunFi
       code: 'skipped_steps',
       severity: 'warning',
       message: `SKIP が記録されています（${run.at}: ${run.skipped.join(', ')}）。--strict 下では SKIP は FAIL になるはずで、strict 未使用か実行環境からツールが欠けています。`,
+    });
+  }
+
+  // 🔴 **「測れなかった」実行を数える** (#717)。クラウド（`--pr` / `--full` の既定実行
+  // 環境）は浅い clone なので、変更範囲を測れずに全ステップを走らせる状態が
+  // **恒常的に起きていても気づけない**。その場の ⚠ は流れて消えるので、
+  // コミットされる記録に付いた印をここで拾う。
+  //
+  // **error ではなく warning。** 測れなかったときは `code` へ倒して全ステップ走らせる
+  // （＝検証は省略されていない）ので、ゲートの健全性としては赤ではない。
+  // ただし毎回起きているなら環境（clone の深さ・起点解決）を直す合図になる。
+  const unmeasured = runs.filter((run) => run.note.includes(UNMEASURED_MARK));
+  if (unmeasured.length > 0) {
+    findings.push({
+      code: 'unmeasured_scope',
+      severity: 'warning',
+      message:
+        `変更範囲を測れなかった実行が ${unmeasured.length} 件あります` +
+        `（直近: ${unmeasured[unmeasured.length - 1]!.at}）。` +
+        '検証は省略されていません（測れないときは code へ倒す）が、恒常的なら ' +
+        'clone の深さや起点解決を直す合図です。',
     });
   }
 

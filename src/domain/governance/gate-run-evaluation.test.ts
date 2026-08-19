@@ -382,3 +382,34 @@ describe('pendingDispatchBranches: 証拠が無いものを「判定保留」と
     expect(orphans.filter((n) => pending.includes(n))).toEqual([]);
   });
 });
+
+describe('測れなかった実行を数える (#717)', () => {
+  /** 既存テストと同じ形の行を作る。 */
+  const row = (at: string, note: string) =>
+    `| ${at} | \`abc1234\` | full | PASS | なし | ${note} |`;
+
+  it('🔴 未測定の印が付いた行を数える', () => {
+    // クラウドは浅い clone。恒常的に起きていても**後から数える手段が無い**のが本体。
+    const findings = evaluateGateRuns(
+      parseGateRuns(
+        [
+          row('2026-08-18T00:00Z', '自動記録（record-gate-run.sh）'),
+          row('2026-08-19T00:00Z', '自動記録（record-gate-run.sh） / 未測定: 変更パスを集めきれない'),
+        ].join('\n'),
+      ),
+      new Date('2026-08-19T01:00Z'),
+    );
+    const found = findings.find((f) => f.code === 'unmeasured_scope');
+    expect(found, JSON.stringify(findings)).toBeDefined();
+    expect(found!.severity).toBe('warning');
+    expect(found!.message).toContain('1 件');
+  });
+
+  it('印が無ければ指摘しない（常態化させない）', () => {
+    const findings = evaluateGateRuns(
+      parseGateRuns(row('2026-08-19T00:00Z', '自動記録（record-gate-run.sh）')),
+      new Date('2026-08-19T01:00Z'),
+    );
+    expect(findings.some((f) => f.code === 'unmeasured_scope')).toBe(false);
+  });
+});
