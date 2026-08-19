@@ -160,6 +160,15 @@ export type StampAttestation = 'verified' | 'unverified';
 export type StopAfter = 'pr' | 'merge';
 
 /**
+ * 🔴 **実行時にも縛る。** 実経路は `scripts/delegate-gate-prompt.ts` が spec.json を
+ * `as DelegationInput` でキャストするところなので、`"stopAfter": "PR"` のような値は
+ * 型では止まらない。`Record` 引きにした結果、**リテラル `undefined` が本文に出て
+ * REST 経路の一文が消える**（三項演算子だった頃は `pr` 側へ縮退していた / #710 レビュー
+ * Minor-2 で入った回帰）。`localFastGate` を実行時検証しているのと同じ理由。
+ */
+export const STOP_AFTER_VALUES: readonly StopAfter[] = ['pr', 'merge'];
+
+/**
  * 「環境の既知の制約」節の部品 (#710)。
  *
  * 🔴 **語彙ではなく構造で縛る。** #705 / #710 と 2 度、生成器が確かめていない事実を
@@ -168,8 +177,16 @@ export type StopAfter = 'pr' | 'merge';
  * `時点の観測` と `違っていたら` は前後に残るので通ってしまう（レビューの変異で実証）。
  * 同じ教訓が `gate-stamp-check.ts` にも書いてある（語彙リストを足すのではなく形を変える）。
  *
- * そこで節本文を**この 3 つの部品の連結だけ**で組み立て、テストが部品から組み直した
- * 文字列との完全一致で縛る。自由文を足すには部品を増やすことになり、黙って入らない。
+ * そこで節本文を**この部品の連結だけ**で組み立て、テストが部品から組み直した文字列との
+ * 完全一致で縛る。
+ *
+ * 🔴 **保証の範囲を正確に言うと**: 縛れるのは「連結の**外**に自由文を足す」「順序を変える」
+ * 「部品を空にする」まで。**部品の中身は文字列リテラルなので、そこへ断定を書き足す変異は
+ * 等式では止まらない**（両辺が同時に動く。レビューの実測で 6 通りの言い換えが素通りした）。
+ * 中身は下の 2 つで守る —— (a) 各部品への正の pin、(b)「`403` を含む文には観測時点
+ * （日付 / `時点の観測` / issue 番号）が同居する」という文単位の規則。
+ * 恒久策は観測を**データ**にすること（`{date, command, status}` の配列＋固定テンプレ）で、
+ * そうすれば自由文の置き場所自体が消える。#710 の範囲を超えるので別 issue。
  */
 export const GRAPHQL_OBSERVATION =
   '- **クラウドのサンドボックスは GitHub GraphQL を絞っています**（#665 / #678 / #702 **時点の観測**。' +
@@ -184,7 +201,10 @@ export const GRAPHQL_OBSERVATION =
  */
 export const OBSERVATION_CAVEAT =
   '**これは過去の観測であって、いまのあなたのセッションについての保証ではありません。**' +
-  '確かめに行く必要はありません —— 下記の REST 経路で想定外のこと（403 以外の失敗）が起きたら報告してください。';
+  // 🔴 **REST 側の失敗は理由を問わず報告してもらう。** 「403 以外」と書くと、
+  // `REST_UNCONDITIONAL`（権限状態によらず通る）を反証する唯一の観測を、報告対象から
+  // 明示的に外すことになる（#710 レビュー Minor-4）。
+  '確かめに行く必要はありません —— 下記の REST 経路が失敗したら、理由を問わず報告してください。';
 
 /** REST 経路の指示。**観測ではなく無条件**（権限状態によらず通るので弱める理由が無い）。 */
 export const GRAPHQL_REST_ROUTE: Record<StopAfter, string> = {
@@ -199,7 +219,7 @@ export const GRAPHQL_REST_ROUTE: Record<StopAfter, string> = {
 export const REST_UNCONDITIONAL =
   'なお REST だけを使う経路は権限状態によらず通るので、確認も REST（`gh api repos/{owner}/{repo}/pulls?...`）で行ってください。';
 
-export function renderEnvironmentConstraints(stopAfter: StopAfter): string {
+function renderEnvironmentConstraints(stopAfter: StopAfter): string {
   return `${GRAPHQL_OBSERVATION}${OBSERVATION_CAVEAT}${GRAPHQL_REST_ROUTE[stopAfter]}${REST_UNCONDITIONAL}`;
 }
 
@@ -234,6 +254,11 @@ export function validateDelegationInput(input: DelegationInput): void {
   // 🔴 **`branch` は `headSha` より load-bearing。** 欠けると委譲先の手順 1 が
   // `git checkout undefined` になり、裏取りも `origin/undefined` を引いて
   // 「まだ push していない」という**誤った理由**で格下げする（#711 レビュー Minor-4）。
+  if (input.stopAfter !== undefined && !STOP_AFTER_VALUES.includes(input.stopAfter)) {
+    throw new Error(
+      `stopAfter は ${STOP_AFTER_VALUES.map((v) => `'${v}'`).join(' / ')} のいずれかです: ${String(input.stopAfter)}`,
+    );
+  }
   if ((input.branch ?? '').trim() === '') {
     throw new Error('branch は必須です（委譲先が checkout する対象です）');
   }
@@ -368,10 +393,6 @@ export function buildDelegationPrompt(
   // 「確かめられるか」の差であって、片方が古いという意味ではない。
   // 一方で**コマンドの指示は無条件でよい** —— REST だけを使う経路は権限状態に
   // よらず通るので、弱める理由が無い（#678 / #702 の損失はここを配り損ねた結果）。
-  //
-  // 🔴 **マージ系への言及は merge のときだけ** (#680)。`stopAfter: 'pr'` の出力に
-  // `gh pr merge` が現れると、手順（PR まで）と例示が食い違う。観測の列挙も例外ではない。
-  const graphqlNote = GRAPHQL_REST_ROUTE[stopAfter];
 
   return `リポジトリ 20m61/open-reception のブランチ \`${input.branch}\`（head = \`${input.headSha}\`、base = main \`${input.baseSha}\`）を、${openingGoal}
 
