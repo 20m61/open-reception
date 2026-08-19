@@ -50,12 +50,21 @@ const resolveBaseRef = (): string | null => resolveBase(tryGit, process.env.GATE
  * 作業ツリーと比較）でコミット済み + 未コミットをまとめて見る。未追跡ファイルは numstat に
  * 出ないため別途数える（新規ディレクトリごと足したときに丸ごと消えるのを防ぐ・増分 3 と同じ罠）。
  */
-function collectStat(base: string | null): ChangeStat {
+function collectStat(base: string | null): ChangeStat & { failures: string[] } {
   let files = 0;
   let insertions = 0;
   let deletions = 0;
+  /**
+   * 集めきれなかった git コマンド (#712)。
+   *
+   * 失敗を黙って空文字へ落とすと `0 ファイル / 0 行` と印字され、**「変更していない」と
+   * 読める**。ここは報告のみで kill switch には影響しないが（判定は `resolveKillSwitch`
+   * だけが持つ）、欠陥の型は #709 / #712 と同じなので、測れなかったことは表に出す。
+   */
+  const failures: string[] = [];
 
   const numstat = base === null ? null : tryGit(['diff', '--numstat', base]);
+  if (base !== null && numstat === null) failures.push(`git diff --numstat ${base}`);
   for (const line of (numstat ?? '').split('\n')) {
     if (line.trim() === '') continue;
     const [add, del] = line.split('\t');
@@ -65,7 +74,9 @@ function collectStat(base: string | null): ChangeStat {
     deletions += Number.parseInt(del ?? '', 10) || 0;
   }
 
-  for (const line of (tryGit(['ls-files', '--others', '--exclude-standard']) ?? '').split('\n')) {
+  const untracked = tryGit(['ls-files', '--others', '--exclude-standard']);
+  if (untracked === null) failures.push('git ls-files --others --exclude-standard');
+  for (const line of (untracked ?? '').split('\n')) {
     const path = line.trim();
     if (path === '' || path === HALT_FILE) continue;
     files += 1;
@@ -76,7 +87,7 @@ function collectStat(base: string | null): ChangeStat {
     }
   }
 
-  return { files, insertions, deletions };
+  return { files, insertions, deletions, failures };
 }
 
 function readHaltFile(): string | undefined {
@@ -98,7 +109,8 @@ if (kill.halted) {
 }
 
 const base = resolveBaseRef();
-const verdict = evaluateChangeBudget(collectStat(base), DEFAULT_CHANGE_BUDGET);
+const stat = collectStat(base);
+const verdict = evaluateChangeBudget(stat, DEFAULT_CHANGE_BUDGET);
 
 console.log(`  停止指示なし（${HALT_FILE} / ${HALT_ENV} のいずれも立っていません）`);
 console.log(
@@ -106,6 +118,10 @@ console.log(
     `（目安 ${verdict.limits.maxFiles} / ${verdict.limits.maxChangedLines}` +
     `${base === null ? '・起点不明のため作業ツリーのみ' : ''}）`,
 );
+// **測れなかったことを「変更していない」と読ませない** (#712)。
+for (const failed of stat.failures) {
+  console.log(`  ⚠ 変更量を集めきれていません（失敗: ${failed}）`);
+}
 if (!verdict.withinBudget) {
   const axes = verdict.exceeded.map((a) => (a === 'files' ? 'ファイル数' : '行数')).join(' / ');
   console.log(`  ⚠ 1 周回の目安を超えています（${axes}）。report のみ・ゲートは FAIL させません`);
