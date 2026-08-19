@@ -202,7 +202,31 @@ GATE_FINGERPRINT="$(gate_tree_fingerprint || true)"
 # ---- 終了処理（summary → 判定 → 記録）------------------------------------
 # **関数にしてあるのは、判定と記録の経路を 1 本にするため。** 呼び出し口が増えても
 # 「記録を書く条件」がここ以外に散らない。
+# 一時領域の状態を毎回 1 行で出す (#721)。
+#
+# 🔴 **症状が原因を指さないので、測って見せる。** 2026-08-19、`/tmp/cdk.out*` が
+# **740 個・26GB** まで積もってディスクが 100% になり、`--full` の e2e が
+# `page.screenshot: Target crashed` と SSL ハンドシェイク失敗で落ちた。
+# メモリも load も正常だったため、**変更内容を疑う方向へ 1 時間費やした**。
+# `CLAUDE.md` の「赤いとき、コードを疑う前に負荷を見る」はメモリしか書いていない。
+report_workspace_state() {
+  local count avail_kb avail_h
+  count=$(find /tmp -maxdepth 1 -name 'cdk.out*' 2>/dev/null | wc -l | tr -d ' ')
+  avail_kb=$(df -Pk "${ROOT}" 2>/dev/null | awk 'NR==2 {print $4}')
+  avail_h=$(df -Ph "${ROOT}" 2>/dev/null | awk 'NR==2 {print $4}')
+  echo "  ディスク空き: ${avail_h:-不明} / /tmp の cdk.out 残骸: ${count} 件"
+  if [[ -n "${avail_kb}" ]] && [[ "${avail_kb}" -lt 2097152 ]]; then
+    echo "  ⚠ 空きが 2GB を切っています。ビルドやブラウザが不可解に落ちる原因になります"
+  fi
+  if [[ "${count}" -gt 0 ]]; then
+    echo "  ⚠ cdk.out の残骸があります（\`rm -rf /tmp/cdk.out*\`）。infra テストは残さない設定です (#721)"
+  fi
+}
+
 finish() {
+  echo ""
+  echo "▶ 一時領域 (#721)"
+  report_workspace_state
   echo "================================================================"
   echo " summary (tier=${TIER})"
   echo "----------------------------------------------------------------"
