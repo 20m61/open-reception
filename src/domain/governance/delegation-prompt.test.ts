@@ -32,10 +32,25 @@ describe('buildDelegationPrompt', () => {
     expect(buildDelegationPrompt(BASE)).toContain('build:open-next');
   });
 
-  it('「要約の緑だけを信じるな」と infra の偽 green を必ず含める', () => {
+  it('「要約の緑だけを信じるな」と infra の偽 green の見分け方を必ず含める', () => {
     const p = buildDelegationPrompt(BASE);
     expect(p).toContain('要約の緑だけを信じず');
-    expect(p).toContain('138 passed (138)');
+    // 見分け方は残す（#642 の偽 green を検出するために置いた一文）。
+    expect(p).toContain('skipped');
+  });
+
+  /**
+   * 🔴 **実測値を焼き込まない (#710)。** 生成器はテスト件数を数えていない（`DelegationInput`
+   * に無い）のに `138 passed (138)` が本物だと書いていた。**単調に増える値**なので放置すれば
+   * 必ず陳腐化し、実際に 2026-08-18 の PR #708 では `153 passed (153)` が出ていた。
+   * 委譲先は「本物の green を偽と疑う」か「skip 混じりで偶然 138 になった出力を本物と読む」
+   * のどちらにも倒れうる —— **検出器として置いた一文が検出器でなくなっていた。**
+   *
+   * 数値ではなく**性質**（`N passed (N)` の形＝ skip が 0）で書けば、数えなくて済む。
+   */
+  it('🔴 テスト件数を焼き込まない（数えていない値を断定しない）', () => {
+    const p = buildDelegationPrompt(BASE);
+    expect(p, '生成器が数えていないテスト件数を本文に書いている').not.toMatch(/\d+ passed/);
   });
 
   it('PR の実在確認を必ず含める（#656 の再発防止）', () => {
@@ -69,6 +84,48 @@ describe('buildDelegationPrompt', () => {
   it('クラウドの GraphQL 制約を必ず伝える', () => {
     // 知らないと `gh pr list` を使って 403 で詰まる（今日 4 周分を失った経路）。
     expect(buildDelegationPrompt(BASE)).toContain('GraphQL');
+  });
+
+  /**
+   * 🔴 **委譲先の権限状態を断定しない (#710)。** 403 は `DelegationInput` に無く、生成器は
+   * 確かめていない。**同じファイルの数行上に、この危険が自分の言葉で書いてあった** ——
+   * 「PR #665 の時点では両方通っていた（当時の記述は正しく、今は誤り）。**通っていたことを
+   * 根拠に残さない**」。原則が片方向にしか適用されていなかった。
+   *
+   * 観測の範囲つきにすれば、次に実測が変わったとき**委譲先が気づいて報告できる**。
+   * 一方で**コマンドの指示は無条件のまま**でよい —— REST だけを使う経路は権限状態に
+   * よらず通るので、弱める理由が無い（#678 / #702 の損失はここを配り損ねた結果）。
+   */
+  it('🔴 403 を「常にそうである」と断定せず、観測時点を添える', () => {
+    const p = buildDelegationPrompt(BASE);
+    // 🔴 **本文全体ではなく「環境の既知の制約」節を見る。** `時点の観測` は手順 6 / 8 にも
+    // 出るので、全体に `toContain` を掛けるとこの節から印が消えても素通りする（実際に
+    // 変異が生き残った）。断定が集まっているのはこの節なので、この節で縛る。
+    const from = p.indexOf('## 環境の既知の制約');
+    const to = p.indexOf('## 禁止事項');
+    expect(from, '環境の既知の制約 節が無い').toBeGreaterThan(-1);
+    expect(to, '禁止事項 節が 環境の既知の制約 より後ろに無い').toBeGreaterThan(from);
+    const section = p.slice(from, to);
+    expect(section, '観測時点が書かれていない').toContain('時点の観測');
+    expect(section, '違っていたときに報告を求めていない').toMatch(/違って(いたら|いれば)/);
+  });
+
+  it.each(['merge', 'pr'] as const)(
+    '🔴 stopAfter: %s の出力に「403 になる」という現在形の断定が残っていない',
+    (stopAfter) => {
+      // 委譲先のセッションの権限状態を、生成時点で無条件に断定しない。
+      // 「なる」は今も必ずそうだという主張で、実測が変わっても誰も気づけない。
+      const p = buildDelegationPrompt({ ...BASE, stopAfter });
+      expect(p).not.toMatch(/403 に(なる|なります)/);
+      expect(p, '委譲先のセッションについて断定している').not.toContain('このセッションでは');
+    },
+  );
+
+  it('観測時点つきにしても、REST 経路の指示は無条件に残る', () => {
+    // 断定をやめることと、指示を弱めることは別。ここを弱めると #678 / #702 が再発する。
+    const p = buildDelegationPrompt(BASE);
+    expect(p).toContain('scripts/create-pull-request.ts');
+    expect(p).not.toContain('gh pr create --base');
   });
 
   it('既定の禁止事項を必ず含める', () => {

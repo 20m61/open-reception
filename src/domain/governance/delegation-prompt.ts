@@ -112,7 +112,7 @@ const STEP_CHANGE_RISK =
   'ゲート出力の `change-risk (停止境界)` 節を**そのまま報告し、PR 本文の「人間承認が必要な変更」節に貼る**。**この報告が停止境界に触れたかどうかの唯一の根拠です**（依頼文はそれを判断していません）。この検出器は報告専用で偽陽性に倒してあるため、該当があっても自己判断で止めず、**全文を報告**すること。**「判定はできていません」は「当たりなし」ではありません**（測れなかったという意味なので、それも含めてそのまま報告する / #709）。';
 
 const STEP_GATE =
-  '`./scripts/quality-gate.sh --full` を実行する。summary の全ステップが PASS であることを確認する。**要約の緑だけを信じず、log 本文で実際に走ったコマンド行を確認する。** infra の `Tests` 行が skip を含むなら**偽の green**です（`138 passed (138)` が本物）。FAIL は**直さずに**全文報告して止める。';
+  '`./scripts/quality-gate.sh --full` を実行する。summary の全ステップが PASS であることを確認する。**要約の緑だけを信じず、log 本文で実際に走ったコマンド行を確認する。** infra の `Tests` 行が `skipped` を含むなら**偽の green**です（`N passed | M skipped` は偽 / 括弧の中と `passed` の数が一致する `N passed (N)` が本物）。**件数そのものは数えないこと** —— 増え続けるので、値を覚えて突き合わせると本物を偽と誤診します。FAIL は**直さずに**全文報告して止める。';
 
 /** 毎回書いていた禁止事項。 */
 const DEFAULT_PROHIBITIONS: readonly string[] = [
@@ -253,7 +253,7 @@ export function buildDelegationPrompt(
 
   // 手順 11〜12（PR 作成後の扱い）。**名前で持ち、名前で並べる**（配列添字での組み立ては
   // 過去に手順を黙って落とした実績がある。冒頭の doc comment を参照）。
-  const stepPrCreate = `green なら次で PR を作る（**\`gh pr create\` は使わないこと** — このセッションでは GraphQL の repo info preamble が 403 になる / #678）:
+  const stepPrCreate = `green なら次で PR を作る（**\`gh pr create\` は使わないこと** — GraphQL の repo info preamble が 403 でした / #678 時点の観測）:
    \`npx tsx scripts/create-pull-request.ts --head ${input.branch} --base main --title "<下記>" --body "<下記>"\`
    タイトル:
    \`${input.title}\`
@@ -270,7 +270,7 @@ export function buildDelegationPrompt(
   // 委譲先はそれを失敗として扱うか、迂回のために余計な判断をする。
   const stepMergeOrStop =
     stopAfter === 'merge'
-      ? 'PR が出来たら `npx tsx scripts/merge-pull-request.ts --number <番号>` で squash マージする（**`gh pr merge` は使わないこと** — このセッションでは GraphQL が 403 になる / #702）。マージできたかは同コマンドが REST で引き直して確認する。**リモートブランチの削除は試さなくてよい**（proxy が write を拒否する。ローカル側で後始末します）。'
+      ? 'PR が出来たら `npx tsx scripts/merge-pull-request.ts --number <番号>` で squash マージする（**`gh pr merge` は使わないこと** — GraphQL が 403 でした / #702 時点の観測）。マージできたかは同コマンドが REST で引き直して確認する。**リモートブランチの削除は試さなくてよい**（proxy が write を拒否する。ローカル側で後始末します）。'
       : '🔴 **ここで止める。マージコマンドを実行しないこと。** マージ可否は人間が判断するため、PR を作成した時点でこの委譲の作業は完了。';
   const stepFinalReport =
     stopAfter === 'merge'
@@ -306,14 +306,23 @@ export function buildDelegationPrompt(
 
   // `gh pr merge` への言及は `stopAfter: 'merge'` のときだけ（'pr' の出力には
   // `gh pr merge` がどこにも現れないことをテストで固定している）。
-  // 🔴 **`gh pr create` も `gh pr merge` も 403 になる (#678 / #702)。**
+  // 🔴 **`gh pr create` も `gh pr merge` も 403 だった (#678 / #702)。**
   // PR #665 の時点では両方通っていた（当時の記述は正しく、今は誤り）。
   // 2026-08-10 に作成が、2026-08-18 にマージが拒否されるのを実測した。
   // **通っていたことを根拠に残さない** —— 実測が変わったら記述を変える。
+  //
+  // 🔴 **その原則を、現在の記述にも当てる (#710)。** 委譲先の権限状態は
+  // `DelegationInput` に無く、生成器は確かめていない。だから断定するのではなく
+  // **観測の範囲つきで書き、違っていたら報告してもらう**。
+  // 一方で**コマンドの指示は無条件でよい** —— REST だけを使う経路は権限状態に
+  // よらず通るので、弱める理由が無い（#678 / #702 の損失はここを配り損ねた結果）。
+  //
+  // 🔴 **マージ系への言及は merge のときだけ** (#680)。`stopAfter: 'pr'` の出力に
+  // `gh pr merge` が現れると、手順（PR まで）と例示が食い違う。観測の列挙も例外ではない。
   const graphqlNote =
     stopAfter === 'merge'
-      ? '**`gh pr create` / `gh pr merge` も 403 になる**ので、作成は `scripts/create-pull-request.ts`、マージは `scripts/merge-pull-request.ts`（どちらも REST のみ）を使う。'
-      : '**`gh pr create` も 403 になる**ので PR 作成は `scripts/create-pull-request.ts` を使う（マージはしない）。';
+      ? '2026-08-18 には `gh pr merge` も 403 でした。作成は `scripts/create-pull-request.ts`、マージは `scripts/merge-pull-request.ts`（どちらも REST のみ）を使ってください。'
+      : 'PR 作成は `scripts/create-pull-request.ts` を使ってください（マージはしない）。';
 
   return `リポジトリ 20m61/open-reception のブランチ \`${input.branch}\`（head = \`${input.headSha}\`、base = main \`${input.baseSha}\`）を、${openingGoal}
 
@@ -331,7 +340,7 @@ ${numbered}
 
 ## 環境の既知の制約
 
-- **クラウドのサンドボックスは GitHub GraphQL を絞っている。** \`gh pr list\` / \`gh pr view --head\` は 403 になる（PR #665 で実測）。PR を探すなら REST（\`gh api repos/{owner}/{repo}/pulls?...\`）を使うこと。${graphqlNote}
+- **クラウドのサンドボックスは GitHub GraphQL を絞っています**（#665 / #678 / #702 **時点の観測**。\`gh pr list\` / \`gh pr view --head\` が 403、2026-08-10 に \`gh pr create\` も 403 を実測）。**これは過去の観測であって、いまのあなたのセッションについての保証ではありません** —— **違っていたら（通った / 別の理由で落ちた）報告してください**。${graphqlNote}なお REST だけを使う経路は権限状態によらず通るので、確認も REST（\`gh api repos/{owner}/{repo}/pulls?...\`）で行ってください。
 
 ## 禁止事項
 
