@@ -177,6 +177,16 @@ describe('scripts/change-risk.ts: 測れていないことを断定しない (#7
     expect(run(makeRepo(['infra/lib/stacks/web.ts'])).status).toBe(0);
   }, 60_000);
 
+  it('🔴 非 ASCII 名のファイルでも停止境界を検出する (#718)', () => {
+    // 既定の git は `"infra/lib/stacks/\\350\\252\\215\\350\\250\\274.ts"` と
+    // エスケープして返すので `/^infra\\//` に一致せず、**「停止境界に触れていません」と
+    // 報告していた**（実測）。停止境界の偽陰性なので、docs 判定の取りこぼしより筋が悪い。
+    const repo = makeRepo(['infra/lib/stacks/認証.ts']);
+    const { stdout } = run(repo);
+    expect(stdout).toContain('人間承認が必要な変更に触れています');
+    expect(stdout).toContain('infra/lib/stacks/認証.ts');
+  }, 60_000);
+
   it('git が正常で当たりがあれば、根拠パス付きで承認が要ると出す', () => {
     const repo = makeRepo(['infra/lib/stacks/web.ts']);
     const { stdout } = run(repo);

@@ -315,13 +315,15 @@ describe('collectChangedPaths: 収集失敗を空集合と区別する (#709)', 
     };
   }
 
-  const DIFF = 'diff --name-only abc123 HEAD';
-  const STATUS = 'status --porcelain -uall';
+  // 🔴 **`-z` を使う** (#718)。既定の git は非 ASCII パスを `"\\346\\227\\245..."` と
+  // エスケープするので、`docs/日本語.md` が `docs/` に一致しなくなる。
+  const DIFF = 'diff --name-only -z abc123 HEAD';
+  const STATUS = 'status --porcelain -uall -z';
 
   it('両方成功したら failures は空で、コミット済みと未コミットを合わせて返す', () => {
     const run = runnerFailing([], {
-      [DIFF]: 'src/a.ts\nsrc/b.ts\n',
-      [STATUS]: ' M src/c.ts\n?? src/d.ts\n',
+      [DIFF]: 'src/a.ts\0src/b.ts\0',
+      [STATUS]: ' M src/c.ts\0?? src/d.ts\0',
     });
     const result = collectChangedPaths(run, 'abc123');
     expect(result.failures).toEqual([]);
@@ -339,7 +341,7 @@ describe('collectChangedPaths: 収集失敗を空集合と区別する (#709)', 
   });
 
   it('🔴 git status が失敗しても failures に出る', () => {
-    const run = runnerFailing([STATUS], { [DIFF]: 'src/a.ts\n' });
+    const run = runnerFailing([STATUS], { [DIFF]: 'src/a.ts\0' });
     const result = collectChangedPaths(run, 'abc123');
     expect(result.paths).toEqual(['src/a.ts']);
     expect(result.failures).toHaveLength(1);
@@ -365,26 +367,46 @@ describe('collectChangedPaths: 収集失敗を空集合と区別する (#709)', 
   it('diff と status に同じパスが出ても 1 件にまとめる', () => {
     // 同じファイルをコミットしてさらに手で直した場合に両方へ出る。二重に数えない。
     const run = runnerFailing([], {
-      [DIFF]: 'src/a.ts\n',
-      [STATUS]: ' M src/a.ts\n',
+      [DIFF]: 'src/a.ts\0',
+      [STATUS]: ' M src/a.ts\0',
     });
     expect(collectChangedPaths(run, 'abc123').paths).toEqual(['src/a.ts']);
   });
 
-  it('前後の空白と空行は落とす（空文字をパスとして混ぜない）', () => {
-    // 移設前の実装は trim していた。**挙動保存の対象**なので固定する。
+  it('空のレコードは落とすが、パスの一部である空白は削らない (#718)', () => {
+    // 🔴 **`-z` は正確なバイト列を返す**ので trim してはいけない。git 上は前後に空白を
+    // 持つパスも正当で、削ると別のパスになる。行区切りだった頃の trim は「行末の改行を
+    // 落とす」ためのもので、`-z` では不要かつ有害。
+    const run = runnerFailing([], { [DIFF]: '  src/a.ts  \0\0', [STATUS]: '' });
+    expect(collectChangedPaths(run, 'abc123').paths).toEqual(['  src/a.ts  ']);
+  });
+
+  it('非 ASCII パスがエスケープされない形で読める (#718)', () => {
+    // 既定の git は `"docs/\\346\\227\\245..."` を返し `/^docs\\//` に一致しなくなる。
     const run = runnerFailing([], {
-      [DIFF]: '  src/a.ts  \n\n',
-      [STATUS]: ' M   \n',
+      [DIFF]: 'docs/日本語.md\0infra/lib/stacks/認証.ts\0',
+      [STATUS]: '?? docs/未追跡.md\0',
     });
-    expect(collectChangedPaths(run, 'abc123').paths).toEqual(['src/a.ts']);
+    expect([...collectChangedPaths(run, 'abc123').paths].sort()).toEqual([
+      'docs/日本語.md',
+      'docs/未追跡.md',
+      'infra/lib/stacks/認証.ts',
+    ]);
+  });
+
+  it('引用符を含むパスも壊さない (#718)', () => {
+    // `core.quotePath=false` でも `"` を含むパスは引用されるが、`-z` は一切引用しない。
+    const run = runnerFailing([], { [DIFF]: '変な"名前.txt\0', [STATUS]: '' });
+    expect(collectChangedPaths(run, 'abc123').paths).toEqual(['変な"名前.txt']);
   });
 
   it('リネームは新しい側を取り、未追跡ディレクトリの畳み込みを防ぐ -uall を使う', () => {
+    // 🔴 **`-z` のリネームは `R  <新>\0<旧>\0` で、既定の `<旧> -> <新>` と順序が逆。**
+    // 旧側は独立したレコードとして続くので、読み飛ばさないとパスとして混入する。
     const calls: string[] = [];
     const run = (args: ReadonlyArray<string>): string | null => {
       calls.push(key(args));
-      return key(args) === STATUS ? 'R  old/a.ts -> new/a.ts\n' : '';
+      return key(args) === STATUS ? 'R  new/a.ts\0old/a.ts\0' : '';
     };
     const result = collectChangedPaths(run, null);
     expect(result.paths).toEqual(['new/a.ts']);

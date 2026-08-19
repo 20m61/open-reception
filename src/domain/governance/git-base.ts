@@ -295,29 +295,51 @@ export function collectChangedPaths(run: GitRunner, base: string | null): Change
   const failures: string[] = [];
 
   if (base !== null) {
-    const diff = run(['diff', '--name-only', base, 'HEAD']);
-    if (diff === null) failures.push(`git diff --name-only ${base} HEAD`);
-    else for (const line of diff.split('\n')) addIfPresent(paths, line);
+    const diff = run(['diff', '--name-only', '-z', base, 'HEAD']);
+    if (diff === null) failures.push(`git diff --name-only -z ${base} HEAD`);
+    else for (const path of splitNul(diff)) paths.add(path);
   }
 
-  // 未コミット（staged / unstaged / untracked）。porcelain の先頭 2 桁は状態コード。
+  // 未コミット（staged / unstaged / untracked）。
   // **`-uall` が必須**: 既定の porcelain は未追跡ディレクトリを `src/foo/` の 1 行へ畳むので、
   // 新しいディレクトリに置いたファイルがまるごと判定から消える（実際に踏んだ）。
-  const status = run(['status', '--porcelain', '-uall']);
-  if (status === null) failures.push('git status --porcelain -uall');
-  else {
-    for (const line of status.split('\n')) {
-      if (line.trim() === '') continue;
-      const path = line.slice(3).trim();
-      // リネームは "old -> new" 形式。新しい側を見る。
-      addIfPresent(paths, path.includes(' -> ') ? path.split(' -> ')[1]! : path);
-    }
-  }
+  const status = run(['status', '--porcelain', '-uall', '-z']);
+  if (status === null) failures.push('git status --porcelain -uall -z');
+  else for (const path of porcelainPaths(splitNul(status))) paths.add(path);
 
   return { paths: [...paths], failures };
 }
 
-function addIfPresent(into: Set<string>, value: string): void {
-  const trimmed = value.trim();
-  if (trimmed !== '') into.add(trimmed);
+/**
+ * NUL 区切りの出力をレコードへ分ける。
+ *
+ * **trim しない。** `-z` は正確なバイト列を返し、前後に空白を持つパスも git 上は正当なので、
+ * 削ると別のパスになる。落とすのは空レコード（末尾の区切り由来）だけ。
+ */
+function splitNul(output: string): ReadonlyArray<string> {
+  return output.split('\0').filter((record) => record !== '');
+}
+
+/**
+ * `git status --porcelain -z` のレコード列からパスを取り出す。
+ *
+ * 各レコードは `XY <path>`（状態コード 2 桁 + 空白 + パス）。
+ *
+ * 🔴 **リネーム／コピーは `R  <新>\0<旧>\0` で、既定の `<旧> -> <新>` と順序が逆。**
+ * 旧側は状態コードを持たない独立レコードとして**続く**ので、読み飛ばさないとパスとして
+ * 混入する（`old/a.ts` が変更扱いになり、`docs` 判定や停止境界の判定が狂う）。
+ *
+ * 新しい側だけを採るのは移設前からの挙動（`<旧> -> <新>` の右側）を保つため。
+ */
+function porcelainPaths(records: ReadonlyArray<string>): ReadonlyArray<string> {
+  const paths: string[] = [];
+  for (let i = 0; i < records.length; i += 1) {
+    const record = records[i]!;
+    const status = record.slice(0, 2);
+    const path = record.slice(3);
+    if (path !== '') paths.push(path);
+    // 旧パスのレコードを 1 つ読み飛ばす。X（index 側）Y（worktree 側）のどちらでも起きる。
+    if (status.includes('R') || status.includes('C')) i += 1;
+  }
+  return paths;
 }
