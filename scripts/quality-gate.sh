@@ -108,13 +108,55 @@ step() { # step <label> <cmd...>
   fi
 }
 
-report() { # report <label> <cmd...>
-  # ゲートの PASS/FAIL に影響しない情報表示。**止めない**のが要点で、偽陽性のある検出器で
-  # ゲートを赤くすると「赤を無視する習慣」がつく方が危険（#424 増分 3）。
-  local label="$1"; shift
+# classify_detector_status <label> <exit-code>
+#
+# 報告専用の検出器の終了コードを、ゲートの語彙へ翻訳する (#713)。
+#
+# **FAILED は立てない。** 偽陽性のある検出器でゲートを赤くすると「赤を無視する習慣」が
+# つく方が危険（#424 増分 3）。一方で「測れなかった」を green として**記録**すると、
+# pr-gate-guard がそれを根拠にマージを許す（#640 と同型）。だから
+# `skip_unverified` ＝ 赤ではないが green でもない、へ振り分ける。
+classify_detector_status() { # classify_detector_status <label> <exit-code>
+  local label="$1" code="$2"
+  case "$code" in
+    0) ;;
+    # 3 = 判定できなかった（検出器が意図して申告した）。#709 で導入。
+    3) skip_unverified "$label" "変更パスを集めきれず停止境界を判定できなかった" ;;
+    # それ以外の非 0 はクラッシュ。**これも「測れていない」**なので green にしない。
+    *) skip_unverified "$label" "検出器の実行に失敗した (exit ${code})" ;;
+  esac
+}
+
+# 停止境界の検出器を走らせ、終了コードをゲートの語彙へ渡す (#424 増分 3 / #713)。
+#
+# 🔴 **関数にしてあるのは、終了コードを拾う 1 行をテストから通すため。** 対応表
+# （`classify_detector_status`）だけをテストしていたときは、**呼び出し側が `|| true` に
+# 戻っても全テストが green のまま**だった（変異で実証）。配線が黙って落ちるのは、
+# この仕組みが無くそうとしている欠陥そのもの。
+#
+# `QUALITY_GATE_DETECTOR_CMD` は**テスト用の差し込み口**（`QUALITY_GATE_SELFTEST` と同性格）。
+# 検出器そのものを別途用意しなくても、終了コードの経路だけを実際に走らせて確かめられる。
+run_change_risk_detector() {
+  local label="change-risk (停止境界)"
+  local -a cmd
+  if [[ -n "${QUALITY_GATE_DETECTOR_CMD:-}" ]]; then
+    cmd=(bash -c "${QUALITY_GATE_DETECTOR_CMD}")
+  elif npx --no-install tsx --version >/dev/null 2>&1; then
+    cmd=(npx --no-install tsx "${ROOT}/scripts/change-risk.ts")
+  else
+    echo ""
+    echo "▶ ${label}（報告のみ）"
+    # 🔴 **tsx が無い＝判定していない** (#713)。判定ロジックが unit テスト済みであることは
+    # 「このツリーで境界に触れたか」を測ったことにはならない。同じ条件で
+    # `infra WebStack synth` も skip_unverified にしているので扱いを揃える。
+    skip_unverified "$label" "tsx が無いため停止境界を判定できない"
+    return
+  fi
   echo ""
   echo "▶ ${label}（報告のみ・FAIL させない）"
-  "$@" || echo "  (報告に失敗しました。ゲートは続行します)"
+  local code=0
+  "${cmd[@]}" || code=$?
+  classify_detector_status "$label" "$code"
 }
 
 skip_or_fail() { # skip_or_fail <label> <reason>
@@ -201,6 +243,11 @@ if [[ -n "${QUALITY_GATE_SELFTEST:-}" ]]; then
     unverified) skip_unverified "selftest step" "前提が壊れていて検査できなかった" ;;
     optional)   skip_or_fail    "selftest step" "selftest tool not installed" ;;
     pass)       SUMMARY+=("PASS  selftest step") ;;
+    # #713: 検出器の終了コード → ゲートの語彙、の対応表だけを通す。
+    change-risk:*) classify_detector_status "change-risk (停止境界)" "${QUALITY_GATE_SELFTEST#change-risk:}" ;;
+    # #713: **実際の呼び出し経路**（終了コードを拾う 1 行を含む）を通す。
+    # 検出器の中身は `QUALITY_GATE_DETECTOR_CMD` で差し替える。
+    change-risk-invoke) run_change_risk_detector ;;
     *) echo "unknown QUALITY_GATE_SELFTEST: ${QUALITY_GATE_SELFTEST}" >&2; exit 2 ;;
   esac
   finish
@@ -508,13 +555,7 @@ fi
 # 停止境界（人間承認が必要な変更）に触れたかを変更パスから判定して見せる。判定ロジックは
 # src/domain/governance/change-risk.ts（純関数・ユニットテスト済）で、ここは呼ぶだけ。
 # **別系統のチェッカにしない**（誰も回さなくなる）ためゲートに同居させるが、報告専用。
-if npx --no-install tsx --version >/dev/null 2>&1; then
-  report "change-risk (停止境界)" npx --no-install tsx "${ROOT}/scripts/change-risk.ts"
-else
-  echo ""
-  echo "▶ change-risk (停止境界)（報告のみ）"
-  echo "  tsx が無いため SKIP（判定ロジック自体は unit テストで検証済み）"
-fi
+run_change_risk_detector
 
 # ---- サマリ ---------------------------------------------------------------
 echo ""

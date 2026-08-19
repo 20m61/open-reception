@@ -200,6 +200,10 @@ instrumentation → screenshot → video/agent → human/device。
 
 🔴 **3 つ目を「当たりなし」と読まない。** 断定してよいのは 1 つ目だけ。
 
+3 つ目のとき、ゲートは **green として記録しない** (#713)。FAILED は立てない（報告専用の
+性質は変えない）が、`skip_unverified` として扱いスタンプを拒否するので `pr-gate-guard` が
+マージを止める。「測れなかった」を「通った」の根拠にしないため。
+
 3 つ目が要るのは、`git diff` / `git status` の失敗を空文字へ落とすと「変更 0 件」になり、
 **測れていないのに「触れていません」と断定していた**から（浅い clone で pin された起点の
 object へ到達できない、メモリ枯渇で散発的に失敗する、等）。`change-scope.ts` は同じ状況に
