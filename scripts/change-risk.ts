@@ -17,7 +17,7 @@ import {
   classifyChangeRisk,
   type DependencyManifest,
 } from '../src/domain/governance/change-risk';
-import { resolveBase } from '../src/domain/governance/git-base';
+import { collectChangedPaths, resolveBase } from '../src/domain/governance/git-base';
 
 /** 停止境界の日本語ラベル（`docs/ai-development-loop.md` §6 の文言に合わせる）。 */
 const BOUNDARY_LABEL = {
@@ -52,29 +52,6 @@ function tryGit(args: ReadonlyArray<string>): string | null {
  */
 const resolveBaseRef = (): string | null => resolveBase(tryGit, process.env.GATE_BASE_SHA);
 
-/**
- * 変更パスを集める。**ゲートが実際に検査するのは作業ツリー**なので、
- * ブランチのコミット分と未コミット分の両方を見る。
- */
-function changedPaths(base: string | null): ReadonlyArray<string> {
-  const paths = new Set<string>();
-  if (base !== null) {
-    for (const line of (tryGit(['diff', '--name-only', base, 'HEAD']) ?? '').split('\n')) {
-      if (line.trim() !== '') paths.add(line.trim());
-    }
-  }
-  // 未コミット（staged / unstaged / untracked）。porcelain の先頭 2 桁は状態コード。
-  // **`-uall` が必須**: 既定の porcelain は未追跡ディレクトリを `src/foo/` の 1 行へ畳むので、
-  // 新しいディレクトリに置いたファイルがまるごと判定から消える（実際に踏んだ）。
-  for (const line of (tryGit(['status', '--porcelain', '-uall']) ?? '').split('\n')) {
-    if (line.trim() === '') continue;
-    const path = line.slice(3).trim();
-    // リネームは "old -> new" 形式。新しい側を見る。
-    paths.add(path.includes(' -> ') ? path.split(' -> ')[1]! : path);
-  }
-  return [...paths];
-}
-
 function manifestAt(ref: string | null, path: string): DependencyManifest {
   const raw = ref === null ? null : tryGit(['show', `${ref}:${path}`]);
   if (raw === null) return {};
@@ -98,7 +75,8 @@ function currentManifest(path: string): DependencyManifest {
 
 function main(): void {
   const base = resolveBaseRef();
-  const paths = changedPaths(base);
+  const collected = collectChangedPaths(tryGit, base);
+  const paths = collected.paths;
   const added = [
     ...addedDependencyNames(manifestAt(base, 'package.json'), currentManifest('package.json')),
     ...addedDependencyNames(
@@ -106,7 +84,13 @@ function main(): void {
       currentManifest('infra/package.json'),
     ),
   ];
-  const assessment = classifyChangeRisk({ paths, addedDependencies: added });
+  const assessment = classifyChangeRisk({
+    paths,
+    addedDependencies: added,
+    // **収集が失敗していたら「完了」と申告しない** (#709)。ここを黙って complete にすると
+    // 判定不能が「触れていません」に化ける —— それがこの issue そのもの。
+    measurement: collected.failures.length === 0 ? 'complete' : 'incomplete',
+  });
 
   console.log(`  変更ファイル: ${paths.length} 件（起点: ${base?.slice(0, 8) ?? 'なし'}）`);
   /**
@@ -121,6 +105,22 @@ function main(): void {
   if (base === null) {
     console.log('  ⚠ 起点を解決できないため、停止境界の判定はできていません');
     console.log('    （未コミット分しか見ていません。コミット済みの変更は判定対象外です）');
+    return;
+  }
+  /**
+   * **収集に失敗していたら判定保留** (#709)。
+   *
+   * 起点があっても `git diff` は失敗しうる（浅い clone で pin された起点の object へ
+   * 到達できない等）。以前は失敗を空文字へ落としていたため、クリーンなツリーでは
+   * 「変更 0 件 → 触れていません」と断定していた。**何が測れなかったかを名指しする。**
+   */
+  if (!assessment.assessable) {
+    console.log('  ⚠ 変更パスを集めきれないため、停止境界の判定はできていません');
+    for (const failed of collected.failures) console.log(`    失敗したコマンド: ${failed}`);
+    if (assessment.hits.length > 0) {
+      console.log('    （集まった範囲では次に当たっています。判定は不完全です）');
+      for (const { boundary } of assessment.hits) console.log(`      - ${BOUNDARY_LABEL[boundary]}`);
+    }
     return;
   }
   if (!assessment.requiresHumanApproval) {
