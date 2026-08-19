@@ -22,6 +22,17 @@
  * 送信は呼び出し側が行う。MCP コネクタの解除（`clear_mcp_connections`）も送信側の責務。
  */
 
+/**
+ * ローカル `--fast` を実際にどうしたか。**呼び出し側が申告する**（生成器は確かめられない）。
+ *
+ * - `green` … 実行して全 PASS
+ * - `not-run` … 実行していない
+ * - `failed` … 実行したが green にならなかった（負荷で完走しなかった場合を含む）
+ */
+export type LocalFastGate = 'green' | 'not-run' | 'failed';
+
+export const LOCAL_FAST_GATE_VALUES: readonly LocalFastGate[] = ['green', 'not-run', 'failed'];
+
 /** 委譲 1 件分の可変部分。 */
 export type DelegationInput = {
   /** 対象ブランチ名。 */
@@ -42,6 +53,23 @@ export type DelegationInput = {
   extraProhibitions?: readonly string[];
   /** 関連 issue 番号（`Refs #N` に使う）。 */
   refs: readonly number[];
+  /**
+   * ローカル `--fast` の結果。**省略できない** —— 断定を生成器に持たせない (#705)。
+   *
+   * かつてこの生成器は「ローカル `--fast` は green」を**無条件で**出力していた。入力に
+   * 含まれず、生成器には確かめようがない事実である。2026-08-18、ローカル macOS が
+   * メモリ枯渇（load 107、空き 529M）で `--fast` を完走できなかった周回でも、生成器は
+   * そのまま「green」と書いた。**委譲先はこの散文を前提として受け取り**、ゲートが赤い
+   * ときの判断（「ローカルでは通っていたのだから環境要因か」）に使う。前提が嘘だと
+   * 判断そのものが狂う。
+   */
+  localFastGate: LocalFastGate;
+  /**
+   * `failed` / `not-run` の理由（負荷・環境・未実行など）。
+   *
+   * `failed` では**必須**（理由の無い「失敗」は委譲先が判断に使えない）。
+   */
+  localFastGateNote?: string;
   /**
    * どこで止めるか（既定 `'merge'`）。
    *
@@ -70,6 +98,19 @@ const CONVENTIONAL = /^(feat|fix|docs|style|refactor|perf|test|build|ci|chore|re
 const STEP_NPM_CI = '`npm ci`';
 const STEP_BUILD =
   '`npm run build:open-next` を実行する（3〜5 分）。**これを飛ばすと `.open-next` が stale 扱いになり、ゲートは green として記録しません。**';
+/**
+ * 停止境界の扱い (#705)。
+ *
+ * かつてこの生成器は「**停止境界には触れていません**」と**無条件で**書いていた。生成器は
+ * 変更が停止境界に触れるかを判断できず、入力にも含まれていない。憶測をやめ、**実際に
+ * 走らせたセッションだけが持つ事実**（ゲート出力の検出器レポート）へ根拠を移す。
+ *
+ * 検出器そのものは報告専用で偽陽性に倒してある（該当＝即停止ではない。判断基準は
+ * `.claude/rules/opus5-autonomous-loop.md`）。だからここで求めるのは**停止ではなく報告**。
+ */
+const STEP_CHANGE_RISK =
+  'ゲート出力の `change-risk (停止境界)` 節を**そのまま報告し、PR 本文の「人間承認が必要な変更」節に貼る**。**この報告が停止境界に触れたかどうかの唯一の根拠です**（依頼文はそれを判断していません）。この検出器は報告専用で偽陽性に倒してあるため、該当があっても自己判断で止めず、**全文を報告**すること。';
+
 const STEP_GATE =
   '`./scripts/quality-gate.sh --full` を実行する。summary の全ステップが PASS であることを確認する。**要約の緑だけを信じず、log 本文で実際に走ったコマンド行を確認する。** infra の `Tests` 行が skip を含むなら**偽の green**です（`138 passed (138)` が本物）。FAIL は**直さずに**全文報告して止める。';
 
@@ -120,14 +161,45 @@ export function buildDelegationPrompt(input: DelegationInput): string {
   }
   if (input.headSha.trim() === '') throw new Error('headSha は必須です（ブランチ取り違えの検出に使います）');
 
+  // 🔴 **型だけでは止まらない。** 実際の呼び出し経路は `scripts/delegate-gate-prompt.ts`
+  // が spec.json を `as DelegationInput` でキャストするところで、欠けていれば `undefined`
+  // が黙って通る。**断定をやめるための申告が、黙って欠けては意味がない**ので実行時にも縛る。
+  if (!LOCAL_FAST_GATE_VALUES.includes(input.localFastGate)) {
+    throw new Error(
+      `localFastGate は ${LOCAL_FAST_GATE_VALUES.map((v) => `'${v}'`).join(' / ')} のいずれかで、省略できません` +
+        `（生成器はローカルゲートの結果を確かめられないため申告が要ります / #705）: ${String(input.localFastGate)}`,
+    );
+  }
+  if (input.localFastGate === 'failed' && (input.localFastGateNote ?? '').trim() === '') {
+    throw new Error(
+      'localFastGate が failed のときは localFastGateNote（理由）が必須です' +
+        '（理由の無い「失敗」は委譲先が判断に使えません / #705）',
+    );
+  }
+
   const stopAfter = input.stopAfter ?? 'merge';
 
   const stepCheckout = `\`git fetch origin && git checkout ${input.branch}\` し、\`git rev-parse HEAD\` が \`${input.headSha}\` で始まることを確認する。違えば**そこで止めて報告**する。`;
   // 追加検証は**ビルドとゲートの前**に置く（この周回の目的の確認を先に済ませる）。
-  const ordered = [stepCheckout, STEP_NPM_CI, ...(input.extraVerification ?? []), STEP_BUILD, STEP_GATE];
+  const ordered = [
+    stepCheckout,
+    STEP_NPM_CI,
+    ...(input.extraVerification ?? []),
+    STEP_BUILD,
+    STEP_GATE,
+    STEP_CHANGE_RISK,
+  ];
 
   const refs = input.refs.map((n) => `#${n}`).join(' ');
   const files = input.changedFiles.map((f) => `\`${f}\``).join(' / ');
+
+  // **申告をそのまま書く。生成器は補わない。** `green` 以外では「green」という断定が
+  // 出力のどこにも現れないことをテストで固定している。
+  const note = (input.localFastGateNote ?? '').trim();
+  const localGateLine =
+    input.localFastGate === 'green'
+      ? `ローカル \`--fast\` は green（呼び出し側の申告${note === '' ? '' : ` / ${note}`}）。`
+      : `🔴 **ローカル \`--fast\` は${input.localFastGate === 'failed' ? '失敗しました' : '実行されていません'}**（${note === '' ? '理由の申告なし' : note}）。**このクラウド実行の \`--full\` が唯一の根拠です。** 「ローカルでは通っていたのだから環境要因だろう」という推測をしないこと。`;
 
   // 手順 11〜12（PR 作成後の扱い）。**名前で持ち、名前で並べる**（配列添字での組み立ては
   // 過去に手順を黙って落とした実績がある。冒頭の doc comment を参照）。
@@ -138,7 +210,7 @@ export function buildDelegationPrompt(input: DelegationInput): string {
    本文には次を必ず含める:
    - 何を変えたか（上記背景の要約）
    - **ゲート結果**: \`--full\` の summary をそのまま貼る
-   - **人間承認が必要な変更**: 該当の有無を明記する
+   - **人間承認が必要な変更**: 上記手順で報告した \`change-risk\` の出力を貼り、該当の有無を明記する
    - 末尾に \`Refs ${refs}\``;
   const stepConfirmPr =
     '🔴 **PR の実在は上のコマンドが REST で引き直して確認する**（0 で終われば実在確認済み）。**その URL を報告する。** 非ゼロで終わったら**黙って終わらせず、出力全文を報告**すること。**ブランチが出来たこと＝PR が出来たことではない**（#656 はこれで FAIL の記録を 5 日間失った）。';
@@ -199,7 +271,9 @@ export function buildDelegationPrompt(input: DelegationInput): string {
 
 ${input.summary}
 
-変更ファイル: ${files}。**停止境界には触れていません**。ローカル \`--fast\` は green。
+変更ファイル: ${files}
+
+${localGateLine}
 
 ## 手順
 

@@ -71,6 +71,13 @@ npx tsx scripts/delegate-gate-prompt.ts <spec.json>   # 委譲プロンプトを
 
 **クラウドでしか確かめられない検証**は `extraVerification` に入れる。
 
+🔴 **`localFastGate` は必須。ローカル `--fast` を実際にどうしたかを申告する**
+（`green` / `not-run` / `failed`。`failed` は `localFastGateNote` に理由が要る）。
+生成器はローカルゲートの結果を確かめられないので、**書かなければ実行時に落ちる**。
+かつては「ローカル `--fast` は green」を無条件で出しており、実際に完走していない周回でも
+そう書いて委譲先へ渡していた（#705）。同じ理由で**停止境界も断定しない** — 生成される
+手順が `change-risk (停止境界)` の報告を求めるので、その報告が唯一の根拠になる。
+
 ## 6. PR とマージ
 
 ```bash
