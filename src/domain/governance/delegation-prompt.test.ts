@@ -601,8 +601,8 @@ describe('spec の自由文の検査を配線する (#729)', () => {
     // 以前は `input.refs.map` の TypeError になり、#711 で回復した「読めるメッセージ」が
     // スタックトレース文字列へ劣化していた。
     const { [field]: _omitted, ...without } = BASE;
-    expect(() => buildDelegationPrompt(without as unknown as typeof BASE)).toThrow(
-      new RegExp(field),
-    );
+    // 動的な `new RegExp(field)` は semgrep の ReDoS ルールに当たる（実際に --full が赤くなった）。
+    // 文字列を渡せば vitest は部分一致で見るので、ここでは正規表現が要らない。
+    expect(() => buildDelegationPrompt(without as unknown as typeof BASE)).toThrow(field);
   });
 });
