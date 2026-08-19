@@ -74,6 +74,14 @@ function currentManifest(path: string): DependencyManifest {
   }
 }
 
+/**
+ * 判定できなかったことを表す終了コード (#713)。
+ *
+ * 0（判定できた）とも、想定外のクラッシュ（1 等）とも区別する。ゲート側はどちらも
+ * 「測れていない」として扱うが、**理由を出し分けられる**ようにしておく。
+ */
+const EXIT_UNASSESSABLE = 3;
+
 function main(): void {
   const base = resolveBaseRef();
   const collected = collectChangedPaths(tryGit, base);
@@ -112,6 +120,10 @@ function main(): void {
    */
   if (!assessment.assessable) {
     console.log('  ⚠ 停止境界の判定はできていません');
+    // 🔴 **終了コードで伝える** (#713)。`quality-gate.sh` はこれを見て
+    // `skip_unverified`（赤ではないが green でもない）へ振り分け、**スタンプ記録を拒否**する。
+    // 文言ではなくコードで伝えるのは、シェル側を出力の言い回しに依存させないため。
+    process.exitCode = EXIT_UNASSESSABLE;
     if (base === null) {
       console.log('    起点を解決できないため、コミット済みの変更は判定対象外です');
     }

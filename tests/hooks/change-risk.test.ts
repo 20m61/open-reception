@@ -99,7 +99,7 @@ function failingDiffShim(): string {
 function run(
   repo: { root: string; base: string },
   options: { shimDir?: string; pinBase?: boolean } = {},
-): string {
+): { stdout: string; status: number } {
   const { shimDir, pinBase = true } = options;
   const env = { ...process.env };
   // **継承した GATE_BASE_SHA を持ち込まない。** ゲート実行中はこの変数が立っており、
@@ -114,7 +114,7 @@ function run(
       ...(shimDir === undefined ? {} : { PATH: `${shimDir}:${process.env.PATH ?? ''}` }),
     },
   });
-  return result.stdout ?? '';
+  return { stdout: result.stdout ?? '', status: result.status ?? -1 };
 }
 
 const NO_BOUNDARY = '停止境界に触れていません';
@@ -124,7 +124,7 @@ describe('scripts/change-risk.ts: 測れていないことを断定しない (#7
   it('🔴 git diff が失敗したら、触れていないと断定せず判定保留にする', () => {
     // これが #709 の本体。修正前は「変更ファイル: 0 件」＋「触れていません」と出ていた。
     const repo = makeRepo(['src/app/page.tsx']);
-    const stdout = run(repo, { shimDir: failingDiffShim() });
+    const { stdout } = run(repo, { shimDir: failingDiffShim() });
     expect(stdout).not.toContain(NO_BOUNDARY);
     expect(stdout).toContain(UNASSESSABLE);
     // **何が測れなかったのかを名指しする**（「失敗した」だけでは直せない）。
@@ -136,7 +136,7 @@ describe('scripts/change-risk.ts: 測れていないことを断定しない (#7
     const repo = makeRepo(['infra/lib/stacks/web.ts']);
     // 未コミットにも置く（diff が死んでも status からは見える経路を作る）。
     writeFile(repo.root, 'infra/lib/stacks/api.ts', 'export const y = 1;\n');
-    const stdout = run(repo, { shimDir: failingDiffShim() });
+    const { stdout } = run(repo, { shimDir: failingDiffShim() });
     expect(stdout).toContain(UNASSESSABLE);
     expect(stdout).toContain('本番デプロイ');
     expect(stdout).toContain('infra/lib/stacks/api.ts');
@@ -147,7 +147,7 @@ describe('scripts/change-risk.ts: 測れていないことを断定しない (#7
     // **保留へ倒しすぎない。** 「判定保留の常態化」は過小報告と同じくらい危険（誰も読まなくなる）。
     // 断定してよい唯一の場合なので、ここは *出る* ことを固定する（レビュー m-4）。
     const repo = makeRepo(['src/app/page.tsx']);
-    const stdout = run(repo);
+    const { stdout } = run(repo);
     expect(stdout).toContain('変更ファイル: 1 件');
     expect(stdout).toContain(NO_BOUNDARY);
     expect(stdout).not.toContain(UNASSESSABLE);
@@ -157,15 +157,29 @@ describe('scripts/change-risk.ts: 測れていないことを断定しない (#7
     // `origin/main` も `main` も無いリポジトリ（起点解決が null になる）。
     // コミット済みの変更を丸ごと見落とすので、「触れていません」と言ってはいけない。
     const repo = makeRepo(['src/app/page.tsx'], 'work');
-    const stdout = run(repo, { pinBase: false });
+    const { stdout } = run(repo, { pinBase: false });
     expect(stdout).not.toContain(NO_BOUNDARY);
     expect(stdout).toContain(UNASSESSABLE);
     expect(stdout).toContain('起点を解決できない');
   }, 60_000);
 
+  it('🔴 判定保留のときは専用の終了コード 3 で終わる (#713)', () => {
+    // ゲートが「測れなかった」を **skip_unverified** として扱えるようにするための合図。
+    // 出力の文言ではなく終了コードで伝えるのは、シェル側が文言に依存しないため。
+    const repo = makeRepo(['src/app/page.tsx']);
+    expect(run(repo, { shimDir: failingDiffShim() }).status).toBe(3);
+  }, 60_000);
+
+  it('判定できたときは、当たりの有無にかかわらず 0 で終わる (#713)', () => {
+    // **保留へ倒しすぎない。** 検出器は report-only であって判定者ではないので、
+    // 当たりがあってもゲートを止めない。
+    expect(run(makeRepo(['src/app/page.tsx'])).status).toBe(0);
+    expect(run(makeRepo(['infra/lib/stacks/web.ts'])).status).toBe(0);
+  }, 60_000);
+
   it('git が正常で当たりがあれば、根拠パス付きで承認が要ると出す', () => {
     const repo = makeRepo(['infra/lib/stacks/web.ts']);
-    const stdout = run(repo);
+    const { stdout } = run(repo);
     expect(stdout).not.toContain(UNASSESSABLE);
     expect(stdout).toContain('人間承認が必要な変更に触れています');
     expect(stdout).toContain('infra/lib/stacks/web.ts');

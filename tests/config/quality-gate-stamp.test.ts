@@ -36,7 +36,10 @@ import { describe, expect, it } from 'vitest';
 const REPO = process.cwd();
 
 /** scripts/ だけを持つ一時 git リポジトリを作り、その中で quality-gate.sh を動かす。 */
-function runIsolated(selftest: string): {
+function runIsolated(
+  selftest: string,
+  extraEnv: Record<string, string> = {},
+): {
   status: number;
   stdout: string;
   stampExists: boolean;
@@ -54,7 +57,7 @@ function runIsolated(selftest: string): {
     stdout = execFileSync(join(dir, 'scripts/quality-gate.sh'), ['--full', '--no-bootstrap'], {
       cwd: dir,
       encoding: 'utf8',
-      env: { ...process.env, QUALITY_GATE_SELFTEST: selftest },
+      env: { ...process.env, QUALITY_GATE_SELFTEST: selftest, ...extraEnv },
     });
   } catch (e) {
     const err = e as { status?: number; stdout?: string };
@@ -99,6 +102,82 @@ describe('quality-gate: 検証できなかったステップは green にしな�
 
   it('全ステップ PASS なら green として記録する', () => {
     const r = runIsolated('pass');
+    expect(r.status).toBe(0);
+    expect(r.stampExists).toBe(true);
+  });
+});
+
+/**
+ * change-risk が「判定できていません」と言った実行を green として記録しない (#713)。
+ *
+ * ## なぜ要るか
+ *
+ * #709 で change-risk は「測れていない」を言えるようになったが、**その状態が機械側へ
+ * 伝播していなかった**。`report` で呼ぶだけ・スクリプトも exit 0 だったので、
+ * `finish()` は `✅ PASSED` を出し、スタンプに green が載り、`pr-gate-guard.sh` は
+ * マージを許した。
+ *
+ * #705 で委譲プロンプトはこの報告を「**停止境界に触れたかどうかの唯一の根拠**」と
+ * 宣言している。その根拠が「測れなかった」と言っているのに機械が素通りするなら、
+ * 実効性は「委譲先が節を貼り忘れない」という散文の規律に依存したままになる。
+ *
+ * #640（`infra WebStack synth` が 45 件 SKIP のまま green 記録）と**まったく同型**なので、
+ * 同じ語彙（`skip_unverified`）へ寄せる。**FAILED は立てない**（検出器は report-only の
+ * ままにして「赤を無視する習慣」を作らない）。記録だけ拒否する。
+ */
+describe('quality-gate: change-risk の判定保留を green にしない (#713)', () => {
+  it('判定保留（exit 3）なら green として記録せず、非 0 で終わる', () => {
+    const r = runIsolated('change-risk:3');
+    expect(r.stampExists).toBe(false);
+    expect(r.status).not.toBe(0);
+    expect(r.stdout).not.toMatch(/✅ quality-gate PASSED/);
+  });
+
+  it('判定保留の理由が読める（黙って落とさない）', () => {
+    const r = runIsolated('change-risk:3');
+    expect(r.stdout).toContain('change-risk (停止境界)');
+    // 「落ちた」ではなく「測れなかった」と読めること。
+    expect(r.stdout).toContain('集めきれ');
+  });
+
+  it('検出器そのものが落ちた場合（想定外の exit）も green にしない', () => {
+    // クラッシュも「測れなかった」の一種。PASS の根拠にはならない。
+    const r = runIsolated('change-risk:1');
+    expect(r.stampExists).toBe(false);
+    expect(r.status).not.toBe(0);
+    expect(r.stdout).toContain('change-risk (停止境界)');
+  });
+
+  it('🔴 実際の呼び出し経路が終了コードを拾っている', () => {
+    // 対応表だけをテストしていたときは、**呼び出し側が `|| true` に戻っても
+    // 全テストが green のまま**だった（変異で実証）。ここは検出器の中身を差し替えて
+    // 「走らせて終了コードを拾って振り分ける」経路そのものを通す。
+    const r = runIsolated('change-risk-invoke', { QUALITY_GATE_DETECTOR_CMD: 'exit 3' });
+    expect(r.stampExists).toBe(false);
+    expect(r.status).not.toBe(0);
+    expect(r.stdout).toContain('change-risk (停止境界)');
+  });
+
+  it('tsx が無くて検出器を動かせないときも green にしない', () => {
+    // 一時リポジトリには node_modules が無いので `npx --no-install tsx` は失敗する。
+    // **判定ロジックが unit テスト済みであることは、「このツリーで境界に触れたか」を
+    // 測ったことにはならない。** 同じ条件で infra WebStack synth も unverified にしている。
+    const r = runIsolated('change-risk-invoke');
+    expect(r.stampExists).toBe(false);
+    expect(r.status).not.toBe(0);
+    expect(r.stdout).toContain('tsx が無いため');
+  }, 60_000);
+
+  it('実際の呼び出し経路でも、判定できた実行は green として記録する', () => {
+    const r = runIsolated('change-risk-invoke', { QUALITY_GATE_DETECTOR_CMD: 'exit 0' });
+    expect(r.status).toBe(0);
+    expect(r.stampExists).toBe(true);
+  });
+
+  it('判定できた実行（exit 0）は従来どおり green として記録する', () => {
+    // **保留へ倒しすぎない。** 当たりが有っても無くても、測れているなら green を記録する
+    // （検出器は report-only であり、判定者ではない）。
+    const r = runIsolated('change-risk:0');
     expect(r.status).toBe(0);
     expect(r.stampExists).toBe(true);
   });
