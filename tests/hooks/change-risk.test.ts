@@ -21,6 +21,10 @@ import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:f
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { afterAll, describe, expect, it } from 'vitest';
+// 🔴 **リネーム構築だけは共有ヘルパを使う** (#719 レビュー m-4)。
+// 「起点コミットに移動元を入れる」という肝を 2 箇所に複製すると、片方だけ直したときに
+// 素通りするテストへ戻る（今回まさに一度踏んだ型）。
+import { makeRenameRepo } from './helpers/git-repo';
 
 const CLI = resolve(process.cwd(), 'scripts/change-risk.ts');
 
@@ -128,7 +132,7 @@ describe('scripts/change-risk.ts: 測れていないことを断定しない (#7
     expect(stdout).not.toContain(NO_BOUNDARY);
     expect(stdout).toContain(UNASSESSABLE);
     // **何が測れなかったのかを名指しする**（「失敗した」だけでは直せない）。
-    expect(stdout).toContain('git diff --name-status');
+    expect(stdout).toContain('git diff --name-only');
   }, 60_000);
 
   it('判定保留でも、集まった範囲の根拠と行動指示を落とさない', () => {
@@ -199,33 +203,13 @@ describe('scripts/change-risk.ts: 測れていないことを断定しない (#7
   }, 60_000);
 
   describe('ガード対象からの持ち出しリネーム (#719)', () => {
-    /** 起点コミットに `from` を入れてから動かす（起点の後だと git は「新規追加」と見る）。 */
-    function renameRepo(from: string, to: string, commit: boolean) {
-      const root = mkdtempSync(join(tmpdir(), 'change-risk-rename-'));
-      created.push(root);
-      const g = (args: ReadonlyArray<string>) =>
-        execFileSync(REAL_GIT, [...args], { cwd: root, encoding: 'utf8' });
-      g(['init', '--quiet', '--initial-branch=main']);
-      g(['config', 'user.email', 'test@example.com']);
-      g(['config', 'user.name', 'test']);
-      g(['config', 'commit.gpgsign', 'false']);
-      writeFile(root, from, 'export const x = 1;\n');
-      g(['add', '-A']);
-      g(['commit', '--quiet', '-m', 'base']);
-      const base = g(['rev-parse', 'HEAD']).trim();
-      mkdirSync(dirname(join(root, to)), { recursive: true });
-      g(['mv', from, to]);
-      if (commit) g(['commit', '--quiet', '-m', 'rename']);
-      return { root, base };
-    }
-
     it.each([
       ['コミット済み（git diff 経路）', true],
       ['未コミット（git status 経路）', false],
     ])('🔴 %s: infra から docs へ動かしても停止境界として検出する', (_label, commit) => {
       // 新側しか見ないと `docs/移動.md` だけになり、**「停止境界に触れていません」**と
       // 報告していた（実測）。停止境界の偽陰性なので倒れる向きが安全側でない。
-      const repo = renameRepo('infra/lib/stacks/認証.ts', 'docs/移動.md', commit);
+      const repo = makeRenameRepo('infra/lib/stacks/認証.ts', 'docs/移動.md', { commit });
       const { stdout } = run(repo);
       expect(stdout).toContain('人間承認が必要な変更に触れています');
       expect(stdout).toContain('infra/lib/stacks/認証.ts');

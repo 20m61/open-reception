@@ -34,7 +34,7 @@ export const CHANGE_BOUNDARIES = [
 
 export type ChangeBoundary = (typeof CHANGE_BOUNDARIES)[number];
 
-/** 判定の入力。呼び出し側が `git diff --name-only` 等から組み立てる。 */
+/** 判定の入力。呼び出し側が `collectChangedPaths`（`git-base.ts`）等から組み立てる。 */
 export type ChangeSignals = {
   /** 変更ファイルのリポジトリ相対パス。 */
   paths: ReadonlyArray<string>;

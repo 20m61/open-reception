@@ -92,7 +92,7 @@ describe('scripts/change-scope.ts: 測れていないのに検証を省略しな
     writeFile(repo.root, 'docs/note.md');
     const stdout = run(repo, { shimDir: failingDiffShim() });
     expect(stdout).toMatch(/^note=/m);
-    expect(stdout).toContain('git diff --name-status');
+    expect(stdout).toContain('git diff --name-only');
   }, 60_000);
 
   describe('ガード対象からの持ち出しリネーム (#719)', () => {

@@ -295,22 +295,49 @@ export function collectChangedPaths(run: GitRunner, base: string | null): Change
   const failures: string[] = [];
 
   if (base !== null) {
-    // 🔴 **`--name-status`**（`--name-only` ではない / #719）。`--name-only` はリネームの
-    // **新側しか返さない**ので、ガード対象ディレクトリからの持ち出しが見えなくなる。
-    const diff = run(['diff', '--name-status', '-z', base, 'HEAD']);
-    if (diff === null) failures.push(`git diff --name-status -z ${base} HEAD`);
-    else for (const path of nameStatusPaths(splitNul(diff))) paths.add(path);
+    const diff = run(['diff', '--name-only', ...NO_RENAMES, '-z', base, 'HEAD']);
+    if (diff === null) failures.push(`git diff --name-only --no-renames -z ${base} HEAD`);
+    else for (const path of splitNul(diff)) paths.add(path);
   }
 
   // 未コミット（staged / unstaged / untracked）。
   // **`-uall` が必須**: 既定の porcelain は未追跡ディレクトリを `src/foo/` の 1 行へ畳むので、
   // 新しいディレクトリに置いたファイルがまるごと判定から消える（実際に踏んだ）。
-  const status = run(['status', '--porcelain', '-uall', '-z']);
-  if (status === null) failures.push('git status --porcelain -uall -z');
-  else for (const path of porcelainPaths(splitNul(status))) paths.add(path);
+  const status = run(['status', '--porcelain', ...NO_RENAMES, '-uall', '-z']);
+  if (status === null) failures.push('git status --porcelain --no-renames -uall -z');
+  else for (const record of splitNul(status)) addIfPresent(paths, record.slice(3));
 
   return { paths: [...paths], failures };
 }
+
+/**
+ * 🔴 **リネーム検出を切る** (#719)。
+ *
+ * ## なぜ切るのか
+ *
+ * リネーム検出が効いていると、git は**新しい側しか返さない**:
+ *
+ * ```
+ * $ git mv infra/lib/stacks/認証.ts docs/移動.md
+ * $ git diff --name-only -z <base> HEAD
+ * docs/移動.md                       ← 旧パスが消える
+ * ```
+ *
+ * その結果 change-risk は「停止境界に触れていません」と言い、change-scope は `docs` と
+ * 判定して build / e2e / sast / lighthouse を飛ばす（＝**未検証のツリーが green**）。
+ * どちらも実測済み。
+ *
+ * ## なぜ `--name-status` ではなくこちらなのか
+ *
+ * 旧パスは `--name-status -z`（`R100\0旧\0新\0`）や porcelain の
+ * `R  新\0旧\0` からも採れるが、**2 つの形式で新旧の順序が逆**で、R/C だけ 2 パス、
+ * スコアの桁も揺れる。`--no-renames` なら git が最初から
+ * 「削除 + 追加」として両方を独立レコードで返すので、**その種類のリスクごと消える**
+ * （実測: `A  docs/移動.md` / `D  infra/lib/stacks/認証.ts`）。
+ *
+ * パーサを増やさない方を選ぶ。**これを外すと #719 がそのまま再発する。**
+ */
+const NO_RENAMES = ['--no-renames'] as const;
 
 /**
  * NUL 区切りの出力をレコードへ分ける。
@@ -322,80 +349,6 @@ function splitNul(output: string): ReadonlyArray<string> {
   return output.split('\0').filter((record) => record !== '');
 }
 
-/**
- * `git status --porcelain -z` のレコード列からパスを取り出す。
- *
- * 各レコードは `XY <path>`（状態コード 2 桁 + 空白 + パス）。
- *
- * 🔴 **リネーム／コピーは `R  <新>\0<旧>\0` で、既定の `<旧> -> <新>` と順序が逆。**
- * 旧側は状態コードを持たない独立レコードとして**続く**ので、読み飛ばさないとパスとして
- * 混入する（`old/a.ts` が変更扱いになり、`docs` 判定や停止境界の判定が狂う）。
- *
- * 新しい側だけを採るのは移設前からの挙動（`<旧> -> <新>` の右側）を保つため。
- */
-/**
- * `git diff --name-status -z` のレコード列からパスを取り出す (#719)。
- *
- * 形式は `<status>\0<path>\0`。ただし**リネーム／コピーだけ 2 パス**で
- * `R100\0<旧>\0<新>\0`。
- *
- * 🔴 **`status --porcelain -z` とは順序が逆。** あちらは `R  <新>\0<旧>\0`（新が先）。
- * 実測で確認した差なので、片方の記憶で書かないこと。
- *
- * 壊れた出力（パスが足りない）では**在るものだけ返す**。捏造も例外も出さない。
- */
-function nameStatusPaths(records: ReadonlyArray<string>): ReadonlyArray<string> {
-  const paths: string[] = [];
-  for (let i = 0; i < records.length; ) {
-    const status = records[i]!;
-    i += 1;
-    // `R`/`C` は類似度スコアが続く（`R100` / `C75`）。それ以外は 1 文字。
-    const pathCount = status.startsWith('R') || status.startsWith('C') ? 2 : 1;
-    for (let taken = 0; taken < pathCount; taken += 1) {
-      const path = records[i];
-      if (path === undefined) return paths;
-      i += 1;
-      if (path !== '') paths.push(path);
-    }
-  }
-  return paths;
-}
-
-/** porcelain v1 の状態コードに使われる文字（`T` は typechange）。 */
-const STATUS_CODE_CHARS = new Set([' ', 'M', 'A', 'D', 'R', 'C', 'U', 'T', '?', '!']);
-
-/**
- * レコードが `XY <path>`（状態つきのレコード）の形に見えるか。
- *
- * 🔴 **3 文字目が空白かどうかだけでは足りない。** 旧パスが `ab cd.ts` のように
- * 3 文字目に空白を持つと状態レコードと誤判定し、**旧パスを変更パスとして数えてしまう**。
- * 倒れる向きは安全側（過剰報告）だが、実在しうる普通のファイル名で起きるので締める。
- * 状態コードの集合まで見れば `ab` は弾ける。
- */
-function looksLikeStatusRecord(record: string | undefined): boolean {
-  if (record === undefined || record.length <= 3 || record[2] !== ' ') return false;
-  return STATUS_CODE_CHARS.has(record[0]!) && STATUS_CODE_CHARS.has(record[1]!);
-}
-
-function porcelainPaths(records: ReadonlyArray<string>): ReadonlyArray<string> {
-  const paths: string[] = [];
-  for (let i = 0; i < records.length; i += 1) {
-    const record = records[i]!;
-    const status = record.slice(0, 2);
-    const path = record.slice(3);
-    if (path !== '') paths.push(path);
-    // 🔴 **リネーム／コピーの旧パスも採る** (#719)。捨てると
-    // `git mv infra/lib/stacks/認証.ts docs/x.md` のような**持ち出しが見えなくなり**、
-    // change-risk は「停止境界に触れていません」、change-scope は `docs` と判定して
-    // build / e2e / sast / lighthouse を飛ばす（どちらも実測済み）。
-    //
-    // 次が状態レコードの形なら旧パスではないので消費しない（出力が壊れていても
-    // 実在するパスを取り落とさない）。
-    if ((status.includes('R') || status.includes('C')) && !looksLikeStatusRecord(records[i + 1])) {
-      i += 1;
-      const previous = records[i];
-      if (previous !== undefined && previous !== '') paths.push(previous);
-    }
-  }
-  return paths;
+function addIfPresent(into: Set<string>, value: string): void {
+  if (value !== '') into.add(value);
 }
