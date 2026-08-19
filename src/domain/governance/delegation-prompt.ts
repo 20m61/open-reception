@@ -166,7 +166,7 @@ export type StopAfter = 'pr' | 'merge';
  * REST 経路の一文が消える**（三項演算子だった頃は `pr` 側へ縮退していた / #710 レビュー
  * Minor-2 で入った回帰）。`localFastGate` を実行時検証しているのと同じ理由。
  */
-export const STOP_AFTER_VALUES: readonly StopAfter[] = ['pr', 'merge'];
+const STOP_AFTER_VALUES: readonly StopAfter[] = ['pr', 'merge'];
 
 /**
  * 「環境の既知の制約」節の部品 (#710)。
@@ -185,8 +185,18 @@ export const STOP_AFTER_VALUES: readonly StopAfter[] = ['pr', 'merge'];
  * 等式では止まらない**（両辺が同時に動く。レビューの実測で 6 通りの言い換えが素通りした）。
  * 中身は下の 2 つで守る —— (a) 各部品への正の pin、(b)「`403` を含む文には観測時点
  * （日付 / `時点の観測` / issue 番号）が同居する」という文単位の規則。
- * 恒久策は観測を**データ**にすること（`{date, command, status}` の配列＋固定テンプレ）で、
- * そうすれば自由文の置き場所自体が消える。#710 の範囲を超えるので別 issue。
+ *
+ * 🔴 **これも「守られている」と読まないこと。** (a)(b) が止めるのは
+ * **リテラル `403` を含む断定**と**部品の骨抜き**まで。実測で次は素通りする:
+ *   - `403` と書かない断定（「例外なく拒否されます」「通りません」）
+ *   - 日付や issue 番号と**同居させた**断定（「2026-08-18 に確認したとおり、あなたの
+ *     環境でも 403 です」）—— 規則は共起しか見ておらず、主張が観測にスコープされて
+ *     いるかは見ていない。**日付を添えれば守れると読んだ善意の書き手が自然に書く形**
+ *   - 制約節の**外**（手順など）に書いた断定 —— 文単位の規則は節スコープ
+ *   - 語彙リストに無い緩和表現（「かまいません」「選んでよい」「大丈夫です」）
+ * 語彙は閉集合、日本語の言い換えは開集合なので、この差は原理的に埋まらない。
+ * 恒久策は観測を**データ**にすること（`{date, command, status}` の配列＋固定テンプレで、
+ * 断定を書ける場所が構造上存在しなくなる）。#710 の範囲を超えるので別 issue。
  */
 export const GRAPHQL_OBSERVATION =
   '- **クラウドのサンドボックスは GitHub GraphQL を絞っています**（#665 / #678 / #702 **時点の観測**。' +
@@ -254,13 +264,14 @@ export function validateDelegationInput(input: DelegationInput): void {
   // 🔴 **`branch` は `headSha` より load-bearing。** 欠けると委譲先の手順 1 が
   // `git checkout undefined` になり、裏取りも `origin/undefined` を引いて
   // 「まだ push していない」という**誤った理由**で格下げする（#711 レビュー Minor-4）。
+  if ((input.branch ?? '').trim() === '') {
+    throw new Error('branch は必須です（委譲先が checkout する対象です）');
+  }
+
   if (input.stopAfter !== undefined && !STOP_AFTER_VALUES.includes(input.stopAfter)) {
     throw new Error(
       `stopAfter は ${STOP_AFTER_VALUES.map((v) => `'${v}'`).join(' / ')} のいずれかです: ${String(input.stopAfter)}`,
     );
-  }
-  if ((input.branch ?? '').trim() === '') {
-    throw new Error('branch は必須です（委譲先が checkout する対象です）');
   }
 
   // 🔴 **型だけでは止まらない。** 実際の呼び出し経路は `scripts/delegate-gate-prompt.ts`
