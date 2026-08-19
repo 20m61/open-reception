@@ -1,0 +1,50 @@
+import { describe, expect, it } from 'vitest';
+import { checkLocalFastGateDeclaration, verdictFromExitCode } from './gate-stamp-check';
+
+describe('verdictFromExitCode (#711)', () => {
+  it.each([
+    [0, 'satisfied'],
+    [1, 'unsatisfied'],
+    [2, 'unknown'],
+  ] as const)('終了コード %i を %s と読む', (code, expected) => {
+    expect(verdictFromExitCode(code)).toBe(expected);
+  });
+
+  it('🔴 3（記録がまだ無い）は判定不能へ倒す', () => {
+    // 「記録が無い」と「別ツリーの記録しかない」は意味が違う。前者で落とすと
+    // ゲートを一度も走らせていない環境で委譲が組み立てられなくなる。
+    expect(verdictFromExitCode(3)).toBe('unknown');
+  });
+
+  it.each([null, 127, 137])('想定外の終了コード（%s）は判定不能へ倒す', (code) => {
+    // 落とす側へ倒すと、bash やライブラリが無いだけの環境で委譲が組み立てられなくなる。
+    expect(verdictFromExitCode(code)).toBe('unknown');
+  });
+});
+
+describe('checkLocalFastGateDeclaration (#711)', () => {
+  it('🔴 green と申告されたのに記録が無ければ通さない', () => {
+    // これが #711 の本体。spec に green と書けば #705 の事象はそのまま再現する。
+    const r = checkLocalFastGateDeclaration('green', 'unsatisfied');
+    expect(r.ok).toBe(false);
+    expect(r.message).toContain('green 記録がありません');
+  });
+
+  it('green と申告され記録もあれば通す', () => {
+    expect(checkLocalFastGateDeclaration('green', 'satisfied')).toEqual({ ok: true });
+  });
+
+  it('🔴 判定不能は通す（「測れなかった」を「嘘だった」に倒さない）', () => {
+    // ここで落とすと、#705 とまさに同じ型の誤りを逆向きに作ることになる。
+    const r = checkLocalFastGateDeclaration('green', 'unknown');
+    expect(r.ok).toBe(true);
+    expect(r.message).toContain('裏取りできませんでした');
+  });
+
+  it.each(['not-run', 'failed'] as const)('%s の申告は裏取りの対象にしない', (declared) => {
+    // 「green ではない」と言っているだけなので、検証すべき主張が無い。
+    for (const verdict of ['satisfied', 'unsatisfied', 'unknown'] as const) {
+      expect(checkLocalFastGateDeclaration(declared, verdict).ok).toBe(true);
+    }
+  });
+});
