@@ -162,16 +162,32 @@ export type StampAttestation = 'verified' | 'unverified';
  * **タイトルが Conventional Commits でなければ投げる。** squash 後の main コミットに
  * なるので、ここを間違えると履歴が汚れ、後から直せない（`CLAUDE.md` 規約）。
  */
-export function buildDelegationPrompt(
-  input: DelegationInput,
-  attestation: StampAttestation = 'unverified',
-): string {
+/** `headSha` として受け付ける形。短すぎる値は委譲先の取り違え検出まで弱める。 */
+const SHA_PREFIX = /^[0-9a-f]{7,40}$/i;
+
+/**
+ * spec の内容を検証する。不正なら投げる。
+ *
+ * 🔴 **`buildDelegationPrompt` から切り出してあるのは、呼び出し側が
+ * 「本文を組む前」に走らせるため。** `scripts/delegate-gate-prompt.ts` は本文を組む前に
+ * `input.headSha` をスタンプ照合で使うので、検証が本文組み立ての中にしか無いと、
+ * 欠けた spec が**検証に届く前に TypeError で落ちる**（#711 レビュー MAJOR-3。実際に
+ * 踏んで、読める「headSha は必須です」が Node のスタックトレースに化けた）。
+ */
+export function validateDelegationInput(input: DelegationInput): void {
   if (!CONVENTIONAL.test(input.title)) {
     throw new Error(
       `PR タイトルが Conventional Commits ではありません（squash 後の main コミットになります）: ${input.title}`,
     );
   }
-  if (input.headSha.trim() === '') throw new Error('headSha は必須です（ブランチ取り違えの検出に使います）');
+  const headSha = (input.headSha ?? '').trim();
+  if (headSha === '') throw new Error('headSha は必須です（ブランチ取り違えの検出に使います）');
+  if (!SHA_PREFIX.test(headSha)) {
+    throw new Error(
+      `headSha は 7〜40 桁の 16 進（コミット SHA の先頭）で書いてください` +
+        `（短すぎる値は委譲先の取り違え検出も弱めます / #711）: ${input.headSha}`,
+    );
+  }
 
   // 🔴 **型だけでは止まらない。** 実際の呼び出し経路は `scripts/delegate-gate-prompt.ts`
   // が spec.json を `as DelegationInput` でキャストするところで、欠けていれば `undefined`
@@ -188,6 +204,13 @@ export function buildDelegationPrompt(
         '（理由の無い「失敗」は委譲先が判断に使えません / #705）',
     );
   }
+}
+
+export function buildDelegationPrompt(
+  input: DelegationInput,
+  attestation: StampAttestation = 'unverified',
+): string {
+  validateDelegationInput(input);
 
   const stopAfter = input.stopAfter ?? 'merge';
 
@@ -217,7 +240,7 @@ export function buildDelegationPrompt(
     input.localFastGate === 'green'
       ? attestation === 'verified'
         ? `ローカル \`--fast\` は green（呼び出し側の申告${note === '' ? '' : ` / ${note}`} / **ゲートスタンプで裏取り済み**）。`
-        : `ローカル \`--fast\` は green（呼び出し側の申告${note === '' ? '' : ` / ${note}`}）。🔴 **ただしゲートスタンプでは裏取りできませんでした**（記録なし / git 外 / 別 worktree / 記録が spec のコミットと別のツリーのもの）。**このクラウド実行の \`--full\` が唯一の根拠です。**`
+        : `ローカル \`--fast\` は green（呼び出し側の申告${note === '' ? '' : ` / ${note}`}）。🔴 **ただしゲートスタンプでは裏取りできませんでした**（理由は生成時の警告を参照）。**このクラウド実行の \`--full\` が唯一の根拠です。**`
       : `🔴 **ローカル \`--fast\` は${input.localFastGate === 'failed' ? '失敗しました' : '実行されていません'}**（${note === '' ? '理由の申告なし' : note}）。**このクラウド実行の \`--full\` が唯一の根拠です。** 「ローカルでは通っていたのだから環境要因だろう」という推測をしないこと。`;
 
   // 手順 11〜12（PR 作成後の扱い）。**名前で持ち、名前で並べる**（配列添字での組み立ては

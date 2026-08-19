@@ -60,6 +60,10 @@ function run(options: {
   dirty?: boolean;
   /** spec の headSha を実 HEAD ではなくこの値にする。 */
   headSha?: string;
+  /** `origin/<branch>` の作り方。既定は HEAD と同じ（= push 済み）。 */
+  remote?: 'same' | 'stale' | 'missing';
+  /** spec から headSha キーごと落とす（`''` ではなく **欠落**。TypeError の再現に要る）。 */
+  omitHeadSha?: boolean;
 }): { status: number; stderr: string; stdout: string } {
   // 🔴 **パスに `$(...)` を仕込む。** probe がライブラリのパスを文字列へ埋め込んで
   // いると、bash がここを**コマンド置換として実行**して別のパスを source しようとし、
@@ -85,7 +89,22 @@ function run(options: {
     }).trim();
   git('add', '-A');
   git('commit', '-q', '-m', 'init', '--no-gpg-sign');
-  const headSha = options.headSha ?? git('rev-parse', 'HEAD');
+  const realHead = git('rev-parse', 'HEAD');
+  const headSha = options.headSha ?? realHead;
+  // 委譲先は `git fetch origin && git checkout` で**リモートの**コミットを取るので、
+  // 裏取りは origin の ref まで見る。ネットワークは要らない（ref を直に置く）。
+  const remote = options.remote ?? 'same';
+  if (remote !== 'missing') {
+    if (remote === 'stale') {
+      writeFileSync(join(dir, 'STALE.md'), 'stale\n');
+      git('add', '-A');
+      git('commit', '-q', '-m', 'stale', '--no-gpg-sign');
+      git('update-ref', `refs/remotes/origin/${SPEC.branch}`, git('rev-parse', 'HEAD'));
+      git('reset', '-q', '--hard', realHead);
+    } else {
+      git('update-ref', `refs/remotes/origin/${SPEC.branch}`, realHead);
+    }
+  }
 
   // 汚すのは**指紋を採る前**。指紋には未コミットの内容も入るので、後から汚すと
   // 「一致しない」になってしまい、見たい「一致するが範囲外」を作れない。
@@ -107,15 +126,21 @@ function run(options: {
 
   // 🔴 **spec を repo 内の非 ignore な場所へ置くと指紋が変わる**（未追跡ファイルも
   // 指紋に入るため）。既定は repo 外。`specInRepo` を渡したときだけ中へ置く。
+  const specBody = { ...SPEC, headSha, localFastGate: options.localFastGate } as Record<string, unknown>;
+  // 🔴 **`''` ではなくキーごと落とす。** 空文字は `startsWith('')` が真になるので
+  // 照合を素通りし、**検証をスタンプ照合の後ろへ戻す変異を検出できない**（実際に踏んだ）。
+  // 実際に落ちたのは `undefined.trim()` の TypeError なので、欠落で再現する。
+  if (options.omitHeadSha === true) delete specBody['headSha'];
+
   let specPath: string;
   if (options.specInRepo !== undefined) {
     specPath = join(dir, options.specInRepo);
-    writeFileSync(specPath, JSON.stringify({ ...SPEC, headSha, localFastGate: options.localFastGate }));
+    writeFileSync(specPath, JSON.stringify(specBody));
   } else {
     const specDir = mkdtempSync(join(tmpdir(), 'delegate-spec-'));
     created.push(specDir);
     specPath = join(specDir, 'spec.json');
-    writeFileSync(specPath, JSON.stringify({ ...SPEC, headSha, localFastGate: options.localFastGate }));
+    writeFileSync(specPath, JSON.stringify(specBody));
   }
   const result = spawnSync(
     resolve(REPO, 'node_modules/.bin/tsx'),
@@ -201,5 +226,51 @@ describe('delegate-gate-prompt.ts: 裏取りの範囲を超えて名乗らない
     expect(r.status, r.stderr).toBe(0);
     expect(r.stdout).not.toContain('ゲートスタンプで裏取り済み');
     expect(r.stderr).toContain('headSha');
+  }, 120_000);
+});
+
+describe('delegate-gate-prompt.ts: 委譲先が取れないツリーを保証しない (#711 レビュー MAJOR-2)', () => {
+  /**
+   * 🔴 **未 push / 古い push も裏取りの範囲外。** 委譲先は `git fetch origin && git checkout`
+   * で**リモートの**コミットを取るので、ローカルにしか無いツリーに「裏取り済み」と
+   * 断定すると、委譲先が絶対に手に入れられないものを保証したことになる。
+   * dirty より起こりやすい —— commit してから push する前に生成する順序はふつう。
+   */
+  it('🔴 まだ push していないときは verified を名乗らない', () => {
+    const r = run({ localFastGate: 'green', stamp: 'matching', remote: 'missing' });
+    expect(r.status, r.stderr).toBe(0); // fail-open は維持する
+    expect(r.stdout).not.toContain('ゲートスタンプで裏取り済み');
+    expect(r.stderr).toContain('push');
+  }, 120_000);
+
+  it('🔴 origin が HEAD より古いときは verified を名乗らない', () => {
+    const r = run({ localFastGate: 'green', stamp: 'matching', remote: 'stale' });
+    expect(r.status, r.stderr).toBe(0);
+    expect(r.stdout).not.toContain('ゲートスタンプで裏取り済み');
+    expect(r.stderr).toContain('origin/');
+  }, 120_000);
+});
+
+describe('delegate-gate-prompt.ts: 終了コードの契約 (#711 レビュー Minor-1)', () => {
+  // 「非 0」でしか縛っていないと、1（裏取りの失敗）と 3（入力が不正）の区別が
+  // 導入した周回でそのまま壊れる（実際に headSha 欠落が TypeError → exit 1 になった）。
+  it('🔴 裏取りの失敗は 1', () => {
+    expect(run({ localFastGate: 'green', stamp: 'mismatched' }).status).toBe(1);
+  }, 120_000);
+
+  it('🔴 headSha が欠けていたら 3（TypeError で 1 に化けない）', () => {
+    // 🔴 **検証がスタンプ照合より後ろにあると、ここで `undefined.trim()` が投げて
+    // exit 1 ＋ Node のスタックトレースになる**（実際に踏んだ / レビュー MAJOR-3）。
+    const r = run({ localFastGate: 'green', stamp: 'matching', omitHeadSha: true });
+    expect(r.status).toBe(3);
+    expect(r.stderr).toContain('headSha');
+    expect(r.stderr).not.toContain('TypeError');
+  }, 120_000);
+
+  it('🔴 headSha が短すぎても 3（裏取りを素通りさせない）', () => {
+    // 空文字や 1 文字は `startsWith` が真になり、照合を**素通り**する。
+    const r = run({ localFastGate: 'green', stamp: 'matching', headSha: 'c' });
+    expect(r.status).toBe(3);
+    expect(r.stdout).not.toContain('## 手順');
   }, 120_000);
 });

@@ -8,6 +8,12 @@
  * `spec.json` は `DelegationInput`（`src/domain/governance/delegation-prompt.ts`）。
  * 判定と本文の組み立ては純関数側にあり、ここは I/O だけ。
  *
+ * 終了コード:
+ *   0 … 本文を出した（裏取り済み / 裏取り不能のいずれでも出す）
+ *   1 … green と申告されたが、現ツリーに一致する green 記録が無い（裏取りの失敗）
+ *   2 … 使い方・spec を読めない
+ *   3 … spec の内容が不正（Conventional Commits でない、headSha が無い 等）
+ *
  * **routine の作成は自動化できない。** `RemoteTrigger` は認証がプロセス内にあるツールで、
  * ここからは叩けない。本文を出すところまでが責務で、送信と
  * `clear_mcp_connections` は呼び出し側が行う（後者は忘れると全コネクタが付く）。
@@ -15,10 +21,16 @@
 import { spawnSync } from 'node:child_process';
 import { readFileSync, realpathSync } from 'node:fs';
 import { join } from 'node:path';
-import { buildDelegationPrompt, type DelegationInput } from '../src/domain/governance/delegation-prompt';
+import {
+  buildDelegationPrompt,
+  validateDelegationInput,
+  type DelegationInput,
+} from '../src/domain/governance/delegation-prompt';
 import {
   checkLocalFastGateDeclaration,
+  stampScopeMismatch,
   verdictFromExitCode,
+  type ScopeFacts,
   type StampVerdict,
 } from '../src/domain/governance/gate-stamp-check';
 
@@ -34,6 +46,16 @@ try {
 } catch (e) {
   console.error(`spec を読めませんでした（${specPath}）: ${e instanceof Error ? e.message : String(e)}`);
   process.exit(2);
+}
+
+// 🔴 **spec の検証はスタンプ照合より前。** 照合は `input.headSha` を読むので、
+// 検証が本文組み立ての中にしか無いと、欠けた spec が**検証に届く前に TypeError で落ち**、
+// 読めるメッセージが Node のスタックトレースに化ける（#711 レビュー MAJOR-3）。
+try {
+  validateDelegationInput(input);
+} catch (e) {
+  console.error(`spec の内容が不正です: ${e instanceof Error ? e.message : String(e)}`);
+  process.exit(3); // 3 = 入力が不正（裏取りの失敗 = 1 と区別する）
 }
 
 /**
@@ -53,38 +75,48 @@ function git(cwd: string, args: string[]): string | null {
   return r.status === 0 ? (r.stdout ?? '').trim() : null;
 }
 
-/**
- * スタンプが証明していることと、spec が委譲しようとしているものが**同じか**を確かめる。
- *
- * 🔴 **指紋は HEAD を含まない**（`scripts/lib/gate-stamp.sh`。「同じ内容のツリーなら同じ値」
- * という設計）。つまり裏取りが言えるのは「**いまの作業ツリーの内容**に green 記録がある」
- * までで、「spec が名指しするコミットに green 記録がある」ではない。1 ファイル commit を
- * 忘れた／古い push のまま生成すると、本文は「裏取り済み」と強く断定するのに、委譲先が
- * checkout するのは別のツリーになる —— #705 と同じ型の誤誘導が、より説得力のある形で残る。
- *
- * ずれていたら**格下げして通す**（fail-open は維持し、本文は「裏取りできませんでした」側）。
- * 一致しない理由を返す。一致していれば `null`。
- */
-function stampScopeMismatch(root: string, headSha: string): string | null {
-  const head = git(root, ['rev-parse', 'HEAD']);
-  if (head === null) return 'HEAD を読めません（コミットがまだ無い）';
-  if (!head.startsWith(headSha.trim())) {
-    return `HEAD (${head.slice(0, 7)}) が spec の headSha (${headSha}) と一致しません`;
+/** realpath は ELOOP/EACCES 等で投げる。**読めなければ `null`**（判定は格下げ側へ倒す）。 */
+function realpathOrNull(path: string | null): string | null {
+  if (path === null) return null;
+  try {
+    return realpathSync(path);
+  } catch {
+    return null;
   }
-  const dirty = git(root, ['status', '--porcelain']);
-  if (dirty === null) return 'ワークツリーの状態を読めません';
-  if (dirty !== '') return '未コミットの変更があります（裏取りしたツリーと委譲するコミットが別物）';
-  // 別 worktree の cwd から絶対パスでこのスクリプトを呼ぶと、裏取りするのは
-  // 呼び出し元ではなく**スクリプト側のツリー**になる。黙って別ツリーを保証しない。
-  const here = git(process.cwd(), ['rev-parse', '--show-toplevel']);
-  const there = git(root, ['rev-parse', '--show-toplevel']);
-  if (here === null || there === null) return 'リポジトリの root を解決できません';
-  if (realpathSync(here) !== realpathSync(there)) {
-    return `呼び出し元のツリー (${here}) とスクリプトのツリー (${there}) が違います`;
-  }
-  return null;
 }
 
+/** `cwd` は削除済みディレクトリで throw する。読めなければ `null`。 */
+function cwdOrNull(): string | null {
+  try {
+    return process.cwd();
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * 判定に要る事実を集める（I/O だけ。判定は `stampScopeMismatch`）。
+ */
+function collectScopeFacts(root: string): ScopeFacts {
+  const caller = cwdOrNull();
+  return {
+    head: git(root, ['rev-parse', 'HEAD']),
+    porcelain: git(root, ['status', '--porcelain']),
+    callerToplevel: caller === null ? null : realpathOrNull(git(caller, ['rev-parse', '--show-toplevel'])),
+    scriptToplevel: realpathOrNull(git(root, ['rev-parse', '--show-toplevel'])),
+    remoteHead: git(root, ['rev-parse', `origin/${input.branch}`]),
+    headSha: input.headSha,
+    branch: input.branch,
+  };
+}
+
+/**
+ * ゲートスタンプで `localFastGate` の申告を裏取りする (#711)。
+ *
+ * 判定はシェル側（`gate_stamp_satisfies`）に 1 つだけ在る。**TS 側に同じ判定を
+ * 書き直さない**（同じ問いに 2 つの実装があると食い違いに気づけない / #557）。
+ * ここは終了コードを受け取るだけで、意味づけは `gate-stamp-check.ts` の純関数が持つ。
+ */
 function readStampVerdict(): StampVerdict {
   // 🔴 **root はこのスクリプトの位置から採る**（cwd ではない）。裏取りの対象は
   // 「このスクリプトが属するツリー」になる —— 別 worktree の cwd から絶対パスで
@@ -113,7 +145,7 @@ function readStampVerdict(): StampVerdict {
   const verdict = verdictFromExitCode(result.status);
   if (verdict !== 'satisfied') return verdict;
   // 記録はあるが、それが証明するツリーと spec が委譲するコミットが同じとは限らない。
-  downgrade = stampScopeMismatch(root, input.headSha);
+  downgrade = stampScopeMismatch(collectScopeFacts(root));
   return downgrade === null ? 'satisfied' : 'unknown';
 }
 

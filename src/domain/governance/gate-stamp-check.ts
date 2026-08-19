@@ -62,8 +62,13 @@ export function verdictFromExitCode(code: number | null): StampVerdict {
  * **自由文を無くす** —— メッセージはこの列挙の描画だけで組み立て、テストが列挙の中身と
  * 「メッセージが描画結果と完全一致すること」を縛る。
  *
- * ここに「申告を下げる」を足すには型と `RECOVERY_ACTIONS` の両方を変えることになり、
- * テストが必ず落ちる。
+ * 🔴 **保証の範囲を正確に言うと**: メッセージが「原因 ＋ この列挙の描画」**だけ**で
+ * 出来ていることは等式テストが保証する。したがって描画関数へ一文足す変異は必ず落ちる。
+ * **しかし定数の中身は自由文**なので、逃げ道を `RECOVERY_TEXT` の値の中へ書く変異は
+ * 下の語彙・意味検査でしか止まらず、`改める` / `修正` / 主語を `localFastGate` にする
+ * といった言い回しは**現状すり抜ける**（レビューの実測）。「構造で完全に保証済み」と
+ * 読まないこと —— 次に強くするなら語彙リストを足すのではなく、値を構造化するか
+ * 長さ上限を課すこと（語彙の追撃は同じ変異クラスを次の周回へ持ち越すだけ）。
  */
 export const RECOVERY_ACTIONS = ['move-spec', 'rerun-gate'] as const;
 export type RecoveryAction = (typeof RECOVERY_ACTIONS)[number];
@@ -134,7 +139,76 @@ export function checkLocalFastGateDeclaration(
     ok: true,
     verdict,
     message:
-      'ゲートスタンプを読めないため、localFastGate の申告を裏取りできませんでした（git 外 / 記録なし / 別 worktree）。' +
+      'ゲートスタンプで localFastGate の申告を裏取りできませんでした。' +
       '**判定不能であって申告が嘘という意味ではない**ので、そのまま組み立てます (#711)。',
   };
+}
+
+/**
+ * スタンプの指紋が証明したツリーと、spec が委譲しようとしているものを突き合わせる材料。
+ *
+ * **収集（git 実行）は呼び出し側、判定はここ。** スクリプトのクロージャに判定を置くと
+ * 分岐がテストできず、実際に 3 条件のうち 1 つが無テストのまま残った
+ * （#711 レビュー Minor-9）。`scripts/delegate-gate-prompt.ts` 冒頭の
+ * 「判定は純関数側、ここは I/O だけ」という宣言にも合わせる。
+ *
+ * 読めなかったものは `null`。**`null` は「一致」ではなく「確かめられなかった」**なので、
+ * いずれも格下げ側へ倒す（弱い主張は安全、強い主張は危険）。
+ */
+export type ScopeFacts = {
+  /** `git rev-parse HEAD`。 */
+  readonly head: string | null;
+  /** `git status --porcelain`。空文字なら clean。 */
+  readonly porcelain: string | null;
+  /** 呼び出し元 cwd の toplevel（realpath 済み）。 */
+  readonly callerToplevel: string | null;
+  /** スクリプトが属するツリーの toplevel（realpath 済み）。 */
+  readonly scriptToplevel: string | null;
+  /** `git rev-parse origin/<branch>`。未 push なら `null`。 */
+  readonly remoteHead: string | null;
+  /** spec の申告値。 */
+  readonly headSha: string;
+  /** spec のブランチ名（メッセージ用）。 */
+  readonly branch: string;
+};
+
+/**
+ * 「裏取り済み」と名乗ってよいか。名乗れない理由を返す（名乗れるなら `null`）。
+ *
+ * 🔴 **指紋は HEAD を含まない**（`scripts/lib/gate-stamp.sh`。「同じ内容のツリーなら
+ * 同じ値」という設計）。つまりスタンプが証明するのは「**いまの作業ツリーの内容**に
+ * green 記録がある」までで、「spec が名指しするコミットに green 記録がある」ではない。
+ * 委譲先が checkout するのは push 済みのコミットなので、そこまで一致して初めて
+ * 「裏取り済み」と言える。
+ */
+export function stampScopeMismatch(facts: ScopeFacts): string | null {
+  if (facts.head === null) return 'HEAD を読めません（コミットがまだ無い）';
+  // 大文字小文字は SHA の意味を変えない。ここで落とすと正直な運用を誤って格下げする。
+  if (!facts.head.toLowerCase().startsWith(facts.headSha.trim().toLowerCase())) {
+    return `HEAD (${facts.head.slice(0, 7)}) が spec の headSha (${facts.headSha}) と一致しません`;
+  }
+  if (facts.porcelain === null) return 'ワークツリーの状態を読めません';
+  if (facts.porcelain !== '') {
+    return '未コミットの変更があります（裏取りしたツリーと委譲するコミットが別物）';
+  }
+  // 🔴 **未 push / 古い push も範囲外。** 委譲先は `git fetch origin && git checkout` で
+  // **リモートの**コミットを取る。ローカルにしか無いツリーに対して「裏取り済み」と
+  // 断定すると、委譲先が絶対に手に入れられないものを保証したことになる
+  // （#711 レビュー MAJOR-2。dirty より起こりやすい —— commit してから push する前に
+  // 生成する順序はふつう）。ref を見るだけで fetch はしない。
+  if (facts.remoteHead === null) {
+    return `origin/${facts.branch} が見つかりません（まだ push していない）`;
+  }
+  if (facts.remoteHead.toLowerCase() !== facts.head.toLowerCase()) {
+    return `origin/${facts.branch} (${facts.remoteHead.slice(0, 7)}) が HEAD (${facts.head.slice(0, 7)}) より古いか別物です`;
+  }
+  // 別 worktree の cwd から絶対パスでこのスクリプトを呼ぶと、裏取りするのは
+  // 呼び出し元ではなく**スクリプト側のツリー**になる。黙って別ツリーを保証しない。
+  if (facts.callerToplevel === null || facts.scriptToplevel === null) {
+    return 'リポジトリの root を解決できません';
+  }
+  if (facts.callerToplevel !== facts.scriptToplevel) {
+    return `呼び出し元のツリー (${facts.callerToplevel}) とスクリプトのツリー (${facts.scriptToplevel}) が違います`;
+  }
+  return null;
 }

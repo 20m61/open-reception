@@ -287,13 +287,16 @@ CI が無い以上、「PR 前に `--pr` / マージ前に `--full`」は**規�
   **判定不能として通す**（警告のみ）—— 「測れなかった」を「嘘だった」に倒さない。
   spec は**リポジトリ外か `.delegate-*.json`**（gitignore 済）へ置くこと。未追跡ファイルも
   指紋に入るため、repo 内へ書くと正直な green 申告が落ちる。
-- スタンプを読む側は**フックだけではない**。契約（`gate_stamp_satisfies`）に触れるのは:
+- スタンプを読む側は**フックだけではない**。契約（`gate_stamp_satisfies` /
+  `gate_tree_fingerprint` / `gate_write_stamp`）に触れるのは:
+  `scripts/quality-gate.sh`（**書き手**。PASS 時に指紋を採って記録する）/
   `scripts/hooks/pr-gate-guard.sh`（PR 作成 / マージのブロック）/
   `scripts/aws-cloud-deploy.sh`（デプロイ前に `--pr` を確認。判定は
   `src/domain/governance/deploy-preflight.ts`）/
-  `scripts/delegate-gate-prompt.ts`（上記の申告の裏取り。意味づけは
+  `scripts/delegate-gate-prompt.ts`（委譲の green 申告の裏取り。意味づけは
   `src/domain/governance/gate-stamp-check.ts`）。
-  **指紋の採り方を変えるときは全部確かめる。** この一覧は
+  **指紋の採り方を変えるときは全部確かめる**（書き手と読み手が食い違うと、記録が
+  常に stale になるか、逆に stale を見逃す）。この一覧は
   `tests/config/gate-stamp-consumers.test.ts` が実測と突き合わせる（散文だけにしない）。
 - 意図的な迂回は明示的に行う: `OPEN_RECEPTION_SKIP_GATE_GUARD=1 gh pr create ...`。
 - 振る舞いは `tests/hooks/pr-gate-guard.test.ts` と `tests/hooks/delegate-gate-prompt.test.ts`

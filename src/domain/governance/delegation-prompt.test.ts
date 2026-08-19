@@ -308,3 +308,19 @@ describe('buildDelegationPrompt', () => {
     });
   });
 });
+
+describe('headSha の形 (#711 レビュー Minor-3)', () => {
+  it('🔴 短すぎる headSha を弾く（委譲先の取り違え検出まで弱まる）', () => {
+    // 生成される手順 1 は `git rev-parse HEAD` が headSha で「始まる」ことを見るので、
+    // 1 文字なら 16 分の 1 の確率で別コミットでも通ってしまう。
+    expect(() => buildDelegationPrompt({ ...BASE, headSha: 'c' })).toThrow(/16 進|7〜40/);
+  });
+
+  it('🔴 16 進でない headSha を弾く', () => {
+    expect(() => buildDelegationPrompt({ ...BASE, headSha: 'not-a-sha' })).toThrow(/16 進|7〜40/);
+  });
+
+  it('7 桁以上の 16 進は通す（大文字も）', () => {
+    expect(() => buildDelegationPrompt({ ...BASE, headSha: 'C70EA47' })).not.toThrow();
+  });
+});

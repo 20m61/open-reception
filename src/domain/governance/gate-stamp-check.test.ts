@@ -6,7 +6,9 @@ import {
   UNSATISFIED_CAUSE,
   checkLocalFastGateDeclaration,
   renderUnsatisfiedMessage,
+  stampScopeMismatch,
   verdictFromExitCode,
+  type ScopeFacts,
 } from './gate-stamp-check';
 
 describe('verdictFromExitCode (#711)', () => {
@@ -121,5 +123,44 @@ describe('checkLocalFastGateDeclaration (#711)', () => {
       return 'unsatisfied';
     });
     expect(calls).toBe(0);
+  });
+});
+
+describe('stampScopeMismatch (#711)', () => {
+  const HEAD = 'c70ea477deadbeefc70ea477deadbeefc70ea477';
+  const OK: ScopeFacts = {
+    head: HEAD,
+    porcelain: '',
+    callerToplevel: '/repo',
+    scriptToplevel: '/repo',
+    remoteHead: HEAD,
+    headSha: HEAD.slice(0, 7),
+    branch: 'fix/x',
+  };
+
+  it('コミット済み・clean・push 済み・同一ツリーなら名乗ってよい', () => {
+    expect(stampScopeMismatch(OK)).toBeNull();
+  });
+
+  it.each([
+    ['HEAD を読めない', { head: null }, 'HEAD'],
+    ['headSha が違う', { headSha: 'deadbee' }, 'headSha'],
+    ['ワークツリーを読めない', { porcelain: null }, 'ワークツリー'],
+    ['未コミットの変更がある', { porcelain: ' M a.ts' }, '未コミット'],
+    ['まだ push していない', { remoteHead: null }, 'push'],
+    ['origin が古い', { remoteHead: 'a'.repeat(40) }, 'origin/fix/x'],
+    ['呼び出し元の root を解決できない', { callerToplevel: null }, 'root'],
+    // 🔴 **この分岐はスクリプト内のクロージャだった間、テストが 1 件も無かった**
+    // （レビュー Minor-9）。判定を純関数へ出したので分岐ごとに縛れる。
+    ['別 worktree から呼ばれた', { callerToplevel: '/other' }, '違います'],
+  ] as const)('%s なら名乗らない', (_name, patch, expected) => {
+    const reason = stampScopeMismatch({ ...OK, ...patch });
+    expect(reason).not.toBeNull();
+    expect(reason).toContain(expected);
+  });
+
+  it('SHA の大文字小文字は一致とみなす（正直な運用を誤って格下げしない）', () => {
+    expect(stampScopeMismatch({ ...OK, headSha: OK.headSha.toUpperCase() })).toBeNull();
+    expect(stampScopeMismatch({ ...OK, remoteHead: HEAD.toUpperCase() })).toBeNull();
   });
 });
