@@ -100,6 +100,19 @@ describe('quality-gate: 検証できなかったステップは green にしな�
     expect(r.stamp).toMatch(/^full\t/);
   });
 
+  it('一時領域の状態を毎回出す（残骸とディスクに気づけるように / #721）', () => {
+    // 🔴 2026-08-19、`/tmp/cdk.out*` が 740 個・26GB でディスクが 100% になり
+    // e2e が `Target crashed` で落ちた。**症状が原因を指さない**ので、毎回測って見せる。
+    const r = runIsolated('pass');
+    expect(r.stdout).toContain('一時領域');
+    expect(r.stdout).toContain('の空き');
+    // 🔴 **周回 root も数える。** infra テストの出力は
+    // `<tmp>/open-reception-cdk-XXXX/cdk.outYYYY` に落ちるので、`cdk.out*` を深さ 1 で
+    // 数えるだけだと**起きうる残骸に対して常に 0** になる（レビュー M1）。
+    expect(r.stdout).toContain('周回 root');
+    expect(r.stdout).toContain('開始時');
+  });
+
   it('全ステップ PASS なら green として記録する', () => {
     const r = runIsolated('pass');
     expect(r.status).toBe(0);
