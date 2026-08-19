@@ -1,10 +1,12 @@
 import { describe, expect, it } from 'vitest';
 import {
-  GRAPHQL_OBSERVATION,
+  GRAPHQL_OBSERVATIONS,
   GRAPHQL_REST_ROUTE,
   OBSERVATION_CAVEAT,
+  OBSERVATION_HEADING,
   REST_UNCONDITIONAL,
   buildDelegationPrompt,
+  warnSpecFreeText,
   type DelegationInput,
 } from './delegation-prompt';
 
@@ -139,10 +141,34 @@ describe('buildDelegationPrompt', () => {
    * 描画関数どうしの比較はトートロジーで、両辺が同時に動いて通ってしまう（#711 で踏んだ）。
    */
   it.each(['merge', 'pr'] as const)('🔴 stopAfter: %s の制約節は部品の連結だけで出来ている', (stopAfter) => {
-    const expected =
-      GRAPHQL_OBSERVATION + OBSERVATION_CAVEAT + GRAPHQL_REST_ROUTE[stopAfter] + REST_UNCONDITIONAL;
     // 期待値は**部品から組み直す**。描画関数と比べるとトートロジー（両辺が同時に動く）。
+    const shown = GRAPHQL_OBSERVATIONS.filter((o) => stopAfter === 'merge' || !o.command.includes('merge'));
+    const lines = shown.map((o) => `- ${o.date} 時点の観測: \`${o.command}\` が ${o.status}（${o.refs.map((n) => `#${n}`).join(' / ')}）`);
+    const expected =
+      `${OBSERVATION_HEADING}\n${lines.join('\n')}\n\n  ` +
+      OBSERVATION_CAVEAT +
+      GRAPHQL_REST_ROUTE[stopAfter] +
+      REST_UNCONDITIONAL;
     expect(constraintSection(stopAfter)).toBe(`## 環境の既知の制約\n\n${expected}`);
+  });
+
+  /**
+   * 🔴 **観測は data で持つ (#728)。** 以前はここが自由文の定数で、断定を書き足す変異が
+   * 素通りした（レビューの実測で 6 通り）。行の描画は `environment-observation.ts` の
+   * 固定テンプレなので、**観測の行に自由文を入れる場所が無い**。
+   */
+  it('🔴 観測はすべて日付・コマンド・ステータス・参照を持つ', () => {
+    expect(GRAPHQL_OBSERVATIONS.length).toBeGreaterThan(0);
+    for (const o of GRAPHQL_OBSERVATIONS) {
+      expect(o.date, `観測に日付が無い: ${o.command}`).toMatch(/^\d{4}-\d{2}-\d{2}$/);
+      expect(o.command).not.toBe('');
+      expect(o.status).toBeGreaterThan(0);
+      expect(o.refs.length).toBeGreaterThan(0);
+    }
+  });
+
+  it("🔴 stopAfter: 'pr' の観測に merge 系を混ぜない (#680)", () => {
+    expect(constraintSection('pr')).not.toContain('gh pr merge');
   });
 
   /**
@@ -160,6 +186,20 @@ describe('buildDelegationPrompt', () => {
       expect(GRAPHQL_REST_ROUTE[stopAfter]).toContain('scripts/merge-pull-request.ts');
     }
   });
+
+  it.each(['merge', 'pr'] as const)(
+    '🔴 stopAfter: %s では、本文の**どこで**403 を語っても観測時点が同居する',
+    (stopAfter) => {
+      // 🔴 **節スコープでは足りない (#728 R3)。** 手順など制約節の**外**へ
+      // 「なおクラウドでは GraphQL は 403 です」を混ぜる変異は、節だけ見ていると素通りする。
+      const whole = buildDelegationPrompt({ ...BASE, stopAfter });
+      for (const sentence of whole.split(/[。\n]/).filter((t) => t.includes('403'))) {
+        expect(sentence, `観測時点の無いまま 403 を語っている: ${sentence}`).toMatch(
+          /\d{4}-\d{2}-\d{2}|時点の観測|#\d+/,
+        );
+      }
+    },
+  );
 
   it.each(['merge', 'pr'] as const)(
     '🔴 stopAfter: %s の制約節で、403 を語る文には必ず観測時点が同居する',
@@ -186,9 +226,8 @@ describe('buildDelegationPrompt', () => {
     expect(OBSERVATION_CAVEAT, 'REST の 403 を報告対象から外している').not.toContain('403 以外');
   });
 
-  it('🔴 観測の部品は観測時点を持ち、但し書きは保証でないと言う', () => {
-    expect(GRAPHQL_OBSERVATION, '観測時点が書かれていない').toContain('時点の観測');
-    expect(OBSERVATION_CAVEAT).toContain('保証ではありません');
+  it('🔴 見出しは保証でないと言い、但し書きは確かめに行けと言わない', () => {
+    expect(OBSERVATION_HEADING, '保証ではないと言っていない').toContain('保証ではありません');
     // 「確かめに行け」と読ませない。全経路を REST に寄せている以上、「通った」を観測できる
     // のは委譲先がわざわざ GraphQL を撃ったときだけになる（レビュー Minor-3）。
     expect(OBSERVATION_CAVEAT).toContain('確かめに行く必要はありません');
@@ -521,5 +560,49 @@ describe('stopAfter の検証 (#710 レビュー Minor-2)', () => {
     for (const stopAfter of ['pr', 'merge'] as const) {
       expect(buildDelegationPrompt({ ...BASE, stopAfter })).not.toContain('undefined');
     }
+  });
+});
+
+describe('spec の自由文の検査を配線する (#729)', () => {
+  /**
+   * 🔴 **危ないのは配線。** 判定は `spec-free-text.ts` でテスト済みだが、
+   * `validateDelegationInput` が呼ばなくなっても、あるいは結果を無視しても、
+   * そちらのテストは全部 green のままになる。この一連の周回で何度も踏んでいる型。
+   */
+  it('🔴 403 になる実行形を含む spec は組み立てを止める', () => {
+    expect(() =>
+      buildDelegationPrompt({ ...BASE, extraVerification: ['`gh pr create --fill` で PR を作る'] }),
+    ).toThrow(/gh pr create/);
+  });
+
+  it('🔴 止めた spec の本文をどこにも出さない（嘘の指示を配らない）', () => {
+    let built = '';
+    try {
+      built = buildDelegationPrompt({ ...BASE, summary: '`gh pr merge 123` でマージした。' });
+    } catch {
+      // 期待どおり
+    }
+    expect(built).toBe('');
+  });
+
+  it('禁止・観測の文脈なら通す（注意書きを書けなくしない）', () => {
+    expect(() =>
+      buildDelegationPrompt({ ...BASE, extraProhibitions: ['`gh pr create` は使わないこと'] }),
+    ).not.toThrow();
+  });
+
+  it('緩和語彙は止めず、警告として取り出せる', () => {
+    const input = { ...BASE, extraVerification: ['`npm run x` を実行（可能なら 2 回）'] };
+    expect(() => buildDelegationPrompt(input)).not.toThrow();
+    expect(warnSpecFreeText(input).map((f) => f.severity)).toEqual(['warn']);
+  });
+
+  it.each(['refs', 'changedFiles'] as const)('🔴 %s が欠けたら読めるメッセージで止まる', (field) => {
+    // 以前は `input.refs.map` の TypeError になり、#711 で回復した「読めるメッセージ」が
+    // スタックトレース文字列へ劣化していた。
+    const { [field]: _omitted, ...without } = BASE;
+    expect(() => buildDelegationPrompt(without as unknown as typeof BASE)).toThrow(
+      new RegExp(field),
+    );
   });
 });

@@ -24,6 +24,7 @@ import { join } from 'node:path';
 import {
   buildDelegationPrompt,
   validateDelegationInput,
+  warnSpecFreeText,
   type DelegationInput,
 } from '../src/domain/governance/delegation-prompt';
 import {
@@ -56,6 +57,12 @@ try {
 } catch (e) {
   console.error(`spec の内容が不正です: ${e instanceof Error ? e.message : String(e)}`);
   process.exit(3); // 3 = 入力が不正（裏取りの失敗 = 1 と区別する）
+}
+
+// 止めない所見は stderr へ（stdout は本文なので混ぜない / #729）。
+for (const finding of warnSpecFreeText(input)) {
+  const where = `${finding.field}${finding.index === undefined ? '' : `[${finding.index}]`}`;
+  console.error(`⚠ ${where}: ${finding.message}\n  該当: ${finding.sentence}`);
 }
 
 /** probe の生の終了コード。⚠ の原因（git 外 / 記録なし）を人へ渡すために保持する。 */
@@ -167,7 +174,11 @@ try {
   // 🔴 **裏取りの結果は spec ではなくここから渡す。** 本文が「裏取り済み」と
   // 「裏取りできなかった」を区別しないと、記録が無い環境（新しい worktree では常態）で
   // #705 の事象が無傷で通る（#711 レビュー MAJOR-1）。
-  console.log(buildDelegationPrompt(input, check.verdict === 'satisfied' ? 'verified' : 'unverified'));
+  // 観測の古さを表示させるため「今日」を渡す（domain 側は時計を読まない / #728）。
+  const today = new Date().toISOString().slice(0, 10);
+  console.log(
+    buildDelegationPrompt(input, check.verdict === 'satisfied' ? 'verified' : 'unverified', today),
+  );
 } catch (e) {
   console.error(`プロンプトを組み立てられませんでした: ${e instanceof Error ? e.message : String(e)}`);
   process.exit(3); // 3 = 入力が不正（裏取りの失敗と区別する）

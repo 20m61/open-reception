@@ -156,6 +156,12 @@ const MENTIONS_MERGE_PROHIBITION = /マージ(しない|するな|禁止)/;
  */
 export type StampAttestation = 'verified' | 'unverified';
 
+import {
+  renderObservations,
+  type EnvironmentObservation,
+} from './environment-observation';
+import { inspectSpecFreeText, type FreeTextFinding } from './spec-free-text';
+
 /** どこまでやるか。`'pr'` は PR 作成まで、`'merge'` はマージまで。 */
 export type StopAfter = 'pr' | 'merge';
 
@@ -198,9 +204,24 @@ const STOP_AFTER_VALUES: readonly StopAfter[] = ['pr', 'merge'];
  * 恒久策は観測を**データ**にすること（`{date, command, status}` の配列＋固定テンプレで、
  * 断定を書ける場所が構造上存在しなくなる）。#710 の範囲を超えるので別 issue。
  */
-export const GRAPHQL_OBSERVATION =
-  '- **クラウドのサンドボックスは GitHub GraphQL を絞っています**（#665 / #678 / #702 **時点の観測**。' +
-  '`gh pr list` / `gh pr view --head` が 403、2026-08-10 に `gh pr create` も 403 を実測）。';
+/**
+ * クラウドの routine セッションで観測した拒否 (#665 / #678 / #702)。
+ *
+ * 🔴 **データで持つ (#728)。** 以前はここが自由文の定数で、断定（「あなたの環境でも
+ * 必ず 403 です」）を書き足す変異が素通りした。描画は `environment-observation.ts` の
+ * 固定テンプレが行うので、**この配列には断定を書ける場所が無い**。
+ * 実測が変わったら**行を足すか日付を直す** —— 散文を書き換えない。
+ */
+export const GRAPHQL_OBSERVATIONS: readonly EnvironmentObservation[] = [
+  { date: '2026-08-03', command: 'gh pr list', status: 403, refs: [665] },
+  { date: '2026-08-03', command: 'gh pr view --head', status: 403, refs: [665] },
+  { date: '2026-08-10', command: 'gh pr create', status: 403, refs: [678] },
+  { date: '2026-08-18', command: 'gh pr merge', status: 403, refs: [702] },
+];
+
+/** 見出し。観測そのものは持たない（持つと自由文の置き場所が戻る）。 */
+export const OBSERVATION_HEADING =
+  '- **クラウドのサンドボックスは GitHub GraphQL を絞っています。** 以下は過去の観測で、いまのあなたのセッションについての保証ではありません:';
 
 /**
  * 観測であって保証ではない、という但し書き。
@@ -210,10 +231,6 @@ export const GRAPHQL_OBSERVATION =
  * 「試してみてください」と読めてしまう（#710 レビュー Minor-3）。
  */
 export const OBSERVATION_CAVEAT =
-  '**これは過去の観測であって、いまのあなたのセッションについての保証ではありません。**' +
-  // 🔴 **REST 側の失敗は理由を問わず報告してもらう。** 「403 以外」と書くと、
-  // `REST_UNCONDITIONAL`（権限状態によらず通る）を反証する唯一の観測を、報告対象から
-  // 明示的に外すことになる（#710 レビュー Minor-4）。
   '確かめに行く必要はありません —— 下記の REST 経路が失敗したら、理由を問わず報告してください。';
 
 /** REST 経路の指示。**観測ではなく無条件**（権限状態によらず通るので弱める理由が無い）。 */
@@ -221,7 +238,7 @@ export const GRAPHQL_REST_ROUTE: Record<StopAfter, string> = {
   // 🔴 **マージ系への言及は merge のときだけ** (#680)。`stopAfter: 'pr'` の出力に
   // `gh pr merge` が現れると、手順（PR まで）と例示が食い違う。観測の列挙も例外ではない。
   merge:
-    '2026-08-18 には `gh pr merge` も 403 でした。作成は `scripts/create-pull-request.ts`、マージは `scripts/merge-pull-request.ts`（どちらも REST のみ）を使ってください。',
+    '作成は `scripts/create-pull-request.ts`、マージは `scripts/merge-pull-request.ts`（どちらも REST のみ）を使ってください。',
   pr: 'PR 作成は `scripts/create-pull-request.ts` を使ってください（マージはしない）。',
 };
 
@@ -229,8 +246,19 @@ export const GRAPHQL_REST_ROUTE: Record<StopAfter, string> = {
 export const REST_UNCONDITIONAL =
   'なお REST だけを使う経路は権限状態によらず通るので、確認も REST（`gh api repos/{owner}/{repo}/pulls?...`）で行ってください。';
 
-function renderEnvironmentConstraints(stopAfter: StopAfter): string {
-  return `${GRAPHQL_OBSERVATION}${OBSERVATION_CAVEAT}${GRAPHQL_REST_ROUTE[stopAfter]}${REST_UNCONDITIONAL}`;
+/**
+ * 「環境の既知の制約」節を組み立てる。
+ *
+ * 観測の部分は**データの描画だけ**で、自由文が入る余地は見出し・但し書き・REST 経路の
+ * 3 定数に限られる。そのどれにも断定を書けるが、**観測の行には書けない**
+ * （#728 の狙いはそこ。節全体を守り切るものではない）。
+ */
+function renderEnvironmentConstraints(stopAfter: StopAfter, at: string): string {
+  const observations = GRAPHQL_OBSERVATIONS.filter(
+    // `stopAfter: 'pr'` の出力に `gh pr merge` を出さない (#680)。
+    (o) => stopAfter === 'merge' || !o.command.includes('merge'),
+  );
+  return `${OBSERVATION_HEADING}\n${renderObservations(observations, at)}\n\n  ${OBSERVATION_CAVEAT}${GRAPHQL_REST_ROUTE[stopAfter]}${REST_UNCONDITIONAL}`;
 }
 
 /** `headSha` として受け付ける形。短すぎる値は委譲先の取り違え検出まで弱める。 */
@@ -289,6 +317,35 @@ export function validateDelegationInput(input: DelegationInput): void {
         '（理由の無い「失敗」は委譲先が判断に使えません / #705）',
     );
   }
+
+  // 🔴 **本文の組み立てで使う配列は、ここで形を確かめる (#729)。** 欠けていると
+  // `input.refs.map` が `TypeError` で落ち、#711 で回復したはずの「読めるメッセージ」が
+  // スタックトレース文字列に劣化する。
+  for (const [name, value] of [
+    ['refs', input.refs],
+    ['changedFiles', input.changedFiles],
+  ] as const) {
+    if (!Array.isArray(value) || value.length === 0) {
+      throw new Error(`${name} は 1 件以上の配列で必須です（本文の組み立てに使います / #729）`);
+    }
+  }
+
+  // 🔴 **自由文も検査する (#729)。** 生成器の散文をどれだけ縛っても、呼び出し側が
+  // `extraVerification: ['gh pr create --fill で PR を作る']` と書けばそのまま本文に載る。
+  // 403 になる実行形は**組み立てを止める**（配った時点で 1 周回が落ちる）。緩和語彙は
+  // 警告どまり —— 正当な指示を弾く代償の方が大きい（`spec-free-text.ts` 参照）。
+  const rejected = inspectSpecFreeText(input).filter((f) => f.severity === 'reject');
+  if (rejected.length > 0) {
+    throw new Error(
+      `spec の自由文に問題があります (#729):\n` +
+        rejected.map((f) => `  - ${f.field}${f.index === undefined ? '' : `[${f.index}]`}: ${f.message}\n    該当: ${f.sentence}`).join('\n'),
+    );
+  }
+}
+
+/** 組み立てを止めない所見（呼び出し側が人へ見せる）。 */
+export function warnSpecFreeText(input: DelegationInput): readonly FreeTextFinding[] {
+  return inspectSpecFreeText(input).filter((f) => f.severity === 'warn');
 }
 
 /**
@@ -300,6 +357,14 @@ export function validateDelegationInput(input: DelegationInput): void {
 export function buildDelegationPrompt(
   input: DelegationInput,
   attestation: StampAttestation = 'unverified',
+  /**
+   * 「今日」（`YYYY-MM-DD`）。観測の古さの表示にだけ使う。
+   *
+   * 🔴 **この module は時計を読まない。** 呼び出し側が渡す ——
+   * テストと本番で同じ関数を通し、時刻に依存した分岐を作らないため。
+   * 省略時は古さを**表示しない**（分からないものを「新しい」とも「古い」とも言わない）。
+   */
+  today = '',
 ): string {
   validateDelegationInput(input);
 
@@ -421,7 +486,7 @@ ${numbered}
 
 ## 環境の既知の制約
 
-${renderEnvironmentConstraints(stopAfter)}
+${renderEnvironmentConstraints(stopAfter, today)}
 
 ## 禁止事項
 
