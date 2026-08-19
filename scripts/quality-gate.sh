@@ -198,28 +198,47 @@ echo "================================================================"
 # shellcheck source=lib/gate-stamp.sh
 . "${ROOT}/scripts/lib/gate-stamp.sh"
 GATE_FINGERPRINT="$(gate_tree_fingerprint || true)"
+# 開始時の空きを控える (#721 レビュー m3)。終了時は掃除の**後**なので、
+# 周回中に沈んだピークが見えない。2 点あれば落ち込みに気づける。
+GATE_DISK_START="$(df -Pk "${TMPDIR:-/tmp}" 2>/dev/null | awk 'NR==2 {printf "%.1fG", $4/1048576}')"
 
 # ---- 終了処理（summary → 判定 → 記録）------------------------------------
 # **関数にしてあるのは、判定と記録の経路を 1 本にするため。** 呼び出し口が増えても
 # 「記録を書く条件」がここ以外に散らない。
-# 一時領域の状態を毎回 1 行で出す (#721)。
+# 一時領域の状態を毎回出す (#721)。
 #
 # 🔴 **症状が原因を指さないので、測って見せる。** 2026-08-19、`/tmp/cdk.out*` が
 # **740 個・26GB** まで積もってディスクが 100% になり、`--full` の e2e が
 # `page.screenshot: Target crashed` と SSL ハンドシェイク失敗で落ちた。
 # メモリも load も正常だったため、**変更内容を疑う方向へ 1 時間費やした**。
-# `CLAUDE.md` の「赤いとき、コードを疑う前に負荷を見る」はメモリしか書いていない。
+#
+# 🔴 **数える対象を間違えない。** infra テストの出力は今
+# `<tmp>/open-reception-cdk-XXXX/cdk.outYYYY`（深さ 2・別名）に落ちるので、
+# `/tmp/cdk.out*` だけを深さ 1 で数えると**起きうる残骸に対して常に 0 を返す**
+# （レビュー M1 で実測）。両方を数える。
+#
+# 可搬性: macOS の `/tmp` は symlink なので `find` に**末尾スラッシュ**が要る（既定 -P では
+# リンク自身しか見ない）。また macOS の `os.tmpdir()` は `$TMPDIR` なので、対象も
+# `${TMPDIR:-/tmp}` に揃える。
 report_workspace_state() {
-  local count avail_kb avail_h
-  count=$(find /tmp -maxdepth 1 -name 'cdk.out*' 2>/dev/null | wc -l | tr -d ' ')
-  avail_kb=$(df -Pk "${ROOT}" 2>/dev/null | awk 'NR==2 {print $4}')
-  avail_h=$(df -Ph "${ROOT}" 2>/dev/null | awk 'NR==2 {print $4}')
-  echo "  ディスク空き: ${avail_h:-不明} / /tmp の cdk.out 残骸: ${count} 件"
-  if [[ -n "${avail_kb}" ]] && [[ "${avail_kb}" -lt 2097152 ]]; then
+  local tmp_root leftovers roots avail_kb avail_h
+  tmp_root="${TMPDIR:-/tmp}"
+  # 素の cdk.out（別の生成元・古い残骸）と、周回 root（kill されたときに残る）を分けて数える。
+  leftovers=$(find "${tmp_root}/" -maxdepth 1 -name 'cdk.out*' 2>/dev/null | wc -l | tr -d ' ')
+  roots=$(find "${tmp_root}/" -maxdepth 1 -name 'open-reception-cdk-*' 2>/dev/null | wc -l | tr -d ' ')
+  avail_kb=$(df -Pk "${tmp_root}" 2>/dev/null | awk 'NR==2 {print $4}')
+  avail_h=$(df -Pk "${tmp_root}" 2>/dev/null | awk 'NR==2 {printf "%.1fG", $4/1048576}')
+  echo "  ${tmp_root} の空き: ${avail_h:-不明}（開始時: ${GATE_DISK_START:-不明}）"
+  echo "  残骸: cdk.out ${leftovers} 件 / 周回 root ${roots} 件"
+  # 🔴 **算術評価に非数値を渡さない。** `set -u` 下で `[[ unknown -lt N ]]` は
+  # **unbound variable で即死**し、summary も判定も出ないまま終わる（レビュー m2 で実測）。
+  if [[ "${avail_kb:-}" =~ ^[0-9]+$ ]] && [[ "${avail_kb}" -lt 2097152 ]]; then
     echo "  ⚠ 空きが 2GB を切っています。ビルドやブラウザが不可解に落ちる原因になります"
   fi
-  if [[ "${count}" -gt 0 ]]; then
-    echo "  ⚠ cdk.out の残骸があります（\`rm -rf /tmp/cdk.out*\`）。infra テストは残さない設定です (#721)"
+  if [[ "${leftovers}" != "0" ]] || [[ "${roots}" != "0" ]]; then
+    echo "  ⚠ 残骸があります。infra テストは正常終了・テスト失敗・SIGINT では残しませんが、"
+    echo "    **kill されたときは周回 root が残ります**（次の infra テストが 6 時間より古いものを掃きます）。"
+    echo "    今すぐ消すなら、他のゲートが走っていないことを確認してから当該ディレクトリを削除してください。"
   fi
 }
 
