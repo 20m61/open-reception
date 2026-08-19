@@ -82,7 +82,7 @@ export type DelegationInput = {
    * 手順と禁止事項が矛盾する（#680 で実際に起きた）。`'pr'` を使えば手順自体が
    * 変わり、マージ禁止も自動で禁止事項へ入るので、呼び出し側が手で書く必要が無い。
    */
-  stopAfter?: 'pr' | 'merge';
+  stopAfter?: StopAfter;
 };
 
 /** Conventional Commits の形か。`type(scope): 説明` / `type: 説明` を許す。 */
@@ -97,7 +97,7 @@ const CONVENTIONAL = /^(feat|fix|docs|style|refactor|perf|test|build|ci|chore|re
  */
 const STEP_NPM_CI = '`npm ci`';
 const STEP_BUILD =
-  '`npm run build:open-next` を実行する（3〜5 分）。**これを飛ばすと `.open-next` が stale 扱いになり、ゲートは green として記録しません。**';
+  '`npm run build:open-next` を実行する（**数分かかります。時間の長さで失敗と判断しないこと**）。**これを飛ばすと `.open-next` が stale 扱いになり、ゲートは green として記録しません。**';
 /**
  * 停止境界の扱い (#705)。
  *
@@ -155,6 +155,53 @@ const MENTIONS_MERGE_PROHIBITION = /マージ(しない|するな|禁止)/;
  * 既定は `unverified` —— 渡し忘れは「裏取り済み」ではなく「裏取りしていない」へ倒す。
  */
 export type StampAttestation = 'verified' | 'unverified';
+
+/** どこまでやるか。`'pr'` は PR 作成まで、`'merge'` はマージまで。 */
+export type StopAfter = 'pr' | 'merge';
+
+/**
+ * 「環境の既知の制約」節の部品 (#710)。
+ *
+ * 🔴 **語彙ではなく構造で縛る。** #705 / #710 と 2 度、生成器が確かめていない事実を
+ * 断定して壊れた。テストを「`403 になる` と書かない」のような*語彙*で縛ると、
+ * **言い換えた再断定が素通りする** ——「あなたの環境でも必ず 403 です」を挿しても
+ * `時点の観測` と `違っていたら` は前後に残るので通ってしまう（レビューの変異で実証）。
+ * 同じ教訓が `gate-stamp-check.ts` にも書いてある（語彙リストを足すのではなく形を変える）。
+ *
+ * そこで節本文を**この 3 つの部品の連結だけ**で組み立て、テストが部品から組み直した
+ * 文字列との完全一致で縛る。自由文を足すには部品を増やすことになり、黙って入らない。
+ */
+export const GRAPHQL_OBSERVATION =
+  '- **クラウドのサンドボックスは GitHub GraphQL を絞っています**（#665 / #678 / #702 **時点の観測**。' +
+  '`gh pr list` / `gh pr view --head` が 403、2026-08-10 に `gh pr create` も 403 を実測）。';
+
+/**
+ * 観測であって保証ではない、という但し書き。
+ *
+ * **「確かめに行け」とは言わない。** 全経路を REST に寄せている以上、「通った」を
+ * 観測できるのは委譲先がわざわざ GraphQL を撃ったときだけで、報告要求がそのまま
+ * 「試してみてください」と読めてしまう（#710 レビュー Minor-3）。
+ */
+export const OBSERVATION_CAVEAT =
+  '**これは過去の観測であって、いまのあなたのセッションについての保証ではありません。**' +
+  '確かめに行く必要はありません —— 下記の REST 経路で想定外のこと（403 以外の失敗）が起きたら報告してください。';
+
+/** REST 経路の指示。**観測ではなく無条件**（権限状態によらず通るので弱める理由が無い）。 */
+export const GRAPHQL_REST_ROUTE: Record<StopAfter, string> = {
+  // 🔴 **マージ系への言及は merge のときだけ** (#680)。`stopAfter: 'pr'` の出力に
+  // `gh pr merge` が現れると、手順（PR まで）と例示が食い違う。観測の列挙も例外ではない。
+  merge:
+    '2026-08-18 には `gh pr merge` も 403 でした。作成は `scripts/create-pull-request.ts`、マージは `scripts/merge-pull-request.ts`（どちらも REST のみ）を使ってください。',
+  pr: 'PR 作成は `scripts/create-pull-request.ts` を使ってください（マージはしない）。',
+};
+
+/** 権限状態によらない事実。**この一文が「断定をやめても指示は弱まらない」の根拠**。 */
+export const REST_UNCONDITIONAL =
+  'なお REST だけを使う経路は権限状態によらず通るので、確認も REST（`gh api repos/{owner}/{repo}/pulls?...`）で行ってください。';
+
+export function renderEnvironmentConstraints(stopAfter: StopAfter): string {
+  return `${GRAPHQL_OBSERVATION}${OBSERVATION_CAVEAT}${GRAPHQL_REST_ROUTE[stopAfter]}${REST_UNCONDITIONAL}`;
+}
 
 /** `headSha` として受け付ける形。短すぎる値は委譲先の取り違え検出まで弱める。 */
 // 下限 7 に意味がある（短いと前方一致が別コミットを拾う）。上限は SHA-256 リポジトリの 64。
@@ -270,7 +317,7 @@ export function buildDelegationPrompt(
   // 委譲先はそれを失敗として扱うか、迂回のために余計な判断をする。
   const stepMergeOrStop =
     stopAfter === 'merge'
-      ? 'PR が出来たら `npx tsx scripts/merge-pull-request.ts --number <番号>` で squash マージする（**`gh pr merge` は使わないこと** — GraphQL が 403 でした / #702 時点の観測）。マージできたかは同コマンドが REST で引き直して確認する。**リモートブランチの削除は試さなくてよい**（proxy が write を拒否する。ローカル側で後始末します）。'
+      ? 'PR が出来たら `npx tsx scripts/merge-pull-request.ts --number <番号>` で squash マージする（**`gh pr merge` は使わないこと** — GraphQL が 403 でした / #702 時点の観測）。マージできたかは同コマンドが REST で引き直して確認する。**リモートブランチの削除は試さなくてよい**（proxy が write を拒否していました / これも観測であって保証ではありません。ローカル側で後始末します）。'
       : '🔴 **ここで止める。マージコマンドを実行しないこと。** マージ可否は人間が判断するため、PR を作成した時点でこの委譲の作業は完了。';
   const stepFinalReport =
     stopAfter === 'merge'
@@ -313,16 +360,18 @@ export function buildDelegationPrompt(
   //
   // 🔴 **その原則を、現在の記述にも当てる (#710)。** 委譲先の権限状態は
   // `DelegationInput` に無く、生成器は確かめていない。だから断定するのではなく
-  // **観測の範囲つきで書き、違っていたら報告してもらう**。
+  // **観測の範囲つきで書く**。
+  //
+  // なお `docs/cloud-dev-environment.md` や `SKILL.md` 側は現在形の断定のままでよい ——
+  // あちらは「routine セッションでは」とセッション種別でスコープした**実測の記録**だが、
+  // 生成器は**送信先がどのセッションかを保証できない**（spec に無い）。確信度の差は
+  // 「確かめられるか」の差であって、片方が古いという意味ではない。
   // 一方で**コマンドの指示は無条件でよい** —— REST だけを使う経路は権限状態に
   // よらず通るので、弱める理由が無い（#678 / #702 の損失はここを配り損ねた結果）。
   //
   // 🔴 **マージ系への言及は merge のときだけ** (#680)。`stopAfter: 'pr'` の出力に
   // `gh pr merge` が現れると、手順（PR まで）と例示が食い違う。観測の列挙も例外ではない。
-  const graphqlNote =
-    stopAfter === 'merge'
-      ? '2026-08-18 には `gh pr merge` も 403 でした。作成は `scripts/create-pull-request.ts`、マージは `scripts/merge-pull-request.ts`（どちらも REST のみ）を使ってください。'
-      : 'PR 作成は `scripts/create-pull-request.ts` を使ってください（マージはしない）。';
+  const graphqlNote = GRAPHQL_REST_ROUTE[stopAfter];
 
   return `リポジトリ 20m61/open-reception のブランチ \`${input.branch}\`（head = \`${input.headSha}\`、base = main \`${input.baseSha}\`）を、${openingGoal}
 
@@ -340,7 +389,7 @@ ${numbered}
 
 ## 環境の既知の制約
 
-- **クラウドのサンドボックスは GitHub GraphQL を絞っています**（#665 / #678 / #702 **時点の観測**。\`gh pr list\` / \`gh pr view --head\` が 403、2026-08-10 に \`gh pr create\` も 403 を実測）。**これは過去の観測であって、いまのあなたのセッションについての保証ではありません** —— **違っていたら（通った / 別の理由で落ちた）報告してください**。${graphqlNote}なお REST だけを使う経路は権限状態によらず通るので、確認も REST（\`gh api repos/{owner}/{repo}/pulls?...\`）で行ってください。
+${renderEnvironmentConstraints(stopAfter)}
 
 ## 禁止事項
 

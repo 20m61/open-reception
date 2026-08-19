@@ -1,5 +1,11 @@
 import { describe, expect, it } from 'vitest';
-import { buildDelegationPrompt, type DelegationInput } from './delegation-prompt';
+import {
+  GRAPHQL_OBSERVATION,
+  GRAPHQL_REST_ROUTE,
+  OBSERVATION_CAVEAT,
+  REST_UNCONDITIONAL,
+  renderEnvironmentConstraints,
+  buildDelegationPrompt, type DelegationInput } from './delegation-prompt';
 
 /**
  * 委譲プロンプトの生成。
@@ -51,6 +57,17 @@ describe('buildDelegationPrompt', () => {
   it('🔴 テスト件数を焼き込まない（数えていない値を断定しない）', () => {
     const p = buildDelegationPrompt(BASE);
     expect(p, '生成器が数えていないテスト件数を本文に書いている').not.toMatch(/\d+ passed/);
+    // 置き換えた中身（本物の形と「数えるな」）も残す。片方だけ消えても落ちるように。
+    expect(p, '本物の形が書かれていない').toContain('N passed (N)');
+    expect(p, '件数を数えるなと言っていない').toMatch(/件数[^。]*数えない/);
+  });
+
+  it('🔴 所要時間も焼き込まない（生成器は測っていない）', () => {
+    // `3〜5 分` も `DelegationInput` に無く測っていない値。実測が伸びたとき、
+    // 委譲先が hang と誤認して kill すると**ゲートが走らないまま終わる**。
+    const p = buildDelegationPrompt(BASE);
+    expect(p, '測っていない所要時間を書いている').not.toMatch(/\d+\s*〜\s*\d+\s*分/);
+    expect(p).toContain('時間の長さで失敗と判断しないこと');
   });
 
   it('PR の実在確認を必ず含める（#656 の再発防止）', () => {
@@ -96,36 +113,76 @@ describe('buildDelegationPrompt', () => {
    * 一方で**コマンドの指示は無条件のまま**でよい —— REST だけを使う経路は権限状態に
    * よらず通るので、弱める理由が無い（#678 / #702 の損失はここを配り損ねた結果）。
    */
-  it('🔴 403 を「常にそうである」と断定せず、観測時点を添える', () => {
-    const p = buildDelegationPrompt(BASE);
-    // 🔴 **本文全体ではなく「環境の既知の制約」節を見る。** `時点の観測` は手順 6 / 8 にも
-    // 出るので、全体に `toContain` を掛けるとこの節から印が消えても素通りする（実際に
-    // 変異が生き残った）。断定が集まっているのはこの節なので、この節で縛る。
+  /** 「環境の既知の制約」節を切り出す。取れなければ落とす（黙って全文を見ない）。 */
+  const constraintSection = (stopAfter: 'pr' | 'merge'): string => {
+    const p = buildDelegationPrompt({ ...BASE, stopAfter });
     const from = p.indexOf('## 環境の既知の制約');
     const to = p.indexOf('## 禁止事項');
     expect(from, '環境の既知の制約 節が無い').toBeGreaterThan(-1);
     expect(to, '禁止事項 節が 環境の既知の制約 より後ろに無い').toBeGreaterThan(from);
-    const section = p.slice(from, to);
-    expect(section, '観測時点が書かれていない').toContain('時点の観測');
-    expect(section, '違っていたときに報告を求めていない').toMatch(/違って(いたら|いれば)/);
+    return p.slice(from, to).trim();
+  };
+
+  /**
+   * 🔴 **語彙ではなく構造で縛る (#710 レビュー MAJOR-2)。**
+   *
+   * 最初は「`403 になる` と書かない」「`このセッションでは` と書かない」という*語彙*で
+   * 縛ったが、**言い換えた再断定が素通りした** ——「あなたの環境でも必ず 403 です」を
+   * 挿しても `時点の観測` と `違っていたら` は前後に残るので通り、
+   * 「必ず 403 です —— 違っていたら報告してください」という**自己矛盾した本文が
+   * 無検出で出荷可能**だった（レビューの変異で実証）。
+   *
+   * `gate-stamp-check.ts` に同じ教訓が既に書いてある（語彙リストを足すのではなく
+   * 形を変える）。節本文を部品の連結だけで組み立て、**部品から組み直した文字列との
+   * 完全一致**で縛る。期待値を `renderEnvironmentConstraints` から作らないこと ——
+   * 描画関数どうしの比較はトートロジーで、両辺が同時に動いて通ってしまう（#711 で踏んだ）。
+   */
+  it.each(['merge', 'pr'] as const)('🔴 stopAfter: %s の制約節は部品の連結だけで出来ている', (stopAfter) => {
+    const expected =
+      GRAPHQL_OBSERVATION + OBSERVATION_CAVEAT + GRAPHQL_REST_ROUTE[stopAfter] + REST_UNCONDITIONAL;
+    expect(constraintSection(stopAfter)).toBe(`## 環境の既知の制約\n\n${expected}`);
+    expect(renderEnvironmentConstraints(stopAfter)).toBe(expected);
   });
 
-  it.each(['merge', 'pr'] as const)(
-    '🔴 stopAfter: %s の出力に「403 になる」という現在形の断定が残っていない',
-    (stopAfter) => {
-      // 委譲先のセッションの権限状態を、生成時点で無条件に断定しない。
-      // 「なる」は今も必ずそうだという主張で、実測が変わっても誰も気づけない。
-      const p = buildDelegationPrompt({ ...BASE, stopAfter });
-      expect(p).not.toMatch(/403 に(なる|なります)/);
-      expect(p, '委譲先のセッションについて断定している').not.toContain('このセッションでは');
-    },
-  );
+  it('🔴 観測の部品は観測時点を持ち、但し書きは保証でないと言う', () => {
+    expect(GRAPHQL_OBSERVATION, '観測時点が書かれていない').toContain('時点の観測');
+    expect(OBSERVATION_CAVEAT).toContain('保証ではありません');
+    // 「確かめに行け」と読ませない。全経路を REST に寄せている以上、「通った」を観測できる
+    // のは委譲先がわざわざ GraphQL を撃ったときだけになる（レビュー Minor-3）。
+    expect(OBSERVATION_CAVEAT).toContain('確かめに行く必要はありません');
+  });
 
-  it('観測時点つきにしても、REST 経路の指示は無条件に残る', () => {
-    // 断定をやめることと、指示を弱めることは別。ここを弱めると #678 / #702 が再発する。
-    const p = buildDelegationPrompt(BASE);
+  it.each(['merge', 'pr'] as const)('🔴 stopAfter: %s で現在形の断定が残っていない', (stopAfter) => {
+    const p = buildDelegationPrompt({ ...BASE, stopAfter });
+    expect(p).not.toMatch(/403 に(なる|なります)/);
+    expect(p, '委譲先のセッションについて断定している').not.toContain('このセッションでは');
+    // 言い換えによる再断定も、節スコープでは意味の側から塞ぐ（構造の縛りとの二重）。
+    expect(constraintSection(stopAfter)).not.toMatch(/(必ず|常に|確実に)\s*403/);
+  });
+
+  /**
+   * 🔴 **禁止文そのものを縛る (#710 レビュー MAJOR-1)。**
+   *
+   * 前版は `toContain('scripts/create-pull-request.ts')` と
+   * `not.toContain('gh pr create --base')` の 2 本で、**どちらも既存テストの真部分集合**
+   * だった（＝単独では構造上ほぼ絶対に落ちない）。実際、手順 6 の「使わないこと」を
+   * 「もし通るならそれでもよいが」へ弱めても全テストが green のままだった。
+   * #678 / #702 の実損（壊れたコマンドを配る）と**対称の欠陥**で、しかも周囲の文言を
+   * 書き換えたこの周回こそ、この保護が要るタイミングだった。
+   */
+  it.each(['merge', 'pr'] as const)('🔴 stopAfter: %s で REST 経路の指示が無条件に残る', (stopAfter) => {
+    const p = buildDelegationPrompt({ ...BASE, stopAfter });
+    expect(p, 'gh pr create の禁止文が消えている').toContain('`gh pr create` は使わないこと');
+    if (stopAfter === 'merge') {
+      expect(p, 'gh pr merge の禁止文が消えている').toContain('`gh pr merge` は使わないこと');
+      expect(p).toContain('scripts/merge-pull-request.ts');
+    }
     expect(p).toContain('scripts/create-pull-request.ts');
-    expect(p).not.toContain('gh pr create --base');
+    // 断定をやめても指示は弱まらない、という根拠の一文（レビュー Minor-2）。
+    expect(constraintSection(stopAfter)).toContain('権限状態によらず通る');
+    // 手順に緩和語彙を入れない（「通るならそれでもよい」は禁止文の骨抜き）。
+    const steps = p.slice(p.indexOf('## 手順'), p.indexOf('## 環境の既知の制約'));
+    expect(steps, '手順に緩和語彙が混ざっている').not.toMatch(/(でもよい|構いません|可能なら|推奨します)/);
   });
 
   it('既定の禁止事項を必ず含める', () => {
