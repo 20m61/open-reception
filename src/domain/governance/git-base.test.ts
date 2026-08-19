@@ -377,8 +377,31 @@ describe('collectChangedPaths: 収集失敗を空集合と区別する (#709)', 
     // 🔴 **`-z` は正確なバイト列を返す**ので trim してはいけない。git 上は前後に空白を
     // 持つパスも正当で、削ると別のパスになる。行区切りだった頃の trim は「行末の改行を
     // 落とす」ためのもので、`-z` では不要かつ有害。
-    const run = runnerFailing([], { [DIFF]: '  src/a.ts  \0\0', [STATUS]: '' });
-    expect(collectChangedPaths(run, 'abc123').paths).toEqual(['  src/a.ts  ']);
+    // **status 側も見る。** DIFF 側だけだと `record.slice(3).trim()` にする変異が
+    // 素通りする（porcelain のパース経路が縛られない）。
+    const run = runnerFailing([], {
+      [DIFF]: '  src/a.ts  \0\0',
+      [STATUS]: ' M   src/b.ts  \0 M \0',
+    });
+    expect([...collectChangedPaths(run, 'abc123').paths].sort()).toEqual([
+      '  src/a.ts  ',
+      '  src/b.ts  ',
+    ]);
+  });
+
+  it('リネーム元の旧パスは、3 文字目が空白でも読み飛ばす (#718)', () => {
+    // `R  <新>\0<旧>\0` の旧側が `ab cd.ts` のようなパスだと、3 文字目の空白だけを見る
+    // 判定では状態レコードと誤認し、**旧パスを変更パスとして数えてしまう**。
+    // 状態コードの集合（`ab` は該当しない）まで見て弾く。
+    const run = runnerFailing([], { [STATUS]: 'R  new/a.ts\0ab cd.ts\0' });
+    expect(collectChangedPaths(run, null).paths).toEqual(['new/a.ts']);
+  });
+
+  it('旧パスが続かない壊れた出力でも、実在するパスを捨てない (#718)', () => {
+    // 前提（R/C には必ず旧パスが続く）が崩れたとき、無条件に読み飛ばすと**次の実在する
+    // パスを黙って捨てる**＝停止境界の偽陰性へ倒れる。状態レコードの形なら飛ばさない。
+    const run = runnerFailing([], { [STATUS]: 'R  new/a.ts\0 M src/b.ts\0' });
+    expect([...collectChangedPaths(run, null).paths].sort()).toEqual(['new/a.ts', 'src/b.ts']);
   });
 
   it('非 ASCII パスがエスケープされない形で読める (#718)', () => {

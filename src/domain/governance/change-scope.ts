@@ -28,11 +28,10 @@ export type ChangeScope = (typeof CHANGE_SCOPES)[number];
  * **ここに足すときは「build / e2e / lighthouse / sast の入力になり得ないか」を確認する。**
  * `docs/` がコード・テスト・設定から参照されていないことは導入時に確認済み
  * （`rg "from '.*docs/"` 等がヒットゼロ。`playwright.config.ts` のコメント言及のみ）。
- */
-/**
+ *
  * 🔴 **パスは `-z`（NUL 区切り）で採ること** (#718)。既定の git は非 ASCII を
  * `"docs/\\346\\227\\245\\346\\234\\254\\350\\252\\236.md"` とエスケープするので、
- * `/^docs\//` に一致しない。収集は `git-base.ts` の `collectChangedPaths` に閉じている。
+ * ここのどのパターンにも一致しない。収集は `git-base.ts` の `collectChangedPaths` に閉じている。
  */
 const DOCS_PATTERNS: ReadonlyArray<RegExp> = [
   /^docs\//, // 設計・運用文書

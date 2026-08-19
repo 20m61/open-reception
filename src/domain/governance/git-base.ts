@@ -331,6 +331,22 @@ function splitNul(output: string): ReadonlyArray<string> {
  *
  * 新しい側だけを採るのは移設前からの挙動（`<旧> -> <新>` の右側）を保つため。
  */
+/** porcelain v1 の状態コードに使われる文字（`T` は typechange）。 */
+const STATUS_CODE_CHARS = new Set([' ', 'M', 'A', 'D', 'R', 'C', 'U', 'T', '?', '!']);
+
+/**
+ * レコードが `XY <path>`（状態つきのレコード）の形に見えるか。
+ *
+ * 🔴 **3 文字目が空白かどうかだけでは足りない。** 旧パスが `ab cd.ts` のように
+ * 3 文字目に空白を持つと状態レコードと誤判定し、**旧パスを変更パスとして数えてしまう**。
+ * 倒れる向きは安全側（過剰報告）だが、実在しうる普通のファイル名で起きるので締める。
+ * 状態コードの集合まで見れば `ab` は弾ける。
+ */
+function looksLikeStatusRecord(record: string | undefined): boolean {
+  if (record === undefined || record.length <= 3 || record[2] !== ' ') return false;
+  return STATUS_CODE_CHARS.has(record[0]!) && STATUS_CODE_CHARS.has(record[1]!);
+}
+
 function porcelainPaths(records: ReadonlyArray<string>): ReadonlyArray<string> {
   const paths: string[] = [];
   for (let i = 0; i < records.length; i += 1) {
@@ -339,7 +355,14 @@ function porcelainPaths(records: ReadonlyArray<string>): ReadonlyArray<string> {
     const path = record.slice(3);
     if (path !== '') paths.push(path);
     // 旧パスのレコードを 1 つ読み飛ばす。X（index 側）Y（worktree 側）のどちらでも起きる。
-    if (status.includes('R') || status.includes('C')) i += 1;
+    //
+    // 🔴 **無条件に飛ばさない。** 前提（R/C には必ず旧パスが続く）が崩れたとき、
+    // 無条件だと**実在するパスを黙って捨てる**＝停止境界の偽陰性へ倒れる。
+    // 次が状態レコードの形（`XY ` の 3 文字目が空白）なら旧パスではないので飛ばさない。
+    // 過剰に拾う側（旧パスをパスとして数える）は安全側。
+    if ((status.includes('R') || status.includes('C')) && !looksLikeStatusRecord(records[i + 1])) {
+      i += 1;
+    }
   }
   return paths;
 }

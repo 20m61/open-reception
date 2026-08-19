@@ -57,6 +57,16 @@ describe('scripts/change-scope.ts: 測れていないのに検証を省略しな
     expect(stdout).toContain('skip=build');
   }, 60_000);
 
+  it('🔴 未コミットの非 ASCII 文書だけでも docs と判定する（status 経路 / #718）', () => {
+    // `makeRepo` は必ずコミットするので、コミット済みだけを見るテストは `git diff` 経路
+    // しか通らない。ゲートは作業ツリーが dirty な状態で回るのが常態。
+    const repo = makeRepo(['docs/既存.md']);
+    writeFile(repo.root, 'docs/未コミット日本語.md');
+    const stdout = run(repo);
+    expect(stdout).toContain('scope=docs');
+    expect(stdout).toContain('skip=build');
+  }, 60_000);
+
   it('コード変更があれば code で、何も省略しない', () => {
     const stdout = run(makeRepo(['src/app/page.tsx']));
     expect(stdout).toContain('scope=code');

@@ -41,7 +41,18 @@ const HEAD_SHA = execFileSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8' }
  */
 const HALT_FILE_PRESENT = existsSync(resolve(process.cwd(), '.loop-halt'));
 
-afterAll(cleanupTempDirs);
+/**
+ * 実リポジトリに置くプローブ。**`--exclude-standard` が ignore 済みを除くので
+ * gitignore できない**（ignore すると数えられず、テストの意味が無くなる）。
+ * `finally` だけではプロセス kill で残り、周回の `git add -A` で docs/ にゴミが入るので、
+ * `afterAll` でも掃く。
+ */
+const PROBE = resolve(process.cwd(), 'docs/718-非ASCII一時.md');
+
+afterAll(() => {
+  rmSync(PROBE, { force: true });
+  cleanupTempDirs();
+});
 
 function run(shimDir?: string): { stdout: string; status: number } {
   const env = { ...process.env };
@@ -88,7 +99,7 @@ describe('scripts/change-budget.ts: 測れなかったことを 0 件と言わ�
       expect(matched, `変更量の行が読めない: ${out}`).not.toBeNull();
       return Number(matched![1]);
     };
-    const probe = resolve(process.cwd(), 'docs/718-非ASCII一時.md');
+    const probe = PROBE;
     const before = lines(run().stdout);
     writeFileSync(probe, Array.from({ length: 40 }, (_, i) => `line ${i}`).join('\n'));
     try {
