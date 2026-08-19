@@ -317,12 +317,14 @@ describe('collectChangedPaths: 収集失敗を空集合と区別する (#709)', 
 
   // 🔴 **`-z` を使う** (#718)。既定の git は非 ASCII パスを `"\\346\\227\\245..."` と
   // エスケープするので、`docs/日本語.md` が `docs/` に一致しなくなる。
-  const DIFF = 'diff --name-only -z abc123 HEAD';
+  // 🔴 **`--name-status`** (#719)。`--name-only` はリネームの**新側しか返さない**ので、
+  // ガード対象ディレクトリからの持ち出し（`git mv infra/... docs/...`）が見えなくなる。
+  const DIFF = 'diff --name-status -z abc123 HEAD';
   const STATUS = 'status --porcelain -uall -z';
 
   it('両方成功したら failures は空で、コミット済みと未コミットを合わせて返す', () => {
     const run = runnerFailing([], {
-      [DIFF]: 'src/a.ts\0src/b.ts\0',
+      [DIFF]: 'M\0src/a.ts\0M\0src/b.ts\0',
       [STATUS]: ' M src/c.ts\0?? src/d.ts\0',
     });
     const result = collectChangedPaths(run, 'abc123');
@@ -341,7 +343,7 @@ describe('collectChangedPaths: 収集失敗を空集合と区別する (#709)', 
   });
 
   it('🔴 git status が失敗しても failures に出る', () => {
-    const run = runnerFailing([STATUS], { [DIFF]: 'src/a.ts\0' });
+    const run = runnerFailing([STATUS], { [DIFF]: 'M\0src/a.ts\0' });
     const result = collectChangedPaths(run, 'abc123');
     expect(result.paths).toEqual(['src/a.ts']);
     expect(result.failures).toHaveLength(1);
@@ -367,7 +369,7 @@ describe('collectChangedPaths: 収集失敗を空集合と区別する (#709)', 
   it('diff と status に同じパスが出ても 1 件にまとめる', () => {
     // 同じファイルをコミットしてさらに手で直した場合に両方へ出る。二重に数えない。
     const run = runnerFailing([], {
-      [DIFF]: 'src/a.ts\0',
+      [DIFF]: 'M\0src/a.ts\0',
       [STATUS]: ' M src/a.ts\0',
     });
     expect(collectChangedPaths(run, 'abc123').paths).toEqual(['src/a.ts']);
@@ -380,7 +382,7 @@ describe('collectChangedPaths: 収集失敗を空集合と区別する (#709)', 
     // **status 側も見る。** DIFF 側だけだと `record.slice(3).trim()` にする変異が
     // 素通りする（porcelain のパース経路が縛られない）。
     const run = runnerFailing([], {
-      [DIFF]: '  src/a.ts  \0\0',
+      [DIFF]: 'M\0  src/a.ts  \0',
       [STATUS]: ' M   src/b.ts  \0 M \0',
     });
     expect([...collectChangedPaths(run, 'abc123').paths].sort()).toEqual([
@@ -394,7 +396,8 @@ describe('collectChangedPaths: 収集失敗を空集合と区別する (#709)', 
     // 判定では状態レコードと誤認し、**旧パスを変更パスとして数えてしまう**。
     // 状態コードの集合（`ab` は該当しない）まで見て弾く。
     const run = runnerFailing([], { [STATUS]: 'R  new/a.ts\0ab cd.ts\0' });
-    expect(collectChangedPaths(run, null).paths).toEqual(['new/a.ts']);
+    // #719 以降は旧側も返す（持ち出しを見落とさないため）。順序は新→旧。
+    expect(collectChangedPaths(run, null).paths).toEqual(['new/a.ts', 'ab cd.ts']);
   });
 
   it('旧パスが続かない壊れた出力でも、実在するパスを捨てない (#718)', () => {
@@ -404,10 +407,55 @@ describe('collectChangedPaths: 収集失敗を空集合と区別する (#709)', 
     expect([...collectChangedPaths(run, null).paths].sort()).toEqual(['new/a.ts', 'src/b.ts']);
   });
 
+  it('🔴 リネームは新旧**両方**を返す（持ち出しを見落とさない / #719）', () => {
+    // `git mv infra/lib/stacks/認証.ts docs/x.md` のような持ち出しは、新側だけ見ると
+    // `docs/x.md` しか出ず、**停止境界に触れたことが消える**。
+    //
+    // 🔴 **2 つの形式で順序が逆。** `diff --name-status -z` は `R100\0旧\0新\0`（旧が先）、
+    // `status --porcelain -z` は `R  新\0旧\0`（新が先）。実測で確認済み。
+    const run = runnerFailing([], {
+      [DIFF]: 'R100\0infra/lib/stacks/認証.ts\0docs/移動.md\0',
+      [STATUS]: 'R  docs/新.md\0src/app/page.tsx\0',
+    });
+    expect([...collectChangedPaths(run, 'abc123').paths].sort()).toEqual([
+      'docs/新.md',
+      'docs/移動.md',
+      'infra/lib/stacks/認証.ts',
+      'src/app/page.tsx',
+    ]);
+  });
+
+  it('コピー（C）も新旧両方を返す (#719)', () => {
+    const run = runnerFailing([], { [DIFF]: 'C75\0src/a.ts\0docs/b.md\0' });
+    expect([...collectChangedPaths(run, 'abc123').paths].sort()).toEqual(['docs/b.md', 'src/a.ts']);
+  });
+
+  it('リネーム以外の状態は 1 パスだけ消費する（ずれない / #719）', () => {
+    // `R`/`C` だけが 2 パス。取り違えると以降のレコードが全部ずれる。
+    const run = runnerFailing([], {
+      [DIFF]: 'M\0src/a.ts\0R100\0src/old.ts\0src/new.ts\0D\0src/gone.ts\0',
+    });
+    expect([...collectChangedPaths(run, 'abc123').paths].sort()).toEqual([
+      'src/a.ts',
+      'src/gone.ts',
+      'src/new.ts',
+      'src/old.ts',
+    ]);
+  });
+
+  it('途中で切れた出力でもパスを捏造しない (#719)', () => {
+    // `R100` の後に 1 つしかパスが無い（壊れた出力）。落ちず、在るものだけ返す。
+    const run = runnerFailing([], { [DIFF]: 'M\0src/a.ts\0R100\0src/old.ts\0' });
+    expect([...collectChangedPaths(run, 'abc123').paths].sort()).toEqual([
+      'src/a.ts',
+      'src/old.ts',
+    ]);
+  });
+
   it('非 ASCII パスがエスケープされない形で読める (#718)', () => {
     // 既定の git は `"docs/\\346\\227\\245..."` を返し `/^docs\\//` に一致しなくなる。
     const run = runnerFailing([], {
-      [DIFF]: 'docs/日本語.md\0infra/lib/stacks/認証.ts\0',
+      [DIFF]: 'M\0docs/日本語.md\0A\0infra/lib/stacks/認証.ts\0',
       [STATUS]: '?? docs/未追跡.md\0',
     });
     expect([...collectChangedPaths(run, 'abc123').paths].sort()).toEqual([
@@ -419,7 +467,7 @@ describe('collectChangedPaths: 収集失敗を空集合と区別する (#709)', 
 
   it('引用符を含むパスも壊さない (#718)', () => {
     // `core.quotePath=false` でも `"` を含むパスは引用されるが、`-z` は一切引用しない。
-    const run = runnerFailing([], { [DIFF]: '変な"名前.txt\0', [STATUS]: '' });
+    const run = runnerFailing([], { [DIFF]: 'M\0変な"名前.txt\0', [STATUS]: '' });
     expect(collectChangedPaths(run, 'abc123').paths).toEqual(['変な"名前.txt']);
   });
 
@@ -432,7 +480,7 @@ describe('collectChangedPaths: 収集失敗を空集合と区別する (#709)', 
       return key(args) === STATUS ? 'R  new/a.ts\0old/a.ts\0' : '';
     };
     const result = collectChangedPaths(run, null);
-    expect(result.paths).toEqual(['new/a.ts']);
+    expect(result.paths).toEqual(['new/a.ts', 'old/a.ts']);
     // `-uall` が抜けると未追跡ディレクトリが 1 行に畳まれ、中のファイルが判定から消える。
     expect(calls).toContain(STATUS);
   });

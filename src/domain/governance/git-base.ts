@@ -295,9 +295,11 @@ export function collectChangedPaths(run: GitRunner, base: string | null): Change
   const failures: string[] = [];
 
   if (base !== null) {
-    const diff = run(['diff', '--name-only', '-z', base, 'HEAD']);
-    if (diff === null) failures.push(`git diff --name-only -z ${base} HEAD`);
-    else for (const path of splitNul(diff)) paths.add(path);
+    // 🔴 **`--name-status`**（`--name-only` ではない / #719）。`--name-only` はリネームの
+    // **新側しか返さない**ので、ガード対象ディレクトリからの持ち出しが見えなくなる。
+    const diff = run(['diff', '--name-status', '-z', base, 'HEAD']);
+    if (diff === null) failures.push(`git diff --name-status -z ${base} HEAD`);
+    else for (const path of nameStatusPaths(splitNul(diff))) paths.add(path);
   }
 
   // 未コミット（staged / unstaged / untracked）。
@@ -331,6 +333,34 @@ function splitNul(output: string): ReadonlyArray<string> {
  *
  * 新しい側だけを採るのは移設前からの挙動（`<旧> -> <新>` の右側）を保つため。
  */
+/**
+ * `git diff --name-status -z` のレコード列からパスを取り出す (#719)。
+ *
+ * 形式は `<status>\0<path>\0`。ただし**リネーム／コピーだけ 2 パス**で
+ * `R100\0<旧>\0<新>\0`。
+ *
+ * 🔴 **`status --porcelain -z` とは順序が逆。** あちらは `R  <新>\0<旧>\0`（新が先）。
+ * 実測で確認した差なので、片方の記憶で書かないこと。
+ *
+ * 壊れた出力（パスが足りない）では**在るものだけ返す**。捏造も例外も出さない。
+ */
+function nameStatusPaths(records: ReadonlyArray<string>): ReadonlyArray<string> {
+  const paths: string[] = [];
+  for (let i = 0; i < records.length; ) {
+    const status = records[i]!;
+    i += 1;
+    // `R`/`C` は類似度スコアが続く（`R100` / `C75`）。それ以外は 1 文字。
+    const pathCount = status.startsWith('R') || status.startsWith('C') ? 2 : 1;
+    for (let taken = 0; taken < pathCount; taken += 1) {
+      const path = records[i];
+      if (path === undefined) return paths;
+      i += 1;
+      if (path !== '') paths.push(path);
+    }
+  }
+  return paths;
+}
+
 /** porcelain v1 の状態コードに使われる文字（`T` は typechange）。 */
 const STATUS_CODE_CHARS = new Set([' ', 'M', 'A', 'D', 'R', 'C', 'U', 'T', '?', '!']);
 
@@ -354,14 +384,17 @@ function porcelainPaths(records: ReadonlyArray<string>): ReadonlyArray<string> {
     const status = record.slice(0, 2);
     const path = record.slice(3);
     if (path !== '') paths.push(path);
-    // 旧パスのレコードを 1 つ読み飛ばす。X（index 側）Y（worktree 側）のどちらでも起きる。
+    // 🔴 **リネーム／コピーの旧パスも採る** (#719)。捨てると
+    // `git mv infra/lib/stacks/認証.ts docs/x.md` のような**持ち出しが見えなくなり**、
+    // change-risk は「停止境界に触れていません」、change-scope は `docs` と判定して
+    // build / e2e / sast / lighthouse を飛ばす（どちらも実測済み）。
     //
-    // 🔴 **無条件に飛ばさない。** 前提（R/C には必ず旧パスが続く）が崩れたとき、
-    // 無条件だと**実在するパスを黙って捨てる**＝停止境界の偽陰性へ倒れる。
-    // 次が状態レコードの形（`XY ` の 3 文字目が空白）なら旧パスではないので飛ばさない。
-    // 過剰に拾う側（旧パスをパスとして数える）は安全側。
+    // 次が状態レコードの形なら旧パスではないので消費しない（出力が壊れていても
+    // 実在するパスを取り落とさない）。
     if ((status.includes('R') || status.includes('C')) && !looksLikeStatusRecord(records[i + 1])) {
       i += 1;
+      const previous = records[i];
+      if (previous !== undefined && previous !== '') paths.push(previous);
     }
   }
   return paths;
