@@ -43,7 +43,13 @@ try {
  * 書き直さない**（同じ問いに 2 つの実装があると食い違いに気づけない / #557）。
  * ここは終了コードを受け取るだけで、意味づけは `gate-stamp-check.ts` の純関数が持つ。
  */
+/** probe の生の終了コード。⚠ の原因（git 外 / 記録なし）を人へ渡すために保持する。 */
+let probeExit: number | null = null;
+
 function readStampVerdict(): StampVerdict {
+  // 🔴 **root はこのスクリプトの位置から採る**（cwd ではない）。裏取りの対象は
+  // 「このスクリプトが属するツリー」になる —— 別 worktree の cwd から絶対パスで
+  // 呼べば、見るのは呼び出し元ではなくスクリプト側のツリーである点に注意。
   const root = join(import.meta.dirname, '..');
   const lib = join(root, 'scripts', 'lib', 'gate-stamp.sh');
   // 🔴 **「記録がまだ無い」を「満たさない」から切り出す。**
@@ -64,6 +70,7 @@ function readStampVerdict(): StampVerdict {
   const result = spawnSync('bash', ['-c', probe, 'gate-stamp-probe', lib], { cwd: root, stdio: 'ignore' });
   // 起動自体に失敗（bash が無い等）したら判定不能。落とす側へ倒さない。
   if (result.error !== undefined) return 'unknown';
+  probeExit = result.status;
   return verdictFromExitCode(result.status);
 }
 
@@ -71,12 +78,18 @@ function readStampVerdict(): StampVerdict {
 const check = checkLocalFastGateDeclaration(input.localFastGate, readStampVerdict);
 if (check.message !== undefined) {
   // **注意は stderr へ。** stdout は委譲プロンプト本文で、混ざると指示として送られる。
-  console.error(`${check.ok ? '⚠' : '❌'} ${check.message}`);
+  // probe は git 外(2) と記録なし(3) を区別しているので、人へ渡す文でも潰さない。
+  const cause =
+    probeExit === 2 ? '（probe exit=2: git リポジトリの外）' : probeExit === 3 ? '（probe exit=3: 記録がまだ無い）' : '';
+  console.error(`${check.ok ? '⚠' : '❌'} ${check.message}${cause}`);
 }
 if (!check.ok) process.exit(1);
 
 try {
-  console.log(buildDelegationPrompt(input));
+  // 🔴 **裏取りの結果は spec ではなくここから渡す。** 本文が「裏取り済み」と
+  // 「裏取りできなかった」を区別しないと、記録が無い環境（新しい worktree では常態）で
+  // #705 の事象が無傷で通る（#711 レビュー MAJOR-1）。
+  console.log(buildDelegationPrompt(input, check.verdict === 'satisfied' ? 'verified' : 'unverified'));
 } catch (e) {
   console.error(`プロンプトを組み立てられませんでした: ${e instanceof Error ? e.message : String(e)}`);
   process.exit(1);

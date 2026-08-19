@@ -287,8 +287,15 @@ CI が無い以上、「PR 前に `--pr` / マージ前に `--full`」は**規�
   **判定不能として通す**（警告のみ）—— 「測れなかった」を「嘘だった」に倒さない。
   spec は**リポジトリ外か `.delegate-*.json`**（gitignore 済）へ置くこと。未追跡ファイルも
   指紋に入るため、repo 内へ書くと正直な green 申告が落ちる。
+- スタンプを読む側は**フックだけではない**。現時点の消費者は次の 4 つ:
+  `scripts/hooks/pr-gate-guard.sh`（PR 作成 / マージのブロック）/
+  `scripts/aws-cloud-deploy.sh`（デプロイ前に `--pr` を確認）/
+  `src/domain/governance/deploy-preflight.ts`（同前の判定）/
+  `scripts/delegate-gate-prompt.ts`（上記の申告の裏取り）。
+  **指紋の採り方を変えるときは 4 つとも確かめる。**
 - 意図的な迂回は明示的に行う: `OPEN_RECEPTION_SKIP_GATE_GUARD=1 gh pr create ...`。
-- 振る舞いは `tests/hooks/pr-gate-guard.test.ts` で検証している（`npm test` に載る）。
+- 振る舞いは `tests/hooks/pr-gate-guard.test.ts` と `tests/hooks/delegate-gate-prompt.test.ts`
+  で検証している（`npm test` に載る）。
 
 ### push 前の秘密情報スキャン（`push-secret-guard` フック）
 

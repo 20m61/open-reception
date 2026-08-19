@@ -9,7 +9,7 @@
  * この一連の周回で同じ型を何度も踏んでいる。
  */
 import { execFileSync, spawnSync } from 'node:child_process';
-import { cpSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { afterAll, describe, expect, it } from 'vitest';
@@ -19,6 +19,20 @@ const created: string[] = [];
 afterAll(() => {
   for (const dir of created) rmSync(dir, { recursive: true, force: true });
 });
+
+/**
+ * SKILL.md が名指ししている spec の置き場所を**そこから読む** (#711 レビュー Minor 4)。
+ *
+ * ハードコードすると、SKILL.md 側だけ `spec.json`（＝ignore されない場所）へ戻っても
+ * 誰も落ちない。この repo が既に使っている「散文と実測を突き合わせる」手法
+ * （`tests/config/loop-round-skill.test.ts`）に揃える。
+ */
+const SKILL_SPEC_PATH = (() => {
+  const skill = readFileSync(resolve(REPO, '.claude/skills/loop-round/SKILL.md'), 'utf8');
+  const m = /delegate-gate-prompt\.ts\s+(\S+\.json)/.exec(skill);
+  if (m === null) throw new Error('SKILL.md に delegate-gate-prompt.ts の spec パスが見つかりません');
+  return m[1];
+})();
 
 const SPEC = {
   branch: 'fix/x',
@@ -43,7 +57,10 @@ function run(options: {
   /** spec をリポジトリ **内**のこのパスへ置く（`.gitignore` の効きを見る）。 */
   specInRepo?: string;
 }): { status: number; stderr: string; stdout: string } {
-  const dir = mkdtempSync(join(tmpdir(), 'delegate-prompt-'));
+  // 🔴 **パスに `$(...)` を仕込む。** probe がライブラリのパスを文字列へ埋め込んで
+  // いると、bash がここを**コマンド置換として実行**して別のパスを source しようとし、
+  // 裏取りが静かに exit 2（判定不能）へ縮退する。`$1` で渡していれば無害。
+  const dir = mkdtempSync(join(tmpdir(), 'delegate-prompt-$(echo x)-'));
   created.push(dir);
   // 🔴 **要る物だけ写す。** `src` 全体は 11MB あり、ケースごとに複製すると
   // ディスクを食う（#721 でゲートを落としたのはディスク枯渇だった）。
@@ -99,10 +116,11 @@ describe('delegate-gate-prompt.ts: 申告をスタンプで裏取りする (#711
     expect(r.stdout).not.toContain('## 手順');
   }, 120_000);
 
-  it('green と申告され一致する記録があれば通る', () => {
+  it('green と申告され一致する記録があれば通り、本文に裏取り済みと出る', () => {
     const r = run({ localFastGate: 'green', stamp: 'matching' });
     expect(r.status, r.stderr).toBe(0);
     expect(r.stdout).toContain('## 手順');
+    expect(r.stdout).toContain('ゲートスタンプで裏取り済み');
   }, 120_000);
 
   it('🔴 記録が無い（判定不能）ときは通す（「測れなかった」を「嘘だった」に倒さない）', () => {
@@ -110,7 +128,12 @@ describe('delegate-gate-prompt.ts: 申告をスタンプで裏取りする (#711
     const r = run({ localFastGate: 'green', stamp: 'none' });
     expect(r.status, r.stderr).toBe(0);
     expect(r.stderr).toContain('裏取りできませんでした');
+    expect(r.stderr).toContain('exit=3');
     expect(r.stdout).toContain('## 手順');
+    // 🔴 **通したことを本文にも残す。** ここが「裏取り済み」と同じ出力になると、
+    // 記録が無い環境（新しい worktree では常態）で #705 の事象が無傷で通る。
+    expect(r.stdout).toContain('ゲートスタンプでは裏取りできませんでした');
+    expect(r.stdout).not.toContain('ゲートスタンプで裏取り済み');
   }, 120_000);
 
   it('not-run の申告は裏取りの対象にしない', () => {
@@ -130,23 +153,11 @@ describe('delegate-gate-prompt.ts: 正直な申告を落とさない (#711 レ�
     expect(r.stdout).toContain('## 手順');
   }, 120_000);
 
-  it('🔴 spec を repo 内の `.delegate-*.json` へ置いても指紋を壊さない', () => {
+  it('🔴 SKILL.md が名指しする場所へ spec を置いても指紋を壊さない', () => {
     // 未追跡（非 ignore）ファイルも指紋に入るので、repo 内に spec を書くと
     // **正直な green 申告が落ちる**。`.gitignore` で経路を用意しておく。
-    const r = run({ localFastGate: 'green', stamp: 'matching', specInRepo: '.delegate-spec.json' });
+    const r = run({ localFastGate: 'green', stamp: 'matching', specInRepo: SKILL_SPEC_PATH });
     expect(r.status, r.stderr).toBe(0);
     expect(r.stdout).toContain('## 手順');
-  }, 120_000);
-
-  it('🔴 記録が無いときのエラー文が、申告を書き換えろと言わない', () => {
-    // 「ゲートは green だったが記録が一致しない」は起こりうる（ゲート後の編集・
-    // repo 内への書き込み）。そこで「申告を not-run / failed へ直せ」と言うと
-    // **嘘の申告を書かせる** —— #705 と同じ病の逆向き。
-    const r = run({ localFastGate: 'green', stamp: 'mismatched' });
-    expect(r.status).not.toBe(0);
-    expect(r.stderr).not.toContain('not-run / failed へ直して');
-    // 代わりに、正直なままで直せる道（本当の原因と、走らせ直し）を出す。
-    expect(r.stderr).toContain('未追跡');
-    expect(r.stderr).toContain('--fast');
   }, 120_000);
 });

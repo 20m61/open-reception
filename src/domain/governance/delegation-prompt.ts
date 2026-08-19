@@ -153,7 +153,19 @@ const MENTIONS_MERGE_PROHIBITION = /マージ(しない|するな|禁止)/;
  * **タイトルが Conventional Commits でなければ投げる。** squash 後の main コミットに
  * なるので、ここを間違えると履歴が汚れ、後から直せない（`CLAUDE.md` 規約）。
  */
-export function buildDelegationPrompt(input: DelegationInput): string {
+/**
+ * 申告をゲートスタンプで裏取りできたか (#711)。
+ *
+ * 🔴 **`DelegationInput` に置かない。** spec.json から読む値にすると、裏取りの結果まで
+ * 申告者が書けることになり、裏取りそのものが自己申告に戻る。**生成器が測って渡す**。
+ * 既定は `unverified` —— 渡し忘れは「裏取り済み」ではなく「裏取りしていない」へ倒す。
+ */
+export type StampAttestation = 'verified' | 'unverified';
+
+export function buildDelegationPrompt(
+  input: DelegationInput,
+  attestation: StampAttestation = 'unverified',
+): string {
   if (!CONVENTIONAL.test(input.title)) {
     throw new Error(
       `PR タイトルが Conventional Commits ではありません（squash 後の main コミットになります）: ${input.title}`,
@@ -196,9 +208,16 @@ export function buildDelegationPrompt(input: DelegationInput): string {
   // **申告をそのまま書く。生成器は補わない。** `green` 以外では「green」という断定が
   // 出力のどこにも現れないことをテストで固定している。
   const note = (input.localFastGateNote ?? '').trim();
+  // 🔴 **裏取りできなかったことを本文に残す (#711 レビュー)。** スタンプは worktree ごとに
+  // 独立で、新しい worktree では**必ず**記録が無い＝判定不能になる。そこで本文が
+  // 「裏取り済み」と同じ 1 バイトを出すと、#705 の事象（走らせていないのに green と申告）は
+  // その経路で今も無傷のまま通る。fail-open は保ちつつ、**測れなかったことは数える**
+  // （#726 が summary・スタンプ・週次記録で確立した原則）。
   const localGateLine =
     input.localFastGate === 'green'
-      ? `ローカル \`--fast\` は green（呼び出し側の申告${note === '' ? '' : ` / ${note}`}）。`
+      ? attestation === 'verified'
+        ? `ローカル \`--fast\` は green（呼び出し側の申告${note === '' ? '' : ` / ${note}`} / **ゲートスタンプで裏取り済み**）。`
+        : `ローカル \`--fast\` は green（呼び出し側の申告${note === '' ? '' : ` / ${note}`}）。🔴 **ただしゲートスタンプでは裏取りできませんでした**（記録なし / git 外 / 別 worktree）。**このクラウド実行の \`--full\` が唯一の根拠です。**`
       : `🔴 **ローカル \`--fast\` は${input.localFastGate === 'failed' ? '失敗しました' : '実行されていません'}**（${note === '' ? '理由の申告なし' : note}）。**このクラウド実行の \`--full\` が唯一の根拠です。** 「ローカルでは通っていたのだから環境要因だろう」という推測をしないこと。`;
 
   // 手順 11〜12（PR 作成後の扱い）。**名前で持ち、名前で並べる**（配列添字での組み立ては

@@ -193,6 +193,33 @@ describe('buildDelegationPrompt', () => {
      */
     const SOLE_EVIDENCE = 'このクラウド実行の `--full` が唯一の根拠です';
 
+    /**
+     * 🔴 **「裏取り済みの green」と「測れなかった green」を同じ本文にしない (#711)。**
+     * スタンプは worktree ごとに独立で、新しい worktree では**必ず**記録が無い＝判定不能。
+     * そこで出力が 1 バイトも変わらなければ、#705 の事象（走らせていないのに green と
+     * 申告して委譲する）はその経路で今も無傷のまま通る。fail-open は保つが、
+     * **測れなかったことは数える**（#726 の原則）。
+     */
+    const UNVERIFIED = 'ゲートスタンプでは裏取りできませんでした';
+
+    it('🔴 裏取りできていない green は、その旨と「--full が唯一の根拠」を本文に出す', () => {
+      const p = buildDelegationPrompt({ ...BASE, localFastGate: 'green' }, 'unverified');
+      expect(p).toContain(UNVERIFIED);
+      expect(p).toContain(SOLE_EVIDENCE);
+    });
+
+    it('裏取り済みの green はその旨を書き、裏取り不能の警告を出さない', () => {
+      const p = buildDelegationPrompt({ ...BASE, localFastGate: 'green' }, 'verified');
+      expect(p).toContain('ゲートスタンプで裏取り済み');
+      expect(p).not.toContain(UNVERIFIED);
+    });
+
+    it('🔴 渡し忘れは「裏取り済み」ではなく「裏取りしていない」へ倒す', () => {
+      // 既定を verified にすると、呼び出し側の配線が外れた瞬間に**黙って**
+      // 「裏取り済み」と書き始める。安全側は unverified。
+      expect(buildDelegationPrompt({ ...BASE, localFastGate: 'green' })).toContain(UNVERIFIED);
+    });
+
     it.each([
       ['not-run', '実行されていません'],
       ['failed', '失敗しました'],

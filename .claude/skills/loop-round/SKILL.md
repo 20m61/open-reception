@@ -66,9 +66,10 @@ repo info preamble が 403 になる（#678 / #702 で実測）。web セッシ�
 npx tsx scripts/delegate-gate-prompt.ts .delegate-spec.json   # 委譲プロンプトを生成（手書きしない）
 ```
 
-🔴 **spec はリポジトリ外か `.delegate-*.json`（gitignore 済）へ置く。** 未追跡（非 ignore）
-ファイルもツリー指紋に入るので、repo 内の追跡対象になる場所へ spec を書くと**直前の green が
-stale 扱いになり、正直な申告が下の裏取りで落ちる**（`.vrm-check/` と同じ理由）。
+🔴 **spec はリポジトリ直下の `.delegate-*.json`（gitignore 済）かリポジトリ外へ置く。**
+未追跡（非 ignore）ファイルもツリー指紋に入るので、repo 内に ignore されないまま spec を書くと
+**直前の green が stale 扱いになり、正直な申告が下の裏取りで落ちる**（`.vrm-check/` と同じ理由）。
+パターンは直下限定なので `scripts/.delegate-*.json` は ignore されない。
 
 `RemoteTrigger` で `run_once_at` を 2〜4 分後に置いた one-shot routine を作り、**直後に
 `clear_mcp_connections`**（MCP コネクタが全部自動アタッチされる）。`run` は使わない（二重発火）。
