@@ -148,12 +148,6 @@ const MERGE_PROHIBITION = 'マージしないこと。PR 作成までで止め�
 const MENTIONS_MERGE_PROHIBITION = /マージ(しない|するな|禁止)/;
 
 /**
- * 委譲プロンプト本文を組み立てる。
- *
- * **タイトルが Conventional Commits でなければ投げる。** squash 後の main コミットに
- * なるので、ここを間違えると履歴が汚れ、後から直せない（`CLAUDE.md` 規約）。
- */
-/**
  * 申告をゲートスタンプで裏取りできたか (#711)。
  *
  * 🔴 **`DelegationInput` に置かない。** spec.json から読む値にすると、裏取りの結果まで
@@ -162,6 +156,12 @@ const MENTIONS_MERGE_PROHIBITION = /マージ(しない|するな|禁止)/;
  */
 export type StampAttestation = 'verified' | 'unverified';
 
+/**
+ * 委譲プロンプト本文を組み立てる。
+ *
+ * **タイトルが Conventional Commits でなければ投げる。** squash 後の main コミットに
+ * なるので、ここを間違えると履歴が汚れ、後から直せない（`CLAUDE.md` 規約）。
+ */
 export function buildDelegationPrompt(
   input: DelegationInput,
   attestation: StampAttestation = 'unverified',
@@ -217,7 +217,7 @@ export function buildDelegationPrompt(
     input.localFastGate === 'green'
       ? attestation === 'verified'
         ? `ローカル \`--fast\` は green（呼び出し側の申告${note === '' ? '' : ` / ${note}`} / **ゲートスタンプで裏取り済み**）。`
-        : `ローカル \`--fast\` は green（呼び出し側の申告${note === '' ? '' : ` / ${note}`}）。🔴 **ただしゲートスタンプでは裏取りできませんでした**（記録なし / git 外 / 別 worktree）。**このクラウド実行の \`--full\` が唯一の根拠です。**`
+        : `ローカル \`--fast\` は green（呼び出し側の申告${note === '' ? '' : ` / ${note}`}）。🔴 **ただしゲートスタンプでは裏取りできませんでした**（記録なし / git 外 / 別 worktree / 記録が spec のコミットと別のツリーのもの）。**このクラウド実行の \`--full\` が唯一の根拠です。**`
       : `🔴 **ローカル \`--fast\` は${input.localFastGate === 'failed' ? '失敗しました' : '実行されていません'}**（${note === '' ? '理由の申告なし' : note}）。**このクラウド実行の \`--full\` が唯一の根拠です。** 「ローカルでは通っていたのだから環境要因だろう」という推測をしないこと。`;
 
   // 手順 11〜12（PR 作成後の扱い）。**名前で持ち、名前で並べる**（配列添字での組み立ては

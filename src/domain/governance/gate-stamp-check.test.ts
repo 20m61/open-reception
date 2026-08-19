@@ -1,6 +1,13 @@
 import { describe, expect, it } from 'vitest';
 import { LOCAL_FAST_GATE_VALUES } from './delegation-prompt';
-import { checkLocalFastGateDeclaration, verdictFromExitCode } from './gate-stamp-check';
+import {
+  RECOVERY_ACTIONS,
+  RECOVERY_TEXT,
+  UNSATISFIED_CAUSE,
+  checkLocalFastGateDeclaration,
+  renderUnsatisfiedMessage,
+  verdictFromExitCode,
+} from './gate-stamp-check';
 
 describe('verdictFromExitCode (#711)', () => {
   it.each([
@@ -33,26 +40,46 @@ describe('checkLocalFastGateDeclaration (#711)', () => {
   });
 
   /**
-   * 🔴 **語彙ではなく性質で縛る。** 前版は旧文言 `'not-run / failed へ直して'` の
-   * literal を禁じていただけで、**言い換えた再導入は素通りした**（レビューの変異で
-   * 21/21 PASS が実証された）。この周回で繰り返し踏んでいる「散文を literal で縛って
-   * 安心する」型そのもの。
+   * 🔴 **語彙ではなく構造で縛る。** 2 版とも語彙で縛って破られた:
+   * 1 版目は旧文言の literal 1 本 → 言い換えで素通り。
+   * 2 版目は `LOCAL_FAST_GATE_VALUES` の英字値を禁止 → **日本語での言い換え**
+   * （「申告を『実行していない』へ書き換えて出し直しても構いません」）で素通り。
+   * どちらもレビューの変異で実証された。「散文を lexical で縛って安心する」型が
+   * 一段深くなっただけで、変異クラスは同じだった。
    *
-   * 性質: **ブロックしたときの文面に、green 以外の申告値を出さない。** 出せば
-   * 「再実行は分、申告の書き換えは秒」の選択を提示することになり、嘘の申告を誘発する
-   * （#705 と同じ病の逆向き）。値は `LOCAL_FAST_GATE_VALUES` から採るので値追加にも追従する。
+   * そこで**自由文を無くした**。逃げ道（申告そのものを下げる）を名指しできるのは
+   * 自由文だけなので、メッセージを `RECOVERY_ACTIONS` の描画だけから組み立て、
+   * ここで「列挙の中身」と「メッセージが描画結果と完全一致すること」を縛る。
+   * どんな言い換えも、型か列挙かこの等式のいずれかを壊さないと入らない。
    */
-  it('🔴 ブロックしたとき、green 以外の申告値を文面に出さない', () => {
-    const message = checkLocalFastGateDeclaration('green', () => 'unsatisfied').message ?? '';
-    expect(message).not.toBe('');
+  it('🔴 提示できる回復手段は、ゲート再実行と spec の置き場所だけ', () => {
+    expect([...RECOVERY_ACTIONS]).toEqual(['move-spec', 'rerun-gate']);
+  });
+
+  it('🔴 ブロック時の文面は原因＋回復手段の描画だけで出来ている（自由文を足せない）', () => {
+    const r = checkLocalFastGateDeclaration('green', () => 'unsatisfied');
+    expect(r.recovery).toEqual(RECOVERY_ACTIONS);
+    // 🔴 **期待値を `renderUnsatisfiedMessage` から作らない。** 描画関数どうしを比べると、
+    // 描画関数に一文足す変異では**両辺が同時に変わって通ってしまう**（実際に踏んだ:
+    // レビューの言い換え変異が 17/17 PASS した）。部品から組み直して突き合わせる。
+    const expected = `${UNSATISFIED_CAUSE}${RECOVERY_ACTIONS.map((a) => RECOVERY_TEXT[a]).join('')}(#711)`;
+    expect(r.message).toBe(expected);
+    expect(renderUnsatisfiedMessage(RECOVERY_ACTIONS)).toBe(expected);
+  });
+
+  it('回復手段の文面はゲートと spec の置き場所を指す（申告の書き換えを勧めない）', () => {
+    expect(RECOVERY_TEXT['rerun-gate']).toContain('--fast');
+    expect(RECOVERY_TEXT['move-spec']).toContain('.delegate-');
+    const rendered = renderUnsatisfiedMessage(RECOVERY_ACTIONS);
     for (const value of LOCAL_FAST_GATE_VALUES) {
       if (value === 'green') continue;
-      expect(message, `回復手段として ${value} を名指ししている`).not.toContain(value);
+      expect(rendered, `回復手段として ${value} を名指ししている`).not.toContain(value);
     }
-    // positive 側: 提示してよい回復手段（ゲートの再実行と spec の置き場所）は出ている。
-    expect(message).toContain('--fast');
-    expect(message).toContain('未追跡');
-    expect(message).toContain('.delegate-');
+    // 🔴 **英字の値名だけでは足りない。** 逃げ道は日本語でも名指しできる
+    // （「申告を『実行していない』へ書き換えて出し直しても構いません」）。構造の縛りに
+    // 加えて、意味の側からも塞ぐ —— 部品の中に書かれても落ちる。
+    expect(rendered).not.toMatch(/申告[^。]{0,25}(直|書き換|変更|下げ|落と)/);
+    expect(rendered).toContain('未追跡');
   });
 
   it('green と申告され記録もあれば通す', () => {
@@ -75,7 +102,13 @@ describe('checkLocalFastGateDeclaration (#711)', () => {
   it.each(['not-run', 'failed'] as const)('%s の申告は裏取りの対象にしない', (declared) => {
     // 「green ではない」と言っているだけなので、検証すべき主張が無い。
     for (const verdict of ['satisfied', 'unsatisfied', 'unknown'] as const) {
-      expect(checkLocalFastGateDeclaration(declared, () => verdict).ok).toBe(true);
+      // 🔴 **`unknown`（測ろうとしたが測れなかった）と同じ値にしない。** 同じにすると、
+      // 後から `verdict` を集計する側が「該当なし」と「測れなかった」を混同する
+      // （#726 が数えるために分けた区別と同じ）。
+      expect(checkLocalFastGateDeclaration(declared, () => verdict)).toEqual({
+        ok: true,
+        verdict: 'not-checked',
+      });
     }
   });
 

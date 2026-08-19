@@ -13,7 +13,7 @@
  * `clear_mcp_connections` は呼び出し側が行う（後者は忘れると全コネクタが付く）。
  */
 import { spawnSync } from 'node:child_process';
-import { readFileSync } from 'node:fs';
+import { readFileSync, realpathSync } from 'node:fs';
 import { join } from 'node:path';
 import { buildDelegationPrompt, type DelegationInput } from '../src/domain/governance/delegation-prompt';
 import {
@@ -45,6 +45,45 @@ try {
  */
 /** probe の生の終了コード。⚠ の原因（git 外 / 記録なし）を人へ渡すために保持する。 */
 let probeExit: number | null = null;
+/** `satisfied` を名乗れなかった理由（裏取り対象のツリーが spec と違う等）。 */
+let downgrade: string | null = null;
+
+function git(cwd: string, args: string[]): string | null {
+  const r = spawnSync('git', ['-C', cwd, ...args], { encoding: 'utf8' });
+  return r.status === 0 ? (r.stdout ?? '').trim() : null;
+}
+
+/**
+ * スタンプが証明していることと、spec が委譲しようとしているものが**同じか**を確かめる。
+ *
+ * 🔴 **指紋は HEAD を含まない**（`scripts/lib/gate-stamp.sh`。「同じ内容のツリーなら同じ値」
+ * という設計）。つまり裏取りが言えるのは「**いまの作業ツリーの内容**に green 記録がある」
+ * までで、「spec が名指しするコミットに green 記録がある」ではない。1 ファイル commit を
+ * 忘れた／古い push のまま生成すると、本文は「裏取り済み」と強く断定するのに、委譲先が
+ * checkout するのは別のツリーになる —— #705 と同じ型の誤誘導が、より説得力のある形で残る。
+ *
+ * ずれていたら**格下げして通す**（fail-open は維持し、本文は「裏取りできませんでした」側）。
+ * 一致しない理由を返す。一致していれば `null`。
+ */
+function stampScopeMismatch(root: string, headSha: string): string | null {
+  const head = git(root, ['rev-parse', 'HEAD']);
+  if (head === null) return 'HEAD を読めません（コミットがまだ無い）';
+  if (!head.startsWith(headSha.trim())) {
+    return `HEAD (${head.slice(0, 7)}) が spec の headSha (${headSha}) と一致しません`;
+  }
+  const dirty = git(root, ['status', '--porcelain']);
+  if (dirty === null) return 'ワークツリーの状態を読めません';
+  if (dirty !== '') return '未コミットの変更があります（裏取りしたツリーと委譲するコミットが別物）';
+  // 別 worktree の cwd から絶対パスでこのスクリプトを呼ぶと、裏取りするのは
+  // 呼び出し元ではなく**スクリプト側のツリー**になる。黙って別ツリーを保証しない。
+  const here = git(process.cwd(), ['rev-parse', '--show-toplevel']);
+  const there = git(root, ['rev-parse', '--show-toplevel']);
+  if (here === null || there === null) return 'リポジトリの root を解決できません';
+  if (realpathSync(here) !== realpathSync(there)) {
+    return `呼び出し元のツリー (${here}) とスクリプトのツリー (${there}) が違います`;
+  }
+  return null;
+}
 
 function readStampVerdict(): StampVerdict {
   // 🔴 **root はこのスクリプトの位置から採る**（cwd ではない）。裏取りの対象は
@@ -71,7 +110,11 @@ function readStampVerdict(): StampVerdict {
   // 起動自体に失敗（bash が無い等）したら判定不能。落とす側へ倒さない。
   if (result.error !== undefined) return 'unknown';
   probeExit = result.status;
-  return verdictFromExitCode(result.status);
+  const verdict = verdictFromExitCode(result.status);
+  if (verdict !== 'satisfied') return verdict;
+  // 記録はあるが、それが証明するツリーと spec が委譲するコミットが同じとは限らない。
+  downgrade = stampScopeMismatch(root, input.headSha);
+  return downgrade === null ? 'satisfied' : 'unknown';
 }
 
 // 裏取りが要るかを決めるのは純関数側。ここは読み方だけを渡す（`green` 以外では呼ばれない）。
@@ -80,10 +123,16 @@ if (check.message !== undefined) {
   // **注意は stderr へ。** stdout は委譲プロンプト本文で、混ざると指示として送られる。
   // probe は git 外(2) と記録なし(3) を区別しているので、人へ渡す文でも潰さない。
   const cause =
-    probeExit === 2 ? '（probe exit=2: git リポジトリの外）' : probeExit === 3 ? '（probe exit=3: 記録がまだ無い）' : '';
+    downgrade !== null
+      ? `（記録はあるが裏取りの範囲外: ${downgrade}）`
+      : probeExit === 2
+        ? '（probe exit=2: git リポジトリの外）'
+        : probeExit === 3
+          ? '（probe exit=3: 記録がまだ無い）'
+          : `（probe exit=${probeExit ?? '起動失敗'}）`;
   console.error(`${check.ok ? '⚠' : '❌'} ${check.message}${cause}`);
 }
-if (!check.ok) process.exit(1);
+if (!check.ok) process.exit(1); // 1 = 裏取りに失敗（申告と記録が食い違う）
 
 try {
   // 🔴 **裏取りの結果は spec ではなくここから渡す。** 本文が「裏取り済み」と
@@ -92,7 +141,7 @@ try {
   console.log(buildDelegationPrompt(input, check.verdict === 'satisfied' ? 'verified' : 'unverified'));
 } catch (e) {
   console.error(`プロンプトを組み立てられませんでした: ${e instanceof Error ? e.message : String(e)}`);
-  process.exit(1);
+  process.exit(3); // 3 = 入力が不正（裏取りの失敗と区別する）
 }
 
 // **送信側への注意は stdout ではなく stderr へ。** 本文にリマインダが混ざると

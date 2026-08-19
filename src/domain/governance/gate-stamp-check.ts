@@ -19,8 +19,16 @@
  */
 import type { LocalFastGate } from './delegation-prompt';
 
-/** スタンプ照合の結果。`gate_stamp_satisfies` の終了コードに対応する。 */
-export type StampVerdict = 'satisfied' | 'unsatisfied' | 'unknown';
+/**
+ * スタンプ照合の結果。`satisfied` / `unsatisfied` / `unknown` は
+ * `gate_stamp_satisfies` の終了コードに対応する。
+ *
+ * `not-checked` は**そもそも裏取りの対象でなかった**（`green` 以外の申告）ことを表し、
+ * 終了コードから来ることはない。`unknown`（＝裏取りしようとしたが測れなかった）と
+ * 同じ値にすると、後から集計する側が「該当なし」と「測れなかった」を混同する
+ * （#726 が「測れなかったものを数える」ために分けた区別と同じ）。
+ */
+export type StampVerdict = 'satisfied' | 'unsatisfied' | 'unknown' | 'not-checked';
 
 /**
  * `gate_stamp_satisfies` の終了コードを判定へ翻訳する。
@@ -45,11 +53,48 @@ export function verdictFromExitCode(code: number | null): StampVerdict {
   return 'unknown';
 }
 
+/**
+ * ブロックしたときに提示してよい回復手段 (#711 レビュー MAJOR-B)。
+ *
+ * 🔴 **文面ではなく選択肢そのものを型にする。** 前版は「`not-run` / `failed` という
+ * 文字列を出さない」という*語彙*の制約で、**日本語での言い換え**（「申告を『実行していない』へ
+ * 書き換えて出し直しても構いません」）が素通りした。逃げ道を名指しできるのは自由文だけなので、
+ * **自由文を無くす** —— メッセージはこの列挙の描画だけで組み立て、テストが列挙の中身と
+ * 「メッセージが描画結果と完全一致すること」を縛る。
+ *
+ * ここに「申告を下げる」を足すには型と `RECOVERY_ACTIONS` の両方を変えることになり、
+ * テストが必ず落ちる。
+ */
+export const RECOVERY_ACTIONS = ['move-spec', 'rerun-gate'] as const;
+export type RecoveryAction = (typeof RECOVERY_ACTIONS)[number];
+
+/** ブロック時の原因説明（回復手段より前に置く固定文）。 */
+export const UNSATISFIED_CAUSE =
+  'localFastGate に green と申告されていますが、**現ツリーに一致するゲートの green 記録がありません**。' +
+  '記録はゲートが実際に検査したツリーに紐づくので、ゲート後に 1 文字でも編集した場合のほか、' +
+  '**spec などの未追跡（非 ignore）ファイルをリポジトリ内へ書いた**だけでも一致しなくなります。';
+
+export const RECOVERY_TEXT: Record<RecoveryAction, string> = {
+  'move-spec':
+    'spec はリポジトリ**直下**の `.delegate-*.json`（gitignore 済）かリポジトリ外へ置いてください。',
+  'rerun-gate': '`./scripts/quality-gate.sh --fast` を走らせ直してください。',
+};
+
+/** ブロック時のメッセージを、原因＋回復手段の描画**だけ**から組み立てる。 */
+export function renderUnsatisfiedMessage(recovery: readonly RecoveryAction[]): string {
+  return `${UNSATISFIED_CAUSE}${recovery.map((a) => RECOVERY_TEXT[a]).join('')}(#711)`;
+}
+
 export type DeclarationCheck = {
   /** プロンプトを組み立ててよいか。 */
   readonly ok: boolean;
   /** 人へ見せる理由（`ok` でも警告として出ることがある）。 */
   readonly message?: string;
+  /**
+   * ブロックしたときに提示した回復手段。通ったときは空。
+   * **文面はこれの描画だけ**で出来ている（自由文で逃げ道を名指しできないようにするため）。
+   */
+  readonly recovery?: readonly RecoveryAction[];
   /**
    * 実際に得られた判定。**本文へ持ち込むために返す** —— 「裏取り済みの green」と
    * 「測れなかった green」が同じ出力になると、記録が無い環境で #705 の事象が無傷で通る。
@@ -75,27 +120,15 @@ export function checkLocalFastGateDeclaration(
   declared: LocalFastGate,
   readVerdict: () => StampVerdict,
 ): DeclarationCheck {
-  if (declared !== 'green') return { ok: true, verdict: 'unknown' };
+  if (declared !== 'green') return { ok: true, verdict: 'not-checked' };
   const verdict = readVerdict();
   if (verdict === 'satisfied') return { ok: true, verdict };
   if (verdict === 'unsatisfied') {
-    return {
-      ok: false,
-      verdict,
-      message:
-        'localFastGate に green と申告されていますが、**現ツリーに一致するゲートの green 記録がありません**。' +
-        '記録はゲートが実際に検査したツリーに紐づくので、ゲート後に 1 文字でも編集した場合のほか、' +
-        '**spec などの未追跡（非 ignore）ファイルをリポジトリ内へ書いた**だけでも一致しなくなります。' +
-        'spec はリポジトリ**直下**の `.delegate-*.json`（gitignore 済）かリポジトリ外へ置き、' +
-        '`./scripts/quality-gate.sh --fast` を走らせ直してください。' +
-        // 🔴 **回復手段としてゲート以外を名指ししない。** ゲートを通していない側の逃げ道
-        // （申告そのものを下げる）をここで挙げると、ブロックされた側にとっては
-        // 「再実行は分、申告の書き換えは秒」の選択になり、**嘘の申告を書かせる** ——
-        // #705 と同じ病を逆向きに再生産する。条件節を付けても名指しは名指し。
-        // `gate-stamp-check.test.ts` が「green 以外の申告値を本文に出さない」を機械で縛る。
-        'ローカルで `--fast` を通していないなら記録が無いのは当然で、そのときは申告の方が事実に反しています —— ' +
-        'ゲートを走らせてから出し直してください (#711)。',
-    };
+    // 🔴 **自由文を足さない。** 逃げ道（申告そのものを下げる）を名指しできるのは自由文
+    // だけで、名指しすればブロックされた側にとっては「再実行は分、申告の書き換えは秒」の
+    // 選択になり、**嘘の申告を書かせる**（#705 と同じ病の逆向き）。`RECOVERY_ACTIONS` の
+    // 描画だけで組み立てる。
+    return { ok: false, verdict, recovery: RECOVERY_ACTIONS, message: renderUnsatisfiedMessage(RECOVERY_ACTIONS) };
   }
   return {
     ok: true,

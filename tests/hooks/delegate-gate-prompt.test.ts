@@ -36,7 +36,7 @@ const SKILL_SPEC_PATH = (() => {
 
 const SPEC = {
   branch: 'fix/x',
-  headSha: 'abc1234',
+  headSha: 'placeholder-上書きされる',
   baseSha: 'def5678',
   title: 'fix(x): y',
   summary: 's',
@@ -56,6 +56,10 @@ function run(options: {
   cwd?: string;
   /** spec をリポジトリ **内**のこのパスへ置く（`.gitignore` の効きを見る）。 */
   specInRepo?: string;
+  /** コミット後にツリーを汚す（指紋は汚した後に採るので**一致したまま**になる）。 */
+  dirty?: boolean;
+  /** spec の headSha を実 HEAD ではなくこの値にする。 */
+  headSha?: string;
 }): { status: number; stderr: string; stdout: string } {
   // 🔴 **パスに `$(...)` を仕込む。** probe がライブラリのパスを文字列へ埋め込んで
   // いると、bash がここを**コマンド置換として実行**して別のパスを source しようとし、
@@ -71,6 +75,21 @@ function run(options: {
   // 「repo 内に spec を置いても指紋が変わらない」を検証できない。
   cpSync(resolve(REPO, '.gitignore'), join(dir, '.gitignore'));
   execFileSync('git', ['init', '-q'], { cwd: dir });
+  // 🔴 **実際にコミットする。** 裏取りは「記録がある」だけでなく「その記録が
+  // spec の headSha / clean なツリーのものである」ことまで見るので、コミットの無い
+  // repo で組むと**全ケースが格下げされ**、verified 側を何も検証できなくなる。
+  const git = (...args: string[]): string =>
+    execFileSync('git', ['-c', 'user.email=t@example.com', '-c', 'user.name=t', ...args], {
+      cwd: dir,
+      encoding: 'utf8',
+    }).trim();
+  git('add', '-A');
+  git('commit', '-q', '-m', 'init', '--no-gpg-sign');
+  const headSha = options.headSha ?? git('rev-parse', 'HEAD');
+
+  // 汚すのは**指紋を採る前**。指紋には未コミットの内容も入るので、後から汚すと
+  // 「一致しない」になってしまい、見たい「一致するが範囲外」を作れない。
+  if (options.dirty === true) writeFileSync(join(dir, '.gitignore'), '# dirty\n', { flag: 'a' });
 
   if (options.stamp !== 'none') {
     const fingerprint =
@@ -91,12 +110,12 @@ function run(options: {
   let specPath: string;
   if (options.specInRepo !== undefined) {
     specPath = join(dir, options.specInRepo);
-    writeFileSync(specPath, JSON.stringify({ ...SPEC, localFastGate: options.localFastGate }));
+    writeFileSync(specPath, JSON.stringify({ ...SPEC, headSha, localFastGate: options.localFastGate }));
   } else {
     const specDir = mkdtempSync(join(tmpdir(), 'delegate-spec-'));
     created.push(specDir);
     specPath = join(specDir, 'spec.json');
-    writeFileSync(specPath, JSON.stringify({ ...SPEC, localFastGate: options.localFastGate }));
+    writeFileSync(specPath, JSON.stringify({ ...SPEC, headSha, localFastGate: options.localFastGate }));
   }
   const result = spawnSync(
     resolve(REPO, 'node_modules/.bin/tsx'),
@@ -159,5 +178,28 @@ describe('delegate-gate-prompt.ts: 正直な申告を落とさない (#711 レ�
     const r = run({ localFastGate: 'green', stamp: 'matching', specInRepo: SKILL_SPEC_PATH });
     expect(r.status, r.stderr).toBe(0);
     expect(r.stdout).toContain('## 手順');
+  }, 120_000);
+});
+
+describe('delegate-gate-prompt.ts: 裏取りの範囲を超えて名乗らない (#711 レビュー MAJOR-A)', () => {
+  /**
+   * 🔴 **指紋は HEAD を含まない。** スタンプが証明するのは「いまの作業ツリーの内容に
+   * green 記録がある」ことだけで、「spec が名指しするコミットに green 記録がある」ではない。
+   * commit し忘れ・古い push のまま生成すると、委譲先が checkout するツリーは裏取り対象と
+   * 別物なのに、本文は「裏取り済み」と**強く断定**してしまう。
+   */
+  it('🔴 未コミットの変更があるときは verified を名乗らない', () => {
+    const r = run({ localFastGate: 'green', stamp: 'matching', dirty: true });
+    expect(r.status, r.stderr).toBe(0); // fail-open は維持する
+    expect(r.stdout).not.toContain('ゲートスタンプで裏取り済み');
+    expect(r.stdout).toContain('ゲートスタンプでは裏取りできませんでした');
+    expect(r.stderr).toContain('未コミットの変更');
+  }, 120_000);
+
+  it('🔴 spec の headSha が HEAD と違うときは verified を名乗らない', () => {
+    const r = run({ localFastGate: 'green', stamp: 'matching', headSha: 'deadbee' });
+    expect(r.status, r.stderr).toBe(0);
+    expect(r.stdout).not.toContain('ゲートスタンプで裏取り済み');
+    expect(r.stderr).toContain('headSha');
   }, 120_000);
 });
