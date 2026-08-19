@@ -356,7 +356,13 @@ fi
 
 # そのステップを変更範囲の理由で省略するか。
 scope_skips() { # scope_skips <step-key>
-  [[ "$GATE_SKIPS" == *" $1 "* ]]
+  # 🔴 **`code` なら何も省略しない、をここで閉じる** (#712 レビュー M1)。
+  # `change-scope.ts` が `scope=docs` と `skip=build` を印字した**後**に死ぬと、
+  # フォールバックの `|| echo "scope=code"` が後から流れて `GATE_SCOPE` は `code` に戻るが、
+  # `GATE_SKIPS` は積まれたまま残る。scope だけを見て判断すると
+  # 「code なのに build を省略した」まま green になる —— #712 が塞ごうとした被害そのもの。
+  # 原則を 1 箇所に閉じるため、行の読み取り側ではなくここで縛る。
+  [[ "$GATE_SCOPE" != "code" ]] && [[ "$GATE_SKIPS" == *" $1 "* ]]
 }
 
 # 省略した理由をサマリへ残す（黙って飛ばさない。何を検査していないかが見えること）。

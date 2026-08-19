@@ -17,9 +17,10 @@ export const TSX = resolve(process.cwd(), 'node_modules/.bin/tsx');
 
 /**
  * 本物の git の場所。**shim を置く前に控える**（shim が自分自身を呼ぶと無限再帰になる）。
- * `which` は POSIX 必須ではないので `command -v` を使う。
+ * `which` は POSIX 必須ではないので `command -v` を使う。**`-l`（ログインシェル）は
+ * 使わない** —— プロファイルを読むので、バナーを出す環境ではパスにゴミが混じる。
  */
-export const REAL_GIT = execFileSync('bash', ['-lc', 'command -v git'], {
+export const REAL_GIT = execFileSync('bash', ['-c', 'command -v git'], {
   encoding: 'utf8',
 }).trim();
 

@@ -69,7 +69,11 @@ function main(): void {
 
   if (base === null) {
     // 起点が解決できないなら比較のしようがない → 省略しない。
-    notes.push('起点を解決できないため変更範囲を測れていません。省略しません');
+    //
+    // **ここでは note を出さない。** `quality-gate.sh` が起点解決の直後に
+    // 「⚠️ 共通祖先へ到達できません…」を既に出しており、重複させると浅い clone や
+    // オフラインのクラウド環境で**毎回 2 行出る**。この PR の新しい情報は「部分失敗」の
+    // 方なので、常時出るメッセージに埋もれさせない（#712 レビュー m2）。
   } else {
     const collected = collectChangedPaths(tryGit, base);
     if (collected.failures.length > 0) {
