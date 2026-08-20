@@ -229,6 +229,12 @@ export type ReceptionLog = {
 };
 
 export type AuditAction =
+  /**
+   * 受付セッションを作成した (#736)。**接続したとは言っていない。**
+   * QR 受付は「予約を使用済みにして受付を作る」と「実際に呼び出す」が別の段なので、
+   * 前者をここで記録する。接続の確定は `reception.connected` が別に書く。
+   */
+  | 'reception.created'
   | 'reception.connected'
   | 'reception.answered'
   | 'reception.timeout'

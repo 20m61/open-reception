@@ -327,6 +327,9 @@ export type MessageKey =
   | 'checkin.error.session'
   | 'checkin.error.reservation'
   | 'checkin.error.server'
+  | 'checkin.error.unanswered'
+  | 'checkin.error.unrouted'
+  | 'checkin.error.outOfHours'
   | 'checkin.error.generic'
   | 'checkin.error.useManual'
   | 'checkin.error.retry'
@@ -616,6 +619,9 @@ const ja: DefaultDictionary = {
   'checkin.error.session': 'この受付端末の認証が切れています。通常受付でお進みください。受付スタッフにもお知らせください。',
   'checkin.error.reservation': 'この QR では受付を進められませんでした。通常受付でお進みいただけます。',
   'checkin.error.server': '受付処理を完了できませんでした。通常受付でお進みいただけます。',
+  'checkin.error.unanswered': '担当者につながりませんでした。恐れ入りますが、近くの受付スタッフにお声がけください。',
+  'checkin.error.unrouted': 'ただいま担当者にお取り次ぎできません。恐れ入りますが、近くの受付スタッフにお声がけください。',
+  'checkin.error.outOfHours': 'ただいま受付時間外のため、お取り次ぎできません。恐れ入りますが、近くの受付スタッフにお声がけください。',
   'checkin.error.generic': 'エラーが発生しました。',
   'checkin.error.useManual': '通常受付へ',
   'checkin.error.retry': 'やり直す',
@@ -907,6 +913,9 @@ const en: LocaleDictionary = {
   'checkin.error.session': 'This terminal is no longer signed in. Please continue with standard check-in, and let a staff member know.',
   'checkin.error.reservation': 'We could not proceed with this QR code. You can continue with standard check-in.',
   'checkin.error.server': 'We could not complete the check-in. You can continue with standard check-in.',
+  'checkin.error.unanswered': 'We could not reach your host. Please ask a nearby staff member for assistance.',
+  'checkin.error.unrouted': 'We cannot reach your host right now. Please ask a nearby staff member for assistance.',
+  'checkin.error.outOfHours': 'We are outside reception hours, so we cannot reach your host. Please ask a nearby staff member for assistance.',
   'checkin.error.generic': 'An error occurred.',
   'checkin.error.useManual': 'Go to standard check-in',
   'checkin.error.retry': 'Try again',
@@ -1197,6 +1206,9 @@ const ko: LocaleDictionary = {
   'checkin.error.session': '이 단말기의 인증이 만료되었습니다. 일반 접수로 진행해 주시고, 담당자에게도 알려 주세요.',
   'checkin.error.reservation': '이 QR 코드로는 접수를 진행할 수 없었습니다. 일반 접수로 진행하실 수 있습니다.',
   'checkin.error.server': '접수 처리를 완료하지 못했습니다. 일반 접수로 진행하실 수 있습니다.',
+  'checkin.error.unanswered': '담당자와 연결되지 않았습니다. 가까운 접수 직원에게 말씀해 주세요.',
+  'checkin.error.unrouted': '지금은 담당자에게 연결할 수 없습니다. 가까운 접수 직원에게 말씀해 주세요.',
+  'checkin.error.outOfHours': '지금은 접수 시간이 아니어서 연결할 수 없습니다. 가까운 접수 직원에게 말씀해 주세요.',
   'checkin.error.generic': '오류가 발생했습니다.',
   'checkin.error.useManual': '일반 접수로 이동',
   'checkin.error.retry': '다시 시도',
@@ -1480,6 +1492,9 @@ const zh: LocaleDictionary = {
   'checkin.error.session': '此终端的登录已失效。请通过常规登记继续，并告知工作人员。',
   'checkin.error.reservation': '无法使用此二维码办理登记。您可以通过常规登记继续。',
   'checkin.error.server': '未能完成登记。您可以通过常规登记继续。',
+  'checkin.error.unanswered': '未能联系到负责人。请向附近的接待人员咨询。',
+  'checkin.error.unrouted': '目前无法为您转接负责人。请向附近的接待人员咨询。',
+  'checkin.error.outOfHours': '现在不在接待时间内，无法为您转接。请向附近的接待人员咨询。',
   'checkin.error.generic': '发生错误。',
   'checkin.error.useManual': '前往常规登记',
   'checkin.error.retry': '重试',

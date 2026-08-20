@@ -20,13 +20,24 @@
  */
 import type { MessageKey } from '@/lib/i18n';
 
-export const CHECKIN_CALL_FAILURE_REASONS = ['network', 'session', 'invalid', 'server'] as const;
+export const CHECKIN_CALL_FAILURE_REASONS = [
+  'network',
+  'session',
+  'invalid',
+  'server',
+  'unanswered',
+  'unrouted',
+  'out_of_hours',
+] as const;
 
 /**
  * - `network` … 端末からサーバへ到達できなかった（fetch 例外）、または上流へ到達できなかった（503）。
  * - `session` … 端末セッションが切れている（403）。**来訪者の操作では直らない**。
  * - `invalid` … 予約を受け付けられなかった（400）。QR 側の問題。
  * - `server`  … 到達したが完了できなかった（その他）。原因を来訪者に転嫁しない。
+ * - `unanswered` … 呼び出しは**行われた**が担当者が出なかった (#736)。失敗と混同しない。
+ * - `unrouted` … 実発信が停止中で、呼び出しが**一度も行われていない** (#736)。
+ * - `out_of_hours` … 受付時間外で、呼び出しが**一度も行われていない** (#736)。
  */
 export type CheckinCallFailureReason = (typeof CHECKIN_CALL_FAILURE_REASONS)[number];
 
@@ -55,5 +66,11 @@ export function checkinCallFailureMessageKeyFor(reason: CheckinCallFailureReason
       return 'checkin.error.reservation';
     case 'server':
       return 'checkin.error.server';
+    case 'unanswered':
+      return 'checkin.error.unanswered';
+    case 'unrouted':
+      return 'checkin.error.unrouted';
+    case 'out_of_hours':
+      return 'checkin.error.outOfHours';
   }
 }

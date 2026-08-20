@@ -55,8 +55,13 @@ export async function POST(request: Request): Promise<NextResponse> {
   }
 
   // QR 受付であることを監査に残す（PII なし。受付方法と呼び出し先種別のみ）。
+  //
+  // 🔴 **`reception.connected` を書かない (#736)。** ここは受付セッションを作った時点で、
+  // 呼び出しはまだ行われていない（実際に呼ぶのは端末が続けて叩く `/call`）。
+  // 「接続した」と書くと、**誰も呼ばれていない受付が監査上は接続済みとして残る**。
+  // 接続の確定は `/status` の遅延評価が `markConnected` で書く（actor は `'staff'`）。
   await appendAuditLog({
-    action: 'reception.connected',
+    action: 'reception.created',
     actor: `kiosk:${session.kioskId}`,
     targetType: 'reception',
     targetId: created.value.id,
