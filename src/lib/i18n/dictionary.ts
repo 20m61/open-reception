@@ -101,6 +101,7 @@ export type MessageKey =
   | 'reception.failedBody'
   | 'reception.failedNetworkBody'
   | 'reception.failedUnroutedBody'
+  | 'reception.failedOutOfHoursBody'
   | 'reception.altContact'
   // 担当者クイック応答 (#99) の「5分お待ちください」に対する目安の再案内 (#323 AC2)。
   | 'reception.staffResponseWaitReguidance'
@@ -414,6 +415,7 @@ const ja: DefaultDictionary = {
   'reception.failedBody': '呼び出しに失敗しました。別の方法でお呼びすることもできます。',
   'reception.failedNetworkBody': '通信が一時的に不安定なため、お呼び出しできませんでした。少し待ってからもう一度お試しください。',
   'reception.failedUnroutedBody': 'ただいま担当者にお取り次ぎできません。恐れ入りますが、近くのスタッフにお声がけください。',
+  'reception.failedOutOfHoursBody': 'ただいま受付時間外のため、お取り次ぎできません。恐れ入りますが、近くのスタッフにお声がけください。',
   'reception.altContact': '代替の連絡先へ',
   'reception.staffResponseWaitReguidance': '目安は数分です。担当者が向かい次第、この画面が切り替わります。',
   'reception.reset': '最初に戻る',
@@ -444,7 +446,7 @@ const ja: DefaultDictionary = {
   'chat.faq.purposeUnknown.q': '予約種別がわからない',
   'chat.faq.purposeUnknown.a': 'ご用件（面接・配送・打ち合わせ等）からお選びいただけます。お困りの場合はスタッフにお繋ぎします。',
   'chat.unrecognized': 'うまく聞き取れませんでした。下の項目からお選びください。',
-  'reception.fallbackBody': '代表窓口にお繋ぎします。受付スタッフが対応いたしますので、しばらくお待ちください。',
+  'reception.fallbackBody': '恐れ入りますが、近くの受付スタッフにお声がけください。ご用件はこちらで承っております。',
   'reception.toDesk': '受付窓口へ',
   'reception.cancelled': '受付をキャンセルしました',
   'reception.completedTitle': '受付が完了しました',
@@ -703,6 +705,7 @@ const en: LocaleDictionary = {
   'reception.failedBody': 'The call failed. We can try another way to reach them.',
   'reception.failedNetworkBody': 'We could not place the call because the connection is temporarily unstable. Please wait a moment and try again.',
   'reception.failedUnroutedBody': 'We cannot reach your host right now. Please ask a nearby staff member for assistance.',
+  'reception.failedOutOfHoursBody': 'We are outside reception hours, so we cannot reach your host. Please ask a nearby staff member for assistance.',
   'reception.altContact': 'Try another way',
   'reception.staffResponseWaitReguidance': "It'll be about a few minutes. This screen will update once they're on the way.",
   'reception.reset': 'Start over',
@@ -733,7 +736,7 @@ const en: LocaleDictionary = {
   'chat.faq.purposeUnknown.q': 'I am not sure of the visit type',
   'chat.faq.purposeUnknown.a': 'You can choose by purpose (interview, delivery, meeting and so on). If you are unsure, we will connect you to staff.',
   'chat.unrecognized': 'We did not quite catch that. Please choose from the options below.',
-  'reception.fallbackBody': "We'll connect you to the main desk. A staff member will assist you shortly.",
+  'reception.fallbackBody': 'Please ask a nearby staff member for assistance. We have your reception details on file.',
   'reception.toDesk': 'Go to the main desk',
   'reception.cancelled': 'Reception cancelled',
   'reception.completedTitle': 'Check-in complete',
@@ -994,6 +997,7 @@ const ko: LocaleDictionary = {
   'reception.failedBody': '호출에 실패했습니다. 다른 방법으로 호출할 수도 있습니다.',
   'reception.failedNetworkBody': '통신이 일시적으로 불안정하여 호출하지 못했습니다. 잠시 후 다시 시도해 주세요.',
   'reception.failedUnroutedBody': '지금은 담당자에게 연결할 수 없습니다. 가까운 직원에게 말씀해 주세요.',
+  'reception.failedOutOfHoursBody': '지금은 접수 시간이 아니어서 연결할 수 없습니다. 가까운 직원에게 말씀해 주세요.',
   'reception.altContact': '다른 연락 방법',
   'reception.staffResponseWaitReguidance': '예상 소요 시간은 몇 분입니다. 담당자가 출발하면 화면이 바뀝니다.',
   'reception.reset': '처음으로',
@@ -1024,7 +1028,7 @@ const ko: LocaleDictionary = {
   'chat.faq.purposeUnknown.q': '방문 종류를 모르겠습니다',
   'chat.faq.purposeUnknown.a': '용건(면접·배송·미팅 등)으로 선택하실 수 있습니다. 어려우시면 담당자에게 연결해 드립니다.',
   'chat.unrecognized': '잘 알아듣지 못했습니다. 아래 항목에서 선택해 주세요.',
-  'reception.fallbackBody': '대표 창구로 연결합니다. 접수 직원이 도와드리니 잠시만 기다려 주세요.',
+  'reception.fallbackBody': '가까운 접수 직원에게 말씀해 주세요. 접수 내용은 저희가 보관하고 있습니다.',
   'reception.toDesk': '접수 창구로',
   'reception.cancelled': '접수가 취소되었습니다',
   'reception.completedTitle': '접수가 완료되었습니다',
@@ -1280,6 +1284,7 @@ const zh: LocaleDictionary = {
   'reception.failedBody': '呼叫失败。我们可以用其他方式联系。',
   'reception.failedNetworkBody': '由于网络暂时不稳定，未能呼叫。请稍后再试。',
   'reception.failedUnroutedBody': '目前无法为您转接负责人。请向附近的工作人员咨询。',
+  'reception.failedOutOfHoursBody': '现在不在接待时间内，无法为您转接。请向附近的工作人员咨询。',
   'reception.altContact': '其他联系方式',
   'reception.staffResponseWaitReguidance': '预计需要几分钟。负责人出发后，本画面将自动更新。',
   'reception.reset': '返回首页',
@@ -1310,7 +1315,7 @@ const zh: LocaleDictionary = {
   'chat.faq.purposeUnknown.q': '不清楚预约类型',
   'chat.faq.purposeUnknown.a': '可以按事由（面试、配送、洽谈等）选择。如有疑问，我们会为您转接工作人员。',
   'chat.unrecognized': '没有听清楚。请从下面的选项中选择。',
-  'reception.fallbackBody': '正在为您转接前台，工作人员将很快为您服务，请稍候。',
+  'reception.fallbackBody': '请向附近的接待人员咨询。您的接待信息已记录。',
   'reception.toDesk': '前往前台',
   'reception.cancelled': '登记已取消',
   'reception.completedTitle': '登记完成',
@@ -1570,6 +1575,7 @@ const jaSimple: LocaleDictionary = {
   'reception.failedBody': 'よびだしに しっぱい しました。べつの 方法で よぶ ことも できます',
   'reception.failedNetworkBody': 'つうしんが つながらず よびだし できませんでした。すこし まってから もういちど おためし ください',
   'reception.failedUnroutedBody': 'いま たんとうしゃに つなげません。ちかくの スタッフに こえを かけて ください',
+  'reception.failedOutOfHoursBody': 'いまは うけつけ時間 では ありません。ちかくの スタッフに こえを かけて ください',
   'reception.altContact': 'べつの 方法で よぶ',
   'reception.cancelled': 'うけつけを やめました',
   'reception.reset': 'さいしょに もどる',
@@ -1600,7 +1606,7 @@ const jaSimple: LocaleDictionary = {
   'chat.faq.purposeUnknown.q': 'よやくの しゅるいが わからない',
   'chat.faq.purposeUnknown.a': 'ようけん（めんせつ・はいそう・うちあわせ など）から えらべます。こまったら 人に つなぎます。',
   'chat.unrecognized': 'うまく ききとれませんでした。下の こうもくから えらんで ください。',
-  'reception.fallbackBody': '受付の 人が おてつだい します。少し お待ち ください',
+  'reception.fallbackBody': 'ちかくの 受付の 人に こえを かけて ください。ごようけんは きろく して います',
   'reception.toDesk': '受付へ',
   'common.next': 'つぎへ',
   'common.cancel': 'やめる',

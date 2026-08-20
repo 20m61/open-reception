@@ -1,5 +1,6 @@
 'use client';
 
+import { callFailureReasonFrom } from '@/domain/reception/call-failure';
 import {
   useCallback,
   useEffect,
@@ -614,10 +615,15 @@ export function KioskFlow({ operatingStatus, sttAdapterFactory, voiceSession, qr
           error?: string;
         };
         if (cancelled) return;
-        // 実発信が止まっているときは「呼び出しに失敗した」ではなく「取り次げない」と伝える。
-        // 呼び出しは**一度も行われていない**ので、失敗として読ませない (N0)。
-        if (result.error === 'unrouted') {
-          dispatch({ type: 'CALL_FAILED', sessionId: session.id, reason: 'unrouted' });
+        // サーバが理由を返したなら、それを来訪者向けの理由へ写す (#736)。
+        // 🔴 **`unrouted` だけを名指しで拾わない。** かつてここは `unrouted` の `if` が 1 つ
+        // だけで、他の理由は状態分岐を素通りして最後の else で `server` に潰れていた。
+        // そのため営業時間外（サーバは 409 と `reopenAt` を返している）の来訪者に
+        // 「呼び出しに失敗しました」＋「代表窓口にお繋ぎします」という**果たせない約束**が
+        // 出ていた。写像は契約（`callFailureReasonFrom`）に一本化する。
+        const failureReason = callFailureReasonFrom(result.error);
+        if (failureReason !== undefined) {
+          dispatch({ type: 'CALL_FAILED', sessionId: session.id, reason: failureReason });
           return;
         }
         // 取次段階を後方互換で取り込む (#363)。旧形（stages 無し）は [] で、表示は増えない。
