@@ -261,6 +261,37 @@ export async function completeReception(id: string): Promise<StoreResult<Recepti
 }
 
 /**
+ * 取次が次の手へ進んだときに相関キーを付け替える (#646)。
+ *
+ * 🔴 **これが無いと `/status` は 1 手目の相関を読み続ける。** 相関のキーは provider の
+ * 通話 ID で、2 手目は新しい ID＝新しいレコードになる。1 手目は「未応答」で確定済みなので、
+ * 付け替えないと**2 手目が鳴っている最中に来訪者へ「応答が得られませんでした」と表示**して
+ * 代替導線へ倒してしまう。
+ *
+ * **状態機械は触らない。** ここは `'calling'` のままの受付の相関キーだけを差し替える
+ * 操作で、確定は従来どおり `/status` の読み時（`resolvePendingCall`）が行う。
+ * 呼び出し元は webhook なので、`'calling'` 以外（既に確定した・取り消された）へは書かない
+ * ── 遅れて届いた webhook で終わった受付を蒸し返さない。
+ */
+export async function repointProviderCall(
+  id: string,
+  providerCallId: string,
+): Promise<StoreResult<ReceptionSession>> {
+  // 🔴 read-modify-write にしない。取次が撃っている最中に `/status` が `markTimeout` を
+  // 書くと、全体置換が終端状態を `'calling'` へ巻き戻す（履歴・監査が二重に残る）。
+  const swapped = await sessions().setProviderCallIdIfCalling(id, providerCallId, now());
+  if (!swapped) {
+    const found = await getReception(id);
+    if (!found.ok) return found;
+    return {
+      ok: false,
+      error: { code: 'invalid_transition', message: `cannot repoint from ${found.value.state}` },
+    };
+  }
+  return getReception(id);
+}
+
+/**
  * 非同期通話で担当者が応答したことを記録する（calling → connected）(issue #4 increment 2)。
  * 受付履歴は完了時に記録するが、応答の瞬間は監査ログ（reception.answered）に残す
  * （connected/completed の監査とは別イベント）(issue #19, increment 2c)。

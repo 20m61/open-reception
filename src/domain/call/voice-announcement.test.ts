@@ -1,9 +1,11 @@
 import { describe, expect, it } from 'vitest';
 import {
   DTMF_CHOICES,
+  STAGE2_CHOICES,
   buildConfirmationNcco,
   buildDetailsNcco,
   resolveStaffChoice,
+  resolveStage2Choice,
   staffChoiceToRouteResult,
   type VisitorAnnouncement,
 } from './voice-announcement';
@@ -139,5 +141,47 @@ describe('staffChoiceToRouteResult — 取次語彙への写像 (#4)', () => {
     // 「対応不可」と「代理へ」は取次語彙では同じ declined。次に誰へ行くかは RoutingPolicy が決める
     // （Provider が代理先を選ばない＝ fallback の判断は Orchestrator の責務。#4 設計方針）。
     expect(staffChoiceToRouteResult(choice)).toBe('declined');
+  });
+});
+
+/**
+ * 第 2 段で「できないこと」を案内しない (#646 レビュー (b))。
+ *
+ * 来訪者⇔担当者の音声経路は MVP 1 の範囲外。案内すると、押した担当者は話せないうえ、
+ * 来訪者の端末には「担当者がまいりますので、そのままお待ちください」と出る。
+ */
+describe('第 2 段の案内から「来訪者と話す」を外す (#646)', () => {
+  const ncco = () =>
+    buildDetailsNcco({
+      visitor: { visitorName: 'TEST-来訪者', companyName: 'TEST-社' },
+      eventUrl: 'https://reception.test/api/providers/vonage/choice',
+      timeoutSeconds: 20,
+    });
+
+  const spoken = () =>
+    ncco()
+      .filter((a): a is Extract<typeof a, { action: 'talk' }> => a.action === 'talk')
+      .map((a) => a.text)
+      .join('');
+
+  it('🔴 「来訪者と話す」を読み上げない', () => {
+    expect(spoken()).not.toContain('来訪者と話す');
+    expect(spoken()).not.toContain('1、');
+  });
+
+  it('🔴 残る選択は読み上げ続ける（消しすぎない）', () => {
+    const text = spoken();
+    for (const label of ['まもなく向かう', '対応できない', '代理担当へ']) {
+      expect(text).toContain(label);
+    }
+  });
+
+  it('🔴 案内と受付は同じ表から導く（案内していない数字を受け付けない）', () => {
+    for (const c of STAGE2_CHOICES) {
+      expect(resolveStage2Choice(c.digit)).toBe(c.choice);
+    }
+    // 第 1 段の本人確認は別。第 2 段では受け付けない。
+    expect(resolveStage2Choice('1')).toBeUndefined();
+    expect(resolveStaffChoice('1')).toBe('accept');
   });
 });

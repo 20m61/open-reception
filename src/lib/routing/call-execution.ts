@@ -19,6 +19,7 @@
 import type { SiteId, TenantId } from '@/domain/tenant/types';
 import type { CallAdapter, CallResult, CallResultStatus } from '@/adapters/call/types';
 import { parseCallStages, type CallStage } from '@/domain/kiosk/call-stages';
+import { dialExpiresAtFrom } from '@/domain/routing/dial-budget';
 import { endpointRef } from '@/domain/routing/endpoint';
 import type { ConnectCommand, ConnectionProvider, ProviderConnectResult } from '@/domain/routing/provider';
 import { runRouting, type RoutingOutcome } from '@/domain/routing/orchestrator';
@@ -30,8 +31,8 @@ import { getRoutingRepositories } from './store';
 import { resolveVoiceInitiator } from './voice-dial';
 import type { StoredContactEndpoint, StoredRoutingPolicy } from './types';
 
-/** notify/announce 用の定型読み上げ文（PII を含めない）。 */
-const KIOSK_ANNOUNCE_TEXT = '受付からの取次です。';
+/** notify/announce 用の定型読み上げ文（PII を含めない）。2 手目以降（`next-hop-dial.ts`）も同じ文言を使う。 */
+export const KIOSK_ANNOUNCE_TEXT = '受付からの取次です。';
 
 export type RoutedCallResult = {
   /**
@@ -175,15 +176,6 @@ export async function runRoutedCall(
  * 実発信経路の失敗理由。**固定コードのみ**（provider のエラーメッセージを載せると
  * 電話番号や URL が来訪者向け応答・ログへ漏れる）。
  */
-/**
- * 呼出予算に足す余裕（秒） (#647)。
- *
- * 期限は「呼出タイムアウト（`ringing_timer`）＋ webhook の配送遅延」を見込む。短すぎると
- * **鳴っている最中に打ち切る**。長すぎると来訪者が無駄に待つ。Vonage の呼出は数十秒なので
- * 30 秒あれば配送遅延を吸収できる。
- */
-const DIAL_BUDGET_MARGIN_SECONDS = 30;
-
 type VoiceDialFailure =
   | 'no_entry_step'
   | 'endpoint_unavailable'
@@ -276,9 +268,7 @@ export async function runVoiceRoutedCall(
       voiceState: 'queued',
       eventCount: 0,
       status: 'in_flight',
-      dialExpiresAt: new Date(
-        dialedAt.getTime() + (start.step.timeoutSeconds + DIAL_BUDGET_MARGIN_SECONDS) * 1000,
-      ).toISOString(),
+      dialExpiresAt: dialExpiresAtFrom(dialedAt, start.step.timeoutSeconds),
       updatedAt: dialedAt.toISOString(),
     });
   } catch {

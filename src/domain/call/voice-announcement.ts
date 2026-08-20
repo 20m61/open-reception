@@ -41,6 +41,9 @@ export type StaffChoice = 'accept' | 'coming' | 'declined' | 'delegate';
 /**
  * DTMF の割り当て。**案内文と写像を同じ表から導く**ため 1 箇所に置く。
  * 分けて書くと「案内では 4 を案内しているのに押しても効かない」がすり抜ける。
+ *
+ * 🔴 **第 1 段（本人確認）と第 2 段（意思表示）で使う範囲が違う。** `accept`（1）は
+ * 第 1 段の「本人です」だけに使い、第 2 段では**案内も受付もしない**（`STAGE2_CHOICES`）。
  */
 export const DTMF_CHOICES = [
   { digit: '1', choice: 'accept', label: '来訪者と話す' },
@@ -48,6 +51,24 @@ export const DTMF_CHOICES = [
   { digit: '3', choice: 'declined', label: '対応できない' },
   { digit: '4', choice: 'delegate', label: '代理担当へ' },
 ] as const satisfies readonly { digit: string; choice: StaffChoice; label: string }[];
+
+/**
+ * 第 2 段（意思表示）で**案内し、受け付ける**選択 (#646)。
+ *
+ * 🔴 **`accept`（「来訪者と話す」）を外してある。** 来訪者⇔担当者の音声経路は MVP 1 の
+ * 範囲外で、押されても実際には話せない ── それどころか来訪者の端末には
+ * 「担当者がまいりますので、そのままお待ちください」と出る。**できないことを案内しない。**
+ *
+ * main では第 2 段の選択が `void` で捨てられていたため到達不能な不整合だったが、
+ * 選択を相関へ書くようにした時点で本番到達可能になる。音声ブリッジ (#376) が入るまでは
+ * 案内から外す（2026-08-20 ユーザー判断）。
+ */
+export const STAGE2_CHOICES = DTMF_CHOICES.filter((c) => c.choice !== 'accept');
+
+/** 第 2 段で受け付ける選択だけを引く。案内していない数字は `undefined`。 */
+export function resolveStage2Choice(digits: string): StaffChoice | undefined {
+  return STAGE2_CHOICES.find((c) => c.digit === digits)?.choice;
+}
 
 export type VisitorAnnouncement = {
   readonly visitorName: string;
@@ -100,7 +121,7 @@ export function buildConfirmationNcco(params: ConfirmationParams): Ncco {
 export function buildDetailsNcco(params: DetailsParams): Ncco {
   const { visitor } = params;
   const purpose = visitor.purpose ? `ご用件は、${visitor.purpose}です。` : '';
-  const options = DTMF_CHOICES.map((c) => `${c.digit}、${c.label}。`).join('');
+  const options = STAGE2_CHOICES.map((c) => `${c.digit}、${c.label}。`).join('');
   return [
     {
       action: 'talk',

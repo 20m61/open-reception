@@ -302,11 +302,15 @@ describe('/events — 取次の進行を実際に保存する (#4 Inc D-2)', () 
   });
 });
 
-describe('/events — 発信できない間は位置を動かさない (#4 Inc D-2 項目 2 待ち)', () => {
+describe('/events — 撃てない状況では位置を動かさない (#646)', () => {
   /**
-   * 🔴 次の手を撃つべきと判断されても、provider 選択（実送信の停止境界）が未配線なので
-   * **発信していない**。にもかかわらず位置を進めると「撃ったことになっている手が
-   * 実際には鳴っていない」不整合になり、担当者を飛ばして取次が終わる。
+   * 🔴 次の手を撃つべきと判断されても、**このテスト環境には発信者が居ない**
+   * （テナントの provider 設定・資格情報が無いので `resolveVoiceInitiator` が null を返す。
+   * 停止スイッチ `VOICE_DIALING_DISABLED` を立てた本番も同じ経路）。
+   * にもかかわらず位置を進めると「撃ったことになっている手が実際には鳴っていない」
+   * 不整合になり、担当者を飛ばして取次が終わる。
+   *
+   * 実際に撃てる場合の配線は `events-next-hop.test.ts` が固定する。
    *
    * seed 取次（personal → acting → department）の先頭に居る相関を作り、
    * 未応答で「次は acting」と判断される状況を踏ませる。
@@ -325,6 +329,12 @@ describe('/events — 発信できない間は位置を動かさない (#4 Inc D
     });
   });
 
+  it('🔴 発信者が居なければ外部発信そのものが起きない', async () => {
+    const fetchSpy = vi.spyOn(globalThis, 'fetch');
+    await events(signed(body({ status: 'unanswered' })));
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
   it('次の手があっても位置を進めない（発信していないため）', async () => {
     await events(signed(body({ status: 'unanswered' })));
     const s = await getCallCorrelationRepository().get(PROVIDER_CALL_ID);
@@ -339,12 +349,38 @@ describe('/events — 発信できない間は位置を動かさない (#4 Inc D
     expect(s?.status).toBe('in_flight');
   });
 
-  it('保留であることを構造化ログで可観測にする（黙って止まらない）', async () => {
+  /**
+   * 🔴 **基底オリジンが分からないなら撃たない (#646 / #612)。**
+   *
+   * この Request は `x-forwarded-host` を持たず `NEXT_PUBLIC_APP_URL` も無い。
+   * `resolveWebhookBaseUrl` は最後の手段として `request.url`（本番では Function URL）を
+   * 返してしまうので、そちらを使っていると **Function URL をコールバックに埋めたまま撃つ**。
+   * その通話の webhook は全部 origin-verify の 403 になり、鳴らしたのに一切進まない。
+   */
+  it('🔴 基底オリジンが分からなければ、その理由で撃たない', async () => {
     const info = vi.spyOn(console, 'info').mockImplementation(() => {});
     await events(signed(body({ status: 'unanswered' })));
     const logged = info.mock.calls.map((c) => String(c[0])).join('\n');
-    expect(logged).toContain('vonage_routing_dial_pending');
+    expect(logged).toContain('vonage_routing_dial_skipped');
+    // 段の切り分けに要るのは「どの手を」「なぜ」撃たなかったか。
     expect(logged).toContain('acting');
+    expect(logged).toContain('webhook_base_url_unknown');
+  });
+
+  it('基底オリジンが分かっても、発信者が居なければ撃たない（理由が変わる）', async () => {
+    const info = vi.spyOn(console, 'info').mockImplementation(() => {});
+    const request = signed(body({ status: 'unanswered' }));
+    const withHost = new Request(request, {
+      headers: new Headers([
+        ...request.headers,
+        ['x-forwarded-host', 'reception.test'],
+        ['x-forwarded-proto', 'https'],
+      ]),
+      body: await request.clone().text(),
+    });
+    await events(withHost);
+    const logged = info.mock.calls.map((c) => String(c[0])).join('\n');
+    expect(logged).toContain('initiator_unavailable');
   });
 });
 

@@ -22,6 +22,21 @@ export interface ReceptionSessionRepository {
   get(id: string): Promise<ReceptionSession | undefined>;
   /** 作成または上書き（read-modify-write は呼び出し側の責務）。 */
   put(session: ReceptionSession): Promise<void>;
+  /**
+   * 呼び出し中の受付の相関キーだけを **atomic に**差し替える (#646)。
+   *
+   * 🔴 **read-modify-write の `put` では終端済みの受付を蘇生させる。** 取次が次の手を
+   * 撃っている最中に `/status` が `markTimeout` を書くと、その直後の全体置換が
+   * `state` / `callOutcome` / `completedAt` を `'calling'` へ**巻き戻す**。受付履歴は
+   * 採番に重複排除が無いので、後で再度確定すると同じ受付の履歴・監査が 2 件残る。
+   *
+   * `'calling'` のときだけ差し替え、そうでなければ `false`（何も書かない）。
+   */
+  setProviderCallIdIfCalling(
+    id: string,
+    providerCallId: string,
+    updatedAt: string,
+  ): Promise<boolean>;
   /** テスト用: 初期状態へ戻す（memory backend のみ実効）。 */
   reset(): Promise<void>;
 }
@@ -42,6 +57,14 @@ export class DataBackedReceptionSessionRepository implements ReceptionSessionRep
 
   async put(session: ReceptionSession): Promise<void> {
     await this.col().put(session);
+  }
+
+  async setProviderCallIdIfCalling(
+    id: string,
+    providerCallId: string,
+    updatedAt: string,
+  ): Promise<boolean> {
+    return this.col().updateIf(id, { providerCallId, updatedAt }, { state: 'calling' });
   }
 
   async reset(): Promise<void> {

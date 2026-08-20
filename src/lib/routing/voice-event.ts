@@ -4,20 +4,32 @@
  * 判断そのものは純関数 `@/domain/routing/webhook-advance` にあり、ここは
  * **保存済みポリシーの読み出しと相関の永続化**だけを持つ（route を薄く保つ）。
  *
- * ## 発信（dial）はまだ行わない
+ * ## 発信（dial）はここから配線されている (#646)
  *
- * 取次が「次の手を撃つべき」と判断した場合、実際に発信するには provider を選ぶ必要があり、
- * それは **#4 Inc D-2 の項目 2（`executeRoutedCall` の mock/vonage 分岐）**＝実送信が
- * 起こりうるようになる停止境界。ここでは**位置を進めずに通話状態だけ保存し、
- * 保留であることをログに出す**。
+ * 取次が「次の手を撃つべき」と判断したら `dialNextHop`（`./next-hop-dial.ts`）へ渡す。
+ * 実発信が起こるのは 1 手目と**同じ条件が全部揃ったときだけ**で、1 つでも欠ければ撃たない:
  *
- * 🔴 **位置を進めないのが要点。** 発信していないのに位置だけ進めると、
+ *   1. `webhookBaseUrl` が分かる（CloudFront のドメイン。Function URL だと全 webhook が 403）
+ *   2. `resolveVoiceInitiator` が発信者を返す（停止スイッチ `VOICE_DIALING_DISABLED` と
+ *      テナント設定・資格情報の検査はこの中。**止めていれば null＝撃たない**）
+ *   3. 次の手の接続先が有効
+ *
+ * 🔴 **撃てないときは位置を進めない。** 発信していないのに位置だけ進めると、
  * 「撃ったことになっている手が実際には鳴っていない」不整合になる。撃てないなら動かさない。
+ *
+ * 🔴 **撃てたときは逆に、ここで保存してはいけない。** 保存は `dialNextHop` の仕事
+ * （1 手目の確定・2 手目の作成・受付の付け替えが 1 つの順序を成す）。ここで重ねて書くと
+ * 「1 手目＝確定済み」を `in_flight` で潰し、遅れて届く webhook がまた 2 手目を撃つ。
  */
 import { eventBudgetOf, withEventBudget } from '@/domain/routing/hop-event-budget';
+import type { VoiceCallInitiator } from '@/domain/routing/voice-initiator';
+import { getReception, repointProviderCall } from '@/lib/data-stores/reception-store';
+import { dialNextHop as defaultDialNextHop } from './next-hop-dial';
+import { resolveVoiceInitiator } from './voice-dial';
+import type { StoredContactEndpoint } from './types';
 import { advanceFromWebhook, type CallProgress } from '@/domain/routing/webhook-advance';
 import type { VoiceCallEvent } from '@/domain/call/voice-call-state';
-import type { RoutingPolicy } from '@/domain/routing/policy';
+import type { RoutingPolicy, RoutingStep } from '@/domain/routing/policy';
 import { getCallCorrelationRepository, type StoredCallCorrelation } from './call-correlation';
 import { asTenantId } from '@/domain/tenant/types';
 import { getRoutingRepositories } from './store';
@@ -35,10 +47,28 @@ async function policiesFor(correlation: StoredCallCorrelation): Promise<RoutingP
  * `providerEventId` には webhook の `jti` を渡すこと。at-least-once 配信の二重処理で
  * 取次が余計に 1 手進むのを防ぐ冪等キーになる。
  */
+export type VoiceEventDeps = {
+  /**
+   * Vonage へ渡すコールバックの基底 URL（**CloudFront のドメイン**）。
+   * **未指定なら実発信しない** ── 1 手目（`ExecuteRoutedCallOptions.webhookBaseUrl`）と同じ規則。
+   */
+  readonly webhookBaseUrl?: string;
+  readonly resolveInitiator?: (
+    tenantId: string,
+    webhookBaseUrl: string,
+  ) => Promise<VoiceCallInitiator | null>;
+  readonly listEndpoints?: (tenantId: string) => Promise<ReadonlyArray<StoredContactEndpoint>>;
+  readonly repointReception?: (receptionId: string, providerCallId: string) => Promise<void>;
+  readonly isReceptionCalling?: (receptionId: string) => Promise<boolean>;
+  readonly dialNextHop?: typeof defaultDialNextHop;
+  readonly now?: () => Date;
+};
+
 export async function applyVoiceEventToCorrelation(
   correlation: StoredCallCorrelation,
   event: VoiceCallEvent,
   providerEventId: string,
+  deps: VoiceEventDeps = {},
 ): Promise<void> {
   const progress: CallProgress = {
     position: correlation.position,
@@ -65,14 +95,10 @@ export async function applyVoiceEventToCorrelation(
   }
 
   if (advance.kind === 'dial') {
-    // 発信できないので位置は動かさず、通話状態だけ記録する（上記 doc 参照）。
-    console.info(
-      JSON.stringify({
-        event: 'vonage_routing_dial_pending',
-        stepId: advance.step.id,
-        reason: 'initiator_not_wired',
-      }),
-    );
+    const dialed = await tryDialNextHop(correlation, advance.next, advance.step, deps);
+    // 撃てた（または撃ったが記録が途中で途切れた）なら保存は発信側が済ませている。
+    // ここで重ねて書くと 1 手目の確定を潰す（上記 doc 参照）。
+    if (dialed === 'handled') return;
   }
 
   const next =
@@ -90,14 +116,121 @@ export async function applyVoiceEventToCorrelation(
         }
       : advance.next;
 
-  await getCallCorrelationRepository().put({
-    ...correlation,
-    // イベント数も position へ書き戻す —— 2 手目の相関はこの position を引き継ぐので、
-    // ここで載せておかないと次の手で 0 から数え直しになる (#646)。
-    position: withEventBudget(next.position, next.eventCount),
-    voiceState: next.voiceState,
-    eventCount: next.eventCount,
-    status: next.settled ? 'settled' : 'in_flight',
-    updatedAt: new Date().toISOString(),
+  // 🔴 **無条件 `put` にしない。** `/choice`（担当者の承諾）と `/events`（通話終了）は
+  // 別の webhook として**並行**に届きうる。全体置換で書くと、後から書いた側が先に書かれた
+  // 確定を潰す ── 担当者が「まもなく向かう」を押した直後に切ると、`/events` 側が先に
+  // 次の手を撃ってしまい、`/choice` の書き戻しではもう受付が 2 手目を指している
+  // （担当者 A が向かっているのに担当者 B の電話が鳴る）。
+  //
+  // 読んだ時点から動いていないときだけ書く。負けたら**何もしない**（勝った側の判断が正）。
+  const saved = await getCallCorrelationRepository().updateIfUnchanged(
+    correlation.providerCallId,
+    {
+      // イベント数も position へ書き戻す —— 2 手目の相関はこの position を引き継ぐので、
+      // ここで載せておかないと次の手で 0 から数え直しになる (#646)。
+      position: withEventBudget(next.position, next.eventCount),
+      voiceState: next.voiceState,
+      eventCount: next.eventCount,
+      status: next.settled ? 'settled' : 'in_flight',
+      updatedAt: new Date().toISOString(),
+    },
+    correlation.updatedAt,
+  );
+  if (!saved) {
+    // 勝敗を無音にしない。ここが無いと「押したのに次が鳴った」の切り分けができない。
+    console.warn(
+      JSON.stringify({
+        event: 'vonage_webhook_apply_lost_race',
+        providerCallId: correlation.providerCallId,
+      }),
+    );
+  }
+}
+
+/**
+ * 次の手を撃つ。**保存まで発信側が済ませたか**を返す（`'handled'`）。
+ *
+ * 撃てなかった場合は `'not_dialed'` を返し、呼び出し側が従来どおり
+ * 「位置は進めず、台帳と通話状態だけ保存」する。
+ */
+async function tryDialNextHop(
+  correlation: StoredCallCorrelation,
+  next: CallProgress,
+  step: RoutingStep,
+  deps: VoiceEventDeps,
+): Promise<'handled' | 'not_dialed'> {
+  const dial = deps.dialNextHop ?? defaultDialNextHop;
+  const resolveInitiator = deps.resolveInitiator ?? resolveVoiceInitiator;
+  // 🔴 基底 URL が分からないなら**解決すらしない**（secret も読ませない）。
+  const initiator = deps.webhookBaseUrl
+    ? await resolveInitiator(correlation.tenantId, deps.webhookBaseUrl)
+    : null;
+
+  if (initiator === null) {
+    console.info(
+      JSON.stringify({
+        event: 'vonage_routing_dial_skipped',
+        stepId: step.id,
+        reason: deps.webhookBaseUrl ? 'initiator_unavailable' : 'webhook_base_url_unknown',
+      }),
+    );
+    return 'not_dialed';
+  }
+
+  const listEndpoints =
+    deps.listEndpoints ??
+    ((tenantId: string) => getRoutingRepositories().endpoints.list(asTenantId(tenantId)));
+  const repointReception =
+    deps.repointReception ??
+    (async (receptionId: string, providerCallId: string) => {
+      const result = await repointProviderCall(receptionId, providerCallId);
+      // 書けなかったことを黙って飲まない ── `/status` が 1 手目を読み続ける。
+      if (!result.ok) throw new Error(result.error.code);
+    });
+
+  const isReceptionCalling =
+    deps.isReceptionCalling ??
+    (async (receptionId: string) => {
+      const found = await getReception(receptionId);
+      // 読めなければ**撃たない**。不在から「まだ呼び出し中だ」をでっち上げない。
+      return found.ok && found.value.state === 'calling';
+    });
+
+  const result = await dial({
+    correlation,
+    next,
+    step,
+    endpoints: await listEndpoints(correlation.tenantId),
+    initiator,
+    saveCorrelation: (c) => getCallCorrelationRepository().put(c),
+    updateIfUnchanged: (id, changes, expectedUpdatedAt) =>
+      getCallCorrelationRepository().updateIfUnchanged(id, changes, expectedUpdatedAt),
+    repointReception,
+    isReceptionCalling,
+    now: deps.now,
   });
+
+  // 撃った／撃たなかったを**理由込みで**残す。一様な 200 応答の対価がこれで、無いと
+  // 「担当者の電話が鳴らない」通報に対して段を切り分ける手段が消える。値・番号は載せない。
+  console.info(
+    JSON.stringify({ event: 'vonage_routing_next_hop', stepId: step.id, result: result.kind }),
+  );
+
+  // 8 種の戻り値を 2 つに畳む。分け方の根拠は「**誰かが既に書いたか**」:
+  //
+  //   not_dialed（呼び出し側が保存する）
+  //     not_wired / endpoint_unavailable / reception_closed / reserve_failed
+  //     ── いずれも撃っておらず、相関にも何も書いていない。**保存させるのが大事**で、
+  //        保存しないとイベント上限が進まず、公開エンドポイントから何度でも同じ判断を
+  //        踏ませられる（`reception_closed` も同じ理由でこちら側）。
+  //
+  //   handled（呼び出し側は触らない）
+  //     dialed / handoff_incomplete / dial_failed ── 発信側が既に書いている。
+  //     reserve_lost ── 別の配信が撃った。ここで保存すると**勝った側の確定を潰す**。
+  return result.kind === 'not_wired' ||
+    result.kind === 'endpoint_unavailable' ||
+    result.kind === 'reception_closed' ||
+    result.kind === 'reserve_failed'
+    ? 'not_dialed'
+    : 'handled';
 }

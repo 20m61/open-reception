@@ -51,7 +51,10 @@ export async function GET(
   // 失敗しても投げない設計なので、状態取得そのものは止まらない。
   await resolvePendingCall(found.value, {
     loadCorrelation: (providerCallId) => getCallCorrelationRepository().get(providerCallId),
-    markConnected: (receptionId) => markConnected(receptionId),
+    // 🔴 actor は `'staff'`。この経路の確定は**担当者側の行動**（DTMF の意思表示か
+    // Vonage の応答）に由来するので、既定の `kiosk:<id>`（端末が検知した）にすると
+    // 監査が誰の行動か言えなくなる (#646)。PII は増えない。
+    markConnected: (receptionId) => markConnected(receptionId, 'staff'),
     markTimeout: (receptionId) => markTimeout(receptionId),
     markCallFailed: (receptionId, reason) => markCallFailed(receptionId, reason),
   });
