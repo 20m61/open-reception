@@ -29,6 +29,12 @@ describe('environments config', () => {
 // 未指定構成は CloudFront 経由の POST が全滅するため）。origin-verify の方式そのものが
 // 検証対象でない prod の suite には、テンプレートに平文を残さない Secrets Manager 名を渡す。
 const ORIGIN_VERIFY_NAME_FOR_PROD_SUITES = 'open-reception/test/app';
+/**
+ * prod / staging を synth する suite が N3b（発行 URL の基底オリジン必須）のガードを
+ * 通過するためだけの値。**これらの suite の検証対象ではない**（PriceClass / IAM /
+ * Cognito / secrets の形を見ている）ので、内容に意味は持たせない。
+ */
+const PUBLIC_ORIGIN_FOR_PROD_SUITES = 'https://example.cloudfront.net';
 
 const ARTIFACTS = openNextArtifactState(path.join(__dirname, '..', '..'));
 const OPEN_NEXT_READY = ARTIFACTS.state === 'fresh';
@@ -210,6 +216,7 @@ describe.runIf(OPEN_NEXT_READY)('WebStack custom domain (#189)', () => {
       env: { account: ACCOUNT, region: REGION },
       config: resolveEnv('prod'),
       originVerifySecretName: ORIGIN_VERIFY_NAME_FOR_PROD_SUITES,
+      publicOriginOverride: PUBLIC_ORIGIN_FOR_PROD_SUITES,
       appEnv: { ADMIN_AUTH_PROVIDER: 'none' },
       customDomain: {
         domainName: 'open-reception.parent.example.com',
@@ -258,6 +265,7 @@ describe.runIf(OPEN_NEXT_READY)('WebStack custom domain (#189)', () => {
           env: { account: ACCOUNT, region: REGION },
           config: resolveEnv('prod'),
           originVerifySecretName: ORIGIN_VERIFY_NAME_FOR_PROD_SUITES,
+        publicOriginOverride: PUBLIC_ORIGIN_FOR_PROD_SUITES,
           customDomain: {
             domainName: 'open-reception.parent.example.com',
             certificateArn: CERT_ARN,
@@ -277,6 +285,7 @@ describe.runIf(OPEN_NEXT_READY)('WebStack app secrets (#194)', () => {
       env: { account: '123456789012', region: 'ap-northeast-1' },
       config: resolveEnv('prod'),
       originVerifySecretName: ORIGIN_VERIFY_NAME_FOR_PROD_SUITES,
+      publicOriginOverride: PUBLIC_ORIGIN_FOR_PROD_SUITES,
       appEnv: { ADMIN_AUTH_PROVIDER: 'none' },
       appSecretsName,
     });
@@ -323,6 +332,7 @@ describe.runIf(OPEN_NEXT_READY)('WebStack tenant provider secrets (#405 Inc2)', 
       env: { account: '123456789012', region: 'ap-northeast-1' },
       config: resolveEnv('prod'),
       originVerifySecretName: ORIGIN_VERIFY_NAME_FOR_PROD_SUITES,
+      publicOriginOverride: PUBLIC_ORIGIN_FOR_PROD_SUITES,
       appEnv: { ADMIN_AUTH_PROVIDER: 'none' },
       ...opts,
     });
@@ -750,6 +760,7 @@ describe.runIf(OPEN_NEXT_READY)('WebStack cost optimization (#300)', () => {
       env: { account: '123456789012', region: 'ap-northeast-1' },
       config: resolveEnv(envName),
       originVerifySecretName: ORIGIN_VERIFY_NAME_FOR_PROD_SUITES,
+      publicOriginOverride: PUBLIC_ORIGIN_FOR_PROD_SUITES,
       appEnv: { ADMIN_AUTH_PROVIDER: 'none' },
     });
     return Template.fromStack(stack);
@@ -801,6 +812,7 @@ describe.runIf(OPEN_NEXT_READY)('WebStack admin Cognito auth', () => {
         env: { account: '123456789012', region: 'ap-northeast-1' },
         config: resolveEnv('prod'),
         originVerifySecretName: ORIGIN_VERIFY_NAME_FOR_PROD_SUITES,
+        publicOriginOverride: PUBLIC_ORIGIN_FOR_PROD_SUITES,
         appEnv: { ADMIN_AUTH_PROVIDER: 'cognito' },
         cognitoAuth: true,
       }),
