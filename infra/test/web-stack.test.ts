@@ -25,6 +25,11 @@ describe('environments config', () => {
 
 // `.open-next/` が **在るだけ**では足りない（古いと synth が凍結ガードで throw する）。
 // `fresh` のときだけ synth し、absent / stale は理由付きで skip する (#628)。
+// dev 以外の WebStack は origin-verify の供給元が必須で、未指定は synth で止まる（N3。
+// 未指定構成は CloudFront 経由の POST が全滅するため）。origin-verify の方式そのものが
+// 検証対象でない prod の suite には、テンプレートに平文を残さない Secrets Manager 名を渡す。
+const ORIGIN_VERIFY_NAME_FOR_PROD_SUITES = 'open-reception/test/app';
+
 const ARTIFACTS = openNextArtifactState(path.join(__dirname, '..', '..'));
 const OPEN_NEXT_READY = ARTIFACTS.state === 'fresh';
 if (!OPEN_NEXT_READY) {
@@ -204,6 +209,7 @@ describe.runIf(OPEN_NEXT_READY)('WebStack custom domain (#189)', () => {
     const stack = new WebStack(app, 'TestWebCustomDomain', {
       env: { account: ACCOUNT, region: REGION },
       config: resolveEnv('prod'),
+      originVerifySecretName: ORIGIN_VERIFY_NAME_FOR_PROD_SUITES,
       appEnv: { ADMIN_AUTH_PROVIDER: 'none' },
       customDomain: {
         domainName: 'open-reception.parent.example.com',
@@ -251,6 +257,7 @@ describe.runIf(OPEN_NEXT_READY)('WebStack custom domain (#189)', () => {
         new WebStack(app, 'TestWebBadDomain', {
           env: { account: ACCOUNT, region: REGION },
           config: resolveEnv('prod'),
+          originVerifySecretName: ORIGIN_VERIFY_NAME_FOR_PROD_SUITES,
           customDomain: {
             domainName: 'open-reception.parent.example.com',
             certificateArn: CERT_ARN,
@@ -269,6 +276,7 @@ describe.runIf(OPEN_NEXT_READY)('WebStack app secrets (#194)', () => {
     const stack = new WebStack(app, 'TestWebSecrets', {
       env: { account: '123456789012', region: 'ap-northeast-1' },
       config: resolveEnv('prod'),
+      originVerifySecretName: ORIGIN_VERIFY_NAME_FOR_PROD_SUITES,
       appEnv: { ADMIN_AUTH_PROVIDER: 'none' },
       appSecretsName,
     });
@@ -314,6 +322,7 @@ describe.runIf(OPEN_NEXT_READY)('WebStack tenant provider secrets (#405 Inc2)', 
     const stack = new WebStack(app, 'TestWebProviderSecrets', {
       env: { account: '123456789012', region: 'ap-northeast-1' },
       config: resolveEnv('prod'),
+      originVerifySecretName: ORIGIN_VERIFY_NAME_FOR_PROD_SUITES,
       appEnv: { ADMIN_AUTH_PROVIDER: 'none' },
       ...opts,
     });
@@ -602,6 +611,35 @@ describe('WebStack origin-verify argument guards (#612)', () => {
     expect(build(envName, { originVerifySecret: 'TEST-raw' })).toThrow(/dev 以外では使えません/);
   });
 
+  // 🔴 **未指定を「OAC + AWS_IAM へのフォールバック」で黙って通さない (N3)。**
+  // その構成では CloudFront -> Lambda Function URL の **POST が全滅**する（OAC が POST ボディを
+  // 署名しないため。実測は docs/deploy-aws.md）。つまり context を渡し忘れたデプロイは、
+  // login も受付 URL 発行も `/api/kiosk/enroll` も通らない＝**受付が成立しない状態で立ち上がる**。
+  // 上の「生値は dev 以外で不可」と対になる: dev 以外では *何らかの* 供給元が要る。
+  it.each(['prod', 'staging'] as const)(
+    'rejects a deployment with no origin-verify supplier in %s (fail-closed)',
+    (envName) => {
+      const build_ = build(envName, {});
+      // 何を渡せばよいかがメッセージから読めること。
+      expect(build_).toThrow(/originVerifySecretName/);
+      // なぜ必要かがメッセージから読めること（POST が落ちて受付が成立しない）。
+      expect(build_).toThrow(/POST/);
+    },
+  );
+
+  // 過剰に厳しくしない: dev は未指定のまま通す（開発を止めない）。
+  it('still lets dev omit origin-verify entirely (開発を止めない)', () => {
+    expect(() => {
+      try {
+        build('dev', {})();
+      } catch (e) {
+        // `.open-next/` 未ビルド環境では成果物チェックで落ちる。ガードを通過した証拠として扱う。
+        if (e instanceof Error && /OpenNext build artifacts/.test(e.message)) return;
+        throw e;
+      }
+    }).not.toThrow();
+  });
+
   it('rejects passing both (どちらがヘッダに載るか曖昧にしない)', () => {
     expect(
       build('prod', { originVerifySecret: 'TEST-raw', originVerifySecretName: 'open-reception/x' }),
@@ -662,6 +700,7 @@ describe.runIf(OPEN_NEXT_READY)('WebStack cost optimization (#300)', () => {
     const stack = new WebStack(app, `TestWebCost${envName}`, {
       env: { account: '123456789012', region: 'ap-northeast-1' },
       config: resolveEnv(envName),
+      originVerifySecretName: ORIGIN_VERIFY_NAME_FOR_PROD_SUITES,
       appEnv: { ADMIN_AUTH_PROVIDER: 'none' },
     });
     return Template.fromStack(stack);
@@ -712,6 +751,7 @@ describe.runIf(OPEN_NEXT_READY)('WebStack admin Cognito auth', () => {
       new WebStack(app, 'TestWebCognito', {
         env: { account: '123456789012', region: 'ap-northeast-1' },
         config: resolveEnv('prod'),
+        originVerifySecretName: ORIGIN_VERIFY_NAME_FOR_PROD_SUITES,
         appEnv: { ADMIN_AUTH_PROVIDER: 'cognito' },
         cognitoAuth: true,
       }),
