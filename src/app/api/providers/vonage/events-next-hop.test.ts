@@ -32,6 +32,8 @@ import { getReceptionSessionRepository } from '@/lib/data-stores/reception-store
 import { getBackend } from '@/lib/data';
 import type { StoredCallCorrelation } from '@/lib/routing/call-correlation';
 import type { ReceptionSession } from '@/domain/reception/session';
+import { DEFAULT_MAX_HOPS } from '@/domain/routing/resumable';
+import { DEFAULT_MAX_EVENTS } from '@/domain/routing/webhook-advance';
 import { POST as events } from './events/route';
 
 const SEED_POLICY = 'seed-personal-acting-department';
@@ -218,5 +220,68 @@ describe('/events → 2 手目の実発信（既定配線 #646）', () => {
     expect(Date.parse(duringDial!.dialExpiresAt!)).toBeGreaterThan(
       Date.parse('2026-08-20T00:00:50.000Z'),
     );
+  });
+});
+
+/**
+ * 取次が有界であること (#646 受入条件 2)。
+ *
+ * 🔴 **webhook は無認証の公開エンドポイント。** 1 手ごとに実 PSTN 発信が起きるので、
+ * 上限が効かなければ「署名さえ通れば社内の電話を無限に鳴らせる」ことになる。
+ *
+ * `hops` は `position` に載っていて 2 手目の相関へ引き継がれる（上のケースが固定）。
+ * ここが固定するのは**引き継いだ結果として実際に止まること** ── 引き継ぎだけ見ても、
+ * 上限判定に届いていなければ意味がない。
+ */
+describe('取次は hop 上限で必ず止まる (#646)', () => {
+  it('🔴 上限に達したら撃たない（通話をまたいでも緩まない）', async () => {
+    const existing = await getCallCorrelationRepository().get(PROVIDER_CALL_ID);
+    await getCallCorrelationRepository().put({
+      ...existing!,
+      position: { ...existing!.position, hops: DEFAULT_MAX_HOPS - 1 },
+    });
+
+    const res = await events(unanswered());
+
+    expect(res.status).toBe(204);
+    expect(initiate).not.toHaveBeenCalled();
+    // 止まったことが記録に残る（宙吊りにしない）。
+    const hop1 = await getCallCorrelationRepository().get(PROVIDER_CALL_ID);
+    expect(hop1?.status).toBe('settled');
+  });
+
+  /**
+   * 🔴 **上限そのものの大きさを縛る。** 上のケースは `DEFAULT_MAX_HOPS - 1` を使うので
+   * **定数と一緒に動く** ── 定数を 1000 に上げても赤くならない（実測で確認した）。
+   * 機構が効くことと、効く範囲が実際に小さいことは別の主張なので、両方を固定する。
+   *
+   * 1 hop = **実 PSTN 発信 1 本**。想定は担当者・代理・部門代表・総合受付の 4 段で、
+   * 10 でも十分に余裕がある。ここを超えるなら「1 回の受付で何本の電話を鳴らすか」を
+   * 決め直したということなので、この行を書き換える判断を通すこと。
+   */
+  it('🔴 上限そのものが小さい（1 受付で鳴らす電話の本数）', () => {
+    expect(DEFAULT_MAX_HOPS).toBeLessThanOrEqual(16);
+    expect(DEFAULT_MAX_HOPS).toBeGreaterThan(0);
+  });
+
+  /**
+   * 🔴 イベント上限も同じ理由で絶対値を縛る。無認証の公開エンドポイントから
+   * `ledger` を伸ばせる長さの上限で、DynamoDB の item サイズ上限（400KB）に効く。
+   */
+  it('🔴 イベント上限そのものが小さい', () => {
+    expect(DEFAULT_MAX_EVENTS).toBeLessThanOrEqual(200);
+    expect(DEFAULT_MAX_EVENTS).toBeGreaterThan(0);
+  });
+
+  it('上限の 1 つ手前なら撃つ（止めすぎていない）', async () => {
+    const existing = await getCallCorrelationRepository().get(PROVIDER_CALL_ID);
+    await getCallCorrelationRepository().put({
+      ...existing!,
+      position: { ...existing!.position, hops: DEFAULT_MAX_HOPS - 2 },
+    });
+
+    await events(unanswered());
+
+    expect(initiate).toHaveBeenCalledTimes(1);
   });
 });
