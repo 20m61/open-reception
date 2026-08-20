@@ -1,5 +1,5 @@
 import { NextResponse } from 'next/server';
-import { DTMF_CHOICES, resolveStaffChoice } from '@/domain/call/voice-announcement';
+import { STAGE2_CHOICES, resolveStage2Choice } from '@/domain/call/voice-announcement';
 import { logWebhookRejection, rejectWebhook, verifyRequest } from '@/lib/routing/vonage-webhook-route';
 import { denyIfProviderWebhooksDisabled } from '@/lib/routing/provider-webhook-switch';
 import { resolveDialCallbackBaseUrl } from '@/lib/routing/webhook-base-url';
@@ -59,10 +59,10 @@ export async function POST(request: Request): Promise<NextResponse> {
     return rejectWebhook();
   }
 
-  const choice = resolveStaffChoice(readDigits(rawBody) ?? '');
+  const choice = resolveStage2Choice(readDigits(rawBody) ?? '');
   if (choice === undefined) {
     // 誤入力・無入力。選択肢を読み直す（黙って切らない）。
-    const options = DTMF_CHOICES.map((c) => `${c.digit}、${c.label}。`).join('');
+    const options = STAGE2_CHOICES.map((c) => `${c.digit}、${c.label}。`).join('');
     return acknowledgement(`入力を確認できませんでした。${options}`);
   }
 
@@ -80,6 +80,6 @@ export async function POST(request: Request): Promise<NextResponse> {
     console.warn(JSON.stringify({ event: 'vonage_choice_apply_failed', choice }));
   }
 
-  const label = DTMF_CHOICES.find((c) => c.choice === choice)?.label ?? '';
+  const label = STAGE2_CHOICES.find((c) => c.choice === choice)?.label ?? '';
   return acknowledgement(`${label}、で承りました。`);
 }

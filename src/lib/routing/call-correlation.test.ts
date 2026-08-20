@@ -107,7 +107,7 @@ describe('保存内容に PII と機密を含めない (#4)', () => {
  * どちらも `in_flight` を読んでから書くので `jti` 台帳の duplicate 判定に掛からない。
  * 両方が dial 判断に至り、担当者の電話が 2 本鳴る。
  */
-describe('reserve — 撃つ権利は 1 つの配信だけが取れる (#646)', () => {
+describe('updateIfUnchanged — 書ける配信は 1 つだけ (#646)', () => {
   const BASE: StoredCallCorrelation = {
     providerCallId: 'TEST-reserve-call',
     receptionId: 'rec-r',
@@ -128,7 +128,7 @@ describe('reserve — 撃つ権利は 1 つの配信だけが取れる (#646)', 
 
   it('読んだ時点から動いていなければ取れる', async () => {
     const repo = getCallCorrelationRepository();
-    expect(await repo.reserve(BASE.providerCallId, { status: 'settled' }, BASE.updatedAt)).toBe(true);
+    expect(await repo.updateIfUnchanged(BASE.providerCallId, { status: 'settled' }, BASE.updatedAt)).toBe(true);
     expect((await repo.get(BASE.providerCallId))?.status).toBe('settled');
   });
 
@@ -140,12 +140,12 @@ describe('reserve — 撃つ権利は 1 つの配信だけが取れる (#646)', 
     const repo = getCallCorrelationRepository();
     const readAt = BASE.updatedAt;
 
-    const first = await repo.reserve(
+    const first = await repo.updateIfUnchanged(
       BASE.providerCallId,
       { status: 'settled', updatedAt: '2026-08-20T00:00:10.000Z' },
       readAt,
     );
-    const second = await repo.reserve(
+    const second = await repo.updateIfUnchanged(
       BASE.providerCallId,
       { status: 'settled', updatedAt: '2026-08-20T00:00:11.000Z' },
       readAt,
@@ -160,18 +160,18 @@ describe('reserve — 撃つ権利は 1 つの配信だけが取れる (#646)', 
   it('🔴 読んだあとに別の更新が入っていたら取れない（lost update を作らない）', async () => {
     const repo = getCallCorrelationRepository();
     await repo.put({ ...BASE, updatedAt: '2026-08-20T00:00:05.000Z' });
-    expect(await repo.reserve(BASE.providerCallId, { status: 'settled' }, BASE.updatedAt)).toBe(false);
+    expect(await repo.updateIfUnchanged(BASE.providerCallId, { status: 'settled' }, BASE.updatedAt)).toBe(false);
   });
 
   it('🔴 既に確定している相関では取れない', async () => {
     const repo = getCallCorrelationRepository();
     await repo.put({ ...BASE, status: 'settled' });
-    expect(await repo.reserve(BASE.providerCallId, { status: 'settled' }, BASE.updatedAt)).toBe(false);
+    expect(await repo.updateIfUnchanged(BASE.providerCallId, { status: 'settled' }, BASE.updatedAt)).toBe(false);
   });
 
   it('不在の相関では取れない', async () => {
     expect(
-      await getCallCorrelationRepository().reserve('TEST-absent', { status: 'settled' }, BASE.updatedAt),
+      await getCallCorrelationRepository().updateIfUnchanged('TEST-absent', { status: 'settled' }, BASE.updatedAt),
     ).toBe(false);
   });
 });

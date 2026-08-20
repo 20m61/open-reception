@@ -75,7 +75,7 @@ function deps(over: Partial<Parameters<typeof dialNextHop>[0]> = {}) {
     endpoints: [ENDPOINT],
     initiator: { key: 'vonage', initiate },
     saveCorrelation: save,
-    reserve,
+    updateIfUnchanged: reserve,
     repointReception: repoint,
     isReceptionCalling,
     now: () => new Date('2026-08-20T00:01:00.000Z'),

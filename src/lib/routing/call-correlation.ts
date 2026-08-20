@@ -78,18 +78,25 @@ export interface CallCorrelationRepository {
   getForTenant(providerCallId: string, tenantId: string): Promise<StoredCallCorrelation | undefined>;
   put(correlation: StoredCallCorrelation): Promise<void>;
   /**
-   * 次の手を撃つ権利を **atomic に 1 つの配信だけへ渡す** (#646)。
+   * **読んだ時点から動いていないときだけ**部分更新する（atomic compare-and-set） (#646)。
    *
    * 🔴 **`put` では二重発信を塞げない。** Vonage は不応答の 1 通話に対し `unanswered` と
    * `completed` を**別 `jti`・ほぼ同時**に送る。Lambda では別インスタンスで並行実行され、
    * どちらも `status: 'in_flight'` を読んでから書くので、`jti` 台帳の duplicate 判定に
    * 掛からない。両方が dial 判断に至り、**担当者の電話が 2 本鳴る**。
    *
+   * 使い道は 2 つあり、どちらも同じ危険を塞ぐ:
+   *
+   * 1. **次の手を撃つ権利**を 1 つの配信だけへ渡す（`next-hop-dial.ts`）
+   * 2. webhook 1 件の適用結果の**保存**（`voice-event.ts`）。無条件 `put` だと、
+   *    `/choice`（担当者の承諾）と `/events`（通話終了）が並行したときに、後から書いた側が
+   *    先に書かれた確定を全体置換で潰す ── 承諾したのに次の担当者が鳴る、が復活する。
+   *
    * `expectedUpdatedAt` に読んだ時点の値を渡し、`status` が `'in_flight'` のままで
    * `updatedAt` も動いていないときだけ更新する（楽観ロック）。負けた側は `false` を受け、
    * **撃たず・保存もしない**。
    */
-  reserve(
+  updateIfUnchanged(
     providerCallId: string,
     changes: Partial<StoredCallCorrelation>,
     expectedUpdatedAt: string,
@@ -127,7 +134,7 @@ export class DataBackedCallCorrelationRepository implements CallCorrelationRepos
     await this.col().put({ ...correlation, id: correlation.providerCallId });
   }
 
-  async reserve(
+  async updateIfUnchanged(
     providerCallId: string,
     changes: Partial<StoredCallCorrelation>,
     expectedUpdatedAt: string,

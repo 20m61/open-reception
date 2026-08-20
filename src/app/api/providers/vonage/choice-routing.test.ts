@@ -114,12 +114,6 @@ describe('担当者の承諾が取次を止める (#646)', () => {
     expect(s?.voiceState).toBe('staff_coming');
   });
 
-  it('🔴 「1 来訪者と話す」も取次を止める', async () => {
-    await choice(pressed('1'));
-    await events(status('completed'));
-    expect(initiate).not.toHaveBeenCalled();
-  });
-
   /**
    * 「3 対応できない」「4 代理担当へ」は逆に**次の手へ進めたい**選択。
    * 止めてしまうと来訪者が放置される。
@@ -144,5 +138,45 @@ describe('担当者の承諾が取次を止める (#646)', () => {
     const s = await stored();
     expect(s?.voiceState).toBe('awaiting_acceptance');
     expect(s?.status).toBe('in_flight');
+  });
+});
+
+/**
+ * 第 2 段で「できないこと」を案内しない (#646 レビュー (b))。
+ *
+ * 来訪者⇔担当者の音声経路は MVP 1 の範囲外。`accept`（1）を第 2 段で受け付けると
+ * `answered`＝終端成功になり、来訪者の端末には「担当者がまいりますので、そのまま
+ * お待ちください」と出る ── 担当者は話せず、来訪者は「来る」と案内される。
+ */
+describe('第 2 段は「来訪者と話す」を案内も受付もしない (#646)', () => {
+  it('🔴 1 を押しても取次を触らない（案内していない数字）', async () => {
+    await choice(pressed('1'));
+    const s = await stored();
+    expect(s?.voiceState).toBe('awaiting_acceptance');
+    expect(s?.status).toBe('in_flight');
+  });
+
+  it('🔴 1 を押したら選択肢を読み直す（黙って切らない）', async () => {
+    const res = await choice(pressed('1'));
+    const ncco = (await res.json()) as { text: string }[];
+    expect(ncco[0]?.text).toContain('入力を確認できませんでした');
+  });
+
+  it('🔴 案内文に「来訪者と話す」が出ない', async () => {
+    const res = await choice(pressed('9'));
+    const ncco = (await res.json()) as { text: string }[];
+    expect(ncco[0]?.text).not.toContain('来訪者と話す');
+    // 残る選択は案内し続ける（消しすぎない）。
+    expect(ncco[0]?.text).toContain('まもなく向かう');
+    expect(ncco[0]?.text).toContain('代理担当へ');
+  });
+
+  /** 🔴 第 1 段の本人確認（1）は温存する。壊すと来訪者情報が一切返らなくなる。 */
+  it('🔴 第 1 段の本人確認は 1 のまま', async () => {
+    const { POST: dtmf } = await import('./dtmf/route');
+    const res = await dtmf(pressed('1'));
+    expect(res.status).toBe(200);
+    const ncco = (await res.json()) as { action: string }[];
+    expect(ncco.some((a) => a.action === 'input')).toBe(true);
   });
 });

@@ -116,16 +116,35 @@ export async function applyVoiceEventToCorrelation(
         }
       : advance.next;
 
-  await getCallCorrelationRepository().put({
-    ...correlation,
-    // イベント数も position へ書き戻す —— 2 手目の相関はこの position を引き継ぐので、
-    // ここで載せておかないと次の手で 0 から数え直しになる (#646)。
-    position: withEventBudget(next.position, next.eventCount),
-    voiceState: next.voiceState,
-    eventCount: next.eventCount,
-    status: next.settled ? 'settled' : 'in_flight',
-    updatedAt: new Date().toISOString(),
-  });
+  // 🔴 **無条件 `put` にしない。** `/choice`（担当者の承諾）と `/events`（通話終了）は
+  // 別の webhook として**並行**に届きうる。全体置換で書くと、後から書いた側が先に書かれた
+  // 確定を潰す ── 担当者が「まもなく向かう」を押した直後に切ると、`/events` 側が先に
+  // 次の手を撃ってしまい、`/choice` の書き戻しではもう受付が 2 手目を指している
+  // （担当者 A が向かっているのに担当者 B の電話が鳴る）。
+  //
+  // 読んだ時点から動いていないときだけ書く。負けたら**何もしない**（勝った側の判断が正）。
+  const saved = await getCallCorrelationRepository().updateIfUnchanged(
+    correlation.providerCallId,
+    {
+      // イベント数も position へ書き戻す —— 2 手目の相関はこの position を引き継ぐので、
+      // ここで載せておかないと次の手で 0 から数え直しになる (#646)。
+      position: withEventBudget(next.position, next.eventCount),
+      voiceState: next.voiceState,
+      eventCount: next.eventCount,
+      status: next.settled ? 'settled' : 'in_flight',
+      updatedAt: new Date().toISOString(),
+    },
+    correlation.updatedAt,
+  );
+  if (!saved) {
+    // 勝敗を無音にしない。ここが無いと「押したのに次が鳴った」の切り分けができない。
+    console.warn(
+      JSON.stringify({
+        event: 'vonage_webhook_apply_lost_race',
+        providerCallId: correlation.providerCallId,
+      }),
+    );
+  }
 }
 
 /**
@@ -184,8 +203,8 @@ async function tryDialNextHop(
     endpoints: await listEndpoints(correlation.tenantId),
     initiator,
     saveCorrelation: (c) => getCallCorrelationRepository().put(c),
-    reserve: (id, changes, expectedUpdatedAt) =>
-      getCallCorrelationRepository().reserve(id, changes, expectedUpdatedAt),
+    updateIfUnchanged: (id, changes, expectedUpdatedAt) =>
+      getCallCorrelationRepository().updateIfUnchanged(id, changes, expectedUpdatedAt),
     repointReception,
     isReceptionCalling,
     now: deps.now,
@@ -197,17 +216,17 @@ async function tryDialNextHop(
     JSON.stringify({ event: 'vonage_routing_next_hop', stepId: step.id, result: result.kind }),
   );
 
-  // 撃ったなら保存は発信側のもの。撃っていない（not_wired / endpoint_unavailable /
-  // reserve_failed）なら呼び出し側が従来どおり保存する。
-  // 撃った／権利を失った／受付が終わっている場合は、呼び出し側が重ねて保存しない。
-  // 撃っていないうえに何も書いていない（not_wired / endpoint_unavailable / reserve_failed）
-  // ときだけ、従来どおり「位置は進めず台帳と通話状態を保存」へ倒す。
-  // 撃っていないうえに何も書いていないものだけ、従来どおり「位置は進めず台帳と通話状態を
-  // 保存」へ倒す。**保存させるのが大事** ── 保存しないとイベント上限が進まず、公開
-  // エンドポイントから何度でも同じ判断を踏ませられる。
+  // 8 種の戻り値を 2 つに畳む。分け方の根拠は「**誰かが既に書いたか**」:
   //
-  // 逆に `reserve_lost`（別の配信が撃った）で保存すると、勝った側が書いた確定を潰す。
-  // `dial_failed` / `handoff_incomplete` / `dialed` は発信側が既に書いている。
+  //   not_dialed（呼び出し側が保存する）
+  //     not_wired / endpoint_unavailable / reception_closed / reserve_failed
+  //     ── いずれも撃っておらず、相関にも何も書いていない。**保存させるのが大事**で、
+  //        保存しないとイベント上限が進まず、公開エンドポイントから何度でも同じ判断を
+  //        踏ませられる（`reception_closed` も同じ理由でこちら側）。
+  //
+  //   handled（呼び出し側は触らない）
+  //     dialed / handoff_incomplete / dial_failed ── 発信側が既に書いている。
+  //     reserve_lost ── 別の配信が撃った。ここで保存すると**勝った側の確定を潰す**。
   return result.kind === 'not_wired' ||
     result.kind === 'endpoint_unavailable' ||
     result.kind === 'reception_closed' ||

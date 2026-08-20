@@ -72,7 +72,7 @@ export type DialNextHopDeps = {
    * 撃つ権利の atomic な取得。`false` は「別の配信が先に取った」。
    * `status: 'in_flight'` かつ `updatedAt` が読んだ値のままのときだけ true。
    */
-  readonly reserve: (
+  readonly updateIfUnchanged: (
     providerCallId: string,
     changes: Partial<StoredCallCorrelation>,
     expectedUpdatedAt: string,
@@ -129,7 +129,7 @@ export async function dialNextHop(deps: DialNextHopDeps): Promise<DialNextHopRes
   //    呼出予算は次の手のぶんへ引き直す（1 手目の期限切れでも同じことが起きるため）。
   let reserved: boolean;
   try {
-    reserved = await deps.reserve(
+    reserved = await deps.updateIfUnchanged(
       correlation.providerCallId,
       {
         position: withEventBudget(
