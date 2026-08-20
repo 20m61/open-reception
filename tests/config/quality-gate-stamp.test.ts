@@ -2,7 +2,7 @@ import { execFileSync } from 'node:child_process';
 import { cpSync, existsSync, mkdtempSync, mkdirSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 /**
  * 「検証できなかったステップ」があるとき green として**記録しない**ことを固定する (#640)。
@@ -74,6 +74,21 @@ function runIsolated(
     stamp: stampExists ? readFileSync(stampPath, 'utf8') : '',
   };
 }
+
+/**
+ * 🔴 **既定の 5s では足りない（弱体化ではない）。**
+ *
+ * ここの各ケースは `git init` と `quality-gate.sh` の**子プロセス**を実走する。
+ * 単独実行なら 1〜2s で終わるが、`npm test` の 500 ファイル並行実行の中では
+ * CPU 待ちだけで 5s を超え、**アサーションに到達する前に**
+ * `Test timed out in 5000ms` で落ちる（2026-08-20 に本ファイル・
+ * `quality-gate-stamp.test.ts` の各先頭ケースで観測。単独実行では全 PASS）。
+ *
+ * `tests/hooks/aws-*.test.ts` が同じ理由で採っている扱いに揃える。
+ * **同じアサーションに、到達するまでの時間を与えるだけ**で、実際に壊れているものは
+ * 30s あっても落ちる。
+ */
+vi.setConfig({ testTimeout: 30_000 });
 
 describe('quality-gate: 検証できなかったステップは green にしない (#640)', () => {
   it('前提が壊れて検査できなかったとき、green として記録せず非 0 で終わる', () => {
