@@ -1,6 +1,8 @@
 'use client';
 
 import { useCallback, useEffect, useReducer, useRef, useState } from 'react';
+import { confirmAndCall } from '@/lib/checkin/place-call';
+import { decidePollAction, CALL_STATUS_POLL_INTERVAL_MS } from '@/domain/reception/call-poll';
 import {
   transition,
   type CheckinEvent,
@@ -19,7 +21,6 @@ import { EscapeBar } from './EscapeBar';
 import { checkinEscapesFor } from './quick-actions';
 import {
   checkinCallFailureMessageKeyFor,
-  checkinCallFailureReasonFrom,
   type CheckinCallFailureReason,
 } from '@/domain/checkin/failure';
 
@@ -127,6 +128,8 @@ export function CheckinFlow({
   // 呼び出し失敗の理由。**状態は増やさず**（`networkError` のまま）、文言だけを出し分ける
   // （第 36 wave の通常受付と同じ方針）。RESET / RETRY で消す。
   const [callFailureReason, setCallFailureReason] = useState<CheckinCallFailureReason | null>(null);
+  /** 実 PSTN の結果待ち中の受付 ID（#736）。null = 待っていない。 */
+  const [pendingReceptionId, setPendingReceptionId] = useState<string | null>(null);
   // 注入されたスキャナ（既定は実カメラ CameraQrScanner）。再レンダーで作り直さない。
   const scannerRef = useRef<QrScanner>(scanner ?? new CameraQrScanner());
 
@@ -185,37 +188,81 @@ export function CheckinFlow({
     };
   }, [data.state, data.payload]);
 
-  // calling になったら confirm（使用済み化 + 受付セッション接続）を実行する。
+  /**
+   * calling になったら confirm（使用済み化 + 受付セッション作成）し、**続けて実際に呼び出す**。
+   *
+   * 🔴 **confirm だけで完了にしない (#736)。** かつてここは confirm が 201 を返した時点で
+   * `CALL_DONE` を dispatch していた。`/api/kiosk/receptions/:id/call` は**一度も呼ばれず**、
+   * それでも「担当者を呼び出しています…」→「受付が完了しました」と表示していた。
+   * **誰も呼ばれていないのに全員が受付完了する。** 通常受付で `unrouted`（#738）・
+   * `out_of_hours`（#747）を塞いだのと同型だが、QR 経路は常にこの状態だった。
+   *
+   * 呼び出しは通常受付とまったく同じ `/call` ルートへ委ねる（営業時間ガード・停止スイッチ・
+   * 取次・失敗理由をそのまま再利用し、二重実装を作らない）。
+   */
   useEffect(() => {
     if (data.state !== 'calling' || !data.payload) return;
     let cancelled = false;
-    (async () => {
-      try {
-        const res = await fetch('/api/kiosk/checkin/confirm', {
-          method: 'POST',
-          headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({ payload: data.payload }),
-        });
-        if (cancelled) return;
-        if (res.ok) {
-          dispatch({ type: 'CALL_DONE' });
-        } else {
-          // 403 / 400 / 503 / その他を「通信に失敗しました」へ潰さない（差分 D）。
-          setCallFailureReason(checkinCallFailureReasonFrom(res.status));
-          dispatch({ type: 'CALL_FAILED' });
-        }
-      } catch {
-        if (!cancelled) {
-          // 応答を得られていない = 本当に通信断。
-          setCallFailureReason(checkinCallFailureReasonFrom(undefined));
-          dispatch({ type: 'CALL_FAILED' });
-        }
+    void (async () => {
+      const result = await confirmAndCall(data.payload!);
+      if (cancelled) return;
+      if (result.kind === 'connected') {
+        dispatch({ type: 'CALL_DONE' });
+        return;
       }
+      if (result.kind === 'failed') {
+        setCallFailureReason(result.reason);
+        dispatch({ type: 'CALL_FAILED' });
+        return;
+      }
+      // 実 PSTN は 1 手撃った時点では結果が無い（webhook で後から届く）。
+      // サーバの確定を `/status` の読みで待つ。**待っている間は完了にしない。**
+      setPendingReceptionId(result.receptionId);
     })();
     return () => {
       cancelled = true;
     };
   }, [data.state, data.payload]);
+
+  /**
+   * 実 PSTN の結果待ち (#736 / #647)。判断は `decidePollAction` に閉じている
+   * （経過時間で結果を作らない ── 状態を決めるのはサーバの応答だけ）。
+   */
+  useEffect(() => {
+    if (pendingReceptionId === null) return;
+    let cancelled = false;
+    const startedAt = Date.now();
+    const timer = window.setInterval(() => {
+      void (async () => {
+        try {
+          const res = await fetch(`/api/kiosk/receptions/${pendingReceptionId}/status`);
+          if (cancelled) return;
+          const body = res.ok ? ((await res.json()) as { state?: string }) : undefined;
+          const action = decidePollAction(body?.state ?? '', Date.now() - startedAt);
+          if (action.kind === 'wait') return;
+          setPendingReceptionId(null);
+          if (action.kind === 'give_up') {
+            // 結果を断定しない。**「判定できなかった」を未応答と混同しない。**
+            setCallFailureReason('server');
+            dispatch({ type: 'CALL_FAILED' });
+            return;
+          }
+          if (action.event === 'CALL_CONNECTED') {
+            dispatch({ type: 'CALL_DONE' });
+            return;
+          }
+          setCallFailureReason(action.event === 'CALL_TIMEOUT' ? 'unanswered' : 'server');
+          dispatch({ type: 'CALL_FAILED' });
+        } catch {
+          // 1 回の取得失敗では倒さない（次の間隔で再取得する）。上限は decidePollAction が持つ。
+        }
+      })();
+    }, CALL_STATUS_POLL_INTERVAL_MS);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, [pendingReceptionId]);
 
   const useManual = useCallback(() => {
     dispatch({ type: 'USE_MANUAL' });
