@@ -157,7 +157,11 @@ describe('buildDelegationPrompt', () => {
    * 素通りした（レビューの実測で 6 通り）。行の描画は `environment-observation.ts` の
    * 固定テンプレなので、**観測の行に自由文を入れる場所が無い**。
    */
-  it('🔴 観測はすべて日付・コマンド・ステータス・参照を持つ', () => {
+  /**
+   * ⚠ **これは AC の充足根拠にならない。** `command` / `status` / `refs` は型で保証済みなので、
+   * 実効があるのは `date` の書式だけ（レビュー 質問 5）。壊れた観測を弾く網ではある。
+   */
+  it('観測はすべて日付・コマンド・ステータス・参照を持つ', () => {
     expect(GRAPHQL_OBSERVATIONS.length).toBeGreaterThan(0);
     for (const o of GRAPHQL_OBSERVATIONS) {
       expect(o.date, `観測に日付が無い: ${o.command}`).toMatch(/^\d{4}-\d{2}-\d{2}$/);
@@ -188,7 +192,9 @@ describe('buildDelegationPrompt', () => {
   });
 
   it.each(['merge', 'pr'] as const)(
-    '🔴 stopAfter: %s では、本文の**どこで**403 を語っても観測時点が同居する',
+    // ⚠ **R3 の一部しか見ていない。** 通過条件が「日付か `#N` の同居」なので、
+    // 観測時点と**同居させた**断定（R2）は定義上必ず合格する（レビュー B-2）。
+    '⚠ stopAfter: %s では、リテラル 403 を語る文に観測時点が同居する（R3 の一部のみ）',
     (stopAfter) => {
       // 🔴 **節スコープでは足りない (#728 R3)。** 手順など制約節の**外**へ
       // 「なおクラウドでは GraphQL は 403 です」を混ぜる変異は、節だけ見ていると素通りする。
@@ -604,5 +610,26 @@ describe('spec の自由文の検査を配線する (#729)', () => {
     // 動的な `new RegExp(field)` は semgrep の ReDoS ルールに当たる（実際に --full が赤くなった）。
     // 文字列を渡せば vitest は部分一致で見るので、ここでは正規表現が要らない。
     expect(() => buildDelegationPrompt(without as unknown as typeof BASE)).toThrow(field);
+  });
+});
+
+describe('観測の古さの配線 (#728 / レビュー M-3)', () => {
+  /**
+   * 🔴 **危ないのは配線。** 古さの判定は `environment-observation.test.ts` で縛ってあるが、
+   * `buildDelegationPrompt` が `today` を渡さなくなっても、そちらは全部 green のままになる。
+   * 実際、`renderEnvironmentConstraints(stopAfter, today)` を `(stopAfter, '')` へ変える変異は
+   * 全テストを通っていた（レビューの実測）。陳腐化の可視化は #710 の再発検知そのもの。
+   */
+  it('🔴 十分に未来の日付を渡すと、観測が古いと本文に出る', () => {
+    const p = buildDelegationPrompt(BASE, 'unverified', '2099-01-01');
+    expect(p, 'today が描画へ届いていない').toContain('古い観測');
+  });
+
+  it('観測の当日なら古いと言わない', () => {
+    expect(buildDelegationPrompt(BASE, 'unverified', '2026-08-19')).not.toContain('古い観測');
+  });
+
+  it('渡さなければ古さを表示しない（分からないものを断定しない）', () => {
+    expect(buildDelegationPrompt(BASE)).not.toContain('古い観測');
   });
 });
