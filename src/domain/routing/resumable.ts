@@ -41,6 +41,18 @@ export type RoutingPosition = {
   readonly hops: number;
   /** 処理済みイベントキー（`idempotencyKey` の値）。重複配信の判定に使う。 */
   readonly ledger: readonly string[];
+  /**
+   * この取次でこれまでに処理したイベント数 (#646)。**任意**。
+   *
+   * 🔴 **通話ごとではなく取次全体で数えるためにここへ載せる。** 2 手目は新しい
+   * `providerCallId`＝新しい相関レコードになるので、相関側の `eventCount` から読むと
+   * **必ず 0 にリセットされ**、上限が hop 数だけ緩む。`hops` / `ledger` と同じく
+   * position ごと引き継げば取次全体で効く。
+   *
+   * 読み書きは `hop-event-budget.ts` の `eventBudgetOf` / `withEventBudget` を使う
+   * （持たない旧レコードは相関側の値へ倒す）。
+   */
+  readonly eventCount?: number;
 };
 
 export type RoutingAdvance =

@@ -115,3 +115,50 @@ describe('applyVoiceEventToCorrelation — dial 判断のときに保存する�
     expect(put).not.toHaveBeenCalled();
   });
 });
+
+/**
+ * イベント上限を取次全体で効かせる配線 (#646 スライス 1)。
+ *
+ * 🔴 **危ないのは配線。** 判定は `hop-event-budget.test.ts` が固定しているが、
+ * `applyVoiceEventToCorrelation` が読まなくなっても・書き戻さなくなっても、
+ * そちらのテストは全部 green のままになる。
+ */
+describe('イベント数を取次全体で数える (#646)', () => {
+  it('🔴 position へ書き戻す（2 手目の相関が引き継げる）', async () => {
+    await applyVoiceEventToCorrelation(
+      correlation(),
+      { kind: 'status', status: 'unanswered' },
+      'ev-1',
+    );
+    const saved = put.mock.calls[0]?.[0] as StoredCallCorrelation;
+    expect(saved.position.eventCount, 'position に載っていない').toBe(1);
+  });
+
+  /**
+   * 🔴 **ここが本体。** 2 手目は新しい providerCallId＝新レコードなので
+   * `correlation.eventCount` は 0 から始まる。position を引き継いでいれば続きから数える。
+   * 引き継がずに相関側だけ読むと、上限が hop 数だけ緩む。
+   */
+  it('🔴 相関側が 0 でも、position の値から続きを数える', async () => {
+    await applyVoiceEventToCorrelation(
+      correlation({
+        eventCount: 0,
+        position: { callUuid: 'rec-1', policyId: 'p1', stepId: 's1', hops: 1, ledger: [], eventCount: 40 },
+      }),
+      { kind: 'status', status: 'unanswered' },
+      'ev-2',
+    );
+    const saved = put.mock.calls[0]?.[0] as StoredCallCorrelation;
+    expect(saved.position.eventCount, '通話ごとに数え直している').toBe(41);
+  });
+
+  it('🔴 position を持たない旧レコードは相関側の値へ倒す（互換）', async () => {
+    await applyVoiceEventToCorrelation(
+      correlation({ eventCount: 5 }),
+      { kind: 'status', status: 'unanswered' },
+      'ev-3',
+    );
+    const saved = put.mock.calls[0]?.[0] as StoredCallCorrelation;
+    expect(saved.position.eventCount).toBe(6);
+  });
+});
