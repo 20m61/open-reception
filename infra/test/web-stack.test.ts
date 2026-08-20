@@ -510,6 +510,9 @@ describe.runIf(OPEN_NEXT_READY)('WebStack origin-verify via Secrets Manager (#61
       config: resolveEnv(envName),
       appEnv: { ADMIN_AUTH_PROVIDER: 'none' },
       originVerifySecretName: SECRET_NAME,
+      // N3b（発行 URL の基底オリジン必須）を満たすためだけの値。この suite の対象は
+      // secret の供給方式であって origin / QR ではない。
+      publicOriginOverride: PUBLIC_ORIGIN_FOR_PROD_SUITES,
     });
     return Template.fromStack(stack);
   };
