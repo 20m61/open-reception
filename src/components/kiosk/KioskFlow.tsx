@@ -611,8 +611,15 @@ export function KioskFlow({ operatingStatus, sttAdapterFactory, voiceSession, qr
         const result = (await callRes.json()) as {
           state: ReceptionState;
           vonageSessionId?: string | null;
+          error?: string;
         };
         if (cancelled) return;
+        // 実発信が止まっているときは「呼び出しに失敗した」ではなく「取り次げない」と伝える。
+        // 呼び出しは**一度も行われていない**ので、失敗として読ませない (N0)。
+        if (result.error === 'unrouted') {
+          dispatch({ type: 'CALL_FAILED', sessionId: session.id, reason: 'unrouted' });
+          return;
+        }
         // 取次段階を後方互換で取り込む (#363)。旧形（stages 無し）は [] で、表示は増えない。
         setCallStages(parseCallStages(result));
         if (result.state === 'connected') dispatch({ type: 'CALL_CONNECTED', sessionId: session.id });

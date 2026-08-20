@@ -8,7 +8,7 @@
  *   - 取次実行が失敗しても従来応答へ倒す（fail-open）。
  *   - 営業時間外ガード (#367): closed 判定は 409（取次を実行しない）、open/判定不能（fail-open）は従来どおり。
  */
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
 const denyWithoutKioskSession = vi.fn();
 const startCall = vi.fn();
@@ -57,6 +57,39 @@ describe('POST /api/kiosk/receptions/:id/call', () => {
     expect(res.status).toBe(403);
     expect(executeRoutedCall).not.toHaveBeenCalled();
     expect(startCall).not.toHaveBeenCalled();
+  });
+
+  /**
+   * 🔴 **実発信を止めているときに「呼び出したふり」をしない (N0)。**
+   *
+   * 以前はキルスイッチが `resolveVoiceInitiator` を null にするだけで、`executeRoutedCall` は
+   * mock へ倒れた。mock は bridge 系を**無条件で `'answered'`** にするので、来訪者には
+   * 「担当者が応答しました」と出て `completed` に到達していた ——
+   * **誰も呼ばれていないのに全員が受付完了する。**運用者からは「全員入館できている」
+   * ように見えるため、全断に気づくのが遅れる。
+   */
+  describe('VOICE_DIALING_DISABLED (N0)', () => {
+    afterEach(() => {
+      delete process.env.VOICE_DIALING_DISABLED;
+    });
+
+    it('🔴 止めているときは誰も呼ばず、取り次げないことを返す', async () => {
+      process.env.VOICE_DIALING_DISABLED = '1';
+      const res = await call();
+      expect(res.status).toBe(503);
+      expect(await res.json()).toEqual({ error: 'unrouted' });
+      // 🔴 **ここが本体。** 呼び出し経路に一切入らないこと。
+      expect(executeRoutedCall).not.toHaveBeenCalled();
+      expect(startCall).not.toHaveBeenCalled();
+    });
+
+    it('止めていなければ従来どおり呼び出す', async () => {
+      startCall.mockResolvedValue({ ok: true, value: { id: 'rec-1', state: 'connected' } });
+      executeRoutedCall.mockResolvedValue(null);
+      const res = await call();
+      expect(res.status).toBe(200);
+      expect(startCall).toHaveBeenCalled();
+    });
   });
 
   it('保存ルートがあれば段階実行結果で確定し、応答に stages[] を付す', async () => {

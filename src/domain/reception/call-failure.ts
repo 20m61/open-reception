@@ -16,11 +16,19 @@
  */
 import type { MessageKey } from '@/lib/i18n';
 
-export const CALL_FAILURE_REASONS = ['network', 'server'] as const;
+export const CALL_FAILURE_REASONS = ['network', 'server', 'unrouted'] as const;
 
 /**
  * - `network` … 端末からサーバへ到達できなかった（fetch が例外）。復旧すれば同じ操作で通る。
  * - `server`  … 到達はしたが呼び出しを完了できなかった（HTTP エラー・想定外の応答）。
+ * - `unrouted` … **呼び出しそのものが行われていない**（実発信が停止中）。
+ *
+ * 🔴 **`unrouted` は他の 2 つと種類が違う。** `network` / `server` は「撃ったが届かなかった」
+ * だが、`unrouted` は**一度も撃っていない**。以前はこの状態で mock が bridge を無条件に
+ * `'answered'` にしていたため、来訪者には「担当者が応答しました」と出て `completed` へ
+ * 到達していた —— **停止スイッチを引くと、誰も呼ばれていないのに全員が受付完了する**。
+ * 運用者からは「全員入館できている」ように見えるので、全断に気づくのが遅れる。
+ * 「止めても来訪者を締め出さない」という設計意図は保ったまま、**嘘をつくのをやめる**。
  */
 export type CallFailureReason = (typeof CALL_FAILURE_REASONS)[number];
 
@@ -29,7 +37,10 @@ export type CallFailureReason = (typeof CALL_FAILURE_REASONS)[number];
  * （文言が増えるだけで、既存の挙動は変わらない）。
  */
 export function failedMessageKeyFor(reason: CallFailureReason | undefined): MessageKey {
-  return reason === 'network' ? 'reception.failedNetworkBody' : 'reception.failedBody';
+  if (reason === 'network') return 'reception.failedNetworkBody';
+  // 「呼び出しに失敗しました」と読ませない —— 呼び出しは行われていない。
+  if (reason === 'unrouted') return 'reception.failedUnroutedBody';
+  return 'reception.failedBody';
 }
 
 /**
@@ -41,5 +52,7 @@ export function failedMessageKeyFor(reason: CallFailureReason | undefined): Mess
  * 逃げ道バー（最初に戻る）は常時可視なので行き止まりにはならない。
  */
 export function shouldOfferAlternativeContact(reason: CallFailureReason | undefined): boolean {
-  return reason !== 'network';
+  // `unrouted` も同じ理由で出さない。取次そのものが止まっているのだから、
+  // 「代表窓口にお繋ぎします」という約束を果たせない。文面側でスタッフ呼出を案内する。
+  return reason !== 'network' && reason !== 'unrouted';
 }

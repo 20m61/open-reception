@@ -3,6 +3,7 @@ import { startCall } from '@/lib/data-stores/reception-store';
 import { toResponse } from '@/lib/data-stores/http';
 import { denyWithoutKioskSession } from '@/lib/kiosk/session-guard';
 import { resolveDefaultScope } from '@/lib/tenant/default-scope';
+import { voiceDialingDisabled } from '@/lib/routing/voice-dial';
 import { executeRoutedCall, routedCallAdapter } from '@/lib/routing/call-execution';
 import { resolveWebhookBaseUrl } from '@/lib/routing/webhook-base-url';
 import { evaluateCallGuard } from '@/lib/operating-policy/call-guard';
@@ -40,6 +41,18 @@ export async function POST(
       { error: 'out_of_hours', reason: guard.reason, ...(guard.reopenAt ? { reopenAt: guard.reopenAt } : {}) },
       { status: 409 },
     );
+  }
+
+  // 🔴 **実発信を止めているなら、呼び出したふりをしない (N0)。**
+  // 以前はここを素通りして `executeRoutedCall` → mock へ倒れ、mock が bridge 系を
+  // 無条件で `'answered'` にするため、来訪者には「担当者が応答しました」と出て
+  // `completed` に到達していた —— **誰も呼ばれていないのに全員が受付完了する**。
+  // 運用者からは「全員入館できている」ように見えるので、全断に気づくのが遅れる。
+  //
+  // 「止めても来訪者を締め出さない」という設計意図（`voice-dial.ts`）は保つ:
+  // 受付は `failed` で終端し、逃げ道バーと有人支援の案内が出る。**やめるのは嘘だけ。**
+  if (voiceDialingDisabled()) {
+    return NextResponse.json({ error: 'unrouted' }, { status: 503 });
   }
 
   // 保存済みルートに従った段階実行を試みる。読み取り/実行で失敗しても取次自体は止めない

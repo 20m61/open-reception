@@ -100,6 +100,7 @@ export type MessageKey =
   | 'reception.timeoutBody'
   | 'reception.failedBody'
   | 'reception.failedNetworkBody'
+  | 'reception.failedUnroutedBody'
   | 'reception.altContact'
   // 担当者クイック応答 (#99) の「5分お待ちください」に対する目安の再案内 (#323 AC2)。
   | 'reception.staffResponseWaitReguidance'
@@ -412,6 +413,7 @@ const ja: DefaultDictionary = {
   'reception.timeoutBody': '応答がありませんでした。別の方法でお呼びすることもできます。',
   'reception.failedBody': '呼び出しに失敗しました。別の方法でお呼びすることもできます。',
   'reception.failedNetworkBody': '通信が一時的に不安定なため、お呼び出しできませんでした。少し待ってからもう一度お試しください。',
+  'reception.failedUnroutedBody': 'ただいま担当者にお取り次ぎできません。恐れ入りますが、近くのスタッフにお声がけください。',
   'reception.altContact': '代替の連絡先へ',
   'reception.staffResponseWaitReguidance': '目安は数分です。担当者が向かい次第、この画面が切り替わります。',
   'reception.reset': '最初に戻る',
@@ -700,6 +702,7 @@ const en: LocaleDictionary = {
   'reception.timeoutBody': 'There was no answer. We can try another way to reach them.',
   'reception.failedBody': 'The call failed. We can try another way to reach them.',
   'reception.failedNetworkBody': 'We could not place the call because the connection is temporarily unstable. Please wait a moment and try again.',
+  'reception.failedUnroutedBody': 'We cannot reach your host right now. Please ask a nearby staff member for assistance.',
   'reception.altContact': 'Try another way',
   'reception.staffResponseWaitReguidance': "It'll be about a few minutes. This screen will update once they're on the way.",
   'reception.reset': 'Start over',
@@ -990,6 +993,7 @@ const ko: LocaleDictionary = {
   'reception.timeoutBody': '응답이 없습니다. 다른 방법으로 호출할 수도 있습니다.',
   'reception.failedBody': '호출에 실패했습니다. 다른 방법으로 호출할 수도 있습니다.',
   'reception.failedNetworkBody': '통신이 일시적으로 불안정하여 호출하지 못했습니다. 잠시 후 다시 시도해 주세요.',
+  'reception.failedUnroutedBody': '지금은 담당자에게 연결할 수 없습니다. 가까운 직원에게 말씀해 주세요.',
   'reception.altContact': '다른 연락 방법',
   'reception.staffResponseWaitReguidance': '예상 소요 시간은 몇 분입니다. 담당자가 출발하면 화면이 바뀝니다.',
   'reception.reset': '처음으로',
@@ -1275,6 +1279,7 @@ const zh: LocaleDictionary = {
   'reception.timeoutBody': '无人应答。我们可以用其他方式联系。',
   'reception.failedBody': '呼叫失败。我们可以用其他方式联系。',
   'reception.failedNetworkBody': '由于网络暂时不稳定，未能呼叫。请稍后再试。',
+  'reception.failedUnroutedBody': '目前无法为您转接负责人。请向附近的工作人员咨询。',
   'reception.altContact': '其他联系方式',
   'reception.staffResponseWaitReguidance': '预计需要几分钟。负责人出发后，本画面将自动更新。',
   'reception.reset': '返回首页',
@@ -1564,6 +1569,7 @@ const jaSimple: LocaleDictionary = {
   'reception.timeoutBody': 'おへんじが ありませんでした。べつの 方法で よぶ ことも できます',
   'reception.failedBody': 'よびだしに しっぱい しました。べつの 方法で よぶ ことも できます',
   'reception.failedNetworkBody': 'つうしんが つながらず よびだし できませんでした。すこし まってから もういちど おためし ください',
+  'reception.failedUnroutedBody': 'いま たんとうしゃに つなげません。ちかくの スタッフに こえを かけて ください',
   'reception.altContact': 'べつの 方法で よぶ',
   'reception.cancelled': 'うけつけを やめました',
   'reception.reset': 'さいしょに もどる',
