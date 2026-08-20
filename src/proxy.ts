@@ -1,4 +1,5 @@
 import { NextResponse } from 'next/server';
+import { prefersHtml, renderServiceHoldPage } from '@/domain/reception/service-hold-page';
 import type { NextRequest } from 'next/server';
 import { buildCsp, createCspNonce, NONCE_HEADER } from '@/lib/security/csp';
 import { verifySession } from '@/lib/auth/session';
@@ -95,8 +96,8 @@ function checkTrustedOrigin(req: NextRequest): NextResponse | null {
   logOriginVerifyTransition(outcome.reason, config.secret);
   if (outcome.ok) return null;
   return outcome.reason === 'missing-secret'
-    ? denyOriginVerify('service unavailable', 503)
-    : denyOriginVerify('forbidden', 403);
+    ? denyOriginVerify(req, 'service unavailable', 503)
+    : denyOriginVerify(req, 'forbidden', 403);
 }
 
 /**
@@ -104,7 +105,21 @@ function checkTrustedOrigin(req: NextRequest): NextResponse | null {
  * リダイレクト応答と同じ理由で、この経路だけ欠落していた）。
  * 本文は理由を区別しない固定文言 ── `missing-secret` を外部に伝えると迂回可能な時間帯を教える。
  */
-function denyOriginVerify(body: string, status: 403 | 503): NextResponse {
+function denyOriginVerify(req: NextRequest, body: string, status: 403 | 503): NextResponse {
+  // 🔴 **来訪者には読める画面を返す (#629)。** matcher は `/kiosk` を含むので、拒否時に
+  // iPad の全画面へ出るのは英語 1 語の `forbidden` だった。再試行導線もスタッフ呼出導線も無い。
+  //
+  // 🔴 **API と webhook の応答は 1 バイトも変えない。** `Accept` にブラウザの画面遷移
+  // （`text/html`）が明示されているときだけ HTML にする。issue #629 の「やること」節が
+  // 挙げていた CloudFront の custom error response は**ディストリビューション単位**でしか
+  // 設定できず、`PROVIDER_WEBHOOKS_DISABLED` の 503 + `Retry-After`（Vonage の再送に
+  // 効いている運用スイッチ）まで HTML に差し替えてしまう。ここなら巻き込まない。
+  if (prefersHtml(req.headers.get('accept'))) {
+    return new NextResponse(renderServiceHoldPage(), {
+      status,
+      headers: { 'Content-Type': 'text/html; charset=utf-8' },
+    });
+  }
   return new NextResponse(body, {
     status,
     headers: { 'Content-Type': 'text/plain; charset=utf-8' },
