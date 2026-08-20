@@ -49,8 +49,11 @@ export type StoredCallCorrelation = {
    */
   readonly voiceState?: VoiceCallState;
   /**
-   * この通話で処理した webhook イベント数。1 通話あたりの上限判定に使う
-   * （#4 Inc D-2 項目 7。無制限だと ledger が DynamoDB item 上限へ向かって育つ）。
+   * この通話で処理した webhook イベント数。
+   *
+   * 🔴 **上限判定の権威はここではない (#646)。** 上限は**取次全体**で効かせるので、
+   * 数える値は `position.eventCount` に載っている。ここは `position` にそれを持たない
+   * 旧レコードのための退避先で、TTL 6 時間で入れ替わるまでの互換用。
    * **任意**＝ voiceState と同じ後方互換の扱いで、読み側は 0 を既定にする。
    */
   readonly eventCount?: number;

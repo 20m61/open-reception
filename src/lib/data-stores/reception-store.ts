@@ -261,6 +261,36 @@ export async function completeReception(id: string): Promise<StoreResult<Recepti
 }
 
 /**
+ * 取次が次の手へ進んだときに相関キーを付け替える (#646)。
+ *
+ * 🔴 **これが無いと `/status` は 1 手目の相関を読み続ける。** 相関のキーは provider の
+ * 通話 ID で、2 手目は新しい ID＝新しいレコードになる。1 手目は「未応答」で確定済みなので、
+ * 付け替えないと**2 手目が鳴っている最中に来訪者へ「応答が得られませんでした」と表示**して
+ * 代替導線へ倒してしまう。
+ *
+ * **状態機械は触らない。** ここは `'calling'` のままの受付の相関キーだけを差し替える
+ * 操作で、確定は従来どおり `/status` の読み時（`resolvePendingCall`）が行う。
+ * 呼び出し元は webhook なので、`'calling'` 以外（既に確定した・取り消された）へは書かない
+ * ── 遅れて届いた webhook で終わった受付を蒸し返さない。
+ */
+export async function repointProviderCall(
+  id: string,
+  providerCallId: string,
+): Promise<StoreResult<ReceptionSession>> {
+  const found = await getReception(id);
+  if (!found.ok) return found;
+  if (found.value.state !== 'calling') {
+    return {
+      ok: false,
+      error: { code: 'invalid_transition', message: `cannot repoint from ${found.value.state}` },
+    };
+  }
+  const updated: ReceptionSession = { ...found.value, providerCallId, updatedAt: now() };
+  await sessions().put(updated);
+  return { ok: true, value: updated };
+}
+
+/**
  * 非同期通話で担当者が応答したことを記録する（calling → connected）(issue #4 increment 2)。
  * 受付履歴は完了時に記録するが、応答の瞬間は監査ログ（reception.answered）に残す
  * （connected/completed の監査とは別イベント）(issue #19, increment 2c)。

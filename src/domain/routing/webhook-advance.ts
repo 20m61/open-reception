@@ -53,24 +53,28 @@ export type CallProgress = {
   readonly voiceState: VoiceCallState;
   /** 取次が確定済みか。確定後のイベントで進めないための材料。 */
   readonly settled: boolean;
-  /** この通話で処理したイベント数。上限（`maxEvents`）の判定に使う。 */
+  /** この**取次**で処理したイベント数。上限（`maxEvents`）の判定に使う (#646)。 */
   readonly eventCount: number;
 };
 
 /**
- * 1 通話あたりのイベント上限 (issue #4 Inc D-2 項目 7)。
+ * **取次 1 本あたり**のイベント上限 (issue #4 Inc D-2 項目 7 / #646)。
  *
  * webhook は**認証を持たない公開エンドポイント**。署名が正当でも同一通話へイベントを
  * 流し続けられると `position.ledger` が無制限に伸びる。ledger は相関ごと DynamoDB へ
  * 書かれるので **item サイズ上限（400KB）へ向かって育ち**、しかも 1 件ごとに書き込みが走る。
  *
- * 正常な通話は数手 × 数イベント（ringing / answered / dtmf / completed）で収まる。
+ * 🔴 **通話ごとではなく取次全体で数える。** 2 手目は新しい `providerCallId`＝新しい相関
+ * レコードになるので、相関側から数えると必ず 0 に戻り、上限が hop 数だけ緩む。数える値は
+ * `RoutingPosition.eventCount` に載せて引き継ぐ（`@/domain/routing/hop-event-budget`）。
+ *
+ * 正常な取次は数手 × 数イベント（ringing / answered / dtmf / completed）で収まる。
  * hop 上限 10 と併せても 100 は十分に余裕がある。
  */
 export const DEFAULT_MAX_EVENTS = 100;
 
 export type WebhookAdvanceOptions = AdvanceOptions & {
-  /** 1 通話あたりのイベント上限。既定 `DEFAULT_MAX_EVENTS`。 */
+  /** 取次 1 本あたりのイベント上限。既定 `DEFAULT_MAX_EVENTS`。 */
   readonly maxEvents?: number;
 };
 
