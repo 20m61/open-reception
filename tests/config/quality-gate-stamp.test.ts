@@ -172,10 +172,21 @@ describe('quality-gate: change-risk の判定保留を green にしない (#713)
   });
 
   it('tsx が無くて検出器を動かせないときも green にしない', () => {
-    // 一時リポジトリには node_modules が無いので `npx --no-install tsx` は失敗する。
     // **判定ロジックが unit テスト済みであることは、「このツリーで境界に触れたか」を
     // 測ったことにはならない。** 同じ条件で infra WebStack synth も unverified にしている。
-    const r = runIsolated('change-risk-invoke');
+    //
+    // 🔴 **「tsx が無い」という前提を、環境任せにしない。** 以前は「一時リポジトリには
+    // `node_modules` が無いので `npx --no-install tsx` は失敗する」に頼っていた。ところが
+    // `npx --no-install` は **npm の共有キャッシュ（`~/.npm/_npx`）も見る**ので、同じマシンで
+    // 一度でも `npx tsx` が走るとキャッシュに載り、**どのディレクトリからでも成功する**。
+    // 2026-08-19 に実際そうなり、**コード無変更の main で `--full` が赤くなった**
+    // （テストが主張しているのは「tsx が無いとき」なのに、測っていたのは
+    // 「たまたま npx が失敗すること」だった）。空のキャッシュを渡して前提をこちらで作る。
+    //
+    // このテストだけに掛ける —— 全 `runIsolated` に広げると、他のケースまで
+    // cache-cold になって別の経路を通る（実際に踏んだ）。
+    const npmCache = mkdtempSync(join(tmpdir(), 'gate-stamp-npm-cache-'));
+    const r = runIsolated('change-risk-invoke', { npm_config_cache: npmCache });
     expect(r.stampExists).toBe(false);
     expect(r.status).not.toBe(0);
     expect(r.stdout).toContain('tsx が無いため');
