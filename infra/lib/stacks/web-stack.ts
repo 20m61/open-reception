@@ -243,6 +243,26 @@ export class WebStack extends Stack {
           '手順は docs/deploy-aws.md の「CloudFront 経由検証（origin-verify）」を参照。',
       );
     }
+
+    // **dev 以外は発行 URL の基底オリジンも必須にする（fail-closed / N3b）。**
+    // `publicOriginOverride` もカスタムドメインも無いと、`resolveCheckinBaseUrl` は
+    // リクエストの Host から推定する。CloudFront -> Lambda Function URL 構成では Host が
+    // **Function URL** なので、発行された QR を開いても CloudFront を経由せず
+    // `x-origin-verify` が付かない -> middleware が forbidden を返す ──
+    // **端末エンロール QR も来訪予約 checkin QR も、誰も使えない**（2026-08-04 に実測）。
+    //
+    // 上の origin-verify 必須化（N3）と**対になる**。片方だけ塞ぐと QR 側だけが落ちる。
+    // dev は従来どおり未指定で通す（デプロイ後に判明する CloudFront ドメインを後から渡す運用）。
+    if (customDomain === undefined && publicOriginOverride === undefined && config.environment !== 'dev') {
+      throw new Error(
+        `発行 URL の基底オリジンが未指定です (指定環境: ${config.environment})。` +
+          'dev 以外では `-c publicOriginOverride=https://<配信ドメイン>` か customDomain が必須です。' +
+          '未指定のまま続行すると、端末エンロール QR と来訪予約 checkin QR が ' +
+          'Function URL のホストで発行されます。その URL は CloudFront を経由しないため ' +
+          'x-origin-verify が付かず middleware が forbidden を返し、**発行された QR を誰も使えません**。' +
+          '手順は docs/deploy-aws.md を参照。',
+      );
+    }
     // NOTE: 「方式が有効か」は下の `originVerifyHeaderValue` **1 つから導く**。別々に導出すると、
     // 片方だけ壊れたときに **Function URL は公開なのに CloudFront がヘッダを付けない** origin
     // （= 認証なしの公開エンドポイント）が組み上がる。

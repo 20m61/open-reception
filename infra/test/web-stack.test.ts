@@ -594,7 +594,13 @@ describe('WebStack origin-verify argument guards (#612)', () => {
   const build =
     (
       envName: 'dev' | 'staging' | 'prod',
-      props: { originVerifySecret?: string; originVerifySecretName?: string },
+      props: {
+        originVerifySecret?: string;
+        originVerifySecretName?: string;
+        // N3b（発行 URL の基底オリジン）のガードも同じ帯に居るので、ここから渡せるようにする。
+        publicOriginOverride?: string;
+        customDomain?: { domainName: string; certificateArn: string };
+      },
     ) =>
     () => {
       const app = new cdk.App();
@@ -626,6 +632,45 @@ describe('WebStack origin-verify argument guards (#612)', () => {
       expect(build_).toThrow(/POST/);
     },
   );
+
+  /**
+   * 🔴 **同じクラスの「渡し忘れると受付が成立しない」context がもう 1 本ある (N3b)。**
+   *
+   * `publicOriginOverride` を渡さず、かつカスタムドメインも無いと、`resolveCheckinBaseUrl` は
+   * リクエストの Host から推定する。CloudFront → Lambda Function URL 構成では Host が
+   * **Function URL** なので、発行された QR を開いても CloudFront を経由せず
+   * `x-origin-verify` が付かない → middleware が forbidden を返す ——
+   * **端末エンロール QR も来訪予約 checkin QR も、誰も使えない**（2026-08-04 に実測）。
+   *
+   * origin-verify（N3）を必須化しても、こちらが無防備なままだと QR 側だけが落ちる。
+   */
+  it.each(['prod', 'staging'] as const)(
+    'rejects a deployment with no public origin in %s (fail-closed / N3b)',
+    (envName) => {
+      const build_ = build(envName, { originVerifySecretName: 'open-reception/test/app' });
+      expect(build_).toThrow(/publicOriginOverride/);
+      // なぜ必要かが読めること（QR が誰にも使えない）。
+      expect(build_).toThrow(/QR/);
+    },
+  );
+
+  // カスタムドメインがあれば publicOrigin はそこから決まるので、override は要らない。
+  it('accepts a deployment with a custom domain instead of publicOriginOverride (N3b)', () => {
+    expect(() => {
+      try {
+        build('prod', {
+          originVerifySecretName: 'open-reception/test/app',
+          customDomain: {
+            domainName: 'reception.example.com',
+            certificateArn: 'arn:aws:acm:us-east-1:123456789012:certificate/test',
+          },
+        })();
+      } catch (e) {
+        if (e instanceof Error && /OpenNext build artifacts/.test(e.message)) return;
+        throw e;
+      }
+    }).not.toThrow();
+  });
 
   // 過剰に厳しくしない: dev は未指定のまま通す（開発を止めない）。
   it('still lets dev omit origin-verify entirely (開発を止めない)', () => {
@@ -678,10 +723,14 @@ describe('WebStack origin-verify argument guards (#612)', () => {
 
   it('accepts the Secrets Manager mode in every environment', () => {
     // ガードは供給方法だけを見る。方式そのものは環境で分岐しない。
+    // `publicOriginOverride` は N3b のガードを満たすためだけに渡す（このテストの対象外）。
     for (const envName of ['dev', 'staging', 'prod'] as const) {
       expect(() => {
         try {
-          build(envName, { originVerifySecretName: 'open-reception/x' })();
+          build(envName, {
+            originVerifySecretName: 'open-reception/x',
+            publicOriginOverride: 'https://example.cloudfront.net',
+          })();
         } catch (e) {
           // `.open-next/` 未ビルド環境では成果物チェックで落ちる。ガードを通過した証拠として扱う。
           if (e instanceof Error && /OpenNext build artifacts/.test(e.message)) return;
