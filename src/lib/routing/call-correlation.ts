@@ -77,6 +77,23 @@ export interface CallCorrelationRepository {
   /** 期待テナントと一致するときだけ返す。越境と不在を**同じ結果**（undefined）にする。 */
   getForTenant(providerCallId: string, tenantId: string): Promise<StoredCallCorrelation | undefined>;
   put(correlation: StoredCallCorrelation): Promise<void>;
+  /**
+   * 次の手を撃つ権利を **atomic に 1 つの配信だけへ渡す** (#646)。
+   *
+   * 🔴 **`put` では二重発信を塞げない。** Vonage は不応答の 1 通話に対し `unanswered` と
+   * `completed` を**別 `jti`・ほぼ同時**に送る。Lambda では別インスタンスで並行実行され、
+   * どちらも `status: 'in_flight'` を読んでから書くので、`jti` 台帳の duplicate 判定に
+   * 掛からない。両方が dial 判断に至り、**担当者の電話が 2 本鳴る**。
+   *
+   * `expectedUpdatedAt` に読んだ時点の値を渡し、`status` が `'in_flight'` のままで
+   * `updatedAt` も動いていないときだけ更新する（楽観ロック）。負けた側は `false` を受け、
+   * **撃たず・保存もしない**。
+   */
+  reserve(
+    providerCallId: string,
+    changes: Partial<StoredCallCorrelation>,
+    expectedUpdatedAt: string,
+  ): Promise<boolean>;
 }
 
 export class DataBackedCallCorrelationRepository implements CallCorrelationRepository {
@@ -108,6 +125,17 @@ export class DataBackedCallCorrelationRepository implements CallCorrelationRepos
   async put(correlation: StoredCallCorrelation): Promise<void> {
     // backend は `id` をキーにするので provider 側の通話 ID をそのまま id にする。
     await this.col().put({ ...correlation, id: correlation.providerCallId });
+  }
+
+  async reserve(
+    providerCallId: string,
+    changes: Partial<StoredCallCorrelation>,
+    expectedUpdatedAt: string,
+  ): Promise<boolean> {
+    return this.col().updateIf(providerCallId, changes, {
+      status: 'in_flight',
+      updatedAt: expectedUpdatedAt,
+    });
   }
 }
 

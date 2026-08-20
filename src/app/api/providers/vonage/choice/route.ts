@@ -1,7 +1,9 @@
 import { NextResponse } from 'next/server';
-import { DTMF_CHOICES, resolveStaffChoice, staffChoiceToRouteResult } from '@/domain/call/voice-announcement';
+import { DTMF_CHOICES, resolveStaffChoice } from '@/domain/call/voice-announcement';
 import { logWebhookRejection, rejectWebhook, verifyRequest } from '@/lib/routing/vonage-webhook-route';
 import { denyIfProviderWebhooksDisabled } from '@/lib/routing/provider-webhook-switch';
+import { resolveDialCallbackBaseUrl } from '@/lib/routing/webhook-base-url';
+import { applyVoiceEventToCorrelation } from '@/lib/routing/voice-event';
 
 /**
  * POST /api/providers/vonage/choice — **第 2 段**（意思表示）の DTMF (issue #4 MVP 1)。
@@ -11,7 +13,21 @@ import { denyIfProviderWebhooksDisabled } from '@/lib/routing/provider-webhook-s
  * 来訪者情報を無限に読み上げる。
  *
  * **どの選択でも必ず音声で応答する。** 無応答で切ると、担当者は自分の入力が
- * 届いたのか分からないまま切ることになる。取次への反映は Inc D。
+ * 届いたのか分からないまま切ることになる。
+ *
+ * ## 選択を相関へ書く (#646)
+ *
+ * 🔴 **ここで書かないと、承諾が取次を止められない。** `applyVoiceEvent` は `answered` を
+ * `awaiting_acceptance`（非 terminal）にし、通話終了の `completed` を**一律 `no_answer`**
+ * へ畳む。選択が相関に残っていないと、担当者が「まもなく向かう」を押して電話を切った
+ * 瞬間に**次の担当者が鳴る** ── 2 手目以降が実発信になった今、これは実際の電話連鎖になる。
+ *
+ * `staff_coming` / `answered` は `TERMINAL_SUCCESS_RESULTS` なので取次は `settled` で止まる。
+ * `declined` / `delegate` は逆に**次の手へ進めたい**選択なので、そのまま dial 判断へ流す。
+ *
+ * 🔴 **第 1 段（`/dtmf` の `accept`）は書かない。** あちらの「1」は本人確認であって
+ * 意思表示ではない。書くと `answered`＝終端成功として取次が止まり、担当者が第 2 段で
+ * 「3 対応できない」を押しても代理へ進めなくなる。
  */
 function readDigits(rawBody: string): string | undefined {
   try {
@@ -50,8 +66,20 @@ export async function POST(request: Request): Promise<NextResponse> {
     return acknowledgement(`入力を確認できませんでした。${options}`);
   }
 
-  // 取次語彙への写像は Inc D で Orchestrator へ渡す。ここでは受領応答のみ。
-  void staffChoiceToRouteResult(choice);
+  // 🔴 **応答を先に返さない。** 承諾を書く前に返すと、担当者が切って `completed` が
+  // 先に届いたときに取次が次の手へ進む。書いてから返す。
+  //
+  // 冪等キーは webhook の `jti`。at-least-once 配信で取次が余計に 1 手進むのを防ぐ。
+  try {
+    await applyVoiceEventToCorrelation(verified.correlation, { kind: 'dtmf', choice }, verified.jti, {
+      webhookBaseUrl: resolveDialCallbackBaseUrl(request),
+    });
+  } catch {
+    // 🔴 **担当者への応答を落とさない。** ここで投げると音声が返らず、担当者は自分の入力が
+    // 届いたか分からないまま切る。書けなかったことはログに残し、応答は返す。
+    console.warn(JSON.stringify({ event: 'vonage_choice_apply_failed', choice }));
+  }
+
   const label = DTMF_CHOICES.find((c) => c.choice === choice)?.label ?? '';
   return acknowledgement(`${label}、で承りました。`);
 }

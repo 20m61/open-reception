@@ -1,7 +1,10 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 import type { RoutingPosition } from '@/domain/routing/resumable';
+import { getBackend } from '@/lib/data';
 import {
   DataBackedCallCorrelationRepository,
+  getCallCorrelationRepository,
+  __resetCallCorrelationRepository,
   type StoredCallCorrelation,
 } from './call-correlation';
 
@@ -93,5 +96,82 @@ describe('保存内容に PII と機密を含めない (#4)', () => {
     for (const forbidden of ['visitor', 'name', 'e164', 'phone', 'secret', 'token']) {
       expect(serialized.toLowerCase()).not.toContain(forbidden);
     }
+  });
+});
+
+/**
+ * 撃つ権利の atomic な取得 (#646 / レビュー B3)。
+ *
+ * 🔴 **`put` では二重発信を塞げない。** Vonage は不応答の 1 通話に対し `unanswered` と
+ * `completed` を**別 `jti`・ほぼ同時**に送る。Lambda では別インスタンスで並行実行され、
+ * どちらも `in_flight` を読んでから書くので `jti` 台帳の duplicate 判定に掛からない。
+ * 両方が dial 判断に至り、担当者の電話が 2 本鳴る。
+ */
+describe('reserve — 撃つ権利は 1 つの配信だけが取れる (#646)', () => {
+  const BASE: StoredCallCorrelation = {
+    providerCallId: 'TEST-reserve-call',
+    receptionId: 'rec-r',
+    tenantId: 'internal',
+    siteId: 'default-site',
+    position: { callUuid: 'rec-r', policyId: 'p1', stepId: 's1', hops: 0, ledger: [] },
+    voiceState: 'ringing',
+    eventCount: 1,
+    status: 'in_flight',
+    updatedAt: '2026-08-20T00:00:00.000Z',
+  };
+
+  beforeEach(async () => {
+    __resetCallCorrelationRepository();
+    await getBackend().collection('call-correlations').reset();
+    await getCallCorrelationRepository().put(BASE);
+  });
+
+  it('読んだ時点から動いていなければ取れる', async () => {
+    const repo = getCallCorrelationRepository();
+    expect(await repo.reserve(BASE.providerCallId, { status: 'settled' }, BASE.updatedAt)).toBe(true);
+    expect((await repo.get(BASE.providerCallId))?.status).toBe('settled');
+  });
+
+  /**
+   * 🔴 **ここが本体。** 2 つの配信が同じ値を読んだ状況。先に取った方だけが true。
+   * 無条件 `put` に戻すと両方 true になり、二重発信が通る。
+   */
+  it('🔴 同じ値を読んだ 2 つの配信のうち、権利を取れるのは 1 つだけ', async () => {
+    const repo = getCallCorrelationRepository();
+    const readAt = BASE.updatedAt;
+
+    const first = await repo.reserve(
+      BASE.providerCallId,
+      { status: 'settled', updatedAt: '2026-08-20T00:00:10.000Z' },
+      readAt,
+    );
+    const second = await repo.reserve(
+      BASE.providerCallId,
+      { status: 'settled', updatedAt: '2026-08-20T00:00:11.000Z' },
+      readAt,
+    );
+
+    expect(first).toBe(true);
+    expect(second).toBe(false);
+    // 負けた側の書き込みは残らない。
+    expect((await repo.get(BASE.providerCallId))?.updatedAt).toBe('2026-08-20T00:00:10.000Z');
+  });
+
+  it('🔴 読んだあとに別の更新が入っていたら取れない（lost update を作らない）', async () => {
+    const repo = getCallCorrelationRepository();
+    await repo.put({ ...BASE, updatedAt: '2026-08-20T00:00:05.000Z' });
+    expect(await repo.reserve(BASE.providerCallId, { status: 'settled' }, BASE.updatedAt)).toBe(false);
+  });
+
+  it('🔴 既に確定している相関では取れない', async () => {
+    const repo = getCallCorrelationRepository();
+    await repo.put({ ...BASE, status: 'settled' });
+    expect(await repo.reserve(BASE.providerCallId, { status: 'settled' }, BASE.updatedAt)).toBe(false);
+  });
+
+  it('不在の相関では取れない', async () => {
+    expect(
+      await getCallCorrelationRepository().reserve('TEST-absent', { status: 'settled' }, BASE.updatedAt),
+    ).toBe(false);
   });
 });

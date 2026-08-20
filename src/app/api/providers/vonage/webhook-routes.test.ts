@@ -349,13 +349,37 @@ describe('/events — 撃てない状況では位置を動かさない (#646)', 
     expect(s?.status).toBe('in_flight');
   });
 
-  it('撃たなかったことを理由込みで可観測にする（黙って止まらない）', async () => {
+  /**
+   * 🔴 **基底オリジンが分からないなら撃たない (#646 / #612)。**
+   *
+   * この Request は `x-forwarded-host` を持たず `NEXT_PUBLIC_APP_URL` も無い。
+   * `resolveWebhookBaseUrl` は最後の手段として `request.url`（本番では Function URL）を
+   * 返してしまうので、そちらを使っていると **Function URL をコールバックに埋めたまま撃つ**。
+   * その通話の webhook は全部 origin-verify の 403 になり、鳴らしたのに一切進まない。
+   */
+  it('🔴 基底オリジンが分からなければ、その理由で撃たない', async () => {
     const info = vi.spyOn(console, 'info').mockImplementation(() => {});
     await events(signed(body({ status: 'unanswered' })));
     const logged = info.mock.calls.map((c) => String(c[0])).join('\n');
     expect(logged).toContain('vonage_routing_dial_skipped');
     // 段の切り分けに要るのは「どの手を」「なぜ」撃たなかったか。
     expect(logged).toContain('acting');
+    expect(logged).toContain('webhook_base_url_unknown');
+  });
+
+  it('基底オリジンが分かっても、発信者が居なければ撃たない（理由が変わる）', async () => {
+    const info = vi.spyOn(console, 'info').mockImplementation(() => {});
+    const request = signed(body({ status: 'unanswered' }));
+    const withHost = new Request(request, {
+      headers: new Headers([
+        ...request.headers,
+        ['x-forwarded-host', 'reception.test'],
+        ['x-forwarded-proto', 'https'],
+      ]),
+      body: await request.clone().text(),
+    });
+    await events(withHost);
+    const logged = info.mock.calls.map((c) => String(c[0])).join('\n');
     expect(logged).toContain('initiator_unavailable');
   });
 });

@@ -23,7 +23,7 @@
  */
 import { eventBudgetOf, withEventBudget } from '@/domain/routing/hop-event-budget';
 import type { VoiceCallInitiator } from '@/domain/routing/voice-initiator';
-import { repointProviderCall } from '@/lib/data-stores/reception-store';
+import { getReception, repointProviderCall } from '@/lib/data-stores/reception-store';
 import { dialNextHop as defaultDialNextHop } from './next-hop-dial';
 import { resolveVoiceInitiator } from './voice-dial';
 import type { StoredContactEndpoint } from './types';
@@ -59,6 +59,7 @@ export type VoiceEventDeps = {
   ) => Promise<VoiceCallInitiator | null>;
   readonly listEndpoints?: (tenantId: string) => Promise<ReadonlyArray<StoredContactEndpoint>>;
   readonly repointReception?: (receptionId: string, providerCallId: string) => Promise<void>;
+  readonly isReceptionCalling?: (receptionId: string) => Promise<boolean>;
   readonly dialNextHop?: typeof defaultDialNextHop;
   readonly now?: () => Date;
 };
@@ -168,6 +169,14 @@ async function tryDialNextHop(
       if (!result.ok) throw new Error(result.error.code);
     });
 
+  const isReceptionCalling =
+    deps.isReceptionCalling ??
+    (async (receptionId: string) => {
+      const found = await getReception(receptionId);
+      // 読めなければ**撃たない**。不在から「まだ呼び出し中だ」をでっち上げない。
+      return found.ok && found.value.state === 'calling';
+    });
+
   const result = await dial({
     correlation,
     next,
@@ -175,7 +184,10 @@ async function tryDialNextHop(
     endpoints: await listEndpoints(correlation.tenantId),
     initiator,
     saveCorrelation: (c) => getCallCorrelationRepository().put(c),
+    reserve: (id, changes, expectedUpdatedAt) =>
+      getCallCorrelationRepository().reserve(id, changes, expectedUpdatedAt),
     repointReception,
+    isReceptionCalling,
     now: deps.now,
   });
 
@@ -187,9 +199,19 @@ async function tryDialNextHop(
 
   // 撃ったなら保存は発信側のもの。撃っていない（not_wired / endpoint_unavailable /
   // reserve_failed）なら呼び出し側が従来どおり保存する。
-  return result.kind === 'dialed' ||
-    result.kind === 'handoff_incomplete' ||
-    result.kind === 'dial_failed'
-    ? 'handled'
-    : 'not_dialed';
+  // 撃った／権利を失った／受付が終わっている場合は、呼び出し側が重ねて保存しない。
+  // 撃っていないうえに何も書いていない（not_wired / endpoint_unavailable / reserve_failed）
+  // ときだけ、従来どおり「位置は進めず台帳と通話状態を保存」へ倒す。
+  // 撃っていないうえに何も書いていないものだけ、従来どおり「位置は進めず台帳と通話状態を
+  // 保存」へ倒す。**保存させるのが大事** ── 保存しないとイベント上限が進まず、公開
+  // エンドポイントから何度でも同じ判断を踏ませられる。
+  //
+  // 逆に `reserve_lost`（別の配信が撃った）で保存すると、勝った側が書いた確定を潰す。
+  // `dial_failed` / `handoff_incomplete` / `dialed` は発信側が既に書いている。
+  return result.kind === 'not_wired' ||
+    result.kind === 'endpoint_unavailable' ||
+    result.kind === 'reception_closed' ||
+    result.kind === 'reserve_failed'
+    ? 'not_dialed'
+    : 'handled';
 }

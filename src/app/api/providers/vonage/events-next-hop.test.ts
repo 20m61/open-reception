@@ -30,6 +30,7 @@ import {
 } from '@/lib/routing/call-correlation';
 import { getReceptionSessionRepository } from '@/lib/data-stores/reception-store';
 import { getBackend } from '@/lib/data';
+import type { StoredCallCorrelation } from '@/lib/routing/call-correlation';
 import type { ReceptionSession } from '@/domain/reception/session';
 import { POST as events } from './events/route';
 
@@ -159,21 +160,63 @@ describe('/events → 2 手目の実発信（既定配線 #646）', () => {
   });
 
   /**
-   * 🔴 **付け替えられなかったことを黙って飲まない。** `dialNextHop` の既定依存が
-   * 受付の書き込み失敗を握り潰すと、撃ったのに `/status` が 1 手目を読み続ける状態を
-   * `dialed`（成功）として報告することになり、通報を受けても段を切り分けられない。
-   *
-   * 受付が既に終わっている（＝遅れて届いた webhook）状況で踏ませる。
+   * 🔴 来訪者がキャンセルした後や既に確定した受付のために社内の電話を鳴らさない。
+   * 相関は受付の終端と連動していないので、ここで見ないと最大 10 段まで鳴る。
    */
-  it('🔴 受付を付け替えられなければ handoff_incomplete として残る', async () => {
-    const info = vi.spyOn(console, 'info').mockImplementation(() => {});
+  it('🔴 受付がもう呼び出し中でなければ撃たない', async () => {
     const session = await getReceptionSessionRepository().get(RECEPTION_ID);
     await getReceptionSessionRepository().put({ ...session!, state: 'cancelled' });
 
+    const res = await events(unanswered());
+
+    expect(res.status).toBe(204);
+    expect(initiate).not.toHaveBeenCalled();
+    expect(await getCallCorrelationRepository().get(NEXT_PROVIDER_CALL_ID)).toBeUndefined();
+  });
+
+  /**
+   * 🔴 **発信中に `/status` が受付を確定させる窓**（予約〜付け替えの間）。
+   *
+   * 付け替えは read-modify-write ではなく `'calling'` 条件付きにしてあるので、
+   * 終端した受付を `'calling'` へ**巻き戻さない**。巻き戻すと受付履歴・監査が二重に残る。
+   */
+  it('🔴 発信中に受付が確定したら、付け替えで状態を巻き戻さない', async () => {
+    const info = vi.spyOn(console, 'info').mockImplementation(() => {});
+    initiate.mockImplementation(async () => {
+      // `/status` のポーリングが割り込んで受付を確定させた、という状況。
+      const session = await getReceptionSessionRepository().get(RECEPTION_ID);
+      await getReceptionSessionRepository().put({ ...session!, state: 'timeout' });
+      return { providerCallId: NEXT_PROVIDER_CALL_ID };
+    });
+
     await events(unanswered());
 
+    const after = await reception();
+    expect(after?.state).toBe('timeout');
+    expect(after?.providerCallId).toBe(PROVIDER_CALL_ID);
     const logged = info.mock.calls.map((c) => String(c[0])).join('\n');
     expect(logged).toContain('handoff_incomplete');
     expect(logged).not.toContain('"result":"dialed"');
+  });
+
+  /**
+   * 🔴 **予約で通話状態を進めない。** 進めると、受付の相関キーがまだ 1 手目を指している
+   * 間に `/status` が `no_answer` を読み、2 手目が鳴っている最中に来訪者へ
+   * 「応答が得られませんでした」と表示して代替導線へ倒してしまう。
+   */
+  it('🔴 発信中の 1 手目は未応答として読めない（来訪者を先に倒さない）', async () => {
+    let duringDial: StoredCallCorrelation | undefined;
+    initiate.mockImplementation(async () => {
+      duringDial = await getCallCorrelationRepository().get(PROVIDER_CALL_ID);
+      return { providerCallId: NEXT_PROVIDER_CALL_ID };
+    });
+
+    await events(unanswered());
+
+    expect(duringDial?.voiceState).toBe('ringing');
+    // 1 手目の呼出予算も引き直されている（期限切れで同じことが起きないように）。
+    expect(Date.parse(duringDial!.dialExpiresAt!)).toBeGreaterThan(
+      Date.parse('2026-08-20T00:00:50.000Z'),
+    );
   });
 });

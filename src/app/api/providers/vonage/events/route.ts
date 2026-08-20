@@ -5,7 +5,7 @@ import {
   rejectWebhook,
   verifyRequest,
 } from '@/lib/routing/vonage-webhook-route';
-import { resolveWebhookBaseUrl } from '@/lib/routing/webhook-base-url';
+import { resolveDialCallbackBaseUrl } from '@/lib/routing/webhook-base-url';
 import { denyIfProviderWebhooksDisabled } from '@/lib/routing/provider-webhook-switch';
 import { applyVoiceEventToCorrelation } from '@/lib/routing/voice-event';
 
@@ -56,9 +56,11 @@ export async function POST(request: Request): Promise<NextResponse> {
 
   // 冪等キーは webhook の `jti`。at-least-once 配信で取次が余計に 1 手進むのを防ぐ。
   await applyVoiceEventToCorrelation(verified.correlation, { kind: 'status', status }, verified.jti, {
-    // 🔴 `request.url` を使わない。Function URL を渡すと `x-origin-verify` が付かず
-    // 2 手目の webhook が全部 403 になり、鳴らしたのに一切進まない通話が残る（#612 と同型）。
-    webhookBaseUrl: resolveWebhookBaseUrl(request),
+    // 🔴 `request.url` へ倒れる `resolveWebhookBaseUrl` を使わない。Function URL を渡すと
+    // `x-origin-verify` が付かず 2 手目の webhook が全部 403 になり、鳴らしたのに一切
+    // 進まない通話が残る（#612 と同型）。**分からないなら撃たない**を成立させるため、
+    // 分からないことを `undefined` で表現できる方を使う。
+    webhookBaseUrl: resolveDialCallbackBaseUrl(request),
   });
   return new NextResponse(null, { status: 204 });
 }

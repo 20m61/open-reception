@@ -61,8 +61,10 @@ function nextProgress(): CallProgress {
 }
 
 const save = vi.fn();
+const reserve = vi.fn();
 const repoint = vi.fn();
 const initiate = vi.fn();
+const isReceptionCalling = vi.fn();
 const order: string[] = [];
 
 function deps(over: Partial<Parameters<typeof dialNextHop>[0]> = {}) {
@@ -73,7 +75,9 @@ function deps(over: Partial<Parameters<typeof dialNextHop>[0]> = {}) {
     endpoints: [ENDPOINT],
     initiator: { key: 'vonage', initiate },
     saveCorrelation: save,
+    reserve,
     repointReception: repoint,
+    isReceptionCalling,
     now: () => new Date('2026-08-20T00:01:00.000Z'),
     ...over,
   };
@@ -85,6 +89,11 @@ beforeEach(() => {
   save.mockImplementation(async (c: StoredCallCorrelation) => {
     order.push(`save:${c.providerCallId}:${c.status}`);
   });
+  reserve.mockImplementation(async (id: string) => {
+    order.push(`reserve:${id}`);
+    return true;
+  });
+  isReceptionCalling.mockResolvedValue(true);
   repoint.mockImplementation(async () => void order.push('repoint'));
   initiate.mockImplementation(async () => {
     order.push('initiate');
@@ -113,39 +122,106 @@ describe('dialNextHop — 撃たない条件', () => {
     expect(result.kind).toBe('endpoint_unavailable');
     expect(initiate).not.toHaveBeenCalled();
   });
+
+  /**
+   * 🔴 PSTN 以外は番号を引けないので発信が例外になる。予約の**後**でそれが起きると
+   * 1 手目は確定済みなので、以降の手を全部捨てて取次がそこで終わる。
+   */
+  it('🔴 PSTN でない接続先は予約の前に弾く', async () => {
+    const result = await dialNextHop(
+      deps({ endpoints: [{ ...ENDPOINT, channel: 'sip', uri: 'sip:x@example.test' }] }),
+    );
+    expect(result.kind).toBe('endpoint_unavailable');
+    expect(reserve).not.toHaveBeenCalled();
+    expect(initiate).not.toHaveBeenCalled();
+  });
+
+  /**
+   * 🔴 来訪者がキャンセルした後や既に確定した受付のために社内の電話を鳴らさない。
+   * 相関は受付の終端と連動していないので、ここで見ないと最大 10 段まで鳴る。
+   */
+  it('🔴 受付がもう呼び出し中でなければ撃たない', async () => {
+    isReceptionCalling.mockResolvedValue(false);
+    const result = await dialNextHop(deps());
+    expect(result.kind).toBe('reception_closed');
+    expect(reserve).not.toHaveBeenCalled();
+    expect(initiate).not.toHaveBeenCalled();
+    expect(save).not.toHaveBeenCalled();
+  });
 });
 
-describe('dialNextHop — 冪等（順序）', () => {
+describe('dialNextHop — 冪等（予約）', () => {
   /**
-   * 🔴 **ここが本体。** 発信してから台帳を書くと、同一 `jti` の再配信が発信の**最中**に
-   * 届いたときに二重発信になる（担当者の電話が 2 本鳴る）。先に台帳を確定させれば、
-   * 再配信は `duplicate` として弾かれる。撃ち損ねは呼出予算が timeout へ倒す。
+   * 🔴 発信してから台帳を書くと、同一 `jti` の再配信が発信の**最中**に届いたときに
+   * 二重発信になる（担当者の電話が 2 本鳴る）。先に予約を確定させれば再配信は弾かれる。
    */
-  it('🔴 1 手目の相関（台帳込み）を確定させてから発信する', async () => {
+  it('🔴 撃つ権利を取ってから発信する', async () => {
     await dialNextHop(deps());
     expect(order).toEqual([
-      'save:TEST-call-1:settled',
+      'reserve:TEST-call-1',
       'initiate',
       'save:TEST-call-2:in_flight',
       'repoint',
     ]);
   });
 
-  it('🔴 台帳を確定できなければ撃たない（予約できていない）', async () => {
-    save.mockRejectedValueOnce(new Error('TEST-write-failed'));
+  /**
+   * 🔴 **ここが本体。** Vonage は不応答の 1 通話に `unanswered` と `completed` を
+   * **別 jti・ほぼ同時**に送る。台帳の duplicate 判定では掛からないので、予約そのものを
+   * compare-and-set にしないと両方が撃つ。
+   */
+  it('🔴 予約に負けたら撃たず、保存もしない', async () => {
+    reserve.mockResolvedValue(false);
+    const result = await dialNextHop(deps());
+    expect(result.kind).toBe('reserve_lost');
+    expect(initiate).not.toHaveBeenCalled();
+    expect(save).not.toHaveBeenCalled();
+    expect(repoint).not.toHaveBeenCalled();
+  });
+
+  it('🔴 予約は「読んだ時点から動いていないこと」を条件にする（楽観ロック）', async () => {
+    await dialNextHop(deps());
+    const [, , expectedUpdatedAt] = reserve.mock.calls[0] as [string, unknown, string];
+    expect(expectedUpdatedAt).toBe(correlation().updatedAt);
+  });
+
+  it('🔴 予約を書けなければ撃たない', async () => {
+    reserve.mockRejectedValueOnce(new Error('TEST-write-failed'));
     const result = await dialNextHop(deps());
     expect(result.kind).toBe('reserve_failed');
     expect(initiate).not.toHaveBeenCalled();
   });
 
-  it('1 手目の相関には今回の台帳とイベント数が載る', async () => {
+  it('予約には今回の台帳とイベント数が載り、1 手目は確定する', async () => {
     await dialNextHop(deps());
-    const first = save.mock.calls[0]?.[0] as StoredCallCorrelation;
-    expect(first.position.ledger).toEqual(['k0', 'k1']);
-    expect(first.position.eventCount).toBe(4);
+    const [, changes] = reserve.mock.calls[0] as [string, Partial<StoredCallCorrelation>, string];
+    expect(changes.position?.ledger).toEqual(['k0', 'k1']);
+    expect(changes.position?.eventCount).toBe(4);
     // 位置そのものは進めない ── この相関は 1 手目のものであり続ける。
-    expect(first.position.stepId).toBe('s1');
-    expect(first.status).toBe('settled');
+    expect(changes.position?.stepId).toBe('s1');
+    expect(changes.status).toBe('settled');
+  });
+
+  /**
+   * 🔴 **予約で terminal な通話状態を書かない。** 受付の相関キーはまだ 1 手目を指しており、
+   * `resolveCallResolution` は呼出予算より先に `voiceState` を見る。3 秒ポーリングが
+   * この窓に当たると、2 手目が鳴っている最中に来訪者へ「応答が得られませんでした」と出る。
+   */
+  it('🔴 予約で通話状態を進めない', async () => {
+    await dialNextHop(deps());
+    const [, changes] = reserve.mock.calls[0] as [string, Partial<StoredCallCorrelation>, string];
+    expect(changes.voiceState).toBeUndefined();
+  });
+
+  /**
+   * 🔴 通話状態を据え置くだけでは足りない ── 1 手目の呼出予算が経過していれば
+   * `budgetElapsed` が同じ窓で timeout を返す。次の手のぶんへ引き直す。
+   */
+  it('🔴 呼出予算を次の手のぶんへ引き直す', async () => {
+    await dialNextHop(deps());
+    const [, changes] = reserve.mock.calls[0] as [string, Partial<StoredCallCorrelation>, string];
+    // now(00:01:00) + timeoutSeconds(20) + margin(30)
+    expect(changes.dialExpiresAt).toBe('2026-08-20T00:01:50.000Z');
   });
 });
 
@@ -153,7 +229,7 @@ describe('dialNextHop — 2 手目の相関', () => {
   it('新しい通話 ID で相関を作り、位置・台帳・イベント数を引き継ぐ', async () => {
     const result = await dialNextHop(deps());
     expect(result).toEqual({ kind: 'dialed', providerCallId: 'TEST-call-2' });
-    const second = save.mock.calls[1]?.[0] as StoredCallCorrelation;
+    const second = save.mock.calls[0]?.[0] as StoredCallCorrelation;
     expect(second.providerCallId).toBe('TEST-call-2');
     expect(second.receptionId).toBe('rec-1');
     expect(second.tenantId).toBe('internal');
@@ -170,20 +246,20 @@ describe('dialNextHop — 2 手目の相関', () => {
    */
   it('🔴 イベント数を 0 に戻さない', async () => {
     await dialNextHop(deps());
-    const second = save.mock.calls[1]?.[0] as StoredCallCorrelation;
+    const second = save.mock.calls[0]?.[0] as StoredCallCorrelation;
     expect(second.position.eventCount).toBe(4);
     expect(second.eventCount).toBe(4);
   });
 
   it('🔴 通話状態は queued から始める ── 1 手目の未応答を引き継ぐと即 timeout になる', async () => {
     await dialNextHop(deps());
-    const second = save.mock.calls[1]?.[0] as StoredCallCorrelation;
+    const second = save.mock.calls[0]?.[0] as StoredCallCorrelation;
     expect(second.voiceState).toBe('queued');
   });
 
   it('🔴 呼出予算をこの手のために引き直す ── 1 手目の期限を持ち込むと即座に打ち切られる', async () => {
     await dialNextHop(deps());
-    const second = save.mock.calls[1]?.[0] as StoredCallCorrelation;
+    const second = save.mock.calls[0]?.[0] as StoredCallCorrelation;
     // now(00:01:00) + timeoutSeconds(20) + margin(30)
     expect(second.dialExpiresAt).toBe('2026-08-20T00:01:50.000Z');
   });
@@ -212,14 +288,25 @@ describe('dialNextHop — 発信の失敗', () => {
     initiate.mockRejectedValueOnce(new Error('TEST-dial-failed'));
     const result = await dialNextHop(deps());
     expect(result.kind).toBe('dial_failed');
-    expect(save).toHaveBeenCalledTimes(1);
     expect(repoint).not.toHaveBeenCalled();
   });
 
+  /**
+   * 🔴 **撃てなかったと分かったら通話状態を terminal にする。** 予約で保留にしたままだと、
+   * 引き直した呼出予算（次の手ぶん）が経過するまで来訪者が待たされる ── 鳴っていないのに。
+   */
+  it('🔴 発信が失敗したら 1 手目を未応答として確定させる（代替導線へ倒す）', async () => {
+    initiate.mockRejectedValueOnce(new Error('TEST-dial-failed'));
+    await dialNextHop(deps());
+    const settled = save.mock.calls[0]?.[0] as StoredCallCorrelation;
+    expect(settled.providerCallId).toBe('TEST-call-1');
+    expect(settled.voiceState).toBe('no_answer');
+    expect(settled.status).toBe('settled');
+    // 予約で引き直した期限を残さない（鳴っていない手のぶん待たせない）。
+    expect(settled.dialExpiresAt).toBe(correlation().dialExpiresAt);
+  });
+
   it('🔴 新相関を書けなければ付け替えない ── 引けない相関を指すと永久に pending', async () => {
-    save.mockImplementationOnce(async (c: StoredCallCorrelation) => {
-      order.push(`save:${c.providerCallId}:${c.status}`);
-    });
     save.mockRejectedValueOnce(new Error('TEST-write-failed'));
     const result = await dialNextHop(deps());
     expect(result.kind).toBe('handoff_incomplete');

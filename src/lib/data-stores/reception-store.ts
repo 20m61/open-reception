@@ -277,17 +277,18 @@ export async function repointProviderCall(
   id: string,
   providerCallId: string,
 ): Promise<StoreResult<ReceptionSession>> {
-  const found = await getReception(id);
-  if (!found.ok) return found;
-  if (found.value.state !== 'calling') {
+  // 🔴 read-modify-write にしない。取次が撃っている最中に `/status` が `markTimeout` を
+  // 書くと、全体置換が終端状態を `'calling'` へ巻き戻す（履歴・監査が二重に残る）。
+  const swapped = await sessions().setProviderCallIdIfCalling(id, providerCallId, now());
+  if (!swapped) {
+    const found = await getReception(id);
+    if (!found.ok) return found;
     return {
       ok: false,
       error: { code: 'invalid_transition', message: `cannot repoint from ${found.value.state}` },
     };
   }
-  const updated: ReceptionSession = { ...found.value, providerCallId, updatedAt: now() };
-  await sessions().put(updated);
-  return { ok: true, value: updated };
+  return getReception(id);
 }
 
 /**
