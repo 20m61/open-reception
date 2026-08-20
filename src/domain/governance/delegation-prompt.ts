@@ -29,6 +29,12 @@
  * - `not-run` … 実行していない
  * - `failed` … 実行したが green にならなかった（負荷で完走しなかった場合を含む）
  */
+import {
+  renderObservations,
+  type EnvironmentObservation,
+} from './environment-observation';
+import { inspectSpecFreeText, type FreeTextFinding } from './spec-free-text';
+
 export type LocalFastGate = 'green' | 'not-run' | 'failed';
 
 export const LOCAL_FAST_GATE_VALUES: readonly LocalFastGate[] = ['green', 'not-run', 'failed'];
@@ -156,11 +162,6 @@ const MENTIONS_MERGE_PROHIBITION = /マージ(しない|するな|禁止)/;
  */
 export type StampAttestation = 'verified' | 'unverified';
 
-import {
-  renderObservations,
-  type EnvironmentObservation,
-} from './environment-observation';
-import { inspectSpecFreeText, type FreeTextFinding } from './spec-free-text';
 
 /** どこまでやるか。`'pr'` は PR 作成まで、`'merge'` はマージまで。 */
 export type StopAfter = 'pr' | 'merge';
@@ -223,9 +224,11 @@ const STOP_AFTER_VALUES: readonly StopAfter[] = ['pr', 'merge'];
  *    なので、**定義上必ず合格する**。#728 自身が「最も効く」と書いているクラス
  *  - **R4**（語彙リストに無い緩和）… green
  *
- * 残っている自由文スロットは 4 つ: `OBSERVATION_HEADING` / `OBSERVATION_CAVEAT` /
- * `GRAPHQL_REST_ROUTE` / `EnvironmentObservation.command`（最後は `COMMAND_SHAPE` で
- * 散文だけは弾いてある）。**「データ化済みだから安全」と読まないこと。**
+ * **この節に残っている自由文スロットは 5 つ**: `OBSERVATION_HEADING` /
+ * `OBSERVATION_CAVEAT` / `GRAPHQL_REST_ROUTE` / `REST_UNCONDITIONAL` /
+ * `EnvironmentObservation.command`。最後だけ `COMMAND_SHAPE` が形を縛るが、
+ * **弾けるのは日本語の散文まで**で、英語の断定（`gh pr create always returns 403 for you`）は
+ * 形を満たすので通る。**「データ化済みだから安全」と読まないこと。**
  */
 export const GRAPHQL_OBSERVATIONS: readonly EnvironmentObservation[] = [
   { date: '2026-08-03', command: 'gh pr list', status: 403, refs: [665] },
@@ -264,8 +267,7 @@ export const REST_UNCONDITIONAL =
 /**
  * 「環境の既知の制約」節を組み立てる。
  *
- * 観測の部分は**データの描画だけ**で、自由文が入る余地は見出し・但し書き・REST 経路の
- * 3 定数に限られる。そのどれにも断定を書けるが、**観測の行には書けない**
+ * 観測の部分は**データの描画だけ**で、自由文が入る余地は上の 5 スロットに限られる。そのどれにも断定を書けるが、**観測の行には書けない**
  * （#728 の狙いはそこ。節全体を守り切るものではない）。
  */
 function renderEnvironmentConstraints(stopAfter: StopAfter, at: string): string {
