@@ -14,6 +14,7 @@
  * 🔴 **位置を進めないのが要点。** 発信していないのに位置だけ進めると、
  * 「撃ったことになっている手が実際には鳴っていない」不整合になる。撃てないなら動かさない。
  */
+import { eventBudgetOf, withEventBudget } from '@/domain/routing/hop-event-budget';
 import { advanceFromWebhook, type CallProgress } from '@/domain/routing/webhook-advance';
 import type { VoiceCallEvent } from '@/domain/call/voice-call-state';
 import type { RoutingPolicy } from '@/domain/routing/policy';
@@ -44,7 +45,10 @@ export async function applyVoiceEventToCorrelation(
     // 旧レコード（voiceState 導入前）は 'queued' 扱い。TTL 6 時間ですぐ入れ替わる。
     voiceState: correlation.voiceState ?? 'queued',
     settled: correlation.status === 'settled',
-    eventCount: correlation.eventCount ?? 0,
+    // 🔴 **取次全体で数える (#646)。** position に載っていればそれを使う。相関側の値は
+    // position を持たない旧レコードのための退避先（TTL 6 時間で入れ替わる）。
+    // ここを相関側だけから読むと、2 手目の新レコードで 0 にリセットされ上限が緩む。
+    eventCount: eventBudgetOf(correlation.position, correlation.eventCount),
   };
 
   const advance = advanceFromWebhook(progress, event, providerEventId, await policiesFor(correlation));
@@ -88,7 +92,9 @@ export async function applyVoiceEventToCorrelation(
 
   await getCallCorrelationRepository().put({
     ...correlation,
-    position: next.position,
+    // イベント数も position へ書き戻す —— 2 手目の相関はこの position を引き継ぐので、
+    // ここで載せておかないと次の手で 0 から数え直しになる (#646)。
+    position: withEventBudget(next.position, next.eventCount),
     voiceState: next.voiceState,
     eventCount: next.eventCount,
     status: next.settled ? 'settled' : 'in_flight',
