@@ -58,6 +58,8 @@ function run(options: {
   specInRepo?: string;
   /** コミット後にツリーを汚す（指紋は汚した後に採るので**一致したまま**になる）。 */
   dirty?: boolean;
+  /** spec へ差し込む追加フィールド（自由文の検査を実走で見る）。 */
+  extra?: Record<string, unknown>;
   /** spec の branch を、実際に居るブランチと違う値にする。 */
   branch?: string;
   /** spec の headSha を実 HEAD ではなくこの値にする。 */
@@ -144,6 +146,7 @@ function run(options: {
   // 指紋に入るため）。既定は repo 外。`specInRepo` を渡したときだけ中へ置く。
   const specBody = {
     ...SPEC,
+    ...(options.extra ?? {}),
     ...(options.branch === undefined ? {} : { branch: options.branch }),
     headSha,
     localFastGate: options.localFastGate,
@@ -317,5 +320,30 @@ describe('delegate-gate-prompt.ts: 終了コードの契約 (#711 レビュー M
     const r = run({ localFastGate: 'green', stamp: 'matching', headSha: 'c' });
     expect(r.status).toBe(3);
     expect(r.stdout).not.toContain('## 手順');
+  }, 120_000);
+});
+
+describe('delegate-gate-prompt.ts: spec の自由文 (#729)', () => {
+  it('🔴 403 になる実行形を含む spec は 3 で止まり、本文を出さない', () => {
+    const r = run({
+      localFastGate: 'green',
+      stamp: 'matching',
+      extra: { extraVerification: ['`gh pr create --fill` で PR を作る'] },
+    });
+    expect(r.status).toBe(3);
+    expect(r.stdout).not.toContain('## 手順');
+    expect(r.stderr).toContain('gh pr create');
+  }, 120_000);
+
+  it('緩和語彙は止めず、警告を stderr へ出す（stdout に混ぜない）', () => {
+    const r = run({
+      localFastGate: 'green',
+      stamp: 'matching',
+      extra: { extraVerification: ['`npm run x` を実行（可能なら 2 回）'] },
+    });
+    expect(r.status, r.stderr).toBe(0);
+    expect(r.stdout).toContain('## 手順');
+    expect(r.stderr).toContain('⚠');
+    expect(r.stdout).not.toContain('⚠');
   }, 120_000);
 });
