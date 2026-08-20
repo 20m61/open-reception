@@ -302,3 +302,69 @@ describe('proxy origin-verify (#612)', () => {
     });
   });
 });
+
+/**
+ * 全断時の来訪者向け応答 (#629 / N2a)。
+ *
+ * 🔴 **危ないのは配線。** 判定と本文は `service-hold-page.test.ts` で縛ってあるが、
+ * `denyOriginVerify` が呼ばなくなっても、あるいは Accept を見なくなっても、
+ * そちらのテストは全部 green のままになる。
+ */
+describe('proxy origin-verify の来訪者向け応答 (#629)', () => {
+  const SECRET = 'TEST-origin-verify-secret';
+
+  function reqAccept(path: string, accept?: string): NextRequest {
+    return new NextRequest(`http://127.0.0.1:3000${path}`, {
+      headers: accept === undefined ? { 'x-origin-verify': 'wrong' } : { 'x-origin-verify': 'wrong', accept },
+    });
+  }
+
+  beforeEach(() => {
+    __resetOriginVerifyLogState();
+    process.env.ORIGIN_VERIFY_SECRET = SECRET;
+    process.env.ORIGIN_VERIFY_REQUIRED = '1';
+  });
+
+  afterEach(() => {
+    delete process.env.ORIGIN_VERIFY_SECRET;
+    delete process.env.ORIGIN_VERIFY_REQUIRED;
+  });
+
+  it('🔴 ブラウザには読める画面を返す（英語 1 語で終わらせない）', async () => {
+    const res = await proxy(reqAccept('/kiosk', 'text/html,application/xhtml+xml'));
+    expect(res.status).toBe(403);
+    expect(res.headers.get('Content-Type')).toContain('text/html');
+    const body = await res.text();
+    expect(body).toContain('スタッフ');
+    expect(body).not.toBe('forbidden');
+  });
+
+  /**
+   * 🔴 **API と webhook の応答を変えない。** ここが変わると、#629 が CloudFront 方式を
+   * 避けた理由（Vonage の再送が HTML を受け取る）を middleware 側で再現してしまう。
+   */
+  it.each([
+    ['application/json', 'API クライアント'],
+    ['*/*', 'webhook / curl の既定'],
+  ])('%s（%s）には従来どおり text/plain を返す', async (accept) => {
+    const res = await proxy(reqAccept('/api/kiosk/health', accept));
+    expect(res.status).toBe(403);
+    expect(res.headers.get('Content-Type')).toContain('text/plain');
+    expect(await res.text()).toBe('forbidden');
+  });
+
+  it('Accept ヘッダが無ければ従来どおり text/plain', async () => {
+    const res = await proxy(reqAccept('/kiosk'));
+    expect(res.headers.get('Content-Type')).toContain('text/plain');
+  });
+
+  it('🔴 503（全断）でも来訪者には同じ文面を出し、理由を漏らさない', async () => {
+    delete process.env.ORIGIN_VERIFY_SECRET;
+    const res = await proxy(reqAccept('/kiosk', 'text/html'));
+    expect(res.status).toBe(503);
+    const body = await res.text();
+    expect(body).toContain('スタッフ');
+    // 403 と 503 で文面を変えない（迂回可能な時間帯を教えない）。
+    expect(body.toLowerCase()).not.toContain('secret');
+  });
+});
