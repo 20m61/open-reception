@@ -224,6 +224,45 @@ export class WebStack extends Stack {
           '`-c originVerifySecretName=<Secrets Manager シークレット名>` を使ってください。',
       );
     }
+    // **dev 以外は origin-verify を必須にする（fail-closed / N3）。**
+    // 未指定だと下の `originVerifyEnabled` が false になり、server Function URL は
+    // AWS_IAM + OAC のまま組み上がる。この構成は **CloudFront 経由の POST が全滅**する
+    // （OAC が POST ボディを署名しないため GET は通り POST だけ 403。実測は
+    // `docs/deploy-aws.md`）。つまり context を渡し忘れたデプロイは、管理ログインも
+    // 受付 URL 発行も `/api/kiosk/enroll` も通らない ── **受付が成立しない状態で立ち上がり、
+    // しかも synth も deploy も成功する**。気づけるのは実機で来訪者が詰まったときになる。
+    // dev は開発を止めないため従来どおり未指定で通す（上の「生値は dev 専用」と対になる）。
+    if (!originVerifySecret && !originVerifySecretName && config.environment !== 'dev') {
+      throw new Error(
+        `origin-verify シークレットが未指定です (指定環境: ${config.environment})。` +
+          'dev 以外では `-c originVerifySecretName=<Secrets Manager シークレット名>`' +
+          `（JSON キー ${ORIGIN_VERIFY_SECRET_KEY}）が必須です。` +
+          '未指定のまま続行すると Function URL が AWS_IAM + OAC で組み上がり、' +
+          'CloudFront OAC は POST ボディを署名しないため **CloudFront 経由の POST が全て 403** になります' +
+          '（管理ログイン・受付 URL 発行・/api/kiosk/enroll が通らず受付が成立しません）。' +
+          '手順は docs/deploy-aws.md の「CloudFront 経由検証（origin-verify）」を参照。',
+      );
+    }
+
+    // **dev 以外は発行 URL の基底オリジンも必須にする（fail-closed / N3b）。**
+    // `publicOriginOverride` もカスタムドメインも無いと、`resolveCheckinBaseUrl` は
+    // リクエストの Host から推定する。CloudFront -> Lambda Function URL 構成では Host が
+    // **Function URL** なので、発行された QR を開いても CloudFront を経由せず
+    // `x-origin-verify` が付かない -> middleware が forbidden を返す ──
+    // **端末エンロール QR も来訪予約 checkin QR も、誰も使えない**（2026-08-04 に実測）。
+    //
+    // 上の origin-verify 必須化（N3）と**対になる**。片方だけ塞ぐと QR 側だけが落ちる。
+    // dev は従来どおり未指定で通す（デプロイ後に判明する CloudFront ドメインを後から渡す運用）。
+    if (customDomain === undefined && publicOriginOverride === undefined && config.environment !== 'dev') {
+      throw new Error(
+        `発行 URL の基底オリジンが未指定です (指定環境: ${config.environment})。` +
+          'dev 以外では `-c publicOriginOverride=https://<配信ドメイン>` か customDomain が必須です。' +
+          '未指定のまま続行すると、端末エンロール QR と来訪予約 checkin QR が ' +
+          'Function URL のホストで発行されます。その URL は CloudFront を経由しないため ' +
+          'x-origin-verify が付かず middleware が forbidden を返し、**発行された QR を誰も使えません**。' +
+          '手順は docs/deploy-aws.md を参照。',
+      );
+    }
     // NOTE: 「方式が有効か」は下の `originVerifyHeaderValue` **1 つから導く**。別々に導出すると、
     // 片方だけ壊れたときに **Function URL は公開なのに CloudFront がヘッダを付けない** origin
     // （= 認証なしの公開エンドポイント）が組み上がる。

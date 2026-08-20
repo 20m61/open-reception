@@ -25,6 +25,17 @@ describe('environments config', () => {
 
 // `.open-next/` が **在るだけ**では足りない（古いと synth が凍結ガードで throw する）。
 // `fresh` のときだけ synth し、absent / stale は理由付きで skip する (#628)。
+// dev 以外の WebStack は origin-verify の供給元が必須で、未指定は synth で止まる（N3。
+// 未指定構成は CloudFront 経由の POST が全滅するため）。origin-verify の方式そのものが
+// 検証対象でない prod の suite には、テンプレートに平文を残さない Secrets Manager 名を渡す。
+const ORIGIN_VERIFY_NAME_FOR_PROD_SUITES = 'open-reception/test/app';
+/**
+ * prod / staging を synth する suite が N3b（発行 URL の基底オリジン必須）のガードを
+ * 通過するためだけの値。**これらの suite の検証対象ではない**（PriceClass / IAM /
+ * Cognito / secrets の形を見ている）ので、内容に意味は持たせない。
+ */
+const PUBLIC_ORIGIN_FOR_PROD_SUITES = 'https://example.cloudfront.net';
+
 const ARTIFACTS = openNextArtifactState(path.join(__dirname, '..', '..'));
 const OPEN_NEXT_READY = ARTIFACTS.state === 'fresh';
 if (!OPEN_NEXT_READY) {
@@ -204,6 +215,8 @@ describe.runIf(OPEN_NEXT_READY)('WebStack custom domain (#189)', () => {
     const stack = new WebStack(app, 'TestWebCustomDomain', {
       env: { account: ACCOUNT, region: REGION },
       config: resolveEnv('prod'),
+      originVerifySecretName: ORIGIN_VERIFY_NAME_FOR_PROD_SUITES,
+      publicOriginOverride: PUBLIC_ORIGIN_FOR_PROD_SUITES,
       appEnv: { ADMIN_AUTH_PROVIDER: 'none' },
       customDomain: {
         domainName: 'open-reception.parent.example.com',
@@ -251,6 +264,8 @@ describe.runIf(OPEN_NEXT_READY)('WebStack custom domain (#189)', () => {
         new WebStack(app, 'TestWebBadDomain', {
           env: { account: ACCOUNT, region: REGION },
           config: resolveEnv('prod'),
+          originVerifySecretName: ORIGIN_VERIFY_NAME_FOR_PROD_SUITES,
+        publicOriginOverride: PUBLIC_ORIGIN_FOR_PROD_SUITES,
           customDomain: {
             domainName: 'open-reception.parent.example.com',
             certificateArn: CERT_ARN,
@@ -269,6 +284,8 @@ describe.runIf(OPEN_NEXT_READY)('WebStack app secrets (#194)', () => {
     const stack = new WebStack(app, 'TestWebSecrets', {
       env: { account: '123456789012', region: 'ap-northeast-1' },
       config: resolveEnv('prod'),
+      originVerifySecretName: ORIGIN_VERIFY_NAME_FOR_PROD_SUITES,
+      publicOriginOverride: PUBLIC_ORIGIN_FOR_PROD_SUITES,
       appEnv: { ADMIN_AUTH_PROVIDER: 'none' },
       appSecretsName,
     });
@@ -314,6 +331,8 @@ describe.runIf(OPEN_NEXT_READY)('WebStack tenant provider secrets (#405 Inc2)', 
     const stack = new WebStack(app, 'TestWebProviderSecrets', {
       env: { account: '123456789012', region: 'ap-northeast-1' },
       config: resolveEnv('prod'),
+      originVerifySecretName: ORIGIN_VERIFY_NAME_FOR_PROD_SUITES,
+      publicOriginOverride: PUBLIC_ORIGIN_FOR_PROD_SUITES,
       appEnv: { ADMIN_AUTH_PROVIDER: 'none' },
       ...opts,
     });
@@ -491,6 +510,9 @@ describe.runIf(OPEN_NEXT_READY)('WebStack origin-verify via Secrets Manager (#61
       config: resolveEnv(envName),
       appEnv: { ADMIN_AUTH_PROVIDER: 'none' },
       originVerifySecretName: SECRET_NAME,
+      // N3b（発行 URL の基底オリジン必須）を満たすためだけの値。この suite の対象は
+      // secret の供給方式であって origin / QR ではない。
+      publicOriginOverride: PUBLIC_ORIGIN_FOR_PROD_SUITES,
     });
     return Template.fromStack(stack);
   };
@@ -585,7 +607,13 @@ describe('WebStack origin-verify argument guards (#612)', () => {
   const build =
     (
       envName: 'dev' | 'staging' | 'prod',
-      props: { originVerifySecret?: string; originVerifySecretName?: string },
+      props: {
+        originVerifySecret?: string;
+        originVerifySecretName?: string;
+        // N3b（発行 URL の基底オリジン）のガードも同じ帯に居るので、ここから渡せるようにする。
+        publicOriginOverride?: string;
+        customDomain?: { domainName: string; certificateArn: string };
+      },
     ) =>
     () => {
       const app = new cdk.App();
@@ -600,6 +628,74 @@ describe('WebStack origin-verify argument guards (#612)', () => {
   it.each(['prod', 'staging'] as const)('rejects the raw-value mode in %s', (envName) => {
     // 🔴 `=== 'prod'` で書くと staging が素通りする。許可リスト（`!== 'dev'`）で判定すること。
     expect(build(envName, { originVerifySecret: 'TEST-raw' })).toThrow(/dev 以外では使えません/);
+  });
+
+  // 🔴 **未指定を「OAC + AWS_IAM へのフォールバック」で黙って通さない (N3)。**
+  // その構成では CloudFront -> Lambda Function URL の **POST が全滅**する（OAC が POST ボディを
+  // 署名しないため。実測は docs/deploy-aws.md）。つまり context を渡し忘れたデプロイは、
+  // login も受付 URL 発行も `/api/kiosk/enroll` も通らない＝**受付が成立しない状態で立ち上がる**。
+  // 上の「生値は dev 以外で不可」と対になる: dev 以外では *何らかの* 供給元が要る。
+  it.each(['prod', 'staging'] as const)(
+    'rejects a deployment with no origin-verify supplier in %s (fail-closed)',
+    (envName) => {
+      const build_ = build(envName, {});
+      // 何を渡せばよいかがメッセージから読めること。
+      expect(build_).toThrow(/originVerifySecretName/);
+      // なぜ必要かがメッセージから読めること（POST が落ちて受付が成立しない）。
+      expect(build_).toThrow(/POST/);
+    },
+  );
+
+  /**
+   * 🔴 **同じクラスの「渡し忘れると受付が成立しない」context がもう 1 本ある (N3b)。**
+   *
+   * `publicOriginOverride` を渡さず、かつカスタムドメインも無いと、`resolveCheckinBaseUrl` は
+   * リクエストの Host から推定する。CloudFront → Lambda Function URL 構成では Host が
+   * **Function URL** なので、発行された QR を開いても CloudFront を経由せず
+   * `x-origin-verify` が付かない → middleware が forbidden を返す ——
+   * **端末エンロール QR も来訪予約 checkin QR も、誰も使えない**（2026-08-04 に実測）。
+   *
+   * origin-verify（N3）を必須化しても、こちらが無防備なままだと QR 側だけが落ちる。
+   */
+  it.each(['prod', 'staging'] as const)(
+    'rejects a deployment with no public origin in %s (fail-closed / N3b)',
+    (envName) => {
+      const build_ = build(envName, { originVerifySecretName: 'open-reception/test/app' });
+      expect(build_).toThrow(/publicOriginOverride/);
+      // なぜ必要かが読めること（QR が誰にも使えない）。
+      expect(build_).toThrow(/QR/);
+    },
+  );
+
+  // カスタムドメインがあれば publicOrigin はそこから決まるので、override は要らない。
+  it('accepts a deployment with a custom domain instead of publicOriginOverride (N3b)', () => {
+    expect(() => {
+      try {
+        build('prod', {
+          originVerifySecretName: 'open-reception/test/app',
+          customDomain: {
+            domainName: 'reception.example.com',
+            certificateArn: 'arn:aws:acm:us-east-1:123456789012:certificate/test',
+          },
+        })();
+      } catch (e) {
+        if (e instanceof Error && /OpenNext build artifacts/.test(e.message)) return;
+        throw e;
+      }
+    }).not.toThrow();
+  });
+
+  // 過剰に厳しくしない: dev は未指定のまま通す（開発を止めない）。
+  it('still lets dev omit origin-verify entirely (開発を止めない)', () => {
+    expect(() => {
+      try {
+        build('dev', {})();
+      } catch (e) {
+        // `.open-next/` 未ビルド環境では成果物チェックで落ちる。ガードを通過した証拠として扱う。
+        if (e instanceof Error && /OpenNext build artifacts/.test(e.message)) return;
+        throw e;
+      }
+    }).not.toThrow();
   });
 
   it('rejects passing both (どちらがヘッダに載るか曖昧にしない)', () => {
@@ -640,10 +736,14 @@ describe('WebStack origin-verify argument guards (#612)', () => {
 
   it('accepts the Secrets Manager mode in every environment', () => {
     // ガードは供給方法だけを見る。方式そのものは環境で分岐しない。
+    // `publicOriginOverride` は N3b のガードを満たすためだけに渡す（このテストの対象外）。
     for (const envName of ['dev', 'staging', 'prod'] as const) {
       expect(() => {
         try {
-          build(envName, { originVerifySecretName: 'open-reception/x' })();
+          build(envName, {
+            originVerifySecretName: 'open-reception/x',
+            publicOriginOverride: 'https://example.cloudfront.net',
+          })();
         } catch (e) {
           // `.open-next/` 未ビルド環境では成果物チェックで落ちる。ガードを通過した証拠として扱う。
           if (e instanceof Error && /OpenNext build artifacts/.test(e.message)) return;
@@ -662,6 +762,8 @@ describe.runIf(OPEN_NEXT_READY)('WebStack cost optimization (#300)', () => {
     const stack = new WebStack(app, `TestWebCost${envName}`, {
       env: { account: '123456789012', region: 'ap-northeast-1' },
       config: resolveEnv(envName),
+      originVerifySecretName: ORIGIN_VERIFY_NAME_FOR_PROD_SUITES,
+      publicOriginOverride: PUBLIC_ORIGIN_FOR_PROD_SUITES,
       appEnv: { ADMIN_AUTH_PROVIDER: 'none' },
     });
     return Template.fromStack(stack);
@@ -712,6 +814,8 @@ describe.runIf(OPEN_NEXT_READY)('WebStack admin Cognito auth', () => {
       new WebStack(app, 'TestWebCognito', {
         env: { account: '123456789012', region: 'ap-northeast-1' },
         config: resolveEnv('prod'),
+        originVerifySecretName: ORIGIN_VERIFY_NAME_FOR_PROD_SUITES,
+        publicOriginOverride: PUBLIC_ORIGIN_FOR_PROD_SUITES,
         appEnv: { ADMIN_AUTH_PROVIDER: 'cognito' },
         cognitoAuth: true,
       }),
