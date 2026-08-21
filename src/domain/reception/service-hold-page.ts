@@ -19,6 +19,23 @@
  */
 
 /**
+ * 全断（オリジン到達不能）用に、同じ画面を**静的ファイルとしても**置く場所 (#629 / Gate A)。
+ *
+ * サーバ Lambda が落ちていると middleware は走らない ── つまり下の `renderServiceHoldPage()`
+ * は**呼ばれない**。CloudFront 既定の応答は英語の技術文（"The request could not be satisfied" /
+ * "ERROR: ... CloudFront"）で、それが来訪者が最初に見る画面になる。
+ *
+ * 🔴 **配信元が S3 になるパスであること。** `/assets/*` は S3 origin の cache behavior。
+ * ここをサーバ Lambda のパスにすると、Lambda が落ちているまさにそのときに取りに行けない
+ * （AWS: custom error page は**パスに一致する cache behavior の origin** から取得される）。
+ *
+ * 実体は `public/assets/service-hold.html`。中身が下の関数と一致していることは
+ * `service-hold-page.static.test.ts` が縛る（**ファイルが無いと CloudFront は元のコードでは
+ * なく 404 を返す**ので、実在も縛る）。
+ */
+export const SERVICE_HOLD_PAGE_PATH = '/assets/service-hold.html';
+
+/**
  * ブラウザの画面遷移か（HTML を返してよいか）。
  *
  * 🔴 **ワイルドカードや欠落を HTML 扱いにしない。** curl・webhook・多くの API クライアントは

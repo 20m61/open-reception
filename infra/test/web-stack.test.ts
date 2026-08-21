@@ -5,6 +5,7 @@ import { Template, Match } from 'aws-cdk-lib/assertions';
 import { WebStack } from '../lib/stacks/web-stack';
 import { openNextArtifactState, describeArtifactState } from '../lib/build-artifacts';
 import { resolveEnv, ENVIRONMENTS } from '../lib/config/environments';
+import { SERVICE_HOLD_PAGE_PATH } from '../../src/domain/reception/service-hold-page';
 
 describe('environments config', () => {
   it('resolves known environments and defaults to dev', () => {
@@ -35,6 +36,62 @@ const ORIGIN_VERIFY_NAME_FOR_PROD_SUITES = 'open-reception/test/app';
  * Cognito / secrets の形を見ている）ので、内容に意味は持たせない。
  */
 const PUBLIC_ORIGIN_FOR_PROD_SUITES = 'https://example.cloudfront.net';
+
+
+/**
+ * テンプレートから CloudFront の custom error response を取り出す。
+ * `hasResourceProperties` は「在ること」しか見られないので、
+ * **無いこと**（403/503 を割り当てていない）を見るには実体が要る。
+ */
+type CustomErrorResponse = {
+  readonly ErrorCode: number;
+  readonly ResponseCode?: number;
+  readonly ResponsePagePath?: string;
+  readonly ErrorCachingMinTTL?: number;
+};
+
+function distributionConfig(template: Template): Record<string, unknown> {
+  const [dist] = Object.values(template.findResources('AWS::CloudFront::Distribution'));
+  return (dist as { Properties: { DistributionConfig: Record<string, unknown> } }).Properties
+    .DistributionConfig;
+}
+
+function errorResponses(template: Template): readonly CustomErrorResponse[] {
+  return (distributionConfig(template).CustomErrorResponses ?? []) as CustomErrorResponse[];
+}
+
+function errorResponseCodes(template: Template): readonly number[] {
+  return errorResponses(template).map((r) => r.ErrorCode);
+}
+
+/** CloudFront の PathPattern（`*` のみのグロブ）が当たるか。正規表現は使わない（誤エスケープで
+ * 静かに「当たらない」側へ倒れると、このテストが縛りたい性質ごと消える）。 */
+function globMatches(pattern: string, target: string): boolean {
+  const parts = pattern.split('*');
+  if (parts.length === 1) return pattern === target;
+  const head = parts[0]!;
+  const tail = parts[parts.length - 1]!;
+  if (!target.startsWith(head) || !target.endsWith(tail)) return false;
+  let cursor = head.length;
+  for (const part of parts.slice(1, -1)) {
+    const at = target.indexOf(part, cursor);
+    if (at < 0) return false;
+    cursor = at + part.length;
+  }
+  return target.length - cursor >= tail.length;
+}
+
+/** そのパスを実際に受ける cache behavior（無ければ default = server Lambda へ落ちる）。 */
+function matchingBehavior(
+  template: Template,
+  target: string,
+): { readonly PathPattern: string; readonly TargetOriginId: string } | undefined {
+  const behaviors = (distributionConfig(template).CacheBehaviors ?? []) as {
+    PathPattern: string;
+    TargetOriginId: string;
+  }[];
+  return behaviors.find((b) => globMatches(b.PathPattern, target));
+}
 
 const ARTIFACTS = openNextArtifactState(path.join(__dirname, '..', '..'));
 const OPEN_NEXT_READY = ARTIFACTS.state === 'fresh';
@@ -128,6 +185,80 @@ describe.runIf(OPEN_NEXT_READY)('WebStack synthesis', () => {
 
   it('serves through a single CloudFront distribution', () => {
     template.resourceCountIs('AWS::CloudFront::Distribution', 1);
+  });
+
+  /**
+   * 全断（オリジン到達不能）のときに来訪者へ出す応答 (#629 / Gate A)。
+   *
+   * `service-hold-page.ts` は middleware から返る。**サーバ Lambda が落ちていると
+   * middleware は走らない**ので、その経路には入らない。CloudFront 既定の応答は
+   * 英語の技術文（"The request could not be satisfied" / "ERROR: ... CloudFront"）で、
+   * それが**来訪者が最初に見る画面**になる。
+   */
+  it('502 / 504 を来訪者向けの停止画面へ差し替える (#629)', () => {
+    template.hasResourceProperties('AWS::CloudFront::Distribution', {
+      DistributionConfig: Match.objectLike({
+        CustomErrorResponses: Match.arrayWith([
+          Match.objectLike({ ErrorCode: 502, ResponsePagePath: SERVICE_HOLD_PAGE_PATH }),
+          Match.objectLike({ ErrorCode: 504, ResponsePagePath: SERVICE_HOLD_PAGE_PATH }),
+        ]),
+      }),
+    });
+  });
+
+  /**
+   * 🔴 **403 / 503 / 500 を割り当てない。** custom error response は
+   * **ディストリビューション単位**で cache behavior に絞れないため、割り当てると
+   * API の 403/503/500 まで HTML に潰れる（`PROVIDER_WEBHOOKS_DISABLED` の 503 +
+   * `Retry-After` は Vonage の再送に効いている運用スイッチ）。
+   * `service-hold-page.ts` が middleware 方式を選んだ理由そのもの。
+   */
+  it('🔴 403 / 503 / 500 は割り当てない（API の応答を HTML に潰さない）', () => {
+    const codes = errorResponseCodes(template);
+    for (const forbidden of [403, 500, 503]) {
+      expect(codes, `${forbidden} を割り当てている`).not.toContain(forbidden);
+    }
+  });
+
+  /**
+   * 🔴 **ステータスコードを変えない。** 200 に潰すと、機械（Vonage の再送等）から見て
+   * 「成功した」ことになり再送が止まる。
+   */
+  it('🔴 ステータスコードを変えない（再送を止めない）', () => {
+    for (const r of errorResponses(template)) {
+      expect(r.ResponseCode, `${r.ErrorCode} を ${r.ResponseCode} へ差し替えている`).toBe(
+        r.ErrorCode,
+      );
+    }
+  });
+
+  /**
+   * 🔴 **停止画面は S3 から配る。** ページ自身をサーバ Lambda から取ると、Lambda が
+   * 落ちているまさにそのときに取れない。AWS の仕様上、custom error page は
+   * **パスに一致する cache behavior の origin** から取得されるので、
+   * `/assets/*`（S3 origin）の behavior に一致していることが条件。
+   */
+  it('🔴 停止画面は server Lambda 以外の origin から配る（落ちていても取れる）', () => {
+    const config = distributionConfig(template);
+    const matched = matchingBehavior(template, SERVICE_HOLD_PAGE_PATH);
+    expect(
+      matched,
+      `${SERVICE_HOLD_PAGE_PATH} に一致する cache behavior が無い（default = server Lambda へ落ちる）`,
+    ).toBeDefined();
+    const defaultOrigin = (config.DefaultCacheBehavior as { TargetOriginId: string }).TargetOriginId;
+    expect(matched?.TargetOriginId, '停止画面を server Lambda から取ろうとしている').not.toBe(
+      defaultOrigin,
+    );
+  });
+
+  /**
+   * 🔴 **エラーを長くキャッシュしない。** 既定は 5 分で、復旧してもその間ずっと
+   * 停止画面が出続ける。
+   */
+  it('🔴 エラーのキャッシュを短く持つ（復旧を遅らせない）', () => {
+    for (const r of errorResponses(template)) {
+      expect(r.ErrorCachingMinTTL, `${r.ErrorCode} のキャッシュが長い`).toBeLessThanOrEqual(60);
+    }
   });
 
   it('passes app env vars to the server function', () => {
