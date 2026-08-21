@@ -1231,6 +1231,77 @@ OR_SMOKE_URL=https://<デプロイ後のドメイン> bash scripts/aws-cloud-dep
 
 ---
 
+## ステップ 10b: 🔴 2026-08-21 の変更を反映するときの確認（デプロイして初めて効くもの）
+
+この日の周回で入れた 5 つは、**デプロイして初めて来訪者・運用者に届く**。
+コードは main に載っているので `deploy` 自体は通常どおりでよいが、**効いたかどうかの
+確認方法がそれぞれ違う**ので並べておく。
+
+| 変更 | どこで効くか | 効いたことの確かめ方 |
+| --- | --- | --- |
+| #760 全断時の停止画面 | CloudFront の custom error response（502/504） | `curl -sI https://<domain>/assets/service-hold.html` が **200** を返す。ファイルが無いと CloudFront は元のコードではなく **404** を返すので、これが先決 |
+| #766 取次不能アラーム | CloudWatch（MetricFilter + Alarm + SNS） | `OpenReception-WebMon-dev` の更新後、アラーム `KioskRealDialingUnavailable` が `INSUFFICIENT_DATA` で存在すること。SNS 購読の確認メールが届いていること |
+| #768 プロバイダ設定の永続化 | DynamoDB（`platform_provider_configs`） | 管理画面で設定を保存 → **別のブラウザ/シークレットウィンドウで開き直して**残っていること（インスタンスをまたぐのが要点） |
+| #770 / #774 通話の切断 | サーバ Lambda（Vonage への PUT） | **実資格情報が入るまで確かめられない**（#65）。それまでは mock 経路なので切断要求自体が起きない |
+| #772 取り次げなかった受付の記録 | DynamoDB（ReceptionLog） | 実発信を設定したテナントで資格情報を伏せて 1 件受付 → 管理の受付履歴に `failed` が 1 件増えること |
+
+### 🔴 順序: 静的ファイルを先に、CloudFront を後に
+
+`/assets/service-hold.html` は `BucketDeployment` で S3 へ、custom error response は
+CloudFront の設定へ入る。**同じ `cdk deploy` の中で両方入る**ので通常は意識しなくてよいが、
+何らかの理由で分けるときは **S3 が先**。逆にすると、全断が起きた瞬間に来訪者へ
+**404** が出る（元のステータスですらない）。
+
+### 🔴 デプロイ後に実発信を有効化するときの手順（#763 / #736）
+
+`vonage` + `enabled` + `fromNumber` を設定した瞬間から、**資格情報かルート定義が欠けていると
+受付が `unrouted`（503）で失敗する**（#765）。これは意図した挙動だが、順序を守らないと
+来訪者を追い返す。
+
+1. secret（`applicationId` / `privateKey` / `fromNumber`）を先に投入する
+2. RoutingPolicy と ContactEndpoint を先に作る
+3. **最後に** `enabled: true` + `fromNumber` を保存する
+4. 管理画面に警告（#773）が出ていないことを確認する
+
+切り戻しは `enabled: false`（または `fromNumber` を空）で、従来どおり mock で完走する。
+発信そのものを止めるなら `VOICE_DIALING_DISABLED=1`。
+
+---
+
+## ステップ 10c: マージ済みリモートブランチの掃除（**ローカル macOS でのみ実行できる**）
+
+🔴 **クラウドサンドボックスからは削除できない。** 2026-08-21 に実測したところ、
+`git push origin --delete <branch>` は **HTTP 403** で拒否される
+（`error: RPC failed; HTTP 403` → `fatal: the remote end hung up unexpectedly`）。
+GitHub MCP サーバにもブランチ削除のツールは無い。よって**ローカルの後始末として扱う**
+（`CLAUDE.md` の「squash マージ後のブランチは残る」に同じ）。
+
+削除してよい条件は「対応する PR 番号の squash コミットが `main` に在ること」。
+次のコマンドが、それを 1 本ずつ確かめてから削除する:
+
+```bash
+# 全リモートブランチについて、main に "(#<PR番号>)" の squash コミットがあるものだけ消す。
+git fetch origin --prune
+for b in $(git branch -r --format='%(refname:short)' | grep -v 'origin/main\|origin/HEAD' | sed 's|origin/||'); do
+  pr=$(gh pr list --state merged --head "$b" --json number --jq '.[0].number' 2>/dev/null)
+  if [ -n "$pr" ] && git log main --oneline --grep="(#${pr})" | grep -q .; then
+    echo "delete $b (#$pr)"
+    git push origin --delete "$b" && git branch -D "$b" 2>/dev/null || true
+  else
+    echo "keep   $b（マージを確認できず）"
+  fi
+done
+```
+
+🔴 **`git branch -d` は使わない**（squash なので「マージ済み」と判定されず失敗する）。`-D` を使う。
+
+🔴 **`gh pr list --json merged` の `merged` を信用しない。** 一覧エンドポイントでは
+この項目が埋まらず、**マージ済みの PR でも `false` が返る**（2026-08-21 に実測）。
+上のコマンドが `--state merged` で絞り、さらに main の squash コミットで裏を取っているのは
+そのため。
+
+---
+
 ## ステップ 11: 窓を閉じる／再発行
 
 デプロイが終わったら、claude.ai/code の環境ダイアログから 5 つの環境変数を削除する
