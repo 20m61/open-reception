@@ -212,6 +212,9 @@ export const SOURCE_VOCABULARIES = [
  */
 export const NOT_A_TIMELINE_VOCABULARY: Record<string, string> = {
   // ある体験状態の「中」の段階・演出であって、別の状態には写らない。
+  WEBHOOK_STAGES:
+    'webhook 応答の内部処理を段ごとに計測するための名前 (#744)。来訪者にも担当者にも' +
+    '見えず、局面も変えない（遅延の切り分けだけに使う運用計測の語彙）',
   CALLING_STAGES: 'contacting の内側の段階（呼出中 → 応答待ち → 長期化）',
   AVATAR_STATES: '各状態の中でのアバターの見え方。状態そのものではない',
   CALL_STATUSES: '呼び出し 1 件の進捗。contacting / connected の内側',
