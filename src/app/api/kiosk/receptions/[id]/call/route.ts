@@ -4,6 +4,7 @@ import { toResponse } from '@/lib/data-stores/http';
 import { denyWithoutKioskSession } from '@/lib/kiosk/session-guard';
 import { resolveDefaultScope } from '@/lib/tenant/default-scope';
 import { voiceDialingDisabled } from '@/lib/routing/voice-dial';
+import { KIOSK_DIAL_LOG_MARKERS } from '@/lib/routing/dial-log-markers';
 import { intendsRealDialing } from '@/lib/platform/provider-resolution';
 import {
   executeRoutedCall,
@@ -93,7 +94,7 @@ export async function POST(
   if (routed === REAL_DIALING_UNAVAILABLE || (intendsReal && routed === null)) {
     console.error(
       JSON.stringify({
-        event: 'kiosk_real_dialing_unavailable',
+        event: KIOSK_DIAL_LOG_MARKERS.realDialingUnavailable,
         // テナント ID は PII ではない。どのテナントが落ちているか分からないログは切り分け不能。
         tenantId: String(scope.tenantId),
         cause: routed === REAL_DIALING_UNAVAILABLE ? 'no_initiator' : 'no_route_or_read_failed',

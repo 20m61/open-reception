@@ -10,6 +10,7 @@ import * as logs from 'aws-cdk-lib/aws-logs';
 import { EnvConfig } from '../config/environments';
 import { applyCostTags } from '../constructs/cost-tags';
 import { ORIGIN_VERIFY_LOG_MARKERS } from '../../../src/lib/security/origin-verify';
+import { KIOSK_DIAL_LOG_MARKERS } from '../../../src/lib/routing/dial-log-markers';
 
 /**
  * mismatch アラームのしきい値（5 分あたりの遷移ログ件数）(#630)。
@@ -279,6 +280,37 @@ export class WebMonitoringStack extends Stack {
         'origin-verify の mismatch が継続。ローテーションで CloudFront と Lambda がずれた疑い',
     });
     mismatchAlarm.addAlarmAction(action);
+
+    // 取り次げずに来訪者を追い返したことを検出する (#764 / #736)。
+    //
+    // このルートは `startCall` に到達しないので、**受付履歴にもメトリクスにも 1 件も残らない**。
+    // 503 は Lambda としては成功した呼び出しなので Errors にも現れず、CloudFront の
+    // 5xxErrorRate アラームはそもそも存在しない。つまりログをメトリクス化しない限り、
+    // 運用者が気づく手掛かりはゼロになる ── #736 が直そうとした「設定不備に気づけない」が
+    // そのまま残る。
+    //
+    // **1 件でも鳴らす。** 出たということは、実発信を設定したテナントで来訪者が
+    // 実際に追い返されたということ。origin-verify の `missing-secret` と同じ扱い。
+    const dialUnavailableAlarm = new cloudwatch.Alarm(this, 'KioskRealDialingUnavailable', {
+      metric: new logs.MetricFilter(this, 'KioskRealDialingUnavailableFilter', {
+        logGroup: serverFn.logGroup,
+        // 引用符で囲むと部分一致検索になる（JSON 1 行ログの中の値を拾う）。
+        filterPattern: logs.FilterPattern.literal(
+          `"${KIOSK_DIAL_LOG_MARKERS.realDialingUnavailable}"`,
+        ),
+        metricNamespace: `OpenReception/${config.environment}/Reception`,
+        metricName: 'KioskRealDialingUnavailable',
+        metricValue: '1',
+      }).metric({ statistic: 'Sum', period: Duration.minutes(5) }),
+      threshold: 1,
+      evaluationPeriods: 1,
+      comparisonOperator: cloudwatch.ComparisonOperator.GREATER_THAN_OR_EQUAL_TO_THRESHOLD,
+      // 欠測を「異常」にすると、平常時（ログ 0 行）に鳴り続ける。
+      treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
+      alarmDescription:
+        '実発信を設定したテナントで取り次げず、来訪者を追い返している（資格情報・ルート・設定ストアのいずれかの不備）',
+    });
+    dialUnavailableAlarm.addAlarmAction(action);
 
     // リージョン制約があるが、ダッシュボード widget はリージョン跨ぎ参照が可能なので
     // region を明示して表示する。
