@@ -10,6 +10,8 @@
  *   list/create/reset の同型契約のため、汎用 interface `PlatformRecordRepository<T>` に束ねる。
  *   一覧上限は PLATFORM_LIST_LIMIT（store-limits.ts）で共通。
  * - feature-flag は 1 テナント 1 レコード（id = tenantId）の get/put/list。
+ * - provider-config も 1 テナント 1 レコード（id = tenantId）。**非秘密設定のみ**を持ち、
+ *   secret は `TenantSecretStore`（Secrets Manager）へ分離する（#405 AC2 / #762）。
  * - elevation-jti はセキュリティ経路（#264/#278）。fail-closed / updateIf CAS / 冪等 revoke の
  *   挙動・原子性を**変えない**こと（契約は elevation-jti-store.test.ts が固定している）。
  */
@@ -20,6 +22,7 @@ import {
   type ElevationJtiStatus,
 } from '@/domain/auth/elevation';
 import type { TenantFeatureFlagRecord } from '@/domain/platform/feature-flags';
+import type { TenantProviderConfig } from '@/domain/provider-config/types';
 import { getBackend } from '@/lib/data';
 import type { Collection } from '@/lib/data/backend';
 import { PLATFORM_LIST_LIMIT } from './store-limits';
@@ -30,6 +33,7 @@ export const PLATFORM_MAINTENANCE_WINDOW_COLLECTION = 'platform_maintenance_wind
 export const PLATFORM_UPDATE_STATUS_COLLECTION = 'platform_update_status';
 export const PLATFORM_FEATURE_FLAG_COLLECTION = 'platform_feature_flags';
 export const PLATFORM_ELEVATION_JTI_COLLECTION = 'platform_elevation_jti';
+export const PLATFORM_PROVIDER_CONFIG_COLLECTION = 'platform_provider_configs';
 
 /**
  * platform 運用レコード（incident / notice / maintenance-window / update-status）の共通契約。
@@ -99,6 +103,50 @@ export class DataBackedTenantFeatureFlagRepository implements TenantFeatureFlagR
 
   async putRecord(record: TenantFeatureFlagRecord): Promise<void> {
     await this.col().put(record);
+  }
+
+  async reset(): Promise<void> {
+    await this.col().reset();
+  }
+}
+
+/**
+ * テナント別プロバイダ設定のレコード (#762)。`id` はテナント ID そのもの。
+ *
+ * 🔴 **secret を持たない。** 型が `TenantProviderConfig`（client-safe・非秘密のみ）由来である
+ * ことに加え、書き込み側で**既知フィールドだけを射影**する（`provider-config-store.ts`）。
+ * 型は呼び出し元が増えたときの最後の砦にならないので、値の側でも落とす
+ * （`rules/pii-secret-minimization.md`「設定ストアに secret を保存しない」）。
+ */
+export type TenantProviderConfigRecord = TenantProviderConfig & { id: string };
+
+export interface TenantProviderConfigRepository {
+  get(tenantId: string): Promise<TenantProviderConfigRecord | undefined>;
+  put(record: TenantProviderConfigRecord): Promise<void>;
+  remove(tenantId: string): Promise<void>;
+  /** テスト用: 初期状態へ戻す（memory backend のみ実効）。 */
+  reset(): Promise<void>;
+}
+
+/**
+ * getBackend() に永続化するプロバイダ設定リポジトリ。seed は置かない ──
+ * **既定は「未設定」でなければならない**（seed で vonage を撒くと、資格情報が無いテナントが
+ * 実発信を意図していることになり、受付が 503 になる。#736）。
+ */
+export class DataBackedTenantProviderConfigRepository implements TenantProviderConfigRepository {
+  private readonly col = () =>
+    getBackend().collection<TenantProviderConfigRecord>(PLATFORM_PROVIDER_CONFIG_COLLECTION);
+
+  async get(tenantId: string): Promise<TenantProviderConfigRecord | undefined> {
+    return this.col().get(tenantId);
+  }
+
+  async put(record: TenantProviderConfigRecord): Promise<void> {
+    await this.col().put(record);
+  }
+
+  async remove(tenantId: string): Promise<void> {
+    await this.col().remove(tenantId);
   }
 
   async reset(): Promise<void> {
