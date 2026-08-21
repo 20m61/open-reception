@@ -330,6 +330,8 @@ export type MessageKey =
   | 'checkin.error.unanswered'
   | 'checkin.error.unrouted'
   | 'checkin.error.outOfHours'
+  | 'checkin.landing.title'
+  | 'checkin.landing.lead'
   | 'checkin.error.generic'
   | 'checkin.error.useManual'
   | 'checkin.error.retry'
@@ -622,6 +624,8 @@ const ja: DefaultDictionary = {
   'checkin.error.unanswered': '担当者につながりませんでした。恐れ入りますが、近くの受付スタッフにお声がけください。',
   'checkin.error.unrouted': 'ただいま担当者にお取り次ぎできません。恐れ入りますが、近くの受付スタッフにお声がけください。',
   'checkin.error.outOfHours': 'ただいま受付時間外のため、お取り次ぎできません。恐れ入りますが、近くの受付スタッフにお声がけください。',
+  'checkin.landing.title': '受付端末で QR をお読み取りください',
+  'checkin.landing.lead': 'この QR コードは、受付にある端末のカメラにかざしてご利用ください。ご不明な点は近くのスタッフにお声がけください。',
   'checkin.error.generic': 'エラーが発生しました。',
   'checkin.error.useManual': '通常受付へ',
   'checkin.error.retry': 'やり直す',
@@ -916,6 +920,8 @@ const en: LocaleDictionary = {
   'checkin.error.unanswered': 'We could not reach your host. Please ask a nearby staff member for assistance.',
   'checkin.error.unrouted': 'We cannot reach your host right now. Please ask a nearby staff member for assistance.',
   'checkin.error.outOfHours': 'We are outside reception hours, so we cannot reach your host. Please ask a nearby staff member for assistance.',
+  'checkin.landing.title': 'Please scan this QR code at the reception terminal',
+  'checkin.landing.lead': 'Hold this QR code up to the camera on the reception terminal. If you need help, please ask a nearby staff member.',
   'checkin.error.generic': 'An error occurred.',
   'checkin.error.useManual': 'Go to standard check-in',
   'checkin.error.retry': 'Try again',
@@ -1209,6 +1215,8 @@ const ko: LocaleDictionary = {
   'checkin.error.unanswered': '담당자와 연결되지 않았습니다. 가까운 접수 직원에게 말씀해 주세요.',
   'checkin.error.unrouted': '지금은 담당자에게 연결할 수 없습니다. 가까운 접수 직원에게 말씀해 주세요.',
   'checkin.error.outOfHours': '지금은 접수 시간이 아니어서 연결할 수 없습니다. 가까운 접수 직원에게 말씀해 주세요.',
+  'checkin.landing.title': '접수 단말기에서 QR 코드를 읽혀 주세요',
+  'checkin.landing.lead': '이 QR 코드는 접수처 단말기의 카메라에 비춰 사용해 주세요. 궁금한 점은 가까운 직원에게 말씀해 주세요.',
   'checkin.error.generic': '오류가 발생했습니다.',
   'checkin.error.useManual': '일반 접수로 이동',
   'checkin.error.retry': '다시 시도',
@@ -1495,6 +1503,8 @@ const zh: LocaleDictionary = {
   'checkin.error.unanswered': '未能联系到负责人。请向附近的接待人员咨询。',
   'checkin.error.unrouted': '目前无法为您转接负责人。请向附近的接待人员咨询。',
   'checkin.error.outOfHours': '现在不在接待时间内，无法为您转接。请向附近的接待人员咨询。',
+  'checkin.landing.title': '请在接待终端扫描此二维码',
+  'checkin.landing.lead': '请将此二维码对准接待终端的摄像头使用。如有疑问，请向附近的工作人员咨询。',
   'checkin.error.generic': '发生错误。',
   'checkin.error.useManual': '前往常规登记',
   'checkin.error.retry': '重试',
