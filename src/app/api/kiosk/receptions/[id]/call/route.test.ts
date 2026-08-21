@@ -25,6 +25,8 @@ vi.mock('@/lib/data-stores/reception-store', () => ({
 vi.mock('@/lib/routing/call-execution', () => ({
   executeRoutedCall: (...a: unknown[]) => executeRoutedCall(...a),
   routedCallAdapter: (...a: unknown[]) => routedCallAdapter(...a),
+  // 実物と同じ値でなければ、ルートの分岐がテストの中でだけ当たらなくなる。
+  REAL_DIALING_UNAVAILABLE: 'real_dialing_unavailable',
 }));
 vi.mock('@/lib/tenant/default-scope', () => ({
   resolveDefaultScope: () => ({ tenantId: 'internal', siteId: 'default-site' }),
@@ -68,6 +70,43 @@ describe('POST /api/kiosk/receptions/:id/call', () => {
    * **誰も呼ばれていないのに全員が受付完了する。**運用者からは「全員入館できている」
    * ように見えるため、全断に気づくのが遅れる。
    */
+  /**
+   * 🔴 **実発信のつもりのテナントで「呼び出したふり」をしない (#736)。**
+   *
+   * N0 が塞いだのはキルスイッチだけで、**資格情報の不備は素通り**だった。
+   * `resolveProviderForTenant` は secret 欠如も設定不備もすべて `mock` へ畳むので、
+   * vonage + enabled と設定したテナントでも mock provider が bridge 系を無条件で
+   * `'answered'` にし、来訪者には「担当者が応答しました」と出て受付が `completed` に
+   * 到達していた —— **誰も呼ばれていないのに全員が受付完了する**。
+   *
+   * 運用者からは「全員入館できている」ように見えるため、設定不備に気づく手掛かりが
+   * 一つも無い。8/30 Gate で最も起きやすい形（資格情報を入れ忘れて公開する）。
+   */
+  describe('実発信のつもりで撃てなかったとき (#736)', () => {
+    it('🔴 誰も呼ばず、取り次げないことを返す', async () => {
+      executeRoutedCall.mockResolvedValue('real_dialing_unavailable');
+      const res = await call();
+      expect(res.status).toBe(503);
+      expect(await res.json()).toEqual({ error: 'unrouted' });
+      expect(startCall).not.toHaveBeenCalled();
+    });
+
+    it('🔴 mock へ倒さない（受付を connected にしない）', async () => {
+      executeRoutedCall.mockResolvedValue('real_dialing_unavailable');
+      await call();
+      expect(routedCallAdapter).not.toHaveBeenCalled();
+    });
+
+    /** 設定が mock（dev / デモ / 未設定）のテナントは従来どおり完走する。 */
+    it('ルート未設定（fail-open）は従来どおり単発 mock へ倒す', async () => {
+      executeRoutedCall.mockResolvedValue(null);
+      startCall.mockResolvedValue({ ok: true, value: { id: 'rec-1', state: 'connected' } });
+      const res = await call();
+      expect(res.status).toBe(200);
+      expect(startCall).toHaveBeenCalled();
+    });
+  });
+
   describe('VOICE_DIALING_DISABLED (N0)', () => {
     afterEach(() => {
       delete process.env.VOICE_DIALING_DISABLED;

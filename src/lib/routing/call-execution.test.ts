@@ -9,6 +9,7 @@ import {
   createKioskMockProvider,
   executeRoutedCall,
   outcomeToCallStatus,
+  REAL_DIALING_UNAVAILABLE,
   runRoutedCall,
   runVoiceRoutedCall,
   selectEntryPolicy,
@@ -372,15 +373,31 @@ describe('executeRoutedCall の mock/vonage 分岐', () => {
     return { initiator, calls };
   }
 
+  /**
+   * 実発信の**意図が無い**テナント（設定 mock / 未設定 = dev・デモ・既定）。
+   * 明示的に渡すのは、既定へ倒すと「設定を読みに行った結果 false」なのか
+   * 「意図を見ていない」のか区別が付かないため。
+   */
+  const NO_REAL_DIALING_INTENT = { intendsRealDialing: async () => false };
+
+  /** `REAL_DIALING_UNAVAILABLE` でないことを主張しつつ型を絞る。 */
+  function asRouted(outcome: Awaited<ReturnType<typeof executeRoutedCall>>) {
+    expect(outcome).not.toBe(REAL_DIALING_UNAVAILABLE);
+    return outcome as Exclude<typeof outcome, typeof REAL_DIALING_UNAVAILABLE>;
+  }
+
   it('🔴 webhookBaseUrl が無ければ実発信を試みない（解決すら呼ばない）', async () => {
     // 分からないまま撃つと Function URL 由来の URL を Vonage へ渡し、全 webhook が 403 になる。
     let asked = 0;
-    const routed = await executeRoutedCall(scope, 'rec-1', {
-      resolveInitiator: async () => {
-        asked += 1;
-        return stubInitiator().initiator;
-      },
-    });
+    const routed = asRouted(
+      await executeRoutedCall(scope, 'rec-1', {
+        ...NO_REAL_DIALING_INTENT,
+        resolveInitiator: async () => {
+          asked += 1;
+          return stubInitiator().initiator;
+        },
+      }),
+    );
     expect(asked).toBe(0);
     // mock 経路＝同期確定（outcome を持つ）。
     expect(routed?.status).not.toBe('calling');
@@ -388,20 +405,80 @@ describe('executeRoutedCall の mock/vonage 分岐', () => {
   });
 
   it('テナントが実発信者を解決できなければ mock 経路のまま', async () => {
-    const routed = await executeRoutedCall(scope, 'rec-1', {
-      webhookBaseUrl: 'https://example.test',
-      resolveInitiator: async () => null,
-    });
+    const routed = asRouted(
+      await executeRoutedCall(scope, 'rec-1', {
+        ...NO_REAL_DIALING_INTENT,
+        webhookBaseUrl: 'https://example.test',
+        resolveInitiator: async () => null,
+      }),
+    );
     expect(routed?.status).not.toBe('calling');
     expect(routed?.outcome).toBeDefined();
   });
 
+  /**
+   * 🔴 **実発信のつもりのテナントで mock へ倒さない (#736)。**
+   *
+   * mock provider は bridge 系を**無条件で `'answered'`** にする。設定は vonage + enabled
+   * なのに撃てなかったとき（資格情報の不備・webhook 基底 URL 不明）にそのまま mock へ倒すと、
+   * 来訪者には「担当者が応答しました」と出て受付が `completed` に到達する ——
+   * **誰も呼ばれていないのに全員が受付完了する**。運用者からは「全員入館できている」ように
+   * 見えるので、設定不備に気づく手掛かりが一つも無い。
+   */
+  it('🔴 実発信の意図があるのに解決できなければ mock へ倒さない', async () => {
+    const outcome = await executeRoutedCall(scope, 'rec-1', {
+      intendsRealDialing: async () => true,
+      webhookBaseUrl: 'https://example.test',
+      resolveInitiator: async () => null,
+    });
+    expect(outcome).toBe(REAL_DIALING_UNAVAILABLE);
+  });
+
+  it('🔴 webhookBaseUrl が分からないときも同じ（撃てないことに変わりはない）', async () => {
+    const outcome = await executeRoutedCall(scope, 'rec-1', {
+      intendsRealDialing: async () => true,
+      resolveInitiator: async () => stubInitiator().initiator,
+    });
+    expect(outcome).toBe(REAL_DIALING_UNAVAILABLE);
+  });
+
+  /** 意図が無いテナント（dev・デモ）は従来どおり mock で完走する。 */
+  it('意図が無ければ従来どおり mock で完走する（dev / デモを壊さない）', async () => {
+    const routed = asRouted(
+      await executeRoutedCall(scope, 'rec-1', {
+        ...NO_REAL_DIALING_INTENT,
+        webhookBaseUrl: 'https://example.test',
+        resolveInitiator: async () => null,
+      }),
+    );
+    expect(routed).not.toBeNull();
+    expect(routed?.outcome).toBeDefined();
+  });
+
+  /** 解決できたなら意図の有無に関わらず実発信経路（意図の判定が発信を止めない）。 */
+  it('解決できたときは意図を見ずに実発信経路へ入る', async () => {
+    const { initiator, calls } = stubInitiator();
+    const routed = asRouted(
+      await executeRoutedCall(scope, 'rec-1', {
+        intendsRealDialing: async () => {
+          throw new Error('TEST-意図を読んではいけない');
+        },
+        webhookBaseUrl: 'https://example.test',
+        resolveInitiator: async () => initiator,
+      }),
+    );
+    expect(routed?.status).toBe('calling');
+    expect(calls.length).toBe(1);
+  });
+
   it('実発信者が解決できたら実発信経路へ入る（mock orchestrator を走らせない）', async () => {
     const { initiator, calls } = stubInitiator();
-    const routed = await executeRoutedCall(scope, 'rec-1', {
-      webhookBaseUrl: 'https://example.test',
-      resolveInitiator: async () => initiator,
-    });
+    const routed = asRouted(
+      await executeRoutedCall(scope, 'rec-1', {
+        webhookBaseUrl: 'https://example.test',
+        resolveInitiator: async () => initiator,
+      }),
+    );
     expect(routed?.status).toBe('calling');
     expect(routed?.providerCallId).toBe('TEST-provider-call-id');
     // mock 経路は最後まで回して outcome を作る。実発信経路では在ってはならない。

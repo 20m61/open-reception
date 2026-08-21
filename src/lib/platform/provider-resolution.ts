@@ -49,6 +49,31 @@ export type ResolveProviderDeps = {
 const MOCK: ResolvedProvider = { provider: 'mock' };
 
 /**
+ * テナントが**実発信を意図している**か（設定が vonage かつ有効）。
+ *
+ * 🔴 `resolveProviderForTenant` はこれを**答えられない**。あれは secret 欠如も設定不備も
+ * すべて `mock` へ畳んでしまうので、返り値からは
+ * 「mock でよい（dev / デモ）」と「vonage のつもりだったが繋がらない」の区別が付かない。
+ *
+ * その区別が要るのは、区別できないと**来訪者に嘘をつく**から。mock provider は bridge 系を
+ * 無条件で `'answered'` にするので、資格情報が壊れているテナントでも来訪者には
+ * 「担当者が応答しました」と出て受付が `completed` に到達する ——
+ * **誰も呼ばれていないのに全員が受付完了する**（`VOICE_DIALING_DISABLED` について
+ * `api/kiosk/receptions/[id]/call/route.ts` の N0 が塞いだのと同じ事故）。
+ *
+ * secret の**有無すら見ない**。見ると「意図」ではなく「今できるか」を答えることになり、
+ * 呼び出し側が知りたい 2 つの事実が 1 つに畳まれて元に戻る。
+ */
+export async function intendsRealDialing(
+  tenantId: string,
+  deps: Pick<ResolveProviderDeps, 'loadConfig'> = {},
+): Promise<boolean> {
+  const loadConfig = deps.loadConfig ?? getTenantProviderConfig;
+  const config = await loadConfig(tenantId);
+  return config?.provider === 'vonage' && config.enabled === true;
+}
+
+/**
  * テナントの実行時プロバイダを解決する。テナント設定が無い/無効/secret 欠如なら Mock。
  * `tenantId` は認可済みコンテキスト由来のみ渡すこと（越境防止）。
  */

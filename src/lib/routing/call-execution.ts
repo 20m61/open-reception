@@ -28,6 +28,7 @@ import { startRouting } from '@/domain/routing/resumable';
 import type { VoiceCallInitiator } from '@/domain/routing/voice-initiator';
 import { getCallCorrelationRepository, type StoredCallCorrelation } from './call-correlation';
 import { getRoutingRepositories } from './store';
+import { intendsRealDialing } from '@/lib/platform/provider-resolution';
 import { resolveVoiceInitiator } from './voice-dial';
 import type { StoredContactEndpoint, StoredRoutingPolicy } from './types';
 
@@ -302,7 +303,20 @@ export type ExecuteRoutedCallOptions = {
     tenantId: string,
     webhookBaseUrl: string,
   ) => Promise<VoiceCallInitiator | null>;
+  /** テスト用の差し替え。既定は `intendsRealDialing`（テナント設定から解決）。 */
+  intendsRealDialing?: (tenantId: string) => Promise<boolean>;
 };
+
+/**
+ * 実発信を意図しているテナントで、実発信できなかったことを表す (#736)。
+ *
+ * 🔴 **`null`（ルート未設定の fail-open）と混ぜない。** あちらは「mock でよい」だが、
+ * こちらは「vonage のつもりだったが繋がらない」。同じ値にすると呼び出し側が
+ * mock へ倒し、来訪者に「担当者が応答しました」と出る。
+ */
+export const REAL_DIALING_UNAVAILABLE = 'real_dialing_unavailable';
+
+export type ExecuteRoutedCallOutcome = RoutedCallResult | null | typeof REAL_DIALING_UNAVAILABLE;
 
 /**
  * スコープ（テナント/サイト）に保存されたルートを読み、mock / 実 PSTN のどちらかで実行する
@@ -317,7 +331,7 @@ export async function executeRoutedCall(
   scope: { tenantId: TenantId; siteId: SiteId },
   callUuid: string,
   options: ExecuteRoutedCallOptions = {},
-): Promise<RoutedCallResult | null> {
+): Promise<ExecuteRoutedCallOutcome> {
   const repos = getRoutingRepositories();
   const allPolicies = await repos.policies.list(scope.tenantId);
   // サイト scope: 同一サイト or テナント横断（siteId 未設定）のポリシーのみを対象にする。
@@ -330,6 +344,19 @@ export async function executeRoutedCall(
   const initiator = options.webhookBaseUrl
     ? await resolveInitiator(String(scope.tenantId), options.webhookBaseUrl)
     : null;
+
+  // 🔴 **実発信のつもりのテナントで mock へ倒さない (#736)。**
+  // mock provider は bridge 系を無条件で `'answered'` にするので、資格情報が壊れていても
+  // 来訪者には「担当者が応答しました」と出て受付が `completed` に到達する ——
+  // **誰も呼ばれていないのに全員が受付完了する**。運用者からは「全員入館できている」
+  // ように見えるため、設定不備に気づく手掛かりが一つも無い。
+  //
+  // 設定が mock（dev / デモ / 未設定）のテナントは従来どおり mock で完走する。
+  // 変わるのは「vonage + enabled と設定したのに撃てなかった」ときだけ。
+  if (initiator === null) {
+    const intends = options.intendsRealDialing ?? intendsRealDialing;
+    if (await intends(String(scope.tenantId))) return REAL_DIALING_UNAVAILABLE;
+  }
 
   if (initiator !== null) {
     return runVoiceRoutedCall(callUuid, {

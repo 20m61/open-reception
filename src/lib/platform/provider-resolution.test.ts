@@ -10,7 +10,7 @@
  *   - テナント境界: あるテナントの設定・secret が別テナントの解決に漏れない。
  */
 import { describe, expect, it } from 'vitest';
-import { resolveProviderForTenant } from './provider-resolution';
+import { intendsRealDialing, resolveProviderForTenant } from './provider-resolution';
 import {
   InMemoryTenantSecretStore,
   SecretValue,
@@ -115,5 +115,51 @@ describe('resolveProviderForTenant (#405 Inc3)', () => {
     const serialized = JSON.stringify(resolved);
     expect(serialized).not.toContain('TEST-must-not-leak');
     expect(serialized).toContain('[redacted]');
+  });
+});
+
+/**
+ * 「実発信を意図しているか」は `resolveProviderForTenant` からは分からない (#736)。
+ *
+ * あれは secret 欠如も設定不備もすべて `mock` へ畳むので、返り値からは
+ * 「mock でよい（dev / デモ）」と「vonage のつもりだったが繋がらない」の区別が付かない。
+ * その区別が無いと、資格情報が壊れたテナントでも mock provider が bridge 系を無条件で
+ * `'answered'` にし、来訪者には「担当者が応答しました」と出る ——
+ * **誰も呼ばれていないのに全員が受付完了する**。
+ */
+describe('intendsRealDialing (#736)', () => {
+  it('vonage + enabled なら意図あり', async () => {
+    const loadConfig = loaderFor({ 'tenant-a': config() });
+    expect(await intendsRealDialing('tenant-a', { loadConfig })).toBe(true);
+  });
+
+  /**
+   * 🔴 **secret の有無を見ない。** 見ると「意図」ではなく「今できるか」を答えることになり、
+   * 呼び出し側が知りたい 2 つの事実が 1 つに畳まれて `resolveProviderForTenant` に戻る。
+   */
+  it('🔴 secret が無くても意図はある（そこが分かれ目）', async () => {
+    const loadConfig = loaderFor({ 'tenant-a': config() });
+    // secretStore を渡していない ＝ secret は解決できない。それでも意図は true。
+    expect(await intendsRealDialing('tenant-a', { loadConfig })).toBe(true);
+  });
+
+  it('disabled なら意図なし', async () => {
+    const loadConfig = loaderFor({ 'tenant-a': config({ enabled: false }) });
+    expect(await intendsRealDialing('tenant-a', { loadConfig })).toBe(false);
+  });
+
+  it('provider が mock なら意図なし', async () => {
+    const loadConfig = loaderFor({ 'tenant-a': config({ provider: 'mock' }) });
+    expect(await intendsRealDialing('tenant-a', { loadConfig })).toBe(false);
+  });
+
+  it('設定が無ければ意図なし（dev / デモの既定を壊さない）', async () => {
+    expect(await intendsRealDialing('tenant-a', { loadConfig: loaderFor({}) })).toBe(false);
+  });
+
+  /** 🔴 他テナントの設定で意図を判定しない（越境防止）。 */
+  it('🔴 他テナントの設定を見ない', async () => {
+    const loadConfig = loaderFor({ 'tenant-a': config() });
+    expect(await intendsRealDialing('tenant-b', { loadConfig })).toBe(false);
   });
 });

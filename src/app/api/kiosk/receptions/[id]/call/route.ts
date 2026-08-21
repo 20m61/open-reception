@@ -4,7 +4,11 @@ import { toResponse } from '@/lib/data-stores/http';
 import { denyWithoutKioskSession } from '@/lib/kiosk/session-guard';
 import { resolveDefaultScope } from '@/lib/tenant/default-scope';
 import { voiceDialingDisabled } from '@/lib/routing/voice-dial';
-import { executeRoutedCall, routedCallAdapter } from '@/lib/routing/call-execution';
+import {
+  executeRoutedCall,
+  routedCallAdapter,
+  REAL_DIALING_UNAVAILABLE,
+} from '@/lib/routing/call-execution';
 import { resolveWebhookBaseUrl } from '@/lib/routing/webhook-base-url';
 import { evaluateCallGuard } from '@/lib/operating-policy/call-guard';
 
@@ -68,6 +72,16 @@ export async function POST(
     });
     return null;
   });
+  // 🔴 **実発信のつもりのテナントで mock へ倒さない (#736)。**
+  // 設定は vonage + enabled なのに撃てなかった＝資格情報や webhook 基底 URL の不備。
+  // そのまま進むと mock が bridge 系を無条件で `'answered'` にして「担当者が応答しました」
+  // に到達する —— **誰も呼ばれていないのに受付が完了する**。N0（キルスイッチ）と同じ扱いで、
+  // 受付は取り次げないことを返し、逃げ道バーと有人支援へ倒す。**やめるのは嘘だけ。**
+  if (routed === REAL_DIALING_UNAVAILABLE) {
+    console.error('[kiosk/call] real dialing intended but unavailable', { tenant: 'redacted' });
+    return NextResponse.json({ error: 'unrouted' }, { status: 503 });
+  }
+
   // ルート未設定（fail-open）時の単発 adapter は、営業時間ガード/routing と同じ scope の
   // tenantId で解決する（テナント設定が vonage+secret 完備なら本番 adapter。既定は Mock）。
   const result = await startCall(id, routed ? routedCallAdapter(routed) : undefined, scope.tenantId);
