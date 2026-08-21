@@ -14,12 +14,36 @@
  * コメントが 2 度書いていることを、3 度目に踏んだ。
  */
 import { execFileSync } from 'node:child_process';
-import { describe, expect, it } from 'vitest';
+import { mkdtempSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join, resolve } from 'node:path';
+import { beforeAll, describe, expect, it } from 'vitest';
+
+const HOOK = resolve('scripts/hooks/pr-gate-guard.sh');
+
+/**
+ * 🔴 **スタンプの無い使い捨て git リポジトリで走らせる。**
+ *
+ * 最初これを本物のリポジトリで走らせて、**main で赤くなった** ── `--full` を回した直後は
+ * スタンプが green なので、ガードは正しく「許可」する。つまりあのテストは
+ * 「スタンプがたまたま無い/古い」ことに依存していて、**ガードの判定ではなく実行環境を
+ * 測っていた**。今夜追ってきた欠陥（性質を主張しているようで別のものを見ている）そのもの。
+ *
+ * スタンプは `git rev-parse --absolute-git-dir` 配下に置かれるので、cwd を空の git
+ * リポジトリにすれば「記録が無い」状態を決定的に作れる。
+ */
+let repoWithoutStamp: string;
+
+beforeAll(() => {
+  repoWithoutStamp = mkdtempSync(join(tmpdir(), 'gate-guard-'));
+  execFileSync('git', ['init', '-q'], { cwd: repoWithoutStamp });
+});
 
 /** フックへ PreToolUse のペイロードを渡し、終了コードと stderr を返す。 */
 function invoke(payload: object): { code: number; stderr: string } {
   try {
-    execFileSync('bash', ['scripts/hooks/pr-gate-guard.sh'], {
+    execFileSync('bash', [HOOK], {
+      cwd: repoWithoutStamp,
       input: JSON.stringify(payload),
       encoding: 'utf8',
       stdio: ['pipe', 'pipe', 'pipe'],
@@ -33,8 +57,7 @@ function invoke(payload: object): { code: number; stderr: string } {
 
 describe('pr-gate-guard.sh が MCP 経路を見る (#736)', () => {
   /**
-   * 🔴 **これが本体。** 作業ツリーはテスト実行時点で必ず「ゲート後に編集済み」
-   * （このテストファイル自身が指紋に入る）なので、記録は stale。ブロックされるはず。
+   * 🔴 **これが本体。** green な記録が無いのだからブロックされるはず。
    */
   it('🔴 MCP でのマージは --full を要求する', () => {
     const { code, stderr } = invoke({
