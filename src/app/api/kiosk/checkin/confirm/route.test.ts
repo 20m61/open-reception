@@ -15,9 +15,10 @@ const createReception = vi.fn();
 const appendAuditLog = vi.fn();
 const requireKioskSession = vi.fn();
 
+const resolveCheckinScope = vi.fn();
 vi.mock('@/lib/checkin/store', () => ({
   getCheckinService: () => ({ confirm }),
-  resolveCheckinScope: () => ({ tenantId: 'internal', siteId: 'default-site' }),
+  resolveCheckinScope: (...a: unknown[]) => resolveCheckinScope(...a),
 }));
 vi.mock('@/lib/data-stores/reception-store', () => ({
   createReception: (...a: unknown[]) => createReception(...a),
@@ -51,6 +52,7 @@ function request(body: unknown = { payload: 'TEST-payload' }): Request {
 beforeEach(() => {
   vi.clearAllMocks();
   requireKioskSession.mockResolvedValue({ kioskId: 'TEST-kiosk' });
+  resolveCheckinScope.mockResolvedValue({ tenantId: 'internal', siteId: 'default-site' });
   confirm.mockResolvedValue({ ok: true, summary: SUMMARY });
   createReception.mockResolvedValue({ ok: true, value: { id: 'rec-1' } });
   appendAuditLog.mockResolvedValue(undefined);
@@ -103,5 +105,28 @@ describe('POST /api/kiosk/checkin/confirm', () => {
     const res = await POST(request());
     expect(res.status).toBe(503);
     expect(appendAuditLog).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * 端末が台帳に無ければ予約を引かせない (#736)。
+ *
+ * 🔴 scope は「その端末がどの予約を見られるか」を決める。既定テナントへ倒すと、
+ * **未登録の端末が他テナントの予約を引ける**。
+ */
+describe('未登録の端末は拒否する (#736)', () => {
+  it('🔴 scope が解決できなければ 403 で、予約も受付も触らない', async () => {
+    resolveCheckinScope.mockResolvedValue(undefined);
+    const res = await POST(request());
+    expect(res.status).toBe(403);
+    expect(confirm).not.toHaveBeenCalled();
+    expect(createReception).not.toHaveBeenCalled();
+    expect(appendAuditLog).not.toHaveBeenCalled();
+  });
+
+  it('端末台帳の scope をそのまま使う（既定へ差し替えない）', async () => {
+    resolveCheckinScope.mockResolvedValue({ tenantId: 'tenant-b', siteId: 'site-9' });
+    await POST(request());
+    expect(confirm).toHaveBeenCalledWith('tenant-b', 'site-9', 'TEST-payload');
   });
 });

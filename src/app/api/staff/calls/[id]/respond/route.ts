@@ -18,7 +18,11 @@ import { getStaffResponseConfigService } from '@/lib/reception/staff-response-co
 async function resolveOverridesForReception(id: string) {
   const reception = await getReception(id);
   if (!reception.ok) return null;
-  const scope = resolveCheckinScope(reception.value.kioskId);
+  // 端末が台帳に無ければ上書きを解決せず null（呼び出し側が既定へ倒す）。ここは
+  // 「どの応答種別を出すか」であって予約の可視範囲ではないので、既定へ倒して問題ない
+  // （予約を引く経路は #736 で fail-closed にした）。
+  const scope = await resolveCheckinScope(reception.value.kioskId);
+  if (!scope) return null;
   return getStaffResponseConfigService().resolveOverrides(scope.tenantId, scope.siteId);
 }
 
