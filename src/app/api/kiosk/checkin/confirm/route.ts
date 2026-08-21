@@ -30,7 +30,12 @@ export async function POST(request: Request): Promise<NextResponse> {
   const payload = readPayload(body);
   if (payload === null) return NextResponse.json({ error: 'invalid' }, { status: 400 });
 
-  const { tenantId, siteId } = resolveCheckinScope(session.kioskId);
+  // 🔴 端末が台帳に無ければ拒否する。既定テナントへ倒すと**他テナントの予約を引ける**。
+  const scope = await resolveCheckinScope(session.kioskId);
+  if (!scope) {
+    return NextResponse.json({ error: 'forbidden', message: 'kiosk is not registered' }, { status: 403 });
+  }
+  const { tenantId, siteId } = scope;
   let summary;
   try {
     const result = await getCheckinService().confirm(tenantId, siteId, payload);

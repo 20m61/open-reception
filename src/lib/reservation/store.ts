@@ -10,7 +10,7 @@
  */
 import { appendAdminAudit } from '@/lib/data-stores/reception-log-store';
 import { serverSecret } from '@/lib/auth/server-secret';
-import { MemoryReservationRepository } from './memory-repository';
+import { DataBackedReservationRepository } from './data-backed-repository';
 import { ReservationService } from './service';
 
 let service: ReservationService | undefined;
@@ -27,7 +27,10 @@ export function getReservationTokenPepper(): string {
 export function getReservationService(): ReservationService {
   if (!service) {
     service = new ReservationService({
-      repo: new MemoryReservationRepository(),
+      // 🔴 `getBackend()` へ載せる (#736)。in-memory だと、発行を処理した Lambda
+      // インスタンスと受付端末のリクエストを処理するインスタンスが別なので、
+      // **発行した QR が必ず「不明な QR」になる**。
+      repo: new DataBackedReservationRepository(),
       appendAudit: appendAdminAudit,
       pepper: getReservationTokenPepper(),
     });
