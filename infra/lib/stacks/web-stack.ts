@@ -605,6 +605,37 @@ export class WebStack extends Stack {
         )
       : undefined;
 
+    /**
+     * 全断（オリジン到達不能）のときに来訪者へ出す応答 (#629 / Gate A)。
+     *
+     * サーバ Lambda が落ちていると middleware は走らないので `service-hold-page.ts` の
+     * 経路には入らず、CloudFront 既定の英語の技術文がそのまま iPad に出る。
+     *
+     * 🔴 **403 / 503 は割り当てない。** custom error response は**ディストリビューション単位**で
+     * cache behavior に絞れないため、割り当てると API の 403/503 まで HTML に潰れる
+     * （`PROVIDER_WEBHOOKS_DISABLED` の 503 + `Retry-After` は Vonage の再送に効いている
+     * 運用スイッチ）。`service-hold-page.ts` が middleware 方式を選んだ理由そのもの。
+     * 500 も同じ理由で外す ── アプリ自身が返しうるコードだから。
+     * 残る 502 / 504 は **CloudFront が origin へ到達できなかったときだけ**出るもので、
+     * そのとき既に HTML を返している。差し替えるのは本文だけ。
+     *
+     * 🔴 **ステータスコードを変えない。** 200 に潰すと、機械（Vonage の再送等）から見て
+     * 「成功した」ことになり再送が止まる。
+     *
+     * 🔴 **エラーを長くキャッシュしない。** 既定は 5 分で、復旧してもその間ずっと停止画面が
+     * 出続ける。受付は復旧が分かるまでの待ち時間が体験そのものなので短く持つ。
+     */
+    // 実体は `public/assets/service-hold.html`。値は `src/domain/reception/service-hold-page.ts`
+    // の `SERVICE_HOLD_PAGE_PATH` と一致していなければならない（deploy 時の ts-node 解決に
+    // 巻き込まないため import はせず、`infra/test/web-stack.test.ts` が両者を突き合わせる）。
+    const HOLD_PAGE_PATH = '/assets/service-hold.html';
+    const holdPageResponse = (httpStatus: number): cloudfront.ErrorResponse => ({
+      httpStatus,
+      responseHttpStatus: httpStatus,
+      responsePagePath: HOLD_PAGE_PATH,
+      ttl: Duration.seconds(10),
+    });
+
     const distribution = new cloudfront.Distribution(this, 'Distribution', {
       comment: `${config.prefix} Next.js (OpenNext)`,
       defaultBehavior: serverBehavior,
@@ -614,6 +645,8 @@ export class WebStack extends Stack {
       // 国内 iPad 受付端末向け用途のため全世界エッジは不要。prod 含む全環境で
       // PriceClass_200（北米/欧州/アジア等）に抑えてコストを最適化する (issue #300)。
       priceClass: cloudfront.PriceClass.PRICE_CLASS_200,
+      // 全断時の来訪者向け応答。割り当てるコードを絞る理由は `holdPageResponse` の doc。
+      errorResponses: [holdPageResponse(502), holdPageResponse(504)],
       additionalBehaviors: {
         // OpenNext behaviors に対応:
         '/_next/image*': {
