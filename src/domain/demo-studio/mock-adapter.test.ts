@@ -3,6 +3,7 @@ import { createDemoKioskFetch, DEMO_CALL_FAILED_LATENCY_MS } from './mock-adapte
 import { DemoSandboxViolation } from './sandbox';
 import { getDemoScenario } from './scenarios';
 import type { DemoScenario } from './scenario';
+import { failureResponse } from '@/lib/checkin/request';
 
 const ORIGIN = 'https://kiosk.example.com';
 
@@ -179,6 +180,24 @@ describe('createDemoKioskFetch — QR 解決', () => {
     expect(res.status).not.toBe(503);
     expect((await json(res)).error).toBe(qr);
   });
+
+  /**
+   * 🔴 **本番ルートと同じ HTTP を返す。** デモは運用者が「本番と同じ振る舞い」を確かめる
+   * 場所なので、ずれていると確かめたつもりのものが確かめられていない。
+   *
+   * 上のテストは `not.toBe(503)` としか見ておらず、`expired` が **410**（本番は 409）
+   * だったことを何年でも通してしまう形だった。実値と突き合わせる。
+   */
+  it.each(['expired', 'used', 'revoked'] as const)(
+    '🔴 %s の HTTP が本番ルートと一致する',
+    async (qr) => {
+      const res = await fetchFor(scenario({ simulatedResults: { qr } }))(
+        '/api/kiosk/checkin/resolve',
+        { method: 'POST', body: JSON.stringify({ payload: 'x' }) },
+      );
+      expect(res.status).toBe(failureResponse(qr).status);
+    },
+  );
 });
 
 describe('createDemoKioskFetch — signage / attract 入口', () => {
