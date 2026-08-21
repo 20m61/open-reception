@@ -157,6 +157,10 @@ import {
   type CallStage,
 } from '@/domain/kiosk/call-stages';
 import {
+  isVisitorExit,
+  shouldCancelOnServer,
+} from '@/domain/reception/leave-calling';
+import {
   escapeHatchesFor,
 } from './quick-actions';
 import { EscapeBar } from './EscapeBar';
@@ -349,6 +353,20 @@ export type KioskFlowProps = {
  */
 function giveUpServerSide(receptionId: string): void {
   void fetch(`/api/kiosk/receptions/${receptionId}/give-up`, { method: 'POST' }).catch(() => {});
+}
+
+/**
+ * 来訪者が**自分で**受付をやめたことをサーバへ伝える (#743)。
+ *
+ * `/give-up`（ポーリング上限の諦め）とは別の経路。あちらは `failed` + `client_timeout` で
+ * 終端するが、こちらは来訪者の明示的な操作なので `cancelled` として残す
+ * ──「呼び出せなかった」と「来訪者がやめた」を履歴上も混ぜない。
+ *
+ * 🔴 **応答を待たない・失敗しても画面を止めない**（`giveUpServerSide` と同じ理由）。
+ * 届かなければ取次は呼出予算で自然に終わる。
+ */
+function cancelServerSide(receptionId: string): void {
+  void fetch(`/api/kiosk/receptions/${receptionId}/cancel`, { method: 'POST' }).catch(() => {});
 }
 
 export function KioskFlow({
@@ -714,6 +732,25 @@ export function KioskFlow({
   // 🔴 **`give_up` 予算の起点は「PSTN 発信が確定した時刻」** (#652)。ポーリングのループは
   // 受付作成の時点から回っている（担当者応答と共有しているため）が、予算の起点をループ側に
   // 持たせると 1 往復ぶん早まって意味が変わる。ここで別に持つ。
+  /**
+   * 来訪者が自分で受付をやめる操作を、**サーバへ伝えてから** dispatch する (#743)。
+   *
+   * 🔴 **判断を 2 か所に書かない。** 抜ける入口は逃げ道バーとチャットドロワーの 2 つあり、
+   * 片方に書くともう片方や 3 つ目の入口で黙って漏れる（#455 で「逃げ道バーを画面分岐の
+   * 外へ出した」のと同じ理由）。判断そのものは `shouldCancelOnServer` が持つ。
+   *
+   * これが無いと、呼び出し中に「最初に戻る」を押した来訪者の受付は `calling` のまま残り、
+   * **取次は hop 上限まで進んで社内の電話が鳴り続ける**。しかもポーリングは抜けた時点で
+   * 止まる（#652）ので `/give-up` も呼ばれない ── 自分から抜けるほうが、放っておくより
+   * 取次が長く走ることになる。
+   */
+  const leaveWithServer = (next: Action): void => {
+    if (isVisitorExit(next.type) && shouldCancelOnServer(data.state, next.type, data.sessionId)) {
+      cancelServerSide(data.sessionId!);
+    }
+    dispatch(next);
+  };
+
   const pstnPollStartedAtRef = useRef<number | null>(null);
   useEffect(() => {
     pstnPollStartedAtRef.current = pstnCallId === null ? null : Date.now();
@@ -1353,7 +1390,7 @@ export function KioskFlow({
                   reset: { type: 'RESET' },
                 };
                 const next = eventByAction[action];
-                if (next) dispatch(next);
+                if (next) leaveWithServer(next);
               }}
             />
           </div>
@@ -1385,7 +1422,7 @@ export function KioskFlow({
             reset: { type: 'RESET' },
           };
           const next = eventByAction[id as ReceptionAction];
-          if (next) dispatch(next);
+          if (next) leaveWithServer(next);
         }}
       />
     </main>
