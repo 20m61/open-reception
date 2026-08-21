@@ -67,6 +67,9 @@ const initiate = vi.fn();
 const receptionState = vi.fn();
 const order: string[] = [];
 
+/** 撃ったが引き継げなかった通話の切断 (#743 AC2 後半)。 */
+const hangUp = vi.fn(async () => ({ kind: 'terminated' }) as unknown);
+
 function deps(over: Partial<Parameters<typeof dialNextHop>[0]> = {}) {
   return {
     correlation: correlation(),
@@ -78,6 +81,7 @@ function deps(over: Partial<Parameters<typeof dialNextHop>[0]> = {}) {
     updateIfUnchanged: reserve,
     repointReception: repoint,
     receptionState,
+    hangUp,
     now: () => new Date('2026-08-20T00:01:00.000Z'),
     ...over,
   };
@@ -311,5 +315,78 @@ describe('dialNextHop — 発信の失敗', () => {
     const result = await dialNextHop(deps());
     expect(result.kind).toBe('handoff_incomplete');
     expect(repoint).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * 撃ったが引き継げなかった通話を切る（2026-08-21 のユーザー判断 / #743 AC2 後半）。
+ *
+ * この通話は**鳴っているのに誰も辿れない**。受付の `providerCallId` は 1 手目のままで、
+ * `/status` は呼出予算で来訪者を代替導線へ倒す ── その後も社内の電話は鳴り続け、
+ * 出た担当者の前に来訪者は居ない。
+ */
+describe('dialNextHop — 引き継げなかった通話を切る (#743 AC2)', () => {
+  it('🔴 新相関を書けなかったら撃った通話を切る', async () => {
+    save.mockRejectedValueOnce(new Error('TEST-write-failed'));
+    await dialNextHop(deps());
+    expect(hangUp).toHaveBeenCalledWith('TEST-call-2');
+  });
+
+  it('🔴 付け替えに失敗したら撃った通話を切る', async () => {
+    repoint.mockRejectedValueOnce(new Error('TEST-write-failed'));
+    await dialNextHop(deps());
+    expect(hangUp).toHaveBeenCalledWith('TEST-call-2');
+  });
+
+  /**
+   * 🔴 **成功した取次では切らない。** ここを取り違えると、繋がった通話を自分で切る。
+   */
+  it('🔴 引き継ぎに成功したら切らない', async () => {
+    const result = await dialNextHop(deps());
+    expect(result.kind).toBe('dialed');
+    expect(hangUp).not.toHaveBeenCalled();
+  });
+
+  it('🔴 そもそも撃てなかったときは切らない（切る通話が無い）', async () => {
+    initiate.mockRejectedValueOnce(new Error('TEST-dial-failed'));
+    await dialNextHop(deps());
+    expect(hangUp).not.toHaveBeenCalled();
+  });
+
+  it('🔴 受付が終端していて撃たなかったときも切らない', async () => {
+    receptionState.mockResolvedValueOnce('failed');
+    await dialNextHop(deps());
+    expect(hangUp).not.toHaveBeenCalled();
+  });
+
+  /**
+   * 🔴 **撃った事実を隠さない。** 切断の成否に関わらず `handoff_incomplete` を返す。
+   * 切れたからといって `dial_failed` 等に変えると、呼び出し元が再発信しうる。
+   */
+  it('🔴 切断の成否で結果を変えない', async () => {
+    save.mockRejectedValueOnce(new Error('TEST-write-failed'));
+    hangUp.mockResolvedValueOnce({ kind: 'failed' });
+    const failed = await dialNextHop(deps());
+    expect(failed).toEqual({ kind: 'handoff_incomplete', providerCallId: 'TEST-call-2' });
+
+    save.mockRejectedValueOnce(new Error('TEST-write-failed'));
+    hangUp.mockResolvedValueOnce({ kind: 'terminated' });
+    const ok = await dialNextHop(deps());
+    expect(ok).toEqual({ kind: 'handoff_incomplete', providerCallId: 'TEST-call-2' });
+  });
+
+  /** 🔴 切断が例外でも結果を変えない（呼び出し元は webhook ルート。5xx を返させない）。 */
+  it('🔴 切断が例外でも handoff_incomplete を返す', async () => {
+    save.mockRejectedValueOnce(new Error('TEST-write-failed'));
+    hangUp.mockRejectedValueOnce(new Error('TEST-hangup-boom'));
+    const result = await dialNextHop(deps());
+    expect(result).toEqual({ kind: 'handoff_incomplete', providerCallId: 'TEST-call-2' });
+  });
+
+  /** 注入しなければ切らない（従来の挙動 ── 呼出予算で自然に終わる）。 */
+  it('hangUp を渡さなければ切らない', async () => {
+    save.mockRejectedValueOnce(new Error('TEST-write-failed'));
+    const result = await dialNextHop({ ...deps(), hangUp: undefined });
+    expect(result.kind).toBe('handoff_incomplete');
   });
 });

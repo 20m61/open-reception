@@ -85,6 +85,12 @@ export type DialNextHopDeps = {
    * 読めなければ `undefined` を返すこと（**不在から「呼び出し中」をでっち上げない**）。
    */
   readonly receptionState: (receptionId: string) => Promise<string | undefined>;
+  /**
+   * 撃った通話を切る (#743 AC2 後半)。**引き継ぎに失敗したときだけ**呼ぶ ──
+   * その通話は鳴っているのに `/status` から辿れず、来訪者は既に別の結末を見ている。
+   * 省略＝切らない（呼出予算で自然に終わる。従来の挙動）。
+   */
+  readonly hangUp?: (providerCallId: string) => Promise<unknown>;
   readonly now?: () => Date;
 };
 
@@ -213,15 +219,39 @@ export async function dialNextHop(deps: DialNextHopDeps): Promise<DialNextHopRes
     });
   } catch {
     // 撃ってはいる。付け替えると `/status` が引けない相関を指して永久に pending になる。
-    return { kind: 'handoff_incomplete', providerCallId };
+    return await abandonDialedCall(deps, providerCallId);
   }
 
   // ── 4. 受付の付け替え。ここまで来て初めて `/status` が 2 手目を見る。
   try {
     await deps.repointReception(correlation.receptionId, providerCallId);
   } catch {
-    return { kind: 'handoff_incomplete', providerCallId };
+    return await abandonDialedCall(deps, providerCallId);
   }
 
   return { kind: 'dialed', providerCallId };
+}
+
+/**
+ * 撃ったが引き継げなかった通話を手放す (#743 AC2 後半)。
+ *
+ * この通話は**鳴っているのに誰も辿れない**。受付の `providerCallId` は 1 手目のままで、
+ * `/status` は呼出予算で来訪者を代替導線へ倒す ── その後も社内の電話は鳴り続け、
+ * 出た担当者の前に来訪者は居ない（「無人の呼び出し」）。だから切る。
+ *
+ * 🔴 **切断の成否で結果を変えない。** 返すのは常に `handoff_incomplete` ──
+ * **撃った事実を隠さない**（隠すと呼び出し元が再発信しうる）。切断は後始末でしかなく、
+ * 失敗しても呼出予算で自然に終わる（従来の挙動に戻るだけ）。
+ */
+async function abandonDialedCall(
+  deps: DialNextHopDeps,
+  providerCallId: string,
+): Promise<DialNextHopResult> {
+  try {
+    await deps.hangUp?.(providerCallId);
+  } catch {
+    // 例外の中身は載せない（宛先・URL・資格情報が混ざりうる）。
+    console.warn(JSON.stringify({ event: 'next_hop_hangup_failed' }));
+  }
+  return { kind: 'handoff_incomplete', providerCallId };
 }
