@@ -91,7 +91,7 @@ async function setCookies(elevationScope: { tenantId?: string } | null = {}): Pr
 
 beforeEach(async () => {
   vi.clearAllMocks();
-  __resetProviderConfigStore();
+  await __resetProviderConfigStore();
   __resetTenantSecretStore();
   resolveAdminActor.mockResolvedValue(developer());
   getTenant.mockResolvedValue({ ...TENANT });
@@ -117,7 +117,7 @@ describe('認可・前提 (#405 Inc1)', () => {
   });
 
   it('config 未設定テナントは 409（先に非秘密設定が要る）', async () => {
-    __resetProviderConfigStore();
+    await __resetProviderConfigStore();
     expect((await setSecret({ secret: FAKE, expectedProvider: 'vonage' })).status).toBe(409);
   });
 

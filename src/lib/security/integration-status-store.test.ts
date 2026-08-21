@@ -26,16 +26,16 @@ beforeEach(async () => {
     delete process.env[k];
   }
   await __resetIntegrationStatus();
-  __resetProviderConfigStore();
+  await __resetProviderConfigStore();
   __resetTenantSecretStore();
 });
 
-afterEach(() => {
+afterEach(async () => {
   for (const k of SECRET_ENV) {
     if (saved[k] === undefined) delete process.env[k];
     else process.env[k] = saved[k];
   }
-  __resetProviderConfigStore();
+  await __resetProviderConfigStore();
   __resetTenantSecretStore();
 });
 
