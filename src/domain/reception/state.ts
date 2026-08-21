@@ -66,6 +66,18 @@ const TRANSITIONS: Partial<Record<ReceptionState, Partial<Record<ReceptionEvent,
     CONFIRM: 'calling',
     BACK: 'inputVisitorInfo',
     CANCEL: 'cancelled',
+    /**
+     * 呼び出しを**始める前に**撃てないと分かったとき (#764)。
+     *
+     * `/call` は実発信が不能なら 503（`unrouted`）で返し、`startCall` に到達しない。
+     * この辺を追加する前は受付が `confirming` のまま残り、**履歴にもメトリクスにも
+     * 1 件も出なかった** ── 運用者は「今日何件取り次げなかったか」を知る手段が無く、
+     * 来訪者は追い返されたのに集計上は存在しないことになる。
+     *
+     * `CONFIRM` を挟んで `calling` を経由させない。**鳴っていない一瞬を「呼び出し中」として
+     * 書くと、その窓に当たった `/status` が来訪者を待たせる**（しかも永久に来ない結果を）。
+     */
+    CALL_FAILED: 'failed',
   },
   calling: {
     CALL_CONNECTED: 'connected',
