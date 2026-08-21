@@ -1,5 +1,5 @@
 /**
- * QR 受付が実際の呼び出しを通ること（配線） (#736 Gate A)。
+ * 端末の意思がサーバへ届く配線 (#736 / #743)。
  *
  * ## なぜ構造で縛るのか
  *
@@ -21,6 +21,7 @@ import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 
 const SOURCE = readFileSync('src/components/kiosk/CheckinFlow.tsx', 'utf8');
+const KIOSK_SOURCE = readFileSync('src/components/kiosk/KioskFlow.tsx', 'utf8');
 
 describe('CheckinFlow が実際の呼び出しを通る (#736)', () => {
   it('🔴 confirmAndCall を経由する（確認だけで完了にしない）', () => {
@@ -43,5 +44,30 @@ describe('CheckinFlow が実際の呼び出しを通る (#736)', () => {
    */
   it('結果待ちの判断は decidePollAction に委ねる', () => {
     expect(SOURCE).toMatch(/decidePollAction\(/);
+  });
+});
+
+/**
+ * 端末が待つのをやめたことをサーバへ伝える (#743 AC3)。
+ *
+ * 🔴 **画面を倒すだけでは取次が止まらない。** サーバ側の受付が `'calling'` のまま残ると
+ * hop 上限まで進み続け、iPad は諦めたのに社内の電話が鳴り続ける（「無人の呼び出し」）。
+ *
+ * ここも振る舞いでは縛れない（node 環境で React の効果を実行できない）。上と同じ理由で
+ * 構造に対して固定する。
+ */
+describe('端末の諦めがサーバへ届く (#743)', () => {
+  it('🔴 待ち上限に達したらサーバへ受付終了の意思を送る', () => {
+    expect(KIOSK_SOURCE).toContain('/give-up');
+    // give_up 判断の直後に送っていること（画面を倒すだけで終わらせない）。
+    expect(KIOSK_SOURCE).toMatch(/give_up[\s\S]{0,400}giveUpServerSide\(/);
+  });
+
+  /**
+   * 🔴 **応答を待たない。** 来訪者にできることは無く、画面が「呼び出し中」のまま
+   * 固まる方が悪い。届かなければ取次は呼出予算で自然に終わる。
+   */
+  it('🔴 送信の失敗で画面を止めない', () => {
+    expect(KIOSK_SOURCE).toMatch(/giveUpServerSide[\s\S]{0,400}\.catch\(/);
   });
 });

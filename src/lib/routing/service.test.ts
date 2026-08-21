@@ -211,6 +211,50 @@ describe('RoutingService policies', () => {
     if (!r.ok) expect(r.error.issues?.some((i) => i.kind === 'empty_policy')).toBe(true);
   });
 
+  /**
+   * 🔴 **端末の待ち上限に収まらない構成を保存させない (#743)。**
+   *
+   * 収まらないと、来訪者が代替のご案内へ倒れたあとも社内の電話が鳴り続ける
+   * （「無人の呼び出し」）。`/give-up` は事後の後始末で、設定の時点で分かるなら
+   * ここで止めるほうが安い。
+   */
+  it('🔴 作成: 端末の待ち上限を超える構成は invalid_input（exceeds_client_wait）', async () => {
+    const { service } = makeService({ endpoints: [storedEndpoint({ id: 'ep-1' })] });
+    // 10 手 × (300s + 余裕 30s) = 3300s ≫ 端末上限 300s
+    const steps = Array.from({ length: 10 }, (_, i) => ({
+      id: `s${i}`,
+      endpointId: 'ep-1',
+      action: 'notify' as const,
+      timeoutSeconds: 300,
+      nextOn: {},
+    }));
+    const r = await service.createPolicy(tenantAdminA, {
+      tenantId: T_A,
+      body: { name: '長すぎるルート', siteId: 'site-a1', enabled: true, steps },
+    });
+    expect(r.ok).toBe(false);
+    if (!r.ok) {
+      expect(r.error.code).toBe('invalid_input');
+      expect(r.error.issues?.some((i) => i.kind === 'exceeds_client_wait')).toBe(true);
+    }
+  });
+
+  it('作成: 既定の取次（20 / 20 / 30 秒）は待ち上限に収まるので通る', async () => {
+    const { service } = makeService({ endpoints: [storedEndpoint({ id: 'ep-1' })] });
+    const steps = [20, 20, 30].map((timeoutSeconds, i) => ({
+      id: `s${i}`,
+      endpointId: 'ep-1',
+      action: 'notify' as const,
+      timeoutSeconds,
+      nextOn: {},
+    }));
+    const r = await service.createPolicy(tenantAdminA, {
+      tenantId: T_A,
+      body: { name: '既定ルート', siteId: 'site-a1', enabled: true, steps },
+    });
+    expect(r.ok).toBe(true);
+  });
+
   it('更新: 相互 fallback で循環を作ると invalid_input（fallback_cycle）で保存拒否', async () => {
     const p1 = storedPolicy({ id: 'p1', fallbackPolicyId: 'p2' });
     const p2 = storedPolicy({ id: 'p2' });

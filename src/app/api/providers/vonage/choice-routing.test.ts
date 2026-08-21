@@ -180,3 +180,44 @@ describe('第 2 段は「来訪者と話す」を案内も受付もしない (#6
     expect(ncco.some((a) => a.action === 'input')).toBe(true);
   });
 });
+
+/**
+ * どの選択でも必ず音声で応答する (#744)。
+ *
+ * route はこれを不変条件として宣言しているが、`3` / `4` では talk を返す**前に**
+ * Vonage への発信を終える。発信が遅いと応答が返らず、担当者は自分の入力が届いたか
+ * 分からないまま切る。
+ */
+describe('遅い発信でも担当者へ応答が返る (#744)', () => {
+  it('🔴 発信が失敗しても talk を返す', async () => {
+    initiate.mockRejectedValue(new Error('TEST-dial-failed'));
+    const res = await choice(pressed('3'));
+    expect(res.status).toBe(200);
+    const ncco = (await res.json()) as { action: string; text: string }[];
+    expect(ncco[0]?.action).toBe('talk');
+    expect(ncco[0]?.text.length).toBeGreaterThan(0);
+  });
+
+  it('🔴 発信が中断されても talk を返す（上限が効いた場合）', async () => {
+    initiate.mockRejectedValue(new DOMException('The operation was aborted.', 'AbortError'));
+    const res = await choice(pressed('4'));
+    expect(res.status).toBe(200);
+    expect(((await res.json()) as { action: string }[])[0]?.action).toBe('talk');
+  });
+
+  /**
+   * 段ごとの所要時間を残す。**どこが遅いか**が分からないと、順序を変える判断ができない
+   * （先に返すと #742 B1 が別の形で開く）。
+   */
+  it('応答までの所要時間を段ごとに残す（PII なし）', async () => {
+    const info = vi.spyOn(console, 'info').mockImplementation(() => {});
+    await choice(pressed('2'));
+    const line = info.mock.calls
+      .map((c) => String(c[0]))
+      .find((l) => l.includes('vonage_webhook_timing'));
+    expect(line).toBeDefined();
+    const parsed = JSON.parse(line!) as Record<string, unknown>;
+    expect(Object.keys(parsed).sort()).toEqual(['event', 'route', 'stages', 'totalMs']);
+    expect(parsed.route).toBe('choice');
+  });
+});

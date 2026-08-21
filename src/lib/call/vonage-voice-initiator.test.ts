@@ -1,5 +1,10 @@
 import { describe, expect, it, vi } from 'vitest';
-import { createVonageVoiceInitiator, type VonageVoiceDeps } from './vonage-voice-initiator';
+import {
+  createVonageVoiceInitiator,
+  NCCO_RESPONSE_BUDGET_MS,
+  VONAGE_VOICE_REQUEST_TIMEOUT_MS,
+  type VonageVoiceDeps,
+} from './vonage-voice-initiator';
 import type { ConnectCommand } from '@/domain/routing/provider';
 
 const COMMAND: ConnectCommand = {
@@ -121,5 +126,47 @@ describe('createVonageVoiceInitiator (#4 Inc D)', () => {
 
   it('key は endpoint の providerKey と突合できる値', () => {
     expect(createVonageVoiceInitiator(deps()).key).toBe('vonage-voice');
+  });
+});
+
+/**
+ * 発信 HTTP に上限を作る (#744)。
+ *
+ * ## 事実
+ *
+ * `/choice` は担当者の選択を相関へ書き、**必要なら次の手を撃ってから** talk（受領応答）を
+ * 返す。順序は意図的で、先に返すと担当者が切って `completed` が先に届いたときに取次が
+ * 次の手へ進む（#742 の B1 が塞いだ事故そのもの）。
+ *
+ * だが `POST /v1/calls` の `fetch` に**タイムアウトが無かった**ので、上限が無い。Vonage の
+ * webhook タイムアウトが先に来ると、route が宣言している不変条件
+ * 「**どの選択でも必ず音声で応答する**」が崩れる ── 担当者は自分の入力が届いたか
+ * 分からないまま切る。
+ */
+describe('発信 HTTP の上限 (#744)', () => {
+  it('🔴 中断シグナルを渡す（上限のない発信をしない）', async () => {
+    const d = deps();
+    await createVonageVoiceInitiator(d).initiate(COMMAND);
+    const [, init] = (d.fetch as ReturnType<typeof vi.fn>).mock.calls[0] as [string, RequestInit];
+    expect(init.signal, '上限が無いと担当者への応答が返らないことがある').toBeDefined();
+    expect(init.signal?.aborted).toBe(false);
+  });
+
+  /**
+   * 🔴 上限は **NCCO 応答の予算より短い**こと。長いと、上限に達する前に Vonage 側の
+   * webhook タイムアウトが先に来て、結局担当者へ応答が返らない。
+   */
+  it('🔴 上限は NCCO 応答の予算より短い', () => {
+    expect(VONAGE_VOICE_REQUEST_TIMEOUT_MS).toBeLessThan(NCCO_RESPONSE_BUDGET_MS);
+    expect(VONAGE_VOICE_REQUEST_TIMEOUT_MS).toBeGreaterThan(0);
+  });
+
+  it('中断された発信は失敗として上へ返す（握り潰さない）', async () => {
+    const d = deps({
+      fetch: vi.fn(async () => {
+        throw new DOMException('The operation was aborted.', 'AbortError');
+      }),
+    });
+    await expect(createVonageVoiceInitiator(d).initiate(COMMAND)).rejects.toThrow();
   });
 });

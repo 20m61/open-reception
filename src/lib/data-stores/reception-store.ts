@@ -167,6 +167,58 @@ async function applyEvent(
 }
 
 /**
+ * 呼び出し結果で受付を終端する (#743)。
+ *
+ * 🔴 **全体置換で書かない。** 読んでから書くまでの間に取次が 2 手目へ進むと
+ * （`setProviderCallIdIfCalling`）、置換が `providerCallId` を **1 手目へ巻き戻す**。
+ * 受付は terminal なので蘇生はしないが、**2 手目は鳴り続け、`/status` は 1 手目の相関を
+ * 読む** ── 担当者の電話は鳴るのに来訪者はもう居ない「無人の呼び出し」になる。
+ *
+ * 状態機械は変えない（遷移の可否は `transition` が決める）。変えるのは**書き方**だけで、
+ * 「読んだ時点の状態のままなら、名指しした項目だけを書く」にする。
+ *
+ * 条件を外した＝別の書き手が先に進めた。**結果を二重に記録しない**（採番に重複排除が
+ * 無いので、二重に確定すると同じ受付の履歴・監査が 2 件残る）。
+ */
+async function settleTerminal(
+  id: string,
+  event: ReceptionEvent,
+  outcome: () => Partial<ReceptionSession>,
+): Promise<StoreResult<ReceptionSession>> {
+  const found = await getReception(id);
+  if (!found.ok) return found;
+
+  const next = transition(found.value.state, event);
+  if (next === null) {
+    return {
+      ok: false,
+      error: { code: 'invalid_transition', message: `cannot ${event} from ${found.value.state}` },
+    };
+  }
+
+  const changes: Partial<ReceptionSession> = {
+    state: next,
+    completedAt: now(),
+    updatedAt: now(),
+    ...outcome(),
+  };
+  const won = await sessions().applyIfState(id, changes, found.value.state);
+  if (!won) {
+    // 別の書き手が先に進めた。**こちらは何も主張しない**（結果を二重に記録しない）。
+    const current = await getReception(id);
+    if (!current.ok) return current;
+    return {
+      ok: false,
+      error: { code: 'invalid_transition', message: `cannot ${event} from ${current.value.state}` },
+    };
+  }
+
+  const settled: ReceptionSession = { ...found.value, ...changes };
+  await recordReceptionOutcome(settled);
+  return { ok: true, value: settled };
+}
+
+/**
  * 呼び出しを開始する。
  * 同期 adapter（Mock）は結果でセッション状態を確定する。
  * 非同期 adapter（Vonage）は calling のまま sessionId を紐づけ、応答は後続イベントで確定する。
@@ -393,14 +445,7 @@ export async function getReceptionVisitorStatus(
  * timeout は結果が確定するため受付履歴を記録する（同期 timeout と同じ扱い）。
  */
 export async function markTimeout(id: string): Promise<StoreResult<ReceptionSession>> {
-  const found = await getReception(id);
-  if (!found.ok) return found;
-  const result = await applyEvent(found.value, 'CALL_TIMEOUT');
-  if (!result.ok) return result;
-  const timed: ReceptionSession = { ...result.value, callOutcome: 'timeout', completedAt: now() };
-  await sessions().put(timed);
-  await recordReceptionOutcome(timed);
-  return { ok: true, value: timed };
+  return settleTerminal(id, 'CALL_TIMEOUT', () => ({ callOutcome: 'timeout' }));
 }
 
 /**
@@ -414,19 +459,10 @@ export async function markCallFailed(
   id: string,
   reason?: string,
 ): Promise<StoreResult<ReceptionSession>> {
-  const found = await getReception(id);
-  if (!found.ok) return found;
-  const result = await applyEvent(found.value, 'CALL_FAILED');
-  if (!result.ok) return result;
-  const failed: ReceptionSession = {
-    ...result.value,
+  return settleTerminal(id, 'CALL_FAILED', () => ({
     callOutcome: 'failed',
-    failureReason: reason,
-    completedAt: now(),
-  };
-  await sessions().put(failed);
-  await recordReceptionOutcome(failed);
-  return { ok: true, value: failed };
+    ...(reason === undefined ? {} : { failureReason: reason }),
+  }));
 }
 
 /** 失敗/未応答後の代替導線利用を記録する (issue #19)。状態は failed/timeout → fallback。 */

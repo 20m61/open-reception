@@ -24,6 +24,8 @@ export function describeIssue(issue: RoutingPolicyIssue): string {
       return '引き継ぎ先の別ルートが見つかりません。存在するルートを指定してください。';
     case 'fallback_cycle':
       return 'ルートの引き継ぎが循環しています。無限取次になるため保存できません。';
+    case 'exceeds_client_wait':
+      return `最後まで呼び出すと受付端末の待ち時間の上限（${Math.round(issue.clientWaitMs / 60_000)} 分）を超えます（最長 ${Math.round(issue.worstCaseMs / 60_000)} 分）。来訪者が代替のご案内へ進んだあとも呼び出しが続くため、手順を減らすか待ち時間を短くしてください。`;
   }
 }
 

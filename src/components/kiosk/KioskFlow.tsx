@@ -333,6 +333,16 @@ export type KioskFlowProps = {
   qrScanner?: QrScanner;
 };
 
+/**
+ * 端末が待つのをやめたことをサーバへ伝える (#743)。
+ *
+ * 🔴 **応答を待たない・失敗しても画面を止めない。** 来訪者にできることは無く、
+ * 画面が「呼び出し中」のまま固まる方が悪い。届かなければ取次は呼出予算で自然に終わる。
+ */
+function giveUpServerSide(receptionId: string): void {
+  void fetch(`/api/kiosk/receptions/${receptionId}/give-up`, { method: 'POST' }).catch(() => {});
+}
+
 export function KioskFlow({ operatingStatus, sttAdapterFactory, voiceSession, qrScanner }: KioskFlowProps = {}) {
   /*
    * 実 orchestrator のローカル起動 (#372 配線)。**既定はオフ。**
@@ -933,6 +943,7 @@ export function KioskFlow({ operatingStatus, sttAdapterFactory, voiceSession, qr
     if (!result.ok) {
       // 単発の取得失敗では諦めない（電話は鳴り続けている）。上限に達したときだけ倒す。
       if (elapsedMs > CALL_STATUS_POLL_MAX_MS) {
+        giveUpServerSide(id);
         dispatch({ type: 'CALL_FAILED', sessionId: id, reason: 'network' });
       }
       return;
@@ -944,6 +955,10 @@ export function KioskFlow({ operatingStatus, sttAdapterFactory, voiceSession, qr
       return;
     }
     if (action.kind === 'give_up') {
+      // 🔴 **画面を倒すだけにしない (#743)。** サーバ側の受付が `'calling'` のまま残ると
+      // 取次は hop 上限まで進み続け、iPad は諦めたのに社内の電話が鳴り続ける。
+      // 受付を終端させれば以降の hop は `decideRoutingStop` に弾かれる。
+      giveUpServerSide(id);
       // 結果を断定しない。呼び出しを完了できなかった（contact_failed）として代替導線へ。
       dispatch({ type: 'CALL_FAILED', sessionId: id, reason: 'server' });
     }
