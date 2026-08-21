@@ -16,10 +16,27 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
-/** 引数解析だけを踏む（PR は作らせない）。ゲートガードは対象外なので明示的に外す。 */
+/**
+ * 各ケースの上限。**既定の 5 秒では足りない。**
+ *
+ * 1 ケースごとに子プロセスで TypeScript を起動するので、単体でも 1〜2 秒、ゲートの
+ * unit ステップ（537 ファイル並列）の下では数倍かかる。実際にゲートで
+ * `Test timed out in 5000ms` を踏んだ ── **アサーションに到達する前**の偽の赤で、
+ * 主張そのものは何も変わっていない（CLAUDE.md「まず偽の赤を疑う」）。
+ */
+const SPAWN_TIMEOUT_MS = 30_000;
+
+/**
+ * 引数解析だけを踏む（PR は作らせない）。ゲートガードは対象外なので明示的に外す。
+ *
+ * `npx` ではなく**ローカルの tsx を直接**呼ぶ。`npx` はレジストリ解決の分だけ余計に
+ * 待つことがあり、上と同じ偽の赤の原因になる。
+ */
+const TSX = join('node_modules', '.bin', 'tsx');
+
 function runArgs(args: string[]): { code: number; output: string } {
   try {
-    const output = execFileSync('npx', ['tsx', 'scripts/create-pull-request.ts', ...args], {
+    const output = execFileSync(TSX, ['scripts/create-pull-request.ts', ...args], {
       encoding: 'utf8',
       stdio: ['ignore', 'pipe', 'pipe'],
       env: { ...process.env, OPEN_RECEPTION_SKIP_GATE_GUARD: '1' },
@@ -40,13 +57,13 @@ describe('create-pull-request.ts の引数 (#736)', () => {
     const { code, output } = runArgs(['--head', 'x', '--title', 'y', '--bogus', 'z']);
     expect(code).not.toBe(0);
     expect(output).toContain('--bogus');
-  });
+  }, SPAWN_TIMEOUT_MS);
 
   it('🔴 本文が空のまま PR を作らない', () => {
     const { code, output } = runArgs(['--head', 'x', '--title', 'y']);
     expect(code).not.toBe(0);
     expect(output).toContain('本文が空');
-  });
+  }, SPAWN_TIMEOUT_MS);
 
   it('🔴 --body-file を受け付ける（無視しない）', () => {
     const dir = mkdtempSync(join(tmpdir(), 'pr-body-'));
@@ -56,7 +73,7 @@ describe('create-pull-request.ts の引数 (#736)', () => {
     const { output } = runArgs(['--head', 'x', '--title', 'y', '--body-file', file]);
     expect(output).not.toContain('知らない引数');
     expect(output).not.toContain('本文が空');
-  });
+  }, SPAWN_TIMEOUT_MS);
 
   it('--body と --body-file の同時指定を拒否する（どちらが効いたか曖昧にしない）', () => {
     const { code, output } = runArgs([
@@ -64,5 +81,5 @@ describe('create-pull-request.ts の引数 (#736)', () => {
     ]);
     expect(code).not.toBe(0);
     expect(output).toContain('同時に指定できません');
-  });
+  }, SPAWN_TIMEOUT_MS);
 });
