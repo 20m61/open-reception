@@ -41,6 +41,7 @@ vi.mock('@/lib/operating-policy/call-guard', () => ({
   evaluateCallGuard: (...a: unknown[]) => evaluateCallGuard(...a),
 }));
 
+import { KIOSK_DIAL_LOG_MARKERS } from '@/lib/routing/dial-log-markers';
 import { POST } from './route';
 
 function call(id = 'rec-1') {
@@ -153,6 +154,35 @@ describe('POST /api/kiosk/receptions/:id/call', () => {
       const res = await call();
       expect(res.status).toBe(503);
       expect(startCall).not.toHaveBeenCalled();
+    });
+
+    /**
+     * 🔴 **アラームが探す文言を実際に出す (#764)。**
+     *
+     * この経路は `startCall` に到達しないので受付履歴にもメトリクスにも残らず、
+     * 503 は Lambda としては成功した呼び出しなので Errors にも出ない。
+     * **ログ以外に手掛かりが無い**ので、文言が消えるとアラームは黙って鳴らなくなる。
+     * CDK 側（`infra/test/web-monitoring-stack.test.ts`）が同じ定数でフィルタを縛る。
+     */
+    it('🔴 アラームが探すマーカーをログへ出す', async () => {
+      const spy = vi.spyOn(console, 'error').mockImplementation(() => {});
+      intendsRealDialing.mockResolvedValue(true);
+      executeRoutedCall.mockResolvedValue(null);
+      await call();
+      const logged = spy.mock.calls.map((c) => String(c[0])).join('\n');
+      spy.mockRestore();
+      expect(logged).toContain(KIOSK_DIAL_LOG_MARKERS.realDialingUnavailable);
+    });
+
+    /** 🔴 ログに secret や来訪者情報を載せない（テナント ID は PII ではない）。 */
+    it('🔴 ログに例外の内容を載せない', async () => {
+      const spy = vi.spyOn(console, 'error').mockImplementation(() => {});
+      intendsRealDialing.mockResolvedValue(true);
+      executeRoutedCall.mockRejectedValue(new Error('TEST-store-detail'));
+      await call();
+      const logged = spy.mock.calls.map((c) => JSON.stringify(c)).join('\n');
+      spy.mockRestore();
+      expect(logged).not.toContain('TEST-store-detail');
     });
 
     it('🔴 応答に例外の内容やテナントの secret を載せない', async () => {

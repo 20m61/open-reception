@@ -9,6 +9,7 @@ import { WebStack } from '../lib/stacks/web-stack';
 import { resolveEnv, EnvConfig } from '../lib/config/environments';
 import { openNextArtifactState, describeArtifactState } from '../lib/build-artifacts';
 import { ORIGIN_VERIFY_LOG_MARKERS } from '../../src/lib/security/origin-verify';
+import { KIOSK_DIAL_LOG_MARKERS } from '../../src/lib/routing/dial-log-markers';
 
 const ENV = { account: '123456789012', region: 'ap-northeast-1' };
 
@@ -64,10 +65,11 @@ describe('WebMonitoringStack (#299)', () => {
     });
   });
 
-  it('creates 11 alarms: server(Errors/Throttles/Duration/Concurrent) + image(Errors/Duration) + ddb(read/write) + account concurrent + origin-verify(missing-secret/mismatch)', () => {
-    // #630 で origin-verify の 2 本を追加（9 → 11）。件数を固定しているのは、
-    // アラームが**黙って消える**のを検出するため（増やす側は必ずここを更新する）。
-    template.resourceCountIs('AWS::CloudWatch::Alarm', 11);
+  it('creates 12 alarms: server(Errors/Throttles/Duration/Concurrent) + image(Errors/Duration) + ddb(read/write) + account concurrent + origin-verify(missing-secret/mismatch) + 取次不能', () => {
+    // #630 で origin-verify の 2 本を追加（9 → 11）。#764 で取次不能を追加（11 → 12）。
+    // 件数を固定しているのは、アラームが**黙って消える**のを検出するため
+    // （増やす側は必ずここを更新する）。
+    template.resourceCountIs('AWS::CloudWatch::Alarm', 12);
   });
 
   it('alarms notify the SNS topic and treat missing data as notBreaching', () => {
@@ -194,7 +196,8 @@ describe('origin-verify の拒否をアラームへ載せる (#630)', () => {
 
   it('missing-secret と mismatch を別々のメトリクスにする', () => {
     // 混ぜると「攻撃されている」と「自分が壊れている」を切り分けられない。
-    template.resourceCountIs('AWS::Logs::MetricFilter', 2);
+    // 3 本目は取次不能 (#764)。件数で縛るのは、フィルタを 1 つに束ねる変更を止めるため。
+    template.resourceCountIs('AWS::Logs::MetricFilter', 3);
   });
 
   it('メトリクスフィルタは実際のログ文言（共有定数）で検索する', () => {
@@ -246,6 +249,41 @@ describe('origin-verify の拒否をアラームへ載せる (#630)', () => {
   });
 });
 
+describe('取り次げず来訪者を追い返したことをアラームへ載せる (#764 / #736)', () => {
+  // この経路は `startCall` に到達しないので受付履歴にもメトリクスにも残らず、503 は
+  // Lambda としては成功した呼び出しなので Errors にも出ない。ログ以外に手掛かりが無い。
+  const template = synth(configWithAlarmEmail('ops@example.com'));
+
+  it('🔴 メトリクスフィルタは実際のログ文言（共有定数）で検索する', () => {
+    // 文言がずれるとアラームは**黙って鳴らなくなる**。定数を 1 箇所に置く理由そのもの。
+    template.hasResourceProperties('AWS::Logs::MetricFilter', {
+      FilterPattern: Match.stringLikeRegexp(
+        escapeForRegexp(KIOSK_DIAL_LOG_MARKERS.realDialingUnavailable),
+      ),
+    });
+  });
+
+  it('🔴 1 件でも鳴らす（出た時点で来訪者が追い返されている）', () => {
+    template.hasResourceProperties('AWS::CloudWatch::Alarm', {
+      MetricName: 'KioskRealDialingUnavailable',
+      Threshold: 1,
+      EvaluationPeriods: 1,
+      ComparisonOperator: 'GreaterThanOrEqualToThreshold',
+      // 欠測を「異常」にすると、平常時（ログ 0 行）に鳴り続ける。
+      TreatMissingData: 'notBreaching',
+    });
+  });
+
+  it('🔴 SNS トピックへ通知する（作っただけで届かないのを防ぐ）', () => {
+    const alarms = template.findResources('AWS::CloudWatch::Alarm', {
+      Properties: { MetricName: 'KioskRealDialingUnavailable' },
+    });
+    const [alarm] = Object.values(alarms);
+    if (!alarm) throw new Error('KioskRealDialingUnavailable alarm not found');
+    expect(alarm.Properties.AlarmActions?.length ?? 0).toBeGreaterThan(0);
+  });
+});
+
 /** 正規表現メタ文字を含むマーカー（`[origin-verify]`）をそのまま検索するため。 */
 function escapeForRegexp(s: string): string {
   return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
@@ -276,10 +314,11 @@ describe.runIf(OPEN_NEXT_READY)('WebStack -> WebMonitoringStack wiring (#299)', 
       distributionId: web.distribution.distributionId,
     });
     const template = Template.fromStack(monitoring);
-    // #630 で origin-verify の 2 本を追加（9 → 11）。**実 WebStack の serverFn を渡す経路**なので、
-    // ここが通ることは「メトリクスフィルタが実 Lambda のロググループに着く」ことの確認でもある。
-    template.resourceCountIs('AWS::CloudWatch::Alarm', 11);
-    template.resourceCountIs('AWS::Logs::MetricFilter', 2);
+    // #630 で origin-verify の 2 本を追加（9 → 11）。#764 で取次不能を追加（11 → 12）。
+    // **実 WebStack の serverFn を渡す経路**なので、ここが通ることは
+    // 「メトリクスフィルタが実 Lambda のロググループに着く」ことの確認でもある。
+    template.resourceCountIs('AWS::CloudWatch::Alarm', 12);
+    template.resourceCountIs('AWS::Logs::MetricFilter', 3);
     template.resourceCountIs('AWS::CloudWatch::Dashboard', 1);
   }, 60000);
 });
