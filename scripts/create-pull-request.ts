@@ -37,6 +37,7 @@
  *    `Command failed: …` までで理由は stderr に在る。拾わずに報告したせいで、クラウドで
  *    到達しない原因を 3 周にわたって当て推量した実績がある（PR #665）。
  */
+import { readFileSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { describeCommandFailure } from '../src/domain/governance/command-failure';
 import { parseGitHubRepo, pullCreateArgs, pullsQueryPath } from '../src/domain/governance/git-base';
@@ -47,6 +48,32 @@ function run(cmd: string, args: string[]): string {
     return execFileSync(cmd, args, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim();
   } catch (e) {
     throw new Error(describeCommandFailure(`${cmd} ${args.join(' ')}`, e));
+  }
+}
+
+/** 受け付ける引数。**ここに無いキーはエラーにする**（下記 `rejectUnknownOptions`）。 */
+const KNOWN_OPTIONS = ['head', 'base', 'title', 'body', 'body-file', 'draft'] as const;
+
+/**
+ * 知らない引数で**黙って先へ進まない** (#736 で実際に踏んだ)。
+ *
+ * 🔴 このスクリプトは長らく未知の引数を無視していた。`--body-file` を渡していた呼び出しは
+ * **本文が空のまま PR を作り続け**、書いた根拠（変更理由・変異検証・人間承認の要否）が
+ * 1 件も GitHub へ載っていなかった。コミットメッセージに残っていたので気づくのが遅れた。
+ *
+ * 「渡したのに効かない」は「渡し忘れ」より悪い。**入力を黙って落とさない。**
+ */
+function rejectUnknownOptions(): void {
+  const unknown = process.argv
+    .slice(2)
+    .filter((a) => a.startsWith('--'))
+    .map((a) => a.replace(/^--/, '').split('=')[0]!)
+    .filter((name) => !KNOWN_OPTIONS.includes(name as (typeof KNOWN_OPTIONS)[number]));
+  if (unknown.length > 0) {
+    throw new Error(
+      `知らない引数です: ${unknown.map((u) => `--${u}`).join(', ')}\n` +
+        `受け付けるのは: ${KNOWN_OPTIONS.map((o) => `--${o}`).join(' / ')}`,
+    );
   }
 }
 
@@ -67,16 +94,29 @@ function main(): number {
   let title: string | undefined;
   let body: string;
   try {
+    rejectUnknownOptions();
     head = readOption('head');
     base = readOption('base') ?? 'main';
     title = readOption('title');
-    body = readOption('body') ?? '';
+
+    const bodyFile = readOption('body-file');
+    const inlineBody = readOption('body');
+    if (bodyFile !== undefined && inlineBody !== undefined) {
+      throw new Error('--body と --body-file は同時に指定できません');
+    }
+    body = bodyFile !== undefined ? readFileSync(bodyFile, 'utf8') : (inlineBody ?? '');
+    // 🔴 空本文で作らない。**根拠の無い PR を静かに量産しない。**
+    if (body.trim() === '') {
+      throw new Error('本文が空です（--body か --body-file を指定してください）');
+    }
   } catch (e) {
     console.error(`❌ 引数を読めませんでした: ${e instanceof Error ? e.message : String(e)}`);
     return 2;
   }
   if (head === undefined || title === undefined) {
-    console.error('使い方: create-pull-request.ts --head <branch> --title <title> [--base <branch>] [--body <body>]');
+    console.error(
+      '使い方: create-pull-request.ts --head <branch> --title <title> [--base <branch>] (--body <body> | --body-file <path>)',
+    );
     return 2;
   }
 
