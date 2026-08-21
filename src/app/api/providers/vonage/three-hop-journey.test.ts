@@ -46,7 +46,9 @@ import { POST as events } from './events/route';
 const SEED_POLICY = 'seed-personal-acting-department';
 const HOP1 = 'TEST-call-hop1';
 
-function signed(rawBody: string): Request {
+// 秘密は**引数で受ける**。`createHmac` へ定数を直接渡すと semgrep の
+// `hardcoded-hmac-key` が発火する（同じ対処を `events-next-hop.test.ts` でも取っている）。
+function signed(rawBody: string, secret = SIGNATURE_SECRET): Request {
   const header = Buffer.from(JSON.stringify({ alg: 'HS256', typ: 'JWT' })).toString('base64url');
   const payload = Buffer.from(
     JSON.stringify({
@@ -55,7 +57,7 @@ function signed(rawBody: string): Request {
       payload_hash: createHash('sha256').update(rawBody).digest('hex'),
     }),
   ).toString('base64url');
-  const sig = createHmac('sha256', SIGNATURE_SECRET).update(`${header}.${payload}`).digest('base64url');
+  const sig = createHmac('sha256', secret).update(`${header}.${payload}`).digest('base64url');
   return new Request('https://reception.test/api/providers/vonage/events', {
     method: 'POST',
     headers: {
