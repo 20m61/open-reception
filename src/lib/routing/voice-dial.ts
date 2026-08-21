@@ -23,6 +23,8 @@
 import { endpointAddress } from '@/domain/routing/endpoint';
 import { asTenantId } from '@/domain/tenant/types';
 import type { VoiceCallInitiator } from '@/domain/routing/voice-initiator';
+import type { VoiceCallTerminator } from '@/domain/routing/voice-terminator';
+import { createVonageVoiceTerminator } from '@/lib/call/vonage-voice-terminator';
 import {
   createVonageVoiceInitiator,
   type VonageVoiceCredentials,
@@ -139,6 +141,34 @@ export async function resolveVoiceInitiator(
     // `deps.fetch(...)` ＝ deps オブジェクトを `this` として呼ぶことになり、`this` を
     // 検査する実装（ブラウザの `window.fetch` や一部 polyfill）で Illegal invocation になる。
     // **テストは必ず fetch を注入するので、この経路はテストでは一度も通らない。**
+    fetch: deps.fetch ?? globalThis.fetch.bind(globalThis),
+  });
+}
+
+/**
+ * テナントの**切断**境界を解決する。`null` は「切るべき実通話が無い」(#743)。
+ *
+ * 🔴 **`voiceDialingDisabled()` で止めない。** あのスイッチの doc が書いているとおり
+ * **新規発信**の停止であって、切断は新規発信ではない。ここを止めると、スイッチを倒した
+ * 瞬間に「鳴りっぱなしの電話を切る手段」まで失う ── 止めたい状況（誤発信・高負荷）で
+ * いちばん切りたいのに切れない、という逆を踏む。切断は外部への影響を**減らす**方向の操作。
+ *
+ * 資格情報の解決は発信と同じ経路を使う（`buildVoiceCredentials`）。切断に `fromNumber` は
+ * 要らないが、**切る相手は必ず自分が撃った通話**なのでその時点で揃っている。
+ */
+export async function resolveVoiceTerminator(
+  tenantId: string,
+  deps: ResolveVoiceInitiatorDeps = {},
+): Promise<VoiceCallTerminator | null> {
+  const resolveProvider = deps.resolveProvider ?? resolveProviderForTenant;
+  const credentials = buildVoiceCredentials(await resolveProvider(tenantId));
+  if (credentials === null) return null;
+
+  return createVonageVoiceTerminator({
+    credentials: async () => credentials,
+    signJwt: deps.signJwt ?? generateAppJwt,
+    baseUrl: deps.apiBaseUrl ?? VONAGE_VOICE_API_BASE_URL,
+    // `globalThis` へ束縛する理由は `resolveVoiceInitiator` と同じ。
     fetch: deps.fetch ?? globalThis.fetch.bind(globalThis),
   });
 }

@@ -26,6 +26,7 @@ import type { VoiceCallInitiator } from '@/domain/routing/voice-initiator';
 import { getReception, repointProviderCall } from '@/lib/data-stores/reception-store';
 import { dialNextHop as defaultDialNextHop } from './next-hop-dial';
 import { resolveVoiceInitiator } from './voice-dial';
+import { hangUpIfRinging } from './hang-up';
 import type { StoredContactEndpoint } from './types';
 import { advanceFromWebhook, type CallProgress } from '@/domain/routing/webhook-advance';
 import type { VoiceCallEvent } from '@/domain/call/voice-call-state';
@@ -208,6 +209,8 @@ async function tryDialNextHop(
       getCallCorrelationRepository().updateIfUnchanged(id, changes, expectedUpdatedAt),
     repointReception,
     receptionState,
+    // 撃ったが引き継げなかった通話を切る (#743)。ここでしか鳴りっぱなしは起きない。
+    hangUp: (providerCallId: string) => hangUpIfRinging(correlation.tenantId, providerCallId),
     now: deps.now,
   });
 
