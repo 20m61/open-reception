@@ -61,9 +61,9 @@ function put(body: unknown) {
   );
 }
 
-beforeEach(() => {
+beforeEach(async () => {
   vi.clearAllMocks();
-  __resetProviderConfigStore();
+  await __resetProviderConfigStore();
   __resetTenantSecretStore();
   resolveAdminActor.mockResolvedValue(developer());
   getTenant.mockResolvedValue({ ...TENANT });

@@ -77,12 +77,12 @@ function bodyReq(url: string, method: string, body: unknown) {
 beforeEach(async () => {
   vi.clearAllMocks();
   await __resetIntegrationStatus();
-  __resetProviderConfigStore();
+  await __resetProviderConfigStore();
   __resetTenantSecretStore();
 });
 
-afterEach(() => {
-  __resetProviderConfigStore();
+afterEach(async () => {
+  await __resetProviderConfigStore();
   __resetTenantSecretStore();
 });
 
