@@ -21,6 +21,7 @@
  *     （adapter builder）でのみ呼ぶ。解決結果を serialize しても平文は出ない（`SecretValue.toJSON`）。
  */
 import type { TenantProviderConfig } from '@/domain/provider-config/types';
+import { intendsRealDialingFrom } from '@/domain/provider-config/readiness';
 import { secretRef, type SecretValue, type TenantSecretStore } from '@/domain/provider-config/secret';
 import { getTenantProviderConfig } from './provider-config-store';
 import { getTenantSecretStore } from './tenant-secret-store';
@@ -78,10 +79,10 @@ export async function intendsRealDialing(
   deps: Pick<ResolveProviderDeps, 'loadConfig'> = {},
 ): Promise<boolean> {
   const loadConfig = deps.loadConfig ?? getTenantProviderConfig;
-  const config = await loadConfig(tenantId);
-  if (config?.provider !== 'vonage' || config.enabled !== true) return false;
-  // 空文字は未設定と同じ扱い（`buildVoiceCredentials` の `!fromNumber` と揃える）。
-  return typeof config.fromNumber === 'string' && config.fromNumber.length > 0;
+  // 🔴 **判定そのものはここに書かない。** 同じ問いに答える場所が管理画面（警告表示）にも
+  // あり、片方だけ直すと「管理画面は未接続と出るのに受付は 503」というずれが復活する
+  // （#763 で実際に起きていた形）。述語は `readiness.ts` の 1 つに集約する。
+  return intendsRealDialingFrom(await loadConfig(tenantId));
 }
 
 /**
