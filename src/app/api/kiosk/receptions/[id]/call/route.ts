@@ -4,7 +4,12 @@ import { toResponse } from '@/lib/data-stores/http';
 import { denyWithoutKioskSession } from '@/lib/kiosk/session-guard';
 import { resolveDefaultScope } from '@/lib/tenant/default-scope';
 import { voiceDialingDisabled } from '@/lib/routing/voice-dial';
-import { executeRoutedCall, routedCallAdapter } from '@/lib/routing/call-execution';
+import { intendsRealDialing } from '@/lib/platform/provider-resolution';
+import {
+  executeRoutedCall,
+  routedCallAdapter,
+  REAL_DIALING_UNAVAILABLE,
+} from '@/lib/routing/call-execution';
 import { resolveWebhookBaseUrl } from '@/lib/routing/webhook-base-url';
 import { evaluateCallGuard } from '@/lib/operating-policy/call-guard';
 
@@ -55,6 +60,12 @@ export async function POST(
     return NextResponse.json({ error: 'unrouted' }, { status: 503 });
   }
 
+  // 🔴 **意図の判定は try の外。** `executeRoutedCall` の `.catch` の内側に置くと、
+  // ガードそのものが握り潰される（DynamoDB の throttle 等で throw → null → mock → 嘘）。
+  // 読み取りに失敗したら**意図ありへ倒す**（fail-closed）。誰も呼ばずに「呼び出しました」と
+  // 言うより、取り次げないと言って有人支援へ倒すほうが回復できる。
+  const intendsReal = await intendsRealDialing(String(scope.tenantId)).catch(() => true);
+
   // 保存済みルートに従った段階実行を試みる。読み取り/実行で失敗しても取次自体は止めない
   // （fail-open で従来の単発 Mock へ）。fail-open は無音にせずログで可観測にする（PII なし）。
   // 🔴 `webhookBaseUrl` を渡さないと実発信は**永久に起こらない**（`executeRoutedCall` は
@@ -68,6 +79,29 @@ export async function POST(
     });
     return null;
   });
+  // 🔴 **実発信のつもりのテナントで mock へ倒さない (#736)。**
+  // そのまま進むと単発 mock adapter が部署呼び出しを**無条件で `connected`** にして
+  // 「担当者が応答しました」に到達する —— **誰も呼ばれていないのに受付が完了する**。
+  // N0（キルスイッチ）と同じ扱いで、取り次げないことを返し有人支援へ倒す。
+  // **やめるのは嘘だけ**（来訪者は逃げ道バーから受付を終われる）。
+  //
+  // 倒すのは 3 通り。**どれか 1 つでも漏らすと同じ嘘が残る**:
+  //   A. 資格情報・発信元番号の不備で発信者を解決できない → `REAL_DIALING_UNAVAILABLE`
+  //   B. 資格情報は正常だが**有効なルートが 1 つも無い** → `runVoiceRoutedCall` が `null`
+  //   C. ルート/接続先の読み取りが throw → 上の `.catch` が `null`
+  // B と C は `null`（＝ mock へ fail-open）と区別が付かないので、**意図側**で判定する。
+  if (routed === REAL_DIALING_UNAVAILABLE || (intendsReal && routed === null)) {
+    console.error(
+      JSON.stringify({
+        event: 'kiosk_real_dialing_unavailable',
+        // テナント ID は PII ではない。どのテナントが落ちているか分からないログは切り分け不能。
+        tenantId: String(scope.tenantId),
+        cause: routed === REAL_DIALING_UNAVAILABLE ? 'no_initiator' : 'no_route_or_read_failed',
+      }),
+    );
+    return NextResponse.json({ error: 'unrouted' }, { status: 503 });
+  }
+
   // ルート未設定（fail-open）時の単発 adapter は、営業時間ガード/routing と同じ scope の
   // tenantId で解決する（テナント設定が vonage+secret 完備なら本番 adapter。既定は Mock）。
   const result = await startCall(id, routed ? routedCallAdapter(routed) : undefined, scope.tenantId);
