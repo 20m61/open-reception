@@ -6,6 +6,7 @@ import { getTenantSecretStore } from '@/lib/platform/tenant-secret-store';
 import { secretRef } from '@/domain/provider-config/secret';
 import { buildTenantProviderConfig } from '@/domain/provider-config/config';
 import { toProviderConfigView } from '@/domain/provider-config/types';
+import { providerConfigWarnings } from '@/domain/provider-config/readiness';
 import { recordDangerAction } from '@/lib/admin/audit';
 
 /**
@@ -26,10 +27,16 @@ export async function GET(): Promise<NextResponse> {
 
   const config = await getTenantProviderConfig(ctx.tenantId);
   if (!config) {
-    return NextResponse.json({ config: null, secretPresence: 'missing' });
+    return NextResponse.json({ config: null, secretPresence: 'missing', warnings: [] });
   }
   const has = await getTenantSecretStore().hasSecret(secretRef(ctx.tenantId, config.provider));
-  return NextResponse.json({ config: toProviderConfigView(config, has ? 'set' : 'missing') });
+  const presence = has ? 'set' : 'missing';
+  // 読み取り側にも載せる。保存直後だけ出す形にすると、画面を開き直した運用者には
+  // 「未接続」としか見えず、受付が 503 になっている理由に辿り着けない（#763）。
+  return NextResponse.json({
+    config: toProviderConfigView(config, presence),
+    warnings: providerConfigWarnings(config, presence),
+  });
 }
 
 /**
@@ -66,5 +73,12 @@ export async function PUT(request: Request): Promise<NextResponse> {
   });
 
   const has = await getTenantSecretStore().hasSecret(secretRef(ctx.tenantId, built.value.provider));
-  return NextResponse.json({ config: toProviderConfigView(built.value, has ? 'set' : 'missing') });
+  const presence = has ? 'set' : 'missing';
+  // 🔴 **保存は拒否しない**（2026-08-21 のユーザー判断）。「設定を先に保存 →
+  // secret を後で入れる」という二段階の運用導線を壊さないため。代わりに警告を返し、
+  // 「有効にした瞬間から受付が 503 になる」ことを保存した本人へその場で伝える。
+  return NextResponse.json({
+    config: toProviderConfigView(built.value, presence),
+    warnings: providerConfigWarnings(built.value, presence),
+  });
 }
