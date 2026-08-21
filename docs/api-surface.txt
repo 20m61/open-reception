@@ -154,6 +154,7 @@ POST /api/kiosk/receptions/[]/complete
 POST /api/kiosk/receptions/[]/connected
 POST /api/kiosk/receptions/[]/fallback
 POST /api/kiosk/receptions/[]/feedback
+POST /api/kiosk/receptions/[]/give-up
 POST /api/kiosk/receptions/[]/timeout
 POST /api/kiosk/stay
 POST /api/kiosk/voice-transport/token

@@ -59,7 +59,7 @@ export type VoiceEventDeps = {
   ) => Promise<VoiceCallInitiator | null>;
   readonly listEndpoints?: (tenantId: string) => Promise<ReadonlyArray<StoredContactEndpoint>>;
   readonly repointReception?: (receptionId: string, providerCallId: string) => Promise<void>;
-  readonly isReceptionCalling?: (receptionId: string) => Promise<boolean>;
+  readonly receptionState?: (receptionId: string) => Promise<string | undefined>;
   readonly dialNextHop?: typeof defaultDialNextHop;
   readonly now?: () => Date;
 };
@@ -188,12 +188,13 @@ async function tryDialNextHop(
       if (!result.ok) throw new Error(result.error.code);
     });
 
-  const isReceptionCalling =
-    deps.isReceptionCalling ??
+  const receptionState =
+    deps.receptionState ??
     (async (receptionId: string) => {
       const found = await getReception(receptionId);
-      // 読めなければ**撃たない**。不在から「まだ呼び出し中だ」をでっち上げない。
-      return found.ok && found.value.state === 'calling';
+      // 読めなければ `undefined`。**不在から「まだ呼び出し中だ」をでっち上げない**
+      // （判断は `decideRoutingStop` が持つ）。
+      return found.ok ? found.value.state : undefined;
     });
 
   const result = await dial({
@@ -206,7 +207,7 @@ async function tryDialNextHop(
     updateIfUnchanged: (id, changes, expectedUpdatedAt) =>
       getCallCorrelationRepository().updateIfUnchanged(id, changes, expectedUpdatedAt),
     repointReception,
-    isReceptionCalling,
+    receptionState,
     now: deps.now,
   });
 

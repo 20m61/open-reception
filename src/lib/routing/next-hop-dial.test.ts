@@ -64,7 +64,7 @@ const save = vi.fn();
 const reserve = vi.fn();
 const repoint = vi.fn();
 const initiate = vi.fn();
-const isReceptionCalling = vi.fn();
+const receptionState = vi.fn();
 const order: string[] = [];
 
 function deps(over: Partial<Parameters<typeof dialNextHop>[0]> = {}) {
@@ -77,7 +77,7 @@ function deps(over: Partial<Parameters<typeof dialNextHop>[0]> = {}) {
     saveCorrelation: save,
     updateIfUnchanged: reserve,
     repointReception: repoint,
-    isReceptionCalling,
+    receptionState,
     now: () => new Date('2026-08-20T00:01:00.000Z'),
     ...over,
   };
@@ -93,7 +93,7 @@ beforeEach(() => {
     order.push(`reserve:${id}`);
     return true;
   });
-  isReceptionCalling.mockResolvedValue(true);
+  receptionState.mockResolvedValue('calling');
   repoint.mockImplementation(async () => void order.push('repoint'));
   initiate.mockImplementation(async () => {
     order.push('initiate');
@@ -141,7 +141,7 @@ describe('dialNextHop — 撃たない条件', () => {
    * 相関は受付の終端と連動していないので、ここで見ないと最大 10 段まで鳴る。
    */
   it('🔴 受付がもう呼び出し中でなければ撃たない', async () => {
-    isReceptionCalling.mockResolvedValue(false);
+    receptionState.mockResolvedValue('timeout');
     const result = await dialNextHop(deps());
     expect(result.kind).toBe('reception_closed');
     expect(reserve).not.toHaveBeenCalled();

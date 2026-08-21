@@ -48,6 +48,7 @@
  * また撃つ。失敗は結果として返し、呼び出し側でログにする。
  */
 import { dialExpiresAtFrom } from '@/domain/routing/dial-budget';
+import { decideRoutingStop } from '@/domain/routing/stop';
 import { endpointRef } from '@/domain/routing/endpoint';
 import type { RoutingStep } from '@/domain/routing/policy';
 import type { VoiceCallInitiator } from '@/domain/routing/voice-initiator';
@@ -79,10 +80,11 @@ export type DialNextHopDeps = {
   ) => Promise<boolean>;
   readonly repointReception: (receptionId: string, providerCallId: string) => Promise<void>;
   /**
-   * 受付がまだ呼び出し中か。**撃つ前に見る** ── 来訪者がキャンセルした後や、
-   * 既に終端した受付のために社内の電話を鳴らさない（#646 レビュー M1）。
+   * 受付の現在状態。**撃つ前に見る** ── 来訪者がキャンセルした後や、既に終端した受付の
+   * ために社内の電話を鳴らさない（#646 レビュー M1 / #743）。
+   * 読めなければ `undefined` を返すこと（**不在から「呼び出し中」をでっち上げない**）。
    */
-  readonly isReceptionCalling: (receptionId: string) => Promise<boolean>;
+  readonly receptionState: (receptionId: string) => Promise<string | undefined>;
   readonly now?: () => Date;
 };
 
@@ -117,7 +119,10 @@ export async function dialNextHop(deps: DialNextHopDeps): Promise<DialNextHopRes
 
   // 🔴 **受付がまだ呼び出し中のときだけ撃つ。** 来訪者がキャンセルした後や既に確定した
   // 受付のために社内の電話を鳴らさない（居ない人のために最大 10 段鳴りうる）。
-  if (!(await deps.isReceptionCalling(correlation.receptionId))) {
+  //
+  // 判断は `decideRoutingStop` に一本化する（#743）。ここで `state === 'calling'` を
+  // 手書きすると、受付状態が増えたときに黙って「進んでよい」側へ入る。
+  if (decideRoutingStop(await deps.receptionState(correlation.receptionId)).kind === 'stop') {
     return { kind: 'reception_closed' };
   }
 
