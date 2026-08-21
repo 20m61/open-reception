@@ -128,9 +128,25 @@ describe('resolveProviderForTenant (#405 Inc3)', () => {
  * **誰も呼ばれていないのに全員が受付完了する**。
  */
 describe('intendsRealDialing (#736)', () => {
-  it('vonage + enabled なら意図あり', async () => {
-    const loadConfig = loaderFor({ 'tenant-a': config() });
+  it('vonage + enabled + fromNumber なら意図あり', async () => {
+    const loadConfig = loaderFor({ 'tenant-a': config({ fromNumber: '+815000000000' }) });
     expect(await intendsRealDialing('tenant-a', { loadConfig })).toBe(true);
+  });
+
+  /**
+   * 🔴 **Video 受付だけのテナントを PSTN 意図と取り違えない。**
+   * `VonageCallAdapter`（遠隔顔合わせ）が要るのは applicationId + apiKey/apiSecret/privateKey で、
+   * **発信元番号は要らない**。`fromNumber` を条件に含めないと、正常に動いている Video 受付を
+   * 「実発信のつもりで撃てなかった」と判定して全断させる。
+   */
+  it('🔴 fromNumber が無ければ意図なし（Video 専用テナントを壊さない）', async () => {
+    const loadConfig = loaderFor({ 'tenant-a': config() });
+    expect(await intendsRealDialing('tenant-a', { loadConfig })).toBe(false);
+  });
+
+  it('fromNumber が空文字なら意図なし（未設定と同じ扱い）', async () => {
+    const loadConfig = loaderFor({ 'tenant-a': config({ fromNumber: '' }) });
+    expect(await intendsRealDialing('tenant-a', { loadConfig })).toBe(false);
   });
 
   /**
@@ -138,18 +154,18 @@ describe('intendsRealDialing (#736)', () => {
    * 呼び出し側が知りたい 2 つの事実が 1 つに畳まれて `resolveProviderForTenant` に戻る。
    */
   it('🔴 secret が無くても意図はある（そこが分かれ目）', async () => {
-    const loadConfig = loaderFor({ 'tenant-a': config() });
+    const loadConfig = loaderFor({ 'tenant-a': config({ fromNumber: '+815000000000' }) });
     // secretStore を渡していない ＝ secret は解決できない。それでも意図は true。
     expect(await intendsRealDialing('tenant-a', { loadConfig })).toBe(true);
   });
 
   it('disabled なら意図なし', async () => {
-    const loadConfig = loaderFor({ 'tenant-a': config({ enabled: false }) });
+    const loadConfig = loaderFor({ 'tenant-a': config({ enabled: false, fromNumber: '+815000000000' }) });
     expect(await intendsRealDialing('tenant-a', { loadConfig })).toBe(false);
   });
 
   it('provider が mock なら意図なし', async () => {
-    const loadConfig = loaderFor({ 'tenant-a': config({ provider: 'mock' }) });
+    const loadConfig = loaderFor({ 'tenant-a': config({ provider: 'mock', fromNumber: '+815000000000' }) });
     expect(await intendsRealDialing('tenant-a', { loadConfig })).toBe(false);
   });
 
@@ -159,7 +175,7 @@ describe('intendsRealDialing (#736)', () => {
 
   /** 🔴 他テナントの設定で意図を判定しない（越境防止）。 */
   it('🔴 他テナントの設定を見ない', async () => {
-    const loadConfig = loaderFor({ 'tenant-a': config() });
+    const loadConfig = loaderFor({ 'tenant-a': config({ fromNumber: '+815000000000' }) });
     expect(await intendsRealDialing('tenant-b', { loadConfig })).toBe(false);
   });
 });

@@ -63,6 +63,15 @@ const MOCK: ResolvedProvider = { provider: 'mock' };
  *
  * secret の**有無すら見ない**。見ると「意図」ではなく「今できるか」を答えることになり、
  * 呼び出し側が知りたい 2 つの事実が 1 つに畳まれて元に戻る。
+ *
+ * 🔴 **`fromNumber` を条件に含める。** vonage + enabled だけだと、**Video 受付だけで
+ * 運用しているテナント**（遠隔顔合わせ。`src/lib/call/adapter-factory.ts` の
+ * `VonageCallAdapter`）まで「PSTN を意図している」ことになる。あちらが要るのは
+ * `applicationId` + `apiKey`/`apiSecret`/`privateKey` で、**発信元番号は要らない**
+ * （`voice-dial.ts` が必須項目の違いを明記している）。含めないと、正常に動いている
+ * Video 受付を全断させる。
+ *
+ * `fromNumber` は非秘密設定なので、これを見ても「secret を見ない」方針は崩れない。
  */
 export async function intendsRealDialing(
   tenantId: string,
@@ -70,7 +79,9 @@ export async function intendsRealDialing(
 ): Promise<boolean> {
   const loadConfig = deps.loadConfig ?? getTenantProviderConfig;
   const config = await loadConfig(tenantId);
-  return config?.provider === 'vonage' && config.enabled === true;
+  if (config?.provider !== 'vonage' || config.enabled !== true) return false;
+  // 空文字は未設定と同じ扱い（`buildVoiceCredentials` の `!fromNumber` と揃える）。
+  return typeof config.fromNumber === 'string' && config.fromNumber.length > 0;
 }
 
 /**

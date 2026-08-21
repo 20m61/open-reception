@@ -19,6 +19,10 @@ import {
   getCallCorrelationRepository,
   type StoredCallCorrelation,
 } from './call-correlation';
+import {
+  deleteTenantProviderConfig,
+  putTenantProviderConfig,
+} from '@/lib/platform/provider-config-store';
 import type { StoredContactEndpoint, StoredRoutingPolicy } from './types';
 
 function endpoint(over: Partial<StoredContactEndpoint> & Pick<StoredContactEndpoint, 'id'>): StoredContactEndpoint {
@@ -453,6 +457,43 @@ describe('executeRoutedCall の mock/vonage 分岐', () => {
     );
     expect(routed).not.toBeNull();
     expect(routed?.outcome).toBeDefined();
+  });
+
+  /**
+   * 🔴 **既定の配線が実際に通ることを確かめる。** 上の 2 本は `intendsRealDialing` を
+   * 注入しているので、`options.intendsRealDialing ?? intendsRealDialing` の右辺を
+   * `async () => false` に置き換える変異を 1 件も落とせない ——
+   * 「実装だけ足して呼ばれていない」という、このリポジトリが繰り返し踏んでいる形そのもの。
+   * ここでは**注入せず**、実のテナント設定ストアを使う。
+   */
+  it('🔴 注入しなければ実のテナント設定を読む（既定の配線）', async () => {
+    await putTenantProviderConfig({
+      tenantId: String(scope.tenantId),
+      provider: 'vonage',
+      enabled: true,
+      applicationId: 'TEST-app',
+      fromNumber: '+815000000000',
+      updatedAt: '2026-08-21T00:00:00.000Z',
+      updatedBy: 'developer',
+    });
+    try {
+      const outcome = await executeRoutedCall(scope, 'rec-1', {
+        webhookBaseUrl: 'https://example.test',
+        resolveInitiator: async () => null,
+      });
+      expect(outcome).toBe(REAL_DIALING_UNAVAILABLE);
+    } finally {
+      await deleteTenantProviderConfig(String(scope.tenantId));
+    }
+  });
+
+  /** 逆向き: 設定が無いテナントは sentinel ではなく `null`（mock へ fail-open）。 */
+  it('🔴 設定が無ければ sentinel ではなく mock 結果を返す（区別が付いている）', async () => {
+    const outcome = await executeRoutedCall(scope, 'rec-1', {
+      webhookBaseUrl: 'https://example.test',
+      resolveInitiator: async () => null,
+    });
+    expect(outcome).not.toBe(REAL_DIALING_UNAVAILABLE);
   });
 
   /** 解決できたなら意図の有無に関わらず実発信経路（意図の判定が発信を止めない）。 */

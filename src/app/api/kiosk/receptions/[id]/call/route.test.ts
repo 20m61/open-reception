@@ -15,6 +15,7 @@ const startCall = vi.fn();
 const executeRoutedCall = vi.fn();
 const routedCallAdapter = vi.fn();
 const evaluateCallGuard = vi.fn();
+const intendsRealDialing = vi.fn();
 
 vi.mock('@/lib/kiosk/session-guard', () => ({
   denyWithoutKioskSession: (...a: unknown[]) => denyWithoutKioskSession(...a),
@@ -22,11 +23,16 @@ vi.mock('@/lib/kiosk/session-guard', () => ({
 vi.mock('@/lib/data-stores/reception-store', () => ({
   startCall: (...a: unknown[]) => startCall(...a),
 }));
-vi.mock('@/lib/routing/call-execution', () => ({
+// 🔴 **sentinel をここで再定義しない。** リテラルを二重に書くと、ルートとスタブが
+// どちらもテスト内の値を見るため、実定数が `null` や `''` になる変異を**全テスト green の
+// まま通す**（`null` になれば fail-open のテナント全部が 503 になる重大回帰）。
+vi.mock('@/lib/routing/call-execution', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@/lib/routing/call-execution')>()),
   executeRoutedCall: (...a: unknown[]) => executeRoutedCall(...a),
   routedCallAdapter: (...a: unknown[]) => routedCallAdapter(...a),
-  // 実物と同じ値でなければ、ルートの分岐がテストの中でだけ当たらなくなる。
-  REAL_DIALING_UNAVAILABLE: 'real_dialing_unavailable',
+}));
+vi.mock('@/lib/platform/provider-resolution', () => ({
+  intendsRealDialing: (...a: unknown[]) => intendsRealDialing(...a),
 }));
 vi.mock('@/lib/tenant/default-scope', () => ({
   resolveDefaultScope: () => ({ tenantId: 'internal', siteId: 'default-site' }),
@@ -48,6 +54,8 @@ beforeEach(() => {
   denyWithoutKioskSession.mockResolvedValue(null);
   routedCallAdapter.mockReturnValue({ call: vi.fn() });
   evaluateCallGuard.mockResolvedValue({ allowed: true });
+  // 既定は「実発信の意図なし」＝ dev / デモ / 未設定テナント（全 seed がこれ）。
+  intendsRealDialing.mockResolvedValue(false);
 });
 
 describe('POST /api/kiosk/receptions/:id/call', () => {
@@ -104,6 +112,54 @@ describe('POST /api/kiosk/receptions/:id/call', () => {
       const res = await call();
       expect(res.status).toBe(200);
       expect(startCall).toHaveBeenCalled();
+    });
+
+    /**
+     * 🔴 **経路 B: 資格情報は正常だが有効なルートが 1 つも無い。**
+     * `runVoiceRoutedCall` が `null` を返し、ルートの fail-open が単発 mock adapter へ倒す。
+     * `MockCallAdapter` は**部署呼び出しを無条件で `connected`** にするので、
+     * 「資格情報は入れたがルートをまだ作っていない」という 8/30 で最も起きやすい形で
+     * 同じ嘘が出る。`null` は fail-open と区別が付かないので**意図側**で倒す。
+     */
+    it('🔴 意図があるのにルート未設定なら mock へ倒さない（経路 B）', async () => {
+      intendsRealDialing.mockResolvedValue(true);
+      executeRoutedCall.mockResolvedValue(null);
+      const res = await call();
+      expect(res.status).toBe(503);
+      expect(await res.json()).toEqual({ error: 'unrouted' });
+      expect(startCall).not.toHaveBeenCalled();
+    });
+
+    /**
+     * 🔴 **経路 C: 取次の読み取りが throw。** ルートの `.catch` が `null` へ倒すので、
+     * 意図の判定を `.catch` の**内側**に置くとガードごと握り潰される。
+     */
+    it('🔴 意図があるのに取次実行が throw したら mock へ倒さない（経路 C）', async () => {
+      intendsRealDialing.mockResolvedValue(true);
+      executeRoutedCall.mockRejectedValue(new Error('TEST-store-down'));
+      const res = await call();
+      expect(res.status).toBe(503);
+      expect(startCall).not.toHaveBeenCalled();
+    });
+
+    /**
+     * 🔴 **意図の読み取り自体が失敗したら、意図ありへ倒す（fail-closed）。**
+     * 誰も呼ばずに「呼び出しました」と言うより、取り次げないと言って有人支援へ倒すほうが
+     * 回復できる。（現状 in-memory Map なので throw しないが、Inc2 の永続化で真になる。）
+     */
+    it('🔴 意図の読み取りが失敗したら嘘へ倒さない', async () => {
+      intendsRealDialing.mockRejectedValue(new Error('TEST-config-store-down'));
+      executeRoutedCall.mockResolvedValue(null);
+      const res = await call();
+      expect(res.status).toBe(503);
+      expect(startCall).not.toHaveBeenCalled();
+    });
+
+    it('🔴 応答に例外の内容やテナントの secret を載せない', async () => {
+      intendsRealDialing.mockResolvedValue(true);
+      executeRoutedCall.mockRejectedValue(new Error('TEST-store-down'));
+      const body = await (await call()).text();
+      expect(body).not.toContain('TEST-store-down');
     });
   });
 
