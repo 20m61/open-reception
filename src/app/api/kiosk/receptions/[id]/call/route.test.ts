@@ -12,6 +12,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
 const denyWithoutKioskSession = vi.fn();
 const startCall = vi.fn();
+const markCallFailed = vi.fn();
 const executeRoutedCall = vi.fn();
 const routedCallAdapter = vi.fn();
 const evaluateCallGuard = vi.fn();
@@ -22,6 +23,7 @@ vi.mock('@/lib/kiosk/session-guard', () => ({
 }));
 vi.mock('@/lib/data-stores/reception-store', () => ({
   startCall: (...a: unknown[]) => startCall(...a),
+  markCallFailed: (...a: unknown[]) => markCallFailed(...a),
 }));
 // 🔴 **sentinel をここで再定義しない。** リテラルを二重に書くと、ルートとスタブが
 // どちらもテスト内の値を見るため、実定数が `null` や `''` になる変異を**全テスト green の
@@ -57,6 +59,7 @@ beforeEach(() => {
   evaluateCallGuard.mockResolvedValue({ allowed: true });
   // 既定は「実発信の意図なし」＝ dev / デモ / 未設定テナント（全 seed がこれ）。
   intendsRealDialing.mockResolvedValue(false);
+  markCallFailed.mockResolvedValue({ ok: true, value: { id: 'rec-1', state: 'failed' } });
 });
 
 describe('POST /api/kiosk/receptions/:id/call', () => {
@@ -376,5 +379,61 @@ describe('POST /api/kiosk/receptions/:id/call — 実発信の配線 (#4 Inc D-2
     ]);
     // 応答に provider 通話 ID を出さない（相関キーは来訪者端末へ渡さない）。
     expect(JSON.stringify(body)).not.toContain('TEST-provider-call-id');
+  });
+});
+
+/**
+ * 撃てなかった受付を履歴に残す（2026-08-21 のユーザー判断 / #764）。
+ *
+ * この経路は `startCall` に到達しないので、以前は受付が `'confirming'` のまま残り
+ * **履歴にもメトリクスにも 1 件も出なかった**。503 は Lambda としては成功した呼び出しで
+ * `Errors` にも現れないため、運用者は「今日何件取り次げなかったか」を知る手段が無かった。
+ */
+describe('取り次げなかった受付を残す (#764)', () => {
+  afterEach(() => {
+    delete process.env.VOICE_DIALING_DISABLED;
+  });
+
+  it('🔴 実発信不能なら受付を終端させる', async () => {
+    intendsRealDialing.mockResolvedValue(true);
+    executeRoutedCall.mockResolvedValue(null);
+    await call();
+    expect(markCallFailed).toHaveBeenCalledWith('rec-1', 'unrouted');
+  });
+
+  it('🔴 キルスイッチでも受付を終端させる（理由を分ける）', async () => {
+    process.env.VOICE_DIALING_DISABLED = '1';
+    await call();
+    expect(markCallFailed).toHaveBeenCalledWith('rec-1', 'dialing_disabled');
+  });
+
+  /**
+   * 🔴 **記録できなくても応答は変えない。** 来訪者にとっては同じ結末で、ここで 5xx にすると
+   * 端末が「呼び出し中」のまま固まる。記録は運用者のためのもの。
+   */
+  it('🔴 記録に失敗しても 503 と本文は変えない', async () => {
+    intendsRealDialing.mockResolvedValue(true);
+    executeRoutedCall.mockResolvedValue(null);
+    markCallFailed.mockResolvedValue({ ok: false, error: { code: 'invalid_transition' } });
+    const res = await call();
+    expect(res.status).toBe(503);
+    expect(await res.json()).toEqual({ error: 'unrouted' });
+  });
+
+  it('🔴 記録が例外でも 503 と本文は変えない', async () => {
+    intendsRealDialing.mockResolvedValue(true);
+    executeRoutedCall.mockResolvedValue(null);
+    markCallFailed.mockRejectedValue(new Error('TEST-store-down'));
+    const res = await call();
+    expect(res.status).toBe(503);
+    expect(await res.json()).toEqual({ error: 'unrouted' });
+  });
+
+  /** 🔴 撃てた受付では終端させない（`startCall` が状態を進める）。 */
+  it('🔴 取次が成立した受付は終端させない', async () => {
+    executeRoutedCall.mockResolvedValue({ status: 'calling', stages: [] });
+    startCall.mockResolvedValue({ ok: true, value: { id: 'rec-1', state: 'calling' } });
+    await call();
+    expect(markCallFailed).not.toHaveBeenCalled();
   });
 });

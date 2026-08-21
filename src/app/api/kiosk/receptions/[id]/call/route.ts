@@ -1,5 +1,5 @@
 import { NextResponse } from 'next/server';
-import { startCall } from '@/lib/data-stores/reception-store';
+import { markCallFailed, startCall } from '@/lib/data-stores/reception-store';
 import { toResponse } from '@/lib/data-stores/http';
 import { denyWithoutKioskSession } from '@/lib/kiosk/session-guard';
 import { resolveDefaultScope } from '@/lib/tenant/default-scope';
@@ -58,7 +58,7 @@ export async function POST(
   // 「止めても来訪者を締め出さない」という設計意図（`voice-dial.ts`）は保つ:
   // 受付は `failed` で終端し、逃げ道バーと有人支援の案内が出る。**やめるのは嘘だけ。**
   if (voiceDialingDisabled()) {
-    return NextResponse.json({ error: 'unrouted' }, { status: 503 });
+    return await refuseToDial(id, 'dialing_disabled');
   }
 
   // 🔴 **意図の判定は try の外。** `executeRoutedCall` の `.catch` の内側に置くと、
@@ -100,7 +100,7 @@ export async function POST(
         cause: routed === REAL_DIALING_UNAVAILABLE ? 'no_initiator' : 'no_route_or_read_failed',
       }),
     );
-    return NextResponse.json({ error: 'unrouted' }, { status: 503 });
+    return await refuseToDial(id, 'unrouted');
   }
 
   // ルート未設定（fail-open）時の単発 adapter は、営業時間ガード/routing と同じ scope の
@@ -112,4 +112,27 @@ export async function POST(
 
   // 後方互換: 既存フィールド（ReceptionSession）を維持しつつ、実行段階を stages[] で供給する。
   return NextResponse.json({ ...result.value, stages: routed.stages });
+}
+
+/**
+ * 撃てないと分かった受付を**終端させてから** 503 を返す (#764)。
+ *
+ * ここは `startCall` に到達しない経路なので、以前は受付が `'confirming'` のまま残り、
+ * **履歴にもメトリクスにも 1 件も出なかった** ── 503 は Lambda としては成功した呼び出しで
+ * `Errors` にも現れないため、運用者は「今日何件取り次げなかったか」を知る手段が無かった。
+ * 来訪者は追い返されたのに、集計上は存在しないことになる。
+ *
+ * 🔴 **記録できなくても応答は変えない。** 来訪者にとっては同じ結末（取り次げない）で、
+ * ここで 5xx にすると端末が「呼び出し中」のまま固まる。記録は運用者のためのもの。
+ *
+ * 🔴 **来訪者向けの応答本文は変えない。** `{ error: 'unrouted' }` は #738 で配線済みの
+ * 経路（専用文言・果たせない代替導線を出さない）で、端末側の分岐はそのまま使う。
+ */
+async function refuseToDial(id: string, reason: string): Promise<NextResponse> {
+  const settled = await markCallFailed(id, reason).catch(() => null);
+  if (settled === null || !settled.ok) {
+    // 既に終端している（担当者が応答した直後 等）／書けなかった。どちらも応答は変えない。
+    console.warn(JSON.stringify({ event: 'kiosk_refuse_to_dial_unrecorded', reason }));
+  }
+  return NextResponse.json({ error: 'unrouted' }, { status: 503 });
 }

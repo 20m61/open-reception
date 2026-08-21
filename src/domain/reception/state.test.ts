@@ -36,6 +36,30 @@ describe('reception state machine', () => {
     expect(() => transitionOrThrow('idle', 'CONFIRM')).toThrowError(/Invalid reception transition/);
   });
 
+  /**
+   * 呼び出しを**始める前に**撃てないと分かる経路 (#764)。`/call` が 503（`unrouted`）で
+   * 返す場合で、`startCall` に到達しないため受付は `confirming` のまま残っていた
+   * ── 履歴にもメトリクスにも 1 件も出ず、運用者は追い返した件数を知れなかった。
+   */
+  it('🔴 confirming から直接 failed へ倒せる（撃つ前に失敗した受付を残す）', () => {
+    expect(transition('confirming', 'CALL_FAILED')).toBe('failed');
+  });
+
+  /**
+   * 🔴 **`calling` を経由させない。** 鳴っていない一瞬を「呼び出し中」として書くと、
+   * その窓に当たった `/status` が来訪者を待たせる（しかも永久に来ない結果を）。
+   * ここが `calling` になる変更が入ったら落ちる。
+   */
+  it('🔴 confirming からの失敗は calling を経由しない', () => {
+    expect(transition('confirming', 'CALL_FAILED')).not.toBe('calling');
+  });
+
+  /** 成功・未応答は撃ってからしか分からない。confirming からは倒せない。 */
+  it('🔴 confirming から成功・未応答へは倒せない', () => {
+    expect(transition('confirming', 'CALL_CONNECTED')).toBeNull();
+    expect(transition('confirming', 'CALL_TIMEOUT')).toBeNull();
+  });
+
   it('呼び出しの失敗・未応答・キャンセルを区別する', () => {
     expect(transition('calling', 'CALL_FAILED')).toBe('failed');
     expect(transition('calling', 'CALL_TIMEOUT')).toBe('timeout');
