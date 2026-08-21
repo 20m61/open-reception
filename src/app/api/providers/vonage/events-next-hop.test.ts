@@ -24,6 +24,10 @@ vi.mock('@/lib/routing/voice-dial', () => ({
   resolveVoiceInitiator: async () => ({ key: 'vonage', initiate }),
 }));
 
+// `/give-up` は端末セッションを要求する。ここで見たいのは「終端したら取次が止まる」なので、
+// 認可は通った前提にする（認可そのものは give-up の route test が固定している）。
+vi.mock('@/lib/kiosk/session-guard', () => ({ denyWithoutKioskSession: async () => null }));
+
 import {
   getCallCorrelationRepository,
   __resetCallCorrelationRepository,
@@ -283,5 +287,41 @@ describe('取次は hop 上限で必ず止まる (#646)', () => {
     await events(unanswered());
 
     expect(initiate).toHaveBeenCalledTimes(1);
+  });
+});
+
+/**
+ * 代表シナリオ: 端末が諦めたら取次が止まる (#743)。
+ *
+ * `/give-up` が受付を終端させ、そのあと webhook が届いても**次の手を撃たない**ことを
+ * 1 本で通す。半分ずつ（give-up ルートの単体・終端受付での不発信）は別に固定してあるが、
+ * **繋がっていることの証拠**はここにしか無い。
+ */
+describe('端末の諦め → 取次停止（通し・#743）', () => {
+  it('🔴 give-up のあとに webhook が届いても撃たない', async () => {
+    const { POST: giveUp } = await import('../../kiosk/receptions/[id]/give-up/route');
+    const res = await giveUp(new Request('https://reception.test/x', { method: 'POST' }), {
+      params: Promise.resolve({ id: RECEPTION_ID }),
+    });
+    expect(res.status).toBe(200);
+
+    // 遅れて届いた未応答 webhook。受付はもう終端しているので次の手は撃たない。
+    await events(unanswered());
+
+    expect(initiate).not.toHaveBeenCalled();
+    expect(await getCallCorrelationRepository().get(NEXT_PROVIDER_CALL_ID)).toBeUndefined();
+  });
+
+  /**
+   * 🔴 **来訪者のキャンセルでも同じ**。取次を止める経路は 1 本（`decideRoutingStop`）で、
+   * 理由が違っても結論は同じでなければならない。
+   */
+  it('🔴 来訪者がキャンセルしたあとも撃たない', async () => {
+    const session = await getReceptionSessionRepository().get(RECEPTION_ID);
+    await getReceptionSessionRepository().put({ ...session!, state: 'cancelled' });
+
+    await events(unanswered());
+
+    expect(initiate).not.toHaveBeenCalled();
   });
 });

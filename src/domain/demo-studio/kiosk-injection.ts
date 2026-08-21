@@ -297,6 +297,9 @@ export function deriveKioskFlowProps(
   nowMs: number = Date.now(),
 ): KioskFlowProps {
   return {
+    // シナリオが宣言した受付モードを実際に反映する (#736 検証用)。ここが繋がっていないと
+    // 「QR 期限切れ」を選んでも通常受付で起動し、E2E からその画面へ到達できない。
+    initialMode: scenario.initialMode === 'qr' ? 'checkin' : 'normal',
     operatingStatus: deriveOperatingStatus(scenario, nowMs),
     sttAdapterFactory: deriveSttAdapterFactory(scenario),
     qrScanner: deriveQrScanner(scenario),

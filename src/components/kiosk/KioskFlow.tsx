@@ -309,6 +309,14 @@ function useCallingStage(
  */
 export type KioskFlowProps = {
   /**
+   * 起動時の受付モード (#736 検証用)。既定は通常受付。
+   *
+   * demo-studio のシナリオは `initialMode: 'qr'` を宣言しているのに、**この受け口が無かった
+   * ため配線されていなかった**。「QR 期限切れ」のシナリオを開いても通常受付で起動するので、
+   * 運用者は手で「ほかのご用件 → QR で受付」と辿る必要があり、E2E からも踏めなかった。
+   */
+  initialMode?: 'normal' | 'checkin';
+  /**
    * 営業状態 (#367)。'closed' かつ待機中のとき営業時間外表示へ切り替える。
    * 未指定は「判定不能」= fail-open（通常受付を止めない）。ServiceOperatingPolicy の
    * 本評価は #367 で行い、その結果をここへ注入する。
@@ -343,7 +351,13 @@ function giveUpServerSide(receptionId: string): void {
   void fetch(`/api/kiosk/receptions/${receptionId}/give-up`, { method: 'POST' }).catch(() => {});
 }
 
-export function KioskFlow({ operatingStatus, sttAdapterFactory, voiceSession, qrScanner }: KioskFlowProps = {}) {
+export function KioskFlow({
+  initialMode = 'normal',
+  operatingStatus,
+  sttAdapterFactory,
+  voiceSession,
+  qrScanner,
+}: KioskFlowProps = {}) {
   /*
    * 実 orchestrator のローカル起動 (#372 配線)。**既定はオフ。**
    *
@@ -404,7 +418,7 @@ export function KioskFlow({ operatingStatus, sttAdapterFactory, voiceSession, qr
   // 「続ける」ボタンから無操作タイマーを延長するための ref（実体は inactivity effect 内で設定）。
   const extendInactivityRef = useRef<() => void>(() => {});
   // 受付モード。idle から「QRで受付」を選ぶと checkin へ。完了/通常受付選択で normal へ戻す (issue #98)。
-  const [mode, setMode] = useState<'normal' | 'checkin'>('normal');
+  const [mode, setMode] = useState<'normal' | 'checkin'>(initialMode);
   // 逃げ道バーの実測高さ。チャット FAB をこの上へ確実に持ち上げ重なりを防ぐ (#121 H1)。
   // バーは flex-wrap で複数行になりうるため固定値ではなく実測する。
   const escapeBarRef = useRef<HTMLElement | null>(null);
