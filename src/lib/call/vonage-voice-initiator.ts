@@ -58,6 +58,32 @@ function requestFailed(status: number): Error {
   return new Error(`vonage voice: create call failed (status ${status})`);
 }
 
+/**
+ * NCCO 応答の予算 (#744)。
+ *
+ * Vonage は webhook（`/answer` `/dtmf` `/choice`）の応答を待つが、待ち時間は無限ではない。
+ * ここを超えると担当者へ音声が返らず、route が宣言している不変条件
+ * 「**どの選択でも必ず音声で応答する**」が崩れる ── 担当者は自分の入力が届いたか
+ * 分からないまま切る。
+ *
+ * 実測に基づく値ではない（実資格情報での計測は #65 待ち）。**上限どうしの関係**を
+ * 型と定数で縛るために置く。実測が取れたら見直すこと。
+ */
+export const NCCO_RESPONSE_BUDGET_MS = 5_000;
+
+/**
+ * `POST /v1/calls` の上限 (#744)。
+ *
+ * 🔴 **上限が無い発信をしない。** `/choice` は「次の手を撃ってから talk を返す」順序で、
+ * これは意図的（先に返すと担当者が切ったときに取次が余計に進む。#742 B1）。よって発信が
+ * 長引くとそのまま応答が遅れる。**NCCO 応答の予算より短く**しておかないと、上限に達する
+ * 前に Vonage 側のタイムアウトが先に来て、結局担当者へ応答が返らない。
+ *
+ * 中断された発信は孤児通話を残しうるが、**上限が無い現状でも残りうる**ので悪化しない
+ * （孤児通話の回収は #743 の残りとして分離）。
+ */
+export const VONAGE_VOICE_REQUEST_TIMEOUT_MS = 3_000;
+
 export function createVonageVoiceInitiator(deps: VonageVoiceDeps): VoiceCallInitiator {
   return {
     key: VONAGE_VOICE_PROVIDER_KEY,
@@ -91,6 +117,8 @@ export function createVonageVoiceInitiator(deps: VonageVoiceDeps): VoiceCallInit
           'content-type': 'application/json',
         },
         body: JSON.stringify(body),
+        // 🔴 上限のない発信をしない (#744)。担当者への応答が返らなくなる。
+        signal: AbortSignal.timeout(VONAGE_VOICE_REQUEST_TIMEOUT_MS),
       });
 
       if (!res.ok) throw requestFailed(res.status);

@@ -4,6 +4,7 @@ import { logWebhookRejection, rejectWebhook, verifyRequest } from '@/lib/routing
 import { denyIfProviderWebhooksDisabled } from '@/lib/routing/provider-webhook-switch';
 import { resolveDialCallbackBaseUrl } from '@/lib/routing/webhook-base-url';
 import { applyVoiceEventToCorrelation } from '@/lib/routing/voice-event';
+import { createStageRecorder, stageTimingLog } from '@/domain/routing/stage-timing';
 
 /**
  * POST /api/providers/vonage/choice — **第 2 段**（意思表示）の DTMF (issue #4 MVP 1)。
@@ -70,15 +71,22 @@ export async function POST(request: Request): Promise<NextResponse> {
   // 先に届いたときに取次が次の手へ進む。書いてから返す。
   //
   // 冪等キーは webhook の `jti`。at-least-once 配信で取次が余計に 1 手進むのを防ぐ。
+  // 応答までの所要時間を段ごとに残す (#744)。順序（書いてから返す）は変えられないので、
+  // **どこが遅いか**を実測できるようにしてから手を入れる。値・宛先・通話 ID は載せない。
+  const recorder = createStageRecorder('choice');
   try {
-    await applyVoiceEventToCorrelation(verified.correlation, { kind: 'dtmf', choice }, verified.jti, {
-      webhookBaseUrl: resolveDialCallbackBaseUrl(request),
-    });
+    await recorder.measure('correlation_write', () =>
+      applyVoiceEventToCorrelation(verified.correlation, { kind: 'dtmf', choice }, verified.jti, {
+        webhookBaseUrl: resolveDialCallbackBaseUrl(request),
+      }),
+    );
   } catch {
     // 🔴 **担当者への応答を落とさない。** ここで投げると音声が返らず、担当者は自分の入力が
     // 届いたか分からないまま切る。書けなかったことはログに残し、応答は返す。
     console.warn(JSON.stringify({ event: 'vonage_choice_apply_failed', choice }));
   }
+
+  console.info(stageTimingLog(recorder.finish()));
 
   const label = STAGE2_CHOICES.find((c) => c.choice === choice)?.label ?? '';
   return acknowledgement(`${label}、で承りました。`);
