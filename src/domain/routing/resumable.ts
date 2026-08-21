@@ -24,10 +24,20 @@ import { isTerminalSuccess, nextTransition, type RouteResult, type RoutingPolicy
  *
  * **`orchestrator.ts` の既定（16）とは別**。あちらは同期実行 1 回で撃ち切る前提だが、
  * こちらは webhook 1 件で 1 手なので、暴走したときに鳴り続ける電話の本数がそのまま
- * 上限になる。担当者・代理・部門代表・総合受付を想定して 10 に置く。
+ * 上限になる。
+ *
+ * 🔴 **端末の待ち上限に収まる数であること (#743)。** 1 手あたり
+ * `timeoutSeconds + DIAL_BUDGET_MARGIN_SECONDS`（30 秒）かかり、端末は
+ * `CALL_STATUS_POLL_MAX_MS`（5 分）で待つのをやめる。以前の 10 は、呼出 30 秒の構成なら
+ * **余裕ぶんだけで使い切る**計算で、原理的に収まらなかった ── 保存時のガード
+ * （`routingFitsClientWait`）が弾く構成を、既定値が指し続けている状態だった。
+ * 呼出 30 秒 × 5 手 = 5 分ちょうどが上限なので 5 に置く。
+ * 既定 seed（20/20/30 秒 = 3 手）は変わらない。
+ *
+ * この関係は `budget-fit.test.ts` が定数どうしで縛る（片方を動かすと落ちる）。
  * **どちらかに寄せるなら値ではなく実装を統合すること**（値だけ揃えると二重の真実が残る）。
  */
-export const DEFAULT_MAX_HOPS = 10;
+export const DEFAULT_MAX_HOPS = 5;
 
 /**
  * 取次の現在位置。**これだけを保存すれば再開できる。**

@@ -54,3 +54,56 @@ test('呼び出し中から待機へ戻ったら /status のポーリングが�
   await page.waitForTimeout(7_000);
   expect(count.status).toBe(afterReset);
 });
+
+/**
+ * 呼び出し中に来訪者が自分で抜けたら、**サーバの受付も止める** (#743)。
+ *
+ * 上のテストが確かめているのは「端末がポーリングをやめる」ことだけ。それだけだと
+ * サーバの受付は `calling` のまま残り、`decideRoutingStop` は「進んでよい」と答え続けて
+ * **取次は hop 上限まで進み、社内の電話が鳴り続ける**。しかもポーリングが止まるので
+ * `/give-up`（#743 AC3）も呼ばれない ── 自分から抜けるほうが、放っておくより取次が
+ * 長く走ることになる。
+ *
+ * 🔴 端末側の実装（`leaveWithServer`）を**振る舞いで**縛る。ソースを走査する形だと、
+ * 3 つ目の出口が足されたときに黙って漏れる。
+ */
+test('🔴 呼び出し中に逃げ道バーで抜けたら受付キャンセルをサーバへ送る', async ({ page }) => {
+  const count = { status: 0 };
+  await stubUnresolvedCalling(page, count);
+
+  const cancels: string[] = [];
+  await page.route('**/api/kiosk/receptions/*/cancel', (route) => {
+    cancels.push(route.request().url());
+    return route.fulfill({ json: { id: 'rec-1', state: 'cancelled' } });
+  });
+
+  await page.goto('/kiosk');
+  await driveToCalling(page);
+  await expect.poll(() => count.status, { timeout: 15_000 }).toBeGreaterThan(0);
+
+  await page.getByTestId('escape-reset').click();
+  await expect(page.getByTestId('start-reception')).toBeVisible();
+
+  await expect.poll(() => cancels.length, { timeout: 5_000 }).toBe(1);
+});
+
+/**
+ * 🔴 **呼び出し中でなければ送らない。** 取次が走っていない局面で撃つと、
+ * 既に終端した受付（担当者が応答した直後など）を蒸し返す余地を作る。
+ */
+test('🔴 呼び出し前に逃げ道バーで抜けてもキャンセルは送らない', async ({ page }) => {
+  const cancels: string[] = [];
+  await page.route('**/api/kiosk/receptions/*/cancel', (route) => {
+    cancels.push(route.request().url());
+    return route.fulfill({ json: { id: 'rec-1', state: 'cancelled' } });
+  });
+
+  await page.goto('/kiosk');
+  await page.getByTestId('start-reception').click();
+  await page.getByTestId('purpose-meeting').click();
+  await page.getByTestId('escape-reset').click();
+  await expect(page.getByTestId('start-reception')).toBeVisible();
+
+  await page.waitForTimeout(1_000);
+  expect(cancels).toHaveLength(0);
+});
