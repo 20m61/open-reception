@@ -134,6 +134,25 @@ describe('TargetView の初期表示密度 (#776)', () => {
   });
 });
 
+describe('0 件の読み上げ (#776)', () => {
+  it('live region は候補が有るうちから存在する（変化の前から在らないと読まれない）', () => {
+    const html = render();
+    expect(html).toContain('data-testid="target-live"');
+    expect(tagOf(html, 'target-live')).toContain('role="status"');
+    expect(innerTextOf(html, 'target-live')).toBe('');
+  });
+
+  it('0 件になったら live region が案内文を持つ', () => {
+    const html = render({ directory: { departments: DIRECTORY.departments, staff: [] } });
+    expect(innerTextOf(html, 'target-live')).toContain('該当する担当者が見つかりません');
+  });
+
+  it('recovery パネル自身は live region にしない（属性の後付けでは読まれない）', () => {
+    const html = render({ directory: { departments: DIRECTORY.departments, staff: [] } });
+    expect(tagOf(html, 'target-recovery')).not.toContain('role="status"');
+  });
+});
+
 describe('部署タブ (#776)', () => {
   it('部署タブで開くと部署グリッドだけを出し、担当者グリッドも検索欄も出さない', () => {
     const html = render({ tab: 'department' });
@@ -162,6 +181,21 @@ describe('部署タブ (#776)', () => {
     // 担当者へ戻す導線とチャットが出る。
     expect(html).toContain('data-testid="target-recovery-staff-cta"');
     expect(html).toContain('data-testid="target-recovery-chat-cta"');
+  });
+
+  it('担当者が全員不在なら「担当者から選ぶ」を出さない（押せないカードの前に置かない）', () => {
+    // 判定は**カードの枚数ではなく選べる件数**。`searchStaffScored` は不在を除外しない
+    // ので、枚数で決めると押せないカードだけのグリッドへ送ることになる。
+    const absent = DIRECTORY.staff.map((s) => ({ ...s, available: false }));
+    const html = render({ tab: 'department', directory: { departments: [], staff: absent } });
+    expect(html).toContain('data-testid="target-recovery"');
+    expect(html).not.toContain('data-testid="target-recovery-staff-cta"');
+  });
+
+  it('部署タブでも roving tabindex が選択中に追従する', () => {
+    const html = render({ tab: 'department' });
+    expect(tagOf(html, 'target-tab-department')).toContain('tabindex="0"');
+    expect(tagOf(html, 'target-tab-staff')).toContain('tabindex="-1"');
   });
 
   it('部署が 0 件なら 0 件 recovery に「部署から選ぶ」を出さない（空の先へ送らない）', () => {

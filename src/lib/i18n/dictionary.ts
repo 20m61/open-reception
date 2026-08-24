@@ -1380,7 +1380,7 @@ const zh: LocaleDictionary = {
   'reception.staffAbsent': '当前不在。请选择部门或前台。',
   'reception.staffAbsentBadge': '不在',
   'reception.staffNotFound': '未找到相应负责人。请选择部门或前台。',
-  'reception.departmentNotFound': '没有可显示的部门・窗口。请从下面的方式中选择。',
+  'reception.departmentNotFound': '没有可显示的部门·窗口。请从下面的方式中选择。',
   'reception.voiceSearch': '语音搜索',
   'reception.listening': '正在聆听…',
   'reception.voiceHint': '识别到的候选。点击填入搜索框，确认后选择。',
@@ -1614,6 +1614,7 @@ const jaSimple: LocaleDictionary = {
   'reception.staffNotFound': '見つかりません。べつの ぶしょを えらんで ください',
   'reception.searchNoResultsGuidance':
     '見つかりませんでした。べつの 名前で ためすか、下から えらんで ください',
+  'reception.searchNoResultsChatCta': 'チャットで 受付の 人に きく',
   'reception.departmentNotFound': 'ぶしょの リストが ありません。下から えらんで ください',
   'reception.voiceSearch': '声で さがす',
   'reception.listening': '聞いて います…',

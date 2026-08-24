@@ -834,6 +834,16 @@ export function TargetView({
           ))}
         </div>
 
+        {/*
+          0 件になったことを支援技術へ伝える (#776)。**live region は変化の前から存在して
+          いないと読み上げられない**ので、recovery パネル自身に role を付けても効かない
+          （3 分岐が同じ位置・同じ div なので React はホストノードを使い回し、属性の
+          後付けになる。打鍵で 0 件になる=最も効いてほしい場面で沈黙する）。
+        */}
+        <p className="a11y-live" role="status" data-testid="target-live" lang={htmlLangFor(locale)}>
+          {panel.kind === 'recovery' ? tr(panel.messageKey) : ''}
+        </p>
+
         <div
           role="tabpanel"
           id={`target-panel-${tab}`}
@@ -978,12 +988,7 @@ export function TargetView({
             // 0 件で行き止まりにしない。警告と案内を 2 枚出していたものを 1 枚へ統合し、
             // 次の一手を優先順に並べる (#322 AC3 / #776)。**押した先に中身が有るものだけ**を
             // 出すのは `targetPanelFor` の責務（空の部署一覧へ送るボタンを作らない）。
-            <div
-              className="notice notice--warning"
-              role="status"
-              data-testid="target-recovery"
-              lang={htmlLangFor(locale)}
-            >
+            <div className="notice notice--warning" data-testid="target-recovery" lang={htmlLangFor(locale)}>
               <p style={{ margin: 0 }}>{tr(panel.messageKey)}</p>
               {panel.actions.length > 0 ? (
                 <div className="card-grid" style={{ marginTop: 'var(--space-md)' }}>

@@ -11,14 +11,20 @@ import {
 } from './target-view-state';
 
 function panel(over: Partial<Parameters<typeof targetPanelFor>[0]> = {}): TargetPanel {
-  return targetPanelFor({
-    tab: 'staff',
+  const input = {
+    tab: 'staff' as const,
     staffResultCount: 3,
     selectableStaffCount: 3,
     departmentCount: 2,
     searching: false,
     chatAvailable: true,
     ...over,
+  };
+  // 「選べる件数 > カードの件数」は起こり得ない。既定値の引き継ぎで到達不能な入力を
+  // 作ると、将来担当者タブ側でも使い始めたときにフィクスチャが嘘をつく。
+  return targetPanelFor({
+    ...input,
+    selectableStaffCount: Math.min(input.selectableStaffCount, input.staffResultCount),
   });
 }
 

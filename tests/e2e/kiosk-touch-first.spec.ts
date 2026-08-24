@@ -129,6 +129,32 @@ test('相手選択のタブは確認画面から戻っても勝手に切り替�
   await expect(page.getByTestId('staff-search')).toBeVisible();
 });
 
+test('探し方は受付 1 回で終わり、次の来訪者へ持ち越さない (#776)', async ({ page }) => {
+  // iPad は常設端末で再読み込みされない。前の来訪者が「部署から選ぶ」で入ったことが
+  // 次の来訪者の着地先を変えると、押した導線と着いた画面が食い違う。
+  await page.goto('/kiosk');
+  await page.getByTestId('quick-department').click();
+  await expect(page.getByTestId('target-tab-department')).toHaveAttribute('aria-selected', 'true');
+  await page.getByTestId('escape-reset').click();
+  await expect(page.getByTestId('kiosk-quick-actions')).toBeVisible();
+
+  await page.getByTestId('start-reception').click();
+  await page.getByTestId('purpose-meeting').click();
+  await expect(page.getByTestId('target-tab-staff')).toHaveAttribute('aria-selected', 'true');
+  await expect(page.locator('[data-testid^="dept-"]')).toHaveCount(0);
+});
+
+test('0 件になったことが支援技術へ伝わる (#776)', async ({ page }) => {
+  await page.goto('/kiosk');
+  await page.getByTestId('start-reception').click();
+  await page.getByTestId('purpose-meeting').click();
+  // live region は候補が有るうちから存在する（変化の前から在らないと読み上げられない）。
+  const live = page.getByTestId('target-live');
+  await expect(live).toHaveText('');
+  await page.getByTestId('staff-search').fill('存在しない名前です');
+  await expect(live).toContainText('お探しの方が見つかりませんでした');
+});
+
 test('進行中の画面に常時見える逃げ道バーが出る', async ({ page }) => {
   await page.goto('/kiosk');
   await page.getByTestId('start-reception').click();
