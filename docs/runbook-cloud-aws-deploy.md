@@ -1042,6 +1042,7 @@ findings が 1 件でも増減・変化すれば値が変わり、**古い承認
 | `OR_APP_SECRETS_NAME` | `appSecretsName` | Secrets Manager 連携が落ち、**起動が 500** |
 | `OR_ORIGIN_VERIFY_SECRET` | `originVerifySecret` | CloudFront 経由の **POST が全滅**（403） |
 | `OR_PUBLIC_ORIGIN_OVERRIDE` | `publicOriginOverride` | 発行される **QR が誰にも使えない** |
+| `OR_PROVIDER_SECRET_BACKEND` | `providerSecretBackend` | テナント provider secret が **in-memory のまま**。実 Vonage 資格情報を入れても Lambda をまたぐと消え、**受付が断続的に 503** になる（下記） |
 
 dev の値は `docs/deploy-aws.md`「dev をゼロから立ち上げる手順」を参照
 （**リポジトリには置かない**。`originVerifySecret` は秘密の値そのもの）。
@@ -1050,7 +1051,33 @@ dev の値は `docs/deploy-aws.md`「dev をゼロから立ち上げる手順」
 export OR_APP_SECRETS_NAME=open-reception/dev/app-v2
 export OR_ORIGIN_VERIFY_SECRET=...        # 高エントロピー値。履歴・ログに残さない
 export OR_PUBLIC_ORIGIN_OVERRIDE=https://dvxkh8nfwl334.cloudfront.net
+# 実 Vonage を使うなら secrets-manager。mock だけで動かすなら memory と**明示**する
+export OR_PROVIDER_SECRET_BACKEND=secrets-manager
 ```
+
+### 🔴 `OR_PROVIDER_SECRET_BACKEND` を明示しないと止まる理由（2026-08-24 追加）
+
+#768 でテナントプロバイダ**設定**を永続化した結果、**設定と secret の永続性が非対称**に
+なった。この変数を渡さないと secret ストアは in-memory のままになる
+（`bin/open-reception.ts`「未指定なら in-memory mock のまま」／`tenant-secret-store.ts` の
+`?? 'memory'`／`web-stack.ts` は `=== 'secrets-manager'` のときだけ env を注入する）。
+
+**この非対称は来訪者に見える。** 設定は残るので `intendsRealDialing` は true を返し、
+secret は消えるので `buildVoiceCredentials` は null を返す ―― #765 のガードが発火して
+**受付が `unrouted`（503）になる**。しかもどの Lambda インスタンスが処理したかで結果が
+変わるので、「たまに取り次げない」という最も切り分けにくい形で出る。
+
+扱いは `DATA_BACKEND` に揃えてある ―― **明示を要求し、明示的な `memory` は「意図的に
+揮発でよい」宣言として通す**。mock だけで動かす dev デプロイは禁じない。
+
+🔴 **綴り違いも止める。** `bin/open-reception.ts` はキャストするだけで検証しないので、
+`secretsmanager` のような綴りは web-stack の判定に一致せず**静かに memory へ倒れる**。
+設定したつもりで揮発する、いちばん気づけない失敗なので `memory | secrets-manager` の
+2 値だけを受ける。
+
+`providerSecretPrefix` は未指定なら `open-reception/<env>` が既定になる
+（`bin/open-reception.ts`）。`secrets-manager` を選んで prefix が空のときは
+WebStack が構築段で fail-closed に落とす。
 
 ⚠️ `originVerifySecret` は `cdk` の argv に載る＝プロセステーブルから見える。CDK context の
 仕組み上避けられないので、**本筋は `originVerifySecretName`（Secrets Manager 名）への移行**（#612）。
