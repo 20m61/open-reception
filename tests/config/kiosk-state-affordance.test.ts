@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { readFileSync } from 'node:fs';
+import { readFileSync, readdirSync } from 'node:fs';
 import { resolve } from 'node:path';
 
 /**
@@ -12,7 +12,26 @@ import { resolve } from 'node:path';
  * 規約を散文で書いても戻る（#776 の相手選択カードは `opacity: 0.55` だけで不在を
  * 表しており、レビューで指摘されるまで残っていた）。CSS を読んで落とす。
  */
-const CSS = readFileSync(resolve(__dirname, '../../src/app/globals.css'), 'utf-8');
+/**
+ * 走査対象は `src/**` の CSS **すべて**。`globals.css` だけを読むと、CSS Modules を
+ * 新規追加した増分で同じ穴がまた開く（実際に `KioskChatDrawer.module.css` の
+ * `.send:disabled` が opacity だけのまま残っていた）。
+ */
+function allCssFiles(dir: string): string[] {
+  const found: string[] = [];
+  for (const entry of readdirSync(dir, { withFileTypes: true })) {
+    const full = resolve(dir, entry.name);
+    if (entry.isDirectory()) found.push(...allCssFiles(full));
+    else if (entry.name.endsWith('.css')) found.push(full);
+  }
+  return found;
+}
+
+const SRC = resolve(__dirname, '../../src');
+const CSS_FILES = allCssFiles(SRC).map((path) => ({
+  path: path.slice(SRC.length + 1),
+  css: readFileSync(path, 'utf-8'),
+}));
 
 /** セレクタと宣言ブロックの組を素朴に取り出す（@media 等のネストは対象外で十分）。 */
 function ruleBlocks(css: string): ReadonlyArray<{ selector: string; body: string }> {
@@ -50,10 +69,15 @@ const MEANING_BEARING = [
 ];
 
 describe('kiosk: 押せない状態を透明度だけで表さない (#778 AC3)', () => {
-  const stateRules = ruleBlocks(CSS).filter((r) => targetsUnavailableState(r.selector));
+  const stateRules = CSS_FILES.flatMap(({ path, css }) =>
+    ruleBlocks(css)
+      .filter((r) => targetsUnavailableState(r.selector))
+      .map((r) => ({ ...r, path })),
+  );
 
   it('対象のルールが実在する（セレクタの書き方が変わって空振りしていない）', () => {
     // 0 件なら「全部通った」ではなく「何も見ていない」。
+    expect(CSS_FILES.length).toBeGreaterThan(0);
     expect(stateRules.length).toBeGreaterThan(0);
     expect(stateRules.some((r) => /\.btn:disabled/.test(r.selector))).toBe(true);
   });
@@ -66,17 +90,19 @@ describe('kiosk: 押せない状態を透明度だけで表さない (#778 AC3)'
       const meaning = MEANING_BEARING.filter(declares);
       expect(
         meaning,
-        `セレクタ "${rule.selector}" は opacity 以外に状態を伝える宣言を持たない`,
+        `${rule.path} のセレクタ "${rule.selector}" は opacity 以外に状態を伝える宣言を持たない`,
       ).not.toEqual([]);
     }
   });
 
-  it('`.btn:disabled` は面・枠・文字色で「押せない」を示す', () => {
+  it('`.btn:disabled` は面・枠の形・文字色で「押せない」を示す', () => {
     const btn = stateRules.find((r) => /\.btn:disabled/.test(r.selector));
     expect(btn).toBeDefined();
     const body = btn!.body;
     expect(body, 'background を指定していない').toMatch(/background/);
-    expect(body, 'border を指定していない').toMatch(/border/);
     expect(body, 'color を指定していない').toMatch(/(?:^|;)\s*color\s*:/m);
+    // 🔴 `border` だけを見ると `border-color` 単独で満たせてしまい、`.btn--secondary` と
+    // 画素レベルで同一の treatment が通る。**形（破線）**が規約の本体なので名指しで縛る。
+    expect(body, 'border-style: dashed を指定していない').toMatch(/border-style\s*:\s*dashed/);
   });
 });

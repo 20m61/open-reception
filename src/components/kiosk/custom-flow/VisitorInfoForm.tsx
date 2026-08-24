@@ -70,11 +70,11 @@ export function VisitorInfoForm({
 
       <div style={{ display: 'flex', gap: 12, marginTop: 8 }}>
         {onBack ? (
-          <button type="button" data-testid="visitor-back" onClick={onBack} style={secondaryBtn}>
+          <button type="button" data-testid="visitor-back" onClick={onBack} className="btn btn--secondary">
             {tr('reception.back')}
           </button>
         ) : null}
-        <button type="submit" data-testid="visitor-submit" disabled={!canSubmit} style={primaryBtn}>
+        <button type="submit" data-testid="visitor-submit" disabled={!canSubmit} className="btn btn--primary">
           {tr('reception.proceedConfirm')}
         </button>
       </div>
@@ -161,25 +161,4 @@ const controlStyle: React.CSSProperties = {
   background: 'var(--color-surface)',
   color: 'var(--color-text)',
   fontSize: '1rem',
-};
-const primaryBtn: React.CSSProperties = {
-  minHeight: 52,
-  padding: '12px 24px',
-  borderRadius: 12,
-  border: 'none',
-  background: 'var(--color-accent)',
-  color: 'var(--color-bg-2)',
-  fontWeight: 700,
-  fontSize: '1.05rem',
-  cursor: 'pointer',
-};
-const secondaryBtn: React.CSSProperties = {
-  minHeight: 52,
-  padding: '12px 24px',
-  borderRadius: 12,
-  border: '1px solid var(--color-surface-2)',
-  background: 'var(--color-surface)',
-  color: 'var(--color-text)',
-  fontSize: '1.05rem',
-  cursor: 'pointer',
 };

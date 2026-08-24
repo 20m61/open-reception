@@ -156,8 +156,15 @@
   cursor: pointer;
 }
 
+/*
+ * 「押せない」を透明度だけで表さない (#778 AC3)。チャットを開いた直後は下書きが空なので、
+ * 送信ボタンは**既定で無効**。ここが opacity だけだと、来訪者が最初に見るのが
+ * AC3 の禁じている失敗形そのものになる。受付端末の視覚語彙（破線＝押せない）へ揃える。
+ */
 .send:disabled,
 .input:disabled {
-  opacity: 0.5;
+  background: var(--color-surface);
+  border: 1px dashed var(--color-border-strong);
+  color: var(--color-muted);
   cursor: not-allowed;
 }

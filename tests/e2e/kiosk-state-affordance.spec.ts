@@ -1,5 +1,9 @@
 import { test, expect, type Locator } from './kiosk-fixtures';
 
+// #778 の主対象は iPad landscape。`chromium-ipad` project は名前に反して縦向き
+// (810x1080) なので明示する。破線の可読性は視距離が伸びる横向きの方が厳しい。
+test.use({ viewport: { width: 1080, height: 810 } });
+
 /**
  * 「押せない」が見て分かるか (#778 AC3)。
  *
@@ -28,6 +32,8 @@ function computed(locator: Locator) {
     return {
       opacity: s.opacity,
       borderStyle: s.borderTopStyle,
+      borderColor: s.borderTopColor,
+      backgroundColor: s.backgroundColor,
       backgroundImage: s.backgroundImage,
       color: s.color,
       cursor: s.cursor,
@@ -86,4 +92,10 @@ test('ハイコントラストでも「押せない」の意味が残る (#778 A
   expect(off.opacity).toBe('1');
   expect(off.borderStyle).toBe('dashed');
   expect(off.backgroundImage).toBe('none');
+
+  // 🔴 ここまでは既定テーマでも同じ値。**ハイコントラストの上書きが死んでも通る**ので、
+  // それだけでは AC5 を名乗れない（変数ブロックを消す変異が素通りすることを実測済み）。
+  // HC でしか成り立たない計算値まで見る。
+  expect(off.backgroundColor, 'HC の --color-surface (#000) が効いていない').toBe('rgb(0, 0, 0)');
+  expect(off.color, 'HC の --color-muted (#e6e6e6) が効いていない').toBe('rgb(230, 230, 230)');
 });
