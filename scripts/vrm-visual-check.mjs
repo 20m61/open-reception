@@ -158,12 +158,42 @@ if (canvasShown) {
   );
 
   // 観測属性（#578 増分 1・2）。実機で「モーションが変」を切り分ける入口。
-  const observed = await canvas.evaluate((el) => ({
-    version: el.getAttribute('data-vrm-version'),
-    motion: el.getAttribute('data-motion-state'),
-  }));
-  console.log(`  [vrm] data-vrm-version=${observed.version} data-motion-state=${observed.motion}`);
-  note('vrm: spec version observable (not none/null)', observed.version !== null && observed.version !== 'none');
+  const readObserved = () =>
+    canvas.evaluate((el) => ({
+      version: el.getAttribute('data-vrm-version'),
+      motion: el.getAttribute('data-motion-state'),
+      framing: el.getAttribute('data-camera-framing'),
+    }));
+  const observed = await readObserved();
+  console.log(
+    `  [vrm] data-vrm-version=${observed.version} data-motion-state=${observed.motion}` +
+      ` data-camera-framing=${observed.framing}`,
+  );
+  /**
+   * 🔴 **「null でも none でもない」では弱すぎる** (#731)。
+   *
+   * 属性がハードコードされた定数へ化けても素通りするので、切り分けの前提（実機で読んだ値が
+   * 事実である）が成立しない。同梱の Rose は VRM 0.x なので、**実際の版を名指しで期待する**。
+   * モデルを差し替えたらここが落ちる——それは気づくべき変更なので、落ちてよい。
+   */
+  note(
+    `vrm: spec version reflects the bundled model (0.x)`,
+    observed.version === '0',
+    `data-vrm-version=${observed.version}`,
+  );
+
+  /**
+   * 頭の高さは humanoid から**実測**していること (#731)。
+   *
+   * 実測を落として既定値へ倒す退行（`headHeight = undefined`）は、描画としては「それらしく」
+   * 見えるので画素の検査では捕まらない。出どころそのものを見る。
+   */
+  const framingSrc = /(?:^|;)src=([^;]*)/.exec(observed.framing ?? '')?.[1];
+  note(
+    'vrm: head height is measured from humanoid (not fallback)',
+    framingSrc === 'measured',
+    `src=${framingSrc ?? '(none)'}`,
+  );
 
   // --- 2. 実際に描画されているか(黒/空でない): canvas 要素のスクショの画素分散
   const shot1 = await canvas.screenshot();
@@ -195,6 +225,86 @@ if (canvasShown) {
     note('vrm: model roughly centered horizontally', Math.abs(centerX - 0.5) < 0.2, `centerX=${centerX.toFixed(2)}`);
     // 左右が両端に張り付いていない（横方向にはみ出していない）。
     note('vrm: model not clipped horizontally', minX > 0 && maxX < cw - 1, `x=[${minX},${maxX}]`);
+  }
+
+  // --- 2c. 描画領域の縦横比が変わっても歪まないか (#731)
+  /**
+   * 🔴 **`camera.updateProjectionMatrix()` の削除は、属性では絶対に捕まらない。**
+   *
+   * 画角は `resolveCameraFraming` が決め、`data-camera-framing` はその**純関数の出力**を
+   * そのまま載せる。行列へ反映したかは属性に出ないので、呼び出しを消しても属性は 1 文字も
+   * 変わらない。three.js は明示的に呼ぶまで射影行列を作り直さないため、`aspect` を代入した
+   * だけでは描画は古い比率のまま——**モデルが伸びる**（#578 増分 3 が直した欠陥そのもの）。
+   *
+   * 端末の回転では捕まらない: アバター領域は 3:4 を保つので、viewport を回しても canvas の
+   * **縦横比は変わらない**（実測: 300x400 → 480x640）。比が変わらなければ射影も変わらず、
+   * 壊れていても差が出ない。よって**親要素の縦横比そのもの**を変えて確かめる。canvas は
+   * 親の 100%、`ResizeObserver` は親を観測しているので、これは実経路をそのまま通る。
+   */
+  if (bounds.found) {
+    const portraitRatio = (bounds.maxX - bounds.minX) / (bounds.maxY - bounds.minY);
+    const framingBefore = (await readObserved()).framing;
+    const readBox = () =>
+      canvas.evaluate((el) => ({ cw: el.clientWidth, ch: el.clientHeight, bw: el.width, bh: el.height }));
+    const boxBefore = await readBox();
+
+    // 親を横長へ。**canvas ではなく親**を触る（canvas を直接触ると `gl.setSize` の
+    // 書き戻しと混ざり、この検査自身が #578 の発散経路を作る）。
+    await canvas.evaluate((el) => {
+      const parent = el.parentElement;
+      if (!parent) return;
+      parent.dataset.vrmCheckPrevStyle = parent.getAttribute('style') ?? '';
+      parent.style.height = `${Math.round(parent.clientWidth * 0.5)}px`;
+    });
+    await page.waitForTimeout(4000);
+
+    const boxAfter = await readBox();
+    const framingAfter = (await readObserved()).framing;
+    console.log(
+      `  [vrm] canvas ${boxBefore.bw}x${boxBefore.bh} -> ${boxAfter.bw}x${boxAfter.bh}` +
+        ` framing ${framingBefore} -> ${framingAfter}`,
+    );
+
+    const aspectChanged =
+      boxAfter.bh > 0 && boxBefore.bh > 0 && Math.abs(boxAfter.bw / boxAfter.bh - boxBefore.bw / boxBefore.bh) > 0.1;
+    // この検査自体が成立しているか。比が変わらなければ以下は何も確かめていない。
+    note('vrm: canvas aspect actually changed (check is meaningful)', aspectChanged,
+      `${(boxBefore.bw / Math.max(boxBefore.bh, 1)).toFixed(2)} -> ${(boxAfter.bw / Math.max(boxAfter.bh, 1)).toFixed(2)}`);
+
+    // 比が変われば画角も決め直される（`ResizeObserver` → `applyFraming` の配線）。
+    note(
+      'vrm: framing recomputed when the drawing area reshapes',
+      Boolean(framingAfter) && framingAfter !== framingBefore,
+      `${framingBefore} -> ${framingAfter}`,
+    );
+
+    const reshapedShot = await canvas.screenshot();
+    await sharp(reshapedShot).toFile(`${outDir}/vrm-01b-reshaped.png`);
+    const reshaped = await measureModelBounds(reshapedShot);
+    if (!reshaped.found) {
+      note('vrm: model proportions survive reshape', false, 'no non-background pixels after reshape');
+    } else {
+      const reshapedRatio = (reshaped.maxX - reshaped.minX) / (reshaped.maxY - reshaped.minY);
+      const drift = reshapedRatio / portraitRatio;
+      console.log(
+        `  [vrm] w/h before=${portraitRatio.toFixed(3)} after=${reshapedRatio.toFixed(3)} drift=${drift.toFixed(2)}x`,
+      );
+      // 射影を更新しないと、縦横比の変化分だけ倍率で狂う。描画の揺らぎは飲み込む幅にする。
+      note(
+        'vrm: model proportions survive reshape (projection matrix updated)',
+        drift > 0.8 && drift < 1.25,
+        `drift=${drift.toFixed(2)}x (before=${portraitRatio.toFixed(3)} after=${reshapedRatio.toFixed(3)})`,
+      );
+    }
+
+    // 以降の検査は元のレイアウト前提なので必ず戻す。
+    await canvas.evaluate((el) => {
+      const parent = el.parentElement;
+      if (!parent) return;
+      parent.setAttribute('style', parent.dataset.vrmCheckPrevStyle ?? '');
+      delete parent.dataset.vrmCheckPrevStyle;
+    });
+    await page.waitForTimeout(3000);
   }
 
   // --- 3. 手続き的アイドル(呼吸)で動いているか: 2.5 秒空けて差分
