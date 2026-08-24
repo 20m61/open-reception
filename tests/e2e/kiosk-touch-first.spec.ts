@@ -58,6 +58,32 @@ test('配送・納品 は目的を先取りして担当/部署選択へ直行す
   await expect(page.getByTestId('staff-search')).toBeVisible();
 });
 
+test('相手選択の初期表示は判断対象を 1 種類に絞る (#776)', async ({ page }) => {
+  await page.goto('/kiosk');
+  await page.getByTestId('start-reception').click();
+  await page.getByTestId('purpose-meeting').click();
+
+  // 担当者グリッドと部署グリッドを縦に連続表示しない。**DOM に無い**ことまで見る
+  // （`toBeHidden` だと「下にあるだけ」の退行を通してしまう）。
+  await expect(page.getByTestId('staff-staff-sato')).toBeVisible();
+  await expect(page.locator('[data-testid^="dept-"]')).toHaveCount(0);
+  // 主操作（検索欄）はスクロールせずに見える位置にある。
+  const search = await page.getByTestId('staff-search').boundingBox();
+  const viewport = page.viewportSize();
+  expect(search).not.toBeNull();
+  expect(viewport).not.toBeNull();
+  expect(search!.y + search!.height).toBeLessThan(viewport!.height);
+  // 候補グリッドは 1 つだけ（0 件案内と候補一覧が同時に出ない、も含む）。
+  await expect(page.locator('.card-grid')).toHaveCount(1);
+
+  // 部署へはタッチだけで 1 タップ到達でき、そのとき担当者グリッドは消える。
+  await page.getByTestId('target-tab-department').click();
+  await expect(page.getByTestId('dept-dept-sales')).toBeVisible();
+  await expect(page.locator('[data-testid^="staff-staff-"]')).toHaveCount(0);
+  await page.getByTestId('dept-dept-sales').click();
+  await expect(page.getByTestId('visitor-name')).toBeVisible();
+});
+
 test('進行中の画面に常時見える逃げ道バーが出る', async ({ page }) => {
   await page.goto('/kiosk');
   await page.getByTestId('start-reception').click();

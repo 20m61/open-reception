@@ -429,6 +429,86 @@ a {
   font-weight: 700;
 }
 
+/*
+ * 相手選択画面の「探し方」セグメント (#776)。担当者グリッドと部署グリッドを同時に主表示
+ * しないための切替。選択中は面と文字色で示し、色相だけに寄せない（`aria-selected` が
+ * スクリーンリーダ向けの正本）。
+ */
+.target-tabs {
+  display: flex;
+  gap: var(--space-sm);
+  padding: 6px;
+  border: 1px solid var(--color-border-strong);
+  border-radius: var(--radius-pill);
+  background: rgba(11, 17, 32, 0.6);
+}
+
+.target-tabs__tab {
+  flex: 1 1 0;
+  min-height: var(--touch-target-min);
+  padding: var(--space-sm) var(--space-lg);
+  border: 2px solid transparent;
+  border-radius: var(--radius-pill);
+  background: transparent;
+  color: var(--color-muted);
+  font-size: var(--font-lg);
+  font-weight: 700;
+  cursor: pointer;
+  transition:
+    background var(--dur-fast) var(--ease-out),
+    color var(--dur-fast) var(--ease-out);
+}
+
+.target-tabs__tab[aria-selected='true'] {
+  background: var(--color-surface-2);
+  border-color: var(--color-accent);
+  color: var(--color-text);
+}
+
+/* 音声検索は検索欄に付随する secondary action。狭いときは下へ落として重ならないようにする。 */
+.target-search {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: stretch;
+  gap: var(--space-sm);
+}
+
+.target-search__input {
+  flex: 1 1 260px;
+  min-width: 0;
+}
+
+.target-search__voice {
+  display: flex;
+  align-items: stretch;
+}
+
+/*
+ * 不在/受付不可の担当者カード (#776)。旧実装は `opacity: 0.55` だけで状態を表しており、
+ * 低コントラスト環境では「押せるのに反応しないカード」に見えた。面と破線境界で
+ * 「押せない」ことを示し、意味そのものはバッジと文言が担う（透明度に依存しない）。
+ */
+.card--unavailable {
+  background: var(--color-surface-faint);
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+  border-style: dashed;
+  border-color: var(--color-border-strong);
+  box-shadow: none;
+  cursor: not-allowed;
+}
+
+.card--unavailable:hover {
+  border-color: var(--color-border-strong);
+  transform: none;
+  box-shadow: none;
+}
+
+.card__badge--unavailable {
+  background: color-mix(in srgb, var(--color-muted) 22%, transparent);
+  color: var(--color-text);
+}
+
 .field {
   display: flex;
   flex-direction: column;

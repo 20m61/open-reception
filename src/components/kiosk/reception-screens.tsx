@@ -22,10 +22,15 @@ import {
 import { staffAffiliationText } from './staff-affiliation-text';
 import { staffTargetFor } from './staff-target';
 import {
+  DEFAULT_TARGET_TAB,
+  TARGET_TABS,
+  targetPanelFor,
+  type TargetTab,
+} from './target-view-state';
+import {
   useCallback,
   useEffect,
   useMemo,
-  useRef,
   useState,
 } from 'react';
 // 用件の一覧（`RECEPTION_PURPOSES`）もここから消えた (#422 inc5-b 増分 3a)。
@@ -667,7 +672,8 @@ function PurposeView({
   );
 }
 
-function TargetView({
+/** 相手選択画面。表示密度の契約 (#776) を SSR で直接縛るため export する。 */
+export function TargetView({
   directory,
   sttEnabled,
   sttAdapterFactory,
@@ -692,6 +698,8 @@ function TargetView({
 }) {
   const tr = makeT(locale);
   const [query, setQuery] = useState('');
+  // 探し方（担当者 / 部署）。view-local な表示モードで、ReceptionState は増やさない (#776)。
+  const [tab, setTab] = useState<TargetTab>(DEFAULT_TARGET_TAB);
   // 音声認識の候補。タップで検索欄に反映し、来訪者の確認後に選択する（即時呼び出ししない）(issue #5)。
   const [sttCandidates, setSttCandidates] = useState<string[]>([]);
   const [sttListening, setSttListening] = useState(false);
@@ -705,8 +713,14 @@ function TargetView({
   const results = isSearching ? scored.map((m) => m.item) : directory.staff;
   const tierById = useMemo(() => new Map(scored.map((m) => [m.item.id, m.tier])), [scored]);
   const departments = directory.departments;
-  const departmentSectionRef = useRef<HTMLDivElement>(null);
-  const hasNoResults = isSearching && results.length === 0;
+  // 何を出すかの判断は純関数へ集約する。0 件警告と 0 件案内を重ねて出す退行は、
+  // 「同時に 2 つ出せない」型で構造的に防ぐ (#776)。
+  const panel = targetPanelFor({
+    tab,
+    staffResultCount: results.length,
+    searching: isSearching,
+    chatAvailable: onRequestChat !== undefined,
+  });
 
   // 検索実行のヒット有無を体験メトリクスへ記録する（クエリ文字列自体は保持しない, issue #322）。
   // 打鍵のたびに数えないよう軽くデバウンスする。
@@ -740,34 +754,94 @@ function TargetView({
     <>
       <ScreenTitle state="selectingTarget" locale={locale} />
       <div className="screen__body">
-        <div className="field">
-          <label className="field__label" htmlFor="staff-search" lang={htmlLangFor(locale)}>
-            {tr('reception.searchStaff')}
-          </label>
-          <input
-            id="staff-search"
-            className="input"
-            data-testid="staff-search"
-            value={query}
-            onChange={(e) => setQuery(e.target.value)}
-            placeholder={tr('reception.searchPlaceholder')}
-            autoComplete="off"
-          />
+        {/*
+          探し方は 2 つあるが、主役は常に 1 つ。担当者グリッドと部署グリッドを縦に連続表示
+          すると、開いた瞬間の判断対象が 2 種類になる (#776)。
+        */}
+        <div className="target-tabs" role="tablist" aria-label={tr('reception.targetTabsLabel')}>
+          {TARGET_TABS.map((id) => (
+            <button
+              key={id}
+              type="button"
+              role="tab"
+              id={`target-tab-${id}`}
+              className="target-tabs__tab"
+              data-testid={`target-tab-${id}`}
+              aria-selected={tab === id}
+              aria-controls={`target-panel-${id}`}
+              onClick={() => setTab(id)}
+              lang={htmlLangFor(locale)}
+            >
+              {tr(id === 'staff' ? 'reception.byStaff' : 'reception.byDepartment')}
+            </button>
+          ))}
         </div>
 
-        {sttEnabled ? (
-          <div className="field" data-testid="stt-panel">
-            <button
-              type="button"
-              className="btn btn--secondary"
-              data-testid="stt-listen"
-              onClick={() => void listen()}
-              disabled={sttListening}
-            >
-              {sttListening ? tr('reception.listening') : tr('reception.voiceSearch')}
-            </button>
-            {sttCandidates.length > 0 ? (
-              <>
+        {panel.kind === 'departments' ? (
+          <div
+            role="tabpanel"
+            id="target-panel-department"
+            aria-labelledby="target-tab-department"
+            data-testid="target-panel-department"
+          >
+            <div className="card-grid">
+              {departments.map((d) => (
+                <button
+                  key={d.id}
+                  type="button"
+                  className="card"
+                  data-testid={`dept-${d.id}`}
+                  onClick={() => onSelect({ type: 'department', id: d.id, label: d.name })}
+                >
+                  {d.name}
+                </button>
+              ))}
+            </div>
+          </div>
+        ) : (
+          <div
+            role="tabpanel"
+            id="target-panel-staff"
+            aria-labelledby="target-tab-staff"
+            data-testid="target-panel-staff"
+          >
+            <div className="field">
+              <label className="field__label" htmlFor="staff-search" lang={htmlLangFor(locale)}>
+                {tr('reception.searchStaff')}
+              </label>
+              {/*
+                音声検索は検索欄に付随する secondary action。独立した大セクションにすると
+                主導線（検索 → 担当者カード）と競合する (#776)。
+              */}
+              <div className="target-search">
+                <input
+                  id="staff-search"
+                  className="input target-search__input"
+                  data-testid="staff-search"
+                  value={query}
+                  onChange={(e) => setQuery(e.target.value)}
+                  placeholder={tr('reception.searchPlaceholder')}
+                  autoComplete="off"
+                />
+                {sttEnabled ? (
+                  <div className="target-search__voice" data-testid="stt-panel">
+                    <button
+                      type="button"
+                      className="btn btn--secondary"
+                      data-testid="stt-listen"
+                      onClick={() => void listen()}
+                      disabled={sttListening}
+                      lang={htmlLangFor(locale)}
+                    >
+                      {sttListening ? tr('reception.listening') : tr('reception.voiceSearch')}
+                    </button>
+                  </div>
+                ) : null}
+              </div>
+            </div>
+
+            {sttEnabled && sttCandidates.length > 0 ? (
+              <div className="field">
                 <p className="card__sub" data-testid="stt-hint" lang={htmlLangFor(locale)}>
                   {tr('reception.voiceHint')}
                 </p>
@@ -789,110 +863,101 @@ function TargetView({
                     </button>
                   ))}
                 </div>
-              </>
+              </div>
             ) : null}
-          </div>
-        ) : null}
 
-        {results.length > 0 ? (
-          <div className="card-grid">
-            {results.map((s) =>
-              s.available ? (
-                <button
-                  key={s.id}
-                  type="button"
-                  className="card"
-                  data-testid={`staff-${s.id}`}
-                  onClick={() => onSelect(staffTargetFor(s, directory.departments, tr))}
-                >
-                  {tierById.get(s.id) === 'fuzzy' ? (
-                    // あいまい一致（1 文字 typo・表記ゆれ由来）は「もしかして」と明示し、
-                    // 完全一致/前方一致と混同させない (issue #322 AC2)。
-                    <span className="card__badge" data-testid={`staff-${s.id}-maybe`} lang={htmlLangFor(locale)}>
-                      {tr('reception.searchMaybeMatch')}
-                    </span>
-                  ) : null}
-                  {s.displayName}
-                  {/*
-                    同姓同名の識別に効く所属を出す。サーバは構造（主所属・兼務の名前）だけを
-                    返し、整形は locale を知るここで行う。規則は `staffAffiliationText` に
-                    集約してある（空＝「出すものが無い」と、旧経路＝「キーを持たない」を
-                    取り違えると、非公開にした所属が部署名として出戻る）。
-                  */}
-                  <span className="card__sub" data-testid={`staff-${s.id}-affiliation`}>
-                    {staffAffiliationText(s, directory.departments, tr)}
-                  </span>
-                </button>
-              ) : (
-                // 不在の担当者は呼び出せない。部署/代表窓口へ誘導する (issue #26)。
-                <div
-                  key={s.id}
-                  className="card"
-                  data-testid={`staff-${s.id}`}
-                  data-unavailable="true"
-                  aria-disabled="true"
-                  style={{ opacity: 0.55, cursor: 'not-allowed' }}
-                >
-                  {s.displayName}
-                  <span className="card__sub" data-testid={`staff-${s.id}-absent`} lang={htmlLangFor(locale)}>
-                    {tr('reception.staffAbsent')}
-                  </span>
+            {panel.kind === 'staff-results' ? (
+              <div className="card-grid">
+                {results.map((s) =>
+                  s.available ? (
+                    <button
+                      key={s.id}
+                      type="button"
+                      className="card"
+                      data-testid={`staff-${s.id}`}
+                      onClick={() => onSelect(staffTargetFor(s, directory.departments, tr))}
+                    >
+                      {tierById.get(s.id) === 'fuzzy' ? (
+                        // あいまい一致（1 文字 typo・表記ゆれ由来）は「もしかして」と明示し、
+                        // 完全一致/前方一致と混同させない (issue #322 AC2)。
+                        <span className="card__badge" data-testid={`staff-${s.id}-maybe`} lang={htmlLangFor(locale)}>
+                          {tr('reception.searchMaybeMatch')}
+                        </span>
+                      ) : null}
+                      {s.displayName}
+                      {/*
+                        同姓同名の識別に効く所属を出す。サーバは構造（主所属・兼務の名前）だけを
+                        返し、整形は locale を知るここで行う。規則は `staffAffiliationText` に
+                        集約してある（空＝「出すものが無い」と、旧経路＝「キーを持たない」を
+                        取り違えると、非公開にした所属が部署名として出戻る）。
+                      */}
+                      <span className="card__sub" data-testid={`staff-${s.id}-affiliation`}>
+                        {staffAffiliationText(s, directory.departments, tr)}
+                      </span>
+                    </button>
+                  ) : (
+                    // 不在の担当者は呼び出せない。部署/代表窓口へ誘導する (issue #26)。
+                    // 状態はバッジ＋文言で明示する。透明度だけに寄せない（色覚・低コントラスト
+                    // 環境で「押せるのに反応しないカード」に見える, #776）。
+                    <div
+                      key={s.id}
+                      className="card card--unavailable"
+                      data-testid={`staff-${s.id}`}
+                      data-unavailable="true"
+                      aria-disabled="true"
+                    >
+                      <span
+                        className="card__badge card__badge--unavailable"
+                        data-testid={`staff-${s.id}-absent-badge`}
+                        lang={htmlLangFor(locale)}
+                      >
+                        {tr('reception.staffAbsentBadge')}
+                      </span>
+                      {s.displayName}
+                      <span className="card__sub" data-testid={`staff-${s.id}-absent`} lang={htmlLangFor(locale)}>
+                        {tr('reception.staffAbsent')}
+                      </span>
+                    </div>
+                  ),
+                )}
+              </div>
+            ) : (
+              // 0 件で行き止まりにしない。警告と案内を 2 枚出していたものを 1 枚へ統合し、
+              // 次の一手（部署 → チャット）を優先順に並べる (#322 AC3 / #776)。
+              <div className="notice notice--warning" data-testid="target-recovery" lang={htmlLangFor(locale)}>
+                <p style={{ margin: 0 }}>{tr(panel.messageKey)}</p>
+                <div className="card-grid" style={{ marginTop: 'var(--space-md)' }}>
+                  {panel.actions.map((action) =>
+                    action === 'department' ? (
+                      <button
+                        key={action}
+                        type="button"
+                        className="btn btn--secondary"
+                        data-testid="search-empty-department-cta"
+                        // 1 操作で部署タブへ切り替える（スクロール誘導では「探しに行く」操作が要る）。
+                        onClick={() => setTab('department')}
+                        lang={htmlLangFor(locale)}
+                      >
+                        {tr('reception.byDepartment')}
+                      </button>
+                    ) : (
+                      <button
+                        key={action}
+                        type="button"
+                        className="btn btn--secondary"
+                        data-testid="search-empty-chat-cta"
+                        onClick={() => onRequestChat?.()}
+                        lang={htmlLangFor(locale)}
+                      >
+                        {tr('reception.searchNoResultsChatCta')}
+                      </button>
+                    ),
+                  )}
                 </div>
-              ),
+              </div>
             )}
           </div>
-        ) : (
-          <div className="notice notice--warning" data-testid="staff-empty" lang={htmlLangFor(locale)}>
-            <p style={{ margin: 0 }}>{tr('reception.staffNotFound')}</p>
-          </div>
         )}
-
-        {hasNoResults ? (
-          // 0 件で行き止まりにしない：部署一覧・チャット相談への次の一手を必ず提示する
-          // (issue #322 AC3)。文言は i18n（dictionary.ts の privacy.* 隣接キー）。
-          <div className="notice notice--warning" data-testid="search-no-results-guidance" lang={htmlLangFor(locale)}>
-            <p style={{ margin: 0 }}>{tr('reception.searchNoResultsGuidance')}</p>
-            <div className="card-grid" style={{ marginTop: 'var(--space-md)' }}>
-              <button
-                type="button"
-                className="btn btn--secondary"
-                data-testid="search-empty-department-cta"
-                onClick={() =>
-                  departmentSectionRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' })
-                }
-              >
-                {tr('reception.byDepartment')}
-              </button>
-              {onRequestChat ? (
-                <button
-                  type="button"
-                  className="btn btn--secondary"
-                  data-testid="search-empty-chat-cta"
-                  onClick={() => onRequestChat()}
-                >
-                  {tr('reception.searchNoResultsChatCta')}
-                </button>
-              ) : null}
-            </div>
-          </div>
-        ) : null}
-
-        <div ref={departmentSectionRef}>
-          <h2 style={{ fontSize: 'var(--font-lg)', margin: 0 }} lang={htmlLangFor(locale)}>{tr('reception.byDepartment')}</h2>
-          <div className="card-grid">
-            {departments.map((d) => (
-              <button
-                key={d.id}
-                type="button"
-                className="card"
-                data-testid={`dept-${d.id}`}
-                onClick={() => onSelect({ type: 'department', id: d.id, label: d.name })}
-              >
-                {d.name}
-              </button>
-            ))}
-          </div>
-        </div>
       </div>
       {/*
         後退（戻る/最初に戻る）は常設の逃げ道バー（EscapeHatchBar, sticky）へ一本化した (#325)。

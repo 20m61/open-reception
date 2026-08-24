@@ -151,8 +151,11 @@ export type MessageKey =
   // 担当・部署選択 / 音声検索 / フォーム・確認の項目ラベル（#103 increment 5・{field} は補間）
   | 'reception.searchStaff'
   | 'reception.searchPlaceholder'
+  | 'reception.byStaff'
   | 'reception.byDepartment'
+  | 'reception.targetTabsLabel'
   | 'reception.staffAbsent'
+  | 'reception.staffAbsentBadge'
   | 'reception.staffNotFound'
   | 'reception.voiceSearch'
   | 'reception.listening'
@@ -464,8 +467,11 @@ const ja: DefaultDictionary = {
   'reception.thanksLead': 'ありがとうございました',
   'reception.searchStaff': '担当者を検索（氏名・よみがな・英字）',
   'reception.searchPlaceholder': '例: さとう / Sato',
+  'reception.byStaff': '担当者から選ぶ',
   'reception.byDepartment': '部署から選ぶ',
+  'reception.targetTabsLabel': '探し方',
   'reception.staffAbsent': '現在不在です。部署または代表窓口をお選びください。',
+  'reception.staffAbsentBadge': '不在',
   'reception.staffNotFound': '該当する担当者が見つかりません。部署または代表窓口をお選びください。',
   'reception.voiceSearch': '音声で担当者を探す',
   'reception.listening': '聞き取り中…',
@@ -762,8 +768,11 @@ const en: LocaleDictionary = {
   'reception.thanksLead': 'Thank you',
   'reception.searchStaff': 'Search by name (kana / romaji)',
   'reception.searchPlaceholder': 'e.g. Sato',
+  'reception.byStaff': 'Choose a person',
   'reception.byDepartment': 'Choose by department',
+  'reception.targetTabsLabel': 'How to find them',
   'reception.staffAbsent': 'Currently unavailable. Please choose a department or the main desk.',
+  'reception.staffAbsentBadge': 'Unavailable',
   'reception.staffNotFound': 'No matching staff found. Please choose a department or the main desk.',
   'reception.voiceSearch': 'Search by voice',
   'reception.listening': 'Listening…',
@@ -1062,8 +1071,11 @@ const ko: LocaleDictionary = {
   'reception.thanksLead': '감사합니다',
   'reception.searchStaff': '담당자 검색 (이름 / 발음 / 영문)',
   'reception.searchPlaceholder': '예: Sato',
+  'reception.byStaff': '담당자로 선택',
   'reception.byDepartment': '부서로 선택',
+  'reception.targetTabsLabel': '찾는 방법',
   'reception.staffAbsent': '현재 부재중입니다. 부서 또는 대표 창구를 선택해 주세요.',
+  'reception.staffAbsentBadge': '부재중',
   'reception.staffNotFound': '해당 담당자를 찾을 수 없습니다. 부서 또는 대표 창구를 선택해 주세요.',
   'reception.voiceSearch': '음성으로 검색',
   'reception.listening': '듣는 중…',
@@ -1357,8 +1369,11 @@ const zh: LocaleDictionary = {
   'reception.thanksLead': '谢谢',
   'reception.searchStaff': '搜索负责人（姓名 / 拼音）',
   'reception.searchPlaceholder': '例: Sato',
+  'reception.byStaff': '按负责人选择',
   'reception.byDepartment': '按部门选择',
+  'reception.targetTabsLabel': '查找方式',
   'reception.staffAbsent': '当前不在。请选择部门或前台。',
+  'reception.staffAbsentBadge': '不在',
   'reception.staffNotFound': '未找到相应负责人。请选择部门或前台。',
   'reception.voiceSearch': '语音搜索',
   'reception.listening': '正在聆听…',
@@ -1584,8 +1599,11 @@ const jaSimple: LocaleDictionary = {
   'reception.targetPrompt': '会いたい 人・ぶしょを えらんで ください',
   'reception.searchStaff': '名前で さがす',
   'reception.searchPlaceholder': '例: さとう',
+  'reception.byStaff': '名前から えらぶ',
   'reception.byDepartment': 'ぶしょから えらぶ',
+  'reception.targetTabsLabel': 'さがしかた',
   'reception.staffAbsent': '今は いません。べつの ぶしょを えらんで ください',
+  'reception.staffAbsentBadge': 'いません',
   'reception.staffNotFound': '見つかりません。べつの ぶしょを えらんで ください',
   'reception.voiceSearch': '声で さがす',
   'reception.listening': '聞いて います…',
