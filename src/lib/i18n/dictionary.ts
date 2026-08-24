@@ -157,6 +157,7 @@ export type MessageKey =
   | 'reception.staffAbsent'
   | 'reception.staffAbsentBadge'
   | 'reception.staffNotFound'
+  | 'reception.departmentNotFound'
   | 'reception.voiceSearch'
   | 'reception.listening'
   | 'reception.voiceHint'
@@ -473,6 +474,7 @@ const ja: DefaultDictionary = {
   'reception.staffAbsent': '現在不在です。部署または代表窓口をお選びください。',
   'reception.staffAbsentBadge': '不在',
   'reception.staffNotFound': '該当する担当者が見つかりません。部署または代表窓口をお選びください。',
+  'reception.departmentNotFound': '部署・窓口の一覧がありません。下の方法からお選びください。',
   'reception.voiceSearch': '音声で担当者を探す',
   'reception.listening': '聞き取り中…',
   'reception.voiceHint': '認識した候補です。タップして検索欄に反映し、内容をご確認のうえお選びください。',
@@ -561,7 +563,7 @@ const ja: DefaultDictionary = {
   'privacy.presenceCameraNote':
     '来訪者検知カメラの映像は端末内でのみ処理し、保存・送信は行いません。',
   'reception.searchNoResultsGuidance':
-    'お探しの方が見つかりませんか？ 部署から選ぶか、チャットで受付係に相談できます。',
+    'お探しの方が見つかりませんでした。別のお名前でもう一度お試しいただくか、下の方法からお選びください。',
   'reception.searchNoResultsChatCta': 'チャットで受付係に相談する',
   'reception.searchMaybeMatch': 'もしかして',
   'reception.affiliationWithSecondary': '{primary}（兼: {secondary}）',
@@ -774,6 +776,7 @@ const en: LocaleDictionary = {
   'reception.staffAbsent': 'Currently unavailable. Please choose a department or the main desk.',
   'reception.staffAbsentBadge': 'Unavailable',
   'reception.staffNotFound': 'No matching staff found. Please choose a department or the main desk.',
+  'reception.departmentNotFound': 'No departments are listed. Please choose one of the options below.',
   'reception.voiceSearch': 'Search by voice',
   'reception.listening': 'Listening…',
   'reception.voiceHint': 'Recognized candidates. Tap to fill the search box, review, then choose.',
@@ -863,7 +866,7 @@ const en: LocaleDictionary = {
   'privacy.presenceCameraNote':
     'The visitor-detection camera image is processed on this device only and is never saved or transmitted.',
   'reception.searchNoResultsGuidance':
-    "Can't find them? Try browsing by department, or chat with the reception desk.",
+    "We couldn't find that person. Try another name, or choose one of the options below.",
   'reception.searchNoResultsChatCta': 'Chat with the reception desk',
   'reception.searchMaybeMatch': 'Did you mean',
   'reception.affiliationWithSecondary': '{primary} (also {secondary})',
@@ -1077,6 +1080,7 @@ const ko: LocaleDictionary = {
   'reception.staffAbsent': '현재 부재중입니다. 부서 또는 대표 창구를 선택해 주세요.',
   'reception.staffAbsentBadge': '부재중',
   'reception.staffNotFound': '해당 담당자를 찾을 수 없습니다. 부서 또는 대표 창구를 선택해 주세요.',
+  'reception.departmentNotFound': '부서・창구 목록이 없습니다. 아래 방법에서 선택해 주세요.',
   'reception.voiceSearch': '음성으로 검색',
   'reception.listening': '듣는 중…',
   'reception.voiceHint': '인식된 후보입니다. 탭하여 검색창에 반영하고 확인 후 선택해 주세요.',
@@ -1164,7 +1168,8 @@ const ko: LocaleDictionary = {
   'privacy.presenceCameraLabel': '방문자 감지 카메라 안내',
   'privacy.presenceCameraNote':
     '방문자 감지 카메라 영상은 이 단말기 내에서만 처리되며 저장하거나 전송하지 않습니다.',
-  'reception.searchNoResultsGuidance': '찾으시는 분이 없나요? 부서에서 선택하거나 채팅으로 접수 담당자와 상담해 보세요.',
+  'reception.searchNoResultsGuidance':
+    '찾으시는 분을 찾지 못했습니다. 다른 이름으로 다시 시도하시거나, 아래 방법에서 선택해 주세요.',
   'reception.searchNoResultsChatCta': '채팅으로 접수 담당자와 상담하기',
   'reception.searchMaybeMatch': '혹시 이 분인가요',
   'reception.affiliationWithSecondary': '{primary}(겸직: {secondary})',
@@ -1375,6 +1380,7 @@ const zh: LocaleDictionary = {
   'reception.staffAbsent': '当前不在。请选择部门或前台。',
   'reception.staffAbsentBadge': '不在',
   'reception.staffNotFound': '未找到相应负责人。请选择部门或前台。',
+  'reception.departmentNotFound': '没有可显示的部门・窗口。请从下面的方式中选择。',
   'reception.voiceSearch': '语音搜索',
   'reception.listening': '正在聆听…',
   'reception.voiceHint': '识别到的候选。点击填入搜索框，确认后选择。',
@@ -1458,7 +1464,8 @@ const zh: LocaleDictionary = {
   'privacy.contactText': '如对信息处理方式有疑问，请咨询前台工作人员。',
   'privacy.presenceCameraLabel': '关于访客检测摄像头',
   'privacy.presenceCameraNote': '访客检测摄像头的画面仅在本设备内处理，不会保存或发送。',
-  'reception.searchNoResultsGuidance': '找不到对方？可以从部门中选择，或通过聊天与前台工作人员咨询。',
+  'reception.searchNoResultsGuidance':
+    '未找到您要找的人。请尝试其他姓名，或从下面的方式中选择。',
   'reception.searchNoResultsChatCta': '通过聊天咨询前台工作人员',
   'reception.searchMaybeMatch': '是否是这位',
   'reception.affiliationWithSecondary': '{primary}（兼任: {secondary}）',
@@ -1605,6 +1612,7 @@ const jaSimple: LocaleDictionary = {
   'reception.staffAbsent': '今は いません。べつの ぶしょを えらんで ください',
   'reception.staffAbsentBadge': 'いません',
   'reception.staffNotFound': '見つかりません。べつの ぶしょを えらんで ください',
+  'reception.departmentNotFound': 'ぶしょの リストが ありません。下から えらんで ください',
   'reception.voiceSearch': '声で さがす',
   'reception.listening': '聞いて います…',
   'reception.voiceHint': 'タップして 検索欄に 入れます。ないようを 見て えらんで ください',

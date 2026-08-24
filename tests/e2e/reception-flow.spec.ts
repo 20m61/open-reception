@@ -133,14 +133,14 @@ test('検索 0 件でも行き止まりにならず、部署一覧・チャッ�
   await expect(page.getByTestId('search-no-results-guidance')).toHaveCount(0);
 
   // 次の一手 1: 1 操作で部署タブへ切り替わる（スクロール誘導ではない）。
-  await page.getByTestId('search-empty-department-cta').click();
+  await page.getByTestId('target-recovery-department-cta').click();
   await expect(page.getByTestId('dept-dept-sales')).toBeVisible();
   await expect(recovery).toHaveCount(0);
 
   // 次の一手 2: チャットで受付係に相談する（Chat-assisted ドロワーが開く）。
   await page.getByTestId('target-tab-staff').click();
   await expect(recovery).toBeVisible();
-  await page.getByTestId('search-empty-chat-cta').click();
+  await page.getByTestId('target-recovery-chat-cta').click();
   await expect(page.getByTestId('kiosk-chat-drawer')).toHaveAttribute('data-open', 'true');
 });
 

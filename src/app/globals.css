@@ -437,32 +437,35 @@ a {
 .target-tabs {
   display: flex;
   gap: var(--space-sm);
-  padding: 6px;
-  border: 1px solid var(--color-border-strong);
-  border-radius: var(--radius-pill);
-  background: rgba(11, 17, 32, 0.6);
 }
 
+/*
+  タブは 1 枚ずつ独立したピルにする。まとめて 1 個の枠へ入れると、選択されていない側が
+  「枠の中のラベル」に見えて押せると気づけない。部署グリッドの常時表示を外した結果、
+  **部署へ至る唯一の入口**がこのタブになったので、そこで気づけないと行き止まりになる (#776)。
+*/
 .target-tabs__tab {
   flex: 1 1 0;
   min-height: var(--touch-target-min);
   padding: var(--space-sm) var(--space-lg);
-  border: 2px solid transparent;
+  border: 2px solid var(--color-border-strong);
   border-radius: var(--radius-pill);
-  background: transparent;
-  color: var(--color-muted);
+  background: var(--color-surface);
+  color: var(--color-text);
   font-size: var(--font-lg);
   font-weight: 700;
   cursor: pointer;
   transition:
     background var(--dur-fast) var(--ease-out),
-    color var(--dur-fast) var(--ease-out);
+    border-color var(--dur-fast) var(--ease-out);
 }
 
+/* 選択中はアクセント面で塗る。文字色は accent 用のインクを使う（accent はテナントで
+   差し替わるため、--color-text のまま置くとテーマ次第で読めなくなる）。 */
 .target-tabs__tab[aria-selected='true'] {
-  background: var(--color-surface-2);
+  background: var(--color-accent);
   border-color: var(--color-accent);
-  color: var(--color-text);
+  color: var(--color-accent-ink);
 }
 
 /* 音声検索は検索欄に付随する secondary action。狭いときは下へ落として重ならないようにする。 */

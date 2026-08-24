@@ -84,6 +84,18 @@ test('相手選択の初期表示は判断対象を 1 種類に絞る (#776)', a
   await expect(page.getByTestId('visitor-name')).toBeVisible();
 });
 
+test('待機の「部署から選ぶ」は部署タブに着地する (#776)', async ({ page }) => {
+  await page.goto('/kiosk');
+  // 押した導線と着いた画面を一致させる。担当者タブに着くと、部署名しか知らない来訪者が
+  // 名前検索欄の前に置き去りになる。
+  await page.getByTestId('quick-department').click();
+  await expect(page.getByTestId('dept-dept-sales')).toBeVisible();
+  await expect(page.getByTestId('target-tab-department')).toHaveAttribute('aria-selected', 'true');
+  // 担当者へも 1 タップで移れる（着地を変えただけで、もう一方を塞いでいない）。
+  await page.getByTestId('target-tab-staff').click();
+  await expect(page.getByTestId('staff-search')).toBeVisible();
+});
+
 test('進行中の画面に常時見える逃げ道バーが出る', async ({ page }) => {
   await page.goto('/kiosk');
   await page.getByTestId('start-reception').click();

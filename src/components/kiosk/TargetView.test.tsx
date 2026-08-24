@@ -31,6 +31,17 @@ function render(
   );
 }
 
+/**
+ * `data-testid` を持つ要素の**中身**を切り出す。`indexOf` 以降を丸ごと見る書き方だと、
+ * 後続要素の文言（例: 「現在不在です…」）がバッジの中身として通ってしまう。
+ */
+function innerTextOf(html: string, testId: string): string {
+  const at = html.indexOf(`data-testid="${testId}"`);
+  expect(at, `data-testid=${testId} が無い`).toBeGreaterThan(-1);
+  const open = html.indexOf('>', at) + 1;
+  return html.slice(open, html.indexOf('<', open));
+}
+
 /** `data-testid` を持つ要素の開始タグだけを切り出す（属性の並び順に依存しないため）。 */
 function tagOf(html: string, testId: string): string {
   const at = html.indexOf(`data-testid="${testId}"`);
@@ -79,12 +90,11 @@ describe('TargetView の初期表示密度 (#776)', () => {
 
   it('不在の担当者は透明度ではなくバッジと文言で示し、押せない', () => {
     const html = render();
-    const card = html.slice(html.indexOf('data-testid="staff-staff-suzuki"'));
-    expect(card).toContain('data-testid="staff-staff-suzuki-absent-badge"');
-    expect(card).toContain('不在');
-    expect(card).toContain('data-testid="staff-staff-suzuki-absent"');
-    expect(html).toContain('data-unavailable="true"');
-    expect(html).toContain('aria-disabled="true"');
+    // バッジは**中身が読める**こと。空文字にすると透明度だけの表現へ逆戻りする。
+    expect(innerTextOf(html, 'staff-staff-suzuki-absent-badge')).toBe('不在');
+    expect(innerTextOf(html, 'staff-staff-suzuki-absent')).toContain('現在不在です');
+    expect(tagOf(html, 'staff-staff-suzuki')).toContain('data-unavailable="true"');
+    expect(tagOf(html, 'staff-staff-suzuki')).toContain('aria-disabled="true"');
     // 透明度だけの表現へ戻さない。
     expect(html).not.toContain('opacity:0.55');
     expect(html).not.toContain('opacity: 0.55');
@@ -101,20 +111,66 @@ describe('TargetView の初期表示密度 (#776)', () => {
 
   it('recovery の次の一手は部署が先、チャットが後', () => {
     const html = render({ directory: { departments: DIRECTORY.departments, staff: [] } });
-    expect(html.indexOf('data-testid="search-empty-department-cta"')).toBeGreaterThan(-1);
-    expect(html.indexOf('data-testid="search-empty-department-cta"')).toBeLessThan(
-      html.indexOf('data-testid="search-empty-chat-cta"'),
+    expect(html.indexOf('data-testid="target-recovery-department-cta"')).toBeGreaterThan(-1);
+    expect(html.indexOf('data-testid="target-recovery-department-cta"')).toBeLessThan(
+      html.indexOf('data-testid="target-recovery-chat-cta"'),
     );
   });
 
   it('チャットを注入していなければチャット導線を出さない', () => {
     const html = render({ directory: { departments: DIRECTORY.departments, staff: [] }, onRequestChat: undefined });
-    expect(html).not.toContain('data-testid="search-empty-chat-cta"');
+    expect(html).not.toContain('data-testid="target-recovery-chat-cta"');
   });
 
   it('4 言語でタブ文言を描画できる（生リテラルを置かない）', () => {
     expect(render({}, 'en')).toContain('Choose a person');
     expect(render({}, 'ko')).toContain('담당자로 선택');
     expect(render({}, 'zh')).toContain('按负责人选择');
+  });
+});
+
+describe('部署タブ (#776)', () => {
+  it('部署タブで開くと部署グリッドだけを出し、担当者グリッドも検索欄も出さない', () => {
+    const html = render({ initialTab: 'department' });
+    expect(html).toContain('data-testid="dept-dept-sales"');
+    expect(html).toContain('data-testid="target-panel-department"');
+    expect(html).not.toContain('data-testid="staff-staff-sato"');
+    expect(html).not.toContain('data-testid="staff-search"');
+    expect(tagOf(html, 'target-tab-department')).toContain('aria-selected="true"');
+  });
+
+  it('選択中のタブだけが実在するパネルを aria-controls で指す', () => {
+    const html = render({ initialTab: 'department' });
+    expect(tagOf(html, 'target-tab-department')).toContain('aria-controls="target-panel-department"');
+    // 非活性パネルは DOM に無いので、参照も持たせない（存在しない id を指さない）。
+    expect(tagOf(html, 'target-tab-staff')).not.toContain('aria-controls');
+    expect(html).not.toContain('id="target-panel-staff"');
+  });
+
+  it('部署が 1 つも無ければ空の枠ではなく recovery を出す（真っ白な画面を作らない）', () => {
+    const html = render({
+      initialTab: 'department',
+      directory: { departments: [], staff: DIRECTORY.staff },
+    });
+    expect(html).toContain('data-testid="target-recovery"');
+    expect(html).toContain('部署・窓口の一覧がありません');
+    // 担当者へ戻す導線とチャットが出る。
+    expect(html).toContain('data-testid="target-recovery-staff-cta"');
+    expect(html).toContain('data-testid="target-recovery-chat-cta"');
+  });
+
+  it('部署が 0 件なら 0 件 recovery に「部署から選ぶ」を出さない（空の先へ送らない）', () => {
+    const html = render({ directory: { departments: [], staff: [] } });
+    expect(html).toContain('data-testid="target-recovery"');
+    expect(html).not.toContain('data-testid="target-recovery-department-cta"');
+  });
+
+  it('次の一手が 1 つも無いときは有人支援の案内だけを出す', () => {
+    const html = render({
+      directory: { departments: [], staff: [] },
+      onRequestChat: undefined,
+    });
+    expect(html).toContain('近くの受付スタッフにお声がけください');
+    expect(html).not.toContain('data-testid="target-recovery-');
   });
 });

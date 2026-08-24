@@ -89,8 +89,10 @@ test('受付端末は管理画面の部署・担当者を取得して表示す�
   await page.goto('/kiosk');
   await page.getByTestId('start-reception').click();
   await page.getByTestId('purpose-meeting').click();
-  // seed の担当者・部署が API 経由で表示される。
+  // seed の担当者・部署が API 経由で表示される。部署グリッドは常時表示ではなく
+  // 「部署から選ぶ」タブの中にある (#776) ので、切り替えてから確かめる。
   await expect(page.getByTestId('staff-staff-sato')).toBeVisible();
+  await page.getByTestId('target-tab-department').click();
   await expect(page.getByTestId('dept-dept-sales')).toBeVisible();
 });
 

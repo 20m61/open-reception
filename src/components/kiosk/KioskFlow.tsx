@@ -38,6 +38,11 @@ import {
   type CheckoutCredential,
 } from './flow-state';
 import {
+  DEFAULT_TARGET_TAB,
+  initialTargetTabFor,
+  type TargetTab,
+} from './target-view-state';
+import {
   primeSpeech,
   speak,
 } from './speech';
@@ -1032,8 +1037,12 @@ export function KioskFlow({
   }, [data.state, data.sessionId, handleFallback]);
 
   // 受付開始（タップ / サイネージ / 来訪検知 共通）。音声再生を有効化してから START。
+  // 相手選択を開いたときの探し方 (#776)。入口カードでのみ変わる view-local な表示モード。
+  const [initialTargetTab, setInitialTargetTab] = useState<TargetTab>(DEFAULT_TARGET_TAB);
+
   const startReception = useCallback(() => {
     primeSpeech();
+    setInitialTargetTab(DEFAULT_TARGET_TAB);
     dispatch({ type: 'START' });
   }, []);
 
@@ -1043,6 +1052,9 @@ export function KioskFlow({
   // 集合・並び順・用件の先取りは契約（`turnAnswersFor('idle')`）が決める。
   const startWithEntry = useCallback((answer: TurnAnswerView) => {
     primeSpeech();
+    // 「部署から選ぶ」で入った来訪者を担当者タブへ着地させない (#776)。押した導線と着いた
+    // 画面が食い違う。表示モードだけの話なので状態機械へは載せず、画面へ渡す。
+    setInitialTargetTab(initialTargetTabFor(answer.id));
     dispatch({ type: 'START', pendingPurpose: answer.presetPurpose });
   }, []);
   // 引き渡し入口 (#422 inc5-b 増分 3b)。**状態機械は進めず**別シェル（CheckinFlow）へ渡す。
@@ -1312,6 +1324,7 @@ export function KioskFlow({
               // 同様に、デバウンス後の検索実行時のみ ref を更新する安定コールバック (#322)。
               onSearchQuery: markSearchQuery,
               onRequestChat: requestChatOpen,
+              initialTargetTab,
               // 呼び出し中の段階的ケア (#323)。UI 層のタイマー派生（state.ts/ui-contract.ts は不変）。
               callingStageState,
               callingStageTextOverride,
