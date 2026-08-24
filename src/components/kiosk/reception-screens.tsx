@@ -246,10 +246,12 @@ type ReceptionScreenProps = {
   /** 検索 0 件時などから Chat-assisted ドロワーを開く合図を送る (issue #322)。 */
   onRequestChat: () => void;
   /**
-   * 相手選択を開いたときの探し方 (#776)。待機の入口カードが「部署から選ぶ」だったときだけ
-   * 部署タブで着地させる（押した導線と着いた画面を一致させる）。
+   * 相手選択の探し方 (#776)。待機の入口カードが「部署から選ぶ」だったときだけ部署タブで
+   * 着地させる（押した導線と着いた画面を一致させる）。画面をまたいで保つ必要があるので
+   * `KioskFlow` が持つ。
    */
-  initialTargetTab: TargetTab;
+  targetTab: TargetTab;
+  onTargetTabChange: (next: TargetTab) => void;
   /**
    * 呼び出し中の経過段階 (issue #323)。UI 層のタイマー派生（state.ts/ui-contract.ts は不変）。
    * calling 以外の画面では参照しない。
@@ -296,7 +298,8 @@ export function renderScreen({
   presenceCameraEnabled,
   onSearchQuery,
   onRequestChat,
-  initialTargetTab,
+  targetTab,
+  onTargetTabChange,
   callingStageState,
   callingStageTextOverride,
   feedback,
@@ -336,7 +339,8 @@ export function renderScreen({
           onVoiceUse={onVoiceUse}
           onSearchQuery={onSearchQuery}
           onRequestChat={onRequestChat}
-          initialTab={initialTargetTab}
+          tab={targetTab}
+          onTabChange={onTargetTabChange}
           locale={locale}
         />
       );
@@ -691,7 +695,8 @@ export function TargetView({
   onVoiceUse,
   onSearchQuery,
   onRequestChat,
-  initialTab = DEFAULT_TARGET_TAB,
+  tab,
+  onTabChange,
   locale,
 }: {
   directory: Directory;
@@ -706,16 +711,16 @@ export function TargetView({
   /** 0 件時の「チャットで相談する」から Chat-assisted ドロワーを開く (issue #322)。 */
   onRequestChat?: () => void;
   /**
-   * 開いたときの探し方 (#776)。待機画面で「部署から選ぶ」を押した来訪者を担当者タブへ
-   * 着地させると、押した導線と着いた画面が食い違う。既定は担当者。
+   * いま選ばれている探し方 (#776)。`KioskFlow` が持つ。この画面は状態が変わるたび
+   * 再マウントされる（`key={data.state}`）ので、ここに state を置くと確認画面から
+   * 「戻る」だけでタブが勝手に切り替わる。
    */
-  initialTab?: TargetTab;
+  tab: TargetTab;
+  onTabChange: (next: TargetTab) => void;
   locale: Locale;
 }) {
   const tr = makeT(locale);
   const [query, setQuery] = useState('');
-  // 探し方（担当者 / 部署）。view-local な表示モードで、ReceptionState は増やさない (#776)。
-  const [tab, setTab] = useState<TargetTab>(initialTab);
   // 音声認識の候補。タップで検索欄に反映し、来訪者の確認後に選択する（即時呼び出ししない）(issue #5)。
   const [sttCandidates, setSttCandidates] = useState<string[]>([]);
   const [sttListening, setSttListening] = useState(false);
@@ -735,6 +740,8 @@ export function TargetView({
   const panel = targetPanelFor({
     tab,
     staffResultCount: results.length,
+    // 「担当者から選ぶ」を押した先が押せないカードだけ、という案内を出さない。
+    selectableStaffCount: results.filter((s) => s.available).length,
     departmentCount: departments.length,
     searching: isSearching,
     chatAvailable: onRequestChat !== undefined,
@@ -742,10 +749,13 @@ export function TargetView({
 
   // タブを移すときはフォーカスも連れて行く。recovery の CTA で切り替えると押した要素自体が
   // 消えるため、放置するとフォーカスが body へ落ちて支援技術には何も起きなかったように見える。
-  const switchTab = useCallback((next: TargetTab) => {
-    setTab(next);
-    tabRefs.current[next]?.focus();
-  }, []);
+  const switchTab = useCallback(
+    (next: TargetTab) => {
+      onTabChange(next);
+      tabRefs.current[next]?.focus();
+    },
+    [onTabChange],
+  );
 
   // 検索実行のヒット有無を体験メトリクスへ記録する（クエリ文字列自体は保持しない, issue #322）。
   // 打鍵のたびに数えないよう軽くデバウンスする。
@@ -968,7 +978,12 @@ export function TargetView({
             // 0 件で行き止まりにしない。警告と案内を 2 枚出していたものを 1 枚へ統合し、
             // 次の一手を優先順に並べる (#322 AC3 / #776)。**押した先に中身が有るものだけ**を
             // 出すのは `targetPanelFor` の責務（空の部署一覧へ送るボタンを作らない）。
-            <div className="notice notice--warning" data-testid="target-recovery" lang={htmlLangFor(locale)}>
+            <div
+              className="notice notice--warning"
+              role="status"
+              data-testid="target-recovery"
+              lang={htmlLangFor(locale)}
+            >
               <p style={{ margin: 0 }}>{tr(panel.messageKey)}</p>
               {panel.actions.length > 0 ? (
                 <div className="card-grid" style={{ marginTop: 'var(--space-md)' }}>

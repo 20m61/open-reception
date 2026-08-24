@@ -14,6 +14,7 @@ function panel(over: Partial<Parameters<typeof targetPanelFor>[0]> = {}): Target
   return targetPanelFor({
     tab: 'staff',
     staffResultCount: 3,
+    selectableStaffCount: 3,
     departmentCount: 2,
     searching: false,
     chatAvailable: true,
@@ -93,16 +94,45 @@ describe('0 件からの回復 (#776 / #322 AC3)', () => {
 
   it('部署タブの recovery は、担当者が選べるときだけ担当者へ戻す', () => {
     // 検索語のせいで担当者も 0 件なら、戻しても同じ recovery に着く。
-    expect(panel({ tab: 'department', departmentCount: 0, staffResultCount: 0 })).toEqual({
+    expect(
+      panel({ tab: 'department', departmentCount: 0, staffResultCount: 0, selectableStaffCount: 0 }),
+    ).toEqual({
       kind: 'recovery',
       messageKey: 'reception.departmentNotFound',
       actions: ['chat'],
     });
   });
 
+  it('担当者が全員不在なら「担当者から選ぶ」を出さない（押せないカードの前に置かない）', () => {
+    // カードは出るが 1 枚も選べない。件数ではなく「選べる件数」で判断する。
+    expect(
+      panel({ tab: 'department', departmentCount: 0, staffResultCount: 4, selectableStaffCount: 0 }),
+    ).toEqual({
+      kind: 'recovery',
+      messageKey: 'reception.departmentNotFound',
+      actions: ['chat'],
+    });
+  });
+
+  it('部署を出せないなら「部署または代表窓口をお選びください」と言わない', () => {
+    // 次の一手から部署を外したのに文言だけ部署を指していると、消したはずの
+    // 行き止まりへ言葉で案内することになる。
+    expect(panel({ staffResultCount: 0, searching: false, departmentCount: 0 })).toEqual({
+      kind: 'recovery',
+      messageKey: 'reception.fallbackBody',
+      actions: ['chat'],
+    });
+  });
+
   it('次の一手が 1 つも無いときは有人支援へ振る（何も出さない画面を作らない）', () => {
     expect(
-      panel({ staffResultCount: 0, departmentCount: 0, searching: true, chatAvailable: false }),
+      panel({
+        staffResultCount: 0,
+        selectableStaffCount: 0,
+        departmentCount: 0,
+        searching: true,
+        chatAvailable: false,
+      }),
     ).toEqual({
       kind: 'recovery',
       messageKey: 'reception.fallbackBody',

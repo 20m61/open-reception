@@ -25,6 +25,8 @@ function render(
       sttEnabled={false}
       onSelect={() => {}}
       onRequestChat={() => {}}
+      tab="staff"
+      onTabChange={() => {}}
       locale={locale}
       {...over}
     />,
@@ -66,6 +68,9 @@ describe('TargetView の初期表示密度 (#776)', () => {
     expect(tagOf(html, 'target-tab-staff')).toContain('aria-selected="true"');
     expect(tagOf(html, 'target-tab-department')).toContain('aria-selected="false"');
     expect(html.match(/aria-selected="true"/g) ?? []).toHaveLength(1);
+    // roving tabindex（APG）。非選択タブを Tab キーの順路から外す。
+    expect(tagOf(html, 'target-tab-staff')).toContain('tabindex="0"');
+    expect(tagOf(html, 'target-tab-department')).toContain('tabindex="-1"');
   });
 
   it('検索欄は担当者タブの主操作として出る', () => {
@@ -131,7 +136,7 @@ describe('TargetView の初期表示密度 (#776)', () => {
 
 describe('部署タブ (#776)', () => {
   it('部署タブで開くと部署グリッドだけを出し、担当者グリッドも検索欄も出さない', () => {
-    const html = render({ initialTab: 'department' });
+    const html = render({ tab: 'department' });
     expect(html).toContain('data-testid="dept-dept-sales"');
     expect(html).toContain('data-testid="target-panel-department"');
     expect(html).not.toContain('data-testid="staff-staff-sato"');
@@ -140,7 +145,7 @@ describe('部署タブ (#776)', () => {
   });
 
   it('選択中のタブだけが実在するパネルを aria-controls で指す', () => {
-    const html = render({ initialTab: 'department' });
+    const html = render({ tab: 'department' });
     expect(tagOf(html, 'target-tab-department')).toContain('aria-controls="target-panel-department"');
     // 非活性パネルは DOM に無いので、参照も持たせない（存在しない id を指さない）。
     expect(tagOf(html, 'target-tab-staff')).not.toContain('aria-controls');
@@ -149,7 +154,7 @@ describe('部署タブ (#776)', () => {
 
   it('部署が 1 つも無ければ空の枠ではなく recovery を出す（真っ白な画面を作らない）', () => {
     const html = render({
-      initialTab: 'department',
+      tab: 'department',
       directory: { departments: [], staff: DIRECTORY.staff },
     });
     expect(html).toContain('data-testid="target-recovery"');

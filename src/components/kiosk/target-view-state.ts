@@ -69,8 +69,13 @@ export type TargetPanel =
 
 type TargetPanelInput = {
   readonly tab: TargetTab;
-  /** 現在の検索条件で選べる担当者の数（全件ではない）。 */
+  /** 現在の検索条件で**カードが出る**担当者の数（不在の担当者も含む）。 */
   readonly staffResultCount: number;
+  /**
+   * そのうち**実際に呼べる**担当者の数。カードは出るが全員不在ということが有り、
+   * 「担当者から選ぶ」を押した先が押せないカードだけになるのを防ぐ。
+   */
+  readonly selectableStaffCount: number;
   /** 来訪者に出せる部署・窓口の数。取得前・取得失敗・未登録テナントでは 0。 */
   readonly departmentCount: number;
   /** 検索欄に入力が有るか。0 件の意味（該当なし / 名簿が空）が変わる。 */
@@ -95,7 +100,7 @@ export function targetPanelFor(input: TargetPanelInput): TargetPanel {
 function recoveryActionsFor(input: TargetPanelInput): readonly TargetRecoveryAction[] {
   const actions: TargetRecoveryAction[] = [];
   if (input.tab === 'department') {
-    if (input.staffResultCount > 0) actions.push('staff');
+    if (input.selectableStaffCount > 0) actions.push('staff');
   } else if (input.departmentCount > 0) {
     actions.push('department');
   }
@@ -112,5 +117,8 @@ function recoveryMessageKeyFor(
   if (actions.length === 0) return 'reception.fallbackBody';
   if (input.tab === 'department') return 'reception.departmentNotFound';
   // 名簿が空のときに「別の名前で」は助けにならない。
-  return input.searching ? 'reception.searchNoResultsGuidance' : 'reception.staffNotFound';
+  if (input.searching) return 'reception.searchNoResultsGuidance';
+  // `staffNotFound` は「部署または代表窓口をお選びください」と言う。次の一手から部署を
+  // 外したのにこの文言を出すと、消したはずの行き止まりへ言葉で案内することになる。
+  return actions.includes('department') ? 'reception.staffNotFound' : 'reception.fallbackBody';
 }

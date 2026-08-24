@@ -96,6 +96,39 @@ test('待機の「部署から選ぶ」は部署タブに着地する (#776)', a
   await expect(page.getByTestId('staff-search')).toBeVisible();
 });
 
+test('相手選択のタブはキーボードでも操作でき、切替でフォーカスが迷子にならない (#776)', async ({ page }) => {
+  await page.goto('/kiosk');
+  await page.getByTestId('start-reception').click();
+  await page.getByTestId('purpose-meeting').click();
+
+  // `role="tab"` を名乗る以上、左右キーでの移動は契約 (WAI-ARIA APG)。
+  await page.getByTestId('target-tab-staff').focus();
+  await page.keyboard.press('ArrowRight');
+  await expect(page.getByTestId('target-tab-department')).toHaveAttribute('aria-selected', 'true');
+  await expect(page.locator(':focus')).toHaveAttribute('data-testid', 'target-tab-department');
+  await page.keyboard.press('ArrowLeft');
+  await expect(page.getByTestId('target-tab-staff')).toHaveAttribute('aria-selected', 'true');
+
+  // recovery の CTA でタブを切り替えると押した要素自体が消える。フォーカスを移さないと
+  // body へ落ち、支援技術には何も起きなかったように見える。
+  await page.getByTestId('staff-search').fill('存在しない名前です');
+  await page.getByTestId('target-recovery-department-cta').click();
+  await expect(page.locator(':focus')).toHaveAttribute('data-testid', 'target-tab-department');
+});
+
+test('相手選択のタブは確認画面から戻っても勝手に切り替わらない (#776)', async ({ page }) => {
+  await page.goto('/kiosk');
+  // 「部署から選ぶ」で入ったあと担当者タブへ移り、担当者を選んで戻る。
+  await page.getByTestId('quick-department').click();
+  await page.getByTestId('target-tab-staff').click();
+  await page.getByTestId('staff-staff-sato').click();
+  await expect(page.getByTestId('visitor-name')).toBeVisible();
+  await page.getByTestId('escape-back').click();
+  // 入口が部署でも、来訪者が最後に選んだ探し方のまま戻る。
+  await expect(page.getByTestId('target-tab-staff')).toHaveAttribute('aria-selected', 'true');
+  await expect(page.getByTestId('staff-search')).toBeVisible();
+});
+
 test('進行中の画面に常時見える逃げ道バーが出る', async ({ page }) => {
   await page.goto('/kiosk');
   await page.getByTestId('start-reception').click();
