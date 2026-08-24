@@ -122,15 +122,14 @@ test.describe('受付フロー画面（実 /kiosk・iPad landscape）', () => {
   });
 
   test('相手選択（取次先: 担当者 + 部門/窓口）画面の VRT + a11y', async ({ page }) => {
-    // 現状の相手選択は 1 画面に担当者一覧と部門/窓口一覧を併置する統合画面で、用件（meeting/delivery）に
-    // よらず同一 DOM をレンダーする（fullPage baseline がバイト一致で確認済み）。よって代表として
-    // meeting 経由で 1 本にまとめ、担当者・部門の双方が可視であることを assert する。#361 の 35/65
-    // レール再設計後に baseline を更新して差分を評価する。
+    // 相手選択は「担当者」「部署・窓口」のタブで、**同時に 2 グリッドを出さない** (#776)。
+    // baseline は初期タブ（担当者）を撮る。部署タブは新しい baseline を足さず、DOM 断定と
+    // 下の axe 再走査で押さえる（darwin/linux の 2 枚を増やさないため）。
     await page.goto('/kiosk');
     await page.getByTestId('start-reception').click();
     await page.getByTestId('purpose-meeting').click();
     await expect(page.getByTestId('staff-staff-sato')).toBeVisible();
-    await expect(page.getByTestId('dept-dept-sales')).toBeVisible();
+    await expect(page.locator('[data-testid^="dept-"]')).toHaveCount(0);
 
     // 相手選択は縦に長く、担当者/部門の候補リストがファーストビュー下にあるため fullPage で全体を撮る
     // （viewport 撮影だと最上部ヘッダのみになり候補リストのレイアウト回帰を取りこぼす）。
@@ -143,6 +142,13 @@ test.describe('受付フロー画面（実 /kiosk・iPad landscape）', () => {
 
     const violations = await blockingViolations(page);
     expect(violations, summarize(violations)).toEqual([]);
+
+    // 部署タブも a11y を満たす（タブ切替後の DOM は baseline に写らないため個別に見る）。
+    await page.getByTestId('target-tab-department').click();
+    await expect(page.getByTestId('dept-dept-sales')).toBeVisible();
+    await expect(page.locator('[data-testid^="staff-staff-"]')).toHaveCount(0);
+    const deptViolations = await blockingViolations(page);
+    expect(deptViolations, summarize(deptViolations)).toEqual([]);
   });
 
   test('取次内容確認画面の VRT + a11y（発信直前・安全上重要）', async ({ page }) => {

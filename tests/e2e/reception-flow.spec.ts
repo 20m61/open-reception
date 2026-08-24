@@ -90,6 +90,8 @@ test('部署選択でも呼び出しできる', async ({ page }) => {
   await page.goto('/kiosk');
   await page.getByTestId('start-reception').click();
   await page.getByTestId('purpose-delivery').click();
+  // 部署グリッドは常時表示ではなく「部署から選ぶ」タブの中にある (#776)。
+  await page.getByTestId('target-tab-department').click();
   await page.getByTestId('dept-dept-sales').click();
   await page.getByTestId('visitor-name').fill('配送 太郎');
   await page.getByTestId('to-confirm').click();
@@ -115,7 +117,7 @@ test('1 文字 typo でも「もしかして」候補として見つかる (#322
   await expect(page.getByTestId('staff-staff-takahashi')).toBeVisible();
   await expect(page.getByTestId('staff-staff-takahashi-maybe')).toBeVisible();
   // 0 件時の誘導は出ない（ヒットしているため）。
-  await expect(page.getByTestId('search-no-results-guidance')).toHaveCount(0);
+  await expect(page.getByTestId('target-recovery')).toHaveCount(0);
 });
 
 test('検索 0 件でも行き止まりにならず、部署一覧・チャット相談への導線が出る (#322 AC3)', async ({ page }) => {
@@ -124,15 +126,21 @@ test('検索 0 件でも行き止まりにならず、部署一覧・チャッ�
   await page.getByTestId('purpose-meeting').click();
   await page.getByTestId('staff-search').fill('存在しない名前です');
 
-  await expect(page.getByTestId('staff-empty')).toBeVisible();
-  const guidance = page.getByTestId('search-no-results-guidance');
-  await expect(guidance).toBeVisible();
+  // 警告と案内を 2 枚重ねず、recovery パネル 1 枚に集約する (#776)。
+  const recovery = page.getByTestId('target-recovery');
+  await expect(recovery).toBeVisible();
+  await expect(page.getByTestId('staff-empty')).toHaveCount(0);
+  await expect(page.getByTestId('search-no-results-guidance')).toHaveCount(0);
 
-  // 次の一手 1: 部署一覧へスクロール誘導。
-  await expect(page.getByTestId('search-empty-department-cta')).toBeVisible();
+  // 次の一手 1: 1 操作で部署タブへ切り替わる（スクロール誘導ではない）。
+  await page.getByTestId('target-recovery-department-cta').click();
+  await expect(page.getByTestId('dept-dept-sales')).toBeVisible();
+  await expect(recovery).toHaveCount(0);
 
   // 次の一手 2: チャットで受付係に相談する（Chat-assisted ドロワーが開く）。
-  await page.getByTestId('search-empty-chat-cta').click();
+  await page.getByTestId('target-tab-staff').click();
+  await expect(recovery).toBeVisible();
+  await page.getByTestId('target-recovery-chat-cta').click();
   await expect(page.getByTestId('kiosk-chat-drawer')).toHaveAttribute('data-open', 'true');
 });
 

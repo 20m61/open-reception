@@ -412,6 +412,23 @@ a {
   }
 }
 
+/*
+ * 目に見えない live region (#776)。見た目に影響を与えず、内容が変わったときだけ
+ * 支援技術へ伝える。`display: none` や `visibility: hidden` では読み上げ対象から
+ * 外れるので、面積を潰す古典的な手法を使う。
+ */
+.a11y-live {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+  border: 0;
+}
+
 .card__sub {
   font-size: var(--font-body);
   font-weight: 400;
@@ -427,6 +444,89 @@ a {
   color: var(--color-accent);
   font-size: var(--font-body);
   font-weight: 700;
+}
+
+/*
+ * 相手選択画面の「探し方」セグメント (#776)。担当者グリッドと部署グリッドを同時に主表示
+ * しないための切替。選択中は面と文字色で示し、色相だけに寄せない（`aria-selected` が
+ * スクリーンリーダ向けの正本）。
+ */
+.target-tabs {
+  display: flex;
+  gap: var(--space-sm);
+}
+
+/*
+  タブは 1 枚ずつ独立したピルにする。まとめて 1 個の枠へ入れると、選択されていない側が
+  「枠の中のラベル」に見えて押せると気づけない。部署グリッドの常時表示を外した結果、
+  **部署へ至る唯一の入口**がこのタブになったので、そこで気づけないと行き止まりになる (#776)。
+*/
+.target-tabs__tab {
+  flex: 1 1 0;
+  min-height: var(--touch-target-min);
+  padding: var(--space-sm) var(--space-lg);
+  border: 2px solid var(--color-border-strong);
+  border-radius: var(--radius-pill);
+  background: var(--color-surface);
+  color: var(--color-text);
+  font-size: var(--font-lg);
+  font-weight: 700;
+  cursor: pointer;
+  transition:
+    background var(--dur-fast) var(--ease-out),
+    border-color var(--dur-fast) var(--ease-out);
+}
+
+/* 選択中はアクセント面で塗る。文字色は accent 用のインクを使う（accent はテナントで
+   差し替わるため、--color-text のまま置くとテーマ次第で読めなくなる）。 */
+.target-tabs__tab[aria-selected='true'] {
+  background: var(--color-accent);
+  border-color: var(--color-accent);
+  color: var(--color-accent-ink);
+}
+
+/* 音声検索は検索欄に付随する secondary action。狭いときは下へ落として重ならないようにする。 */
+.target-search {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: stretch;
+  gap: var(--space-sm);
+}
+
+.target-search__input {
+  flex: 1 1 260px;
+  min-width: 0;
+}
+
+.target-search__voice {
+  display: flex;
+  align-items: stretch;
+}
+
+/*
+ * 不在/受付不可の担当者カード (#776)。旧実装は `opacity: 0.55` だけで状態を表しており、
+ * 低コントラスト環境では「押せるのに反応しないカード」に見えた。面と破線境界で
+ * 「押せない」ことを示し、意味そのものはバッジと文言が担う（透明度に依存しない）。
+ */
+.card--unavailable {
+  background: var(--color-surface-faint);
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+  border-style: dashed;
+  border-color: var(--color-border-strong);
+  box-shadow: none;
+  cursor: not-allowed;
+}
+
+.card--unavailable:hover {
+  border-color: var(--color-border-strong);
+  transform: none;
+  box-shadow: none;
+}
+
+.card__badge--unavailable {
+  background: color-mix(in srgb, var(--color-muted) 22%, transparent);
+  color: var(--color-text);
 }
 
 .field {
