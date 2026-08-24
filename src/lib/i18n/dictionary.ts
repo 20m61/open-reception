@@ -1308,7 +1308,7 @@ const zh: LocaleDictionary = {
   'kiosk.action.delivery.desc': '送货·快递请走这里',
   'kiosk.action.other.label': '其他事由',
   'kiosk.action.other.desc': '不属于以上情况的访客',
-  'kiosk.action.more.label': 'QR・配送・其他事由',
+  'kiosk.action.more.label': 'QR·配送·其他事由',
   'kiosk.action.more.hide': '关闭',
   'reception.targetPrompt': '请选择负责人或部门',
   'reception.visitorInfoPrompt': '请输入来访者信息',

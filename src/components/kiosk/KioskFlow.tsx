@@ -1042,23 +1042,29 @@ export function KioskFlow({
   // タブが切り替わる。受付 1 回分の寿命でここが持つ。
   const [targetTab, setTargetTab] = useState<TargetTab>(DEFAULT_TARGET_TAB);
 
-  const startReception = useCallback(() => {
+  /**
+   * 受付開始の唯一の入口 (#776)。`START` の dispatch を撒くとタブのリセットを書き忘れ
+   * られる——iPad は再読み込みされない常設端末なので、前の来訪者の探し方が次の来訪者へ
+   * 持ち越される（サイネージ CTA 経由が実際にその形だった）。入口を 1 本にして構造で防ぐ。
+   */
+  const beginReception = useCallback((answer?: TurnAnswerView) => {
     primeSpeech();
-    setTargetTab(DEFAULT_TARGET_TAB);
-    dispatch({ type: 'START' });
+    // 「部署から選ぶ」で入った来訪者を担当者タブへ着地させない。押した導線と着いた
+    // 画面が食い違う。表示モードだけの話なので状態機械へは載せず、画面へ渡す。
+    setTargetTab(initialTargetTabFor(answer?.id));
+    dispatch({ type: 'START', pendingPurpose: answer?.presetPurpose });
   }, []);
+
+  const startReception = useCallback(() => beginReception(), [beginReception]);
 
   // クイックアクションからの受付開始 (issue #121)。用件を先取りした目的を pendingPurpose に載せる。
   // checkin（QR 受付）はモード切替なので START を使わず、ここではなく UI 側で mode='checkin' にする。
   // 待機の入口カード (#422 inc5-b 増分 3b)。受付を開始し、用件の先取りがあれば添える。
   // 集合・並び順・用件の先取りは契約（`turnAnswersFor('idle')`）が決める。
-  const startWithEntry = useCallback((answer: TurnAnswerView) => {
-    primeSpeech();
-    // 「部署から選ぶ」で入った来訪者を担当者タブへ着地させない (#776)。押した導線と着いた
-    // 画面が食い違う。表示モードだけの話なので状態機械へは載せず、画面へ渡す。
-    setTargetTab(initialTargetTabFor(answer.id));
-    dispatch({ type: 'START', pendingPurpose: answer.presetPurpose });
-  }, []);
+  const startWithEntry = useCallback(
+    (answer: TurnAnswerView) => beginReception(answer),
+    [beginReception],
+  );
   // 引き渡し入口 (#422 inc5-b 増分 3b)。**状態機械は進めず**別シェル（CheckinFlow）へ渡す。
   // 回答と関数を分けているのは、押したときに起こることが違うため（取り違えを型で防ぐ）。
   const handoffToShell = useCallback((handoff: TurnHandoffView) => {

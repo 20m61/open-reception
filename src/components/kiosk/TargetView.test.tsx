@@ -142,7 +142,10 @@ describe('0 件の読み上げ (#776)', () => {
     expect(innerTextOf(html, 'target-live')).toBe('');
   });
 
-  it('0 件になったら live region が案内文を持つ', () => {
+  // 「文を持つ」は「読み上げられる」ではない。到着した瞬間から 0 件の場合は要素ごと
+  // 新規挿入されるので live region は沈黙する（既存の挙動。#788 で扱う）。ここが縛れる
+  // のは中身の配線だけで、実際に読まれるかは E2E のノード同一性テストが見ている。
+  it('0 件になったら live region が案内文を持つ（読み上げの可否は E2E 側）', () => {
     const html = render({ directory: { departments: DIRECTORY.departments, staff: [] } });
     expect(innerTextOf(html, 'target-live')).toContain('該当する担当者が見つかりません');
   });

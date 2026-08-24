@@ -151,8 +151,19 @@ test('0 件になったことが支援技術へ伝わる (#776)', async ({ page 
   // live region は候補が有るうちから存在する（変化の前から在らないと読み上げられない）。
   const live = page.getByTestId('target-live');
   await expect(live).toHaveText('');
+  // **存在するだけでは足りない**。同じノードのまま中身が変わることまで縛る。要素ごと
+  // 作り直されると「内容を持った状態で挿入」になり、live region は読み上げない。
+  // React は自分が管理しない属性を上書きしないので、印を打って生存を見る。
+  await live.evaluate((node) => node.setAttribute('data-liveness-probe', '1'));
+
   await page.getByTestId('staff-search').fill('存在しない名前です');
   await expect(live).toContainText('お探しの方が見つかりませんでした');
+  await expect(live).toHaveAttribute('data-liveness-probe', '1');
+
+  // 候補が戻れば静かになる（空文字の書き込みは読み上げられない）。ノードは生きたまま。
+  await page.getByTestId('staff-search').fill('さとう');
+  await expect(live).toHaveText('');
+  await expect(live).toHaveAttribute('data-liveness-probe', '1');
 });
 
 test('進行中の画面に常時見える逃げ道バーが出る', async ({ page }) => {
