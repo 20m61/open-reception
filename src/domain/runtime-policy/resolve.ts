@@ -155,17 +155,29 @@ function evaluateToState(schedule: CommonSchedule, now: number): ServiceRuntimeS
 function expiresAtMs(expiresAt: string, timezone: string): number {
   // オフセット付き（`Z` / `±HH:MM`）はそのまま絶対時刻として読める。
   if (/(?:Z|[+-]\d{2}:?\d{2})$/.test(expiresAt)) return Date.parse(expiresAt);
-  const m = /^(\d{4})-(\d{2})-(\d{2})(?:[T ](\d{2}):(\d{2}))?/.exec(expiresAt);
+  /*
+   * 🔴 **末尾まで縛る（`$`）。** 前方一致だと `2026-07-22T12:00oops` を「12:00 まで」と
+   * 読んでしまい、doc の「解析不能は自動解除」と食い違う。黙って別の値として解釈しない。
+   * 🔴 **秒も読む。** 落とすと `12:00:59` が `12:00:00` 扱いになり、最大 59 秒早く失効する。
+   */
+  const m = /^(\d{4})-(\d{2})-(\d{2})(?:[T ](\d{2}):(\d{2})(?::(\d{2}))?)?$/.exec(expiresAt);
   if (!m) return Number.NaN;
-  return zonedTimeToUtcMs(
-    {
-      year: Number(m[1]),
-      month: Number(m[2]),
-      day: Number(m[3]),
-      hour: m[4] === undefined ? 0 : Number(m[4]),
-      minute: m[5] === undefined ? 0 : Number(m[5]),
-    },
-    timezone,
+  const seconds = m[6] === undefined ? 0 : Number(m[6]);
+  if (seconds > 59) return Number.NaN;
+  // `zonedTimeToUtcMs` は分までしか受けないので、秒は後から足す（TZ オフセットは分単位で
+  // 表現されるので、秒を加えても帯の判定はずれない）。
+  return (
+    zonedTimeToUtcMs(
+      {
+        year: Number(m[1]),
+        month: Number(m[2]),
+        day: Number(m[3]),
+        hour: m[4] === undefined ? 0 : Number(m[4]),
+        minute: m[5] === undefined ? 0 : Number(m[5]),
+      },
+      timezone,
+    ) +
+    seconds * 1000
   );
 }
 

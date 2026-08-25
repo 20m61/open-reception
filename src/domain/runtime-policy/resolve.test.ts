@@ -618,3 +618,41 @@ describe('mode と段の関係 (#367 / PR #791 レビュー M1)', () => {
     expect(stateOf(policy, 'admin', IN_HOURS)).toEqual({ state: 'stopped', reason: 'temporary_override' });
   });
 });
+
+describe('expiresAt の解析（外部レビュー指摘の回帰固定, PR #791）', () => {
+  const at = (expiresAt: string) =>
+    policyWith({ bedrock: { temporaryOverride: { state: 'force_stopped', expiresAt } } });
+
+  it('秒まで解釈する（切り捨てると最大 59 秒早く失効する）', () => {
+    const policy = at('2026-07-22T12:00:59');
+    // 12:00:30 はまだ期限内。秒を落とすと 12:00:00 で失効扱いになり、ここが落ちる。
+    expect(stateOf(policy, 'bedrock', tokyo(2026, 7, 22, 12, 0, 30))).toEqual({
+      state: 'stopped',
+      reason: 'temporary_override',
+    });
+    expect(stateOf(policy, 'bedrock', tokyo(2026, 7, 22, 12, 1, 0))).toEqual({
+      state: 'running',
+      reason: 'common_weekly_schedule',
+    });
+  });
+
+  it('末尾に余計なものが付いた値は解析不能として扱う（前方一致で通さない）', () => {
+    // `2026-07-22T12:00oops` を「12:00 まで」と読むのは、doc が言う
+    // 「解析不能は undefined = 自動解除」と食い違う。黙って別の値として解釈しない。
+    for (const bad of ['2026-07-22T12:00oops', '2026-07-22T12:00:99', '2026-07-22extra', 'not-a-date']) {
+      expect(stateOf(at(bad), 'bedrock', IN_HOURS), `expiresAt=${bad}`).toEqual({
+        state: 'running',
+        reason: 'common_weekly_schedule',
+      });
+    }
+  });
+
+  it('秒を省いた値・日付だけの値は従来どおり解釈できる', () => {
+    expect(stateOf(at('2026-07-22T13:00'), 'bedrock', IN_HOURS)).toMatchObject({
+      reason: 'temporary_override',
+    });
+    expect(stateOf(at('2026-07-23'), 'bedrock', IN_HOURS)).toMatchObject({
+      reason: 'temporary_override',
+    });
+  });
+});
