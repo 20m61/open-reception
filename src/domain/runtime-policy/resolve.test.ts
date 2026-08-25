@@ -647,6 +647,27 @@ describe('expiresAt の解析（外部レビュー指摘の回帰固定, PR #791
     }
   });
 
+  it('暦として存在しない日時は解析不能として扱う（黙って先の時刻へ繰り上げない）', () => {
+    /*
+     * 🔴 `Date` も `zonedTimeToUtcMs` も `2026-13-45` を 2027 年へ、`99:99` を翌日以降へ
+     * 繰り上げる。`force_stopped` と組み合わさると、月や時刻の 1 桁ミスが**数か月の
+     * サービス停止**になり、画面上は「その日時まで」と読めるので気づけない。
+     */
+    // `0000-01-01` は `Date.UTC` が 1900-01-01 へ写す（0〜99 年の特例）。年の比較を落とすと通る。
+    for (const bad of ['2026-13-01', '2026-02-30', '2026-00-10', '2026-07-32', '2026-07-22T24:00', '2026-07-22T12:60', '0000-01-01']) {
+      expect(stateOf(at(bad), 'bedrock', IN_HOURS), `expiresAt=${bad}`).toEqual({
+        state: 'running',
+        reason: 'common_weekly_schedule',
+      });
+    }
+  });
+
+  it('うるう年の 2/29 は年によって受理と拒否が分かれる', () => {
+    // 「暦の妥当性」を月ごとの固定表で誤魔化していないことを固定する。
+    expect(stateOf(at('2028-02-29'), 'bedrock', IN_HOURS)).toMatchObject({ reason: 'temporary_override' });
+    expect(stateOf(at('2027-02-29'), 'bedrock', IN_HOURS)).toMatchObject({ reason: 'common_weekly_schedule' });
+  });
+
   it('秒を省いた値・日付だけの値は従来どおり解釈できる', () => {
     expect(stateOf(at('2026-07-22T13:00'), 'bedrock', IN_HOURS)).toMatchObject({
       reason: 'temporary_override',
