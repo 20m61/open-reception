@@ -70,12 +70,28 @@ function conflictError(message: string): Result<ServiceOperatingPolicy> {
   return { ok: false, error: { code: 'conflict', message, issues: [] } };
 }
 
-/** body の `expectedVersion`（任意・非負整数）を読む。型が違えば未指定として扱わない。 */
-function readExpectedVersion(raw: unknown): number | undefined {
+/**
+ * `expectedVersion` の型不正は**競合ではない**。409 は「読み直して再試行せよ」という意味
+ * だが、型が違うリクエストは何度やっても成功しない——**永久に直らない指示**になる。
+ * 他の型不正フィールドと同じく 400 + issues で返す。
+ */
+function invalidExpectedVersion(): Result<ServiceOperatingPolicy> {
+  return {
+    ok: false,
+    error: {
+      code: 'invalid_input',
+      message: 'operating policy is invalid',
+      issues: [{ field: 'expectedVersion', message: 'must be a non-negative integer' }],
+    },
+  };
+}
+
+/** body の `expectedVersion` を読む。未指定は undefined、型不正は 'invalid'。 */
+function readExpectedVersion(raw: unknown): number | undefined | 'invalid' {
   if (typeof raw !== 'object' || raw === null) return undefined;
   const value = (raw as Record<string, unknown>).expectedVersion;
   if (value === undefined) return undefined;
-  return typeof value === 'number' && Number.isInteger(value) && value >= 0 ? value : -1;
+  return typeof value === 'number' && Number.isInteger(value) && value >= 0 ? value : 'invalid';
 }
 
 export async function upsertOperatingPolicy(
@@ -98,7 +114,9 @@ export async function upsertOperatingPolicy(
    * 残り、AC「競合更新で後勝ち上書きしない」を満たせない。
    */
   const id = operatingPolicyKey(tenantId, siteId);
-  const expectedVersion = readExpectedVersion(raw);
+  const requested = readExpectedVersion(raw);
+  if (requested === 'invalid') return invalidExpectedVersion();
+  const expectedVersion = requested;
   const existing = await collection().get(id);
 
   if (existing === null || existing === undefined) {
@@ -123,8 +141,19 @@ export async function upsertOperatingPolicy(
   };
 
   if (existing) {
+    /*
+     * 🔴 **`updateIf` はマージ、`put` は置換。**
+     *
+     * `validatePolicyInput` は空の任意フィールドを**キーごと落とす**ので、`put` では
+     * 「キーが無い＝削除」だった。そのまま `updateIf` へ渡すと旧値が残り、API は
+     * 「消えた」と答えるのに永続状態には古い値が居座る。営業時間外画面は
+     * `emergencyContactLabel` を来訪者への**唯一の頼れる連絡先**として出すので、
+     * 廃止した内線が iPad に残り続ける。任意フィールドは省略せず `undefined` を明示し、
+     * 両バックエンドで削除が成立するようにする（memory は上書き、dynamo は REMOVE）。
+     */
+    const changes = { ...stored, emergencyContactLabel: validated.value.emergencyContactLabel };
     // 読んでから書くまでの隙間も塞ぐ（CAS）。false = その間に誰かが書いた。
-    const applied = await collection().updateIf(id, stored, { version: expectedVersion });
+    const applied = await collection().updateIf(id, changes, { version: expectedVersion });
     if (!applied) return conflictError('operating policy was updated by someone else');
   } else {
     await collection().put(stored);

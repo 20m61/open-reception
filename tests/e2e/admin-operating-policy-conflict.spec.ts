@@ -56,9 +56,13 @@ test('ほかの管理者が先に保存していたら、上書きせず読み�
   await page.getByTestId('operating-hours-timezone').fill('Asia/Tokyo');
   await page.getByTestId('operating-hours-save').click();
 
-  const issues = page.getByTestId('operating-hours-issues');
-  await expect(issues).toBeVisible();
-  await expect(issues).toContainText('保存していません');
+  // 競合は「入力の誤り」ではないので専用の通知に出る。
+  const conflict = page.getByTestId('operating-hours-conflict');
+  await expect(conflict).toBeVisible();
+  await expect(conflict).toContainText('保存していません');
+  await expect(page.getByTestId('operating-hours-issues')).toHaveCount(0);
+  // 行き止まりにしない。読み直す導線が押せる形で有ること。
+  await expect(page.getByTestId('operating-hours-reload')).toBeVisible();
 
   // ほかの管理者の内容が残っていること（黙って消えていない）。
   const after = await page.request.get('/api/admin/operating-policy?tenantId=internal&siteId=branch-site');
@@ -91,5 +95,9 @@ test('競合していない通常の保存は通る（画面が読んだ版を�
   await page.getByTestId('operating-hours-timezone').fill('Asia/Tokyo');
   await page.getByTestId('operating-hours-save').click();
 
+  // 🔴 **成功シグナルを見る。** `toHaveCount(0)` は PUT の応答が届く前（notice がまだ
+  // 存在しない t=0）で通ってしまい、保存結果を一切見ていない。実際、UI から
+  // `expectedVersion` を落とす変異が素通りしていた。
+  await expect(page.getByTestId('operating-hours-saved')).toBeVisible();
   await expect(page.getByTestId('operating-hours-issues')).toHaveCount(0);
 });

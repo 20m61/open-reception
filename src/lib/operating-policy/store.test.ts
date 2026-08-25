@@ -199,3 +199,47 @@ describe('読んでから書くまでの隙間（CAS）', () => {
     }
   });
 });
+
+describe('任意フィールドの削除（put→updateIf で置換がマージに変わった, #367）', () => {
+  it('緊急連絡先ラベルを空にして保存したら、ストアからも消える', async () => {
+    // 🔴 `validatePolicyInput` は空ラベルのとき **キーごと落とす**。`put` はレコード全体を
+    // 置換したので「キーが無い＝削除」だったが、`updateIf` はマージなので旧値が残る。
+    // 営業時間外画面は `emergencyContactLabel` を来訪者への**唯一の頼れる連絡先**として
+    // 出すので、廃止した内線が iPad に残り続ける（API は「消えた」と答えるのに）。
+    const created = await upsertOperatingPolicy('t1', 's1', 'a@example.com', {
+      weeklySchedule: { mon: [{ start: '09:00', end: '18:00' }] },
+      emergencyContactLabel: '警備室 内線9',
+    });
+    expect(created.ok).toBe(true);
+
+    const cleared = await upsertOperatingPolicy('t1', 's1', 'a@example.com', {
+      weeklySchedule: { mon: [{ start: '09:00', end: '18:00' }] },
+      emergencyContactLabel: '',
+      expectedVersion: 1,
+    });
+    expect(cleared.ok).toBe(true);
+    if (cleared.ok) expect(cleared.value.emergencyContactLabel).toBeUndefined();
+
+    // 応答だけでなく**永続状態**を見る。ここが食い違うと運用者は気づけない。
+    const persisted = await getOperatingPolicy('t1', 's1');
+    expect(persisted?.emergencyContactLabel).toBeUndefined();
+  });
+});
+
+describe('expectedVersion の型不正は競合ではない (#367)', () => {
+  it('数値でない/負数/小数は 400 相当（invalid_input）で返す', async () => {
+    // 409 は「読み直して再試行せよ」の意味だが、型が違うリクエストは何度やっても
+    // 成功しない——永久に直らない指示になる。他の型不正フィールドと同じ扱いにする。
+    for (const bad of ['1', null, -1, 1.5, true]) {
+      const result = await upsertOperatingPolicy('t1', 's1', 'a@example.com', {
+        weeklySchedule: { mon: [{ start: '09:00', end: '18:00' }] },
+        expectedVersion: bad,
+      });
+      expect(result.ok, `expectedVersion=${String(bad)}`).toBe(false);
+      if (!result.ok) {
+        expect(result.error.code).toBe('invalid_input');
+        expect(result.error.issues.map((i) => i.field)).toContain('expectedVersion');
+      }
+    }
+  });
+});
