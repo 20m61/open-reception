@@ -19,6 +19,8 @@ import { __resetOperatingPolicyStore, upsertOperatingPolicy } from '@/lib/operat
 import type { ManagedRuntimeService } from '@/domain/runtime-policy/registry';
 import {
   resolutionFor,
+  resolveServiceStates,
+  type CommonSchedule,
   type RuntimeOperatingPolicy,
   type ServiceResolution,
 } from '@/domain/runtime-policy/resolve';
@@ -418,7 +420,7 @@ describe('unresolvedWithoutCommonSchedule', () => {
       { serviceKey: 'b', mode: 'always_on', state: 'running', reason: 'default_policy' },
       { serviceKey: 'c', mode: 'always_on', state: 'running', reason: 'default_policy' },
     ] as unknown as ServiceResolution[];
-    const unresolved = unresolvedWithoutCommonSchedule(services, undefined, chain);
+    const unresolved = unresolvedWithoutCommonSchedule(services, undefined, IN_HOURS, chain);
     expect([...unresolved].sort()).toEqual(['a', 'b', 'c']);
   });
 
@@ -435,7 +437,7 @@ describe('unresolvedWithoutCommonSchedule', () => {
       { serviceKey: 'b', mode: 'manual_only', state: 'stopped', reason: 'default_policy' },
       { serviceKey: 'c', mode: 'always_on', state: 'running', reason: 'default_policy' },
     ] as unknown as ServiceResolution[];
-    const unresolved = unresolvedWithoutCommonSchedule(services, undefined, chain);
+    const unresolved = unresolvedWithoutCommonSchedule(services, undefined, IN_HOURS, chain);
     expect([...unresolved].sort()).toEqual(['a', 'c']);
   });
 
@@ -451,7 +453,7 @@ describe('unresolvedWithoutCommonSchedule', () => {
       { serviceKey: 'b', mode: 'always_on', state: 'running', reason: 'default_policy' },
       { serviceKey: 'a', mode: 'follow_operating_hours', state: 'stopped', reason: 'common_weekly_schedule' },
     ] as unknown as ServiceResolution[];
-    expect([...unresolvedWithoutCommonSchedule(services, undefined, chain)].sort()).toEqual(['a', 'b', 'c']);
+    expect([...unresolvedWithoutCommonSchedule(services, undefined, IN_HOURS, chain)].sort()).toEqual(['a', 'b', 'c']);
   });
 
   it('確定 draining は飲み込む（stopped ほど強くないので依存先しだいで変わる）', () => {
@@ -468,7 +470,7 @@ describe('unresolvedWithoutCommonSchedule', () => {
     const overrides = {
       b: { temporaryOverride: { state: 'draining', expiresAt: '2026-07-20T23:00:00Z' } },
     } as unknown as RuntimeOperatingPolicy['services'];
-    expect([...unresolvedWithoutCommonSchedule(services, overrides, chain)].sort()).toEqual(['a', 'b']);
+    expect([...unresolvedWithoutCommonSchedule(services, overrides, IN_HOURS, chain)].sort()).toEqual(['a', 'b']);
   });
 
   it('補正で確定停止になった側は、自分の判断が TZ 依存でも確定扱い', () => {
@@ -488,7 +490,7 @@ describe('unresolvedWithoutCommonSchedule', () => {
         correction: { blockedBy: 'a', from: { state: 'running', reason: 'common_weekly_schedule' } },
       },
     ] as unknown as ServiceResolution[];
-    expect([...unresolvedWithoutCommonSchedule(services, undefined, chain)]).toEqual([]);
+    expect([...unresolvedWithoutCommonSchedule(services, undefined, IN_HOURS, chain)]).toEqual([]);
   });
 
   it('解決に含まれないサービスは辿らない（部分集合で呼ばれても増やさない）', () => {
@@ -499,7 +501,87 @@ describe('unresolvedWithoutCommonSchedule', () => {
     const services = [
       { serviceKey: 'a', mode: 'follow_operating_hours', state: 'stopped', reason: 'common_weekly_schedule' },
     ] as unknown as ServiceResolution[];
-    expect([...unresolvedWithoutCommonSchedule(services, undefined, chain)]).toEqual(['a']);
+    expect([...unresolvedWithoutCommonSchedule(services, undefined, IN_HOURS, chain)]).toEqual(['a']);
+  });
+});
+
+/**
+ * 🔴 **この increment が 5 周振れた理由への対処。**
+ *
+ * 「どの段が TZ に依るか」を人が段ごとに導くたびに、述語とコードが**同じ誤りを共有**して
+ * しまい、行単位の変異では検出できなかった（既存テストが全部「捏造 Asia/Tokyo の世界」を
+ * 正解として書かれているため）。導出をやめて、**満たすべき不変条件そのもの**を縛る。
+ *
+ *   判定不能に入っていない ⟹ 拠点 TZ と共通営業時間が何であっても state が一致する
+ */
+describe('判定不能の切り分けの不変条件', () => {
+  const TIMEZONES = ['Etc/GMT+12', 'America/Los_Angeles', 'UTC', 'Asia/Tokyo', 'Etc/GMT-14'];
+  const WEEKLY: CommonSchedule['weeklySchedule'][] = [
+    {},
+    { mon: [{ start: '09:00', end: '18:00' }] },
+    { mon: [{ start: '00:00', end: '23:59' }], tue: [{ start: '00:00', end: '23:59' }] },
+  ];
+  // 期限内（絶対/現地）・失効済み（絶対/現地）・境界をまたぐ現地時刻を混ぜる。
+  const EXPIRES = [
+    '2030-01-01T00:00:00Z',
+    '2026-07-21T20:30',
+    '2020-01-01T00:00',
+    '2026-07-20T23:00:00Z',
+    '2020-01-01T00:00:00Z',
+  ];
+  const OVERRIDE_STATES = ['force_running', 'force_stopped', 'draining'] as const;
+
+  function fixtures(): RuntimeOperatingPolicy['services'][] {
+    const out: RuntimeOperatingPolicy['services'][] = [undefined as never];
+    for (const mode of ['always_on', 'manual_only', 'follow_operating_hours', 'custom_schedule'] as const) {
+      for (const expiresAt of EXPIRES) {
+        for (const state of OVERRIDE_STATES) {
+          out.push({
+            // 依存元は override、依存先は個別スケジュール——依存補正が絡む形を必ず含める。
+            'realtime-conversation': { mode, temporaryOverride: { state, expiresAt } },
+            stt: { mode: 'custom_schedule', weeklySchedule: { wed: [{ start: '04:00', end: '08:00' }] } },
+          } as RuntimeOperatingPolicy['services']);
+        }
+      }
+      out.push({
+        'realtime-conversation': {
+          mode,
+          exceptionDates: [{ date: '2026-07-21', closed: false, ranges: [{ start: '00:00', end: '23:59' }] }],
+        },
+      } as RuntimeOperatingPolicy['services']);
+    }
+    return out;
+  }
+
+  it('確定と報告した state は、拠点 TZ と共通営業時間に依らない', () => {
+    const now = Date.parse('2026-07-21T20:00:00Z');
+    const violations: string[] = [];
+    for (const services of fixtures()) {
+      const unknown = resolveServiceStates({
+        policy: { commonSchedule: { timezone: 'Asia/Tokyo', weeklySchedule: {}, fixedHolidays: [], exceptionDates: [] }, ...(services ? { services } : {}) },
+        now,
+      });
+      const unresolved = unresolvedWithoutCommonSchedule(unknown.services, services, now);
+      const confirmed = unknown.services.filter((s) => !unresolved.has(s.serviceKey));
+
+      for (const timezone of TIMEZONES) {
+        for (const weeklySchedule of WEEKLY) {
+          const actual = resolveServiceStates({
+            policy: { commonSchedule: { timezone, weeklySchedule, fixedHolidays: [], exceptionDates: [] }, ...(services ? { services } : {}) },
+            now,
+          });
+          for (const service of confirmed) {
+            const found = resolutionFor(actual, service.serviceKey);
+            if (found?.state !== service.state) {
+              violations.push(
+                `${service.serviceKey} @${timezone}: 確定 ${service.state}(${service.reason}) だが実際は ${found?.state}(${found?.reason}) / ${JSON.stringify(services)}`,
+              );
+            }
+          }
+        }
+      }
+    }
+    expect(violations.slice(0, 5)).toEqual([]);
   });
 });
 
@@ -659,7 +741,7 @@ describe('resolveRuntimeStatesFor', () => {
         id: `${TENANT}:${SITE}`,
         tenantId: TENANT,
         siteId: SITE,
-        services: { stt: { temporaryOverride: { state: 'force_stopped', expiresAt: 1234 } } },
+        services: { signage: { temporaryOverride: { state: 'force_stopped', expiresAt: 1234 } } },
         breakGlass: undefined,
         version: 1,
         updatedAt: new Date().toISOString(),
@@ -668,8 +750,13 @@ describe('resolveRuntimeStatesFor', () => {
     const outcome = await resolveRuntimeStatesFor(TENANT, SITE, IN_HOURS);
     expect(outcome.kind).toBe('partial');
     if (outcome.kind !== 'partial') return;
-    // 解析できない期限は安全側（判定不能）へ。
-    expect(outcome.unresolved).toContain('stt');
+    /*
+     * 🔴 `stt`（既定 `follow_operating_hours`）で確かめると、ガードの戻り値に関わらず
+     * 落ちた先が段 5 なので必ず判定不能になり、**決定を縛れない**。落ちた先が TZ 非依存な
+     * `signage`（既定 `always_on`）で、確定側に出ることまで固定する。
+     */
+    expect(outcome.unresolved).not.toContain('signage');
+    expect(outcome.services.find((s) => s.serviceKey === 'signage')?.state).toBe('running');
   });
 
   it('break-glass は一時 override より上の段なので、TZ が分からなくても確定する', async () => {
@@ -743,16 +830,55 @@ describe('resolveRuntimeStatesFor', () => {
     expect(outcome.unresolved).toContain('signage');
   });
 
-  it('一時 override も確定値として扱わない（期限の解釈に timezone が要る）', async () => {
-    // `expiresAt` にオフセットが無い値は現地時刻として読むので、TZ が分からないと
-    // 「まだ有効か」を決められない。効いているように見せて実は数時間ずれる方が危ない。
+  /**
+   * 判定は書式ではなく**値**で行う。TZ の両端（UTC-12 / UTC+14）で解釈して `now` の同じ側に
+   * 落ちるなら、その失効判定は TZ に依らない。境界をまたぐときだけ判定不能。
+   */
+  it('現地時刻の期限は、TZ の両端で結論が割れるときだけ判定不能', async () => {
+    // 01:00Z 時点で、UTC-12 なら未来・UTC+14 なら過去（＝結論が割れる）。
     await upsertRuntimePolicy(TENANT, SITE, 'a@example.com', {
-      services: { bedrock: { temporaryOverride: { state: 'force_stopped', expiresAt: '2026-07-20T23:00' } } },
+      services: { bedrock: { temporaryOverride: { state: 'force_stopped', expiresAt: '2026-07-20T05:00' } } },
+    });
+    const straddling = await resolveRuntimeStatesFor(TENANT, SITE, IN_HOURS);
+    expect(straddling.kind).toBe('partial');
+    if (straddling.kind !== 'partial') return;
+    expect(straddling.unresolved).toContain('bedrock');
+  });
+
+  it('遠い過去に失効した現地時刻の期限は確定扱い（どの TZ でも失効している）', async () => {
+    /*
+     * 失効した override はレコードに残り続ける（自動解除は読み取り時のみ）。ここを一律
+     * 判定不能にすると、期限付きの停止を一度でも使ったサービスは、共通営業時間を設定するまで
+     * **Reconciler が永久に何もしない**（起動も停止も届かない）。
+     */
+    await upsertRuntimePolicy(TENANT, SITE, 'a@example.com', {
+      services: { signage: { temporaryOverride: { state: 'force_stopped', expiresAt: '2020-01-01T00:00' } } },
     });
     const outcome = await resolveRuntimeStatesFor(TENANT, SITE, IN_HOURS);
     expect(outcome.kind).toBe('partial');
     if (outcome.kind !== 'partial') return;
-    expect(outcome.unresolved).toContain('bedrock');
+    expect(outcome.unresolved).not.toContain('signage');
+    expect(outcome.services.find((s) => s.serviceKey === 'signage')?.state).toBe('running');
+  });
+
+  it('解析できない期限はどの TZ でも失効扱いなので確定（型ドリフト・壊れた値）', async () => {
+    await seedOperatingHours();
+    for (const expiresAt of [1234, null, '', 'garbage']) {
+      await getBackend()
+        .collection<{ id: string }>('runtime_policy')
+        .put({
+          id: `${TENANT}:${SITE}`,
+          tenantId: TENANT,
+          siteId: SITE,
+          services: { signage: { temporaryOverride: { state: 'force_stopped', expiresAt } } },
+          breakGlass: undefined,
+          version: 1,
+          updatedAt: new Date().toISOString(),
+          updatedBy: 'legacy',
+        } as unknown as { id: string });
+      const outcome = await resolveRuntimeStatesFor(TENANT, SITE, IN_HOURS);
+      expect(outcome.kind, String(expiresAt)).toBe('resolved');
+    }
   });
 
   it('runtime policy が未設定なら registry の既定 mode で解決する', async () => {

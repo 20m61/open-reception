@@ -11,7 +11,6 @@ import type { ManagedRuntimeService, ManagedRuntimeServiceKey } from './registry
 import {
   BREAK_GLASS_PROTECTED_SERVICES,
   expiresAtMs,
-  hasAbsoluteOffset,
   resolveServiceStates,
   resolutionFor,
   type RuntimeOperatingPolicy,
@@ -618,29 +617,6 @@ describe('mode と段の関係 (#367 / PR #791 レビュー M1)', () => {
       },
     });
     expect(stateOf(policy, 'admin', IN_HOURS)).toEqual({ state: 'stopped', reason: 'temporary_override' });
-  });
-});
-
-describe('hasAbsoluteOffset（判定不能の切り分けと共有する述語）', () => {
-  /*
-   * `resolve.ts` の内部だけで使っていた頃は間接テストで足りていたが、永続層が
-   * 「TZ が分からなくても確定するか」の判定に使うようになった（`lib/runtime-policy/store.ts`）。
-   * 受理集合がずれると、絶対時刻の一時停止が黙って判定不能へ落ちる。
-   */
-  it('オフセット付きだけを true にする', () => {
-    for (const value of [
-      '2026-07-22T12:00:00Z',
-      '2026-07-22T12:00:00z',
-      '2026-07-22T12:00:00+09:00',
-      '2026-07-22T12:00:00+0900',
-      '2026-07-22T12:00:00-13:30',
-      ' 2026-07-22T12:00:00Z ',
-    ]) {
-      expect(hasAbsoluteOffset(value), value).toBe(true);
-    }
-    for (const value of ['2026-07-22T12:00', '2026-07-22T12:00:00', '2026-07-22', '2026-07-22 12:00', 'not-a-date']) {
-      expect(hasAbsoluteOffset(value), value).toBe(false);
-    }
   });
 });
 

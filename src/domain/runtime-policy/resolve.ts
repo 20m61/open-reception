@@ -222,11 +222,8 @@ export function expiresAtMs(expiresAt: string, timezone: string): number {
   }
 }
 
-/**
- * オフセット付き（`Z` / `±HH:MM`）か。**付いていれば絶対時刻**なので、拠点の timezone が
- * 分からなくても解釈が確定する（呼び出し側が「判定不能」を切り分けるのに使う）。
- */
-export function hasAbsoluteOffset(expiresAt: string): boolean {
+/** オフセット付き（`Z` / `±HH:MM`）か。付いていれば絶対時刻として読める。 */
+function hasAbsoluteOffset(expiresAt: string): boolean {
   return /(?:[Zz]|[+-]\d{2}:?\d{2})$/.test(expiresAt.trim());
 }
 

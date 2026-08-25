@@ -18,7 +18,7 @@ import {
   type ManagedRuntimeServiceKey,
 } from '@/domain/runtime-policy/registry';
 import {
-  hasAbsoluteOffset,
+  expiresAtMs,
   resolveServiceStates,
   type CommonSchedule,
   type RuntimeOperatingPolicy,
@@ -397,7 +397,7 @@ export async function resolveRuntimeStatesFor(
   try {
     resolution = resolveServiceStates({ policy, now: atMs });
     if (common) return { kind: 'resolved', resolution };
-    unresolved = unresolvedWithoutCommonSchedule(resolution.services, runtime?.services);
+    unresolved = unresolvedWithoutCommonSchedule(resolution.services, runtime?.services, atMs);
   } catch (err) {
     const reason = (err as { name?: string }).name ?? 'unknown';
     console.error('[runtime-policy] failed to resolve policy; reporting error', { tenantId, siteId, reason });
@@ -428,12 +428,12 @@ export async function resolveRuntimeStatesFor(
  */
 const NEEDS_TIMEZONE_BY_REASON: Record<ResolutionReason, boolean> = {
   /*
-   * 段 1。段 2 より上なので TZ に依らず決まる。この表より前で早期 return するため
-   * **この行自体は到達しない**が、`ResolutionReason` の網羅を型で強制するために要る。
+   * 段 1 と段 2 は上で早期 return するので、**この 2 行は到達しない**。`ResolutionReason` の
+   * 網羅を型で強制するために置いてある（値ではなく到達不能であることが要点。段が増えたときに
+   * 「入れ忘れ＝黙って確定値として報告」を型で止めるのが目的）。
    */
   break_glass: false,
-  // 段 2。実際には `expiresAt` を見て決めるので、ここへ落ちるのは想定外。安全側に倒す。
-  temporary_override: true,
+  temporary_override: false,
   // 段 3〜5。いずれも現地時刻の解釈が要る。
   exception_date: true,
   custom_service_schedule: true,
@@ -445,34 +445,67 @@ const NEEDS_TIMEZONE_BY_REASON: Record<ResolutionReason, boolean> = {
 };
 
 /**
+ * 拠点 TZ として起こりうる範囲の両端（実在する UTC オフセットの下限 -12 と上限 +14）。
+ * 現地時刻として書かれた値が指しうる絶対時刻は、必ずこの 2 つの間に入る。
+ */
+const TIMEZONE_BOUNDS = ['Etc/GMT+12', 'Etc/GMT-14'] as const;
+
+/**
+ * その override の**失効判定**が拠点 TZ に依るか。
+ *
+ * 🔴 **「オフセットが付いているか」で決めない。** 5 周のレビューで、この述語を段や書式から
+ * 手で導くたびに振り子が振れた（狭すぎ→広すぎ→reason 依存→早期 return が後段を飲み込む）。
+ * 判定を実際の値で行う——**TZ の両端で解釈して同じ側に落ちるなら、その判定は TZ に依らない**。
+ * これで「絶対時刻」も「遠い過去に失効した現地時刻」も自動的に確定側になり、境界付近だけが
+ * 判定不能になる。解析不能な値（型ドリフト・壊れた文字列）はどの TZ でも失効扱いなので確定。
+ */
+function lapseNeedsSiteTimezone(expiresAt: unknown, now: number): boolean {
+  if (typeof expiresAt !== 'string') return false;
+  const [low, high] = TIMEZONE_BOUNDS.map((timezone) => expiresAtMs(expiresAt, timezone));
+  if (low === undefined || high === undefined || !Number.isFinite(low)) return false;
+  return low > now !== high > now;
+}
+
+/** 段 3（例外日）は `mode` が schedule 駆動のときだけ発火する（`resolve.ts` と同じ判定）。 */
+function isScheduleDriven(mode: ServiceResolution['mode']): boolean {
+  return mode === 'follow_operating_hours' || mode === 'custom_schedule';
+}
+
+/**
  * その判断が拠点の timezone を要るか。
  *
- * 🔴 **`reason` だけで決めない。** 段 2（一時 override の失効判定）は捏造した TZ で行われ、
- * 「失効した」と判断されると **reason から `temporary_override` が消える**（段 6 の
- * `default_policy` に落ちる）。reason を見ている限り「TZ 次第で結論が変わる」ことを検出できず、
- * `manual_only` + オフセット無しの `force_running` が「確定して停止」と報告されていた。
- * override を持つサービスは、`expiresAt` が絶対時刻でない限り常に判定不能とする。
- * 段 1（break-glass）だけは段 2 より上なので、TZ に依らず確定する。
+ * 🔴 **reason だけでも書式だけでも決めない。** 段 2 の失効判定は reason から痕跡を消し
+ * （`default_policy` に落ちる）、段 3 は**発火条件そのもの**が TZ 依存なので「段 3 が
+ * 不発だった」という事実も信用できない。上の段から順に、TZ に依らず決まるかを見る。
  */
 function needsSiteTimezone(
-  service: Pick<ServiceResolution, 'serviceKey' | 'reason'>,
+  service: Pick<ServiceResolution, 'serviceKey' | 'reason' | 'mode'>,
   overrides: RuntimeOperatingPolicy['services'] | undefined,
+  now: number,
 ): boolean {
+  // 段 1。段 2 より上なので TZ に依らない。
   if (service.reason === 'break_glass') return false;
-  const expiresAt = overrides?.[service.serviceKey]?.temporaryOverride?.expiresAt;
-  /*
-   * 🔴 **ここで打ち切らない。** 絶対時刻の override でも**失効していれば段 3〜6 へ落ちる**ので、
-   * 結論は落ちた先の段で決まる。`expiresAt` を見た時点で「確定」と返していたため、
-   * 期限付きの停止を一度でも絶対時刻で使った拠点は、期限切れ後そのサービスが恒久的に
-   * 確定扱いになっていた（自動解除は読み取り時のみで、レコードには残り続ける）。
-   * 型ドリフト（非文字列）でも throw しない——`resolve.ts` は同じ入力を総関数として扱う。
-   */
-  if (expiresAt !== undefined && !(typeof expiresAt === 'string' && hasAbsoluteOffset(expiresAt))) {
-    return true;
-  }
-  // 段 2 で決まった＝絶対時刻の override が有効。ここだけは reason が結論を保証する。
+  const override = overrides?.[service.serviceKey];
+  // 段 2。失効判定が TZ 次第なら、そこから先の段も含めて結論が動く。
+  if (lapseNeedsSiteTimezone(override?.temporaryOverride?.expiresAt, now)) return true;
+  // 段 2 で決まった＝失効判定が TZ に依らず「有効」だったということ。
   if (service.reason === 'temporary_override') return false;
+  /*
+   * 段 3。`hasExceptionInEffect` は捏造した TZ で評価されるので、**入らなかった**という
+   * 事実も信用できない。例外日を持つ schedule 駆動サービスは、reason が何であれ判定不能。
+   */
+  if (isScheduleDriven(service.mode) && (override?.exceptionDates?.length ?? 0) > 0) return true;
   return NEEDS_TIMEZONE_BY_REASON[service.reason];
+}
+
+/**
+ * 判定不能の種として使う reason。補正で `stopped` になったなら severity 最大なので値は不変
+ * （`dependency_correction` のまま）。`draining` への補正は不変でないので、**補正前の自分の
+ * 判断**を見る——見ないと「本来 stopped のものを確定 draining として報告」する。
+ */
+function seedReasonOf(service: ServiceResolution): ResolutionReason {
+  if (!service.correction || service.state === 'stopped') return service.reason;
+  return service.correction.from.reason;
 }
 
 /**
@@ -484,10 +517,13 @@ function needsSiteTimezone(
 export function unresolvedWithoutCommonSchedule(
   services: readonly ServiceResolution[],
   overrides: RuntimeOperatingPolicy['services'] | undefined,
+  now: number,
   registry: readonly ManagedRuntimeService[] = MANAGED_RUNTIME_SERVICES,
 ): Set<ManagedRuntimeServiceKey> {
   const unresolved = new Set(
-    services.filter((service) => needsSiteTimezone(service, overrides)).map((s) => s.serviceKey),
+    services
+      .filter((service) => needsSiteTimezone({ ...service, reason: seedReasonOf(service) }, overrides, now))
+      .map((s) => s.serviceKey),
   );
   const byKey = new Map(services.map((service) => [service.serviceKey, service]));
   // 解決に含まれるサービスだけを辿る（`resolveServiceStates` は部分集合で呼べる）。
@@ -509,7 +545,11 @@ export function unresolvedWithoutCommonSchedule(
       const from = resolved?.correction?.from ?? resolved;
       if (
         from?.state === 'stopped' &&
-        !needsSiteTimezone({ serviceKey: service.serviceKey, reason: from.reason }, overrides)
+        !needsSiteTimezone(
+          { serviceKey: service.serviceKey, reason: from.reason, mode: resolved?.mode ?? 'follow_operating_hours' },
+          overrides,
+          now,
+        )
       ) {
         continue;
       }
