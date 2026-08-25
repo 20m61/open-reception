@@ -17,7 +17,11 @@ vi.mock('@/lib/data-stores/reception-log-store', () => ({
 
 import { __resetOperatingPolicyStore, upsertOperatingPolicy } from '@/lib/operating-policy/store';
 import type { ManagedRuntimeService } from '@/domain/runtime-policy/registry';
-import { resolutionFor, type ServiceResolution } from '@/domain/runtime-policy/resolve';
+import {
+  resolutionFor,
+  type RuntimeOperatingPolicy,
+  type ServiceResolution,
+} from '@/domain/runtime-policy/resolve';
 import { getBackend } from '@/lib/data';
 import {
   __resetRuntimePolicyStore,
@@ -450,6 +454,43 @@ describe('unresolvedWithoutCommonSchedule', () => {
     expect([...unresolvedWithoutCommonSchedule(services, undefined, chain)].sort()).toEqual(['a', 'b', 'c']);
   });
 
+  it('確定 draining は飲み込む（stopped ほど強くないので依存先しだいで変わる）', () => {
+    // skip 節を `!== 'running'` に緩めると draining まで確定扱いになる。severity は
+    // stopped が最大で draining はその下なので、依存先が判定不能なら値は動きうる。
+    const chain = [
+      { serviceKey: 'a', defaultMode: 'always_on', dependsOn: [], provides: [] },
+      { serviceKey: 'b', defaultMode: 'always_on', dependsOn: ['a'], provides: [] },
+    ] as unknown as ManagedRuntimeService[];
+    const services = [
+      { serviceKey: 'a', mode: 'follow_operating_hours', state: 'running', reason: 'common_weekly_schedule' },
+      { serviceKey: 'b', mode: 'always_on', state: 'draining', reason: 'temporary_override' },
+    ] as unknown as ServiceResolution[];
+    const overrides = {
+      b: { temporaryOverride: { state: 'draining', expiresAt: '2026-07-20T23:00:00Z' } },
+    } as unknown as RuntimeOperatingPolicy['services'];
+    expect([...unresolvedWithoutCommonSchedule(services, overrides, chain)].sort()).toEqual(['a', 'b']);
+  });
+
+  it('補正で確定停止になった側は、自分の判断が TZ 依存でも確定扱い', () => {
+    // 補正は severity を上げることしかできないので、stopped へ補正された時点で値は不変。
+    // ここを補正前の reason で seed すると、確定しているものまで判定不能になる（過剰拒否）。
+    const chain = [
+      { serviceKey: 'a', defaultMode: 'always_on', dependsOn: [], provides: [] },
+      { serviceKey: 'b', defaultMode: 'always_on', dependsOn: ['a'], provides: [] },
+    ] as unknown as ManagedRuntimeService[];
+    const services = [
+      { serviceKey: 'a', mode: 'manual_only', state: 'stopped', reason: 'break_glass' },
+      {
+        serviceKey: 'b',
+        mode: 'always_on',
+        state: 'stopped',
+        reason: 'dependency_correction',
+        correction: { blockedBy: 'a', from: { state: 'running', reason: 'common_weekly_schedule' } },
+      },
+    ] as unknown as ServiceResolution[];
+    expect([...unresolvedWithoutCommonSchedule(services, undefined, chain)]).toEqual([]);
+  });
+
   it('解決に含まれないサービスは辿らない（部分集合で呼ばれても増やさない）', () => {
     const chain = [
       { serviceKey: 'a', defaultMode: 'always_on', dependsOn: [], provides: [] },
@@ -581,6 +622,54 @@ describe('resolveRuntimeStatesFor', () => {
     if (outcome.kind !== 'partial') return;
     expect(outcome.unresolved).toContain('stt');
     expect(outcome.services.map((s) => s.serviceKey)).not.toContain('stt');
+  });
+
+  /**
+   * 🔴 絶対時刻の override でも**失効していれば段 3〜6 へ落ちる**ので、結論は落ちた先の段で
+   * 決まる。`expiresAt` を見た時点で「確定」と返していたため、期限付きの停止を一度でも
+   * 絶対時刻で使った拠点は、**期限切れ後そのサービスが恒久的に確定扱い**になっていた
+   * （自動解除は読み取り時のみで、レコードには残り続ける）。
+   */
+  it('失効した絶対時刻の override は、落ちた先の段で判定する', async () => {
+    await upsertRuntimePolicy(TENANT, SITE, 'a@example.com', {
+      services: {
+        signage: {
+          mode: 'custom_schedule',
+          weeklySchedule: { mon: [{ start: '09:00', end: '18:00' }] },
+          temporaryOverride: { state: 'force_running', expiresAt: '2020-01-01T00:00:00Z' },
+        },
+        bedrock: { temporaryOverride: { state: 'force_stopped', expiresAt: '2020-01-01T00:00:00Z' } },
+      },
+    });
+    const outcome = await resolveRuntimeStatesFor(TENANT, SITE, IN_HOURS);
+    expect(outcome.kind).toBe('partial');
+    if (outcome.kind !== 'partial') return;
+    // 段 4（サービス個別スケジュール）と段 5（共通週間）へ落ちるので、どちらも TZ 依存。
+    expect(outcome.unresolved).toContain('signage');
+    expect(outcome.unresolved).toContain('bedrock');
+  });
+
+  it('expiresAt が文字列でなくても判定不能の切り分けを落とさない', async () => {
+    // 型ドリフト（旧データ・部分書き込み・属性型違い）。`resolve.ts` は同じ入力を総関数として
+    // 扱うのに、永続層側で throw すると Reconciler が毎分同じ例外で全サービス no-op になる。
+    // 共通営業時間は**設定しない**——切り分けを通る経路でないと、この防御は踏めない。
+    await getBackend()
+      .collection<{ id: string }>('runtime_policy')
+      .put({
+        id: `${TENANT}:${SITE}`,
+        tenantId: TENANT,
+        siteId: SITE,
+        services: { stt: { temporaryOverride: { state: 'force_stopped', expiresAt: 1234 } } },
+        breakGlass: undefined,
+        version: 1,
+        updatedAt: new Date().toISOString(),
+        updatedBy: 'legacy',
+      } as unknown as { id: string });
+    const outcome = await resolveRuntimeStatesFor(TENANT, SITE, IN_HOURS);
+    expect(outcome.kind).toBe('partial');
+    if (outcome.kind !== 'partial') return;
+    // 解析できない期限は安全側（判定不能）へ。
+    expect(outcome.unresolved).toContain('stt');
   });
 
   it('break-glass は一時 override より上の段なので、TZ が分からなくても確定する', async () => {

@@ -14,7 +14,6 @@ import type { PolicyValidationIssue } from '@/domain/operating-policy/types';
 import { DEFAULT_TIMEZONE } from '@/domain/operating-policy/tz';
 import {
   MANAGED_RUNTIME_SERVICES,
-  MANAGED_RUNTIME_SERVICE_KEYS,
   type ManagedRuntimeService,
   type ManagedRuntimeServiceKey,
 } from '@/domain/runtime-policy/registry';
@@ -388,27 +387,26 @@ export async function resolveRuntimeStatesFor(
     ...(runtime?.breakGlass ? { breakGlass: runtime.breakGlass } : {}),
   };
 
+  /*
+   * 解決も判定不能の切り分けも**同じ catch で受ける**。分けると、片方だけ守った非対称が
+   * 生まれる（切り分け側は現状 throw しないので、専用の catch は殺せない分岐になる）。
+   * 解決はまだ総関数ではない（`resolve.ts` が明記）ので、壊れたレコードは「見るべき異常」。
+   */
   let resolution: RuntimeStateResolution;
+  let unresolved: Set<ManagedRuntimeServiceKey>;
   try {
     resolution = resolveServiceStates({ policy, now: atMs });
+    if (common) return { kind: 'resolved', resolution };
+    unresolved = unresolvedWithoutCommonSchedule(resolution.services, runtime?.services);
   } catch (err) {
-    // 解決はまだ総関数ではない（`resolve.ts` が明記）。壊れたレコードは「見るべき異常」。
     const reason = (err as { name?: string }).name ?? 'unknown';
     console.error('[runtime-policy] failed to resolve policy; reporting error', { tenantId, siteId, reason });
     return { kind: 'error', reason };
   }
-
-  if (common) return { kind: 'resolved', resolution };
-
-  const unresolved = unresolvedWithoutCommonSchedule(resolution.services, runtime?.services);
   return {
     kind: 'partial',
     services: resolution.services.filter((service) => !unresolved.has(service.serviceKey)),
-    // registry の順に揃える（`services` 側は registry 順なので、片方だけ挿入順だと並びが崩れる）。
-    /*
-     * 並びは**解決の順**に揃える（`services` 側と同じ）。registry の全キーで整列すると、
-     * 部分集合で解決したとき registry に無いキーが黙って一覧から蒸発する。
-     */
+    // 並びは**解決の順**に揃える（`services` 側と同じ列から作るので、両者が必ず分割になる）。
     unresolved: resolution.services.map((s) => s.serviceKey).filter((key) => unresolved.has(key)),
   };
 }
@@ -423,12 +421,28 @@ export async function resolveRuntimeStatesFor(
  * （＝ `default_policy`）。これは前回 BLOCKER として直した「未設定だと緊急停止が効かない」を
  * 保ったまま、捏造した timezone 由来の値を「決まった」と言わない線引きになる。
  */
-/** 現地時刻の解釈を要する段（`resolve.ts` の段 3〜5）。 */
-const SCHEDULE_REASONS: ReadonlySet<ResolutionReason> = new Set([
-  'common_weekly_schedule',
-  'exception_date',
-  'custom_service_schedule',
-]);
+/**
+ * 段ごとに「拠点の timezone が要るか」。**`Record<ResolutionReason, boolean>` で持つ**ので、
+ * `resolve.ts` に段が増えたらコンパイルが落ちる。集合で持っていると、入れ忘れが
+ * 「黙って確定値として報告する」（＝過剰確定）として現れ、型では捕まらない。
+ */
+const NEEDS_TIMEZONE_BY_REASON: Record<ResolutionReason, boolean> = {
+  /*
+   * 段 1。段 2 より上なので TZ に依らず決まる。この表より前で早期 return するため
+   * **この行自体は到達しない**が、`ResolutionReason` の網羅を型で強制するために要る。
+   */
+  break_glass: false,
+  // 段 2。実際には `expiresAt` を見て決めるので、ここへ落ちるのは想定外。安全側に倒す。
+  temporary_override: true,
+  // 段 3〜5。いずれも現地時刻の解釈が要る。
+  exception_date: true,
+  custom_service_schedule: true,
+  common_weekly_schedule: true,
+  // 段 6。mode だけで決まる（`always_on` / `manual_only`）。
+  default_policy: false,
+  // 依存補正。自分ではなく**依存元**の判定で決まるので、閉包側が扱う。
+  dependency_correction: false,
+};
 
 /**
  * その判断が拠点の timezone を要るか。
@@ -446,8 +460,19 @@ function needsSiteTimezone(
 ): boolean {
   if (service.reason === 'break_glass') return false;
   const expiresAt = overrides?.[service.serviceKey]?.temporaryOverride?.expiresAt;
-  if (expiresAt !== undefined) return !hasAbsoluteOffset(expiresAt);
-  return SCHEDULE_REASONS.has(service.reason);
+  /*
+   * 🔴 **ここで打ち切らない。** 絶対時刻の override でも**失効していれば段 3〜6 へ落ちる**ので、
+   * 結論は落ちた先の段で決まる。`expiresAt` を見た時点で「確定」と返していたため、
+   * 期限付きの停止を一度でも絶対時刻で使った拠点は、期限切れ後そのサービスが恒久的に
+   * 確定扱いになっていた（自動解除は読み取り時のみで、レコードには残り続ける）。
+   * 型ドリフト（非文字列）でも throw しない——`resolve.ts` は同じ入力を総関数として扱う。
+   */
+  if (expiresAt !== undefined && !(typeof expiresAt === 'string' && hasAbsoluteOffset(expiresAt))) {
+    return true;
+  }
+  // 段 2 で決まった＝絶対時刻の override が有効。ここだけは reason が結論を保証する。
+  if (service.reason === 'temporary_override') return false;
+  return NEEDS_TIMEZONE_BY_REASON[service.reason];
 }
 
 /**

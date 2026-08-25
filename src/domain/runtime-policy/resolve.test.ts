@@ -7,7 +7,7 @@
  */
 import { describe, expect, it } from 'vitest';
 import type { OperatingException, TimeRange, Weekday } from '@/domain/operating-policy/types';
-import { MANAGED_RUNTIME_SERVICES, type ManagedRuntimeService, type ManagedRuntimeServiceKey } from './registry';
+import type { ManagedRuntimeService, ManagedRuntimeServiceKey } from './registry';
 import {
   BREAK_GLASS_PROTECTED_SERVICES,
   expiresAtMs,
