@@ -748,6 +748,13 @@ describe('expiresAt の解析（外部レビュー指摘の回帰固定, PR #791
     }
   });
 
+  it('空白区切りの時刻も同じ厳しさで見る（T 区切りだけを見ない）', () => {
+    // 時刻レンジ検査は 1 箇所へ寄せたので、区切り文字を取りこぼすと受け皿が無くなる。
+    expect(expiresAtMs('2026-07-22 25:00', 'Asia/Tokyo')).toBeNaN();
+    expect(expiresAtMs('2026-07-22 12:60', 'Asia/Tokyo')).toBeNaN();
+    expect(expiresAtMs('2026-07-22 12:00', 'Asia/Tokyo')).not.toBeNaN();
+  });
+
   it('秒を省いた値・日付だけの値は従来どおり解釈できる', () => {
     expect(stateOf(at('2026-07-22T13:00'), 'bedrock', IN_HOURS)).toMatchObject({
       reason: 'temporary_override',

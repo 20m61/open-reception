@@ -14,6 +14,7 @@
 import { validatePolicyInput } from '@/domain/operating-policy/schedule';
 import type { PolicyValidationIssue } from '@/domain/operating-policy/types';
 import {
+  MANAGED_RUNTIME_SERVICES,
   MANAGED_RUNTIME_SERVICE_KEYS,
   type ManagedRuntimeServiceKey,
   type ServiceOperatingMode,
@@ -174,7 +175,7 @@ const MAX_FIELD_PATH_LENGTH = 128;
 function safeFieldPath(path: string): string {
   const cleaned = stripLineBreakers(path);
   if (cleaned.length <= MAX_FIELD_PATH_LENGTH) return cleaned;
-  return `${cleaned.slice(0, MAX_FIELD_PATH_LENGTH - 24)}…${cleaned.slice(-24)}`;
+  return `${cleaned.slice(0, MAX_FIELD_PATH_LENGTH - 25)}…${cleaned.slice(-24)}`;
 }
 
 export function validateRuntimePolicyInput(raw: unknown): RuntimePolicyValidation {
@@ -250,26 +251,34 @@ const MAX_ISSUES = 50;
  * 階層（`field` の先頭セグメント）ごとに順番に取り、打ち切ったことは黙らず表明する。
  */
 function limitIssues(issues: PolicyValidationIssue[]): PolicyValidationIssue[] {
-  const bySection = new Map<string, PolicyValidationIssue[]>();
-  for (const issue of issues) {
-    const section = issue.field.split('.')[0] ?? 'body';
+  // 上限未満のときの早道は置かない——選抜後に入力順へ戻すので結果が同じで、**殺せない分岐**になる。
+  const bySection = new Map<string, number[]>();
+  issues.forEach((issue, index) => {
+    // `field` は必ず `root|commonSchedule|breakGlass|services|body` で始まる（キー由来の `.` は
+    // 2 番目以降にしか出ない）ので、攻撃者がセクションを増やして予算を薄めることはできない。
+    const section = issue.field.split('.')[0] ?? issue.field;
     const bucket = bySection.get(section);
-    if (bucket) bucket.push(issue);
-    else bySection.set(section, [issue]);
-  }
+    if (bucket) bucket.push(index);
+    else bySection.set(section, [index]);
+  });
   const queues = [...bySection.values()];
-  const kept: PolicyValidationIssue[] = [];
+  const keptIndexes: number[] = [];
   let drained = false;
-  while (!drained && kept.length < MAX_ISSUES) {
+  while (!drained && keptIndexes.length < MAX_ISSUES) {
     drained = true;
     for (const queue of queues) {
       const next = queue.shift();
-      if (!next) continue;
+      if (next === undefined) continue;
       drained = false;
-      kept.push(next);
-      if (kept.length >= MAX_ISSUES) break;
+      keptIndexes.push(next);
+      if (keptIndexes.length >= MAX_ISSUES) break;
     }
   }
+  /*
+   * **選ぶ**のは階層をまたいで均等に、**返す**のは入力の順序で。常にインターリーブして返すと、
+   * issue 順にエラーを並べる画面で無関係な行が交互に出る（隣接 route は文書順を返す）。
+   */
+  const kept = keptIndexes.sort((a, b) => a - b).map((index) => issues[index]!);
   const dropped = issues.length - kept.length;
   if (dropped > 0) kept.push({ field: 'body', message: `too many issues; ${dropped} more not reported` });
   return kept;
@@ -329,7 +338,7 @@ function validateBreakGlass(
   if (unique.length > MAX_SERVICE_INPUT_ENTRIES) {
     issues.push({
       field: 'breakGlass.serviceKeys',
-      message: `too many distinct entries (max ${MAX_SERVICE_ENTRIES})`,
+      message: `too many distinct entries (max ${MAX_SERVICE_INPUT_ENTRIES})`,
     });
     return undefined;
   }
@@ -357,7 +366,7 @@ function validateServices(
   }
   const entries = Object.entries(value);
   if (entries.length > MAX_SERVICE_INPUT_ENTRIES) {
-    issues.push({ field: 'services', message: `too many entries (max ${MAX_SERVICE_ENTRIES})` });
+    issues.push({ field: 'services', message: `too many entries (max ${MAX_SERVICE_INPUT_ENTRIES})` });
     return undefined;
   }
   const services: Partial<Record<ManagedRuntimeServiceKey, ServicePolicyOverride>> = {};
@@ -382,8 +391,20 @@ function validateServices(
  * スケジュールは**どちらでもない恒久停止**を作り、`reason` は `custom_service_schedule` という
  * 正当に見える値で返るので気づけない。助言は mode まで含めて書く。
  */
+/** registry の既定 mode（入力が mode を省いたときに実際に効く値）。 */
+const DEFAULT_MODE_BY_KEY = new Map<ManagedRuntimeServiceKey, ServiceOperatingMode>(
+  MANAGED_RUNTIME_SERVICES.map((service) => [service.serviceKey, service.defaultMode]),
+);
+
+/*
+ * `always_on` / `manual_only` は解決の段 3/4 を通さないので、スケジュールを設定しても
+ * **黙って無視される**——本 PR が塞いだ typo と同じ「設定したのに効かない」体験になる。
+ */
+const IGNORED_SCHEDULE_MESSAGE =
+  'is ignored unless mode is follow_operating_hours or custom_schedule; use break-glass or temporaryOverride to stop a service';
+
 const EMPTY_SCHEDULE_MESSAGE =
-  'must contain at least one time range; omit this key and set mode to follow_operating_hours to inherit the common schedule, or use manual_only to keep the service stopped';
+  'must contain at least one time range (or set exceptionDates); omit this key and set mode to follow_operating_hours to inherit the common schedule, or use manual_only to keep the service stopped';
 
 /** 区間を 1 つでも持つか（`{}` も `{ mon: [] }` も「恒久停止」という同じ意味になる）。 */
 function hasAnyRange(schedule: Record<string, unknown>): boolean {
@@ -413,12 +434,17 @@ function validateOverride(
     }
   }
 
+  /** 実際に効く mode（明示 > registry 既定）。判定はすべてこれで行う。 */
+  const effectiveMode = result.mode ?? DEFAULT_MODE_BY_KEY.get(key) ?? 'follow_operating_hours';
+  const scheduleDriven = effectiveMode === 'follow_operating_hours' || effectiveMode === 'custom_schedule';
+  const hasExceptions = Array.isArray(override.exceptionDates) && override.exceptionDates.length > 0;
+
   /*
-   * 🔴 `custom_schedule` なのにスケジュールが無いと、解決は段 4・段 5 を素通りして
+   * 🔴 `custom_schedule` なのにスケジュールも例外日も無いと、解決は段 3・段 4 を素通りして
    * `default_policy` で **stopped** になる。「キーを省略せよ」という助言だけを載せていた頃は、
    * **メッセージ自身が事故を誘発していた**（共通営業時間へ戻したつもりが恒久停止）。
    */
-  if (result.mode === 'custom_schedule' && override.weeklySchedule === undefined) {
+  if (effectiveMode === 'custom_schedule' && override.weeklySchedule === undefined && !hasExceptions) {
     issues.push({ field: `services.${key}.weeklySchedule`, message: EMPTY_SCHEDULE_MESSAGE });
   }
 
@@ -426,6 +452,18 @@ function validateOverride(
   if (temporary !== undefined) {
     const validated = validateTemporaryOverride(key, temporary, issues);
     if (validated) result.temporaryOverride = validated;
+  }
+
+  /*
+   * スケジュールを読まない mode に設定させない。mode の省略時は registry の既定が効くので、
+   * 判定も**実際に効く mode**（明示 > registry 既定）で行う。
+   */
+  if (!scheduleDriven) {
+    for (const field of ['weeklySchedule', 'exceptionDates'] as const) {
+      if (override[field] !== undefined) {
+        issues.push({ field: `services.${key}.${field}`, message: IGNORED_SCHEDULE_MESSAGE });
+      }
+    }
   }
 
   /*
@@ -445,7 +483,13 @@ function validateOverride(
      * フォームが素直に作る `{}` は、解決では「区間ゼロ = 恒久 stopped」になり、`mode` を
      * `follow_operating_hours` へ戻しても段 4 が段 5 を上書きするので共通営業時間へ戻らない。
      */
-    if (isRecord(override.weeklySchedule) && !hasAnyRange(override.weeklySchedule)) {
+    /*
+     * 🔴 **例外日があるなら区間ゼロは正当。** 「普段は停止、展示会の日だけ稼働」は解決の段 3
+     * （`exception_date`）が今も正しく扱う構成で、一律に弾いていたときは費用最適化の設定が
+     * 保存できなくなっていた。しかも当時のメッセージが勧める `manual_only` は段 3 を素通りする
+     * ので、助言に従うと**例外日が黙って死ぬ**。区間ゼロを咎めるのは、例外日も無いときだけ。
+     */
+    if (!hasExceptions && isRecord(override.weeklySchedule) && !hasAnyRange(override.weeklySchedule)) {
       issues.push({ field: `services.${key}.weeklySchedule`, message: EMPTY_SCHEDULE_MESSAGE });
     }
     const nested = validatePolicyInput({

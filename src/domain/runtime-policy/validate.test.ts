@@ -279,6 +279,124 @@ describe('runtime policy の入力検証 (#367)', () => {
     expect(message).toContain('manual_only');
   });
 
+  it('「普段は停止・例外日だけ稼働」を表現できる（段 3 が意味を持つ構成を弾かない）', () => {
+    /*
+     * 🔴 区間ゼロを一律で弾いた結果、`exceptionDates` と組み合わせた正当な構成——展示会の日だけ
+     * realtime-conversation を上げる、のような費用最適化——が保存できなくなっていた。解決側は
+     * この形を今も `reason: 'exception_date'` として正しく扱う。しかも旧メッセージは
+     * `manual_only` を勧めるが、`manual_only` は段 3 を素通りするので**例外日が黙って死ぬ**。
+     */
+    const exceptionOnly = {
+      ...OK,
+      services: {
+        'realtime-conversation': {
+          mode: 'custom_schedule',
+          weeklySchedule: { mon: [] },
+          exceptionDates: [{ date: '2026-09-01', closed: false, ranges: [{ start: '10:00', end: '12:00' }] }],
+        },
+      },
+    };
+    expect(validateRuntimePolicyInput(exceptionOnly).ok).toBe(true);
+    // weeklySchedule を省いた同じ意図も通る。
+    expect(
+      validateRuntimePolicyInput({
+        ...OK,
+        services: {
+          'realtime-conversation': {
+            mode: 'custom_schedule',
+            exceptionDates: [{ date: '2026-09-01', closed: false, ranges: [{ start: '10:00', end: '12:00' }] }],
+          },
+        },
+      }).ok,
+    ).toBe(true);
+    // 例外日が無ければ、区間ゼロは依然として説明できない恒久停止なので弾く。
+    expect(issuesOf({ ...OK, services: { stt: { mode: 'custom_schedule', weeklySchedule: { mon: [] } } } })).toContain(
+      'services.stt.weeklySchedule',
+    );
+  });
+
+  it('スケジュールを読まない mode にスケジュールを設定させない（黙って無視しない）', () => {
+    /*
+     * `always_on` / `manual_only` は段 3/4 を通さないので、設定しても**黙って無視される**。
+     * これは本 PR が塞いだ typo と同じ「設定したのに効かない」体験。mode を省いたときは
+     * registry の既定 mode で判定する（`signage` の既定は `always_on`）。
+     */
+    expect(issuesOf({ ...OK, services: { stt: { mode: 'manual_only', weeklySchedule: { mon: [{ start: '09:00', end: '18:00' }] } } } })).toContain(
+      'services.stt.weeklySchedule',
+    );
+    expect(
+      issuesOf({
+        ...OK,
+        services: {
+          stt: { mode: 'always_on', exceptionDates: [{ date: '2026-09-01', closed: true }] },
+        },
+      }),
+    ).toContain('services.stt.exceptionDates');
+    // mode 省略 + registry 既定が always_on のサービス。
+    expect(issuesOf({ ...OK, services: { signage: { weeklySchedule: { mon: [{ start: '09:00', end: '18:00' }] } } } })).toContain(
+      'services.signage.weeklySchedule',
+    );
+    // mode 省略 + registry 既定が follow_operating_hours のサービスは通る。
+    expect(
+      validateRuntimePolicyInput({
+        ...OK,
+        services: { stt: { weeklySchedule: { mon: [{ start: '09:00', end: '18:00' }] } } },
+      }).ok,
+    ).toBe(true);
+  });
+
+  it('打ち切らないときは入力の順序を保つ', () => {
+    // 常にインターリーブすると、フォームが issue 順に並べたとき無関係な行が交互に出る。
+    const issues = issuesOf({
+      ...OK,
+      aaa: 1,
+      services: { nope: {} },
+      bbb: 2,
+    });
+    expect(issues).toEqual(['root.aaa', 'root.bbb', 'services.nope']);
+  });
+
+  it('打ち切りの閾値そのものを固定する', () => {
+    // 未知キー経路は階層ごとに 5 件で先に潰れるので、委譲先が出す issue（例外日）で数を作る。
+    const exceptions = Array.from({ length: 60 }, (_, i) => ({ date: `bad-${i}` }));
+    const result = validateRuntimePolicyInput({
+      ...OK,
+      commonSchedule: { ...OK.commonSchedule, exceptionDates: exceptions },
+    });
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    // 50 件 + 「打ち切った」の 1 行。
+    expect(result.error.issues.length).toBe(51);
+
+    /*
+     * 階層が複数あっても超過しない。ラウンドの途中で上限に達する形（大きいキューが 2 本 +
+     * 奇数件の小さいキュー）でないと、はみ出しは観測できない——ラウンド単位でちょうど
+     * 上限に着地してしまう。
+     */
+    const noisyServices: Record<string, unknown> = {};
+    for (const key of MANAGED_RUNTIME_SERVICE_KEYS) {
+      const override: Record<string, unknown> = {};
+      for (let i = 0; i < 6; i++) override[`bogus-${i}`] = 1;
+      noisyServices[key] = override;
+    }
+    const spread = validateRuntimePolicyInput({
+      aaa: 1,
+      bbb: 2,
+      ccc: 3,
+      commonSchedule: { ...OK.commonSchedule, exceptionDates: exceptions },
+      services: noisyServices,
+    });
+    expect(spread.ok).toBe(false);
+    if (spread.ok) return;
+    expect(spread.error.issues.length).toBe(51);
+  });
+
+  it('上限未満なら 1 件も落とさない（空のキューで打ち切らない）', () => {
+    const exceptions = Array.from({ length: 10 }, (_, i) => ({ date: `bad-${i}` }));
+    const issues = issuesOf({ aaa: 1, commonSchedule: { ...OK.commonSchedule, exceptionDates: exceptions } });
+    expect(issues.length).toBe(11);
+  });
+
   it('breakGlass の対象は重複を畳んでから上限判定する', () => {
     // 上限 10 は distinct 前提。重複したまま数えると、実質 2 サービスの緊急停止が
     // 「too many entries」で 400 になる——不発の害が最も大きい経路で。
