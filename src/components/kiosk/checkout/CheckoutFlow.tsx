@@ -68,6 +68,13 @@ export function CheckoutFlow() {
   // 初期化順に依存せず常に選択中 locale の文言になる（tr クロージャの取り違えを防ぐ）。
   const [errorReason, setErrorReason] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  /**
+   * いま往復中の**操作**。`busy` は画面共有のガードなので、`aria-busy` をそれで駆動すると
+   * 「別の操作の往復中」に、条件未達で押せないボタンまで**有効な主 CTA の見た目**へ戻る
+   * （`?ct=` の自動解決中に空欄の送信ボタン 2 つがシアンの塗りになる, #778 AC3 の再違反）。
+   * 進行中表示はそのボタン自身の操作にだけ出す。
+   */
+  const [inFlight, setInFlight] = useState<'token' | 'code' | 'confirm' | null>(null);
   const [locale, setLocale] = useState<Locale>(DEFAULT_LOCALE);
 
   const tr = useMemo(() => makeT(locale), [locale]);
@@ -97,9 +104,10 @@ export function CheckoutFlow() {
 
   /** resolve API を叩き、成功なら確認画面へ進む。 */
   const resolveCredential = useCallback(
-    async (body: Record<string, string>, method: CheckoutMethod) => {
+    async (body: Record<string, string>, method: CheckoutMethod, action: 'token' | 'code' | null = null) => {
       if (busy) return;
       setBusy(true);
+      setInFlight(action);
       setErrorReason(null);
       try {
         const res = await fetch('/api/kiosk/checkout/resolve', {
@@ -119,6 +127,7 @@ export function CheckoutFlow() {
         setErrorReason('network');
       } finally {
         setBusy(false);
+        setInFlight(null);
       }
     },
     [busy],
@@ -134,7 +143,7 @@ export function CheckoutFlow() {
 
   const submitToken = useCallback(() => {
     if (token.trim() === '') return;
-    void resolveCredential({ payload: token.trim() }, 'qr');
+    void resolveCredential({ payload: token.trim() }, 'qr', 'token');
   }, [token, resolveCredential]);
 
   const submitCode = useCallback(() => {
@@ -143,7 +152,7 @@ export function CheckoutFlow() {
       setErrorReason('invalid');
       return;
     }
-    void resolveCredential({ code: normalized, targetLabel: targetLabel.trim() }, 'code');
+    void resolveCredential({ code: normalized, targetLabel: targetLabel.trim() }, 'code', 'code');
   }, [code, targetLabel, resolveCredential]);
 
   /** 在館一覧（staff 補助）から選ぶ。判別材料を持つ確認画面へ進む。 */
@@ -165,6 +174,7 @@ export function CheckoutFlow() {
   const confirmCheckout = useCallback(async () => {
     if (!pending || busy) return;
     setBusy(true);
+    setInFlight('confirm');
     setErrorReason(null);
     try {
       const res =
@@ -194,6 +204,7 @@ export function CheckoutFlow() {
       setPending(null);
     } finally {
       setBusy(false);
+      setInFlight(null);
     }
   }, [pending, busy]);
 
@@ -261,9 +272,9 @@ export function CheckoutFlow() {
             data-testid="checkout-confirm-yes"
             onClick={() => void confirmCheckout()}
             disabled={busy}
-            aria-busy={busy}
+            aria-busy={inFlight === 'confirm'}
           >
-            {tr('checkout.confirm.yes')}
+            {inFlight === 'confirm' ? tr('common.processing') : tr('checkout.confirm.yes')}
           </button>
           <button
             type="button"
@@ -271,7 +282,6 @@ export function CheckoutFlow() {
             data-testid="checkout-confirm-no"
             onClick={resetToIdentify}
             disabled={busy}
-            aria-busy={busy}
           >
             {tr('checkout.confirm.no')}
           </button>
@@ -322,9 +332,9 @@ export function CheckoutFlow() {
             data-testid="checkout-token-submit"
             onClick={submitToken}
             disabled={busy || token.trim() === ''}
-            aria-busy={busy}
+            aria-busy={inFlight === 'token'}
           >
-            {tr('checkout.scanButton')}
+            {inFlight === 'token' ? tr('common.processing') : tr('checkout.scanButton')}
           </button>
         </section>
 
@@ -374,9 +384,9 @@ export function CheckoutFlow() {
             data-testid="checkout-resolve-submit"
             onClick={submitCode}
             disabled={busy || code.trim() === '' || targetLabel.trim() === ''}
-            aria-busy={busy}
+            aria-busy={inFlight === 'code'}
           >
-            {tr('checkout.resolveSubmit')}
+            {inFlight === 'code' ? tr('common.processing') : tr('checkout.resolveSubmit')}
           </button>
         </section>
 
@@ -407,7 +417,6 @@ export function CheckoutFlow() {
                     data-testid="checkout-present-item"
                     onClick={() => selectPresent(s)}
                     disabled={busy}
-            aria-busy={busy}
                   >
                     {tr('checkout.checkoutButton')}
                   </button>

@@ -58,6 +58,7 @@ export type MessageKey =
   | 'common.next'
   | 'common.cancel'
   | 'common.retry'
+  | 'common.processing'
   // 待機画面のクイックアクション（カード label/desc, #103 increment 2）
   | 'kiosk.action.callStaff.label'
   | 'kiosk.action.callStaff.desc'
@@ -392,6 +393,7 @@ const ja: DefaultDictionary = {
   'common.next': '次へ',
   'common.cancel': 'キャンセル',
   'common.retry': 'もう一度',
+  'common.processing': '処理しています…',
   'kiosk.action.callStaff.label': '担当者を呼ぶ',
   'kiosk.action.callStaff.desc': 'お名前・ご用件をうかがって担当者をお呼びします',
   'kiosk.action.checkin.label': 'QR で受付',
@@ -693,6 +695,7 @@ const en: LocaleDictionary = {
   'common.next': 'Next',
   'common.cancel': 'Cancel',
   'common.retry': 'Try again',
+  'common.processing': 'Working…',
   'kiosk.action.callStaff.label': 'Call a staff member',
   'kiosk.action.callStaff.desc': "We'll ask your name and purpose, then call the right person",
   'kiosk.action.checkin.label': 'Check in with QR',
@@ -998,6 +1001,7 @@ const ko: LocaleDictionary = {
   'common.next': '다음',
   'common.cancel': '취소',
   'common.retry': '다시 시도',
+  'common.processing': '처리 중…',
   'kiosk.action.callStaff.label': '담당자 호출',
   'kiosk.action.callStaff.desc': '성함과 용건을 여쭙고 담당자를 호출합니다',
   'kiosk.action.checkin.label': 'QR로 접수',
@@ -1298,6 +1302,7 @@ const zh: LocaleDictionary = {
   'common.next': '下一步',
   'common.cancel': '取消',
   'common.retry': '重试',
+  'common.processing': '处理中…',
   'kiosk.action.callStaff.label': '呼叫负责人',
   'kiosk.action.callStaff.desc': '我们会询问您的姓名和事由，然后呼叫相应人员',
   'kiosk.action.checkin.label': '扫码登记',
@@ -1683,6 +1688,7 @@ const jaSimple: LocaleDictionary = {
   'common.next': 'つぎへ',
   'common.cancel': 'やめる',
   'common.retry': 'もう一度',
+  'common.processing': 'しょり しています…',
   'reception.back': 'もどる',
 };
 

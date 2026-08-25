@@ -130,6 +130,46 @@ test('「処理中」は「押せない」と同じ見た目にしない (#792)'
   const busy = await computed(finish);
   expect(busy.borderStyle, '処理中に「押せない」の破線へ落ちている').not.toBe('dashed');
   expect(busy.backgroundColor, '処理中に面が無効表現へ変わっている').toBe(before.backgroundColor);
+  // `.btn--secondary` は有効時も無効表現も同じ面色なので、`backgroundColor` だけでは
+  // 空振りする。gradient の有無まで見る（primary の主症状はこちら）。
+  expect(busy.backgroundImage, '処理中に gradient が消えている').toBe(before.backgroundImage);
   expect(busy.color, '処理中に文字色が無効表現へ変わっている').toBe(before.color);
   expect(busy.cursor, '進行中であることがカーソルに出ていない').toBe('progress');
+});
+
+test('別の操作の往復中に、条件未達のボタンが「押せる」見た目へ戻らない (#792 B1)', async ({ page }) => {
+  // `busy` を画面共有のフラグのまま `aria-busy` へ流すと、**そのボタン自身の操作でなくても**
+  // 進行中表示になり、条件未達で押せないボタンが有効な主 CTA の見た目へ戻る。
+  // 退館 QR (`?ct=`) の自動解決中がそれに当たり、空欄の送信ボタン 2 つが該当した。
+  // #778 AC3 が防ごうとした「押せないボタンがただのボタンに見える」の再発。
+  //
+  // 🔴 **往復を保持したまま断定する。** `toHaveAttribute` は自動リトライするので、
+  // 遅延させるだけだと「一時的に true → 往復後に false」を待って通してしまう。
+  let release: (() => void) | undefined;
+  const held = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  let hits = 0;
+  await page.route('**/api/kiosk/checkout/resolve', async (route) => {
+    hits += 1;
+    await held;
+    await route.fulfill({ status: 400, contentType: 'application/json', body: '{"error":"not_found"}' });
+  });
+
+  try {
+    await page.goto('/kiosk/checkout?ct=dummy-token');
+    const tokenSubmit = page.getByTestId('checkout-token-submit');
+    await expect(tokenSubmit).toBeVisible();
+    // 検査が空振りしていないこと（自動解決が実際に走って止まっている）。
+    await expect.poll(() => hits, { timeout: 10_000 }).toBe(1);
+
+    // 往復は止まったまま。リトライに頼らず 1 度だけ読む。
+    await expect(tokenSubmit).toBeDisabled();
+    expect(await tokenSubmit.getAttribute('aria-busy')).toBe('false');
+    const blocked = await computed(tokenSubmit);
+    expect(blocked.borderStyle, '別の操作の往復中に無効表現が外れている').toBe('dashed');
+    expect(blocked.backgroundImage, '別の操作の往復中に主 CTA の塗りへ戻っている').toBe('none');
+  } finally {
+    release?.();
+  }
 });

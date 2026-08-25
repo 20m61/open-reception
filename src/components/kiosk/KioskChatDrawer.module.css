@@ -162,7 +162,8 @@
  * AC3 の禁じている失敗形そのものになる。受付端末の視覚語彙（破線＝押せない）へ揃える。
  */
 /* 送信の往復中は「押せない」の見た目にしない (#792)。`disabled` は残すので二重送信は防がれる。 */
-.send:disabled[aria-busy='true'] {
+.send:disabled[aria-busy='true'],
+.input:disabled[aria-busy='true'] {
   cursor: progress;
 }
 

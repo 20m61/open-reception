@@ -1440,7 +1440,7 @@ function ConnectedView({
         // 終了操作の CTA も契約が決める (#422 inc5-b 増分 2)。強調度（secondary＝任意操作で
         // あることを示す）と二度押しガードだけが画面の裁量。
         turnAnswersFor('connected', locale).map((answer) => ({
-          label: answer.label,
+          label: busy ? tr('common.processing') : answer.label,
           onClick: () => void finish(),
           testId: answer.testId,
           variant: 'secondary' as const,

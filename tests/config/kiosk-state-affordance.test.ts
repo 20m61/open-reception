@@ -57,6 +57,14 @@ function targetsUnavailableState(selector: string): boolean {
   );
 }
 
+/**
+ * 「処理中」になり得る状態を狙ったセレクタか。`[data-unavailable]`（担当者の不在）は
+ * 往復を伴わないので対象外。`:hover:not(:disabled)` のような否定形も除く。
+ */
+function targetsDisabledState(selector: string): boolean {
+  return /:disabled(?!\))/.test(selector);
+}
+
 /** 透明度以外に、状態を伝える視覚的な宣言を持つか。 */
 const MEANING_BEARING = [
   'background',
@@ -118,7 +126,7 @@ describe('kiosk: 「処理中」を「押せない」と同じ見た目にしな
    */
   const btnRules = CSS_FILES.flatMap(({ path, css }) =>
     ruleBlocks(css)
-      .filter((r) => /:disabled/.test(r.selector))
+      .filter((r) => targetsDisabledState(r.selector))
       .map((r) => ({ ...r, path })),
   );
 
@@ -126,12 +134,17 @@ describe('kiosk: 「処理中」を「押せない」と同じ見た目にしな
     // 除外が無いと、送信の往復の間だけ主 CTA が破線へ落ち、来訪者は
     // 「押せなくなった」と読む（#778 AC3 を満たすほど悪化する、という矛盾）。
     const treatments = btnRules.filter((r) => /border-style|background\s*:/.test(r.body));
-    expect(treatments.length, '無効表現を持つ .btn ルールが見つからない').toBeGreaterThan(0);
+    expect(treatments.length, '無効表現を持つルールが見つからない').toBeGreaterThan(0);
+    // 母集団が 1 ファイルへ狭まっていないこと。`.btn` だけに絞ると CSS Modules に
+    // 同じ穴が残る（実際 `.send:disabled` がそうだった）。
+    expect(new Set(treatments.map((r) => r.path)).size).toBeGreaterThan(1);
     for (const rule of treatments) {
+      // 🔴 `='true'` まで縛る。`:not([aria-busy])` だと React が常に出す
+      // `aria-busy="false"` にもマッチし、**条件未達の表現が恒久的に消える**。
       expect(
         rule.selector,
-        `${rule.path} の "${rule.selector}" が aria-busy を除外していない`,
-      ).toMatch(/:not\(\[aria-busy/);
+        `${rule.path} の "${rule.selector}" が aria-busy='true' を除外していない`,
+      ).toMatch(/:not\(\[aria-busy\s*=\s*['"]true['"]\]\)/);
     }
   });
 });

@@ -268,6 +268,8 @@ export function KioskChatDrawer({
               type="submit"
               className={styles.send}
               disabled={busy || draft.trim() === ''}
+              // 送信中は下書きが空（`setDraft('')` 済み）なので二重に無効だが、往復して
+              // いるのは**このボタン自身の操作**なので進行中表示でよい (#792)。
               aria-busy={busy}
             >
               {tr('chat.send')}
