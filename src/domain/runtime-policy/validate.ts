@@ -66,14 +66,13 @@ const POLICY_FIELDS: Record<keyof RuntimeOperatingPolicy, true> = {
   services: true,
 };
 /*
- * 🔴 **route 層の封筒フィールドは既知として受け取り、文書には入れない。** 隣接する
- * `operating-policy` の route/store は `tenantId` / `siteId` / `expectedVersion` を**同じ body に
- * 載せて** validator へ渡す（`src/lib/operating-policy/store.ts`）。ここでそれを未知キーとして
- * 弾くと、同じ形で繋いだ瞬間に全リクエストが 400 になり、緊急停止も一時延長も保存できない。
- * `version` / `updatedBy` は封筒ではないので、従来どおり拒否する（mass-assignment）。
+ * 🔴 **封筒フィールドをここで「既知だが無視」にしない。** 一度そうしたが、隣接する
+ * `operating-policy` の body は**平たい**（`timezone` / `weeklySchedule` が最上位）ので、
+ * 封筒を許しても互換にはならない——実測で 6 件の issue が出て通らない。得るものが無い一方、
+ * `expectedVersion` を**黙って捨てる**形になり、`validated.value` だけを見る route を書いた
+ * 瞬間に競合更新が後勝ちで上書きされる（同じ関数内で `emergencyContactLabel` は
+ * 「捨てずに拒否」と決めているのに、原則が反転する）。封筒は route が剥がして渡す（#798）。
  */
-const ENVELOPE_FIELDS: Record<string, true> = { tenantId: true, siteId: true, expectedVersion: true };
-const ACCEPTED_ROOT_FIELDS: Record<string, true> = { ...POLICY_FIELDS, ...ENVELOPE_FIELDS };
 
 /*
  * 共通営業時間で**この層が組み立て直す**フィールド。`emergencyContactLabel` は含めない——
@@ -128,14 +127,20 @@ function rejectUnknownFields(
 
 const MAX_FIELD_KEY_LENGTH = 64;
 
+/*
+ * `\p{C}` は U+2028 / U+2029（Zl/Zp）を含まないが、JS の LineTerminator であり
+ * `JSON.stringify` もエスケープしない。行注入としては改行と同じなので一緒に落とす。
+ */
+function stripLineBreakers(value: string): string {
+  return value.replace(/[\p{C}\p{Zl}\p{Zp}]/gu, '·');
+}
+
 /**
  * issue の `field` へ載せる入力キーを丸めて無害化する。逐語で載せると、改行入りのキーが
  * 構造化ログへ偽イベント行として流れ、長大なキーがそのままレスポンスを膨らませる。
  */
 function safeFieldKey(key: string): string {
-  // `\p{C}` は U+2028 / U+2029（Zl/Zp）を含まないが、JS の LineTerminator であり
-  // `JSON.stringify` もエスケープしない。行注入としては改行と同じなので一緒に落とす。
-  const cleaned = key.replace(/[\p{C}\p{Zl}\p{Zp}]/gu, '·');
+  const cleaned = stripLineBreakers(key);
   if (cleaned.length <= MAX_FIELD_KEY_LENGTH) return cleaned;
   // 先頭だけ残すと、同じ前置を持つ 2 つのキーが同じ `field` に潰れて特定できなくなる。
   return `${cleaned.slice(0, MAX_FIELD_KEY_LENGTH - 16)}…${cleaned.slice(-16)}`;
@@ -146,10 +151,30 @@ function safeFieldKey(key: string): string {
  * 1 件ずつ issue にせず 1 行で打ち切る（20 万キーの body で 20MB の応答を作らせない）。
  */
 const MAX_SERVICE_ENTRIES = MANAGED_RUNTIME_SERVICE_KEYS.length;
+/*
+ * 打ち切りは登録数**ちょうどでは早すぎる**。10 サービス全部 + typo 1 件で「too many entries」しか
+ * 返らず、どれが typo か示せない——「typo を黙って捨てない」という目的と噛み合わない。
+ */
+const MAX_SERVICE_INPUT_ENTRIES = MAX_SERVICE_ENTRIES * 2;
 
-/** 共通 validator の issue を、この階層のフィールド名へ付け替える。 */
+/**
+ * 共通 validator の issue を、この階層のフィールド名へ付け替える。
+ *
+ * 🔴 **委譲先の `field` も無害化する。** 委譲先は入力キーを逐語で載せるので、前置きを足すだけだと
+ * 改行入りのキーが構造化ログへ偽イベント行として流れ、2 万文字のキーが 1MB の応答を作れる。
+ * 自前の経路だけ `safeFieldKey` を掛けても意味がない。
+ */
 function reprefix(issues: readonly PolicyValidationIssue[], prefix: string): PolicyValidationIssue[] {
-  return issues.map((issue) => ({ ...issue, field: `${prefix}.${issue.field}` }));
+  return issues.map((issue) => ({ ...issue, field: safeFieldPath(`${prefix}.${issue.field}`) }));
+}
+
+const MAX_FIELD_PATH_LENGTH = 128;
+
+/** パス全体を無害化して丸める（セグメント単位に分けない——キー自身が `.` を含みうる）。 */
+function safeFieldPath(path: string): string {
+  const cleaned = stripLineBreakers(path);
+  if (cleaned.length <= MAX_FIELD_PATH_LENGTH) return cleaned;
+  return `${cleaned.slice(0, MAX_FIELD_PATH_LENGTH - 24)}…${cleaned.slice(-24)}`;
 }
 
 export function validateRuntimePolicyInput(raw: unknown): RuntimePolicyValidation {
@@ -164,7 +189,7 @@ export function validateRuntimePolicyInput(raw: unknown): RuntimePolicyValidatio
    * `updatedBy`）のどちらかしかない。前者は「設定したのに効かない」、後者は楽観ロックと
    * 監査の破壊なので、どちらも黙って捨てずに issue にする。
    */
-  rejectUnknownFields(raw, ACCEPTED_ROOT_FIELDS, 'root', issues);
+  rejectUnknownFields(raw, POLICY_FIELDS, 'root', issues);
 
   /*
    * 🔴 **配列を先に落とす。** 委譲先の門は `typeof raw !== 'object' || raw === null` だけなので
@@ -172,24 +197,18 @@ export function validateRuntimePolicyInput(raw: unknown): RuntimePolicyValidatio
    * 外線発信が全滅し（残るのは notify_staff だけ）、`reason` は `common_weekly_schedule` という
    * 正当に見える値で返る。この層は `isRecord` を持っているのに、ここだけ使っていなかった。
    */
-  if (!isRecord(raw.commonSchedule)) {
-    return fail([...issues, { field: 'commonSchedule', message: 'commonSchedule is required and must be an object' }]);
-  }
-  rejectUnknownFields(raw.commonSchedule, COMMON_SCHEDULE_FIELDS, 'commonSchedule', issues);
-
-  // 共通営業時間は丸ごと既存 validator へ。**正規化済みの値を使う**（素通しにしない）。
-  const common = validatePolicyInput(raw.commonSchedule);
   let commonSchedule: CommonSchedule | undefined;
-  if (!common.ok) {
-    issues.push(...reprefix(common.error.issues, 'commonSchedule'));
-    if (common.error.issues.length === 0) {
-      // 委譲するのは契約であって文言ではない。委譲元は「body must be an object」と言うが、
-      // ここでの body は正しいオブジェクトで、足りないのは `commonSchedule` の方。
-      issues.push({ field: 'commonSchedule', message: 'commonSchedule is required and must be an object' });
-    }
+  if (!isRecord(raw.commonSchedule)) {
+    /*
+     * ここで即 return すると `breakGlass` / `services` の問題が 1 件も返らず、新規作成時に
+     * 往復が増える。`commonSchedule` は undefined のまま先へ進めて、まとめて報告する。
+     */
+    issues.push({ field: 'commonSchedule', message: 'commonSchedule is required and must be an object' });
   } else {
-    const { timezone, weeklySchedule, fixedHolidays, exceptionDates } = common.value;
-    commonSchedule = { timezone, weeklySchedule, fixedHolidays, exceptionDates };
+    rejectUnknownFields(raw.commonSchedule, COMMON_SCHEDULE_FIELDS, 'commonSchedule', issues);
+    validateCommonSchedule(raw.commonSchedule, issues, (value) => {
+      commonSchedule = value;
+    });
   }
 
   const breakGlass = validateBreakGlass(raw.breakGlass, issues);
@@ -218,16 +237,66 @@ export function validateRuntimePolicyInput(raw: unknown): RuntimePolicyValidatio
  * サービス 10 件）まで含めた総量を抑えられない。認証済み admin の誤った body で Lambda の応答が
  * 数 MB になり、管理画面が固まり、CloudWatch へ同量が流れる。打ち切ったことは黙らず表明する。
  */
+/*
+ * 応答が入力に比例して膨らまないための上限は**2 つで足りる**——1 issue の大きさ（`field` は
+ * `safeFieldPath` で 128 文字、`message` はこのモジュールと委譲先の定数のみ）と、issue の件数。
+ * 別途バイト予算も置いていたが、この 2 つがある限り観測できない冗長分岐だったので外した。
+ */
 const MAX_ISSUES = 50;
 
+/**
+ * 報告する issue を絞る。**末尾切りにしない**——`commonSchedule` の issue が先に積まれるので、
+ * 単純に前から取ると `services` の typo が 1 件も返らず、運用者は直すたびに次が現れる。
+ * 階層（`field` の先頭セグメント）ごとに順番に取り、打ち切ったことは黙らず表明する。
+ */
+function limitIssues(issues: PolicyValidationIssue[]): PolicyValidationIssue[] {
+  const bySection = new Map<string, PolicyValidationIssue[]>();
+  for (const issue of issues) {
+    const section = issue.field.split('.')[0] ?? 'body';
+    const bucket = bySection.get(section);
+    if (bucket) bucket.push(issue);
+    else bySection.set(section, [issue]);
+  }
+  const queues = [...bySection.values()];
+  const kept: PolicyValidationIssue[] = [];
+  let drained = false;
+  while (!drained && kept.length < MAX_ISSUES) {
+    drained = true;
+    for (const queue of queues) {
+      const next = queue.shift();
+      if (!next) continue;
+      drained = false;
+      kept.push(next);
+      if (kept.length >= MAX_ISSUES) break;
+    }
+  }
+  const dropped = issues.length - kept.length;
+  if (dropped > 0) kept.push({ field: 'body', message: `too many issues; ${dropped} more not reported` });
+  return kept;
+}
+
+/** 共通営業時間は丸ごと既存 validator へ。**正規化済みの値を使う**（素通しにしない）。 */
+function validateCommonSchedule(
+  raw: Record<string, unknown>,
+  issues: PolicyValidationIssue[],
+  accept: (value: CommonSchedule) => void,
+): void {
+  const common = validatePolicyInput(raw);
+  if (!common.ok) {
+    issues.push(...reprefix(common.error.issues, 'commonSchedule'));
+    if (common.error.issues.length === 0) {
+      // 委譲するのは契約であって文言ではない。委譲元は「body must be an object」と言うが、
+      // ここでの body は正しいオブジェクトで、足りないのは `commonSchedule` の方。
+      issues.push({ field: 'commonSchedule', message: 'commonSchedule is required and must be an object' });
+    }
+    return;
+  }
+  const { timezone, weeklySchedule, fixedHolidays, exceptionDates } = common.value;
+  accept({ timezone, weeklySchedule, fixedHolidays, exceptionDates });
+}
+
 function fail(issues: PolicyValidationIssue[]): RuntimePolicyValidation {
-  const reported =
-    issues.length <= MAX_ISSUES
-      ? issues
-      : [
-          ...issues.slice(0, MAX_ISSUES),
-          { field: 'body', message: `too many issues; ${issues.length - MAX_ISSUES} more not reported` },
-        ];
+  const reported = limitIssues(issues);
   return { ok: false, error: { code: 'invalid_input', message: 'runtime policy is invalid', issues: reported } };
 }
 
@@ -257,21 +326,23 @@ function validateBreakGlass(
    * 「too many entries」で 400 になる——不発の害が最も大きい経路で。
    */
   const unique = Array.from(new Set(keys));
-  if (unique.length > MAX_SERVICE_ENTRIES) {
+  if (unique.length > MAX_SERVICE_INPUT_ENTRIES) {
     issues.push({
       field: 'breakGlass.serviceKeys',
       message: `too many distinct entries (max ${MAX_SERVICE_ENTRIES})`,
     });
     return undefined;
   }
-  const serviceKeys: ManagedRuntimeServiceKey[] = [];
-  unique.forEach((key, index) => {
+  /*
+   * issue の位置は**入力の位置**を指す。畳んだ後の index を返すと、緊急停止の設定画面が
+   * 誤った要素をハイライトする——急いで叩く操作でさらに迷わせることになる。保存するのは畳んだ値。
+   */
+  keys.forEach((key, index) => {
     if (!isManagedKey(key)) {
       issues.push({ field: `breakGlass.serviceKeys[${index}]`, message: 'unknown service key' });
-      return;
     }
-    serviceKeys.push(key);
   });
+  const serviceKeys = unique.filter(isManagedKey);
   return typeof value.active === 'boolean' ? { active: value.active, serviceKeys } : undefined;
 }
 
@@ -285,7 +356,7 @@ function validateServices(
     return undefined;
   }
   const entries = Object.entries(value);
-  if (entries.length > MAX_SERVICE_ENTRIES) {
+  if (entries.length > MAX_SERVICE_INPUT_ENTRIES) {
     issues.push({ field: 'services', message: `too many entries (max ${MAX_SERVICE_ENTRIES})` });
     return undefined;
   }
@@ -304,6 +375,19 @@ function validateServices(
     if (validated) services[key] = validated;
   }
   return services;
+}
+
+/*
+ * 「共通へ戻す」は `follow_operating_hours`、「止め続ける」は `manual_only`。区間ゼロの
+ * スケジュールは**どちらでもない恒久停止**を作り、`reason` は `custom_service_schedule` という
+ * 正当に見える値で返るので気づけない。助言は mode まで含めて書く。
+ */
+const EMPTY_SCHEDULE_MESSAGE =
+  'must contain at least one time range; omit this key and set mode to follow_operating_hours to inherit the common schedule, or use manual_only to keep the service stopped';
+
+/** 区間を 1 つでも持つか（`{}` も `{ mon: [] }` も「恒久停止」という同じ意味になる）。 */
+function hasAnyRange(schedule: Record<string, unknown>): boolean {
+  return Object.values(schedule).some((ranges) => Array.isArray(ranges) && ranges.length > 0);
 }
 
 function validateOverride(
@@ -329,6 +413,15 @@ function validateOverride(
     }
   }
 
+  /*
+   * 🔴 `custom_schedule` なのにスケジュールが無いと、解決は段 4・段 5 を素通りして
+   * `default_policy` で **stopped** になる。「キーを省略せよ」という助言だけを載せていた頃は、
+   * **メッセージ自身が事故を誘発していた**（共通営業時間へ戻したつもりが恒久停止）。
+   */
+  if (result.mode === 'custom_schedule' && override.weeklySchedule === undefined) {
+    issues.push({ field: `services.${key}.weeklySchedule`, message: EMPTY_SCHEDULE_MESSAGE });
+  }
+
   const temporary = override.temporaryOverride;
   if (temporary !== undefined) {
     const validated = validateTemporaryOverride(key, temporary, issues);
@@ -352,11 +445,8 @@ function validateOverride(
      * フォームが素直に作る `{}` は、解決では「区間ゼロ = 恒久 stopped」になり、`mode` を
      * `follow_operating_hours` へ戻しても段 4 が段 5 を上書きするので共通営業時間へ戻らない。
      */
-    if (isRecord(override.weeklySchedule) && Object.keys(override.weeklySchedule).length === 0) {
-      issues.push({
-        field: `services.${key}.weeklySchedule`,
-        message: 'must not be empty; omit the key to inherit the common schedule',
-      });
+    if (isRecord(override.weeklySchedule) && !hasAnyRange(override.weeklySchedule)) {
+      issues.push({ field: `services.${key}.weeklySchedule`, message: EMPTY_SCHEDULE_MESSAGE });
     }
     const nested = validatePolicyInput({
       timezone: 'UTC',

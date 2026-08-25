@@ -68,17 +68,25 @@ describe('runtime policy の入力検証 (#367)', () => {
     );
   });
 
-  it('route 層の封筒フィールドは通し、永続層の管理フィールドは拒否する', () => {
+  it('route 層の封筒フィールドもこの層では拒否する（黙って捨てない）', () => {
     /*
-     * 隣接する `operating-policy` の route/store は `tenantId` / `siteId` / `expectedVersion` を
-     * **同じ body に載せて** validator へ渡す（`src/lib/operating-policy/store.ts`）。この層が
-     * それを未知キーとして弾くと、繋いだ瞬間に全リクエストが 400 になる。封筒は既知として
-     * 受け取り、**文書には入れない**。一方 `version` / `updatedBy` は封筒ではないので拒否する。
+     * 一度は `tenantId` / `siteId` / `expectedVersion` を「既知だが無視」にしたが、隣接する
+     * `operating-policy` の body は**平たい**ので封筒を許しても互換にならない（実測で別の
+     * 6 件が出て通らない）。得るものが無い一方、`expectedVersion` を黙って捨てる形になり、
+     * `validated.value` だけを見る route を書いた瞬間に競合更新が後勝ちで上書きされる。
+     * 封筒は route が剥がしてから渡す契約にする（#798）。
      */
-    const result = validateRuntimePolicyInput({ ...OK, tenantId: 't1', siteId: 's1', expectedVersion: 3 });
-    expect(result.ok).toBe(true);
-    if (result.ok) expect(Object.keys(result.value)).toEqual(['commonSchedule']);
+    expect(issuesOf({ ...OK, expectedVersion: 3 })).toContain('root.expectedVersion');
+    expect(issuesOf({ ...OK, tenantId: 't1' })).toContain('root.tenantId');
     expect(issuesOf({ ...OK, version: 99 })).toContain('root.version');
+  });
+
+  it('commonSchedule が不正でも他の階層の問題をまとめて報告する', () => {
+    // 早期 return すると新規作成時に往復が増える（1 件直すたびに次の 1 件が現れる）。
+    const issues = issuesOf({ commonSchedule: 'x', services: { nope: {} }, breakGlass: { active: 'yes' } });
+    expect(issues).toContain('commonSchedule');
+    expect(issues).toContain('services.nope');
+    expect(issues).toContain('breakGlass.active');
   });
 
   it('commonSchedule の欠落を自分の言葉で説明する（委譲元の文言を漏らさない）', () => {
@@ -243,6 +251,34 @@ describe('runtime policy の入力検証 (#367)', () => {
     expect(messagesOf({ ...OK, services: { stt: { weeklySchedule: {} } } }).join(' ')).toContain('omit');
   });
 
+  it('breakGlass の issue は入力の位置を指す（重複を畳んだ後の位置ではない）', () => {
+    // 「どれが効いていないかを名指しできないと直せない」——緊急停止の画面で誤った要素を
+    // ハイライトすると、急いで叩く操作でさらに迷う。
+    expect(issuesOf({ ...OK, breakGlass: { active: true, serviceKeys: ['stt', 'stt', 'stt', 'nope'] } })).toContain(
+      'breakGlass.serviceKeys[3]',
+    );
+  });
+
+  it('mode と weeklySchedule の矛盾を通さない（意図と逆の恒久停止を作らせない）', () => {
+    /*
+     * 🔴 `{}` を弾くだけでは足りなかった。`{ mon: [] }`（区間ゼロ）は同じ恒久停止に到達し、
+     * `custom_schedule` のままキーを省略すると段 4・段 5 を素通りして `default_policy` で
+     * stopped になる——**「キーを省略せよ」という当のメッセージが事故を誘発していた**。
+     */
+    expect(issuesOf({ ...OK, services: { stt: { weeklySchedule: { mon: [] } } } })).toContain(
+      'services.stt.weeklySchedule',
+    );
+    expect(issuesOf({ ...OK, services: { stt: { mode: 'custom_schedule' } } })).toContain(
+      'services.stt.weeklySchedule',
+    );
+    // 助言どおりに書けば通る。共通へ戻すのは follow_operating_hours、止め続けるなら manual_only。
+    expect(validateRuntimePolicyInput({ ...OK, services: { stt: { mode: 'follow_operating_hours' } } }).ok).toBe(true);
+    expect(validateRuntimePolicyInput({ ...OK, services: { stt: { mode: 'manual_only' } } }).ok).toBe(true);
+    const message = messagesOf({ ...OK, services: { stt: { weeklySchedule: {} } } }).join(' ');
+    expect(message).toContain('follow_operating_hours');
+    expect(message).toContain('manual_only');
+  });
+
   it('breakGlass の対象は重複を畳んでから上限判定する', () => {
     // 上限 10 は distinct 前提。重複したまま数えると、実質 2 サービスの緊急停止が
     // 「too many entries」で 400 になる——不発の害が最も大きい経路で。
@@ -276,6 +312,59 @@ describe('runtime policy の入力検証 (#367)', () => {
     expect(spread.ok).toBe(false);
     if (spread.ok) return;
     expect(spread.error.issues.length).toBeLessThanOrEqual(51);
+  });
+
+  it('委譲先が出す issue の field も無害化・切り詰めの対象にする', () => {
+    /*
+     * 🔴 `safeFieldKey` は自前の経路にしか掛かっておらず、`reprefix` は委譲先の field に
+     * 前置きを足すだけだった。委譲先は**入力キーを逐語で**載せるので、改行入りのキーが
+     * 構造化ログへ偽イベント行として流れ、2 万文字のキーが 1MB の応答を作れた。
+     */
+    const noisy = issuesOf({
+      ...OK,
+      commonSchedule: { ...OK.commonSchedule, weeklySchedule: { ['INJ\nlevel=fatal\u2028x']: [] } },
+    });
+    expect(noisy.some((f) => /[\n\r\u2028\u2029]/.test(f))).toBe(false);
+
+    const huge: Record<string, unknown> = {};
+    for (let i = 0; i < 60; i++) huge[`${'y'.repeat(20_000)}-${i}`] = [];
+    const result = validateRuntimePolicyInput({ ...OK, commonSchedule: { ...OK.commonSchedule, weeklySchedule: huge } });
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    /*
+     * 応答が入力に比例しないことを、**効いている 2 つの上限**それぞれで縛る。
+     * どちらを外しても落ちる（合計バイト数だけを見ると、片方を外しても閾値に収まってしまう）。
+     */
+    expect(result.error.issues.every((i) => JSON.stringify(i).length <= 400)).toBe(true);
+    expect(result.error.issues.length).toBeLessThanOrEqual(51);
+    expect(JSON.stringify(result.error).length).toBeLessThan(16_000);
+  });
+
+  it('打ち切りは末尾切りにしない（先頭の階層で埋めて他を消さない）', () => {
+    // `commonSchedule` の issue が先に積まれるので、末尾切りだと services の typo が
+    // 1 件も返らず、運用者は直しても直しても次が出てくる。
+    const manyExceptions = Array.from({ length: 80 }, (_, i) => ({ date: `bad-${i}` }));
+    const issues = issuesOf({
+      commonSchedule: { ...OK.commonSchedule, exceptionDates: manyExceptions },
+      services: { stt: { temporaryOveride: {} } },
+    });
+    expect(issues).toContain('services.stt.temporaryOveride');
+  });
+
+  it('打ち切ったことを黙らずに表明する', () => {
+    const manyExceptions = Array.from({ length: 200 }, (_, i) => ({ date: `bad-${i}` }));
+    expect(messagesOf({ ...OK, commonSchedule: { ...OK.commonSchedule, exceptionDates: manyExceptions } }).join(' ')).toContain(
+      'not reported',
+    );
+  });
+
+  it('サービス数の上限に余裕を持たせ、typo を名指しできるようにする', () => {
+    // 上限が登録数ちょうどだと、10 サービス全部 + typo 1 件で「too many entries」しか返らず、
+    // **どれが typo か一切示さない**——「typo を黙って捨てない」という目的と噛み合わない。
+    const all: Record<string, unknown> = {};
+    for (const key of MANAGED_RUNTIME_SERVICE_KEYS) all[key] = {};
+    all.sttt = {};
+    expect(issuesOf({ ...OK, services: all })).toContain('services.sttt');
   });
 
   it('プロトタイプ由来のキーを既知キーと取り違えない', () => {
@@ -312,6 +401,8 @@ describe('runtime policy の入力検証 (#367)', () => {
     const issues = issuesOf({ ...OK, services: { stt: noisy } });
     expect(issues.length).toBeLessThanOrEqual(6);
     expect(issues).toContain('services.stt');
+    // 打ち切ったこと自体も黙らない（1 行で表明する）。
+    expect(messagesOf({ ...OK, services: { stt: noisy } }).join(' ')).toContain('too many unknown fields');
   });
 
   it('services とサービス個別 override の形を弾く（黙って捨てない）', () => {

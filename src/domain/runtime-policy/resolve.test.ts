@@ -10,6 +10,7 @@ import type { OperatingException, TimeRange, Weekday } from '@/domain/operating-
 import { MANAGED_RUNTIME_SERVICES, type ManagedRuntimeService, type ManagedRuntimeServiceKey } from './registry';
 import {
   BREAK_GLASS_PROTECTED_SERVICES,
+  expiresAtMs,
   resolveServiceStates,
   resolutionFor,
   type RuntimeOperatingPolicy,
@@ -728,6 +729,23 @@ describe('expiresAt の解析（外部レビュー指摘の回帰固定, PR #791
       state: 'running',
       reason: 'common_weekly_schedule',
     });
+  });
+
+  it('不正な timezone で解決を落とさない（expiresAt だけ塞いでも意味がない）', () => {
+    // `timezone` は `expiresAt` と同じレコード・同じドリフト要因で来る。`zonedTimeToUtcMs` は
+    // 不正な IANA 名で RangeError を投げるので、ここも解析不能（= 自動解除）へ倒す。
+    expect(() => expiresAtMs('2026-07-22T12:00', 'Asia/Tokyoo')).not.toThrow();
+    expect(expiresAtMs('2026-07-22T12:00', 'Asia/Tokyoo')).toBeNaN();
+  });
+
+  it('時刻の妥当性も経路によらず見る（Z を付けたら通る、をなくす）', () => {
+    // `'2026-07-22T24:00'` は NaN なのに `'2026-07-22T24:00:00Z'` は 7/23 として通っていた。
+    for (const bad of ['2027-07-22T24:00:00Z', '2027-07-22T12:60:00Z', '2027-07-22T12:00:60Z']) {
+      expect(stateOf(at(bad), 'bedrock', IN_HOURS), `expiresAt=${bad}`).toEqual({
+        state: 'running',
+        reason: 'common_weekly_schedule',
+      });
+    }
   });
 
   it('秒を省いた値・日付だけの値は従来どおり解釈できる', () => {

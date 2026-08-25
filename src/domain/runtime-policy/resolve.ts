@@ -154,9 +154,11 @@ function evaluateToState(schedule: CommonSchedule, now: number): ServiceRuntimeS
  */
 export function expiresAtMs(expiresAt: string, timezone: string): number {
   /*
-   * 🔴 **総関数のままにする。** ここは Reconciler の毎分の解決から呼ばれるので、
-   * 1 レコードの型ドリフト（旧データ・部分書き込み・DynamoDB の属性型違い）で throw すると
-   * **全サービスの解決が丸ごと落ち、何も収束しない**。文字列でなければ解析不能として扱う。
+   * 🔴 **この関数は総関数にする。** Reconciler の毎分の解決から呼ばれるので、1 レコードの
+   * 型ドリフト（旧データ・部分書き込み・DynamoDB の属性型違い）で throw すると**全サービスの
+   * 解決が丸ごと落ち、何も収束しない**。文字列でない `expiresAt` も、不正な `timezone` も
+   * 解析不能（NaN = 自動解除）として扱う。**解決全体はまだ総関数ではない**（`commonSchedule`
+   * 欠落・非配列の `exceptionDates` などは throw する）。読み側の fail-safe は #798。
    */
   if (typeof expiresAt !== 'string') return Number.NaN;
   /*
@@ -171,6 +173,13 @@ export function expiresAtMs(expiresAt: string, timezone: string): number {
    */
   const ymd = /^(\d{4})-(\d{2})-(\d{2})/.exec(value);
   if (!ymd || !isRealCalendarDate(Number(ymd[1]), Number(ymd[2]), Number(ymd[3]))) return Number.NaN;
+  /*
+   * 🔴 時刻の妥当性も**経路によらず**先に見る。`Date.parse` は `24:00` を翌日として通すので、
+   * 「`Z` を付けたら通る、付けなければ通らない」という説明できない差になっていた。
+   * （オフセットの `+09:00` は `[T ]` が前置されないのでここには掛からない。）
+   */
+  const time = /[T ](\d{2}):(\d{2})(?::(\d{2}))?/.exec(value);
+  if (time && (Number(time[1]) > 23 || Number(time[2]) > 59 || Number(time[3] ?? '0') > 59)) return Number.NaN;
   // オフセット付き（`Z` / `±HH:MM`）はそのまま絶対時刻として読める（小文字 `z` も同義に扱う）。
   if (/(?:[Zz]|[+-]\d{2}:?\d{2})$/.test(value)) return Date.parse(value.replace(/z$/, 'Z'));
   /*
@@ -198,10 +207,19 @@ export function expiresAtMs(expiresAt: string, timezone: string): number {
    * 組み合わさると、月や時刻の 1 桁ミスが**数か月のサービス停止**として現れ、しかも
    * 画面上は「その日時まで」と読める。ここは doc の契約どおり「解析不能 = 自動解除」へ倒す。
    */
-  if (hour > 23 || minute > 59 || seconds > 59) return Number.NaN;
   // `zonedTimeToUtcMs` は分までしか受けないので、秒は後から足す（TZ オフセットは分単位で
   // 表現されるので、秒を加えても帯の判定はずれない）。
-  return zonedTimeToUtcMs({ year, month, day, hour, minute }, timezone) + seconds * 1000 + millis;
+  /*
+   * 🔴 `timezone` は `expiresAt` と**同じレコード・同じドリフト要因**で来る。`zonedTimeToUtcMs` は
+   * 不正な IANA 名で RangeError を投げるので、ここも解析不能（= 自動解除）へ倒す。片方だけ塞いでも、
+   * Reconciler が毎分同じ throw を繰り返す経路は消えない。
+   * （解決全体の fail-safe——読み側で壊れたレコードをどう扱うか——は #798 の受入条件。）
+   */
+  try {
+    return zonedTimeToUtcMs({ year, month, day, hour, minute }, timezone) + seconds * 1000 + millis;
+  } catch {
+    return Number.NaN;
+  }
 }
 
 /**
