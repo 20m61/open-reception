@@ -473,6 +473,38 @@ describe('unresolvedWithoutCommonSchedule', () => {
     expect([...unresolvedWithoutCommonSchedule(services, overrides, IN_HOURS, chain)].sort()).toEqual(['a', 'b']);
   });
 
+  it('例外日を持っていても、有効な override で決まったなら確定扱い', () => {
+    // 段 2 で決まった時点で段 3 は走らない。例外日の有無で判定不能にすると、
+    // 「今すぐ止める」が例外日を設定した拠点でだけ効かなくなる。
+    const chain = [
+      { serviceKey: 'a', defaultMode: 'custom_schedule', dependsOn: [], provides: [] },
+    ] as unknown as ManagedRuntimeService[];
+    const services = [
+      { serviceKey: 'a', mode: 'custom_schedule', state: 'stopped', reason: 'temporary_override' },
+    ] as unknown as ServiceResolution[];
+    const overrides = {
+      a: {
+        exceptionDates: [{ date: '2026-07-21', closed: true }],
+        temporaryOverride: { state: 'force_stopped', expiresAt: '2030-01-01T00:00:00Z' },
+      },
+    } as unknown as RuntimeOperatingPolicy['services'];
+    expect([...unresolvedWithoutCommonSchedule(services, overrides, IN_HOURS, chain)]).toEqual([]);
+  });
+
+  it('例外日を持っていても、スケジュールを読まない mode なら確定扱い', () => {
+    // `always_on` / `manual_only` は段 3 を通らないので、例外日は無視される（＝結論は TZ に依らない）。
+    const chain = [
+      { serviceKey: 'a', defaultMode: 'always_on', dependsOn: [], provides: [] },
+    ] as unknown as ManagedRuntimeService[];
+    const services = [
+      { serviceKey: 'a', mode: 'always_on', state: 'running', reason: 'default_policy' },
+    ] as unknown as ServiceResolution[];
+    const overrides = {
+      a: { exceptionDates: [{ date: '2026-07-21', closed: true }] },
+    } as unknown as RuntimeOperatingPolicy['services'];
+    expect([...unresolvedWithoutCommonSchedule(services, overrides, IN_HOURS, chain)]).toEqual([]);
+  });
+
   it('補正で確定停止になった側は、自分の判断が TZ 依存でも確定扱い', () => {
     // 補正は severity を上げることしかできないので、stopped へ補正された時点で値は不変。
     // ここを補正前の reason で seed すると、確定しているものまで判定不能になる（過剰拒否）。
@@ -484,13 +516,17 @@ describe('unresolvedWithoutCommonSchedule', () => {
       { serviceKey: 'a', mode: 'manual_only', state: 'stopped', reason: 'break_glass' },
       {
         serviceKey: 'b',
-        mode: 'always_on',
+        mode: 'custom_schedule',
         state: 'stopped',
         reason: 'dependency_correction',
         correction: { blockedBy: 'a', from: { state: 'running', reason: 'common_weekly_schedule' } },
       },
     ] as unknown as ServiceResolution[];
-    expect([...unresolvedWithoutCommonSchedule(services, undefined, IN_HOURS, chain)]).toEqual([]);
+    // 例外日を持っていても同じ（補正で最大 severity に張り付いた時点で値は動かない）。
+    const overrides = {
+      b: { exceptionDates: [{ date: '2026-07-21', closed: true }] },
+    } as unknown as RuntimeOperatingPolicy['services'];
+    expect([...unresolvedWithoutCommonSchedule(services, overrides, IN_HOURS, chain)]).toEqual([]);
   });
 
   it('解決に含まれないサービスは辿らない（部分集合で呼ばれても増やさない）', () => {
@@ -515,19 +551,31 @@ describe('unresolvedWithoutCommonSchedule', () => {
  *   判定不能に入っていない ⟹ 拠点 TZ と共通営業時間が何であっても state が一致する
  */
 describe('判定不能の切り分けの不変条件', () => {
-  const TIMEZONES = ['Etc/GMT+12', 'America/Los_Angeles', 'UTC', 'Asia/Tokyo', 'Etc/GMT-14'];
+  /*
+   * 名前付きゾーン（-12〜+14）だけでは、境界を**名前付きの範囲まで狭める**変異を検出できない。
+   * このシステムは生オフセット（±23:59）も受理して保存するので、実際の両端まで入れる。
+   */
+  const TIMEZONES = ['-23:59', 'Etc/GMT+12', 'America/Los_Angeles', 'UTC', 'Asia/Tokyo', 'Etc/GMT-14', '+23:59'];
   const WEEKLY: CommonSchedule['weeklySchedule'][] = [
     {},
     { mon: [{ start: '09:00', end: '18:00' }] },
     { mon: [{ start: '00:00', end: '23:59' }], tue: [{ start: '00:00', end: '23:59' }] },
   ];
-  // 期限内（絶対/現地）・失効済み（絶対/現地）・境界をまたぐ現地時刻を混ぜる。
+  /*
+   * 期限内（絶対/現地）・失効済み（絶対/現地）・境界をまたぐ現地時刻に加えて、
+   * **TZ 境界のすぐ内側**を必ず入れる。ここを踏まないと、両端を狭める変異
+   * （＝過剰確定）が素通りする——境界の緊さは fixture でしか縛れない。
+   */
   const EXPIRES = [
     '2030-01-01T00:00:00Z',
     '2026-07-21T20:30',
     '2020-01-01T00:00',
     '2026-07-20T23:00:00Z',
     '2020-01-01T00:00:00Z',
+    // now = 2026-07-21T20:00Z に対し、-23:59 の拠点でだけ未来（境界の 30 分内側）。
+    '2026-07-20T20:30',
+    // +23:59 の拠点でだけ失効（同じく 30 分内側）。
+    '2026-07-22T19:30',
   ];
   const OVERRIDE_STATES = ['force_running', 'force_stopped', 'draining'] as const;
 
@@ -563,6 +611,18 @@ describe('判定不能の切り分けの不変条件', () => {
       });
       const unresolved = unresolvedWithoutCommonSchedule(unknown.services, services, now);
       const confirmed = unknown.services.filter((s) => !unresolved.has(s.serviceKey));
+
+      /*
+       * 🔴 **下界も縛る。** 不変条件は片側（過剰確定）しか主張しないので、判定不能を
+       * 広げるだけの変異は空虚に満たせてしまう。設定を一切持たないサービスは、
+       * 共通営業時間が無くても必ず確定側に居る（`always_on` は mode だけで決まる）。
+       */
+      const confirmedKeys = confirmed.map((s) => s.serviceKey);
+      for (const key of ['admin', 'monitoring', 'qr-resolution'] as const) {
+        if (!confirmedKeys.includes(key)) {
+          violations.push(`${key} は設定が無いのに判定不能になった / ${JSON.stringify(services)}`);
+        }
+      }
 
       for (const timezone of TIMEZONES) {
         for (const weeklySchedule of WEEKLY) {
@@ -862,7 +922,7 @@ describe('resolveRuntimeStatesFor', () => {
   });
 
   it('解析できない期限はどの TZ でも失効扱いなので確定（型ドリフト・壊れた値）', async () => {
-    await seedOperatingHours();
+    // 共通営業時間は**設定しない**——設定すると早期 return で切り分けを通らず、主張が空虚になる。
     for (const expiresAt of [1234, null, '', 'garbage']) {
       await getBackend()
         .collection<{ id: string }>('runtime_policy')
@@ -877,7 +937,10 @@ describe('resolveRuntimeStatesFor', () => {
           updatedBy: 'legacy',
         } as unknown as { id: string });
       const outcome = await resolveRuntimeStatesFor(TENANT, SITE, IN_HOURS);
-      expect(outcome.kind, String(expiresAt)).toBe('resolved');
+      expect(outcome.kind, String(expiresAt)).toBe('partial');
+      if (outcome.kind !== 'partial') return;
+      expect(outcome.unresolved, String(expiresAt)).not.toContain('signage');
+      expect(outcome.services.find((s) => s.serviceKey === 'signage')?.state).toBe('running');
     }
   });
 

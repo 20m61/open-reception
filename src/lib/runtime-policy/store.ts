@@ -434,8 +434,12 @@ const NEEDS_TIMEZONE_BY_REASON: Record<ResolutionReason, boolean> = {
    */
   break_glass: false,
   temporary_override: false,
-  // 段 3〜5。いずれも現地時刻の解釈が要る。
+  /*
+   * 段 3。実際には上の段 3 ルール（例外日を持つ schedule 駆動サービス）が先に true を返すので
+   * **この行は到達しない**。網羅を型で強制するために置いてある。
+   */
   exception_date: true,
+  // 段 4・段 5。現地時刻の解釈が要る。
   custom_service_schedule: true,
   common_weekly_schedule: true,
   // 段 6。mode だけで決まる（`always_on` / `manual_only`）。
@@ -445,10 +449,15 @@ const NEEDS_TIMEZONE_BY_REASON: Record<ResolutionReason, boolean> = {
 };
 
 /**
- * 拠点 TZ として起こりうる範囲の両端（実在する UTC オフセットの下限 -12 と上限 +14）。
- * 現地時刻として書かれた値が指しうる絶対時刻は、必ずこの 2 つの間に入る。
+ * 拠点 TZ として起こりうる範囲の両端。現地時刻として書かれた値が指しうる絶対時刻は、
+ * 必ずこの 2 つの間に入る。
+ *
+ * 🔴 **名前付きゾーンの範囲（-12〜+14）で取らない。** このシステムが受理して保存するのは
+ * `isValidTimeZone`（`Intl.DateTimeFormat` が通るか）を満たす値で、Node 22 / ES2024 は
+ * **生のオフセット文字列（±23:59）も受理する**（実測: `timezone: '-23:59'` が保存できる）。
+ * 名前付きの範囲で近似すると、その外側の拠点で「確定」と報告した state が実際には反転する。
  */
-const TIMEZONE_BOUNDS = ['Etc/GMT+12', 'Etc/GMT-14'] as const;
+const TIMEZONE_BOUNDS = { earliest: '+23:59', latest: '-23:59' } as const;
 
 /**
  * その override の**失効判定**が拠点 TZ に依るか。
@@ -461,9 +470,13 @@ const TIMEZONE_BOUNDS = ['Etc/GMT+12', 'Etc/GMT-14'] as const;
  */
 function lapseNeedsSiteTimezone(expiresAt: unknown, now: number): boolean {
   if (typeof expiresAt !== 'string') return false;
-  const [low, high] = TIMEZONE_BOUNDS.map((timezone) => expiresAtMs(expiresAt, timezone));
-  if (low === undefined || high === undefined || !Number.isFinite(low)) return false;
-  return low > now !== high > now;
+  // 同じ現地時刻でも、東にある拠点ほど早い絶対時刻を指す（オフセット単調減少）。
+  const earliest = expiresAtMs(expiresAt, TIMEZONE_BOUNDS.earliest);
+  const latest = expiresAtMs(expiresAt, TIMEZONE_BOUNDS.latest);
+  // 解析不能はどの TZ でも同じ（NaN の条件は TZ に依らない）＝失効扱いで確定。
+  if (!Number.isFinite(earliest)) return false;
+  // 「有効 ⟺ expiresAt > now」（`resolve.ts` の自動解除と同じ境界）。両端が同じ側なら中間も同じ。
+  return earliest > now !== latest > now;
 }
 
 /** 段 3（例外日）は `mode` が schedule 駆動のときだけ発火する（`resolve.ts` と同じ判定）。 */
@@ -485,6 +498,12 @@ function needsSiteTimezone(
 ): boolean {
   // 段 1。段 2 より上なので TZ に依らない。
   if (service.reason === 'break_glass') return false;
+  /*
+   * 依存補正で決まった値は**依存元**の判定に従うので、閉包側が扱う（設計どおりの分業）。
+   * ここで段 2/3 のルールへ流すと、確定停止へ補正された側が例外日を持つだけで判定不能になり、
+   * 「確定停止できるサービスを Reconciler が永久に触れない」（EC2 が上がりっぱなし）になる。
+   */
+  if (service.reason === 'dependency_correction') return false;
   const override = overrides?.[service.serviceKey];
   // 段 2。失効判定が TZ 次第なら、そこから先の段も含めて結論が動く。
   if (lapseNeedsSiteTimezone(override?.temporaryOverride?.expiresAt, now)) return true;
@@ -541,15 +560,12 @@ export function unresolvedWithoutCommonSchedule(
        * 落とすと、スコープ付き break-glass や `manual_only` が「保存できるのに効かない」に戻る。
        * 補正済みなら**補正前の自分の判断**を見る（補正で stopped に化けた側は判定不能のまま）。
        */
-      const resolved = byKey.get(service.serviceKey);
-      const from = resolved?.correction?.from ?? resolved;
+      const resolved = byKey.get(service.serviceKey)!;
+      const from = resolved.correction?.from ?? resolved;
       if (
-        from?.state === 'stopped' &&
-        !needsSiteTimezone(
-          { serviceKey: service.serviceKey, reason: from.reason, mode: resolved?.mode ?? 'follow_operating_hours' },
-          overrides,
-          now,
-        )
+        from.state === 'stopped' &&
+        // `present` は `byKey.has` で絞ってあるので `resolved` は必ず居る。
+        !needsSiteTimezone({ serviceKey: service.serviceKey, reason: from.reason, mode: resolved.mode }, overrides, now)
       ) {
         continue;
       }
