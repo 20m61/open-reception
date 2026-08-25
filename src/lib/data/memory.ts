@@ -83,6 +83,13 @@ class MemoryCollection<T extends { id: string }> implements Collection<T> {
     this.items.set(item.id, clone(item));
   }
 
+  // has→set を await を挟まず同期で行うため、単一スレッドの event loop 上で原子的。
+  async putIfAbsent(item: T): Promise<boolean> {
+    if (this.items.has(item.id)) return false;
+    this.items.set(item.id, clone(item));
+    return true;
+  }
+
   // get→check→部分更新→set を await を挟まず同期で行うため、単一スレッドの event loop 上で原子的。
   // **現在値**から changes のフィールドだけを変えるので、他フィールドの並行更新を失わない。
   async updateIf(id: string, changes: Partial<T>, expected: Partial<T>): Promise<boolean> {

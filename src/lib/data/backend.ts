@@ -45,6 +45,14 @@ export interface Collection<T extends { id: string }> {
   /** 作成または上書き（read-modify-write は呼び出し側で行う）。 */
   put(item: T): Promise<void>;
   /**
+   * **不在のときだけ**作成する（条件付き作成）。既に存在するなら何もせず `false`。
+   *
+   * `get` → 無ければ `put` は原子的でないので、2 人が同時に初回作成すると片方が
+   * **無言で消える**（`updateIf` は `attribute_exists(PK)` を必須にするため作成には使えない）。
+   * 最初の 1 件が緊急停止の設定なら、消えた側は「止めたつもり」のまま残る。
+   */
+  putIfAbsent(item: T): Promise<boolean>;
+  /**
    * 条件付き**部分更新**（atomic compare-and-set）。対象 id の**現在値**が `expected` の全フィールドに
    * 一致するときのみ、`changes` のフィールドだけを更新し `true` を返す。値が `undefined` の changes は
    * 属性削除（REMOVE）。一致しない / 対象が存在しないなら何もせず `false`。

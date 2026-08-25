@@ -12,19 +12,31 @@
  */
 import type { PolicyValidationIssue } from '@/domain/operating-policy/types';
 import { DEFAULT_TIMEZONE } from '@/domain/operating-policy/tz';
+import type { ManagedRuntimeServiceKey } from '@/domain/runtime-policy/registry';
 import {
   resolveServiceStates,
   type CommonSchedule,
   type RuntimeOperatingPolicy,
   type RuntimeStateResolution,
+  type ServiceResolution,
 } from '@/domain/runtime-policy/resolve';
 import { validateRuntimePolicyInput } from '@/domain/runtime-policy/validate';
 import { getBackend } from '@/lib/data';
 import { appendAdminAudit } from '@/lib/data-stores/reception-log-store';
 import { getOperatingPolicy } from '@/lib/operating-policy/store';
 
-/** 永続化する部分。共通営業時間は持たない（読み出し時に合成する）。 */
-export type RuntimePolicyDocument = Pick<RuntimeOperatingPolicy, 'services' | 'breakGlass'>;
+/**
+ * 永続化する部分。共通営業時間は持たない（読み出し時に合成する）。
+ *
+ * 🔴 **任意プロパティ（`?`）にしない。** `updateIf` はマージなので、キーを落とすと更新時に
+ * 旧値が残る。`undefined` を**必須で明示**させる型にしておくと、書き込みリテラルからキーを
+ * 落とした瞬間にコンパイルが落ちる（隣接 store の `emergencyContactLabel` 事故が構造的に
+ * 再発しない）。
+ */
+export type RuntimePolicyDocument = {
+  services: RuntimeOperatingPolicy['services'] | undefined;
+  breakGlass: RuntimeOperatingPolicy['breakGlass'] | undefined;
+};
 
 export type RuntimePolicyRecord = RuntimePolicyDocument & {
   tenantId: string;
@@ -85,6 +97,26 @@ function splitEnvelope(raw: Record<string, unknown>): Record<string, unknown> {
   return document;
 }
 
+/**
+ * 封筒のスコープが認可済みのスコープと食い違っていたら弾く。**黙って捨てない。**
+ * 捨てると、将来 route が Cookie 由来のスコープを使うようになったとき、body で別サイトを
+ * 指定した運用者が「サイト B を止めた」つもりでサイト A を触ることになる。
+ */
+function envelopeScopeMismatch(
+  raw: Record<string, unknown>,
+  tenantId: string,
+  siteId: string,
+): PolicyValidationIssue[] {
+  const issues: PolicyValidationIssue[] = [];
+  if (raw.tenantId !== undefined && raw.tenantId !== tenantId) {
+    issues.push({ field: 'tenantId', message: 'does not match the authorized scope' });
+  }
+  if (raw.siteId !== undefined && raw.siteId !== siteId) {
+    issues.push({ field: 'siteId', message: 'does not match the authorized scope' });
+  }
+  return issues;
+}
+
 function fail(code: StoreError['code'], message: string, issues: PolicyValidationIssue[] = []): Result<never> {
   return { ok: false, error: { code, message, issues } };
 }
@@ -131,6 +163,8 @@ export async function upsertRuntimePolicy(
       { field: 'expectedVersion', message: 'must be a non-negative integer' },
     ]);
   }
+  const mismatch = envelopeScopeMismatch(body, tenantId, siteId);
+  if (mismatch.length > 0) return fail('invalid_input', 'runtime policy is invalid', mismatch);
   const document = splitEnvelope(body);
 
   /*
@@ -155,10 +189,10 @@ export async function upsertRuntimePolicy(
   if (existing === null || existing === undefined) {
     // 「更新のつもり」で来たのに実体が無い＝別経路で消された等。作成へ倒さない。
     if (expectedVersion !== undefined) {
-      return fail('conflict', 'runtime policy does not exist (expectedVersion was given)');
+      return conflict(tenantId, siteId, id, updatedBy, 'runtime policy does not exist (expectedVersion was given)');
     }
   } else if (expectedVersion === undefined) {
-    return fail('conflict', 'expectedVersion is required to update an existing runtime policy');
+    return conflict(tenantId, siteId, id, updatedBy, 'expectedVersion is required to update an existing runtime policy');
   }
   /*
    * version の一致判定はここでは**しない**。読んでから書くまでの隙間があるので、権威は下の
@@ -186,9 +220,14 @@ export async function upsertRuntimePolicy(
   if (existing) {
     // 読んでから書くまでの隙間も塞ぐ（CAS）。false = その間に誰かが書いた。
     const applied = await collection().updateIf(id, stored, { version: expectedVersion });
-    if (!applied) return fail('conflict', 'runtime policy was updated by someone else');
+    if (!applied) return conflict(tenantId, siteId, id, updatedBy, 'runtime policy was updated by someone else');
   } else {
-    await collection().put(stored);
+    /*
+     * 🔴 **無条件 `put` にしない。** `get` → 無ければ `put` は原子的でないので、2 人が同時に
+     * 初回作成すると片方が無言で消える。消えるのが緊急停止なら「止めたつもり」が残る。
+     */
+    const created = await collection().putIfAbsent(stored);
+    if (!created) return conflict(tenantId, siteId, id, updatedBy, 'runtime policy was created by someone else');
   }
 
   await appendAdminAudit(
@@ -199,44 +238,136 @@ export async function upsertRuntimePolicy(
       tenantId,
       siteId,
       version: String(stored.version),
-      // 「誰がどのサービスを触ったか」まで。時間帯の具体値は残さない。
-      serviceKeys: Object.keys(stored.services ?? {}).sort().join(','),
+      /*
+       * `appendAdminAudit` の `actor` は `'admin'` 固定なので、**実施者はここに載せないと残らない**
+       * （レコードの `updatedBy` は次の更新で上書きされる）。時間帯の具体値は残さない。
+       */
+      updatedBy,
+      configuredServiceKeys: Object.keys(stored.services ?? {}).sort().join(','),
       breakGlass: stored.breakGlass ? (stored.breakGlass.active ? 'active' : 'inactive') : 'unset',
+      /*
+       * `breakGlass.serviceKeys` の省略は「保護対象以外を**全部**止める」を意味する。
+       * `configuredServiceKeys` は別物（サービス個別設定のキー）なので、事後レビューで
+       * 「何も止まっていない」と誤読されないよう、範囲を独立して残す。
+       */
+      breakGlassScope: breakGlassScopeOf(stored.breakGlass),
     },
   );
   return { ok: true, value: stripId(stored) };
 }
 
+function breakGlassScopeOf(breakGlass: RuntimeOperatingPolicy['breakGlass']): string {
+  if (!breakGlass?.active) return 'none';
+  const keys = breakGlass.serviceKeys;
+  return keys && keys.length > 0 ? keys.join(',') : 'all_unprotected';
+}
+
+/** 競合は監査に残す（「2 人が同時に運用状態を触った」は緊急時に最も知りたい運用イベント）。 */
+async function conflict(
+  tenantId: string,
+  siteId: string,
+  id: string,
+  updatedBy: string,
+  message: string,
+): Promise<Result<never>> {
+  await appendAdminAudit(
+    'runtime_policy.update_conflicted',
+    { type: 'runtime_policy', id },
+    { resource: 'runtime_policy', tenantId, siteId, updatedBy, reason: message },
+  );
+  return fail('conflict', message);
+}
+
 /**
- * 保存済みのポリシーから各サービスの状態を解決する。
+ * 解決の結果。**「判定不能」を単一の `undefined` で表さない。**
  *
- * 共通営業時間が未設定なら **undefined**（判定不能）。ここで「停止」に倒すと、営業時間を
- * まだ設定していない拠点で受付が上がらない。呼び出し側（Reconciler）は undefined を
- * 「現状を変えない」として扱う（#798 AC1）。
+ * 🔴 共通営業時間を実際に読むのは段 5（`follow_operating_hours`）だけ。それが未設定だからと
+ * 解決全体を諦めると、**break-glass や `manual_only` が「保存できるのに絶対に効かない」**
+ * ——API は 200、画面は「停止しました」、監査にも残るのに EC2 は動き続ける。このモジュールの
+ * 下層が名指しで潰した失敗を、1 階層上で再生産することになる。
+ *
+ * `error` と `partial` も分ける。前者は「壊れている（人が見るべき）」、後者は「まだ設定して
+ * いない（正常な途中状態）」で、運用者が取るべき行動が違う。
  */
+export type RuntimeResolutionOutcome =
+  | { readonly kind: 'resolved'; readonly resolution: RuntimeStateResolution }
+  | {
+      readonly kind: 'partial';
+      /** 判定できたサービスだけ。capabilities は集計値なので出さない（半分正しい集合は誤用される）。 */
+      readonly services: readonly ServiceResolution[];
+      /** 共通営業時間が無いと決められないサービス。呼び出し側は**現状を変えない**。 */
+      readonly unresolved: readonly ManagedRuntimeServiceKey[];
+    }
+  | { readonly kind: 'error'; readonly reason: string };
+
+/** 共通営業時間が無いときに段 5 へ渡す値。結果は `unresolved` として捨てるので中身は効かない。 */
+const UNKNOWN_COMMON_SCHEDULE: CommonSchedule = {
+  timezone: DEFAULT_TIMEZONE,
+  weeklySchedule: {},
+  fixedHolidays: [],
+  exceptionDates: [],
+};
+
 export async function resolveRuntimeStatesFor(
   tenantId: string,
   siteId: string,
   atMs: number = Date.now(),
-): Promise<RuntimeStateResolution | undefined> {
+): Promise<RuntimeResolutionOutcome> {
+  let common: Awaited<ReturnType<typeof getOperatingPolicy>>;
+  let runtime: RuntimePolicyRecord | null;
   try {
-    const common = await getOperatingPolicy(tenantId, siteId);
-    if (!common) return undefined;
-    const runtime = await getRuntimePolicy(tenantId, siteId);
-    const policy: RuntimeOperatingPolicy = {
-      commonSchedule: {
-        timezone: common.timezone,
-        weeklySchedule: common.weeklySchedule,
-        fixedHolidays: common.fixedHolidays,
-        exceptionDates: common.exceptionDates,
-      },
-      ...(runtime?.services ? { services: runtime.services } : {}),
-      ...(runtime?.breakGlass ? { breakGlass: runtime.breakGlass } : {}),
-    };
-    return resolveServiceStates({ policy, now: atMs });
-  } catch {
-    return undefined;
+    common = await getOperatingPolicy(tenantId, siteId);
+    runtime = await getRuntimePolicy(tenantId, siteId);
+  } catch (err) {
+    /*
+     * 🔴 **黙って捨てない。** ここを undefined に潰すと、壊れたレコード 1 件や継続的な
+     * DynamoDB 障害が Reconciler を**恒久的な no-op** にし、EC2 が上がりっぱなし（費用）か
+     * 上がらないまま（受付不能）で固定される——しかも 1 分ごとに静かに失敗し続ける。
+     * PII を載せず名前だけ出す（`operating-policy/call-guard.ts` と同じ書式）。
+     */
+    const reason = (err as { name?: string }).name ?? 'unknown';
+    console.error('[runtime-policy] failed to read policy; reporting error', { tenantId, siteId, reason });
+    return { kind: 'error', reason };
   }
+
+  const policy: RuntimeOperatingPolicy = {
+    commonSchedule: common
+      ? {
+          timezone: common.timezone,
+          weeklySchedule: common.weeklySchedule,
+          fixedHolidays: common.fixedHolidays,
+          exceptionDates: common.exceptionDates,
+        }
+      : UNKNOWN_COMMON_SCHEDULE,
+    ...(runtime?.services ? { services: runtime.services } : {}),
+    ...(runtime?.breakGlass ? { breakGlass: runtime.breakGlass } : {}),
+  };
+
+  let resolution: RuntimeStateResolution;
+  try {
+    resolution = resolveServiceStates({ policy, now: atMs });
+  } catch (err) {
+    // 解決はまだ総関数ではない（`resolve.ts` が明記）。壊れたレコードは「見るべき異常」。
+    const reason = (err as { name?: string }).name ?? 'unknown';
+    console.error('[runtime-policy] failed to resolve policy; reporting error', { tenantId, siteId, reason });
+    return { kind: 'error', reason };
+  }
+
+  if (common) return { kind: 'resolved', resolution };
+
+  /*
+   * 共通営業時間に依存して決まったサービス（段 5）だけを判定不能として切り分ける。
+   * break-glass・一時 override・`always_on` / `manual_only`・サービス個別スケジュールは
+   * 共通側を読まないので、そのまま効かせてよい。
+   */
+  const unresolved = resolution.services
+    .filter((service) => service.reason === 'common_weekly_schedule')
+    .map((service) => service.serviceKey);
+  return {
+    kind: 'partial',
+    services: resolution.services.filter((service) => service.reason !== 'common_weekly_schedule'),
+    unresolved,
+  };
 }
 
 /** テスト用: ストアを空へ戻す。 */

@@ -277,6 +277,9 @@ export type AuditAction =
   // action も分ける。metadata は resource/tenantId/siteId/version/serviceKeys/breakGlass のみ
   // （時間帯の具体値は残さない）。
   | 'runtime_policy.updated'
+  // 競合で保存できなかったこと自体を残す (issue #367)。「2 人が同時に運用状態を触った」は
+  // 緊急時に最も知りたい運用イベントで、成功だけ記録すると事後に再構成できない。
+  | 'runtime_policy.update_conflicted'
   // プラットフォーム運用: テナントの有効/停止 (issue #90)。理由を metadata.reason に残す。
   | 'tenant.suspended'
   | 'tenant.activated'

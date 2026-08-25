@@ -139,7 +139,8 @@ class DynamoCollection<T extends { id: string }> implements Collection<T> {
     return strip<T>(res.Item as Item | undefined);
   }
 
-  async put(item: T): Promise<void> {
+  /** 保存レコード（GSI1 キー・TTL 込み）を組み立てる。`put` と `putIfAbsent` で共有する。 */
+  private recordFor(item: T): Item {
     const record: Item = { ...item, PK: this.pk, SK: item.id };
     if (this.indexedField) {
       // 境界クエリ用の GSI1 キー（#274/#284）。indexedField は不変フィールド限定（backend.ts）。
@@ -150,7 +151,33 @@ class DynamoCollection<T extends { id: string }> implements Collection<T> {
     if (this.ttlSeconds && this.ttlSeconds > 0) {
       record.ttl = Math.floor(Date.now() / 1000) + this.ttlSeconds;
     }
-    await this.doc.send(new PutCommand({ TableName: this.table, Item: record }));
+    return record;
+  }
+
+  async put(item: T): Promise<void> {
+    await this.doc.send(new PutCommand({ TableName: this.table, Item: this.recordFor(item) }));
+  }
+
+  /**
+   * 条件付き作成。`attribute_not_exists(PK)` で「まだ無いこと」を条件にするので、
+   * 同時に走った初回作成のうち 1 つだけが成功する（片方が無言で消えない）。
+   */
+  async putIfAbsent(item: T): Promise<boolean> {
+    const record = this.recordFor(item);
+    try {
+      await this.doc.send(
+        new PutCommand({
+          TableName: this.table,
+          Item: record,
+          ConditionExpression: 'attribute_not_exists(#pk)',
+          ExpressionAttributeNames: { '#pk': 'PK' },
+        }),
+      );
+      return true;
+    } catch (err) {
+      if ((err as { name?: string }).name === 'ConditionalCheckFailedException') return false;
+      throw err;
+    }
   }
 
   // 条件付き**部分更新**（UpdateItem）。expected が現在値と一致するときのみ changes を適用。

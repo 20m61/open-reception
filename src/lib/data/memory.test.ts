@@ -156,3 +156,24 @@ describe('MemoryBackend log() の読み取り時 TTL 判定 (#313)', () => {
     expect((await log.list()).map((l) => l.id)).toEqual(['a']);
   });
 });
+
+describe('MemoryBackend collection putIfAbsent() の条件付き作成 (#367)', () => {
+  it('不在のときだけ作成し、既にあれば false', async () => {
+    const backend = new MemoryBackend();
+    const items = backend.collection<{ id: string; label: string }>('putIfAbsent_demo');
+    await expect(items.putIfAbsent({ id: 'a', label: 'first' })).resolves.toBe(true);
+    await expect(items.putIfAbsent({ id: 'a', label: 'second' })).resolves.toBe(false);
+    await expect(items.get('a')).resolves.toMatchObject({ label: 'first' });
+  });
+
+  it('同時に走らせても 1 つだけ成功する（片方が無言で消えない）', async () => {
+    const backend = new MemoryBackend();
+    const items = backend.collection<{ id: string; label: string }>('putIfAbsent_race');
+    const results = await Promise.all([
+      items.putIfAbsent({ id: 'a', label: 'a' }),
+      items.putIfAbsent({ id: 'a', label: 'b' }),
+      items.putIfAbsent({ id: 'a', label: 'c' }),
+    ]);
+    expect(results.filter(Boolean)).toHaveLength(1);
+  });
+});

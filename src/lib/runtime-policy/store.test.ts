@@ -19,6 +19,7 @@ import {
   __resetRuntimePolicyStore,
   getRuntimePolicy,
   resolveRuntimeStatesFor,
+  runtimePolicyKey,
   upsertRuntimePolicy,
 } from './store';
 
@@ -106,13 +107,19 @@ describe('upsertRuntimePolicy', () => {
   });
 
   it('サービス設定の契約は共通営業時間の有無によらず同じ', async () => {
+    /*
+     * 検証に固定値を被せる判断の根拠そのもの。**両側**で同じ issue が出ることを固定しないと、
+     * 「実物を読んでも受理集合は変わらない」という散文が機械で守られない。
+     */
+    const input = { services: { stt: { mode: 'custom_schedule', weeklySchedule: {} } } };
+    const withoutCommon = await upsertRuntimePolicy(TENANT, SITE, 'admin@example.com', input);
     await seedOperatingHours();
-    // サービス個別の区間ゼロは恒久停止として弾かれる（共通側の値には依存しない）。
-    const result = await upsertRuntimePolicy(TENANT, SITE, 'admin@example.com', {
-      services: { stt: { mode: 'custom_schedule', weeklySchedule: {} } },
-    });
-    expect(result.ok).toBe(false);
-    if (!result.ok) expect(result.error.issues.map((i) => i.field)).toContain('services.stt.weeklySchedule');
+    const withCommon = await upsertRuntimePolicy(TENANT, SITE, 'admin@example.com', input);
+    expect(withoutCommon.ok).toBe(false);
+    expect(withCommon.ok).toBe(false);
+    if (withoutCommon.ok || withCommon.ok) return;
+    expect(withoutCommon.error.issues).toEqual(withCommon.error.issues);
+    expect(withCommon.error.issues.map((i) => i.field)).toContain('services.stt.weeklySchedule');
   });
 
   it('共通営業時間が未設定でもサービス設定は保存できる', async () => {
@@ -164,14 +171,16 @@ describe('upsertRuntimePolicy', () => {
     it('expectedVersion の型不正は conflict ではなく invalid_input', async () => {
       // 409 は「読み直して再試行せよ」の意味。型が違う要求は何度やっても直らない。
       await upsertRuntimePolicy(TENANT, SITE, 'a@example.com', { services: {} });
-      const result = await upsertRuntimePolicy(TENANT, SITE, 'b@example.com', {
-        expectedVersion: '1',
-        services: {},
-      });
-      expect(result.ok).toBe(false);
-      if (!result.ok) {
-        expect(result.error.code).toBe('invalid_input');
-        expect(result.error.issues.map((i) => i.field)).toContain('expectedVersion');
+      for (const bad of ['1', 1.5, -1, null, true]) {
+        const result = await upsertRuntimePolicy(TENANT, SITE, 'b@example.com', {
+          expectedVersion: bad,
+          services: {},
+        });
+        expect(result.ok, String(bad)).toBe(false);
+        if (!result.ok) {
+          expect(result.error.code, String(bad)).toBe('invalid_input');
+          expect(result.error.issues.map((i) => i.field)).toContain('expectedVersion');
+        }
       }
     });
   });
@@ -195,6 +204,60 @@ describe('upsertRuntimePolicy', () => {
     expect(stored?.breakGlass).toBeUndefined();
   });
 
+  it('省略したサービス設定も消える（breakGlass 側だけ守っても意味がない）', async () => {
+    /*
+     * PUT は文書の全置換。緊急時に手で叩かれる「break-glass だけの最小 body」が全サービスの
+     * 週間スケジュールを消すので、消えること自体を機械で固定しておく（route/UI は全文書を
+     * 送る契約にする。#798）。
+     */
+    await upsertRuntimePolicy(TENANT, SITE, 'a@example.com', {
+      services: { stt: { mode: 'custom_schedule', weeklySchedule: { mon: [{ start: '09:00', end: '12:00' }] } } },
+    });
+    await upsertRuntimePolicy(TENANT, SITE, 'a@example.com', {
+      expectedVersion: 1,
+      breakGlass: { active: true },
+    });
+    const stored = await getRuntimePolicy(TENANT, SITE);
+    expect(stored?.services).toBeUndefined();
+  });
+
+  it('同時に初回作成しても片方が無言で消えない', async () => {
+    // `get` → 無ければ `put` は原子的でない。消えるのが緊急停止なら「止めたつもり」が残る。
+    const [a, b] = await Promise.all([
+      upsertRuntimePolicy(TENANT, SITE, 'a@example.com', { breakGlass: { active: true } }),
+      upsertRuntimePolicy(TENANT, SITE, 'b@example.com', { services: { stt: { mode: 'manual_only' } } }),
+    ]);
+    expect([a.ok, b.ok].filter(Boolean)).toHaveLength(1);
+    const stored = await getRuntimePolicy(TENANT, SITE);
+    expect(stored?.version).toBe(1);
+  });
+
+  it('封筒のスコープが認可済みスコープと食い違ったら弾く（黙って捨てない）', async () => {
+    const result = await upsertRuntimePolicy(TENANT, SITE, 'a@example.com', {
+      tenantId: 'other-tenant',
+      services: {},
+    });
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error.issues.map((i) => i.field)).toContain('tenantId');
+    const site = await upsertRuntimePolicy(TENANT, SITE, 'a@example.com', { siteId: 'other-site', services: {} });
+    expect(site.ok).toBe(false);
+  });
+
+  it('保存するスコープと実施者は引数（認可済み）由来', async () => {
+    const result = await upsertRuntimePolicy(TENANT, SITE, 'admin@example.com', { services: {} });
+    expect(result.ok).toBe(true);
+    const stored = await getRuntimePolicy(TENANT, SITE);
+    expect(stored).toMatchObject({ tenantId: TENANT, siteId: SITE, updatedBy: 'admin@example.com' });
+    expect(Date.parse(stored?.updatedAt ?? '')).toBeGreaterThan(0);
+  });
+
+  it('キー成分に区切り文字を含む値を拒否する（別スコープと衝突させない）', () => {
+    // `a:b` + `c` と `a` + `b:c` が同じキーになると、別サイトの設定を読み書きしてしまう。
+    expect(() => runtimePolicyKey('a:b', 'c')).toThrow();
+    expect(() => runtimePolicyKey('a', 'b:c')).toThrow();
+    expect(runtimePolicyKey('a', 'b')).toBe('a:b');
+  });
+
   it('監査に時間帯の具体値を残さない（誰がどのサービスを触ったかまで）', async () => {
     await upsertRuntimePolicy(TENANT, SITE, 'admin@example.com', {
       services: { stt: { mode: 'custom_schedule', weeklySchedule: { mon: [{ start: '09:00', end: '18:00' }] } } },
@@ -203,40 +266,129 @@ describe('upsertRuntimePolicy', () => {
     const [action, target, metadata] = appendAdminAudit.mock.calls[0] as [string, unknown, Record<string, string>];
     expect(action).toBe('runtime_policy.updated');
     expect(target).toMatchObject({ type: 'runtime_policy' });
-    expect(metadata.serviceKeys).toBe('stt');
+    expect(metadata.configuredServiceKeys).toBe('stt');
+    expect(metadata.updatedBy).toBe('admin@example.com');
     expect(JSON.stringify(metadata)).not.toContain('09:00');
+  });
+
+  it('break-glass の範囲を監査に残す（対象なしと全停止を取り違えない）', async () => {
+    /*
+     * 🔴 `breakGlass.serviceKeys` の省略は「保護対象以外を**全部**止める」を意味する。
+     * サービス個別設定のキー（`configuredServiceKeys`）と同じ欄で表すと、全停止が
+     * 「何も止まっていない」と読める監査行になる。
+     */
+    await upsertRuntimePolicy(TENANT, SITE, 'admin@example.com', { breakGlass: { active: true } });
+    const [, , all] = appendAdminAudit.mock.calls[0] as [string, unknown, Record<string, string>];
+    expect(all.breakGlass).toBe('active');
+    expect(all.breakGlassScope).toBe('all_unprotected');
+
+    vi.clearAllMocks();
+    await upsertRuntimePolicy(TENANT, SITE, 'admin@example.com', {
+      expectedVersion: 1,
+      breakGlass: { active: true, serviceKeys: ['stt'] },
+    });
+    const [, , scoped] = appendAdminAudit.mock.calls[0] as [string, unknown, Record<string, string>];
+    expect(scoped.breakGlassScope).toBe('stt');
+
+    vi.clearAllMocks();
+    await upsertRuntimePolicy(TENANT, SITE, 'admin@example.com', { expectedVersion: 2, services: {} });
+    const [, , none] = appendAdminAudit.mock.calls[0] as [string, unknown, Record<string, string>];
+    expect(none.breakGlassScope).toBe('none');
+  });
+
+  it('競合で保存できなかったことも監査に残す', async () => {
+    await upsertRuntimePolicy(TENANT, SITE, 'a@example.com', { services: {} });
+    vi.clearAllMocks();
+    const result = await upsertRuntimePolicy(TENANT, SITE, 'b@example.com', { services: {} });
+    expect(result.ok).toBe(false);
+    const [action, target, metadata] = appendAdminAudit.mock.calls[0] as [string, unknown, Record<string, string>];
+    expect(action).toBe('runtime_policy.update_conflicted');
+    expect(target).toMatchObject({ type: 'runtime_policy', id: `${TENANT}:${SITE}` });
+    expect(metadata.updatedBy).toBe('b@example.com');
   });
 });
 
 describe('resolveRuntimeStatesFor', () => {
-  it('共通営業時間が未設定なら undefined（判定不能を「停止」と言わない）', async () => {
-    // ここで「停止」に倒すと、営業時間を未設定のまま運用を始めた拠点で受付が上がらない。
-    await expect(resolveRuntimeStatesFor(TENANT, SITE, IN_HOURS)).resolves.toBeUndefined();
+  /**
+   * 🔴 共通営業時間を実際に読むのは段 5（`follow_operating_hours`）だけ。それが未設定だからと
+   * 解決全体を諦めると、**break-glass が「保存できるのに絶対に効かない」**——API は 200、
+   * 画面は「停止しました」、監査にも残るのに EC2 は動き続ける。
+   */
+  it('共通営業時間が未設定でも break-glass は効く', async () => {
+    await upsertRuntimePolicy(TENANT, SITE, 'a@example.com', { breakGlass: { active: true } });
+    const outcome = await resolveRuntimeStatesFor(TENANT, SITE, IN_HOURS);
+    expect(outcome.kind).toBe('partial');
+    if (outcome.kind !== 'partial') return;
+    expect(outcome.services.find((s) => s.serviceKey === 'stt')?.state).toBe('stopped');
+    // 保護対象は落とさない（止めた後に戻す手段を残す）。
+    expect(outcome.services.find((s) => s.serviceKey === 'admin')?.state).toBe('running');
+  });
+
+  it('共通営業時間が未設定でも manual_only は効く', async () => {
+    await upsertRuntimePolicy(TENANT, SITE, 'a@example.com', {
+      services: { 'realtime-conversation': { mode: 'manual_only' } },
+    });
+    const outcome = await resolveRuntimeStatesFor(TENANT, SITE, IN_HOURS);
+    expect(outcome.kind).toBe('partial');
+    if (outcome.kind !== 'partial') return;
+    expect(outcome.services.find((s) => s.serviceKey === 'realtime-conversation')?.state).toBe('stopped');
+  });
+
+  it('共通営業時間に依存するサービスだけを判定不能として切り分ける', async () => {
+    const outcome = await resolveRuntimeStatesFor(TENANT, SITE, IN_HOURS);
+    expect(outcome.kind).toBe('partial');
+    if (outcome.kind !== 'partial') return;
+    // 既定が follow_operating_hours のサービスは共通側が要る。always_on 側は決まる。
+    expect(outcome.unresolved).toContain('stt');
+    expect(outcome.unresolved).not.toContain('signage');
+    expect(outcome.services.find((s) => s.serviceKey === 'signage')?.state).toBe('running');
+    // 判定できていないサービスを「決まった」側に混ぜない。
+    expect(outcome.services.map((s) => s.serviceKey)).not.toContain('stt');
   });
 
   it('runtime policy が未設定なら registry の既定 mode で解決する', async () => {
     await seedOperatingHours();
-    const resolution = await resolveRuntimeStatesFor(TENANT, SITE, IN_HOURS);
-    expect(resolution && resolutionFor(resolution, 'stt')?.state).toBe('running');
-    expect(resolution && resolutionFor(resolution, 'signage')?.state).toBe('running');
-    expect(resolution?.capabilities).toContain('speech_input');
+    const outcome = await resolveRuntimeStatesFor(TENANT, SITE, IN_HOURS);
+    expect(outcome.kind).toBe('resolved');
+    if (outcome.kind !== 'resolved') return;
+    expect(resolutionFor(outcome.resolution, 'stt')?.state).toBe('running');
+    expect(resolutionFor(outcome.resolution, 'signage')?.state).toBe('running');
+    expect(outcome.resolution.capabilities).toContain('speech_input');
   });
 
   it('保存したサービス設定が解決に効く', async () => {
     await seedOperatingHours();
     await upsertRuntimePolicy(TENANT, SITE, 'a@example.com', { services: { stt: { mode: 'manual_only' } } });
-    const resolution = await resolveRuntimeStatesFor(TENANT, SITE, IN_HOURS);
-    expect(resolution && resolutionFor(resolution, 'stt')?.state).toBe('stopped');
+    const outcome = await resolveRuntimeStatesFor(TENANT, SITE, IN_HOURS);
+    expect(outcome.kind).toBe('resolved');
+    if (outcome.kind !== 'resolved') return;
+    expect(resolutionFor(outcome.resolution, 'stt')?.state).toBe('stopped');
     // capability も落ちる（画面が「音声で話しかけてください」と出し続けないように）。
-    expect(resolution?.capabilities).not.toContain('speech_input');
+    expect(outcome.resolution.capabilities).not.toContain('speech_input');
   });
 
   it('break-glass が解決に効く', async () => {
     await seedOperatingHours();
     await upsertRuntimePolicy(TENANT, SITE, 'a@example.com', { breakGlass: { active: true } });
-    const resolution = await resolveRuntimeStatesFor(TENANT, SITE, IN_HOURS);
-    expect(resolution && resolutionFor(resolution, 'stt')?.state).toBe('stopped');
-    // 保護対象は落とさない（止めた後に戻す手段を残す）。
-    expect(resolution && resolutionFor(resolution, 'admin')?.state).toBe('running');
+    const outcome = await resolveRuntimeStatesFor(TENANT, SITE, IN_HOURS);
+    expect(outcome.kind).toBe('resolved');
+    if (outcome.kind !== 'resolved') return;
+    expect(resolutionFor(outcome.resolution, 'stt')?.state).toBe('stopped');
+    expect(resolutionFor(outcome.resolution, 'admin')?.state).toBe('running');
+  });
+
+  /**
+   * 🔴 「まだ設定していない」と「壊れている」を同じ値にしない。潰すと、壊れたレコード 1 件や
+   * 継続的な DynamoDB 障害が Reconciler を**恒久的な no-op** にし、1 分ごとに静かに失敗し続ける。
+   */
+  it('読み取りに失敗したら error として報告し、黙って捨てない', async () => {
+    const error = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    try {
+      const outcome = await resolveRuntimeStatesFor('bad:tenant', SITE, IN_HOURS);
+      expect(outcome.kind).toBe('error');
+      expect(error).toHaveBeenCalled();
+    } finally {
+      error.mockRestore();
+    }
   });
 });
