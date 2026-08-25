@@ -5,6 +5,11 @@ import { loginAsAdmin } from './helpers';
 /**
  * 営業時間の同時編集で後勝ち上書きしない (#367)。
  *
+ * 🔴 **`default-site` を使わない。** kiosk は `resolveDefaultScope()`（= `default-site`）の
+ * 営業時間を読むので、ここで制限的なスケジュールを書くと**受付端末が営業時間外になり、
+ * 他の kiosk テストが全滅する**（実際に 136 件落とした）。副作用の閉じた `branch-site`
+ * （seed の 2 拠点目・拠点セレクタの検証にしか使われない）で回す。
+ *
  * 従来の保存は `get` → `put` の read-modify-write で、2 人の運用者が同じ版を読んで
  * 保存すると**先に保存した側の変更が痕跡なく消えていた**。営業時間は EC2 の起動時間
  * （＝実費）と、営業時間外の発信抑止に直結する。
@@ -17,20 +22,27 @@ import { loginAsAdmin } from './helpers';
 // 進めてしまう（実際にフレークした）。順に走らせる。
 test.describe.configure({ mode: 'serial' });
 
+// `branch-site` は seed 由来。dynamodb backend では seed が無視されるため実環境には無い
+// （`admin-site-scope.spec.ts` と同じ理由）。
+test.skip(
+  !!process.env.PLAYWRIGHT_BASE_URL,
+  'branch-site は seed 由来で、dynamodb backend では seed が無視されるため実環境には存在しない',
+);
+
 test('ほかの管理者が先に保存していたら、上書きせず読み直しを促す', async ({ page }) => {
   await loginAsAdmin(page);
-  await page.goto('/admin/operating-hours?siteId=default-site');
+  await page.goto('/admin/operating-hours?siteId=branch-site');
   await expect(page.getByTestId('operating-hours-save')).toBeEnabled();
 
   // 画面が読んだ後に、別の管理者が保存した状況を作る。
-  const current = await page.request.get('/api/admin/operating-policy?tenantId=internal&siteId=default-site');
+  const current = await page.request.get('/api/admin/operating-policy?tenantId=internal&siteId=branch-site');
   expect(current.ok()).toBeTruthy();
   const { policy } = (await current.json()) as { policy: { version: number } | null };
 
   const other = await page.request.put('/api/admin/operating-policy', {
     data: {
       tenantId: 'internal',
-      siteId: 'default-site',
+      siteId: 'branch-site',
       timezone: 'Asia/Tokyo',
       weeklySchedule: { mon: [{ start: '09:00', end: '17:00' }] },
       fixedHolidays: [],
@@ -49,7 +61,7 @@ test('ほかの管理者が先に保存していたら、上書きせず読み�
   await expect(issues).toContainText('保存していません');
 
   // ほかの管理者の内容が残っていること（黙って消えていない）。
-  const after = await page.request.get('/api/admin/operating-policy?tenantId=internal&siteId=default-site');
+  const after = await page.request.get('/api/admin/operating-policy?tenantId=internal&siteId=branch-site');
   const body = (await after.json()) as { policy: { weeklySchedule: Record<string, unknown> } };
   expect(Object.keys(body.policy.weeklySchedule)).toEqual(['mon']);
 });
@@ -63,7 +75,7 @@ test('競合していない通常の保存は通る（画面が読んだ版を�
   const seeded = await page.request.put('/api/admin/operating-policy', {
     data: {
       tenantId: 'internal',
-      siteId: 'default-site',
+      siteId: 'branch-site',
       timezone: 'Asia/Tokyo',
       weeklySchedule: { mon: [{ start: '09:00', end: '18:00' }] },
       fixedHolidays: [],
@@ -73,7 +85,7 @@ test('競合していない通常の保存は通る（画面が読んだ版を�
   // 既に有れば 409（それでよい。要るのは「レコードが存在すること」だけ）。
   expect([200, 409]).toContain(seeded.status());
 
-  await page.goto('/admin/operating-hours?siteId=default-site');
+  await page.goto('/admin/operating-hours?siteId=branch-site');
   await expect(page.getByTestId('operating-hours-save')).toBeEnabled();
 
   await page.getByTestId('operating-hours-timezone').fill('Asia/Tokyo');
