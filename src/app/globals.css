@@ -249,9 +249,41 @@ a {
   transform: translateY(1px) scale(0.99);
 }
 
+/*
+ * 「押せない」を透明度だけで表さない (#778 AC3)。
+ *
+ * 受付端末は明るいロビーに置かれ、来訪者は初見で使う。`opacity: 0.5` だけのボタンは
+ * 「押せない」ではなく「ただのボタン」に見え、反応しないまま連打される。高コントラスト
+ * モードではさらに悪く、**透明度は意味を伝えずコントラストだけを削る**。
+ *
+ * 面をフラットに戻し（`.btn--primary` の gradient を打ち消す）、破線の枠と弱い文字色で
+ * 示す。`.btn:disabled` は `.btn--primary` より詳細度が高いので、後勝ちに頼らない。
+ */
 .btn:disabled {
-  opacity: 0.5;
+  background: var(--color-surface);
+  /* ショートハンドで既に gradient は消えるが、後日 `background-color` へ書き換えられた
+     ときに `.btn--primary` の gradient が戻るのを防ぐ（冗長だが意図的）。 */
+  background-image: none;
+  /*
+   * `.btn` の 1px を保つ。太らせると氏名を入力した瞬間にボタンの寸法が変わる。
+   * 色は `--color-border-strong`（rgba(255,255,255,.16)）だと面に対して 1.66:1 しかなく、
+   * iPad の実距離では破線が見えない。**見えない破線は色だけの表現に戻る**ので、
+   * `--color-muted` 寄りへ上げる（太さは変えずに色で稼ぐ）。
+   */
+  border-style: dashed;
+  border-color: color-mix(in srgb, var(--color-muted) 60%, transparent);
+  color: var(--color-muted);
+  box-shadow: none;
   cursor: not-allowed;
+}
+
+/*
+ * ghost は有効時が `background: transparent`。無効時に面を塗ると**有効なボタンより重く**
+ * 見え、#778 の原則「枠が強い＝重要」と逆になる（viewer ロールの管理画面では ghost が
+ * 全部塗りつぶしになり、書ける primary より目立つ）。面だけ透明へ戻す。
+ */
+.btn--ghost:disabled {
+  background: transparent;
 }
 
 .btn--primary {

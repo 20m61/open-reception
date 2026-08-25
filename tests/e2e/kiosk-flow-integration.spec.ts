@@ -192,3 +192,50 @@ test('English を選ぶとカスタム受付フローの画面も英語になる
   await expect(page.getByRole('heading', { name: 'Please enter your details' })).toBeVisible();
   await expect(page.getByTestId('visitor-submit')).toHaveText('Continue to confirm');
 });
+
+test('カスタム受付フローの主 CTA も「押せない」を視覚語彙で示す (#778 AC2/AC3)', async ({ page }) => {
+  // 旧実装はインラインスタイルで `cursor: pointer` 固定・disabled 表現ゼロだった。
+  // 「押せそうに見えて反応しない主 CTA」は opacity 0.5 より悪く、明るいロビーの初見
+  // 来訪者は連打して受付を諦める。組込みフローの `to-confirm` を見る E2E では気づけない。
+  const key = uniq('e2e-affordance');
+  const name = uniq('affordance flow');
+
+  await loginAsAdmin(page);
+  const created = await page.request.post('/api/admin/reception-flows', {
+    data: {
+      tenantId: 'internal',
+      siteId: 'default-site',
+      purposeKey: key,
+      displayName: name,
+      order: 99,
+      steps: ['purpose', 'visitorInfo', 'confirm', 'call'],
+      fields: [{ key: 'name', label: 'お名前', type: 'text', required: true }],
+    },
+  });
+  expect(created.ok()).toBeTruthy();
+  createdFlowIds.push(((await created.json()) as { id: string }).id);
+
+  await establishKioskSession(page);
+  await page.goto('/kiosk');
+  await page.getByTestId('start-reception').click();
+  await expect(page.getByTestId('purpose-selector')).toBeVisible({ timeout: 15_000 });
+  await page.getByTestId('purpose-option').first().click();
+  await page.getByTestId('staff-staff-sato').click();
+  await expect(page.getByTestId('visitor-info-form')).toBeVisible({ timeout: 15_000 });
+
+  const submit = page.getByTestId('visitor-submit');
+  await expect(submit).toBeDisabled();
+  const off = await submit.evaluate((el) => {
+    const s = getComputedStyle(el);
+    return { borderStyle: s.borderTopStyle, cursor: s.cursor, backgroundImage: s.backgroundImage };
+  });
+  expect(off.borderStyle, '破線で「押せない」を示していない').toBe('dashed');
+  expect(off.cursor, 'カーソルが押せるように見えたまま').toBe('not-allowed');
+  expect(off.backgroundImage, 'アクセントの塗りが残っている').toBe('none');
+
+  // 必須項目が埋まれば主 CTA の見た目へ戻る（組込みフローと同じ語彙）。
+  await page.getByTestId('field-input').first().fill('来客 一郎');
+  await expect(submit).toBeEnabled();
+  const on = await submit.evaluate((el) => getComputedStyle(el).borderTopStyle);
+  expect(on).not.toBe('dashed');
+});
