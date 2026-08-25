@@ -152,33 +152,87 @@ function evaluateToState(schedule: CommonSchedule, now: number): ServiceRuntimeS
  * 生き残る。開発機(JST)で検証すると正しく見えるため、環境差でしか露見しない。
  * このモジュールの他の判定は全て IANA TZ を明示して使っているので、ここも揃える。
  */
-function expiresAtMs(expiresAt: string, timezone: string): number {
-  // オフセット付き（`Z` / `±HH:MM`）はそのまま絶対時刻として読める。
-  if (/(?:Z|[+-]\d{2}:?\d{2})$/.test(expiresAt)) return Date.parse(expiresAt);
+export function expiresAtMs(expiresAt: string, timezone: string): number {
+  /*
+   * 🔴 **この関数は総関数にする。** Reconciler の毎分の解決から呼ばれるので、1 レコードの
+   * 型ドリフト（旧データ・部分書き込み・DynamoDB の属性型違い）で throw すると**全サービスの
+   * 解決が丸ごと落ち、何も収束しない**。文字列でない `expiresAt` も、不正な `timezone` も
+   * 解析不能（NaN = 自動解除）として扱う。**解決全体はまだ総関数ではない**（`commonSchedule`
+   * 欠落・非配列の `exceptionDates` などは throw する）。読み側の fail-safe は #798。
+   */
+  if (typeof expiresAt !== 'string') return Number.NaN;
+  /*
+   * 前後の空白は落とす。運用画面のコピー&ペーストで混ざるだけの違いを「解析不能 =
+   * 一時 override が黙って効かない」に昇格させない。
+   */
+  const value = expiresAt.trim();
+  /*
+   * 🔴 **暦の妥当性は経路によらず先に見る。** `Date.parse` は月の桁溢れ（`13-01`）は拒むが
+   * **日の桁溢れは通す**（`2026-02-30T00:00:00Z` → 3/2）。月末を機械生成する UI の
+   * オフバイワンで、停止が最大 3 日延びる——画面は「2/30 まで」と読めるので気づけない。
+   */
+  const ymd = /^(\d{4})-(\d{2})-(\d{2})/.exec(value);
+  if (!ymd || !isRealCalendarDate(Number(ymd[1]), Number(ymd[2]), Number(ymd[3]))) return Number.NaN;
+  /*
+   * 🔴 時刻の妥当性も**経路によらず**先に見る。`Date.parse` は `24:00` を翌日として通すので、
+   * 「`Z` を付けたら通る、付けなければ通らない」という説明できない差になっていた。
+   * （オフセットの `+09:00` は `[T ]` が前置されないのでここには掛からない。）
+   */
+  const time = /[T ](\d{2}):(\d{2})(?::(\d{2}))?/.exec(value);
+  if (time && (Number(time[1]) > 23 || Number(time[2]) > 59 || Number(time[3] ?? '0') > 59)) return Number.NaN;
+  // オフセット付き（`Z` / `±HH:MM`）はそのまま絶対時刻として読める（小文字 `z` も同義に扱う）。
+  if (/(?:[Zz]|[+-]\d{2}:?\d{2})$/.test(value)) return Date.parse(value.replace(/z$/, 'Z'));
   /*
    * 🔴 **末尾まで縛る（`$`）。** 前方一致だと `2026-07-22T12:00oops` を「12:00 まで」と
    * 読んでしまい、doc の「解析不能は自動解除」と食い違う。黙って別の値として解釈しない。
    * 🔴 **秒も読む。** 落とすと `12:00:59` が `12:00:00` 扱いになり、最大 59 秒早く失効する。
    */
-  const m = /^(\d{4})-(\d{2})-(\d{2})(?:[T ](\d{2}):(\d{2})(?::(\d{2}))?)?$/.exec(expiresAt);
+  const m = /^(\d{4})-(\d{2})-(\d{2})(?:[T ](\d{2}):(\d{2})(?::(\d{2})(?:\.(\d{1,3}))?)?)?$/.exec(value);
   if (!m) return Number.NaN;
+  const year = Number(m[1]);
+  const month = Number(m[2]);
+  const day = Number(m[3]);
+  const hour = m[4] === undefined ? 0 : Number(m[4]);
+  const minute = m[5] === undefined ? 0 : Number(m[5]);
   const seconds = m[6] === undefined ? 0 : Number(m[6]);
-  if (seconds > 59) return Number.NaN;
+  /*
+   * ミリ秒はオフセット付き（`.000Z`）だけ通って、オフセット無し（`.500`）は落ちる——という
+   * 説明できない境界を作らない。`<input step="0.001">` と Luxon の
+   * `toISO({ includeOffset: false })` がこの形を出す。`.5` は 500ms（右をゼロ埋め）。
+   */
+  const millis = m[7] === undefined ? 0 : Number(m[7].padEnd(3, '0'));
+  /*
+   * 🔴 **暦として存在しない値を黙って読み替えない。** `Date` も `zonedTimeToUtcMs` も
+   * `2026-13-45` を 2027 年へ、`99:99` を翌日以降へ繰り上げる。`force_stopped` と
+   * 組み合わさると、月や時刻の 1 桁ミスが**数か月のサービス停止**として現れ、しかも
+   * 画面上は「その日時まで」と読める。ここは doc の契約どおり「解析不能 = 自動解除」へ倒す。
+   */
   // `zonedTimeToUtcMs` は分までしか受けないので、秒は後から足す（TZ オフセットは分単位で
   // 表現されるので、秒を加えても帯の判定はずれない）。
-  return (
-    zonedTimeToUtcMs(
-      {
-        year: Number(m[1]),
-        month: Number(m[2]),
-        day: Number(m[3]),
-        hour: m[4] === undefined ? 0 : Number(m[4]),
-        minute: m[5] === undefined ? 0 : Number(m[5]),
-      },
-      timezone,
-    ) +
-    seconds * 1000
-  );
+  /*
+   * 🔴 `timezone` は `expiresAt` と**同じレコード・同じドリフト要因**で来る。`zonedTimeToUtcMs` は
+   * 不正な IANA 名で RangeError を投げるので、ここも解析不能（= 自動解除）へ倒す。片方だけ塞いでも、
+   * Reconciler が毎分同じ throw を繰り返す経路は消えない。
+   * （解決全体の fail-safe——読み側で壊れたレコードをどう扱うか——は #798 の受入条件。）
+   */
+  try {
+    return zonedTimeToUtcMs({ year, month, day, hour, minute }, timezone) + seconds * 1000 + millis;
+  } catch {
+    return Number.NaN;
+  }
+}
+
+/**
+ * 暦として存在する年月日か。`Date` は `2026-13-01` を 2027-01-01 へ、`2026-02-30` を 3/2 へ
+ * 読み替えるので、`force_stopped` と組み合わさると桁のミスが数か月のサービス停止になる。
+ *
+ * 月がずれていれば日の桁溢れも月の桁溢れも両方掴める——桁数は正規表現で 2 桁に固定済みなので、
+ * 日の溢れは必ず月を動かす。年の比較は `Date.UTC` が 0〜99 年を 1900 年代へ写すため。
+ */
+function isRealCalendarDate(year: number, month: number, day: number): boolean {
+  const asUtc = new Date(Date.UTC(year, month - 1, day));
+  if (Number.isNaN(asUtc.getTime())) return false;
+  return asUtc.getUTCFullYear() === year && asUtc.getUTCMonth() === month - 1;
 }
 
 /** 期限内の一時 override だけを返す（期限切れ・解析不能は undefined = 自動解除）。 */

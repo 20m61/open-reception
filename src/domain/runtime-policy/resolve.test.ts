@@ -10,6 +10,7 @@ import type { OperatingException, TimeRange, Weekday } from '@/domain/operating-
 import { MANAGED_RUNTIME_SERVICES, type ManagedRuntimeService, type ManagedRuntimeServiceKey } from './registry';
 import {
   BREAK_GLASS_PROTECTED_SERVICES,
+  expiresAtMs,
   resolveServiceStates,
   resolutionFor,
   type RuntimeOperatingPolicy,
@@ -645,6 +646,113 @@ describe('expiresAt の解析（外部レビュー指摘の回帰固定, PR #791
         reason: 'common_weekly_schedule',
       });
     }
+  });
+
+  it('暦として存在しない日時は解析不能として扱う（黙って先の時刻へ繰り上げない）', () => {
+    /*
+     * 🔴 `Date` も `zonedTimeToUtcMs` も `2026-13-45` を 2027 年へ、`99:99` を翌日以降へ
+     * 繰り上げる。`force_stopped` と組み合わさると、月や時刻の 1 桁ミスが**数か月の
+     * サービス停止**になり、画面上は「その日時まで」と読めるので気づけない。
+     */
+    // `0000-01-01` は `Date.UTC` が 1900-01-01 へ写す（0〜99 年の特例）。年の比較を落とすと通る。
+    for (const bad of ['2026-13-01', '2026-02-30', '2026-00-10', '2026-07-32', '2026-07-22T24:00', '2026-07-22T12:60', '0000-01-01']) {
+      expect(stateOf(at(bad), 'bedrock', IN_HOURS), `expiresAt=${bad}`).toEqual({
+        state: 'running',
+        reason: 'common_weekly_schedule',
+      });
+    }
+  });
+
+  it('うるう年の 2/29 は年によって受理と拒否が分かれる', () => {
+    // 「暦の妥当性」を月ごとの固定表で誤魔化していないことを固定する。
+    expect(stateOf(at('2028-02-29'), 'bedrock', IN_HOURS)).toMatchObject({ reason: 'temporary_override' });
+    expect(stateOf(at('2027-02-29'), 'bedrock', IN_HOURS)).toMatchObject({ reason: 'common_weekly_schedule' });
+  });
+
+  it('運用画面が普通に作る形を拒否しない（ミリ秒・前後空白・小文字 z）', () => {
+    /*
+     * `.000Z` は通るのに `.500`（オフセット無しのミリ秒つき）は通らない、という説明できない
+     * 境界を残さない。`<input type="datetime-local" step="0.001">` や
+     * Luxon の `toISO({ includeOffset: false })` がこの形を出す。
+     */
+    for (const good of ['2026-07-22T13:00:00.500', '2026-07-22T13:00:00.5', ' 2026-07-22T13:00 ', '2026-07-22T04:00:00z']) {
+      expect(stateOf(at(good), 'bedrock', IN_HOURS), `expiresAt=${good}`).toMatchObject({
+        reason: 'temporary_override',
+      });
+    }
+  });
+
+  it('ミリ秒は切り捨てず、期限の判定に効かせる', () => {
+    // `.5` は 500ms（右ゼロ埋め）。`Number('5')` と読むと 5ms になり、`.5` と `.005` が同じになる。
+    for (const expiresAt of ['2026-07-22T12:00:00.500', '2026-07-22T12:00:00.5']) {
+      const policy = at(expiresAt);
+      expect(stateOf(policy, 'bedrock', tokyo(2026, 7, 22, 12, 0, 0) + 250), expiresAt).toMatchObject({
+        reason: 'temporary_override',
+      });
+      expect(stateOf(policy, 'bedrock', tokyo(2026, 7, 22, 12, 0, 0) + 750), expiresAt).toMatchObject({
+        reason: 'common_weekly_schedule',
+      });
+    }
+  });
+
+  it('文字列でない expiresAt で解決を落とさない（総関数のままにする）', () => {
+    /*
+     * 🔴 `expiresAt.trim()` は非文字列で throw する。Reconciler は 1 分ごとに走るので、
+     * 1 レコードの型ドリフト（旧データ・部分書き込み・DynamoDB の属性型違い）で
+     * **全サービスの解決が丸ごと落ち、何も収束しないまま繰り返す**。解析不能として扱う。
+     */
+    for (const bad of [null, undefined, 123, {}, []]) {
+      const policy = at(bad as unknown as string);
+      expect(() => stateOf(policy, 'bedrock', IN_HOURS), String(bad)).not.toThrow();
+      expect(stateOf(policy, 'bedrock', IN_HOURS), String(bad)).toEqual({
+        state: 'running',
+        reason: 'common_weekly_schedule',
+      });
+    }
+  });
+
+  it('オフセット付きでも暦チェックを迂回させない', () => {
+    // `Date.parse` は月の桁溢れは拒むが**日の桁溢れは通す**（`2026-02-30T00:00:00Z` → 3/2）。
+    // 月末を機械生成する UI のオフバイワンで、停止が最大 3 日延びる。
+    // 🔴 未来日で試す。過去日だと「期限切れで自動解除」と区別が付かず、テストが素通しになる。
+    for (const bad of ['2027-02-30T00:00:00Z', '2027-06-31T00:00:00Z', '2027-02-30T00:00:00+09:00']) {
+      expect(stateOf(at(bad), 'bedrock', IN_HOURS), `expiresAt=${bad}`).toEqual({
+        state: 'running',
+        reason: 'common_weekly_schedule',
+      });
+    }
+  });
+
+  it('ミリ秒は 3 桁まで（桁を緩めると padEnd が効かず大幅な延長になる）', () => {
+    // `.123456789` を許すと `padEnd` が無効化され +123456789ms ≒ 34 時間の停止延長になる。
+    expect(stateOf(at('2026-07-22T13:00:00.1234'), 'bedrock', IN_HOURS)).toEqual({
+      state: 'running',
+      reason: 'common_weekly_schedule',
+    });
+  });
+
+  it('不正な timezone で解決を落とさない（expiresAt だけ塞いでも意味がない）', () => {
+    // `timezone` は `expiresAt` と同じレコード・同じドリフト要因で来る。`zonedTimeToUtcMs` は
+    // 不正な IANA 名で RangeError を投げるので、ここも解析不能（= 自動解除）へ倒す。
+    expect(() => expiresAtMs('2026-07-22T12:00', 'Asia/Tokyoo')).not.toThrow();
+    expect(expiresAtMs('2026-07-22T12:00', 'Asia/Tokyoo')).toBeNaN();
+  });
+
+  it('時刻の妥当性も経路によらず見る（Z を付けたら通る、をなくす）', () => {
+    // `'2026-07-22T24:00'` は NaN なのに `'2026-07-22T24:00:00Z'` は 7/23 として通っていた。
+    for (const bad of ['2027-07-22T24:00:00Z', '2027-07-22T12:60:00Z', '2027-07-22T12:00:60Z']) {
+      expect(stateOf(at(bad), 'bedrock', IN_HOURS), `expiresAt=${bad}`).toEqual({
+        state: 'running',
+        reason: 'common_weekly_schedule',
+      });
+    }
+  });
+
+  it('空白区切りの時刻も同じ厳しさで見る（T 区切りだけを見ない）', () => {
+    // 時刻レンジ検査は 1 箇所へ寄せたので、区切り文字を取りこぼすと受け皿が無くなる。
+    expect(expiresAtMs('2026-07-22 25:00', 'Asia/Tokyo')).toBeNaN();
+    expect(expiresAtMs('2026-07-22 12:60', 'Asia/Tokyo')).toBeNaN();
+    expect(expiresAtMs('2026-07-22 12:00', 'Asia/Tokyo')).not.toBeNaN();
   });
 
   it('秒を省いた値・日付だけの値は従来どおり解釈できる', () => {
