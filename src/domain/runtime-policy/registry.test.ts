@@ -41,6 +41,15 @@ describe('MANAGED_RUNTIME_SERVICES', () => {
     expect([...alwaysOn].sort()).toEqual(['admin', 'monitoring', 'qr-resolution', 'signage', 'touch-reception']);
   });
 
+  it('既定 mode に custom_schedule は使わない', () => {
+    /*
+     * 入力検証（`validate.ts`）は「mode が不正なら、推測した既定 mode を前提にした助言をしない」
+     * を、この不変条件に乗せている。既定が `custom_schedule` のサービスが現れると、
+     * 「スケジュールが必須」という助言を**不正な mode の入力に対して**出すようになる。
+     */
+    expect(MANAGED_RUNTIME_SERVICES.map((s) => s.defaultMode)).not.toContain('custom_schedule');
+  });
+
   it('dependsOn は既知の serviceKey のみを参照し、自己参照しない', () => {
     const keys = new Set<string>(MANAGED_RUNTIME_SERVICES.map((s) => s.serviceKey));
     for (const service of MANAGED_RUNTIME_SERVICES) {

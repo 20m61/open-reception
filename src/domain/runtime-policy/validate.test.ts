@@ -335,6 +335,23 @@ describe('runtime policy の入力検証 (#367)', () => {
     expect(issuesOf({ ...OK, services: { stt: { mode: 'custom_schedule', exceptionDates: closedOnly } } })).toContain(
       'services.stt.weeklySchedule',
     );
+    // 休業日と臨時営業日が**混在**するのは現実的な構成。「1 件でも開けば」で緩める
+    // （全件が開くことを要求すると、休業日を明示した途端に保存できなくなる）。
+    expect(
+      validateRuntimePolicyInput({
+        ...OK,
+        services: {
+          stt: {
+            mode: 'custom_schedule',
+            weeklySchedule: {},
+            exceptionDates: [
+              { date: '2026-09-01', closed: true },
+              { date: '2026-09-02', ranges: [{ start: '10:00', end: '12:00' }] },
+            ],
+          },
+        },
+      }).ok,
+    ).toBe(true);
     // `closed` を省いた開ける例外日（委譲先は closed=false として ranges を要求する）は緩和の対象。
     const openWithoutFlag = [{ date: '2026-09-01', ranges: [{ start: '10:00', end: '12:00' }] }];
     expect(
@@ -359,6 +376,10 @@ describe('runtime policy の入力検証 (#367)', () => {
     const issues = issuesOf({ ...OK, services: { signage: { mode: 'always-on', weeklySchedule: { mon: [{ start: '09:00', end: '18:00' }] } } } });
     expect(issues).toContain('services.signage.mode');
     expect(issues).not.toContain('services.signage.weeklySchedule');
+    // registry 既定が schedule 駆動の側でも同じ（推測した mode で助言すると往復が増える）。
+    const other = issuesOf({ ...OK, services: { stt: { mode: 'manual-only', weeklySchedule: {} } } });
+    expect(other).toContain('services.stt.mode');
+    expect(other).not.toContain('services.stt.weeklySchedule');
   });
 
   it('稼働時間を絞りたい運用者に緊急停止を勧めない', () => {
@@ -366,6 +387,8 @@ describe('runtime policy の入力検証 (#367)', () => {
     const message = messagesOf({ ...OK, services: { signage: { weeklySchedule: { mon: [{ start: '09:00', end: '18:00' }] } } } }).join(' ');
     expect(message).toContain('custom_schedule');
     expect(message).not.toContain('break-glass');
+    // 「何を勧めないか」だけでなく「何を勧めるか」も固定する。
+    expect(message).toContain('set one of those to limit when this service runs');
   });
 
   it('スケジュールを読まない mode にスケジュールを設定させない（黙って無視しない）', () => {

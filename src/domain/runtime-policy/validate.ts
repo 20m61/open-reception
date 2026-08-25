@@ -450,13 +450,22 @@ function validateOverride(
   const hasOpeningException =
     Array.isArray(override.exceptionDates) &&
     override.exceptionDates.some((exception) => isRecord(exception) && exception.closed !== true);
-  // mode 自体が不正なら「無視される」と断言しない（typo を直せば無視されなくなる）。
+  /*
+   * mode 自体が不正なら、**推測した既定 mode を前提にした助言をしない**（typo を直せば
+   * 前提が変わる）。`manual-only` の打ち間違いに「区間を 1 つ以上入れよ」と言い、直したら
+   * 今度は「無視される」と言う——往復が 1 回増えるだけで、どちらの助言も嘘になる。
+   */
   const modeIsValid = override.mode === undefined || result.mode !== undefined;
 
   /*
    * 🔴 `custom_schedule` なのにスケジュールも例外日も無いと、解決は段 3・段 4 を素通りして
    * `default_policy` で **stopped** になる。「キーを省略せよ」という助言だけを載せていた頃は、
    * **メッセージ自身が事故を誘発していた**（共通営業時間へ戻したつもりが恒久停止）。
+   */
+  /*
+   * ここに `modeIsValid` は要らない。registry の既定 mode に `custom_schedule` は無いので
+   * （`registry.test.ts` が固定）、mode が不正なときに `effectiveMode` が `custom_schedule` に
+   * なることはない＝到達しない分岐を増やすだけになる。
    */
   if (effectiveMode === 'custom_schedule' && override.weeklySchedule === undefined && !hasOpeningException) {
     issues.push({ field: `services.${key}.weeklySchedule`, message: EMPTY_SCHEDULE_MESSAGE });
@@ -503,7 +512,7 @@ function validateOverride(
      * 保存できなくなっていた。しかも当時のメッセージが勧める `manual_only` は段 3 を素通りする
      * ので、助言に従うと**例外日が黙って死ぬ**。区間ゼロを咎めるのは、例外日も無いときだけ。
      */
-    if (scheduleDriven && !hasOpeningException && isRecord(override.weeklySchedule) && !hasAnyRange(override.weeklySchedule)) {
+    if (modeIsValid && scheduleDriven && !hasOpeningException && isRecord(override.weeklySchedule) && !hasAnyRange(override.weeklySchedule)) {
       issues.push({ field: `services.${key}.weeklySchedule`, message: EMPTY_SCHEDULE_MESSAGE });
     }
     const nested = validatePolicyInput({
