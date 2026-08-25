@@ -42,6 +42,8 @@ export function OperatingHoursManager({
     defaultSiteId,
   );
   const [policy, setPolicy] = useState<PolicyView>(null);
+  /** ほかの管理者が先に保存していた（409）。入力の誤りとは別物として出す。 */
+  const [conflict, setConflict] = useState(false);
   /**
    * **どのスコープ（テナント + 拠点）の内容が今フォームに載っているか。**
    *
@@ -134,6 +136,9 @@ export function OperatingHoursManager({
           fixedHolidays,
           exceptionDates,
           ...(emergencyContactLabel.trim() ? { emergencyContactLabel: emergencyContactLabel.trim() } : {}),
+          // 読んだ版を添える (#367)。同時編集の後勝ち上書きをサーバ側で 409 にするため、
+          // 既存レコードの更新では必須。未取得（新規作成）のときだけ省く。
+          ...(policy ? { expectedVersion: policy.version } : {}),
         }),
       });
       if (!isCurrentScope(startedWith)) return;
@@ -143,8 +148,20 @@ export function OperatingHoursManager({
         setLoadedScopeKey(startedWith);
         success();
       } else {
-        const body = (await res.json().catch(() => null)) as { issues?: { field: string; message: string }[] } | null;
-        setIssues(body?.issues ?? []);
+        const body = (await res.json().catch(() => null)) as {
+          error?: string;
+          issues?: { field: string; message: string }[];
+        } | null;
+        if (res.status === 409) {
+          // 競合は「入力の誤り」ではない。検証 issue のリストへ相乗りさせず、専用の通知に
+          // する（見出しが「入力に誤りがあります」になり、`version:` という内部フィールド名が
+          // 運用者に出ていた）。**次に何をすべきか**は押せる導線として置く。
+          setConflict(true);
+          setIssues([]);
+        } else {
+          setConflict(false);
+          setIssues(body?.issues ?? []);
+        }
         failure();
       }
     } finally {
@@ -172,6 +189,35 @@ export function OperatingHoursManager({
           <> まだ設定がありません（未設定の間は常時営業として扱われます）。</>
         )}
       </p>
+
+      {conflict ? (
+        <div
+          className="notice notice--warning"
+          data-testid="operating-hours-conflict"
+          style={{ marginBottom: space.md }}
+        >
+          <strong>保存できませんでした（ほかの管理者が更新済み）</strong>
+          <p style={{ margin: '8px 0 0' }}>
+            この拠点の営業時間は、あなたが画面を開いたあとに更新されています。上書きを避けるため
+            保存していません。最新を読み込んでから、変更をやり直してください。
+          </p>
+          <p style={{ margin: '8px 0 0' }}>
+            <strong>読み込み直すと、この画面で編集中の内容は失われます。</strong>
+          </p>
+          <div style={{ marginTop: space.sm }}>
+            <Button
+              variant="secondary"
+              data-testid="operating-hours-reload"
+              onClick={() => {
+                setConflict(false);
+                void load();
+              }}
+            >
+              最新を読み込む
+            </Button>
+          </div>
+        </div>
+      ) : null}
 
       {issues.length > 0 ? (
         <div className="notice notice--danger" data-testid="operating-hours-issues" style={{ marginBottom: space.md }}>

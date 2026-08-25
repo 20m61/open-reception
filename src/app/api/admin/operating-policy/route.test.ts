@@ -127,6 +127,20 @@ describe('PUT /api/admin/operating-policy', () => {
     expect(body.issues).toHaveLength(1);
   });
 
+  it('競合は 409 を返す（400 に化けると画面が理由を出せなくなる）', async () => {
+    // UI は `res.status === 409` で専用の通知へ分岐する。ここが 400 に化けると
+    // `issues` が空のまま検証エラー扱いになり、**通知パネルが 1 つも描画されない**
+    // ——運用者は理由の説明が無いまま保存失敗だけを見る。
+    upsertOperatingPolicy.mockResolvedValue({
+      ok: false,
+      error: { code: 'conflict', message: 'operating policy was updated by someone else', issues: [] },
+    });
+    const res = await PUT(putReq({ tenantId: 't1', siteId: 's1', weeklySchedule: {}, expectedVersion: 1 }));
+    expect(res.status).toBe(409);
+    const body = await res.json();
+    expect(body.error).toBe('conflict');
+  });
+
   it('成功時は identity を updatedBy として service に渡し、更新後ポリシーを返す', async () => {
     const saved = { tenantId: 't1', siteId: 's1', timezone: 'Asia/Tokyo', weeklySchedule: {}, fixedHolidays: [], exceptionDates: [], version: 1, updatedAt: '2026-07-22T00:00:00.000Z', updatedBy: 'admin@example.com' };
     upsertOperatingPolicy.mockResolvedValue({ ok: true, value: saved });
