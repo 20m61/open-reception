@@ -12,17 +12,18 @@
  */
 import type { PolicyValidationIssue } from '@/domain/operating-policy/types';
 import { DEFAULT_TIMEZONE } from '@/domain/operating-policy/tz';
-import type { ManagedRuntimeServiceKey } from '@/domain/runtime-policy/registry';
+import { MANAGED_RUNTIME_SERVICES, type ManagedRuntimeServiceKey } from '@/domain/runtime-policy/registry';
 import {
   resolveServiceStates,
   type CommonSchedule,
   type RuntimeOperatingPolicy,
+  type ResolutionReason,
   type RuntimeStateResolution,
   type ServiceResolution,
 } from '@/domain/runtime-policy/resolve';
 import { validateRuntimePolicyInput } from '@/domain/runtime-policy/validate';
 import { getBackend } from '@/lib/data';
-import { appendAdminAudit } from '@/lib/data-stores/reception-log-store';
+import { appendAuditLog } from '@/lib/data-stores/reception-log-store';
 import { getOperatingPolicy } from '@/lib/operating-policy/store';
 
 /**
@@ -188,11 +189,15 @@ export async function upsertRuntimePolicy(
   const existing = await collection().get(id);
   if (existing === null || existing === undefined) {
     // 「更新のつもり」で来たのに実体が無い＝別経路で消された等。作成へ倒さない。
+    /*
+     * ここと下の「expectedVersion 必須」はクライアントの実装ミスで、同時編集ではない。
+     * 監査に混ぜるとリトライで線形に増え、本命の同時編集イベントが埋もれる。
+     */
     if (expectedVersion !== undefined) {
-      return conflict(tenantId, siteId, id, updatedBy, 'runtime policy does not exist (expectedVersion was given)');
+      return fail('conflict', 'runtime policy does not exist (expectedVersion was given)');
     }
   } else if (expectedVersion === undefined) {
-    return conflict(tenantId, siteId, id, updatedBy, 'expectedVersion is required to update an existing runtime policy');
+    return fail('conflict', 'expectedVersion is required to update an existing runtime policy');
   }
   /*
    * version の一致判定はここでは**しない**。読んでから書くまでの隙間があるので、権威は下の
@@ -220,29 +225,36 @@ export async function upsertRuntimePolicy(
   if (existing) {
     // 読んでから書くまでの隙間も塞ぐ（CAS）。false = その間に誰かが書いた。
     const applied = await collection().updateIf(id, stored, { version: expectedVersion });
-    if (!applied) return conflict(tenantId, siteId, id, updatedBy, 'runtime policy was updated by someone else');
+    if (!applied) {
+      return conflictWithAudit(tenantId, siteId, id, updatedBy, 'runtime policy was updated by someone else');
+    }
   } else {
     /*
      * 🔴 **無条件 `put` にしない。** `get` → 無ければ `put` は原子的でないので、2 人が同時に
      * 初回作成すると片方が無言で消える。消えるのが緊急停止なら「止めたつもり」が残る。
      */
     const created = await collection().putIfAbsent(stored);
-    if (!created) return conflict(tenantId, siteId, id, updatedBy, 'runtime policy was created by someone else');
+    if (!created) {
+      return conflictWithAudit(tenantId, siteId, id, updatedBy, 'runtime policy was created by someone else');
+    }
   }
 
-  await appendAdminAudit(
-    'runtime_policy.updated',
-    { type: 'runtime_policy', id: stored.id },
-    {
+  /*
+   * 実施者は **`actor` に載せる**（`appendAdminAudit` は `'admin'` 固定なので使わない）。
+   * metadata へ入れると、監査 API の PII サニタイザ（`email`/`name` の部分一致）を素通りし、
+   * レコードの `updatedBy` は次の更新で上書きされて残らない。`platform:<identity>` と同じ流儀。
+   */
+  await appendAuditLog({
+    action: 'runtime_policy.updated',
+    actor: `admin:${updatedBy}`,
+    targetType: 'runtime_policy',
+    targetId: stored.id,
+    metadata: {
       resource: 'runtime_policy',
       tenantId,
       siteId,
       version: String(stored.version),
-      /*
-       * `appendAdminAudit` の `actor` は `'admin'` 固定なので、**実施者はここに載せないと残らない**
-       * （レコードの `updatedBy` は次の更新で上書きされる）。時間帯の具体値は残さない。
-       */
-      updatedBy,
+      // 時間帯の具体値は残さない。どのサービスを触ったかまで。
       configuredServiceKeys: Object.keys(stored.services ?? {}).sort().join(','),
       breakGlass: stored.breakGlass ? (stored.breakGlass.active ? 'active' : 'inactive') : 'unset',
       /*
@@ -252,7 +264,7 @@ export async function upsertRuntimePolicy(
        */
       breakGlassScope: breakGlassScopeOf(stored.breakGlass),
     },
-  );
+  });
   return { ok: true, value: stripId(stored) };
 }
 
@@ -262,19 +274,34 @@ function breakGlassScopeOf(breakGlass: RuntimeOperatingPolicy['breakGlass']): st
   return keys && keys.length > 0 ? keys.join(',') : 'all_unprotected';
 }
 
-/** 競合は監査に残す（「2 人が同時に運用状態を触った」は緊急時に最も知りたい運用イベント）。 */
-async function conflict(
+/**
+ * 同時編集の競合を監査に残す（「2 人が同時に運用状態を触った」は緊急時に最も知りたい運用イベント）。
+ *
+ * 🔴 監査の失敗で **409 を 500 に化けさせない**。「読み直して再試行せよ」は返せるのに返せなく
+ * なるのが、緊急時に一番起きてほしくない壊れ方。握ったことはログに出す。
+ */
+async function conflictWithAudit(
   tenantId: string,
   siteId: string,
   id: string,
   updatedBy: string,
   message: string,
 ): Promise<Result<never>> {
-  await appendAdminAudit(
-    'runtime_policy.update_conflicted',
-    { type: 'runtime_policy', id },
-    { resource: 'runtime_policy', tenantId, siteId, updatedBy, reason: message },
-  );
+  try {
+    await appendAuditLog({
+      action: 'runtime_policy.update_conflicted',
+      actor: `admin:${updatedBy}`,
+      targetType: 'runtime_policy',
+      targetId: id,
+      metadata: { resource: 'runtime_policy', tenantId, siteId, reason: message },
+    });
+  } catch (err) {
+    console.error('[runtime-policy] failed to record conflict audit', {
+      tenantId,
+      siteId,
+      reason: (err as { name?: string }).name ?? 'unknown',
+    });
+  }
   return fail('conflict', message);
 }
 
@@ -355,19 +382,55 @@ export async function resolveRuntimeStatesFor(
 
   if (common) return { kind: 'resolved', resolution };
 
-  /*
-   * 共通営業時間に依存して決まったサービス（段 5）だけを判定不能として切り分ける。
-   * break-glass・一時 override・`always_on` / `manual_only`・サービス個別スケジュールは
-   * 共通側を読まないので、そのまま効かせてよい。
-   */
-  const unresolved = resolution.services
-    .filter((service) => service.reason === 'common_weekly_schedule')
-    .map((service) => service.serviceKey);
+  const unresolved = unresolvedWithoutCommonSchedule(resolution.services);
   return {
     kind: 'partial',
-    services: resolution.services.filter((service) => service.reason !== 'common_weekly_schedule'),
-    unresolved,
+    services: resolution.services.filter((service) => !unresolved.has(service.serviceKey)),
+    unresolved: [...unresolved],
   };
+}
+
+/*
+ * 🔴 **共通営業時間が無い＝拠点の timezone が分からない。** `resolve.ts` は timezone を
+ * `commonSchedule` から取り、段 2〜5（override の失効判定・例外日・サービス個別スケジュール・
+ * 共通週間スケジュール）すべてが現地時刻の解釈に使う。したがって「段 5 だけが共通側を読む」は
+ * 誤りで、**時刻の解釈が絡む判断は全部**信用できない。
+ *
+ * 信用してよいのは時刻に依らない切り替えだけ——break-glass と、`always_on` / `manual_only`
+ * （＝ `default_policy`）。これは前回 BLOCKER として直した「未設定だと緊急停止が効かない」を
+ * 保ったまま、捏造した timezone 由来の値を「決まった」と言わない線引きになる。
+ */
+const TIME_DEPENDENT_REASONS: ReadonlySet<ResolutionReason> = new Set([
+  'common_weekly_schedule',
+  'exception_date',
+  'custom_service_schedule',
+  'temporary_override',
+]);
+
+/**
+ * 判定不能なサービス集合。**依存先を辿って推移的に広げる**——依存補正は reason を
+ * `dependency_correction` に書き換えるので、段 5 由来の停止が「決まった値」として漏れていた
+ * （実測: 共通未設定で `stt: always_on` が `blockedBy: realtime-conversation` により stopped、
+ * しかも当の realtime-conversation は判定不能）。
+ */
+function unresolvedWithoutCommonSchedule(
+  services: readonly ServiceResolution[],
+): Set<ManagedRuntimeServiceKey> {
+  const unresolved = new Set(
+    services.filter((service) => TIME_DEPENDENT_REASONS.has(service.reason)).map((s) => s.serviceKey),
+  );
+  // registry の依存は非循環（`registry.test.ts` が固定）なので、変化が無くなるまで回せば閉じる。
+  for (let changed = true; changed; ) {
+    changed = false;
+    for (const service of MANAGED_RUNTIME_SERVICES) {
+      if (unresolved.has(service.serviceKey)) continue;
+      if (service.dependsOn.some((dep) => unresolved.has(dep))) {
+        unresolved.add(service.serviceKey);
+        changed = true;
+      }
+    }
+  }
+  return unresolved;
 }
 
 /** テスト用: ストアを空へ戻す。 */

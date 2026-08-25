@@ -8,13 +8,16 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+const appendAuditLog = vi.fn();
 const appendAdminAudit = vi.fn();
 vi.mock('@/lib/data-stores/reception-log-store', () => ({
+  appendAuditLog: (...a: unknown[]) => appendAuditLog(...a),
   appendAdminAudit: (...a: unknown[]) => appendAdminAudit(...a),
 }));
 
 import { __resetOperatingPolicyStore, upsertOperatingPolicy } from '@/lib/operating-policy/store';
 import { resolutionFor } from '@/domain/runtime-policy/resolve';
+import { getBackend } from '@/lib/data';
 import {
   __resetRuntimePolicyStore,
   getRuntimePolicy,
@@ -41,6 +44,7 @@ async function seedOperatingHours(): Promise<void> {
 beforeEach(async () => {
   vi.clearAllMocks();
   appendAdminAudit.mockResolvedValue(undefined);
+  appendAuditLog.mockResolvedValue(undefined);
   await __resetRuntimePolicyStore();
   await __resetOperatingPolicyStore();
 });
@@ -262,13 +266,22 @@ describe('upsertRuntimePolicy', () => {
     await upsertRuntimePolicy(TENANT, SITE, 'admin@example.com', {
       services: { stt: { mode: 'custom_schedule', weeklySchedule: { mon: [{ start: '09:00', end: '18:00' }] } } },
     });
-    expect(appendAdminAudit).toHaveBeenCalledTimes(1);
-    const [action, target, metadata] = appendAdminAudit.mock.calls[0] as [string, unknown, Record<string, string>];
-    expect(action).toBe('runtime_policy.updated');
-    expect(target).toMatchObject({ type: 'runtime_policy' });
-    expect(metadata.configuredServiceKeys).toBe('stt');
-    expect(metadata.updatedBy).toBe('admin@example.com');
-    expect(JSON.stringify(metadata)).not.toContain('09:00');
+    expect(appendAuditLog).toHaveBeenCalledTimes(1);
+    const [entry] = appendAuditLog.mock.calls[0] as [{ action: string; actor: string; targetType: string; metadata: Record<string, string> }];
+    expect(entry.action).toBe('runtime_policy.updated');
+    expect(entry.targetType).toBe('runtime_policy');
+    // 実施者は actor 側（metadata へ入れると監査 API の PII サニタイザを素通りする）。
+    expect(entry.actor).toBe('admin:admin@example.com');
+    expect(entry.metadata.configuredServiceKeys).toBe('stt');
+    expect(JSON.stringify(entry.metadata)).not.toContain('09:00');
+  });
+
+  it('複数サービスの監査は並び順を固定する（差分レビューが安定するように）', async () => {
+    await upsertRuntimePolicy(TENANT, SITE, 'admin@example.com', {
+      services: { signage: { mode: 'always_on' }, bedrock: { mode: 'manual_only' } },
+    });
+    const [entry] = appendAuditLog.mock.calls[0] as [{ metadata: Record<string, string> }];
+    expect(entry.metadata.configuredServiceKeys).toBe('bedrock,signage');
   });
 
   it('break-glass の範囲を監査に残す（対象なしと全停止を取り違えない）', async () => {
@@ -277,34 +290,74 @@ describe('upsertRuntimePolicy', () => {
      * サービス個別設定のキー（`configuredServiceKeys`）と同じ欄で表すと、全停止が
      * 「何も止まっていない」と読める監査行になる。
      */
-    await upsertRuntimePolicy(TENANT, SITE, 'admin@example.com', { breakGlass: { active: true } });
-    const [, , all] = appendAdminAudit.mock.calls[0] as [string, unknown, Record<string, string>];
-    expect(all.breakGlass).toBe('active');
-    expect(all.breakGlassScope).toBe('all_unprotected');
+    const scopeOf = () => (appendAuditLog.mock.calls[0] as [{ metadata: Record<string, string> }])[0].metadata;
 
+    await upsertRuntimePolicy(TENANT, SITE, 'admin@example.com', { breakGlass: { active: true } });
+    expect(scopeOf().breakGlass).toBe('active');
+    expect(scopeOf().breakGlassScope).toBe('all_unprotected');
+
+    // 空配列も「保護対象以外を全停止」（`resolve.ts` の契約）。'' と記録して誤読させない。
     vi.clearAllMocks();
     await upsertRuntimePolicy(TENANT, SITE, 'admin@example.com', {
       expectedVersion: 1,
+      breakGlass: { active: true, serviceKeys: [] },
+    });
+    expect(scopeOf().breakGlassScope).toBe('all_unprotected');
+
+    vi.clearAllMocks();
+    await upsertRuntimePolicy(TENANT, SITE, 'admin@example.com', {
+      expectedVersion: 2,
       breakGlass: { active: true, serviceKeys: ['stt'] },
     });
-    const [, , scoped] = appendAdminAudit.mock.calls[0] as [string, unknown, Record<string, string>];
-    expect(scoped.breakGlassScope).toBe('stt');
+    expect(scopeOf().breakGlassScope).toBe('stt');
 
+    // 解除（active: false）は「範囲なし」。
     vi.clearAllMocks();
-    await upsertRuntimePolicy(TENANT, SITE, 'admin@example.com', { expectedVersion: 2, services: {} });
-    const [, , none] = appendAdminAudit.mock.calls[0] as [string, unknown, Record<string, string>];
-    expect(none.breakGlassScope).toBe('none');
+    await upsertRuntimePolicy(TENANT, SITE, 'admin@example.com', {
+      expectedVersion: 3,
+      breakGlass: { active: false },
+    });
+    expect(scopeOf().breakGlass).toBe('inactive');
+    expect(scopeOf().breakGlassScope).toBe('none');
   });
 
-  it('競合で保存できなかったことも監査に残す', async () => {
+  it('同時編集の競合は監査に残す（クライアントの実装ミスは残さない）', async () => {
+    // 「2 人が同時に触った」だけを残す。実装ミス由来の 409 まで残すと、リトライで線形に増えて
+    // 本命の同時編集イベントが埋もれる。
     await upsertRuntimePolicy(TENANT, SITE, 'a@example.com', { services: {} });
     vi.clearAllMocks();
-    const result = await upsertRuntimePolicy(TENANT, SITE, 'b@example.com', { services: {} });
-    expect(result.ok).toBe(false);
-    const [action, target, metadata] = appendAdminAudit.mock.calls[0] as [string, unknown, Record<string, string>];
-    expect(action).toBe('runtime_policy.update_conflicted');
-    expect(target).toMatchObject({ type: 'runtime_policy', id: `${TENANT}:${SITE}` });
-    expect(metadata.updatedBy).toBe('b@example.com');
+    const stale = await upsertRuntimePolicy(TENANT, SITE, 'b@example.com', {
+      expectedVersion: 99,
+      services: {},
+    });
+    expect(stale.ok).toBe(false);
+    const [entry] = appendAuditLog.mock.calls[0] as [{ action: string; actor: string; targetId: string }];
+    expect(entry.action).toBe('runtime_policy.update_conflicted');
+    expect(entry.actor).toBe('admin:b@example.com');
+    expect(entry.targetId).toBe(`${TENANT}:${SITE}`);
+
+    vi.clearAllMocks();
+    const missingVersion = await upsertRuntimePolicy(TENANT, SITE, 'b@example.com', { services: {} });
+    expect(missingVersion.ok).toBe(false);
+    expect(appendAuditLog).not.toHaveBeenCalled();
+  });
+
+  it('監査の失敗で 409 を 500 に化けさせない', async () => {
+    // 「読み直して再試行せよ」は返せるのに返せなくなるのが、緊急時に一番困る壊れ方。
+    const error = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    try {
+      await upsertRuntimePolicy(TENANT, SITE, 'a@example.com', { services: {} });
+      appendAuditLog.mockRejectedValueOnce(new Error('audit down'));
+      const result = await upsertRuntimePolicy(TENANT, SITE, 'b@example.com', {
+        expectedVersion: 99,
+        services: {},
+      });
+      expect(result.ok).toBe(false);
+      if (!result.ok) expect(result.error.code).toBe('conflict');
+      expect(error).toHaveBeenCalled();
+    } finally {
+      error.mockRestore();
+    }
   });
 });
 
@@ -346,6 +399,50 @@ describe('resolveRuntimeStatesFor', () => {
     expect(outcome.services.map((s) => s.serviceKey)).not.toContain('stt');
   });
 
+  /**
+   * 🔴 依存補正は reason を `dependency_correction` に書き換える。段 5 由来だけを弾いていた頃は、
+   * **捏造したスケジュールから生まれた停止指示**が「決まった値」として漏れていた——共通営業時間
+   * 未設定の拠点で `stt: always_on` にしても「STT を止めろ」、しかも止める理由になっている
+   * realtime-conversation 自身は「触るな」という矛盾した指示になる。
+   */
+  it('判定不能なサービスに依存するものも判定不能にする（推移的に広げる）', async () => {
+    await upsertRuntimePolicy(TENANT, SITE, 'a@example.com', {
+      services: { stt: { mode: 'always_on' } },
+    });
+    const outcome = await resolveRuntimeStatesFor(TENANT, SITE, IN_HOURS);
+    expect(outcome.kind).toBe('partial');
+    if (outcome.kind !== 'partial') return;
+    expect(outcome.unresolved).toContain('realtime-conversation');
+    expect(outcome.unresolved).toContain('stt');
+    expect(outcome.services.map((s) => s.serviceKey)).not.toContain('stt');
+  });
+
+  it('時刻の解釈が絡む判断は「決まった」と言わない（timezone が分からないため）', async () => {
+    // 共通営業時間が無いと拠点の timezone も無い。段 2〜4 も現地時刻の解釈に使うので、
+    // 捏造した既定 TZ 由来の結果を確定値として報告しない。
+    await upsertRuntimePolicy(TENANT, SITE, 'a@example.com', {
+      services: {
+        signage: { mode: 'custom_schedule', weeklySchedule: { mon: [{ start: '09:00', end: '18:00' }] } },
+      },
+    });
+    const outcome = await resolveRuntimeStatesFor(TENANT, SITE, IN_HOURS);
+    expect(outcome.kind).toBe('partial');
+    if (outcome.kind !== 'partial') return;
+    expect(outcome.unresolved).toContain('signage');
+  });
+
+  it('一時 override も確定値として扱わない（期限の解釈に timezone が要る）', async () => {
+    // `expiresAt` にオフセットが無い値は現地時刻として読むので、TZ が分からないと
+    // 「まだ有効か」を決められない。効いているように見せて実は数時間ずれる方が危ない。
+    await upsertRuntimePolicy(TENANT, SITE, 'a@example.com', {
+      services: { bedrock: { temporaryOverride: { state: 'force_stopped', expiresAt: '2026-07-20T23:00' } } },
+    });
+    const outcome = await resolveRuntimeStatesFor(TENANT, SITE, IN_HOURS);
+    expect(outcome.kind).toBe('partial');
+    if (outcome.kind !== 'partial') return;
+    expect(outcome.unresolved).toContain('bedrock');
+  });
+
   it('runtime policy が未設定なら registry の既定 mode で解決する', async () => {
     await seedOperatingHours();
     const outcome = await resolveRuntimeStatesFor(TENANT, SITE, IN_HOURS);
@@ -381,6 +478,35 @@ describe('resolveRuntimeStatesFor', () => {
    * 🔴 「まだ設定していない」と「壊れている」を同じ値にしない。潰すと、壊れたレコード 1 件や
    * 継続的な DynamoDB 障害が Reconciler を**恒久的な no-op** にし、1 分ごとに静かに失敗し続ける。
    */
+  it('壊れたレコードで解決が落ちても error として報告する', async () => {
+    /*
+     * 検証層は**新規の書き込みしか守れない**（旧スキーマ・直接編集・別経路）。解決は
+     * まだ総関数ではないので、ここで潰すと壊れたレコード 1 件が Reconciler を恒久的な
+     * no-op にし、1 分ごとに静かに失敗し続ける。
+     */
+    await seedOperatingHours();
+    await getBackend()
+      .collection<{ id: string }>('runtime_policy')
+      .put({
+        id: `${TENANT}:${SITE}`,
+        tenantId: TENANT,
+        siteId: SITE,
+        services: { stt: { mode: 'custom_schedule', exceptionDates: 'broken' } },
+        breakGlass: undefined,
+        version: 1,
+        updatedAt: new Date().toISOString(),
+        updatedBy: 'legacy',
+      } as unknown as { id: string });
+    const error = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    try {
+      const outcome = await resolveRuntimeStatesFor(TENANT, SITE, IN_HOURS);
+      expect(outcome.kind).toBe('error');
+      expect(error).toHaveBeenCalled();
+    } finally {
+      error.mockRestore();
+    }
+  });
+
   it('読み取りに失敗したら error として報告し、黙って捨てない', async () => {
     const error = vi.spyOn(console, 'error').mockImplementation(() => undefined);
     try {
