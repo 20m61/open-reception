@@ -261,12 +261,14 @@ export function KioskChatDrawer({
               placeholder={tr('chat.inputPlaceholder')}
               aria-label={tr('chat.inputLabel')}
               disabled={busy}
+              aria-busy={busy}
               onChange={(e) => setDraft(e.target.value)}
             />
             <button
               type="submit"
               className={styles.send}
               disabled={busy || draft.trim() === ''}
+              aria-busy={busy}
             >
               {tr('chat.send')}
             </button>

@@ -1500,7 +1500,7 @@ function KioskAuthorizeView({ onAuthorized }: { onAuthorized: () => void }) {
           PIN が正しくありません。
         </p>
       ) : null}
-      <button type="submit" className="btn btn--primary" data-testid="kiosk-authorize" disabled={busy}>
+      <button type="submit" className="btn btn--primary" data-testid="kiosk-authorize" disabled={busy} aria-busy={busy}>
         受付を開始する
       </button>
     </form>

@@ -261,6 +261,7 @@ export function CheckoutFlow() {
             data-testid="checkout-confirm-yes"
             onClick={() => void confirmCheckout()}
             disabled={busy}
+            aria-busy={busy}
           >
             {tr('checkout.confirm.yes')}
           </button>
@@ -270,6 +271,7 @@ export function CheckoutFlow() {
             data-testid="checkout-confirm-no"
             onClick={resetToIdentify}
             disabled={busy}
+            aria-busy={busy}
           >
             {tr('checkout.confirm.no')}
           </button>
@@ -320,6 +322,7 @@ export function CheckoutFlow() {
             data-testid="checkout-token-submit"
             onClick={submitToken}
             disabled={busy || token.trim() === ''}
+            aria-busy={busy}
           >
             {tr('checkout.scanButton')}
           </button>
@@ -371,6 +374,7 @@ export function CheckoutFlow() {
             data-testid="checkout-resolve-submit"
             onClick={submitCode}
             disabled={busy || code.trim() === '' || targetLabel.trim() === ''}
+            aria-busy={busy}
           >
             {tr('checkout.resolveSubmit')}
           </button>
@@ -403,6 +407,7 @@ export function CheckoutFlow() {
                     data-testid="checkout-present-item"
                     onClick={() => selectPresent(s)}
                     disabled={busy}
+            aria-busy={busy}
                   >
                     {tr('checkout.checkoutButton')}
                   </button>

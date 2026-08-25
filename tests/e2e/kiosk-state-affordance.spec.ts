@@ -99,3 +99,37 @@ test('ハイコントラストでも「押せない」の意味が残る (#778 A
   expect(off.backgroundColor, 'HC の --color-surface (#000) が効いていない').toBe('rgb(0, 0, 0)');
   expect(off.color, 'HC の --color-muted (#e6e6e6) が効いていない').toBe('rgb(230, 230, 230)');
 });
+
+test('「処理中」は「押せない」と同じ見た目にしない (#792)', async ({ page }) => {
+  // `disabled` は条件未達と処理中の 2 つに使われている。#778 の無効表現をそのまま
+  // 処理中にも当てると、送信の往復の間だけ主 CTA が破線へ落ち、来訪者は
+  // 「押せなくなった／タップが失敗した」と読む。**AC3 を満たすほど悪化する**矛盾。
+  //
+  // 完了リクエストを遅らせて busy を観測可能な長さに保つ。
+  await page.route('**/api/kiosk/receptions/*/complete', async (route) => {
+    await new Promise((resolve) => setTimeout(resolve, 2500));
+    await route.continue();
+  });
+
+  await page.goto('/kiosk');
+  await page.getByTestId('start-reception').click();
+  await page.getByTestId('purpose-meeting').click();
+  await page.getByTestId('staff-staff-sato').click();
+  await page.getByTestId('visitor-name').fill('来客 一郎');
+  await page.getByTestId('to-confirm').click();
+  await page.getByTestId('confirm-call').click();
+  await expect(page.getByTestId('result-connected')).toBeVisible({ timeout: 20_000 });
+
+  const finish = page.getByTestId('complete');
+  const before = await computed(finish);
+  await finish.click();
+
+  // 送信の往復の間。`disabled` は付いたまま（二重送信はブラウザが防ぐ）。
+  await expect(finish).toBeDisabled();
+  await expect(finish).toHaveAttribute('aria-busy', 'true');
+  const busy = await computed(finish);
+  expect(busy.borderStyle, '処理中に「押せない」の破線へ落ちている').not.toBe('dashed');
+  expect(busy.backgroundColor, '処理中に面が無効表現へ変わっている').toBe(before.backgroundColor);
+  expect(busy.color, '処理中に文字色が無効表現へ変わっている').toBe(before.color);
+  expect(busy.cursor, '進行中であることがカーソルに出ていない').toBe('progress');
+});
