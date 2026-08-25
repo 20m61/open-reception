@@ -347,7 +347,11 @@ describe('upsertRuntimePolicy', () => {
       appendAuditLog.mockRejectedValueOnce(new Error('audit down'));
       const result = await upsertRuntimePolicy(TENANT, SITE, 'a@example.com', { services: {} });
       expect(result.ok).toBe(true);
-      expect(error).toHaveBeenCalled();
+      // どの拠点の監査行が欠落したかを特定できること（`targetId` は `<tenantId>:<siteId>`）。
+      expect(error).toHaveBeenCalledWith(
+        expect.any(String),
+        expect.objectContaining({ targetId: `${TENANT}:${SITE}` }),
+      );
     } finally {
       error.mockRestore();
     }
@@ -412,6 +416,38 @@ describe('unresolvedWithoutCommonSchedule', () => {
     ] as unknown as ServiceResolution[];
     const unresolved = unresolvedWithoutCommonSchedule(services, undefined, chain);
     expect([...unresolved].sort()).toEqual(['a', 'b', 'c']);
+  });
+
+  it('確定停止が連鎖の途中にあっても、その先を辿る', () => {
+    // skip の `continue` を `break` にすると `c` が漏れる。「確定停止」と「連鎖」を
+    // 組み合わせないと、この分岐は縛れない。
+    const chain = [
+      { serviceKey: 'a', defaultMode: 'always_on', dependsOn: [], provides: [] },
+      { serviceKey: 'b', defaultMode: 'always_on', dependsOn: [], provides: [] },
+      { serviceKey: 'c', defaultMode: 'always_on', dependsOn: ['a'], provides: [] },
+    ] as unknown as ManagedRuntimeService[];
+    const services = [
+      { serviceKey: 'a', mode: 'follow_operating_hours', state: 'stopped', reason: 'common_weekly_schedule' },
+      { serviceKey: 'b', mode: 'manual_only', state: 'stopped', reason: 'default_policy' },
+      { serviceKey: 'c', mode: 'always_on', state: 'running', reason: 'default_policy' },
+    ] as unknown as ServiceResolution[];
+    const unresolved = unresolvedWithoutCommonSchedule(services, undefined, chain);
+    expect([...unresolved].sort()).toEqual(['a', 'c']);
+  });
+
+  it('registry が依存の逆順に並んでいても閉包が閉じる（不動点まで回す）', () => {
+    // 順方向に並んだ registry だと 1 パスでも同じ結果になり、不動点性が縛れない。
+    const chain = [
+      { serviceKey: 'c', defaultMode: 'always_on', dependsOn: ['b'], provides: [] },
+      { serviceKey: 'b', defaultMode: 'always_on', dependsOn: ['a'], provides: [] },
+      { serviceKey: 'a', defaultMode: 'always_on', dependsOn: [], provides: [] },
+    ] as unknown as ManagedRuntimeService[];
+    const services = [
+      { serviceKey: 'c', mode: 'always_on', state: 'running', reason: 'default_policy' },
+      { serviceKey: 'b', mode: 'always_on', state: 'running', reason: 'default_policy' },
+      { serviceKey: 'a', mode: 'follow_operating_hours', state: 'stopped', reason: 'common_weekly_schedule' },
+    ] as unknown as ServiceResolution[];
+    expect([...unresolvedWithoutCommonSchedule(services, undefined, chain)].sort()).toEqual(['a', 'b', 'c']);
   });
 
   it('解決に含まれないサービスは辿らない（部分集合で呼ばれても増やさない）', () => {
@@ -521,6 +557,67 @@ describe('resolveRuntimeStatesFor', () => {
   it('手動停止（manual_only）も確定値として残す（費用目的の停止が届かないと困る）', async () => {
     await upsertRuntimePolicy(TENANT, SITE, 'a@example.com', {
       services: { stt: { mode: 'manual_only' } },
+    });
+    const outcome = await resolveRuntimeStatesFor(TENANT, SITE, IN_HOURS);
+    expect(outcome.kind).toBe('partial');
+    if (outcome.kind !== 'partial') return;
+    expect(outcome.unresolved).not.toContain('stt');
+    expect(outcome.services.find((s) => s.serviceKey === 'stt')?.state).toBe('stopped');
+  });
+
+  /**
+   * 🔴 段 2（override の失効判定）は捏造した TZ で行われ、「失効した」と判断されると
+   * **reason から `temporary_override` が消える**（段 6 の `default_policy` に落ちる）。
+   * reason だけを見ていると、TZ 次第で結論が変わることを検出できない。
+   */
+  it('失効判定が TZ 依存なら、reason に痕跡が無くても判定不能にする', async () => {
+    await upsertRuntimePolicy(TENANT, SITE, 'a@example.com', {
+      services: {
+        stt: { mode: 'manual_only', temporaryOverride: { state: 'force_running', expiresAt: '2026-07-20T09:30' } },
+      },
+    });
+    const outcome = await resolveRuntimeStatesFor(TENANT, SITE, IN_HOURS);
+    expect(outcome.kind).toBe('partial');
+    if (outcome.kind !== 'partial') return;
+    expect(outcome.unresolved).toContain('stt');
+    expect(outcome.services.map((s) => s.serviceKey)).not.toContain('stt');
+  });
+
+  it('break-glass は一時 override より上の段なので、TZ が分からなくても確定する', async () => {
+    // 段 1 は段 2 より先に決まるので、オフセット無しの override が同居していても影響されない。
+    await upsertRuntimePolicy(TENANT, SITE, 'a@example.com', {
+      services: { stt: { temporaryOverride: { state: 'force_running', expiresAt: '2026-07-20T09:30' } } },
+      breakGlass: { active: true, serviceKeys: ['stt'] },
+    });
+    const outcome = await resolveRuntimeStatesFor(TENANT, SITE, IN_HOURS);
+    expect(outcome.kind).toBe('partial');
+    if (outcome.kind !== 'partial') return;
+    expect(outcome.unresolved).not.toContain('stt');
+    expect(outcome.services.find((s) => s.serviceKey === 'stt')).toMatchObject({ reason: 'break_glass' });
+  });
+
+  it('always_on + オフセット無しの force_stopped も判定不能にする', async () => {
+    // 逆向き（「止めたのに確定 running と報告」）。管理画面の datetime-local は
+    // オフセットを持たない値を送るので、これが既定の入力形になる。
+    await upsertRuntimePolicy(TENANT, SITE, 'a@example.com', {
+      services: {
+        signage: { mode: 'always_on', temporaryOverride: { state: 'force_stopped', expiresAt: '2026-07-20T09:30' } },
+      },
+    });
+    const outcome = await resolveRuntimeStatesFor(TENANT, SITE, IN_HOURS);
+    expect(outcome.kind).toBe('partial');
+    if (outcome.kind !== 'partial') return;
+    expect(outcome.unresolved).toContain('signage');
+  });
+
+  it('依存を持つサービスでも、オフセット付きの一時停止は確定値として残る', async () => {
+    /*
+     * 🔴 `bedrock`（`dependsOn: []`）だけで確かめていたので、閉包の分岐に到達していなかった。
+     * 依存を持つ `stt` で試すと、絶対時刻の「今すぐ止める」が判定不能に吸い込まれていた
+     * ——この増分の主目的そのものが、依存を持たないサービスでしか達成できていなかった。
+     */
+    await upsertRuntimePolicy(TENANT, SITE, 'a@example.com', {
+      services: { stt: { temporaryOverride: { state: 'force_stopped', expiresAt: '2026-07-20T23:00:00Z' } } },
     });
     const outcome = await resolveRuntimeStatesFor(TENANT, SITE, IN_HOURS);
     expect(outcome.kind).toBe('partial');

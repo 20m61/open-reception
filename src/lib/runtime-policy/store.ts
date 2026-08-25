@@ -314,8 +314,10 @@ async function recordAudit(entry: Parameters<typeof appendAuditLog>[0]): Promise
   try {
     await appendAuditLog(entry);
   } catch (err) {
+    // どの拠点の監査行が欠落したかを特定できるようにする（`targetId` は `<tenantId>:<siteId>`）。
     console.error('[runtime-policy] failed to record audit', {
       action: entry.action,
+      targetId: entry.targetId,
       reason: (err as { name?: string }).name ?? 'unknown',
     });
   }
@@ -403,7 +405,11 @@ export async function resolveRuntimeStatesFor(
     kind: 'partial',
     services: resolution.services.filter((service) => !unresolved.has(service.serviceKey)),
     // registry の順に揃える（`services` 側は registry 順なので、片方だけ挿入順だと並びが崩れる）。
-    unresolved: MANAGED_RUNTIME_SERVICE_KEYS.filter((key) => unresolved.has(key)),
+    /*
+     * 並びは**解決の順**に揃える（`services` 側と同じ）。registry の全キーで整列すると、
+     * 部分集合で解決したとき registry に無いキーが黙って一覧から蒸発する。
+     */
+    unresolved: resolution.services.map((s) => s.serviceKey).filter((key) => unresolved.has(key)),
   };
 }
 
@@ -417,27 +423,31 @@ export async function resolveRuntimeStatesFor(
  * （＝ `default_policy`）。これは前回 BLOCKER として直した「未設定だと緊急停止が効かない」を
  * 保ったまま、捏造した timezone 由来の値を「決まった」と言わない線引きになる。
  */
-const TIME_DEPENDENT_REASONS: ReadonlySet<ResolutionReason> = new Set([
+/** 現地時刻の解釈を要する段（`resolve.ts` の段 3〜5）。 */
+const SCHEDULE_REASONS: ReadonlySet<ResolutionReason> = new Set([
   'common_weekly_schedule',
   'exception_date',
   'custom_service_schedule',
-  'temporary_override',
 ]);
 
 /**
- * その判断が拠点の timezone を要るか。`temporary_override` は例外で、`expiresAt` に
- * オフセットが付いていれば**絶対時刻**として読めるので確定する（`resolve.ts` の実装がそうなって
- * いる）。一律に判定不能へ倒すと、「今すぐ止める（期限付き）」が共通営業時間未設定の拠点で
- * 黙って無効になる。
+ * その判断が拠点の timezone を要るか。
+ *
+ * 🔴 **`reason` だけで決めない。** 段 2（一時 override の失効判定）は捏造した TZ で行われ、
+ * 「失効した」と判断されると **reason から `temporary_override` が消える**（段 6 の
+ * `default_policy` に落ちる）。reason を見ている限り「TZ 次第で結論が変わる」ことを検出できず、
+ * `manual_only` + オフセット無しの `force_running` が「確定して停止」と報告されていた。
+ * override を持つサービスは、`expiresAt` が絶対時刻でない限り常に判定不能とする。
+ * 段 1（break-glass）だけは段 2 より上なので、TZ に依らず確定する。
  */
 function needsSiteTimezone(
-  service: ServiceResolution,
+  service: Pick<ServiceResolution, 'serviceKey' | 'reason'>,
   overrides: RuntimeOperatingPolicy['services'] | undefined,
 ): boolean {
-  if (!TIME_DEPENDENT_REASONS.has(service.reason)) return false;
-  if (service.reason !== 'temporary_override') return true;
+  if (service.reason === 'break_glass') return false;
   const expiresAt = overrides?.[service.serviceKey]?.temporaryOverride?.expiresAt;
-  return expiresAt === undefined || !hasAbsoluteOffset(expiresAt);
+  if (expiresAt !== undefined) return !hasAbsoluteOffset(expiresAt);
+  return SCHEDULE_REASONS.has(service.reason);
 }
 
 /**
@@ -471,9 +481,11 @@ export function unresolvedWithoutCommonSchedule(
        * 補正済みなら**補正前の自分の判断**を見る（補正で stopped に化けた側は判定不能のまま）。
        */
       const resolved = byKey.get(service.serviceKey);
-      const own = resolved?.correction ?? { state: resolved?.state, reason: resolved?.reason };
-      const from = 'from' in own ? own.from : own;
-      if (from.state === 'stopped' && from.reason !== undefined && !TIME_DEPENDENT_REASONS.has(from.reason)) {
+      const from = resolved?.correction?.from ?? resolved;
+      if (
+        from?.state === 'stopped' &&
+        !needsSiteTimezone({ serviceKey: service.serviceKey, reason: from.reason }, overrides)
+      ) {
         continue;
       }
       if (service.dependsOn.some((dep) => unresolved.has(dep))) {

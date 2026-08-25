@@ -38,9 +38,7 @@ class FakeDoc {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   async send(command: any): Promise<any> {
     const input = command.input as Item;
-    // 判定基準を 2 種類持たない（バンドラ設定でクラス名が保持されないことがある）。
-    const name = command instanceof PutCommand ? 'PutCommand' : command.constructor.name;
-    this.calls.push({ name, input: input as Item });
+    this.calls.push({ name: command.constructor.name, input: input as Item });
     if (command instanceof PutCommand) {
       if (this.failNextPut) {
         const err = this.failNextPut;
