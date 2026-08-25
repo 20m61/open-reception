@@ -44,7 +44,11 @@ export function operatingPolicyKey(tenantId: string, siteId: string): string {
   return `${tenantId}:${siteId}`;
 }
 
-export type StoreError = { code: 'invalid_input'; message: string; issues: PolicyValidationIssue[] };
+export type StoreError = {
+  code: 'invalid_input' | 'conflict';
+  message: string;
+  issues: PolicyValidationIssue[];
+};
 export type Result<T> = { ok: true; value: T } | { ok: false; error: StoreError };
 
 /** 保存済みポリシーを取得する。未設定なら null（呼び出し側は fail-open=常時営業として扱う）。 */
@@ -62,6 +66,18 @@ function stripId(stored: StoredOperatingPolicy): ServiceOperatingPolicy {
  * ポリシーを作成/更新する（tenantId/siteId は呼び出し側で認可済みの前提、#80 は route 側で担保）。
  * `version` は既存があれば +1、無ければ 1（楽観ロック用の単調増加カウンタ）。
  */
+function conflictError(message: string): Result<ServiceOperatingPolicy> {
+  return { ok: false, error: { code: 'conflict', message, issues: [] } };
+}
+
+/** body の `expectedVersion`（任意・非負整数）を読む。型が違えば未指定として扱わない。 */
+function readExpectedVersion(raw: unknown): number | undefined {
+  if (typeof raw !== 'object' || raw === null) return undefined;
+  const value = (raw as Record<string, unknown>).expectedVersion;
+  if (value === undefined) return undefined;
+  return typeof value === 'number' && Number.isInteger(value) && value >= 0 ? value : -1;
+}
+
 export async function upsertOperatingPolicy(
   tenantId: string,
   siteId: string,
@@ -71,9 +87,33 @@ export async function upsertOperatingPolicy(
   const validated: ValidationResult = validatePolicyInput(raw);
   if (!validated.ok) return { ok: false, error: validated.error };
 
-  const existing = await collection().get(operatingPolicyKey(tenantId, siteId));
+  /*
+   * 楽観ロック (#367)。
+   *
+   * 🔴 従来は `get` → `put` の read-modify-write で、**同時更新が黙って後勝ちになる**。
+   * 2 人の運用者が同じ version を読んで保存すると、先に保存した側の変更が痕跡なく消える
+   * （営業時間は EC2 の起動時間＝実費と、営業時間外の発信抑止に直結する）。
+   *
+   * 既存レコードの更新には `expectedVersion` を**必須**にする。省略を許すと後勝ちの経路が
+   * 残り、AC「競合更新で後勝ち上書きしない」を満たせない。
+   */
+  const id = operatingPolicyKey(tenantId, siteId);
+  const expectedVersion = readExpectedVersion(raw);
+  const existing = await collection().get(id);
+
+  if (existing === null || existing === undefined) {
+    if (expectedVersion !== undefined) {
+      // 「更新のつもり」で来たのに実体が無い＝別経路で消された等。作成へ倒さない。
+      return conflictError('operating policy does not exist (expectedVersion was given)');
+    }
+  } else if (expectedVersion === undefined) {
+    return conflictError('expectedVersion is required to update an existing operating policy');
+  } else if (existing.version !== expectedVersion) {
+    return conflictError('operating policy was updated by someone else');
+  }
+
   const stored: StoredOperatingPolicy = {
-    id: operatingPolicyKey(tenantId, siteId),
+    id,
     tenantId,
     siteId,
     ...validated.value,
@@ -81,7 +121,14 @@ export async function upsertOperatingPolicy(
     updatedAt: new Date().toISOString(),
     updatedBy,
   };
-  await collection().put(stored);
+
+  if (existing) {
+    // 読んでから書くまでの隙間も塞ぐ（CAS）。false = その間に誰かが書いた。
+    const applied = await collection().updateIf(id, stored, { version: expectedVersion });
+    if (!applied) return conflictError('operating policy was updated by someone else');
+  } else {
+    await collection().put(stored);
+  }
   // PII/機微値は残さない: 時間帯の具体値は載せず件数・timezone・version のみ（rules/pii-secret-minimization.md）。
   await appendAdminAudit(
     'operating_policy.updated',

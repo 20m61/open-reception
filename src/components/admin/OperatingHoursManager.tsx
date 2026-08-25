@@ -134,6 +134,9 @@ export function OperatingHoursManager({
           fixedHolidays,
           exceptionDates,
           ...(emergencyContactLabel.trim() ? { emergencyContactLabel: emergencyContactLabel.trim() } : {}),
+          // 読んだ版を添える (#367)。同時編集の後勝ち上書きをサーバ側で 409 にするため、
+          // 既存レコードの更新では必須。未取得（新規作成）のときだけ省く。
+          ...(policy ? { expectedVersion: policy.version } : {}),
         }),
       });
       if (!isCurrentScope(startedWith)) return;
@@ -143,8 +146,22 @@ export function OperatingHoursManager({
         setLoadedScopeKey(startedWith);
         success();
       } else {
-        const body = (await res.json().catch(() => null)) as { issues?: { field: string; message: string }[] } | null;
-        setIssues(body?.issues ?? []);
+        const body = (await res.json().catch(() => null)) as {
+          error?: string;
+          issues?: { field: string; message: string }[];
+        } | null;
+        if (res.status === 409) {
+          // 黙って上書きしない。**何が起きたか**と**次に何をすべきか**を出す。
+          setIssues([
+            {
+              field: 'version',
+              message:
+                'ほかの管理者がこの拠点の営業時間を更新しました。保存していません。最新を読み直してから、変更をやり直してください。',
+            },
+          ]);
+        } else {
+          setIssues(body?.issues ?? []);
+        }
         failure();
       }
     } finally {
