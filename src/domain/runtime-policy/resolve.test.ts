@@ -694,6 +694,42 @@ describe('expiresAt の解析（外部レビュー指摘の回帰固定, PR #791
     }
   });
 
+  it('文字列でない expiresAt で解決を落とさない（総関数のままにする）', () => {
+    /*
+     * 🔴 `expiresAt.trim()` は非文字列で throw する。Reconciler は 1 分ごとに走るので、
+     * 1 レコードの型ドリフト（旧データ・部分書き込み・DynamoDB の属性型違い）で
+     * **全サービスの解決が丸ごと落ち、何も収束しないまま繰り返す**。解析不能として扱う。
+     */
+    for (const bad of [null, undefined, 123, {}, []]) {
+      const policy = at(bad as unknown as string);
+      expect(() => stateOf(policy, 'bedrock', IN_HOURS), String(bad)).not.toThrow();
+      expect(stateOf(policy, 'bedrock', IN_HOURS), String(bad)).toEqual({
+        state: 'running',
+        reason: 'common_weekly_schedule',
+      });
+    }
+  });
+
+  it('オフセット付きでも暦チェックを迂回させない', () => {
+    // `Date.parse` は月の桁溢れは拒むが**日の桁溢れは通す**（`2026-02-30T00:00:00Z` → 3/2）。
+    // 月末を機械生成する UI のオフバイワンで、停止が最大 3 日延びる。
+    // 🔴 未来日で試す。過去日だと「期限切れで自動解除」と区別が付かず、テストが素通しになる。
+    for (const bad of ['2027-02-30T00:00:00Z', '2027-06-31T00:00:00Z', '2027-02-30T00:00:00+09:00']) {
+      expect(stateOf(at(bad), 'bedrock', IN_HOURS), `expiresAt=${bad}`).toEqual({
+        state: 'running',
+        reason: 'common_weekly_schedule',
+      });
+    }
+  });
+
+  it('ミリ秒は 3 桁まで（桁を緩めると padEnd が効かず大幅な延長になる）', () => {
+    // `.123456789` を許すと `padEnd` が無効化され +123456789ms ≒ 34 時間の停止延長になる。
+    expect(stateOf(at('2026-07-22T13:00:00.1234'), 'bedrock', IN_HOURS)).toEqual({
+      state: 'running',
+      reason: 'common_weekly_schedule',
+    });
+  });
+
   it('秒を省いた値・日付だけの値は従来どおり解釈できる', () => {
     expect(stateOf(at('2026-07-22T13:00'), 'bedrock', IN_HOURS)).toMatchObject({
       reason: 'temporary_override',

@@ -36,8 +36,15 @@ const OVERRIDE_STATES = ['force_running', 'force_stopped', 'draining'] as const;
 const _MODES: readonly ServiceOperatingMode[] = MODES;
 const _STATES: readonly TemporaryOverride['state'][] = OVERRIDE_STATES;
 
+/*
+ * ここへ来るのは JSON.parse を通った値だけなので、**素のオブジェクトだけ**を通す。
+ * `typeof === 'object'` だけだと `new Date()` のような「キーを持たないオブジェクト」が通り、
+ * 委譲先で既定（空スケジュール）へ倒れて保存される。
+ */
 function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value);
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return false;
+  const proto = Object.getPrototypeOf(value) as unknown;
+  return proto === Object.prototype || proto === null;
 }
 
 function isManagedKey(value: unknown): value is ManagedRuntimeServiceKey {
@@ -58,6 +65,27 @@ const POLICY_FIELDS: Record<keyof RuntimeOperatingPolicy, true> = {
   breakGlass: true,
   services: true,
 };
+/*
+ * 🔴 **route 層の封筒フィールドは既知として受け取り、文書には入れない。** 隣接する
+ * `operating-policy` の route/store は `tenantId` / `siteId` / `expectedVersion` を**同じ body に
+ * 載せて** validator へ渡す（`src/lib/operating-policy/store.ts`）。ここでそれを未知キーとして
+ * 弾くと、同じ形で繋いだ瞬間に全リクエストが 400 になり、緊急停止も一時延長も保存できない。
+ * `version` / `updatedBy` は封筒ではないので、従来どおり拒否する（mass-assignment）。
+ */
+const ENVELOPE_FIELDS: Record<string, true> = { tenantId: true, siteId: true, expectedVersion: true };
+const ACCEPTED_ROOT_FIELDS: Record<string, true> = { ...POLICY_FIELDS, ...ENVELOPE_FIELDS };
+
+/*
+ * 共通営業時間で**この層が組み立て直す**フィールド。`emergencyContactLabel` は含めない——
+ * 委譲先は受け付けるが、この層は返さないので、通すと**無言で消える**。それは営業時間外画面で
+ * 来訪者へ出す唯一の連絡先なので、捨てずに拒否して気づかせる。
+ */
+const COMMON_SCHEDULE_FIELDS: Record<keyof CommonSchedule, true> = {
+  timezone: true,
+  weeklySchedule: true,
+  fixedHolidays: true,
+  exceptionDates: true,
+};
 const OVERRIDE_FIELDS: Record<keyof ServicePolicyOverride, true> = {
   mode: true,
   weeklySchedule: true,
@@ -70,17 +98,31 @@ const BREAK_GLASS_FIELDS: Record<keyof NonNullable<RuntimeOperatingPolicy['break
   serviceKeys: true,
 };
 
-/** 未知キーは 1 件ずつ issue にする（どれが効いていないかを名指しできないと直せない）。 */
+/*
+ * 未知キーは 1 件ずつ issue にする（どれが効いていないかを名指しできないと直せない）。
+ * ただし**件数は打ち切る**——`services` のキー数だけ抑えても、その内側が無制限なら
+ * 20 万キーの body で応答が膨らむ経路は残る。打ち切ったことは黙らず 1 行で表明する。
+ */
+const MAX_REPORTED_UNKNOWN_FIELDS = 5;
+
 function rejectUnknownFields(
   value: Record<string, unknown>,
   known: Record<string, true>,
   prefix: string,
   issues: PolicyValidationIssue[],
 ): void {
+  let reported = 0;
   for (const key of Object.keys(value)) {
-    if (!Object.hasOwn(known, key)) {
-      issues.push({ field: `${prefix}.${safeFieldKey(key)}`, message: 'unknown field' });
+    if (Object.hasOwn(known, key)) continue;
+    if (reported === MAX_REPORTED_UNKNOWN_FIELDS) {
+      issues.push({
+        field: prefix,
+        message: `too many unknown fields (first ${MAX_REPORTED_UNKNOWN_FIELDS} reported)`,
+      });
+      return;
     }
+    issues.push({ field: `${prefix}.${safeFieldKey(key)}`, message: 'unknown field' });
+    reported += 1;
   }
 }
 
@@ -91,8 +133,12 @@ const MAX_FIELD_KEY_LENGTH = 64;
  * 構造化ログへ偽イベント行として流れ、長大なキーがそのままレスポンスを膨らませる。
  */
 function safeFieldKey(key: string): string {
-  const cleaned = key.replace(/\p{C}/gu, '·');
-  return cleaned.length > MAX_FIELD_KEY_LENGTH ? `${cleaned.slice(0, MAX_FIELD_KEY_LENGTH)}…` : cleaned;
+  // `\p{C}` は U+2028 / U+2029（Zl/Zp）を含まないが、JS の LineTerminator であり
+  // `JSON.stringify` もエスケープしない。行注入としては改行と同じなので一緒に落とす。
+  const cleaned = key.replace(/[\p{C}\p{Zl}\p{Zp}]/gu, '·');
+  if (cleaned.length <= MAX_FIELD_KEY_LENGTH) return cleaned;
+  // 先頭だけ残すと、同じ前置を持つ 2 つのキーが同じ `field` に潰れて特定できなくなる。
+  return `${cleaned.slice(0, MAX_FIELD_KEY_LENGTH - 16)}…${cleaned.slice(-16)}`;
 }
 
 /*
@@ -108,7 +154,7 @@ function reprefix(issues: readonly PolicyValidationIssue[], prefix: string): Pol
 
 export function validateRuntimePolicyInput(raw: unknown): RuntimePolicyValidation {
   if (!isRecord(raw)) {
-    return fail([{ field: 'root', message: 'must be an object' }]);
+    return fail([{ field: 'body', message: 'must be an object' }]);
   }
   const issues: PolicyValidationIssue[] = [];
   /*
@@ -118,7 +164,18 @@ export function validateRuntimePolicyInput(raw: unknown): RuntimePolicyValidatio
    * `updatedBy`）のどちらかしかない。前者は「設定したのに効かない」、後者は楽観ロックと
    * 監査の破壊なので、どちらも黙って捨てずに issue にする。
    */
-  rejectUnknownFields(raw, POLICY_FIELDS, 'root', issues);
+  rejectUnknownFields(raw, ACCEPTED_ROOT_FIELDS, 'root', issues);
+
+  /*
+   * 🔴 **配列を先に落とす。** 委譲先の門は `typeof raw !== 'object' || raw === null` だけなので
+   * `[]` を通し、既定（空スケジュール）へ倒れる。それが保存されると音声受付・AI 意図解決・
+   * 外線発信が全滅し（残るのは notify_staff だけ）、`reason` は `common_weekly_schedule` という
+   * 正当に見える値で返る。この層は `isRecord` を持っているのに、ここだけ使っていなかった。
+   */
+  if (!isRecord(raw.commonSchedule)) {
+    return fail([...issues, { field: 'commonSchedule', message: 'commonSchedule is required and must be an object' }]);
+  }
+  rejectUnknownFields(raw.commonSchedule, COMMON_SCHEDULE_FIELDS, 'commonSchedule', issues);
 
   // 共通営業時間は丸ごと既存 validator へ。**正規化済みの値を使う**（素通しにしない）。
   const common = validatePolicyInput(raw.commonSchedule);
@@ -156,8 +213,22 @@ export function validateRuntimePolicyInput(raw: unknown): RuntimePolicyValidatio
   };
 }
 
+/*
+ * 🔴 **issue の総数を打ち切る。** 階層ごとの上限だけでは、委譲先が出す issue（例外日 366 件 ×
+ * サービス 10 件）まで含めた総量を抑えられない。認証済み admin の誤った body で Lambda の応答が
+ * 数 MB になり、管理画面が固まり、CloudWatch へ同量が流れる。打ち切ったことは黙らず表明する。
+ */
+const MAX_ISSUES = 50;
+
 function fail(issues: PolicyValidationIssue[]): RuntimePolicyValidation {
-  return { ok: false, error: { code: 'invalid_input', message: 'runtime policy is invalid', issues } };
+  const reported =
+    issues.length <= MAX_ISSUES
+      ? issues
+      : [
+          ...issues.slice(0, MAX_ISSUES),
+          { field: 'body', message: `too many issues; ${issues.length - MAX_ISSUES} more not reported` },
+        ];
+  return { ok: false, error: { code: 'invalid_input', message: 'runtime policy is invalid', issues: reported } };
 }
 
 function validateBreakGlass(
@@ -181,12 +252,20 @@ function validateBreakGlass(
     issues.push({ field: 'breakGlass.serviceKeys', message: 'must be an array' });
     return undefined;
   }
-  if (keys.length > MAX_SERVICE_ENTRIES) {
-    issues.push({ field: 'breakGlass.serviceKeys', message: `too many entries (max ${MAX_SERVICE_ENTRIES})` });
+  /*
+   * 上限 10 は**重複を畳んだ後**の数。畳まずに数えると、実質 2 サービスの緊急停止が
+   * 「too many entries」で 400 になる——不発の害が最も大きい経路で。
+   */
+  const unique = Array.from(new Set(keys));
+  if (unique.length > MAX_SERVICE_ENTRIES) {
+    issues.push({
+      field: 'breakGlass.serviceKeys',
+      message: `too many distinct entries (max ${MAX_SERVICE_ENTRIES})`,
+    });
     return undefined;
   }
   const serviceKeys: ManagedRuntimeServiceKey[] = [];
-  keys.forEach((key, index) => {
+  unique.forEach((key, index) => {
     if (!isManagedKey(key)) {
       issues.push({ field: `breakGlass.serviceKeys[${index}]`, message: 'unknown service key' });
       return;
@@ -268,6 +347,17 @@ function validateOverride(
      * 永久停止させ、`reason` は `custom_service_schedule` という正当に見える値で返っていた。
      * 「共通営業時間へ戻す」はキーの省略で表す（`undefined` は委譲先が既定へ倒す）。
      */
+    /*
+     * 🔴 **空オブジェクトも拒否する。** `null` を塞いだだけでは足りない。行を全部消した
+     * フォームが素直に作る `{}` は、解決では「区間ゼロ = 恒久 stopped」になり、`mode` を
+     * `follow_operating_hours` へ戻しても段 4 が段 5 を上書きするので共通営業時間へ戻らない。
+     */
+    if (isRecord(override.weeklySchedule) && Object.keys(override.weeklySchedule).length === 0) {
+      issues.push({
+        field: `services.${key}.weeklySchedule`,
+        message: 'must not be empty; omit the key to inherit the common schedule',
+      });
+    }
     const nested = validatePolicyInput({
       timezone: 'UTC',
       weeklySchedule: override.weeklySchedule,
@@ -315,7 +405,9 @@ function validateTemporaryOverride(
   if (!(OVERRIDE_STATES as readonly string[]).includes(state as string) || typeof expiresAt !== 'string') {
     return undefined;
   }
-  return { state: state as TemporaryOverride['state'], expiresAt };
+  // 検証だけ trim して生値を保存すると、改行込みの値が DynamoDB → 応答 → 画面 → 監査へ流れ、
+  // `expiresAtMs` を通らない消費者（画面の `new Date()`・TTL 計算・ログ）が別の結果になる。
+  return { state: state as TemporaryOverride['state'], expiresAt: expiresAt.trim() };
 }
 
 /**

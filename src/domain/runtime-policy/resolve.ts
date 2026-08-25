@@ -154,10 +154,23 @@ function evaluateToState(schedule: CommonSchedule, now: number): ServiceRuntimeS
  */
 export function expiresAtMs(expiresAt: string, timezone: string): number {
   /*
+   * 🔴 **総関数のままにする。** ここは Reconciler の毎分の解決から呼ばれるので、
+   * 1 レコードの型ドリフト（旧データ・部分書き込み・DynamoDB の属性型違い）で throw すると
+   * **全サービスの解決が丸ごと落ち、何も収束しない**。文字列でなければ解析不能として扱う。
+   */
+  if (typeof expiresAt !== 'string') return Number.NaN;
+  /*
    * 前後の空白は落とす。運用画面のコピー&ペーストで混ざるだけの違いを「解析不能 =
    * 一時 override が黙って効かない」に昇格させない。
    */
   const value = expiresAt.trim();
+  /*
+   * 🔴 **暦の妥当性は経路によらず先に見る。** `Date.parse` は月の桁溢れ（`13-01`）は拒むが
+   * **日の桁溢れは通す**（`2026-02-30T00:00:00Z` → 3/2）。月末を機械生成する UI の
+   * オフバイワンで、停止が最大 3 日延びる——画面は「2/30 まで」と読めるので気づけない。
+   */
+  const ymd = /^(\d{4})-(\d{2})-(\d{2})/.exec(value);
+  if (!ymd || !isRealCalendarDate(Number(ymd[1]), Number(ymd[2]), Number(ymd[3]))) return Number.NaN;
   // オフセット付き（`Z` / `±HH:MM`）はそのまま絶対時刻として読める（小文字 `z` も同義に扱う）。
   if (/(?:[Zz]|[+-]\d{2}:?\d{2})$/.test(value)) return Date.parse(value.replace(/z$/, 'Z'));
   /*
@@ -186,18 +199,22 @@ export function expiresAtMs(expiresAt: string, timezone: string): number {
    * 画面上は「その日時まで」と読める。ここは doc の契約どおり「解析不能 = 自動解除」へ倒す。
    */
   if (hour > 23 || minute > 59 || seconds > 59) return Number.NaN;
-  const asUtc = new Date(Date.UTC(year, month - 1, day));
-  /*
-   * 月がずれていれば、日の桁溢れ（`02-30` → 3/2）も月の桁溢れ（`13-01` → 翌年 1 月）も
-   * 両方掴める——桁数は正規表現で 2 桁に固定済みなので、日の溢れは必ず月を動かす。
-   * 年の比較は `Date.UTC` が 0〜99 年を 1900 年代へ写すため（`0000-01-01` → 1900-01-01）。
-   */
-  if (Number.isNaN(asUtc.getTime()) || asUtc.getUTCFullYear() !== year || asUtc.getUTCMonth() !== month - 1) {
-    return Number.NaN;
-  }
   // `zonedTimeToUtcMs` は分までしか受けないので、秒は後から足す（TZ オフセットは分単位で
   // 表現されるので、秒を加えても帯の判定はずれない）。
   return zonedTimeToUtcMs({ year, month, day, hour, minute }, timezone) + seconds * 1000 + millis;
+}
+
+/**
+ * 暦として存在する年月日か。`Date` は `2026-13-01` を 2027-01-01 へ、`2026-02-30` を 3/2 へ
+ * 読み替えるので、`force_stopped` と組み合わさると桁のミスが数か月のサービス停止になる。
+ *
+ * 月がずれていれば日の桁溢れも月の桁溢れも両方掴める——桁数は正規表現で 2 桁に固定済みなので、
+ * 日の溢れは必ず月を動かす。年の比較は `Date.UTC` が 0〜99 年を 1900 年代へ写すため。
+ */
+function isRealCalendarDate(year: number, month: number, day: number): boolean {
+  const asUtc = new Date(Date.UTC(year, month - 1, day));
+  if (Number.isNaN(asUtc.getTime())) return false;
+  return asUtc.getUTCFullYear() === year && asUtc.getUTCMonth() === month - 1;
 }
 
 /** 期限内の一時 override だけを返す（期限切れ・解析不能は undefined = 自動解除）。 */

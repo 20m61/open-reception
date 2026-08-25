@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { MANAGED_RUNTIME_SERVICE_KEYS } from './registry';
 import { resolveServiceStates } from './resolve';
 import { validateRuntimePolicyInput } from './validate';
 
@@ -17,6 +18,12 @@ function issuesOf(raw: unknown): string[] {
   return result.ok ? [] : result.error.issues.map((i) => i.field);
 }
 
+/** 文言も固定する。`field` しか見ないと「何と言って弾いたか」の変異が生き残る。 */
+function messagesOf(raw: unknown): string[] {
+  const result = validateRuntimePolicyInput(raw);
+  return result.ok ? [] : result.error.issues.map((i) => i.message);
+}
+
 describe('runtime policy の入力検証 (#367)', () => {
   it('正しい入力は通り、解決へそのまま渡せる', () => {
     const result = validateRuntimePolicyInput(OK);
@@ -30,8 +37,48 @@ describe('runtime policy の入力検証 (#367)', () => {
     for (const bad of [null, undefined, 'x', 1, []]) {
       expect(validateRuntimePolicyInput(bad).ok, String(bad)).toBe(false);
       // issues が空だと、フィールド脇に理由を出す画面が「何も言わずに失敗」になる。
-      expect(issuesOf(bad), String(bad)).toContain('root');
+      // `body`（文書そのもの）と `root.<key>`（トップ階層のフィールド）は別物として名付ける。
+      expect(issuesOf(bad), String(bad)).toContain('body');
     }
+  });
+
+  it('commonSchedule に配列・Date を通さない（委譲先は配列を通す）', () => {
+    /*
+     * 🔴 委譲先 `validatePolicyInput` の門は `typeof raw !== 'object' || raw === null` だけで、
+     * **配列を通す**。`{ commonSchedule: [] }` が既定へ倒れて保存されると、音声受付・AI 意図解決・
+     * 外線発信が全滅し（残るのは notify_staff だけ）、`reason` は `common_weekly_schedule` という
+     * 正当に見える値で返る。この層は `isRecord` を持っているのに、ここだけ使っていなかった。
+     */
+    for (const bad of [[], [1, 2, 3], new Date(), 'x', null]) {
+      expect(issuesOf({ commonSchedule: bad }), JSON.stringify(bad)).toContain('commonSchedule');
+    }
+  });
+
+  it('commonSchedule の未知キーも黙って捨てない（emergencyContactLabel を無言で消さない）', () => {
+    /*
+     * 🔴 `emergencyContactLabel` は営業時間外画面で**来訪者への唯一の頼れる連絡先**として出る値。
+     * この層は 4 フィールドしか組み立て直さないので、runtime policy 経由で共通営業時間を書くと
+     * **無言で消える**。この層が管理しないなら、捨てるのではなく拒否して気づかせる。
+     */
+    expect(issuesOf({ ...OK, commonSchedule: { ...OK.commonSchedule, emergencyContactLabel: '内線 1234' } })).toContain(
+      'commonSchedule.emergencyContactLabel',
+    );
+    expect(issuesOf({ ...OK, commonSchedule: { ...OK.commonSchedule, typoKey: 1 } })).toContain(
+      'commonSchedule.typoKey',
+    );
+  });
+
+  it('route 層の封筒フィールドは通し、永続層の管理フィールドは拒否する', () => {
+    /*
+     * 隣接する `operating-policy` の route/store は `tenantId` / `siteId` / `expectedVersion` を
+     * **同じ body に載せて** validator へ渡す（`src/lib/operating-policy/store.ts`）。この層が
+     * それを未知キーとして弾くと、繋いだ瞬間に全リクエストが 400 になる。封筒は既知として
+     * 受け取り、**文書には入れない**。一方 `version` / `updatedBy` は封筒ではないので拒否する。
+     */
+    const result = validateRuntimePolicyInput({ ...OK, tenantId: 't1', siteId: 's1', expectedVersion: 3 });
+    expect(result.ok).toBe(true);
+    if (result.ok) expect(Object.keys(result.value)).toEqual(['commonSchedule']);
+    expect(issuesOf({ ...OK, version: 99 })).toContain('root.version');
   });
 
   it('commonSchedule の欠落を自分の言葉で説明する（委譲元の文言を漏らさない）', () => {
@@ -160,10 +207,15 @@ describe('runtime policy の入力検証 (#367)', () => {
 
   it('issue の field に入力キーを丸ごと載せない（長さと制御文字を落とす）', () => {
     // 構造化ログへ流れると偽イベント行を注入できる。レスポンス肥大も避ける。
-    const issues = issuesOf({ ...OK, services: { ['a\nb\rINJECTED level=fatal']: {} } });
-    expect(issues.some((f) => f.includes('\n') || f.includes('\r'))).toBe(false);
+    // U+2028 / U+2029 は `\p{C}` に**含まれない**（Zl/Zp）が、JS の LineTerminator であり
+    // `JSON.stringify` もエスケープしない。行注入としては改行と同じ。
+    const issues = issuesOf({ ...OK, services: { ['a\nb\rINJECTED level=fatal']: {}, ['c\u2028d\u2029e']: {} } });
+    expect(issues.some((f) => /[\n\r\u2028\u2029]/.test(f))).toBe(false);
     const long = issuesOf({ ...OK, services: { ['x'.repeat(500)]: {} } });
     expect(long.every((f) => f.length <= 128)).toBe(true);
+    // 先頭だけ残すと、同じ前置を持つ 2 つのキーが同じ `field` に潰れて特定できなくなる。
+    const pair = issuesOf({ ...OK, services: { [`${'x'.repeat(200)}-alpha`]: {}, [`${'x'.repeat(200)}-beta`]: {} } });
+    expect(new Set(pair).size).toBe(2);
   });
 
   it('サービス数・breakGlass の対象数に上限を持つ（issue の氾濫で応答を膨らませない）', () => {
@@ -171,9 +223,74 @@ describe('runtime policy の入力検証 (#367)', () => {
     for (let i = 0; i < 200; i++) many[`svc-${i}`] = {};
     expect(issuesOf({ ...OK, services: many }).length).toBeLessThanOrEqual(4);
     expect(issuesOf({ ...OK, services: many })).toContain('services');
-    expect(issuesOf({ ...OK, breakGlass: { active: true, serviceKeys: new Array(200).fill('stt') } })).toContain(
+    // 上限は**重複を畳んだ後**の数なので、相異なるキーで確かめる（同じ値の 200 件は 1 件）。
+    const distinct = Array.from({ length: 200 }, (_, i) => `svc-${i}`);
+    expect(issuesOf({ ...OK, breakGlass: { active: true, serviceKeys: distinct } })).toContain(
       'breakGlass.serviceKeys',
     );
+  });
+
+  it('空の weeklySchedule を「区間ゼロ = 恒久停止」として受け取らない', () => {
+    /*
+     * 🔴 `null` を塞いだだけでは足りない。行を全部消したフォームが素直に作る `{}` は、
+     * 解決では「区間ゼロ = 恒久 stopped」になり、`mode` を `follow_operating_hours` へ戻しても
+     * 段 4 が段 5 を上書きするので**共通営業時間へ戻らない**。運用者から見ると
+     * 「共通に戻したのに音声受付が動かない」。共通へ戻すのはキーの省略。
+     */
+    expect(issuesOf({ ...OK, services: { stt: { weeklySchedule: {} } } })).toContain(
+      'services.stt.weeklySchedule',
+    );
+    expect(messagesOf({ ...OK, services: { stt: { weeklySchedule: {} } } }).join(' ')).toContain('omit');
+  });
+
+  it('breakGlass の対象は重複を畳んでから上限判定する', () => {
+    // 上限 10 は distinct 前提。重複したまま数えると、実質 2 サービスの緊急停止が
+    // 「too many entries」で 400 になる——不発の害が最も大きい経路で。
+    const result = validateRuntimePolicyInput({
+      ...OK,
+      breakGlass: { active: true, serviceKeys: ['stt', 'stt', 'stt', 'admin', 'admin'] },
+    });
+    expect(result.ok).toBe(true);
+    if (result.ok) expect(result.value.breakGlass?.serviceKeys).toEqual(['stt', 'admin']);
+    const many = new Array(30).fill('stt');
+    expect(validateRuntimePolicyInput({ ...OK, breakGlass: { active: true, serviceKeys: many } }).ok).toBe(true);
+  });
+
+  it('issue の総数を打ち切り、応答が入力に比例して膨らまないようにする', () => {
+    // 「件数 ≤ N」ではなく**バイト数**で縛る（目的は応答肥大の阻止であって件数ではない）。
+    const noisy: Record<string, unknown> = { ...OK };
+    for (let i = 0; i < 50_000; i++) noisy[`bogus-${i}`] = 1;
+    const result = validateRuntimePolicyInput(noisy);
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(JSON.stringify(result.error).length).toBeLessThan(8_000);
+
+    // 階層ごとの上限だけでは総量を抑えられない（10 サービス × 未知キー、委譲先の例外日 366 件 …）。
+    const perService: Record<string, unknown> = {};
+    for (const key of MANAGED_RUNTIME_SERVICE_KEYS) {
+      const override: Record<string, unknown> = {};
+      for (let i = 0; i < 20; i++) override[`bogus-${i}`] = 1;
+      perService[key] = override;
+    }
+    const spread = validateRuntimePolicyInput({ ...OK, services: perService });
+    expect(spread.ok).toBe(false);
+    if (spread.ok) return;
+    expect(spread.error.issues.length).toBeLessThanOrEqual(51);
+  });
+
+  it('プロトタイプ由来のキーを既知キーと取り違えない', () => {
+    // `key in known` に緩めると `toString` / `constructor` がすり抜ける。
+    for (const key of ['toString', 'constructor', 'hasOwnProperty']) {
+      expect(issuesOf({ ...OK, [key]: 'x' }), key).toContain(`root.${key}`);
+    }
+  });
+
+  it('未知キー・上限の文言を固定する', () => {
+    expect(messagesOf({ ...OK, servcies: {} })).toContain('unknown field');
+    expect(messagesOf({ ...OK, services: { nope: {} } })).toContain('unknown service key');
+    const many: Record<string, unknown> = {};
+    for (let i = 0; i < 200; i++) many[`svc-${i}`] = {};
+    expect(messagesOf({ ...OK, services: many }).join(' ')).toContain('too many entries');
   });
 
   it('永続層の管理フィールドを body から混ぜられない（mass-assignment）', () => {
@@ -186,6 +303,15 @@ describe('runtime policy の入力検証 (#367)', () => {
     );
     // 打ち間違いも同じ経路で拾う（`servcies` は「設定したのに効かない」として現れる）。
     expect(issuesOf({ ...OK, servcies: {} })).toContain('root.servcies');
+  });
+
+  it('未知キーの報告件数にも上限を持つ（1 オブジェクトで応答を膨らませない）', () => {
+    // `services` のキー数だけ抑えても、**その内側**が無制限なら同じ応答肥大が残る。
+    const noisy: Record<string, unknown> = {};
+    for (let i = 0; i < 200; i++) noisy[`bogus-${i}`] = 1;
+    const issues = issuesOf({ ...OK, services: { stt: noisy } });
+    expect(issues.length).toBeLessThanOrEqual(6);
+    expect(issues).toContain('services.stt');
   });
 
   it('services とサービス個別 override の形を弾く（黙って捨てない）', () => {
@@ -274,6 +400,17 @@ describe('runtime policy の入力検証 (#367)', () => {
     expect(
       validateRuntimePolicyInput({ ...OK, services: { stt: { temporaryOverride: { state: 'force_stopped', expiresAt } } } }).ok,
     ).toBe(true);
+  });
+
+  it('保存する expiresAt は正規化済み（検証だけ trim して生値を保存しない）', () => {
+    // 改行込みの値がそのまま DynamoDB → API 応答 → 画面 → 監査 metadata まで流れると、
+    // `expiresAtMs` を通らない消費者（画面の `new Date()`、TTL 計算、ログ）が別の結果になる。
+    const result = validateRuntimePolicyInput({
+      ...OK,
+      services: { stt: { temporaryOverride: { state: 'force_stopped', expiresAt: ' 2099-01-01T00:00:00 ' } } },
+    });
+    expect(result.ok).toBe(true);
+    if (result.ok) expect(result.value.services?.stt?.temporaryOverride?.expiresAt).toBe('2099-01-01T00:00:00');
   });
 
   it('暦として存在しない日付を弾く（黙って別の時刻へ読み替えない）', () => {
