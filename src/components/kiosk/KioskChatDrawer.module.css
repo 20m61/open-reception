@@ -161,8 +161,14 @@
  * 送信ボタンは**既定で無効**。ここが opacity だけだと、来訪者が最初に見るのが
  * AC3 の禁じている失敗形そのものになる。受付端末の視覚語彙（破線＝押せない）へ揃える。
  */
-.send:disabled,
-.input:disabled {
+/* 送信の往復中は「押せない」の見た目にしない (#792)。`disabled` は残すので二重送信は防がれる。 */
+.send:disabled[aria-busy='true'],
+.input:disabled[aria-busy='true'] {
+  cursor: progress;
+}
+
+.send:disabled:not([aria-busy='true']),
+.input:disabled:not([aria-busy='true']) {
   background: var(--color-surface);
   border: 1px dashed var(--color-border-strong);
   color: var(--color-muted);

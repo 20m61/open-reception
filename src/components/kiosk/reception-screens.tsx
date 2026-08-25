@@ -878,6 +878,7 @@ export function TargetView({
                         data-testid="stt-listen"
                         onClick={() => void listen()}
                         disabled={sttListening}
+                        aria-busy={sttListening}
                         lang={htmlLangFor(locale)}
                       >
                         {sttListening ? tr('reception.listening') : tr('reception.voiceSearch')}
@@ -1323,6 +1324,8 @@ function ResultPanel({
     variant?: 'primary' | 'secondary';
     /** 実行中に二度押しを防ぐため無効化する（例: 受付完了ボタンの busy ガード, #342）。 */
     disabled?: boolean;
+    /** 処理中（送信の往復）。`disabled` と違い「押せない」の見た目にはしない (#792)。 */
+    busy?: boolean;
   };
   locale: Locale;
   /** パネルの root div へ追加する data-* 属性（例: 呼び出し段階 #323）。 */
@@ -1347,6 +1350,7 @@ function ResultPanel({
               data-testid={action.testId}
               onClick={action.onClick}
               disabled={action.disabled}
+              aria-busy={action.busy}
               lang={htmlLangFor(locale)}
             >
               {action.label}
@@ -1436,11 +1440,12 @@ function ConnectedView({
         // 終了操作の CTA も契約が決める (#422 inc5-b 増分 2)。強調度（secondary＝任意操作で
         // あることを示す）と二度押しガードだけが画面の裁量。
         turnAnswersFor('connected', locale).map((answer) => ({
-          label: answer.label,
+          label: busy ? tr('common.processing') : answer.label,
           onClick: () => void finish(),
           testId: answer.testId,
           variant: 'secondary' as const,
           disabled: busy,
+          busy,
         }))[0]
       }
       locale={locale}

@@ -57,6 +57,14 @@ function targetsUnavailableState(selector: string): boolean {
   );
 }
 
+/**
+ * 「処理中」になり得る状態を狙ったセレクタか。`[data-unavailable]`（担当者の不在）は
+ * 往復を伴わないので対象外。`:hover:not(:disabled)` のような否定形も除く。
+ */
+function targetsDisabledState(selector: string): boolean {
+  return /:disabled(?!\))/.test(selector);
+}
+
 /** 透明度以外に、状態を伝える視覚的な宣言を持つか。 */
 const MEANING_BEARING = [
   'background',
@@ -96,7 +104,10 @@ describe('kiosk: 押せない状態を透明度だけで表さない (#778 AC3)'
   });
 
   it('`.btn:disabled` は面・枠の形・文字色で「押せない」を示す', () => {
-    const btn = stateRules.find((r) => /\.btn:disabled/.test(r.selector));
+    // 「処理中」用の除外ルールではなく、**無効表現を持つ側**を選ぶ。
+    const btn = stateRules.find(
+      (r) => /\.btn:disabled/.test(r.selector) && /border-style/.test(r.body),
+    );
     expect(btn).toBeDefined();
     const body = btn!.body;
     expect(body, 'background を指定していない').toMatch(/background/);
@@ -104,5 +115,36 @@ describe('kiosk: 押せない状態を透明度だけで表さない (#778 AC3)'
     // 🔴 `border` だけを見ると `border-color` 単独で満たせてしまい、`.btn--secondary` と
     // 画素レベルで同一の treatment が通る。**形（破線）**が規約の本体なので名指しで縛る。
     expect(body, 'border-style: dashed を指定していない').toMatch(/border-style\s*:\s*dashed/);
+  });
+});
+
+describe('kiosk: 「処理中」を「押せない」と同じ見た目にしない (#792)', () => {
+  /*
+   * 対象は `:disabled` を狙う**すべての**ルール。`.btn` だけに絞ると、CSS Modules
+   * （`.send:disabled` 等）に同じ穴が残る。`[data-unavailable]` 系は「処理中」になり得ない
+   * 状態（担当者の不在）なので対象外でよい。
+   */
+  const btnRules = CSS_FILES.flatMap(({ path, css }) =>
+    ruleBlocks(css)
+      .filter((r) => targetsDisabledState(r.selector))
+      .map((r) => ({ ...r, path })),
+  );
+
+  it('無効表現を持つルールは `aria-busy` を除外している', () => {
+    // 除外が無いと、送信の往復の間だけ主 CTA が破線へ落ち、来訪者は
+    // 「押せなくなった」と読む（#778 AC3 を満たすほど悪化する、という矛盾）。
+    const treatments = btnRules.filter((r) => /border-style|background\s*:/.test(r.body));
+    expect(treatments.length, '無効表現を持つルールが見つからない').toBeGreaterThan(0);
+    // 母集団が 1 ファイルへ狭まっていないこと。`.btn` だけに絞ると CSS Modules に
+    // 同じ穴が残る（実際 `.send:disabled` がそうだった）。
+    expect(new Set(treatments.map((r) => r.path)).size).toBeGreaterThan(1);
+    for (const rule of treatments) {
+      // 🔴 `='true'` まで縛る。`:not([aria-busy])` だと React が常に出す
+      // `aria-busy="false"` にもマッチし、**条件未達の表現が恒久的に消える**。
+      expect(
+        rule.selector,
+        `${rule.path} の "${rule.selector}" が aria-busy='true' を除外していない`,
+      ).toMatch(/:not\(\[aria-busy\s*=\s*['"]true['"]\]\)/);
+    }
   });
 });

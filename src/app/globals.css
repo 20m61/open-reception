@@ -259,7 +259,22 @@ a {
  * 面をフラットに戻し（`.btn--primary` の gradient を打ち消す）、破線の枠と弱い文字色で
  * 示す。`.btn:disabled` は `.btn--primary` より詳細度が高いので、後勝ちに頼らない。
  */
-.btn:disabled {
+/*
+ * 🔴 **「処理中」は「押せない」ではない** (#792)。
+ *
+ * `disabled` は 2 つの意味に使われている——条件未達（氏名未入力）と、処理中（送信の往復）。
+ * 下の無効表現をそのまま処理中にも当てると、`checkout-confirm-yes` はネットワーク往復の
+ * 間だけシアンの塗り → フラット面 + 破線へ**一段階まるごと**変わり、来訪者は「押せなく
+ * なった／タップが失敗した」と読む。`.btn--danger` は送信中だけ危険色が完全に消える。
+ *
+ * よって `aria-busy="true"` のときは無効表現を当てない。**`disabled` 自体は外さない**ので
+ * 二重送信は従来どおりブラウザが防ぐ。見た目は有効のまま、カーソルだけ進行中を示す。
+ */
+.btn:disabled[aria-busy='true'] {
+  cursor: progress;
+}
+
+.btn:disabled:not([aria-busy='true']) {
   background: var(--color-surface);
   /* ショートハンドで既に gradient は消えるが、後日 `background-color` へ書き換えられた
      ときに `.btn--primary` の gradient が戻るのを防ぐ（冗長だが意図的）。 */
@@ -282,7 +297,7 @@ a {
  * 見え、#778 の原則「枠が強い＝重要」と逆になる（viewer ロールの管理画面では ghost が
  * 全部塗りつぶしになり、書ける primary より目立つ）。面だけ透明へ戻す。
  */
-.btn--ghost:disabled {
+.btn--ghost:disabled:not([aria-busy='true']) {
   background: transparent;
 }
 
