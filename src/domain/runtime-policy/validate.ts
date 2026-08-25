@@ -391,17 +391,21 @@ function validateServices(
  * スケジュールは**どちらでもない恒久停止**を作り、`reason` は `custom_service_schedule` という
  * 正当に見える値で返るので気づけない。助言は mode まで含めて書く。
  */
-/** registry の既定 mode（入力が mode を省いたときに実際に効く値）。 */
-const DEFAULT_MODE_BY_KEY = new Map<ManagedRuntimeServiceKey, ServiceOperatingMode>(
+/**
+ * registry の既定 mode（入力が mode を省いたときに実際に効く値）。
+ * registry の全キーから作るので欠けは無い（`registry.test.ts` が一覧と一意性を固定している）。
+ * `Map` + `??` にすると、到達しないフォールバックという**殺せない分岐**が 1 つ増える。
+ */
+const DEFAULT_MODE_BY_KEY = Object.fromEntries(
   MANAGED_RUNTIME_SERVICES.map((service) => [service.serviceKey, service.defaultMode]),
-);
+) as Record<ManagedRuntimeServiceKey, ServiceOperatingMode>;
 
 /*
  * `always_on` / `manual_only` は解決の段 3/4 を通さないので、スケジュールを設定しても
  * **黙って無視される**——本 PR が塞いだ typo と同じ「設定したのに効かない」体験になる。
  */
 const IGNORED_SCHEDULE_MESSAGE =
-  'is ignored unless mode is follow_operating_hours or custom_schedule; use break-glass or temporaryOverride to stop a service';
+  'is ignored unless mode is follow_operating_hours or custom_schedule; set one of those to limit when this service runs';
 
 const EMPTY_SCHEDULE_MESSAGE =
   'must contain at least one time range (or set exceptionDates); omit this key and set mode to follow_operating_hours to inherit the common schedule, or use manual_only to keep the service stopped';
@@ -435,16 +439,26 @@ function validateOverride(
   }
 
   /** 実際に効く mode（明示 > registry 既定）。判定はすべてこれで行う。 */
-  const effectiveMode = result.mode ?? DEFAULT_MODE_BY_KEY.get(key) ?? 'follow_operating_hours';
+  const effectiveMode = result.mode ?? DEFAULT_MODE_BY_KEY[key];
   const scheduleDriven = effectiveMode === 'follow_operating_hours' || effectiveMode === 'custom_schedule';
-  const hasExceptions = Array.isArray(override.exceptionDates) && override.exceptionDates.length > 0;
+  /*
+   * 🔴 「例外日が**あるか**」ではなく「**開ける**例外日があるか」。休業（`closed: true`）の
+   * 例外日で守りを外すと、区間ゼロとの組み合わせが「1 年中 stopped」になり、しかも
+   * `reason` は `exception_date` という正当に見える値で返る。
+   * `closed` の省略は委譲先が false（＝ ranges 必須の臨時営業）として扱うので、開ける側に数える。
+   */
+  const hasOpeningException =
+    Array.isArray(override.exceptionDates) &&
+    override.exceptionDates.some((exception) => isRecord(exception) && exception.closed !== true);
+  // mode 自体が不正なら「無視される」と断言しない（typo を直せば無視されなくなる）。
+  const modeIsValid = override.mode === undefined || result.mode !== undefined;
 
   /*
    * 🔴 `custom_schedule` なのにスケジュールも例外日も無いと、解決は段 3・段 4 を素通りして
    * `default_policy` で **stopped** になる。「キーを省略せよ」という助言だけを載せていた頃は、
    * **メッセージ自身が事故を誘発していた**（共通営業時間へ戻したつもりが恒久停止）。
    */
-  if (effectiveMode === 'custom_schedule' && override.weeklySchedule === undefined && !hasExceptions) {
+  if (effectiveMode === 'custom_schedule' && override.weeklySchedule === undefined && !hasOpeningException) {
     issues.push({ field: `services.${key}.weeklySchedule`, message: EMPTY_SCHEDULE_MESSAGE });
   }
 
@@ -458,7 +472,7 @@ function validateOverride(
    * スケジュールを読まない mode に設定させない。mode の省略時は registry の既定が効くので、
    * 判定も**実際に効く mode**（明示 > registry 既定）で行う。
    */
-  if (!scheduleDriven) {
+  if (!scheduleDriven && modeIsValid) {
     for (const field of ['weeklySchedule', 'exceptionDates'] as const) {
       if (override[field] !== undefined) {
         issues.push({ field: `services.${key}.${field}`, message: IGNORED_SCHEDULE_MESSAGE });
@@ -489,7 +503,7 @@ function validateOverride(
      * 保存できなくなっていた。しかも当時のメッセージが勧める `manual_only` は段 3 を素通りする
      * ので、助言に従うと**例外日が黙って死ぬ**。区間ゼロを咎めるのは、例外日も無いときだけ。
      */
-    if (!hasExceptions && isRecord(override.weeklySchedule) && !hasAnyRange(override.weeklySchedule)) {
+    if (scheduleDriven && !hasOpeningException && isRecord(override.weeklySchedule) && !hasAnyRange(override.weeklySchedule)) {
       issues.push({ field: `services.${key}.weeklySchedule`, message: EMPTY_SCHEDULE_MESSAGE });
     }
     const nested = validatePolicyInput({

@@ -221,6 +221,12 @@ describe('runtime policy の入力検証 (#367)', () => {
     expect(issues.some((f) => /[\n\r\u2028\u2029]/.test(f))).toBe(false);
     const long = issuesOf({ ...OK, services: { ['x'.repeat(500)]: {} } });
     expect(long.every((f) => f.length <= 128)).toBe(true);
+    // 委譲経路は上限そのものが 128 ちょうどになる（境界を固定しないと 129 へ戻る）。
+    const delegated = issuesOf({
+      ...OK,
+      commonSchedule: { ...OK.commonSchedule, weeklySchedule: { ['z'.repeat(300)]: [] } },
+    });
+    expect(Math.max(...delegated.map((f) => f.length))).toBe(128);
     // 先頭だけ残すと、同じ前置を持つ 2 つのキーが同じ `field` に潰れて特定できなくなる。
     const pair = issuesOf({ ...OK, services: { [`${'x'.repeat(200)}-alpha`]: {}, [`${'x'.repeat(200)}-beta`]: {} } });
     expect(new Set(pair).size).toBe(2);
@@ -313,6 +319,53 @@ describe('runtime policy の入力検証 (#367)', () => {
     expect(issuesOf({ ...OK, services: { stt: { mode: 'custom_schedule', weeklySchedule: { mon: [] } } } })).toContain(
       'services.stt.weeklySchedule',
     );
+  });
+
+  it('「開かない例外日」で守りを外さない（1 年中 stopped を通さない）', () => {
+    /*
+     * 🔴 「例外日があるか」で緩めたら、**休業の例外日**でも守りが外れた。
+     * `closed: true` の例外日 + 区間ゼロは、どの時点でも stopped——この検査が存在する理由
+     * そのものの構成が素通りし、`reason` は `exception_date` という正当に見える値で返る。
+     * 緩めてよいのは「**開ける**例外日」があるときだけ。
+     */
+    const closedOnly = [{ date: '2026-09-01', closed: true }];
+    expect(issuesOf({ ...OK, services: { stt: { weeklySchedule: { mon: [] }, exceptionDates: closedOnly } } })).toContain(
+      'services.stt.weeklySchedule',
+    );
+    expect(issuesOf({ ...OK, services: { stt: { mode: 'custom_schedule', exceptionDates: closedOnly } } })).toContain(
+      'services.stt.weeklySchedule',
+    );
+    // `closed` を省いた開ける例外日（委譲先は closed=false として ranges を要求する）は緩和の対象。
+    const openWithoutFlag = [{ date: '2026-09-01', ranges: [{ start: '10:00', end: '12:00' }] }];
+    expect(
+      validateRuntimePolicyInput({
+        ...OK,
+        services: { stt: { mode: 'custom_schedule', weeklySchedule: {}, exceptionDates: openWithoutFlag } },
+      }).ok,
+    ).toBe(true);
+  });
+
+  it('同じフィールドに矛盾する 2 件を出さない', () => {
+    /*
+     * `custom_schedule` + `{}` は「manual_only にせよ」と勧める。運用者が mode だけ変えると、
+     * 今度は「そのフィールドは無視される」と怒られる——**メッセージが次の 400 を作る**。
+     */
+    const issues = issuesOf({ ...OK, services: { stt: { mode: 'manual_only', weeklySchedule: {} } } });
+    expect(issues.filter((f) => f === 'services.stt.weeklySchedule')).toHaveLength(1);
+  });
+
+  it('無効な mode のときに「無視される」と断言しない', () => {
+    // typo を直せば無視されなくなるので、直前で断言すると往復が 1 回増える。
+    const issues = issuesOf({ ...OK, services: { signage: { mode: 'always-on', weeklySchedule: { mon: [{ start: '09:00', end: '18:00' }] } } } });
+    expect(issues).toContain('services.signage.mode');
+    expect(issues).not.toContain('services.signage.weeklySchedule');
+  });
+
+  it('稼働時間を絞りたい運用者に緊急停止を勧めない', () => {
+    // `signage` に時間帯を入れるのは「絞りたい」であって「止めたい」ではない。
+    const message = messagesOf({ ...OK, services: { signage: { weeklySchedule: { mon: [{ start: '09:00', end: '18:00' }] } } } }).join(' ');
+    expect(message).toContain('custom_schedule');
+    expect(message).not.toContain('break-glass');
   });
 
   it('スケジュールを読まない mode にスケジュールを設定させない（黙って無視しない）', () => {
@@ -497,7 +550,12 @@ describe('runtime policy の入力検証 (#367)', () => {
     expect(messagesOf({ ...OK, services: { nope: {} } })).toContain('unknown service key');
     const many: Record<string, unknown> = {};
     for (let i = 0; i < 200; i++) many[`svc-${i}`] = {};
-    expect(messagesOf({ ...OK, services: many }).join(' ')).toContain('too many entries');
+    // 文言は**実際の閾値**を名乗る（半分を名乗ると、何件までなら通るのか読めない）。
+    expect(messagesOf({ ...OK, services: many }).join(' ')).toContain('too many entries (max 20)');
+    const distinct = Array.from({ length: 30 }, (_, i) => `svc-${i}`);
+    expect(messagesOf({ ...OK, breakGlass: { active: true, serviceKeys: distinct } }).join(' ')).toContain(
+      'too many distinct entries (max 20)',
+    );
   });
 
   it('永続層の管理フィールドを body から混ぜられない（mass-assignment）', () => {
