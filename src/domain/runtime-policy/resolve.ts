@@ -153,14 +153,19 @@ function evaluateToState(schedule: CommonSchedule, now: number): ServiceRuntimeS
  * このモジュールの他の判定は全て IANA TZ を明示して使っているので、ここも揃える。
  */
 export function expiresAtMs(expiresAt: string, timezone: string): number {
-  // オフセット付き（`Z` / `±HH:MM`）はそのまま絶対時刻として読める。
-  if (/(?:Z|[+-]\d{2}:?\d{2})$/.test(expiresAt)) return Date.parse(expiresAt);
+  /*
+   * 前後の空白は落とす。運用画面のコピー&ペーストで混ざるだけの違いを「解析不能 =
+   * 一時 override が黙って効かない」に昇格させない。
+   */
+  const value = expiresAt.trim();
+  // オフセット付き（`Z` / `±HH:MM`）はそのまま絶対時刻として読める（小文字 `z` も同義に扱う）。
+  if (/(?:[Zz]|[+-]\d{2}:?\d{2})$/.test(value)) return Date.parse(value.replace(/z$/, 'Z'));
   /*
    * 🔴 **末尾まで縛る（`$`）。** 前方一致だと `2026-07-22T12:00oops` を「12:00 まで」と
    * 読んでしまい、doc の「解析不能は自動解除」と食い違う。黙って別の値として解釈しない。
    * 🔴 **秒も読む。** 落とすと `12:00:59` が `12:00:00` 扱いになり、最大 59 秒早く失効する。
    */
-  const m = /^(\d{4})-(\d{2})-(\d{2})(?:[T ](\d{2}):(\d{2})(?::(\d{2}))?)?$/.exec(expiresAt);
+  const m = /^(\d{4})-(\d{2})-(\d{2})(?:[T ](\d{2}):(\d{2})(?::(\d{2})(?:\.(\d{1,3}))?)?)?$/.exec(value);
   if (!m) return Number.NaN;
   const year = Number(m[1]);
   const month = Number(m[2]);
@@ -168,6 +173,12 @@ export function expiresAtMs(expiresAt: string, timezone: string): number {
   const hour = m[4] === undefined ? 0 : Number(m[4]);
   const minute = m[5] === undefined ? 0 : Number(m[5]);
   const seconds = m[6] === undefined ? 0 : Number(m[6]);
+  /*
+   * ミリ秒はオフセット付き（`.000Z`）だけ通って、オフセット無し（`.500`）は落ちる——という
+   * 説明できない境界を作らない。`<input step="0.001">` と Luxon の
+   * `toISO({ includeOffset: false })` がこの形を出す。`.5` は 500ms（右をゼロ埋め）。
+   */
+  const millis = m[7] === undefined ? 0 : Number(m[7].padEnd(3, '0'));
   /*
    * 🔴 **暦として存在しない値を黙って読み替えない。** `Date` も `zonedTimeToUtcMs` も
    * `2026-13-45` を 2027 年へ、`99:99` を翌日以降へ繰り上げる。`force_stopped` と
@@ -186,7 +197,7 @@ export function expiresAtMs(expiresAt: string, timezone: string): number {
   }
   // `zonedTimeToUtcMs` は分までしか受けないので、秒は後から足す（TZ オフセットは分単位で
   // 表現されるので、秒を加えても帯の判定はずれない）。
-  return zonedTimeToUtcMs({ year, month, day, hour, minute }, timezone) + seconds * 1000;
+  return zonedTimeToUtcMs({ year, month, day, hour, minute }, timezone) + seconds * 1000 + millis;
 }
 
 /** 期限内の一時 override だけを返す（期限切れ・解析不能は undefined = 自動解除）。 */

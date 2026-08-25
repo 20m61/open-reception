@@ -668,6 +668,32 @@ describe('expiresAt の解析（外部レビュー指摘の回帰固定, PR #791
     expect(stateOf(at('2027-02-29'), 'bedrock', IN_HOURS)).toMatchObject({ reason: 'common_weekly_schedule' });
   });
 
+  it('運用画面が普通に作る形を拒否しない（ミリ秒・前後空白・小文字 z）', () => {
+    /*
+     * `.000Z` は通るのに `.500`（オフセット無しのミリ秒つき）は通らない、という説明できない
+     * 境界を残さない。`<input type="datetime-local" step="0.001">` や
+     * Luxon の `toISO({ includeOffset: false })` がこの形を出す。
+     */
+    for (const good of ['2026-07-22T13:00:00.500', '2026-07-22T13:00:00.5', ' 2026-07-22T13:00 ', '2026-07-22T04:00:00z']) {
+      expect(stateOf(at(good), 'bedrock', IN_HOURS), `expiresAt=${good}`).toMatchObject({
+        reason: 'temporary_override',
+      });
+    }
+  });
+
+  it('ミリ秒は切り捨てず、期限の判定に効かせる', () => {
+    // `.5` は 500ms（右ゼロ埋め）。`Number('5')` と読むと 5ms になり、`.5` と `.005` が同じになる。
+    for (const expiresAt of ['2026-07-22T12:00:00.500', '2026-07-22T12:00:00.5']) {
+      const policy = at(expiresAt);
+      expect(stateOf(policy, 'bedrock', tokyo(2026, 7, 22, 12, 0, 0) + 250), expiresAt).toMatchObject({
+        reason: 'temporary_override',
+      });
+      expect(stateOf(policy, 'bedrock', tokyo(2026, 7, 22, 12, 0, 0) + 750), expiresAt).toMatchObject({
+        reason: 'common_weekly_schedule',
+      });
+    }
+  });
+
   it('秒を省いた値・日付だけの値は従来どおり解釈できる', () => {
     expect(stateOf(at('2026-07-22T13:00'), 'bedrock', IN_HOURS)).toMatchObject({
       reason: 'temporary_override',
