@@ -12,8 +12,14 @@
  */
 import type { PolicyValidationIssue } from '@/domain/operating-policy/types';
 import { DEFAULT_TIMEZONE } from '@/domain/operating-policy/tz';
-import { MANAGED_RUNTIME_SERVICES, type ManagedRuntimeServiceKey } from '@/domain/runtime-policy/registry';
 import {
+  MANAGED_RUNTIME_SERVICES,
+  MANAGED_RUNTIME_SERVICE_KEYS,
+  type ManagedRuntimeService,
+  type ManagedRuntimeServiceKey,
+} from '@/domain/runtime-policy/registry';
+import {
+  hasAbsoluteOffset,
   resolveServiceStates,
   type CommonSchedule,
   type RuntimeOperatingPolicy,
@@ -241,10 +247,12 @@ export async function upsertRuntimePolicy(
 
   /*
    * 実施者は **`actor` に載せる**（`appendAdminAudit` は `'admin'` 固定なので使わない）。
-   * metadata へ入れると、監査 API の PII サニタイザ（`email`/`name` の部分一致）を素通りし、
-   * レコードの `updatedBy` は次の更新で上書きされて残らない。`platform:<identity>` と同じ流儀。
+   * `platform:<identity>` / `kiosk:<id>` と同じ流儀で、`maskAuditActor` のマスク対象にもなる。
+   * metadata に置くとレコードの `updatedBy` 同様、次の更新で上書きされて追えなくなる。
+   * （`sanitizeAuditMetadata` は `recordDangerAction` 経由にしか掛からないので、
+   * 「actor に置けば sanitize される」という理由付けではない。）
    */
-  await appendAuditLog({
+  await recordAudit({
     action: 'runtime_policy.updated',
     actor: `admin:${updatedBy}`,
     targetType: 'runtime_policy',
@@ -287,22 +295,30 @@ async function conflictWithAudit(
   updatedBy: string,
   message: string,
 ): Promise<Result<never>> {
+  await recordAudit({
+    action: 'runtime_policy.update_conflicted',
+    actor: `admin:${updatedBy}`,
+    targetType: 'runtime_policy',
+    targetId: id,
+    metadata: { resource: 'runtime_policy', tenantId, siteId, reason: message },
+  });
+  return fail('conflict', message);
+}
+
+/**
+ * 監査の失敗で**結果を返せなくしない**。成功経路も競合経路も同じ扱いにする——成功だけ
+ * 例外にすると、「保存は成功したのに 500 が返り、再送すると version が進んでいて 409」という
+ * 「止められなかった」と読める壊れ方を作る。握ったことはログに出す。
+ */
+async function recordAudit(entry: Parameters<typeof appendAuditLog>[0]): Promise<void> {
   try {
-    await appendAuditLog({
-      action: 'runtime_policy.update_conflicted',
-      actor: `admin:${updatedBy}`,
-      targetType: 'runtime_policy',
-      targetId: id,
-      metadata: { resource: 'runtime_policy', tenantId, siteId, reason: message },
-    });
+    await appendAuditLog(entry);
   } catch (err) {
-    console.error('[runtime-policy] failed to record conflict audit', {
-      tenantId,
-      siteId,
+    console.error('[runtime-policy] failed to record audit', {
+      action: entry.action,
       reason: (err as { name?: string }).name ?? 'unknown',
     });
   }
-  return fail('conflict', message);
 }
 
 /**
@@ -382,11 +398,12 @@ export async function resolveRuntimeStatesFor(
 
   if (common) return { kind: 'resolved', resolution };
 
-  const unresolved = unresolvedWithoutCommonSchedule(resolution.services);
+  const unresolved = unresolvedWithoutCommonSchedule(resolution.services, runtime?.services);
   return {
     kind: 'partial',
     services: resolution.services.filter((service) => !unresolved.has(service.serviceKey)),
-    unresolved: [...unresolved],
+    // registry の順に揃える（`services` 側は registry 順なので、片方だけ挿入順だと並びが崩れる）。
+    unresolved: MANAGED_RUNTIME_SERVICE_KEYS.filter((key) => unresolved.has(key)),
   };
 }
 
@@ -408,22 +425,57 @@ const TIME_DEPENDENT_REASONS: ReadonlySet<ResolutionReason> = new Set([
 ]);
 
 /**
+ * その判断が拠点の timezone を要るか。`temporary_override` は例外で、`expiresAt` に
+ * オフセットが付いていれば**絶対時刻**として読めるので確定する（`resolve.ts` の実装がそうなって
+ * いる）。一律に判定不能へ倒すと、「今すぐ止める（期限付き）」が共通営業時間未設定の拠点で
+ * 黙って無効になる。
+ */
+function needsSiteTimezone(
+  service: ServiceResolution,
+  overrides: RuntimeOperatingPolicy['services'] | undefined,
+): boolean {
+  if (!TIME_DEPENDENT_REASONS.has(service.reason)) return false;
+  if (service.reason !== 'temporary_override') return true;
+  const expiresAt = overrides?.[service.serviceKey]?.temporaryOverride?.expiresAt;
+  return expiresAt === undefined || !hasAbsoluteOffset(expiresAt);
+}
+
+/**
  * 判定不能なサービス集合。**依存先を辿って推移的に広げる**——依存補正は reason を
  * `dependency_correction` に書き換えるので、段 5 由来の停止が「決まった値」として漏れていた
  * （実測: 共通未設定で `stt: always_on` が `blockedBy: realtime-conversation` により stopped、
  * しかも当の realtime-conversation は判定不能）。
  */
-function unresolvedWithoutCommonSchedule(
+export function unresolvedWithoutCommonSchedule(
   services: readonly ServiceResolution[],
+  overrides: RuntimeOperatingPolicy['services'] | undefined,
+  registry: readonly ManagedRuntimeService[] = MANAGED_RUNTIME_SERVICES,
 ): Set<ManagedRuntimeServiceKey> {
   const unresolved = new Set(
-    services.filter((service) => TIME_DEPENDENT_REASONS.has(service.reason)).map((s) => s.serviceKey),
+    services.filter((service) => needsSiteTimezone(service, overrides)).map((s) => s.serviceKey),
   );
-  // registry の依存は非循環（`registry.test.ts` が固定）なので、変化が無くなるまで回せば閉じる。
+  const byKey = new Map(services.map((service) => [service.serviceKey, service]));
+  // 解決に含まれるサービスだけを辿る（`resolveServiceStates` は部分集合で呼べる）。
+  const present = registry.filter((service) => byKey.has(service.serviceKey));
+
+  // 依存は非循環（`registry.test.ts` が固定）なので、変化が無くなるまで回せば閉じる。
   for (let changed = true; changed; ) {
     changed = false;
-    for (const service of MANAGED_RUNTIME_SERVICES) {
+    for (const service of present) {
       if (unresolved.has(service.serviceKey)) continue;
+      /*
+       * 🔴 **確定した停止は飲み込まない。** 依存補正は severity を上げることしかできず
+       * （`resolve.ts` の `applyDependencyCorrections`）、`stopped` は最大値なので、時刻に
+       * 依らない理由で既に停止しているサービスは依存先が不明でも値が変わらない。ここを
+       * 落とすと、スコープ付き break-glass や `manual_only` が「保存できるのに効かない」に戻る。
+       * 補正済みなら**補正前の自分の判断**を見る（補正で stopped に化けた側は判定不能のまま）。
+       */
+      const resolved = byKey.get(service.serviceKey);
+      const own = resolved?.correction ?? { state: resolved?.state, reason: resolved?.reason };
+      const from = 'from' in own ? own.from : own;
+      if (from.state === 'stopped' && from.reason !== undefined && !TIME_DEPENDENT_REASONS.has(from.reason)) {
+        continue;
+      }
       if (service.dependsOn.some((dep) => unresolved.has(dep))) {
         unresolved.add(service.serviceKey);
         changed = true;

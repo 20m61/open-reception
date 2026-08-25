@@ -181,7 +181,7 @@ export function expiresAtMs(expiresAt: string, timezone: string): number {
   const time = /[T ](\d{2}):(\d{2})(?::(\d{2}))?/.exec(value);
   if (time && (Number(time[1]) > 23 || Number(time[2]) > 59 || Number(time[3] ?? '0') > 59)) return Number.NaN;
   // オフセット付き（`Z` / `±HH:MM`）はそのまま絶対時刻として読める（小文字 `z` も同義に扱う）。
-  if (/(?:[Zz]|[+-]\d{2}:?\d{2})$/.test(value)) return Date.parse(value.replace(/z$/, 'Z'));
+  if (hasAbsoluteOffset(value)) return Date.parse(value.replace(/z$/, 'Z'));
   /*
    * 🔴 **末尾まで縛る（`$`）。** 前方一致だと `2026-07-22T12:00oops` を「12:00 まで」と
    * 読んでしまい、doc の「解析不能は自動解除」と食い違う。黙って別の値として解釈しない。
@@ -220,6 +220,14 @@ export function expiresAtMs(expiresAt: string, timezone: string): number {
   } catch {
     return Number.NaN;
   }
+}
+
+/**
+ * オフセット付き（`Z` / `±HH:MM`）か。**付いていれば絶対時刻**なので、拠点の timezone が
+ * 分からなくても解釈が確定する（呼び出し側が「判定不能」を切り分けるのに使う）。
+ */
+export function hasAbsoluteOffset(expiresAt: string): boolean {
+  return /(?:[Zz]|[+-]\d{2}:?\d{2})$/.test(expiresAt.trim());
 }
 
 /**

@@ -16,13 +16,15 @@ vi.mock('@/lib/data-stores/reception-log-store', () => ({
 }));
 
 import { __resetOperatingPolicyStore, upsertOperatingPolicy } from '@/lib/operating-policy/store';
-import { resolutionFor } from '@/domain/runtime-policy/resolve';
+import type { ManagedRuntimeService } from '@/domain/runtime-policy/registry';
+import { resolutionFor, type ServiceResolution } from '@/domain/runtime-policy/resolve';
 import { getBackend } from '@/lib/data';
 import {
   __resetRuntimePolicyStore,
   getRuntimePolicy,
   resolveRuntimeStatesFor,
   runtimePolicyKey,
+  unresolvedWithoutCommonSchedule,
   upsertRuntimePolicy,
 } from './store';
 
@@ -321,6 +323,36 @@ describe('upsertRuntimePolicy', () => {
     expect(scopeOf().breakGlassScope).toBe('none');
   });
 
+  it('「存在しないのに expectedVersion」も監査に残さない（実装ミス由来）', async () => {
+    const result = await upsertRuntimePolicy(TENANT, SITE, 'a@example.com', {
+      expectedVersion: 1,
+      services: {},
+    });
+    expect(result.ok).toBe(false);
+    expect(appendAuditLog).not.toHaveBeenCalled();
+  });
+
+  it('競合監査に理由を残す（どの競合だったか事後に分かるように）', async () => {
+    await upsertRuntimePolicy(TENANT, SITE, 'a@example.com', { services: {} });
+    vi.clearAllMocks();
+    await upsertRuntimePolicy(TENANT, SITE, 'b@example.com', { expectedVersion: 99, services: {} });
+    const [entry] = appendAuditLog.mock.calls[0] as [{ metadata: Record<string, string> }];
+    expect(entry.metadata.reason).toContain('updated by someone else');
+  });
+
+  it('成功したのに監査で落ちて 500 にならない', async () => {
+    // 保存は成功したのに 500 が返ると、運用者は再送して 409 を受け「止められなかった」と読む。
+    const error = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    try {
+      appendAuditLog.mockRejectedValueOnce(new Error('audit down'));
+      const result = await upsertRuntimePolicy(TENANT, SITE, 'a@example.com', { services: {} });
+      expect(result.ok).toBe(true);
+      expect(error).toHaveBeenCalled();
+    } finally {
+      error.mockRestore();
+    }
+  });
+
   it('同時編集の競合は監査に残す（クライアントの実装ミスは残さない）', async () => {
     // 「2 人が同時に触った」だけを残す。実装ミス由来の 409 まで残すと、リトライで線形に増えて
     // 本命の同時編集イベントが埋もれる。
@@ -358,6 +390,39 @@ describe('upsertRuntimePolicy', () => {
     } finally {
       error.mockRestore();
     }
+  });
+});
+
+describe('unresolvedWithoutCommonSchedule', () => {
+  /**
+   * 現 registry の依存は深さ 1（stt / dynamic-tts → realtime-conversation）なので、
+   * 「推移的に辿る」主張は**単一パスでも同じ結果**になり、閉包そのものが縛られない。
+   * 擬似 registry で 3 段の連鎖を作って固定する（registry に 2 段依存が入った日に静かに壊れないよう）。
+   */
+  it('2 段以上の依存も辿る（不動点まで回す）', () => {
+    const chain = [
+      { serviceKey: 'a', defaultMode: 'always_on', dependsOn: [], provides: [] },
+      { serviceKey: 'b', defaultMode: 'always_on', dependsOn: ['a'], provides: [] },
+      { serviceKey: 'c', defaultMode: 'always_on', dependsOn: ['b'], provides: [] },
+    ] as unknown as ManagedRuntimeService[];
+    const services = [
+      { serviceKey: 'a', mode: 'follow_operating_hours', state: 'stopped', reason: 'common_weekly_schedule' },
+      { serviceKey: 'b', mode: 'always_on', state: 'running', reason: 'default_policy' },
+      { serviceKey: 'c', mode: 'always_on', state: 'running', reason: 'default_policy' },
+    ] as unknown as ServiceResolution[];
+    const unresolved = unresolvedWithoutCommonSchedule(services, undefined, chain);
+    expect([...unresolved].sort()).toEqual(['a', 'b', 'c']);
+  });
+
+  it('解決に含まれないサービスは辿らない（部分集合で呼ばれても増やさない）', () => {
+    const chain = [
+      { serviceKey: 'a', defaultMode: 'always_on', dependsOn: [], provides: [] },
+      { serviceKey: 'b', defaultMode: 'always_on', dependsOn: ['a'], provides: [] },
+    ] as unknown as ManagedRuntimeService[];
+    const services = [
+      { serviceKey: 'a', mode: 'follow_operating_hours', state: 'stopped', reason: 'common_weekly_schedule' },
+    ] as unknown as ServiceResolution[];
+    expect([...unresolvedWithoutCommonSchedule(services, undefined, chain)]).toEqual(['a']);
   });
 });
 
@@ -414,6 +479,9 @@ describe('resolveRuntimeStatesFor', () => {
     if (outcome.kind !== 'partial') return;
     expect(outcome.unresolved).toContain('realtime-conversation');
     expect(outcome.unresolved).toContain('stt');
+    // 並びは registry 順（`services` 側と揃える。挿入順だと閉包で足した分が末尾に来る）。
+    expect(outcome.unresolved.indexOf('realtime-conversation')).toBeLessThan(outcome.unresolved.indexOf('stt'));
+    expect(outcome.unresolved.indexOf('stt')).toBeLessThan(outcome.unresolved.indexOf('bedrock'));
     expect(outcome.services.map((s) => s.serviceKey)).not.toContain('stt');
   });
 
@@ -423,6 +491,64 @@ describe('resolveRuntimeStatesFor', () => {
     await upsertRuntimePolicy(TENANT, SITE, 'a@example.com', {
       services: {
         signage: { mode: 'custom_schedule', weeklySchedule: { mon: [{ start: '09:00', end: '18:00' }] } },
+      },
+    });
+    const outcome = await resolveRuntimeStatesFor(TENANT, SITE, IN_HOURS);
+    expect(outcome.kind).toBe('partial');
+    if (outcome.kind !== 'partial') return;
+    expect(outcome.unresolved).toContain('signage');
+  });
+
+  /**
+   * 🔴 判定不能の集合を**広げ過ぎない**側の表明。依存補正は severity を上げることしかできず、
+   * `stopped` は最大値なので、時刻に依らない理由で既に停止しているサービスは依存先が不明でも
+   * 値が変わらない。ここを飲み込むと、スコープ付き break-glass が「保存できるのに効かない」に戻る。
+   */
+  it('確定した停止は判定不能に飲み込まない（スコープ付き break-glass が効く）', async () => {
+    await upsertRuntimePolicy(TENANT, SITE, 'a@example.com', {
+      breakGlass: { active: true, serviceKeys: ['stt', 'dynamic-tts'] },
+    });
+    const outcome = await resolveRuntimeStatesFor(TENANT, SITE, IN_HOURS);
+    expect(outcome.kind).toBe('partial');
+    if (outcome.kind !== 'partial') return;
+    expect(outcome.unresolved).not.toContain('stt');
+    expect(outcome.services.find((s) => s.serviceKey === 'stt')).toMatchObject({
+      state: 'stopped',
+      reason: 'break_glass',
+    });
+  });
+
+  it('手動停止（manual_only）も確定値として残す（費用目的の停止が届かないと困る）', async () => {
+    await upsertRuntimePolicy(TENANT, SITE, 'a@example.com', {
+      services: { stt: { mode: 'manual_only' } },
+    });
+    const outcome = await resolveRuntimeStatesFor(TENANT, SITE, IN_HOURS);
+    expect(outcome.kind).toBe('partial');
+    if (outcome.kind !== 'partial') return;
+    expect(outcome.unresolved).not.toContain('stt');
+    expect(outcome.services.find((s) => s.serviceKey === 'stt')?.state).toBe('stopped');
+  });
+
+  it('オフセット付きの一時 override は確定値として扱う（絶対時刻なので TZ が要らない）', async () => {
+    await upsertRuntimePolicy(TENANT, SITE, 'a@example.com', {
+      services: { bedrock: { temporaryOverride: { state: 'force_stopped', expiresAt: '2026-07-20T23:00:00Z' } } },
+    });
+    const outcome = await resolveRuntimeStatesFor(TENANT, SITE, IN_HOURS);
+    expect(outcome.kind).toBe('partial');
+    if (outcome.kind !== 'partial') return;
+    expect(outcome.unresolved).not.toContain('bedrock');
+    expect(outcome.services.find((s) => s.serviceKey === 'bedrock')?.state).toBe('stopped');
+  });
+
+  it('例外日で決まった状態も確定値として扱わない', async () => {
+    // 例外日の一致判定も現地時刻。4 つの time-dependent な理由をそれぞれ固定する。
+    await upsertRuntimePolicy(TENANT, SITE, 'a@example.com', {
+      services: {
+        signage: {
+          mode: 'custom_schedule',
+          weeklySchedule: { mon: [{ start: '09:00', end: '18:00' }] },
+          exceptionDates: [{ date: '2026-07-20', closed: true }],
+        },
       },
     });
     const outcome = await resolveRuntimeStatesFor(TENANT, SITE, IN_HOURS);
