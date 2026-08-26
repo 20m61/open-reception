@@ -25,7 +25,15 @@ describe('読み上げ文言 (#803)', () => {
     expect(phrase).toContain('代表窓口');
   });
 
-  it.each(['en', 'ko', 'zh'] as const)('%s でも名前を落とさない', (locale) => {
+  /**
+   * 🔴 **`toContain('佐藤')` だけでは locale 引数を縛れない。** 名前は locale を無視しても
+   * 全言語の出力に現れるので、`makeT(locale)` を `makeT('ja')` へ固定する変異が素通りする
+   * （実測で生存）。**字幕と同じ文言であること**を各言語で見る ―― 字幕が選択言語・読み上げが
+   * 日本語という不一致は AC「表示と読み上げが一致する」の違反である。
+   */
+  it.each(['en', 'ko', 'zh'] as const)('%s でも字幕と同じ文言を返す', (locale) => {
+    const captionKey = captionKeyFor(NOTICE);
+    expect(announcementPhrase(NOTICE, locale)).toBe(makeT(locale)(captionKey!, { name: '佐藤' }));
     expect(announcementPhrase(NOTICE, locale)).toContain('佐藤');
   });
 

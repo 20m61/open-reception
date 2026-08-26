@@ -34,6 +34,7 @@ import {
 } from './kiosk-view';
 import { VOICE_MODE_TO_EXPERIENCE } from '@/domain/experience/journey-map';
 import { VoiceKioskStore } from '@/lib/voice-session/kiosk-store';
+import { shouldAnnounce } from '@/components/kiosk/voice-announcement';
 import type { EntityDirectory } from '@/domain/voice-stt/entity-resolver';
 
 const PRESENT: EntityDirectory = {
@@ -323,4 +324,48 @@ describe('不在告知を声に出す (#803)', () => {
       expect(announcementFor({ mode, readbackName: '佐藤' })).toBeNull();
     },
   );
+});
+
+/**
+ * 「同じ名前を言い直したら、もう一度言う」を**層をまたいで**縛る (#803)。
+ *
+ * 🔴 **reducer のメモ化 1 行で AC が静かに消える。** `heardUnavailable` に
+ * 「同じ名前なら `state` をそのまま返す」を足すと、`shouldAnnounce` は identity で判定して
+ * いるので**沈黙**になる —— 聞き取れなかったと思って言い直した来訪者に何も返さない、
+ * #803 が塞ぎたかった状況そのもの。同じ switch の隣（`hearPartial`）にメモ化の前例があり、
+ * 誘因が実在する。純関数単体ではなく store のスナップショット越しに見る。
+ */
+describe('同じ名前を言い直しても読み上げ直す (#803)', () => {
+  it('同じ名前の再告知でスナップショットが変わる', () => {
+    let emit: (event: VoiceKioskEvent) => void = () => {};
+    const store = new VoiceKioskStore((e) => {
+      emit = e;
+      return { start: async () => {}, close: async () => {}, confirmYes: () => {}, confirmNo: () => {} };
+    });
+    store.start();
+
+    emit({ type: 'heardUnavailable', displayName: '不在花子' });
+    const first = store.getState();
+    emit({ type: 'heardUnavailable', displayName: '不在花子' });
+    const second = store.getState();
+
+    expect(second).toEqual(first);
+    expect(shouldAnnounce(first, second)).toBe(true);
+  });
+
+  /** 下界: 無変化の再描画では喋り直さない。 */
+  it('同じスナップショットのままなら喋り直さない', () => {
+    const state: VoiceKioskState = { mode: 'unavailable', readbackName: '不在花子' };
+    expect(shouldAnnounce(state, state)).toBe(false);
+  });
+
+  /**
+   * 告知を畳むイベントは**告知の局面でだけ**意味を持つ。ガードを外すと、復唱や発話まで
+   * 畳めてしまう（今は dispatch 元が 1 箇所なので実害ゼロの二重化防御だが、増えたときに効く）。
+   */
+  it('告知以外の局面は noticeDismissed で畳まれない', () => {
+    const readback: VoiceKioskState = { mode: 'readback', readbackName: '在席太郎' };
+    expect(voiceKioskReducer(readback, { type: 'noticeDismissed' }).mode).toBe('readback');
+    expect(voiceKioskReducer({ mode: 'speaking' }, { type: 'noticeDismissed' }).mode).toBe('speaking');
+  });
 });

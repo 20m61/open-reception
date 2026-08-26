@@ -138,6 +138,21 @@ describe('不在告知の読み上げ配線 (#803)', () => {
     expect(LAYER).toContain('shouldAnnounce');
     expect(LAYER).toContain('announcementPhrase(state, locale)');
     expect(LAYER).toContain('onAnnounce?.(phrase)');
+    // 覚えないと毎描画で喋り直す。純関数側の変異は落ちるが、**呼び出し側の 1 行**は別に縛る。
+    expect(LAYER).toContain('announcedRef.current = state');
+  });
+
+  /**
+   * 🔴 **依存配列に `state` が要る。** 落とすと **告知が一度も喋られなくなる**のに、
+   * `react-hooks/exhaustive-deps` は warning 止まりで `npm run lint` に `--max-warnings` が
+   * 無いためゲートは緑のまま（実測）。#788 が `useVoiceSession` に対してやったのと同じ形で固定する。
+   */
+  it('読み上げ effect は局面の変化で再評価される', () => {
+    const effect = LAYER.slice(LAYER.indexOf('shouldAnnounce(announcedRef.current, state)'));
+    const deps = effect.match(/\}, \[([^\]]*)\]\);/);
+    expect(deps, '読み上げ effect と依存配列が見つからない').not.toBeNull();
+    expect(deps?.[1]).toMatch(/\bstate\b/);
+    expect(deps?.[1]).toMatch(/\blocale\b/);
   });
 
   it('KioskFlow は onAnnounce を既存の speak() へ繋ぐ', () => {
