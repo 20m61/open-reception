@@ -35,6 +35,11 @@ export const VOICE_KIOSK_MODES = [
   'speaking',
   'ducked',
   'fallback',
+  /**
+   * 不在の担当者を名指しされ、その理由を伝えている局面 (#803)。タッチ側の「本日不在」バッジと
+   * 同じ事実を音声でも言う。**選択は進まない** —— 来訪者は部署か代表窓口を選び直す。
+   */
+  'unavailable',
 ] as const;
 
 export type VoiceKioskMode = (typeof VOICE_KIOSK_MODES)[number];
@@ -57,6 +62,11 @@ export type VoiceKioskState = {
   readbackKind?: VoiceReadbackKind;
   /** 復唱を促した低信頼の別（表示ニュアンス切替に使う。#370 の確認理由をそのまま持つ）。 */
   readbackReason?: SttEntityConfirmationReason;
+  /**
+   * 復唱対象が**不在の担当者**か (#803)。true なら「はい」で選択へ進まず、不在を伝える。
+   * 低信頼で「◯◯は本日不在です」と断定しないために、復唱を 1 段挟む経路で使う。
+   */
+  readbackUnavailable?: boolean;
   /** 直近フォールバック源（診断用。PII なし）。 */
   fallbackSource?: VoiceSessionFallbackSource;
   /**
@@ -96,7 +106,14 @@ export type VoiceKioskEvent =
       displayName: string;
       reason: SttEntityConfirmationReason;
       kind?: VoiceReadbackKind;
+      /** 復唱対象が不在の担当者か (#803)。true なら「はい」でも選択へ進まない。 */
+      unavailable?: boolean;
     }
+  /**
+   * 不在の担当者を高信頼で名指しされた (#803)。理由を伝えて別経路へ導く。
+   * 表示名は組織が管理する担当者名で、UI 一時表示のみ（ログ/eval へ出さない）。
+   */
+  | { type: 'heardUnavailable'; displayName: string }
   /** 復唱確認に「はい」（タッチでも音声でも同じ入口）。 */
   | { type: 'confirmYes' }
   /** 復唱確認に「いいえ」（聞き直しへ）。 */
@@ -167,9 +184,20 @@ export function voiceKioskReducer(state: VoiceKioskState, event: VoiceKioskEvent
         readbackName: event.displayName,
         readbackReason: event.reason,
         readbackKind: event.kind,
+        ...(event.unavailable === true ? { readbackUnavailable: true } : {}),
       };
 
+    case 'heardUnavailable':
+      return { mode: 'unavailable', readbackName: event.displayName };
+
     case 'confirmYes':
+      /*
+       * 不在の相手の復唱を確定した場合は、**選択へ進まず不在を伝える** (#803)。
+       * ここで idle へ落とすと、来訪者は「はい」と答えたのに何も起きない画面に取り残される。
+       */
+      if (state.readbackUnavailable === true) {
+        return { mode: 'unavailable', ...(state.readbackName ? { readbackName: state.readbackName } : {}) };
+      }
       // 復唱を確定 → 次ターンのため待機へ（復唱情報はクリア）。
       return { mode: 'idle' };
 
@@ -203,6 +231,7 @@ export type VoiceKioskCaptionKey =
   | 'voice.caption.ducked'
   | 'voice.readback.confirmTarget'
   | 'voice.readback.confirmDepartment'
+  | 'voice.unavailable.staffAbsent'
   | 'voice.fallback.touchNotice';
 
 /**
@@ -227,6 +256,8 @@ export function captionKeyFor(
       return state.readbackKind === 'department'
         ? 'voice.readback.confirmDepartment'
         : 'voice.readback.confirmTarget';
+    case 'unavailable':
+      return 'voice.unavailable.staffAbsent';
     case 'fallback':
       return 'voice.fallback.touchNotice';
     case 'idle':

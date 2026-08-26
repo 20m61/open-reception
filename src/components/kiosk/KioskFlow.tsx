@@ -147,7 +147,10 @@ import {
 import {
   voiceCandidateToTarget,
 } from './voice-target-binding';
-import { kioskDirectoryToEntityDirectory } from './voice-directory';
+import {
+  kioskDirectoryToEntityDirectory,
+  kioskDirectoryToUnavailableDirectory,
+} from './voice-directory';
 import type {
   OnResolved,
   VoiceSessionFactory,
@@ -543,7 +546,11 @@ export function KioskFlow({
    */
   const localVoiceSession = useMemo(() => {
     if (!localVoiceEnabled) return undefined;
-    return createLocalVoiceSessionFactory(kioskDirectoryToEntityDirectory(directory));
+    return createLocalVoiceSessionFactory(
+      kioskDirectoryToEntityDirectory(directory),
+      // 不在の相手を名指しされたら理由を言う (#803)。選択肢としては渡していない。
+      kioskDirectoryToUnavailableDirectory(directory),
+    );
   }, [localVoiceEnabled, directory]);
   const effectiveVoiceSession = voiceSession ?? localVoiceSession;
   const [callingStageQueryOverride, setCallingStageQueryOverride] = useState<

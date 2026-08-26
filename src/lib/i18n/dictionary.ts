@@ -54,6 +54,7 @@ export type MessageKey =
   | 'voice.readback.confirmDepartment'
   | 'voice.readback.yes'
   | 'voice.readback.no'
+  | 'voice.unavailable.staffAbsent'
   | 'voice.fallback.touchNotice'
   | 'common.next'
   | 'common.cancel'
@@ -389,6 +390,9 @@ const ja: DefaultDictionary = {
   'voice.readback.confirmDepartment': '{name}でよろしいですか？',
   'voice.readback.yes': 'はい',
   'voice.readback.no': 'いいえ',
+  // タッチ側の「本日不在」バッジと**同じ事実**を音声でも言う (#803)。言いっぱなしにせず、
+  // タッチ経路と同じ次の手（部署・代表窓口）へ導く。
+  'voice.unavailable.staffAbsent': '{name}は現在不在です。画面から部署または代表窓口をお選びください',
   'voice.fallback.touchNotice': '音声が使えないため、画面のタッチで受付を続けられます',
   'common.next': '次へ',
   'common.cancel': 'キャンセル',
@@ -691,6 +695,8 @@ const en: LocaleDictionary = {
   'voice.readback.confirmDepartment': 'Would you like to be connected to {name}?',
   'voice.readback.yes': 'Yes',
   'voice.readback.no': 'No',
+  'voice.unavailable.staffAbsent':
+    '{name} is not available now. Please choose a department or the main desk on the screen',
   'voice.fallback.touchNotice': 'Voice is unavailable. You can continue by touch',
   'common.next': 'Next',
   'common.cancel': 'Cancel',
@@ -997,6 +1003,7 @@ const ko: LocaleDictionary = {
   'voice.readback.confirmDepartment': '{name} 부서가 맞으신가요?',
   'voice.readback.yes': '네',
   'voice.readback.no': '아니요',
+  'voice.unavailable.staffAbsent': '{name}님은 현재 부재중입니다. 화면에서 부서 또는 대표 창구를 선택해 주세요',
   'voice.fallback.touchNotice': '음성을 사용할 수 없어 화면 터치로 접수를 이어갈 수 있습니다',
   'common.next': '다음',
   'common.cancel': '취소',
@@ -1298,6 +1305,7 @@ const zh: LocaleDictionary = {
   'voice.readback.confirmDepartment': '您要找的是{name}吗？',
   'voice.readback.yes': '是',
   'voice.readback.no': '否',
+  'voice.unavailable.staffAbsent': '{name}目前不在。请在屏幕上选择部门或前台',
   'voice.fallback.touchNotice': '语音暂不可用，您可以通过触摸屏幕继续登记',
   'common.next': '下一步',
   'common.cancel': '取消',
