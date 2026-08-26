@@ -27,6 +27,8 @@ function render(
       onRequestChat={() => {}}
       tab="staff"
       onTabChange={() => {}}
+      openGroupId={null}
+      onOpenGroupChange={() => {}}
       locale={locale}
       {...over}
     />,
@@ -54,9 +56,30 @@ function tagOf(html: string, testId: string): string {
 describe('TargetView の初期表示密度 (#776)', () => {
   it('開いた直後に部署グリッドを出さない（担当者/部署の 2 グリッド同時表示を禁じる）', () => {
     const html = render();
-    expect(html).toContain('data-testid="staff-staff-sato"');
+    // 初期表示は担当者を絞るための**群**（#787）。取次先としての部署グリッドとは別物。
+    expect(html).toContain('data-testid="staff-groups"');
     expect(html).not.toContain('data-testid="dept-dept-sales"');
     expect(html).not.toContain('data-testid="target-panel-department"');
+  });
+
+  /**
+   * 担当者グリッドの段階開示 (#787)。**上位 N 件打ち切りにしない**ので、初期表示に
+   * 担当者カードは出ないが、部署を開けば必ず出る（＝到達不能を作らない）。
+   */
+  it('初期表示では担当者カードを出さず、部署を開くと出る', () => {
+    expect(render()).not.toContain('data-testid="staff-staff-sato"');
+    expect(render({ openGroupId: 'dept-sales' })).toContain('data-testid="staff-staff-sato"');
+  });
+
+  it('開いた部署からは戻れる（押した先から出られない画面を作らない）', () => {
+    expect(render({ openGroupId: 'dept-sales' })).toContain('data-testid="staff-group-back"');
+    expect(render()).not.toContain('data-testid="staff-group-back"');
+  });
+
+  it('群のカードは部署名と人数を出す', () => {
+    const html = render();
+    expect(innerTextOf(html, 'staff-group-dept-sales-count')).toBe('1名');
+    expect(html).toContain('営業部');
   });
 
   it('探し方のタブを両方出し、担当者タブを選択済みにする（部署へもタッチで到達できる）', () => {
@@ -94,7 +117,8 @@ describe('TargetView の初期表示密度 (#776)', () => {
   });
 
   it('不在の担当者は透明度ではなくバッジと文言で示し、押せない', () => {
-    const html = render();
+    // 鈴木は開発部。段階開示 (#787) 後は群を開かないとカードが出ない。
+    const html = render({ openGroupId: 'dept-dev' });
     // バッジは**中身が読める**こと。空文字にすると透明度だけの表現へ逆戻りする。
     expect(innerTextOf(html, 'staff-staff-suzuki-absent-badge')).toBe('不在');
     expect(innerTextOf(html, 'staff-staff-suzuki-absent')).toContain('現在不在です');

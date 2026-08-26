@@ -1,4 +1,4 @@
-import { test, expect, type Page } from './kiosk-fixtures';
+import { test, expect, type Page, revealStaff } from './kiosk-fixtures';
 
 /**
  * 実 PSTN 発信の結果確定ポーリングの**意味論**を固定する E2E (issue #652 AC3 / #647)。
@@ -36,6 +36,7 @@ async function stubCallThenStatus(
 async function driveToCalling(page: Page): Promise<void> {
   await page.getByTestId('start-reception').click();
   await page.getByTestId('purpose-meeting').click();
+  await revealStaff(page, 'staff-staff-sato');
   await page.getByTestId('staff-staff-sato').click();
   await page.getByTestId('visitor-name').fill('来客 四郎');
   await page.getByTestId('to-confirm').click();

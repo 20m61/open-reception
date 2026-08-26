@@ -1,4 +1,4 @@
-import { test, expect } from './kiosk-fixtures';
+import { test, expect, revealStaff } from './kiosk-fixtures';
 import { openMoreIdleActions } from './helpers';
 
 /**
@@ -65,7 +65,11 @@ test('相手選択の初期表示は判断対象を 1 種類に絞る (#776)', a
 
   // 担当者グリッドと部署グリッドを縦に連続表示しない。**DOM に無い**ことまで見る
   // （`toBeHidden` だと「下にあるだけ」の退行を通してしまう）。
-  await expect(page.getByTestId('staff-staff-sato')).toBeVisible();
+  //
+  // 初期表示は担当者を絞るための**群**（#787）。ここで `revealStaff` を挟むと
+  // 「初期表示を見る」という本テストの主題が消えるので、挟まない。
+  await expect(page.getByTestId('staff-groups')).toBeVisible();
+  await expect(page.locator('[data-testid^="staff-staff-"]')).toHaveCount(0);
   await expect(page.locator('[data-testid^="dept-"]')).toHaveCount(0);
   // 主操作（検索欄）はスクロールせずに見える位置にある。
   const search = await page.getByTestId('staff-search').boundingBox();
@@ -121,6 +125,7 @@ test('相手選択のタブは確認画面から戻っても勝手に切り替�
   // 「部署から選ぶ」で入ったあと担当者タブへ移り、担当者を選んで戻る。
   await page.getByTestId('quick-department').click();
   await page.getByTestId('target-tab-staff').click();
+  await revealStaff(page, 'staff-staff-sato');
   await page.getByTestId('staff-staff-sato').click();
   await expect(page.getByTestId('visitor-name')).toBeVisible();
   await page.getByTestId('escape-back').click();

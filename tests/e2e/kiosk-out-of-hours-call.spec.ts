@@ -1,4 +1,4 @@
-import { test, expect } from './kiosk-fixtures';
+import { test, expect, revealStaff } from './kiosk-fixtures';
 
 /**
  * 受付中に閉店した来訪者に、果たせない約束をしない (#736 Gate A)。
@@ -37,6 +37,7 @@ test('営業時間外に閉店をまたいだ呼び出しで、果たせない�
   await page.goto('/kiosk');
   await page.getByTestId('start-reception').click();
   await page.getByTestId('purpose-meeting').click();
+  await revealStaff(page, 'staff-staff-sato');
   await page.getByTestId('staff-staff-sato').click();
   await page.getByTestId('visitor-name').fill('来客 一郎');
   await page.getByTestId('to-confirm').click();

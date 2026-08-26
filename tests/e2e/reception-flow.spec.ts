@@ -1,4 +1,4 @@
-import { test, expect, type Page } from './kiosk-fixtures';
+import { test, expect, type Page, revealStaff } from './kiosk-fixtures';
 
 /**
  * iPad 受付 MVP フローの E2E smoke test (issue #21)。
@@ -14,6 +14,7 @@ async function advanceToConfirm(page: Page, staffTestId: string, name = '来客 
   await page.goto(`/kiosk${query}`);
   await page.getByTestId('start-reception').click();
   await page.getByTestId('purpose-meeting').click();
+  await revealStaff(page, staffTestId);
   await page.getByTestId(staffTestId).click();
   await page.getByTestId('visitor-name').fill(name);
   await page.getByTestId('to-confirm').click();
@@ -45,6 +46,7 @@ test('接続画面は無操作で待機へ自動復帰する（「操作不要�
   await page.goto('/kiosk?inactivityMs.connected=600');
   await page.getByTestId('start-reception').click();
   await page.getByTestId('purpose-meeting').click();
+  await revealStaff(page, 'staff-staff-sato');
   await page.getByTestId('staff-staff-sato').click();
   await page.getByTestId('visitor-name').fill('来客 一郎');
   await page.getByTestId('to-confirm').click();
@@ -104,6 +106,7 @@ test('担当者検索で絞り込める', async ({ page }) => {
   await page.getByTestId('start-reception').click();
   await page.getByTestId('purpose-meeting').click();
   await page.getByTestId('staff-search').fill('すずき');
+  await revealStaff(page, 'staff-staff-suzuki');
   await expect(page.getByTestId('staff-staff-suzuki')).toBeVisible();
   await expect(page.getByTestId('staff-staff-sato')).toHaveCount(0);
 });
@@ -114,7 +117,9 @@ test('1 文字 typo でも「もしかして」候補として見つかる (#322
   await page.getByTestId('purpose-meeting').click();
   // 「たかはし」の 1 文字 typo。従来の完全部分一致では 0 件だった。
   await page.getByTestId('staff-search').fill('たかばし');
+  await revealStaff(page, 'staff-staff-takahashi');
   await expect(page.getByTestId('staff-staff-takahashi')).toBeVisible();
+  await revealStaff(page, 'staff-staff-takahashi-maybe');
   await expect(page.getByTestId('staff-staff-takahashi-maybe')).toBeVisible();
   // 0 件時の誘導は出ない（ヒットしているため）。
   await expect(page.getByTestId('target-recovery')).toHaveCount(0);

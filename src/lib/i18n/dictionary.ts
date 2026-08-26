@@ -158,6 +158,9 @@ export type MessageKey =
   | 'reception.targetTabsLabel'
   | 'reception.staffAbsent'
   | 'reception.staffAbsentBadge'
+  | 'reception.staffGroupOther'
+  | 'reception.staffGroupCount'
+  | 'reception.staffGroupBack'
   | 'reception.staffNotFound'
   | 'reception.departmentNotFound'
   | 'reception.voiceSearch'
@@ -479,6 +482,10 @@ const ja: DefaultDictionary = {
   'reception.targetTabsLabel': '探し方',
   'reception.staffAbsent': '現在不在です。部署または代表窓口をお選びください。',
   'reception.staffAbsentBadge': '不在',
+  // 所属が名簿と一致しない担当者の受け皿 (#787)。**捨てない**ための群なので、名前は中立に。
+  'reception.staffGroupOther': 'その他',
+  'reception.staffGroupCount': '{count}名',
+  'reception.staffGroupBack': '部署を選び直す',
   'reception.staffNotFound': '該当する担当者が見つかりません。部署または代表窓口をお選びください。',
   'reception.departmentNotFound': '部署・窓口の一覧がありません。下の方法からお選びください。',
   'reception.voiceSearch': '音声で担当者を探す',
@@ -784,6 +791,9 @@ const en: LocaleDictionary = {
   'reception.targetTabsLabel': 'How to find them',
   'reception.staffAbsent': 'Currently unavailable. Please choose a department or the main desk.',
   'reception.staffAbsentBadge': 'Unavailable',
+  'reception.staffGroupOther': 'Other',
+  'reception.staffGroupCount': '{count}',
+  'reception.staffGroupBack': 'Choose another department',
   'reception.staffNotFound': 'No matching staff found. Please choose a department or the main desk.',
   'reception.departmentNotFound': 'No departments or main desk are listed. Please choose one of the options below.',
   'reception.voiceSearch': 'Search by voice',
@@ -1090,6 +1100,9 @@ const ko: LocaleDictionary = {
   'reception.targetTabsLabel': '찾는 방법',
   'reception.staffAbsent': '현재 부재중입니다. 부서 또는 대표 창구를 선택해 주세요.',
   'reception.staffAbsentBadge': '부재중',
+  'reception.staffGroupOther': '기타',
+  'reception.staffGroupCount': '{count}명',
+  'reception.staffGroupBack': '부서 다시 선택',
   'reception.staffNotFound': '해당 담당자를 찾을 수 없습니다. 부서 또는 대표 창구를 선택해 주세요.',
   'reception.departmentNotFound': '부서·대표 창구 목록이 없습니다. 아래 방법에서 선택해 주세요.',
   'reception.voiceSearch': '음성으로 검색',
@@ -1392,6 +1405,9 @@ const zh: LocaleDictionary = {
   'reception.targetTabsLabel': '查找方式',
   'reception.staffAbsent': '当前不在。请选择部门或前台。',
   'reception.staffAbsentBadge': '不在',
+  'reception.staffGroupOther': '其他',
+  'reception.staffGroupCount': '{count}人',
+  'reception.staffGroupBack': '重新选择部门',
   'reception.staffNotFound': '未找到相应负责人。请选择部门或前台。',
   'reception.departmentNotFound': '没有可显示的部门·窗口。请从下面的方式中选择。',
   'reception.voiceSearch': '语音搜索',

@@ -1,4 +1,4 @@
-import { test, expect } from './kiosk-fixtures';
+import { test, expect, revealStaff } from './kiosk-fixtures';
 
 /**
  * 呼び出し中の待ち体験 (issue #323) の E2E。
@@ -22,6 +22,7 @@ test('呼び出し中は段階的に文言が変わり、タイムアウトは�
   await page.goto('/kiosk?callingStageMs=200&callingNoticeMs=500&callingNoticeHoldMs=300');
   await page.getByTestId('start-reception').click();
   await page.getByTestId('purpose-meeting').click();
+  await revealStaff(page, 'staff-staff-suzuki');
   await page.getByTestId('staff-staff-suzuki').click();
   await page.getByTestId('visitor-name').fill('来客 一郎');
   await page.getByTestId('to-confirm').click();
@@ -51,6 +52,7 @@ test('しきい値を長めにすると dialing のまま既存どおり即結�
   await page.goto('/kiosk');
   await page.getByTestId('start-reception').click();
   await page.getByTestId('purpose-meeting').click();
+  await revealStaff(page, 'staff-staff-sato');
   await page.getByTestId('staff-staff-sato').click();
   await page.getByTestId('visitor-name').fill('来客 二郎');
   await page.getByTestId('to-confirm').click();

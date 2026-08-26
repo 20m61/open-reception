@@ -1,4 +1,4 @@
-import { test, expect } from './kiosk-fixtures';
+import { test, expect, revealStaff } from './kiosk-fixtures';
 
 /**
  * 実 orchestrator のローカル起動 (#372 配線)。
@@ -58,6 +58,7 @@ test('?voiceOrchestrator=1 で、担当者を押さずに音声だけで相手�
   await page.getByTestId('purpose-meeting').click();
 
   // 🔴 **相手選択画面は消えない。** 復唱が出ている間もタッチで別の相手を選べること。
+  await revealStaff(page, 'staff-staff-sato');
   await expect(page.getByTestId('staff-staff-sato')).toBeVisible();
 
   // 見える応答（復唱）が出る。無言で相手が決まらない。名前は字幕側に出る
@@ -123,6 +124,7 @@ test('?voiceOrchestrator=1 で、復唱に「いいえ」と答えたら相手�
   await page.getByTestId('voice-confirm-no').click();
 
   // 相手選択に留まり、タッチで自分の相手を選べる。
+  await revealStaff(page, 'staff-staff-sato');
   await expect(page.getByTestId('staff-staff-sato')).toBeVisible();
   await expect(page.getByTestId('visitor-name')).toHaveCount(0);
 });

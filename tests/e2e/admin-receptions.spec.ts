@@ -1,4 +1,4 @@
-import { test, expect, type Page } from './kiosk-fixtures';
+import { test, expect, type Page, revealStaff } from './kiosk-fixtures';
 import { loginAsAdmin } from './helpers';
 
 /**
@@ -11,6 +11,7 @@ async function runReception(page: Page, staffTestId: string, query = '') {
   await page.goto(`/kiosk${query}`);
   await page.getByTestId('start-reception').click();
   await page.getByTestId('purpose-meeting').click();
+  await revealStaff(page, staffTestId);
   await page.getByTestId(staffTestId).click();
   await page.getByTestId('visitor-name').fill('来客 一郎');
   await page.getByTestId('to-confirm').click();

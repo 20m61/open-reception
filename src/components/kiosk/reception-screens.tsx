@@ -29,6 +29,7 @@ import {
   type TargetRecoveryAction,
   type TargetTab,
 } from './target-view-state';
+import { staffGroupsFor } from './staff-grouping';
 import {
   useCallback,
   useEffect,
@@ -252,6 +253,9 @@ type ReceptionScreenProps = {
    */
   targetTab: TargetTab;
   onTargetTabChange: (next: TargetTab) => void;
+  /** 開いている部署の群 (#787)。`KioskFlow` が持つ（再マウントで閉じさせない）。 */
+  openStaffGroupId: string | null;
+  onOpenStaffGroupChange: (next: string | null) => void;
   /**
    * 呼び出し中の経過段階 (issue #323)。UI 層のタイマー派生（state.ts/ui-contract.ts は不変）。
    * calling 以外の画面では参照しない。
@@ -300,6 +304,8 @@ export function renderScreen({
   onRequestChat,
   targetTab,
   onTargetTabChange,
+  openStaffGroupId,
+  onOpenStaffGroupChange,
   callingStageState,
   callingStageTextOverride,
   feedback,
@@ -341,6 +347,8 @@ export function renderScreen({
           onRequestChat={onRequestChat}
           tab={targetTab}
           onTabChange={onTargetTabChange}
+          openGroupId={openStaffGroupId}
+          onOpenGroupChange={onOpenStaffGroupChange}
           locale={locale}
         />
       );
@@ -697,6 +705,8 @@ export function TargetView({
   onRequestChat,
   tab,
   onTabChange,
+  openGroupId,
+  onOpenGroupChange,
   locale,
 }: {
   directory: Directory;
@@ -717,6 +727,13 @@ export function TargetView({
    */
   tab: TargetTab;
   onTabChange: (next: TargetTab) => void;
+  /**
+   * 開いている部署の群 (#787)。**`KioskFlow` が持つ。** `tab` と同じ理由 —— この画面は
+   * 受付状態が変わるたび再マウントされる（`key={data.state}`）ので、ここに state を置くと
+   * 確認画面から「戻る」だけで**開いていた部署が勝手に閉じる**。
+   */
+  openGroupId: string | null;
+  onOpenGroupChange: (next: string | null) => void;
   locale: Locale;
 }) {
   const tr = makeT(locale);
@@ -733,6 +750,21 @@ export function TargetView({
     [directory.staff, query, isSearching],
   );
   const results = isSearching ? scored.map((m) => m.item) : directory.staff;
+  /*
+   * 担当者グリッドの段階開示 (#787)。未入力時は**部署カード**を出し、選んだ部署の担当者だけを見せる。
+   *
+   * 🔴 **判断は `results` から切り離す。** `targetPanelFor` の入力（0 件警告・0 件案内の
+   * 出し分け, #776）は「担当者が何人居るか」であって「いま何人見えているか」ではない。
+   * ここを兼ねさせると、部署未選択＝0 件と誤判定して「担当者が見つかりません」を出す。
+   */
+  const staffGroups = useMemo(
+    () => staffGroupsFor(directory.staff, directory.departments),
+    [directory.staff, directory.departments],
+  );
+  const openGroup = openGroupId === null ? null : (staffGroups.find((g) => g.id === openGroupId) ?? null);
+  // 検索中は群を跨いで探せる（絞り込みが到達不能を作らない、という #787 の受入条件）。
+  const showStaffGroups = !isSearching && openGroup === null;
+  const visibleStaff = isSearching ? results : (openGroup?.staff ?? []);
   const tierById = useMemo(() => new Map(scored.map((m) => [m.item.id, m.tier])), [scored]);
   const departments = directory.departments;
   // 何を出すかの判断は純関数へ集約する。0 件警告と 0 件案内を重ねて出す退行は、
@@ -916,9 +948,37 @@ export function TargetView({
             </>
           ) : null}
 
-          {panel.kind === 'staff-results' ? (
+          {panel.kind === 'staff-results' && showStaffGroups ? (
+            <div className="card-grid" data-testid="staff-groups">
+              {staffGroups.map((g) => (
+                <button
+                  key={g.id}
+                  type="button"
+                  className="card"
+                  data-testid={`staff-group-${g.id}`}
+                  onClick={() => onOpenGroupChange(g.id)}
+                >
+                  {g.name ?? tr('reception.staffGroupOther')}
+                  <span className="card__sub" data-testid={`staff-group-${g.id}-count`}>
+                    {tr('reception.staffGroupCount', { count: String(g.staff.length) })}
+                  </span>
+                </button>
+              ))}
+            </div>
+          ) : panel.kind === 'staff-results' ? (
             <div className="card-grid">
-              {results.map((s) =>
+              {openGroup ? (
+                // 群を開いたら戻れる。押した先から出られない画面を作らない（#776 の逃げ道と同じ判断）。
+                <button
+                  type="button"
+                  className="card card--ghost"
+                  data-testid="staff-group-back"
+                  onClick={() => onOpenGroupChange(null)}
+                >
+                  {tr('reception.staffGroupBack')}
+                </button>
+              ) : null}
+              {visibleStaff.map((s) =>
                 s.available ? (
                   <button
                     key={s.id}

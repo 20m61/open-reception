@@ -1,4 +1,4 @@
-import { test, expect, type Page } from './kiosk-fixtures';
+import { test, expect, type Page, revealStaff } from './kiosk-fixtures';
 
 /**
  * 受付端末のプライバシー・安全性ゲート E2E (issue #125 / Epic #119)。
@@ -15,6 +15,7 @@ import { test, expect, type Page } from './kiosk-fixtures';
 async function startReceptionToVisitorInfo(page: Page, staffTestId = 'staff-staff-sato') {
   await page.getByTestId('start-reception').click();
   await page.getByTestId('purpose-meeting').click();
+  await revealStaff(page, staffTestId);
   await page.getByTestId(staffTestId).click();
 }
 

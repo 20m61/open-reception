@@ -1093,6 +1093,13 @@ export function KioskFlow({
   // タブが切り替わる。受付 1 回分の寿命でここが持つ。
   const [targetTab, setTargetTab] = useState<TargetTab>(DEFAULT_TARGET_TAB);
 
+  /*
+   * 開いている部署の群 (#787)。**ここに持つ理由は `targetTab` と同じ** —— 画面は
+   * `key={data.state}` で再マウントされるので、`TargetView` に置くと確認画面から
+   * 「戻る」だけで開いていた部署が勝手に閉じる。
+   */
+  const [openStaffGroupId, setOpenStaffGroupId] = useState<string | null>(null);
+
   /**
    * 受付開始の唯一の入口 (#776)。`START` の dispatch を撒くとタブのリセットを書き忘れ
    * られる——iPad は再読み込みされない常設端末なので、前の来訪者の探し方が次の来訪者へ
@@ -1103,6 +1110,8 @@ export function KioskFlow({
     // 「部署から選ぶ」で入った来訪者を担当者タブへ着地させない。押した導線と着いた
     // 画面が食い違う。表示モードだけの話なので状態機械へは載せず、画面へ渡す。
     setTargetTab(initialTargetTabFor(answer?.id));
+    // 前の来訪者が開いた部署を次の来訪者へ持ち越さない（タブと同じ扱い）。
+    setOpenStaffGroupId(null);
     dispatch({ type: 'START', pendingPurpose: answer?.presetPurpose });
   }, []);
 
@@ -1395,6 +1404,8 @@ export function KioskFlow({
               onSearchQuery: markSearchQuery,
               onRequestChat: requestChatOpen,
               targetTab,
+              openStaffGroupId,
+              onOpenStaffGroupChange: setOpenStaffGroupId,
               onTargetTabChange: setTargetTab,
               // 呼び出し中の段階的ケア (#323)。UI 層のタイマー派生（state.ts/ui-contract.ts は不変）。
               callingStageState,

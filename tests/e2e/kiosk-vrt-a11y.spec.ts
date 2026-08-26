@@ -1,4 +1,5 @@
 import { test, expect, type Page, type Locator } from '@playwright/test';
+import { revealStaff } from './kiosk-fixtures';
 import AxeBuilder from '@axe-core/playwright';
 import { establishKioskSession, loginAsAdmin, openMoreIdleActions } from './helpers';
 
@@ -128,7 +129,14 @@ test.describe('受付フロー画面（実 /kiosk・iPad landscape）', () => {
     await page.goto('/kiosk');
     await page.getByTestId('start-reception').click();
     await page.getByTestId('purpose-meeting').click();
-    await expect(page.getByTestId('staff-staff-sato')).toBeVisible();
+    /*
+     * 担当者タブの**初期表示は部署カード** (#787)。担当者が数十人のテナントでファースト
+     * ビューが埋まるのを避けるため、未入力時は部署を出し、選んだ部署の担当者を見せる。
+     * baseline はこの初期表示を撮る（＝来訪者が最初に見る画面）。
+     */
+    await expect(page.getByTestId('staff-groups')).toBeVisible();
+    await expect(page.locator('[data-testid^="staff-staff-"]')).toHaveCount(0);
+    // 「部署・窓口」タブの取次先カードとは別物。ここに出るのは担当者を絞るための群である。
     await expect(page.locator('[data-testid^="dept-"]')).toHaveCount(0);
 
     // 相手選択は縦に長く、担当者/部門の候補リストがファーストビュー下にあるため fullPage で全体を撮る
@@ -143,6 +151,20 @@ test.describe('受付フロー画面（実 /kiosk・iPad landscape）', () => {
     const violations = await blockingViolations(page);
     expect(violations, summarize(violations)).toEqual([]);
 
+    /*
+     * 群を開いた先も a11y を満たす (#787)。新しい baseline は足さない —— darwin/linux の
+     * 2 枚が増えるうえ、darwin 側はローカル macOS でしか取れない（#789）。DOM 断定と
+     * axe 再走査で押さえる（このファイルが #776 の部署タブに対して既にやっている流儀）。
+     */
+    await revealStaff(page, 'staff-staff-sato');
+    await revealStaff(page, 'staff-staff-sato');
+    await expect(page.getByTestId('staff-staff-sato')).toBeVisible();
+    await expect(page.getByTestId('staff-group-back')).toBeVisible();
+    const groupViolations = await blockingViolations(page);
+    expect(groupViolations, summarize(groupViolations)).toEqual([]);
+    // 群を閉じて初期表示へ戻す（以降の部署タブ検査を、開いた状態から始めない）。
+    await page.getByTestId('staff-group-back').click();
+
     // 部署タブも a11y を満たす（タブ切替後の DOM は baseline に写らないため個別に見る）。
     await page.getByTestId('target-tab-department').click();
     await expect(page.getByTestId('dept-dept-sales')).toBeVisible();
@@ -155,6 +177,7 @@ test.describe('受付フロー画面（実 /kiosk・iPad landscape）', () => {
     await page.goto('/kiosk');
     await page.getByTestId('start-reception').click();
     await page.getByTestId('purpose-meeting').click();
+    await revealStaff(page, 'staff-staff-sato');
     await page.getByTestId('staff-staff-sato').click();
     await page.getByTestId('visitor-name').fill('来客 一郎');
     await page.getByTestId('to-confirm').click();
@@ -197,6 +220,7 @@ test.describe('受付フロー画面（実 /kiosk・iPad landscape）', () => {
     await page.goto(`/kiosk${query}`);
     await page.getByTestId('start-reception').click();
     await page.getByTestId('purpose-meeting').click();
+    await revealStaff(page, staffTestId);
     await page.getByTestId(staffTestId).click();
     await page.getByTestId('visitor-name').fill('来客 一郎');
     await page.getByTestId('to-confirm').click();
