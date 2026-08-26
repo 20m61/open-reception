@@ -321,6 +321,26 @@ describe('runtime policy の入力検証 (#367)', () => {
     );
   });
 
+  it('サービス個別の例外日でも日付の重複を弾く（委譲先と同じ契約）', () => {
+    // 共通側（#799）と同じ検査が、委譲しているぶんサービス個別にも効くことを固定する。
+    // ここが効かないと、サービス単位の臨時営業が順序次第で黙って無視される。
+    expect(
+      issuesOf({
+        ...OK,
+        services: {
+          stt: {
+            mode: 'custom_schedule',
+            weeklySchedule: { mon: [{ start: '09:00', end: '18:00' }] },
+            exceptionDates: [
+              { date: '2026-09-01', closed: true },
+              { date: '2026-09-01', closed: false, ranges: [{ start: '10:00', end: '12:00' }] },
+            ],
+          },
+        },
+      }),
+    ).toContain('services.stt.exceptionDates[1]');
+  });
+
   it('「開かない例外日」で守りを外さない（1 年中 stopped を通さない）', () => {
     /*
      * 🔴 「例外日があるか」で緩めたら、**休業の例外日**でも守りが外れた。

@@ -164,6 +164,14 @@ function validateExceptionDates(raw: unknown, issues: PolicyValidationIssue[]): 
     issues.push({ field: 'exceptionDates', message: `too many exception dates (max ${MAX_EXCEPTIONS})` });
     return null;
   }
+  /*
+   * 🔴 **同じ日付を 2 件通さない。** 解決（`resolveDayRanges`）は `find` で**先勝ち**なので、
+   * 重複があると後の行が黙って無視され、しかも**配列の順序で結果が変わる**。
+   * 「9/1 は 10:00-12:00 だけ臨時営業」と設定しても、同じ日の休業行が先にあれば
+   * 来訪者から見て受付が開かない——画面上は両方とも設定済みに見える。
+   * 名指しするのは**後ろ**の要素（先頭を指すと「消したのにまだ怒られる」になる）。
+   */
+  const seenDates = new Set<string>();
   const out: OperatingException[] = [];
   raw.forEach((v, i) => {
     const field = `exceptionDates[${i}]`;
@@ -177,6 +185,11 @@ function validateExceptionDates(raw: unknown, issues: PolicyValidationIssue[]): 
       issues.push({ field: `${field}.date`, message: 'must be "YYYY-MM-DD"' });
       return;
     }
+    if (seenDates.has(date)) {
+      issues.push({ field, message: `duplicate exception date '${date}'（同じ日付は 1 件だけ）` });
+      return;
+    }
+    seenDates.add(date);
     const closed = o.closed === true;
     if (closed) {
       if (Array.isArray(o.ranges) && o.ranges.length > 0) {

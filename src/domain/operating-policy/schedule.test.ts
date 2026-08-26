@@ -186,6 +186,55 @@ describe('validatePolicyInput: 正常系', () => {
   });
 });
 
+describe('validatePolicyInput: 例外日の日付重複 (#799)', () => {
+  /**
+   * 🔴 解決（`resolveDayRanges`）は `exceptionDates.find(...)` で**先勝ち**。同じ日付が 2 件
+   * あると後の行が黙って無視され、しかも**配列の順序で結果が変わる**。
+   * 「9/1 は 10:00-12:00 だけ臨時営業」と設定しても、同じ日の休業行が先にあれば
+   * **来訪者から見て受付が開かない**（画面上は両方とも設定済みに見える）。
+   */
+  it('同じ日付が 2 件あれば弾く（後ろの要素を名指しする）', () => {
+    const result = validatePolicyInput({
+      exceptionDates: [
+        { date: '2026-09-01', closed: true },
+        { date: '2026-09-01', closed: false, ranges: [{ start: '10:00', end: '12:00' }] },
+      ],
+    });
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    // どれを消せばよいか名指しできること（先頭を指すと「消したのにまだ怒られる」になる）。
+    expect(result.error.issues.map((i) => i.field)).toContain('exceptionDates[1]');
+  });
+
+  it('3 件以上の重複は 2 件目以降をすべて名指しする', () => {
+    const result = validatePolicyInput({
+      exceptionDates: [
+        { date: '2026-09-01', closed: true },
+        { date: '2026-09-02', closed: true },
+        { date: '2026-09-01', closed: true },
+        { date: '2026-09-01', closed: true },
+      ],
+    });
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    const fields = result.error.issues.map((i) => i.field);
+    expect(fields).toContain('exceptionDates[2]');
+    expect(fields).toContain('exceptionDates[3]');
+    expect(fields).not.toContain('exceptionDates[0]');
+    expect(fields).not.toContain('exceptionDates[1]');
+  });
+
+  it('日付が違えば通る（重複検査が正当な設定を弾かない）', () => {
+    const result = validatePolicyInput({
+      exceptionDates: [
+        { date: '2026-09-01', closed: true },
+        { date: '2026-09-02', closed: false, ranges: [{ start: '10:00', end: '12:00' }] },
+      ],
+    });
+    expect(result.ok).toBe(true);
+  });
+});
+
 describe('validatePolicyInput: fixedHolidays の件数上限', () => {
   it('366 件超は invalid_input（ストア肥大・評価コスト増の防止）', () => {
     const result = validatePolicyInput({
