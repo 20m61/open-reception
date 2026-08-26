@@ -6,6 +6,7 @@ import { useSiteScope } from './use-site-scope';
 import { SiteScopeSelect } from './SiteScopeSelect';
 import { color, space } from '@/components/admin/ui/tokens';
 import { WEEKDAYS, type Weekday } from '@/domain/operating-policy/tz';
+import { duplicateExceptionDates } from '@/domain/operating-policy/schedule';
 import { formatExceptionsText, formatTimeRanges, parseExceptionsText, parseTimeRangesText } from '@/domain/operating-policy/text-format';
 import type { ServiceOperatingPolicy } from '@/domain/operating-policy/types';
 
@@ -60,6 +61,7 @@ export function OperatingHoursManager({
   );
   const [fixedHolidaysText, setFixedHolidaysText] = useState('');
   const [exceptionsText, setExceptionsText] = useState('');
+  const [duplicateDates, setDuplicateDates] = useState<string[]>([]);
   const [emergencyContactLabel, setEmergencyContactLabel] = useState('');
   const [busy, setBusy] = useState(false);
   const [issues, setIssues] = useState<{ field: string; message: string }[]>([]);
@@ -78,6 +80,12 @@ export function OperatingHoursManager({
     );
     setFixedHolidaysText((p?.fixedHolidays ?? []).join('\n'));
     setExceptionsText(formatExceptionsText(p?.exceptionDates ?? []));
+    /*
+     * 🔴 保存済みの重複を**読み込んだ時点で**知らせる。検証（#799）は新規保存を止めるだけで、
+     * 既に入っている重複は残り続ける——読み側は先勝ちなので、臨時営業日に受付が開かない。
+     * 保存を押すまで気づけないと、そのときには当該の日は過ぎている。
+     */
+    setDuplicateDates(duplicateExceptionDates(p?.exceptionDates ?? []));
     setEmergencyContactLabel(p?.emergencyContactLabel ?? '');
   }, []);
 
@@ -219,6 +227,24 @@ export function OperatingHoursManager({
         </div>
       ) : null}
 
+      {duplicateDates.length > 0 ? (
+        <div
+          className="notice notice--warning"
+          data-testid="operating-hours-duplicate-exceptions"
+          style={{ marginBottom: space.md }}
+        >
+          <strong>同じ日付の例外日が重複しています</strong>
+          <p style={{ margin: '8px 0 0' }}>
+            対象日: {duplicateDates.join(' / ')}
+          </p>
+          <p style={{ margin: '8px 0 0' }}>
+            重複した日は<strong>最初の 1 件だけが有効</strong>で、後の行は無視されます。臨時営業の
+            設定が効かない原因になります。同じ日に複数の時間帯を設定するには、1 行にまとめて
+            カンマで区切ってください（例 10:00-12:00, 14:00-16:00）。
+          </p>
+        </div>
+      ) : null}
+
       {issues.length > 0 ? (
         <div className="notice notice--danger" data-testid="operating-hours-issues" style={{ marginBottom: space.md }}>
           <strong>入力に誤りがあります</strong>
@@ -284,7 +310,7 @@ export function OperatingHoursManager({
         </Field>
 
         <Field
-          label="単発の休業日/臨時営業（1行1件・YYYY-MM-DD:closed または YYYY-MM-DD:09:00-12:00）"
+          label="単発の休業日/臨時営業（1行1件・YYYY-MM-DD:closed または YYYY-MM-DD:09:00-12:00。同じ日に複数の時間帯はカンマ区切り）"
           htmlFor="operating-hours-exceptions"
         >
           <textarea

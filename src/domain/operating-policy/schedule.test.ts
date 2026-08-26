@@ -1,5 +1,10 @@
 import { describe, expect, it } from 'vitest';
-import { evaluateOperatingStatus, resolveKioskOperatingStatus, validatePolicyInput } from './schedule';
+import {
+  duplicateExceptionDates,
+  evaluateOperatingStatus,
+  resolveKioskOperatingStatus,
+  validatePolicyInput,
+} from './schedule';
 import type { ServiceOperatingPolicy } from './types';
 
 type BasePolicy = Pick<ServiceOperatingPolicy, 'timezone' | 'weeklySchedule' | 'fixedHolidays' | 'exceptionDates'>;
@@ -183,6 +188,141 @@ describe('validatePolicyInput: 正常系', () => {
       weeklySchedule: { fri: [{ start: '22:00', end: '02:00', crossesMidnight: true }] },
     });
     expect(result.ok).toBe(true);
+  });
+});
+
+describe('validatePolicyInput: 例外日の日付重複 (#799)', () => {
+  /**
+   * 🔴 解決（`resolveDayRanges`）は `exceptionDates.find(...)` で**先勝ち**。同じ日付が 2 件
+   * あると後の行が黙って無視され、しかも**配列の順序で結果が変わる**。
+   * 「9/1 は 10:00-12:00 だけ臨時営業」と設定しても、同じ日の休業行が先にあれば
+   * **来訪者から見て受付が開かない**（画面上は両方とも設定済みに見える）。
+   */
+  it('同じ日付が 2 件あれば弾く（後ろの要素を名指しする）', () => {
+    const result = validatePolicyInput({
+      exceptionDates: [
+        { date: '2026-09-01', closed: true },
+        { date: '2026-09-01', closed: false, ranges: [{ start: '10:00', end: '12:00' }] },
+      ],
+    });
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    // どれを消せばよいか名指しできること（先頭を指すと「消したのにまだ怒られる」になる）。
+    expect(result.error.issues.map((i) => i.field)).toContain('exceptionDates[1]');
+    /*
+     * 🔴 救済策まで示す。「1 件だけ」としか言わないと、運用者は片方の行を消す＝
+     * 受付可能時間を自分で削る。同じ日に複数区間は 1 行カンマ区切りで書ける。
+     */
+    expect(result.error.issues.map((i) => i.message).join(' ')).toContain('カンマ');
+  });
+
+  it('同じ日の複数区間は 1 行カンマ区切りで書ける（メッセージが勧める書き方が実際に通る）', () => {
+    const result = validatePolicyInput({
+      exceptionDates: [
+        {
+          date: '2026-09-01',
+          closed: false,
+          ranges: [
+            { start: '10:00', end: '12:00' },
+            { start: '14:00', end: '16:00' },
+          ],
+        },
+      ],
+    });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.value.exceptionDates[0]?.ranges).toHaveLength(2);
+  });
+
+  it('日付の書式が不正なら、重複ではなく書式として報告する（検査の順序）', () => {
+    const result = validatePolicyInput({
+      exceptionDates: [{ date: 'nonsense' }, { date: 'nonsense' }],
+    });
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    const messages = result.error.issues.map((i) => i.message).join(' ');
+    expect(messages).toContain('YYYY-MM-DD');
+    expect(messages).not.toContain('duplicate');
+  });
+
+  it('3 件以上の重複は 2 件目以降をすべて名指しする', () => {
+    const result = validatePolicyInput({
+      exceptionDates: [
+        { date: '2026-09-01', closed: true },
+        { date: '2026-09-02', closed: true },
+        { date: '2026-09-01', closed: true },
+        { date: '2026-09-01', closed: true },
+      ],
+    });
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    const fields = result.error.issues.map((i) => i.field);
+    expect(fields).toContain('exceptionDates[2]');
+    expect(fields).toContain('exceptionDates[3]');
+    expect(fields).not.toContain('exceptionDates[0]');
+    expect(fields).not.toContain('exceptionDates[1]');
+  });
+
+  it('日付が違えば通り、2 件目以降も保存値に残る', () => {
+    const result = validatePolicyInput({
+      exceptionDates: [
+        { date: '2026-09-01', closed: true },
+        { date: '2026-09-02', closed: false, ranges: [{ start: '10:00', end: '12:00' }] },
+      ],
+    });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    /*
+     * 🔴 **下界も縛る。** 「弾かれない」だけでは、正当な 2 件目以降を保存値から黙って
+     * 落とす実装が素通りする（#799 と同じ「臨時営業日に受付が開かない」を別経路で作る）。
+     */
+    expect(result.value.exceptionDates).toEqual([
+      { date: '2026-09-01', closed: true },
+      { date: '2026-09-02', closed: false, ranges: [{ start: '10:00', end: '12:00' }] },
+    ]);
+  });
+
+  /**
+   * 読み側は**先勝ちのまま**（挙動を変えない）。既存レコードに重複があっても表示は従来どおりで、
+   * 次に保存しようとしたときに初めて弾かれる。この契約を固定しておかないと、UI やストアが
+   * `exceptionDates` を並べ替えた瞬間に既存レコードの意味が無音で変わる。
+   */
+  it('既存レコードの重複は読み側では従来どおり先勝ち（挙動を変えない）', () => {
+    const policy: BasePolicy = {
+      timezone: 'Asia/Tokyo',
+      weeklySchedule: {},
+      fixedHolidays: [],
+      exceptionDates: [
+        { date: '2026-09-01', closed: true },
+        { date: '2026-09-01', closed: false, ranges: [{ start: '10:00', end: '12:00' }] },
+      ],
+    };
+    // 先頭が closed なので終日休業のまま（後ろの臨時営業は無視される）。
+    expect(evaluateOperatingStatus(policy, Date.parse('2026-09-01T02:00:00Z')).state).toBe('closed');
+  });
+});
+
+describe('duplicateExceptionDates（保存済みデータの検出）', () => {
+  it('重複している日付だけを返す（1 件ずつ・順序は入力どおり）', () => {
+    expect(
+      duplicateExceptionDates([
+        { date: '2026-09-01', closed: true },
+        { date: '2026-09-02', closed: true },
+        { date: '2026-09-01', closed: true },
+        { date: '2026-09-01', closed: true },
+        { date: '2026-09-03', closed: true },
+      ]),
+    ).toEqual(['2026-09-01']);
+  });
+
+  it('重複が無ければ空（正当なデータで警告を出さない）', () => {
+    expect(
+      duplicateExceptionDates([
+        { date: '2026-09-01', closed: true },
+        { date: '2026-09-02', closed: true },
+      ]),
+    ).toEqual([]);
+    expect(duplicateExceptionDates([])).toEqual([]);
   });
 });
 
