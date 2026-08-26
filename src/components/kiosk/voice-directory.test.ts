@@ -88,11 +88,27 @@ describe('kioskDirectoryToEntityDirectory (#788)', () => {
    * 聞き直され続ける。
    */
   it('担当者が居なくても部署は解決できる', () => {
-    const directory: Directory = {
+    const withAbsentOnly: Directory = {
       departments: [{ id: 'dept-1', name: '営業部' }],
       staff: [staff({ id: 'staff-1', displayName: '山田 太郎', available: false })],
     };
-    expect(resolvedIds(directory, '営業部')).toContain('dept-1');
+    expect(resolvedIds(withAbsentOnly, '営業部')).toContain('dept-1');
+    // 🔴 **生の配列が空**のケースも別に縛る。上だけだと「フィルタ後が空」しか見ておらず、
+    // `if (directory.staff.length === 0) return {staff:[],departments:[]}` を素通しする
+    // （担当者を 1 人も登録していない拠点で、部署が音声から消える）。
+    const noStaffAtAll: Directory = { departments: [{ id: 'dept-1', name: '営業部' }], staff: [] };
+    expect(resolvedIds(noStaffAtAll, '営業部')).toContain('dept-1');
+  });
+
+  /**
+   * 呼び出し先（電話番号等）を音声側へ持ち込まない
+   * （`.claude/rules/pii-secret-minimization.md`）。いまは `DirStaff` が持たないので実害は
+   * 無いが、`Directory` がリッチになったときに黙って通らないよう主張として固定する。
+   */
+  it('呼び出し先・代替担当者を写さない', () => {
+    const mapped = kioskDirectoryToEntityDirectory(DIRECTORY);
+    expect(mapped.staff.every((s) => s.callTargets.length === 0)).toBe(true);
+    expect(mapped.staff.every((s) => s.fallbackStaffIds.length === 0)).toBe(true);
   });
 
   /** 旧経路（`/api/kiosk/directory`）は kana/affiliation を持たないことがある。 */

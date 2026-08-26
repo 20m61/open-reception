@@ -67,50 +67,86 @@ export function shouldUseLocalVoiceOrchestrator(search: string): boolean {
 /**
  * mock provider 駆動の `VoiceSessionFactory` を作る。
  *
- * `phrases` は認識候補（在席担当者名など）。mock STT はこの中から確定文を返すので、
- * 画面に居る担当者を渡すこと（渡さないと解決できない候補ばかりになる）。
+ * 発話候補は `directory` そのものから導く。**別引数で受け取らない** ── 受け取ると
+ * 「解決できる集合（directory）」と「喋る集合（phrases）」がずれうる。実際、直前の形では
+ * directory 側だけ在席で絞って phrases 側を絞り忘れても誰も気づけなかった
+ * （不在の担当者名を mock STT が喋り、解決だけ失敗する）。
+ *
+ * ## 合成発話の起点は `start()` ではなく相手選択への到達 (#788)
+ *
+ * 🔴 **`start()` で喋らせない。** セッションは (a) マウント時（`data.state === 'idle'`）と
+ * (b) factory が作り直されたとき（構成取得の着地など）に start する。そこで喋ると
+ * **来訪者が一言も発していないのに相手が確定する**——高信頼・候補 1 件なら
+ * `bridgeCommittedTurn` は復唱を挟まず `heardAccepted` を返し、`onResolved` →
+ * `SELECT_TARGET` がそのまま通る。実 Directory を渡す前（空辞書）は候補ゼロで無害
+ * だったが、渡した途端に実害のある競合になる。
+ *
+ * 逆に start だけを起点にすると**通常の導線では一度も喋らない**。マウント時点の
+ * Directory は空（取得は非同期）なので `spoken` が空、着地後の再 start は `idle` で
+ * reducer が握り潰し、受付が始まると構成の再適用が止まって factory は作り直されない。
+ *
+ * よって demo-studio と同じく `notifyReceptionState('selectingTarget')` を起点にする
+ * （`kiosk-injection.ts` が同じ罠を先に潰している）。
+ *
+ * ## 1 セッション 1 回だけ
+ *
+ * 相手選択へ**再到達**するたびに喋ると、来訪者が「戻る」で選び直そうとした瞬間に
+ * 同じ相手が再確定し、抜けられなくなる。demo-studio は台本を再生する用途なので毎回
+ * 再開してよいが、こちらは実受付の導線に乗るので 1 回で止める。
  */
-export function createLocalVoiceSessionFactory(
-  directory: EntityDirectory,
-  phrases: readonly string[],
-): VoiceSessionFactory {
-  const spoken = phrases[0] ?? '';
-  return createOrchestratorVoiceSession(
-    (callbacks) =>
-      driveWithSyntheticAudio(
-        new VoiceSessionOrchestrator(
-        {
-          transport: {
-            url: 'loopback://voice',
-            socketFactory: createLoopbackSocketFactory(),
-            queueLimits: { maxChunks: 64, maxBytes: 1024 * 1024, dropPolicy: 'drop-oldest' },
-            rateLimit: { capacity: 64, refillPerMs: 1 },
-            heartbeatIntervalMs: 30_000,
-            heartbeatTimeoutMs: 60_000,
-            idleTimeoutMs: 300_000,
-            // ローカルは再接続しない（loopback なので落ちる要因が無い）。
-            reconnect: { backoff: { baseMs: 1000, maxMs: 1000 }, maxAttempts: 0 },
+export function createLocalVoiceSessionFactory(directory: EntityDirectory): VoiceSessionFactory {
+  const spoken = directory.staff[0]?.displayName ?? '';
+  return (emit, hooks) => {
+    // `construct` はこの factory 呼び出しの中で同期的に 1 回呼ばれる。その回の
+    // orchestrator を掴んで、相手選択へ到達したときだけ合成発話を流す。
+    let orchestrator: VoiceSessionOrchestrator | null = null;
+    const controller = createOrchestratorVoiceSession(
+      (callbacks) => {
+        orchestrator = new VoiceSessionOrchestrator(
+          {
+            transport: {
+              url: 'loopback://voice',
+              socketFactory: createLoopbackSocketFactory(),
+              queueLimits: { maxChunks: 64, maxBytes: 1024 * 1024, dropPolicy: 'drop-oldest' },
+              rateLimit: { capacity: 64, refillPerMs: 1 },
+              heartbeatIntervalMs: 30_000,
+              heartbeatTimeoutMs: 60_000,
+              idleTimeoutMs: 300_000,
+              // ローカルは再接続しない（loopback なので落ちる要因が無い）。
+              reconnect: { backoff: { baseMs: 1000, maxMs: 1000 }, maxAttempts: 0 },
+            },
+            stt: { locale: 'ja-JP', audio: DEFAULT_VOICE_TRANSPORT_AUDIO_CONFIG },
           },
-          stt: { locale: 'ja-JP', audio: DEFAULT_VOICE_TRANSPORT_AUDIO_CONFIG },
-        },
-        {
-          sttProvider: createMockSttProvider({
-            partials: spoken === '' ? [] : [{ afterChunk: 1, text: spoken, confidence: 0.9 }],
-            final: { afterChunk: 2, text: spoken, confidence: 0.95 },
-          }),
-          ttsProvider: new MockStreamingTtsProvider(),
-          ttsCache: new InMemoryTtsCache(),
-        },
+          {
+            sttProvider: createMockSttProvider({
+              partials: spoken === '' ? [] : [{ afterChunk: 1, text: spoken, confidence: 0.9 }],
+              final: { afterChunk: 2, text: spoken, confidence: 0.95 },
+            }),
+            ttsProvider: new MockStreamingTtsProvider(),
+            ttsCache: new InMemoryTtsCache(),
+          },
           callbacks,
-        ),
-        spoken,
-      ),
-    { directory, now: () => Date.now() },
-  );
+        );
+        return orchestrator;
+      },
+      { directory, now: () => Date.now() },
+    )(emit, hooks);
+
+    let spokenAlready = false;
+    return {
+      ...controller,
+      notifyReceptionState: (state) => {
+        if (state !== 'selectingTarget' || spoken === '' || spokenAlready) return;
+        if (orchestrator === null) return;
+        spokenAlready = true;
+        driveWithSyntheticAudio(orchestrator, spoken);
+      },
+    };
+  };
 }
 
 /**
- * 合成音声で実 orchestrator を駆動する。
+ * 合成音声で実 orchestrator を 1 ターン駆動する。
  *
  * ## なぜ要るか
  *
@@ -119,26 +155,20 @@ export function createLocalVoiceSessionFactory(
  * 実機ではマイクと VAD が駆動するが、ローカルにはそれが無い。駆動側を用意しないと
  * 「起動はするが何も起きない」セッションになる ── まさにそれが今までの状態だった。
  *
- * ここでは start 後に短い発話シーケンスを 1 回流す。ターン検出（無音 → 確定）が実際に走り、
- * 上位（Kiosk UI）へ確定テキストが届くところまでを実 UI で確かめられる。
+ * 🔴 **`start()` を包まない。** 以前は start を上書きして起動と同時に喋らせていたが、
+ * それだと来訪者が一言も発していない局面（idle・構成取得の着地）で相手が確定しうる。
+ * 起点の判断は呼び出し側（`createLocalVoiceSessionFactory`）が持ち、ここは
+ * 「呼ばれたら 1 ターン流す」だけにする。
  *
  * **本番の音声挙動ではない。** `?voiceOrchestrator=1` を付けた端末だけが通る検証用の駆動。
  */
-function driveWithSyntheticAudio(
-  orchestrator: VoiceSessionOrchestrator,
-  spoken: string,
-): VoiceSessionOrchestrator {
-  const originalStart = orchestrator.start.bind(orchestrator);
-  orchestrator.start = async () => {
-    await originalStart();
-    if (spoken === '') return;
-    orchestrator.reportSpeechStarted();
-    // mock STT は「何チャンク目で partial / final を出すか」で駆動する。
-    for (let i = 0; i < 3; i += 1) orchestrator.pushMicChunk(new ArrayBuffer(320));
-    orchestrator.reportSpeechEnded(spoken);
-    // 無音の蓄積でターンを確定させる（固定無音だけを真実源にしない設計だが、
-    // 合成では上限を超える値を 1 度入れて確定まで進める）。
-    orchestrator.reportSilenceTick(2_000);
-  };
-  return orchestrator;
+function driveWithSyntheticAudio(orchestrator: VoiceSessionOrchestrator, spoken: string): void {
+  if (spoken === '') return;
+  orchestrator.reportSpeechStarted();
+  // mock STT は「何チャンク目で partial / final を出すか」で駆動する。
+  for (let i = 0; i < 3; i += 1) orchestrator.pushMicChunk(new ArrayBuffer(320));
+  orchestrator.reportSpeechEnded(spoken);
+  // 無音の蓄積でターンを確定させる（固定無音だけを真実源にしない設計だが、
+  // 合成では上限を超える値を 1 度入れて確定まで進める）。
+  orchestrator.reportSilenceTick(2_000);
 }

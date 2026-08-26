@@ -503,8 +503,7 @@ export function KioskFlow({
   /**
    * 実 orchestrator のローカル起動 (#372 配線)。**既定はオフ。**
    *
-   * mock STT はここで渡した候補から確定文を返すので、画面に居る担当者を渡す
-   * （渡さないと解決できない候補ばかりになり、確認導線の検証にならない）。
+   * mock STT は渡した Directory の先頭担当者を確定文として返す。
    * 明示注入（`voiceSession` prop = demo-studio 等）が最優先 ── URL フラグが呼び出し側の
    * 意図を上書きしない。
    *
@@ -514,10 +513,7 @@ export function KioskFlow({
    */
   const localVoiceSession = useMemo(() => {
     if (!localVoiceEnabled) return undefined;
-    return createLocalVoiceSessionFactory(
-      kioskDirectoryToEntityDirectory(directory),
-      directory.staff.filter((s) => s.available).map((s) => s.displayName),
-    );
+    return createLocalVoiceSessionFactory(kioskDirectoryToEntityDirectory(directory));
   }, [localVoiceEnabled, directory]);
   const effectiveVoiceSession = voiceSession ?? localVoiceSession;
   const [callingStageQueryOverride, setCallingStageQueryOverride] = useState<

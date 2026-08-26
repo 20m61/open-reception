@@ -59,6 +59,11 @@ export function kioskDirectoryToEntityDirectory(directory: Directory): EntityDir
     }));
   // `displayOrder` は Entity 解決が読まない（`resolveDepartmentEntities` は enabled と
   // name/kana/aliases しか見ない）。型が要求するので Directory の並び順をそのまま置く。
+  //
+  // 部署は `kana` を持てない。`DirDepartment` は `{id, name}` だけで、サーバ側の
+  // `buildVisitorDirectory` も読み仮名を返さない。`search.ts` に漢字→かなの変換は無いので
+  // **「えいぎょうぶ」と発話しても「営業部」には当たらない**（担当者は kana が写るので当たる）。
+  // demo-studio の合成辞書は kana を持つため、demo だけ解決できる非対称がある。
   const departments: Department[] = directory.departments.map((d, index) => ({
     id: d.id,
     name: d.name,
