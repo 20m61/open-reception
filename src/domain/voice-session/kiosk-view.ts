@@ -118,6 +118,15 @@ export type VoiceKioskEvent =
   | { type: 'confirmYes' }
   /** 復唱確認に「いいえ」（聞き直しへ）。 */
   | { type: 'confirmNo' }
+  /**
+   * 告知を畳む (#803)。受付が先へ進んだので、もう読ませる必要が無くなった。
+   *
+   * 🔴 **`listenStart` で代用しない。** あれは「ユーザー発話の取り込みを開始した」という
+   * **事実の報告**で、transport が何も報告していないのに合成すると `listening`（「お話しください」
+   * ＋パルス）になる。告知の居座りを**別の居座りに置き換える**だけで、しかもそちらは
+   * 「聞いていると表示しながら何も届かない」嘘の応答になる。
+   */
+  | { type: 'noticeDismissed' }
   /** TTS 発話が始まった。 */
   | { type: 'speakStart' }
   /** TTS 発話が終わった（最後まで再生 or resume 後の自然終了）。 */
@@ -189,6 +198,10 @@ export function voiceKioskReducer(state: VoiceKioskState, event: VoiceKioskEvent
 
     case 'heardUnavailable':
       return { mode: 'unavailable', readbackName: event.displayName };
+
+    case 'noticeDismissed':
+      // 告知の局面でだけ意味を持つ。それ以外は不変（誤って復唱や発話を畳まない）。
+      return state.mode === 'unavailable' ? { mode: 'idle' } : state;
 
     case 'confirmYes':
       /*

@@ -272,7 +272,12 @@ describe('不在告知は受付の進行で消える (#803)', () => {
       const store = storeAt('unavailable');
       expect(store.getState().mode).toBe('unavailable');
       store.notifyReceptionState(state);
-      expect(store.getState().mode).not.toBe('unavailable');
+      /*
+       * 🔴 **落とし先まで縛る。** `not.toBe('unavailable')` は上界だけで、`listening` へ
+       * 落としても満たせる。それだと「お話しください」＋パルスが受付完了まで残り、
+       * 何も届かないので嘘の応答になる（独立レビューの実測指摘）。何も描かない `idle` へ。
+       */
+      expect(store.getState().mode).toBe('idle');
     },
   );
 

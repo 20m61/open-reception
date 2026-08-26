@@ -11,8 +11,8 @@ import type { Locale } from '@/lib/i18n';
 import type { OnResolved, VoiceSessionFactory } from '@/lib/voice-session/kiosk-binding';
 import type { ReceptionState } from '@/domain/reception/state';
 import { useEffect, useRef } from 'react';
-import { announcementFor } from '@/domain/voice-session/kiosk-view';
-import { makeT } from '@/lib/i18n';
+import { announcementPhrase, shouldAnnounce } from './voice-announcement';
+import type { VoiceKioskState } from '@/domain/voice-session/kiosk-view';
 import { useVoiceSession } from './useVoiceSession';
 import { VoiceReadbackConfirm } from './VoiceReadbackConfirm';
 
@@ -51,21 +51,18 @@ export function VoiceSessionLayer({
   const { state, confirmYes, confirmNo } = useVoiceSession(factory, receptionState, onResolved);
 
   /*
-   * 局面へ**入った瞬間に 1 度だけ**読み上げる (#803)。`announcementFor` が返す間ずっと
-   * 喋らせると、再描画のたびに重なる。直前に読み上げた内容を覚えて、変わったときだけ出す。
+   * 局面へ**入った瞬間に 1 度だけ**読み上げる (#803)。判定は純関数へ出してある ——
+   * ここ（effect の中）は node 環境で回せないので、埋めると縛れなくなる。
+   *
+   * 覚えるのは**文言ではなく局面**。同じ名前で再入したときに黙らせないため（`shouldAnnounce`）。
    */
-  const spokenRef = useRef<string | null>(null);
-  const announcement = announcementFor(state);
-  const phrase = announcement ? makeT(locale)(announcement.key, { name: announcement.name }) : null;
+  const announcedRef = useRef<VoiceKioskState | null>(null);
   useEffect(() => {
-    if (phrase === null) {
-      spokenRef.current = null;
-      return;
-    }
-    if (spokenRef.current === phrase) return;
-    spokenRef.current = phrase;
-    onAnnounce?.(phrase);
-  }, [phrase, onAnnounce]);
+    if (!shouldAnnounce(announcedRef.current, state)) return;
+    announcedRef.current = state;
+    const phrase = announcementPhrase(state, locale);
+    if (phrase !== null) onAnnounce?.(phrase);
+  }, [state, locale, onAnnounce]);
 
   return <VoiceReadbackConfirm state={state} locale={locale} onYes={confirmYes} onNo={confirmNo} />;
 }

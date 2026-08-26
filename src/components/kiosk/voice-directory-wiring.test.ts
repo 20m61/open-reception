@@ -125,15 +125,33 @@ describe('KioskFlow が実 Directory を音声へ渡す (#788)', () => {
 describe('不在告知の読み上げ配線 (#803)', () => {
   const LAYER = readFileSync('src/components/kiosk/VoiceSessionLayer.tsx', 'utf8');
 
+  /** `const <name> = ...` の宣言 1 つ分を切り出す（`localVoiceMemoBody` と同じ手法）。 */
+  function declarationBody(name: string): string {
+    const start = SOURCE.indexOf(`const ${name} = `);
+    expect(start, `${name} の宣言が見つからない`).toBeGreaterThan(-1);
+    const end = SOURCE.indexOf('\n  );', start);
+    expect(end, `${name} の宣言の終端が見つからない`).toBeGreaterThan(start);
+    return SOURCE.slice(start, end);
+  }
+
   it('レイヤは告知を onAnnounce へ渡す', () => {
-    expect(LAYER).toContain('announcementFor');
+    expect(LAYER).toContain('shouldAnnounce');
+    expect(LAYER).toContain('announcementPhrase(state, locale)');
     expect(LAYER).toContain('onAnnounce?.(phrase)');
   });
 
   it('KioskFlow は onAnnounce を既存の speak() へ繋ぐ', () => {
     expect(SOURCE).toContain('onAnnounce={speakVoiceAnnouncement}');
+    /*
+     * 🔴 **ファイル全体へ `toContain` しない。** 受付ナレーション側に同型の
+     * `speak(phrase, { ...speakSettings, language })` が既にあるので、告知側を丸ごと
+     * 消しても一致して**空虚に通る**（独立レビューの実測で 6774 tests 全緑のまま生存）。
+     * 宣言ブロックだけを切り出して、その中に発話があることを見る。
+     */
+    const body = declarationBody('speakVoiceAnnouncement');
+    expect(body).toContain('speak(');
     // 別経路を作らない（音量・言語設定が片方だけ効かない形にしない）。
-    expect(SOURCE).toContain('speak(phrase, { ...speakSettings, language })');
+    expect(body).toContain('speakSettings');
   });
 });
 
