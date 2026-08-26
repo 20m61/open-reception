@@ -19,7 +19,7 @@
 | --- | --- | --- |
 | 受付の進行 | `src/domain/reception/state.ts` | `idle` / `selectingPurpose` / `selectingTarget` / `inputVisitorInfo` / `confirming` / `calling` / `connected` / `failed` / `timeout` / `cancelled` / `fallback` / `completed`（12） |
 | 画面の層 | `src/domain/kiosk/mode.ts` | `signage` / `reception` / `qr_reception` / `completion` / `out_of_hours` / `degraded`（6） |
-| 音声対話 | `src/domain/voice-session/kiosk-view.ts` | `inactive` / `idle` / `listening` / `readback` / `speaking` / `ducked` / `fallback`（7） |
+| 音声対話 | `src/domain/voice-session/kiosk-view.ts` | `inactive` / `idle` / `listening` / `readback` / `speaking` / `ducked` / `fallback` / `unavailable`（8） |
 | 聞き取り段階 | `voiceListeningStage()`（同上） | `idle` / `speech`（2・**`listening` 中だけ有効**） |
 | 来訪検知 | `src/domain/presence/state.ts` | `IDLE` / `CANDIDATE` / `ATTRACT` / `ACTIVE` / `COOLDOWN`（5） |
 | QR 受付 | `src/domain/checkin/state.ts` | `idle` / `selectingMethod` / `checkingCamera` / `scanning` / `resolving` / `confirming` / `calling` / `completed` / `cancelled` / `manualFallback` + エラー 6（16） |
@@ -61,7 +61,7 @@ README: `idle -> visitor_detected -> greeting -> choosing_method -> listening|to
 | --- | --- | --- |
 | `speech_unclear` | `VoiceKioskMode.fallback`（`readbackReason` は低信頼の理由として readback に付く） | 対応（別系統）。**readback 自体は `recognizing` の内側**（ADR 0007） |
 | `no_match` | 明示状態なし。検索 0 件は画面内分岐（`target-recovery` の 1 パネルに部署・チャット導線を集約, #776） | **状態は無いが計測はできる**。0 件率は `searchZeroHitCount` → KPI 集計 → 管理画面まで通っている（第 35 wave）。状態化は**しない** |
-| `person_unavailable` | `ReceptionState.timeout` | **対応**（名前が違う） |
+| `person_unavailable` | `ReceptionState.timeout` ＋ `VoiceKioskMode.unavailable`（#803） | **対応**（名前が違う）。**経路が 2 本ある** —— 呼び出して応答が無い（`timeout`）と、不在の相手を音声で名指しされた（`unavailable`）。来訪者から見れば「その人には繋がらない」という同じ事実なので同じ体験状態へ写す |
 | `contact_failed` | `ReceptionState.failed` | **対応**（名前が違う） |
 | `network_degraded` | `KioskFlow` のローカル state `online=false` + `KioskMode.degraded`。呼び出し失敗時は `failed` + `failureReason='network'` で**説明を分ける**（第 36 wave） | **部分**。状態としては `failed` に含めたまま、同じ状態の中の説明で区別する（区別のために遷移表を増やすと逃げ道・timeout・戻るの組み合わせが倍になるため） |
 | `privacy_blocked` | `CheckinState.cameraError`（カメラ権限拒否）。`RETRY` → 方法選択 / `CHOOSE_MANUAL` → 通常受付で戻れる | **対応**（ADR 0006 で定義を確定）。「PII 表示の抑止」という読み方は却下した（全状態が `PII exposure rule` を持つので重複になる）。マイク側は実 `getUserMedia` 未配線のため未到達 |

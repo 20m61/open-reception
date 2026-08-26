@@ -73,6 +73,12 @@ describe('KioskFlow が実 Directory を音声へ渡す (#788)', () => {
   it('EntityDirectory は端末が保持する directory から作る', () => {
     expect(SOURCE).toContain("from './voice-directory'");
     expect(localVoiceMemoBody()).toContain('kioskDirectoryToEntityDirectory(directory)');
+    /*
+     * 🔴 **不在辞書の配線も同じ扱いにする** (#803)。これを足すまで、`KioskFlow` から
+     * 第 2 引数を消す変異は **206 tests 全緑のまま生き残った**（独立レビューの実測）。
+     * 消えると来訪者は #803 以前の「聞き直しループ」へ静かに戻る。
+     */
+    expect(localVoiceMemoBody()).toContain('kioskDirectoryToUnavailableDirectory(directory)');
   });
 
   /**
@@ -105,5 +111,53 @@ describe('KioskFlow が実 Directory を音声へ渡す (#788)', () => {
     // prettier の折り返しや三項演算子への書き換えで**振る舞い不変のまま**落ちる。
     const returns = localVoiceMemoBody().match(/return undefined/g) ?? [];
     expect(returns).toHaveLength(1);
+  });
+});
+
+/**
+ * 不在告知が**実際に声へ出る**配線 (#803)。
+ *
+ * 🔴 **`aria-live` では代用できない。** スクリーンリーダの提示と端末の発話は別物で、
+ * 前者だけを見て「読み上げている」と主張していた（独立レビューの指摘）。ここは
+ * `VoiceSessionLayer` → `KioskFlow` → `speak()` が繋がっていることを固定する。
+ * 効果（`useEffect`）は node 環境で回せないので、#788 と同じくソースで縛る。
+ */
+describe('不在告知の読み上げ配線 (#803)', () => {
+  const LAYER = readFileSync('src/components/kiosk/VoiceSessionLayer.tsx', 'utf8');
+
+  it('レイヤは告知を onAnnounce へ渡す', () => {
+    expect(LAYER).toContain('announcementFor');
+    expect(LAYER).toContain('onAnnounce?.(phrase)');
+  });
+
+  it('KioskFlow は onAnnounce を既存の speak() へ繋ぐ', () => {
+    expect(SOURCE).toContain('onAnnounce={speakVoiceAnnouncement}');
+    // 別経路を作らない（音量・言語設定が片方だけ効かない形にしない）。
+    expect(SOURCE).toContain('speak(phrase, { ...speakSettings, language })');
+  });
+});
+
+/**
+ * 不在辞書が **local factory から bridge まで** 落ちずに届く配線 (#803)。
+ *
+ * 🔴 **振る舞いでは踏めない。** `createLocalVoiceSessionFactory` の合成発話は
+ * `directory.staff[0]`（＝**在席側**）から選ばれるので、mock 駆動では不在照合に到達しない
+ * （実 STT 待ち。#65）。よってこの 1 行の転送は**ソースで固定するしかない** ——
+ * 独立レビューの実測で、消しても全緑のまま生き残ることを確認済み。
+ */
+describe('不在辞書の転送（local factory）(#803)', () => {
+  const LOCAL = readFileSync('src/lib/voice-session/local-mode.ts', 'utf8');
+
+  it('factory の第 2 引数を bridge deps へ渡している', () => {
+    expect(LOCAL).toContain('unavailableDirectory?: EntityDirectory');
+    expect(LOCAL).toContain('...(unavailableDirectory ? { unavailableDirectory } : {})');
+  });
+
+  /**
+   * 合成発話は在席側から選ぶ（不在の相手を勝手に喋らせない）。ここが崩れると、
+   * 端末が**選べない相手を自分から名乗り出す**ことになる。
+   */
+  it('合成発話は在席側の辞書から選ぶ', () => {
+    expect(LOCAL).toContain('const spoken = directory.staff[0]?.displayName');
   });
 });

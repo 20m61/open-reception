@@ -287,3 +287,25 @@ export function voiceListeningStage(
   if (state.mode !== 'listening') return null;
   return (state.interimText ?? '').trim() !== '' ? 'speech' : 'idle';
 }
+
+/**
+ * その局面で**端末が声に出して言うべきこと**があるか (#803)。無ければ null。
+ *
+ * ## なぜ字幕と分けるか
+ *
+ * 字幕（`captionKeyFor`）は**その局面である間ずっと出ている**もので、読み上げは
+ * **その局面へ入った瞬間に 1 度だけ**起きるもの。同じ関数で兼ねると、再描画のたびに
+ * 喋る・局面が続く限り喋り続ける、のどちらかになる。
+ *
+ * ## なぜ不在告知だけか
+ *
+ * listening / speaking / ducked の字幕は**状態表示**であって、読み上げると来訪者の発話に
+ * かぶる。不在告知は**来訪者の問いへの答え**なので、声で返さないと「聞こえていない」に
+ * 見える —— 名前を声で言った来訪者が、画面下部の字幕へ視線を落とすとは限らない。
+ */
+export function announcementFor(
+  state: Pick<VoiceKioskState, 'mode' | 'readbackName'>,
+): { key: VoiceKioskCaptionKey; name: string } | null {
+  if (state.mode !== 'unavailable') return null;
+  return { key: 'voice.unavailable.staffAbsent', name: state.readbackName ?? '' };
+}

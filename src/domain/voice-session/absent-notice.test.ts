@@ -25,8 +25,15 @@ import {
   kioskDirectoryToEntityDirectory,
   kioskDirectoryToUnavailableDirectory,
 } from '@/components/kiosk/voice-directory';
-import { voiceKioskReducer, captionKeyFor, type VoiceKioskState } from './kiosk-view';
+import {
+  voiceKioskReducer,
+  captionKeyFor,
+  announcementFor,
+  type VoiceKioskState,
+  type VoiceKioskEvent,
+} from './kiosk-view';
 import { VOICE_MODE_TO_EXPERIENCE } from '@/domain/experience/journey-map';
+import { VoiceKioskStore } from '@/lib/voice-session/kiosk-store';
 import type { EntityDirectory } from '@/domain/voice-stt/entity-resolver';
 
 const PRESENT: EntityDirectory = {
@@ -221,4 +228,94 @@ describe('不在辞書の作り方 (#803)', () => {
   it('在席者は従来どおり選択対象に残る', () => {
     expect(kioskDirectoryToEntityDirectory(DIRECTORY).staff.map((s) => s.id)).toEqual(['in']);
   });
+});
+
+/**
+ * 告知が居座らないこと (#803)。
+ *
+ * 🔴 **手段の無い終端状態を作らない。** `unavailable` は「はい/いいえ」を描かないので、
+ * 来訪者側に字幕を消す手段が無い。reducer 上は `listenStart` で抜けられるが、
+ * **それを発火する主体が居ない**と、「◯◯は現在不在です」が用件入力・確認・呼び出し中、
+ * 場合によっては次の来訪者の待機画面まで残る（独立レビューで実測指摘）。
+ *
+ * そこで「**受付がその画面から先へ進んだら告知は消える**」を不変条件として縛る。
+ */
+describe('不在告知は受付の進行で消える (#803)', () => {
+  function storeAt(mode: 'unavailable' | 'readback') {
+    let emit: (event: VoiceKioskEvent) => void = () => {};
+    const store = new VoiceKioskStore((e) => {
+      emit = e;
+      return {
+        start: async () => {},
+        close: async () => {},
+        confirmYes: () => {},
+        confirmNo: () => {},
+      };
+    });
+    store.start();
+    emit(
+      mode === 'unavailable'
+        ? { type: 'heardUnavailable', displayName: '不在花子' }
+        : {
+            type: 'heardNeedsConfirmation',
+            displayName: '在席太郎',
+            reason: 'low_stt_confidence',
+            kind: 'staff',
+          },
+    );
+    return store;
+  }
+
+  it.each(['inputVisitorInfo', 'confirming', 'calling', 'completed', 'idle'] as const)(
+    '%s へ進んだら告知は消える',
+    (state) => {
+      const store = storeAt('unavailable');
+      expect(store.getState().mode).toBe('unavailable');
+      store.notifyReceptionState(state);
+      expect(store.getState().mode).not.toBe('unavailable');
+    },
+  );
+
+  it('相手選択に留まっている間は消えない（読む時間を奪わない）', () => {
+    const store = storeAt('unavailable');
+    store.notifyReceptionState('selectingTarget');
+    expect(store.getState().mode).toBe('unavailable');
+  });
+
+  /**
+   * 🔴 **下界を縛る。** 「進んだら消す」を「常に消す」で満たさない。復唱中に画面が進んでも
+   * 復唱を消してよいわけではない（そちらには消す手段があり、確定待ちの意味がある）。
+   */
+  it('復唱中は受付が進んでも勝手に消さない', () => {
+    const store = storeAt('readback');
+    store.notifyReceptionState('inputVisitorInfo');
+    expect(store.getState().mode).toBe('readback');
+  });
+});
+
+/**
+ * 読み上げ (#803 AC「音声で『不在』を伝え」「表示と読み上げが一致する」)。
+ *
+ * 🔴 **`aria-live` は読み上げではない。** スクリーンリーダの提示であって、端末が声に出す
+ * こととは別物。前者だけを見て「読み上げている」と主張しないために、ここで分けて縛る
+ * （独立レビューの指摘。テスト名が測っているものを超えて主張していた）。
+ */
+describe('不在告知を声に出す (#803)', () => {
+  it('不在告知の局面では、字幕と同じ文言を読み上げ対象として返す', () => {
+    const announcement = announcementFor({ mode: 'unavailable', readbackName: '佐藤' });
+    expect(announcement).toEqual({ key: 'voice.unavailable.staffAbsent', name: '佐藤' });
+    // 表示と読み上げが**同じキー**であることまで縛る（別文言に分岐させない）。
+    expect(announcement?.key).toBe(captionKeyFor({ mode: 'unavailable' }));
+  });
+
+  /**
+   * 🔴 **下界。** 「常に何か返す」実装で上を満たさせない。状態表示の字幕を読み上げると
+   * 来訪者の発話にかぶる。
+   */
+  it.each(['listening', 'speaking', 'ducked', 'readback', 'fallback', 'idle', 'inactive'] as const)(
+    '%s では読み上げない',
+    (mode) => {
+      expect(announcementFor({ mode, readbackName: '佐藤' })).toBeNull();
+    },
+  );
 });

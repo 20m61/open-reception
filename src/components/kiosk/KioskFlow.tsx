@@ -925,6 +925,19 @@ export function KioskFlow({
     }
   }, [data.state, data.target?.label, guidanceIdle, speakSettings, locale]);
 
+  /*
+   * 音声レイヤの告知を実際に声へ出す (#803)。既存の受付ナレーションと**同じ `speak()`**
+   * を使う —— 別経路を作ると、片方だけ音量・言語設定が効かない形になる。
+   */
+  const speakVoiceAnnouncement = useCallback(
+    (phrase: string) => {
+      const language =
+        locale === DEFAULT_LOCALE ? speakSettings.language : LOCALE_LANGUAGE_CODE[locale];
+      speak(phrase, { ...speakSettings, language });
+    },
+    [locale, speakSettings],
+  );
+
   // 受付完了時に在館記録を自動生成し、退館クレデンシャルを発行して完了画面へ提示する (issue #342)。
   // 失敗しても受付完了画面の表示・自動リセットは妨げない（ホットパスを止めない・来訪者をブロックしない）。
   // token/code はここでもログに出さない（PII ではないが秘密）。
@@ -1254,6 +1267,7 @@ export function KioskFlow({
           locale={locale}
           receptionState={data.state}
           onResolved={handleVoiceResolved}
+          onAnnounce={speakVoiceAnnouncement}
         />
       ) : null}
       {inactivitySeconds !== null ? (

@@ -133,7 +133,12 @@ describe('聞き取り中インジケータ + interim 逐次字幕（#361/#364 �
       expect(html).toContain('代表窓口');
     });
 
-    it('字幕は読み上げ対象（表示と読み上げが一致する）', () => {
+    /**
+     * 🔴 **これは端末の発話ではない。** 見ているのは支援技術向けの提示（`aria-live`）だけで、
+     * 声に出すことは `VoiceSessionLayer` → `KioskFlow` → `speak()` の配線が担う
+     * （`voice-directory-wiring.test.ts` が固定）。テスト名で両方を主張しない。
+     */
+    it('字幕は支援技術へ提示される（aria-live）', () => {
       const html = render({ mode: 'unavailable', readbackName: '佐藤' });
       expect(html).toContain('data-testid="voice-caption"');
       expect(html).toContain('aria-live="polite"');

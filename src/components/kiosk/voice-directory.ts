@@ -97,8 +97,10 @@ export function kioskDirectoryToUnavailableDirectory(directory: Directory): Enti
       aliases: s.aliases,
       departmentId: s.departmentId,
       enabled: true,
-      // 解決器の `available` フィルタを素通りさせるための値で、**在席の意味ではない**
-      // （この辞書に居ること自体が「不在」を意味する）。
+      // **在席の意味ではない**（この辞書に居ること自体が「不在」を意味する）。
+      // なお `resolveStaffEntities` が見るのは `enabled` だけで、`available` フィルタは
+      // 解決器にも `search.ts` にも**存在しない** —— この値は今は何も素通りさせていない。
+      // 将来 `available` で絞る変更が入ったときに壊れないための予防値である。
       available: true,
       callTargets: [],
       fallbackStaffIds: [],
