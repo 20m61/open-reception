@@ -42,6 +42,27 @@ const MAX_RANGES_PER_DAY = 12;
 const MAX_EXCEPTIONS = 366;
 const MAX_FIXED_HOLIDAYS = 366;
 
+function isLeapYear(year: number): boolean {
+  return year % 400 === 0 || (year % 4 === 0 && year % 100 !== 0);
+}
+
+/**
+ * `YYYY-MM-DD` が書式だけでなく Gregorian calendar 上で実在するか。
+ *
+ * `new Date(...)` / `Date.UTC(...)` へ丸投げしない。JavaScript は不正日付を翌月へ
+ * rollover し、0〜99 年には 1900 offset という別契約もあるため、入力検証の正本として
+ * 使うと「書いた値」と「検証した値」がずれる。
+ */
+function isValidCalendarDate(value: string): boolean {
+  if (!YMD_RE.test(value)) return false;
+  const [yearText, monthText, dayText] = value.split('-');
+  const year = Number(yearText);
+  const month = Number(monthText);
+  const day = Number(dayText);
+  const daysInMonth = [31, isLeapYear(year) ? 29 : 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+  return day <= daysInMonth[month - 1]!;
+}
+
 function parseTimeToMinutes(t: string): number | null {
   const m = TIME_RE.exec(t);
   if (!m) return null;
@@ -183,6 +204,13 @@ function validateExceptionDates(raw: unknown, issues: PolicyValidationIssue[]): 
     const date = typeof o.date === 'string' ? o.date : '';
     if (!YMD_RE.test(date)) {
       issues.push({ field: `${field}.date`, message: 'must be "YYYY-MM-DD"' });
+      return;
+    }
+    if (!isValidCalendarDate(date)) {
+      issues.push({
+        field: `${field}.date`,
+        message: 'must be an existing Gregorian calendar date in "YYYY-MM-DD"',
+      });
       return;
     }
     if (seenDates.has(date)) {
