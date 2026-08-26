@@ -28,6 +28,8 @@ const SOURCE = readFileSync('src/components/kiosk/KioskFlow.tsx', 'utf8');
  *
  * 呼び出し式ではなく**ブロック**を取るので、`const entities = ...(directory);` のように
  * 中間変数へ切り出すリファクタでも落ちない（呼び出し 1 行を文字列一致で見ていた版は落ちた）。
+ * ただし縛れるのは**引数名が `directory` のまま**の切り出しまで。`...(dirForVoice)` へ改名
+ * すると落ちる ── ソース文字列に対する検査である以上、この程度の脆さは残る。
  */
 function localVoiceMemoBody(): string {
   const marker = 'const localVoiceSession = useMemo(() => {';
@@ -45,6 +47,27 @@ function localVoiceMemoDeps(): string {
   expect(deps, 'useMemo の依存配列を読めない').not.toBeNull();
   return deps?.[1] ?? '';
 }
+
+/**
+ * 受付局面の通知が controller へ届く配線 (#788 レビュー 2 周目)。
+ *
+ * 合成発話の起点は `notifyReceptionState('selectingTarget')` なので、`useVoiceSession` の
+ * effect が `receptionState` を依存に持たなくなると**新しい起点が丸ごと死ぬ**
+ * （demo-studio のゼロタッチ再生も同時に死ぬ）。依存を落とす変異は
+ * `src/lib/voice-session/**` `src/components/kiosk/**` の 601 tests 全緑で生存した（実測）。
+ * store 側の中継（`VoiceKioskStore.notifyReceptionState`）は unit で縛られているので、
+ * 残るこの 1 行だけを構造で固定する。
+ */
+describe('受付局面が音声 controller へ中継される (#788)', () => {
+  const HOOK = readFileSync('src/components/kiosk/useVoiceSession.ts', 'utf8');
+
+  it('receptionState の変化で controller へ通知する', () => {
+    const effect = HOOK.slice(HOOK.indexOf('store.notifyReceptionState(receptionState)'));
+    const deps = effect.match(/\}, \[([^\]]*)\]\);/);
+    expect(deps, 'notifyReceptionState の effect と依存配列が見つからない').not.toBeNull();
+    expect(deps?.[1]).toMatch(/\breceptionState\b/);
+  });
+});
 
 describe('KioskFlow が実 Directory を音声へ渡す (#788)', () => {
   it('EntityDirectory は端末が保持する directory から作る', () => {
@@ -78,8 +101,9 @@ describe('KioskFlow が実 Directory を音声へ渡す (#788)', () => {
    * 早期 return はフラグ判定の 1 本だけに保つ。
    */
   it('フラグ以外の理由で音声セッションを undefined にしない', () => {
+    // 個数だけ数える。文面（`if (!localVoiceEnabled) return undefined;`）の完全一致は、
+    // prettier の折り返しや三項演算子への書き換えで**振る舞い不変のまま**落ちる。
     const returns = localVoiceMemoBody().match(/return undefined/g) ?? [];
     expect(returns).toHaveLength(1);
-    expect(localVoiceMemoBody()).toContain('if (!localVoiceEnabled) return undefined;');
   });
 });

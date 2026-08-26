@@ -65,6 +65,21 @@ export function shouldUseLocalVoiceOrchestrator(search: string): boolean {
 }
 
 /**
+ * 合成発話の STT confidence。**自動採用しきい値（`minSttConfidence` = 0.6）未満**に置く。
+ *
+ * 🔴 **自動採用させない。** 高信頼のまま流すと `bridgeCommittedTurn` が復唱を挟まず
+ * `heardAccepted` を返し、`onResolved` → `SELECT_TARGET` が **notify effect の中で同期的に**
+ * 通る。相手選択画面は 1 フレームで消え、来訪者には**字幕もインジケータも確認も出ない**まま
+ * 先頭の担当者が確定する ── 別の相手に会いに来た人はその端末では二度と選べない。
+ *
+ * 復唱確認（「◯◯様ですね？ はい／いいえ」）を挟めば、見える応答・読み上げ・取り消し口が
+ * 同時に手に入り、タッチでの選択も生きたままになる（復唱中もタッチは有効）。
+ * demo-studio が同じ理由で同じことをしている（`DEMO_VOICE_CONFIDENCE`。
+ * 「重要な固有名詞は必ず画面で確認する」= #364 原則）。
+ */
+const LOCAL_SYNTHETIC_STT_CONFIDENCE = 0.4;
+
+/**
  * mock provider 駆動の `VoiceSessionFactory` を作る。
  *
  * 発話候補は `directory` そのものから導く。**別引数で受け取らない** ── 受け取ると
@@ -129,13 +144,19 @@ export function createLocalVoiceSessionFactory(directory: EntityDirectory): Voic
         );
         return orchestrator;
       },
-      { directory, now: () => Date.now() },
+      { directory, sttConfidence: LOCAL_SYNTHETIC_STT_CONFIDENCE, now: () => Date.now() },
     )(emit, hooks);
 
     let spokenAlready = false;
     return {
       ...controller,
       notifyReceptionState: (state) => {
+        // 内側が将来この任意メソッドを実装しても握り潰さない（今は未実装 = no-op）。
+        controller.notifyReceptionState?.(state);
+        // 🔴 **待機へ戻ったら次の来訪者。** ここで再武装しないと、音声セッションは
+        // `directory` の identity が変わるまで作り直されないので、**2 人目以降は
+        // 音声で相手を選べない**（版スナップショット運用の拠点では端末を再読込するまで永久に）。
+        if (state === 'idle') spokenAlready = false;
         if (state !== 'selectingTarget' || spoken === '' || spokenAlready) return;
         if (orchestrator === null) return;
         spokenAlready = true;
@@ -161,8 +182,15 @@ export function createLocalVoiceSessionFactory(directory: EntityDirectory): Voic
  * 「呼ばれたら 1 ターン流す」だけにする。
  *
  * **本番の音声挙動ではない。** `?voiceOrchestrator=1` を付けた端末だけが通る検証用の駆動。
+ *
+ * 🔴 **export しているのはテストのため。** 上位（`VoiceSessionController`）から見ると、
+ * この駆動の中身は結果（確定テキスト）に効かない ── ターン確定に要る文字列は
+ * `reportSpeechEnded` が運ぶので、**マイクチャンクを 1 つも流さなくても、
+ * `reportSpeechStarted` を消しても、UI の結果は同じ**（実測で変異が生存した）。
+ * それでは本モジュールの存在理由（transport 送出・STT session 供給・遅延計測イベント）が
+ * 黙って空になっても誰も気づけないので、駆動そのものを直接縛る。
  */
-function driveWithSyntheticAudio(orchestrator: VoiceSessionOrchestrator, spoken: string): void {
+export function driveWithSyntheticAudio(orchestrator: VoiceSessionOrchestrator, spoken: string): void {
   if (spoken === '') return;
   orchestrator.reportSpeechStarted();
   // mock STT は「何チャンク目で partial / final を出すか」で駆動する。
