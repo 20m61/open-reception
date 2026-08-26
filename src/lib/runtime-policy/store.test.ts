@@ -18,6 +18,7 @@ vi.mock('@/lib/data-stores/reception-log-store', () => ({
 import { __resetOperatingPolicyStore, upsertOperatingPolicy } from '@/lib/operating-policy/store';
 import type { ManagedRuntimeService } from '@/domain/runtime-policy/registry';
 import {
+  expiresAtMs,
   resolutionFor,
   resolveServiceStates,
   type CommonSchedule,
@@ -489,6 +490,66 @@ describe('unresolvedWithoutCommonSchedule', () => {
       },
     } as unknown as RuntimeOperatingPolicy['services'];
     expect([...unresolvedWithoutCommonSchedule(services, overrides, IN_HOURS, chain)]).toEqual([]);
+  });
+
+  it('補正で確定停止になった側は、自分の override の失効判定が TZ 依存でも確定扱い', () => {
+    /*
+     * 🔴 `dependency_correction` の早期 return は**段 2 より前**でなければならない。段 2 の
+     * 後ろへ動かすと（「早期 return は失効判定より後が自然」という一見もっともな整理で
+     * 起こりうる）、スコープ付き break-glass で止めたサービスに依存する側が、過去に一度でも
+     * 現地時刻の override を使っていただけで判定不能に吸い込まれる——一度直した回帰の再発。
+     */
+    const chain = [
+      { serviceKey: 'a', defaultMode: 'always_on', dependsOn: [], provides: [] },
+      { serviceKey: 'b', defaultMode: 'always_on', dependsOn: ['a'], provides: [] },
+    ] as unknown as ManagedRuntimeService[];
+    const services = [
+      { serviceKey: 'a', mode: 'manual_only', state: 'stopped', reason: 'break_glass' },
+      {
+        serviceKey: 'b',
+        mode: 'always_on',
+        state: 'stopped',
+        reason: 'dependency_correction',
+        correction: { blockedBy: 'a', from: { state: 'running', reason: 'temporary_override' } },
+      },
+    ] as unknown as ServiceResolution[];
+    // 01:00Z 時点で、TZ の両端で有効/失効が割れる期限。
+    const overrides = {
+      b: { temporaryOverride: { state: 'force_running', expiresAt: '2026-07-20T05:00' } },
+    } as unknown as RuntimeOperatingPolicy['services'];
+    expect([...unresolvedWithoutCommonSchedule(services, overrides, IN_HOURS, chain)]).toEqual([]);
+  });
+
+  it('例外日が空配列なら段 3 は発火しない（`!== undefined` に緩めない）', () => {
+    // 管理画面で例外日の行を全部消すと `[]` がそのまま保存される。`!== undefined` で判定すると、
+    // 一度でも例外日を設定して消したサービスが恒久的に判定不能になる。
+    const chain = [
+      { serviceKey: 'a', defaultMode: 'custom_schedule', dependsOn: [], provides: [] },
+    ] as unknown as ManagedRuntimeService[];
+    const services = [
+      { serviceKey: 'a', mode: 'custom_schedule', state: 'stopped', reason: 'default_policy' },
+    ] as unknown as ServiceResolution[];
+    const overrides = { a: { exceptionDates: [] } } as unknown as RuntimeOperatingPolicy['services'];
+    expect([...unresolvedWithoutCommonSchedule(services, overrides, IN_HOURS, chain)]).toEqual([]);
+  });
+
+  it('期限がちょうど境界に載るときは判定不能（`>` と `>=` を取り違えない）', () => {
+    /*
+     * `resolve.ts` の自動解除は `expiresAt <= now`。`>=` で比較すると、東端の拠点では
+     * 失効・西端では有効という割れた状態を「確定」と報告する（過剰確定＝危険な向き）。
+     */
+    const local = '2026-07-21T20:00';
+    const now = expiresAtMs(local, '+23:59');
+    const chain = [
+      { serviceKey: 'a', defaultMode: 'always_on', dependsOn: [], provides: [] },
+    ] as unknown as ManagedRuntimeService[];
+    const services = [
+      { serviceKey: 'a', mode: 'always_on', state: 'stopped', reason: 'temporary_override' },
+    ] as unknown as ServiceResolution[];
+    const overrides = {
+      a: { temporaryOverride: { state: 'force_stopped', expiresAt: local } },
+    } as unknown as RuntimeOperatingPolicy['services'];
+    expect([...unresolvedWithoutCommonSchedule(services, overrides, now, chain)]).toEqual(['a']);
   });
 
   it('例外日を持っていても、スケジュールを読まない mode なら確定扱い', () => {

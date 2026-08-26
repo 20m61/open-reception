@@ -444,7 +444,10 @@ const NEEDS_TIMEZONE_BY_REASON: Record<ResolutionReason, boolean> = {
   common_weekly_schedule: true,
   // 段 6。mode だけで決まる（`always_on` / `manual_only`）。
   default_policy: false,
-  // 依存補正。自分ではなく**依存元**の判定で決まるので、閉包側が扱う。
+  /*
+   * 依存補正。自分ではなく**依存元**の判定で決まるので閉包側が扱う——そのため上で早期
+   * return しており、**この行も到達しない**（7 エントリ中 4 つが網羅のためだけに在る）。
+   */
   dependency_correction: false,
 };
 
