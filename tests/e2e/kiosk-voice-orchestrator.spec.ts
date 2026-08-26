@@ -160,3 +160,74 @@ test('4K サイネージでも復唱ボタンが逃げ道バーに食い込ま�
     'button',
   ]);
 });
+
+/**
+ * 縦置き iPad で**担当者を検索で絞っても**復唱ボタンが逃げ道バーに食い込まないこと (#788)。
+ *
+ * 🔴 **4K のテストとは逆向きの盲点を塞ぐ。** 4K は「内容がスクロールしない画面」で崩れたが、
+ * こちらは「**スクロールしていた画面が、絞り込みでスクロールしなくなる**」瞬間に崩れる。
+ * 一覧が縮むとページが overflow しなくなり、sticky のバーが `.screen` の下 padding ぶん
+ * 浮く。バー自身は変わらないので ResizeObserver は鳴らず、scrollY も 0 のままなので
+ * scroll も鳴らない ── **再測定の契機が無いまま持ち上げ量が古い値で残る**（実測 −8px）。
+ *
+ * あわせて**スクロール後の矩形**も見る。`position: fixed` を `absolute` に戻す変異と、
+ * scroll リスナを外す変異は、スクロールしない検査では原理的に落とせない。
+ */
+test('担当者を絞り込んでも・スクロールしても復唱ボタンが逃げ道バーに食い込まない', async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 810, height: 1080 });
+  await page.goto('/kiosk?voiceOrchestrator=1');
+  await page.getByTestId('start-reception').click();
+  await page.getByTestId('purpose-meeting').click();
+  await expect(page.getByTestId('voice-readback')).toBeVisible();
+
+  const bottomEdgeHits = () =>
+    page.evaluate(() => {
+      const yes = document.querySelector('[data-testid="voice-confirm-yes"]');
+      if (!yes) return ['missing'];
+      const box = yes.getBoundingClientRect();
+      // 食い込みは下端から始まるので、下端寄りを横方向に振って見る。**角丸を避ける** ──
+      // 両端ちょうどは border-radius の外側で親レイヤが出るため、重なりと区別できない。
+      return [0.2, 0.5, 0.8].map((x) => {
+        const el = document.elementFromPoint(box.left + box.width * x, box.bottom - 2);
+        return el === yes || yes.contains(el) ? 'button' : (el?.getAttribute('data-testid') ?? 'other');
+      });
+    });
+
+  expect(await bottomEdgeHits(), '絞り込み前から食い込んでいる').toEqual([
+    'button',
+    'button',
+    'button',
+  ]);
+
+  // 一覧を 1 件まで絞る = ページが overflow しなくなり、sticky のバーが浮く。
+  await page.getByTestId('staff-search').fill('佐');
+  await page.waitForTimeout(300);
+  expect(await bottomEdgeHits(), '絞り込みで一覧が縮んだ後に食い込んでいる').toEqual([
+    'button',
+    'button',
+    'button',
+  ]);
+
+  // スクロールしても viewport 基準に留まること（absolute へ戻す変異・scroll リスナ削除を落とす）。
+  await page.getByTestId('staff-search').fill('');
+  await page.waitForTimeout(200);
+  await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight));
+  await page.waitForTimeout(300);
+  expect(await bottomEdgeHits(), 'スクロール後に食い込んでいる').toEqual([
+    'button',
+    'button',
+    'button',
+  ]);
+  const drift = await page.evaluate(() => {
+    const yes = document.querySelector('[data-testid="voice-confirm-yes"]');
+    const bar = document.querySelector('[data-testid="kiosk-escape-bar"]');
+    if (!yes || !bar) return null;
+    return Math.round(bar.getBoundingClientRect().top - yes.getBoundingClientRect().bottom);
+  });
+  // 🔴 **上限も縛る。** 「重なっていない」だけなら、画面上端へ飛んでいても満たせる
+  // （`absolute` で初期包含ブロック基準のまま流れていく形がまさにそれ）。
+  expect(drift, `逃げ道バーとの間隔が想定外: ${drift}`).toBeLessThanOrEqual(64);
+  expect(drift).toBeGreaterThanOrEqual(0);
+});

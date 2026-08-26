@@ -475,6 +475,15 @@ export function KioskFlow({
     measure();
     const ro = new ResizeObserver(measure);
     ro.observe(el);
+    /*
+     * 🔴 **本文の高さも観測する** (#788)。バーは sticky なので、**バー自身が変わらなくても
+     * 本文が縮めばバーの位置は動く**。担当者を検索で絞ると一覧が縮んでページが overflow
+     * しなくなり、バーが `.screen` の下 padding ぶん浮く ── このとき ResizeObserver（バーのみ）も
+     * scroll（scrollY は 0 のまま）も resize も発火せず、持ち上げ量が古い値のまま残って
+     * 「はい／いいえ」の下端 8px が死ぬ（実測。過渡ではなく定常）。
+     * `measure` が動かすのは fixed 要素だけなので観測ループにはならない。
+     */
+    ro.observe(document.body);
     window.addEventListener('resize', measure);
     window.addEventListener('scroll', measure, { passive: true });
     return () => {

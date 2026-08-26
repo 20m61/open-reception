@@ -71,7 +71,10 @@ export function VoiceReadbackConfirm({ state, locale, onYes, onNo }: VoiceReadba
          * 持ち上げ量は `KioskFlow` が**バーの実位置から実測**して渡す（固定値にすると、
          * 内容がスクロールしない画面でバーが下端に付かず食い込む。実測で 4K が壊れた）。
          */
-        bottom: 'var(--kiosk-voice-safe-bottom, 16px)',
+        // 既定値は**逃げ道バーが無い画面**（idle 等）でだけ効く。16px まで下げると退館導線
+        // （`kiosk-checkout-link`）に完全に内包され、fallback 帯（`pointerEvents: 'auto'`）が
+        // そのタップを奪う（実測）。測れない局面なので、安全側に離しておく。
+        bottom: 'var(--kiosk-voice-safe-bottom, 96px)',
         /*
          * 🔴 **操作カードより前面** (#788)。この層は DOM 上で受付画面より**前**に置かれており、
          * `.screen-anim` が animation で stacking context を作るため、z-index が無いと
