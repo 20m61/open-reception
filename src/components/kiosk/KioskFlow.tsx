@@ -147,6 +147,7 @@ import {
 import {
   voiceCandidateToTarget,
 } from './voice-target-binding';
+import { kioskDirectoryToEntityDirectory } from './voice-directory';
 import type {
   OnResolved,
   VoiceSessionFactory,
@@ -506,14 +507,18 @@ export function KioskFlow({
    * （渡さないと解決できない候補ばかりになり、確認導線の検証にならない）。
    * 明示注入（`voiceSession` prop = demo-studio 等）が最優先 ── URL フラグが呼び出し側の
    * 意図を上書きしない。
+   *
+   * Entity 解決の入力は**端末が保持する Directory から作る** (#788)。ここが空配列だった
+   * 間、配線は正しいのに音声では誰も選べなかった。素通しにはしない理由（不在の担当者を
+   * 音声だけが呼べる形になる）は `voice-directory.ts` の doc。
    */
   const localVoiceSession = useMemo(() => {
     if (!localVoiceEnabled) return undefined;
     return createLocalVoiceSessionFactory(
-      { staff: [], departments: [] },
+      kioskDirectoryToEntityDirectory(directory),
       directory.staff.filter((s) => s.available).map((s) => s.displayName),
     );
-  }, [localVoiceEnabled, directory.staff]);
+  }, [localVoiceEnabled, directory]);
   const effectiveVoiceSession = voiceSession ?? localVoiceSession;
   const [callingStageQueryOverride, setCallingStageQueryOverride] = useState<
     Partial<CallingStageThresholds>
