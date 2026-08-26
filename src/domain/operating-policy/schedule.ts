@@ -47,6 +47,16 @@ function isLeapYear(year: number): boolean {
 }
 
 /**
+ * その月の日数。`february` に**閏年の 29 を渡すかどうか**が唯一の分岐点。
+ *
+ * `fixedHolidays` は `MM-DD` で年を持たないため「どこかの年に実在しうるか」を見る
+ * （= 2 月は 29 まで許す）。`exceptionDates` は年があるので、その年で判定する。
+ */
+function daysInMonth(month: number, february: 28 | 29): number | undefined {
+  return [31, february, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31][month - 1];
+}
+
+/**
  * `YYYY-MM-DD` が書式だけでなく Gregorian calendar 上で実在するか。
  *
  * `new Date(...)` / `Date.UTC(...)` へ丸投げしない。JavaScript は不正日付を翌月へ
@@ -56,11 +66,21 @@ function isLeapYear(year: number): boolean {
 function isValidCalendarDate(value: string): boolean {
   if (!YMD_RE.test(value)) return false;
   const [yearText, monthText, dayText] = value.split('-');
-  const year = Number(yearText);
-  const month = Number(monthText);
-  const day = Number(dayText);
-  const daysInMonth = [31, isLeapYear(year) ? 29 : 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
-  return day <= daysInMonth[month - 1]!;
+  const max = daysInMonth(Number(monthText), isLeapYear(Number(yearText)) ? 29 : 28);
+  return max !== undefined && Number(dayText) <= max;
+}
+
+/**
+ * `MM-DD`（毎年繰り返す固定休業日）が**どこかの年に実在しうる**か。
+ *
+ * 🔴 **`02-29` は通す。** 閏年には実在するので、拒否すると 4 年に 1 度の休業日を
+ * 設定できなくなる。拒否するのは `02-30` / `04-31` のように**どの年にも存在しない**日だけ。
+ */
+function isPossibleAnnualDate(value: string): boolean {
+  if (!MMDD_RE.test(value)) return false;
+  const [monthText, dayText] = value.split('-');
+  const max = daysInMonth(Number(monthText), 29);
+  return max !== undefined && Number(dayText) <= max;
 }
 
 function parseTimeToMinutes(t: string): number | null {
@@ -168,6 +188,13 @@ function validateFixedHolidays(raw: unknown, issues: PolicyValidationIssue[]): s
   raw.forEach((v, i) => {
     if (typeof v !== 'string' || !MMDD_RE.test(v)) {
       issues.push({ field: `fixedHolidays[${i}]`, message: 'must be "MM-DD"' });
+      return;
+    }
+    if (!isPossibleAnnualDate(v)) {
+      issues.push({
+        field: `fixedHolidays[${i}]`,
+        message: 'must be an existing Gregorian calendar date in "MM-DD"',
+      });
       return;
     }
     out.push(v);

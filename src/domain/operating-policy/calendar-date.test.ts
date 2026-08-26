@@ -7,6 +7,10 @@ function operatingResult(date: string) {
   return validatePolicyInput({ exceptionDates: [{ date, closed: true }] });
 }
 
+function holidayResult(mmdd: string) {
+  return validatePolicyInput({ fixedHolidays: [mmdd] });
+}
+
 function runtimeResult(date: string) {
   return validateRuntimePolicyInput({
     commonSchedule: {
@@ -64,5 +68,47 @@ describe('exceptionDates Gregorian calendar validity (#805)', () => {
     );
 
     expect(runtimeResult('2028-02-29').ok).toBe(true);
+  });
+});
+
+/**
+ * `fixedHolidays` は `MM-DD`（毎年繰り返す固定休業日）なので、**年が無い**。
+ * よって判定規則が `exceptionDates` と変わる ── **`02-29` は残さなければならない**
+ * （閏年には実在するので、拒否すると 4 年に 1 度の休業日を設定できなくなる）。
+ * 拒否すべきは「どの年にも存在し得ない日」だけである。
+ */
+describe('fixedHolidays Gregorian calendar validity (#805)', () => {
+  it.each(['02-30', '02-31', '04-31', '06-31', '09-31', '11-31'])(
+    'どの年にも存在しない %s を拒否する',
+    (mmdd) => {
+      const result = holidayResult(mmdd);
+      expect(result.ok).toBe(false);
+      if (result.ok) return;
+      expect(result.error.issues).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            field: 'fixedHolidays[0]',
+            message: expect.stringContaining('Gregorian calendar date'),
+          }),
+        ]),
+      );
+      // 診断へ入力値自体を反射しない（exceptionDates 側と同じ方針）。
+      expect(result.error.issues.map((issue) => issue.message).join(' ')).not.toContain(mmdd);
+    },
+  );
+
+  /**
+   * 🔴 **下界を縛る。** 「不正を拒否する」だけなら、`fixedHolidays` を全部拒否する実装で
+   * 空虚に満たせる。閏日と各月の月末を通すことまで見る。
+   */
+  it.each(['02-29', '01-31', '04-30', '02-28', '12-31'])('実在しうる %s は通す', (mmdd) => {
+    expect(holidayResult(mmdd).ok, mmdd).toBe(true);
+  });
+
+  it('不正な要素の位置を index で指す（複数件でも取り違えない）', () => {
+    const result = validatePolicyInput({ fixedHolidays: ['01-01', '04-31', '12-31'] });
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error.issues.map((issue) => issue.field)).toContain('fixedHolidays[1]');
   });
 });
