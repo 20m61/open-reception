@@ -65,6 +65,37 @@ test('?voiceOrchestrator=1 で、担当者を押さずに音声だけで相手�
   await expect(page.getByTestId('voice-readback')).toBeVisible();
   await expect(page.getByTestId('voice-caption')).toContainText('佐藤 太郎');
 
+  /*
+   * 🔴 **逃げ道バーと物理的に重ならないこと** (#124 がチャットドロワーに課したのと同じ規則)。
+   * `bottom: 0` だった間、担当者リストが長い端末では sticky の「戻る」が復唱の上へ乗り、
+   * どちらかが必ず押せなかった（実測: Playwright の click が pointer events を奪われた）。
+   * click 自体は重なったときしか落ちない ── リストの長さに依存しない形で縛る。
+   */
+  const yes = await page.getByTestId('voice-confirm-yes').boundingBox();
+  const escapeBar = await page.getByTestId('kiosk-escape-bar').boundingBox();
+  expect(yes, '復唱の「はい」が描画されていない').not.toBeNull();
+  expect(escapeBar, '逃げ道バーが描画されていない').not.toBeNull();
+  expect(
+    yes!.y + yes!.height <= escapeBar!.y + 1,
+    `復唱ボタンが逃げ道バーに重なっている: yes=${JSON.stringify(yes)} bar=${JSON.stringify(escapeBar)}`,
+  ).toBe(true);
+
+  /*
+   * 🔴 **操作カードに覆われないこと** (#788)。この層は DOM 上で受付画面より**前**にあるので、
+   * z-index が無いと担当者カードが「はい／いいえ」を覆う。**担当者リストを末尾まで送ってから**
+   * 見る ── リストが短いと物理的に重ならず、重なりを作らない限りこの回帰は観測できない
+   * （実測: z-index を外す変異は、リストが短い単独実行では素通りした）。
+   */
+  await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight));
+  const topmost = await page.evaluate(() => {
+    const button = document.querySelector('[data-testid="voice-confirm-yes"]');
+    if (!button) return 'missing';
+    const box = button.getBoundingClientRect();
+    const hit = document.elementFromPoint(box.left + box.width / 2, box.top + box.height / 2);
+    return hit === button || button.contains(hit) ? 'button' : (hit?.getAttribute('data-testid') ?? hit?.className ?? 'other');
+  });
+  expect(topmost, '復唱の「はい」が別の要素に覆われている').toBe('button');
+
   // 「はい」で初めて相手が確定する。ここまで担当者カードは一度も押していない。
   await page.getByTestId('voice-confirm-yes').click();
   await expect(page.getByTestId('visitor-name')).toBeVisible();

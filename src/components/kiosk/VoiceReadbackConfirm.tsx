@@ -59,7 +59,20 @@ export function VoiceReadbackConfirm({ state, locale, onYes, onNo }: VoiceReadba
         position: 'absolute',
         left: 0,
         right: 0,
-        bottom: 0,
+        /*
+         * 🔴 **逃げ道バー（`.kiosk-escape-bar`、sticky・z-index 30）の上へ逃がす** (#788)。
+         * `bottom: 0` だと「戻る」と物理的に重なり、どちらかが必ず押せなくなる。
+         * チャットドロワー（`--kiosk-chat-safe-bottom`）と同じ考え方で高さ分だけ持ち上げる。
+         */
+        bottom: 'var(--kiosk-voice-safe-bottom, 96px)',
+        /*
+         * 🔴 **操作カードより前面** (#788)。この層は DOM 上で受付画面より**前**に置かれており、
+         * `.screen-anim` が animation で stacking context を作るため、z-index が無いと
+         * 担当者カードが復唱の「はい／いいえ」を覆って**押せなくなる**（実測: Playwright が
+         * `staff-*` に pointer events を奪われた）。逃げ道バー（30）より下に留めて、
+         * 「戻る」を隠さない。
+         */
+        zIndex: 25,
         display: 'flex',
         flexDirection: 'column',
         alignItems: 'center',
