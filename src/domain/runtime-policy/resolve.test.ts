@@ -7,7 +7,7 @@
  */
 import { describe, expect, it } from 'vitest';
 import type { OperatingException, TimeRange, Weekday } from '@/domain/operating-policy/types';
-import { MANAGED_RUNTIME_SERVICES, type ManagedRuntimeService, type ManagedRuntimeServiceKey } from './registry';
+import type { ManagedRuntimeService, ManagedRuntimeServiceKey } from './registry';
 import {
   BREAK_GLASS_PROTECTED_SERVICES,
   expiresAtMs,
@@ -617,6 +617,29 @@ describe('mode と段の関係 (#367 / PR #791 レビュー M1)', () => {
       },
     });
     expect(stateOf(policy, 'admin', IN_HOURS)).toEqual({ state: 'stopped', reason: 'temporary_override' });
+  });
+});
+
+describe('expiresAt はポリシーの timezone で解釈する（環境差でしか露見しない型）', () => {
+  /*
+   * 🔴 `expiresAtMs` の 🔴 コメントが名指しする失敗（Lambda(UTC) と開発機(JST) の環境差）は、
+   * 既存テストが全部 `Asia/Tokyo`（= `DEFAULT_TIMEZONE`）の fixture なので**どこにも縛られて
+   * いなかった**。永続層の「判定不能の切り分け」はこの前提の上に組まれているので、ここで固定する。
+   */
+  it('同じ現地時刻の期限が、ポリシーの timezone で有効/失効に分かれる', () => {
+    const policy = (timezone: string): RuntimeOperatingPolicy => ({
+      commonSchedule: {
+        timezone,
+        weeklySchedule: { mon: [{ start: '09:00', end: '18:00' }] },
+        fixedHolidays: [],
+        exceptionDates: [],
+      },
+      services: { bedrock: { temporaryOverride: { state: 'force_stopped', expiresAt: '2026-07-20T05:00' } } },
+    });
+    const now = Date.parse('2026-07-20T01:00:00Z');
+    // UTC-12 では 17:00Z（未来＝有効）、UTC+14 では前日 15:00Z（過去＝失効）。
+    expect(stateOf(policy('Etc/GMT+12'), 'bedrock', now)).toMatchObject({ reason: 'temporary_override' });
+    expect(stateOf(policy('Etc/GMT-14'), 'bedrock', now)).not.toMatchObject({ reason: 'temporary_override' });
   });
 });
 
