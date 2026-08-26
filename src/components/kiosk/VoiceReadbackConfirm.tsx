@@ -56,15 +56,22 @@ export function VoiceReadbackConfirm({ state, locale, onYes, onNo }: VoiceReadba
       data-voice-mode={state.mode}
       lang={htmlLangFor(locale)}
       style={{
-        position: 'absolute',
+        /*
+         * 🔴 **viewport 基準に固定する** (#788)。`absolute` だと positioned な祖先が無く
+         * 初期包含ブロック（文書原点）基準になるため、担当者リストをスクロールすると
+         * 復唱がカードの上へ流れて上端付近まで昇ってしまう。逃げ道バー（sticky）・
+         * チャット FAB（fixed）と同じ基準系へ揃える。
+         */
+        position: 'fixed',
         left: 0,
         right: 0,
         /*
          * 🔴 **逃げ道バー（`.kiosk-escape-bar`、sticky・z-index 30）の上へ逃がす** (#788)。
          * `bottom: 0` だと「戻る」と物理的に重なり、どちらかが必ず押せなくなる。
-         * チャットドロワー（`--kiosk-chat-safe-bottom`）と同じ考え方で高さ分だけ持ち上げる。
+         * 持ち上げ量は `KioskFlow` が**バーの実位置から実測**して渡す（固定値にすると、
+         * 内容がスクロールしない画面でバーが下端に付かず食い込む。実測で 4K が壊れた）。
          */
-        bottom: 'var(--kiosk-voice-safe-bottom, 96px)',
+        bottom: 'var(--kiosk-voice-safe-bottom, 16px)',
         /*
          * 🔴 **操作カードより前面** (#788)。この層は DOM 上で受付画面より**前**に置かれており、
          * `.screen-anim` が animation で stacking context を作るため、z-index が無いと

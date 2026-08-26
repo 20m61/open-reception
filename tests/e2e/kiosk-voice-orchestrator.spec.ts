@@ -75,8 +75,9 @@ test('?voiceOrchestrator=1 で、担当者を押さずに音声だけで相手�
   const escapeBar = await page.getByTestId('kiosk-escape-bar').boundingBox();
   expect(yes, '復唱の「はい」が描画されていない').not.toBeNull();
   expect(escapeBar, '逃げ道バーが描画されていない').not.toBeNull();
+  // 🔴 **スラックを足さない。** `+1` を許すと 1px 食い込む値（実測 93px）が素通りする。
   expect(
-    yes!.y + yes!.height <= escapeBar!.y + 1,
+    yes!.y + yes!.height <= escapeBar!.y,
     `復唱ボタンが逃げ道バーに重なっている: yes=${JSON.stringify(yes)} bar=${JSON.stringify(escapeBar)}`,
   ).toBe(true);
 
@@ -124,4 +125,38 @@ test('?voiceOrchestrator=1 で、復唱に「いいえ」と答えたら相手�
   // 相手選択に留まり、タッチで自分の相手を選べる。
   await expect(page.getByTestId('staff-staff-sato')).toBeVisible();
   await expect(page.getByTestId('visitor-name')).toHaveCount(0);
+});
+
+/**
+ * 大画面（4K サイネージ）で復唱ボタンが逃げ道バーに食い込まないこと (#788)。
+ *
+ * 🔴 **iPad の viewport だけでは捕まえられない。** 持ち上げ量を固定値（96px）にしていた間、
+ * ipad-portrait では余裕が 2px だけ残って通り、**large-display では 38px 食い込んで
+ * 「はい」の下半分を押すと「戻る」が発火していた**（実測）。原因は、内容がスクロールしない
+ * 画面では sticky の逃げ道バーが viewport 下端に付かず、`.screen` の下 padding 分だけ
+ * 浮くこと。バーの「高さ」ではなく「viewport 下端からの距離」を測らないと合わない。
+ */
+test('4K サイネージでも復唱ボタンが逃げ道バーに食い込まない', async ({ page }) => {
+  await page.setViewportSize({ width: 3840, height: 2160 });
+  await page.goto('/kiosk?voiceOrchestrator=1');
+  await page.getByTestId('start-reception').click();
+  await page.getByTestId('purpose-meeting').click();
+  await expect(page.getByTestId('voice-readback')).toBeVisible();
+
+  const hits = await page.evaluate(() => {
+    const yes = document.querySelector('[data-testid="voice-confirm-yes"]');
+    if (!yes) return ['missing'];
+    const box = yes.getBoundingClientRect();
+    // 🔴 **中心だけ見ない。** 食い込みは下端から始まるので、下寄りの点を含めて見る。
+    return [0.1, 0.5, 0.85, 0.95].map((frac) => {
+      const el = document.elementFromPoint(box.left + box.width / 2, box.top + box.height * frac);
+      return el === yes || yes.contains(el) ? 'button' : (el?.getAttribute('data-testid') ?? 'other');
+    });
+  });
+  expect(hits, '復唱ボタンの一部が別の要素に覆われている（押すと別の操作が起きる）').toEqual([
+    'button',
+    'button',
+    'button',
+    'button',
+  ]);
 });

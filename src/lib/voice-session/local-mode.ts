@@ -103,6 +103,15 @@ const LOCAL_SYNTHETIC_STT_CONFIDENCE = 0.4;
  * よって demo-studio と同じく `notifyReceptionState('selectingTarget')` を起点にする
  * （`kiosk-injection.ts` が同じ罠を先に潰している）。
  *
+ * ## 「いいえ」の後は喋り直さない（既知の行き止まり）
+ *
+ * 復唱を否定すると UI は listening（「お話しください」）へ戻るが、合成駆動は
+ * `selectingTarget` への**遷移**でしか発火せず、この受付ではもう喋らない。**聞いていると
+ * 表示しながら何も届かない**状態になる。タッチは生きているので受付は完遂できるが、
+ * 「果たせないことを言わない」という観点では嘘の応答であり、実 STT（#369/#370）が入るまでの
+ * 暫定である。喋り直させると同じ相手を再確定して相手選択から抜けられなくなるため、
+ * ここでは**行き止まりを選んでいる**（黙って直すより、どちらの不都合かを明示しておく）。
+ *
  * ## 1 セッション 1 回だけ
  *
  * 相手選択へ**再到達**するたびに喋ると、来訪者が「戻る」で選び直そうとした瞬間に
@@ -133,9 +142,14 @@ export function createLocalVoiceSessionFactory(directory: EntityDirectory): Voic
             stt: { locale: 'ja-JP', audio: DEFAULT_VOICE_TRANSPORT_AUDIO_CONFIG },
           },
           {
+            // provider 側の confidence は**判定に使われない**（判定は `deps.sttConfidence`）。
+            // 別の値を書くと、6 行の中に矛盾する confidence が 2 つ並んで次に読む人を誤らせる。
             sttProvider: createMockSttProvider({
-              partials: spoken === '' ? [] : [{ afterChunk: 1, text: spoken, confidence: 0.9 }],
-              final: { afterChunk: 2, text: spoken, confidence: 0.95 },
+              partials:
+                spoken === ''
+                  ? []
+                  : [{ afterChunk: 1, text: spoken, confidence: LOCAL_SYNTHETIC_STT_CONFIDENCE }],
+              final: { afterChunk: 2, text: spoken, confidence: LOCAL_SYNTHETIC_STT_CONFIDENCE },
             }),
             ttsProvider: new MockStreamingTtsProvider(),
             ttsCache: new InMemoryTtsCache(),

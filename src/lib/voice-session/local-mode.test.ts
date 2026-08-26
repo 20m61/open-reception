@@ -78,6 +78,11 @@ describe('createLocalVoiceSessionFactory', () => {
    * 実 Directory を渡す前（空辞書）は候補ゼロで無害だったので、実害はこの配線で初めて出る。
    */
   describe('合成発話は相手選択への到達だけを起点にする (#788)', () => {
+    /** 復唱（= 実際に喋った回数）。`onResolved` は「はい」の後にしか来ないので数に使えない。 */
+    function readbackCount(emit: ReturnType<typeof vi.fn>): number {
+      return emit.mock.calls.filter(([event]) => event.type === 'heardNeedsConfirmation').length;
+    }
+
     async function started(directory: EntityDirectory = DIRECTORY) {
       const onResolved = vi.fn();
       const emit = vi.fn();
@@ -163,16 +168,17 @@ describe('createLocalVoiceSessionFactory', () => {
       const { controller, emit } = await started();
       controller.notifyReceptionState?.('selectingTarget');
       controller.confirmYes();
-      // 来訪者 1 の受付が終わって待機へ戻る。
-      for (const state of ['inputVisitorInfo', 'confirming', 'calling', 'completed', 'idle'] as const) {
-        controller.notifyReceptionState?.(state);
-      }
+      // 来訪者 1 の受付が終わって待機へ戻る。🔴 **`completed` を通さない** ── 通すと
+      // 「再武装の起点を `completed` に変える」変異が素通りする（`idle` を指定していることを
+      // 縛れなくなる）。実際の遷移では `completed` → `idle` だが、ここで見たいのは
+      // **`idle` が起点であること**なので、その 1 点だけを踏む。
+      controller.notifyReceptionState?.('inputVisitorInfo');
+      controller.notifyReceptionState?.('idle');
       // 来訪者 2。
-      const before = emit.mock.calls.filter(([e]) => e.type === 'heardNeedsConfirmation').length;
+      const before = readbackCount(emit);
       controller.notifyReceptionState?.('selectingPurpose');
       controller.notifyReceptionState?.('selectingTarget');
-      const after = emit.mock.calls.filter(([e]) => e.type === 'heardNeedsConfirmation').length;
-      expect(after).toBe(before + 1);
+      expect(readbackCount(emit)).toBe(before + 1);
       await controller.close();
     });
 
@@ -185,15 +191,16 @@ describe('createLocalVoiceSessionFactory', () => {
      * ここを踏まないと、1 回制限を外す変異が**素通りする**（実測で生存した）。
      */
     it('同じ受付の中で相手選択へ再到達しても 2 度目は喋らない', async () => {
-      const { controller, onResolved } = await started();
+      const { controller, emit } = await started();
       controller.notifyReceptionState?.('selectingTarget');
       controller.confirmYes();
       // 待機（idle）を経由しない = 同じ来訪者が「戻る」で選び直そうとしている。
       controller.notifyReceptionState?.('inputVisitorInfo');
       controller.notifyReceptionState?.('selectingTarget');
-      // `confirmYes` 自体は保留候補（消費後は null）も流すので、相手が決まった回数だけ数える。
-      const resolvedTargets = onResolved.mock.calls.filter(([candidate]) => candidate !== null);
-      expect(resolvedTargets).toHaveLength(1);
+      // 🔴 **`onResolved` の回数で数えない。** 復唱を挟むようになった今、2 度目に喋っても
+      // 「はい」が無ければ `onResolved` は増えないので、**喋り直していても空虚に通る**
+      // （実測: 復唱導入前は落ちていた 1 回制限の変異が、導入後は生き残った）。
+      expect(readbackCount(emit)).toBe(1);
       await controller.close();
     });
 
