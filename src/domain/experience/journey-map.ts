@@ -102,6 +102,10 @@ export const VOICE_MODE_TO_EXPERIENCE: Record<VoiceKioskMode, AnyExperienceState
   speaking: null,
   ducked: null,
   fallback: 'speech_unclear',
+  // 不在の相手を名指しされた局面 (#803)。タッチ側で `timeout` が使う `person_unavailable` と
+  // **同じ体験状態**へ写す —— 来訪者から見れば「その人には繋がらない」という同じ事実で、
+  // 経路（音声で名指し / 呼び出して応答が無い）が違うだけである。
+  unavailable: 'person_unavailable',
 };
 
 /**

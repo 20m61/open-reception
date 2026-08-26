@@ -35,6 +35,11 @@ export const VOICE_KIOSK_MODES = [
   'speaking',
   'ducked',
   'fallback',
+  /**
+   * 不在の担当者を名指しされ、その理由を伝えている局面 (#803)。タッチ側の「本日不在」バッジと
+   * 同じ事実を音声でも言う。**選択は進まない** —— 来訪者は部署か代表窓口を選び直す。
+   */
+  'unavailable',
 ] as const;
 
 export type VoiceKioskMode = (typeof VOICE_KIOSK_MODES)[number];
@@ -57,6 +62,11 @@ export type VoiceKioskState = {
   readbackKind?: VoiceReadbackKind;
   /** 復唱を促した低信頼の別（表示ニュアンス切替に使う。#370 の確認理由をそのまま持つ）。 */
   readbackReason?: SttEntityConfirmationReason;
+  /**
+   * 復唱対象が**不在の担当者**か (#803)。true なら「はい」で選択へ進まず、不在を伝える。
+   * 低信頼で「◯◯は本日不在です」と断定しないために、復唱を 1 段挟む経路で使う。
+   */
+  readbackUnavailable?: boolean;
   /** 直近フォールバック源（診断用。PII なし）。 */
   fallbackSource?: VoiceSessionFallbackSource;
   /**
@@ -96,11 +106,27 @@ export type VoiceKioskEvent =
       displayName: string;
       reason: SttEntityConfirmationReason;
       kind?: VoiceReadbackKind;
+      /** 復唱対象が不在の担当者か (#803)。true なら「はい」でも選択へ進まない。 */
+      unavailable?: boolean;
     }
+  /**
+   * 不在の担当者を高信頼で名指しされた (#803)。理由を伝えて別経路へ導く。
+   * 表示名は組織が管理する担当者名で、UI 一時表示のみ（ログ/eval へ出さない）。
+   */
+  | { type: 'heardUnavailable'; displayName: string }
   /** 復唱確認に「はい」（タッチでも音声でも同じ入口）。 */
   | { type: 'confirmYes' }
   /** 復唱確認に「いいえ」（聞き直しへ）。 */
   | { type: 'confirmNo' }
+  /**
+   * 告知を畳む (#803)。受付が先へ進んだので、もう読ませる必要が無くなった。
+   *
+   * 🔴 **`listenStart` で代用しない。** あれは「ユーザー発話の取り込みを開始した」という
+   * **事実の報告**で、transport が何も報告していないのに合成すると `listening`（「お話しください」
+   * ＋パルス）になる。告知の居座りを**別の居座りに置き換える**だけで、しかもそちらは
+   * 「聞いていると表示しながら何も届かない」嘘の応答になる。
+   */
+  | { type: 'noticeDismissed' }
   /** TTS 発話が始まった。 */
   | { type: 'speakStart' }
   /** TTS 発話が終わった（最後まで再生 or resume 後の自然終了）。 */
@@ -167,9 +193,24 @@ export function voiceKioskReducer(state: VoiceKioskState, event: VoiceKioskEvent
         readbackName: event.displayName,
         readbackReason: event.reason,
         readbackKind: event.kind,
+        ...(event.unavailable === true ? { readbackUnavailable: true } : {}),
       };
 
+    case 'heardUnavailable':
+      return { mode: 'unavailable', readbackName: event.displayName };
+
+    case 'noticeDismissed':
+      // 告知の局面でだけ意味を持つ。それ以外は不変（誤って復唱や発話を畳まない）。
+      return state.mode === 'unavailable' ? { mode: 'idle' } : state;
+
     case 'confirmYes':
+      /*
+       * 不在の相手の復唱を確定した場合は、**選択へ進まず不在を伝える** (#803)。
+       * ここで idle へ落とすと、来訪者は「はい」と答えたのに何も起きない画面に取り残される。
+       */
+      if (state.readbackUnavailable === true) {
+        return { mode: 'unavailable', ...(state.readbackName ? { readbackName: state.readbackName } : {}) };
+      }
       // 復唱を確定 → 次ターンのため待機へ（復唱情報はクリア）。
       return { mode: 'idle' };
 
@@ -203,6 +244,7 @@ export type VoiceKioskCaptionKey =
   | 'voice.caption.ducked'
   | 'voice.readback.confirmTarget'
   | 'voice.readback.confirmDepartment'
+  | 'voice.unavailable.staffAbsent'
   | 'voice.fallback.touchNotice';
 
 /**
@@ -227,6 +269,8 @@ export function captionKeyFor(
       return state.readbackKind === 'department'
         ? 'voice.readback.confirmDepartment'
         : 'voice.readback.confirmTarget';
+    case 'unavailable':
+      return 'voice.unavailable.staffAbsent';
     case 'fallback':
       return 'voice.fallback.touchNotice';
     case 'idle':
@@ -255,4 +299,26 @@ export function voiceListeningStage(
 ): VoiceListeningStage | null {
   if (state.mode !== 'listening') return null;
   return (state.interimText ?? '').trim() !== '' ? 'speech' : 'idle';
+}
+
+/**
+ * その局面で**端末が声に出して言うべきこと**があるか (#803)。無ければ null。
+ *
+ * ## なぜ字幕と分けるか
+ *
+ * 字幕（`captionKeyFor`）は**その局面である間ずっと出ている**もので、読み上げは
+ * **その局面へ入った瞬間に 1 度だけ**起きるもの。同じ関数で兼ねると、再描画のたびに
+ * 喋る・局面が続く限り喋り続ける、のどちらかになる。
+ *
+ * ## なぜ不在告知だけか
+ *
+ * listening / speaking / ducked の字幕は**状態表示**であって、読み上げると来訪者の発話に
+ * かぶる。不在告知は**来訪者の問いへの答え**なので、声で返さないと「聞こえていない」に
+ * 見える —— 名前を声で言った来訪者が、画面下部の字幕へ視線を落とすとは限らない。
+ */
+export function announcementFor(
+  state: Pick<VoiceKioskState, 'mode' | 'readbackName'>,
+): { key: VoiceKioskCaptionKey; name: string } | null {
+  if (state.mode !== 'unavailable') return null;
+  return { key: 'voice.unavailable.staffAbsent', name: state.readbackName ?? '' };
 }

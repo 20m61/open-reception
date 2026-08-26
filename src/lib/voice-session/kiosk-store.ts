@@ -70,6 +70,22 @@ export class VoiceKioskStore {
    * controller が `notifyReceptionState` を実装していなければ no-op（実 orchestrator 経路は無影響）。
    */
   notifyReceptionState = (state: ReceptionState): void => {
+    /*
+     * 🔴 **不在告知を居座らせない** (#803)。`unavailable` は「はい/いいえ」を描かないので
+     * **来訪者側に字幕を消す手段が無い**。放置すると「◯◯は現在不在です」が用件入力・確認・
+     * 呼び出し中、場合によっては次の来訪者の待機画面まで残る。
+     *
+     * 消す契機は**受付がその画面から先へ進んだこと**に置く。相手選択に留まっている間は
+     * 消さない（読む時間を奪わない）。ここは告知だけを対象にする —— 復唱には消す手段が
+     * あり、確定待ちという意味があるので、同じ扱いにはしない。
+     *
+     * 🔴 **落とし先は `idle`（何も描かない）。** `listenStart` で畳むと `listening` になり、
+     * 「お話しください」＋パルスが受付完了まで残る —— 居座りを別の居座りに置き換えるだけで、
+     * しかもそちらは何も届かないので**嘘の応答**になる。
+     */
+    if (state !== 'selectingTarget' && this.state.mode === 'unavailable') {
+      this.dispatch({ type: 'noticeDismissed' });
+    }
     this.controller.notifyReceptionState?.(state);
   };
 

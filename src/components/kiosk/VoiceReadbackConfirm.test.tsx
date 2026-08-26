@@ -117,4 +117,45 @@ describe('聞き取り中インジケータ + interim 逐次字幕（#361/#364 �
     expect(render({ mode: 'speaking' })).not.toContain('data-testid="voice-listening-indicator"');
     expect(render({ mode: 'readback', readbackName: '佐藤', readbackReason: 'low_stt_confidence' })).not.toContain('data-testid="voice-interim"');
   });
+
+  /**
+   * 不在の担当者を名指しされたときの応答 (#803)。タッチ側の「本日不在」バッジと**同じ事実**を
+   * 音声側でも言い、**同じ次の手**（部署・代表窓口）へ導く。
+   */
+  describe('不在告知 (#803)', () => {
+    it('誰が不在かと、次に何をすればよいかを両方言う', () => {
+      const html = render({ mode: 'unavailable', readbackName: '佐藤' });
+      expect(html).toContain('data-voice-mode="unavailable"');
+      expect(html).toContain('佐藤');
+      expect(html).toContain('不在');
+      // 🔴 **言いっぱなしにしない。** 理由だけ告げて次の手が無いと、来訪者は待合で止まる。
+      expect(html).toContain('部署');
+      expect(html).toContain('代表窓口');
+    });
+
+    /**
+     * 🔴 **これは端末の発話ではない。** 見ているのは支援技術向けの提示（`aria-live`）だけで、
+     * 声に出すことは `VoiceSessionLayer` → `KioskFlow` → `speak()` の配線が担う
+     * （`voice-directory-wiring.test.ts` が固定）。テスト名で両方を主張しない。
+     */
+    it('字幕は支援技術へ提示される（aria-live）', () => {
+      const html = render({ mode: 'unavailable', readbackName: '佐藤' });
+      expect(html).toContain('data-testid="voice-caption"');
+      expect(html).toContain('aria-live="polite"');
+    });
+
+    it('確認ボタンは出さない（選ばせる相手ではない）', () => {
+      const html = render({ mode: 'unavailable', readbackName: '佐藤' });
+      expect(html).not.toContain('data-testid="voice-readback"');
+      expect(html).not.toContain('data-testid="voice-confirm-yes"');
+    });
+
+    it('locale を跨いで名前と次の手を落とさない', () => {
+      for (const locale of ['en', 'ko', 'zh'] as const) {
+        const html = render({ mode: 'unavailable', readbackName: '佐藤' }, locale);
+        expect(html, locale).toContain('佐藤');
+        expect(html, locale).toContain('data-voice-mode="unavailable"');
+      }
+    });
+  });
 });

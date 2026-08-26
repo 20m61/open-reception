@@ -118,7 +118,14 @@ const LOCAL_SYNTHETIC_STT_CONFIDENCE = 0.4;
  * 同じ相手が再確定し、抜けられなくなる。demo-studio は台本を再生する用途なので毎回
  * 再開してよいが、こちらは実受付の導線に乗るので 1 回で止める。
  */
-export function createLocalVoiceSessionFactory(directory: EntityDirectory): VoiceSessionFactory {
+export function createLocalVoiceSessionFactory(
+  directory: EntityDirectory,
+  /**
+   * 不在の担当者の辞書 (#803)。名指しされたら理由を伝えるために渡す。**選択肢ではない**
+   * ので、合成発話（`spoken`）はこちらからは選ばない。
+   */
+  unavailableDirectory?: EntityDirectory,
+): VoiceSessionFactory {
   const spoken = directory.staff[0]?.displayName ?? '';
   return (emit, hooks) => {
     // `construct` はこの factory 呼び出しの中で同期的に 1 回呼ばれる。その回の
@@ -158,7 +165,12 @@ export function createLocalVoiceSessionFactory(directory: EntityDirectory): Voic
         );
         return orchestrator;
       },
-      { directory, sttConfidence: LOCAL_SYNTHETIC_STT_CONFIDENCE, now: () => Date.now() },
+      {
+        directory,
+        ...(unavailableDirectory ? { unavailableDirectory } : {}),
+        sttConfidence: LOCAL_SYNTHETIC_STT_CONFIDENCE,
+        now: () => Date.now(),
+      },
     )(emit, hooks);
 
     let spokenAlready = false;

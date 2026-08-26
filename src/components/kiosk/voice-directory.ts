@@ -17,12 +17,12 @@
  * そこで在席の担当者だけを解決対象にする。「音声とタッチの等価性」は
  * *タッチで押せるものが音声でも選べる* ことであって、*音声の方が多く選べる* ことではない。
  *
- * ## 不在の相手を名指しされたとき
+ * ## 不在の相手を名指しされたとき (#803)
  *
- * 現状は候補ゼロ → 聞き直し（`bridgeCommittedTurn`）になる。タッチが出す「本日不在です」に
- * 相当する応答は音声側に無く、来訪者は同じ名前を言い直し続けうる。**この非対称は残る**が、
- * 塞ぐべき穴（音声だけが呼べる）とは別問題で、応答の追加は音声 UI の語彙を増やす変更なので
- * 分けて扱う。
+ * 「解決対象から外す」と「存在を知らない」は別である。外しただけだと候補ゼロ → 聞き直しになり、
+ * 来訪者には「聞き取れなかった」に見えて**同じ名前を言い直し続ける**。そこで不在の担当者を
+ * `kioskDirectoryToUnavailableDirectory` として**別の辞書に分けて**渡し、名指しされたことは
+ * 認識して理由を伝えられるようにする。**選択肢としては依然として渡さない。**
  *
  * ## enabled をどう埋めるか
  *
@@ -71,4 +71,39 @@ export function kioskDirectoryToEntityDirectory(directory: Directory): EntityDir
     enabled: true,
   }));
   return { staff, departments };
+}
+
+/**
+ * 受付端末の Directory から、**不在の担当者だけ**の Entity 辞書を作る (#803)。
+ *
+ * `kioskDirectoryToEntityDirectory` と対になる。あちらは「選ばせてよい相手」、こちらは
+ * 「選ばせないが、名指しされたら理由を言う相手」。
+ *
+ * **部署は含めない。** 部署に「不在」は無い（在席は担当者の属性）。
+ *
+ * ただし**これが「営業部は現在不在です」を防いでいる本体ではない**。実際に効いているのは
+ * `kioskDirectoryToEntityDirectory` が部署を**全件**載せることで、部署名の発話は在席側で
+ * 必ず解決され、不在照合まで到達しない（この行を部署入りに変えても振る舞いは変わらない
+ * ＝等価変異であることを実測済み）。**在席側の部署フィルタを足す変更が入ったら、ここが
+ * 効き始める**ので、そのときのために空にしてある。
+ */
+export function kioskDirectoryToUnavailableDirectory(directory: Directory): EntityDirectory {
+  const staff: Staff[] = directory.staff
+    .filter((s) => !s.available)
+    .map((s) => ({
+      id: s.id,
+      displayName: s.displayName,
+      kana: s.kana,
+      aliases: s.aliases,
+      departmentId: s.departmentId,
+      enabled: true,
+      // **在席の意味ではない**（この辞書に居ること自体が「不在」を意味する）。
+      // なお `resolveStaffEntities` が見るのは `enabled` だけで、`available` フィルタは
+      // 解決器にも `search.ts` にも**存在しない** —— この値は今は何も素通りさせていない。
+      // 将来 `available` で絞る変更が入ったときに壊れないための予防値である。
+      available: true,
+      callTargets: [],
+      fallbackStaffIds: [],
+    }));
+  return { staff, departments: [] };
 }

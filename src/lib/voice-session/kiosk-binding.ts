@@ -89,6 +89,11 @@ export type VoiceSessionFactory = (
 export type VoiceSessionBridgeDeps = {
   /** マッチング対象の担当者/部門辞書。 */
   directory: EntityDirectory;
+  /**
+   * 不在の担当者の辞書 (#803)。選択させないが、名指しされたことは認識して理由を伝える。
+   * 省略すれば従来どおり「候補ゼロ → 聞き直し」。
+   */
+  unavailableDirectory?: EntityDirectory;
   /** 発話の STT confidence。関数で text→confidence を返せる（mock は固定でよい）。既定 0.9。 */
   sttConfidence?: number | ((text: string) => number);
   /** 低信頼判定の閾値（省略時は #370 既定）。 */
@@ -108,6 +113,7 @@ function bridge(deps: VoiceSessionBridgeDeps, text: string): BridgeCommittedTurn
   return bridgeCommittedTurn({
     text,
     directory: deps.directory,
+    ...(deps.unavailableDirectory ? { unavailableDirectory: deps.unavailableDirectory } : {}),
     sttConfidence: confidenceFor(deps.sttConfidence, text),
     thresholds: deps.thresholds,
     t: (deps.now ?? Date.now)(),

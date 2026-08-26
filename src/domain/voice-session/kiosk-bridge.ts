@@ -28,6 +28,12 @@ export type BridgeCommittedTurnInput = {
   text: string;
   /** マッチング対象の担当者/部門辞書（Kiosk が保持する directory）。 */
   directory: EntityDirectory;
+  /**
+   * **不在の担当者**の辞書 (#803)。選択させないが、名指しされたことは認識する。
+   *
+   * 省略可 —— 渡さなければ従来どおり「候補ゼロ → 聞き直し」になる（既存呼び出し元は無変更）。
+   */
+  unavailableDirectory?: EntityDirectory;
   /** その発話の STT confidence（Entity confidence とは別軸、#370）。 */
   sttConfidence: number;
   /** 低信頼判定の閾値（省略時は #370 既定）。 */
@@ -57,6 +63,15 @@ export function bridgeCommittedTurn(input: BridgeCommittedTurnInput): BridgeComm
   }
 
   if (resolution.top1 === null) {
+    /*
+     * 在席者に当たらなかった。**不在の相手を名指しされていないか**を見てから聞き直す (#803)。
+     *
+     * これを見ないと、タッチが「本日不在です」と理由を言う場面で音声だけが黙り、
+     * 来訪者には「聞き取れなかった」に見えて**同じ名前を言い直し続ける**。
+     */
+    const unavailable = matchUnavailable(input, thresholds);
+    if (unavailable !== null) return unavailable;
+
     // 候補ゼロ → 復唱できる対象が無いので聞き直し。
     return { event: { type: 'listenStart' }, resolved: null };
   }
@@ -72,5 +87,50 @@ export function bridgeCommittedTurn(input: BridgeCommittedTurnInput): BridgeComm
       kind: resolution.top1.kind === 'department' ? 'department' : 'staff',
     },
     resolved: resolution.top1,
+  };
+}
+
+/**
+ * 不在の担当者に当たったか。当たっていなければ `null`（呼び出し側は従来どおり聞き直す）。
+ *
+ * 🔴 **低信頼で「不在です」と断定しない。** 聞き違えた名前に対して「◯◯は本日不在です」と
+ * 言うのは、このプロジェクトが繰り返し塞いできた「果たせないことを言う」の裏返し —— **事実で
+ * ないことを言う**形になる。断定は高信頼のときだけで、低信頼なら既存の復唱を挟んで来訪者に
+ * 確かめてもらう（`unavailable: true` を載せ、確定しても選択へは進ませない）。
+ *
+ * 🔴 **どちらの場合も `resolved` は null。** タッチが押させない相手を音声が呼べてはいけない。
+ */
+function matchUnavailable(
+  input: BridgeCommittedTurnInput,
+  thresholds: EntityResolutionThresholds,
+): BridgeCommittedTurnResult | null {
+  if (input.unavailableDirectory === undefined) return null;
+
+  const resolution = resolveEntities(input.unavailableDirectory, input.text);
+  if (resolution.top1 === null) return null;
+
+  const confirmation = decideEntityConfirmation(
+    input.sttConfidence,
+    resolution.top3,
+    thresholds,
+    input.t,
+  );
+
+  if (confirmation === null) {
+    return {
+      event: { type: 'heardUnavailable', displayName: resolution.top1.displayName },
+      resolved: null,
+    };
+  }
+
+  return {
+    event: {
+      type: 'heardNeedsConfirmation',
+      displayName: resolution.top1.displayName,
+      reason: confirmation.reason,
+      kind: resolution.top1.kind === 'department' ? 'department' : 'staff',
+      unavailable: true,
+    },
+    resolved: null,
   };
 }

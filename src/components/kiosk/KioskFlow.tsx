@@ -147,7 +147,10 @@ import {
 import {
   voiceCandidateToTarget,
 } from './voice-target-binding';
-import { kioskDirectoryToEntityDirectory } from './voice-directory';
+import {
+  kioskDirectoryToEntityDirectory,
+  kioskDirectoryToUnavailableDirectory,
+} from './voice-directory';
 import type {
   OnResolved,
   VoiceSessionFactory,
@@ -543,7 +546,11 @@ export function KioskFlow({
    */
   const localVoiceSession = useMemo(() => {
     if (!localVoiceEnabled) return undefined;
-    return createLocalVoiceSessionFactory(kioskDirectoryToEntityDirectory(directory));
+    return createLocalVoiceSessionFactory(
+      kioskDirectoryToEntityDirectory(directory),
+      // 不在の相手を名指しされたら理由を言う (#803)。選択肢としては渡していない。
+      kioskDirectoryToUnavailableDirectory(directory),
+    );
   }, [localVoiceEnabled, directory]);
   const effectiveVoiceSession = voiceSession ?? localVoiceSession;
   const [callingStageQueryOverride, setCallingStageQueryOverride] = useState<
@@ -918,6 +925,19 @@ export function KioskFlow({
     }
   }, [data.state, data.target?.label, guidanceIdle, speakSettings, locale]);
 
+  /*
+   * 音声レイヤの告知を実際に声へ出す (#803)。既存の受付ナレーションと**同じ `speak()`**
+   * を使う —— 別経路を作ると、片方だけ音量・言語設定が効かない形になる。
+   */
+  const speakVoiceAnnouncement = useCallback(
+    (phrase: string) => {
+      const language =
+        locale === DEFAULT_LOCALE ? speakSettings.language : LOCALE_LANGUAGE_CODE[locale];
+      speak(phrase, { ...speakSettings, language });
+    },
+    [locale, speakSettings],
+  );
+
   // 受付完了時に在館記録を自動生成し、退館クレデンシャルを発行して完了画面へ提示する (issue #342)。
   // 失敗しても受付完了画面の表示・自動リセットは妨げない（ホットパスを止めない・来訪者をブロックしない）。
   // token/code はここでもログに出さない（PII ではないが秘密）。
@@ -1247,6 +1267,7 @@ export function KioskFlow({
           locale={locale}
           receptionState={data.state}
           onResolved={handleVoiceResolved}
+          onAnnounce={speakVoiceAnnouncement}
         />
       ) : null}
       {inactivitySeconds !== null ? (
