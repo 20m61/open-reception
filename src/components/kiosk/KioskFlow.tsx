@@ -147,6 +147,7 @@ import {
 import {
   voiceCandidateToTarget,
 } from './voice-target-binding';
+import { kioskDirectoryToEntityDirectory } from './voice-directory';
 import type {
   OnResolved,
   VoiceSessionFactory,
@@ -447,19 +448,49 @@ export function KioskFlow({
   const escapeBarRef = useRef<HTMLElement | null>(null);
   const [escapeBarHeight, setEscapeBarHeight] = useState(0);
 
+  /**
+   * 音声レイヤ（復唱確認）を逃げ道バーの上へ逃がすための隙間 (#788)。
+   *
+   * 🔴 **バーの高さではなく「viewport 下端からバー上端までの距離」を測る。** バーは sticky
+   * なので、**内容がスクロールしない画面ではバーは下端に付かない**（`.screen` の下 padding 分だけ
+   * 浮く）。高さ（110px）を使うと 4K の large-display で 38px 食い込み、「はい」の下半分を押すと
+   * **「戻る」が発火する**（実測）。#124 がチャット FAB に課したのと同じ「固定値ではなく実測する」。
+   */
+  const [voiceSafeBottom, setVoiceSafeBottom] = useState(0);
+
   // 逃げ道バーの高さを実測してチャット FAB の持ち上げ量に反映する (#121 H1)。
   // バーの表示/段数が状態で変わるため data.state を依存に再観測する。
   useEffect(() => {
     const el = escapeBarRef.current;
     if (!el || typeof ResizeObserver === 'undefined') {
       setEscapeBarHeight(0);
+      setVoiceSafeBottom(0);
       return;
     }
-    const measure = () => setEscapeBarHeight(el.offsetHeight);
+    const measure = () => {
+      setEscapeBarHeight(el.offsetHeight);
+      // sticky の実位置を見る（スクロール中は下端に貼り付き、非スクロール時は浮く）。
+      setVoiceSafeBottom(Math.max(0, Math.round(window.innerHeight - el.getBoundingClientRect().top)));
+    };
     measure();
     const ro = new ResizeObserver(measure);
     ro.observe(el);
-    return () => ro.disconnect();
+    /*
+     * 🔴 **本文の高さも観測する** (#788)。バーは sticky なので、**バー自身が変わらなくても
+     * 本文が縮めばバーの位置は動く**。担当者を検索で絞ると一覧が縮んでページが overflow
+     * しなくなり、バーが `.screen` の下 padding ぶん浮く ── このとき ResizeObserver（バーのみ）も
+     * scroll（scrollY は 0 のまま）も resize も発火せず、持ち上げ量が古い値のまま残って
+     * 「はい／いいえ」の下端 8px が死ぬ（実測。過渡ではなく定常）。
+     * `measure` が動かすのは fixed 要素だけなので観測ループにはならない。
+     */
+    ro.observe(document.body);
+    window.addEventListener('resize', measure);
+    window.addEventListener('scroll', measure, { passive: true });
+    return () => {
+      ro.disconnect();
+      window.removeEventListener('resize', measure);
+      window.removeEventListener('scroll', measure);
+    };
   }, [data.state]);
 
   // 来訪者が目的選択で選んだカスタムフロー。null のときは既定フローのまま進む。
@@ -502,18 +533,18 @@ export function KioskFlow({
   /**
    * 実 orchestrator のローカル起動 (#372 配線)。**既定はオフ。**
    *
-   * mock STT はここで渡した候補から確定文を返すので、画面に居る担当者を渡す
-   * （渡さないと解決できない候補ばかりになり、確認導線の検証にならない）。
+   * mock STT は渡した Directory の先頭担当者を確定文として返す。
    * 明示注入（`voiceSession` prop = demo-studio 等）が最優先 ── URL フラグが呼び出し側の
    * 意図を上書きしない。
+   *
+   * Entity 解決の入力は**端末が保持する Directory から作る** (#788)。ここが空配列だった
+   * 間、配線は正しいのに音声では誰も選べなかった。素通しにはしない理由（不在の担当者を
+   * 音声だけが呼べる形になる）は `voice-directory.ts` の doc。
    */
   const localVoiceSession = useMemo(() => {
     if (!localVoiceEnabled) return undefined;
-    return createLocalVoiceSessionFactory(
-      { staff: [], departments: [] },
-      directory.staff.filter((s) => s.available).map((s) => s.displayName),
-    );
-  }, [localVoiceEnabled, directory.staff]);
+    return createLocalVoiceSessionFactory(kioskDirectoryToEntityDirectory(directory));
+  }, [localVoiceEnabled, directory]);
   const effectiveVoiceSession = voiceSession ?? localVoiceSession;
   const [callingStageQueryOverride, setCallingStageQueryOverride] = useState<
     Partial<CallingStageThresholds>
@@ -1172,7 +1203,17 @@ export function KioskFlow({
       data-a11y-font-scale={fontScale}
       data-a11y-contrast={a11yHighContrast ? 'high' : undefined}
       data-a11y-reach={a11yLowReach ? 'low' : undefined}
-      style={backgroundStyle}
+      /*
+       * 音声レイヤ（復唱確認）の持ち上げ量を実測値で渡す (#788)。**DOM ノードを増やさない** ──
+       * ラッパを足すと SSR（フラグ未評価）とクライアント初回描画で木が食い違い、hydration が
+       * 壊れる（実測: React error #418）。カスタムプロパティは継承するので、常に描かれる
+       * `<main>` に載せれば子の音声レイヤへ届く。
+       */
+      style={
+        voiceSafeBottom > 0
+          ? ({ ...backgroundStyle, '--kiosk-voice-safe-bottom': `${voiceSafeBottom + 16}px` } as React.CSSProperties)
+          : backgroundStyle
+      }
     >
       {/*
         常設アクセシビリティ支援モードボタン (issue #321 AC「全 kiosk 画面でモード切替が
