@@ -99,7 +99,18 @@ class MemoryCollection<T extends { id: string }> implements Collection<T> {
       // プリミティブ前提（dynamo の値比較と揃える）。一致しなければ更新しない。
       if (cur[key] !== expected[key]) return false;
     }
-    this.items.set(id, clone({ ...cur, ...changes }));
+    /*
+     * 🔴 **`undefined` の changes は「キーごと消す」** (#796)。素の spread だと
+     * `{ note: undefined }` がキーを残すので、**dynamo（REMOVE でキーが消える）と食い違う**。
+     * ローカル開発は memory・本番は dynamo なので、ずれると**本番だけが壊れる**。
+     * `Object.keys` や `in` 判定、JSON 化の結果がバックエンドで変わってしまう。
+     */
+    const next: Record<string, unknown> = { ...cur };
+    for (const [key, value] of Object.entries(changes)) {
+      if (value === undefined) delete next[key];
+      else next[key] = value;
+    }
+    this.items.set(id, clone(next as T));
     return true;
   }
 
