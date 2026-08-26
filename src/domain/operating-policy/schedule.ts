@@ -186,7 +186,15 @@ function validateExceptionDates(raw: unknown, issues: PolicyValidationIssue[]): 
       return;
     }
     if (seenDates.has(date)) {
-      issues.push({ field, message: `duplicate exception date '${date}'（同じ日付は 1 件だけ）` });
+      /*
+       * 🔴 **救済策を書く。** 「1 件だけ」としか言わないと、運用者の合理的な反応は
+       * 「片方の行を消す」＝**受付可能時間を自分で削る**。同じ日に複数の時間帯を設定する
+       * 正しい書き方（1 行にカンマ区切り）を message に載せる。
+       */
+      issues.push({
+        field,
+        message: `duplicate exception date '${date}': 同じ日に複数の時間帯を設定するには 1 行にまとめてカンマで区切る（例 10:00-12:00, 14:00-16:00）`,
+      });
       return;
     }
     seenDates.add(date);
@@ -259,6 +267,24 @@ export function validatePolicyInput(raw: unknown): ValidationResult {
       ...(emergencyContactLabel ? { emergencyContactLabel } : {}),
     },
   };
+}
+
+/**
+ * 保存済みの例外日から**重複している日付**を返す（保存前の検証とは別に、既に入っている
+ * データを運用者へ知らせるため）。
+ *
+ * 🔴 検証を足しても、**既に保存されている重複は直らない**。読み側は先勝ちのままなので、
+ * 臨時営業日に受付が開かない状態が残り続ける。しかも運用者が気づく契機は「たまたま
+ * その拠点の営業時間画面で保存を押したとき」だけで、そのときには当該の日は過ぎている。
+ */
+export function duplicateExceptionDates(exceptions: readonly OperatingException[]): string[] {
+  const seen = new Set<string>();
+  const duplicated = new Set<string>();
+  for (const exception of exceptions) {
+    if (seen.has(exception.date)) duplicated.add(exception.date);
+    else seen.add(exception.date);
+  }
+  return [...duplicated];
 }
 
 type DayRanges = { ranges: TimeRange[] };
