@@ -258,6 +258,36 @@ GitHub の署名で `verified: true` になっている（`gh api repos/:owner/:
 | **`.open-next/`** | fresh checkout には無い。以前は `infra WebStack synth` が SKIP → `--strict` で FAIL になっていたが、**`quality-gate.sh` が自分でビルドするようになった**（#677）。手で `npm run build:open-next` を先に打つ必要はもう無い |
 | **lighthouse** | `lhci` は npm 依存なので `npm ci` で入る。Chrome は `playwright.config.ts` と同じ理由で `quality-gate.sh` が `CHROME_PATH` を補完する |
 
+#### GitHub のレート制限は「別々のバケツ」（2026-08-27 実測）
+
+🔴 **`gh api rate_limit` を見て「5000/5000 だから大丈夫」と判断しない。あれは
+このセッションの消費を映していない。**
+
+| 見るもの | 実測 |
+| --- | --- |
+| `gh api rate_limit` | `limit 5000` / `used 0`。**REST を 3 回叩いた後も 0 のまま**動かない |
+| 実リクエストの `X-Ratelimit-*` ヘッダ | `limit` **12500**・`resource core`・`used` が 1 ずつ増える。**こちらが `gh api` の実際のバケツ**（GitHub App のインストールトークン） |
+| MCP GitHub | **さらに別。** `gh api` が 12500 のバケツで通り続けている最中に `mcp__github__update_pull_request` が `API rate limit already exceeded for user ID 1693436` を約 25 分間返し続けた |
+
+連続サンプルで `used` が **31 → 8 と減った**こともある ＝ REST を捌くトークンも 1 本ではない。
+**単発のサンプルから残量を推定しない。**
+
+つまり **MCP のバケツはセッションの中から観測できない**。空くのを待つ以外に手が無く、
+実測では**当日 25 分**・**前日は翌日まで**かかった。ポーリングで待たない。
+
+##### 対策: draft PR を作らない
+
+MCP のバケツに賭けるしかない操作は**実質 draft 解除だけ**である（PR 作成もマージも #678 /
+#702 で REST 化済み）。そして draft 解除は**クラウドから到達できない**:
+
+- `gh pr ready` … proxy が GraphQL を 403
+- REST `PATCH .../pulls/<n> -f draft=false` … 🔴 **黙って無視**（`draft: true` のまま返る）
+- `mcp__github__update_pull_request` … 唯一通るが上記のとおり落ちうる
+
+PR #819 はこれで**丸一日 draft のまま動かせなかった**。**作らなければ解除も要らない。**
+`scripts/create-pull-request.ts` は `--draft` を**理由付きで拒否する**（機械強制。
+`tests/config/create-pull-request-args.test.ts`）。
+
 #### リモートブランチの削除は 2 経路とも塞がっている（2026-08-27 実測）
 
 🔴 **`git push` 経路の失敗が「成功」に見える。** 拒否は 403 として返らず、こう出る:

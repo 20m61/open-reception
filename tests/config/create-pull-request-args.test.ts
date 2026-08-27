@@ -82,4 +82,29 @@ describe('create-pull-request.ts の引数 (#736)', () => {
     expect(code).not.toBe(0);
     expect(output).toContain('同時に指定できません');
   }, SPAWN_TIMEOUT_MS);
+
+  /**
+   * 🔴 **`--draft` は「渡したのに効かない」の 2 例目だった。**
+   *
+   * `KNOWN_OPTIONS` に `draft` が入っているので `rejectUnknownOptions` を素通りするが、
+   * `readOption('draft')` はどこからも呼ばれておらず、`pullCreateArgs` も draft を
+   * 組み立てない ── **受け取って捨てていた**。#736 で塞いだはずの型が 1 件残っていた。
+   *
+   * しかも draft は**クラウドから解除できない**（2026-08-27 実測）:
+   *
+   * - `gh pr ready` … proxy が GraphQL を 403
+   * - REST `PATCH .../pulls/<n> -f draft=false` … **黙って無視**（`draft: true` のまま返る）
+   * - `mcp__github__update_pull_request` … GitHub App 側のレート制限で落ちうる
+   *
+   * PR #819 はこれで**丸一日 draft のまま動かせなかった**。だから「効かない引数」を
+   * 実装して直すのではなく、**受け付けない**方向で塞ぐ ── 作れてしまうと一方通行になる。
+   */
+  it('🔴 --draft を黙って捨てない（クラウドから解除できないので受け付けない）', () => {
+    const { code, output } = runArgs(['--head', 'x', '--title', 'y', '--body', 'z', '--draft']);
+    expect(code).not.toBe(0);
+    expect(output).toContain('--draft');
+    // 「知らない引数」で終わらせず、**なぜ駄目か**を出す。理由が無いと次に来た人が
+    // KNOWN_OPTIONS へ足し直して同じ袋小路に戻る。
+    expect(output).toContain('解除');
+  }, SPAWN_TIMEOUT_MS);
 });
