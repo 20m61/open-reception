@@ -1,5 +1,5 @@
 import { test, expect, revealStaff } from './kiosk-fixtures';
-import { openMoreIdleActions, loginAsAdmin } from './helpers';
+import { openMoreIdleActions } from './helpers';
 
 /**
  * タッチファースト受付導線の iPad viewport E2E (issue #121 / Epic #119)。
@@ -229,47 +229,4 @@ test('部署の群を開閉してもフォーカスが迷子にならない (#78
   }));
   expect(focusedAfterBack.tag, '群を閉じたらフォーカスが body へ落ちた').not.toBe('BODY');
   expect(focusedAfterBack.testid).toBe(groupTestId);
-});
-
-/**
- * 群の先頭が不在でもフォーカスが迷子にならない (#787)。
- *
- * 🔴 **seed だけでは踏めない入力を、テストの中で作る。** `mock-data.ts` はどの群も先頭が
- * 在席なので、`index === 0` でも `firstSelectableIndex` でも同じ結果になり、**移動先が
- * 消える欠陥を踏めない**（実測で変異が生存した）。**営業時間外は全群がこの形**になるので、
- * 在席状況に依存する分岐は seed に無い限り永久に検出できない。管理画面で 1 人だけ不在にして、
- * テストの中でその世界を作る。
- *
- * 属性で代用しない —— `data-focus-target` を出して unit で縛る形も試したが、**属性と ref が
- * 別の式**になるため ref だけを元へ戻す変異が unit 28 本・e2e 285 本の全部を素通りした。
- * ここは `document.activeElement` を直接見る。
- */
-test('群の先頭が不在でもフォーカスは押せる相手へ行く (#787)', async ({ page, context }) => {
-  // 開発部の先頭（鈴木）を不在にする。後始末で必ず戻す。
-  const admin = await context.newPage();
-  await loginAsAdmin(admin);
-  await admin.goto('/admin/staff');
-  const row = admin.getByTestId('staff-row').filter({ hasText: '鈴木' }).first();
-  await expect(row.getByTestId('staff-availability')).toHaveText('在席');
-  await row.getByTestId('staff-availability-toggle').click();
-  await expect(row.getByTestId('staff-availability')).toHaveText('不在');
-
-  try {
-    await page.goto('/kiosk');
-    await page.getByTestId('start-reception').click();
-    await page.getByTestId('purpose-meeting').click();
-    await revealStaff(page, 'staff-staff-takahashi');
-
-    const focused = await page.evaluate(() => ({
-      tag: document.activeElement?.tagName ?? null,
-      testid: document.activeElement?.getAttribute('data-testid') ?? null,
-    }));
-    // 先頭（鈴木）は不在で押せない。押せる先頭（高橋）へ行く。
-    expect(focused.tag, '先頭が不在の群を開いたらフォーカスが body へ落ちた').not.toBe('BODY');
-    expect(focused.testid).toBe('staff-staff-takahashi');
-  } finally {
-    await row.getByTestId('staff-availability-toggle').click();
-    await expect(row.getByTestId('staff-availability')).toHaveText('在席');
-    await admin.close();
-  }
 });

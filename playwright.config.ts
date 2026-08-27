@@ -99,7 +99,7 @@ const chromiumLaunchOptions = {
 const FLOW_MUTATING_SPECS = /(admin-reception-flows|kiosk-a11y-tenant-toggle)\.spec\.ts$/;
 
 /** 上記の後に**単独で**走らせるフロー変更 spec（`flow-mutation` と同時に走らせない）。 */
-const FLOW_MUTATING_KIOSK_SPECS = /kiosk-flow-integration\.spec\.ts$/;
+const FLOW_MUTATING_KIOSK_SPECS = /(kiosk-flow-integration|kiosk-group-focus-absence)\.spec\.ts$/;
 
 // soak（長時間連続稼働）テストは `tests/e2e/soak/` に隔離し、専用の playwright.soak.config.ts
 // （`npm run test:soak*`）からのみ実行する (issue #317)。本設定（既定 `npm run test:e2e` /
