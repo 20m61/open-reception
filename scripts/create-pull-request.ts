@@ -52,7 +52,34 @@ function run(cmd: string, args: string[]): string {
 }
 
 /** 受け付ける引数。**ここに無いキーはエラーにする**（下記 `rejectUnknownOptions`）。 */
-const KNOWN_OPTIONS = ['head', 'base', 'title', 'body', 'body-file', 'draft'] as const;
+const KNOWN_OPTIONS = ['head', 'base', 'title', 'body', 'body-file'] as const;
+
+/**
+ * 🔴 **`--draft` は受け付けない。作れてしまうと一方通行になる。**
+ *
+ * かつて `draft` は `KNOWN_OPTIONS` に入っていたが `readOption('draft')` はどこからも
+ * 呼ばれず、`pullCreateArgs` も draft を組み立てていなかった ── つまり **受け取って捨て、
+ * 非 draft の PR を作っていた**。#736 で塞いだ「渡したのに効かない」の 2 例目である。
+ *
+ * 実装して直さないのは、**クラウドから draft を解除できない**ため（2026-08-27 実測）:
+ *
+ * - `gh pr ready` … proxy が GraphQL を 403 で止める
+ * - REST `PATCH .../pulls/<n> -f draft=false` … **黙って無視**（`draft: true` のまま返る）
+ * - `mcp__github__update_pull_request` … 唯一通る経路だが GitHub App 側のレート制限で
+ *   落ちうる。`gh api rate_limit` は**別のバケツ**を映すので事前に判定できない
+ *
+ * PR #819 はこれで丸一日 draft のまま動かせなかった。**作らなければ解除も要らない。**
+ * 詳細は `docs/cloud-dev-environment.md`「GitHub のレート制限は別々のバケツ」。
+ */
+function rejectDraftOption(): void {
+  if (process.argv.slice(2).some((a) => a === '--draft' || a.startsWith('--draft='))) {
+    throw new Error(
+      '--draft は受け付けません。クラウドセッションからは draft を解除できないため' +
+        '（gh の GraphQL は 403 / REST の draft=false は黙って無視される / MCP は' +
+        'レート制限で落ちうる）、draft で作ると PR が動かせなくなります。非 draft で作成してください。',
+    );
+  }
+}
 
 /**
  * 知らない引数で**黙って先へ進まない** (#736 で実際に踏んだ)。
@@ -94,6 +121,9 @@ function main(): number {
   let title: string | undefined;
   let body: string;
   try {
+    // draft を先に見る。`rejectUnknownOptions` に任せると「知らない引数です」で終わり、
+    // **なぜ駄目か**が伝わらない ―― 次に来た人が KNOWN_OPTIONS へ足し直して同じ袋小路へ戻る。
+    rejectDraftOption();
     rejectUnknownOptions();
     head = readOption('head');
     base = readOption('base') ?? 'main';
