@@ -172,8 +172,13 @@ BLOCKER 3 件はすべて**直前の自分の修正が作った**もので、い
 ## Claude Code 設定（`.claude/`）
 
 - `settings.json`（**追跡・チーム共通**）… このワークフローが前提とするプラグイン
-  （`enabledPlugins`）と、読み取り専用コマンドの共有許可リストを宣言。個人固有の許可・
-  env は各自の `settings.local.json`（gitignore 済）へ。`/fewer-permission-prompts` で追記可。
+  （`enabledPlugins`）と、**ループが機械的に必要とするコマンド**の共有許可リストを宣言。
+  大半は読み取り専用だが、`git worktree add/remove` や `git push origin --delete`（マージ後の
+  ブランチ削除）のように**規約が実行を要求する書き込み系も入る** —— ここに無いと
+  クラウドセッションが後始末を完了できない。個人固有の許可・env は各自の
+  `settings.local.json`（gitignore 済）へ。`/fewer-permission-prompts` で追記可。
+  🔴 **クラウドの `settings.local.json` はコンテナと一緒に消える。** 毎セッション効かせたい
+  許可は**追跡側に入れる**こと（`docs/cloud-dev-environment.md`「引き継がれるもの」）。
 - `agents/loop-track.md` … 並行トラック実装用の subagent（ループ規約を内蔵。`Agent` の
   `subagent_type: "loop-track"` + `isolation: "worktree"` で使う）。
 - `rules/` … パススコープ付き制約（admin/platform API 認可、PII/secret 最小化、TDD）。

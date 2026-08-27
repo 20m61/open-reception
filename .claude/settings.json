@@ -89,6 +89,7 @@
       "Bash(git switch:*)",
       "Bash(git worktree add:*)",
       "Bash(git worktree remove:*)",
+      "Bash(git push origin --delete:*)",
       "Bash(aws cloudformation list-stacks:*)",
       "Bash(aws cloudformation describe-stacks:*)",
       "Bash(aws sts get-caller-identity)"
