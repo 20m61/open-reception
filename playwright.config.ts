@@ -99,7 +99,21 @@ const chromiumLaunchOptions = {
 const FLOW_MUTATING_SPECS = /(admin-reception-flows|kiosk-a11y-tenant-toggle)\.spec\.ts$/;
 
 /** 上記の後に**単独で**走らせるフロー変更 spec（`flow-mutation` と同時に走らせない）。 */
-const FLOW_MUTATING_KIOSK_SPECS = /(kiosk-flow-integration|kiosk-group-focus-absence)\.spec\.ts$/;
+const FLOW_MUTATING_KIOSK_SPECS = /kiosk-flow-integration\.spec\.ts$/;
+
+/**
+ * 担当者の**在席状態**を書き換える spec (#787)。**専用 project へ単独で隔離する。**
+ *
+ * 🔴 **`flow-mutation-kiosk` へ相乗りさせてはいけない。** `fullyParallel` は config 全体に
+ * 効くので、**同じ project の中でも並行実行される**。実際 `kiosk-flow-integration` と
+ * 重ねたところ、あちらが既定スコープへ作るカスタムフローで組込みの `purpose-meeting` が
+ * DOM から消え、**4 回中 2 回タイムアウトした**（`retries` が吸収して緑のままだった）。
+ * FLOW_MUTATING_SPECS の注記が書き残しているのと**まったく同じ失敗**である。
+ *
+ * `test.describe.serial` でも足りない —— あれは describe 内の順序を縛るだけで、
+ * 同 project の**別ファイル**との並行は止まらない。同居者を 0 にするしかない。
+ */
+const STAFF_AVAILABILITY_MUTATING_SPECS = /kiosk-group-focus-absence\.spec\.ts$/;
 
 // soak（長時間連続稼働）テストは `tests/e2e/soak/` に隔離し、専用の playwright.soak.config.ts
 // （`npm run test:soak*`）からのみ実行する (issue #317)。本設定（既定 `npm run test:e2e` /
@@ -148,6 +162,7 @@ const PLATFORM_SPECS = /(platform-[a-z0-9-]+|capture-screens-platform)\.spec\.ts
 const DEFAULT_TEST_IGNORE = [
   FLOW_MUTATING_SPECS,
   FLOW_MUTATING_KIOSK_SPECS,
+  STAFF_AVAILABILITY_MUTATING_SPECS,
   PRISTINE_STATE_SPECS,
   PLATFORM_SPECS,
   SOAK_SPECS,
@@ -240,6 +255,15 @@ export default defineConfig({
       use: { browserName: 'chromium', ...iPadPortraitViewport, launchOptions: chromiumLaunchOptions },
       testMatch: FLOW_MUTATING_KIOSK_SPECS,
       dependencies: ['flow-mutation'],
+    },
+    {
+      // **在席状態を書き換える spec の終端 project** (#787)。同居者を作らないことが要件なので、
+      // spec が 1 本でも専用 project にする（詳細は STAFF_AVAILABILITY_MUTATING_SPECS の注記）。
+      // 壁時計の増分は約 4 秒。
+      name: 'staff-availability-mutation',
+      use: { browserName: 'chromium', ...iPadPortraitViewport, launchOptions: chromiumLaunchOptions },
+      testMatch: STAFF_AVAILABILITY_MUTATING_SPECS,
+      dependencies: ['flow-mutation-kiosk'],
     },
     // platform は developer 専用サーバ（別ポート・別プロセス）へ向ける。実サーバを起こせない
     // 実環境向け実行（PLAYWRIGHT_BASE_URL 指定）では passwordRole を制御できないため project ごと落とす

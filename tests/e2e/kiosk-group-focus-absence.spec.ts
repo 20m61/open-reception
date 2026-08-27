@@ -6,9 +6,17 @@
  * 🔴 **このテストは seed の在席状態をグローバルに書き換える。** `kiosk-touch-first.spec.ts`
  * に置いたところ、`--workers=4` で **3/3 の確率で無関係な受付導線 spec を落とした**
  * （鈴木が不在の 8〜11 秒間に他 spec が `staff-staff-suzuki` を押すと、不在カードは
- * `aria-disabled` の div なので click が黙って no-op になる）。`playwright.config.ts` の
- * `FLOW_MUTATING_KIOSK_SPECS` が**まさにこの型のために**用意されている隔離機構なので、
- * そこへ載せる（単独・直列で走る）。
+ * `aria-disabled` の div なので click が黙って no-op になる）。
+ *
+ * 🔴 **既存の `flow-mutation-kiosk` へ相乗りさせるのでは足りない。** `fullyParallel` は
+ * config 全体に効くので**同じ project の中でも並行実行される**。実際そこへ載せたところ、
+ * 同居する `kiosk-flow-integration` が作るカスタムフローで組込みの `purpose-meeting` が
+ * DOM から消え、**4 回中 2 回タイムアウトした**（`retries` が吸収して緑のままだった）。
+ * よって `staff-availability-mutation` という**専用の終端 project**へ隔離してある ——
+ * 直列だから安全なのではなく、**同居者が 0 だから**安全である。
+ *
+ * ⚠️ **このファイルに 2 本目を足すときは `test.describe.serial` を巻くこと。** 足した瞬間に
+ * 自分同士が並行し、両方が同じ担当者の在席を奪い合う。
  *
  * ## なぜ後始末が `afterEach` なのか
  *
@@ -30,10 +38,16 @@ const ABSENT_STAFF = '鈴木';
 /** 管理 API 用の独立コンテキスト。kiosk の cookie jar に管理セッションを載せない。 */
 async function adminPage(browser: import('@playwright/test').Browser) {
   const context = await browser.newContext();
-  const page = await context.newPage();
-  await loginAsAdmin(page);
-  await page.goto('/admin/staff');
-  return { context, page };
+  try {
+    const page = await context.newPage();
+    await loginAsAdmin(page);
+    await page.goto('/admin/staff');
+    return { context, page };
+  } catch (error) {
+    // ここで投げると呼び出し側の close へ到達しない。ワーカー終了まで context が残る。
+    await context.close();
+    throw error;
+  }
 }
 
 async function setAvailability(
@@ -61,6 +75,14 @@ test.afterEach(async ({ browser }) => {
 test('群の先頭が不在でもフォーカスは押せる相手へ行く (#787)', async ({ page, browser }) => {
   const { context, page: admin } = await adminPage(browser);
   try {
+    /*
+     * 🔴 **前提を主張してから変える。** `setAvailability` は希望状態なら早期 return するので、
+     * これが無いと**鈴木が既に不在だった世界**（前回の後始末が失敗した等）を検出できない。
+     */
+    await expect(
+      admin.getByTestId('staff-row').filter({ hasText: ABSENT_STAFF }).first().getByTestId('staff-availability'),
+      '前提が崩れている: 開始時点で在席でない',
+    ).toHaveText('在席');
     await setAvailability(admin, ABSENT_STAFF, '不在');
   } finally {
     await context.close();
