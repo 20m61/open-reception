@@ -1,4 +1,4 @@
-import { test, expect } from './kiosk-fixtures';
+import { test, expect, revealStaff } from './kiosk-fixtures';
 
 /**
  * 実効構成の一括取得へ切り替えた受付端末の E2E (issue #422 increment 1 / #419)。

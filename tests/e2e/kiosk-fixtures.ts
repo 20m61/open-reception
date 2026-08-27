@@ -53,3 +53,44 @@ export async function expectCheckinState(page: Page, state: string): Promise<voi
 }
 
 export { expect, type Page };
+
+/**
+ * 担当者カードを出す (#787)。
+ *
+ * 相手選択画面は**未入力時に部署カードを出す**ようになった（担当者が数十人のテナントで
+ * ファーストビューが埋まるのを避けるため）。担当者カードへ到達するには部署を 1 つ開く。
+ *
+ * 🔴 **spec 側で `staff-group-*` を直接押さない。** どの担当者がどの部署に居るかは
+ * fixture の都合で変わる。ここで「その担当者を含む群を開く」まで面倒を見る ——
+ * spec は「誰を選ぶか」だけを書けばよい。
+ *
+ * 検索経路は群を跨ぐので、こちらは**検索でも到達できる**ことの裏返しでもある。
+ */
+export async function revealStaff(page: Page, staffTestId: string): Promise<void> {
+  const card = page.getByTestId(staffTestId);
+  if (await card.isVisible().catch(() => false)) return;
+
+  /*
+   * 🔴 **検索中は群を開かない** (#787)。検索は群を跨いで結果を直接出すので、ここで群を
+   * 開くと「検索したら結果がそのまま出る」という**検索系 spec の主題を吸収してしまう**
+   * （独立レビューの実測: 群カードを検索中も出す変異が、このヘルパ越しだと素通りする）。
+   */
+  const query = await page.getByTestId('staff-search').inputValue().catch(() => '');
+  if (query.trim() !== '') {
+    throw new Error(`検索中に revealStaff を呼んでいます（${staffTestId}）。検索結果は群を跨いで直接出ます`);
+  }
+
+  const groups = page.getByTestId('staff-groups');
+  if (!(await groups.isVisible().catch(() => false))) {
+    throw new Error(`${staffTestId} が見えず、部署の群も出ていません`);
+  }
+
+  const buttons = await groups.locator('button[data-testid^="staff-group-"]').all();
+  for (const button of buttons) {
+    await button.click();
+    if (await card.isVisible().catch(() => false)) return;
+    // この群には居なかった。部署を選び直して次を試す。
+    await page.getByTestId('staff-group-back').click();
+  }
+  throw new Error(`${staffTestId} がどの部署にも見つかりませんでした`);
+}

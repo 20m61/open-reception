@@ -1,4 +1,4 @@
-import { test, expect, type Page } from './kiosk-fixtures';
+import { test, expect, type Page, revealStaff } from './kiosk-fixtures';
 
 /**
  * 受付端末のフォールバック継続ゲート E2E (issue #125 / Epic #119)。
@@ -15,6 +15,7 @@ import { test, expect, type Page } from './kiosk-fixtures';
 async function runReceptionToComplete(page: Page) {
   await page.getByTestId('start-reception').click();
   await page.getByTestId('purpose-meeting').click();
+  await revealStaff(page, 'staff-staff-sato');
   await page.getByTestId('staff-staff-sato').click();
   await page.getByTestId('visitor-name').fill('来客 四郎');
   await page.getByTestId('to-confirm').click();

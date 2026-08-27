@@ -1,4 +1,4 @@
-import { test, expect, type Locator } from './kiosk-fixtures';
+import { test, expect, type Locator, revealStaff } from './kiosk-fixtures';
 
 // #778 の主対象は iPad landscape。`chromium-ipad` project は名前に反して縦向き
 // (810x1080) なので明示する。破線の可読性は視距離が伸びる横向きの方が厳しい。
@@ -22,6 +22,7 @@ async function advanceToVisitorInfo(page: import('@playwright/test').Page) {
   await page.goto('/kiosk');
   await page.getByTestId('start-reception').click();
   await page.getByTestId('purpose-meeting').click();
+  await revealStaff(page, 'staff-staff-sato');
   await page.getByTestId('staff-staff-sato').click();
   await expect(page.getByTestId('visitor-name')).toBeVisible();
 }
@@ -83,6 +84,7 @@ test('ハイコントラストでも「押せない」の意味が残る (#778 A
 
   await page.getByTestId('start-reception').click();
   await page.getByTestId('purpose-meeting').click();
+  await revealStaff(page, 'staff-staff-sato');
   await page.getByTestId('staff-staff-sato').click();
   const cta = page.getByTestId('to-confirm');
   await expect(cta).toBeDisabled();
@@ -114,6 +116,7 @@ test('「処理中」は「押せない」と同じ見た目にしない (#792)'
   await page.goto('/kiosk');
   await page.getByTestId('start-reception').click();
   await page.getByTestId('purpose-meeting').click();
+  await revealStaff(page, 'staff-staff-sato');
   await page.getByTestId('staff-staff-sato').click();
   await page.getByTestId('visitor-name').fill('来客 一郎');
   await page.getByTestId('to-confirm').click();

@@ -1,4 +1,5 @@
 import { test, expect, type Page } from '@playwright/test';
+import { revealStaff } from './kiosk-fixtures';
 import { establishKioskSession, loginAsAdmin } from './helpers';
 
 /**
@@ -33,6 +34,9 @@ test.describe('受付端末（kiosk）', () => {
     await page.getByTestId('purpose-meeting').click().catch(() => {});
     await shot(page, 'kiosk-03-target');
 
+    // 段階開示 (#787) で担当者カードは部署を開かないと出ない。撮影は best-effort なので
+    // ここも握り潰すが、**群を開く手順は通す**（開かないと以降の画面が撮れない）。
+    await revealStaff(page, 'staff-staff-sato').catch(() => {});
     await page.getByTestId('staff-staff-sato').click().catch(() => {});
     await shot(page, 'kiosk-04-visitor-info');
 

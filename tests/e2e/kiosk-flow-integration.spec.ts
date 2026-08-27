@@ -1,4 +1,5 @@
 import { test, expect } from '@playwright/test';
+import { revealStaff } from './kiosk-fixtures';
 import { establishKioskSession, loginAsAdmin } from './helpers';
 
 /**
@@ -135,6 +136,7 @@ test('カスタム受付フローの画面にも逃げ道バーが常設され�
   // 一覧の先頭が他 spec の作ったフローになりうる（実際 `並び替えA-*` を掴んで
   // custom-visitor-view に辿り着けず落ちた）。**自分が作ったフローを名前で選ぶ。**
   await page.getByTestId('purpose-option').filter({ hasText: name }).click();
+  await revealStaff(page, 'staff-staff-sato');
   await page.getByTestId('staff-staff-sato').click();
 
   // カスタム来訪者情報入力（inputVisitorInfo）。ここが最も戻りたくなる画面。
@@ -184,6 +186,7 @@ test('English を選ぶとカスタム受付フローの画面も英語になる
   await expect(page.getByRole('heading', { name: 'Please select the reason for your visit' })).toBeVisible();
 
   await page.getByTestId('purpose-option').first().click();
+  await revealStaff(page, 'staff-staff-sato');
   await page.getByTestId('staff-staff-sato').click();
 
   // 入力フォームの見出しと主 CTA が英語。
@@ -220,6 +223,7 @@ test('カスタム受付フローの主 CTA も「押せない」を視覚語彙
   await page.getByTestId('start-reception').click();
   await expect(page.getByTestId('purpose-selector')).toBeVisible({ timeout: 15_000 });
   await page.getByTestId('purpose-option').first().click();
+  await revealStaff(page, 'staff-staff-sato');
   await page.getByTestId('staff-staff-sato').click();
   await expect(page.getByTestId('visitor-info-form')).toBeVisible({ timeout: 15_000 });
 

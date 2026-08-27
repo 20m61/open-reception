@@ -1,4 +1,4 @@
-import { test, expect, type Page } from './kiosk-fixtures';
+import { test, expect, type Page, revealStaff } from './kiosk-fixtures';
 
 /**
  * iPad 受付 MVP フローの E2E smoke test (issue #21)。
@@ -14,6 +14,7 @@ async function advanceToConfirm(page: Page, staffTestId: string, name = '来客 
   await page.goto(`/kiosk${query}`);
   await page.getByTestId('start-reception').click();
   await page.getByTestId('purpose-meeting').click();
+  await revealStaff(page, staffTestId);
   await page.getByTestId(staffTestId).click();
   await page.getByTestId('visitor-name').fill(name);
   await page.getByTestId('to-confirm').click();
@@ -45,6 +46,7 @@ test('接続画面は無操作で待機へ自動復帰する（「操作不要�
   await page.goto('/kiosk?inactivityMs.connected=600');
   await page.getByTestId('start-reception').click();
   await page.getByTestId('purpose-meeting').click();
+  await revealStaff(page, 'staff-staff-sato');
   await page.getByTestId('staff-staff-sato').click();
   await page.getByTestId('visitor-name').fill('来客 一郎');
   await page.getByTestId('to-confirm').click();

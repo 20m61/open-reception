@@ -1,4 +1,5 @@
 import { test, expect, type Page, type APIRequestContext } from '@playwright/test';
+import { revealStaff } from './kiosk-fixtures';
 import { loginAsAdmin } from './helpers';
 
 /**
@@ -96,6 +97,7 @@ test.describe('理想ジャーニー: 発行→エンロール→受付→担当
         if (await purposeMeeting.isVisible()) {
           // 既定フロー: 来訪者が担当者（staff-sato=connected で決定的）に接続するまで通す。
           await purposeMeeting.click();
+          await revealStaff(device, 'staff-staff-sato');
           await device.getByTestId('staff-staff-sato').click();
           await device.getByTestId('visitor-name').fill('来客 太郎');
           await device.getByTestId('to-confirm').click();
