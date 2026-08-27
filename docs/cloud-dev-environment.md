@@ -254,9 +254,27 @@ GitHub の署名で `verified: true` になっている（`gh api repos/:owner/:
 | **VRT の自動生成** | `playwright.config.ts` で `updateSnapshots: 'none'` にしてある。既定の `'missing'` は欠落分をその場の描画で自動生成し、`retries: 1` と組み合わさると**1 回目が書いて落ち retry が通る**ため、レビューされていない描画が「正」として焼き付く。取り直すときは `--update-snapshots` を明示し、**差分を見てからコミットする** |
 | **`gh` の GraphQL**（routine セッション） | 🔴 **PR レビュー用の pinned な操作セットしか通らない。** `gh pr list` / `gh pr view` に加えて **`gh pr create`（2026-08-10 実測 / #678）も `gh pr merge`（2026-08-18・PR #701 で実測 / #702）も 403**。PR #665 の時点では作成もマージも通っていた ―― **通っていたことを根拠に残さない**。作成は `npx tsx scripts/create-pull-request.ts --head … --title …`、マージは `npx tsx scripts/merge-pull-request.ts --number …`、照会は `gh api repos/{owner}/{repo}/…`（すべて REST のみ） |
 | **`gh` の GraphQL**（web セッション） | ⚠️ **未検証。** 上の 403 はすべて **routine セッション**での観測で、人が claude.ai/code で開くインタラクティブなセッションで同じ制限がかかるかは**測っていない**。§0 の手順 3 で判別する。**どちらであれ REST 経路（上記スクリプト）は動く**ので、迷ったらそちらを使う |
-| **`git push`** | セッションの作業ブランチに対してのみ可。force push と remote 削除は不可（非 fast-forward を作らない運用で回避する）。**マージ後のブランチ削除もできない**（`git push origin --delete` が HTTP 403）ので、ローカルの後始末として扱う |
+| **`git push`** | セッションの作業ブランチに対してのみ可。force push と remote 削除は不可（非 fast-forward を作らない運用で回避する）。**マージ後のブランチ削除もできない**ので、ローカルの後始末として扱う（下記） |
 | **`.open-next/`** | fresh checkout には無い。以前は `infra WebStack synth` が SKIP → `--strict` で FAIL になっていたが、**`quality-gate.sh` が自分でビルドするようになった**（#677）。手で `npm run build:open-next` を先に打つ必要はもう無い |
 | **lighthouse** | `lhci` は npm 依存なので `npm ci` で入る。Chrome は `playwright.config.ts` と同じ理由で `quality-gate.sh` が `CHROME_PATH` を補完する |
+
+#### リモートブランチの削除は 2 経路とも塞がっている（2026-08-27 実測）
+
+🔴 **`git push` 経路の失敗が「成功」に見える。** 拒否は 403 として返らず、こう出る:
+
+```
+send-pack: unexpected disconnect while reading sideband packet
+fatal: the remote end hung up unexpectedly
+Everything up-to-date          ← ⚠️ 最後の 1 行だけ読むと消えたように見える
+```
+
+REST 経路も塞がっている（`gh api -X DELETE repos/{owner}/{repo}/git/refs/heads/<branch>` →
+**HTTP 403 `Write access to this GitHub API path is not permitted through this proxy.`**）。
+**2 通りで確かめた結果、クラウドから ref は消せない。**
+
+`.claude/settings.json` に `Bash(git push origin --delete:*)` を入れてあるが、これが外すのは
+**ホスト側の許可プロンプト**だけで、proxy の拒否には効かない。**効くのはローカル macOS だけ**である。
+削除できたと報告する前に `git ls-remote --heads origin | grep <branch>` で消えたことを確かめること。
 
 ## 5. 最初のクラウドセッションでやること（受入確認）
 
