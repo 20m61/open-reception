@@ -43,6 +43,17 @@ describe('guard-destructive.sh がブロックする', () => {
     ['rm -rf /root', 'mass-delete'],
     ['git push --force origin main', 'force push'],
     ['git push -f origin production', 'force push'],
+    // 保護ブランチの**リモート削除**。force push と別の入口で、同じだけ壊せる。
+    // `.claude/settings.json` が `Bash(git push origin --delete:*)` を auto-allow して
+    // いるため、ここで止めないと **プロンプト無しで main を消せる**（2026-08-27 の
+    // 自動セキュリティレビュー指摘）。git は同じ操作に 4 通りの書き方を許すので全部塞ぐ。
+    ['git push origin --delete main', 'protected branch'],
+    ['git push --delete origin main', 'protected branch'],
+    ['git push origin -d master', 'protected branch'],
+    ['git push origin --delete refs/heads/production', 'protected branch'],
+    // コロン前置の refspec も削除である（`--delete` を探すだけでは素通りする）。
+    ['git push origin :main', 'protected branch'],
+    ['git push origin :refs/heads/release', 'protected branch'],
     ['git reset --hard origin/main', 'reset --hard'],
     ['cat ~/.aws/credentials', 'credential'],
     ['git commit --no-verify -m x', '--no-verify'],
@@ -64,6 +75,14 @@ describe('guard-destructive.sh が通す（誤検出しない）', () => {
     // 保護ブランチ以外への force push は通常のトピックブランチ運用。
     'git push --force origin feature/my-branch',
     'git push origin main',
+    // マージ後のトピックブランチ削除は**規約が要求する後始末**（CLAUDE.md「マージ: squash +
+    // --delete-branch」）。ここを止めるとガードが後始末そのものを妨げる。
+    'git push origin --delete feat/target-department-progressive',
+    'git push origin --delete docs/test-hygiene-rules',
+    'git push origin :claude/handoff-docs-resume-ivzxq2',
+    // 保護ブランチ名を**含む**だけのトピックブランチは別物。前方一致で巻き込まない。
+    'git push origin --delete fix/main-menu-overflow',
+    'git push origin --delete release-notes-draft',
     './scripts/quality-gate.sh --full',
     'npm ci',
     // 危険な文字列が引用符の中にあるだけのケース（走査前に引用符を落とす）。

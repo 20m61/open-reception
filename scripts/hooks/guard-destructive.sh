@@ -63,6 +63,29 @@ if printf '%s' "$scan" | grep -Eq 'git[[:space:]]+push([[:space:]]+[^&|;]+)*[[:s
   block "force push to protected branch (main/master/production/release)"
 fi
 
+# 2b. 保護ブランチの**リモート削除**。
+#
+# 🔴 **force push を止めるだけでは足りない。** 削除は別の入口で、同じだけ壊せる。
+# `.claude/settings.json` が後始末のために `Bash(git push origin --delete:*)` を
+# auto-allow しているので、**ここで止めないとプロンプト無しで main を消せる**
+# （2026-08-27 の自動セキュリティレビューが指摘。許可を足した PR #822 の直後）。
+#
+# git は同じ操作に複数の書き方を許すため、**全部塞ぐ**:
+#   git push origin --delete main / git push --delete origin main
+#   git push origin -d main       / git push origin :main
+#   refs/heads/ 前置つきの各形
+#
+# ブランチ名は**終端を縛る**（`\b` ではなく「区切りか行末」）。`\b` だと
+# `fix/main-menu-overflow` や `release-notes-draft` のような**保護ブランチ名を含むだけの
+# トピックブランチ**を巻き込み、規約が要求する後始末をガードが妨げる。
+PROTECTED_REF='(refs/heads/)?(main|master|production|release)([[:space:]]|$)'
+if printf '%s' "$scan" | grep -Eq "git[[:space:]]+push([[:space:]]+[^&|;]+)*[[:space:]]+(--delete|-d)([[:space:]]+[^&|;]+)*[[:space:]]+${PROTECTED_REF}"; then
+  block "remote delete of a protected branch (main/master/production/release)"
+fi
+if printf '%s' "$scan" | grep -Eq "git[[:space:]]+push([[:space:]]+[^&|;]+)*[[:space:]]+:${PROTECTED_REF}"; then
+  block "remote delete of a protected branch (main/master/production/release)"
+fi
+
 # 3. 保護追跡ブランチに対する reset --hard。
 if printf '%s' "$scan" | grep -Eq 'git[[:space:]]+reset[[:space:]]+--hard[[:space:]]+(origin/)?(main|master|production|release)\b'; then
   block "git reset --hard against a protected tracking branch"
