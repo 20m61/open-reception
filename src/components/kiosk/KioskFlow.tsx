@@ -1240,7 +1240,12 @@ export function KioskFlow({
        */
       style={
         voiceSafeBottom > 0
-          ? ({ ...backgroundStyle, '--kiosk-voice-safe-bottom': `${voiceSafeBottom + 16}px` } as React.CSSProperties)
+          ? ({
+              ...backgroundStyle,
+              '--kiosk-voice-safe-bottom': `${voiceSafeBottom + 16}px`,
+              // 逃げ道バーの下に内容を取り残さない (#787)。実測した高さ分の余白を内容側へ。
+              '--kiosk-content-safe-bottom': `${escapeBarHeight}px`,
+            } as React.CSSProperties)
           : backgroundStyle
       }
     >

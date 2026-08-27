@@ -774,6 +774,8 @@ export function TargetView({
   const visibleStaff = isSearching ? results : (openGroup?.staff ?? []);
   // 検索中に「部署を選び直す」を出さない —— 押しても検索結果は変わらず、嘘のアフォーダンスになる。
   const showGroupBack = openGroup !== null && !isSearching && soleGroup === null;
+  // フォーカス移動先。押せる相手が 1 人も居なければ -1 になり、下の fallback が効く。
+  const firstSelectableIndex = visibleStaff.findIndex((s) => s.available);
   const tierById = useMemo(() => new Map(scored.map((m) => [m.item.id, m.tier])), [scored]);
   const departments = directory.departments;
   // 何を出すかの判断は純関数へ集約する。0 件警告と 0 件案内を重ねて出す退行は、
@@ -806,6 +808,7 @@ export function TargetView({
    */
   const groupRefs = useRef<Record<string, HTMLButtonElement | null>>({});
   const firstStaffRef = useRef<HTMLButtonElement | HTMLDivElement | null>(null);
+  const groupBackRef = useRef<HTMLButtonElement | null>(null);
   const [groupAnnouncement, setGroupAnnouncement] = useState('');
   const pendingFocus = useRef<'staff' | string | null>(null);
 
@@ -821,8 +824,10 @@ export function TargetView({
     const target = pendingFocus.current;
     if (target === null) return;
     pendingFocus.current = null;
-    if (target === 'staff') firstStaffRef.current?.focus();
-    else groupRefs.current[target]?.focus();
+    if (target === 'staff') {
+      // 押せる相手が 1 人も居ない群では移動先が無い。黙って body へ落とさず、戻る導線へ送る。
+      (firstStaffRef.current ?? groupBackRef.current)?.focus();
+    } else groupRefs.current[target]?.focus();
   }, [openGroupId]);
 
   // 検索実行のヒット有無を体験メトリクスへ記録する（クエリ文字列自体は保持しない, issue #322）。
@@ -1043,6 +1048,7 @@ export function TargetView({
                   type="button"
                   className="card card--ghost"
                   data-testid="staff-group-back"
+                  ref={groupBackRef}
                   // 開いている群の名前を戻る導線に持たせる (#787)。どの部署を開いたかが
                   // 画面から読み取れないと、来訪者は自分がどこに居るか分からない。
                   aria-label={`${openGroup.name ?? tr('reception.staffGroupOther')} / ${tr('reception.staffGroupBack')}`}
@@ -1061,9 +1067,23 @@ export function TargetView({
                     type="button"
                     className="card"
                     ref={(el) => {
-                      // 群を開いたときのフォーカス移動先（#787）。先頭の 1 枚だけ覚える。
-                      if (index === 0) firstStaffRef.current = el;
+                      /*
+                       * 群を開いたときのフォーカス移動先（#787）。
+                       *
+                       * 🔴 **「押せる先頭」であって「先頭」ではない。** `index === 0` で拾うと、
+                       * 群の先頭が不在のときに ref が誰にも付かず、focus() が黙って no-op になる
+                       * （実測: 先頭が不在の群を開くとフォーカスが body へ落ちた）。営業時間外は
+                       * 全群がこの形になるので、**在席状況によって出たり出なかったりする**欠陥だった。
+                       */
+                      if (index === firstSelectableIndex) firstStaffRef.current = el;
                     }}
+                    /*
+                     * 群を開いたときのフォーカス移動先を DOM にも出す (#787)。ref は
+                     * `renderToStaticMarkup` から見えず、e2e の seed は**どの群も先頭が在席**なので、
+                     * 「先頭が不在なら移動先が消える」欠陥を踏む入力が無い（実測で生存した）。
+                     * 属性にしておけば unit で総当りできる。
+                     */
+                    data-focus-target={index === firstSelectableIndex ? 'true' : undefined}
                     data-testid={`staff-${s.id}`}
                     onClick={() => onSelect(staffTargetFor(s, directory.departments, tr))}
                   >

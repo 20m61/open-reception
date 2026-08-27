@@ -269,3 +269,40 @@ describe('部署タブ (#776)', () => {
     expect(html).not.toContain('data-testid="target-recovery-');
   });
 });
+
+/**
+ * 群を開いたときのフォーカス移動先 (#787)。
+ *
+ * 🔴 **「先頭」ではなく「押せる先頭」。** `index === 0` で拾うと、群の先頭が不在のときに
+ * 移動先が誰にも付かず `focus()` が黙って no-op になる ―― フォーカスは body へ落ち、
+ * 支援技術には**何も起きなかったように見える**。**営業時間外は全群がこの形**になるので、
+ * 在席状況によって出たり出なかったりする欠陥だった（独立レビューが実測で検出）。
+ *
+ * e2e の seed はどの群も先頭が在席なので、この入力は unit でしか踏めない。
+ */
+describe('群を開いたときのフォーカス移動先 (#787)', () => {
+  function focusTargetOf(html: string): string | null {
+    const at = html.indexOf('data-focus-target="true"');
+    if (at === -1) return null;
+    const tagStart = html.lastIndexOf('<', at);
+    const tag = html.slice(tagStart, html.indexOf('>', at) + 1);
+    return tag.match(/data-testid="([^"]+)"/)?.[1] ?? null;
+  }
+
+  it('先頭が在席ならその人へ', () => {
+    // 開発部は 鈴木(不在) → 田中(在席) の順なので、在席の先頭は田中。
+    expect(focusTargetOf(render({ openGroupId: 'dept-dev' }))).toBe('staff-staff-tanaka');
+  });
+
+  it('先頭が不在でも、押せる先頭へ移動先が付く', () => {
+    const html = render({ openGroupId: 'dept-dev' });
+    // 不在の鈴木には付かない（付くと focus() が no-op になる）。
+    expect(html).toContain('data-testid="staff-staff-suzuki"');
+    expect(focusTargetOf(html)).not.toBe('staff-staff-suzuki');
+  });
+
+  it('押せる相手が 1 人も居なければ移動先を持たない（戻る導線へ送る）', () => {
+    const absent = { ...DIRECTORY, staff: DIRECTORY.staff.map((m) => ({ ...m, available: false })) };
+    expect(focusTargetOf(render({ directory: absent, openGroupId: 'dept-dev' }))).toBeNull();
+  });
+});

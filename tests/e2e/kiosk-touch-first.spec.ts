@@ -230,3 +230,46 @@ test('部署の群を開閉してもフォーカスが迷子にならない (#78
   expect(focusedAfterBack.tag, '群を閉じたらフォーカスが body へ落ちた').not.toBe('BODY');
   expect(focusedAfterBack.testid).toBe(groupTestId);
 });
+
+/**
+ * 逃げ道バーの下にコンテンツを取り残さない (#787)。
+ *
+ * 🔴 **スクリーンショットでは見えない欠陥。** バーは不透明なので、覆われた部分は
+ * 「カードが途中で切れている」ようにしか見えない。押した結果が変わるのは**見えない領域**
+ * なので誤操作には直結しないが、#124 が「バーがスクロール内容に隠れないようにする」と
+ * 決めた裏返し ―― 内容がバーに隠れる ―― は塞がっていなかった。
+ *
+ * 判定は VRT ではなく**ヒットテスト**で行う。1024x768（iPad 9.7"/mini の横向き）は
+ * カードが 2 行に折り返して最も高くなる構成で、独立レビューが実測で踏んだ viewport。
+ */
+test('逃げ道バーが最後のカードを覆わない (#787)', async ({ page }) => {
+  await page.setViewportSize({ width: 1024, height: 768 });
+  await page.goto('/kiosk');
+  await page.getByTestId('start-reception').click();
+  await page.getByTestId('purpose-meeting').click();
+  await expect(page.getByTestId('staff-groups')).toBeVisible();
+
+  /*
+   * 🔴 **最下部まで送ってから見る。** 余白が保証するのは「**スクロールすれば必ず出てくる**」
+   * ことであって、初期位置で重ならないことではない（sticky なバーは、スクロールできる限り
+   * 内容の上に乗る ―― それが sticky の役目でもある）。初期位置で判定すると、内容が増えた
+   * だけで落ちる**主張しすぎのオラクル**になる。実際それで一度落とした。
+   */
+  await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight));
+  await page.waitForTimeout(200);
+
+  const covered = await page.evaluate(() => {
+    const bar = document.querySelector('[data-testid="kiosk-escape-bar"]')!.getBoundingClientRect();
+    const cards = [...document.querySelectorAll('[data-testid^="staff-group-"][data-selectable]')];
+    return cards
+      .map((el) => {
+        const r = el.getBoundingClientRect();
+        return { id: el.getAttribute('data-testid'), overlap: Math.round(r.bottom - bar.top) };
+      })
+      .filter((c) => c.overlap > 0);
+  });
+  expect(
+    covered,
+    `最下部まで送っても逃げ道バーがカードを覆っている: ${JSON.stringify(covered)}`,
+  ).toEqual([]);
+});
