@@ -21,6 +21,52 @@ describe('isValidTimeZone', () => {
     expect(isValidTimeZone('Not/A/Zone')).toBe(false);
     expect(isValidTimeZone('')).toBe(false);
   });
+
+  /**
+   * 🔴 **生のオフセット文字列を受理しない** (#800)。
+   *
+   * `Intl.DateTimeFormat` は Node 22 / ES2024 で `±23:59` までの生オフセットを**受理する**
+   * （実測済み）。だが営業時間の判定は**名前付きゾーンであること**を前提にしている:
+   *
+   * - **DST が無い。** `America/Los_Angeles` の拠点が `-08:00` で保存されると夏の間ずっと 1h ずれる
+   * - **曜日の境界がずれる。** `evaluateOperatingStatus` は現地日付から曜日を引く
+   * - **判定不能の窓が倍になる。** `TIMEZONE_BOUNDS` が ±23:59 まで広がる（26h → 48h）
+   */
+  it('🔴 生のオフセット文字列は false（DST が効かないので営業時間の前提が壊れる）', () => {
+    for (const raw of ['+09:00', '-08:00', '+18:00', '-23:59', '+00:00', '-05:30', '+0900', '09:00']) {
+      expect(isValidTimeZone(raw), `${raw} を受理してはいけない`).toBe(false);
+    }
+  });
+
+  /**
+   * **通すべきものを通す。** 名前付きゾーンを巻き込むと、拠点が営業ポリシーを保存できなくなる。
+   *
+   * ここが実質の難所だった: `Intl.supportedValuesOf('timeZone')` による許可リストは
+   * **`UTC` も `Etc/*` も小文字形も含まない**（実測: 418 件のうち `UTC` は無い）。
+   * 許可リストで実装すると、**今日 `Intl` が受理していて既に保存されうる値**を弾く。
+   * だから「`UTC` か、`/` を含む実在ゾーン」で判定する。
+   */
+  it('名前付きゾーンは通す（許可リスト方式だと弾かれるものを含む）', () => {
+    for (const named of [
+      'Asia/Tokyo',
+      'America/Los_Angeles',
+      'UTC',
+      'Etc/UTC', // supportedValuesOf に無い
+      'Etc/GMT+5', // 同上。名前付きだが固定オフセット
+      'asia/tokyo', // Intl は大小文字を問わない。既存レコードにありうる
+    ]) {
+      expect(isValidTimeZone(named), `${named} は通すべき`).toBe(true);
+    }
+  });
+
+  /**
+   * 生オフセットを弾く実装が **`/` の有無だけ**を見ていないこと。
+   * `Not/A/Zone` は既に上で見ているが、**オフセットに `/` を混ぜた形**も塞ぐ。
+   */
+  it('`/` を含んでいても実在しないゾーンは false', () => {
+    expect(isValidTimeZone('+09:00/Tokyo')).toBe(false);
+    expect(isValidTimeZone('Etc/+09:00')).toBe(false);
+  });
 });
 
 describe('getZonedParts', () => {
