@@ -95,6 +95,25 @@
 出るが、変異検証中は自分の変更も出ているので**区別がつかない**。復元後は
 `git diff --stat` を読み、**触っていないはずのファイルが出ていないこと**まで確かめる。
 
+## テストの隔離は「project を分けた」では足りない
+
+playwright の `fullyParallel` は **config 全体に効く**。project を分けても**その中では並行実行
+される**ので、「専用 project に載せた」は「単独で走る」を意味しない。**同居者を 0 にするしかない。**
+
+`test.describe.serial` でも足りない —— あれは describe 内の順序を縛るだけで、同じ project の
+**別ファイル**との並行は止まらない。
+
+> 由来: 2026-08-26 / #787。seed の在席状態を書き換える spec を `flow-mutation-kiosk` へ
+> 相乗りさせたところ、同居する `kiosk-flow-integration` が作るカスタムフローで組込みの
+> `purpose-meeting` が DOM から消え、**4 回中 2 回タイムアウト**した。`retries` が吸収するので
+> `--full` は緑のままだった。`playwright.config.ts` は**同じ失敗を過去に踏んで注記まで
+> 残していた**（「project を分けたのは他 project との分離であって、project 内の分離には
+> なっていなかった」）のに、それを読んだうえで踏んだ。
+
+**グローバル状態を書き換える spec は専用の終端 project へ隔離し、後始末は `finally` ではなく
+`test.afterEach` に置く**（timeout でページが閉じられると `finally` の中の `await` は即座に
+reject し、復元されないまま run の残り全部が汚染される。実測）。
+
 ## 停止境界
 
 - 本番デプロイ、本番データ操作
