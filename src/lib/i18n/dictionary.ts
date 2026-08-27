@@ -161,6 +161,8 @@ export type MessageKey =
   | 'reception.staffGroupOther'
   | 'reception.staffGroupCount'
   | 'reception.staffGroupBack'
+  | 'reception.staffGroupOpened'
+  | 'reception.staffGroupLabel'
   | 'reception.staffNotFound'
   | 'reception.departmentNotFound'
   | 'reception.voiceSearch'
@@ -484,8 +486,13 @@ const ja: DefaultDictionary = {
   'reception.staffAbsentBadge': '不在',
   // 所属が名簿と一致しない担当者の受け皿 (#787)。**捨てない**ための群なので、名前は中立に。
   'reception.staffGroupOther': 'その他',
+  // 🔴 **部署タブの取次先カードと同じ見た目にしない** (#787)。あちらは「部署宛てに取り次ぐ」、
+  // こちらは「その部署の担当者へ降りる」。同じ部署名が同じカードで出るので、押した結果が
+  // 違うことを語で言い分ける。
+  'reception.staffGroupLabel': '{name}の担当者',
   'reception.staffGroupCount': '{count}名',
   'reception.staffGroupBack': '部署を選び直す',
+  'reception.staffGroupOpened': '{name}の担当者を{count}名表示しました',
   'reception.staffNotFound': '該当する担当者が見つかりません。部署または代表窓口をお選びください。',
   'reception.departmentNotFound': '部署・窓口の一覧がありません。下の方法からお選びください。',
   'reception.voiceSearch': '音声で担当者を探す',
@@ -792,8 +799,10 @@ const en: LocaleDictionary = {
   'reception.staffAbsent': 'Currently unavailable. Please choose a department or the main desk.',
   'reception.staffAbsentBadge': 'Unavailable',
   'reception.staffGroupOther': 'Other',
-  'reception.staffGroupCount': '{count}',
+  'reception.staffGroupLabel': 'People in {name}',
+  'reception.staffGroupCount': '{count} people',
   'reception.staffGroupBack': 'Choose another department',
+  'reception.staffGroupOpened': 'Showing {count} people in {name}',
   'reception.staffNotFound': 'No matching staff found. Please choose a department or the main desk.',
   'reception.departmentNotFound': 'No departments or main desk are listed. Please choose one of the options below.',
   'reception.voiceSearch': 'Search by voice',
@@ -1101,8 +1110,10 @@ const ko: LocaleDictionary = {
   'reception.staffAbsent': '현재 부재중입니다. 부서 또는 대표 창구를 선택해 주세요.',
   'reception.staffAbsentBadge': '부재중',
   'reception.staffGroupOther': '기타',
+  'reception.staffGroupLabel': '{name} 담당자',
   'reception.staffGroupCount': '{count}명',
   'reception.staffGroupBack': '부서 다시 선택',
+  'reception.staffGroupOpened': '{name}의 담당자 {count}명을 표시했습니다',
   'reception.staffNotFound': '해당 담당자를 찾을 수 없습니다. 부서 또는 대표 창구를 선택해 주세요.',
   'reception.departmentNotFound': '부서·대표 창구 목록이 없습니다. 아래 방법에서 선택해 주세요.',
   'reception.voiceSearch': '음성으로 검색',
@@ -1406,8 +1417,10 @@ const zh: LocaleDictionary = {
   'reception.staffAbsent': '当前不在。请选择部门或前台。',
   'reception.staffAbsentBadge': '不在',
   'reception.staffGroupOther': '其他',
+  'reception.staffGroupLabel': '{name}的负责人',
   'reception.staffGroupCount': '{count}人',
   'reception.staffGroupBack': '重新选择部门',
+  'reception.staffGroupOpened': '已显示{name}的{count}位负责人',
   'reception.staffNotFound': '未找到相应负责人。请选择部门或前台。',
   'reception.departmentNotFound': '没有可显示的部门·窗口。请从下面的方式中选择。',
   'reception.voiceSearch': '语音搜索',

@@ -12,6 +12,10 @@ const DIRECTORY: Directory = {
   staff: [
     { id: 'staff-sato', displayName: '佐藤 太郎', kana: 'さとう', aliases: [], departmentId: 'dept-sales', available: true },
     { id: 'staff-suzuki', displayName: '鈴木 花子', kana: 'すずき', aliases: [], departmentId: 'dept-dev', available: false },
+    // 🔴 **群に 2 名以上を置く。** 1 群 1 名だと「グリッドは群の全員を描く」が主張できず、
+    // **上位 N 件打ち切りの変異が素通りする**（独立レビューの実測: main では killed だった
+    // `slice(0, 1)` が HEAD で生存した）。Issue #787 が名指しで禁じた失敗そのもの。
+    { id: 'staff-tanaka', displayName: '田中 次郎', kana: 'たなか', aliases: [], departmentId: 'dept-dev', available: true },
   ],
 };
 
@@ -76,10 +80,35 @@ describe('TargetView の初期表示密度 (#776)', () => {
     expect(render()).not.toContain('data-testid="staff-group-back"');
   });
 
-  it('群のカードは部署名と人数を出す', () => {
+  /**
+   * 🔴 **打ち切りを禁じる。** 名前を知らない来訪者は検索できないので、切り捨てた相手は
+   * タッチで永久に到達不能になる（＝呼べない）。群を開いたら**その群の全員**が出ること、
+   * かつ**他の群の担当者は出ない**ことを両側から縛る。
+   */
+  it('群を開くとその群の全員が出て、他の群の担当者は出ない', () => {
+    const html = render({ openGroupId: 'dept-dev' });
+    expect(html).toContain('data-testid="staff-staff-suzuki"');
+    expect(html).toContain('data-testid="staff-staff-tanaka"');
+    expect(html).not.toContain('data-testid="staff-staff-sato"');
+  });
+
+  /**
+   * 🔴 **人数は押せる相手を数える。** 全体件数を出すと、全員不在の部署が「2名」と広告して
+   * 開いた先に押せないカードだけが並ぶ。営業時間外は**全部署がこの状態**になる。
+   */
+  it('群のカードは部署名と、押せる相手の人数を出す', () => {
     const html = render();
     expect(innerTextOf(html, 'staff-group-dept-sales-count')).toBe('1名');
     expect(html).toContain('営業部');
+    // 開発部は在席 1（田中）・不在 1（鈴木）なので 1 名。
+    expect(innerTextOf(html, 'staff-group-dept-dev-count')).toBe('1名');
+  });
+
+  it('押せる相手が居ない部署は、開く前にそれと分かる', () => {
+    const absent = { ...DIRECTORY, staff: DIRECTORY.staff.map((m) => ({ ...m, available: false })) };
+    const html = render({ directory: absent });
+    expect(innerTextOf(html, 'staff-group-dept-sales-absent-badge')).toBe('不在');
+    expect(innerTextOf(html, 'staff-group-dept-sales-count')).toBe('0名');
   });
 
   it('探し方のタブを両方出し、担当者タブを選択済みにする（部署へもタッチで到達できる）', () => {

@@ -125,6 +125,7 @@ test('相手選択のタブは確認画面から戻っても勝手に切り替�
   // 「部署から選ぶ」で入ったあと担当者タブへ移り、担当者を選んで戻る。
   await page.getByTestId('quick-department').click();
   await page.getByTestId('target-tab-staff').click();
+  // 担当者タブの初期表示は部署の群 (#787)。担当者カードは群を開かないと出ない。
   await revealStaff(page, 'staff-staff-sato');
   await page.getByTestId('staff-staff-sato').click();
   await expect(page.getByTestId('visitor-name')).toBeVisible();
@@ -189,4 +190,43 @@ test('逃げ道の「最初に戻る」で待機画面へ戻れる', async ({ pa
   await page.getByTestId('purpose-meeting').click();
   await page.getByTestId('escape-reset').click();
   await expect(page.getByTestId('kiosk-quick-actions')).toBeVisible();
+});
+
+/**
+ * 群の開閉でフォーカスを連れて行く (#787)。
+ *
+ * 🔴 **押した要素自体が消える導線**なので、放置するとフォーカスが body へ落ち、
+ * 支援技術には**何も起きなかったように見える**（独立レビューが実測で検出）。
+ * このファイルは #776 でタブに対してまったく同じ欠陥を直しており（`switchTab`）、
+ * 新導線にその対策が入っていなかった。axe は焦点喪失を検出しないので、ここで縛る。
+ */
+test('部署の群を開閉してもフォーカスが迷子にならない (#787)', async ({ page }) => {
+  await page.goto('/kiosk');
+  await page.getByTestId('start-reception').click();
+  await page.getByTestId('purpose-meeting').click();
+  await expect(page.getByTestId('staff-groups')).toBeVisible();
+
+  const group = page.locator('[data-testid^="staff-group-"][data-selectable]').first();
+  const groupTestId = await group.getAttribute('data-testid');
+  await group.click();
+
+  // 開いたら中身の先頭へ。body へ落とさない。
+  const focusedAfterOpen = await page.evaluate(() => ({
+    tag: document.activeElement?.tagName ?? null,
+    testid: document.activeElement?.getAttribute('data-testid') ?? null,
+  }));
+  expect(focusedAfterOpen.tag, '群を開いたらフォーカスが body へ落ちた').not.toBe('BODY');
+  expect(focusedAfterOpen.testid).toMatch(/^staff-staff-/);
+
+  // 何が起きたかを読み上げる（見えている変化を支援技術にも届ける）。
+  await expect(page.getByTestId('target-live')).not.toBeEmpty();
+
+  await page.getByTestId('staff-group-back').click();
+  // 閉じたら**開く前に押した群カード**へ戻す。先頭へ飛ばすと、どこに居たか分からなくなる。
+  const focusedAfterBack = await page.evaluate(() => ({
+    tag: document.activeElement?.tagName ?? null,
+    testid: document.activeElement?.getAttribute('data-testid') ?? null,
+  }));
+  expect(focusedAfterBack.tag, '群を閉じたらフォーカスが body へ落ちた').not.toBe('BODY');
+  expect(focusedAfterBack.testid).toBe(groupTestId);
 });

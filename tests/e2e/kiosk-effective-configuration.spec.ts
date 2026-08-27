@@ -74,7 +74,6 @@ test('新経路でも待機画面の文言・目的選択・担当者検索が�
   await page.getByTestId('purpose-meeting').click();
   await expect(page.getByTestId('staff-search')).toBeVisible();
   await page.getByTestId('staff-search').fill('すずき');
-  await revealStaff(page, 'staff-staff-suzuki');
   await expect(page.getByTestId('staff-staff-suzuki')).toBeVisible();
 });
 

@@ -761,10 +761,19 @@ export function TargetView({
     () => staffGroupsFor(directory.staff, directory.departments),
     [directory.staff, directory.departments],
   );
-  const openGroup = openGroupId === null ? null : (staffGroups.find((g) => g.id === openGroupId) ?? null);
+  /*
+   * 群が 1 つしか無いなら層を飛ばす (#787)。押す選択肢が 1 つだけの画面を挟むのは、
+   * 来訪者にとって**意味の無い 1 タップ**でしかない。部署を非公開にしている組織や、
+   * 縮退した directory ではこの形になる。
+   */
+  const soleGroup = staffGroups.length === 1 ? (staffGroups[0] ?? null) : null;
+  const openGroup =
+    soleGroup ?? (openGroupId === null ? null : (staffGroups.find((g) => g.id === openGroupId) ?? null));
   // 検索中は群を跨いで探せる（絞り込みが到達不能を作らない、という #787 の受入条件）。
   const showStaffGroups = !isSearching && openGroup === null;
   const visibleStaff = isSearching ? results : (openGroup?.staff ?? []);
+  // 検索中に「部署を選び直す」を出さない —— 押しても検索結果は変わらず、嘘のアフォーダンスになる。
+  const showGroupBack = openGroup !== null && !isSearching && soleGroup === null;
   const tierById = useMemo(() => new Map(scored.map((m) => [m.item.id, m.tier])), [scored]);
   const departments = directory.departments;
   // 何を出すかの判断は純関数へ集約する。0 件警告と 0 件案内を重ねて出す退行は、
@@ -788,6 +797,33 @@ export function TargetView({
     },
     [onTabChange],
   );
+
+  /*
+   * 群の開閉でもフォーカスを連れて行く (#787)。**タブとまったく同じ理由** ―― 押した要素
+   * （群カード / 戻るカード）自体が消えるので、放置するとフォーカスが body へ落ち、
+   * 支援技術には**何も起きなかったように見える**（実測で確認された）。
+   * 開いたら先頭の担当者へ、閉じたら**開く前に押した群カード**へ戻す。
+   */
+  const groupRefs = useRef<Record<string, HTMLButtonElement | null>>({});
+  const firstStaffRef = useRef<HTMLButtonElement | HTMLDivElement | null>(null);
+  const [groupAnnouncement, setGroupAnnouncement] = useState('');
+  const pendingFocus = useRef<'staff' | string | null>(null);
+
+  const changeOpenGroup = useCallback(
+    (next: string | null) => {
+      onOpenGroupChange(next);
+      pendingFocus.current = next === null ? (openGroupId ?? null) : 'staff';
+    },
+    [onOpenGroupChange, openGroupId],
+  );
+
+  useEffect(() => {
+    const target = pendingFocus.current;
+    if (target === null) return;
+    pendingFocus.current = null;
+    if (target === 'staff') firstStaffRef.current?.focus();
+    else groupRefs.current[target]?.focus();
+  }, [openGroupId]);
 
   // 検索実行のヒット有無を体験メトリクスへ記録する（クエリ文字列自体は保持しない, issue #322）。
   // 打鍵のたびに数えないよう軽くデバウンスする。
@@ -873,7 +909,7 @@ export function TargetView({
           後付けになる。打鍵で 0 件になる=最も効いてほしい場面で沈黙する）。
         */}
         <p className="a11y-live" role="status" data-testid="target-live" lang={htmlLangFor(locale)}>
-          {panel.kind === 'recovery' ? tr(panel.messageKey) : ''}
+          {panel.kind === 'recovery' ? tr(panel.messageKey) : groupAnnouncement}
         </p>
 
         <div
@@ -950,40 +986,84 @@ export function TargetView({
 
           {panel.kind === 'staff-results' && showStaffGroups ? (
             <div className="card-grid" data-testid="staff-groups">
-              {staffGroups.map((g) => (
-                <button
-                  key={g.id}
-                  type="button"
-                  className="card"
-                  data-testid={`staff-group-${g.id}`}
-                  onClick={() => onOpenGroupChange(g.id)}
-                >
-                  {g.name ?? tr('reception.staffGroupOther')}
-                  <span className="card__sub" data-testid={`staff-group-${g.id}-count`}>
-                    {tr('reception.staffGroupCount', { count: String(g.staff.length) })}
-                  </span>
-                </button>
-              ))}
+              {staffGroups.map((g) => {
+                /*
+                 * 🔴 **人数は「押せる相手」を数える** (#787)。全体件数を出すと、全員不在の部署が
+                 * 「2名」と広告して、開いた先に押せないカードだけが並ぶ ―― この画面が既に
+                 * 2 度書いている原則（空の部署は群にしない / 押した先が押せないカードだけなら
+                 * 案内を出さない）から、群カードだけが漏れていた。営業時間外は**全部署が
+                 * この状態**になるので、来訪者は部署の数だけタップして初めて誰も呼べないと分かる。
+                 */
+                const selectable = g.staff.filter((m) => m.available).length;
+                return (
+                  <button
+                    key={g.id}
+                    type="button"
+                    className="card"
+                    data-testid={`staff-group-${g.id}`}
+                    data-selectable={selectable}
+                    ref={(el) => {
+                      groupRefs.current[g.id] = el;
+                    }}
+                    onClick={() => {
+                      changeOpenGroup(g.id);
+                      setGroupAnnouncement(
+                        tr('reception.staffGroupOpened', {
+                          name: g.name ?? tr('reception.staffGroupOther'),
+                          count: String(selectable),
+                        }),
+                      );
+                    }}
+                  >
+                    {selectable === 0 ? (
+                      // 開く前に分かるようにする。押してから気づかせない。
+                      <span
+                        className="card__badge card__badge--unavailable"
+                        data-testid={`staff-group-${g.id}-absent-badge`}
+                        lang={htmlLangFor(locale)}
+                      >
+                        {tr('reception.staffAbsentBadge')}
+                      </span>
+                    ) : null}
+                    {tr('reception.staffGroupLabel', {
+                      name: g.name ?? tr('reception.staffGroupOther'),
+                    })}
+                    <span className="card__sub" data-testid={`staff-group-${g.id}-count`}>
+                      {tr('reception.staffGroupCount', { count: String(selectable) })}
+                    </span>
+                  </button>
+                );
+              })}
             </div>
           ) : panel.kind === 'staff-results' ? (
             <div className="card-grid">
-              {openGroup ? (
+              {showGroupBack ? (
                 // 群を開いたら戻れる。押した先から出られない画面を作らない（#776 の逃げ道と同じ判断）。
                 <button
                   type="button"
                   className="card card--ghost"
                   data-testid="staff-group-back"
-                  onClick={() => onOpenGroupChange(null)}
+                  // 開いている群の名前を戻る導線に持たせる (#787)。どの部署を開いたかが
+                  // 画面から読み取れないと、来訪者は自分がどこに居るか分からない。
+                  aria-label={`${openGroup.name ?? tr('reception.staffGroupOther')} / ${tr('reception.staffGroupBack')}`}
+                  onClick={() => {
+                    changeOpenGroup(null);
+                    setGroupAnnouncement('');
+                  }}
                 >
                   {tr('reception.staffGroupBack')}
                 </button>
               ) : null}
-              {visibleStaff.map((s) =>
+              {visibleStaff.map((s, index) =>
                 s.available ? (
                   <button
                     key={s.id}
                     type="button"
                     className="card"
+                    ref={(el) => {
+                      // 群を開いたときのフォーカス移動先（#787）。先頭の 1 枚だけ覚える。
+                      if (index === 0) firstStaffRef.current = el;
+                    }}
                     data-testid={`staff-${s.id}`}
                     onClick={() => onSelect(staffTargetFor(s, directory.departments, tr))}
                   >
