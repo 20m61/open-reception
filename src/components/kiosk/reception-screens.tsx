@@ -1060,8 +1060,10 @@ export function TargetView({
                   {tr('reception.staffGroupBack')}
                 </button>
               ) : null}
-              {visibleStaff.map((s, index) =>
-                s.available ? (
+              {visibleStaff.map((s, index) => {
+                // 押せる先頭かどうかは 1 つの式で決める（ref と将来の消費者が同じ値を見る）。
+                const isFocusTarget = index === firstSelectableIndex;
+                return s.available ? (
                   <button
                     key={s.id}
                     type="button"
@@ -1074,16 +1076,13 @@ export function TargetView({
                        * 群の先頭が不在のときに ref が誰にも付かず、focus() が黙って no-op になる
                        * （実測: 先頭が不在の群を開くとフォーカスが body へ落ちた）。営業時間外は
                        * 全群がこの形になるので、**在席状況によって出たり出なかったりする**欠陥だった。
+                       *
+                       * 判定は `isFocusTarget`（1 つの式）に集約する。同じ条件を 2 箇所へ手書きすると、
+                       * 片方だけ変異させる余地が残る —— 実際、表示用の属性と ref を別々に書いた結果、
+                       * ref だけを元へ戻す変異が unit 28 本・e2e 285 本の全部を素通りした。
                        */
-                      if (index === firstSelectableIndex) firstStaffRef.current = el;
+                      if (isFocusTarget) firstStaffRef.current = el;
                     }}
-                    /*
-                     * 群を開いたときのフォーカス移動先を DOM にも出す (#787)。ref は
-                     * `renderToStaticMarkup` から見えず、e2e の seed は**どの群も先頭が在席**なので、
-                     * 「先頭が不在なら移動先が消える」欠陥を踏む入力が無い（実測で生存した）。
-                     * 属性にしておけば unit で総当りできる。
-                     */
-                    data-focus-target={index === firstSelectableIndex ? 'true' : undefined}
                     data-testid={`staff-${s.id}`}
                     onClick={() => onSelect(staffTargetFor(s, directory.departments, tr))}
                   >
@@ -1128,8 +1127,8 @@ export function TargetView({
                       {tr('reception.staffAbsent')}
                     </span>
                   </div>
-                ),
-              )}
+                );
+              })}
             </div>
           ) : panel.kind === 'departments' ? (
             <div className="card-grid">
