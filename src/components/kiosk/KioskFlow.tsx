@@ -610,7 +610,6 @@ export function KioskFlow({
   useEffect(() => {
     if (data.state !== 'calling') {
       noticeShownAtRef.current = null;
-      setPendingTimeoutSessionId(null);
       return;
     }
     if (callingStageState.stage === 'preTimeoutNotice' && noticeShownAtRef.current === null) {
@@ -621,7 +620,9 @@ export function KioskFlow({
   // CALL_TIMEOUT を dispatch しない。未描画（gate=null）の間は何もせず、描画されると
   // stage の変化で本 effect が再評価される。state.ts の遷移表自体は変更しない。
   useEffect(() => {
-    if (pendingTimeoutSessionId === null) return;
+    // 保留の掃除は呼び出し effect の cleanup が行う（calling を抜けると必ず走る）。
+    // ここでも state を見るのは、掃除が走る前の 1 レンダーで発火させないため。
+    if (data.state !== 'calling' || pendingTimeoutSessionId === null) return;
     const gateMs = timeoutDispatchGateMs(
       noticeShownAtRef.current,
       Date.now(),
@@ -635,7 +636,7 @@ export function KioskFlow({
     }
     const timer = window.setTimeout(fire, gateMs);
     return () => window.clearTimeout(timer);
-  }, [pendingTimeoutSessionId, callingStageState.stage, dispatch]);
+  }, [data.state, pendingTimeoutSessionId, callingStageState.stage, dispatch]);
   // アバター常設コンパニオンの段階演出 (#323)。avatarState 自体は変えず、同じ avatarState
   // ('calling') 内の字幕/表情だけを差し替える（見た目の演出のみ・状態機械は不変）。
   // dialing 段階は既存どおり avatarState 標準の文言（新規表示を増やさない）。
