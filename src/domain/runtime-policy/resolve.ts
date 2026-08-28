@@ -71,9 +71,24 @@ export type ServicePolicyOverride = {
   readonly temporaryOverride?: TemporaryOverride;
 };
 
-/** 緊急全停止。`serviceKeys` 省略時は `BREAK_GLASS_PROTECTED_SERVICES` を除く全サービスが対象。 */
+/**
+ * 緊急全停止。`serviceKeys` 省略時は `BREAK_GLASS_PROTECTED_SERVICES` を除く全サービスが対象。
+ *
+ * `scope` は**その暗黙表現を明示化するための語彙** (#798 AC4)。`serviceKeys` を渡し損ねると
+ * 1 サービスのつもりが `touch-reception` / `qr-resolution` / `signage` まで止まり、
+ * **iPad がタッチ受付も QR も含めて全滅**する。書き手が「全部」と言えるようにする。
+ *
+ * 🔴 **倒し方は変えていない。** `scope` が無い（＝既存レコード・既存呼び出し）ときは
+ * 従来どおりに解釈する。「誤発火より不発が害」という設計判断自体は妥当なので、
+ * `scope: 'selected'` でも対象が空なら全停止へ倒す（下の `breakGlassTargets` 参照）。
+ */
 export type BreakGlassDirective = {
   readonly active: boolean;
+  /**
+   * `'all'` … `serviceKeys` の有無によらず保護対象以外を全停止する（**`serviceKeys` より優先**）。
+   * `'selected'` … 挙げたものだけ。省略時は従来の暗黙解釈。
+   */
+  readonly scope?: 'all' | 'selected';
   readonly serviceKeys?: readonly ManagedRuntimeServiceKey[];
 };
 
@@ -289,13 +304,20 @@ function breakGlassTargets(
   services: readonly ManagedRuntimeService[],
 ): ReadonlySet<ManagedRuntimeServiceKey> {
   if (!directive?.active) return new Set();
+  const everythingUnprotected = () =>
+    new Set(
+      services.map((service) => service.serviceKey).filter((key) => !BREAK_GLASS_PROTECTED_SERVICES.includes(key)),
+    );
+  // 🔴 **`scope: 'all'` は `serviceKeys` より強い** (#798 AC4)。両方書かれたら scope が勝つ ――
+  // 「1 件だけ選んだつもりで全停止」を事故ではなく**宣言**にするための語彙なので、
+  // ここで serviceKeys を優先すると足した意味が無くなる。
+  if (directive.scope === 'all') return everythingUnprotected();
   // 🔴 **空配列を「対象なし」にしない。** 緊急停止は誤発火より**不発**のほうが害が大きい。
   // フォームで 1 件も選ばずに送られた `[]` を no-op にすると、UI は「停止しました」と出す
   // のに全サービスが動き続ける。省略と同じ（既定の保護対象以外を全停止）に倒す。
+  // **`scope: 'selected'` でも同じ**（表現を明示化しても倒し方は変えない ＝ AC4 の「意味を変えず」）。
   if (directive.serviceKeys && directive.serviceKeys.length > 0) return new Set(directive.serviceKeys);
-  return new Set(
-    services.map((service) => service.serviceKey).filter((key) => !BREAK_GLASS_PROTECTED_SERVICES.includes(key)),
-  );
+  return everythingUnprotected();
 }
 
 /** 優先順位チェーンを 1 サービスへ適用する（依存補正はこの後段）。 */

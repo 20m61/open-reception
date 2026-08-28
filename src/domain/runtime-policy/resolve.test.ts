@@ -13,6 +13,7 @@ import {
   expiresAtMs,
   resolveServiceStates,
   resolutionFor,
+  type BreakGlassDirective,
   type RuntimeOperatingPolicy,
   type ServicePolicyOverride,
 } from './resolve';
@@ -499,6 +500,112 @@ describe('独立レビューで見つかった欠陥の回帰固定 (PR #791)', 
     });
     // 保護対象は止めない（省略時と同じ扱い）。
     expect(resolutionFor(resolved, 'admin')).toMatchObject({ state: 'running' });
+  });
+
+  /**
+   * #798 AC4: 「全停止」を暗黙表現から明示フラグへ。
+   *
+   * 🔴 **意味は変えない。表現を足すだけ。** `serviceKeys` の省略／空配列が
+   * 「保護対象以外を全停止」を意味する暗黙表現は、`serviceKeys` を渡し損ねると
+   * 1 サービスのつもりが `touch-reception` / `qr-resolution` / `signage` まで止まり
+   * **iPad がタッチ受付も QR も含めて全滅**する。「誤発火より不発が害」という設計判断
+   * 自体は妥当なので、**倒し方はそのまま**に、書き手が意図を言える語彙を足す。
+   */
+  describe('break-glass の scope（#798 AC4）', () => {
+    // 🔴 `as const` にしない。**共用体になると `serviceKeys` を持たない形が混ざり**、
+    // 下の総当たりで型が通らなくなる（実際に typecheck で落ちた。vitest は型を見ない）。
+    const ALL_SHAPES: readonly { label: string; directive: BreakGlassDirective }[] = [
+      { label: 'active のみ', directive: { active: true } },
+      { label: 'serviceKeys 省略', directive: { active: true, serviceKeys: undefined } },
+      { label: 'serviceKeys 空配列', directive: { active: true, serviceKeys: [] } },
+      { label: 'serviceKeys 指定', directive: { active: true, serviceKeys: ['vonage-pstn'] } },
+      { label: 'active:false', directive: { active: false } },
+      { label: 'active:false + keys', directive: { active: false, serviceKeys: ['vonage-pstn'] } },
+    ];
+
+    /**
+     * 🔴 **これが本体の不変条件。** `scope` を足したことで、**既存の形の意味が 1 つも
+     * 変わっていない**ことを総当たりで縛る。分岐ごとの期待値を手で書くと、実装と同じ
+     * 誤りを共有する（CLAUDE.md「検証の作法」）ので、**旧実装と同じ結果になること**を
+     * 全サービス × 全形で比較する。
+     */
+    it('scope を書かない既存の形は、意味が 1 つも変わらない', () => {
+      for (const { label, directive } of ALL_SHAPES) {
+        const resolved = resolveServiceStates({
+          policy: { commonSchedule: COMMON_8_23, breakGlass: directive },
+          now: IN_HOURS,
+        });
+        // 期待値は「旧仕様の定義」から導く: active かつ（keys が非空ならその集合／
+        // それ以外は保護対象以外の全部）。
+        const stopped = new Set<string>();
+        if (directive.active) {
+          const keys = directive.serviceKeys;
+          if (keys && keys.length > 0) for (const k of keys) stopped.add(k);
+          else
+            for (const s of resolved.services)
+              if (!BREAK_GLASS_PROTECTED_SERVICES.includes(s.serviceKey)) stopped.add(s.serviceKey);
+        }
+        for (const service of resolved.services) {
+          const expected = stopped.has(service.serviceKey);
+          expect(
+            service.reason === 'break_glass',
+            `${label} / ${service.serviceKey}`,
+          ).toBe(expected);
+        }
+      }
+    });
+
+    it("scope:'all' は serviceKeys の有無によらず保護対象以外を全停止する", () => {
+      // 🔴 **`serviceKeys` を無視するのが要点。** 「1 件だけ選んだつもりで全停止」を
+      // 事故ではなく**宣言**にするための語彙なので、両方書かれたら scope が勝つ。
+      const resolved = resolveServiceStates({
+        policy: {
+          commonSchedule: COMMON_8_23,
+          breakGlass: { active: true, scope: 'all', serviceKeys: ['vonage-pstn'] },
+        },
+        now: IN_HOURS,
+      });
+      expect(resolutionFor(resolved, 'realtime-conversation')).toMatchObject({ reason: 'break_glass' });
+      expect(resolutionFor(resolved, 'vonage-pstn')).toMatchObject({ reason: 'break_glass' });
+      expect(resolutionFor(resolved, 'admin')).toMatchObject({ state: 'running' });
+    });
+
+    it("scope:'selected' は挙げたものだけを止める", () => {
+      const resolved = resolveServiceStates({
+        policy: {
+          commonSchedule: COMMON_8_23,
+          breakGlass: { active: true, scope: 'selected', serviceKeys: ['vonage-pstn'] },
+        },
+        now: IN_HOURS,
+      });
+      expect(resolutionFor(resolved, 'vonage-pstn')).toMatchObject({ reason: 'break_glass' });
+      expect(resolutionFor(resolved, 'realtime-conversation')?.reason).not.toBe('break_glass');
+    });
+
+    /**
+     * 🔴 **`selected` なのに空でも「対象なし」にしない。** ここを no-op にすると
+     * 「誤発火より不発が害」を破る ―― UI は「停止しました」と出すのに全サービスが動き続ける。
+     * 表現を明示化しても**倒し方は変えない**（それが AC4 の「意味を変えずに」である）。
+     */
+    it("scope:'selected' で空配列でも、不発にはせず全停止へ倒す", () => {
+      const resolved = resolveServiceStates({
+        policy: {
+          commonSchedule: COMMON_8_23,
+          breakGlass: { active: true, scope: 'selected', serviceKeys: [] },
+        },
+        now: IN_HOURS,
+      });
+      expect(resolutionFor(resolved, 'realtime-conversation')).toMatchObject({ reason: 'break_glass' });
+      expect(resolutionFor(resolved, 'admin')).toMatchObject({ state: 'running' });
+    });
+
+    it("active:false なら scope:'all' でも何も止めない", () => {
+      const resolved = resolveServiceStates({
+        policy: { commonSchedule: COMMON_8_23, breakGlass: { active: false, scope: 'all' } },
+        now: IN_HOURS,
+      });
+      for (const service of resolved.services) expect(service.reason).not.toBe('break_glass');
+    });
   });
 
   it('expiresAt はホストの TZ ではなくポリシーの TZ で解釈する', () => {

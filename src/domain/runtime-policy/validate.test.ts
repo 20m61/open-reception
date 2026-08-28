@@ -213,6 +213,40 @@ describe('runtime policy の入力検証 (#367)', () => {
     expect(issuesOf({ ...OK, breakGlass: { active: true, serviceKey: 'stt' } })).toContain('breakGlass.serviceKey');
   });
 
+  /**
+   * #798 AC4。🔴 **知らない `scope` を黙って捨てない。**
+   *
+   * 捨てると `'ALL'` のような打ち間違いが「未指定」に化ける。`scope: 'all'` のつもりで
+   * `serviceKeys` を 1 件だけ渡していた運用者は、**全停止したつもりで 1 件しか止まらない**
+   * （不発 ＝ 緊急停止で最も害が大きい倒れ方）。`serviceKey` 単数形の typo と同じ扱いにする。
+   */
+  it('breakGlass.scope の未知の値を黙って捨てない', () => {
+    for (const bad of ['ALL', 'All', 'every', '', 'selected ', 1, true, null]) {
+      expect(issuesOf({ ...OK, breakGlass: { active: true, scope: bad } }), String(bad)).toContain(
+        'breakGlass.scope',
+      );
+    }
+  });
+
+  it('breakGlass.scope の既知の値は通り、そのまま保存される', () => {
+    for (const scope of ['all', 'selected'] as const) {
+      const result = validateRuntimePolicyInput({ ...OK, breakGlass: { active: true, scope } });
+      expect(result.ok, scope).toBe(true);
+      if (result.ok) expect(result.value.breakGlass).toMatchObject({ active: true, scope });
+    }
+  });
+
+  /**
+   * **`scope` を書かない既存の入力は、保存される形が 1 バイトも変わらない。**
+   * 任意フィールドを足したときに旧レコード・旧呼び出しが影響を受けないことを縛る
+   * （CLAUDE.md「永続スキーマも互換なら進めてよい」の条件そのもの）。
+   */
+  it('scope を書かない入力の保存形は変わらない', () => {
+    const result = validateRuntimePolicyInput({ ...OK, breakGlass: { active: true, serviceKeys: ['stt'] } });
+    expect(result.ok).toBe(true);
+    if (result.ok) expect(result.value.breakGlass).toEqual({ active: true, serviceKeys: ['stt'] });
+  });
+
   it('issue の field に入力キーを丸ごと載せない（長さと制御文字を落とす）', () => {
     // 構造化ログへ流れると偽イベント行を注入できる。レスポンス肥大も避ける。
     // U+2028 / U+2029 は `\p{C}` に**含まれない**（Zl/Zp）が、JS の LineTerminator であり
