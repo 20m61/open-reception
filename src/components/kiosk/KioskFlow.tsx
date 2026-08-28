@@ -199,7 +199,7 @@ import {
 import {
   clampCallingStageThresholds,
   deriveCallingStage,
-  timeoutDispatchDelayMs,
+  timeoutDispatchGateMs,
   type CallingStage,
   type CallingStageThresholds,
 } from '@/domain/reception/calling-experience';
@@ -591,8 +591,12 @@ export function KioskFlow({
   useEffect(() => {
     callingStageThresholdsRef.current = callingStageThresholds;
   }, [callingStageThresholds]);
-  // 予告を見せてから実際に CALL_TIMEOUT を dispatch するための遅延タイマー（#323 AC3）。
-  const timeoutDispatchTimerRef = useRef<number | null>(null);
+  // 予告(preTimeoutNotice)を**実際に描画した**時刻。未描画は null（#323 AC3 / #826）。
+  // 経過時間ではなくこの時刻を起点に保持時間を数えるので、レンダラが詰まって
+  // 「段階を進める setState」と「dispatch」が 1 コミットへ畳まれても予告が飛ばない。
+  const noticeShownAtRef = useRef<number | null>(null);
+  // 呼び出し結果が timeout で確定したが、予告の保持がまだ済んでいない受付セッション。
+  const [pendingTimeoutSessionId, setPendingTimeoutSessionId] = useState<string | null>(null);
   // 呼び出し中の表示段階（dialing/waiting/preTimeoutNotice）。CallingView とアバターコンパニオンの
   // 両方が同じ経過時刻（callingStartedAtRef）・しきい値から導出するため常に一致する。
   const callingStageState = useCallingStage(
@@ -600,6 +604,38 @@ export function KioskFlow({
     callingStartedAtRef,
     callingStageThresholds,
   );
+  // 予告段階を「描画した」瞬間を記録する (#826)。calling を抜けたら起点と保留を捨てる。
+  // 本 effect は下の「予告保持ゲート」より**先に宣言する**（同一コミットで先に走り、
+  // ゲートが最新の描画時刻を読めるようにするため）。
+  useEffect(() => {
+    if (data.state !== 'calling') {
+      noticeShownAtRef.current = null;
+      setPendingTimeoutSessionId(null);
+      return;
+    }
+    if (callingStageState.stage === 'preTimeoutNotice' && noticeShownAtRef.current === null) {
+      noticeShownAtRef.current = Date.now();
+    }
+  }, [data.state, callingStageState.stage]);
+  // 予告保持ゲート (#323 AC3 / #826)。予告を実際に描画してから noticeMinDurationMs 経つまで
+  // CALL_TIMEOUT を dispatch しない。未描画（gate=null）の間は何もせず、描画されると
+  // stage の変化で本 effect が再評価される。state.ts の遷移表自体は変更しない。
+  useEffect(() => {
+    if (pendingTimeoutSessionId === null) return;
+    const gateMs = timeoutDispatchGateMs(
+      noticeShownAtRef.current,
+      Date.now(),
+      callingStageThresholdsRef.current,
+    );
+    if (gateMs === null) return;
+    const fire = () => dispatch({ type: 'CALL_TIMEOUT', sessionId: pendingTimeoutSessionId });
+    if (gateMs <= 0) {
+      fire();
+      return;
+    }
+    const timer = window.setTimeout(fire, gateMs);
+    return () => window.clearTimeout(timer);
+  }, [pendingTimeoutSessionId, callingStageState.stage, dispatch]);
   // アバター常設コンパニオンの段階演出 (#323)。avatarState 自体は変えず、同じ avatarState
   // ('calling') 内の字幕/表情だけを差し替える（見た目の演出のみ・状態機械は不変）。
   // dialing 段階は既存どおり avatarState 標準の文言（新規表示を増やさない）。
@@ -719,16 +755,8 @@ export function KioskFlow({
           // （preTimeoutNotice 段階）を最低 noticeMinDurationMs は見せてから CALL_TIMEOUT を
           // dispatch する。state.ts の遷移表自体は変えず、「いつ dispatch するか」だけを
           // UI 層で遅らせる。しきい値は ref 経由（この effect の再実行トリガーにはしない）。
-          const startedAt = callingStartedAtRef.current;
-          const elapsedMs = startedAt !== null ? Date.now() - startedAt : 0;
-          const delayMs = timeoutDispatchDelayMs(elapsedMs, callingStageThresholdsRef.current);
-          if (delayMs <= 0) {
-            dispatch({ type: 'CALL_TIMEOUT', sessionId: session.id });
-          } else {
-            timeoutDispatchTimerRef.current = window.setTimeout(() => {
-              if (!cancelled) dispatch({ type: 'CALL_TIMEOUT', sessionId: session.id });
-            }, delayMs);
-          }
+          // 実際の発火は下の「予告保持ゲート」effect が行う。ここでは保留に置くだけ。
+          setPendingTimeoutSessionId(session.id);
         }
         // 'calling' は非同期の待ち。**媒体が 2 つある** (#4 Inc D-2 項目 2):
         //   - ビデオ: セッションが確立済み。ビデオビューが応答/未応答を確定する
@@ -749,10 +777,9 @@ export function KioskFlow({
 
     return () => {
       cancelled = true;
-      if (timeoutDispatchTimerRef.current !== null) {
-        window.clearTimeout(timeoutDispatchTimerRef.current);
-        timeoutDispatchTimerRef.current = null;
-      }
+      // 受付を作り直すときは、前の呼び出しの timeout 保留を持ち越さない（旧タイマーの
+      // clearTimeout と同じ意図。発火自体は下のゲート effect が持つ）。
+      setPendingTimeoutSessionId(null);
     };
   }, [data.state, data.purpose, data.target, data.visitor, selectedFlow]);
 

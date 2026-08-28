@@ -108,3 +108,29 @@ export function timeoutDispatchDelayMs(
   const earliestMs = thresholds.noticeAfterMs + thresholds.noticeMinDurationMs;
   return Math.max(0, earliestMs - elapsedMs);
 }
+
+/**
+ * 予告(preTimeoutNotice)を**実際に描画してから**最低 noticeMinDurationMs 見せるための残り ms。
+ *
+ * `timeoutDispatchDelayMs` との違いは「何を起点に数えるか」だけだが、その差が #323 AC3 の
+ * 保証そのものである。旧版は **呼び出し開始からの経過**（壁時計）で数えていたため、
+ * レンダラが数百 ms 詰まると「段階を進める setState」と「CALL_TIMEOUT の dispatch」が
+ * どちらも期限切れになり、React が 1 回のコミットへ畳んで **予告が一度も描画されないまま
+ * 結果画面へ飛ぶ**（#826 の調査で実測）。来訪者から見れば「突然感がない」という約束が
+ * 破れており、しかも画面には何の痕跡も残らない。
+ *
+ * そこで起点を「予告段階を描画した時刻」に変える。まだ描画していなければ `null` を返し、
+ * 呼び出し側は **dispatch してはならない**（描画されてから改めて評価する）と解釈する。
+ *
+ * @param noticeShownAtMs 予告段階を最初に描画した時刻（ms epoch）。未描画なら null。
+ * @param nowMs 現在時刻（ms epoch）。
+ * @returns dispatch までの残り ms（0 なら即時可）。未描画なら null。
+ */
+export function timeoutDispatchGateMs(
+  noticeShownAtMs: number | null,
+  nowMs: number,
+  thresholds: CallingStageThresholds = DEFAULT_CALLING_STAGE_THRESHOLDS,
+): number | null {
+  if (noticeShownAtMs === null) return null;
+  return Math.max(0, noticeShownAtMs + thresholds.noticeMinDurationMs - nowMs);
+}
