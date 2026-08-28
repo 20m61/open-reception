@@ -95,8 +95,14 @@ const OVERRIDE_FIELDS: Record<keyof ServicePolicyOverride, true> = {
 const TEMPORARY_FIELDS: Record<keyof TemporaryOverride, true> = { state: true, expiresAt: true };
 const BREAK_GLASS_FIELDS: Record<keyof NonNullable<RuntimeOperatingPolicy['breakGlass']>, true> = {
   active: true,
+  scope: true,
   serviceKeys: true,
 };
+/** `scope` に許す値 (#798 AC4)。型から導くので、語彙を増やしたらここも型で落ちる。 */
+const BREAK_GLASS_SCOPES: readonly NonNullable<NonNullable<RuntimeOperatingPolicy['breakGlass']>['scope']>[] = [
+  'all',
+  'selected',
+];
 
 /*
  * 未知キーは 1 件ずつ issue にする（どれが効いていないかを名指しできないと直せない）。
@@ -322,9 +328,27 @@ function validateBreakGlass(
   if (typeof value.active !== 'boolean') {
     issues.push({ field: 'breakGlass.active', message: 'must be a boolean' });
   }
+  /*
+   * 🔴 **知らない `scope` を黙って捨てない。** 捨てると `scope: 'ALL'` のような打ち間違いが
+   * 「未指定」に化け、**全停止のつもりが 1 件も止まらない**（不発）か、その逆になる。
+   * #797 が typo を潰したのと同じ理由で、ここも名指しで落とす。
+   */
+  let scope: NonNullable<RuntimeOperatingPolicy['breakGlass']>['scope'];
+  if (value.scope !== undefined) {
+    if (typeof value.scope !== 'string' || !BREAK_GLASS_SCOPES.includes(value.scope as typeof BREAK_GLASS_SCOPES[number])) {
+      issues.push({
+        field: 'breakGlass.scope',
+        message: `must be one of ${BREAK_GLASS_SCOPES.join(' | ')}`,
+      });
+      return undefined;
+    }
+    scope = value.scope as typeof BREAK_GLASS_SCOPES[number];
+  }
+  const withScope = <T extends object>(base: T): T & { scope?: typeof scope } =>
+    scope === undefined ? base : { ...base, scope };
   const keys = value.serviceKeys;
   if (keys === undefined) {
-    return typeof value.active === 'boolean' ? { active: value.active } : undefined;
+    return typeof value.active === 'boolean' ? withScope({ active: value.active }) : undefined;
   }
   if (!Array.isArray(keys)) {
     issues.push({ field: 'breakGlass.serviceKeys', message: 'must be an array' });
@@ -352,7 +376,7 @@ function validateBreakGlass(
     }
   });
   const serviceKeys = unique.filter(isManagedKey);
-  return typeof value.active === 'boolean' ? { active: value.active, serviceKeys } : undefined;
+  return typeof value.active === 'boolean' ? withScope({ active: value.active, serviceKeys }) : undefined;
 }
 
 function validateServices(
