@@ -1069,6 +1069,71 @@ describe('resolveRuntimeStatesFor', () => {
     }
   });
 
+  /**
+   * 🔴 **壊れ方は 1 種類ではない** (#798 AC1)。
+   *
+   * 既存の「壊れたレコード」テストは `services.stt.exceptionDates` が非配列の形だけを見ている。
+   * issue が実測で挙げている 4 つのうち、**共通営業時間側の timezone** から来る経路が
+   * 抜けていた ―― `resolveRuntimeStatesFor` は `common.timezone` をそのまま `resolve` へ渡し、
+   * `Intl` が知らないゾーンだと **`RangeError` で落ちる**（実測で再現済み）。
+   *
+   * 書き込み経路（`upsertOperatingPolicy`）は `isValidTimeZone` で塞いであるが、
+   * **検証層は新規の書き込みしか守れない**。旧スキーマ・直接編集・別経路で入った値は残る。
+   * ここが throw のままだと、拠点 1 つの壊れた timezone で Reconciler が毎分落ち続ける。
+   */
+  it('共通営業時間の timezone が壊れていても error として報告する（throw させない）', async () => {
+    // 検証層を**迂回して**書く。`upsertOperatingPolicy` は弾くので直接 backend へ置く。
+    await getBackend()
+      .collection<{ id: string }>('operating_policy')
+      .put({
+        id: `${TENANT}:${SITE}`,
+        tenantId: TENANT,
+        siteId: SITE,
+        timezone: 'Not/A/Zone',
+        weeklySchedule: { mon: [{ start: '09:00', end: '18:00' }] },
+        fixedHolidays: [],
+        exceptionDates: [],
+        version: 1,
+        updatedAt: new Date().toISOString(),
+        updatedBy: 'legacy',
+      } as unknown as { id: string });
+    const error = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    try {
+      // 🔴 **throw しないこと自体が主張。** await が reject すればこの行で落ちる。
+      const outcome = await resolveRuntimeStatesFor(TENANT, SITE, IN_HOURS);
+      expect(outcome.kind).toBe('error');
+      expect(error).toHaveBeenCalled();
+    } finally {
+      error.mockRestore();
+    }
+  });
+
+  /**
+   * 生のオフセットは #800 で**書き込めなくなった**が、それ以前のレコードは残る。
+   * `Intl` は受理するので **throw しない** ―― つまり「壊れている」とは報告されず、
+   * **黙って解決される**。これは #800 の AC4（`TIMEZONE_BOUNDS` の縮小）を保留している
+   * 理由そのものなので、**現在の挙動を明示的に固定**しておく。
+   */
+  it('生オフセットの timezone は（旧レコードとして）読めて解決できる — #800 AC4 保留の根拠', async () => {
+    await getBackend()
+      .collection<{ id: string }>('operating_policy')
+      .put({
+        id: `${TENANT}:${SITE}`,
+        tenantId: TENANT,
+        siteId: SITE,
+        timezone: '-23:59',
+        weeklySchedule: { mon: [{ start: '09:00', end: '18:00' }] },
+        fixedHolidays: [],
+        exceptionDates: [],
+        version: 1,
+        updatedAt: new Date().toISOString(),
+        updatedBy: 'legacy',
+      } as unknown as { id: string });
+    const outcome = await resolveRuntimeStatesFor(TENANT, SITE, IN_HOURS);
+    // 落ちも壊れもしない。**だから静かに残る**（TIMEZONE_BOUNDS を狭められない理由）。
+    expect(outcome.kind).not.toBe('error');
+  });
+
   it('読み取りに失敗したら error として報告し、黙って捨てない', async () => {
     const error = vi.spyOn(console, 'error').mockImplementation(() => undefined);
     try {
