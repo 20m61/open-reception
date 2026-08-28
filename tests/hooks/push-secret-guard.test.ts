@@ -14,7 +14,29 @@ import { execFileSync, spawnSync } from 'node:child_process';
 import { mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+
+/**
+ * 🔴 **既定の 5 秒では足りない。**
+ *
+ * 各ケースは使い捨ての git リポジトリを作り（`git init` / `add` / `commit` を複数回）、
+ * そのうえで bash のフックを起動し、フックの中で **gitleaks が差分を走査**する。
+ * 単独実行でも 31 ケースで 17 秒かかる（実測）。ゲートの unit ステップは 557 ファイルを
+ * 並列で回すので、その下では 1 ケースが 5 秒を超える。
+ *
+ * 2026-08-28 のゲートで実際に踏んだ:
+ *
+ * ```
+ * FAIL tests/hooks/push-secret-guard.test.ts > 連結されていても捕まえる（秘密情報ありで差分テスト）
+ * Error: Test timed out in 5000ms.
+ * ```
+ *
+ * これは**アサーションに到達する前**の偽の赤で、主張そのものは何も変わっていない
+ * （CLAUDE.md「まず偽の赤を疑う」）。時間を伸ばしても**検出力は下がらない** ――
+ * 下がるのは「アサーションに到達できずに落ちる」確率だけである。
+ * `tests/config/create-pull-request-args.test.ts` が同じ理由で同じ手当てをしている。
+ */
+vi.setConfig({ testTimeout: 30_000 });
 
 const HOOK = resolve(process.cwd(), 'scripts/hooks/push-secret-guard.sh');
 const BASH = '/bin/bash';
