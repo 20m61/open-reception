@@ -25,15 +25,22 @@ const ACTOR = {
   assignments: [{ role: 'tenant_admin' as const, tenantId: TENANT, siteId: null, deviceId: null }],
 };
 
+// 🔴 **絶対日付を書かない。** 以前ここは `visitAt: '2026-08-28…'` /
+// `expiresAt: '2026-08-29…'` というリテラルで、**2026-08-29 を過ぎた時点で予約が
+// 期限切れ**（`lifecycle.ts` の `Date.parse(expiresAt) <= now`）になり、
+// 照合が `not_found` に倒れて落ちるようになっていた。#736 が縛りたいのは
+// 「発行と照合が同じバックエンドを見ているか」だけで、期限は本質ではない。
+// 現在時刻からの相対にして、いつ実行しても同じことを主張させる。
+const HOUR_MS = 60 * 60 * 1000;
 const INPUT = {
   tenantId: TENANT,
   siteId: SITE,
   visitorName: 'TEST-来客',
-  visitAt: '2026-08-28T01:00:00.000Z',
+  visitAt: new Date(Date.now() + HOUR_MS).toISOString(),
   targetType: 'staff' as const,
   targetId: 'staff-seed',
   usagePolicy: 'single_use' as const,
-  expiresAt: '2026-08-29T00:00:00.000Z',
+  expiresAt: new Date(Date.now() + 24 * HOUR_MS).toISOString(),
   retentionDays: 30,
 };
 

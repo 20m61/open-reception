@@ -1,4 +1,5 @@
 import { test, expect, revealStaff } from './kiosk-fixtures';
+import type { Page } from '@playwright/test';
 
 /**
  * 呼び出し中の待ち体験 (issue #323) の E2E。
@@ -10,40 +11,181 @@ import { test, expect, revealStaff } from './kiosk-fixtures';
  *   - `?callingNoticeMs=` … waiting → preTimeoutNotice（タイムアウト直前の予告）へ切り替わる経過 ms
  *   - `?callingNoticeHoldMs=` … 予告を見せてから実際に CALL_TIMEOUT へ遷移するまでの最低保持 ms
  *
- * 呼び出し結果は担当者の mockCallOutcome で決定的に分岐する（reception-flow.spec.ts と同じ担当者
- * フィクスチャ）: staff-suzuki → timeout（未応答）。予告を挟んでからでないと result-timeout に
- * 到達しないことを、段階の出現順序で確認する。
+ * 呼び出し結果は担当者の mockCallOutcome で決定的に分岐する: staff-suzuki → timeout（未応答）。
+ *
+ * ## 🔴 何を縛っているか (#826)
+ *
+ * 1. **段の順序**（dialing → waiting → preTimeoutNotice → result-timeout）
+ * 2. **予告の保持時間**。順序だけでは足りない —— 予告が 1 フレームだけ DOM に載って即座に
+ *    結果へ飛んでも順序列は同一になるので、**保持を無効化する変異が素通りする**。
+ * 3. **レンダラが詰まっても 1・2 が保たれること**（下の「停止注入」テスト）
+ *
+ * ## なぜ瞬時値で待たないか
+ *
+ * 各段が画面に出ている時間は full suite 並行下で**どれも 300ms 未満**（実測: dialing 約 208ms →
+ * waiting 約 299ms → preTimeoutNotice 約 292ms）。`toHaveAttribute` の瞬時値待ちはポーリングが
+ * 1 回飛ぶと段の窓を丸ごと越え、その後 calling 自体が消えるので二度と観測できない。
+ * そこで MutationObserver で遷移を**取りこぼしなく記録**し、待つのは消えない終端シグナルだけにする。
  */
 
-test('呼び出し中は段階的に文言が変わり、タイムアウトは予告を経てから遷移する (#323 AC1/AC3)', async ({ page }) => {
-  // 無操作リセットの短縮は指定しない。calling は INACTIVITY_RESET_STATES に含まれず
-  // （state.ts）本テストの検証対象にも関わらないため、一律に短縮しても利益が無く、
-  // calling へ至る 6 ステップの操作を警告オーバーレイの横取りに晒すだけだった (#476)。
-  await page.goto('/kiosk?callingStageMs=200&callingNoticeMs=500&callingNoticeHoldMs=300');
+/** 記録の置き場（ページ側 window に生やす一時キー）。 */
+const TRAIL_KEY = '__callingStageTrail';
+/** 予告の最低保持 ms。URL クエリと assert の両方がこの 1 つの定数から引く。 */
+const HOLD_MS = 300;
+const STAGE_QUERY = `callingStageMs=200&callingNoticeMs=500&callingNoticeHoldMs=${HOLD_MS}`;
+
+/** 段の遷移列（時刻つき）と、経過インジケータの観測高さ。 */
+type StageTrail = { stages: { stage: string; at: number }[]; pulseHeight: number };
+
+/**
+ * `data-calling-stage` の遷移と経過インジケータを記録し始める。**confirm-call の前に呼ぶこと。**
+ *
+ * 🔴 **属性の「現在値」をループの中で読まない。** `record.target.getAttribute()` は
+ * *コールバック時点の最終値*を返すので、1 コールバックに属性 record が 2 件束ねられると
+ * `dialing → (最終値)preTimeoutNotice → waiting → …` と**順序が壊れて偽の赤になる**。
+ * しかも record が束ねられるのは「レンダラが詰まって複数コミットが 1 タスクに入ったとき」＝
+ * #826 が再現する条件そのもの。よってループ内では `oldValue` だけを積み、
+ * 現在値はループを抜けてから 1 度だけ確定させる（連続する属性変化は、次の record の
+ * `oldValue` が前の現在値そのものなので、これで漏れない）。
+ */
+async function recordCallingStageTrail(page: Page): Promise<void> {
+  await page.evaluate((key) => {
+    const trail: StageTrail = { stages: [], pulseHeight: 0 };
+    (window as unknown as Record<string, StageTrail>)[key] = trail;
+
+    const push = (value: string | null | undefined) => {
+      if (!value) return;
+      const last = trail.stages[trail.stages.length - 1];
+      if (last?.stage === value) return;
+      trail.stages.push({ stage: value, at: performance.now() });
+    };
+    const has = (root: Element, selector: string) =>
+      root.matches(selector) || root.querySelector(selector) !== null;
+    const scan = (root: Element) => {
+      const panel = root.matches('[data-calling-stage]')
+        ? root
+        : root.querySelector('[data-calling-stage]');
+      if (panel) push(panel.getAttribute('data-calling-stage'));
+      const pulse = root.matches('[data-testid="calling-pulse"]')
+        ? root
+        : root.querySelector('[data-testid="calling-pulse"]');
+      // 存在チェックだけでは display:none / 高さ 0 の退行を素通りするので実寸を採る。
+      if (pulse) trail.pulseHeight = Math.max(trail.pulseHeight, pulse.getBoundingClientRect().height);
+      if (has(root, '[data-testid="result-timeout"]')) push('result-timeout');
+    };
+
+    new MutationObserver((records) => {
+      let pending: Element | null = null;
+      const flush = () => {
+        if (pending) push(pending.getAttribute('data-calling-stage'));
+        pending = null;
+      };
+      for (const record of records) {
+        if (record.type === 'attributes') {
+          push(record.oldValue);
+          if (record.target instanceof Element) pending = record.target;
+          continue;
+        }
+        flush();
+        for (const added of record.addedNodes) {
+          if (added instanceof Element) scan(added);
+        }
+      }
+      flush();
+    }).observe(document.body, {
+      subtree: true,
+      childList: true,
+      attributes: true,
+      attributeOldValue: true,
+      attributeFilter: ['data-calling-stage'],
+    });
+  }, TRAIL_KEY);
+}
+
+async function readCallingStageTrail(page: Page): Promise<StageTrail> {
+  return page.evaluate((key) => {
+    const trail = (window as unknown as Record<string, StageTrail>)[key];
+    return { stages: [...trail.stages], pulseHeight: trail.pulseHeight };
+  }, TRAIL_KEY);
+}
+
+/** 呼び出し(calling)まで進める。無操作リセットの短縮は指定しない (#476)。 */
+async function callSuzuki(page: Page): Promise<void> {
+  await page.goto(`/kiosk?${STAGE_QUERY}`);
   await page.getByTestId('start-reception').click();
   await page.getByTestId('purpose-meeting').click();
   await revealStaff(page, 'staff-staff-suzuki');
   await page.getByTestId('staff-staff-suzuki').click();
   await page.getByTestId('visitor-name').fill('来客 一郎');
   await page.getByTestId('to-confirm').click();
+}
+
+/** 段の順序と、予告の実保持時間を縛る。 */
+function expectNoticeHonoured(trail: StageTrail): void {
+  expect(trail.stages.map((s) => s.stage)).toEqual([
+    'dialing',
+    'waiting',
+    'preTimeoutNotice',
+    'result-timeout',
+  ]);
+  const notice = trail.stages.find((s) => s.stage === 'preTimeoutNotice')!;
+  const result = trail.stages.find((s) => s.stage === 'result-timeout')!;
+  // 🔴 順序だけでは「予告が 1 フレームで通過した」を検出できない。保持そのものを測る。
+  // 下限は計測誤差ぶん緩める（保持を無効化する変異では差が 0 近傍になるので十分に落ちる）。
+  expect(result.at - notice.at).toBeGreaterThanOrEqual(HOLD_MS * 0.8);
+  // AC1: 画面が「動いて」いる（経過インジケータが実寸を持って出ている）。
+  expect(trail.pulseHeight).toBeGreaterThan(0);
+}
+
+test('呼び出し中は段階的に文言が変わり、タイムアウトは予告を経てから遷移する (#323 AC1/AC3)', async ({
+  page,
+}) => {
+  await callSuzuki(page);
+  await recordCallingStageTrail(page);
   await page.getByTestId('confirm-call').click();
 
-  const calling = page.getByTestId('calling');
-  await expect(calling).toBeVisible();
+  // 待つのは**消えない終端シグナル**だけ。段の観測は recorder が担う。
+  await expect(page.getByTestId('result-timeout')).toBeVisible({ timeout: 15_000 });
+  expectNoticeHonoured(await readCallingStageTrail(page));
+});
 
-  // AC1: 画面が「動いて」いる（常時アニメーションする経過インジケータ）。
-  await expect(page.getByTestId('calling-pulse')).toBeVisible();
+/**
+ * 🔴 **#826 の回帰拘束。** 上のテストは「レンダラが詰まらなければ」旧実装でも緑になる
+ * （実測 11 サンプルすべてで同じ順序列が出た）。落ちるのは詰まったときだけなので、
+ * **詰まりを注入しないと修正を縛れない**。
+ *
+ * 予告の保持を「呼び出し開始からの経過」起点で数えていた旧実装では、ここで段階更新と
+ * CALL_TIMEOUT の dispatch がどちらも期限切れになり、React が 1 コミットへ畳んで
+ * **preTimeoutNotice が一度も DOM に載らない**。実測で `origin/main` はこのテストで赤、
+ * 本 PR で緑になる。
+ *
+ * グローバル状態は書き換えないので専用 project は要らない（塞ぐのは自分のページの
+ * メインスレッドだけ）。
+ */
+test('レンダラが詰まっても予告は飛ばない (#826 回帰)', async ({ page }) => {
+  await callSuzuki(page);
+  await recordCallingStageTrail(page);
 
-  // AC1: 経過に応じて段階（dialing → waiting → preTimeoutNotice）が進み、文言も切り替わる。
-  await expect(calling).toHaveAttribute('data-calling-stage', 'waiting', { timeout: 3_000 });
-  await expect(calling).toHaveAttribute('data-calling-stage', 'preTimeoutNotice', { timeout: 3_000 });
+  // waiting を観測した 150ms 後から 700ms 塞ぐ。しきい値 200/500/300 に対して
+  // 「予告の境界(500)」と「旧実装の dispatch 期限(800)」の両方を飲み込む窓になる。
+  await page.evaluate(() => {
+    const obs = new MutationObserver(() => {
+      const el = document.querySelector('[data-testid="calling"]');
+      if (el?.getAttribute('data-calling-stage') !== 'waiting') return;
+      obs.disconnect();
+      setTimeout(() => {
+        const until = Date.now() + 700;
+        while (Date.now() < until) {
+          /* メインスレッドを塞ぐ */
+        }
+      }, 150);
+    });
+    obs.observe(document.body, { subtree: true, childList: true, attributes: true });
+  });
 
-  // AC3: タイムアウト直前の予告を経てから実遷移する（突然 result-timeout に飛ばない）。
-  // ここまでに result-timeout が出ていないこと＝予告を見せてから遷移していることの証跡。
-  await expect(page.getByTestId('result-timeout')).toHaveCount(0);
-
-  // 予告保持後、実際の CALL_TIMEOUT 遷移で結果画面へ進む（state.ts の遷移そのものは不変）。
-  await expect(page.getByTestId('result-timeout')).toBeVisible({ timeout: 5_000 });
+  await page.getByTestId('confirm-call').click();
+  await expect(page.getByTestId('result-timeout')).toBeVisible({ timeout: 20_000 });
+  expectNoticeHonoured(await readCallingStageTrail(page));
 });
 
 test('しきい値を長めにすると dialing のまま既存どおり即結果へ進む（後方互換）', async ({ page }) => {
