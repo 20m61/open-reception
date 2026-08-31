@@ -35,6 +35,18 @@ const HOLD_MS = 300;
 const STAGE_QUERY = `callingStageMs=200&callingNoticeMs=500&callingNoticeHoldMs=${HOLD_MS}`;
 
 /**
+ * 同期応答経路（mock が `/call` で即 `timeout` を返す）用。🔴 **予告しきい値をテストの
+ * 制限時間より長く置く。**
+ *
+ * こうしないと変異検出力が落ちる。短いしきい値（500ms）だと、「確定しても経過を待つ」変異
+ * （= `outcomeResolved` を無視する変異）でも予告は 500ms 後に出てしまうので、段列も保持時間も
+ * 正常と区別できず**変異が生存する**（実測: 緩めた直後に kill が 2→1 へ減った）。
+ * 30 秒に置けば、変異体は制限時間内に予告へ到達できず**必ず**落ちる。
+ */
+const SYNC_NOTICE_MS = 30_000;
+const SYNC_STAGE_QUERY = `callingStageMs=200&callingNoticeMs=${SYNC_NOTICE_MS}&callingNoticeHoldMs=${HOLD_MS}`;
+
+/**
  * PSTN 用のしきい値。**予告(3000ms)を `/status` の初回ポーリング(約 3 秒)より後ろに置く**。
  *
  * ここが #832 の再現条件そのもので、停止注入は要らない ── PSTN の欠陥は**構造的**である。
@@ -133,7 +145,7 @@ async function readCallingStageTrail(page: Page): Promise<StageTrail> {
 
 /** 呼び出し(calling)まで進める。無操作リセットの短縮は指定しない (#476)。 */
 async function callSuzuki(page: Page): Promise<void> {
-  await page.goto(`/kiosk?${STAGE_QUERY}`);
+  await page.goto(`/kiosk?${SYNC_STAGE_QUERY}`);
   await page.getByTestId('start-reception').click();
   await page.getByTestId('purpose-meeting').click();
   await revealStaff(page, 'staff-staff-suzuki');
@@ -181,6 +193,31 @@ async function callViaPstn(page: Page): Promise<void> {
  */
 function expectNoticeHonoured(trail: StageTrail, stages: string[]): void {
   expect(trail.stages.map((s) => s.stage)).toEqual(stages);
+  expectNoticeHeld(trail);
+}
+
+/**
+ * **結果が確定してから遷移する経路**の段列を縛る。
+ *
+ * 🔴 **`waiting` の有無は主張しない。** 出るかどうかは「サーバが答えるまでに `waitingAfterMs`
+ * を跨いだか」で決まり、並行実行の負荷次第で変わる（実測: 単独では出ず、full suite では出た）。
+ * 縛りたいのは**予告が飛ばないこと**であって段の本数ではないので、時間依存の部分は主張しない。
+ *
+ * 検出力は落ちない。予告を飛ばす変異は「予告が結果の直前に居る」で落ち、予告を一瞬で
+ * 通過させる変異は `expectNoticeHeld` の保持時間で落ちる。
+ */
+function expectNoticeBeforeResult(trail: StageTrail): void {
+  const stages = trail.stages.map((x) => x.stage);
+  expect(stages[0]).toBe('dialing');
+  // 予告は必ず出て、**結果の直前**に居る（段を飛ばして結果へ行っていない）。
+  expect(stages.slice(-2)).toEqual(['preTimeoutNotice', 'result-timeout']);
+  // 途中に現れてよいのは `waiting` だけ（未知の段や逆行が混ざっていないこと）。
+  expect(stages.slice(1, -2).every((x) => x === 'waiting')).toBe(true);
+  expectNoticeHeld(trail);
+}
+
+/** 予告の**実保持時間**だけを縛る（段列の主張とは独立に使う）。 */
+function expectNoticeHeld(trail: StageTrail): void {
   const notice = trail.stages.find((s) => s.stage === 'preTimeoutNotice')!;
   const result = trail.stages.find((s) => s.stage === 'result-timeout')!;
   // 🔴 順序だけでは「予告が 1 フレームで通過した」を検出できない。保持そのものを測る。
@@ -190,7 +227,7 @@ function expectNoticeHonoured(trail: StageTrail, stages: string[]): void {
   expect(trail.pulseHeight).toBeGreaterThan(0);
 }
 
-test('呼び出し中は段階的に文言が変わり、タイムアウトは予告を経てから遷移する (#323 AC1/AC3)', async ({
+test('同期応答: 結果が確定したら予告しきい値を待たず、予告を経てから遷移する (#323 AC3)', async ({
   page,
 }) => {
   await callSuzuki(page);
@@ -199,13 +236,9 @@ test('呼び出し中は段階的に文言が変わり、タイムアウトは�
 
   // 待つのは**消えない終端シグナル**だけ。段の観測は recorder が担う。
   await expect(page.getByTestId('result-timeout')).toBeVisible({ timeout: 15_000 });
-  // mock は `/call` で即 timeout を返すので、結果は開始時点で確定している。
-  // よって `waiting` は出ず、予告段へ直行してから保持ぶん見せて遷移する (#832)。
-  expectNoticeHonoured(await readCallingStageTrail(page), [
-    'dialing',
-    'preTimeoutNotice',
-    'result-timeout',
-  ]);
+  // mock は `/call` で即 timeout を返すので結果は開始時点で確定しており、予告段へ直行して
+  // 保持ぶん見せてから遷移する (#832)。`waiting` を跨ぐかは応答速度次第なので主張しない。
+  expectNoticeBeforeResult(await readCallingStageTrail(page));
 });
 
 /**
@@ -246,11 +279,7 @@ test('レンダラが詰まっても予告は飛ばない (#826 回帰)', async 
 
   await page.getByTestId('confirm-call').click();
   await expect(page.getByTestId('result-timeout')).toBeVisible({ timeout: 20_000 });
-  expectNoticeHonoured(await readCallingStageTrail(page), [
-    'dialing',
-    'preTimeoutNotice',
-    'result-timeout',
-  ]);
+  expectNoticeBeforeResult(await readCallingStageTrail(page));
 
   // 🔴 **注入が本当に走ったことを確かめる** (#826 レビュー MINOR-1)。observer が段を
   // 掴み損ねると 700ms のブロックは起きず、このテストは上の非注入テストと同一になる。
@@ -296,12 +325,15 @@ test('PSTN: 結果が確定したら予告しきい値を待たず、予告を�
   await page.getByTestId('confirm-call').click();
 
   await expect(page.getByTestId('result-timeout')).toBeVisible({ timeout: 20_000 });
-  // 結果は開始直後に確定するので `waiting` は出ない。予告は**出る**（飛ばさない）。
-  expectNoticeHonoured(await readCallingStageTrail(page), [
-    'dialing',
-    'preTimeoutNotice',
-    'result-timeout',
-  ]);
+
+  // 🔴 **`waiting` の有無は主張しない。** 出るかどうかは「サーバが答えるまでに
+  // `waitingAfterMs`(200ms) を跨いだか」で決まり、並行実行の負荷次第で変わる（実測: 単独では
+  // 出ず、full suite では出た）。ここで縛りたいのは**予告が飛ばないこと**であって段の本数
+  // ではないので、時間依存の部分を主張から外す ―― 外さないと**偽の赤**になる。
+  //
+  // 検出力は落ちていない。この修正を戻した変異は予告が 30 秒後まで出ないので、
+  // 上の `toBeVisible({ timeout: 20_000 })` に到達できず**必ず**落ちる（実測 22.6s で失敗）。
+  expectNoticeBeforeResult(await readCallingStageTrail(page));
 });
 
 /**
