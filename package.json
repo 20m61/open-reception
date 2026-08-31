@@ -24,7 +24,7 @@
     "lighthouse": "lhci autorun",
     "vrm:check": "bash scripts/vrm-check.sh",
     "audit:deps": "tsx scripts/audit-deps.ts",
-    "sast": "semgrep scan --config p/default --error",
+    "sast": "bash scripts/sast.sh",
     "secrets:scan": "gitleaks detect --no-banner --redact",
     "test:e2e:live": "bash scripts/e2e-live.sh",
     "delegate:prompt": "tsx scripts/delegate-gate-prompt.ts",
