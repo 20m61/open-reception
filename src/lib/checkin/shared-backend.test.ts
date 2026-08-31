@@ -31,6 +31,12 @@ const ACTOR = {
 // 照合が `not_found` に倒れて落ちるようになっていた。#736 が縛りたいのは
 // 「発行と照合が同じバックエンドを見ているか」だけで、期限は本質ではない。
 // 現在時刻からの相対にして、いつ実行しても同じことを主張させる。
+//
+// 🔴 **落ちたことより、隣が空虚に通っていたことのほうが重い。** 期限切れの予約は
+// **テナントに関係なく** `resolve` が失敗するので、下の「他テナントからは引けない」は
+// **境界が壊れていても緑**だった。境界を外す変異（索引 key を発行側テナントで固定し
+// `inBounds` を削る）を当てると、期限切れ fixture では **SURVIVED**、相対時刻では
+// **KILLED** になることを実測した。だから下のテストには**下界**を足してある。
 const HOUR_MS = 60 * 60 * 1000;
 const INPUT = {
   tenantId: TENANT,
@@ -74,6 +80,12 @@ describe('発行と照合が同じバックエンドを見る (#736)', () => {
   it('🔴 他テナントの受付端末からは引けない', async () => {
     const issued = await getReservationService().create(ACTOR, INPUT);
     if (!issued.ok) throw new Error('発行に失敗');
+
+    // 🔴 **下界を先に縛る (#833)。** 「引けない」だけを主張する assertion は、期限切れのように
+    // **全部が失敗する**世界でも通ってしまう。正しいテナントからは引けることを先に確かめ、
+    // 下の失敗が**境界に由来する**ことを保証する（`resolve` は閲覧のみで使用済み化しない）。
+    const sameTenant = await getCheckinService().resolve(TENANT, SITE, issued.value.token);
+    expect(sameTenant.ok, '正しいテナントからも引けない ── 境界以外の理由で失敗している').toBe(true);
 
     const resolved = await getCheckinService().resolve(
       asTenantId('other-tenant'),
