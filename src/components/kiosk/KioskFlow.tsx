@@ -1092,6 +1092,20 @@ export function KioskFlow({
 
     const action = decidePollAction(result.status.state, elapsedMs);
     if (action.kind === 'resolved') {
+      // 🔴 **timeout だけは予告保持ゲートへ送る** (#832 / #323 AC3)。ここで直に dispatch すると、
+      // サーバが予告しきい値より前に `timeout` を返した場合（既定では予告 25s に対しサーバは
+      // 数秒〜十数秒で返すので**実運用ではほぼ必ず**そうなる）、来訪者は予告を 1 度も見ずに
+      // 未応答画面へ飛ぶ。実測した遷移列は `dialing → result-timeout` で、`waiting` すら出ない。
+      //
+      // 同期応答経路（`/call` が `timeout` を返す枝）と**同じ保留に置く**ことで、発火は下の
+      // ゲート effect 1 か所に集約される ── 判断を 2 か所に書かない。
+      //
+      // connected / failed は予告の対象ではない（予告は「まもなく打ち切る」の告知なので、
+      // 結果が出た側を遅らせる理由が無い）ので従来どおり即 dispatch する。
+      if (action.event === 'CALL_TIMEOUT') {
+        setPendingTimeoutSessionId(id);
+        return;
+      }
       dispatch({ type: action.event, sessionId: id });
       return;
     }

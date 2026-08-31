@@ -107,9 +107,15 @@ export function deriveCallingStage(
  * そこで起点を「予告段階を描画した時刻」に変える。まだ描画していなければ `null` を返し、
  * 呼び出し側は **dispatch してはならない**（描画されてから改めて評価する）と解釈する。
  *
- * 🔴 **適用範囲は `/call` が同期で `timeout` を返す経路だけ**（#826 時点）。実 PSTN の
- * `/status` ポーリングと Vonage ビデオ経路は今も予告を経ずに `CALL_TIMEOUT` を dispatch する。
- * 2 経路への適用は別 Issue。
+ * 🔴 **適用範囲**（#832 で実 PSTN を追加）。`CALL_TIMEOUT` の dispatch 元は 4 つあり、
+ * 現時点でゲートを通るのは上 2 つだけ:
+ *
+ *  - ✅ `/call` が同期で `timeout` を返す経路（#826）
+ *  - ✅ 実 PSTN の `/status` ポーリング（#832。`handleStatusPoll` が保留へ置く）
+ *  - ❌ Vonage ビデオ（`reception-screens.tsx` の `onTimeout`）
+ *  - ❌ QR 受付（`CheckinFlow`。そもそも段階演出を持たない）
+ *
+ * 残り 2 経路も #832 で面倒を見る。**#323 AC3 はまだ全経路では満たされていない。**
  *
  * @param noticeShownAtMs 予告段階を最初に commit した時刻（ms epoch）。未 commit なら null。
  * @param nowMs 現在時刻（ms epoch）。

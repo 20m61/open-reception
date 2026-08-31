@@ -56,7 +56,16 @@ test('サーバが connected を返したらその結果で確定する（権威
 test('サーバが timeout を返したら未応答として確定する', async ({ page }) => {
   await stubCallThenStatus(page, 1, 'timeout');
 
-  await page.goto('/kiosk');
+  // 🔴 **段階しきい値を縮めるのは「速さ」を測っているからではない** (#832)。
+  //
+  // PSTN の `CALL_TIMEOUT` は予告保持ゲートを通るようになった（#323 AC3 を実経路でも満たす
+  // ため）。既定しきい値では予告 25s ＋ 保持 5s = **30 秒**かかるので、この spec は素で赤くなる。
+  //
+  // ここが主張しているのは「**どの結果に確定するか**（権威はサーバ）」であって到達時間ではない。
+  // よって主張は 1 文字も緩めず、ゲートが律速にならないところまでしきい値だけを縮める
+  // （`?inactivityMs=` と同じ、このリポジトリ既定の短縮クエリの流儀）。
+  // 予告そのものが飛ばないことは `kiosk-calling-stage.spec.ts` の PSTN テストが縛る。
+  await page.goto('/kiosk?callingStageMs=200&callingNoticeMs=500&callingNoticeHoldMs=300');
   await driveToCalling(page);
 
   await expect(page.getByTestId('result-timeout')).toBeVisible({ timeout: 20_000 });

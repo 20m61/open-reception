@@ -34,6 +34,18 @@ const TRAIL_KEY = '__callingStageTrail';
 const HOLD_MS = 300;
 const STAGE_QUERY = `callingStageMs=200&callingNoticeMs=500&callingNoticeHoldMs=${HOLD_MS}`;
 
+/**
+ * PSTN 用のしきい値。**予告(3000ms)を `/status` の初回ポーリング(約 3 秒)より後ろに置く**。
+ *
+ * ここが #832 の再現条件そのもので、停止注入は要らない ── PSTN の欠陥は**構造的**である。
+ * サーバが予告しきい値より前に `timeout` を返すと、`handleStatusPoll` が予告を待たずに
+ * `CALL_TIMEOUT` を dispatch するので、来訪者は `waiting` の文言から**予告を 1 度も見ずに**
+ * 未応答画面へ飛ぶ（既定しきい値では予告 25s に対しサーバは数秒〜十数秒で返すため、
+ * 実運用では**ほぼ必ず**こうなる）。
+ */
+const PSTN_NOTICE_MS = 3_000;
+const PSTN_STAGE_QUERY = `callingStageMs=200&callingNoticeMs=${PSTN_NOTICE_MS}&callingNoticeHoldMs=${HOLD_MS}`;
+
 /** 段の遷移列（時刻つき）と、経過インジケータの観測高さ。 */
 type StageTrail = { stages: { stage: string; at: number }[]; pulseHeight: number };
 
@@ -120,6 +132,36 @@ async function callSuzuki(page: Page): Promise<void> {
   await page.getByTestId('to-confirm').click();
 }
 
+/**
+ * 実 PSTN 発信を模す。`/call` は `state:'calling'`（ビデオセッション無し）で返し、
+ * 結果は `/status` ポーリングで確定させる ── これが**実運用で来訪者が一番踏む経路**である。
+ *
+ * 🔴 **`vonageSessionId` を返さないこと。** 返すとビデオビュー（`KioskCallView`）が開き、
+ * `data-calling-stage` パネルごと別経路になる（`shouldOpenVideoView`）。
+ */
+async function stubPstnTimeout(page: Page): Promise<void> {
+  await page.route('**/api/kiosk/receptions/*/call', (route) =>
+    route.fulfill({ json: { state: 'calling' } }),
+  );
+  await page.route('**/api/kiosk/receptions/*/status', (route) =>
+    route.fulfill({ json: { state: 'timeout' } }),
+  );
+}
+
+/**
+ * PSTN 経路で呼び出しまで進める。**予告しきい値をポーリングより後ろに置く**ことが肝で、
+ * 「サーバが予告より前に結果を返す」という #832 の条件をここで作っている。
+ */
+async function callViaPstn(page: Page): Promise<void> {
+  await page.goto(`/kiosk?${PSTN_STAGE_QUERY}`);
+  await page.getByTestId('start-reception').click();
+  await page.getByTestId('purpose-meeting').click();
+  await revealStaff(page, 'staff-staff-sato');
+  await page.getByTestId('staff-staff-sato').click();
+  await page.getByTestId('visitor-name').fill('来客 三郎');
+  await page.getByTestId('to-confirm').click();
+}
+
 /** 段の順序と、予告の実保持時間を縛る。 */
 function expectNoticeHonoured(trail: StageTrail): void {
   expect(trail.stages.map((s) => s.stage)).toEqual([
@@ -201,4 +243,26 @@ test('しきい値を長めにすると dialing のまま既存どおり即結�
   await page.getByTestId('confirm-call').click();
 
   await expect(page.getByTestId('result-connected')).toBeVisible();
+});
+
+/**
+ * 🔴 **#832 AC1 の回帰拘束（実 PSTN 経路）。**
+ *
+ * 上の 2 本が縛っているのは `/call` が**同期で** `timeout` を返す経路だけで、これは mock の
+ * 都合である。実運用の PSTN は `/call` が `calling` で返り、結果は `/status` ポーリングで
+ * 後から届く ── そちらは #826 の予告保持ゲートを**素通り**していた。
+ *
+ * 停止注入は要らない。サーバの応答が予告しきい値より前に来れば**必ず**飛ぶので、
+ * しきい値と応答時刻の関係だけで決定的に落ちる。
+ */
+test('PSTN: サーバが予告より前に timeout を返しても、予告を経てから遷移する (#832)', async ({
+  page,
+}) => {
+  await stubPstnTimeout(page);
+  await callViaPstn(page);
+  await recordCallingStageTrail(page);
+  await page.getByTestId('confirm-call').click();
+
+  await expect(page.getByTestId('result-timeout')).toBeVisible({ timeout: 20_000 });
+  expectNoticeHonoured(await readCallingStageTrail(page));
 });
