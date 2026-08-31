@@ -199,6 +199,7 @@ import {
 import {
   clampCallingStageThresholds,
   deriveCallingStage,
+  advanceCallingStage,
   timeoutDispatchGateMs,
   type CallingStage,
   type CallingStageThresholds,
@@ -285,8 +286,11 @@ function useCallingStage(
   timeoutPending: boolean,
 ): { stage: CallingStage; elapsedMs: number } {
   const [elapsedMs, setElapsedMs] = useState(0);
+  // 到達した最大段。`calling` を抜けたら捨てる（次の受付へ持ち越さない）。
+  const latchedStageRef = useRef<CallingStage>('dialing');
   useEffect(() => {
     if (!active) {
+      latchedStageRef.current = 'dialing';
       setElapsedMs(0);
       return;
     }
@@ -312,7 +316,14 @@ function useCallingStage(
     // startedAtRef は ref オブジェクト自体（identity は不変）を依存にする。中身の変更検知は
     // tick() の中で毎回読む（react-hooks/refs: レンダー中に ref を触らない）。
   }, [active, startedAtRef, thresholds]);
-  return { stage: deriveCallingStage(elapsedMs, thresholds, { timeoutPending }), elapsedMs };
+  // 🔴 **ラッチを通す** (#832 5 周目レビュー MAJOR-1)。`deriveCallingStage` は「その瞬間の段」
+  // しか返さず、`timeoutPending` が真になった瞬間に `waiting → dialing` へ後退しうる
+  // （床が `waitingAfterMs` を上回る設定。テナントは 100ms まで下げられる）。
+  // 生で出すと来訪者は逆行するちらつきを見て、保持も数え直しになる。
+  const raw = deriveCallingStage(elapsedMs, thresholds, { timeoutPending });
+  const latched = active ? advanceCallingStage(latchedStageRef.current, raw) : 'dialing';
+  latchedStageRef.current = latched;
+  return { stage: latched, elapsedMs };
 }
 
 

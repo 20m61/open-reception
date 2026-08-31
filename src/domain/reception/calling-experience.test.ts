@@ -6,8 +6,11 @@ import {
   deriveCallingStage,
   MIN_DIALING_MS,
   MIN_DIALING_FLOOR_MS,
+  advanceCallingStage,
+  callingStageRank,
   timeoutDispatchGateMs,
 } from './calling-experience';
+import type { CallingStage } from './calling-experience';
 
 describe('deriveCallingStage (#323)', () => {
   it('経過 0ms は dialing 段階', () => {
@@ -119,28 +122,59 @@ describe('deriveCallingStage (#323)', () => {
   });
 
   /**
-   * 🔴 **不変条件: `timeoutPending` が真になっても、段は予告から後退しない**
-   * （4 周目レビュー MINOR-2）。
+   * 🔴 **不変条件: ラッチを通せば段は決して後退しない**（5 周目レビュー MAJOR-1）。
    *
-   * ここまで 3 周連続で「床の値」を調整していた。値ではなく**満たすべき性質**を総当たりで
-   * 縛る（CLAUDE.md「分岐ごとの期待値ではなく不変条件を書く」）。後退すると `KioskFlow` の
-   * 「逆行したら起点を捨てる」が走り、保持が数え直しになって画面がちらつく。
+   * 前周は「予告からの後退」だけを見る**片側**の主張だった。ところが実装が実際に後退するのは
+   * **`waiting → dialing`** の方向で、同じ総当たり範囲の **225 点中 31 点**がそれを踏んで
+   * いたのに 1 件も見えていなかった（CLAUDE.md「不変条件は片側しか主張しない」）。
+   * さらに応答を 300ms 遅らせるだけで e2e が決定的に落ちることも実測されている。
+   *
+   * 純関数は時間軸を持たないので単調性を表現できない。**ラッチに対して両側で縛る。**
    */
-  it('🔴 timeoutPending が真になっても予告段から後退しない（不変条件）', () => {
+  it('🔴 ラッチを通すと段は決して後退しない（両側・総当たり）', () => {
     for (const waitingAfterMs of [100, 200, 400, 1_000, 15_000]) {
       for (const noticeAfterMs of [200, 300, 500, 5_000, 25_000]) {
         const t = clampCallingStageThresholds({ waitingAfterMs, noticeAfterMs });
-        for (const elapsedMs of [0, 99, 199, 210, 399, 499, 500, 3_000, 30_000]) {
-          const idle = deriveCallingStage(elapsedMs, t, { timeoutPending: false });
-          const pending = deriveCallingStage(elapsedMs, t, { timeoutPending: true });
-          if (idle === 'preTimeoutNotice') {
-            expect(pending, `elapsed=${elapsedMs} w=${waitingAfterMs} n=${noticeAfterMs}`).toBe(
-              'preTimeoutNotice',
-            );
+        for (const pendingFrom of [0, 199, 210, 399, 499, 500, 3_000]) {
+          let latched: CallingStage = 'dialing';
+          let previousRank = -1;
+          for (const elapsedMs of [0, 99, 199, 210, 399, 499, 500, 3_000, 30_000]) {
+            const raw = deriveCallingStage(elapsedMs, t, { timeoutPending: elapsedMs >= pendingFrom });
+            latched = advanceCallingStage(latched, raw);
+            const rank = callingStageRank(latched);
+            expect(
+              rank,
+              `後退した: w=${waitingAfterMs} n=${noticeAfterMs} pendingFrom=${pendingFrom} elapsed=${elapsedMs}`,
+            ).toBeGreaterThanOrEqual(previousRank);
+            previousRank = rank;
           }
         }
       }
     }
+  });
+
+  /**
+   * **下界**。「後退しない」だけを主張すると、*常に `dialing` を返す*ラッチでも空虚に通る。
+   * 進むべきときに進むことを対で縛る。
+   */
+  it('🔴 ラッチは進むべきときに進む（下界）', () => {
+    const t = DEFAULT_CALLING_STAGE_THRESHOLDS;
+    let latched: CallingStage = 'dialing';
+    latched = advanceCallingStage(latched, deriveCallingStage(t.waitingAfterMs, t));
+    expect(latched).toBe('waiting');
+    latched = advanceCallingStage(latched, deriveCallingStage(t.noticeAfterMs, t));
+    expect(latched).toBe('preTimeoutNotice');
+  });
+
+  it('🔴 生の導出は後退しうる（ラッチが必要な理由を固定する）', () => {
+    // 床(500) > waitingAfterMs(100) の設定。pending が立つと waiting → dialing へ落ちる。
+    const t = clampCallingStageThresholds({ waitingAfterMs: 100, noticeAfterMs: 100_000 });
+    expect(deriveCallingStage(210, t, { timeoutPending: false })).toBe('waiting');
+    expect(deriveCallingStage(210, t, { timeoutPending: true })).toBe('dialing');
+    // ラッチを通せば後退しない。
+    expect(advanceCallingStage('waiting', deriveCallingStage(210, t, { timeoutPending: true }))).toBe(
+      'waiting',
+    );
   });
 
   it('🔴 床は 2.5 秒を下回らない（値を狭める変異を落とす）', () => {

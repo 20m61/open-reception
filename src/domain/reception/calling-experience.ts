@@ -126,6 +126,16 @@ export const MIN_DIALING_FLOOR_MS = 500;
  * 「呼び出しています」は確定直後でも嘘ではない ―― 実際に呼び出したのだから。
  * 潰すべき嘘と、潰してはいけない事実を分ける。
  *
+ * 🔴 **この関数は「その瞬間の段」しか返さない。単調性は保証しない。**
+ * `MIN_DIALING_FLOOR_MS` が `waitingAfterMs` を上回りうる（テナントは 100ms まで下げられる）
+ * ので、`timeoutPending` が真になった瞬間に `waiting → dialing` へ**後退しうる**。
+ * 純関数は時間軸を持たないため、ここで単調性を表現することは原理的にできない ——
+ * 引数を並べ替えても両立しない（5 周目レビューで実測: 225 点中 31 点が後退）。
+ *
+ * **時間軸に沿った単調性は `advanceCallingStage` のラッチが担保する。** 呼び出し側
+ * （`useCallingStage`）は必ずラッチを通すこと。生の戻り値を画面へ出すと、来訪者は
+ * 「お待ちください → 呼び出しています → 予告」という逆行するちらつきを見る。
+ *
  * @param options.timeoutPending timeout が確定し、予告保持ゲート待ちであるか。
  *   🔴 **`connected` / `failed` で真にしないこと。** 結果直前に「つながらない場合は…」を
  *   見せることになる（呼び出し側の保留は timeout 専用。`KioskFlow` の `pendingTimeout`）。
@@ -146,13 +156,7 @@ export function deriveCallingStage(
     MIN_DIALING_FLOOR_MS,
     Math.min(MIN_DIALING_MS, thresholds.waitingAfterMs),
   );
-  // 🔴 **経過だけで予告段に到達していたら、`timeoutPending` の有無に関わらず予告段**。
-  //
-  // これを後ろに置くと**段が後退する**（4 周目レビュー MINOR-2 の実測: `noticeAfterMs < 床`
-  // となる設定で `preTimeoutNotice → dialing` が起きた）。後退すると `KioskFlow` の
-  // 「逆行したら起点を捨てる」が走って保持が数え直しになり、来訪者は
-  // 「予告 → 呼び出し中 → 予告 → 結果」というちらつきを見る。
-  // 単調性は下の不変条件テストが総当たりで縛る。
+  // 経過だけで予告段に到達していたら、`timeoutPending` の有無に関わらず予告段。
   if (elapsedMs >= thresholds.noticeAfterMs) return 'preTimeoutNotice';
   if (options?.timeoutPending === true) {
     // 🔴 **床の下では `dialing` を保つ**（`waiting` へ落とさない）。落とすと、まさに消したい
@@ -201,4 +205,24 @@ export function timeoutDispatchGateMs(
 ): number | null {
   if (noticeShownAtMs === null) return null;
   return Math.max(0, noticeShownAtMs + thresholds.noticeMinDurationMs - nowMs);
+}
+
+/** 段の進行順における位置（`CALLING_STAGES` の添字）。 */
+export function callingStageRank(stage: CallingStage): number {
+  return CALLING_STAGES.indexOf(stage);
+}
+
+/**
+ * 到達した最大段でラッチする（**段は後退しない**）。純関数。
+ *
+ * 🔴 **これが単調性の担保である。** `deriveCallingStage` は「その瞬間の段」しか返さず、
+ * `timeoutPending` が真になった瞬間に `waiting → dialing` へ後退しうる（床が
+ * `waitingAfterMs` を上回る設定で起きる）。後退すると `KioskFlow` の「逆行したら起点を
+ * 捨てる」が走って保持が数え直しになり、来訪者は逆行するちらつきを見る。
+ *
+ * 5 周目レビューの実測では、`/status` の応答を 300ms 遅らせるだけで PSTN 4/4・同期 3/3 で
+ * 再現した（`retries` が flaky として吸収するので、緑と誤読される形）。
+ */
+export function advanceCallingStage(previous: CallingStage, next: CallingStage): CallingStage {
+  return callingStageRank(next) > callingStageRank(previous) ? next : previous;
 }

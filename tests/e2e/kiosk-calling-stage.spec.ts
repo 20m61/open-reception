@@ -447,3 +447,50 @@ test('確定しても、床のあいだは「呼び出しています」を見�
   // 床は 3s。計測誤差ぶん緩めるが、狭める変異（250ms 等）は必ず落ちる。
   expect(notice.at - dialing.at).toBeGreaterThanOrEqual(2_500);
 });
+
+/**
+ * 🔴 **応答が遅れても段が後退しない**（#832 5 周目レビュー MAJOR-1 の回帰）。
+ *
+ * レビューが `/status` を 300ms 遅らせるプローブで、**PSTN 4/4・同期 3/3 で決定的に**
+ * 段の後退（`waiting → dialing`）を再現した。機構は `useCallingStage` の tick が
+ * 0ms → `waitingAfterMs+10` → 以後 500ms 刻みで、`waiting` を commit した後に
+ * `timeoutPending` が (210ms, 710ms) の窓で立つと、`elapsedMs` が 210 のまま
+ * 床未満と判定されて `dialing` へ落ちる、というもの。
+ *
+ * 無遅延では窓に入らないので**現状のスイートは緑のまま**であり、並行負荷で数百 ms
+ * 遅れたときだけ落ちる ―― `retries` が flaky として吸収するので緑と誤読される。
+ * CLAUDE.md が #787 / #826 で名指ししている型なので、**遅延を注入して固定する**。
+ */
+test('応答が遅れても段は後退しない (#832 MAJOR-1 回帰)', async ({ page }) => {
+  await page.route('**/api/kiosk/receptions/*/call', (route) =>
+    route.fulfill({ json: { state: 'calling' } }),
+  );
+  await page.route('**/api/kiosk/receptions/*/status', async (route) => {
+    // 🔴 `waiting` が commit された後・床に達する前に確定が届く窓へ入れる。
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    return route.fulfill({ json: { state: 'timeout' } });
+  });
+
+  // 床(500) > waitingAfterMs(200) になる設定。ここが後退の起きる条件。
+  await page.goto('/kiosk?callingStageMs=200&callingNoticeMs=30000&callingNoticeHoldMs=300');
+  await page.getByTestId('start-reception').click();
+  await page.getByTestId('purpose-meeting').click();
+  await revealStaff(page, 'staff-staff-sato');
+  await page.getByTestId('staff-staff-sato').click();
+  await page.getByTestId('visitor-name').fill('来客 七郎');
+  await page.getByTestId('to-confirm').click();
+  await recordCallingStageTrail(page);
+  await page.getByTestId('confirm-call').click();
+
+  await expect(page.getByTestId('result-timeout')).toBeVisible({ timeout: 20_000 });
+
+  // 段の rank が単調非減少であること（`expectNoticeBeforeResult` より直接的に後退を見る）。
+  const trail = await readCallingStageTrail(page);
+  const order = ['dialing', 'waiting', 'preTimeoutNotice', 'result-timeout'];
+  const ranks = trail.stages.map((x) => order.indexOf(x.stage));
+  expect(ranks, `段が後退した: ${trail.stages.map((x) => x.stage).join(' → ')}`).toEqual(
+    [...ranks].sort((a, b) => a - b),
+  );
+  // 下界: 予告を経ていること（後退が無いだけの空虚な合格を防ぐ）。
+  expect(trail.stages.map((x) => x.stage)).toContain('preTimeoutNotice');
+});
