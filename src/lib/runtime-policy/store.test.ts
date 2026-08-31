@@ -877,7 +877,8 @@ describe('resolveRuntimeStatesFor', () => {
      * `signage`（既定 `always_on`）で、確定側に出ることまで固定する。
      */
     expect(outcome.unresolved).not.toContain('signage');
-    expect(outcome.services.find((s) => s.serviceKey === 'signage')?.state).toBe('running');
+    // #798 AC2: 解析不能な `force_stopped` は**維持**する（止まりっぱなしが安全側）。
+    expect(outcome.services.find((s) => s.serviceKey === 'signage')?.state).toBe('stopped');
   });
 
   it('break-glass は一時 override より上の段なので、TZ が分からなくても確定する', async () => {
@@ -982,8 +983,12 @@ describe('resolveRuntimeStatesFor', () => {
     expect(outcome.services.find((s) => s.serviceKey === 'signage')?.state).toBe('running');
   });
 
-  it('解析できない期限はどの TZ でも失効扱いなので確定（型ドリフト・壊れた値）', async () => {
-    // 共通営業時間は**設定しない**——設定すると早期 return で切り分けを通らず、主張が空虚になる。
+  it('解析できない期限はどの TZ でも同じ倒し方なので確定（型ドリフト・壊れた値）', async () => {
+    /*
+     * 共通営業時間は**設定しない**——設定すると早期 return で切り分けを通らず、主張が空虚になる。
+     * 🔴 #798 AC2 以降、解析不能な override は「一律で失効」ではなく **state 依存**で倒れる。
+     * それでも判定不能にならない理由は変わらない —— 倒し方が拠点 TZ に依らないからである。
+     */
     for (const expiresAt of [1234, null, '', 'garbage']) {
       await getBackend()
         .collection<{ id: string }>('runtime_policy')
@@ -1001,7 +1006,11 @@ describe('resolveRuntimeStatesFor', () => {
       expect(outcome.kind, String(expiresAt)).toBe('partial');
       if (outcome.kind !== 'partial') return;
       expect(outcome.unresolved, String(expiresAt)).not.toContain('signage');
-      expect(outcome.services.find((s) => s.serviceKey === 'signage')?.state).toBe('running');
+      expect(outcome.services.find((s) => s.serviceKey === 'signage')?.state, String(expiresAt)).toBe('stopped');
+      // 「維持した」ことは呼び出し側から見える（`partial` でも落とさない）。
+      expect(outcome.anomalies.map((a) => [a.serviceKey, a.disposition]), String(expiresAt)).toEqual([
+        ['signage', 'retained'],
+      ]);
     }
   });
 
@@ -1142,6 +1151,74 @@ describe('resolveRuntimeStatesFor', () => {
       expect(error).toHaveBeenCalled();
     } finally {
       error.mockRestore();
+    }
+  });
+
+  /*
+   * #798 AC2。**維持したことも解除したことも観測できる**（現状は完全に無言だった）。
+   * 共通営業時間がある経路（`resolved`）と無い経路（`partial`）の両方で落とさない。
+   */
+  it('共通営業時間があるときも、解析不能な override の扱いが resolution に載る', async () => {
+    // 検証層は**新規の書き込みしか守れない**ので、旧スキーマ / 直接編集の形を直接置く。
+    await seedOperatingHours();
+    await getBackend()
+      .collection<{ id: string }>('runtime_policy')
+      .put({
+        id: `${TENANT}:${SITE}`,
+        tenantId: TENANT,
+        siteId: SITE,
+        services: {
+          signage: { temporaryOverride: { state: 'force_stopped', expiresAt: 'garbage-xyz' } },
+          bedrock: { temporaryOverride: { state: 'force_running', expiresAt: 'garbage-xyz' } },
+        },
+        breakGlass: undefined,
+        version: 1,
+        updatedAt: new Date().toISOString(),
+        updatedBy: 'legacy',
+      } as unknown as { id: string });
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    try {
+      const outcome = await resolveRuntimeStatesFor(TENANT, SITE, IN_HOURS);
+      expect(outcome.kind).toBe('resolved');
+      if (outcome.kind !== 'resolved') return;
+      expect(outcome.resolution.anomalies.map((a) => [a.serviceKey, a.disposition])).toEqual([
+        ['bedrock', 'released'],
+        ['signage', 'retained'],
+      ]);
+      /*
+       * 報告だけでなく**倒れ方**を対で縛る。「維持」だけを見ると、何も解除しない実装でも通る。
+       * `bedrock` は営業時間内なので、解除されれば共通営業時間の段で running に戻る。
+       */
+      expect(resolutionFor(outcome.resolution, 'signage')?.state).toBe('stopped');
+      expect(resolutionFor(outcome.resolution, 'bedrock')).toMatchObject({
+        state: 'running',
+        reason: 'common_weekly_schedule',
+      });
+
+      // 監視へは解決 1 回につき 1 行（サービスごとに毎分鳴らさない）。
+      expect(warn).toHaveBeenCalledTimes(1);
+      // 🔴 運用者が入力した生値はアプリログへ出さない（`rules/pii-secret-minimization.md`）。
+      expect(JSON.stringify(warn.mock.calls)).not.toContain('garbage-xyz');
+      expect(JSON.stringify(warn.mock.calls)).toContain('signage');
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('壊れた override が無ければ監視へ何も上げない（正常時に鳴らさない）', async () => {
+    await seedOperatingHours();
+    await upsertRuntimePolicy(TENANT, SITE, 'a@example.com', {
+      services: { signage: { temporaryOverride: { state: 'force_stopped', expiresAt: '2026-07-20T23:00:00Z' } } },
+    });
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    try {
+      const outcome = await resolveRuntimeStatesFor(TENANT, SITE, IN_HOURS);
+      expect(outcome.kind).toBe('resolved');
+      if (outcome.kind !== 'resolved') return;
+      expect(outcome.resolution.anomalies).toEqual([]);
+      expect(warn).not.toHaveBeenCalled();
+    } finally {
+      warn.mockRestore();
     }
   });
 });
