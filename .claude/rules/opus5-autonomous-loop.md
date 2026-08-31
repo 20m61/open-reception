@@ -6,7 +6,8 @@
 （`/loop-retro`）が実データから足し引きし、そのたびに版を上げる。版は
 `docs/loop-retro.md` の台帳と突き合わせられ、「その教訓を入れてから再発が減ったか」を
 後から測るための帰属になる。**手で教訓を足したら版も上げ、台帳へ 1 行足すこと**
-（食い違いは `npm run loop:retro` が `revision_drift` として出す）。
+（版と台帳の食い違いは `npm run loop:retro` が `revision_drift`、記録より後の日付を持つ
+教訓は `unrecorded_guideline` として出す）。
 
 既存の `CLAUDE.md`、`docs/loop-workflow.md`、`docs/loop-queue.md`、`scripts/quality-gate.sh` を正本として補強する。来訪者・運用者向け変更では `docs/experience/README.md` を体験設計の正本として併用する。
 

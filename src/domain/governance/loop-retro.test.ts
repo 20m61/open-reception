@@ -71,6 +71,14 @@ describe('parseLearnedGuidelines', () => {
   it('由来を持たない引用は教訓ではない', () => {
     expect(parseLearnedGuidelines('> ただの引用。\n> 続き。')).toEqual([]);
   });
+
+  it('全角コロンの「由来：」も教訓として数える', () => {
+    // 🔴 レビュー指摘。表記ゆれ 1 つで上限も帰属検査も**空虚に通る**。
+    // 日本語入力では全角の方がむしろ自然に出る。
+    const gs = parseLearnedGuidelines('> 由来：2026-08-26 / #788（PR #804）。');
+    expect(gs).toHaveLength(1);
+    expect(gs[0]?.issues).toEqual([788]);
+  });
 });
 
 describe('parseRetroRuns', () => {
@@ -103,6 +111,28 @@ describe('parseRetroRuns', () => {
 
   it('見出しや説明表の行は拾わない', () => {
     expect(parseRetroRuns('| 列 | 内容 |\n| --- | --- |\n| 日時 (UTC) | 実行開始時刻 |')).toEqual([]);
+  });
+
+  // 🔴 以下 4 本はレビュー指摘。**記録を静かに落とすと `never_run`（error）が
+  // 「回っているのに回っていない」と報告する** —— 検出器が嘘をつく側へ倒れる。
+  it('秒つきの日時も実データとして拾う', () => {
+    const row = '| 2026-09-07T00:00:00Z | 1→1 | 直近 14 日 | なし | NO_CHANGE | 信号が弱い |';
+    expect(parseRetroRuns(row)).toHaveLength(1);
+  });
+
+  it('結果セルが装飾されていても拾う（**UPDATED** 等）', () => {
+    const row = '| 2026-09-07T00:00Z | 1→2 | 直近 14 日 | 追加 1 | **UPDATED** | PR #900 |';
+    expect(parseRetroRuns(row)[0]?.result).toBe('UPDATED');
+  });
+
+  it('末尾の | が無い行でも最後のセルを切り落とさない', () => {
+    const row = '| 2026-09-07T00:00Z | 1→2 | 直近 14 日 | 追加 1 | UPDATED | PR #900';
+    expect(parseRetroRuns(row)[0]?.note).toBe('PR #900');
+  });
+
+  it('備考で EXAMPLE 行に言及しただけの実データを落とさない', () => {
+    const row = '| 2026-09-07T00:00Z | 1→2 | 直近 14 日 | 追加 1 | UPDATED | EXAMPLE 行の下に追記した |';
+    expect(parseRetroRuns(row)).toHaveLength(1);
   });
 });
 
@@ -175,6 +205,35 @@ describe('evaluateLoopRetro', () => {
     // 教訓を外側ループを通さずに手で足すと、ここで見える。
     const f = evaluateLoopRetro({ ...healthy, rulesRevision: 5 });
     expect(f.map((x) => x.code)).toContain('revision_drift');
+  });
+
+  it('直近の実行より後の日付を持つ教訓は unrecorded_guideline', () => {
+    // 🔴 レビュー指摘。規約本文は「手で教訓を足したら版も上げること（食い違いは
+    // revision_drift が出す）」と約束しているが、版も台帳も触らずに教訓だけ足した場合
+    // 版は一致したままなので **drift は原理的に発火しない**。約束が嘘になっていた。
+    const f = evaluateLoopRetro({
+      ...healthy,
+      guidelines: [guideline('2026-08-26'), guideline('2026-08-30')],
+      runs: [run('2026-08-28T00:00Z', 2)],
+    });
+    expect(f.map((x) => x.code)).toContain('unrecorded_guideline');
+  });
+
+  it('実行と同日に足された教訓は指摘しない（その実行の産物）', () => {
+    const f = evaluateLoopRetro({
+      ...healthy,
+      guidelines: [guideline('2026-08-28')],
+      runs: [run('2026-08-28T00:00Z', 2)],
+    });
+    expect(f.map((x) => x.code)).not.toContain('unrecorded_guideline');
+  });
+
+  it('台帳の版が読めないときは drift を「無し」と断定しない', () => {
+    const f = evaluateLoopRetro({
+      ...healthy,
+      runs: [{ at: '2026-08-28T00:00Z', result: 'UPDATED' as const, note: '' }],
+    });
+    expect(f.map((x) => x.code)).toContain('revision_unmeasured');
   });
 
   it('版マーカーが無いときは「問題なし」ではなく revision_unmeasured', () => {

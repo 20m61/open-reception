@@ -25,7 +25,15 @@
  * （`evaluate-gate-runs.ts` と同じ判断 / `docs/ai-development-loop.md` §9）。
  */
 
-/** 教訓の上限。Warp の improver skill と同じ 15 件。超えたら統合か剪定を促す。 */
+/**
+ * 教訓の上限。Warp の improver skill と同じ 15 件。超えたら統合か剪定を促す。
+ *
+ * 🔴 **この上限が縛るのは `> 由来:` 形式で書かれた教訓だけ**である。同じ内容を素の
+ * bullet で書けば上限も帰属検査も素通りする（レビュー指摘）。**検査が縛れるのは
+ * 「帰属を持つ教訓」であって「規約が伸びること」ではない。** 形式を守らせるのは
+ * `.claude/skills/loop-retro/SKILL.md` 手順 4 の指示であって機械検証ではないので、
+ * **「上限内である」を「規約が肥大していない」と読み替えないこと。**
+ */
 export const GUIDELINE_BUDGET = 15;
 
 /** これを超えて外側ループが回っていなければ「止まっている」とみなす（日）。 */
@@ -66,6 +74,7 @@ export type LoopRetroFinding = {
     | 'over_budget'
     | 'missing_provenance'
     | 'revision_drift'
+    | 'unrecorded_guideline'
     | 'revision_unmeasured';
   severity: 'error' | 'warning';
   message: string;
@@ -101,7 +110,9 @@ export function parseLearnedGuidelines(markdown: string): LearnedGuideline[] {
       heading = (h[1] ?? '').trim();
       continue;
     }
-    if (!/^>\s*由来\s*:/.test(line)) continue;
+    // **コロンは半角・全角の両方を受ける。** 日本語入力では全角の方がむしろ自然に出る。
+    // 表記ゆれ 1 つで教訓が 0 件と数えられると、上限も帰属検査も**空虚に通る**。
+    if (!/^>\s*由来\s*[:：]/.test(line)) continue;
     const block: string[] = [line];
     let j = i + 1;
     while (j < lines.length && /^>/.test(lines[j] ?? '')) {
@@ -139,9 +150,26 @@ function refNumbers(raw: string, wantPull: boolean): number[] {
   return out;
 }
 
-/** EXAMPLE 行は実データではない（`gate-runs.md` と同じ扱い）。 */
+/**
+ * `| a | b |` 形式の行をセルへ割る。
+ *
+ * 🔴 **`slice(1, -1)` で両端を落とさない。** 末尾の `|` を書き忘れた行では
+ * **最後のセルの 1 文字が切れる**（`PR #900` → `PR #90`）。指摘の根拠として
+ * 印字する文字列が静かに壊れるので、前後の `|` を明示的に剥がす。
+ */
+function splitRow(trimmed: string): string[] {
+  return trimmed.replace(/^\|/, '').replace(/\|$/, '').split('|').map((c) => c.trim());
+}
+
+/**
+ * ファイル自身が持つ説明用の行（実データではない）。
+ *
+ * 🔴 **どのセルでも `EXAMPLE` に当たったら落とす、という数え方をしない。**
+ * 備考で「EXAMPLE 行の下に追記した」と書いた**実データが丸ごと消える**。
+ * 落とすのはファイルが自分でそう宣言している太字マーカーの行だけにする。
+ */
 function isExampleRow(cells: readonly string[]): boolean {
-  return cells.some((c) => c.includes('EXAMPLE'));
+  return cells.some((c) => c.includes('**EXAMPLE'));
 }
 
 /**
@@ -154,13 +182,18 @@ export function parseRetroRuns(markdown: string): RetroRun[] {
   for (const line of markdown.split('\n')) {
     const trimmed = line.trim();
     if (!trimmed.startsWith('|')) continue;
-    const cells = trimmed.slice(1, -1).split('|').map((c) => c.trim());
+    const cells = splitRow(trimmed);
     if (cells.length < 6) continue;
     const at = cells[0] ?? '';
-    if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}Z$/.test(at)) continue;
+    // **秒つきも受ける。** `date -u` の書式は運用者によって揺れる。落とすと記録が
+    // 消え、`never_run`（error）が「回っているのに回っていない」と嘘をつく。
+    if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2})?Z$/.test(at)) continue;
     if (isExampleRow(cells)) continue;
-    const result = (cells[4] ?? '').toUpperCase();
-    if (result !== 'UPDATED' && result !== 'NO_CHANGE') continue;
+    // **装飾を許す。** `**UPDATED**` のような強調は台帳では自然に現れる。
+    // 完全一致で弾くと、その行だけが静かに実データから外れる。
+    const resultMatch = /\b(UPDATED|NO_CHANGE)\b/.exec((cells[4] ?? '').toUpperCase());
+    if (resultMatch === null) continue;
+    const result = resultMatch[1] as 'UPDATED' | 'NO_CHANGE';
     const rev = /(\d+)\s*(?:→|->)\s*(\d+)/.exec(cells[1] ?? '');
     runs.push({
       at,
@@ -212,23 +245,28 @@ export function evaluateLoopRetro(input: LoopRetroInput): LoopRetroFinding[] {
     });
   }
 
-  if (rulesRevision === undefined) {
-    // 🔴 **「触れていない」と「測れていない」を混ぜない (#717)。** 版が読めないときは
-    // drift を「無し」と断定せず、測れていないことを出す。
+  // 🔴 **「触れていない」と「測れていない」を混ぜない (#717)。** 版が読めないときは
+  // drift を「無し」と断定せず、測れていないことを出す。**規約側と台帳側の
+  // どちらが読めなくても同じ**（片方だけ守ると、もう片方から静かに素通りする）。
+  const ledgerRevision = runs.length > 0 ? runs[0]?.revisionTo : undefined;
+  if (rulesRevision === undefined || (runs.length > 0 && ledgerRevision === undefined)) {
     findings.push({
       code: 'revision_unmeasured',
       severity: 'warning',
       message:
-        '規約ファイルに版マーカー（`<!-- loop-rules-revision: N -->`）がありません。' +
-        '**版の食い違いは「無い」のではなく「測れていません」。**',
+        rulesRevision === undefined
+          ? '規約ファイルに版マーカー（`<!-- loop-rules-revision: N -->`）がありません。' +
+            '**版の食い違いは「無い」のではなく「測れていません」。**'
+          : `台帳の直近の行から規約版を読めませんでした（\`<前>→<後>\` の形で書いてください）。` +
+            '**版の食い違いは「無い」のではなく「測れていません」。**',
     });
-  } else if (runs.length > 0 && runs[0]?.revisionTo !== undefined && runs[0].revisionTo !== rulesRevision) {
+  } else if (ledgerRevision !== undefined && ledgerRevision !== rulesRevision) {
     findings.push({
       code: 'revision_drift',
       severity: 'warning',
       message:
-        `規約は版 ${rulesRevision} ですが、台帳の直近は版 ${runs[0].revisionTo} で終わっています。` +
-        '外側ループを通さずに教訓が足されたか、実行の記録が漏れています。',
+        `規約は版 ${rulesRevision} ですが、台帳の直近は版 ${ledgerRevision} で終わっています。` +
+        '外側ループを通さずに版が上げられたか、実行の記録が漏れています。',
     });
   }
 
@@ -245,6 +283,30 @@ export function evaluateLoopRetro(input: LoopRetroInput): LoopRetroFinding[] {
   }
 
   const latest = runs[0];
+
+  /**
+   * 🔴 **`revision_drift` だけでは「手で足した教訓」を捕まえられない。**
+   *
+   * 規約本文は「手で教訓を足したら版も上げ、台帳へ 1 行足すこと」と要求し、食い違いは
+   * ここが出すと約束している。ところが**版も台帳も触らずに教訓だけ足す**と、版は一致した
+   * ままなので drift は原理的に発火しない ―― 約束の方が嘘になっていた（レビュー指摘）。
+   *
+   * 記録された最後の実行より**後の日付**を持つ教訓は、その実行の産物ではありえない。
+   * 同日は指摘しない（その実行が足したものとして正しい）。
+   */
+  const latestRunDay = (latest?.at ?? '').slice(0, 10);
+  const unrecorded = guidelines.filter((g) => g.date !== undefined && g.date > latestRunDay);
+  if (unrecorded.length > 0) {
+    findings.push({
+      code: 'unrecorded_guideline',
+      severity: 'warning',
+      message:
+        `直近の実行（${latestRunDay}）より後の日付を持つ教訓が ${unrecorded.length} 件あります` +
+        `（${unrecorded.map((g) => `${RULES_LABEL}:${g.line}`).join(', ')}）。` +
+        '外側ループを通さずに足されたか、実行の記録が漏れています。版を上げて台帳へ 1 行足してください。',
+    });
+  }
+
   const age = daysBetween(new Date(latest?.at ?? ''), now);
   if (age > STALE_AFTER_DAYS) {
     findings.push({
