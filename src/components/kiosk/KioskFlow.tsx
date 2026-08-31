@@ -612,7 +612,13 @@ export function KioskFlow({
       noticeShownAtRef.current = null;
       return;
     }
-    if (callingStageState.stage === 'preTimeoutNotice' && noticeShownAtRef.current === null) {
+    if (callingStageState.stage !== 'preTimeoutNotice') {
+      // 段が予告から**逆行**したら起点を捨てる（端末の壁時計が巻き戻ると起こりうる）。
+      // 残すと、次に予告が出た瞬間にゲートが満了扱いになり「予告が一瞬で結果へ」になる。
+      noticeShownAtRef.current = null;
+      return;
+    }
+    if (noticeShownAtRef.current === null) {
       noticeShownAtRef.current = Date.now();
     }
   }, [data.state, callingStageState.stage]);

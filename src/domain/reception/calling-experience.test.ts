@@ -4,7 +4,6 @@ import {
   DEFAULT_CALLING_STAGE_THRESHOLDS,
   clampCallingStageThresholds,
   deriveCallingStage,
-  timeoutDispatchDelayMs,
   timeoutDispatchGateMs,
 } from './calling-experience';
 
@@ -74,33 +73,6 @@ describe('clampCallingStageThresholds (#323)', () => {
   });
 });
 
-describe('timeoutDispatchDelayMs (#323 AC3: 予告付きタイムアウト遷移)', () => {
-  it('経過が noticeAfterMs+noticeMinDurationMs 以上なら遅延不要（0）', () => {
-    const t = DEFAULT_CALLING_STAGE_THRESHOLDS;
-    const earliest = t.noticeAfterMs + t.noticeMinDurationMs;
-    expect(timeoutDispatchDelayMs(earliest, t)).toBe(0);
-    expect(timeoutDispatchDelayMs(earliest + 10_000, t)).toBe(0);
-  });
-
-  it('経過が浅い場合は、予告を最低 noticeMinDurationMs 見せる分だけ遅延させる', () => {
-    const t = DEFAULT_CALLING_STAGE_THRESHOLDS;
-    // モック応答は瞬時に返る想定（elapsed=0）でも、予告 + 保持時間ぶんは遅らせる。
-    expect(timeoutDispatchDelayMs(0, t)).toBe(t.noticeAfterMs + t.noticeMinDurationMs);
-  });
-
-  it('予告段階に入った直後（notice 開始時点）は noticeMinDurationMs まるごと遅延する', () => {
-    const t = DEFAULT_CALLING_STAGE_THRESHOLDS;
-    expect(timeoutDispatchDelayMs(t.noticeAfterMs, t)).toBe(t.noticeMinDurationMs);
-  });
-
-  it('短縮しきい値でも一貫した計算になる（E2E 決定性）', () => {
-    const t = clampCallingStageThresholds({ waitingAfterMs: 100, noticeAfterMs: 250, noticeMinDurationMs: 150 });
-    expect(timeoutDispatchDelayMs(0, t)).toBe(400);
-    expect(timeoutDispatchDelayMs(250, t)).toBe(150);
-    expect(timeoutDispatchDelayMs(400, t)).toBe(0);
-  });
-});
-
 describe('timeoutDispatchGateMs (#826: 予告を「描画してから」数える)', () => {
   const t = clampCallingStageThresholds({
     waitingAfterMs: 200,
@@ -124,7 +96,9 @@ describe('timeoutDispatchGateMs (#826: 予告を「描画してから」数え�
   /**
    * 不変条件（上界）: **0 を返した ⟹ 予告は必ず noticeMinDurationMs 以上描画されている**。
    * 経過時刻・しきい値の組合せを総当たりして縛る。「経過が深ければ即時」という
-   * 旧 timeoutDispatchDelayMs の近道（描画を確認しない）が復活したら落ちる。
+   * 「描画を確認せず経過だけで判定する」旧実装の近道が復活したら落ちる。
+   * ただし**純関数レベルの拘束**である点に注意 —— KioskFlow の配線が戻された場合は
+   * e2e の「レンダラが詰まっても予告は飛ばない」テストが落とす。
    */
   it('0 を返すのは、予告が保持時間ぶん描画された後だけ', () => {
     for (const requested of [1, 100, 300, 5_000]) {
