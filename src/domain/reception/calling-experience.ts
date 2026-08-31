@@ -83,11 +83,29 @@ export function clampCallingStageThresholds(
   return { waitingAfterMs, noticeAfterMs, noticeMinDurationMs };
 }
 
-/** 経過 ms としきい値から表示段階を導出する。純関数。 */
+/**
+ * 経過 ms としきい値から表示段階を導出する。純関数。
+ *
+ * 🔴 **結果が確定していたら、経過に関係なく予告段へ進む** (#832)。予告の目的は
+ * 「突然感を無くす」ことなので、**サーバが既に結果を返しているのに `noticeAfterMs` まで
+ * 待つ理由が無い**。むしろ待つと害がある —— `busy` と `declined`（担当者の辞退）も
+ * `timeout` に写る（`src/domain/call/call-resolution.ts`）ので、辞退が数秒で確定した来訪者に
+ * 「もう少しお待ちください。**担当者に確認しています**」を最大 22 秒、字幕と読み上げで
+ * 流し続けることになる。**もう確認していないので、端末が事実でないことを喋る。**
+ *
+ * この分岐が無いと `noticeAfterMs` が**終端遷移の律速**になる点も悪い。しきい値は
+ * テナント設定で上限なく伸ばせる（管理画面に max が無い）ので、10 分を入れれば来訪者は
+ * 10 分間「呼び出し中」に固定される —— `calling` は無操作リセットの対象外なので、
+ * 逃げ道バー以外に復帰路が無い。
+ *
+ * @param outcomeResolved 呼び出し結果が既に確定しているか（省略時は未確定）。
+ */
 export function deriveCallingStage(
   elapsedMs: number,
   thresholds: CallingStageThresholds = DEFAULT_CALLING_STAGE_THRESHOLDS,
+  options?: { readonly outcomeResolved?: boolean },
 ): CallingStage {
+  if (options?.outcomeResolved === true) return 'preTimeoutNotice';
   if (elapsedMs >= thresholds.noticeAfterMs) return 'preTimeoutNotice';
   if (elapsedMs >= thresholds.waitingAfterMs) return 'waiting';
   return 'dialing';
@@ -107,13 +125,15 @@ export function deriveCallingStage(
  * そこで起点を「予告段階を描画した時刻」に変える。まだ描画していなければ `null` を返し、
  * 呼び出し側は **dispatch してはならない**（描画されてから改めて評価する）と解釈する。
  *
- * 🔴 **適用範囲**（#832 で実 PSTN を追加）。`CALL_TIMEOUT` の dispatch 元は 4 つあり、
+ * 🔴 **適用範囲**（#832 increment 1 で実 PSTN を追加）。`CALL_TIMEOUT` の dispatch 元は 4 つあり、
  * 現時点でゲートを通るのは上 2 つだけ:
  *
  *  - ✅ `/call` が同期で `timeout` を返す経路（#826）
  *  - ✅ 実 PSTN の `/status` ポーリング（#832。`handleStatusPoll` が保留へ置く）
  *  - ❌ Vonage ビデオ（`reception-screens.tsx` の `onTimeout`）
- *  - ❌ QR 受付（`CheckinFlow`。そもそも段階演出を持たない）
+ *  - ❌ QR 受付（`CheckinFlow`）。厳密には `CALL_TIMEOUT` を dispatch せず、
+ *    `decidePollAction` の `CALL_TIMEOUT` を `CALL_FAILED('unanswered')` へ**写して**いる。
+ *    段階演出そのものを持たないので、探しても `CALL_TIMEOUT` は見つからない
  *
  * 残り 2 経路も #832 で面倒を見る。**#323 AC3 はまだ全経路では満たされていない。**
  *

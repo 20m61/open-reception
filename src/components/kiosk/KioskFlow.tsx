@@ -281,6 +281,8 @@ function useCallingStage(
   active: boolean,
   startedAtRef: React.RefObject<number | null>,
   thresholds: CallingStageThresholds,
+  /** 呼び出し結果が既に確定しているか (#832)。確定していれば経過を待たず予告段へ進む。 */
+  outcomeResolved: boolean,
 ): { stage: CallingStage; elapsedMs: number } {
   const [elapsedMs, setElapsedMs] = useState(0);
   useEffect(() => {
@@ -310,7 +312,7 @@ function useCallingStage(
     // startedAtRef は ref オブジェクト自体（identity は不変）を依存にする。中身の変更検知は
     // tick() の中で毎回読む（react-hooks/refs: レンダー中に ref を触らない）。
   }, [active, startedAtRef, thresholds]);
-  return { stage: deriveCallingStage(elapsedMs, thresholds), elapsedMs };
+  return { stage: deriveCallingStage(elapsedMs, thresholds, { outcomeResolved }), elapsedMs };
 }
 
 
@@ -596,13 +598,23 @@ export function KioskFlow({
   // 「段階を進める setState」と「dispatch」が 1 コミットへ畳まれても予告が飛ばない。
   const noticeShownAtRef = useRef<number | null>(null);
   // 呼び出し結果が timeout で確定したが、予告の保持がまだ済んでいない受付セッション。
-  const [pendingTimeoutSessionId, setPendingTimeoutSessionId] = useState<string | null>(null);
+  //
+  // 🔴 **ここへ載せてよいのは timeout だけ** (#832)。発火側は `CALL_TIMEOUT` を固定で
+  // dispatch するので、`failed` をここへ送る変異は「発信そのものが失敗した来訪者に、
+  // 25 秒待たせた末に**未応答**画面を出す」に化ける ―― `call-poll.ts` が
+  // 「give_up と未応答を混同しない」と強調している区別が無言で潰れる。
+  //
+  // これは型では止まらない（`sessionId` しか持たないので）。**`/status` が `failed` を返す
+  // 経路の e2e**（`kiosk-calling-stage.spec.ts`）が落とす。テストを消すなら、先にここを
+  // 判別可能なユニオンにすること。
+  const [pendingTimeout, setPendingTimeout] = useState<{ sessionId: string } | null>(null);
   // 呼び出し中の表示段階（dialing/waiting/preTimeoutNotice）。CallingView とアバターコンパニオンの
   // 両方が同じ経過時刻（callingStartedAtRef）・しきい値から導出するため常に一致する。
   const callingStageState = useCallingStage(
     data.state === 'calling',
     callingStartedAtRef,
     callingStageThresholds,
+    pendingTimeout !== null,
   );
   // 予告段階を「描画した」瞬間を記録する (#826)。calling を抜けたら起点と保留を捨てる。
   // 本 effect は下の「予告保持ゲート」より**先に宣言する**（同一コミットで先に走り、
@@ -628,21 +640,21 @@ export function KioskFlow({
   useEffect(() => {
     // 保留の掃除は呼び出し effect の cleanup が行う（calling を抜けると必ず走る）。
     // ここでも state を見るのは、掃除が走る前の 1 レンダーで発火させないため。
-    if (data.state !== 'calling' || pendingTimeoutSessionId === null) return;
+    if (data.state !== 'calling' || pendingTimeout === null) return;
     const gateMs = timeoutDispatchGateMs(
       noticeShownAtRef.current,
       Date.now(),
       callingStageThresholdsRef.current,
     );
     if (gateMs === null) return;
-    const fire = () => dispatch({ type: 'CALL_TIMEOUT', sessionId: pendingTimeoutSessionId });
+    const fire = () => dispatch({ type: 'CALL_TIMEOUT', sessionId: pendingTimeout.sessionId });
     if (gateMs <= 0) {
       fire();
       return;
     }
     const timer = window.setTimeout(fire, gateMs);
     return () => window.clearTimeout(timer);
-  }, [data.state, pendingTimeoutSessionId, callingStageState.stage, dispatch]);
+  }, [data.state, pendingTimeout, callingStageState.stage, dispatch]);
   // アバター常設コンパニオンの段階演出 (#323)。avatarState 自体は変えず、同じ avatarState
   // ('calling') 内の字幕/表情だけを差し替える（見た目の演出のみ・状態機械は不変）。
   // dialing 段階は既存どおり avatarState 標準の文言（新規表示を増やさない）。
@@ -763,7 +775,7 @@ export function KioskFlow({
           // dispatch する。state.ts の遷移表自体は変えず、「いつ dispatch するか」だけを
           // UI 層で遅らせる。しきい値は ref 経由（この effect の再実行トリガーにはしない）。
           // 実際の発火は下の「予告保持ゲート」effect が行う。ここでは保留に置くだけ。
-          setPendingTimeoutSessionId(session.id);
+          setPendingTimeout({ sessionId: session.id });
         }
         // 'calling' は非同期の待ち。**媒体が 2 つある** (#4 Inc D-2 項目 2):
         //   - ビデオ: セッションが確立済み。ビデオビューが応答/未応答を確定する
@@ -786,7 +798,7 @@ export function KioskFlow({
       cancelled = true;
       // 受付を作り直すときは、前の呼び出しの timeout 保留を持ち越さない（旧タイマーの
       // clearTimeout と同じ意図。発火自体は下のゲート effect が持つ）。
-      setPendingTimeoutSessionId(null);
+      setPendingTimeout(null);
     };
   }, [data.state, data.purpose, data.target, data.visitor, selectedFlow]);
 
@@ -1103,7 +1115,7 @@ export function KioskFlow({
       // connected / failed は予告の対象ではない（予告は「まもなく打ち切る」の告知なので、
       // 結果が出た側を遅らせる理由が無い）ので従来どおり即 dispatch する。
       if (action.event === 'CALL_TIMEOUT') {
-        setPendingTimeoutSessionId(id);
+        setPendingTimeout({ sessionId: id });
         return;
       }
       dispatch({ type: action.event, sessionId: id });

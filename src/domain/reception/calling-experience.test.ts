@@ -31,6 +31,41 @@ describe('deriveCallingStage (#323)', () => {
     expect(deriveCallingStage(300, t)).toBe('preTimeoutNotice');
   });
 
+  /**
+   * 🔴 **結果が確定したら、しきい値を待たずに予告段へ進む** (#832 / #323 AC3)。
+   *
+   * 予告の目的は「突然感を無くす」ことなので、**サーバが既に結果を返しているのに
+   * `noticeAfterMs` まで待つ理由が無い**。むしろ待つと害がある ―― `busy` と `declined`
+   * （担当者の辞退）も `timeout` に写る（`call-resolution.ts`）ため、辞退が数秒で確定した
+   * 来訪者に「もう少しお待ちください。**担当者に確認しています**」を最大 22 秒、
+   * 字幕と読み上げで流し続けることになる。**もう確認していないので、端末が事実でないことを喋る。**
+   */
+  it('🔴 結果が確定したら経過に関係なく preTimeoutNotice へ進む', () => {
+    const t = DEFAULT_CALLING_STAGE_THRESHOLDS;
+    expect(deriveCallingStage(0, t, { outcomeResolved: true })).toBe('preTimeoutNotice');
+    expect(deriveCallingStage(t.waitingAfterMs - 1, t, { outcomeResolved: true })).toBe(
+      'preTimeoutNotice',
+    );
+  });
+
+  /**
+   * **下界**。「確定したら予告」だけを主張すると、*常に* preTimeoutNotice を返す実装でも通る。
+   * 未確定の間は従来どおり段が進むことを対で縛る。
+   */
+  it('🔴 未確定の間は従来どおり経過で段が進む（下界）', () => {
+    const t = DEFAULT_CALLING_STAGE_THRESHOLDS;
+    expect(deriveCallingStage(0, t, { outcomeResolved: false })).toBe('dialing');
+    expect(deriveCallingStage(t.waitingAfterMs, t, { outcomeResolved: false })).toBe('waiting');
+    expect(deriveCallingStage(t.noticeAfterMs, t, { outcomeResolved: false })).toBe(
+      'preTimeoutNotice',
+    );
+  });
+
+  it('省略時は未確定として扱う（後方互換）', () => {
+    const t = DEFAULT_CALLING_STAGE_THRESHOLDS;
+    expect(deriveCallingStage(0, t)).toBe('dialing');
+  });
+
   it('CALLING_STAGES は 3 段階を dialing→waiting→preTimeoutNotice の順で網羅する', () => {
     expect(CALLING_STAGES).toEqual(['dialing', 'waiting', 'preTimeoutNotice']);
   });

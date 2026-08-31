@@ -43,7 +43,17 @@ const STAGE_QUERY = `callingStageMs=200&callingNoticeMs=500&callingNoticeHoldMs=
  * 未応答画面へ飛ぶ（既定しきい値では予告 25s に対しサーバは数秒〜十数秒で返すため、
  * 実運用では**ほぼ必ず**こうなる）。
  */
-const PSTN_NOTICE_MS = 3_000;
+/**
+ * PSTN 用のしきい値。🔴 **予告しきい値を 30 秒に置く** —— テストの制限時間(20s)より長い。
+ *
+ * これが変異検出の要である。結果が確定したら経過を待たず予告段へ進む（#832）ので、正しい実装は
+ * **数秒で**予告を出して遷移する。一方「確定しても経過を待つ」実装（＝この修正を戻した変異）は
+ * 予告が 30 秒後まで出ないので、**制限時間内に `result-timeout` へ到達できず必ず落ちる**。
+ *
+ * しきい値を短く置くと、変異体も同じ段列を出してしまい、判定が保持時間の数百 ms 差だけに
+ * なる ―― 負荷次第で変異が生存する（レース依存の kill）。**段列そのもので落とす**ほうが堅い。
+ */
+const PSTN_NOTICE_MS = 30_000;
 const PSTN_STAGE_QUERY = `callingStageMs=200&callingNoticeMs=${PSTN_NOTICE_MS}&callingNoticeHoldMs=${HOLD_MS}`;
 
 /** 段の遷移列（時刻つき）と、経過インジケータの観測高さ。 */
@@ -162,14 +172,15 @@ async function callViaPstn(page: Page): Promise<void> {
   await page.getByTestId('to-confirm').click();
 }
 
-/** 段の順序と、予告の実保持時間を縛る。 */
-function expectNoticeHonoured(trail: StageTrail): void {
-  expect(trail.stages.map((s) => s.stage)).toEqual([
-    'dialing',
-    'waiting',
-    'preTimeoutNotice',
-    'result-timeout',
-  ]);
+/**
+ * 段の順序と、予告の実保持時間を縛る。
+ *
+ * 🔴 **`waiting` を通るかは「結果がいつ確定したか」で変わる** (#832)。結果が確定すると
+ * 経過を待たず予告段へ進むので、mock のように即座に確定する経路では `waiting` が出ない。
+ * よって期待する段列は呼び出し側が渡す（暗黙の既定値を置くと、段が消えた退行を素通りする）。
+ */
+function expectNoticeHonoured(trail: StageTrail, stages: string[]): void {
+  expect(trail.stages.map((s) => s.stage)).toEqual(stages);
   const notice = trail.stages.find((s) => s.stage === 'preTimeoutNotice')!;
   const result = trail.stages.find((s) => s.stage === 'result-timeout')!;
   // 🔴 順序だけでは「予告が 1 フレームで通過した」を検出できない。保持そのものを測る。
@@ -188,7 +199,13 @@ test('呼び出し中は段階的に文言が変わり、タイムアウトは�
 
   // 待つのは**消えない終端シグナル**だけ。段の観測は recorder が担う。
   await expect(page.getByTestId('result-timeout')).toBeVisible({ timeout: 15_000 });
-  expectNoticeHonoured(await readCallingStageTrail(page));
+  // mock は `/call` で即 timeout を返すので、結果は開始時点で確定している。
+  // よって `waiting` は出ず、予告段へ直行してから保持ぶん見せて遷移する (#832)。
+  expectNoticeHonoured(await readCallingStageTrail(page), [
+    'dialing',
+    'preTimeoutNotice',
+    'result-timeout',
+  ]);
 });
 
 /**
@@ -208,14 +225,16 @@ test('レンダラが詰まっても予告は飛ばない (#826 回帰)', async 
   await callSuzuki(page);
   await recordCallingStageTrail(page);
 
-  // waiting を観測した 150ms 後から 700ms 塞ぐ。しきい値 200/500/300 に対して
-  // 「予告の境界(500)」と「旧実装の dispatch 期限(800)」の両方を飲み込む窓になる。
+  // 🔴 **起点は `dialing`** (#832)。結果が即確定する mock 経路では `waiting` が出ないので、
+  // `waiting` を待つ書き方だと**注入そのものが走らず、このテストが空虚に通る**。
+  // dialing を観測した 150ms 後から 700ms 塞ぎ、予告の commit と dispatch を同じ窓へ入れる。
   await page.evaluate(() => {
     const obs = new MutationObserver(() => {
       const el = document.querySelector('[data-testid="calling"]');
-      if (el?.getAttribute('data-calling-stage') !== 'waiting') return;
+      if (el?.getAttribute('data-calling-stage') !== 'dialing') return;
       obs.disconnect();
       setTimeout(() => {
+        (window as unknown as Record<string, boolean>).__stallInjected = true;
         const until = Date.now() + 700;
         while (Date.now() < until) {
           /* メインスレッドを塞ぐ */
@@ -227,7 +246,18 @@ test('レンダラが詰まっても予告は飛ばない (#826 回帰)', async 
 
   await page.getByTestId('confirm-call').click();
   await expect(page.getByTestId('result-timeout')).toBeVisible({ timeout: 20_000 });
-  expectNoticeHonoured(await readCallingStageTrail(page));
+  expectNoticeHonoured(await readCallingStageTrail(page), [
+    'dialing',
+    'preTimeoutNotice',
+    'result-timeout',
+  ]);
+
+  // 🔴 **注入が本当に走ったことを確かめる** (#826 レビュー MINOR-1)。observer が段を
+  // 掴み損ねると 700ms のブロックは起きず、このテストは上の非注入テストと同一になる。
+  // 「詰まっても飛ばない」を主張しているのに詰まらせていない、を無言で許さない。
+  expect(await page.evaluate(() => (window as unknown as Record<string, boolean>).__stallInjected)).toBe(
+    true,
+  );
 });
 
 test('しきい値を長めにすると dialing のまま既存どおり即結果へ進む（後方互換）', async ({ page }) => {
@@ -246,16 +276,18 @@ test('しきい値を長めにすると dialing のまま既存どおり即結�
 });
 
 /**
- * 🔴 **#832 AC1 の回帰拘束（実 PSTN 経路）。**
+ * 🔴 **#832 の回帰拘束（実 PSTN 経路）。**
  *
  * 上の 2 本が縛っているのは `/call` が**同期で** `timeout` を返す経路だけで、これは mock の
  * 都合である。実運用の PSTN は `/call` が `calling` で返り、結果は `/status` ポーリングで
- * 後から届く ── そちらは #826 の予告保持ゲートを**素通り**していた。
+ * 後から届く ―― そちらは #826 の予告保持ゲートを**素通り**していた（修正前の実測遷移列は
+ * `dialing → result-timeout` で、`waiting` すら出ない）。
  *
- * 停止注入は要らない。サーバの応答が予告しきい値より前に来れば**必ず**飛ぶので、
- * しきい値と応答時刻の関係だけで決定的に落ちる。
+ * ここでは予告しきい値を 30 秒（テストの制限時間より長い）に置いてあるので、
+ * 「結果が確定したら経過を待たず予告段へ進む」が効いていなければ**制限時間内に終わらない**。
+ * 停止注入は要らない ―― PSTN の欠陥はタイミング依存ではなく構造的である。
  */
-test('PSTN: サーバが予告より前に timeout を返しても、予告を経てから遷移する (#832)', async ({
+test('PSTN: 結果が確定したら予告しきい値を待たず、予告を見せてから遷移する (#832)', async ({
   page,
 }) => {
   await stubPstnTimeout(page);
@@ -264,5 +296,75 @@ test('PSTN: サーバが予告より前に timeout を返しても、予告を�
   await page.getByTestId('confirm-call').click();
 
   await expect(page.getByTestId('result-timeout')).toBeVisible({ timeout: 20_000 });
-  expectNoticeHonoured(await readCallingStageTrail(page));
+  // 結果は開始直後に確定するので `waiting` は出ない。予告は**出る**（飛ばさない）。
+  expectNoticeHonoured(await readCallingStageTrail(page), [
+    'dialing',
+    'preTimeoutNotice',
+    'result-timeout',
+  ]);
+});
+
+/**
+ * 🔴 **下界**（#832）。上のテストは「予告を早く出す」ことしか主張しないので、
+ * **常に予告段を返す**実装（= 段階演出そのものを潰す変異）でも通ってしまう。
+ *
+ * 結果がまだ確定していない間は従来どおり段が進むことを、実経路で対に縛る。
+ * これは #323 AC1「呼び出し中に段階に応じて文言が変わる」の実 PSTN 版でもある。
+ */
+test('PSTN: 結果が未確定の間は従来どおり段階が進む（下界・#323 AC1）', async ({ page }) => {
+  // `/status` を 2 回 `calling` で返してから `timeout` にする。予告しきい値(500ms)は
+  // その前に越えるので、来訪者は dialing → waiting → preTimeoutNotice を順に見る。
+  await page.route('**/api/kiosk/receptions/*/call', (route) =>
+    route.fulfill({ json: { state: 'calling' } }),
+  );
+  let turn = 0;
+  await page.route('**/api/kiosk/receptions/*/status', (route) => {
+    turn += 1;
+    return route.fulfill({ json: { state: turn <= 2 ? 'calling' : 'timeout' } });
+  });
+
+  await page.goto(`/kiosk?${STAGE_QUERY}`);
+  await page.getByTestId('start-reception').click();
+  await page.getByTestId('purpose-meeting').click();
+  await revealStaff(page, 'staff-staff-sato');
+  await page.getByTestId('staff-staff-sato').click();
+  await page.getByTestId('visitor-name').fill('来客 五郎');
+  await page.getByTestId('to-confirm').click();
+  await recordCallingStageTrail(page);
+  await page.getByTestId('confirm-call').click();
+
+  await expect(page.getByTestId('result-timeout')).toBeVisible({ timeout: 20_000 });
+  expectNoticeHonoured(await readCallingStageTrail(page), [
+    'dialing',
+    'waiting',
+    'preTimeoutNotice',
+    'result-timeout',
+  ]);
+});
+
+/**
+ * 🔴 **`failed` を予告ゲートへ送らない** (#832)。
+ *
+ * 予告は「まもなく打ち切る」の告知なので、**結果が出た側を遅らせる理由が無い**。とりわけ
+ * `failed`（発信そのものの失敗 ＝ `contact_failed`）を timeout の保留へ載せてしまうと、
+ * 来訪者は待たされた末に**未応答**（`person_unavailable`）画面を見る ―― `call-poll.ts` が
+ * 「give_up と未応答を混同しない」と強調している区別が無言で潰れる。
+ *
+ * 保留は `sessionId` しか持たず、発火側が `CALL_TIMEOUT` を固定で dispatch する構造なので、
+ * **この変異は型では止まらない。** 落とすのはこのテストだけである。
+ */
+test('PSTN: サーバが failed を返したら、予告を挟まず失敗として出す (#832)', async ({ page }) => {
+  await page.route('**/api/kiosk/receptions/*/call', (route) =>
+    route.fulfill({ json: { state: 'calling' } }),
+  );
+  await page.route('**/api/kiosk/receptions/*/status', (route) =>
+    route.fulfill({ json: { state: 'failed' } }),
+  );
+
+  // 予告しきい値は 30 秒。`failed` が保留へ載る変異では制限時間内に何も出ない。
+  await callViaPstn(page);
+  await page.getByTestId('confirm-call').click();
+
+  await expect(page.getByTestId('result-failed')).toBeVisible({ timeout: 20_000 });
+  await expect(page.getByTestId('result-timeout')).toHaveCount(0);
 });
