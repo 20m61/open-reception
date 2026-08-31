@@ -251,6 +251,183 @@ OPEN_RECEPTION_LOOP_HALT=1 ...     # 一時的に止める（env。file の方�
 - **残件**: 文書 PR で省略し続けた分を定期実行で必ず一度は踏む網（`--full --strict` の
   頻度と起点の設計）は未整備。現状の担保はトリップワイヤのみ。
 
+### lint の warning は素通りしない（#813）
+
+`npm run lint` は **`eslint . --max-warnings 74`**、加えて `react-hooks/exhaustive-deps` を
+**`error`** へ上げてある（`eslint.config.mjs`）。方針は 2 段構えである。
+
+**1. 実害が実証されているルールだけ error にする。**
+`react-hooks/exhaustive-deps` は既定 warn だが、依存配列の取りこぼしは**全部この穴を通る**。
+#803（PR #812）の独立レビューで、`VoiceSessionLayer` の effect 依存から `state` を落とす変異が
+**6789 tests 全緑・`eslint` exit=0** のまま通ることが実測されている（不在告知が一度も
+喋られなくなるのに）。このリポジトリは effect を node 環境で実行できず（jsdom 無し）、
+配線の防御線がソース文字列検査しか無いので、ここは助言ではなく停止させる。
+
+**2. 残りは件数の ratchet で頭打ちにする。**
+`set-state-in-effect`（54 件）は「マウント時に async load() を呼ぶ」既存パターンを多数拾う
+意図的な warn で、機械的に直すと回帰リスクが高い。`--max-warnings 0` は現実的でないので、
+**現状の件数を上限**にして増加だけを止める。
+
+🔴 **`--max-warnings` の数値は、減らしたときに一緒に下げること。** 上げるのは
+「なぜ増やすのか」を PR に書いたときだけ。上げっぱなしにすると ratchet が意味を失う。
+
+#### 現状の内訳（2026-08-31 実測・#813 の周回で 86 → 74）
+
+| 件数 | ルール | 扱い |
+| --- | --- | --- |
+| 54 | `react-hooks/set-state-in-effect` | warn のまま（ratchet で頭打ち） |
+| 19 | `@typescript-eslint/no-unused-vars` | warn のまま |
+| 1 | `@next/next/no-img-element` | warn のまま |
+| 0 | `react-hooks/exhaustive-deps` | **error**（既存 6 件は #813 で実際に直した） |
+
+減った 12 件の内訳: `exhaustive-deps` 6 件を修正、**stale な `eslint-disable` ディレクティブ
+6 件を削除**（抑止しているルールがもう発火していないもの。うち 1 件は `exhaustive-deps` を
+抑止していた）。
+
+`exhaustive-deps` の 6 件の内訳は次のとおり。🔴 **「依存が抜けている」は「実害がある」では
+ない。** 独立レビューの指摘で数え直した（当初は 4 件を実害と書いていたが誤りだった）。
+
+| 件数 | 種別 | 中身 |
+| --- | --- | --- |
+| 1 | **実挙動の欠陥** | `VrmAvatarViewer` が `gazeOffsetFor(gazeTarget, layout)` を計算しながら依存は `[avatarState]` だけ。**iPad を回しても（`layout` 変化）視線オフセットが横向きのまま**で、縦画面で首を右へ振り続ける。`selectingTarget → fallback` でも右レールを見続ける |
+| 2 | **別の依存にマスクされた潜在的取りこぼし** | 現状は到達不能。他の依存が一緒に変わることで正しく動いている（下記） |
+| 1 | **構造的に無害** | `KioskChatDrawer` の挨拶 effect。マスクではなく、effect が依存変化時に**そのレンダーのクロージャ**で走るため原理的に旧 locale を掴めない |
+| 1 | 不要依存 | `OperatingHoursManager` の `load` の `siteId`（`qs`/`scopeKey` が派生済み） |
+| 1 | 挙動不変 | `KioskFlow` の `snapshotForCall`（`useCallback(..., [])` で identity 不変） |
+
+マスクされている 3 件は、**マスクを外す変更で真になる**ので直す価値がある:
+
+- `KioskChatDrawer` の `submit` … `llm = useMemo(..., [adapter, locale])` が依存に入っており、
+  `adapter` の本番注入がゼロなので locale 変更時に `llm` ごと作り直される。
+  **`adapter` を注入した瞬間にマスクが外れ**、旧 locale で応答するようになる
+- `OperatingHoursManager` の保存 … `policy` を変える唯一の経路 `applyPolicy` が必ず
+  `setWeeklyText` を新しいオブジェクトで呼び、`weeklyText` が依存にある。
+  **`setPolicy` の呼び出し元が増えた瞬間**に stale な `expectedVersion` が飛ぶ
+（`KioskChatDrawer` の挨拶 effect は上記 2 件とは別で、**マスクされているのではなく構造的に
+無害**。`open && messages.length === 0` の窓が 1 コミットしか無く、effect はそのレンダーの
+クロージャで走る。ここを「マスク」と一緒くたに書くと、1 周目に訂正した「一段飛ばしの断定」を
+別の形で繰り返すことになる。）
+
+**warn のままなら、実害のある 1 件も、マスクが外れたときに真になる 2 件も見つからなかった。**
+
+#### 🔴 ratchet が見ていないもの（穴の残り）
+
+**1. 抑止（`eslint-disable` 系）は error からも ratchet からも見えない。**
+理由の無い 1 行を足せば error 化は**ゼロコストで無効化**でき、使用済みディレクティブは
+warning を 1 件も増やさないので予算にも掛からない。
+
+そこで **`npm run lint:suppressions`**（`scripts/check-lint-suppressions.mjs`）が、
+`eslint . -f json` の **`suppressedMessages`** を読んで棚卸しする。ESLint は抑止された問題と
+その **`justification`（`--` 以降の理由）を解析済みで返す**ので、こちらで文法を解釈しない。
+ゲートの `--pr` / `--full` で走る（`--fast` には載せない）。
+
+🔴 **主張は両側で張る。** 以前の版は「許可されていない場所に無いこと」だけを見ており、
+(a) **許可ファイルの中なら理由なしの抑止をいくらでも足せ**、(b) **棚卸しが 0 件へ潰れても緑**、
+という 2 つの穴があった（どちらも実測でバイパス成立）。`CLAUDE.md`「検証の作法」の
+「不変条件は片側しか主張しない。**下界**を併せて縛る」に当たる。いまは 3 つを主張する。
+
+1. 🔴 **主検査**: `eslint . --no-inline-config` 下で `react-hooks/exhaustive-deps` が
+   **報告される場所と件数**が、期待と完全一致（既知 3 ファイル × 1 件）
+2. `exhaustive-deps` の抑止に重なる suppression が、**すべて**理由を持つ（AND 判定）
+3. **全ルールの抑止が、ファイル別に**期待と一致（スコープは repo 全体・10 ファイル 13 件）
+
+**1 が主検査なのは、`suppressedMessages` だけでは見えない族があるから。**
+`/* eslint react-hooks/exhaustive-deps: "off" */` は**抑止を 1 つも作らない** —— severity を
+変えるので問題がそもそも報告されず、抑止の記録も残らない。実測では、受付導線の任意の
+ファイルでこの 1 行を置くだけで依存の取りこぼしが恒久的に無検査化でき、
+lint・棚卸し・unit がすべて緑だった。`--no-inline-config` は inline 指示を**すべて**無効化
+するので、次の **3 つの族が同時に**この数へ現れる:
+
+| 族 | 現れ方 |
+| --- | --- |
+| `eslint-disable` 系（綴り・位置・理由を問わない） | 報告されるので数に入る（**上界**） |
+| インライン `rule: "off"` | 報告されるので数が増える（**上界**） |
+| config の後段上書き / `ignores`（**既知 3 ファイルを覆う場合のみ**） | 報告されなくなるので数が減る（**下界**） |
+
+🔴 **`--no-inline-config` が無効化するのは inline 指示だけで、config 側の設定は生きている。**
+そのため「**新しいファイルだけ**ルールを外す」形（後段に `files:` スコープの `'off'` を足す、
+`ignores` に 1 行足す）は報告も抑止も発生させず、**期待値を 1 ミリも動かさない**（実測で 2 通り生存）。
+この族は `tests/config/lint-warning-budget.test.ts` が **`eslint.config.mjs` を import して
+形そのものを縛る**ことで塞いでいる（eslint を回さないので数百 ms）:
+
+- `exhaustive-deps` を設定するエントリが **2 つ**で、その並びが `['warn', 'error']`
+  （flat config は**後勝ち**なので、後段に `'off'` を足すと 3 つ目になって落ちる）
+- `ignores` の総和が期待どおり（19 要素）
+
+**文字列一致では実効 severity を保証できない。** 以前は `'error'` を `toMatch` で見ていたが、
+後段に `'off'` を足しても前段の文字列は残るので、**「rule は error」と読めるのに実効は off**
+という状態を緑のまま通していた（実測）。
+
+🔴 **2 は OR ではなく AND。** 「1 つでも理由があれば可」にすると、`/* eslint-disable */`
+（ルール名なし）が持つ**空の理由**を捨ててしまい、重なった抑止を「理由あり」と誤判定する。
+実測でこれが穴になった —— `KioskFlow.tsx` の 2 行目に 1 行置くだけで**受付フロー本体
+1500 行が全ルール無検査**になり、`design-tokens/no-raw-color-literals`（#329 で error）も
+黙って消えるのに、すべて緑だった。しかも**warning は減る**（74 → 65）ので
+`--max-warnings` は永久に発火しない。
+
+🔴 **3 をファイル別にしているのは、総数 1 つだと脆いから。** 無関係な PR が抑止を 1 件
+増減させただけでマージ後の main が赤くなり、しかも「あるファイルで +k、別ファイルで −k」の
+**相殺が通る**。ファイル別なら壊れる範囲が触ったファイルに局所化し、失敗も名指しできる。
+
+**行番号では縛らない**（無関係な編集で行がずれるたびに偽の赤を出さないため）。
+そのため「同一ファイル内で 1 件消して 1 件足す交換」は通るが、その交換は diff に
+**理由つきの新しい `eslint-disable`** として必ず現れるので、guard の目的
+（禁止ではなく晒すこと）は満たされる。
+
+🔴 **期待値は base が動いたら数え直す。** `--max-warnings` と同じ性質で、
+`EXPECTED_RULE` / `EXPECTED_SUPPRESSIONS` も並行 PR の影響を受ける。
+数え直しは `node scripts/check-lint-suppressions.mjs` の出力を読めばよい。
+
+🔴 **棚卸しを自前で書かないこと。** ここは 4 周にわたって「抑止の綴りを自前で探す」実装を
+直し続け、そのたびに独立レビューが別の書き方で素通りさせた —— 固定文字列 1 綴り →
+行末形・ブロック形で突破、正規表現 3 綴り → **ルール名省略**（省略すると全ルールが外れるので
+名前を書くより強い）・複数行ブロックで突破、コメントの文法判定 → **理由の区切りが
+`-` 2 個以上**であること・**文字列リテラル中の `/*`** がコメント抽出を壊すことで突破。
+**ESLint の文法を手写しすること自体が前提の誤り**だった。`suppressedMessages` なら
+ファイル・行・ruleId・理由が ESLint の口から出るので、綴り・複数行・ルール名省略・区切り記号・
+文字列リテラルのどれにも影響されない（構成上、文法と一致することが保証される）。
+`--no-inline-config` の差分を取る版も一度通ったが、eslint を 2 回回すうえ
+`/* global */` 等まで無効化して件数が水増しされるので、`suppressedMessages` へ寄せた。
+
+現在の抑止 3 件はいずれも来訪者導線にある（`KioskFlow` の a11y クランプ /
+`CheckoutFlow` の初回のみ実行 / `reception-screens` の検索デバウンス）。
+**何も隠していない抑止は差分に出ない。** それは意図どおりで、guard の目的は禁止ではなく
+**実際に効いている抑止をレビューに晒すこと**である。
+
+**2. hook を別名にすると、ルールの射程外へ出る。** `const ue = useEffect;` として `ue(...)` で
+呼ぶと、同じ依存の取りこぼしが**診断ゼロ**になる（実測）。これは guard の穴ではなく
+**lint の射程外**で、config の pin でも棚卸しでも到達できない。補償手段は
+`voice-directory-wiring.test.ts` の型（ソースで配線を縛るテスト）だけである。
+
+**3. `ignores` の完全一致は依存更新で落ちる。** 19 要素のうち 8 要素は Next プリセット由来の
+重複なので、Next.js を上げると無関係に落ちる。落ち方は明示的（差分が出る）なので実害は小さいが、
+**期待値の更新が要る**ことは認識しておく。
+
+**4. 予算は base が動くと変わる。** 並行してマージされた**無関係な PR が warning を
+1 件足すだけで、マージ後の main が赤くなる**。base を取り込んだら
+`npx eslint --format=json . | ...` で数え直すこと（本 PR でも #835 の取り込み時に実施した）。
+
+**5. 予算は総数のみで、ルール別内訳の悪化を検出しない。** `no-unused-vars` を 3 件消して
+`set-state-in-effect` を**受付導線に** 3 件足す交換は 74 のまま緑になる。内訳は本書にしか
+無く機械では見ていない。→ **#843**
+
+**6. `ignores` を足せば件数は下げられる。** `eslint.config.mjs` の `ignores` を縛るテストは
+まだ無い（`coverage/**` は `vitest --coverage` が生成する istanbul の `.js` で予算が
+無関係に溢れるのを避けるための保険として追加済み）。「逃げ方」としては開いたまま。
+
+#### 実効性の実測（#813 AC3）
+
+`git worktree` に隔離して変異を当て、両方で lint が止まることを確認した。
+
+| 変異 | `npm run lint` |
+| --- | --- |
+| `VoiceSessionLayer` の依存から `state` を落とす | **FAIL**（1 error） |
+| warning を 1 件増やす | **FAIL**（75 > 74） |
+| 変異なし | PASS（74 warnings） |
+
+意図的に依存を外す場合は `// eslint-disable-next-line react-hooks/exhaustive-deps` に
+**理由を書いて**抑止する。理由の無い抑止は、warn に戻したのと同じである。
+
 ### ゲートの強制（`pr-gate-guard` フック）
 
 CI が無い以上、「PR 前に `--pr` / マージ前に `--full`」は**規約だけでは守られない**。

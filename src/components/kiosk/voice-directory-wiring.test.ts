@@ -144,8 +144,11 @@ describe('不在告知の読み上げ配線 (#803)', () => {
 
   /**
    * 🔴 **依存配列に `state` が要る。** 落とすと **告知が一度も喋られなくなる**のに、
-   * `react-hooks/exhaustive-deps` は warning 止まりで `npm run lint` に `--max-warnings` が
-   * 無いためゲートは緑のまま（実測）。#788 が `useVoiceSession` に対してやったのと同じ形で固定する。
+   * かつては `react-hooks/exhaustive-deps` が warning 止まりで、`npm run lint` に
+   * `--max-warnings` も無かったためゲートは緑のまま通っていた。**#813 で同ルールを error へ
+   * 上げたので、いまは lint 側でも落ちる**（実測）。本テストはそれとは独立に、
+   * #788 が `useVoiceSession` に対してやったのと同じ形でソース側から固定する
+   * （理由付きの `eslint-disable` で抑止されても、こちらは落ちる）。
    */
   it('読み上げ effect は局面の変化で再評価される', () => {
     const effect = LAYER.slice(LAYER.indexOf('shouldAnnounce(announcedRef.current, state)'));

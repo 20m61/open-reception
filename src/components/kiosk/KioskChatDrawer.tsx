@@ -124,7 +124,7 @@ export function KioskChatDrawer({
       const greet = buildGreetingMessage(0, undefined, locale);
       setMessages([{ id: greet.id, role: 'assistant', text: greet.text }]);
     }
-  }, [open, messages.length]);
+  }, [open, messages.length, locale]);
 
   useEffect(() => {
     listEndRef.current?.scrollIntoView({ block: 'end' });
@@ -156,7 +156,7 @@ export function KioskChatDrawer({
     } finally {
       setBusy(false);
     }
-  }, [draft, busy, llm, screenState, online, appendTurn]);
+  }, [draft, busy, llm, screenState, online, locale, appendTurn]);
 
   const handleQuickReply = useCallback(
     (qr: QuickReply) => {

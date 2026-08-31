@@ -509,7 +509,16 @@ fi
 
 # ---- 必須ステップ ---------------------------------------------------------
 [[ "$RUN_TYPECHECK" -eq 1 ]] && step "typecheck (tsc)"      npm run --silent typecheck
-[[ "$RUN_LINT"      -eq 1 ]] && step "lint (eslint)"        npm run --silent lint
+if [[ "$RUN_LINT" -eq 1 ]]; then
+  # 予算 (#813) を出しておく。超えたときに「何件までなら良いのか」がログから読めないと、
+  # 赤を「壊れた」と読み違える（CLAUDE.md「緑を読むときは flaky を数える」と同じ型）。
+  echo "  ↳ warning 予算: $(node -p "require('./package.json').scripts.lint.match(/--max-warnings (\\d+)/)?.[1] ?? '(未設定)'" 2>/dev/null || echo '?')（docs/quality-gate.md）"
+  step "lint (eslint)"        npm run --silent lint
+  # 抑止の棚卸しは ESLint 自身に数えさせる (#813)。eslint を 2 回回すので fast には載せない。
+  if [[ "$TIER" != "fast" ]]; then
+    step "lint suppressions"   npm run --silent lint:suppressions
+  fi
+fi
 [[ "$RUN_UNIT"      -eq 1 ]] && step "unit (vitest)"        npm run --silent test
 if [[ "$RUN_BUILD" -eq 1 ]]; then
   if scope_skips build; then scope_skip "build (next build)"

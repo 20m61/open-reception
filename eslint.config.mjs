@@ -17,6 +17,9 @@ const eslintConfig = [
       'infra/**',
       'tests/e2e/**',
       'playwright-report/**',
+      // vitest --coverage を回すと istanbul の HTML レポートが .js を同梱する。
+      // lint 対象に入ると、変更と無関係に warning 予算 (#813) を超えてゲートが赤くなる。
+      'coverage/**',
       'test-results/**',
       // isolation:"worktree" のサブエージェントがリポジトリ内 (.claude/worktrees/) に
       // worktree を作るため、走査すると path スコープの設定が外れて誤検知する。
@@ -37,6 +40,23 @@ const eslintConfig = [
       // 意図的なデータ取得・heartbeat であり Next 15 時点では非エラーだった。
       // 機械的リファクタの回帰リスクを避けるため助言（warn）に留める。
       'react-hooks/set-state-in-effect': 'warn',
+      /**
+       * 🔴 **error にする** (#813)。既定は warn だが、warn は `--max-warnings` が無い間
+       * ゲートを素通りしていた。#803（PR #812）の独立レビューで、`VoiceSessionLayer` の
+       * effect 依存から `state` を落とす変異が **6789 tests 全緑・eslint exit=0** のまま
+       * 通ることが実測されている（不在告知が一度も喋られなくなるのに）。
+       *
+       * このリポジトリは effect を node 環境で実行できず（jsdom 無し）、配線の防御線が
+       * ソース文字列検査しか無い。依存配列の取りこぼしは**すべてこの穴を通る**ので、
+       * このルールだけは助言ではなく停止させる。
+       *
+       * 既存の 6 件は #813 の周回で実際に直した。**実害があったのは 1 件**
+       * （`VrmAvatarViewer` の視線が iPad の回転に追従しない）で、3 件は別の依存に
+       * マスクされた潜在的取りこぼし、2 件は不要依存・挙動不変。内訳は
+       * `docs/quality-gate.md`。
+       * 意図的に依存を外す場合は `// eslint-disable-next-line` に**理由を書いて**抑止する。
+       */
+      'react-hooks/exhaustive-deps': 'error',
     },
   },
   {
