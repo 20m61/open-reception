@@ -16,6 +16,8 @@ import {
   type BreakGlassDirective,
   type RuntimeOperatingPolicy,
   type ServicePolicyOverride,
+  type ServiceRuntimeState,
+  type TemporaryOverride,
 } from './resolve';
 
 /** Asia/Tokyo（UTC+9 固定・DST なし）の現地日時から UTC epoch ms を作る。 */
@@ -751,30 +753,32 @@ describe('expiresAt はポリシーの timezone で解釈する（環境差で�
 });
 
 describe('expiresAt の解析（外部レビュー指摘の回帰固定, PR #791）', () => {
+  /*
+   * 🔴 **`force_running` で見る。** #798 AC2 以降、解析不能な `force_stopped` / `draining` は
+   * **維持される**ので、`force_stopped` のままだと「解析できた」と「解析不能」がどちらも
+   * `stopped / temporary_override` に落ち、この describe 全体が**空虚に通る**ようになる。
+   * 併せて `manual_only`（＝下位の段は `stopped / default_policy` に固定）にしておくと、
+   * 「適用」と「解除」が state と reason の両方で分かれ、評価時刻にも依らない。
+   */
   const at = (expiresAt: string) =>
-    policyWith({ bedrock: { temporaryOverride: { state: 'force_stopped', expiresAt } } });
+    policyWith({ bedrock: { mode: 'manual_only', temporaryOverride: { state: 'force_running', expiresAt } } });
+  /** 期限内として適用された形。 */
+  const APPLIED = { state: 'running', reason: 'temporary_override' } as const;
+  /** 解析不能（または期限切れ）で自動解除され、下位の段へ落ちた形。 */
+  const RELEASED = { state: 'stopped', reason: 'default_policy' } as const;
 
   it('秒まで解釈する（切り捨てると最大 59 秒早く失効する）', () => {
     const policy = at('2026-07-22T12:00:59');
     // 12:00:30 はまだ期限内。秒を落とすと 12:00:00 で失効扱いになり、ここが落ちる。
-    expect(stateOf(policy, 'bedrock', tokyo(2026, 7, 22, 12, 0, 30))).toEqual({
-      state: 'stopped',
-      reason: 'temporary_override',
-    });
-    expect(stateOf(policy, 'bedrock', tokyo(2026, 7, 22, 12, 1, 0))).toEqual({
-      state: 'running',
-      reason: 'common_weekly_schedule',
-    });
+    expect(stateOf(policy, 'bedrock', tokyo(2026, 7, 22, 12, 0, 30))).toEqual(APPLIED);
+    expect(stateOf(policy, 'bedrock', tokyo(2026, 7, 22, 12, 1, 0))).toEqual(RELEASED);
   });
 
   it('末尾に余計なものが付いた値は解析不能として扱う（前方一致で通さない）', () => {
     // `2026-07-22T12:00oops` を「12:00 まで」と読むのは、doc が言う
     // 「解析不能は undefined = 自動解除」と食い違う。黙って別の値として解釈しない。
     for (const bad of ['2026-07-22T12:00oops', '2026-07-22T12:00:99', '2026-07-22extra', 'not-a-date']) {
-      expect(stateOf(at(bad), 'bedrock', IN_HOURS), `expiresAt=${bad}`).toEqual({
-        state: 'running',
-        reason: 'common_weekly_schedule',
-      });
+      expect(stateOf(at(bad), 'bedrock', IN_HOURS), `expiresAt=${bad}`).toEqual(RELEASED);
     }
   });
 
@@ -786,17 +790,14 @@ describe('expiresAt の解析（外部レビュー指摘の回帰固定, PR #791
      */
     // `0000-01-01` は `Date.UTC` が 1900-01-01 へ写す（0〜99 年の特例）。年の比較を落とすと通る。
     for (const bad of ['2026-13-01', '2026-02-30', '2026-00-10', '2026-07-32', '2026-07-22T24:00', '2026-07-22T12:60', '0000-01-01']) {
-      expect(stateOf(at(bad), 'bedrock', IN_HOURS), `expiresAt=${bad}`).toEqual({
-        state: 'running',
-        reason: 'common_weekly_schedule',
-      });
+      expect(stateOf(at(bad), 'bedrock', IN_HOURS), `expiresAt=${bad}`).toEqual(RELEASED);
     }
   });
 
   it('うるう年の 2/29 は年によって受理と拒否が分かれる', () => {
     // 「暦の妥当性」を月ごとの固定表で誤魔化していないことを固定する。
-    expect(stateOf(at('2028-02-29'), 'bedrock', IN_HOURS)).toMatchObject({ reason: 'temporary_override' });
-    expect(stateOf(at('2027-02-29'), 'bedrock', IN_HOURS)).toMatchObject({ reason: 'common_weekly_schedule' });
+    expect(stateOf(at('2028-02-29'), 'bedrock', IN_HOURS)).toEqual(APPLIED);
+    expect(stateOf(at('2027-02-29'), 'bedrock', IN_HOURS)).toEqual(RELEASED);
   });
 
   it('運用画面が普通に作る形を拒否しない（ミリ秒・前後空白・小文字 z）', () => {
@@ -806,9 +807,7 @@ describe('expiresAt の解析（外部レビュー指摘の回帰固定, PR #791
      * Luxon の `toISO({ includeOffset: false })` がこの形を出す。
      */
     for (const good of ['2026-07-22T13:00:00.500', '2026-07-22T13:00:00.5', ' 2026-07-22T13:00 ', '2026-07-22T04:00:00z']) {
-      expect(stateOf(at(good), 'bedrock', IN_HOURS), `expiresAt=${good}`).toMatchObject({
-        reason: 'temporary_override',
-      });
+      expect(stateOf(at(good), 'bedrock', IN_HOURS), `expiresAt=${good}`).toEqual(APPLIED);
     }
   });
 
@@ -816,12 +815,8 @@ describe('expiresAt の解析（外部レビュー指摘の回帰固定, PR #791
     // `.5` は 500ms（右ゼロ埋め）。`Number('5')` と読むと 5ms になり、`.5` と `.005` が同じになる。
     for (const expiresAt of ['2026-07-22T12:00:00.500', '2026-07-22T12:00:00.5']) {
       const policy = at(expiresAt);
-      expect(stateOf(policy, 'bedrock', tokyo(2026, 7, 22, 12, 0, 0) + 250), expiresAt).toMatchObject({
-        reason: 'temporary_override',
-      });
-      expect(stateOf(policy, 'bedrock', tokyo(2026, 7, 22, 12, 0, 0) + 750), expiresAt).toMatchObject({
-        reason: 'common_weekly_schedule',
-      });
+      expect(stateOf(policy, 'bedrock', tokyo(2026, 7, 22, 12, 0, 0) + 250), expiresAt).toEqual(APPLIED);
+      expect(stateOf(policy, 'bedrock', tokyo(2026, 7, 22, 12, 0, 0) + 750), expiresAt).toEqual(RELEASED);
     }
   });
 
@@ -834,10 +829,7 @@ describe('expiresAt の解析（外部レビュー指摘の回帰固定, PR #791
     for (const bad of [null, undefined, 123, {}, []]) {
       const policy = at(bad as unknown as string);
       expect(() => stateOf(policy, 'bedrock', IN_HOURS), String(bad)).not.toThrow();
-      expect(stateOf(policy, 'bedrock', IN_HOURS), String(bad)).toEqual({
-        state: 'running',
-        reason: 'common_weekly_schedule',
-      });
+      expect(stateOf(policy, 'bedrock', IN_HOURS), String(bad)).toEqual(RELEASED);
     }
   });
 
@@ -846,19 +838,13 @@ describe('expiresAt の解析（外部レビュー指摘の回帰固定, PR #791
     // 月末を機械生成する UI のオフバイワンで、停止が最大 3 日延びる。
     // 🔴 未来日で試す。過去日だと「期限切れで自動解除」と区別が付かず、テストが素通しになる。
     for (const bad of ['2027-02-30T00:00:00Z', '2027-06-31T00:00:00Z', '2027-02-30T00:00:00+09:00']) {
-      expect(stateOf(at(bad), 'bedrock', IN_HOURS), `expiresAt=${bad}`).toEqual({
-        state: 'running',
-        reason: 'common_weekly_schedule',
-      });
+      expect(stateOf(at(bad), 'bedrock', IN_HOURS), `expiresAt=${bad}`).toEqual(RELEASED);
     }
   });
 
   it('ミリ秒は 3 桁まで（桁を緩めると padEnd が効かず大幅な延長になる）', () => {
     // `.123456789` を許すと `padEnd` が無効化され +123456789ms ≒ 34 時間の停止延長になる。
-    expect(stateOf(at('2026-07-22T13:00:00.1234'), 'bedrock', IN_HOURS)).toEqual({
-      state: 'running',
-      reason: 'common_weekly_schedule',
-    });
+    expect(stateOf(at('2026-07-22T13:00:00.1234'), 'bedrock', IN_HOURS)).toEqual(RELEASED);
   });
 
   it('不正な timezone で解決を落とさない（expiresAt だけ塞いでも意味がない）', () => {
@@ -871,10 +857,7 @@ describe('expiresAt の解析（外部レビュー指摘の回帰固定, PR #791
   it('時刻の妥当性も経路によらず見る（Z を付けたら通る、をなくす）', () => {
     // `'2026-07-22T24:00'` は NaN なのに `'2026-07-22T24:00:00Z'` は 7/23 として通っていた。
     for (const bad of ['2027-07-22T24:00:00Z', '2027-07-22T12:60:00Z', '2027-07-22T12:00:60Z']) {
-      expect(stateOf(at(bad), 'bedrock', IN_HOURS), `expiresAt=${bad}`).toEqual({
-        state: 'running',
-        reason: 'common_weekly_schedule',
-      });
+      expect(stateOf(at(bad), 'bedrock', IN_HOURS), `expiresAt=${bad}`).toEqual(RELEASED);
     }
   });
 
@@ -886,11 +869,290 @@ describe('expiresAt の解析（外部レビュー指摘の回帰固定, PR #791
   });
 
   it('秒を省いた値・日付だけの値は従来どおり解釈できる', () => {
-    expect(stateOf(at('2026-07-22T13:00'), 'bedrock', IN_HOURS)).toMatchObject({
-      reason: 'temporary_override',
+    expect(stateOf(at('2026-07-22T13:00'), 'bedrock', IN_HOURS)).toEqual(APPLIED);
+    expect(stateOf(at('2026-07-23'), 'bedrock', IN_HOURS)).toEqual(APPLIED);
+  });
+});
+
+/*
+ * ---------------------------------------------------------------------------
+ * #798 AC2: 解析不能な一時 override の倒し方を state 依存にする
+ * ---------------------------------------------------------------------------
+ */
+
+/**
+ * 承認された表そのもの（#798 の 2026-08-31 コメント）。**仕様の宣言はここ 1 箇所だけ**にする。
+ * 各ケースの期待値は分岐ごとに手で書かず、下の 2 つの不変条件から導く:
+ *
+ *   - `retained` … その override が**勝つ**（下位の段が何を言おうと state / reason が override）
+ *   - `released` … **override が最初から無かった場合と完全に一致**する（自動解除の最強の定義）
+ */
+const DISPOSAL_OF_UNPARSABLE = {
+  force_running: 'released',
+  force_stopped: 'retained',
+  draining: 'retained',
+} as const satisfies Record<TemporaryOverride['state'], 'released' | 'retained'>;
+
+const OVERRIDDEN_STATE = {
+  force_running: 'running',
+  force_stopped: 'stopped',
+  draining: 'draining',
+} as const satisfies Record<TemporaryOverride['state'], ServiceRuntimeState>;
+
+const ALL_OVERRIDE_STATES = Object.keys(DISPOSAL_OF_UNPARSABLE) as TemporaryOverride['state'][];
+
+/**
+ * 「解析不能」の**総当たり**。構文の壊れ方（前方一致・暦・時刻・桁）と型ドリフト（DynamoDB の
+ * 属性型違い・部分書き込み・旧スキーマ）を両方入れる。1 形だけで確かめると、`expiresAtMs` の
+ * どこか 1 段を通る壊れ方だけが縛られ、他の段が素通りする。
+ */
+const MALFORMED_EXPIRES_AT: readonly unknown[] = [
+  // 構文（前方一致で通してはいけないもの・空値）
+  'not-a-date',
+  '',
+  '   ',
+  '2026-07-22T12:00oops',
+  '2026-07-22extra',
+  '2026/07/22T12:00',
+  // 暦として存在しない（`Date` が黙って繰り上げる形）
+  '2026-13-01',
+  '2026-02-30',
+  '2026-00-10',
+  '2026-07-32',
+  '2027-02-29',
+  '0000-01-01',
+  '2027-02-30T00:00:00Z',
+  '2027-02-30T00:00:00+09:00',
+  // 時刻として存在しない（オフセットの有無で差を作らない）
+  '2027-07-22T24:00',
+  '2027-07-22T12:60',
+  '2027-07-22T12:00:60',
+  '2027-07-22T24:00:00Z',
+  '2027-07-22T12:60:00Z',
+  // 桁（ミリ秒 4 桁以上は padEnd が効かず大幅な延長になる）
+  '2027-07-22T13:00:00.1234',
+  // 型ドリフト
+  null,
+  undefined,
+  123,
+  0,
+  true,
+  {},
+  [],
+  Number.NaN,
+];
+
+/** bedrock にだけ一時 override を載せたポリシー。 */
+function withOverride(state: TemporaryOverride['state'], expiresAt: unknown): RuntimeOperatingPolicy {
+  return policyWith({ bedrock: { temporaryOverride: { state, expiresAt: expiresAt as string } } });
+}
+
+/** override が無いときの解決（＝「解除された」の正解）。 */
+function baselineServices(now: number) {
+  return resolveServiceStates({ policy: { commonSchedule: COMMON_8_23 }, now }).services;
+}
+
+/** override が勝ったときの解決（bedrock 以外は baseline のまま＝他サービスを巻き込まない）。 */
+function servicesWithOverrideWinning(now: number, state: TemporaryOverride['state']) {
+  return baselineServices(now).map((service) =>
+    service.serviceKey === 'bedrock'
+      ? {
+          serviceKey: 'bedrock' as const,
+          mode: service.mode,
+          state: OVERRIDDEN_STATE[state],
+          reason: 'temporary_override' as const,
+        }
+      : service,
+  );
+}
+
+describe('AC2 解析不能な一時 override は state で倒し方を変える (#798)', () => {
+  /*
+   * 代表点を 2 つ使う。営業時間内（下位の段は running）と営業時間外（下位の段は stopped）で、
+   * 「維持」と「解除」がそれぞれ別の値になる。片方だけだと、state が偶然一致して空虚に通る。
+   */
+  const EVALUATION_POINTS = [IN_HOURS, OUT_OF_HOURS];
+
+  it('この fixture では「維持」と「解除」が必ず別の値になる（空虚な合格の予防）', () => {
+    for (const now of EVALUATION_POINTS) {
+      for (const state of ALL_OVERRIDE_STATES) {
+        expect(servicesWithOverrideWinning(now, state), `${state}@${now}`).not.toEqual(baselineServices(now));
+      }
+    }
+  });
+
+  it('壊れ方を総当たりしても、倒れ方は override の state だけで決まる', () => {
+    for (const now of EVALUATION_POINTS) {
+      for (const state of ALL_OVERRIDE_STATES) {
+        const expected =
+          DISPOSAL_OF_UNPARSABLE[state] === 'retained' ? servicesWithOverrideWinning(now, state) : baselineServices(now);
+        for (const bad of MALFORMED_EXPIRES_AT) {
+          expect(
+            resolveServiceStates({ policy: withOverride(state, bad), now }).services,
+            `${state} / ${String(bad)} / ${now}`,
+          ).toEqual(expected);
+        }
+      }
+    }
+  });
+
+  it('期限切れ（解析できた値）は 3 つの state すべてで従来どおり自動解除する', () => {
+    /*
+     * 🔴 下界。「維持」を state 依存にした結果、**解析できた期限切れまで維持する**と
+     * 一時 override が永久 override に化ける。`expiresAt <= now` の契約は変えていない。
+     */
+    for (const now of EVALUATION_POINTS) {
+      for (const state of ALL_OVERRIDE_STATES) {
+        for (const expiresAt of [new Date(now - 60_000).toISOString(), new Date(now).toISOString()]) {
+          const result = resolveServiceStates({ policy: withOverride(state, expiresAt), now });
+          expect(result.services, `${state} / ${expiresAt}`).toEqual(baselineServices(now));
+          expect(result.anomalies, `${state} / ${expiresAt}`).toEqual([]);
+        }
+      }
+    }
+  });
+
+  it('期限内（解析できた値）は 3 つの state すべてで適用する', () => {
+    // 上界。「解除」側の実装が何もしなくなっていないことを対で縛る。
+    for (const now of EVALUATION_POINTS) {
+      for (const state of ALL_OVERRIDE_STATES) {
+        const expiresAt = new Date(now + 60_000).toISOString();
+        const result = resolveServiceStates({ policy: withOverride(state, expiresAt), now });
+        expect(result.services, `${state} / ${expiresAt}`).toEqual(servicesWithOverrideWinning(now, state));
+        expect(result.anomalies, `${state} / ${expiresAt}`).toEqual([]);
+      }
+    }
+  });
+
+  it('壊れた timezone 経由の解析不能でも倒し方は同じ（壊れ方の経路に依らない）', () => {
+    /*
+     * `expiresAt` 自体は正しい書式なのに、**同じレコードの `timezone` が壊れていて**現地時刻と
+     * して解釈できない形。`expiresAt` の書式検査だけを塞いでも消えない経路なので、ここも同じ表で
+     * 倒れることを縛る。段 5 は不正 TZ で throw するので、schedule を読まない mode の registry
+     * 部分集合で見る。
+     */
+    const onlyBedrock: readonly ManagedRuntimeService[] = [
+      { serviceKey: 'bedrock', defaultMode: 'manual_only', dependsOn: [], provides: ['ai_intent_resolution'] },
+    ];
+    const now = IN_HOURS; // 2026-07-22 10:00 JST
+    // オフセットを持たない値だけが timezone を要る（`Z` 付きは絶対時刻として読めてしまう）。
+    const localExpiresAt = '2026-07-22T13:00';
+    const policyIn = (timezone: string, state: TemporaryOverride['state']): RuntimeOperatingPolicy => ({
+      commonSchedule: { ...COMMON_8_23, timezone },
+      services: { bedrock: { temporaryOverride: { state, expiresAt: localExpiresAt } } },
     });
-    expect(stateOf(at('2026-07-23'), 'bedrock', IN_HOURS)).toMatchObject({
-      reason: 'temporary_override',
+    for (const state of ALL_OVERRIDE_STATES) {
+      // 対照: timezone が正しければ同じ値が「期限内」として解釈でき、異常も出ない。
+      const healthy = resolveServiceStates({ policy: policyIn('Asia/Tokyo', state), services: onlyBedrock, now });
+      expect(healthy.services, state).toEqual([
+        { serviceKey: 'bedrock', mode: 'manual_only', state: OVERRIDDEN_STATE[state], reason: 'temporary_override' },
+      ]);
+      expect(healthy.anomalies, state).toEqual([]);
+
+      const broken = resolveServiceStates({ policy: policyIn('Not/A/Zone', state), services: onlyBedrock, now });
+      const retained = DISPOSAL_OF_UNPARSABLE[state] === 'retained';
+      expect(broken.services, state).toEqual([
+        {
+          serviceKey: 'bedrock',
+          mode: 'manual_only',
+          state: retained ? OVERRIDDEN_STATE[state] : 'stopped',
+          reason: retained ? 'temporary_override' : 'default_policy',
+        },
+      ]);
+      expect(
+        broken.anomalies.map((anomaly) => anomaly.disposition),
+        state,
+      ).toEqual([DISPOSAL_OF_UNPARSABLE[state]]);
+    }
+  });
+});
+
+describe('AC2 解析不能な override は観測できる（無言で捨てない・無言で維持しない） (#798)', () => {
+  it('壊れ方を総当たりしても 1 件だけ、どのサービスをどう倒したかが載る', () => {
+    for (const state of ALL_OVERRIDE_STATES) {
+      for (const bad of MALFORMED_EXPIRES_AT) {
+        const result = resolveServiceStates({ policy: withOverride(state, bad), now: IN_HOURS });
+        expect(result.anomalies, `${state} / ${String(bad)}`).toEqual([
+          {
+            kind: 'unparsable_override_expiry',
+            serviceKey: 'bedrock',
+            overrideState: state,
+            disposition: DISPOSAL_OF_UNPARSABLE[state],
+            expiresAt: expect.any(String),
+          },
+        ]);
+      }
+    }
+  });
+
+  it('報告した disposition は実際の倒れ方と一致する（報告と挙動を乖離させない）', () => {
+    /*
+     * 🔴 表と実装を別々に手で書くと、片方だけ直したときに**「維持した」と報告しながら解除する**
+     * （またはその逆）状態が作れてしまう。報告を挙動から検算する。
+     */
+    for (const now of [IN_HOURS, OUT_OF_HOURS]) {
+      for (const state of ALL_OVERRIDE_STATES) {
+        for (const bad of MALFORMED_EXPIRES_AT) {
+          const result = resolveServiceStates({ policy: withOverride(state, bad), now });
+          const bedrock = resolutionFor(result, 'bedrock');
+          const reportedRetained = result.anomalies[0]?.disposition === 'retained';
+          const actuallyRetained = bedrock?.reason === 'temporary_override' && bedrock.state === OVERRIDDEN_STATE[state];
+          expect(reportedRetained, `${state} / ${String(bad)} / ${now}`).toBe(actuallyRetained);
+        }
+      }
+    }
+  });
+
+  it('壊れていなければ何も報告しない（正常時に鳴らさない）', () => {
+    expect(resolveServiceStates({ policy: { commonSchedule: COMMON_8_23 }, now: IN_HOURS }).anomalies).toEqual([]);
+    expect(
+      resolveServiceStates({ policy: policyWith({ bedrock: { mode: 'manual_only' } }), now: IN_HOURS }).anomalies,
+    ).toEqual([]);
+  });
+
+  it('複数サービスが壊れていたら registry 順に全部載る（1 件で打ち切らない）', () => {
+    const policy = policyWith({
+      stt: { temporaryOverride: { state: 'force_running', expiresAt: 'not-a-date' } },
+      bedrock: { temporaryOverride: { state: 'force_stopped', expiresAt: 'not-a-date' } },
+      monitoring: { temporaryOverride: { state: 'draining', expiresAt: 'not-a-date' } },
     });
+    const result = resolveServiceStates({ policy, now: IN_HOURS });
+    expect(result.anomalies.map((anomaly) => [anomaly.serviceKey, anomaly.disposition])).toEqual([
+      ['stt', 'released'],
+      ['bedrock', 'retained'],
+      ['monitoring', 'retained'],
+    ]);
+  });
+
+  it('break-glass で決まったサービスは override を見ていないので報告しない', () => {
+    /*
+     * 段 1 は段 2 より上で、override は**参照されない**。ここで報告すると
+     * 「維持した / 解除した」が実際には起きていない出来事になる（緊急停止中は全件鳴り続ける）。
+     */
+    const policy: RuntimeOperatingPolicy = {
+      commonSchedule: COMMON_8_23,
+      breakGlass: { active: true, scope: 'all' },
+      services: { bedrock: { temporaryOverride: { state: 'force_stopped', expiresAt: 'not-a-date' } } },
+    };
+    const result = resolveServiceStates({ policy, now: IN_HOURS });
+    expect(resolutionFor(result, 'bedrock')).toMatchObject({ state: 'stopped', reason: 'break_glass' });
+    expect(result.anomalies).toEqual([]);
+  });
+
+  it('報告に載せる expiresAt は上限つきの標本にする（生値をそのまま溜めない）', () => {
+    const long = `2026-07-22T12:00${'x'.repeat(500)}`;
+    const [anomaly] = resolveServiceStates({ policy: withOverride('force_stopped', long), now: IN_HOURS }).anomalies;
+    expect(anomaly?.expiresAt.length).toBeLessThanOrEqual(65);
+    expect(anomaly?.expiresAt.startsWith('2026-07-22T12:00')).toBe(true);
+  });
+
+  it('文字列でない値は型名で報告する（`[object Object]` のような無情報にしない）', () => {
+    const sampleFor = (value: unknown) =>
+      resolveServiceStates({ policy: withOverride('force_stopped', value), now: IN_HOURS }).anomalies[0]?.expiresAt;
+    expect(sampleFor(null)).toBe('<null>');
+    expect(sampleFor(undefined)).toBe('<undefined>');
+    expect(sampleFor(123)).toBe('<number>');
+    expect(sampleFor({})).toBe('<object>');
+    expect(sampleFor([])).toBe('<object>');
   });
 });

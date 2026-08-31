@@ -23,6 +23,7 @@ import {
   type CommonSchedule,
   type RuntimeOperatingPolicy,
   type ResolutionReason,
+  type RuntimeResolutionAnomaly,
   type RuntimeStateResolution,
   type ServiceResolution,
 } from '@/domain/runtime-policy/resolve';
@@ -341,6 +342,12 @@ export type RuntimeResolutionOutcome =
       readonly services: readonly ServiceResolution[];
       /** 共通営業時間が無いと決められないサービス。呼び出し側は**現状を変えない**。 */
       readonly unresolved: readonly ManagedRuntimeServiceKey[];
+      /**
+       * 解析不能な override の扱い (#798 AC2)。`resolved` は `resolution.anomalies` が持つが、
+       * `partial` は `services` を組み直すので**ここで明示的に持ち越す**（落とすと「維持した」が
+       * 未設定の拠点でだけ無言に戻り、その拠点こそ壊れたレコードが残りやすい）。
+       */
+      readonly anomalies: readonly RuntimeResolutionAnomaly[];
     }
   | { readonly kind: 'error'; readonly reason: string };
 
@@ -396,6 +403,7 @@ export async function resolveRuntimeStatesFor(
   let unresolved: Set<ManagedRuntimeServiceKey>;
   try {
     resolution = resolveServiceStates({ policy, now: atMs });
+    reportOverrideAnomalies(tenantId, siteId, resolution.anomalies);
     if (common) return { kind: 'resolved', resolution };
     unresolved = unresolvedWithoutCommonSchedule(resolution.services, runtime?.services, atMs);
   } catch (err) {
@@ -408,7 +416,35 @@ export async function resolveRuntimeStatesFor(
     services: resolution.services.filter((service) => !unresolved.has(service.serviceKey)),
     // 並びは**解決の順**に揃える（`services` 側と同じ列から作るので、両者が必ず分割になる）。
     unresolved: resolution.services.map((s) => s.serviceKey).filter((key) => unresolved.has(key)),
+    anomalies: resolution.anomalies,
   };
+}
+
+/**
+ * 解析不能な override の扱いを監視へ上げる (#798 AC2)。
+ *
+ * 🔴 **無言の誤動作を別の無言の誤動作に置き換えない。** `force_stopped` / `draining` を維持する
+ * ようになった以上、「なぜ止まったままなのか」を外から辿れる必要がある。
+ *
+ * `expiresAt` の**値はログに出さない**（`.claude/rules/pii-secret-minimization.md`。運用者が
+ * 入力した生値をアプリログへ溜めない）。原因のレコードへ辿るための標本は戻り値の
+ * `anomalies[].expiresAt` が持つ。
+ *
+ * 同一原因を毎分 1 件ずつ積まないための**集約**は、Reconciler を DynamoDB へ配線する増分
+ * （#798 AC1-2）で入れる。ここは解決 1 回につき 1 行に抑えるところまで。
+ */
+function reportOverrideAnomalies(
+  tenantId: string,
+  siteId: string,
+  anomalies: readonly RuntimeResolutionAnomaly[],
+): void {
+  if (anomalies.length === 0) return;
+  console.warn('[runtime-policy] unparsable temporary override expiry', {
+    tenantId,
+    siteId,
+    retained: anomalies.filter((a) => a.disposition === 'retained').map((a) => a.serviceKey),
+    released: anomalies.filter((a) => a.disposition === 'released').map((a) => a.serviceKey),
+  });
 }
 
 /*
@@ -486,7 +522,9 @@ const TIMEZONE_BOUNDS = { earliest: '+23:59', latest: '-23:59' } as const;
  * 手で導くたびに振り子が振れた（狭すぎ→広すぎ→reason 依存→早期 return が後段を飲み込む）。
  * 判定を実際の値で行う——**TZ の両端で解釈して同じ側に落ちるなら、その判定は TZ に依らない**。
  * これで「絶対時刻」も「遠い過去に失効した現地時刻」も自動的に確定側になり、境界付近だけが
- * 判定不能になる。解析不能な値（型ドリフト・壊れた文字列）はどの TZ でも失効扱いなので確定。
+ * 判定不能になる。解析不能な値（型ドリフト・壊れた文字列）は**どの TZ でも同じ倒し方**なので
+ * 確定 —— #798 AC2 で「解析不能を一律で失効させる」のはやめたが、`force_stopped` / `draining`
+ * を維持するのも `force_running` を解除するのも拠点 TZ に依らないので、この述語は変わらない。
  */
 function lapseNeedsSiteTimezone(expiresAt: unknown, now: number): boolean {
   if (typeof expiresAt !== 'string') return false;

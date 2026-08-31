@@ -44,13 +44,38 @@
 
 | Issue | 待っているもの |
 | --- | --- |
-| **#798 AC2** | 🔴 **ユーザー承認。** 解析不能な一時 override を `force_stopped` / `draining` では維持する変更で、主要 state / fallback の意味を変える仕様判断＝停止境界 |
-| **#798 AC1-2** | Reconciler の DynamoDB 配線。**Reconciler はまだ `resolveServiceStates` を呼んでいない**ので、集約ログは配線と同じ increment で入れる |
+| **#798 AC1-2** | Reconciler の DynamoDB 配線。**Reconciler はまだ `resolveServiceStates` を呼んでいない**ので、集約ログは配線と同じ increment で入れる。🔴 **配線より先に片付ける blocking 依存が 3 つある**（下記） |
 | **#800 AC4** | 本番 DynamoDB の棚卸し（AWS の窓が要る）。`TIMEZONE_BOUNDS` は**それまで狭めてはいけない** |
 | **#789 / #807** | 上の「人にしか出来ない残件」表のとおり |
 
+> **#798 AC2 は 2026-08-31 に消化した**（ユーザー承認は同日、issue のコメントに記録）。
+> 解析不能な `expiresAt` を持つ一時 override は、**`force_running` は従来どおり自動解除、
+> `force_stopped` / `draining` は維持**へ変えた（「起動しっぱなし」より「止まりっぱなし」が
+> 安全側）。併せて、どう倒したかを `RuntimeStateResolution.anomalies` として返し、
+> `resolveRuntimeStatesFor` が監視へ 1 行上げる（**同一原因の集約は AC1-2 と同じ increment**）。
+>
+> ⚠️ **「観測できる」は現時点で実効ゼロ。** `resolveRuntimeStatesFor` に本番の呼び出し元が
+> 無いうえ、ログ文字列が**裸のリテラル**で、このリポジトリに既にある
+> `KIOSK_DIAL_LOG_MARKERS` → MetricFilter → Alarm の型（`infra/lib/stacks/web-monitoring-stack.ts`）
+> に載っていない。**配線しても誰も見ない。**
+>
 > **#798 と #800 は閉じないこと。** どちらも AC の一部だけが残っている（issue 本文に
 > マッピング結果を反映済み）。
+>
+> ### 🔴 #798 AC1-2（Reconciler 配線）の blocking 依存
+>
+> 独立レビュー（2026-08-31・PR #842）が出したもの。**どれも「今は誰も呼んでいないから無害」で
+> 成立しており、その前提は配線 PR の 1 コミットで消える。**
+>
+> | # | 前提条件 | 放置したときに起きること |
+> | --- | --- | --- |
+> | 1 | **維持された override の解除導線** | `upsertRuntimePolicy` は本番呼び出し元ゼロ・admin UI 無し・TTL 無し。壊れた `force_stopped` が 1 件あると依存補正で `stt` / `dynamic-tts` も落ち、**iPad の音声受付が復旧不能に停止**する（復旧は DynamoDB の手術のみ）。従来は「毎分黙って running へ戻る」だったので、**壊れ方の向きが反転しただけで運用者の手は増えていない** |
+> | 2 | **監視配線**（マーカー定数 + MetricFilter + Alarm） | 「維持した」が CloudWatch Logs に流れるだけで誰も見ない。#798 AC2 の狙い（無言の起動を無言の停止へ置き換えない）が果たされず、**「無言の起動」→「ほぼ無言の恒久停止」**になる |
+> | 3 | **#846**（未知 state ＋ 有効な期限が `state: undefined` を無言で返す） | 解決結果が自分の型について嘘をつき、依存補正がそれを伝播させる。配線する人が高確率で踏む |
+>
+> あわせて、`anomalies[].expiresAt` が**生値を 64 文字そのまま運ぶ**点も配線前に片付けること
+> （検証層が拒否した値＝内容に制約が無いので、PII が混じりうる。配線後は監査ログ方針の変更＝
+> 停止境界に触れる）。
 
 `docs/loop-workflow.md` の運用対象キュー。**独立トラックは並行、統合点は直列、
 マージは直列**（理由は workflow の「並列オーケストレーション」節）。
