@@ -289,7 +289,8 @@ OPEN_RECEPTION_LOOP_HALT=1 ...     # 一時的に止める（env。file の方�
 | 件数 | 種別 | 中身 |
 | --- | --- | --- |
 | 1 | **実挙動の欠陥** | `VrmAvatarViewer` が `gazeOffsetFor(gazeTarget, layout)` を計算しながら依存は `[avatarState]` だけ。**iPad を回しても（`layout` 変化）視線オフセットが横向きのまま**で、縦画面で首を右へ振り続ける。`selectingTarget → fallback` でも右レールを見続ける |
-| 3 | **別の依存にマスクされた潜在的取りこぼし** | 現状は到達不能。下記のとおり「たまたま」他の依存が一緒に変わることで正しく動いている |
+| 2 | **別の依存にマスクされた潜在的取りこぼし** | 現状は到達不能。他の依存が一緒に変わることで正しく動いている（下記） |
+| 1 | **構造的に無害** | `KioskChatDrawer` の挨拶 effect。マスクではなく、effect が依存変化時に**そのレンダーのクロージャ**で走るため原理的に旧 locale を掴めない |
 | 1 | 不要依存 | `OperatingHoursManager` の `load` の `siteId`（`qs`/`scopeKey` が派生済み） |
 | 1 | 挙動不変 | `KioskFlow` の `snapshotForCall`（`useCallback(..., [])` で identity 不変） |
 
@@ -301,8 +302,10 @@ OPEN_RECEPTION_LOOP_HALT=1 ...     # 一時的に止める（env。file の方�
 - `OperatingHoursManager` の保存 … `policy` を変える唯一の経路 `applyPolicy` が必ず
   `setWeeklyText` を新しいオブジェクトで呼び、`weeklyText` が依存にある。
   **`setPolicy` の呼び出し元が増えた瞬間**に stale な `expectedVersion` が飛ぶ
-- `KioskChatDrawer` の挨拶 effect … `open && messages.length === 0` の窓が 1 コミットしか
-  無いので、その間に言語切替を挟めない
+（`KioskChatDrawer` の挨拶 effect は上記 2 件とは別で、**マスクされているのではなく構造的に
+無害**。`open && messages.length === 0` の窓が 1 コミットしか無く、effect はそのレンダーの
+クロージャで走る。ここを「マスク」と一緒くたに書くと、1 周目に訂正した「一段飛ばしの断定」を
+別の形で繰り返すことになる。）
 
 **warn のままなら、実害のある 1 件も、マスクが外れたときに真になる 3 件も見つからなかった。**
 
@@ -311,9 +314,21 @@ OPEN_RECEPTION_LOOP_HALT=1 ...     # 一時的に止める（env。file の方�
 **1. 抑止（`eslint-disable-next-line`）は error からも ratchet からも見えない。**
 理由の無い 1 行を足せば error 化は**ゼロコストで無効化**でき、使用済みディレクティブは
 warning を 1 件も増やさないので予算にも掛からない（独立レビューで実測）。
-そこで `tests/config/lint-warning-budget.test.ts` が **抑止の件数（3 件以下）と、
-各行に `--` の理由があること**を固定する。増やすときはこのテストを直すことになり、
-レビューに必ず目が入る。**`exhaustive-deps: 0` は「報告 0」であって「取りこぼし 0」ではない。**
+そこで `tests/config/lint-warning-budget.test.ts` が次を固定する。
+**`exhaustive-deps: 0` は「報告 0」であって「取りこぼし 0」ではない。**
+
+- 抑止が**既知の 3 箇所だけ**であること（件数だけだと「1 件消して別の効果へ 1 件足す」交換が
+  素通りするので、ファイルの集合で縛る）
+- 各行に**インラインの `--` 理由**があること
+- **ルール名を書かない無差別 `/* eslint-disable */` が 0 件**であること
+
+🔴 **綴りは 1 つではない。** 固定文字列 `eslint-disable-next-line …` だけを見ていた初版は、
+独立レビューの実測で `// eslint-disable-line …`（行末形）と
+`/* eslint-disable react-hooks/exhaustive-deps */`（ブロック形。**1 行でファイルまるごと**除外）
+の**2 通りに完全バイパスされた**。いまは正規表現で 3 形式を拾い、走査対象も `src` に加えて
+`tests` へ広げてある（`eslint .` の対象と揃える）。
+
+guard の目的は**禁止ではなく、レビューに晒すこと**である。理由を書けば抑止は通る。
 
 現在の抑止 3 件はいずれも来訪者導線にある（`KioskFlow` の a11y クランプ /
 `CheckoutFlow` の初回のみ実行 / `reception-screens` の検索デバウンス）。
