@@ -209,6 +209,12 @@ BLOCKER 3 件はすべて**直前の自分の修正が作った**もので、い
   委譲プロンプト生成器と同じコマンドを名指ししていることは
   `tests/config/loop-round-skill.test.ts` が縛る（散文が実測から遅れる型を機械で止める）。
 - `skills/quality-gate` … `/quality-gate` で `scripts/quality-gate.sh` を起動する project skill。
+- `skills/loop-retro` … `/loop-retro`。**外側ループの入口**（内側ループの実績を観測し、
+  一般化できる教訓だけを `.claude/rules/opus5-autonomous-loop.md` へ反映して PR を出す）。
+  内側が成果物を出すのに対し、こちらは**内側の質そのもの**を上げる。2〜3 週ごと、または
+  同じ失敗を 3 回踏んだときに回す。点検は `npm run loop:retro`、台帳は `docs/loop-retro.md`。
+  🔴 **周回の最中に回さない** — 教訓を失敗したその場で書くと、規約とコードが同じ誤りを
+  共有する（「検証の作法」冒頭と同型）。
 - `skills/issue-ac-mapping` … `/issue-ac-mapping`。**各周回の冒頭で必ず通す**。issue の AC を
   実コードへマッピングし、未充足の AC だけを increment 化する。キューの分類は仮説であって
   事実ではない（stale 分類による作り直し・不要な「外部待ち」判定を防ぐ）。

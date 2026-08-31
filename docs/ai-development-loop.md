@@ -147,6 +147,7 @@ green 記録が無ければブロックする。記録はゲートが実際に�
 | 停止境界に触れた変更の検出（§6 の列挙を変更パスから判定） | `src/domain/governance/change-risk.ts` |
 | **検査そのものが走っているか**（作っただけで誰も呼んでいない状態の検出） | `scripts/check-script-wiring.ts` |
 | **マージが squash で行われたか**（指示どおり実行されたかの検証） | `scripts/check-merge-method.ts` |
+| **規約の教訓が上限内で帰属を持つか**（外側ループの散文が無限に伸びるのを止める） | `src/domain/governance/loop-retro.ts` |
 
 ### UX complexity budget
 
@@ -268,6 +269,13 @@ wave 表）で、専用の追跡 ID は無い。
       `scripts/change-risk.ts`（git から集めて印字）。`quality-gate.sh` が毎回**報告のみ**で
       呼ぶ。**検出器であって判定者ではない**（偽陽性に倒してある）ので、承認の実行は人間
 - [ ] 提案 → Issue → PR → 計測の追跡 ID
+      **部分的に着手した**（#424 / Warp の self-improving agents に倣った外側ループ）。
+      `.claude/rules/opus5-autonomous-loop.md` が `<!-- loop-rules-revision: N -->` で
+      **版**を持ち、教訓は `> 由来: <日付> / #<issue>（PR #<n>）` で**どの周回の産物か**
+      帰属する。版と実行は `docs/loop-retro.md`（append-only）で突き合わせるので、
+      「その教訓を入れてから再発が減ったか」を後から測れる。
+      🔴 **これは追跡 ID そのものではない。** 帰属できるのは**規約の変更**だけで、
+      通常の Issue → PR → KPI の追跡 ID は依然として無い（§8 と同根）。本項目は開いたまま。
 - [x] kill switch と 1 ループあたりの変更行数 / ファイル数 …
       `src/domain/governance/change-budget.ts`（純関数）+ `scripts/change-budget.ts`。
       `quality-gate.sh` が**最初に**呼ぶ。**扱いを分けてある**: kill switch
@@ -296,6 +304,22 @@ wave 表）で、専用の追跡 ID は無い。
       流れないため）、`--report` で報告のみ。**呼び出し元は `scripts/record-gate-run.sh`**
       （#656。2026-08-08 まで**呼ぶものが 1 つも無く**、実装しただけで誰も走らせていなかった。
       週次運用の入口から `--report` で呼び、終了コードには混ぜない）。
+- [x] **外側ループ（規約そのものを実データから改善する）** …
+      `.claude/skills/loop-retro/SKILL.md`（改善手順）+ `src/domain/governance/loop-retro.ts`
+      （純関数）+ `scripts/loop-retro.ts`（`npm run loop:retro`）+ `docs/loop-retro.md`（台帳）。
+      内側ループ（Issue → TDD → ゲート → PR → マージ）の実績を観測し、**一般化できる教訓
+      だけ**を規約へ反映して **PR を出す**（main へ直接書き戻さない）。
+      **扱いを分けてある**: 構造の検査（教訓の上限 15 件・帰属の有無）は偽陽性が無いので
+      **ゲートの unit に入る**（`loop-retro.test.ts` の fitness ブロック）。
+      間隔の検査（`never_run` / `stale`）は**入れない** — 運用が止まっている間ずっと
+      ローカルゲートが赤くなり override が習慣化する（`evaluate:gate-runs` と同じ判断）。
+      自動経路は `scripts/record-gate-run.sh` から `--report` で 1 回（#656 の
+      「作ったが誰も呼ばない検出器」を繰り返さないため）。
+      **「変更なし」を `NO_CHANGE` として台帳に残す**のは、「回っていない」と
+      「回したが変えるに値しなかった」を区別するため。
+      🔴 **未構築**: 信号の収集は自動化していない。スキルが `gh` と `docs/gate-runs.md` を
+      読んで人（or agent）が判断する。無風の周回を「弱い肯定」として数えることも散文の指示
+      であって機械検証ではない。
 - [ ] プロンプト・判断根拠・ツール実行・差分の監査ログ
 
 ### 既に在るので作らないもの
