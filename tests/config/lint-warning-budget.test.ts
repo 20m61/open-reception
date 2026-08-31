@@ -13,6 +13,7 @@ import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
 const ROOT = process.cwd();
+const RULE = 'react-hooks/exhaustive-deps';
 
 
 /** `npm run lint` の実体。`noUncheckedIndexedAccess` があるので undefined を畳んでおく。 */
@@ -37,9 +38,56 @@ describe('lint の warning 予算 (#813)', () => {
     );
   });
 
-  it('react-hooks/exhaustive-deps は error（warn だと依存の取りこぼしが素通りする）', () => {
-    const config = readFileSync(join(ROOT, 'eslint.config.mjs'), 'utf8');
-    expect(config).toMatch(/'react-hooks\/exhaustive-deps':\s*'error'/);
+  /**
+   * 🔴 **文字列一致では実効 severity を保証できない。** flat config は**後勝ち**なので、
+   * 後段に `{ files: [...], rules: { 'react-hooks/exhaustive-deps': 'off' } }` を足しても
+   * 前段の `'error'` という文字列は残る。以前の版はそれを `toMatch` で見ていたため、
+   * **「rule は error」と読めるのに実効は off** という状態を緑のまま通していた（実測）。
+   *
+   * さらに `--no-inline-config` の主検査（`scripts/check-lint-suppressions.mjs`）も、
+   * 無効化するのは **inline 指示だけ**で config 側は生きたままなので、
+   * **既知 3 ファイル以外へスコープした上書き・`ignores` 追加は期待値を 1 ミリも動かさない**。
+   * config の形そのものをここで縛る（eslint を回さないので数百 ms）。
+   */
+  it('react-hooks/exhaustive-deps を設定するエントリが 2 つで、実効（後勝ち）が error', async () => {
+    const cfg = (await import('../../eslint.config.mjs')).default as {
+      rules?: Record<string, unknown>;
+      ignores?: string[];
+    }[];
+    const setters = cfg.filter((c) => c.rules?.[RULE] !== undefined);
+    expect(
+      setters.map((c) => c.rules?.[RULE]),
+      'setter が増減した。後段の上書きで実効 severity が変わっていないか',
+    ).toEqual(['warn', 'error']);
+  });
+
+  /**
+   * `ignores` に 1 行足すだけで、そのファイルは lint 対象から外れる。棚卸しにも予算にも
+   * 現れないので、ここで固定する。増やすときはこのテストを直す＝レビューに目が入る。
+   */
+  it('eslint.config.mjs の ignores が期待どおり', async () => {
+    const cfg = (await import('../../eslint.config.mjs')).default as { ignores?: string[] }[];
+    expect(cfg.flatMap((c) => c.ignores ?? [])).toEqual([
+      'node_modules/**',
+      '.next/**',
+      '.open-next/**',
+      'infra/**',
+      'tests/e2e/**',
+      'playwright-report/**',
+      'coverage/**',
+      'test-results/**',
+      '.claude/worktrees/**',
+      '.next/**',
+      'out/**',
+      'build/**',
+      'next-env.d.ts',
+      '.next/**',
+      'out/**',
+      'build/**',
+      'next-env.d.ts',
+      'src/components/**/*.test.ts',
+      'src/components/**/*.test.tsx',
+    ]);
   });
 
   /**

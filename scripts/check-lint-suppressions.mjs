@@ -40,8 +40,13 @@ import { join } from 'node:path';
  * severity を変えるので問題がそもそも報告されず、抑止の記録も残らない。件数も総数も
  * 理由判定も動かないまま、受付導線の任意のファイルで依存の取りこぼしを 1 行で無検査化できた
  * （実測）。`--no-inline-config` は inline 指示を**すべて**無効化するので、
- * disable ディレクティブ・インライン severity 変更・config の後段上書きの
- * **3 つの族が同時に**この数へ現れる（増えれば上界、減れば下界で落ちる）。
+ * disable ディレクティブとインライン severity 変更の **2 族がこの数へ現れる**
+ * （増えれば上界、減れば下界で落ちる）。
+ *
+ * 🔴 **config 側の上書き・`ignores` はここに現れない。** `--no-inline-config` が無効化するのは
+ * inline 指示だけで、config は生きたまま。新しいファイルへスコープした `'off'` や `ignores`
+ * 追加は報告も抑止も発生させないので、この数は動かない。その族は
+ * `tests/config/lint-warning-budget.test.ts` が `eslint.config.mjs` を import して縛る。
  */
 const EXPECTED_RULE = new Map([
   ['src/components/kiosk/KioskFlow.tsx', 1],
