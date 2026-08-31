@@ -286,11 +286,18 @@ function useCallingStage(
   timeoutPending: boolean,
 ): { stage: CallingStage; elapsedMs: number } {
   const [elapsedMs, setElapsedMs] = useState(0);
-  // 到達した最大段。`calling` を抜けたら捨てる（次の受付へ持ち越さない）。
-  const latchedStageRef = useRef<CallingStage>('dialing');
+  // 🔴 **到達した最大段を state でラッチする** (#832 5 周目レビュー MAJOR-1)。
+  // `deriveCallingStage` は「その瞬間の段」しか返さず、`timeoutPending` が真になった瞬間に
+  // `waiting → dialing` へ後退しうる（床が `waitingAfterMs` を上回る設定。テナントは 100ms
+  // まで下げられる）。生で出すと来訪者は逆行するちらつきを見て、保持も数え直しになる。
+  //
+  // ref ではなく state に置くのは、**レンダー中に ref を読み書きできない**ため
+  // （`react-hooks/refs`。最初 ref で書いて lint に落とされた）。更新は必ず tick の中で、
+  // 関数更新でラッチする。`calling` を抜けたら捨てる（次の受付へ持ち越さない）。
+  const [latchedStage, setLatchedStage] = useState<CallingStage>('dialing');
   useEffect(() => {
     if (!active) {
-      latchedStageRef.current = 'dialing';
+      setLatchedStage('dialing');
       setElapsedMs(0);
       return;
     }
@@ -299,6 +306,9 @@ function useCallingStage(
       const startedAt = startedAtRef.current;
       const elapsed = startedAt !== null ? Math.max(0, Date.now() - startedAt) : 0;
       setElapsedMs(elapsed);
+      setLatchedStage((previous) =>
+        advanceCallingStage(previous, deriveCallingStage(elapsed, thresholds, { timeoutPending })),
+      );
       // 次に到達すべき段階境界までの残り時間（無ければ上限間隔で「動いている」演出だけ更新する）。
       const nextBoundaryMs =
         elapsed < thresholds.waitingAfterMs
@@ -315,15 +325,8 @@ function useCallingStage(
     return () => window.clearTimeout(timer);
     // startedAtRef は ref オブジェクト自体（identity は不変）を依存にする。中身の変更検知は
     // tick() の中で毎回読む（react-hooks/refs: レンダー中に ref を触らない）。
-  }, [active, startedAtRef, thresholds]);
-  // 🔴 **ラッチを通す** (#832 5 周目レビュー MAJOR-1)。`deriveCallingStage` は「その瞬間の段」
-  // しか返さず、`timeoutPending` が真になった瞬間に `waiting → dialing` へ後退しうる
-  // （床が `waitingAfterMs` を上回る設定。テナントは 100ms まで下げられる）。
-  // 生で出すと来訪者は逆行するちらつきを見て、保持も数え直しになる。
-  const raw = deriveCallingStage(elapsedMs, thresholds, { timeoutPending });
-  const latched = active ? advanceCallingStage(latchedStageRef.current, raw) : 'dialing';
-  latchedStageRef.current = latched;
-  return { stage: latched, elapsedMs };
+  }, [active, startedAtRef, thresholds, timeoutPending]);
+  return { stage: latchedStage, elapsedMs };
 }
 
 
