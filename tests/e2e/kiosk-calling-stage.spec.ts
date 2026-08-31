@@ -417,3 +417,34 @@ test('PSTN: サーバが failed を返したら、予告を挟まず失敗とし
   await expect(page.getByTestId('result-failed')).toBeVisible({ timeout: 20_000 });
   await expect(page.getByTestId('result-timeout')).toHaveCount(0);
 });
+
+/**
+ * 🔴 **床の実時間を、しきい値を縮めない条件で縛る**（#832 3 周目レビュー MAJOR-2）。
+ *
+ * 他の spec は全部 `callingStageMs` を 100〜200 に縮めており、床は
+ * `Math.min(MIN_DIALING_MS, waitingAfterMs)` で clamp されるので **`MIN_DIALING_MS` を
+ * 3000 → 250 に狭める変異が全部素通りする**（実測: unit 6853 本すべて PASS）。
+ * ここは `callingStageMs` を床より長く置き、**予告に到達するまでの実時間**を測る。
+ */
+test('確定しても、床のあいだは「呼び出しています」を見せる (#832 MAJOR-2 回帰)', async ({
+  page,
+}) => {
+  // 床(3s) < waitingAfterMs(15s) なので clamp は効かず、床がそのまま出る。
+  // 予告しきい値 30s は経過では到達しないので、予告段へ入るのは床の経過が理由だと確定する。
+  await page.goto('/kiosk?callingStageMs=15000&callingNoticeMs=30000&callingNoticeHoldMs=300');
+  await page.getByTestId('start-reception').click();
+  await page.getByTestId('purpose-meeting').click();
+  await revealStaff(page, 'staff-staff-suzuki');
+  await page.getByTestId('staff-staff-suzuki').click();
+  await page.getByTestId('visitor-name').fill('来客 六郎');
+  await page.getByTestId('to-confirm').click();
+  await recordCallingStageTrail(page);
+  await page.getByTestId('confirm-call').click();
+
+  await expect(page.getByTestId('result-timeout')).toBeVisible({ timeout: 20_000 });
+  const trail = await readCallingStageTrail(page);
+  const dialing = trail.stages.find((x) => x.stage === 'dialing')!;
+  const notice = trail.stages.find((x) => x.stage === 'preTimeoutNotice')!;
+  // 床は 3s。計測誤差ぶん緩めるが、狭める変異（250ms 等）は必ず落ちる。
+  expect(notice.at - dialing.at).toBeGreaterThanOrEqual(2_500);
+});

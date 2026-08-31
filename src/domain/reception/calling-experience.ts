@@ -39,14 +39,21 @@ export type CallingStageThresholds = {
 };
 
 /**
- * 既定しきい値。Vonage の応答待ち上限（`KioskCallView.CALL_TIMEOUT_MS` = 30s）と体感を
- * 揃え、「予告 → 保持 → 実遷移」までの合計（noticeAfterMs + noticeMinDurationMs）が
- * およそ 30s になるよう選定（25s で予告を出し、最低 5s は見せてから遷移する）。
+ * 既定しきい値。
+ *
+ * `noticeAfterMs`(25s) は Vonage の応答待ち上限（`KioskCallView.CALL_TIMEOUT_MS` = 30s）に
+ * 対する予告の出しどころ。**結果がまだ確定していないとき**の段の進み方を決める。
+ *
+ * `noticeMinDurationMs` は **2s**（#832 でオーナー判断により 5s から短縮）。この値は
+ * 「予告を見せてから遷移するまで」であり、**結果が確定した後の待ち時間そのもの**である。
+ * 実 PSTN では結果が数十 ms で届くので、ここが長いほど「サーバは答えを知っているのに
+ * 来訪者が待たされる」時間が延びる（5s のときは床 3s と合わせて実測 8.5 秒だった）。
+ * 「突然感を無くす」には 2s あれば足りる、という判断。
  */
 export const DEFAULT_CALLING_STAGE_THRESHOLDS: CallingStageThresholds = {
   waitingAfterMs: 15_000,
   noticeAfterMs: 25_000,
-  noticeMinDurationMs: 5_000,
+  noticeMinDurationMs: 2_000,
 };
 
 /** しきい値として受け付ける最小値（0 や負値・NaN 等の壊れた設定を弾く）。 */
@@ -90,14 +97,17 @@ export function clampCallingStageThresholds(
  * 置かないと実測で **25〜36ms**（＝体感 0 フレーム）になり、来訪者は「呼ぶ」を押した瞬間に
  * warning トーンの予告画面を見る ―― 端末が呼び出しを試みた痕跡が画面に残らない。
  *
- * さらに悪いのが**音声との乖離**である。ナレーションは段では再発話しないので、
- * 「{相手} を呼び出しています。少々お待ちください。」を喋り終える前に画面だけ
- * 「つながらない場合は…」へ変わる。規約の「音声とタッチの等価性 / 表示と読み上げ」に反する。
- *
- * 値はナレーションの長さに合わせてある。**これでも読み上げのほうが数百 ms 長いことがある** ――
- * 完全に揃えるには読み上げ側も差し替える必要があり、それは別の仕様判断（#832 の残課題）。
+ * 🔴 **値は読み上げと揃っていない。** ナレーション（`reception.callingBody`）は既定で
+ * 概ね 4〜5.5 秒かかり、話速は管理画面で 0.5〜2.0 に設定できるので、床 3s との差は
+ * **既定でも 1〜2.5 秒、低速設定では 5 秒以上**になる。つまり画面が予告へ変わってからも
+ * 「少々お待ちください」と喋り続ける時間が残る。完全に揃えるには `speak()` の完了
+ * （`onEnd`）を床の条件へ混ぜる必要があり、それは別の仕様判断（#832 の残課題）。
+ * **「ナレーションの長さに合わせた」とは言えない** —— 揃えたのではなく、潰れるのを止めただけ。
  */
 export const MIN_DIALING_MS = 3_000;
+
+/** 床の下限。テナントが `waitingAfterMs` を極小にしても、ここより短くはしない。 */
+export const MIN_DIALING_FLOOR_MS = 500;
 
 /**
  * 経過 ms としきい値から表示段階を導出する。純関数。
@@ -106,7 +116,11 @@ export const MIN_DIALING_MS = 3_000;
  * 「もう少しお待ちください。**担当者に確認しています**」だが、`busy` と `declined`
  * （担当者の**辞退**）も `timeout` に写る（`src/domain/call/call-resolution.ts`）ので、
  * 辞退が数秒で確定した来訪者に対して**もう確認していないことを喋り続ける**ことになる。
- * 既定しきい値では最大 22 秒、字幕と読み上げの両方で。
+ * 既定しきい値では最大 22 秒。
+ *
+ * 🔴 なお**段の文言は読み上げられない**（`KioskFlow` は `AvatarGuide` に `ttsSettings` を
+ * 渡しておらず、`AvatarGuide` は未指定なら即 return する。親も `aria-hidden` なので支援技術にも
+ * 届かない）。嘘をつくのは**表示だけ**である —— それでも 22 秒は長すぎるので判断は変わらない。
  *
  * ただし**飛ばすのは `waiting` だけで、`dialing` は飛ばさない**（`MIN_DIALING_MS`）。
  * 「呼び出しています」は確定直後でも嘘ではない ―― 実際に呼び出したのだから。
@@ -121,9 +135,23 @@ export function deriveCallingStage(
   thresholds: CallingStageThresholds = DEFAULT_CALLING_STAGE_THRESHOLDS,
   options?: { readonly timeoutPending?: boolean },
 ): CallingStage {
-  // 床は `waitingAfterMs` を超えない（しきい値を縮めた E2E では床も縮む）。
-  const dialingFloorMs = Math.min(MIN_DIALING_MS, thresholds.waitingAfterMs);
-  if (options?.timeoutPending === true && elapsedMs >= dialingFloorMs) return 'preTimeoutNotice';
+  // 🔴 **床には専用の下限を持たせる** (#832 3 周目レビュー MINOR-4)。
+  //
+  // `waitingAfterMs` はテナントが管理画面で **100ms まで下げられる**。あの入力欄の意味は
+  // 「『もう少しお待ちください』へ切り替える経過」であって「呼び出し確定後に
+  // 『呼び出しています』を見せる最低時間」ではないので、あそこに 300ms を入れた
+  // テナントで床が消える ―― 2 周目 MAJOR-1（dialing が潰れて音声と表示が乖離する）が
+  // そのテナントだけで再発する。本番の保証を、意味の違うつまみに結びつけない。
+  const dialingFloorMs = Math.max(
+    MIN_DIALING_FLOOR_MS,
+    Math.min(MIN_DIALING_MS, thresholds.waitingAfterMs),
+  );
+  if (options?.timeoutPending === true) {
+    // 🔴 **床の下では `dialing` を保つ**（`waiting` へ落とさない）。落とすと、まさに消したい
+    // 嘘の文言（「担当者に確認しています」＝もう確認していない）を床のあいだ見せてしまう。
+    // テナントが `waitingAfterMs` を床より短くしている場合に実際に起きる。
+    return elapsedMs >= dialingFloorMs ? 'preTimeoutNotice' : 'dialing';
+  }
   if (elapsedMs >= thresholds.noticeAfterMs) return 'preTimeoutNotice';
   if (elapsedMs >= thresholds.waitingAfterMs) return 'waiting';
   return 'dialing';

@@ -42,7 +42,7 @@
 > | --- | --- | --- |
 > | `/call` が同期で `timeout` | ✅ #826 | e2e が縛っているのはここ（mock の都合） |
 > | 実 PSTN の `/status` ポーリング | ✅ #832 | **実運用で来訪者が一番踏む**。修正前の遷移列は `dialing → result-timeout` で `waiting` すら出なかった（実測） |
-> | Vonage ビデオ | ❌ | 予告の**字幕と読み上げは出ている**（`callingAvatarGuidanceOverride`）。欠けているのは commit 保証。方針は「commit 保証だけ入れる」で確定済み |
+> | Vonage ビデオ | ❌ | 予告の**字幕は出ている**（`callingAvatarGuidanceOverride`）。🔴 **読み上げは出ていない** —— `KioskFlow` は `AvatarGuide` に `ttsSettings` を渡しておらず、親も `aria-hidden` なので支援技術にも届かない（2026-08-31 実測。以前ここに「読み上げも出る」と書いたのは誤り）。欠けているのは commit 保証と、そもそもの音声 |
 > | QR 受付（`CheckinFlow`） | ❌ | 段階演出そのものが無い。**`CALL_TIMEOUT` を dispatch せず** `decidePollAction` の結果を `CALL_FAILED('unanswered')` へ写しているので、grep しても見つからない。#832 のスコープに含めると決定 |
 
 ### ⛔ 着手できないもの（待ちの理由つき）

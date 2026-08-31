@@ -5,6 +5,7 @@ import {
   clampCallingStageThresholds,
   deriveCallingStage,
   MIN_DIALING_MS,
+  MIN_DIALING_FLOOR_MS,
   timeoutDispatchGateMs,
 } from './calling-experience';
 
@@ -68,14 +69,42 @@ describe('deriveCallingStage (#323)', () => {
     expect(deriveCallingStage(MIN_DIALING_MS, t, { timeoutPending: true })).toBe('preTimeoutNotice');
   });
 
+  /**
+   * 🔴 **床には下限がある**（3 周目レビュー MINOR-4）。`waitingAfterMs` は管理画面で 100ms まで
+   * 下げられるが、あの欄の意味は「『お待ちください』へ切り替える経過」であって
+   * 「確定後に『呼び出しています』を見せる最低時間」ではない。本番の保証を、意味の違う
+   * つまみに消させない。
+   */
+  it('🔴 テナントが waitingAfterMs を極小にしても床は消えない', () => {
+    const t = clampCallingStageThresholds({ waitingAfterMs: 100, noticeAfterMs: 500 });
+    expect(deriveCallingStage(MIN_DIALING_FLOOR_MS - 1, t, { timeoutPending: true })).toBe('dialing');
+    expect(deriveCallingStage(MIN_DIALING_FLOOR_MS, t, { timeoutPending: true })).toBe(
+      'preTimeoutNotice',
+    );
+  });
+
+  /**
+   * 🔴 **床の値そのものを縛る**（3 周目レビュー MAJOR-2）。
+   *
+   * 上の 2 本は `MIN_DIALING_MS` を**引数にも期待値にも使う自己参照**なので、値を狭める変異
+   * （3000 → 250 等）を原理的に検出できない。実測でも `MIN_DIALING_MS = 250` は
+   * **unit 6853 本すべてを素通り**した。ここは**リテラル**で下界を置く。
+   */
+  it('🔴 床は 2.5 秒を下回らない（値を狭める変異を落とす）', () => {
+    const t = DEFAULT_CALLING_STAGE_THRESHOLDS;
+    // 既定しきい値（waitingAfterMs=15s）では clamp が効かないので、床がそのまま出る。
+    expect(deriveCallingStage(2_499, t, { timeoutPending: true })).toBe('dialing');
+  });
+
   it('床は waitingAfterMs を超えない（しきい値を縮めれば床も縮む）', () => {
     const t = clampCallingStageThresholds({
-      waitingAfterMs: 200,
-      noticeAfterMs: 500,
+      waitingAfterMs: 1_000,
+      noticeAfterMs: 5_000,
       noticeMinDurationMs: 100,
     });
-    expect(deriveCallingStage(199, t, { timeoutPending: true })).toBe('dialing');
-    expect(deriveCallingStage(200, t, { timeoutPending: true })).toBe('preTimeoutNotice');
+    // 床(3s) より waitingAfterMs(1s) が短いので、床は 1s へ縮む（下限 500ms は下回らない）。
+    expect(deriveCallingStage(999, t, { timeoutPending: true })).toBe('dialing');
+    expect(deriveCallingStage(1_000, t, { timeoutPending: true })).toBe('preTimeoutNotice');
   });
 
   /**
