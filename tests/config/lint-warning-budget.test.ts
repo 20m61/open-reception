@@ -25,8 +25,15 @@ function lintScript(): string {
 }
 
 describe('lint の warning 予算 (#813)', () => {
-  it('npm run lint は --max-warnings を持つ（無いと warning が素通りする）', () => {
-    expect(lintScript()).toMatch(/--max-warnings\s+\d+/);
+  /**
+   * 🔴 **完全一致で縛る。** 「`--max-warnings` を含む」だけだと、
+   * `--config eslint.weak.mjs` や `--ignore-pattern 'src/**'` を足して lint ステップ全体を
+   * 骨抜きにできる（棚卸しスクリプトは独自に eslint を起動するので `exhaustive-deps` だけは
+   * 守られるが、他のルールは丸ごと落ちる）。`lint:suppressions` 側は完全一致で縛ってあり、
+   * こちらだけ緩いのは非対称だった。
+   */
+  it('npm run lint が期待どおり（無いと warning が素通りする）', () => {
+    expect(lintScript()).toBe('eslint . --max-warnings 74');
   });
 
   it('予算の数値が docs/quality-gate.md の記載と一致する（散文が実測から遅れない）', () => {
@@ -107,10 +114,15 @@ describe('lint の warning 予算 (#813)', () => {
     expect(pkg.scripts?.['lint:suppressions']).toBe('node scripts/check-lint-suppressions.mjs');
   });
 
-  it('抑止の棚卸しが品質ゲート（fast 以外）で呼ばれている', () => {
+  /**
+   * 🔴 **`step` 経由であることまで見る。** 部分文字列一致だと `|| true` を足すだけで
+   * exit code が捨てられ、SUMMARY からも消えるのに緑のまま通る（実測）。
+   * 本テストは「存在するが実行されない guard」を防ぐために書かれたので、呼び出しの形を縛る。
+   */
+  it('抑止の棚卸しが品質ゲート（fast 以外）で step として呼ばれている', () => {
     const gate = readFileSync(join(ROOT, 'scripts/quality-gate.sh'), 'utf8');
-    expect(gate, 'ゲートから呼ばれない guard は「存在するが実行されない」形になる').toContain(
-      'npm run --silent lint:suppressions',
+    expect(gate, 'ゲートから呼ばれない guard は「存在するが実行されない」形になる').toMatch(
+      /step "lint suppressions"\s+npm run --silent lint:suppressions\s*$/m,
     );
   });
 });
