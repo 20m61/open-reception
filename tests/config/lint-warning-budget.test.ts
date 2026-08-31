@@ -8,44 +8,75 @@
  * 使用済みディレクティブは warning を 1 件も増やさないので ratchet にも掛からない。
  * ここで抑止の件数と理由を固定して、穴が同じ場所へ戻らないようにする。
  */
-import { readFileSync, readdirSync, statSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
+import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
 const ROOT = process.cwd();
 
-function walk(dir: string, out: string[] = []): string[] {
-  for (const entry of readdirSync(dir)) {
-    const full = join(dir, entry);
-    if (statSync(full).isDirectory()) walk(full, out);
-    else if (/\.tsx?$/.test(entry)) out.push(full);
+
+/**
+ * 🔴 **綴りを列挙しない。** ここは 3 周にわたって「見落とした綴りを足す」修正を繰り返し、
+ * そのたびに独立レビューが別の綴りで素通りさせた（1 綴り → 3 綴り → さらに 3 通り）。
+ * 前提そのものが 2 つ間違っていた:
+ *
+ *  1. **ルール名は省略できる。** 省略した `eslint-disable` は**全ルールを外す**ので、
+ *     名前を書くより強い。「ルール名を含む行」を探す網には最強の形が引っかからない
+ *  2. **ディレクティブは 1 物理行に収まらない。** ブロックコメントは改行を跨げるので、
+ *     行単位に `split` してから探す方式では原理的に見えない
+ *
+ * そこで**コメントを取り出し、その本文がディレクティブかどうかを文法で判定する**。
+ * これなら「思いついた綴り」に依存せず、検査したと言い切れる。
+ * （`.claude/rules/opus5-autonomous-loop.md`「値の調整を繰り返すのをやめ、前提を疑う」）
+ */
+
+/** 行コメントとブロックコメントの両方。ブロックは改行を跨ぐ。 */
+const COMMENT_RE = /\/\*[\s\S]*?\*\/|\/\/[^\n]*/g;
+/** コメント本文の先頭がディレクティブか。捕獲するのは「ルール列 + 理由」。 */
+const DIRECTIVE_RE = /^eslint-disable(?:-next-line|-line)?\b([\s\S]*)$/;
+const TARGET_RULE = 'react-hooks/exhaustive-deps';
+
+type Directive = { file: string; line: number; rules: string; reason: string };
+
+/** コメントの囲みを外して本文だけにする。ブロック内の行頭 `*` も落とす。 */
+function commentBody(raw: string): string {
+  const inner = raw.startsWith('//')
+    ? raw.slice(2)
+    : raw.slice(2, -2).replace(/^[ \t]*\*/gm, '');
+  return inner.trim();
+}
+
+/** lint 対象と揃える。`walk` の拡張子フィルタでは `.mjs` を取りこぼしていた。 */
+function lintedFiles(): string[] {
+  return execFileSync('git', ['ls-files', 'src', 'tests', 'scripts', 'eslint-rules', '*.ts', '*.mjs'], {
+    cwd: ROOT,
+    encoding: 'utf8',
+  })
+    .split('\n')
+    .filter((f) => /\.(tsx?|mjs)$/.test(f));
+}
+
+/** ファイル中の eslint-disable 系ディレクティブを全部拾う（綴りに依存しない）。 */
+function directives(): Directive[] {
+  const out: Directive[] = [];
+  for (const file of lintedFiles()) {
+    const src = readFileSync(join(ROOT, file), 'utf8');
+    for (const m of src.matchAll(COMMENT_RE)) {
+      const d = DIRECTIVE_RE.exec(commentBody(m[0]));
+      if (!d) continue;
+      // `--` 以降は理由。手前がルール列（空なら無差別）。
+      const [rulesPart = '', ...reasonParts] = (d[1] ?? '').split(/\s--\s/);
+      out.push({
+        file,
+        line: src.slice(0, m.index).split('\n').length,
+        rules: rulesPart.trim(),
+        reason: reasonParts.join(' -- ').trim(),
+      });
+    }
   }
   return out;
 }
-
-/**
- * 🔴 **抑止の綴りは 1 つではない。** 固定文字列 `eslint-disable-next-line …` だけを見ていた
- * 版は、独立レビューの実測で **2 通りの完全バイパス**を通した:
- *
- *  - `// eslint-disable-line react-hooks/exhaustive-deps`（行末形・理由なし）
- *  - `/* eslint-disable react-hooks/exhaustive-deps *\/`（ブロック形。**1 行でファイルまるごと**除外）
- *
- * どちらも `eslint --max-warnings 74` は EXIT=0、旧テストも 6 passed だった。
- * `CLAUDE.md`「調査の作法」が名指ししている「固定文字列で探すと変種を取りこぼす」型そのもの。
- */
-const SUPPRESSION_RE =
-  /eslint-disable(?:-next-line|-line)?\b[^\n]*\breact-hooks\/exhaustive-deps\b/;
-/** ルール名を書かない無差別抑止。1 行でそのファイルの全ルールが外れる。 */
-const BLANKET_RE = /\/\*\s*eslint-disable\s*\*\//;
-/** 同じ行に `-- 理由` があること。多ルール列挙・順序入替えも許容する。 */
-const REASON_RE = /react-hooks\/exhaustive-deps\b[^\n]*?\s--\s+\S/;
-
-/**
- * 走査対象。`eslint .` の対象と揃える（`src` だけだと `tests/config` などへ逃がせる）。
- * **本ファイル自身は除く** —— 上の doc とパターン定義が自分にマッチしてしまうため。
- */
-const SCAN_DIRS = ['src', 'tests'];
-const SELF = 'tests/config/lint-warning-budget.test.ts';
 
 /** `npm run lint` の実体。`noUncheckedIndexedAccess` があるので undefined を畳んでおく。 */
 function lintScript(): string {
@@ -53,19 +84,6 @@ function lintScript(): string {
     scripts?: Record<string, string | undefined>;
   };
   return pkg.scripts?.lint ?? '';
-}
-
-type Hit = { file: string; line: number; text: string };
-
-function scan(match: RegExp): Hit[] {
-  return SCAN_DIRS.flatMap((dir) => walk(join(ROOT, dir))).flatMap((file) => {
-    const rel = file.slice(ROOT.length + 1);
-    if (rel === SELF) return [];
-    return readFileSync(file, 'utf8')
-      .split('\n')
-      .map((text, i) => ({ file: rel, line: i + 1, text }))
-      .filter(({ text }) => match.test(text));
-  });
 }
 
 describe('lint の warning 予算 (#813)', () => {
@@ -88,44 +106,43 @@ describe('lint の warning 予算 (#813)', () => {
   });
 
   /**
-   * 🔴 **抑止は ratchet からも error からも見えない。** 件数と場所を固定して、
-   * 「error にしたのに 1 行 disable で戻す」経路を可視化する。増やすときは
-   * このテストを直すことになり、レビューに必ず目が入る。
-   *
+   * 🔴 **抑止は ratchet からも error からも見えない。** 場所と理由を固定して、
+   * 「error にしたのに 1 行 disable で戻す」経路を可視化する。
    * guard の目的は**禁止ではなく、レビューに晒すこと**である。理由を書けば抑止は通る。
    */
-  it('exhaustive-deps の抑止は既知の 3 箇所だけ（綴りの違いも拾う）', () => {
-    const found = scan(SUPPRESSION_RE);
-    // 件数だけだと「1 件消して別の効果へ 1 件足す」交換が素通りするので**場所**で縛る。
-    expect([...new Set(found.map((f) => f.file))].sort()).toEqual([
+  it('exhaustive-deps の抑止は既知の 3 箇所だけ', () => {
+    const found = directives().filter((d) => d.rules.includes(TARGET_RULE));
+    expect([...new Set(found.map((d) => d.file))].sort()).toEqual([
       'src/components/kiosk/KioskFlow.tsx',
       'src/components/kiosk/checkout/CheckoutFlow.tsx',
       'src/components/kiosk/reception-screens.tsx',
     ]);
+    // 件数も見る（同一ファイル内で 2 件目に増える形を止める）。
     expect(
       found.length,
-      `抑止が増えている:\n${found.map((f) => `  ${f.file}:${f.line}`).join('\n')}`,
-    ).toBeLessThanOrEqual(3);
+      `抑止が増えている:\n${found.map((d) => `  ${d.file}:${d.line}`).join('\n')}`,
+    ).toBe(3);
   });
 
-  it('抑止には必ず同じ行に `--` の理由が書かれている', () => {
-    for (const { file, line, text } of scan(SUPPRESSION_RE)) {
+  it('抑止には必ず `--` の理由が書かれている', () => {
+    for (const d of directives().filter((x) => x.rules.includes(TARGET_RULE))) {
       expect(
-        REASON_RE.test(text),
-        `${file}:${line} に理由が無い。理由の無い抑止は warn に戻したのと同じ`,
-      ).toBe(true);
+        d.reason,
+        `${d.file}:${d.line} に理由が無い。理由の無い抑止は warn に戻したのと同じ`,
+      ).not.toBe('');
     }
   });
 
   /**
-   * ルール名を書かない `/* eslint-disable *\/` は、**1 行でそのファイルの全ルールを外す**。
-   * 抑止としては最も強く、上の「理由を書く」規約もすり抜けるので 0 件で固定する。
+   * ルール名を書かない `eslint-disable` は**そのファイル（または次の行）の全ルールを外す**。
+   * 名前を書くより強く、上の「理由を書く」規約もすり抜けるので 0 件で固定する。
+   * 行コメント・ブロックコメント・複数行ブロックのいずれの綴りでも捕まる。
    */
   it('ルール名を書かない無差別 eslint-disable は存在しない', () => {
-    const found = scan(BLANKET_RE);
+    const blanket = directives().filter((d) => d.rules === '');
     expect(
-      found.map((f) => `${f.file}:${f.line}`),
-      '無差別抑止はファイルごと検査対象から外す。ルール名を明記すること',
+      blanket.map((d) => `${d.file}:${d.line}`),
+      '無差別抑止は全ルールを外す。ルール名を明記すること',
     ).toEqual([]);
   });
 });
@@ -143,7 +160,7 @@ describe('snapshotForCall の identity 不変性 (#813)', () => {
     expect(
       src,
       '受付作成 effect の依存から snapshotForCall が消えた。不変性 pin だけでは結合を守れない',
-    ).toMatch(/\}, \[data\.state,[^\]]*snapshotForCall\]\);/);
+    ).toMatch(/\}, \[data\.state,[^\]]*snapshotForCall[^\]]*\]\);/);
   });
 
   it('useExperienceMetrics の snapshotForCall は依存空の useCallback である', () => {
