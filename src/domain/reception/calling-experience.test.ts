@@ -39,8 +39,9 @@ describe('deriveCallingStage (#323)', () => {
    * 予告の目的は「突然感を無くす」ことなので、**サーバが既に結果を返しているのに
    * `noticeAfterMs` まで待つ理由が無い**。むしろ待つと害がある ―― `busy` と `declined`
    * （担当者の辞退）も `timeout` に写る（`call-resolution.ts`）ため、辞退が数秒で確定した
-   * 来訪者に「もう少しお待ちください。**担当者に確認しています**」を最大 22 秒、
-   * 字幕と読み上げで流し続けることになる。**もう確認していないので、端末が事実でないことを喋る。**
+   * 来訪者に「もう少しお待ちください。**担当者に確認しています**」を最大 22 秒
+   * 表示し続けることになる ―― **もう確認していないのに、画面がそう言い続ける**。
+   * （段の文言は読み上げられない。`KioskFlow` は `AvatarGuide` に `ttsSettings` を渡していない。）
    */
   it('🔴 timeout が確定したら waiting を飛ばして予告段へ進む', () => {
     const t = DEFAULT_CALLING_STAGE_THRESHOLDS;
@@ -90,6 +91,58 @@ describe('deriveCallingStage (#323)', () => {
    * （3000 → 250 等）を原理的に検出できない。実測でも `MIN_DIALING_MS = 250` は
    * **unit 6853 本すべてを素通り**した。ここは**リテラル**で下界を置く。
    */
+  /**
+   * 🔴 **下限そのものをリテラルで縛る**（4 周目レビュー MAJOR-1）。
+   *
+   * `MIN_DIALING_FLOOR_MS` を引数にも期待値にも使う自己参照テストだけだと、値を狭める変異が
+   * 素通りする ―― 実測で **`= 100` は 6855 本すべて PASS** した。`MIN_THRESHOLD_MS` が 100 な
+   * ので、100 まで下げると `Math.max` が恒等になり**下限を削除したのと数学的に等価**になる。
+   *
+   * `MIN_DIALING_MS` には同じ対策を入れたのに、**同じコミットで新設したこちらに入れ忘れた**。
+   * CLAUDE.md が名指ししている「同型の 2 本には対策を入れて 3 本目に入れ忘れる」型。
+   */
+  /**
+   * 🔴 **既定の保持そのものをリテラルで縛る**（4 周目レビュー MINOR-3）。
+   *
+   * `noticeMinDurationMs` は #832 で 5s → 2s へ選び直した値で、**予告を見せる時間の唯一の
+   * 実効保証**である。既定値を主張するテストは全部 `DEFAULT_CALLING_STAGE_THRESHOLDS` を
+   * 参照する自己参照で、実測では **`2_000 → 100` が 6855 本すべて PASS** した。
+   */
+  it('🔴 既定の予告保持は 1.5 秒を下回らない', () => {
+    expect(DEFAULT_CALLING_STAGE_THRESHOLDS.noticeMinDurationMs).toBeGreaterThanOrEqual(1_500);
+  });
+
+  it('🔴 下限は 400ms を下回らない（値を狭める変異を落とす）', () => {
+    const t = clampCallingStageThresholds({ waitingAfterMs: 100, noticeAfterMs: 100_000 });
+    // 床 = max(FLOOR, min(3000, 100)) = FLOOR。FLOOR が 400 以下へ縮むとここが preTimeoutNotice になる。
+    expect(deriveCallingStage(399, t, { timeoutPending: true })).toBe('dialing');
+  });
+
+  /**
+   * 🔴 **不変条件: `timeoutPending` が真になっても、段は予告から後退しない**
+   * （4 周目レビュー MINOR-2）。
+   *
+   * ここまで 3 周連続で「床の値」を調整していた。値ではなく**満たすべき性質**を総当たりで
+   * 縛る（CLAUDE.md「分岐ごとの期待値ではなく不変条件を書く」）。後退すると `KioskFlow` の
+   * 「逆行したら起点を捨てる」が走り、保持が数え直しになって画面がちらつく。
+   */
+  it('🔴 timeoutPending が真になっても予告段から後退しない（不変条件）', () => {
+    for (const waitingAfterMs of [100, 200, 400, 1_000, 15_000]) {
+      for (const noticeAfterMs of [200, 300, 500, 5_000, 25_000]) {
+        const t = clampCallingStageThresholds({ waitingAfterMs, noticeAfterMs });
+        for (const elapsedMs of [0, 99, 199, 210, 399, 499, 500, 3_000, 30_000]) {
+          const idle = deriveCallingStage(elapsedMs, t, { timeoutPending: false });
+          const pending = deriveCallingStage(elapsedMs, t, { timeoutPending: true });
+          if (idle === 'preTimeoutNotice') {
+            expect(pending, `elapsed=${elapsedMs} w=${waitingAfterMs} n=${noticeAfterMs}`).toBe(
+              'preTimeoutNotice',
+            );
+          }
+        }
+      }
+    }
+  });
+
   it('🔴 床は 2.5 秒を下回らない（値を狭める変異を落とす）', () => {
     const t = DEFAULT_CALLING_STAGE_THRESHOLDS;
     // 既定しきい値（waitingAfterMs=15s）では clamp が効かないので、床がそのまま出る。

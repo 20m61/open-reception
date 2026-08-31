@@ -146,13 +146,20 @@ export function deriveCallingStage(
     MIN_DIALING_FLOOR_MS,
     Math.min(MIN_DIALING_MS, thresholds.waitingAfterMs),
   );
+  // 🔴 **経過だけで予告段に到達していたら、`timeoutPending` の有無に関わらず予告段**。
+  //
+  // これを後ろに置くと**段が後退する**（4 周目レビュー MINOR-2 の実測: `noticeAfterMs < 床`
+  // となる設定で `preTimeoutNotice → dialing` が起きた）。後退すると `KioskFlow` の
+  // 「逆行したら起点を捨てる」が走って保持が数え直しになり、来訪者は
+  // 「予告 → 呼び出し中 → 予告 → 結果」というちらつきを見る。
+  // 単調性は下の不変条件テストが総当たりで縛る。
+  if (elapsedMs >= thresholds.noticeAfterMs) return 'preTimeoutNotice';
   if (options?.timeoutPending === true) {
     // 🔴 **床の下では `dialing` を保つ**（`waiting` へ落とさない）。落とすと、まさに消したい
     // 嘘の文言（「担当者に確認しています」＝もう確認していない）を床のあいだ見せてしまう。
     // テナントが `waitingAfterMs` を床より短くしている場合に実際に起きる。
     return elapsedMs >= dialingFloorMs ? 'preTimeoutNotice' : 'dialing';
   }
-  if (elapsedMs >= thresholds.noticeAfterMs) return 'preTimeoutNotice';
   if (elapsedMs >= thresholds.waitingAfterMs) return 'waiting';
   return 'dialing';
 }
