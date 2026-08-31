@@ -39,6 +39,12 @@ const EXPECTED = new Map([
   ['src/components/kiosk/reception-screens.tsx', 1],
 ]);
 const RULE = 'react-hooks/exhaustive-deps';
+/**
+ * 全ルールの抑止総数。追跡ルールと**重ならない**無差別 disable を捕まえるための下界。
+ * 現在の内訳: exhaustive-deps 3（いずれも理由あり）+ 他ルール 10（no-img-element 7 /
+ * no-explicit-any 2 / no-require-imports 1。いずれも理由なしだが既存として許容）。
+ */
+const EXPECTED_TOTAL = 13;
 
 // 🔴 `npx` を使わない。eslint が未インストールだとレジストリ取得を試み、プロキシ環境では
 // ハングか長い失敗になる。ローカル bin を直接叩き、無ければ理由を言って止まる。
@@ -69,24 +75,29 @@ try {
 }
 
 const found = [];
+let totalSuppressed = 0;
 for (const file of results) {
   const rel = file.filePath.replace(process.cwd() + '/', '');
   for (const m of file.suppressedMessages ?? []) {
+    totalSuppressed += 1;
     if (m.ruleId !== RULE) continue;
-    const justification = (m.suppressions ?? [])
-      .map((s) => (s.justification ?? '').trim())
-      .filter((j) => j !== '')
-      .join(' / ');
-    found.push({ file: rel, line: m.line, justification });
+    const parts = (m.suppressions ?? []).map((x) => (x.justification ?? '').trim());
+    // 🔴 **OR ではなく AND。** 「1 つでも理由があれば可」にすると、無差別 disable が持つ
+    // 空の justification を捨ててしまい、重なった抑止を「理由あり」と誤判定する。
+    // 無差別 disable は必ず空の justification を持つので、AND なら重なった瞬間に落ちる。
+    const missingReason = parts.length === 0 || parts.some((j) => j === '');
+    found.push({ file: rel, line: m.line, justification: parts.filter((j) => j !== '').join(' / '), missingReason });
   }
 }
 
 const actual = new Map();
 for (const f of found) actual.set(f.file, (actual.get(f.file) ?? 0) + 1);
 
-console.log(RULE + ' の抑止: ' + found.length + ' 件');
+console.log(RULE + ' の抑止: ' + found.length + ' 件 / 全ルールの抑止: ' + totalSuppressed + ' 件');
 for (const f of found) {
-  console.log('  ' + f.file + ':' + f.line + (f.justification === '' ? '  【理由なし】' : '  -- ' + f.justification));
+  console.log(
+    '  ' + f.file + ':' + f.line + (f.missingReason ? '  【理由なし】' : '  -- ' + f.justification),
+  );
 }
 
 const problems = [];
@@ -98,7 +109,18 @@ for (const [file, count] of actual) {
   if (!EXPECTED.has(file)) problems.push(file + ': 許可されていない場所に ' + count + ' 件');
 }
 for (const f of found) {
-  if (f.justification === '') problems.push(f.file + ':' + f.line + ': 理由（-- 以降）が無い');
+  if (f.missingReason) problems.push(f.file + ':' + f.line + ': 理由（-- 以降）が無い抑止が重なっている');
+}
+// 🔴 **追跡ルールと重ならない無差別 disable は、件数でしか見えない。**
+// `suppressedMessages` は「どのルール名を書いたか」を返さないので、
+// `/* eslint-disable */` を 1 行置いてファイル全体を無検査にする変異は、
+// 追跡ルールに重ならなければ上の検査を素通りする（実測で受付フロー本体が全ルール無検査になった）。
+// 総数を期待値に入れると、どのファイルの無差別 disable も必ずここを動かす。
+if (totalSuppressed !== EXPECTED_TOTAL) {
+  problems.push(
+    '全ルールの抑止総数: 期待 ' + EXPECTED_TOTAL + ' 件 / 実際 ' + totalSuppressed +
+      ' 件（無差別 eslint-disable がファイル全体を無検査にしていないか）',
+  );
 }
 
 if (problems.length > 0) {
