@@ -44,13 +44,18 @@
 
 | Issue | 待っているもの |
 | --- | --- |
-| **#798 AC2** | 🔴 **ユーザー承認。** 解析不能な一時 override を `force_stopped` / `draining` では維持する変更で、主要 state / fallback の意味を変える仕様判断＝停止境界 |
 | **#798 AC1-2** | Reconciler の DynamoDB 配線。**Reconciler はまだ `resolveServiceStates` を呼んでいない**ので、集約ログは配線と同じ increment で入れる |
 | **#800 AC4** | 本番 DynamoDB の棚卸し（AWS の窓が要る）。`TIMEZONE_BOUNDS` は**それまで狭めてはいけない** |
 | **#789 / #807** | 上の「人にしか出来ない残件」表のとおり |
 
+> **#798 AC2 は 2026-08-31 に消化した**（ユーザー承認は同日、issue のコメントに記録）。
+> 解析不能な `expiresAt` を持つ一時 override は、**`force_running` は従来どおり自動解除、
+> `force_stopped` / `draining` は維持**へ変えた（「起動しっぱなし」より「止まりっぱなし」が
+> 安全側）。併せて、どう倒したかを `RuntimeStateResolution.anomalies` として返し、
+> `resolveRuntimeStatesFor` が監視へ 1 行上げる（**同一原因の集約は AC1-2 と同じ increment**）。
+>
 > **#798 と #800 は閉じないこと。** どちらも AC の一部だけが残っている（issue 本文に
-> マッピング結果を反映済み）。
+> マッピング結果を反映済み）。#798 に残っているのは **AC1-2 だけ**。
 
 `docs/loop-workflow.md` の運用対象キュー。**独立トラックは並行、統合点は直列、
 マージは直列**（理由は workflow の「並列オーケストレーション」節）。
