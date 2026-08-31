@@ -20,7 +20,6 @@ import type {
 export class MockGuidanceProvider implements GuidanceProvider {
   readonly id = 'mock';
 
-  // eslint-disable-next-line @typescript-eslint/require-await
   async generate(request: GuidanceRequest): Promise<GuidanceResponse> {
     const text = request.utterance.toLowerCase();
 
@@ -49,7 +48,6 @@ export class MockHandoffChannel implements HandoffChannel {
 
   constructor(private readonly accept: boolean = true) {}
 
-  // eslint-disable-next-line @typescript-eslint/require-await
   async requestHandoff(_input: HandoffRequest): Promise<HandoffOutcome> {
     if (this.accept) {
       return { accepted: true };

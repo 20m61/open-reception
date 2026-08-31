@@ -138,7 +138,7 @@ export function CheckoutFlow() {
     const ct = new URLSearchParams(window.location.search).get(CHECKOUT_TOKEN_QUERY);
     if (ct) void resolveCredential({ payload: ct }, 'qr');
     // 初回のみ。resolveCredential は tr/busy に依存するため意図的に依存を絞る。
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- 初回のみ実行する意図（resolveCredential は tr/busy に依存する）
   }, []);
 
   const submitToken = useCallback(() => {

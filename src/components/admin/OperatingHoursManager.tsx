@@ -103,7 +103,7 @@ export function OperatingHoursManager({
       applyPolicy(body.policy);
     }
     setLoadedScopeKey(requestedScope);
-  }, [qs, siteId, scopeKey, scopeReady, isCurrentScope, applyPolicy]);
+  }, [qs, scopeKey, scopeReady, isCurrentScope, applyPolicy]);
 
   useEffect(() => {
     // 拠点が変わったら「まだ読めていない」へ戻す。これを忘れると前拠点の値のまま
@@ -175,7 +175,7 @@ export function OperatingHoursManager({
     } finally {
       setBusy(false);
     }
-  }, [busy, loaded, sitePending, scopeKey, isCurrentScope, clear, weeklyText, fixedHolidaysText, exceptionsText, timezone, emergencyContactLabel, tenantId, siteId, applyPolicy, success, failure]);
+  }, [busy, loaded, sitePending, scopeKey, isCurrentScope, clear, weeklyText, fixedHolidaysText, exceptionsText, timezone, emergencyContactLabel, tenantId, siteId, policy, applyPolicy, success, failure]);
 
   if (!loaded) {
     return (

@@ -11,7 +11,7 @@
     "seed:dynamodb": "tsx scripts/seed-dynamodb.ts",
     "evaluate:gate-runs": "tsx scripts/evaluate-gate-runs.ts",
     "change-risk": "tsx scripts/change-risk.ts",
-    "lint": "eslint .",
+    "lint": "eslint . --max-warnings 74",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",

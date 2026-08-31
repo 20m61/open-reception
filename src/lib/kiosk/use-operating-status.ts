@@ -42,7 +42,6 @@ export function useOperatingStatus(
       poller.stop();
     };
     // 初期値はマウント時のみ採用する（force-dynamic の再訪はページ再マウントで反映される）。
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   return status;

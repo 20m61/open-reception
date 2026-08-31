@@ -78,7 +78,7 @@ export function AccessibilityMenu({
           role="presentation"
           onClick={() => setOpen(false)}
         >
-          {/* eslint-disable-next-line jsx-a11y/no-noninteractive-element-interactions -- パネル内クリックの overlay 閉じ伝播だけを止める（キーボード操作は各コントロールが担う） */}
+          {/* パネル内クリックの overlay 閉じ伝播だけを止める（キーボード操作は各コントロールが担う）。 */}
           <div
             className="a11y-menu__panel"
             data-testid="a11y-menu-panel"

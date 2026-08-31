@@ -525,7 +525,7 @@ export function KioskFlow({
     if (clamped.lowReach !== a11yLowReach) setA11yLowReach(clamped.lowReach);
     // fontScale/a11yHighContrast/a11yLowReach は「クランプ対象」であり、この effect 自身の
     // setState で変わりうるため依存に含めない（a11yEnabledModes の変化にのみ反応する）。
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- クランプ対象は自身の setState で変わるため依存に含めない（上のコメント参照）
   }, [a11yEnabledModes]);
   // E2E タイマー短縮用のクエリ上書き（`?callingStageMs=` 等、既存 `?inactivityMs=` の流儀）。
   // window 参照は SSR 不一致を避けるため effect 内でのみ行う。
@@ -788,7 +788,7 @@ export function KioskFlow({
       // clearTimeout と同じ意図。発火自体は下のゲート effect が持つ）。
       setPendingTimeoutSessionId(null);
     };
-  }, [data.state, data.purpose, data.target, data.visitor, selectedFlow]);
+  }, [data.state, data.purpose, data.target, data.visitor, selectedFlow, snapshotForCall]);
 
   // 実 PSTN 発信中は `/status` をポーリングして結果を確定させる (#647)。
   //

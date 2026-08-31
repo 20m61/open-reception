@@ -130,7 +130,7 @@ export function VrmAvatarViewer({
   useEffect(() => {
     avatarStateRef.current = avatarState ?? 'idle';
     gazeRef.current = gazeOffsetFor(gazeTarget ?? 'none', layout ?? 'ipad-landscape');
-  }, [avatarState]);
+  }, [avatarState, gazeTarget, layout]);
 
   // モーション URL も [vrmUrl] エフェクト外から変化するため ref 経由で渡す。
   // VRM ロード完了後に loadMotionRef.current が設定され、状態遷移ごとに .vrma を切替える（#31）。

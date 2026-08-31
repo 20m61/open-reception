@@ -250,6 +250,95 @@ OPEN_RECEPTION_LOOP_HALT=1 ...     # 一時的に止める（env。file の方�
 - **残件**: 文書 PR で省略し続けた分を定期実行で必ず一度は踏む網（`--full --strict` の
   頻度と起点の設計）は未整備。現状の担保はトリップワイヤのみ。
 
+### lint の warning は素通りしない（#813）
+
+`npm run lint` は **`eslint . --max-warnings 74`**、加えて `react-hooks/exhaustive-deps` を
+**`error`** へ上げてある（`eslint.config.mjs`）。方針は 2 段構えである。
+
+**1. 実害が実証されているルールだけ error にする。**
+`react-hooks/exhaustive-deps` は既定 warn だが、依存配列の取りこぼしは**全部この穴を通る**。
+#803（PR #812）の独立レビューで、`VoiceSessionLayer` の effect 依存から `state` を落とす変異が
+**6789 tests 全緑・`eslint` exit=0** のまま通ることが実測されている（不在告知が一度も
+喋られなくなるのに）。このリポジトリは effect を node 環境で実行できず（jsdom 無し）、
+配線の防御線がソース文字列検査しか無いので、ここは助言ではなく停止させる。
+
+**2. 残りは件数の ratchet で頭打ちにする。**
+`set-state-in-effect`（54 件）は「マウント時に async load() を呼ぶ」既存パターンを多数拾う
+意図的な warn で、機械的に直すと回帰リスクが高い。`--max-warnings 0` は現実的でないので、
+**現状の件数を上限**にして増加だけを止める。
+
+🔴 **`--max-warnings` の数値は、減らしたときに一緒に下げること。** 上げるのは
+「なぜ増やすのか」を PR に書いたときだけ。上げっぱなしにすると ratchet が意味を失う。
+
+#### 現状の内訳（2026-08-31 実測・#813 の周回で 86 → 74）
+
+| 件数 | ルール | 扱い |
+| --- | --- | --- |
+| 54 | `react-hooks/set-state-in-effect` | warn のまま（ratchet で頭打ち） |
+| 19 | `@typescript-eslint/no-unused-vars` | warn のまま |
+| 1 | `@next/next/no-img-element` | warn のまま |
+| 0 | `react-hooks/exhaustive-deps` | **error**（既存 6 件は #813 で実際に直した） |
+
+減った 12 件の内訳: `exhaustive-deps` 6 件を修正、**stale な `eslint-disable` ディレクティブ
+6 件を削除**（抑止しているルールがもう発火していないもの。うち 1 件は `exhaustive-deps` を
+抑止していた）。
+
+`exhaustive-deps` の 6 件の内訳は次のとおり。🔴 **「依存が抜けている」は「実害がある」では
+ない。** 独立レビューの指摘で数え直した（当初は 4 件を実害と書いていたが誤りだった）。
+
+| 件数 | 種別 | 中身 |
+| --- | --- | --- |
+| 1 | **実挙動の欠陥** | `VrmAvatarViewer` が `gazeOffsetFor(gazeTarget, layout)` を計算しながら依存は `[avatarState]` だけ。**iPad を回しても（`layout` 変化）視線オフセットが横向きのまま**で、縦画面で首を右へ振り続ける。`selectingTarget → fallback` でも右レールを見続ける |
+| 3 | **別の依存にマスクされた潜在的取りこぼし** | 現状は到達不能。下記のとおり「たまたま」他の依存が一緒に変わることで正しく動いている |
+| 1 | 不要依存 | `OperatingHoursManager` の `load` の `siteId`（`qs`/`scopeKey` が派生済み） |
+| 1 | 挙動不変 | `KioskFlow` の `snapshotForCall`（`useCallback(..., [])` で identity 不変） |
+
+マスクされている 3 件は、**マスクを外す変更で真になる**ので直す価値がある:
+
+- `KioskChatDrawer` の `submit` … `llm = useMemo(..., [adapter, locale])` が依存に入っており、
+  `adapter` の本番注入がゼロなので locale 変更時に `llm` ごと作り直される。
+  **`adapter` を注入した瞬間にマスクが外れ**、旧 locale で応答するようになる
+- `OperatingHoursManager` の保存 … `policy` を変える唯一の経路 `applyPolicy` が必ず
+  `setWeeklyText` を新しいオブジェクトで呼び、`weeklyText` が依存にある。
+  **`setPolicy` の呼び出し元が増えた瞬間**に stale な `expectedVersion` が飛ぶ
+- `KioskChatDrawer` の挨拶 effect … `open && messages.length === 0` の窓が 1 コミットしか
+  無いので、その間に言語切替を挟めない
+
+**warn のままなら、実害のある 1 件も、マスクが外れたときに真になる 3 件も見つからなかった。**
+
+#### 🔴 ratchet が見ていないもの（穴の残り）
+
+**1. 抑止（`eslint-disable-next-line`）は error からも ratchet からも見えない。**
+理由の無い 1 行を足せば error 化は**ゼロコストで無効化**でき、使用済みディレクティブは
+warning を 1 件も増やさないので予算にも掛からない（独立レビューで実測）。
+そこで `tests/config/lint-warning-budget.test.ts` が **抑止の件数（3 件以下）と、
+各行に `--` の理由があること**を固定する。増やすときはこのテストを直すことになり、
+レビューに必ず目が入る。**`exhaustive-deps: 0` は「報告 0」であって「取りこぼし 0」ではない。**
+
+現在の抑止 3 件はいずれも来訪者導線にある（`KioskFlow` の a11y クランプ /
+`CheckoutFlow` の初回のみ実行 / `reception-screens` の検索デバウンス）。
+
+**2. 予算は base が動くと変わる。** 並行してマージされた**無関係な PR が warning を
+1 件足すだけで、マージ後の main が赤くなる**。base を取り込んだら
+`npx eslint --format=json . | ...` で数え直すこと（本 PR でも #835 の取り込み時に実施した）。
+
+**3. `ignores` を足せば件数は下げられる。** `eslint.config.mjs` の `ignores` を縛るテストは
+まだ無い（`coverage/**` は `vitest --coverage` が生成する istanbul の `.js` で予算が
+無関係に溢れるのを避けるための保険として追加済み）。「逃げ方」としては開いたまま。
+
+#### 実効性の実測（#813 AC3）
+
+`git worktree` に隔離して変異を当て、両方で lint が止まることを確認した。
+
+| 変異 | `npm run lint` |
+| --- | --- |
+| `VoiceSessionLayer` の依存から `state` を落とす | **FAIL**（1 error） |
+| warning を 1 件増やす | **FAIL**（75 > 74） |
+| 変異なし | PASS（74 warnings） |
+
+意図的に依存を外す場合は `// eslint-disable-next-line react-hooks/exhaustive-deps` に
+**理由を書いて**抑止する。理由の無い抑止は、warn に戻したのと同じである。
+
 ### ゲートの強制（`pr-gate-guard` フック）
 
 CI が無い以上、「PR 前に `--pr` / マージ前に `--full`」は**規約だけでは守られない**。
