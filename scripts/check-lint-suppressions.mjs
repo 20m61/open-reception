@@ -157,6 +157,16 @@ diff('[--no-inline-config]', EXPECTED_RULE, ruleByFile);
 // 無差別 disable が RULE と重ならない場合も、そのファイルの抑止件数は必ず動く。
 diff('[抑止]', EXPECTED_SUPPRESSIONS, suppressionsByFile);
 
+// 🔴 **理由判定にも下界が要る。** 主検査を `--no-inline-config` 側へ移した結果、`found`
+// （通常実行の抑止収集）は理由判定にしか使われなくなった。そのため収集そのものを壊す変異が
+// 「理由の問題ゼロ」として素通りする（回帰行列で実測。生存 1/15）。収集件数も期待と縛る。
+const expectedRuleTotal = [...EXPECTED_RULE.values()].reduce((a, b) => a + b, 0);
+if (found.length !== expectedRuleTotal) {
+  problems.push(
+    RULE + ' の抑止収集: 期待 ' + expectedRuleTotal + ' 件 / 実際 ' + found.length +
+      ' 件（理由判定が空振りしていないか）',
+  );
+}
 for (const f of found) {
   if (f.missingReason) problems.push(f.file + ':' + f.line + ': 理由（-- 以降）が無い抑止が重なっている');
 }
