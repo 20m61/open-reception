@@ -77,6 +77,7 @@ sast 49s (8%) / lint 37s (6%) / typecheck 25s (4%) / secrets + audit 4s。
 | --- | --- | --- | --- |
 | 任意ツール未導入 | gitleaks / semgrep / lhci が無い | `skip_or_fail` | **green として記録する**（`--strict` で FAIL にできる） |
 | 検査できなかった | `.open-next` がビルド後も揃わない / 状態を判定できない / **停止境界を判定できなかった** (#713) | `skip_unverified` | **記録しない**（exit 1） |
+| 検査できなかった | **semgrep のルールセットを読めなかった** (#841) | `skip_unverified` | **記録しない**（exit 1） |
 
 前者は「その検査を持っていない」だけだが、後者は**やるはずの検査が前提の破損で走らなかった**
 状態で、「落ちなかった」だけであり「通った」根拠が無い。
@@ -554,11 +555,15 @@ FAIL したステップの重大度に応じて**即時 issue を起票**し、�
 
 ### ツールのバージョン・ルール更新への追従方針
 
-- `gitleaks` / `semgrep` はローカルインストールのツール（npm 管理外）で、脆弱性・秘密情報の
-  検出ルールは日々更新される。**四半期に一度**、`gitleaks version` / `semgrep --version` を
-  最新リリースと比較し、メジャー更新があれば変更点（`semgrep scan --config p/default` の
-  ルールセット変更含む）を確認してから追従する。追従作業自体も `docs/gate-runs.md` の
-  備考欄に記録する（例: 「semgrep 1.x→1.y 追従」）。
+- `gitleaks` / `semgrep` はローカルインストールのツール（npm 管理外）。**四半期に一度**、
+  `gitleaks version` / `semgrep --version` を最新リリースと比較し、メジャー更新があれば
+  変更点を確認してから追従する。追従作業自体も `docs/gate-runs.md` の備考欄に記録する
+  （例: 「semgrep 1.x→1.y 追従」）。
+- **semgrep のルールは `semgrep-rules/` に置く。レジストリ（`p/default`）は引かない** (#841)。
+  レジストリ依存には 2 つ問題があった: ①外向き通信が制限された環境では semgrep が導入済みでも
+  実行できない（クラウドから `semgrep.dev` へ CONNECT できず、`--pr` / `--full` をクラウド既定と
+  する方針と噛み合わない）②ルールが外側で更新されるので、同じツリーに対する結果が日で変わる。
+  ルールの追加・更新は**リポジトリの差分としてレビューする**。書き方は `semgrep-rules/README.md`。
 - `npm audit` は実行のたびに最新の advisory DB を参照するため、追従は定期実行の副次効果として
   自動的に行われる。
 

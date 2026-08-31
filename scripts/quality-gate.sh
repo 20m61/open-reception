@@ -108,6 +108,34 @@ step() { # step <label> <cmd...>
   fi
 }
 
+# step_or_unverified <label> <cmd...>
+#
+# `step` と同じだが、**終了コード 3 を「検査できなかった」**として `skip_unverified` へ倒す (#841)。
+#
+# 任意ツールの未導入（`skip_or_fail`）とも、指摘あり（FAIL）とも違う第 3 の状態がある検査で使う。
+# sast は「semgrep は在るがルールセットを読めなかった」がまさにそれで、指摘ゼロと同じ緑で
+# 記録すると #640（infra synth が 45 件 SKIP のまま tier=full を記録）と同じ被害になる。
+step_or_unverified() { # step_or_unverified <label> <cmd...>
+  local label="$1"; shift
+  echo ""
+  echo "▶ ${label}"
+  echo "  \$ $*"
+  local start; start=$SECONDS
+  # 🔴 `local code=$?` と 1 行で書かない ── `local` 自体の終了コードで上書きされる。
+  local code
+  if "$@"; then
+    SUMMARY+=("PASS  ${label}  ($((SECONDS-start))s)")
+  else
+    code=$?
+    if [[ "${code}" -eq 3 ]]; then
+      skip_unverified "${label}" "ルールセットを読めず検査できなかった (exit 3)"
+    else
+      SUMMARY+=("FAIL  ${label}  ($((SECONDS-start))s)")
+      FAILED=1
+    fi
+  fi
+}
+
 # classify_detector_status <label> <exit-code>
 #
 # 報告専用の検出器の終了コードを、ゲートの語彙へ翻訳する (#713)。
@@ -594,7 +622,10 @@ if [[ "$RUN_SAST" -eq 1 ]] && scope_skips sast; then
   scope_skip "sast (semgrep)"
 elif [[ "$RUN_SAST" -eq 1 ]]; then
   if command -v semgrep >/dev/null 2>&1; then
-    step "sast (semgrep)" semgrep scan --config p/default --error
+    # ルールセットは**リポジトリ内** (#841)。レジストリ (`p/default`) を引くと、
+    # 外向き通信が制限された環境では semgrep が導入済みでも実行できず、結果も日で変わる。
+    # 終了コード 3 は「ルールを読めず検査できなかった」＝ green として記録しない。
+    step_or_unverified "sast (semgrep)" "${ROOT}/scripts/sast.sh"
   else
     skip_or_fail "sast (semgrep)" "semgrep not installed"
   fi
