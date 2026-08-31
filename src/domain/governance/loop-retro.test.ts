@@ -72,6 +72,14 @@ describe('parseLearnedGuidelines', () => {
     expect(parseLearnedGuidelines('> ただの引用。\n> 続き。')).toEqual([]);
   });
 
+  it('強調された「**由来:**」も教訓として数える', () => {
+    // 🔴 2 周目のレビュー指摘。台帳側では `**UPDATED**` を受けるようにしたのに、
+    // 教訓側は強調を受けないままだった。同じ抜け道が片側にだけ残っていた。
+    const gs = parseLearnedGuidelines('> **由来:** 2026-08-26 / #788（PR #804）。');
+    expect(gs).toHaveLength(1);
+    expect(gs[0]?.issues).toEqual([788]);
+  });
+
   it('全角コロンの「由来：」も教訓として数える', () => {
     // 🔴 レビュー指摘。表記ゆれ 1 つで上限も帰属検査も**空虚に通る**。
     // 日本語入力では全角の方がむしろ自然に出る。
@@ -219,6 +227,27 @@ describe('evaluateLoopRetro', () => {
     expect(f.map((x) => x.code)).toContain('unrecorded_guideline');
   });
 
+  it('翌日までの教訓は指摘しない（記録は UTC・教訓の日付は現地時間で書かれる）', () => {
+    // 🔴 2 周目のレビュー指摘。台帳は `date -u` で UTC、教訓の日付は人が JST で書く。
+    // 15:00Z 以降に回した回が、同じ JST 日の教訓を「ループを通さず足された」と
+    // 自分で誤検出する。厳密な同日比較ではなく 1 日の猶予を持たせる。
+    const f = evaluateLoopRetro({
+      ...healthy,
+      guidelines: [guideline('2026-08-29')],
+      runs: [run('2026-08-28T16:00Z', 2)],
+    });
+    expect(f.map((x) => x.code)).not.toContain('unrecorded_guideline');
+  });
+
+  it('猶予を超えた教訓は指摘する（猶予がすべてを飲み込まない）', () => {
+    const f = evaluateLoopRetro({
+      ...healthy,
+      guidelines: [guideline('2026-08-30')],
+      runs: [run('2026-08-28T16:00Z', 2)],
+    });
+    expect(f.map((x) => x.code)).toContain('unrecorded_guideline');
+  });
+
   it('実行と同日に足された教訓は指摘しない（その実行の産物）', () => {
     const f = evaluateLoopRetro({
       ...healthy,
@@ -254,6 +283,22 @@ describe('実リポジトリの教訓台帳（fitness）', () => {
 
   it('規約ファイルが版マーカーを持つ', () => {
     expect(parseRulesRevision(rules)).toBeTypeOf('number');
+  });
+
+  it('台帳の EXAMPLE 行が実データに混ざらない', () => {
+    // 🔴 2 周目のレビュー指摘。EXAMPLE 行の判定は行の自由文に依っており、書式が崩れると
+    // **説明用の行が実データとして数えられ `never_run`（error）を黙らせる**。
+    // 正規表現を調整し続けるのをやめ、**実ファイルに対する契約としてここで固定する**
+    // （`docs/loop-retro.md` の EXAMPLE 行は太字マーカーを保つこと）。
+    //
+    // 🔴 **オラクルは「太字つきの EXAMPLE」を探してはならない。** 最初そう書いたところ、
+    // 太字を外す変異では備考から `EXAMPLE 行**` という文字列自体が消えるので
+    // **アサーションが必ず真になり、変異が生存した**（実測）。判定対象の選び方が
+    // 変異と一緒に動くと、テストは何も縛らない。
+    // 実台帳に対する契約は「**実データの備考は EXAMPLE に一切言及しない**」である。
+    const runs = parseRetroRuns(readFileSync(LEDGER, 'utf8'));
+    expect(runs.every((r) => !r.note.includes('EXAMPLE'))).toBe(true);
+    expect(runs.every((r) => r.revisionFrom !== undefined && r.revisionTo !== undefined)).toBe(true);
   });
 
   it('教訓はすべて帰属（日付＋issue か PR）を持ち、上限を超えない', () => {

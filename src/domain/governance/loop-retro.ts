@@ -110,9 +110,10 @@ export function parseLearnedGuidelines(markdown: string): LearnedGuideline[] {
       heading = (h[1] ?? '').trim();
       continue;
     }
-    // **コロンは半角・全角の両方を受ける。** 日本語入力では全角の方がむしろ自然に出る。
-    // 表記ゆれ 1 つで教訓が 0 件と数えられると、上限も帰属検査も**空虚に通る**。
-    if (!/^>\s*由来\s*[:：]/.test(line)) continue;
+    // **コロンの全角半角と、強調（`**由来:**`）の両方を受ける。** 表記ゆれ 1 つで
+    // 教訓が 0 件と数えられると、上限も帰属検査も**空虚に通る**。台帳側で
+    // `**UPDATED**` を受けておきながらこちらで強調を弾くと、抜け道が片側にだけ残る。
+    if (!/^>\s*\**\s*由来\s*[:：]/.test(line)) continue;
     const block: string[] = [line];
     let j = i + 1;
     while (j < lines.length && /^>/.test(lines[j] ?? '')) {
@@ -167,6 +168,12 @@ function splitRow(trimmed: string): string[] {
  * 🔴 **どのセルでも `EXAMPLE` に当たったら落とす、という数え方をしない。**
  * 備考で「EXAMPLE 行の下に追記した」と書いた**実データが丸ごと消える**。
  * 落とすのはファイルが自分でそう宣言している太字マーカーの行だけにする。
+ *
+ * 🔴 **この判定は行の自由文に依っている以上、書式が崩れれば必ず破れる**（説明用の行が
+ * 実データとして数えられ、`never_run` を黙らせる方向へ倒れる）。正規表現を調整し続けても
+ * この性質は消えないので、**実ファイルに対する契約として `loop-retro.test.ts` の
+ * fitness ブロックで固定してある**。`docs/loop-retro.md` の EXAMPLE 行から太字を外すと
+ * ゲートが落ちる ―― それが意図した設計である。
  */
 function isExampleRow(cells: readonly string[]): boolean {
   return cells.some((c) => c.includes('**EXAMPLE'));
@@ -292,16 +299,22 @@ export function evaluateLoopRetro(input: LoopRetroInput): LoopRetroFinding[] {
    * ままなので drift は原理的に発火しない ―― 約束の方が嘘になっていた（レビュー指摘）。
    *
    * 記録された最後の実行より**後の日付**を持つ教訓は、その実行の産物ではありえない。
-   * 同日は指摘しない（その実行が足したものとして正しい）。
+   *
+   * 🔴 **1 日の猶予を置く。** 台帳の日時は `date -u`（UTC）で書かれ、教訓の日付は人が
+   * 現地時間（JST = UTC+9）で書く。15:00Z 以降に回した回は、同じ JST 日に書いた教訓を
+   * **自分で「ループを通さず足された」と誤検出する**。厳密な同日比較では成立しない。
    */
   const latestRunDay = (latest?.at ?? '').slice(0, 10);
-  const unrecorded = guidelines.filter((g) => g.date !== undefined && g.date > latestRunDay);
+  const graceDay = new Date(`${latestRunDay}T00:00:00Z`);
+  graceDay.setUTCDate(graceDay.getUTCDate() + 1);
+  const cutoff = graceDay.toISOString().slice(0, 10);
+  const unrecorded = guidelines.filter((g) => g.date !== undefined && g.date > cutoff);
   if (unrecorded.length > 0) {
     findings.push({
       code: 'unrecorded_guideline',
       severity: 'warning',
       message:
-        `直近の実行（${latestRunDay}）より後の日付を持つ教訓が ${unrecorded.length} 件あります` +
+        `直近の実行（${latestRunDay}・猶予 1 日）より後の日付を持つ教訓が ${unrecorded.length} 件あります` +
         `（${unrecorded.map((g) => `${RULES_LABEL}:${g.line}`).join(', ')}）。` +
         '外側ループを通さずに足されたか、実行の記録が漏れています。版を上げて台帳へ 1 行足してください。',
     });
