@@ -21,6 +21,8 @@
  *   - **`temporaryOverride` は読み取り時に失効させる**（`expiresAt <= now` は無視）。期限切れを
  *     書き戻す非同期処理に依存せず、判定だけで「一時 override が期限後に自動解除される」
  *     （#367 受入条件）を満たす。`@/lib/operating-policy/call-guard` と同じ流儀。
+ *     ただし**期限が読めない**（解析不能な）override の倒し方は state 依存にする —— 一律で
+ *     破棄すると「止めたい」指示だけが失われるため（#798 AC2。`RETAIN_WHEN_UNPARSABLE`）。
  *   - **依存に反する組合せは安全側へ補正する**。依存先が stopped / draining なら依存元も
  *     そこまで落とし、`reason: 'dependency_correction'` と `correction.blockedBy` で理由を残す。
  */
@@ -57,7 +59,10 @@ export type ResolutionReason =
 /** 一時 override（issue #367 本文の `temporaryOverride`）。 */
 export type TemporaryOverride = {
   readonly state: 'force_running' | 'force_stopped' | 'draining';
-  /** ISO8601。`expiresAt <= now` の評価時点で無視される（自動解除）。 */
+  /**
+   * ISO8601。`expiresAt <= now` の評価時点で無視される（自動解除）。
+   * **解析できない**値は state 次第（`RETAIN_WHEN_UNPARSABLE`。#798 AC2）。
+   */
   readonly expiresAt: string;
 };
 
@@ -119,10 +124,40 @@ export type ServiceResolution = {
   };
 };
 
+/**
+ * 解析不能な一時 override をどう倒したか (#798 AC2)。
+ *
+ * `released` … 従来どおり自動解除した（`force_running`）。
+ * `retained` … 維持した（`force_stopped` / `draining`）。**止まりっぱなしの方が安全側**だが、
+ *   維持したこと自体を報告しないと今度は「なぜ止まったままか」が分からなくなる。
+ */
+export type OverrideDisposition = 'released' | 'retained';
+
+/**
+ * 解決中に見つけた「見るべき異常」(#798 AC2)。**無言の誤動作を別の無言の誤動作に
+ * 置き換えないための出力**であり、状態を決める入力ではない。
+ *
+ * 監視への集約（同一原因を毎分 1 件ずつ積まない）は Reconciler の配線と同じ増分で行う
+ * （#798 AC1-2）。この層は「何が起きたか」を機械可読な形で返すところまでを持つ。
+ */
+export type RuntimeResolutionAnomaly = {
+  readonly kind: 'unparsable_override_expiry';
+  readonly serviceKey: ManagedRuntimeServiceKey;
+  readonly overrideState: TemporaryOverride['state'];
+  readonly disposition: OverrideDisposition;
+  /**
+   * 原因のレコードへ辿るための**標本**。生値をそのまま持ち回らない（上限つき・非文字列は型名）。
+   * 運用者が管理画面で入力した日時欄の値であり、PII ではない。
+   */
+  readonly expiresAt: string;
+};
+
 /** 解決結果全体。`capabilities` は running のサービスが提供する能力の和（registry 順・重複なし）。 */
 export type RuntimeStateResolution = {
   readonly services: readonly ServiceResolution[];
   readonly capabilities: readonly RuntimeCapability[];
+  /** 解析不能な override の扱い（#798 AC2）。正常なら空配列。registry 順。 */
+  readonly anomalies: readonly RuntimeResolutionAnomaly[];
 };
 
 /**
@@ -255,16 +290,73 @@ function isRealCalendarDate(year: number, month: number, day: number): boolean {
   return asUtc.getUTCFullYear() === year && asUtc.getUTCMonth() === month - 1;
 }
 
-/** 期限内の一時 override だけを返す（期限切れ・解析不能は undefined = 自動解除）。 */
-function activeTemporaryOverride(
+/**
+ * 解析不能な `expiresAt` を持つ override を**維持する** state (#798 AC2、2026-08-31 承認)。
+ *
+ * 🔴 **倒す向きは state で変える。** 一律で破棄すると、**止めたい方向の指示だけが失われる**。
+ * security incident で `force_stopped` にしたサービスが、壊れた `expiresAt` によって毎分黙って
+ * running へ戻る経路が実在した。「起動しっぱなし」より「止まりっぱなし」が安全側なので
+ * `force_stopped` / `draining` は維持し、逆に「無理やり動かす」指示（`force_running`）は
+ * 期限が読めない時点で失効させる。
+ *
+ * **`Record<...>` で持つ**ので、`TemporaryOverride['state']` に値が増えたらコンパイルが落ちる
+ * （集合で持つと入れ忘れが「黙って解除」として現れ、型では捕まらない）。
+ */
+const RETAIN_WHEN_UNPARSABLE: Record<TemporaryOverride['state'], boolean> = {
+  force_running: false,
+  force_stopped: true,
+  draining: true,
+};
+
+/** 報告に載せる `expiresAt` の標本の長さ上限（超えた分は切る）。 */
+const EXPIRES_AT_SAMPLE_MAX = 64;
+
+/**
+ * 報告用に `expiresAt` を標本化する。**生値をそのまま持ち回らない。**
+ * 文字列でない値（型ドリフト）は `[object Object]` のような無情報にせず型名で表す。
+ */
+function describeExpiresAt(value: unknown): string {
+  if (value === null) return '<null>';
+  if (typeof value !== 'string') return `<${typeof value}>`;
+  const trimmed = value.trim();
+  return trimmed.length <= EXPIRES_AT_SAMPLE_MAX ? trimmed : `${trimmed.slice(0, EXPIRES_AT_SAMPLE_MAX)}…`;
+}
+
+/** 段 2 の判定結果。`anomaly` は解析不能だったときだけ入る（`serviceKey` は呼び出し側が足す）。 */
+type TemporaryOverrideDecision = {
+  readonly override: TemporaryOverride | undefined;
+  readonly anomaly?: Omit<RuntimeResolutionAnomaly, 'serviceKey'>;
+};
+
+/**
+ * 効かせるべき一時 override を決める。
+ *
+ * - **解析できた**値は従来どおり `expiresAt <= now` で自動解除する（異常ではないので報告しない）。
+ * - **解析できない**値は `RETAIN_WHEN_UNPARSABLE` に従って倒し、**どちらへ倒しても報告する**。
+ */
+function decideTemporaryOverride(
   override: TemporaryOverride | undefined,
   timezone: string,
   now: number,
-): TemporaryOverride | undefined {
-  if (!override) return undefined;
+): TemporaryOverrideDecision {
+  if (!override) return { override: undefined };
   const expiresAt = expiresAtMs(override.expiresAt, timezone);
-  if (!Number.isFinite(expiresAt) || expiresAt <= now) return undefined;
-  return override;
+  if (Number.isFinite(expiresAt)) return { override: expiresAt > now ? override : undefined };
+  /*
+   * 未知の state（永続層の型ドリフト）はこの表に無いので `undefined` になる。維持できない値を
+   * 維持したことにすると `OVERRIDE_STATE` の引きが `undefined` になり、**不正な state を
+   * 返す**ので、ここは従来どおり解除へ倒す（そのうえで報告はする）。
+   */
+  const retained = RETAIN_WHEN_UNPARSABLE[override.state] === true;
+  return {
+    override: retained ? override : undefined,
+    anomaly: {
+      kind: 'unparsable_override_expiry',
+      overrideState: override.state,
+      disposition: retained ? 'retained' : 'released',
+      expiresAt: describeExpiresAt(override.expiresAt),
+    },
+  };
 }
 
 /** "HH:MM" を 0 時からの秒数へ。解析できなければ 0（＝持ち越しなしとして扱う）。 */
@@ -320,23 +412,37 @@ function breakGlassTargets(
   return everythingUnprotected();
 }
 
-/** 優先順位チェーンを 1 サービスへ適用する（依存補正はこの後段）。 */
+/**
+ * 優先順位チェーンを 1 サービスへ適用する（依存補正はこの後段）。
+ *
+ * @param anomalies 見つけた異常の受け皿 (#798 AC2)。`resolveServiceStates` が registry 順に
+ *   1 本の配列へ集める（返り値へ混ぜると段ごとの early return が全部書き換わるので分ける）。
+ */
 function resolveSingleService(
   service: ManagedRuntimeService,
   policy: RuntimeOperatingPolicy,
   stopTargets: ReadonlySet<ManagedRuntimeServiceKey>,
   timezone: string,
   now: number,
+  anomalies: RuntimeResolutionAnomaly[],
 ): ServiceResolution {
   const override = policy.services?.[service.serviceKey];
   const mode = override?.mode ?? service.defaultMode;
   const base = { serviceKey: service.serviceKey, mode } as const;
 
-  // 1. break-glass force stop
+  /*
+   * 1. break-glass force stop
+   *
+   * 🔴 段 2 より上なので、ここで決まったサービスは **override を参照していない**。異常も
+   * 報告しない —— 「維持した / 解除した」と報告すると、実際には起きていない出来事になる
+   * （緊急停止中は全サービス分が毎分鳴り続ける）。
+   */
   if (stopTargets.has(service.serviceKey)) return { ...base, state: 'stopped', reason: 'break_glass' };
 
-  // 2. temporary override（期限内のみ）
-  const temporary = activeTemporaryOverride(override?.temporaryOverride, timezone, now);
+  // 2. temporary override（期限内のみ。解析不能なものの倒し方は state 依存 = #798 AC2）
+  const decision = decideTemporaryOverride(override?.temporaryOverride, timezone, now);
+  if (decision.anomaly) anomalies.push({ serviceKey: service.serviceKey, ...decision.anomaly });
+  const temporary = decision.override;
   if (temporary) return { ...base, state: OVERRIDE_STATE[temporary.state], reason: 'temporary_override' };
 
   /*
@@ -448,9 +554,12 @@ export function resolveServiceStates({
 }): RuntimeStateResolution {
   const timezone = policy.commonSchedule.timezone || DEFAULT_TIMEZONE;
   const stopTargets = breakGlassTargets(policy.breakGlass, services);
-  const resolved = services.map((service) => resolveSingleService(service, policy, stopTargets, timezone, now));
+  const anomalies: RuntimeResolutionAnomaly[] = [];
+  const resolved = services.map((service) =>
+    resolveSingleService(service, policy, stopTargets, timezone, now, anomalies),
+  );
   const corrected = applyDependencyCorrections(resolved, services);
-  return { services: corrected, capabilities: collectCapabilities(services, corrected) };
+  return { services: corrected, capabilities: collectCapabilities(services, corrected), anomalies };
 }
 
 /** 解決結果から 1 サービスを引く。未知キーは undefined。 */
