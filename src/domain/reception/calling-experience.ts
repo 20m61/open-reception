@@ -84,28 +84,46 @@ export function clampCallingStageThresholds(
 }
 
 /**
+ * 確定後でも「呼び出しています」を見せる**最低時間**（#832 2 周目レビュー MAJOR-1）。
+ *
+ * 🔴 **床が無いと `dialing` が潰れる。** 結果は初回ポーリングで即座に届きうるので、床を
+ * 置かないと実測で **25〜36ms**（＝体感 0 フレーム）になり、来訪者は「呼ぶ」を押した瞬間に
+ * warning トーンの予告画面を見る ―― 端末が呼び出しを試みた痕跡が画面に残らない。
+ *
+ * さらに悪いのが**音声との乖離**である。ナレーションは段では再発話しないので、
+ * 「{相手} を呼び出しています。少々お待ちください。」を喋り終える前に画面だけ
+ * 「つながらない場合は…」へ変わる。規約の「音声とタッチの等価性 / 表示と読み上げ」に反する。
+ *
+ * 値はナレーションの長さに合わせてある。**これでも読み上げのほうが数百 ms 長いことがある** ――
+ * 完全に揃えるには読み上げ側も差し替える必要があり、それは別の仕様判断（#832 の残課題）。
+ */
+export const MIN_DIALING_MS = 3_000;
+
+/**
  * 経過 ms としきい値から表示段階を導出する。純関数。
  *
- * 🔴 **結果が確定していたら、経過に関係なく予告段へ進む** (#832)。予告の目的は
- * 「突然感を無くす」ことなので、**サーバが既に結果を返しているのに `noticeAfterMs` まで
- * 待つ理由が無い**。むしろ待つと害がある —— `busy` と `declined`（担当者の辞退）も
- * `timeout` に写る（`src/domain/call/call-resolution.ts`）ので、辞退が数秒で確定した来訪者に
- * 「もう少しお待ちください。**担当者に確認しています**」を最大 22 秒、字幕と読み上げで
- * 流し続けることになる。**もう確認していないので、端末が事実でないことを喋る。**
+ * 🔴 **timeout が確定していたら `waiting` を飛ばして予告段へ進む** (#832)。`waiting` の文言は
+ * 「もう少しお待ちください。**担当者に確認しています**」だが、`busy` と `declined`
+ * （担当者の**辞退**）も `timeout` に写る（`src/domain/call/call-resolution.ts`）ので、
+ * 辞退が数秒で確定した来訪者に対して**もう確認していないことを喋り続ける**ことになる。
+ * 既定しきい値では最大 22 秒、字幕と読み上げの両方で。
  *
- * この分岐が無いと `noticeAfterMs` が**終端遷移の律速**になる点も悪い。しきい値は
- * テナント設定で上限なく伸ばせる（管理画面に max が無い）ので、10 分を入れれば来訪者は
- * 10 分間「呼び出し中」に固定される —— `calling` は無操作リセットの対象外なので、
- * 逃げ道バー以外に復帰路が無い。
+ * ただし**飛ばすのは `waiting` だけで、`dialing` は飛ばさない**（`MIN_DIALING_MS`）。
+ * 「呼び出しています」は確定直後でも嘘ではない ―― 実際に呼び出したのだから。
+ * 潰すべき嘘と、潰してはいけない事実を分ける。
  *
- * @param outcomeResolved 呼び出し結果が既に確定しているか（省略時は未確定）。
+ * @param options.timeoutPending timeout が確定し、予告保持ゲート待ちであるか。
+ *   🔴 **`connected` / `failed` で真にしないこと。** 結果直前に「つながらない場合は…」を
+ *   見せることになる（呼び出し側の保留は timeout 専用。`KioskFlow` の `pendingTimeout`）。
  */
 export function deriveCallingStage(
   elapsedMs: number,
   thresholds: CallingStageThresholds = DEFAULT_CALLING_STAGE_THRESHOLDS,
-  options?: { readonly outcomeResolved?: boolean },
+  options?: { readonly timeoutPending?: boolean },
 ): CallingStage {
-  if (options?.outcomeResolved === true) return 'preTimeoutNotice';
+  // 床は `waitingAfterMs` を超えない（しきい値を縮めた E2E では床も縮む）。
+  const dialingFloorMs = Math.min(MIN_DIALING_MS, thresholds.waitingAfterMs);
+  if (options?.timeoutPending === true && elapsedMs >= dialingFloorMs) return 'preTimeoutNotice';
   if (elapsedMs >= thresholds.noticeAfterMs) return 'preTimeoutNotice';
   if (elapsedMs >= thresholds.waitingAfterMs) return 'waiting';
   return 'dialing';

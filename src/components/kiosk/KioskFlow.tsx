@@ -281,8 +281,8 @@ function useCallingStage(
   active: boolean,
   startedAtRef: React.RefObject<number | null>,
   thresholds: CallingStageThresholds,
-  /** 呼び出し結果が既に確定しているか (#832)。確定していれば経過を待たず予告段へ進む。 */
-  outcomeResolved: boolean,
+  /** timeout が確定し予告保持ゲート待ちか (#832)。真なら waiting を飛ばして予告段へ進む。 */
+  timeoutPending: boolean,
 ): { stage: CallingStage; elapsedMs: number } {
   const [elapsedMs, setElapsedMs] = useState(0);
   useEffect(() => {
@@ -312,7 +312,7 @@ function useCallingStage(
     // startedAtRef は ref オブジェクト自体（identity は不変）を依存にする。中身の変更検知は
     // tick() の中で毎回読む（react-hooks/refs: レンダー中に ref を触らない）。
   }, [active, startedAtRef, thresholds]);
-  return { stage: deriveCallingStage(elapsedMs, thresholds, { outcomeResolved }), elapsedMs };
+  return { stage: deriveCallingStage(elapsedMs, thresholds, { timeoutPending }), elapsedMs };
 }
 
 

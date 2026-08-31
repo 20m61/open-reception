@@ -15,7 +15,10 @@ import type { Page } from '@playwright/test';
  *
  * ## 🔴 何を縛っているか (#826)
  *
- * 1. **段の順序**（dialing → waiting → preTimeoutNotice → result-timeout）
+ * 1. **段の順序**。ただし `waiting` を通るかは「結果がいつ確定したか」で変わる (#832) ――
+ *    確定すると `waiting` を飛ばして予告段へ進むので、**段列を完全一致で縛るのは
+ *    確定が遅い経路だけ**（下の PSTN 下界テスト）。他は `expectNoticeBeforeResult` で
+ *    「予告が結果の直前に居る」を縛る
  * 2. **予告の保持時間**。順序だけでは足りない —— 予告が 1 フレームだけ DOM に載って即座に
  *    結果へ飛んでも順序列は同一になるので、**保持を無効化する変異が素通りする**。
  * 3. **レンダラが詰まっても 1・2 が保たれること**（下の「停止注入」テスト）
@@ -46,15 +49,6 @@ const STAGE_QUERY = `callingStageMs=200&callingNoticeMs=500&callingNoticeHoldMs=
 const SYNC_NOTICE_MS = 30_000;
 const SYNC_STAGE_QUERY = `callingStageMs=200&callingNoticeMs=${SYNC_NOTICE_MS}&callingNoticeHoldMs=${HOLD_MS}`;
 
-/**
- * PSTN 用のしきい値。**予告(3000ms)を `/status` の初回ポーリング(約 3 秒)より後ろに置く**。
- *
- * ここが #832 の再現条件そのもので、停止注入は要らない ── PSTN の欠陥は**構造的**である。
- * サーバが予告しきい値より前に `timeout` を返すと、`handleStatusPoll` が予告を待たずに
- * `CALL_TIMEOUT` を dispatch するので、来訪者は `waiting` の文言から**予告を 1 度も見ずに**
- * 未応答画面へ飛ぶ（既定しきい値では予告 25s に対しサーバは数秒〜十数秒で返すため、
- * 実運用では**ほぼ必ず**こうなる）。
- */
 /**
  * PSTN 用のしきい値。🔴 **予告しきい値を 30 秒に置く** —— テストの制限時間(20s)より長い。
  *
@@ -258,35 +252,58 @@ test('レンダラが詰まっても予告は飛ばない (#826 回帰)', async 
   await callSuzuki(page);
   await recordCallingStageTrail(page);
 
-  // 🔴 **起点は `dialing`** (#832)。結果が即確定する mock 経路では `waiting` が出ないので、
-  // `waiting` を待つ書き方だと**注入そのものが走らず、このテストが空虚に通る**。
-  // dialing を観測した 150ms 後から 700ms 塞ぎ、予告の commit と dispatch を同じ窓へ入れる。
+  // 🔴 **注入は `confirm-call` の押下と同時に始める** (#832 2 周目レビュー MAJOR-2)。
+  //
+  // 以前は「`dialing` を観測した 150ms 後」に塞いでいたが、新設計では予告 commit が
+  // `dialing` の **25〜36ms 後**に起きるため、**ブロックが始まる前に予告は commit 済み**だった
+  // （実測 4/4 回）。検査したい事象が窓の外にあり、このテストは隣の非注入テストの重複に
+  // なっていた ―― #826 の逆変異（`noticeShownAtMs === null` → `return 0`）に対する kill が
+  // **2 → 0** へ落ちていた（PR 前後で同じ変異を当てた実測）。
+  //
+  // 🔴 **ただし、注入位置を直してもこのテストは #826 の null ガードを落とさない。** 実測で
+  // 確認した事実を正確に書いておく ―― `noticeShownAtMs === null` 分岐は、**配線されている
+  // 2 経路では構造的に到達不能**である。予告記録 effect がゲート effect より先に宣言されて
+  // いるので、ゲートが走る時点で `noticeShownAtRef.current` は必ず非 null になる。
+  // 逆変異（`return null` → `return 0`）を落とすのは隣の 2 本で、このテストではない。
+  //
+  // **null ガードの検査責務は #832 increment 2（Vonage ビデオ）へ送る。** あちらは
+  // `CallingView` ごと描画されないので、`noticeShownAtRef` が「段の状態」から立って
+  // 「描画」からは立たない点が効いてくる ―― #826 と同型で、今度は画面に痕跡が残らない。
+  //
+  // このテストが今も守っているのは「**詰まっても段列と保持が壊れない**」ことである
+  // （主修正を戻す変異は 24.2s のタイムアウトで落とす。実測）。
   await page.evaluate(() => {
-    const obs = new MutationObserver(() => {
-      const el = document.querySelector('[data-testid="calling"]');
-      if (el?.getAttribute('data-calling-stage') !== 'dialing') return;
-      obs.disconnect();
-      setTimeout(() => {
-        (window as unknown as Record<string, boolean>).__stallInjected = true;
-        const until = Date.now() + 700;
-        while (Date.now() < until) {
-          /* メインスレッドを塞ぐ */
-        }
-      }, 150);
-    });
-    obs.observe(document.body, { subtree: true, childList: true, attributes: true });
+    const w = window as unknown as Record<string, unknown>;
+    w.__stallAt = undefined;
+    document.addEventListener(
+      'click',
+      (ev) => {
+        if (!(ev.target instanceof Element)) return;
+        if (ev.target.closest('[data-testid="confirm-call"]') === null) return;
+        setTimeout(() => {
+          // 🔴 **塞ぐ直前の段を採る。** bool だけでは「注入は走ったが、検査したい事象は
+          // 窓の外だった」を許してしまう（それが今回の欠陥だった）。
+          const panel = document.querySelector('[data-calling-stage]');
+          w.__stallAt = panel === null ? 'no-panel' : String(panel.getAttribute('data-calling-stage'));
+          const until = Date.now() + 700;
+          while (Date.now() < until) {
+            /* メインスレッドを塞ぐ */
+          }
+        }, 0);
+      },
+      { capture: true },
+    );
   });
 
   await page.getByTestId('confirm-call').click();
   await expect(page.getByTestId('result-timeout')).toBeVisible({ timeout: 20_000 });
   expectNoticeBeforeResult(await readCallingStageTrail(page));
 
-  // 🔴 **注入が本当に走ったことを確かめる** (#826 レビュー MINOR-1)。observer が段を
-  // 掴み損ねると 700ms のブロックは起きず、このテストは上の非注入テストと同一になる。
-  // 「詰まっても飛ばない」を主張しているのに詰まらせていない、を無言で許さない。
-  expect(await page.evaluate(() => (window as unknown as Record<string, boolean>).__stallInjected)).toBe(
-    true,
-  );
+  // 🔴 **予告が commit される「前」に塞ぎ始めたこと**を確かめる。`preTimeoutNotice` に
+  // なっていたら窓が遅すぎで、このテストは #826 の欠陥を検査できていない。
+  const stallAt = await page.evaluate(() => (window as unknown as Record<string, unknown>).__stallAt);
+  expect(stallAt).toBeDefined();
+  expect(stallAt).not.toBe('preTimeoutNotice');
 });
 
 test('しきい値を長めにすると dialing のまま既存どおり即結果へ進む（後方互換）', async ({ page }) => {

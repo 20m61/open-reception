@@ -56,16 +56,16 @@ test('サーバが connected を返したらその結果で確定する（権威
 test('サーバが timeout を返したら未応答として確定する', async ({ page }) => {
   await stubCallThenStatus(page, 1, 'timeout');
 
-  // 🔴 **段階しきい値を縮めるのは「速さ」を測っているからではない** (#832)。
+  // 🔴 **既定しきい値のまま走らせる。** 短縮クエリを付けたくなるが、それは不要かつ有害である。
   //
-  // PSTN の `CALL_TIMEOUT` は予告保持ゲートを通るようになった（#323 AC3 を実経路でも満たす
-  // ため）。既定しきい値では予告 25s ＋ 保持 5s = **30 秒**かかるので、この spec は素で赤くなる。
+  // #832 の最終設計では `noticeAfterMs`（既定 25s）は timeout 経路の律速ではなく、確定後に
+  // 要るのは保持（既定 5s）だけなので、既定のままでも 20 秒 budget に収まる（実測 11.1 秒・3/3）。
+  // 一方しきい値を縮めると、この spec は保持を 5s → 300ms へ**圧縮**することになり、
+  // CLAUDE.md「e2e のためにしきい値を圧縮すると、実装の保証そのものが壊れることがある」に当たる。
   //
-  // ここが主張しているのは「**どの結果に確定するか**（権威はサーバ）」であって到達時間ではない。
-  // よって主張は 1 文字も緩めず、ゲートが律速にならないところまでしきい値だけを縮める
-  // （`?inactivityMs=` と同じ、このリポジトリ既定の短縮クエリの流儀）。
-  // 予告そのものが飛ばないことは `kiosk-calling-stage.spec.ts` の PSTN テストが縛る。
-  await page.goto('/kiosk?callingStageMs=200&callingNoticeMs=500&callingNoticeHoldMs=300');
+  // ここは **PSTN の timeout 確定を本番既定しきい値で通す唯一の e2e** でもあるので、
+  // 既定を通る経路をゼロにしないという意味でも短縮しない。
+  await page.goto('/kiosk');
   await driveToCalling(page);
 
   await expect(page.getByTestId('result-timeout')).toBeVisible({ timeout: 20_000 });

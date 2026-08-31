@@ -4,6 +4,7 @@ import {
   DEFAULT_CALLING_STAGE_THRESHOLDS,
   clampCallingStageThresholds,
   deriveCallingStage,
+  MIN_DIALING_MS,
   timeoutDispatchGateMs,
 } from './calling-experience';
 
@@ -40,12 +41,41 @@ describe('deriveCallingStage (#323)', () => {
    * 来訪者に「もう少しお待ちください。**担当者に確認しています**」を最大 22 秒、
    * 字幕と読み上げで流し続けることになる。**もう確認していないので、端末が事実でないことを喋る。**
    */
-  it('🔴 結果が確定したら経過に関係なく preTimeoutNotice へ進む', () => {
+  it('🔴 timeout が確定したら waiting を飛ばして予告段へ進む', () => {
     const t = DEFAULT_CALLING_STAGE_THRESHOLDS;
-    expect(deriveCallingStage(0, t, { outcomeResolved: true })).toBe('preTimeoutNotice');
-    expect(deriveCallingStage(t.waitingAfterMs - 1, t, { outcomeResolved: true })).toBe(
+    // 床を越えていれば、noticeAfterMs(25s) を待たずに予告段。
+    expect(deriveCallingStage(t.waitingAfterMs, t, { timeoutPending: true })).toBe(
       'preTimeoutNotice',
     );
+    expect(deriveCallingStage(t.noticeAfterMs - 1, t, { timeoutPending: true })).toBe(
+      'preTimeoutNotice',
+    );
+  });
+
+  /**
+   * 🔴 **床**（#832 2 周目レビュー MAJOR-1）。確定していても、最低限は「呼び出しています」を
+   * 見せてから跳ぶ。床が無いと `dialing` が **25〜36ms** に潰れ（実測）、来訪者は「呼ぶ」を
+   * 押した瞬間に諦めの予告を見る ―― 端末が呼び出しを試みた痕跡が画面に残らない。
+   *
+   * さらに悪いのは**音声との乖離**で、ナレーションは段では再発話しないため
+   * 「{相手} を呼び出しています」を 3〜4 秒喋り続けている間ずっと、画面は
+   * 「つながらない場合は…」を出すことになる（音声とタッチの等価性に反する）。
+   */
+  it('🔴 確定していても、最低限は dialing を見せてから跳ぶ（床）', () => {
+    const t = DEFAULT_CALLING_STAGE_THRESHOLDS;
+    expect(deriveCallingStage(0, t, { timeoutPending: true })).toBe('dialing');
+    expect(deriveCallingStage(MIN_DIALING_MS - 1, t, { timeoutPending: true })).toBe('dialing');
+    expect(deriveCallingStage(MIN_DIALING_MS, t, { timeoutPending: true })).toBe('preTimeoutNotice');
+  });
+
+  it('床は waitingAfterMs を超えない（しきい値を縮めれば床も縮む）', () => {
+    const t = clampCallingStageThresholds({
+      waitingAfterMs: 200,
+      noticeAfterMs: 500,
+      noticeMinDurationMs: 100,
+    });
+    expect(deriveCallingStage(199, t, { timeoutPending: true })).toBe('dialing');
+    expect(deriveCallingStage(200, t, { timeoutPending: true })).toBe('preTimeoutNotice');
   });
 
   /**
@@ -54,9 +84,9 @@ describe('deriveCallingStage (#323)', () => {
    */
   it('🔴 未確定の間は従来どおり経過で段が進む（下界）', () => {
     const t = DEFAULT_CALLING_STAGE_THRESHOLDS;
-    expect(deriveCallingStage(0, t, { outcomeResolved: false })).toBe('dialing');
-    expect(deriveCallingStage(t.waitingAfterMs, t, { outcomeResolved: false })).toBe('waiting');
-    expect(deriveCallingStage(t.noticeAfterMs, t, { outcomeResolved: false })).toBe(
+    expect(deriveCallingStage(0, t, { timeoutPending: false })).toBe('dialing');
+    expect(deriveCallingStage(t.waitingAfterMs, t, { timeoutPending: false })).toBe('waiting');
+    expect(deriveCallingStage(t.noticeAfterMs, t, { timeoutPending: false })).toBe(
       'preTimeoutNotice',
     );
   });
