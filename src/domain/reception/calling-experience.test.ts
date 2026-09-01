@@ -254,6 +254,52 @@ describe('clampCallingStageThresholds (#323)', () => {
     expect(merged.waitingAfterMs).toBe(20_000); // テナント設定を継承
     expect(merged.noticeAfterMs).toBe(30_000); // クエリで上書き
   });
+
+  /**
+   * 上限 (#836)。`KioskFlow` のクエリ `num()` は有限かつ > 0 なら何でも通し、
+   * clamp にも上限が無かった。#826 以後 `?callingNoticeMs=1e15` は
+   * `elapsed` が到達せず予告も CALL_TIMEOUT も起きない固着になる。
+   *
+   * 🔴 **期待値はリテラル。** 実装の MAX 定数を参照すると、上限を外す／緩める
+   * 変異がテストとコードで同じ誤りを共有する。
+   */
+  it('noticeAfterMs の上限は 120 秒（1e15 を入れても固着しない）', () => {
+    const t = clampCallingStageThresholds({ noticeAfterMs: 1e15 });
+    expect(t.noticeAfterMs).toBeLessThanOrEqual(120_000);
+  });
+
+  it('noticeAfterMs = 120_000 は採用する（上限を狭める変異を落とす）', () => {
+    const t = clampCallingStageThresholds({ waitingAfterMs: 15_000, noticeAfterMs: 120_000 });
+    expect(t.noticeAfterMs).toBe(120_000);
+  });
+
+  it('waitingAfterMs の上限も 120 秒（同じ固着経路）', () => {
+    const t = clampCallingStageThresholds({ waitingAfterMs: 1e15 });
+    expect(t.waitingAfterMs).toBeLessThanOrEqual(120_000);
+  });
+
+  it('waitingAfterMs = 120_000 は採用する（上限を狭める変異を落とす）', () => {
+    const t = clampCallingStageThresholds({ waitingAfterMs: 120_000, noticeAfterMs: 120_000 });
+    expect(t.waitingAfterMs).toBeGreaterThanOrEqual(119_000);
+    expect(t.waitingAfterMs).toBeLessThanOrEqual(120_000);
+  });
+
+  it('noticeMinDurationMs の上限は 30 秒', () => {
+    const t = clampCallingStageThresholds({ noticeMinDurationMs: 1e15 });
+    expect(t.noticeMinDurationMs).toBeLessThanOrEqual(30_000);
+  });
+
+  it('noticeMinDurationMs = 30_000 は採用する（上限を狭める変異を落とす）', () => {
+    const t = clampCallingStageThresholds({ noticeMinDurationMs: 30_000 });
+    expect(t.noticeMinDurationMs).toBe(30_000);
+  });
+
+  it('両方を極端にしても notice は waiting より後（順序不変条件）', () => {
+    const t = clampCallingStageThresholds({ waitingAfterMs: 1e15, noticeAfterMs: 1e15 });
+    expect(t.noticeAfterMs).toBeGreaterThan(t.waitingAfterMs);
+    expect(t.noticeAfterMs).toBeLessThanOrEqual(120_000);
+    expect(t.waitingAfterMs).toBeLessThanOrEqual(120_000);
+  });
 });
 
 describe('timeoutDispatchGateMs (#826: 予告を「描画してから」数える)', () => {
@@ -265,6 +311,22 @@ describe('timeoutDispatchGateMs (#826: 予告を「描画してから」数え�
 
   it('予告をまだ描画していない間は dispatch を許可しない（null）', () => {
     expect(timeoutDispatchGateMs(null, 10_000, t)).toBeNull();
+  });
+
+  /**
+   * #837.3。兄弟の clamp は NaN/Infinity を弾くのに、こちらは `Math.max(0, NaN)` = NaN
+   * を返し、呼び出し側が `setTimeout(fire, NaN)`（即時発火）する。安全側は null。
+   */
+  it('非有限の描画時刻は dispatch しない（null）', () => {
+    expect(timeoutDispatchGateMs(Number.NaN, 10_000, t)).toBeNull();
+    expect(timeoutDispatchGateMs(Number.POSITIVE_INFINITY, 10_000, t)).toBeNull();
+    expect(timeoutDispatchGateMs(Number.NEGATIVE_INFINITY, 10_000, t)).toBeNull();
+  });
+
+  it('非有限の now は dispatch しない（null）', () => {
+    expect(timeoutDispatchGateMs(1_000, Number.NaN, t)).toBeNull();
+    expect(timeoutDispatchGateMs(1_000, Number.POSITIVE_INFINITY, t)).toBeNull();
+    expect(timeoutDispatchGateMs(1_000, Number.NEGATIVE_INFINITY, t)).toBeNull();
   });
 
   it('描画直後は noticeMinDurationMs まるごと待たせる', () => {

@@ -60,11 +60,23 @@ export const DEFAULT_CALLING_STAGE_THRESHOLDS: CallingStageThresholds = {
 const MIN_THRESHOLD_MS = 100;
 /** waitingAfterMs と noticeAfterMs の最低差（順序不変条件を保つための最小マージン）。 */
 const MIN_STAGE_GAP_MS = 100;
+/**
+ * 段階しきい値の上限 (#836)。クエリ `num()` は有限かつ > 0 なら何でも通すので、
+ * 上限が無いと `?callingNoticeMs=1e15` がそのまま入り、#826 以後は elapsed が
+ * 到達せず呼び出し中で固着する。テナント設定も同じ上限で切る。
+ */
+const MAX_STAGE_MS = 120_000;
+/** 予告保持の上限。段階しきい値より短くてよい（来訪者を何分も予告画面に置かない）。 */
+const MAX_NOTICE_MIN_DURATION_MS = 30_000;
 
 function normalizePositive(value: number | undefined | null, fallback: number): number {
   return typeof value === 'number' && Number.isFinite(value) && value >= MIN_THRESHOLD_MS
     ? value
     : fallback;
+}
+
+function capMs(value: number, maxMs: number): number {
+  return value > maxMs ? maxMs : value;
 }
 
 /**
@@ -80,13 +92,21 @@ export function clampCallingStageThresholds(
   input?: Partial<CallingStageThresholds> | null,
   base: CallingStageThresholds = DEFAULT_CALLING_STAGE_THRESHOLDS,
 ): CallingStageThresholds {
-  const waitingAfterMs = normalizePositive(input?.waitingAfterMs, base.waitingAfterMs);
-  const noticeMinDurationMs = normalizePositive(input?.noticeMinDurationMs, base.noticeMinDurationMs);
-  const noticeCandidate = normalizePositive(input?.noticeAfterMs, base.noticeAfterMs);
-  const noticeAfterMs =
-    noticeCandidate >= waitingAfterMs + MIN_STAGE_GAP_MS
-      ? noticeCandidate
-      : waitingAfterMs + MIN_STAGE_GAP_MS;
+  let waitingAfterMs = capMs(normalizePositive(input?.waitingAfterMs, base.waitingAfterMs), MAX_STAGE_MS);
+  const noticeMinDurationMs = capMs(
+    normalizePositive(input?.noticeMinDurationMs, base.noticeMinDurationMs),
+    MAX_NOTICE_MIN_DURATION_MS,
+  );
+  let noticeAfterMs = capMs(normalizePositive(input?.noticeAfterMs, base.noticeAfterMs), MAX_STAGE_MS);
+  if (noticeAfterMs < waitingAfterMs + MIN_STAGE_GAP_MS) {
+    const raised = waitingAfterMs + MIN_STAGE_GAP_MS;
+    if (raised <= MAX_STAGE_MS) {
+      noticeAfterMs = raised;
+    } else {
+      noticeAfterMs = MAX_STAGE_MS;
+      waitingAfterMs = noticeAfterMs - MIN_STAGE_GAP_MS;
+    }
+  }
   return { waitingAfterMs, noticeAfterMs, noticeMinDurationMs };
 }
 
@@ -209,6 +229,7 @@ export function timeoutDispatchGateMs(
   thresholds: CallingStageThresholds = DEFAULT_CALLING_STAGE_THRESHOLDS,
 ): number | null {
   if (noticeShownAtMs === null) return null;
+  if (!Number.isFinite(noticeShownAtMs) || !Number.isFinite(nowMs)) return null;
   return Math.max(0, noticeShownAtMs + thresholds.noticeMinDurationMs - nowMs);
 }
 
