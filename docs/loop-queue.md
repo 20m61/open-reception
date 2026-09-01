@@ -27,8 +27,15 @@
 | --- | --- | --- | --- |
 | 1 | **#816** → **#815** | 逃げ道バーが内容を覆う。#816 は linux/darwin 両方の VRT 取り直しが要る | darwin VRT 待ち（#789） |
 
+> **#847 は 2026-09-01 に消化した**（本周回）。fixture の `POST /api/admin/login` `ECONNRESET`
+> は並列 backlog ではなく、Playwright のプロセス共通 keep-alive agent が死んだソケットを
+> 再利用していた。`Connection: close` で抑止し、残った RST は `kiosk-session-transport:` で
+> spec 失敗と区別する。testing.md の「既知」記述は消した。
+> 実測: `kiosk-staff-response-calling.spec.ts --retries=0 --repeat-each=20` → **61 passed / 0 flaky**
+> （依存 project 含む。対象 spec 本体は 2×20）。
+>
 > **#818 / #817 / #843 / #836 / #849 / #837.2–3 / #838 / #832 は 2026-09-01 に消化した**
-> （PR #852 / #856 / #853 / #854 / #855 / #857 / #860 / 本周回。linux VRT 取り直しは #858）。
+> （PR #852 / #856 / #853 / #854 / #855 / #857 / #860 / #862。linux VRT 取り直しは #858）。
 > #837.1（stall 自己確認）は main の `__stallAt` で既充足。
 > #838 AC6（semgrep ルール固定）は #841 で既充足していた。
 

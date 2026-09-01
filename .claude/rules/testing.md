@@ -22,7 +22,12 @@ superpowers の `test-driven-development` スキルに沿って **red → green 
   テストし、ルートでは「ガードを通す」ことだけを検証する（`rules/admin-api-authz.md`）。
 - **PII/secret をテストデータに残さない**: フィクスチャは最小の擬似データ。実来訪者情報・
   実 secret・実トークンを混入させない（`rules/pii-secret-minimization.md`）。
-- **フレーク対策**: e2e は seed/分離/reuse を明示し、共有状態に依存しない。負荷時の
-  `ECONNRESET` 散発は既知（handoff 参照）。変更後の e2e は本番ビルド再利用のため再ビルド必須。
+- **フレーク対策**: e2e は seed/分離/reuse を明示し、共有状態に依存しない。変更後の e2e は
+  本番ビルド再利用のため再ビルド必須。
+  `establishKioskSession` の `ECONNRESET` は負荷の不可抗力ではない（#847）。Playwright の
+  `request.newContext()` がプロセス共通 keep-alive agent を使うため、サーバが切ったソケットを
+  次テストの `POST /api/admin/login` が再利用して RST する。抑止はリトライではなく
+  `Connection: close`。それでも RST が残るならサーバ側の異常として
+  `kiosk-session-transport:` 付きで落とす（spec のアサーション失敗と区別する）。
 
 > unit/統合は `npm test`、PR 前は `./scripts/quality-gate.sh --pr`、マージ前は `--full`。
