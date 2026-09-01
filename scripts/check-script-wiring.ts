@@ -96,6 +96,10 @@ export const MANUAL_ONLY_ALLOWLIST: Readonly<Record<string, string>> = {
   'record-gate-run.sh':
     '週次 routine（リポジトリ外）から呼ばれる入口そのもの。リポジトリ内に呼び出し元は無くて正しい。',
   'cloud-setup.sh': 'クラウド開発環境の初期化。人が環境を作るときだけ走る。',
+  'cursor-cloud-install.sh':
+    'Cursor Cloud Agent の install 正本。ダッシュボードの install 欄へ人が載せる／同期する。自動では走らない。',
+  'cursor-cloud-start.sh':
+    'Cursor Cloud Agent の start 正本。ダッシュボードの start 欄へ人が載せる／同期する。自動では走らない。',
   'generate-idle-vrma.mjs': 'アセット生成の一回限りツール。成果物は commit 済み。',
   // `install_pkgs.sh` は #681 で allowlist から外した。`.claude/settings.json` の
   // SessionStart フックが実際に叩いており、**手動ではなく自動で走る**。

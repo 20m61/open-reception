@@ -19,8 +19,9 @@
  * ## 対象コマンドの選定（#680 時点の判断）
  *
  * - **`aws`（含む）**: wrapper の `preflight`/`diff`/`deploy` が直接呼ぶ。
- *   `scripts/cloud-setup.sh` が入れて初めて存在が保証される ―― `gh`/`gitleaks`/`semgrep`/
- *   Playwright と同じカテゴリで、**土台（ベースイメージ）の一部ではない**。
+ *   cloud-setup.sh（Claude Code）または cursor-cloud-install.sh（Cursor Cloud Agents）が
+ *   入れて初めて存在が保証される ―― `gh`/`gitleaks`/`semgrep` / Playwright と同じカテゴリで、
+ *   **土台（ベースイメージ）の一部ではない**。
  *   今回の実インシデントの当事者。
  * - **`node` / `npx`（除外）**: このリポジトリの開発ループそのものが Node 前提
  *   （typecheck/lint/test/build、`quality-gate.sh`、`gate-stamp.sh`、そして
@@ -85,6 +86,7 @@ export function formatMissingCommandMessage(missing: ReadonlyArray<string>): str
   return (
     `必要なコマンドが見つかりません: ${missing.join(', ')}。` +
     `インストールが未完了です（資格情報の問題ではありません）。cloud-setup.sh` +
+    ` または cursor-cloud-install.sh` +
     `（クラウド環境ダイアログの Setup script が実行しているはずの内容）を確認してください。`
   );
 }
