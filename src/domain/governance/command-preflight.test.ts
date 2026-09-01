@@ -63,7 +63,9 @@ describe('formatMissingCommandMessage', () => {
   });
 
   it('セットアップスクリプトを指す', () => {
-    expect(formatMissingCommandMessage(['aws'])).toContain('cloud-setup.sh');
+    const msg = formatMissingCommandMessage(['aws']);
+    expect(msg).toContain('cloud-setup.sh');
+    expect(msg).toContain('cursor-cloud-install.sh');
   });
 
   // 🔴 これが本 Issue の核心: 資格情報の問題だと誤読させる語を含めない。
