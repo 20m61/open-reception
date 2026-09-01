@@ -470,6 +470,24 @@ test('応答が遅れても段は後退しない (#832 MAJOR-1 回帰)', async (
     await new Promise((resolve) => setTimeout(resolve, 300));
     return route.fulfill({ json: { state: 'timeout' } });
   });
+  // 🔴 **確定が届いた時刻を採る**（窓に入った証人）。これが無いと、`/api/kiosk/receptions` の
+  // 生成レイテンシが伸びただけで窓を外し、**ラッチを外す変異が沈黙して素通りする**
+  // （実測: create を 400ms 遅らせると変異体も単調な段列を出し、このテストは通ってしまう）。
+  // 同じ型の対策は上の停止注入テスト（`__stallAt`）に既に書いてあるのに、こちらに
+  // 入れ忘れていた ―― CLAUDE.md「同型には対策を入れて、もう 1 本に入れ忘れる」。
+  await page.addInitScript(() => {
+    const w = window as unknown as Record<string, unknown>;
+    w.__statusResolvedAt = null;
+    const original = window.fetch;
+    window.fetch = async (...args: Parameters<typeof fetch>) => {
+      const response = await original(...args);
+      const url = typeof args[0] === 'string' ? args[0] : String((args[0] as Request).url ?? '');
+      if (url.includes('/status') && w.__statusResolvedAt === null) {
+        w.__statusResolvedAt = performance.now();
+      }
+      return response;
+    };
+  });
 
   // 床(500) > waitingAfterMs(200) になる設定。ここが後退の起きる条件。
   await page.goto('/kiosk?callingStageMs=200&callingNoticeMs=30000&callingNoticeHoldMs=300');
@@ -492,5 +510,58 @@ test('応答が遅れても段は後退しない (#832 MAJOR-1 回帰)', async (
     [...ranks].sort((a, b) => a - b),
   );
   // 下界: 予告を経ていること（後退が無いだけの空虚な合格を防ぐ）。
+  expect(trail.stages.map((x) => x.stage)).toContain('preTimeoutNotice');
+
+  // 🔴 **証人**: 確定が「`waiting` を commit した後・床に達する前」の窓へ実際に入ったこと。
+  // tick は 0 → `waitingAfterMs+10`(210) → 以後 500ms 刻みなので、窓は (210ms, 710ms)。
+  // 外れていたらこのテストは後退を検査できていないので、**通してはいけない**。
+  const dialingAt = trail.stages.find((x) => x.stage === 'dialing')!.at;
+  const resolvedAt = (await page.evaluate(
+    () => (window as unknown as Record<string, number | null>).__statusResolvedAt,
+  ))!;
+  expect(resolvedAt, '確定が観測されていない').not.toBeNull();
+  const sinceDialing = resolvedAt - dialingAt;
+  expect(sinceDialing, `窓を外した（確定が calling 起点 ${Math.round(sinceDialing)}ms）`).toBeGreaterThan(210);
+  expect(sinceDialing, `窓を外した（確定が calling 起点 ${Math.round(sinceDialing)}ms）`).toBeLessThan(700);
+});
+
+/**
+ * 🔴 **ラッチを次の来訪者へ持ち越さない**（#832 6 周目レビュー MAJOR-1 の回帰）。
+ *
+ * ラッチは今回の増分で新設した「受付をまたいで生き残りうる唯一の state」である。
+ * `calling` を抜けたときのリセット 1 行を削除しても、**unit 6860 本・e2e 269 本すべてが
+ * 通る**ことが実測された ―― 危険面を作ったのに検査がゼロだった。
+ *
+ * iPad は再読み込みされない常設端末なので、1 人目が未応答で終わった直後の 2 人目は、
+ * リセットが無いと「呼ぶ」を押した瞬間に諦めの予告パネルから始まる。しかも
+ * `noticeShownAtRef` が calling 突入時に立つので**予告保持ゲートが最初から満了済み**になり、
+ * 床も保持も丸ごと無効化される。CLAUDE.md が `targetTab` で名指ししている
+ * 「前の来訪者の状態が次の来訪者へ持ち越される」型。
+ */
+test('ラッチは次の来訪者へ持ち越さない (#832 MAJOR-1 回帰)', async ({ page }) => {
+  await stubPstnTimeout(page);
+  await callViaPstn(page);
+  await page.getByTestId('confirm-call').click();
+  await expect(page.getByTestId('result-timeout')).toBeVisible({ timeout: 20_000 });
+
+  // 逃げ道バーから待機画面へ戻り、**同じ端末のまま** 2 人目の受付を始める。
+  await page.getByTestId('escape-reset').click();
+  await page.getByTestId('start-reception').click();
+  await page.getByTestId('purpose-meeting').click();
+  await revealStaff(page, 'staff-staff-sato');
+  await page.getByTestId('staff-staff-sato').click();
+  await page.getByTestId('visitor-name').fill('来客 八郎');
+  await page.getByTestId('to-confirm').click();
+  await recordCallingStageTrail(page);
+  await page.getByTestId('confirm-call').click();
+
+  await expect(page.getByTestId('result-timeout')).toBeVisible({ timeout: 20_000 });
+  const trail = await readCallingStageTrail(page);
+  // 2 人目も `dialing` から始まる（前の受付の予告段を引き継がない）。
+  expect(
+    trail.stages[0]?.stage,
+    `2 人目が引き継いだ: ${trail.stages.map((x) => x.stage).join(' → ')}`,
+  ).toBe('dialing');
+  // 下界: 2 人目もちゃんと予告を経ていること。
   expect(trail.stages.map((x) => x.stage)).toContain('preTimeoutNotice');
 });

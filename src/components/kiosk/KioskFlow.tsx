@@ -639,8 +639,12 @@ export function KioskFlow({
       return;
     }
     if (callingStageState.stage !== 'preTimeoutNotice') {
-      // 段が予告から**逆行**したら起点を捨てる（端末の壁時計が巻き戻ると起こりうる）。
-      // 残すと、次に予告が出た瞬間にゲートが満了扱いになり「予告が一瞬で結果へ」になる。
+      // 段が予告以外なら起点を捨てる。
+      //
+      // 🔴 **ラッチ導入後、`calling` 中の逆行は原理的に起こらない**（#832。壁時計の巻き戻しも
+      // `advanceCallingStage` が吸収する）。この分岐が実際に効くのは `calling` へ入った直後
+      // （まだ予告に達していない）だけである。「逆行しうる」と読ませると、次に読む人が
+      // 存在しない経路を想定してしまうので、事実を書いておく。
       noticeShownAtRef.current = null;
       return;
     }
