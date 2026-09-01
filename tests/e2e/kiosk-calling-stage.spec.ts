@@ -36,8 +36,6 @@ import type { Page } from '@playwright/test';
 const TRAIL_KEY = '__callingStageTrail';
 /** 予告の最低保持 ms。URL クエリと assert の両方がこの 1 つの定数から引く。 */
 const HOLD_MS = 300;
-/** `waiting` が commit される目安（`callingStageMs=200` ＋ 境界の +10ms）。 */
-const WAITING_COMMIT_MS = 210;
 const STAGE_QUERY = `callingStageMs=200&callingNoticeMs=500&callingNoticeHoldMs=${HOLD_MS}`;
 
 /**
@@ -213,7 +211,9 @@ async function recordResolveTime(page: Page, urlPart: string, key: string): Prom
 
 async function readResolveTime(page: Page, key: string): Promise<number> {
   const at = await page.evaluate((k) => (window as unknown as Record<string, number | null>)[k], key);
-  expect(at, `${key}: 応答が観測されていない`).not.toBeNull();
+  // `addInitScript` が当たらないとキーは `undefined` になる。`not.toBeNull()` はそれを
+  // 素通しするので、数値であることを直接主張する（8 周目レビュー MINOR-2）。
+  expect(at, `${key}: 応答が観測されていない`).toEqual(expect.any(Number));
   return at!;
 }
 
@@ -590,7 +590,14 @@ test('応答が遅れても段は後退しない (#832 MAJOR-1 回帰)', async (
   const dialingAt = trail.stages.find((x) => x.stage === 'dialing')!.at;
   const sinceDialing = (await readResolveTime(page, '__statusResolvedAt')) - dialingAt;
   const message = `窓を外した（確定が calling 起点 ${Math.round(sinceDialing)}ms・床 ${MIN_DIALING_FLOOR_MS}ms）`;
-  expect(sinceDialing, message).toBeGreaterThan(WAITING_COMMIT_MS);
+  // 🔴 **下界は literal ではなく実観測から採る。** 前版は `WAITING_COMMIT_MS = 210` という
+  // literal で、対になる `callingStageMs` はインライン文字列だった ―― しきい値を触ると
+  // 窓だけがずれて沈黙する（7 周目に上界で直したのと同じ構造が反対側に残っていた）。
+  // `waiting` の実時刻から採れば、**`waiting` が実際に出たこと**も同時に縛れる
+  // （出ていなければ後退は原理的に起こらず、変異が沈黙する）。
+  const waitingAt = trail.stages.find((x) => x.stage === 'waiting')?.at;
+  expect(waitingAt, `waiting が観測されていない: ${trail.stages.map((x) => x.stage).join(' → ')}`).toBeDefined();
+  expect(sinceDialing, message).toBeGreaterThan(waitingAt! - dialingAt);
   // json パースと commit のぶんだけ手前で切る（床ちょうどだと境界で揺れる）。
   expect(sinceDialing, message).toBeLessThan(MIN_DIALING_FLOOR_MS - 50);
 });
@@ -608,14 +615,36 @@ test('応答が遅れても段は後退しない (#832 MAJOR-1 回帰)', async (
  * 床も保持も丸ごと無効化される。CLAUDE.md が `targetTab` で名指ししている
  * 「前の来訪者の状態が次の来訪者へ持ち越される」型。
  */
-test('ラッチは次の来訪者へ持ち越さない (#832 MAJOR-1 回帰)', async ({ page }) => {
-  await stubPstnTimeout(page);
+test('前の来訪者の状態を次へ持ち越さない (#832 MAJOR-1 回帰)', async ({ page }) => {
+  // 🔴 **2 人目は「応答あり」にする。** 2 人目も timeout にすると、状態を持ち越しても
+  // **同じ画面に着いてしまう**ので、`pendingTimeout` のリセットを外す変異が素通りする
+  // （8 周目レビュー実測: 13 本すべて生存）。ラッチのリセットだけを縛っていた前版の穴。
+  //
+  // 持ち越すと `timeoutPending` が 2 人目の開始時点から真になり、床(3s)＋保持(2s)＝**5 秒**で
+  // **1 人目の sessionId** で `CALL_TIMEOUT` が撃たれる。実運用の PSTN 応答（数秒〜十数秒）
+  // より速いので、**担当者が受話器を取っても「応答がありませんでした」画面**が出る。
+  //
+  // この増分が露出を広げた点も重要: main では発火が `noticeAfterMs`(25s)＋保持(5s)＝30 秒後で
+  // 実応答に追いつけなかったが、5 秒へ縮めたことで現実の応答より速く誤発火する窓ができた。
+  let secondReception = false;
+  let statusTurn = 0;
+  await page.route('**/api/kiosk/receptions/*/call', (route) =>
+    route.fulfill({ json: { state: 'calling' } }),
+  );
+  await page.route('**/api/kiosk/receptions/*/status', (route) => {
+    if (!secondReception) return route.fulfill({ json: { state: 'timeout' } });
+    statusTurn += 1;
+    // 2 人目は約 6 秒で担当者が応答する現実的な列。
+    return route.fulfill({ json: { state: statusTurn <= 2 ? 'calling' : 'connected' } });
+  });
+
   await callViaPstn(page);
   await page.getByTestId('confirm-call').click();
   await expect(page.getByTestId('result-timeout')).toBeVisible({ timeout: 20_000 });
 
   // 逃げ道バーから待機画面へ戻り、**同じ端末のまま** 2 人目の受付を始める。
   await page.getByTestId('escape-reset').click();
+  secondReception = true;
   await page.getByTestId('start-reception').click();
   await page.getByTestId('purpose-meeting').click();
   await revealStaff(page, 'staff-staff-sato');
@@ -625,13 +654,13 @@ test('ラッチは次の来訪者へ持ち越さない (#832 MAJOR-1 回帰)', a
   await recordCallingStageTrail(page);
   await page.getByTestId('confirm-call').click();
 
-  await expect(page.getByTestId('result-timeout')).toBeVisible({ timeout: 20_000 });
+  // 🔴 **2 人目はちゃんと「応答あり」に着く。** 持ち越すと 5 秒で誤って未応答へ倒れる。
+  await expect(page.getByTestId('result-connected')).toBeVisible({ timeout: 20_000 });
+  await expect(page.getByTestId('result-timeout')).toHaveCount(0);
+  // 段のラッチも持ち越さない（2 人目は `dialing` から始まる）。
   const trail = await readCallingStageTrail(page);
-  // 2 人目も `dialing` から始まる（前の受付の予告段を引き継がない）。
   expect(
     trail.stages[0]?.stage,
     `2 人目が引き継いだ: ${trail.stages.map((x) => x.stage).join(' → ')}`,
   ).toBe('dialing');
-  // 下界: 2 人目もちゃんと予告を経ていること。
-  expect(trail.stages.map((x) => x.stage)).toContain('preTimeoutNotice');
 });

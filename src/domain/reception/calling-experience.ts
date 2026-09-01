@@ -157,6 +157,11 @@ export function deriveCallingStage(
     Math.min(MIN_DIALING_MS, thresholds.waitingAfterMs),
   );
   // 経過だけで予告段に到達していたら、`timeoutPending` の有無に関わらず予告段。
+  //
+  // 🔴 **この分岐が先にあるので、`noticeAfterMs < 床` の設定では床が効かない。**
+  // テナントは両方 100ms まで下げられるので到達可能である（例: waiting=100 / notice=200 なら
+  // 来訪者は「呼ぶ」の 200ms 後に予告を見る）。これは意図した挙動 —— 経過だけで予告に
+  // 到達しているなら、予告を出すのが正しい。**「床は必ず効く」とは読まないこと。**
   if (elapsedMs >= thresholds.noticeAfterMs) return 'preTimeoutNotice';
   if (options?.timeoutPending === true) {
     // 🔴 **床の下では `dialing` を保つ**（`waiting` へ落とさない）。落とすと、まさに消したい
