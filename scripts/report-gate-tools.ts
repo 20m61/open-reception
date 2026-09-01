@@ -16,7 +16,7 @@ import {
 } from '../src/domain/governance/gate-tooling';
 
 function parseArgs(argv: ReadonlyArray<string>): Partial<GateToolObservation> {
-  const observed: Partial<GateToolObservation> = {};
+  const observed: { [K in GateOptionalTool]?: boolean } = {};
   for (const arg of argv) {
     const eq = arg.indexOf('=');
     if (eq === -1) {
