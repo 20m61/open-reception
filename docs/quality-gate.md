@@ -251,9 +251,10 @@ OPEN_RECEPTION_LOOP_HALT=1 ...     # 一時的に止める（env。file の方�
 - **残件**: 文書 PR で省略し続けた分を定期実行で必ず一度は踏む網（`--full --strict` の
   頻度と起点の設計）は未整備。現状の担保はトリップワイヤのみ。
 
-### lint の warning は素通りしない（#813）
+### lint の warning は素通りしない（#813 / #843）
 
-`npm run lint` は **`eslint . --max-warnings 74`**、加えて `react-hooks/exhaustive-deps` を
+`npm run lint` は `tsx scripts/lint-with-budget.ts`（ESLint を 1 回 JSON で回し、
+warning をルール別に突き合わせる）。加えて `react-hooks/exhaustive-deps` を
 **`error`** へ上げてある（`eslint.config.mjs`）。方針は 2 段構えである。
 
 **1. 実害が実証されているルールだけ error にする。**
@@ -263,19 +264,23 @@ OPEN_RECEPTION_LOOP_HALT=1 ...     # 一時的に止める（env。file の方�
 喋られなくなるのに）。このリポジトリは effect を node 環境で実行できず（jsdom 無し）、
 配線の防御線がソース文字列検査しか無いので、ここは助言ではなく停止させる。
 
-**2. 残りは件数の ratchet で頭打ちにする。**
-`set-state-in-effect`（54 件）は「マウント時に async load() を呼ぶ」既存パターンを多数拾う
+**2. 残りはルール別件数の ratchet で頭打ちにする（#843）。**
+`set-state-in-effect` は「マウント時に async load() を呼ぶ」既存パターンを多数拾う
 意図的な warn で、機械的に直すと回帰リスクが高い。`--max-warnings 0` は現実的でないので、
-**現状の件数を上限**にして増加だけを止める。
+**現状の件数をルール別に固定**して増加と内訳の悪化を止める。
 
-🔴 **`--max-warnings` の数値は、減らしたときに一緒に下げること。** 上げるのは
-「なぜ増やすのか」を PR に書いたときだけ。上げっぱなしにすると ratchet が意味を失う。
+内訳の正本は `src/domain/governance/lint-warning-budget.ts` の `LINT_WARNING_BUDGET`。
+本書の表は説明用で、食い違ったらモジュールを信じる。合計はモジュールの和（#813 時点で 74）。
 
-#### 現状の内訳（2026-08-31 実測・#813 の周回で 86 → 74）
+🔴 **件数を下げたら `LINT_WARNING_BUDGET` も一緒に下げること。** exact match なので
+下げ忘れは赤になる。上げるのは「なぜ増やすのか」を PR に書いたときだけ。
+上げっぱなしにすると ratchet が意味を失う。
+
+#### 現状の内訳（2026-08-31 実測・#813 の周回で 86 → 74。正本はモジュール）
 
 | 件数 | ルール | 扱い |
 | --- | --- | --- |
-| 54 | `react-hooks/set-state-in-effect` | warn のまま（ratchet で頭打ち） |
+| 54 | `react-hooks/set-state-in-effect` | warn のまま（ルール別 ratchet で頭打ち） |
 | 19 | `@typescript-eslint/no-unused-vars` | warn のまま |
 | 1 | `@next/next/no-img-element` | warn のまま |
 | 0 | `react-hooks/exhaustive-deps` | **error**（既存 6 件は #813 で実際に直した） |
@@ -407,9 +412,9 @@ lint・棚卸し・unit がすべて緑だった。`--no-inline-config` は inli
 1 件足すだけで、マージ後の main が赤くなる**。base を取り込んだら
 `npx eslint --format=json . | ...` で数え直すこと（本 PR でも #835 の取り込み時に実施した）。
 
-**5. 予算は総数のみで、ルール別内訳の悪化を検出しない。** `no-unused-vars` を 3 件消して
-`set-state-in-effect` を**受付導線に** 3 件足す交換は 74 のまま緑になる。内訳は本書にしか
-無く機械では見ていない。→ **#843**
+**5. 予算のルール別内訳は `LINT_WARNING_BUDGET` が機械で見る（#843）。**
+以前は総数 `--max-warnings 74` だけだったので、`no-unused-vars` を 3 件消して
+`set-state-in-effect` を受付導線に 3 件足す交換が緑のまま通った。いまは exact match。
 
 **6. `ignores` を足せば件数は下げられる。** `eslint.config.mjs` の `ignores` を縛るテストは
 まだ無い（`coverage/**` は `vitest --coverage` が生成する istanbul の `.js` で予算が
