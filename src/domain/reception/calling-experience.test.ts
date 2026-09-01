@@ -2,13 +2,17 @@ import { describe, expect, it } from 'vitest';
 import {
   CALLING_STAGES,
   DEFAULT_CALLING_STAGE_THRESHOLDS,
+  DEFAULT_VIDEO_ANSWER_TIMEOUT_MS,
   clampCallingStageThresholds,
+  clampVideoAnswerTimeoutMs,
+  callingStageQueryFromSearch,
   deriveCallingStage,
   MIN_DIALING_MS,
   MIN_DIALING_FLOOR_MS,
   advanceCallingStage,
   callingStageRank,
   timeoutDispatchGateMs,
+  videoAnswerTimeoutMsFromSearch,
 } from './calling-experience';
 import type { CallingStage } from './calling-experience';
 
@@ -373,5 +377,54 @@ describe('timeoutDispatchGateMs (#826: 予告を「描画してから」数え�
         }
       }
     }
+  });
+});
+
+describe('callingStageQueryFromSearch / videoAnswerTimeoutMsFromSearch', () => {
+  it('Kiosk と Checkin が同じキーを読む（? の有無を問わない）', () => {
+    const a = callingStageQueryFromSearch('?callingStageMs=200&callingNoticeMs=500&callingNoticeHoldMs=300');
+    const b = callingStageQueryFromSearch('callingStageMs=200&callingNoticeMs=500&callingNoticeHoldMs=300');
+    expect(a).toEqual(b);
+    expect(a).toEqual({ waitingAfterMs: 200, noticeAfterMs: 500, noticeMinDurationMs: 300 });
+  });
+
+  it('欠けるキーは undefined（clamp が既定へ倒す。0 で上書きしない）', () => {
+    expect(callingStageQueryFromSearch('')).toEqual({
+      waitingAfterMs: undefined,
+      noticeAfterMs: undefined,
+      noticeMinDurationMs: undefined,
+    });
+    expect(callingStageQueryFromSearch('callingStageMs=0&callingNoticeMs=-1')).toEqual({
+      waitingAfterMs: undefined,
+      noticeAfterMs: undefined,
+      noticeMinDurationMs: undefined,
+    });
+  });
+
+  it('callTimeoutMs はビデオ応答待ちだけを読む', () => {
+    expect(videoAnswerTimeoutMsFromSearch('?callTimeoutMs=600')).toBe(600);
+    expect(videoAnswerTimeoutMsFromSearch('')).toBeUndefined();
+    expect(videoAnswerTimeoutMsFromSearch('callTimeoutMs=abc')).toBeUndefined();
+  });
+});
+
+describe('clampVideoAnswerTimeoutMs', () => {
+  it('未指定・非有限・下限未満は既定 30s', () => {
+    expect(clampVideoAnswerTimeoutMs(undefined)).toBe(DEFAULT_VIDEO_ANSWER_TIMEOUT_MS);
+    expect(clampVideoAnswerTimeoutMs(null)).toBe(DEFAULT_VIDEO_ANSWER_TIMEOUT_MS);
+    expect(clampVideoAnswerTimeoutMs(Number.NaN)).toBe(DEFAULT_VIDEO_ANSWER_TIMEOUT_MS);
+    expect(clampVideoAnswerTimeoutMs(50)).toBe(DEFAULT_VIDEO_ANSWER_TIMEOUT_MS);
+  });
+
+  it('上限は 120 秒（1e15 を入れても固着しない）', () => {
+    expect(clampVideoAnswerTimeoutMs(1e15)).toBeLessThanOrEqual(120_000);
+  });
+
+  it('120_000 は採用する（上限を狭める変異を落とす）', () => {
+    expect(clampVideoAnswerTimeoutMs(120_000)).toBe(120_000);
+  });
+
+  it('100ms は採用する（下限を上げる変異を落とす）', () => {
+    expect(clampVideoAnswerTimeoutMs(100)).toBe(100);
   });
 });

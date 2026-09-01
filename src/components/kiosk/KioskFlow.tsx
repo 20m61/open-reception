@@ -4,7 +4,6 @@ import { callFailureReasonFrom } from '@/domain/reception/call-failure';
 import {
   useCallback,
   useEffect,
-  useLayoutEffect,
   useMemo,
   useReducer,
   useRef,
@@ -199,12 +198,12 @@ import {
 } from './useExperienceMetrics';
 import {
   clampCallingStageThresholds,
-  deriveCallingStage,
-  advanceCallingStage,
-  timeoutDispatchGateMs,
-  type CallingStage,
+  clampVideoAnswerTimeoutMs,
+  callingStageQueryFromSearch,
+  videoAnswerTimeoutMsFromSearch,
   type CallingStageThresholds,
 } from '@/domain/reception/calling-experience';
+import { useCallingNoticeHold } from './use-calling-notice-hold';
 import { shouldOpenVideoView } from '@/domain/reception/call-medium';
 import {
   CALL_STATUS_POLL_INTERVAL_MS,
@@ -259,75 +258,6 @@ function showAvatarCompanion(state: ReceptionState, layout: KioskLayout): boolea
   if (deriveAvatarPresence(state) === 'primary') return false;
   if (layout === 'ipad-portrait') return PORTRAIT_COMPANION_STATES.has(state);
   return true;
-}
-
-/** 「動いている」演出のための定期更新の上限間隔（ms）。段階境界が近ければもっと短く刻む。 */
-const CALLING_TICK_MAX_MS = 500;
-
-/**
- * 呼び出し中(calling)の経過段階を UI 層のタイマーで導出するフック (issue #323)。
- *
- * 「動いている」ことの伝達を優先し、正確な秒数カウントより段階（dialing/waiting/
- * preTimeoutNotice）の切り替えを重視する。次の tick は「段階の境界（waitingAfterMs /
- * noticeAfterMs）」または `CALLING_TICK_MAX_MS` のどちらか近い方に合わせて動的に予約する
- * （固定間隔だと、E2E のようにしきい値を短く上書きしたときに境界を読み飛ばしうるため）。
- *
- * `startedAtRef` は calling に入った時刻（ms epoch）を持つ ref（レンダー中に ref を直接
- * 読まないよう、`.current` の読み出しは常にタイマーコールバック内で行い、結果は state に
- * 反映する）。`active=false` の間はタイマーを止め 'dialing'・経過 0 を返す。
- *
- * state.ts の遷移表・ui-contract.ts の screenState/avatarState 写像は一切変更しない
- * （ここで導出する段階は KioskFlow ローカルの見た目の演出のみ）。
- */
-function useCallingStage(
-  active: boolean,
-  startedAtRef: React.RefObject<number | null>,
-  thresholds: CallingStageThresholds,
-  /** timeout が確定し予告保持ゲート待ちか (#832)。真なら waiting を飛ばして予告段へ進む。 */
-  timeoutPending: boolean,
-): { stage: CallingStage; elapsedMs: number } {
-  const [elapsedMs, setElapsedMs] = useState(0);
-  // 🔴 **到達した最大段を state でラッチする** (#832 5 周目レビュー MAJOR-1)。
-  // `deriveCallingStage` は「その瞬間の段」しか返さず、`timeoutPending` が真になった瞬間に
-  // `waiting → dialing` へ後退しうる（床が `waitingAfterMs` を上回る設定。テナントは 100ms
-  // まで下げられる）。生で出すと来訪者は逆行するちらつきを見て、保持も数え直しになる。
-  //
-  // ref ではなく state に置くのは、**レンダー中に ref を読み書きできない**ため
-  // （`react-hooks/refs`。最初 ref で書いて lint に落とされた）。更新は必ず tick の中で、
-  // 関数更新でラッチする。`calling` を抜けたら捨てる（次の受付へ持ち越さない）。
-  const [latchedStage, setLatchedStage] = useState<CallingStage>('dialing');
-  useEffect(() => {
-    if (!active) {
-      setLatchedStage('dialing');
-      setElapsedMs(0);
-      return;
-    }
-    let timer = 0;
-    const tick = () => {
-      const startedAt = startedAtRef.current;
-      const elapsed = startedAt !== null ? Math.max(0, Date.now() - startedAt) : 0;
-      setElapsedMs(elapsed);
-      setLatchedStage((previous) =>
-        advanceCallingStage(previous, deriveCallingStage(elapsed, thresholds, { timeoutPending })),
-      );
-      // 次に到達すべき段階境界までの残り時間（無ければ上限間隔で「動いている」演出だけ更新する）。
-      const nextBoundaryMs =
-        elapsed < thresholds.waitingAfterMs
-          ? thresholds.waitingAfterMs
-          : elapsed < thresholds.noticeAfterMs
-            ? thresholds.noticeAfterMs
-            : null;
-      const untilBoundaryMs = nextBoundaryMs === null ? Infinity : Math.max(0, nextBoundaryMs - elapsed);
-      // 境界のわずかに後（+10ms）まで読み、確実に境界を跨いだ状態を検知する。
-      const delay = Math.min(CALLING_TICK_MAX_MS, Number.isFinite(untilBoundaryMs) ? untilBoundaryMs + 10 : CALLING_TICK_MAX_MS);
-      timer = window.setTimeout(tick, delay);
-    };
-    tick();
-    return () => window.clearTimeout(timer);
-    // startedAtRef は ref オブジェクト自体（identity は不変）を依存にする。中身の変更検知は
-    // tick() の中で毎回読む（react-hooks/refs: レンダー中に ref を触らない）。
-  }, [active, startedAtRef, thresholds, timeoutPending]);
-  return { stage: latchedStage, elapsedMs };
 }
 
 
@@ -573,18 +503,16 @@ export function KioskFlow({
   const [callingStageQueryOverride, setCallingStageQueryOverride] = useState<
     Partial<CallingStageThresholds>
   >({});
+  const [videoAnswerTimeoutMs, setVideoAnswerTimeoutMs] = useState(() =>
+    clampVideoAnswerTimeoutMs(undefined),
+  );
   useEffect(() => {
-    const params = new URLSearchParams(window.location.search);
-    const num = (key: string): number | undefined => {
-      const v = Number(params.get(key));
-      return Number.isFinite(v) && v > 0 ? v : undefined;
-    };
-    setHeartbeatQueryOverride(num('heartbeatMs'));
-    setCallingStageQueryOverride({
-      waitingAfterMs: num('callingStageMs'),
-      noticeAfterMs: num('callingNoticeMs'),
-      noticeMinDurationMs: num('callingNoticeHoldMs'),
-    });
+    const search = window.location.search;
+    const params = new URLSearchParams(search.startsWith('?') ? search.slice(1) : search);
+    const heartbeat = Number(params.get('heartbeatMs'));
+    setHeartbeatQueryOverride(Number.isFinite(heartbeat) && heartbeat > 0 ? heartbeat : undefined);
+    setCallingStageQueryOverride(callingStageQueryFromSearch(search));
+    setVideoAnswerTimeoutMs(clampVideoAnswerTimeoutMs(videoAnswerTimeoutMsFromSearch(search)));
   }, []);
   // テナント設定 → E2E クエリの順で重ねてしきい値を確定する（クエリが最優先, #323）。
   const callingStageThresholds = useMemo(
@@ -595,23 +523,6 @@ export function KioskFlow({
       ),
     [callingStageTenantOverride, callingStageQueryOverride],
   );
-  // 呼び出し(calling)開始時刻。経過 ms の起点で、calling を抜けたら null に戻す（次回呼び出しで
-  // 取り直す）。UI 層のタイマー派生のみに使い、state.ts の遷移表・screenState は変えない。
-  const callingStartedAtRef = useRef<number | null>(null);
-  useEffect(() => {
-    callingStartedAtRef.current = data.state === 'calling' ? Date.now() : null;
-  }, [data.state]);
-  // 呼び出しの calling-effect（下記）は data.purpose/target/visitor 等の変化でも再実行されうるが、
-  // しきい値の変化では再実行させたくない（無関係な再作成で受付を再作成してしまう事故を防ぐ）。
-  // そのため ref 経由で「その時点の最新しきい値」だけを参照する。
-  const callingStageThresholdsRef = useRef<CallingStageThresholds>(callingStageThresholds);
-  useEffect(() => {
-    callingStageThresholdsRef.current = callingStageThresholds;
-  }, [callingStageThresholds]);
-  // 予告(preTimeoutNotice)を**実際に描画した**時刻。未描画は null（#323 AC3 / #826）。
-  // 経過時間ではなくこの時刻を起点に保持時間を数えるので、レンダラが詰まって
-  // 「段階を進める setState」と「dispatch」が 1 コミットへ畳まれても予告が飛ばない。
-  const noticeShownAtRef = useRef<number | null>(null);
   // 呼び出し結果が timeout で確定したが、予告の保持がまだ済んでいない受付セッション。
   //
   // 🔴 **ここへ載せてよいのは timeout だけ** (#832)。発火側は `CALL_TIMEOUT` を固定で
@@ -623,65 +534,12 @@ export function KioskFlow({
   // 経路の e2e**（`kiosk-calling-stage.spec.ts`）が落とす。テストを消すなら、先にここを
   // 判別可能なユニオンにすること。
   const [pendingTimeout, setPendingTimeout] = useState<{ sessionId: string } | null>(null);
-  // 呼び出し中の表示段階（dialing/waiting/preTimeoutNotice）。CallingView とアバターコンパニオンの
-  // 両方が同じ経過時刻（callingStartedAtRef）・しきい値から導出するため常に一致する。
-  const callingStageState = useCallingStage(
-    data.state === 'calling',
-    callingStartedAtRef,
-    callingStageThresholds,
-    pendingTimeout !== null,
-  );
-  // 予告段階を「描画した」瞬間を記録する (#826 / #837.2)。calling を抜けたら起点と保留を捨てる。
-  // 🔴 **useLayoutEffect にする。** 記録を passive effect に置くと、ゲート effect との
-  // **宣言順**が契約になる。入れ替える／片方をカスタムフックへ抜くと、予告 commit と
-  // 同じコミットのゲートが `noticeShownAtRef === null` を読み、CALL_TIMEOUT が二度と
-  // dispatch されない（来訪者は呼び出し中に固定。calling は INACTIVITY_RESET_STATES に無い）。
-  // layout はすべての passive effect より先に走るので、並びを契約にしない。
-  useLayoutEffect(() => {
-    if (data.state !== 'calling') {
-      // 🔴 **この分岐は下の「段が予告以外なら捨てる」と冗長である**（実測: この行だけを消しても
-      // e2e 34・unit 317 が全部通る）。`calling` を抜けるとラッチが `dialing` へ戻るので、
-      // 下の分岐が必ず拾うため。**変異が生き残るのはテストの穴ではなく、二重に守っているから**
-      // ―― 次に測る人が「穴」と誤判定しないように書いておく。
-      // 明示的に残すのは、`calling` 以外で起点を持たないことを 1 行で読めるようにするため。
-      noticeShownAtRef.current = null;
-      return;
-    }
-    if (callingStageState.stage !== 'preTimeoutNotice') {
-      // 段が予告以外なら起点を捨てる。
-      //
-      // 🔴 **ラッチ導入後、`calling` 中の逆行は原理的に起こらない**（#832。壁時計の巻き戻しも
-      // `advanceCallingStage` が吸収する）。この分岐が実際に効くのは `calling` へ入った直後
-      // （まだ予告に達していない）だけである。「逆行しうる」と読ませると、次に読む人が
-      // 存在しない経路を想定してしまうので、事実を書いておく。
-      noticeShownAtRef.current = null;
-      return;
-    }
-    if (noticeShownAtRef.current === null) {
-      noticeShownAtRef.current = Date.now();
-    }
-  }, [data.state, callingStageState.stage]);
-  // 予告保持ゲート (#323 AC3 / #826)。予告を実際に描画してから noticeMinDurationMs 経つまで
-  // CALL_TIMEOUT を dispatch しない。未描画（gate=null）の間は何もせず、描画されると
-  // stage の変化で本 effect が再評価される。state.ts の遷移表自体は変更しない。
-  useEffect(() => {
-    // 保留の掃除は呼び出し effect の cleanup が行う（calling を抜けると必ず走る）。
-    // ここでも state を見るのは、掃除が走る前の 1 レンダーで発火させないため。
-    if (data.state !== 'calling' || pendingTimeout === null) return;
-    const gateMs = timeoutDispatchGateMs(
-      noticeShownAtRef.current,
-      Date.now(),
-      callingStageThresholdsRef.current,
-    );
-    if (gateMs === null) return;
-    const fire = () => dispatch({ type: 'CALL_TIMEOUT', sessionId: pendingTimeout.sessionId });
-    if (gateMs <= 0) {
-      fire();
-      return;
-    }
-    const timer = window.setTimeout(fire, gateMs);
-    return () => window.clearTimeout(timer);
-  }, [data.state, pendingTimeout, callingStageState.stage, dispatch]);
+  const callingStageState = useCallingNoticeHold({
+    active: data.state === 'calling',
+    thresholds: callingStageThresholds,
+    pendingSessionId: pendingTimeout?.sessionId ?? null,
+    onFire: (sessionId) => dispatch({ type: 'CALL_TIMEOUT', sessionId }),
+  });
   // アバター常設コンパニオンの段階演出 (#323)。avatarState 自体は変えず、同じ avatarState
   // ('calling') 内の字幕/表情だけを差し替える（見た目の演出のみ・状態機械は不変）。
   // dialing 段階は既存どおり avatarState 標準の文言（新規表示を増やさない）。
@@ -1500,6 +1358,11 @@ export function KioskFlow({
               // 呼び出し中の段階的ケア (#323)。UI 層のタイマー派生（state.ts/ui-contract.ts は不変）。
               callingStageState,
               callingStageTextOverride,
+              onCallTimeout: () => {
+                if (data.state !== 'calling' || vonageCallId === null) return;
+                setPendingTimeout({ sessionId: vonageCallId });
+              },
+              videoAnswerTimeoutMs,
               // ワンタップ満足度フィードバック (#320)。完了/未応答/失敗画面のみが使う。
               feedback: { enabled: feedbackEnabled, onSubmit: submitFeedback },
               // STT アダプタ注入 (#370)。未指定は既定 MockSttAdapter（無変更動作）。

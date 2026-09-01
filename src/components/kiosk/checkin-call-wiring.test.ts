@@ -45,6 +45,14 @@ describe('CheckinFlow が実際の呼び出しを通る (#736)', () => {
   it('結果待ちの判断は decidePollAction に委ねる', () => {
     expect(SOURCE).toMatch(/decidePollAction\(/);
   });
+
+  it('timeout / unanswered は予告保持ゲートを通る (#832)', () => {
+    expect(SOURCE).toContain("from './use-calling-notice-hold'");
+    expect(SOURCE).toMatch(/useCallingNoticeHold\(/);
+    expect(SOURCE).not.toMatch(
+      /setCallFailureReason\(action\.event === 'CALL_TIMEOUT' \? 'unanswered' : 'server'\)/,
+    );
+  });
 });
 
 /**
