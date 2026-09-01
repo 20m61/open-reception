@@ -4,6 +4,7 @@ import { callFailureReasonFrom } from '@/domain/reception/call-failure';
 import {
   useCallback,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useReducer,
   useRef,
@@ -630,10 +631,13 @@ export function KioskFlow({
     callingStageThresholds,
     pendingTimeout !== null,
   );
-  // 予告段階を「描画した」瞬間を記録する (#826)。calling を抜けたら起点と保留を捨てる。
-  // 本 effect は下の「予告保持ゲート」より**先に宣言する**（同一コミットで先に走り、
-  // ゲートが最新の描画時刻を読めるようにするため）。
-  useEffect(() => {
+  // 予告段階を「描画した」瞬間を記録する (#826 / #837.2)。calling を抜けたら起点と保留を捨てる。
+  // 🔴 **useLayoutEffect にする。** 記録を passive effect に置くと、ゲート effect との
+  // **宣言順**が契約になる。入れ替える／片方をカスタムフックへ抜くと、予告 commit と
+  // 同じコミットのゲートが `noticeShownAtRef === null` を読み、CALL_TIMEOUT が二度と
+  // dispatch されない（来訪者は呼び出し中に固定。calling は INACTIVITY_RESET_STATES に無い）。
+  // layout はすべての passive effect より先に走るので、並びを契約にしない。
+  useLayoutEffect(() => {
     if (data.state !== 'calling') {
       // 🔴 **この分岐は下の「段が予告以外なら捨てる」と冗長である**（実測: この行だけを消しても
       // e2e 34・unit 317 が全部通る）。`calling` を抜けるとラッチが `dialing` へ戻るので、
