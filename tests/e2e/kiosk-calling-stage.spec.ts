@@ -742,8 +742,9 @@ test('ビデオ: 結果が確定したら予告しきい値を待たず、予告
   await recordCallingStageTrail(page);
   await page.getByTestId('confirm-call').click();
 
-  await expect(page.getByTestId('kiosk-call')).toBeVisible({ timeout: 15_000 });
-  await expect(page.getByTestId('calling')).toBeVisible();
+  await expect(page.getByTestId('calling')).toBeVisible({ timeout: 15_000 });
+  // 映像ボックスは CSS 寸法が無く Playwright は hidden と見る。経路の証人は attached。
+  await expect(page.getByTestId('kiosk-call')).toBeAttached();
   await expect(page.getByTestId('result-timeout')).toBeVisible({ timeout: 20_000 });
   expectNoticeBeforeResult(await readCallingStageTrail(page));
 });
@@ -752,10 +753,11 @@ test('ビデオ: レンダラが詰まっても予告は飛ばない (#832 AC3)'
   await callViaVideo(page);
   await recordCallingStageTrail(page);
   await page.getByTestId('confirm-call').click();
-  await expect(page.getByTestId('kiosk-call')).toBeVisible({ timeout: 15_000 });
+  await expect(page.getByTestId('calling')).toBeVisible({ timeout: 15_000 });
+  await expect(page.getByTestId('kiosk-call')).toBeAttached();
 
-  // ビデオの timeout はコントローラの短タイマー。confirm 押下時ではなく、ビデオが
-  // 乗った直後に塞いで「確定と予告が同一タスクへ畳まれる」窓を作る。
+  // ビデオの timeout はコントローラの短タイマー。CallingView が乗った直後に塞いで
+  // 「確定と予告が同一タスクへ畳まれる」窓を作る。
   const stallAt = await page.evaluate(() => {
     const w = window as unknown as Record<string, unknown>;
     const panel = document.querySelector('[data-calling-stage]');
