@@ -31,6 +31,8 @@
 > は並列 backlog ではなく、Playwright のプロセス共通 keep-alive agent が死んだソケットを
 > 再利用していた。`Connection: close` で抑止し、残った RST は `kiosk-session-transport:` で
 > spec 失敗と区別する。testing.md の「既知」記述は消した。
+> 実測: `kiosk-staff-response-calling.spec.ts --retries=0 --repeat-each=20` → **61 passed / 0 flaky**
+> （依存 project 含む。対象 spec 本体は 2×20）。
 >
 > **#818 / #817 / #843 / #836 / #849 / #837.2–3 / #838 / #832 は 2026-09-01 に消化した**
 > （PR #852 / #856 / #853 / #854 / #855 / #857 / #860 / #862。linux VRT 取り直しは #858）。
