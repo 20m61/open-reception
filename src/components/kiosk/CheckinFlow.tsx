@@ -143,12 +143,9 @@ export function CheckinFlow({
    * 発火は `useCallingNoticeHold`。ここへ `server` などを載せない。
    */
   const [pendingTimeout, setPendingTimeout] = useState<{ sessionId: string } | null>(null);
-  const [callingStageQueryOverride, setCallingStageQueryOverride] = useState<
-    Partial<CallingStageThresholds>
-  >({});
-  useEffect(() => {
-    setCallingStageQueryOverride(callingStageQueryFromSearch(window.location.search));
-  }, []);
+  const [callingStageQueryOverride] = useState<Partial<CallingStageThresholds>>(() =>
+    typeof window === 'undefined' ? {} : callingStageQueryFromSearch(window.location.search),
+  );
   const callingStageThresholds = useMemo(
     () => clampCallingStageThresholds(callingStageQueryOverride),
     [callingStageQueryOverride],
@@ -163,9 +160,6 @@ export function CheckinFlow({
       dispatch({ type: 'CALL_FAILED' });
     },
   });
-  useEffect(() => {
-    if (data.state !== 'calling') setPendingTimeout(null);
-  }, [data.state]);
   // 注入されたスキャナ（既定は実カメラ CameraQrScanner）。再レンダーで作り直さない。
   const scannerRef = useRef<QrScanner>(scanner ?? new CameraQrScanner());
 
@@ -262,6 +256,7 @@ export function CheckinFlow({
     })();
     return () => {
       cancelled = true;
+      setPendingTimeout(null);
     };
   }, [data.state, data.payload]);
 
