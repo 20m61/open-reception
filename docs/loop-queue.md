@@ -34,10 +34,15 @@
 > **予告が一度も描画されないまま結果画面へ飛ぶ**（#323 AC3 の保証違反）。e2e は保持を
 > 300ms へ圧縮しているのでこれを踏みやすかった。保持の起点を「commit した時刻」へ変えた。
 >
-> 🔴 **ただし直ったのは `/call` が同期で `timeout` を返す経路だけ。** 実運用で来訪者が踏む
-> **実 PSTN（`/status` ポーリング）と Vonage ビデオの 2 経路は、今も予告を経ずに遷移する**
-> （main も同じ既存欠陥。独立レビューで判明）。#323 AC3 は**まだ全経路では満たされていない**
-> ので「解消」と読まないこと。2 経路への適用は別 Issue。
+> 🔴 **#323 AC3 はまだ全経路では満たされていない。**「解消」と読まないこと。`CALL_TIMEOUT` の
+> dispatch 元は 4 つあり、ゲートを通るのは 2 つだけである（#832 で残りを追う）:
+>
+> | 経路 | ゲート | 備考 |
+> | --- | --- | --- |
+> | `/call` が同期で `timeout` | ✅ #826 | e2e が縛っているのはここ（mock の都合） |
+> | 実 PSTN の `/status` ポーリング | ✅ #832 | **実運用で来訪者が一番踏む**。修正前の遷移列は `dialing → result-timeout` で `waiting` すら出なかった（実測） |
+> | Vonage ビデオ | ❌ | 予告の**字幕は出ている**（`callingAvatarGuidanceOverride`）。🔴 **読み上げは出ていない** —— `KioskFlow` は `AvatarGuide` に `ttsSettings` を渡しておらず、親も `aria-hidden` なので支援技術にも届かない（2026-08-31 実測。以前ここに「読み上げも出る」と書いたのは誤り）。欠けているのは commit 保証と、そもそもの音声 |
+> | QR 受付（`CheckinFlow`） | ❌ | 段階演出そのものが無い。**`CALL_TIMEOUT` を dispatch せず** `decidePollAction` の結果を `CALL_FAILED('unanswered')` へ写しているので、grep しても見つからない。#832 のスコープに含めると決定 |
 
 > **#813 は 2026-08-31 に消化した。** `react-hooks/exhaustive-deps` を **error** へ上げ、
 > 残りは `--max-warnings 74` の ratchet で頭打ちにした（86 → 74 へ削減済み）。

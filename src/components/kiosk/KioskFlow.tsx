@@ -199,6 +199,7 @@ import {
 import {
   clampCallingStageThresholds,
   deriveCallingStage,
+  advanceCallingStage,
   timeoutDispatchGateMs,
   type CallingStage,
   type CallingStageThresholds,
@@ -281,10 +282,22 @@ function useCallingStage(
   active: boolean,
   startedAtRef: React.RefObject<number | null>,
   thresholds: CallingStageThresholds,
+  /** timeout が確定し予告保持ゲート待ちか (#832)。真なら waiting を飛ばして予告段へ進む。 */
+  timeoutPending: boolean,
 ): { stage: CallingStage; elapsedMs: number } {
   const [elapsedMs, setElapsedMs] = useState(0);
+  // 🔴 **到達した最大段を state でラッチする** (#832 5 周目レビュー MAJOR-1)。
+  // `deriveCallingStage` は「その瞬間の段」しか返さず、`timeoutPending` が真になった瞬間に
+  // `waiting → dialing` へ後退しうる（床が `waitingAfterMs` を上回る設定。テナントは 100ms
+  // まで下げられる）。生で出すと来訪者は逆行するちらつきを見て、保持も数え直しになる。
+  //
+  // ref ではなく state に置くのは、**レンダー中に ref を読み書きできない**ため
+  // （`react-hooks/refs`。最初 ref で書いて lint に落とされた）。更新は必ず tick の中で、
+  // 関数更新でラッチする。`calling` を抜けたら捨てる（次の受付へ持ち越さない）。
+  const [latchedStage, setLatchedStage] = useState<CallingStage>('dialing');
   useEffect(() => {
     if (!active) {
+      setLatchedStage('dialing');
       setElapsedMs(0);
       return;
     }
@@ -293,6 +306,9 @@ function useCallingStage(
       const startedAt = startedAtRef.current;
       const elapsed = startedAt !== null ? Math.max(0, Date.now() - startedAt) : 0;
       setElapsedMs(elapsed);
+      setLatchedStage((previous) =>
+        advanceCallingStage(previous, deriveCallingStage(elapsed, thresholds, { timeoutPending })),
+      );
       // 次に到達すべき段階境界までの残り時間（無ければ上限間隔で「動いている」演出だけ更新する）。
       const nextBoundaryMs =
         elapsed < thresholds.waitingAfterMs
@@ -309,8 +325,8 @@ function useCallingStage(
     return () => window.clearTimeout(timer);
     // startedAtRef は ref オブジェクト自体（identity は不変）を依存にする。中身の変更検知は
     // tick() の中で毎回読む（react-hooks/refs: レンダー中に ref を触らない）。
-  }, [active, startedAtRef, thresholds]);
-  return { stage: deriveCallingStage(elapsedMs, thresholds), elapsedMs };
+  }, [active, startedAtRef, thresholds, timeoutPending]);
+  return { stage: latchedStage, elapsedMs };
 }
 
 
@@ -596,25 +612,44 @@ export function KioskFlow({
   // 「段階を進める setState」と「dispatch」が 1 コミットへ畳まれても予告が飛ばない。
   const noticeShownAtRef = useRef<number | null>(null);
   // 呼び出し結果が timeout で確定したが、予告の保持がまだ済んでいない受付セッション。
-  const [pendingTimeoutSessionId, setPendingTimeoutSessionId] = useState<string | null>(null);
+  //
+  // 🔴 **ここへ載せてよいのは timeout だけ** (#832)。発火側は `CALL_TIMEOUT` を固定で
+  // dispatch するので、`failed` をここへ送る変異は「発信そのものが失敗した来訪者に、
+  // 25 秒待たせた末に**未応答**画面を出す」に化ける ―― `call-poll.ts` が
+  // 「give_up と未応答を混同しない」と強調している区別が無言で潰れる。
+  //
+  // これは型では止まらない（`sessionId` しか持たないので）。**`/status` が `failed` を返す
+  // 経路の e2e**（`kiosk-calling-stage.spec.ts`）が落とす。テストを消すなら、先にここを
+  // 判別可能なユニオンにすること。
+  const [pendingTimeout, setPendingTimeout] = useState<{ sessionId: string } | null>(null);
   // 呼び出し中の表示段階（dialing/waiting/preTimeoutNotice）。CallingView とアバターコンパニオンの
   // 両方が同じ経過時刻（callingStartedAtRef）・しきい値から導出するため常に一致する。
   const callingStageState = useCallingStage(
     data.state === 'calling',
     callingStartedAtRef,
     callingStageThresholds,
+    pendingTimeout !== null,
   );
   // 予告段階を「描画した」瞬間を記録する (#826)。calling を抜けたら起点と保留を捨てる。
   // 本 effect は下の「予告保持ゲート」より**先に宣言する**（同一コミットで先に走り、
   // ゲートが最新の描画時刻を読めるようにするため）。
   useEffect(() => {
     if (data.state !== 'calling') {
+      // 🔴 **この分岐は下の「段が予告以外なら捨てる」と冗長である**（実測: この行だけを消しても
+      // e2e 34・unit 317 が全部通る）。`calling` を抜けるとラッチが `dialing` へ戻るので、
+      // 下の分岐が必ず拾うため。**変異が生き残るのはテストの穴ではなく、二重に守っているから**
+      // ―― 次に測る人が「穴」と誤判定しないように書いておく。
+      // 明示的に残すのは、`calling` 以外で起点を持たないことを 1 行で読めるようにするため。
       noticeShownAtRef.current = null;
       return;
     }
     if (callingStageState.stage !== 'preTimeoutNotice') {
-      // 段が予告から**逆行**したら起点を捨てる（端末の壁時計が巻き戻ると起こりうる）。
-      // 残すと、次に予告が出た瞬間にゲートが満了扱いになり「予告が一瞬で結果へ」になる。
+      // 段が予告以外なら起点を捨てる。
+      //
+      // 🔴 **ラッチ導入後、`calling` 中の逆行は原理的に起こらない**（#832。壁時計の巻き戻しも
+      // `advanceCallingStage` が吸収する）。この分岐が実際に効くのは `calling` へ入った直後
+      // （まだ予告に達していない）だけである。「逆行しうる」と読ませると、次に読む人が
+      // 存在しない経路を想定してしまうので、事実を書いておく。
       noticeShownAtRef.current = null;
       return;
     }
@@ -628,21 +663,21 @@ export function KioskFlow({
   useEffect(() => {
     // 保留の掃除は呼び出し effect の cleanup が行う（calling を抜けると必ず走る）。
     // ここでも state を見るのは、掃除が走る前の 1 レンダーで発火させないため。
-    if (data.state !== 'calling' || pendingTimeoutSessionId === null) return;
+    if (data.state !== 'calling' || pendingTimeout === null) return;
     const gateMs = timeoutDispatchGateMs(
       noticeShownAtRef.current,
       Date.now(),
       callingStageThresholdsRef.current,
     );
     if (gateMs === null) return;
-    const fire = () => dispatch({ type: 'CALL_TIMEOUT', sessionId: pendingTimeoutSessionId });
+    const fire = () => dispatch({ type: 'CALL_TIMEOUT', sessionId: pendingTimeout.sessionId });
     if (gateMs <= 0) {
       fire();
       return;
     }
     const timer = window.setTimeout(fire, gateMs);
     return () => window.clearTimeout(timer);
-  }, [data.state, pendingTimeoutSessionId, callingStageState.stage, dispatch]);
+  }, [data.state, pendingTimeout, callingStageState.stage, dispatch]);
   // アバター常設コンパニオンの段階演出 (#323)。avatarState 自体は変えず、同じ avatarState
   // ('calling') 内の字幕/表情だけを差し替える（見た目の演出のみ・状態機械は不変）。
   // dialing 段階は既存どおり avatarState 標準の文言（新規表示を増やさない）。
@@ -763,7 +798,7 @@ export function KioskFlow({
           // dispatch する。state.ts の遷移表自体は変えず、「いつ dispatch するか」だけを
           // UI 層で遅らせる。しきい値は ref 経由（この effect の再実行トリガーにはしない）。
           // 実際の発火は下の「予告保持ゲート」effect が行う。ここでは保留に置くだけ。
-          setPendingTimeoutSessionId(session.id);
+          setPendingTimeout({ sessionId: session.id });
         }
         // 'calling' は非同期の待ち。**媒体が 2 つある** (#4 Inc D-2 項目 2):
         //   - ビデオ: セッションが確立済み。ビデオビューが応答/未応答を確定する
@@ -786,7 +821,7 @@ export function KioskFlow({
       cancelled = true;
       // 受付を作り直すときは、前の呼び出しの timeout 保留を持ち越さない（旧タイマーの
       // clearTimeout と同じ意図。発火自体は下のゲート effect が持つ）。
-      setPendingTimeoutSessionId(null);
+      setPendingTimeout(null);
     };
   }, [data.state, data.purpose, data.target, data.visitor, selectedFlow, snapshotForCall]);
 
@@ -1092,6 +1127,20 @@ export function KioskFlow({
 
     const action = decidePollAction(result.status.state, elapsedMs);
     if (action.kind === 'resolved') {
+      // 🔴 **timeout だけは予告保持ゲートへ送る** (#832 / #323 AC3)。ここで直に dispatch すると、
+      // サーバが予告しきい値より前に `timeout` を返した場合（既定では予告 25s に対しサーバは
+      // 数秒〜十数秒で返すので**実運用ではほぼ必ず**そうなる）、来訪者は予告を 1 度も見ずに
+      // 未応答画面へ飛ぶ。実測した遷移列は `dialing → result-timeout` で、`waiting` すら出ない。
+      //
+      // 同期応答経路（`/call` が `timeout` を返す枝）と**同じ保留に置く**ことで、発火は下の
+      // ゲート effect 1 か所に集約される ── 判断を 2 か所に書かない。
+      //
+      // connected / failed は予告の対象ではない（予告は「まもなく打ち切る」の告知なので、
+      // 結果が出た側を遅らせる理由が無い）ので従来どおり即 dispatch する。
+      if (action.event === 'CALL_TIMEOUT') {
+        setPendingTimeout({ sessionId: id });
+        return;
+      }
       dispatch({ type: action.event, sessionId: id });
       return;
     }
