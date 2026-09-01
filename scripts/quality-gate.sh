@@ -596,8 +596,25 @@ if [[ "$RUN_INFRA" -eq 1 ]]; then
 fi
 
 # ---- 任意ステップ ---------------------------------------------------------
+# shellcheck source=lib/gate-tooling.sh
+. "${ROOT}/scripts/lib/gate-tooling.sh"
+
+# --full を回せない環境を、e2e が 1ms 全滅する前に名指しする (#838 AC5)。
+# バイナリ欠落は「任意ツール未導入の SKIP」ではなく「検査できなかった」なので
+# skip_unverified（記録しない）。gitleaks/semgrep は従来どおり skip_or_fail。
+if [[ "$RUN_E2E" -eq 1 || "$RUN_VRM" -eq 1 ]]; then
+  if ! gate_tool_playwright_chromium_present; then
+    echo ""
+    echo "▶ gate tooling (#838)"
+    # shellcheck disable=SC2086
+    npx --yes tsx "${ROOT}/scripts/report-gate-tools.ts" $(gate_tool_observe_argv) || true
+  fi
+fi
+
 if [[ "$RUN_E2E" -eq 1 ]]; then
   if scope_skips e2e; then scope_skip "e2e (playwright)"
+  elif ! gate_tool_playwright_chromium_present; then
+    skip_unverified "e2e (playwright)" "playwright chromium not installed (npx playwright install chromium)"
   else step "e2e (playwright)" npm run --silent test:e2e; fi
 fi
 
@@ -675,6 +692,8 @@ fi
 # なるため、そちらへは相乗りさせない。
 if [[ "$RUN_VRM" -eq 1 ]] && scope_skips vrm; then
   scope_skip "vrm (real render)"
+elif [[ "$RUN_VRM" -eq 1 ]] && ! gate_tool_playwright_chromium_present; then
+  skip_unverified "vrm (real render)" "playwright chromium not installed (npx playwright install chromium)"
 elif [[ "$RUN_VRM" -eq 1 ]]; then
   step "vrm (real render)" npm run --silent vrm:check
 fi

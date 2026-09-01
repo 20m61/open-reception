@@ -36,4 +36,10 @@ if [ -f infra/package-lock.json ] && needs_install "infra"; then
   npm ci --prefix infra || true
 fi
 
+# 品質ゲート任意ツールの欠落を SessionStart で名指しする (#838)。
+# 欠けていてもここでは落とさない（報告だけ。ゲート側の SKIP / skip_unverified が本丸）。
+# shellcheck source=lib/gate-tooling.sh
+. "$(cd "$(dirname "$0")" && pwd)/lib/gate-tooling.sh"
+gate_tool_report "$(cd "${CLAUDE_PROJECT_DIR:-.}" && pwd)"
+
 exit 0
