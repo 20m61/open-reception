@@ -46,3 +46,8 @@ if ! command -v aws >/dev/null 2>&1; then
   unzip -qo /tmp/awscliv2.zip -d /tmp/aws-cli-extract
   as_root /tmp/aws-cli-extract/aws/install
 fi
+
+# install 直後に欠落を名指しする (#838)。SessionStart が無い Cursor Cloud でも同じ報告を残す。
+# shellcheck source=lib/gate-tooling.sh
+. "$(cd "$(dirname "$0")" && pwd)/lib/gate-tooling.sh"
+gate_tool_report "$(cd "$(dirname "$0")/.." && pwd)"

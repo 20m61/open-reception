@@ -87,24 +87,30 @@ https://claude.ai/code/routines を開き、本文を **`./scripts/record-gate-r
 web セッションでこれを流す。**値は出さない**（名前だけ）:
 
 ```bash
+npx tsx scripts/report-gate-tools.ts $(. scripts/lib/gate-tooling.sh; gate_tool_observe_argv)
+# または手で:
 for c in gh aws gitleaks semgrep; do printf '%-10s %s\n' "$c" "$(command -v $c || echo MISSING)"; done
 ls /opt/pw-browsers 2>/dev/null | head -3
+ls ~/.cache/ms-playwright 2>/dev/null | head -5
 env | grep -o '^AWS_[A-Z_]*' || echo "AWS 変数なし（正常）"
 gh api graphql -f query='query{viewer{login}}' >/dev/null 2>&1 \
   && echo "GraphQL OK" || echo "GraphQL 403（REST スクリプトを使う）"
 ```
 
-見るべきは 3 点:
+見るべきは 4 点:
 
 | 見るところ | 期待 | 外れていたら |
 | --- | --- | --- |
-| 4 コマンド | 全部パスがある | Setup script が古い or 貼られていない → §0-A 2. を貼り直す |
+| 4 コマンド | 全部パスがある | Setup script / `cursor-cloud-install.sh` が古い → §0-A 2. を貼り直す |
+| Playwright chromium | `/opt/pw-browsers/chromium` または `~/.cache/ms-playwright/chromium-*` | `npx playwright install chromium`（要 `cdn.playwright.dev` egress）。無いと `--full` の e2e/vrm は **早い段階で skip_unverified**（#838） |
 | `AWS_*` | **なし** | 窓が開けっぱなし → §0-C 4. で削除 |
 | GraphQL | どちらでもよい | 403 なら REST スクリプト必須（routine は 403 と実測済み。§4） |
 
 > **なぜ「4 コマンドが入っていること」を気にするのか**: `gitleaks` / `semgrep` が無いと
 > `quality-gate.sh` は **FAIL ではなく SKIP** する。SKIP は赤くならないので、
-> **マージゲートが黙って弱くなる**（#545 で実際に踏んだ）。
+> **マージゲートが黙って弱くなる**（#545 で実際に踏んだ）。SessionStart
+> （`install_pkgs.sh`）と Cursor Cloud の install（`cursor-cloud-install.sh`）は
+> `#838` で欠落を名指しする。semgrep ルールは `#841` でリポジトリ内固定済み。
 
 ### 0-F. 実測の記録（2026-08-18）
 
