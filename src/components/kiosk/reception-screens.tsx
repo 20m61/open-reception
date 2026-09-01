@@ -1470,12 +1470,19 @@ function ResultPanel({
   locale,
   panelDataAttrs,
   children,
+  messageLive,
 }: {
   tone: ResultTone;
   /** パネル自体の testid。既存 e2e の可視性チェックはこのまま通る。 */
   testId: string;
   title?: string;
   message?: string;
+  /**
+   * 呼び出し中の段階メッセージを支援技術へ届ける (#849)。
+   * `role="status"` は polite な live region。アバター側は aria-hidden なので、
+   * 通知は本体のこの文言が担う。
+   */
+  messageLive?: boolean;
   action?: {
     label: string;
     onClick: () => void;
@@ -1500,7 +1507,11 @@ function ResultPanel({
         </span>
         {children}
         {title ? <h1 className="result-panel__title">{title}</h1> : null}
-        {message ? <p className="result-panel__message">{message}</p> : null}
+        {message ? (
+          <p className="result-panel__message" role={messageLive ? 'status' : undefined}>
+            {message}
+          </p>
+        ) : null}
         {action ? (
           <div className="result-panel__actions">
             <button
@@ -1551,6 +1562,7 @@ function CallingView({
       message={callingStageMessage(stage, target, locale, textOverride)}
       locale={locale}
       panelDataAttrs={{ 'data-calling-stage': stage }}
+      messageLive
     >
       {/* 常時動く経過インジケータ。「動いている」ことの伝達を優先し、正確な秒数は示さない。
           prefers-reduced-motion は globals.css の全体ルールで自動的に抑制される。 */}
