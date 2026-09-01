@@ -1,4 +1,5 @@
 import { test, expect, revealStaff } from './kiosk-fixtures';
+import { MIN_DIALING_FLOOR_MS } from '@/domain/reception/calling-experience';
 import type { Page } from '@playwright/test';
 
 /**
@@ -35,6 +36,8 @@ import type { Page } from '@playwright/test';
 const TRAIL_KEY = '__callingStageTrail';
 /** 予告の最低保持 ms。URL クエリと assert の両方がこの 1 つの定数から引く。 */
 const HOLD_MS = 300;
+/** `waiting` が commit される目安（`callingStageMs=200` ＋ 境界の +10ms）。 */
+const WAITING_COMMIT_MS = 210;
 const STAGE_QUERY = `callingStageMs=200&callingNoticeMs=500&callingNoticeHoldMs=${HOLD_MS}`;
 
 /**
@@ -185,6 +188,35 @@ async function callViaPstn(page: Page): Promise<void> {
  * 経過を待たず予告段へ進むので、mock のように即座に確定する経路では `waiting` が出ない。
  * よって期待する段列は呼び出し側が渡す（暗黙の既定値を置くと、段が消えた退行を素通りする）。
  */
+/**
+ * 指定 URL の応答が**解決した時刻**を page 側へ記録する（テストが窓に入った証人）。
+ *
+ * 🔴 **証人が無いと、レイテンシが伸びただけで検査したい事象が窓の外へ出て、変異が沈黙して
+ * 素通りする。** 6・7 周目で 2 度これを踏んだので、採り方を 1 か所へ寄せる。
+ */
+async function recordResolveTime(page: Page, urlPart: string, key: string): Promise<void> {
+  await page.addInitScript(
+    ([part, storeKey]) => {
+      const w = window as unknown as Record<string, unknown>;
+      w[storeKey] = null;
+      const original = window.fetch;
+      window.fetch = async (...args: Parameters<typeof fetch>) => {
+        const response = await original(...args);
+        const url = typeof args[0] === 'string' ? args[0] : String((args[0] as Request).url ?? '');
+        if (url.includes(part) && w[storeKey] === null) w[storeKey] = performance.now();
+        return response;
+      };
+    },
+    [urlPart, key] as const,
+  );
+}
+
+async function readResolveTime(page: Page, key: string): Promise<number> {
+  const at = await page.evaluate((k) => (window as unknown as Record<string, number | null>)[k], key);
+  expect(at, `${key}: 応答が観測されていない`).not.toBeNull();
+  return at!;
+}
+
 function expectNoticeHonoured(trail: StageTrail, stages: string[]): void {
   expect(trail.stages.map((s) => s.stage)).toEqual(stages);
   expectNoticeHeld(trail);
@@ -430,6 +462,9 @@ test('確定しても、床のあいだは「呼び出しています」を見�
 }) => {
   // 床(3s) < waitingAfterMs(15s) なので clamp は効かず、床がそのまま出る。
   // 予告しきい値 30s は経過では到達しないので、予告段へ入るのは床の経過が理由だと確定する。
+  // 🔴 同型の証人。確定が**床より前**に届いていなければ、`notice.at` は確定時刻に引きずられて
+  // 2500 を超えるので、床を狭める変異が素通りする（MAJOR-1 と同じ構造）。
+  await recordResolveTime(page, '/call', '__callResolvedAt');
   await page.goto('/kiosk?callingStageMs=15000&callingNoticeMs=30000&callingNoticeHoldMs=300');
   await page.getByTestId('start-reception').click();
   await page.getByTestId('purpose-meeting').click();
@@ -446,6 +481,56 @@ test('確定しても、床のあいだは「呼び出しています」を見�
   const notice = trail.stages.find((x) => x.stage === 'preTimeoutNotice')!;
   // 床は 3s。計測誤差ぶん緩めるが、狭める変異（250ms 等）は必ず落ちる。
   expect(notice.at - dialing.at).toBeGreaterThanOrEqual(2_500);
+  // 証人: 確定が床より十分前に届いていること（そうでなければ上の assert は確定時刻を
+  // 測っているだけで、床を検査していない）。
+  const resolvedSinceDialing = (await readResolveTime(page, '__callResolvedAt')) - dialing.at;
+  expect(resolvedSinceDialing, `確定が遅すぎて床を検査できていない（${Math.round(resolvedSinceDialing)}ms）`).toBeLessThan(2_000);
+});
+
+/**
+ * 🔴 **PSTN 経路でも、レンダラが詰まって予告は飛ばない**（#832 AC3）。
+ *
+ * AC は「**3 経路すべて**について、レンダラが詰まっても予告が飛ばないことを e2e で縛る」。
+ * 停止注入は同期経路にしか無く、increment 1 が配線した 2 経路目（PSTN）が未充足だった
+ * （1〜7 周目レビューで繰り返し MINOR として挙がっていた宿題）。
+ *
+ * ゲートは 1 か所へ集約されているので同期版と重複に近いが、**「重複に近い」は増分の外へ
+ * 出す理由にならない** —— #826 の教訓は「宣言順の推論が外れた」ことなので、推論で閉じない。
+ */
+test('PSTN: レンダラが詰まっても予告は飛ばない (#832 AC3)', async ({ page }) => {
+  await stubPstnTimeout(page);
+  await callViaPstn(page);
+  await recordCallingStageTrail(page);
+
+  await page.evaluate(() => {
+    const w = window as unknown as Record<string, unknown>;
+    w.__stallAt = undefined;
+    document.addEventListener(
+      'click',
+      (ev) => {
+        if (!(ev.target instanceof Element)) return;
+        if (ev.target.closest('[data-testid="confirm-call"]') === null) return;
+        setTimeout(() => {
+          const panel = document.querySelector('[data-calling-stage]');
+          w.__stallAt = panel === null ? 'no-panel' : String(panel.getAttribute('data-calling-stage'));
+          const until = Date.now() + 700;
+          while (Date.now() < until) {
+            /* メインスレッドを塞ぐ */
+          }
+        }, 0);
+      },
+      { capture: true },
+    );
+  });
+
+  await page.getByTestId('confirm-call').click();
+  await expect(page.getByTestId('result-timeout')).toBeVisible({ timeout: 20_000 });
+  expectNoticeBeforeResult(await readCallingStageTrail(page));
+
+  // 証人: 予告が commit される前に塞ぎ始めたこと。
+  const stallAt = await page.evaluate(() => (window as unknown as Record<string, unknown>).__stallAt);
+  expect(stallAt).toBeDefined();
+  expect(stallAt).not.toBe('preTimeoutNotice');
 });
 
 /**
@@ -470,24 +555,7 @@ test('応答が遅れても段は後退しない (#832 MAJOR-1 回帰)', async (
     await new Promise((resolve) => setTimeout(resolve, 300));
     return route.fulfill({ json: { state: 'timeout' } });
   });
-  // 🔴 **確定が届いた時刻を採る**（窓に入った証人）。これが無いと、`/api/kiosk/receptions` の
-  // 生成レイテンシが伸びただけで窓を外し、**ラッチを外す変異が沈黙して素通りする**
-  // （実測: create を 400ms 遅らせると変異体も単調な段列を出し、このテストは通ってしまう）。
-  // 同じ型の対策は上の停止注入テスト（`__stallAt`）に既に書いてあるのに、こちらに
-  // 入れ忘れていた ―― CLAUDE.md「同型には対策を入れて、もう 1 本に入れ忘れる」。
-  await page.addInitScript(() => {
-    const w = window as unknown as Record<string, unknown>;
-    w.__statusResolvedAt = null;
-    const original = window.fetch;
-    window.fetch = async (...args: Parameters<typeof fetch>) => {
-      const response = await original(...args);
-      const url = typeof args[0] === 'string' ? args[0] : String((args[0] as Request).url ?? '');
-      if (url.includes('/status') && w.__statusResolvedAt === null) {
-        w.__statusResolvedAt = performance.now();
-      }
-      return response;
-    };
-  });
+  await recordResolveTime(page, '/status', '__statusResolvedAt');
 
   // 床(500) > waitingAfterMs(200) になる設定。ここが後退の起きる条件。
   await page.goto('/kiosk?callingStageMs=200&callingNoticeMs=30000&callingNoticeHoldMs=300');
@@ -512,17 +580,19 @@ test('応答が遅れても段は後退しない (#832 MAJOR-1 回帰)', async (
   // 下界: 予告を経ていること（後退が無いだけの空虚な合格を防ぐ）。
   expect(trail.stages.map((x) => x.stage)).toContain('preTimeoutNotice');
 
-  // 🔴 **証人**: 確定が「`waiting` を commit した後・床に達する前」の窓へ実際に入ったこと。
-  // tick は 0 → `waitingAfterMs+10`(210) → 以後 500ms 刻みなので、窓は (210ms, 710ms)。
-  // 外れていたらこのテストは後退を検査できていないので、**通してはいけない**。
+  // 🔴 **証人**: 確定が「`waiting` を commit した後・**床に達する前**」の窓へ実際に入ったこと。
+  //
+  // 上界は**床**から採る。前版は tick 格子（0 → 210 → 710）から 700 を置いていたが、
+  // これは導出の誤りだった ―― `timeoutPending` が立つと effect が deps 変化で再実行され、
+  // `tick()` が `Date.now()` を採り直すので `elapsed` は stale にならない。後退が起きるのは
+  // **`elapsed < 床` のときだけ**で、実際の窓は (210, 500)。700 のままだと (500, 700) の
+  // 200ms 帯が盲目になり、create が 250ms 遅れるだけで**変異が沈黙して生存**した（実測）。
   const dialingAt = trail.stages.find((x) => x.stage === 'dialing')!.at;
-  const resolvedAt = (await page.evaluate(
-    () => (window as unknown as Record<string, number | null>).__statusResolvedAt,
-  ))!;
-  expect(resolvedAt, '確定が観測されていない').not.toBeNull();
-  const sinceDialing = resolvedAt - dialingAt;
-  expect(sinceDialing, `窓を外した（確定が calling 起点 ${Math.round(sinceDialing)}ms）`).toBeGreaterThan(210);
-  expect(sinceDialing, `窓を外した（確定が calling 起点 ${Math.round(sinceDialing)}ms）`).toBeLessThan(700);
+  const sinceDialing = (await readResolveTime(page, '__statusResolvedAt')) - dialingAt;
+  const message = `窓を外した（確定が calling 起点 ${Math.round(sinceDialing)}ms・床 ${MIN_DIALING_FLOOR_MS}ms）`;
+  expect(sinceDialing, message).toBeGreaterThan(WAITING_COMMIT_MS);
+  // json パースと commit のぶんだけ手前で切る（床ちょうどだと境界で揺れる）。
+  expect(sinceDialing, message).toBeLessThan(MIN_DIALING_FLOOR_MS - 50);
 });
 
 /**
