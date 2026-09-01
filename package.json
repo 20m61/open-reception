@@ -12,7 +12,7 @@
     "evaluate:gate-runs": "tsx scripts/evaluate-gate-runs.ts",
     "loop:retro": "tsx scripts/loop-retro.ts",
     "change-risk": "tsx scripts/change-risk.ts",
-    "lint": "eslint . --max-warnings 74",
+    "lint": "tsx scripts/lint-with-budget.ts",
     "lint:suppressions": "node scripts/check-lint-suppressions.mjs",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",

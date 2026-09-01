@@ -33,15 +33,13 @@ describe('lint の warning 予算 (#813)', () => {
    * こちらだけ緩いのは非対称だった。
    */
   it('npm run lint が期待どおり（無いと warning が素通りする）', () => {
-    expect(lintScript()).toBe('eslint . --max-warnings 74');
+    expect(lintScript()).toBe('tsx scripts/lint-with-budget.ts');
   });
 
-  it('予算の数値が docs/quality-gate.md の記載と一致する（散文が実測から遅れない）', () => {
-    const budget = /--max-warnings\s+(\d+)/.exec(lintScript())?.[1];
-    expect(budget).toBeDefined();
+  it('内訳の正本は docs の散文ではなく lint-warning-budget モジュールである', () => {
     const docs = readFileSync(join(ROOT, 'docs/quality-gate.md'), 'utf8');
-    expect(docs, `docs に --max-warnings ${budget} の記載が無い`).toContain(
-      `--max-warnings ${budget}`,
+    expect(docs, 'docs が正本のパスを指していない').toContain(
+      'src/domain/governance/lint-warning-budget.ts',
     );
   });
 
