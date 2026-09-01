@@ -62,6 +62,12 @@ const SYNC_STAGE_QUERY = `callingStageMs=200&callingNoticeMs=${SYNC_NOTICE_MS}&c
  */
 const PSTN_NOTICE_MS = 30_000;
 const PSTN_STAGE_QUERY = `callingStageMs=200&callingNoticeMs=${PSTN_NOTICE_MS}&callingNoticeHoldMs=${HOLD_MS}`;
+/**
+ * ビデオ経路。コントローラの応答待ちを 600ms に縮め、予告しきい値は 30s のまま。
+ * 「結果が確定したら予告へ進む」が効いていなければ制限時間内に終わらない。
+ */
+const VIDEO_ANSWER_MS = 600;
+const VIDEO_STAGE_QUERY = `${PSTN_STAGE_QUERY}&callTimeoutMs=${VIDEO_ANSWER_MS}`;
 
 /** 段の遷移列（時刻つき）と、経過インジケータの観測高さ。 */
 type StageTrail = { stages: { stage: string; at: number }[]; pulseHeight: number };
@@ -176,6 +182,62 @@ async function callViaPstn(page: Page): Promise<void> {
   await revealStaff(page, 'staff-staff-sato');
   await page.getByTestId('staff-staff-sato').click();
   await page.getByTestId('visitor-name').fill('来客 三郎');
+  await page.getByTestId('to-confirm').click();
+}
+
+/**
+ * Vonage ビデオ経路。`vonageSessionId` を返して KioskCallView を開き、SDK は接続したまま
+ * 相手が来ない（streamCreated 無し）。コントローラが timeout すると親がゲートへ送る。
+ *
+ * 🔴 **addInitScript は goto より前。** 後からでは既存ドキュメントに載らない。
+ */
+async function stubVideoTimeout(page: Page): Promise<void> {
+  await page.addInitScript(() => {
+    const ot = {
+      initSession() {
+        return {
+          connect(_token: string, cb: (err?: unknown) => void) {
+            cb();
+          },
+          publish() {},
+          on() {},
+          disconnect() {},
+        };
+      },
+      initPublisher() {
+        return { destroy() {} };
+      },
+    };
+    (window as unknown as { OT: typeof ot }).OT = ot;
+  });
+  await page.route('**/api/kiosk/receptions/*/call', (route) =>
+    route.fulfill({ json: { state: 'calling', vonageSessionId: 'sess-video' } }),
+  );
+  await page.route('**/api/kiosk/receptions/*/token', (route) =>
+    route.fulfill({
+      json: {
+        applicationId: 'app-e2e',
+        sessionId: 'sess-video',
+        token: 'tok-e2e',
+        role: 'publisher',
+        expiresAt: new Date(Date.now() + 60_000).toISOString(),
+      },
+    }),
+  );
+  await page.route('**/api/kiosk/receptions/*/timeout', (route) => route.fulfill({ json: { ok: true } }));
+  await page.route('**/api/kiosk/receptions/*/connected', (route) =>
+    route.fulfill({ json: { ok: true } }),
+  );
+}
+
+async function callViaVideo(page: Page): Promise<void> {
+  await stubVideoTimeout(page);
+  await page.goto(`/kiosk?${VIDEO_STAGE_QUERY}`);
+  await page.getByTestId('start-reception').click();
+  await page.getByTestId('purpose-meeting').click();
+  await revealStaff(page, 'staff-staff-sato');
+  await page.getByTestId('staff-staff-sato').click();
+  await page.getByTestId('visitor-name').fill('来客 ビデオ');
   await page.getByTestId('to-confirm').click();
 }
 
@@ -663,4 +725,52 @@ test('前の来訪者の状態を次へ持ち越さない (#832 MAJOR-1 回帰)'
     trail.stages[0]?.stage,
     `2 人目が引き継いだ: ${trail.stages.map((x) => x.stage).join(' → ')}`,
   ).toBe('dialing');
+});
+
+/**
+ * 🔴 **#832 の回帰拘束（Vonage ビデオ経路）。**
+ *
+ * `vonageSessionId` が立つと KioskCallView が CallingView を**置き換えて**いたため、
+ * `data-calling-stage` が DOM に無く、`onTimeout` がゲートを素通りして即 CALL_TIMEOUT していた。
+ * 設計判断: ビデオはメディア寿命だけを駆動し、待ち体験は CallingView のまま。timeout は
+ * PSTN と同じ `pendingTimeout` へ送る。
+ */
+test('ビデオ: 結果が確定したら予告しきい値を待たず、予告を見せてから遷移する (#832)', async ({
+  page,
+}) => {
+  await callViaVideo(page);
+  await recordCallingStageTrail(page);
+  await page.getByTestId('confirm-call').click();
+
+  await expect(page.getByTestId('calling')).toBeVisible({ timeout: 15_000 });
+  // 映像ボックスは CSS 寸法が無く Playwright は hidden と見る。経路の証人は attached。
+  await expect(page.getByTestId('kiosk-call')).toBeAttached();
+  await expect(page.getByTestId('result-timeout')).toBeVisible({ timeout: 20_000 });
+  expectNoticeBeforeResult(await readCallingStageTrail(page));
+});
+
+test('ビデオ: レンダラが詰まっても予告は飛ばない (#832 AC3)', async ({ page }) => {
+  await callViaVideo(page);
+  await recordCallingStageTrail(page);
+  await page.getByTestId('confirm-call').click();
+  await expect(page.getByTestId('calling')).toBeVisible({ timeout: 15_000 });
+  await expect(page.getByTestId('kiosk-call')).toBeAttached();
+
+  // ビデオの timeout はコントローラの短タイマー。CallingView が乗った直後に塞いで
+  // 「確定と予告が同一タスクへ畳まれる」窓を作る。
+  const stallAt = await page.evaluate(() => {
+    const w = window as unknown as Record<string, unknown>;
+    const panel = document.querySelector('[data-calling-stage]');
+    w.__stallAt = panel === null ? 'no-panel' : String(panel.getAttribute('data-calling-stage'));
+    const until = Date.now() + 700;
+    while (Date.now() < until) {
+      /* メインスレッドを塞ぐ */
+    }
+    return w.__stallAt;
+  });
+  expect(stallAt).toBeDefined();
+  expect(stallAt).not.toBe('preTimeoutNotice');
+
+  await expect(page.getByTestId('result-timeout')).toBeVisible({ timeout: 20_000 });
+  expectNoticeBeforeResult(await readCallingStageTrail(page));
 });

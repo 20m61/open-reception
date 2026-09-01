@@ -264,6 +264,12 @@ type ReceptionScreenProps = {
   /** 呼び出し中の段階的ケアのテナント文言上書き (issue #28 / #323)。ja のみ適用。 */
   callingStageTextOverride: { waiting?: string; notice?: string };
   /**
+   * Vonage ビデオが未応答になったとき (#832)。直に `CALL_TIMEOUT` せず、予告保持ゲートへ送る。
+   */
+  onCallTimeout: () => void;
+  /** ビデオの応答待ち上限。E2E は `?callTimeoutMs=` で短縮する。 */
+  videoAnswerTimeoutMs: number;
+  /**
    * ワンタップ満足度フィードバック (issue #320)。完了/未応答/失敗の終端画面のみが使う。
    * `enabled=false`（テナント設定でオフ）のときは呼び出し側で UI ごと出さない。
    */
@@ -308,6 +314,8 @@ export function renderScreen({
   onOpenStaffGroupChange,
   callingStageState,
   callingStageTextOverride,
+  onCallTimeout,
+  videoAnswerTimeoutMs,
   feedback,
   sttAdapterFactory,
   callStages,
@@ -372,8 +380,10 @@ export function renderScreen({
         />
       );
     case 'calling':
-      // Vonage（非同期）通話はビデオビューがライフサイクルを駆動する。Mock 同期通話は従来表示。
-      // 担当者の応答アクションがあれば、その来訪者向けメッセージを上に重ねて表示する (issue #99)。
+      // Vonage ビデオはメディアのライフサイクルだけを駆動する。来訪者向けの待ち体験
+      // （dialing / waiting / preTimeoutNotice）は **CallingView が持つ** (#832 の設計判断)。
+      // KioskCallView に段階を足すと取次 hops（`stages[]`）と待ち段が同名で混ざる。
+      // `onTimeout` は直 dispatch せず、KioskFlow の予告保持ゲートへ送る。
       return (
         <>
           <StaffResponseBanner
@@ -388,19 +398,19 @@ export function renderScreen({
             <KioskCallView
               receptionId={vonageCallId}
               onConnected={() => dispatch({ type: 'CALL_CONNECTED', sessionId: vonageCallId })}
-              onTimeout={() => dispatch({ type: 'CALL_TIMEOUT', sessionId: vonageCallId })}
+              onTimeout={onCallTimeout}
               onFallback={() => dispatch({ type: 'CALL_FAILED', sessionId: vonageCallId })}
               stages={callStages}
               locale={locale}
+              timeoutMs={videoAnswerTimeoutMs}
             />
-          ) : (
-            <CallingView
-              target={data.target?.label ?? ''}
-              locale={locale}
-              stage={callingStageState.stage}
-              textOverride={callingStageTextOverride}
-            />
-          )}
+          ) : null}
+          <CallingView
+            target={data.target?.label ?? ''}
+            locale={locale}
+            stage={callingStageState.stage}
+            textOverride={callingStageTextOverride}
+          />
         </>
       );
     case 'connected':

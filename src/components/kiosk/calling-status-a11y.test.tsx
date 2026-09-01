@@ -61,6 +61,8 @@ function html(data: FlowData, stage: CallingStage = 'dialing'): string {
       onOpenStaffGroupChange: noop,
       callingStageState: { stage, elapsedMs: 0 },
       callingStageTextOverride: {},
+      onCallTimeout: noop,
+      videoAnswerTimeoutMs: 30_000,
       feedback: { enabled: false, onSubmit: noop },
       sttAdapterFactory: undefined,
       callStages: [],
@@ -101,5 +103,55 @@ describe('呼び出し中の段階メッセージは支援技術に届く (#849)
     const out = html(connected);
     expect(out).toContain('data-testid="result-connected"');
     expect(messageParagraph(out)).not.toContain('role="status"');
+  });
+
+  /**
+   * ビデオ経路でも来訪者向け予告は CallingView が持つ (#832)。KioskCallView に差し替えると
+   * `data-calling-stage` が消え、ゲートも素通りしていた。
+   */
+  it('vonageCallId があっても本体パネルに予告段階がある', () => {
+    const out = renderToStaticMarkup(
+      renderScreen({
+        data: calling,
+        dispatch: vi.fn(),
+        complete: noop,
+        onFallback: noop,
+        directory: { departments: [], staff: [] },
+        guidanceIdle: '',
+        vrmUrl: undefined,
+        avatarFallbackUrl: undefined,
+        sttEnabled: false,
+        motionUrl: undefined,
+        vonageCallId: 'sess-video',
+        staffResponse: null,
+        onStaffResponseFallback: noop,
+        onEntry: noop,
+        onHandoff: noop,
+        locale: 'ja',
+        onLocaleChange: noop,
+        branding: {},
+        onVoiceUse: noop,
+        checkoutCredential: null,
+        privacyNoticeOverride: undefined,
+        presenceCameraEnabled: false,
+        onSearchQuery: noop,
+        onRequestChat: noop,
+        targetTab: 'staff',
+        onTargetTabChange: noop,
+        openStaffGroupId: null,
+        onOpenStaffGroupChange: noop,
+        callingStageState: { stage: 'preTimeoutNotice', elapsedMs: 0 },
+        callingStageTextOverride: {},
+        onCallTimeout: noop,
+        videoAnswerTimeoutMs: 30_000,
+        feedback: { enabled: false, onSubmit: noop },
+        sttAdapterFactory: undefined,
+        callStages: [],
+      }),
+    );
+    expect(out).toContain('data-testid="calling"');
+    expect(out).toContain('data-calling-stage="preTimeoutNotice"');
+    expect(out).toContain('data-testid="kiosk-call"');
+    expect(messageParagraph(out)).toContain('role="status"');
   });
 });

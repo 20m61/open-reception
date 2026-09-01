@@ -10,8 +10,10 @@ import { describe, expect, it } from 'vitest';
  * 二度と dispatch されない（呼び出し中で固着。#826 と同型）。
  *
  * layout は passive より必ず先に走るので、ファイル内の並びを契約にしない。
+ *
+ * 正本は `use-calling-notice-hold.ts`（KioskFlow / CheckinFlow が共有する）。
  */
-const SRC = readFileSync(join(import.meta.dirname, 'KioskFlow.tsx'), 'utf8');
+const SRC = readFileSync(join(import.meta.dirname, 'use-calling-notice-hold.ts'), 'utf8');
 
 describe('予告時刻の記録は useLayoutEffect (#837.2)', () => {
   it('noticeShownAtRef への初回書き込みは、直近のフックが useLayoutEffect である', () => {

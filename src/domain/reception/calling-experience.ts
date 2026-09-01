@@ -41,7 +41,7 @@ export type CallingStageThresholds = {
 /**
  * 既定しきい値。
  *
- * `noticeAfterMs`(25s) は Vonage の応答待ち上限（`KioskCallView.CALL_TIMEOUT_MS` = 30s）に
+ * `noticeAfterMs`(25s) は Vonage の応答待ち上限（`DEFAULT_VIDEO_ANSWER_TIMEOUT_MS` = 30s）に
  * 対する予告の出しどころ。**結果がまだ確定していないとき**の段の進み方を決める。
  *
  * `noticeMinDurationMs` は **2s**（#832 でオーナー判断により 5s から短縮）。この値は
@@ -77,6 +77,52 @@ function normalizePositive(value: number | undefined | null, fallback: number): 
 
 function capMs(value: number, maxMs: number): number {
   return value > maxMs ? maxMs : value;
+}
+
+/**
+ * Vonage ビデオの応答待ち上限。`noticeAfterMs`(25s) の後に満了する既定で、
+ * 予告を挟んでから打ち切る窓を残す。E2E は `?callTimeoutMs=` で短縮する。
+ */
+export const DEFAULT_VIDEO_ANSWER_TIMEOUT_MS = 30_000;
+
+function positiveQueryMs(params: URLSearchParams, key: string): number | undefined {
+  const v = Number(params.get(key));
+  return Number.isFinite(v) && v > 0 ? v : undefined;
+}
+
+/**
+ * E2E / デバッグ用クエリからしきい値の上書きを読む。不正値は `undefined`（clamp 側が既定へ倒す）。
+ *
+ * `KioskFlow` と `CheckinFlow` が同じキーを読むための単一の入口。キーを片方だけ足すと
+ * QR 経路だけ本番しきい値のまま残り、e2e がビデオ/PSTN だけを緑にして QR を見落とす。
+ */
+export function callingStageQueryFromSearch(search: string): Partial<CallingStageThresholds> {
+  const params = new URLSearchParams(search.startsWith('?') ? search.slice(1) : search);
+  return {
+    waitingAfterMs: positiveQueryMs(params, 'callingStageMs'),
+    noticeAfterMs: positiveQueryMs(params, 'callingNoticeMs'),
+    noticeMinDurationMs: positiveQueryMs(params, 'callingNoticeHoldMs'),
+  };
+}
+
+/**
+ * `?callTimeoutMs=`。未指定・不正は `undefined`（呼び出し側が既定 30s を使う）。
+ */
+export function videoAnswerTimeoutMsFromSearch(search: string): number | undefined {
+  const params = new URLSearchParams(search.startsWith('?') ? search.slice(1) : search);
+  return positiveQueryMs(params, 'callTimeoutMs');
+}
+
+/**
+ * ビデオ応答待ちの上限を既定へ正規化する。段階しきい値と同じ 100ms〜120s。
+ *
+ * 🔴 **期待値の上限はテスト側でリテラル。** ここの MAX を緩める変異がテストと共有されないこと。
+ */
+export function clampVideoAnswerTimeoutMs(value: number | undefined | null): number {
+  if (typeof value !== 'number' || !Number.isFinite(value) || value < MIN_THRESHOLD_MS) {
+    return DEFAULT_VIDEO_ANSWER_TIMEOUT_MS;
+  }
+  return capMs(value, MAX_STAGE_MS);
 }
 
 /**
@@ -207,17 +253,14 @@ export function deriveCallingStage(
  * そこで起点を「予告段階を描画した時刻」に変える。まだ描画していなければ `null` を返し、
  * 呼び出し側は **dispatch してはならない**（描画されてから改めて評価する）と解釈する。
  *
- * 🔴 **適用範囲**（#832 increment 1 で実 PSTN を追加）。`CALL_TIMEOUT` の dispatch 元は 4 つあり、
- * 現時点でゲートを通るのは上 2 つだけ:
+ * 🔴 **適用範囲**（#832）。timeout が確定したあと、来訪者向けの遷移はすべて
+ * `useCallingNoticeHold` のゲートを通る:
  *
  *  - ✅ `/call` が同期で `timeout` を返す経路（#826）
- *  - ✅ 実 PSTN の `/status` ポーリング（#832。`handleStatusPoll` が保留へ置く）
- *  - ❌ Vonage ビデオ（`reception-screens.tsx` の `onTimeout`）
- *  - ❌ QR 受付（`CheckinFlow`）。厳密には `CALL_TIMEOUT` を dispatch せず、
- *    `decidePollAction` の `CALL_TIMEOUT` を `CALL_FAILED('unanswered')` へ**写して**いる。
- *    段階演出そのものを持たないので、探しても `CALL_TIMEOUT` は見つからない
- *
- * 残り 2 経路も #832 で面倒を見る。**#323 AC3 はまだ全経路では満たされていない。**
+ *  - ✅ 実 PSTN の `/status` ポーリング（`handleStatusPoll` が保留へ置く）
+ *  - ✅ Vonage ビデオ（`KioskCallView.onTimeout` が保留へ置く。段階表示は `CallingView`）
+ *  - ✅ QR 受付（`CheckinFlow`）。`CALL_TIMEOUT` は `CALL_FAILED('unanswered')` へ写すが、
+ *    発火はゲート後。段階は `data-calling-stage` で出す
  *
  * @param noticeShownAtMs 予告段階を最初に commit した時刻（ms epoch）。未 commit なら null。
  * @param nowMs 現在時刻（ms epoch）。

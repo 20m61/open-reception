@@ -25,11 +25,10 @@
 
 | 順 | Issue | なぜこの順か | 着手可否 |
 | --- | --- | --- | --- |
-| 1 | **#832**（残: Vonage ビデオ / QR） | #323 AC3 の実運用経路。PSTN ポーリングは消化済み。ビデオは設計判断あり | ローカル可（設計判断あり） |
-| 2 | **#816** → **#815** | 逃げ道バーが内容を覆う。#816 は linux/darwin 両方の VRT 取り直しが要る | darwin VRT 待ち（#789） |
+| 1 | **#816** → **#815** | 逃げ道バーが内容を覆う。#816 は linux/darwin 両方の VRT 取り直しが要る | darwin VRT 待ち（#789） |
 
-> **#818 / #817 / #843 / #836 / #849 / #837.2–3 / #838 は 2026-09-01 に消化した**
-> （PR #852 / #856 / #853 / #854 / #855 / #857 / #860。linux VRT 取り直しは #858）。
+> **#818 / #817 / #843 / #836 / #849 / #837.2–3 / #838 / #832 は 2026-09-01 に消化した**
+> （PR #852 / #856 / #853 / #854 / #855 / #857 / #860 / 本周回。linux VRT 取り直しは #858）。
 > #837.1（stall 自己確認）は main の `__stallAt` で既充足。
 > #838 AC6（semgrep ルール固定）は #841 で既充足していた。
 
@@ -39,15 +38,16 @@
 > **予告が一度も描画されないまま結果画面へ飛ぶ**（#323 AC3 の保証違反）。e2e は保持を
 > 300ms へ圧縮しているのでこれを踏みやすかった。保持の起点を「commit した時刻」へ変えた。
 >
-> 🔴 **#323 AC3 はまだ全経路では満たされていない。**「解消」と読まないこと。`CALL_TIMEOUT` の
-> dispatch 元は 4 つあり、ゲートを通るのは 2 つだけである（#832 で残りを追う）:
+> 🔴 **#323 AC3 のゲートは 4 経路とも通る**（#832 でビデオと QR を足した）。読み上げは
+> 依然として本体パネルの `role="status"` が担う（AvatarGuide は `ttsSettings` 未指定・親は
+> `aria-hidden`。#849 / #803 と重なるのでここでは触らない）。
 >
 > | 経路 | ゲート | 備考 |
 > | --- | --- | --- |
 > | `/call` が同期で `timeout` | ✅ #826 | e2e が縛っているのはここ（mock の都合） |
 > | 実 PSTN の `/status` ポーリング | ✅ #832 | **実運用で来訪者が一番踏む**。修正前の遷移列は `dialing → result-timeout` で `waiting` すら出なかった（実測） |
-> | Vonage ビデオ | ❌ | 予告の**字幕は出ている**（`callingAvatarGuidanceOverride`）。🔴 **読み上げは出ていない** —— `KioskFlow` は `AvatarGuide` に `ttsSettings` を渡しておらず、親も `aria-hidden` なので支援技術にも届かない（2026-08-31 実測。以前ここに「読み上げも出る」と書いたのは誤り）。欠けているのは commit 保証と、そもそもの音声 |
-> | QR 受付（`CheckinFlow`） | ❌ | 段階演出そのものが無い。**`CALL_TIMEOUT` を dispatch せず** `decidePollAction` の結果を `CALL_FAILED('unanswered')` へ写しているので、grep しても見つからない。#832 のスコープに含めると決定 |
+> | Vonage ビデオ | ✅ #832 | 設計判断: `KioskCallView` はメディア寿命、待ち段は `CallingView`。`onTimeout` は `pendingTimeout` へ。e2e は `?callTimeoutMs=` + fake `OT` |
+> | QR 受付（`CheckinFlow`） | ✅ #832 | `CALL_FAILED('unanswered')` へ写すのはゲート後。段階は `data-calling-stage`。本番 e2e は `debugScanPayload` が無効なので markup + 配線テスト |
 
 > **#813 は 2026-08-31 に消化した。** `react-hooks/exhaustive-deps` を **error** へ上げ、
 > 残りは `--max-warnings 74` の ratchet で頭打ちにした（86 → 74 へ削減済み）。
