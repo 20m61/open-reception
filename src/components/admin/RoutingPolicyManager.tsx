@@ -4,7 +4,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useSiteScope } from './use-site-scope';
 import { SiteScopeSelect } from './SiteScopeSelect';
 import { DangerActionButton } from './danger/DangerActionButton';
-import { Button, Card, Field } from '@/components/admin/ui';
+import { Button, Card, Field, Form } from '@/components/admin/ui';
 import { color, space } from '@/components/admin/ui/tokens';
 import {
   CONTINUABLE_RESULTS,
@@ -253,7 +253,11 @@ function EndpointsSection({
   return (
     <div style={{ marginBottom: space.xl }}>
       <h2>接続先</h2>
-      <div style={{ display: 'flex', gap: space.sm, alignItems: 'flex-end', flexWrap: 'wrap', marginBottom: space.md }}>
+      <Form
+        onSubmit={add}
+        aria-label="接続先を追加"
+        style={{ display: 'flex', gap: space.sm, alignItems: 'flex-end', flexWrap: 'wrap', marginBottom: space.md }}
+      >
         <Field label="表示名" htmlFor="ep-label" hint="例: 山田の個人携帯（氏名以外の呼称推奨）">
           <input id="ep-label" data-testid="endpoint-label-input" value={label} onChange={(e) => setLabel(e.target.value)} style={inputStyle} />
         </Field>
@@ -272,10 +276,10 @@ function EndpointsSection({
         <Field label="担当者/組織 ID" htmlFor="ep-owner">
           <input id="ep-owner" data-testid="endpoint-owner-input" value={ownerId} onChange={(e) => setOwnerId(e.target.value)} style={inputStyle} />
         </Field>
-        <Button variant="primary" data-testid="endpoint-add" onClick={add} disabled={busy || writeBlocked || address.trim() === ''}>
+        <Button variant="primary" type="submit" data-testid="endpoint-add" disabled={busy || writeBlocked || address.trim() === ''}>
           接続先を追加
         </Button>
-      </div>
+      </Form>
       {error ? (
         <p data-testid="endpoint-error" style={{ color: color.danger, fontSize: '0.85rem' }}>
           {error}

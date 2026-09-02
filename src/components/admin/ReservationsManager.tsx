@@ -6,18 +6,7 @@ import type {
   ReservationUsagePolicy,
   VisitReservation,
 } from '@/domain/reservation/types';
-import {
-  Button,
-  Card,
-  CardGrid,
-  DataTable,
-  Field,
-  FormRow,
-  MetricCard,
-  Section,
-  StatusBadge,
-  type Column,
-} from '@/components/admin/ui';
+import { Button, Card, CardGrid, DataTable, Field, Form, FormRow, MetricCard, Section, StatusBadge, type Column } from '@/components/admin/ui';
 import { color, radius, space, font } from '@/components/admin/ui/tokens';
 import { useQueryParams } from './use-query-params';
 import { useSiteScope } from './use-site-scope';
@@ -430,7 +419,11 @@ export function ReservationsManager({
 
       <Section title="予約を作成" description="作成と同時に QR トークンを発行します。">
         <Card>
-          <div style={{ display: 'flex', flexDirection: 'column', gap: space.md }}>
+          <Form
+            onSubmit={create}
+            aria-label="予約を作成"
+            style={{ display: 'flex', flexDirection: 'column', gap: space.md }}
+          >
             <FormRow>
               <Field label="来訪者名" htmlFor="rsv-visitor" required>
                 <input id="rsv-visitor" data-testid="rsv-visitor" value={form.visitorName} onChange={(e) => setForm({ ...form, visitorName: e.target.value })} style={inputStyle} />
@@ -463,11 +456,11 @@ export function ReservationsManager({
               <input id="rsv-note" data-testid="rsv-note" value={form.note} onChange={(e) => setForm({ ...form, note: e.target.value })} style={inputStyle} />
             </Field>
             <div>
-              <Button variant="primary" data-testid="rsv-create" onClick={create} disabled={!gate.canCreate}>
+              <Button variant="primary" type="submit" data-testid="rsv-create" disabled={!gate.canCreate}>
                 予約を作成
               </Button>
             </div>
-          </div>
+          </Form>
         </Card>
       </Section>
 

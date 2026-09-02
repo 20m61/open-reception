@@ -7,7 +7,7 @@ import { CsvImport } from './CsvImport';
 import { StaffEditor } from './StaffEditor';
 import { filterStaff, type StaffStatusFilter } from './staff-filter';
 import { useQueryParams } from './use-query-params';
-import { Button, DataTable, Field, SaveFeedback, useSaveFeedback, type Column } from '@/components/admin/ui';
+import { Button, DataTable, Field, Form, SaveFeedback, useSaveFeedback, type Column } from '@/components/admin/ui';
 import { color, space } from '@/components/admin/ui/tokens';
 
 /**
@@ -249,7 +249,11 @@ export function StaffManager() {
     <section>
       <h1 style={{ marginTop: 0 }}>担当者管理</h1>
 
-      <div style={{ display: 'flex', gap: space.sm, alignItems: 'flex-end', flexWrap: 'wrap', marginBottom: space.lg }}>
+      <Form
+        onSubmit={add}
+        aria-label="担当者を追加"
+        style={{ display: 'flex', gap: space.sm, alignItems: 'flex-end', flexWrap: 'wrap', marginBottom: space.lg }}
+      >
         <Field label="氏名" htmlFor="staff-name-input">
           <input id="staff-name-input" data-testid="staff-name-input" value={displayName} onChange={(e) => setDisplayName(e.target.value)} style={inputStyle} />
         </Field>
@@ -265,11 +269,11 @@ export function StaffManager() {
             ))}
           </select>
         </Field>
-        <Button variant="primary" data-testid="staff-add" onClick={add} disabled={busy || displayName.trim() === ''}>
+        <Button variant="primary" type="submit" data-testid="staff-add" disabled={busy || displayName.trim() === ''}>
           追加
         </Button>
         <SaveFeedback feedback={feedback} successTestId="staff-saved" errorTestId="staff-save-error" />
-      </div>
+      </Form>
 
       <CsvImport
         endpoint="/api/admin/staff/import"
