@@ -37,6 +37,7 @@ import type { DemoShareToken } from '@/domain/demo-studio/share-token';
 import type { Kiosk } from '@/domain/kiosk/types';
 import { canIssueShare, canRevokeShare, canShowRollback, shareStatus, targetLabel } from './publish-panel';
 import { DangerActionButton } from '../danger/DangerActionButton';
+import { font } from '@/components/admin/ui/tokens';
 
 /**
  * 受付体験スタジオ Demo Harness — 3 ペイン編集スタジオ (issue #363 Increment 2)。
@@ -692,7 +693,7 @@ export function DemoStudio({ canWrite = true, siteId }: { canWrite?: boolean; si
             {/* 公開先選択・公開 */}
             <div className="stack" style={{ gap: 4, borderTop: '1px solid var(--color-border)', paddingTop: 8 }}>
               <label className="stack" style={{ gap: 2 }}>
-                <span style={{ fontSize: '0.85rem', opacity: 0.75 }}>公開先 Kiosk</span>
+                <span style={{ fontSize: font.small, opacity: 0.75 }}>公開先 Kiosk</span>
                 <select
                   data-testid="demo-pub-target"
                   value={targetKioskId}
@@ -742,7 +743,7 @@ export function DemoStudio({ canWrite = true, siteId }: { canWrite?: boolean; si
               data-testid="demo-pub-versions"
               style={{ gap: 4, borderTop: '1px solid var(--color-border)', paddingTop: 8 }}
             >
-              <span style={{ fontSize: '0.85rem', opacity: 0.75 }}>公開履歴</span>
+              <span style={{ fontSize: font.small, opacity: 0.75 }}>公開履歴</span>
               {!canShowRollback(currentPub.versions.length) ? (
                 <p className="page__lead" data-testid="demo-pub-versions-empty" style={{ margin: 0 }}>
                   まだ公開されていません。
@@ -795,7 +796,7 @@ export function DemoStudio({ canWrite = true, siteId }: { canWrite?: boolean; si
               data-testid="demo-pub-share"
               style={{ gap: 6, borderTop: '1px solid var(--color-border)', paddingTop: 8 }}
             >
-              <span style={{ fontSize: '0.85rem', opacity: 0.75 }}>共有リンク（認証なし閲覧）</span>
+              <span style={{ fontSize: font.small, opacity: 0.75 }}>共有リンク（認証なし閲覧）</span>
               {(() => {
                 const status = shareStatus(currentPub.share, nowMs);
                 if (status === 'active') {
@@ -975,7 +976,7 @@ export function DemoStudio({ canWrite = true, siteId }: { canWrite?: boolean; si
 
           {/* シナリオ全体 */}
           <label className="stack" style={{ gap: 2 }}>
-            <span style={{ fontSize: '0.85rem', opacity: 0.75 }}>シナリオ名</span>
+            <span style={{ fontSize: font.small, opacity: 0.75 }}>シナリオ名</span>
             {isEditing ? (
               <input
                 data-testid="demo-name-input"
@@ -992,7 +993,7 @@ export function DemoStudio({ canWrite = true, siteId }: { canWrite?: boolean; si
           ) : null}
 
           <label className="stack" style={{ gap: 2 }}>
-            <span style={{ fontSize: '0.85rem', opacity: 0.75 }}>起動モード</span>
+            <span style={{ fontSize: font.small, opacity: 0.75 }}>起動モード</span>
             {isEditing ? (
               <select
                 data-testid="demo-initial-mode"
@@ -1016,7 +1017,7 @@ export function DemoStudio({ canWrite = true, siteId }: { canWrite?: boolean; si
 
           {/* 選択ターン */}
           <div className="stack" style={{ gap: 4, borderTop: '1px solid var(--color-border)', paddingTop: 8 }}>
-            <span style={{ fontSize: '0.85rem', opacity: 0.75 }}>
+            <span style={{ fontSize: font.small, opacity: 0.75 }}>
               選択ターン{selectedTurn !== null ? `（#${selectedTurn + 1}）` : ''}
             </span>
             {selTurn ? (
@@ -1072,7 +1073,7 @@ export function DemoStudio({ canWrite = true, siteId }: { canWrite?: boolean; si
 
           {/* シミュレーション結果 */}
           <div className="stack" style={{ gap: 6, borderTop: '1px solid var(--color-border)', paddingTop: 8 }}>
-            <span style={{ fontSize: '0.85rem', opacity: 0.75 }}>シミュレーション結果</span>
+            <span style={{ fontSize: font.small, opacity: 0.75 }}>シミュレーション結果</span>
 
             {/* 呼び出し結果列 */}
             <div className="stack" data-testid="demo-sim-call" style={{ gap: 4 }}>

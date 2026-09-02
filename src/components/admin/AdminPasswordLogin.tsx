@@ -2,6 +2,7 @@
 
 import { useRouter } from 'next/navigation';
 import { useState } from 'react';
+import { font } from '@/components/admin/ui/tokens';
 
 /** パスワードによる管理ログインフォーム (issue #24)。検証は server 側で行う。 */
 export function AdminPasswordLogin() {
@@ -36,7 +37,7 @@ export function AdminPasswordLogin() {
   return (
     <form onSubmit={submit} style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
       <label style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
-        <span style={{ fontSize: '0.85rem', opacity: 0.8 }}>パスワード</span>
+        <span style={{ fontSize: font.small, opacity: 0.8 }}>パスワード</span>
         <span style={{ position: 'relative', display: 'block' }}>
           <input
             type={showPassword ? 'text' : 'password'}

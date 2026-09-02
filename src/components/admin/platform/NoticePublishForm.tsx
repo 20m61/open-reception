@@ -3,6 +3,7 @@
 import { useState, type FormEvent } from 'react';
 import type { NoticeLevel } from '@/domain/platform/notice';
 import { buildNoticePublishPayload, noticePublishError } from '@/lib/platform/client-elevation';
+import { font } from '@/components/admin/ui/tokens';
 
 /**
  * お知らせ登録フォーム — 昇格つき write の最初の UI 導線 (issue #83 §2 / inc4d)。
@@ -70,7 +71,7 @@ export function NoticePublishForm({ onPublished }: { onPublished?: () => void })
     borderRadius: 8,
     padding: '6px 10px',
     color: 'inherit',
-    fontSize: '0.85rem',
+    fontSize: font.small,
     width: '100%',
     boxSizing: 'border-box',
   } as const;
@@ -85,7 +86,7 @@ export function NoticePublishForm({ onPublished }: { onPublished?: () => void })
         padding: 'var(--space-md)',
         display: 'grid',
         gap: 'var(--space-sm)',
-        fontSize: '0.85rem',
+        fontSize: font.small,
       }}
     >
       <strong style={{ color: 'var(--color-platform-warn)' }}>お知らせを登録（昇格が必要な操作）</strong>

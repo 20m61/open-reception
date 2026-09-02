@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useState } from 'react';
 import type { Kiosk } from '@/domain/kiosk/types';
-import { SaveFeedback, useSaveFeedback } from '@/components/admin/ui';
+import { SaveFeedback, font, useSaveFeedback } from '@/components/admin/ui';
 import { enablementState } from './state-vocabulary';
 
 /**
@@ -135,7 +135,7 @@ export function KiosksManager() {
 }
 
 const col: React.CSSProperties = { display: 'flex', flexDirection: 'column', gap: 4 };
-const lbl: React.CSSProperties = { fontSize: '0.85rem', opacity: 0.8 };
+const lbl: React.CSSProperties = { fontSize: font.small, opacity: 0.8 };
 const noticeStyle: React.CSSProperties = {
   margin: '0 0 24px',
   padding: '12px 16px',

@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useState } from 'react';
 import type { DashboardSummary } from '@/domain/reception/dashboard-summary';
-import { Button } from '@/components/admin/ui';
+import { Button, font } from '@/components/admin/ui';
 import { StatusBadge } from './StatusBadge';
 import { MetricCard } from './MetricCard';
 import { Section, CardGrid } from './Section';
@@ -138,7 +138,7 @@ export function Dashboard() {
             placeholder
             note="通話連携の状態はまだ表示されていません"
           >
-            <span style={{ fontSize: '1.1rem', fontWeight: 700, opacity: 0.7 }}>準備中</span>
+            <span style={{ fontSize: font.label, fontWeight: 700, opacity: 0.7 }}>準備中</span>
           </MetricCard>
         </CardGrid>
       </Section>
@@ -155,7 +155,7 @@ export function Dashboard() {
             />
           ) : (
             <MetricCard label="今月の利用量" href="/admin/usage" placeholder note="利用量サマリ未集計">
-              <span style={{ fontSize: '1.1rem', fontWeight: 700, opacity: 0.7 }}>—</span>
+              <span style={{ fontSize: font.label, fontWeight: 700, opacity: 0.7 }}>—</span>
             </MetricCard>
           )}
           {usageCost ? (
@@ -167,7 +167,7 @@ export function Dashboard() {
             />
           ) : (
             <MetricCard label="今月の予想コスト（概算）" href="/admin/costs" placeholder note="コスト概算未集計">
-              <span style={{ fontSize: '1.1rem', fontWeight: 700, opacity: 0.7 }}>—</span>
+              <span style={{ fontSize: font.label, fontWeight: 700, opacity: 0.7 }}>—</span>
             </MetricCard>
           )}
           <MetricCard
@@ -176,7 +176,7 @@ export function Dashboard() {
             placeholder
             note="メンテナンス情報や警告が発生するとここに表示されます"
           >
-            <span style={{ fontSize: '1.1rem', fontWeight: 700, opacity: 0.7 }}>現在お知らせはありません</span>
+            <span style={{ fontSize: font.label, fontWeight: 700, opacity: 0.7 }}>現在お知らせはありません</span>
           </MetricCard>
         </CardGrid>
       </Section>

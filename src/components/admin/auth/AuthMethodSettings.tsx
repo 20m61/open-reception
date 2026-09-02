@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from 'react';
 import type { AdminAuthStatus, EntraSettingStatus } from '@/lib/auth/admin-auth-config';
-import { Section, StatusBadge } from '@/components/admin/ui';
+import { Section, StatusBadge, font } from '@/components/admin/ui';
 
 /**
  * 認証方式設定（Microsoft Entra ID オプション）の状態表示 (issue #70)。
@@ -95,7 +95,7 @@ export function AuthMethodSettings() {
             {PROVIDER_LABEL[status.provider] ?? status.provider}
           </strong>
           <StatusBadge status={providerKind} label={status.ok ? '設定OK' : '要設定'} />
-          <span data-testid="auth-required" style={{ fontSize: '0.85rem', opacity: 0.75 }}>
+          <span data-testid="auth-required" style={{ fontSize: font.small, opacity: 0.75 }}>
             認証必須: {status.required ? '有効' : '無効（PoC/ローカル）'}
           </span>
         </div>
@@ -139,7 +139,7 @@ export function AuthMethodSettings() {
                 <span>
                   {COGNITO_SETTING_LABEL[s.key] ?? s.key}
                   {s.requiredForLogin ? (
-                    <span style={{ marginLeft: 6, fontSize: '0.75rem', opacity: 0.6 }}>必須</span>
+                    <span style={{ marginLeft: 6, fontSize: font.caption, opacity: 0.6 }}>必須</span>
                   ) : null}
                 </span>
                 <StatusBadge
@@ -149,7 +149,7 @@ export function AuthMethodSettings() {
               </div>
             ))}
           </div>
-          <p data-testid="cognito-allowed-roles" style={{ fontSize: '0.85rem', marginTop: 12 }}>
+          <p data-testid="cognito-allowed-roles" style={{ fontSize: font.small, marginTop: 12 }}>
             許可ロール:{' '}
             {status.cognito.allowedRoles.length > 0
               ? status.cognito.allowedRoles.join(', ')
@@ -180,7 +180,7 @@ export function AuthMethodSettings() {
                 <span>
                   {SETTING_LABEL[s.key]}
                   {s.requiredForLogin ? (
-                    <span style={{ marginLeft: 6, fontSize: '0.75rem', opacity: 0.6 }}>必須</span>
+                    <span style={{ marginLeft: 6, fontSize: font.caption, opacity: 0.6 }}>必須</span>
                   ) : null}
                 </span>
                 <StatusBadge
@@ -190,7 +190,7 @@ export function AuthMethodSettings() {
               </div>
             ))}
           </div>
-          <p data-testid="entra-allowed-roles" style={{ fontSize: '0.85rem', marginTop: 12 }}>
+          <p data-testid="entra-allowed-roles" style={{ fontSize: font.small, marginTop: 12 }}>
             許可ロール:{' '}
             {status.entra.allowedRoles.length > 0
               ? status.entra.allowedRoles.join(', ')

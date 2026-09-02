@@ -1,6 +1,7 @@
 'use client';
 
 import { useEffect, useState, type FormEvent } from 'react';
+import { font } from '@/components/admin/ui/tokens';
 import {
   buildBreakGlassRequest,
   buildElevateRequest,
@@ -158,7 +159,7 @@ export function ElevationStatus({ initial }: { initial: ElevationView | null }) 
     borderRadius: 8,
     padding: '6px 10px',
     color: 'inherit',
-    fontSize: '0.85rem',
+    fontSize: font.small,
   } as const;
 
   // break-glass 昇格中は通常昇格より強い警告色で常時明示する（#83 §3）。
@@ -183,7 +184,7 @@ export function ElevationStatus({ initial }: { initial: ElevationView | null }) 
         borderRadius: 12,
         padding: 'var(--space-md)',
         marginBottom: 'var(--space-lg)',
-        fontSize: '0.85rem',
+        fontSize: font.small,
       }}
     >
       <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-md)', flexWrap: 'wrap' }}>

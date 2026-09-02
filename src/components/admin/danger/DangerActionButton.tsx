@@ -1,6 +1,7 @@
 'use client';
 
 import { useState } from 'react';
+import { font } from '@/components/admin/ui/tokens';
 import {
   canConfirm,
   normalizedReason,
@@ -110,7 +111,7 @@ export function DangerActionButton({
       ) : null}
 
       {issues.length > 0 ? (
-        <ul data-testid="danger-issues" style={{ margin: 0, paddingLeft: 18, fontSize: '0.85rem' }}>
+        <ul data-testid="danger-issues" style={{ margin: 0, paddingLeft: 18, fontSize: font.small }}>
           {issues.map((i) => (
             <li key={i}>{ISSUE_LABELS[i]}</li>
           ))}

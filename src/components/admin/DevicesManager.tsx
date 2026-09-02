@@ -807,10 +807,10 @@ export function DevicesManager({
                 {copied ? 'コピー済み' : 'コピー'}
               </Button>
             </div>
-            <p style={{ fontSize: '0.85rem', opacity: 0.8, marginBottom: 4 }}>
+            <p style={{ fontSize: font.small, opacity: 0.8, marginBottom: 4 }}>
               有効期限: {formatLastSeen(issued.expiresAt)}
             </p>
-            <p style={{ fontSize: '0.85rem', color: 'var(--color-warning)', marginTop: 0 }}>
+            <p style={{ fontSize: font.small, color: 'var(--color-warning)', marginTop: 0 }}>
               ⚠ このURL/QRはここでしか表示できません。閉じる前に控えるか受付端末で開いてください。
             </p>
             <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
@@ -834,7 +834,7 @@ const inputStyle: React.CSSProperties = {
   color: 'var(--color-text)',
 };
 const labelStyle: React.CSSProperties = { display: 'flex', flexDirection: 'column', gap: 4 };
-const labelText: React.CSSProperties = { fontSize: '0.85rem', opacity: 0.8 };
+const labelText: React.CSSProperties = { fontSize: font.small, opacity: 0.8 };
 const dialogBackdrop: React.CSSProperties = {
   position: 'fixed',
   inset: 0,
