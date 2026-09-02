@@ -5,7 +5,8 @@ import type { AuditAction, AuditLog } from '@/domain/reception/log';
 import { filterAuditLogs, type AuditFilter } from '@/domain/audit/audit-filter';
 import { Button, DataTable, Field, color, font, radius, space, type Column } from '@/components/admin/ui';
 import { useQueryParams } from '@/components/admin/use-query-params';
-import { paginate } from '@/components/admin/list-io';
+import { paginate, sortRows } from '@/components/admin/list-io';
+import { useTableSort } from '@/components/admin/use-table-sort';
 import { auditLogsToCsv } from './logic';
 
 const PAGE_SIZE = 20;
@@ -57,10 +58,7 @@ export function AuditLogViewer({
   );
 
   const filtered = useMemo(() => filterAuditLogs(logs, filter), [logs, filter]);
-  const paged = useMemo(
-    () => paginate(filtered, Number(pageParam) || 1, PAGE_SIZE),
-    [filtered, pageParam],
-  );
+  const { sort, setSort } = useTableSort();
   const labelFor = useCallback(
     (a: string) => actionLabels[a as AuditAction] ?? a,
     [actionLabels],
@@ -69,7 +67,8 @@ export function AuditLogViewer({
 
   // フィルタ変更時はページを 1 に戻す（絞り込み後に空ページへ迷い込まないようにする）。
   const updateFilter = (updates: Record<string, string>) => setMany({ ...updates, page: '' });
-  const reset = () => setMany({ start: '', end: '', action: '', actor: '', keyword: '', page: '' });
+  const reset = () =>
+    setMany({ start: '', end: '', action: '', actor: '', keyword: '', page: '', sort: '', sortDir: '' });
 
   const downloadCsv = () => {
     const csv = auditLogsToCsv(filtered, labelFor);
@@ -85,9 +84,14 @@ export function AuditLogViewer({
 
   const columns = useMemo<Column<AuditLog>[]>(
     () => [
-      { key: 'at', header: '日時', cell: (l) => new Date(l.at).toLocaleString('ja-JP') },
-      { key: 'action', header: '操作', cell: (l) => labelFor(l.action) },
-      { key: 'actor', header: '主体', cell: (l) => l.actor },
+      {
+        key: 'at',
+        header: '日時',
+        cell: (l) => new Date(l.at).toLocaleString('ja-JP'),
+        sortValue: (l) => l.at,
+      },
+      { key: 'action', header: '操作', cell: (l) => labelFor(l.action), sortValue: (l) => labelFor(l.action) },
+      { key: 'actor', header: '主体', cell: (l) => l.actor, sortValue: (l) => l.actor },
       {
         key: 'target',
         header: '対象',
@@ -100,6 +104,17 @@ export function AuditLogViewer({
       },
     ],
     [labelFor],
+  );
+
+  /*
+   * 🔴 **並べ替えてからページを切る。** 逆にすると「並べ替えたのに 2 ページ目に
+   * 小さい値が残っている」という壊れ方になる（ページを切ったあとの 20 件だけが
+   * 並び替わる）。
+   */
+  const sorted = useMemo(() => sortRows(filtered, columns, sort), [filtered, columns, sort]);
+  const paged = useMemo(
+    () => paginate(sorted, Number(pageParam) || 1, PAGE_SIZE),
+    [sorted, pageParam],
   );
 
   return (
@@ -189,6 +204,8 @@ export function AuditLogViewer({
         rows={paged.items}
         rowKey={(l) => l.id}
         rowTestId={() => 'audit-row'}
+        sort={sort}
+        onSortChange={setSort}
         emptyMessage={
           hasFilter ? '条件に一致する監査ログはありません。' : 'まだ監査ログはありません。'
         }

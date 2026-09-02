@@ -8,7 +8,8 @@ import { Button, DataTable, Field, Form, SaveFeedback, useSaveFeedback, type Col
 import { color, font, space } from '@/components/admin/ui/tokens';
 import { useQueryParams } from './use-query-params';
 import { useSiteList } from './use-site-list';
-import { paginate } from './list-io';
+import { paginate, sortRows } from './list-io';
+import { useTableSort } from './use-table-sort';
 import { filterSites, sitesToCsv, type SiteListFilter } from './sites-filter';
 import { resolveSiteListFeedback } from './site-list-feedback';
 import { siteStatusState } from './state-vocabulary';
@@ -46,6 +47,7 @@ export function SitesManager({ tenantId }: { tenantId: string }) {
   } = useSaveFeedback();
 
   const { get, setMany } = useQueryParams();
+  const { sort, setSort } = useTableSort();
   const keyword = get('q');
   const filterStatus = get('status');
   const pageParam = get('page');
@@ -117,6 +119,7 @@ export function SitesManager({ tenantId }: { tenantId: string }) {
       {
         key: 'name',
         header: '拠点名',
+        sortValue: (s) => s.name,
         cellTestId: () => 'site-name',
         cell: (s) =>
           editingId === s.id ? (
@@ -137,12 +140,15 @@ export function SitesManager({ tenantId }: { tenantId: string }) {
         key: 'devices',
         header: '端末',
         cellTestId: () => 'site-devices',
+        // 表示は「n / m オンライン」だが、比較はオンライン台数の数値で行う。
+        sortValue: (s) => s.onlineDeviceCount,
         cell: (s) => `${s.onlineDeviceCount} / ${s.deviceCount} オンライン`,
       },
       {
         key: 'status',
         header: '状態',
         cellStyle: (s) => ({ color: siteStatusState(s.status).color }),
+        sortValue: (s) => siteStatusState(s.status).label,
         cell: (s) => siteStatusState(s.status).label,
       },
       {
@@ -185,7 +191,9 @@ export function SitesManager({ tenantId }: { tenantId: string }) {
     [keyword, filterStatus],
   );
   const filtered = useMemo(() => filterSites(items, filter), [items, filter]);
-  const paged = useMemo(() => paginate(filtered, Number(pageParam) || 1, PAGE_SIZE), [filtered, pageParam]);
+  // 並べ替えてからページを切る（逆にすると 1 ページぶんだけが並び替わる）。
+  const sorted = useMemo(() => sortRows(filtered, columns, sort), [filtered, columns, sort]);
+  const paged = useMemo(() => paginate(sorted, Number(pageParam) || 1, PAGE_SIZE), [sorted, pageParam]);
   const hasFilter = Boolean(keyword || filterStatus);
   const feedback = resolveSiteListFeedback(listStatus, hasFilter);
 
@@ -263,7 +271,7 @@ export function SitesManager({ tenantId }: { tenantId: string }) {
           </select>
         </Field>
         {hasFilter ? (
-          <Button variant="secondary" onClick={() => setMany({ q: '', status: '', page: '' })} data-testid="site-filter-reset">
+          <Button variant="secondary" onClick={() => setMany({ q: '', status: '', page: '', sort: '', sortDir: '' })} data-testid="site-filter-reset">
             条件をクリア
           </Button>
         ) : null}
@@ -308,6 +316,8 @@ export function SitesManager({ tenantId }: { tenantId: string }) {
         rows={paged.items}
         rowKey={(s) => s.id}
         rowTestId={() => 'site-row'}
+        sort={sort}
+        onSortChange={setSort}
         emptyMessage={feedback.emptyMessage}
       />
 
