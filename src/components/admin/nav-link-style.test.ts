@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { navLinkAriaCurrent, navLinkStyle } from './nav-link-style';
+import { motion } from './ui/tokens';
 
 describe('navLinkStyle: アクティブ表示の即時反映 (#94)', () => {
   it('アクティブ項目はアクセントの左罫線・太字・surface-2 背景になる', () => {
@@ -19,8 +20,18 @@ describe('navLinkStyle: アクティブ表示の即時反映 (#94)', () => {
   });
 
   it('遷移を滑らかに見せる軽い transition を常に持つ', () => {
-    expect(navLinkStyle(true).transition).toContain('120ms');
-    expect(navLinkStyle(false).transition).toContain('120ms');
+    /*
+     * #903 で直書きの `120ms` をモーショントークンへ寄せた。**主張は弱めない** ——
+     * 「軽い」を言い切るのが目的なので、単に transition が在ることではなく
+     * **応答 3 段階のいちばん速い段**を使っていることを見る（下界として `slow` を排除）。
+     */
+    for (const active of [true, false]) {
+      const transition = String(navLinkStyle(active).transition);
+      expect(transition).toContain(motion.fast);
+      expect(transition).not.toContain(motion.slow);
+      expect(transition).toContain('background');
+      expect(transition).toContain('opacity');
+    }
   });
 
   it('語中改行を防ぐ（#330 item4）: keep-all を基本にしつつ、収まらない場合の保険を持つ', () => {

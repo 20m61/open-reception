@@ -38,8 +38,10 @@ CSS 変数（`src/app/globals.css` の `--color-*` / `--space-*`）を TypeScrip
 - `color` … bg / surface / surface2 / text / muted / accent / success / danger / warning /
   border / borderStrong
 - `space` … xs:6 / sm:12 / md:16 / lg:24 / xl:40（`--space-*` と整合）
-- `radius` … sm:8 / md:12 / lg:16 / pill:999
+- `radius` … sm:10 / md:14 / lg:18 / xl:28 / pill:9999（`--radius-*` と整合）
 - `font` … caption / small / body / label / metric
+- `motion` … fast / base / slow（操作への応答）+ spin / pulse（ループの周期）+ easeOut
+- `zIndex` … 重ね順。`--z-*` と整合（意味は `tests/config/z-index-layers.test.ts`）
 - 語彙（管理画面全体で統一）:
   - `StatusKind` = `ok | warning | critical | stopped | maintenance` → `STATUS_META`
   - `Tone` = `neutral | success | warning | danger | accent` → `TONE_COLOR` / `TONE_SOFT_BG`
