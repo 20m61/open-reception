@@ -4,7 +4,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import type { DeviceConnectivity, DeviceView } from '@/lib/tenant/device-service';
 import type { DeviceKind } from '@/domain/tenant/types';
 import { Button, DataTable, Field, Form, Section, StatusBadge, type Column, type StatusKind } from '@/components/admin/ui';
-import { font, space } from '@/components/admin/ui/tokens';
+import { font, space, zIndex } from '@/components/admin/ui/tokens';
 import { renderTextToQrSvg } from '@/lib/reservation/qr';
 import { useQueryParams } from './use-query-params';
 import { useModalDialog } from './useModalDialog';
@@ -842,7 +842,7 @@ const dialogBackdrop: React.CSSProperties = {
   display: 'flex',
   alignItems: 'center',
   justifyContent: 'center',
-  zIndex: 50,
+  zIndex: zIndex.dialog,
 };
 const dialogBox: React.CSSProperties = {
   maxWidth: 440,

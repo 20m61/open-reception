@@ -88,6 +88,24 @@
   --radius-xl: 28px;
   --radius-pill: 9999px;
 
+  /* ---- 重ね順（#901 / 課題 29） ----
+     層の値はここにしか無い。以前は globals.css / CSS module / inline style の
+     3 つの記述系に 12 の層が散っており、**同じ area の 2 層が同値**になっていた
+     （サイドバーと端末ダイアログがどちらも 50。正しく描けていたのは AdminShell が
+     sidebar を children より前に置いている DOM 順の偶然による）。
+     順序の意味は `tests/config/z-index-layers.test.ts` が縛る。 */
+  --z-behind: 2; /* 操作カードより背面（大画面の確認中アバター） */
+  --z-companion: 5; /* アバター伴走レイヤ */
+  --z-voice: 25; /* 復唱の「はい／いいえ」。操作カードより前・逃げ道バーより後ろ (#788) */
+  --z-escape-bar: 30; /* 逃げ道バー。これより前へ出すと「戻る」を隠す */
+  --z-chat-drawer: 40; /* 受付端末のチャットドロワー（admin の層とは同時に出ない） */
+  --z-scrim: 40; /* 管理画面のサイドバー背面スクリム */
+  --z-a11y-button: 45; /* 支援モードの呼び出しボタン */
+  --z-sidebar: 50; /* 管理画面サイドバー（狭幅ではドロワー） */
+  --z-dialog: 55; /* 管理画面のモーダル。サイドバーより前 */
+  --z-inactivity: 60; /* 無操作警告。来訪者を止める層 */
+  --z-a11y-overlay: 70; /* 支援モードのモーダル。最前面 */
+
   /* ---- 影（奥行き） ---- */
   --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.3);
   --shadow-md: 0 10px 28px rgba(0, 0, 0, 0.38);
@@ -479,7 +497,7 @@ a {
 .inactivity-overlay {
   position: fixed;
   inset: 0;
-  z-index: 60;
+  z-index: var(--z-inactivity);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -808,7 +826,7 @@ a {
   bottom: var(--space-md);
   width: 200px;
   max-width: 26vw;
-  z-index: 5;
+  z-index: var(--z-companion);
   pointer-events: none;
   animation: kiosk-rise var(--dur-slow) var(--ease-out) both;
 }
@@ -859,7 +877,7 @@ a {
   align-items: center;
   justify-content: center;
   padding: var(--space-lg);
-  z-index: 2; /* 操作カードより背面。pointer-events:none なのでタッチは貫通する。 */
+  z-index: var(--z-behind); /* 操作カードより背面。pointer-events:none なのでタッチは貫通する。 */
 }
 
 /* 会話継続レールでは字幕を常時表示する（今の問いかけが音声無しでも読める）。 */
@@ -1411,7 +1429,7 @@ a {
    */
   position: sticky;
   bottom: 0;
-  z-index: 30;
+  z-index: var(--z-escape-bar);
   background: var(--color-bg);
   padding-bottom: var(--space-sm);
 }
@@ -1716,7 +1734,7 @@ a {
   .admin-shell__sidebar {
     position: fixed;
     inset: 0 auto 0 0;
-    z-index: 50;
+    z-index: var(--z-sidebar);
     transform: translateX(-100%);
     transition: transform 200ms ease;
     overflow-y: auto;
@@ -1730,7 +1748,7 @@ a {
   .admin-shell__scrim {
     position: fixed;
     inset: 0;
-    z-index: 40;
+    z-index: var(--z-scrim);
     border: 0;
     padding: 0;
     background: rgba(0, 0, 0, 0.5);
@@ -1862,7 +1880,7 @@ a {
   position: fixed;
   top: var(--space-md);
   right: var(--space-md);
-  z-index: 45;
+  z-index: var(--z-a11y-button);
   display: inline-flex;
   align-items: center;
   gap: var(--space-sm);
@@ -1885,7 +1903,7 @@ a {
 .a11y-menu__overlay {
   position: fixed;
   inset: 0;
-  z-index: 70;
+  z-index: var(--z-a11y-overlay);
   display: flex;
   align-items: center;
   justify-content: center;

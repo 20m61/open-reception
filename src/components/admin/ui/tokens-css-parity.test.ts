@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { color, radius, space } from './tokens';
+import { color, radius, space, zIndex } from './tokens';
 
 /**
  * デザイントークン単一ソース化の検証 (issue #329)。
@@ -84,5 +84,31 @@ describe('color: 全トークンが CSS 変数参照で単一ソース化され�
   it('テナントテーマ: --color-accent は --brand-accent 由来（差し替えが波及する）', () => {
     expect(color.accent).toBe('var(--color-accent)');
     expect(cssVar('color-accent')).toBe('var(--brand-accent)');
+  });
+});
+
+describe('zIndex: tokens.ts と globals.css の一致 (#901)', () => {
+  /** `zIndex.a11yButton` → `--z-a11y-button`。 */
+  function cssName(key: string): string {
+    return `z-${key.replace(/[A-Z]/g, (c) => `-${c.toLowerCase()}`)}`;
+  }
+
+  it('すべての層が globals.css の --z-* と同値', () => {
+    for (const [key, value] of Object.entries(zIndex)) {
+      const raw = cssVar(cssName(key));
+      expect(Number(raw), `--${cssName(key)} が数値でない: ${raw}`).toBe(value);
+    }
+  });
+
+  /*
+   * 下界。上の 1 本は「TS 側の表を空にする」と 0 件ループで通る。CSS 側に居る層が
+   * TS 側にも居ることを併せて縛る —— inline style から指せない層があると、
+   * その層だけ生の数値へ戻る（#901 で直したのはまさにその形）。
+   */
+  it('下界: globals.css の --z-* はすべて tokens.ts にも居る', () => {
+    const declared = [...GLOBALS_CSS.matchAll(/--z-([a-z0-9-]+)\s*:/g)].map((m) => m[1]);
+    expect(declared.length).toBeGreaterThan(0);
+    const known = new Set(Object.keys(zIndex).map(cssName).map((n) => n.slice(2)));
+    expect(declared.filter((n) => !known.has(String(n)))).toEqual([]);
   });
 });

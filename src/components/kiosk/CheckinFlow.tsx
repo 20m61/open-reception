@@ -31,6 +31,7 @@ import { AvatarGuide } from './avatar/AvatarGuide';
 import { checkinSubtitleFor } from './conversation-turn';
 import { EscapeBar } from './EscapeBar';
 import { checkinEscapesFor } from './quick-actions';
+import { zIndex } from '@/components/admin/ui/tokens';
 import {
   checkinCallFailureMessageKeyFor,
   type CheckinCallFailureReason,
@@ -501,7 +502,7 @@ const avatarCompanionStyle: React.CSSProperties = {
   bottom: 'var(--space-md)',
   width: 150,
   maxWidth: '26vw',
-  zIndex: 5,
+  zIndex: zIndex.companion,
   pointerEvents: 'none',
 };
 
