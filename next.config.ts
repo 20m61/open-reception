@@ -26,6 +26,21 @@ const securityHeaders = [
 const nextConfig: NextConfig = {
   reactStrictMode: true,
   poweredByHeader: false,
+  /**
+   * 廃止した管理画面の旧 URL (issue #873)。
+   *
+   * `/admin/call-routes`（旧「呼び出しルート」）は**設定しても実通話に効かない**画面だった
+   * ため削除した（実発信は `executeRoutedCall` → RoutingPolicy / ContactEndpoint, #374）。
+   * ブックマークや手打ちを 404 にせず、正となる `/admin/call-routing` へ送る。
+   *
+   * `permanent: true`（308）にする。一時 redirect ではブラウザ・検索が旧 URL を覚え続け、
+   * 「消したのにいつまでも参照される」状態が残る。クエリ（`?siteId=`）は Next が引き継ぐ。
+   */
+  async redirects() {
+    return [
+      { source: '/admin/call-routes', destination: '/admin/call-routing', permanent: true },
+    ];
+  },
   async headers() {
     return [
       { source: '/:path*', headers: securityHeaders },

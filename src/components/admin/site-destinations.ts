@@ -42,9 +42,6 @@ export const SITE_DESTINATIONS: readonly SiteDestination[] = [
     description: '誰に・どの順で・何秒待って繋ぐか',
     siteScoped: true,
   },
-  // 旧 `/admin/call-routes` はここに載せない (#421)。ナビから外したのに拠点詳細から
-  // 対等なカードとして出すと、入口が変わっただけで重複は残る。旧画面へは正となる
-  // `/admin/call-routing` の中の導線から辿る。
   {
     href: '/admin/reception-flows',
     label: '受付フロー',
@@ -81,13 +78,6 @@ export const SITE_DETAIL_PATH_PATTERN = '/admin/sites/[siteId]';
 export const SITE_SCOPED_PATHS: readonly string[] = [
   ...SITE_DESTINATIONS.filter((d) => d.siteScoped).map((d) => d.href),
   SITE_DETAIL_PATH_PATTERN,
-  /**
-   * 旧・呼び出しルート。**拠点詳細のカードには載せない**（入口を増やすと重複が残る）が、
-   * 画面自体は `?siteId=` を読んで拠点別に編集する。「ハブから辿れるか」と「拠点別か」は
-   * 別の問いなので、登録簿の派生だけにすると**この画面だけヘッダが黙る**。
-   * `tests/config/admin-site-context.test.ts` が実ファイルを走査して漏れを落とす。
-   */
-  '/admin/call-routes',
   /**
    * 受付体験の版管理。拠点詳細のカードには載せていない（#420 のライフサイクル画面で、
    * 拠点別設定というより公開操作）が、`?siteId=` で拠点別に版を持つ (#554)。

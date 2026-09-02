@@ -55,7 +55,7 @@ test.describe('管理画面（admin）', () => {
     ['admin-03-reservations', '/admin/reservations'],
     ['admin-04-sites', '/admin/sites'],
     ['admin-05-devices', '/admin/devices'],
-    ['admin-06-call-routes', '/admin/call-routes'],
+    ['admin-06-call-routing', '/admin/call-routing'],
     ['admin-07-departments', '/admin/departments'],
     ['admin-08-staff', '/admin/staff'],
     ['admin-09-reception-flows', '/admin/reception-flows'],
