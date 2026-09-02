@@ -12,6 +12,7 @@ import {
   type FlowStepKind,
 } from '@/domain/reception/custom-flow';
 import { Button, Card, Field, SaveFeedback, useSaveFeedback } from '@/components/admin/ui';
+import { DangerActionButton } from './danger/DangerActionButton';
 import { color, space } from '@/components/admin/ui/tokens';
 import {
   buildFieldDraft,
@@ -220,7 +221,6 @@ export function ReceptionFlowsManager({
   const remove = useCallback(
     async (f: StoredReceptionFlow) => {
       if (!flowsLoaded) return;
-      if (!window.confirm(`受付フロー「${f.displayName}」を削除します。よろしいですか?`)) return;
       clear();
       const res = await fetch(
         `/api/admin/reception-flows/${f.id}?tenantId=${encodeURIComponent(tenantId)}`,
@@ -355,9 +355,14 @@ export function ReceptionFlowsManager({
                     <Button data-testid="flow-toggle" onClick={() => toggle(f)}>
                       {f.enabled ? '無効化' : '有効化'}
                     </Button>
-                    <Button variant="danger" data-testid="flow-delete" onClick={() => remove(f)}>
-                      削除
-                    </Button>
+<span data-testid="flow-delete">
+                      <DangerActionButton
+                        label="削除"
+                        requirement={{ requireImpactAck: true, requireReason: false }}
+                        impactSummary="この受付目的が来訪者の選択肢から消えます。進行中の受付には影響しません。"
+                        onConfirm={() => void remove(f)}
+                      />
+                    </span>
                   </>
                 )}
               </div>
