@@ -11,7 +11,8 @@ import type {
 } from '@/domain/platform/maintenance-window';
 import type { NoticeLevel, NoticeRow, NoticeSummary } from '@/domain/platform/notice';
 import { NoticePublishForm } from './NoticePublishForm';
-import { DangerActionPlaceholder, MetricCard } from './primitives';
+import { DangerActionPlaceholder } from './primitives';
+import { MetricCard } from '@/components/admin/ui';
 
 /**
  * メンテナンス状況・障害情報（read 中心） (issue #90, increment 2/3e)。
