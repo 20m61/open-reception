@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useSiteScope } from './use-site-scope';
 import { SiteScopeSelect } from './SiteScopeSelect';
+import { DangerActionButton } from './danger/DangerActionButton';
 import { Button, Card, Field } from '@/components/admin/ui';
 import { color, space } from '@/components/admin/ui/tokens';
 import {
@@ -229,7 +230,6 @@ function EndpointsSection({
 
   const removeEndpoint = useCallback(
     async (e: EndpointView) => {
-      if (!window.confirm(`接続先「${e.label ?? e.id}」を削除します。よろしいですか?`)) return;
       await fetch(`/api/admin/routing/endpoints/${e.id}?tenantId=${encodeURIComponent(scope.tenantId)}`, {
         method: 'DELETE',
       });
@@ -303,9 +303,13 @@ function EndpointsSection({
                   <Button data-testid="endpoint-toggle" onClick={() => toggle(e)}>
                     {e.enabled ? '無効化' : '有効化'}
                   </Button>
-                  <Button variant="danger" data-testid="endpoint-delete" onClick={() => removeEndpoint(e)}>
-                    削除
-                  </Button>
+<span data-testid="endpoint-delete">
+                    <DangerActionButton
+                      label="削除"
+                      requirement={{ requireImpactAck: false, requireReason: false }}
+                      onConfirm={() => void removeEndpoint(e)}
+                    />
+                  </span>
                 </div>
               </div>
             </Card>
@@ -366,7 +370,6 @@ function PoliciesSection({
 
   const removePolicy = useCallback(
     async (p: PolicyView) => {
-      if (!window.confirm(`ルート「${p.name}」を削除します。よろしいですか?`)) return;
       await fetch(`/api/admin/routing/policies/${p.id}?tenantId=${encodeURIComponent(scope.tenantId)}`, { method: 'DELETE' });
       await reload();
     },
@@ -445,9 +448,14 @@ function PoliciesSection({
                   <Button data-testid="policy-edit" onClick={() => startEdit(p)}>
                     手順を編集
                   </Button>
-                  <Button variant="danger" data-testid="policy-delete" onClick={() => removePolicy(p)}>
-                    削除
-                  </Button>
+<span data-testid="policy-delete">
+                    <DangerActionButton
+                      label="削除"
+                      requirement={{ requireImpactAck: true, requireReason: false }}
+                      impactSummary="このルートを使っている取次が実行できなくなります。"
+                      onConfirm={() => void removePolicy(p)}
+                    />
+                  </span>
                 </div>
               </header>
               {/* 文章形式の説明（describe.ts 由来）。 */}
