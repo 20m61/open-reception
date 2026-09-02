@@ -9,6 +9,7 @@ import { filterStaff, type StaffStatusFilter } from './staff-filter';
 import { useQueryParams } from './use-query-params';
 import { Button, DataTable, Field, Form, SaveFeedback, useSaveFeedback, type Column } from '@/components/admin/ui';
 import { color, space } from '@/components/admin/ui/tokens';
+import { enablementState } from './state-vocabulary';
 
 /**
  * 担当者管理 (issue #26; 検索/フィルタ #330 item2)。
@@ -199,8 +200,8 @@ export function StaffManager() {
       {
         key: 'status',
         header: '状態',
-        cellStyle: (s) => ({ color: s.enabled ? color.success : color.muted }),
-        cell: (s) => (s.enabled ? '有効' : '無効'),
+        cellStyle: (s) => ({ color: enablementState(s.enabled).color }),
+        cell: (s) => enablementState(s.enabled).label,
       },
       {
         key: 'availability',

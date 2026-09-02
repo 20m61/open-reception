@@ -11,6 +11,7 @@ import { useSiteList } from './use-site-list';
 import { paginate } from './list-io';
 import { filterSites, sitesToCsv, type SiteListFilter } from './sites-filter';
 import { resolveSiteListFeedback } from './site-list-feedback';
+import { siteStatusState } from './state-vocabulary';
 
 /**
  * 拠点管理 (issue #87, increment 1; 検索/フィルタ/ページング/CSV は #330 item2 残増分)。
@@ -141,8 +142,8 @@ export function SitesManager({ tenantId }: { tenantId: string }) {
       {
         key: 'status',
         header: '状態',
-        cellStyle: (s) => ({ color: s.status === 'active' ? color.success : color.muted }),
-        cell: (s) => (s.status === 'active' ? '有効' : '停止中'),
+        cellStyle: (s) => ({ color: siteStatusState(s.status).color }),
+        cell: (s) => siteStatusState(s.status).label,
       },
       {
         key: 'actions',
@@ -257,8 +258,8 @@ export function SitesManager({ tenantId }: { tenantId: string }) {
             style={inputStyle}
           >
             <option value="">すべて</option>
-            <option value="active">有効</option>
-            <option value="suspended">停止中</option>
+            <option value="active">{siteStatusState('active').label}</option>
+            <option value="suspended">{siteStatusState('suspended').label}</option>
           </select>
         </Field>
         {hasFilter ? (

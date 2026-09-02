@@ -4,6 +4,7 @@ import { useEffect, useState } from 'react';
 import type { MaskedAuditRow } from '@/domain/platform/console-summary';
 import { formatPercent } from '@/domain/util/format';
 import { MetricCard } from '@/components/admin/ui';
+import { enablementState } from '../state-vocabulary';
 
 /**
  * 可観測性（read 中心） (issue #90, increment 2)。
@@ -91,7 +92,7 @@ export function Observability() {
             <tr key={i.id} style={{ borderTop: '1px solid var(--color-border)' }}>
               <td style={{ padding: '6px 8px' }}>{i.label}</td>
               <td style={{ padding: '6px 8px', opacity: 0.8 }}>{i.configured ? '済' : '未'}</td>
-              <td style={{ padding: '6px 8px', opacity: 0.8 }}>{i.enabled ? '有効' : '無効'}</td>
+              <td style={{ padding: '6px 8px', opacity: 0.8 }}>{enablementState(i.enabled).label}</td>
               <td style={{ padding: '6px 8px', opacity: 0.8 }}>{RESULT_LABEL[i.lastResult]}</td>
               <td style={{ padding: '6px 8px', opacity: 0.6 }}>{i.lastErrorSummary ?? '-'}</td>
             </tr>

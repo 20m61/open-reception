@@ -13,7 +13,8 @@ import {
 } from '@/domain/reception/custom-flow';
 import { Button, Card, Field, SaveFeedback, useSaveFeedback } from '@/components/admin/ui';
 import { DangerActionButton } from './danger/DangerActionButton';
-import { color, space } from '@/components/admin/ui/tokens';
+import { space } from '@/components/admin/ui/tokens';
+import { enablementState } from './state-vocabulary';
 import {
   buildFieldDraft,
   isFieldFormReady,
@@ -312,10 +313,10 @@ export function ReceptionFlowsManager({
                 data-testid="flow-status"
                 style={{
                   fontSize: '0.8rem',
-                  color: f.enabled ? color.success : color.muted,
+                  color: enablementState(f.enabled).color,
                 }}
               >
-                {f.enabled ? '有効' : '無効'}
+                {enablementState(f.enabled).label}
               </span>
               <div style={{ display: 'flex', gap: 6, marginLeft: 'auto' }}>
                 {editingId === f.id ? (

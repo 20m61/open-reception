@@ -6,6 +6,7 @@ import { useSiteScope } from './use-site-scope';
 import { SiteScopeSelect } from './SiteScopeSelect';
 import { resolveScopeGate } from './scope-gate';
 import { color, space } from '@/components/admin/ui/tokens';
+import { enablementState } from './state-vocabulary';
 import type {
   ResolvedStaffResponseDefinition,
   StaffResponseAction,
@@ -239,9 +240,9 @@ export function StaffResponseManager({
                 <code style={{ fontSize: '0.8rem', opacity: 0.6 }}>{d.action}</code>
                 <span
                   data-testid="staff-response-config-status"
-                  style={{ fontSize: '0.8rem', color: d.enabled ? color.success : color.muted }}
+                  style={{ fontSize: '0.8rem', color: enablementState(d.enabled).color }}
                 >
-                  {d.enabled ? '有効' : '無効'}
+                  {enablementState(d.enabled).label}
                 </span>
                 <div style={{ display: 'flex', gap: 6, marginLeft: 'auto' }}>
                   <Button
