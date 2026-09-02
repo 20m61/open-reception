@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import type { Department } from '@/domain/department/types';
 import { CsvImport } from './CsvImport';
-import { Button, DataTable, Field, SaveFeedback, useSaveFeedback, type Column } from '@/components/admin/ui';
+import { Button, DataTable, Field, Form, SaveFeedback, useSaveFeedback, type Column } from '@/components/admin/ui';
 import { color, space } from '@/components/admin/ui/tokens';
 
 /** 部署管理 (issue #25)。一覧・作成・有効/無効・並び替えを管理 API 経由で行う。 */
@@ -167,18 +167,22 @@ export function DepartmentsManager() {
     <section>
       <h1 style={{ marginTop: 0 }}>部署管理</h1>
 
-      <div style={{ display: 'flex', gap: space.sm, alignItems: 'flex-end', flexWrap: 'wrap', marginBottom: space.lg }}>
+      <Form
+        onSubmit={add}
+        aria-label="部署を追加"
+        style={{ display: 'flex', gap: space.sm, alignItems: 'flex-end', flexWrap: 'wrap', marginBottom: space.lg }}
+      >
         <Field label="部署名" htmlFor="dept-name-input">
           <input id="dept-name-input" data-testid="dept-name-input" value={name} onChange={(e) => setName(e.target.value)} style={inputStyle} />
         </Field>
         <Field label="よみがな（任意）" htmlFor="dept-kana-input">
           <input id="dept-kana-input" data-testid="dept-kana-input" value={kana} onChange={(e) => setKana(e.target.value)} style={inputStyle} />
         </Field>
-        <Button variant="primary" data-testid="dept-add" onClick={add} disabled={busy || name.trim() === ''}>
+        <Button variant="primary" type="submit" data-testid="dept-add" disabled={busy || name.trim() === ''}>
           追加
         </Button>
         <SaveFeedback feedback={feedback} successTestId="dept-saved" errorTestId="dept-save-error" />
-      </div>
+      </Form>
 
       <CsvImport
         endpoint="/api/admin/departments/import"

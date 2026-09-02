@@ -3,15 +3,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import type { DeviceConnectivity, DeviceView } from '@/lib/tenant/device-service';
 import type { DeviceKind } from '@/domain/tenant/types';
-import {
-  Button,
-  DataTable,
-  Field,
-  Section,
-  StatusBadge,
-  type Column,
-  type StatusKind,
-} from '@/components/admin/ui';
+import { Button, DataTable, Field, Form, Section, StatusBadge, type Column, type StatusKind } from '@/components/admin/ui';
 import { font, space } from '@/components/admin/ui/tokens';
 import { renderTextToQrSvg } from '@/lib/reservation/qr';
 import { useQueryParams } from './use-query-params';
@@ -527,7 +519,11 @@ export function DevicesManager({
         />
       </div>
 
-      <div style={{ display: 'flex', gap: 8, alignItems: 'flex-end', flexWrap: 'wrap', marginBottom: 24 }}>
+      <Form
+        onSubmit={add}
+        aria-label="端末を追加"
+        style={{ display: 'flex', gap: 8, alignItems: 'flex-end', flexWrap: 'wrap', marginBottom: 24 }}
+      >
         <label style={labelStyle}>
           <span style={labelText}>端末名</span>
           <input
@@ -563,8 +559,8 @@ export function DevicesManager({
         </label>
         <Button
           variant="primary"
+          type="submit"
           data-testid="device-add"
-          onClick={add}
           disabled={busy || name.trim() === '' || !canCreate}
         >
           追加
@@ -578,7 +574,7 @@ export function DevicesManager({
             {addError}
           </p>
         )}
-      </div>
+      </Form>
 
       <div
         data-testid="device-filters"

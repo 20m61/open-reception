@@ -4,7 +4,7 @@ import Link from 'next/link';
 import { useCallback, useMemo, useState } from 'react';
 import type { SiteStatus } from '@/domain/tenant/types';
 import type { SiteWithDevices } from '@/lib/tenant/site-service';
-import { Button, DataTable, Field, SaveFeedback, useSaveFeedback, type Column } from '@/components/admin/ui';
+import { Button, DataTable, Field, Form, SaveFeedback, useSaveFeedback, type Column } from '@/components/admin/ui';
 import { color, font, space } from '@/components/admin/ui/tokens';
 import { useQueryParams } from './use-query-params';
 import { useSiteList } from './use-site-list';
@@ -210,7 +210,11 @@ export function SitesManager({ tenantId }: { tenantId: string }) {
         テナント <code>{tenantId}</code> 配下の受付拠点を管理します。各拠点に紐づく受付端末数を表示します。
       </p>
 
-      <div style={{ display: 'flex', gap: space.sm, alignItems: 'flex-end', flexWrap: 'wrap', marginBottom: space.lg }}>
+      <Form
+        onSubmit={add}
+        aria-label="拠点を追加"
+        style={{ display: 'flex', gap: space.sm, alignItems: 'flex-end', flexWrap: 'wrap', marginBottom: space.lg }}
+      >
         <Field label="拠点名" htmlFor="site-name-input">
           <input
             id="site-name-input"
@@ -225,11 +229,11 @@ export function SitesManager({ tenantId }: { tenantId: string }) {
           一覧が 1 回取れないだけで拠点を追加できなくなる（#552 で実際に P1 になった形）。
           作成の可否は入力と実行中かどうかだけで決める。
         */}
-        <Button variant="primary" data-testid="site-add" onClick={add} disabled={busy || name.trim() === ''}>
+        <Button variant="primary" type="submit" data-testid="site-add" disabled={busy || name.trim() === ''}>
           追加
         </Button>
         <SaveFeedback feedback={saveFeedback} successTestId="site-saved" errorTestId="site-save-error" />
-      </div>
+      </Form>
 
       <div
         data-testid="site-filters"
