@@ -76,6 +76,7 @@
 
   /* ---- タッチ・余白 ---- */
   --touch-target-min: 64px;
+  --space-xs: 6px;
   --space-sm: 12px;
   --space-md: 16px;
   --space-lg: 24px;
@@ -118,6 +119,12 @@
   --dur-fast: 140ms;
   --dur-base: 220ms;
   --dur-slow: 380ms;
+  /*
+     ループアニメーションの**周期** (#903 / 課題 31)。`fast/base/slow` は「操作に対する
+     応答の速さ」の 3 段階で、待機中に回り続けるものとは軸が違う —— 3 段階へ押し込むと
+     スピナーが 380ms で 1 回転する（速すぎて読めない）。別の軸として置く。 */
+  --dur-spin: 0.7s;
+  --dur-pulse: 1.4s;
 
   /* ---- タイポ ---- */
   --font-sans: var(--font-inter), system-ui, -apple-system, 'Hiragino Kaku Gothic ProN',

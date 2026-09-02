@@ -77,6 +77,22 @@ export const radius = {
  * 散っており、**同じ area の 2 層が同値**（サイドバーと端末ダイアログがどちらも 50）
  * になっていた。順序の意味は `tests/config/z-index-layers.test.ts` が縛る。
  */
+/**
+ * モーショントークン (#903 / 課題 31)。正は `globals.css` の `--dur-*` / `--ease-out`。
+ *
+ * inline style から `var(--…)` をそのまま使えるので値ではなく**参照文字列**で持つ
+ * （`color` と同じ形）。`spin` / `pulse` は待機中に回り続けるものの**周期**で、
+ * `fast/base/slow`（操作への応答の速さ）とは軸が違う。
+ */
+export const motion = {
+  fast: 'var(--dur-fast)',
+  base: 'var(--dur-base)',
+  slow: 'var(--dur-slow)',
+  spin: 'var(--dur-spin)',
+  pulse: 'var(--dur-pulse)',
+  easeOut: 'var(--ease-out)',
+} as const;
+
 export const zIndex = {
   behind: 2,
   companion: 5,

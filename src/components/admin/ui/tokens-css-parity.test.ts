@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { color, radius, space, zIndex } from './tokens';
+import { color, motion, radius, space, zIndex } from './tokens';
 
 /**
  * デザイントークン単一ソース化の検証 (issue #329)。
@@ -50,11 +50,35 @@ describe('radius: tokens.ts と globals.css の一致 (#329)', () => {
 });
 
 describe('space: tokens.ts と globals.css の一致 (#329)', () => {
-  it('sm/md/lg/xl が CSS の --space-* と同値', () => {
-    expect(space.sm).toBe(cssPx('space-sm'));
-    expect(space.md).toBe(cssPx('space-md'));
-    expect(space.lg).toBe(cssPx('space-lg'));
-    expect(space.xl).toBe(cssPx('space-xl'));
+  /*
+   * 🔴 **列挙ではなく総当たりにする (#903 / 課題 21)。** かつては sm/md/lg/xl を手で並べており、
+   * `--space-xs` が CSS 側に無いこと（TS だけが `xs: 6` を持つ）を**この検査自身が
+   * 見落としていた** —— 書き忘れたキーは検査されない。`space` の全キーを回す。
+   */
+  it('全キーが CSS の --space-* と同値', () => {
+    for (const [key, value] of Object.entries(space)) {
+      expect(value, `space.${key}`).toBe(cssPx(`space-${key}`));
+    }
+  });
+});
+
+describe('motion: tokens.ts と globals.css の一致 (#903)', () => {
+  it('motion.* はすべて var(--…) 参照で、参照先が globals.css に実在する', () => {
+    for (const [key, value] of Object.entries(motion)) {
+      const m = /^var\((--[\w-]+)\)$/.exec(value);
+      expect(m?.[1], `${key} は var(--…) 参照であるべき: ${value}`).toBeTruthy();
+      expect(cssVar(String(m?.[1]).slice(2)).length, `${m?.[1]} が globals.css に無い`).toBeGreaterThan(0);
+    }
+  });
+
+  /*
+   * 下界。上の 1 本は「TS 側の表を空にする」と 0 件ループで通る。
+   * 応答の 3 段階とループの 2 周期が**別の軸として両方居る**ことを縛る。
+   */
+  it('下界: 応答の 3 段階とループの 2 周期が揃っている', () => {
+    for (const key of ['fast', 'base', 'slow', 'spin', 'pulse', 'easeOut']) {
+      expect(Object.keys(motion), `motion.${key} が無い`).toContain(key);
+    }
   });
 });
 
