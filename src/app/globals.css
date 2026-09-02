@@ -76,16 +76,33 @@
   --font-sans: var(--font-inter), system-ui, -apple-system, 'Hiragino Kaku Gothic ProN',
     'Noto Sans JP', 'Noto Sans KR', 'Noto Sans SC', sans-serif;
   /*
-   * 来訪者が選べる「大きな文字」アクセシビリティ支援モード (issue #321)。
-   * 既定 1（等倍）。KioskFlow が `<main class="screen" data-a11y-font-scale="1.3|1.6">` を
-   * 出し、下の属性セレクタが --a11y-font-scale を上書きする。CSS カスタムプロパティは
-   * 参照時に「その要素で有効な値」を都度解決するため、この :root の calc() 定義を書き換えずに
-   * 子孫要素すべてへ波及する（テーマ切り替えと同じ仕組み）。
+   * 来訪者が選べる「大きな文字」アクセシビリティ支援モード (issue #321 / #869)。
+   *
+   * 🔴 **色トークンと同じ仕組みではない。** 以前ここには「参照時に『その要素で有効な値』を
+   * 都度解決するため…子孫要素すべてへ波及する（テーマ切り替えと同じ仕組み）」と書いてあったが、
+   * **成り立たない**。カスタムプロパティの `var()` は**宣言された要素の計算値時点で置換される**
+   * ので、この `:root` での `--font-body` の計算値は `calc(1.25rem * 1)` に固定され、
+   * その済んだ値が子孫へ継承される。子孫で `--a11y-font-scale` だけを上書きしても、
+   * **置換済みの派生トークンは再計算されない**。
+   *
+   * 色が波及するのは `var(--color-x)` を**参照側**（`color: var(--color-text)`）で解くから。
+   * `--font-*` は**宣言側**で数値へ潰れているので、事情が違う。
+   *
+   * 実測 (#869): 1.6× 指定時の `.screen__title` は 54.924px で、1× と**同一**だった。
+   * 属性は付くのに寸法が 1 ピクセルも動いていなかった。
+   *
+   * したがって **`--a11y-font-scale` を上書きする場所では、派生トークンも併せて再宣言する**
+   * （下の `.screen[data-a11y-font-scale='…']`）。素の値を 3 度書かずに済むよう、
+   * 倍率を掛ける前の基準値を `--font-size-*-base` として切り出してある。
+   * この不変条件は `tests/config/css-custom-property-definitions.test.ts` が縛る。
    */
+  --font-size-body-base: 1.25rem;
+  --font-size-lg-base: 1.75rem;
+  --font-size-xl-base: 2.75rem;
   --a11y-font-scale: 1;
-  --font-body: calc(1.25rem * var(--a11y-font-scale));
-  --font-lg: calc(1.75rem * var(--a11y-font-scale));
-  --font-xl: calc(2.75rem * var(--a11y-font-scale));
+  --font-body: calc(var(--font-size-body-base) * var(--a11y-font-scale));
+  --font-lg: calc(var(--font-size-lg-base) * var(--a11y-font-scale));
+  --font-xl: calc(var(--font-size-xl-base) * var(--a11y-font-scale));
 }
 
 * {
@@ -145,9 +162,17 @@ a {
 [data-area='admin'],
 [data-area='platform'] {
   --touch-target-min: 44px;
-  --font-body: calc(1rem * var(--a11y-font-scale));
-  --font-lg: calc(1.25rem * var(--a11y-font-scale));
-  --font-xl: calc(1.9rem * var(--a11y-font-scale));
+  /*
+   * 基準値だけを差し替え、派生の式は :root と同じ形で書き直す（#869）。
+   * 基準値の変更だけでは足りない —— :root で `--font-body` は既に置換済みなので、
+   * ここで再宣言しないと管理画面の本文が受付端末のサイズのまま残る。
+   */
+  --font-size-body-base: 1rem;
+  --font-size-lg-base: 1.25rem;
+  --font-size-xl-base: 1.9rem;
+  --font-body: calc(var(--font-size-body-base) * var(--a11y-font-scale));
+  --font-lg: calc(var(--font-size-lg-base) * var(--a11y-font-scale));
+  --font-xl: calc(var(--font-size-xl-base) * var(--a11y-font-scale));
 
   /* `font-size` は計算値で継承されるため、変数の再定義だけでは本文サイズが変わらない。 */
   font-size: var(--font-body);
@@ -193,7 +218,12 @@ a {
 }
 
 .screen__title {
-  font-size: clamp(1.9rem, 4.6vw, var(--font-xl));
+  /*
+   * 倍率は clamp の**外**へ掛ける (#869)。中の項を `var(--font-xl)`（倍率込み）にすると、
+   * 上限しか拡大せず、preferred の `4.6vw` が勝つ幅では 1 ピクセルも動かない
+   * （実測: 1194px 幅で 1× も 1.6× も 54.924px）。外へ掛ければどの項が勝っても倍率が乗る。
+   */
+  font-size: calc(clamp(1.9rem, 4.6vw, var(--font-size-xl-base)) * var(--a11y-font-scale));
   margin: 0;
   font-weight: 800;
   letter-spacing: -0.02em;
@@ -203,7 +233,8 @@ a {
 }
 
 .screen__lead {
-  font-size: clamp(1.15rem, 2.8vw, var(--font-lg));
+  /* 見出しと同じ理由で倍率を clamp の外へ (#869)。 */
+  font-size: calc(clamp(1.15rem, 2.8vw, var(--font-size-lg-base)) * var(--a11y-font-scale));
   color: var(--color-muted);
   margin: 0;
   line-height: 1.5;
@@ -1198,7 +1229,14 @@ a {
   border-radius: var(--radius-md);
   background: var(--color-glass);
   color: var(--color-text);
-  font-size: var(--font-md);
+  /*
+   * `var(--font-md)` と書かれていたが **そのトークンは存在しない** (#869)。
+   * 未定義の参照は invalid at computed-value time で宣言ごと捨てられ、この要素だけ
+   * 静かに継承値へ落ちていた —— つまり QR / 配送 / その他への唯一の入口が、
+   * 「大きな文字」モードでも拡大していなかった。型階層に md は無いので `--font-body` を使う。
+   * 同じ穴は下の `:1516` 付近で `--font-sm` として一度記録されている。**二度目だった。**
+   */
+  font-size: var(--font-body);
   font-weight: 700;
   cursor: pointer;
   transition:
@@ -1224,7 +1262,8 @@ a {
   text-align: center;
   /* L1: 2カラム時に「担当者を呼ぶ」等の 5–6 文字見出しが 1 行に収まる大きさにし、
      「呼／ぶ」のような語中改行を防ぐ。広い画面では --font-xl まで拡大（#119 スキャン性）。 */
-  font-size: clamp(2rem, 3.6vw, var(--font-xl));
+  /* 倍率を clamp の外へ (#869)。 */
+  font-size: calc(clamp(2rem, 3.6vw, var(--font-size-xl-base)) * var(--a11y-font-scale));
   /* CJK 連なりを語として扱い、語中での折り返しを避ける（見出し・説明文に継承される）。 */
   word-break: keep-all;
   background:
@@ -1471,7 +1510,10 @@ a {
 .kiosk-quick-actions .card--cta {
   min-height: var(--touch-target-min);
   padding-block: 8px;
-  font-size: clamp(1.5rem, 2.2vw, 2rem);
+  /*
+   * `.card--cta` の上書きなので、ここも倍率を掛けないと詳細度で勝って拡大が消える (#869)。
+   */
+  font-size: calc(clamp(1.5rem, 2.2vw, 2rem) * var(--a11y-font-scale));
   gap: 4px;
 }
 
@@ -1507,14 +1549,16 @@ a {
 
 /* 大型画面では CTA を読みやすく保ちつつ上限を設け、ボタンが過度に巨大化しないようにする。 */
 .screen[data-kiosk-layout='large-display'] .card--cta {
-  font-size: clamp(var(--font-lg), 2.5vw, var(--font-xl-max));
+  /* 倍率を clamp の外へ (#869)。中は倍率を含まない基準値で書く。 */
+  font-size: calc(clamp(var(--font-size-lg-base), 2.5vw, var(--font-xl-max)) * var(--a11y-font-scale));
   min-height: clamp(160px, 18vh, 260px);
 }
 
 /* 待機の入口カードは上の大型指定より詰める (#620)。上のセレクタの方が詳細度が高いので明示で戻す。
    用件選択など他画面のカードは大型指定のまま（大きく出したいのはそちら）。 */
 .screen[data-kiosk-layout='large-display'] .kiosk-quick-actions .card--cta {
-  font-size: clamp(1.5rem, 1.6vw, 2.25rem);
+  /* `.card--cta` の上書き。上と同じ理由で倍率を掛ける (#869)。 */
+  font-size: calc(clamp(1.5rem, 1.6vw, 2.25rem) * var(--a11y-font-scale));
   min-height: var(--touch-target-min);
 }
 
@@ -1691,13 +1735,26 @@ a {
  * 見た目」だけを定義すればよい。
  * ======================================================================= */
 
-/* ---- 大きな文字（fontScale） ---- */
+/* ---- 大きな文字（fontScale） ----
+ * 🔴 **倍率だけを上書きしても寸法は動かない** (#869)。`:root` の `--font-body` 等は
+ * そこで既に `calc(1.25rem * 1)` へ置換済みで、子孫での倍率変更では再計算されない。
+ * 派生トークンを**この要素で**同じ式のまま宣言し直すことで、`var(--a11y-font-scale)` が
+ * ここでの値（1.3 / 1.6）で解決される。
+ * 3 つを書き忘れると「属性は付くが何も拡大しない」に戻るので、
+ * `tests/config/css-custom-property-definitions.test.ts` が不変条件として縛る。
+ */
 .screen[data-a11y-font-scale='1.3'] {
   --a11y-font-scale: 1.3;
+  --font-body: calc(var(--font-size-body-base) * var(--a11y-font-scale));
+  --font-lg: calc(var(--font-size-lg-base) * var(--a11y-font-scale));
+  --font-xl: calc(var(--font-size-xl-base) * var(--a11y-font-scale));
 }
 
 .screen[data-a11y-font-scale='1.6'] {
   --a11y-font-scale: 1.6;
+  --font-body: calc(var(--font-size-body-base) * var(--a11y-font-scale));
+  --font-lg: calc(var(--font-size-lg-base) * var(--a11y-font-scale));
+  --font-xl: calc(var(--font-size-xl-base) * var(--a11y-font-scale));
 }
 
 /* ---- ハイコントラスト ----
