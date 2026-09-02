@@ -10,7 +10,74 @@
 > | `admin-desktop-call-routing-chromium-ipad-darwin.png` の取り直し（**この 1 枚だけ**） | 同上。**2 つの変更が同じ 1 枚に乗っている**ので取り直しは 1 回で済む: (1) #873 で見出しを「取次ルート」へ統一し旧画面への導線を削除、(2) #886 で disabled ボタン（「接続先を追加」）が破線表現になった。**linux 側はどちらも再生成済み**（毎回 差分画像を目視して確認）。darwin だけ stale | #873 / #886 |
 > | AWS の窓を開ける（`./scripts/aws-issue-credentials.sh`） | 短命 STS の発行は darwin 限定で、`scripts/hooks/guard-destructive.sh` が機械強制（#675）。**窓さえ開けばデプロイ本体はクラウドから wrapper 経由で流せる** | #675 / `docs/runbook-cloud-aws-deploy.md` |
 > | 実機 iPad UAT | 横向きで部署カードが何枚見えるか / 部署を開いて戻れるか / 騒音下で不在告知が聞き取れるか | #807 / #65 |
+> | **リモートブランチ 14 本の削除**（2026-09-02 の UI/UX 周回ぶん） | クラウドセッションからは `git push origin --delete` が **黙って「Everything up-to-date」を返して消えない**（proxy が write を拒否する）。全部 squash マージ済みで PR も閉じているので `orphan_branch` 検出には掛からない。一覧は本書「2026-09-02 の周回」節 | — |
 >
+## 2026-09-02 の周回（UI/UX 監査 Wave 0 / Wave 1）
+
+正本は `docs/ui-review-2026-09-01.md`。Wave 0（BLOCKER 7 + D6）と Wave 1（課題 06–18 / 22–32）を
+消化した。**各周回とも `--full` green・flaky 0・変異検証つき**で、判定できない主張は緑で飾らずに
+落として理由を残してある（詳細は各 PR 本文）。
+
+| PR | 課題 | 内容 |
+| --- | --- | --- |
+| #885 | 22 / 23 / 25 | ブランド accent が**一度も効いていなかった**（`:root` 由来の派生は再計算されない）。輝度でインクを選ぶ |
+| #887 | 09 / 10 | 押せないボタンの視覚契約を admin へ / `ghost` を `secondary` から分離 |
+| #889 | 08 | 生 `window.confirm` 8 箇所 → 二段確認 + 監査理由 |
+| #891 | 15 / 16 | モーダルのフォーカス管理（`useModalDialog`）/ 4 画面へ `h1` |
+| #894 | 13 / 14 | CRUD の `<form>` 化と Enter 送信 / `Field` の aria 配線 |
+| #897 | 07 | platform の `MetricCard` / `StatusBadge` 重複解消 |
+| #900 | 11 | 状態語彙の一元化（**無効を「失効」と呼ぶ誤り**を修正） |
+| #902 | 29 | z-index トークン化 + **監査が見落としていた** sidebar/dialog の同値衝突 |
+| #904 | 27 / 21 / 31 | カタログの旧値 / `--space-xs` / モーショントークン |
+| #906 | 17 | 監査ログのページング + CSV |
+| #911 | 18 | 列ソート（`aria-sort` / URL 復元 / **並べ替えてからページを切る**） |
+| #914 | 12 | 未保存の変更を持ったままの離脱を止める |
+| #916 | 28（前半） | トークンと同値の `fontSize` リテラル 54 件 |
+| #908 | 32 | `prefers-contrast` / `forced-colors` 対応、HC が届かない地色 |
+
+**監査の主張を 3 つ訂正した**（監査は仮説であって事実ではない、の 4〜6 例目）:
+
+- 課題 29「`VoiceReadbackConfirm` が逃げ道バーより下」… **意図的で機械強制済み**（#788）。取り下げ
+- 課題 29「ドロワーとスクリムの 40 衝突」… 同時に描画されないので不具合ではない
+- 課題 28「`0.85rem` はスケールに無い」… **`font.small` そのもの**
+
+### 分けた残り（Issue 化済み）
+
+| Issue | 内容 |
+| --- | --- |
+| #893 | 保存系 8 画面と表の行内編集の form 化（#894 の残り） |
+| #896 | platform の生 table 14 個・読込中と 0 件の描き分け（課題 06） |
+| #899 | 状態表示をバッジへ揃えるかの設計判断（#900 の続き） |
+| #910 | 列ソートの残りの一覧 + ページング未導入 5 リスト（#911 の続き） |
+| #913 | 未保存判定が「未設定」と「空文字」を別物として扱う（#912 の既知の粗さ） |
+| #915 | `fontSize` リテラルの残り 102 件（寄せると文字サイズが動く） |
+
+### 未着手（**方針判断が要る**）
+
+- **課題 24（罫線コントラスト 3:1）** … `--color-border` は面に対し **1.27:1**、
+  `--color-border-strong` は **1.67:1**（実測）。WCAG 1.4.11 の 3:1 に届かせるには
+  alpha を 0.08 → **0.34**（約 4 倍）にする必要があり、**罫線を持つ全要素の描画が変わる**。
+  linux の 14 枚は再生成できるが、**darwin の 14 枚は macOS でしか作れない**。
+  上の残件表の 1 枚とは規模が違うので、着手はコスト込みの判断になる。
+- **課題 30（レスポンシブ戦略が 2 つ併存）** … 管理画面は CSS の `max-width: 900px` 1 本、
+  受付端末は `domain/kiosk/layout.ts` の JS 判定（1600px + アスペクト比）。
+  統一するのか、意図として文書化して固定するのかを決める必要がある。
+
+### 削除できていないリモートブランチ
+
+クラウドからは消せない（上の残件表）。ローカル macOS で:
+
+```
+for b in feat/admin-form-aria feat/audit-log-paging-csv feat/prefers-contrast-support \
+         feat/table-column-sort feat/unsaved-changes-guard fix/accent-derivation \
+         fix/admin-button-visual-contract fix/admin-danger-confirm \
+         fix/admin-dialog-focus-headings fix/token-single-source \
+         refactor/admin-state-vocabulary refactor/font-token-adoption \
+         refactor/platform-shared-primitives refactor/z-index-tokens; do
+  git push origin --delete "$b"
+done
+```
+
 > 2026-08-26 の引き継ぎ（`docs/handoff-2026-08-26.md`）の §0 は **2026-08-27 に消化済み**
 > （PR #819 / #820 マージ、Cursor 手順書の環境変数方針）。同書は経緯の記録として残すが、
 > **着手待ちとして追いかける必要はない**。
