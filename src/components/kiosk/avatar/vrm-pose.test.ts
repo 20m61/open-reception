@@ -1,7 +1,16 @@
 import { describe, it, expect } from 'vitest';
+import type { VRMHumanBoneName } from '@pixiv/three-vrm';
 import { AVATAR_STATES } from '@/domain/reception/ui-contract';
-import { resolveStatePose } from './vrm-pose';
-import { IDLE_REST_POSE } from './vrm-idle';
+import { poseEntries, resolveStatePose } from './vrm-pose';
+import { IDLE_REST_POSE, type HumanoidBoneName } from './vrm-idle';
+
+/**
+ * 型レベルの固定: 手続き的ポーズが触るボーン名は VRM 仕様の `VRMHumanBoneName` の部分集合。
+ * `import type` なので three-vrm は実行時に読まれない。綴りを誤ると typecheck が落ちる
+ * （以前は `string` で、誤字は実機で「動かない」としてしか出なかった）。
+ */
+const _boneNamesAreVrmHumanBones: VRMHumanBoneName = null as unknown as HumanoidBoneName;
+void _boneNamesAreVrmHumanBones;
 
 describe('vrm-pose (#31 motion variations)', () => {
   it('全ての avatarState でポーズを解決でき、腕（rest）が含まれる', () => {
@@ -40,5 +49,10 @@ describe('vrm-pose (#31 motion variations)', () => {
     const a = resolveStatePose('greeting', 0.0).rightLowerArm?.z ?? 0;
     const b = resolveStatePose('greeting', 0.26).rightLowerArm?.z ?? 0; // sin(6t) が変化
     expect(a).not.toBeCloseTo(b);
+  });
+
+  it('poseEntries は値のあるボーンだけを、ボーン名の型を保って列挙する', () => {
+    const entries = poseEntries({ head: { x: 0.1 }, neck: undefined });
+    expect(entries).toEqual([['head', { x: 0.1 }]]);
   });
 });

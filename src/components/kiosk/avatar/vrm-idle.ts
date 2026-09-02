@@ -14,11 +14,32 @@
 export type BoneEuler = { x?: number; y?: number; z?: number };
 
 /**
+ * 手続き的ポーズが触る humanoid ボーン名。VRM 仕様の `VRMHumanBoneName` の**部分集合**で、
+ * `vrm-pose.test.ts` が型レベルで部分集合であることを固定する（three-vrm を実行時に
+ * import せず、綴りの誤りを typecheck で落とす。以前は `string` だったので
+ * `getNormalizedBoneNode` に何を渡しても通り、誤字は実機で「動かない」としてしか出なかった）。
+ */
+export type HumanoidBoneName =
+  | 'hips'
+  | 'spine'
+  | 'chest'
+  | 'upperChest'
+  | 'neck'
+  | 'head'
+  | 'leftUpperArm'
+  | 'leftLowerArm'
+  | 'rightUpperArm'
+  | 'rightLowerArm';
+
+/** ボーン名 → 回転。手続き的ポーズの単位。 */
+export type BonePose = Partial<Record<HumanoidBoneName, BoneEuler>>;
+
+/**
  * T-pose（腕が水平）から自然な立ち姿へ落とすための固定回転。
  * VRM 正規化空間では左上腕は +X、右上腕は −X を向くため、Z 回りに回して下ろす。
  * 値は控えめな A-pose（上腕 約60°・前腕を軽く内側）。実機で微調整可（#65）。
  */
-export const IDLE_REST_POSE: Readonly<Record<string, BoneEuler>> = {
+export const IDLE_REST_POSE: Readonly<BonePose> = {
   leftUpperArm: { z: 1.25, x: 0.05 },
   rightUpperArm: { z: -1.25, x: 0.05 },
   leftLowerArm: { z: 0.15 },
