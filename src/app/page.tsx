@@ -65,7 +65,7 @@ export default function HomePage() {
             alignItems: 'center',
             justifyContent: 'center',
             background: 'var(--color-accent)',
-            color: '#0f172a',
+            color: 'var(--color-accent-ink)',
             borderRadius: 'var(--radius-lg)',
             fontWeight: 700,
             fontSize: '1.2rem',
