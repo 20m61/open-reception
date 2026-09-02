@@ -14,6 +14,8 @@ import {
   receptionLogsToCsv,
   type ReceptionLogFilter,
 } from './logic';
+import { sortRows } from '@/components/admin/list-io';
+import { useTableSort } from '@/components/admin/use-table-sort';
 
 const PAGE_SIZE = 20;
 
@@ -59,15 +61,13 @@ export function ReceptionsViewer({
 
   const filtered = useMemo(() => filterReceptionLogs(logs, filter), [logs, filter]);
   const facets = useMemo(() => kioskFacets(logs), [logs]);
-  const paged = useMemo(
-    () => paginate(filtered, Number(pageParam) || 1, PAGE_SIZE),
-    [filtered, pageParam],
-  );
+  const { sort, setSort } = useTableSort();
   const hasFilter = Boolean(start || end || outcome || kioskId);
 
   // フィルタ変更時はページを 1 に戻す（絞り込み後に空ページへ迷い込まないようにする）。
   const updateFilter = (updates: Record<string, string>) => setMany({ ...updates, page: '' });
-  const reset = () => setMany({ start: '', end: '', outcome: '', kiosk: '', page: '' });
+  const reset = () =>
+    setMany({ start: '', end: '', outcome: '', kiosk: '', page: '', sort: '', sortDir: '' });
 
   const downloadCsv = () => {
     const csv = receptionLogsToCsv(filtered, { outcomeLabel, purposeLabel });
@@ -83,8 +83,13 @@ export function ReceptionsViewer({
 
   const columns = useMemo<Column<ReceptionLog>[]>(
     () => [
-      { key: 'startedAt', header: '開始日時', cell: (l) => new Date(l.startedAt).toLocaleString('ja-JP') },
-      { key: 'kiosk', header: '端末', cell: (l) => l.kioskId },
+      {
+        key: 'startedAt',
+        header: '開始日時',
+        cell: (l) => new Date(l.startedAt).toLocaleString('ja-JP'),
+        sortValue: (l) => l.startedAt,
+      },
+      { key: 'kiosk', header: '端末', cell: (l) => l.kioskId, sortValue: (l) => l.kioskId },
       { key: 'purpose', header: '目的', cell: (l) => purposeLabel(l.purpose) },
       { key: 'target', header: '呼び出し先', cell: (l) => l.targetLabel ?? '-' },
       {
@@ -102,10 +107,23 @@ export function ReceptionsViewer({
           </>
         ),
       },
-      { key: 'duration', header: '所要', cell: (l) => `${Math.round(l.durationMs / 1000)}秒` },
+      {
+        key: 'duration',
+        header: '所要',
+        cell: (l) => `${Math.round(l.durationMs / 1000)}秒`,
+        // 表示は「秒」だが、比較は元の ms で行う（文字列比較にすると 9秒 > 10秒 になる）。
+        sortValue: (l) => l.durationMs,
+      },
       { key: 'fallback', header: '代替導線', cell: (l) => (l.fallbackUsed ? 'あり' : '-') },
     ],
     [outcomeLabel, outcomeColor],
+  );
+
+  // 並べ替えてからページを切る（逆にすると 1 ページぶんだけが並び替わる）。
+  const sorted = useMemo(() => sortRows(filtered, columns, sort), [filtered, columns, sort]);
+  const paged = useMemo(
+    () => paginate(sorted, Number(pageParam) || 1, PAGE_SIZE),
+    [sorted, pageParam],
   );
 
   return (
@@ -191,6 +209,8 @@ export function ReceptionsViewer({
         rows={paged.items}
         rowKey={(l) => l.id}
         rowTestId={() => 'reception-row'}
+        sort={sort}
+        onSortChange={setSort}
         emptyMessage={hasFilter ? '条件に一致する受付履歴はありません。' : 'まだ受付履歴はありません。'}
       />
 
