@@ -364,6 +364,26 @@ describe('発信結果を保存側でどう扱うか (#646)', () => {
  * `/choice`（担当者の承諾）と `/events`（通話終了）は別の webhook として並行に届きうる。
  * 全体置換で書くと、後から書いた側が先に書かれた確定を潰す。
  */
+describe('region_url を相関へ残す (2026-09-02 仕様照合)', () => {
+  it('渡されたら同じ CAS 書き込みに載せる（別に書くと楽観ロックを無用に負けさせる）', async () => {
+    await applyVoiceEventToCorrelation(
+      correlation(),
+      { kind: 'status', status: 'ringing' },
+      'jti-1',
+      { regionUrl: 'https://api-ap-3.vonage.com' },
+    );
+    expect(updateIfUnchanged).toHaveBeenCalledTimes(1);
+    const saved = put.mock.calls[0]?.[0] as StoredCallCorrelation;
+    expect(saved.regionUrl).toBe('https://api-ap-3.vonage.com');
+  });
+
+  it('渡されなければ書かない（既存の値を undefined で潰さない）', async () => {
+    await applyVoiceEventToCorrelation(correlation(), { kind: 'status', status: 'ringing' }, 'jti-1');
+    const saved = put.mock.calls[0]?.[0] as StoredCallCorrelation;
+    expect('regionUrl' in saved).toBe(false);
+  });
+});
+
 describe('保存は「読んだ時点から動いていない」ときだけ (#646)', () => {
   it('🔴 条件付きで書く ── 無条件の全体置換にしない', async () => {
     await applyVoiceEventToCorrelation(

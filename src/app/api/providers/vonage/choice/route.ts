@@ -30,19 +30,6 @@ import { createStageRecorder, stageTimingLog } from '@/domain/routing/stage-timi
  * 意思表示ではない。書くと `answered`＝終端成功として取次が止まり、担当者が第 2 段で
  * 「3 対応できない」を押しても代理へ進めなくなる。
  */
-function readDigits(rawBody: string): string | undefined {
-  try {
-    const parsed: unknown = JSON.parse(rawBody);
-    if (parsed === null || typeof parsed !== 'object') return undefined;
-    const dtmf = (parsed as Record<string, unknown>).dtmf;
-    if (dtmf === null || typeof dtmf !== 'object') return undefined;
-    const digits = (dtmf as Record<string, unknown>).digits;
-    return typeof digits === 'string' ? digits : undefined;
-  } catch {
-    return undefined;
-  }
-}
-
 /** 選択を受け取ったことを担当者へ返す（PII を含めない定型文）。 */
 function acknowledgement(text: string): NextResponse {
   return NextResponse.json([
@@ -54,13 +41,13 @@ export async function POST(request: Request): Promise<NextResponse> {
   // 停止スイッチは署名検証より前（止めたい状況では検証の計算もさせない）。
   const disabled = denyIfProviderWebhooksDisabled();
   if (disabled) return disabled;
-  const { verified, rawBody } = await verifyRequest(request);
+  const { verified, body } = await verifyRequest(request);
   if (!verified.ok) {
     logWebhookRejection('choice', verified.logOnly);
     return rejectWebhook();
   }
 
-  const choice = resolveStage2Choice(readDigits(rawBody) ?? '');
+  const choice = resolveStage2Choice(body.dtmfDigits ?? '');
   if (choice === undefined) {
     // 誤入力・無入力。選択肢を読み直す（黙って切らない）。
     const options = STAGE2_CHOICES.map((c) => `${c.digit}、${c.label}。`).join('');
@@ -78,6 +65,7 @@ export async function POST(request: Request): Promise<NextResponse> {
     await recorder.measure('correlation_write', () =>
       applyVoiceEventToCorrelation(verified.correlation, { kind: 'dtmf', choice }, verified.jti, {
         webhookBaseUrl: resolveDialCallbackBaseUrl(request),
+        regionUrl: body.regionUrl,
       }),
     );
   } catch {

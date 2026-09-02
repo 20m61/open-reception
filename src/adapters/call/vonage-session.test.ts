@@ -27,7 +27,12 @@ beforeAll(() => {
 });
 
 describe('RestVonageSessionService.createSession', () => {
-  it('POSTs to the project session endpoint with a Bearer app JWT and parses session_id', async () => {
+  /**
+   * 🔴 **`/session/create` へ form で送る**（2026-09-02 仕様照合）。以前の
+   * `/v2/project/{appId}/session` + JSON `{ mediaMode }` は存在しない経路で、実資格情報を
+   * 入れた瞬間に 404 になるはずだった。公式 SDK（Node / Python / Java）と同じ要求に揃える。
+   */
+  it('POSTs form-encoded to /session/create with a Bearer app JWT and parses session_id', async () => {
     const calls: Array<{ url: string; init: Parameters<VonageTransport>[1] }> = [];
     const transport: VonageTransport = async (url, init) => {
       calls.push({ url, init });
@@ -40,14 +45,32 @@ describe('RestVonageSessionService.createSession', () => {
 
     expect(calls).toHaveLength(1);
     const { url, init } = calls[0]!;
-    expect(url).toBe('https://video.test/v2/project/app-123/session');
+    expect(url).toBe('https://video.test/session/create');
     expect(init.method).toBe('POST');
     const auth = init.headers.Authorization ?? '';
     expect(auth).toMatch(/^Bearer .+\..+\..+$/);
     // Bearer の JWT は app 認証（application_id を含む）。
     const jwt = auth.slice('Bearer '.length);
     expect(decodeJwtPayload(jwt).application_id).toBe('app-123');
-    expect(JSON.parse(init.body!)).toMatchObject({ mediaMode: 'routed' });
+    expect(init.headers['Content-Type']).toBe('application/x-www-form-urlencoded');
+    // 無いと XML で返る。
+    expect(init.headers.Accept).toBe('application/json');
+    // REST の項目名は `p2p.preference`（`disabled` = routed）。`mediaMode` は SDK 側の呼び名。
+    const form = new URLSearchParams(init.body!);
+    expect(form.get('p2p.preference')).toBe('disabled');
+    expect(form.get('archiveMode')).toBe('manual');
+    expect(form.has('mediaMode')).toBe(false);
+  });
+
+  it('applicationId を URL に載せない（REST は JWT の application_id で識別する）', async () => {
+    let seen = '';
+    const transport: VonageTransport = async (url) => {
+      seen = url;
+      return { ok: true, status: 200, text: async () => JSON.stringify([{ session_id: 's' }]) };
+    };
+    await new RestVonageSessionService(config, transport, 'https://video.test').createSession('r');
+    expect(seen).not.toContain('app-123');
+    expect(seen).not.toContain('/v2/project/');
   });
 
   it('accepts a non-array response shape', async () => {

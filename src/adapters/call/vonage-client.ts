@@ -9,6 +9,11 @@
  * 前提とし、SDK 依存部は defaultLoadSdk と下記の最小 interface に隔離する。実認証情報・実機での
  * 結合検証時に URL/グローバル/呼び出しを調整する。connect/disconnect の制御ロジックは
  * loadSdk 注入により単体テスト可能。
+ *
+ * 2026-09-02 仕様照合: 公式サンプル（`opentok/opentok-web-samples`）は今も同じ CDN URL と
+ * `OT.initSession(<applicationId>, sessionId)` を使う（unified では第 1 引数が applicationId）。
+ * npm の `@vonage/client-sdk-video`（2.35.1、`dist/js/opentok.js`）も同じ `OT` を公開するので、
+ * バンドルに同梱する選択肢もある（依存追加＝#105 のライセンス確認が要る）。
  */
 import type { CallClient } from '@/lib/call/call-controller';
 

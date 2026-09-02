@@ -225,6 +225,9 @@ export const NOT_A_TIMELINE_VOCABULARY: Record<string, string> = {
   TERMINAL_VOICE_STATES:
     '担当者への外線通話 1 本の終端結果 (#4)。contacting の内側で、来訪者の局面は変えない' +
     '（取次全体の結果は RouteResult → CallResultStatus 経由で写る）',
+  VONAGE_CALL_STATUSES:
+    'Vonage Voice の event webhook が送る通話ステータス (#4)。provider 語彙をそのまま受ける' +
+    '入口で、VoiceCallState へ正規化してから contacting の内側に写る（体験状態ではない）',
   KIOSK_WAIT_STATUSES: '担当者応答の待ち表示。contacting の内側',
   PRIVACY_STATES: 'PII の保持状況（none / collecting / retained）。局面ではなく属性',
   INPUT_MODES: '入力手段（touch / voice）。状態ではなく、状態が許す入力の種類',

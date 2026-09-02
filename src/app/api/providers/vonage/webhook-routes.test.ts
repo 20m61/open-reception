@@ -187,9 +187,24 @@ describe('/dtmf — 本人確認の後だけ詳細を返す (#4)', () => {
 });
 
 describe('/events — 未知のステータスで再送を誘発しない (#4)', () => {
-  it.each(['ringing', 'answered', 'completed'])('既知のステータス %s を受け取る', async (status) => {
-    const res = await events(signed(body({ status })));
-    expect(res.status).toBe(204);
+  it.each(['started', 'ringing', 'answered', 'cancelled', 'disconnected', 'completed'])(
+    '既知のステータス %s を受け取る',
+    async (status) => {
+      const res = await events(signed(body({ status })));
+      expect(res.status).toBe(204);
+    },
+  );
+
+  /**
+   * 🔴 `cancelled` は**こちらが呼出中に切った**ときに届く（`/give-up` の後始末）。
+   * 以前は route の既知一覧に無く、黙って無視されていた ── `completed` が続かなければ
+   * 相関は ringing のまま呼出予算の期限まで残る。一覧は domain の `VONAGE_CALL_STATUSES` が
+   * 正本で、route は写しを持たない（片方だけに足す型の再発を塞ぐ）。
+   */
+  it('cancelled で取次が進む（無視しない）', async () => {
+    await events(signed(body({ status: 'cancelled' })));
+    const stored = await getCallCorrelationRepository().get(PROVIDER_CALL_ID);
+    expect(stored?.voiceState).toBe('no_answer');
   });
 
   // 4xx を返すと Vonage が再送し続ける。未知は黙って受け取る。
@@ -255,6 +270,26 @@ describe('/events — 取次の進行を実際に保存する (#4 Inc D-2)', () 
     if (found === undefined) throw new Error('correlation missing');
     return found;
   }
+
+  /**
+   * webhook の `region_url`（この通話を制御する REST の基底 URL）を相関へ残す
+   * （2026-09-02 仕様照合）。切断（`hang-up.ts`）がここを読んで近いリージョンへ撃つ。
+   */
+  it('region_url を相関へ残す', async () => {
+    await events(signed(body({ status: 'ringing', region_url: 'https://api-ap-3.vonage.com' })));
+    expect((await stored()).regionUrl).toBe('https://api-ap-3.vonage.com');
+  });
+
+  it('🔴 Vonage 以外のホストを region_url として残さない', async () => {
+    await events(signed(body({ status: 'ringing', region_url: 'https://evil.example.com' })));
+    expect((await stored()).regionUrl).toBeUndefined();
+  });
+
+  it('region_url が無い webhook は既存の値を消さない', async () => {
+    await events(signed(body({ status: 'ringing', region_url: 'https://api-ap-3.vonage.com' })));
+    await events(signed(body({ status: 'answered' })));
+    expect((await stored()).regionUrl).toBe('https://api-ap-3.vonage.com');
+  });
 
   it('通話状態を保存する（毎回 queued から畳み直さない）', async () => {
     // 🔴 Inc D-1 の /events は applyVoiceEvent('queued', …) を毎回畳んで void で捨てて

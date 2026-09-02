@@ -97,6 +97,24 @@ describe('generateClientToken', () => {
     expect(p.exp).toBe(2_000_300);
   });
 
+  /**
+   * 公式 SDK（Node `@vonage/video` / Python `vonage-video`）が client token に必ず載せる
+   * claims（Python 側は「acl は変更するな」と明記）。2026-09-02 の仕様照合で揃えた。
+   */
+  it('carries the sub/acl claims the official SDKs send', () => {
+    const result = generateClientToken({
+      applicationId: 'a',
+      privateKeyPem,
+      sessionId: 's',
+      role: 'subscriber',
+      nowSec: 0,
+    });
+    const p = decodeJwtPayload(result.token);
+    expect(p.sub).toBe('video');
+    expect(p.acl).toEqual({ paths: { '/session/**': {} } });
+    expect(typeof p.jti).toBe('string');
+  });
+
   it('defaults to a short TTL when not specified', () => {
     const result = generateClientToken({
       applicationId: 'a',

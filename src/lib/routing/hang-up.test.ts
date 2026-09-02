@@ -9,24 +9,68 @@ import { hangUpIfRinging } from './hang-up';
 
 function terminatorReturning(outcome: unknown) {
   const terminate = vi.fn(async () => outcome);
+  const resolveTerminator = vi.fn(async () => ({ key: 'vonage-voice', terminate }));
   return {
     terminate,
-    resolveTerminator: (async () => ({ key: 'vonage-voice', terminate })) as never,
+    resolveTerminator: resolveTerminator as never,
+    resolveCalls: resolveTerminator.mock.calls as unknown as Array<[string, { apiBaseUrl?: string }]>,
   };
 }
+
+/** 相関に region が無い（既定の参照が引けない）状況。 */
+const noRegion = async () => undefined;
 
 describe('hangUpIfRinging (#743)', () => {
   it('通話 ID があれば切りに行く', async () => {
     const { terminate, resolveTerminator } = terminatorReturning({ kind: 'terminated' });
-    const out = await hangUpIfRinging('TEST-tenant', 'TEST-uuid', { resolveTerminator });
+    const out = await hangUpIfRinging('TEST-tenant', 'TEST-uuid', {
+      resolveTerminator,
+      lookupControlBaseUrl: noRegion,
+    });
     expect(terminate).toHaveBeenCalledWith('TEST-uuid');
+    expect(out).toEqual({ kind: 'terminated' });
+  });
+
+  /**
+   * Vonage は通話ごとに所属リージョンを決め、制御はそのリージョン（webhook の `region_url`）へ
+   * 送るよう案内している（2026-09-02 仕様照合）。切断の予算は 2 秒なので、分かっていれば近い方へ。
+   */
+  it('相関に region_url があれば、その基底 URL で切断者を解決する', async () => {
+    const { resolveCalls, resolveTerminator } = terminatorReturning({ kind: 'terminated' });
+    await hangUpIfRinging('TEST-tenant', 'TEST-uuid', {
+      resolveTerminator,
+      lookupControlBaseUrl: async () => 'https://api-ap-3.vonage.com',
+    });
+    expect(resolveCalls[0]?.[0]).toBe('TEST-tenant');
+    expect(resolveCalls[0]?.[1]).toEqual({ apiBaseUrl: 'https://api-ap-3.vonage.com' });
+  });
+
+  it('region が分からなければ基底 URL を渡さない（＝グローバルへ撃つ）', async () => {
+    const { resolveCalls, resolveTerminator } = terminatorReturning({ kind: 'terminated' });
+    await hangUpIfRinging('TEST-tenant', 'TEST-uuid', {
+      resolveTerminator,
+      lookupControlBaseUrl: noRegion,
+    });
+    expect(resolveCalls[0]?.[1]).toEqual({});
+  });
+
+  it('🔴 region の参照が落ちても切断は諦めない（グローバルへ撃つ）', async () => {
+    const { terminate, resolveCalls, resolveTerminator } = terminatorReturning({ kind: 'terminated' });
+    const out = await hangUpIfRinging('TEST-tenant', 'TEST-uuid', {
+      resolveTerminator,
+      lookupControlBaseUrl: async () => {
+        throw new Error('TEST-store-down');
+      },
+    });
+    expect(terminate).toHaveBeenCalledWith('TEST-uuid');
+    expect(resolveCalls[0]?.[1]).toEqual({});
     expect(out).toEqual({ kind: 'terminated' });
   });
 
   /** mock 経路・ビデオ経路には provider 通話が無い。叩きに行かない。 */
   it.each([undefined, ''])('通話 ID が %p なら何もしない', async (id) => {
     const { terminate, resolveTerminator } = terminatorReturning({ kind: 'terminated' });
-    const out = await hangUpIfRinging('TEST-tenant', id, { resolveTerminator });
+    const out = await hangUpIfRinging('TEST-tenant', id, { resolveTerminator, lookupControlBaseUrl: noRegion });
     expect(terminate).not.toHaveBeenCalled();
     expect(out).toEqual({ kind: 'not_wired' });
   });

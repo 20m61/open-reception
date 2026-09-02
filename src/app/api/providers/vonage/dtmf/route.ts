@@ -15,30 +15,17 @@ import { denyIfProviderWebhooksDisabled } from '@/lib/routing/provider-webhook-s
  */
 const DTMF_TIMEOUT_SECONDS = 20;
 
-function readDigits(rawBody: string): string | undefined {
-  try {
-    const parsed: unknown = JSON.parse(rawBody);
-    if (parsed === null || typeof parsed !== 'object') return undefined;
-    const dtmf = (parsed as Record<string, unknown>).dtmf;
-    if (dtmf === null || typeof dtmf !== 'object') return undefined;
-    const digits = (dtmf as Record<string, unknown>).digits;
-    return typeof digits === 'string' ? digits : undefined;
-  } catch {
-    return undefined;
-  }
-}
-
 export async function POST(request: Request): Promise<NextResponse> {
   // 停止スイッチは署名検証より前（止めたい状況では検証の計算もさせない）。
   const disabled = denyIfProviderWebhooksDisabled();
   if (disabled) return disabled;
-  const { verified, rawBody } = await verifyRequest(request);
+  const { verified, body } = await verifyRequest(request);
   if (!verified.ok) {
     logWebhookRejection('dtmf', verified.logOnly);
     return rejectWebhook();
   }
 
-  const choice = resolveStaffChoice(readDigits(rawBody) ?? '');
+  const choice = resolveStaffChoice(body.dtmfDigits ?? '');
   // 本人確認（1）以外では来訪者情報を返さない。無入力・誤入力もここに落ちる。
   if (choice !== 'accept') return new NextResponse(null, { status: 204 });
 

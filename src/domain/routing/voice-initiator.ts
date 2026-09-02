@@ -48,6 +48,17 @@ export type CreateCallRequest = {
   readonly ringing_timer: number;
 };
 
+/**
+ * `ringing_timer` の上限（秒）。Vonage Voice API の仕様は 1〜120（既定 60）で、
+ * 公式 SDK も同じ範囲で検証している（Java は例外、Python は pydantic の `le=120`）。
+ *
+ * 超える値をそのまま送ると 400 で**発信自体が失敗**し、来訪者は有人支援へ倒れる。
+ * ルート設定（`RoutingStep.timeoutSeconds`）は端末の待ち上限（5 分）までしか検証して
+ * いないので、ここで上限へ丸める。丸めた分は呼出予算（`dialExpiresAt`）より Vonage 側の
+ * `timeout` webhook が先に届くだけで、取次は正しく次の手へ進む。
+ */
+export const VONAGE_RINGING_TIMER_MAX_SECONDS = 120;
+
 function requireE164(value: string, field: string): string {
   if (!E164.test(value)) {
     // 値そのものは載せない（番号は PII）。どの項目かだけを伝える。
@@ -87,7 +98,9 @@ export function buildCreateCallRequest(params: CreateCallParams): CreateCallRequ
     answer_method: 'POST',
     event_url: [requireHttpUrl(params.eventUrl, 'eventUrl')],
     event_method: 'POST',
-    ringing_timer: params.timeoutSeconds,
+    // 上限を超える値は 400 になる（上記）。整数であることは入力検証（`parseRoutingSteps`）が
+    // 保証するが、直接呼ばれても壊れないよう切り捨てておく。
+    ringing_timer: Math.min(Math.floor(params.timeoutSeconds), VONAGE_RINGING_TIMER_MAX_SECONDS),
   };
 }
 

@@ -59,6 +59,12 @@ describe('buildConfirmationNcco — 第 1 段（DTMF 確認前） (#4)', () => {
     const talk = ncco.find((a) => a.action === 'talk');
     expect(talk).toMatchObject({ bargeIn: true });
   });
+
+  // この設計は署名済み**本文**だけを権威にする。GET で届くと通話 ID も数字も取れず全部 403。
+  it('DTMF の結果は POST で受ける（eventMethod を既定に依存させない）', () => {
+    const input = ncco.find((a) => a.action === 'input');
+    expect(input).toMatchObject({ eventMethod: 'POST' });
+  });
 });
 
 describe('buildDetailsNcco — 第 2 段（DTMF 確認後） (#4)', () => {
@@ -80,6 +86,7 @@ describe('buildDetailsNcco — 第 2 段（DTMF 確認後） (#4)', () => {
   it('選択のための DTMF 入力を要求する', () => {
     expect(ncco.find((a) => a.action === 'input')).toMatchObject({
       eventUrl: [EVENT_URL],
+      eventMethod: 'POST',
       dtmf: { maxDigits: 1 },
     });
   });
