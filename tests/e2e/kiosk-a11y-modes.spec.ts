@@ -87,6 +87,74 @@ test.describe('大きな文字 (AC2/AC3)', () => {
     await completeToConnected(page);
   });
 
+  /**
+   * 🔴 **属性ではなく計算値で縛る** (#869)。
+   *
+   * 上の「data-a11y-font-scale が反映され」は属性の付与しか見ておらず、**寸法が 1 ピクセルも
+   * 動いていない状態で 1 年近く緑だった**。原因は 2 段あった:
+   *
+   * 1. `:root` の `--font-body` 等は宣言時点で `calc(1.25rem * 1)` へ置換済みで、子孫で
+   *    `--a11y-font-scale` を上書きしても再計算されない
+   * 2. それを直しても、`.screen__title` の `clamp(1.9rem, 4.6vw, var(--font-xl))` は
+   *    トークンを**上限にしか使っていない**ため、`4.6vw` が勝つ幅では倍率が届かない
+   *
+   * (1) は `tests/config/css-custom-property-definitions.test.ts` が静的に縛るが、**(2) は
+   * 静的検査では見えない** —— どの項が勝つかは viewport 次第だからである。ここで実測する。
+   *
+   * 代表として見出し・本文・主 CTA の 3 種を採る（それぞれ clamp あり / clamp あり /
+   * トークン直参照で、拡大の経路が違う）。
+   */
+  test('1.6× で画面上の文字の計算値が実際に拡大する', async ({ page }) => {
+    /*
+     * 「この画面に在る要素**すべて**が拡大する」という不変条件で見る。
+     * 特定のセレクタを名指しすると画面ごとの構成差で落ちる（実際、待機画面には
+     * `.screen__title` が無い —— `screenTitleFor('idle')` が null を返すため）。
+     */
+    const CANDIDATES = ['.screen__title', '.screen__lead', '.btn', '.card--cta'] as const;
+
+    const sizes = async () =>
+      page.evaluate((sels) => {
+        const out: Record<string, number> = {};
+        for (const sel of sels) {
+          const el = document.querySelector(`main.screen ${sel}`);
+          if (el) out[sel] = parseFloat(getComputedStyle(el).fontSize);
+        }
+        return out;
+      }, CANDIDATES as unknown as string[]);
+
+    await page.goto('/kiosk');
+    await expect(page.getByTestId('start-reception')).toBeVisible();
+    const before = await sizes();
+
+    /*
+     * 下界を併せて縛る (#869)。測れた要素が 0〜1 個だと「全部拡大した」は空虚に満たせる。
+     * 待機画面には少なくともリード文と入口カードがある。
+     */
+    expect(
+      Object.keys(before).length,
+      `拡大を観測できる要素が足りない（測れたのは ${JSON.stringify(before)}）`,
+    ).toBeGreaterThanOrEqual(2);
+    for (const [sel, value] of Object.entries(before)) {
+      expect(value, `${sel} の 1× サイズ`).toBeGreaterThan(0);
+    }
+
+    await page.getByTestId('a11y-menu-button').click();
+    await page.getByTestId('a11y-font-scale-1.6').click();
+    await page.getByTestId('a11y-menu-close').click();
+    await expect(page.locator(screen())).toHaveAttribute('data-a11y-font-scale', '1.6');
+
+    const after = await sizes();
+    expect(Object.keys(after).sort(), '1.6× で要素の構成が変わってはいけない').toEqual(
+      Object.keys(before).sort(),
+    );
+    for (const [sel, value] of Object.entries(before)) {
+      expect(
+        after[sel],
+        `${sel}: 1.6× を選んでも計算値が ${value}px から動いていない（#869 の再発）`,
+      ).toBeGreaterThan(value);
+    }
+  });
+
   test('axe: critical/serious 違反がない（待機画面・確認画面）', async ({ page }) => {
     await page.goto('/kiosk');
     await page.getByTestId('a11y-menu-button').click();

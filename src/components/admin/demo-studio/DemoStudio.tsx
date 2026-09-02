@@ -510,7 +510,13 @@ export function DemoStudio({ canWrite = true, siteId }: { canWrite?: boolean; si
 
   return (
     <div className="stack" data-testid="demo-studio" style={{ gap: 'var(--space-lg)' }}>
-      <header className="stack" style={{ gap: 'var(--space-xs)' }}>
+      {/*
+        `gap: 'var(--space-xs)'` と書かれていたが `--space-xs` は CSS に存在せず（TS 側の
+        `tokens.ts` にしか無い）、しかも `.stack` にはルールが無いので flex コンテナですら
+        なかった —— gap は二重に効いていなかった (#869)。実際の見た目を変えないよう
+        宣言ごと外す。`.stack` に実体を与えるかは別件（横断レビュー課題 23）。
+      */}
+      <header className="stack">
         <h1 className="page__title">受付体験スタジオ（デモ）</h1>
         <p className="page__lead">
           本番の受付端末画面を、模擬データ（Mock）で安全に試せます。組込テンプレートを複製して
@@ -842,11 +848,11 @@ export function DemoStudio({ canWrite = true, siteId }: { canWrite?: boolean; si
 
       {/* 3 ペイン */}
       <div style={{ display: 'flex', gap: 'var(--space-md)', alignItems: 'flex-start', flexWrap: 'wrap' }}>
-        {/* 左: 会話フロー */}
+        {/* 左: 会話フロー。gap は上と同じ理由で外した（--space-xs は未定義・.stack にルール無し, #869）。 */}
         <section
           className="card stack"
           data-testid="demo-flow-pane"
-          style={{ gap: 'var(--space-xs)', flex: '1 1 260px', minWidth: 260 }}
+          style={{ flex: '1 1 260px', minWidth: 260 }}
         >
           <h2 className="card__title">会話フロー{isEditing ? '（編集）' : ''}</h2>
           {turns.length === 0 ? (
