@@ -163,6 +163,8 @@ export function ExperienceVersionsManager({
 
   return (
     <div style={{ display: 'grid', gap: space.lg }}>
+      {/* この画面は Section を根に使っていないので、h1 を明示的に置く (#890 / 課題 16)。 */}
+      <h1 style={{ margin: 0 }}>公開と反映状況</h1>
       {/* 対象拠点を常時表示し、ここから切り替えられるようにする (#554)。 */}
       <SiteScopeSelect
         sites={sites}

@@ -3,6 +3,8 @@
 import { useCallback, useEffect, useState } from 'react';
 import { Button, Field, SaveFeedback, useSaveFeedback } from '@/components/admin/ui';
 import { useSiteScope } from './use-site-scope';
+import { resolveScopeGate } from './scope-gate';
+import { EmptyState } from '@/components/admin/ui';
 import { SiteScopeSelect } from './SiteScopeSelect';
 import { color, space } from '@/components/admin/ui/tokens';
 import { WEEKDAYS, type Weekday } from '@/domain/operating-policy/tz';
@@ -55,6 +57,19 @@ export function OperatingHoursManager({
    */
   const [loadedScopeKey, setLoadedScopeKey] = useState<string | null>(null);
   const loaded = loadedScopeKey === scopeKey;
+  /**
+   * **取得に失敗したこと**を状態として持つ (#870 増分 03)。
+   *
+   * 以前は `setLoadedScopeKey` を `if (res.ok)` の**外**で呼んでいたため、401 / 403 / 5xx /
+   * オフラインでも「読めた」状態になっていた。その結果、画面は
+   * **「まだ設定がありません（未設定の間は常時営業として扱われます）」と断定表示**する ——
+   * 取得できていないことを、設定が無いことと言い換えていた。
+   *
+   * さらに悪いことに、その状態からの保存は `policy` が null なので `expectedVersion` を
+   * 落とす。**この画面が土台にしている楽観ロック（#367）も同時に外れる**ため、他の管理者の
+   * 更新を黙って上書きできてしまう。
+   */
+  const [loadFailed, setLoadFailed] = useState(false);
   const [timezone, setTimezone] = useState('Asia/Tokyo');
   const [weeklyText, setWeeklyText] = useState<Record<Weekday, string>>(
     () => Object.fromEntries(WEEKDAYS.map((d) => [d, ''])) as Record<Weekday, string>,
@@ -89,19 +104,43 @@ export function OperatingHoursManager({
     setEmergencyContactLabel(p?.emergencyContactLabel ?? '');
   }, []);
 
+  /**
+   * 可否と「出せない理由」の判断は 1 箇所へ寄せる (#870 増分 03)。
+   *
+   * `SignageManager` / `StaffResponseManager` / `ReservationsManager` と同じ `resolveScopeGate`
+   * を使う。**理由の種別**（拠点一覧が読めない / 拠点が 0 件 / この画面の取得に失敗 / まだ）を
+   * 返すので、失敗を「読み込み中…」や「未設定」と言い換えずに済む。
+   */
+  const gate = resolveScopeGate({
+    scopeReady,
+    dataLoaded: loaded,
+    sitePending,
+    busy,
+    listStatus,
+    loadFailed,
+    hasSites: sites.length > 0,
+  });
+
   const load = useCallback(async () => {
     // 拠点が確定するまで取得しない。確定前に投げると deep link のたびに
     // 既定拠点への要求が先に飛び、応答順次第で選択中でない拠点の内容が載る。
     if (!scopeReady) return;
     const requestedScope = scopeKey;
-    const res = await fetch(`/api/admin/operating-policy?${qs}`);
+    // `catch` が無いとオフラインで例外になり、`void load()` が握り潰して**失敗にすら
+    // 落ちない**（画面は「読み込み中…」のまま固まる）。
+    const res = await fetch(`/api/admin/operating-policy?${qs}`).catch(() => null);
     // 取得中に拠点が変わっていたら捨てる。反映すると、セレクタは新拠点なのにフォームは
     // 旧拠点の値、という状態になる（保存は loadedSiteId 不一致で止まるが表示が嘘になる）。
     if (!isCurrentScope(requestedScope)) return;
-    if (res.ok) {
-      const body = (await res.json()) as { policy: PolicyView };
-      applyPolicy(body.policy);
+    if (!res?.ok) {
+      // **`setLoadedScopeKey` をここで呼ばない。** 呼ぶと「読めた」ことになり、
+      // 未設定と断定表示し、楽観ロックまで外れる（上の `loadFailed` のコメント）。
+      setLoadFailed(true);
+      return;
     }
+    const body = (await res.json()) as { policy: PolicyView };
+    applyPolicy(body.policy);
+    setLoadFailed(false);
     setLoadedScopeKey(requestedScope);
   }, [qs, scopeKey, scopeReady, isCurrentScope, applyPolicy]);
 
@@ -109,12 +148,16 @@ export function OperatingHoursManager({
     // 拠点が変わったら「まだ読めていない」へ戻す。これを忘れると前拠点の値のまま
     // 保存できてしまう。
     setLoadedScopeKey((prev) => (prev === scopeKey ? prev : null));
+    // 前拠点の失敗を新しい拠点へ持ち越さない（切替直後に「取得できませんでした」と出る）。
+    setLoadFailed(false);
     void load();
   }, [load, scopeKey]);
 
   const save = useCallback(async () => {
     // 選択中の拠点の内容が載りきるまで保存させない（載っているのは別拠点の値かもしれない）。
-    if (busy || !loaded || sitePending) return;
+    // **ハンドラとボタンが同じ値を見る。** 片方だけ強くするとサイレント no-op になる
+    // （#552 で実際に P1 になった型）。
+    if (!gate.canMutate) return;
     // **応答の適用にも同じ門が要る** (#554 レビュー B1 と同型)。PUT が飛行中に拠点を
     // 切り替えると、遅れて届いた A の応答が B の画面へ載り、以後 B として保存できてしまう。
     const startedWith = scopeKey;
@@ -175,13 +218,44 @@ export function OperatingHoursManager({
     } finally {
       setBusy(false);
     }
-  }, [busy, loaded, sitePending, scopeKey, isCurrentScope, clear, weeklyText, fixedHolidaysText, exceptionsText, timezone, emergencyContactLabel, tenantId, siteId, policy, applyPolicy, success, failure]);
+  }, [gate.canMutate, scopeKey, isCurrentScope, clear, weeklyText, fixedHolidaysText, exceptionsText, timezone, emergencyContactLabel, tenantId, siteId, policy, applyPolicy, success, failure]);
 
-  if (!loaded) {
+  if (gate.unavailable !== null) {
+    // **理由で出し分ける。** 失敗を「読み込み中…」と出すと運用者は終わらない待ちに入り、
+    // 「未設定」と出すと**取得できていないこと**を**設定が無いこと**として読ませてしまう。
+    const failed = gate.unavailable === 'load-failed' || gate.unavailable === 'site-list-error';
     return (
       <section>
         <h1 style={{ marginTop: 0 }}>営業時間設定</h1>
-        <p>読み込み中…</p>
+        {failed ? (
+          <EmptyState
+            testId="operating-hours-unavailable"
+            title="読み込めませんでした"
+            message={
+              gate.unavailable === 'site-list-error'
+                ? '拠点を確認できないため、営業時間設定を表示できません。'
+                : '営業時間設定を取得できませんでした。通信状況を確認して再試行してください。'
+            }
+            action={
+              <Button
+                data-testid="operating-hours-unavailable-retry"
+                onClick={() => {
+                  if (gate.unavailable === 'site-list-error') reloadSites();
+                  else void load();
+                }}
+                disabled={!gate.canRefresh}
+              >
+                再試行
+              </Button>
+            }
+          />
+        ) : gate.unavailable === 'no-site' ? (
+          <p data-testid="operating-hours-no-site" style={{ color: color.muted }}>
+            このテナントにはまだ拠点がありません。拠点を登録すると営業時間を設定できます。
+          </p>
+        ) : (
+          <p style={{ color: color.muted }}>読み込み中…</p>
+        )}
       </section>
     );
   }
@@ -335,7 +409,7 @@ export function OperatingHoursManager({
 
         <div style={{ display: 'flex', gap: space.sm, alignItems: 'center' }}>
           {/* 拠点切替の遷移確定前は siteId が古いままなので保存しない（#532 と同じ理由）。 */}
-          <Button variant="primary" data-testid="operating-hours-save" onClick={save} disabled={busy || sitePending || !loaded}>
+          <Button variant="primary" data-testid="operating-hours-save" onClick={save} disabled={!gate.canMutate}>
             保存
           </Button>
           <SaveFeedback feedback={feedback} successTestId="operating-hours-saved" errorTestId="operating-hours-error" />

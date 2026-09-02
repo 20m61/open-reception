@@ -56,6 +56,15 @@ test('サーバが connected を返したらその結果で確定する（権威
 test('サーバが timeout を返したら未応答として確定する', async ({ page }) => {
   await stubCallThenStatus(page, 1, 'timeout');
 
+  // 🔴 **既定しきい値のまま走らせる。** 短縮クエリを付けたくなるが、それは不要かつ有害である。
+  //
+  // #832 の最終設計では `noticeAfterMs`（既定 25s）は timeout 経路の律速ではなく、確定後に
+  // 要るのは保持（既定 **2s**。#832 で 5s から短縮）だけなので、既定のままでも 20 秒 budget に収まる。
+  // 一方しきい値を縮めると、この spec は保持を 5s → 300ms へ**圧縮**することになり、
+  // CLAUDE.md「e2e のためにしきい値を圧縮すると、実装の保証そのものが壊れることがある」に当たる。
+  //
+  // ここは **PSTN の timeout 確定を本番既定しきい値で通す唯一の e2e** でもあるので、
+  // 既定を通る経路をゼロにしないという意味でも短縮しない。
   await page.goto('/kiosk');
   await driveToCalling(page);
 

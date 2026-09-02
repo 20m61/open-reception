@@ -102,6 +102,45 @@ describe('PATCH publish（誤 Site/Kiosk 公開防止）', () => {
     expect(action).toBe('reception.demo_published');
     expect(metadata).toMatchObject({ event: 'published', kioskId: 'kiosk-a', version: '1' });
   });
+
+  /*
+   * 操作理由が**監査に残る** (#888)。以前は `window.confirm` だったので、誰がなぜ本番公開したかが
+   * どこにも残らなかった。UI（`DangerActionButton`）が理由を集めても、ここで捨てていたら
+   * **理由を訊く意味が無い**ので、届いていることを実際に確かめる。
+   */
+  it('公開の理由が監査メタデータに残る', async () => {
+    await seedDraft();
+    const res = await patch('pub-1', {
+      op: 'publish',
+      target: { siteId: SITE, kioskId: 'kiosk-a' },
+      reason: '新レイアウトの検証のため',
+    });
+    expect(res.status).toBe(200);
+    const [, , metadata] = appendAdminAudit.mock.calls.at(-1)!;
+    expect(metadata).toMatchObject({ reason: '新レイアウトの検証のため' });
+  });
+
+  it('理由は 500 字で切る（operator 記述の貼付を抑える既存の型に従う）', async () => {
+    await seedDraft();
+    await patch('pub-1', {
+      op: 'publish',
+      target: { siteId: SITE, kioskId: 'kiosk-a' },
+      reason: 'あ'.repeat(600),
+    });
+    const [, , metadata] = appendAdminAudit.mock.calls.at(-1)!;
+    expect((metadata as { reason: string }).reason).toHaveLength(500);
+  });
+
+  it('理由が空なら監査へ入れない（空文字のキーを増やさない）', async () => {
+    await seedDraft();
+    await patch('pub-1', {
+      op: 'publish',
+      target: { siteId: SITE, kioskId: 'kiosk-a' },
+      reason: '   ',
+    });
+    const [, , metadata] = appendAdminAudit.mock.calls.at(-1)!;
+    expect(metadata).not.toHaveProperty('reason');
+  });
   it('存在しない Kiosk への公開は 422（fail-closed）', async () => {
     await seedDraft();
     const res = await patch('pub-1', { op: 'publish', target: { siteId: SITE, kioskId: 'ghost' } });

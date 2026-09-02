@@ -11,6 +11,11 @@
  *
  * 値は globals.css と `VoiceReadbackConfirm` の inline style に分かれて置かれているので、
  * ここで突き合わせる（順序はどちらか一方だけを見ても分からない）。
+ *
+ * #901 で層は `--z-*` トークンへ寄せた。**この検査は弱めない** —— セレクタが指す
+ * トークンを `:root` まで辿って数値に解決したうえで、同じ順序を主張する。
+ * 「トークンを使っているか」ではなく「順序が保たれているか」を見る、という #788 の
+ * 立て方は変えていない。
  */
 import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
@@ -18,20 +23,29 @@ import { describe, expect, it } from 'vitest';
 const CSS = readFileSync('src/app/globals.css', 'utf8');
 const LAYER = readFileSync('src/components/kiosk/VoiceReadbackConfirm.tsx', 'utf8');
 
-/** セレクタ直後のブロックから z-index を読む。 */
+/** `:root` の `--z-<name>` を数値に解決する。 */
+function tokenValue(name: string): number {
+  const match = new RegExp(`--z-${name}\\s*:\\s*(\\d+)\\s*;`).exec(CSS);
+  expect(match, `globals.css に --z-${name} が無い`).not.toBeNull();
+  return Number(match?.[1]);
+}
+
+/** セレクタ直後のブロックの z-index を、トークンを辿って数値で読む。 */
 function cssZIndex(selector: string): number {
   const at = CSS.indexOf(`${selector} {`);
   expect(at, `${selector} が globals.css に無い`).toBeGreaterThan(-1);
   const block = CSS.slice(at, CSS.indexOf('}', at));
-  const match = block.match(/z-index:\s*(\d+)/);
-  expect(match, `${selector} に z-index が無い`).not.toBeNull();
-  return Number(match?.[1]);
+  const match = block.match(/z-index:\s*var\(--z-([a-z0-9-]+)\)/);
+  expect(match, `${selector} の z-index が --z-* トークンで書かれていない`).not.toBeNull();
+  return tokenValue(String(match?.[1]));
 }
 
 function voiceLayerZIndex(): number {
-  const match = LAYER.match(/zIndex:\s*(\d+)/);
-  expect(match, 'VoiceReadbackConfirm に zIndex が無い').not.toBeNull();
-  return Number(match?.[1]);
+  const match = LAYER.match(/zIndex:\s*zIndex\.([A-Za-z]+)/);
+  expect(match, 'VoiceReadbackConfirm の zIndex がトークンで書かれていない').not.toBeNull();
+  // `zIndex.voice` → `--z-voice`。camelCase は kebab-case へ倒す。
+  const kebab = String(match?.[1]).replace(/[A-Z]/g, (c) => `-${c.toLowerCase()}`);
+  return tokenValue(kebab);
 }
 
 describe('音声レイヤの重ね順 (#788)', () => {

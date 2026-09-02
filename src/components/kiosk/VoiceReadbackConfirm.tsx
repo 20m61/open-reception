@@ -21,6 +21,7 @@ import {
   type VoiceKioskState,
 } from '@/domain/voice-session/kiosk-view';
 import { persistentRegionProps } from './persistent-regions';
+import { zIndex } from '@/components/admin/ui/tokens';
 
 export type VoiceReadbackConfirmProps = {
   state: VoiceKioskState;
@@ -82,7 +83,7 @@ export function VoiceReadbackConfirm({ state, locale, onYes, onNo }: VoiceReadba
          * `staff-*` に pointer events を奪われた）。逃げ道バー（30）より下に留めて、
          * 「戻る」を隠さない。
          */
-        zIndex: 25,
+        zIndex: zIndex.voice,
         display: 'flex',
         flexDirection: 'column',
         alignItems: 'center',

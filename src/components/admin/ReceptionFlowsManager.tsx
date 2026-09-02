@@ -11,8 +11,10 @@ import {
   type FlowField,
   type FlowStepKind,
 } from '@/domain/reception/custom-flow';
-import { Button, Card, Field } from '@/components/admin/ui';
-import { color, space } from '@/components/admin/ui/tokens';
+import { Button, Card, Field, SaveFeedback, useSaveFeedback } from '@/components/admin/ui';
+import { DangerActionButton } from './danger/DangerActionButton';
+import { font, space } from '@/components/admin/ui/tokens';
+import { enablementState } from './state-vocabulary';
 import {
   buildFieldDraft,
   isFieldFormReady,
@@ -83,6 +85,7 @@ export function ReceptionFlowsManager({
   const [purposeKey, setPurposeKey] = useState('');
   const [displayName, setDisplayName] = useState('');
   const [busy, setBusy] = useState(false);
+  const { feedback, success, failure, clear } = useSaveFeedback();
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editName, setEditName] = useState('');
 
@@ -120,8 +123,13 @@ export function ReceptionFlowsManager({
     if (purposeKey.trim() === '' || displayName.trim() === '' || busy || sitePending || !flowsLoaded)
       return;
     setBusy(true);
+    clear();
     try {
-      await fetch('/api/admin/reception-flows', {
+      /*
+        **結果を捨てない (#870 増分 02)。** 戻りを見ずに `load()` すると、403 / 409 / 5xx でも
+        入力欄が空になって一覧が元のまま返るだけになり、運用者には「作成した」ように見える。
+      */
+      const res = await fetch('/api/admin/reception-flows', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({
@@ -133,27 +141,40 @@ export function ReceptionFlowsManager({
           steps: DEFAULT_STEPS,
           fields: [],
         }),
-      });
+      }).catch(() => null);
+      if (!res?.ok) {
+        failure('受付フローを作成できませんでした。');
+        return;
+      }
       setPurposeKey('');
       setDisplayName('');
       await load();
+      success('受付フローを作成しました。');
     } finally {
       setBusy(false);
     }
-  }, [purposeKey, displayName, busy, sitePending, flowsLoaded, tenantId, siteId, items.length, load]);
+  }, [purposeKey, displayName, busy, sitePending, flowsLoaded, tenantId, siteId, items.length, load, clear, success, failure]);
 
   const patch = useCallback(
     async (id: string, body: Record<string, unknown>) => {
       // 表示中のスコープのデータでなければ触らない（対象は tenant + ID でしか決まらない）。
       if (!flowsLoaded) return;
-      await fetch(`/api/admin/reception-flows/${id}`, {
+      clear();
+      const res = await fetch(`/api/admin/reception-flows/${id}`, {
         method: 'PATCH',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ tenantId, ...body }),
-      });
+      }).catch(() => null);
+      if (!res?.ok) {
+        // 失敗したら `load()` しない。取り直すと行が元へ戻り、**何も起きなかったのか
+        // 失敗したのかが区別できない**（無効化したつもりで来訪者にはまだ出ている、が起こる）。
+        failure('変更を保存できませんでした。');
+        return;
+      }
       await load();
+      success('変更を保存しました。');
     },
-    [tenantId, load, flowsLoaded],
+    [tenantId, load, flowsLoaded, clear, success, failure],
   );
 
   const toggle = useCallback((f: StoredReceptionFlow) => patch(f.id, { enabled: !f.enabled }), [patch]);
@@ -164,18 +185,22 @@ export function ReceptionFlowsManager({
       if (!flowsLoaded) return;
       const { changed } = reorderBySwap(items, index, dir);
       if (changed.length === 0) return;
-      await Promise.all(
+      clear();
+      // **一部だけ成功した並び替えを黙って通さない。** 片方の PATCH だけ通ると order が
+      // 重複した状態で残るので、1 つでも失敗したら失敗として伝え、取り直して実態を見せる。
+      const results = await Promise.all(
         changed.map((c) =>
           fetch(`/api/admin/reception-flows/${c.id}`, {
             method: 'PATCH',
             headers: { 'content-type': 'application/json' },
             body: JSON.stringify({ tenantId, order: c.order }),
-          }),
+          }).catch(() => null),
         ),
       );
       await load();
+      if (results.some((r) => !r?.ok)) failure('並び順を保存できませんでした。');
     },
-    [items, tenantId, load, flowsLoaded],
+    [items, tenantId, load, flowsLoaded, clear, failure],
   );
 
   // 入力項目の保存 (inc2): fields 配列ごと PATCH する（検証は API のドメイン層）。
@@ -197,13 +222,21 @@ export function ReceptionFlowsManager({
   const remove = useCallback(
     async (f: StoredReceptionFlow) => {
       if (!flowsLoaded) return;
-      if (!window.confirm(`受付フロー「${f.displayName}」を削除します。よろしいですか?`)) return;
-      await fetch(`/api/admin/reception-flows/${f.id}?tenantId=${encodeURIComponent(tenantId)}`, {
-        method: 'DELETE',
-      });
+      clear();
+      const res = await fetch(
+        `/api/admin/reception-flows/${f.id}?tenantId=${encodeURIComponent(tenantId)}`,
+        { method: 'DELETE' },
+      ).catch(() => null);
+      if (!res?.ok) {
+        // 削除は取り消せないと思われがちなので、失敗を黙るのがとくに危険
+        // （消したつもりの目的が来訪者に出続ける）。
+        failure('受付フローを削除できませんでした。');
+        return;
+      }
       await load();
+      success('受付フローを削除しました。');
     },
-    [tenantId, load, flowsLoaded],
+    [tenantId, load, flowsLoaded, clear, success, failure],
   );
 
   return (
@@ -256,6 +289,7 @@ export function ReceptionFlowsManager({
         >
           追加
         </Button>
+        <SaveFeedback feedback={feedback} successTestId="flow-saved" errorTestId="flow-save-error" />
       </div>
 
       <div data-testid="flow-list" style={{ display: 'flex', flexDirection: 'column', gap: space.md }}>
@@ -279,10 +313,10 @@ export function ReceptionFlowsManager({
                 data-testid="flow-status"
                 style={{
                   fontSize: '0.8rem',
-                  color: f.enabled ? color.success : color.muted,
+                  color: enablementState(f.enabled).color,
                 }}
               >
-                {f.enabled ? '有効' : '無効'}
+                {enablementState(f.enabled).label}
               </span>
               <div style={{ display: 'flex', gap: 6, marginLeft: 'auto' }}>
                 {editingId === f.id ? (
@@ -322,9 +356,14 @@ export function ReceptionFlowsManager({
                     <Button data-testid="flow-toggle" onClick={() => toggle(f)}>
                       {f.enabled ? '無効化' : '有効化'}
                     </Button>
-                    <Button variant="danger" data-testid="flow-delete" onClick={() => remove(f)}>
-                      削除
-                    </Button>
+<span data-testid="flow-delete">
+                      <DangerActionButton
+                        label="削除"
+                        requirement={{ requireImpactAck: true, requireReason: false }}
+                        impactSummary="この受付目的が来訪者の選択肢から消えます。進行中の受付には影響しません。"
+                        onConfirm={() => void remove(f)}
+                      />
+                    </span>
                   </>
                 )}
               </div>
@@ -408,7 +447,7 @@ function FlowFieldsEditor({
     <div data-testid="flow-fields" style={{ marginTop: 12 }}>
       <div style={{ fontSize: '0.8rem', opacity: 0.7, marginBottom: 4 }}>入力項目</div>
       {fields.length === 0 ? (
-        <p style={{ opacity: 0.6, fontSize: '0.85rem', margin: '0 0 8px' }}>入力項目はありません。</p>
+        <p style={{ opacity: 0.6, fontSize: font.small, margin: '0 0 8px' }}>入力項目はありません。</p>
       ) : (
         <ul style={{ margin: '0 0 8px', paddingLeft: 0, listStyle: 'none', display: 'flex', flexDirection: 'column', gap: 4 }}>
           {fields.map((field) => (
@@ -479,7 +518,7 @@ function FlowFieldsEditor({
             />
           </Field>
         ) : null}
-        <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: '0.85rem', minHeight: 44 }}>
+        <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: font.small, minHeight: 44 }}>
           <input
             type="checkbox"
             data-testid="flow-field-required"

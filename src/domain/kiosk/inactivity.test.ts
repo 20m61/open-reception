@@ -15,7 +15,11 @@ import {
   CONNECTED_INACTIVITY_RESET_MS,
   INACTIVITY_RESET_MS,
   resolveInactivityLimitMs,
+  shouldAutoReturnFromCheckin,
+  shouldResetOnInactivityForKiosk,
+  TERMINAL_AUTO_RESET_MS,
 } from './inactivity';
+import { RECEPTION_STATES, shouldResetOnInactivity } from '../reception/state';
 
 describe('resolveInactivityLimitMs — 既定', () => {
   it('選択・入力画面は INACTIVITY_RESET_MS', () => {
@@ -99,5 +103,62 @@ describe('resolveInactivityLimitMs — 不正値は既定へフォールバッ�
         raw,
       ).toBe(CONNECTED_INACTIVITY_RESET_MS);
     }
+  });
+});
+
+describe('QR 受付中の無操作リセット (#871)', () => {
+  /*
+   * QR 受付は**受付状態機械を進めない** —— `KioskFlow` は `setMode('checkin')` を呼ぶだけで
+   * `ReceptionState` は `idle` のまま残る。`idle` は `INACTIVITY_RESET_STATES` に無いので、
+   * 従来の `shouldResetOnInactivity(state)` だけで判定すると **QR 受付では無操作リセットが
+   * 一度も発火しない**。予約者の氏名・会社・予約時刻を出したまま、ロビーの端末に無期限で
+   * 残る（通常受付では #125 で解決済みの問題が、QR 経路にだけ残っていた）。
+   */
+  it('QR 受付が動いている間は、受付状態が idle でもリセット対象になる', () => {
+    expect(shouldResetOnInactivityForKiosk({ receptionState: 'idle', qrCheckinActive: true })).toBe(
+      true,
+    );
+  });
+
+  it('QR 受付が動いていなければ、従来どおり受付状態だけで決まる', () => {
+    // 下界: 何でも true になる実装では、この 2 本が両方通ることはない。
+    expect(
+      shouldResetOnInactivityForKiosk({ receptionState: 'idle', qrCheckinActive: false }),
+    ).toBe(false);
+    expect(
+      shouldResetOnInactivityForKiosk({ receptionState: 'confirming', qrCheckinActive: false }),
+    ).toBe(true);
+  });
+
+  it('通常受付の判定を壊さない（全 ReceptionState で従来関数と一致する）', () => {
+    for (const state of RECEPTION_STATES) {
+      expect(
+        shouldResetOnInactivityForKiosk({ receptionState: state, qrCheckinActive: false }),
+        state,
+      ).toBe(shouldResetOnInactivity(state));
+    }
+  });
+});
+
+describe('QR 受付の終端状態からの自動復帰 (#871)', () => {
+  /*
+   * 通常受付は `completed` / `cancelled` から `AUTO_RESET_MS`（6 秒）で待機へ戻る。
+   * QR 受付にはこの短い復帰が無く、無操作リセット（既定 60 秒）を待つしかなかった。
+   * 「受付が完了しました」の画面が 1 分間居座ると、次の来訪者は端末が壊れていると読む。
+   */
+  it('completed / cancelled は自動復帰の対象', () => {
+    expect(shouldAutoReturnFromCheckin('completed')).toBe(true);
+    expect(shouldAutoReturnFromCheckin('cancelled')).toBe(true);
+  });
+
+  it('進行中の状態は対象にしない（読み取り中に勝手に戻さない）', () => {
+    // 下界: 常に true を返す実装ではこの 1 本が落ちる。
+    for (const state of ['idle', 'selectingMethod', 'scanning', 'resolving', 'confirming'] as const) {
+      expect(shouldAutoReturnFromCheckin(state), state).toBe(false);
+    }
+  });
+
+  it('終端の復帰時間は通常受付と同じ（フロー間で待たされ方を変えない）', () => {
+    expect(TERMINAL_AUTO_RESET_MS).toBe(6000);
   });
 });

@@ -1,6 +1,7 @@
 import type { HTMLAttributes, ReactNode } from 'react';
 import { color, font, space } from './tokens';
 import { EmptyState } from './EmptyState';
+import { ariaSortFor, nextSortState, type SortState } from '../list-io';
 
 /**
  * 管理画面 共有データテーブル (issue #92, increment 1)。
@@ -35,6 +36,14 @@ export type Column<Row> = {
   cellTestId?: (row: Row) => string | undefined;
   /** セル `<td>` の追加スタイル（移行元のセル色などを保つ）。 */
   cellStyle?: (row: Row) => React.CSSProperties | undefined;
+  /**
+   * 並べ替えの比較キー。**指定した列だけ**ソート可能になる (#909 / 課題 18)。
+   *
+   * 並べ替えそのものは `list-io.ts` の `sortRows` が行い、呼び出し側が
+   * `sortRows` → `paginate` の順に通す。ここで並べ替えると**ページを切ったあとの
+   * 20 件だけが並び替わる**ため。
+   */
+  sortValue?: (row: Row) => string | number;
 };
 
 export function DataTable<Row>({
@@ -45,6 +54,8 @@ export function DataTable<Row>({
   testId = 'ui-data-table',
   rowTestId,
   rowProps,
+  sort,
+  onSortChange,
 }: {
   columns: ReadonlyArray<Column<Row>>;
   rows: ReadonlyArray<Row>;
@@ -58,6 +69,10 @@ export function DataTable<Row>({
     row: Row,
     index: number,
   ) => HTMLAttributes<HTMLTableRowElement> & { draggable?: boolean };
+  /** 現在の並べ替え。`onSortChange` と対で渡す（片方だけではヘッダは押せない）。 */
+  sort?: SortState;
+  /** ヘッダを押したときの遷移先。`undefined` は並べ替え解除。 */
+  onSortChange?: (next: SortState | undefined) => void;
 }) {
   if (rows.length === 0) {
     return <EmptyState message={emptyMessage} testId={`${testId}-empty`} />;
@@ -79,20 +94,54 @@ export function DataTable<Row>({
       >
         <thead>
           <tr style={{ textAlign: 'left', borderBottom: `1px solid ${color.borderStrong}` }}>
-            {columns.map((c) => (
-              <th
-                key={c.key}
-                style={{
-                  padding: `${space.xs}px ${space.sm}px`,
-                  textAlign: c.align ?? 'left',
-                  opacity: 0.7,
-                  fontWeight: 700,
-                  whiteSpace: 'nowrap',
-                }}
-              >
-                {c.header}
-              </th>
-            ))}
+            {columns.map((c) => {
+              /*
+               * ソート可能に**見せる**条件は 3 つ揃ったときだけ (#909 / 課題 18)。
+               * 列が比較キーを持ち、現在の状態が渡され、遷移先を受け取る先がある。
+               * どれか欠けたまま押せるように見せると、押しても何も起きないヘッダになる。
+               */
+              const sortable = Boolean(c.sortValue && onSortChange);
+              return (
+                <th
+                  key={c.key}
+                  aria-sort={sortable ? ariaSortFor(sort, c.key) : undefined}
+                  style={{
+                    padding: `${space.xs}px ${space.sm}px`,
+                    textAlign: c.align ?? 'left',
+                    opacity: 0.7,
+                    fontWeight: 700,
+                    whiteSpace: 'nowrap',
+                  }}
+                >
+                  {sortable ? (
+                    <button
+                      type="button"
+                      data-testid={`${testId}-sort-${c.key}`}
+                      onClick={() => onSortChange?.(nextSortState(sort, c.key))}
+                      style={{
+                        display: 'inline-flex',
+                        alignItems: 'center',
+                        gap: 4,
+                        background: 'none',
+                        border: 'none',
+                        padding: 0,
+                        font: 'inherit',
+                        color: 'inherit',
+                        cursor: 'pointer',
+                      }}
+                    >
+                      {c.header}
+                      {/* 向きは aria-sort が正。記号は目で読む人のための冗長表現。 */}
+                      <span aria-hidden>
+                        {sort?.key === c.key ? (sort.direction === 'asc' ? '▲' : '▼') : '↕'}
+                      </span>
+                    </button>
+                  ) : (
+                    c.header
+                  )}
+                </th>
+              );
+            })}
           </tr>
         </thead>
         <tbody>

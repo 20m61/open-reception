@@ -7,7 +7,9 @@ import type {
   SecretStatus,
 } from '@/domain/security/integration-status';
 import { Button } from '@/components/admin/ui';
+import { AdminReadGate } from '../AdminReadGate';
 import { SecretStatusField } from './SecretStatusField';
+import { enablementState } from '../state-vocabulary';
 
 /**
  * 認証方式・外部連携・シークレット状態の管理 (issue #93, increment 1)。
@@ -38,12 +40,22 @@ export function IntegrationsManager({
   canManage?: boolean;
 }) {
   const [view, setView] = useState<StatusView | null>(null);
+  const [loadFailed, setLoadFailed] = useState(false);
   const [busy, setBusy] = useState(false);
   const [confirmClear, setConfirmClear] = useState<SecretKey | null>(null);
 
   const load = useCallback(async () => {
-    const res = await fetch(`/api/admin/integrations?tenantId=${encodeURIComponent(tenantId)}`);
-    if (res.ok) setView((await res.json()) as StatusView);
+    // `catch` を省くとオフラインで例外になり、`void load()` が握り潰して
+    // **失敗にすら落ちない**（画面は「読み込み中…」のまま固まる）。
+    const res = await fetch(
+      `/api/admin/integrations?tenantId=${encodeURIComponent(tenantId)}`,
+    ).catch(() => null);
+    if (!res?.ok) {
+      setLoadFailed(true);
+      return;
+    }
+    setView((await res.json()) as StatusView);
+    setLoadFailed(false);
   }, [tenantId]);
 
   useEffect(() => {
@@ -107,10 +119,13 @@ export function IntegrationsManager({
 
   if (!view) {
     return (
-      <section>
-        <h1 style={{ marginTop: 0 }}>認証・外部連携</h1>
-        <p>読み込み中…</p>
-      </section>
+      <AdminReadGate
+        heading="認証・外部連携"
+        failed={loadFailed}
+        failureMessage="連携状態を取得できませんでした。通信状況を確認して再試行してください。"
+        onRetry={() => void load()}
+        testId="integrations-unavailable"
+      />
     );
   }
 
@@ -128,7 +143,7 @@ export function IntegrationsManager({
           <div key={m.id} data-testid={`auth-${m.id}`} style={card}>
             <strong>{m.label}</strong>
             <span data-testid={`auth-${m.id}-state`} style={{ marginLeft: 8 }}>
-              {m.enabled ? '有効' : '無効'}
+              {enablementState(m.enabled).label}
             </span>
             {m.issues.length > 0 ? (
               <ul style={{ margin: '6px 0 0', color: 'var(--color-danger)' }}>

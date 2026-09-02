@@ -1,8 +1,13 @@
-# クラウド開発環境（Claude Code on the web）
+# クラウド開発環境（Claude Code on the web / Cursor Cloud Agents）
 
-開発を Claude Code on the web（クラウドセッション）へ移すための**正本**。環境設定の実体は
-claude.ai/code の環境ダイアログにあり、リポジトリからは触れない。ここは「何をどう設定してあるか」
-「なぜそうしたか」「何が動かないか」を残す場所。
+開発をクラウドセッションへ移すための**正本**。実行実体は各ホストの環境ダイアログにあり、
+リポジトリからは触れない。ここは「何をどう設定してあるか」「なぜそうしたか」
+「何が動かないか」を残す場所。
+
+- **Claude Code on the web**: claude.ai/code の環境ダイアログ。Setup script の正本は
+  `scripts/cloud-setup.sh`
+- **Cursor Cloud Agents**: Cursor の Environment パネル。install / start の正本は
+  `scripts/cursor-cloud-install.sh` / `scripts/cursor-cloud-start.sh`（§0-G / §7）
 
 セッションは Ubuntu 24.04 の使い捨て VM（4 vCPU / 16 GB RAM / 30 GB ディスク）で、
 リポジトリはクローンされた状態で始まる。
@@ -22,6 +27,15 @@ claude.ai/code の環境 **open-reception**（`env_012h7PiJKNb4EYzKRSuBwpX3`）�
    `cloud-setup.sh` を変更したら**環境ダイアログ側も貼り替える**
 
 **済んでいるかの判定は §0-E の点検で付く**（設定を眺めるより、実物を見る方が確実）。
+
+### 0-G. Cursor Cloud Agents — 環境パネルで Save（✅ 2026-09-01 検証済み）
+
+Cursor の Cloud Agent は claude.ai/code とは**別環境**。install / start の正本は
+`scripts/cursor-cloud-install.sh` / `scripts/cursor-cloud-start.sh`。ダッシュボード側を
+同期したら **Environment パネルで Save**。詳細は §7。
+
+🔴 **`.cursor/environment.json` はコミットしない。** リポジトリの environment.json は
+ダッシュボードの personal snapshot 環境より優先され、焼き込んだベースラインが消える。
 
 ### 0-B. 毎回 — web セッションで 1 周回す
 
@@ -73,24 +87,30 @@ https://claude.ai/code/routines を開き、本文を **`./scripts/record-gate-r
 web セッションでこれを流す。**値は出さない**（名前だけ）:
 
 ```bash
+npx tsx scripts/report-gate-tools.ts $(. scripts/lib/gate-tooling.sh; gate_tool_observe_argv)
+# または手で:
 for c in gh aws gitleaks semgrep; do printf '%-10s %s\n' "$c" "$(command -v $c || echo MISSING)"; done
 ls /opt/pw-browsers 2>/dev/null | head -3
+ls ~/.cache/ms-playwright 2>/dev/null | head -5
 env | grep -o '^AWS_[A-Z_]*' || echo "AWS 変数なし（正常）"
 gh api graphql -f query='query{viewer{login}}' >/dev/null 2>&1 \
   && echo "GraphQL OK" || echo "GraphQL 403（REST スクリプトを使う）"
 ```
 
-見るべきは 3 点:
+見るべきは 4 点:
 
 | 見るところ | 期待 | 外れていたら |
 | --- | --- | --- |
-| 4 コマンド | 全部パスがある | Setup script が古い or 貼られていない → §0-A 2. を貼り直す |
+| 4 コマンド | 全部パスがある | Setup script / `cursor-cloud-install.sh` が古い → §0-A 2. を貼り直す |
+| Playwright chromium | `/opt/pw-browsers/chromium` または `~/.cache/ms-playwright/chromium-*` | `npx playwright install chromium`（要 `cdn.playwright.dev` egress）。無いと `--full` の e2e/vrm は **早い段階で skip_unverified**（#838） |
 | `AWS_*` | **なし** | 窓が開けっぱなし → §0-C 4. で削除 |
 | GraphQL | どちらでもよい | 403 なら REST スクリプト必須（routine は 403 と実測済み。§4） |
 
 > **なぜ「4 コマンドが入っていること」を気にするのか**: `gitleaks` / `semgrep` が無いと
 > `quality-gate.sh` は **FAIL ではなく SKIP** する。SKIP は赤くならないので、
-> **マージゲートが黙って弱くなる**（#545 で実際に踏んだ）。
+> **マージゲートが黙って弱くなる**（#545 で実際に踏んだ）。SessionStart
+> （`install_pkgs.sh`）と Cursor Cloud の install（`cursor-cloud-install.sh`）は
+> `#838` で欠落を名指しする。semgrep ルールは `#841` でリポジトリ内固定済み。
 
 ### 0-F. 実測の記録（2026-08-18）
 
@@ -533,3 +553,32 @@ linux 側（クラウドセッション）で実施済み:
 
 **「ゲートが全 PASS」は「退行が無い」ではない。** 3 例とも `--full` green の状態で潜んでいた。
 閾値を実測ベースまで締めて初めて機械的に出てくる。
+
+---
+
+## 7. Cursor Cloud Agents
+
+Claude Code on the web（§0–§6）とはホストが違う。Cursor の Cloud Agent は
+Ubuntu 上の別 VM で、環境の正本は **ダッシュボードの personal environment**
+（snapshot + install + start）である。リポジトリ側の正本ファイルはドリフト防止用。
+
+| ファイル | ダッシュボード欄 | 役割 |
+| --- | --- | --- |
+| `scripts/cursor-cloud-install.sh` | install | root / infra の `npm ci`、Playwright chromium、gitleaks / semgrep / AWS CLI |
+| `scripts/cursor-cloud-start.sh` | start | lockfile が新しければ `npm ci`。**サーバは立てない** |
+
+**install でサーバを立てない理由**: install は終了しなければならない。加えて e2e は
+port 3000 で `npm run start` を自分で起こす（`playwright.config.ts` の `reuseExistingServer: false`）。
+dev server を start に置くとアドレス衝突する。
+
+**`.cursor/environment.json` を置かない理由**: Cursor はリポジトリの environment.json を
+ダッシュボード環境より優先する。置くと personal snapshot（依存とブラウザを焼いたベースライン）
+が効かなくなり、毎回素のイメージから install し直す。secrets と snapshot はダッシュボード側に残す。
+
+変更したら:
+
+1. 正本ファイルを直す
+2. ダッシュボードの install / start を同じ内容へ同期する
+3. 新しい snapshot / draft build を検証してから Environment パネルで Save
+
+片方だけ直すと #545 と同型（repo は直ったが実行実体が古く、`--full` の sast が SKIP）になる。

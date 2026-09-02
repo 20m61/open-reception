@@ -1,8 +1,20 @@
 'use client';
 
-import { useCallback, useEffect, useReducer, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from 'react';
 import { confirmAndCall } from '@/lib/checkin/place-call';
 import { decidePollAction, CALL_STATUS_POLL_INTERVAL_MS } from '@/domain/reception/call-poll';
+import {
+  shouldAutoReturnFromCheckin,
+  TERMINAL_AUTO_RESET_MS,
+} from '@/domain/kiosk/inactivity';
+import {
+  clampCallingStageThresholds,
+  callingStageQueryFromSearch,
+  type CallingStage,
+  type CallingStageThresholds,
+} from '@/domain/reception/calling-experience';
+import { useCallingNoticeHold } from './use-calling-notice-hold';
+import { callingStageMessage } from './reception-screens';
 import {
   transition,
   type CheckinEvent,
@@ -19,6 +31,7 @@ import { AvatarGuide } from './avatar/AvatarGuide';
 import { checkinSubtitleFor } from './conversation-turn';
 import { EscapeBar } from './EscapeBar';
 import { checkinEscapesFor } from './quick-actions';
+import { zIndex } from '@/components/admin/ui/tokens';
 import {
   checkinCallFailureMessageKeyFor,
   type CheckinCallFailureReason,
@@ -130,6 +143,28 @@ export function CheckinFlow({
   const [callFailureReason, setCallFailureReason] = useState<CheckinCallFailureReason | null>(null);
   /** 実 PSTN の結果待ち中の受付 ID（#736）。null = 待っていない。 */
   const [pendingReceptionId, setPendingReceptionId] = useState<string | null>(null);
+  /**
+   * timeout / unanswered が確定したが、予告の保持がまだ済んでいない (#832)。
+   * 発火は `useCallingNoticeHold`。ここへ `server` などを載せない。
+   */
+  const [pendingTimeout, setPendingTimeout] = useState<{ sessionId: string } | null>(null);
+  const [callingStageQueryOverride] = useState<Partial<CallingStageThresholds>>(() =>
+    typeof window === 'undefined' ? {} : callingStageQueryFromSearch(window.location.search),
+  );
+  const callingStageThresholds = useMemo(
+    () => clampCallingStageThresholds(callingStageQueryOverride),
+    [callingStageQueryOverride],
+  );
+  const callingStageState = useCallingNoticeHold({
+    active: data.state === 'calling',
+    thresholds: callingStageThresholds,
+    pendingSessionId: pendingTimeout?.sessionId ?? null,
+    onFire: () => {
+      setPendingTimeout(null);
+      setCallFailureReason('unanswered');
+      dispatch({ type: 'CALL_FAILED' });
+    },
+  });
   // 注入されたスキャナ（既定は実カメラ CameraQrScanner）。再レンダーで作り直さない。
   const scannerRef = useRef<QrScanner>(scanner ?? new CameraQrScanner());
 
@@ -211,6 +246,11 @@ export function CheckinFlow({
         return;
       }
       if (result.kind === 'failed') {
+        if (result.reason === 'unanswered') {
+          // 同期 timeout も予告保持ゲートへ (#832)。未応答以外は即失敗。
+          setPendingTimeout({ sessionId: 'checkin' });
+          return;
+        }
         setCallFailureReason(result.reason);
         dispatch({ type: 'CALL_FAILED' });
         return;
@@ -221,6 +261,7 @@ export function CheckinFlow({
     })();
     return () => {
       cancelled = true;
+      setPendingTimeout(null);
     };
   }, [data.state, data.payload]);
 
@@ -251,7 +292,11 @@ export function CheckinFlow({
             dispatch({ type: 'CALL_DONE' });
             return;
           }
-          setCallFailureReason(action.event === 'CALL_TIMEOUT' ? 'unanswered' : 'server');
+          if (action.event === 'CALL_TIMEOUT') {
+            setPendingTimeout({ sessionId: pendingReceptionId });
+            return;
+          }
+          setCallFailureReason('server');
           dispatch({ type: 'CALL_FAILED' });
         } catch {
           // 1 回の取得失敗では倒さない（次の間隔で再取得する）。上限は decidePollAction が持つ。
@@ -274,6 +319,19 @@ export function CheckinFlow({
     onExit?.();
   }, [onExit]);
 
+  /*
+   * 終端（完了・中止）から待機画面へ自動復帰する (#871)。
+   *
+   * 通常受付には同じ復帰が `KioskFlow` にあるが、QR 受付には無く、無操作リセット
+   * （既定 60 秒）を待つしかなかった。「受付が完了しました」の画面が 1 分間居座ると、
+   * 次の来訪者は端末が壊れていると読む。どの状態を終端とみなすかは純関数へ委ねる。
+   */
+  useEffect(() => {
+    if (!shouldAutoReturnFromCheckin(data.state)) return;
+    const timer = setTimeout(exit, TERMINAL_AUTO_RESET_MS);
+    return () => clearTimeout(timer);
+  }, [data.state, exit]);
+
   return (
     <CheckinShell
       state={data.state}
@@ -295,6 +353,7 @@ export function CheckinFlow({
         locale,
         callFailureReason,
         onClearFailureReason: () => setCallFailureReason(null),
+        callingStage: callingStageState.stage,
       })}
     </CheckinShell>
   );
@@ -443,7 +502,7 @@ const avatarCompanionStyle: React.CSSProperties = {
   bottom: 'var(--space-md)',
   width: 150,
   maxWidth: '26vw',
-  zIndex: 5,
+  zIndex: zIndex.companion,
   pointerEvents: 'none',
 };
 
@@ -479,6 +538,8 @@ export type RenderCheckinProps = {
   callFailureReason?: CheckinCallFailureReason | null;
   /** 再試行時に理由を捨てる（前回の失敗の説明を次の試行へ持ち越さない）。 */
   onClearFailureReason?: () => void;
+  /** 呼び出し中の経過段階 (#832)。calling 以外では無視。 */
+  callingStage?: CallingStage;
 };
 
 /**
@@ -495,6 +556,7 @@ export function renderCheckin({
   locale = DEFAULT_LOCALE,
   callFailureReason = null,
   onClearFailureReason,
+  callingStage = 'dialing',
 }: RenderCheckinProps) {
   const tr = makeT(locale);
   switch (data.state) {
@@ -586,8 +648,19 @@ export function renderCheckin({
     case 'calling':
       return (
         <CenteredCard>
-          <h1 className="screen__title" data-testid="checkin-calling">{tr('checkin.calling.title')}</h1>
-          <p className="screen__lead">{tr('checkin.calling.lead')}</p>
+          <div data-testid="checkin-calling" data-calling-stage={callingStage}>
+            <h1 className="screen__title">{tr('checkin.calling.title')}</h1>
+            <p className="screen__lead">
+              {callingStage === 'dialing'
+                ? tr('checkin.calling.lead')
+                : callingStageMessage(callingStage, '', locale, {})}
+            </p>
+            <span className="calling-pulse" data-testid="calling-pulse" aria-hidden="true">
+              <span className="calling-pulse__dot" />
+              <span className="calling-pulse__dot" />
+              <span className="calling-pulse__dot" />
+            </span>
+          </div>
         </CenteredCard>
       );
     case 'completed':

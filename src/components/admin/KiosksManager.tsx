@@ -2,6 +2,8 @@
 
 import { useCallback, useEffect, useState } from 'react';
 import type { Kiosk } from '@/domain/kiosk/types';
+import { SaveFeedback, font, useSaveFeedback } from '@/components/admin/ui';
+import { enablementState } from './state-vocabulary';
 
 /**
  * 受付端末管理（旧レジストリ・issue #18）。登録・失効・再有効化を管理 API 経由で行う。
@@ -16,6 +18,7 @@ export function KiosksManager() {
   const [displayName, setDisplayName] = useState('');
   const [location, setLocation] = useState('');
   const [busy, setBusy] = useState(false);
+  const { feedback, success, failure, clear } = useSaveFeedback();
 
   const load = useCallback(async () => {
     const res = await fetch('/api/admin/kiosks');
@@ -29,26 +32,46 @@ export function KiosksManager() {
   const add = useCallback(async () => {
     if (displayName.trim() === '' || busy) return;
     setBusy(true);
+    clear();
     try {
-      await fetch('/api/admin/kiosks', {
+      /*
+        **結果を捨てない (#870 増分 02)。** 戻りを見ずに `load()` すると、403 / 409 / 5xx でも
+        入力欄が空になって一覧が元のまま返るだけになり、運用者には「登録した」ように見える。
+      */
+      const res = await fetch('/api/admin/kiosks', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ displayName, location: location || undefined }),
-      });
+      }).catch(() => null);
+      if (!res?.ok) {
+        failure('受付端末を登録できませんでした。');
+        return;
+      }
       setDisplayName('');
       setLocation('');
       await load();
+      success('受付端末を登録しました。');
     } finally {
       setBusy(false);
     }
-  }, [displayName, location, busy, load]);
+  }, [displayName, location, busy, load, clear, success, failure]);
 
   const setEnabled = useCallback(
     async (k: Kiosk, enabled: boolean) => {
-      await fetch(`/api/admin/kiosks/${k.id}/${enabled ? 'restore' : 'revoke'}`, { method: 'POST' });
+      clear();
+      const res = await fetch(`/api/admin/kiosks/${k.id}/${enabled ? 'restore' : 'revoke'}`, {
+        method: 'POST',
+      }).catch(() => null);
+      if (!res?.ok) {
+        // 失敗したら `load()` しない。取り直すと行が元の状態へ戻り、**何も起きなかったのか
+        // 失敗したのかが区別できない**（失効したつもりで失効していない、が起こる）。
+        failure(enabled ? '再有効化できませんでした。' : '失効できませんでした。');
+        return;
+      }
       await load();
+      success(enabled ? '再有効化しました。' : '失効しました。');
     },
-    [load],
+    [load, clear, success, failure],
   );
 
   return (
@@ -76,6 +99,7 @@ export function KiosksManager() {
         <button type="button" data-testid="kiosk-add" onClick={add} disabled={busy || displayName.trim() === ''} style={btnStyle}>
           登録
         </button>
+        <SaveFeedback feedback={feedback} successTestId="kiosk-saved" errorTestId="kiosk-save-error" />
       </div>
 
       <table data-testid="kiosk-table" style={{ width: '100%', borderCollapse: 'collapse' }}>
@@ -94,8 +118,8 @@ export function KiosksManager() {
                 {k.displayName}
               </td>
               <td style={cell}>{k.location ?? '-'}</td>
-              <td style={{ ...cell, color: k.enabled ? 'var(--color-success)' : 'var(--color-danger)' }}>
-                {k.enabled ? '有効' : '失効'}
+              <td style={{ ...cell, color: enablementState(k.enabled).color }}>
+                {enablementState(k.enabled).label}
               </td>
               <td style={cell}>
                 <button type="button" data-testid="kiosk-toggle" onClick={() => setEnabled(k, !k.enabled)} style={smallBtn}>
@@ -111,7 +135,7 @@ export function KiosksManager() {
 }
 
 const col: React.CSSProperties = { display: 'flex', flexDirection: 'column', gap: 4 };
-const lbl: React.CSSProperties = { fontSize: '0.85rem', opacity: 0.8 };
+const lbl: React.CSSProperties = { fontSize: font.small, opacity: 0.8 };
 const noticeStyle: React.CSSProperties = {
   margin: '0 0 24px',
   padding: '12px 16px',

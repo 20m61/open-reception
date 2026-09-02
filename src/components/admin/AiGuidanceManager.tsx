@@ -4,6 +4,7 @@ import { useCallback, useEffect, useState } from 'react';
 import type { AiGuidanceConfig } from '@/domain/ai-guidance/config';
 import { Button, Field, SaveFeedback, useSaveFeedback } from '@/components/admin/ui';
 import { color, space } from '@/components/admin/ui/tokens';
+import { AdminReadGate } from './AdminReadGate';
 
 /**
  * AI 案内設定 (issue #104)。AI 案内の有効/無効と「回答してよいトピック（許可リスト）」を編集する。
@@ -12,17 +13,23 @@ import { color, space } from '@/components/admin/ui/tokens';
  */
 export function AiGuidanceManager() {
   const [config, setConfig] = useState<AiGuidanceConfig | null>(null);
+  const [loadFailed, setLoadFailed] = useState(false);
   const [topicsText, setTopicsText] = useState('');
   const [busy, setBusy] = useState(false);
   const { feedback, success, failure, clear } = useSaveFeedback();
 
   const load = useCallback(async () => {
-    const res = await fetch('/api/admin/ai-guidance');
-    if (res.ok) {
-      const c = (await res.json()) as AiGuidanceConfig;
-      setConfig(c);
-      setTopicsText(c.allowedTopics.join('\n'));
+    // `catch` を省くとオフラインで例外になり、`void load()` が握り潰して
+    // **失敗にすら落ちない**（画面は「読み込み中…」のまま固まる）。
+    const res = await fetch('/api/admin/ai-guidance').catch(() => null);
+    if (!res?.ok) {
+      setLoadFailed(true);
+      return;
     }
+    const c = (await res.json()) as AiGuidanceConfig;
+    setConfig(c);
+    setTopicsText(c.allowedTopics.join('\n'));
+    setLoadFailed(false);
   }, []);
 
   useEffect(() => {
@@ -54,10 +61,13 @@ export function AiGuidanceManager() {
 
   if (!config) {
     return (
-      <section>
-        <h1 style={{ marginTop: 0 }}>AI 案内設定</h1>
-        <p>読み込み中…</p>
-      </section>
+      <AdminReadGate
+        heading="AI 案内設定"
+        failed={loadFailed}
+        failureMessage="AI 案内設定を取得できませんでした。通信状況を確認して再試行してください。"
+        onRetry={() => void load()}
+        testId="ai-guidance-unavailable"
+      />
     );
   }
 

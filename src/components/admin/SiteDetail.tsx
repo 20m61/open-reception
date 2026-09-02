@@ -5,6 +5,7 @@ import { Button, Card, Section, StatusBadge } from '@/components/admin/ui';
 import { color, font, space } from '@/components/admin/ui/tokens';
 import { SITE_DESTINATIONS, siteDestinationHref } from './site-destinations';
 import { useSiteList } from './use-site-list';
+import { siteStatusState } from './state-vocabulary';
 
 /**
  * 拠点詳細 (issue #421)。
@@ -105,8 +106,8 @@ export function SiteDetail({ tenantId, siteId }: { tenantId: string; siteId: str
           <>
             {' '}
             <StatusBadge
-              status={site.status === 'active' ? 'ok' : 'stopped'}
-              label={site.status === 'active' ? '稼働中' : '停止中'}
+              status={siteStatusState(site.status).status}
+              label={siteStatusState(site.status).label}
             />{' '}
             / 受付端末 {site.deviceCount} 台
           </>

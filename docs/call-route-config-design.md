@@ -1,5 +1,16 @@
 # 呼び出し先・通知ルート設定 設計 (issue #88)
 
+> 🔴 **管理画面は 2026-09-02 に削除された (#873)。本書の「UI」「nav 配線」節は履歴である。**
+>
+> 実際の発信は `executeRoutedCall` → `RoutingPolicy` / `ContactEndpoint`（#374）が決めており、
+> ここで設定する `CallRoute` を**参照しない**。受付フローからの参照（`callRouteId`）も
+> `normalize.ts` の `RETIRED_KEYS` で撤去済み。「設定しても実通話に効かない画面」だけが
+> 残っていたため、`/admin/call-routes` と `CallRoutesManager` と `routing/compat.ts` を削除し、
+> 旧 URL は `/admin/call-routing` へ redirect している。
+>
+> **API（`/api/admin/call-routes`）と永続レコードは残している**（削除の巻き添えで旧データを
+> 壊さないため）。ただし呼び出し元はもう無い。撤去は別 Issue で扱う。
+
 受付後に「誰へ・どの順番で・どの手段で」通知するかを、テナント/サイト境界の中で
 管理者が設定できるようにする。本書は increment 1 のスコープと、設定ドメインの構造、
 認可・監査方針、次増分計画をまとめる。
@@ -65,7 +76,7 @@ inc1 では Group/Target を `CallRoute` 内の値として保持する（別エ
 
 未認証は 401、認可違反は 403、境界外/不存在は 404、入力不正は 400。
 
-## UI（`/admin/call-routes`）
+## UI（`/admin/call-routes`）— **削除済み (#873)**
 
 `CallRoutesManager` がルート一覧・作成・名称編集・有効/無効・削除を提供する。
 非エンジニア向けに、ルートごとにグループ → 呼び出し先（チャネル + 優先順）を
@@ -81,7 +92,7 @@ inc1 では Group/Target を `CallRoute` 内の値として保持する（別エ
 - **inc3 以降**: DynamoDB 実装と `getBackend()` 配線、通知実行サブシステムとの結線
   （ルート解決 → `NotificationRequest`）、最終利用日時/直近成功失敗の集計表示。
 
-## nav 配線（オーケストレータ対応）
+## nav 配線（オーケストレータ対応）— **撤去済み (#421 でナビから除外 → #873 で削除)**
 
 `/admin/call-routes`「呼び出しルート」を `src/components/admin/navigation.ts` の
 `operations`（日常運用）グループへ追加する想定（`/admin/kiosks` の近傍）。

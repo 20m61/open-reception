@@ -39,25 +39,90 @@ export type CallingStageThresholds = {
 };
 
 /**
- * 既定しきい値。Vonage の応答待ち上限（`KioskCallView.CALL_TIMEOUT_MS` = 30s）と体感を
- * 揃え、「予告 → 保持 → 実遷移」までの合計（noticeAfterMs + noticeMinDurationMs）が
- * およそ 30s になるよう選定（25s で予告を出し、最低 5s は見せてから遷移する）。
+ * 既定しきい値。
+ *
+ * `noticeAfterMs`(25s) は Vonage の応答待ち上限（`DEFAULT_VIDEO_ANSWER_TIMEOUT_MS` = 30s）に
+ * 対する予告の出しどころ。**結果がまだ確定していないとき**の段の進み方を決める。
+ *
+ * `noticeMinDurationMs` は **2s**（#832 でオーナー判断により 5s から短縮）。この値は
+ * 「予告を見せてから遷移するまで」であり、**結果が確定した後の待ち時間そのもの**である。
+ * 実 PSTN では結果が数十 ms で届くので、ここが長いほど「サーバは答えを知っているのに
+ * 来訪者が待たされる」時間が延びる（5s のときは床 3s と合わせて実測 8.5 秒だった）。
+ * 「突然感を無くす」には 2s あれば足りる、という判断。
  */
 export const DEFAULT_CALLING_STAGE_THRESHOLDS: CallingStageThresholds = {
   waitingAfterMs: 15_000,
   noticeAfterMs: 25_000,
-  noticeMinDurationMs: 5_000,
+  noticeMinDurationMs: 2_000,
 };
 
 /** しきい値として受け付ける最小値（0 や負値・NaN 等の壊れた設定を弾く）。 */
 const MIN_THRESHOLD_MS = 100;
 /** waitingAfterMs と noticeAfterMs の最低差（順序不変条件を保つための最小マージン）。 */
 const MIN_STAGE_GAP_MS = 100;
+/**
+ * 段階しきい値の上限 (#836)。クエリ `num()` は有限かつ > 0 なら何でも通すので、
+ * 上限が無いと `?callingNoticeMs=1e15` がそのまま入り、#826 以後は elapsed が
+ * 到達せず呼び出し中で固着する。テナント設定も同じ上限で切る。
+ */
+const MAX_STAGE_MS = 120_000;
+/** 予告保持の上限。段階しきい値より短くてよい（来訪者を何分も予告画面に置かない）。 */
+const MAX_NOTICE_MIN_DURATION_MS = 30_000;
 
 function normalizePositive(value: number | undefined | null, fallback: number): number {
   return typeof value === 'number' && Number.isFinite(value) && value >= MIN_THRESHOLD_MS
     ? value
     : fallback;
+}
+
+function capMs(value: number, maxMs: number): number {
+  return value > maxMs ? maxMs : value;
+}
+
+/**
+ * Vonage ビデオの応答待ち上限。`noticeAfterMs`(25s) の後に満了する既定で、
+ * 予告を挟んでから打ち切る窓を残す。E2E は `?callTimeoutMs=` で短縮する。
+ */
+export const DEFAULT_VIDEO_ANSWER_TIMEOUT_MS = 30_000;
+
+function positiveQueryMs(params: URLSearchParams, key: string): number | undefined {
+  const v = Number(params.get(key));
+  return Number.isFinite(v) && v > 0 ? v : undefined;
+}
+
+/**
+ * E2E / デバッグ用クエリからしきい値の上書きを読む。不正値は `undefined`（clamp 側が既定へ倒す）。
+ *
+ * `KioskFlow` と `CheckinFlow` が同じキーを読むための単一の入口。キーを片方だけ足すと
+ * QR 経路だけ本番しきい値のまま残り、e2e がビデオ/PSTN だけを緑にして QR を見落とす。
+ */
+export function callingStageQueryFromSearch(search: string): Partial<CallingStageThresholds> {
+  const params = new URLSearchParams(search.startsWith('?') ? search.slice(1) : search);
+  return {
+    waitingAfterMs: positiveQueryMs(params, 'callingStageMs'),
+    noticeAfterMs: positiveQueryMs(params, 'callingNoticeMs'),
+    noticeMinDurationMs: positiveQueryMs(params, 'callingNoticeHoldMs'),
+  };
+}
+
+/**
+ * `?callTimeoutMs=`。未指定・不正は `undefined`（呼び出し側が既定 30s を使う）。
+ */
+export function videoAnswerTimeoutMsFromSearch(search: string): number | undefined {
+  const params = new URLSearchParams(search.startsWith('?') ? search.slice(1) : search);
+  return positiveQueryMs(params, 'callTimeoutMs');
+}
+
+/**
+ * ビデオ応答待ちの上限を既定へ正規化する。段階しきい値と同じ 100ms〜120s。
+ *
+ * 🔴 **期待値の上限はテスト側でリテラル。** ここの MAX を緩める変異がテストと共有されないこと。
+ */
+export function clampVideoAnswerTimeoutMs(value: number | undefined | null): number {
+  if (typeof value !== 'number' || !Number.isFinite(value) || value < MIN_THRESHOLD_MS) {
+    return DEFAULT_VIDEO_ANSWER_TIMEOUT_MS;
+  }
+  return capMs(value, MAX_STAGE_MS);
 }
 
 /**
@@ -73,22 +138,103 @@ export function clampCallingStageThresholds(
   input?: Partial<CallingStageThresholds> | null,
   base: CallingStageThresholds = DEFAULT_CALLING_STAGE_THRESHOLDS,
 ): CallingStageThresholds {
-  const waitingAfterMs = normalizePositive(input?.waitingAfterMs, base.waitingAfterMs);
-  const noticeMinDurationMs = normalizePositive(input?.noticeMinDurationMs, base.noticeMinDurationMs);
-  const noticeCandidate = normalizePositive(input?.noticeAfterMs, base.noticeAfterMs);
-  const noticeAfterMs =
-    noticeCandidate >= waitingAfterMs + MIN_STAGE_GAP_MS
-      ? noticeCandidate
-      : waitingAfterMs + MIN_STAGE_GAP_MS;
+  let waitingAfterMs = capMs(normalizePositive(input?.waitingAfterMs, base.waitingAfterMs), MAX_STAGE_MS);
+  const noticeMinDurationMs = capMs(
+    normalizePositive(input?.noticeMinDurationMs, base.noticeMinDurationMs),
+    MAX_NOTICE_MIN_DURATION_MS,
+  );
+  let noticeAfterMs = capMs(normalizePositive(input?.noticeAfterMs, base.noticeAfterMs), MAX_STAGE_MS);
+  if (noticeAfterMs < waitingAfterMs + MIN_STAGE_GAP_MS) {
+    const raised = waitingAfterMs + MIN_STAGE_GAP_MS;
+    if (raised <= MAX_STAGE_MS) {
+      noticeAfterMs = raised;
+    } else {
+      noticeAfterMs = MAX_STAGE_MS;
+      waitingAfterMs = noticeAfterMs - MIN_STAGE_GAP_MS;
+    }
+  }
   return { waitingAfterMs, noticeAfterMs, noticeMinDurationMs };
 }
 
-/** 経過 ms としきい値から表示段階を導出する。純関数。 */
+/**
+ * 確定後でも「呼び出しています」を見せる**最低時間**（#832 2 周目レビュー MAJOR-1）。
+ *
+ * 🔴 **床が無いと `dialing` が潰れる。** 結果は初回ポーリングで即座に届きうるので、床を
+ * 置かないと実測で **25〜36ms**（＝体感 0 フレーム）になり、来訪者は「呼ぶ」を押した瞬間に
+ * warning トーンの予告画面を見る ―― 端末が呼び出しを試みた痕跡が画面に残らない。
+ *
+ * 🔴 **値は読み上げと揃っていない。** ナレーション（`reception.callingBody`）は既定で
+ * 概ね 4〜5.5 秒かかり、話速は管理画面で 0.5〜2.0 に設定できるので、床 3s との差は
+ * **既定でも 1〜2.5 秒、低速設定では 5 秒以上**になる。つまり画面が予告へ変わってからも
+ * 「少々お待ちください」と喋り続ける時間が残る。完全に揃えるには `speak()` の完了
+ * （`onEnd`）を床の条件へ混ぜる必要があり、それは別の仕様判断（#832 の残課題）。
+ * **「ナレーションの長さに合わせた」とは言えない** —— 揃えたのではなく、潰れるのを止めただけ。
+ */
+export const MIN_DIALING_MS = 3_000;
+
+/** 床の下限。テナントが `waitingAfterMs` を極小にしても、ここより短くはしない。 */
+export const MIN_DIALING_FLOOR_MS = 500;
+
+/**
+ * 経過 ms としきい値から表示段階を導出する。純関数。
+ *
+ * 🔴 **timeout が確定していたら `waiting` を飛ばして予告段へ進む** (#832)。`waiting` の文言は
+ * 「もう少しお待ちください。**担当者に確認しています**」だが、`busy` と `declined`
+ * （担当者の**辞退**）も `timeout` に写る（`src/domain/call/call-resolution.ts`）ので、
+ * 辞退が数秒で確定した来訪者に対して**もう確認していないことを喋り続ける**ことになる。
+ * 既定しきい値では最大 22 秒。
+ *
+ * 🔴 なお**段の文言は読み上げられない**（`KioskFlow` は `AvatarGuide` に `ttsSettings` を
+ * 渡しておらず、`AvatarGuide` は未指定なら即 return する。親も `aria-hidden` なので支援技術にも
+ * 届かない）。嘘をつくのは**表示だけ**である —— それでも 22 秒は長すぎるので判断は変わらない。
+ *
+ * ただし**飛ばすのは `waiting` だけで、`dialing` は飛ばさない**（`MIN_DIALING_MS`）。
+ * 「呼び出しています」は確定直後でも嘘ではない ―― 実際に呼び出したのだから。
+ * 潰すべき嘘と、潰してはいけない事実を分ける。
+ *
+ * 🔴 **この関数は「その瞬間の段」しか返さない。単調性は保証しない。**
+ * `MIN_DIALING_FLOOR_MS` が `waitingAfterMs` を上回りうる（テナントは 100ms まで下げられる）
+ * ので、`timeoutPending` が真になった瞬間に `waiting → dialing` へ**後退しうる**。
+ * 純関数は時間軸を持たないため、ここで単調性を表現することは原理的にできない ——
+ * 引数を並べ替えても両立しない（5 周目レビューで実測: 225 点中 31 点が後退）。
+ *
+ * **時間軸に沿った単調性は `advanceCallingStage` のラッチが担保する。** 呼び出し側
+ * （`useCallingStage`）は必ずラッチを通すこと。生の戻り値を画面へ出すと、来訪者は
+ * 「お待ちください → 呼び出しています → 予告」という逆行するちらつきを見る。
+ *
+ * @param options.timeoutPending timeout が確定し、予告保持ゲート待ちであるか。
+ *   🔴 **`connected` / `failed` で真にしないこと。** 結果直前に「つながらない場合は…」を
+ *   見せることになる（呼び出し側の保留は timeout 専用。`KioskFlow` の `pendingTimeout`）。
+ */
 export function deriveCallingStage(
   elapsedMs: number,
   thresholds: CallingStageThresholds = DEFAULT_CALLING_STAGE_THRESHOLDS,
+  options?: { readonly timeoutPending?: boolean },
 ): CallingStage {
+  // 🔴 **床には専用の下限を持たせる** (#832 3 周目レビュー MINOR-4)。
+  //
+  // `waitingAfterMs` はテナントが管理画面で **100ms まで下げられる**。あの入力欄の意味は
+  // 「『もう少しお待ちください』へ切り替える経過」であって「呼び出し確定後に
+  // 『呼び出しています』を見せる最低時間」ではないので、あそこに 300ms を入れた
+  // テナントで床が消える ―― 2 周目 MAJOR-1（dialing が潰れて音声と表示が乖離する）が
+  // そのテナントだけで再発する。本番の保証を、意味の違うつまみに結びつけない。
+  const dialingFloorMs = Math.max(
+    MIN_DIALING_FLOOR_MS,
+    Math.min(MIN_DIALING_MS, thresholds.waitingAfterMs),
+  );
+  // 経過だけで予告段に到達していたら、`timeoutPending` の有無に関わらず予告段。
+  //
+  // 🔴 **この分岐が先にあるので、`noticeAfterMs < 床` の設定では床が効かない。**
+  // テナントは両方 100ms まで下げられるので到達可能である（例: waiting=100 / notice=200 なら
+  // 来訪者は「呼ぶ」の 200ms 後に予告を見る）。これは意図した挙動 —— 経過だけで予告に
+  // 到達しているなら、予告を出すのが正しい。**「床は必ず効く」とは読まないこと。**
   if (elapsedMs >= thresholds.noticeAfterMs) return 'preTimeoutNotice';
+  if (options?.timeoutPending === true) {
+    // 🔴 **床の下では `dialing` を保つ**（`waiting` へ落とさない）。落とすと、まさに消したい
+    // 嘘の文言（「担当者に確認しています」＝もう確認していない）を床のあいだ見せてしまう。
+    // テナントが `waitingAfterMs` を床より短くしている場合に実際に起きる。
+    return elapsedMs >= dialingFloorMs ? 'preTimeoutNotice' : 'dialing';
+  }
   if (elapsedMs >= thresholds.waitingAfterMs) return 'waiting';
   return 'dialing';
 }
@@ -107,9 +253,14 @@ export function deriveCallingStage(
  * そこで起点を「予告段階を描画した時刻」に変える。まだ描画していなければ `null` を返し、
  * 呼び出し側は **dispatch してはならない**（描画されてから改めて評価する）と解釈する。
  *
- * 🔴 **適用範囲は `/call` が同期で `timeout` を返す経路だけ**（#826 時点）。実 PSTN の
- * `/status` ポーリングと Vonage ビデオ経路は今も予告を経ずに `CALL_TIMEOUT` を dispatch する。
- * 2 経路への適用は別 Issue。
+ * 🔴 **適用範囲**（#832）。timeout が確定したあと、来訪者向けの遷移はすべて
+ * `useCallingNoticeHold` のゲートを通る:
+ *
+ *  - ✅ `/call` が同期で `timeout` を返す経路（#826）
+ *  - ✅ 実 PSTN の `/status` ポーリング（`handleStatusPoll` が保留へ置く）
+ *  - ✅ Vonage ビデオ（`KioskCallView.onTimeout` が保留へ置く。段階表示は `CallingView`）
+ *  - ✅ QR 受付（`CheckinFlow`）。`CALL_TIMEOUT` は `CALL_FAILED('unanswered')` へ写すが、
+ *    発火はゲート後。段階は `data-calling-stage` で出す
  *
  * @param noticeShownAtMs 予告段階を最初に commit した時刻（ms epoch）。未 commit なら null。
  * @param nowMs 現在時刻（ms epoch）。
@@ -121,5 +272,26 @@ export function timeoutDispatchGateMs(
   thresholds: CallingStageThresholds = DEFAULT_CALLING_STAGE_THRESHOLDS,
 ): number | null {
   if (noticeShownAtMs === null) return null;
+  if (!Number.isFinite(noticeShownAtMs) || !Number.isFinite(nowMs)) return null;
   return Math.max(0, noticeShownAtMs + thresholds.noticeMinDurationMs - nowMs);
+}
+
+/** 段の進行順における位置（`CALLING_STAGES` の添字）。 */
+export function callingStageRank(stage: CallingStage): number {
+  return CALLING_STAGES.indexOf(stage);
+}
+
+/**
+ * 到達した最大段でラッチする（**段は後退しない**）。純関数。
+ *
+ * 🔴 **これが単調性の担保である。** `deriveCallingStage` は「その瞬間の段」しか返さず、
+ * `timeoutPending` が真になった瞬間に `waiting → dialing` へ後退しうる（床が
+ * `waitingAfterMs` を上回る設定で起きる）。後退すると `KioskFlow` の「逆行したら起点を
+ * 捨てる」が走って保持が数え直しになり、来訪者は逆行するちらつきを見る。
+ *
+ * 5 周目レビューの実測では、`/status` の応答を 300ms 遅らせるだけで PSTN 4/4・同期 3/3 で
+ * 再現した（`retries` が flaky として吸収するので、緑と誤読される形）。
+ */
+export function advanceCallingStage(previous: CallingStage, next: CallingStage): CallingStage {
+  return callingStageRank(next) > callingStageRank(previous) ? next : previous;
 }

@@ -12,12 +12,16 @@ export function Section({
   description,
   actions,
   children,
+  headingLevel = 'h2',
 }: {
   title: string;
   description?: string;
   actions?: ReactNode;
   children: ReactNode;
+  /** ページ根に使うときは 'h1'。既定は節としての 'h2'。 */
+  headingLevel?: 'h1' | 'h2';
 }) {
+  const Heading = headingLevel;
   return (
     <section data-testid="ui-section" style={{ marginBottom: space.lg }}>
       <div
@@ -30,7 +34,13 @@ export function Section({
         }}
       >
         <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
-          <h2 style={{ fontSize: font.label, margin: 0 }}>{title}</h2>
+          {/*
+            ページ根に使う画面では `h1` を出せるようにする (#890 / 課題 16)。
+            既定は従来どおり `h2`（節として使う用途がほとんど）。`h2` 固定だったため、
+            この部品をページ根に使う 4 画面は**見出しツリーが h2 から始まっていた** ——
+            スクリーンリーダーの見出しジャンプで「この画面は何か」に辿り着けない。
+          */}
+          <Heading style={{ fontSize: font.label, margin: 0 }}>{title}</Heading>
           {description ? (
             <span style={{ fontSize: font.small, opacity: 0.65 }}>{description}</span>
           ) : null}

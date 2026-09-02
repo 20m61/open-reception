@@ -7,8 +7,9 @@ import { CsvImport } from './CsvImport';
 import { StaffEditor } from './StaffEditor';
 import { filterStaff, type StaffStatusFilter } from './staff-filter';
 import { useQueryParams } from './use-query-params';
-import { Button, DataTable, Field, type Column } from '@/components/admin/ui';
-import { color, space } from '@/components/admin/ui/tokens';
+import { Button, DataTable, Field, Form, SaveFeedback, useSaveFeedback, type Column } from '@/components/admin/ui';
+import { color, font, space } from '@/components/admin/ui/tokens';
+import { enablementState } from './state-vocabulary';
 
 /**
  * 担当者管理 (issue #26; 検索/フィルタ #330 item2)。
@@ -24,6 +25,7 @@ export function StaffManager() {
   const [kana, setKana] = useState('');
   const [departmentId, setDepartmentId] = useState('');
   const [busy, setBusy] = useState(false);
+  const { feedback, success, failure, clear } = useSaveFeedback();
   const [editingId, setEditingId] = useState<string | null>(null);
 
   const { get, setMany } = useQueryParams();
@@ -63,30 +65,48 @@ export function StaffManager() {
   const add = useCallback(async () => {
     if (displayName.trim() === '' || departmentId === '' || busy) return;
     setBusy(true);
+    clear();
     try {
-      await fetch('/api/admin/staff', {
+      /*
+        **結果を捨てない (#870 増分 02)。** 戻りを見ずに `load()` すると、403 / 409 / 5xx でも
+        入力欄が空になって一覧が元のまま返るだけになり、運用者には「登録した」ように見える。
+      */
+      const res = await fetch('/api/admin/staff', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ displayName, kana: kana || undefined, departmentId }),
-      });
+      }).catch(() => null);
+      if (!res?.ok) {
+        failure('担当者を追加できませんでした。');
+        return;
+      }
       setDisplayName('');
       setKana('');
       await load();
+      success('担当者を追加しました。');
     } finally {
       setBusy(false);
     }
-  }, [displayName, kana, departmentId, busy, load]);
+  }, [displayName, kana, departmentId, busy, load, clear, success, failure]);
 
   const patch = useCallback(
     async (s: Staff, body: Record<string, unknown>) => {
-      await fetch(`/api/admin/staff/${s.id}`, {
+      clear();
+      const res = await fetch(`/api/admin/staff/${s.id}`, {
         method: 'PATCH',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify(body),
-      });
+      }).catch(() => null);
+      if (!res?.ok) {
+        // 失敗したら `load()` しない。取り直すと行が元へ戻り、**何も起きなかったのか
+        // 失敗したのかが区別できない**（viewer が在席を切り替えたつもりで切り替わっていない）。
+        failure('変更を保存できませんでした。');
+        return;
+      }
       await load();
+      success('変更を保存しました。');
     },
-    [load],
+    [load, clear, success, failure],
   );
 
   const deptName = useCallback(
@@ -105,14 +125,20 @@ export function StaffManager() {
   );
   const changeSecondary = useCallback(
     async (staffId: string, organizationId: string, method: 'POST' | 'DELETE') => {
-      await fetch(`/api/admin/staff/${staffId}/memberships`, {
+      clear();
+      const res = await fetch(`/api/admin/staff/${staffId}/memberships`, {
         method,
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ organizationId }),
-      });
+      }).catch(() => null);
+      if (!res?.ok) {
+        failure(method === 'POST' ? '兼務を追加できませんでした。' : '兼務を外せませんでした。');
+        return;
+      }
       await load();
+      success(method === 'POST' ? '兼務を追加しました。' : '兼務を外しました。');
     },
-    [load],
+    [load, clear, success, failure],
   );
 
   const hasFilter = Boolean(keyword || filterDeptId || status);
@@ -174,8 +200,8 @@ export function StaffManager() {
       {
         key: 'status',
         header: '状態',
-        cellStyle: (s) => ({ color: s.enabled ? color.success : color.muted }),
-        cell: (s) => (s.enabled ? '有効' : '無効'),
+        cellStyle: (s) => ({ color: enablementState(s.enabled).color }),
+        cell: (s) => enablementState(s.enabled).label,
       },
       {
         key: 'availability',
@@ -224,7 +250,11 @@ export function StaffManager() {
     <section>
       <h1 style={{ marginTop: 0 }}>担当者管理</h1>
 
-      <div style={{ display: 'flex', gap: space.sm, alignItems: 'flex-end', flexWrap: 'wrap', marginBottom: space.lg }}>
+      <Form
+        onSubmit={add}
+        aria-label="担当者を追加"
+        style={{ display: 'flex', gap: space.sm, alignItems: 'flex-end', flexWrap: 'wrap', marginBottom: space.lg }}
+      >
         <Field label="氏名" htmlFor="staff-name-input">
           <input id="staff-name-input" data-testid="staff-name-input" value={displayName} onChange={(e) => setDisplayName(e.target.value)} style={inputStyle} />
         </Field>
@@ -240,10 +270,11 @@ export function StaffManager() {
             ))}
           </select>
         </Field>
-        <Button variant="primary" data-testid="staff-add" onClick={add} disabled={busy || displayName.trim() === ''}>
+        <Button variant="primary" type="submit" data-testid="staff-add" disabled={busy || displayName.trim() === ''}>
           追加
         </Button>
-      </div>
+        <SaveFeedback feedback={feedback} successTestId="staff-saved" errorTestId="staff-save-error" />
+      </Form>
 
       <CsvImport
         endpoint="/api/admin/staff/import"
@@ -304,7 +335,7 @@ export function StaffManager() {
           </Button>
         ) : null}
       </div>
-      <p data-testid="staff-count" style={{ opacity: 0.7, fontSize: '0.85rem' }}>
+      <p data-testid="staff-count" style={{ opacity: 0.7, fontSize: font.small }}>
         {items.length} 件中 {filtered.length} 件を表示
       </p>
 

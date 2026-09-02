@@ -214,7 +214,6 @@ export function isActivePath(itemHref: string, pathname: string): boolean {
 export const UNLISTED_ADMIN_TITLES: Record<string, string> = {
   '/admin/login': 'ログイン',
   '/admin/kiosks': '受付端末管理（旧）',
-  '/admin/call-routes': '呼び出しルート（旧）',
 };
 
 export const UNLISTED_ADMIN_ROUTES: Record<string, string> = {
@@ -224,10 +223,4 @@ export const UNLISTED_ADMIN_ROUTES: Record<string, string> = {
     '旧・受付端末管理 (#18)。`docs/site-device-management-design.md` の確定方針で ' +
     'Device が正・`/admin/devices` が主管理画面。token 登録/失効の旧フローが生きているため ' +
     '画面は残すが、ナビに対等で並べると「受付端末」が 2 つに見える。/admin/devices から辿れる',
-  '/admin/call-routes':
-    '旧・呼び出しルート (#88)。**実際の発信は参照しない**（発信は executeRoutedCall → ' +
-    'RoutingPolicy/ContactEndpoint（issue 374）。routing/compat.ts は消費者ゼロ）。設定しても実通話に ' +
-    '効かないのでナビから外す。受付フローからの参照（callRouteId）は撤去済みだが、既存の ' +
-    '旧ルートを確認・整理できるよう画面自体は残し、' +
-    '/admin/call-routing から辿れる。モデル一本化は移行台帳 §5「取次モデル」',
 };

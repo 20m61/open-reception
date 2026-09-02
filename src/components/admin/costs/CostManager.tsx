@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useState } from 'react';
 import type { CostEstimate, CostTrendPoint } from '@/domain/usage/cost-estimate';
-import { Button } from '@/components/admin/ui';
+import { Button, font } from '@/components/admin/ui';
 import { UsageCard, CardGrid } from '../usage/UsageCard';
 import { TrendBars, TrendSection } from '../usage/TrendBars';
 
@@ -85,7 +85,7 @@ function Body({ estimate }: { estimate: CostResponse }) {
         style={{
           display: 'inline-block',
           alignSelf: 'flex-start',
-          fontSize: '0.75rem',
+          fontSize: font.caption,
           padding: '4px 10px',
           borderRadius: 999,
           background: 'var(--color-surface-2)',
@@ -123,7 +123,7 @@ function Body({ estimate }: { estimate: CostResponse }) {
 
       <div>
         <h2 style={{ fontSize: '1.05rem', marginBottom: 12 }}>サービス別内訳（概算）</h2>
-        <table data-testid="cost-breakdown" style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.95rem' }}>
+        <table data-testid="cost-breakdown" style={{ width: '100%', borderCollapse: 'collapse', fontSize: font.body }}>
           <thead>
             <tr style={{ textAlign: 'left', borderBottom: '1px solid var(--color-surface-2)' }}>
               <th style={cell}>サービス</th>

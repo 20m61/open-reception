@@ -198,6 +198,7 @@ export function SignageManager({
 
   return (
     <Section
+      headingLevel="h1"
       title="待機中サイネージ"
       description="受付待機中に表示するコンテンツ（時計 / 案内文 / 画像 / スライド）を設定します。来訪者の個人情報は表示しません。画像・スライドの外部 URL は信頼できるオリジンのみを使用し、素材のライセンスを確認してください。"
       actions={

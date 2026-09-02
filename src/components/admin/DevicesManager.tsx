@@ -3,18 +3,11 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import type { DeviceConnectivity, DeviceView } from '@/lib/tenant/device-service';
 import type { DeviceKind } from '@/domain/tenant/types';
-import {
-  Button,
-  DataTable,
-  Field,
-  Section,
-  StatusBadge,
-  type Column,
-  type StatusKind,
-} from '@/components/admin/ui';
-import { font, space } from '@/components/admin/ui/tokens';
+import { Button, DataTable, Field, Form, Section, StatusBadge, type Column, type StatusKind } from '@/components/admin/ui';
+import { font, space, zIndex } from '@/components/admin/ui/tokens';
 import { renderTextToQrSvg } from '@/lib/reservation/qr';
 import { useQueryParams } from './use-query-params';
+import { useModalDialog } from './useModalDialog';
 import { useSiteScope } from './use-site-scope';
 import { SiteScopeSelect } from './SiteScopeSelect';
 import { paginate } from './list-io';
@@ -103,6 +96,23 @@ export function DevicesManager({
   const [copied, setCopied] = useState(false);
   /** 発行失敗時のメッセージ（null=非表示）。無反応を避けるため必ず表示する。 */
   const [issueError, setIssueError] = useState<string | null>(null);
+
+  /*
+    3 つのオーバーレイに focus 管理を与える (#890)。`role="dialog"` を宣言しながら
+    autoFocus / trap / Escape / 復帰のどれも無かった —— とくに受付 URL は「再表示できない」。
+  */
+  const reissueDialogRef = useModalDialog<HTMLDivElement>({
+    open: reissueTarget !== null,
+    onClose: useCallback(() => setReissueTarget(null), []),
+  });
+  const issuedDialogRef = useModalDialog<HTMLDivElement>({
+    open: issued !== null,
+    onClose: useCallback(() => setIssued(null), []),
+  });
+  const errorDialogRef = useModalDialog<HTMLDivElement>({
+    open: issueError !== null,
+    onClose: useCallback(() => setIssueError(null), []),
+  });
   /** 端末登録の失敗メッセージ。フォームの隣に出す（発行失敗のダイアログとは別物）。 */
   const [addError, setAddError] = useState<string | null>(null);
 
@@ -475,6 +485,7 @@ export function DevicesManager({
 
   return (
     <Section
+      headingLevel="h1"
       title="受付端末管理"
       description="サイトを選択し、その配下の受付端末を管理します。端末トークンの値は表示しません（登録状態のみ）。"
     >
@@ -508,7 +519,11 @@ export function DevicesManager({
         />
       </div>
 
-      <div style={{ display: 'flex', gap: 8, alignItems: 'flex-end', flexWrap: 'wrap', marginBottom: 24 }}>
+      <Form
+        onSubmit={add}
+        aria-label="端末を追加"
+        style={{ display: 'flex', gap: 8, alignItems: 'flex-end', flexWrap: 'wrap', marginBottom: 24 }}
+      >
         <label style={labelStyle}>
           <span style={labelText}>端末名</span>
           <input
@@ -544,8 +559,8 @@ export function DevicesManager({
         </label>
         <Button
           variant="primary"
+          type="submit"
           data-testid="device-add"
-          onClick={add}
           disabled={busy || name.trim() === '' || !canCreate}
         >
           追加
@@ -559,7 +574,7 @@ export function DevicesManager({
             {addError}
           </p>
         )}
-      </div>
+      </Form>
 
       <div
         data-testid="device-filters"
@@ -694,9 +709,17 @@ export function DevicesManager({
       ) : null}
 
       {reissueTarget && (
-        <div data-testid="device-reissue-dialog" role="dialog" aria-modal="true" style={dialogBackdrop}>
+        <div
+          data-testid="device-reissue-dialog"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="device-reissue-title"
+          tabIndex={-1}
+          ref={reissueDialogRef}
+          style={dialogBackdrop}
+        >
           <div style={dialogBox}>
-            <h2 style={{ marginTop: 0 }}>受付URLを発行しますか？</h2>
+            <h2 id="device-reissue-title" style={{ marginTop: 0 }}>受付URLを発行しますか？</h2>
             <p>
               端末 <strong>{reissueTarget.name}</strong> の受付URL（QR）を発行します。現在有効なURLは無効になり、
               新しいURL/QRから受付画面を開けるようになります。この操作は監査ログに記録されます。
@@ -714,10 +737,29 @@ export function DevicesManager({
       )}
 
       {issueError && (
-        <div data-testid="device-issue-error" role="alert" style={dialogBackdrop}>
+        /*
+          `role="alert"` だけだと**ダイアログとして辿れない** (#890 / 課題 15)。
+          閉じるまで操作を止めるオーバーレイなので dialog として宣言し、`aria-describedby` で
+          本文（失敗理由）を読み上げへ載せる。alert の即時読み上げは `role="alert"` を内側の
+          本文へ移して保つ。
+        */
+        <div
+          data-testid="device-issue-error"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="device-issue-error-title"
+          aria-describedby="device-issue-error-body"
+          tabIndex={-1}
+          ref={errorDialogRef}
+          style={dialogBackdrop}
+        >
           <div style={dialogBox}>
-            <h2 style={{ marginTop: 0, color: 'var(--color-danger)' }}>発行に失敗しました</h2>
-            <p>{issueError}</p>
+            <h2 id="device-issue-error-title" style={{ marginTop: 0, color: 'var(--color-danger)' }}>
+              発行に失敗しました
+            </h2>
+            <p id="device-issue-error-body" role="alert">
+              {issueError}
+            </p>
             <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
               <Button data-testid="device-issue-error-close" onClick={() => setIssueError(null)}>
                 閉じる
@@ -728,9 +770,17 @@ export function DevicesManager({
       )}
 
       {issued && (
-        <div data-testid="device-issued-dialog" role="dialog" aria-modal="true" style={dialogBackdrop}>
+        <div
+          data-testid="device-issued-dialog"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="device-issued-title"
+          tabIndex={-1}
+          ref={issuedDialogRef}
+          style={dialogBackdrop}
+        >
           <div style={{ ...dialogBox, maxWidth: 520 }}>
-            <h2 style={{ marginTop: 0 }}>受付URLを発行しました</h2>
+            <h2 id="device-issued-title" style={{ marginTop: 0 }}>受付URLを発行しました</h2>
             <p style={{ marginTop: 0 }}>
               端末 <strong>{issued.deviceName}</strong> をこのURL/QRで開くと受付画面が有効になります。
             </p>
@@ -757,10 +807,10 @@ export function DevicesManager({
                 {copied ? 'コピー済み' : 'コピー'}
               </Button>
             </div>
-            <p style={{ fontSize: '0.85rem', opacity: 0.8, marginBottom: 4 }}>
+            <p style={{ fontSize: font.small, opacity: 0.8, marginBottom: 4 }}>
               有効期限: {formatLastSeen(issued.expiresAt)}
             </p>
-            <p style={{ fontSize: '0.85rem', color: 'var(--color-warning)', marginTop: 0 }}>
+            <p style={{ fontSize: font.small, color: 'var(--color-warning)', marginTop: 0 }}>
               ⚠ このURL/QRはここでしか表示できません。閉じる前に控えるか受付端末で開いてください。
             </p>
             <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
@@ -784,7 +834,7 @@ const inputStyle: React.CSSProperties = {
   color: 'var(--color-text)',
 };
 const labelStyle: React.CSSProperties = { display: 'flex', flexDirection: 'column', gap: 4 };
-const labelText: React.CSSProperties = { fontSize: '0.85rem', opacity: 0.8 };
+const labelText: React.CSSProperties = { fontSize: font.small, opacity: 0.8 };
 const dialogBackdrop: React.CSSProperties = {
   position: 'fixed',
   inset: 0,
@@ -792,7 +842,7 @@ const dialogBackdrop: React.CSSProperties = {
   display: 'flex',
   alignItems: 'center',
   justifyContent: 'center',
-  zIndex: 50,
+  zIndex: zIndex.dialog,
 };
 const dialogBox: React.CSSProperties = {
   maxWidth: 440,

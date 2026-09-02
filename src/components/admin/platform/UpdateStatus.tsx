@@ -7,7 +7,8 @@ import type {
   UpdateStatusRow,
   UpdateStatusSummary,
 } from '@/domain/platform/update-status';
-import { DangerActionPlaceholder, MetricCard } from './primitives';
+import { DangerActionPlaceholder } from './primitives';
+import { MetricCard } from '@/components/admin/ui';
 
 /**
  * アップデート状況（read 中心） (issue #83 AC6)。

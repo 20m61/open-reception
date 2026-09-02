@@ -3,19 +3,35 @@
 import { useCallback, useEffect, useState } from 'react';
 import type { VoiceSettings } from '@/domain/voice/types';
 import { Button, Field, FormRow, SaveFeedback, useSaveFeedback } from '@/components/admin/ui';
-import { space } from '@/components/admin/ui/tokens';
+import { color, font, space } from '@/components/admin/ui/tokens';
+import { isSttRecognitionSimulated } from '@/domain/voice/stt-capability';
+import { AdminReadGate } from './AdminReadGate';
 import { DEFAULT_CALLING_STAGE_THRESHOLDS } from '@/domain/reception/calling-experience';
 import { sanitizeA11yEnabledModes, type A11yEnabledModes } from '@/domain/kiosk/a11y-modes';
+import { useUnsavedChanges } from './use-unsaved-changes';
+import { useUnsavedChangesGuard } from './use-unsaved-changes-guard';
+import { UnsavedChangesDialog } from './UnsavedChangesDialog';
 
 /** 音声設定 (issue #28)。TTS/STT の有効化・案内文言・話速・音量を編集する。 */
 export function VoiceManager() {
   const [v, setV] = useState<VoiceSettings | null>(null);
+  const [loadFailed, setLoadFailed] = useState(false);
   const [busy, setBusy] = useState(false);
+  // 未保存のまま離脱しようとしたら止める (#912 / 課題 12)。
+  const { dirty, markSaved } = useUnsavedChanges(v);
+  const guard = useUnsavedChangesGuard(dirty);
   const { feedback, success, failure, clear } = useSaveFeedback();
 
   const load = useCallback(async () => {
-    const res = await fetch('/api/admin/voice');
-    if (res.ok) setV((await res.json()) as VoiceSettings);
+    // `catch` を省くとオフラインで例外になり、`void load()` が握り潰して
+    // **失敗にすら落ちない**（画面は「読み込み中…」のまま固まる）。
+    const res = await fetch('/api/admin/voice').catch(() => null);
+    if (!res?.ok) {
+      setLoadFailed(true);
+      return;
+    }
+    setV((await res.json()) as VoiceSettings);
+    setLoadFailed(false);
   }, []);
 
   useEffect(() => {
@@ -38,7 +54,9 @@ export function VoiceManager() {
         body: JSON.stringify(v),
       });
       if (res.ok) {
-        setV((await res.json()) as VoiceSettings);
+        const next = (await res.json()) as VoiceSettings;
+        setV(next);
+        markSaved(next);
         success();
       } else {
         failure();
@@ -46,9 +64,19 @@ export function VoiceManager() {
     } finally {
       setBusy(false);
     }
-  }, [v, busy, success, failure, clear]);
+  }, [v, busy, markSaved, success, failure, clear]);
 
-  if (!v) return <section><h1 style={{ marginTop: 0 }}>音声設定</h1><p>読み込み中…</p></section>;
+  if (!v) {
+    return (
+      <AdminReadGate
+        heading="音声設定"
+        failed={loadFailed}
+        failureMessage="音声設定を取得できませんでした。通信状況を確認して再試行してください。"
+        onRetry={() => void load()}
+        testId="voice-unavailable"
+      />
+    );
+  }
 
   // アクセシビリティ支援モードの有効/無効 (issue #321)。未設定は「全モード有効」として表示する
   // （sanitizeA11yEnabledModes の既定と一致させる。保存時は常に全 4 モード分をまとめて送る）。
@@ -58,16 +86,45 @@ export function VoiceManager() {
 
   return (
     <section style={{ maxWidth: 560 }}>
+      <UnsavedChangesDialog
+        pendingHref={guard.pendingHref}
+        onLeave={guard.leave}
+        onStay={guard.stay}
+      />
       <h1 style={{ marginTop: 0 }}>音声設定</h1>
       <div style={{ display: 'flex', flexDirection: 'column', gap: space.md }}>
         <label style={chk}>
           <input type="checkbox" data-testid="voice-tts" checked={v.ttsEnabled} onChange={(e) => patch({ ttsEnabled: e.target.checked })} />
           音声合成（読み上げ）を有効にする
         </label>
-        <label style={chk}>
-          <input type="checkbox" data-testid="voice-stt" checked={v.sttEnabled} onChange={(e) => patch({ sttEnabled: e.target.checked })} />
-          音声認識を有効にする（結果は候補表示・確認必須／即時呼び出しはしない）
-        </label>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: space.xs }}>
+          <label style={chk}>
+            <input type="checkbox" data-testid="voice-stt" checked={v.sttEnabled} onChange={(e) => patch({ sttEnabled: e.target.checked })} />
+            音声認識を有効にする（結果は候補表示・確認必須／即時呼び出しはしない）
+          </label>
+          {/*
+            擬似認識であることを、有効化する前に運用者へ伝える (#872)。
+            従来のラベルは「確認必須」と**安心させる方向にだけ**書かれており、実際には
+            マイクを使わず在席担当者名を返すことに触れていなかった。実 provider が既定に
+            なれば `isSttRecognitionSimulated()` が false になり、この注意書きは自動で消える。
+          */}
+          {isSttRecognitionSimulated() ? (
+            <p
+              data-testid="voice-stt-simulated-notice"
+              role="note"
+              style={{
+                margin: 0,
+                marginLeft: 26,
+                fontSize: font.small,
+                lineHeight: 1.7,
+                color: color.warning,
+              }}
+            >
+              現在の音声認識は<strong>デモ用の擬似認識</strong>です。マイクは使わず、在席中の担当者名を
+              候補として返します。来訪者の発話は認識していません（実際の音声認識は Issue 370 で対応）。
+            </p>
+          ) : null}
+        </div>
         <label style={chk}>
           <input
             type="checkbox"

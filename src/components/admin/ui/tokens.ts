@@ -69,6 +69,44 @@ export const radius = {
   pill: 9999,
 } as const;
 
+/**
+ * 重ね順トークン (#901 / 課題 29)。正は `globals.css` の `--z-*` で、
+ * `tokens-css-parity.test.ts` が一致を機械検証する。
+ *
+ * inline style から層を指定するときはここを使う。以前は 3 つの記述系に 12 の層が
+ * 散っており、**同じ area の 2 層が同値**（サイドバーと端末ダイアログがどちらも 50）
+ * になっていた。順序の意味は `tests/config/z-index-layers.test.ts` が縛る。
+ */
+/**
+ * モーショントークン (#903 / 課題 31)。正は `globals.css` の `--dur-*` / `--ease-out`。
+ *
+ * inline style から `var(--…)` をそのまま使えるので値ではなく**参照文字列**で持つ
+ * （`color` と同じ形）。`spin` / `pulse` は待機中に回り続けるものの**周期**で、
+ * `fast/base/slow`（操作への応答の速さ）とは軸が違う。
+ */
+export const motion = {
+  fast: 'var(--dur-fast)',
+  base: 'var(--dur-base)',
+  slow: 'var(--dur-slow)',
+  spin: 'var(--dur-spin)',
+  pulse: 'var(--dur-pulse)',
+  easeOut: 'var(--ease-out)',
+} as const;
+
+export const zIndex = {
+  behind: 2,
+  companion: 5,
+  voice: 25,
+  escapeBar: 30,
+  chatDrawer: 40,
+  scrim: 40,
+  a11yButton: 45,
+  sidebar: 50,
+  dialog: 55,
+  inactivity: 60,
+  a11yOverlay: 70,
+} as const;
+
 /** タイポトークン。管理画面（情報密度寄り）の標準値。 */
 export const font = {
   caption: '0.75rem',

@@ -1,5 +1,5 @@
 import type { CSSProperties } from 'react';
-import { color, radius, space } from './tokens';
+import { color, motion, radius, space } from './tokens';
 
 /**
  * 管理画面 共有 スケルトン (issue #94, increment 1)。
@@ -37,7 +37,7 @@ export function Skeleton({
         height,
         borderRadius: rounded,
         background: color.surface2,
-        animation: 'admin-skeleton-pulse 1.4s ease-in-out infinite',
+        animation: `admin-skeleton-pulse ${motion.pulse} ease-in-out infinite`,
         ...style,
       }}
     />

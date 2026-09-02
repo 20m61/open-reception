@@ -1,4 +1,8 @@
 import { expect, request, type Page } from '@playwright/test';
+import {
+  adminApiContextOptions,
+  formatKioskSessionTransportError,
+} from '../config/kiosk-session-transport';
 
 /**
  * 管理セッションを確立する (issue #24)。
@@ -19,6 +23,10 @@ export async function loginAsAdmin(page: Page): Promise<void> {
  * 管理操作（ログイン・端末作成・トークン発行）は使い捨ての admin リクエストコンテキストで行い、
  * `page` には kiosk セッション cookie だけを残す（実機の受付端末に管理セッションが乗らないのと同じ）。
  * fullyParallel 下の干渉を避けるため、テストごとに一意な端末を新規作成してエンロールする。
+ *
+ * 管理 API は `Connection: close`（#847）。Playwright の APIRequestContext はプロセス共通の
+ * keep-alive agent を使い、`dispose()` してもソケットが残る。サーバが先に切ったあと再利用すると
+ * 最初の `POST /api/admin/login` が `ECONNRESET` になり、spec に到達せず retry で緑になる。
  */
 export async function establishKioskSession(page: Page): Promise<void> {
   // request.newContext() は config の use.baseURL を継承しないため明示的に渡す（config と同じ解決）。
@@ -27,26 +35,31 @@ export async function establishKioskSession(page: Page): Promise<void> {
     process.env.PLAYWRIGHT_BASE_URL?.replace(/\/$/, '') ||
     `http://127.0.0.1:${process.env.PORT ?? 3000}`;
   // ブラウザページを起こさない軽量な APIRequestContext で管理操作を行う（独立 cookie ジャー）。
-  const admin = await request.newContext({ baseURL });
+  const admin = await request.newContext(adminApiContextOptions(baseURL));
+  const adminPost = async (path: string, data: Record<string, unknown>) => {
+    try {
+      return await admin.post(path, { data });
+    } catch (error) {
+      throw formatKioskSessionTransportError(error, `POST ${path}`);
+    }
+  };
   try {
-    const login = await admin.post('/api/admin/login', {
-      data: { password: 'open-reception' },
+    const login = await adminPost('/api/admin/login', {
+      password: 'open-reception',
     });
     expect(login.ok()).toBeTruthy();
 
-    const created = await admin.post('/api/admin/devices', {
-      data: {
-        tenantId: 'internal',
-        siteId: 'default-site',
-        name: `e2e-kiosk-${Math.random().toString(36).slice(2, 9)}`,
-        kind: 'kiosk',
-      },
+    const created = await adminPost('/api/admin/devices', {
+      tenantId: 'internal',
+      siteId: 'default-site',
+      name: `e2e-kiosk-${Math.random().toString(36).slice(2, 9)}`,
+      kind: 'kiosk',
     });
     expect(created.ok()).toBeTruthy();
     const deviceId = ((await created.json()) as { id: string }).id;
 
-    const issued = await admin.post(`/api/admin/devices/${deviceId}/reissue-token`, {
-      data: { tenantId: 'internal' },
+    const issued = await adminPost(`/api/admin/devices/${deviceId}/reissue-token`, {
+      tenantId: 'internal',
     });
     expect(issued.ok()).toBeTruthy();
     const { enrollmentUrl } = (await issued.json()) as { enrollmentUrl: string };

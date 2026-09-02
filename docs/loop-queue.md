@@ -7,9 +7,77 @@
 > | 残件 | なぜ人・ローカル macOS でしか出来ないか | 追跡 |
 > | --- | --- | --- |
 > | `kiosk-landscape-target-chromium-ipad-darwin.png` の取り直し（**この 1 枚だけ**） | ベースライン名に `{platform}` が入る。**linux の描画を darwin の名前で置くと永久に一致せず、本物の退行を隠す**。手順は #789 のコメント | #789 |
+> | `admin-desktop-call-routing-chromium-ipad-darwin.png` の取り直し（**この 1 枚だけ**） | 同上。**2 つの変更が同じ 1 枚に乗っている**ので取り直しは 1 回で済む: (1) #873 で見出しを「取次ルート」へ統一し旧画面への導線を削除、(2) #886 で disabled ボタン（「接続先を追加」）が破線表現になった。**linux 側はどちらも再生成済み**（毎回 差分画像を目視して確認）。darwin だけ stale | #873 / #886 |
 > | AWS の窓を開ける（`./scripts/aws-issue-credentials.sh`） | 短命 STS の発行は darwin 限定で、`scripts/hooks/guard-destructive.sh` が機械強制（#675）。**窓さえ開けばデプロイ本体はクラウドから wrapper 経由で流せる** | #675 / `docs/runbook-cloud-aws-deploy.md` |
 > | 実機 iPad UAT | 横向きで部署カードが何枚見えるか / 部署を開いて戻れるか / 騒音下で不在告知が聞き取れるか | #807 / #65 |
+> | **リモートブランチ 14 本の削除**（2026-09-02 の UI/UX 周回ぶん） | クラウドセッションからは `git push origin --delete` が **黙って「Everything up-to-date」を返して消えない**（proxy が write を拒否する）。全部 squash マージ済みで PR も閉じているので `orphan_branch` 検出には掛からない。一覧は本書「2026-09-02 の周回」節 | — |
 >
+## 2026-09-02 の周回（UI/UX 監査 Wave 0 / Wave 1）
+
+正本は `docs/ui-review-2026-09-01.md`。Wave 0（BLOCKER 7 + D6）と Wave 1（課題 06–18 / 22–32）を
+消化した。**各周回とも `--full` green・flaky 0・変異検証つき**で、判定できない主張は緑で飾らずに
+落として理由を残してある（詳細は各 PR 本文）。
+
+| PR | 課題 | 内容 |
+| --- | --- | --- |
+| #885 | 22 / 23 / 25 | ブランド accent が**一度も効いていなかった**（`:root` 由来の派生は再計算されない）。輝度でインクを選ぶ |
+| #887 | 09 / 10 | 押せないボタンの視覚契約を admin へ / `ghost` を `secondary` から分離 |
+| #889 | 08 | 生 `window.confirm` 8 箇所 → 二段確認 + 監査理由 |
+| #891 | 15 / 16 | モーダルのフォーカス管理（`useModalDialog`）/ 4 画面へ `h1` |
+| #894 | 13 / 14 | CRUD の `<form>` 化と Enter 送信 / `Field` の aria 配線 |
+| #897 | 07 | platform の `MetricCard` / `StatusBadge` 重複解消 |
+| #900 | 11 | 状態語彙の一元化（**無効を「失効」と呼ぶ誤り**を修正） |
+| #902 | 29 | z-index トークン化 + **監査が見落としていた** sidebar/dialog の同値衝突 |
+| #904 | 27 / 21 / 31 | カタログの旧値 / `--space-xs` / モーショントークン |
+| #906 | 17 | 監査ログのページング + CSV |
+| #911 | 18 | 列ソート（`aria-sort` / URL 復元 / **並べ替えてからページを切る**） |
+| #914 | 12 | 未保存の変更を持ったままの離脱を止める |
+| #916 | 28（前半） | トークンと同値の `fontSize` リテラル 54 件 |
+| #908 | 32 | `prefers-contrast` / `forced-colors` 対応、HC が届かない地色 |
+
+**監査の主張を 3 つ訂正した**（監査は仮説であって事実ではない、の 4〜6 例目）:
+
+- 課題 29「`VoiceReadbackConfirm` が逃げ道バーより下」… **意図的で機械強制済み**（#788）。取り下げ
+- 課題 29「ドロワーとスクリムの 40 衝突」… 同時に描画されないので不具合ではない
+- 課題 28「`0.85rem` はスケールに無い」… **`font.small` そのもの**
+
+### 分けた残り（Issue 化済み）
+
+| Issue | 内容 |
+| --- | --- |
+| #893 | 保存系 8 画面と表の行内編集の form 化（#894 の残り） |
+| #896 | platform の生 table 14 個・読込中と 0 件の描き分け（課題 06） |
+| #899 | 状態表示をバッジへ揃えるかの設計判断（#900 の続き） |
+| #910 | 列ソートの残りの一覧 + ページング未導入 5 リスト（#911 の続き） |
+| #913 | 未保存判定が「未設定」と「空文字」を別物として扱う（#912 の既知の粗さ） |
+| #915 | `fontSize` リテラルの残り 102 件（寄せると文字サイズが動く） |
+
+### 未着手（**方針判断が要る**）
+
+- **課題 24（罫線コントラスト 3:1）** … `--color-border` は面に対し **1.27:1**、
+  `--color-border-strong` は **1.67:1**（実測）。WCAG 1.4.11 の 3:1 に届かせるには
+  alpha を 0.08 → **0.34**（約 4 倍）にする必要があり、**罫線を持つ全要素の描画が変わる**。
+  linux の 14 枚は再生成できるが、**darwin の 14 枚は macOS でしか作れない**。
+  上の残件表の 1 枚とは規模が違うので、着手はコスト込みの判断になる。
+- **課題 30（レスポンシブ戦略が 2 つ併存）** … 管理画面は CSS の `max-width: 900px` 1 本、
+  受付端末は `domain/kiosk/layout.ts` の JS 判定（1600px + アスペクト比）。
+  統一するのか、意図として文書化して固定するのかを決める必要がある。
+
+### 削除できていないリモートブランチ
+
+クラウドからは消せない（上の残件表）。ローカル macOS で:
+
+```
+for b in feat/admin-form-aria feat/audit-log-paging-csv feat/prefers-contrast-support \
+         feat/table-column-sort feat/unsaved-changes-guard fix/accent-derivation \
+         fix/admin-button-visual-contract fix/admin-danger-confirm \
+         fix/admin-dialog-focus-headings fix/token-single-source \
+         refactor/admin-state-vocabulary refactor/font-token-adoption \
+         refactor/platform-shared-primitives refactor/z-index-tokens; do
+  git push origin --delete "$b"
+done
+```
+
 > 2026-08-26 の引き継ぎ（`docs/handoff-2026-08-26.md`）の §0 は **2026-08-27 に消化済み**
 > （PR #819 / #820 マージ、Cursor 手順書の環境変数方針）。同書は経緯の記録として残すが、
 > **着手待ちとして追いかける必要はない**。
@@ -25,8 +93,19 @@
 
 | 順 | Issue | なぜこの順か | 着手可否 |
 | --- | --- | --- | --- |
-| 1 | **#818** | 全 spec がちょうど 1 つの project に載ることの機械化。#787 で「project を分けても隔離にならない」を踏んだ再発防止 | ローカル可 |
-| 2 | **#817** → **#816** → **#815** | #787 の周回で実測から分離したもの。#817 は**営業時間外に全群がその形になる**ので 3 つの中では先 | ローカル可 |
+| 1 | **#816** → **#815** | 逃げ道バーが内容を覆う。#816 は linux/darwin 両方の VRT 取り直しが要る | darwin VRT 待ち（#789） |
+
+> **#847 は 2026-09-01 に消化した**（本周回）。fixture の `POST /api/admin/login` `ECONNRESET`
+> は並列 backlog ではなく、Playwright のプロセス共通 keep-alive agent が死んだソケットを
+> 再利用していた。`Connection: close` で抑止し、残った RST は `kiosk-session-transport:` で
+> spec 失敗と区別する。testing.md の「既知」記述は消した。
+> 実測: `kiosk-staff-response-calling.spec.ts --retries=0 --repeat-each=20` → **61 passed / 0 flaky**
+> （依存 project 含む。対象 spec 本体は 2×20）。
+>
+> **#818 / #817 / #843 / #836 / #849 / #837.2–3 / #838 / #832 は 2026-09-01 に消化した**
+> （PR #852 / #856 / #853 / #854 / #855 / #857 / #860 / #862。linux VRT 取り直しは #858）。
+> #837.1（stall 自己確認）は main の `__stallAt` で既充足。
+> #838 AC6（semgrep ルール固定）は #841 で既充足していた。
 
 > **#826 は 2026-08-31 に消化した**（PR は本書の履歴を参照）。**flaky の正体は観測ではなく実装**
 > だった: 予告(preTimeoutNotice)の保持が「呼び出し開始からの経過」起点だったため、レンダラが
@@ -34,10 +113,16 @@
 > **予告が一度も描画されないまま結果画面へ飛ぶ**（#323 AC3 の保証違反）。e2e は保持を
 > 300ms へ圧縮しているのでこれを踏みやすかった。保持の起点を「commit した時刻」へ変えた。
 >
-> 🔴 **ただし直ったのは `/call` が同期で `timeout` を返す経路だけ。** 実運用で来訪者が踏む
-> **実 PSTN（`/status` ポーリング）と Vonage ビデオの 2 経路は、今も予告を経ずに遷移する**
-> （main も同じ既存欠陥。独立レビューで判明）。#323 AC3 は**まだ全経路では満たされていない**
-> ので「解消」と読まないこと。2 経路への適用は別 Issue。
+> 🔴 **#323 AC3 のゲートは 4 経路とも通る**（#832 でビデオと QR を足した）。読み上げは
+> 依然として本体パネルの `role="status"` が担う（AvatarGuide は `ttsSettings` 未指定・親は
+> `aria-hidden`。#849 / #803 と重なるのでここでは触らない）。
+>
+> | 経路 | ゲート | 備考 |
+> | --- | --- | --- |
+> | `/call` が同期で `timeout` | ✅ #826 | e2e が縛っているのはここ（mock の都合） |
+> | 実 PSTN の `/status` ポーリング | ✅ #832 | **実運用で来訪者が一番踏む**。修正前の遷移列は `dialing → result-timeout` で `waiting` すら出なかった（実測） |
+> | Vonage ビデオ | ✅ #832 | 設計判断: `KioskCallView` はメディア寿命、待ち段は `CallingView`。`onTimeout` は `pendingTimeout` へ。e2e は `?callTimeoutMs=` + fake `OT` |
+> | QR 受付（`CheckinFlow`） | ✅ #832 | `CALL_FAILED('unanswered')` へ写すのはゲート後。段階は `data-calling-stage`。本番 e2e は `debugScanPayload` が無効なので markup + 配線テスト |
 
 > **#813 は 2026-08-31 に消化した。** `react-hooks/exhaustive-deps` を **error** へ上げ、
 > 残りは `--max-warnings 74` の ratchet で頭打ちにした（86 → 74 へ削減済み）。

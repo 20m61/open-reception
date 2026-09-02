@@ -1,19 +1,4 @@
-import {
-  Button,
-  Card,
-  CardGrid,
-  DangerZone,
-  DataTable,
-  EmptyState,
-  Field,
-  FormRow,
-  MetricCard,
-  Section,
-  SecretStatusField,
-  StatusBadge,
-  type Column,
-  type StatusKind,
-} from '@/components/admin/ui';
+import { Button, Card, CardGrid, DangerZone, DataTable, EmptyState, Field, FormRow, MetricCard, SecretStatusField, Section, StatusBadge, font, type Column, type StatusKind } from '@/components/admin/ui';
 
 /**
  * 開発者向け UI カタログ (issue #92, increment 1)。
@@ -91,10 +76,10 @@ export default function UiCatalogPage() {
         <Card>
           <FormRow>
             <Field label="表示名" htmlFor="demo-name" hint="一覧に表示される名前" required>
-              <input id="demo-name" className="input" style={{ minHeight: 34, fontSize: '0.95rem', padding: '6px 12px' }} />
+              <input id="demo-name" className="input" style={{ minHeight: 34, fontSize: font.body, padding: '6px 12px' }} />
             </Field>
             <Field label="メール" htmlFor="demo-mail" error="メールアドレスの形式が不正です">
-              <input id="demo-mail" className="input" style={{ minHeight: 34, fontSize: '0.95rem', padding: '6px 12px' }} />
+              <input id="demo-mail" className="input" style={{ minHeight: 34, fontSize: font.body, padding: '6px 12px' }} />
             </Field>
           </FormRow>
         </Card>

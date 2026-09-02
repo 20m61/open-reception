@@ -3,8 +3,9 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useSiteScope } from './use-site-scope';
 import { SiteScopeSelect } from './SiteScopeSelect';
-import { Button, Card, Field } from '@/components/admin/ui';
-import { color, space } from '@/components/admin/ui/tokens';
+import { DangerActionButton } from './danger/DangerActionButton';
+import { Button, Card, Field, Form } from '@/components/admin/ui';
+import { color, font, space } from '@/components/admin/ui/tokens';
 import {
   CONTINUABLE_RESULTS,
   ROUTE_ACTIONS,
@@ -22,6 +23,7 @@ import {
   transitionKindOf,
 } from '@/lib/routing/transition-options';
 import type { EndpointView, PolicyView } from '@/lib/routing/types';
+import { enablementState } from './state-vocabulary';
 
 /**
  * 文章形式ルートビルダー (issue #374, 残 increment)。
@@ -115,38 +117,17 @@ export function RoutingPolicyManager({
 
   return (
     <section>
-      <h1 style={{ marginTop: 0 }}>呼び出しルート（文章形式）</h1>
+      {/*
+        見出しはナビのラベル（`navigation.ts` の「取次ルート」）と同じ名前にする (#873)。
+        かつてここは「呼び出しルート（文章形式）」で、ナビ・旧画面と合わせて同じ概念に
+        **3 つの名前**が並んでいた。運用者が「呼び出しルート」でサイドバーを探しても
+        見つからない。`tests/config/legacy-call-routes-removal.test.ts` が一致を縛る。
+      */}
+      <h1 style={{ marginTop: 0 }}>取次ルート</h1>
       <p style={{ opacity: 0.7, marginTop: -8 }}>
         テナント <code>{scope.tenantId}</code> / 拠点 <code>{scope.siteId}</code> の取次ルートを、
         「誰に・どの順で・何秒待って・繋がらなければどこへ」という文章として確認し、編集できます。
         電話番号などの接続先は機微情報のため下 4 桁のみ表示します。
-      </p>
-
-      {/*
-        旧 /admin/call-routes はナビから外したので、ここから辿れるようにする (#421)。
-        受付フローからの参照は撤去済みだが、既存の旧ルートを確認・整理できるよう画面は残している。
-      */}
-      <p style={{ opacity: 0.7, marginTop: 0 }}>
-        どこからも参照されなくなった旧「呼び出しルート」は{' '}
-        {/*
-          **siteId を落とさない。** CallRoutesManager は URL を拠点の真実源にしているので
-          （増分 3）、クエリ無しで開くと既定拠点の旧ルートを編集させてしまう。
-
-          **確定するまでリンクを出さない。** 一覧が届く前は `resolveSiteScopeState` が
-          既定拠点を返す（ready=false）ため、href が一瞬 `?siteId=default-site` になる。
-          そこを押すと別拠点の旧ルートを編集してしまう（e2e が実際に踏んだ）。
-        */}
-        {scopeReady ? (
-          <a
-            href={`/admin/call-routes?siteId=${encodeURIComponent(siteId)}`}
-            data-testid="routing-legacy-call-routes-link"
-          >
-            呼び出しルート（旧）
-          </a>
-        ) : (
-          <span data-testid="routing-legacy-call-routes-pending">呼び出しルート（旧）</span>
-        )}{' '}
-        に残しています（整理用。実際の発信はこの画面の設定が決めます）。
       </p>
 
       {/* 対象拠点を常時表示し、ここから切り替えられるようにする (#421)。 */}
@@ -250,7 +231,6 @@ function EndpointsSection({
 
   const removeEndpoint = useCallback(
     async (e: EndpointView) => {
-      if (!window.confirm(`接続先「${e.label ?? e.id}」を削除します。よろしいですか?`)) return;
       await fetch(`/api/admin/routing/endpoints/${e.id}?tenantId=${encodeURIComponent(scope.tenantId)}`, {
         method: 'DELETE',
       });
@@ -274,7 +254,11 @@ function EndpointsSection({
   return (
     <div style={{ marginBottom: space.xl }}>
       <h2>接続先</h2>
-      <div style={{ display: 'flex', gap: space.sm, alignItems: 'flex-end', flexWrap: 'wrap', marginBottom: space.md }}>
+      <Form
+        onSubmit={add}
+        aria-label="接続先を追加"
+        style={{ display: 'flex', gap: space.sm, alignItems: 'flex-end', flexWrap: 'wrap', marginBottom: space.md }}
+      >
         <Field label="表示名" htmlFor="ep-label" hint="例: 山田の個人携帯（氏名以外の呼称推奨）">
           <input id="ep-label" data-testid="endpoint-label-input" value={label} onChange={(e) => setLabel(e.target.value)} style={inputStyle} />
         </Field>
@@ -293,12 +277,12 @@ function EndpointsSection({
         <Field label="担当者/組織 ID" htmlFor="ep-owner">
           <input id="ep-owner" data-testid="endpoint-owner-input" value={ownerId} onChange={(e) => setOwnerId(e.target.value)} style={inputStyle} />
         </Field>
-        <Button variant="primary" data-testid="endpoint-add" onClick={add} disabled={busy || writeBlocked || address.trim() === ''}>
+        <Button variant="primary" type="submit" data-testid="endpoint-add" disabled={busy || writeBlocked || address.trim() === ''}>
           接続先を追加
         </Button>
-      </div>
+      </Form>
       {error ? (
-        <p data-testid="endpoint-error" style={{ color: color.danger, fontSize: '0.85rem' }}>
+        <p data-testid="endpoint-error" style={{ color: color.danger, fontSize: font.small }}>
           {error}
         </p>
       ) : null}
@@ -314,19 +298,23 @@ function EndpointsSection({
               <div style={{ display: 'flex', gap: 12, alignItems: 'center', flexWrap: 'wrap' }}>
                 <strong data-testid="endpoint-name">{e.label ?? e.id}</strong>
                 <span style={{ fontSize: '0.8rem', opacity: 0.7 }}>{CHANNEL_LABELS[e.channel]}</span>
-                <span data-testid="endpoint-masked" style={{ fontSize: '0.85rem', opacity: 0.7 }}>
+                <span data-testid="endpoint-masked" style={{ fontSize: font.small, opacity: 0.7 }}>
                   {e.maskedAddress}
                 </span>
-                <span data-testid="endpoint-status" style={{ fontSize: '0.8rem', color: e.enabled ? color.success : color.muted }}>
-                  {e.enabled ? '有効' : '無効'}
+                <span data-testid="endpoint-status" style={{ fontSize: '0.8rem', color: enablementState(e.enabled).color }}>
+                  {enablementState(e.enabled).label}
                 </span>
                 <div style={{ display: 'flex', gap: 6, marginLeft: 'auto' }}>
                   <Button data-testid="endpoint-toggle" onClick={() => toggle(e)}>
                     {e.enabled ? '無効化' : '有効化'}
                   </Button>
-                  <Button variant="danger" data-testid="endpoint-delete" onClick={() => removeEndpoint(e)}>
-                    削除
-                  </Button>
+<span data-testid="endpoint-delete">
+                    <DangerActionButton
+                      label="削除"
+                      requirement={{ requireImpactAck: false, requireReason: false }}
+                      onConfirm={() => void removeEndpoint(e)}
+                    />
+                  </span>
                 </div>
               </div>
             </Card>
@@ -387,7 +375,6 @@ function PoliciesSection({
 
   const removePolicy = useCallback(
     async (p: PolicyView) => {
-      if (!window.confirm(`ルート「${p.name}」を削除します。よろしいですか?`)) return;
       await fetch(`/api/admin/routing/policies/${p.id}?tenantId=${encodeURIComponent(scope.tenantId)}`, { method: 'DELETE' });
       await reload();
     },
@@ -440,7 +427,8 @@ function PoliciesSection({
   return (
     <div>
       <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-        <h2 style={{ marginRight: 'auto' }}>取次ルート</h2>
+        {/* h1 が「取次ルート」になったので、節見出しは中身（一覧）を指す名前にする (#873)。 */}
+        <h2 style={{ marginRight: 'auto' }}>ルート一覧</h2>
         <Button variant="primary" data-testid="policy-new" onClick={startNew}>
           新しいルート
         </Button>
@@ -458,16 +446,21 @@ function PoliciesSection({
                 <strong data-testid="policy-name" style={{ fontSize: '1.05rem' }}>
                   {p.name}
                 </strong>
-                <span style={{ fontSize: '0.8rem', color: p.enabled ? color.success : color.muted }}>
-                  {p.enabled ? '有効' : '無効'}
+                <span style={{ fontSize: '0.8rem', color: enablementState(p.enabled).color }}>
+                  {enablementState(p.enabled).label}
                 </span>
                 <div style={{ display: 'flex', gap: 6, marginLeft: 'auto' }}>
                   <Button data-testid="policy-edit" onClick={() => startEdit(p)}>
                     手順を編集
                   </Button>
-                  <Button variant="danger" data-testid="policy-delete" onClick={() => removePolicy(p)}>
-                    削除
-                  </Button>
+<span data-testid="policy-delete">
+                    <DangerActionButton
+                      label="削除"
+                      requirement={{ requireImpactAck: true, requireReason: false }}
+                      impactSummary="このルートを使っている取次が実行できなくなります。"
+                      onConfirm={() => void removePolicy(p)}
+                    />
+                  </span>
                 </div>
               </header>
               {/* 文章形式の説明（describe.ts 由来）。 */}
@@ -553,14 +546,14 @@ function PolicyEditor({
       </h3>
 
       {policyErrors.length > 0 ? (
-        <ul data-testid="policy-error" style={{ color: color.danger, fontSize: '0.85rem', margin: '0 0 12px', paddingLeft: 18 }}>
+        <ul data-testid="policy-error" style={{ color: color.danger, fontSize: font.small, margin: '0 0 12px', paddingLeft: 18 }}>
           {policyErrors.map((m, i) => (
             <li key={i}>{m}</li>
           ))}
         </ul>
       ) : null}
       {saveError ? (
-        <p data-testid="policy-save-error" style={{ color: color.danger, fontSize: '0.85rem' }}>
+        <p data-testid="policy-save-error" style={{ color: color.danger, fontSize: font.small }}>
           {saveError}
         </p>
       ) : null}
@@ -717,7 +710,7 @@ function StepRow({
 
       {/* 結果別遷移（基本操作）。継続可能な結果ごとに、既定（次へ）から上書きできる。 */}
       <details style={{ marginTop: 8 }}>
-        <summary style={{ cursor: 'pointer', fontSize: '0.85rem', opacity: 0.8 }}>結果別の遷移を細かく指定</summary>
+        <summary style={{ cursor: 'pointer', fontSize: font.small, opacity: 0.8 }}>結果別の遷移を細かく指定</summary>
         <div style={{ display: 'flex', flexDirection: 'column', gap: 6, marginTop: 8 }}>
           {CONTINUABLE_RESULTS.map((result) => (
             <TransitionRow
@@ -770,7 +763,7 @@ function TransitionRow({
     endpoints.find((ep) => ep.id === endpointId)?.label;
   const choices = gotoStepChoices(steps, labelForEndpoint);
   return (
-    <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap', fontSize: '0.85rem' }}>
+    <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap', fontSize: font.small }}>
       <span style={{ minWidth: 64 }}>{RESULT_LABELS[result]}</span>
       <select
         data-testid="transition-kind-select"

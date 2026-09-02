@@ -3,7 +3,8 @@
 import { useEffect, useState } from 'react';
 import type { MaskedAuditRow } from '@/domain/platform/console-summary';
 import { formatPercent } from '@/domain/util/format';
-import { MetricCard } from './primitives';
+import { MetricCard } from '@/components/admin/ui';
+import { enablementState } from '../state-vocabulary';
 
 /**
  * 可観測性（read 中心） (issue #90, increment 2)。
@@ -91,7 +92,7 @@ export function Observability() {
             <tr key={i.id} style={{ borderTop: '1px solid var(--color-border)' }}>
               <td style={{ padding: '6px 8px' }}>{i.label}</td>
               <td style={{ padding: '6px 8px', opacity: 0.8 }}>{i.configured ? '済' : '未'}</td>
-              <td style={{ padding: '6px 8px', opacity: 0.8 }}>{i.enabled ? '有効' : '無効'}</td>
+              <td style={{ padding: '6px 8px', opacity: 0.8 }}>{enablementState(i.enabled).label}</td>
               <td style={{ padding: '6px 8px', opacity: 0.8 }}>{RESULT_LABEL[i.lastResult]}</td>
               <td style={{ padding: '6px 8px', opacity: 0.6 }}>{i.lastErrorSummary ?? '-'}</td>
             </tr>
@@ -119,7 +120,7 @@ export function Observability() {
       <h2 style={{ fontSize: '1rem', opacity: 0.7, marginTop: 'var(--space-lg)' }}>指標（実データ未接続）</h2>
       <div style={{ display: 'flex', gap: 'var(--space-md)', flexWrap: 'wrap' }}>
         {PENDING_METRICS.map((m) => (
-          <MetricCard key={m.key} label={m.label} pending note="次増分で接続" />
+          <MetricCard key={m.key} label={m.label} placeholder placeholderText="未接続" note="次増分で接続" />
         ))}
       </div>
 

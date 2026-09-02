@@ -1,66 +1,18 @@
 import type { ReactNode } from 'react';
+import { font } from '@/components/admin/ui/tokens';
 
 /**
  * プラットフォーム運用コンソール固有の表示プリミティブ (issue #90, increment 1)。
  *
- * トップレベル共有 UI（#92）はまだ無いため、ここでは platform エリアに閉じた最小の
- * 表示部品のみを置く。共有プリミティブが用意され次第そちらへ寄せる（重複定義しない）。
  * 表示のみで I/O・認可ロジックは持たない。
+ *
+ * 🔴 **ここに置いてよいのは platform でしか意味を持たない部品だけ (#895 / 課題 07)。**
+ * かつては `MetricCard` と `StatusBadge` を独自に持っており、共有版（#92）と
+ * **角丸が 12/999 対 14/9999** で食い違っていた。この冒頭注記自身が「共有プリミティブが
+ * 用意され次第そちらへ寄せる（重複定義しない）」と宣言していたのに、共有版が出来た後も
+ * 移行されていなかった —— 宣言は機械が読まないので守られない。
+ * `tests/config/platform-shared-primitives.test.ts` が再発を止める。
  */
-
-/** 概況カード。指標 1 つ（または「未接続」プレースホルダ）を表示する。 */
-export function MetricCard({
-  label,
-  value,
-  pending,
-  note,
-}: {
-  label: string;
-  value?: ReactNode;
-  /** 実データ未接続。値の代わりに「未接続」を明示する（#90 安全 UX: 偽の安心を与えない）。 */
-  pending?: boolean;
-  note?: string;
-}) {
-  return (
-    <div
-      style={{
-        background: 'var(--color-surface)',
-        borderRadius: 12,
-        padding: 'var(--space-md)',
-        border: '1px solid var(--color-border)',
-        minWidth: 160,
-      }}
-    >
-      <div style={{ fontSize: '0.8rem', opacity: 0.65 }}>{label}</div>
-      {pending ? (
-        <div style={{ fontSize: '0.95rem', opacity: 0.55, marginTop: 6 }} data-testid="metric-pending">
-          未接続
-        </div>
-      ) : (
-        <div style={{ fontSize: '1.6rem', fontWeight: 700, marginTop: 4 }}>{value}</div>
-      )}
-      {note ? <div style={{ fontSize: '0.75rem', opacity: 0.5, marginTop: 6 }}>{note}</div> : null}
-    </div>
-  );
-}
-
-/** ステータスバッジ（稼働中 / 停止中 等）。 */
-export function StatusBadge({ status }: { status: 'active' | 'suspended' }) {
-  const active = status === 'active';
-  return (
-    <span
-      style={{
-        fontSize: '0.75rem',
-        padding: '2px 8px',
-        borderRadius: 999,
-        background: active ? 'color-mix(in srgb, var(--color-platform-ok) 18%, transparent)' : 'color-mix(in srgb, var(--color-platform-warn) 18%, transparent)',
-        color: active ? 'var(--color-platform-ok)' : 'var(--color-platform-warn)',
-      }}
-    >
-      {active ? '稼働中' : '停止中'}
-    </span>
-  );
-}
 
 /**
  * 破壊的操作のプレースホルダ。次増分で昇格・理由入力・確認・監査を伴って実装する導線を
@@ -75,7 +27,7 @@ export function DangerActionPlaceholder({ label }: { label: string }) {
         borderRadius: 10,
         padding: 'var(--space-md)',
         color: 'var(--color-platform-warn)',
-        fontSize: '0.85rem',
+        fontSize: font.small,
       }}
     >
       <strong>{label}</strong>

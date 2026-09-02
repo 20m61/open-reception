@@ -99,6 +99,20 @@ export async function PATCH(request: Request, { params }: Ctx): Promise<NextResp
     return NextResponse.json(toDemoPublicationView(next));
   }
 
+  /*
+    操作理由（#888）。**既存の型に従う** —— `lib/platform/danger-create.ts` が
+    「reason は 500 字上限（sanitize 対象外の operator 記述の貼付＝PII/secret・肥大を抑制）」
+    としているので、同じ上限を同じ理由でかける。新しい監査ログ方針を作らない。
+
+    任意フィールドなので旧クライアント（送らない）とも互換。
+  */
+  const reason = ((): string | undefined => {
+    const raw = (body as Record<string, unknown>).reason;
+    if (typeof raw !== 'string') return undefined;
+    const trimmed = raw.trim().slice(0, 500);
+    return trimmed === '' ? undefined : trimmed;
+  })();
+
   if (op === 'publish') {
     const target = (body as Record<string, unknown>).target;
     if (!isDemoPublishTarget(target)) {
@@ -123,6 +137,8 @@ export async function PATCH(request: Request, { params }: Ctx): Promise<NextResp
         // target の id は PII ではない運用識別子。誰がどの端末へ公開したかの説明責任のため残す。
         siteId: target.siteId,
         kioskId: target.kioskId,
+        // 本番公開の理由。以前は window.confirm だったので**何も残らなかった** (#888)。
+        ...(reason ? { reason } : {}),
       },
     );
     return NextResponse.json(toDemoPublicationView(next));
@@ -146,6 +162,7 @@ export async function PATCH(request: Request, { params }: Ctx): Promise<NextResp
         status: next.status,
         version: String(next.currentVersion),
         rolledBackFrom: String(version),
+        ...(reason ? { reason } : {}),
       },
     );
     return NextResponse.json(toDemoPublicationView(next));

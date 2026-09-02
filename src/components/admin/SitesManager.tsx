@@ -4,13 +4,15 @@ import Link from 'next/link';
 import { useCallback, useMemo, useState } from 'react';
 import type { SiteStatus } from '@/domain/tenant/types';
 import type { SiteWithDevices } from '@/lib/tenant/site-service';
-import { Button, DataTable, Field, type Column } from '@/components/admin/ui';
+import { Button, DataTable, Field, Form, SaveFeedback, useSaveFeedback, type Column } from '@/components/admin/ui';
 import { color, font, space } from '@/components/admin/ui/tokens';
 import { useQueryParams } from './use-query-params';
 import { useSiteList } from './use-site-list';
-import { paginate } from './list-io';
+import { paginate, sortRows } from './list-io';
+import { useTableSort } from './use-table-sort';
 import { filterSites, sitesToCsv, type SiteListFilter } from './sites-filter';
 import { resolveSiteListFeedback } from './site-list-feedback';
+import { siteStatusState } from './state-vocabulary';
 
 /**
  * 拠点管理 (issue #87, increment 1; 検索/フィルタ/ページング/CSV は #330 item2 残増分)。
@@ -36,8 +38,16 @@ export function SitesManager({ tenantId }: { tenantId: string }) {
   const [busy, setBusy] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editName, setEditName] = useState('');
+  // 既存の `feedback`（一覧取得の状態）と混ざらないよう別名で受ける。
+  const {
+    feedback: saveFeedback,
+    success: saveSucceeded,
+    failure: saveFailed,
+    clear: clearSaveFeedback,
+  } = useSaveFeedback();
 
   const { get, setMany } = useQueryParams();
+  const { sort, setSort } = useTableSort();
   const keyword = get('q');
   const filterStatus = get('status');
   const pageParam = get('page');
@@ -45,29 +55,48 @@ export function SitesManager({ tenantId }: { tenantId: string }) {
   const add = useCallback(async () => {
     if (name.trim() === '' || busy) return;
     setBusy(true);
+    clearSaveFeedback();
     try {
-      await fetch('/api/admin/sites', {
+      /*
+        **結果を捨てない (#870 増分 02)。** `await fetch(...)` の戻りを見ずに `load()` すると、
+        403 / 409 / 5xx でも入力欄が空になって一覧が元のまま返るだけになり、運用者には
+        「登録した」ように見える。viewer ロールが拠点を作ったつもりで作れていない、が起こる。
+      */
+      const res = await fetch('/api/admin/sites', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ tenantId, name }),
-      });
+      }).catch(() => null);
+      if (!res?.ok) {
+        saveFailed('拠点を追加できませんでした。');
+        return;
+      }
       setName('');
       await load();
+      saveSucceeded('拠点を追加しました。');
     } finally {
       setBusy(false);
     }
-  }, [name, busy, tenantId, load]);
+  }, [name, busy, tenantId, load, clearSaveFeedback, saveSucceeded, saveFailed]);
 
   const patch = useCallback(
     async (id: string, body: Record<string, unknown>) => {
-      await fetch(`/api/admin/sites/${id}`, {
+      clearSaveFeedback();
+      const res = await fetch(`/api/admin/sites/${id}`, {
         method: 'PATCH',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ tenantId, ...body }),
-      });
+      }).catch(() => null);
+      if (!res?.ok) {
+        // 失敗したら `load()` しない。取り直すと行が元の値へ戻り、**変更が無かったように
+        // 見える**（何も起きなかったのか、失敗したのかが区別できない）。
+        saveFailed('変更を保存できませんでした。');
+        return;
+      }
       await load();
+      saveSucceeded('変更を保存しました。');
     },
-    [tenantId, load],
+    [tenantId, load, clearSaveFeedback, saveSucceeded, saveFailed],
   );
 
   const toggle = useCallback(
@@ -90,6 +119,7 @@ export function SitesManager({ tenantId }: { tenantId: string }) {
       {
         key: 'name',
         header: '拠点名',
+        sortValue: (s) => s.name,
         cellTestId: () => 'site-name',
         cell: (s) =>
           editingId === s.id ? (
@@ -110,13 +140,16 @@ export function SitesManager({ tenantId }: { tenantId: string }) {
         key: 'devices',
         header: '端末',
         cellTestId: () => 'site-devices',
+        // 表示は「n / m オンライン」だが、比較はオンライン台数の数値で行う。
+        sortValue: (s) => s.onlineDeviceCount,
         cell: (s) => `${s.onlineDeviceCount} / ${s.deviceCount} オンライン`,
       },
       {
         key: 'status',
         header: '状態',
-        cellStyle: (s) => ({ color: s.status === 'active' ? color.success : color.muted }),
-        cell: (s) => (s.status === 'active' ? '有効' : '停止中'),
+        cellStyle: (s) => ({ color: siteStatusState(s.status).color }),
+        sortValue: (s) => siteStatusState(s.status).label,
+        cell: (s) => siteStatusState(s.status).label,
       },
       {
         key: 'actions',
@@ -158,7 +191,9 @@ export function SitesManager({ tenantId }: { tenantId: string }) {
     [keyword, filterStatus],
   );
   const filtered = useMemo(() => filterSites(items, filter), [items, filter]);
-  const paged = useMemo(() => paginate(filtered, Number(pageParam) || 1, PAGE_SIZE), [filtered, pageParam]);
+  // 並べ替えてからページを切る（逆にすると 1 ページぶんだけが並び替わる）。
+  const sorted = useMemo(() => sortRows(filtered, columns, sort), [filtered, columns, sort]);
+  const paged = useMemo(() => paginate(sorted, Number(pageParam) || 1, PAGE_SIZE), [sorted, pageParam]);
   const hasFilter = Boolean(keyword || filterStatus);
   const feedback = resolveSiteListFeedback(listStatus, hasFilter);
 
@@ -184,7 +219,11 @@ export function SitesManager({ tenantId }: { tenantId: string }) {
         テナント <code>{tenantId}</code> 配下の受付拠点を管理します。各拠点に紐づく受付端末数を表示します。
       </p>
 
-      <div style={{ display: 'flex', gap: space.sm, alignItems: 'flex-end', flexWrap: 'wrap', marginBottom: space.lg }}>
+      <Form
+        onSubmit={add}
+        aria-label="拠点を追加"
+        style={{ display: 'flex', gap: space.sm, alignItems: 'flex-end', flexWrap: 'wrap', marginBottom: space.lg }}
+      >
         <Field label="拠点名" htmlFor="site-name-input">
           <input
             id="site-name-input"
@@ -199,10 +238,11 @@ export function SitesManager({ tenantId }: { tenantId: string }) {
           一覧が 1 回取れないだけで拠点を追加できなくなる（#552 で実際に P1 になった形）。
           作成の可否は入力と実行中かどうかだけで決める。
         */}
-        <Button variant="primary" data-testid="site-add" onClick={add} disabled={busy || name.trim() === ''}>
+        <Button variant="primary" type="submit" data-testid="site-add" disabled={busy || name.trim() === ''}>
           追加
         </Button>
-      </div>
+        <SaveFeedback feedback={saveFeedback} successTestId="site-saved" errorTestId="site-save-error" />
+      </Form>
 
       <div
         data-testid="site-filters"
@@ -226,12 +266,12 @@ export function SitesManager({ tenantId }: { tenantId: string }) {
             style={inputStyle}
           >
             <option value="">すべて</option>
-            <option value="active">有効</option>
-            <option value="suspended">停止中</option>
+            <option value="active">{siteStatusState('active').label}</option>
+            <option value="suspended">{siteStatusState('suspended').label}</option>
           </select>
         </Field>
         {hasFilter ? (
-          <Button variant="secondary" onClick={() => setMany({ q: '', status: '', page: '' })} data-testid="site-filter-reset">
+          <Button variant="secondary" onClick={() => setMany({ q: '', status: '', page: '', sort: '', sortDir: '' })} data-testid="site-filter-reset">
             条件をクリア
           </Button>
         ) : null}
@@ -276,6 +316,8 @@ export function SitesManager({ tenantId }: { tenantId: string }) {
         rows={paged.items}
         rowKey={(s) => s.id}
         rowTestId={() => 'site-row'}
+        sort={sort}
+        onSortChange={setSort}
         emptyMessage={feedback.emptyMessage}
       />
 

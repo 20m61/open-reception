@@ -11,7 +11,7 @@
 .root {
   position: fixed;
   right: 16px;
-  z-index: 40;
+  z-index: var(--z-chat-drawer);
   font-size: 16px;
   /* 安全バー（逃げ道）と重ならないよう、その高さ分だけ上へ持ち上げる（KioskFlow が値を継承させる）。 */
   bottom: calc(16px + var(--kiosk-chat-safe-bottom, 0px));

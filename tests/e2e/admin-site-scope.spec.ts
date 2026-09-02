@@ -84,7 +84,6 @@ test.describe('管理: 拠点スコープが URL に載る (#421)', () => {
   });
 
   for (const screen of [
-    { path: '/admin/call-routes', testId: 'call-routes-site-select', label: '呼び出しルート' },
     { path: '/admin/call-routing', testId: 'call-routing-site-select', label: '取次ルート' },
     { path: '/admin/reception-flows', testId: 'reception-flows-site-select', label: '受付フロー' },
     // #554 で移行。版は拠点別なのに既定拠点固定で、UI から別拠点へ到達できなかった。
@@ -171,30 +170,69 @@ test.describe('管理: 重複ナビの一本化 (#421)', () => {
     await expect(page.getByTestId('kiosk-devices-link')).toBeVisible();
   });
 
-  test('旧・呼び出しルートは実発信に効かないと明示され、call-routing から辿れる', async ({
-    page,
-  }) => {
-    await page.goto('/admin/call-routing');
-    await page.getByTestId('routing-legacy-call-routes-link').click();
-    await expect(page).toHaveURL(/\/admin\/call-routes/);
-    // 誤解を生まないことがこの画面を残す条件。
-    await expect(page.getByTestId('call-routes-legacy-notice')).toContainText(
-      '実際の発信には使われません',
-    );
+  test('旧・呼び出しルートの URL は取次ルートへ redirect する (#873)', async ({ page }) => {
+    // 旧画面は**設定しても実通話に効かなかった**ので削除した。ブックマークや手打ちを
+    // 404 にせず、正となる画面へ送る。
+    await page.goto('/admin/call-routes');
+    await expect(page).toHaveURL(/\/admin\/call-routing/);
+    await expect(page.getByRole('heading', { level: 1, name: '取次ルート' })).toBeVisible();
   });
 
-  test('旧画面への導線は選択中の拠点を落とさない', async ({ page }) => {
-    // **既定拠点だけを見ていると気づけない欠陥。** CallRoutesManager は URL を拠点の
-    // 真実源にしているので、クエリ無しのリンクだと既定拠点の旧ルートを編集させてしまう。
+  test('redirect は選択中の拠点を落とさない (#873)', async ({ page }) => {
+    // **既定拠点だけを見ていると気づけない欠陥。** 旧画面への導線が siteId を落として
+    // 別拠点を編集させた前科があり（#421 増分 5 のレビュー P1）、redirect でも同じ形の
+    // 取りこぼしが起こりうる。クエリが引き継がれることまで縛る。
     test.skip(!!process.env.PLAYWRIGHT_BASE_URL, 'seed 依存のため実環境では実行しない');
 
-    await page.goto('/admin/call-routing?siteId=branch-site');
-    await page.getByTestId('routing-legacy-call-routes-link').click();
-    await expect(page).toHaveURL(/\/admin\/call-routes\?siteId=branch-site/);
-
-    // 戻りの導線も同様に拠点を保つ。
-    await page.getByTestId('call-routes-canonical-link').click();
+    await page.goto('/admin/call-routes?siteId=branch-site');
     await expect(page).toHaveURL(/\/admin\/call-routing\?siteId=branch-site/);
+    await expect(page.getByTestId('call-routing-site-select')).toHaveValue('branch-site');
+  });
+});
+
+/**
+ * テナントを切り替えたら本文も新テナントを映す (#870 増分 01)。
+ *
+ * 切替後に `router.refresh()` だけを呼ぶと、`useCallback(..., [])` の mount 時 fetch で読む
+ * 11 画面が再取得されない。ヘッダのテナント名だけが変わり、**前テナントのデータを新テナント名の
+ * 下で編集できてしまう**（そして書き込みは切替後テナントへ行く）。
+ *
+ * 🔴 **現在の seed はテナントが 1 件なので、このテストは常に skip される。**
+ * 切替 UI 自体が単一所属では固定表示（`TenantContextChip`）になり、選ぶ対象が無い。
+ * `platform-viewing-context.spec.ts` の「選択中と別のテナント」テストが同じ理由で skip
+ * されており、テナント作成 API も現状は無い（`/api/platform/tenants` は GET のみ）。
+ *
+ * **消さずに置く**のは、2 件目のテナントが入った時点で**自動的に有効になる**ようにするため。
+ * それまでの反映方法の保証は `tests/config/tenant-switch-reflection.test.ts` が構造で担う。
+ */
+test.describe('管理: テナント切替が本文へ届く (#870)', () => {
+  test.beforeEach(async ({ page }) => {
+    await loginAsAdmin(page);
+  });
+
+  test('テナントを切り替えると一覧が新テナントの内容になる', async ({ page }) => {
+    test.skip(!!process.env.PLAYWRIGHT_BASE_URL, 'seed 依存のため実環境では実行しない');
+
+    await page.goto('/admin/staff');
+    const switcher = page.getByTestId('admin-tenant-switcher');
+    const optionCount = await switcher.locator('option').count();
+    test.skip(optionCount < 2, 'seed のテナントが 1 件のため切替対象が作れない');
+
+    const before = await page.getByTestId('staff-table').innerText();
+    const current = await switcher.inputValue();
+    const next = await switcher
+      .locator('option')
+      .filter({ hasNot: page.locator(`[value="${current}"]`) })
+      .first()
+      .getAttribute('value');
+    await switcher.selectOption(next ?? '');
+
+    // 切替はフルリロードで反映される。ヘッダだけでなく**本文**が変わることを見る
+    // （ヘッダだけ見ていたのが、この欠陥が 1 度も検出されなかった理由）。
+    await expect(switcher).toHaveValue(next ?? '');
+    await expect
+      .poll(async () => page.getByTestId('staff-table').innerText(), { timeout: 10_000 })
+      .not.toBe(before);
   });
 });
 
