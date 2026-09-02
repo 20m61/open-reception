@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import type { Department } from '@/domain/department/types';
 import { CsvImport } from './CsvImport';
-import { Button, DataTable, Field, type Column } from '@/components/admin/ui';
+import { Button, DataTable, Field, SaveFeedback, useSaveFeedback, type Column } from '@/components/admin/ui';
 import { color, space } from '@/components/admin/ui/tokens';
 
 /** 部署管理 (issue #25)。一覧・作成・有効/無効・並び替えを管理 API 経由で行う。 */
@@ -13,6 +13,7 @@ export function DepartmentsManager() {
   const [kana, setKana] = useState('');
   const [busy, setBusy] = useState(false);
   const [dragIndex, setDragIndex] = useState<number | null>(null);
+  const { feedback, success, failure, clear } = useSaveFeedback();
 
   const load = useCallback(async () => {
     const res = await fetch('/api/admin/departments');
@@ -26,42 +27,65 @@ export function DepartmentsManager() {
   const add = useCallback(async () => {
     if (name.trim() === '' || busy) return;
     setBusy(true);
+    clear();
     try {
-      await fetch('/api/admin/departments', {
+      /*
+        **結果を捨てない (#870 増分 02)。** 戻りを見ずに `load()` すると、403 / 409 / 5xx でも
+        入力欄が空になって一覧が元のまま返るだけになり、運用者には「登録した」ように見える。
+      */
+      const res = await fetch('/api/admin/departments', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ name, kana: kana || undefined }),
-      });
+      }).catch(() => null);
+      if (!res?.ok) {
+        failure('部署を追加できませんでした。');
+        return;
+      }
       setName('');
       setKana('');
       await load();
+      success('部署を追加しました。');
     } finally {
       setBusy(false);
     }
-  }, [name, kana, busy, load]);
+  }, [name, kana, busy, load, clear, success, failure]);
 
   const toggle = useCallback(
     async (d: Department) => {
-      await fetch(`/api/admin/departments/${d.id}`, {
+      clear();
+      const res = await fetch(`/api/admin/departments/${d.id}`, {
         method: 'PATCH',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ enabled: !d.enabled }),
-      });
+      }).catch(() => null);
+      if (!res?.ok) {
+        // 失敗したら `load()` しない。取り直すと行が元へ戻り、**何も起きなかったのか
+        // 失敗したのかが区別できない**（無効化したつもりで無効化できていない、が起こる）。
+        failure(d.enabled ? '無効化できませんでした。' : '有効化できませんでした。');
+        return;
+      }
       await load();
+      success(d.enabled ? '無効にしました。' : '有効にしました。');
     },
-    [load],
+    [load, clear, success, failure],
   );
 
   const move = useCallback(
     async (d: Department, direction: 'up' | 'down') => {
-      await fetch(`/api/admin/departments/${d.id}/move`, {
+      clear();
+      const res = await fetch(`/api/admin/departments/${d.id}/move`, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ direction }),
-      });
+      }).catch(() => null);
+      if (!res?.ok) {
+        failure('並び順を変更できませんでした。');
+        return;
+      }
       await load();
     },
-    [load],
+    [load, clear, failure],
   );
 
   // DnD で並び替える (issue #25)。確定順序を reorder API へ送る。
@@ -71,16 +95,24 @@ export function DepartmentsManager() {
       const next = [...items];
       const [moved] = next.splice(dragIndex, 1);
       if (moved) next.splice(targetIndex, 0, moved);
+      // 先に画面上の並びを動かしているので、失敗したときは**必ず取り直して戻す**。
+      // 戻さないと、保存されていない並びが正しいものとして残る。
       setItems(next);
       setDragIndex(null);
-      await fetch('/api/admin/departments/reorder', {
+      clear();
+      const res = await fetch('/api/admin/departments/reorder', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ orderedIds: next.map((d) => d.id) }),
-      });
+      }).catch(() => null);
+      if (!res?.ok) {
+        failure('並び順を保存できませんでした。');
+        await load();
+        return;
+      }
       await load();
     },
-    [dragIndex, items, load],
+    [dragIndex, items, load, clear, failure],
   );
 
   const columns = useMemo<Column<Department>[]>(() => {
@@ -145,6 +177,7 @@ export function DepartmentsManager() {
         <Button variant="primary" data-testid="dept-add" onClick={add} disabled={busy || name.trim() === ''}>
           追加
         </Button>
+        <SaveFeedback feedback={feedback} successTestId="dept-saved" errorTestId="dept-save-error" />
       </div>
 
       <CsvImport
