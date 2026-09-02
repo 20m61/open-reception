@@ -733,17 +733,19 @@ a {
 }
 
 .notice--success {
-  background: rgba(34, 197, 94, 0.15);
+  /* 🔴 生 rgba は HC モードのパレット上書き（CSS 変数 13 個）に届かない (#907 / 課題 32)。
+     しかも焼き込まれていた緑 `#22c55e` は `--color-success`(`#34d399`) と別物だった。 */
+  background: color-mix(in srgb, var(--color-success) 15%, transparent);
   border: 2px solid var(--color-success);
 }
 
 .notice--danger {
-  background: rgba(248, 113, 113, 0.15);
+  background: color-mix(in srgb, var(--color-danger) 15%, transparent);
   border: 2px solid var(--color-danger);
 }
 
 .notice--warning {
-  background: rgba(251, 191, 36, 0.15);
+  background: color-mix(in srgb, var(--color-warning) 15%, transparent);
   border: 2px solid var(--color-warning);
 }
 
@@ -960,17 +962,17 @@ a {
 }
 
 .result-panel--success .result-panel__icon {
-  background: rgba(52, 211, 153, 0.16);
+  background: color-mix(in srgb, var(--color-success) 16%, transparent);
   color: var(--color-success);
 }
 
 .result-panel--danger .result-panel__icon {
-  background: rgba(248, 113, 113, 0.16);
+  background: color-mix(in srgb, var(--color-danger) 16%, transparent);
   color: var(--color-danger);
 }
 
 .result-panel--warning .result-panel__icon {
-  background: rgba(251, 191, 36, 0.16);
+  background: color-mix(in srgb, var(--color-warning) 16%, transparent);
   color: var(--color-warning);
 }
 
@@ -1862,6 +1864,73 @@ a {
   /* アクセント上の文字色は accent の明るさに関わらず読める黒に固定（コントラスト最優先）。 */
   --color-accent-ink: #000000;
   background: var(--color-bg);
+}
+
+/* ---- OS 設定への応答 (#907 / 課題 32) ----
+ *
+ * それまで `prefers-contrast` / `forced-colors` の出現数は src 全体で 0 だった。
+ * 高コントラストの手段は `AccessibilityMenu`（`KioskFlow` からしか mount されない）だけで、
+ * **管理画面と platform にはコントラストを上げる手段が 1 つも無かった**。
+ *
+ * 🔴 **パレットの本体は下の `[data-a11y-contrast='high']` と同じ値でなければならない。**
+ * CSS では宣言ブロックを共有できないので二重に書くしかないが、片方だけ更新する事故は
+ * `tests/config/contrast-palette-parity.test.ts` が止める（「ある次元で解いた対策を
+ * 別の次元へ写していない」型を機械で防ぐ）。
+ */
+@media (prefers-contrast: more) {
+  :root {
+    --color-bg: #000000;
+    --color-bg-2: #000000;
+    --color-surface: #000000;
+    --color-surface-2: #0a0a0a;
+    --color-glass: #000000;
+    --color-text: #ffffff;
+    --color-muted: #e6e6e6;
+    --color-border: #ffffff;
+    --color-border-strong: #ffffff;
+    --color-success: #00e676;
+    --color-danger: #ff6b6b;
+    --color-warning: #ffd400;
+    --color-accent-ink: #000000;
+  }
+}
+
+/* ---- OS のハイコントラスト（強制配色）----
+ *
+ * ここでは自前のパレットを当てない。**OS が選んだ色に明け渡す**のが正しい振る舞いで、
+ * 自前の色を重ねると利用者が OS 側で調整した意味が消える。やることは 2 つだけ:
+ * 装飾の面を落として system color を見せることと、**操作できるものの輪郭を残す**こと。
+ * `forced-colors` は背景画像を描かないので、面だけで押せると示している要素は
+ * 輪郭が無いと消える。
+ */
+@media (forced-colors: active) {
+  .btn,
+  button,
+  [role='button'] {
+    border: 1px solid ButtonText;
+  }
+
+  .card,
+  .notice,
+  .result-panel,
+  .kiosk-escape-bar {
+    border: 1px solid CanvasText;
+    background: Canvas;
+  }
+
+  /* 面の濃淡で状態を示しているものは、強制配色では色が潰れる。輪郭で残す。 */
+  .notice--success,
+  .notice--danger,
+  .notice--warning,
+  .result-panel__icon {
+    background: Canvas;
+    border: 1px solid CanvasText;
+  }
+
+  :focus-visible {
+    outline: 3px solid Highlight;
+    outline-offset: 2px;
+  }
 }
 
 /* ---- 低位置レイアウト ----
