@@ -259,3 +259,35 @@ describe('reception-store', () => {
     });
   });
 });
+
+/**
+ * 実 PSTN 通話の相関キー保持 (#647)。
+ *
+ * 相関は provider 通話 ID をキーに保存されるので、**受付側からその ID を持っていないと
+ * 引けない**。持たないと `/status` は結果を確定できず、来訪者は待ち続ける。
+ */
+describe('startCall — 実 PSTN 発信の相関キー (#647)', () => {
+  it('🔴 非同期 adapter が返した providerCallId を受付へ保持する', async () => {
+    const created = await createReception(baseInput);
+    if (!created.ok) return;
+    const r = await startCall(created.value.id, {
+      call: async () => ({ status: 'calling', providerCallId: 'TEST-provider-call-id' }),
+    });
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.value.state).toBe('calling');
+    expect(r.value.providerCallId).toBe('TEST-provider-call-id');
+  });
+
+  it('ビデオ経路（sessionId のみ）では providerCallId を持たない', async () => {
+    const created = await createReception(baseInput);
+    if (!created.ok) return;
+    const r = await startCall(created.value.id, {
+      call: async () => ({ status: 'calling', sessionId: 'TEST-session' }),
+    });
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.value.vonageSessionId).toBe('TEST-session');
+    expect(r.value.providerCallId).toBeUndefined();
+  });
+});

@@ -3,7 +3,9 @@
 import Link from 'next/link';
 import { useEffect, useState } from 'react';
 import type { TenantFleetSummary, TenantRow } from '@/domain/platform/console-summary';
-import { DangerActionPlaceholder, MetricCard, StatusBadge } from './primitives';
+import { DangerActionPlaceholder } from './primitives';
+import { MetricCard, StatusBadge } from '@/components/admin/ui';
+import { tenantStatusState } from '../state-vocabulary';
 
 /**
  * テナント一覧（テナント横断 read） (issue #90, increment 1; #90, increment 2 で詳細導線追加)。
@@ -69,7 +71,7 @@ export function TenantList() {
               </td>
               <td style={{ padding: '6px 8px', opacity: 0.7 }}>{t.slug}</td>
               <td style={{ padding: '6px 8px' }}>
-                <StatusBadge status={t.status} />
+                <StatusBadge status={tenantStatusState(t.status).status} label={tenantStatusState(t.status).label} />
               </td>
               <td style={{ padding: '6px 8px', opacity: 0.7 }}>{t.updatedAt}</td>
             </tr>

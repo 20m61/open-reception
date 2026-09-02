@@ -172,6 +172,35 @@ describe('SecretsManagerTenantSecretStore — 非漏洩 (#405 Inc2 セキュリ�
     // 静的メッセージ（op を示すが値は含まない）。
     expect((caught as Error).message).toMatch(/secret/i);
   });
+
+  it('失敗ログの format 文字列は定数で、可変部は構造化フィールドに分離する', async () => {
+    // format 文字列に変数を埋め込むと、format specifier 注入でログを偽造できる
+    // （semgrep `unsafe-formatstring`）。監査ログの信頼性に直結するため
+    // （docs/audit-logging.md）、第 1 引数は必ず定数にし、op / err.name は
+    // 第 2 引数の構造化フィールドへ回す。
+    const backend = new FakeBackend();
+    const store = new SecretsManagerTenantSecretStore(backend, PREFIX);
+    vi.spyOn(backend, 'create').mockRejectedValueOnce(
+      Object.assign(new Error('boom'), { name: 'InternalServiceError' }),
+    );
+    const spy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      await store.setSecret(secretRef('acme', 'vonage'), new SecretValue(FAKE));
+    } catch {
+      // 送出は上のテストで固定済み。ここではログの形だけを見る。
+    }
+    // mockRestore() は記録も消すので、検証前に控えを取ってから復元する。
+    const calls = spy.mock.calls.map((args) => [...args]);
+    spy.mockRestore();
+
+    expect(calls).toHaveLength(1);
+    const [format, fields] = calls[0]!;
+    // 第 1 引数は完全な定数（op を埋め込まない）。
+    expect(format).toBe('[tenant-secret-store] secrets manager operation failed');
+    // 可変部は構造化フィールドとして分離され、値は依然として出さない。
+    expect(fields).toEqual({ op: 'set', name: 'InternalServiceError' });
+    expect(JSON.stringify(fields)).not.toContain('TEST-');
+  });
 });
 
 describe('削除猶予中の整合（敵対的レビュー I2）', () => {

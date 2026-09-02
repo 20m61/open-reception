@@ -18,6 +18,8 @@
 import type { Department } from '@/domain/department/types';
 import type { Staff } from '@/domain/staff/types';
 import { getBackend } from '@/lib/data';
+import { tenantScopedStoreKey } from '@/domain/tenant/store-key';
+import { defaultTenantIdFrom } from '@/lib/tenant/default-scope';
 import type { Collection } from '@/lib/data/backend';
 
 export const DEPARTMENT_COLLECTION = 'department';
@@ -32,17 +34,17 @@ export const STAFF_LIST_LIMIT = 1000;
 
 export interface DirectoryRepository {
   /** 部署の全件（無効含む）。並び替え・enabled フィルタは呼び出し側（互換 API）で行う。 */
-  listDepartments(): Promise<Department[]>;
-  getDepartment(id: string): Promise<Department | undefined>;
+  listDepartments(tenantId: string): Promise<Department[]>;
+  getDepartment(tenantId: string, id: string): Promise<Department | undefined>;
   /** 作成または上書き（read-modify-write は呼び出し側の責務）。 */
-  putDepartment(dept: Department): Promise<void>;
+  putDepartment(tenantId: string, dept: Department): Promise<void>;
   /** 担当者の全件（無効含む、STAFF_LIST_LIMIT 上限）。検索・フィルタは呼び出し側で行う。 */
-  listStaff(): Promise<Staff[]>;
-  getStaff(id: string): Promise<Staff | undefined>;
+  listStaff(tenantId: string): Promise<Staff[]>;
+  getStaff(tenantId: string, id: string): Promise<Staff | undefined>;
   /** 作成または上書き（read-modify-write は呼び出し側の責務）。 */
-  putStaff(member: Staff): Promise<void>;
+  putStaff(tenantId: string, member: Staff): Promise<void>;
   /** テスト用: seed 状態へ戻す（memory backend のみ実効）。 */
-  reset(): Promise<void>;
+  reset(tenantId: string): Promise<void>;
 }
 
 /**
@@ -50,40 +52,49 @@ export interface DirectoryRepository {
  * seed は memory backend のみ有効（dev/test/CI）。dynamodb では無視され実データを正とする。
  */
 export class DataBackedDirectoryRepository implements DirectoryRepository {
-  private readonly depts: () => Collection<Department>;
-  private readonly staff: () => Collection<Staff>;
+  private readonly depts: (tenantId: string) => Collection<Department>;
+  private readonly staff: (tenantId: string) => Collection<Staff>;
 
   constructor(seedDepartments?: () => Department[], seedStaff?: () => Staff[]) {
-    this.depts = () =>
-      getBackend().collection<Department>(DEPARTMENT_COLLECTION, { seed: seedDepartments });
-    this.staff = () => getBackend().collection<Staff>(STAFF_COLLECTION, { seed: seedStaff });
+    // **テナント別キー** (#419 残増分)。既定テナントは従来キー据え置きなので移行不要。
+    // collection は従来どおり**呼び出しごとに**解決する（寿命モデルを変えない）。
+    this.depts = (tenantId: string) =>
+      getBackend().collection<Department>(
+        tenantScopedStoreKey(DEPARTMENT_COLLECTION, tenantId, defaultTenantIdFrom()),
+        { seed: seedDepartments },
+      );
+    this.staff = (tenantId: string) =>
+      getBackend().collection<Staff>(
+        tenantScopedStoreKey(STAFF_COLLECTION, tenantId, defaultTenantIdFrom()),
+        { seed: seedStaff },
+      );
   }
 
-  async listDepartments(): Promise<Department[]> {
-    return this.depts().list();
+  async listDepartments(tenantId: string): Promise<Department[]> {
+    return this.depts(tenantId).list();
   }
 
-  async getDepartment(id: string): Promise<Department | undefined> {
-    return this.depts().get(id);
+  async getDepartment(tenantId: string, id: string): Promise<Department | undefined> {
+    return this.depts(tenantId).get(id);
   }
 
-  async putDepartment(dept: Department): Promise<void> {
-    await this.depts().put(dept);
+  async putDepartment(tenantId: string, dept: Department): Promise<void> {
+    await this.depts(tenantId).put(dept);
   }
 
-  async listStaff(): Promise<Staff[]> {
-    return this.staff().list({ limit: STAFF_LIST_LIMIT });
+  async listStaff(tenantId: string): Promise<Staff[]> {
+    return this.staff(tenantId).list({ limit: STAFF_LIST_LIMIT });
   }
 
-  async getStaff(id: string): Promise<Staff | undefined> {
-    return this.staff().get(id);
+  async getStaff(tenantId: string, id: string): Promise<Staff | undefined> {
+    return this.staff(tenantId).get(id);
   }
 
-  async putStaff(member: Staff): Promise<void> {
-    await this.staff().put(member);
+  async putStaff(tenantId: string, member: Staff): Promise<void> {
+    await this.staff(tenantId).put(member);
   }
 
-  async reset(): Promise<void> {
-    await Promise.all([this.depts().reset(), this.staff().reset()]);
+  async reset(tenantId: string): Promise<void> {
+    await Promise.all([this.depts(tenantId).reset(), this.staff(tenantId).reset()]);
   }
 }

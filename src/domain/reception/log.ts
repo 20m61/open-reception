@@ -60,6 +60,14 @@ export type ReceptionExperience = {
    * 完遂（connected 到達）した受付では未設定。ファネルの離脱ステップ特定に使う。
    */
   abandonedAtStep?: ExperienceStep;
+  /**
+   * 担当者検索の実行回数と、うち 0 件だった回数 (issue #322)。
+   *
+   * 体験設計（`docs/experience/README.md`）の Outcome metrics「zero-result recovery rate」の
+   * 分母/分子。**クエリ文字列は持たない**（回数のみ。PII 最小化）。0 のときは省略する。
+   */
+  searchQueryCount?: number;
+  searchZeroHitCount?: number;
 };
 
 /** 体験メトリクスで許可するステップ列挙（サニタイズ用の網羅リスト）。 */
@@ -105,6 +113,12 @@ export function sanitizeReceptionExperience(input: unknown): ReceptionExperience
   if (isFiniteNonNegative(o.timeToCallMs)) out.timeToCallMs = o.timeToCallMs;
   if (isFiniteNonNegative(o.backCount) && o.backCount > 0) out.backCount = o.backCount;
   if (isFiniteNonNegative(o.cancelCount) && o.cancelCount > 0) out.cancelCount = o.cancelCount;
+  if (isFiniteNonNegative(o.searchQueryCount) && o.searchQueryCount > 0) {
+    out.searchQueryCount = o.searchQueryCount;
+  }
+  if (isFiniteNonNegative(o.searchZeroHitCount) && o.searchZeroHitCount > 0) {
+    out.searchZeroHitCount = o.searchZeroHitCount;
+  }
   if (
     typeof o.inputMethod === 'string' &&
     (EXPERIENCE_INPUT_METHOD_VALUES as readonly string[]).includes(o.inputMethod)
@@ -215,6 +229,12 @@ export type ReceptionLog = {
 };
 
 export type AuditAction =
+  /**
+   * 受付セッションを作成した (#736)。**接続したとは言っていない。**
+   * QR 受付は「予約を使用済みにして受付を作る」と「実際に呼び出す」が別の段なので、
+   * 前者をここで記録する。接続の確定は `reception.connected` が別に書く。
+   */
+  | 'reception.created'
   | 'reception.connected'
   | 'reception.answered'
   | 'reception.timeout'
@@ -225,6 +245,8 @@ export type AuditAction =
   // 管理操作 (issue #22)
   | 'department.created'
   | 'department.updated'
+  // 階層組織の編集 (#373)。値は残さず「誰がどの組織を編集したか」まで。
+  | 'organization.updated'
   | 'department.reordered'
   | 'staff.created'
   | 'staff.updated'
@@ -251,6 +273,13 @@ export type AuditAction =
   // （`site.updated` + metadata.resource='operating_policy'）を専用 action へ差し替える。
   // metadata は resource/tenantId/siteId/timezone/version/件数のみ（時間帯の具体値は残さない）。
   | 'operating_policy.updated'
+  // サービス単位の稼働ポリシー更新 (issue #367)。共通営業時間とは別コレクションなので
+  // action も分ける。metadata は resource/tenantId/siteId/version/serviceKeys/breakGlass のみ
+  // （時間帯の具体値は残さない）。
+  | 'runtime_policy.updated'
+  // 競合で保存できなかったこと自体を残す (issue #367)。「2 人が同時に運用状態を触った」は
+  // 緊急時に最も知りたい運用イベントで、成功だけ記録すると事後に再構成できない。
+  | 'runtime_policy.update_conflicted'
   // プラットフォーム運用: テナントの有効/停止 (issue #90)。理由を metadata.reason に残す。
   | 'tenant.suspended'
   | 'tenant.activated'
@@ -294,6 +323,12 @@ export type AuditAction =
   | 'reception.demo_published'
   | 'reception.demo_rolled_back'
   // 公開（認証なし閲覧）共有トークンの発行/失効。トークン値そのものは記録しない。
+  // 受付体験バージョン (issue #420 Inc2)。公開・承認・切り戻しの実施者と版番号を残す。
+  // metadata は tenantId/siteId/revision/configHash のみ（構成の中身は残さない）。
+  | 'experience.draft_saved'
+  | 'experience.approved'
+  | 'experience.published'
+  | 'experience.rolled_back'
   | 'reception.demo_share_issued'
   | 'reception.demo_share_revoked'
   // 受付端末（Device）管理 (issue #87 inc2)。token 値そのものは記録しない。

@@ -57,18 +57,12 @@ const DEFAULT_ROOTS = [
  *     と同様にタブタイトルは日本語運用に統一しており、来訪者が閲覧する画面コンテンツではない。
  */
 export const CJK_EXCEPTION_ALLOWLIST: readonly string[] = [
-  'src/components/kiosk/CheckinFlow.tsx',
-  'src/components/kiosk/KioskCallView.tsx',
-  'src/components/kiosk/KioskChatDrawer.tsx',
+  // `CheckinFlow.tsx` は移行が済んで 0 件になっていたので外した（allowlist のドリフト）。
+  // `quick-actions.ts` も同様（逃げ道の文言を i18n キーへ、未使用の日本語 label を削除）。
   'src/components/kiosk/KioskFlow.tsx',
   'src/components/kiosk/ai-guidance/AiGuidancePanel.tsx',
   'src/components/kiosk/avatar/guidance.ts',
-  'src/components/kiosk/chat/chat-logic.ts',
-  'src/components/kiosk/chat/llm-adapter.ts',
   'src/components/kiosk/custom-flow/CustomFlowRenderer.tsx',
-  'src/components/kiosk/custom-flow/PurposeSelector.tsx',
-  'src/components/kiosk/custom-flow/VisitorInfoForm.tsx',
-  'src/components/kiosk/quick-actions.ts',
   'src/app/kiosk/enroll/page.tsx',
   'src/app/kiosk/layout.tsx',
 ];

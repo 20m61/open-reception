@@ -1,0 +1,11 @@
+rules:
+  - id: dynamic-code-execution
+    languages: [typescript, javascript]
+    severity: ERROR
+    message: >-
+      文字列からコードを生成して実行しない（eval / new Function）。
+      受付端末は来訪者の入力と外部 webhook を受けるため、動的コード実行は
+      そのまま任意コード実行の経路になる。設定で分岐したいならマップか判別共用体で表す。
+    pattern-either:
+      - pattern: eval(...)
+      - pattern: new Function(...)

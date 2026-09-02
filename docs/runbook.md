@@ -13,7 +13,7 @@ CloudWatch アラームは CDK Stack 3 つが作成する（`infra/lib/stacks/`�
 | Stack (CDK) | デプロイ先リージョン | ダッシュボード | SNS Topic |
 | --- | --- | --- | --- |
 | `OpenReception-WebMonitoring-<env>`（`web-monitoring-stack.ts`, issue #299） | `ap-northeast-1`（既定） | `<prefix>-web`（例 `open-reception-prod-web`） | `<prefix> web alarms` |
-| `OpenReception-CfMonitoring-<env>`（`cloudfront-monitoring-stack.ts`, issue #303） | **us-east-1 固定**（CloudFront メトリクスの発行先制約） | 専用ダッシュボードなし（アラームは us-east-1 の CloudWatch コンソール「すべてのアラーム」で確認。5xxErrorRate の推移は上記 `<prefix>-web` ダッシュボードの CloudFront widget で見られる） | `<prefix> cloudfront alarms`（us-east-1） |
+| `OpenReception-CfMon-<env>`（`cloudfront-monitoring-stack.ts`, issue #303） | **us-east-1 固定**（CloudFront メトリクスの発行先制約） | 専用ダッシュボードなし（アラームは us-east-1 の CloudWatch コンソール「すべてのアラーム」で確認。5xxErrorRate の推移は上記 `<prefix>-web` ダッシュボードの CloudFront widget で見られる） | `<prefix> cloudfront alarms`（us-east-1） |
 | `OpenReception-Monitoring-<env>`（`monitoring-stack.ts`, 通知サブシステム #34） | `ap-northeast-1`（既定） | `<prefix>-notification` | `<prefix> notification alarms` |
 
 `<prefix>` は `infra/lib/config/environments.ts` の環境別 `prefix`（例: 本番は
@@ -51,7 +51,7 @@ Subscription）が承認済みかを疑う。
 | 8 | `DdbReadThrottles` | DynamoDB 読み取りスロットル発生（オンデマンド上限/ホットパーティション） | ダッシュボード「DynamoDB」でスロットル発生時刻を確認。特定操作（一覧取得の急増等）に偏りがないか CloudWatch Logs と突き合わせる。オンデマンドのため通常は自動でキャパシティが追随するが、急激なスパイクでは一時的に発生し得る。 | 継続・悪化する場合は開発者へエスカレーション（ホットパーティション設計の見直しが必要な可能性）。 |
 | 9 | `DdbWriteThrottles` | DynamoDB 書き込みスロットル発生 | #8 と同様の確認。受付登録・端末ハートビート等の書き込み急増が無いか確認。 | 継続・悪化する場合は開発者へエスカレーション。 |
 
-### 1.2 CloudFrontMonitoringStack（`OpenReception-CfMonitoring-<env>`, issue #303, us-east-1）
+### 1.2 CloudFrontMonitoringStack（`OpenReception-CfMon-<env>`, issue #303, us-east-1）
 
 | # | アラーム名 (CDK Construct ID) | 意味 | 一次対応 | エスカレーション |
 | --- | --- | --- | --- | --- |

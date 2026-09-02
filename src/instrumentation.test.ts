@@ -102,10 +102,50 @@ describe('instrumentation register() — Secrets Manager preload (#194)', () => 
     await expect(register()).rejects.toThrow(/must be a JSON object/);
   });
 
-  it('throws when the secret string is absent', async () => {
+  // Node の JSON.parse は失敗時のメッセージに入力の先頭 10 文字を含める。cause を連結すると
+  // console.error(err) がチェーンごと出力し、CloudWatch にシークレットの先頭が残る (#612)。
+  // **cause チェーン全体**を走査する（top-level message だけ見ると素通りする）。
+  it('シークレットが JSON でないとき、値が cause チェーンのどこにも漏れない', async () => {
     process.env.APP_SECRETS_ARN = 'arn:secret';
-    sendMock.mockResolvedValue({ SecretString: undefined });
+    sendMock.mockResolvedValue({ SecretString: 'TEST-raw-not-json-secret-value' });
+
+    const error = await register().then(
+      () => undefined,
+      (e: unknown) => e,
+    );
+
+    expect(error).toBeInstanceOf(Error);
+    const chain: string[] = [];
+    for (let e: unknown = error, depth = 0; e instanceof Error && depth < 10; depth++) {
+      chain.push(e.message, e.stack ?? '');
+      e = e.cause;
+    }
+    expect(chain.join('\n')).not.toContain('TEST-raw');
+  });
+
+  // 🔴 空文字は Secrets Manager の実在する設定ミス（作成時に値を入れ忘れる等）。
+  // `!secretString` を `=== undefined` に狭められても気づけるよう、両方を固定する。
+  it.each([
+    ['undefined', undefined],
+    ['空文字', ''],
+  ])('throws when the secret string is %s', async (_label, value) => {
+    process.env.APP_SECRETS_ARN = 'arn:secret';
+    sendMock.mockResolvedValue({ SecretString: value });
 
     await expect(register()).rejects.toThrow(/no SecretString/);
+  });
+
+  // 🔴 明示注入された空文字を Secrets Manager の値で上書きしない。
+  // `=== undefined` を `!process.env[key]` に緩めると、意図的に空にした env が黙って埋まる。
+  it('明示注入された空文字の env を上書きしない', async () => {
+    process.env.APP_SECRETS_ARN = 'arn:secret';
+    process.env.ADMIN_SESSION_SECRET = '';
+    sendMock.mockResolvedValue({
+      SecretString: JSON.stringify({ ADMIN_SESSION_SECRET: 'from-sm-admin' }),
+    });
+
+    await register();
+
+    expect(process.env.ADMIN_SESSION_SECRET).toBe('');
   });
 });

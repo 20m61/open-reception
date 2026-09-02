@@ -1,6 +1,7 @@
 import { test, expect, type Page, type Locator } from '@playwright/test';
+import { revealStaff } from './kiosk-fixtures';
 import AxeBuilder from '@axe-core/playwright';
-import { establishKioskSession, loginAsAdmin } from './helpers';
+import { establishKioskSession, loginAsAdmin, openMoreIdleActions } from './helpers';
 
 /**
  * Character-led 受付 UX の Visual Regression（VRT）+ アクセシビリティ（axe）検査
@@ -44,7 +45,22 @@ function avatarMasks(page: Page): Locator[] {
   ];
 }
 
-const SHOT_BASE = { animations: 'disabled', maxDiffPixelRatio: 0.02 } as const;
+/**
+ * `maxDiffPixelRatio` は **0.002**。かつて 0.02 だった。
+ *
+ * 0.02 は**退行を隠す幅**である。第 95 wave で `kiosk-screenshot` の待機カードが
+ * `担当者を呼ぶ → QR で受付 → …` の旧並びのまま**通り続けていた**のがその実例で、
+ * カードの位置が同じで中身の文字とアイコンだけ入れ替わる差分は実比 ~0.006 にしかならず
+ * 0.02 の内側に収まっていた（第 77 wave に続き 2 度目）。
+ *
+ * 同一プラットフォームでの再撮影は**実測でノイズ 0**（`maxDiffPixelRatio: 0` で 9 枚中 8 枚が
+ * 完全一致）。ベースラインは `{platform}` 込みの名前で OS ごとに分かれているので、
+ * フォント描画差を吸収する緩い許容値はもう要らない。
+ *
+ * 唯一 0 で落ちていた `out-of-hours` は**「次回の受付開始」の日時が毎日動く**のが原因で、
+ * これは閾値ではなく `mask` で潰した（下記）。**緩めるときは何を見逃すかを数値で確かめること。**
+ */
+const SHOT_BASE = { animations: 'disabled', maxDiffPixelRatio: 0.002 } as const;
 
 /**
  * スクショ前の決定化: フォーカス中要素を blur し、スクロール位置を最上部へ固定する。
@@ -53,6 +69,12 @@ const SHOT_BASE = { animations: 'disabled', maxDiffPixelRatio: 0.02 } as const;
  * 縦にずれて画像差分をフレークさせる。blur + scrollTo(0,0) で毎回同じ最上部を撮る。
  */
 async function stabilize(page: Page): Promise<void> {
+  // **マウスを画面外へ退避する。** クリックで進んだ直後はカーソルがその座標に残り、
+  // 次画面のカードが同じ位置に来ると Chromium が `:hover`（`globals.css` の `.card:hover` =
+  // ボーダー + `translateY(-3px)` + グロー）を再評価する。**再評価がスクショ前か後かは
+  // 非決定的**で、これが `kiosk-landscape-purpose` の flaky の正体だった（#553）。
+  // blur / scroll と同じく「撮る前に状態を 1 つに決める」次元をもう 1 つ塞ぐ。
+  await page.mouse.move(0, 0);
   await page.evaluate(() => {
     const el = document.activeElement as HTMLElement | null;
     if (el && typeof el.blur === 'function') el.blur();
@@ -101,15 +123,21 @@ test.describe('受付フロー画面（実 /kiosk・iPad landscape）', () => {
   });
 
   test('相手選択（取次先: 担当者 + 部門/窓口）画面の VRT + a11y', async ({ page }) => {
-    // 現状の相手選択は 1 画面に担当者一覧と部門/窓口一覧を併置する統合画面で、用件（meeting/delivery）に
-    // よらず同一 DOM をレンダーする（fullPage baseline がバイト一致で確認済み）。よって代表として
-    // meeting 経由で 1 本にまとめ、担当者・部門の双方が可視であることを assert する。#361 の 35/65
-    // レール再設計後に baseline を更新して差分を評価する。
+    // 相手選択は「担当者」「部署・窓口」のタブで、**同時に 2 グリッドを出さない** (#776)。
+    // baseline は初期タブ（担当者）を撮る。部署タブは新しい baseline を足さず、DOM 断定と
+    // 下の axe 再走査で押さえる（darwin/linux の 2 枚を増やさないため）。
     await page.goto('/kiosk');
     await page.getByTestId('start-reception').click();
     await page.getByTestId('purpose-meeting').click();
-    await expect(page.getByTestId('staff-staff-sato')).toBeVisible();
-    await expect(page.getByTestId('dept-dept-sales')).toBeVisible();
+    /*
+     * 担当者タブの**初期表示は部署カード** (#787)。担当者が数十人のテナントでファースト
+     * ビューが埋まるのを避けるため、未入力時は部署を出し、選んだ部署の担当者を見せる。
+     * baseline はこの初期表示を撮る（＝来訪者が最初に見る画面）。
+     */
+    await expect(page.getByTestId('staff-groups')).toBeVisible();
+    await expect(page.locator('[data-testid^="staff-staff-"]')).toHaveCount(0);
+    // 「部署・窓口」タブの取次先カードとは別物。ここに出るのは担当者を絞るための群である。
+    await expect(page.locator('[data-testid^="dept-"]')).toHaveCount(0);
 
     // 相手選択は縦に長く、担当者/部門の候補リストがファーストビュー下にあるため fullPage で全体を撮る
     // （viewport 撮影だと最上部ヘッダのみになり候補リストのレイアウト回帰を取りこぼす）。
@@ -122,16 +150,43 @@ test.describe('受付フロー画面（実 /kiosk・iPad landscape）', () => {
 
     const violations = await blockingViolations(page);
     expect(violations, summarize(violations)).toEqual([]);
+
+    /*
+     * 群を開いた先も a11y を満たす (#787)。新しい baseline は足さない —— darwin/linux の
+     * 2 枚が増えるうえ、darwin 側はローカル macOS でしか取れない（#789）。DOM 断定と
+     * axe 再走査で押さえる（このファイルが #776 の部署タブに対して既にやっている流儀）。
+     */
+    await revealStaff(page, 'staff-staff-sato');
+    await revealStaff(page, 'staff-staff-sato');
+    await expect(page.getByTestId('staff-staff-sato')).toBeVisible();
+    await expect(page.getByTestId('staff-group-back')).toBeVisible();
+    const groupViolations = await blockingViolations(page);
+    expect(groupViolations, summarize(groupViolations)).toEqual([]);
+    // 群を閉じて初期表示へ戻す（以降の部署タブ検査を、開いた状態から始めない）。
+    await page.getByTestId('staff-group-back').click();
+
+    // 部署タブも a11y を満たす（タブ切替後の DOM は baseline に写らないため個別に見る）。
+    await page.getByTestId('target-tab-department').click();
+    await expect(page.getByTestId('dept-dept-sales')).toBeVisible();
+    await expect(page.locator('[data-testid^="staff-staff-"]')).toHaveCount(0);
+    const deptViolations = await blockingViolations(page);
+    expect(deptViolations, summarize(deptViolations)).toEqual([]);
   });
 
   test('取次内容確認画面の VRT + a11y（発信直前・安全上重要）', async ({ page }) => {
     await page.goto('/kiosk');
     await page.getByTestId('start-reception').click();
     await page.getByTestId('purpose-meeting').click();
+    await revealStaff(page, 'staff-staff-sato');
     await page.getByTestId('staff-staff-sato').click();
     await page.getByTestId('visitor-name').fill('来客 一郎');
     await page.getByTestId('to-confirm').click();
     await expect(page.getByTestId('confirm-call')).toBeVisible();
+
+    // 発信直前に同姓同名を区別できることが J-OR-01 の成功条件 (#591)。宛先セルは下で mask
+    // するので **VRT では中身を検証できない**。テキストとして確認する。
+    // 「選んだ担当者の所属が、発信の直前にもう一度出ている」ことがここで担保される。
+    await expect(page.getByTestId('confirm-target-affiliation')).toHaveText(/\S/);
 
     // 氏名・宛先セルは PII を baseline へ焼き込まないため mask（値は合成データだが厳密に沿う）。
     await stabilize(page);
@@ -148,8 +203,104 @@ test.describe('受付フロー画面（実 /kiosk・iPad landscape）', () => {
     expect(violations, summarize(violations)).toEqual([]);
   });
 
+  /**
+   * 結果系（呼び出し中・通話中・未応答・代替案内）の VRT + a11y (#422 AC「visual regression で
+   * 主要状態を固定」)。
+   *
+   * この 4 状態は**このセッションで契約を大きく直した箇所**（`answers` / `gazeTarget` の乖離、
+   * 代替導線を出すかの判断の一本化）なのに画像で固定されていなかった。CTA の有無や配置が
+   * 変わっても誰も気づけない状態だったので埋める。
+   *
+   * 到達手段は `reception-flow.spec.ts` と同じ seed 依存（担当者ごとに結果が分かれる）:
+   *  - staff-sato      → connected
+   *  - staff-suzuki    → timeout（`?callingStageMs=` 等で短縮）
+   *  - staff-takahashi → failed
+   */
+  async function advanceToCall(page: Page, staffTestId: string, query = ''): Promise<void> {
+    await page.goto(`/kiosk${query}`);
+    await page.getByTestId('start-reception').click();
+    await page.getByTestId('purpose-meeting').click();
+    await revealStaff(page, staffTestId);
+    await page.getByTestId(staffTestId).click();
+    await page.getByTestId('visitor-name').fill('来客 一郎');
+    await page.getByTestId('to-confirm').click();
+    await page.getByTestId('confirm-call').click();
+  }
+
+  test('通話中画面の VRT + a11y（終了操作は任意・急かさない）', async ({ page }) => {
+    await advanceToCall(page, 'staff-staff-sato');
+    await expect(page.getByTestId('result-connected')).toBeVisible();
+
+    await stabilize(page);
+    await expect(page).toHaveScreenshot('kiosk-landscape-connected.png', {
+      ...SHOT_BASE,
+      // 本文は `{target}`（担当者名）を含むので mask する。**パネルごと隠さない** —
+      // 終了 CTA の有無と配置がこのテストで固定したいものなので、隠すと VRT の意味が無くなる。
+      mask: [...avatarMasks(page), page.locator('.result-panel__message')],
+    });
+
+    const violations = await blockingViolations(page);
+    expect(violations, summarize(violations)).toEqual([]);
+  });
+
+  test('未応答画面の VRT + a11y（代替導線が主 CTA）', async ({ page }) => {
+    await advanceToCall(
+      page,
+      'staff-staff-suzuki',
+      '?callingStageMs=100&callingNoticeMs=200&callingNoticeHoldMs=100',
+    );
+    await expect(page.getByTestId('result-timeout')).toBeVisible();
+    // 契約が返す代替導線が実際に出ていること（#489 で通信断のとき出さないよう直した箇所の対）。
+    await expect(page.getByTestId('use-fallback')).toBeVisible();
+
+    await stabilize(page);
+    await expect(page).toHaveScreenshot('kiosk-landscape-timeout.png', {
+      ...SHOT_BASE,
+      mask: avatarMasks(page),
+    });
+
+    const violations = await blockingViolations(page);
+    expect(violations, summarize(violations)).toEqual([]);
+  });
+
+  test('失敗画面の VRT + a11y', async ({ page }) => {
+    await advanceToCall(page, 'staff-staff-takahashi');
+    await expect(page.getByTestId('result-failed')).toBeVisible();
+
+    await stabilize(page);
+    await expect(page).toHaveScreenshot('kiosk-landscape-failed.png', {
+      ...SHOT_BASE,
+      mask: avatarMasks(page),
+    });
+
+    const violations = await blockingViolations(page);
+    expect(violations, summarize(violations)).toEqual([]);
+  });
+
+  test('代替案内画面の VRT + a11y（CTA を持たず逃げ道バーだけ・#325）', async ({ page }) => {
+    await advanceToCall(
+      page,
+      'staff-staff-suzuki',
+      '?callingStageMs=100&callingNoticeMs=200&callingNoticeHoldMs=100',
+    );
+    await page.getByTestId('use-fallback').click();
+    await expect(page.getByTestId('fallback')).toBeVisible();
+    // コンテンツ側 CTA は持たない（契約 `defaultAnswersFor('fallback')` が [] を返すのと対）。
+    await expect(page.getByTestId('escape-reset')).toBeVisible();
+
+    await stabilize(page);
+    await expect(page).toHaveScreenshot('kiosk-landscape-fallback.png', {
+      ...SHOT_BASE,
+      mask: avatarMasks(page),
+    });
+
+    const violations = await blockingViolations(page);
+    expect(violations, summarize(violations)).toEqual([]);
+  });
+
   test('QR 受付導入（受付方法選択）画面の VRT + a11y', async ({ page }) => {
     await page.goto('/kiosk');
+    await openMoreIdleActions(page);
     await page.getByTestId('start-checkin').click();
     await page.getByTestId('checkin-start').click();
     await expect(page.getByTestId('method-qr')).toBeVisible();
@@ -179,7 +330,14 @@ test.describe('デモプレビュー経由の画面（営業時間外・サイ�
     await stabilize(page);
     await expect(page).toHaveScreenshot('kiosk-landscape-out-of-hours.png', {
       ...SHOT_BASE,
-      mask: avatarMasks(page),
+      // 「次回の受付開始」の**日時の値だけ**を mask する。日付が変われば必ず動くため、
+      // 唯一この 1 枚が許容値 0 で落ちていた（実測 1813px・差分は全てこのテキスト）。
+      //
+      // **ラベルや枠ごと隠さない** — 第 72 wave で通話中パネルを丸ごと mask して VRT を
+      // 無意味にしかけた反省に従い、非決定的な値のノードへ絞る。`kiosk-out-of-hours-reopen`
+      // （枠）ではなく `-reopen-time`（値）を指すのはそのため。時刻が出ない場合に描かれる
+      // `-reopen-unknown` は固定文言なので mask しない（0 件マッチは no-op）。
+      mask: [...avatarMasks(page), page.getByTestId('kiosk-out-of-hours-reopen-time')],
     });
 
     const violations = await blockingViolations(page);

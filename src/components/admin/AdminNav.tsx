@@ -6,6 +6,7 @@ import type { ReactNode } from 'react';
 import type { TenantRole } from '@/domain/tenant/types';
 import { type NavGroup, type NavItem, isActivePath, visibleNav } from './navigation';
 import { navLinkAriaCurrent, navLinkStyle } from './nav-link-style';
+import { font, motion } from './ui/tokens';
 
 /**
  * 責務グループ表示・現在地表示・ロールに応じた出し分けを担うナビ (issue #85, SPA 化 #94)。
@@ -42,7 +43,7 @@ export function AdminNav({
           <p
             style={{
               margin: '0 0 4px',
-              fontSize: '0.75rem',
+              fontSize: font.caption,
               textTransform: 'uppercase',
               letterSpacing: '0.05em',
               opacity: 0.55,
@@ -115,7 +116,7 @@ function NavLinkPending(): ReactNode {
         border: '2px solid currentColor',
         borderTopColor: 'transparent',
         opacity: 0.7,
-        animation: 'admin-spinner-rotate 0.7s linear infinite',
+        animation: `admin-spinner-rotate ${motion.spin} linear infinite`,
       }}
     />
   );

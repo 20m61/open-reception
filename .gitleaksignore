@@ -1,0 +1,40 @@
+# gitleaks の既知・受容済み検出（#474）
+#
+# `gitleaks detect` は作業ツリーではなく **git 履歴** を走査するため、フィクスチャを
+# 現在のコードで修正しても、過去のコミットに残った文字列は検出され続ける。履歴の
+# 書き換えはしない方針なので、**該当コミットの該当行だけ**を指紋で受容する。
+#
+# 指紋の形式: <commit>:<file>:<rule>:<line>
+# ファイル単位・ルール単位の広い allowlist にはしない（実 secret を素通しさせないため）。
+#
+# 以下 2 件はいずれも退館 token のテストフィクスチャで、実 secret ではない。
+# 現在のコードでは `TEST-...` の明確な擬似値へ置換済み（`rules/pii-secret-minimization.md`:
+# 「テストに実 secret 風文字列を置かず、明確な擬似値（TEST-...）を使う」）。
+# したがって新規コミットで同種の検出は再発しない。
+#
+# 注: このファイルに検出値そのものを書かないこと。書くとこのファイル自身が新たな
+# 検出源になる（実際に一度踏んだ）。何が引っかかったかは指紋の file:line で辿れる。
+
+# 退館 token フィクスチャ（credential-display.test.ts, 2026-07-12）
+6ce134ac4c759431cadfb328ef5cc68f74e5a665:src/components/kiosk/checkout/credential-display.test.ts:generic-api-key:5
+
+# 退館 token フィクスチャ（self-id.test.ts, 2026-07-12）
+04915c88950680bd08e12679a79fcca689f15099:src/components/kiosk/checkout/self-id.test.ts:generic-api-key:81
+
+# push-secret-guard.sh の変異テスト用フィクスチャ（push-secret-guard.test.ts）。
+# 構文上は有効な AWS アクセスキー ID 形式（AKIA + [A-Z2-7]{16}）だが実 secret ではない。
+#
+# 🔴 **#680 続報: この指紋は「都度貼り替え」ではなく「一度きりで恒久」であるべき区別が
+# ある。** PR #684 は同じフィクスチャを `9f7dcf6e...`（**マージ前のブランチコミット**）で
+# 指紋登録した。squash マージはブランチのコミット鎖を丸ごと捨てて main 上に新しい
+# 1 コミットを作るため、`9f7dcf6e` は main の履歴に一度も現れず、代わりに現れた
+# `5ef205c3...`（現在の main）が指紋不一致で再検出された。
+#
+# 以下の指紋はその `5ef205c3...`（**既に main の一部として確定した、書き換えられない
+# コミット**）を指しており、9f7dcf6e のときとは違い、以後のどの squash マージでも
+# この SHA 自体が変わることはない。加えて `push-secret-guard.test.ts` 側は以後
+# `AKIA` 形式のリテラルをランタイム構築へ変更した（このコミットより後）ので、
+# **今後の新規コミットでこの検出が再発することはない** —— この 1 行は
+# `5ef205c3` という過去の 1 点だけを恒久的に受容するためのものであり、
+# 都度貼り替えが必要になる性質のものではない。
+5ef205c3216164192387da33ba039733bf22bac0:tests/hooks/push-secret-guard.test.ts:aws-access-token:85

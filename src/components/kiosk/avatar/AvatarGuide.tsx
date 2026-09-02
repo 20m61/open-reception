@@ -3,7 +3,8 @@
 import dynamic from 'next/dynamic';
 import { useEffect, useMemo, useState } from 'react';
 import type { ReceptionState } from '@/domain/reception/state';
-import { deriveAvatarState } from '@/domain/reception/ui-contract';
+import { deriveAvatarState, gazeTargetFor } from '@/domain/reception/ui-contract';
+import type { KioskLayout } from '../layout';
 import { resolveMotionUrl, type MotionKey } from '@/domain/motion/types';
 import { DEFAULT_LOCALE, htmlLangFor, type Locale } from '@/lib/i18n';
 import { speak, type SpeakSettings } from '../speech';
@@ -65,6 +66,11 @@ export type AvatarGuideProps = {
    * 提示内容（後方互換）。
    */
   guidanceOverride?: AvatarGuidanceOverride;
+  /**
+   * 画面レイアウト (#422 inc5-c 増分 3)。視線の向きに効く（横向きは右レール、縦向きは真下）。
+   * 未指定は横向き扱い＝既定プロファイル。
+   */
+  layout?: KioskLayout;
   className?: string;
 };
 
@@ -77,6 +83,7 @@ export function AvatarGuide({
   defaultMotionUrl,
   ttsSettings,
   guidanceOverride,
+  layout,
   className,
 }: AvatarGuideProps) {
   const avatarState = deriveAvatarState(screenState);
@@ -128,6 +135,10 @@ export function AvatarGuide({
             expression={guidance.expression}
             speaking={speaking}
             avatarState={avatarState}
+            // 視線誘導は契約から導出する (#422 inc5-c 増分 3)。screenState キーの
+            // `gazeTargetFor` が唯一の権威で、ここは向きの解決へ渡すだけ。
+            gazeTarget={gazeTargetFor(screenState)}
+            layout={layout}
             className={undefined}
           />
         ) : null}
@@ -171,7 +182,15 @@ const containerStyle: React.CSSProperties = {
 const viewerStyle: React.CSSProperties = {
   position: 'relative',
   width: '100%',
-  maxWidth: 360,
+  /*
+   * 上限を CSS 変数で受ける (#620)。縦置き・大型の待機画面はアバターが縦積みで総高を支配する
+   * ため、視覚だけを小さくしたい。**インラインスタイルは CSS より優先される**ので、
+   * ここを固定値にしていると外側のスタイルシートから絞れない（実際に効かず、原因を
+   * 「高さが幅で決まっていない」と誤診した）。高さは下の aspect-ratio が幅から導く。
+   *
+   * 字幕は兄弟要素なのでこの上限に巻き込まれない。ガイドごと絞ると字幕まで狭まって折り返す。
+   */
+  maxWidth: 'var(--kiosk-avatar-visual-max, 360px)',
   aspectRatio: '3 / 4',
 };
 

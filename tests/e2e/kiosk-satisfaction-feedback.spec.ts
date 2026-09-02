@@ -1,4 +1,4 @@
-import { test, expect } from './kiosk-fixtures';
+import { test, expect, revealStaff } from './kiosk-fixtures';
 
 /**
  * ワンタップ満足度フィードバック (issue #320) の E2E。
@@ -12,6 +12,7 @@ async function advanceToConfirm(page: import('@playwright/test').Page, staffTest
   await page.goto(`/kiosk${query}`);
   await page.getByTestId('start-reception').click();
   await page.getByTestId('purpose-meeting').click();
+  await revealStaff(page, staffTestId);
   await page.getByTestId(staffTestId).click();
   await page.getByTestId('visitor-name').fill('来客 一郎');
   await page.getByTestId('to-confirm').click();

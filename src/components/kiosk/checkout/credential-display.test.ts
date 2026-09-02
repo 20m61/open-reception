@@ -2,7 +2,10 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { buildCheckoutUrl, checkoutQrDataUrl, safeCheckoutQrDataUrl } from './credential-display';
 import { extractCheckoutToken } from './self-id';
 
-const TOKEN = 'abc123_-DEF456';
+// base64url 文字種（`/^[A-Za-z0-9_-]+$/`）は保ちつつ、明確な擬似値にする。
+// 高エントロピー風の文字列は gitleaks の generic-api-key に誤検知される
+// （`rules/pii-secret-minimization.md`: テストに実 secret 風文字列を置かない）。
+const TOKEN = 'TEST-checkout-token_000';
 
 describe('buildCheckoutUrl (issue #342)', () => {
   it('退館 checkout URL に token を ct クエリで載せる', () => {

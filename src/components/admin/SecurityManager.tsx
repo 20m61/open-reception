@@ -3,12 +3,14 @@
 import { useCallback, useEffect, useState } from 'react';
 import { Button, Field, SaveFeedback, useSaveFeedback } from '@/components/admin/ui';
 import { space } from '@/components/admin/ui/tokens';
+import { AdminReadGate } from './AdminReadGate';
 
 type SecurityView = { pinRequired: boolean; ipAllowlist: string[]; pinConfigured: boolean; emergencyStop: boolean };
 
 /** セキュリティ設定 (issue #23, #29)。PIN 必須・PIN 変更・IP 許可リストを編集する。 */
 export function SecurityManager() {
   const [view, setView] = useState<SecurityView | null>(null);
+  const [loadFailed, setLoadFailed] = useState(false);
   const [pinRequired, setPinRequired] = useState(false);
   const [pin, setPin] = useState('');
   const [ipText, setIpText] = useState('');
@@ -17,13 +19,18 @@ export function SecurityManager() {
   const [confirmingEmergency, setConfirmingEmergency] = useState(false);
 
   const load = useCallback(async () => {
-    const res = await fetch('/api/admin/security');
-    if (res.ok) {
-      const v = (await res.json()) as SecurityView;
-      setView(v);
-      setPinRequired(v.pinRequired);
-      setIpText(v.ipAllowlist.join('\n'));
+    // `catch` を省くとオフラインで例外になり、`void load()` が握り潰して
+    // **失敗にすら落ちない**（画面は「読み込み中…」のまま固まる）。
+    const res = await fetch('/api/admin/security').catch(() => null);
+    if (!res?.ok) {
+      setLoadFailed(true);
+      return;
     }
+    const v = (await res.json()) as SecurityView;
+    setView(v);
+    setPinRequired(v.pinRequired);
+    setIpText(v.ipAllowlist.join('\n'));
+    setLoadFailed(false);
   }, []);
 
   useEffect(() => {
@@ -68,7 +75,17 @@ export function SecurityManager() {
     [load],
   );
 
-  if (!view) return <section><h1 style={{ marginTop: 0 }}>セキュリティ設定</h1><p>読み込み中…</p></section>;
+  if (!view) {
+    return (
+      <AdminReadGate
+        heading="セキュリティ設定"
+        failed={loadFailed}
+        failureMessage="セキュリティ設定を取得できませんでした。通信状況を確認して再試行してください。"
+        onRetry={() => void load()}
+        testId="security-unavailable"
+      />
+    );
+  }
 
   return (
     <section style={{ maxWidth: 480 }}>

@@ -167,6 +167,58 @@ async function applyEvent(
 }
 
 /**
+ * 呼び出し結果で受付を終端する (#743)。
+ *
+ * 🔴 **全体置換で書かない。** 読んでから書くまでの間に取次が 2 手目へ進むと
+ * （`setProviderCallIdIfCalling`）、置換が `providerCallId` を **1 手目へ巻き戻す**。
+ * 受付は terminal なので蘇生はしないが、**2 手目は鳴り続け、`/status` は 1 手目の相関を
+ * 読む** ── 担当者の電話は鳴るのに来訪者はもう居ない「無人の呼び出し」になる。
+ *
+ * 状態機械は変えない（遷移の可否は `transition` が決める）。変えるのは**書き方**だけで、
+ * 「読んだ時点の状態のままなら、名指しした項目だけを書く」にする。
+ *
+ * 条件を外した＝別の書き手が先に進めた。**結果を二重に記録しない**（採番に重複排除が
+ * 無いので、二重に確定すると同じ受付の履歴・監査が 2 件残る）。
+ */
+async function settleTerminal(
+  id: string,
+  event: ReceptionEvent,
+  outcome: () => Partial<ReceptionSession>,
+): Promise<StoreResult<ReceptionSession>> {
+  const found = await getReception(id);
+  if (!found.ok) return found;
+
+  const next = transition(found.value.state, event);
+  if (next === null) {
+    return {
+      ok: false,
+      error: { code: 'invalid_transition', message: `cannot ${event} from ${found.value.state}` },
+    };
+  }
+
+  const changes: Partial<ReceptionSession> = {
+    state: next,
+    completedAt: now(),
+    updatedAt: now(),
+    ...outcome(),
+  };
+  const won = await sessions().applyIfState(id, changes, found.value.state);
+  if (!won) {
+    // 別の書き手が先に進めた。**こちらは何も主張しない**（結果を二重に記録しない）。
+    const current = await getReception(id);
+    if (!current.ok) return current;
+    return {
+      ok: false,
+      error: { code: 'invalid_transition', message: `cannot ${event} from ${current.value.state}` },
+    };
+  }
+
+  const settled: ReceptionSession = { ...found.value, ...changes };
+  await recordReceptionOutcome(settled);
+  return { ok: true, value: settled };
+}
+
+/**
  * 呼び出しを開始する。
  * 同期 adapter（Mock）は結果でセッション状態を確定する。
  * 非同期 adapter（Vonage）は calling のまま sessionId を紐づけ、応答は後続イベントで確定する。
@@ -185,7 +237,7 @@ export async function startCall(
   if (!calling.ok) return calling;
 
   // 既定は Mock。テナント設定が vonage+secret 完備なら本番 adapter（#4）。担当者は現在のディレクトリから構成。
-  const callAdapter = adapter ?? (await resolveCallAdapter(tenantId, await listStaff(true)));
+  const callAdapter = adapter ?? (await resolveCallAdapter(tenantId, await listStaff(tenantId, true)));
   const result: CallResult = await callAdapter.call({
     receptionId: calling.value.id,
     targetType: calling.value.targetType!,
@@ -195,7 +247,12 @@ export async function startCall(
   // 非同期 adapter（Vonage）: セッション確立 → 応答待ち。calling のまま sessionId を紐づけ、
   // 応答/未応答は /connected・/timeout（markConnected/markTimeout）で確定する (increment 2)。
   if (result.status === 'calling') {
-    const withSession: ReceptionSession = { ...calling.value, vonageSessionId: result.sessionId };
+    // 媒体は排他: ビデオは sessionId、実 PSTN は providerCallId。両方入ることは無い。
+    const withSession: ReceptionSession = {
+      ...calling.value,
+      vonageSessionId: result.sessionId,
+      providerCallId: result.providerCallId,
+    };
     await sessions().put(withSession);
     return { ok: true, value: withSession };
   }
@@ -253,6 +310,37 @@ export async function completeReception(id: string): Promise<StoreResult<Recepti
     return getReception(id);
   }
   return result;
+}
+
+/**
+ * 取次が次の手へ進んだときに相関キーを付け替える (#646)。
+ *
+ * 🔴 **これが無いと `/status` は 1 手目の相関を読み続ける。** 相関のキーは provider の
+ * 通話 ID で、2 手目は新しい ID＝新しいレコードになる。1 手目は「未応答」で確定済みなので、
+ * 付け替えないと**2 手目が鳴っている最中に来訪者へ「応答が得られませんでした」と表示**して
+ * 代替導線へ倒してしまう。
+ *
+ * **状態機械は触らない。** ここは `'calling'` のままの受付の相関キーだけを差し替える
+ * 操作で、確定は従来どおり `/status` の読み時（`resolvePendingCall`）が行う。
+ * 呼び出し元は webhook なので、`'calling'` 以外（既に確定した・取り消された）へは書かない
+ * ── 遅れて届いた webhook で終わった受付を蒸し返さない。
+ */
+export async function repointProviderCall(
+  id: string,
+  providerCallId: string,
+): Promise<StoreResult<ReceptionSession>> {
+  // 🔴 read-modify-write にしない。取次が撃っている最中に `/status` が `markTimeout` を
+  // 書くと、全体置換が終端状態を `'calling'` へ巻き戻す（履歴・監査が二重に残る）。
+  const swapped = await sessions().setProviderCallIdIfCalling(id, providerCallId, now());
+  if (!swapped) {
+    const found = await getReception(id);
+    if (!found.ok) return found;
+    return {
+      ok: false,
+      error: { code: 'invalid_transition', message: `cannot repoint from ${found.value.state}` },
+    };
+  }
+  return getReception(id);
 }
 
 /**
@@ -357,14 +445,24 @@ export async function getReceptionVisitorStatus(
  * timeout は結果が確定するため受付履歴を記録する（同期 timeout と同じ扱い）。
  */
 export async function markTimeout(id: string): Promise<StoreResult<ReceptionSession>> {
-  const found = await getReception(id);
-  if (!found.ok) return found;
-  const result = await applyEvent(found.value, 'CALL_TIMEOUT');
-  if (!result.ok) return result;
-  const timed: ReceptionSession = { ...result.value, callOutcome: 'timeout', completedAt: now() };
-  await sessions().put(timed);
-  await recordReceptionOutcome(timed);
-  return { ok: true, value: timed };
+  return settleTerminal(id, 'CALL_TIMEOUT', () => ({ callOutcome: 'timeout' }));
+}
+
+/**
+ * 非同期通話の失敗を記録する（calling → failed）(#647)。
+ *
+ * 実 PSTN 発信で provider が失敗を返した場合に使う。体験モデルの `contact_failed`
+ * （呼び出しを完了できなかった）に対応し、代替導線を主 CTA にする。
+ * `reason` は**非機微の固定コードのみ**（番号・URL・資格情報を載せない）。
+ */
+export async function markCallFailed(
+  id: string,
+  reason?: string,
+): Promise<StoreResult<ReceptionSession>> {
+  return settleTerminal(id, 'CALL_FAILED', () => ({
+    callOutcome: 'failed',
+    ...(reason === undefined ? {} : { failureReason: reason }),
+  }));
 }
 
 /** 失敗/未応答後の代替導線利用を記録する (issue #19)。状態は failed/timeout → fallback。 */

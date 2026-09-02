@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server';
 import { getKioskAssets } from '@/lib/assets/asset-store';
+import { defaultTenantIdFrom } from '@/lib/tenant/default-scope';
 import { isKioskFeatureEnabled } from '@/lib/platform/feature-flag-gate';
 import { requireKioskSession } from '@/lib/kiosk/session-guard';
 
@@ -15,7 +16,9 @@ import { requireKioskSession } from '@/lib/kiosk/session-guard';
 export async function GET(): Promise<NextResponse> {
   const session = await requireKioskSession();
   const [assets, avatarEnabled] = await Promise.all([
-    getKioskAssets(),
+    // 旧・個別 API。端末セッション不要の公開経路なので既定テナント固定のまま据え置く
+    // （テナントを受け取る形にすると無認証で任意テナントの設定を引ける）。撤去対象。
+    getKioskAssets(defaultTenantIdFrom()),
     isKioskFeatureEnabled('avatarReception', session?.kioskId),
   ]);
   if (!avatarEnabled) {

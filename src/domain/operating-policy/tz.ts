@@ -41,9 +41,34 @@ const WEEKDAY_MAP: Record<string, Weekday> = {
   Sun: 'sun',
 };
 
-/** 指定 IANA タイムゾーン名が `Intl` で解決できるか。 */
+/**
+ * 指定値が**名前付き** IANA タイムゾーンとして解決できるか (#367 / #800)。
+ *
+ * 🔴 **`Intl` が通ることだけでは足りない。** Node 22 / ES2024 の `Intl.DateTimeFormat` は
+ * **生のオフセット文字列（`±23:59` まで）も受理する**（実測）。営業時間の判定は
+ * 名前付きゾーンであることを前提にしているので、生オフセットが保存されると壊れる:
+ *
+ * - **DST が無い。** `America/Los_Angeles` の拠点が `-08:00` で保存されると夏の間ずっと 1h ずれる
+ * - **曜日の境界がずれる。** `evaluateOperatingStatus` は現地日付から曜日を引く
+ * - **判定不能の窓が倍になる。** `src/lib/runtime-policy/store.ts` の `TIMEZONE_BOUNDS` は
+ *   拠点 TZ の取りうる範囲を両端で近似しており、生オフセットを許すと ±23:59 まで広がる
+ *
+ * ## なぜ許可リストで実装しないか
+ *
+ * `Intl.supportedValuesOf('timeZone')` は**正準名だけ**を返す。実測すると 418 件の中に
+ * **`UTC` が無く**、`Etc/*` も無く、`asia/tokyo` のような小文字形も無い。許可リストにすると
+ * **今日 `Intl` が受理していて、既に保存されうる値**を弾いてしまう。加えて中身は ICU の
+ * バージョンに依るので、環境によって判定が変わる。
+ *
+ * よって「**`UTC`、または `/` を含み、かつ `Intl` が実在ゾーンとして受理するもの**」で判定する。
+ * 生オフセットは `/` を含まないので確実に落ち、`Foo/Bar` のような偽物は `Intl` が弾く。
+ */
 export function isValidTimeZone(timeZone: string): boolean {
   if (typeof timeZone !== 'string' || timeZone.trim() === '') return false;
+  // 名前付きの形をしているか。`UTC` だけは `/` を持たない例外として明示的に通す
+  // （`Intl` は大小文字を問わないので、こちらも問わない）。
+  const named = timeZone.includes('/') || timeZone.toUpperCase() === 'UTC';
+  if (!named) return false;
   try {
     new Intl.DateTimeFormat('en-US', { timeZone });
     return true;

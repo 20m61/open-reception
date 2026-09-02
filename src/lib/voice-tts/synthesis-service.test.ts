@@ -29,10 +29,8 @@ class CountingProvider implements StreamingTtsProvider {
 
 /** テスト用 provider: 常に失敗する（Polly 障害シミュレーション, issue #371 AC）。 */
 class FailingProvider implements StreamingTtsProvider {
-  // eslint-disable-next-line @typescript-eslint/no-unused-vars
   async *synthesize(_req: TtsRequest): AsyncIterable<TtsAudioChunk> {
     throw new Error('polly unavailable');
-    // eslint-disable-next-line no-unreachable
     yield undefined as never;
   }
 }

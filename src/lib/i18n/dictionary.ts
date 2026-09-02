@@ -54,10 +54,12 @@ export type MessageKey =
   | 'voice.readback.confirmDepartment'
   | 'voice.readback.yes'
   | 'voice.readback.no'
+  | 'voice.unavailable.staffAbsent'
   | 'voice.fallback.touchNotice'
   | 'common.next'
   | 'common.cancel'
   | 'common.retry'
+  | 'common.processing'
   // 待機画面のクイックアクション（カード label/desc, #103 increment 2）
   | 'kiosk.action.callStaff.label'
   | 'kiosk.action.callStaff.desc'
@@ -69,6 +71,10 @@ export type MessageKey =
   | 'kiosk.action.delivery.desc'
   | 'kiosk.action.other.label'
   | 'kiosk.action.other.desc'
+  // 待機画面の「ほかのご用件」開示 (#620)。ラベルに中身（QR・配送）を出すのは、
+  // 単なる「その他」だと QR 受付が畳まれていることに再訪者が気づけないため。
+  | 'kiosk.action.more.label'
+  | 'kiosk.action.more.hide'
   // 受付フロー画面の見出し・目的・主要ボタン（#103 increment 3）
   | 'reception.targetPrompt'
   | 'reception.visitorInfoPrompt'
@@ -95,10 +101,50 @@ export type MessageKey =
   | 'reception.finishReception'
   | 'reception.timeoutBody'
   | 'reception.failedBody'
+  | 'reception.failedNetworkBody'
+  | 'reception.failedUnroutedBody'
+  | 'reception.failedOutOfHoursBody'
   | 'reception.altContact'
   // 担当者クイック応答 (#99) の「5分お待ちください」に対する目安の再案内 (#323 AC2)。
   | 'reception.staffResponseWaitReguidance'
   | 'reception.reset'
+  // 常設の逃げ道バーの nav ラベル。読み上げにだけ使う (#327)。
+  // **ボタンを列挙しない**: 出るボタンは状態で変わる（reset だけの状態が 10 個ある）ため、
+  // 列挙すると存在しない「戻る」を案内してしまう。中身は nav 内のボタンが読み上げられる。
+  | 'reception.escapeBarLabel'
+  // 受付進行中も画面分岐より手前で常設される来訪者向けのお知らせ (#327 follow-up)。
+  | 'reception.offlineNotice'
+  | 'kiosk.deviceUnavailable'
+  | 'kiosk.unexpectedError.title'
+  | 'kiosk.unexpectedError.lead'
+  | 'kiosk.unexpectedError.retry'
+  // 通話ビューの状態表示（#375 経路ではなく Vonage 通話の実況）。
+  | 'kiosk.call.connecting'
+  | 'kiosk.call.connected'
+  | 'kiosk.call.timeout'
+  | 'kiosk.call.fallback'
+  // カスタム受付フロー (#100) の画面。
+  | 'customFlow.noFlows'
+  | 'customFlow.selectPlaceholder'
+  // Chat-assisted ドロワー (#122/#124)。担当者検索 0 件時に開くので、来訪者が困っている時に出る。
+  | 'chat.fabLabel'
+  | 'chat.panelLabel'
+  | 'chat.title'
+  | 'chat.repliesLabel'
+  | 'chat.confirmRedirectHint'
+  | 'chat.inputPlaceholder'
+  | 'chat.inputLabel'
+  | 'chat.send'
+  | 'chat.staffHandoff'
+  | 'chat.greeting'
+  | 'chat.fallbackReply'
+  | 'chat.faq.qrForgot.q'
+  | 'chat.faq.qrForgot.a'
+  | 'chat.faq.departmentOnly.q'
+  | 'chat.faq.departmentOnly.a'
+  | 'chat.faq.purposeUnknown.q'
+  | 'chat.faq.purposeUnknown.a'
+  | 'chat.unrecognized'
   | 'reception.fallbackBody'
   | 'reception.toDesk'
   | 'reception.cancelled'
@@ -107,9 +153,18 @@ export type MessageKey =
   // 担当・部署選択 / 音声検索 / フォーム・確認の項目ラベル（#103 increment 5・{field} は補間）
   | 'reception.searchStaff'
   | 'reception.searchPlaceholder'
+  | 'reception.byStaff'
   | 'reception.byDepartment'
+  | 'reception.targetTabsLabel'
   | 'reception.staffAbsent'
+  | 'reception.staffAbsentBadge'
+  | 'reception.staffGroupOther'
+  | 'reception.staffGroupCount'
+  | 'reception.staffGroupBack'
+  | 'reception.staffGroupOpened'
+  | 'reception.staffGroupLabel'
   | 'reception.staffNotFound'
+  | 'reception.departmentNotFound'
   | 'reception.voiceSearch'
   | 'reception.listening'
   | 'reception.voiceHint'
@@ -121,10 +176,6 @@ export type MessageKey =
   | 'reception.requiredLabel'
   | 'reception.optionalLabel'
   // 進捗ステッパーのステップ短ラベル（#121 UX）
-  | 'reception.step.purpose'
-  | 'reception.step.target'
-  | 'reception.step.info'
-  | 'reception.step.confirm'
   // 無操作タイムアウトのカウントダウン警告（#125 UX・{seconds} 補間）
   | 'reception.inactivityTitle'
   | 'reception.inactivityBody'
@@ -212,6 +263,8 @@ export type MessageKey =
   | 'reception.searchNoResultsGuidance'
   | 'reception.searchNoResultsChatCta'
   | 'reception.searchMaybeMatch'
+  | 'reception.affiliationWithSecondary'
+  | 'reception.affiliationSeparator'
   // ワンタップ満足度フィードバック（完了/未応答/失敗の終端画面, #320）。自由記述は無く、
   // 評価（happy/neutral/unhappy）の aria-label と定型理由チップの文言のみ。
   | 'reception.feedback.prompt'
@@ -253,7 +306,6 @@ export type MessageKey =
   | 'checkin.idle.title'
   | 'checkin.idle.lead'
   | 'checkin.idle.start'
-  | 'checkin.backToStart'
   | 'checkin.method.title'
   | 'checkin.method.qr'
   | 'checkin.method.manual'
@@ -285,9 +337,36 @@ export type MessageKey =
   | 'checkin.error.used'
   | 'checkin.error.revoked'
   | 'checkin.error.network'
+  // 呼び出し失敗の理由別（差分 D）。すべてを「通信に失敗しました」に潰さない。
+  | 'checkin.error.session'
+  | 'checkin.error.reservation'
+  | 'checkin.error.server'
+  | 'checkin.error.unanswered'
+  | 'checkin.error.unrouted'
+  | 'checkin.error.outOfHours'
+  | 'checkin.landing.title'
+  | 'checkin.landing.lead'
   | 'checkin.error.generic'
   | 'checkin.error.useManual'
-  | 'checkin.error.retry';
+  | 'checkin.error.retry'
+  // QR 受付のアバター字幕 (#361 AC2)。見出し/リードとは別スロットで、`CheckinMessageKey`
+  // 1 つにつき 1 キー。画面の見出しと矛盾しない主指示を、来訪者の言語で読み上げる/表示する。
+  | 'checkin.subtitle.intro'
+  | 'checkin.subtitle.chooseMethod'
+  | 'checkin.subtitle.cameraPermission'
+  | 'checkin.subtitle.scanning'
+  | 'checkin.subtitle.resolving'
+  | 'checkin.subtitle.reviewReservation'
+  | 'checkin.subtitle.calling'
+  | 'checkin.subtitle.completed'
+  | 'checkin.subtitle.cancelled'
+  | 'checkin.subtitle.manualFallback'
+  | 'checkin.subtitle.cameraError'
+  | 'checkin.subtitle.scanError'
+  | 'checkin.subtitle.expiredError'
+  | 'checkin.subtitle.usedError'
+  | 'checkin.subtitle.revokedError'
+  | 'checkin.subtitle.networkError';
 
 /** 既定 locale 辞書は全キー網羅必須。他 locale は Partial 可（欠落は ja へフォールバック）。 */
 type DefaultDictionary = Record<MessageKey, string>;
@@ -316,10 +395,14 @@ const ja: DefaultDictionary = {
   'voice.readback.confirmDepartment': '{name}でよろしいですか？',
   'voice.readback.yes': 'はい',
   'voice.readback.no': 'いいえ',
+  // タッチ側の「本日不在」バッジと**同じ事実**を音声でも言う (#803)。言いっぱなしにせず、
+  // タッチ経路と同じ次の手（部署・代表窓口）へ導く。
+  'voice.unavailable.staffAbsent': '{name}は現在不在です。画面から部署または代表窓口をお選びください',
   'voice.fallback.touchNotice': '音声が使えないため、画面のタッチで受付を続けられます',
   'common.next': '次へ',
   'common.cancel': 'キャンセル',
   'common.retry': 'もう一度',
+  'common.processing': '処理しています…',
   'kiosk.action.callStaff.label': '担当者を呼ぶ',
   'kiosk.action.callStaff.desc': 'お名前・ご用件をうかがって担当者をお呼びします',
   'kiosk.action.checkin.label': 'QR で受付',
@@ -330,6 +413,8 @@ const ja: DefaultDictionary = {
   'kiosk.action.delivery.desc': 'お届け物・納品の方はこちら',
   'kiosk.action.other.label': 'その他のご用件',
   'kiosk.action.other.desc': '上記にあてはまらない方はこちら',
+  'kiosk.action.more.label': 'QR・配送・その他のご用件',
+  'kiosk.action.more.hide': '閉じる',
   'reception.targetPrompt': '担当者・部署をお選びください',
   'reception.visitorInfoPrompt': '来訪者情報を入力してください',
   'reception.purpose.meeting': '面会',
@@ -351,19 +436,65 @@ const ja: DefaultDictionary = {
   'reception.finishReception': '受付を終える',
   'reception.timeoutBody': '応答がありませんでした。別の方法でお呼びすることもできます。',
   'reception.failedBody': '呼び出しに失敗しました。別の方法でお呼びすることもできます。',
+  'reception.failedNetworkBody': '通信が一時的に不安定なため、お呼び出しできませんでした。少し待ってからもう一度お試しください。',
+  'reception.failedUnroutedBody': 'ただいま担当者にお取り次ぎできません。恐れ入りますが、近くのスタッフにお声がけください。',
+  'reception.failedOutOfHoursBody': 'ただいま受付時間外のため、お取り次ぎできません。恐れ入りますが、近くのスタッフにお声がけください。',
   'reception.altContact': '代替の連絡先へ',
   'reception.staffResponseWaitReguidance': '目安は数分です。担当者が向かい次第、この画面が切り替わります。',
   'reception.reset': '最初に戻る',
-  'reception.fallbackBody': '代表窓口にお繋ぎします。受付スタッフが対応いたしますので、しばらくお待ちください。',
+  'reception.escapeBarLabel': '受付の操作',
+  'reception.offlineNotice': '通信が不安定です。復帰までしばらくお待ちください。',
+  'kiosk.deviceUnavailable': 'この受付端末は現在ご利用いただけません。担当者にお問い合わせください。',
+  'kiosk.unexpectedError.title': '受付を続けられませんでした',
+  'kiosk.unexpectedError.lead': '恐れ入りますが、近くのスタッフにお声がけください。もう一度お試しいただくこともできます。',
+  'kiosk.unexpectedError.retry': 'もう一度試す',
+  'kiosk.call.connecting': '担当者を呼び出しています。少々お待ちください。',
+  'kiosk.call.connected': '応答がありました。まもなくお越しになります。',
+  'kiosk.call.timeout': '応答がありませんでした。',
+  'kiosk.call.fallback': '通話を開始できませんでした。画面の案内に沿ってお進みください。',
+  'customFlow.noFlows': '受付フローが設定されていません。',
+  'customFlow.selectPlaceholder': '選択してください',
+  'chat.fabLabel': 'お困りですか？',
+  'chat.panelLabel': '受付のお手伝いチャット',
+  'chat.title': 'お手伝い',
+  'chat.repliesLabel': '次の操作',
+  'chat.confirmRedirectHint': '（確認画面で操作します）',
+  'chat.inputPlaceholder': '例: 山田さんに会いに来ました',
+  'chat.inputLabel': 'ご用件を入力',
+  'chat.send': '送信',
+  'chat.staffHandoff': 'スタッフに繋ぐ',
+  'chat.greeting': 'お困りですか？ ご用件を入力するか、下のボタンからお選びください。',
+  'chat.fallbackReply': 'ただ今うまくお答えできません。よくあるご質問か、スタッフ対応からお選びください。',
+  'chat.faq.qrForgot.q': 'QRコードを忘れた',
+  'chat.faq.qrForgot.a': 'QRコードが無くても受付できます。画面の案内から担当者をお選びください。',
+  'chat.faq.departmentOnly.q': '部署名しかわからない',
+  'chat.faq.departmentOnly.a': '部署からお探しいただけます。画面で部署を選び、担当者を選択してください。',
+  'chat.faq.purposeUnknown.q': '予約種別がわからない',
+  'chat.faq.purposeUnknown.a': 'ご用件（面接・配送・打ち合わせ等）からお選びいただけます。お困りの場合はスタッフにお繋ぎします。',
+  'chat.unrecognized': 'うまく聞き取れませんでした。下の項目からお選びください。',
+  'reception.fallbackBody': '恐れ入りますが、近くの受付スタッフにお声がけください。ご用件はこちらで承っております。',
   'reception.toDesk': '受付窓口へ',
   'reception.cancelled': '受付をキャンセルしました',
   'reception.completedTitle': '受付が完了しました',
   'reception.thanksLead': 'ありがとうございました',
   'reception.searchStaff': '担当者を検索（氏名・よみがな・英字）',
   'reception.searchPlaceholder': '例: さとう / Sato',
+  'reception.byStaff': '担当者から選ぶ',
   'reception.byDepartment': '部署から選ぶ',
+  'reception.targetTabsLabel': '探し方',
   'reception.staffAbsent': '現在不在です。部署または代表窓口をお選びください。',
+  'reception.staffAbsentBadge': '不在',
+  // 所属が名簿と一致しない担当者の受け皿 (#787)。**捨てない**ための群なので、名前は中立に。
+  'reception.staffGroupOther': 'その他',
+  // 🔴 **部署タブの取次先カードと同じ見た目にしない** (#787)。あちらは「部署宛てに取り次ぐ」、
+  // こちらは「その部署の担当者へ降りる」。同じ部署名が同じカードで出るので、押した結果が
+  // 違うことを語で言い分ける。
+  'reception.staffGroupLabel': '{name}の担当者',
+  'reception.staffGroupCount': '{count}名',
+  'reception.staffGroupBack': '部署を選び直す',
+  'reception.staffGroupOpened': '{name}の担当者を{count}名表示しました',
   'reception.staffNotFound': '該当する担当者が見つかりません。部署または代表窓口をお選びください。',
+  'reception.departmentNotFound': '部署・窓口の一覧がありません。下の方法からお選びください。',
   'reception.voiceSearch': '音声で担当者を探す',
   'reception.listening': '聞き取り中…',
   'reception.voiceHint': '認識した候補です。タップして検索欄に反映し、内容をご確認のうえお選びください。',
@@ -374,10 +505,6 @@ const ja: DefaultDictionary = {
   'reception.fieldNote': 'ご用件メモ',
   'reception.requiredLabel': '{field}（必須）',
   'reception.optionalLabel': '{field}（任意）',
-  'reception.step.purpose': '用件',
-  'reception.step.target': '相手',
-  'reception.step.info': '情報',
-  'reception.step.confirm': '確認',
   'reception.inactivityTitle': 'まだご利用中ですか？',
   'reception.inactivityBody': 'プライバシー保護のため、まもなく最初の画面に戻ります。',
   'reception.inactivityCountdown': '{seconds} 秒後にリセットします',
@@ -456,9 +583,11 @@ const ja: DefaultDictionary = {
   'privacy.presenceCameraNote':
     '来訪者検知カメラの映像は端末内でのみ処理し、保存・送信は行いません。',
   'reception.searchNoResultsGuidance':
-    'お探しの方が見つかりませんか？ 部署から選ぶか、チャットで受付係に相談できます。',
+    'お探しの方が見つかりませんでした。別のお名前でもう一度お試しいただくか、下の方法からお選びください。',
   'reception.searchNoResultsChatCta': 'チャットで受付係に相談する',
   'reception.searchMaybeMatch': 'もしかして',
+  'reception.affiliationWithSecondary': '{primary}（兼: {secondary}）',
+  'reception.affiliationSeparator': '・',
   'reception.feedback.prompt': '今回の受付はいかがでしたか？',
   'reception.feedback.happy': '満足',
   'reception.feedback.neutral': '普通',
@@ -492,7 +621,6 @@ const ja: DefaultDictionary = {
   'checkin.idle.title': 'QR で受付',
   'checkin.idle.lead': '予約 QR をお持ちの方はこちらから受付できます。',
   'checkin.idle.start': '受付を開始する',
-  'checkin.backToStart': '最初に戻る',
   'checkin.method.title': '受付方法をお選びください',
   'checkin.method.qr': 'QR で受付',
   'checkin.method.manual': '通常受付（手入力）',
@@ -524,9 +652,38 @@ const ja: DefaultDictionary = {
   'checkin.error.used': 'この QR はすでに受付に使用されています。受付スタッフにお問い合わせください。',
   'checkin.error.revoked': 'この QR は無効化されています。受付スタッフにお問い合わせください。',
   'checkin.error.network': '通信に失敗しました。通常受付でお進みいただけます。',
+  'checkin.error.session': 'この受付端末の認証が切れています。通常受付でお進みください。受付スタッフにもお知らせください。',
+  'checkin.error.reservation': 'この QR では受付を進められませんでした。通常受付でお進みいただけます。',
+  'checkin.error.server': '受付処理を完了できませんでした。通常受付でお進みいただけます。',
+  'checkin.error.unanswered': '担当者につながりませんでした。恐れ入りますが、近くの受付スタッフにお声がけください。',
+  'checkin.error.unrouted': 'ただいま担当者にお取り次ぎできません。恐れ入りますが、近くの受付スタッフにお声がけください。',
+  'checkin.error.outOfHours': 'ただいま受付時間外のため、お取り次ぎできません。恐れ入りますが、近くの受付スタッフにお声がけください。',
+  'checkin.landing.title': '受付端末で QR をお読み取りください',
+  'checkin.landing.lead': 'この QR コードは、受付にある端末のカメラにかざしてご利用ください。ご不明な点は近くのスタッフにお声がけください。',
   'checkin.error.generic': 'エラーが発生しました。',
   'checkin.error.useManual': '通常受付へ',
   'checkin.error.retry': 'やり直す',
+  // QR 受付のアバター字幕 (#361 AC2)。ja 文言は契約既定（ui-contract.ts の
+  // CHECKIN_MESSAGE_TEXT_JA）と一致させる。conversation-turn.test.ts が突き合わせて固定する。
+  'checkin.subtitle.intro': '予約 QR をお持ちの方はこちらから受付できます',
+  'checkin.subtitle.chooseMethod': '受付方法をお選びください',
+  'checkin.subtitle.cameraPermission': 'QR を読み取るためにカメラの使用を許可してください',
+  'checkin.subtitle.scanning': '予約 QR をカメラにかざしてください',
+  'checkin.subtitle.resolving': 'ご予約を確認しています。少々お待ちください',
+  'checkin.subtitle.reviewReservation': 'ご予約内容をご確認のうえ、お呼び出しください',
+  'checkin.subtitle.calling': '担当者を呼び出しています。少々お待ちください',
+  'checkin.subtitle.completed': '受付が完了しました。ご案内をお待ちください',
+  'checkin.subtitle.cancelled': '受付を中止しました',
+  'checkin.subtitle.manualFallback': '通常受付に切り替えます。手入力でお進みください',
+  'checkin.subtitle.cameraError': 'カメラを使用できませんでした。通常受付でお進みいただけます',
+  'checkin.subtitle.scanError':
+    'QR を読み取れませんでした。もう一度お試しか、通常受付をご利用ください',
+  'checkin.subtitle.expiredError':
+    'この QR は有効期限が切れています。受付スタッフにお問い合わせください',
+  'checkin.subtitle.usedError':
+    'この QR はすでに受付に使用されています。受付スタッフにお問い合わせください',
+  'checkin.subtitle.revokedError': 'この QR は無効化されています。受付スタッフにお問い合わせください',
+  'checkin.subtitle.networkError': '通信に失敗しました。通常受付でお進みいただけます',
 };
 
 const en: LocaleDictionary = {
@@ -552,10 +709,13 @@ const en: LocaleDictionary = {
   'voice.readback.confirmDepartment': 'Would you like to be connected to {name}?',
   'voice.readback.yes': 'Yes',
   'voice.readback.no': 'No',
+  'voice.unavailable.staffAbsent':
+    '{name} is not available now. Please choose a department or the main desk on the screen',
   'voice.fallback.touchNotice': 'Voice is unavailable. You can continue by touch',
   'common.next': 'Next',
   'common.cancel': 'Cancel',
   'common.retry': 'Try again',
+  'common.processing': 'Working…',
   'kiosk.action.callStaff.label': 'Call a staff member',
   'kiosk.action.callStaff.desc': "We'll ask your name and purpose, then call the right person",
   'kiosk.action.checkin.label': 'Check in with QR',
@@ -566,6 +726,8 @@ const en: LocaleDictionary = {
   'kiosk.action.delivery.desc': 'For deliveries and drop-offs',
   'kiosk.action.other.label': 'Other inquiry',
   'kiosk.action.other.desc': 'If none of the above apply',
+  'kiosk.action.more.label': 'QR code, delivery & other',
+  'kiosk.action.more.hide': 'Close',
   'reception.targetPrompt': 'Choose a person or department',
   'reception.visitorInfoPrompt': 'Please enter your details',
   'reception.purpose.meeting': 'Visit',
@@ -588,19 +750,61 @@ const en: LocaleDictionary = {
   'reception.finishReception': 'Done',
   'reception.timeoutBody': 'There was no answer. We can try another way to reach them.',
   'reception.failedBody': 'The call failed. We can try another way to reach them.',
+  'reception.failedNetworkBody': 'We could not place the call because the connection is temporarily unstable. Please wait a moment and try again.',
+  'reception.failedUnroutedBody': 'We cannot reach your host right now. Please ask a nearby staff member for assistance.',
+  'reception.failedOutOfHoursBody': 'We are outside reception hours, so we cannot reach your host. Please ask a nearby staff member for assistance.',
   'reception.altContact': 'Try another way',
   'reception.staffResponseWaitReguidance': "It'll be about a few minutes. This screen will update once they're on the way.",
   'reception.reset': 'Start over',
-  'reception.fallbackBody': "We'll connect you to the main desk. A staff member will assist you shortly.",
+  'reception.escapeBarLabel': 'Reception controls',
+  'reception.offlineNotice': 'The connection is unstable. Please wait a moment while it recovers.',
+  'kiosk.deviceUnavailable': 'This reception terminal is currently unavailable. Please contact a staff member.',
+  'kiosk.unexpectedError.title': 'We could not continue with check-in',
+  'kiosk.unexpectedError.lead': 'Please ask a nearby staff member for assistance. You can also try again.',
+  'kiosk.unexpectedError.retry': 'Try again',
+  'kiosk.call.connecting': 'Calling the person in charge. Please wait a moment.',
+  'kiosk.call.connected': 'They have responded and will be with you shortly.',
+  'kiosk.call.timeout': 'There was no response.',
+  'kiosk.call.fallback': 'The call could not be started. Please follow the on-screen guidance.',
+  'customFlow.noFlows': 'No reception flow has been configured.',
+  'customFlow.selectPlaceholder': 'Please select',
+  'chat.fabLabel': 'Need help?',
+  'chat.panelLabel': 'Reception help chat',
+  'chat.title': 'Help',
+  'chat.repliesLabel': 'Next steps',
+  'chat.confirmRedirectHint': '(you will confirm on the next screen)',
+  'chat.inputPlaceholder': 'e.g. I am here to see Ms. Yamada',
+  'chat.inputLabel': 'Describe your visit',
+  'chat.send': 'Send',
+  'chat.staffHandoff': 'Connect me to staff',
+  'chat.greeting': 'Need help? Describe your visit, or choose one of the buttons below.',
+  'chat.fallbackReply': 'We could not answer that just now. Please pick a common question, or ask for staff.',
+  'chat.faq.qrForgot.q': 'I forgot my QR code',
+  'chat.faq.qrForgot.a': 'You can check in without a QR code. Please choose the person you are visiting from the on-screen guidance.',
+  'chat.faq.departmentOnly.q': 'I only know the department',
+  'chat.faq.departmentOnly.a': 'You can search by department. Choose the department on screen, then choose the person.',
+  'chat.faq.purposeUnknown.q': 'I am not sure of the visit type',
+  'chat.faq.purposeUnknown.a': 'You can choose by purpose (interview, delivery, meeting and so on). If you are unsure, we will connect you to staff.',
+  'chat.unrecognized': 'We did not quite catch that. Please choose from the options below.',
+  'reception.fallbackBody': 'Please ask a nearby staff member for assistance. We have your reception details on file.',
   'reception.toDesk': 'Go to the main desk',
   'reception.cancelled': 'Reception cancelled',
   'reception.completedTitle': 'Check-in complete',
   'reception.thanksLead': 'Thank you',
   'reception.searchStaff': 'Search by name (kana / romaji)',
   'reception.searchPlaceholder': 'e.g. Sato',
+  'reception.byStaff': 'Choose a person',
   'reception.byDepartment': 'Choose by department',
+  'reception.targetTabsLabel': 'How to find them',
   'reception.staffAbsent': 'Currently unavailable. Please choose a department or the main desk.',
+  'reception.staffAbsentBadge': 'Unavailable',
+  'reception.staffGroupOther': 'Other',
+  'reception.staffGroupLabel': 'People in {name}',
+  'reception.staffGroupCount': '{count} people',
+  'reception.staffGroupBack': 'Choose another department',
+  'reception.staffGroupOpened': 'Showing {count} people in {name}',
   'reception.staffNotFound': 'No matching staff found. Please choose a department or the main desk.',
+  'reception.departmentNotFound': 'No departments or main desk are listed. Please choose one of the options below.',
   'reception.voiceSearch': 'Search by voice',
   'reception.listening': 'Listening…',
   'reception.voiceHint': 'Recognized candidates. Tap to fill the search box, review, then choose.',
@@ -611,10 +815,6 @@ const en: LocaleDictionary = {
   'reception.fieldNote': 'Note',
   'reception.requiredLabel': '{field} (required)',
   'reception.optionalLabel': '{field} (optional)',
-  'reception.step.purpose': 'Purpose',
-  'reception.step.target': 'Person',
-  'reception.step.info': 'Details',
-  'reception.step.confirm': 'Confirm',
   'reception.inactivityTitle': 'Are you still there?',
   'reception.inactivityBody': 'For your privacy, this will return to the start screen shortly.',
   'reception.inactivityCountdown': 'Resetting in {seconds}s',
@@ -694,9 +894,11 @@ const en: LocaleDictionary = {
   'privacy.presenceCameraNote':
     'The visitor-detection camera image is processed on this device only and is never saved or transmitted.',
   'reception.searchNoResultsGuidance':
-    "Can't find them? Try browsing by department, or chat with the reception desk.",
+    "We couldn't find that person. Try another name, or choose one of the options below.",
   'reception.searchNoResultsChatCta': 'Chat with the reception desk',
   'reception.searchMaybeMatch': 'Did you mean',
+  'reception.affiliationWithSecondary': '{primary} (also {secondary})',
+  'reception.affiliationSeparator': ', ',
   'reception.feedback.prompt': 'How was your visit today?',
   'reception.feedback.happy': 'Satisfied',
   'reception.feedback.neutral': 'Okay',
@@ -730,7 +932,6 @@ const en: LocaleDictionary = {
   'checkin.idle.title': 'Check in with QR',
   'checkin.idle.lead': 'If you have a reservation QR code, you can check in here.',
   'checkin.idle.start': 'Start check-in',
-  'checkin.backToStart': 'Back to start',
   'checkin.method.title': 'Please choose a check-in method',
   'checkin.method.qr': 'Check in with QR',
   'checkin.method.manual': 'Standard check-in (manual entry)',
@@ -762,9 +963,40 @@ const en: LocaleDictionary = {
   'checkin.error.used': 'This QR code has already been used for check-in. Please contact reception staff.',
   'checkin.error.revoked': 'This QR code has been revoked. Please contact reception staff.',
   'checkin.error.network': 'The connection failed. You can continue with standard check-in.',
+  'checkin.error.session': 'This terminal is no longer signed in. Please continue with standard check-in, and let a staff member know.',
+  'checkin.error.reservation': 'We could not proceed with this QR code. You can continue with standard check-in.',
+  'checkin.error.server': 'We could not complete the check-in. You can continue with standard check-in.',
+  'checkin.error.unanswered': 'We could not reach your host. Please ask a nearby staff member for assistance.',
+  'checkin.error.unrouted': 'We cannot reach your host right now. Please ask a nearby staff member for assistance.',
+  'checkin.error.outOfHours': 'We are outside reception hours, so we cannot reach your host. Please ask a nearby staff member for assistance.',
+  'checkin.landing.title': 'Please scan this QR code at the reception terminal',
+  'checkin.landing.lead': 'Hold this QR code up to the camera on the reception terminal. If you need help, please ask a nearby staff member.',
   'checkin.error.generic': 'An error occurred.',
   'checkin.error.useManual': 'Go to standard check-in',
   'checkin.error.retry': 'Try again',
+  // QR 受付のアバター字幕 (#361 AC2)。同じ局面の見出し/リードと矛盾しない主指示を置く。
+  'checkin.subtitle.intro': 'If you have a reservation QR code, you can check in here.',
+  'checkin.subtitle.chooseMethod': 'Please choose a check-in method.',
+  'checkin.subtitle.cameraPermission': 'Please allow camera access so the QR code can be scanned.',
+  'checkin.subtitle.scanning': 'Hold your reservation QR code up to the camera.',
+  'checkin.subtitle.resolving': 'Checking your reservation. Please wait a moment.',
+  'checkin.subtitle.reviewReservation':
+    'Please confirm your reservation details, then place the call.',
+  'checkin.subtitle.calling': 'Calling the staff member. Please wait a moment.',
+  'checkin.subtitle.completed': 'Check-in is complete. Please wait to be shown in.',
+  'checkin.subtitle.cancelled': 'Check-in has been cancelled.',
+  'checkin.subtitle.manualFallback':
+    'Switching to standard check-in. Please continue by entering your details.',
+  'checkin.subtitle.cameraError':
+    'The camera could not be used. You can continue with standard check-in.',
+  'checkin.subtitle.scanError':
+    'Could not read the QR code. Please try again or use standard check-in.',
+  'checkin.subtitle.expiredError': 'This QR code has expired. Please contact reception staff.',
+  'checkin.subtitle.usedError':
+    'This QR code has already been used for check-in. Please contact reception staff.',
+  'checkin.subtitle.revokedError': 'This QR code has been revoked. Please contact reception staff.',
+  'checkin.subtitle.networkError':
+    'The connection failed. You can continue with standard check-in.',
 };
 
 const ko: LocaleDictionary = {
@@ -790,10 +1022,12 @@ const ko: LocaleDictionary = {
   'voice.readback.confirmDepartment': '{name} 부서가 맞으신가요?',
   'voice.readback.yes': '네',
   'voice.readback.no': '아니요',
+  'voice.unavailable.staffAbsent': '{name}님은 현재 부재중입니다. 화면에서 부서 또는 대표 창구를 선택해 주세요',
   'voice.fallback.touchNotice': '음성을 사용할 수 없어 화면 터치로 접수를 이어갈 수 있습니다',
   'common.next': '다음',
   'common.cancel': '취소',
   'common.retry': '다시 시도',
+  'common.processing': '처리 중…',
   'kiosk.action.callStaff.label': '담당자 호출',
   'kiosk.action.callStaff.desc': '성함과 용건을 여쭙고 담당자를 호출합니다',
   'kiosk.action.checkin.label': 'QR로 접수',
@@ -804,6 +1038,8 @@ const ko: LocaleDictionary = {
   'kiosk.action.delivery.desc': '배송·납품하시는 분',
   'kiosk.action.other.label': '기타 용건',
   'kiosk.action.other.desc': '위에 해당하지 않는 분',
+  'kiosk.action.more.label': 'QR·배송·기타 용건',
+  'kiosk.action.more.hide': '닫기',
   'reception.targetPrompt': '담당자·부서를 선택해 주세요',
   'reception.visitorInfoPrompt': '방문자 정보를 입력해 주세요',
   'reception.purpose.meeting': '면회',
@@ -825,19 +1061,61 @@ const ko: LocaleDictionary = {
   'reception.finishReception': '접수 종료',
   'reception.timeoutBody': '응답이 없습니다. 다른 방법으로 호출할 수도 있습니다.',
   'reception.failedBody': '호출에 실패했습니다. 다른 방법으로 호출할 수도 있습니다.',
+  'reception.failedNetworkBody': '통신이 일시적으로 불안정하여 호출하지 못했습니다. 잠시 후 다시 시도해 주세요.',
+  'reception.failedUnroutedBody': '지금은 담당자에게 연결할 수 없습니다. 가까운 직원에게 말씀해 주세요.',
+  'reception.failedOutOfHoursBody': '지금은 접수 시간이 아니어서 연결할 수 없습니다. 가까운 직원에게 말씀해 주세요.',
   'reception.altContact': '다른 연락 방법',
   'reception.staffResponseWaitReguidance': '예상 소요 시간은 몇 분입니다. 담당자가 출발하면 화면이 바뀝니다.',
   'reception.reset': '처음으로',
-  'reception.fallbackBody': '대표 창구로 연결합니다. 접수 직원이 도와드리니 잠시만 기다려 주세요.',
+  'reception.escapeBarLabel': '접수 컨트롤',
+  'reception.offlineNotice': '통신이 불안정합니다. 복구될 때까지 잠시 기다려 주세요.',
+  'kiosk.deviceUnavailable': '이 접수 단말기는 현재 이용할 수 없습니다. 담당자에게 문의해 주세요.',
+  'kiosk.unexpectedError.title': '접수를 계속할 수 없었습니다',
+  'kiosk.unexpectedError.lead': '가까운 직원에게 말씀해 주세요. 다시 시도하실 수도 있습니다.',
+  'kiosk.unexpectedError.retry': '다시 시도',
+  'kiosk.call.connecting': '담당자를 호출하고 있습니다. 잠시만 기다려 주세요.',
+  'kiosk.call.connected': '응답이 있었습니다. 곧 도착합니다.',
+  'kiosk.call.timeout': '응답이 없었습니다.',
+  'kiosk.call.fallback': '통화를 시작할 수 없었습니다. 화면 안내에 따라 진행해 주세요.',
+  'customFlow.noFlows': '접수 플로우가 설정되어 있지 않습니다.',
+  'customFlow.selectPlaceholder': '선택해 주세요',
+  'chat.fabLabel': '도움이 필요하신가요?',
+  'chat.panelLabel': '접수 도움 채팅',
+  'chat.title': '도움',
+  'chat.repliesLabel': '다음 단계',
+  'chat.confirmRedirectHint': '(확인 화면에서 조작합니다)',
+  'chat.inputPlaceholder': '예: 야마다 님을 만나러 왔습니다',
+  'chat.inputLabel': '방문 목적 입력',
+  'chat.send': '보내기',
+  'chat.staffHandoff': '담당자에게 연결',
+  'chat.greeting': '도움이 필요하신가요? 방문 목적을 입력하시거나 아래 버튼에서 선택해 주세요.',
+  'chat.fallbackReply': '지금은 답변드리기 어렵습니다. 자주 묻는 질문이나 담당자 연결 중에서 선택해 주세요.',
+  'chat.faq.qrForgot.q': 'QR 코드를 잊었습니다',
+  'chat.faq.qrForgot.a': 'QR 코드가 없어도 접수할 수 있습니다. 화면 안내에서 담당자를 선택해 주세요.',
+  'chat.faq.departmentOnly.q': '부서명만 알고 있습니다',
+  'chat.faq.departmentOnly.a': '부서로 찾으실 수 있습니다. 화면에서 부서를 선택한 뒤 담당자를 선택해 주세요.',
+  'chat.faq.purposeUnknown.q': '방문 종류를 모르겠습니다',
+  'chat.faq.purposeUnknown.a': '용건(면접·배송·미팅 등)으로 선택하실 수 있습니다. 어려우시면 담당자에게 연결해 드립니다.',
+  'chat.unrecognized': '잘 알아듣지 못했습니다. 아래 항목에서 선택해 주세요.',
+  'reception.fallbackBody': '가까운 접수 직원에게 말씀해 주세요. 접수 내용은 저희가 보관하고 있습니다.',
   'reception.toDesk': '접수 창구로',
   'reception.cancelled': '접수가 취소되었습니다',
   'reception.completedTitle': '접수가 완료되었습니다',
   'reception.thanksLead': '감사합니다',
   'reception.searchStaff': '담당자 검색 (이름 / 발음 / 영문)',
   'reception.searchPlaceholder': '예: Sato',
+  'reception.byStaff': '담당자로 선택',
   'reception.byDepartment': '부서로 선택',
+  'reception.targetTabsLabel': '찾는 방법',
   'reception.staffAbsent': '현재 부재중입니다. 부서 또는 대표 창구를 선택해 주세요.',
+  'reception.staffAbsentBadge': '부재중',
+  'reception.staffGroupOther': '기타',
+  'reception.staffGroupLabel': '{name} 담당자',
+  'reception.staffGroupCount': '{count}명',
+  'reception.staffGroupBack': '부서 다시 선택',
+  'reception.staffGroupOpened': '{name}의 담당자 {count}명을 표시했습니다',
   'reception.staffNotFound': '해당 담당자를 찾을 수 없습니다. 부서 또는 대표 창구를 선택해 주세요.',
+  'reception.departmentNotFound': '부서·대표 창구 목록이 없습니다. 아래 방법에서 선택해 주세요.',
   'reception.voiceSearch': '음성으로 검색',
   'reception.listening': '듣는 중…',
   'reception.voiceHint': '인식된 후보입니다. 탭하여 검색창에 반영하고 확인 후 선택해 주세요.',
@@ -848,10 +1126,6 @@ const ko: LocaleDictionary = {
   'reception.fieldNote': '용건 메모',
   'reception.requiredLabel': '{field}(필수)',
   'reception.optionalLabel': '{field}(선택)',
-  'reception.step.purpose': '용건',
-  'reception.step.target': '대상',
-  'reception.step.info': '정보',
-  'reception.step.confirm': '확인',
   'reception.inactivityTitle': '아직 이용 중이신가요?',
   'reception.inactivityBody': '개인정보 보호를 위해 곧 첫 화면으로 돌아갑니다.',
   'reception.inactivityCountdown': '{seconds}초 후 초기화됩니다',
@@ -929,9 +1203,12 @@ const ko: LocaleDictionary = {
   'privacy.presenceCameraLabel': '방문자 감지 카메라 안내',
   'privacy.presenceCameraNote':
     '방문자 감지 카메라 영상은 이 단말기 내에서만 처리되며 저장하거나 전송하지 않습니다.',
-  'reception.searchNoResultsGuidance': '찾으시는 분이 없나요? 부서에서 선택하거나 채팅으로 접수 담당자와 상담해 보세요.',
+  'reception.searchNoResultsGuidance':
+    '찾으시는 분을 찾지 못했습니다. 다른 이름으로 다시 시도하시거나, 아래 방법에서 선택해 주세요.',
   'reception.searchNoResultsChatCta': '채팅으로 접수 담당자와 상담하기',
   'reception.searchMaybeMatch': '혹시 이 분인가요',
+  'reception.affiliationWithSecondary': '{primary}(겸직: {secondary})',
+  'reception.affiliationSeparator': ', ',
   'reception.feedback.prompt': '오늘 접수는 어떠셨나요?',
   'reception.feedback.happy': '만족',
   'reception.feedback.neutral': '보통',
@@ -965,7 +1242,6 @@ const ko: LocaleDictionary = {
   'checkin.idle.title': 'QR로 접수',
   'checkin.idle.lead': '예약 QR 코드가 있으신 분은 여기에서 접수하실 수 있습니다.',
   'checkin.idle.start': '접수 시작',
-  'checkin.backToStart': '처음으로 돌아가기',
   'checkin.method.title': '접수 방법을 선택해 주세요',
   'checkin.method.qr': 'QR로 접수',
   'checkin.method.manual': '일반 접수(직접 입력)',
@@ -997,9 +1273,37 @@ const ko: LocaleDictionary = {
   'checkin.error.used': '이 QR 코드는 이미 접수에 사용되었습니다. 접수 담당자에게 문의해 주세요.',
   'checkin.error.revoked': '이 QR 코드는 무효화되었습니다. 접수 담당자에게 문의해 주세요.',
   'checkin.error.network': '통신에 실패했습니다. 일반 접수로 진행하실 수 있습니다.',
+  'checkin.error.session': '이 단말기의 인증이 만료되었습니다. 일반 접수로 진행해 주시고, 담당자에게도 알려 주세요.',
+  'checkin.error.reservation': '이 QR 코드로는 접수를 진행할 수 없었습니다. 일반 접수로 진행하실 수 있습니다.',
+  'checkin.error.server': '접수 처리를 완료하지 못했습니다. 일반 접수로 진행하실 수 있습니다.',
+  'checkin.error.unanswered': '담당자와 연결되지 않았습니다. 가까운 접수 직원에게 말씀해 주세요.',
+  'checkin.error.unrouted': '지금은 담당자에게 연결할 수 없습니다. 가까운 접수 직원에게 말씀해 주세요.',
+  'checkin.error.outOfHours': '지금은 접수 시간이 아니어서 연결할 수 없습니다. 가까운 접수 직원에게 말씀해 주세요.',
+  'checkin.landing.title': '접수 단말기에서 QR 코드를 읽혀 주세요',
+  'checkin.landing.lead': '이 QR 코드는 접수처 단말기의 카메라에 비춰 사용해 주세요. 궁금한 점은 가까운 직원에게 말씀해 주세요.',
   'checkin.error.generic': '오류가 발생했습니다.',
   'checkin.error.useManual': '일반 접수로 이동',
   'checkin.error.retry': '다시 시도',
+  // QR 受付のアバター字幕 (#361 AC2)。
+  'checkin.subtitle.intro': '예약 QR 코드가 있으신 분은 여기에서 접수하실 수 있습니다.',
+  'checkin.subtitle.chooseMethod': '접수 방법을 선택해 주세요.',
+  'checkin.subtitle.cameraPermission': 'QR 코드를 읽기 위해 카메라 사용을 허용해 주세요.',
+  'checkin.subtitle.scanning': '예약 QR 코드를 카메라에 비춰주세요.',
+  'checkin.subtitle.resolving': '예약을 확인하고 있습니다. 잠시만 기다려 주세요.',
+  'checkin.subtitle.reviewReservation': '예약 내용을 확인하신 후 호출해 주세요.',
+  'checkin.subtitle.calling': '담당자를 호출하고 있습니다. 잠시만 기다려 주세요.',
+  'checkin.subtitle.completed': '접수가 완료되었습니다. 안내를 기다려 주세요.',
+  'checkin.subtitle.cancelled': '접수를 취소했습니다.',
+  'checkin.subtitle.manualFallback': '일반 접수로 전환합니다. 직접 입력으로 진행해 주세요.',
+  'checkin.subtitle.cameraError': '카메라를 사용할 수 없었습니다. 일반 접수로 진행하실 수 있습니다.',
+  'checkin.subtitle.scanError':
+    'QR 코드를 인식하지 못했습니다. 다시 시도하시거나 일반 접수를 이용해 주세요.',
+  'checkin.subtitle.expiredError':
+    '이 QR 코드는 유효기간이 만료되었습니다. 접수 담당자에게 문의해 주세요.',
+  'checkin.subtitle.usedError':
+    '이 QR 코드는 이미 접수에 사용되었습니다. 접수 담당자에게 문의해 주세요.',
+  'checkin.subtitle.revokedError': '이 QR 코드는 무효화되었습니다. 접수 담당자에게 문의해 주세요.',
+  'checkin.subtitle.networkError': '통신에 실패했습니다. 일반 접수로 진행하실 수 있습니다.',
 };
 
 const zh: LocaleDictionary = {
@@ -1025,10 +1329,12 @@ const zh: LocaleDictionary = {
   'voice.readback.confirmDepartment': '您要找的是{name}吗？',
   'voice.readback.yes': '是',
   'voice.readback.no': '否',
+  'voice.unavailable.staffAbsent': '{name}目前不在。请在屏幕上选择部门或前台',
   'voice.fallback.touchNotice': '语音暂不可用，您可以通过触摸屏幕继续登记',
   'common.next': '下一步',
   'common.cancel': '取消',
   'common.retry': '重试',
+  'common.processing': '处理中…',
   'kiosk.action.callStaff.label': '呼叫负责人',
   'kiosk.action.callStaff.desc': '我们会询问您的姓名和事由，然后呼叫相应人员',
   'kiosk.action.checkin.label': '扫码登记',
@@ -1039,6 +1345,8 @@ const zh: LocaleDictionary = {
   'kiosk.action.delivery.desc': '送货·快递请走这里',
   'kiosk.action.other.label': '其他事由',
   'kiosk.action.other.desc': '不属于以上情况的访客',
+  'kiosk.action.more.label': 'QR·配送·其他事由',
+  'kiosk.action.more.hide': '关闭',
   'reception.targetPrompt': '请选择负责人或部门',
   'reception.visitorInfoPrompt': '请输入来访者信息',
   'reception.purpose.meeting': '会面',
@@ -1060,19 +1368,61 @@ const zh: LocaleDictionary = {
   'reception.finishReception': '结束登记',
   'reception.timeoutBody': '无人应答。我们可以用其他方式联系。',
   'reception.failedBody': '呼叫失败。我们可以用其他方式联系。',
+  'reception.failedNetworkBody': '由于网络暂时不稳定，未能呼叫。请稍后再试。',
+  'reception.failedUnroutedBody': '目前无法为您转接负责人。请向附近的工作人员咨询。',
+  'reception.failedOutOfHoursBody': '现在不在接待时间内，无法为您转接。请向附近的工作人员咨询。',
   'reception.altContact': '其他联系方式',
   'reception.staffResponseWaitReguidance': '预计需要几分钟。负责人出发后，本画面将自动更新。',
   'reception.reset': '返回首页',
-  'reception.fallbackBody': '正在为您转接前台，工作人员将很快为您服务，请稍候。',
+  'reception.escapeBarLabel': '登记操作',
+  'reception.offlineNotice': '网络连接不稳定。请稍候，正在恢复。',
+  'kiosk.deviceUnavailable': '此登记终端当前无法使用。请联系工作人员。',
+  'kiosk.unexpectedError.title': '无法继续办理登记',
+  'kiosk.unexpectedError.lead': '请向附近的工作人员咨询。您也可以重试。',
+  'kiosk.unexpectedError.retry': '重试',
+  'kiosk.call.connecting': '正在呼叫负责人，请稍候。',
+  'kiosk.call.connected': '已收到回应，负责人稍后就到。',
+  'kiosk.call.timeout': '没有收到回应。',
+  'kiosk.call.fallback': '无法开始通话。请按照屏幕提示继续。',
+  'customFlow.noFlows': '尚未设置登记流程。',
+  'customFlow.selectPlaceholder': '请选择',
+  'chat.fabLabel': '需要帮助吗？',
+  'chat.panelLabel': '登记帮助聊天',
+  'chat.title': '帮助',
+  'chat.repliesLabel': '下一步',
+  'chat.confirmRedirectHint': '（将在确认页面操作）',
+  'chat.inputPlaceholder': '例：我来拜访山田女士',
+  'chat.inputLabel': '输入来访事由',
+  'chat.send': '发送',
+  'chat.staffHandoff': '转接工作人员',
+  'chat.greeting': '需要帮助吗？请输入来访事由，或从下方按钮中选择。',
+  'chat.fallbackReply': '暂时无法回答。请从常见问题或工作人员对应中选择。',
+  'chat.faq.qrForgot.q': '忘记带二维码了',
+  'chat.faq.qrForgot.a': '没有二维码也可以登记。请按照屏幕提示选择要拜访的负责人。',
+  'chat.faq.departmentOnly.q': '只知道部门名称',
+  'chat.faq.departmentOnly.a': '可以按部门查找。请在屏幕上选择部门，然后选择负责人。',
+  'chat.faq.purposeUnknown.q': '不清楚预约类型',
+  'chat.faq.purposeUnknown.a': '可以按事由（面试、配送、洽谈等）选择。如有疑问，我们会为您转接工作人员。',
+  'chat.unrecognized': '没有听清楚。请从下面的选项中选择。',
+  'reception.fallbackBody': '请向附近的接待人员咨询。您的接待信息已记录。',
   'reception.toDesk': '前往前台',
   'reception.cancelled': '登记已取消',
   'reception.completedTitle': '登记完成',
   'reception.thanksLead': '谢谢',
   'reception.searchStaff': '搜索负责人（姓名 / 拼音）',
   'reception.searchPlaceholder': '例: Sato',
+  'reception.byStaff': '按负责人选择',
   'reception.byDepartment': '按部门选择',
+  'reception.targetTabsLabel': '查找方式',
   'reception.staffAbsent': '当前不在。请选择部门或前台。',
+  'reception.staffAbsentBadge': '不在',
+  'reception.staffGroupOther': '其他',
+  'reception.staffGroupLabel': '{name}的负责人',
+  'reception.staffGroupCount': '{count}人',
+  'reception.staffGroupBack': '重新选择部门',
+  'reception.staffGroupOpened': '已显示{name}的{count}位负责人',
   'reception.staffNotFound': '未找到相应负责人。请选择部门或前台。',
+  'reception.departmentNotFound': '没有可显示的部门·窗口。请从下面的方式中选择。',
   'reception.voiceSearch': '语音搜索',
   'reception.listening': '正在聆听…',
   'reception.voiceHint': '识别到的候选。点击填入搜索框，确认后选择。',
@@ -1083,10 +1433,6 @@ const zh: LocaleDictionary = {
   'reception.fieldNote': '事由备注',
   'reception.requiredLabel': '{field}（必填）',
   'reception.optionalLabel': '{field}（选填）',
-  'reception.step.purpose': '事由',
-  'reception.step.target': '对象',
-  'reception.step.info': '信息',
-  'reception.step.confirm': '确认',
   'reception.inactivityTitle': '您还在吗？',
   'reception.inactivityBody': '为保护隐私，即将返回首页。',
   'reception.inactivityCountdown': '{seconds} 秒后重置',
@@ -1160,9 +1506,12 @@ const zh: LocaleDictionary = {
   'privacy.contactText': '如对信息处理方式有疑问，请咨询前台工作人员。',
   'privacy.presenceCameraLabel': '关于访客检测摄像头',
   'privacy.presenceCameraNote': '访客检测摄像头的画面仅在本设备内处理，不会保存或发送。',
-  'reception.searchNoResultsGuidance': '找不到对方？可以从部门中选择，或通过聊天与前台工作人员咨询。',
+  'reception.searchNoResultsGuidance':
+    '未找到您要找的人。请尝试其他姓名，或从下面的方式中选择。',
   'reception.searchNoResultsChatCta': '通过聊天咨询前台工作人员',
   'reception.searchMaybeMatch': '是否是这位',
+  'reception.affiliationWithSecondary': '{primary}（兼任: {secondary}）',
+  'reception.affiliationSeparator': '、',
   'reception.feedback.prompt': '这次接待您感觉如何？',
   'reception.feedback.happy': '满意',
   'reception.feedback.neutral': '一般',
@@ -1196,7 +1545,6 @@ const zh: LocaleDictionary = {
   'checkin.idle.title': '扫码登记',
   'checkin.idle.lead': '如果您有预约二维码，可以在此登记。',
   'checkin.idle.start': '开始登记',
-  'checkin.backToStart': '返回首页',
   'checkin.method.title': '请选择登记方式',
   'checkin.method.qr': '扫码登记',
   'checkin.method.manual': '常规登记（手动输入）',
@@ -1228,9 +1576,34 @@ const zh: LocaleDictionary = {
   'checkin.error.used': '此二维码已用于登记。请联系前台工作人员。',
   'checkin.error.revoked': '此二维码已失效。请联系前台工作人员。',
   'checkin.error.network': '通信失败。您可以通过常规登记继续。',
+  'checkin.error.session': '此终端的登录已失效。请通过常规登记继续，并告知工作人员。',
+  'checkin.error.reservation': '无法使用此二维码办理登记。您可以通过常规登记继续。',
+  'checkin.error.server': '未能完成登记。您可以通过常规登记继续。',
+  'checkin.error.unanswered': '未能联系到负责人。请向附近的接待人员咨询。',
+  'checkin.error.unrouted': '目前无法为您转接负责人。请向附近的接待人员咨询。',
+  'checkin.error.outOfHours': '现在不在接待时间内，无法为您转接。请向附近的接待人员咨询。',
+  'checkin.landing.title': '请在接待终端扫描此二维码',
+  'checkin.landing.lead': '请将此二维码对准接待终端的摄像头使用。如有疑问，请向附近的工作人员咨询。',
   'checkin.error.generic': '发生错误。',
   'checkin.error.useManual': '前往常规登记',
   'checkin.error.retry': '重试',
+  // QR 受付のアバター字幕 (#361 AC2)。
+  'checkin.subtitle.intro': '如果您有预约二维码，可以在此登记。',
+  'checkin.subtitle.chooseMethod': '请选择登记方式。',
+  'checkin.subtitle.cameraPermission': '请允许使用摄像头，以便扫描二维码。',
+  'checkin.subtitle.scanning': '请将预约二维码对准摄像头。',
+  'checkin.subtitle.resolving': '正在确认预约，请稍候。',
+  'checkin.subtitle.reviewReservation': '请确认预约信息后再进行呼叫。',
+  'checkin.subtitle.calling': '正在呼叫负责人，请稍候。',
+  'checkin.subtitle.completed': '登记已完成，请等待引导。',
+  'checkin.subtitle.cancelled': '已取消登记。',
+  'checkin.subtitle.manualFallback': '正在切换到常规登记，请以手动方式继续。',
+  'checkin.subtitle.cameraError': '无法使用摄像头。您可以通过常规登记继续。',
+  'checkin.subtitle.scanError': '无法识别二维码。请重试，或使用常规登记。',
+  'checkin.subtitle.expiredError': '此二维码已过期。请联系前台工作人员。',
+  'checkin.subtitle.usedError': '此二维码已用于登记。请联系前台工作人员。',
+  'checkin.subtitle.revokedError': '此二维码已失效。请联系前台工作人员。',
+  'checkin.subtitle.networkError': '通信失败。您可以通过常规登记继续。',
 };
 
 /**
@@ -1270,12 +1643,21 @@ const jaSimple: LocaleDictionary = {
   'kiosk.action.delivery.desc': 'にもつを とどける 方は こちら',
   'kiosk.action.other.label': 'その他',
   'kiosk.action.other.desc': '上に ない 方は こちら',
+  'kiosk.action.more.label': 'QR・はいそう・そのほかの ごようけん',
+  'kiosk.action.more.hide': 'とじる',
   'reception.targetPrompt': '会いたい 人・ぶしょを えらんで ください',
   'reception.searchStaff': '名前で さがす',
   'reception.searchPlaceholder': '例: さとう',
+  'reception.byStaff': '名前から えらぶ',
   'reception.byDepartment': 'ぶしょから えらぶ',
+  'reception.targetTabsLabel': 'さがしかた',
   'reception.staffAbsent': '今は いません。べつの ぶしょを えらんで ください',
+  'reception.staffAbsentBadge': 'いません',
   'reception.staffNotFound': '見つかりません。べつの ぶしょを えらんで ください',
+  'reception.searchNoResultsGuidance':
+    '見つかりませんでした。べつの 名前で ためすか、下から えらんで ください',
+  'reception.searchNoResultsChatCta': 'チャットで 受付の 人に きく',
+  'reception.departmentNotFound': 'ぶしょの リストが ありません。下から えらんで ください',
   'reception.voiceSearch': '声で さがす',
   'reception.listening': '聞いて います…',
   'reception.voiceHint': 'タップして 検索欄に 入れます。ないようを 見て えらんで ください',
@@ -1302,14 +1684,48 @@ const jaSimple: LocaleDictionary = {
   'reception.thanksLead': 'ありがとう ございました',
   'reception.timeoutBody': 'おへんじが ありませんでした。べつの 方法で よぶ ことも できます',
   'reception.failedBody': 'よびだしに しっぱい しました。べつの 方法で よぶ ことも できます',
+  'reception.failedNetworkBody': 'つうしんが つながらず よびだし できませんでした。すこし まってから もういちど おためし ください',
+  'reception.failedUnroutedBody': 'いま たんとうしゃに つなげません。ちかくの スタッフに こえを かけて ください',
+  'reception.failedOutOfHoursBody': 'いまは うけつけ時間 では ありません。ちかくの スタッフに こえを かけて ください',
   'reception.altContact': 'べつの 方法で よぶ',
   'reception.cancelled': 'うけつけを やめました',
   'reception.reset': 'さいしょに もどる',
-  'reception.fallbackBody': '受付の 人が おてつだい します。少し お待ち ください',
+  'reception.escapeBarLabel': 'うけつけの そうさ',
+  'reception.offlineNotice': 'つうしんが ふあんていです。なおるまで すこし まってください。',
+  'kiosk.deviceUnavailable': 'この うけつけたんまつは いま つかえません。かかりのひとに きいてください。',
+  'kiosk.unexpectedError.title': 'うけつけを つづけられませんでした',
+  'kiosk.unexpectedError.lead': 'ちかくの スタッフに こえを かけて ください。もういちど ためすことも できます',
+  'kiosk.unexpectedError.retry': 'もういちど ためす',
+  'kiosk.call.connecting': '人を よんで います。少し お待ち ください。',
+  'kiosk.call.connected': 'へんじが ありました。もうすぐ きます。',
+  'kiosk.call.timeout': 'へんじが ありませんでした。',
+  'kiosk.call.fallback': 'つうわを はじめられませんでした。がめんの あんないに そって すすんで ください。',
+  'customFlow.noFlows': 'うけつけの ながれが せっていされて いません。',
+  'customFlow.selectPlaceholder': 'えらんで ください',
+  'chat.fabLabel': 'こまって いますか？',
+  'chat.panelLabel': 'うけつけの おてつだい チャット',
+  'chat.title': 'おてつだい',
+  'chat.repliesLabel': 'つぎの そうさ',
+  'chat.confirmRedirectHint': '（かくにん がめんで そうさ します）',
+  'chat.inputPlaceholder': 'れい: 山田さんに 会いに 来ました',
+  'chat.inputLabel': 'ようけんを 入れる',
+  'chat.send': 'おくる',
+  'chat.staffHandoff': '人に つなぐ',
+  'chat.greeting': 'こまって いますか？ ようけんを 入れるか、下の ボタンから えらんで ください。',
+  'chat.fallbackReply': 'いま うまく こたえられません。よくある しつもんか、人の たいおうから えらんで ください。',
+  'chat.faq.qrForgot.q': 'QRコードを わすれた',
+  'chat.faq.qrForgot.a': 'QRコードが なくても うけつけ できます。がめんの あんないから 人を えらんで ください。',
+  'chat.faq.departmentOnly.q': 'ぶしょの 名前しか わからない',
+  'chat.faq.departmentOnly.a': 'ぶしょから さがせます。がめんで ぶしょを えらび、人を えらんで ください。',
+  'chat.faq.purposeUnknown.q': 'よやくの しゅるいが わからない',
+  'chat.faq.purposeUnknown.a': 'ようけん（めんせつ・はいそう・うちあわせ など）から えらべます。こまったら 人に つなぎます。',
+  'chat.unrecognized': 'うまく ききとれませんでした。下の こうもくから えらんで ください。',
+  'reception.fallbackBody': 'ちかくの 受付の 人に こえを かけて ください。ごようけんは きろく して います',
   'reception.toDesk': '受付へ',
   'common.next': 'つぎへ',
   'common.cancel': 'やめる',
   'common.retry': 'もう一度',
+  'common.processing': 'しょり しています…',
   'reception.back': 'もどる',
 };
 

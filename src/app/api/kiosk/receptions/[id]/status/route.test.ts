@@ -17,9 +17,20 @@ vi.mock('@/lib/auth/kiosk', () => ({
   KIOSK_COOKIE: 'kiosk_session',
   readKioskSession: (...a: unknown[]) => readKioskSession(...a),
 }));
+const markConnected = vi.fn();
+const markTimeout = vi.fn();
+const markCallFailed = vi.fn();
+const loadCorrelation = vi.fn();
+
 vi.mock('@/lib/data-stores/reception-store', () => ({
   getReception: (...a: unknown[]) => getReception(...a),
   getReceptionVisitorStatus: (...a: unknown[]) => getReceptionVisitorStatus(...a),
+  markConnected: (...a: unknown[]) => markConnected(...a),
+  markTimeout: (...a: unknown[]) => markTimeout(...a),
+  markCallFailed: (...a: unknown[]) => markCallFailed(...a),
+}));
+vi.mock('@/lib/routing/call-correlation', () => ({
+  getCallCorrelationRepository: () => ({ get: (...a: unknown[]) => loadCorrelation(...a) }),
 }));
 
 import { GET } from './route';
@@ -64,5 +75,74 @@ describe('GET /api/kiosk/receptions/:id/status', () => {
     expect(res.status).toBe(200);
     const body = await res.json();
     expect(body).toEqual({ state: 'calling' });
+  });
+});
+
+/**
+ * 実 PSTN 通話の遅延確定の配線 (#647)。
+ *
+ * 🔴 `resolvePendingCall` を呼び忘れても既存テストは全部緑のまま通る（状態は返るので）。
+ * 症状は「実発信の受付が永久に calling」という沈黙だけになるので、配線そのものを固定する。
+ */
+describe('GET /api/kiosk/receptions/:id/status — 実 PSTN の遅延確定 (#647)', () => {
+  beforeEach(() => {
+    getReceptionVisitorStatus.mockResolvedValue({ ok: true, value: { state: 'calling' } });
+  });
+
+  it('🔴 呼び出し中かつ providerCallId 在りなら相関を読む（＝確定を試みる）', async () => {
+    getReception.mockResolvedValue({
+      ok: true,
+      value: { kioskId: 'kiosk-1', id: 'rec-1', state: 'calling', providerCallId: 'TEST-call' },
+    });
+    loadCorrelation.mockResolvedValue({ voiceState: 'ringing', status: 'in_flight' });
+
+    await call();
+    expect(loadCorrelation).toHaveBeenCalledWith('TEST-call');
+  });
+
+  it('未応答の相関なら timeout として確定してから状態を返す', async () => {
+    getReception.mockResolvedValue({
+      ok: true,
+      value: { kioskId: 'kiosk-1', id: 'rec-1', state: 'calling', providerCallId: 'TEST-call' },
+    });
+    loadCorrelation.mockResolvedValue({ voiceState: 'no_answer', status: 'in_flight' });
+    getReceptionVisitorStatus.mockResolvedValue({ ok: true, value: { state: 'timeout' } });
+
+    const res = await call();
+    expect(markTimeout).toHaveBeenCalledWith('rec-1');
+    expect(await res.json()).toEqual({ state: 'timeout' });
+  });
+
+  it('🔴 ビデオ経路（providerCallId 無し）の calling には触らない', async () => {
+    // ビデオビュー側の確定と二重になる。
+    getReception.mockResolvedValue({
+      ok: true,
+      value: { kioskId: 'kiosk-1', id: 'rec-1', state: 'calling', vonageSessionId: 'sess-1' },
+    });
+    await call();
+    expect(loadCorrelation).not.toHaveBeenCalled();
+    expect(markTimeout).not.toHaveBeenCalled();
+  });
+
+  it('🔴 認可に失敗したら確定を試みない（越境要求で他人の通話を進めない）', async () => {
+    getReception.mockResolvedValue({
+      ok: true,
+      value: { kioskId: 'other-kiosk', id: 'rec-1', state: 'calling', providerCallId: 'TEST-call' },
+    });
+    const res = await call();
+    expect(res.status).toBe(403);
+    expect(loadCorrelation).not.toHaveBeenCalled();
+  });
+
+  it('🔴 相関の読み取りが落ちても状態取得は成功する（/status を巻き添えにしない）', async () => {
+    getReception.mockResolvedValue({
+      ok: true,
+      value: { kioskId: 'kiosk-1', id: 'rec-1', state: 'calling', providerCallId: 'TEST-call' },
+    });
+    loadCorrelation.mockRejectedValue(new Error('backend unavailable'));
+
+    const res = await call();
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ state: 'calling' });
   });
 });

@@ -1,17 +1,29 @@
 import { NextResponse } from 'next/server';
-import { startCall } from '@/lib/data-stores/reception-store';
+import { markCallFailed, startCall } from '@/lib/data-stores/reception-store';
 import { toResponse } from '@/lib/data-stores/http';
 import { denyWithoutKioskSession } from '@/lib/kiosk/session-guard';
 import { resolveDefaultScope } from '@/lib/tenant/default-scope';
-import { executeRoutedCall, routedCallAdapter } from '@/lib/routing/call-execution';
+import { voiceDialingDisabled } from '@/lib/routing/voice-dial';
+import { KIOSK_DIAL_LOG_MARKERS } from '@/lib/routing/dial-log-markers';
+import { intendsRealDialing } from '@/lib/platform/provider-resolution';
+import {
+  executeRoutedCall,
+  routedCallAdapter,
+  REAL_DIALING_UNAVAILABLE,
+} from '@/lib/routing/call-execution';
+import { resolveWebhookBaseUrl } from '@/lib/routing/webhook-base-url';
 import { evaluateCallGuard } from '@/lib/operating-policy/call-guard';
 
 /**
  * POST /api/kiosk/receptions/:id/call — 呼び出しを開始する (issue #16, #20, #374, #367)。
  *
  * テナント/サイトに**保存済みのルーティングポリシー**があれば、そのルート定義（順次取次・
- * 結果別遷移・fallback）を Orchestrator で段階実行し（外部発信は mock provider のまま）、
- * 応答へ取次段階 `stages[]` を後方互換で付す（#363 injection point 4）。
+ * 結果別遷移・fallback）に従って取次を実行し、応答へ取次段階 `stages[]` を後方互換で付す
+ * （#363 injection point 4）。
+ *
+ * 実行経路は 2 つ (#4 Inc D-2 項目 2)。テナント設定が vonage + 資格情報完備なら**実 PSTN 発信**
+ * （1 手撃って `calling` を返し、応答/未応答は provider webhook で確定する）。それ以外は
+ * 従来どおり mock provider の同期段階実行。**既定は mock**（資格情報が欠ければ倒れる）。
  *
  * ルート未設定テナントは `executeRoutedCall` が null を返し、従来どおり単発 Mock adapter の
  * 結果で connected / timeout / failed へ確定する（fail-open。既存 e2e/挙動を維持）。
@@ -21,7 +33,7 @@ import { evaluateCallGuard } from '@/lib/operating-policy/call-guard';
  * 判定不能は fail-open（従来どおり許可）。
  */
 export async function POST(
-  _request: Request,
+  request: Request,
   { params }: { params: Promise<{ id: string }> },
 ): Promise<NextResponse> {
   const denied = await denyWithoutKioskSession();
@@ -37,14 +49,60 @@ export async function POST(
     );
   }
 
+  // 🔴 **実発信を止めているなら、呼び出したふりをしない (N0)。**
+  // 以前はここを素通りして `executeRoutedCall` → mock へ倒れ、mock が bridge 系を
+  // 無条件で `'answered'` にするため、来訪者には「担当者が応答しました」と出て
+  // `completed` に到達していた —— **誰も呼ばれていないのに全員が受付完了する**。
+  // 運用者からは「全員入館できている」ように見えるので、全断に気づくのが遅れる。
+  //
+  // 「止めても来訪者を締め出さない」という設計意図（`voice-dial.ts`）は保つ:
+  // 受付は `failed` で終端し、逃げ道バーと有人支援の案内が出る。**やめるのは嘘だけ。**
+  if (voiceDialingDisabled()) {
+    return await refuseToDial(id, 'dialing_disabled');
+  }
+
+  // 🔴 **意図の判定は try の外。** `executeRoutedCall` の `.catch` の内側に置くと、
+  // ガードそのものが握り潰される（DynamoDB の throttle 等で throw → null → mock → 嘘）。
+  // 読み取りに失敗したら**意図ありへ倒す**（fail-closed）。誰も呼ばずに「呼び出しました」と
+  // 言うより、取り次げないと言って有人支援へ倒すほうが回復できる。
+  const intendsReal = await intendsRealDialing(String(scope.tenantId)).catch(() => true);
+
   // 保存済みルートに従った段階実行を試みる。読み取り/実行で失敗しても取次自体は止めない
   // （fail-open で従来の単発 Mock へ）。fail-open は無音にせずログで可観測にする（PII なし）。
-  const routed = await executeRoutedCall(scope, id).catch((err: unknown) => {
+  // 🔴 `webhookBaseUrl` を渡さないと実発信は**永久に起こらない**（`executeRoutedCall` は
+  // 分からなければ mock へ倒す）。CloudFront のドメインで解決すること — Function URL だと
+  // Vonage の webhook が origin-verify に落ちて 403 になる（#612 と同型）。
+  const routed = await executeRoutedCall(scope, id, {
+    webhookBaseUrl: resolveWebhookBaseUrl(request),
+  }).catch((err: unknown) => {
     console.error('[kiosk/call] routed execution failed; falling back to single mock call', {
       reason: err instanceof Error ? err.name : 'unknown',
     });
     return null;
   });
+  // 🔴 **実発信のつもりのテナントで mock へ倒さない (#736)。**
+  // そのまま進むと単発 mock adapter が部署呼び出しを**無条件で `connected`** にして
+  // 「担当者が応答しました」に到達する —— **誰も呼ばれていないのに受付が完了する**。
+  // N0（キルスイッチ）と同じ扱いで、取り次げないことを返し有人支援へ倒す。
+  // **やめるのは嘘だけ**（来訪者は逃げ道バーから受付を終われる）。
+  //
+  // 倒すのは 3 通り。**どれか 1 つでも漏らすと同じ嘘が残る**:
+  //   A. 資格情報・発信元番号の不備で発信者を解決できない → `REAL_DIALING_UNAVAILABLE`
+  //   B. 資格情報は正常だが**有効なルートが 1 つも無い** → `runVoiceRoutedCall` が `null`
+  //   C. ルート/接続先の読み取りが throw → 上の `.catch` が `null`
+  // B と C は `null`（＝ mock へ fail-open）と区別が付かないので、**意図側**で判定する。
+  if (routed === REAL_DIALING_UNAVAILABLE || (intendsReal && routed === null)) {
+    console.error(
+      JSON.stringify({
+        event: KIOSK_DIAL_LOG_MARKERS.realDialingUnavailable,
+        // テナント ID は PII ではない。どのテナントが落ちているか分からないログは切り分け不能。
+        tenantId: String(scope.tenantId),
+        cause: routed === REAL_DIALING_UNAVAILABLE ? 'no_initiator' : 'no_route_or_read_failed',
+      }),
+    );
+    return await refuseToDial(id, 'unrouted');
+  }
+
   // ルート未設定（fail-open）時の単発 adapter は、営業時間ガード/routing と同じ scope の
   // tenantId で解決する（テナント設定が vonage+secret 完備なら本番 adapter。既定は Mock）。
   const result = await startCall(id, routed ? routedCallAdapter(routed) : undefined, scope.tenantId);
@@ -54,4 +112,27 @@ export async function POST(
 
   // 後方互換: 既存フィールド（ReceptionSession）を維持しつつ、実行段階を stages[] で供給する。
   return NextResponse.json({ ...result.value, stages: routed.stages });
+}
+
+/**
+ * 撃てないと分かった受付を**終端させてから** 503 を返す (#764)。
+ *
+ * ここは `startCall` に到達しない経路なので、以前は受付が `'confirming'` のまま残り、
+ * **履歴にもメトリクスにも 1 件も出なかった** ── 503 は Lambda としては成功した呼び出しで
+ * `Errors` にも現れないため、運用者は「今日何件取り次げなかったか」を知る手段が無かった。
+ * 来訪者は追い返されたのに、集計上は存在しないことになる。
+ *
+ * 🔴 **記録できなくても応答は変えない。** 来訪者にとっては同じ結末（取り次げない）で、
+ * ここで 5xx にすると端末が「呼び出し中」のまま固まる。記録は運用者のためのもの。
+ *
+ * 🔴 **来訪者向けの応答本文は変えない。** `{ error: 'unrouted' }` は #738 で配線済みの
+ * 経路（専用文言・果たせない代替導線を出さない）で、端末側の分岐はそのまま使う。
+ */
+async function refuseToDial(id: string, reason: string): Promise<NextResponse> {
+  const settled = await markCallFailed(id, reason).catch(() => null);
+  if (settled === null || !settled.ok) {
+    // 既に終端している（担当者が応答した直後 等）／書けなかった。どちらも応答は変えない。
+    console.warn(JSON.stringify({ event: 'kiosk_refuse_to_dial_unrecorded', reason }));
+  }
+  return NextResponse.json({ error: 'unrouted' }, { status: 503 });
 }

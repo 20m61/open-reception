@@ -6,8 +6,10 @@
  * 結果別遷移・fallback）を Orchestrator で段階実行し、応答へ `stages[]` を供給する。
  *
  * 方針:
- *   - **外部発信は mock provider のまま**（実 Vonage 発信は #4 の外部待ち）。ここでは
- *     `createKioskMockProvider`（notify=応答なし / bridge=応答）で決定的に段階を再現する。
+ *   - **経路は 2 つある** (#4 Inc D-2 項目 2)。テナント設定が vonage + 資格情報完備なら
+ *     `runVoiceRoutedCall`（**実 PSTN 発信**。1 手撃って `'calling'` を返し、続きは webhook）。
+ *     それ以外は `createKioskMockProvider`（notify=応答なし / bridge=応答）で段階を決定的に
+ *     再現する同期経路。**既定は mock**で、資格情報が 1 つでも欠ければ mock へ倒れる。
  *   - **後方互換**: ルート未設定なら `null` を返し、呼び出し側は従来の単発 Mock へ fail-open する。
  *   - **冪等**: Orchestrator の冪等台帳（`./ledger` 経由）をそのまま通すため、Provider の重複
  *     イベント（webhook 再配信 / retry）で二重発信しない（`runRoutedCall` の統合テストで固定）。
@@ -17,23 +19,43 @@
 import type { SiteId, TenantId } from '@/domain/tenant/types';
 import type { CallAdapter, CallResult, CallResultStatus } from '@/adapters/call/types';
 import { parseCallStages, type CallStage } from '@/domain/kiosk/call-stages';
+import { dialExpiresAtFrom } from '@/domain/routing/dial-budget';
+import { endpointRef } from '@/domain/routing/endpoint';
 import type { ConnectCommand, ConnectionProvider, ProviderConnectResult } from '@/domain/routing/provider';
 import { runRouting, type RoutingOutcome } from '@/domain/routing/orchestrator';
 import type { RouteResult } from '@/domain/routing/policy';
+import { startRouting } from '@/domain/routing/resumable';
+import type { VoiceCallInitiator } from '@/domain/routing/voice-initiator';
+import { getCallCorrelationRepository, type StoredCallCorrelation } from './call-correlation';
 import { getRoutingRepositories } from './store';
+import { intendsRealDialing } from '@/lib/platform/provider-resolution';
+import { resolveVoiceInitiator } from './voice-dial';
 import type { StoredContactEndpoint, StoredRoutingPolicy } from './types';
 
-/** notify/announce 用の定型読み上げ文（PII を含めない）。 */
-const KIOSK_ANNOUNCE_TEXT = '受付からの取次です。';
+/** notify/announce 用の定型読み上げ文（PII を含めない）。2 手目以降（`next-hop-dial.ts`）も同じ文言を使う。 */
+export const KIOSK_ANNOUNCE_TEXT = '受付からの取次です。';
 
 export type RoutedCallResult = {
-  /** 受付状態機械へ渡す取次結果（'calling' は返さない＝ mock は同期確定）。 */
-  status: Exclude<CallResultStatus, 'calling'>;
-  /** failed/timeout 時の理由（非機微）。 */
+  /**
+   * 受付状態機械へ渡す取次結果。
+   *
+   * mock 経路は同期で確定するので `'calling'` を返さない。**実発信経路は必ず `'calling'`**
+   * （1 手目を撃った時点では結果が無く、応答・未応答は webhook で後から届く）。
+   */
+  status: CallResultStatus;
+  /** failed/timeout 時の理由（**非機微の固定コードのみ**。番号・資格情報を載せない）。 */
   reason?: string;
   /** 取次段階（#363 injection point 4）。実行トレースから供給する。 */
   stages: CallStage[];
-  /** 実行結果（トレース等。非機微のみ）。テスト・監査補助用。 */
+  /** 実行結果（トレース等。非機微のみ）。**mock 同期経路のみ**。 */
+  outcome?: RoutingOutcome;
+  /** provider 側の通話 ID（相関キー）。**実発信経路のみ**。 */
+  providerCallId?: string;
+};
+
+/** mock 同期経路の結果。`outcome` が必ず在り、`'calling'` は返らない。 */
+export type MockRoutedCallResult = RoutedCallResult & {
+  status: Exclude<CallResultStatus, 'calling'>;
   outcome: RoutingOutcome;
 };
 
@@ -129,7 +151,7 @@ export type RunRoutedCallDeps = {
 export async function runRoutedCall(
   callUuid: string,
   deps: RunRoutedCallDeps,
-): Promise<RoutedCallResult | null> {
+): Promise<MockRoutedCallResult | null> {
   const entry = selectEntryPolicy(deps.policies);
   if (entry === undefined) return null;
 
@@ -152,13 +174,164 @@ export async function runRoutedCall(
 }
 
 /**
+ * 実発信経路の失敗理由。**固定コードのみ**（provider のエラーメッセージを載せると
+ * 電話番号や URL が来訪者向け応答・ログへ漏れる）。
+ */
+type VoiceDialFailure =
+  | 'no_entry_step'
+  | 'endpoint_unavailable'
+  | 'dial_failed'
+  | 'correlation_write_failed';
+
+export type VoiceRoutedCallDeps = {
+  scope: { tenantId: string; siteId: string };
+  policies: ReadonlyArray<StoredRoutingPolicy>;
+  endpoints: ReadonlyArray<StoredContactEndpoint>;
+  /** 実 PSTN 発信者（`resolveVoiceInitiator` の解決結果）。 */
+  initiator: VoiceCallInitiator;
+  saveCorrelation: (correlation: StoredCallCorrelation) => Promise<void>;
+  now?: () => Date;
+};
+
+/** 実発信経路の段階表示。撃った 1 手は `active`（`done` ではない ── まだ結果が無い）。 */
+function voiceStages(
+  entry: Pick<StoredRoutingPolicy, 'steps'>,
+  activeStepId?: string,
+): CallStage[] {
+  return parseCallStages({
+    stages: entry.steps.map((s) => ({
+      key: s.id,
+      status: s.id === activeStepId ? 'active' : 'pending',
+    })),
+  });
+}
+
+/**
+ * 保存済みルートの**最初の 1 手だけ**を実 PSTN で発信する (#4 Inc D-2 項目 2)。
+ *
+ * ## mock 経路と形が違う
+ *
+ * `runRoutedCall`（mock）は 1 リクエストの中で取次を最後まで回して確定するが、実 PSTN では
+ * `POST /v1/calls` が返すのは「受け付けた」と通話 ID だけ。応答・DTMF・切断は webhook で
+ * 後から届く。よってここは **1 手撃って `'calling'` で返す**のが正しい終わり方で、
+ * 続きは `applyVoiceEventToCorrelation` が進める。
+ *
+ * ## 失敗を握り潰さない
+ *
+ * 🔴 **例外を投げない。** 呼び出し元（call route）は `executeRoutedCall` の例外を捕まえて
+ * 単発 mock へ fail-open するので、ここで投げると**鳴っていないのに「繋がった」と
+ * 来訪者へ表示しうる**。実発信経路の失敗は `failed` として返し、有人支援へ倒す。
+ */
+export async function runVoiceRoutedCall(
+  callUuid: string,
+  deps: VoiceRoutedCallDeps,
+): Promise<RoutedCallResult | null> {
+  const entry = selectEntryPolicy(deps.policies);
+  if (entry === undefined) return null;
+
+  const failed = (reason: VoiceDialFailure, activeStepId?: string): RoutedCallResult => {
+    console.error(JSON.stringify({ event: 'voice_dial_failed', reason, policyId: entry.id }));
+    return { status: 'failed', reason, stages: voiceStages(entry, activeStepId) };
+  };
+
+  const start = startRouting(deps.policies, entry.id, callUuid);
+  if (start.kind !== 'dial') return failed('no_entry_step');
+
+  // 接続先が引けない／無効なら撃たない。握り潰して撃つと誤った宛先へ繋がる余地が出る。
+  const contact = deps.endpoints.find((e) => e.id === start.step.endpointId);
+  if (contact === undefined || !contact.enabled) return failed('endpoint_unavailable');
+
+  let providerCallId: string;
+  try {
+    const initiation = await deps.initiator.initiate({
+      callUuid,
+      endpoint: endpointRef(contact),
+      action: start.step.action,
+      timeoutSeconds: start.step.timeoutSeconds,
+      announceText: KIOSK_ANNOUNCE_TEXT,
+    });
+    providerCallId = initiation.providerCallId;
+  } catch {
+    // 例外の中身は載せない（宛先・URL・資格情報が混ざりうる）。診断はサーバログ側で行う。
+    return failed('dial_failed', start.step.id);
+  }
+
+  // 🔴 相関は**発信の後**にしか書けない（鍵になる provider 通話 ID は発信して初めて分かる）。
+  // answer webhook 側が短時間リトライすることでこの順序逆転を吸収する（Inc D の設計判断）。
+  const dialedAt = deps.now?.() ?? new Date();
+  try {
+    await deps.saveCorrelation({
+      providerCallId,
+      receptionId: callUuid,
+      tenantId: deps.scope.tenantId,
+      siteId: deps.scope.siteId,
+      position: start.position,
+      voiceState: 'queued',
+      eventCount: 0,
+      status: 'in_flight',
+      dialExpiresAt: dialExpiresAtFrom(dialedAt, start.step.timeoutSeconds),
+      updatedAt: dialedAt.toISOString(),
+    });
+  } catch {
+    // 相関が無いと 4 webhook とも 403 になり取次は永久に進まない。'calling' で返すと
+    // 来訪者が無限に待つので、失敗として返して有人支援へ倒す（電話は 1 回鳴って切れる）。
+    return failed('correlation_write_failed', start.step.id);
+  }
+
+  return {
+    status: 'calling',
+    stages: voiceStages(entry, start.step.id),
+    providerCallId,
+  };
+}
+
+/**
  * スコープ（テナント/サイト）に保存されたルートを読み、`runRoutedCall` を実行する。
  * ルート未設定なら `null`（fail-open）。永続化は admin 側と同じ backing collection / seed を共有。
+ */
+export type ExecuteRoutedCallOptions = {
+  /**
+   * webhook の基底 URL（**CloudFront のドメイン**。`resolveWebhookBaseUrl` で解決する）。
+   *
+   * 🔴 **未指定なら実発信しない。** Vonage へ渡すコールバック URL が Function URL になると
+   * `x-origin-verify` が付かず全 webhook が 403 になり、鳴らしたのに一切進まない通話が残る
+   * （#612 で実際に起きた事故と同型）。分からないなら撃たない。
+   */
+  webhookBaseUrl?: string;
+  /** テスト用の差し替え。既定は `resolveVoiceInitiator`（テナント設定から解決）。 */
+  resolveInitiator?: (
+    tenantId: string,
+    webhookBaseUrl: string,
+  ) => Promise<VoiceCallInitiator | null>;
+  /** テスト用の差し替え。既定は `intendsRealDialing`（テナント設定から解決）。 */
+  intendsRealDialing?: (tenantId: string) => Promise<boolean>;
+};
+
+/**
+ * 実発信を意図しているテナントで、実発信できなかったことを表す (#736)。
+ *
+ * 🔴 **`null`（ルート未設定の fail-open）と混ぜない。** あちらは「mock でよい」だが、
+ * こちらは「vonage のつもりだったが繋がらない」。同じ値にすると呼び出し側が
+ * mock へ倒し、来訪者に「担当者が応答しました」と出る。
+ */
+export const REAL_DIALING_UNAVAILABLE = 'real_dialing_unavailable';
+
+export type ExecuteRoutedCallOutcome = RoutedCallResult | null | typeof REAL_DIALING_UNAVAILABLE;
+
+/**
+ * スコープ（テナント/サイト）に保存されたルートを読み、mock / 実 PSTN のどちらかで実行する
+ * (#4 Inc D-2 項目 2)。ルート未設定なら `null`（fail-open）。
+ *
+ * 実発信は次が**すべて**揃ったときだけ（1 つでも欠ければ mock ＝ fail-closed）:
+ *   1. `webhookBaseUrl` が分かる
+ *   2. テナント設定が vonage + enabled + secret 設定済み（`resolveProviderForTenant`）
+ *   3. 発信用の資格情報が完備（`buildVoiceCredentials`）
  */
 export async function executeRoutedCall(
   scope: { tenantId: TenantId; siteId: SiteId },
   callUuid: string,
-): Promise<RoutedCallResult | null> {
+  options: ExecuteRoutedCallOptions = {},
+): Promise<ExecuteRoutedCallOutcome> {
   const repos = getRoutingRepositories();
   const allPolicies = await repos.policies.list(scope.tenantId);
   // サイト scope: 同一サイト or テナント横断（siteId 未設定）のポリシーのみを対象にする。
@@ -166,6 +339,35 @@ export async function executeRoutedCall(
     (p) => p.siteId === undefined || p.siteId === String(scope.siteId),
   );
   const endpoints = await repos.endpoints.list(scope.tenantId);
+
+  const resolveInitiator = options.resolveInitiator ?? resolveVoiceInitiator;
+  const initiator = options.webhookBaseUrl
+    ? await resolveInitiator(String(scope.tenantId), options.webhookBaseUrl)
+    : null;
+
+  // 🔴 **実発信のつもりのテナントで mock へ倒さない (#736)。**
+  // mock provider は bridge 系を無条件で `'answered'` にするので、資格情報が壊れていても
+  // 来訪者には「担当者が応答しました」と出て受付が `completed` に到達する ——
+  // **誰も呼ばれていないのに全員が受付完了する**。運用者からは「全員入館できている」
+  // ように見えるため、設定不備に気づく手掛かりが一つも無い。
+  //
+  // 設定が mock（dev / デモ / 未設定）のテナントは従来どおり mock で完走する。
+  // 変わるのは「vonage + enabled と設定したのに撃てなかった」ときだけ。
+  if (initiator === null) {
+    const intends = options.intendsRealDialing ?? intendsRealDialing;
+    if (await intends(String(scope.tenantId))) return REAL_DIALING_UNAVAILABLE;
+  }
+
+  if (initiator !== null) {
+    return runVoiceRoutedCall(callUuid, {
+      scope: { tenantId: String(scope.tenantId), siteId: String(scope.siteId) },
+      policies,
+      endpoints,
+      initiator,
+      saveCorrelation: (correlation) => getCallCorrelationRepository().put(correlation),
+    });
+  }
+
   return runRoutedCall(callUuid, { policies, endpoints });
 }
 
@@ -173,7 +375,13 @@ export async function executeRoutedCall(
 export function routedCallAdapter(routed: RoutedCallResult): CallAdapter {
   return {
     async call(): Promise<CallResult> {
-      return { status: routed.status, reason: routed.reason };
+      // 実発信経路では provider 通話 ID を受付へ渡す。**これが無いと `/status` が
+      // 相関を引けず、結果を確定できない**（来訪者が呼び出し中画面で待ち続ける。#647）。
+      return {
+        status: routed.status,
+        reason: routed.reason,
+        providerCallId: routed.providerCallId,
+      };
     },
   };
 }

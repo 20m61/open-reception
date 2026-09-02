@@ -3,6 +3,7 @@ import { createSyntheticVoiceSession, createOrchestratorVoiceSession, type Voice
 import type { VoiceKioskEvent } from '@/domain/voice-session/kiosk-view';
 import type { VoiceSessionCallbacks } from './orchestrator';
 import type { Staff } from '@/domain/staff/types';
+import type { EntityDirectory } from '@/domain/voice-stt/entity-resolver';
 
 function staff(id: string, displayName: string, kana: string): Staff {
   return {
@@ -204,5 +205,69 @@ describe('createOrchestratorVoiceSession (実 orchestrator を束ねる seam・f
     factory(emit);
     fake.getCallbacks()!.onEvalEvent!({ type: 'stt.final', t: 3, turnIndex: 0, text: 'さとう' });
     expect(events.some((e) => e.type === 'hearPartial')).toBe(false);
+  });
+});
+
+/**
+ * 不在辞書が bridge まで届くこと (#803)。
+ *
+ * 🔴 **振る舞いで縛る。** 転送の 1 行を消す変異は、これを書くまで全緑で生き残った
+ * （独立レビューの実測）。型は任意引数なので、消しても誰も困らない形に見えてしまう。
+ */
+describe('不在辞書の転送 (#803)', () => {
+  const PRESENT: EntityDirectory = {
+    staff: [
+      {
+        id: 'in',
+        displayName: '在席太郎',
+        kana: 'ざいせきたろう',
+        aliases: [],
+        departmentId: 'd1',
+        enabled: true,
+        available: true,
+        callTargets: [],
+        fallbackStaffIds: [],
+      },
+    ],
+    departments: [],
+  };
+  const ABSENT: EntityDirectory = {
+    staff: [
+      {
+        id: 'out',
+        displayName: '不在花子',
+        kana: 'ふざいはなこ',
+        aliases: [],
+        departmentId: 'd1',
+        enabled: true,
+        available: true,
+        callTargets: [],
+        fallbackStaffIds: [],
+      },
+    ],
+    departments: [],
+  };
+
+  function eventsFor(deps: Parameters<typeof createSyntheticVoiceSession>[0], text: string) {
+    const emitted: VoiceKioskEvent[] = [];
+    const driver = createSyntheticVoiceSession(deps);
+    driver.factory((e) => emitted.push(e));
+    driver.beginListening();
+    driver.hearTurn(text);
+    return emitted;
+  }
+
+  it('渡せば不在の相手を認識する', () => {
+    const events = eventsFor(
+      { directory: PRESENT, unavailableDirectory: ABSENT, sttConfidence: 0.95 },
+      '不在花子',
+    );
+    expect(events.some((e) => e.type === 'heardUnavailable')).toBe(true);
+  });
+
+  /** 🔴 **下界。** 「常に heardUnavailable を出す」実装で上のテストを満たさせない。 */
+  it('渡さなければ従来どおり聞き直しになる', () => {
+    const events = eventsFor({ directory: PRESENT, sttConfidence: 0.95 }, '不在花子');
+    expect(events.some((e) => e.type === 'heardUnavailable')).toBe(false);
   });
 });

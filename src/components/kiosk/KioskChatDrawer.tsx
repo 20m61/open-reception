@@ -29,6 +29,8 @@ import {
   type QuickReply,
 } from './chat/chat-logic';
 import { MockChatLlmAdapter, type ChatLlmAdapter } from './chat/llm-adapter';
+import { DEFAULT_LOCALE, htmlLangFor, makeT, type Locale } from '@/lib/i18n';
+import { persistentRegionProps } from './persistent-regions';
 
 export type KioskChatDrawerProps = {
   /** 現在の受付状態。許可アクション判定の文脈に使う。 */
@@ -52,6 +54,11 @@ export type KioskChatDrawerProps = {
   adapter?: ChatLlmAdapter;
   /** オンライン状態。false でフォールバックへ倒す（既定 true）。 */
   online?: boolean;
+  /**
+   * 表示言語 (#327)。**このドロワーは担当者検索 0 件時に開く導線を持つ**ので、訳されないと
+   * 「来訪者が困っている時にだけ日本語が出る」ことになる。
+   */
+  locale?: Locale;
   /** 初期表示で開いておくか（既定 false = 控えめ）。 */
   defaultOpen?: boolean;
   /**
@@ -70,6 +77,7 @@ let turnSeq = 0;
 export function KioskChatDrawer({
   screenState,
   available,
+  locale = DEFAULT_LOCALE,
   onAction,
   onRequestStaff,
   onRedirectToConfirm,
@@ -83,7 +91,8 @@ export function KioskChatDrawer({
   const [busy, setBusy] = useState(false);
   const [messages, setMessages] = useState<DisplayMessage[]>([]);
   const panelId = useId();
-  const llm = useMemo(() => adapter ?? new MockChatLlmAdapter(), [adapter]);
+  const llm = useMemo(() => adapter ?? new MockChatLlmAdapter({ locale }), [adapter, locale]);
+  const tr = makeT(locale);
   const listEndRef = useRef<HTMLDivElement>(null);
 
   // 補助が使えない局面（待機/終端）では履歴を残さず閉じる（PII を残さない設計）。
@@ -112,10 +121,10 @@ export function KioskChatDrawer({
   // 開いた直後に控えめな呼びかけを 1 件だけ出す。
   useEffect(() => {
     if (open && messages.length === 0) {
-      const greet = buildGreetingMessage();
+      const greet = buildGreetingMessage(0, undefined, locale);
       setMessages([{ id: greet.id, role: 'assistant', text: greet.text }]);
     }
-  }, [open, messages.length]);
+  }, [open, messages.length, locale]);
 
   useEffect(() => {
     listEndRef.current?.scrollIntoView({ block: 'end' });
@@ -142,12 +151,12 @@ export function KioskChatDrawer({
     setBusy(true);
     setDraft('');
     try {
-      const result = await runChatTurn(llm, screenState, utterance, { online });
+      const result = await runChatTurn(llm, screenState, utterance, { online, locale });
       appendTurn(utterance, result);
     } finally {
       setBusy(false);
     }
-  }, [draft, busy, llm, screenState, online, appendTurn]);
+  }, [draft, busy, llm, screenState, online, locale, appendTurn]);
 
   const handleQuickReply = useCallback(
     (qr: QuickReply) => {
@@ -171,7 +180,7 @@ export function KioskChatDrawer({
   }
 
   return (
-    <div className={styles.root} data-testid="kiosk-chat-drawer" data-open={open}>
+    <div className={styles.root} {...persistentRegionProps('kiosk-chat-drawer')} data-open={open}>
       {!open && (
         <button
           type="button"
@@ -179,8 +188,9 @@ export function KioskChatDrawer({
           aria-expanded={false}
           aria-controls={panelId}
           onClick={() => setOpen(true)}
+          lang={htmlLangFor(locale)}
         >
-          お困りですか？
+          {tr('chat.fabLabel')}
         </button>
       )}
 
@@ -189,15 +199,16 @@ export function KioskChatDrawer({
           id={panelId}
           className={styles.panel}
           role="dialog"
-          aria-label="受付のお手伝いチャット"
+          aria-label={tr('chat.panelLabel')}
           aria-modal={false}
+          lang={htmlLangFor(locale)}
         >
           <header className={styles.head}>
-            <span className={styles.title}>お手伝い</span>
+            <span className={styles.title}>{tr('chat.title')}</span>
             <button
               type="button"
               className={styles.close}
-              aria-label="閉じる"
+              aria-label={tr('a11y.panel.close')}
               onClick={() => setOpen(false)}
             >
               ×
@@ -209,7 +220,7 @@ export function KioskChatDrawer({
               m.role === 'turn' ? (
                 <div key={m.id} className={styles.turn}>
                   <p className={`${styles.bubble} ${styles.bubbleAssistant}`}>{m.text}</p>
-                  <div className={styles.replies} role="group" aria-label="次の操作">
+                  <div className={styles.replies} role="group" aria-label={tr('chat.repliesLabel')}>
                     {m.quickReplies.map((qr, i) => (
                       <button
                         key={`${m.id}-qr-${i}`}
@@ -220,7 +231,7 @@ export function KioskChatDrawer({
                       >
                         {qr.label}
                         {qr.kind === 'confirm-redirect' && (
-                          <span className={styles.hint}>（確認画面で操作します）</span>
+                          <span className={styles.hint}>{tr('chat.confirmRedirectHint')}</span>
                         )}
                       </button>
                     ))}
@@ -247,17 +258,21 @@ export function KioskChatDrawer({
               type="text"
               inputMode="text"
               value={draft}
-              placeholder="例: 山田さんに会いに来ました"
-              aria-label="ご用件を入力"
+              placeholder={tr('chat.inputPlaceholder')}
+              aria-label={tr('chat.inputLabel')}
               disabled={busy}
+              aria-busy={busy}
               onChange={(e) => setDraft(e.target.value)}
             />
             <button
               type="submit"
               className={styles.send}
               disabled={busy || draft.trim() === ''}
+              // 送信中は下書きが空（`setDraft('')` 済み）なので二重に無効だが、往復して
+              // いるのは**このボタン自身の操作**なので進行中表示でよい (#792)。
+              aria-busy={busy}
             >
-              送信
+              {tr('chat.send')}
             </button>
           </form>
         </section>

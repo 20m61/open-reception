@@ -1,4 +1,4 @@
-import { test, expect, type Page } from './kiosk-fixtures';
+import { test, expect, type Page, revealStaff } from './kiosk-fixtures';
 
 /**
  * 受付端末のプライバシー・安全性ゲート E2E (issue #125 / Epic #119)。
@@ -15,6 +15,7 @@ import { test, expect, type Page } from './kiosk-fixtures';
 async function startReceptionToVisitorInfo(page: Page, staffTestId = 'staff-staff-sato') {
   await page.getByTestId('start-reception').click();
   await page.getByTestId('purpose-meeting').click();
+  await revealStaff(page, staffTestId);
   await page.getByTestId(staffTestId).click();
 }
 
@@ -52,8 +53,10 @@ test('完了後、次の受付に前回の氏名（個人情報）が残らな�
 });
 
 test('入力途中で無操作が続くと待機へ戻り、氏名（個人情報）が残らない', async ({ page }) => {
-  // 無操作タイムアウトを短縮して検証する（本番既定は 60s）。
-  await page.goto('/kiosk?inactivityMs=600');
+  // 無操作タイムアウトを短縮して検証する（本番既定は 60s）。検証対象は入力画面なので
+  // inputVisitorInfo **だけ**短縮し、そこへ至る操作は本番既定のままにする。一律に短縮すると
+  // 警告オーバーレイ（猶予は 500ms 固定）が途中の click を横取りしてフレークする (#476)。
+  await page.goto('/kiosk?inactivityMs.inputVisitorInfo=600');
   await startReceptionToVisitorInfo(page);
   await page.getByTestId('visitor-name').fill('来客 三郎');
 

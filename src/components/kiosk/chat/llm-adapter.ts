@@ -11,6 +11,7 @@
  *  - PII を保持/送信しない。来訪者の自由入力はその場の解釈にのみ使い、履歴へ残さない。
  */
 import type { ReceptionAction, ReceptionState } from '@/domain/reception/ui-contract';
+import { DEFAULT_LOCALE, makeT, type Locale } from '@/lib/i18n';
 
 /**
  * LLM が提案する 1 候補。`label` はタッチ可能なクイックリプライ/カードの表示文言。
@@ -69,13 +70,18 @@ export class MockChatLlmAdapter implements ChatLlmAdapter {
     scripted?: Record<string, ChatAdapterResponse>;
     fallbackResponse?: ChatAdapterResponse;
     failOn?: readonly string[];
+    /**
+     * 既定応答の表示言語 (#327)。**このモックは実 LLM が未配線の現状で来訪者へ実際に表示される**
+     * ため、既定応答も訳す（`fallbackResponse` を明示指定した場合はそちらが優先）。
+     */
+    locale?: Locale;
   }) {
     const norm = (s: string): string => s.normalize('NFKC').trim().toLowerCase();
     this.scripted = new Map(
       Object.entries(opts?.scripted ?? {}).map(([k, v]) => [norm(k), v] as const),
     );
     this.fallbackResponse = opts?.fallbackResponse ?? {
-      reply: 'うまく聞き取れませんでした。下の項目からお選びください。',
+      reply: makeT(opts?.locale ?? DEFAULT_LOCALE)('chat.unrecognized'),
       suggestions: [],
     };
     this.failOn = new Set((opts?.failOn ?? []).map(norm));

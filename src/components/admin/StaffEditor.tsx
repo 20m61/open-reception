@@ -2,6 +2,7 @@
 
 import { useCallback, useState } from 'react';
 import { CALL_TARGET_TYPES, type CallTarget, type Staff } from '@/domain/staff/types';
+import { SaveFeedback, font, useSaveFeedback } from '@/components/admin/ui';
 
 /** 担当者の呼び出し先（優先順位 DnD）と代替担当者を編集する (issue #26)。 */
 export function StaffEditor({ staff, allStaff, onSaved }: { staff: Staff; allStaff: Staff[]; onSaved: () => void }) {
@@ -9,6 +10,7 @@ export function StaffEditor({ staff, allStaff, onSaved }: { staff: Staff; allSta
   const [fallbacks, setFallbacks] = useState<string[]>(staff.fallbackStaffIds);
   const [dragIndex, setDragIndex] = useState<number | null>(null);
   const [busy, setBusy] = useState(false);
+  const { feedback, failure, clear } = useSaveFeedback();
 
   const update = (i: number, patch: Partial<CallTarget>) =>
     setTargets((cur) => cur.map((t, idx) => (idx === i ? { ...t, ...patch } : t)));
@@ -32,17 +34,28 @@ export function StaffEditor({ staff, allStaff, onSaved }: { staff: Staff; allSta
 
   const save = useCallback(async () => {
     setBusy(true);
+    clear();
     try {
-      await fetch(`/api/admin/staff/${staff.id}`, {
+      /*
+        **結果を捨てない (#870 増分 02)。** 戻りを見ずに `onSaved()` を呼ぶと編集が閉じるので、
+        403 / 409 / 5xx でも**保存できたように見える**。呼び出し先の設定は実際の発信先を
+        決めるので、保存できていないことに気づけないのは重い。
+      */
+      const res = await fetch(`/api/admin/staff/${staff.id}`, {
         method: 'PATCH',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ callTargets: targets.filter((t) => t.value.trim() !== ''), fallbackStaffIds: fallbacks }),
-      });
+      }).catch(() => null);
+      if (!res?.ok) {
+        // **編集を閉じない。** 閉じると入力が失われ、やり直す手段まで消える。
+        failure('呼び出し先を保存できませんでした。');
+        return;
+      }
       onSaved();
     } finally {
       setBusy(false);
     }
-  }, [staff.id, targets, fallbacks, onSaved]);
+  }, [staff.id, targets, fallbacks, onSaved, clear, failure]);
 
   return (
     <div data-testid="staff-editor" style={{ padding: 12, background: 'var(--color-surface)', borderRadius: 8, marginTop: 8 }}>
@@ -67,7 +80,7 @@ export function StaffEditor({ staff, allStaff, onSaved }: { staff: Staff; allSta
             ))}
           </select>
           <input data-testid="ct-value" value={t.value} onChange={(e) => update(i, { value: e.target.value })} placeholder="値" style={{ ...field, flex: 1 }} />
-          <label style={{ display: 'flex', gap: 4, alignItems: 'center', fontSize: '0.85rem' }}>
+          <label style={{ display: 'flex', gap: 4, alignItems: 'center', fontSize: font.small }}>
             <input type="checkbox" checked={t.enabled} onChange={(e) => update(i, { enabled: e.target.checked })} />有効
           </label>
           <button type="button" aria-label="up" onClick={() => reorder(i, i - 1)} disabled={i === 0} style={small}>↑</button>
@@ -89,6 +102,7 @@ export function StaffEditor({ staff, allStaff, onSaved }: { staff: Staff; allSta
 
       <div style={{ marginTop: 12 }}>
         <button type="button" data-testid="staff-editor-save" onClick={save} disabled={busy} style={primary}>保存</button>
+        <SaveFeedback feedback={feedback} errorTestId="staff-editor-save-error" />
       </div>
     </div>
   );

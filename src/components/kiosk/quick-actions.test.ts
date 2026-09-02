@@ -1,57 +1,34 @@
 import { describe, expect, it } from 'vitest';
 import { RECEPTION_STATES, type ReceptionState } from '@/domain/reception/state';
+import { CHECKIN_STATES } from '@/domain/checkin/state';
 import {
   availableActions,
-  isActionAllowed,
+  checkinEscapeHatchesFor,
+  escapeHatchActionsFor,
   REQUIRES_CONFIRMATION_ACTIONS,
 } from '@/domain/reception/ui-contract';
+import { DICTIONARIES, SUPPORTED_LOCALES, makeT } from '@/lib/i18n';
 import {
+  checkinEscapesFor,
   escapeHatchesFor,
-  quickActionsFor,
-  QUICK_ACTION_INTENTS,
 } from './quick-actions';
 
-describe('quickActionsFor', () => {
-  it('idle で 5 つの主要 CTA を返す（担当者を呼ぶ/QR/部署/配送・納品/その他）', () => {
-    const actions = quickActionsFor('idle');
-    expect(actions.map((a) => a.intent)).toEqual([...QUICK_ACTION_INTENTS]);
-  });
-
-  it('idle 以外ではクイックアクションを出さない（入口は idle のみ）', () => {
-    for (const state of RECEPTION_STATES) {
-      if (state === 'idle') continue;
-      expect(quickActionsFor(state)).toHaveLength(0);
-    }
-  });
-
-  it('checkin 以外の CTA は契約上 start が許可される idle でのみ出る', () => {
-    expect(isActionAllowed('idle', 'start')).toBe(true);
-    const normal = quickActionsFor('idle').filter((a) => !a.isCheckin);
-    expect(normal.length).toBeGreaterThan(0);
-  });
-
-  it('checkin CTA はモード切替（START を使わない）ので isCheckin で表現する', () => {
-    const checkin = quickActionsFor('idle').find((a) => a.intent === 'checkin');
-    expect(checkin?.isCheckin).toBe(true);
-    expect(checkin?.presetPurpose).toBeUndefined();
-  });
-
-  it('配送・納品/その他/部署は目的を preset し、目的選択を短縮できる', () => {
-    const find = (intent: string) => quickActionsFor('idle').find((a) => a.intent === intent);
-    expect(find('delivery')?.presetPurpose).toBe('delivery');
-    expect(find('other')?.presetPurpose).toBe('other');
-    expect(find('department')?.presetPurpose).toBe('meeting');
-  });
-
-  it('クイックアクションは重要操作（確認必須）を直接起こさない', () => {
-    // クイックアクションは preset/checkin/start 由来のみ。confirm/submitVisitorInfo を含まない。
-    for (const a of quickActionsFor('idle')) {
-      expect(REQUIRES_CONFIRMATION_ACTIONS.has(a.intent as never)).toBe(false);
-    }
-  });
-});
-
 describe('escapeHatchesFor', () => {
+  it('どのアクションを出すかは全状態で契約と一致する（真実源は 1 つ・#422 地ならし）', () => {
+    // 層は意図的に分かれている: **どの後退アクションか**は契約（domain）、
+    // label/variant/testId は UI 側（本ファイル）。比較するのはアクションの集合だけ。
+    //
+    // かつてその「どのアクションか」の判断が二重実装され、`confirming` の back 抑制
+    // （#240/#325）が契約側に無いという食い違いがあった。片方を直してももう片方に
+    // 伝播しないため、判断を契約へ寄せたうえで一致をここで固定する。これが崩れると、
+    // 画面を ConversationTurnView へ配線した時点で挙動が変わる。
+    for (const state of RECEPTION_STATES) {
+      const ui = escapeHatchesFor(state).map((h) => h.action);
+      const contract = escapeHatchActionsFor(state).map((h) => h.action);
+      expect(ui, state).toEqual(contract);
+    }
+  });
+
   it('idle では逃げ道を出さない（戻る先が無い）', () => {
     expect(escapeHatchesFor('idle')).toHaveLength(0);
   });
@@ -105,5 +82,81 @@ describe('escapeHatchesFor', () => {
         expect(REQUIRES_CONFIRMATION_ACTIONS.has(hatch.action)).toBe(false);
       }
     }
+  });
+});
+
+/**
+ * 逃げ道バーは**全画面に常設**される唯一の後退導線 (#325)。ここが日本語固定だと、
+ * 言語を選んだ来訪者が受付中ずっと日本語のボタンを見続けることになる（#327 の受入条件
+ * 「English/한국어/中文 で待機→受付→退館の全導線に未翻訳文言が出ない」に反する）。
+ */
+describe('逃げ道の文言は i18n カタログ経由 (#327)', () => {
+  it('生の文字列ではなくメッセージキーを持つ', () => {
+    const hatches = escapeHatchesFor('selectingTarget');
+    expect(hatches.map((h) => h.labelKey)).toEqual(['reception.back', 'reception.reset']);
+  });
+
+  it('全ロケールに訳が実在する（ja へフォールバックしていない）', () => {
+    // `makeT` は未訳キーを ja へフォールバックするため、`tr()` の戻り値が非空でも
+    // 「訳が在る」ことにはならない。辞書を直接見る。
+    for (const locale of SUPPORTED_LOCALES) {
+      for (const hatch of escapeHatchesFor('selectingTarget')) {
+        const value = DICTIONARIES[locale][hatch.labelKey];
+        expect(value, `${locale}/${hatch.action}`).toBeTruthy();
+      }
+    }
+    // 英語で日本語が出ないことを具体値で固定する（キーの取り違えを検出する）。
+    const en = makeT('en');
+    expect(escapeHatchesFor('selectingTarget').map((h) => en(h.labelKey))).toEqual([
+      'Back',
+      'Start over',
+    ]);
+  });
+
+});
+
+/**
+ * QR 受付の逃げ道 (#361 AC2)。
+ *
+ * 受付側と**同じ構造**にする: どのイベントを出すかは契約（`checkinEscapeHatchesFor`）、
+ * label/variant/testId はここ。かつて QR 側は各画面が `CANCEL`/`exit` ボタンを手書きしており、
+ * 契約の導出は消費者ゼロだった（受付側が #325/#39 で潰した「画面分岐の中に逃げ道を置くと
+ * 入れ忘れる」構造がそのまま残っていた）。
+ */
+describe('checkinEscapesFor (#361 AC2)', () => {
+  it('どのイベントを出すかは全状態で契約と一致する（真実源は 1 つ）', () => {
+    for (const state of CHECKIN_STATES) {
+      expect(checkinEscapesFor(state).map((e) => e.event), state).toEqual(
+        checkinEscapeHatchesFor(state).map((h) => h.event),
+      );
+    }
+  });
+
+  it('全ターンで「最初に戻る」が 1 つだけ出る（どのターンでも同じ場所・同じ言葉で帰れる）', () => {
+    for (const state of CHECKIN_STATES) {
+      const escapes = checkinEscapesFor(state);
+      expect(escapes.map((e) => e.testId), state).toEqual(['escape-reset']);
+      expect(escapes.map((e) => e.labelKey), state).toEqual(['reception.reset']);
+    }
+  });
+
+  it('受付の逃げ道と同じ語彙・同じ testId を使う（QR だけ別の言葉にしない）', () => {
+    // 受付で「最初に戻る」を覚えた来訪者が QR でも同じものを探せること。ここがズレると
+    // 「同じ受付体験」に見えない（#361 AC2）。
+    const reception = escapeHatchesFor('selectingTarget').find((h) => h.action === 'reset');
+    const checkin = checkinEscapesFor('scanning')[0];
+    expect(checkin?.labelKey).toBe(reception?.labelKey);
+    expect(checkin?.testId).toBe(reception?.testId);
+    expect(checkin?.variant).toBe(reception?.variant);
+  });
+
+  it('全ロケールに訳が実在する（ja へフォールバックしていない）', () => {
+    for (const locale of SUPPORTED_LOCALES) {
+      for (const escape of checkinEscapesFor('scanning')) {
+        expect(DICTIONARIES[locale][escape.labelKey], `${locale}/${escape.event}`).toBeTruthy();
+      }
+    }
+    const en = makeT('en');
+    expect(checkinEscapesFor('scanning').map((e) => en(e.labelKey))).toEqual(['Start over']);
   });
 });

@@ -136,7 +136,17 @@ export type RoutingPolicyIssue =
   | { kind: 'unknown_endpoint'; policyId: string; stepId: string; endpointId: string }
   | { kind: 'unknown_goto_step'; policyId: string; stepId: string; targetStepId: string }
   | { kind: 'unknown_fallback_policy'; policyId: string; targetPolicyId: string }
-  | { kind: 'fallback_cycle'; policyId: string };
+  | { kind: 'fallback_cycle'; policyId: string }
+  /**
+   * 最後まで撃ち切ると端末の待ち上限（`CALL_STATUS_POLL_MAX_MS`）を超える (#743)。
+   * 超える構成では、来訪者が代替導線へ倒れたあとも社内の電話が鳴り続ける。
+   */
+  | {
+      kind: 'exceeds_client_wait';
+      policyId: string;
+      worstCaseMs: number;
+      clientWaitMs: number;
+    };
 
 /**
  * fallback route（ポリシー間の `fallbackPolicyId`）の**全**循環ノードを返す。

@@ -74,3 +74,69 @@ export function toCsv(header: readonly string[], rows: readonly (readonly string
   const lines = [header, ...rows].map((cells) => cells.map(csvCell).join(','));
   return lines.join('\n') + '\n';
 }
+
+/** 並べ替えの状態。列キーと向き。 */
+export type SortState = { readonly key: string; readonly direction: 'asc' | 'desc' };
+
+/** 並べ替えに使える列（`DataTable` の `Column` から必要な部分だけ）。 */
+export type SortableColumn<Row> = {
+  readonly key: string;
+  readonly sortValue?: (row: Row) => string | number;
+};
+
+/**
+ * 一覧を安定に並べ替える純関数 (#909 / 課題 18)。
+ *
+ * 🔴 **`DataTable` の側で並べ替えない。** 行を渡す側がページングもするので、描画の直前で
+ * 並べ替えると**ページを切ったあとの 20 件だけが並び替わる** —— 利用者から見ると
+ * 「並べ替えたのに 2 ページ目に小さい値が残っている」という壊れ方になる。
+ * 呼び出し側が `sortRows` → `paginate` の順に通す。
+ *
+ * 並べ替えは**安定**である（同値の行の相対順序を保つ）。取得順に意味がある一覧
+ * （監査ログは新しい順）で、同値のかたまりの中の順序が毎回変わると読みにくい。
+ * `Array.prototype.sort` は ES2019 以降**仕様として安定**なので、比較関数に
+ * 添字の tie-break を足す必要は無い（足しても振る舞いは変わらない ——
+ * 実際に変異検証で「等価な変異」として生存した）。
+ *
+ * 指定が無い / 列が無い / その列がソート不可のときは**元の配列をそのまま返す**
+ * （既定の順序を勝手に変えない）。
+ */
+export function sortRows<Row>(
+  rows: readonly Row[],
+  columns: readonly SortableColumn<Row>[],
+  sort: SortState | undefined,
+): readonly Row[] {
+  if (!sort) return rows;
+  const column = columns.find((c) => c.key === sort.key);
+  const sortValue = column?.sortValue;
+  if (!sortValue) return rows;
+
+  const sign = sort.direction === 'desc' ? -1 : 1;
+  // 複製してから並べ替える。呼び出し側は `useMemo` の入力を共有しているので、
+  // 元の配列を破壊すると**並べ替えていない一覧まで順序が変わる**。
+  return [...rows].sort((a, b) => {
+    const av = sortValue(a);
+    const bv = sortValue(b);
+    if (av < bv) return -1 * sign;
+    if (av > bv) return 1 * sign;
+    return 0;
+  });
+}
+
+/**
+ * ヘッダを押したときの次の状態。`asc` → `desc` → 解除（`undefined`）で 1 周する。
+ *
+ * 解除できることが要る —— 一覧の**既定の順序に意味がある**（監査ログは新しい順、
+ * 部署は表示順）ので、並べ替えたあと元へ戻せないと情報が失われる。
+ */
+export function nextSortState(current: SortState | undefined, key: string): SortState | undefined {
+  if (current?.key !== key) return { key, direction: 'asc' };
+  if (current.direction === 'asc') return { key, direction: 'desc' };
+  return undefined;
+}
+
+/** `aria-sort` の値。 */
+export function ariaSortFor(current: SortState | undefined, key: string): 'ascending' | 'descending' | 'none' {
+  if (current?.key !== key) return 'none';
+  return current.direction === 'asc' ? 'ascending' : 'descending';
+}

@@ -1,14 +1,27 @@
 'use client';
 
 import { useEffect, useRef, useState } from 'react';
+import {
+  resolveVrmSpecVersion,
+  vrmVersionAttribute,
+  type VrmSpecVersion,
+} from '@/domain/avatar/vrm-version';
+import {
+  motionStateAttribute,
+  resolveMotionObservation,
+  type MotionObservation,
+} from '@/domain/avatar/motion-state';
+import { cameraFramingAttribute, resolveCameraFraming } from '@/domain/avatar/camera-framing';
 import { ResourceTracker } from '@/lib/three/resource-tracker';
 import { AvatarFallbackImage } from './avatar/fallback-image';
 import { emotionExpressionValues } from './avatar/vrm-expression';
 import { resolveStatePose } from './avatar/vrm-pose';
+import { gazeOffsetFor, type GazeOffset } from './avatar/vrm-gaze';
 import { resolveFrameExpressionWeights } from './avatar/frame-weights';
 import { createAutoBlinkState, stepAutoBlink, type AutoBlinkState } from '@/domain/avatar/auto-blink';
 import type { AvatarExpression } from './avatar/guidance';
-import type { AvatarState } from '@/domain/reception/ui-contract';
+import type { AvatarState, GazeTarget } from '@/domain/reception/ui-contract';
+import type { KioskLayout } from './layout';
 
 /**
  * VRM アバター表示基盤 (issue #36)。
@@ -39,6 +52,8 @@ export function VrmAvatarViewer({
   expressionIntensity,
   speaking,
   avatarState,
+  gazeTarget,
+  layout,
   className,
 }: {
   vrmUrl?: string;
@@ -60,10 +75,39 @@ export function VrmAvatarViewer({
   speaking?: boolean;
   /** 受付アバター状態（#31）。.vrma 非再生時に状態別の手続き的ポーズ/所作を適用する。 */
   avatarState?: AvatarState;
+  /**
+   * 視線誘導先 (#422 inc5-c 増分 3)。契約 `gazeTargetFor(screenState)` の値。
+   * `layout` と組で向く方向が決まる（横向きは右レール、縦向きは真下）。
+   */
+  gazeTarget?: GazeTarget;
+  /** 画面レイアウト。視線の向きに効く。未指定は横向き扱い（既定プロファイル）。 */
+  layout?: KioskLayout;
   className?: string;
 }) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const [failed, setFailed] = useState(false);
+  /**
+   * 読み込んだ VRM の仕様版 (#578 増分 1)。**診断のためだけ**に持つ。
+   *
+   * 実機で「モーションが変」と分かっても、版が出ていないとモデル版・モーション・カメラの
+   * どれに帰属するのか切り分けられない。`data-vrm-version` として観測可能にする。
+   */
+  const [vrmVersion, setVrmVersion] = useState<VrmSpecVersion>('unknown');
+  const [vrmLoaded, setVrmLoaded] = useState(false);
+  /**
+   * モーション適用の**結果** (#578 増分 2)。`data-motion-url` は要求した URL を出すだけで、
+   * 実際に再生されたかは分からなかった。「再生されていない」と「再生されているが見た目が
+   * 変」を実機で区別できるようにする。
+   */
+  const [motionObservation, setMotionObservation] = useState<MotionObservation>({ state: 'none' });
+  /**
+   * 実効画角 (#578 増分 1 の残り)。**診断のためだけ**に持つ（描画は three.js 側が持つ値で行う）。
+   *
+   * 版とモーションは観測できるようになったのに**カメラだけが出ていない**ため、実機で
+   * 「顔が切れる / 真っ黒」を見ても帰属先を絞れなかった。とくに頭の高さは黙って既定へ
+   * 倒され、黙って妥当域へ寄せられるので、その事実（`src=`）まで載せる。
+   */
+  const [cameraFramingAttr, setCameraFramingAttr] = useState<string>('none');
   // 表情はレンダーループ（[vrmUrl] 依存）の外から更新されるため ref で最新値を渡す。
   const expressionRef = useRef<AvatarExpression>(expression ?? 'neutral');
   useEffect(() => {
@@ -81,9 +125,12 @@ export function VrmAvatarViewer({
   }, [speaking]);
   // 受付状態もレンダーループ外から変化するため ref で渡す（#31 状態別ポーズ）。
   const avatarStateRef = useRef<AvatarState>(avatarState ?? 'idle');
+  // 視線は毎フレーム参照するので ref に持つ（再マウントせず追従させる）。
+  const gazeRef = useRef<GazeOffset>(gazeOffsetFor(gazeTarget ?? 'none', layout ?? 'ipad-landscape'));
   useEffect(() => {
     avatarStateRef.current = avatarState ?? 'idle';
-  }, [avatarState]);
+    gazeRef.current = gazeOffsetFor(gazeTarget ?? 'none', layout ?? 'ipad-landscape');
+  }, [avatarState, gazeTarget, layout]);
 
   // モーション URL も [vrmUrl] エフェクト外から変化するため ref 経由で渡す。
   // VRM ロード完了後に loadMotionRef.current が設定され、状態遷移ごとに .vrma を切替える（#31）。
@@ -103,6 +150,12 @@ export function VrmAvatarViewer({
     const canvas = canvasRef.current;
     if (!canvas) return;
 
+    // **前モデルの観測を持ち越さない** (#578 レビュー M6)。リセットしないと、新モデルの
+    // ダウンロード中（実機で数秒）に前モデルの版・再生状態を報告し続ける。
+    setVrmVersion('unknown');
+    setVrmLoaded(false);
+    setMotionObservation({ state: 'none' });
+
     let disposed = false;
     let animationId = 0;
     const tracker = new ResourceTracker();
@@ -121,12 +174,50 @@ export function VrmAvatarViewer({
         const gl = new THREE.WebGLRenderer({ canvas, alpha: true, antialias: false });
         // iPad 向け軽量モード: pixelRatio を抑制。
         gl.setPixelRatio(Math.min(globalThis.devicePixelRatio || 1, 1.5));
-        gl.setSize(canvas.clientWidth || 320, canvas.clientHeight || 480, false);
         renderer = gl;
 
         const scene = new THREE.Scene();
-        const camera = new THREE.PerspectiveCamera(30, (canvas.clientWidth || 320) / (canvas.clientHeight || 480), 0.1, 20);
-        camera.position.set(0, 1.3, 2.2);
+        // 画角はモデルの背丈から決めるので、ここでは器だけ作る（#578 増分 3）。
+        // 実際の位置・注視点・aspect は VRM 読込後の applyFraming で確定する。
+        const camera = new THREE.PerspectiveCamera(30, 1, 0.1, 20);
+
+        /**
+         * 画角をモデルと描画領域から決め直す (#578 増分 3)。
+         *
+         * 従来は `position.set(0, 1.3, 2.2)` の決め打ちで、**モデルの背丈に依存しなかった**
+         * （VRM は身長差が大きい）。さらに `aspect` は読込時 1 回だけで
+         * `updateProjectionMatrix()` も呼ばれておらず、**横向き iPad で回転すると歪んで**いた。
+         */
+        let headHeight: number | undefined;
+        let headHeightApplied: number | undefined;
+        /** 直前に適用した実寸。同値なら何もしない（自己参照フィードバックの再発防止）。 */
+        let appliedSize: { w: number; h: number } | null = null;
+        const applyFraming = () => {
+          const w = canvas.clientWidth || 320;
+          const h = canvas.clientHeight || 480;
+          // **冪等にする。** 万一寸法が自分の書き込みで揺れても、同値なら再適用しない。
+          if (appliedSize?.w === w && appliedSize.h === h && headHeightApplied === headHeight) return;
+          appliedSize = { w, h };
+          headHeightApplied = headHeight;
+          gl.setSize(w, h, false);
+          const framing = resolveCameraFraming({ headHeight, aspect: w / h });
+          camera.aspect = w / h;
+          camera.fov = framing.fov;
+          camera.position.set(framing.position.x, framing.position.y, framing.position.z);
+          camera.lookAt(framing.target.x, framing.target.y, framing.target.z);
+          // これを忘れると aspect / fov の変更が反映されない（歪んだまま）。
+          camera.updateProjectionMatrix();
+          /**
+           * 実効画角を観測可能にする (#578 増分 1 の残り)。
+           *
+           * **同値なら前の値を返して React に bail out させる。** applyFraming 自体は
+           * 冪等だが、状態更新は再レンダリングを呼び、再レンダリングは canvas の実寸に
+           * 触れうる。増分 3 で踏んだ自己参照フィードバックの入口をここにも作らない。
+           */
+          const attr = cameraFramingAttribute(framing);
+          if (!disposed) setCameraFramingAttr((prev) => (prev === attr ? prev : attr));
+        };
+        applyFraming();
         const light = new THREE.DirectionalLight(0xffffff, 1.2);
         light.position.set(1, 1, 1);
         scene.add(light);
@@ -143,7 +234,20 @@ export function VrmAvatarViewer({
         // VRM 1.0 には no-op。これが無いと 0.x モデルは常に後ろ姿で描画される
         // （実描画検証 2026-07-22 で発覚。同梱 Rose は 0.x）。
         if (vrm) VRMUtils.rotateVRM0(vrm);
+        // 版を観測可能にする (#578 増分 1)。rotateVRM0 が「何に対して」効いたのかを
+        // 実機から確認できるようにする（推測で既定へ倒さない。判別不能は unknown）。
+        setVrmVersion(resolveVrmSpecVersion(vrm?.meta));
+        setVrmLoaded(Boolean(vrm));
         scene.add(gltf.scene);
+        // humanoid から頭の高さを取り、画角を決め直す（背丈の違うモデルでも顔が切れない）。
+        // 取れなければ undefined のまま＝既定へ倒す（0 を渡してカメラを原点に埋めない）。
+        const headNode = vrm?.humanoid?.getNormalizedBoneNode?.('head');
+        if (headNode) {
+          const worldPos = new THREE.Vector3();
+          headNode.getWorldPosition(worldPos);
+          if (Number.isFinite(worldPos.y) && worldPos.y > 0) headHeight = worldPos.y;
+        }
+        applyFraming();
         tracker.track({ dispose: () => VRMUtils.deepDispose(gltf.scene) });
 
         // --- 状態別モーション（.vrma）再生 (#31) ---
@@ -153,23 +257,61 @@ export function VrmAvatarViewer({
         let currentAction: { fadeOut: (d: number) => void } | null = null;
         let motionToken = 0;
         const loadMotion = async (url: string | undefined): Promise<void> => {
-          if (!url) return;
+          // **黙って return しない** (#578 増分 2)。以前はここも catch も無言だったため、
+          // 「再生されていない」ことが `data-motion-url` からは判別できなかった。
+          const observe = (o: MotionObservation) => {
+            if (!disposed) setMotionObservation(o);
+          };
+          if (!url) {
+            // **token を進める。** 進めないと、飛行中だった前の要求が「まだ現役」と誤判定して
+            // 後から再生され、`data-motion-url` は空なのに `data-motion-state=playing` になる。
+            ++motionToken;
+            // **再生中の .vrma を止める。** 止めないと `state:'none'`（＝手続き的ポーズで
+            // 動く正常状態）と報告しながら前状態のモーションが回り続け、しかも
+            // `if (!currentAction)` の内側にある**視線誘導ごと無効化**される。
+            currentAction?.fadeOut(0.3);
+            currentAction = null;
+            observe({ state: 'none' });
+            return;
+          }
           const token = ++motionToken;
+          observe(resolveMotionObservation({ requestedUrl: url, vrmLoaded: Boolean(vrm) }));
           try {
             const animLoader = new GLTFLoader();
             animLoader.register((parser) => new VRMAnimationLoaderPlugin(parser));
             const vrma = await animLoader.loadAsync(url);
             // 破棄済み or 後発のモーション要求が来ていれば破棄（古い読込を捨てる）。
+            // **観測も更新しない** — 後発の要求が既に自分の状態を書いているため。
             if (disposed || token !== motionToken) return;
             const vrmAnimation = vrma.userData.vrmAnimations?.[0];
-            if (!vrmAnimation || !vrm) return;
+            const observation = resolveMotionObservation({
+              requestedUrl: url,
+              vrmLoaded: Boolean(vrm),
+              loaded: true,
+              hasAnimation: Boolean(vrmAnimation),
+            });
+            observe(observation);
+            if (observation.state !== 'playing' || !vrmAnimation || !vrm) {
+              // 失敗を報告する以上、前のモーションを回し続けない
+              // （`failed:*` を見た運用者は「再生されていない」と読む）。
+              currentAction?.fadeOut(0.3);
+              currentAction = null;
+              return;
+            }
+            // 版差（0.x の 180° 反転）は createVRMAnimationClip が `vrm.meta.metaVersion` を
+            // 見て補正する。ここで独自に判定すると二重補正になるので触らない。
             const clip = createVRMAnimationClip(vrmAnimation, vrm);
             const action = mixer.clipAction(clip);
             action.reset().setLoop(THREE.LoopRepeat, Infinity).fadeIn(0.3).play();
             currentAction?.fadeOut(0.3);
             currentAction = action;
           } catch {
-            // モーション読込失敗は受付フローを止めない（idle 継続）。
+            // モーション読込失敗は受付フローを止めない（idle 継続）。ただし黙らない。
+            if (token === motionToken) {
+              currentAction?.fadeOut(0.3);
+              currentAction = null;
+              observe(resolveMotionObservation({ requestedUrl: url, vrmLoaded: Boolean(vrm), loaded: false }));
+            }
           }
         };
         loadMotionRef.current = (url) => void loadMotion(url);
@@ -220,6 +362,21 @@ export function VrmAvatarViewer({
           const humanoid = vrm?.humanoid;
           if (!currentAction && humanoid) {
             const pose = resolveStatePose(avatarStateRef.current, clock.elapsedTime);
+            // 視線誘導 (#422 inc5-c 増分 3)。首と頭に分けて配分し、頭だけが不自然に回るのを
+            // 避ける。ポーズ（呼吸・頷き等）へ**加算**するので、既存の所作は失われない。
+            const gaze = gazeRef.current;
+            if (gaze.yaw !== 0 || gaze.pitch !== 0) {
+              pose.neck = {
+                ...(pose.neck ?? {}),
+                x: (pose.neck?.x ?? 0) + gaze.pitch * 0.4,
+                y: (pose.neck?.y ?? 0) + gaze.yaw * 0.4,
+              };
+              pose.head = {
+                ...(pose.head ?? {}),
+                x: (pose.head?.x ?? 0) + gaze.pitch * 0.6,
+                y: (pose.head?.y ?? 0) + gaze.yaw * 0.6,
+              };
+            }
             for (const [bone, rot] of Object.entries(pose)) {
               const node = humanoid.getNormalizedBoneNode(bone);
               if (node) node.rotation.set(rot.x ?? 0, rot.y ?? 0, rot.z ?? 0);
@@ -231,9 +388,31 @@ export function VrmAvatarViewer({
           animationId = requestAnimationFrame(render);
         };
         tracker.track({ dispose: () => mixer.stopAllAction() });
+
+        /**
+         * 描画領域の変化に追従する (#578 増分 3)。
+         *
+         * これが無いと `aspect` は読込時の 1 回きりで、**横向き iPad を回転させると
+         * 縦横比がずれたまま描画され続ける**（`updateProjectionMatrix()` も未呼び出しだった）。
+         * `ResizeObserver` は canvas 自身の実寸変化を見るので、`orientationchange` や
+         * CSS レイアウト由来の変化も同じ経路で拾える。
+         */
+        if (typeof ResizeObserver !== 'undefined') {
+          const observer = new ResizeObserver(() => {
+            if (!disposed) applyFraming();
+          });
+          // **canvas ではなく親を観測する。** canvas を観測すると、`gl.setSize` が書いた
+          // backing store の変化を自分で拾って発散し得る（上の style で切り離してはいるが、
+          // 観測対象を親にしておけば構造的にその経路が存在しない）。
+          observer.observe(canvas.parentElement ?? canvas);
+          tracker.track({ dispose: () => observer.disconnect() });
+        }
         render();
       } catch {
         // WebGL 不可 / VRM 読み込み失敗 → fallback。受付フローは継続。
+        // `setFailed(true)` で `showFallback` が真になり canvas 自体が描かれなくなるため、
+        // ここで観測属性を触っても誰も読めない（#578 レビュー m9）。状態は effect 冒頭の
+        // リセットで既に初期化済み。
         if (!disposed) setFailed(true);
       }
     })();
@@ -262,5 +441,30 @@ export function VrmAvatarViewer({
   }
 
   // data-motion-url: 現在再生中のモーション URL（#31。AnimationMixer で再生、実描画確認は #65）。
-  return <canvas ref={canvasRef} className={className} data-testid="vrm-canvas" data-motion-url={motionUrl} />;
+  return (
+    <canvas
+      ref={canvasRef}
+      className={className}
+      /**
+       * **レイアウト寸法を CSS で確定させる**（#578 増分 3 の退行修正）。
+       *
+       * これが無いと canvas のレイアウト寸法＝`width`/`height` **属性**（intrinsic size）に
+       * なる。`gl.setSize(w, h, false)` は属性へ `w * pixelRatio` を書くので、
+       * **自分が書いた値が次の `clientWidth` になる**。それを `ResizeObserver` で観測すると
+       * 1 フレームごとに `pixelRatio` 倍へ発散し、DPR>1（＝実機 iPad）で canvas が
+       * 数百 ms のうちに上限まで肥大して GPU が落ちる。
+       * CSS で寸法を決めれば属性を書き換えてもレイアウトは動かない。
+       */
+      style={{ display: 'block', width: '100%', height: '100%' }}
+      data-testid="vrm-canvas"
+      data-motion-url={motionUrl}
+      // 読み込んだ VRM の仕様版 (#578 増分 1)。`none`=未読込/失敗、`unknown`=読めたが版不明。
+      data-vrm-version={vrmVersionAttribute({ loaded: vrmLoaded, version: vrmVersion })}
+      // モーション適用の結果 (#578 増分 2)。失敗は理由まで出す（failed:no-animation 等）。
+      data-motion-state={motionStateAttribute(motionObservation)}
+      // 実効画角 (#578 増分 1)。`none`=未確定。`src=fallback|clamped` は頭の高さを
+      // 実測できなかった／妥当域へ寄せたことを表す（黙って倒さない）。
+      data-camera-framing={cameraFramingAttr}
+    />
+  );
 }

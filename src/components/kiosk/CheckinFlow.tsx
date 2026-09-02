@@ -1,6 +1,20 @@
 'use client';
 
-import { useCallback, useEffect, useReducer, useRef } from 'react';
+import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from 'react';
+import { confirmAndCall } from '@/lib/checkin/place-call';
+import { decidePollAction, CALL_STATUS_POLL_INTERVAL_MS } from '@/domain/reception/call-poll';
+import {
+  shouldAutoReturnFromCheckin,
+  TERMINAL_AUTO_RESET_MS,
+} from '@/domain/kiosk/inactivity';
+import {
+  clampCallingStageThresholds,
+  callingStageQueryFromSearch,
+  type CallingStage,
+  type CallingStageThresholds,
+} from '@/domain/reception/calling-experience';
+import { useCallingNoticeHold } from './use-calling-notice-hold';
+import { callingStageMessage } from './reception-screens';
 import {
   transition,
   type CheckinEvent,
@@ -14,6 +28,14 @@ import type { MotionKey } from '@/domain/motion/types';
 import { DEFAULT_LOCALE, makeT, type Locale, type MessageKey } from '@/lib/i18n';
 import type { KioskLayout } from './layout';
 import { AvatarGuide } from './avatar/AvatarGuide';
+import { checkinSubtitleFor } from './conversation-turn';
+import { EscapeBar } from './EscapeBar';
+import { checkinEscapesFor } from './quick-actions';
+import { zIndex } from '@/components/admin/ui/tokens';
+import {
+  checkinCallFailureMessageKeyFor,
+  type CheckinCallFailureReason,
+} from '@/domain/checkin/failure';
 
 /**
  * QR チェックインフロー (issue #98, increment 2)。
@@ -116,6 +138,33 @@ export function CheckinFlow({
   defaultMotionUrl,
 }: CheckinFlowProps) {
   const [data, dispatch] = useReducer(reducer, INITIAL);
+  // 呼び出し失敗の理由。**状態は増やさず**（`networkError` のまま）、文言だけを出し分ける
+  // （第 36 wave の通常受付と同じ方針）。RESET / RETRY で消す。
+  const [callFailureReason, setCallFailureReason] = useState<CheckinCallFailureReason | null>(null);
+  /** 実 PSTN の結果待ち中の受付 ID（#736）。null = 待っていない。 */
+  const [pendingReceptionId, setPendingReceptionId] = useState<string | null>(null);
+  /**
+   * timeout / unanswered が確定したが、予告の保持がまだ済んでいない (#832)。
+   * 発火は `useCallingNoticeHold`。ここへ `server` などを載せない。
+   */
+  const [pendingTimeout, setPendingTimeout] = useState<{ sessionId: string } | null>(null);
+  const [callingStageQueryOverride] = useState<Partial<CallingStageThresholds>>(() =>
+    typeof window === 'undefined' ? {} : callingStageQueryFromSearch(window.location.search),
+  );
+  const callingStageThresholds = useMemo(
+    () => clampCallingStageThresholds(callingStageQueryOverride),
+    [callingStageQueryOverride],
+  );
+  const callingStageState = useCallingNoticeHold({
+    active: data.state === 'calling',
+    thresholds: callingStageThresholds,
+    pendingSessionId: pendingTimeout?.sessionId ?? null,
+    onFire: () => {
+      setPendingTimeout(null);
+      setCallFailureReason('unanswered');
+      dispatch({ type: 'CALL_FAILED' });
+    },
+  });
   // 注入されたスキャナ（既定は実カメラ CameraQrScanner）。再レンダーで作り直さない。
   const scannerRef = useRef<QrScanner>(scanner ?? new CameraQrScanner());
 
@@ -174,28 +223,91 @@ export function CheckinFlow({
     };
   }, [data.state, data.payload]);
 
-  // calling になったら confirm（使用済み化 + 受付セッション接続）を実行する。
+  /**
+   * calling になったら confirm（使用済み化 + 受付セッション作成）し、**続けて実際に呼び出す**。
+   *
+   * 🔴 **confirm だけで完了にしない (#736)。** かつてここは confirm が 201 を返した時点で
+   * `CALL_DONE` を dispatch していた。`/api/kiosk/receptions/:id/call` は**一度も呼ばれず**、
+   * それでも「担当者を呼び出しています…」→「受付が完了しました」と表示していた。
+   * **誰も呼ばれていないのに全員が受付完了する。** 通常受付で `unrouted`（#738）・
+   * `out_of_hours`（#747）を塞いだのと同型だが、QR 経路は常にこの状態だった。
+   *
+   * 呼び出しは通常受付とまったく同じ `/call` ルートへ委ねる（営業時間ガード・停止スイッチ・
+   * 取次・失敗理由をそのまま再利用し、二重実装を作らない）。
+   */
   useEffect(() => {
     if (data.state !== 'calling' || !data.payload) return;
     let cancelled = false;
-    (async () => {
-      try {
-        const res = await fetch('/api/kiosk/checkin/confirm', {
-          method: 'POST',
-          headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({ payload: data.payload }),
-        });
-        if (cancelled) return;
-        if (res.ok) dispatch({ type: 'CALL_DONE' });
-        else dispatch({ type: 'CALL_FAILED' });
-      } catch {
-        if (!cancelled) dispatch({ type: 'CALL_FAILED' });
+    void (async () => {
+      const result = await confirmAndCall(data.payload!);
+      if (cancelled) return;
+      if (result.kind === 'connected') {
+        dispatch({ type: 'CALL_DONE' });
+        return;
       }
+      if (result.kind === 'failed') {
+        if (result.reason === 'unanswered') {
+          // 同期 timeout も予告保持ゲートへ (#832)。未応答以外は即失敗。
+          setPendingTimeout({ sessionId: 'checkin' });
+          return;
+        }
+        setCallFailureReason(result.reason);
+        dispatch({ type: 'CALL_FAILED' });
+        return;
+      }
+      // 実 PSTN は 1 手撃った時点では結果が無い（webhook で後から届く）。
+      // サーバの確定を `/status` の読みで待つ。**待っている間は完了にしない。**
+      setPendingReceptionId(result.receptionId);
     })();
     return () => {
       cancelled = true;
+      setPendingTimeout(null);
     };
   }, [data.state, data.payload]);
+
+  /**
+   * 実 PSTN の結果待ち (#736 / #647)。判断は `decidePollAction` に閉じている
+   * （経過時間で結果を作らない ── 状態を決めるのはサーバの応答だけ）。
+   */
+  useEffect(() => {
+    if (pendingReceptionId === null) return;
+    let cancelled = false;
+    const startedAt = Date.now();
+    const timer = window.setInterval(() => {
+      void (async () => {
+        try {
+          const res = await fetch(`/api/kiosk/receptions/${pendingReceptionId}/status`);
+          if (cancelled) return;
+          const body = res.ok ? ((await res.json()) as { state?: string }) : undefined;
+          const action = decidePollAction(body?.state ?? '', Date.now() - startedAt);
+          if (action.kind === 'wait') return;
+          setPendingReceptionId(null);
+          if (action.kind === 'give_up') {
+            // 結果を断定しない。**「判定できなかった」を未応答と混同しない。**
+            setCallFailureReason('server');
+            dispatch({ type: 'CALL_FAILED' });
+            return;
+          }
+          if (action.event === 'CALL_CONNECTED') {
+            dispatch({ type: 'CALL_DONE' });
+            return;
+          }
+          if (action.event === 'CALL_TIMEOUT') {
+            setPendingTimeout({ sessionId: pendingReceptionId });
+            return;
+          }
+          setCallFailureReason('server');
+          dispatch({ type: 'CALL_FAILED' });
+        } catch {
+          // 1 回の取得失敗では倒さない（次の間隔で再取得する）。上限は decidePollAction が持つ。
+        }
+      })();
+    }, CALL_STATUS_POLL_INTERVAL_MS);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, [pendingReceptionId]);
 
   const useManual = useCallback(() => {
     dispatch({ type: 'USE_MANUAL' });
@@ -207,6 +319,19 @@ export function CheckinFlow({
     onExit?.();
   }, [onExit]);
 
+  /*
+   * 終端（完了・中止）から待機画面へ自動復帰する (#871)。
+   *
+   * 通常受付には同じ復帰が `KioskFlow` にあるが、QR 受付には無く、無操作リセット
+   * （既定 60 秒）を待つしかなかった。「受付が完了しました」の画面が 1 分間居座ると、
+   * 次の来訪者は端末が壊れていると読む。どの状態を終端とみなすかは純関数へ委ねる。
+   */
+  useEffect(() => {
+    if (!shouldAutoReturnFromCheckin(data.state)) return;
+    const timer = setTimeout(exit, TERMINAL_AUTO_RESET_MS);
+    return () => clearTimeout(timer);
+  }, [data.state, exit]);
+
   return (
     <CheckinShell
       state={data.state}
@@ -216,8 +341,20 @@ export function CheckinFlow({
       avatarFallbackUrl={avatarFallbackUrl}
       motionUrls={motionUrls}
       defaultMotionUrl={defaultMotionUrl}
+      // 逃げ道は RESET のみ（契約）。`exit` が RESET + QR モード離脱を同時に行うので、
+      // 押した来訪者は kiosk 待機画面へ帰る（QR シェルの中で idle に留まらない）。
+      onEscape={exit}
     >
-      {renderCheckin(data, dispatch, useManual, exit, locale)}
+      {renderCheckin({
+        data,
+        dispatch,
+        useManual,
+        exit,
+        locale,
+        callFailureReason,
+        onClearFailureReason: () => setCallFailureReason(null),
+        callingStage: callingStageState.stage,
+      })}
     </CheckinShell>
   );
 }
@@ -243,6 +380,7 @@ function CheckinShell({
   avatarFallbackUrl,
   motionUrls,
   defaultMotionUrl,
+  onEscape,
   children,
 }: {
   state: CheckinState;
@@ -252,9 +390,15 @@ function CheckinShell({
   avatarFallbackUrl?: string;
   motionUrls?: Partial<Record<MotionKey, string>>;
   defaultMotionUrl?: string;
+  /** 逃げ道バーの選択（現状は RESET のみ＝ kiosk 待機へ帰る）。 */
+  onEscape: (event: string) => void;
   children: React.ReactNode;
 }) {
-  const turn = checkinConversationTurnFor(state);
+  // 字幕は来訪者の言語で解決して注入する (#361 AC2)。渡さないと契約の ja 既定文言が出て、
+  // 見出し・リードだけが訳された「日本語で話しかけてくる英語画面」になる。
+  const turn = checkinConversationTurnFor(state, {
+    message: { displayText: checkinSubtitleFor(state, locale) },
+  });
   const isRail = layout === 'ipad-landscape' || layout === 'large-display';
 
   const avatar = (
@@ -284,15 +428,45 @@ function CheckinShell({
       data-testid="checkin-shell"
       data-checkin-state={turn.stateKey}
       data-checkin-presence={turn.avatar.presence}
-      style={isRail ? shellRailStyle : shellStackStyle}
+      style={shellOuterStyle}
     >
-      {avatar}
-      <div className="checkin-shell__content" style={isRail ? contentRailStyle : contentStackStyle}>
-        {children}
+      {/*
+        アバターと会話・操作の並び（横向きは 35%/65% のレール、縦向きは重ね置き）。
+        **逃げ道バーはこの内側に入れない。** バーは `position: sticky; bottom: 0` で列方向の
+        流れに乗る前提なので、行 flex の子にすると右側の縦カラムとして描かれ、右上の
+        「見やすさ設定」に重なる（VRT が実際にこの退行を捕まえた）。
+      */}
+      <div style={isRail ? shellRailStyle : shellStackStyle}>
+        {avatar}
+        <div className="checkin-shell__content" style={isRail ? contentRailStyle : contentStackStyle}>
+          {children}
+        </div>
       </div>
+      {/*
+        常設逃げ道バー (#361 AC2)。**画面分岐の外**に置く（受付側が #39 で同じ是正をした）。
+        以前は各ターンが `CANCEL`/`exit` ボタンを手書きしており、ターンが増えるたびに
+        入れ忘れる余地があった。ここに置けば構造として全ターンへ常設される。
+        出す項目は契約（`checkinEscapeHatchesFor`）由来で、受付と同じ「最初に戻る」を出す。
+      */}
+      <EscapeBar
+        regionTestId="checkin-escape-bar"
+        locale={locale}
+        items={checkinEscapesFor(state).map((escape) => ({ id: escape.event, ...escape }))}
+        onSelect={onEscape}
+      />
     </div>
   );
 }
+
+// シェルの外枠。列方向にして「アバター＋会話」の並びと常設バーを縦に積む（バーの
+// sticky bottom が効く流れを作る）。
+const shellOuterStyle: React.CSSProperties = {
+  display: 'flex',
+  flexDirection: 'column',
+  flex: 1,
+  minHeight: 0,
+  width: '100%',
+};
 
 // 横向き/大型: アバターを左レール(35%)として在席させる（#361 会話継続レイアウト）。
 const shellRailStyle: React.CSSProperties = {
@@ -328,7 +502,7 @@ const avatarCompanionStyle: React.CSSProperties = {
   bottom: 'var(--space-md)',
   width: 150,
   maxWidth: '26vw',
-  zIndex: 5,
+  zIndex: zIndex.companion,
   pointerEvents: 'none',
 };
 
@@ -354,13 +528,36 @@ const contentStackStyle: React.CSSProperties = {
  * で直接レンダーしてテストできる（プロジェクトに jsdom/RTL は無いため、`VoiceReadbackConfirm` と同じ
  * 静的マークアップ検証の流儀に合わせている）。`export` は CheckinFlow.test.tsx からの直接検証用。
  */
-export function renderCheckin(
-  data: FlowData,
-  dispatch: React.Dispatch<Action>,
-  useManual: () => void,
-  exit: () => void,
-  locale: Locale = DEFAULT_LOCALE,
-) {
+export type RenderCheckinProps = {
+  data: FlowData;
+  dispatch: React.Dispatch<Action>;
+  useManual: () => void;
+  exit: () => void;
+  locale?: Locale;
+  /** 呼び出し失敗の理由。読み取り段階のエラーでは null（状態から文言を引く）。 */
+  callFailureReason?: CheckinCallFailureReason | null;
+  /** 再試行時に理由を捨てる（前回の失敗の説明を次の試行へ持ち越さない）。 */
+  onClearFailureReason?: () => void;
+  /** 呼び出し中の経過段階 (#832)。calling 以外では無視。 */
+  callingStage?: CallingStage;
+};
+
+/**
+ * 画面の描画（hooks を使わない純関数）。
+ *
+ * **位置引数ではなく props オブジェクトで受ける。** 第 28 wave (#445) で `renderScreen` の
+ * 位置引数が 29 個まで膨れて可読性を失った前例があるため、増える前に寄せる。
+ */
+export function renderCheckin({
+  data,
+  dispatch,
+  useManual,
+  exit,
+  locale = DEFAULT_LOCALE,
+  callFailureReason = null,
+  onClearFailureReason,
+  callingStage = 'dialing',
+}: RenderCheckinProps) {
   const tr = makeT(locale);
   switch (data.state) {
     case 'idle':
@@ -375,9 +572,6 @@ export function renderCheckin(
             onClick={() => dispatch({ type: 'START' })}
           >
             {tr('checkin.idle.start')}
-          </button>
-          <button type="button" className="btn btn--ghost" data-testid="checkin-exit" onClick={exit}>
-            {tr('checkin.backToStart')}
           </button>
         </CenteredCard>
       );
@@ -403,9 +597,6 @@ export function renderCheckin(
               {tr('checkin.method.manual')}
             </button>
           </div>
-          <button type="button" className="btn btn--ghost" data-testid="method-cancel" onClick={() => dispatch({ type: 'CANCEL' })}>
-            {tr('checkin.backToStart')}
-          </button>
         </CenteredCard>
       );
     case 'checkingCamera':
@@ -429,9 +620,6 @@ export function renderCheckin(
           >
             {tr('checkin.camera.deny')}
           </button>
-          <button type="button" className="btn btn--ghost" data-testid="camera-cancel" onClick={() => dispatch({ type: 'CANCEL' })}>
-            {tr('checkin.backToStart')}
-          </button>
         </CenteredCard>
       );
     case 'scanning':
@@ -439,9 +627,6 @@ export function renderCheckin(
         <CenteredCard>
           <h1 className="screen__title" data-testid="checkin-scanning">{tr('checkin.scanning.title')}</h1>
           <p className="screen__lead">{tr('checkin.scanning.lead')}</p>
-          <button type="button" className="btn btn--ghost" data-testid="scan-cancel" onClick={() => dispatch({ type: 'CANCEL' })}>
-            {tr('checkin.cancelAction')}
-          </button>
         </CenteredCard>
       );
     case 'resolving':
@@ -463,8 +648,19 @@ export function renderCheckin(
     case 'calling':
       return (
         <CenteredCard>
-          <h1 className="screen__title" data-testid="checkin-calling">{tr('checkin.calling.title')}</h1>
-          <p className="screen__lead">{tr('checkin.calling.lead')}</p>
+          <div data-testid="checkin-calling" data-calling-stage={callingStage}>
+            <h1 className="screen__title">{tr('checkin.calling.title')}</h1>
+            <p className="screen__lead">
+              {callingStage === 'dialing'
+                ? tr('checkin.calling.lead')
+                : callingStageMessage(callingStage, '', locale, {})}
+            </p>
+            <span className="calling-pulse" data-testid="calling-pulse" aria-hidden="true">
+              <span className="calling-pulse__dot" />
+              <span className="calling-pulse__dot" />
+              <span className="calling-pulse__dot" />
+            </span>
+          </div>
         </CenteredCard>
       );
     case 'completed':
@@ -472,18 +668,12 @@ export function renderCheckin(
         <CenteredCard>
           <h1 className="screen__title" data-testid="checkin-completed">{tr('checkin.completed.title')}</h1>
           <p className="screen__lead">{tr('checkin.completed.lead')}</p>
-          <button type="button" className="btn btn--ghost" data-testid="checkin-reset" onClick={exit}>
-            {tr('checkin.backToStart')}
-          </button>
         </CenteredCard>
       );
     case 'cancelled':
       return (
         <CenteredCard>
           <h1 className="screen__title" data-testid="checkin-cancelled">{tr('checkin.cancelled.title')}</h1>
-          <button type="button" className="btn btn--ghost" data-testid="checkin-reset" onClick={exit}>
-            {tr('checkin.backToStart')}
-          </button>
         </CenteredCard>
       );
     case 'manualFallback':
@@ -491,9 +681,6 @@ export function renderCheckin(
         <CenteredCard>
           <h1 className="screen__title" data-testid="checkin-manual">{tr('checkin.manualFallback.title')}</h1>
           <p className="screen__lead">{tr('checkin.manualFallback.lead')}</p>
-          <button type="button" className="btn btn--ghost" data-testid="checkin-reset" onClick={exit}>
-            {tr('checkin.backToStart')}
-          </button>
         </CenteredCard>
       );
     case 'cameraError':
@@ -505,10 +692,13 @@ export function renderCheckin(
       return (
         <ErrorView
           state={data.state}
+          callFailureReason={callFailureReason}
           locale={locale}
           onUseManual={useManual}
-          onRetry={() => dispatch({ type: 'RETRY' })}
-          onReset={exit}
+          onRetry={() => {
+            onClearFailureReason?.();
+            dispatch({ type: 'RETRY' });
+          }}
         />
       );
     default:
@@ -577,19 +767,25 @@ const ERROR_MESSAGE_KEY: Partial<Record<CheckinState, MessageKey>> = {
 
 function ErrorView({
   state,
+  callFailureReason,
   locale,
   onUseManual,
   onRetry,
-  onReset,
 }: {
   state: CheckinState;
+  /** 呼び出し失敗の理由。読み取り段階のエラーでは null（状態から文言を引く）。 */
+  callFailureReason: CheckinCallFailureReason | null;
   locale: Locale;
   onUseManual: () => void;
   onRetry: () => void;
-  onReset: () => void;
 }) {
   const tr = makeT(locale);
-  const key = ERROR_MESSAGE_KEY[state];
+  // 呼び出し失敗は理由ごとに文言を変える（差分 D）。理由が無い＝読み取り段階のエラーなので
+  // 従来どおり状態から引く。
+  const key =
+    callFailureReason === null
+      ? ERROR_MESSAGE_KEY[state]
+      : checkinCallFailureMessageKeyFor(callFailureReason);
   return (
     <div className="screen__body" style={{ alignItems: 'center', justifyContent: 'center', textAlign: 'center' }}>
       <div className="notice notice--danger" data-testid={`checkin-error-${state}`}>
@@ -602,9 +798,7 @@ function ErrorView({
         <button type="button" className="btn btn--secondary" data-testid="checkin-error-retry" onClick={onRetry}>
           {tr('checkin.error.retry')}
         </button>
-        <button type="button" className="btn btn--ghost" data-testid="checkin-error-reset" onClick={onReset}>
-          {tr('checkin.backToStart')}
-        </button>
+        {/* 「最初に戻る」は常設バーへ統合した (#361 AC2)。ここは前進系だけを置く。 */}
       </div>
     </div>
   );

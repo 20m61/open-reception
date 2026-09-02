@@ -1,4 +1,5 @@
 import { NextResponse } from 'next/server';
+import { prefersHtml, renderServiceHoldPage } from '@/domain/reception/service-hold-page';
 import type { NextRequest } from 'next/server';
 import { buildCsp, createCspNonce, NONCE_HEADER } from '@/lib/security/csp';
 import { verifySession } from '@/lib/auth/session';
@@ -6,6 +7,13 @@ import { ADMIN_COOKIE, ENTRA_TOKEN_COOKIE, getAdminSecret } from '@/lib/auth/adm
 import { getAdminAuthConfig, validateAdminAuthConfig } from '@/lib/auth/admin-auth-config';
 import { verifyOidcToken, createJwksResolver } from '@/lib/auth/entra';
 import { canWrite } from '@/domain/auth/roles';
+import {
+  ORIGIN_VERIFY_HEADER,
+  ORIGIN_VERIFY_LOG_MARKERS,
+  evaluateOriginVerify,
+  readOriginVerifyConfig,
+  type OriginVerifyOutcome,
+} from '@/lib/security/origin-verify';
 
 /**
  * 認可境界 (issue #24, #70)。
@@ -22,19 +30,100 @@ const PUBLIC_PATHS = new Set<string>([
 ]);
 
 /**
- * CloudFront 経由アクセスの検証 (OAC POST 署名問題の回避方式)。
+ * CloudFront 経由アクセスの検証 (OAC POST 署名問題の回避方式。判定は origin-verify.ts)。
  * Function URL を authType=NONE で公開する代わり、CloudFront が origin custom header
  * `x-origin-verify` に高エントロピーのシークレットを付与する。これと一致しないリクエスト
- * （= Function URL 直叩き / CloudFront 迂回）は全ルートで 403 拒否する。
- * `ORIGIN_VERIFY_SECRET` 未設定（ローカル / OAC 方式）なら検証しない（後方互換）。
+ * （= Function URL 直叩き / CloudFront 迂回）は server function の全ルートで拒否する。
+ *
+ * **拒否の 2 種類を区別する (#612)。** どちらも「拒否」だが運用上は正反対で、混ぜると
+ * 障害時に「攻撃されている」と「自分が壊れている」を切り分けられない。
+ * - `mismatch`      … 直叩き（正常動作）。**または**ローテーションで CloudFront と Lambda が
+ *                     ずれた状態（全断）。403 を返す
+ * - `missing-secret`… 配備側の障害。全リクエストが落ちる。503 を返す
  */
-const ORIGIN_VERIFY_HEADER = 'x-origin-verify';
+let lastOriginVerifyReason: OriginVerifyOutcome['reason'] | 'initial' = 'initial';
 
-function isFromTrustedOrigin(req: NextRequest): boolean {
-  const expected = process.env.ORIGIN_VERIFY_SECRET;
-  if (!expected) return true;
-  // シークレットは高エントロピーのため単純比較で十分（タイミング攻撃は非現実的）。
-  return req.headers.get(ORIGIN_VERIFY_HEADER) === expected;
+/** テスト用にログ状態を初期化する（module scope なのでテスト順序に依存させない）。 */
+export function __resetOriginVerifyLogState(): void {
+  lastOriginVerifyReason = 'initial';
+}
+
+/**
+ * **状態が変わったときだけ**ログする。
+ *
+ * 「プロセスにつき 1 回」のラッチは一方通行で、復旧してから再発したときに何も出ない。
+ * `missing-secret` は matcher 除外パス（`/favicon.ico` 等）が `register()` を走らせると
+ * 実際に復旧しうるので、これは机上の話ではない。出力量はラッチとほぼ変わらないまま、
+ * 復旧と再発の両方が記録される。**値は一切出さない**（rules/pii-secret-minimization.md）。
+ */
+function logOriginVerifyTransition(reason: OriginVerifyOutcome['reason'], secret?: string): void {
+  if (reason === lastOriginVerifyReason) return;
+  lastOriginVerifyReason = reason;
+  switch (reason) {
+    case 'missing-secret':
+      // 先頭は必ず共有マーカー。CDK のメトリクスフィルタがこの文字列を検索する (#630)。
+      console.error(
+        `${ORIGIN_VERIFY_LOG_MARKERS.missingSecret} but ORIGIN_VERIFY_SECRET is unresolved ` +
+          '(unset, blank, or an unsubstituted {{resolve:...}}); rejecting every request.',
+      );
+      break;
+    case 'mismatch':
+      // 攻撃者が任意に発火できるので**毎リクエストは出さない**が、ゼロにもしない。
+      // ローテーションで CloudFront と Lambda がずれると全リクエストがここへ落ちるため、
+      // 「一部インスタンスに数行」＝スキャン、「全インスタンスに 1 行」＝配備破損、と切り分けられる。
+      console.warn(
+        `${ORIGIN_VERIFY_LOG_MARKERS.mismatch}; rejecting requests that bypass CloudFront.`,
+      );
+      break;
+    case 'disabled':
+      // シークレットが在るのに方式が表明されていない＝配備が降格された強い兆候。
+      // 旧仕様ではこの組合せが「検証有効」を意味していた。
+      if (secret) {
+        console.warn(
+          '[origin-verify] ORIGIN_VERIFY_SECRET is present but ORIGIN_VERIFY_REQUIRED is not set; ' +
+            'origin verification is DISABLED.',
+        );
+      }
+      break;
+    case 'matched':
+      break;
+  }
+}
+
+function checkTrustedOrigin(req: NextRequest): NextResponse | null {
+  const config = readOriginVerifyConfig(process.env);
+  const outcome = evaluateOriginVerify(config, req.headers.get(ORIGIN_VERIFY_HEADER));
+  logOriginVerifyTransition(outcome.reason, config.secret);
+  if (outcome.ok) return null;
+  return outcome.reason === 'missing-secret'
+    ? denyOriginVerify(req, 'service unavailable', 503)
+    : denyOriginVerify(req, 'forbidden', 403);
+}
+
+/**
+ * origin-verify の拒否応答。`Content-Type` を明示する（ZAP 10019。`denyApiOrRedirect` の
+ * リダイレクト応答と同じ理由で、この経路だけ欠落していた）。
+ * 本文は理由を区別しない固定文言 ── `missing-secret` を外部に伝えると迂回可能な時間帯を教える。
+ */
+function denyOriginVerify(req: NextRequest, body: string, status: 403 | 503): NextResponse {
+  // 🔴 **来訪者には読める画面を返す (#629)。** matcher は `/kiosk` を含むので、拒否時に
+  // iPad の全画面へ出るのは英語 1 語の `forbidden` だった。再試行導線もスタッフ呼出導線も無い。
+  //
+  // 🔴 **API と webhook の応答は 1 バイトも変えない。** `Accept` にブラウザの画面遷移
+  // （`text/html`）が明示されているときだけ HTML にする。issue #629 の「やること」節が
+  // 挙げていた CloudFront の custom error response は**ディストリビューション単位**でしか
+  // 設定できず、`PROVIDER_WEBHOOKS_DISABLED` の 503 + `Retry-After`（Vonage の再送に
+  // 効いている運用スイッチ）まで HTML に差し替えてしまう。ここなら巻き込まない。
+  if (prefersHtml(req.headers.get('accept'))) {
+    return new NextResponse(renderServiceHoldPage(), {
+      status,
+      headers: { 'Content-Type': 'text/html; charset=utf-8' },
+    });
+  }
+  return new NextResponse(body, {
+    status,
+    headers: { 'Content-Type': 'text/plain; charset=utf-8' },
+  });
 }
 
 /** 状態変更系メソッドか（Viewer に拒否する対象）。 */
@@ -100,9 +189,8 @@ export async function proxy(req: NextRequest): Promise<NextResponse> {
 
 async function route(req: NextRequest, csp: CspContext): Promise<NextResponse> {
   // CloudFront 迂回（Function URL 直叩き）を全ルートで拒否する（origin-verify 方式時のみ）。
-  if (!isFromTrustedOrigin(req)) {
-    return new NextResponse('forbidden', { status: 403 });
-  }
+  const originVerifyDenial = checkTrustedOrigin(req);
+  if (originVerifyDenial) return originVerifyDenial;
 
   const { pathname } = req.nextUrl;
   if (PUBLIC_PATHS.has(pathname)) return passThrough(req, csp);

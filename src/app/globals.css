@@ -18,9 +18,27 @@
   /* アクセント（ブランドで差し替える土台） */
   --brand-accent: #38bdf8;
   --color-accent: var(--brand-accent);
-  --color-accent-strong: #0ea5e9;
+  /*
+   * グラデーションの下端。**ここだけは既定値を厳密には再現できない** (#884)。
+   *
+   * 元の literal `#0ea5e9` は `#38bdf8` より**彩度が高い**（赤 56 → 14 に対し緑・青はほぼ据置）。
+   * `color-mix` は 2 色の内分なので、彩度を上げる方向へは動けない —— 混ぜ相手を逆算すると
+   * どの比率でも赤が負になる。よって「accent から導出する」と「既定の描画を 1 px も変えない」は
+   * **両立しない**。導出を採ったので、既定の VRT 基準は取り直してある。
+   */
+  --color-accent-strong: color-mix(in oklch, var(--color-accent) 85%, black);
   --color-accent-ink: #06121f; /* アクセント上の文字色 */
-  --color-accent-soft: rgba(56, 189, 248, 0.16);
+  /*
+   * accent 由来の色は**すべて `--color-accent` から導出する** (#884)。
+   *
+   * かつてここは `rgba(56, 189, 248, 0.16)` の literal だった。テナントが注入できるのは
+   * `--brand-accent` 1 つだけなので、**赤を設定したテナントが「赤 → シアン」のグラデーション
+   * ボタンとシアンのフォーカス光を得ていた**。
+   *
+   * `color-mix(... N%, transparent)` は既定 accent に対して元の rgba と**完全に同じ値**を返す
+   * （`#38bdf8` 16% = `rgba(56,189,248,0.16)`）。よって既定テナントの描画は 1 ピクセルも変わらない。
+   */
+  --color-accent-soft: color-mix(in srgb, var(--color-accent) 16%, transparent);
   --color-success: #34d399;
   --color-danger: #f87171;
   --color-warning: #fbbf24;
@@ -41,13 +59,24 @@
    * 値/コントラスト方向が異なり流用不可）。テーマ非対象の固定値。
    */
   --color-on-danger: #fff; /* 危険サーフェス上の文字色（DangerActionButton 実行ボタンの白インク） */
-  --color-on-accent: #fff; /* アクセント上の文字色（--color-accent-ink=#06121f とは逆コントラスト。LanguageSwitcher アクティブボタン） */
+  /*
+   * accent 上のインクの**明るい側** (#884)。
+   *
+   * 以前は「LanguageSwitcher アクティブボタン」用と書かれていたが当の消費者は既に
+   * `--color-accent-ink` へ移っており、**消費者ゼロで 2.14:1 の罠トークン**だった。
+   * 課題 26 は「削除」を提案していたが、**役割を与える**方へ倒した ——
+   * `accentInkFor()`（`domain/branding/types.ts`）が accent の輝度に応じて
+   * `--color-accent-ink`（暗）とこれ（明）のどちらかを選び、`KioskFlow` が注入する。
+   * 暗いブランド色のテナントではこちらが選ばれる（`#7f1d1d` なら 10.02:1）。
+   */
+  --color-on-accent: #fff;
   --color-scrim: rgba(0, 0, 0, 0.6); /* 暗幕オーバーレイ（AvatarGuide 字幕背景） */
   --color-on-scrim: #fff; /* 暗幕上の文字色（AvatarGuide 字幕） */
   --color-surface-faint: rgba(255, 255, 255, 0.06); /* ごく薄い面（AvatarGuide プレースホルダ地色） */
 
   /* ---- タッチ・余白 ---- */
   --touch-target-min: 64px;
+  --space-xs: 6px;
   --space-sm: 12px;
   --space-md: 16px;
   --space-lg: 24px;
@@ -60,32 +89,74 @@
   --radius-xl: 28px;
   --radius-pill: 9999px;
 
+  /* ---- 重ね順（#901 / 課題 29） ----
+     層の値はここにしか無い。以前は globals.css / CSS module / inline style の
+     3 つの記述系に 12 の層が散っており、**同じ area の 2 層が同値**になっていた
+     （サイドバーと端末ダイアログがどちらも 50。正しく描けていたのは AdminShell が
+     sidebar を children より前に置いている DOM 順の偶然による）。
+     順序の意味は `tests/config/z-index-layers.test.ts` が縛る。 */
+  --z-behind: 2; /* 操作カードより背面（大画面の確認中アバター） */
+  --z-companion: 5; /* アバター伴走レイヤ */
+  --z-voice: 25; /* 復唱の「はい／いいえ」。操作カードより前・逃げ道バーより後ろ (#788) */
+  --z-escape-bar: 30; /* 逃げ道バー。これより前へ出すと「戻る」を隠す */
+  --z-chat-drawer: 40; /* 受付端末のチャットドロワー（admin の層とは同時に出ない） */
+  --z-scrim: 40; /* 管理画面のサイドバー背面スクリム */
+  --z-a11y-button: 45; /* 支援モードの呼び出しボタン */
+  --z-sidebar: 50; /* 管理画面サイドバー（狭幅ではドロワー） */
+  --z-dialog: 55; /* 管理画面のモーダル。サイドバーより前 */
+  --z-inactivity: 60; /* 無操作警告。来訪者を止める層 */
+  --z-a11y-overlay: 70; /* 支援モードのモーダル。最前面 */
+
   /* ---- 影（奥行き） ---- */
   --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.3);
   --shadow-md: 0 10px 28px rgba(0, 0, 0, 0.38);
   --shadow-lg: 0 24px 56px rgba(0, 0, 0, 0.5);
-  --shadow-glow: 0 0 0 1px var(--color-accent-soft), 0 10px 34px rgba(56, 189, 248, 0.2);
+  --shadow-glow: 0 0 0 1px var(--color-accent-soft), 0 10px 34px
+    color-mix(in srgb, var(--color-accent) 20%, transparent);
 
   /* ---- モーション ---- */
   --ease-out: cubic-bezier(0.22, 1, 0.36, 1);
   --dur-fast: 140ms;
   --dur-base: 220ms;
   --dur-slow: 380ms;
+  /*
+     ループアニメーションの**周期** (#903 / 課題 31)。`fast/base/slow` は「操作に対する
+     応答の速さ」の 3 段階で、待機中に回り続けるものとは軸が違う —— 3 段階へ押し込むと
+     スピナーが 380ms で 1 回転する（速すぎて読めない）。別の軸として置く。 */
+  --dur-spin: 0.7s;
+  --dur-pulse: 1.4s;
 
   /* ---- タイポ ---- */
   --font-sans: var(--font-inter), system-ui, -apple-system, 'Hiragino Kaku Gothic ProN',
     'Noto Sans JP', 'Noto Sans KR', 'Noto Sans SC', sans-serif;
   /*
-   * 来訪者が選べる「大きな文字」アクセシビリティ支援モード (issue #321)。
-   * 既定 1（等倍）。KioskFlow が `<main class="screen" data-a11y-font-scale="1.3|1.6">` を
-   * 出し、下の属性セレクタが --a11y-font-scale を上書きする。CSS カスタムプロパティは
-   * 参照時に「その要素で有効な値」を都度解決するため、この :root の calc() 定義を書き換えずに
-   * 子孫要素すべてへ波及する（テーマ切り替えと同じ仕組み）。
+   * 来訪者が選べる「大きな文字」アクセシビリティ支援モード (issue #321 / #869)。
+   *
+   * 🔴 **色トークンと同じ仕組みではない。** 以前ここには「参照時に『その要素で有効な値』を
+   * 都度解決するため…子孫要素すべてへ波及する（テーマ切り替えと同じ仕組み）」と書いてあったが、
+   * **成り立たない**。カスタムプロパティの `var()` は**宣言された要素の計算値時点で置換される**
+   * ので、この `:root` での `--font-body` の計算値は `calc(1.25rem * 1)` に固定され、
+   * その済んだ値が子孫へ継承される。子孫で `--a11y-font-scale` だけを上書きしても、
+   * **置換済みの派生トークンは再計算されない**。
+   *
+   * 色が波及するのは `var(--color-x)` を**参照側**（`color: var(--color-text)`）で解くから。
+   * `--font-*` は**宣言側**で数値へ潰れているので、事情が違う。
+   *
+   * 実測 (#869): 1.6× 指定時の `.screen__title` は 54.924px で、1× と**同一**だった。
+   * 属性は付くのに寸法が 1 ピクセルも動いていなかった。
+   *
+   * したがって **`--a11y-font-scale` を上書きする場所では、派生トークンも併せて再宣言する**
+   * （下の `.screen[data-a11y-font-scale='…']`）。素の値を 3 度書かずに済むよう、
+   * 倍率を掛ける前の基準値を `--font-size-*-base` として切り出してある。
+   * この不変条件は `tests/config/css-custom-property-definitions.test.ts` が縛る。
    */
+  --font-size-body-base: 1.25rem;
+  --font-size-lg-base: 1.75rem;
+  --font-size-xl-base: 2.75rem;
   --a11y-font-scale: 1;
-  --font-body: calc(1.25rem * var(--a11y-font-scale));
-  --font-lg: calc(1.75rem * var(--a11y-font-scale));
-  --font-xl: calc(2.75rem * var(--a11y-font-scale));
+  --font-body: calc(var(--font-size-body-base) * var(--a11y-font-scale));
+  --font-lg: calc(var(--font-size-lg-base) * var(--a11y-font-scale));
+  --font-xl: calc(var(--font-size-xl-base) * var(--a11y-font-scale));
 }
 
 * {
@@ -99,7 +170,11 @@ body {
   min-height: 100%;
   /* ベースにごく淡いアクセント光を載せて単調さを消す（奥行き） */
   background:
-    radial-gradient(135% 90% at 50% -15%, rgba(56, 189, 248, 0.07), transparent 55%),
+    radial-gradient(
+      135% 90% at 50% -15%,
+      color-mix(in srgb, var(--color-accent) 7%, transparent),
+      transparent 55%
+    ),
     radial-gradient(110% 80% at 85% 110%, rgba(34, 80, 128, 0.16), transparent 55%),
     var(--color-bg);
   background-attachment: fixed;
@@ -125,7 +200,68 @@ a {
 
 /* ---- 受付端末向けユーティリティ (issue #17) ---- */
 
+/*
+ * 管理画面向けサイズトークン (#501)。
+ *
+ * **方向に注意: 既定（:root）は受付端末向けのまま据え置き、admin/platform 側が下げる。**
+ * 逆（:root を下げて kiosk が上書き）にすると kiosk の実寸が変わる。`chromium-ipad` の
+ * ような mobile 相当環境では Chrome の text autosizing が効き、**`rem` の基準である
+ * `html` の font-size 自体が周囲のフォント指定に応じて膨らむ**（実測: html 16px → 20px）。
+ * :root を下げると拡大率が変わり、kiosk 側で「同じ 1.25rem」に戻しても実寸が一致しない
+ * （VRT が検出。3 度スコープを変えても差分が消えなかった原因）。
+ *
+ * 解決する問題: 管理ナビが受付端末向けの巨大フォント（`--font-body` = 20px 相当）を
+ * body から継承し、"受付端末（拠点別）" のような長いラベルが語の途中で折り返っていた
+ * （#330 item4。`components/admin/nav-link-style.ts` が個別に打ち消していた）。
+ *
+ * `data-area` は `AdminShell` が出す（admin / platform 共通のシェル）。
+ * 拡大（--a11y-font-scale）は掛けたままにして、管理画面でも文字サイズ切替が効くようにする。
+ */
+[data-area='admin'],
+[data-area='platform'] {
+  --touch-target-min: 44px;
+  /*
+   * 基準値だけを差し替え、派生の式は :root と同じ形で書き直す（#869）。
+   * 基準値の変更だけでは足りない —— :root で `--font-body` は既に置換済みなので、
+   * ここで再宣言しないと管理画面の本文が受付端末のサイズのまま残る。
+   */
+  --font-size-body-base: 1rem;
+  --font-size-lg-base: 1.25rem;
+  --font-size-xl-base: 1.9rem;
+  --font-body: calc(var(--font-size-body-base) * var(--a11y-font-scale));
+  --font-lg: calc(var(--font-size-lg-base) * var(--a11y-font-scale));
+  --font-xl: calc(var(--font-size-xl-base) * var(--a11y-font-scale));
+
+  /* `font-size` は計算値で継承されるため、変数の再定義だけでは本文サイズが変わらない。 */
+  font-size: var(--font-body);
+}
+
 .screen {
+  /*
+   * 🔴 **ブランド accent をここで再導出する (#884)。これが無いと注入が一切効かない。**
+   *
+   * `KioskFlow` は `--brand-accent` を **この要素へインラインで**注入する
+   * （`KioskFlow.tsx` の `backgroundStyle`）。しかし `--color-accent: var(--brand-accent)` は
+   * `:root` で宣言されており、**`var()` は宣言された要素の計算値時点で置換される**。
+   * つまり `:root` で `#38bdf8` に確定し、その済んだ値が子孫へ継承される ——
+   * 子孫で `--brand-accent` だけを差し替えても、置換済みの `--color-accent` は再計算されない。
+   *
+   * 実測（修正前・`--brand-accent: #7f1d1d` を `.screen` へ注入）:
+   *   --brand-accent   #38bdf8 → #7f1d1d   （注入は届いている）
+   *   --color-accent   #38bdf8 → #38bdf8   （**追随しない**）
+   *   主 CTA の背景     変化なし（バイト単位で同一）
+   *
+   * **これは #869（`--a11y-font-scale` で支援モードが何も拡大していなかった）と同じ型**で、
+   * あちらは `--font-*` で踏み、こちらは `--color-accent` で踏んでいた。上書きする場所で
+   * 派生を丸ごと再宣言する、という同じ手当てを当てる。
+   * `tests/config/css-custom-property-definitions.test.ts` が両方を同じ不変条件で縛る。
+   */
+  --color-accent: var(--brand-accent);
+  --color-accent-strong: color-mix(in oklch, var(--color-accent) 85%, black);
+  --color-accent-soft: color-mix(in srgb, var(--color-accent) 16%, transparent);
+  --shadow-glow: 0 0 0 1px var(--color-accent-soft), 0 10px 34px
+    color-mix(in srgb, var(--color-accent) 20%, transparent);
+
   min-height: 100vh;
   display: flex;
   flex-direction: column;
@@ -140,8 +276,37 @@ a {
  * それでも収まらない極端な幅でのみ anywhere が効く（コンテナからの溢れを防ぐ最終防波堤）。
  * word-break:keep-all は CJK の意味のない字間での通常改行を避けるためのもの。
  */
+/*
+ * 常設の「見やすさ設定」ボタン (.a11y-menu__button) は position:fixed で右上に固定される。
+ * ステッパー廃止 (#422 inc5-c 増分 1) で見出しが上段へ上がり、そのボタンと重なるように
+ * なった（以前はステッパーがこの帯を占めていた。VRT が検出）。見出しの前にボタン 1 つ分の
+ * 余白を確保して衝突を防ぐ。
+ *
+ * 待機画面の見出しは `.kiosk-idle__head` の中にあるためこのセレクタから外れる。当初は
+ * 「ヒーロー独自のレイアウトなので対象外」と判断したが、**iPad 横置きでは同じ衝突が起きていた**
+ * （#617）。横置きは `grid-template-areas: 'avatar head'` で head が右カラム上段＝まさに
+ * ボタンの真下に来る。縦置き・大型横画面では見出しがはるか下（実測 titleTop≈628）へ来るため
+ * 衝突しない。よって横置きにだけ、同じ量の余白を同じ理由で入れる。
+ *
+ * 見出しを**横に**狭める案（`padding-inline-end`）は採らない。実測では日本語が 2 行・英語が
+ * 3 行に折れ、`.kiosk-idle__head` 側に入れると言語ボタン 4 つが折り返した。ヒーローの
+ * 可読性を落とさずに避けるには縦方向の退避しかない。
+ */
+.screen-anim > .screen__title {
+  margin-top: calc(var(--touch-target-min) + var(--space-sm));
+}
+
+.screen[data-kiosk-layout='ipad-landscape'] .kiosk-idle__head > .screen__title {
+  margin-top: calc(var(--touch-target-min) + var(--space-sm));
+}
+
 .screen__title {
-  font-size: clamp(1.9rem, 4.6vw, var(--font-xl));
+  /*
+   * 倍率は clamp の**外**へ掛ける (#869)。中の項を `var(--font-xl)`（倍率込み）にすると、
+   * 上限しか拡大せず、preferred の `4.6vw` が勝つ幅では 1 ピクセルも動かない
+   * （実測: 1194px 幅で 1× も 1.6× も 54.924px）。外へ掛ければどの項が勝っても倍率が乗る。
+   */
+  font-size: calc(clamp(1.9rem, 4.6vw, var(--font-size-xl-base)) * var(--a11y-font-scale));
   margin: 0;
   font-weight: 800;
   letter-spacing: -0.02em;
@@ -151,7 +316,8 @@ a {
 }
 
 .screen__lead {
-  font-size: clamp(1.15rem, 2.8vw, var(--font-lg));
+  /* 見出しと同じ理由で倍率を clamp の外へ (#869)。 */
+  font-size: calc(clamp(1.15rem, 2.8vw, var(--font-size-lg-base)) * var(--a11y-font-scale));
   color: var(--color-muted);
   margin: 0;
   line-height: 1.5;
@@ -197,9 +363,56 @@ a {
   transform: translateY(1px) scale(0.99);
 }
 
-.btn:disabled {
-  opacity: 0.5;
+/*
+ * 「押せない」を透明度だけで表さない (#778 AC3)。
+ *
+ * 受付端末は明るいロビーに置かれ、来訪者は初見で使う。`opacity: 0.5` だけのボタンは
+ * 「押せない」ではなく「ただのボタン」に見え、反応しないまま連打される。高コントラスト
+ * モードではさらに悪く、**透明度は意味を伝えずコントラストだけを削る**。
+ *
+ * 面をフラットに戻し（`.btn--primary` の gradient を打ち消す）、破線の枠と弱い文字色で
+ * 示す。`.btn:disabled` は `.btn--primary` より詳細度が高いので、後勝ちに頼らない。
+ */
+/*
+ * 🔴 **「処理中」は「押せない」ではない** (#792)。
+ *
+ * `disabled` は 2 つの意味に使われている——条件未達（氏名未入力）と、処理中（送信の往復）。
+ * 下の無効表現をそのまま処理中にも当てると、`checkout-confirm-yes` はネットワーク往復の
+ * 間だけシアンの塗り → フラット面 + 破線へ**一段階まるごと**変わり、来訪者は「押せなく
+ * なった／タップが失敗した」と読む。`.btn--danger` は送信中だけ危険色が完全に消える。
+ *
+ * よって `aria-busy="true"` のときは無効表現を当てない。**`disabled` 自体は外さない**ので
+ * 二重送信は従来どおりブラウザが防ぐ。見た目は有効のまま、カーソルだけ進行中を示す。
+ */
+.btn:disabled[aria-busy='true'] {
+  cursor: progress;
+}
+
+.btn:disabled:not([aria-busy='true']) {
+  background: var(--color-surface);
+  /* ショートハンドで既に gradient は消えるが、後日 `background-color` へ書き換えられた
+     ときに `.btn--primary` の gradient が戻るのを防ぐ（冗長だが意図的）。 */
+  background-image: none;
+  /*
+   * `.btn` の 1px を保つ。太らせると氏名を入力した瞬間にボタンの寸法が変わる。
+   * 色は `--color-border-strong`（rgba(255,255,255,.16)）だと面に対して 1.66:1 しかなく、
+   * iPad の実距離では破線が見えない。**見えない破線は色だけの表現に戻る**ので、
+   * `--color-muted` 寄りへ上げる（太さは変えずに色で稼ぐ）。
+   */
+  border-style: dashed;
+  border-color: color-mix(in srgb, var(--color-muted) 60%, transparent);
+  color: var(--color-muted);
+  box-shadow: none;
   cursor: not-allowed;
+}
+
+/*
+ * ghost は有効時が `background: transparent`。無効時に面を塗ると**有効なボタンより重く**
+ * 見え、#778 の原則「枠が強い＝重要」と逆になる（viewer ロールの管理画面では ghost が
+ * 全部塗りつぶしになり、書ける primary より目立つ）。面だけ透明へ戻す。
+ */
+.btn--ghost:disabled:not([aria-busy='true']) {
+  background: transparent;
 }
 
 .btn--primary {
@@ -284,105 +497,6 @@ a {
   transform: translateY(-1px) scale(0.995);
 }
 
-/* =========================================================================
- * 受付フロー進捗ステッパー (#121 / UX 研究準拠)
- * 「今どのステップか・あと何ステップか」を来訪者に示す（モダン受付の標準）。
- * ======================================================================= */
-.flow-stepper {
-  list-style: none;
-  margin: 0;
-  padding: 0;
-  display: flex;
-  align-items: flex-start;
-  justify-content: center;
-  width: 100%;
-  max-width: 720px;
-  align-self: center;
-}
-
-.flow-stepper__item {
-  position: relative;
-  flex: 1 1 0;
-  min-width: 0;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: var(--space-sm);
-  text-align: center;
-}
-
-/* ステップ間の連結線（各セルの左右に半分ずつ伸ばす）。 */
-.flow-stepper__item::before,
-.flow-stepper__item::after {
-  content: '';
-  position: absolute;
-  top: 21px;
-  height: 2px;
-  width: 50%;
-  background: var(--color-border-strong);
-}
-
-.flow-stepper__item::before {
-  left: 0;
-}
-
-.flow-stepper__item::after {
-  right: 0;
-}
-
-.flow-stepper__item:first-child::before,
-.flow-stepper__item:last-child::after {
-  display: none;
-}
-
-/* 通過済み区間はアクセントで塗る。 */
-.flow-stepper__item[data-status='done']::after,
-.flow-stepper__item[data-status='current']::before {
-  background: var(--color-accent);
-}
-
-.flow-stepper__dot {
-  position: relative;
-  z-index: 1;
-  width: 44px;
-  height: 44px;
-  border-radius: var(--radius-pill);
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  font-size: var(--font-body);
-  font-weight: 700;
-  background: var(--color-surface);
-  color: var(--color-muted);
-  border: 2px solid var(--color-border-strong);
-  transition:
-    background var(--dur-base) var(--ease-out),
-    border-color var(--dur-base) var(--ease-out),
-    box-shadow var(--dur-base) var(--ease-out),
-    color var(--dur-base) var(--ease-out);
-}
-
-.flow-stepper__label {
-  font-size: 1rem;
-  font-weight: 600;
-  color: var(--color-muted);
-}
-
-.flow-stepper__item[data-status='done'] .flow-stepper__dot {
-  background: var(--color-accent);
-  border-color: var(--color-accent);
-  color: var(--color-accent-ink);
-}
-
-.flow-stepper__item[data-status='current'] .flow-stepper__dot {
-  border-color: var(--color-accent);
-  color: var(--color-text);
-  box-shadow: var(--shadow-glow);
-}
-
-.flow-stepper__item[data-status='current'] .flow-stepper__label {
-  color: var(--color-text);
-}
 
 /* =========================================================================
  * 無操作リセットのカウントダウン警告オーバーレイ (#125 UX, "don't surprise-expire")
@@ -390,7 +504,7 @@ a {
 .inactivity-overlay {
   position: fixed;
   inset: 0;
-  z-index: 60;
+  z-index: var(--z-inactivity);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -448,6 +562,7 @@ a {
   animation: screen-enter var(--dur-base) var(--ease-out);
 }
 
+
 @keyframes screen-enter {
   from {
     opacity: 0;
@@ -457,6 +572,23 @@ a {
     opacity: 1;
     transform: none;
   }
+}
+
+/*
+ * 目に見えない live region (#776)。見た目に影響を与えず、内容が変わったときだけ
+ * 支援技術へ伝える。`display: none` や `visibility: hidden` では読み上げ対象から
+ * 外れるので、面積を潰す古典的な手法を使う。
+ */
+.a11y-live {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+  border: 0;
 }
 
 .card__sub {
@@ -474,6 +606,89 @@ a {
   color: var(--color-accent);
   font-size: var(--font-body);
   font-weight: 700;
+}
+
+/*
+ * 相手選択画面の「探し方」セグメント (#776)。担当者グリッドと部署グリッドを同時に主表示
+ * しないための切替。選択中は面と文字色で示し、色相だけに寄せない（`aria-selected` が
+ * スクリーンリーダ向けの正本）。
+ */
+.target-tabs {
+  display: flex;
+  gap: var(--space-sm);
+}
+
+/*
+  タブは 1 枚ずつ独立したピルにする。まとめて 1 個の枠へ入れると、選択されていない側が
+  「枠の中のラベル」に見えて押せると気づけない。部署グリッドの常時表示を外した結果、
+  **部署へ至る唯一の入口**がこのタブになったので、そこで気づけないと行き止まりになる (#776)。
+*/
+.target-tabs__tab {
+  flex: 1 1 0;
+  min-height: var(--touch-target-min);
+  padding: var(--space-sm) var(--space-lg);
+  border: 2px solid var(--color-border-strong);
+  border-radius: var(--radius-pill);
+  background: var(--color-surface);
+  color: var(--color-text);
+  font-size: var(--font-lg);
+  font-weight: 700;
+  cursor: pointer;
+  transition:
+    background var(--dur-fast) var(--ease-out),
+    border-color var(--dur-fast) var(--ease-out);
+}
+
+/* 選択中はアクセント面で塗る。文字色は accent 用のインクを使う（accent はテナントで
+   差し替わるため、--color-text のまま置くとテーマ次第で読めなくなる）。 */
+.target-tabs__tab[aria-selected='true'] {
+  background: var(--color-accent);
+  border-color: var(--color-accent);
+  color: var(--color-accent-ink);
+}
+
+/* 音声検索は検索欄に付随する secondary action。狭いときは下へ落として重ならないようにする。 */
+.target-search {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: stretch;
+  gap: var(--space-sm);
+}
+
+.target-search__input {
+  flex: 1 1 260px;
+  min-width: 0;
+}
+
+.target-search__voice {
+  display: flex;
+  align-items: stretch;
+}
+
+/*
+ * 不在/受付不可の担当者カード (#776)。旧実装は `opacity: 0.55` だけで状態を表しており、
+ * 低コントラスト環境では「押せるのに反応しないカード」に見えた。面と破線境界で
+ * 「押せない」ことを示し、意味そのものはバッジと文言が担う（透明度に依存しない）。
+ */
+.card--unavailable {
+  background: var(--color-surface-faint);
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+  border-style: dashed;
+  border-color: var(--color-border-strong);
+  box-shadow: none;
+  cursor: not-allowed;
+}
+
+.card--unavailable:hover {
+  border-color: var(--color-border-strong);
+  transform: none;
+  box-shadow: none;
+}
+
+.card__badge--unavailable {
+  background: color-mix(in srgb, var(--color-muted) 22%, transparent);
+  color: var(--color-text);
 }
 
 .field {
@@ -518,17 +733,19 @@ a {
 }
 
 .notice--success {
-  background: rgba(34, 197, 94, 0.15);
+  /* 🔴 生 rgba は HC モードのパレット上書き（CSS 変数 13 個）に届かない (#907 / 課題 32)。
+     しかも焼き込まれていた緑 `#22c55e` は `--color-success`(`#34d399`) と別物だった。 */
+  background: color-mix(in srgb, var(--color-success) 15%, transparent);
   border: 2px solid var(--color-success);
 }
 
 .notice--danger {
-  background: rgba(248, 113, 113, 0.15);
+  background: color-mix(in srgb, var(--color-danger) 15%, transparent);
   border: 2px solid var(--color-danger);
 }
 
 .notice--warning {
-  background: rgba(251, 191, 36, 0.15);
+  background: color-mix(in srgb, var(--color-warning) 15%, transparent);
   border: 2px solid var(--color-warning);
 }
 
@@ -618,7 +835,7 @@ a {
   bottom: var(--space-md);
   width: 200px;
   max-width: 26vw;
-  z-index: 5;
+  z-index: var(--z-companion);
   pointer-events: none;
   animation: kiosk-rise var(--dur-slow) var(--ease-out) both;
 }
@@ -669,7 +886,7 @@ a {
   align-items: center;
   justify-content: center;
   padding: var(--space-lg);
-  z-index: 2; /* 操作カードより背面。pointer-events:none なのでタッチは貫通する。 */
+  z-index: var(--z-behind); /* 操作カードより背面。pointer-events:none なのでタッチは貫通する。 */
 }
 
 /* 会話継続レールでは字幕を常時表示する（今の問いかけが音声無しでも読める）。 */
@@ -745,17 +962,17 @@ a {
 }
 
 .result-panel--success .result-panel__icon {
-  background: rgba(52, 211, 153, 0.16);
+  background: color-mix(in srgb, var(--color-success) 16%, transparent);
   color: var(--color-success);
 }
 
 .result-panel--danger .result-panel__icon {
-  background: rgba(248, 113, 113, 0.16);
+  background: color-mix(in srgb, var(--color-danger) 16%, transparent);
   color: var(--color-danger);
 }
 
 .result-panel--warning .result-panel__icon {
-  background: rgba(251, 191, 36, 0.16);
+  background: color-mix(in srgb, var(--color-warning) 16%, transparent);
   color: var(--color-warning);
 }
 
@@ -1073,6 +1290,51 @@ a {
 .kiosk-quick-actions {
   width: 100%;
   max-width: 1100px;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-sm);
+}
+
+/*
+ * 「ほかのご用件」開示 (#620)。
+ *
+ * 受付端末はスクロールしない前提なのに、入口カード 5 枚を全部並べると
+ * `.kiosk-quick-actions` だけで 1152px（コンテンツ全高の 69%）を占め、全レイアウトで
+ * viewport を超えていた。主要 2 枚を大きいまま残し、残りをこの下へ畳む。
+ *
+ * リンクではなくボタンにして `aria-expanded` / `aria-controls` を持たせる。畳んだ中身が
+ * 「無い」ではなく「隠れている」ことを支援技術に伝えるため。タッチ領域は他の CTA と同じ
+ * 下限（--touch-target-min）を割らない。
+ */
+.kiosk-quick-actions__more {
+  width: 100%;
+  min-height: var(--touch-target-min);
+  padding: var(--space-sm) var(--space-md);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  background: var(--color-glass);
+  color: var(--color-text);
+  /*
+   * `var(--font-md)` と書かれていたが **そのトークンは存在しない** (#869)。
+   * 未定義の参照は invalid at computed-value time で宣言ごと捨てられ、この要素だけ
+   * 静かに継承値へ落ちていた —— つまり QR / 配送 / その他への唯一の入口が、
+   * 「大きな文字」モードでも拡大していなかった。型階層に md は無いので `--font-body` を使う。
+   * 同じ穴は下の `:1516` 付近で `--font-sm` として一度記録されている。**二度目だった。**
+   */
+  font-size: var(--font-body);
+  font-weight: 700;
+  cursor: pointer;
+  transition:
+    border-color var(--dur-base) var(--ease-out),
+    background var(--dur-base) var(--ease-out);
+}
+
+.kiosk-quick-actions__more:hover {
+  border-color: var(--color-accent);
+}
+
+.kiosk-quick-actions__panel[hidden] {
+  display: none;
 }
 
 /* CTA カードは中央寄せ・主目的が読み取りやすい配置にする（通常カードより縦を強調）。
@@ -1085,16 +1347,18 @@ a {
   text-align: center;
   /* L1: 2カラム時に「担当者を呼ぶ」等の 5–6 文字見出しが 1 行に収まる大きさにし、
      「呼／ぶ」のような語中改行を防ぐ。広い画面では --font-xl まで拡大（#119 スキャン性）。 */
-  font-size: clamp(2rem, 3.6vw, var(--font-xl));
+  /* 倍率を clamp の外へ (#869)。 */
+  font-size: calc(clamp(2rem, 3.6vw, var(--font-size-xl-base)) * var(--a11y-font-scale));
   /* CJK 連なりを語として扱い、語中での折り返しを避ける（見出し・説明文に継承される）。 */
   word-break: keep-all;
   background:
-    linear-gradient(180deg, rgba(56, 189, 248, 0.06), transparent 40%),
+    linear-gradient(180deg, color-mix(in srgb, var(--color-accent) 6%, transparent), transparent 40%),
     var(--color-glass);
 }
 
-/* L2: catch-all（その他のご用件）は全幅にし、5 枚で最終行が片寄る不揃いを解消する。 */
-.kiosk-quick-actions .card[data-intent='other'] {
+/* L2: catch-all（その他のご用件）は全幅にし、最終行が片寄る不揃いを解消する。
+   #620 以降 `other` は開示パネル側に居るので、パネル内のグリッドに効かせる。 */
+.kiosk-quick-actions__panel .card[data-intent='other'] {
   grid-column: 1 / -1;
 }
 
@@ -1174,7 +1438,7 @@ a {
    */
   position: sticky;
   bottom: 0;
-  z-index: 30;
+  z-index: var(--z-escape-bar);
   background: var(--color-bg);
   padding-bottom: var(--space-sm);
 }
@@ -1206,9 +1470,53 @@ a {
   --font-xl-max: 3.25rem;
 }
 
+/*
+ * 待機画面だけ画面外周の余白と段間を詰める (#620)。
+ *
+ * `.screen` は上下 var(--space-xl) ずつ＝80px を外周に使い、段間にも --space-lg(24px) を置く。
+ * 他の画面は要素が少ないので効いていなかったが、待機画面はアバター・見出し・言語切替・
+ * 入口カード・開示・逃げ道バーが縦に積まれるため、この外周だけで予算の 13% を食っていた。
+ *
+ * **絞り込みは「待機画面の中身を持っているか」で行う。** `data-kiosk-state='idle'` で絞ると
+ * QR 受付導入画面まで巻き込む（あの画面は別シェルへ切り替わるが state は idle のまま）。
+ * レイアウトで絞ったときに用件選択まで縮んだのと同じ失敗なので、**実体で絞る**。
+ */
+.screen:has(.kiosk-idle) {
+  padding-block: var(--space-md);
+  gap: var(--space-md);
+}
+
 /* iPad 縦置き（既定）: 上アバター → 中央案内 → 下に大きな操作。.kiosk-idle の縦積みを踏襲。 */
 .screen[data-kiosk-layout='ipad-portrait'] .kiosk-idle {
   justify-content: flex-start;
+}
+
+/*
+ * 縦置き・大型横画面のアバターを抑える (#620)。
+ *
+ * 横置きは `grid-template-areas: 'avatar head' / 'avatar actions'` でアバターが**横に**並ぶため
+ * 高さを決めていない（実測 511px に対し右カラムが 647px）。一方、縦置き・大型は縦積みなので
+ * **アバターが総高を支配する**（実測 564px。head 201 + actions 283 を足すと予算 889 を超える）。
+ * カードをゼロにしても収まらないので、ここだけはアバター側を抑えるしかない。
+ *
+ * 高さではなく `max-width` で抑えるのは、アバターの**高さは中身のアスペクト比が決めている**ため
+ * （max-height だけ掛けると縮まずに切れる）。
+ *
+ * **絞るのは視覚部分だけで、字幕は絞らない。** ガイドごと `max-width` を掛けると、同じ中に
+ * 居る字幕（#123 の「AI受付です」）まで狭まって 3 行に折れる。視覚の上限は
+ * `AvatarGuide` が `--kiosk-avatar-visual-max` で受けるようにしてある
+ * （インラインスタイルは CSS より優先されるため、変数で渡さないと外から絞れない）。
+ */
+.screen[data-kiosk-layout='ipad-portrait'] .kiosk-idle__avatar,
+.screen[data-kiosk-layout='large-display'] .kiosk-idle__avatar {
+  --kiosk-avatar-visual-max: 200px;
+}
+
+/* 視覚を変数で独立させたので、ガイドを広げてもアバターは大きくならない。字幕が
+   「…お選びくださ／い」と 1 文字だけ折れるのを防ぐ幅を与える（字幕自身の上限は 480px）。 */
+.screen[data-kiosk-layout='ipad-portrait'] .kiosk-idle__avatar .kiosk-avatar-guide,
+.screen[data-kiosk-layout='large-display'] .kiosk-idle__avatar .kiosk-avatar-guide {
+  max-width: 480px;
 }
 
 /* iPad 横置き: 左アバター / 右に案内文+操作カードを同時に見せる。 */
@@ -1260,9 +1568,57 @@ a {
  * 列数を明示的に 2×2 + 全幅（other は既存の grid-column:1/-1）へ固定し、カード幅を
  * 常に十分（コンテナの約半分）確保する。
  */
-.screen[data-kiosk-layout='ipad-landscape'] .kiosk-quick-actions,
-.screen[data-kiosk-layout='large-display'] .kiosk-quick-actions {
+.screen[data-kiosk-layout='ipad-landscape'] .kiosk-quick-actions__primary,
+.screen[data-kiosk-layout='ipad-landscape'] .kiosk-quick-actions__panel,
+.screen[data-kiosk-layout='large-display'] .kiosk-quick-actions__primary,
+.screen[data-kiosk-layout='large-display'] .kiosk-quick-actions__panel {
   grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+/*
+ * 縦の予算に収める (#620)。
+ *
+ * 横置き 810px の内訳は `810 − 40(上pad) − 40(下pad) − 24(gap) − 87(逃げ道バー) = 619px` が
+ * `.screen-anim` の上限。右カラムは head(302) + gap(24) + actions なので **actions は 293px**
+ * しか使えない。既定の CTA カードは 232〜308px/枚あるため、そのままでは 1 枚も入らない。
+ *
+ * カードの縦を決めているのは `min-height:168px` ではなく**中身**（font-size: clamp の 40px、
+ * 上下 padding 24px、説明文）だったので、そこを詰める。タップ領域は
+ * `--touch-target-min` を下限として割らない。
+ */
+/* **待機画面の入口カードだけ**に効かせる。`.card--cta` は用件選択・相手選択でも使われており、
+   レイアウト指定だけで絞ると、収めたい画面以外まで一緒に縮んで VRT が落ちる（実際に踏んだ）。
+
+   横置きだけでなく縦置き・大型横画面でも超過していた（実測 portrait 1038 / large-display 1049）
+   ため、待機の入口カードは全レイアウトで詰める。`large-display` は下の
+   `min-height: clamp(160px, 18vh, 260px)` を持つので、後段で上書きする。 */
+.kiosk-quick-actions .card--cta {
+  min-height: var(--touch-target-min);
+  padding-block: 8px;
+  /*
+   * `.card--cta` の上書きなので、ここも倍率を掛けないと詳細度で勝って拡大が消える (#869)。
+   */
+  font-size: calc(clamp(1.5rem, 2.2vw, 2rem) * var(--a11y-font-scale));
+  gap: 4px;
+}
+
+.kiosk-quick-actions .card--cta .card__icon {
+  margin-bottom: 0;
+  /* 既定 48px。待機の入口は 2 枚に絞ったぶん 1 枚が縦に効くので、アイコンも詰める。 */
+  height: 32px;
+}
+
+/*
+ * 説明文がカードの縦を最も食っている (#620 実測: 横置きで 114px = 4 行)。横置きは 2 列で
+ * 1 枚が細くなるため、同じ文でも縦置きより行数が増える。文言は削らず、字だけ詰める
+ * （何の入口かを説明する情報は残す）。
+ */
+.kiosk-quick-actions .card--cta .card__sub {
+  /* `.card--cta` の font-size(30px) を継承させない。**明示しないと継承で拡大する**
+     （`var(--font-sm)` のような未定義トークンを書くと無効値になり継承が効く。実際に踏んだ）。
+     受付端末は視認距離があるので、説明文は既定の --font-body より小さくしない。 */
+  font-size: calc(1.125rem * var(--a11y-font-scale));
+  line-height: 1.3;
 }
 
 /* 4K/大型横画面: 主要操作を画面全体に散らさず、触れる範囲（中央寄せ・幅上限）へ集約する。 */
@@ -1278,8 +1634,17 @@ a {
 
 /* 大型画面では CTA を読みやすく保ちつつ上限を設け、ボタンが過度に巨大化しないようにする。 */
 .screen[data-kiosk-layout='large-display'] .card--cta {
-  font-size: clamp(var(--font-lg), 2.5vw, var(--font-xl-max));
+  /* 倍率を clamp の外へ (#869)。中は倍率を含まない基準値で書く。 */
+  font-size: calc(clamp(var(--font-size-lg-base), 2.5vw, var(--font-xl-max)) * var(--a11y-font-scale));
   min-height: clamp(160px, 18vh, 260px);
+}
+
+/* 待機の入口カードは上の大型指定より詰める (#620)。上のセレクタの方が詳細度が高いので明示で戻す。
+   用件選択など他画面のカードは大型指定のまま（大きく出したいのはそちら）。 */
+.screen[data-kiosk-layout='large-display'] .kiosk-quick-actions .card--cta {
+  /* `.card--cta` の上書き。上と同じ理由で倍率を掛ける (#869)。 */
+  font-size: calc(clamp(1.5rem, 1.6vw, 2.25rem) * var(--a11y-font-scale));
+  min-height: var(--touch-target-min);
 }
 
 .screen[data-kiosk-layout='large-display'] .btn {
@@ -1329,6 +1694,9 @@ a {
   display: flex;
   align-items: center;
   justify-content: space-between;
+  /* 対象テナント + 対象拠点 (#423) が並ぶので、狭い幅では折り返す（横スクロールを出さない）。 */
+  flex-wrap: wrap;
+  gap: var(--space-sm);
   padding: var(--space-md) var(--space-lg);
   border-bottom: 1px solid rgba(255, 255, 255, 0.1);
 }
@@ -1375,7 +1743,7 @@ a {
   .admin-shell__sidebar {
     position: fixed;
     inset: 0 auto 0 0;
-    z-index: 50;
+    z-index: var(--z-sidebar);
     transform: translateX(-100%);
     transition: transform 200ms ease;
     overflow-y: auto;
@@ -1389,7 +1757,7 @@ a {
   .admin-shell__scrim {
     position: fixed;
     inset: 0;
-    z-index: 40;
+    z-index: var(--z-scrim);
     border: 0;
     padding: 0;
     background: rgba(0, 0, 0, 0.5);
@@ -1452,13 +1820,26 @@ a {
  * 見た目」だけを定義すればよい。
  * ======================================================================= */
 
-/* ---- 大きな文字（fontScale） ---- */
+/* ---- 大きな文字（fontScale） ----
+ * 🔴 **倍率だけを上書きしても寸法は動かない** (#869)。`:root` の `--font-body` 等は
+ * そこで既に `calc(1.25rem * 1)` へ置換済みで、子孫での倍率変更では再計算されない。
+ * 派生トークンを**この要素で**同じ式のまま宣言し直すことで、`var(--a11y-font-scale)` が
+ * ここでの値（1.3 / 1.6）で解決される。
+ * 3 つを書き忘れると「属性は付くが何も拡大しない」に戻るので、
+ * `tests/config/css-custom-property-definitions.test.ts` が不変条件として縛る。
+ */
 .screen[data-a11y-font-scale='1.3'] {
   --a11y-font-scale: 1.3;
+  --font-body: calc(var(--font-size-body-base) * var(--a11y-font-scale));
+  --font-lg: calc(var(--font-size-lg-base) * var(--a11y-font-scale));
+  --font-xl: calc(var(--font-size-xl-base) * var(--a11y-font-scale));
 }
 
 .screen[data-a11y-font-scale='1.6'] {
   --a11y-font-scale: 1.6;
+  --font-body: calc(var(--font-size-body-base) * var(--a11y-font-scale));
+  --font-lg: calc(var(--font-size-lg-base) * var(--a11y-font-scale));
+  --font-xl: calc(var(--font-size-xl-base) * var(--a11y-font-scale));
 }
 
 /* ---- ハイコントラスト ----
@@ -1485,6 +1866,73 @@ a {
   background: var(--color-bg);
 }
 
+/* ---- OS 設定への応答 (#907 / 課題 32) ----
+ *
+ * それまで `prefers-contrast` / `forced-colors` の出現数は src 全体で 0 だった。
+ * 高コントラストの手段は `AccessibilityMenu`（`KioskFlow` からしか mount されない）だけで、
+ * **管理画面と platform にはコントラストを上げる手段が 1 つも無かった**。
+ *
+ * 🔴 **パレットの本体は下の `[data-a11y-contrast='high']` と同じ値でなければならない。**
+ * CSS では宣言ブロックを共有できないので二重に書くしかないが、片方だけ更新する事故は
+ * `tests/config/contrast-palette-parity.test.ts` が止める（「ある次元で解いた対策を
+ * 別の次元へ写していない」型を機械で防ぐ）。
+ */
+@media (prefers-contrast: more) {
+  :root {
+    --color-bg: #000000;
+    --color-bg-2: #000000;
+    --color-surface: #000000;
+    --color-surface-2: #0a0a0a;
+    --color-glass: #000000;
+    --color-text: #ffffff;
+    --color-muted: #e6e6e6;
+    --color-border: #ffffff;
+    --color-border-strong: #ffffff;
+    --color-success: #00e676;
+    --color-danger: #ff6b6b;
+    --color-warning: #ffd400;
+    --color-accent-ink: #000000;
+  }
+}
+
+/* ---- OS のハイコントラスト（強制配色）----
+ *
+ * ここでは自前のパレットを当てない。**OS が選んだ色に明け渡す**のが正しい振る舞いで、
+ * 自前の色を重ねると利用者が OS 側で調整した意味が消える。やることは 2 つだけ:
+ * 装飾の面を落として system color を見せることと、**操作できるものの輪郭を残す**こと。
+ * `forced-colors` は背景画像を描かないので、面だけで押せると示している要素は
+ * 輪郭が無いと消える。
+ */
+@media (forced-colors: active) {
+  .btn,
+  button,
+  [role='button'] {
+    border: 1px solid ButtonText;
+  }
+
+  .card,
+  .notice,
+  .result-panel,
+  .kiosk-escape-bar {
+    border: 1px solid CanvasText;
+    background: Canvas;
+  }
+
+  /* 面の濃淡で状態を示しているものは、強制配色では色が潰れる。輪郭で残す。 */
+  .notice--success,
+  .notice--danger,
+  .notice--warning,
+  .result-panel__icon {
+    background: Canvas;
+    border: 1px solid CanvasText;
+  }
+
+  :focus-visible {
+    outline: 3px solid Highlight;
+    outline-offset: 2px;
+  }
+}
+
 /* ---- 低位置レイアウト ----
  * 主要操作を画面下半分へ寄せる（車椅子・低身長の利用者のリーチ対応）。`.screen__body` は
  * ほぼ全画面（待機・選択・入力・確認・結果）で使われる主要コンテンツ領域なので、ここを
@@ -1508,7 +1956,7 @@ a {
   position: fixed;
   top: var(--space-md);
   right: var(--space-md);
-  z-index: 45;
+  z-index: var(--z-a11y-button);
   display: inline-flex;
   align-items: center;
   gap: var(--space-sm);
@@ -1531,7 +1979,7 @@ a {
 .a11y-menu__overlay {
   position: fixed;
   inset: 0;
-  z-index: 70;
+  z-index: var(--z-a11y-overlay);
   display: flex;
   align-items: center;
   justify-content: center;

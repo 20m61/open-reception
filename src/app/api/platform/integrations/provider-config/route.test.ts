@@ -61,9 +61,9 @@ function put(body: unknown) {
   );
 }
 
-beforeEach(() => {
+beforeEach(async () => {
   vi.clearAllMocks();
-  __resetProviderConfigStore();
+  await __resetProviderConfigStore();
   __resetTenantSecretStore();
   resolveAdminActor.mockResolvedValue(developer());
   getTenant.mockResolvedValue({ ...TENANT });
@@ -97,7 +97,7 @@ describe('認可 (#405 Inc1)', () => {
 describe('GET — read (#405 Inc1)', () => {
   it('未設定なら config:null / presence missing', async () => {
     const body = await (await GET()).json();
-    expect(body).toEqual({ config: null, secretPresence: 'missing' });
+    expect(body).toEqual({ config: null, secretPresence: 'missing', warnings: [] });
   });
 
   it('設定済みなら非秘密設定 + presence を返し、updatedBy を出さない (AC1)', async () => {
@@ -140,5 +140,72 @@ describe('PUT — 非秘密設定 upsert (#405 Inc1)', () => {
 
   it('不正な provider は 400', async () => {
     expect((await put({ provider: 'twilio' })).status).toBe(400);
+  });
+});
+
+/**
+ * secret を入れる前に「有効」にできてしまう問題への警告 (#763)。
+ *
+ * 2026-08-21 のユーザー判断は**「警告して保存は通す」**。「設定を先に保存 →
+ * secret を後で入れる」という二段階の運用導線を壊さないため、拒否はしない。
+ */
+describe('取り次げない設定を警告する (#763)', () => {
+  it('🔴 secret 未設定で実発信を意図する設定を保存すると警告が返る', async () => {
+    const res = await put({
+      provider: 'vonage',
+      enabled: true,
+      applicationId: 'TEST-app',
+      fromNumber: '+815000000000',
+    });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { warnings: string[] };
+    expect(body.warnings).toContain('real_dialing_without_secret');
+  });
+
+  /** 🔴 **保存は通す。** 拒否すると二段階の運用導線が壊れる。 */
+  it('🔴 警告が出ても保存は成立する', async () => {
+    const res = await put({
+      provider: 'vonage',
+      enabled: true,
+      applicationId: 'TEST-app',
+      fromNumber: '+815000000000',
+    });
+    expect(res.status).toBe(200);
+    expect(await getTenantProviderConfig('internal')).not.toBeNull();
+  });
+
+  /**
+   * 🔴 **読み取りにも載せる。** 保存直後だけ出す形にすると、画面を開き直した運用者には
+   * 「未接続」としか見えず、受付が 503 になっている理由に辿り着けない。
+   */
+  it('🔴 読み取り応答にも同じ警告が載る', async () => {
+    await put({
+      provider: 'vonage',
+      enabled: true,
+      applicationId: 'TEST-app',
+      fromNumber: '+815000000000',
+    });
+    const body = (await (await GET()).json()) as { warnings: string[] };
+    expect(body.warnings).toContain('real_dialing_without_secret');
+  });
+
+  /** 意図が無い設定（Video 専用・mock）を警告で埋めない。 */
+  it('Video 専用（発信元番号なし）では警告しない', async () => {
+    const res = await put({ provider: 'vonage', enabled: true, applicationId: 'TEST-app' });
+    const body = (await res.json()) as { warnings: string[] };
+    expect(body.warnings).toEqual([]);
+  });
+
+  it('🔴 警告に設定値や secret を載せない', async () => {
+    const res = await put({
+      provider: 'vonage',
+      enabled: true,
+      applicationId: 'TEST-app',
+      fromNumber: '+81900001111',
+    });
+    const raw = await res.text();
+    expect(JSON.parse(raw).warnings).toContain('real_dialing_without_secret');
+    // 応答全体には fromNumber が（射影として）載るが、**警告の中**には載らない。
+    expect(JSON.stringify(JSON.parse(raw).warnings)).not.toContain('81900001111');
   });
 });

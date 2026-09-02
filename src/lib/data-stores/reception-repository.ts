@@ -22,6 +22,37 @@ export interface ReceptionSessionRepository {
   get(id: string): Promise<ReceptionSession | undefined>;
   /** 作成または上書き（read-modify-write は呼び出し側の責務）。 */
   put(session: ReceptionSession): Promise<void>;
+  /**
+   * 呼び出し中の受付の相関キーだけを **atomic に**差し替える (#646)。
+   *
+   * 🔴 **read-modify-write の `put` では終端済みの受付を蘇生させる。** 取次が次の手を
+   * 撃っている最中に `/status` が `markTimeout` を書くと、その直後の全体置換が
+   * `state` / `callOutcome` / `completedAt` を `'calling'` へ**巻き戻す**。受付履歴は
+   * 採番に重複排除が無いので、後で再度確定すると同じ受付の履歴・監査が 2 件残る。
+   *
+   * `'calling'` のときだけ差し替え、そうでなければ `false`（何も書かない）。
+   */
+  setProviderCallIdIfCalling(
+    id: string,
+    providerCallId: string,
+    updatedAt: string,
+  ): Promise<boolean>;
+  /**
+   * 現在の状態が `expectedState` のときだけ、**名指しした項目だけ**を更新する（atomic） (#743)。
+   *
+   * 🔴 **終端の書き込みを全体置換でやらない。** `markTimeout` などは受付を読んでから書くが、
+   * その間に取次が 2 手目へ進むと（`setProviderCallIdIfCalling`）、置換が
+   * `providerCallId` を **1 手目へ巻き戻す**。受付は terminal なので蘇生はしないが、
+   * **2 手目は鳴り続け、`/status` は 1 手目の相関を読む**（結果を誰も回収しない）。
+   *
+   * 条件を外した側は `false` を受け、**結果を二重に記録しない**（採番に重複排除が無いので、
+   * 二重に確定すると同じ受付の履歴・監査が 2 件残る）。
+   */
+  applyIfState(
+    id: string,
+    changes: Partial<ReceptionSession>,
+    expectedState: ReceptionSession['state'],
+  ): Promise<boolean>;
   /** テスト用: 初期状態へ戻す（memory backend のみ実効）。 */
   reset(): Promise<void>;
 }
@@ -42,6 +73,22 @@ export class DataBackedReceptionSessionRepository implements ReceptionSessionRep
 
   async put(session: ReceptionSession): Promise<void> {
     await this.col().put(session);
+  }
+
+  async applyIfState(
+    id: string,
+    changes: Partial<ReceptionSession>,
+    expectedState: ReceptionSession['state'],
+  ): Promise<boolean> {
+    return this.col().updateIf(id, changes, { state: expectedState });
+  }
+
+  async setProviderCallIdIfCalling(
+    id: string,
+    providerCallId: string,
+    updatedAt: string,
+  ): Promise<boolean> {
+    return this.col().updateIf(id, { providerCallId, updatedAt }, { state: 'calling' });
   }
 
   async reset(): Promise<void> {

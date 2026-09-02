@@ -1,0 +1,27 @@
+# ADR インデックス
+
+アーキテクチャ決定記録（Architecture Decision Record）の一覧。**Issue / PR からここを参照して
+決定の根拠を辿れるようにする**（#425 台帳の「ADR index」）。
+
+## 一覧
+
+| ADR | 主題 | ステータス | 関連 Issue |
+| --- | --- | --- | --- |
+| [0001](0001-voice-transport.md) | iPad 音声ストリーム Transport（WSS + AudioWorklet, PCM 16kHz/16bit, 20ms チャンク） | 承認（MVP・実測により見直す前提） | #369 |
+| [0002](0002-voice-tts-cache-boundaries.md) | TTS 音声キャッシュの境界（S3 → CloudFront → Service Worker → IndexedDB） | 承認（設計のみ。実配線は #65） | #371 |
+| [0003](0003-realtime-runtime-ec2-phase0.md) | リアルタイム会話 EC2 基盤 Phase 0（lifecycle・endpoint・fallback・instance type） | 承認（設計 + skeleton のみ。**deploy 未実施**） | #366 |
+| [0004](0004-kiosk-experience-migration-flag.md) | 新旧 KioskFlow の切替方式（移行フラグの粒度・解決順・自動フォールバック・撤去条件） | 承認（構成取得の切替まで実装済み） | #422 |
+| [0005](0005-demo-publication-and-experience-version.md) | デモ公開モデルと受付体験版モデルの統合方針（一本化の向き・デモ固有関心の置き場・移行順） | **提案**（移行の実施はユーザー承認待ち） | #363 / #420 |
+| [0006](0006-experience-state-model-gaps.md) | 体験設計の状態モデルに残った 2 つの未定義（`privacy_blocked` の定義・QR スキャン＝第 3 の入力手段） | 承認（正本・対応表・実装へ反映済み。挙動は不変） | #422 / #98 |
+| [0007](0007-voice-touch-confirmation-boundary.md) | 音声とタッチの「確認」を統合しない（差分 C の却下）。ただし等価性ギャップは別の理由で実在＝差分 C' | 承認（統合の却下まで。**差分 C' の解消は要ユーザー確認**） | #422 / #361 |
+| [0008](0008-qr-checkin-state-machine.md) | QR 受付の状態機械を今は統合しない（並存コスト＝修正が伝播しないこと。実害 1 件を是正） | 承認（統合の見送りまで。**統合の是非は要ユーザー確認**） | #98 / #422 |
+| [0009](0009-claude-cloud-aws-dev-deploy-boundary.md) | Claude Cloud から AWS dev への安全境界（qualifier 分離・スタック ARN 主境界・短命 STS 窓・IAM 記録のみ） | 承認（設計 + スクリプト/ポリシーのみ。**IAM 未適用・デプロイ未実施**） | #680 |
+
+## 書くとき
+
+- ファイル名は `NNNN-<kebab-topic>.md`（連番は採番済みの次番号）。
+- 先頭に「ステータス」「文脈」「決定」「代替案」「影響（コスト・運用・撤回条件）」を置く
+  （既存 3 件の構成に合わせる）。
+- **ADR を起こす基準**: 覆すのに実装のやり直しが要る決定、コスト構造を変える決定、
+  セキュリティ境界を動かす決定。1 増分で閉じる実装判断は ADR にせず module doc に書く。
+- 追加したら本書の表と `docs/product-integration-plan.md` §8 の「ADR が要る決定」を更新する。

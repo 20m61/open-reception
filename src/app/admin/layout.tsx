@@ -1,3 +1,4 @@
+import { Suspense } from 'react';
 import { headers } from 'next/headers';
 import { redirect } from 'next/navigation';
 import type { Metadata } from 'next';
@@ -5,9 +6,11 @@ import type { TenantRole } from '@/domain/tenant/types';
 import type { Actor } from '@/domain/tenant/authorization';
 import { AdminShell } from '@/components/admin/AdminShell';
 import { TenantSwitcher } from '@/components/admin/TenantSwitcher';
-import { ADMIN_NAV, isActivePath } from '@/components/admin/navigation';
+import { SiteContextChip } from '@/components/admin/SiteContextChip';
+import { ADMIN_NAV, UNLISTED_ADMIN_TITLES, isActivePath } from '@/components/admin/navigation';
 import { resolveAdminActor } from '@/lib/auth/actor';
 import { resolveActiveTenant } from '@/lib/tenant/active-tenant';
+import { resolveDefaultScope } from '@/lib/tenant/default-scope';
 import { canEnterArea } from '@/domain/auth/route-guard';
 import { PATHNAME_HEADER } from '@/proxy';
 
@@ -37,7 +40,9 @@ function rolesFromActor(actor: Actor): readonly TenantRole[] {
  * 「受付履歴 | open-reception」のように画面ごとに区別できるタイトルになる。
  */
 const ADMIN_TITLE_ENTRIES: readonly { href: string; label: string }[] = [
-  { href: '/admin/login', label: 'ログイン' },
+  // ナビから外した旧画面（#421）も画面名を持つ。表示可否とメタ情報は別物で、
+  // ADMIN_NAV だけから導出すると旧画面のタイトルが「管理画面」に落ちる。
+  ...Object.entries(UNLISTED_ADMIN_TITLES).map(([href, label]) => ({ href, label })),
   ...ADMIN_NAV.flatMap((group) => group.items),
 ];
 
@@ -78,6 +83,20 @@ export default async function AdminLayout({ children }: { children: React.ReactN
   // 選択は表示用であり、認可は引き続き各 API / service が actor を正として検証する。
   const { options, activeTenantId } = await resolveActiveTenant(actor);
 
+  // 対象拠点の常設表示 (#423)。既定拠点はサーバが解決した値を渡し（拠点別画面の本文が
+  // `?siteId=` 未指定時に使うものと同じ）、実際にどの拠点を指すかはクライアント側で
+  // パス/クエリから解決する — layout の props はクライアント遷移で更新されないため。
+  // `useSearchParams` を使うので Suspense 境界で包む（静的生成されるページでのビルド失敗を防ぐ）。
+  const siteContext = (
+    <Suspense fallback={null}>
+      <SiteContextChip
+        // 上で解決済みの選択中テナントを使う（`resolveAdminTenantId` と同じ倒し方）。
+        tenantId={String(activeTenantId ?? resolveDefaultScope().tenantId)}
+        fallbackSiteId={String(resolveDefaultScope().siteId)}
+      />
+    </Suspense>
+  );
+
   return (
     <AdminShell
       area="admin"
@@ -87,6 +106,7 @@ export default async function AdminLayout({ children }: { children: React.ReactN
       tenantSwitcher={
         <TenantSwitcher options={options} activeTenantId={activeTenantId ?? undefined} />
       }
+      siteContext={siteContext}
     >
       {children}
     </AdminShell>

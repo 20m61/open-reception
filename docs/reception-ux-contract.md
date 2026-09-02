@@ -97,6 +97,22 @@
 - **不変条件（受け入れ条件）**: どの画面でも同一機能の後退ボタンを 2 個出さない。後退系は最大 2 種
   （戻る / 最初に戻る）＋ 文脈固有 1（修正する）以内。長い画面（`selectingTarget` / `inputVisitorInfo`）でも
   sticky バーの `back` が常時可視なので、コンテンツ内フッターの戻るを撤去しても戻る導線は失われない。
+- **QR 受付も同じバーを使う（#361 AC2）**: `CheckinShell` が同じ `EscapeBar` コンポーネントを
+  `checkin-escape-bar` として描く（領域は `help`）。QR 受付の状態機械に 1 ステップ戻る遷移は無いので
+  後退語彙は **`RESET`（最初に戻る）1 語**で、ラベル・`testId`（`escape-reset`）・強調度は受付と同一。
+  出す判断は `checkinEscapeHatchesFor`、表示メタは `checkinEscapesFor`（受付の
+  `escapeHatchActionsFor` / `escapeHatchesFor` と同じ層分け）。
+  - **受付の idle と違い QR の idle でもバーを出す**。QR の idle は kiosk 待機から `handoffs` で
+    降りてきた 1 つ下で「最初に戻る」先が実在する（出さないと QR に入った来訪者が帰れない）。
+  - `CHOOSE_MANUAL` / `USE_MANUAL`（通常受付へ切替）は**バーに出さない**。押すと別レールへ
+    **前進**するので、`use-fallback` と同じ扱いでコンテンツの主 CTA（`checkin-error-manual` /
+    `method-manual`）に置く。
+  - 撤去した画面ごとの後退ボタン: `checkin-exit` / `method-cancel` / `camera-cancel` /
+    `scan-cancel` / `checkin-reset` / `checkin-error-reset`。
+  - 例外: 確認画面の `checkin-cancel`（「やめる」）だけコンテンツに残す。`CANCEL` → `cancelled`
+    （「受付を中止しました」の明示応答）へ到達する唯一の導線で、撤去すると `cancelled` が
+    タッチ操作から到達不能になる。受付側は同じ状態をチャット経由でのみ到達可能にしているが、
+    QR 受付にチャットは無い。
 
 真実源: 表示集合の純ロジックは `src/components/kiosk/quick-actions.ts`（`escapeHatchesFor` /
 `STATES_WITH_CONTEXTUAL_BACK`）、ユニットは `quick-actions.test.ts`、E2E は `reception-flow` /
@@ -118,7 +134,9 @@
   は別指示で矛盾していた）。リードには主指示を置かず、「タッチだけで受付できる（音声・チャット不要）」等の
   **安心情報**のみを置く（`reception.idleReassure`）。ja のリードは管理設定の案内文言（`guidanceIdle`,
   #28）を尊重し、既定値も安心情報のみに揃える。
-- **二重質問の禁止（用件の先取り）**: 待機カード（`quickActionsFor('idle')`）は用件を**先取り**する。
+- **二重質問の禁止（用件の先取り）**: 待機の入口カード（契約の回答を解決する
+  `turnAnswersFor('idle', locale)`。QR 受付は状態機械を進めないので `turnHandoffsFor` 側）は
+  用件を**先取り**する。
   `delivery`/`department`/`other` は `presetPurpose` を持ち、`START` に初期 purpose を添えて
   `selectingPurpose` を自動スキップする（遷移の真実源 `state.ts` は不変。`SELECT_PURPOSE` を UI 側で
   自動 dispatch するだけで遷移表を分岐させない）。`callStaff` は用件未確定なので目的選択へ進むが、

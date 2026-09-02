@@ -1,6 +1,5 @@
 import * as path from 'node:path';
-import * as fs from 'node:fs';
-import { Stack, StackProps, Duration, CfnOutput } from 'aws-cdk-lib';
+import { Stack, StackProps, Duration, CfnOutput, SecretValue } from 'aws-cdk-lib';
 import { Construct } from 'constructs';
 import * as lambda from 'aws-cdk-lib/aws-lambda';
 import * as iam from 'aws-cdk-lib/aws-iam';
@@ -18,9 +17,22 @@ import * as cognito from 'aws-cdk-lib/aws-cognito';
 import { EnvConfig } from '../config/environments';
 import { toRetentionDays, prodRemovalPolicy } from '../config/aws-helpers';
 import { applyCostTags } from '../constructs/cost-tags';
+import { openNextArtifactState } from '../build-artifacts';
 
 /** リポジトリルート（infra/ の 1 つ上）。 */
 const REPO_ROOT = path.join(__dirname, '..', '..', '..');
+
+/**
+ * CloudFront が付与する origin custom header 名と、Secrets Manager JSON のキー名 (issue #612)。
+ *
+ * アプリ側の正本は `src/lib/security/origin-verify.ts`。infra/ は別 tsconfig で `src/` を
+ * 参照できないため同じ値をここに置く。ドリフトは
+ * `src/lib/security/origin-verify.contract.test.ts` が**このファイルを読んで**固定する。
+ * 検査を `src/` 側に置いているのは、`infra/test/**` が品質ゲートで実行されないため（issue #628）。
+ */
+const ORIGIN_VERIFY_HEADER = 'x-origin-verify';
+const ORIGIN_VERIFY_SECRET_KEY = 'ORIGIN_VERIFY_SECRET';
+const ORIGIN_VERIFY_REQUIRED_KEY = 'ORIGIN_VERIFY_REQUIRED';
 const OPEN_NEXT_DIR = path.join(REPO_ROOT, '.open-next');
 
 /**
@@ -78,8 +90,31 @@ export interface WebStackProps extends StackProps {
    * 一致を検証し、Function URL 直叩き（CloudFront 迂回）を拒否する。
    * CloudFront OAC は POST/PUT のボディを署名せず Lambda(IAM) が拒否する制約を回避するための方式。
    * 未指定なら従来どおり OAC + IAM 署名（GET は通るが POST は 403 になる既知問題）。
+   *
+   * **この方式は生値が CFN テンプレートに平文で載る。dev 専用** (issue #612)。
+   * dev 以外では `originVerifySecretName`（Secrets Manager）を使うこと。
+   * 生値を dev 以外へ渡すと **synth 時点で throw する**。空文字も同様。
    */
   readonly originVerifySecret?: string;
+  /**
+   * origin-verify シークレットを収めた Secrets Manager シークレットの名前 (issue #612)。
+   * JSON の `ORIGIN_VERIFY_SECRET` キーを参照する（`appSecretsName` と同じシークレットで良い）。
+   *
+   * CloudFront の origin custom header と server Lambda の env の**両方**に
+   * **CFN 動的参照**（`{{resolve:secretsmanager:...}}`）を埋めるので、生成される CFN
+   * テンプレートに平文は載らない。ただし **CFN が解決した値は Lambda 環境変数として保持される**
+   * （runtime 取得は middleware に間に合わない。理由は下の実装コメント）。
+   *
+   * `originVerifySecret`（生値）との併用は不可。空文字も不可。
+   */
+  readonly originVerifySecretName?: string;
+  /**
+   * 発行 URL（QR）の基底オリジンの明示指定。
+   *
+   * カスタムドメインが無い環境では CloudFront のドメインを CDK 内から参照できない
+   * （循環依存になる）。デプロイ後に判明したドメインをここへ渡す。
+   */
+  readonly publicOriginOverride?: string;
   /**
    * 管理ログインに Cognito（埋め込み SRP）を使う場合 true (issue #238)。指定すると Cognito
    * User Pool + App Client（USER_SRP_AUTH 有効・client secret 無し・Hosted UI 無し）を作成し、
@@ -128,18 +163,125 @@ export class WebStack extends Stack {
   constructor(scope: Construct, id: string, props: WebStackProps) {
     super(scope, id, props);
 
-    this.assertBuildArtifacts();
-
     const {
       config,
       appEnv = {},
       customDomain,
       appSecretsName,
       originVerifySecret,
+      originVerifySecretName,
+      publicOriginOverride,
       cognitoAuth,
       providerSecretBackend,
       providerSecretPrefix,
     } = props;
+
+    // **引数の検証はビルド成果物の確認より先**。順序を逆にすると、`.open-next/` が無い環境では
+    // 引数ガードのテストが「成果物が無い」で落ち、ガード自体を検証できなくなる（issue #612）。
+    // --- origin-verify 方式の供給元を決める (issue #612) ---
+    // **空文字を「未指定」に落とさない。** `-c originVerifySecret=$UNSET_VAR` は `''` を渡すので、
+    // falsy 判定に任せると origin-verify が黙って OFF になり、OAC+IAM に戻って全 POST が 403 になる
+    // （この方式が回避しようとしていた障害そのもの）。synth 時点で明示的に止める。
+    for (const [name, value] of [
+      ['originVerifySecret', originVerifySecret],
+      ['originVerifySecretName', originVerifySecretName],
+    ] as const) {
+      if (value === undefined) continue;
+      // 非文字列は `cdk.json` の `context` ブロックから実 JSON として届きうる（例 `true` / 数値）。
+      // なお `-c name`（`=` なし）は CDK CLI が警告して**捨てる**ので undefined になり、ここには来ない。
+      if (typeof value !== 'string' || value.trim() === '') {
+        throw new Error(
+          `${name} に空文字/非文字列が渡されました (issue #612。received: ${JSON.stringify(value)})。` +
+            'デプロイスクリプトの変数が未設定（`-c name=$UNSET_VAR`）か、cdk.json の値が文字列でない可能性があります。' +
+            'このまま続行すると origin-verify が無効化され、CloudFront OAC の POST 署名問題で全 POST が 403 になります。',
+        );
+      }
+    }
+    // `appEnv` から origin-verify の env を渡させない。origin-verify 無効構成で
+    // `-c appEnv='{"ORIGIN_VERIFY_REQUIRED":"1"}'` を渡すと、下の addEnvironment による上書きが
+    // 走らないため **REQUIRED=1 かつ SECRET 無し**で確定し、全リクエストが恒久 503 になる。
+    const forbiddenAppEnvKeys = Object.keys(appEnv).filter((k) => k.startsWith('ORIGIN_VERIFY'));
+    if (forbiddenAppEnvKeys.length > 0) {
+      throw new Error(
+        `appEnv に ${forbiddenAppEnvKeys.join(', ')} を渡せません (issue #612)。` +
+          'origin-verify の env は originVerifySecret / originVerifySecretName から WebStack が組み立てます。' +
+          '手で渡すと「検証を要求するが値が無い」状態を作れてしまい、全リクエストが 503 になります。',
+      );
+    }
+    // 生値（dev 専用）と Secrets Manager は排他。
+    if (originVerifySecret && originVerifySecretName) {
+      throw new Error(
+        'originVerifySecret と originVerifySecretName は併用できません' +
+          '（どちらが CloudFront ヘッダに載るか曖昧になるため）。dev 以外は originVerifySecretName を使ってください。',
+      );
+    }
+    // **許可リストで判定する（`!== 'dev'`）。** `=== 'prod'` だと staging が素通りし、
+    // 環境を足したときの既定が「平文可」に倒れる。
+    if (originVerifySecret && config.environment !== 'dev') {
+      throw new Error(
+        `originVerifySecret（生値）は dev 以外では使えません (issue #612。指定環境: ${config.environment})。` +
+          '生値は CFN テンプレートに平文で載ります。' +
+          '`-c originVerifySecretName=<Secrets Manager シークレット名>` を使ってください。',
+      );
+    }
+    // **dev 以外は origin-verify を必須にする（fail-closed / N3）。**
+    // 未指定だと下の `originVerifyEnabled` が false になり、server Function URL は
+    // AWS_IAM + OAC のまま組み上がる。この構成は **CloudFront 経由の POST が全滅**する
+    // （OAC が POST ボディを署名しないため GET は通り POST だけ 403。実測は
+    // `docs/deploy-aws.md`）。つまり context を渡し忘れたデプロイは、管理ログインも
+    // 受付 URL 発行も `/api/kiosk/enroll` も通らない ── **受付が成立しない状態で立ち上がり、
+    // しかも synth も deploy も成功する**。気づけるのは実機で来訪者が詰まったときになる。
+    // dev は開発を止めないため従来どおり未指定で通す（上の「生値は dev 専用」と対になる）。
+    if (!originVerifySecret && !originVerifySecretName && config.environment !== 'dev') {
+      throw new Error(
+        `origin-verify シークレットが未指定です (指定環境: ${config.environment})。` +
+          'dev 以外では `-c originVerifySecretName=<Secrets Manager シークレット名>`' +
+          `（JSON キー ${ORIGIN_VERIFY_SECRET_KEY}）が必須です。` +
+          '未指定のまま続行すると Function URL が AWS_IAM + OAC で組み上がり、' +
+          'CloudFront OAC は POST ボディを署名しないため **CloudFront 経由の POST が全て 403** になります' +
+          '（管理ログイン・受付 URL 発行・/api/kiosk/enroll が通らず受付が成立しません）。' +
+          '手順は docs/deploy-aws.md の「CloudFront 経由検証（origin-verify）」を参照。',
+      );
+    }
+
+    // **dev 以外は発行 URL の基底オリジンも必須にする（fail-closed / N3b）。**
+    // `publicOriginOverride` もカスタムドメインも無いと、`resolveCheckinBaseUrl` は
+    // リクエストの Host から推定する。CloudFront -> Lambda Function URL 構成では Host が
+    // **Function URL** なので、発行された QR を開いても CloudFront を経由せず
+    // `x-origin-verify` が付かない -> middleware が forbidden を返す ──
+    // **端末エンロール QR も来訪予約 checkin QR も、誰も使えない**（2026-08-04 に実測）。
+    //
+    // 上の origin-verify 必須化（N3）と**対になる**。片方だけ塞ぐと QR 側だけが落ちる。
+    // dev は従来どおり未指定で通す（デプロイ後に判明する CloudFront ドメインを後から渡す運用）。
+    if (customDomain === undefined && publicOriginOverride === undefined && config.environment !== 'dev') {
+      throw new Error(
+        `発行 URL の基底オリジンが未指定です (指定環境: ${config.environment})。` +
+          'dev 以外では `-c publicOriginOverride=https://<配信ドメイン>` か customDomain が必須です。' +
+          '未指定のまま続行すると、端末エンロール QR と来訪予約 checkin QR が ' +
+          'Function URL のホストで発行されます。その URL は CloudFront を経由しないため ' +
+          'x-origin-verify が付かず middleware が forbidden を返し、**発行された QR を誰も使えません**。' +
+          '手順は docs/deploy-aws.md を参照。',
+      );
+    }
+    // NOTE: 「方式が有効か」は下の `originVerifyHeaderValue` **1 つから導く**。別々に導出すると、
+    // 片方だけ壊れたときに **Function URL は公開なのに CloudFront がヘッダを付けない** origin
+    // （= 認証なしの公開エンドポイント）が組み上がる。
+    // CloudFront は origin custom header に「値」を必要とする。Secrets Manager 方式では CFN 動的参照を
+    // 埋め、テンプレートには `{{resolve:secretsmanager:...}}` だけが残る（平文は載らない）。
+    // 注: 解決後の値は CloudFront の Distribution 設定と Lambda 環境変数として保持されるため、
+    // `cloudfront:GetDistribution*` / `lambda:GetFunctionConfiguration` 権限を持つ主体からは
+    // 見える（docs/deploy-aws.md の「残る露出」に明記）。
+    const originVerifyHeaderValue = originVerifySecretName
+      ? SecretValue.secretsManager(originVerifySecretName, {
+          jsonField: ORIGIN_VERIFY_SECRET_KEY,
+        }).unsafeUnwrap()
+      : originVerifySecret;
+    const originVerifyEnabled = originVerifyHeaderValue !== undefined;
+
+    // **引数ガード（上）より後であること。理由は上の「引数の検証はビルド成果物の確認より先」。**
+    // ここを上へ戻すと、クリーンな checkout でガードのテストが「成果物が無い」で落ちる。
+    this.assertBuildArtifacts();
+
     const retention = toRetentionDays(config.web.logRetentionDays);
     const removalPolicy = prodRemovalPolicy(config.environment);
 
@@ -266,8 +408,20 @@ export class WebStack extends Stack {
     }
 
     // CloudFront 経由検証（直叩き拒否）。middleware(proxy.ts) が x-origin-verify を照合する。
-    if (originVerifySecret) {
-      serverFn.addEnvironment('ORIGIN_VERIFY_SECRET', originVerifySecret);
+    if (originVerifyHeaderValue) {
+      // **検証の ON/OFF はこのフラグだけが決める**（シークレットの有無では決めない）。
+      // 非機密。proxy.ts はこれが立っていて値が解決できないとき 503 を返す (issue #612)。
+      serverFn.addEnvironment(ORIGIN_VERIFY_REQUIRED_KEY, '1');
+      // CloudFront が送る値と同じものを env にも入れる。Secrets Manager 方式ではどちらも
+      // CFN 動的参照なので、テンプレート上は同じ `{{resolve:...}}` で、平文は現れない。
+      //
+      // **ARN を渡して runtime 解決する形へ戻さないこと。** middleware(proxy.ts) は OpenNext の
+      // routing 層から instrumentation の register() より **先** に呼ばれる。しかも middleware が
+      // 拒否応答を返すと routing 層がその場で返し、Next サーバへ到達しないので register() が走らない。
+      // 回復するのは matcher 除外パス（`/favicon.ico` 等）が同じインスタンスに当たったときだけで、
+      // **回復の有無がリクエスト順に依存する**（＝断続的で切り分けが難しい）。
+      // よって値はプロセス開始時から env に在る必要がある。
+      serverFn.addEnvironment(ORIGIN_VERIFY_SECRET_KEY, originVerifyHeaderValue);
     }
 
     // --- 管理ログイン Cognito（埋め込み SRP・Hosted UI 無し） (issue #238) ---
@@ -300,6 +454,19 @@ export class WebStack extends Stack {
       serverFn.addEnvironment('COGNITO_REGION', this.region);
       serverFn.addEnvironment('COGNITO_ISSUER', issuer);
 
+      // **dev のみ**: AdminUser レコードが無い SSO ユーザーへ env 既定のロールを与える。
+      //
+      // 既定は最小権限（`resolveActorFromStore` が未登録を拒否）で、それが正しい。しかし
+      // 新規環境には AdminUser を作る経路が無く（#83 の JIT プロビジョニングが未配線）、
+      // **Cognito 認証は通るのに管理 API が全て 401** という手詰まりになる。
+      //
+      // dev で受付導線を実際に通すために限って緩める。`config.environment !== 'dev'` では
+      // 一切設定しない ── **本番でこれが有効になると「登録されていない人が入れる」**。
+      // 恒久策は JIT プロビジョニング（#83）。
+      if (config.environment === 'dev') {
+        serverFn.addEnvironment('OPEN_RECEPTION_ENTRA_UNREGISTERED', 'env_roles');
+      }
+
       new CfnOutput(this, 'AdminUserPoolId', {
         value: userPool.userPoolId,
         description: '管理ログイン Cognito User Pool ID（管理者ユーザー作成に使用）',
@@ -310,14 +477,20 @@ export class WebStack extends Stack {
       });
     }
 
-    // Function URL の認証方式。originVerifySecret 指定時は NONE（CloudFront 秘密ヘッダで保護）に切替え、
-    // OAC が POST ボディを署名しない制約を回避する。未指定時は従来の AWS_IAM(+OAC)。
-    const functionUrlAuthType = originVerifySecret
+    // server Function URL の認証方式。origin-verify 方式では NONE（CloudFront 秘密ヘッダで保護）に
+    // 切替え、OAC が POST ボディを署名しない制約を回避する。未指定時は従来の AWS_IAM(+OAC)。
+    //
+    // **image には適用しない (issue #631)。** 回避したい制約は「OAC が POST ボディを署名しない」
+    // ことだが、`/_next/image*` の behavior は GET/HEAD/OPTIONS のみなので image origin には
+    // そもそも当たらない。一方 image Lambda は middleware を通らず `x-origin-verify` を誰も
+    // 検証しないため、NONE にすると**無認証・無検証の公開エンドポイント**になる
+    // （URL を知れば `_assets/` 配下を画像として引け、変換の従量課金も開放される）。
+    const serverFnUrlAuthType = originVerifyEnabled
       ? lambda.FunctionUrlAuthType.NONE
       : lambda.FunctionUrlAuthType.AWS_IAM;
 
     const serverFnUrl = serverFn.addFunctionUrl({
-      authType: functionUrlAuthType,
+      authType: serverFnUrlAuthType,
       invokeMode: lambda.InvokeMode.BUFFERED,
     });
 
@@ -340,8 +513,10 @@ export class WebStack extends Stack {
     // image 最適化は元画像を S3 から読む。
     assetBucket.grantRead(imageFn);
 
+    // **image は origin-verify 方式でも常に OAC + AWS_IAM (issue #631)。**
+    // GET のみなので OAC の POST 署名問題に当たらず、NONE にする理由が無い。
     const imageFnUrl = imageFn.addFunctionUrl({
-      authType: functionUrlAuthType,
+      authType: lambda.FunctionUrlAuthType.AWS_IAM,
       invokeMode: lambda.InvokeMode.BUFFERED,
     });
 
@@ -349,18 +524,18 @@ export class WebStack extends Stack {
     const s3Origin = origins.S3BucketOrigin.withOriginAccessControl(assetBucket, {
       originPath: '/_assets',
     });
-    // originVerifySecret 指定時: OAC を使わず、CloudFront が origin custom header に秘密値を付与する。
+    // origin-verify 方式: OAC を使わず、CloudFront が origin custom header に秘密値を付与する。
     //   → server(middleware) が照合し直叩きを拒否。POST も含め全メソッドが通る。
     // 未指定時: 従来の OAC（withOriginAccessControl）。
-    const originVerifyHeaders = originVerifySecret
-      ? { 'x-origin-verify': originVerifySecret }
+    const originVerifyHeaders = originVerifyHeaderValue
+      ? { [ORIGIN_VERIFY_HEADER]: originVerifyHeaderValue }
       : undefined;
-    const serverOrigin = originVerifySecret
+    const serverOrigin = originVerifyEnabled
       ? new origins.FunctionUrlOrigin(serverFnUrl, { customHeaders: originVerifyHeaders })
       : origins.FunctionUrlOrigin.withOriginAccessControl(serverFnUrl);
-    const imageOrigin = originVerifySecret
-      ? new origins.FunctionUrlOrigin(imageFnUrl, { customHeaders: originVerifyHeaders })
-      : origins.FunctionUrlOrigin.withOriginAccessControl(imageFnUrl);
+    // image は常に OAC。秘密ヘッダは付けない（検証する者が居ないので意味が無く、
+    // 「守られている」という誤解だけを生む）(issue #631)。
+    const imageOrigin = origins.FunctionUrlOrigin.withOriginAccessControl(imageFnUrl);
 
     // SSR/Route Handler はクッキー（管理セッション）・クエリ・メソッドに依存するため
     // キャッシュは無効化し、Host 以外の viewer 情報を origin へ転送する。
@@ -430,6 +605,37 @@ export class WebStack extends Stack {
         )
       : undefined;
 
+    /**
+     * 全断（オリジン到達不能）のときに来訪者へ出す応答 (#629 / Gate A)。
+     *
+     * サーバ Lambda が落ちていると middleware は走らないので `service-hold-page.ts` の
+     * 経路には入らず、CloudFront 既定の英語の技術文がそのまま iPad に出る。
+     *
+     * 🔴 **403 / 503 は割り当てない。** custom error response は**ディストリビューション単位**で
+     * cache behavior に絞れないため、割り当てると API の 403/503 まで HTML に潰れる
+     * （`PROVIDER_WEBHOOKS_DISABLED` の 503 + `Retry-After` は Vonage の再送に効いている
+     * 運用スイッチ）。`service-hold-page.ts` が middleware 方式を選んだ理由そのもの。
+     * 500 も同じ理由で外す ── アプリ自身が返しうるコードだから。
+     * 残る 502 / 504 は **CloudFront が origin へ到達できなかったときだけ**出るもので、
+     * そのとき既に HTML を返している。差し替えるのは本文だけ。
+     *
+     * 🔴 **ステータスコードを変えない。** 200 に潰すと、機械（Vonage の再送等）から見て
+     * 「成功した」ことになり再送が止まる。
+     *
+     * 🔴 **エラーを長くキャッシュしない。** 既定は 5 分で、復旧してもその間ずっと停止画面が
+     * 出続ける。受付は復旧が分かるまでの待ち時間が体験そのものなので短く持つ。
+     */
+    // 実体は `public/assets/service-hold.html`。値は `src/domain/reception/service-hold-page.ts`
+    // の `SERVICE_HOLD_PAGE_PATH` と一致していなければならない（deploy 時の ts-node 解決に
+    // 巻き込まないため import はせず、`infra/test/web-stack.test.ts` が両者を突き合わせる）。
+    const HOLD_PAGE_PATH = '/assets/service-hold.html';
+    const holdPageResponse = (httpStatus: number): cloudfront.ErrorResponse => ({
+      httpStatus,
+      responseHttpStatus: httpStatus,
+      responsePagePath: HOLD_PAGE_PATH,
+      ttl: Duration.seconds(10),
+    });
+
     const distribution = new cloudfront.Distribution(this, 'Distribution', {
       comment: `${config.prefix} Next.js (OpenNext)`,
       defaultBehavior: serverBehavior,
@@ -439,6 +645,8 @@ export class WebStack extends Stack {
       // 国内 iPad 受付端末向け用途のため全世界エッジは不要。prod 含む全環境で
       // PriceClass_200（北米/欧州/アジア等）に抑えてコストを最適化する (issue #300)。
       priceClass: cloudfront.PriceClass.PRICE_CLASS_200,
+      // 全断時の来訪者向け応答。割り当てるコードを絞る理由は `holdPageResponse` の doc。
+      errorResponses: [holdPageResponse(502), holdPageResponse(504)],
       additionalBehaviors: {
         // OpenNext behaviors に対応:
         '/_next/image*': {
@@ -485,26 +693,51 @@ export class WebStack extends Stack {
     });
     this.distribution = distribution;
 
+    /*
+     * 発行 URL（端末エンロール QR / 来訪予約 checkin QR）の基底オリジン。
+     *
+     * **明示しないと使えない URL が発行される。** `resolveCheckinBaseUrl` は環境変数が無ければ
+     * リクエストの Host から推定するが、CloudFront → Lambda Function URL 構成では Host が
+     * **Function URL** になる。その URL を開くと CloudFront を経由しないため
+     * `x-origin-verify` が付かず、middleware が `forbidden` を返す ── **発行された QR を
+     * 誰も使えない**（2026-08-04 に実測）。
+     *
+     * ## CloudFront のドメインは渡せない
+     *
+     * `distribution.distributionDomainName` を Lambda の env へ入れると、Distribution が
+     * server Lambda（オリジン）に依存しているため**循環依存**になり deploy が失敗する
+     * （実際に踏んだ）。カスタムドメインは Distribution と独立なので渡せる。
+     *
+     * カスタムドメインが無い環境（dev 等）は、デプロイ後に判明する CloudFront ドメインを
+     * `-c publicOriginOverride=...` で渡す（`infra/bin` 参照）。
+     */
+    const primaryDomain = customDomainNames?.[0];
+    const publicOrigin = primaryDomain ? `https://${primaryDomain}` : publicOriginOverride;
+    if (publicOrigin) {
+      serverFn.addEnvironment('NEXT_PUBLIC_APP_URL', publicOrigin);
+    }
+
     // CloudFront OAC → Lambda Function URL の invoke 権限 (issue #192)。OAC 方式のときのみ必要。
     // `FunctionUrlOrigin.withOriginAccessControl` は `lambda:InvokeFunctionUrl` のみを付与するが、
     // 2025-10 以降 AWS は OAC 経由の呼び出しに **`lambda:InvokeFunction` も必須**としており、
     // これが無いと CloudFront → Function URL が 403（AccessDeniedException）になる。
     // 参照: aws-samples/remote-swe-agents#361。両 Lambda（server/image）へ明示的に付与する。
-    // originVerifySecret 方式（authType=NONE）では Function URL が公開のため invoke 権限は不要。
-    if (!originVerifySecret) {
-      const cloudfrontPrincipal = new iam.ServicePrincipal('cloudfront.amazonaws.com');
-      const distributionArn = `arn:aws:cloudfront::${this.account}:distribution/${distribution.distributionId}`;
+    // origin-verify 方式（authType=NONE）では server の Function URL が公開のため invoke 権限は不要。
+    // **image は常に OAC なので、方式に関わらず必要** (issue #631)。
+    const cloudfrontPrincipal = new iam.ServicePrincipal('cloudfront.amazonaws.com');
+    const distributionArn = `arn:aws:cloudfront::${this.account}:distribution/${distribution.distributionId}`;
+    if (!originVerifyEnabled) {
       serverFn.addPermission('CloudFrontOacInvokeFunction', {
         principal: cloudfrontPrincipal,
         action: 'lambda:InvokeFunction',
         sourceArn: distributionArn,
       });
-      imageFn.addPermission('CloudFrontOacInvokeFunction', {
-        principal: cloudfrontPrincipal,
-        action: 'lambda:InvokeFunction',
-        sourceArn: distributionArn,
-      });
     }
+    imageFn.addPermission('CloudFrontOacInvokeFunction', {
+      principal: cloudfrontPrincipal,
+      action: 'lambda:InvokeFunction',
+      sourceArn: distributionArn,
+    });
 
     // Route53 管理下なら alias A/AAAA を作成して FQDN を Distribution に向ける (issue #189)。
     // 管理外・手動管理の場合は createDnsRecord=false にして、CloudFront 側の紐付けだけ行う。
@@ -558,20 +791,32 @@ export class WebStack extends Stack {
     });
   }
 
-  /** `.open-next/` 成果物が存在するか検証（未ビルドでの synth/deploy を早期に止める）。 */
+  /**
+   * `.open-next/` 成果物が存在し、かつ `src/` より新しいか検証する
+   * （未ビルド・stale での synth/deploy を早期に止める）。
+   *
+   * 判定そのものは `lib/build-artifacts.ts` に一本化してある (#628)。**synth は absent と
+   * stale をどちらも例外にする**が、CDK テストとゲートは 2 つを区別して「理由付きスキップ」
+   * に使う。同じ問いに 2 つの実装を置くと、片方だけ直して食い違うため（#557 で実際に起きた）。
+   */
   private assertBuildArtifacts(): void {
-    const required = [
-      path.join(OPEN_NEXT_DIR, 'open-next.output.json'),
-      path.join(OPEN_NEXT_DIR, 'assets'),
-      path.join(OPEN_NEXT_DIR, 'server-functions', 'default', 'index.mjs'),
-      path.join(OPEN_NEXT_DIR, 'image-optimization-function', 'index.mjs'),
-    ];
-    const missing = required.filter((p) => !fs.existsSync(p));
-    if (missing.length > 0) {
+    const status = openNextArtifactState(REPO_ROOT);
+    if (status.state === 'fresh') return;
+    if (status.state === 'absent') {
       throw new Error(
-        `OpenNext build artifacts not found:\n  ${missing.join('\n  ')}\n` +
+        `OpenNext build artifacts not found:\n  ${status.missing
+          .map((rel) => path.join(OPEN_NEXT_DIR, rel))
+          .join('\n  ')}\n` +
           `Run \`npm run build:open-next\` at the repo root before \`cdk synth\`/\`deploy\`.`,
       );
     }
+    throw new Error(
+      `OpenNext build artifacts are older than src/:\n` +
+        `  .open-next: ${new Date(status.artifactMtime!).toISOString()}\n` +
+        `  newest src: ${new Date(status.newestSrcMtime!).toISOString()}\n` +
+        `Run \`npm run build:open-next\` — deploying now would ship stale code ` +
+        `(this actually happened on 2026-08-04 and shipped a build missing 4 security fixes).`,
+    );
   }
+
 }

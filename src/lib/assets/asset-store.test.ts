@@ -1,8 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+
+const T = 'internal';
 import {
   __resetAssets,
   createAsset,
   defaultVrmUrl,
+  getActiveAssets,
   getKioskAssets,
   listAssets,
   setActiveAsset,
@@ -40,15 +43,15 @@ describe('getKioskAssets VRM 既定 (#31)', () => {
 
   it('VRM 未登録時は環境変数の既定モデルへ fallback する', async () => {
     process.env.KIOSK_DEFAULT_VRM_URL = '/avatar/default.vrm';
-    expect((await getKioskAssets()).vrmUrl).toBe('/avatar/default.vrm');
+    expect((await getKioskAssets(T)).vrmUrl).toBe('/avatar/default.vrm');
   });
 
   it('登録済み VRM は既定より優先される', async () => {
     process.env.KIOSK_DEFAULT_VRM_URL = '/avatar/default.vrm';
-    const created = await createAsset({ kind: 'vrm', name: 'カスタム', url: 'https://cdn/custom.vrm' });
+    const created = await createAsset(T, { kind: 'vrm', name: 'カスタム', url: 'https://cdn/custom.vrm' });
     expect(created.ok).toBe(true);
-    if (created.ok) await setActiveAsset(created.value.id);
-    expect((await getKioskAssets()).vrmUrl).toBe('https://cdn/custom.vrm');
+    if (created.ok) await setActiveAsset(T, created.value.id);
+    expect((await getKioskAssets(T)).vrmUrl).toBe('https://cdn/custom.vrm');
   });
 });
 
@@ -68,36 +71,58 @@ describe('validateAsset (#27)', () => {
 
 describe('asset-store (#27)', () => {
   it('seed の背景が適用中', async () => {
-    expect((await getKioskAssets()).backgroundUrl).toBe('/assets/default-bg.jpg');
+    expect((await getKioskAssets(T)).backgroundUrl).toBe('/assets/default-bg.jpg');
   });
 
   it('アセットを登録できる', async () => {
-    const r = await createAsset({ kind: 'background', name: 'イベント背景', url: 'https://cdn/x.jpg' });
+    const r = await createAsset(T, { kind: 'background', name: 'イベント背景', url: 'https://cdn/x.jpg' });
     expect(r.ok).toBe(true);
-    if (r.ok) expect((await listAssets('background')).some((a) => a.id === r.value.id)).toBe(true);
+    if (r.ok) expect((await listAssets(T, 'background')).some((a) => a.id === r.value.id)).toBe(true);
   });
 
   it('不正な形式を拒否', async () => {
-    const r = await createAsset({ kind: 'vrm', name: 'bad', url: 'bad.txt' });
+    const r = await createAsset(T, { kind: 'vrm', name: 'bad', url: 'bad.txt' });
     expect(r.ok).toBe(false);
   });
 
   it('アクティブ背景を切り替えられる', async () => {
-    const created = await createAsset({ kind: 'background', name: 'new', url: 'https://cdn/n.png' });
+    const created = await createAsset(T, { kind: 'background', name: 'new', url: 'https://cdn/n.png' });
     if (!created.ok) return;
-    await setActiveAsset(created.value.id);
-    expect((await getKioskAssets()).backgroundUrl).toBe('https://cdn/n.png');
+    await setActiveAsset(T, created.value.id);
+    expect((await getKioskAssets(T)).backgroundUrl).toBe('https://cdn/n.png');
   });
 
   it('無効なアセットは適用できない', async () => {
-    const created = await createAsset({ kind: 'background', name: 'd', url: 'https://cdn/d.png' });
+    const created = await createAsset(T, { kind: 'background', name: 'd', url: 'https://cdn/d.png' });
     if (!created.ok) return;
-    await setAssetEnabled(created.value.id, false);
-    expect((await setActiveAsset(created.value.id)).ok).toBe(false);
+    await setAssetEnabled(T, created.value.id, false);
+    expect((await setActiveAsset(T, created.value.id)).ok).toBe(false);
   });
 
   it('適用中アセットを無効化すると適用解除される', async () => {
-    await setAssetEnabled('asset-bg-default', false);
-    expect((await getKioskAssets()).backgroundUrl).toBeUndefined();
+    await setAssetEnabled(T, 'asset-bg-default', false);
+    expect((await getKioskAssets(T)).backgroundUrl).toBeUndefined();
+  });
+});
+
+/** テナント別に分離されていること (#419 残増分)。 */
+describe('asset-store のテナント分離 (#419)', () => {
+  it('別テナントには登録したアセットが見えない', async () => {
+    await __resetAssets('acme');
+    const r = await createAsset(T, { kind: 'motion', name: 'M', url: 'https://cdn/m.vrma' });
+    if (!r.ok) throw new Error('fixture failed');
+
+    expect((await listAssets(T, 'motion')).some((a) => a.id === r.value.id)).toBe(true);
+    expect((await listAssets('acme', 'motion')).some((a) => a.id === r.value.id)).toBe(false);
+  });
+
+  it('アクティブセットも別テナントへ波及しない', async () => {
+    await __resetAssets('acme');
+    const r = await createAsset(T, { kind: 'background', name: 'B', url: 'https://cdn/b.png' });
+    if (!r.ok) throw new Error('fixture failed');
+    await setActiveAsset(T, r.value.id);
+
+    expect((await getActiveAssets(T)).background).toBe(r.value.id);
+    expect((await getActiveAssets('acme')).background).not.toBe(r.value.id);
   });
 });

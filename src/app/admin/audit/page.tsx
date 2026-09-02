@@ -39,6 +39,8 @@ const ACTION_LABEL: Partial<Record<AuditAction, string>> = {
   'reception.demo_share_issued': '受付体験スタジオ: 共有リンク発行',
   'reception.demo_share_revoked': '受付体験スタジオ: 共有リンク失効',
   'operating_policy.updated': '営業時間ポリシー: 更新',
+  'runtime_policy.updated': 'サービス稼働ポリシー: 更新',
+  'runtime_policy.update_conflicted': 'サービス稼働ポリシー: 競合で保存できず',
   'contact_endpoint.created': '接続先: 登録',
   'contact_endpoint.updated': '接続先: 更新',
   'contact_endpoint.deleted': '接続先: 削除',

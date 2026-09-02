@@ -18,6 +18,8 @@
  *   - 接続アドレス（e164/uri）は API レスポンス（EndpointView）にも監査 metadata にも出さない。
  *     UI へは末尾数桁の `maskedAddress` のみ。
  */
+import { CALL_STATUS_POLL_MAX_MS } from '@/domain/reception/call-poll';
+import { routingFitsClientWait, routingWorstCaseMs } from '@/domain/routing/budget-fit';
 import { randomUUID } from 'node:crypto';
 import { canAccessSite, canAccessTenant, type Actor } from '@/domain/tenant/authorization';
 import { asSiteId, type SiteId, type TenantId } from '@/domain/tenant/types';
@@ -296,7 +298,23 @@ export class RoutingService {
     const endpointIds = new Set(endpoints.map((e) => e.id));
     const existing = await this.policies.list(tenantId);
     const merged: RoutingPolicy[] = [...existing.filter((p) => p.id !== candidate.id), candidate];
-    return validateRoutingPolicySet(merged, endpointIds).filter((i) => i.policyId === candidate.id);
+    const issues = validateRoutingPolicySet(merged, endpointIds).filter(
+      (i) => i.policyId === candidate.id,
+    );
+
+    // 🔴 **端末の待ち上限に収まらない構成を保存させない (#743)。** 収まらないと、来訪者が
+    // 代替導線へ倒れたあとも社内の電話が鳴り続ける（「無人の呼び出し」）。
+    // `/give-up` は事後の後始末で、設定の時点で分かるならここで言うほうが安い。
+    const timeouts = candidate.steps.map((step) => step.timeoutSeconds);
+    if (!routingFitsClientWait(timeouts)) {
+      issues.push({
+        kind: 'exceeds_client_wait',
+        policyId: candidate.id,
+        worstCaseMs: routingWorstCaseMs(timeouts),
+        clientWaitMs: CALL_STATUS_POLL_MAX_MS,
+      });
+    }
+    return issues;
   }
 
   private async auditEndpoint(action: AuditAction, e: StoredContactEndpoint): Promise<void> {

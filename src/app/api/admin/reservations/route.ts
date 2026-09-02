@@ -10,6 +10,7 @@ import {
   serviceResponse,
   toReservationView,
 } from '@/lib/reservation/request';
+import { resolveAdminActorWithIdentity } from '@/lib/auth/actor';
 
 /**
  * GET /api/admin/reservations?tenantId=&siteId= — テナント/サイトの来訪予約一覧 (issue #97)。
@@ -30,14 +31,20 @@ export async function GET(request: Request): Promise<NextResponse> {
 }
 
 export async function POST(request: Request): Promise<NextResponse> {
-  const actor = await resolveAdminActor();
-  if (!actor) return NextResponse.json({ error: 'unauthorized' }, { status: 401 });
+  // 発行主体を記録するため identity も解決する (#375)。**リクエスト body の値は使わない**
+  // （クライアントに発行者を詐称させない。identity は監査帰属に使う安定識別子）。
+  const resolved = await resolveAdminActorWithIdentity();
+  if (!resolved) return NextResponse.json({ error: 'unauthorized' }, { status: 401 });
+  const { actor, identity } = resolved;
   const body = await readJson(request);
   const scope = readScope((body ?? {}) as Record<string, unknown>);
   if (!scope.ok) return NextResponse.json(scope.error, { status: 400 });
   const parsed = parseCreateBody(body, scope.tenantId, scope.siteId);
   if (!parsed.ok) return NextResponse.json(parsed.error, { status: 400 });
-  const result = await getReservationService().create(actor, parsed.value);
+  const result = await getReservationService().create(actor, parsed.value, {
+    actorType: 'admin',
+    identity,
+  });
   // 生 token は一度きり応答(#375)。UI がその場で QR を表示できるよう qrDataUrl を同梱する
   // (サーバ側描画。以後は保存 hash から再生成できない)。
   if (result.ok) {

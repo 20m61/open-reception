@@ -1,0 +1,110 @@
+/**
+ * PR 作成スクリプトが**入力を黙って落とさない**こと (#736)。
+ *
+ * ## 事実
+ *
+ * このスクリプトは長らく未知の引数を無視していた。`--body-file` を渡していた呼び出しは
+ * **本文が空のまま PR を作り続け**、書いた根拠（変更理由・変異検証・人間承認の要否）が
+ * 1 件も GitHub へ載っていなかった。コミットメッセージ側には残っていたので気づくのが遅れた
+ * ── 2026-08-21 に 6 本の PR で実際に起きた。
+ *
+ * 「渡したのに効かない」は「渡し忘れ」より悪い。**呼び出し側は成功したと思い込む。**
+ */
+import { execFileSync } from 'node:child_process';
+import { mkdtempSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { describe, expect, it } from 'vitest';
+
+/**
+ * 各ケースの上限。**既定の 5 秒では足りない。**
+ *
+ * 1 ケースごとに子プロセスで TypeScript を起動するので、単体でも 1〜2 秒、ゲートの
+ * unit ステップ（537 ファイル並列）の下では数倍かかる。実際にゲートで
+ * `Test timed out in 5000ms` を踏んだ ── **アサーションに到達する前**の偽の赤で、
+ * 主張そのものは何も変わっていない（CLAUDE.md「まず偽の赤を疑う」）。
+ */
+const SPAWN_TIMEOUT_MS = 30_000;
+
+/**
+ * 引数解析だけを踏む（PR は作らせない）。ゲートガードは対象外なので明示的に外す。
+ *
+ * `npx` ではなく**ローカルの tsx を直接**呼ぶ。`npx` はレジストリ解決の分だけ余計に
+ * 待つことがあり、上と同じ偽の赤の原因になる。
+ */
+const TSX = join('node_modules', '.bin', 'tsx');
+
+function runArgs(args: string[]): { code: number; output: string } {
+  try {
+    const output = execFileSync(TSX, ['scripts/create-pull-request.ts', ...args], {
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'pipe'],
+      env: { ...process.env, OPEN_RECEPTION_SKIP_GATE_GUARD: '1' },
+    });
+    return { code: 0, output };
+  } catch (e) {
+    const err = e as { status?: number; stdout?: string; stderr?: string };
+    return { code: err.status ?? 1, output: `${err.stdout ?? ''}${err.stderr ?? ''}` };
+  }
+}
+
+describe('create-pull-request.ts の引数 (#736)', () => {
+  /**
+   * 🔴 **これが本体。** 知らない引数を無視すると、呼び出し側は渡したつもりで PR が
+   * 空本文になる。
+   */
+  it('🔴 知らない引数を黙って無視しない', () => {
+    const { code, output } = runArgs(['--head', 'x', '--title', 'y', '--bogus', 'z']);
+    expect(code).not.toBe(0);
+    expect(output).toContain('--bogus');
+  }, SPAWN_TIMEOUT_MS);
+
+  it('🔴 本文が空のまま PR を作らない', () => {
+    const { code, output } = runArgs(['--head', 'x', '--title', 'y']);
+    expect(code).not.toBe(0);
+    expect(output).toContain('本文が空');
+  }, SPAWN_TIMEOUT_MS);
+
+  it('🔴 --body-file を受け付ける（無視しない）', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'pr-body-'));
+    const file = join(dir, 'body.md');
+    writeFileSync(file, 'TEST-本文');
+    // 引数解析は通り、その先（git remote / gh）で落ちる ＝ 引数エラーではない。
+    const { output } = runArgs(['--head', 'x', '--title', 'y', '--body-file', file]);
+    expect(output).not.toContain('知らない引数');
+    expect(output).not.toContain('本文が空');
+  }, SPAWN_TIMEOUT_MS);
+
+  it('--body と --body-file の同時指定を拒否する（どちらが効いたか曖昧にしない）', () => {
+    const { code, output } = runArgs([
+      '--head', 'x', '--title', 'y', '--body', 'a', '--body-file', '/tmp/nonexistent',
+    ]);
+    expect(code).not.toBe(0);
+    expect(output).toContain('同時に指定できません');
+  }, SPAWN_TIMEOUT_MS);
+
+  /**
+   * 🔴 **`--draft` は「渡したのに効かない」の 2 例目だった。**
+   *
+   * `KNOWN_OPTIONS` に `draft` が入っているので `rejectUnknownOptions` を素通りするが、
+   * `readOption('draft')` はどこからも呼ばれておらず、`pullCreateArgs` も draft を
+   * 組み立てない ── **受け取って捨てていた**。#736 で塞いだはずの型が 1 件残っていた。
+   *
+   * しかも draft は**クラウドから解除できない**（2026-08-27 実測）:
+   *
+   * - `gh pr ready` … proxy が GraphQL を 403
+   * - REST `PATCH .../pulls/<n> -f draft=false` … **黙って無視**（`draft: true` のまま返る）
+   * - `mcp__github__update_pull_request` … GitHub App 側のレート制限で落ちうる
+   *
+   * PR #819 はこれで**丸一日 draft のまま動かせなかった**。だから「効かない引数」を
+   * 実装して直すのではなく、**受け付けない**方向で塞ぐ ── 作れてしまうと一方通行になる。
+   */
+  it('🔴 --draft を黙って捨てない（クラウドから解除できないので受け付けない）', () => {
+    const { code, output } = runArgs(['--head', 'x', '--title', 'y', '--body', 'z', '--draft']);
+    expect(code).not.toBe(0);
+    expect(output).toContain('--draft');
+    // 「知らない引数」で終わらせず、**なぜ駄目か**を出す。理由が無いと次に来た人が
+    // KNOWN_OPTIONS へ足し直して同じ袋小路に戻る。
+    expect(output).toContain('解除');
+  }, SPAWN_TIMEOUT_MS);
+});

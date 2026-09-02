@@ -4,7 +4,7 @@ import { useEffect, useState } from 'react';
 import type { TenantFleetSummary } from '@/domain/platform/console-summary';
 import type { TodayCounts } from '@/domain/reception/dashboard-summary';
 import { AwsCostPanel } from './AwsCostPanel';
-import { MetricCard } from './primitives';
+import { MetricCard } from '@/components/admin/ui';
 
 /**
  * プラットフォーム概況ダッシュボード (issue #90, increment 1 / #377)。
@@ -81,7 +81,7 @@ export function PlatformDashboard() {
       </h2>
       <div style={{ display: 'flex', gap: 'var(--space-md)', flexWrap: 'wrap' }}>
         {PENDING_METRICS.map((m) => (
-          <MetricCard key={m.key} label={m.label} pending note="次増分で接続" />
+          <MetricCard key={m.key} label={m.label} placeholder placeholderText="未接続" note="次増分で接続" />
         ))}
       </div>
     </section>

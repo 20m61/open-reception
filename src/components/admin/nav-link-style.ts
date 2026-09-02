@@ -1,5 +1,5 @@
 import type { CSSProperties } from 'react';
-import { font } from './ui/tokens';
+import { font, motion } from './ui/tokens';
 
 /**
  * 管理ナビ 1 項目の見た目（active / pending）を 1 箇所で決める純関数 (issue #94, increment 1)。
@@ -36,7 +36,7 @@ export function navLinkStyle(active: boolean): CSSProperties {
     wordBreak: 'keep-all',
     overflowWrap: 'anywhere',
     // 遷移開始時の即時フィードバック（CSS で軽く）。
-    transition: 'background 120ms ease, opacity 120ms ease',
+    transition: `background ${motion.fast} ${motion.easeOut}, opacity ${motion.fast} ${motion.easeOut}`,
   };
 }
 

@@ -1,8 +1,10 @@
+import { existsSync, readdirSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 import type { TenantRole } from '@/domain/tenant/types';
 import {
   ADMIN_NAV,
   PLATFORM_NAV,
+  UNLISTED_ADMIN_ROUTES,
   type NavGroup,
   isActivePath,
   visibleNav,
@@ -115,5 +117,72 @@ describe('IA 定義の不変条件 (#85)', () => {
         }
       }
     }
+  });
+});
+
+/**
+ * **作った画面がナビから辿れないまま放置されるのを止める** (issue #421)。
+ *
+ * `/admin/experience-versions` は第 21 wave（#420）で作ったが、`ADMIN_NAV` にも他画面からの
+ * リンクにも登録されず、**URL を直接打つ以外に開く手段が無い**状態で放置されていた。
+ * ナビへの登録は「画面を作った周回」と「IA を触る周回」が別なので、規律では抜ける。
+ *
+ * ここでは `src/app/admin/**` の実ルートを走査し、ナビに載っているか、載せない理由を
+ * `UNLISTED_ADMIN_ROUTES` に登録してあるかのどちらかを強制する。
+ */
+describe('管理画面のルートはナビから辿れる', () => {
+  const routeDirs = readdirSync('src/app/admin', { withFileTypes: true })
+    .filter((e) => e.isDirectory())
+    .map((e) => `/admin/${e.name}`)
+    .filter((href) => existsSync(`src/app${href}/page.tsx`));
+
+  it('全ルートがナビ登録済みか、理由付きで非掲載登録されている', () => {
+    const listed = new Set(ADMIN_NAV.flatMap((g) => g.items.map((i) => i.href)));
+    const unlisted = new Set(Object.keys(UNLISTED_ADMIN_ROUTES));
+    const orphans = routeDirs.filter((href) => !listed.has(href) && !unlisted.has(href));
+    expect(orphans, `ナビから辿れない画面: ${orphans.join(', ')}`).toEqual([]);
+  });
+
+  it('非掲載の理由が空文字で誤魔化されていない', () => {
+    for (const [href, reason] of Object.entries(UNLISTED_ADMIN_ROUTES)) {
+      expect(reason.length, `${href} の非掲載理由`).toBeGreaterThan(10);
+    }
+  });
+
+  it('非掲載リストに実在しないルートが残っていない（消したのに残る、を防ぐ）', () => {
+    for (const href of Object.keys(UNLISTED_ADMIN_ROUTES)) {
+      expect(routeDirs, `${href} は実在しない`).toContain(href);
+    }
+  });
+});
+
+describe('重複ナビの一本化 (#421)', () => {
+  const adminHrefs = ADMIN_NAV.flatMap((g) => g.items.map((i) => i.href));
+
+  it('受付端末はナビに 1 つだけ（devices を正とする）', () => {
+    // `docs/site-device-management-design.md` の確定方針: Device を正とし、
+    // /admin/devices を主管理画面、/admin/kiosks は旧 token フロー互換で当面残す。
+    // ナビにも「受付端末」「受付端末（拠点別）」と対等に 2 つ並んでいたのが方針との乖離。
+    expect(adminHrefs).toContain('/admin/devices');
+    expect(adminHrefs).not.toContain('/admin/kiosks');
+  });
+
+  it('取次はナビに 1 つだけ（call-routing を正とする）', () => {
+    // `CallRoute`(#88) は **実際の発信が参照しない**（発信は executeRoutedCall →
+    // RoutingPolicy/ContactEndpoint #374）。「呼び出しルート」を設定しても実通話に
+    // 効かないので、対等に並べると誤解を生む。**#873 で旧画面ごと削除した**ので、
+    // いまは非掲載登録にも残っていない（`tests/config/legacy-call-routes-removal.test.ts`）。
+    expect(adminHrefs).toContain('/admin/call-routing');
+    expect(adminHrefs).not.toContain('/admin/call-routes');
+  });
+
+  it('ナビから外した旧画面は理由付きで非掲載登録する（消しはしない）', () => {
+    // kiosks は token 発行の旧フローが生きているので **消すのではなく legacy 表示へ寄せる**
+    // （#421 AC の段階廃止）。call-routes も当初はこちらだったが、参照が全部撤去され
+    // 「設定しても効かない画面」だけが残ったので #873 で削除へ倒した。
+    expect(Object.keys(UNLISTED_ADMIN_ROUTES)).toEqual(
+      expect.arrayContaining(['/admin/kiosks']),
+    );
+    expect(Object.keys(UNLISTED_ADMIN_ROUTES)).not.toContain('/admin/call-routes');
   });
 });

@@ -68,11 +68,28 @@ describe('toVisitorOrganization', () => {
 
 describe('listVisitorOrganizations', () => {
   it('無効・非公開の組織を除外する', () => {
+    // 並び順の主張はここではしない（下の displayOrder のテストが持つ）。ここは
+    // 「internal（非公開）と closed（無効）が落ちること」だけを見る。
+    expect(listVisitorOrganizations(UNITS, TENANT).map((o) => o.id).sort()).toEqual(
+      ['dev', 'sales', 'sales-1'].sort(),
+    );
+  });
+
+  /**
+   * 来訪者の画面はこの配列順にそのまま並ぶので、順序は見た目そのもの。
+   * `sales-1` は `displayOrder: 1`、`sales` / `dev` は既定の 0 なので後ろに来る。
+   */
+  it('displayOrder 昇順で並ぶ（同値は入力順を保つ）', () => {
     expect(listVisitorOrganizations(UNITS, TENANT).map((o) => o.id)).toEqual([
       'sales',
-      'sales-1',
       'dev',
+      'sales-1',
     ]);
+  });
+
+  it('公開表示名が空の組織は出さない（ラベルの無い押せるカードを作らない）', () => {
+    const blank = [...UNITS, unit({ id: 'blank', publicDisplayName: '   ' })];
+    expect(listVisitorOrganizations(blank, TENANT).map((o) => o.id)).not.toContain('blank');
   });
 
   it('他テナントの組織を参照できない', () => {

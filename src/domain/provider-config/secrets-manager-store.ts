@@ -58,7 +58,10 @@ function normalizePrefix(prefix: string): string {
 function rethrowRedacted(op: string, err: unknown): never {
   const name = err instanceof Error ? err.name : 'UnknownError';
   // secret 値・secretId は出さない。運用に要る最小情報（op と err.name）のみ。
-  console.error(`[tenant-secret-store] secrets manager ${op} failed`, { name });
+  // format 文字列は**定数**にし、可変部は構造化フィールドへ分離する。変数を format に
+  // 埋めると format specifier 注入でログを偽造でき、監査ログの信頼性を損なう
+  // （semgrep `unsafe-formatstring` / docs/audit-logging.md）。
+  console.error('[tenant-secret-store] secrets manager operation failed', { op, name });
   throw new Error(`tenant secret ${op} failed`);
 }
 

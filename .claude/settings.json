@@ -5,7 +5,52 @@
     "pr-review-toolkit@claude-plugins-official": true,
     "skill-creator@claude-plugins-official": true,
     "typescript-lsp@claude-plugins-official": true,
-    "security-guidance@claude-plugins-official": true
+    "security-guidance@claude-plugins-official": true,
+    "frontend-design@claude-plugins-official": true,
+    "aws-serverless@claude-plugins-official": true,
+    "playwright@claude-plugins-official": true,
+    "context7@claude-plugins-official": true
+  },
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"$CLAUDE_PROJECT_DIR/scripts/hooks/pr-gate-guard.sh\""
+          },
+          {
+            "type": "command",
+            "command": "bash \"$CLAUDE_PROJECT_DIR/scripts/hooks/guard-destructive.sh\""
+          },
+          {
+            "type": "command",
+            "command": "bash \"$CLAUDE_PROJECT_DIR/scripts/hooks/push-secret-guard.sh\""
+          }
+        ]
+      },
+      {
+        "matcher": "mcp__github__merge_pull_request|mcp__github__create_pull_request",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"$CLAUDE_PROJECT_DIR/scripts/hooks/pr-gate-guard.sh\""
+          }
+        ]
+      }
+    ],
+    "SessionStart": [
+      {
+        "matcher": "startup|resume",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"$CLAUDE_PROJECT_DIR/scripts/install_pkgs.sh\""
+          }
+        ]
+      }
+    ]
   },
   "permissions": {
     "allow": [
@@ -17,6 +62,12 @@
       "Bash(./scripts/quality-gate.sh:*)",
       "Bash(git status)",
       "Bash(git status:*)",
+      "Bash(git ls-files:*)",
+      "Bash(rg:*)",
+      "Bash(ls:*)",
+      "Bash(wc:*)",
+      "Bash(npm run change-risk)",
+      "Bash(npx vitest run:*)",
       "Bash(git diff:*)",
       "Bash(git log:*)",
       "Bash(git show:*)",
@@ -38,6 +89,7 @@
       "Bash(git switch:*)",
       "Bash(git worktree add:*)",
       "Bash(git worktree remove:*)",
+      "Bash(git push origin --delete:*)",
       "Bash(aws cloudformation list-stacks:*)",
       "Bash(aws cloudformation describe-stacks:*)",
       "Bash(aws sts get-caller-identity)"

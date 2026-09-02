@@ -29,7 +29,8 @@ import {
   type CheckinState,
 } from '@/domain/checkin/state';
 import { motionKeyForState, type MotionKey } from '@/domain/motion/types';
-import { RECEPTION_PURPOSES } from './session';
+import { RECEPTION_PURPOSES, type ReceptionPurposeId } from './session';
+import { shouldOfferAlternativeContact, type CallFailureReason } from './call-failure';
 
 // 契約モジュールの消費側（#121/#122/#123）が screenState 型を 1 箇所から import できるよう再エクスポート。
 export type { ReceptionState } from './state';
@@ -423,27 +424,53 @@ export function deriveAvatarEmotion(state: ReceptionState): AvatarEmotion {
 /**
  * 視線誘導先(gazeTarget)。次に触れるべき場所へ軽く視線を向ける意味論的ヒント。
  * 実際の VRM 視線適用は #65。'none' は誘導なし（操作を急かさない局面）。
+ *
+ * **指す先は画面に実在しなければならない**（#422 inc5-b）。存在しない領域を指すと、
+ * アバターが何も無い方を見つめる。各値の根拠は `reception-screens.tsx` の対応ビュー。
  */
 export const GAZE_TARGETS = ['none', 'answers', 'form', 'confirmCta', 'fallbackCta'] as const;
 export type GazeTarget = (typeof GAZE_TARGETS)[number];
 
-const SCREEN_TO_GAZE: Record<ReceptionState, GazeTarget> = {
-  idle: 'answers',
-  selectingPurpose: 'answers',
-  selectingTarget: 'answers',
-  inputVisitorInfo: 'form',
-  confirming: 'confirmCta',
-  calling: 'none',
-  connected: 'none',
-  failed: 'fallbackCta',
-  timeout: 'fallbackCta',
-  cancelled: 'none',
-  fallback: 'answers',
-  completed: 'none',
+/**
+ * ターンの導出に効く実行時文脈（screenState だけでは決まらない分）。
+ *
+ * 状態を増やさずに `failed` の中身を説明で分ける設計（`call-failure.ts`）に対応する。
+ * PII は持ち込まない（来訪者の氏名・会社名等はここに入れない）。
+ */
+export type TurnContext = {
+  /** 呼び出し失敗の理由。通信断では代替導線を約束しない（#422 / J-OR-05）。 */
+  callFailureReason?: CallFailureReason;
 };
 
-/** screenState から視線誘導先を導出する。 */
-export function gazeTargetFor(state: ReceptionState): GazeTarget {
+const SCREEN_TO_GAZE: Record<ReceptionState, GazeTarget> = {
+  idle: 'answers', // IdleView のクイックアクション
+  selectingPurpose: 'answers', // PurposeView のカード
+  selectingTarget: 'answers', // 担当者/部署の実行時リスト
+  inputVisitorInfo: 'form', // 氏名フォーム
+  confirming: 'confirmCta', // confirm-call
+  calling: 'none', // 待つだけの局面。操作を急かさない
+  connected: 'none', // 終了操作は任意（#324-5）
+  failed: 'fallbackCta', // use-fallback（通信断では出ないため下の文脈で 'none' へ落とす）
+  timeout: 'fallbackCta', // use-fallback
+  cancelled: 'none', // EndView（CTA 無し）
+  // FallbackView は CTA を一切持たない（#325 で fallback-reset を撤去し、後退は逃げ道バー
+  // escape-reset へ一本化した）。`defaultAnswersFor('fallback')` が [] を返すのと同じ理由で
+  // 視線を向ける先も無い。guidance.ts の cue は avatarState キー（'guiding'）のため
+  // selectingTarget と区別できず 'lookAtChoices' のままだが、screenState キーの本契約が正。
+  fallback: 'none',
+  completed: 'none', // EndView（満足度評価は任意で急かさない）
+};
+
+/**
+ * screenState から視線誘導先を導出する。
+ *
+ * `failed` だけは失敗理由で実際の CTA の有無が変わる（通信断では代替導線を出さない）ため、
+ * 文脈を受け取る。判断は `shouldOfferAlternativeContact` に一本化し、ここで二重実装しない。
+ */
+export function gazeTargetFor(state: ReceptionState, context?: TurnContext): GazeTarget {
+  if (state === 'failed' && !shouldOfferAlternativeContact(context?.callFailureReason)) {
+    return 'none';
+  }
   return SCREEN_TO_GAZE[state];
 }
 
@@ -493,11 +520,14 @@ export function messageKeyForState(state: ReceptionState): MessageKey {
  * こちらは「その画面の主指示（見出し相当）」を意味論キーから供給する（#324 の役割分担）。
  */
 const MESSAGE_TEXT_JA: Record<MessageKey, string> = {
-  welcome: 'ようこそ。ご用件をお選びください',
-  choosePurpose: 'ご用件の種類をお選びください',
-  chooseTarget: 'お訪ねする担当者・部署をお選びください',
-  enterVisitorInfo: 'お名前などをご入力ください',
-  reviewAndConfirm: '内容をご確認のうえ、お呼び出しください',
+  // 主指示を持つ画面は、実装の `<h1 className="screen__title">` と ja 文言を一致させる
+  // （#422 地ならし）。ズレていると、注入を忘れた箇所で見出しが変わる。対応する i18n キーは
+  // `ui-contract.test.ts` が辞書と突き合わせて固定している。
+  welcome: 'ご用件をお選びください', // reception.purposePrompt
+  choosePurpose: 'ご用件の種類をお選びください', // reception.purposeDetailPrompt
+  chooseTarget: '担当者・部署をお選びください', // reception.targetPrompt
+  enterVisitorInfo: '来訪者情報を入力してください', // reception.visitorInfoPrompt
+  reviewAndConfirm: '内容をご確認ください', // reception.confirm
   calling: '担当者を呼び出しています。少々お待ちください',
   connected: 'おつなぎしました。担当者がまいります',
   apologyTimeout: 'ただ今応答がありません。別の方法をご案内します',
@@ -517,9 +547,14 @@ export type InputMode = (typeof INPUT_MODES)[number];
 const SCREEN_TO_INPUT_MODES: Record<ReceptionState, ReadonlyArray<InputMode>> = {
   // 待機は QR 受付の入口を併記する（読み取りだけで発信しない導線: qr-scan→qr-confirm→calling）。
   idle: ['touch', 'qr'],
-  selectingPurpose: ['touch', 'voice', 'text'],
+  // 宣言は「実際に受け付けられる手段」に限る。実装に無い手段を宣言すると、腕が塞がっている・
+  // 視覚に頼れない来訪者に対する主張が事実でなくなる（差分 C' / ADR 0007 の独立レビューで判明）。
+  // 用件選択はカードのみ（PurposeView）。音声・文字の経路が無い。
+  selectingPurpose: ['touch'],
+  // 相手選択だけが音声の実結線点（VoiceSessionLayer → onResolved → SELECT_TARGET）。検索欄で文字も可。
   selectingTarget: ['touch', 'voice', 'text'],
-  inputVisitorInfo: ['touch', 'voice', 'text'],
+  // 氏名フォームで文字は可。音声で SUBMIT_VISITOR_INFO を生む経路は無い。
+  inputVisitorInfo: ['touch', 'text'],
   // 発信・個人情報確定は必ずタッチ確認のみ（音声だけで発信されない）。
   confirming: ['touch'],
   calling: ['touch'],
@@ -558,13 +593,33 @@ export type EscapeHatch = { action: ReceptionAction };
 const ESCAPE_HATCH_ACTIONS: ReadonlyArray<ReceptionAction> = ['back', 'reset'];
 
 /**
+ * 逃げ道バーに `back`（戻る）を重複表示しない状態 (#240 / #325)。
+ *
+ * 確認画面（confirming）は短い要約で、フッターの「修正する」(confirm-back) が常に到達可能。
+ * 常設バーの 戻る と二重になる後退系コントロールを整理する。戻る操作自体はフッターの
+ * 文脈ボタンで可能なので機能は失わない。
+ *
+ * selectingTarget（担当者一覧）/ inputVisitorInfo（入力フォーム）は内容がビューポートを
+ * 超え得るため除外しない。#325 でコンテンツ側の戻る（target-back/visitor-back）を撤去した
+ * ため、sticky で常時可視なバーの 戻る が**唯一の戻る導線**になる。
+ */
+const STATES_WITH_CONTEXTUAL_BACK: ReadonlySet<ReceptionState> = new Set(['confirming']);
+
+/**
  * そのターンで提示する逃げ道アクション（back/reset のうち availableActions にあるもの）。
  * idle は入口画面で戻る先が無いため出さない。
+ *
+ * **どの後退アクションを出すかの判断はここが唯一の権威**（#422 地ならし）。表示のための
+ * label/variant/testId は UI 側（`components/kiosk/quick-actions.ts`）が付ける。かつて
+ * 判断が両方に二重実装され、`confirming` の back 抑制が契約側に無いという食い違いがあった。
  */
 export function escapeHatchActionsFor(state: ReceptionState): ReadonlyArray<EscapeHatch> {
   if (state === 'idle') return [];
   const allowed = availableActions(state);
-  return ESCAPE_HATCH_ACTIONS.filter((action) => allowed.has(action)).map((action) => ({ action }));
+  const omitBack = STATES_WITH_CONTEXTUAL_BACK.has(state);
+  return ESCAPE_HATCH_ACTIONS.filter(
+    (action) => allowed.has(action) && !(action === 'back' && omitBack),
+  ).map((action) => ({ action }));
 }
 
 /** 会話ターンの回答候補（タッチ/音声/文字いずれの入力でも同じ intent へ収束させる）。 */
@@ -573,28 +628,109 @@ export type ConversationAnswer = {
   label: string;
   /** 選択時に起こす許可済みアクション（既定 answers は必ず availableActions の部分集合）。 */
   intent: ReceptionAction;
+  /**
+   * 目的選択を省いて先に確定する用件 (#422 inc5-b 増分 3b)。待機の入口カードだけが持つ。
+   * 「部署から選ぶ」「配送・納品」のような入口は、用件を先取りして担当者選択へ直行する。
+   * **別のアクションを作らない**（intent は 'start' のまま）。用件の先取りは受付の進み方
+   * ではなく、同じ受付開始に添える情報だから。
+   */
+  presetPurpose?: ReceptionPurposeId;
 };
+
+/**
+ * 状態機械を進めず、別のターン空間へ会話を引き渡す入口 (#422 inc5-b 増分 3b)。
+ *
+ * QR 受付は `CheckinFlow`（`domain/checkin/state.ts` の別状態機械。本契約では
+ * `checkinConversationTurnFor` が担う）へ切り替わる操作で、`ReceptionEvent` を発しない。
+ *
+ * **`answers` に混ぜない。** 回答は「このターンの問いへの答え」で、`intent` は必ず
+ * その状態で許可されたアクションでなければならない（自由文で不正操作に飛べない不変条件）。
+ * QR 受付に嘘の `intent`（'start' など）を与えるとその不変条件が意味を失う。会話そのものを
+ * 別のレールへ渡す操作なので、種類を分けて持つ。
+ */
+export type ConversationHandoff = {
+  id: string;
+  label: string;
+  /** 引き渡し先のターン空間。現状は QR 受付シェルのみ。 */
+  to: 'checkin';
+};
+
+/**
+ * 代替の連絡先へ進む回答（reception.altContact / use-fallback）。未応答と失敗の 2 経路が
+ * 同じものを返すので 1 箇所に持つ（文言が片方だけ直されて静かにズレるのを防ぐ）。
+ */
+const ALT_CONTACT_ANSWER: ConversationAnswer = {
+  id: 'fallback',
+  label: '代替の連絡先へ',
+  intent: 'useFallback',
+};
+
+/**
+ * 待機画面の入口（#422 inc5-b 増分 3b）。ja ラベルは辞書 `kiosk.action.<id>.label` と
+ * 一致させる（`ui-contract.test.ts` が突き合わせて固定）。表示順がそのままカードの並び順。
+ *
+ * `callStaff` は用件を先取りしない汎用導線で、残り 3 つは用件を先取りして担当者選択へ直行する。
+ */
+const IDLE_ENTRY_ANSWERS: ReadonlyArray<ConversationAnswer> = [
+  { id: 'callStaff', label: '担当者を呼ぶ', intent: 'start' },
+  { id: 'department', label: '部署から選ぶ', intent: 'start', presetPurpose: 'meeting' },
+  { id: 'delivery', label: '配送・納品', intent: 'start', presetPurpose: 'delivery' },
+  { id: 'other', label: 'その他のご用件', intent: 'start', presetPurpose: 'other' },
+];
+
+/** QR 受付への引き渡し。待機だけが持つ（受付の途中で別シェルへ飛ばさない）。 */
+const CHECKIN_HANDOFF: ConversationHandoff = {
+  id: 'checkin',
+  label: 'QR で受付',
+  to: 'checkin',
+};
+
+/** そのターンが提示する引き渡し入口。 */
+function defaultHandoffsFor(state: ReceptionState): ReadonlyArray<ConversationHandoff> {
+  return state === 'idle' ? [CHECKIN_HANDOFF] : [];
+}
 
 /**
  * ターン既定の回答候補（ja ラベル・静的な分だけ）。担当者/部署のような実行時リストは空にし、
  * component 層が `conversationTurnFor(state, { answers })` で注入する。
  */
-function defaultAnswersFor(state: ReceptionState): ReadonlyArray<ConversationAnswer> {
+function defaultAnswersFor(
+  state: ReceptionState,
+  context?: TurnContext,
+): ReadonlyArray<ConversationAnswer> {
   switch (state) {
+    // 待機の入口カード (#422 inc5-b 増分 3b)。すべて受付開始で、用件の先取りだけが違う。
+    // 「いつ出すか」は availableActions('idle') に start が在ることで既に保証されている。
+    case 'idle':
+      return IDLE_ENTRY_ANSWERS;
     case 'selectingPurpose':
       return RECEPTION_PURPOSES.map((p) => ({ id: p.id, label: p.label, intent: 'selectPurpose' }));
+    // ja 文言は**画面が実際に出しているもの**と一致させる（#422 地ならし）。フォールバックで
+    // ある以上ズレていると、注入を忘れた箇所で別の文言が出る。対応する i18n キーは
+    // `ui-contract.test.ts` が辞書と突き合わせて固定している。
     case 'confirming':
-      return [{ id: 'confirm', label: 'この内容で呼ぶ', intent: 'confirm' }];
-    case 'timeout':
+      // reception.callWithThis（confirm-call）
+      return [{ id: 'confirm', label: 'この内容で呼び出す', intent: 'confirm' }];
     case 'failed':
-      return [{ id: 'fallback', label: '別の方法でご連絡', intent: 'useFallback' }];
+      // ResultView は通信断のとき use-fallback を**出さない**。代替導線の文言は
+      // 「代表窓口にお繋ぎします」＝システムが取り次ぐ約束で、通信が切れている端末は
+      // それを果たせないため（`shouldOfferAlternativeContact`）。契約が無条件に返すと、
+      // 配線した時点でその果たせない約束が通信断の画面へ復活する。
+      if (!shouldOfferAlternativeContact(context?.callFailureReason)) return [];
+      return [ALT_CONTACT_ANSWER];
+    case 'timeout':
+      // 未応答は呼び出し自体が到達しているので、理由に依らず代替導線を出す。
+      return [ALT_CONTACT_ANSWER];
     case 'connected':
-      return [{ id: 'complete', label: '受付を終了', intent: 'complete' }];
-    case 'fallback':
-      return [{ id: 'complete', label: '受付を終了', intent: 'complete' }];
+      // reception.finishReception（complete）
+      return [{ id: 'complete', label: '受付を終える', intent: 'complete' }];
     default:
       // idle（クイックアクションが入口）/ selectingTarget・inputVisitorInfo（実行時リスト・フォーム）/
       // calling / completed / cancelled は既定の静的回答を持たない。
+      //
+      // fallback も持たない: FallbackView は CTA を一切持たず、後退は逃げ道バー
+      // （escape-reset）へ一本化されている (#325)。ここで answers を返すと、画面を
+      // ConversationTurnView へ配線した時点でボタンが増えて #325 の決定が退行する。
       return [];
   }
 }
@@ -620,10 +756,89 @@ export type ConversationTurnView = {
     speak: boolean;
   };
   answers: ReadonlyArray<ConversationAnswer>;
+  /** 状態機械を進めず別のターン空間へ渡す入口（待機の QR 受付）。回答とは種類が違う。 */
+  handoffs: ReadonlyArray<ConversationHandoff>;
   inputModes: ReadonlyArray<InputMode>;
   requiresExplicitConfirmation: boolean;
   escapeHatches: ReadonlyArray<EscapeHatch>;
 };
+
+/**
+ * 常設要素の領域 (#422 inc5-c 増分 2)。
+ *
+ * #422 の AC「常設要素を原則『案内・回答対象・ヘルプ』の 3 領域以内へ整理」を語彙にする。
+ *  - guidance: 今どういう局面かを伝える（アバター・字幕・主指示）
+ *  - answers:  この問いに答えるための操作（回答カード・入力欄・確定 CTA）
+ *  - help:     行き詰まったときの手段（逃げ道・チャット・言語切替・アクセシビリティ）
+ *
+ * **この契約が持つのはターン要素の帰属だけ。** 言語切替やアクセシビリティメニューのような
+ * 契約の外側にある常設要素は component 層の登録簿が持つ（domain は component の存在を
+ * 知らない。知らせると依存が逆流する）。
+ */
+export const PERSISTENT_REGIONS = ['guidance', 'answers', 'help'] as const;
+export type PersistentRegion = (typeof PERSISTENT_REGIONS)[number];
+
+/** `ConversationTurnView` の各部。領域帰属の対象。 */
+export type TurnPart = 'avatar' | 'message' | 'answers' | 'handoffs' | 'escapeHatches';
+
+const TURN_PART_REGION: Record<TurnPart, PersistentRegion> = {
+  avatar: 'guidance',
+  message: 'guidance',
+  answers: 'answers',
+  // 引き渡し（QR 受付）は押した結果が回答と違う（状態機械を進めず別シェルへ）が、
+  // 来訪者には入口カードと並んだ 1 枚として見える。領域としては同じ。
+  handoffs: 'answers',
+  escapeHatches: 'help',
+};
+
+/** ターン要素がどの領域に出るか。 */
+export function regionOfTurnPart(part: TurnPart): PersistentRegion {
+  return TURN_PART_REGION[part];
+}
+
+/**
+ * 常設要素の意味論キー (#500)。DOM の testid ではなく「何のための常設要素か」で持つ
+ * （domain は component の DOM を知らない。testid との対応は登録簿が持つ）。
+ */
+export const PERSISTENT_ELEMENT_KEYS = [
+  'escapeBar',
+  'chatDrawer',
+  'accessibilityMenu',
+  'languageSwitcher',
+  'checkoutLink',
+] as const;
+export type PersistentElementKey = (typeof PERSISTENT_ELEMENT_KEYS)[number];
+
+/**
+ * その常設要素をその局面で出すか (#500)。
+ *
+ * **「いつ出すか」の判断をここへ一本化する。** 逃げ道とチャットは既に契約が決めていたが、
+ * 言語切替・退館・アクセシビリティは component の分岐に散っていた。同じ種類の判断が二層に
+ * 分かれていると、片方だけ直してズレる（#489→#492 で実際に起きた）。
+ *
+ * 逃げ道とチャットは**既存の導出へ委譲する**（ここで再実装しない＝二重定義を作らない）。
+ */
+export function isPersistentVisible(
+  key: PersistentElementKey,
+  state: ReceptionState,
+): boolean {
+  switch (key) {
+    case 'escapeBar':
+      // 後退できる局面だけ。idle は戻る先が無い（#325）。
+      return escapeHatchActionsFor(state).length > 0;
+    case 'chatDrawer':
+      // 受付が進行中の局面だけ。待機/終端では閉じる（#122）。
+      return deriveChatAvailability(state) === 'available';
+    case 'accessibilityMenu':
+      // 全 kiosk 画面で 1〜2 タップで到達できること（#321 の AC）。
+      return true;
+    case 'languageSwitcher':
+    case 'checkoutLink':
+      // 待機だけ。受付が始まったら言語は選び終えており、退館は別の用事。
+      // 進行中に出すと来訪者の注意が本筋から逸れる（#103 / #102）。
+      return state === 'idle';
+  }
+}
 
 /** 通話中はアバターが発話を止める（#361 レイアウト方針）。 */
 const NON_SPEAKING_STATES: ReadonlySet<ReceptionState> = new Set<ReceptionState>(['connected']);
@@ -631,19 +846,23 @@ const NON_SPEAKING_STATES: ReadonlySet<ReceptionState> = new Set<ReceptionState>
 /**
  * screenState（+ component 層が locale 解決した表示値）から ConversationTurnView を組み立てる純関数。
  *
- * `overrides.message` を渡すと displayText/speechText を差し替え（多言語や人名読みの反映）、
- * `overrides.answers` を渡すと回答候補を差し替える（担当者/部署の実行時リストの注入）。
+ * `options.message` を渡すと displayText/speechText を差し替え（多言語や人名読みの反映）、
+ * `options.answers` を渡すと回答候補を差し替える（担当者/部署の実行時リストの注入）。
  * いずれも省略時は ja の意味論的既定値を使う。domain は component へ依存しない。
+ *
+ * `TurnContext`（現状は `callFailureReason`）だけは差し替えではなく**導出に効く文脈**で、
+ * screenState だけでは決まらない分を補う。通信断の `failed` は代替導線を約束しないため、
+ * 既定 answers と gazeTarget の両方がこの文脈で変わる（#422 inc5-b）。
  */
 export function conversationTurnFor(
   state: ReceptionState,
-  overrides?: {
+  options?: {
     message?: { displayText: string; speechText?: string };
     answers?: ReadonlyArray<ConversationAnswer>;
-  },
+  } & TurnContext,
 ): ConversationTurnView {
   const semanticKey = messageKeyForState(state);
-  const gazeTarget = gazeTargetFor(state);
+  const gazeTarget = gazeTargetFor(state, options);
   return {
     stateKey: state,
     avatar: {
@@ -655,13 +874,14 @@ export function conversationTurnFor(
     },
     message: {
       semanticKey,
-      displayText: overrides?.message?.displayText ?? MESSAGE_TEXT_JA[semanticKey],
-      ...(overrides?.message?.speechText !== undefined
-        ? { speechText: overrides.message.speechText }
+      displayText: options?.message?.displayText ?? MESSAGE_TEXT_JA[semanticKey],
+      ...(options?.message?.speechText !== undefined
+        ? { speechText: options.message.speechText }
         : {}),
       speak: !NON_SPEAKING_STATES.has(state),
     },
-    answers: overrides?.answers ?? defaultAnswersFor(state),
+    answers: options?.answers ?? defaultAnswersFor(state, options),
+    handoffs: defaultHandoffsFor(state),
     inputModes: inputModesFor(state),
     requiresExplicitConfirmation: requiresExplicitConfirmationFor(state),
     escapeHatches: escapeHatchActionsFor(state),
@@ -828,27 +1048,35 @@ export function checkinRequiresExplicitConfirmation(state: CheckinState): boolea
   return checkinTransition(state, 'CONFIRM') === 'calling';
 }
 
-/** QR 受付シェルの逃げ道（後退・切替）。表示ラベルは component 層が担う。 */
+/** QR 受付シェルの逃げ道（後退のみ）。表示ラベルは component 層が担う。 */
 export type CheckinEscapeHatch = { event: CheckinEvent };
 
 /**
- * 逃げ道として提示しうるイベント（後退・通常受付への切替・待機へリセット）。
- * どれを実際に出すかは状態機械の許可に従う（存在しない遷移は出さない）。
+ * 逃げ道として提示するイベント。**後退だけを持つ** (#361 AC2)。
+ *
+ * 受付側 (`ESCAPE_HATCH_ACTIONS`) は #325 で後退語彙を `back`/`reset` の 2 語へ集約した。
+ * QR 受付の状態機械に 1 ステップ戻る遷移は無いので、ここは `RESET`（最初に戻る）1 語になる。
+ *
+ * 含めないものと、その理由:
+ *  - `CHOOSE_MANUAL` / `USE_MANUAL`（通常受付へ切替）… 押すと受付が**前へ進む**（手入力受付
+ *    へ移る）。後退バーへ混ぜると来訪者が「戻る」と思って別の受付方法へ移動してしまう。
+ *    #325 が `useFallback`（代替の連絡先へ）をバーから外したのと同じ判断で、各画面の
+ *    コンテンツ側の主 CTA に置く。
+ *  - `CANCEL`（中断）… 来訪者は 戻る / やめる / 最初に戻る を判別しにくい (#325)。後退の
+ *    語彙を 1 つに保つため、バーには出さない。状態機械の CANCEL 遷移自体は変更しない
+ *    （`confirming` の「やめる」は確認画面の文脈固有コントロールとして残る）。
  */
-const CHECKIN_ESCAPE_EVENTS: ReadonlyArray<CheckinEvent> = [
-  'CHOOSE_MANUAL', // 受付方法選択から通常受付へ
-  'USE_MANUAL', // エラーから通常受付へ
-  'CANCEL', // 中断
-  'RESET', // 最初に戻る（全状態から待機へ）
-];
+const CHECKIN_ESCAPE_EVENTS: ReadonlyArray<CheckinEvent> = ['RESET'];
 
 /**
- * そのターンで提示する逃げ道イベント。idle は入口で戻る先が無いため出さない。RESET は
- * 状態機械上どの状態からも idle へ戻せる安全弁のため常に許可する（idle を除く）。それ以外は
- * `checkinTransition` が非 null を返すものだけを出す（許可外は出さない）。
+ * そのターンで提示する逃げ道イベント。**全ターンで出す**。
+ *
+ * `RESET` は状態機械上どの状態からも idle へ戻せる安全弁なので、常に許可される。受付側は
+ * idle（kiosk の根＝戻る先が無い）だけ出さないが、**QR 受付の idle は kiosk 待機から
+ * `handoffs` で降りてきた 1 つ下**で「最初に戻る」先が実在する。ここを受付と同じ扱いにすると
+ * QR に入った来訪者が帰れない行き止まりになる。
  */
 export function checkinEscapeHatchesFor(state: CheckinState): ReadonlyArray<CheckinEscapeHatch> {
-  if (state === 'idle') return [];
   return CHECKIN_ESCAPE_EVENTS.filter((event) =>
     event === 'RESET' ? true : checkinTransition(state, event) !== null,
   ).map((event) => ({ event }));
@@ -880,11 +1108,11 @@ export type CheckinTurnView = {
 
 /**
  * CheckinState（+ component 層が locale 解決した字幕）から CheckinTurnView を組み立てる純関数。
- * `overrides.message.displayText` を渡すと字幕を差し替え（多言語対応）。省略時は ja 既定値。
+ * `options.message.displayText` を渡すと字幕を差し替え（多言語対応）。省略時は ja 既定値。
  */
 export function checkinConversationTurnFor(
   state: CheckinState,
-  overrides?: {
+  options?: {
     message?: { displayText: string };
   },
 ): CheckinTurnView {
@@ -900,7 +1128,7 @@ export function checkinConversationTurnFor(
     },
     message: {
       semanticKey,
-      displayText: overrides?.message?.displayText ?? CHECKIN_MESSAGE_TEXT_JA[semanticKey],
+      displayText: options?.message?.displayText ?? CHECKIN_MESSAGE_TEXT_JA[semanticKey],
       speak: true,
     },
     inputModes: checkinInputModesFor(state),

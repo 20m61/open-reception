@@ -30,7 +30,12 @@ export async function POST(request: Request): Promise<NextResponse> {
   const payload = readPayload(body);
   if (payload === null) return NextResponse.json({ error: 'invalid' }, { status: 400 });
 
-  const { tenantId, siteId } = resolveCheckinScope(session.kioskId);
+  // 🔴 端末が台帳に無ければ拒否する。既定テナントへ倒すと**他テナントの予約を引ける**。
+  const scope = await resolveCheckinScope(session.kioskId);
+  if (!scope) {
+    return NextResponse.json({ error: 'forbidden', message: 'kiosk is not registered' }, { status: 403 });
+  }
+  const { tenantId, siteId } = scope;
   let summary;
   try {
     const result = await getCheckinService().confirm(tenantId, siteId, payload);
@@ -55,8 +60,13 @@ export async function POST(request: Request): Promise<NextResponse> {
   }
 
   // QR 受付であることを監査に残す（PII なし。受付方法と呼び出し先種別のみ）。
+  //
+  // 🔴 **`reception.connected` を書かない (#736)。** ここは受付セッションを作った時点で、
+  // 呼び出しはまだ行われていない（実際に呼ぶのは端末が続けて叩く `/call`）。
+  // 「接続した」と書くと、**誰も呼ばれていない受付が監査上は接続済みとして残る**。
+  // 接続の確定は `/status` の遅延評価が `markConnected` で書く（actor は `'staff'`）。
   await appendAuditLog({
-    action: 'reception.connected',
+    action: 'reception.created',
     actor: `kiosk:${session.kioskId}`,
     targetType: 'reception',
     targetId: created.value.id,

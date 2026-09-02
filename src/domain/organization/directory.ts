@@ -13,6 +13,7 @@
  */
 import { searchStaffScored } from '@/domain/staff/search';
 import { ancestorsOf } from './hierarchy';
+import { isVisibleToVisitor } from './visibility';
 import type {
   OrganizationMembership,
   OrganizationRelation,
@@ -89,7 +90,10 @@ function publicUnitsInScope(
   units: ReadonlyArray<OrganizationUnit>,
   scope: OrganizationScope,
 ): OrganizationUnit[] {
-  return scopeOrganizationUnits(units, scope).filter((u) => u.enabled && u.publicInDirectory);
+  // 判定は `isVisibleToVisitor` に一本化する。管理画面は同じ判定で「なぜ出ないか」を
+  // 運用者へ説明するので、ここに条件を書き足すと**管理画面が「見える」と言っているのに
+  // 来訪者には出ない**という食い違いが生まれる。
+  return scopeOrganizationUnits(units, scope).filter(isVisibleToVisitor);
 }
 
 function toVisitorList(units: ReadonlyArray<OrganizationUnit>): VisitorOrganization[] {
@@ -97,12 +101,31 @@ function toVisitorList(units: ReadonlyArray<OrganizationUnit>): VisitorOrganizat
   return units.map((u) => toVisitorOrganization(u, publicIds));
 }
 
-/** 来訪者向け組織一覧。 */
+/**
+ * 来訪者向け組織一覧。
+ *
+ * **`displayOrder` 昇順で返す。** 来訪者の画面はこの配列順にそのまま並ぶので、順序は
+ * 見た目そのもの。運用者が並べ替えた意図（先頭に来る 2〜3 件で視線を誘導する）が
+ * 効かないと、順序を持たせている意味が無くなる。
+ *
+ * 同値のときは**入力順を保つ**（安定ソート）。`displayOrder` が重複する既存データで
+ * 並びが揺れると、旧経路（`listDepartments` の displayOrder ソート）と食い違う。
+ *
+ * `displayOrder` は**階層を跨いだ平坦な順序**として扱う。来訪者の組織一覧は今のところ
+ * 平坦に描画され（`reception-screens.tsx` の部署カード）、親子を隣接させる規則を持たない。
+ * 階層を見せる UI を作るときは、そのときの描画規則に合わせた並べ替えをその層で行うこと
+ * （ここで木構造を前提にすると、平坦描画側が勝手に並べ替えられて意図が二重になる）。
+ */
 export function listVisitorOrganizations(
   units: ReadonlyArray<OrganizationUnit>,
   scope: OrganizationScope,
 ): VisitorOrganization[] {
-  return toVisitorList(publicUnitsInScope(units, scope));
+  const inScope = publicUnitsInScope(units, scope);
+  const ordered = inScope
+    .map((unit, index) => ({ unit, index }))
+    .sort((a, b) => a.unit.displayOrder - b.unit.displayOrder || a.index - b.index)
+    .map((entry) => entry.unit);
+  return toVisitorList(ordered);
 }
 
 /**
@@ -154,6 +177,14 @@ export type AffiliationQuery = {
    */
   now: string;
   /**
+   * 祖先（パンくず）を組み立てるか。既定 true（従来の挙動）。
+   *
+   * **false にすると劇的に速い。** `ancestorsOf` は所属 1 件ごとに全組織の索引を作り直すため、
+   * 担当者 × 所属の回数だけ全走査が走る。ラベル用途（`affiliationSummaryLabel` を
+   * `includeAncestors` 無しで呼ぶ）では結果が 100% 捨てられるので、明示的に切ること。
+   */
+  includeAncestors?: boolean;
+  /**
    * 参照可能な tenant/site 境界。**必須**。任意にすると呼び忘れで境界が漏れ、他テナント組織の
    * ラベルが出たり（`resolveStaffAffiliations`）、他テナント staff が呼び出し候補へ混ざる
    * （`listCallableMembers`）。`now` と同じく「安全でない側が既定」を避けるため必須にする。
@@ -186,7 +217,7 @@ export function resolveStaffAffiliations(
     const affiliation: StaffAffiliation = {
       unit,
       membership,
-      ancestors: ancestorsOf(visible, unit.id),
+      ancestors: query.includeAncestors === false ? [] : ancestorsOf(visible, unit.id),
     };
     if (membership.relation === 'primary') {
       // 主所属は最大 1 件。既に在る場合は最初のものを正とする。
@@ -214,9 +245,9 @@ export type VisitorStaffAffiliations = {
   acting: VisitorStaffAffiliation[];
 };
 
-function isPublic(unit: OrganizationUnit): boolean {
-  return unit.enabled && unit.publicInDirectory;
-}
+// 所属ラベル経路も来訪者向け一覧と**同じ判定**を使う。片方だけに条件を足すと
+// `営業部（兼:    ）` のような壊れたラベルが出る（実際に一度そうなった）。
+const isPublic = isVisibleToVisitor;
 
 function toVisitorAffiliation(affiliation: StaffAffiliation): VisitorStaffAffiliation | undefined {
   if (!isPublic(affiliation.unit)) return undefined;

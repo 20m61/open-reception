@@ -45,9 +45,26 @@ export interface Collection<T extends { id: string }> {
   /** 作成または上書き（read-modify-write は呼び出し側で行う）。 */
   put(item: T): Promise<void>;
   /**
+   * **不在のときだけ**作成する（条件付き作成）。既に存在するなら何もせず `false`。
+   *
+   * `get` → 無ければ `put` は原子的でないので、2 人が同時に初回作成すると片方が
+   * **無言で消える**（`updateIf` は `attribute_exists(PK)` を必須にするため作成には使えない）。
+   * 最初の 1 件が緊急停止の設定なら、消えた側は「止めたつもり」のまま残る。
+   */
+  putIfAbsent(item: T): Promise<boolean>;
+  /**
    * 条件付き**部分更新**（atomic compare-and-set）。対象 id の**現在値**が `expected` の全フィールドに
    * 一致するときのみ、`changes` のフィールドだけを更新し `true` を返す。値が `undefined` の changes は
    * 属性削除（REMOVE）。一致しない / 対象が存在しないなら何もせず `false`。
+   *
+   * 🔴 **`put` の置き換えではない。マージである** (#796)。`changes` に**書かなかったキーは
+   * 旧値が残る**。任意フィールドを空にしたいなら **`undefined` を明示する**しかない。
+   *
+   * `put` を `updateIf` へ移すとき（CAS が欲しくなったとき）にレコード全体を渡すと、
+   * **任意フィールドを消したつもりが消えない**。#795 で実際に踏み、営業時間外画面が
+   * **廃止した緊急連絡先を来訪者に出し続けた**（API は「消えた」と答えるのに）。
+   * 症状は**任意フィールドを消したときだけ**出るので、通常の更新テストでは現れない。
+   * 意味論は `update-if-contract.test.ts` が memory / dynamo の両方で固定している。
    *
    * アイテム**全体を置換しない**ため、read→write 間に別フィールドへ並行更新が入っても失われない
    * （lost-update を避ける）。使い捨てトークンの二重消費防止などに使う。memory は単一スレッドの同期

@@ -8,6 +8,10 @@ import {
 } from '@/lib/i18n';
 import type { LanguageSettings } from '@/lib/i18n/language-settings';
 import { Button, Field, SaveFeedback, useSaveFeedback } from '@/components/admin/ui';
+import { AdminReadGate } from './AdminReadGate';
+import { useUnsavedChanges } from './use-unsaved-changes';
+import { useUnsavedChangesGuard } from './use-unsaved-changes-guard';
+import { UnsavedChangesDialog } from './UnsavedChangesDialog';
 
 /**
  * 通常の言語設定に出す locale（#321: 'ja-simple' はここには出さない）。
@@ -22,12 +26,23 @@ const DISPLAY_LOCALES = SUPPORTED_LOCALES.filter((value) => value !== 'ja-simple
  */
 export function LanguageSettingsManager() {
   const [s, setS] = useState<LanguageSettings | null>(null);
+  const [loadFailed, setLoadFailed] = useState(false);
   const [busy, setBusy] = useState(false);
+  // 未保存のまま離脱しようとしたら止める (#912 / 課題 12)。
+  const { dirty, markSaved } = useUnsavedChanges(s);
+  const guard = useUnsavedChangesGuard(dirty);
   const { feedback, success, failure, clear } = useSaveFeedback();
 
   const load = useCallback(async () => {
-    const res = await fetch('/api/admin/languages');
-    if (res.ok) setS((await res.json()) as LanguageSettings);
+    // `catch` を省くとオフラインで例外になり、`void load()` が握り潰して
+    // **失敗にすら落ちない**（画面は「読み込み中…」のまま固まる）。
+    const res = await fetch('/api/admin/languages').catch(() => null);
+    if (!res?.ok) {
+      setLoadFailed(true);
+      return;
+    }
+    setS((await res.json()) as LanguageSettings);
+    setLoadFailed(false);
   }, []);
 
   useEffect(() => {
@@ -55,7 +70,9 @@ export function LanguageSettingsManager() {
         body: JSON.stringify(s),
       });
       if (res.ok) {
-        setS((await res.json()) as LanguageSettings);
+        const next = (await res.json()) as LanguageSettings;
+        setS(next);
+        markSaved(next);
         success();
       } else {
         failure();
@@ -63,19 +80,27 @@ export function LanguageSettingsManager() {
     } finally {
       setBusy(false);
     }
-  }, [s, busy, success, failure, clear]);
+  }, [s, busy, markSaved, success, failure, clear]);
 
   if (!s) {
     return (
-      <section>
-        <h1 style={{ marginTop: 0 }}>言語設定</h1>
-        <p>読み込み中…</p>
-      </section>
+      <AdminReadGate
+        heading="言語設定"
+        failed={loadFailed}
+        failureMessage="言語設定を取得できませんでした。通信状況を確認して再試行してください。"
+        onRetry={() => void load()}
+        testId="languages-unavailable"
+      />
     );
   }
 
   return (
     <section style={{ maxWidth: 560 }}>
+      <UnsavedChangesDialog
+        pendingHref={guard.pendingHref}
+        onLeave={guard.leave}
+        onStay={guard.stay}
+      />
       <h1 style={{ marginTop: 0 }}>言語設定</h1>
       <p style={{ color: 'var(--color-muted)' }}>
         受付端末で選べる言語と、最初に表示する言語を設定します。音声が使えない場合も画面で受付を完了できます。

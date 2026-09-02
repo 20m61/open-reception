@@ -11,13 +11,13 @@
  * 再現する。データが揃っているだけで表示されない状態（旧 Inc1 の制約）を解消する。
  *
  * サンドボックス安全設計（#363 最重要 AC）:
- *   Vonage 発信失敗の「段階表示」は KioskCallView（`vonageCallId` が立つ非同期経路）を経由
- *   しないと実際には見えない（`case 'calling'` は `vonageCallId` が無いとき従来の CallingView を
- *   描画し、stages を使わない）。しかし KioskCallView は VonageCallClient 経由で実 CDN
+ *   Vonage 発信失敗の「取次 hops 段階表示」は KioskCallView（`vonageCallId` が立つ非同期経路）
+ *   を経由しないと見えない。来訪者向け待ち段（dialing/waiting/preTimeoutNotice）は
+ *   #832 以降 CallingView が常に出す。KioskCallView は VonageCallClient 経由で実 CDN
  *   （opentok.js）を動的ロードしうる — token 取得（`/token`）が成立して初めて `client.connect()`
  *   が呼ばれる（call-controller.ts）。よって「段階表示 → 失敗」の再現は **token を必ず非 ok で
  *   返す**（mock-adapter.ts）ことで `client.connect()` 自体を回避し、外部 SDK ロードを一切
- *   発生させない。'answered'/'no_answer' など段階表示を伴わない終端は従来どおり `/call` が
+ *   発生させない。'answered'/'no_answer' など hops を伴わない終端は従来どおり `/call` が
  *   直接終端状態を返す同期経路のままにし、実 SDK 接続を要する非同期経路には踏み込まない。
  */
 import type { ReceptionState } from '@/domain/reception/state';
@@ -297,6 +297,9 @@ export function deriveKioskFlowProps(
   nowMs: number = Date.now(),
 ): KioskFlowProps {
   return {
+    // シナリオが宣言した受付モードを実際に反映する (#736 検証用)。ここが繋がっていないと
+    // 「QR 期限切れ」を選んでも通常受付で起動し、E2E からその画面へ到達できない。
+    initialMode: scenario.initialMode === 'qr' ? 'checkin' : 'normal',
     operatingStatus: deriveOperatingStatus(scenario, nowMs),
     sttAdapterFactory: deriveSttAdapterFactory(scenario),
     qrScanner: deriveQrScanner(scenario),

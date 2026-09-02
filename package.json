@@ -9,7 +9,11 @@
     "start": "next start",
     "build:open-next": "open-next build",
     "seed:dynamodb": "tsx scripts/seed-dynamodb.ts",
-    "lint": "eslint .",
+    "evaluate:gate-runs": "tsx scripts/evaluate-gate-runs.ts",
+    "loop:retro": "tsx scripts/loop-retro.ts",
+    "change-risk": "tsx scripts/change-risk.ts",
+    "lint": "tsx scripts/lint-with-budget.ts",
+    "lint:suppressions": "node scripts/check-lint-suppressions.mjs",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",
@@ -20,9 +24,14 @@
     "test:soak:8h": "SOAK_MODE=8h playwright test --config=playwright.soak.config.ts",
     "verify": "npm run typecheck && npm run lint && npm test && npm run build",
     "lighthouse": "lhci autorun",
-    "audit:deps": "npm audit --omit=dev",
-    "sast": "semgrep scan --config p/default --error",
-    "secrets:scan": "gitleaks detect --no-banner --redact"
+    "vrm:check": "bash scripts/vrm-check.sh",
+    "audit:deps": "tsx scripts/audit-deps.ts",
+    "sast": "bash scripts/sast.sh",
+    "secrets:scan": "gitleaks detect --no-banner --redact",
+    "test:e2e:live": "bash scripts/e2e-live.sh",
+    "delegate:prompt": "tsx scripts/delegate-gate-prompt.ts",
+    "aws:diff-gate": "tsx scripts/aws-diff-gate.ts",
+    "aws:negative-tests": "tsx scripts/aws-negative-tests.ts"
   },
   "dependencies": {
     "@aws-sdk/client-cognito-identity-provider": "^3.1076.0",
@@ -62,7 +71,7 @@
     "node": ">=22"
   },
   "overrides": {
-    "postcss": ">=8.5.10",
+    "postcss": ">=8.5.18",
     "sharp": ">=0.35.0",
     "tmp": ">=0.2.5",
     "@lhci/cli": {

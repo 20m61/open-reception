@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { Actor } from '@/domain/tenant/authorization';
+import { ISSUER_UNKNOWN } from '@/domain/reservation/invitation';
 import { asSiteId, asTenantId } from '@/domain/tenant/types';
 import type { AuditAction } from '@/domain/reception/log';
 import type { CreateReservationInput } from '@/domain/reservation/types';
@@ -205,5 +206,46 @@ describe('ReservationService ライフサイクル (#97)', () => {
     // 参照時に expired が永続化されている。
     const got = await svc.get(developer, T_A, S_1, id);
     expect(got.ok && got.value.status).toBe('expired');
+  });
+});
+
+
+describe('発行者の記録 (#375)', () => {
+  it('発行した運用者を記録する（誰が QR を出したかを失わない）', async () => {
+    const { svc } = makeService();
+    const created = await svc.create(tenantAdminA, input(), {
+      actorType: 'admin',
+      identity: 'TEST-operator@example.com',
+    });
+    expect(created.ok).toBe(true);
+    if (!created.ok) return;
+    expect(created.value.issuedBy).toEqual({
+      actorType: 'admin',
+      identity: 'TEST-operator@example.com',
+    });
+  });
+
+  it('発行者を渡さなければ不明として記録する（推測で埋めない）', async () => {
+    const { svc } = makeService();
+    const created = await svc.create(tenantAdminA, input());
+    expect(created.ok).toBe(true);
+    if (!created.ok) return;
+    // 受付対象を発行者とみなすと、代理発行が入った瞬間に嘘の監査情報になる（#375 / ADR 参照）。
+    expect(created.value.issuedBy).toEqual(ISSUER_UNKNOWN);
+  });
+
+  it('クライアントが発行者を詐称できない（入力に issuedBy を置いても無視される）', async () => {
+    const { svc } = makeService();
+    const spoofed = { ...input(), issuedBy: { actorType: 'staff', staffId: 'staff-sato' } };
+    const created = await svc.create(tenantAdminA, spoofed as never, {
+      actorType: 'admin',
+      identity: 'TEST-operator@example.com',
+    });
+    expect(created.ok).toBe(true);
+    if (!created.ok) return;
+    expect(created.value.issuedBy).toEqual({
+      actorType: 'admin',
+      identity: 'TEST-operator@example.com',
+    });
   });
 });

@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import {
   SIGNAGE_CONTENT_TYPES,
   type SignageConfig,
@@ -9,6 +9,9 @@ import {
 } from '@/domain/signage/types';
 import { Button, Field, FormRow, SaveFeedback, Section, useSaveFeedback } from '@/components/admin/ui';
 import { color, radius, space } from '@/components/admin/ui/tokens';
+import { useSiteScope } from './use-site-scope';
+import { SiteScopeSelect } from './SiteScopeSelect';
+import { resolveScopeGate } from './scope-gate';
 
 /**
  * 待機中サイネージ 管理画面 (issue #101, increment 1)。
@@ -20,11 +23,12 @@ import { color, radius, space } from '@/components/admin/ui/tokens';
  * オリジンのみ（サーバ側 rotation.validateConfig が http(s) を強制）。素材ライセンスは
  * #105 に従う（docs/signage-mode-design.md）。
  *
- * actor の実テナント解決は #80 配線に依存する。inc1 は単一テナント運用の互換シード
- * `internal` を既定にし、siteId は画面上部で選択（暫定は手入力 + 既定値）する。
+ * **対象拠点は URL が真実源** (#554)。以前は component state ＋自由入力で、既定は
+ * ローカル定数の `'default'` だった。**実在する既定拠点は `'default-site'`** なので、
+ * 管理画面は `'default'` に保存し、受付端末（`SignageDisplay` は共有の `DEFAULT_SITE_ID`
+ * ＝ `'default-site'` を読む）はそれを見に行かない — **保存した設定が端末に反映されない**
+ * 状態だった。テナントも `'internal'` 固定で、テナントを切り替えても同じ設定を編集していた。
  */
-const DEFAULT_TENANT_ID = 'internal';
-const DEFAULT_SITE_ID = 'default';
 
 const TYPE_LABEL: Record<SignageContentType, string> = {
   clock: '時計',
@@ -44,37 +48,80 @@ function newItem(): SignageItem {
 type FieldError = { field: string; message: string };
 
 export function SignageManager({
-  tenantId = DEFAULT_TENANT_ID,
-  initialSiteId = DEFAULT_SITE_ID,
+  tenantId,
+  siteId: defaultSiteId,
 }: {
-  tenantId?: string;
-  initialSiteId?: string;
+  tenantId: string;
+  /** サーバが解決した既定拠点（`resolveDefaultScope().siteId`）。ヘッダの対象拠点と同じ出所。 */
+  siteId: string;
 }) {
-  const [siteId, setSiteId] = useState(initialSiteId);
+  const { sites, siteId, scopeKey, scopeReady, isCurrentScope, selectSite, sitePending, listStatus, reloadSites } =
+    useSiteScope(tenantId, defaultSiteId);
   const [config, setConfig] = useState<SignageConfig | null>(null);
+  /**
+   * **どのスコープの設定が今フォームに載っているか。**
+   *
+   * ここを持たないと、拠点 A の設定を編集している最中に B へ切り替えたとき、
+   * **フォームには A の内容が残ったまま `siteId` だけ B になり、保存すると A の内容を
+   * B へ書き込む**（#541 レビュー P1 と同型）。テナントを含む `scopeKey` で持つ。
+   */
+  const [configScopeKey, setConfigScopeKey] = useState<string | null>(null);
+  const dataLoaded = configScopeKey === scopeKey;
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  /** 取得の失敗だけを別に持つ（`error` は保存の失敗にも使うため理由がすり替わる）。 */
+  const [loadFailed, setLoadFailed] = useState(false);
   const [fieldErrors, setFieldErrors] = useState<FieldError[]>([]);
   const { feedback, success, failure, clear } = useSaveFeedback();
 
-  const scopeQuery = useMemo(
-    () => `tenantId=${encodeURIComponent(tenantId)}&siteId=${encodeURIComponent(siteId)}`,
-    [tenantId, siteId],
-  );
+  /** 可否の判断は 1 箇所。ハンドラも保存ボタンの `disabled` もこの値を見る。 */
+  const gate = resolveScopeGate({
+    scopeReady,
+    dataLoaded,
+    sitePending,
+    busy,
+    listStatus,
+    loadFailed,
+    hasSites: sites.length > 0,
+  });
 
   const load = useCallback(async () => {
+    // 拠点が確定するまで取得しない（既定拠点と URL 指定で 2 本飛ばさない）。
+    if (!scopeReady) return;
+    const startedWith = scopeKey;
     setError(null);
-    const res = await fetch(`/api/admin/signage?${scopeQuery}`);
+    let res: Response;
+    try {
+      res = await fetch(
+        `/api/admin/signage?tenantId=${encodeURIComponent(tenantId)}&siteId=${encodeURIComponent(siteId)}`,
+      );
+    } catch {
+      if (!isCurrentScope(startedWith)) return;
+      setLoadFailed(true);
+      setError('読み込みに失敗しました');
+      return;
+    }
+    // 取得中に拠点／テナントが変わっていたら捨てる。
+    if (!isCurrentScope(startedWith)) return;
     if (res.ok) {
+      setLoadFailed(false);
+      setConfigScopeKey(startedWith);
       setConfig((await res.json()) as SignageConfig);
     } else {
+      setLoadFailed(true);
       setError('読み込みに失敗しました');
     }
-  }, [scopeQuery]);
+  }, [tenantId, siteId, scopeKey, scopeReady, isCurrentScope]);
 
   useEffect(() => {
+    // 拠点が変わった瞬間に前拠点の設定をフォームから捨てる。**編集中の内容ごと消す** —
+    // 残すと「B を選んでいるのに A の内容を編集している」状態になり、保存で越境する。
+    setConfigScopeKey((prev) => (prev === scopeKey ? prev : null));
+    setConfig((prev) => (prev === null ? prev : null));
+    setLoadFailed(false);
+    setFieldErrors([]);
     void load();
-  }, [load]);
+  }, [load, scopeKey]);
 
   const update = useCallback((patch: Partial<SignageConfig>) => {
     setConfig((c) => (c ? { ...c, ...patch } : c));
@@ -95,7 +142,19 @@ export function SignageManager({
   }, []);
 
   const save = useCallback(async () => {
-    if (!config) return;
+    // **ボタンと同じ 1 つの値を見る。** `config` の有無だけで判断すると、拠点切替中に
+    // 前拠点の内容を現在の `siteId` へ書き込める（越境保存）。
+    if (!config || !gate.canMutate) return;
+    /**
+     * **応答を適用する側にも門が要る。**
+     *
+     * 入口（`gate.canMutate`）は「押した瞬間」しか守らない。PUT が飛行中に拠点を切り替えると、
+     * 遅れて届いた A の応答が B の状態を上書きし、**セレクタは B・中身は A** になる。
+     * `configScopeKey` は B のままなので `canMutate` は真、そこで保存すると **A の内容が
+     * B の待機画面として保存される**（来訪者に他拠点の案内が出る）。
+     * 読み（`load`）には写してあった守りを、書きにも写す。
+     */
+    const startedWith = scopeKey;
     setBusy(true);
     setError(null);
     setFieldErrors([]);
@@ -111,7 +170,14 @@ export function SignageManager({
         items: config.items,
       }),
     });
+    // 応答が届いた時点で別スコープを見ていたら、結果を画面へ載せない。
+    if (!isCurrentScope(startedWith)) {
+      setBusy(false);
+      return;
+    }
     if (res.ok) {
+      // 載せるスコープも同時に更新する（「載っているデータのスコープ」を嘘にしない）。
+      setConfigScopeKey(startedWith);
       setConfig((await res.json()) as SignageConfig);
       success(`保存しました（${new Date().toLocaleTimeString()}）`);
     } else {
@@ -123,7 +189,7 @@ export function SignageManager({
       setFieldErrors(data.fields ?? []);
     }
     setBusy(false);
-  }, [config, tenantId, siteId, success, failure, clear]);
+  }, [config, tenantId, siteId, scopeKey, isCurrentScope, success, failure, clear, gate.canMutate]);
 
   const errorFor = useCallback(
     (field: string) => fieldErrors.find((e) => e.field === field)?.message,
@@ -132,24 +198,25 @@ export function SignageManager({
 
   return (
     <Section
+      headingLevel="h1"
       title="待機中サイネージ"
       description="受付待機中に表示するコンテンツ（時計 / 案内文 / 画像 / スライド）を設定します。来訪者の個人情報は表示しません。画像・スライドの外部 URL は信頼できるオリジンのみを使用し、素材のライセンスを確認してください。"
       actions={
-        <Button variant="primary" onClick={() => void save()} disabled={busy || !config}>
+        <Button variant="primary" onClick={() => void save()} disabled={!gate.canMutate || !config}>
           保存
         </Button>
       }
     >
       <FormRow>
-        <Field label="サイト ID" htmlFor="signage-site">
-          <input
-            id="signage-site"
-            data-testid="signage-site"
-            value={siteId}
-            onChange={(e) => setSiteId(e.target.value)}
-            style={inputStyle}
-          />
-        </Field>
+        <SiteScopeSelect
+          sites={sites}
+          siteId={siteId}
+          onSelect={selectSite}
+          onRetry={reloadSites}
+          disabled={sitePending || busy}
+          testId="signage-site-select"
+          status={listStatus}
+        />
       </FormRow>
 
       {error ? (
@@ -218,7 +285,29 @@ export function SignageManager({
           </div>
         </>
       ) : (
-        <p>読み込み中…</p>
+        // **理由で出し分ける。** 失敗を「読み込み中…」と出すと運用者は終わらない待ちに入る
+        // （他 3 画面は出し分けているのにここだけ写し忘れていた。レビュー M4）。
+        <div style={{ display: 'flex', alignItems: 'center', gap: space.sm }}>
+          <p data-testid="signage-unavailable" style={{ margin: 0, color: color.muted }}>
+            {gate.unavailable === 'site-list-error'
+              ? '拠点を確認できないため、サイネージ設定を表示できません。'
+              : gate.unavailable === 'no-site'
+                ? 'このテナントにはまだ拠点がありません。拠点を登録すると設定できます。'
+                : gate.unavailable === 'load-failed'
+                  ? 'サイネージ設定を取得できませんでした。'
+                  : '読み込み中…'}
+          </p>
+          {gate.unavailable === 'load-failed' ? (
+            <Button
+              variant="secondary"
+              onClick={() => void load()}
+              disabled={!gate.canRefresh}
+              data-testid="signage-retry"
+            >
+              再試行
+            </Button>
+          ) : null}
+        </div>
       )}
     </Section>
   );

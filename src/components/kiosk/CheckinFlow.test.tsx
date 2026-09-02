@@ -3,6 +3,7 @@ import { renderToStaticMarkup } from 'react-dom/server';
 import { renderCheckin, type FlowData } from './CheckinFlow';
 import type { Locale } from '@/lib/i18n';
 import type { CheckinSummary } from '@/domain/checkin/types';
+import type { CallingStage } from '@/domain/reception/calling-experience';
 
 /**
  * QR 受付シェル（`renderCheckin`）の i18n 直書き解消テスト (issue #361 残)。
@@ -11,9 +12,18 @@ import type { CheckinSummary } from '@/domain/checkin/types';
  * `renderToStaticMarkup` の流儀で各 `CheckinState` の描画を検証できる（プロジェクトに jsdom/RTL は
  * 無いため、これが実機を介さず確認できる最も直接的な手段）。
  */
-function html(data: FlowData, locale: Locale = 'ja') {
+function html(data: FlowData, locale: Locale = 'ja', callingStage?: CallingStage) {
   return renderToStaticMarkup(
-    <>{renderCheckin(data, vi.fn(), vi.fn(), vi.fn(), locale)}</>,
+    <>
+      {renderCheckin({
+        data,
+        dispatch: vi.fn(),
+        useManual: vi.fn(),
+        exit: vi.fn(),
+        locale,
+        callingStage,
+      })}
+    </>,
   );
 }
 
@@ -119,6 +129,14 @@ describe('renderCheckin の日本語直書き解消（#361 残）: 全 CheckinSt
     expect(html({ state: 'manualFallback' }, 'en')).toContain('Switching to standard check-in');
   });
 
+  it('calling は予告段階を data-calling-stage で出す (#832 QR)', () => {
+    expect(html({ state: 'calling' })).toContain('data-calling-stage="dialing"');
+    const notice = html({ state: 'calling' }, 'ja', 'preTimeoutNotice');
+    expect(notice).toContain('data-calling-stage="preTimeoutNotice"');
+    expect(notice).toContain('つながらない場合は');
+    expect(notice).toContain('data-testid="calling-pulse"');
+  });
+
   it('エラー種別ごとに異なる文言を出し分ける（期限切れ/使用済み/失効/不正/通信断/カメラ不可を区別、#98 AC）', () => {
     expect(html({ state: 'cameraError' }, 'ja')).toContain('カメラを使用できませんでした');
     expect(html({ state: 'scanError' }, 'ja')).toContain('QR を読み取れませんでした');
@@ -135,7 +153,7 @@ describe('renderCheckin の日本語直書き解消（#361 残）: 全 CheckinSt
   });
 
   it('locale 省略時は既定 locale（ja）で描画する（後方互換）', () => {
-    expect(renderToStaticMarkup(<>{renderCheckin({ state: 'idle' }, vi.fn(), vi.fn(), vi.fn())}</>)).toContain(
+    expect(renderToStaticMarkup(<>{renderCheckin({ data: { state: 'idle' }, dispatch: vi.fn(), useManual: vi.fn(), exit: vi.fn() })}</>)).toContain(
       'QR で受付',
     );
   });

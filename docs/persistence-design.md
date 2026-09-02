@@ -246,6 +246,23 @@ src/lib/<entity>/
 - `LogStore.list()` は本増分の対象外（受付/監査ログの集計経路は #254 の `listSince` で
   境界化済み。残る全件 list は管理画面表示のみで、境界化は移行増分で扱う）。
 
+### 9.3.1 条件付き作成 `putIfAbsent`（#367 で追加）
+
+- `Collection.putIfAbsent(item): Promise<boolean>` — **不在のときだけ**作成し、既にあれば
+  何もせず `false`。`updateIf` に続く 2 つ目の原子的書き込みプリミティブで、全 backend 実装に
+  義務がある（memory は `has` → `set` を同期で、dynamodb は `attribute_not_exists(PK)` 付きの
+  PutItem）。
+- **なぜ必要か**: `get` → 無ければ `put` は原子的でないので、2 人が同時に初回作成すると
+  片方が無言で消える。`updateIf` は `attribute_exists(PK)` を必須にする契約なので作成には
+  使えない（不在 id への upsert を防ぐため。§9.3 の GSI 注意と同じく意図的な制約）。
+  最初の 1 件が緊急停止の設定なら、消えた側は「止めたつもり」のまま残る。
+- 適用済み: runtime policy（`src/lib/runtime-policy/store.ts`）。決定論的キー
+  （`<tenantId>:<siteId>`）で 1 サイト 1 レコードを持つ store は、同じ理由で作成経路に
+  これを使うこと。
+- **テスト時の注意**: dynamodb backend のテスト用 FakeDoc は、PutCommand の
+  `ConditionExpression` を評価する。評価しない fake だと、条件を落とす変更も
+  `attribute_exists` へ反転する変更も緑のまま通り、**本番だけが壊れる**。
+
 ### 9.4 既存 store の移行順（段階増分、1 PR = 1〜2 エンティティ、挙動不変）
 
 1. ~~**visitstay**~~ — **済（#274 ①）**。`/api/kiosk/checkout` の getBackend() 直呼びを

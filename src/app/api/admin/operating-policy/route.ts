@@ -14,7 +14,8 @@ import { readOperatingScope, requireActorWithIdentity } from '@/lib/operating-po
  * 監査: 更新を `site.updated`（metadata.resource='operating_policy'）で記録する（`lib/operating-policy/store.ts`）。
  */
 
-const STATUS_BY_CODE = { invalid_input: 400 } as const;
+// 競合は 409。後勝ちで黙って上書きするより、運用者に読み直させる (#367)。
+const STATUS_BY_CODE = { invalid_input: 400, conflict: 409 } as const;
 
 export async function GET(request: Request): Promise<NextResponse> {
   const scope = readOperatingScope(new URL(request.url).searchParams);

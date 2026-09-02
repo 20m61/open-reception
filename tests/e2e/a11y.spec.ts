@@ -1,4 +1,4 @@
-import { test, expect } from './kiosk-fixtures';
+import { test, expect, revealStaff } from './kiosk-fixtures';
 import AxeBuilder from '@axe-core/playwright';
 import { loginAsAdmin } from './helpers';
 
@@ -34,6 +34,7 @@ test('受付の確認画面に critical な a11y 違反がない（呼び出し�
   await page.goto('/kiosk');
   await page.getByTestId('start-reception').click();
   await page.getByTestId('purpose-meeting').click();
+  await revealStaff(page, 'staff-staff-sato');
   await page.getByTestId('staff-staff-sato').click();
   await page.getByTestId('visitor-name').fill('来客 一郎');
   await page.getByTestId('to-confirm').click();

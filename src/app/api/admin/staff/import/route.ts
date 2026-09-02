@@ -5,10 +5,11 @@ import { readJson } from '@/lib/data-stores/result-http';
 import { appendAdminAudit } from '@/lib/data-stores/reception-log-store';
 import {
   assertCanWrite,
-  defaultAdminTenantId,
   requireActor,
   toGuardResponse,
 } from '@/lib/admin/guard';
+import { resolveAdminTenantId } from '@/lib/tenant/admin-tenant-scope';
+import { asTenantId } from '@/domain/tenant/types';
 
 /**
  * POST /api/admin/staff/import — 担当者 CSV の取り込み (issue #26)。
@@ -17,9 +18,11 @@ import {
  * 認可（#91 inc2）: preview も含め書込権を要求する。`requireActor` + `assertCanWrite`（viewer は 403）。
  */
 export async function POST(request: Request): Promise<NextResponse> {
+  let tenantId: string;
   try {
     const actor = await requireActor();
-    assertCanWrite(actor, defaultAdminTenantId());
+    tenantId = await resolveAdminTenantId();
+    assertCanWrite(actor, asTenantId(tenantId));
   } catch (err) {
     return toGuardResponse(err);
   }
@@ -29,7 +32,7 @@ export async function POST(request: Request): Promise<NextResponse> {
   }
   const mode = body.mode === 'apply' ? 'apply' : 'preview';
   const { records } = parseCsvRecords(body.csv);
-  const summary = await importStaff(records, mode);
+  const summary = await importStaff(tenantId, records, mode);
   if (mode === 'apply') {
     await appendAdminAudit('staff.created', { type: 'staff' }, {
       via: 'csv',

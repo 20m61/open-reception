@@ -1,12 +1,21 @@
 # ループ開発ワークフロー（Issue 順次消化）
 
-Issue を 1 件ずつ「ブランチ → 実装 → ローカル品質ゲート → PR → セルフレビュー →
+Issue を 1 件ずつ「ブランチ → 実装 → 品質ゲート（`--pr`/`--full` はクラウド）→ PR → セルフレビュー →
 squash マージ → クリーンアップ → Issue クローズ」で消化するためのランブック。
+
+本書は**1 周の手順**を持つ。ループ全体の位置づけ（観測 → 仮説 → 実装 → 検証 → 展開 → 計測）、
+暴走防止ガード、人間承認が必要な変更の一覧、architecture fitness functions の棚卸しは
+[`docs/ai-development-loop.md`](ai-development-loop.md) を参照する（#424 / #426）。
+
+> **入口**: この手順を実際に回すときは **`/loop-round`**（`.claude/skills/loop-round/`）を使う。
+> **routine セッションでも、claude.ai/code の web セッションでも、ローカルでも同じ手順**で、
+> 場所によって変わるのは「回せるゲートの範囲」と「ブランチ削除をどこでやるか」だけ。
+> 本書はその**正本**（なぜそうするかを含む詳細）。
 
 **前提方針**
 
-- **GitHub Actions は使用しない。** 品質ゲートはローカル（または Actions 以外の
-  ランナー）で `scripts/quality-gate.sh` を実行して担保する。
+- **GitHub Actions は使用しない。** 品質ゲートは `scripts/quality-gate.sh` の実行で担保する。
+  **`--fast` はローカル、`--pr` / `--full` はクラウド routine**（手順 4）。
 - main へのブランチ保護は設定しない代わりに、**「ゲート green を確認してからマージ」**
   をこのランブックで運用ルールとして強制する。
 - マージは **squash**、マージ後はブランチを削除する（リポジトリ設定は
@@ -50,6 +59,10 @@ git switch -c feat/<topic>
 
 ### 3. 実装（TDD 推奨）
 
+> **内側ループは秒で回す。** 1 ファイルを直している間は `npm test`（全 406 ファイル・**約 95 秒**）
+> ではなく `npx vitest run <path>`（**0.3〜1 秒**）を使う。実測で 100 倍以上違い、TDD の
+> red → green を確認する回数がそのまま増える。全体は `--fast` に任せる。
+
 - 失敗するテストを先に追加 → 実装 → green、の順を基本にする。
 - 既存コードの命名・コメント密度・構成に合わせる。
 - 1 Issue が大きい場合は **increment 単位**で PR を分割する
@@ -57,7 +70,23 @@ git switch -c feat/<topic>
 - 外部認証情報・実機・アセットが必要な部分は **interface + mock 先行**で実装し、
   実物が必要なタスクは #65 にスタックする。
 
-### 4. ローカル品質ゲート（PR 前・必須）
+### 4. 品質ゲート（PR 前・必須）
+
+**内側ループ（ローカル）は `--fast` まで。**
+
+```bash
+./scripts/quality-gate.sh --fast      # typecheck + lint + unit
+```
+
+**`--pr` / `--full` はクラウド routine へ委譲する**（2026-08-08 決定）。ローカル macOS は
+16GB を他プロジェクトと共有しており、相手が重いテストを回すとメモリ枯渇でゲートが完走できない
+（unit が 43s → 377s ＋ 偽の赤になった実測がある）。委譲の手順・環境 ID・既知の罠は
+`docs/cloud-dev-environment.md`、方針は `CLAUDE.md`「どこで回すか」。
+
+🔴 **PR 作成とマージまでクラウド内で完結させる。** ゲートスタンプは `.git` 配下のローカル記録
+なので、クラウドで green を取ってもローカルの `gh pr merge` はフックにブロックされる。
+
+以下はローカルで回す場合の参考（`--fast` で足りないときや、クラウドが使えないとき）:
 
 ```bash
 ./scripts/quality-gate.sh --pr        # typecheck + lint + unit + build
@@ -88,9 +117,24 @@ git add -A
 git commit -m "feat(reservation): 来訪予約ドメインと QR トークン発行 (#97)"
 ```
 
-> **署名の注意**: コミット署名は 1Password の `op-ssh-sign`。1Password がロック中だと
-> `git commit` が署名失敗で止まる。失敗したら 1Password をアンロックして再実行する
-> （`--no-verify` での回避はしない）。
+> **署名の注意**: コミット署名は repo-local のローカル鍵 ssh 署名
+> （`gpg.ssh.program=ssh-keygen`、鍵は `~/.ssh/id_ed25519`、Apple の ssh-agent 経由。
+> 1Password には依存しない — 2026-07-31 に恒久移行済み）。`git commit` が無出力のまま
+> 止まったときの真因は、**agent 上に鍵が載っていないと `ssh-keygen -Y sign` が秘密鍵
+> ファイルを直接読みに行き、パスフレーズ入力待ちで固まる**こと。順序は次のとおり
+> （`--no-verify` での回避はしない）:
+>
+> 1. **まず `ssh-add -l` で agent の中身を見る。** 鍵が既に載っていれば固まらないはずなので、
+>    素の `git commit` をそのまま試す。
+> 2. **空（`The agent has no identities.`）なら `ssh-add --apple-load-keychain` を実行し、
+>    再試行する。** login Keychain にパスフレーズが登録済みなら無入力で鍵が載る
+>    （実測: これで通ることがほとんど）。
+> 3. それでも失敗する、またはパスフレーズがまだ Keychain に登録されていない場合のみ、
+>    ユーザーへ `ssh-add --apple-use-keychain ~/.ssh/id_ed25519` を依頼する
+>    （初回のみ・以後は 2. で無入力になる）。
+>
+> **診断を先に出す。** `ssh-add -l` は無害な読み取りなので、ユーザーへ依頼する前に
+> 1〜2 を自分で実行して埋まるか確認する。
 
 ### 6. PR を作る
 
@@ -99,6 +143,27 @@ git push -u origin HEAD
 gh pr create --fill --base main \
   --body-file .github/pull_request_template.md   # テンプレを編集して使う
 ```
+
+🔴 **クラウドの routine セッションでは `gh pr create` が使えない (#678)。**
+サンドボックスの `gh` は PR レビュー用の pinned な操作セットしか GraphQL を通さず、
+`gh pr create` が本体の POST の前に撃つ repo info preamble（`RepositoryInfo`）が 403 になる。
+
+⚠️ **人が claude.ai/code で開く web セッションで同じ制限がかかるかは未検証**（403 の観測は
+すべて routine 側。`docs/cloud-dev-environment.md` §4）。**どちらであれ次は動く**ので、
+判別が付くまではこちらを既定にする（REST だけで完結する）:
+
+```bash
+git push -u origin HEAD
+npx tsx scripts/create-pull-request.ts \
+  --head "$(git branch --show-current)" --base main \
+  --title "feat: ..." --body "Closes #<N> ..."
+```
+
+作成後に**そのブランチを head に持つ PR を REST で引き直して実在を確認**し、
+確認できなければ非ゼロで落ちる（「ブランチが出来た＝PR が出来た」ではない、が #656）。
+既に PR が在れば成功として扱う（同名ブランチでの再実行）。
+`pr-gate-guard.sh` はこの経路も `--pr` 以上の green 記録を要求する ―― **PR 作成の主経路を
+移したことがゲートの抜け道にならないようにするため**。
 
 PR タイトルは squash 後の main コミットになるため、Conventional Commits で書く。
 本文には `Closes #<N>` を入れ、Issue の受け入れ条件をチェックリストとして転記する。
@@ -123,6 +188,18 @@ PR タイトルは squash 後の main コミットになるため、Conventional
 ```bash
 gh pr merge --squash --delete-branch
 ```
+
+🔴 **routine セッションでは `gh pr merge` も 403 になる (#702)。** PR 作成と同じ GraphQL 制約で、
+2026-08-18 の PR #701 で実測した（web セッションは未検証。上と同じ）。次を使う:
+
+```bash
+npx tsx scripts/merge-pull-request.ts --number <番号>
+```
+
+squash を明示し、マージ後に `merged === true` を REST で引き直して確認する。
+`pr-gate-guard.sh` はこの経路と生の `gh api .../merge` の**両方**に `--full` を要求する。
+**リモートブランチはクラウドから消せない**（proxy が write を拒否する）ので、
+ローカルの後始末として扱う: `git push origin --delete <branch>` ＋ `git branch -D <branch>`。
 
 ただし次のいずれかに該当する場合は**マージ前にユーザー確認する**:
 重大な設計判断 / 破壊的変更（スキーマ・公開 API・移行）/ 外部影響（本番デプロイ・
@@ -195,10 +272,13 @@ git worktree remove ../open-reception-105   # マージ後に撤去
 - **マージは直列**（手順 8）。並列で PR が積まれても、マージは 1 本ずつ（ゲート + レビュー
   green を満たせば自動で）行い、後続トラックはマージ後の main を `git pull --ff-only` で
   取り込んでから整合を取る。重大変更時のみユーザー確認（手順 8 の例外条件）。
-- **コミット署名は対話的**（1Password `op-ssh-sign`）。並行エージェント内でのコミットは
-  署名で詰まりやすい。コミットは 1Password アンロック済みを確認してから行う。
-- **ローカルゲートは重い**（build ~30s 超）。同時実行は **最大 2〜3 トラック**を目安に
-  し、`--pr` の同時多重起動でマシンを飽和させない。
+- **コミット署名はローカル鍵の ssh 署名**（repo-local `gpg.ssh.program=ssh-keygen`）。
+  2026-07-31 に 1Password `op-ssh-sign` から移行済みで、**アンロック待ちはもう起きない**。
+  署名に失敗しても `--no-verify` で回避せず、鍵/エージェント側を直す（`CLAUDE.md` 参照）。
+  なお**クラウドセッションのコミットは未署名**（署名鍵がサンドボックスに入らない）。
+- **ローカルで `--pr` / `--full` を多重起動しない。** これらはクラウドへ委譲する方針
+  （手順 4）。ローカルの内側ループ（`--fast`）でも同時実行は **最大 2〜3 トラック**を目安に
+  し、マシンを飽和させない。**他プロジェクトのプロセスは殺さない**（共有マシンである）。
 - 依存チェーン内（`#97→#98`）は**前段がマージされてから**後段を本実装する。先行して
   下調べ（Explore/Plan）するのは可。
 

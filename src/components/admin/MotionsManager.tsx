@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { MOTION_KEYS, type MotionKey, type MotionMapping } from '@/domain/motion/types';
 import type { Asset } from '@/domain/assets/types';
-import { DataTable, Field, type Column } from '@/components/admin/ui';
+import { DataTable, Field, SaveFeedback, useSaveFeedback, type Column } from '@/components/admin/ui';
 
 const KEY_LABEL: Record<MotionKey, string> = {
   idle: '待機', greeting: '挨拶', listening: '入力中', thinking: '確認中', selecting: '選択中',
@@ -15,6 +15,7 @@ export function MotionsManager() {
   const [mapping, setMapping] = useState<MotionMapping>({});
   const [defaultId, setDefaultId] = useState<string | undefined>(undefined);
   const [assets, setAssets] = useState<Asset[]>([]);
+  const { feedback, success, failure, clear } = useSaveFeedback();
 
   const load = useCallback(async () => {
     const res = await fetch('/api/admin/motions');
@@ -32,14 +33,25 @@ export function MotionsManager() {
 
   const assign = useCallback(
     async (body: Record<string, unknown>) => {
-      await fetch('/api/admin/motions', {
+      clear();
+      /*
+        **結果を捨てない (#870 増分 02)。** 戻りを見ずに `load()` すると、403 / 409 / 5xx でも
+        選択が元へ戻るだけで、運用者には**選び直しただけ**に見える（割り当てたつもりで
+        割り当てられていない）。
+      */
+      const res = await fetch('/api/admin/motions', {
         method: 'PUT',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify(body),
-      });
+      }).catch(() => null);
+      if (!res?.ok) {
+        failure('モーションの割り当てを保存できませんでした。');
+        return;
+      }
       await load();
+      success('モーションの割り当てを保存しました。');
     },
-    [load],
+    [load, clear, success, failure],
   );
 
   const columns = useMemo<Column<MotionKey>[]>(
@@ -83,6 +95,10 @@ export function MotionsManager() {
         受付状態ごとにモーションを割り当てます。未設定の状態は default を使い、読み込み失敗時も受付画面は壊れません。
         モーションは「アセット管理」で登録してください。
       </p>
+
+      <div style={{ marginBottom: 12 }}>
+        <SaveFeedback feedback={feedback} successTestId="motion-saved" errorTestId="motion-save-error" />
+      </div>
 
       <div style={{ marginBottom: 16, maxWidth: 360 }}>
         <Field label="default モーション" htmlFor="motion-default">

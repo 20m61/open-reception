@@ -1,4 +1,4 @@
-import { test, expect } from './kiosk-fixtures';
+import { test, expect, revealStaff } from './kiosk-fixtures';
 import { loginAsAdmin } from './helpers';
 
 /**
@@ -89,7 +89,32 @@ test('受付端末は管理画面の部署・担当者を取得して表示す�
   await page.goto('/kiosk');
   await page.getByTestId('start-reception').click();
   await page.getByTestId('purpose-meeting').click();
-  // seed の担当者・部署が API 経由で表示される。
+  // seed の担当者・部署が API 経由で表示される。部署グリッドは常時表示ではなく
+  // 「部署から選ぶ」タブの中にある (#776) ので、切り替えてから確かめる。
+  await revealStaff(page, 'staff-staff-sato');
   await expect(page.getByTestId('staff-staff-sato')).toBeVisible();
+  await page.getByTestId('target-tab-department').click();
   await expect(page.getByTestId('dept-dept-sales')).toBeVisible();
+});
+
+/**
+ * 作った画面がナビから辿れること (issue #421)。
+ *
+ * `/admin/experience-versions`（受付体験の公開と端末への反映状況）は第 21 wave で作ったが、
+ * `ADMIN_NAV` にも他画面からのリンクにも登録されず、**URL を直打ちする以外に開けない**まま
+ * 放置されていた。運用者から見れば「作られていない」のと同じなので、実ブラウザで固定する。
+ */
+test('受付体験の公開・反映状況へサイドバーから到達できる', async ({ page }) => {
+  await loginAsAdmin(page);
+  await page.goto('/admin');
+
+  // iPad 幅ではサイドバーが畳まれている（ハンバーガーで開く）。
+  const hamburger = page.getByRole('button', { name: 'メニューを開く' });
+  if (await hamburger.isVisible()) await hamburger.click();
+
+  await page.getByRole('link', { name: '公開と反映状況' }).click();
+  await expect(page).toHaveURL(/\/admin\/experience-versions/);
+  // 版が 0 件のテナントでは表ではなく空状態が出るので、見出しで到達を判定する
+  // （このテストが固定したいのは「ナビから開ける」ことであって、版の有無ではない）。
+  await expect(page.getByRole('heading', { name: '受付体験の版' })).toBeVisible({ timeout: 15_000 });
 });

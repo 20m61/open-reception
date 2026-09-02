@@ -4,6 +4,10 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { MAX_LOGO_DATA_URI_LENGTH, type BrandingSettings } from '@/domain/branding/types';
 import { Button, Field, SaveFeedback, useSaveFeedback } from '@/components/admin/ui';
 import { color, space } from '@/components/admin/ui/tokens';
+import { AdminReadGate } from './AdminReadGate';
+import { useUnsavedChanges } from './use-unsaved-changes';
+import { useUnsavedChangesGuard } from './use-unsaved-changes-guard';
+import { UnsavedChangesDialog } from './UnsavedChangesDialog';
 
 /**
  * ブランディング設定 (issue #88)。会社ロゴ・アクセント色・社名を待機画面に反映する。
@@ -11,14 +15,25 @@ import { color, space } from '@/components/admin/ui/tokens';
  */
 export function BrandingManager() {
   const [b, setB] = useState<BrandingSettings | null>(null);
+  const [loadFailed, setLoadFailed] = useState(false);
   const [busy, setBusy] = useState(false);
+  // 未保存のまま離脱しようとしたら止める (#912 / 課題 12)。
+  const { dirty, markSaved } = useUnsavedChanges(b);
+  const guard = useUnsavedChangesGuard(dirty);
   const { feedback, success, failure, clear } = useSaveFeedback();
   const [error, setError] = useState<string | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
 
   const load = useCallback(async () => {
-    const res = await fetch('/api/admin/branding');
-    if (res.ok) setB((await res.json()) as BrandingSettings);
+    // `catch` を省くとオフラインで例外になり、`void load()` が握り潰して
+    // **失敗にすら落ちない**（画面は「読み込み中…」のまま固まる）。
+    const res = await fetch('/api/admin/branding').catch(() => null);
+    if (!res?.ok) {
+      setLoadFailed(true);
+      return;
+    }
+    setB((await res.json()) as BrandingSettings);
+    setLoadFailed(false);
   }, []);
 
   useEffect(() => {
@@ -58,7 +73,9 @@ export function BrandingManager() {
         body: JSON.stringify(b),
       });
       if (res.ok) {
-        setB((await res.json()) as BrandingSettings);
+        const next = (await res.json()) as BrandingSettings;
+        setB(next);
+        markSaved(next);
         success();
       } else {
         failure();
@@ -66,20 +83,28 @@ export function BrandingManager() {
     } finally {
       setBusy(false);
     }
-  }, [b, busy, success, failure, clear]);
+  }, [b, busy, markSaved, success, failure, clear]);
 
   if (!b)
     return (
-      <section>
-        <h1 style={{ marginTop: 0 }}>ブランド</h1>
-        <p>読み込み中…</p>
-      </section>
+      <AdminReadGate
+        heading="ブランド"
+        failed={loadFailed}
+        failureMessage="ブランド設定を取得できませんでした。通信状況を確認して再試行してください。"
+        onRetry={() => void load()}
+        testId="branding-unavailable"
+      />
     );
 
   const accent = b.accentColor ?? '#38bdf8';
 
   return (
     <section style={{ maxWidth: 560 }}>
+      <UnsavedChangesDialog
+        pendingHref={guard.pendingHref}
+        onLeave={guard.leave}
+        onStay={guard.stay}
+      />
       <h1 style={{ marginTop: 0 }}>ブランド</h1>
       <p style={{ color: color.muted, marginTop: 0 }}>
         会社ロゴ・アクセント色・社名を受付の待機画面に反映します（「会社の顔」）。

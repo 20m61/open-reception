@@ -38,14 +38,14 @@ export function CustomFlowRenderer({
         <h2 style={{ margin: 0 }}>{selected.displayName}</h2>
         {selected.description ? <p style={{ opacity: 0.8, margin: 0 }}>{selected.description}</p> : null}
         <div style={{ display: 'flex', gap: 12 }}>
-          <button type="button" onClick={() => setSelected(null)} style={secondaryBtn}>
+          <button type="button" onClick={() => setSelected(null)} className="btn btn--secondary">
             戻る
           </button>
           <button
             type="button"
             data-testid="custom-flow-proceed"
             onClick={() => onComplete(selected, {})}
-            style={primaryBtn}
+            className="btn btn--primary"
           >
             確認へ進む
           </button>
@@ -63,24 +63,3 @@ export function CustomFlowRenderer({
   );
 }
 
-const primaryBtn: React.CSSProperties = {
-  minHeight: 52,
-  padding: '12px 24px',
-  borderRadius: 12,
-  border: 'none',
-  background: 'var(--color-accent)',
-  color: 'var(--color-bg-2)',
-  fontWeight: 700,
-  fontSize: '1.05rem',
-  cursor: 'pointer',
-};
-const secondaryBtn: React.CSSProperties = {
-  minHeight: 52,
-  padding: '12px 24px',
-  borderRadius: 12,
-  border: '1px solid var(--color-surface-2)',
-  background: 'var(--color-surface)',
-  color: 'var(--color-text)',
-  fontSize: '1.05rem',
-  cursor: 'pointer',
-};

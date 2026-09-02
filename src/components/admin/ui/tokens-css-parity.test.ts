@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { color, radius, space } from './tokens';
+import { color, motion, radius, space, zIndex } from './tokens';
 
 /**
  * デザイントークン単一ソース化の検証 (issue #329)。
@@ -18,6 +18,9 @@ const GLOBALS_CSS = fs.readFileSync(
 
 /** globals.css の :root から `--name` の生値（`;` 手前まで）を取り出す。 */
 function cssVar(name: string): string {
+  // `name` はテスト内のトークン名リテラル由来で外部入力は到達しない（ReDoS 不成立）。
+  // 走査対象もリポジトリ内の globals.css。
+  // nosemgrep: javascript.lang.security.audit.detect-non-literal-regexp.detect-non-literal-regexp
   const m = new RegExp(`--${name}\\s*:\\s*([^;]+);`).exec(GLOBALS_CSS);
   if (!m?.[1]) throw new Error(`globals.css に --${name} が見つからない`);
   return m[1].trim();
@@ -47,11 +50,35 @@ describe('radius: tokens.ts と globals.css の一致 (#329)', () => {
 });
 
 describe('space: tokens.ts と globals.css の一致 (#329)', () => {
-  it('sm/md/lg/xl が CSS の --space-* と同値', () => {
-    expect(space.sm).toBe(cssPx('space-sm'));
-    expect(space.md).toBe(cssPx('space-md'));
-    expect(space.lg).toBe(cssPx('space-lg'));
-    expect(space.xl).toBe(cssPx('space-xl'));
+  /*
+   * 🔴 **列挙ではなく総当たりにする (#903 / 課題 21)。** かつては sm/md/lg/xl を手で並べており、
+   * `--space-xs` が CSS 側に無いこと（TS だけが `xs: 6` を持つ）を**この検査自身が
+   * 見落としていた** —— 書き忘れたキーは検査されない。`space` の全キーを回す。
+   */
+  it('全キーが CSS の --space-* と同値', () => {
+    for (const [key, value] of Object.entries(space)) {
+      expect(value, `space.${key}`).toBe(cssPx(`space-${key}`));
+    }
+  });
+});
+
+describe('motion: tokens.ts と globals.css の一致 (#903)', () => {
+  it('motion.* はすべて var(--…) 参照で、参照先が globals.css に実在する', () => {
+    for (const [key, value] of Object.entries(motion)) {
+      const m = /^var\((--[\w-]+)\)$/.exec(value);
+      expect(m?.[1], `${key} は var(--…) 参照であるべき: ${value}`).toBeTruthy();
+      expect(cssVar(String(m?.[1]).slice(2)).length, `${m?.[1]} が globals.css に無い`).toBeGreaterThan(0);
+    }
+  });
+
+  /*
+   * 下界。上の 1 本は「TS 側の表を空にする」と 0 件ループで通る。
+   * 応答の 3 段階とループの 2 周期が**別の軸として両方居る**ことを縛る。
+   */
+  it('下界: 応答の 3 段階とループの 2 周期が揃っている', () => {
+    for (const key of ['fast', 'base', 'slow', 'spin', 'pulse', 'easeOut']) {
+      expect(Object.keys(motion), `motion.${key} が無い`).toContain(key);
+    }
   });
 });
 
@@ -81,5 +108,31 @@ describe('color: 全トークンが CSS 変数参照で単一ソース化され�
   it('テナントテーマ: --color-accent は --brand-accent 由来（差し替えが波及する）', () => {
     expect(color.accent).toBe('var(--color-accent)');
     expect(cssVar('color-accent')).toBe('var(--brand-accent)');
+  });
+});
+
+describe('zIndex: tokens.ts と globals.css の一致 (#901)', () => {
+  /** `zIndex.a11yButton` → `--z-a11y-button`。 */
+  function cssName(key: string): string {
+    return `z-${key.replace(/[A-Z]/g, (c) => `-${c.toLowerCase()}`)}`;
+  }
+
+  it('すべての層が globals.css の --z-* と同値', () => {
+    for (const [key, value] of Object.entries(zIndex)) {
+      const raw = cssVar(cssName(key));
+      expect(Number(raw), `--${cssName(key)} が数値でない: ${raw}`).toBe(value);
+    }
+  });
+
+  /*
+   * 下界。上の 1 本は「TS 側の表を空にする」と 0 件ループで通る。CSS 側に居る層が
+   * TS 側にも居ることを併せて縛る —— inline style から指せない層があると、
+   * その層だけ生の数値へ戻る（#901 で直したのはまさにその形）。
+   */
+  it('下界: globals.css の --z-* はすべて tokens.ts にも居る', () => {
+    const declared = [...GLOBALS_CSS.matchAll(/--z-([a-z0-9-]+)\s*:/g)].map((m) => m[1]);
+    expect(declared.length).toBeGreaterThan(0);
+    const known = new Set(Object.keys(zIndex).map(cssName).map((n) => n.slice(2)));
+    expect(declared.filter((n) => !known.has(String(n)))).toEqual([]);
   });
 });

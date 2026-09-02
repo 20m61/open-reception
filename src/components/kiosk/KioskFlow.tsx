@@ -1,41 +1,84 @@
 'use client';
 
-import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from 'react';
+import { callFailureReasonFrom } from '@/domain/reception/call-failure';
 import {
-  RECEPTION_PURPOSES,
-  type ReceptionPurposeId,
-  type VisitorInfo,
-} from '@/domain/reception/session';
-import type { FeedbackReasonCode, SatisfactionRating } from '@/domain/reception/log';
+  useCallback,
+  useEffect,
+  useMemo,
+  useReducer,
+  useRef,
+  useState,
+} from 'react';
 import {
-  shouldResetOnInactivity,
-  transition,
-  type ReceptionEvent,
+  createLocalVoiceSessionFactory,
+  shouldUseLocalVoiceOrchestrator,
+} from '@/lib/voice-session/local-mode';
+import type {
+  FeedbackReasonCode,
+  SatisfactionRating,
+} from '@/domain/reception/log';
+import {
   type ReceptionState,
 } from '@/domain/reception/state';
-import { motionKeyForState, resolveMotionUrl, type MotionKey } from '@/domain/motion/types';
-import { primeSpeech, speak, type SpeakSettings } from './speech';
-import { AvatarGuide } from './avatar/AvatarGuide';
-import type { AvatarGuidanceOverride } from './avatar/guidance';
-import { LanguageSwitcher } from './LanguageSwitcher';
-import { makeT, DEFAULT_LOCALE, htmlLangFor, type Locale, type MessageKey } from '@/lib/i18n';
-import { LOCALE_LANGUAGE_CODE } from '@/lib/voice/locale-voice';
-import { AccessibilityMenu } from './AccessibilityMenu';
+import {
+  motionKeyForState,
+  resolveMotionUrl,
+} from '@/domain/motion/types';
+import {
+  InactivityWarning,
+  PrivacyNotice,
+  callingStageMessage,
+  renderScreen,
+} from './reception-screens';
+import {
+  INITIAL,
+  reducer,
+  type Action,
+  type CheckoutCredential,
+} from './flow-state';
+import {
+  DEFAULT_TARGET_TAB,
+  initialTargetTabFor,
+  type TargetTab,
+} from './target-view-state';
+import {
+  primeSpeech,
+  speak,
+} from './speech';
+import {
+  AvatarGuide,
+} from './avatar/AvatarGuide';
+import type {
+  AvatarGuidanceOverride,
+} from './avatar/guidance';
+import {
+  LanguageSwitcher,
+} from './LanguageSwitcher';
+import {
+  makeT,
+  DEFAULT_LOCALE,
+  htmlLangFor,
+  type Locale,
+} from '@/lib/i18n';
+import {
+  LOCALE_LANGUAGE_CODE,
+} from '@/lib/voice/locale-voice';
+import {
+  AccessibilityMenu,
+} from './AccessibilityMenu';
 import {
   DEFAULT_A11Y_MODE_STATE,
   clampA11yModeState,
-  sanitizeA11yEnabledModes,
-  type A11yEnabledModes,
   type FontScale,
 } from '@/domain/kiosk/a11y-modes';
-import { FlowStepper } from './FlowStepper';
-import { quickActionIcon, purposeIcon } from './quick-action-icons';
-import { hasBrandingContent, normalizeAccentColor, type BrandingSettings } from '@/domain/branding/types';
-import { resultToneForState, type ResultTone } from './result-tone';
-import { resolvePrivacyNoticeContent } from './privacy-notice';
-import type { QuickActionIntent } from './quick-actions';
+import {
+  accentInkFor,
+  normalizeAccentColor,
+} from '@/domain/branding/types';
+import {
+  KioskCallView,
+} from './KioskCallView';
 import dynamic from 'next/dynamic';
-import { KioskCallView } from './KioskCallView';
 
 /**
  * チェックイン画面は QR デコーダ（jsQR）とカメラスキャナを内包するため `next/dynamic` で
@@ -47,14 +90,30 @@ const CheckinFlow = dynamic(() => import('./CheckinFlow').then((mod) => mod.Chec
   ssr: false,
   loading: () => null,
 });
-import { useStaffResponse } from './useStaffResponse';
-import type { StaffResponseResult } from '@/domain/reception/staff-response';
-import { PurposeSelector } from './custom-flow/PurposeSelector';
-import { VisitorInfoForm } from './custom-flow/VisitorInfoForm';
-import type { KioskFlow as KioskCustomFlow, FlowFieldValues } from './custom-flow/types';
-import { SignageDisplay } from './signage/SignageDisplay';
-import { usePresenceCamera } from './usePresenceCamera';
-import { useKioskLayout } from './useKioskLayout';
+
+import {
+  useStaffResponse,
+  type ReceptionStatusPoll,
+} from './useStaffResponse';
+import {
+  PurposeSelector,
+} from './custom-flow/PurposeSelector';
+import {
+  VisitorInfoForm,
+} from './custom-flow/VisitorInfoForm';
+import type {
+  KioskFlow as KioskCustomFlow,
+  FlowFieldValues,
+} from './custom-flow/types';
+import {
+  SignageDisplay,
+} from './signage/SignageDisplay';
+import {
+  usePresenceCamera,
+} from './usePresenceCamera';
+import {
+  useKioskLayout,
+} from './useKioskLayout';
 import {
   flowValuesToVisitorInfo,
   purposeIdForFlow,
@@ -62,91 +121,115 @@ import {
   shouldShowSignage,
   shouldUseCustomFlow,
 } from './integration';
-import type { PresenceCameraStatus } from './usePresenceCamera';
-import { resolveKioskMode } from '@/domain/kiosk/mode';
-import { operatingStateOf, type KioskOperatingStatus } from '@/domain/kiosk/operating-status';
-import { OutOfHoursView } from './OutOfHoursView';
-import { defaultSttAdapterFactory, type SttAdapterFactory } from './stt-adapter';
-import { VoiceSessionLayer } from './VoiceSessionLayer';
-import { voiceCandidateToTarget, type ReceptionTarget } from './voice-target-binding';
-import type { OnResolved, VoiceSessionFactory } from '@/lib/voice-session/kiosk-binding';
-import { debugScannerFromSearch } from './qr-injection';
-import type { QrScanner } from '@/domain/checkin/scanner';
-import { parseCallStages, type CallStage } from '@/domain/kiosk/call-stages';
+import type {
+  PresenceCameraStatus,
+} from './usePresenceCamera';
+import {
+  resolveKioskMode,
+} from '@/domain/kiosk/mode';
+import {
+  INACTIVITY_WARNING_MS,
+  resolveInactivityLimitMs,
+  shouldResetOnInactivityForKiosk,
+  TERMINAL_AUTO_RESET_MS,
+} from '@/domain/kiosk/inactivity';
+import {
+  operatingStateOf,
+  type KioskOperatingStatus,
+} from '@/domain/kiosk/operating-status';
+import {
+  OutOfHoursView,
+} from './OutOfHoursView';
+import {
+  type SttAdapterFactory,
+} from './stt-adapter';
+import {
+  VoiceSessionLayer,
+} from './VoiceSessionLayer';
+import {
+  voiceCandidateToTarget,
+} from './voice-target-binding';
+import {
+  kioskDirectoryToEntityDirectory,
+  kioskDirectoryToUnavailableDirectory,
+} from './voice-directory';
+import type {
+  OnResolved,
+  VoiceSessionFactory,
+} from '@/lib/voice-session/kiosk-binding';
+import {
+  debugScannerFromSearch,
+} from './qr-injection';
+import type {
+  QrScanner,
+} from '@/domain/checkin/scanner';
+import {
+  parseCallStages,
+  type CallStage,
+} from '@/domain/kiosk/call-stages';
+import {
+  isVisitorExit,
+  shouldCancelOnServer,
+} from '@/domain/reception/leave-calling';
 import {
   escapeHatchesFor,
-  quickActionsFor,
-  type EscapeHatch,
-  type QuickAction,
 } from './quick-actions';
+import { EscapeBar } from './EscapeBar';
+import type {
+  TurnAnswerView,
+  TurnHandoffView,
+} from './conversation-turn';
+import {
+  isElementVisible,
+  persistentRegionProps,
+} from './persistent-regions';
 import {
   deriveAvatarPresence,
   deriveChatAvailability,
   type ReceptionAction,
 } from '@/domain/reception/ui-contract';
-import type { KioskLayout } from './layout';
-import { KioskChatDrawer } from './KioskChatDrawer';
-import { buildCheckoutUrl, safeCheckoutQrDataUrl } from './checkout/credential-display';
+import type {
+  KioskLayout,
+} from './layout';
+import {
+  KioskChatDrawer,
+} from './KioskChatDrawer';
 import Link from 'next/link';
 import {
-  createTracker,
-  enterStep,
-  finalizeExperience,
-  recordBack,
-  recordCancel,
-  recordInputMethod,
-  recordSearchQuery,
-  stepForState,
-  type ExperienceTracker,
-} from '@/domain/reception/experience-metrics';
-import { EXPERIENCE_STEP_ORDER } from '@/domain/reception/experience-summary';
-import { searchStaffScored } from '@/domain/staff/search';
+  useExperienceMetrics,
+} from './useExperienceMetrics';
 import {
   clampCallingStageThresholds,
-  deriveCallingStage,
-  timeoutDispatchDelayMs,
-  type CallingStage,
+  clampVideoAnswerTimeoutMs,
+  callingStageQueryFromSearch,
+  videoAnswerTimeoutMsFromSearch,
   type CallingStageThresholds,
 } from '@/domain/reception/calling-experience';
+import { useCallingNoticeHold } from './use-calling-notice-hold';
+import { shouldOpenVideoView } from '@/domain/reception/call-medium';
+import {
+  CALL_STATUS_POLL_INTERVAL_MS,
+  CALL_STATUS_POLL_MAX_MS,
+  decidePollAction,
+} from '@/domain/reception/call-poll';
+import {
+  useKioskConfiguration,
+} from './useKioskConfiguration';
+import {
+  useKioskDeviceStatus,
+} from './useKioskDeviceStatus';
 
-/**
- * MVP では heartbeat・PIN 許可（初回セッション発行前）向けの端末 ID は固定。将来 kiosk
- * config から取得する (issue #18)。
- *
- * 受付作成（`POST /api/kiosk/receptions`）はこの定数を送らない (issue #348):
- * `reception.kioskId` はサーバが認証済み kiosk セッション（cookie）から確定するため、
- * クライアントがここで何を送っても（送らなくても）権威にならない。かつてこの定数を
- * 受付作成にも使い回していたため、実際にエンロールされた端末（ランダム UUID の
- * kioskId）と 'kiosk-dev' 固定値が食い違い、以後の所有権チェック（status/stay）が
- * 正当な同一端末の要求まで 403 にしていた。
- */
-const KIOSK_ID = 'kiosk-dev';
 
-type DirDepartment = { id: string; name: string };
-type DirStaff = { id: string; displayName: string; kana?: string; aliases: string[]; departmentId: string; available: boolean };
-type Directory = { departments: DirDepartment[]; staff: DirStaff[] };
+
+/** 待機画面リードの ja 既定文言（テナント上書きが無いとき, #324）。i18n 移行は #327。 */
+const DEFAULT_IDLE_GUIDANCE = 'ようこそ。タッチ操作だけで受付できます。';
+
 /** 完了・キャンセル後に待機画面へ自動復帰するまでの時間。 */
-const AUTO_RESET_MS = 6000;
+// 終端からの自動復帰は QR 受付と同じ値を共有する（#871 で domain へ移した）。
+const AUTO_RESET_MS = TERMINAL_AUTO_RESET_MS;
 
-/**
- * 操作途中で離席した場合に、無操作のまま待機画面へ戻すまでの時間 (issue #125)。
- * 公共端末に入力途中の個人情報を残さないための上限。`?inactivityMs=` で E2E から短縮できる。
- */
-const INACTIVITY_RESET_MS = 60000;
-/**
- * connected（担当者応答済み・来訪待ち）画面の無操作リセット上限 (#324)。
- * 「操作は不要です」と案内し来訪者はその場で担当者の到着を待つため、選択/入力画面より長めに取り、
- * 正当な待機中の誤リセットを避ける。離席した場合はこの時間で PII を破棄して待機へ戻す。
- * 待機中の来訪者は警告カウントダウンで「続ける」を押せば延長できる。
- */
-const CONNECTED_INACTIVITY_RESET_MS = 120000;
-/**
- * リセット前にカウントダウン警告を出す時間 (issue #125 UX, "don't surprise-expire")。
- * 残り WARNING ミリ秒で警告を表示し、来訪者が操作すれば延長する。
- */
-const INACTIVITY_WARNING_MS = 10000;
-/** 端末有効性・設定変更を検知する heartbeat 間隔 (issue #30)。 */
-const HEARTBEAT_INTERVAL_MS = 30000;
+// 無操作リセットの上限と警告時間は `src/domain/kiosk/inactivity.ts` の純ロジックに集約する
+// （E2E 上書き `?inactivityMs=` / `?connectedInactivityMs=` の解決を含む）。
 
 /**
  * 縦向き(ipad-portrait)でアバターコンパニオンを表示する状態 (#361 / 旧 #123)。
@@ -180,166 +263,22 @@ function showAvatarCompanion(state: ReceptionState, layout: KioskLayout): boolea
   return true;
 }
 
-/** 「動いている」演出のための定期更新の上限間隔（ms）。段階境界が近ければもっと短く刻む。 */
-const CALLING_TICK_MAX_MS = 500;
-
-/**
- * 呼び出し中(calling)の経過段階を UI 層のタイマーで導出するフック (issue #323)。
- *
- * 「動いている」ことの伝達を優先し、正確な秒数カウントより段階（dialing/waiting/
- * preTimeoutNotice）の切り替えを重視する。次の tick は「段階の境界（waitingAfterMs /
- * noticeAfterMs）」または `CALLING_TICK_MAX_MS` のどちらか近い方に合わせて動的に予約する
- * （固定間隔だと、E2E のようにしきい値を短く上書きしたときに境界を読み飛ばしうるため）。
- *
- * `startedAtRef` は calling に入った時刻（ms epoch）を持つ ref（レンダー中に ref を直接
- * 読まないよう、`.current` の読み出しは常にタイマーコールバック内で行い、結果は state に
- * 反映する）。`active=false` の間はタイマーを止め 'dialing'・経過 0 を返す。
- *
- * state.ts の遷移表・ui-contract.ts の screenState/avatarState 写像は一切変更しない
- * （ここで導出する段階は KioskFlow ローカルの見た目の演出のみ）。
- */
-function useCallingStage(
-  active: boolean,
-  startedAtRef: React.RefObject<number | null>,
-  thresholds: CallingStageThresholds,
-): { stage: CallingStage; elapsedMs: number } {
-  const [elapsedMs, setElapsedMs] = useState(0);
-  useEffect(() => {
-    if (!active) {
-      setElapsedMs(0);
-      return;
-    }
-    let timer = 0;
-    const tick = () => {
-      const startedAt = startedAtRef.current;
-      const elapsed = startedAt !== null ? Math.max(0, Date.now() - startedAt) : 0;
-      setElapsedMs(elapsed);
-      // 次に到達すべき段階境界までの残り時間（無ければ上限間隔で「動いている」演出だけ更新する）。
-      const nextBoundaryMs =
-        elapsed < thresholds.waitingAfterMs
-          ? thresholds.waitingAfterMs
-          : elapsed < thresholds.noticeAfterMs
-            ? thresholds.noticeAfterMs
-            : null;
-      const untilBoundaryMs = nextBoundaryMs === null ? Infinity : Math.max(0, nextBoundaryMs - elapsed);
-      // 境界のわずかに後（+10ms）まで読み、確実に境界を跨いだ状態を検知する。
-      const delay = Math.min(CALLING_TICK_MAX_MS, Number.isFinite(untilBoundaryMs) ? untilBoundaryMs + 10 : CALLING_TICK_MAX_MS);
-      timer = window.setTimeout(tick, delay);
-    };
-    tick();
-    return () => window.clearTimeout(timer);
-    // startedAtRef は ref オブジェクト自体（identity は不変）を依存にする。中身の変更検知は
-    // tick() の中で毎回読む（react-hooks/refs: レンダー中に ref を触らない）。
-  }, [active, startedAtRef, thresholds]);
-  return { stage: deriveCallingStage(elapsedMs, thresholds), elapsedMs };
-}
-
-/**
- * 呼び出し中の段階（dialing/waiting/preTimeoutNotice）から表示文言を導出する (#323)。
- *
- * ja のみテナント上書き（`guidanceCallingWaiting` / `guidanceCallingNotice`。#28 の
- * 案内文言設定と同じ運用）を尊重し、他 locale は i18n 辞書の既定文言を使う（`guidanceIdle` と
- * 同じ運用方針。avatar/guidance.ts の locale 内製文言とは別に、辞書（dictionary.ts）を
- * 真実源にする＝ #327 の全 locale 網羅検証の対象にする）。dialing 段階は既存の
- * `reception.callingBody` をそのまま使い、新規表示を増やさない（既存動作を変えない）。
- */
-function callingStageMessage(
-  stage: CallingStage,
-  target: string,
-  locale: Locale,
-  textOverride: { waiting?: string; notice?: string },
-): string {
-  const tr = makeT(locale);
-  if (stage === 'waiting') {
-    return locale === DEFAULT_LOCALE && textOverride.waiting
-      ? textOverride.waiting
-      : tr('reception.callingStageWaiting');
-  }
-  if (stage === 'preTimeoutNotice') {
-    return locale === DEFAULT_LOCALE && textOverride.notice
-      ? textOverride.notice
-      : tr('reception.callingStageNotice');
-  }
-  return tr('reception.callingBody', { target });
-}
 
 // 音声経路（voice-target-binding.ts）とタッチ経路で同一の相手構造を使う（後勝ち規則の前提）。
-type Target = ReceptionTarget;
-type CallOutcome = 'connected' | 'timeout' | 'failed';
-
-/**
- * 受付完了画面へ提示する退館クレデンシャル (issue #342)。/api/kiosk/checkout/issue の戻り値。
- * token/code は秘密（PII ではない）。ログには出さず表示のためだけに保持する。
- */
-type CheckoutCredential = { token: string; code: string; expiresAt: string };
-
-type FlowData = {
-  state: ReceptionState;
-  purpose?: ReceptionPurposeId;
-  target?: Target;
-  visitor?: VisitorInfo;
-  sessionId?: string;
-  outcome?: CallOutcome;
-  /**
-   * クイックアクションで用件を先取りした場合の目的 (issue #121)。
-   * START 直後に selectingPurpose で自動選択し、目的選択画面をスキップして担当/部署選択へ
-   * 進めるためのヒント。担当者を呼ぶ（用件未確定）では undefined のまま通常の目的選択を出す。
-   */
-  pendingPurpose?: ReceptionPurposeId;
-};
-
-type Action =
-  | { type: 'START'; pendingPurpose?: ReceptionPurposeId }
-  | { type: 'SELECT_PURPOSE'; purpose: ReceptionPurposeId }
-  | { type: 'SELECT_TARGET'; target: Target }
-  | { type: 'SUBMIT_VISITOR_INFO'; visitor: VisitorInfo }
-  | { type: 'CONFIRM' }
-  | { type: 'CALL_CONNECTED'; sessionId: string }
-  | { type: 'CALL_TIMEOUT'; sessionId: string }
-  | { type: 'CALL_FAILED'; sessionId?: string }
-  | { type: 'USE_FALLBACK' }
-  | { type: 'COMPLETE' }
-  | { type: 'BACK' }
-  | { type: 'CANCEL' }
-  | { type: 'RESET' };
-
-const INITIAL: FlowData = { state: 'idle' };
-
-function reducer(data: FlowData, action: Action): FlowData {
-  const next = transition(data.state, action.type as ReceptionEvent);
-  // 不正遷移は無視して現状維持（受付画面を壊さない）。
-  if (next === null) return data;
-
-  switch (action.type) {
-    case 'START':
-      // クイックアクションで用件を先取りした目的を保持し、selectingPurpose で自動選択する。
-      return { ...data, state: next, pendingPurpose: action.pendingPurpose };
-    case 'SELECT_PURPOSE':
-      // 目的が確定したら先取りヒントは消費済み。target も作り直す。
-      return { ...data, state: next, purpose: action.purpose, target: undefined, pendingPurpose: undefined };
-    case 'SELECT_TARGET':
-      return { ...data, state: next, target: action.target };
-    case 'SUBMIT_VISITOR_INFO':
-      return { ...data, state: next, visitor: action.visitor };
-    case 'CALL_CONNECTED':
-      return { ...data, state: next, sessionId: action.sessionId, outcome: 'connected' };
-    case 'CALL_TIMEOUT':
-      return { ...data, state: next, sessionId: action.sessionId, outcome: 'timeout' };
-    case 'CALL_FAILED':
-      return { ...data, state: next, sessionId: action.sessionId, outcome: 'failed' };
-    case 'RESET':
-      return INITIAL;
-    default:
-      return { ...data, state: next };
-  }
-}
-
 /**
  * KioskFlow の外部注入点 (第6wave / #363 injection points・#367 の kiosk 受け口)。
  * すべて任意で、未指定時は従来どおり動作する（additive・既定挙動は不変）。
  * デモ再現・テスト・将来の実 provider 接続はこれらの受け口経由で行う。
  */
 export type KioskFlowProps = {
+  /**
+   * 起動時の受付モード (#736 検証用)。既定は通常受付。
+   *
+   * demo-studio のシナリオは `initialMode: 'qr'` を宣言しているのに、**この受け口が無かった
+   * ため配線されていなかった**。「QR 期限切れ」のシナリオを開いても通常受付で起動するので、
+   * 運用者は手で「ほかのご用件 → QR で受付」と辿る必要があり、E2E からも踏めなかった。
+   */
+  initialMode?: 'normal' | 'checkin';
   /**
    * 営業状態 (#367)。'closed' かつ待機中のとき営業時間外表示へ切り替える。
    * 未指定は「判定不能」= fail-open（通常受付を止めない）。ServiceOperatingPolicy の
@@ -365,7 +304,51 @@ export type KioskFlowProps = {
   qrScanner?: QrScanner;
 };
 
-export function KioskFlow({ operatingStatus, sttAdapterFactory, voiceSession, qrScanner }: KioskFlowProps = {}) {
+/**
+ * 端末が待つのをやめたことをサーバへ伝える (#743)。
+ *
+ * 🔴 **応答を待たない・失敗しても画面を止めない。** 来訪者にできることは無く、
+ * 画面が「呼び出し中」のまま固まる方が悪い。届かなければ取次は呼出予算で自然に終わる。
+ */
+function giveUpServerSide(receptionId: string): void {
+  void fetch(`/api/kiosk/receptions/${receptionId}/give-up`, { method: 'POST' }).catch(() => {});
+}
+
+/**
+ * 来訪者が**自分で**受付をやめたことをサーバへ伝える (#743)。
+ *
+ * `/give-up`（ポーリング上限の諦め）とは別の経路。あちらは `failed` + `client_timeout` で
+ * 終端するが、こちらは来訪者の明示的な操作なので `cancelled` として残す
+ * ──「呼び出せなかった」と「来訪者がやめた」を履歴上も混ぜない。
+ *
+ * 🔴 **応答を待たない・失敗しても画面を止めない**（`giveUpServerSide` と同じ理由）。
+ * 届かなければ取次は呼出予算で自然に終わる。
+ */
+function cancelServerSide(receptionId: string): void {
+  void fetch(`/api/kiosk/receptions/${receptionId}/cancel`, { method: 'POST' }).catch(() => {});
+}
+
+export function KioskFlow({
+  initialMode = 'normal',
+  operatingStatus,
+  sttAdapterFactory,
+  voiceSession,
+  qrScanner,
+}: KioskFlowProps = {}) {
+  /*
+   * 実 orchestrator のローカル起動 (#372 配線)。**既定はオフ。**
+   *
+   * `VoiceSessionOrchestrator`（ターン検出・barge-in・TTS duck/stop・VRM 同期）は実装も
+   * テストも揃っているのに**本番呼び出し元がゼロ**で、一度も起動していなかった。実音声
+   * （#369/#370）を繋ぐ前に、mock provider で通る経路を用意して実 UI で確かめられるようにする。
+   *
+   * 受付端末の音声挙動を変えるので `?voiceOrchestrator=1` を付けた端末だけ。明示注入
+   * （`voiceSession` prop = demo-studio 等）があればそちらを優先する ── 呼び出し側の
+   * 意図を URL が上書きしない。
+   */
+  const [localVoiceEnabled] = useState(() =>
+    typeof window === 'undefined' ? false : shouldUseLocalVoiceOrchestrator(window.location.search),
+  );
   const [data, dispatch] = useReducer(reducer, INITIAL);
   // onResolved 実結線 (#364): 音声で確定した相手候補を、タッチ経路と同一の SELECT_TARGET へ写像して
   // dispatch する。相手でない候補（purpose/other/なし）は null で無視。dispatch は useReducer 由来で
@@ -376,45 +359,57 @@ export function KioskFlow({ operatingStatus, sttAdapterFactory, voiceSession, qr
     const target = voiceCandidateToTarget(candidate);
     if (target) dispatch({ type: 'SELECT_TARGET', target });
   }, []);
-  const [directory, setDirectory] = useState<Directory>({ departments: [], staff: [] });
+  // 端末に適用する構成（ディレクトリ・音声・ブランド・アセット・モーション・フロー・サイネージ）は
+  // `useKioskConfiguration` が所有する (#422 increment 2)。取得経路（実効構成の一括取得 / 個別 API）は
+  // 移行フラグで選ばれ、ここからは見えない。名前は分離前と同じにして呼び出し側を変えない。
+  const {
+    directory,
+    guidanceIdle: guidanceIdleOverride,
+    privacyNoticeOverride,
+    speakSettings,
+    sttEnabled,
+    backgroundUrl,
+    branding,
+    vrmUrl,
+    avatarFallbackUrl,
+    motions,
+    customFlows,
+    signageCount,
+    feedbackEnabled,
+    a11yEnabledModes,
+    callingStageThresholdOverride: callingStageTenantOverride,
+    callingStageTextOverride,
+    report: configurationReport,
+  } = useKioskConfiguration({
+    // 受付が進行中の間は新しい版を適用しない（公開操作で来訪者の画面を入れ替えない, #420）。
+    sessionActive: data.state !== 'idle',
+  });
   // 待機画面リードの既定文言 (#324)。主指示（「ご用件をお選びください」）は見出し・アバター字幕が
   // 担うため、リードは挨拶＋安心情報（タッチだけで受付できる）のみにして指示を二重化しない。
-  // ja は管理設定 (#28) で上書き可能。
-  const [guidanceIdle, setGuidanceIdle] = useState('ようこそ。タッチ操作だけで受付できます。');
-  // 来訪者向けプライバシー通知の要約文言の上書き (issue #28 / #314)。未設定なら i18n 既定文言を使う。
-  const [privacyNoticeOverride, setPrivacyNoticeOverride] = useState<string | undefined>(undefined);
+  // ja は管理設定 (#28) で上書き可能。i18n 移行は #327（本ファイルは移行前の allowlist 対象）。
+  const guidanceIdle = guidanceIdleOverride ?? DEFAULT_IDLE_GUIDANCE;
   // 受付の表示言語 (#103)。来訪者が待機画面の LanguageSwitcher で切替える（セッション内で保持）。
   const [locale, setLocale] = useState<Locale>(DEFAULT_LOCALE);
   // 無操作リセット直前のカウントダウン警告（#125 UX, "don't surprise-expire"）。null=非表示。
   const [inactivitySeconds, setInactivitySeconds] = useState<number | null>(null);
   // 「続ける」ボタンから無操作タイマーを延長するための ref（実体は inactivity effect 内で設定）。
   const extendInactivityRef = useRef<() => void>(() => {});
-  const [speakSettings, setSpeakSettings] = useState<SpeakSettings>({ ttsEnabled: false, rate: 1, volume: 1, language: 'ja-JP' });
-  const [sttEnabled, setSttEnabled] = useState(false);
-  const [backgroundUrl, setBackgroundUrl] = useState<string | undefined>(undefined);
-  // テナントのブランド設定（ロゴ/アクセント色/社名）。「会社の顔」テーマ注入 (#88)。
-  const [branding, setBranding] = useState<BrandingSettings>({});
-  const [vrmUrl, setVrmUrl] = useState<string | undefined>(undefined);
-  const [avatarFallbackUrl, setAvatarFallbackUrl] = useState<string | undefined>(undefined);
-  // 状態別モーション URL（#31）。default URL に fallback して VRM レンダラへ渡す。
-  const [motions, setMotions] = useState<{ motions: Partial<Record<MotionKey, string>>; defaultUrl?: string }>({
-    motions: {},
-  });
-  // null=取得前/取得失敗（既定で表示継続）、false=失効、true=有効。
-  const [active, setActive] = useState<boolean | null>(null);
-  // kiosk セッション保持状態 (issue #239)。null=heartbeat 取得前（楽観的に表示継続）、
-  // false=未保持（ゲートで受付フローを出さない）、true=保持。
-  const [authorized, setAuthorized] = useState<boolean | null>(null);
-  // PIN 必須設定 (issue #23)。未保持時に PIN 自己許可へ誘導するか未エンロール案内かを分ける。
-  const [pinRequired, setPinRequired] = useState(false);
-  // オンライン状態。heartbeat 失敗で false、復帰で true (issue #30)。
-  const [online, setOnline] = useState(true);
   // 受付モード。idle から「QRで受付」を選ぶと checkin へ。完了/通常受付選択で normal へ戻す (issue #98)。
-  const [mode, setMode] = useState<'normal' | 'checkin'>('normal');
+  const [mode, setMode] = useState<'normal' | 'checkin'>(initialMode);
   // 逃げ道バーの実測高さ。チャット FAB をこの上へ確実に持ち上げ重なりを防ぐ (#121 H1)。
   // バーは flex-wrap で複数行になりうるため固定値ではなく実測する。
   const escapeBarRef = useRef<HTMLElement | null>(null);
   const [escapeBarHeight, setEscapeBarHeight] = useState(0);
+
+  /**
+   * 音声レイヤ（復唱確認）を逃げ道バーの上へ逃がすための隙間 (#788)。
+   *
+   * 🔴 **バーの高さではなく「viewport 下端からバー上端までの距離」を測る。** バーは sticky
+   * なので、**内容がスクロールしない画面ではバーは下端に付かない**（`.screen` の下 padding 分だけ
+   * 浮く）。高さ（110px）を使うと 4K の large-display で 38px 食い込み、「はい」の下半分を押すと
+   * **「戻る」が発火する**（実測）。#124 がチャット FAB に課したのと同じ「固定値ではなく実測する」。
+   */
+  const [voiceSafeBottom, setVoiceSafeBottom] = useState(0);
 
   // 逃げ道バーの高さを実測してチャット FAB の持ち上げ量に反映する (#121 H1)。
   // バーの表示/段数が状態で変わるため data.state を依存に再観測する。
@@ -422,21 +417,37 @@ export function KioskFlow({ operatingStatus, sttAdapterFactory, voiceSession, qr
     const el = escapeBarRef.current;
     if (!el || typeof ResizeObserver === 'undefined') {
       setEscapeBarHeight(0);
+      setVoiceSafeBottom(0);
       return;
     }
-    const measure = () => setEscapeBarHeight(el.offsetHeight);
+    const measure = () => {
+      setEscapeBarHeight(el.offsetHeight);
+      // sticky の実位置を見る（スクロール中は下端に貼り付き、非スクロール時は浮く）。
+      setVoiceSafeBottom(Math.max(0, Math.round(window.innerHeight - el.getBoundingClientRect().top)));
+    };
     measure();
     const ro = new ResizeObserver(measure);
     ro.observe(el);
-    return () => ro.disconnect();
+    /*
+     * 🔴 **本文の高さも観測する** (#788)。バーは sticky なので、**バー自身が変わらなくても
+     * 本文が縮めばバーの位置は動く**。担当者を検索で絞ると一覧が縮んでページが overflow
+     * しなくなり、バーが `.screen` の下 padding ぶん浮く ── このとき ResizeObserver（バーのみ）も
+     * scroll（scrollY は 0 のまま）も resize も発火せず、持ち上げ量が古い値のまま残って
+     * 「はい／いいえ」の下端 8px が死ぬ（実測。過渡ではなく定常）。
+     * `measure` が動かすのは fixed 要素だけなので観測ループにはならない。
+     */
+    ro.observe(document.body);
+    window.addEventListener('resize', measure);
+    window.addEventListener('scroll', measure, { passive: true });
+    return () => {
+      ro.disconnect();
+      window.removeEventListener('resize', measure);
+      window.removeEventListener('scroll', measure);
+    };
   }, [data.state]);
 
-  // カスタム受付フロー (issue #100)。null=取得前/失敗、[]=無効（既定フローへフォールバック）。
-  const [customFlows, setCustomFlows] = useState<KioskCustomFlow[] | null>(null);
   // 来訪者が目的選択で選んだカスタムフロー。null のときは既定フローのまま進む。
   const [selectedFlow, setSelectedFlow] = useState<KioskCustomFlow | null>(null);
-  // 待機サイネージ (issue #101)。再生可能項目数だけ保持し、idle 中の待機表示判定に使う。
-  const [signageCount, setSignageCount] = useState(0);
   // 来訪者検知カメラの有効化トグル (issue #79)。既定 OFF（タップ起動が常に生きる）。
   const [presenceEnabled, setPresenceEnabled] = useState(false);
   // ATTRACT オーバーレイの表示状態 (issue #362)。来訪検知が ATTRACT に達したときだけ
@@ -446,19 +457,12 @@ export function KioskFlow({ operatingStatus, sttAdapterFactory, voiceSession, qr
   // 受付完了時に発行された退館クレデンシャル (issue #342)。null=未発行/発行失敗（QR 非表示で継続）。
   // 完了画面に退館 QR / 短コード / 有効期限を提示する。idle 復帰で破棄する（次の来訪者へ持ち越さない）。
   const [checkoutCredential, setCheckoutCredential] = useState<CheckoutCredential | null>(null);
-  // ワンタップ満足度フィードバック収集の有効/無効 (issue #320)。テナント設定 (#28) を尊重する。
-  // 既定 true（未取得/未設定は収集する）。false のときは終端画面から評価 UI 自体を出さない。
-  const [feedbackEnabled, setFeedbackEnabled] = useState(true);
   // 来訪者が選べるアクセシビリティ支援モード (issue #321)。文字サイズ・ハイコントラスト・
   // 低位置レイアウトの現在値。既定は無支援（DEFAULT_A11Y_MODE_STATE）で、セッション終了・
   // 無操作リセットで idle 復帰時に既定へ戻す（次の来訪者へ持ち越さない、下記 idle effect 参照）。
   const [fontScale, setFontScale] = useState<FontScale>(DEFAULT_A11Y_MODE_STATE.fontScale);
   const [a11yHighContrast, setA11yHighContrast] = useState(DEFAULT_A11Y_MODE_STATE.highContrast);
   const [a11yLowReach, setA11yLowReach] = useState(DEFAULT_A11Y_MODE_STATE.lowReach);
-  // テナント/サイト設定でのモードごとの有効/無効 (issue #321 AC)。未取得時は既定=全モード有効。
-  const [a11yEnabledModes, setA11yEnabledModes] = useState<A11yEnabledModes>(
-    sanitizeA11yEnabledModes(undefined),
-  );
   // テナント設定の取得後にモードが無効化されていた場合、既に選ばれていた値を既定へ丸める
   // （#321: 無効モードの残留表示を防ぐ。clampA11yModeState は純関数、src/domain/kiosk/a11y-modes.ts）。
   useEffect(() => {
@@ -471,33 +475,47 @@ export function KioskFlow({ operatingStatus, sttAdapterFactory, voiceSession, qr
     if (clamped.lowReach !== a11yLowReach) setA11yLowReach(clamped.lowReach);
     // fontScale/a11yHighContrast/a11yLowReach は「クランプ対象」であり、この effect 自身の
     // setState で変わりうるため依存に含めない（a11yEnabledModes の変化にのみ反応する）。
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- クランプ対象は自身の setState で変わるため依存に含めない（上のコメント参照）
   }, [a11yEnabledModes]);
-  // 呼び出し中(calling)の段階的ケア (issue #323)。しきい値・文言はテナント設定 (#28) を尊重する。
-  // 未取得時は既定値のまま（クランプ側が既定へフォールバックするため壊れない）。
-  const [callingStageTenantOverride, setCallingStageTenantOverride] = useState<
-    Partial<CallingStageThresholds>
-  >({});
-  const [callingStageTextOverride, setCallingStageTextOverride] = useState<{
-    waiting?: string;
-    notice?: string;
-  }>({});
   // E2E タイマー短縮用のクエリ上書き（`?callingStageMs=` 等、既存 `?inactivityMs=` の流儀）。
   // window 参照は SSR 不一致を避けるため effect 内でのみ行う。
+  const [heartbeatQueryOverride, setHeartbeatQueryOverride] = useState<number | undefined>(
+    undefined,
+  );
+
+  /**
+   * 実 orchestrator のローカル起動 (#372 配線)。**既定はオフ。**
+   *
+   * mock STT は渡した Directory の先頭担当者を確定文として返す。
+   * 明示注入（`voiceSession` prop = demo-studio 等）が最優先 ── URL フラグが呼び出し側の
+   * 意図を上書きしない。
+   *
+   * Entity 解決の入力は**端末が保持する Directory から作る** (#788)。ここが空配列だった
+   * 間、配線は正しいのに音声では誰も選べなかった。素通しにはしない理由（不在の担当者を
+   * 音声だけが呼べる形になる）は `voice-directory.ts` の doc。
+   */
+  const localVoiceSession = useMemo(() => {
+    if (!localVoiceEnabled) return undefined;
+    return createLocalVoiceSessionFactory(
+      kioskDirectoryToEntityDirectory(directory),
+      // 不在の相手を名指しされたら理由を言う (#803)。選択肢としては渡していない。
+      kioskDirectoryToUnavailableDirectory(directory),
+    );
+  }, [localVoiceEnabled, directory]);
+  const effectiveVoiceSession = voiceSession ?? localVoiceSession;
   const [callingStageQueryOverride, setCallingStageQueryOverride] = useState<
     Partial<CallingStageThresholds>
   >({});
+  const [videoAnswerTimeoutMs, setVideoAnswerTimeoutMs] = useState(() =>
+    clampVideoAnswerTimeoutMs(undefined),
+  );
   useEffect(() => {
-    const params = new URLSearchParams(window.location.search);
-    const num = (key: string): number | undefined => {
-      const v = Number(params.get(key));
-      return Number.isFinite(v) && v > 0 ? v : undefined;
-    };
-    setCallingStageQueryOverride({
-      waitingAfterMs: num('callingStageMs'),
-      noticeAfterMs: num('callingNoticeMs'),
-      noticeMinDurationMs: num('callingNoticeHoldMs'),
-    });
+    const search = window.location.search;
+    const params = new URLSearchParams(search.startsWith('?') ? search.slice(1) : search);
+    const heartbeat = Number(params.get('heartbeatMs'));
+    setHeartbeatQueryOverride(Number.isFinite(heartbeat) && heartbeat > 0 ? heartbeat : undefined);
+    setCallingStageQueryOverride(callingStageQueryFromSearch(search));
+    setVideoAnswerTimeoutMs(clampVideoAnswerTimeoutMs(videoAnswerTimeoutMsFromSearch(search)));
   }, []);
   // テナント設定 → E2E クエリの順で重ねてしきい値を確定する（クエリが最優先, #323）。
   const callingStageThresholds = useMemo(
@@ -508,28 +526,23 @@ export function KioskFlow({ operatingStatus, sttAdapterFactory, voiceSession, qr
       ),
     [callingStageTenantOverride, callingStageQueryOverride],
   );
-  // 呼び出し(calling)開始時刻。経過 ms の起点で、calling を抜けたら null に戻す（次回呼び出しで
-  // 取り直す）。UI 層のタイマー派生のみに使い、state.ts の遷移表・screenState は変えない。
-  const callingStartedAtRef = useRef<number | null>(null);
-  useEffect(() => {
-    callingStartedAtRef.current = data.state === 'calling' ? Date.now() : null;
-  }, [data.state]);
-  // 呼び出しの calling-effect（下記）は data.purpose/target/visitor 等の変化でも再実行されうるが、
-  // しきい値の変化では再実行させたくない（無関係な再作成で受付を再作成してしまう事故を防ぐ）。
-  // そのため ref 経由で「その時点の最新しきい値」だけを参照する。
-  const callingStageThresholdsRef = useRef<CallingStageThresholds>(callingStageThresholds);
-  useEffect(() => {
-    callingStageThresholdsRef.current = callingStageThresholds;
-  }, [callingStageThresholds]);
-  // 予告を見せてから実際に CALL_TIMEOUT を dispatch するための遅延タイマー（#323 AC3）。
-  const timeoutDispatchTimerRef = useRef<number | null>(null);
-  // 呼び出し中の表示段階（dialing/waiting/preTimeoutNotice）。CallingView とアバターコンパニオンの
-  // 両方が同じ経過時刻（callingStartedAtRef）・しきい値から導出するため常に一致する。
-  const callingStageState = useCallingStage(
-    data.state === 'calling',
-    callingStartedAtRef,
-    callingStageThresholds,
-  );
+  // 呼び出し結果が timeout で確定したが、予告の保持がまだ済んでいない受付セッション。
+  //
+  // 🔴 **ここへ載せてよいのは timeout だけ** (#832)。発火側は `CALL_TIMEOUT` を固定で
+  // dispatch するので、`failed` をここへ送る変異は「発信そのものが失敗した来訪者に、
+  // 25 秒待たせた末に**未応答**画面を出す」に化ける ―― `call-poll.ts` が
+  // 「give_up と未応答を混同しない」と強調している区別が無言で潰れる。
+  //
+  // これは型では止まらない（`sessionId` しか持たないので）。**`/status` が `failed` を返す
+  // 経路の e2e**（`kiosk-calling-stage.spec.ts`）が落とす。テストを消すなら、先にここを
+  // 判別可能なユニオンにすること。
+  const [pendingTimeout, setPendingTimeout] = useState<{ sessionId: string } | null>(null);
+  const callingStageState = useCallingNoticeHold({
+    active: data.state === 'calling',
+    thresholds: callingStageThresholds,
+    pendingSessionId: pendingTimeout?.sessionId ?? null,
+    onFire: (sessionId) => dispatch({ type: 'CALL_TIMEOUT', sessionId }),
+  });
   // アバター常設コンパニオンの段階演出 (#323)。avatarState 自体は変えず、同じ avatarState
   // ('calling') 内の字幕/表情だけを差し替える（見た目の演出のみ・状態機械は不変）。
   // dialing 段階は既存どおり avatarState 標準の文言（新規表示を増やさない）。
@@ -541,252 +554,37 @@ export function KioskFlow({ operatingStatus, sttAdapterFactory, voiceSession, qr
     };
   }, [data.state, data.target?.label, callingStageState.stage, locale, callingStageTextOverride]);
 
-  const refreshHeartbeat = useCallback(async () => {
-    try {
-      const res = await fetch(`/api/kiosk/heartbeat?kioskId=${encodeURIComponent(KIOSK_ID)}`, { cache: 'no-store' });
-      if (!res.ok) {
-        setOnline(false);
-        return;
-      }
-      const hb = (await res.json()) as { active: boolean; pinRequired: boolean; authorized: boolean };
-      setOnline(true);
-      setActive(hb.active);
-      setAuthorized(hb.authorized);
-      setPinRequired(hb.pinRequired);
-      // 失効/緊急停止を検知したら、受付中の個人情報を破棄して待機へ戻す (issue #30)。
-      if (!hb.active) {
-        dispatch({ type: 'RESET' });
-        setMode('normal');
-      }
-    } catch {
-      setOnline(false);
-    }
+  // 端末の有効性・セッション保持・疎通は `useKioskDeviceStatus` が監視する (#422 increment 2)。
+  // 失効（active=false）を検知したら受付中の個人情報を破棄して待機へ戻す (issue #30)。
+  const handleDeviceRevoked = useCallback(() => {
+    dispatch({ type: 'RESET' });
+    setMode('normal');
   }, []);
+  const { active, authorized, pinRequired, online, markAuthorized } = useKioskDeviceStatus({
+    onRevoked: handleDeviceRevoked,
+    // いま読み込んでいる版を heartbeat に相乗りさせて報告する (#420)。
+    report: configurationReport,
+    // E2E から通信断表示を検証するための周期短縮（既存 `?inactivityMs=` の流儀）。
+    intervalMs: heartbeatQueryOverride,
+  });
 
-  // 起動時に確認し、以降は定期 heartbeat で長期表示中の変化を検知する (issue #30)。
-  useEffect(() => {
-    void refreshHeartbeat();
-    const timer = setInterval(() => void refreshHeartbeat(), HEARTBEAT_INTERVAL_MS);
-    return () => clearInterval(timer);
-  }, [refreshHeartbeat]);
 
-  // 部署・担当者を管理画面と共有のディレクトリ API から取得する (issue #3)。
-  useEffect(() => {
-    let cancelled = false;
-    (async () => {
-      try {
-        const res = await fetch('/api/kiosk/directory');
-        if (!res.ok) return;
-        const dir = (await res.json()) as Directory;
-        if (!cancelled) setDirectory(dir);
-      } catch {
-        /* 取得失敗時は空のまま。受付開始ボタンは表示され、画面は壊れない */
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, []);
-
-  // 音声設定の案内文言を受付画面へ反映する (issue #28)。
-  useEffect(() => {
-    let cancelled = false;
-    (async () => {
-      try {
-        const res = await fetch('/api/kiosk/voice');
-        if (!res.ok) return;
-        const voice = (await res.json()) as {
-          guidanceIdle?: string;
-          ttsEnabled?: boolean;
-          sttEnabled?: boolean;
-          rate?: number;
-          volume?: number;
-          language?: string;
-          privacyNotice?: string;
-          callingStageWaitingAfterMs?: number;
-          callingStageNoticeAfterMs?: number;
-          guidanceCallingWaiting?: string;
-          guidanceCallingNotice?: string;
-          feedbackEnabled?: boolean;
-          a11yModesEnabled?: Partial<A11yEnabledModes>;
-        };
-        if (cancelled) return;
-        if (voice.guidanceIdle) setGuidanceIdle(voice.guidanceIdle);
-        setPrivacyNoticeOverride(voice.privacyNotice);
-        setSttEnabled(voice.sttEnabled ?? false);
-        setSpeakSettings({
-          ttsEnabled: voice.ttsEnabled ?? false,
-          rate: voice.rate ?? 1,
-          volume: voice.volume ?? 1,
-          language: voice.language ?? 'ja-JP',
-        });
-        // 呼び出し中の段階的ケア (issue #323)。テナント設定のしきい値・案内文言の上書き。
-        setCallingStageTenantOverride({
-          waitingAfterMs: voice.callingStageWaitingAfterMs,
-          noticeAfterMs: voice.callingStageNoticeAfterMs,
-        });
-        setCallingStageTextOverride({
-          waiting: voice.guidanceCallingWaiting,
-          notice: voice.guidanceCallingNotice,
-        });
-        // ワンタップ満足度フィードバック収集の有効/無効 (issue #320)。未設定は収集する（既定 true）。
-        setFeedbackEnabled(voice.feedbackEnabled ?? true);
-        // アクセシビリティ支援モードの有効/無効 (issue #321)。未設定は全モード有効扱い。
-        setA11yEnabledModes(sanitizeA11yEnabledModes(voice.a11yModesEnabled));
-      } catch {
-        /* 取得失敗時は既定文言を使う */
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, []);
-
-  // 適用中の背景アセットを反映する (issue #27)。読み込み失敗時は背景色で fallback。
-  useEffect(() => {
-    let cancelled = false;
-    (async () => {
-      try {
-        const res = await fetch('/api/kiosk/assets');
-        if (!res.ok) return;
-        const assets = (await res.json()) as { backgroundUrl?: string; vrmUrl?: string; fallbackImageUrl?: string };
-        if (cancelled) return;
-        setBackgroundUrl(assets.backgroundUrl);
-        setVrmUrl(assets.vrmUrl);
-        setAvatarFallbackUrl(assets.fallbackImageUrl);
-      } catch {
-        /* 取得失敗時は既定背景 */
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, []);
-
-  // テナントのブランド設定を取得（#88）。失敗時は汎用テーマのまま。
-  useEffect(() => {
-    let cancelled = false;
-    (async () => {
-      try {
-        const res = await fetch('/api/kiosk/branding');
-        if (!res.ok) return;
-        const data = (await res.json()) as BrandingSettings;
-        if (!cancelled) setBranding(data);
-      } catch {
-        /* 取得失敗時は汎用テーマ */
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, []);
-
-  // 状態別モーション URL を取得する (issue #31)。未設定/失敗時は default または無効化で fallback。
-  useEffect(() => {
-    let cancelled = false;
-    (async () => {
-      try {
-        const res = await fetch('/api/kiosk/motions');
-        if (!res.ok) return;
-        const m = (await res.json()) as { motions: Partial<Record<MotionKey, string>>; defaultUrl?: string };
-        if (!cancelled) setMotions({ motions: m.motions ?? {}, defaultUrl: m.defaultUrl });
-      } catch {
-        /* 取得失敗時はモーション無し（アバターは静止/ fallback のまま） */
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, []);
-
-  // 有効なカスタム受付フローを取得する (issue #100)。取得失敗/無効時は既定フローへフォールバック。
-  useEffect(() => {
-    let cancelled = false;
-    (async () => {
-      try {
-        const res = await fetch('/api/kiosk/flow', { cache: 'no-store' });
-        if (!res.ok) {
-          // 403（セッション未確立）/503（障害）等は既定フローで継続する。
-          if (!cancelled) setCustomFlows([]);
-          return;
-        }
-        const body = (await res.json()) as { flows?: KioskCustomFlow[] };
-        if (!cancelled) setCustomFlows(body.flows ?? []);
-      } catch {
-        if (!cancelled) setCustomFlows([]); // 取得失敗＝既定フロー
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, []);
-
-  // 待機サイネージの再生可能項目数を取得する (issue #101)。失敗/無効時は 0（既定 IdleView）。
-  useEffect(() => {
-    let cancelled = false;
-    (async () => {
-      try {
-        const res = await fetch('/api/kiosk/signage');
-        if (!res.ok) return;
-        const sig = (await res.json()) as { items?: unknown[] };
-        if (!cancelled) setSignageCount(Array.isArray(sig.items) ? sig.items.length : 0);
-      } catch {
-        /* 取得失敗時は 0 のまま（待機画面は既定の IdleView） */
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, []);
-
-  // 受付体験メトリクスの計測 (issue #319)。PII を含まない所要/回数/入力手段を集計し、呼び出し作成時に
-  // サーバへ同送する（現状サーバは未知フィールドとして無視。永続化は次増分）。計測は非破壊で受付挙動を
-  // 変えない。ref で保持し、状態遷移・戻る/キャンセル・入力手段イベントごとにイミュータブルに置換する。
-  const experienceRef = useRef<ExperienceTracker>(createTracker());
-  const prevStepRef = useRef<ReturnType<typeof stepForState>>(null);
-
-  const markInputMethod = useCallback((method: Parameters<typeof recordInputMethod>[1]) => {
-    experienceRef.current = recordInputMethod(experienceRef.current, method);
-  }, []);
-  // 音声検索の採用を主入力手段=音声として記録する安定ハンドラ (issue #319)。renderScreen は
-  // 素の関数呼び出しのため、ref を触る処理は（インライン arrow ではなく）useCallback で渡す
-  // （react-hooks/refs: レンダー中に ref を触らない）。実行はクリック時のみ。
-  const markVoiceInput = useCallback(() => markInputMethod('stt'), [markInputMethod]);
-  // 担当者検索の実行（ヒット有無のみ）をヒット率/0 件率フックへ記録する安定ハンドラ (issue #322)。
-  // クエリ文字列や検索結果自体は ref に持ち込まない（PII 最小化）。
-  const markSearchQuery = useCallback((hasHit: boolean) => {
-    experienceRef.current = recordSearchQuery(experienceRef.current, hasHit);
-  }, []);
+  // 受付体験メトリクスの計測 (issue #319 / #322) は `useExperienceMetrics` が所有する
+  // (#422 increment 2)。PII を含まない所要/回数/入力手段のみを集計し、呼び出し作成時に
+  // サーバへ同送する。計測は非破壊で受付挙動を変えない。
+  const { markInputMethod, markVoiceInput, markSearchQuery, snapshotForCall } =
+    useExperienceMetrics(data.state);
 
   // 検索 0 件時などから Chat-assisted ドロワーを外部から開く合図 (issue #322)。値の増加を
   // KioskChatDrawer 側の effect が検知して開く（ドロワーは自身の開閉状態を所有したまま）。
   const [chatOpenSignal, setChatOpenSignal] = useState(0);
   const requestChatOpen = useCallback(() => setChatOpenSignal((n) => n + 1), []);
 
-  // 状態遷移から体験メトリクスを計測する (issue #319)。ステップ滞在所要・呼び出し到達までの所要・
-  // 「戻る」回数（ステップ後退で検知）・「キャンセル」回数を記録し、idle でトラッカをリセットする。
-  // 「calling」への create 副作用より前に定義し、作成時スナップショットで timeToCall が確定するようにする。
-  useEffect(() => {
-    if (data.state === 'idle') {
-      experienceRef.current = createTracker();
-      prevStepRef.current = null;
-      return;
-    }
-    const step = stepForState(data.state);
-    if (step) {
-      const prev = prevStepRef.current;
-      if (prev && EXPERIENCE_STEP_ORDER.indexOf(step) < EXPERIENCE_STEP_ORDER.indexOf(prev)) {
-        experienceRef.current = recordBack(experienceRef.current);
-      }
-      experienceRef.current = enterStep(experienceRef.current, step, Date.now());
-      prevStepRef.current = step;
-    } else if (data.state === 'cancelled') {
-      experienceRef.current = recordCancel(experienceRef.current);
-    }
-  }, [data.state]);
-
   // Vonage（非同期）通話のとき、ビデオビューに渡す受付 ID。Mock 同期通話では null のまま。
   const [vonageCallId, setVonageCallId] = useState<string | null>(null);
+  // 実 PSTN 発信中の受付 ID (#647)。ビデオと違いセッションが無いので、端末が
+  // `/status` を取りに行って結果を確定させる（サーバ側の遅延確定に合流する）。
+  const [pstnCallId, setPstnCallId] = useState<string | null>(null);
   // 取次段階 (#363 injection point 4)。`/call` 応答が `stages[]` を返したときだけ非空になり、
   // KioskCallView が段階表示する。旧形応答（stages 無し）は [] のまま（後方互換）。
   const [callStages, setCallStages] = useState<CallStage[]>([]);
@@ -803,6 +601,7 @@ export function KioskFlow({ operatingStatus, sttAdapterFactory, voiceSession, qr
     if (data.state !== 'calling') return;
     let cancelled = false;
     setVonageCallId(null);
+    setPstnCallId(null);
     setCallStages([]);
 
     (async () => {
@@ -823,20 +622,38 @@ export function KioskFlow({ operatingStatus, sttAdapterFactory, voiceSession, qr
             visitor: data.visitor,
             // 体験メトリクス (issue #319)。PII を含まない所要/回数/入力手段。呼び出し到達時点の
             // スナップショット（timeToCall はこの時点で確定）。サーバ未対応時は無視される（非破壊）。
-            experience: finalizeExperience(experienceRef.current, {
-              abandoned: false,
-              nowMs: Date.now(),
-            }),
+            experience: snapshotForCall(Date.now()),
           }),
         });
         if (!createRes.ok) {
-          if (!cancelled) dispatch({ type: 'CALL_FAILED' });
+          // サーバへは届いている（HTTP 応答が返った）ので server 扱い。
+          if (!cancelled) dispatch({ type: 'CALL_FAILED', reason: 'server' });
           return;
         }
         const session = (await createRes.json()) as { id: string };
+        // 受付 ID が確定した時点で状態機械へ載せる (#649)。`/call` の結果を待たないのは、
+        // **呼び出し中**の担当者応答ポーリング（#99 `useStaffResponse`）が受付 ID を必要と
+        // するため。結果と一緒にしか立たなかった頃は calling 中に 1 度も走っていなかった。
+        // 状態は動かさない（calling のまま）。
+        if (!cancelled) dispatch({ type: 'SESSION_CREATED', sessionId: session.id });
         const callRes = await fetch(`/api/kiosk/receptions/${session.id}/call`, { method: 'POST' });
-        const result = (await callRes.json()) as { state: ReceptionState };
+        const result = (await callRes.json()) as {
+          state: ReceptionState;
+          vonageSessionId?: string | null;
+          error?: string;
+        };
         if (cancelled) return;
+        // サーバが理由を返したなら、それを来訪者向けの理由へ写す (#736)。
+        // 🔴 **`unrouted` だけを名指しで拾わない。** かつてここは `unrouted` の `if` が 1 つ
+        // だけで、他の理由は状態分岐を素通りして最後の else で `server` に潰れていた。
+        // そのため営業時間外（サーバは 409 と `reopenAt` を返している）の来訪者に
+        // 「呼び出しに失敗しました」＋「代表窓口にお繋ぎします」という**果たせない約束**が
+        // 出ていた。写像は契約（`callFailureReasonFrom`）に一本化する。
+        const failureReason = callFailureReasonFrom(result.error);
+        if (failureReason !== undefined) {
+          dispatch({ type: 'CALL_FAILED', sessionId: session.id, reason: failureReason });
+          return;
+        }
         // 取次段階を後方互換で取り込む (#363)。旧形（stages 無し）は [] で、表示は増えない。
         setCallStages(parseCallStages(result));
         if (result.state === 'connected') dispatch({ type: 'CALL_CONNECTED', sessionId: session.id });
@@ -845,33 +662,76 @@ export function KioskFlow({ operatingStatus, sttAdapterFactory, voiceSession, qr
           // （preTimeoutNotice 段階）を最低 noticeMinDurationMs は見せてから CALL_TIMEOUT を
           // dispatch する。state.ts の遷移表自体は変えず、「いつ dispatch するか」だけを
           // UI 層で遅らせる。しきい値は ref 経由（この effect の再実行トリガーにはしない）。
-          const startedAt = callingStartedAtRef.current;
-          const elapsedMs = startedAt !== null ? Date.now() - startedAt : 0;
-          const delayMs = timeoutDispatchDelayMs(elapsedMs, callingStageThresholdsRef.current);
-          if (delayMs <= 0) {
-            dispatch({ type: 'CALL_TIMEOUT', sessionId: session.id });
-          } else {
-            timeoutDispatchTimerRef.current = window.setTimeout(() => {
-              if (!cancelled) dispatch({ type: 'CALL_TIMEOUT', sessionId: session.id });
-            }, delayMs);
-          }
+          // 実際の発火は下の「予告保持ゲート」effect が行う。ここでは保留に置くだけ。
+          setPendingTimeout({ sessionId: session.id });
         }
-        // 'calling' は Vonage（非同期）: ビデオビューが応答/未応答を確定する。
-        else if (result.state === 'calling') setVonageCallId(session.id);
-        else dispatch({ type: 'CALL_FAILED', sessionId: session.id });
+        // 'calling' は非同期の待ち。**媒体が 2 つある** (#4 Inc D-2 項目 2):
+        //   - ビデオ: セッションが確立済み。ビデオビューが応答/未応答を確定する
+        //   - PSTN:  電話を鳴らした直後。セッションは無く、結果は provider webhook で届く
+        // セッションが無いのにビデオビューを開くと、存在しないトークンを取りに行って失敗する。
+        else if (shouldOpenVideoView(result)) setVonageCallId(session.id);
+        else if (result.state === 'calling') {
+          // PSTN 発信中は呼び出し中画面（段階的ケア #323）のまま、`/status` を取りに行く。
+          setVonageCallId(null);
+          setPstnCallId(session.id);
+        }
+        else dispatch({ type: 'CALL_FAILED', sessionId: session.id, reason: 'server' });
       } catch {
-        if (!cancelled) dispatch({ type: 'CALL_FAILED' });
+        // fetch が例外 = 端末からサーバへ到達できていない。呼び出しは行われていない。
+        if (!cancelled) dispatch({ type: 'CALL_FAILED', reason: 'network' });
       }
     })();
 
     return () => {
       cancelled = true;
-      if (timeoutDispatchTimerRef.current !== null) {
-        window.clearTimeout(timeoutDispatchTimerRef.current);
-        timeoutDispatchTimerRef.current = null;
-      }
+      // 受付を作り直すときは、前の呼び出しの timeout 保留を持ち越さない（旧タイマーの
+      // clearTimeout と同じ意図。発火自体は下のゲート effect が持つ）。
+      setPendingTimeout(null);
     };
-  }, [data.state, data.purpose, data.target, data.visitor, selectedFlow]);
+  }, [data.state, data.purpose, data.target, data.visitor, selectedFlow, snapshotForCall]);
+
+  // 実 PSTN 発信中は `/status` をポーリングして結果を確定させる (#647)。
+  //
+  // ビデオ経路（`vonageCallId`）はビデオビューが確定するのでここは走らない。判定は純関数
+  // `decidePollAction` に閉じてあり、この effect はタイマーと fetch だけを持つ。
+  //
+  // 🔴 **経過時間で結果を作らない。** 状態を決めるのはサーバの応答だけ（権威はサーバ）。
+  // 上限到達（`give_up`）は「判定できなかった」の表明で、未応答とは別物として
+  // `contact_failed` へ倒す。
+  //
+  // 🔴 **`calling` の間だけ回す** (#652)。`pstnCallId` を null に戻すのは次に `calling` へ
+  // 入ったときだけなので、`pstnCallId` だけを見ていると**来訪者が呼び出し中から抜けても
+  // 最大 5 分（`CALL_STATUS_POLL_MAX_MS`）回り続ける**。抜ける経路は逃げ道バーの「最初に戻る」
+  // (RESET)・CANCEL・担当者応答からの代替導線の 3 つあり、いずれも #652 以前から到達可能だった。
+  // 状態機械が終端状態で `CALL_*` を不正遷移として無視するため**画面は壊れず、テストもゲートも
+  // 緑のまま通る**種類の欠陥。`data.state` を条件と deps の両方に入れることで、抜けた時点で
+  // cleanup が走ってタイマーが止まる（3 経路すべてが同時に閉じる）。
+  // 🔴 **`give_up` 予算の起点は「PSTN 発信が確定した時刻」** (#652)。ポーリングのループは
+  // 受付作成の時点から回っている（担当者応答と共有しているため）が、予算の起点をループ側に
+  // 持たせると 1 往復ぶん早まって意味が変わる。ここで別に持つ。
+  /**
+   * 来訪者が自分で受付をやめる操作を、**サーバへ伝えてから** dispatch する (#743)。
+   *
+   * 🔴 **判断を 2 か所に書かない。** 抜ける入口は逃げ道バーとチャットドロワーの 2 つあり、
+   * 片方に書くともう片方や 3 つ目の入口で黙って漏れる（#455 で「逃げ道バーを画面分岐の
+   * 外へ出した」のと同じ理由）。判断そのものは `shouldCancelOnServer` が持つ。
+   *
+   * これが無いと、呼び出し中に「最初に戻る」を押した来訪者の受付は `calling` のまま残り、
+   * **取次は hop 上限まで進んで社内の電話が鳴り続ける**。しかもポーリングは抜けた時点で
+   * 止まる（#652）ので `/give-up` も呼ばれない ── 自分から抜けるほうが、放っておくより
+   * 取次が長く走ることになる。
+   */
+  const leaveWithServer = (next: Action): void => {
+    if (isVisitorExit(next.type) && shouldCancelOnServer(data.state, next.type, data.sessionId)) {
+      cancelServerSide(data.sessionId!);
+    }
+    dispatch(next);
+  };
+
+  const pstnPollStartedAtRef = useRef<number | null>(null);
+  useEffect(() => {
+    pstnPollStartedAtRef.current = pstnCallId === null ? null : Date.now();
+  }, [pstnCallId]);
 
   // 完了・キャンセル後は一定時間で待機画面へ自動復帰する。個人情報も破棄される。
   useEffect(() => {
@@ -884,15 +744,21 @@ export function KioskFlow({ operatingStatus, sttAdapterFactory, voiceSession, qr
   // (issue #125)。RESET は INITIAL を返すため、入力済みの氏名等 PII は持ち越されない。
   // 来訪者がタッチ/キー操作するたびにタイマーを延長する。
   useEffect(() => {
-    if (!shouldResetOnInactivity(data.state)) {
+    /*
+     * QR 受付は受付状態機械を進めない（`setMode('checkin')` だけで state は idle のまま）ので、
+     * `data.state` だけで判定すると **QR 経路では無操作リセットが一度も発火しない** (#871)。
+     * 予約内容の確認画面（氏名・会社名・予約時刻）が端末に無期限で残っていた。
+     */
+    const qrCheckinActive = mode === 'checkin';
+    if (!shouldResetOnInactivityForKiosk({ receptionState: data.state, qrCheckinActive })) {
       setInactivitySeconds(null);
       return;
     }
-    const params = new URLSearchParams(window.location.search);
-    const override = Number(params.get('inactivityMs'));
-    // connected（来訪待ち）は長めの上限を使う (#324)。?inactivityMs= の明示指定は常に優先（E2E 短縮用）。
-    const base = data.state === 'connected' ? CONNECTED_INACTIVITY_RESET_MS : INACTIVITY_RESET_MS;
-    const limit = Number.isFinite(override) && override > 0 ? override : base;
+    // connected（来訪待ち）は長めの上限を使う (#324)。E2E 上書きの解決も含めて純ロジックへ委譲する。
+    const limit = resolveInactivityLimitMs({
+      search: window.location.search,
+      state: data.state,
+    });
     // 警告（カウントダウン）に割く時間は limit を超えない範囲で確保する。
     const warnMs = Math.min(INACTIVITY_WARNING_MS, Math.max(0, limit - 500));
     const warnAfter = Math.max(0, limit - warnMs);
@@ -908,6 +774,8 @@ export function KioskFlow({ operatingStatus, sttAdapterFactory, voiceSession, qr
         remaining -= 1;
         if (remaining <= 0) {
           window.clearInterval(interval);
+          // RESET は ReceptionState を戻すだけ。QR 受付から戻すには mode も明示的に戻す (#871)。
+          setMode('normal');
           dispatch({ type: 'RESET' });
         } else {
           setInactivitySeconds(remaining);
@@ -939,7 +807,8 @@ export function KioskFlow({ operatingStatus, sttAdapterFactory, voiceSession, qr
       window.removeEventListener('keydown', bump);
       setInactivitySeconds(null);
     };
-  }, [data.state]);
+    // `mode` を依存に入れないと、QR 受付へ入った瞬間に再評価されず判定が古いままになる。
+  }, [data.state, mode]);
 
   // idle へ戻ったら選んだカスタムフローを破棄し、表示言語も既定へ戻す（次の来訪者へ持ち越さない）
   // (issue #100 / #103)。待機中の言語切替はそのまま有効（idle に居る間は state 遷移しないため）。
@@ -998,6 +867,19 @@ export function KioskFlow({ operatingStatus, sttAdapterFactory, voiceSession, qr
       speak(phrase, { ...speakSettings, language });
     }
   }, [data.state, data.target?.label, guidanceIdle, speakSettings, locale]);
+
+  /*
+   * 音声レイヤの告知を実際に声へ出す (#803)。既存の受付ナレーションと**同じ `speak()`**
+   * を使う —— 別経路を作ると、片方だけ音量・言語設定が効かない形になる。
+   */
+  const speakVoiceAnnouncement = useCallback(
+    (phrase: string) => {
+      const language =
+        locale === DEFAULT_LOCALE ? speakSettings.language : LOCALE_LANGUAGE_CODE[locale];
+      speak(phrase, { ...speakSettings, language });
+    },
+    [locale, speakSettings],
+  );
 
   // 受付完了時に在館記録を自動生成し、退館クレデンシャルを発行して完了画面へ提示する (issue #342)。
   // 失敗しても受付完了画面の表示・自動リセットは妨げない（ホットパスを止めない・来訪者をブロックしない）。
@@ -1082,8 +964,75 @@ export function KioskFlow({ operatingStatus, sttAdapterFactory, voiceSession, qr
 
   // 担当者の応答アクションを短時間ポーリングで取得する (issue #99)。
   // 呼び出し中・応答後（calling/connected）のみ。終端状態では停止し、個人情報は持ち越さない。
+  //
+  // **`/status` を叩くのはこの 1 本だけ** (#652)。実 PSTN の結果確定（#647）も同じ応答から
+  // 導出する（`onPoll`）。かつては別々に 3 秒間隔で叩いており、サーバ側の `resolvePendingCall`
+  // が丸ごと 2 倍走っていた。
   const pollResponseEnabled = data.state === 'calling' || data.state === 'connected';
-  const staffResponse = useStaffResponse(data.sessionId ?? null, { enabled: pollResponseEnabled });
+
+  /**
+   * 毎ポーリングの結果から実 PSTN の呼び出し結果を確定させる (#647 / #652)。
+   *
+   * 🔴 **経過時間で結果を作らない。** 状態を決めるのはサーバの応答だけ（権威はサーバ）。
+   * 上限到達（`give_up`）は「判定できなかった」の表明で、未応答とは別物として
+   * `contact_failed` へ倒す。
+   *
+   * 🔴 **`calling` の間だけ判断する。** 抜ける経路は逃げ道バーの「最初に戻る」(RESET)・
+   * CANCEL・担当者応答からの代替導線の 3 つ。状態機械は終端状態で `CALL_*` を不正遷移として
+   * 無視するので画面は壊れないが、来訪者が居なくなった後に結果を作らない。
+   *
+   * ビデオ経路（`vonageCallId`）はビデオビューが確定するので、ここは `pstnCallId` が
+   * 立っているときだけ働く。
+   */
+  const handleStatusPoll = (result: ReceptionStatusPoll) => {
+    const id = pstnCallId;
+    const startedAt = pstnPollStartedAtRef.current;
+    if (id === null || startedAt === null || data.state !== 'calling') return;
+    const elapsedMs = Date.now() - startedAt;
+
+    if (!result.ok) {
+      // 単発の取得失敗では諦めない（電話は鳴り続けている）。上限に達したときだけ倒す。
+      if (elapsedMs > CALL_STATUS_POLL_MAX_MS) {
+        giveUpServerSide(id);
+        dispatch({ type: 'CALL_FAILED', sessionId: id, reason: 'network' });
+      }
+      return;
+    }
+
+    const action = decidePollAction(result.status.state, elapsedMs);
+    if (action.kind === 'resolved') {
+      // 🔴 **timeout だけは予告保持ゲートへ送る** (#832 / #323 AC3)。ここで直に dispatch すると、
+      // サーバが予告しきい値より前に `timeout` を返した場合（既定では予告 25s に対しサーバは
+      // 数秒〜十数秒で返すので**実運用ではほぼ必ず**そうなる）、来訪者は予告を 1 度も見ずに
+      // 未応答画面へ飛ぶ。実測した遷移列は `dialing → result-timeout` で、`waiting` すら出ない。
+      //
+      // 同期応答経路（`/call` が `timeout` を返す枝）と**同じ保留に置く**ことで、発火は下の
+      // ゲート effect 1 か所に集約される ── 判断を 2 か所に書かない。
+      //
+      // connected / failed は予告の対象ではない（予告は「まもなく打ち切る」の告知なので、
+      // 結果が出た側を遅らせる理由が無い）ので従来どおり即 dispatch する。
+      if (action.event === 'CALL_TIMEOUT') {
+        setPendingTimeout({ sessionId: id });
+        return;
+      }
+      dispatch({ type: action.event, sessionId: id });
+      return;
+    }
+    if (action.kind === 'give_up') {
+      // 🔴 **画面を倒すだけにしない (#743)。** サーバ側の受付が `'calling'` のまま残ると
+      // 取次は hop 上限まで進み続け、iPad は諦めたのに社内の電話が鳴り続ける。
+      // 受付を終端させれば以降の hop は `decideRoutingStop` に弾かれる。
+      giveUpServerSide(id);
+      // 結果を断定しない。呼び出しを完了できなかった（contact_failed）として代替導線へ。
+      dispatch({ type: 'CALL_FAILED', sessionId: id, reason: 'server' });
+    }
+  };
+
+  const staffResponse = useStaffResponse(data.sessionId ?? null, {
+    enabled: pollResponseEnabled,
+    intervalMs: CALL_STATUS_POLL_INTERVAL_MS,
+    onPoll: handleStatusPoll,
+  });
 
   // 拒否・別チャネル誘導（offersFallback）応答からの代替導線。calling からは USE_FALLBACK が
   // 不正遷移のため、まず failed へ落としてから既存の代替導線フロー（ResultView）へ繋ぐ。
@@ -1096,20 +1045,47 @@ export function KioskFlow({ operatingStatus, sttAdapterFactory, voiceSession, qr
   }, [data.state, data.sessionId, handleFallback]);
 
   // 受付開始（タップ / サイネージ / 来訪検知 共通）。音声再生を有効化してから START。
-  const startReception = useCallback(() => {
+  // 相手選択の探し方 (#776)。view-local な表示モードだが、`TargetView` は状態が変わるたび
+  // 再マウントされる（`key={data.state}`）ので、画面側に置くと確認画面から戻っただけで
+  // タブが切り替わる。受付 1 回分の寿命でここが持つ。
+  const [targetTab, setTargetTab] = useState<TargetTab>(DEFAULT_TARGET_TAB);
+
+  /*
+   * 開いている部署の群 (#787)。**ここに持つ理由は `targetTab` と同じ** —— 画面は
+   * `key={data.state}` で再マウントされるので、`TargetView` に置くと確認画面から
+   * 「戻る」だけで開いていた部署が勝手に閉じる。
+   */
+  const [openStaffGroupId, setOpenStaffGroupId] = useState<string | null>(null);
+
+  /**
+   * 受付開始の唯一の入口 (#776)。`START` の dispatch を撒くとタブのリセットを書き忘れ
+   * られる——iPad は再読み込みされない常設端末なので、前の来訪者の探し方が次の来訪者へ
+   * 持ち越される（サイネージ CTA 経由が実際にその形だった）。入口を 1 本にして構造で防ぐ。
+   */
+  const beginReception = useCallback((answer?: TurnAnswerView) => {
     primeSpeech();
-    dispatch({ type: 'START' });
+    // 「部署から選ぶ」で入った来訪者を担当者タブへ着地させない。押した導線と着いた
+    // 画面が食い違う。表示モードだけの話なので状態機械へは載せず、画面へ渡す。
+    setTargetTab(initialTargetTabFor(answer?.id));
+    // 前の来訪者が開いた部署を次の来訪者へ持ち越さない（タブと同じ扱い）。
+    setOpenStaffGroupId(null);
+    dispatch({ type: 'START', pendingPurpose: answer?.presetPurpose });
   }, []);
+
+  const startReception = useCallback(() => beginReception(), [beginReception]);
 
   // クイックアクションからの受付開始 (issue #121)。用件を先取りした目的を pendingPurpose に載せる。
   // checkin（QR 受付）はモード切替なので START を使わず、ここではなく UI 側で mode='checkin' にする。
-  const startWithQuickAction = useCallback((action: QuickAction) => {
-    if (action.isCheckin) {
-      setMode('checkin');
-      return;
-    }
-    primeSpeech();
-    dispatch({ type: 'START', pendingPurpose: action.presetPurpose });
+  // 待機の入口カード (#422 inc5-b 増分 3b)。受付を開始し、用件の先取りがあれば添える。
+  // 集合・並び順・用件の先取りは契約（`turnAnswersFor('idle')`）が決める。
+  const startWithEntry = useCallback(
+    (answer: TurnAnswerView) => beginReception(answer),
+    [beginReception],
+  );
+  // 引き渡し入口 (#422 inc5-b 増分 3b)。**状態機械は進めず**別シェル（CheckinFlow）へ渡す。
+  // 回答と関数を分けているのは、押したときに起こることが違うため（取り違えを型で防ぐ）。
+  const handoffToShell = useCallback((handoff: TurnHandoffView) => {
+    setMode(handoff.to);
   }, []);
 
   // 用件先取りがあるとき、目的選択画面をスキップして担当/部署選択へ自動で進める (issue #121)。
@@ -1194,7 +1170,18 @@ export function KioskFlow({ operatingStatus, sttAdapterFactory, voiceSession, qr
     ...(backgroundUrl && !a11yHighContrast
       ? { backgroundImage: `url(${backgroundUrl})`, backgroundSize: 'cover', backgroundPosition: 'center' }
       : {}),
-    ...(brandAccent ? ({ '--brand-accent': brandAccent } as React.CSSProperties) : {}),
+    /*
+      accent と**その上に置くインク**を対で注入する (#884)。
+      インクを `#06121f` 固定にしていたため、紺やえんじのテナントは主 CTA が黒地に黒文字に
+      なっていた（実測: `#7f1d1d` 対 `#06121f` = 1.88:1）。輝度で選べばどの色でも 4.34:1 以上出る。
+      派生色（strong / soft / glow）は CSS 側の `.screen` が `--brand-accent` から再導出する。
+    */
+    ...(brandAccent
+      ? ({
+          '--brand-accent': brandAccent,
+          '--color-accent-ink': accentInkFor(brandAccent),
+        } as React.CSSProperties)
+      : {}),
   };
 
   return (
@@ -1213,7 +1200,20 @@ export function KioskFlow({ operatingStatus, sttAdapterFactory, voiceSession, qr
       data-a11y-font-scale={fontScale}
       data-a11y-contrast={a11yHighContrast ? 'high' : undefined}
       data-a11y-reach={a11yLowReach ? 'low' : undefined}
-      style={backgroundStyle}
+      /*
+       * 音声レイヤ（復唱確認）の持ち上げ量を実測値で渡す (#788)。**DOM ノードを増やさない** ──
+       * ラッパを足すと SSR（フラグ未評価）とクライアント初回描画で木が食い違い、hydration が
+       * 壊れる（実測: React error #418）。カスタムプロパティは継承するので、常に描かれる
+       * `<main>` に載せれば子の音声レイヤへ届く。
+       */
+      style={
+        voiceSafeBottom > 0
+          ? ({
+              ...backgroundStyle,
+              '--kiosk-voice-safe-bottom': `${voiceSafeBottom + 16}px`,
+            } as React.CSSProperties)
+          : backgroundStyle
+      }
     >
       {/*
         常設アクセシビリティ支援モードボタン (issue #321 AC「全 kiosk 画面でモード切替が
@@ -1241,12 +1241,13 @@ export function KioskFlow({ operatingStatus, sttAdapterFactory, voiceSession, qr
         通知する。demo-studio の synthetic driver はこれを合図に発話シーケンスを (再)開始できる
         （実 orchestrator 経路は同 hook を実装しないため無影響 = 中立な通知口）。
       */}
-      {voiceSession ? (
+      {effectiveVoiceSession ? (
         <VoiceSessionLayer
-          factory={voiceSession}
+          factory={effectiveVoiceSession}
           locale={locale}
           receptionState={data.state}
           onResolved={handleVoiceResolved}
+          onAnnounce={speakVoiceAnnouncement}
         />
       ) : null}
       {inactivitySeconds !== null ? (
@@ -1257,18 +1258,25 @@ export function KioskFlow({ operatingStatus, sttAdapterFactory, voiceSession, qr
         />
       ) : null}
       {!online ? (
-        <div className="notice notice--warning" data-testid="kiosk-offline" style={{ marginBottom: 'var(--space-md)' }}>
-          通信が不安定です。復帰までしばらくお待ちください。
+        // 受付のどの局面でも出る来訪者向けのお知らせ。しかも通信断は失敗時フォールバックの
+        // 入口そのものなので、選んだ言語で出さないと最も助けが要る場面で読めなくなる (#327)。
+        <div
+          className="notice notice--warning"
+          data-testid="kiosk-offline"
+          lang={htmlLangFor(locale)}
+          style={{ marginBottom: 'var(--space-md)' }}
+        >
+          {makeT(locale)('reception.offlineNotice')}
         </div>
       ) : null}
       {view === 'revoked' ? (
         <div className="screen__body" style={{ alignItems: 'center', justifyContent: 'center', textAlign: 'center' }}>
-          <div className="notice notice--danger" data-testid="kiosk-revoked">
-            この受付端末は現在ご利用いただけません。担当者にお問い合わせください。
+          <div className="notice notice--danger" data-testid="kiosk-revoked" lang={htmlLangFor(locale)}>
+            {makeT(locale)('kiosk.deviceUnavailable')}
           </div>
         </div>
       ) : view === 'authorize' ? (
-        <KioskAuthorizeView onAuthorized={() => setAuthorized(true)} />
+        <KioskAuthorizeView onAuthorized={markAuthorized} />
       ) : view === 'unenrolled' ? (
         <KioskUnenrolledView />
       ) : view === 'checking' ? (
@@ -1316,6 +1324,7 @@ export function KioskFlow({ operatingStatus, sttAdapterFactory, voiceSession, qr
       ) : useCustomFlow && data.state === 'selectingPurpose' ? (
         // カスタム目的選択 (issue #100)。選択でフローを保持し、入力ステップ有無で次へ分岐。
         <CustomPurposeView
+          locale={locale}
           flows={customFlows ?? []}
           onSelect={(flow) => {
             setSelectedFlow(flow);
@@ -1335,14 +1344,13 @@ export function KioskFlow({ operatingStatus, sttAdapterFactory, voiceSession, qr
         />
       ) : (
         <>
-          <FlowStepper state={data.state} locale={locale} />
           {/* 画面遷移ごとに key を変え、上品な入場アニメを再生する（#119 UX 仕上げ）。 */}
           <div className="screen-anim" key={data.state}>
-            {renderScreen(
+            {renderScreen({
               data,
               dispatch,
               complete,
-              handleFallback,
+              onFallback: handleFallback,
               directory,
               guidanceIdle,
               vrmUrl,
@@ -1350,36 +1358,41 @@ export function KioskFlow({ operatingStatus, sttAdapterFactory, voiceSession, qr
               sttEnabled,
               motionUrl,
               vonageCallId,
-              () => setMode('checkin'),
               staffResponse,
-              handleStaffResponseFallback,
-              startWithQuickAction,
+              onStaffResponseFallback: handleStaffResponseFallback,
+              onEntry: startWithEntry,
+              onHandoff: handoffToShell,
               locale,
-              setLocale,
+              onLocaleChange: setLocale,
               branding,
-              // renderScreen は素の関数のため lint はこの引数をレンダー中の ref アクセスと誤検知する。
-              // markVoiceInput は音声候補クリック時のみ実行される（レンダー中に ref を触らない）(issue #319)。
-              // eslint-disable-next-line react-hooks/refs -- クリック時のみ実行される安定コールバック
-              markVoiceInput,
+              // 音声候補クリック時のみ実行される安定コールバック（レンダー中に ref を触らない, #319）。
+              onVoiceUse: markVoiceInput,
               // 受付完了画面に提示する退館クレデンシャル (#342)。connected 完了時のみ非 null。
               checkoutCredential,
               privacyNoticeOverride,
-              presenceEnabled,
-              // markVoiceInput と同様、レンダー中には呼ばれない安定コールバック（デバウンス後の
-              // 検索実行時のみ ref を更新する, issue #322）。
-              // eslint-disable-next-line react-hooks/refs -- クリック/検索実行時のみ実行される安定コールバック
-              markSearchQuery,
-              requestChatOpen,
+              presenceCameraEnabled: presenceEnabled,
+              // 同様に、デバウンス後の検索実行時のみ ref を更新する安定コールバック (#322)。
+              onSearchQuery: markSearchQuery,
+              onRequestChat: requestChatOpen,
+              targetTab,
+              openStaffGroupId,
+              onOpenStaffGroupChange: setOpenStaffGroupId,
+              onTargetTabChange: setTargetTab,
               // 呼び出し中の段階的ケア (#323)。UI 層のタイマー派生（state.ts/ui-contract.ts は不変）。
               callingStageState,
               callingStageTextOverride,
+              onCallTimeout: () => {
+                if (data.state !== 'calling' || vonageCallId === null) return;
+                setPendingTimeout({ sessionId: vonageCallId });
+              },
+              videoAnswerTimeoutMs,
               // ワンタップ満足度フィードバック (#320)。完了/未応答/失敗画面のみが使う。
-              { enabled: feedbackEnabled, onSubmit: submitFeedback },
+              feedback: { enabled: feedbackEnabled, onSubmit: submitFeedback },
               // STT アダプタ注入 (#370)。未指定は既定 MockSttAdapter（無変更動作）。
               sttAdapterFactory,
               // 取次段階 (#363)。Vonage 非同期通話ビュー（KioskCallView）が段階表示する。
               callStages,
-            )}
+            })}
           </div>
           {/*
             #123 アバター常設コンパニオン。screenState（=data.state）から表情/モーション/字幕を
@@ -1390,7 +1403,11 @@ export function KioskFlow({ operatingStatus, sttAdapterFactory, voiceSession, qr
             待機画面は IdleView 側がヒーローとして大きく表示する。
           */}
           {showAvatarCompanion(data.state, layout) ? (
-            <div className="kiosk-avatar-companion" aria-hidden="true">
+            <div
+              className="kiosk-avatar-companion"
+              aria-hidden="true"
+              {...persistentRegionProps('kiosk-avatar-companion')}
+            >
               <AvatarGuide
                 screenState={data.state}
                 locale={locale}
@@ -1398,30 +1415,14 @@ export function KioskFlow({ operatingStatus, sttAdapterFactory, voiceSession, qr
                 fallbackImageUrl={avatarFallbackUrl}
                 defaultMotionUrl={motionUrl}
                 guidanceOverride={callingAvatarGuidanceOverride}
+                layout={layout}
               />
             </div>
           ) : null}
           {/* 退館チェックアウト導線 (issue #102)。待機中のみ小さく常設する（非破壊）。 */}
-          {data.state === 'idle' ? <CheckoutLink locale={locale} /> : null}
-          {/*
-            常時見える「逃げ道」バー (issue #121 / #325)。後退系コントロールはここに一本化し、
-            戻る（1 ステップ）/ 最初に戻る（リセット）の 2 語だけを出す。出すアクションは #120 契約の
-            availableActions に従う（許可外は出さない）。各画面のコンテンツ側は前進系（主 CTA）と
-            文脈固有（修正する）に限定し、後退ボタンは置かない（同一機能ボタンの二重表示を解消）。
-          */}
-          <EscapeHatchBar
-            barRef={escapeBarRef}
-            state={data.state}
-            onAction={(action) => {
-              // escapeHatchesFor が返すのは back/reset のみ（#325）。状態機械イベントへ写す。
-              const eventByAction: Partial<Record<ReceptionAction, Action>> = {
-                back: { type: 'BACK' },
-                reset: { type: 'RESET' },
-              };
-              const next = eventByAction[action];
-              if (next) dispatch(next);
-            }}
-          />
+          {isElementVisible('kiosk-checkout-link', data.state) ? (
+            <CheckoutLink locale={locale} />
+          ) : null}
           {/*
             #122 Chat-assisted ドロワー (#124 で配線)。利用可否は deriveChatAvailability(state) に従い、
             idle/終端では自動で閉じ・履歴を破棄する（ドロワー側で null を返す→スロットは :empty で非表示）。
@@ -1439,6 +1440,7 @@ export function KioskFlow({ operatingStatus, sttAdapterFactory, voiceSession, qr
           >
             <KioskChatDrawer
               screenState={data.state}
+              locale={locale}
               available={deriveChatAvailability(data.state) === 'available'}
               // 担当者検索 0 件時の「チャットで相談する」ボタンから開く合図 (issue #322)。
               openSignal={chatOpenSignal}
@@ -1459,52 +1461,42 @@ export function KioskFlow({ operatingStatus, sttAdapterFactory, voiceSession, qr
                   reset: { type: 'RESET' },
                 };
                 const next = eventByAction[action];
-                if (next) dispatch(next);
+                if (next) leaveWithServer(next);
               }}
             />
           </div>
         </>
       )}
-    </main>
-  );
-}
+      {/*
+        常時見える「逃げ道」バー (issue #121 / #325)。後退系コントロールはここに一本化し、
+        戻る（1 ステップ）/ 最初に戻る（リセット）の 2 語だけを出す。出すアクションは #120 契約の
+        availableActions に従う（許可外は出さない）。各画面のコンテンツ側は前進系（主 CTA）と
+        文脈固有（修正する）に限定し、後退ボタンは置かない（同一機能ボタンの二重表示を解消）。
 
-/**
- * 常時見える逃げ道バー (issue #121)。
- *
- * `escapeHatchesFor(state)`（#120 契約の availableActions 由来）が返すアクションだけを出す。
- * idle や逃げ道が無い状態では何も描画しない。重要操作（確認必須）は含めない。
- */
-function EscapeHatchBar({
-  state,
-  onAction,
-  barRef,
-}: {
-  state: ReceptionState;
-  onAction: (action: ReceptionAction) => void;
-  barRef?: React.Ref<HTMLElement>;
-}) {
-  const hatches: ReadonlyArray<EscapeHatch> = escapeHatchesFor(state);
-  if (hatches.length === 0) return null;
-  return (
-    <nav
-      ref={barRef}
-      className="kiosk-escape-bar"
-      data-testid="kiosk-escape-bar"
-      aria-label="受付の操作（戻る・最初に戻る）"
-    >
-      {hatches.map((hatch) => (
-        <button
-          key={hatch.action}
-          type="button"
-          className={`btn btn--${hatch.variant}`}
-          data-testid={hatch.testId}
-          onClick={() => onAction(hatch.action)}
-        >
-          {hatch.label}
-        </button>
-      ))}
-    </nav>
+        **画面分岐の外に置く**（#455 レビュー指摘）。以前は既定受付の枝の中に在ったため、
+        カスタム受付フロー (#100) の 2 画面では逃げ道が 1 つも描画されず、来訪者は 60 秒の
+        無操作リセットを待つしかない**行き止まり**になっていた。分岐が増えるたびに
+        「バーを入れ忘れる」余地を残さないよう、構造として全画面の外側へ出す。
+        逃げ道を出さない局面（idle・端末ゲート系・QR 受付モード）は `escapeHatchesFor` が
+        空を返して null になるので、ここに置いても余計なものは出ない。
+      */}
+      <EscapeBar
+        barRef={escapeBarRef}
+        regionTestId="kiosk-escape-bar"
+        locale={locale}
+        // 出す項目は契約（`escapeHatchActionsFor`）由来。バーは描画だけを持つ。
+        items={escapeHatchesFor(data.state).map((hatch) => ({ id: hatch.action, ...hatch }))}
+        onSelect={(id) => {
+          // escapeHatchesFor が返すのは back/reset のみ（#325）。状態機械イベントへ写す。
+          const eventByAction: Partial<Record<ReceptionAction, Action>> = {
+            back: { type: 'BACK' },
+            reset: { type: 'RESET' },
+          };
+          const next = eventByAction[id as ReceptionAction];
+          if (next) leaveWithServer(next);
+        }}
+      />
+    </main>
   );
 }
 
@@ -1522,7 +1514,9 @@ function KioskAuthorizeView({ onAuthorized }: { onAuthorized: () => void }) {
       const res = await fetch('/api/kiosk/authorize', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ pin, kioskId: KIOSK_ID }),
+        // 端末 ID は送らない (#419)。PIN 自己許可は端末 ID を持たない初回経路で、
+        // サーバが dev 既定へ倒す。以後の端末 ID はセッションが権威になる。
+        body: JSON.stringify({ pin }),
       });
       if (res.ok) onAuthorized();
       else setError(true);
@@ -1555,7 +1549,7 @@ function KioskAuthorizeView({ onAuthorized }: { onAuthorized: () => void }) {
           PIN が正しくありません。
         </p>
       ) : null}
-      <button type="submit" className="btn btn--primary" data-testid="kiosk-authorize" disabled={busy}>
+      <button type="submit" className="btn btn--primary" data-testid="kiosk-authorize" disabled={busy} aria-busy={busy}>
         受付を開始する
       </button>
     </form>
@@ -1805,7 +1799,7 @@ function CheckoutLink({ locale = DEFAULT_LOCALE }: { locale?: Locale }) {
     <Link
       href={`/kiosk/checkout?locale=${locale}`}
       className="btn btn--ghost"
-      data-testid="kiosk-checkout-link"
+      {...persistentRegionProps('kiosk-checkout-link')}
       lang={htmlLangFor(locale)}
     >
       {tr('kiosk.checkoutLink')}
@@ -1817,15 +1811,17 @@ function CheckoutLink({ locale = DEFAULT_LOCALE }: { locale?: Locale }) {
 function CustomPurposeView({
   flows,
   onSelect,
+  locale,
 }: {
   flows: readonly KioskCustomFlow[];
   onSelect: (flow: KioskCustomFlow) => void;
+  locale: Locale;
 }) {
   // 「最初に戻る」は常設の逃げ道バーに一本化（画面内フッターとの二重表示を解消, #121）。
   return (
     <>
       <div className="screen__body" data-testid="custom-purpose-view">
-        <PurposeSelector flows={flows} onSelect={onSelect} />
+        <PurposeSelector flows={flows} onSelect={onSelect} locale={locale} />
       </div>
     </>
   );
@@ -1857,7 +1853,7 @@ function CustomVisitorInfoView({
         </div>
         <div className="screen__footer">
           <button type="button" className="btn btn--primary" data-testid="custom-flow-proceed" onClick={() => onSubmit({})}>
-            確認へ進む
+            {makeT(locale)('reception.proceedConfirm')}
           </button>
         </div>
       </>
@@ -1871,1326 +1867,7 @@ function CustomVisitorInfoView({
         overrideSummary={privacyNoticeOverride}
         presenceCameraEnabled={presenceCameraEnabled}
       />
-      <VisitorInfoForm fields={flow.fields} onSubmit={onSubmit} />
+      <VisitorInfoForm fields={flow.fields} onSubmit={onSubmit} locale={locale} />
     </div>
-  );
-}
-
-/**
- * 来訪者向けプライバシー通知 (issue #314)。要約は入力ステップで常時表示し、詳細
- * （利用目的・保存の有無・保持期間・問い合わせ先、presence カメラ注記）は折りたたみで読める。
- * タッチのみで開閉でき、大きな文字/コントラストの kiosk UI 基準 (#17) に沿う。
- */
-function PrivacyNotice({
-  locale,
-  overrideSummary,
-  presenceCameraEnabled,
-}: {
-  locale: Locale;
-  overrideSummary: string | undefined;
-  presenceCameraEnabled: boolean;
-}) {
-  const [expanded, setExpanded] = useState(false);
-  const content = resolvePrivacyNoticeContent(locale, {
-    overrideSummary,
-    presenceCameraEnabled,
-  });
-  return (
-    <div className="privacy-notice" data-testid="privacy-notice" lang={htmlLangFor(locale)}>
-      <p className="privacy-notice__title">{content.title}</p>
-      <p className="privacy-notice__summary" data-testid="privacy-notice-summary">
-        {content.summary}
-      </p>
-      <button
-        type="button"
-        className="privacy-notice__toggle"
-        data-testid="privacy-notice-toggle"
-        aria-expanded={expanded}
-        onClick={() => setExpanded((v) => !v)}
-      >
-        {expanded ? content.detailsHideLabel : content.detailsShowLabel}
-      </button>
-      {expanded ? (
-        <dl className="privacy-notice__details" data-testid="privacy-notice-details">
-          <dt>{content.purposeLabel}</dt>
-          <dd>{content.purposeText}</dd>
-          <dt>{content.storageLabel}</dt>
-          <dd>{content.storageText}</dd>
-          <dt>{content.retentionLabel}</dt>
-          <dd>{content.retentionText}</dd>
-          <dt>{content.contactLabel}</dt>
-          <dd>{content.contactText}</dd>
-          {content.presenceCameraNote ? (
-            <>
-              <dt>{content.presenceCameraLabel}</dt>
-              <dd data-testid="privacy-notice-presence-camera">{content.presenceCameraNote}</dd>
-            </>
-          ) : null}
-        </dl>
-      ) : null}
-    </div>
-  );
-}
-
-function renderScreen(
-  data: FlowData,
-  dispatch: React.Dispatch<Action>,
-  complete: () => void,
-  onFallback: () => void,
-  directory: Directory,
-  guidanceIdle: string,
-  vrmUrl: string | undefined,
-  avatarFallbackUrl: string | undefined,
-  sttEnabled: boolean,
-  motionUrl: string | undefined,
-  vonageCallId: string | null,
-  onStartCheckin: () => void,
-  staffResponse: StaffResponseResult | null,
-  onStaffResponseFallback: () => void,
-  onQuickAction: (action: QuickAction) => void,
-  locale: Locale,
-  onLocaleChange: (next: Locale) => void,
-  branding: BrandingSettings,
-  /** 音声検索が使われたことを体験メトリクスへ通知する (issue #319)。 */
-  onVoiceUse: () => void,
-  /** 受付完了画面に提示する退館クレデンシャル (issue #342)。未発行なら null。 */
-  checkoutCredential: CheckoutCredential | null,
-  /** 来訪者向けプライバシー通知の要約文言の上書き (issue #28 / #314)。未設定は既定文言。 */
-  privacyNoticeOverride: string | undefined,
-  /** 来訪者検知カメラの有効状態 (issue #79)。有効時のみ通知にローカル処理・非保存の注記を足す。 */
-  presenceCameraEnabled: boolean,
-  /** 担当者検索の実行を体験メトリクスへ通知する（ヒット有無のみ。PII なし, issue #322）。 */
-  onSearchQuery: (hasHit: boolean) => void,
-  /** 検索 0 件時などから Chat-assisted ドロワーを開く合図を送る (issue #322)。 */
-  onRequestChat: () => void,
-  /**
-   * 呼び出し中の経過段階 (issue #323)。UI 層のタイマー派生（state.ts/ui-contract.ts は不変）。
-   * calling 以外の画面では参照しない。
-   */
-  callingStageState: { stage: CallingStage; elapsedMs: number },
-  /** 呼び出し中の段階的ケアのテナント文言上書き (issue #28 / #323)。ja のみ適用。 */
-  callingStageTextOverride: { waiting?: string; notice?: string },
-  /**
-   * ワンタップ満足度フィードバック (issue #320)。完了/未応答/失敗の終端画面のみが使う。
-   * `enabled=false`（テナント設定でオフ）のときは呼び出し側で UI ごと出さない。
-   */
-  feedback: { enabled: boolean; onSubmit: (rating: SatisfactionRating, reasonCodes: FeedbackReasonCode[]) => void },
-  /** STT アダプタ注入 (#370)。未指定は既定 MockSttAdapter（無変更動作）。 */
-  sttAdapterFactory: SttAdapterFactory | undefined,
-  /** 取次段階 (#363)。Vonage 非同期通話ビューが段階表示する。旧形応答では空配列。 */
-  callStages: CallStage[],
-) {
-  const tr = makeT(locale);
-  switch (data.state) {
-    case 'idle':
-      return (
-        <IdleView
-          onQuickAction={onQuickAction}
-          guidance={guidanceIdle}
-          vrmUrl={vrmUrl}
-          avatarFallbackUrl={avatarFallbackUrl}
-          motionUrl={motionUrl}
-          locale={locale}
-          onLocaleChange={onLocaleChange}
-          branding={branding}
-        />
-      );
-    case 'selectingPurpose':
-      return (
-        <PurposeView
-          onSelect={(purpose) => dispatch({ type: 'SELECT_PURPOSE', purpose })}
-          locale={locale}
-        />
-      );
-    case 'selectingTarget':
-      return (
-        <TargetView
-          directory={directory}
-          sttEnabled={sttEnabled}
-          sttAdapterFactory={sttAdapterFactory}
-          onSelect={(target) => dispatch({ type: 'SELECT_TARGET', target })}
-          onVoiceUse={onVoiceUse}
-          onSearchQuery={onSearchQuery}
-          onRequestChat={onRequestChat}
-          locale={locale}
-        />
-      );
-    case 'inputVisitorInfo':
-      return (
-        <VisitorInfoView
-          initial={data.visitor}
-          onSubmit={(visitor) => dispatch({ type: 'SUBMIT_VISITOR_INFO', visitor })}
-          locale={locale}
-          privacyNoticeOverride={privacyNoticeOverride}
-          presenceCameraEnabled={presenceCameraEnabled}
-        />
-      );
-    case 'confirming':
-      return (
-        <ConfirmView
-          data={data}
-          onConfirm={() => dispatch({ type: 'CONFIRM' })}
-          onBack={() => dispatch({ type: 'BACK' })}
-          locale={locale}
-        />
-      );
-    case 'calling':
-      // Vonage（非同期）通話はビデオビューがライフサイクルを駆動する。Mock 同期通話は従来表示。
-      // 担当者の応答アクションがあれば、その来訪者向けメッセージを上に重ねて表示する (issue #99)。
-      return (
-        <>
-          <StaffResponseBanner
-            // respondedAt で key を切り替え、新しい応答が届くたびに入場アニメを再生して
-            // 「応答が届いた瞬間」を明確に伝える (issue #323 AC2)。
-            key={staffResponse?.respondedAt ?? 'none'}
-            response={staffResponse}
-            onFallback={onStaffResponseFallback}
-            locale={locale}
-          />
-          {vonageCallId ? (
-            <KioskCallView
-              receptionId={vonageCallId}
-              onConnected={() => dispatch({ type: 'CALL_CONNECTED', sessionId: vonageCallId })}
-              onTimeout={() => dispatch({ type: 'CALL_TIMEOUT', sessionId: vonageCallId })}
-              onFallback={() => dispatch({ type: 'CALL_FAILED', sessionId: vonageCallId })}
-              stages={callStages}
-              locale={locale}
-            />
-          ) : (
-            <CallingView
-              target={data.target?.label ?? ''}
-              locale={locale}
-              stage={callingStageState.stage}
-              textOverride={callingStageTextOverride}
-            />
-          )}
-        </>
-      );
-    case 'connected':
-      return (
-        <>
-          <StaffResponseBanner
-            // respondedAt で key を切り替え、新しい応答が届くたびに入場アニメを再生して
-            // 「応答が届いた瞬間」を明確に伝える (issue #323 AC2)。
-            key={staffResponse?.respondedAt ?? 'none'}
-            response={staffResponse}
-            onFallback={onStaffResponseFallback}
-            locale={locale}
-          />
-          <ConnectedView target={data.target?.label ?? ''} onComplete={complete} locale={locale} />
-        </>
-      );
-    case 'timeout':
-    case 'failed':
-      return (
-        <>
-          <ResultView
-            outcome={data.state}
-            onFallback={onFallback}
-            locale={locale}
-          />
-          {/* ワンタップ満足度フィードバック (#320)。テナント設定でオフなら UI ごと出さない。 */}
-          {feedback.enabled ? <SatisfactionFeedback onSubmit={feedback.onSubmit} locale={locale} /> : null}
-        </>
-      );
-    case 'fallback':
-      return <FallbackView locale={locale} />;
-    case 'cancelled':
-      return <EndView testid="completed" tone="info" title={tr('reception.cancelled')} locale={locale} />;
-    case 'completed':
-      return (
-        <>
-          <EndView
-            testid="completed"
-            tone="success"
-            title={tr('reception.completedTitle')}
-            lead={tr('reception.thanksLead')}
-            locale={locale}
-          />
-          {/* 退館クレデンシャル (#342)。発行できた場合のみ QR / 短コード / 有効期限を提示する。 */}
-          {checkoutCredential ? (
-            <CheckoutCredentialPanel credential={checkoutCredential} locale={locale} />
-          ) : null}
-          {/* ワンタップ満足度フィードバック (#320)。テナント設定でオフなら UI ごと出さない。 */}
-          {feedback.enabled ? <SatisfactionFeedback onSubmit={feedback.onSubmit} locale={locale} /> : null}
-        </>
-      );
-    default:
-      return null;
-  }
-}
-
-/* ---------- 各画面 (issue #11–#15) ---------- */
-
-/**
- * 待機/初期画面 (issue #121 タッチファースト再設計)。
- *
- * 1 画面 1 主目的: 「何のご用件か」を大きなカードで選ぶ。主要 CTA（担当者を呼ぶ / QR で受付 /
- * 部署から選ぶ / 配送・納品 / その他）はクイックアクションとして `quickActionsFor('idle')` から
- * 描画する（ボタン集合の真実源は #120 の契約）。音声・チャットなしでもタッチだけで進める。
- *
- * 後方互換: 既存 E2E/テストが参照する `start-reception`（受付を開始する）と
- * `start-checkin`（QR で受付）の testid を、それぞれ「担当者を呼ぶ」「QR で受付」カードに
- * 付与し直して維持する。
- */
-/** クイックアクション intent → 辞書キー（label/desc）。多言語表示に使う (#103)。 */
-const QUICK_ACTION_I18N: Record<QuickActionIntent, { label: MessageKey; desc: MessageKey }> = {
-  callStaff: { label: 'kiosk.action.callStaff.label', desc: 'kiosk.action.callStaff.desc' },
-  checkin: { label: 'kiosk.action.checkin.label', desc: 'kiosk.action.checkin.desc' },
-  department: { label: 'kiosk.action.department.label', desc: 'kiosk.action.department.desc' },
-  delivery: { label: 'kiosk.action.delivery.label', desc: 'kiosk.action.delivery.desc' },
-  other: { label: 'kiosk.action.other.label', desc: 'kiosk.action.other.desc' },
-};
-
-function IdleView({
-  onQuickAction,
-  guidance,
-  vrmUrl,
-  avatarFallbackUrl,
-  motionUrl,
-  locale,
-  onLocaleChange,
-  branding,
-}: {
-  onQuickAction: (action: QuickAction) => void;
-  guidance: string;
-  vrmUrl?: string;
-  avatarFallbackUrl?: string;
-  motionUrl?: string;
-  locale: Locale;
-  onLocaleChange: (next: Locale) => void;
-  branding: BrandingSettings;
-}) {
-  const actions = quickActionsFor('idle');
-  const tr = makeT(locale);
-  // ja は管理設定で上書きできる案内文言（guidance）を使い、他言語は辞書の挨拶＋安心情報を出す (#103 / #324)。
-  // リードは主指示（見出しの「ご用件をお選びください」）を重ねず、挨拶＋「タッチだけで受付できる」
-  // 安心情報に限定して二重指示を避ける (#324)。文の区切りは locale に合わせる（CJK は「。」、他は「. 」）。
-  // 'ja-simple' は日本語の一種なので 'ja' と同じ区切りにする (#321)。
-  const sentenceSep = locale === 'ja' || locale === 'zh' || locale === 'ja-simple' ? '。' : '. ';
-  const lead =
-    locale === DEFAULT_LOCALE
-      ? guidance
-      : `${tr('welcome.title')}${sentenceSep}${tr('reception.idleReassure')}`;
-  // 既存 testid との後方互換（再設計後もリンク切れにしない）。
-  const legacyTestId: Partial<Record<QuickAction['intent'], string>> = {
-    callStaff: 'start-reception',
-    checkin: 'start-checkin',
-  };
-  const hasBrand = hasBrandingContent(branding);
-  return (
-    <div
-      className={`screen__body kiosk-idle${hasBrand ? ' kiosk-idle--branded' : ''}`}
-      data-testid="kiosk-idle"
-    >
-      {/* テナントのブランド（ロゴ/社名）。待機画面を「その会社の受付」に見せる (#88)。 */}
-      {hasBrand ? (
-        <div className="kiosk-brand" data-testid="kiosk-brand">
-          {branding.logoUrl ? (
-            // eslint-disable-next-line @next/next/no-img-element
-            <img className="kiosk-brand__logo" src={branding.logoUrl} alt={branding.companyName ?? ''} />
-          ) : null}
-          {branding.companyName ? <span className="kiosk-brand__name">{branding.companyName}</span> : null}
-        </div>
-      ) : null}
-      {/*
-        #123 アバター状態同期。AvatarGuide が screenState から発話/字幕/モーションを導出し、
-        idle では「AI受付です…」の字幕で AI 受付であることを初期体験で明示する。音声は KioskFlow 側の
-        案内読み上げ（SPEAK_PHRASES）と二重化しないよう、ここでは字幕のみ（ttsSettings 未指定）。
-        VRM/静止画が無くても字幕・フォールバックテキストで内容を保証する。pointer-events:none で操作を妨げない。
-      */}
-      <div className="kiosk-idle__avatar" data-slot="avatar">
-        <AvatarGuide
-          className="kiosk-avatar-guide"
-          screenState="idle"
-          locale={locale}
-          vrmUrl={vrmUrl}
-          fallbackImageUrl={avatarFallbackUrl}
-          defaultMotionUrl={motionUrl}
-        />
-      </div>
-      <header className="kiosk-idle__head">
-        <h1 className="screen__title">{tr('reception.purposePrompt')}</h1>
-        <p className="screen__lead" data-testid="idle-guidance" lang={htmlLangFor(locale)}>
-          {lead}
-        </p>
-        {/* 言語切替 (#103)。読めない言語でも自言語ラベルで選べる。 */}
-        <LanguageSwitcher
-          locale={locale}
-          onChange={onLocaleChange}
-          label={tr('welcome.chooseLanguage')}
-        />
-      </header>
-      <div className="card-grid kiosk-quick-actions" data-testid="kiosk-quick-actions">
-        {actions.map((action) => {
-          const keys = QUICK_ACTION_I18N[action.intent];
-          return (
-            <button
-              key={action.intent}
-              type="button"
-              className="card card--cta"
-              data-testid={legacyTestId[action.intent] ?? action.testId}
-              data-intent={action.intent}
-              lang={htmlLangFor(locale)}
-              onClick={() => onQuickAction(action)}
-            >
-              <span className="card__icon" aria-hidden="true">
-                {quickActionIcon(action.intent)}
-              </span>
-              {tr(keys.label)}
-              <span className="card__sub">{tr(keys.desc)}</span>
-            </button>
-          );
-        })}
-      </div>
-    </div>
-  );
-}
-
-function PurposeView({
-  onSelect,
-  locale,
-}: {
-  onSelect: (p: ReceptionPurposeId) => void;
-  locale: Locale;
-}) {
-  // 「最初に戻る/キャンセル」は常設の逃げ道バー（EscapeHatchBar）に一本化したため、ここには置かない
-  // （画面内フッターと逃げ道バーで「最初に戻る」が二重表示になる問題を解消, #121）。
-  const tr = makeT(locale);
-  // 待機の見出し（purposePrompt）と同一文言だと「担当者を呼ぶ」→ 目的選択で同じ質問が二重に見える
-  // ため、ここは「種類の絞り込み」として purposeDetailPrompt を出す (#324-2)。
-  // カード自体も待機カードと同じアイコン＋説明を持たせて視覚語彙を統一する (#324-3)。
-  return (
-    <>
-      <h1 className="screen__title">{tr('reception.purposeDetailPrompt')}</h1>
-      <div className="screen__body">
-        <div className="card-grid">
-          {RECEPTION_PURPOSES.map((p) => (
-            <button
-              key={p.id}
-              type="button"
-              className="card card--cta"
-              data-testid={`purpose-${p.id}`}
-              lang={htmlLangFor(locale)}
-              onClick={() => onSelect(p.id)}
-            >
-              <span className="card__icon" aria-hidden="true">
-                {purposeIcon(p.id)}
-              </span>
-              {tr(`reception.purpose.${p.id}` as MessageKey)}
-              <span className="card__sub">{tr(`reception.purpose.${p.id}.desc` as MessageKey)}</span>
-            </button>
-          ))}
-        </div>
-      </div>
-    </>
-  );
-}
-
-function TargetView({
-  directory,
-  sttEnabled,
-  sttAdapterFactory,
-  onSelect,
-  onVoiceUse,
-  onSearchQuery,
-  onRequestChat,
-  locale,
-}: {
-  directory: Directory;
-  sttEnabled: boolean;
-  /** STT アダプタ注入 (#370)。未指定は既定 MockSttAdapter（無変更動作）。 */
-  sttAdapterFactory?: SttAdapterFactory;
-  onSelect: (t: Target) => void;
-  /** 音声候補が採用されたことを体験メトリクスへ通知する (issue #319)。 */
-  onVoiceUse?: () => void;
-  /** 検索実行のヒット有無を体験メトリクスへ通知する（クエリ文字列は渡さない, issue #322）。 */
-  onSearchQuery?: (hasHit: boolean) => void;
-  /** 0 件時の「チャットで相談する」から Chat-assisted ドロワーを開く (issue #322)。 */
-  onRequestChat?: () => void;
-  locale: Locale;
-}) {
-  const tr = makeT(locale);
-  const [query, setQuery] = useState('');
-  // 音声認識の候補。タップで検索欄に反映し、来訪者の確認後に選択する（即時呼び出ししない）(issue #5)。
-  const [sttCandidates, setSttCandidates] = useState<string[]>([]);
-  const [sttListening, setSttListening] = useState(false);
-  const isSearching = query.trim() !== '';
-  // 未入力時は従来どおり全件表示。入力時は tier 付きスコアリング検索（ローマ字/表記ゆれ/1 文字
-  // typo に寛容, issue #322）を行い、exact/prefix/contains → fuzzy（もしかして）の順で並べる。
-  const scored = useMemo(
-    () => (isSearching ? searchStaffScored(directory.staff, query) : []),
-    [directory.staff, query, isSearching],
-  );
-  const results = isSearching ? scored.map((m) => m.item) : directory.staff;
-  const tierById = useMemo(() => new Map(scored.map((m) => [m.item.id, m.tier])), [scored]);
-  const departments = directory.departments;
-  const departmentSectionRef = useRef<HTMLDivElement>(null);
-  const hasNoResults = isSearching && results.length === 0;
-
-  // 検索実行のヒット有無を体験メトリクスへ記録する（クエリ文字列自体は保持しない, issue #322）。
-  // 打鍵のたびに数えないよう軽くデバウンスする。
-  useEffect(() => {
-    if (!isSearching) return;
-    const timer = setTimeout(() => {
-      onSearchQuery?.(results.length > 0);
-    }, 400);
-    return () => clearTimeout(timer);
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- results は query/directory から導出済み
-  }, [query, isSearching]);
-
-  const listen = useCallback(async () => {
-    if (sttListening) return;
-    setSttListening(true);
-    try {
-      // 候補生成元は在席担当者名。実 STT は注入ファクトリ (#370) で差し替える。既定は
-      // MockSttAdapter（実ブラウザ音声認識は実機前提 #65）。中立 interface のみに依存する。
-      const phrases = directory.staff
-        .filter((s) => s.available)
-        .map((s) => s.kana ?? s.displayName);
-      const factory = sttAdapterFactory ?? defaultSttAdapterFactory;
-      const candidates = await factory(phrases).listen();
-      setSttCandidates(candidates);
-    } finally {
-      setSttListening(false);
-    }
-  }, [directory.staff, sttListening, sttAdapterFactory]);
-
-  return (
-    <>
-      <h1 className="screen__title">{tr('reception.targetPrompt')}</h1>
-      <div className="screen__body">
-        <div className="field">
-          <label className="field__label" htmlFor="staff-search" lang={htmlLangFor(locale)}>
-            {tr('reception.searchStaff')}
-          </label>
-          <input
-            id="staff-search"
-            className="input"
-            data-testid="staff-search"
-            value={query}
-            onChange={(e) => setQuery(e.target.value)}
-            placeholder={tr('reception.searchPlaceholder')}
-            autoComplete="off"
-          />
-        </div>
-
-        {sttEnabled ? (
-          <div className="field" data-testid="stt-panel">
-            <button
-              type="button"
-              className="btn btn--secondary"
-              data-testid="stt-listen"
-              onClick={() => void listen()}
-              disabled={sttListening}
-            >
-              {sttListening ? tr('reception.listening') : tr('reception.voiceSearch')}
-            </button>
-            {sttCandidates.length > 0 ? (
-              <>
-                <p className="card__sub" data-testid="stt-hint" lang={htmlLangFor(locale)}>
-                  {tr('reception.voiceHint')}
-                </p>
-                <div className="card-grid" data-testid="stt-candidates">
-                  {sttCandidates.map((c, i) => (
-                    <button
-                      key={`${c}-${i}`}
-                      type="button"
-                      className="card"
-                      data-testid={`stt-candidate-${i}`}
-                      // 候補は検索欄に反映するのみ。担当者選択・呼び出しは行わない (issue #5)。
-                      // 音声候補の採用を主入力手段=音声として体験メトリクスに記録する (issue #319)。
-                      onClick={() => {
-                        onVoiceUse?.();
-                        setQuery(c);
-                      }}
-                    >
-                      {c}
-                    </button>
-                  ))}
-                </div>
-              </>
-            ) : null}
-          </div>
-        ) : null}
-
-        {results.length > 0 ? (
-          <div className="card-grid">
-            {results.map((s) =>
-              s.available ? (
-                <button
-                  key={s.id}
-                  type="button"
-                  className="card"
-                  data-testid={`staff-${s.id}`}
-                  onClick={() => onSelect({ type: 'staff', id: s.id, label: s.displayName })}
-                >
-                  {tierById.get(s.id) === 'fuzzy' ? (
-                    // あいまい一致（1 文字 typo・表記ゆれ由来）は「もしかして」と明示し、
-                    // 完全一致/前方一致と混同させない (issue #322 AC2)。
-                    <span className="card__badge" data-testid={`staff-${s.id}-maybe`} lang={htmlLangFor(locale)}>
-                      {tr('reception.searchMaybeMatch')}
-                    </span>
-                  ) : null}
-                  {s.displayName}
-                  <span className="card__sub">{directory.departments.find((d) => d.id === s.departmentId)?.name}</span>
-                </button>
-              ) : (
-                // 不在の担当者は呼び出せない。部署/代表窓口へ誘導する (issue #26)。
-                <div
-                  key={s.id}
-                  className="card"
-                  data-testid={`staff-${s.id}`}
-                  data-unavailable="true"
-                  aria-disabled="true"
-                  style={{ opacity: 0.55, cursor: 'not-allowed' }}
-                >
-                  {s.displayName}
-                  <span className="card__sub" data-testid={`staff-${s.id}-absent`} lang={htmlLangFor(locale)}>
-                    {tr('reception.staffAbsent')}
-                  </span>
-                </div>
-              ),
-            )}
-          </div>
-        ) : (
-          <div className="notice notice--warning" data-testid="staff-empty" lang={htmlLangFor(locale)}>
-            <p style={{ margin: 0 }}>{tr('reception.staffNotFound')}</p>
-          </div>
-        )}
-
-        {hasNoResults ? (
-          // 0 件で行き止まりにしない：部署一覧・チャット相談への次の一手を必ず提示する
-          // (issue #322 AC3)。文言は i18n（dictionary.ts の privacy.* 隣接キー）。
-          <div className="notice notice--warning" data-testid="search-no-results-guidance" lang={htmlLangFor(locale)}>
-            <p style={{ margin: 0 }}>{tr('reception.searchNoResultsGuidance')}</p>
-            <div className="card-grid" style={{ marginTop: 'var(--space-md)' }}>
-              <button
-                type="button"
-                className="btn btn--secondary"
-                data-testid="search-empty-department-cta"
-                onClick={() =>
-                  departmentSectionRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' })
-                }
-              >
-                {tr('reception.byDepartment')}
-              </button>
-              {onRequestChat ? (
-                <button
-                  type="button"
-                  className="btn btn--secondary"
-                  data-testid="search-empty-chat-cta"
-                  onClick={() => onRequestChat()}
-                >
-                  {tr('reception.searchNoResultsChatCta')}
-                </button>
-              ) : null}
-            </div>
-          </div>
-        ) : null}
-
-        <div ref={departmentSectionRef}>
-          <h2 style={{ fontSize: 'var(--font-lg)', margin: 0 }} lang={htmlLangFor(locale)}>{tr('reception.byDepartment')}</h2>
-          <div className="card-grid">
-            {departments.map((d) => (
-              <button
-                key={d.id}
-                type="button"
-                className="card"
-                data-testid={`dept-${d.id}`}
-                onClick={() => onSelect({ type: 'department', id: d.id, label: d.name })}
-              >
-                {d.name}
-              </button>
-            ))}
-          </div>
-        </div>
-      </div>
-      {/*
-        後退（戻る/最初に戻る）は常設の逃げ道バー（EscapeHatchBar, sticky）へ一本化した (#325)。
-        担当者一覧は長くなり得るが、バーは画面下端に常時可視なので戻る導線は失われない。
-      */}
-    </>
-  );
-}
-
-function VisitorInfoView({
-  initial,
-  onSubmit,
-  locale,
-  privacyNoticeOverride,
-  presenceCameraEnabled,
-}: {
-  initial?: VisitorInfo;
-  onSubmit: (v: VisitorInfo) => void;
-  locale: Locale;
-  privacyNoticeOverride: string | undefined;
-  presenceCameraEnabled: boolean;
-}) {
-  const tr = makeT(locale);
-  const [name, setName] = useState(initial?.name ?? '');
-  const [company, setCompany] = useState(initial?.company ?? '');
-  const [note, setNote] = useState(initial?.note ?? '');
-  const valid = name.trim().length > 0;
-
-  return (
-    <>
-      <h1 className="screen__title">{tr('reception.visitorInfoPrompt')}</h1>
-      <div className="screen__body">
-        {/* 用途・保存有無・保持期間・問い合わせ先を入力前に明示する (issue #314)。 */}
-        <PrivacyNotice
-          locale={locale}
-          overrideSummary={privacyNoticeOverride}
-          presenceCameraEnabled={presenceCameraEnabled}
-        />
-        <div className="field">
-          <label className="field__label" htmlFor="visitor-name" lang={htmlLangFor(locale)}>
-            {tr('reception.requiredLabel', { field: tr('reception.fieldName') })}
-          </label>
-          <input
-            id="visitor-name"
-            className="input"
-            data-testid="visitor-name"
-            value={name}
-            onChange={(e) => setName(e.target.value)}
-            autoComplete="off"
-          />
-        </div>
-        <div className="field">
-          <label className="field__label" htmlFor="visitor-company" lang={htmlLangFor(locale)}>
-            {tr('reception.optionalLabel', { field: tr('reception.fieldCompany') })}
-          </label>
-          <input
-            id="visitor-company"
-            className="input"
-            data-testid="visitor-company"
-            value={company}
-            onChange={(e) => setCompany(e.target.value)}
-            autoComplete="off"
-          />
-        </div>
-        <div className="field">
-          <label className="field__label" htmlFor="visitor-note" lang={htmlLangFor(locale)}>
-            {tr('reception.optionalLabel', { field: tr('reception.fieldNote') })}
-          </label>
-          <input
-            id="visitor-note"
-            className="input"
-            data-testid="visitor-note"
-            value={note}
-            onChange={(e) => setNote(e.target.value)}
-            autoComplete="off"
-          />
-        </div>
-      </div>
-      {/* 後退（戻る/最初に戻る）は逃げ道バーへ一本化 (#325)。フッターは前進の主 CTA のみ。 */}
-      <div className="screen__footer">
-        <button
-          type="button"
-          className="btn btn--primary"
-          data-testid="to-confirm"
-          disabled={!valid}
-          onClick={() =>
-            onSubmit({
-              name: name.trim(),
-              company: company.trim() || undefined,
-              note: note.trim() || undefined,
-            })
-          }
-        >
-          {tr('reception.proceedConfirm')}
-        </button>
-      </div>
-    </>
-  );
-}
-
-function ConfirmView({
-  data,
-  onConfirm,
-  onBack,
-  locale,
-}: {
-  data: FlowData;
-  onConfirm: () => void;
-  onBack: () => void;
-  locale: Locale;
-}) {
-  const tr = makeT(locale);
-  const purposeLabel = data.purpose ? tr(`reception.purpose.${data.purpose}` as MessageKey) : '-';
-  return (
-    <>
-      <h1 className="screen__title">{tr('reception.confirm')}</h1>
-      <div className="screen__body">
-        <dl style={{ display: 'grid', gridTemplateColumns: 'auto 1fr', gap: 'var(--space-md)', fontSize: 'var(--font-lg)' }}>
-          <dt className="card__sub" lang={htmlLangFor(locale)}>{tr('reception.fieldPurpose')}</dt>
-          <dd style={{ margin: 0 }}>{purposeLabel}</dd>
-          <dt className="card__sub" lang={htmlLangFor(locale)}>{tr('reception.fieldTarget')}</dt>
-          <dd style={{ margin: 0 }} data-testid="confirm-target">
-            {data.target?.label}
-          </dd>
-          <dt className="card__sub" lang={htmlLangFor(locale)}>{tr('reception.fieldName')}</dt>
-          <dd style={{ margin: 0 }} data-testid="confirm-name">
-            {data.visitor?.name}
-          </dd>
-          {data.visitor?.company ? (
-            <>
-              <dt className="card__sub" lang={htmlLangFor(locale)}>{tr('reception.fieldCompany')}</dt>
-              <dd style={{ margin: 0 }}>{data.visitor.company}</dd>
-            </>
-          ) : null}
-        </dl>
-      </div>
-      <div className="screen__footer">
-        <button type="button" className="btn btn--ghost" data-testid="confirm-back" onClick={onBack}>
-          {tr('reception.editInfo')}
-        </button>
-        <button type="button" className="btn btn--primary" data-testid="confirm-call" onClick={onConfirm}>
-          {tr('reception.callWithThis')}
-        </button>
-      </div>
-    </>
-  );
-}
-
-/**
- * 担当者の応答アクションを来訪者向けに表示するバナー (issue #99)。
- * 応答がなければ何も描画しない（呼び出し中の通常表示を妨げない）。
- * 拒否・別チャネル誘導（offersFallback）のときは代替導線を併記する。
- *
- * (#323 AC2) 応答内容を主役として大きく表示する（`staff-response-banner--prominent`）。
- * 呼び出し側が `key={response.respondedAt}` を付けて呼ぶことで、新しい応答が届くたびに
- * 本コンポーネントが再マウントされ入場アニメ（`kiosk-rise`）が再生される＝「応答が届いた瞬間」を
- * 視覚的に明確化する。`kioskStatus === 'waiting'`（「5分お待ちください」）のときは、目安の
- * 再案内（reception.staffResponseWaitReguidance）を併記する。
- */
-function StaffResponseBanner({
-  response,
-  onFallback,
-  locale,
-}: {
-  response: StaffResponseResult | null;
-  onFallback: () => void;
-  locale: Locale;
-}) {
-  if (!response) return null;
-  const noticeClass =
-    response.severity === 'danger'
-      ? 'notice notice--danger'
-      : response.severity === 'warning'
-        ? 'notice notice--warning'
-        : response.severity === 'success'
-          ? 'notice notice--success'
-          : 'notice';
-  return (
-    <div
-      className="staff-response-banner staff-response-banner--prominent"
-      data-testid="staff-response-banner"
-      data-status={response.kioskStatus}
-      style={{ marginBottom: 'var(--space-md)' }}
-    >
-      <div className={`${noticeClass} staff-response-banner__message`} role="status" data-testid="staff-response-message">
-        {response.visitorMessage}
-      </div>
-      {response.kioskStatus === 'waiting' ? (
-        <p className="staff-response-banner__reguidance" data-testid="staff-response-reguidance" lang={htmlLangFor(locale)}>
-          {makeT(locale)('reception.staffResponseWaitReguidance')}
-        </p>
-      ) : null}
-      {response.offersFallback ? (
-        <button
-          type="button"
-          className="btn btn--secondary"
-          data-testid="staff-response-fallback"
-          onClick={onFallback}
-          style={{ marginTop: 'var(--space-sm)' }}
-          lang={htmlLangFor(locale)}
-        >
-          {makeT(locale)('reception.toDesk')}
-        </button>
-      ) : null}
-    </div>
-  );
-}
-
-/**
- * 結果/待ち画面のトーンアイコン (#326 L1)。装飾のみ（ラベルはメッセージ側が持つ）で
- * aria-hidden にする。currentColor で `.result-panel--<tone>` の色を継承する。
- */
-function ResultToneIcon({ tone }: { tone: ResultTone }) {
-  const svgProps = {
-    viewBox: '0 0 24 24',
-    fill: 'none',
-    stroke: 'currentColor',
-    strokeWidth: 1.8,
-    strokeLinecap: 'round' as const,
-    strokeLinejoin: 'round' as const,
-    'aria-hidden': true as const,
-  };
-  switch (tone) {
-    case 'success':
-      return (
-        <svg {...svgProps}>
-          <circle cx="12" cy="12" r="9" />
-          <path d="m8 12.5 2.5 2.5L16 9.5" />
-        </svg>
-      );
-    case 'danger':
-      return (
-        <svg {...svgProps}>
-          <circle cx="12" cy="12" r="9" />
-          <path d="M9 9l6 6M15 9l-6 6" />
-        </svg>
-      );
-    case 'warning':
-      return (
-        <svg {...svgProps}>
-          <path d="M12 3.5 21.5 20h-19L12 3.5z" />
-          <path d="M12 10v4M12 17h.01" />
-        </svg>
-      );
-    case 'info':
-    default:
-      return (
-        <svg {...svgProps}>
-          <circle cx="12" cy="12" r="9" />
-          <path d="M12 8h.01M12 11v5" />
-        </svg>
-      );
-  }
-}
-
-/**
- * 結果/待ち画面の共通レイアウト (#326 L1)。
- *
- * 呼び出し中・結果（接続/タイムアウト/失敗/代替導線）・完了/キャンセルは、これまで
- * 「通知ピルが画面中央にぽつんと浮く」だけで死空間が大きかった。状態アイコン＋メッセージ＋
- * 次の一手（あれば）を 1 枚のパネル（.result-panel）へ凝集し、fold 内で完結させる。
- * トーンは `resultToneForState` が状態から一意に導出する（真実源はそちら）。
- * 後退（戻る/最初に戻る）は逃げ道バーへ一本化済み (#325) のため、ここでは前進系の
- * アクションのみを扱う。
- */
-function ResultPanel({
-  tone,
-  testId,
-  title,
-  message,
-  action,
-  locale,
-  panelDataAttrs,
-  children,
-}: {
-  tone: ResultTone;
-  /** パネル自体の testid。既存 e2e の可視性チェックはこのまま通る。 */
-  testId: string;
-  title?: string;
-  message?: string;
-  action?: {
-    label: string;
-    onClick: () => void;
-    testId: string;
-    variant?: 'primary' | 'secondary';
-    /** 実行中に二度押しを防ぐため無効化する（例: 受付完了ボタンの busy ガード, #342）。 */
-    disabled?: boolean;
-  };
-  locale: Locale;
-  /** パネルの root div へ追加する data-* 属性（例: 呼び出し段階 #323）。 */
-  panelDataAttrs?: Record<string, string>;
-  /** アイコンとタイトルの間に差し込む追加要素（例: 経過インジケータ, #323）。 */
-  children?: React.ReactNode;
-}) {
-  return (
-    <div className="screen__body" style={{ alignItems: 'center', justifyContent: 'center' }}>
-      <div className={`result-panel result-panel--${tone}`} data-testid={testId} lang={htmlLangFor(locale)} {...panelDataAttrs}>
-        <span className="result-panel__icon">
-          <ResultToneIcon tone={tone} />
-        </span>
-        {children}
-        {title ? <h1 className="result-panel__title">{title}</h1> : null}
-        {message ? <p className="result-panel__message">{message}</p> : null}
-        {action ? (
-          <div className="result-panel__actions">
-            <button
-              type="button"
-              className={`btn btn--${action.variant ?? 'primary'}`}
-              data-testid={action.testId}
-              onClick={action.onClick}
-              disabled={action.disabled}
-              lang={htmlLangFor(locale)}
-            >
-              {action.label}
-            </button>
-          </div>
-        ) : null}
-      </div>
-    </div>
-  );
-}
-
-/**
- * 呼び出し中の待ち画面 (issue #323)。
- *
- * 「進んでいるのか固まっているのか分からない」を解消するため、常時アニメーションする
- * 経過インジケータ（`calling-pulse`。正確な秒数より「動いている」ことの伝達を優先）と、
- * 経過段階（dialing/waiting/preTimeoutNotice、UI 層のタイマー派生。state.ts は不変）に応じた
- * 文言の切り替えを行う。`stage` は KioskFlow の `useCallingStage` が算出する。
- */
-function CallingView({
-  target,
-  locale,
-  stage,
-  textOverride,
-}: {
-  target: string;
-  locale: Locale;
-  /** 呼び出し中の経過段階 (#323)。UI 層のタイマー派生。 */
-  stage: CallingStage;
-  /** テナントの案内文言上書き（ja のみ, #28）。未設定は i18n 既定文言。 */
-  textOverride: { waiting?: string; notice?: string };
-}) {
-  const tr = makeT(locale);
-  return (
-    <ResultPanel
-      tone={stage === 'preTimeoutNotice' ? 'warning' : resultToneForState('calling')}
-      testId="calling"
-      title={tr('reception.callingTitle')}
-      message={callingStageMessage(stage, target, locale, textOverride)}
-      locale={locale}
-      panelDataAttrs={{ 'data-calling-stage': stage }}
-    >
-      {/* 常時動く経過インジケータ。「動いている」ことの伝達を優先し、正確な秒数は示さない。
-          prefers-reduced-motion は globals.css の全体ルールで自動的に抑制される。 */}
-      <span className="calling-pulse" data-testid="calling-pulse" aria-hidden="true">
-        <span className="calling-pulse__dot" />
-        <span className="calling-pulse__dot" />
-        <span className="calling-pulse__dot" />
-      </span>
-    </ResultPanel>
-  );
-}
-
-function ConnectedView({
-  target,
-  onComplete,
-  locale,
-}: {
-  target: string;
-  onComplete: () => void | Promise<void>;
-  locale: Locale;
-}) {
-  const tr = makeT(locale);
-  // 二度押しガード: 完了は在館記録の起票 API を伴い、サーバの冪等チェックは check-then-act で
-  // 非原子的（#342 レビュー指摘）。実運用の二重タップ由来の重複起票を単一 in-flight に絞るため、
-  // 実行中はボタンを無効化して onComplete を一度しか発火させない（KioskAuthorize.busy と同型）。
-  const [busy, setBusy] = useState(false);
-  const finish = async () => {
-    if (busy) return;
-    setBusy(true);
-    try {
-      await onComplete();
-    } finally {
-      setBusy(false);
-    }
-  };
-  // connected は「担当者がまいります／操作は不要です」を message で明示し、終了操作は任意にする (#324-5)。
-  // 主 CTA（primary）で終了を促すと「押さないと進まない」と誤解させるため、secondary の任意アクションにする。
-  // 「操作不要」の案内と挙動を一致させるため、connected は無操作タイムアウトで待機へ自動復帰する
-  // （INACTIVITY_RESET_STATES に connected を追加, #324）。明示的に今すぐ終えたい来訪者のため操作は残す。
-  return (
-    <ResultPanel
-      tone={resultToneForState('connected')}
-      testId="result-connected"
-      message={tr('reception.connectedBody', { target })}
-      action={{
-        label: tr('reception.finishReception'),
-        onClick: () => void finish(),
-        testId: 'complete',
-        variant: 'secondary',
-        disabled: busy,
-      }}
-      locale={locale}
-    />
-  );
-}
-
-function ResultView({
-  outcome,
-  onFallback,
-  locale,
-}: {
-  outcome: 'timeout' | 'failed';
-  onFallback: () => void;
-  locale: Locale;
-}) {
-  const tr = makeT(locale);
-  const message = tr(outcome === 'timeout' ? 'reception.timeoutBody' : 'reception.failedBody');
-  // 後退（最初に戻る）は逃げ道バーへ一本化 (#325)。コンテンツ側は前進の主 CTA（代替の連絡先へ＝
-  // useFallback）のみ。以前あった result-reset（最初に戻る）はバーの escape-reset と重複するため撤去。
-  return (
-    <ResultPanel
-      tone={resultToneForState(outcome)}
-      testId={`result-${outcome}`}
-      message={message}
-      action={{ label: tr('reception.altContact'), onClick: onFallback, testId: 'use-fallback', variant: 'secondary' }}
-      locale={locale}
-    />
-  );
-}
-
-function FallbackView({ locale }: { locale: Locale }) {
-  const tr = makeT(locale);
-  // 後退（最初に戻る）は逃げ道バー（escape-reset）へ一本化 (#325)。以前あった fallback-reset は
-  // バーと重複するため撤去し、コンテンツは代替案内メッセージのみにする。
-  return (
-    <ResultPanel
-      tone={resultToneForState('fallback')}
-      testId="fallback"
-      message={tr('reception.fallbackBody')}
-      locale={locale}
-    />
-  );
-}
-
-/** ワンタップ満足度評価の表示順・絵文字・testid・aria-label キー (issue #320)。 */
-const SATISFACTION_RATINGS: readonly { rating: SatisfactionRating; icon: string; labelKey: MessageKey }[] = [
-  { rating: 'happy', icon: '😊', labelKey: 'reception.feedback.happy' },
-  { rating: 'neutral', icon: '😐', labelKey: 'reception.feedback.neutral' },
-  { rating: 'unhappy', icon: '😞', labelKey: 'reception.feedback.unhappy' },
-];
-
-/** 満足度評価に添える定型理由チップの表示順・testid・辞書キー (issue #320)。自由記述は無い。 */
-const FEEDBACK_REASON_CHIPS: readonly { code: FeedbackReasonCode; labelKey: MessageKey }[] = [
-  { code: 'waitTooLong', labelKey: 'reception.feedback.reason.waitTooLong' },
-  { code: 'hardToOperate', labelKey: 'reception.feedback.reason.hardToOperate' },
-  { code: 'staffUnavailable', labelKey: 'reception.feedback.reason.staffUnavailable' },
-  { code: 'other', labelKey: 'reception.feedback.reason.other' },
-];
-
-/**
- * 終端画面（完了/未応答/失敗）のワンタップ満足度フィードバック (issue #320)。
- *
- * AC「1 タップで評価でき、直後に通常の自動復帰が動く」: 絵文字ボタンを 1 回タップした時点で
- * 評価を確定・送信する（送信は fire-and-forget。以降の待機/確認ステップは無い）。理由チップは
- * 評価後に追加で選べる任意項目で、選択のたびに（評価値 + そこまでの選択）を再送して上書きする。
- * 自由記述欄は存在しない（コード化された列挙のみ、#105 PII 最小化）。
- *
- * 評価しないまま放置しても何も送信されない（AC「評価せず放置しても体験が変わらない」）。
- * 親（KioskFlow）は画面遷移ごとに `key={data.state}` で本コンポーネントを再マウントするため、
- * 内部状態（rating/reasons）は終端画面に入るたびに自然にリセットされる。
- */
-function SatisfactionFeedback({
-  onSubmit,
-  locale,
-}: {
-  onSubmit: (rating: SatisfactionRating, reasonCodes: FeedbackReasonCode[]) => void;
-  locale: Locale;
-}) {
-  const tr = makeT(locale);
-  const [rating, setRating] = useState<SatisfactionRating | null>(null);
-  const [reasons, setReasons] = useState<FeedbackReasonCode[]>([]);
-
-  const pickRating = (next: SatisfactionRating) => {
-    if (rating !== null) return; // 評価は 1 タップで確定（連打で上書きしない）
-    setRating(next);
-    onSubmit(next, []);
-  };
-
-  const toggleReason = (code: FeedbackReasonCode) => {
-    if (rating === null) return;
-    const next = reasons.includes(code) ? reasons.filter((c) => c !== code) : [...reasons, code];
-    setReasons(next);
-    onSubmit(rating, next);
-  };
-
-  return (
-    <div className="satisfaction-feedback" data-testid="satisfaction-feedback" lang={htmlLangFor(locale)}>
-      {rating === null ? (
-        <>
-          <p className="satisfaction-feedback__prompt">{tr('reception.feedback.prompt')}</p>
-          <div
-            className="satisfaction-feedback__ratings"
-            role="group"
-            aria-label={tr('reception.feedback.prompt')}
-          >
-            {SATISFACTION_RATINGS.map(({ rating: r, icon, labelKey }) => (
-              <button
-                key={r}
-                type="button"
-                className="satisfaction-feedback__rating-btn"
-                data-testid={`satisfaction-${r}`}
-                aria-label={tr(labelKey)}
-                onClick={() => pickRating(r)}
-              >
-                <span aria-hidden="true">{icon}</span>
-              </button>
-            ))}
-          </div>
-        </>
-      ) : (
-        <>
-          <p className="satisfaction-feedback__prompt" data-testid="satisfaction-feedback-thanks">
-            {tr('reception.feedback.thanks')}
-          </p>
-          <p className="satisfaction-feedback__prompt">{tr('reception.feedback.reasonPrompt')}</p>
-          <div
-            className="satisfaction-feedback__reasons"
-            role="group"
-            aria-label={tr('reception.feedback.reasonPrompt')}
-          >
-            {FEEDBACK_REASON_CHIPS.map(({ code, labelKey }) => (
-              <button
-                key={code}
-                type="button"
-                className="satisfaction-feedback__reason-chip"
-                data-testid={`satisfaction-reason-${code}`}
-                aria-pressed={reasons.includes(code)}
-                onClick={() => toggleReason(code)}
-              >
-                {tr(labelKey)}
-              </button>
-            ))}
-          </div>
-        </>
-      )}
-    </div>
-  );
-}
-
-/**
- * 無操作リセット直前のカウントダウン警告 (issue #125 UX, "don't surprise-expire")。
- * 突然のリセットで来訪者を驚かせず、プライバシーのために戻ることを予告し、続行手段を与える。
- */
-function InactivityWarning({
-  seconds,
-  locale,
-  onContinue,
-}: {
-  seconds: number;
-  locale: Locale;
-  onContinue: () => void;
-}) {
-  const tr = makeT(locale);
-  return (
-    <div
-      className="inactivity-overlay"
-      data-testid="inactivity-warning"
-      role="alertdialog"
-      aria-live="assertive"
-      aria-label={tr('reception.inactivityTitle')}
-      lang={htmlLangFor(locale)}
-    >
-      <div className="inactivity-overlay__panel">
-        <h2 className="inactivity-overlay__title">{tr('reception.inactivityTitle')}</h2>
-        <p className="inactivity-overlay__body">{tr('reception.inactivityBody')}</p>
-        <p className="inactivity-overlay__count" data-testid="inactivity-countdown">
-          {tr('reception.inactivityCountdown', { seconds })}
-        </p>
-        <button
-          type="button"
-          className="btn btn--primary"
-          data-testid="inactivity-continue"
-          onClick={onContinue}
-        >
-          {tr('reception.inactivityContinue')}
-        </button>
-      </div>
-    </div>
-  );
-}
-
-function EndView({
-  testid,
-  tone,
-  title,
-  lead,
-  locale,
-}: {
-  testid: string;
-  tone: ResultTone;
-  title: string;
-  lead?: string;
-  locale: Locale;
-}) {
-  return <ResultPanel tone={tone} testId={testid} title={title} message={lead} locale={locale} />;
-}
-
-/**
- * 退館クレデンシャルの有効期限（ISO）を locale の時刻表記へ整形する (issue #342)。
- * 不正日付は空文字（表示を壊さない）。
- */
-function formatExpiryTime(iso: string, locale: Locale): string {
-  const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return '';
-  try {
-    return new Intl.DateTimeFormat(locale, { hour: '2-digit', minute: '2-digit' }).format(d);
-  } catch {
-    return d.toISOString();
-  }
-}
-
-/**
- * 受付完了画面の退館クレデンシャル提示 (issue #342)。
- *
- * 退館 QR（token を参照する URL のみを符号化。PII 非包含）・短い退館コード・有効期限・一行案内を出す。
- * 表示のみで、来訪者を待たせず（発行できた場合に後追い表示）、失敗時はそもそも描画しない
- * （呼び出し側が credential=null を渡す）。氏名・会社名は同居させない。token/code はログに出さない。
- * 色リテラルは使わずデザイントークン（--space-* 等）とデザインシステムのクラスに揃える。
- */
-function CheckoutCredentialPanel({
-  credential,
-  locale,
-}: {
-  credential: CheckoutCredential;
-  locale: Locale;
-}) {
-  const tr = makeT(locale);
-  // origin はブラウザ由来（SSR 時は空。完了画面はクライアントで描画される）。
-  const origin = typeof window !== 'undefined' ? window.location.origin : '';
-  const checkoutUrl = buildCheckoutUrl(origin, credential.token);
-  const qrAlt = tr('checkout.credential.qrAlt');
-  // QR 生成は render 中に走る。完了画面には error boundary が無いため、throw すると退館コード/
-  // 案内まで巻き添えでクラッシュする。安全版で失敗時は null にし、QR を省いてコード/案内は残す。
-  const qrSrc = safeCheckoutQrDataUrl(checkoutUrl, qrAlt);
-  const expiry = formatExpiryTime(credential.expiresAt, locale);
-  return (
-    <section
-      className="checkout-credential"
-      data-testid="checkout-credential"
-      lang={htmlLangFor(locale)}
-      style={{
-        marginTop: 'var(--space-lg)',
-        display: 'flex',
-        flexDirection: 'column',
-        alignItems: 'center',
-        gap: 'var(--space-sm)',
-        textAlign: 'center',
-      }}
-    >
-      <h2 className="screen__title" style={{ fontSize: 'var(--font-lg)' }}>
-        {tr('checkout.credential.title')}
-      </h2>
-      <p className="screen__lead">{tr('checkout.credential.instruction')}</p>
-      {qrSrc ? (
-        <img
-          src={qrSrc}
-          alt={qrAlt}
-          data-testid="checkout-credential-qr"
-          width={200}
-          height={200}
-          style={{ width: 200, height: 200, maxWidth: '60vw' }}
-        />
-      ) : null}
-      <p className="checkout-credential__code" style={{ fontSize: 'var(--font-lg)' }}>
-        {tr('checkout.credential.codeLabel')}:{' '}
-        <strong data-testid="checkout-credential-code" style={{ letterSpacing: '0.15em' }}>
-          {credential.code}
-        </strong>
-      </p>
-      {expiry ? (
-        <p className="screen__lead" data-testid="checkout-credential-expiry">
-          {tr('checkout.credential.expiresAt', { time: expiry })}
-        </p>
-      ) : null}
-    </section>
   );
 }

@@ -1,0 +1,134 @@
+/**
+ * 実効構成のセクションローダ (issue #419)。既存ストアを resolver の port に合わせる互換アダプタ。
+ *
+ * `docs/product-integration-plan.md` §4.1 の移行対象 API と 1:1 に対応する。ここが埋まっても
+ * 個別 API は**残す**（rollback playbook の切り戻し先）。撤去は台帳 §9 B-03 の予告どおり別途行う。
+ *
+ * **グローバルストアはすべてテナント対応済み** (#419 残増分)。かつて branding / directory /
+ * voice / motions / assets / languages は単一テナント運用の名残でテナント次元を持たず、
+ * 越境（テナント A の管理者が B の端末をプレビューすると A の branding が出る）を避けるため
+ * **既定テナント以外を fail-closed で落として**いた。安全側ではあるが、その結果
+ * **2 つ目以降のテナントはこれらの機能を一切使えなかった**。
+ * 各ストアが `tenantScopedStoreKey` でテナント別キーを持つようになったので guard は撤去した。
+ * 越境しないことは「別テナントへ既定テナントの値を配らない」検査で直接固定している。
+ */
+import type {
+  ConfigurationSectionLoaders,
+  ConfigurationLoadInput,
+} from '@/domain/product-context/resolver';
+import type { ConfigurationSectionResult } from '@/domain/product-context/types';
+import { TENANT_FEATURE_FLAG_KEYS } from '@/domain/platform/feature-flags';
+import { getBrandingSettings } from '@/lib/branding/branding-store';
+import { getVisitorDirectory } from '@/lib/organization/organization-service';
+import { getVoiceSettings } from '@/lib/voice/voice-store';
+import { getKioskMotions } from '@/lib/motion/motion-store';
+import { getKioskAssets } from '@/lib/assets/asset-store';
+import { getLanguageSettings } from '@/lib/i18n/language-settings';
+import { getKioskSignage } from '@/lib/signage/kiosk-signage';
+import { resolveKioskStatusFor } from '@/lib/operating-policy/store';
+import { getReceptionFlowService } from '@/lib/reception/flow-config/store';
+import { isKioskFeatureEnabled } from '@/lib/platform/feature-flag-gate';
+import { defaultTenantIdFrom } from '@/lib/tenant/default-scope';
+
+const section = <T>(value: T, source: ConfigurationSectionResult['source']) => ({ value, source });
+
+export function createSectionLoaders(now: () => Date = () => new Date()): ConfigurationSectionLoaders {
+  return {
+    async operatingPolicy(input) {
+      const status = await resolveKioskStatusFor(
+        String(input.tenantId),
+        String(input.siteId),
+        now().getTime(),
+      );
+      // 未設定は null（端末側 `operatingStateOf` が「判定不能」として通常受付に倒す既存契約）。
+      return status ? section({ status }, 'site') : section({ status: null }, 'default');
+    },
+
+    async receptionFlow(input) {
+      const flows = await getReceptionFlowService().listEnabledForKiosk(
+        input.tenantId,
+        input.siteId,
+      );
+      return section({ flows }, 'site');
+    },
+
+    async signage(input) {
+      return section(await getKioskSignage(input.tenantId, input.siteId), 'site');
+    },
+
+    /**
+     * テナント対応済み (#419 残増分)。これで全セクションが対応し、guard は撤去した。
+     *
+     * 導出は組織モデル側 (`getVisitorDirectory`, #373 増分 4) に一本化してある。
+     * **担当者の呼び出し可否は組織の有効/無効に波及しない**（規則 A）— 詳細と根拠は
+     * `getVisitorDirectory` の doc コメントを見ること。
+     *
+     * scope は当面テナント全体。サイト別の組織スコープ（`{ kind: 'site' }`）へ寄せるかは
+     * セクションのキャッシュ次元（'tenant' → 'site'）も変わるため別増分で判断する。
+     */
+    async directory(input) {
+      return section(
+        await getVisitorDirectory({ kind: 'tenant', tenantId: String(input.tenantId) }),
+        'tenant',
+      );
+    },
+
+    /**
+     * **テナント対応済み** (#419 残増分)。`assertGlobalStoreScope` は外してある —
+     * ストアがテナント別にキーを持つようになったので、既定以外のテナントへ配っても
+     * 越境しない。残りのセクション（directory / voice / motions / assets）は
+     * まだ単一テナントのストアなので guard を残す。
+     */
+    async branding(input) {
+      return section(await getBrandingSettings(String(input.tenantId)), 'tenant');
+    },
+
+    /** テナント対応済み (#419 残増分)。guard は外してある。 */
+    async voice(input) {
+      const [settings, enabled] = await Promise.all([
+        getVoiceSettings(String(input.tenantId)),
+        isKioskFeatureEnabled('voiceSynthesis', input.kioskId),
+      ]);
+      // フラグ無効時も応答スキーマは保つ（既存 `/api/kiosk/voice` と同じ契約）。
+      return section(enabled ? settings : { ...settings, ttsEnabled: false }, 'tenant');
+    },
+
+    /** テナント対応済み (#419 残増分)。guard は外してある。 */
+    async motions(input) {
+      if (!(await isKioskFeatureEnabled('avatarReception', input.kioskId))) {
+        return section({ motions: {} }, 'default');
+      }
+      return section(await getKioskMotions(String(input.tenantId)), 'tenant');
+    },
+
+    /** テナント対応済み (#419 残増分)。guard は外してある。 */
+    async avatar(input) {
+      const [assets, enabled] = await Promise.all([
+        getKioskAssets(String(input.tenantId)),
+        isKioskFeatureEnabled('avatarReception', input.kioskId),
+      ]);
+      // アバター無効時は VRM / fallback 画像を落とす（背景はアバター機能ではないので維持）。
+      return section(enabled ? assets : { backgroundUrl: assets.backgroundUrl }, 'tenant');
+    },
+
+    /** テナント対応済み (#419 残増分)。guard は外してある。 */
+    async languages(input) {
+      return section(await getLanguageSettings(String(input.tenantId)), 'tenant');
+    },
+
+    async featureFlags(input) {
+      const entries = await Promise.all(
+        TENANT_FEATURE_FLAG_KEYS.map(
+          async (key) => [key, await isKioskFeatureEnabled(key, input.kioskId)] as const,
+        ),
+      );
+      return section(Object.fromEntries(entries), 'tenant');
+    },
+
+    async integrations() {
+      // 連携設定は秘匿値と表裏（#405）。端末構成には載せない。presence が要る画面は
+      // developer 専用 API を使う。ここで空を返すことを契約として固定する。
+      return section({}, 'default');
+    },
+  };
+}

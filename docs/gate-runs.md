@@ -24,3 +24,8 @@
 | 日時 (UTC) | コミット SHA | tier | 結果 | SKIP 項目 | 起票 Issue / 備考 |
 | --- | --- | --- | --- | --- | --- |
 | 2026-01-05T09:00Z | `abcdef1` | full | PASS | なし | **EXAMPLE 行**（実データではない。実運用の最初の行はこの下に追記する） |
+| 2026-07-31T19:22Z | `ba60889` | full | FAIL | なし | 要 issue 起票（docs/quality-gate.md の FAIL 時ハンドリング参照） |
+| 2026-07-31T22:58Z | `3bc6f50` | full | PASS | なし | semgrep 導入済みで再実行し green を確認（#545 クローズ） |
+| 2026-08-03T00:01Z | `8fe2756` | full | FAIL | なし | 🔴 **原因未記録**。週次 routine はこの行を `chore/gate-run-20260803` に commit したが **PR を作らなかった**ため、記録が 5 日間 main に載らなかった（2026-08-08 のブランチ棚卸しで発見し、本 PR で回収）。失敗内容は routine のセッションログにしか残っておらず復元できない。追跡: #656 |
+| 2026-08-10T00:04Z | `b5c4529` | full | FAIL | infra WebStack synth  (.open-next/ が未ビルド（不足: open-next.output.json, assets, server-functions/default/index.mjs, image-optimization-function/index.mjs）— `npm run build:open-next` で作成) | ビルド前提の欠落であって退行ではない。**#677 で解消**（ゲート自身が `.open-next/` をビルドして復旧するようにした / PR #701）。この実行では `--publish` の `gh pr create` も GraphQL 403 で落ちており、記録は push 済みなのに PR が無い状態になった → **#678 で解消**（PR 作成を REST 化 / PR #701）。本 PR はそのとき手動で作成したもの |
+| 2026-08-27T23:50Z | `0425a658` | full | PASS | なし | 自動記録（record-gate-run.sh） |

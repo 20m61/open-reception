@@ -1,4 +1,5 @@
 import { test, expect, type Page } from '@playwright/test';
+import { revealStaff } from './kiosk-fixtures';
 import { establishKioskSession, loginAsAdmin } from './helpers';
 
 /**
@@ -33,6 +34,9 @@ test.describe('受付端末（kiosk）', () => {
     await page.getByTestId('purpose-meeting').click().catch(() => {});
     await shot(page, 'kiosk-03-target');
 
+    // 段階開示 (#787) で担当者カードは部署を開かないと出ない。撮影は best-effort なので
+    // ここも握り潰すが、**群を開く手順は通す**（開かないと以降の画面が撮れない）。
+    await revealStaff(page, 'staff-staff-sato').catch(() => {});
     await page.getByTestId('staff-staff-sato').click().catch(() => {});
     await shot(page, 'kiosk-04-visitor-info');
 
@@ -51,7 +55,7 @@ test.describe('管理画面（admin）', () => {
     ['admin-03-reservations', '/admin/reservations'],
     ['admin-04-sites', '/admin/sites'],
     ['admin-05-devices', '/admin/devices'],
-    ['admin-06-call-routes', '/admin/call-routes'],
+    ['admin-06-call-routing', '/admin/call-routing'],
     ['admin-07-departments', '/admin/departments'],
     ['admin-08-staff', '/admin/staff'],
     ['admin-09-reception-flows', '/admin/reception-flows'],
@@ -75,18 +79,9 @@ test.describe('管理画面（admin）', () => {
     }
   });
 
-  test('platform 主要画面', async ({ page }) => {
-    await loginAsAdmin(page);
-    for (const [name, path] of [
-      ['platform-01-dashboard', '/platform'],
-      ['platform-02-tenants', '/platform/tenants'],
-    ] as Array<[string, string]>) {
-      await page.goto(path);
-      await page.waitForLoadState('networkidle').catch(() => {});
-      await page.waitForTimeout(400);
-      await shot(page, name);
-    }
-  });
+  // platform 主要画面は `capture-screens-platform.spec.ts` へ分離した。ここ（既定サーバ）は
+  // developer になれないため /platform/* は /admin へリダイレクトされ、**admin を
+  // platform-*.png として撮り続けていた**（#423 / 第 85 wave 発見）。
 });
 
 /**
@@ -117,6 +112,9 @@ test.describe('新規導線（発行/エンロール/LP）', () => {
     expect(res.ok()).toBeTruthy();
 
     await page.goto('/admin/devices');
+    // 一覧はページネーションされる。他 spec が作った端末で 2 ページ目以降へ押し出されないよう、
+    // 一意な端末名で絞り込んでから行を掴む（フルスイート実行時の決定的な失敗を防ぐ）。
+    await page.getByTestId('device-filter-keyword').fill(name);
     const row = page.getByTestId('device-table').locator('tr', { hasText: name });
     await expect(row).toBeVisible({ timeout: 15_000 });
     await row.getByTestId('device-reissue').click();

@@ -8,6 +8,7 @@ import { NotificationStack } from '../lib/stacks/notification-stack';
 import { MonitoringStack } from '../lib/stacks/monitoring-stack';
 import { RealtimeRuntimeStack, RealtimeRuntimeDnsConfig } from '../lib/stacks/realtime-runtime-stack';
 import { resolveEnv } from '../lib/config/environments';
+import { applyClaudeDeployBoundary } from '../lib/config/claude-deploy-boundary';
 import { configureCostExplorerAccess } from '../lib/constructs/cost-explorer-access';
 import { overrideComponentTag } from '../lib/constructs/cost-tags';
 import { COST_TAG_COMPONENTS } from '../lib/config/cost-components';
@@ -31,6 +32,15 @@ import { COST_TAG_COMPONENTS } from '../lib/config/cost-components';
  * (CDK_DEFAULT_ACCOUNT / CDK_DEFAULT_REGION) を使用する。
  */
 const app = new cdk.App();
+
+// 🔴 **Claude Cloud からの無人 dev デプロイ用 Permissions Boundary (#680 / ADR 0009 層 4)。**
+// `-c claudeBoundary=<ポリシー名>` が渡されたときだけ、App 配下の全 Role / User へ
+// boundary を強制する。`cdk bootstrap --custom-permissions-boundary` は cfn-exec role
+// 1 つにしか boundary を付けないため、これが無いと初回 CREATE で `iam:CreateRole` が
+// Deny されて AccessDenied になる。理由と落とし穴の全文は
+// `../lib/config/claude-deploy-boundary.ts` の doc コメント。
+// **Stack を 1 つでも作る前に呼ぶこと**（`Stack` の constructor が context を読む）。
+applyClaudeDeployBoundary(app);
 
 const envName = app.node.tryGetContext('env') as string | undefined;
 const config = resolveEnv(envName);
@@ -66,6 +76,19 @@ const appSecretsName = app.node.tryGetContext('appSecretsName') as string | unde
 // 任意: CloudFront 経由検証用シークレット。指定すると Function URL を NONE + 秘密ヘッダ方式にし、
 // OAC が POST ボディを署名しない制約（GET 可・POST 403）を回避する。`-c originVerifySecret=<高エントロピー値>`。
 const originVerifySecret = app.node.tryGetContext('originVerifySecret') as string | undefined;
+// **dev 以外はこちら** (issue #612)。Secrets Manager シークレット名を渡すと、CloudFront ヘッダと
+// Lambda 環境変数の両方が CFN 動的参照になる（テンプレートに平文が載らない）。
+// `-c originVerifySecretName=open-reception/prod/app`（JSON キー `ORIGIN_VERIFY_SECRET`）。
+// dev 以外で生値を渡すと WebStack が synth 時点で止める。**空文字・`=` 無しの指定も止める**
+// （`-c originVerifySecret=$UNSET_VAR` を黙って無効化に落とすと全 POST が 403 になるため）。
+const originVerifySecretName = app.node.tryGetContext('originVerifySecretName') as
+  | string
+  | undefined;
+// 発行 URL（端末エンロール QR / checkin QR）の基底オリジン。カスタムドメインが無い環境では
+// CloudFront のドメインを CDK 内から参照できない（循環依存）ため、デプロイ後に判明した値を
+// `-c publicOriginOverride=https://xxxx.cloudfront.net` で渡す。
+// **渡さないと Function URL のホストで QR が発行され、誰も使えない**（middleware が forbidden）。
+const publicOriginOverride = app.node.tryGetContext('publicOriginOverride') as string | undefined;
 
 // 任意: テナント別 CCaaS プロバイダ secret を Secrets Manager で扱う (issue #405 Inc2)。
 // `-c providerSecretBackend=secrets-manager -c providerSecretPrefix=open-reception/prod`。
@@ -94,6 +117,8 @@ const web = new WebStack(app, `OpenReception-Web-${config.environment}`, {
   customDomain,
   appSecretsName,
   originVerifySecret,
+  originVerifySecretName,
+  publicOriginOverride,
   cognitoAuth: adminProvider === 'cognito',
   providerSecretBackend,
   providerSecretPrefix,
@@ -133,7 +158,7 @@ overrideComponentTag(webMonitoring, COST_TAG_COMPONENTS.webMonitoring);
 if (account) {
   const cloudFrontMonitoring = new CloudFrontMonitoringStack(
     app,
-    `OpenReception-CfMonitoring-${config.environment}`,
+    `OpenReception-CfMon-${config.environment}`,
     {
       env: { account, region: 'us-east-1' },
       crossRegionReferences: true,
@@ -145,7 +170,7 @@ if (account) {
   overrideComponentTag(cloudFrontMonitoring, COST_TAG_COMPONENTS.cloudFrontMonitoring);
 } else {
   console.warn(
-    '[open-reception] CDK_DEFAULT_ACCOUNT が未解決のため OpenReception-CfMonitoring-* を synth 対象から除外しました（cross-region 参照には concrete account が必要）。',
+    '[open-reception] CDK_DEFAULT_ACCOUNT が未解決のため OpenReception-CfMon-* を synth 対象から除外しました（cross-region 参照には concrete account が必要）。',
   );
 }
 

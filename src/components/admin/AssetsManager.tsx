@@ -2,8 +2,9 @@
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import type { ActiveAssetSet, Asset, AssetKind } from '@/domain/assets/types';
-import { Button, DataTable, Field, FormRow, type Column } from '@/components/admin/ui';
+import { Button, DataTable, Field, Form, FormRow, type Column } from '@/components/admin/ui';
 import { color, space } from '@/components/admin/ui/tokens';
+import { enablementState } from './state-vocabulary';
 
 const KIND_LABEL: Record<AssetKind, string> = {
   background: '背景画像',
@@ -76,8 +77,8 @@ export function AssetsManager() {
       {
         key: 'status',
         header: '状態',
-        cellStyle: (a) => ({ color: a.enabled ? color.success : color.muted }),
-        cell: (a) => (a.enabled ? '有効' : '無効'),
+        cellStyle: (a) => ({ color: enablementState(a.enabled).color }),
+        cell: (a) => enablementState(a.enabled).label,
       },
       {
         key: 'active',
@@ -106,22 +107,24 @@ export function AssetsManager() {
     <section>
       <h1 style={{ marginTop: 0 }}>アセット管理</h1>
 
-      <FormRow>
-        <Field label="種別" htmlFor="asset-kind">
-          <select id="asset-kind" data-testid="asset-kind" value={kind} onChange={(e) => setKind(e.target.value as AssetKind)} style={input}>
-            {(Object.keys(KIND_LABEL) as AssetKind[]).map((k) => (
-              <option key={k} value={k}>{KIND_LABEL[k]}</option>
-            ))}
-          </select>
-        </Field>
-        <Field label="名称" htmlFor="asset-name">
-          <input id="asset-name" data-testid="asset-name" value={name} onChange={(e) => setName(e.target.value)} style={input} />
-        </Field>
-        <Field label="URL（拡張子で形式検証）" htmlFor="asset-url">
-          <input id="asset-url" data-testid="asset-url" value={url} onChange={(e) => setUrl(e.target.value)} style={{ ...input, minWidth: 260 }} />
-        </Field>
-        <Button variant="primary" data-testid="asset-add" onClick={add} disabled={busy}>登録</Button>
-      </FormRow>
+      <Form onSubmit={add} aria-label="アセットを登録">
+        <FormRow>
+          <Field label="種別" htmlFor="asset-kind">
+            <select id="asset-kind" data-testid="asset-kind" value={kind} onChange={(e) => setKind(e.target.value as AssetKind)} style={input}>
+              {(Object.keys(KIND_LABEL) as AssetKind[]).map((k) => (
+                <option key={k} value={k}>{KIND_LABEL[k]}</option>
+              ))}
+            </select>
+          </Field>
+          <Field label="名称" htmlFor="asset-name">
+            <input id="asset-name" data-testid="asset-name" value={name} onChange={(e) => setName(e.target.value)} style={input} />
+          </Field>
+          <Field label="URL（拡張子で形式検証）" htmlFor="asset-url">
+            <input id="asset-url" data-testid="asset-url" value={url} onChange={(e) => setUrl(e.target.value)} style={{ ...input, minWidth: 260 }} />
+          </Field>
+          <Button variant="primary" type="submit" data-testid="asset-add" disabled={busy}>登録</Button>
+        </FormRow>
+      </Form>
       {error ? <p data-testid="asset-error" style={{ color: color.danger }}>{error}</p> : null}
 
       <div style={{ marginTop: space.sm }}>

@@ -8,11 +8,13 @@
 #
 # 段階（tier）:
 #   --fast   typecheck + lint + unit            （各変更ごとの高速チェック・デフォルト）
-#   --pr     fast + build                        （PR 作成前の必須ゲート）
+#   --pr     fast + build + infra                （PR 作成前の必須ゲート）
 #   --full   pr + secrets + sast + audit + e2e + lighthouse （マージ前/定期の重ゲート）
 #
 # 個別トグル（tier に追加・除外）:
 #   --no-build       build を省く
+#   --infra          infra/test/** の CDK アサーションを含める（--pr 以上は既定で ON）
+#   --no-infra       infra/test/** を省く
 #   --e2e            Playwright E2E を含める
 #   --secrets        gitleaks による秘密情報スキャンを含める
 #   --sast           semgrep による SAST を含める
@@ -20,6 +22,14 @@
 #   --lighthouse     Lighthouse CI を含める
 #   --strict         任意ツールが未インストールの場合も FAIL 扱いにする
 #   --no-bootstrap   依存（node_modules / infra/node_modules）の自動インストールを行わない
+#   --no-skip-docs   変更範囲による省略を無効化し、tier の全ステップを実行する
+#
+# 変更範囲による省略（docs スコープ）:
+#   build / e2e / lighthouse / sast は**ソースを入力に取る**ため、文書だけを触った周回では
+#   結果が変わり得ない。`scripts/change-scope.ts` が「文書のみ」と判定した場合これらを SKIP
+#   する（実測 598s → 約 152s）。判定できないときは必ず code 扱い＝省略しない。
+#   typecheck / lint / unit / secrets は docs でも実行する（判定器のバグに対するトリップワイヤ
+#   と、文書への鍵混入の検出）。一覧の真実源は src/domain/governance/change-scope.ts。
 #
 # fresh な git worktree では node_modules / infra/node_modules が無いため、既定で
 # 不足を検出したら install してからゲートを実行する（並列 worktree トラックの自己修復）。
@@ -34,32 +44,54 @@ ROOT="$(pwd)"
 
 # ---- 引数解析 -------------------------------------------------------------
 RUN_TYPECHECK=1 RUN_LINT=1 RUN_UNIT=1 RUN_BUILD=0
-RUN_E2E=0 RUN_SECRETS=0 RUN_SAST=0 RUN_AUDIT=0 RUN_LH=0
+RUN_E2E=0 RUN_SECRETS=0 RUN_SAST=0 RUN_AUDIT=0 RUN_LH=0 RUN_VRM=0 RUN_INFRA=0
 STRICT=0
 BOOTSTRAP=1
+SKIP_BY_SCOPE=1
 TIER="fast"
 
 if [[ $# -eq 0 ]]; then set -- --fast; fi
 for arg in "$@"; do
   case "$arg" in
     --fast) TIER="fast"; RUN_BUILD=0 ;;
-    --pr)   TIER="pr";   RUN_BUILD=1 ;;
-    --full) TIER="full"; RUN_BUILD=1; RUN_SECRETS=1; RUN_SAST=1; RUN_AUDIT=1; RUN_E2E=1; RUN_LH=1 ;;
+    --pr)   TIER="pr";   RUN_BUILD=1; RUN_INFRA=1 ;;
+    --full) TIER="full"; RUN_BUILD=1; RUN_SECRETS=1; RUN_SAST=1; RUN_AUDIT=1; RUN_E2E=1; RUN_LH=1; RUN_VRM=1; RUN_INFRA=1 ;;
     --no-build)   RUN_BUILD=0 ;;
+    --infra)      RUN_INFRA=1 ;;
+    --no-infra)   RUN_INFRA=0 ;;
     --e2e)        RUN_E2E=1 ;;
     --secrets)    RUN_SECRETS=1 ;;
+    --vrm)        RUN_VRM=1 ;;
     --sast)       RUN_SAST=1 ;;
     --audit)      RUN_AUDIT=1 ;;
     --lighthouse) RUN_LH=1 ;;
     --strict)     STRICT=1 ;;
     --no-bootstrap) BOOTSTRAP=0 ;;
+    --no-skip-docs) SKIP_BY_SCOPE=0 ;;
     -h|--help) grep '^#' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) echo "unknown arg: $arg" >&2; exit 2 ;;
   esac
 done
 
+# ---- 解決した実行計画の出力（--dry-run） ----------------------------------
+# ステップを 1 つも起動せず、tier がどのステップに解決したかだけを出す。
+#
+# これが無いと「--pr で infra が走るか」を確かめる手段が**スクリプトを目で読むこと**
+# しか無くなる。#628（infra/test が 1 度も実行されていなかった）はまさに、
+# 走っていないことを機械が誰も見ていなかったために 数ヶ月 表面化しなかった。
+if [[ "${QUALITY_GATE_DRY_RUN:-0}" == "1" ]]; then
+  echo "tier=${TIER}"
+  for pair in "typecheck:$RUN_TYPECHECK" "lint:$RUN_LINT" "unit:$RUN_UNIT" "build:$RUN_BUILD" \
+              "infra:$RUN_INFRA" "e2e:$RUN_E2E" "secrets:$RUN_SECRETS" "sast:$RUN_SAST" \
+              "audit:$RUN_AUDIT" "lighthouse:$RUN_LH" "vrm:$RUN_VRM"; do
+    echo "${pair%%:*}=${pair##*:}"
+  done
+  exit 0
+fi
+
 # ---- 実行ヘルパ -----------------------------------------------------------
 declare -a SUMMARY
+declare -a UNVERIFIED
 FAILED=0
 
 step() { # step <label> <cmd...>
@@ -76,6 +108,85 @@ step() { # step <label> <cmd...>
   fi
 }
 
+# step_or_unverified <label> <cmd...>
+#
+# `step` と同じだが、**終了コード 3 を「検査できなかった」**として `skip_unverified` へ倒す (#841)。
+#
+# 任意ツールの未導入（`skip_or_fail`）とも、指摘あり（FAIL）とも違う第 3 の状態がある検査で使う。
+# sast は「semgrep は在るがルールセットを読めなかった」がまさにそれで、指摘ゼロと同じ緑で
+# 記録すると #640（infra synth が 45 件 SKIP のまま tier=full を記録）と同じ被害になる。
+step_or_unverified() { # step_or_unverified <label> <cmd...>
+  local label="$1"; shift
+  echo ""
+  echo "▶ ${label}"
+  echo "  \$ $*"
+  local start; start=$SECONDS
+  # 🔴 `local code=$?` と 1 行で書かない ── `local` 自体の終了コードで上書きされる。
+  local code
+  if "$@"; then
+    SUMMARY+=("PASS  ${label}  ($((SECONDS-start))s)")
+  else
+    code=$?
+    if [[ "${code}" -eq 3 ]]; then
+      skip_unverified "${label}" "ルールセットを読めず検査できなかった (exit 3)"
+    else
+      SUMMARY+=("FAIL  ${label}  ($((SECONDS-start))s)")
+      FAILED=1
+    fi
+  fi
+}
+
+# classify_detector_status <label> <exit-code>
+#
+# 報告専用の検出器の終了コードを、ゲートの語彙へ翻訳する (#713)。
+#
+# **FAILED は立てない。** 偽陽性のある検出器でゲートを赤くすると「赤を無視する習慣」が
+# つく方が危険（#424 増分 3）。一方で「測れなかった」を green として**記録**すると、
+# pr-gate-guard がそれを根拠にマージを許す（#640 と同型）。だから
+# `skip_unverified` ＝ 赤ではないが green でもない、へ振り分ける。
+classify_detector_status() { # classify_detector_status <label> <exit-code>
+  local label="$1" code="$2"
+  case "$code" in
+    0) ;;
+    # 3 = 判定できなかった（検出器が意図して申告した）。#709 で導入。
+    3) skip_unverified "$label" "変更パスを集めきれず停止境界を判定できなかった" ;;
+    # それ以外の非 0 はクラッシュ。**これも「測れていない」**なので green にしない。
+    *) skip_unverified "$label" "検出器の実行に失敗した (exit ${code})" ;;
+  esac
+}
+
+# 停止境界の検出器を走らせ、終了コードをゲートの語彙へ渡す (#424 増分 3 / #713)。
+#
+# 🔴 **関数にしてあるのは、終了コードを拾う 1 行をテストから通すため。** 対応表
+# （`classify_detector_status`）だけをテストしていたときは、**呼び出し側が `|| true` に
+# 戻っても全テストが green のまま**だった（変異で実証）。配線が黙って落ちるのは、
+# この仕組みが無くそうとしている欠陥そのもの。
+#
+# `QUALITY_GATE_DETECTOR_CMD` は**テスト用の差し込み口**（`QUALITY_GATE_SELFTEST` と同性格）。
+# 検出器そのものを別途用意しなくても、終了コードの経路だけを実際に走らせて確かめられる。
+run_change_risk_detector() {
+  local label="change-risk (停止境界)"
+  local -a cmd
+  if [[ -n "${QUALITY_GATE_DETECTOR_CMD:-}" ]]; then
+    cmd=(bash -c "${QUALITY_GATE_DETECTOR_CMD}")
+  elif npx --no-install tsx --version >/dev/null 2>&1; then
+    cmd=(npx --no-install tsx "${ROOT}/scripts/change-risk.ts")
+  else
+    echo ""
+    echo "▶ ${label}（報告のみ）"
+    # 🔴 **tsx が無い＝判定していない** (#713)。判定ロジックが unit テスト済みであることは
+    # 「このツリーで境界に触れたか」を測ったことにはならない。同じ条件で
+    # `infra WebStack synth` も skip_unverified にしているので扱いを揃える。
+    skip_unverified "$label" "tsx が無いため停止境界を判定できない"
+    return
+  fi
+  echo ""
+  echo "▶ ${label}（報告のみ・FAIL させない）"
+  local code=0
+  "${cmd[@]}" || code=$?
+  classify_detector_status "$label" "$code"
+}
+
 skip_or_fail() { # skip_or_fail <label> <reason>
   if [[ "$STRICT" -eq 1 ]]; then
     SUMMARY+=("FAIL  $1  (${2}; --strict)")
@@ -85,10 +196,133 @@ skip_or_fail() { # skip_or_fail <label> <reason>
   fi
 }
 
+# skip_unverified <label> <reason>
+#
+# **「検査できなかった」SKIP。** skip_or_fail（任意ツール未導入）とは意味が違う。
+#
+# 任意ツールが無いのは「その検査を持っていない」だけで、docs/quality-gate.md の既定として
+# 許容している。一方こちらは**やるはずの検査が前提の破損で走らなかった**ので、
+# 「落ちなかった」だけであり「通った」の根拠が無い。
+#
+# 🔴 これを skip_or_fail で扱っていたために #640 が起きた — `infra WebStack synth` が
+# 45 件 SKIP されたまま exit 0 で `✅ PASSED (tier=full)` と記録され、
+# pr-gate-guard がそれを根拠にマージを許した。**FAILED は立てず、記録だけ拒否する**
+# （赤ではないが green でもない、という状態を正しく表す）。
+skip_unverified() { # skip_unverified <label> <reason>
+  SUMMARY+=("SKIP  $1  (${2})")
+  UNVERIFIED+=("$1")
+}
+
 echo "================================================================"
 echo " quality-gate  tier=${TIER}  $(node -v 2>/dev/null)"
 echo " repo: ${ROOT}"
 echo "================================================================"
+
+# ---- green 記録（スタンプ）------------------------------------------------
+# PASS 時に「どのツリーを・どの tier で検査したか」を .git 配下に記録する。
+# scripts/hooks/pr-gate-guard.sh が gh pr create / merge の直前にこれを検証し、
+# ゲート未実施・tier 不足・実行後の編集（stale）をブロックする。
+# 指紋は**実行開始時点**で採る（実行中の編集を green として記録しないため）。
+# shellcheck source=lib/gate-stamp.sh
+. "${ROOT}/scripts/lib/gate-stamp.sh"
+GATE_FINGERPRINT="$(gate_tree_fingerprint || true)"
+# 開始時の空きを控える (#721 レビュー m3)。終了時は掃除の**後**なので、
+# 周回中に沈んだピークが見えない。2 点あれば落ち込みに気づける。
+GATE_DISK_START="$(df -Pk "${TMPDIR:-/tmp}" 2>/dev/null | awk 'NR==2 {printf "%.1fG", $4/1048576}')"
+
+# ---- 終了処理（summary → 判定 → 記録）------------------------------------
+# **関数にしてあるのは、判定と記録の経路を 1 本にするため。** 呼び出し口が増えても
+# 「記録を書く条件」がここ以外に散らない。
+# 一時領域の状態を毎回出す (#721)。
+#
+# 🔴 **症状が原因を指さないので、測って見せる。** 2026-08-19、`/tmp/cdk.out*` が
+# **740 個・26GB** まで積もってディスクが 100% になり、`--full` の e2e が
+# `page.screenshot: Target crashed` と SSL ハンドシェイク失敗で落ちた。
+# メモリも load も正常だったため、**変更内容を疑う方向へ 1 時間費やした**。
+#
+# 🔴 **数える対象を間違えない。** infra テストの出力は今
+# `<tmp>/open-reception-cdk-XXXX/cdk.outYYYY`（深さ 2・別名）に落ちるので、
+# `/tmp/cdk.out*` だけを深さ 1 で数えると**起きうる残骸に対して常に 0 を返す**
+# （レビュー M1 で実測）。両方を数える。
+#
+# 可搬性: macOS の `/tmp` は symlink なので `find` に**末尾スラッシュ**が要る（既定 -P では
+# リンク自身しか見ない）。また macOS の `os.tmpdir()` は `$TMPDIR` なので、対象も
+# `${TMPDIR:-/tmp}` に揃える。
+report_workspace_state() {
+  local tmp_root leftovers roots avail_kb avail_h
+  tmp_root="${TMPDIR:-/tmp}"
+  # 素の cdk.out（別の生成元・古い残骸）と、周回 root（kill されたときに残る）を分けて数える。
+  leftovers=$(find "${tmp_root}/" -maxdepth 1 -name 'cdk.out*' 2>/dev/null | wc -l | tr -d ' ')
+  roots=$(find "${tmp_root}/" -maxdepth 1 -name 'open-reception-cdk-*' 2>/dev/null | wc -l | tr -d ' ')
+  avail_kb=$(df -Pk "${tmp_root}" 2>/dev/null | awk 'NR==2 {print $4}')
+  avail_h=$(df -Pk "${tmp_root}" 2>/dev/null | awk 'NR==2 {printf "%.1fG", $4/1048576}')
+  echo "  ${tmp_root} の空き: ${avail_h:-不明}（開始時: ${GATE_DISK_START:-不明}）"
+  echo "  残骸: cdk.out ${leftovers} 件 / 周回 root ${roots} 件"
+  # 🔴 **算術評価に非数値を渡さない。** `set -u` 下で `[[ unknown -lt N ]]` は
+  # **unbound variable で即死**し、summary も判定も出ないまま終わる（レビュー m2 で実測）。
+  if [[ "${avail_kb:-}" =~ ^[0-9]+$ ]] && [[ "${avail_kb}" -lt 2097152 ]]; then
+    echo "  ⚠ 空きが 2GB を切っています。ビルドやブラウザが不可解に落ちる原因になります"
+  fi
+  if [[ "${leftovers}" != "0" ]] || [[ "${roots}" != "0" ]]; then
+    echo "  ⚠ 残骸があります。infra テストは正常終了・テスト失敗・SIGINT では残しませんが、"
+    echo "    **kill されたときは周回 root が残ります**（次の infra テストが 6 時間より古いものを掃きます）。"
+    echo "    今すぐ消すなら、他のゲートが走っていないことを確認してから当該ディレクトリを削除してください。"
+  fi
+}
+
+finish() {
+  echo ""
+  echo "▶ 一時領域 (#721)"
+  report_workspace_state
+  echo "================================================================"
+  echo " summary (tier=${TIER})"
+  echo "----------------------------------------------------------------"
+  for line in "${SUMMARY[@]}"; do echo "  ${line}"; done
+  echo "================================================================"
+
+  if [[ "$FAILED" -eq 1 ]]; then
+    echo "❌ quality-gate FAILED"
+    exit 1
+  fi
+
+  # 🔴 検査できなかったステップがあるなら green として記録しない (#640)。
+  # ここで記録してしまうと pr-gate-guard が「検査済み」と判断してマージを通す。
+  # `${#UNVERIFIED[@]}` は使わない。**bash 5.x は `set -u` 下で「宣言済みだが要素ゼロ」の
+  # 配列を unbound として落とす**（3.2 は 0 を返す。新しい方が厳しいという逆転がある）。
+  # 実際にこれで落として気づいた。`${arr[*]:-}` は両方で安全。
+  if [[ -n "${UNVERIFIED[*]:-}" ]]; then
+    echo "⚠️  quality-gate は green として記録しません（tier=${TIER}）"
+    echo "    検査できなかったステップ: ${UNVERIFIED[*]}"
+    echo "    落ちてはいませんが「通った」根拠がありません。前提を整えて再実行してください。"
+    echo "    よくある原因: .open-next/ が src/ より古い → npm run build:open-next"
+    exit 1
+  fi
+
+  gate_write_stamp "${TIER}" "${GATE_FINGERPRINT}" "${GATE_SCOPE_RECORD:-${GATE_SCOPE:-code}}"
+  echo "✅ quality-gate PASSED  (tier=${TIER} を green として記録しました)"
+  # **finish は必ず終端する。** 呼び出し口が複数あるので、戻ると呼び出し元の続きが
+  # 走ってしまう（seam から呼んだときに全ステップが実行された）。
+  exit 0
+}
+
+# ---- 自己テスト用の seam --------------------------------------------------
+# `tests/config/quality-gate-stamp.test.ts` が「検査できなかったステップがあると
+# green として記録しない」ことを**実際に起動して**確かめるための入口。
+# ステップは 1 つも実行せず finish() の判定だけを通す（QUALITY_GATE_DRY_RUN と同性格）。
+if [[ -n "${QUALITY_GATE_SELFTEST:-}" ]]; then
+  case "${QUALITY_GATE_SELFTEST}" in
+    unverified) skip_unverified "selftest step" "前提が壊れていて検査できなかった" ;;
+    optional)   skip_or_fail    "selftest step" "selftest tool not installed" ;;
+    pass)       SUMMARY+=("PASS  selftest step") ;;
+    # #713: 検出器の終了コード → ゲートの語彙、の対応表だけを通す。
+    change-risk:*) classify_detector_status "change-risk (停止境界)" "${QUALITY_GATE_SELFTEST#change-risk:}" ;;
+    # #713: **実際の呼び出し経路**（終了コードを拾う 1 行を含む）を通す。
+    # 検出器の中身は `QUALITY_GATE_DETECTOR_CMD` で差し替える。
+    change-risk-invoke) run_change_risk_detector ;;
+    *) echo "unknown QUALITY_GATE_SELFTEST: ${QUALITY_GATE_SELFTEST}" >&2; exit 2 ;;
+  esac
+  finish
+fi
 
 # ---- 依存 bootstrap（fresh worktree の自己修復）---------------------------
 install_deps() { # install_deps <dir-label> <prefix-or-empty>
@@ -129,38 +363,317 @@ if [[ "$BOOTSTRAP" -eq 1 ]]; then
   fi
 fi
 
+# ---- 比較起点の解決（浅い clone 対策・#557）------------------------------
+# 変更量・変更範囲・停止境界の 3 つは同じ `origin/main` を起点に測るのに、**走る時刻が
+# 違う**。浅い clone では `origin/main` がステールで、unshallow は secrets ステップまで
+# 走らないため、同一実行の中で数字が食い違っていた（#557: 47 ファイル vs 7 件）。
+#
+# **起点は 1 度だけここで確定し、`GATE_BASE_SHA` で全消費者へ配る。** 各自が再解決すると
+# 整合が「たまたま同時刻に同じ」という時間的性質に戻る（共有実装にしただけでは閉じない）。
+# 表示済み／未表示を問わず「測れなかった」ことを記録する入れ物 (#717)。
+# **宣言はここ**（起点解決より前）でなければ `set -u` 下で unbound になる。
+declare -a GATE_SCOPE_NOTES
+declare -a GATE_SCOPE_RECORD_NOTES
+
+# 変更範囲の判定より前に置くこと — あれだけが唯一ステップを省略できる消費者なので、
+# 起点がずれると docs 判定で build / e2e / sast / lighthouse が飛ぶ。
+if [[ "$(git rev-parse --is-shallow-repository 2>/dev/null)" == "true" ]]; then
+  echo ""
+  echo "▶ 比較起点の解決（shallow clone を検出・#557）"
+  # **宛先 ref を明示する。** `git fetch origin main` は、PR ブランチだけを
+  # `--single-branch` で clone した環境（クラウドサンドボックス）では refspec に main が
+  # 無いため **`refs/remotes/origin/main` を作らない**（FETCH_HEAD に落とすだけ）。
+  # 明示しないと修正が黙って空振りし、無駄な fetch が 2 回増えるだけになる。
+  #
+  # `GIT_TERMINAL_PROMPT=0` … 資格情報ヘルパが無い環境で入力待ちに入らせない。
+  # `http.lowSpeed*` … TCP が落ちない proxy 環境で無限に待たせない。
+  # ここは kill switch より前なので、**止まらないことがゲートを止められることより優先**。
+  if GIT_TERMINAL_PROMPT=0 git -c http.lowSpeedLimit=1000 -c http.lowSpeedTime=10 \
+       fetch --quiet origin '+refs/heads/main:refs/remotes/origin/main' 2>/dev/null; then
+    echo "  origin/main を更新しました"
+  else
+    echo "  ⚠️ origin/main を更新できませんでした（オフライン / 認証 / 到達不能）"
+  fi
+  if ! git merge-base origin/main HEAD >/dev/null 2>&1; then
+    # 切り詰められた履歴では共通祖先へ届かないことがある。届かないと起点が
+    # ステールな `main` や「起点不明」へ落ち、今度は**過小**に報告する。
+    GIT_TERMINAL_PROMPT=0 git fetch --quiet --deepen=100 origin main 2>/dev/null || true
+  fi
+fi
+# shallow でなくても、ここで 1 度だけ解決して全消費者へ配る（起点を実行内で固定する）。
+GATE_BASE_SHA="$(git merge-base origin/main HEAD 2>/dev/null || git merge-base main HEAD 2>/dev/null || true)"
+export GATE_BASE_SHA
+if [[ -n "$GATE_BASE_SHA" ]]; then
+  echo "  起点: ${GATE_BASE_SHA:0:8}（この実行の全ステップで共有）"
+else
+  echo "  ⚠️ 共通祖先へ到達できません。変更量・変更範囲・停止境界は作業ツリーのみで測られます"
+  echo "     手動: git fetch --unshallow"
+  # 🔴 **これも「測れなかった」実行として記録する** (#717 レビュー M3)。
+  # クラウドは浅い clone なので**本命はこの経路**。ここを数えないと、カウンタが 0 の
+  # ことが「測れている」証拠として読まれる（偽の安心）。
+  # **表示はここで済んでいる**ので、上の ⚠ を二重に出さないよう記録専用の配列へ入れる
+  # （#712 レビュー m2 が嫌った重複を作らない）。
+  GATE_SCOPE_RECORD_NOTES+=("共通祖先へ到達できないため変更範囲を測れていません（浅い clone / オフライン）")
+fi
+
+# ---- 変更範囲の判定（ステップ省略）---------------------------------------
+# 判定ロジックは src/domain/governance/change-scope.ts（純関数・ユニットテスト済）。
+# **省略してよいステップ名も TS 側から受け取る**（shell に同じ一覧を持たせると二重管理）。
+# 判定できない場合は必ず code 扱い＝何も省略しない（楽観に倒すと未検証ツリーが green になる）。
+GATE_SCOPE="code"
+GATE_SKIPS=" "
+if [[ "$SKIP_BY_SCOPE" -eq 1 ]] && npx --no-install tsx --version >/dev/null 2>&1; then
+  while IFS= read -r line; do
+    case "$line" in
+      scope=*) GATE_SCOPE="${line#scope=}" ;;
+      skip=*)  GATE_SKIPS="${GATE_SKIPS}${line#skip=} " ;;
+      # #712: 「測れなかったので省略しない」等の理由。**黙って安全側へ倒さない**
+      # （scope が code のときシェルは何も表示しないので、ここで拾わないと見えない）。
+      note=*)  GATE_SCOPE_NOTES+=("${line#note=}") ;;
+    esac
+  done < <(npx --no-install tsx "${ROOT}/scripts/change-scope.ts" \
+    $([[ "$STRICT" -eq 1 ]] && echo --strict) 2>/dev/null || echo "scope=code")
+fi
+
+# そのステップを変更範囲の理由で省略するか。
+scope_skips() { # scope_skips <step-key>
+  # 🔴 **`code` なら何も省略しない、をここで閉じる** (#712 レビュー M1)。
+  # `change-scope.ts` が `scope=docs` と `skip=build` を印字した**後**に死ぬと、
+  # フォールバックの `|| echo "scope=code"` が後から流れて `GATE_SCOPE` は `code` に戻るが、
+  # `GATE_SKIPS` は積まれたまま残る。scope だけを見て判断すると
+  # 「code なのに build を省略した」まま green になる —— #712 が塞ごうとした被害そのもの。
+  # 原則を 1 箇所に閉じるため、行の読み取り側ではなくここで縛る。
+  [[ "$GATE_SCOPE" != "code" ]] && [[ "$GATE_SKIPS" == *" $1 "* ]]
+}
+
+# 省略した理由をサマリへ残す（黙って飛ばさない。何を検査していないかが見えること）。
+scope_skip() { # scope_skip <label>
+  SUMMARY+=("SKIP  $1  (${GATE_SCOPE}-scope: 入力が変わらない)")
+}
+
+if [[ "$GATE_SCOPE" != "code" ]]; then
+  echo ""
+  echo "▶ change-scope: ${GATE_SCOPE}（--no-skip-docs で全ステップ実行）"
+  echo "  省略: ${GATE_SKIPS# }"
+fi
+# 🔴 **省略しなかった理由も見せる** (#712)。`code` のときは上のブロックが出ないので、
+# ここで拾わないと「測れなかったから全部走らせた」が完全に不可視になる。
+# `${arr[*]:-}` を使うのは、bash 5.x が `set -u` 下で要素ゼロの配列を unbound とするため。
+if [[ -n "${GATE_SCOPE_NOTES[*]:-}" ]]; then
+  echo ""
+  echo "▶ change-scope: 判定の但し書き"
+  for note in "${GATE_SCOPE_NOTES[@]}"; do
+    echo "  ⚠ ${note}"
+    # 🔴 **サマリにも残す** (#717)。`--full` は 10 分以上走り、この ⚠ は先頭付近に出て
+    # **末尾のサマリからは消える**。`scope_skip` は「省略した理由をサマリへ残す」方針
+    # なのに、「測れなかった」側だけ非対称に扱われていた。
+    # 接頭辞は `SKIP` ではなく `NOTE` —— `record-gate-run.sh` は `^  SKIP  ` を拾うので、
+    # SKIP にすると「任意ツール未導入」と同じ列へ混ざる。
+    SUMMARY+=("NOTE  change-scope  (${note})")
+  done
+fi
+# 表示済みのものと、表示しないが記録するものの**両方**を summary / スタンプへ載せる。
+for note in ${GATE_SCOPE_RECORD_NOTES[@]+"${GATE_SCOPE_RECORD_NOTES[@]}"}; do
+  SUMMARY+=("NOTE  change-scope  (${note})")
+done
+if [[ -n "${GATE_SCOPE_NOTES[*]:-}" ]] || [[ -n "${GATE_SCOPE_RECORD_NOTES[*]:-}" ]]; then
+  # スタンプの scope 列にも残す。クラウドは浅い clone なので、恒常的に起きていても
+  # **後から数える手段が無い**のがこの issue の本体。
+  GATE_SCOPE_RECORD="${GATE_SCOPE}(unmeasured)"
+fi
+
+# ---- ループの停止指示と変更量 (#424 増分 4) -------------------------------
+# kill switch（.loop-halt / OPEN_RECEPTION_LOOP_HALT）が立っていれば **FAIL** させる。
+# 人間の明示操作なので偽陽性が無く、止めると決めた人が居る。**最初に**置くのが要点で、
+# 10 分のゲートを走り切ってから止めても kill switch の意味が無い。
+# 同時に 1 周回の変更量を報告する（こちらは超えても FAIL させない。理由は
+# src/domain/governance/change-budget.ts の冒頭）。判定は純関数側でユニットテスト済。
+# **その場で abort する**（step でサマリに FAIL を積むだけでは残りを走り切ってしまい、
+# 「10 分使う前に止める」目的を果たさない）。abort すると末尾の green 記録にも到達しないので、
+# 停止中のツリーが green として記録されることもない。
+if npx --no-install tsx --version >/dev/null 2>&1; then
+  echo ""
+  echo "▶ loop halt / 変更量 (#424)"
+  if ! npx --no-install tsx "${ROOT}/scripts/change-budget.ts"; then
+    echo ""
+    echo "❌ quality-gate ABORTED (ループ停止指示。green は記録しません)"
+    exit 1
+  fi
+  SUMMARY+=("PASS  loop halt / 変更量 (#424)")
+else
+  echo ""
+  echo "▶ loop halt / 変更量 (#424)"
+  echo "  tsx が無いため SKIP（判定ロジック自体は unit テストで検証済み）"
+  SUMMARY+=("SKIP  loop halt / 変更量 (#424)  (tsx not available)")
+fi
+
 # ---- 必須ステップ ---------------------------------------------------------
 [[ "$RUN_TYPECHECK" -eq 1 ]] && step "typecheck (tsc)"      npm run --silent typecheck
-[[ "$RUN_LINT"      -eq 1 ]] && step "lint (eslint)"        npm run --silent lint
+if [[ "$RUN_LINT" -eq 1 ]]; then
+  # 予算 (#813) を出しておく。超えたときに「何件までなら良いのか」がログから読めないと、
+  # 赤を「壊れた」と読み違える（CLAUDE.md「緑を読むときは flaky を数える」と同じ型）。
+  echo "  ↳ warning 予算: $(node -p "require('./package.json').scripts.lint.match(/--max-warnings (\\d+)/)?.[1] ?? '(未設定)'" 2>/dev/null || echo '?')（docs/quality-gate.md）"
+  step "lint (eslint)"        npm run --silent lint
+  # 抑止の棚卸しは ESLint 自身に数えさせる (#813)。eslint を 2 回回すので fast には載せない。
+  if [[ "$TIER" != "fast" ]]; then
+    step "lint suppressions"   npm run --silent lint:suppressions
+  fi
+fi
 [[ "$RUN_UNIT"      -eq 1 ]] && step "unit (vitest)"        npm run --silent test
-[[ "$RUN_BUILD"     -eq 1 ]] && step "build (next build)"   npm run --silent build
+if [[ "$RUN_BUILD" -eq 1 ]]; then
+  if scope_skips build; then scope_skip "build (next build)"
+  else step "build (next build)" npm run --silent build; fi
+fi
+
+# CDK スタックのアサーション (#628)。
+#
+# root の `npm test` は root vitest の include（`src/**` ほか）しか走らせないため、
+# **`infra/test/**` は 1 度も実行されていなかった**。合成されるテンプレートの中身は
+# `tsc --noEmit` では見えない（型は通るがリソースの中身は誰も見ない）。
+#
+# root vitest の include に足すのではなく別ステップにしてある: infra は別の node_modules
+# （aws-cdk-lib）を要し、synth が重い（~80s）ので `--fast` に載せたくない。加えて
+# **独立ステップなら summary に自分の行を持てる** — これが「黙って 0 件にしない」の実体。
+if [[ "$RUN_INFRA" -eq 1 ]]; then
+  if scope_skips infra; then scope_skip "infra (cdk vitest)"
+  elif [[ ! -d infra ]]; then skip_or_fail "infra (cdk vitest)" "infra/ が無い"
+  else
+    # `.open-next/` が fresh でないと WebStack の synth suite は自分で skip する。
+    # **その事実を summary へ出す**（vitest の "skipped N" だけでは理由が残らない）。
+    #
+    # 🔴 **判定できなかったときに黙って先へ進まないこと。** 理由が空＝fresh と解釈すると、
+    # tsx が無い・import が壊れた場合に「SKIP 行が出ないまま synth テストも走らない」
+    # という #628 そのものの状態へ戻る。ここは 3 分岐で扱う。
+    if npx --no-install tsx --version >/dev/null 2>&1; then
+      probe_err="$(mktemp)"
+      probe_open_next() { # 標準出力に「検査できない理由」。空なら fresh。
+        npx --no-install tsx -e '
+          import { openNextArtifactState, describeArtifactState } from "./infra/lib/build-artifacts";
+          process.stdout.write(describeArtifactState(openNextArtifactState(process.cwd())));
+        ' 2>"$probe_err"
+      }
+      artifact_reason="$(probe_open_next)"
+      probe_status=$?
+      if [[ "$probe_status" -ne 0 ]]; then
+        skip_unverified "infra WebStack synth" \
+          "状態を判定できなかった（tsx 失敗: $(tr '\n' ' ' < "$probe_err" | cut -c1-120)）"
+      elif [[ -n "$artifact_reason" ]]; then
+        # 🔴 **前提が無いなら自分で揃える (#677)。**
+        #
+        # ここは以前そのまま `skip_unverified` にしていた。fresh checkout は
+        # **クラウドセッションの既定の姿**なので、週次ゲートは毎回この枝に落ちて
+        # 恒常的に赤くなり（2026-08-10 の #318 実行）、`--pr` / `--full` も毎回
+        # 「SKIP → 手でビルド → 再実行」の 2 パスを強いていた。復旧できる前提の欠落を
+        # 人間の再実行に頼るのをやめる。
+        #
+        # **ビルドの失敗は SKIP ではなく FAIL。** ビルドが通らないツリーは synth も
+        # デプロイもできないので「検査を省いた」ではなく「壊れている」。
+        echo ""
+        echo "  ↳ .open-next/: ${artifact_reason}"
+        step "build (open-next)" npm run --silent build:open-next
+        artifact_reason="$(probe_open_next)"
+        probe_status=$?
+        if [[ "$probe_status" -ne 0 ]]; then
+          skip_unverified "infra WebStack synth" \
+            "ビルド後に状態を判定できなかった（tsx 失敗: $(tr '\n' ' ' < "$probe_err" | cut -c1-120)）"
+        elif [[ -n "$artifact_reason" ]]; then
+          # **「復旧を試みた」は「検査できた」ではない。** #640 の保護をここで緩めない。
+          skip_unverified "infra WebStack synth" "ビルド後も揃いませんでした: ${artifact_reason}"
+        fi
+      fi
+      rm -f "$probe_err"
+    else
+      skip_unverified "infra WebStack synth" "tsx が無いため .open-next の状態を判定できない"
+    fi
+    # 🔴 **root の typecheck では infra を検査しきれない。** root tsconfig は
+    # `noUnusedLocals` を持たないが `infra/tsconfig.json` は持つため、`cdk synth` /
+    # `cdk deploy` が使う ts-node の方が**厳しい**。vitest は esbuild で型を落とすので
+    # ここも通らない。結果、**ゲート 12 段すべて green のまま `cdk deploy` が
+    # コンパイルエラーで落ちる**状態が実在した（#630 のデプロイ直前に踏んだ）。
+    step "infra typecheck (tsc)" npm --prefix infra run --silent typecheck
+    step "infra (cdk vitest)" npm --prefix infra test
+  fi
+fi
 
 # ---- 任意ステップ ---------------------------------------------------------
+# shellcheck source=lib/gate-tooling.sh
+. "${ROOT}/scripts/lib/gate-tooling.sh"
+
+# --full を回せない環境を、e2e が 1ms 全滅する前に名指しする (#838 AC5)。
+# バイナリ欠落は「任意ツール未導入の SKIP」ではなく「検査できなかった」なので
+# skip_unverified（記録しない）。gitleaks/semgrep は従来どおり skip_or_fail。
+if [[ "$RUN_E2E" -eq 1 || "$RUN_VRM" -eq 1 ]]; then
+  if ! gate_tool_playwright_chromium_present; then
+    echo ""
+    echo "▶ gate tooling (#838)"
+    # shellcheck disable=SC2086
+    npx --yes tsx "${ROOT}/scripts/report-gate-tools.ts" $(gate_tool_observe_argv) || true
+  fi
+fi
+
 if [[ "$RUN_E2E" -eq 1 ]]; then
-  step "e2e (playwright)" npm run --silent test:e2e
+  if scope_skips e2e; then scope_skip "e2e (playwright)"
+  elif ! gate_tool_playwright_chromium_present; then
+    skip_unverified "e2e (playwright)" "playwright chromium not installed (npx playwright install chromium)"
+  else step "e2e (playwright)" npm run --silent test:e2e; fi
 fi
 
 if [[ "$RUN_SECRETS" -eq 1 ]]; then
   if command -v gitleaks >/dev/null 2>&1; then
+    # `gitleaks detect` は作業ツリーではなく **git 履歴** を走査し、`.gitleaksignore` の指紋は
+    # `<commit>:<file>:<rule>:<line>` の **commit SHA** で受容対象を特定する。
+    #
+    # **shallow clone だとこの指紋が原理的に一致しない。** 切り詰められた根より古い履歴が無い
+    # ため、本来 2026-07-12 のコミットで入った文字列が「grafted root で新規追加された」ものと
+    # して現れ、別の SHA で報告される。結果、受容済みのはずのテストフィクスチャが毎回
+    # 新規検出として上がり、**実 secret と見分けが付かない red** になる（Claude Code on the web
+    # は depth 50 で clone するため必ず踏む）。
+    #
+    # 履歴を完全化してから走らせる。走査対象が増える方向なので検出は弱まらない。
+    if [[ "$(git rev-parse --is-shallow-repository 2>/dev/null)" == "true" ]]; then
+      echo "  shallow clone を検出。.gitleaksignore の指紋照合に完全な履歴が要るため unshallow します"
+      git fetch --unshallow --quiet 2>/dev/null || git fetch --deepen=2147483647 --quiet 2>/dev/null || true
+      if [[ "$(git rev-parse --is-shallow-repository 2>/dev/null)" == "true" ]]; then
+        echo "  ⚠️ unshallow に失敗しました。既知フィクスチャが新規検出として報告される可能性があります"
+        echo "     手動: git fetch --unshallow"
+      fi
+    fi
     step "secrets (gitleaks)" gitleaks detect --no-banner --redact
   else
     skip_or_fail "secrets (gitleaks)" "gitleaks not installed"
   fi
 fi
 
-if [[ "$RUN_SAST" -eq 1 ]]; then
+if [[ "$RUN_SAST" -eq 1 ]] && scope_skips sast; then
+  scope_skip "sast (semgrep)"
+elif [[ "$RUN_SAST" -eq 1 ]]; then
   if command -v semgrep >/dev/null 2>&1; then
-    step "sast (semgrep)" semgrep scan --config p/default --error
+    # ルールセットは**リポジトリ内** (#841)。レジストリ (`p/default`) を引くと、
+    # 外向き通信が制限された環境では semgrep が導入済みでも実行できず、結果も日で変わる。
+    # 終了コード 3 は「ルールを読めず検査できなかった」＝ green として記録しない。
+    step_or_unverified "sast (semgrep)" "${ROOT}/scripts/sast.sh"
   else
     skip_or_fail "sast (semgrep)" "semgrep not installed"
   fi
 fi
 
 if [[ "$RUN_AUDIT" -eq 1 ]]; then
-  step "audit (npm audit)" npm audit --omit=dev
+  # `npm audit` を直接呼ばない。**root しか見ないため infra/ が監査されない** (#634)。
+  # `scripts/audit-deps.ts` が root と infra の両方を監査し、期限付き allowlist で判定する。
+  step "audit (deps)" npm run --silent audit:deps
 fi
 
-if [[ "$RUN_LH" -eq 1 ]]; then
+if [[ "$RUN_LH" -eq 1 ]] && scope_skips lighthouse; then
+  scope_skip "lighthouse (lhci)"
+elif [[ "$RUN_LH" -eq 1 ]]; then
+  # lhci は Chrome を自力で探すが、プリインストール済み Chromium しか無い実行環境
+  # （例: Claude Code on the web の /opt/pw-browsers）では見つけられず healthcheck で落ちる。
+  # playwright.config.ts が同じ理由で同じパスを自動検出しているので、ここでも合わせる
+  # （env を明示し忘れて「この環境では lighthouse は動かない」と誤結論するのを防ぐ。
+  # e2e で実際にその誤結論が 5 周引き継がれた前例がある）。
+  if [[ -z "${CHROME_PATH:-}" && -x /opt/pw-browsers/chromium ]]; then
+    export CHROME_PATH=/opt/pw-browsers/chromium
+  fi
   if command -v lhci >/dev/null 2>&1 || npx --no-install lhci --version >/dev/null 2>&1; then
     step "lighthouse (lhci)" npm run --silent lighthouse
   else
@@ -168,16 +681,29 @@ if [[ "$RUN_LH" -eq 1 ]]; then
   fi
 fi
 
+# ---- VRM 実描画検査 -------------------------------------------------------
+# #578 で入れた ResizeObserver の暴走ループ（DPR>1 で canvas が指数的に肥大し、実機 iPad が
+# 落ちる）は **ローカルゲート 10 項目すべてが green のまま素通り**した。VRM 専用の検査は
+# 存在したが `deviceScaleFactor: 1` で構造的に盲目だったうえ、手動実行だった。
+# **手動の検査は回すのを忘れる**ので、機械が回す側へ置く。
+#
+# サーバは専用ポートで別に立てる（`scripts/vrm-check.sh`）。e2e サーバへ
+# `KIOSK_DEFAULT_VRM_URL` を足すと全 e2e でアバターが描画され VRT ベースラインが総入れ替えに
+# なるため、そちらへは相乗りさせない。
+if [[ "$RUN_VRM" -eq 1 ]] && scope_skips vrm; then
+  scope_skip "vrm (real render)"
+elif [[ "$RUN_VRM" -eq 1 ]] && ! gate_tool_playwright_chromium_present; then
+  skip_unverified "vrm (real render)" "playwright chromium not installed (npx playwright install chromium)"
+elif [[ "$RUN_VRM" -eq 1 ]]; then
+  step "vrm (real render)" npm run --silent vrm:check
+fi
+
+# ---- 変更リスクの報告 (#424 増分 3) ---------------------------------------
+# 停止境界（人間承認が必要な変更）に触れたかを変更パスから判定して見せる。判定ロジックは
+# src/domain/governance/change-risk.ts（純関数・ユニットテスト済）で、ここは呼ぶだけ。
+# **別系統のチェッカにしない**（誰も回さなくなる）ためゲートに同居させるが、報告専用。
+run_change_risk_detector
+
 # ---- サマリ ---------------------------------------------------------------
 echo ""
-echo "================================================================"
-echo " summary (tier=${TIER})"
-echo "----------------------------------------------------------------"
-for line in "${SUMMARY[@]}"; do echo "  ${line}"; done
-echo "================================================================"
-
-if [[ "$FAILED" -eq 1 ]]; then
-  echo "❌ quality-gate FAILED"
-  exit 1
-fi
-echo "✅ quality-gate PASSED"
+finish

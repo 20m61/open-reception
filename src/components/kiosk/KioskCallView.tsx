@@ -15,10 +15,10 @@ import { useEffect, useRef, useState } from 'react';
 import { createCallController, type CallTokenResponse, type CallUiState } from '@/lib/call/call-controller';
 import { VonageCallClient } from '@/adapters/call/vonage-client';
 import { makeT, htmlLangFor, DEFAULT_LOCALE, type Locale, type MessageKey } from '@/lib/i18n';
+import { DEFAULT_VIDEO_ANSWER_TIMEOUT_MS } from '@/domain/reception/calling-experience';
 import type { CallStage, CallStageStatus } from '@/domain/kiosk/call-stages';
 
-/** 応答待ちの上限（ミリ秒）。 */
-const CALL_TIMEOUT_MS = 30_000;
+/** 応答待ちの上限は `DEFAULT_VIDEO_ANSWER_TIMEOUT_MS`。E2E は props / `?callTimeoutMs=` で短縮する。 */
 
 /** 段階状態 → i18n ラベルキー（未知状態は増やさず 3 種で網羅）。 */
 const STAGE_STATUS_KEY: Record<CallStageStatus, MessageKey> = {
@@ -39,6 +39,11 @@ export type KioskCallViewProps = {
   stages?: CallStage[];
   /** 段階見出し/状態ラベルの表示言語（#103）。既定は ja。 */
   locale?: Locale;
+  /**
+   * 担当者の応答待ち上限（#832）。未指定は 30s。来訪者向けの予告は CallingView が持つので、
+   * ここを短くしても予告無しで結果へ飛ばない（親がゲートへ送る）。
+   */
+  timeoutMs?: number;
 };
 
 export function KioskCallView({
@@ -48,6 +53,7 @@ export function KioskCallView({
   onFallback,
   stages,
   locale = DEFAULT_LOCALE,
+  timeoutMs = DEFAULT_VIDEO_ANSWER_TIMEOUT_MS,
 }: KioskCallViewProps): React.ReactElement {
   const tr = makeT(locale);
   const containerRef = useRef<HTMLDivElement>(null);
@@ -74,7 +80,7 @@ export function KioskCallView({
         await fetch(`/api/kiosk/receptions/${receptionId}/timeout`, { method: 'POST' });
       },
       client,
-      timeoutMs: CALL_TIMEOUT_MS,
+      timeoutMs,
       onState: (state) => {
         setUiState(state);
         if (state === 'connected') cbRef.current.onConnected();
@@ -86,18 +92,22 @@ export function KioskCallView({
     return () => {
       void controller.stop();
     };
-  }, [receptionId]);
+  }, [receptionId, timeoutMs]);
 
   return (
     <div className="kiosk-call" data-testid="kiosk-call" data-call-state={uiState}>
       {/* publisher（受付端末カメラ）の描画先。SDK が利用できないときは空のまま。 */}
       <div ref={containerRef} className="kiosk-call__video" aria-hidden={uiState !== 'connected'} />
-      <p className="kiosk-call__status" role="status">
-        {uiState === 'connecting' && '担当者を呼び出しています。少々お待ちください。'}
-        {uiState === 'connected' && '応答がありました。まもなくお越しになります。'}
-        {uiState === 'timeout' && '応答がありませんでした。'}
-        {uiState === 'fallback' && '通話を開始できませんでした。画面の案内に沿ってお進みください。'}
-      </p>
+      {/*
+        待ち中の文言は CallingView（`data-calling-stage`）が担う (#832 / #849)。
+        ここに connecting/timeout を出すと role="status" が二重になり、予告がビデオ側の
+        「接続中」に隠れる。fallback だけ残す（親が CALL_FAILED するまでの短い窓）。
+      */}
+      {uiState === 'fallback' ? (
+        <p className="kiosk-call__status" role="status" lang={htmlLangFor(locale)}>
+          {tr('kiosk.call.fallback')}
+        </p>
+      ) : null}
       {stages && stages.length > 0 ? (
         <div className="kiosk-call__stages" data-testid="kiosk-call-stages" lang={htmlLangFor(locale)}>
           <p className="card__sub">{tr('kiosk.callStages.label')}</p>

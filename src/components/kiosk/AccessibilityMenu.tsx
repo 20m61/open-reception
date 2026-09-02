@@ -7,6 +7,7 @@ import {
   type A11yEnabledModes,
   type FontScale,
 } from '@/domain/kiosk/a11y-modes';
+import { persistentRegionProps } from './persistent-regions';
 
 /**
  * 常設アクセシビリティ支援モードボタン + パネル (issue #321)。
@@ -61,7 +62,7 @@ export function AccessibilityMenu({
       <button
         type="button"
         className="a11y-menu__button"
-        data-testid="a11y-menu-button"
+        {...persistentRegionProps('a11y-menu-button')}
         aria-haspopup="dialog"
         aria-expanded={open}
         onClick={() => setOpen((v) => !v)}
@@ -77,7 +78,7 @@ export function AccessibilityMenu({
           role="presentation"
           onClick={() => setOpen(false)}
         >
-          {/* eslint-disable-next-line jsx-a11y/no-noninteractive-element-interactions -- パネル内クリックの overlay 閉じ伝播だけを止める（キーボード操作は各コントロールが担う） */}
+          {/* パネル内クリックの overlay 閉じ伝播だけを止める（キーボード操作は各コントロールが担う）。 */}
           <div
             className="a11y-menu__panel"
             data-testid="a11y-menu-panel"

@@ -78,7 +78,10 @@ describe('isCredentialExpired (#328)', () => {
 });
 
 describe('extractCheckoutToken (#328)', () => {
-  const token = 'abcDEF-_123456ghiJKL';
+  // base64url の文字種（英大小・数字・`-`・`_`）を網羅しつつ明確な擬似値にする。
+  // 高エントロピー風だと gitleaks の generic-api-key に誤検知される
+  // （`rules/pii-secret-minimization.md`: テストに実 secret 風文字列を置かない）。
+  const token = 'TEST-checkout-token_ABCdef123';
   it('checkout URL の ?ct= から token を取り出す', () => {
     expect(extractCheckoutToken(`https://example.com/kiosk/checkout?${CHECKOUT_TOKEN_QUERY}=${token}`)).toBe(
       token,

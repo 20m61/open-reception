@@ -42,6 +42,47 @@ const MAX_RANGES_PER_DAY = 12;
 const MAX_EXCEPTIONS = 366;
 const MAX_FIXED_HOLIDAYS = 366;
 
+function isLeapYear(year: number): boolean {
+  return year % 400 === 0 || (year % 4 === 0 && year % 100 !== 0);
+}
+
+/**
+ * その月の日数。`february` に**閏年の 29 を渡すかどうか**が唯一の分岐点。
+ *
+ * `fixedHolidays` は `MM-DD` で年を持たないため「どこかの年に実在しうるか」を見る
+ * （= 2 月は 29 まで許す）。`exceptionDates` は年があるので、その年で判定する。
+ */
+function daysInMonth(month: number, february: 28 | 29): number | undefined {
+  return [31, february, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31][month - 1];
+}
+
+/**
+ * `YYYY-MM-DD` が書式だけでなく Gregorian calendar 上で実在するか。
+ *
+ * `new Date(...)` / `Date.UTC(...)` へ丸投げしない。JavaScript は不正日付を翌月へ
+ * rollover し、0〜99 年には 1900 offset という別契約もあるため、入力検証の正本として
+ * 使うと「書いた値」と「検証した値」がずれる。
+ */
+function isValidCalendarDate(value: string): boolean {
+  if (!YMD_RE.test(value)) return false;
+  const [yearText, monthText, dayText] = value.split('-');
+  const max = daysInMonth(Number(monthText), isLeapYear(Number(yearText)) ? 29 : 28);
+  return max !== undefined && Number(dayText) <= max;
+}
+
+/**
+ * `MM-DD`（毎年繰り返す固定休業日）が**どこかの年に実在しうる**か。
+ *
+ * 🔴 **`02-29` は通す。** 閏年には実在するので、拒否すると 4 年に 1 度の休業日を
+ * 設定できなくなる。拒否するのは `02-30` / `04-31` のように**どの年にも存在しない**日だけ。
+ */
+function isPossibleAnnualDate(value: string): boolean {
+  if (!MMDD_RE.test(value)) return false;
+  const [monthText, dayText] = value.split('-');
+  const max = daysInMonth(Number(monthText), 29);
+  return max !== undefined && Number(dayText) <= max;
+}
+
 function parseTimeToMinutes(t: string): number | null {
   const m = TIME_RE.exec(t);
   if (!m) return null;
@@ -149,6 +190,13 @@ function validateFixedHolidays(raw: unknown, issues: PolicyValidationIssue[]): s
       issues.push({ field: `fixedHolidays[${i}]`, message: 'must be "MM-DD"' });
       return;
     }
+    if (!isPossibleAnnualDate(v)) {
+      issues.push({
+        field: `fixedHolidays[${i}]`,
+        message: 'must be an existing Gregorian calendar date in "MM-DD"',
+      });
+      return;
+    }
     out.push(v);
   });
   return issues.length === 0 ? out : null;
@@ -164,6 +212,14 @@ function validateExceptionDates(raw: unknown, issues: PolicyValidationIssue[]): 
     issues.push({ field: 'exceptionDates', message: `too many exception dates (max ${MAX_EXCEPTIONS})` });
     return null;
   }
+  /*
+   * 🔴 **同じ日付を 2 件通さない。** 解決（`resolveDayRanges`）は `find` で**先勝ち**なので、
+   * 重複があると後の行が黙って無視され、しかも**配列の順序で結果が変わる**。
+   * 「9/1 は 10:00-12:00 だけ臨時営業」と設定しても、同じ日の休業行が先にあれば
+   * 来訪者から見て受付が開かない——画面上は両方とも設定済みに見える。
+   * 名指しするのは**後ろ**の要素（先頭を指すと「消したのにまだ怒られる」になる）。
+   */
+  const seenDates = new Set<string>();
   const out: OperatingException[] = [];
   raw.forEach((v, i) => {
     const field = `exceptionDates[${i}]`;
@@ -177,6 +233,26 @@ function validateExceptionDates(raw: unknown, issues: PolicyValidationIssue[]): 
       issues.push({ field: `${field}.date`, message: 'must be "YYYY-MM-DD"' });
       return;
     }
+    if (!isValidCalendarDate(date)) {
+      issues.push({
+        field: `${field}.date`,
+        message: 'must be an existing Gregorian calendar date in "YYYY-MM-DD"',
+      });
+      return;
+    }
+    if (seenDates.has(date)) {
+      /*
+       * 🔴 **救済策を書く。** 「1 件だけ」としか言わないと、運用者の合理的な反応は
+       * 「片方の行を消す」＝**受付可能時間を自分で削る**。同じ日に複数の時間帯を設定する
+       * 正しい書き方（1 行にカンマ区切り）を message に載せる。
+       */
+      issues.push({
+        field,
+        message: `duplicate exception date '${date}': 同じ日に複数の時間帯を設定するには 1 行にまとめてカンマで区切る（例 10:00-12:00, 14:00-16:00）`,
+      });
+      return;
+    }
+    seenDates.add(date);
     const closed = o.closed === true;
     if (closed) {
       if (Array.isArray(o.ranges) && o.ranges.length > 0) {
@@ -246,6 +322,24 @@ export function validatePolicyInput(raw: unknown): ValidationResult {
       ...(emergencyContactLabel ? { emergencyContactLabel } : {}),
     },
   };
+}
+
+/**
+ * 保存済みの例外日から**重複している日付**を返す（保存前の検証とは別に、既に入っている
+ * データを運用者へ知らせるため）。
+ *
+ * 🔴 検証を足しても、**既に保存されている重複は直らない**。読み側は先勝ちのままなので、
+ * 臨時営業日に受付が開かない状態が残り続ける。しかも運用者が気づく契機は「たまたま
+ * その拠点の営業時間画面で保存を押したとき」だけで、そのときには当該の日は過ぎている。
+ */
+export function duplicateExceptionDates(exceptions: readonly OperatingException[]): string[] {
+  const seen = new Set<string>();
+  const duplicated = new Set<string>();
+  for (const exception of exceptions) {
+    if (seen.has(exception.date)) duplicated.add(exception.date);
+    else seen.add(exception.date);
+  }
+  return [...duplicated];
 }
 
 type DayRanges = { ranges: TimeRange[] };

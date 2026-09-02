@@ -128,3 +128,39 @@ export function mergeOrganizationUnits(
   }
   return [...merged.values()];
 }
+
+/**
+ * 互換所属（担当者の `departmentId` 由来）に、保存済みの所属を重ねる。
+ *
+ * **`mergeOrganizationUnits` と同じ原則**を所属にも適用する:
+ * 「無効化・非公開は fail-closed で AND、編集結果は保存済みが勝つ」。
+ *
+ * `callable` / `publicInDirectory` は**閉じる方向の安全フラグ**なので AND を採る。
+ * stored が丸ごと置換すると、一度でも新 UI で所属を編集した担当者は、既存の担当者管理 UI で
+ * 呼び出し不可にしても呼べたままになり、**閉じたはずの導線が段階移行期に開く**。
+ * `relation` / `actingForStaffId` は新 UI が所有する編集結果なので保存済みを優先する。
+ *
+ * 同一性は `staffId` × `organizationId`（`membership-key.ts` と同じ複合キー）。
+ */
+export function mergeOrganizationMemberships(
+  compatMemberships: ReadonlyArray<OrganizationMembership>,
+  storedMemberships: ReadonlyArray<OrganizationMembership>,
+): OrganizationMembership[] {
+  const key = (m: OrganizationMembership) => `${m.staffId}\u0000${m.organizationId}`;
+  const merged = new Map<string, OrganizationMembership>();
+  for (const m of compatMemberships) merged.set(key(m), m);
+  for (const m of storedMemberships) {
+    const compat = merged.get(key(m));
+    merged.set(
+      key(m),
+      compat === undefined
+        ? m
+        : {
+            ...m,
+            callable: compat.callable && m.callable,
+            publicInDirectory: compat.publicInDirectory && m.publicInDirectory,
+          },
+    );
+  }
+  return [...merged.values()];
+}

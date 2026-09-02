@@ -124,6 +124,7 @@ export function StaffResponseActions({ receptionId, token }: StaffResponseAction
                 data-testid={`staff-response-${def.action}`}
                 data-confirming={awaitingConfirm ? 'true' : undefined}
                 disabled={submitState === 'submitting'}
+                aria-busy={submitState === 'submitting'}
                 onClick={() => onClick(def.action, def.requiresConfirmation)}
               >
                 {awaitingConfirm ? `本当に「${def.staffLabel}」でよろしいですか？（もう一度）` : def.staffLabel}

@@ -1,4 +1,4 @@
-import { test, expect } from './kiosk-fixtures';
+import { test, expect, revealStaff } from './kiosk-fixtures';
 import { loginAsAdmin } from './helpers';
 
 /**
@@ -12,6 +12,7 @@ test('受付画面で不在の担当者は呼び出せない', async ({ page }) 
   await page.getByTestId('purpose-meeting').click();
 
   // seed の不在担当者（staff-ono）は「不在」案内が出て選択できない。
+  await revealStaff(page, 'staff-staff-ono');
   const absent = page.getByTestId('staff-staff-ono');
   await expect(absent).toBeVisible();
   await expect(absent).toHaveAttribute('data-unavailable', 'true');

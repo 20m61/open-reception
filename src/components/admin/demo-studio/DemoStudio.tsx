@@ -36,6 +36,8 @@ import type { DemoPublication, DemoPublicationStatus } from '@/domain/demo-studi
 import type { DemoShareToken } from '@/domain/demo-studio/share-token';
 import type { Kiosk } from '@/domain/kiosk/types';
 import { canIssueShare, canRevokeShare, canShowRollback, shareStatus, targetLabel } from './publish-panel';
+import { DangerActionButton } from '../danger/DangerActionButton';
+import { font } from '@/components/admin/ui/tokens';
 
 /**
  * 受付体験スタジオ Demo Harness — 3 ペイン編集スタジオ (issue #363 Increment 2)。
@@ -248,17 +250,21 @@ export function DemoStudio({ canWrite = true, siteId }: { canWrite?: boolean; si
     [currentPub, loadPublications],
   );
 
-  const publishPub = useCallback(async () => {
+  /*
+    確認は `DangerActionButton` が担う (#888)。以前は `window.confirm` 1 つで本番公開できた ——
+    無スタイル・翻訳不可・フォーカス管理なしで、**理由が監査に残らなかった**。
+    受付端末に何が出るかを変える操作なので、影響範囲 ack と理由入力を要求する。
+  */
+  const publishPub = useCallback(async (reason?: string) => {
     if (!currentPub || !targetKioskId) return;
-    const kioskName = enabledKiosks.find((k) => k.id === targetKioskId)?.displayName ?? targetKioskId;
-    if (!window.confirm(`このシナリオを Kiosk「${kioskName}」へ本番公開します。よろしいですか？`)) return;
     setPubBusy(true);
     setPubError(null);
     try {
       const res = await fetch(`/api/admin/demo/publications/${currentPub.id}`, {
         method: 'PATCH',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ op: 'publish', target: { siteId, kioskId: targetKioskId } }),
+        // 理由は監査へ渡す。既存の型に従い、サーバ側で 500 字上限をかける。
+        body: JSON.stringify({ op: 'publish', target: { siteId, kioskId: targetKioskId }, reason }),
       });
       if (!res.ok) {
         setPubError('公開に失敗しました（対象端末が無効化・未登録の可能性があります）。');
@@ -268,19 +274,18 @@ export function DemoStudio({ canWrite = true, siteId }: { canWrite?: boolean; si
     } finally {
       setPubBusy(false);
     }
-  }, [currentPub, targetKioskId, siteId, enabledKiosks, loadPublications]);
+  }, [currentPub, targetKioskId, siteId, loadPublications]);
 
   const rollbackPub = useCallback(
-    async (version: number) => {
+    async (version: number, reason?: string) => {
       if (!currentPub) return;
-      if (!window.confirm(`version ${version} の内容を新しい version として復元（rollback）します。よろしいですか？`)) return;
       setPubBusy(true);
       setPubError(null);
       try {
         const res = await fetch(`/api/admin/demo/publications/${currentPub.id}`, {
           method: 'PATCH',
           headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({ op: 'rollback', version }),
+          body: JSON.stringify({ op: 'rollback', version, reason }),
         });
         if (!res.ok) {
           setPubError('ロールバックに失敗しました。');
@@ -320,7 +325,6 @@ export function DemoStudio({ canWrite = true, siteId }: { canWrite?: boolean; si
 
   const revokeShare = useCallback(async () => {
     if (!currentPub) return;
-    if (!window.confirm('この共有リンクを失効させます。よろしいですか？')) return;
     setPubBusy(true);
     setPubError(null);
     try {
@@ -338,7 +342,6 @@ export function DemoStudio({ canWrite = true, siteId }: { canWrite?: boolean; si
 
   const deletePub = useCallback(async () => {
     if (!currentPub) return;
-    if (!window.confirm('この公開単位を削除します（公開履歴・共有リンクも失われます）。よろしいですか？')) return;
     setPubBusy(true);
     setPubError(null);
     try {
@@ -464,7 +467,6 @@ export function DemoStudio({ canWrite = true, siteId }: { canWrite?: boolean; si
 
   const removeSaved = useCallback(
     async (scn: DemoScenario) => {
-      if (!window.confirm(`カスタムシナリオ「${scn.name}」を削除します。よろしいですか?`)) return;
       await fetch(`/api/admin/demo/scenarios/${scn.id}`, { method: 'DELETE' });
       if (editingSavedId === scn.id) cancelEdit();
       await loadSaved();
@@ -510,7 +512,13 @@ export function DemoStudio({ canWrite = true, siteId }: { canWrite?: boolean; si
 
   return (
     <div className="stack" data-testid="demo-studio" style={{ gap: 'var(--space-lg)' }}>
-      <header className="stack" style={{ gap: 'var(--space-xs)' }}>
+      {/*
+        `gap: 'var(--space-xs)'` と書かれていたが `--space-xs` は CSS に存在せず（TS 側の
+        `tokens.ts` にしか無い）、しかも `.stack` にはルールが無いので flex コンテナですら
+        なかった —— gap は二重に効いていなかった (#869)。実際の見た目を変えないよう
+        宣言ごと外す。`.stack` に実体を与えるかは別件（横断レビュー課題 23）。
+      */}
+      <header className="stack">
         <h1 className="page__title">受付体験スタジオ（デモ）</h1>
         <p className="page__lead">
           本番の受付端末画面を、模擬データ（Mock）で安全に試せます。組込テンプレートを複製して
@@ -572,15 +580,13 @@ export function DemoStudio({ canWrite = true, siteId }: { canWrite?: boolean; si
                     >
                       {s.name}
                     </button>
-                    <button
-                      type="button"
-                      data-testid={`demo-delete-${s.id}`}
-                      className="btn btn--ghost"
-                      aria-label={`${s.name}を削除`}
-                      onClick={() => void removeSaved(s)}
-                    >
-                      削除
-                    </button>
+                    <span data-testid={`demo-delete-${s.id}`}>
+                      <DangerActionButton
+                        label="削除"
+                        requirement={{ requireImpactAck: false, requireReason: false }}
+                        onConfirm={() => void removeSaved(s)}
+                      />
+                    </span>
                   </span>
                 );
               })}
@@ -667,21 +673,27 @@ export function DemoStudio({ canWrite = true, siteId }: { canWrite?: boolean; si
                   下書きへ戻す
                 </button>
               ) : null}
-              <button
-                type="button"
-                data-testid="demo-pub-delete"
-                className="btn btn--ghost"
-                disabled={!canWrite || pubBusy}
-                onClick={() => void deletePub()}
-              >
-                公開単位を削除
-              </button>
+              <span data-testid="demo-pub-delete">
+                {canWrite ? (
+                  <DangerActionButton
+                    label="公開単位を削除"
+                    busy={pubBusy}
+                    requirement={{ requireImpactAck: true, requireReason: false }}
+                    impactSummary="この公開単位に紐づく公開履歴と共有リンクも失われます。元に戻せません。"
+                    onConfirm={() => void deletePub()}
+                  />
+                ) : (
+                  <button type="button" className="btn btn--ghost" disabled>
+                    公開単位を削除
+                  </button>
+                )}
+              </span>
             </div>
 
             {/* 公開先選択・公開 */}
             <div className="stack" style={{ gap: 4, borderTop: '1px solid var(--color-border)', paddingTop: 8 }}>
               <label className="stack" style={{ gap: 2 }}>
-                <span style={{ fontSize: '0.85rem', opacity: 0.75 }}>公開先 Kiosk</span>
+                <span style={{ fontSize: font.small, opacity: 0.75 }}>公開先 Kiosk</span>
                 <select
                   data-testid="demo-pub-target"
                   value={targetKioskId}
@@ -702,15 +714,27 @@ export function DemoStudio({ canWrite = true, siteId }: { canWrite?: boolean; si
                   有効な Kiosk がありません。端末管理で登録・有効化してください。
                 </p>
               ) : null}
-              <button
-                type="button"
-                data-testid="demo-pub-publish"
-                className="btn btn--primary"
-                disabled={!canWrite || pubBusy || !targetKioskId}
-                onClick={() => void publishPub()}
-              >
-                このシナリオを公開する
-              </button>
+              {/*
+                本番公開は**最も重い操作**なので、影響範囲 ack と理由入力の両方を要求する (#888)。
+                理由は監査へ残る（以前は window.confirm 1 つで、何も残らなかった）。
+              */}
+              <div data-testid="demo-pub-publish">
+                {canWrite && targetKioskId ? (
+                  <DangerActionButton
+                    label="このシナリオを公開する"
+                    busy={pubBusy}
+                    requirement={{ requireImpactAck: true, requireReason: true }}
+                    impactSummary={`受付端末「${
+                      enabledKiosks.find((k) => k.id === targetKioskId)?.displayName ?? targetKioskId
+                    }」に表示される内容が、いま編集中のシナリオへ切り替わります。来訪者に見えます。`}
+                    onConfirm={({ reason }) => void publishPub(reason)}
+                  />
+                ) : (
+                  <button type="button" className="btn btn--primary" disabled>
+                    このシナリオを公開する
+                  </button>
+                )}
+              </div>
             </div>
 
             {/* version 履歴・rollback */}
@@ -719,7 +743,7 @@ export function DemoStudio({ canWrite = true, siteId }: { canWrite?: boolean; si
               data-testid="demo-pub-versions"
               style={{ gap: 4, borderTop: '1px solid var(--color-border)', paddingTop: 8 }}
             >
-              <span style={{ fontSize: '0.85rem', opacity: 0.75 }}>公開履歴</span>
+              <span style={{ fontSize: font.small, opacity: 0.75 }}>公開履歴</span>
               {!canShowRollback(currentPub.versions.length) ? (
                 <p className="page__lead" data-testid="demo-pub-versions-empty" style={{ margin: 0 }}>
                   まだ公開されていません。
@@ -743,15 +767,21 @@ export function DemoStudio({ canWrite = true, siteId }: { canWrite?: boolean; si
                           {v.rolledBackFrom !== undefined ? `（v${v.rolledBackFrom} から復元）` : ''}
                         </span>
                         {!isCurrent ? (
-                          <button
-                            type="button"
-                            data-testid={`demo-pub-rollback-${v.version}`}
-                            className="btn btn--ghost"
-                            disabled={!canWrite || pubBusy}
-                            onClick={() => void rollbackPub(v.version)}
-                          >
-                            この version へロールバック
-                          </button>
+                          <span data-testid={`demo-pub-rollback-${v.version}`}>
+                            {canWrite ? (
+                              <DangerActionButton
+                                label="この version へロールバック"
+                                busy={pubBusy}
+                                requirement={{ requireImpactAck: true, requireReason: true }}
+                                impactSummary={`version ${v.version} の内容を新しい version として復元します。現在 受付端末に出ている内容が置き換わります。`}
+                                onConfirm={({ reason }) => void rollbackPub(v.version, reason)}
+                              />
+                            ) : (
+                              <button type="button" className="btn btn--ghost" disabled>
+                                この version へロールバック
+                              </button>
+                            )}
+                          </span>
                         ) : null}
                       </li>
                     );
@@ -766,7 +796,7 @@ export function DemoStudio({ canWrite = true, siteId }: { canWrite?: boolean; si
               data-testid="demo-pub-share"
               style={{ gap: 6, borderTop: '1px solid var(--color-border)', paddingTop: 8 }}
             >
-              <span style={{ fontSize: '0.85rem', opacity: 0.75 }}>共有リンク（認証なし閲覧）</span>
+              <span style={{ fontSize: font.small, opacity: 0.75 }}>共有リンク（認証なし閲覧）</span>
               {(() => {
                 const status = shareStatus(currentPub.share, nowMs);
                 if (status === 'active') {
@@ -818,15 +848,20 @@ export function DemoStudio({ canWrite = true, siteId }: { canWrite?: boolean; si
                   共有リンクを発行
                 </button>
                 {canRevokeShare(currentPub.share, nowMs) ? (
-                  <button
-                    type="button"
-                    data-testid="demo-pub-share-revoke"
-                    className="btn btn--ghost"
-                    disabled={!canWrite || pubBusy}
-                    onClick={() => void revokeShare()}
-                  >
-                    失効させる
-                  </button>
+                  <span data-testid="demo-pub-share-revoke">
+                    {canWrite ? (
+                      <DangerActionButton
+                        label="失効させる"
+                        busy={pubBusy}
+                        requirement={{ requireImpactAck: false, requireReason: false }}
+                        onConfirm={() => void revokeShare()}
+                      />
+                    ) : (
+                      <button type="button" className="btn btn--ghost" disabled>
+                        失効させる
+                      </button>
+                    )}
+                  </span>
                 ) : null}
               </div>
             </div>
@@ -842,11 +877,11 @@ export function DemoStudio({ canWrite = true, siteId }: { canWrite?: boolean; si
 
       {/* 3 ペイン */}
       <div style={{ display: 'flex', gap: 'var(--space-md)', alignItems: 'flex-start', flexWrap: 'wrap' }}>
-        {/* 左: 会話フロー */}
+        {/* 左: 会話フロー。gap は上と同じ理由で外した（--space-xs は未定義・.stack にルール無し, #869）。 */}
         <section
           className="card stack"
           data-testid="demo-flow-pane"
-          style={{ gap: 'var(--space-xs)', flex: '1 1 260px', minWidth: 260 }}
+          style={{ flex: '1 1 260px', minWidth: 260 }}
         >
           <h2 className="card__title">会話フロー{isEditing ? '（編集）' : ''}</h2>
           {turns.length === 0 ? (
@@ -941,7 +976,7 @@ export function DemoStudio({ canWrite = true, siteId }: { canWrite?: boolean; si
 
           {/* シナリオ全体 */}
           <label className="stack" style={{ gap: 2 }}>
-            <span style={{ fontSize: '0.85rem', opacity: 0.75 }}>シナリオ名</span>
+            <span style={{ fontSize: font.small, opacity: 0.75 }}>シナリオ名</span>
             {isEditing ? (
               <input
                 data-testid="demo-name-input"
@@ -958,7 +993,7 @@ export function DemoStudio({ canWrite = true, siteId }: { canWrite?: boolean; si
           ) : null}
 
           <label className="stack" style={{ gap: 2 }}>
-            <span style={{ fontSize: '0.85rem', opacity: 0.75 }}>起動モード</span>
+            <span style={{ fontSize: font.small, opacity: 0.75 }}>起動モード</span>
             {isEditing ? (
               <select
                 data-testid="demo-initial-mode"
@@ -982,7 +1017,7 @@ export function DemoStudio({ canWrite = true, siteId }: { canWrite?: boolean; si
 
           {/* 選択ターン */}
           <div className="stack" style={{ gap: 4, borderTop: '1px solid var(--color-border)', paddingTop: 8 }}>
-            <span style={{ fontSize: '0.85rem', opacity: 0.75 }}>
+            <span style={{ fontSize: font.small, opacity: 0.75 }}>
               選択ターン{selectedTurn !== null ? `（#${selectedTurn + 1}）` : ''}
             </span>
             {selTurn ? (
@@ -1038,7 +1073,7 @@ export function DemoStudio({ canWrite = true, siteId }: { canWrite?: boolean; si
 
           {/* シミュレーション結果 */}
           <div className="stack" style={{ gap: 6, borderTop: '1px solid var(--color-border)', paddingTop: 8 }}>
-            <span style={{ fontSize: '0.85rem', opacity: 0.75 }}>シミュレーション結果</span>
+            <span style={{ fontSize: font.small, opacity: 0.75 }}>シミュレーション結果</span>
 
             {/* 呼び出し結果列 */}
             <div className="stack" data-testid="demo-sim-call" style={{ gap: 4 }}>

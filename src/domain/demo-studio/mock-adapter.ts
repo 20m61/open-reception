@@ -71,8 +71,20 @@ function delay(ms: number): Promise<void> {
 }
 
 /** QR 失敗理由 → 非 ok の HTTP ステータス（503=通信断とは区別する）。 */
+/**
+ * QR の失敗理由 → HTTP。**本番ルート（`src/lib/checkin/request.ts` の `failureResponse`）と
+ * 同じ値でなければならない。** デモは運用者が「本番と同じ振る舞い」を確かめる場所なので、
+ * ここがずれると、確かめたつもりのものが確かめられていない。
+ *
+ * 🔴 `expired` はかつて 410 で、本番の 409 とずれていた。既存テストが
+ * `expect(res.status).not.toBe(503)` としか見ていなかったので誰も気付けなかった。
+ * いまは `mock-adapter.test.ts` が `failureResponse()` の実値と突き合わせる。
+ *
+ * ここで `failureResponse` を直接呼ばないのは、あれが `next/headers` を引き込む
+ * **サーバ専用**モジュールで、この adapter は preview の**ブラウザ側**で動くため。
+ */
 const QR_FAILURE_STATUS: Record<'expired' | 'used' | 'revoked', number> = {
-  expired: 410,
+  expired: 409,
   used: 409,
   revoked: 409,
 };

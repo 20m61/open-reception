@@ -11,7 +11,9 @@ import {
   featureFlagUpdateError,
   type ElevatedWriteError,
 } from '@/lib/platform/client-elevation';
-import { DangerActionPlaceholder, MetricCard } from './primitives';
+import { DangerActionPlaceholder } from './primitives';
+import { MetricCard, font } from '@/components/admin/ui';
+import { enablementState } from '../state-vocabulary';
 
 /**
  * 機能フラグ / 利用制限 (issue #90 inc2 / #83 inc5a)。
@@ -44,7 +46,7 @@ type TenantFlagsResponse = {
 };
 
 function boolLabel(v: boolean): string {
-  return v ? '有効' : '無効';
+  return enablementState(v).label;
 }
 
 export function FeatureFlags() {
@@ -116,9 +118,9 @@ export function FeatureFlags() {
         利用上限（実データ未接続）
       </h2>
       <div style={{ display: 'flex', gap: 'var(--space-md)', flexWrap: 'wrap' }}>
-        <MetricCard label="受付端末上限" pending note="メータリング接続後" />
-        <MetricCard label="月間通話数上限" pending note="メータリング接続後" />
-        <MetricCard label="概算コスト上限" pending note="メータリング接続後" />
+        <MetricCard label="受付端末上限" placeholder placeholderText="未接続" note="メータリング接続後" />
+        <MetricCard label="月間通話数上限" placeholder placeholderText="未接続" note="メータリング接続後" />
+        <MetricCard label="概算コスト上限" placeholder placeholderText="未接続" note="メータリング接続後" />
       </div>
 
       <div style={{ marginTop: 'var(--space-lg)', maxWidth: 760 }}>
@@ -193,7 +195,7 @@ function TenantFeatureFlagEditor({ onChanged }: { onChanged?: () => void }) {
         return;
       }
       setDone(
-        `「${TENANT_FEATURE_FLAG_LABELS[key]}」を${enable ? '有効' : '無効'}にしました（監査に記録済み）。`,
+        `「${TENANT_FEATURE_FLAG_LABELS[key]}」を${enablementState(enable).label}にしました（監査に記録済み）。`,
       );
       setReason('');
       // 楽観更新はしない: サーバ応答が正。テナントの実効値と横断サマリを再取得する。
@@ -212,7 +214,7 @@ function TenantFeatureFlagEditor({ onChanged }: { onChanged?: () => void }) {
     borderRadius: 8,
     padding: '6px 10px',
     color: 'inherit',
-    fontSize: '0.85rem',
+    fontSize: font.small,
     boxSizing: 'border-box',
   } as const;
 
@@ -227,7 +229,7 @@ function TenantFeatureFlagEditor({ onChanged }: { onChanged?: () => void }) {
         padding: 'var(--space-md)',
         display: 'grid',
         gap: 'var(--space-sm)',
-        fontSize: '0.85rem',
+        fontSize: font.small,
       }}
     >
       <strong style={{ color: 'var(--color-platform-warn)' }}>テナント別機能フラグの変更（昇格が必要な操作）</strong>
@@ -283,7 +285,7 @@ function TenantFeatureFlagEditor({ onChanged }: { onChanged?: () => void }) {
             ))}
           </div>
           {flags.updatedAt ? (
-            <p style={{ margin: 0, opacity: 0.5, fontSize: '0.75rem' }}>
+            <p style={{ margin: 0, opacity: 0.5, fontSize: font.caption }}>
               最終変更: {new Date(flags.updatedAt).toLocaleString('ja-JP')}
             </p>
           ) : null}

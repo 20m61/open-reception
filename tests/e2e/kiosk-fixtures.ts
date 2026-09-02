@@ -20,4 +20,77 @@ export const test = base.extend({
   },
 });
 
+/**
+ * QR 受付の**状態機械が実際にどこに居るか**を表明する (#361 調査)。
+ *
+ * 画面固有の testid（`checkin-scanning` 等）だけを見ると、失敗が
+ * `element(s) not found` としか出ず**どの状態に居たのかが分からない**。実際
+ * `kiosk-checkin-subtitle-i18n.spec.ts:47` が 2 セッション連続で flaky になった際、
+ * ログから分かるのは「5 秒間 `checkin-scanning` が無かった」ことだけで、
+ * cameraError へ落ちたのか、そもそも遷移していないのか、待機へ戻ったのかが区別できなかった。
+ *
+ * `checkin-shell` の `data-checkin-state` を先に突き合わせると、失敗時に
+ * `Expected: "scanning" / Received: "cameraError"` のように**実際の状態が出る**。
+ *
+ * 調査の記録（誤った結論を再学習させないため）:
+ *
+ * 第 91 wave で「headless にカメラが無く `CameraQrScanner` が `camera_denied` へ落ちる」という
+ * 仮説を **実測で棄却したと書いたが、その棄却自体が誤り**だった。原因は **1 点サンプリング** —
+ * camera-grant の 1.5 秒後だけを 5 回見て `scanning=1` だったので「安定」と結論づけていた。
+ *
+ * 第 92 wave で時間軸に沿って 35 点サンプリングし直した結果（フェイクデバイス無し）:
+ * `0s=scanning 1s=scanning 2s=cameraError 3s=cameraError ... 34s=cameraError`。
+ * **`scanning` は約 2 秒だけの過渡状態**で、1 点観測はちょうど境界の内側を踏んでいた。
+ * 負荷が高い（`--full` 等）と assert が窓を跨ぎ、以後ずっと `element(s) not found` になる。
+ *
+ * 対策は `playwright.config.ts` の `FAKE_MEDIA_ARGS`（フェイクカメラ）。同じ 35 点計測で
+ * `0s..30s=scanning 31s=scanError`（31s は scan timeout）となり `scanning` は安定した。
+ *
+ * **教訓: 過渡状態の有無を 1 点で判定しない。時間軸で複数点を取る。**
+ */
+export async function expectCheckinState(page: Page, state: string): Promise<void> {
+  await expect(page.getByTestId('checkin-shell')).toHaveAttribute('data-checkin-state', state);
+}
+
 export { expect, type Page };
+
+/**
+ * 担当者カードを出す (#787)。
+ *
+ * 相手選択画面は**未入力時に部署カードを出す**ようになった（担当者が数十人のテナントで
+ * ファーストビューが埋まるのを避けるため）。担当者カードへ到達するには部署を 1 つ開く。
+ *
+ * 🔴 **spec 側で `staff-group-*` を直接押さない。** どの担当者がどの部署に居るかは
+ * fixture の都合で変わる。ここで「その担当者を含む群を開く」まで面倒を見る ——
+ * spec は「誰を選ぶか」だけを書けばよい。
+ *
+ * 検索経路は群を跨ぐので、こちらは**検索でも到達できる**ことの裏返しでもある。
+ */
+export async function revealStaff(page: Page, staffTestId: string): Promise<void> {
+  const card = page.getByTestId(staffTestId);
+  if (await card.isVisible().catch(() => false)) return;
+
+  /*
+   * 🔴 **検索中は群を開かない** (#787)。検索は群を跨いで結果を直接出すので、ここで群を
+   * 開くと「検索したら結果がそのまま出る」という**検索系 spec の主題を吸収してしまう**
+   * （独立レビューの実測: 群カードを検索中も出す変異が、このヘルパ越しだと素通りする）。
+   */
+  const query = await page.getByTestId('staff-search').inputValue().catch(() => '');
+  if (query.trim() !== '') {
+    throw new Error(`検索中に revealStaff を呼んでいます（${staffTestId}）。検索結果は群を跨いで直接出ます`);
+  }
+
+  const groups = page.getByTestId('staff-groups');
+  if (!(await groups.isVisible().catch(() => false))) {
+    throw new Error(`${staffTestId} が見えず、部署の群も出ていません`);
+  }
+
+  const buttons = await groups.locator('button[data-testid^="staff-group-"]').all();
+  for (const button of buttons) {
+    await button.click();
+    if (await card.isVisible().catch(() => false)) return;
+    // この群には居なかった。部署を選び直して次を試す。
+    await page.getByTestId('staff-group-back').click();
+  }
+  throw new Error(`${staffTestId} がどの部署にも見つかりませんでした`);
+}

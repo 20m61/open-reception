@@ -181,3 +181,19 @@ infra/cdk-outputs-*.json
 /.w*.mjs
 /.dbg-*.mjs
 /.studio-visual-check.mjs
+
+# ループの緊急停止フラグ (#424 増分 4)。**追跡しない** — コミットすると全員のゲートが
+# 止まる。止めたい人がローカルに置き、理由を書いて、消せば解除される運用。
+/.loop-halt
+
+# VRM 実描画検査の出力（scripts/vrm-check.sh）。
+# **ignore しないとゲートが自分のスタンプを壊す** — 検査が repo 内へ出力を書いた時点で
+# ツリー指紋が変わり、直前に記録した green が stale 扱いになる（実際に踏んだ）。
+.vrm-check/
+.live-capture/
+
+# 委譲プロンプトの spec（`scripts/delegate-gate-prompt.ts <spec.json>`）。
+# **ignore しないと正直な green 申告が落ちる** — 未追跡（非 ignore）ファイルも
+# ツリー指紋に入るので、repo 内へ spec を書いた時点で直前の green が stale 扱いになり、
+# `--fast` を実際に通していても裏取り (#711) が FAIL する。repo 外へ置いてもよい。
+/.delegate-*.json

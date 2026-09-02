@@ -13,6 +13,7 @@ const getKioskConfig = vi.fn();
 const getSecuritySettings = vi.fn();
 const resolveKioskMaintenance = vi.fn();
 const resolveKioskOperatingStatusById = vi.fn();
+const requireKioskSession = vi.fn();
 
 vi.mock('@/lib/kiosk/kiosk-store', () => ({
   getKioskConfig: (...a: unknown[]) => getKioskConfig(...a),
@@ -26,10 +27,18 @@ vi.mock('@/lib/platform/maintenance-gate', () => ({
 vi.mock('@/lib/operating-policy/kiosk-gate', () => ({
   resolveKioskOperatingStatusById: (...a: unknown[]) => resolveKioskOperatingStatusById(...a),
 }));
+// **kioskId はセッション由来**になった (#601)。クエリで任意端末を指定できると、無認証と
+// 相まって任意端末の設定・メンテナンス状態・営業状態が列挙できる。
+vi.mock('@/lib/kiosk/session-guard', () => ({
+  requireKioskSession: () => requireKioskSession(),
+}));
 
 import { GET } from './route';
 
-const req = (kioskId: string) => new Request(`http://localhost/api/kiosk/config?kioskId=${kioskId}`);
+/** セッションの kioskId を差し替える（リクエスト引数はもう受け取らない）。 */
+const asKiosk = (kioskId: string) => {
+  requireKioskSession.mockResolvedValue({ kioskId });
+};
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -37,11 +46,12 @@ beforeEach(() => {
   getSecuritySettings.mockResolvedValue({ emergencyStop: false });
   resolveKioskMaintenance.mockResolvedValue(null);
   resolveKioskOperatingStatusById.mockResolvedValue(undefined);
+  requireKioskSession.mockResolvedValue({ kioskId: 'kiosk-1' });
 });
 
 describe('GET /api/kiosk/config (#290 item3)', () => {
   it('通常時は設定 + active=true・maintenance=null・operatingStatus=null を返す', async () => {
-    const res = await GET(req('kiosk-1'));
+    const res = (asKiosk('kiosk-1'), await GET());
     expect(res.status).toBe(200);
     await expect(res.json()).resolves.toEqual({
       kioskId: 'kiosk-1',
@@ -59,7 +69,7 @@ describe('GET /api/kiosk/config (#290 item3)', () => {
       message: '緊急メンテナンス中',
       endsAt: '2026-07-01T16:00:00.000Z',
     });
-    const res = await GET(req('kiosk-1'));
+    const res = (asKiosk('kiosk-1'), await GET());
     const body = await res.json();
     expect(body.active).toBe(false);
     expect(body.maintenance).toEqual({
@@ -75,7 +85,7 @@ describe('GET /api/kiosk/config (#290 item3)', () => {
       message: '定期メンテナンス（受付は読み取り専用）',
       endsAt: '2026-07-01T16:00:00.000Z',
     });
-    const res = await GET(req('kiosk-1'));
+    const res = (asKiosk('kiosk-1'), await GET());
     const body = await res.json();
     expect(body.active).toBe(true);
     expect(body.maintenance.impact).toBe('read_only');
@@ -83,7 +93,7 @@ describe('GET /api/kiosk/config (#290 item3)', () => {
 
   it('緊急停止中はメンテ無しでも active=false（既存ロジックを維持）', async () => {
     getSecuritySettings.mockResolvedValue({ emergencyStop: true });
-    const res = await GET(req('kiosk-1'));
+    const res = (asKiosk('kiosk-1'), await GET());
     await expect(res.json()).resolves.toMatchObject({ active: false, maintenance: null });
   });
 });
@@ -95,7 +105,7 @@ describe('GET /api/kiosk/config — operatingStatus (#367)', () => {
       reopenAt: '2026-07-23T00:00:00.000Z',
       emergencyContactLabel: '警備室内線',
     });
-    const res = await GET(req('kiosk-1'));
+    const res = (asKiosk('kiosk-1'), await GET());
     const body = await res.json();
     expect(body.operatingStatus).toEqual({
       state: 'closed',
@@ -109,8 +119,26 @@ describe('GET /api/kiosk/config — operatingStatus (#367)', () => {
 
   it('ポリシー未設定（fail-open）は operatingStatus=null を返す', async () => {
     resolveKioskOperatingStatusById.mockResolvedValue(undefined);
-    const res = await GET(req('kiosk-1'));
+    const res = (asKiosk('kiosk-1'), await GET());
     const body = await res.json();
     expect(body.operatingStatus).toBeNull();
+  });
+});
+
+/**
+ * セッションが無ければ何も返さない (#601)。以前は無認証で、しかも kioskId をクエリで
+ * 受けていたため、**任意端末の設定を列挙できた**。
+ */
+describe('GET /api/kiosk/config / セッション必須 (#601)', () => {
+  it('kiosk セッションが無ければ 403', async () => {
+    requireKioskSession.mockResolvedValue(null);
+    const res = await GET();
+    expect(res.status).toBe(403);
+  });
+
+  it('設定の読み出しはセッションの kioskId で行う（クエリでは指定できない）', async () => {
+    requireKioskSession.mockResolvedValue({ kioskId: 'kiosk-mine' });
+    await GET();
+    expect(getKioskConfig).toHaveBeenCalledWith('kiosk-mine');
   });
 });

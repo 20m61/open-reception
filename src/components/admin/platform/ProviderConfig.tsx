@@ -7,6 +7,8 @@ import {
   type SecretPresence,
   type TenantProviderConfigView,
 } from '@/domain/provider-config/types';
+import type { ProviderConfigWarning } from '@/domain/provider-config/readiness';
+import { font } from '@/components/admin/ui/tokens';
 
 /**
  * テナント別 CCaaS プロバイダ設定（developer 専用・write-only secret） (issue #405 Inc1)。
@@ -24,6 +26,20 @@ const SECRET_ENDPOINT = '/api/platform/integrations/provider-config/secret';
 type ConfigResponse = {
   config: TenantProviderConfigView | null;
   secretPresence?: SecretPresence;
+  /** 「有効にしたのに取り次げない」設定への警告 (#763)。語彙はサーバ側で列挙固定。 */
+  warnings?: readonly ProviderConfigWarning[];
+};
+
+/**
+ * 警告の文言。**サーバは語彙（列挙）だけを返し、文言は画面側が持つ** ──
+ * 応答に自由文を載せると、そこへ設定値や secret の断片が混ざりうる
+ * （`rules/pii-secret-minimization.md`）。
+ */
+const WARNING_TEXT: Record<ProviderConfigWarning, string> = {
+  real_dialing_without_secret:
+    '実発信の設定（発信元番号あり・有効）ですが secret が未設定です。この状態では受付端末が担当者を呼び出せず、来訪者には「取り次げません」と表示されます。下の欄で secret を保存してください。',
+  real_dialing_without_application_id:
+    '実発信の設定ですが application id が未設定です。この状態では受付端末が担当者を呼び出せません。',
 };
 
 const th = { padding: '6px 8px' } as const;
@@ -140,13 +156,23 @@ export function ProviderConfig() {
   return (
     <section style={{ marginTop: 'var(--space-lg)', maxWidth: 760 }}>
       <h2 style={{ fontSize: '1rem', opacity: 0.7 }}>テナント別プロバイダ設定</h2>
-      <p style={{ opacity: 0.8, fontSize: '0.85rem' }}>
+      <p style={{ opacity: 0.8, fontSize: font.small }}>
         選択中テナントの CCaaS プロバイダ設定です。secret は<strong>書き込み専用</strong>で、値は
         保存後も一切表示されません（状態のみ）。対象テナントはサーバ側で認可済みコンテキストから
         決まります。
       </p>
 
       {error ? <p style={{ color: 'var(--color-platform-warn)' }}>{error}</p> : null}
+      {/*
+        🔴 **保存の成否とは別に出す。** 保存は成功しているので `notice`（緑）だけだと
+        「有効にした瞬間から受付が 503 になる」ことが伝わらない。#763 で問題にしたのは
+        まさに「管理画面は未接続としか言わないのに受付は全件落ちている」状態。
+      */}
+      {(data?.warnings ?? []).map((w) => (
+        <p key={w} data-testid={`provider-config-warning-${w}`} style={{ color: 'var(--color-platform-warn)' }}>
+          {WARNING_TEXT[w]}
+        </p>
+      ))}
       {notice ? <p style={{ color: 'var(--color-platform-ok)' }}>{notice}</p> : null}
 
       <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.9rem' }}>
@@ -192,10 +218,10 @@ export function ProviderConfig() {
         設定を保存
       </button>
 
-      <h3 style={{ fontSize: '0.95rem', opacity: 0.7, marginTop: 'var(--space-lg)' }}>
+      <h3 style={{ fontSize: font.body, opacity: 0.7, marginTop: 'var(--space-lg)' }}>
         API secret（書き込み専用）
       </h3>
-      <p style={{ fontSize: '0.85rem' }}>
+      <p style={{ fontSize: font.small }}>
         現在の状態:{' '}
         <strong style={{ color: presence === 'set' ? 'var(--color-platform-ok)' : 'var(--color-platform-warn)' }}>
           {presence === 'set' ? '設定済み' : '未設定'}

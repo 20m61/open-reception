@@ -29,6 +29,19 @@ vi.mock('@/lib/auth/actor', () => ({
     entraUnregistered: 'deny',
   }),
 }));
+/**
+ * **表示スコープの解決だけをモックする** (#419 残増分)。
+ *
+ * ルートは対象テナントを `resolveAdminTenantId()`（＝ cookie を actor の
+ * `accessibleTenants` で検証する `resolveActiveTenant`）から取るようになった。
+ * ここはハンドラを**リクエストスコープ外で直接呼ぶ**単体テストなので `cookies()` が
+ * 使えない。既定テナントを返す形に固定し、**認可の検査（401/403/viewer/tenant_admin）は
+ * 一切弱めない** — 検査したいのは「actor に対してガードが効くか」であって、
+ * cookie からテナントを引く経路ではない（そちらは `active-tenant` 側で検査済み）。
+ */
+vi.mock('@/lib/tenant/admin-tenant-scope', () => ({
+  resolveAdminTenantId: async () => 'default',
+}));
 vi.mock('@/lib/data-stores/reception-log-store', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@/lib/data-stores/reception-log-store')>();
   return { ...actual, appendAdminAudit: (...a: unknown[]) => appendAdminAudit(...a) };
@@ -48,6 +61,7 @@ import { POST as KIOSK_RESTORE } from './kiosks/[id]/restore/route';
 import { GET as ASSET_GET, POST as ASSET_POST } from './assets/route';
 import { PATCH as ASSET_PATCH } from './assets/[id]/route';
 import { GET as MOTION_GET, PUT as MOTION_PUT } from './motions/route';
+import { GET as BRANDING_GET, PUT as BRANDING_PUT } from './branding/route';
 import { GET as VOICE_GET, PUT as VOICE_PUT } from './voice/route';
 import { GET as RECEPTIONS_GET } from './receptions/route';
 import { GET as AUDIT_GET } from './audit/route';
@@ -90,6 +104,8 @@ const READ_ROUTES: Array<{ name: string; call: () => Promise<Response> }> = [
   { name: 'GET /kiosks', call: () => KIOSK_GET() },
   { name: 'GET /assets', call: () => ASSET_GET() },
   { name: 'GET /motions', call: () => MOTION_GET() },
+  // branding も同じ認可・同じテナント解決を使う。覆っていなかったので追加 (#419 残増分)。
+  { name: 'GET /branding', call: () => BRANDING_GET() },
   { name: 'GET /voice', call: () => VOICE_GET() },
   { name: 'GET /receptions', call: () => RECEPTIONS_GET() },
   { name: 'GET /audit', call: () => AUDIT_GET() },
@@ -110,6 +126,7 @@ const WRITE_ROUTES: Array<{ name: string; call: () => Promise<Response> }> = [
   { name: 'POST /assets', call: () => ASSET_POST(jsonReq({ name: 'X' })) },
   { name: 'PATCH /assets/:id', call: () => ASSET_PATCH(jsonReq({ enabled: true }, 'PATCH'), params('a1')) },
   { name: 'PUT /motions', call: () => MOTION_PUT(jsonReq({ default: null }, 'PUT')) },
+  { name: 'PUT /branding', call: () => BRANDING_PUT(jsonReq({ companyName: 'X' }, 'PUT')) },
   { name: 'PUT /voice', call: () => VOICE_PUT(jsonReq({}, 'PUT')) },
 ];
 

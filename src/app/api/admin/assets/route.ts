@@ -5,10 +5,11 @@ import { appendAdminAudit } from '@/lib/data-stores/reception-log-store';
 import {
   assertCanRead,
   assertCanWrite,
-  defaultAdminTenantId,
   requireActor,
   toGuardResponse,
 } from '@/lib/admin/guard';
+import { resolveAdminTenantId } from '@/lib/tenant/admin-tenant-scope';
+import { asTenantId } from '@/domain/tenant/types';
 
 /**
  * GET /api/admin/assets — アセット一覧 + アクティブセット (issue #27)。
@@ -18,23 +19,27 @@ import {
  * で最終認可を行う（フロントで隠した操作でも 403）。
  */
 export async function GET(): Promise<NextResponse> {
+  let tenantId: string;
   try {
     const actor = await requireActor();
-    assertCanRead(actor, defaultAdminTenantId());
+    tenantId = await resolveAdminTenantId();
+    assertCanRead(actor, asTenantId(tenantId));
   } catch (err) {
     return toGuardResponse(err);
   }
-  return NextResponse.json({ items: await listAssets(), active: await getActiveAssets() });
+  return NextResponse.json({ items: await listAssets(tenantId), active: await getActiveAssets(tenantId) });
 }
 
 export async function POST(request: Request): Promise<NextResponse> {
+  let tenantId: string;
   try {
     const actor = await requireActor();
-    assertCanWrite(actor, defaultAdminTenantId());
+    tenantId = await resolveAdminTenantId();
+    assertCanWrite(actor, asTenantId(tenantId));
   } catch (err) {
     return toGuardResponse(err);
   }
-  const result = await createAsset(await readJson(request));
+  const result = await createAsset(tenantId, await readJson(request));
   if (result.ok) await appendAdminAudit('asset.created', { type: 'asset', id: result.value.id }, { kind: result.value.kind });
   return resultResponse(result, 201);
 }

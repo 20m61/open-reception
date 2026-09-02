@@ -1,4 +1,4 @@
-import { test, expect, type Page } from './kiosk-fixtures';
+import { test, expect, type Page, revealStaff } from './kiosk-fixtures';
 
 /**
  * iPad 受付 MVP フローの E2E smoke test (issue #21)。
@@ -14,6 +14,7 @@ async function advanceToConfirm(page: Page, staffTestId: string, name = '来客 
   await page.goto(`/kiosk${query}`);
   await page.getByTestId('start-reception').click();
   await page.getByTestId('purpose-meeting').click();
+  await revealStaff(page, staffTestId);
   await page.getByTestId(staffTestId).click();
   await page.getByTestId('visitor-name').fill(name);
   await page.getByTestId('to-confirm').click();
@@ -37,10 +38,15 @@ test('呼び出し成功フロー: 接続 → 完了 → 待機画面へ復帰',
 test('接続画面は無操作で待機へ自動復帰する（「操作不要」案内と挙動を一致, #324）', async ({ page }) => {
   // connected は「操作は不要です」と案内する (#324-5)。指示どおり操作しないと、無操作タイムアウトで
   // 待機へ自動復帰し、前の来訪者のセッション（PII）を残して次の来訪者をブロックしないことを検証する。
-  // 本番の connected 既定は 120s。E2E では ?inactivityMs= で短縮する。
-  await page.goto('/kiosk?inactivityMs=600');
+  // 本番の connected 既定は 120s。E2E では connected **だけ**短縮する。
+  // 一律の ?inactivityMs= だと、connected へ至る 6 ステップの操作も同じ短い上限に晒される。
+  // 警告オーバーレイまでの猶予は limit が 10.5s 未満なら常に 500ms 固定なので、値を大きく
+  // しても解決しない。1 ステップでもアニメーション待ちで遅れるとオーバーレイが click を
+  // 横取りして落ちていた（負荷依存のフレーク, #476）。
+  await page.goto('/kiosk?inactivityMs.connected=600');
   await page.getByTestId('start-reception').click();
   await page.getByTestId('purpose-meeting').click();
+  await revealStaff(page, 'staff-staff-sato');
   await page.getByTestId('staff-staff-sato').click();
   await page.getByTestId('visitor-name').fill('来客 一郎');
   await page.getByTestId('to-confirm').click();
@@ -86,6 +92,8 @@ test('部署選択でも呼び出しできる', async ({ page }) => {
   await page.goto('/kiosk');
   await page.getByTestId('start-reception').click();
   await page.getByTestId('purpose-delivery').click();
+  // 部署グリッドは常時表示ではなく「部署から選ぶ」タブの中にある (#776)。
+  await page.getByTestId('target-tab-department').click();
   await page.getByTestId('dept-dept-sales').click();
   await page.getByTestId('visitor-name').fill('配送 太郎');
   await page.getByTestId('to-confirm').click();
@@ -111,7 +119,7 @@ test('1 文字 typo でも「もしかして」候補として見つかる (#322
   await expect(page.getByTestId('staff-staff-takahashi')).toBeVisible();
   await expect(page.getByTestId('staff-staff-takahashi-maybe')).toBeVisible();
   // 0 件時の誘導は出ない（ヒットしているため）。
-  await expect(page.getByTestId('search-no-results-guidance')).toHaveCount(0);
+  await expect(page.getByTestId('target-recovery')).toHaveCount(0);
 });
 
 test('検索 0 件でも行き止まりにならず、部署一覧・チャット相談への導線が出る (#322 AC3)', async ({ page }) => {
@@ -120,15 +128,21 @@ test('検索 0 件でも行き止まりにならず、部署一覧・チャッ�
   await page.getByTestId('purpose-meeting').click();
   await page.getByTestId('staff-search').fill('存在しない名前です');
 
-  await expect(page.getByTestId('staff-empty')).toBeVisible();
-  const guidance = page.getByTestId('search-no-results-guidance');
-  await expect(guidance).toBeVisible();
+  // 警告と案内を 2 枚重ねず、recovery パネル 1 枚に集約する (#776)。
+  const recovery = page.getByTestId('target-recovery');
+  await expect(recovery).toBeVisible();
+  await expect(page.getByTestId('staff-empty')).toHaveCount(0);
+  await expect(page.getByTestId('search-no-results-guidance')).toHaveCount(0);
 
-  // 次の一手 1: 部署一覧へスクロール誘導。
-  await expect(page.getByTestId('search-empty-department-cta')).toBeVisible();
+  // 次の一手 1: 1 操作で部署タブへ切り替わる（スクロール誘導ではない）。
+  await page.getByTestId('target-recovery-department-cta').click();
+  await expect(page.getByTestId('dept-dept-sales')).toBeVisible();
+  await expect(recovery).toHaveCount(0);
 
   // 次の一手 2: チャットで受付係に相談する（Chat-assisted ドロワーが開く）。
-  await page.getByTestId('search-empty-chat-cta').click();
+  await page.getByTestId('target-tab-staff').click();
+  await expect(recovery).toBeVisible();
+  await page.getByTestId('target-recovery-chat-cta').click();
   await expect(page.getByTestId('kiosk-chat-drawer')).toHaveAttribute('data-open', 'true');
 });
 

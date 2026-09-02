@@ -1,7 +1,10 @@
 'use client';
 
+import Link from 'next/link';
+import { TenantContextChip } from './TenantContextView';
 import { useEffect, useState, type ReactNode } from 'react';
 import type { TenantRole } from '@/domain/tenant/types';
+import { resolveAreaSwitch } from '@/domain/auth/area-switch';
 import type { NavGroup } from './navigation';
 import { AdminNav } from './AdminNav';
 
@@ -32,6 +35,11 @@ export function AdminShell({
    * TenantSwitcher を想定するが、AdminShell は actor 解決に依存しないよう ReactNode で受ける。
    */
   tenantSwitcher,
+  /**
+   * 対象拠点の常設表示 (#423)。テナントの隣に置く。拠点次元を持たない画面では
+   * 中身が `null` を返す（出す/出さないの判定は表示側が持つ）。
+   */
+  siteContext,
   children,
 }: {
   area: 'admin' | 'platform';
@@ -40,10 +48,15 @@ export function AdminShell({
   roles: readonly TenantRole[];
   tenantLabel?: string;
   tenantSwitcher?: ReactNode;
+  siteContext?: ReactNode;
   children: ReactNode;
 }) {
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const closeSidebar = () => setSidebarOpen(false);
+
+  // エリア切替導線 (#423)。**導線であって認可ではない** — 認可は各 layout の canEnterArea と
+  // API 側が行う。ここは「現在地は分かるのに、そこから出る手段が無い」状態を解消するだけ。
+  const areaSwitch = resolveAreaSwitch(area, roles);
 
   // モバイルのドロワーを開いている間に Esc で閉じられるようにする（A11y）。
   useEffect(() => {
@@ -98,25 +111,37 @@ export function AdminShell({
             >
               ☰
             </button>
-            <span style={{ opacity: 0.6, fontSize: '0.875rem' }}>
+            <span style={{ opacity: 0.6, fontSize: '0.875rem' }} data-testid="area-label">
               {area === 'platform' ? 'プラットフォーム運用' : 'テナント管理'}
             </span>
+            {areaSwitch ? (
+              <Link
+                href={areaSwitch.href}
+                data-testid="area-switch"
+                data-target-area={areaSwitch.area}
+                style={{ fontSize: '0.8125rem', opacity: 0.85 }}
+              >
+                {areaSwitch.label}
+              </Link>
+            ) : null}
           </div>
-          {tenantSwitcher ? (
-            tenantSwitcher
-          ) : tenantLabel ? (
-            <span
-              data-testid="active-tenant"
-              style={{
-                fontSize: '0.875rem',
-                padding: '4px 10px',
-                borderRadius: 999,
-                background: 'var(--color-surface-2)',
-              }}
-            >
-              対象テナント: <strong>{tenantLabel}</strong>
-            </span>
-          ) : null}
+          <div
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              gap: 'var(--space-sm)',
+              flexWrap: 'wrap',
+            }}
+          >
+            {tenantSwitcher ? (
+              tenantSwitcher
+            ) : tenantLabel ? (
+              // 固定表示は admin TenantSwitcher の単一所属表示と同一の見た目。逐語的に
+              // 重複していて、排他レンダリングなので片方を直しても気づけなかった (#423)。
+              <TenantContextChip tenantName={tenantLabel} />
+            ) : null}
+            {siteContext}
+          </div>
         </header>
         <main className="admin-shell__content" style={{ flex: 1, padding: 'var(--space-lg)' }}>
           {children}

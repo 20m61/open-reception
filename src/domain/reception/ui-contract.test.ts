@@ -7,7 +7,12 @@ import {
   transition as checkinTransition,
 } from '@/domain/checkin/state';
 import { motionKeyForState } from '@/domain/motion/types';
-import { avatarGuidanceFor } from '@/components/kiosk/avatar/guidance';
+import { CALL_FAILURE_REASONS, shouldOfferAlternativeContact } from './call-failure';
+import { avatarGuidanceFor, type AvatarGuidanceCue } from '@/components/kiosk/avatar/guidance';
+// 契約の ja フォールバック文言が、画面が実際に出す訳と一致することを突き合わせるために使う
+// （本番の ui-contract.ts は i18n に依存しない。テストだけの参照）。
+import { DICTIONARIES, type MessageKey as I18nMessageKey } from '@/lib/i18n';
+
 import {
   AVATAR_EMOTIONS,
   AVATAR_PRESENCES,
@@ -32,16 +37,32 @@ import {
   escapeHatchActionsFor,
   gazeTargetFor,
   inputModesFor,
+  REQUIRES_CONFIRMATION_ACTIONS,
+  type GazeTarget,
   INPUT_MODES,
   isActionAllowed,
   isChatActionAllowed,
   MESSAGE_KEYS,
   messageKeyForState,
   passesConfirmationInvariant,
+  PERSISTENT_ELEMENT_KEYS,
+  PERSISTENT_REGIONS,
+  isPersistentVisible,
+  regionOfTurnPart,
   RECEPTION_ACTIONS,
   requiresExplicitConfirmationFor,
   type ReceptionAction,
 } from './ui-contract';
+
+/**
+ * ja 辞書の訳文。キーが消えたら（訳の整理・リネーム）その場で落とす — undefined と
+ * 突き合わせて「一致した」ことにしないため。
+ */
+function ja(key: I18nMessageKey): string {
+  const value = DICTIONARIES.ja[key];
+  if (value === undefined) throw new Error(`ja 辞書に ${key} が無い`);
+  return value;
+}
 
 describe('reception ui-contract: availableActions / isActionAllowed', () => {
   it('availableActions は state.ts の transition と整合する（二重定義していない）', () => {
@@ -336,12 +357,23 @@ describe('reception ui-contract: messageKey / gazeTarget / inputModes (#361)', (
     }
   });
 
-  it('選択/入力ターンは音声・文字も受け付ける', () => {
-    for (const state of ['selectingPurpose', 'selectingTarget', 'inputVisitorInfo'] as const) {
-      const modes = inputModesFor(state);
-      expect(modes).toContain('voice');
-      expect(modes).toContain('text');
-    }
+  // inputModes は「その局面で実際に受け付けられる入力手段」の宣言であり、努力目標ではない。
+  // 実装に無い手段を宣言すると、アクセシビリティ上の主張が事実でなくなる（差分 C'）。
+  // 各局面の根拠:
+  //   selectingPurpose … PurposeView はボタンのみ（reception-screens.tsx）。音声・文字の経路が無い。
+  //   selectingTarget  … 検索欄（文字）と VoiceSessionLayer の onResolved（音声で相手を確定）が有る。
+  //   inputVisitorInfo … 氏名フォーム（文字）は有るが、音声で SUBMIT_VISITOR_INFO を生む経路は無い。
+  // 音声入力を増やすこと自体は Journey の意味に関わる判断なので、実装が追いついたときに
+  // 宣言を足す（宣言を先に置かない）。
+  it('宣言する inputModes は実装されている手段だけに限る（差分 C\'）', () => {
+    expect(inputModesFor('selectingPurpose')).toEqual(['touch']);
+    expect(inputModesFor('selectingTarget')).toEqual(['touch', 'voice', 'text']);
+    expect(inputModesFor('inputVisitorInfo')).toEqual(['touch', 'text']);
+  });
+
+  it('音声で相手を確定できるのは selectingTarget だけ（唯一の実結線点）', () => {
+    const voiceStates = RECEPTION_STATES.filter((s) => inputModesFor(s).includes('voice'));
+    expect(voiceStates).toEqual(['selectingTarget']);
   });
 
   it('QR は待機ターンの入口手段として提示する（読み取りだけで発信しない導線）', () => {
@@ -386,6 +418,221 @@ describe('reception ui-contract: requiresExplicitConfirmation (#361)', () => {
   });
 });
 
+// =============================================================================
+// #422 inc5-b 地ならし: 残る 3 導出（emotion / gaze / requiresExplicitConfirmation）を
+// 実挙動へ突き合わせる。
+//
+// `ConversationTurnView` の 9 導出のうち 6 つが消費者ゼロで、調べた 4 つすべてが実挙動と
+// 乖離していた（#481 #486 #487）。テストが無い契約は「在る」だけで「正しい」ではない。
+//
+// - deriveAvatarEmotion … 実挙動（AvatarGuide が描画する guidance.expression）との
+//   クロスチェックが既に在る（上の「avatar/guidance.ts の expression と一致する」）。
+//   本 increment での修正は不要。ただし #323 の呼び出し段階オーバーライド
+//   （preTimeoutNotice → 'concerned'）は screenState だけでは表現できず、component 層の
+//   `guidanceOverride` が担う。契約はあくまで段階以前の基底値を返す。
+// - gazeTarget … 下記 2 件の乖離を修正する。
+// - requiresExplicitConfirmation … 実挙動と一致していたが、それを縛るテストが無かった。
+// =============================================================================
+
+describe('reception ui-contract: gazeTarget を実在する領域へ縛る (#422 inc5-b)', () => {
+  it('視線誘導先は、その画面に実在する領域だけを指す', () => {
+    // 根拠は reception-screens.tsx の各ビュー。
+    // fallback: FallbackView は CTA を一切持たない（#325 で fallback-reset を撤去し、後退は
+    // 逃げ道バー escape-reset へ一本化した）。`defaultAnswersFor('fallback')` が [] を返すのと
+    // 同じ理由で、視線を向ける先も無い。'answers' を指したまま VRM へ配線すると、アバターが
+    // 存在しない選択肢を見つめる。
+    expect(gazeTargetFor('fallback')).toBe('none');
+    // cancelled / completed: EndView（見出しと本文のみ。満足度評価は任意で急かさない）。
+    expect(gazeTargetFor('cancelled')).toBe('none');
+    expect(gazeTargetFor('completed')).toBe('none');
+    // connected: 終了操作は secondary の任意アクション。「操作は不要」と案内する画面なので
+    // 視線でも急かさない（#324-5）。
+    expect(gazeTargetFor('connected')).toBe('none');
+  });
+
+  it('answers を指す状態は、既定または実行時注入で必ず回答領域を持つ', () => {
+    // 回答領域が実行時注入（担当者一覧・クイックアクション）の状態を明示し、それ以外で
+    // 'answers' を指すなら既定 answers が非空であることを要求する。fallback のように
+    // 「既定も注入も無い」状態が 'answers' を指して紛れ込むのを防ぐ。
+    const RUNTIME_INJECTED: ReadonlySet<ReceptionState> = new Set([
+      'idle', // IdleView の入口カード（契約の既定 answers。#422 inc5-b 増分 3b で寄せた）
+      'selectingTarget', // 担当者/部署の実行時リスト
+    ]);
+    for (const state of RECEPTION_STATES) {
+      if (gazeTargetFor(state) !== 'answers') continue;
+      if (RUNTIME_INJECTED.has(state)) continue;
+      expect(conversationTurnFor(state).answers.length, state).toBeGreaterThan(0);
+    }
+  });
+
+  it('gazeTarget は AvatarGuide が実 DOM へ出す data-cue と矛盾しない', () => {
+    // `AvatarGuidanceCue`（guidance.ts）と `GazeTarget`（本契約）は「どこへ誘導するか」を
+    // 別語彙で二重に持っている。cue は `data-cue` として実 DOM に出る表示側で、gaze は
+    // VRM 視線適用（#65）の真実源。整合を固定しないと #486（逃げ道の二重実装）と同じ形で
+    // 静かに乖離する。cue は所作（reassure/inviteTouch）も含む superset なので、視線先へ
+    // 写せる値だけを突き合わせる。
+    const CUE_TO_GAZE: Partial<Record<AvatarGuidanceCue, GazeTarget>> = {
+      lookAtChoices: 'answers',
+      lookAtForm: 'form',
+      lookAtConfirm: 'confirmCta',
+      offerAlternative: 'fallbackCta',
+    };
+    // cue は avatarState キーなので、'guiding' が selectingTarget（選択肢あり）と
+    // fallback（CTA 無し）の両方を覆ってしまい、fallback だけは構造的に正しくできない。
+    // screenState キーの契約側が正しく、cue 側が粗い — この既知の非対称だけを許す。
+    const COARSE_CUE_STATES: ReadonlySet<ReceptionState> = new Set(['fallback']);
+    for (const state of RECEPTION_STATES) {
+      const cue = avatarGuidanceFor(deriveAvatarState(state)).cue;
+      const mapped = CUE_TO_GAZE[cue];
+      if (mapped === undefined) continue; // 所作系の cue は視線先を主張しない
+      if (COARSE_CUE_STATES.has(state)) {
+        expect(gazeTargetFor(state), state).toBe('none');
+        continue;
+      }
+      expect(gazeTargetFor(state), state).toBe(mapped);
+    }
+  });
+});
+
+describe('reception ui-contract: 通信断の failed は代替導線を約束しない (#422 inc5-b)', () => {
+  // ResultView（reception-screens.tsx）は `shouldOfferAlternativeContact(failureReason)` が
+  // false のとき use-fallback CTA を**出さない**。代替導線の文言は「代表窓口にお繋ぎします」
+  // ＝システムが取り次ぐという約束で、通信が切れている端末はそれを果たせないため。
+  // 契約が無条件に代替導線を返していると、配線した時点でその約束が通信断の画面に復活する。
+  it('通信断(network)では既定 answers に代替導線を含めない', () => {
+    expect(conversationTurnFor('failed', { callFailureReason: 'network' }).answers).toEqual([]);
+  });
+
+  it('通信断以外（server / 理由不明）では従来どおり代替導線を出す', () => {
+    expect(conversationTurnFor('failed', { callFailureReason: 'server' }).answers).toEqual([
+      { id: 'fallback', label: ja('reception.altContact'), intent: 'useFallback' },
+    ]);
+    expect(conversationTurnFor('failed').answers.map((a) => a.intent)).toEqual(['useFallback']);
+  });
+
+  it('未応答(timeout)は理由に依らず代替導線を出す（呼び出しは到達している）', () => {
+    for (const reason of [...CALL_FAILURE_REASONS, undefined] as const) {
+      const turn = conversationTurnFor('timeout', reason ? { callFailureReason: reason } : undefined);
+      expect(turn.answers.map((a) => a.intent), String(reason)).toEqual(['useFallback']);
+    }
+  });
+
+  it('代替導線を出すかの判断は shouldOfferAlternativeContact に一本化する（二重実装しない）', () => {
+    for (const reason of [...CALL_FAILURE_REASONS, undefined] as const) {
+      const turn = conversationTurnFor('failed', reason ? { callFailureReason: reason } : undefined);
+      expect(turn.answers.length > 0, String(reason)).toBe(shouldOfferAlternativeContact(reason));
+    }
+  });
+
+  it('通信断では視線も代替 CTA を指さない（存在しない CTA を見つめない）', () => {
+    expect(gazeTargetFor('failed', { callFailureReason: 'network' })).toBe('none');
+    expect(
+      conversationTurnFor('failed', { callFailureReason: 'network' }).avatar.gazeTarget,
+    ).toBeUndefined();
+    // 出す側は従来どおり代替 CTA を指す。
+    expect(gazeTargetFor('failed', { callFailureReason: 'server' })).toBe('fallbackCta');
+    expect(gazeTargetFor('failed')).toBe('fallbackCta');
+  });
+});
+
+describe('reception ui-contract: requiresExplicitConfirmation を実挙動へ縛る (#422 inc5-b)', () => {
+  it('確認必須のターンは音声入力を宣言しない（音声だけで発信・PII 確定が起きない）', () => {
+    // 音声の実結線点は selectingTarget だけ（VoiceSessionLayer → onResolved → SELECT_TARGET）。
+    // 復唱「はい」も担当者確定に閉じており、CONFIRM / SUBMIT_VISITOR_INFO を生む経路は無い。
+    for (const state of RECEPTION_STATES) {
+      if (!requiresExplicitConfirmationFor(state)) continue;
+      expect(inputModesFor(state), state).not.toContain('voice');
+    }
+  });
+
+  it('確認必須のターンは QR でも進めない（読み取りだけで発信しない）', () => {
+    for (const state of RECEPTION_STATES) {
+      if (!requiresExplicitConfirmationFor(state)) continue;
+      expect(inputModesFor(state), state).not.toContain('qr');
+    }
+  });
+
+  it('発信確定ターン(confirming)の既定 answers は確定 CTA 1 つだけ（主 CTA が一意）', () => {
+    // 画面（ConfirmView）の主 CTA は confirm-call のみ。修正は footer の confirm-back、
+    // 後退は逃げ道バーで、確定を起こす回答は 1 つに保つ。
+    const answers = conversationTurnFor('confirming').answers;
+    expect(answers.map((a) => a.intent)).toEqual(['confirm']);
+  });
+
+  it('確認必須のターン以外に確定アクションを持つ回答が現れない', () => {
+    // 既定 answers の intent が REQUIRES_CONFIRMATION_ACTIONS に触れるのは、
+    // requiresExplicitConfirmation=true のターンだけ。
+    for (const state of RECEPTION_STATES) {
+      const critical = conversationTurnFor(state).answers.filter((a) =>
+        REQUIRES_CONFIRMATION_ACTIONS.has(a.intent),
+      );
+      if (critical.length > 0) expect(requiresExplicitConfirmationFor(state), state).toBe(true);
+    }
+  });
+});
+
+describe('reception ui-contract: 待機の入口を契約が持つ (#422 inc5-b 増分 3b)', () => {
+  // 待機画面の 5 つの入口は `components/kiosk/quick-actions.ts` の QUICK_ACTIONS が持っていた。
+  // 「いつ出すか」は既に契約（isActionAllowed(state,'start')）に従っていたが、**集合の定義と
+  // 意味（用件の先取り / QR 受付への引き渡し）は component 側にしか無かった**。
+  it('待機は用件を先取りする 3 つの入口と、先取りしない 1 つを回答に持つ', () => {
+    const answers = conversationTurnFor('idle').answers;
+    expect(answers.map((a) => a.id)).toEqual(['callStaff', 'department', 'delivery', 'other']);
+    // すべて受付開始。用件の先取りは presetPurpose で表す（別のアクションを作らない）。
+    for (const answer of answers) expect(answer.intent, answer.id).toBe('start');
+    expect(answers.map((a) => a.presetPurpose)).toEqual([
+      undefined, // callStaff: 用件は後段の目的選択で確定する汎用導線
+      'meeting', // department
+      'delivery',
+      'other',
+    ]);
+  });
+
+  it('待機以外は入口回答を持たない（受付開始は待機からだけ）', () => {
+    for (const state of RECEPTION_STATES) {
+      if (state === 'idle') continue;
+      for (const answer of conversationTurnFor(state).answers) {
+        expect(answer.presetPurpose, `${state}/${answer.id}`).toBeUndefined();
+      }
+    }
+  });
+
+  it('QR 受付は回答ではなく引き渡し（handoff）として持つ', () => {
+    // QR 受付は状態機械を進めない（START ではなく CheckinFlow へのモード切替）。
+    // `answers` に混ぜると「回答の intent は必ず許可済みアクション」という安全不変条件に
+    // 嘘の intent を通すことになる。会話そのものを別のターン空間へ渡す操作なので分けて持つ。
+    const handoffs = conversationTurnFor('idle').handoffs;
+    expect(handoffs.map((h) => h.id)).toEqual(['checkin']);
+    expect(handoffs[0]?.to).toBe('checkin');
+  });
+
+  it('引き渡しを持つのは待機だけ（受付の途中で別シェルへ飛ばさない）', () => {
+    for (const state of RECEPTION_STATES) {
+      if (state === 'idle') continue;
+      expect(conversationTurnFor(state).handoffs, state).toEqual([]);
+    }
+  });
+
+  it('待機の既定ラベルは、画面が実際に使う i18n キーの ja 訳と一致する', () => {
+    // #487 / #493 と同じ突き合わせ。契約の既定が辞書とズレると、注入を忘れた箇所で
+    // 別の文言が出る。
+    const turn = conversationTurnFor('idle');
+    expect(turn.answers.map((a) => a.label)).toEqual([
+      ja('kiosk.action.callStaff.label'),
+      ja('kiosk.action.department.label'),
+      ja('kiosk.action.delivery.label'),
+      ja('kiosk.action.other.label'),
+    ]);
+    expect(turn.handoffs.map((h) => h.label)).toEqual([ja('kiosk.action.checkin.label')]);
+  });
+
+  it('入口回答も「許可済みアクション」の不変条件に従う（待機で start が許可されている）', () => {
+    for (const answer of conversationTurnFor('idle').answers) {
+      expect(isActionAllowed('idle', answer.intent), answer.id).toBe(true);
+    }
+  });
+});
+
 describe('reception ui-contract: escapeHatchActionsFor (#361)', () => {
   it('待機(idle)では逃げ道を出さない', () => {
     expect(escapeHatchActionsFor('idle')).toEqual([]);
@@ -404,6 +651,23 @@ describe('reception ui-contract: escapeHatchActionsFor (#361)', () => {
     const actions = escapeHatchActionsFor('selectingTarget').map((h) => h.action);
     expect(actions).toContain('back');
     expect(actions).toContain('reset');
+  });
+
+  it('確認画面(confirming)では 戻る を出さない（フッターの「修正する」と二重になる・#240/#325）', () => {
+    // 確認画面は短い要約で、フッターの「修正する」(confirm-back) が常に到達可能。
+    // 常設バーの 戻る と二重になるため意図的に抑制している。契約がこれを反映していないと、
+    // 画面を ConversationTurnView へ配線した時点で #240 の dedup が退行する。
+    const actions = escapeHatchActionsFor('confirming').map((h) => h.action);
+    expect(actions).not.toContain('back');
+    expect(actions).toContain('reset');
+  });
+
+  it('内容がビューポートを超え得る画面では 戻る を残す（唯一の戻る導線・#325）', () => {
+    // selectingTarget（担当者一覧）/ inputVisitorInfo（入力フォーム）はコンテンツ側の
+    // 戻るを #325 で撤去したため、sticky な常設バーの 戻る が唯一の戻る導線になる。
+    for (const state of ['selectingTarget', 'inputVisitorInfo'] as const) {
+      expect(escapeHatchActionsFor(state).map((h) => h.action), state).toContain('back');
+    }
   });
 });
 
@@ -424,6 +688,61 @@ describe('reception ui-contract: conversationTurnFor (#361)', () => {
       expect(turn.escapeHatches).toEqual(escapeHatchActionsFor(state));
       expect(turn.requiresExplicitConfirmation).toBe(requiresExplicitConfirmationFor(state));
     }
+  });
+
+  // #422 地ならし: 契約の既定 answers は「component が locale 解決値を注入しない場合の
+  // ja フォールバック」（下の注入テスト参照）。フォールバックである以上、**画面が実際に
+  // 出している文言と一致していなければならない**。ズレたまま画面を ConversationTurnView へ
+  // 配線すると、注入を忘れた箇所で別の文言が出る。
+  //
+  // 逃げ道（#486）・inputModes（#481）と同じ乖離が answers にも在ったため、ここで
+  // 辞書と突き合わせて固定する。
+  it('既定 answers の ja 文言は、画面が実際に使う i18n キーの ja 訳と一致する', () => {
+    const expected: Partial<Record<ReceptionState, readonly string[]>> = {
+      selectingPurpose: [
+        ja('reception.purpose.meeting'),
+        ja('reception.purpose.delivery'),
+        ja('reception.purpose.interview'),
+        ja('reception.purpose.other'),
+      ],
+      // 確認画面の主 CTA（reception-screens.tsx の confirm-call）。
+      confirming: [ja('reception.callWithThis')],
+      // 結果画面の代替導線（use-fallback）。
+      timeout: [ja('reception.altContact')],
+      failed: [ja('reception.altContact')],
+      // 通話中の完了 CTA（complete）。
+      connected: [ja('reception.finishReception')],
+    };
+    for (const [state, labels] of Object.entries(expected)) {
+      const actual = conversationTurnFor(state as ReceptionState).answers.map((a) => a.label);
+      expect(actual, state).toEqual(labels);
+    }
+  });
+
+  it('既定 message の ja 文言は、画面の主指示（screen__title）と一致する', () => {
+    // 契約の message は「その画面の主指示（見出し相当）」（#324 の役割分担）。実装では
+    // 各画面の `<h1 className="screen__title">` がそれに当たる。ズレたまま配線すると、
+    // 注入を忘れた箇所で見出しが変わる。
+    //
+    // 主指示を持たない画面（結果系は ResultPanel の message で、`{target}` の
+    // 差し込みを含むため契約の静的文言とは対応づかない）は対象外。
+    const expected: Partial<Record<ReceptionState, string>> = {
+      idle: ja('reception.purposePrompt'),
+      selectingPurpose: ja('reception.purposeDetailPrompt'),
+      selectingTarget: ja('reception.targetPrompt'),
+      inputVisitorInfo: ja('reception.visitorInfoPrompt'),
+      confirming: ja('reception.confirm'),
+    };
+    for (const [state, text] of Object.entries(expected)) {
+      expect(conversationTurnFor(state as ReceptionState).message.displayText, state).toBe(text);
+    }
+  });
+
+  it('フォールバック画面は既定 answers を持たない（コンテンツは案内のみ・#325）', () => {
+    // FallbackView は CTA を一切持たない。後退は逃げ道バー（escape-reset）へ一本化した
+    // ため、コンテンツは代替案内メッセージのみ。契約が answers を返すと、配線した時点で
+    // 画面にボタンが増える（#325 の決定が退行する）。
+    expect(conversationTurnFor('fallback').answers).toEqual([]);
   });
 
   it('answers の intent は必ずその画面で許可されたアクション（自由文で不正操作に飛べない）', () => {
@@ -552,10 +871,13 @@ describe('checkin ui-contract: checkinConversationTurnFor (#361 QRシェル統�
     expect(turn.inputModes).toEqual(['touch']);
   });
 
-  it('idle は入口のため逃げ道を出さない / アバターはヒーロー(primary)', () => {
+  it('idle でもアバターはヒーロー(primary)だが、逃げ道は出す（受付の idle と違い戻る先がある）', () => {
+    // QR 受付の idle は kiosk 待機画面から `handoffs` で降りてきた**入口の 1 つ下**で、
+    // 「最初に戻る」＝ kiosk 待機へ帰る先が実在する。受付の idle（kiosk の根。戻る先が無い）と
+    // 同じ扱いにすると、QR に入った来訪者が戻れない行き止まりになる。
     const turn = checkinConversationTurnFor('idle');
-    expect(turn.escapeHatches).toEqual([]);
     expect(turn.avatar.presence).toBe('primary');
+    expect(turn.escapeHatches.map((h) => h.event)).toEqual(['RESET']);
   });
 
   it('idle 以外の全ターンでアバターは継続レール(companion)として付き添う', () => {
@@ -565,19 +887,27 @@ describe('checkin ui-contract: checkinConversationTurnFor (#361 QRシェル統�
     }
   });
 
-  it('各エラー結果(期限切れ/使用済み/取消/読取失敗/カメラ不可/通信断)は通常受付へ切替(USE_MANUAL)の逃げ道を持つ', () => {
-    for (const state of CHECKIN_ERROR_STATES) {
-      const events = checkinEscapeHatchesFor(state).map((h) => h.event);
-      expect(events).toContain('USE_MANUAL');
+  it('逃げ道は全ターンで「最初に戻る(RESET)」だけ（受付の常設バーと同じ後退語彙に揃える）', () => {
+    // 受付側は #325 で後退語彙を back/reset の 2 語へ集約した。QR 受付には BACK 遷移が
+    // 存在しないので RESET 1 語になる。**常に出す**（RESET は状態機械の安全弁として全状態から
+    // 許可されている）ので、来訪者はどのターンでも同じ場所の同じ言葉で帰れる。
+    for (const state of CHECKIN_STATES) {
+      expect(checkinEscapeHatchesFor(state).map((h) => h.event), state).toEqual(['RESET']);
     }
   });
 
-  it('受付方法選択(selectingMethod)は通常受付(CHOOSE_MANUAL)へ切替できる', () => {
-    const events = checkinEscapeHatchesFor('selectingMethod').map((h) => h.event);
-    expect(events).toContain('CHOOSE_MANUAL');
+  it('通常受付への切替(CHOOSE_MANUAL / USE_MANUAL)は逃げ道に含めない（後退ではなく別レールへの前進）', () => {
+    // #325 が `useFallback`（代替の連絡先へ）をバーから外したのと同じ理由。押すと受付が
+    // **前へ進む**（手入力受付へ移る）ものを後退バーへ混ぜると、来訪者は「戻る」と思って
+    // 別の受付方法へ移動してしまう。これらは各画面のコンテンツ側の主 CTA に置く。
+    for (const state of [...CHECKIN_ERROR_STATES, 'selectingMethod'] as const) {
+      const events = checkinEscapeHatchesFor(state).map((h) => h.event);
+      expect(events, state).not.toContain('USE_MANUAL');
+      expect(events, state).not.toContain('CHOOSE_MANUAL');
+    }
   });
 
-  it('終端(completed/cancelled/manualFallback)は最初に戻る(RESET)を提示する', () => {
+  it('終端(completed/cancelled/manualFallback)も最初に戻る(RESET)を提示する', () => {
     for (const state of CHECKIN_TERMINAL_STATES) {
       const events = checkinEscapeHatchesFor(state).map((h) => h.event);
       expect(events).toContain('RESET');
@@ -603,6 +933,84 @@ describe('checkin ui-contract: checkinConversationTurnFor (#361 QRシェル統�
   it('avatar proxy は各 CheckinState を有効な ReceptionState へ写す（AvatarGuide 再利用のため）', () => {
     for (const state of CHECKIN_STATES) {
       expect(RECEPTION_STATES).toContain(checkinAvatarProxyState(state));
+    }
+  });
+});
+
+describe('reception ui-contract: 常設要素の領域 (#422 inc5-c 増分 2)', () => {
+  it('領域はちょうど 3 つ（案内・回答対象・ヘルプ）', () => {
+    // #422 の AC「常設要素を原則 3 領域以内へ整理」。語彙が増えたらここで落ちる。
+    expect([...PERSISTENT_REGIONS]).toEqual(['guidance', 'answers', 'help']);
+  });
+
+  it('契約が持つターン要素はすべて領域に属する（帰属不明の要素を作らない）', () => {
+    // ConversationTurnView の各部が、来訪者から見てどの領域に出るかを宣言する。
+    // 契約が持たない常設要素（言語切替・退館リンク・アクセシビリティメニュー）は
+    // component 層の登録簿が持つ（domain は component の存在を知らない）。
+    const turn = conversationTurnFor('idle');
+    const parts = ['avatar', 'message', 'answers', 'handoffs', 'escapeHatches'] as const;
+    for (const part of parts) {
+      expect(turn[part], part).toBeDefined();
+      expect(PERSISTENT_REGIONS, part).toContain(regionOfTurnPart(part));
+    }
+  });
+
+  it('回答と引き渡しは同じ領域（来訪者には並んだカードとして見える）', () => {
+    // 待機画面では入口カードと QR 受付が同じカード列に並ぶ。押した結果は違うが
+    // （回答は状態機械、引き渡しは別シェル）、領域としては同じ「回答対象」。
+    expect(regionOfTurnPart('answers')).toBe('answers');
+    expect(regionOfTurnPart('handoffs')).toBe('answers');
+  });
+
+  it('アバターと字幕は案内、逃げ道はヘルプ', () => {
+    expect(regionOfTurnPart('avatar')).toBe('guidance');
+    expect(regionOfTurnPart('message')).toBe('guidance');
+    expect(regionOfTurnPart('escapeHatches')).toBe('help');
+  });
+});
+
+describe('reception ui-contract: 常設要素をいつ出すか (#500)', () => {
+  it('言語切替と退館導線は待機だけ（受付中に別の用事へ逸れさせない）', () => {
+    // 受付が始まったら、言語は選び終えている / 退館は別の用事。進行中に出すと注意が逸れる。
+    for (const state of RECEPTION_STATES) {
+      const expected = state === 'idle';
+      expect(isPersistentVisible('languageSwitcher', state), state).toBe(expected);
+      expect(isPersistentVisible('checkoutLink', state), state).toBe(expected);
+    }
+  });
+
+  it('アクセシビリティ支援は全状態で出す（#321 の「全 kiosk 画面で 1〜2 タップ」）', () => {
+    for (const state of RECEPTION_STATES) {
+      expect(isPersistentVisible('accessibilityMenu', state), state).toBe(true);
+    }
+  });
+
+  it('逃げ道バーは既存の契約（escapeHatchActionsFor）と一致する（判断を二重化しない）', () => {
+    for (const state of RECEPTION_STATES) {
+      expect(isPersistentVisible('escapeBar', state), state).toBe(
+        escapeHatchActionsFor(state).length > 0,
+      );
+    }
+  });
+
+  it('チャットは既存の契約（deriveChatAvailability）と一致する（判断を二重化しない）', () => {
+    for (const state of RECEPTION_STATES) {
+      expect(isPersistentVisible('chatDrawer', state), state).toBe(
+        deriveChatAvailability(state) === 'available',
+      );
+    }
+  });
+
+  it('待機は入口の局面なので逃げ道とチャットを出さない（戻る先も相談対象も無い）', () => {
+    expect(isPersistentVisible('escapeBar', 'idle')).toBe(false);
+    expect(isPersistentVisible('chatDrawer', 'idle')).toBe(false);
+  });
+
+  it('全ての常設要素キーが全状態で真偽を返す（判定漏れを作らない）', () => {
+    for (const key of PERSISTENT_ELEMENT_KEYS) {
+      for (const state of RECEPTION_STATES) {
+        expect(typeof isPersistentVisible(key, state), `${key}/${state}`).toBe('boolean');
+      }
     }
   });
 });

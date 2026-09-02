@@ -21,6 +21,7 @@
  *     （adapter builder）でのみ呼ぶ。解決結果を serialize しても平文は出ない（`SecretValue.toJSON`）。
  */
 import type { TenantProviderConfig } from '@/domain/provider-config/types';
+import { intendsRealDialingFrom } from '@/domain/provider-config/readiness';
 import { secretRef, type SecretValue, type TenantSecretStore } from '@/domain/provider-config/secret';
 import { getTenantProviderConfig } from './provider-config-store';
 import { getTenantSecretStore } from './tenant-secret-store';
@@ -47,6 +48,42 @@ export type ResolveProviderDeps = {
 };
 
 const MOCK: ResolvedProvider = { provider: 'mock' };
+
+/**
+ * テナントが**実発信を意図している**か（設定が vonage かつ有効）。
+ *
+ * 🔴 `resolveProviderForTenant` はこれを**答えられない**。あれは secret 欠如も設定不備も
+ * すべて `mock` へ畳んでしまうので、返り値からは
+ * 「mock でよい（dev / デモ）」と「vonage のつもりだったが繋がらない」の区別が付かない。
+ *
+ * その区別が要るのは、区別できないと**来訪者に嘘をつく**から。mock provider は bridge 系を
+ * 無条件で `'answered'` にするので、資格情報が壊れているテナントでも来訪者には
+ * 「担当者が応答しました」と出て受付が `completed` に到達する ——
+ * **誰も呼ばれていないのに全員が受付完了する**（`VOICE_DIALING_DISABLED` について
+ * `api/kiosk/receptions/[id]/call/route.ts` の N0 が塞いだのと同じ事故）。
+ *
+ * secret の**有無すら見ない**。見ると「意図」ではなく「今できるか」を答えることになり、
+ * 呼び出し側が知りたい 2 つの事実が 1 つに畳まれて元に戻る。
+ *
+ * 🔴 **`fromNumber` を条件に含める。** vonage + enabled だけだと、**Video 受付だけで
+ * 運用しているテナント**（遠隔顔合わせ。`src/lib/call/adapter-factory.ts` の
+ * `VonageCallAdapter`）まで「PSTN を意図している」ことになる。あちらが要るのは
+ * `applicationId` + `apiKey`/`apiSecret`/`privateKey` で、**発信元番号は要らない**
+ * （`voice-dial.ts` が必須項目の違いを明記している）。含めないと、正常に動いている
+ * Video 受付を全断させる。
+ *
+ * `fromNumber` は非秘密設定なので、これを見ても「secret を見ない」方針は崩れない。
+ */
+export async function intendsRealDialing(
+  tenantId: string,
+  deps: Pick<ResolveProviderDeps, 'loadConfig'> = {},
+): Promise<boolean> {
+  const loadConfig = deps.loadConfig ?? getTenantProviderConfig;
+  // 🔴 **判定そのものはここに書かない。** 同じ問いに答える場所が管理画面（警告表示）にも
+  // あり、片方だけ直すと「管理画面は未接続と出るのに受付は 503」というずれが復活する
+  // （#763 で実際に起きていた形）。述語は `readiness.ts` の 1 つに集約する。
+  return intendsRealDialingFrom(await loadConfig(tenantId));
+}
 
 /**
  * テナントの実行時プロバイダを解決する。テナント設定が無い/無効/secret 欠如なら Mock。
