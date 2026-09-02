@@ -13,7 +13,13 @@
   --color-text: #f6f9ff;
   --color-muted: #9fb1cc;
   --color-border: rgba(255, 255, 255, 0.08);
-  --color-border-strong: rgba(255, 255, 255, 0.16);
+  /*
+     操作要素の境界。**面に対して 3:1 以上**を保つ (#918 / 課題 24・WCAG 1.4.11)。
+     alpha 0.16 では 1.58〜1.66:1 しかなく、罫線でしか輪郭を示していないボタンや入力欄が
+     「押せる範囲」を伝えられていなかった。0.36 は罫線が乗る 4 面
+     （bg / bg-2 / surface / surface-2）すべてで 3:1 を満たす最小値（最悪 3.05:1）。
+     比率は `tests/config/border-contrast.test.ts` が計算して固定する。 */
+  --color-border-strong: rgba(255, 255, 255, 0.36);
 
   /* アクセント（ブランドで差し替える土台） */
   --brand-accent: #38bdf8;
@@ -1310,7 +1316,10 @@ a {
   width: 100%;
   min-height: var(--touch-target-min);
   padding: var(--space-sm) var(--space-md);
-  border: 1px solid var(--color-border);
+  /* 🔴 **操作要素なので強い方 (#918 / 課題 24)。** `<button>` でありながら装飾用の
+     `--color-border`（1.27:1）を使っており、QR / 配送 / その他への唯一の入口の輪郭が
+     見えていなかった。 */
+  border: 1px solid var(--color-border-strong);
   border-radius: var(--radius-md);
   background: var(--color-glass);
   color: var(--color-text);

@@ -10,6 +10,7 @@
 > | `admin-desktop-call-routing-chromium-ipad-darwin.png` の取り直し（**この 1 枚だけ**） | 同上。**2 つの変更が同じ 1 枚に乗っている**ので取り直しは 1 回で済む: (1) #873 で見出しを「取次ルート」へ統一し旧画面への導線を削除、(2) #886 で disabled ボタン（「接続先を追加」）が破線表現になった。**linux 側はどちらも再生成済み**（毎回 差分画像を目視して確認）。darwin だけ stale | #873 / #886 |
 > | AWS の窓を開ける（`./scripts/aws-issue-credentials.sh`） | 短命 STS の発行は darwin 限定で、`scripts/hooks/guard-destructive.sh` が機械強制（#675）。**窓さえ開けばデプロイ本体はクラウドから wrapper 経由で流せる** | #675 / `docs/runbook-cloud-aws-deploy.md` |
 > | 実機 iPad UAT | 横向きで部署カードが何枚見えるか / 部署を開いて戻れるか / 騒音下で不在告知が聞き取れるか | #807 / #65 |
+> | **darwin ベースライン 4 枚の取り直し**（`kiosk-idle-ipad-portrait` / `-ipad-landscape` / `-large-display` / `kiosk-landscape-out-of-hours`） | #918 で `--color-border-strong` を 3:1 へ上げた（WCAG 1.4.11）。ベースライン名に `{platform}` が入るので linux の描画を darwin の名前で置けない。**linux 側は再生成済み**。閾値 0 で測って**この 4 枚だけ**が変わることを確認してある（他 12 枚は画素単位で同一） | #918 |
 > | **リモートブランチ 14 本の削除**（2026-09-02 の UI/UX 周回ぶん） | クラウドセッションからは `git push origin --delete` が **黙って「Everything up-to-date」を返して消えない**（proxy が write を拒否する）。全部 squash マージ済みで PR も閉じているので `orphan_branch` 検出には掛からない。一覧は本書「2026-09-02 の周回」節 | — |
 >
 ## 2026-09-02 の周回（UI/UX 監査 Wave 0 / Wave 1）
