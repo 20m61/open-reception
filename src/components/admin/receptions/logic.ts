@@ -8,6 +8,7 @@
  */
 import type { ReceptionLog } from '@/domain/reception/log';
 import type { CallOutcome } from '@/domain/reception/session';
+import { csvCell, paginate, toCsv, type Page } from '../list-io';
 
 /** 受付履歴の検索条件。未指定（undefined）の項目は絞り込みに使わない。 */
 export type ReceptionLogFilter = {
@@ -110,46 +111,13 @@ export function failureReasonLabel(reason: string | undefined): string | undefin
   return FAILURE_REASON_LABEL[reason] ?? reason;
 }
 
-/** 一覧のページング結果。 */
-export type Page<T> = {
-  items: T[];
-  /** クランプ後の実際のページ番号（1 始まり）。 */
-  page: number;
-  /** 総ページ数（最低 1）。 */
-  pageCount: number;
-  /** 絞り込み後の総件数。 */
-  total: number;
-};
-
-/** 配列を 1 始まりのページに分割する純関数。ページ番号は有効範囲にクランプし、0 除算しない。 */
-export function paginate<T>(items: readonly T[], page: number, pageSize: number): Page<T> {
-  const total = items.length;
-  const pageCount = Math.max(1, Math.ceil(total / pageSize));
-  const clamped = Math.min(Math.max(1, Math.trunc(page) || 1), pageCount);
-  const startIndex = (clamped - 1) * pageSize;
-  return {
-    items: items.slice(startIndex, startIndex + pageSize),
-    page: clamped,
-    pageCount,
-    total,
-  };
-}
-
-/**
- * RFC4180 に沿って 1 セル値をエスケープする（カンマ・改行・ダブルクォートを含む場合のみクォート）。
- * あわせて Excel/Sheets の数式インジェクションを無害化する（#330 レビュー）: `=`/`+`/`@` で始まる、
- * または `-` の後に式が続くセルは先頭にタブを付け、式として評価させない。`targetLabel`（呼び出し先の
- * 表示名）は管理者が編集可能な自由入力のため対象になりうる。未設定プレースホルダの単独 `-` や純数値
- * （所要秒）は式にならないので無害化しない。
+/*
+ * ページングと CSV セルのエスケープは `../list-io.ts` が正本 (#905 / 課題 17)。
+ * ここには**同じ実装が別に居た** —— 監査ログを揃えるときに 3 つ目を作らないよう
+ * 1 本へ寄せる。既存の import 経路（`./logic` から取る呼び出し側）は変えない。
  */
-function csvCell(value: string): string {
-  const isFormula = /^[=+@]/.test(value) || (value.startsWith('-') && value !== '-' && !/^-?\d/.test(value));
-  const guarded = isFormula ? `\t${value}` : value;
-  if (/[",\n\r]/.test(guarded)) {
-    return `"${guarded.replace(/"/g, '""')}"`;
-  }
-  return guarded;
-}
+export { csvCell, paginate, type Page };
+
 
 /** CSV 出力用の表示ラベル解決。 */
 export type ReceptionCsvLabels = {
@@ -178,7 +146,7 @@ export function receptionLogsToCsv(
       String(Math.round(log.durationMs / 1000)),
       log.fallbackUsed ? 'あり' : 'いいえ',
     ];
-    return cells.map(csvCell).join(',');
+    return cells;
   });
-  return [CSV_HEADER.join(','), ...rows].join('\n') + '\n';
+  return toCsv(CSV_HEADER, rows);
 }
