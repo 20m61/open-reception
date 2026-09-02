@@ -7,7 +7,7 @@ import { CsvImport } from './CsvImport';
 import { StaffEditor } from './StaffEditor';
 import { filterStaff, type StaffStatusFilter } from './staff-filter';
 import { useQueryParams } from './use-query-params';
-import { Button, DataTable, Field, type Column } from '@/components/admin/ui';
+import { Button, DataTable, Field, SaveFeedback, useSaveFeedback, type Column } from '@/components/admin/ui';
 import { color, space } from '@/components/admin/ui/tokens';
 
 /**
@@ -24,6 +24,7 @@ export function StaffManager() {
   const [kana, setKana] = useState('');
   const [departmentId, setDepartmentId] = useState('');
   const [busy, setBusy] = useState(false);
+  const { feedback, success, failure, clear } = useSaveFeedback();
   const [editingId, setEditingId] = useState<string | null>(null);
 
   const { get, setMany } = useQueryParams();
@@ -63,30 +64,48 @@ export function StaffManager() {
   const add = useCallback(async () => {
     if (displayName.trim() === '' || departmentId === '' || busy) return;
     setBusy(true);
+    clear();
     try {
-      await fetch('/api/admin/staff', {
+      /*
+        **結果を捨てない (#870 増分 02)。** 戻りを見ずに `load()` すると、403 / 409 / 5xx でも
+        入力欄が空になって一覧が元のまま返るだけになり、運用者には「登録した」ように見える。
+      */
+      const res = await fetch('/api/admin/staff', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ displayName, kana: kana || undefined, departmentId }),
-      });
+      }).catch(() => null);
+      if (!res?.ok) {
+        failure('担当者を追加できませんでした。');
+        return;
+      }
       setDisplayName('');
       setKana('');
       await load();
+      success('担当者を追加しました。');
     } finally {
       setBusy(false);
     }
-  }, [displayName, kana, departmentId, busy, load]);
+  }, [displayName, kana, departmentId, busy, load, clear, success, failure]);
 
   const patch = useCallback(
     async (s: Staff, body: Record<string, unknown>) => {
-      await fetch(`/api/admin/staff/${s.id}`, {
+      clear();
+      const res = await fetch(`/api/admin/staff/${s.id}`, {
         method: 'PATCH',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify(body),
-      });
+      }).catch(() => null);
+      if (!res?.ok) {
+        // 失敗したら `load()` しない。取り直すと行が元へ戻り、**何も起きなかったのか
+        // 失敗したのかが区別できない**（viewer が在席を切り替えたつもりで切り替わっていない）。
+        failure('変更を保存できませんでした。');
+        return;
+      }
       await load();
+      success('変更を保存しました。');
     },
-    [load],
+    [load, clear, success, failure],
   );
 
   const deptName = useCallback(
@@ -105,14 +124,20 @@ export function StaffManager() {
   );
   const changeSecondary = useCallback(
     async (staffId: string, organizationId: string, method: 'POST' | 'DELETE') => {
-      await fetch(`/api/admin/staff/${staffId}/memberships`, {
+      clear();
+      const res = await fetch(`/api/admin/staff/${staffId}/memberships`, {
         method,
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ organizationId }),
-      });
+      }).catch(() => null);
+      if (!res?.ok) {
+        failure(method === 'POST' ? '兼務を追加できませんでした。' : '兼務を外せませんでした。');
+        return;
+      }
       await load();
+      success(method === 'POST' ? '兼務を追加しました。' : '兼務を外しました。');
     },
-    [load],
+    [load, clear, success, failure],
   );
 
   const hasFilter = Boolean(keyword || filterDeptId || status);
@@ -243,6 +268,7 @@ export function StaffManager() {
         <Button variant="primary" data-testid="staff-add" onClick={add} disabled={busy || displayName.trim() === ''}>
           追加
         </Button>
+        <SaveFeedback feedback={feedback} successTestId="staff-saved" errorTestId="staff-save-error" />
       </div>
 
       <CsvImport
