@@ -84,7 +84,6 @@ test.describe('管理: 拠点スコープが URL に載る (#421)', () => {
   });
 
   for (const screen of [
-    { path: '/admin/call-routes', testId: 'call-routes-site-select', label: '呼び出しルート' },
     { path: '/admin/call-routing', testId: 'call-routing-site-select', label: '取次ルート' },
     { path: '/admin/reception-flows', testId: 'reception-flows-site-select', label: '受付フロー' },
     // #554 で移行。版は拠点別なのに既定拠点固定で、UI から別拠点へ到達できなかった。
@@ -171,30 +170,23 @@ test.describe('管理: 重複ナビの一本化 (#421)', () => {
     await expect(page.getByTestId('kiosk-devices-link')).toBeVisible();
   });
 
-  test('旧・呼び出しルートは実発信に効かないと明示され、call-routing から辿れる', async ({
-    page,
-  }) => {
-    await page.goto('/admin/call-routing');
-    await page.getByTestId('routing-legacy-call-routes-link').click();
-    await expect(page).toHaveURL(/\/admin\/call-routes/);
-    // 誤解を生まないことがこの画面を残す条件。
-    await expect(page.getByTestId('call-routes-legacy-notice')).toContainText(
-      '実際の発信には使われません',
-    );
+  test('旧・呼び出しルートの URL は取次ルートへ redirect する (#873)', async ({ page }) => {
+    // 旧画面は**設定しても実通話に効かなかった**ので削除した。ブックマークや手打ちを
+    // 404 にせず、正となる画面へ送る。
+    await page.goto('/admin/call-routes');
+    await expect(page).toHaveURL(/\/admin\/call-routing/);
+    await expect(page.getByRole('heading', { level: 1, name: '取次ルート' })).toBeVisible();
   });
 
-  test('旧画面への導線は選択中の拠点を落とさない', async ({ page }) => {
-    // **既定拠点だけを見ていると気づけない欠陥。** CallRoutesManager は URL を拠点の
-    // 真実源にしているので、クエリ無しのリンクだと既定拠点の旧ルートを編集させてしまう。
+  test('redirect は選択中の拠点を落とさない (#873)', async ({ page }) => {
+    // **既定拠点だけを見ていると気づけない欠陥。** 旧画面への導線が siteId を落として
+    // 別拠点を編集させた前科があり（#421 増分 5 のレビュー P1）、redirect でも同じ形の
+    // 取りこぼしが起こりうる。クエリが引き継がれることまで縛る。
     test.skip(!!process.env.PLAYWRIGHT_BASE_URL, 'seed 依存のため実環境では実行しない');
 
-    await page.goto('/admin/call-routing?siteId=branch-site');
-    await page.getByTestId('routing-legacy-call-routes-link').click();
-    await expect(page).toHaveURL(/\/admin\/call-routes\?siteId=branch-site/);
-
-    // 戻りの導線も同様に拠点を保つ。
-    await page.getByTestId('call-routes-canonical-link').click();
+    await page.goto('/admin/call-routes?siteId=branch-site');
     await expect(page).toHaveURL(/\/admin\/call-routing\?siteId=branch-site/);
+    await expect(page.getByTestId('call-routing-site-select')).toHaveValue('branch-site');
   });
 });
 

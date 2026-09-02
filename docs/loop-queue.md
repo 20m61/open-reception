@@ -7,6 +7,7 @@
 > | 残件 | なぜ人・ローカル macOS でしか出来ないか | 追跡 |
 > | --- | --- | --- |
 > | `kiosk-landscape-target-chromium-ipad-darwin.png` の取り直し（**この 1 枚だけ**） | ベースライン名に `{platform}` が入る。**linux の描画を darwin の名前で置くと永久に一致せず、本物の退行を隠す**。手順は #789 のコメント | #789 |
+> | `admin-desktop-call-routing-chromium-ipad-darwin.png` の取り直し（**この 1 枚だけ**） | 同上。#873 で取次ルート画面の見出しを「取次ルート」へ統一し旧画面への導線を削除したため描画が変わった。**linux 側は同 PR で再生成済み**（差分画像を目視し、変わったのが h1・削除した段落・h2 だけであることを確認）。darwin だけ stale | #873 |
 > | AWS の窓を開ける（`./scripts/aws-issue-credentials.sh`） | 短命 STS の発行は darwin 限定で、`scripts/hooks/guard-destructive.sh` が機械強制（#675）。**窓さえ開けばデプロイ本体はクラウドから wrapper 経由で流せる** | #675 / `docs/runbook-cloud-aws-deploy.md` |
 > | 実機 iPad UAT | 横向きで部署カードが何枚見えるか / 部署を開いて戻れるか / 騒音下で不在告知が聞き取れるか | #807 / #65 |
 >

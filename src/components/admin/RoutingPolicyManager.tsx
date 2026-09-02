@@ -115,38 +115,17 @@ export function RoutingPolicyManager({
 
   return (
     <section>
-      <h1 style={{ marginTop: 0 }}>呼び出しルート（文章形式）</h1>
+      {/*
+        見出しはナビのラベル（`navigation.ts` の「取次ルート」）と同じ名前にする (#873)。
+        かつてここは「呼び出しルート（文章形式）」で、ナビ・旧画面と合わせて同じ概念に
+        **3 つの名前**が並んでいた。運用者が「呼び出しルート」でサイドバーを探しても
+        見つからない。`tests/config/legacy-call-routes-removal.test.ts` が一致を縛る。
+      */}
+      <h1 style={{ marginTop: 0 }}>取次ルート</h1>
       <p style={{ opacity: 0.7, marginTop: -8 }}>
         テナント <code>{scope.tenantId}</code> / 拠点 <code>{scope.siteId}</code> の取次ルートを、
         「誰に・どの順で・何秒待って・繋がらなければどこへ」という文章として確認し、編集できます。
         電話番号などの接続先は機微情報のため下 4 桁のみ表示します。
-      </p>
-
-      {/*
-        旧 /admin/call-routes はナビから外したので、ここから辿れるようにする (#421)。
-        受付フローからの参照は撤去済みだが、既存の旧ルートを確認・整理できるよう画面は残している。
-      */}
-      <p style={{ opacity: 0.7, marginTop: 0 }}>
-        どこからも参照されなくなった旧「呼び出しルート」は{' '}
-        {/*
-          **siteId を落とさない。** CallRoutesManager は URL を拠点の真実源にしているので
-          （増分 3）、クエリ無しで開くと既定拠点の旧ルートを編集させてしまう。
-
-          **確定するまでリンクを出さない。** 一覧が届く前は `resolveSiteScopeState` が
-          既定拠点を返す（ready=false）ため、href が一瞬 `?siteId=default-site` になる。
-          そこを押すと別拠点の旧ルートを編集してしまう（e2e が実際に踏んだ）。
-        */}
-        {scopeReady ? (
-          <a
-            href={`/admin/call-routes?siteId=${encodeURIComponent(siteId)}`}
-            data-testid="routing-legacy-call-routes-link"
-          >
-            呼び出しルート（旧）
-          </a>
-        ) : (
-          <span data-testid="routing-legacy-call-routes-pending">呼び出しルート（旧）</span>
-        )}{' '}
-        に残しています（整理用。実際の発信はこの画面の設定が決めます）。
       </p>
 
       {/* 対象拠点を常時表示し、ここから切り替えられるようにする (#421)。 */}
@@ -440,7 +419,8 @@ function PoliciesSection({
   return (
     <div>
       <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-        <h2 style={{ marginRight: 'auto' }}>取次ルート</h2>
+        {/* h1 が「取次ルート」になったので、節見出しは中身（一覧）を指す名前にする (#873)。 */}
+        <h2 style={{ marginRight: 'auto' }}>ルート一覧</h2>
         <Button variant="primary" data-testid="policy-new" onClick={startNew}>
           新しいルート
         </Button>

@@ -169,17 +169,20 @@ describe('重複ナビの一本化 (#421)', () => {
 
   it('取次はナビに 1 つだけ（call-routing を正とする）', () => {
     // `CallRoute`(#88) は **実際の発信が参照しない**（発信は executeRoutedCall →
-    // RoutingPolicy/ContactEndpoint #374。routing/compat.ts は消費者ゼロ）。
-    // 「呼び出しルート」を設定しても実通話に効かないので、対等に並べると誤解を生む。
+    // RoutingPolicy/ContactEndpoint #374）。「呼び出しルート」を設定しても実通話に
+    // 効かないので、対等に並べると誤解を生む。**#873 で旧画面ごと削除した**ので、
+    // いまは非掲載登録にも残っていない（`tests/config/legacy-call-routes-removal.test.ts`）。
     expect(adminHrefs).toContain('/admin/call-routing');
     expect(adminHrefs).not.toContain('/admin/call-routes');
   });
 
   it('ナビから外した旧画面は理由付きで非掲載登録する（消しはしない）', () => {
-    // 受付フローの callRouteId が旧 CallRoute を参照しており、kiosks も token 発行フローが
-    // 生きている。**消すのではなく legacy 表示へ寄せる**（#421 AC の段階廃止）。
+    // kiosks は token 発行の旧フローが生きているので **消すのではなく legacy 表示へ寄せる**
+    // （#421 AC の段階廃止）。call-routes も当初はこちらだったが、参照が全部撤去され
+    // 「設定しても効かない画面」だけが残ったので #873 で削除へ倒した。
     expect(Object.keys(UNLISTED_ADMIN_ROUTES)).toEqual(
-      expect.arrayContaining(['/admin/kiosks', '/admin/call-routes']),
+      expect.arrayContaining(['/admin/kiosks']),
     );
+    expect(Object.keys(UNLISTED_ADMIN_ROUTES)).not.toContain('/admin/call-routes');
   });
 });

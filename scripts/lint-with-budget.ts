@@ -2,7 +2,7 @@
  * `npm run lint` の実体 (#843)。ESLint を 1 回だけ回し、warning のルール別件数を
  * `LINT_WARNING_BUDGET` と exact match する。
  *
- * 総数の `--max-warnings` は内訳の悪化を見ないので使わない。合計は予算の和（74）になる。
+ * 総数の `--max-warnings` は内訳の悪化を見ないので使わない。合計は予算の和になる。
  */
 import { execFileSync } from 'node:child_process';
 import { existsSync } from 'node:fs';

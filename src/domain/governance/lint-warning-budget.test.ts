@@ -8,8 +8,10 @@ import {
 } from './lint-warning-budget';
 
 describe('lintWarningBudgetTotal', () => {
-  it('正本の合計は 74（#813 の総数 ratchet を内訳の和として引き継ぐ）', () => {
-    expect(lintWarningBudgetTotal()).toBe(74);
+  it('正本の合計は 73（#813 の総数 ratchet を内訳の和として引き継ぐ）', () => {
+    // **べた書きなのは意図的。** 正本から導くと「予算を下げたつもりが下がっていない」を
+    // 検出できなくなる。件数を減らしたらここも一緒に下げる（#873 で 74 → 73）。
+    expect(lintWarningBudgetTotal()).toBe(73);
   });
 });
 
@@ -19,19 +21,19 @@ describe('diffLintWarningBudget', () => {
   });
 
   /**
-   * 🔴 **#843 が止める交換。** 総数は 74 のまま、受付導線に set-state-in-effect を
-   * 3 件足して unused-vars を 3 件消す。`--max-warnings 74` だけだと緑。
+   * 🔴 **#843 が止める交換。** 総数は 73 のまま、受付導線に set-state-in-effect を
+   * 3 件足して unused-vars を 3 件消す。`--max-warnings 73` だけだと緑。
    */
   it('総数が同じでもルール別の 3 件交換は落ちる', () => {
     const swapped = {
-      'react-hooks/set-state-in-effect': 57,
+      'react-hooks/set-state-in-effect': 56,
       '@typescript-eslint/no-unused-vars': 16,
       '@next/next/no-img-element': 1,
     };
-    expect(lintWarningBudgetTotal(swapped)).toBe(74);
+    expect(lintWarningBudgetTotal(swapped)).toBe(73);
     expect(diffLintWarningBudget(swapped)).toEqual([
       { ruleId: '@typescript-eslint/no-unused-vars', expected: 19, actual: 16 },
-      { ruleId: 'react-hooks/set-state-in-effect', expected: 54, actual: 57 },
+      { ruleId: 'react-hooks/set-state-in-effect', expected: 53, actual: 56 },
     ]);
   });
 

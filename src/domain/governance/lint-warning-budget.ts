@@ -12,7 +12,8 @@
 
 /** ルール ID → 許容する warning 件数。載っていないルールの warning は 0 件が期待。 */
 export const LINT_WARNING_BUDGET: Readonly<Record<string, number>> = {
-  'react-hooks/set-state-in-effect': 54,
+  // #873 で `CallRoutesManager`（旧・呼び出しルート画面）を削除し 54 → 53 へ下がった。
+  'react-hooks/set-state-in-effect': 53,
   '@typescript-eslint/no-unused-vars': 19,
   '@next/next/no-img-element': 1,
 };
