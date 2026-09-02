@@ -2,6 +2,18 @@
 
 既存の Issue ループ、品質ゲート、重大変更の人間確認を維持しつつ、Opus 5 で過剰になりやすい並列委譲と重複レビューを抑える。
 
+> 🔴 **重なる項目の正本はここではない。** 本書は 2026-07-27 に書かれ、
+> `.claude/rules/opus5-autonomous-loop.md`（版管理あり・`/loop-retro` が実データから更新する）
+> より前に成立している。**モデル役割・レビューの停止条件・停止境界・完了証拠は同規約が正本**で、
+> 食い違ったら規約が勝つ。
+>
+> 本書が固有に持つのは **completion contract の記法**（`objective` / `acceptance_criteria` /
+> `owned_files` / `execution_profile` / `human_gate` / `delegation_budget` / `stop_conditions`）と、
+> **プロファイル別の委譲予算**である。規約側にこの語彙は無い（実測）。
+>
+> 「指示が 2 箇所にあると古い方が残って発火する」は本リポジトリが繰り返し踏んでいる型なので、
+> この注記を外さないこと。
+
 ## Completion contract
 
 各トラック開始時に一度だけ確定する。
