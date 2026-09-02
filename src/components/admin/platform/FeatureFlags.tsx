@@ -11,7 +11,8 @@ import {
   featureFlagUpdateError,
   type ElevatedWriteError,
 } from '@/lib/platform/client-elevation';
-import { DangerActionPlaceholder, MetricCard } from './primitives';
+import { DangerActionPlaceholder } from './primitives';
+import { MetricCard } from '@/components/admin/ui';
 
 /**
  * 機能フラグ / 利用制限 (issue #90 inc2 / #83 inc5a)。
@@ -116,9 +117,9 @@ export function FeatureFlags() {
         利用上限（実データ未接続）
       </h2>
       <div style={{ display: 'flex', gap: 'var(--space-md)', flexWrap: 'wrap' }}>
-        <MetricCard label="受付端末上限" pending note="メータリング接続後" />
-        <MetricCard label="月間通話数上限" pending note="メータリング接続後" />
-        <MetricCard label="概算コスト上限" pending note="メータリング接続後" />
+        <MetricCard label="受付端末上限" placeholder placeholderText="未接続" note="メータリング接続後" />
+        <MetricCard label="月間通話数上限" placeholder placeholderText="未接続" note="メータリング接続後" />
+        <MetricCard label="概算コスト上限" placeholder placeholderText="未接続" note="メータリング接続後" />
       </div>
 
       <div style={{ marginTop: 'var(--space-lg)', maxWidth: 760 }}>

@@ -3,7 +3,7 @@
 import { useEffect, useState } from 'react';
 import type { MaskedAuditRow } from '@/domain/platform/console-summary';
 import { formatPercent } from '@/domain/util/format';
-import { MetricCard } from './primitives';
+import { MetricCard } from '@/components/admin/ui';
 
 /**
  * 可観測性（read 中心） (issue #90, increment 2)。
@@ -119,7 +119,7 @@ export function Observability() {
       <h2 style={{ fontSize: '1rem', opacity: 0.7, marginTop: 'var(--space-lg)' }}>指標（実データ未接続）</h2>
       <div style={{ display: 'flex', gap: 'var(--space-md)', flexWrap: 'wrap' }}>
         {PENDING_METRICS.map((m) => (
-          <MetricCard key={m.key} label={m.label} pending note="次増分で接続" />
+          <MetricCard key={m.key} label={m.label} placeholder placeholderText="未接続" note="次増分で接続" />
         ))}
       </div>
 

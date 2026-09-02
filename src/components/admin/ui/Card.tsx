@@ -53,6 +53,7 @@ export function MetricCard({
   hint,
   note,
   placeholder = false,
+  placeholderText,
   alwaysShowNote = false,
   testId = 'ui-metric-card',
   noteTestId = 'ui-metric-note',
@@ -67,6 +68,14 @@ export function MetricCard({
   hint?: string;
   note?: string;
   placeholder?: boolean;
+  /**
+   * `placeholder` かつ値が無いときに、値の位置へ出す文言（例: 「未接続」）。
+   *
+   * 空欄は「0 件」とも「まだ繋がっていない」とも読めてしまう。platform コンソールは
+   * **偽の安心を与えない**ことを明示の要件にしているので（#90）、そこでは何が
+   * 起きているかを言葉で出す。既定は未指定＝従来どおり空欄（dashboard 系の挙動）。
+   */
+  placeholderText?: string;
   /** placeholder でなくても note を表示する（usage 系の挙動）。 */
   alwaysShowNote?: boolean;
   testId?: string;
@@ -99,6 +108,13 @@ export function MetricCard({
           {unit ? (
             <span style={{ fontSize: font.body, fontWeight: 600, opacity: 0.7, marginLeft: 4 }}>{unit}</span>
           ) : null}
+        </span>
+      ) : placeholder && placeholderText ? (
+        <span
+          data-testid="ui-metric-placeholder"
+          style={{ fontSize: font.body, opacity: 0.75, marginTop: 4 }}
+        >
+          {placeholderText}
         </span>
       ) : null}
       {children}

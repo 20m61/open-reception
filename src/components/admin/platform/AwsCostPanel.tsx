@@ -9,7 +9,7 @@ import {
   type CostEnvironmentFilter,
   type ForecastUnavailableReason,
 } from '@/domain/platform/aws-cost';
-import { MetricCard } from './primitives';
+import { MetricCard } from '@/components/admin/ui';
 
 const COMPONENT_LABELS: Record<CostComponentFilter, string> = {
   all: 'すべて',
