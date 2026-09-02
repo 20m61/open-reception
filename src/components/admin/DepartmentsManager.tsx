@@ -4,7 +4,8 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import type { Department } from '@/domain/department/types';
 import { CsvImport } from './CsvImport';
 import { Button, DataTable, Field, Form, SaveFeedback, useSaveFeedback, type Column } from '@/components/admin/ui';
-import { color, space } from '@/components/admin/ui/tokens';
+import { space } from '@/components/admin/ui/tokens';
+import { enablementState } from './state-vocabulary';
 
 /** 部署管理 (issue #25)。一覧・作成・有効/無効・並び替えを管理 API 経由で行う。 */
 export function DepartmentsManager() {
@@ -137,8 +138,8 @@ export function DepartmentsManager() {
       {
         key: 'status',
         header: '状態',
-        cellStyle: (d) => ({ color: d.enabled ? color.success : color.muted }),
-        cell: (d) => (d.enabled ? '有効' : '無効'),
+        cellStyle: (d) => ({ color: enablementState(d.enabled).color }),
+        cell: (d) => enablementState(d.enabled).label,
       },
       {
         key: 'actions',

@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import type { Kiosk } from '@/domain/kiosk/types';
 import { SaveFeedback, useSaveFeedback } from '@/components/admin/ui';
+import { enablementState } from './state-vocabulary';
 
 /**
  * 受付端末管理（旧レジストリ・issue #18）。登録・失効・再有効化を管理 API 経由で行う。
@@ -117,8 +118,8 @@ export function KiosksManager() {
                 {k.displayName}
               </td>
               <td style={cell}>{k.location ?? '-'}</td>
-              <td style={{ ...cell, color: k.enabled ? 'var(--color-success)' : 'var(--color-danger)' }}>
-                {k.enabled ? '有効' : '失効'}
+              <td style={{ ...cell, color: enablementState(k.enabled).color }}>
+                {enablementState(k.enabled).label}
               </td>
               <td style={cell}>
                 <button type="button" data-testid="kiosk-toggle" onClick={() => setEnabled(k, !k.enabled)} style={smallBtn}>

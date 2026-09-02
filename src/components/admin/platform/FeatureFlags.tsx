@@ -13,6 +13,7 @@ import {
 } from '@/lib/platform/client-elevation';
 import { DangerActionPlaceholder } from './primitives';
 import { MetricCard } from '@/components/admin/ui';
+import { enablementState } from '../state-vocabulary';
 
 /**
  * 機能フラグ / 利用制限 (issue #90 inc2 / #83 inc5a)。
@@ -45,7 +46,7 @@ type TenantFlagsResponse = {
 };
 
 function boolLabel(v: boolean): string {
-  return v ? '有効' : '無効';
+  return enablementState(v).label;
 }
 
 export function FeatureFlags() {
@@ -194,7 +195,7 @@ function TenantFeatureFlagEditor({ onChanged }: { onChanged?: () => void }) {
         return;
       }
       setDone(
-        `「${TENANT_FEATURE_FLAG_LABELS[key]}」を${enable ? '有効' : '無効'}にしました（監査に記録済み）。`,
+        `「${TENANT_FEATURE_FLAG_LABELS[key]}」を${enablementState(enable).label}にしました（監査に記録済み）。`,
       );
       setReason('');
       // 楽観更新はしない: サーバ応答が正。テナントの実効値と横断サマリを再取得する。

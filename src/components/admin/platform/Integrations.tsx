@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from 'react';
 import { DangerActionPlaceholder } from './primitives';
+import { enablementState } from '../state-vocabulary';
 
 /**
  * 外部連携状態（read 中心） (issue #90, increment 3 / #83)。
@@ -91,7 +92,7 @@ export function Integrations() {
             <tr key={i.id} style={bodyRow}>
               <td style={th}>{i.label}</td>
               <td style={{ ...th, opacity: 0.8 }}>{i.configured ? '済' : '未'}</td>
-              <td style={{ ...th, opacity: 0.8 }}>{i.enabled ? '有効' : '無効'}</td>
+              <td style={{ ...th, opacity: 0.8 }}>{enablementState(i.enabled).label}</td>
               <td style={{ ...th, opacity: 0.8 }}>{RESULT_LABEL[i.lastResult]}</td>
               <td style={{ ...th, opacity: 0.6 }}>{i.lastErrorSummary ?? '-'}</td>
             </tr>
@@ -114,7 +115,7 @@ export function Integrations() {
           {(data?.authMethods ?? []).map((m) => (
             <tr key={m.id} style={bodyRow}>
               <td style={th}>{m.label}</td>
-              <td style={{ ...th, opacity: 0.8 }}>{m.enabled ? '有効' : '無効'}</td>
+              <td style={{ ...th, opacity: 0.8 }}>{enablementState(m.enabled).label}</td>
               <td style={{ ...th, opacity: 0.6 }}>{m.issues.length ? m.issues.join(' / ') : '-'}</td>
             </tr>
           ))}

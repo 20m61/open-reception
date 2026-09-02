@@ -5,6 +5,7 @@ import type { TenantDetail as TenantDetailData } from '@/domain/platform/console
 import type { TenantLifecycleAction } from '@/domain/platform/tenant-lifecycle';
 import { DangerActionButton } from '@/components/admin/danger/DangerActionButton';
 import { MetricCard, StatusBadge } from '@/components/admin/ui';
+import { siteStatusState, tenantStatusState } from '../state-vocabulary';
 
 /**
  * テナント詳細（テナント横断 read + 有効/停止操作） (issue #90)。
@@ -64,7 +65,7 @@ export function TenantDetail({ tenantId }: { tenantId: string }) {
         テナント詳細{data ? `: ${data.name}` : ''}
         {data ? (
           <span style={{ marginLeft: 'var(--space-md)' }}>
-            <StatusBadge status={data.status === 'active' ? 'ok' : 'stopped'} label={data.status === 'active' ? '稼働中' : '停止中'} />
+            <StatusBadge status={tenantStatusState(data.status).status} label={tenantStatusState(data.status).label} />
           </span>
         ) : null}
       </h1>
@@ -98,7 +99,7 @@ export function TenantDetail({ tenantId }: { tenantId: string }) {
             <tr key={s.id} style={{ borderTop: '1px solid var(--color-border)' }}>
               <td style={{ padding: '6px 8px' }}>{s.name}</td>
               <td style={{ padding: '6px 8px' }}>
-                <StatusBadge status={s.status === 'active' ? 'ok' : 'stopped'} label={s.status === 'active' ? '稼働中' : '停止中'} />
+                <StatusBadge status={siteStatusState(s.status).status} label={siteStatusState(s.status).label} />
               </td>
               <td style={{ padding: '6px 8px', opacity: 0.8 }}>{s.deviceCount}</td>
               <td style={{ padding: '6px 8px', opacity: 0.8 }}>{s.activeDeviceCount}</td>

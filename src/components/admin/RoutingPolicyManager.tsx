@@ -23,6 +23,7 @@ import {
   transitionKindOf,
 } from '@/lib/routing/transition-options';
 import type { EndpointView, PolicyView } from '@/lib/routing/types';
+import { enablementState } from './state-vocabulary';
 
 /**
  * 文章形式ルートビルダー (issue #374, 残 increment)。
@@ -300,8 +301,8 @@ function EndpointsSection({
                 <span data-testid="endpoint-masked" style={{ fontSize: '0.85rem', opacity: 0.7 }}>
                   {e.maskedAddress}
                 </span>
-                <span data-testid="endpoint-status" style={{ fontSize: '0.8rem', color: e.enabled ? color.success : color.muted }}>
-                  {e.enabled ? '有効' : '無効'}
+                <span data-testid="endpoint-status" style={{ fontSize: '0.8rem', color: enablementState(e.enabled).color }}>
+                  {enablementState(e.enabled).label}
                 </span>
                 <div style={{ display: 'flex', gap: 6, marginLeft: 'auto' }}>
                   <Button data-testid="endpoint-toggle" onClick={() => toggle(e)}>
@@ -445,8 +446,8 @@ function PoliciesSection({
                 <strong data-testid="policy-name" style={{ fontSize: '1.05rem' }}>
                   {p.name}
                 </strong>
-                <span style={{ fontSize: '0.8rem', color: p.enabled ? color.success : color.muted }}>
-                  {p.enabled ? '有効' : '無効'}
+                <span style={{ fontSize: '0.8rem', color: enablementState(p.enabled).color }}>
+                  {enablementState(p.enabled).label}
                 </span>
                 <div style={{ display: 'flex', gap: 6, marginLeft: 'auto' }}>
                   <Button data-testid="policy-edit" onClick={() => startEdit(p)}>

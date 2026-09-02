@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import type { ActiveAssetSet, Asset, AssetKind } from '@/domain/assets/types';
 import { Button, DataTable, Field, Form, FormRow, type Column } from '@/components/admin/ui';
 import { color, space } from '@/components/admin/ui/tokens';
+import { enablementState } from './state-vocabulary';
 
 const KIND_LABEL: Record<AssetKind, string> = {
   background: '背景画像',
@@ -76,8 +77,8 @@ export function AssetsManager() {
       {
         key: 'status',
         header: '状態',
-        cellStyle: (a) => ({ color: a.enabled ? color.success : color.muted }),
-        cell: (a) => (a.enabled ? '有効' : '無効'),
+        cellStyle: (a) => ({ color: enablementState(a.enabled).color }),
+        cell: (a) => enablementState(a.enabled).label,
       },
       {
         key: 'active',

@@ -9,6 +9,7 @@ import type {
 import { Button } from '@/components/admin/ui';
 import { AdminReadGate } from '../AdminReadGate';
 import { SecretStatusField } from './SecretStatusField';
+import { enablementState } from '../state-vocabulary';
 
 /**
  * 認証方式・外部連携・シークレット状態の管理 (issue #93, increment 1)。
@@ -142,7 +143,7 @@ export function IntegrationsManager({
           <div key={m.id} data-testid={`auth-${m.id}`} style={card}>
             <strong>{m.label}</strong>
             <span data-testid={`auth-${m.id}-state`} style={{ marginLeft: 8 }}>
-              {m.enabled ? '有効' : '無効'}
+              {enablementState(m.enabled).label}
             </span>
             {m.issues.length > 0 ? (
               <ul style={{ margin: '6px 0 0', color: 'var(--color-danger)' }}>
