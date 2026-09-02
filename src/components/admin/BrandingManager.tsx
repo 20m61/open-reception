@@ -4,6 +4,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { MAX_LOGO_DATA_URI_LENGTH, type BrandingSettings } from '@/domain/branding/types';
 import { Button, Field, SaveFeedback, useSaveFeedback } from '@/components/admin/ui';
 import { color, space } from '@/components/admin/ui/tokens';
+import { AdminReadGate } from './AdminReadGate';
 
 /**
  * ブランディング設定 (issue #88)。会社ロゴ・アクセント色・社名を待機画面に反映する。
@@ -11,14 +12,22 @@ import { color, space } from '@/components/admin/ui/tokens';
  */
 export function BrandingManager() {
   const [b, setB] = useState<BrandingSettings | null>(null);
+  const [loadFailed, setLoadFailed] = useState(false);
   const [busy, setBusy] = useState(false);
   const { feedback, success, failure, clear } = useSaveFeedback();
   const [error, setError] = useState<string | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
 
   const load = useCallback(async () => {
-    const res = await fetch('/api/admin/branding');
-    if (res.ok) setB((await res.json()) as BrandingSettings);
+    // `catch` を省くとオフラインで例外になり、`void load()` が握り潰して
+    // **失敗にすら落ちない**（画面は「読み込み中…」のまま固まる）。
+    const res = await fetch('/api/admin/branding').catch(() => null);
+    if (!res?.ok) {
+      setLoadFailed(true);
+      return;
+    }
+    setB((await res.json()) as BrandingSettings);
+    setLoadFailed(false);
   }, []);
 
   useEffect(() => {
@@ -70,10 +79,13 @@ export function BrandingManager() {
 
   if (!b)
     return (
-      <section>
-        <h1 style={{ marginTop: 0 }}>ブランド</h1>
-        <p>読み込み中…</p>
-      </section>
+      <AdminReadGate
+        heading="ブランド"
+        failed={loadFailed}
+        failureMessage="ブランド設定を取得できませんでした。通信状況を確認して再試行してください。"
+        onRetry={() => void load()}
+        testId="branding-unavailable"
+      />
     );
 
   const accent = b.accentColor ?? '#38bdf8';

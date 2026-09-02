@@ -8,6 +8,7 @@ import {
 } from '@/lib/i18n';
 import type { LanguageSettings } from '@/lib/i18n/language-settings';
 import { Button, Field, SaveFeedback, useSaveFeedback } from '@/components/admin/ui';
+import { AdminReadGate } from './AdminReadGate';
 
 /**
  * 通常の言語設定に出す locale（#321: 'ja-simple' はここには出さない）。
@@ -22,12 +23,20 @@ const DISPLAY_LOCALES = SUPPORTED_LOCALES.filter((value) => value !== 'ja-simple
  */
 export function LanguageSettingsManager() {
   const [s, setS] = useState<LanguageSettings | null>(null);
+  const [loadFailed, setLoadFailed] = useState(false);
   const [busy, setBusy] = useState(false);
   const { feedback, success, failure, clear } = useSaveFeedback();
 
   const load = useCallback(async () => {
-    const res = await fetch('/api/admin/languages');
-    if (res.ok) setS((await res.json()) as LanguageSettings);
+    // `catch` を省くとオフラインで例外になり、`void load()` が握り潰して
+    // **失敗にすら落ちない**（画面は「読み込み中…」のまま固まる）。
+    const res = await fetch('/api/admin/languages').catch(() => null);
+    if (!res?.ok) {
+      setLoadFailed(true);
+      return;
+    }
+    setS((await res.json()) as LanguageSettings);
+    setLoadFailed(false);
   }, []);
 
   useEffect(() => {
@@ -67,10 +76,13 @@ export function LanguageSettingsManager() {
 
   if (!s) {
     return (
-      <section>
-        <h1 style={{ marginTop: 0 }}>言語設定</h1>
-        <p>読み込み中…</p>
-      </section>
+      <AdminReadGate
+        heading="言語設定"
+        failed={loadFailed}
+        failureMessage="言語設定を取得できませんでした。通信状況を確認して再試行してください。"
+        onRetry={() => void load()}
+        testId="languages-unavailable"
+      />
     );
   }
 
