@@ -2,7 +2,7 @@
 
 import { useCallback, useState } from 'react';
 import { CALL_TARGET_TYPES, type CallTarget, type Staff } from '@/domain/staff/types';
-import { SaveFeedback, useSaveFeedback } from '@/components/admin/ui';
+import { SaveFeedback, font, useSaveFeedback } from '@/components/admin/ui';
 
 /** 担当者の呼び出し先（優先順位 DnD）と代替担当者を編集する (issue #26)。 */
 export function StaffEditor({ staff, allStaff, onSaved }: { staff: Staff; allStaff: Staff[]; onSaved: () => void }) {
@@ -80,7 +80,7 @@ export function StaffEditor({ staff, allStaff, onSaved }: { staff: Staff; allSta
             ))}
           </select>
           <input data-testid="ct-value" value={t.value} onChange={(e) => update(i, { value: e.target.value })} placeholder="値" style={{ ...field, flex: 1 }} />
-          <label style={{ display: 'flex', gap: 4, alignItems: 'center', fontSize: '0.85rem' }}>
+          <label style={{ display: 'flex', gap: 4, alignItems: 'center', fontSize: font.small }}>
             <input type="checkbox" checked={t.enabled} onChange={(e) => update(i, { enabled: e.target.checked })} />有効
           </label>
           <button type="button" aria-label="up" onClick={() => reorder(i, i - 1)} disabled={i === 0} style={small}>↑</button>

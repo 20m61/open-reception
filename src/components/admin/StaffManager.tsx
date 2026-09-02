@@ -8,7 +8,7 @@ import { StaffEditor } from './StaffEditor';
 import { filterStaff, type StaffStatusFilter } from './staff-filter';
 import { useQueryParams } from './use-query-params';
 import { Button, DataTable, Field, Form, SaveFeedback, useSaveFeedback, type Column } from '@/components/admin/ui';
-import { color, space } from '@/components/admin/ui/tokens';
+import { color, font, space } from '@/components/admin/ui/tokens';
 import { enablementState } from './state-vocabulary';
 
 /**
@@ -335,7 +335,7 @@ export function StaffManager() {
           </Button>
         ) : null}
       </div>
-      <p data-testid="staff-count" style={{ opacity: 0.7, fontSize: '0.85rem' }}>
+      <p data-testid="staff-count" style={{ opacity: 0.7, fontSize: font.small }}>
         {items.length} 件中 {filtered.length} 件を表示
       </p>
 

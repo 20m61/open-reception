@@ -13,7 +13,7 @@ import {
 } from '@/domain/reception/custom-flow';
 import { Button, Card, Field, SaveFeedback, useSaveFeedback } from '@/components/admin/ui';
 import { DangerActionButton } from './danger/DangerActionButton';
-import { space } from '@/components/admin/ui/tokens';
+import { font, space } from '@/components/admin/ui/tokens';
 import { enablementState } from './state-vocabulary';
 import {
   buildFieldDraft,
@@ -447,7 +447,7 @@ function FlowFieldsEditor({
     <div data-testid="flow-fields" style={{ marginTop: 12 }}>
       <div style={{ fontSize: '0.8rem', opacity: 0.7, marginBottom: 4 }}>入力項目</div>
       {fields.length === 0 ? (
-        <p style={{ opacity: 0.6, fontSize: '0.85rem', margin: '0 0 8px' }}>入力項目はありません。</p>
+        <p style={{ opacity: 0.6, fontSize: font.small, margin: '0 0 8px' }}>入力項目はありません。</p>
       ) : (
         <ul style={{ margin: '0 0 8px', paddingLeft: 0, listStyle: 'none', display: 'flex', flexDirection: 'column', gap: 4 }}>
           {fields.map((field) => (
@@ -518,7 +518,7 @@ function FlowFieldsEditor({
             />
           </Field>
         ) : null}
-        <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: '0.85rem', minHeight: 44 }}>
+        <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: font.small, minHeight: 44 }}>
           <input
             type="checkbox"
             data-testid="flow-field-required"

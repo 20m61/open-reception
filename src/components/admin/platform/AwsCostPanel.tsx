@@ -9,7 +9,7 @@ import {
   type CostEnvironmentFilter,
   type ForecastUnavailableReason,
 } from '@/domain/platform/aws-cost';
-import { MetricCard } from '@/components/admin/ui';
+import { MetricCard, font } from '@/components/admin/ui';
 
 const COMPONENT_LABELS: Record<CostComponentFilter, string> = {
   all: 'すべて',
@@ -307,7 +307,7 @@ export function AwsCostPanel() {
         </>
       ) : null}
 
-      <p style={{ opacity: 0.56, fontSize: '0.75rem', marginTop: 10 }}>
+      <p style={{ opacity: 0.56, fontSize: font.caption, marginTop: 10 }}>
         AWS請求データはリアルタイムではなく、コスト配分タグの有効化・反映にも時間がかかります。
         {updatedAt ? ` 最終取得: ${updatedAt}` : ''}
       </p>

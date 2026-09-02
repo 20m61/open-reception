@@ -1,4 +1,5 @@
 import type { ReactNode } from 'react';
+import { font } from '@/components/admin/ui/tokens';
 
 /**
  * プラットフォーム運用コンソール固有の表示プリミティブ (issue #90, increment 1)。
@@ -26,7 +27,7 @@ export function DangerActionPlaceholder({ label }: { label: string }) {
         borderRadius: 10,
         padding: 'var(--space-md)',
         color: 'var(--color-platform-warn)',
-        fontSize: '0.85rem',
+        fontSize: font.small,
       }}
     >
       <strong>{label}</strong>

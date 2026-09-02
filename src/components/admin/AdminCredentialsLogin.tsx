@@ -2,6 +2,7 @@
 
 import { useRouter } from 'next/navigation';
 import { useState } from 'react';
+import { font } from '@/components/admin/ui/tokens';
 
 /**
  * ユーザー名＋パスワードによる管理ログインフォーム (issue #238)。
@@ -44,7 +45,7 @@ export function AdminCredentialsLogin() {
   return (
     <form onSubmit={submit} style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
       <label style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
-        <span style={{ fontSize: '0.85rem', opacity: 0.8 }}>ユーザー名</span>
+        <span style={{ fontSize: font.small, opacity: 0.8 }}>ユーザー名</span>
         <input
           type="text"
           autoComplete="username"
@@ -55,7 +56,7 @@ export function AdminCredentialsLogin() {
         />
       </label>
       <label style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
-        <span style={{ fontSize: '0.85rem', opacity: 0.8 }}>パスワード</span>
+        <span style={{ fontSize: font.small, opacity: 0.8 }}>パスワード</span>
         <span style={{ position: 'relative', display: 'block' }}>
           <input
             type={showPassword ? 'text' : 'password'}

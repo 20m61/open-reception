@@ -8,6 +8,7 @@ import {
   type TenantProviderConfigView,
 } from '@/domain/provider-config/types';
 import type { ProviderConfigWarning } from '@/domain/provider-config/readiness';
+import { font } from '@/components/admin/ui/tokens';
 
 /**
  * テナント別 CCaaS プロバイダ設定（developer 専用・write-only secret） (issue #405 Inc1)。
@@ -155,7 +156,7 @@ export function ProviderConfig() {
   return (
     <section style={{ marginTop: 'var(--space-lg)', maxWidth: 760 }}>
       <h2 style={{ fontSize: '1rem', opacity: 0.7 }}>テナント別プロバイダ設定</h2>
-      <p style={{ opacity: 0.8, fontSize: '0.85rem' }}>
+      <p style={{ opacity: 0.8, fontSize: font.small }}>
         選択中テナントの CCaaS プロバイダ設定です。secret は<strong>書き込み専用</strong>で、値は
         保存後も一切表示されません（状態のみ）。対象テナントはサーバ側で認可済みコンテキストから
         決まります。
@@ -217,10 +218,10 @@ export function ProviderConfig() {
         設定を保存
       </button>
 
-      <h3 style={{ fontSize: '0.95rem', opacity: 0.7, marginTop: 'var(--space-lg)' }}>
+      <h3 style={{ fontSize: font.body, opacity: 0.7, marginTop: 'var(--space-lg)' }}>
         API secret（書き込み専用）
       </h3>
-      <p style={{ fontSize: '0.85rem' }}>
+      <p style={{ fontSize: font.small }}>
         現在の状態:{' '}
         <strong style={{ color: presence === 'set' ? 'var(--color-platform-ok)' : 'var(--color-platform-warn)' }}>
           {presence === 'set' ? '設定済み' : '未設定'}

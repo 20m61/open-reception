@@ -5,7 +5,7 @@ import { useSiteScope } from './use-site-scope';
 import { SiteScopeSelect } from './SiteScopeSelect';
 import { DangerActionButton } from './danger/DangerActionButton';
 import { Button, Card, Field, Form } from '@/components/admin/ui';
-import { color, space } from '@/components/admin/ui/tokens';
+import { color, font, space } from '@/components/admin/ui/tokens';
 import {
   CONTINUABLE_RESULTS,
   ROUTE_ACTIONS,
@@ -282,7 +282,7 @@ function EndpointsSection({
         </Button>
       </Form>
       {error ? (
-        <p data-testid="endpoint-error" style={{ color: color.danger, fontSize: '0.85rem' }}>
+        <p data-testid="endpoint-error" style={{ color: color.danger, fontSize: font.small }}>
           {error}
         </p>
       ) : null}
@@ -298,7 +298,7 @@ function EndpointsSection({
               <div style={{ display: 'flex', gap: 12, alignItems: 'center', flexWrap: 'wrap' }}>
                 <strong data-testid="endpoint-name">{e.label ?? e.id}</strong>
                 <span style={{ fontSize: '0.8rem', opacity: 0.7 }}>{CHANNEL_LABELS[e.channel]}</span>
-                <span data-testid="endpoint-masked" style={{ fontSize: '0.85rem', opacity: 0.7 }}>
+                <span data-testid="endpoint-masked" style={{ fontSize: font.small, opacity: 0.7 }}>
                   {e.maskedAddress}
                 </span>
                 <span data-testid="endpoint-status" style={{ fontSize: '0.8rem', color: enablementState(e.enabled).color }}>
@@ -546,14 +546,14 @@ function PolicyEditor({
       </h3>
 
       {policyErrors.length > 0 ? (
-        <ul data-testid="policy-error" style={{ color: color.danger, fontSize: '0.85rem', margin: '0 0 12px', paddingLeft: 18 }}>
+        <ul data-testid="policy-error" style={{ color: color.danger, fontSize: font.small, margin: '0 0 12px', paddingLeft: 18 }}>
           {policyErrors.map((m, i) => (
             <li key={i}>{m}</li>
           ))}
         </ul>
       ) : null}
       {saveError ? (
-        <p data-testid="policy-save-error" style={{ color: color.danger, fontSize: '0.85rem' }}>
+        <p data-testid="policy-save-error" style={{ color: color.danger, fontSize: font.small }}>
           {saveError}
         </p>
       ) : null}
@@ -710,7 +710,7 @@ function StepRow({
 
       {/* 結果別遷移（基本操作）。継続可能な結果ごとに、既定（次へ）から上書きできる。 */}
       <details style={{ marginTop: 8 }}>
-        <summary style={{ cursor: 'pointer', fontSize: '0.85rem', opacity: 0.8 }}>結果別の遷移を細かく指定</summary>
+        <summary style={{ cursor: 'pointer', fontSize: font.small, opacity: 0.8 }}>結果別の遷移を細かく指定</summary>
         <div style={{ display: 'flex', flexDirection: 'column', gap: 6, marginTop: 8 }}>
           {CONTINUABLE_RESULTS.map((result) => (
             <TransitionRow
@@ -763,7 +763,7 @@ function TransitionRow({
     endpoints.find((ep) => ep.id === endpointId)?.label;
   const choices = gotoStepChoices(steps, labelForEndpoint);
   return (
-    <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap', fontSize: '0.85rem' }}>
+    <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap', fontSize: font.small }}>
       <span style={{ minWidth: 64 }}>{RESULT_LABELS[result]}</span>
       <select
         data-testid="transition-kind-select"

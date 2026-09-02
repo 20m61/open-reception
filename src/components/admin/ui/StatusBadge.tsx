@@ -1,4 +1,5 @@
 import { radius, space, STATUS_META, type StatusKind } from './tokens';
+import { font } from '@/components/admin/ui/tokens';
 
 /**
  * 管理画面 共有ステータスバッジ (issue #92, increment 1)。
@@ -20,7 +21,7 @@ export function StatusBadge({ status, label }: { status: StatusKind; label?: str
         padding: '6px 14px',
         borderRadius: radius.pill,
         fontWeight: 700,
-        fontSize: '0.95rem',
+        fontSize: font.body,
         color: meta.color,
         background: 'var(--color-surface)',
         border: `1px solid ${meta.color}`,

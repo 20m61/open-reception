@@ -12,7 +12,7 @@ import {
   type ElevatedWriteError,
 } from '@/lib/platform/client-elevation';
 import { DangerActionPlaceholder } from './primitives';
-import { MetricCard } from '@/components/admin/ui';
+import { MetricCard, font } from '@/components/admin/ui';
 import { enablementState } from '../state-vocabulary';
 
 /**
@@ -214,7 +214,7 @@ function TenantFeatureFlagEditor({ onChanged }: { onChanged?: () => void }) {
     borderRadius: 8,
     padding: '6px 10px',
     color: 'inherit',
-    fontSize: '0.85rem',
+    fontSize: font.small,
     boxSizing: 'border-box',
   } as const;
 
@@ -229,7 +229,7 @@ function TenantFeatureFlagEditor({ onChanged }: { onChanged?: () => void }) {
         padding: 'var(--space-md)',
         display: 'grid',
         gap: 'var(--space-sm)',
-        fontSize: '0.85rem',
+        fontSize: font.small,
       }}
     >
       <strong style={{ color: 'var(--color-platform-warn)' }}>テナント別機能フラグの変更（昇格が必要な操作）</strong>
@@ -285,7 +285,7 @@ function TenantFeatureFlagEditor({ onChanged }: { onChanged?: () => void }) {
             ))}
           </div>
           {flags.updatedAt ? (
-            <p style={{ margin: 0, opacity: 0.5, fontSize: '0.75rem' }}>
+            <p style={{ margin: 0, opacity: 0.5, fontSize: font.caption }}>
               最終変更: {new Date(flags.updatedAt).toLocaleString('ja-JP')}
             </p>
           ) : null}
