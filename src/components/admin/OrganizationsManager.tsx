@@ -219,7 +219,7 @@ export function OrganizationsManager() {
   ];
 
   return (
-    <Section title="組織（来訪者への見せ方）">
+    <Section headingLevel="h1" title="組織（来訪者への見せ方）">
       <p style={{ color: color.muted }}>
         部署そのものの追加・無効化は「部署管理」で行います。ここでは、来訪者の受付端末に
         <strong>どの名前で・どの順で出すか</strong>を決めます。
