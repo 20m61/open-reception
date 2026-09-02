@@ -3,7 +3,7 @@
 import { useMemo } from 'react';
 import type { ReceptionLog } from '@/domain/reception/log';
 import { RECEPTION_PURPOSES, type CallOutcome } from '@/domain/reception/session';
-import { Button, DataTable, type Column } from '@/components/admin/ui';
+import { Button, DataTable, Field, type Column } from '@/components/admin/ui';
 import { color, font, radius, space } from '@/components/admin/ui/tokens';
 import { useQueryParams } from '@/components/admin/use-query-params';
 import {
@@ -114,26 +114,29 @@ export function ReceptionsViewer({
         data-testid="receptions-filters"
         style={{ display: 'flex', flexWrap: 'wrap', gap: space.sm, alignItems: 'flex-end' }}
       >
-        <FilterField label="開始日">
+        <Field label="開始日" htmlFor="receptions-filter-start">
           <input
             type="date"
+            id="receptions-filter-start"
             data-testid="receptions-filter-start"
             value={start}
             onChange={(e) => updateFilter({ start: e.target.value })}
             style={inputStyle}
           />
-        </FilterField>
-        <FilterField label="終了日">
+        </Field>
+        <Field label="終了日" htmlFor="receptions-filter-end">
           <input
             type="date"
+            id="receptions-filter-end"
             data-testid="receptions-filter-end"
             value={end}
             onChange={(e) => updateFilter({ end: e.target.value })}
             style={inputStyle}
           />
-        </FilterField>
-        <FilterField label="結果">
+        </Field>
+        <Field label="結果" htmlFor="receptions-filter-outcome">
           <select
+            id="receptions-filter-outcome"
             data-testid="receptions-filter-outcome"
             value={outcome}
             onChange={(e) => updateFilter({ outcome: e.target.value })}
@@ -146,9 +149,10 @@ export function ReceptionsViewer({
               </option>
             ))}
           </select>
-        </FilterField>
-        <FilterField label="端末">
+        </Field>
+        <Field label="端末" htmlFor="receptions-filter-kiosk">
           <select
+            id="receptions-filter-kiosk"
             data-testid="receptions-filter-kiosk"
             value={kioskId}
             onChange={(e) => updateFilter({ kiosk: e.target.value })}
@@ -161,7 +165,7 @@ export function ReceptionsViewer({
               </option>
             ))}
           </select>
-        </FilterField>
+        </Field>
         {hasFilter ? (
           <Button variant="secondary" onClick={reset} data-testid="receptions-filter-reset">
             条件をクリア
@@ -220,14 +224,6 @@ export function ReceptionsViewer({
   );
 }
 
-function FilterField({ label, children }: { label: string; children: React.ReactNode }) {
-  return (
-    <label style={{ display: 'flex', flexDirection: 'column', gap: 4, fontSize: font.caption, opacity: 0.85 }}>
-      <span>{label}</span>
-      {children}
-    </label>
-  );
-}
 
 const inputStyle: React.CSSProperties = {
   padding: '6px 10px',
