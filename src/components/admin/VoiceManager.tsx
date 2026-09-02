@@ -8,12 +8,18 @@ import { isSttRecognitionSimulated } from '@/domain/voice/stt-capability';
 import { AdminReadGate } from './AdminReadGate';
 import { DEFAULT_CALLING_STAGE_THRESHOLDS } from '@/domain/reception/calling-experience';
 import { sanitizeA11yEnabledModes, type A11yEnabledModes } from '@/domain/kiosk/a11y-modes';
+import { useUnsavedChanges } from './use-unsaved-changes';
+import { useUnsavedChangesGuard } from './use-unsaved-changes-guard';
+import { UnsavedChangesDialog } from './UnsavedChangesDialog';
 
 /** 音声設定 (issue #28)。TTS/STT の有効化・案内文言・話速・音量を編集する。 */
 export function VoiceManager() {
   const [v, setV] = useState<VoiceSettings | null>(null);
   const [loadFailed, setLoadFailed] = useState(false);
   const [busy, setBusy] = useState(false);
+  // 未保存のまま離脱しようとしたら止める (#912 / 課題 12)。
+  const { dirty, markSaved } = useUnsavedChanges(v);
+  const guard = useUnsavedChangesGuard(dirty);
   const { feedback, success, failure, clear } = useSaveFeedback();
 
   const load = useCallback(async () => {
@@ -48,7 +54,9 @@ export function VoiceManager() {
         body: JSON.stringify(v),
       });
       if (res.ok) {
-        setV((await res.json()) as VoiceSettings);
+        const next = (await res.json()) as VoiceSettings;
+        setV(next);
+        markSaved(next);
         success();
       } else {
         failure();
@@ -56,7 +64,7 @@ export function VoiceManager() {
     } finally {
       setBusy(false);
     }
-  }, [v, busy, success, failure, clear]);
+  }, [v, busy, markSaved, success, failure, clear]);
 
   if (!v) {
     return (
@@ -78,6 +86,11 @@ export function VoiceManager() {
 
   return (
     <section style={{ maxWidth: 560 }}>
+      <UnsavedChangesDialog
+        pendingHref={guard.pendingHref}
+        onLeave={guard.leave}
+        onStay={guard.stay}
+      />
       <h1 style={{ marginTop: 0 }}>音声設定</h1>
       <div style={{ display: 'flex', flexDirection: 'column', gap: space.md }}>
         <label style={chk}>

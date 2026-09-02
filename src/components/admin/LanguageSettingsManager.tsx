@@ -9,6 +9,9 @@ import {
 import type { LanguageSettings } from '@/lib/i18n/language-settings';
 import { Button, Field, SaveFeedback, useSaveFeedback } from '@/components/admin/ui';
 import { AdminReadGate } from './AdminReadGate';
+import { useUnsavedChanges } from './use-unsaved-changes';
+import { useUnsavedChangesGuard } from './use-unsaved-changes-guard';
+import { UnsavedChangesDialog } from './UnsavedChangesDialog';
 
 /**
  * 通常の言語設定に出す locale（#321: 'ja-simple' はここには出さない）。
@@ -25,6 +28,9 @@ export function LanguageSettingsManager() {
   const [s, setS] = useState<LanguageSettings | null>(null);
   const [loadFailed, setLoadFailed] = useState(false);
   const [busy, setBusy] = useState(false);
+  // 未保存のまま離脱しようとしたら止める (#912 / 課題 12)。
+  const { dirty, markSaved } = useUnsavedChanges(s);
+  const guard = useUnsavedChangesGuard(dirty);
   const { feedback, success, failure, clear } = useSaveFeedback();
 
   const load = useCallback(async () => {
@@ -64,7 +70,9 @@ export function LanguageSettingsManager() {
         body: JSON.stringify(s),
       });
       if (res.ok) {
-        setS((await res.json()) as LanguageSettings);
+        const next = (await res.json()) as LanguageSettings;
+        setS(next);
+        markSaved(next);
         success();
       } else {
         failure();
@@ -72,7 +80,7 @@ export function LanguageSettingsManager() {
     } finally {
       setBusy(false);
     }
-  }, [s, busy, success, failure, clear]);
+  }, [s, busy, markSaved, success, failure, clear]);
 
   if (!s) {
     return (
@@ -88,6 +96,11 @@ export function LanguageSettingsManager() {
 
   return (
     <section style={{ maxWidth: 560 }}>
+      <UnsavedChangesDialog
+        pendingHref={guard.pendingHref}
+        onLeave={guard.leave}
+        onStay={guard.stay}
+      />
       <h1 style={{ marginTop: 0 }}>言語設定</h1>
       <p style={{ color: 'var(--color-muted)' }}>
         受付端末で選べる言語と、最初に表示する言語を設定します。音声が使えない場合も画面で受付を完了できます。
