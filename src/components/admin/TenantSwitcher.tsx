@@ -1,7 +1,6 @@
 'use client';
 
 import { useTransition } from 'react';
-import { useRouter } from 'next/navigation';
 import type { TenantOption } from '@/lib/tenant/tenant-selection';
 import { selectTenant } from '@/lib/tenant/select-tenant-action';
 import { TenantContextChip, TenantSelect } from './TenantContextView';
@@ -29,7 +28,6 @@ export function TenantSwitcher({
   options: readonly TenantOption[];
   activeTenantId?: string;
 }) {
-  const router = useRouter();
   const [pending, startTransition] = useTransition();
 
   const first = options[0];
@@ -55,8 +53,20 @@ export function TenantSwitcher({
         if (next === null || next === active.id) return;
         startTransition(async () => {
           await selectTenant(next);
-          // サーバ側 cookie 更新後に再フェッチして表示を反映する。
-          router.refresh();
+          /*
+            **フルリロードする。`router.refresh()` では足りない (#870 増分 01)。**
+
+            管理画面の read は 11 コンポーネントが `useCallback(..., [])` の mount 時 fetch で
+            行っており、server component の再レンダリングでは**再取得されない**。
+            `router.refresh()` だけだとヘッダのテナント名は変わるのに本文は前テナントのまま残り、
+            **その状態で編集すると切替後テナントへ書き込まれる**。
+
+            platform 側（`admin/platform/TenantSwitcher.tsx`）は同じ理由で既に
+            `window.location.reload()` にしていた。その修正が admin へ写されていなかった。
+            体感は重いが、運用コンソールでは「前テナントのデータを新テナント名の下で編集させない」
+            ことが優先される。`tests/config/tenant-switch-reflection.test.ts` が両方を縛る。
+          */
+          window.location.reload();
         });
       }}
     />
