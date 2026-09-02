@@ -5,18 +5,27 @@ import type { VoiceSettings } from '@/domain/voice/types';
 import { Button, Field, FormRow, SaveFeedback, useSaveFeedback } from '@/components/admin/ui';
 import { color, font, space } from '@/components/admin/ui/tokens';
 import { isSttRecognitionSimulated } from '@/domain/voice/stt-capability';
+import { AdminReadGate } from './AdminReadGate';
 import { DEFAULT_CALLING_STAGE_THRESHOLDS } from '@/domain/reception/calling-experience';
 import { sanitizeA11yEnabledModes, type A11yEnabledModes } from '@/domain/kiosk/a11y-modes';
 
 /** 音声設定 (issue #28)。TTS/STT の有効化・案内文言・話速・音量を編集する。 */
 export function VoiceManager() {
   const [v, setV] = useState<VoiceSettings | null>(null);
+  const [loadFailed, setLoadFailed] = useState(false);
   const [busy, setBusy] = useState(false);
   const { feedback, success, failure, clear } = useSaveFeedback();
 
   const load = useCallback(async () => {
-    const res = await fetch('/api/admin/voice');
-    if (res.ok) setV((await res.json()) as VoiceSettings);
+    // `catch` を省くとオフラインで例外になり、`void load()` が握り潰して
+    // **失敗にすら落ちない**（画面は「読み込み中…」のまま固まる）。
+    const res = await fetch('/api/admin/voice').catch(() => null);
+    if (!res?.ok) {
+      setLoadFailed(true);
+      return;
+    }
+    setV((await res.json()) as VoiceSettings);
+    setLoadFailed(false);
   }, []);
 
   useEffect(() => {
@@ -49,7 +58,17 @@ export function VoiceManager() {
     }
   }, [v, busy, success, failure, clear]);
 
-  if (!v) return <section><h1 style={{ marginTop: 0 }}>音声設定</h1><p>読み込み中…</p></section>;
+  if (!v) {
+    return (
+      <AdminReadGate
+        heading="音声設定"
+        failed={loadFailed}
+        failureMessage="音声設定を取得できませんでした。通信状況を確認して再試行してください。"
+        onRetry={() => void load()}
+        testId="voice-unavailable"
+      />
+    );
+  }
 
   // アクセシビリティ支援モードの有効/無効 (issue #321)。未設定は「全モード有効」として表示する
   // （sanitizeA11yEnabledModes の既定と一致させる。保存時は常に全 4 モード分をまとめて送る）。
