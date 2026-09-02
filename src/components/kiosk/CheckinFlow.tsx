@@ -4,6 +4,10 @@ import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from 'r
 import { confirmAndCall } from '@/lib/checkin/place-call';
 import { decidePollAction, CALL_STATUS_POLL_INTERVAL_MS } from '@/domain/reception/call-poll';
 import {
+  shouldAutoReturnFromCheckin,
+  TERMINAL_AUTO_RESET_MS,
+} from '@/domain/kiosk/inactivity';
+import {
   clampCallingStageThresholds,
   callingStageQueryFromSearch,
   type CallingStage,
@@ -313,6 +317,19 @@ export function CheckinFlow({
     dispatch({ type: 'RESET' });
     onExit?.();
   }, [onExit]);
+
+  /*
+   * 終端（完了・中止）から待機画面へ自動復帰する (#871)。
+   *
+   * 通常受付には同じ復帰が `KioskFlow` にあるが、QR 受付には無く、無操作リセット
+   * （既定 60 秒）を待つしかなかった。「受付が完了しました」の画面が 1 分間居座ると、
+   * 次の来訪者は端末が壊れていると読む。どの状態を終端とみなすかは純関数へ委ねる。
+   */
+  useEffect(() => {
+    if (!shouldAutoReturnFromCheckin(data.state)) return;
+    const timer = setTimeout(exit, TERMINAL_AUTO_RESET_MS);
+    return () => clearTimeout(timer);
+  }, [data.state, exit]);
 
   return (
     <CheckinShell
