@@ -191,6 +191,52 @@ test.describe('管理: 重複ナビの一本化 (#421)', () => {
 });
 
 /**
+ * テナントを切り替えたら本文も新テナントを映す (#870 増分 01)。
+ *
+ * 切替後に `router.refresh()` だけを呼ぶと、`useCallback(..., [])` の mount 時 fetch で読む
+ * 11 画面が再取得されない。ヘッダのテナント名だけが変わり、**前テナントのデータを新テナント名の
+ * 下で編集できてしまう**（そして書き込みは切替後テナントへ行く）。
+ *
+ * 🔴 **現在の seed はテナントが 1 件なので、このテストは常に skip される。**
+ * 切替 UI 自体が単一所属では固定表示（`TenantContextChip`）になり、選ぶ対象が無い。
+ * `platform-viewing-context.spec.ts` の「選択中と別のテナント」テストが同じ理由で skip
+ * されており、テナント作成 API も現状は無い（`/api/platform/tenants` は GET のみ）。
+ *
+ * **消さずに置く**のは、2 件目のテナントが入った時点で**自動的に有効になる**ようにするため。
+ * それまでの反映方法の保証は `tests/config/tenant-switch-reflection.test.ts` が構造で担う。
+ */
+test.describe('管理: テナント切替が本文へ届く (#870)', () => {
+  test.beforeEach(async ({ page }) => {
+    await loginAsAdmin(page);
+  });
+
+  test('テナントを切り替えると一覧が新テナントの内容になる', async ({ page }) => {
+    test.skip(!!process.env.PLAYWRIGHT_BASE_URL, 'seed 依存のため実環境では実行しない');
+
+    await page.goto('/admin/staff');
+    const switcher = page.getByTestId('admin-tenant-switcher');
+    const optionCount = await switcher.locator('option').count();
+    test.skip(optionCount < 2, 'seed のテナントが 1 件のため切替対象が作れない');
+
+    const before = await page.getByTestId('staff-table').innerText();
+    const current = await switcher.inputValue();
+    const next = await switcher
+      .locator('option')
+      .filter({ hasNot: page.locator(`[value="${current}"]`) })
+      .first()
+      .getAttribute('value');
+    await switcher.selectOption(next ?? '');
+
+    // 切替はフルリロードで反映される。ヘッダだけでなく**本文**が変わることを見る
+    // （ヘッダだけ見ていたのが、この欠陥が 1 度も検出されなかった理由）。
+    await expect(switcher).toHaveValue(next ?? '');
+    await expect
+      .poll(async () => page.getByTestId('staff-table').innerText(), { timeout: 10_000 })
+      .not.toBe(before);
+  });
+});
+
+/**
  * ヘッダの対象拠点常設表示 (#423 受入条件「主要画面で現在の tenant/site が常に確認できる」)。
  *
  * **ヘッダと本文がずれないこと**が肝。platform では実際にヘッダ（Cookie の選択）と本文
