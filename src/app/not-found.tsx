@@ -41,7 +41,7 @@ export default function NotFound() {
           alignItems: 'center',
           justifyContent: 'center',
           background: 'var(--color-accent)',
-          color: '#0f172a',
+          color: 'var(--color-accent-ink)',
           borderRadius: 'var(--radius-lg)',
           fontWeight: 700,
           padding: '0 28px',

@@ -69,7 +69,7 @@ export default async function AdminLoginPage({
               justifyContent: 'center',
               borderRadius: 8,
               background: 'var(--color-accent)',
-              color: '#0f172a',
+              color: 'var(--color-accent-ink)',
               fontWeight: 700,
               textDecoration: 'none',
               padding: '0 16px',

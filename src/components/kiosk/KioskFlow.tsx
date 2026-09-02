@@ -72,6 +72,7 @@ import {
   type FontScale,
 } from '@/domain/kiosk/a11y-modes';
 import {
+  accentInkFor,
   normalizeAccentColor,
 } from '@/domain/branding/types';
 import {
@@ -1169,7 +1170,18 @@ export function KioskFlow({
     ...(backgroundUrl && !a11yHighContrast
       ? { backgroundImage: `url(${backgroundUrl})`, backgroundSize: 'cover', backgroundPosition: 'center' }
       : {}),
-    ...(brandAccent ? ({ '--brand-accent': brandAccent } as React.CSSProperties) : {}),
+    /*
+      accent と**その上に置くインク**を対で注入する (#884)。
+      インクを `#06121f` 固定にしていたため、紺やえんじのテナントは主 CTA が黒地に黒文字に
+      なっていた（実測: `#7f1d1d` 対 `#06121f` = 1.88:1）。輝度で選べばどの色でも 4.34:1 以上出る。
+      派生色（strong / soft / glow）は CSS 側の `.screen` が `--brand-accent` から再導出する。
+    */
+    ...(brandAccent
+      ? ({
+          '--brand-accent': brandAccent,
+          '--color-accent-ink': accentInkFor(brandAccent),
+        } as React.CSSProperties)
+      : {}),
   };
 
   return (

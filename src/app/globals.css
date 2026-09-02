@@ -18,9 +18,27 @@
   /* アクセント（ブランドで差し替える土台） */
   --brand-accent: #38bdf8;
   --color-accent: var(--brand-accent);
-  --color-accent-strong: #0ea5e9;
+  /*
+   * グラデーションの下端。**ここだけは既定値を厳密には再現できない** (#884)。
+   *
+   * 元の literal `#0ea5e9` は `#38bdf8` より**彩度が高い**（赤 56 → 14 に対し緑・青はほぼ据置）。
+   * `color-mix` は 2 色の内分なので、彩度を上げる方向へは動けない —— 混ぜ相手を逆算すると
+   * どの比率でも赤が負になる。よって「accent から導出する」と「既定の描画を 1 px も変えない」は
+   * **両立しない**。導出を採ったので、既定の VRT 基準は取り直してある。
+   */
+  --color-accent-strong: color-mix(in oklch, var(--color-accent) 85%, black);
   --color-accent-ink: #06121f; /* アクセント上の文字色 */
-  --color-accent-soft: rgba(56, 189, 248, 0.16);
+  /*
+   * accent 由来の色は**すべて `--color-accent` から導出する** (#884)。
+   *
+   * かつてここは `rgba(56, 189, 248, 0.16)` の literal だった。テナントが注入できるのは
+   * `--brand-accent` 1 つだけなので、**赤を設定したテナントが「赤 → シアン」のグラデーション
+   * ボタンとシアンのフォーカス光を得ていた**。
+   *
+   * `color-mix(... N%, transparent)` は既定 accent に対して元の rgba と**完全に同じ値**を返す
+   * （`#38bdf8` 16% = `rgba(56,189,248,0.16)`）。よって既定テナントの描画は 1 ピクセルも変わらない。
+   */
+  --color-accent-soft: color-mix(in srgb, var(--color-accent) 16%, transparent);
   --color-success: #34d399;
   --color-danger: #f87171;
   --color-warning: #fbbf24;
@@ -41,7 +59,17 @@
    * 値/コントラスト方向が異なり流用不可）。テーマ非対象の固定値。
    */
   --color-on-danger: #fff; /* 危険サーフェス上の文字色（DangerActionButton 実行ボタンの白インク） */
-  --color-on-accent: #fff; /* アクセント上の文字色（--color-accent-ink=#06121f とは逆コントラスト。LanguageSwitcher アクティブボタン） */
+  /*
+   * accent 上のインクの**明るい側** (#884)。
+   *
+   * 以前は「LanguageSwitcher アクティブボタン」用と書かれていたが当の消費者は既に
+   * `--color-accent-ink` へ移っており、**消費者ゼロで 2.14:1 の罠トークン**だった。
+   * 課題 26 は「削除」を提案していたが、**役割を与える**方へ倒した ——
+   * `accentInkFor()`（`domain/branding/types.ts`）が accent の輝度に応じて
+   * `--color-accent-ink`（暗）とこれ（明）のどちらかを選び、`KioskFlow` が注入する。
+   * 暗いブランド色のテナントではこちらが選ばれる（`#7f1d1d` なら 10.02:1）。
+   */
+  --color-on-accent: #fff;
   --color-scrim: rgba(0, 0, 0, 0.6); /* 暗幕オーバーレイ（AvatarGuide 字幕背景） */
   --color-on-scrim: #fff; /* 暗幕上の文字色（AvatarGuide 字幕） */
   --color-surface-faint: rgba(255, 255, 255, 0.06); /* ごく薄い面（AvatarGuide プレースホルダ地色） */
@@ -64,7 +92,8 @@
   --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.3);
   --shadow-md: 0 10px 28px rgba(0, 0, 0, 0.38);
   --shadow-lg: 0 24px 56px rgba(0, 0, 0, 0.5);
-  --shadow-glow: 0 0 0 1px var(--color-accent-soft), 0 10px 34px rgba(56, 189, 248, 0.2);
+  --shadow-glow: 0 0 0 1px var(--color-accent-soft), 0 10px 34px
+    color-mix(in srgb, var(--color-accent) 20%, transparent);
 
   /* ---- モーション ---- */
   --ease-out: cubic-bezier(0.22, 1, 0.36, 1);
@@ -116,7 +145,11 @@ body {
   min-height: 100%;
   /* ベースにごく淡いアクセント光を載せて単調さを消す（奥行き） */
   background:
-    radial-gradient(135% 90% at 50% -15%, rgba(56, 189, 248, 0.07), transparent 55%),
+    radial-gradient(
+      135% 90% at 50% -15%,
+      color-mix(in srgb, var(--color-accent) 7%, transparent),
+      transparent 55%
+    ),
     radial-gradient(110% 80% at 85% 110%, rgba(34, 80, 128, 0.16), transparent 55%),
     var(--color-bg);
   background-attachment: fixed;
@@ -179,6 +212,31 @@ a {
 }
 
 .screen {
+  /*
+   * 🔴 **ブランド accent をここで再導出する (#884)。これが無いと注入が一切効かない。**
+   *
+   * `KioskFlow` は `--brand-accent` を **この要素へインラインで**注入する
+   * （`KioskFlow.tsx` の `backgroundStyle`）。しかし `--color-accent: var(--brand-accent)` は
+   * `:root` で宣言されており、**`var()` は宣言された要素の計算値時点で置換される**。
+   * つまり `:root` で `#38bdf8` に確定し、その済んだ値が子孫へ継承される ——
+   * 子孫で `--brand-accent` だけを差し替えても、置換済みの `--color-accent` は再計算されない。
+   *
+   * 実測（修正前・`--brand-accent: #7f1d1d` を `.screen` へ注入）:
+   *   --brand-accent   #38bdf8 → #7f1d1d   （注入は届いている）
+   *   --color-accent   #38bdf8 → #38bdf8   （**追随しない**）
+   *   主 CTA の背景     変化なし（バイト単位で同一）
+   *
+   * **これは #869（`--a11y-font-scale` で支援モードが何も拡大していなかった）と同じ型**で、
+   * あちらは `--font-*` で踏み、こちらは `--color-accent` で踏んでいた。上書きする場所で
+   * 派生を丸ごと再宣言する、という同じ手当てを当てる。
+   * `tests/config/css-custom-property-definitions.test.ts` が両方を同じ不変条件で縛る。
+   */
+  --color-accent: var(--brand-accent);
+  --color-accent-strong: color-mix(in oklch, var(--color-accent) 85%, black);
+  --color-accent-soft: color-mix(in srgb, var(--color-accent) 16%, transparent);
+  --shadow-glow: 0 0 0 1px var(--color-accent-soft), 0 10px 34px
+    color-mix(in srgb, var(--color-accent) 20%, transparent);
+
   min-height: 100vh;
   display: flex;
   flex-direction: column;
@@ -1267,7 +1325,7 @@ a {
   /* CJK 連なりを語として扱い、語中での折り返しを避ける（見出し・説明文に継承される）。 */
   word-break: keep-all;
   background:
-    linear-gradient(180deg, rgba(56, 189, 248, 0.06), transparent 40%),
+    linear-gradient(180deg, color-mix(in srgb, var(--color-accent) 6%, transparent), transparent 40%),
     var(--color-glass);
 }
 

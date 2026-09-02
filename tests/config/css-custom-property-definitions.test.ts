@@ -178,3 +178,105 @@ describe('CSS カスタムプロパティ: 派生トークンは上書き元と�
     ).toEqual([]);
   });
 });
+
+/**
+ * **実行時にインラインで注入されるトークン**にも同じ不変条件を課す (#884)。
+ *
+ * ## なぜ上の検査では捕まらなかったか
+ *
+ * 上は「CSS のブロックが元トークンを上書きしている」場合しか見ない。ところが
+ * `--brand-accent` は **`KioskFlow` が `main.screen` へインラインで注入する**ので、
+ * CSS 側には上書きブロックが存在しない。よって上の検査は `--brand-accent` について
+ * **構造的に何も言えなかった** —— #869 で正しい不変条件を書いたのに、対象が
+ * `--a11y-font-scale` にべた書きされていたため、**同じ欠陥の 2 例目を見逃した**。
+ *
+ * ## 実測（修正前）
+ *
+ * `--brand-accent: #7f1d1d` を `.screen` へ注入したときの計算値:
+ *
+ * ```
+ * --brand-accent   #38bdf8 → #7f1d1d   （注入は届いている）
+ * --color-accent   #38bdf8 → #38bdf8   （追随しない）
+ * 主 CTA の背景     バイト単位で同一
+ * ```
+ *
+ * **テナントのブランド色は 1 度も効いたことが無かった。**
+ *
+ * ## 何を縛るか
+ *
+ * 「注入先のセレクタが、その元トークンから**推移的に**導出される全トークンを再宣言している」。
+ * 推移閉包を取るのは、`--color-accent-soft` のように `--brand-accent` を直接は参照せず
+ * `var(--color-accent)` 経由で derive されるものを取りこぼさないため。
+ */
+describe('CSS カスタムプロパティ: 実行時注入トークンの派生も注入先で再宣言する (#884)', () => {
+  const GLOBALS = stripComments(readFileSync(resolve(SRC, 'app/globals.css'), 'utf8'));
+
+  function blocks(css: string): { selector: string; body: string }[] {
+    return [...css.matchAll(/([^{}]+)\{([^{}]*)\}/g)].map((m) => ({
+      selector: m[1]!.trim(),
+      body: m[2]!,
+    }));
+  }
+
+  /**
+   * 実行時にインラインで注入される元トークンと、その注入先セレクタ。
+   *
+   * 注入先は静的には決められない（React のインラインスタイル）ので、**人が読んで登録する**。
+   * 登録が実態とずれたら e2e（`kiosk-brand-accent.spec.ts`）が落ちる —— 構造と挙動の両方で
+   * 縛るのは、どちらか片方では「宣言はあるが効いていない」を見抜けないため。
+   */
+  const RUNTIME_INJECTED: readonly { token: string; injectedInto: string; source: string }[] = [
+    { token: '--brand-accent', injectedInto: '.screen', source: 'components/kiosk/KioskFlow.tsx' },
+  ];
+
+  it.each(RUNTIME_INJECTED)(
+    '$token の派生トークンは注入先 $injectedInto で再宣言されている',
+    ({ token, injectedInto, source }) => {
+      const all = blocks(GLOBALS);
+
+      // 注入されていることを実ファイルで確かめる（登録が古くなったら落とす＝下界）。
+      const injector = readFileSync(resolve(SRC, source), 'utf8');
+      expect(injector, `${source} が ${token} を注入していない`).toContain(`'${token}'`);
+
+      /*
+       * 推移閉包。`--color-accent: var(--brand-accent)` だけでなく、
+       * `--color-accent-soft: color-mix(... var(--color-accent) ...)` のように
+       * 1 段以上離れて derive されるものまで集める。
+       */
+      const derived = new Set<string>();
+      let grew = true;
+      while (grew) {
+        grew = false;
+        for (const { body } of all) {
+          for (const m of body.matchAll(/(--[a-zA-Z0-9-]+)\s*:\s*([^;]+);/g)) {
+            const name = m[1]!;
+            const value = m[2]!;
+            if (derived.has(name)) continue;
+            const dependsOnSource =
+              value.includes(`var(${token})`) ||
+              [...derived].some((d) => value.includes(`var(${d})`));
+            if (dependsOnSource) {
+              derived.add(name);
+              grew = true;
+            }
+          }
+        }
+      }
+
+      expect(derived.size, `${token} から導出されるトークンが見つからない`).toBeGreaterThan(1);
+
+      const target = all.filter((b) => b.selector === injectedInto);
+      expect(target.length, `注入先 ${injectedInto} のブロックが無い`).toBeGreaterThan(0);
+      const targetBody = target.map((b) => b.body).join('\n');
+
+      const missing = [...derived].filter((d) => !new RegExp(`${d}\\s*:`).test(targetBody));
+      expect(
+        missing,
+        `${token} は ${injectedInto} へ実行時に注入されるが、そこで派生トークンが再宣言されて\n` +
+          'いない。var() は宣言された要素の計算値時点で置換されるので、:root で確定した派生は\n' +
+          '子孫で元トークンを差し替えても再計算されない（= 注入が一切効かない）。\n' +
+          `再宣言されていない: ${missing.join(', ')}`,
+      ).toEqual([]);
+    },
+  );
+});
