@@ -18,7 +18,6 @@ import type {
   SatisfactionRating,
 } from '@/domain/reception/log';
 import {
-  shouldResetOnInactivity,
   type ReceptionState,
 } from '@/domain/reception/state';
 import {
@@ -130,6 +129,8 @@ import {
 import {
   INACTIVITY_WARNING_MS,
   resolveInactivityLimitMs,
+  shouldResetOnInactivityForKiosk,
+  TERMINAL_AUTO_RESET_MS,
 } from '@/domain/kiosk/inactivity';
 import {
   operatingStateOf,
@@ -223,7 +224,8 @@ import {
 const DEFAULT_IDLE_GUIDANCE = 'ようこそ。タッチ操作だけで受付できます。';
 
 /** 完了・キャンセル後に待機画面へ自動復帰するまでの時間。 */
-const AUTO_RESET_MS = 6000;
+// 終端からの自動復帰は QR 受付と同じ値を共有する（#871 で domain へ移した）。
+const AUTO_RESET_MS = TERMINAL_AUTO_RESET_MS;
 
 // 無操作リセットの上限と警告時間は `src/domain/kiosk/inactivity.ts` の純ロジックに集約する
 // （E2E 上書き `?inactivityMs=` / `?connectedInactivityMs=` の解決を含む）。
@@ -741,7 +743,13 @@ export function KioskFlow({
   // (issue #125)。RESET は INITIAL を返すため、入力済みの氏名等 PII は持ち越されない。
   // 来訪者がタッチ/キー操作するたびにタイマーを延長する。
   useEffect(() => {
-    if (!shouldResetOnInactivity(data.state)) {
+    /*
+     * QR 受付は受付状態機械を進めない（`setMode('checkin')` だけで state は idle のまま）ので、
+     * `data.state` だけで判定すると **QR 経路では無操作リセットが一度も発火しない** (#871)。
+     * 予約内容の確認画面（氏名・会社名・予約時刻）が端末に無期限で残っていた。
+     */
+    const qrCheckinActive = mode === 'checkin';
+    if (!shouldResetOnInactivityForKiosk({ receptionState: data.state, qrCheckinActive })) {
       setInactivitySeconds(null);
       return;
     }
@@ -765,6 +773,8 @@ export function KioskFlow({
         remaining -= 1;
         if (remaining <= 0) {
           window.clearInterval(interval);
+          // RESET は ReceptionState を戻すだけ。QR 受付から戻すには mode も明示的に戻す (#871)。
+          setMode('normal');
           dispatch({ type: 'RESET' });
         } else {
           setInactivitySeconds(remaining);
@@ -796,7 +806,8 @@ export function KioskFlow({
       window.removeEventListener('keydown', bump);
       setInactivitySeconds(null);
     };
-  }, [data.state]);
+    // `mode` を依存に入れないと、QR 受付へ入った瞬間に再評価されず判定が古いままになる。
+  }, [data.state, mode]);
 
   // idle へ戻ったら選んだカスタムフローを破棄し、表示言語も既定へ戻す（次の来訪者へ持ち越さない）
   // (issue #100 / #103)。待機中の言語切替はそのまま有効（idle に居る間は state 遷移しないため）。

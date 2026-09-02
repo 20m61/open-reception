@@ -22,6 +22,9 @@
  * 構造的に消す。
  */
 
+import { shouldResetOnInactivity, type ReceptionState } from '../reception/state';
+import type { CheckinState } from '../checkin/state';
+
 /**
  * 操作途中で離席した場合に、無操作のまま待機画面へ戻すまでの時間 (issue #125)。
  * 公共端末に入力途中の個人情報を残さないための上限。
@@ -66,4 +69,49 @@ export function resolveInactivityLimitMs(input: { search?: string; state: string
   if (uniformOverride !== undefined) return uniformOverride;
 
   return input.state === 'connected' ? CONNECTED_INACTIVITY_RESET_MS : INACTIVITY_RESET_MS;
+}
+
+/**
+ * 無操作リセットを働かせるべきか（キオスク全体で見た判定, #871）。
+ *
+ * `shouldResetOnInactivity(state)` は `ReceptionState` だけを見る。しかし **QR 受付は受付
+ * 状態機械を進めない** —— `KioskFlow` は `setMode('checkin')` を呼ぶだけで `ReceptionState`
+ * は `idle` のまま残り、`idle` は `INACTIVITY_RESET_STATES` に含まれない。結果、QR 受付では
+ * 無操作リセットが一度も発火せず、予約内容の確認画面（氏名・会社名・予約時刻）が
+ * ロビーの端末に無期限で残っていた。通常受付では #125 で解決済みの問題が、QR 経路にだけ
+ * 残っていた形である。
+ *
+ * ここで合成することで、「どの画面層に居るか」を知っている呼び出し側（`KioskFlow`）が
+ * 判断を持ち込まずに済む。**入力手段が増えても、この関数に足せば全経路へ効く。**
+ */
+export function shouldResetOnInactivityForKiosk(input: {
+  /** 受付状態機械の現在状態。 */
+  readonly receptionState: ReceptionState;
+  /** QR 受付（`KioskMode.checkin`）が動いているか。 */
+  readonly qrCheckinActive: boolean;
+}): boolean {
+  return input.qrCheckinActive || shouldResetOnInactivity(input.receptionState);
+}
+
+/**
+ * 終端状態（完了・中止）から待機画面へ自動復帰するまでの時間 (#125 / #871)。
+ *
+ * 通常受付の `KioskFlow` が使っていた値をここへ移し、QR 受付と**同じ値を共有する**。
+ * 別々に持つと、片方だけ調整されて「同じ完了画面なのに入口によって待たされ方が違う」
+ * が静かに生まれる。
+ */
+export const TERMINAL_AUTO_RESET_MS = 6000;
+
+/**
+ * QR 受付の状態が「終端」か —— 待機画面へ自動復帰させるべきか (#871)。
+ *
+ * 通常受付は `completed` / `cancelled` から `TERMINAL_AUTO_RESET_MS` で戻るが、QR 受付には
+ * この短い復帰が無く、無操作リセット（既定 60 秒）を待つしかなかった。「受付が完了しました」
+ * の画面が 1 分間居座ると、次の来訪者は端末が壊れていると読む。
+ *
+ * **進行中の状態を含めない。** 読み取り中や確認中に勝手に戻すと、来訪者の操作を奪う
+ * （そちらは無操作リセットの担当で、警告カウントダウンと「続ける」を伴う）。
+ */
+export function shouldAutoReturnFromCheckin(state: CheckinState): boolean {
+  return state === 'completed' || state === 'cancelled';
 }
