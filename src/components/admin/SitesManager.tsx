@@ -4,7 +4,7 @@ import Link from 'next/link';
 import { useCallback, useMemo, useState } from 'react';
 import type { SiteStatus } from '@/domain/tenant/types';
 import type { SiteWithDevices } from '@/lib/tenant/site-service';
-import { Button, DataTable, Field, Form, SaveFeedback, useSaveFeedback, type Column } from '@/components/admin/ui';
+import { Button, DataTable, Pager, Field, Form, SaveFeedback, useSaveFeedback, type Column } from '@/components/admin/ui';
 import { color, font, space } from '@/components/admin/ui/tokens';
 import { useQueryParams } from './use-query-params';
 import { useSiteList } from './use-site-list';
@@ -321,32 +321,12 @@ export function SitesManager({ tenantId }: { tenantId: string }) {
         emptyMessage={feedback.emptyMessage}
       />
 
-      {paged.pageCount > 1 ? (
-        <div
-          data-testid="site-pagination"
-          style={{ display: 'flex', gap: space.sm, alignItems: 'center', marginTop: space.sm }}
-        >
-          <Button
-            variant="secondary"
-            data-testid="site-page-prev"
-            disabled={paged.page <= 1}
-            onClick={() => setMany({ page: String(paged.page - 1) })}
-          >
-            前へ
-          </Button>
-          <span style={{ fontSize: font.small, opacity: 0.8 }} data-testid="site-page-label">
-            {paged.page} / {paged.pageCount} ページ
-          </span>
-          <Button
-            variant="secondary"
-            data-testid="site-page-next"
-            disabled={paged.page >= paged.pageCount}
-            onClick={() => setMany({ page: String(paged.page + 1) })}
-          >
-            次へ
-          </Button>
-        </div>
-      ) : null}
+      <Pager
+        page={paged.page}
+        pageCount={paged.pageCount}
+        onChange={(next) => setMany({ page: String(next) })}
+        testIdPrefix="site"
+      />
     </section>
   );
 }

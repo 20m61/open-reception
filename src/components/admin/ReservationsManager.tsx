@@ -6,13 +6,14 @@ import type {
   ReservationUsagePolicy,
   VisitReservation,
 } from '@/domain/reservation/types';
-import { Button, Card, CardGrid, DataTable, Field, Form, FormRow, MetricCard, Section, StatusBadge, type Column } from '@/components/admin/ui';
+import { Button, Card, CardGrid, DataTable, Pager, Field, Form, FormRow, MetricCard, Section, StatusBadge, type Column } from '@/components/admin/ui';
 import { color, radius, space, font } from '@/components/admin/ui/tokens';
 import { useQueryParams } from './use-query-params';
+import { useTableSort } from './use-table-sort';
 import { useSiteScope } from './use-site-scope';
 import { SiteScopeSelect } from './SiteScopeSelect';
 import { resolveScopeGate } from './scope-gate';
-import { paginate } from './list-io';
+import { paginate, sortRows } from './list-io';
 import { filterReservations, reservationsToCsv, type ReservationListFilter } from './reservations/list-filter';
 import {
   availableActions,
@@ -106,6 +107,7 @@ export function ReservationsManager({
   });
 
   const { get, setMany } = useQueryParams();
+  const { sort, setSort } = useTableSort();
   const filterStart = get('start');
   const filterEnd = get('end');
   const filterStatus = get('status');
@@ -306,7 +308,6 @@ export function ReservationsManager({
     [filterStart, filterEnd, filterStatus, filterTargetType],
   );
   const filtered = useMemo(() => filterReservations(sorted, filter), [sorted, filter]);
-  const paged = useMemo(() => paginate(filtered, Number(pageParam) || 1, PAGE_SIZE), [filtered, pageParam]);
   const hasFilter = Boolean(filterStart || filterEnd || filterStatus || filterTargetType);
 
   // フィルタ変更時はページを 1 に戻す（絞り込み後に空ページへ迷い込まないようにする）。
@@ -325,7 +326,9 @@ export function ReservationsManager({
     URL.revokeObjectURL(url);
   };
 
-  const columns: ReadonlyArray<Column<VisitReservation>> = [
+  const columns = useMemo<ReadonlyArray<Column<VisitReservation>>>(
+    () => (
+[
     {
       key: 'visitor',
       header: '来訪者',
@@ -338,7 +341,7 @@ export function ReservationsManager({
         </div>
       ),
     },
-    { key: 'visitAt', header: '予定日時', cell: (r) => formatDateTime(r.visitAt) },
+    { key: 'visitAt', header: '予定日時', cell: (r) => formatDateTime(r.visitAt), sortValue: (r) => r.visitAt },
     {
       key: 'target',
       header: '呼び出し先',
@@ -356,7 +359,18 @@ export function ReservationsManager({
       align: 'right',
       cell: (r) => <RowActions reservation={r} onShowQr={showQr} onCancel={cancel} onRevoke={revoke} onReissue={reissue} canMutate={gate.canMutate} />,
     },
-  ];
+  ]
+    ),
+    [cancel, gate.canMutate, reissue, revoke, showQr],
+  );
+
+  /*
+   * `sorted` は既に「予定日時の昇順」（業務上の既定）で使われているので、
+   * 利用者の並べ替えは**フィルタ後**に別名で重ねる。解除すると `sortRows` が
+   * 入力をそのまま返すので、既定の順序へ戻る。
+   */
+  const userSorted = useMemo(() => sortRows(filtered, columns, sort), [filtered, columns, sort]);
+  const paged = useMemo(() => paginate(userSorted, Number(pageParam) || 1, PAGE_SIZE), [userSorted, pageParam]);
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: space.lg }}>
@@ -550,6 +564,8 @@ export function ReservationsManager({
           columns={columns}
           rows={paged.items}
           rowKey={(r) => r.id}
+          sort={sort}
+          onSortChange={setSort}
           emptyMessage={
             // 取得できていない間は「まだありません」と断定しない。
             !gate.dataTrusted
@@ -561,32 +577,12 @@ export function ReservationsManager({
           testId="reservation-table"
         />
 
-        {paged.pageCount > 1 ? (
-          <div
-            data-testid="reservation-pagination"
-            style={{ display: 'flex', gap: space.sm, alignItems: 'center', marginTop: space.sm }}
-          >
-            <Button
-              variant="secondary"
-              data-testid="reservation-page-prev"
-              disabled={paged.page <= 1}
-              onClick={() => setMany({ page: String(paged.page - 1) })}
-            >
-              前へ
-            </Button>
-            <span style={{ fontSize: font.small, opacity: 0.8 }} data-testid="reservation-page-label">
-              {paged.page} / {paged.pageCount} ページ
-            </span>
-            <Button
-              variant="secondary"
-              data-testid="reservation-page-next"
-              disabled={paged.page >= paged.pageCount}
-              onClick={() => setMany({ page: String(paged.page + 1) })}
-            >
-              次へ
-            </Button>
-          </div>
-        ) : null}
+        <Pager
+          page={paged.page}
+          pageCount={paged.pageCount}
+          onChange={(next) => setMany({ page: String(next) })}
+          testIdPrefix="reservation"
+        />
       </Section>
 
       {qrFor !== null && qrFor.scopeKey === scopeKey ? (

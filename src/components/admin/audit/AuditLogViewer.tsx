@@ -3,7 +3,7 @@
 import { useCallback, useMemo } from 'react';
 import type { AuditAction, AuditLog } from '@/domain/reception/log';
 import { filterAuditLogs, type AuditFilter } from '@/domain/audit/audit-filter';
-import { Button, DataTable, Field, color, font, radius, space, type Column } from '@/components/admin/ui';
+import { Button, DataTable, Pager, Field, color, font, radius, space, type Column } from '@/components/admin/ui';
 import { useQueryParams } from '@/components/admin/use-query-params';
 import { paginate, sortRows } from '@/components/admin/list-io';
 import { useTableSort } from '@/components/admin/use-table-sort';
@@ -211,32 +211,12 @@ export function AuditLogViewer({
         }
       />
 
-      {paged.pageCount > 1 ? (
-        <div
-          data-testid="audit-pagination"
-          style={{ display: 'flex', gap: space.sm, alignItems: 'center' }}
-        >
-          <Button
-            variant="secondary"
-            data-testid="audit-page-prev"
-            disabled={paged.page <= 1}
-            onClick={() => setMany({ page: String(paged.page - 1) })}
-          >
-            前へ
-          </Button>
-          <span style={{ fontSize: font.small, opacity: 0.8 }} data-testid="audit-page-label">
-            {paged.page} / {paged.pageCount} ページ
-          </span>
-          <Button
-            variant="secondary"
-            data-testid="audit-page-next"
-            disabled={paged.page >= paged.pageCount}
-            onClick={() => setMany({ page: String(paged.page + 1) })}
-          >
-            次へ
-          </Button>
-        </div>
-      ) : null}
+      <Pager
+        page={paged.page}
+        pageCount={paged.pageCount}
+        onChange={(next) => setMany({ page: String(next) })}
+        testIdPrefix="audit"
+      />
     </div>
   );
 }

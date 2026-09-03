@@ -3,14 +3,15 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import type { DeviceConnectivity, DeviceView } from '@/lib/tenant/device-service';
 import type { DeviceKind } from '@/domain/tenant/types';
-import { Button, DataTable, Field, Form, Section, StatusBadge, type Column, type StatusKind } from '@/components/admin/ui';
+import { Button, DataTable, Pager, Field, Form, Section, StatusBadge, type Column, type StatusKind } from '@/components/admin/ui';
 import { font, space, zIndex } from '@/components/admin/ui/tokens';
 import { renderTextToQrSvg } from '@/lib/reservation/qr';
 import { useQueryParams } from './use-query-params';
+import { useTableSort } from './use-table-sort';
 import { useModalDialog } from './useModalDialog';
 import { useSiteScope } from './use-site-scope';
 import { SiteScopeSelect } from './SiteScopeSelect';
-import { paginate } from './list-io';
+import { paginate, sortRows } from './list-io';
 import { filterDevices, devicesToCsv, type DeviceListFilter } from './devices-filter';
 
 /**
@@ -117,6 +118,7 @@ export function DevicesManager({
   const [addError, setAddError] = useState<string | null>(null);
 
   const { get, setMany } = useQueryParams();
+  const { sort, setSort } = useTableSort();
   const keyword = get('q');
   const connectivityFilter = get('connectivity');
   const kindFilter = get('kind');
@@ -359,7 +361,6 @@ export function DevicesManager({
     () => filterDevices(devicesLoaded ? devices : [], filter),
     [devicesLoaded, devices, filter],
   );
-  const paged = useMemo(() => paginate(filtered, Number(pageParam) || 1, PAGE_SIZE), [filtered, pageParam]);
   const hasFilter = Boolean(keyword || connectivityFilter || kindFilter);
 
   // フィルタ変更時はページを 1 に戻す（絞り込み後に空ページへ迷い込まないようにする）。
@@ -381,6 +382,7 @@ export function DevicesManager({
     () => [
       {
         key: 'name',
+        sortValue: (d) => d.name,
         header: '端末名',
         cell: (d) =>
           editingId === d.id ? (
@@ -482,6 +484,9 @@ export function DevicesManager({
     ],
     [editingId, editName, editLocation, canMutateRows, saveEdit, toggleEnabled, toggleMaintenance],
   );
+
+  const sorted = useMemo(() => sortRows(filtered, columns, sort), [filtered, columns, sort]);
+  const paged = useMemo(() => paginate(sorted, Number(pageParam) || 1, PAGE_SIZE), [sorted, pageParam]);
 
   return (
     <Section
@@ -669,6 +674,8 @@ export function DevicesManager({
         columns={columns}
         rows={paged.items}
         rowKey={(d) => d.id}
+        sort={sort}
+        onSortChange={setSort}
         emptyMessage={
           // 失敗の詳細は上のバナーに出しているので、ここでは短く（二重表示にしない）。
           listError !== null
@@ -681,32 +688,12 @@ export function DevicesManager({
         }
       />
 
-      {paged.pageCount > 1 ? (
-        <div
-          data-testid="device-pagination"
-          style={{ display: 'flex', gap: space.sm, alignItems: 'center', marginTop: space.sm }}
-        >
-          <Button
-            variant="secondary"
-            data-testid="device-page-prev"
-            disabled={paged.page <= 1}
-            onClick={() => setMany({ page: String(paged.page - 1) })}
-          >
-            前へ
-          </Button>
-          <span style={{ fontSize: font.small, opacity: 0.8 }} data-testid="device-page-label">
-            {paged.page} / {paged.pageCount} ページ
-          </span>
-          <Button
-            variant="secondary"
-            data-testid="device-page-next"
-            disabled={paged.page >= paged.pageCount}
-            onClick={() => setMany({ page: String(paged.page + 1) })}
-          >
-            次へ
-          </Button>
-        </div>
-      ) : null}
+      <Pager
+        page={paged.page}
+        pageCount={paged.pageCount}
+        onChange={(next) => setMany({ page: String(next) })}
+        testIdPrefix="device"
+      />
 
       {reissueTarget && (
         <div
