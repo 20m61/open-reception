@@ -11,7 +11,7 @@
 > | AWS の窓を開ける（`./scripts/aws-issue-credentials.sh`） | 短命 STS の発行は darwin 限定で、`scripts/hooks/guard-destructive.sh` が機械強制（#675）。**窓さえ開けばデプロイ本体はクラウドから wrapper 経由で流せる** | #675 / `docs/runbook-cloud-aws-deploy.md` |
 > | 実機 iPad UAT | 横向きで部署カードが何枚見えるか / 部署を開いて戻れるか / 騒音下で不在告知が聞き取れるか | #807 / #65 |
 > | **darwin ベースライン 4 枚の取り直し**（`kiosk-idle-ipad-portrait` / `-ipad-landscape` / `-large-display` / `kiosk-landscape-out-of-hours`） | #918 で `--color-border-strong` を 3:1 へ上げた（WCAG 1.4.11）。ベースライン名に `{platform}` が入るので linux の描画を darwin の名前で置けない。**linux 側は再生成済み**。閾値 0 で測って**この 4 枚だけ**が変わることを確認してある（他 12 枚は画素単位で同一） | #918 |
-> | **リモートブランチ 21 本の削除**（2026-09-02〜03 の周回ぶん） | クラウドセッションからは `git push origin --delete` が消せない。2026-09-03 に**エラーの出方まで実測**した: `error: RPC failed; HTTP 403` に続けて `Everything up-to-date` が出るので、**戻り値だけ見ると成功に見える**（proxy が write を拒否している）。全部 squash マージ済みで PR も閉じているので `orphan_branch` 検出には掛からない。一覧は本書「削除できていないリモートブランチ」節 | — |
+> | **リモートブランチ 22 本の削除**（2026-09-02〜03 の周回ぶん） | クラウドセッションからは `git push origin --delete` が消せない。2026-09-03 に**エラーの出方まで実測**した: `error: RPC failed; HTTP 403` に続けて `Everything up-to-date` が出るので、**戻り値だけ見ると成功に見える**（proxy が write を拒否している）。全部 squash マージ済みで PR も閉じているので `orphan_branch` 検出には掛からない。一覧は本書「削除できていないリモートブランチ」節 | — |
 >
 ## 2026-09-03 の周回（Vonage 仕様照合）
 
@@ -36,6 +36,27 @@
 **実資格情報が要る 4 点は #65 §5 へスタックした**（`/session/create` の応答形が配列か / client SDK の
 グローバル名と `OT.initSession(applicationId, sessionId)` / `region_url` が answer・event の
 どちらの webhook に載るか / `cancelled` の後に `completed` が続くか）。
+
+### admin の form 化（#893・PR #938）
+
+設定の保存 11 画面を `ui/Form` へ変換した。`--full` green・flaky 0・**VRT ベースラインは 1 枚も
+動いていない**（変換した 2 画面は `admin-vrt-a11y.spec.ts` が直接撮っている）。
+
+🔴 **issue の棚卸しが不完全だった**（「調査の作法」の 7 例目）。#893 の本文は「残りは 8 画面 + 2」と
+書いていたが、実測すると admin の primary ボタンは 25 個あり、**form 形なのに一覧から漏れていたものが
+2 つ**あった（`flow-add` / `staff-response-config-message-save`）。散文の棚卸しは必ず腐るので、
+レジストリを 3 バケツ（`CONVERTED` / `PENDING` / `ACTIONS`）にして**全 primary ボタンが
+どれかに属すること**を機械で強制した。`PENDING` が空になったら AC8 の締めに入ることもテストが見張る。
+
+🔴 **変異検証を一度やり直した。** `vitest --reporter=basic` はこのバージョンでは**レポータの
+読み込み自体が `ERR_LOAD_URL` で落ち、テストが 1 本も走らないまま exit 1** になる。exit code だけを
+見て「15/15 kill」と判定していたが**全部が偽の kill** だった。**変異なしの baseline が 0 で終わることを
+先に確認する**こと（CLAUDE.md「アサーションに到達する前に落ちたものは、まず偽の赤を疑う」の同型）。
+
+🔴 **`<form>` の中にボタンがある限り、Enter の e2e は `onSubmit` の配線を検査できていない。**
+`ui/Form` の `onSubmit={handle}` を `onClick={handle}` に変えても、既存の Enter テストは**全部通る**
+（Enter の暗黙送信 → 送信ボタンの click → form へバブル → `onClick` が発火し `preventDefault` が
+送信を止めるので挙動がほぼ等価になる）。落ちたのは**保存ボタンが form の外にある**サイネージだけだった。
 
 ## 2026-09-02 の周回（UI/UX 監査 Wave 0 / Wave 1）
 
@@ -70,7 +91,7 @@
 
 | Issue | 内容 |
 | --- | --- |
-| #893 | 保存系 8 画面と表の行内編集の form 化（#894 の残り） |
+| #893 | 保存系と表の行内編集の form 化（#894 の残り）。**2026-09-03 に 11 画面を消化**（PR #938）。残りは `device-save` 1 件（`DataTable` のセル内で入力欄と保存ボタンが別 `<td>` に載るため `<form>` で囲えない）と AC8（レジストリ方式の廃止） |
 | #896 | platform の生 table 14 個・読込中と 0 件の描き分け（課題 06） |
 | #899 | 状態表示をバッジへ揃えるかの設計判断（#900 の続き） |
 | #910 | 列ソートの残りの一覧 + ページング未導入 5 リスト（#911 の続き） |
@@ -111,7 +132,8 @@ for b in feat/admin-form-aria feat/audit-log-paging-csv feat/prefers-contrast-su
          refactor/platform-shared-primitives refactor/z-index-tokens \
          docs/wave1-closeout fix/border-contrast-3to1 docs/responsive-strategy-guard \
          docs/opus-5-loop-profile claude/handoff-docs-resume-ivzxq2 \
-         claude/vonage-module-spec-check-dui9jn docs/vonage-followups-queue; do
+         claude/vonage-module-spec-check-dui9jn docs/vonage-followups-queue \
+         feat/admin-settings-form-submit docs/round-893-closeout; do
   git push origin --delete "$b"
 done
 ```
