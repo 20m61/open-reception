@@ -7,7 +7,9 @@ import { CsvImport } from './CsvImport';
 import { StaffEditor } from './StaffEditor';
 import { filterStaff, type StaffStatusFilter } from './staff-filter';
 import { useQueryParams } from './use-query-params';
-import { Button, DataTable, Field, Form, SaveFeedback, useSaveFeedback, type Column } from '@/components/admin/ui';
+import { useTableSort } from './use-table-sort';
+import { paginate, sortRows } from './list-io';
+import { Button, DataTable, Field, Form, Pager, SaveFeedback, useSaveFeedback, type Column } from '@/components/admin/ui';
 import { color, font, space } from '@/components/admin/ui/tokens';
 import { enablementState } from './state-vocabulary';
 
@@ -16,6 +18,8 @@ import { enablementState } from './state-vocabulary';
  * 一覧・作成・有効/無効・部署割り当てを管理 API 経由で行う。
  * 検索/フィルタ状態は監査ログ・受付履歴と同じく URL クエリを真実源にする（issue #94）。
  */
+const PAGE_SIZE = 20;
+
 export function StaffManager() {
   const [items, setItems] = useState<Staff[]>([]);
   const [departments, setDepartments] = useState<Department[]>([]);
@@ -29,6 +33,7 @@ export function StaffManager() {
   const [editingId, setEditingId] = useState<string | null>(null);
 
   const { get, setMany } = useQueryParams();
+  const { sort, setSort } = useTableSort();
   const keyword = get('q');
   const filterDeptId = get('dept');
   const status = get('status');
@@ -123,6 +128,7 @@ export function StaffManager() {
       }),
     [items, keyword, filterDeptId, status],
   );
+
   const changeSecondary = useCallback(
     async (staffId: string, organizationId: string, method: 'POST' | 'DELETE') => {
       clear();
@@ -149,6 +155,7 @@ export function StaffManager() {
         key: 'name',
         header: '氏名',
         cellTestId: () => 'staff-name',
+        sortValue: (s) => s.displayName,
         cell: (s) => (
           <>
             {s.displayName}
@@ -156,7 +163,7 @@ export function StaffManager() {
           </>
         ),
       },
-      { key: 'dept', header: '部署', cell: (s) => deptName(s.departmentId) },
+      { key: 'dept', header: '部署', cell: (s) => deptName(s.departmentId), sortValue: (s) => deptName(s.departmentId) },
       {
         key: 'secondary',
         header: '兼務',
@@ -245,6 +252,8 @@ export function StaffManager() {
     ],
     [deptName, patch, editingId, items, load, secondary, departments, changeSecondary],
   );
+  const sorted = useMemo(() => sortRows(filtered, columns, sort), [filtered, columns, sort]);
+  const paged = useMemo(() => paginate(sorted, Number(get('page')) || 1, PAGE_SIZE), [sorted, get]);
 
   return (
     <section>
@@ -342,10 +351,18 @@ export function StaffManager() {
       <DataTable
         testId="staff-table"
         columns={columns}
-        rows={filtered}
+        rows={paged.items}
         rowKey={(s) => s.id}
         rowTestId={() => 'staff-row'}
+        sort={sort}
+        onSortChange={setSort}
         emptyMessage={hasFilter ? '条件に一致する担当者はいません。' : '登録された担当者はありません。'}
+      />
+      <Pager
+        page={paged.page}
+        pageCount={paged.pageCount}
+        onChange={(next) => setMany({ page: String(next) })}
+        testIdPrefix="staff"
       />
     </section>
   );

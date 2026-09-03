@@ -91,3 +91,71 @@ test('下界: ソート不可の列にはボタンも aria-sort も出ない', a
   await expect(header).not.toHaveAttribute('aria-sort', /.*/);
   await expect(header.locator('button')).toHaveCount(0);
 });
+
+/**
+ * #910: 部署は**表示順そのものが業務上の値**なので、並べ替えを解除して既定へ戻せることが要る。
+ *
+ * 監査ログ（上）は「新しい順」という自明な既定へ戻るだけだが、部署の既定は運用者が
+ * ドラッグで作った並びで、**戻せないと作り直しになる**。
+ */
+test('部署: 並べ替えを解除すると既定の表示順へ戻る (#910)', async ({ page }) => {
+  await loginAsAdmin(page);
+  await page.goto('/admin/departments');
+  await expect(page.getByTestId('dept-table')).toBeVisible();
+
+  const names = async () =>
+    page.locator('[data-testid="dept-row"] [data-testid="dept-name"]').allTextContents();
+
+  const defaultOrder = await names();
+  // 既定の並びが 2 件以上ないと「戻った」が判定できない。
+  expect(defaultOrder.length).toBeGreaterThan(1);
+
+  const header = page.getByTestId('dept-table').locator('th').filter({ hasText: '部署名' });
+  const button = page.getByTestId('dept-table-sort-name');
+
+  await button.click();
+  await expect(header).toHaveAttribute('aria-sort', 'ascending');
+  await button.click();
+  await expect(header).toHaveAttribute('aria-sort', 'descending');
+  const descending = await names();
+
+  await button.click();
+  await expect(header).toHaveAttribute('aria-sort', 'none');
+  // 🔴 既定の並びが**そのまま**戻る（「解除したが取得順に化けた」を落とす）。
+  expect(await names()).toEqual(defaultOrder);
+  // 下界: 途中で本当に並びが変わっていた（解除の主張が空虚でない）。
+  expect(descending).not.toEqual(defaultOrder);
+});
+
+/**
+ * #910: 並べ替えが URL に載り、**ページ指定を落とす**。
+ *
+ * 🔴 **書けることだけを主張する。** AC2 は「ページングを入れた一覧は URL に `page` を持ち、
+ * フィルタ変更でページが 1 に戻る」だが、**e2e の seed は担当者 6 件**（実測）で
+ * `PAGE_SIZE = 20` に届かず、ページ送りは描画されない。つまりこの環境では
+ * **2 ページ目という状態を作れない**ので、「フィルタでページが 1 に戻る」を実演できない。
+ *
+ * 実演できないものを緑で飾らず、ここでは**確かめられること**だけを見る ——
+ * 並べ替えが URL に載り、`page` を持ち越さないこと。ページングの算術と
+ * 「押せる/押せない」は `src/components/admin/ui/Pager.test.tsx` と `list-io` の
+ * `paginate` の unit が、**`sortRows` → `paginate` の順序**は
+ * `tests/config/table-sort-adoption.test.ts` が縛っている。
+ */
+test('担当者: 並べ替えが URL に載り、ページ指定を持ち越さない (#910)', async ({ page }) => {
+  await loginAsAdmin(page);
+  await page.goto('/admin/staff?page=2');
+  await expect(page.getByTestId('staff-table')).toBeVisible();
+
+  // 前提の明示: 1 ページに収まっているのでページ送りは出ない（出るなら上の注記が古い）。
+  await expect(page.getByTestId('staff-pagination')).toHaveCount(0);
+
+  await page.getByTestId('staff-table-sort-name').click();
+  await expect(
+    page.getByTestId('staff-table').locator('th').filter({ hasText: '氏名' }),
+  ).toHaveAttribute('aria-sort', 'ascending');
+
+  const url = new URL(page.url());
+  expect(url.searchParams.get('sort')).toBe('name');
+  // 並べ替えを変えたらページ指定は落とす（順序が変われば 2 ページ目の中身は別物）。
+  expect(url.searchParams.get('page') ?? '').toBe('');
+});

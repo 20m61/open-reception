@@ -2,9 +2,12 @@
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import type { ActiveAssetSet, Asset, AssetKind } from '@/domain/assets/types';
-import { Button, DataTable, Field, Form, FormRow, type Column } from '@/components/admin/ui';
+import { Button, DataTable, Pager, Field, Form, FormRow, type Column } from '@/components/admin/ui';
 import { color, space } from '@/components/admin/ui/tokens';
 import { enablementState } from './state-vocabulary';
+import { useQueryParams } from './use-query-params';
+import { useTableSort } from './use-table-sort';
+import { paginate, sortRows } from './list-io';
 
 const KIND_LABEL: Record<AssetKind, string> = {
   background: '背景画像',
@@ -14,8 +17,12 @@ const KIND_LABEL: Record<AssetKind, string> = {
 };
 
 /** アセット管理 (issue #27)。登録・有効/無効・アクティブ選択を行う（URL 登録方式）。 */
+const PAGE_SIZE = 20;
+
 export function AssetsManager() {
   const [items, setItems] = useState<Asset[]>([]);
+  const { get, setMany } = useQueryParams();
+  const { sort, setSort } = useTableSort();
   const [active, setActive] = useState<ActiveAssetSet>({});
   const [kind, setKind] = useState<AssetKind>('background');
   const [name, setName] = useState('');
@@ -72,8 +79,8 @@ export function AssetsManager() {
 
   const columns = useMemo<Column<Asset>[]>(
     () => [
-      { key: 'kind', header: '種別', cell: (a) => KIND_LABEL[a.kind] },
-      { key: 'name', header: '名称', cellTestId: () => 'asset-name-cell', cell: (a) => a.name },
+      { key: 'kind', header: '種別', cell: (a) => KIND_LABEL[a.kind], sortValue: (a) => KIND_LABEL[a.kind] },
+      { key: 'name', header: '名称', cellTestId: () => 'asset-name-cell', cell: (a) => a.name, sortValue: (a) => a.name },
       {
         key: 'status',
         header: '状態',
@@ -103,6 +110,9 @@ export function AssetsManager() {
     [active, patch],
   );
 
+  const sorted = useMemo(() => sortRows(items, columns, sort), [items, columns, sort]);
+  const paged = useMemo(() => paginate(sorted, Number(get('page')) || 1, PAGE_SIZE), [sorted, get]);
+
   return (
     <section>
       <h1 style={{ marginTop: 0 }}>アセット管理</h1>
@@ -131,10 +141,19 @@ export function AssetsManager() {
         <DataTable
           testId="asset-table"
           columns={columns}
-          rows={items}
+          rows={paged.items}
           rowKey={(a) => a.id}
           rowTestId={() => 'asset-row'}
+          sort={sort}
+          onSortChange={setSort}
           emptyMessage="登録されたアセットはありません。"
+        />
+
+        <Pager
+          page={paged.page}
+          pageCount={paged.pageCount}
+          onChange={(next) => setMany({ page: String(next) })}
+          testIdPrefix="asset"
         />
       </div>
     </section>
