@@ -429,6 +429,33 @@ describe('platform の一覧の状態表示 (#896 / 課題 06)', () => {
     expect(offenders).toEqual([]);
   });
 
+  /*
+   * 🔴 **免除は「何を map しているか」を名指しする（拡幅そのものを禁ずる）。**
+   *
+   * 直上の「他のファイルに当たらない」だけでは足りない —— platform に残る `<tbody>` は
+   * 1 つだけなので、`PROVIDER_IDS.map(` を `.map(` へ**書き換える**変異は当たる先が
+   * 増えず、件数一致も「ちょうど 1 つ」も他ファイル検査も**全部すり抜ける**（実測で生存）。
+   * 母集団が 1 である限り、「当たった数」を数える主張は何を足しても拡幅を殺せない。
+   *
+   * 数えるのをやめて**式の形**を縛る: 免除は `<識別子>.map(` の形でなければならず、
+   * その識別子はそのファイルに**実在する束縛**（import か宣言）でなければならない。
+   * `.map(` は識別子を持たないので落ち、`FOO.map(` は宣言が無いので落ちる。
+   */
+  it('🔴 免除は実在する束縛を名指しする（.map( のような汎用の式を書かせない）', () => {
+    const offenders = EXEMPT_TBODY.flatMap((e) => {
+      const identifier = /^([A-Za-z_$][\w$]*)\./.exec(e.field)?.[1];
+      if (!identifier) return [`${e.field}: 先頭が識別子ではない（何を map しているか分からない）`];
+      const file = platformFiles().find((f) => f.name === e.file);
+      if (!file) return [`${e.file}: ファイルが無い`];
+      // 束縛の実在: import 文か、`const`/`let`/`function` の宣言に現れること。
+      const declared = new RegExp(
+        `(^|\\n)\\s*(import[^;]*\\b${identifier}\\b|(const|let|var|function)\\s+${identifier}\\b)`,
+      ).test(file.source);
+      return declared ? [] : [`${e.field}: ${identifier} は ${e.file} に宣言されていない`];
+    });
+    expect(offenders).toEqual([]);
+  });
+
   it('免除は名指ししたファイルに実在する（腐った file 名を残さない）', () => {
     const offenders = EXEMPT_TBODY.filter(
       (e) => !platformFiles().some((f) => f.name === e.file && tbodyBlocks(f.source).some((b) => b.includes(e.field))),
