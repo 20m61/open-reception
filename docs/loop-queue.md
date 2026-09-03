@@ -6,13 +6,40 @@
 >
 > | 残件 | なぜ人・ローカル macOS でしか出来ないか | 追跡 |
 > | --- | --- | --- |
-> | `kiosk-landscape-target-chromium-ipad-darwin.png` の取り直し（**この 1 枚だけ**） | ベースライン名に `{platform}` が入る。**linux の描画を darwin の名前で置くと永久に一致せず、本物の退行を隠す**。手順は #789 のコメント | #789 |
-> | `admin-desktop-call-routing-chromium-ipad-darwin.png` の取り直し（**この 1 枚だけ**） | 同上。**2 つの変更が同じ 1 枚に乗っている**ので取り直しは 1 回で済む: (1) #873 で見出しを「取次ルート」へ統一し旧画面への導線を削除、(2) #886 で disabled ボタン（「接続先を追加」）が破線表現になった。**linux 側はどちらも再生成済み**（毎回 差分画像を目視して確認）。darwin だけ stale | #873 / #886 |
 > | AWS の窓を開ける（`./scripts/aws-issue-credentials.sh`） | 短命 STS の発行は darwin 限定で、`scripts/hooks/guard-destructive.sh` が機械強制（#675）。**窓さえ開けばデプロイ本体はクラウドから wrapper 経由で流せる** | #675 / `docs/runbook-cloud-aws-deploy.md` |
 > | 実機 iPad UAT | 横向きで部署カードが何枚見えるか / 部署を開いて戻れるか / 騒音下で不在告知が聞き取れるか | #807 / #65 |
-> | **darwin ベースライン 4 枚の取り直し**（`kiosk-idle-ipad-portrait` / `-ipad-landscape` / `-large-display` / `kiosk-landscape-out-of-hours`） | #918 で `--color-border-strong` を 3:1 へ上げた（WCAG 1.4.11）。ベースライン名に `{platform}` が入るので linux の描画を darwin の名前で置けない。**linux 側は再生成済み**。閾値 0 で測って**この 4 枚だけ**が変わることを確認してある（他 12 枚は画素単位で同一） | #918 |
 > | **リモートブランチ 22 本の削除**（2026-09-02〜03 の周回ぶん） | クラウドセッションからは `git push origin --delete` が消せない。2026-09-03 に**エラーの出方まで実測**した: `error: RPC failed; HTTP 403` に続けて `Everything up-to-date` が出るので、**戻り値だけ見ると成功に見える**（proxy が write を拒否している）。全部 squash マージ済みで PR も閉じているので `orphan_branch` 検出には掛からない。一覧は本書「削除できていないリモートブランチ」節 | — |
 >
+## 2026-09-03 の周回（darwin VRT ベースライン）
+
+**darwin ベースライン 6 枚を取り直した。** 残件表からこの行は消えた。手順と実測:
+
+1. `npm run build`（e2e は本番ビルドを再利用するので、main が進んでいたら必ず先に建て直す）
+2. 3 spec の `maxDiffPixelRatio` を **一時的に 0** にして `--update-snapshots=none` → **6 枚が落ちる**
+3. 閾値 0 のまま `--update-snapshots=changed` → **その 6 枚だけが書き換わる**（`git status` で確認）
+4. 閾値を `git checkout` で戻し、**16/16 が閾値 0 で pass** することを確認
+
+`--update-snapshots=all` は使わない（描画が変わっていない PNG まで再エンコードされ、
+バイト差だけのコミットに本物が埋もれる）。`changed` を**閾値 0 で**回すのが要点で、
+既定の 0.002 のままでは #918 由来の 4 枚が「変わっていない」と判定されて**永久に stale のまま残る**。
+
+### 🔴 訂正: stale だった 6 枚目は `kiosk-landscape-target` ではなく `kiosk-landscape-fallback`
+
+残件表と `docs/handoff-2026-09-03.md` は 1 枚目を
+`kiosk-landscape-target-chromium-ipad-darwin.png`（#789）と書いていたが、**これは既に #867 で
+再生成済み**で、閾値 0 でも落ちない。実際に stale だったのは
+`kiosk-landscape-fallback-chromium-ipad-darwin.png` で、**#747（PR `b9bc079`）が代替導線の文言を
+「代表窓口にお繋ぎします…」から「恐れ入りますが、近くの受付スタッフにお声がけください…」へ
+変えて以降**（＝「果たせない約束をしない」の修正）、darwin だけ `#499` の描画のまま止まっていた。
+linux 側は #747 の時点で追従している。
+
+**枚数が合っていても中身が合っているとは限らない。** 6 枚という数が一致したので危うく
+見落とすところだった —— 実際に落ちたファイル名を 1 枚ずつ突き合わせて初めて判った。
+残件表の「この 1 枚だけ」という書き方は、**測らずに書かれた分類**であって事実ではない
+（`CLAUDE.md`「調査の作法」）。
+
+なお #789 は「darwin baseline の扱いを決める」方針 issue なので、本作業では閉じない。
+
 ## 2026-09-03 の周回（Vonage 仕様照合）
 
 **PR #921 を `--full` green（flaky 0）で squash マージした**（merge commit `34450d2`）。Vonage
