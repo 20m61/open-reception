@@ -343,7 +343,7 @@ export type RuntimeResolutionOutcome =
       /** 共通営業時間が無いと決められないサービス。呼び出し側は**現状を変えない**。 */
       readonly unresolved: readonly ManagedRuntimeServiceKey[];
       /**
-       * 解析不能な override の扱い (#798 AC2)。`resolved` は `resolution.anomalies` が持つが、
+       * override の異常の扱い（#798 AC2 / #846）。`resolved` は `resolution.anomalies` が持つが、
        * `partial` は `services` を組み直すので**ここで明示的に持ち越す**（落とすと「維持した」が
        * 未設定の拠点でだけ無言に戻り、その拠点こそ壊れたレコードが残りやすい）。
        */
@@ -439,9 +439,19 @@ function reportOverrideAnomalies(
   anomalies: readonly RuntimeResolutionAnomaly[],
 ): void {
   if (anomalies.length === 0) return;
-  console.warn('[runtime-policy] unparsable temporary override expiry', {
+  /*
+   * 🔴 **原因の種類を落とさない (#846)。** かつてこの行は文言を
+   * 「unparsable temporary override expiry」と決め打っていたが、異常は 2 種類ある
+   * （期限が読めない / **state が 3 値から外れている**）。決め打つと、運用者は
+   * `expiresAt` 欄を疑い続けて **state の typo に辿り着けない**。
+   *
+   * この文字列を MetricFilter が拾っている事実は無い（実測: リポジトリ内の参照は
+   * この 1 箇所のみ）ので、文言の変更で監視は壊れない。
+   */
+  console.warn('[runtime-policy] temporary override anomaly', {
     tenantId,
     siteId,
+    kinds: [...new Set(anomalies.map((a) => a.kind))],
     retained: anomalies.filter((a) => a.disposition === 'retained').map((a) => a.serviceKey),
     released: anomalies.filter((a) => a.disposition === 'released').map((a) => a.serviceKey),
   });

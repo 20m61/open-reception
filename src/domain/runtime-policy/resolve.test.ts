@@ -15,6 +15,7 @@ import {
   resolutionFor,
   type BreakGlassDirective,
   type RuntimeOperatingPolicy,
+  type RuntimeResolutionAnomaly,
   type ServicePolicyOverride,
   type ServiceRuntimeState,
   type TemporaryOverride,
@@ -1139,20 +1140,120 @@ describe('AC2 解析不能な override は観測できる（無言で捨てな�
     expect(result.anomalies).toEqual([]);
   });
 
+  /** `expiresAt` を持つ枝へ絞る（union 化後も従来の主張をそのまま残すため）。 */
+  const unparsable = (a: RuntimeResolutionAnomaly | undefined) =>
+    a?.kind === 'unparsable_override_expiry' ? a : undefined;
+
   it('報告に載せる expiresAt は上限つきの標本にする（生値をそのまま溜めない）', () => {
     const long = `2026-07-22T12:00${'x'.repeat(500)}`;
     const [anomaly] = resolveServiceStates({ policy: withOverride('force_stopped', long), now: IN_HOURS }).anomalies;
-    expect(anomaly?.expiresAt.length).toBeLessThanOrEqual(65);
-    expect(anomaly?.expiresAt.startsWith('2026-07-22T12:00')).toBe(true);
+    expect(unparsable(anomaly)?.expiresAt.length).toBeLessThanOrEqual(65);
+    expect(unparsable(anomaly)?.expiresAt.startsWith('2026-07-22T12:00')).toBe(true);
   });
 
   it('文字列でない値は型名で報告する（`[object Object]` のような無情報にしない）', () => {
     const sampleFor = (value: unknown) =>
-      resolveServiceStates({ policy: withOverride('force_stopped', value), now: IN_HOURS }).anomalies[0]?.expiresAt;
+      unparsable(resolveServiceStates({ policy: withOverride('force_stopped', value), now: IN_HOURS }).anomalies[0])?.expiresAt;
     expect(sampleFor(null)).toBe('<null>');
     expect(sampleFor(undefined)).toBe('<undefined>');
     expect(sampleFor(123)).toBe('<number>');
     expect(sampleFor({})).toBe('<object>');
     expect(sampleFor([])).toBe('<object>');
+  });
+});
+
+/**
+ * 未知 state（永続層の型ドリフト）の扱い (#846)。
+ *
+ * `OVERRIDE_STATE` の引きが外れると `state` が `undefined` になり、**型が嘘をつく**
+ * （`ServiceRuntimeState` を返すと宣言しているのに返していない）。しかも `SEVERITY[undefined]`
+ * も `undefined` なので依存補正の比較が常に false になり、`undefined` が依存元へ伝播する。
+ *
+ * 倒し方は**解除**（ユーザー承認 2026-09-03）。`resolve.ts` が解析不能な expiresAt について
+ * 「未知 state は不正な state を返すので解除へ倒す」と書いていた理由をこちらへも適用する
+ * ―― 加えて、壊れた override を消す運用導線が無い（`upsertRuntimePolicy` に本番呼び出し元が
+ * 無い）ので、stopped へクランプすると typo 1 件で音声受付が復旧不能に止まる。
+ */
+describe('未知 state の temporaryOverride (#846)', () => {
+  const UNKNOWN = 'force-stopped'; // ハイフンの typo
+  const unknownStatePolicy = (expiresAt: string): RuntimeOperatingPolicy =>
+    ({
+      commonSchedule: COMMON_8_23,
+      services: { 'realtime-conversation': { temporaryOverride: { state: UNKNOWN, expiresAt } } },
+    }) as unknown as RuntimeOperatingPolicy;
+
+  it('🔴 有効な expiresAt でも state が未知なら override を解除する（common schedule に従う）', () => {
+    const policy = unknownStatePolicy(new Date(OUT_OF_HOURS + 3_600_000).toISOString());
+    expect(stateOf(policy, 'realtime-conversation', OUT_OF_HOURS)).toEqual({
+      state: 'stopped',
+      reason: 'common_weekly_schedule',
+    });
+  });
+
+  it('🔴 未知 state を無言にしない（anomaly に載る）', () => {
+    const policy = unknownStatePolicy(new Date(OUT_OF_HOURS + 3_600_000).toISOString());
+    const result = resolveServiceStates({ policy, now: OUT_OF_HOURS });
+    expect(result.anomalies).toContainEqual({
+      kind: 'unknown_override_state',
+      serviceKey: 'realtime-conversation',
+      overrideState: UNKNOWN,
+      disposition: 'released',
+    });
+  });
+
+  it('🔴 依存補正へ undefined を伝播させない（state は必ず 3 値のいずれか）', () => {
+    const policy = unknownStatePolicy(new Date(IN_HOURS + 3_600_000).toISOString());
+    const result = resolveServiceStates({ policy, now: IN_HOURS });
+    for (const service of result.services) {
+      expect(['running', 'draining', 'stopped'], service.serviceKey).toContain(service.state);
+    }
+  });
+
+  /**
+   * 🔴 **`in` / 添字だけで判定すると素通りする族。** `'toString' in OVERRIDE_STATE` は
+   * プロトタイプ経由で `true` になり、`OVERRIDE_STATE['toString']` は関数を返す。
+   * 自前プロパティで判定していないと、これらが「既知 state」として通ってしまう。
+   */
+  it.each(['toString', 'constructor', 'hasOwnProperty', '__proto__'])(
+    '🔴 プロトタイプ由来の名前 %s も未知として解除する',
+    (drifted) => {
+      const policy = {
+        commonSchedule: COMMON_8_23,
+        services: {
+          'realtime-conversation': {
+            temporaryOverride: { state: drifted, expiresAt: new Date(OUT_OF_HOURS + 3_600_000).toISOString() },
+          },
+        },
+      } as unknown as RuntimeOperatingPolicy;
+      expect(stateOf(policy, 'realtime-conversation', OUT_OF_HOURS)).toEqual({
+        state: 'stopped',
+        reason: 'common_weekly_schedule',
+      });
+    },
+  );
+
+  it('未知 state は expiresAt が解析不能でも解除（RETAIN_WHEN_UNPARSABLE より優先）', () => {
+    const policy = unknownStatePolicy('not-a-date');
+    const result = resolveServiceStates({ policy, now: OUT_OF_HOURS });
+    expect(result.anomalies.map((a) => a.kind)).toEqual(['unknown_override_state']);
+  });
+
+  /** 生値を持ち回らない（`expiresAt` と同じ原則）。 */
+  it('未知 state の標本は長さを切る', () => {
+    const policy = unknownStatePolicy(new Date(OUT_OF_HOURS + 3_600_000).toISOString()) as any;
+    policy.services['realtime-conversation'].temporaryOverride.state = 'x'.repeat(500);
+    const result = resolveServiceStates({ policy, now: OUT_OF_HOURS });
+    const anomaly = result.anomalies[0] as { overrideState: string };
+    expect(anomaly.overrideState.length).toBeLessThanOrEqual(80);
+  });
+
+  /** **下界**: 既知 state は従来どおり効き、anomaly も出さない。 */
+  it('既知 state は従来どおり（期限内の force_running は running・anomaly 無し）', () => {
+    const policy = policyWith({
+      bedrock: { temporaryOverride: { state: 'force_running', expiresAt: new Date(OUT_OF_HOURS + 60_000).toISOString() } },
+    });
+    const result = resolveServiceStates({ policy, now: OUT_OF_HOURS });
+    expect(resolutionFor(result, 'bedrock')).toMatchObject({ state: 'running', reason: 'temporary_override' });
+    expect(result.anomalies).toEqual([]);
   });
 });
