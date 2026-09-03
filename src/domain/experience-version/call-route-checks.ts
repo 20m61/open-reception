@@ -36,6 +36,8 @@ function messageFor(issue: RoutingPolicyIssue): string {
       return `取次ポリシー ${issue.policyId} が存在しないフォールバック先 ${issue.targetPolicyId} を指しています`;
     case 'fallback_cycle':
       return `取次ポリシー ${issue.policyId} のフォールバックが循環しています`;
+    case 'step_timeout_exceeds_provider_max':
+      return `取次ポリシー ${issue.policyId} の手順 ${issue.stepId} の待ち時間が電話事業者の上限（${issue.maxSeconds} 秒）を超えています（表示より早く次の手順へ進みます）`;
     case 'exceeds_client_wait':
       return `取次ポリシー ${issue.policyId} は最後まで呼び出すと受付端末の待ち時間の上限を超えます（来訪者が代替のご案内へ進んだあとも呼び出しが続きます）`;
   }
