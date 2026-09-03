@@ -78,3 +78,48 @@ test('補足とエラーが入力へ aria-describedby で結ばれている', as
   await expect(description).toHaveCount(1);
   expect((await description.textContent())?.trim()).not.toBe('');
 });
+
+/*
+ * #893: 設定画面の「保存」も Enter で送信できる。
+ *
+ * 追加/作成フォーム（上）とは形が違い、**複数の Field を 1 つの保存ボタンが受ける**。
+ * ここでは値を変えずに Enter を押す —— 送信されたことだけを見たいので、
+ * 他の spec と競合しうる状態変更を起こさない（保存されるのは読み込んだ値そのもの）。
+ */
+test('設定: ブランド設定の入力欄で Enter を押すと保存される', async ({ page }) => {
+  await loginAsAdmin(page);
+  await page.goto('/admin/branding');
+
+  const input = page.getByTestId('brand-company');
+  await expect(input).toBeVisible();
+
+  const before = page.url();
+  await input.press('Enter');
+
+  await expect(page.getByTestId('brand-saved')).toBeVisible();
+  expect(page.url()).toBe(before);
+});
+
+/*
+ * 🔴 サイネージだけは**保存ボタンが `<form>` の外**にある（`Section` の右肩）。
+ * ボタンを中へ移すと見た目が変わるので、HTML の `form="signage-form"` で結んでいる。
+ * 結び忘れ・id の食い違いは「クリックでは保存できるが Enter では何も起きない」形で出る
+ * ので、**Enter 側からしか見えない**。ここが無いとその退行を誰も捕まえられない。
+ */
+test('設定: サイネージは保存ボタンが form の外にあるが Enter で送信される', async ({ page }) => {
+  await loginAsAdmin(page);
+  await page.goto('/admin/signage');
+
+  const interval = page.getByTestId('signage-interval');
+  await expect(interval).toBeVisible();
+
+  // 送信ボタンが form の外に居ることそのものを固定する（中へ移すと前提が変わる）。
+  const save = page.getByTestId('signage-save');
+  await expect(save).toHaveAttribute('form', 'signage-form');
+
+  const before = page.url();
+  await interval.press('Enter');
+
+  await expect(page.getByTestId('signage-saved')).toBeVisible();
+  expect(page.url()).toBe(before);
+});

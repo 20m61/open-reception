@@ -7,7 +7,7 @@ import {
   type SignageContentType,
   type SignageItem,
 } from '@/domain/signage/types';
-import { Button, Field, FormRow, SaveFeedback, Section, useSaveFeedback } from '@/components/admin/ui';
+import { Button, Field, Form, FormRow, SaveFeedback, Section, useSaveFeedback } from '@/components/admin/ui';
 import { color, radius, space } from '@/components/admin/ui/tokens';
 import { useSiteScope } from './use-site-scope';
 import { SiteScopeSelect } from './SiteScopeSelect';
@@ -202,113 +202,125 @@ export function SignageManager({
       title="待機中サイネージ"
       description="受付待機中に表示するコンテンツ（時計 / 案内文 / 画像 / スライド）を設定します。来訪者の個人情報は表示しません。画像・スライドの外部 URL は信頼できるオリジンのみを使用し、素材のライセンスを確認してください。"
       actions={
-        <Button variant="primary" onClick={() => void save()} disabled={!gate.canMutate || !config}>
+        /*
+         * 保存ボタンは `Section` の右肩（`<form>` の外）に置いている。移動すると見た目が
+         * 変わるので、HTML の `form` 属性で下の `<Form id="signage-form">` へ結ぶ。
+         */
+        <Button
+          variant="primary"
+          type="submit"
+          form="signage-form"
+          data-testid="signage-save"
+          disabled={!gate.canMutate || !config}
+        >
           保存
         </Button>
       }
     >
-      <FormRow>
-        <SiteScopeSelect
-          sites={sites}
-          siteId={siteId}
-          onSelect={selectSite}
-          onRetry={reloadSites}
-          disabled={sitePending || busy}
-          testId="signage-site-select"
-          status={listStatus}
-        />
-      </FormRow>
+      <Form id="signage-form" onSubmit={() => void save()}>
+        <FormRow>
+          <SiteScopeSelect
+            sites={sites}
+            siteId={siteId}
+            onSelect={selectSite}
+            onRetry={reloadSites}
+            disabled={sitePending || busy}
+            testId="signage-site-select"
+            status={listStatus}
+          />
+        </FormRow>
 
-      {error ? (
-        <p data-testid="signage-error" style={{ color: color.danger }}>
-          {error}
-        </p>
-      ) : null}
-      <SaveFeedback feedback={feedback} successTestId="signage-saved" errorTestId="signage-save-error" />
-
-      {config ? (
-        <>
-          <FormRow>
-            <Field label="サイネージモード" htmlFor="signage-enabled">
-              <label style={{ display: 'flex', gap: space.xs, alignItems: 'center' }}>
-                <input
-                  id="signage-enabled"
-                  data-testid="signage-enabled"
-                  type="checkbox"
-                  checked={config.enabled}
-                  onChange={(e) => update({ enabled: e.target.checked })}
-                />
-                <span>有効にする</span>
-              </label>
-            </Field>
-            <Field
-              label="既定の表示間隔（秒）"
-              htmlFor="signage-interval"
-              error={errorFor('defaultIntervalSeconds')}
-            >
-              <input
-                id="signage-interval"
-                data-testid="signage-interval"
-                type="number"
-                min={3}
-                max={600}
-                value={config.defaultIntervalSeconds}
-                onChange={(e) => update({ defaultIntervalSeconds: Number(e.target.value) })}
-                style={inputStyle}
-              />
-            </Field>
-          </FormRow>
-
-          {errorFor('items') ? (
-            <p data-testid="signage-items-error" style={{ color: color.danger }}>
-              {errorFor('items')}
-            </p>
-          ) : null}
-
-          <div style={{ display: 'flex', flexDirection: 'column', gap: space.md, marginTop: space.md }}>
-            {config.items.map((item, index) => (
-              <SignageItemEditor
-                key={item.id}
-                item={item}
-                index={index}
-                onChange={(patch) => updateItem(item.id, patch)}
-                onRemove={() => removeItem(item.id)}
-                errorFor={errorFor}
-              />
-            ))}
-          </div>
-
-          <div style={{ marginTop: space.md }}>
-            <Button data-testid="signage-add-item" onClick={addItem}>
-              ＋ コンテンツを追加
-            </Button>
-          </div>
-        </>
-      ) : (
-        // **理由で出し分ける。** 失敗を「読み込み中…」と出すと運用者は終わらない待ちに入る
-        // （他 3 画面は出し分けているのにここだけ写し忘れていた。レビュー M4）。
-        <div style={{ display: 'flex', alignItems: 'center', gap: space.sm }}>
-          <p data-testid="signage-unavailable" style={{ margin: 0, color: color.muted }}>
-            {gate.unavailable === 'site-list-error'
-              ? '拠点を確認できないため、サイネージ設定を表示できません。'
-              : gate.unavailable === 'no-site'
-                ? 'このテナントにはまだ拠点がありません。拠点を登録すると設定できます。'
-                : gate.unavailable === 'load-failed'
-                  ? 'サイネージ設定を取得できませんでした。'
-                  : '読み込み中…'}
+        {error ? (
+          <p data-testid="signage-error" style={{ color: color.danger }}>
+            {error}
           </p>
-          {gate.unavailable === 'load-failed' ? (
-            <Button
-              variant="secondary"
-              onClick={() => void load()}
-              disabled={!gate.canRefresh}
-              data-testid="signage-retry"
-            >
-              再試行
-            </Button>
-          ) : null}
-        </div>
-      )}
+        ) : null}
+        <SaveFeedback feedback={feedback} successTestId="signage-saved" errorTestId="signage-save-error" />
+
+        {config ? (
+          <>
+            <FormRow>
+              <Field label="サイネージモード" htmlFor="signage-enabled">
+                <label style={{ display: 'flex', gap: space.xs, alignItems: 'center' }}>
+                  <input
+                    id="signage-enabled"
+                    data-testid="signage-enabled"
+                    type="checkbox"
+                    checked={config.enabled}
+                    onChange={(e) => update({ enabled: e.target.checked })}
+                  />
+                  <span>有効にする</span>
+                </label>
+              </Field>
+              <Field
+                label="既定の表示間隔（秒）"
+                htmlFor="signage-interval"
+                error={errorFor('defaultIntervalSeconds')}
+              >
+                <input
+                  id="signage-interval"
+                  data-testid="signage-interval"
+                  type="number"
+                  min={3}
+                  max={600}
+                  value={config.defaultIntervalSeconds}
+                  onChange={(e) => update({ defaultIntervalSeconds: Number(e.target.value) })}
+                  style={inputStyle}
+                />
+              </Field>
+            </FormRow>
+
+            {errorFor('items') ? (
+              <p data-testid="signage-items-error" style={{ color: color.danger }}>
+                {errorFor('items')}
+              </p>
+            ) : null}
+
+            <div style={{ display: 'flex', flexDirection: 'column', gap: space.md, marginTop: space.md }}>
+              {config.items.map((item, index) => (
+                <SignageItemEditor
+                  key={item.id}
+                  item={item}
+                  index={index}
+                  onChange={(patch) => updateItem(item.id, patch)}
+                  onRemove={() => removeItem(item.id)}
+                  errorFor={errorFor}
+                />
+              ))}
+            </div>
+
+            <div style={{ marginTop: space.md }}>
+              <Button data-testid="signage-add-item" onClick={addItem}>
+                ＋ コンテンツを追加
+              </Button>
+            </div>
+          </>
+        ) : (
+          // **理由で出し分ける。** 失敗を「読み込み中…」と出すと運用者は終わらない待ちに入る
+          // （他 3 画面は出し分けているのにここだけ写し忘れていた。レビュー M4）。
+          <div style={{ display: 'flex', alignItems: 'center', gap: space.sm }}>
+            <p data-testid="signage-unavailable" style={{ margin: 0, color: color.muted }}>
+              {gate.unavailable === 'site-list-error'
+                ? '拠点を確認できないため、サイネージ設定を表示できません。'
+                : gate.unavailable === 'no-site'
+                  ? 'このテナントにはまだ拠点がありません。拠点を登録すると設定できます。'
+                  : gate.unavailable === 'load-failed'
+                    ? 'サイネージ設定を取得できませんでした。'
+                    : '読み込み中…'}
+            </p>
+            {gate.unavailable === 'load-failed' ? (
+              <Button
+                variant="secondary"
+                onClick={() => void load()}
+                disabled={!gate.canRefresh}
+                data-testid="signage-retry"
+              >
+                再試行
+              </Button>
+            ) : null}
+          </div>
+        )}
+      </Form>
     </Section>
   );
 }

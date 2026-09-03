@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { MAX_LOGO_DATA_URI_LENGTH, type BrandingSettings } from '@/domain/branding/types';
-import { Button, Field, SaveFeedback, useSaveFeedback } from '@/components/admin/ui';
+import { Button, Field, Form, SaveFeedback, useSaveFeedback } from '@/components/admin/ui';
 import { color, space } from '@/components/admin/ui/tokens';
 import { AdminReadGate } from './AdminReadGate';
 import { useUnsavedChanges } from './use-unsaved-changes';
@@ -109,7 +109,7 @@ export function BrandingManager() {
       <p style={{ color: color.muted, marginTop: 0 }}>
         会社ロゴ・アクセント色・社名を受付の待機画面に反映します（「会社の顔」）。
       </p>
-      <div style={{ display: 'flex', flexDirection: 'column', gap: space.md }}>
+      <Form onSubmit={save} style={{ display: 'flex', flexDirection: 'column', gap: space.md }}>
         <Field label="会社名（待機画面に表示・任意）" htmlFor="brand-company-input">
           <input
             id="brand-company-input"
@@ -188,12 +188,12 @@ export function BrandingManager() {
         ) : null}
 
         <div style={{ display: 'flex', gap: space.sm, alignItems: 'center' }}>
-          <Button variant="primary" data-testid="brand-save" onClick={save} disabled={busy}>
+          <Button variant="primary" type="submit" data-testid="brand-save" disabled={busy}>
             保存
           </Button>
           <SaveFeedback feedback={feedback} successTestId="brand-saved" errorTestId="brand-save-error" />
         </div>
-      </div>
+      </Form>
     </section>
   );
 }

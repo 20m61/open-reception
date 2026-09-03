@@ -1,7 +1,7 @@
 'use client';
 
 import { useCallback, useEffect, useState } from 'react';
-import { Button, Field, SaveFeedback, useSaveFeedback } from '@/components/admin/ui';
+import { Button, Field, Form, SaveFeedback, useSaveFeedback } from '@/components/admin/ui';
 import { space } from '@/components/admin/ui/tokens';
 import { AdminReadGate } from './AdminReadGate';
 
@@ -120,7 +120,7 @@ export function SecurityManager() {
         )}
       </div>
 
-      <div style={{ display: 'flex', flexDirection: 'column', gap: space.md }}>
+      <Form onSubmit={save} style={{ display: 'flex', flexDirection: 'column', gap: space.md }}>
         <label style={{ display: 'flex', gap: space.sm, alignItems: 'center' }}>
           <input
             type="checkbox"
@@ -140,12 +140,12 @@ export function SecurityManager() {
           <textarea id="security-ip" data-testid="security-ip" value={ipText} onChange={(e) => setIpText(e.target.value)} rows={4} style={input} />
         </Field>
         <div style={{ display: 'flex', gap: space.sm, alignItems: 'center' }}>
-          <Button variant="primary" data-testid="security-save" onClick={save} disabled={busy}>
+          <Button variant="primary" type="submit" data-testid="security-save" disabled={busy}>
             保存
           </Button>
           <SaveFeedback feedback={feedback} successTestId="security-saved" errorTestId="security-error" />
         </div>
-      </div>
+      </Form>
     </section>
   );
 }

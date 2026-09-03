@@ -1,7 +1,7 @@
 'use client';
 
 import { useCallback, useEffect, useState } from 'react';
-import { Button, Card, Field, SaveFeedback, useSaveFeedback } from '@/components/admin/ui';
+import { Button, Card, Field, Form, SaveFeedback, useSaveFeedback } from '@/components/admin/ui';
 import { useSiteScope } from './use-site-scope';
 import { SiteScopeSelect } from './SiteScopeSelect';
 import { resolveScopeGate } from './scope-gate';
@@ -260,7 +260,10 @@ export function StaffResponseManager({
                   来訪者向け表示文言{d.isMessageOverridden ? '（上書き中）' : '（既定）'}
                 </div>
                 {editing ? (
-                  <div style={{ display: 'flex', gap: space.sm, alignItems: 'flex-end', flexWrap: 'wrap' }}>
+                  <Form
+                    onSubmit={() => saveMessage(d.action)}
+                    style={{ display: 'flex', gap: space.sm, alignItems: 'flex-end', flexWrap: 'wrap' }}
+                  >
                     <Field label="表示文言" htmlFor={`msg-${d.action}`}>
                       <input
                         id={`msg-${d.action}`}
@@ -273,8 +276,8 @@ export function StaffResponseManager({
                     </Field>
                     <Button
                       variant="primary"
+                      type="submit"
                       data-testid="staff-response-config-message-save"
-                      onClick={() => saveMessage(d.action)}
                       disabled={!gate.canMutate}
                     >
                       保存
@@ -287,7 +290,7 @@ export function StaffResponseManager({
                     <Button onClick={() => setEditingAction(null)} disabled={busy}>
                       取消
                     </Button>
-                  </div>
+                  </Form>
                 ) : (
                   <div style={{ display: 'flex', gap: space.sm, alignItems: 'center', flexWrap: 'wrap' }}>
                     <p

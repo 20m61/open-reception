@@ -541,80 +541,82 @@ function PolicyEditor({
 
   return (
     <Card testId="policy-editor" style={{ marginTop: space.lg, borderColor: color.accent }}>
-      <h3 style={{ marginTop: 0 }} data-testid="policy-editor-title">
-        {draft.id ? 'ルートを編集' : '新しいルート'}
-      </h3>
+      <Form onSubmit={onSave}>
+        <h3 style={{ marginTop: 0 }} data-testid="policy-editor-title">
+          {draft.id ? 'ルートを編集' : '新しいルート'}
+        </h3>
 
-      {policyErrors.length > 0 ? (
-        <ul data-testid="policy-error" style={{ color: color.danger, fontSize: font.small, margin: '0 0 12px', paddingLeft: 18 }}>
-          {policyErrors.map((m, i) => (
-            <li key={i}>{m}</li>
+        {policyErrors.length > 0 ? (
+          <ul data-testid="policy-error" style={{ color: color.danger, fontSize: font.small, margin: '0 0 12px', paddingLeft: 18 }}>
+            {policyErrors.map((m, i) => (
+              <li key={i}>{m}</li>
+            ))}
+          </ul>
+        ) : null}
+        {saveError ? (
+          <p data-testid="policy-save-error" style={{ color: color.danger, fontSize: font.small }}>
+            {saveError}
+          </p>
+        ) : null}
+
+        <div style={{ display: 'flex', gap: space.sm, flexWrap: 'wrap', alignItems: 'flex-end', marginBottom: space.md }}>
+          <Field label="ルート名" htmlFor="pol-name">
+            <input id="pol-name" data-testid="policy-name-input" value={draft.name} onChange={(e) => update({ name: e.target.value })} style={inputStyle} />
+          </Field>
+          <Field label="繋がらなかったときの引き継ぎ先" htmlFor="pol-fallback" hint="全手順で繋がらなければ別ルートへ引き継ぎます">
+            <select
+              id="pol-fallback"
+              data-testid="policy-fallback-select"
+              value={draft.fallbackPolicyId ?? ''}
+              onChange={(e) => update({ fallbackPolicyId: e.target.value || undefined })}
+              style={inputStyle}
+            >
+              <option value="">（引き継がず終了）</option>
+              {policies
+                .filter((p) => p.id !== draft.id)
+                .map((p) => (
+                  <option key={p.id} value={p.id}>
+                    {p.name}
+                  </option>
+                ))}
+            </select>
+          </Field>
+          <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: '0.9rem' }}>
+            <input type="checkbox" data-testid="policy-enabled-toggle" checked={draft.enabled} onChange={(e) => update({ enabled: e.target.checked })} />
+            有効
+          </label>
+        </div>
+
+        <div data-testid="policy-steps" style={{ display: 'flex', flexDirection: 'column', gap: space.sm }}>
+          {draft.steps.map((step, index) => (
+            <StepRow
+              key={step.id}
+              step={step}
+              index={index}
+              total={draft.steps.length}
+              steps={draft.steps}
+              endpoints={endpoints}
+              policies={policies}
+              errors={stepErrors[step.id] ?? []}
+              onChange={(patch) => updateStep(index, patch)}
+              onMove={(dir) => move(index, dir)}
+              onRemove={() => removeStep(index)}
+            />
           ))}
-        </ul>
-      ) : null}
-      {saveError ? (
-        <p data-testid="policy-save-error" style={{ color: color.danger, fontSize: font.small }}>
-          {saveError}
-        </p>
-      ) : null}
+        </div>
 
-      <div style={{ display: 'flex', gap: space.sm, flexWrap: 'wrap', alignItems: 'flex-end', marginBottom: space.md }}>
-        <Field label="ルート名" htmlFor="pol-name">
-          <input id="pol-name" data-testid="policy-name-input" value={draft.name} onChange={(e) => update({ name: e.target.value })} style={inputStyle} />
-        </Field>
-        <Field label="繋がらなかったときの引き継ぎ先" htmlFor="pol-fallback" hint="全手順で繋がらなければ別ルートへ引き継ぎます">
-          <select
-            id="pol-fallback"
-            data-testid="policy-fallback-select"
-            value={draft.fallbackPolicyId ?? ''}
-            onChange={(e) => update({ fallbackPolicyId: e.target.value || undefined })}
-            style={inputStyle}
-          >
-            <option value="">（引き継がず終了）</option>
-            {policies
-              .filter((p) => p.id !== draft.id)
-              .map((p) => (
-                <option key={p.id} value={p.id}>
-                  {p.name}
-                </option>
-              ))}
-          </select>
-        </Field>
-        <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: '0.9rem' }}>
-          <input type="checkbox" data-testid="policy-enabled-toggle" checked={draft.enabled} onChange={(e) => update({ enabled: e.target.checked })} />
-          有効
-        </label>
-      </div>
-
-      <div data-testid="policy-steps" style={{ display: 'flex', flexDirection: 'column', gap: space.sm }}>
-        {draft.steps.map((step, index) => (
-          <StepRow
-            key={step.id}
-            step={step}
-            index={index}
-            total={draft.steps.length}
-            steps={draft.steps}
-            endpoints={endpoints}
-            policies={policies}
-            errors={stepErrors[step.id] ?? []}
-            onChange={(patch) => updateStep(index, patch)}
-            onMove={(dir) => move(index, dir)}
-            onRemove={() => removeStep(index)}
-          />
-        ))}
-      </div>
-
-      <div style={{ display: 'flex', gap: 8, marginTop: space.md }}>
-        <Button data-testid="policy-add-step" onClick={() => update({ steps: [...draft.steps, emptyStep()] })}>
-          手順を追加
-        </Button>
-        <Button variant="primary" data-testid="policy-save" onClick={onSave} disabled={busy || writeBlocked}>
-          保存
-        </Button>
-        <Button data-testid="policy-cancel" onClick={onCancel}>
-          取消
-        </Button>
-      </div>
+        <div style={{ display: 'flex', gap: 8, marginTop: space.md }}>
+          <Button data-testid="policy-add-step" onClick={() => update({ steps: [...draft.steps, emptyStep()] })}>
+            手順を追加
+          </Button>
+          <Button variant="primary" type="submit" data-testid="policy-save" disabled={busy || writeBlocked}>
+            保存
+          </Button>
+          <Button data-testid="policy-cancel" onClick={onCancel}>
+            取消
+          </Button>
+        </div>
+      </Form>
     </Card>
   );
 }

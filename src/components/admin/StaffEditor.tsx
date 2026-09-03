@@ -2,7 +2,7 @@
 
 import { useCallback, useState } from 'react';
 import { CALL_TARGET_TYPES, type CallTarget, type Staff } from '@/domain/staff/types';
-import { SaveFeedback, font, useSaveFeedback } from '@/components/admin/ui';
+import { Form, SaveFeedback, font, useSaveFeedback } from '@/components/admin/ui';
 
 /** 担当者の呼び出し先（優先順位 DnD）と代替担当者を編集する (issue #26)。 */
 export function StaffEditor({ staff, allStaff, onSaved }: { staff: Staff; allStaff: Staff[]; onSaved: () => void }) {
@@ -59,51 +59,53 @@ export function StaffEditor({ staff, allStaff, onSaved }: { staff: Staff; allSta
 
   return (
     <div data-testid="staff-editor" style={{ padding: 12, background: 'var(--color-surface)', borderRadius: 8, marginTop: 8 }}>
-      <h3 style={{ margin: '0 0 8px' }}>呼び出し先（優先順位順・ドラッグで並び替え）</h3>
-      {targets.map((t, i) => (
-        <div
-          key={i}
-          data-testid="ct-row"
-          draggable
-          onDragStart={() => setDragIndex(i)}
-          onDragOver={(e) => e.preventDefault()}
-          onDrop={() => {
-            if (dragIndex !== null) reorder(dragIndex, i);
-            setDragIndex(null);
-          }}
-          style={{ display: 'flex', gap: 6, alignItems: 'center', marginBottom: 6, cursor: 'grab' }}
-        >
-          <span title="ドラッグで並び替え">⠿</span>
-          <select data-testid="ct-type" value={t.type} onChange={(e) => update(i, { type: e.target.value as CallTarget['type'] })} style={field}>
-            {CALL_TARGET_TYPES.map((k) => (
-              <option key={k} value={k}>{k}</option>
-            ))}
-          </select>
-          <input data-testid="ct-value" value={t.value} onChange={(e) => update(i, { value: e.target.value })} placeholder="値" style={{ ...field, flex: 1 }} />
-          <label style={{ display: 'flex', gap: 4, alignItems: 'center', fontSize: font.small }}>
-            <input type="checkbox" checked={t.enabled} onChange={(e) => update(i, { enabled: e.target.checked })} />有効
-          </label>
-          <button type="button" aria-label="up" onClick={() => reorder(i, i - 1)} disabled={i === 0} style={small}>↑</button>
-          <button type="button" aria-label="down" onClick={() => reorder(i, i + 1)} disabled={i === targets.length - 1} style={small}>↓</button>
-          <button type="button" data-testid="ct-remove" onClick={() => removeTarget(i)} style={small}>削除</button>
-        </div>
-      ))}
-      <button type="button" data-testid="ct-add" onClick={addTarget} style={small}>＋ 呼び出し先を追加</button>
-
-      <h3 style={{ margin: '16px 0 8px' }}>代替担当者</h3>
-      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 12 }}>
-        {allStaff.filter((s) => s.id !== staff.id).map((s) => (
-          <label key={s.id} style={{ display: 'flex', gap: 4, alignItems: 'center', fontSize: '0.9rem' }}>
-            <input type="checkbox" data-testid={`fallback-${s.id}`} checked={fallbacks.includes(s.id)} onChange={() => toggleFallback(s.id)} />
-            {s.displayName}
-          </label>
+      <Form onSubmit={save}>
+        <h3 style={{ margin: '0 0 8px' }}>呼び出し先（優先順位順・ドラッグで並び替え）</h3>
+        {targets.map((t, i) => (
+          <div
+            key={i}
+            data-testid="ct-row"
+            draggable
+            onDragStart={() => setDragIndex(i)}
+            onDragOver={(e) => e.preventDefault()}
+            onDrop={() => {
+              if (dragIndex !== null) reorder(dragIndex, i);
+              setDragIndex(null);
+            }}
+            style={{ display: 'flex', gap: 6, alignItems: 'center', marginBottom: 6, cursor: 'grab' }}
+          >
+            <span title="ドラッグで並び替え">⠿</span>
+            <select data-testid="ct-type" value={t.type} onChange={(e) => update(i, { type: e.target.value as CallTarget['type'] })} style={field}>
+              {CALL_TARGET_TYPES.map((k) => (
+                <option key={k} value={k}>{k}</option>
+              ))}
+            </select>
+            <input data-testid="ct-value" value={t.value} onChange={(e) => update(i, { value: e.target.value })} placeholder="値" style={{ ...field, flex: 1 }} />
+            <label style={{ display: 'flex', gap: 4, alignItems: 'center', fontSize: font.small }}>
+              <input type="checkbox" checked={t.enabled} onChange={(e) => update(i, { enabled: e.target.checked })} />有効
+            </label>
+            <button type="button" aria-label="up" onClick={() => reorder(i, i - 1)} disabled={i === 0} style={small}>↑</button>
+            <button type="button" aria-label="down" onClick={() => reorder(i, i + 1)} disabled={i === targets.length - 1} style={small}>↓</button>
+            <button type="button" data-testid="ct-remove" onClick={() => removeTarget(i)} style={small}>削除</button>
+          </div>
         ))}
-      </div>
+        <button type="button" data-testid="ct-add" onClick={addTarget} style={small}>＋ 呼び出し先を追加</button>
 
-      <div style={{ marginTop: 12 }}>
-        <button type="button" data-testid="staff-editor-save" onClick={save} disabled={busy} style={primary}>保存</button>
-        <SaveFeedback feedback={feedback} errorTestId="staff-editor-save-error" />
-      </div>
+        <h3 style={{ margin: '16px 0 8px' }}>代替担当者</h3>
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 12 }}>
+          {allStaff.filter((s) => s.id !== staff.id).map((s) => (
+            <label key={s.id} style={{ display: 'flex', gap: 4, alignItems: 'center', fontSize: '0.9rem' }}>
+              <input type="checkbox" data-testid={`fallback-${s.id}`} checked={fallbacks.includes(s.id)} onChange={() => toggleFallback(s.id)} />
+              {s.displayName}
+            </label>
+          ))}
+        </div>
+
+        <div style={{ marginTop: 12 }}>
+          <button type="submit" data-testid="staff-editor-save" disabled={busy} style={primary}>保存</button>
+          <SaveFeedback feedback={feedback} errorTestId="staff-editor-save-error" />
+        </div>
+      </Form>
     </div>
   );
 }
