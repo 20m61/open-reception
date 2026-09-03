@@ -11,7 +11,7 @@ import {
   type FlowField,
   type FlowStepKind,
 } from '@/domain/reception/custom-flow';
-import { Button, Card, Field, SaveFeedback, useSaveFeedback } from '@/components/admin/ui';
+import { Button, Card, Field, Form, SaveFeedback, useSaveFeedback } from '@/components/admin/ui';
 import { DangerActionButton } from './danger/DangerActionButton';
 import { font, space } from '@/components/admin/ui/tokens';
 import { enablementState } from './state-vocabulary';
@@ -247,7 +247,7 @@ export function ReceptionFlowsManager({
         目的ごとに、受付端末で表示するステップと入力項目を切り替えられます。
       </p>
 
-      <div style={{ display: 'flex', gap: space.sm, alignItems: 'flex-end', flexWrap: 'wrap', marginBottom: space.lg }}>
+      <Form onSubmit={add} style={{ display: 'flex', gap: space.sm, alignItems: 'flex-end', flexWrap: 'wrap', marginBottom: space.lg }}>
         {/* 対象拠点を常時表示し、ここから切り替えられるようにする (#421)。 */}
         <SiteScopeSelect
           sites={sites}
@@ -280,8 +280,8 @@ export function ReceptionFlowsManager({
         </Field>
         <Button
           variant="primary"
+          type="submit"
           data-testid="flow-add"
-          onClick={add}
           // **無効化を loaded にも連動させる。** ハンドラ側だけ止めると、押せるボタンが
           // 黙って何もしない（サイレント no-op）。実際 e2e が「押したのに増えない」で
           // 不安定になった。無効にしておけば利用者にも分かり、Playwright も待てる。
@@ -290,7 +290,7 @@ export function ReceptionFlowsManager({
           追加
         </Button>
         <SaveFeedback feedback={feedback} successTestId="flow-saved" errorTestId="flow-save-error" />
-      </div>
+      </Form>
 
       <div data-testid="flow-list" style={{ display: 'flex', flexDirection: 'column', gap: space.md }}>
         {items.map((f, index) => (

@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useState } from 'react';
 import type { VoiceSettings } from '@/domain/voice/types';
-import { Button, Field, FormRow, SaveFeedback, useSaveFeedback } from '@/components/admin/ui';
+import { Button, Field, Form, FormRow, SaveFeedback, useSaveFeedback } from '@/components/admin/ui';
 import { color, font, space } from '@/components/admin/ui/tokens';
 import { isSttRecognitionSimulated } from '@/domain/voice/stt-capability';
 import { AdminReadGate } from './AdminReadGate';
@@ -92,7 +92,7 @@ export function VoiceManager() {
         onStay={guard.stay}
       />
       <h1 style={{ marginTop: 0 }}>音声設定</h1>
-      <div style={{ display: 'flex', flexDirection: 'column', gap: space.md }}>
+      <Form onSubmit={save} style={{ display: 'flex', flexDirection: 'column', gap: space.md }}>
         <label style={chk}>
           <input type="checkbox" data-testid="voice-tts" checked={v.ttsEnabled} onChange={(e) => patch({ ttsEnabled: e.target.checked })} />
           音声合成（読み上げ）を有効にする
@@ -262,12 +262,12 @@ export function VoiceManager() {
         </FormRow>
 
         <div style={{ display: 'flex', gap: space.sm, alignItems: 'center' }}>
-          <Button variant="primary" data-testid="voice-save" onClick={save} disabled={busy}>
+          <Button variant="primary" type="submit" data-testid="voice-save" disabled={busy}>
             保存
           </Button>
           <SaveFeedback feedback={feedback} successTestId="voice-saved" errorTestId="voice-error" />
         </div>
-      </div>
+      </Form>
     </section>
   );
 }

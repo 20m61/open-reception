@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useState } from 'react';
 import type { AiGuidanceConfig } from '@/domain/ai-guidance/config';
-import { Button, Field, SaveFeedback, useSaveFeedback } from '@/components/admin/ui';
+import { Button, Field, Form, SaveFeedback, useSaveFeedback } from '@/components/admin/ui';
 import { color, space } from '@/components/admin/ui/tokens';
 import { AdminReadGate } from './AdminReadGate';
 
@@ -77,7 +77,7 @@ export function AiGuidanceManager() {
       <p style={{ color: color.muted, marginTop: 0 }}>
         AI 案内は補助導線です。許可トピック外の質問や曖昧な入力は、誤案内を避けるため担当者/有人対応へ切り替わります。
       </p>
-      <div style={{ display: 'flex', flexDirection: 'column', gap: space.md }}>
+      <Form onSubmit={save} style={{ display: 'flex', flexDirection: 'column', gap: space.md }}>
         <label style={chk}>
           <input
             type="checkbox"
@@ -107,7 +107,7 @@ export function AiGuidanceManager() {
         </Field>
 
         <div style={{ display: 'flex', gap: space.sm, alignItems: 'center' }}>
-          <Button variant="primary" data-testid="ai-guidance-save" onClick={save} disabled={busy}>
+          <Button variant="primary" type="submit" data-testid="ai-guidance-save" disabled={busy}>
             保存
           </Button>
           <SaveFeedback
@@ -116,7 +116,7 @@ export function AiGuidanceManager() {
             errorTestId="ai-guidance-error"
           />
         </div>
-      </div>
+      </Form>
     </section>
   );
 }

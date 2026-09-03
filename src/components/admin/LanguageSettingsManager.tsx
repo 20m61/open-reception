@@ -7,7 +7,7 @@ import {
   type Locale,
 } from '@/lib/i18n';
 import type { LanguageSettings } from '@/lib/i18n/language-settings';
-import { Button, Field, SaveFeedback, useSaveFeedback } from '@/components/admin/ui';
+import { Button, Field, Form, SaveFeedback, useSaveFeedback } from '@/components/admin/ui';
 import { AdminReadGate } from './AdminReadGate';
 import { useUnsavedChanges } from './use-unsaved-changes';
 import { useUnsavedChangesGuard } from './use-unsaved-changes-guard';
@@ -106,43 +106,45 @@ export function LanguageSettingsManager() {
         受付端末で選べる言語と、最初に表示する言語を設定します。音声が使えない場合も画面で受付を完了できます。
       </p>
 
-      <fieldset style={fieldset}>
-        <legend style={legend}>受付で出す言語</legend>
-        {DISPLAY_LOCALES.map((locale) => (
-          <label key={locale} style={chk}>
-            <input
-              type="checkbox"
-              data-testid={`lang-enabled-${locale}`}
-              checked={s.enabledLocales.includes(locale)}
-              onChange={() => toggle(locale)}
-            />
-            <span lang={locale}>{LOCALE_NATIVE_LABEL[locale]}</span>
-          </label>
-        ))}
-      </fieldset>
-
-      <Field label="初期表示する言語" htmlFor="lang-default">
-        <select
-          id="lang-default"
-          data-testid="lang-default"
-          value={s.defaultLocale}
-          onChange={(e) => setS((cur) => (cur ? { ...cur, defaultLocale: e.target.value as Locale } : cur))}
-          style={input}
-        >
-          {s.enabledLocales.map((locale) => (
-            <option key={locale} value={locale}>
-              {LOCALE_NATIVE_LABEL[locale]}
-            </option>
+      <Form onSubmit={save}>
+        <fieldset style={fieldset}>
+          <legend style={legend}>受付で出す言語</legend>
+          {DISPLAY_LOCALES.map((locale) => (
+            <label key={locale} style={chk}>
+              <input
+                type="checkbox"
+                data-testid={`lang-enabled-${locale}`}
+                checked={s.enabledLocales.includes(locale)}
+                onChange={() => toggle(locale)}
+              />
+              <span lang={locale}>{LOCALE_NATIVE_LABEL[locale]}</span>
+            </label>
           ))}
-        </select>
-      </Field>
+        </fieldset>
 
-      <div style={{ marginTop: 24, display: 'flex', alignItems: 'center', gap: 12 }}>
-        <Button variant="primary" data-testid="lang-save" onClick={save} disabled={busy} style={saveBtn}>
-          {busy ? '保存中…' : '保存'}
-        </Button>
-        <SaveFeedback feedback={feedback} successTestId="lang-saved" errorTestId="lang-error" />
-      </div>
+        <Field label="初期表示する言語" htmlFor="lang-default">
+          <select
+            id="lang-default"
+            data-testid="lang-default"
+            value={s.defaultLocale}
+            onChange={(e) => setS((cur) => (cur ? { ...cur, defaultLocale: e.target.value as Locale } : cur))}
+            style={input}
+          >
+            {s.enabledLocales.map((locale) => (
+              <option key={locale} value={locale}>
+                {LOCALE_NATIVE_LABEL[locale]}
+              </option>
+            ))}
+          </select>
+        </Field>
+
+        <div style={{ marginTop: 24, display: 'flex', alignItems: 'center', gap: 12 }}>
+          <Button variant="primary" type="submit" data-testid="lang-save" disabled={busy} style={saveBtn}>
+            {busy ? '保存中…' : '保存'}
+          </Button>
+          <SaveFeedback feedback={feedback} successTestId="lang-saved" errorTestId="lang-error" />
+        </div>
+      </Form>
     </section>
   );
 }

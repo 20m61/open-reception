@@ -1,7 +1,7 @@
 'use client';
 
 import { useCallback, useEffect, useState } from 'react';
-import { Button, Field, SaveFeedback, useSaveFeedback } from '@/components/admin/ui';
+import { Button, Field, Form, SaveFeedback, useSaveFeedback } from '@/components/admin/ui';
 import { useSiteScope } from './use-site-scope';
 import { resolveScopeGate } from './scope-gate';
 import { EmptyState } from '@/components/admin/ui';
@@ -332,7 +332,7 @@ export function OperatingHoursManager({
         </div>
       ) : null}
 
-      <div style={{ display: 'flex', flexDirection: 'column', gap: space.md }}>
+      <Form onSubmit={save} style={{ display: 'flex', flexDirection: 'column', gap: space.md }}>
         {/* 対象拠点を常時表示する (#421「管理者が現在の対象を見失わない」)。 */}
         <SiteScopeSelect
           sites={sites}
@@ -409,12 +409,12 @@ export function OperatingHoursManager({
 
         <div style={{ display: 'flex', gap: space.sm, alignItems: 'center' }}>
           {/* 拠点切替の遷移確定前は siteId が古いままなので保存しない（#532 と同じ理由）。 */}
-          <Button variant="primary" data-testid="operating-hours-save" onClick={save} disabled={!gate.canMutate}>
+          <Button variant="primary" type="submit" data-testid="operating-hours-save" disabled={!gate.canMutate}>
             保存
           </Button>
           <SaveFeedback feedback={feedback} successTestId="operating-hours-saved" errorTestId="operating-hours-error" />
         </div>
-      </div>
+      </Form>
     </section>
   );
 }
