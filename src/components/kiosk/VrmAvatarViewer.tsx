@@ -12,6 +12,7 @@ import { cameraFramingAttribute, resolveCameraFraming } from '@/domain/avatar/ca
 import { ResourceTracker } from '@/lib/three/resource-tracker';
 import { measureHeadHeight, prepareLoadedVrm, vrmPreparedAttribute } from '@/lib/three/vrm-prepare';
 import { AvatarFallbackImage } from './avatar/fallback-image';
+import { shouldShowVrmFallback } from './avatar/fallback-state';
 import { emotionExpressionValues } from './avatar/vrm-expression';
 import { poseEntries, resolveStatePose } from './avatar/vrm-pose';
 import { createMotionPlayer } from './avatar/motion-player';
@@ -92,7 +93,12 @@ export function VrmAvatarViewer({
   className?: string;
 }) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
-  const [failed, setFailed] = useState(false);
+  /**
+   * **どの URL で失敗したか**を持つ（#932）。真偽値だと一度立つと戻らず、`vrmUrl` を
+   * 差し替えても静止画のままになる（effect は `if (!canvas) return;` をリセットより前に
+   * 持ち、fallback 中は canvas が DOM に無いので、リセット自体へ到達しない）。
+   */
+  const [failedUrl, setFailedUrl] = useState<string | undefined>(undefined);
   /**
    * 読み込んだ VRM の仕様版 (#578 増分 1)。**診断のためだけ**に持つ。
    *
@@ -410,10 +416,10 @@ export function VrmAvatarViewer({
         gl.setAnimationLoop(render);
       } catch {
         // WebGL 不可 / VRM 読み込み失敗 → fallback。受付フローは継続。
-        // `setFailed(true)` で `showFallback` が真になり canvas 自体が描かれなくなるため、
+        // `setFailedUrl(vrmUrl)` で `showFallback` が真になり canvas 自体が描かれなくなるため、
         // ここで観測属性を触っても誰も読めない（#578 レビュー m9）。状態は effect 冒頭の
         // リセットで既に初期化済み。
-        if (!disposed) setFailed(true);
+        if (!disposed) setFailedUrl(vrmUrl);
       }
     })();
 
@@ -431,7 +437,7 @@ export function VrmAvatarViewer({
     };
   }, [vrmUrl]);
 
-  const showFallback = !vrmUrl || failed;
+  const showFallback = shouldShowVrmFallback({ vrmUrl, failedUrl });
 
   if (showFallback) {
     // VRM も fallback 画像も無ければ何も表示しない（既定の受付画面の体裁を保つ）。
