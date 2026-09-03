@@ -10,6 +10,36 @@ describe('describeIssue', () => {
     expect(describeIssue({ kind: 'fallback_cycle', policyId: 'p' })).toContain('循環');
     expect(describeIssue({ kind: 'unknown_fallback_policy', policyId: 'p', targetPolicyId: 'q' })).toContain('引き継ぎ');
   });
+
+  /**
+   * 1 手あたりの上限超過 (#927)。**運用者が直せる形で言う**ため、
+   * 「いま幾つで」「幾つまでか」の両方を出す（片方だけだと何秒にすればよいか分からない）。
+   */
+  it('上限超過は、設定値と上限の両方を示す', () => {
+    const message = describeIssue({
+      kind: 'exceeds_provider_ringing_timer',
+      policyId: 'p',
+      stepId: 's1',
+      timeoutSeconds: 180,
+      maxSeconds: 120,
+    });
+    expect(message).toContain('180');
+    expect(message).toContain('120');
+  });
+
+  it('上限超過は step 別に表示される（ポリシー全体ではなく手順に紐づく）', () => {
+    const grouped = groupIssues([
+      {
+        kind: 'exceeds_provider_ringing_timer',
+        policyId: 'p',
+        stepId: 's2',
+        timeoutSeconds: 180,
+        maxSeconds: 120,
+      },
+    ]);
+    expect(grouped.byStep.s2).toHaveLength(1);
+    expect(grouped.policyLevel).toEqual([]);
+  });
 });
 
 describe('groupIssues', () => {

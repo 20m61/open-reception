@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { VONAGE_RINGING_TIMER_MAX_SECONDS } from './voice-initiator';
 import {
   findAllFallbackCycleIds,
   isTerminalSuccess,
@@ -141,6 +142,94 @@ describe('validateRoutingPolicySet (#374)', () => {
       policyId: 'p1',
       stepId: 's1',
     });
+  });
+
+  /**
+   * 1 手あたりの呼出時間が provider の上限を超える (#927)。
+   *
+   * `buildCreateCallRequest` は超過分を黙って丸めるので、設定時に言わないと
+   * **表示（「180秒待つ」）と挙動（120 秒）が食い違ったまま**運用される。
+   *
+   * 🔴 **上限の literal をここへ写さない。** 正本は `VONAGE_RINGING_TIMER_MAX_SECONDS` で、
+   * 値そのもの（120）は `voice-initiator.test.ts` が丸めの挙動として縛っている。
+   * ここへ 120 を書くと写しが 2 つになり、片方だけ直ってズレる。
+   */
+  it('1 手あたりの呼出時間が provider 上限を超えるものを検出する', () => {
+    const p = policy({
+      id: 'p1',
+      steps: [
+        {
+          id: 's1',
+          endpointId: 'e1',
+          action: 'notify',
+          timeoutSeconds: VONAGE_RINGING_TIMER_MAX_SECONDS + 1,
+          nextOn: {},
+        },
+      ],
+    });
+    expect(validateRoutingPolicySet([p], endpointIds)).toContainEqual({
+      kind: 'exceeds_provider_ringing_timer',
+      policyId: 'p1',
+      stepId: 's1',
+      timeoutSeconds: VONAGE_RINGING_TIMER_MAX_SECONDS + 1,
+      maxSeconds: VONAGE_RINGING_TIMER_MAX_SECONDS,
+    });
+  });
+
+  /**
+   * **下界**（`.claude/rules/opus5-autonomous-loop.md`「不変条件は片側しか主張しない」）。
+   * 上の 1 本だけだと「全部の step を弾く」実装でも通ってしまう。境界ちょうどが
+   * **通ること**と、既存 seed 相当が**素通りすること**を併せて縛る。
+   */
+  it('境界ちょうど（上限と等しい）は弾かない', () => {
+    const p = policy({
+      id: 'p1',
+      steps: [
+        {
+          id: 's1',
+          endpointId: 'e1',
+          action: 'notify',
+          timeoutSeconds: VONAGE_RINGING_TIMER_MAX_SECONDS,
+          nextOn: {},
+        },
+      ],
+    });
+    expect(
+      validateRoutingPolicySet([p], endpointIds).filter(
+        (i) => i.kind === 'exceeds_provider_ringing_timer',
+      ),
+    ).toEqual([]);
+  });
+
+  it('既存 seed 相当（20/20/30 秒）には この issue が立たない', () => {
+    expect(
+      validateRoutingPolicySet([threeStep], endpointIds).filter(
+        (i) => i.kind === 'exceeds_provider_ringing_timer',
+      ),
+    ).toEqual([]);
+  });
+
+  /**
+   * 🔴 **早期 return が後段を飲み込む型**（`.claude/rules/opus5-autonomous-loop.md`）。
+   * 上限超過を見つけたところで step の検査を打ち切る実装だと、同じ step の
+   * `unknown_endpoint` が消える。両方立つことを縛る。
+   */
+  it('上限超過は同じ step の他の issue を飲み込まない', () => {
+    const p = policy({
+      id: 'p1',
+      steps: [
+        {
+          id: 's1',
+          endpointId: 'missing',
+          action: 'notify',
+          timeoutSeconds: VONAGE_RINGING_TIMER_MAX_SECONDS + 1,
+          nextOn: {},
+        },
+      ],
+    });
+    const kinds = validateRoutingPolicySet([p], endpointIds).map((i) => i.kind);
+    expect(kinds).toContain('exceeds_provider_ringing_timer');
+    expect(kinds).toContain('unknown_endpoint');
   });
 
   it('空ポリシーを検出する', () => {

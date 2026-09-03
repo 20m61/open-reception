@@ -12,6 +12,17 @@
  */
 
 /**
+ * 呼出時間の上限は provider（Vonage）由来だが、**写しを作らない**ため正本を参照する (#927)。
+ * `voice-initiator.ts` が「provider 固有の形はここで閉じる」方針なのに対し、ここが参照するのは
+ * **リクエストの形ではなくスカラの上限値 1 つ**なので、閉じ込めの意図は壊れない
+ * （`budget-fit.ts` が `CALL_STATUS_POLL_MAX_MS` を参照しているのと同じ形）。
+ *
+ * **2 つ目の provider が入るときはここを見直す** —— そのときは上限を引数で受けるか、
+ * provider ごとの上限の最小値を取る形にする（定数の写しを作る方向へは倒さない）。
+ */
+import { VONAGE_RINGING_TIMER_MAX_SECONDS } from './voice-initiator';
+
+/**
  * 取次 1 手の結果。provider 非依存の受付ドメイン語彙に正規化する（Vonage 固有語を持ち込まない）。
  *   - answered: 相手が応答した（通話成立）。
  *   - accepted: 担当者が受付を引き受けた（アプリ内応答等）。
@@ -146,6 +157,24 @@ export type RoutingPolicyIssue =
       policyId: string;
       worstCaseMs: number;
       clientWaitMs: number;
+    }
+  /**
+   * 1 手あたりの呼出時間が provider の上限（Vonage `ringing_timer` = 120 秒）を超える (#927)。
+   *
+   * `buildCreateCallRequest` は超過分を**黙って丸める**（多層防御として残す）。丸めのおかげで
+   * 発信は 400 にならず取次は正しく次の手へ進むが、**設定時に何も言わない**ため、
+   * 運用者が 180 秒と設定するとルートビルダーには「180秒待つ」と表示されたまま
+   * 実際には 120 秒で切れる —— 表示と挙動が食い違い、気づく手がかりが無い。
+   *
+   * `exceeds_client_wait` が**全手順の合計**を見るのに対し、こちらは**1 手ごと**。
+   * 合計 5 分に収まっていても 1 手 180 秒は起こりうるので、片方では塞げない。
+   */
+  | {
+      kind: 'exceeds_provider_ringing_timer';
+      policyId: string;
+      stepId: string;
+      timeoutSeconds: number;
+      maxSeconds: number;
     };
 
 /**
@@ -213,6 +242,18 @@ export function validateRoutingPolicySet(
     for (const step of policy.steps) {
       if (!Number.isInteger(step.timeoutSeconds) || step.timeoutSeconds <= 0) {
         issues.push({ kind: 'non_positive_timeout', policyId: policy.id, stepId: step.id });
+      }
+      // **上限は provider 由来だが、丸めは発信時にしか効かない** (#927)。設定の時点で
+      // 言わないと表示と挙動が食い違ったまま運用される。`continue` しない ——
+      // 同じ step の `unknown_endpoint` 等を飲み込ませない。
+      if (step.timeoutSeconds > VONAGE_RINGING_TIMER_MAX_SECONDS) {
+        issues.push({
+          kind: 'exceeds_provider_ringing_timer',
+          policyId: policy.id,
+          stepId: step.id,
+          timeoutSeconds: step.timeoutSeconds,
+          maxSeconds: VONAGE_RINGING_TIMER_MAX_SECONDS,
+        });
       }
       if (!endpointIds.has(step.endpointId)) {
         issues.push({
