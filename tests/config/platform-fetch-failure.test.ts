@@ -345,6 +345,26 @@ const RESET_ON_SWITCH: readonly { readonly file: string; readonly setter: string
  */
 const FAILED_EXPRESSION = /^\s*([A-Za-z_$][\w$]*)\s*!==\s*null\s*$/;
 
+/**
+ * `if (… !res.ok …)` の枝（本体つき）。
+ *
+ * 🔴 **波括弧の無い形も拾う。** `if (!res.ok) return;` は 1 行で「無言」を書ける最短の形で、
+ * `\)\s*\{` を要求すると**その 1 行だけが検査から外れる**（実測で生存）。
+ */
+function notOkBranches(source: string): { readonly condition: string; readonly body: string }[] {
+  // `res` / `response` の `.ok` だけを見る。`Result` 型の `.ok`（`built.ok` / `scoped.ok`）は別物。
+  return [...source.matchAll(/if\s*\(([^)]*!(?:res|response)\??\.ok[^)]*)\)\s*/g)].flatMap((m) => {
+    const after = (m.index ?? 0) + m[0].length;
+    const condition = (m[1] ?? '').trim();
+    if (source[after] === '{') {
+      const end = matchBrace(source, after);
+      return end < 0 ? [] : [{ condition, body: source.slice(after, end) }];
+    }
+    const semicolon = source.indexOf(';', after);
+    return semicolon < 0 ? [] : [{ condition, body: source.slice(after, semicolon + 1) }];
+  });
+}
+
 /** `<DataTable … />` を粗く切り出す（`platform-list-states.test.ts` と同じ形）。 */
 function dataTableBlocks(source: string): string[] {
   return [...source.matchAll(/<DataTable\b[\s\S]*?\/>/g)].map((m) => m[0]);
@@ -799,23 +819,15 @@ describe('platform の通信失敗が無言にならない (#968)', () => {
    */
   it('!res.ok の枝は失敗を報告する（403 / 5xx を無言にしない）', () => {
     const offenders = platformFiles().flatMap((f) =>
-      [...f.source.matchAll(/if\s*\(([^)]*![\w.?]*\.ok[^)]*)\)\s*\{/g)].flatMap((m) => {
-        const open = (m.index ?? 0) + m[0].length - 1;
-        const end = matchBrace(f.source, open);
-        if (end < 0) return [];
-        const body = f.source.slice(open, end);
-        return reportsFailure(body) ? [] : [`${f.name}: if (${(m[1] ?? '').trim()}) が無言`];
-      }),
+      notOkBranches(f.source).flatMap((b) =>
+        reportsFailure(b.body) ? [] : [`${f.name}: if (${b.condition}) が無言`],
+      ),
     );
     expect(offenders).toEqual([]);
   });
 
   it('🔴 下界: !res.ok の枝を実際に見つけている（走査が空振りしていない）', () => {
-    const branches = platformFiles().reduce(
-      (n, f) => n + [...f.source.matchAll(/if\s*\(([^)]*![\w.?]*\.ok[^)]*)\)\s*\{/g)].length,
-      0,
-    );
-    expect(branches).toBeGreaterThanOrEqual(8);
+    expect(platformFiles().reduce((n, f) => n + notOkBranches(f.source).length, 0)).toBeGreaterThanOrEqual(8);
   });
 
   /*
@@ -844,14 +856,31 @@ describe('platform の通信失敗が無言にならない (#968)', () => {
           reportedStates(f.source.slice(b.catchBody.start, b.catchBody.end)),
         ),
       );
+      const conditionOf = (c: { start: number; end: number }): string => {
+        const head = (f.source.slice(c.start, c.end).split('\n')[0] ?? '').replace(/^\{/, '');
+        return head.slice(0, head.lastIndexOf('?')).trim();
+      };
       return [...reported].flatMap((state) => {
-        const at = f.source.search(new RegExp(`\\{\\s*${state}\\s*(?:!==\\s*null\\s*)?\\?`));
-        if (at < 0) return [];
-        const enclosing = containers.filter((c) => c.start < at && c.end > at);
-        if (enclosing.length === 0) return [];
-        return RENDER_NESTING.some((e) => e.file === f.name && e.state === state)
-          ? []
-          : [`${f.name}: ${state} の描画が排他の枝の内側に在る`];
+        const registered = RENDER_NESTING.some((e) => e.file === f.name && e.state === state);
+        /*
+         * 🔴 **描画は「その state だけ」を条件にする。**
+         *
+         * 条件に別の state を and で足す変異（`{flags && flagsError ? …}`）は、
+         * 「その state で始まる三項」を探す形だと**検出そのものから外れる**（実測で生存）——
+         * `flagsError` が立つのは `flags === null` のときだけなので、描画は永遠に到達しない。
+         * 閉じた形 `state` / `state !== null` の描画が**在ること**を先に要求する。
+         */
+        const renders = containers.filter((c) =>
+          new RegExp(`^${state}\\s*(?:!==\\s*null)?$`).test(conditionOf(c)),
+        );
+        if (renders.length === 0)
+          return registered ? [] : [`${f.name}: ${state} を単独条件で描いていない`];
+        return renders.flatMap((c) => {
+          const enclosing = containers.filter((x) => x.start < c.start && x.end > c.start);
+          return enclosing.length > 0 && !registered
+            ? [`${f.name}: ${state} の描画が排他の枝の内側に在る`]
+            : [];
+        });
       });
     });
     expect(offenders).toEqual([]);
