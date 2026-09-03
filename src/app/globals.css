@@ -1452,6 +1452,44 @@ a {
   padding-bottom: var(--space-sm);
 }
 
+/*
+ * #816: バーが内容を覆っているときだけ出す「まだ続きがある」の提示。
+ *
+ * バーは不透明（--color-bg）なので、覆われた部分は「カードが途中で切れている」ようにしか
+ * 見えず、スクロールできると分からない。#124 は「バーがスクロール内容に隠れないこと」を
+ * 定めたが、その裏返しは塞がれていなかった。
+ *
+ * 絶対配置にして**バー自身の寸法を変えない**（バーの高さは --kiosk-chat-safe-bottom /
+ * --kiosk-voice-safe-bottom の基準なので、ここで高さが動くと FAB と音声レイヤが揺れる）。
+ * 位置の基準はバー自身（sticky なので配置済み祖先になる）。
+ */
+.kiosk-escape-bar__more {
+  position: absolute;
+  bottom: 100%;
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+  gap: var(--space-xs);
+  padding: 4px var(--space-sm);
+  border: 1px solid var(--color-border-strong);
+  border-radius: 999px;
+  background: var(--color-surface-2);
+  color: var(--color-text);
+  /* 支援モードの拡大に追従させる。`--font-body` は上書き地点で再宣言される派生トークン (#869)。 */
+  font-size: calc(var(--font-body) * 0.8);
+  line-height: 1.4;
+  white-space: nowrap;
+  pointer-events: none;
+}
+
+/* 下向きの合図。文字と別に持ち、翻訳で消えないようにする。 */
+.kiosk-escape-bar__more::after {
+  content: '▾';
+  font-size: 1.1em;
+  line-height: 1;
+}
+
 /* #122 Chat-assisted ドロワーのスロット（中身は後続トラックが差し込む）。 */
 /*
  * チャットドロワーを安全バー（.kiosk-escape-bar）より上へ持ち上げるための予約高さ。
