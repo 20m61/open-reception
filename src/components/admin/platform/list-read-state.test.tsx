@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { ReactElement } from 'react';
+import { readFileSync, readdirSync } from 'node:fs';
+import { join } from 'node:path';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { AuditLogs } from './AuditLogs';
 import { Integrations } from './Integrations';
@@ -38,6 +40,22 @@ import { UpdateStatus } from './UpdateStatus';
  * 縛る。**2 つで 1 組**であり、どちらか片方だけでは配線は閉じない。
  */
 
+/** platform 配下の `.tsx` ソース（テスト除く）。JSX コメントは落とす。 */
+function platformSources(): string[] {
+  const dir = join(process.cwd(), 'src/components/admin/platform');
+  const out: string[] = [];
+  const walk = (d: string): void => {
+    for (const entry of readdirSync(d, { withFileTypes: true })) {
+      const path = join(d, entry.name);
+      if (entry.isDirectory()) walk(path);
+      else if (entry.name.endsWith('.tsx') && !entry.name.includes('.test.'))
+        out.push(readFileSync(path, 'utf8').replace(/\/\*[\s\S]*?\*\//g, ''));
+    }
+  };
+  walk(dir);
+  return out;
+}
+
 /** 移行した一覧と、その `testId`。`AwsCostPanel` は `data` が載ってからしか表を描かないので対象外。 */
 const LISTS: readonly { readonly label: string; readonly element: ReactElement; readonly testId: string }[] = [
   { label: 'TenantList', element: <TenantList />, testId: 'platform-tenants' },
@@ -67,11 +85,34 @@ describe('platform の一覧は配線として「読み込み中」を出す (#8
   );
 
   /*
-   * 🔴 **下界。** 上の主張は「一覧を全部消す」「`testId` を全部書き換える」で空虚に満たせる
-   * ——`-loading` も `-empty` も出なくなれば `toContain` は落ちるが、`LISTS` を空にすれば
-   * `it.each` は 1 件も走らずに緑になる。件数を固定する。
+   * 🔴 **下界を「件数の固定」から「網羅」へ変える (#896 レビュー m1)。**
+   *
+   * `LISTS.length === 12` という固定値は、**新しい一覧を足しても増えない** ——
+   * 実測で「新規画面を `loaded failed={false}`（定数）で描き、定数免除に偽の理由で
+   * 登録する」変異が生存した。`LISTS` が手書きである限り、新しい画面は実描画の
+   * 観測に載らないまま通ってしまう。
+   *
+   * ソースを走査して「`failed` を**式**で渡している `DataTable`」を全部見つけ、
+   * それが漏れなく `LISTS` に載っていることを要求する。こうすると一覧を足した人は
+   * ここへ登録するまで緑にできない。
    */
-  it('🔴 下界: 12 の一覧を実際に描いている（表を数えずに通す形にしない）', () => {
-    expect(LISTS.length).toBe(12);
+  it('🔴 網羅: failed を式で渡す DataTable は全部 LISTS に載っている', () => {
+    const covered = new Set(LISTS.map((l) => l.testId));
+    const wired = platformSources().flatMap((source) =>
+      [...source.matchAll(/<DataTable\b[\s\S]*?\/>/g)]
+        .map((m) => m[0])
+        .filter((b) => /\bfailed=\{(?!true\}|false\})/.test(b))
+        .map((b) => /testId="([^"]*)"/.exec(b)?.[1] ?? '(testId なし)'),
+    );
+    const missing = wired.filter((t) => !covered.has(t));
+    expect(missing, 'この一覧を LISTS へ足すこと（実描画で観測されていない）').toEqual([]);
+  });
+
+  it('🔴 下界: LISTS が実在の一覧を指している（腐った登録を残さない）', () => {
+    const all = platformSources()
+      .flatMap((source) => [...source.matchAll(/testId="([^"]*)"/g)].map((m) => m[1]))
+      .filter((t): t is string => Boolean(t));
+    const stale = LISTS.filter((l) => !all.includes(l.testId)).map((l) => l.testId);
+    expect(stale).toEqual([]);
   });
 });

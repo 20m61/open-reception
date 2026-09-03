@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import type { TenantDetail as TenantDetailData, TenantSiteRow } from '@/domain/platform/console-summary';
 import type { TenantLifecycleAction } from '@/domain/platform/tenant-lifecycle';
 import { DangerActionButton } from '@/components/admin/danger/DangerActionButton';
@@ -20,6 +20,8 @@ export function TenantDetail({ tenantId }: { tenantId: string }) {
   const [data, setData] = useState<TenantDetailData | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  /** いま画面が指しているテナント。遷移をまたいだ古い応答を捨てるために持つ。 */
+  const latestTenantId = useRef(tenantId);
 
   const load = useCallback(async () => {
     try {
@@ -44,13 +46,21 @@ export function TenantDetail({ tenantId }: { tenantId: string }) {
      * 化ける」まさにその形で、画面には再試行の導線も `role="alert"` も出ない。
      */
     } catch {
-      setError('テナント詳細の取得に失敗しました。');
+      /*
+       * 🔴 **古い要求の失敗を新しい画面へ出さない (#896 レビュー m4)。**
+       * `load` は `tenantId` ごとに作り直されるので、A から B へ遷移した直後に
+       * **A の fetch が reject する**ことがある。素で `setError` すると B の画面に
+       * 「テナント詳細の取得に失敗しました。」が出て、B の表が失敗側へ落ちる ——
+       * B の取得はまだ成功する途中かもしれない。いま見ているテナント宛の失敗だけ出す。
+       */
+      if (latestTenantId.current === tenantId) setError('テナント詳細の取得に失敗しました。');
     }
   }, [tenantId]);
 
   useEffect(() => {
+    latestTenantId.current = tenantId;
     void load();
-  }, [load]);
+  }, [load, tenantId]);
 
   const runLifecycle = useCallback(
     async (action: TenantLifecycleAction, reason?: string) => {

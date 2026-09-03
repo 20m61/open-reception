@@ -33,6 +33,45 @@ function render(props: Partial<Parameters<typeof DataTable<Row>>[0]> = {}): stri
 }
 
 describe('DataTable の読み取り状態 (#896)', () => {
+  /*
+   * 🔴 **13 表ぶんの契約が、この 1 ファイルに集約された (#896 レビュー MAJOR-2)。**
+   *
+   * 移行前、横スクロール領域と `role="region"` は**各画面が自前で書いていた**ので、
+   * `platform-list-states.test.ts` の「生 `<table>` は `overflowX` の中に置く」が
+   * 8 ファイルを守っていた。寄せた結果その主張が守る対象は **1 ファイル
+   * （`ProviderConfig`）へ縮み**、残り 13 表の同じ保証は**どこも守らなくなった**。
+   *
+   * 独立レビューの実測で、`overflowX` を外す / `role="region"` を外す /
+   * `scrollRegionLabel` を無視する / loading の `role="status"` を外す、の 4 変異が
+   * **すべて生存**した。`.claude/rules/opus5-autonomous-loop.md`「方式を替えたら、
+   * 前の方式が守っていた変異を当て直す」が言うとおり、**落ちた保証は次にそこを
+   * 踏むまで誰にも見えない**。ここで当て直す。
+   */
+  it('横スクロール領域を持つ（狭幅で列が潰れない / #330 item5）', () => {
+    expect(render()).toContain('overflow-x:auto');
+  });
+
+  it('スクロール領域はキーボードで到達できる（WCAG 2.1.1 / #330 レビュー）', () => {
+    const html = render();
+    expect(html).toContain('role="region"');
+    expect(html).toContain('tabindex="0"');
+  });
+
+  it('scrollRegionLabel を渡すとスクロール領域の名前になる（landmark を区別する）', () => {
+    expect(render({ scrollRegionLabel: 'コスト内訳' })).toContain('aria-label="コスト内訳"');
+  });
+
+  it('scrollRegionLabel を渡さなければ既定の名前になる', () => {
+    expect(render()).toContain('aria-label="テーブル（横スクロール可）"');
+  });
+
+  it('読み込み中は読み上げへ届く（role="status" / aria-live）', () => {
+    const html = render({ rows: [], loaded: false, failed: false });
+    expect(html).toContain('data-testid="t-loading"');
+    expect(html).toContain('role="status"');
+    expect(html).toContain('aria-live="polite"');
+  });
+
   it('🔴 下界: 行が在るなら表を描く（状態表示に置き換えない）', () => {
     const html = render();
     expect(html).toContain('data-testid="t"');

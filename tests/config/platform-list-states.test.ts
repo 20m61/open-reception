@@ -35,7 +35,7 @@ import { join } from 'node:path';
  * | 片方（`loaded` だけ）を渡す | 同上（対で渡すことを要求する） |
  * | 免除に広すぎる式（`.map(`）を足して全部免除にする | 免除の件数 ⟺ 免除された tbody の数 |
  * | 表を全部消して主張を空虚に満たす | 生 + `DataTable` の合計、および状態を渡す `DataTable` の下界 |
- * | 表を `overflowX` の外へ出す | 同左（生 `<table>` に対して継続） |
+ * | 表を `overflowX` の外へ出す | 生 `<table>` は同左。**寄せた 13 表は `DataTable.test.tsx` が持つ**（下記） |
  * | エラー表示から `role="alert"` を外す | 同左 |
  * | 生の一覧表を新しく足して素通りさせる | `FILES_ALLOWED_RAW_TABLE`（同一性で縛る） |
  * | `colSpan` が列数と食い違う | **構造的に閉じた**ので主張ごと削除（下記） |
@@ -49,7 +49,18 @@ import { join } from 'node:path';
  * | --- | --- |
  * | 配線を定数にする（`loaded={data !== null}` → `loaded`） | 「定数ではなく式へ束ねる」＋ `list-read-state.test.tsx` の実描画 |
  * | サブディレクトリへ画面を足す | `platformFiles()` を再帰にする |
- * | 既存の免除を**拡幅**する（`PROVIDER_IDS.map(` → `.map(`） | 「免除は名指ししたファイルの tbody にだけ当たる」 |
+ * | 既存の免除を**拡幅**する（`PROVIDER_IDS.map(` → `.map(`） | 免除は実在する束縛を名指しすること |
+ *
+ * 2 周目でさらに 10 件の生存が出た。**1 周目で塞いだつもりの族から漏れていた**ものが多い:
+ *
+ * | 生存した変異 | 塞いだ主張 |
+ * | --- | --- |
+ * | `overflowX` / `role="region"` / `tabIndex` を `DataTable` から外す | `ui/DataTable.test.tsx`（13 表ぶんの契約が集約された先） |
+ * | `scrollRegionLabel` を `DataTable` 側で無視する | 同上（配線を全部残したまま landmark 名が既定へ戻る） |
+ * | loading の `role="status"` / `aria-live` を外す | 同上 |
+ * | `catch` の中身を無音化する | 「`await fetch` を持つなら `catch` を持つ」（下記 `REQUIRE_FETCH_CATCH`） |
+ * | `CONSTANT_READ_STATE` に偽の理由で新規一覧を登録して逃げる | `why` 長・`testId` 実在・`LISTS` の網羅性 |
+ * | `scrollRegionLabel` を片方だけ外す（同名衝突しないので通る） | 全 `DataTable` に必須＋platform 全体で一意 |
  */
 
 const PLATFORM_DIR = join(process.cwd(), 'src/components/admin/platform');
@@ -133,6 +144,13 @@ function dataTableBlocks(source: string): string[] {
  * 表を消して別の場所へ足しても落ちる）。
  */
 const FILES_ALLOWED_RAW_TABLE: readonly string[] = ['ProviderConfig.tsx'];
+
+/** `failed` を**式**で渡している（＝失敗が起こりうると主張している）ファイル。 */
+function filesWiringFailed(): { name: string; source: string }[] {
+  return platformFiles().filter((f) =>
+    dataTableBlocks(f.source).some((b) => /\bfailed=\{(?!true\}|false\})/.test(b)),
+  );
+}
 
 /**
  * `loaded` / `failed` を**定数**に束ねてよい一覧。**理由を必ず書く。**
@@ -303,6 +321,83 @@ describe('platform の一覧の状態表示 (#896 / 課題 06)', () => {
       const dupes = labels.filter((l, i) => labels.indexOf(l) !== i);
       return [...new Set(dupes)].map((l) => `${f.name}: "${l}" が重複`);
     });
+    expect(offenders).toEqual([]);
+  });
+
+
+  /*
+   * 🔴 **`failed` を配線したなら、失敗する道が実在すること (#896 レビュー MAJOR-1)。**
+   *
+   * `failed={error !== null}` と書いても、`error` が**決して真にならない**なら
+   * `DataTable` は永遠に「読み込み中」を出す。実際 1 周目のレビューで、8 画面のうち
+   * 6 つが `fetch` の reject を拾っておらず、オフライン・DNS 断・HTML 応答で
+   * `res.json()` が投げると **失敗が永遠の待ちに化ける**ことが分かった。
+   *
+   * その主修正（`try/catch` の追加）に**オラクルが 1 本も無かった** —— 2 周目の
+   * レビューが catch の中身を `void 0;` に置換したところ**生存**した。CLAUDE.md
+   * 「主修正とフォールバックを同じコミットで入れない／主修正を先に縛る」の型である。
+   *
+   * `failed` を式で渡しているファイルは、**失敗を報告する `catch`** を持つこと。
+   * `} catch {` が在るだけでは足りない（中身を消す変異が通る）ので、`setError` を
+   * 呼んでいることまで要求する。
+   */
+  it('failed を式で渡すファイルは、失敗を報告する catch を持つ', () => {
+    const offenders = filesWiringFailed()
+      .filter((f) => !/catch[\s\S]{0,240}?setError\(/.test(f.source))
+      .map((f) => f.name);
+    expect(offenders).toEqual([]);
+  });
+
+  /*
+   * 🔴 **下界。** 直上は「`failed` を式で渡すファイル」が 0 件なら空虚に満たせる。
+   * 実在することを併せて固定する（移行した 7 ファイルが下限）。
+   */
+  it('🔴 下界: failed を式で渡すファイルが実在する', () => {
+    expect(filesWiringFailed().length).toBeGreaterThanOrEqual(7);
+  });
+
+  /*
+   * 🔴 **`scrollRegionLabel` は全部に必須で、platform 全体で一意 (#896 レビュー m2)。**
+   *
+   * 「同一ファイルに 2 つ以上あるとき」しか見ないと、**1 表だけのファイルを 2 つ
+   * 同じページに置く**組み合わせが漏れる（実測: `Integrations` の片方から外す変異が
+   * 生存した —— 残り 1 つと名前が衝突しないため）。ページ構成はファイルを跨ぐので、
+   * ファイル単位の重複検査では原理的に届かない。全体で一意にしておけば、どのページに
+   * どう並べても landmark 名が衝突しない。
+   */
+  it('全 DataTable が固有の scrollRegionLabel を持つ（platform 全体で一意）', () => {
+    const labels = platformFiles().flatMap((f) =>
+      dataTableBlocks(f.source).map((b) => {
+        const label = /scrollRegionLabel="([^"]*)"/.exec(b)?.[1];
+        const testId = /testId="([^"]*)"/.exec(b)?.[1] ?? '(testId なし)';
+        return { file: f.name, testId, label };
+      }),
+    );
+    const missing = labels.filter((l) => !l.label).map((l) => `${l.file}: ${l.testId} に scrollRegionLabel が無い`);
+    const seen = labels.map((l) => l.label);
+    const dupes = [...new Set(seen.filter((l, i) => l && seen.indexOf(l) !== i))].map(
+      (l) => `"${l}" が複数の表で使われている`,
+    );
+    expect([...missing, ...dupes]).toEqual([]);
+  });
+
+  /*
+   * 🔴 **定数免除にも `EXEMPT_TBODY` と同じ衛生検査を掛ける (#896 レビュー m1)。**
+   *
+   * 免除簿は 2 枚あるのに検査が片方だけ、という非対称は抜け道になる ——
+   * 実測で「新規一覧を `loaded failed={false}` で描き、偽の理由で
+   * `CONSTANT_READ_STATE` に 1 行足す」変異が生存した。`why` を空にする変異も通っていた。
+   */
+  it('定数免除には理由が書かれている', () => {
+    const missing = CONSTANT_READ_STATE.filter((e) => e.why.trim().length < 10);
+    expect(missing.map((e) => e.testId)).toEqual([]);
+  });
+
+  it('🔴 下界: 定数免除は実在する DataTable を名指しする（腐った登録を残さない）', () => {
+    const testIds = platformFiles().flatMap((f) =>
+      dataTableBlocks(f.source).map((b) => /testId="([^"]*)"/.exec(b)?.[1] ?? ''),
+    );
+    const offenders = CONSTANT_READ_STATE.filter((e) => !testIds.includes(e.testId)).map((e) => e.testId);
     expect(offenders).toEqual([]);
   });
 
