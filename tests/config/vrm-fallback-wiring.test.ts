@@ -43,6 +43,21 @@ describe('VRM fallback 判定の配線 (#932)', () => {
   });
 
   /**
+   * 🔴 **記録するのは「試みた URL」でなければならない。**
+   *
+   * 変異検証で実測: `setFailedUrl(vrmUrl)` を `setFailedUrl('__failed__')` のような
+   * 定数へ変えても、上の 3 本は全部緑のまま通った（生存）。この形は
+   * `failedUrl === vrmUrl` が**永遠に偽**になるので、読込に失敗しても
+   * **fallback 画像が一度も出ない**（壊れた canvas のまま）という別の欠陥になる。
+   *
+   * 判定側（`shouldShowVrmFallback`）をいくら縛っても、入力を作る側が嘘をつけば
+   * 意味が無い。記録の中身をここで縛る。
+   */
+  it('🔴 失敗時に記録するのは、いま読もうとしている vrmUrl そのもの', () => {
+    expect(viewerSource()).toMatch(/setFailedUrl\(\s*vrmUrl\s*\)/);
+  });
+
+  /**
    * **下界**: 「失敗したら以後ずっと fallback」へ戻す変異を名指しで落とす。
    * `failedUrl` は URL を持つので、真偽値として扱う書き方（`|| failedUrl` /
    * `failedUrl !== undefined`）が判定に現れたら退行である。
