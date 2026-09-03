@@ -186,10 +186,10 @@ kill のままであることを確認した
 
 | Issue | 内容 |
 | --- | --- |
-| #929 | 品質ゲートの change-scope skip が vrm を SKIP したまま `tier=full` を green として記録する（#640 と同型） |
-| #930 | `.vrma` の解放（`stop` + `uncacheClip`）が viewer 側で観測されておらず、変異が素通りする（`data-motion-actions`） |
+| ~~#929~~ | **クローズ（起票時の前提が誤り）**。スタンプは既に 4 列目へ scope を記録していた（#511 で導入・#717 で強化）。`scope=docs` は省略された集合を一意に決めるので、**どの層を見たかは復元できる**。`skip_unverified`（検査できなかった）は既にスタンプ自体を拒否しており、2 種類の SKIP は区別済みだった |
+| ~~#930~~ | **クローズ（PR #962）**。`data-motion-actions` を追加。**`play` +1 / `release` −1 では守れない**（`release` が呼ばれたことしか見ない）ので `mixer.existingAction(clip)` を引く。実描画で 2 回切替え、`uncacheClip` を落とすと **1 → 2 → 3** と増えて落ちることを実測 |
 | #931 | 解放の遅延は実時計・フェードは mixer 時計。レンダーループが詰まるとハードカットになる（cosmetic） |
-| #932 | VRM 読込に一度失敗すると `vrmUrl` を変えても復帰しない（`setFailed` のリセットが無い。**点検前からの欠陥**） |
+| ~~#932~~ | **クローズ（PR #957）**。🔴 **issue の提案（`setFailed(false)` を effect 冒頭のリセットへ足す）では直らなかった** —— effect は `if (!canvas) return;` を**リセットより前**に持ち、fallback 中は canvas が DOM に無いのでリセットへ到達しない。失敗を**URL に紐づける**（`failedUrl`）形へ変えた |
 | #933 | soak が VRM 無効のまま回っており、アクション蓄積型の退行を原理的に検出できない |
 | #934 | `vrm.lookAt.target` で眼球にも視線を持たせる（#781 の下位増分） |
 | #935 | ライト強度を実機比較して決める（本 repo 1.2 / 公式例 `Math.PI`） |
@@ -371,6 +371,41 @@ git show origin/main:<path> | grep -c <入るはずの印>
   理由は `docs/component-catalog.md` §5.5、3 つ目が黙って生えないことは
   `tests/config/responsive-strategy.test.ts` が縛る。
 
+## 2026-09-03 の周回（VRM の観測性 / runtime-policy）
+
+| PR | Issue | 内容 |
+| --- | --- | --- |
+| #954 | #846 | 未知 state の override を**解除**へ倒し、`unknown_override_state` を出す。判定は `Object.hasOwn`（`in` だと `toString` / `constructor` が既知として通る）。state の既知性を **expiry より先に**見る |
+| #957 | #932 | VRM 読込失敗を **URL に紐づけ**、差し替えで復帰できるようにする |
+| #962 | #930 | 退場した `.vrma` アクションが mixer に残らないことを**実描画で**縛る。検査用ハーネスを新設 |
+| #964 | #963 | 実描画検査 section 4 の遷移を実 CTA で行い、主張を実装に合わせる |
+
+**この 4 周で「空虚な緑」を 4 件見つけた。** いずれも「変更後に全部 green」では見えない型:
+
+- **#932**: 純関数の変異 3 件は kill されたが、**viewer が純関数を使うのをやめる変異は生存**した
+  （#923 B1 と同型）。塞いだら今度は**照合がすぐ上の説明コメントに一致**しており、コードを
+  変異させてもテストが緑だった。コメントを落としてから照合するようにし、**過去の変異を
+  全部当て直して** 7/7 kill を確認した
+- **#930**: issue の提案（`play` +1 / `release` −1）は「`release` が**呼ばれた**」ことしか
+  見ておらず、中身を落とす変異が素通りする。**mixer に残っているか**を直接引く形へ変えた
+- **#963**: section 4 の「アバターは遷移後も生きている」が、**遷移していないから通っていた**。
+  座標タップは外れても例外にならない。しかも `reception-screens.tsx` は `IdleView` にだけ
+  `vrmUrl` を渡すので、**遷移していれば旧主張は必ず落ちる**ものだった
+- **#846**: `anomalies` が空＝完全に無言のまま `state: undefined` が依存補正で伝播していた
+
+### 検査用ハーネス（`src/app/kiosk/vrm-harness/`）
+
+`/kiosk` では**見たい状況が作れない**ことが実測で分かったため新設した:
+
+- `selectingPurpose` では **`vrm-canvas` が 0 個**（アバターは idle 専用）。状態遷移では
+  canvas ごと mixer が破棄されるので、アクション蓄積が再現しない
+- `vrmUrl` はサーバ env 由来で、セッション内に差し替えられない
+
+`VrmAvatarViewer` を**マウントしたまま**入力だけ差し替える。既定は 404 で、
+`KIOSK_VRM_HARNESS=1` のときだけ描画する（`tests/config/vrm-harness-gate.test.ts` が
+既定・条件の非反転・env 名の一致を縛る）。**#932 AC3（復帰の実描画検証）と #933（soak での
+VRM 有効化）も同じ到達性の問題で止まっていた**ので、そちらでも使える。
+
 ### リモートブランチの掃除（2026-09-03 に完了）
 
 **`main` 以外のリモートブランチ 103 本を削除した。** 残件表からこの行は消えた。
@@ -380,6 +415,19 @@ git show origin/main:<path> | grep -c <入るはずの印>
 | --- | --- |
 | `fix/routing-step-provider-timeout-limit` | PR #944 が **CLOSED（未マージ）**。消すと作業そのものが消える |
 | `fix/vrm-observability-wiring` | PR が 1 つも無い。素性が確かめられていない |
+
+> 🔴 **掃除の直後からまた溜まる。そして削除はクラウドからは依然できない。**
+> 同日 12:30 に実測したところ、上の 2 本に加えて**マージ済みの 4 本**が溜まっていた:
+> `docs/round-910-final`（#961）/ `feat/vrm-motion-action-observability`（#962）/
+> `fix/admin-list-sort-remainder`（#959）/ `fix/vrm-check-section4-real-transition`（#964）。
+> **クラウドセッションから `git push origin --delete` を試したが 4 本とも残った**
+> （`git ls-remote` で確認。proxy が write を拒否する既知の症状で、戻り値は成功に見える）。
+> **macOS で流すこと。**
+>
+> あわせて `feat/datatable-read-state`（#965）は **open な PR を持つ**ので消さないこと。
+> 下の手順は `*MERGED*` だけを拾うが、**1 ブランチに複数 PR が在ると `MERGED,OPEN` になりうる**
+> ので、`*OPEN*` を先に除く条件を足すほうが安全である。
+> 掃除は「一度やって終わり」ではなく、**周回のたびに実測から作り直す**もの。
 
 #### 🔴 消す前に「MERGED な PR を持つか」を 1 本ずつ引くこと
 
