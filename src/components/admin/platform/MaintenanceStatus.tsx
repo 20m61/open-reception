@@ -11,7 +11,7 @@ import type {
 } from '@/domain/platform/maintenance-window';
 import type { NoticeLevel, NoticeRow, NoticeSummary } from '@/domain/platform/notice';
 import { NoticePublishForm } from './NoticePublishForm';
-import { DangerActionPlaceholder } from './primitives';
+import { DangerActionPlaceholder, TableBodyState } from './primitives';
 import { MetricCard } from '@/components/admin/ui';
 
 /**
@@ -116,7 +116,7 @@ export function MaintenanceStatus() {
         広いため、確認・昇格・監査を伴う導線に隔離します。
       </p>
 
-      {error ? <p style={{ color: 'var(--color-platform-warn)' }}>{error}</p> : null}
+      {error ? <p role="alert" style={{ color: 'var(--color-platform-warn)' }}>{error}</p> : null}
 
       <div style={{ display: 'flex', gap: 'var(--space-md)', flexWrap: 'wrap', marginBottom: 'var(--space-md)' }}>
         <MetricCard
@@ -132,118 +132,134 @@ export function MaintenanceStatus() {
       </div>
 
       <h2 style={{ fontSize: '1rem', opacity: 0.7 }}>メンテナンス表示中の端末</h2>
-      <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.9rem' }}>
-        <thead>
-          <tr style={{ textAlign: 'left', opacity: 0.6 }}>
-            <th style={{ padding: '6px 8px' }}>テナント</th>
-            <th style={{ padding: '6px 8px' }}>端末</th>
-            <th style={{ padding: '6px 8px' }}>サイト</th>
-          </tr>
-        </thead>
-        <tbody>
-          {(data?.summary.devices ?? []).map((d) => (
-            <tr key={d.deviceId} style={{ borderTop: '1px solid var(--color-border)' }}>
-              <td style={{ padding: '6px 8px' }}>{d.tenantName}</td>
-              <td style={{ padding: '6px 8px' }}>{d.deviceName}</td>
-              <td style={{ padding: '6px 8px', opacity: 0.7 }}>{d.siteId}</td>
+      <div style={{ overflowX: 'auto' }}>
+        <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.9rem' }}>
+          <thead>
+            <tr style={{ textAlign: 'left', opacity: 0.6 }}>
+              <th style={{ padding: '6px 8px' }}>テナント</th>
+              <th style={{ padding: '6px 8px' }}>端末</th>
+              <th style={{ padding: '6px 8px' }}>サイト</th>
             </tr>
-          ))}
-        </tbody>
-      </table>
+          </thead>
+          <tbody>
+            {(data?.summary.devices ?? []).map((d) => (
+              <tr key={d.deviceId} style={{ borderTop: '1px solid var(--color-border)' }}>
+                <td style={{ padding: '6px 8px' }}>{d.tenantName}</td>
+                <td style={{ padding: '6px 8px' }}>{d.deviceName}</td>
+                <td style={{ padding: '6px 8px', opacity: 0.7 }}>{d.siteId}</td>
+              </tr>
+            ))}
+            <TableBodyState
+              loaded={data !== null}
+              failed={error !== null}
+              rowCount={data?.summary.devices.length ?? 0}
+              columns={3}
+              emptyMessage="端末がありません。"
+              testId="platform-maintenance-devices"
+            />
+          </tbody>
+        </table>
+      </div>
 
       <h2 style={{ fontSize: '1rem', opacity: 0.7, marginTop: 'var(--space-lg)' }}>障害・インシデント</h2>
       {data && data.incidents.incidents.length === 0 ? (
         <p style={{ opacity: 0.7 }}>登録された障害情報はありません。</p>
       ) : (
-        <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.9rem' }}>
-          <thead>
-            <tr style={{ textAlign: 'left', opacity: 0.6 }}>
-              <th style={{ padding: '6px 8px' }}>重大度</th>
-              <th style={{ padding: '6px 8px' }}>状態</th>
-              <th style={{ padding: '6px 8px' }}>範囲</th>
-              <th style={{ padding: '6px 8px' }}>概要</th>
-              <th style={{ padding: '6px 8px' }}>発生</th>
-            </tr>
-          </thead>
-          <tbody>
-            {(data?.incidents.incidents ?? []).map((i) => (
-              <tr
-                key={i.id}
-                style={{ borderTop: '1px solid var(--color-border)', opacity: i.active ? 1 : 0.55 }}
-              >
-                <td style={{ padding: '6px 8px' }}>{SEVERITY_LABEL[i.severity]}</td>
-                <td style={{ padding: '6px 8px', opacity: 0.8 }}>{STATUS_LABEL[i.status]}</td>
-                <td style={{ padding: '6px 8px', opacity: 0.7 }}>{incidentScopeLabel(i)}</td>
-                <td style={{ padding: '6px 8px' }}>{i.title}</td>
-                <td style={{ padding: '6px 8px', opacity: 0.7 }}>{i.startedAt}</td>
+        <div style={{ overflowX: 'auto' }}>
+          <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.9rem' }}>
+            <thead>
+              <tr style={{ textAlign: 'left', opacity: 0.6 }}>
+                <th style={{ padding: '6px 8px' }}>重大度</th>
+                <th style={{ padding: '6px 8px' }}>状態</th>
+                <th style={{ padding: '6px 8px' }}>範囲</th>
+                <th style={{ padding: '6px 8px' }}>概要</th>
+                <th style={{ padding: '6px 8px' }}>発生</th>
               </tr>
-            ))}
-          </tbody>
-        </table>
+            </thead>
+            <tbody>
+              {(data?.incidents.incidents ?? []).map((i) => (
+                <tr
+                  key={i.id}
+                  style={{ borderTop: '1px solid var(--color-border)', opacity: i.active ? 1 : 0.55 }}
+                >
+                  <td style={{ padding: '6px 8px' }}>{SEVERITY_LABEL[i.severity]}</td>
+                  <td style={{ padding: '6px 8px', opacity: 0.8 }}>{STATUS_LABEL[i.status]}</td>
+                  <td style={{ padding: '6px 8px', opacity: 0.7 }}>{incidentScopeLabel(i)}</td>
+                  <td style={{ padding: '6px 8px' }}>{i.title}</td>
+                  <td style={{ padding: '6px 8px', opacity: 0.7 }}>{i.startedAt}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
       )}
 
       <h2 style={{ fontSize: '1rem', opacity: 0.7, marginTop: 'var(--space-lg)' }}>予定メンテナンス</h2>
       {data && data.windows.windows.length === 0 ? (
         <p style={{ opacity: 0.7 }}>予定メンテナンスはありません。</p>
       ) : (
-        <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.9rem' }}>
-          <thead>
-            <tr style={{ textAlign: 'left', opacity: 0.6 }}>
-              <th style={{ padding: '6px 8px' }}>状態</th>
-              <th style={{ padding: '6px 8px' }}>範囲</th>
-              <th style={{ padding: '6px 8px' }}>影響</th>
-              <th style={{ padding: '6px 8px' }}>概要</th>
-              <th style={{ padding: '6px 8px' }}>開始</th>
-              <th style={{ padding: '6px 8px' }}>終了</th>
-            </tr>
-          </thead>
-          <tbody>
-            {(data?.windows.windows ?? []).map((w) => (
-              <tr
-                key={w.id}
-                style={{ borderTop: '1px solid var(--color-border)', opacity: w.open ? 1 : 0.55 }}
-              >
-                <td style={{ padding: '6px 8px' }}>{WINDOW_STATUS_LABEL[w.status]}</td>
-                <td style={{ padding: '6px 8px', opacity: 0.7 }}>{windowScopeLabel(w)}</td>
-                <td style={{ padding: '6px 8px', opacity: 0.8 }}>{IMPACT_LABEL[w.impact]}</td>
-                <td style={{ padding: '6px 8px' }}>{w.message}</td>
-                <td style={{ padding: '6px 8px', opacity: 0.7 }}>{w.startsAt}</td>
-                <td style={{ padding: '6px 8px', opacity: 0.7 }}>{w.endsAt}</td>
+        <div style={{ overflowX: 'auto' }}>
+          <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.9rem' }}>
+            <thead>
+              <tr style={{ textAlign: 'left', opacity: 0.6 }}>
+                <th style={{ padding: '6px 8px' }}>状態</th>
+                <th style={{ padding: '6px 8px' }}>範囲</th>
+                <th style={{ padding: '6px 8px' }}>影響</th>
+                <th style={{ padding: '6px 8px' }}>概要</th>
+                <th style={{ padding: '6px 8px' }}>開始</th>
+                <th style={{ padding: '6px 8px' }}>終了</th>
               </tr>
-            ))}
-          </tbody>
-        </table>
+            </thead>
+            <tbody>
+              {(data?.windows.windows ?? []).map((w) => (
+                <tr
+                  key={w.id}
+                  style={{ borderTop: '1px solid var(--color-border)', opacity: w.open ? 1 : 0.55 }}
+                >
+                  <td style={{ padding: '6px 8px' }}>{WINDOW_STATUS_LABEL[w.status]}</td>
+                  <td style={{ padding: '6px 8px', opacity: 0.7 }}>{windowScopeLabel(w)}</td>
+                  <td style={{ padding: '6px 8px', opacity: 0.8 }}>{IMPACT_LABEL[w.impact]}</td>
+                  <td style={{ padding: '6px 8px' }}>{w.message}</td>
+                  <td style={{ padding: '6px 8px', opacity: 0.7 }}>{w.startsAt}</td>
+                  <td style={{ padding: '6px 8px', opacity: 0.7 }}>{w.endsAt}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
       )}
 
       <h2 style={{ fontSize: '1rem', opacity: 0.7, marginTop: 'var(--space-lg)' }}>お知らせ</h2>
       {data && data.notices.notices.length === 0 ? (
         <p style={{ opacity: 0.7 }}>お知らせはありません。</p>
       ) : (
-        <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.9rem' }}>
-          <thead>
-            <tr style={{ textAlign: 'left', opacity: 0.6 }}>
-              <th style={{ padding: '6px 8px' }}>重要度</th>
-              <th style={{ padding: '6px 8px' }}>状態</th>
-              <th style={{ padding: '6px 8px' }}>範囲</th>
-              <th style={{ padding: '6px 8px' }}>件名</th>
-              <th style={{ padding: '6px 8px' }}>公開</th>
-            </tr>
-          </thead>
-          <tbody>
-            {(data?.notices.notices ?? []).map((n) => (
-              <tr
-                key={n.id}
-                style={{ borderTop: '1px solid var(--color-border)', opacity: n.active ? 1 : 0.55 }}
-              >
-                <td style={{ padding: '6px 8px' }}>{NOTICE_LEVEL_LABEL[n.level]}</td>
-                <td style={{ padding: '6px 8px', opacity: 0.8 }}>{NOTICE_STATUS_LABEL[n.status]}</td>
-                <td style={{ padding: '6px 8px', opacity: 0.7 }}>{noticeScopeLabel(n)}</td>
-                <td style={{ padding: '6px 8px' }}>{n.title}</td>
-                <td style={{ padding: '6px 8px', opacity: 0.7 }}>{n.publishedAt}</td>
+        <div style={{ overflowX: 'auto' }}>
+          <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.9rem' }}>
+            <thead>
+              <tr style={{ textAlign: 'left', opacity: 0.6 }}>
+                <th style={{ padding: '6px 8px' }}>重要度</th>
+                <th style={{ padding: '6px 8px' }}>状態</th>
+                <th style={{ padding: '6px 8px' }}>範囲</th>
+                <th style={{ padding: '6px 8px' }}>件名</th>
+                <th style={{ padding: '6px 8px' }}>公開</th>
               </tr>
-            ))}
-          </tbody>
-        </table>
+            </thead>
+            <tbody>
+              {(data?.notices.notices ?? []).map((n) => (
+                <tr
+                  key={n.id}
+                  style={{ borderTop: '1px solid var(--color-border)', opacity: n.active ? 1 : 0.55 }}
+                >
+                  <td style={{ padding: '6px 8px' }}>{NOTICE_LEVEL_LABEL[n.level]}</td>
+                  <td style={{ padding: '6px 8px', opacity: 0.8 }}>{NOTICE_STATUS_LABEL[n.status]}</td>
+                  <td style={{ padding: '6px 8px', opacity: 0.7 }}>{noticeScopeLabel(n)}</td>
+                  <td style={{ padding: '6px 8px' }}>{n.title}</td>
+                  <td style={{ padding: '6px 8px', opacity: 0.7 }}>{n.publishedAt}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
       )}
 
       <div style={{ marginTop: 'var(--space-lg)', maxWidth: 760, display: 'grid', gap: 'var(--space-md)' }}>

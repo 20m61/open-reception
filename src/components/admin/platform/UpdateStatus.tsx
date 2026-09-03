@@ -75,7 +75,7 @@ export function UpdateStatus() {
         昇格・監査を伴う導線に隔離します。
       </p>
 
-      {error ? <p style={{ color: 'var(--color-platform-warn)' }}>{error}</p> : null}
+      {error ? <p role="alert" style={{ color: 'var(--color-platform-warn)' }}>{error}</p> : null}
 
       <div style={{ display: 'flex', gap: 'var(--space-md)', flexWrap: 'wrap', marginBottom: 'var(--space-md)' }}>
         <MetricCard label="要対応（更新待ち/中/失敗）" value={data ? data.updates.pendingCount : '—'} />
@@ -89,33 +89,35 @@ export function UpdateStatus() {
         <p style={{ opacity: 0.7 }}>アップデート状況の登録はありません。</p>
       ) : null}
       {rows.length > 0 ? (
-        <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.9rem' }}>
-          <thead>
-            <tr style={{ textAlign: 'left', opacity: 0.6 }}>
-              <th style={{ padding: '6px 8px' }}>状況</th>
-              <th style={{ padding: '6px 8px' }}>範囲</th>
-              <th style={{ padding: '6px 8px' }}>対象</th>
-              <th style={{ padding: '6px 8px' }}>コンポーネント</th>
-              <th style={{ padding: '6px 8px' }}>現行→最新</th>
-              <th style={{ padding: '6px 8px' }}>確認日時</th>
-            </tr>
-          </thead>
-          <tbody>
-            {rows.map((r) => (
-              <tr key={r.id} style={{ borderTop: '1px solid var(--color-border)', opacity: r.pending ? 1 : 0.6 }}>
-                <td style={{ padding: '6px 8px' }}>{STATE_LABEL[r.state]}</td>
-                <td style={{ padding: '6px 8px', opacity: 0.7 }}>{SCOPE_LABEL[r.scope]}</td>
-                <td style={{ padding: '6px 8px', opacity: 0.7 }}>{scopeTarget(r)}</td>
-                <td style={{ padding: '6px 8px' }}>{r.component}</td>
-                <td style={{ padding: '6px 8px', opacity: 0.8 }}>
-                  {r.currentVersion}
-                  {r.currentVersion !== r.latestVersion ? ` → ${r.latestVersion}` : ''}
-                </td>
-                <td style={{ padding: '6px 8px', opacity: 0.7 }}>{r.checkedAt}</td>
+        <div style={{ overflowX: 'auto' }}>
+          <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.9rem' }}>
+            <thead>
+              <tr style={{ textAlign: 'left', opacity: 0.6 }}>
+                <th style={{ padding: '6px 8px' }}>状況</th>
+                <th style={{ padding: '6px 8px' }}>範囲</th>
+                <th style={{ padding: '6px 8px' }}>対象</th>
+                <th style={{ padding: '6px 8px' }}>コンポーネント</th>
+                <th style={{ padding: '6px 8px' }}>現行→最新</th>
+                <th style={{ padding: '6px 8px' }}>確認日時</th>
               </tr>
-            ))}
-          </tbody>
-        </table>
+            </thead>
+            <tbody>
+              {rows.map((r) => (
+                <tr key={r.id} style={{ borderTop: '1px solid var(--color-border)', opacity: r.pending ? 1 : 0.6 }}>
+                  <td style={{ padding: '6px 8px' }}>{STATE_LABEL[r.state]}</td>
+                  <td style={{ padding: '6px 8px', opacity: 0.7 }}>{SCOPE_LABEL[r.scope]}</td>
+                  <td style={{ padding: '6px 8px', opacity: 0.7 }}>{scopeTarget(r)}</td>
+                  <td style={{ padding: '6px 8px' }}>{r.component}</td>
+                  <td style={{ padding: '6px 8px', opacity: 0.8 }}>
+                    {r.currentVersion}
+                    {r.currentVersion !== r.latestVersion ? ` → ${r.latestVersion}` : ''}
+                  </td>
+                  <td style={{ padding: '6px 8px', opacity: 0.7 }}>{r.checkedAt}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
       ) : null}
 
       <div style={{ marginTop: 'var(--space-lg)', maxWidth: 760 }}>

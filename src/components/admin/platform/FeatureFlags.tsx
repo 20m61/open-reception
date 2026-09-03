@@ -79,7 +79,7 @@ export function FeatureFlags() {
         機密値は表示しません。変更（機能制限の変更）は JIT 昇格が必要な破壊的操作で、監査に記録されます。
       </p>
 
-      {error ? <p style={{ color: 'var(--color-platform-warn)' }}>{error}</p> : null}
+      {error ? <p role="alert" style={{ color: 'var(--color-platform-warn)' }}>{error}</p> : null}
 
       <h2 style={{ fontSize: '1rem', opacity: 0.7 }}>機能フラグ</h2>
       <div style={{ display: 'flex', gap: 'var(--space-md)', flexWrap: 'wrap' }}>

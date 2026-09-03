@@ -162,7 +162,7 @@ export function ProviderConfig() {
         決まります。
       </p>
 
-      {error ? <p style={{ color: 'var(--color-platform-warn)' }}>{error}</p> : null}
+      {error ? <p role="alert" style={{ color: 'var(--color-platform-warn)' }}>{error}</p> : null}
       {/*
         🔴 **保存の成否とは別に出す。** 保存は成功しているので `notice`（緑）だけだと
         「有効にした瞬間から受付が 503 になる」ことが伝わらない。#763 で問題にしたのは
@@ -175,45 +175,47 @@ export function ProviderConfig() {
       ))}
       {notice ? <p style={{ color: 'var(--color-platform-ok)' }}>{notice}</p> : null}
 
-      <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.9rem' }}>
-        <tbody>
-          <tr>
-            <td style={th}>プロバイダ</td>
-            <td style={th}>
-              <select value={provider} onChange={(e) => setProvider(e.target.value as ProviderId)}>
-                {PROVIDER_IDS.map((p) => (
-                  <option key={p} value={p}>
-                    {p}
-                  </option>
-                ))}
-              </select>
-            </td>
-          </tr>
-          <tr>
-            <td style={th}>有効</td>
-            <td style={th}>
-              <input
-                type="checkbox"
-                checked={enabled}
-                onChange={(e) => setEnabled(e.target.checked)}
-                aria-label="有効"
-              />
-            </td>
-          </tr>
-          <tr>
-            <td style={th}>Application ID</td>
-            <td style={th}>
-              <input value={applicationId} onChange={(e) => setApplicationId(e.target.value)} />
-            </td>
-          </tr>
-          <tr>
-            <td style={th}>発信元番号</td>
-            <td style={th}>
-              <input value={fromNumber} onChange={(e) => setFromNumber(e.target.value)} />
-            </td>
-          </tr>
-        </tbody>
-      </table>
+      <div style={{ overflowX: 'auto' }}>
+        <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.9rem' }}>
+          <tbody>
+            <tr>
+              <td style={th}>プロバイダ</td>
+              <td style={th}>
+                <select value={provider} onChange={(e) => setProvider(e.target.value as ProviderId)}>
+                  {PROVIDER_IDS.map((p) => (
+                    <option key={p} value={p}>
+                      {p}
+                    </option>
+                  ))}
+                </select>
+              </td>
+            </tr>
+            <tr>
+              <td style={th}>有効</td>
+              <td style={th}>
+                <input
+                  type="checkbox"
+                  checked={enabled}
+                  onChange={(e) => setEnabled(e.target.checked)}
+                  aria-label="有効"
+                />
+              </td>
+            </tr>
+            <tr>
+              <td style={th}>Application ID</td>
+              <td style={th}>
+                <input value={applicationId} onChange={(e) => setApplicationId(e.target.value)} />
+              </td>
+            </tr>
+            <tr>
+              <td style={th}>発信元番号</td>
+              <td style={th}>
+                <input value={fromNumber} onChange={(e) => setFromNumber(e.target.value)} />
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
       <button type="button" onClick={() => void saveConfig()} style={{ marginTop: 8 }}>
         設定を保存
       </button>

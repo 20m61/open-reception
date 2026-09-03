@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useState } from 'react';
-import { DangerActionPlaceholder } from './primitives';
+import { DangerActionPlaceholder, TableBodyState } from './primitives';
 import { enablementState } from '../state-vocabulary';
 
 /**
@@ -74,53 +74,73 @@ export function Integrations() {
         などの機密値は表示しません。
       </p>
 
-      {error ? <p style={{ color: 'var(--color-platform-warn)' }}>{error}</p> : null}
+      {error ? <p role="alert" style={{ color: 'var(--color-platform-warn)' }}>{error}</p> : null}
 
       <h2 style={{ fontSize: '1rem', opacity: 0.7 }}>外部連携</h2>
-      <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.9rem' }}>
-        <thead>
-          <tr style={headRow}>
-            <th style={th}>連携</th>
-            <th style={th}>設定</th>
-            <th style={th}>有効</th>
-            <th style={th}>直近結果</th>
-            <th style={th}>要約</th>
-          </tr>
-        </thead>
-        <tbody>
-          {(data?.integrations ?? []).map((i) => (
-            <tr key={i.id} style={bodyRow}>
-              <td style={th}>{i.label}</td>
-              <td style={{ ...th, opacity: 0.8 }}>{i.configured ? '済' : '未'}</td>
-              <td style={{ ...th, opacity: 0.8 }}>{enablementState(i.enabled).label}</td>
-              <td style={{ ...th, opacity: 0.8 }}>{RESULT_LABEL[i.lastResult]}</td>
-              <td style={{ ...th, opacity: 0.6 }}>{i.lastErrorSummary ?? '-'}</td>
+      <div style={{ overflowX: 'auto' }}>
+        <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.9rem' }}>
+          <thead>
+            <tr style={headRow}>
+              <th style={th}>連携</th>
+              <th style={th}>設定</th>
+              <th style={th}>有効</th>
+              <th style={th}>直近結果</th>
+              <th style={th}>要約</th>
             </tr>
-          ))}
-        </tbody>
-      </table>
+          </thead>
+          <tbody>
+            {(data?.integrations ?? []).map((i) => (
+              <tr key={i.id} style={bodyRow}>
+                <td style={th}>{i.label}</td>
+                <td style={{ ...th, opacity: 0.8 }}>{i.configured ? '済' : '未'}</td>
+                <td style={{ ...th, opacity: 0.8 }}>{enablementState(i.enabled).label}</td>
+                <td style={{ ...th, opacity: 0.8 }}>{RESULT_LABEL[i.lastResult]}</td>
+                <td style={{ ...th, opacity: 0.6 }}>{i.lastErrorSummary ?? '-'}</td>
+              </tr>
+            ))}
+            <TableBodyState
+              loaded={data !== null}
+              failed={error !== null}
+              rowCount={data?.integrations.length ?? 0}
+              columns={5}
+              emptyMessage="連携がありません。"
+              testId="platform-integrations"
+            />
+          </tbody>
+        </table>
+      </div>
 
       <h2 style={{ fontSize: '1rem', opacity: 0.7, marginTop: 'var(--space-lg)' }}>
         管理画面ログイン方式
       </h2>
-      <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.9rem' }}>
-        <thead>
-          <tr style={headRow}>
-            <th style={th}>方式</th>
-            <th style={th}>有効</th>
-            <th style={th}>設定上の問題</th>
-          </tr>
-        </thead>
-        <tbody>
-          {(data?.authMethods ?? []).map((m) => (
-            <tr key={m.id} style={bodyRow}>
-              <td style={th}>{m.label}</td>
-              <td style={{ ...th, opacity: 0.8 }}>{enablementState(m.enabled).label}</td>
-              <td style={{ ...th, opacity: 0.6 }}>{m.issues.length ? m.issues.join(' / ') : '-'}</td>
+      <div style={{ overflowX: 'auto' }}>
+        <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.9rem' }}>
+          <thead>
+            <tr style={headRow}>
+              <th style={th}>方式</th>
+              <th style={th}>有効</th>
+              <th style={th}>設定上の問題</th>
             </tr>
-          ))}
-        </tbody>
-      </table>
+          </thead>
+          <tbody>
+            {(data?.authMethods ?? []).map((m) => (
+              <tr key={m.id} style={bodyRow}>
+                <td style={th}>{m.label}</td>
+                <td style={{ ...th, opacity: 0.8 }}>{enablementState(m.enabled).label}</td>
+                <td style={{ ...th, opacity: 0.6 }}>{m.issues.length ? m.issues.join(' / ') : '-'}</td>
+              </tr>
+            ))}
+            <TableBodyState
+              loaded={data !== null}
+              failed={error !== null}
+              rowCount={data?.authMethods.length ?? 0}
+              columns={3}
+              emptyMessage="認証方式がありません。"
+              testId="platform-auth-methods"
+            />
+          </tbody>
+        </table>
+      </div>
 
       <div style={{ marginTop: 'var(--space-lg)', maxWidth: 760 }}>
         <DangerActionPlaceholder label="シークレット再登録 / 連携設定の変更" />
