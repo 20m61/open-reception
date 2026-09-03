@@ -9,7 +9,7 @@
 > | AWS の窓を開ける（`./scripts/aws-issue-credentials.sh`） | 短命 STS の発行は darwin 限定で、`scripts/hooks/guard-destructive.sh` が機械強制（#675）。**窓さえ開けばデプロイ本体はクラウドから wrapper 経由で流せる** | #675 / `docs/runbook-cloud-aws-deploy.md` |
 > | 実機 iPad UAT | 横向きで部署カードが何枚見えるか / 部署を開いて戻れるか / 騒音下で不在告知が聞き取れるか | #807 / #65 |
 > | **PR #923 の可否判断**（依存バージョン＝停止境界。承認されたら「Ready for review」も要る） | `docs/handoff-2026-09-03.md` §3-a が **依存バージョン変更＝#105 のライセンス/プライバシーチェック対象**として止めている。前回の「全てマージ承認します」は #859 / #848 / #428 に対するもので**本 PR を含まない**。🔴 **draft 解除そのものは到達できる**（2026-09-03 に本項を訂正）。`gh pr ready` は GraphQL 403、REST `PATCH draft=false` は**黙って無視**される（どちらも再現）が、**GitHub MCP の `update_pull_request` に `draft: false` を渡すと外せる** —— 同日 PR #921 で実測し、REST で `draft:false` を確認した（MCP が接続されているセッションに限る）。したがって**残っているブロッカーは可否判断だけ**で、道具の問題ではない。なお draft のままではマージ側が `Pull Request is still a draft (HTTP 405)` で拒否する。**`--full` は 14 段すべて PASS 済み**（`vrm (real render)` を含む） | #923 / #105 |
-> | **リモートブランチ 32 本の削除**（2026-09-02〜03 の周回ぶん） | クラウドセッションからは `git push origin --delete` が消せない。2026-09-03 に**エラーの出方まで実測**した: `error: RPC failed; HTTP 403` に続けて `Everything up-to-date` が出るので、**戻り値だけ見ると成功に見える**（proxy が write を拒否している）。全部 squash マージ済みで PR も閉じているので `orphan_branch` 検出には掛からない。一覧は本書「削除できていないリモートブランチ」節 | — |
+> | **リモートブランチ 33 本の削除**（2026-09-02〜03 の周回ぶん） | クラウドセッションからは `git push origin --delete` が消せない。2026-09-03 に**エラーの出方まで実測**した: `error: RPC failed; HTTP 403` に続けて `Everything up-to-date` が出るので、**戻り値だけ見ると成功に見える**（proxy が write を拒否している）。全部 squash マージ済みで PR も閉じているので `orphan_branch` 検出には掛からない。一覧は本書「削除できていないリモートブランチ」節 | — |
 >
 ## 2026-09-03 の周回（darwin VRT ベースライン）
 
@@ -183,6 +183,27 @@ linux 側は #747 の時点で追従している。
 **issue 単位の衝突は防いでいない**。クラウドセッション同士は互いの作業中ブランチを見ないので、
 着手時に issue へ「着手します」を落とすか、キューの行を予約に使うかしないと再発する。
 
+### #915 は実装不要だった（AC マッピングが効いた例）
+
+**`/issue-ac-mapping` を通しただけで 1 周分の実装が消えた。** #915（fontSize のトークン採用）は
+本文の数字が 2026-09-02 時点のままで、**AC 1・2 とも PR #916 が同日中に充足していた**
+（`0.85rem` は 38 → 1、`fontSize` リテラル総数は 171 → 119、台帳は
+`tests/config/font-token-adoption.test.ts` の `REMAINING_BUDGET`）。
+
+**「分けた残り」として起票した issue は、分けた元の PR が続けて片付けていることがある。**
+起票と実装が同じ日に走ると、issue 本文は書かれた瞬間から stale になりうる。
+キューの分類を見て着手するのではなく、**毎回コードで検算する**（本書冒頭の注意そのもの）。
+
+残った `0.85rem` / `0.95rem` 各 1 件は `kiosk/` と `app/page.tsx` にあり、**admin の外なので
+範囲外**とした。`font` スケールは `components/admin/ui/tokens.ts` の admin 向けで、
+受付端末へ持ち込むのは層をまたぐ結合になる（#916 の台帳が走査範囲を admin に限っているのも同じ理由）。
+
+### 🔴 着手を issue に落とす運用を試している
+
+#927 の並行衝突（PR #943 / #944）を受けて、本セッションは #915 の着手前に issue へ
+「着手します」を落とした。結果として**実装不要と分かって取り下げた**ので衝突の検証にはならな
+かったが、**取り下げも含めて issue に残る**ぶん、他セッションから見える状態にはなった。
+
 ## 2026-09-02 の周回（UI/UX 監査 Wave 0 / Wave 1）
 
 正本は `docs/ui-review-2026-09-01.md`。Wave 0（BLOCKER 7 + D6）と Wave 1（課題 06–18 / 22–32）を
@@ -221,7 +242,7 @@ linux 側は #747 の時点で追従している。
 | #899 | 状態表示をバッジへ揃えるかの設計判断（#900 の続き） |
 | #910 | 列ソートの残りの一覧 + ページング未導入 5 リスト（#911 の続き） |
 | ~~#913~~ | **2026-09-03 に消化・クローズ**（PR #941）。方針は「比較側で正規化」——**ストアが既に `''` と未設定を同一視していた**ので、区別していたのは述語だけだった。PUT の payload は不変 |
-| #915 | `fontSize` リテラルの残り 102 件（寄せると文字サイズが動く） |
+| ~~#915~~ | **2026-09-03 にクローズ（実装不要）。AC 1・2 とも PR #916 で既に充足していた** —— issue 本文の数字が stale で、`0.85rem` は 38 → 1、総数も 171 → 119。台帳は `tests/config/font-token-adoption.test.ts` の `REMAINING_BUDGET`（上限つきラチェット）。**残る「スケールに無い 95 件」は方針判断**（寄せると VRT が動く＝darwin ベースライン待ち）で、判断が要るときに別 issue で起こす |
 
 ### 方針判断が要ったもの（**2 件とも 2026-09-03 に決着**）
 
@@ -269,7 +290,8 @@ for b in feat/admin-form-aria feat/audit-log-paging-csv feat/prefers-contrast-su
          feat/routing-step-timeout-provider-cap docs/round-927-closeout \
          docs/vrm-alignment-queue-row fix/routing-step-provider-timeout-limit \
          docs/branch-cleanup-vrm-round \
-         fix/platform-table-scroll-and-alerts docs/round-896-closeout; do
+         fix/platform-table-scroll-and-alerts docs/round-896-closeout \
+         docs/queue-915-already-done; do
   git push origin --delete "$b"
 done
 ```
