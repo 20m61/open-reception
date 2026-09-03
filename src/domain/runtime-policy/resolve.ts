@@ -140,17 +140,38 @@ export type OverrideDisposition = 'released' | 'retained';
  * 監視への集約（同一原因を毎分 1 件ずつ積まない）は Reconciler の配線と同じ増分で行う
  * （#798 AC1-2）。この層は「何が起きたか」を機械可読な形で返すところまでを持つ。
  */
-export type RuntimeResolutionAnomaly = {
-  readonly kind: 'unparsable_override_expiry';
-  readonly serviceKey: ManagedRuntimeServiceKey;
-  readonly overrideState: TemporaryOverride['state'];
-  readonly disposition: OverrideDisposition;
+export type RuntimeResolutionAnomaly =
+  | {
+      readonly kind: 'unparsable_override_expiry';
+      readonly serviceKey: ManagedRuntimeServiceKey;
+      readonly overrideState: TemporaryOverride['state'];
+      readonly disposition: OverrideDisposition;
+      /**
+       * 原因のレコードへ辿るための**標本**。生値をそのまま持ち回らない（上限つき・非文字列は型名）。
+       * 運用者が管理画面で入力した日時欄の値であり、PII ではない。
+       */
+      readonly expiresAt: string;
+    }
   /**
-   * 原因のレコードへ辿るための**標本**。生値をそのまま持ち回らない（上限つき・非文字列は型名）。
-   * 運用者が管理画面で入力した日時欄の値であり、PII ではない。
+   * `state` が 3 値のどれでもない（永続層の型ドリフト）(#846)。
+   *
+   * この場合 `OVERRIDE_STATE` の引きが外れて `state: undefined` になり、**`ServiceRuntimeState`
+   * を返すという型の約束を破る**。`SEVERITY[undefined]` も `undefined` なので依存補正の比較が
+   * 常に false になり、`undefined` が依存元へそのまま伝播する（`anomalies` は空のまま＝無言）。
+   *
+   * **倒し方は解除**。`unparsable_override_expiry` の側が「未知 state は不正な state を返すので
+   * 解除へ倒す」と書いていた理由がこちらにも同じく当たる。加えて壊れた override を運用者が消す
+   * 導線が無い（`upsertRuntimePolicy` に本番呼び出し元が無い）ため、停止側へクランプすると
+   * typo 1 件で音声受付が復旧不能に止まる。
    */
-  readonly expiresAt: string;
-};
+  | {
+      readonly kind: 'unknown_override_state';
+      readonly serviceKey: ManagedRuntimeServiceKey;
+      /** 型から外れた値なので `string`。**標本化して載せる**（生値を持ち回らない）。 */
+      readonly overrideState: string;
+      /** 常に解除する。 */
+      readonly disposition: 'released';
+    };
 
 /** 解決結果全体。`capabilities` は running のサービスが提供する能力の和（registry 順・重複なし）。 */
 export type RuntimeStateResolution = {
@@ -322,10 +343,27 @@ function describeExpiresAt(value: unknown): string {
   return trimmed.length <= EXPIRES_AT_SAMPLE_MAX ? trimmed : `${trimmed.slice(0, EXPIRES_AT_SAMPLE_MAX)}…`;
 }
 
-/** 段 2 の判定結果。`anomaly` は解析不能だったときだけ入る（`serviceKey` は呼び出し側が足す）。 */
+/**
+ * 報告用に未知 `state` を標本化する (#846)。`describeExpiresAt` と同じ原則で、
+ * 型ドリフトした生値をそのまま持ち回らない（長さ上限つき・非文字列は型名）。
+ */
+function describeOverrideState(value: unknown): string {
+  if (value === null) return '<null>';
+  if (typeof value !== 'string') return `<${typeof value}>`;
+  const trimmed = value.trim();
+  return trimmed.length <= EXPIRES_AT_SAMPLE_MAX ? trimmed : `${trimmed.slice(0, EXPIRES_AT_SAMPLE_MAX)}…`;
+}
+
+/**
+ * union の各枝ごとに `Omit` する。素の `Omit<Union, K>` は**共通キーだけに潰れる**ため、
+ * `unparsable_override_expiry` の `expiresAt` が消えて枝を組み立てられなくなる (#846)。
+ */
+type DistributiveOmit<T, K extends PropertyKey> = T extends unknown ? Omit<T, K> : never;
+
+/** 段 2 の判定結果。`anomaly` は異常があったときだけ入る（`serviceKey` は呼び出し側が足す）。 */
 type TemporaryOverrideDecision = {
   readonly override: TemporaryOverride | undefined;
-  readonly anomaly?: Omit<RuntimeResolutionAnomaly, 'serviceKey'>;
+  readonly anomaly?: DistributiveOmit<RuntimeResolutionAnomaly, 'serviceKey'>;
 };
 
 /**
@@ -340,6 +378,26 @@ function decideTemporaryOverride(
   now: number,
 ): TemporaryOverrideDecision {
   if (!override) return { override: undefined };
+  /*
+   * 🔴 **state の既知性を expiry より先に見る (#846)。**
+   *
+   * 逆順にすると、`expiresAt` が解析できた未知 state が下の `Number.isFinite` 分岐で
+   * **報告も検査もされないまま** override として通り、`OVERRIDE_STATE` の引きが外れて
+   * `state: undefined` になる（依存補正がそれを依存元へ伝播させ、`anomalies` は空のまま）。
+   *
+   * 判定は `Object.hasOwn` で行う。`in` や添字の真偽で見ると `'toString'` /
+   * `'constructor'` がプロトタイプ経由で**既知として通る**。
+   */
+  if (!Object.hasOwn(OVERRIDE_STATE, override.state)) {
+    return {
+      override: undefined,
+      anomaly: {
+        kind: 'unknown_override_state',
+        overrideState: describeOverrideState(override.state),
+        disposition: 'released',
+      },
+    };
+  }
   const expiresAt = expiresAtMs(override.expiresAt, timezone);
   if (Number.isFinite(expiresAt)) return { override: expiresAt > now ? override : undefined };
   /*
