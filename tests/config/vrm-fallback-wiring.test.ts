@@ -26,6 +26,24 @@ function viewerSource(): string {
   return readFileSync(VIEWER, 'utf8');
 }
 
+/**
+ * コメントを落としたソース。
+ *
+ * 🔴 **コメント中の言及を拾うと変異が素通りする。** 実測: `setFailedUrl(vrmUrl)` を
+ * 定数へ変える変異を当てても、**すぐ上の説明コメントが同じ字面を含んでいた**ため
+ * 正規表現が一致し、テストが緑のままだった（`tests/config/gate-stamp-consumers.test.ts`
+ * が「doc コメントでの言及も拾う」と書いているのと同じ罠を、逆向きに踏んだ）。
+ */
+function viewerCode(): string {
+  return viewerSource()
+    .split('\n')
+    .filter((line) => {
+      const t = line.trim();
+      return !t.startsWith('//') && !t.startsWith('*') && !t.startsWith('/*');
+    })
+    .join('\n');
+}
+
 /** `showFallback` を決めている行（代入の右辺）。 */
 function showFallbackAssignment(source: string): string {
   const line = source.split('\n').find((l) => /const\s+showFallback\s*=/.test(l));
@@ -35,11 +53,11 @@ function showFallbackAssignment(source: string): string {
 
 describe('VRM fallback 判定の配線 (#932)', () => {
   it('🔴 fallback 判定は shouldShowVrmFallback に委ねる（viewer が独自に組み立てない）', () => {
-    expect(showFallbackAssignment(viewerSource())).toContain('shouldShowVrmFallback');
+    expect(showFallbackAssignment(viewerCode())).toContain('shouldShowVrmFallback');
   });
 
   it('純関数を実際に import している（名前だけ書いて使わない、を防ぐ）', () => {
-    expect(viewerSource()).toMatch(/import\s*\{[^}]*shouldShowVrmFallback[^}]*\}\s*from\s*'\.\/avatar\/fallback-state'/);
+    expect(viewerCode()).toMatch(/import\s*\{[^}]*shouldShowVrmFallback[^}]*\}\s*from\s*'\.\/avatar\/fallback-state'/);
   });
 
   /**
@@ -54,7 +72,7 @@ describe('VRM fallback 判定の配線 (#932)', () => {
    * 意味が無い。記録の中身をここで縛る。
    */
   it('🔴 失敗時に記録するのは、いま読もうとしている vrmUrl そのもの', () => {
-    expect(viewerSource()).toMatch(/setFailedUrl\(\s*vrmUrl\s*\)/);
+    expect(viewerCode()).toMatch(/setFailedUrl\(\s*vrmUrl\s*\)/);
   });
 
   /**
@@ -63,7 +81,7 @@ describe('VRM fallback 判定の配線 (#932)', () => {
    * `failedUrl !== undefined`）が判定に現れたら退行である。
    */
   it('🔴 失敗を真偽値として持ち回る判定に戻っていない', () => {
-    const assignment = showFallbackAssignment(viewerSource());
+    const assignment = showFallbackAssignment(viewerCode());
     expect(assignment).not.toMatch(/\|\|\s*failed/);
     expect(assignment).not.toMatch(/failedUrl\s*!==\s*undefined/);
   });
