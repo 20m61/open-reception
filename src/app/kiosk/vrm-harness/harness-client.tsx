@@ -39,7 +39,7 @@ export function VrmHarnessClient() {
             setMotionUrl(motionDraft === '' ? undefined : motionDraft);
           }}
         >
-          適用
+          apply
         </button>
       </div>
       <div data-testid="harness-stage" style={{ minHeight: 0 }}>
