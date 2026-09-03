@@ -10,10 +10,17 @@
  * 腕の向きの符号は dev 実描画で確定（左 upperArm +Z / 右 -Z で下ろす）。
  */
 import type { AvatarState } from '@/domain/reception/ui-contract';
-import { IDLE_REST_POSE, breathingRotation, swayRotation, type BoneEuler } from './vrm-idle';
+import {
+  IDLE_REST_POSE,
+  breathingRotation,
+  swayRotation,
+  type BoneEuler,
+  type BonePose,
+  type HumanoidBoneName,
+} from './vrm-idle';
 
 /** 状態ごとの「rest pose からの上書き差分」。idle は上書きなし（rest のまま）。 */
-const STATE_OVERRIDES: Partial<Record<AvatarState, Readonly<Record<string, BoneEuler>>>> = {
+const STATE_OVERRIDES: Partial<Record<AvatarState, Readonly<BonePose>>> = {
   // 挨拶: 右手を上げ気味にして（後段で小さく振る）、わずかに前を向く。
   greeting: { rightUpperArm: { z: -0.6, x: 0.15 }, rightLowerArm: { z: -0.5, x: -0.2 } },
   // 案内: 選択肢へ軽く体を向け、右手を少し開いて提示する。
@@ -32,6 +39,11 @@ const STATE_OVERRIDES: Partial<Record<AvatarState, Readonly<Record<string, BoneE
   farewell: { spine: { x: 0.1 }, neck: { x: 0.07 } },
 };
 
+/** `Object.entries` はキーを `string` に落とすので、ボーン名の型を保って列挙する。 */
+export function poseEntries(pose: Readonly<BonePose>): Array<[HumanoidBoneName, BoneEuler]> {
+  return Object.entries(pose).filter((entry): entry is [HumanoidBoneName, BoneEuler] => Boolean(entry[1]));
+}
+
 function addAxis(base: BoneEuler | undefined, axis: 'x' | 'y' | 'z', delta: number): BoneEuler {
   return { ...(base ?? {}), [axis]: (base?.[axis] ?? 0) + delta };
 }
@@ -40,15 +52,12 @@ function addAxis(base: BoneEuler | undefined, axis: 'x' | 'y' | 'z', delta: numb
  * 状態 + 経過秒から、適用すべき humanoid ボーン回転（Euler, ラジアン）を解決する純関数。
  * ベース(rest) + 状態上書き + 常時の生命感(呼吸/揺れ) + 状態別の動的モーションを合成する。
  */
-export function resolveStatePose(
-  state: AvatarState,
-  elapsedSec: number,
-): Record<string, BoneEuler> {
-  const pose: Record<string, BoneEuler> = {};
+export function resolveStatePose(state: AvatarState, elapsedSec: number): BonePose {
+  const pose: BonePose = {};
   // ベース: idle rest pose。
-  for (const [bone, e] of Object.entries(IDLE_REST_POSE)) pose[bone] = { ...e };
+  for (const [bone, e] of poseEntries(IDLE_REST_POSE)) pose[bone] = { ...e };
   // 状態の上書きをマージ。
-  for (const [bone, e] of Object.entries(STATE_OVERRIDES[state] ?? {})) {
+  for (const [bone, e] of poseEntries(STATE_OVERRIDES[state] ?? {})) {
     pose[bone] = { ...(pose[bone] ?? {}), ...e };
   }
   // 常時の生命感: 呼吸(spine.x) と 揺れ(chest.z) を加算。

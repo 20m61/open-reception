@@ -17,7 +17,9 @@ src/
       admin/        管理 API (/api/admin/*, 認証・認可必須)
       platform/     プラットフォーム API (/api/platform/*, developer + JIT 昇格)
   components/
-    kiosk/          受付端末向け (avatar/ 含む。three/three-vrm は VrmAvatarViewer 内で動的 import)
+    kiosk/          受付端末向け (avatar/ 含む。three/three-vrm は VrmAvatarViewer 内で動的 import。
+                    読込後の公式手順は lib/three/vrm-prepare、.vrma 切替は avatar/motion-player に分離。
+                    版追従の点検記録は docs/three-vrm-alignment.md)
     admin/          管理画面向け (admin/platform/ = 運用コンソール UI)
     staff/          担当者向け
     ui/             共通 UI

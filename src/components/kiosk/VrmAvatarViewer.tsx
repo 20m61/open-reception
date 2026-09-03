@@ -1,21 +1,20 @@
 'use client';
 
 import { useEffect, useRef, useState } from 'react';
+import type { VRM } from '@pixiv/three-vrm';
 import {
   resolveVrmSpecVersion,
   vrmVersionAttribute,
   type VrmSpecVersion,
 } from '@/domain/avatar/vrm-version';
-import {
-  motionStateAttribute,
-  resolveMotionObservation,
-  type MotionObservation,
-} from '@/domain/avatar/motion-state';
+import { motionStateAttribute, type MotionObservation } from '@/domain/avatar/motion-state';
 import { cameraFramingAttribute, resolveCameraFraming } from '@/domain/avatar/camera-framing';
 import { ResourceTracker } from '@/lib/three/resource-tracker';
+import { measureHeadHeight, prepareLoadedVrm, vrmPreparedAttribute } from '@/lib/three/vrm-prepare';
 import { AvatarFallbackImage } from './avatar/fallback-image';
 import { emotionExpressionValues } from './avatar/vrm-expression';
-import { resolveStatePose } from './avatar/vrm-pose';
+import { poseEntries, resolveStatePose } from './avatar/vrm-pose';
+import { createMotionPlayer } from './avatar/motion-player';
 import { gazeOffsetFor, type GazeOffset } from './avatar/vrm-gaze';
 import { resolveFrameExpressionWeights } from './avatar/frame-weights';
 import { createAutoBlinkState, stepAutoBlink, type AutoBlinkState } from '@/domain/avatar/auto-blink';
@@ -29,6 +28,14 @@ import type { KioskLayout } from './layout';
  * - three / three-vrm は vrmUrl があるときのみ動的 import（初期バンドル・SSR を汚さない）。
  * - unmount 時に renderer/geometry/material/texture を破棄する。
  * - 受付フローとは疎結合。実描画は実機 UAT で確認する（headless では fallback 経路を検証）。
+ *
+ * three-vrm への依存はこのファイルに閉じる。three を触らずに検証できる部分は外へ出してある:
+ * - 読込直後の公式手順（VRMUtils 最適化 / frustumCulled / rotateVRM0 / lookAt proxy）
+ *   → `lib/three/vrm-prepare.ts`（依存注入。配線の有無と順序を unit で固定）
+ * - `.vrma` 切替の競合制御（後発が勝つ / 空 URL で止める / 破棄後の遅延読込を捨てる）
+ *   → `avatar/motion-player.ts`
+ * - 表情・ポーズ・視線・まばたき・画角の計算 → `avatar/*` と `domain/avatar/*` の純関数
+ * 版追従の点検記録は `docs/three-vrm-alignment.md`。
  *
  * 状態別モーション再生（#31）: motionUrl の .vrma を AnimationMixer で切替再生する。
  * リップシンク（#5）は expression(aa) と `avatar/frame-weights.ts` の合成関数
@@ -108,6 +115,16 @@ export function VrmAvatarViewer({
    * 倒され、黙って妥当域へ寄せられるので、その事実（`src=`）まで載せる。
    */
   const [cameraFramingAttr, setCameraFramingAttr] = useState<string>('none');
+  /**
+   * 配線の観測（独立レビュー B1）。`data-vrm-prepared` は読込後の公式手順が通ったこと、
+   * `data-render-state` は最初のフレームが実際に描かれたことを表す。
+   *
+   * どちらも**落としても unit は緑のまま**で、描画も「それらしく」見える（`setAnimationLoop`
+   * が呼ばれなければ透明な canvas が残るだけで fallback には落ちない）。実描画検査が
+   * この 2 つを名指しで期待する。
+   */
+  const [preparedAttr, setPreparedAttr] = useState<string>('none');
+  const [renderState, setRenderState] = useState<'pending' | 'rendering'>('pending');
   // 表情はレンダーループ（[vrmUrl] 依存）の外から更新されるため ref で最新値を渡す。
   const expressionRef = useRef<AvatarExpression>(expression ?? 'neutral');
   useEffect(() => {
@@ -155,20 +172,20 @@ export function VrmAvatarViewer({
     setVrmVersion('unknown');
     setVrmLoaded(false);
     setMotionObservation({ state: 'none' });
+    setPreparedAttr('none');
+    setRenderState('pending');
 
     let disposed = false;
-    let animationId = 0;
     const tracker = new ResourceTracker();
-    let renderer: { dispose: () => void; setAnimationLoop?: (cb: null) => void } | null = null;
+    let renderer: { dispose: () => void; setAnimationLoop: (cb: null) => void } | null = null;
 
     (async () => {
       try {
         const THREE = await import('three');
         const { GLTFLoader } = await import('three/examples/jsm/loaders/GLTFLoader.js');
         const { VRMLoaderPlugin, VRMUtils } = await import('@pixiv/three-vrm');
-        const { VRMAnimationLoaderPlugin, createVRMAnimationClip } = await import(
-          '@pixiv/three-vrm-animation'
-        );
+        const { VRMAnimationLoaderPlugin, VRMLookAtQuaternionProxy, createVRMAnimationClip } =
+          await import('@pixiv/three-vrm-animation');
 
         if (disposed) return;
         const gl = new THREE.WebGLRenderer({ canvas, alpha: true, antialias: false });
@@ -188,7 +205,7 @@ export function VrmAvatarViewer({
          * （VRM は身長差が大きい）。さらに `aspect` は読込時 1 回だけで
          * `updateProjectionMatrix()` も呼ばれておらず、**横向き iPad で回転すると歪んで**いた。
          */
-        let headHeight: number | undefined;
+        let headHeight: number | undefined = undefined;
         let headHeightApplied: number | undefined;
         /** 直前に適用した実寸。同値なら何もしない（自己参照フィードバックの再発防止）。 */
         let appliedSize: { w: number; h: number } | null = null;
@@ -229,11 +246,18 @@ export function VrmAvatarViewer({
           VRMUtils.deepDispose(gltf.scene);
           return;
         }
-        const vrm = gltf.userData.vrm;
-        // VRM 0.x は -Z 向き（カメラから背面）規約のため、+Z 向きへ 180° 回す。
-        // VRM 1.0 には no-op。これが無いと 0.x モデルは常に後ろ姿で描画される
-        // （実描画検証 2026-07-22 で発覚。同梱 Rose は 0.x）。
-        if (vrm) VRMUtils.rotateVRM0(vrm);
+        // `gltf.userData` は `any`。ここで型を付けないと以降の three-vrm API が全部無検査になる
+        // （VRM でない glTF を読んだときは undefined）。
+        const vrm = gltf.userData.vrm as VRM | undefined;
+        // 読込直後の公式手順（VRMUtils 最適化・frustumCulled・0.x の向き補正・lookAt proxy）。
+        // 何を・どの順で呼ぶかは `lib/three/vrm-prepare.ts` に集約し unit で固定している。
+        if (vrm) {
+          const prepared = prepareLoadedVrm(vrm, {
+            utils: VRMUtils,
+            LookAtProxy: VRMLookAtQuaternionProxy,
+          });
+          setPreparedAttr(vrmPreparedAttribute(prepared));
+        }
         // 版を観測可能にする (#578 増分 1)。rotateVRM0 が「何に対して」効いたのかを
         // 実機から確認できるようにする（推測で既定へ倒さない。判別不能は unknown）。
         setVrmVersion(resolveVrmSpecVersion(vrm?.meta));
@@ -241,87 +265,53 @@ export function VrmAvatarViewer({
         scene.add(gltf.scene);
         // humanoid から頭の高さを取り、画角を決め直す（背丈の違うモデルでも顔が切れない）。
         // 取れなければ undefined のまま＝既定へ倒す（0 を渡してカメラを原点に埋めない）。
-        const headNode = vrm?.humanoid?.getNormalizedBoneNode?.('head');
-        if (headNode) {
-          const worldPos = new THREE.Vector3();
-          headNode.getWorldPosition(worldPos);
-          if (Number.isFinite(worldPos.y) && worldPos.y > 0) headHeight = worldPos.y;
-        }
+        headHeight = vrm ? measureHeadHeight(vrm, () => new THREE.Vector3()) : undefined;
         applyFraming();
         tracker.track({ dispose: () => VRMUtils.deepDispose(gltf.scene) });
 
         // --- 状態別モーション（.vrma）再生 (#31) ---
         // 受付状態 → motionUrl は AvatarGuide/KioskFlow が解決する。ここでは .vrma を読み込み、
-        // AnimationMixer で切替再生する。読込失敗時は idle ポーズのまま安全に継続する。
+        // AnimationMixer で切替再生する。競合制御と観測は `avatar/motion-player.ts`。
         const mixer = new THREE.AnimationMixer(vrm?.scene ?? gltf.scene);
-        let currentAction: { fadeOut: (d: number) => void } | null = null;
-        let motionToken = 0;
-        const loadMotion = async (url: string | undefined): Promise<void> => {
-          // **黙って return しない** (#578 増分 2)。以前はここも catch も無言だったため、
-          // 「再生されていない」ことが `data-motion-url` からは判別できなかった。
-          const observe = (o: MotionObservation) => {
-            if (!disposed) setMotionObservation(o);
-          };
-          if (!url) {
-            // **token を進める。** 進めないと、飛行中だった前の要求が「まだ現役」と誤判定して
-            // 後から再生され、`data-motion-url` は空なのに `data-motion-state=playing` になる。
-            ++motionToken;
-            // **再生中の .vrma を止める。** 止めないと `state:'none'`（＝手続き的ポーズで
-            // 動く正常状態）と報告しながら前状態のモーションが回り続け、しかも
-            // `if (!currentAction)` の内側にある**視線誘導ごと無効化**される。
-            currentAction?.fadeOut(0.3);
-            currentAction = null;
-            observe({ state: 'none' });
-            return;
-          }
-          const token = ++motionToken;
-          observe(resolveMotionObservation({ requestedUrl: url, vrmLoaded: Boolean(vrm) }));
-          try {
+        const motionPlayer = createMotionPlayer({
+          vrmLoaded: Boolean(vrm),
+          load: async (url) => {
             const animLoader = new GLTFLoader();
             animLoader.register((parser) => new VRMAnimationLoaderPlugin(parser));
             const vrma = await animLoader.loadAsync(url);
-            // 破棄済み or 後発のモーション要求が来ていれば破棄（古い読込を捨てる）。
-            // **観測も更新しない** — 後発の要求が既に自分の状態を書いているため。
-            if (disposed || token !== motionToken) return;
-            const vrmAnimation = vrma.userData.vrmAnimations?.[0];
-            const observation = resolveMotionObservation({
-              requestedUrl: url,
-              vrmLoaded: Boolean(vrm),
-              loaded: true,
-              hasAnimation: Boolean(vrmAnimation),
-            });
-            observe(observation);
-            if (observation.state !== 'playing' || !vrmAnimation || !vrm) {
-              // 失敗を報告する以上、前のモーションを回し続けない
-              // （`failed:*` を見た運用者は「再生されていない」と読む）。
-              currentAction?.fadeOut(0.3);
-              currentAction = null;
-              return;
-            }
+            return vrma.userData.vrmAnimations?.[0];
+          },
+          play: (vrmAnimation) => {
+            if (!vrm) throw new Error('VRM is not loaded');
             // 版差（0.x の 180° 反転）は createVRMAnimationClip が `vrm.meta.metaVersion` を
             // 見て補正する。ここで独自に判定すると二重補正になるので触らない。
             const clip = createVRMAnimationClip(vrmAnimation, vrm);
             const action = mixer.clipAction(clip);
             action.reset().setLoop(THREE.LoopRepeat, Infinity).fadeIn(0.3).play();
-            currentAction?.fadeOut(0.3);
-            currentAction = action;
-          } catch {
-            // モーション読込失敗は受付フローを止めない（idle 継続）。ただし黙らない。
-            if (token === motionToken) {
-              currentAction?.fadeOut(0.3);
-              currentAction = null;
-              observe(resolveMotionObservation({ requestedUrl: url, vrmLoaded: Boolean(vrm), loaded: false }));
-            }
-          }
-        };
-        loadMotionRef.current = (url) => void loadMotion(url);
-        void loadMotion(motionUrlRef.current);
+            return {
+              fadeOut: (d) => void action.fadeOut(d),
+              // フェード後に mixer から外す。`fadeOut` だけでは `LoopRepeat` のアクションが
+              // 評価対象に残り続け、状態遷移のたびに増える（`motion-player.ts` 参照）。
+              release: () => {
+                action.stop();
+                mixer.uncacheClip(clip);
+              },
+            };
+          },
+          observe: (o) => {
+            if (!disposed) setMotionObservation(o);
+          },
+        });
+        tracker.track({ dispose: () => motionPlayer.dispose() });
+        loadMotionRef.current = (url) => void motionPlayer.request(url);
+        void motionPlayer.request(motionUrlRef.current);
 
         const clock = new THREE.Clock();
         // auto-blink（#31 増分）: 描画ループ開始時刻を種に初期状態を生成する。実時刻
         // （Date.now()）を扱うのはここ（viewer 側）だけで、domain 側の純関数へは値として
         // 渡すのみ（`domain/avatar/auto-blink.ts` は Math.random()/Date.now() を呼ばない）。
         autoBlinkStateRef.current = createAutoBlinkState(Date.now());
+        let firstFrameReported = false;
         const render = () => {
           if (disposed) return;
           const dt = clock.getDelta();
@@ -360,7 +350,7 @@ export function VrmAvatarViewer({
           // .vrma モーションが無いときは受付状態に応じた手続き的ポーズ/所作を適用する（#31）。
           // モーション再生中は AnimationMixer がボーンを駆動するため適用しない。
           const humanoid = vrm?.humanoid;
-          if (!currentAction && humanoid) {
+          if (!motionPlayer.isPlaying() && humanoid) {
             const pose = resolveStatePose(avatarStateRef.current, clock.elapsedTime);
             // 視線誘導 (#422 inc5-c 増分 3)。首と頭に分けて配分し、頭だけが不自然に回るのを
             // 避ける。ポーズ（呼吸・頷き等）へ**加算**するので、既存の所作は失われない。
@@ -377,15 +367,23 @@ export function VrmAvatarViewer({
                 y: (pose.head?.y ?? 0) + gaze.yaw * 0.6,
               };
             }
-            for (const [bone, rot] of Object.entries(pose)) {
+            // 正規化ボーンへ書く。`vrm.update()` の humanoid.update が raw ボーンへ転写する
+            // （`autoUpdateHumanBones` 既定 true）。
+            for (const [bone, rot] of poseEntries(pose)) {
               const node = humanoid.getNormalizedBoneNode(bone);
               if (node) node.rotation.set(rot.x ?? 0, rot.y ?? 0, rot.z ?? 0);
             }
           }
+          // 公式例と同じ順: mixer が正規化ボーン/表情/lookAt proxy を書き、vrm.update が
+          // humanoid → raw 転写・lookAt・expression・constraint・springBone を適用する。
           mixer.update(dt);
-          vrm?.update?.(dt);
+          vrm?.update(dt);
           gl.render(scene, camera);
-          animationId = requestAnimationFrame(render);
+          // 最初のフレームを描いた事実だけを 1 回報告する（毎フレーム setState しない）。
+          if (!firstFrameReported) {
+            firstFrameReported = true;
+            if (!disposed) setRenderState('rendering');
+          }
         };
         tracker.track({ dispose: () => mixer.stopAllAction() });
 
@@ -407,7 +405,9 @@ export function VrmAvatarViewer({
           observer.observe(canvas.parentElement ?? canvas);
           tracker.track({ dispose: () => observer.disconnect() });
         }
-        render();
+        // three.js 推奨のループ。`setAnimationLoop(null)` で止まるので、破棄経路が 1 本になる
+        // （以前は rAF を自前で回しつつ、使っていない setAnimationLoop(null) も呼んでいた）。
+        gl.setAnimationLoop(render);
       } catch {
         // WebGL 不可 / VRM 読み込み失敗 → fallback。受付フローは継続。
         // `setFailed(true)` で `showFallback` が真になり canvas 自体が描かれなくなるため、
@@ -421,10 +421,9 @@ export function VrmAvatarViewer({
       disposed = true;
       loadMotionRef.current = null;
       autoBlinkStateRef.current = null;
-      if (animationId) cancelAnimationFrame(animationId);
       tracker.disposeAll();
       try {
-        renderer?.setAnimationLoop?.(null);
+        renderer?.setAnimationLoop(null);
         renderer?.dispose();
       } catch {
         /* ignore */
@@ -465,6 +464,10 @@ export function VrmAvatarViewer({
       // 実効画角 (#578 増分 1)。`none`=未確定。`src=fallback|clamped` は頭の高さを
       // 実測できなかった／妥当域へ寄せたことを表す（黙って倒さない）。
       data-camera-framing={cameraFramingAttr}
+      // 配線の観測（独立レビュー B1）。`optimized[;lookat-proxy]`=公式手順が通った、`none`=未読込。
+      data-vrm-prepared={preparedAttr}
+      // `rendering`=最初のフレームを描いた。`pending` のままなら描画ループが配線されていない。
+      data-render-state={renderState}
     />
   );
 }
