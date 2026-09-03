@@ -2,6 +2,8 @@ import type { HTMLAttributes, ReactNode } from 'react';
 import { color, font, space } from './tokens';
 import { EmptyState } from './EmptyState';
 import { ariaSortFor, nextSortState, type SortState } from '../list-io';
+import { resolveAdminReadState } from '../read-state';
+import { Skeleton } from './Skeleton';
 
 /**
  * 管理画面 共有データテーブル (issue #92, increment 1)。
@@ -56,6 +58,10 @@ export function DataTable<Row>({
   rowProps,
   sort,
   onSortChange,
+  loaded,
+  failed,
+  failureMessage,
+  scrollRegionLabel,
 }: {
   columns: ReadonlyArray<Column<Row>>;
   rows: ReadonlyArray<Row>;
@@ -73,8 +79,65 @@ export function DataTable<Row>({
   sort?: SortState;
   /** ヘッダを押したときの遷移先。`undefined` は並べ替え解除。 */
   onSortChange?: (next: SortState | undefined) => void;
+  /**
+   * 対象のデータが載っているか (#896)。**省略すると今までどおり**「常に読めている」
+   * とみなし、0 件は `EmptyState` になる（移行を一度に強制しないため）。
+   */
+  loaded?: boolean;
+  /** 直近の読み取りが失敗したか。`loaded` と対で渡す。 */
+  failed?: boolean;
+  /** 失敗時の本文。何が取れなかったかを画面ごとに書く。 */
+  failureMessage?: string;
+  /**
+   * 横スクロール領域のアクセシブル名 (#896 レビュー M4)。
+   *
+   * 🔴 **1 ページに表が複数あるなら必ず渡す。** 既定の固定文言のままだと、
+   * `MaintenanceStatus`（表 4 つ）では**同じ名前の region landmark が 4 つ**並び、
+   * スクリーンリーダーの landmark 一覧が「テーブル（横スクロール可）」×4 になって
+   * どれがどの表か判別できない（axe の `landmark-unique`）。
+   */
+  scrollRegionLabel?: string;
 }) {
   if (rows.length === 0) {
+    /*
+     * 「まだ読めていない」と「0 件だった」を混ぜない (#896 / 課題 06)。
+     *
+     * 取得できていないのに「登録された部署はありません。」と**断定**すると、
+     * 利用者は「無い」と信じて操作をやめる。失敗しても行は空のままなので、
+     * `loaded` だけを見ると**失敗が永遠の「読み込み中」に化ける** ——
+     * 状態の決め方は `AdminReadGate`（#870）と同じ `resolveAdminReadState` に委ねる。
+     */
+    const state = resolveAdminReadState({ loaded: loaded ?? true, failed: failed ?? false });
+    if (state === 'loading') {
+      return (
+        <div
+          data-testid={`${testId}-loading`}
+          /*
+           * 読み上げへ「待っている」を届ける (#896 レビュー M4)。同じ設計体系の
+           * `Skeleton` の `SkeletonBlock` は既に `role="status" aria-busy aria-live` を
+           * 持っており、ここだけ黙っているのは不整合だった。
+           */
+          role="status"
+          aria-busy="true"
+          aria-live="polite"
+          style={{ display: 'flex', flexDirection: 'column', gap: space.xs }}
+        >
+          {/* 行の形で待たせる（「何かが出る場所」だと分かる）。読み上げは下の text が担う。 */}
+          {/* testId は表ごと・行ごとに一意にする（strict mode の locator が使えるように）。 */}
+          <Skeleton height={20} testId={`${testId}-skeleton-1`} />
+          <Skeleton height={20} testId={`${testId}-skeleton-2`} />
+          <span style={{ fontSize: font.small, color: color.muted }}>読み込み中…</span>
+        </div>
+      );
+    }
+    if (state === 'failed') {
+      return (
+        <EmptyState
+          testId={`${testId}-failed`}
+          message={failureMessage ?? '一覧を読み込めませんでした。'}
+        />
+      );
+    }
     return <EmptyState message={emptyMessage} testId={`${testId}-empty`} />;
   }
   // 狭幅では横スクロールで全列を見せる。スクロール領域はキーボードでも到達できるよう
@@ -84,7 +147,7 @@ export function DataTable<Row>({
     <div
       data-testid={`${testId}-scroll`}
       role="region"
-      aria-label="テーブル（横スクロール可）"
+      aria-label={scrollRegionLabel ?? 'テーブル（横スクロール可）'}
       tabIndex={0}
       style={{ overflowX: 'auto' }}
     >

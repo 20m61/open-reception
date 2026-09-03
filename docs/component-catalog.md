@@ -66,12 +66,19 @@ CSS 変数（`src/app/globals.css` の `--color-*` / `--space-*`）を TypeScrip
 | `CardGrid`          | `Card.tsx`               | カードのレスポンシブグリッド            | `children`, `minWidth?` |
 | `Section`           | `Section.tsx`            | 見出し + 説明 + 右肩アクション + 本文    | `title`, `description?`, `actions?`, `children` |
 | `StatusBadge`       | `StatusBadge.tsx`        | 5 状態の統一バッジ                      | `status: StatusKind`, `label?` |
-| `DataTable`         | `DataTable.tsx`          | 列定義ベースの汎用テーブル（空時 Empty） | `columns`, `rows`, `rowKey`, `emptyMessage?`, `testId?` |
+| `DataTable`         | `DataTable.tsx`          | 列定義ベースの汎用テーブル（**読込中/失敗/0 件**を描き分け） | `columns`, `rows`, `rowKey`, `emptyMessage?`, `testId?`, `loaded?`, `failed?`, `failureMessage?`, `scrollRegionLabel?` |
 | `Field`             | `Field.tsx`              | ラベル + 入力 + 補足/エラー             | `label`, `htmlFor?`, `hint?`, `error?`, `required?`, `children` |
 | `FormRow`           | `Field.tsx`              | Field の横並び行                        | `children` |
 | `SecretStatusField` | `SecretStatusField.tsx`  | 機密の **状態のみ** 表示（視覚の器）     | `name`, `presence: SecretPresence`, `updatedLabel?`, `actions?` |
 | `DangerZone`        | `DangerZone.tsx`         | 危険操作セクションの **視覚の器**         | `title?`, `description?`, `children` |
 | `EmptyState`        | `EmptyState.tsx`         | 0 件時の自然な案内                       | `title?`, `message?`, `action?`, `testId?` |
+
+> 🔴 **一覧を新しく足すときは `loaded` / `failed` を対で渡すこと** (#896)。省略すると
+> 「常に読めている」扱いになり、取得中も失敗中も **0 件だと断定する**画面になる
+> （`resolveAdminReadState` が 3 状態を分けられるのは両方渡したときだけ）。1 ページに表が
+> 複数あるなら `scrollRegionLabel` も渡す —— 既定のままだと同名の region landmark が並び、
+> スクリーンリーダーでどれがどの表か判別できない。`tests/config/platform-list-states.test.ts`
+> が platform 配下でこれを機械的に強制している。
 
 > `SecretStatusField` は型に value を持たない（機密値を渡せない）。`DangerZone` は
 > レイアウトのみで、確認導線・理由入力・監査連携は #91 `components/admin/danger/**` が担う。

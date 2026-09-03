@@ -1,12 +1,11 @@
 'use client';
 
-import { useCallback, useEffect, useState } from 'react';
-import type { TenantDetail as TenantDetailData } from '@/domain/platform/console-summary';
+import { useCallback, useEffect, useRef, useState } from 'react';
+import type { TenantDetail as TenantDetailData, TenantSiteRow } from '@/domain/platform/console-summary';
 import type { TenantLifecycleAction } from '@/domain/platform/tenant-lifecycle';
 import { DangerActionButton } from '@/components/admin/danger/DangerActionButton';
-import { MetricCard, StatusBadge } from '@/components/admin/ui';
+import { DataTable, MetricCard, StatusBadge, type Column } from '@/components/admin/ui';
 import { siteStatusState, tenantStatusState } from '../state-vocabulary';
-import { TableBodyState } from './primitives';
 
 /**
  * テナント詳細（テナント横断 read + 有効/停止操作） (issue #90)。
@@ -21,26 +20,47 @@ export function TenantDetail({ tenantId }: { tenantId: string }) {
   const [data, setData] = useState<TenantDetailData | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  /** いま画面が指しているテナント。遷移をまたいだ古い応答を捨てるために持つ。 */
+  const latestTenantId = useRef(tenantId);
 
   const load = useCallback(async () => {
-    const res = await fetch(`/api/platform/tenants/${encodeURIComponent(tenantId)}`);
-    if (!res.ok) {
-      setError(
-        res.status === 403
-          ? 'この画面の閲覧権限がありません。'
-          : res.status === 404
-            ? 'テナントが見つかりません。'
-            : 'テナント詳細の取得に失敗しました。',
-      );
-      return;
+    try {
+      const res = await fetch(`/api/platform/tenants/${encodeURIComponent(tenantId)}`);
+      if (!res.ok) {
+        setError(
+          res.status === 403
+            ? 'この画面の閲覧権限がありません。'
+            : res.status === 404
+              ? 'テナントが見つかりません。'
+              : 'テナント詳細の取得に失敗しました。',
+        );
+        return;
+      }
+      setError(null);
+      setData(((await res.json()) as DetailResponse).detail);
+    /*
+     * 🔴 **通信そのものが失敗した場合も「失敗」へ落とす (#896 レビュー M3)。**
+     * `fetch` の reject（オフライン・DNS・接続断）や、HTML が返って `res.json()` が
+     * 投げるケースを拾わないと `data` も `error` も `null` のままになり、
+     * `resolveAdminReadState` は `'loading'` を返す ——「失敗が永遠の読み込み中に
+     * 化ける」まさにその形で、画面には再試行の導線も `role="alert"` も出ない。
+     */
+    } catch {
+      /*
+       * 🔴 **古い要求の失敗を新しい画面へ出さない (#896 レビュー m4)。**
+       * `load` は `tenantId` ごとに作り直されるので、A から B へ遷移した直後に
+       * **A の fetch が reject する**ことがある。素で `setError` すると B の画面に
+       * 「テナント詳細の取得に失敗しました。」が出て、B の表が失敗側へ落ちる ——
+       * B の取得はまだ成功する途中かもしれない。いま見ているテナント宛の失敗だけ出す。
+       */
+      if (latestTenantId.current === tenantId) setError('テナント詳細の取得に失敗しました。');
     }
-    setError(null);
-    setData(((await res.json()) as DetailResponse).detail);
   }, [tenantId]);
 
   useEffect(() => {
+    latestTenantId.current = tenantId;
     void load();
-  }, [load]);
+  }, [load, tenantId]);
 
   const runLifecycle = useCallback(
     async (action: TenantLifecycleAction, reason?: string) => {
@@ -59,6 +79,22 @@ export function TenantDetail({ tenantId }: { tenantId: string }) {
     },
     [tenantId, load],
   );
+
+  const siteColumns: ReadonlyArray<Column<TenantSiteRow>> = [
+    { key: 'name', header: 'サイト', cell: (s) => s.name },
+    {
+      key: 'status',
+      header: '状態',
+      cell: (s) => <StatusBadge status={siteStatusState(s.status).status} label={siteStatusState(s.status).label} />,
+    },
+    { key: 'deviceCount', header: '端末数', cell: (s) => s.deviceCount, cellStyle: () => ({ opacity: 0.8 }) },
+    {
+      key: 'activeDeviceCount',
+      header: '稼働中',
+      cell: (s) => s.activeDeviceCount,
+      cellStyle: () => ({ opacity: 0.8 }),
+    },
+  ];
 
   return (
     <section>
@@ -86,38 +122,22 @@ export function TenantDetail({ tenantId }: { tenantId: string }) {
       </div>
 
       <h2 style={{ fontSize: '1rem', opacity: 0.7 }}>サイト</h2>
-      <div style={{ overflowX: 'auto' }}>
-        <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.9rem' }}>
-          <thead>
-            <tr style={{ textAlign: 'left', opacity: 0.6 }}>
-              <th style={{ padding: '6px 8px' }}>サイト</th>
-              <th style={{ padding: '6px 8px' }}>状態</th>
-              <th style={{ padding: '6px 8px' }}>端末数</th>
-              <th style={{ padding: '6px 8px' }}>稼働中</th>
-            </tr>
-          </thead>
-          <tbody>
-            {(data?.sites ?? []).map((s) => (
-              <tr key={s.id} style={{ borderTop: '1px solid var(--color-border)' }}>
-                <td style={{ padding: '6px 8px' }}>{s.name}</td>
-                <td style={{ padding: '6px 8px' }}>
-                  <StatusBadge status={siteStatusState(s.status).status} label={siteStatusState(s.status).label} />
-                </td>
-                <td style={{ padding: '6px 8px', opacity: 0.8 }}>{s.deviceCount}</td>
-                <td style={{ padding: '6px 8px', opacity: 0.8 }}>{s.activeDeviceCount}</td>
-              </tr>
-            ))}
-            <TableBodyState
-              loaded={data !== null}
-              failed={error !== null}
-              rowCount={data?.sites.length ?? 0}
-              columns={4}
-              emptyMessage="このテナントに拠点がありません。"
-              testId="platform-tenant-sites"
-            />
-          </tbody>
-        </table>
-      </div>
+      {/*
+        生 `<table>` を共有 `ui/DataTable` へ寄せた (#896 AC1)。横スクロール領域は
+        `DataTable` が持つので、外側の `overflowX` ラッパは要らない。3 状態は
+        `loaded` / `failed` で渡す（#947 の `TableBodyState` と同じ判断を部品側で行う）。
+      */}
+      <DataTable
+        testId="platform-tenant-sites"
+        scrollRegionLabel="サイト一覧"
+        columns={siteColumns}
+        rows={data?.sites ?? []}
+        rowKey={(s) => s.id}
+        loaded={data !== null}
+        failed={error !== null}
+        emptyMessage="このテナントに拠点がありません。"
+        failureMessage="サイト一覧を読み込めませんでした。"
+      />
 
       {data ? (
         <div style={{ marginTop: 'var(--space-lg)', maxWidth: 760 }}>

@@ -1,7 +1,8 @@
 'use client';
 
 import { useEffect, useState } from 'react';
-import { DangerActionPlaceholder, TableBodyState } from './primitives';
+import { DangerActionPlaceholder } from './primitives';
+import { DataTable, type Column } from '@/components/admin/ui';
 import { enablementState } from '../state-vocabulary';
 
 /**
@@ -39,9 +40,24 @@ const RESULT_LABEL: Record<IntegrationRow['lastResult'], string> = {
   failure: '失敗',
 };
 
-const th = { padding: '6px 8px' } as const;
-const headRow = { textAlign: 'left', opacity: 0.6 } as const;
-const bodyRow = { borderTop: '1px solid var(--color-border)' } as const;
+const INTEGRATION_COLUMNS: ReadonlyArray<Column<IntegrationRow>> = [
+  { key: 'label', header: '連携', cell: (i) => i.label },
+  { key: 'configured', header: '設定', cell: (i) => (i.configured ? '済' : '未'), cellStyle: () => ({ opacity: 0.8 }) },
+  { key: 'enabled', header: '有効', cell: (i) => enablementState(i.enabled).label, cellStyle: () => ({ opacity: 0.8 }) },
+  { key: 'lastResult', header: '直近結果', cell: (i) => RESULT_LABEL[i.lastResult], cellStyle: () => ({ opacity: 0.8 }) },
+  { key: 'summary', header: '要約', cell: (i) => i.lastErrorSummary ?? '-', cellStyle: () => ({ opacity: 0.6 }) },
+];
+
+const AUTH_METHOD_COLUMNS: ReadonlyArray<Column<AuthMethodRow>> = [
+  { key: 'label', header: '方式', cell: (m) => m.label },
+  { key: 'enabled', header: '有効', cell: (m) => enablementState(m.enabled).label, cellStyle: () => ({ opacity: 0.8 }) },
+  {
+    key: 'issues',
+    header: '設定上の問題',
+    cell: (m) => (m.issues.length ? m.issues.join(' / ') : '-'),
+    cellStyle: () => ({ opacity: 0.6 }),
+  },
+];
 
 export function Integrations() {
   const [data, setData] = useState<IntegrationsResponse | null>(null);
@@ -50,15 +66,26 @@ export function Integrations() {
   useEffect(() => {
     let cancelled = false;
     void (async () => {
-      const res = await fetch('/api/platform/integrations');
-      if (cancelled) return;
-      if (!res.ok) {
-        setError(
-          res.status === 403 ? 'この画面の閲覧権限がありません。' : '連携状態の取得に失敗しました。',
-        );
-        return;
+      try {
+        const res = await fetch('/api/platform/integrations');
+        if (cancelled) return;
+        if (!res.ok) {
+          setError(
+            res.status === 403 ? 'この画面の閲覧権限がありません。' : '連携状態の取得に失敗しました。',
+          );
+          return;
+        }
+        setData((await res.json()) as IntegrationsResponse);
+      /*
+       * 🔴 **通信そのものが失敗した場合も「失敗」へ落とす (#896 レビュー M3)。**
+       * `fetch` の reject（オフライン・DNS・接続断）や、HTML が返って `res.json()` が
+       * 投げるケースを拾わないと `data` も `error` も `null` のままになり、
+       * `resolveAdminReadState` は `'loading'` を返す ——「失敗が永遠の読み込み中に
+       * 化ける」まさにその形で、画面には再試行の導線も `role="alert"` も出ない。
+       */
+      } catch {
+        if (!cancelled) setError('連携状態の取得に失敗しました。');
       }
-      setData((await res.json()) as IntegrationsResponse);
     })();
     return () => {
       cancelled = true;
@@ -77,70 +104,42 @@ export function Integrations() {
       {error ? <p role="alert" style={{ color: 'var(--color-platform-warn)' }}>{error}</p> : null}
 
       <h2 style={{ fontSize: '1rem', opacity: 0.7 }}>外部連携</h2>
-      <div style={{ overflowX: 'auto' }}>
-        <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.9rem' }}>
-          <thead>
-            <tr style={headRow}>
-              <th style={th}>連携</th>
-              <th style={th}>設定</th>
-              <th style={th}>有効</th>
-              <th style={th}>直近結果</th>
-              <th style={th}>要約</th>
-            </tr>
-          </thead>
-          <tbody>
-            {(data?.integrations ?? []).map((i) => (
-              <tr key={i.id} style={bodyRow}>
-                <td style={th}>{i.label}</td>
-                <td style={{ ...th, opacity: 0.8 }}>{i.configured ? '済' : '未'}</td>
-                <td style={{ ...th, opacity: 0.8 }}>{enablementState(i.enabled).label}</td>
-                <td style={{ ...th, opacity: 0.8 }}>{RESULT_LABEL[i.lastResult]}</td>
-                <td style={{ ...th, opacity: 0.6 }}>{i.lastErrorSummary ?? '-'}</td>
-              </tr>
-            ))}
-            <TableBodyState
-              loaded={data !== null}
-              failed={error !== null}
-              rowCount={data?.integrations.length ?? 0}
-              columns={5}
-              emptyMessage="連携がありません。"
-              testId="platform-integrations"
-            />
-          </tbody>
-        </table>
-      </div>
+      {/*
+        生 `<table>` を共有 `ui/DataTable` へ寄せた (#896 AC1)。横スクロール領域は
+        `DataTable` が持つので、外側の `overflowX` ラッパは要らない。3 状態は
+        `loaded` / `failed` で渡す（#947 の `TableBodyState` と同じ判断を部品側で行う）。
+      */}
+      <DataTable
+        testId="platform-integrations"
+        scrollRegionLabel="外部連携"
+        columns={INTEGRATION_COLUMNS}
+        rows={data?.integrations ?? []}
+        rowKey={(i) => i.id}
+        loaded={data !== null}
+        failed={error !== null}
+        emptyMessage="連携がありません。"
+        failureMessage="外部連携の状態を読み込めませんでした。"
+      />
 
       <h2 style={{ fontSize: '1rem', opacity: 0.7, marginTop: 'var(--space-lg)' }}>
         管理画面ログイン方式
       </h2>
-      <div style={{ overflowX: 'auto' }}>
-        <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.9rem' }}>
-          <thead>
-            <tr style={headRow}>
-              <th style={th}>方式</th>
-              <th style={th}>有効</th>
-              <th style={th}>設定上の問題</th>
-            </tr>
-          </thead>
-          <tbody>
-            {(data?.authMethods ?? []).map((m) => (
-              <tr key={m.id} style={bodyRow}>
-                <td style={th}>{m.label}</td>
-                <td style={{ ...th, opacity: 0.8 }}>{enablementState(m.enabled).label}</td>
-                <td style={{ ...th, opacity: 0.6 }}>{m.issues.length ? m.issues.join(' / ') : '-'}</td>
-              </tr>
-            ))}
-            <TableBodyState
-              loaded={data !== null}
-              failed={error !== null}
-              rowCount={data?.authMethods.length ?? 0}
-              columns={3}
-              emptyMessage="認証方式がありません。"
-              testId="platform-auth-methods"
-            />
-          </tbody>
-        </table>
-      </div>
+      {/*
+        生 `<table>` を共有 `ui/DataTable` へ寄せた (#896 AC1)。横スクロール領域は
+        `DataTable` が持つので、外側の `overflowX` ラッパは要らない。3 状態は
+        `loaded` / `failed` で渡す（#947 の `TableBodyState` と同じ判断を部品側で行う）。
+      */}
+      <DataTable
+        testId="platform-auth-methods"
+        scrollRegionLabel="管理画面ログイン方式"
+        columns={AUTH_METHOD_COLUMNS}
+        rows={data?.authMethods ?? []}
+        rowKey={(m) => m.id}
+        loaded={data !== null}
+        failed={error !== null}
+        emptyMessage="認証方式がありません。"
+        failureMessage="ログイン方式の状態を読み込めませんでした。"
+      />
 
       <div style={{ marginTop: 'var(--space-lg)', maxWidth: 760 }}>
         <DangerActionPlaceholder label="シークレット再登録 / 連携設定の変更" />
