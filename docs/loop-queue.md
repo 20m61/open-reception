@@ -53,16 +53,26 @@
 | #913 | 未保存判定が「未設定」と「空文字」を別物として扱う（#912 の既知の粗さ） |
 | #915 | `fontSize` リテラルの残り 102 件（寄せると文字サイズが動く） |
 
-### 未着手（**方針判断が要る**）
+### 方針判断が要ったもの（**2 件とも 2026-09-03 に決着**）
 
-- **課題 24（罫線コントラスト 3:1）** … `--color-border` は面に対し **1.27:1**、
-  `--color-border-strong` は **1.67:1**（実測）。WCAG 1.4.11 の 3:1 に届かせるには
-  alpha を 0.08 → **0.34**（約 4 倍）にする必要があり、**罫線を持つ全要素の描画が変わる**。
-  linux の 14 枚は再生成できるが、**darwin の 14 枚は macOS でしか作れない**。
-  上の残件表の 1 枚とは規模が違うので、着手はコスト込みの判断になる。
-- **課題 30（レスポンシブ戦略が 2 つ併存）** … 管理画面は CSS の `max-width: 900px` 1 本、
-  受付端末は `domain/kiosk/layout.ts` の JS 判定（1600px + アスペクト比）。
-  統一するのか、意図として文書化して固定するのかを決める必要がある。
+- ~~**課題 24（罫線コントラスト 3:1）**~~ … **決着（#918 / PR #919）。**
+  `--color-border-strong` を alpha 0.16 → **0.36** へ上げ、**罫線が乗る 4 面すべて**
+  （bg / bg-2 / surface / surface-2）で 3:1 を満たすようにした（最悪 3.05:1）。
+  装飾用の `--color-border` は据え置き —— WCAG 1.4.11 が要求するのは
+  **操作要素の境界**であって仕切り線ではない。`tests/config/border-contrast.test.ts` が
+  相対輝度を計算して 4 面すべてで縛る（下界 2 本つき: 装飾側の alpha が強調側を超えないこと、
+  名指しの操作要素が `-strong` を使うこと）。
+  🔴 **見積もりが 3.5 倍外れていた。** 「14 枚全部が動く」と書いていたが、**許容 0 で
+  測ったら動いたのは 4 枚だけ**（待機 3 レイアウト + 時間外）。残り 12 枚は画素単位で同一で、
+  装飾トークンを触らず主要 CTA が背景で塗られているためだった。
+  **`maxDiffPixelRatio: 0.002` では 16 枚とも緑**になり、この 4 枚が見えない
+  （本リポジトリが 3 度踏んでいる「VRT が退行を隠す」型）。darwin 4 枚は残件表へ。
+- ~~**課題 30（レスポンシブ戦略が 2 つ併存）**~~ … **2026-09-03 に決着（#920 / PR #922）。**
+  統一せず**分業として固定**した。受付端末を media query へ寄せられない理由は 2 つ
+  （アスペクト比が排他的に優先する / 判定結果を CSS だけでなく JS レイヤも読む）で、
+  CSS だけの判定にすると同じ条件を JS で書き直すことになり **3 系統目**が生える。
+  理由は `docs/component-catalog.md` §5.5、3 つ目が黙って生えないことは
+  `tests/config/responsive-strategy.test.ts` が縛る。
 
 ### 削除できていないリモートブランチ
 
@@ -74,7 +84,9 @@ for b in feat/admin-form-aria feat/audit-log-paging-csv feat/prefers-contrast-su
          fix/admin-button-visual-contract fix/admin-danger-confirm \
          fix/admin-dialog-focus-headings fix/token-single-source \
          refactor/admin-state-vocabulary refactor/font-token-adoption \
-         refactor/platform-shared-primitives refactor/z-index-tokens; do
+         refactor/platform-shared-primitives refactor/z-index-tokens \
+         docs/wave1-closeout fix/border-contrast-3to1 docs/responsive-strategy-guard \
+         docs/opus-5-loop-profile claude/handoff-docs-resume-ivzxq2; do
   git push origin --delete "$b"
 done
 ```
