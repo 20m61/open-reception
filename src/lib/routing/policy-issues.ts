@@ -24,6 +24,13 @@ export function describeIssue(issue: RoutingPolicyIssue): string {
       return '引き継ぎ先の別ルートが見つかりません。存在するルートを指定してください。';
     case 'fallback_cycle':
       return 'ルートの引き継ぎが循環しています。無限取次になるため保存できません。';
+    case 'step_timeout_exceeds_provider_max':
+      /*
+       * **丸められることまで言う。** 「上限は 120 秒です」だけだと、既に 180 秒で
+       * 運用している人は「今まで動いていたのに」と読む。実際には最初から 120 秒で
+       * 動いていて、表示だけが違っていた。
+       */
+      return `1 つの手順で待てるのは最大 ${issue.maxSeconds} 秒です。これを超える値を設定しても、実際には ${issue.maxSeconds} 秒で次の手順へ進みます（電話事業者側の上限）。表示と実際の動きが食い違うため、${issue.maxSeconds} 秒以下にしてください。`;
     case 'exceeds_client_wait':
       return `最後まで呼び出すと受付端末の待ち時間の上限（${Math.round(issue.clientWaitMs / 60_000)} 分）を超えます（最長 ${Math.round(issue.worstCaseMs / 60_000)} 分）。来訪者が代替のご案内へ進んだあとも呼び出しが続くため、手順を減らすか待ち時間を短くしてください。`;
   }

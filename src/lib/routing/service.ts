@@ -38,6 +38,7 @@ import { describeRoutingPolicy } from '@/domain/routing/describe';
 import type { ParsedRoutingPolicyBody } from './input';
 import type { ContactEndpointRepository, RoutingPolicyRepository } from './repository';
 import type { EndpointView, PolicyView, StoredContactEndpoint, StoredRoutingPolicy } from './types';
+import { VONAGE_RINGING_TIMER_MAX_SECONDS } from '@/domain/routing/voice-initiator';
 
 export type ServiceError = {
   code: 'invalid_input' | 'not_found' | 'forbidden' | 'conflict';
@@ -313,6 +314,28 @@ export class RoutingService {
         worstCaseMs: routingWorstCaseMs(timeouts),
         clientWaitMs: CALL_STATUS_POLL_MAX_MS,
       });
+    }
+
+    /*
+     * 🔴 **1 手あたりの上限を設定時に言う (#927)。** `buildCreateCallRequest` は provider の
+     * 上限（`ringing_timer` = 120 秒）へ丸めるので発信は成功するが、ルートビルダーは
+     * 設定値のまま「180秒待つ」と表示する。**表示と実際の動きが食い違う。**
+     *
+     * 上の `exceeds_client_wait` は**合計**しか見ないので、1 手だけ長い構成
+     * （180s + 余裕 30s = 210s ≤ 端末上限 300s）は素通りしていた。**両方要る。**
+     *
+     * 丸めは `buildCreateCallRequest` 側に残す（多層防御）。ここを通らない経路から
+     * 上限超えが来ても、発信が 400 で落ちて有人支援へ倒れることはない。
+     */
+    for (const step of candidate.steps) {
+      if (step.timeoutSeconds > VONAGE_RINGING_TIMER_MAX_SECONDS) {
+        issues.push({
+          kind: 'step_timeout_exceeds_provider_max',
+          policyId: candidate.id,
+          stepId: step.id,
+          maxSeconds: VONAGE_RINGING_TIMER_MAX_SECONDS,
+        });
+      }
     }
     return issues;
   }

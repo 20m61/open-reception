@@ -146,6 +146,21 @@ export type RoutingPolicyIssue =
       policyId: string;
       worstCaseMs: number;
       clientWaitMs: number;
+    }
+  /**
+   * 1 手あたりの待ち時間が provider の上限を超える (#927)。
+   *
+   * `buildCreateCallRequest` は上限へ**丸める**ので発信は成功するが、
+   * 文章形式ルートビルダーは設定値のまま表示する（`domain/routing/describe.ts`）。
+   * **表示と実際の動きが食い違い、運用者はそれを知る手がかりを持たない。**
+   *
+   * `exceeds_client_wait` は**合計**しか見ないので、1 手だけ長い構成は素通りする。
+   */
+  | {
+      kind: 'step_timeout_exceeds_provider_max';
+      policyId: string;
+      stepId: string;
+      maxSeconds: number;
     };
 
 /**

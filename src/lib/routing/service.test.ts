@@ -5,6 +5,7 @@ import { asSiteId, asTenantId } from '@/domain/tenant/types';
 import { MemoryContactEndpointRepository, MemoryRoutingPolicyRepository } from './repository';
 import { RoutingService } from './service';
 import type { StoredContactEndpoint, StoredRoutingPolicy } from './types';
+import { VONAGE_RINGING_TIMER_MAX_SECONDS } from '@/domain/routing/voice-initiator';
 
 const T_A = asTenantId('tenant-a');
 const T_B = asTenantId('tenant-b');
@@ -199,6 +200,100 @@ describe('RoutingService policies', () => {
       expect(r.error.code).toBe('invalid_input');
       expect(r.error.issues?.some((i) => i.kind === 'unknown_endpoint')).toBe(true);
     }
+  });
+
+  /**
+   * 🔴 **1 手あたりの上限を設定時に言う (#927)。**
+   *
+   * `buildCreateCallRequest` は Vonage の `ringing_timer` 上限（120 秒）へ**丸める**ので、
+   * 180 秒と設定しても実際には 120 秒で次の手へ進む。ところが文章形式ルートビルダーは
+   * 「180秒待つ」と表示する（`domain/routing/describe.ts`）。**表示と挙動が食い違い、
+   * 運用者はそれを知る手がかりを持たない。**
+   *
+   * `exceeds_client_wait` は**合計**しか見ないので、1 手 180 秒（+30s 余裕 = 210s）は
+   * 端末上限 300s に収まってしまい、この構成は素通りしていた。
+   */
+  it('🔴 作成: 1 手が provider 上限を超える構成は invalid_input（step_timeout_exceeds_provider_max）', async () => {
+    const { service } = makeService({ endpoints: [storedEndpoint({ id: 'ep-1' })] });
+    const r = await service.createPolicy(tenantAdminA, {
+      tenantId: T_A,
+      body: {
+        name: '1 手が長すぎるルート',
+        siteId: 'site-a1',
+        enabled: true,
+        steps: [
+          {
+            id: 's0',
+            endpointId: 'ep-1',
+            action: 'notify' as const,
+            timeoutSeconds: VONAGE_RINGING_TIMER_MAX_SECONDS + 1,
+            nextOn: {},
+          },
+        ],
+      },
+    });
+    expect(r.ok).toBe(false);
+    if (!r.ok) {
+      expect(r.error.code).toBe('invalid_input');
+      const issue = r.error.issues?.find((i) => i.kind === 'step_timeout_exceeds_provider_max');
+      expect(issue).toBeTruthy();
+      // どの手が悪いかを言う（step 別に表示するため）。
+      if (issue && issue.kind === 'step_timeout_exceeds_provider_max') {
+        expect(issue.stepId).toBe('s0');
+        expect(issue.maxSeconds).toBe(VONAGE_RINGING_TIMER_MAX_SECONDS);
+      }
+    }
+  });
+
+  /*
+   * 🔴 **下界。** 上限そのものは通さないと、上限いっぱいの設定が保存できなくなる
+   * （`buildCreateCallRequest` は 120 をそのまま送る＝丸めが起きない値である）。
+   * これが無いと「上限を 1 でも下げる」変異が素通りする。
+   */
+  it('🔴 下界: 1 手が provider 上限ちょうどなら保存できる', async () => {
+    const { service } = makeService({ endpoints: [storedEndpoint({ id: 'ep-1' })] });
+    const r = await service.createPolicy(tenantAdminA, {
+      tenantId: T_A,
+      body: {
+        name: '上限ちょうど',
+        siteId: 'site-a1',
+        enabled: true,
+        steps: [
+          {
+            id: 's0',
+            endpointId: 'ep-1',
+            action: 'notify' as const,
+            timeoutSeconds: VONAGE_RINGING_TIMER_MAX_SECONDS,
+            nextOn: {},
+          },
+        ],
+      },
+    });
+    expect(r.ok).toBe(true);
+  });
+
+  /*
+   * 🔴 **既存の seed が引き続き通ること。** 上限を厳しくしすぎると、運用中の設定が
+   * 保存し直せなくなる。既定値（20/20/30 秒）は上限の内側に居る。
+   */
+  it('🔴 下界: 既定の待ち時間（20〜30 秒）は引き続き保存できる', async () => {
+    const { service } = makeService({ endpoints: [storedEndpoint({ id: 'ep-1' })] });
+    const r = await service.createPolicy(tenantAdminA, {
+      tenantId: T_A,
+      body: {
+        name: '既定どおり',
+        siteId: 'site-a1',
+        enabled: true,
+        steps: [20, 20, 30].map((timeoutSeconds, i) => ({
+          id: `s${i}`,
+          endpointId: 'ep-1',
+          action: 'notify' as const,
+          timeoutSeconds,
+          nextOn: {},
+        })),
+      },
+    });
+    expect(r.ok).toBe(true);
   });
 
   it('作成: 空 step のポリシーは invalid_input（empty_policy）', async () => {
