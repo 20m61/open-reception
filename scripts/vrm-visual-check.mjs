@@ -342,12 +342,40 @@ if (canvasShown) {
 
   await page.screenshot({ path: `${outDir}/vrm-03-idle-full.png` });
 
-  // --- 4. 受付を開始し状態遷移後もアバターが生きているか(表情/ポーズは目視)
-  const start = page.getByTestId('signage-start').or(page.locator('main'));
-  await page.touchscreen.tap(405, 540);
-  await page.waitForTimeout(4000);
+  /*
+   * --- 4. 受付を開始したときのアバターの在り方 (#963) ---
+   *
+   * 🔴 **座標タップをやめた。** 以前は `page.touchscreen.tap(405, 540)` で進めていたが、
+   * **外れても例外にならない**ので、状態が `idle` のままでも次の主張が通ってしまう。
+   * #930 の作業中に実測したところ、このタップの後も `data-kiosk-state` は **`idle` のまま**
+   * だった（`signage-start` の locator を作りながら使っていない未使用変数も、その名残）。
+   *
+   * 🔴 **主張の中身も実装と逆だった。** 旧: 「canvas は遷移後も生きている」(`count > 0`)。
+   * しかし `reception-screens.tsx` は **`IdleView` にだけ `vrmUrl` を渡す**（`PurposeView` /
+   * `TargetView` / `VisitorInfoView` は受け取らない）ので、受付へ進むと canvas は
+   * **0 個になるのが正しい**。旧主張が PASS していたのは、遷移していなかったからである。
+   *
+   * よって「遷移したこと」を状態で確かめたうえで、**アバターが idle 専用であること**を
+   * 固定する。companion 配置を出す設計変更（#781）が入ったらここが落ちる ——
+   * それは気づくべき変更なので、落ちてよい。
+   */
+  await page.getByTestId('start-reception').click({ timeout: 30000 });
+  const stateAfter = await page
+    .locator('[data-kiosk-state]')
+    .first()
+    .getAttribute('data-kiosk-state')
+    .catch(() => null);
+  note(
+    'vrm: reception actually started (state moved off idle)',
+    stateAfter === 'selectingPurpose',
+    `data-kiosk-state=${stateAfter}`,
+  );
   const canvasAfter = await page.getByTestId('vrm-canvas').count();
-  note('vrm: canvas survives state transition to reception', canvasAfter > 0, `count=${canvasAfter}`);
+  note(
+    'vrm: avatar is idle-only today (no canvas on reception screens)',
+    canvasAfter === 0,
+    `count=${canvasAfter}（companion を出す設計にしたらここが落ちる: #781）`,
+  );
   await page.screenshot({ path: `${outDir}/vrm-04-purpose-full.png` });
 
   // --- 5. motionUrl 属性(状態別モーション接続口)の確認
