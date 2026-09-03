@@ -101,12 +101,23 @@ describe('DataTable の読み取り状態 (#896)', () => {
     expect(html).not.toContain('部署はありません。');
   });
 
-  it('失敗は読み上げへ届く（待ちは role="status" なのに失敗だけ黙っていた・#966）', () => {
+  it('失敗は読み上げへ届く。ただし polite（#966 レビュー M3）', () => {
     const html = render({ rows: [], loaded: false, failed: true });
-    expect(html, '失敗に role="alert" が無い').toContain('role="alert"');
-    // 下界: 「常に alert を出す」で満たさない。待ちと 0 件は alert ではない。
-    expect(render({ rows: [], loaded: false, failed: false })).not.toContain('role="alert"');
-    expect(render({ rows: [], loaded: true })).not.toContain('role="alert"');
+    expect(html, '失敗が読み上げへ届かない').toContain('aria-live="polite"');
+    /*
+     * 🔴 **assertive にしない。** 失敗の**理由**は画面側の `role="alert"` が持っており
+     * （各画面に 1 つ）、表を 4 つ持つ画面では同じ `error` で 5 個の assertive が同時に
+     * 発火して、理由を伝えているアナウンスを汎用文が割り込みで潰す。
+     */
+    expect(html, '失敗が assertive になっている').not.toContain('role="alert"');
+    // 下界: 「常に live region を出す」で満たさない。0 件は読み上げの割り込み対象ではない。
+    expect(render({ rows: [], loaded: true })).not.toContain('aria-live');
+  });
+
+  it('0 件の見出しを渡せる（表の外の EmptyState から寄せた画面のため・#966 レビュー m5）', () => {
+    const html = render({ rows: [], loaded: true, emptyTitle: '組織がありません', emptyMessage: '追加してください。' });
+    expect(html).toContain('組織がありません');
+    expect(html).toContain('追加してください。');
   });
 
   it('読めていて 0 件なら 0 件と言う', () => {

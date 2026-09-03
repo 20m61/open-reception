@@ -154,6 +154,11 @@ export function AssetsManager() {
       </Form>
       {error ? <p data-testid="asset-error" style={{ color: color.danger }}>{error}</p> : null}
 
+      {listError ? (
+        <p role="alert" data-testid="asset-list-error" style={{ color: color.danger }}>
+          {listError}
+        </p>
+      ) : null}
       <div style={{ marginTop: space.sm }}>
         <DataTable
           testId="asset-table"

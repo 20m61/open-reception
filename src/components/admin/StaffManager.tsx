@@ -58,15 +58,12 @@ export function StaffManager() {
         // 「一覧に出ているのに設定できない」になる。
         fetch('/api/admin/organizations/memberships'),
       ]);
-      if (oRes.ok) {
-        const body = (await oRes.json()) as { items: { staffId: string; organizationId: string; relation: string }[] };
-        const map: Record<string, string[]> = {};
-        for (const m of body.items) {
-          if (m.relation !== 'secondary') continue;
-          (map[m.staffId] ??= []).push(m.organizationId);
-        }
-        setSecondary(map);
-      }
+      /*
+       * 🔴 **担当者一覧を先に確定させる (#966 レビュー m6)。**
+       * 兼務の `json()` が投げると、`sRes` が 200 でも `setItems` に到達せず
+       * 「担当者一覧を取得できませんでした」に化けていた —— 取れていたのに取れていないと言う。
+       * 兼務は付加情報なので、失敗しても担当者一覧の可否を変えない。
+       */
       if (!sRes.ok) {
         // 担当者一覧が引けないことは、部署が引けたかどうかとは別に報告する。
         setListError('担当者一覧を取得できませんでした。');
@@ -78,6 +75,15 @@ export function StaffManager() {
         const depts = ((await dRes.json()) as { items: Department[] }).items;
         setDepartments(depts);
         setDepartmentId((prev) => prev || depts[0]?.id || '');
+      }
+      if (oRes.ok) {
+        const body = (await oRes.json()) as { items: { staffId: string; organizationId: string; relation: string }[] };
+        const map: Record<string, string[]> = {};
+        for (const m of body.items) {
+          if (m.relation !== 'secondary') continue;
+          (map[m.staffId] ??= []).push(m.organizationId);
+        }
+        setSecondary(map);
       }
     } catch {
       setListError('担当者一覧を取得できませんでした。');
@@ -372,6 +378,11 @@ export function StaffManager() {
         </p>
       )}
 
+      {listError ? (
+        <p role="alert" data-testid="staff-list-error" style={{ color: color.danger }}>
+          {listError}
+        </p>
+      ) : null}
       <DataTable
         testId="staff-table"
         columns={columns}

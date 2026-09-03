@@ -61,6 +61,7 @@ export function DataTable<Row>({
   loaded,
   failed,
   failureMessage,
+  emptyTitle,
   scrollRegionLabel,
 }: {
   columns: ReadonlyArray<Column<Row>>;
@@ -88,6 +89,11 @@ export function DataTable<Row>({
   failed?: boolean;
   /** 失敗時の本文。何が取れなかったかを画面ごとに書く。 */
   failureMessage?: string;
+  /**
+   * 0 件のときの見出し (#966 レビュー m5)。`EmptyState` の `title` へ渡す。
+   * 表の外の `EmptyState` から寄せた画面で、見出しの視覚的階層が失われたため。
+   */
+  emptyTitle?: string;
   /**
    * 横スクロール領域のアクセシブル名 (#896 レビュー M4)。
    *
@@ -133,11 +139,15 @@ export function DataTable<Row>({
     if (state === 'failed') {
       return (
         /*
-         * 🔴 **失敗は読み上げへ届ける (#966)。** 待ち状態は `role="status"` を持つのに、
-         * 失敗だけが黙っていた —— 画面を見ていない利用者には「まだ来ない」と区別が付かない。
-         * `EmptyState` は `<div>` なので、外側で `role="alert"` を持たせる。
+         * 🔴 **失敗は読み上げへ届ける。ただし polite で (#966 レビュー M3)。**
+         *
+         * 待ち状態は `role="status"` を持つのに失敗だけが黙っていたので、読み上げへ届く
+         * ようにした。**`role="alert"`（assertive）にはしない** —— 失敗の**理由**は画面側の
+         * `role="alert"` が持っており（各画面に 1 つ）、表が 4 つある画面（`MaintenanceStatus`）
+         * では同じ `error` で**5 個の assertive が同時に発火**して、理由を伝えている
+         * アナウンスを汎用文が割り込みで潰す。ここは「表が空である理由」を補う役なので polite。
          */
-        <div role="alert">
+        <div role="status" aria-live="polite">
           <EmptyState
             testId={`${testId}-failed`}
             message={failureMessage ?? '一覧を読み込めませんでした。'}
@@ -145,7 +155,7 @@ export function DataTable<Row>({
         </div>
       );
     }
-    return <EmptyState message={emptyMessage} testId={`${testId}-empty`} />;
+    return <EmptyState title={emptyTitle} message={emptyMessage} testId={`${testId}-empty`} />;
   }
   // 狭幅では横スクロールで全列を見せる。スクロール領域はキーボードでも到達できるよう
   // tabIndex=0 + role="region" を付与する（WCAG 2.1.1: マウス/タッチの無い利用者でも

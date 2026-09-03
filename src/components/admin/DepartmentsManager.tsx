@@ -231,6 +231,11 @@ export function DepartmentsManager() {
         testId="dept"
       />
 
+      {listError ? (
+        <p role="alert" data-testid="dept-list-error" style={{ color: 'var(--color-danger)' }}>
+          {listError}
+        </p>
+      ) : null}
       <DataTable
         testId="dept-table"
         columns={columns}

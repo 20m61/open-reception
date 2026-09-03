@@ -296,7 +296,8 @@ export function OrganizationsManager() {
         onSortChange={setSort}
         loaded={items !== null}
         failed={listError !== null}
-        emptyMessage="組織がありません。まず「部署管理」で部署を追加してください。"
+        emptyTitle="組織がありません"
+        emptyMessage="まず「部署管理」で部署を追加してください。"
         failureMessage="組織一覧を読み込めませんでした。"
         scrollRegionLabel="組織一覧"
       />
