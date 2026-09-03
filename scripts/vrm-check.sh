@@ -103,6 +103,7 @@ echo "  VRM 有効のサーバを ${PORT} で起動します（e2e/VRT へ影響
   cd "${ROOT}" || exit 1
   KIOSK_DEFAULT_VRM_URL="${KIOSK_DEFAULT_VRM_URL:-/avatar/default.vrm}" \
   RECEPTION_DISABLE_DEV_SEED=1 \
+  KIOSK_VRM_HARNESS=1 \
   PORT="${PORT}" \
   npm run --silent start > "${OUT}/server.log" 2>&1
 ) &

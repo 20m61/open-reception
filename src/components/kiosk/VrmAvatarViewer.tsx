@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState } from 'react';
 import type { VRM } from '@pixiv/three-vrm';
+import type { AnimationClip } from 'three';
 import {
   resolveVrmSpecVersion,
   vrmVersionAttribute,
@@ -99,6 +100,8 @@ export function VrmAvatarViewer({
    * 持ち、fallback 中は canvas が DOM に無いので、リセット自体へ到達しない）。
    */
   const [failedUrl, setFailedUrl] = useState<string | undefined>(undefined);
+  /** mixer に残っている `.vrma` アクション数（#930）。切替後も 1 のままであるべき。 */
+  const [liveMotionActions, setLiveMotionActions] = useState(0);
   /**
    * 読み込んだ VRM の仕様版 (#578 増分 1)。**診断のためだけ**に持つ。
    *
@@ -279,6 +282,26 @@ export function VrmAvatarViewer({
         // 受付状態 → motionUrl は AvatarGuide/KioskFlow が解決する。ここでは .vrma を読み込み、
         // AnimationMixer で切替再生する。競合制御と観測は `avatar/motion-player.ts`。
         const mixer = new THREE.AnimationMixer(vrm?.scene ?? gltf.scene);
+        /**
+         * `.vrma` の**生存アクション数**を観測する（#930）。
+         *
+         * 🔴 **`play` で +1 / `release` で −1 する数え方にしない。** それは
+         * 「`release` が**呼ばれた**」ことしか見ておらず、`release` の中身
+         * （`action.stop()` / `mixer.uncacheClip(clip)`）を落とす変異が素通りする。
+         * #923 が直した欠陥はまさに「呼んでいるのに mixer から外れていない」形だった。
+         *
+         * そこで **mixer に残っているか**を直接引く。`uncacheClip` が効いていれば
+         * `existingAction` は `null` を返すので、外し忘れた分だけ数が増える。
+         * `knownClips` は退場したクリップも保持し続ける（外れたことを見るために要る）。
+         * 種類数は状態ごとのモーション数で頭打ちなので伸び続けない。
+         */
+        const knownClips = new Set<AnimationClip>();
+        const reportLiveActions = () => {
+          let live = 0;
+          for (const clip of knownClips) if (mixer.existingAction(clip)) live += 1;
+          if (!disposed) setLiveMotionActions(live);
+        };
+
         const motionPlayer = createMotionPlayer({
           vrmLoaded: Boolean(vrm),
           load: async (url) => {
@@ -294,6 +317,8 @@ export function VrmAvatarViewer({
             const clip = createVRMAnimationClip(vrmAnimation, vrm);
             const action = mixer.clipAction(clip);
             action.reset().setLoop(THREE.LoopRepeat, Infinity).fadeIn(0.3).play();
+            knownClips.add(clip);
+            reportLiveActions();
             return {
               fadeOut: (d) => void action.fadeOut(d),
               // フェード後に mixer から外す。`fadeOut` だけでは `LoopRepeat` のアクションが
@@ -301,6 +326,7 @@ export function VrmAvatarViewer({
               release: () => {
                 action.stop();
                 mixer.uncacheClip(clip);
+                reportLiveActions();
               },
             };
           },
@@ -474,6 +500,9 @@ export function VrmAvatarViewer({
       data-vrm-prepared={preparedAttr}
       // `rendering`=最初のフレームを描いた。`pending` のままなら描画ループが配線されていない。
       data-render-state={renderState}
+      // mixer に残っている `.vrma` アクション数 (#930)。**切替を繰り返しても 1 のまま**が正。
+      // 増えるなら退場したアクションが評価対象に残っている（24 時間稼働で単調増加する）。
+      data-motion-actions={liveMotionActions}
     />
   );
 }

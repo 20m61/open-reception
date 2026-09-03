@@ -394,6 +394,63 @@ if (canvasShown) {
     const m2 = await canvas2.screenshot();
     await sharp(m2).toFile(`${outDir}/vrm-06-vrma-playing-2.5s.png`);
     note('vrma: motion animates the model (frames differ)', !m1.equals(m2));
+
+    /*
+     * --- 6b. 退場したアクションが mixer に残らないこと (#930) ---
+     *
+     * #923 が直した欠陥は「`fadeOut` は重みを 0 にするだけで `LoopRepeat` のアクションは
+     * mixer の評価対象に残り続ける」形で、**切替のたびに 1 つずつ増える**。24 時間稼働の
+     * 受付端末では毎フレームの評価対象が単調増加する。unit は `play` に fake action を
+     * 注入するので **viewer 側の `release` の中身を見ていない**（#923 B1 と同じ族）。
+     *
+     * 🔴 **`/kiosk` では作れない状況なので、ハーネスを使う**（実測）:
+     *   - `selectingPurpose` では `vrm-canvas` が **0 個**（アバターは idle 専用）。
+     *     状態遷移では canvas ごと mixer が破棄されるので、蓄積が再現しない
+     *   - `vrmUrl` はサーバ env 由来でセッション内に差し替えられない
+     * ハーネスは `VrmAvatarViewer` を**マウントしたまま**入力だけ差し替える。
+     *
+     * 切替は**別 URL**でなければ意味が無い（同じ URL では再要求が起きず、何を主張しても
+     * 空虚に通る）。同じ .vrma をクエリ違いで指す。
+     */
+    await page.goto(baseURL + '/kiosk/vrm-harness', { waitUntil: 'domcontentloaded', timeout: 90000 });
+    const harnessCanvas = () => page.getByTestId('vrm-canvas').first();
+    const applyUrls = async (vrm, motion) => {
+      await page.getByTestId('harness-vrm-url').fill(vrm);
+      await page.getByTestId('harness-motion-url').fill(motion);
+      await page.getByTestId('harness-apply').click();
+    };
+    const waitFor = async (getter, want, tries = 40) => {
+      let v = await getter();
+      for (let i = 0; i < tries && v !== want; i += 1) {
+        await page.waitForTimeout(500);
+        v = await getter();
+      }
+      return v;
+    };
+    const liveActions = async () => await harnessCanvas().getAttribute('data-motion-actions');
+    const motionUrlAttr = async () => await harnessCanvas().getAttribute('data-motion-url');
+
+    const vrmForHarness = process.env.KIOSK_DEFAULT_VRM_URL || '/avatar/default.vrm';
+    await applyUrls(vrmForHarness, '/avatar/idle.vrma');
+    await harnessCanvas().waitFor({ state: 'visible', timeout: 60000 });
+    const firstLive = await waitFor(liveActions, '1');
+    note('vrma(harness): one live action after first play', firstLive === '1', `data-motion-actions=${firstLive}`);
+
+    // **マウントしたまま**別 URL のモーションへ 2 回切り替える。
+    for (const [round, url] of [[1, '/avatar/idle.vrma?v=2'], [2, '/avatar/idle.vrma?v=3']]) {
+      await applyUrls(vrmForHarness, url);
+      const switched = await waitFor(motionUrlAttr, url);
+      note(`vrma(harness): motion url switched in-session (round ${round})`, switched === url, `data-motion-url=${switched}`);
+      // フェード(0.3s)完了後に解放される。余裕を持って待ってから数える。
+      await page.waitForTimeout(3000);
+      const live = await liveActions();
+      note(
+        `vrma(harness): retired action released from mixer (round ${round})`,
+        live === '1',
+        `data-motion-actions=${live}（増えていたら退場分が評価対象に残っている）`,
+      );
+    }
+
     // 後始末(割り当て解除)
     await admin.put('/api/admin/motions', { data: { default: null } });
   } finally {
