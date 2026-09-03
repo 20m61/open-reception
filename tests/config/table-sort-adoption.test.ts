@@ -22,6 +22,10 @@ const ADOPTED: readonly string[] = [
   'src/components/admin/StaffManager.tsx',
   'src/components/admin/AssetsManager.tsx',
   'src/components/admin/OrganizationsManager.tsx',
+  // #910 の残り: 既にページングを持っていた 3 一覧。
+  'src/components/admin/DevicesManager.tsx',
+  'src/components/admin/ReservationsManager.tsx',
+  'src/components/admin/StayManager.tsx',
 ];
 
 /**
@@ -36,6 +40,13 @@ const DELIBERATELY_UNSORTED: readonly { readonly path: string; readonly why: str
   {
     path: 'src/components/admin/MotionsManager.tsx',
     why: '行が定数 MOTION_KEYS（11 件・増減しない）で、順序そのものが進行順という意味を持つ',
+  },
+  {
+    path: 'src/components/admin/dashboard/RecentCalls.tsx',
+    why:
+      '行を prop で受け取るだけの表示部品（state も URL も持たない）。ダッシュボードの' +
+      '「直近」の抜粋なので、並べ替えると「直近」でなくなる。全件を並べ替える画面は' +
+      ' receptions/ReceptionsViewer で、そちらは ADOPTED に居る',
   },
 ];
 

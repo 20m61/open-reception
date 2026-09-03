@@ -8,15 +8,17 @@ import {
   DataTable,
   Field,
   MetricCard,
+  Pager,
   Section,
   StatusBadge,
   type Column,
 } from '@/components/admin/ui';
 import { color, font, radius, space } from '@/components/admin/ui/tokens';
 import { useQueryParams } from './use-query-params';
+import { useTableSort } from './use-table-sort';
 import { useSiteScope } from './use-site-scope';
 import { SiteScopeSelect } from './SiteScopeSelect';
-import { paginate } from './list-io';
+import { paginate, sortRows } from './list-io';
 import { filterStays, staysToCsv, type StayListFilter } from './stay/list-filter';
 import type { StayStatus } from '@/domain/visit/types';
 import {
@@ -96,6 +98,7 @@ export function StayManager({
   });
 
   const { get, setMany } = useQueryParams();
+  const { sort, setSort } = useTableSort();
   const filterStart = get('start');
   const filterEnd = get('end');
   const filterStatus = get('status');
@@ -175,7 +178,6 @@ export function StayManager({
     [filterStart, filterEnd, filterStatus],
   );
   const filtered = useMemo(() => filterStays(sorted, filter), [sorted, filter]);
-  const paged = useMemo(() => paginate(filtered, Number(pageParam) || 1, PAGE_SIZE), [filtered, pageParam]);
   const hasFilter = Boolean(filterStart || filterEnd || filterStatus);
 
   // フィルタ変更時はページを 1 に戻す（絞り込み後に空ページへ迷い込まないようにする）。
@@ -194,9 +196,12 @@ export function StayManager({
     URL.revokeObjectURL(url);
   };
 
-  const columns: ReadonlyArray<Column<VisitStay>> = [
+  const columns = useMemo<ReadonlyArray<Column<VisitStay>>>(
+    () => (
+[
     {
       key: 'id',
+      sortValue: (s) => s.id,
       header: '受付番号',
       cell: (s) => <code style={{ fontSize: '0.8rem' }}>{s.id}</code>,
     },
@@ -220,7 +225,17 @@ export function StayManager({
         <RowActions stay={s} onCheckout={checkout} onCancel={cancel} canMutate={actions.canMutate} />
       ),
     },
-  ];
+  ]
+    ),
+    [actions.canMutate, cancel, checkout, now],
+  );
+
+  /*
+   * `sorted` は既に業務上の既定順（`sortStays`）で使われているので、利用者の
+   * 並べ替えは**フィルタ後**に別名で重ねる。解除すると既定の順序へ戻る。
+   */
+  const userSorted = useMemo(() => sortRows(filtered, columns, sort), [filtered, columns, sort]);
+  const paged = useMemo(() => paginate(userSorted, Number(pageParam) || 1, PAGE_SIZE), [userSorted, pageParam]);
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: space.lg }}>
@@ -338,6 +353,8 @@ export function StayManager({
           columns={columns}
           rows={paged.items}
           rowKey={(s) => s.id}
+          sort={sort}
+          onSortChange={setSort}
           emptyMessage={
             // 取得できていない間は「まだありません」と断定しない（同上の理由）。
             !actions.showSummary
@@ -349,32 +366,12 @@ export function StayManager({
           testId="stay-table"
         />
 
-        {paged.pageCount > 1 ? (
-          <div
-            data-testid="stay-pagination"
-            style={{ display: 'flex', gap: space.sm, alignItems: 'center', marginTop: space.sm }}
-          >
-            <Button
-              variant="secondary"
-              data-testid="stay-page-prev"
-              disabled={paged.page <= 1}
-              onClick={() => setMany({ page: String(paged.page - 1) })}
-            >
-              前へ
-            </Button>
-            <span style={{ fontSize: font.small, opacity: 0.8 }} data-testid="stay-page-label">
-              {paged.page} / {paged.pageCount} ページ
-            </span>
-            <Button
-              variant="secondary"
-              data-testid="stay-page-next"
-              disabled={paged.page >= paged.pageCount}
-              onClick={() => setMany({ page: String(paged.page + 1) })}
-            >
-              次へ
-            </Button>
-          </div>
-        ) : null}
+        <Pager
+          page={paged.page}
+          pageCount={paged.pageCount}
+          onChange={(next) => setMany({ page: String(next) })}
+          testIdPrefix="stay"
+        />
       </Section>
     </div>
   );

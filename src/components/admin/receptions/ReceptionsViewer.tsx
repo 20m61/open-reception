@@ -3,7 +3,7 @@
 import { useMemo } from 'react';
 import type { ReceptionLog } from '@/domain/reception/log';
 import { RECEPTION_PURPOSES, type CallOutcome } from '@/domain/reception/session';
-import { Button, DataTable, Field, type Column } from '@/components/admin/ui';
+import { Button, DataTable, Pager, Field, type Column } from '@/components/admin/ui';
 import { color, font, radius, space } from '@/components/admin/ui/tokens';
 import { useQueryParams } from '@/components/admin/use-query-params';
 import {
@@ -214,32 +214,12 @@ export function ReceptionsViewer({
         emptyMessage={hasFilter ? '条件に一致する受付履歴はありません。' : 'まだ受付履歴はありません。'}
       />
 
-      {paged.pageCount > 1 ? (
-        <div
-          data-testid="receptions-pagination"
-          style={{ display: 'flex', gap: space.sm, alignItems: 'center' }}
-        >
-          <Button
-            variant="secondary"
-            data-testid="receptions-page-prev"
-            disabled={paged.page <= 1}
-            onClick={() => setMany({ page: String(paged.page - 1) })}
-          >
-            前へ
-          </Button>
-          <span style={{ fontSize: font.small, opacity: 0.8 }} data-testid="receptions-page-label">
-            {paged.page} / {paged.pageCount} ページ
-          </span>
-          <Button
-            variant="secondary"
-            data-testid="receptions-page-next"
-            disabled={paged.page >= paged.pageCount}
-            onClick={() => setMany({ page: String(paged.page + 1) })}
-          >
-            次へ
-          </Button>
-        </div>
-      ) : null}
+      <Pager
+        page={paged.page}
+        pageCount={paged.pageCount}
+        onChange={(next) => setMany({ page: String(next) })}
+        testIdPrefix="receptions"
+      />
     </div>
   );
 }
