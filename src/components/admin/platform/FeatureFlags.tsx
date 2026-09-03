@@ -54,12 +54,17 @@ export function FeatureFlags() {
   const [error, setError] = useState<string | null>(null);
 
   const loadSummary = useCallback(async () => {
-    const res = await fetch('/api/platform/feature-flags');
-    if (!res.ok) {
-      setError(res.status === 403 ? 'この画面の閲覧権限がありません。' : '機能フラグの取得に失敗しました。');
-      return;
+    try {
+      const res = await fetch('/api/platform/feature-flags');
+      if (!res.ok) {
+        setError(res.status === 403 ? 'この画面の閲覧権限がありません。' : '機能フラグの取得に失敗しました。');
+        return;
+      }
+      setData((await res.json()) as FlagsResponse);
+    } catch {
+      // 通信そのものの失敗も「失敗」へ落とす (#968)。拾わないと表が永遠に「読み込み中」になる。
+      setError('機能フラグを取得できませんでした。通信を確認してください。');
     }
-    setData((await res.json()) as FlagsResponse);
   }, []);
 
   useEffect(() => {
@@ -146,10 +151,16 @@ function TenantFeatureFlagEditor({ onChanged }: { onChanged?: () => void }) {
   useEffect(() => {
     let cancelled = false;
     void (async () => {
-      const res = await fetch('/api/platform/tenants');
-      if (cancelled || !res.ok) return;
-      const body = (await res.json()) as { tenants: TenantRow[] };
-      setTenants(body.tenants);
+      try {
+        const res = await fetch('/api/platform/tenants');
+        if (cancelled || !res.ok) return;
+        const body = (await res.json()) as { tenants: TenantRow[] };
+        setTenants(body.tenants);
+      } catch {
+        // テナントを選べないまま黙って空のプルダウンを出さない (#968)。
+        if (!cancelled)
+          setWriteError({ needsElevation: false, message: 'テナント一覧を取得できませんでした。通信を確認してください。' });
+      }
     })();
     return () => {
       cancelled = true;
@@ -159,12 +170,21 @@ function TenantFeatureFlagEditor({ onChanged }: { onChanged?: () => void }) {
   const loadTenantFlags = useCallback(async (id: string) => {
     setFlags(null);
     if (id === '') return;
-    const res = await fetch(`/api/platform/tenants/${encodeURIComponent(id)}/feature-flags`);
-    if (!res.ok) {
-      setWriteError({ needsElevation: false, message: 'テナントの機能フラグの取得に失敗しました。' });
-      return;
+    try {
+      const res = await fetch(`/api/platform/tenants/${encodeURIComponent(id)}/feature-flags`);
+      if (!res.ok) {
+        setWriteError({ needsElevation: false, message: 'テナントの機能フラグの取得に失敗しました。' });
+        return;
+      }
+      setFlags((await res.json()) as TenantFlagsResponse);
+    } catch {
+      /*
+       * 🔴 **拾わないと「読み込み中…」で止まる (#968)。** 描画は
+       * `tenantId !== '' && !flags && !writeError` で読み込み中を出しているので、
+       * `flags` も `writeError` も `null` のままだと終わらない待ちになる。
+       */
+      setWriteError({ needsElevation: false, message: 'テナントの機能フラグを取得できませんでした。通信を確認してください。' });
     }
-    setFlags((await res.json()) as TenantFlagsResponse);
   }, []);
 
   function selectTenant(id: string) {

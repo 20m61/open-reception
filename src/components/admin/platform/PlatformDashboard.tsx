@@ -36,13 +36,23 @@ export function PlatformDashboard() {
   useEffect(() => {
     let cancelled = false;
     void (async () => {
-      const res = await fetch('/api/platform/dashboard');
-      if (cancelled) return;
-      if (!res.ok) {
-        setError(res.status === 403 ? 'この画面の閲覧権限がありません。' : '概況の取得に失敗しました。');
-        return;
+      try {
+        const res = await fetch('/api/platform/dashboard');
+        if (cancelled) return;
+        if (!res.ok) {
+          setError(res.status === 403 ? 'この画面の閲覧権限がありません。' : '概況の取得に失敗しました。');
+          return;
+        }
+        setData((await res.json()) as DashboardResponse);
+      /*
+       * 🔴 **通信そのものの失敗も「失敗」へ落とす (#968 AC2)。** `fetch` の reject や、
+       * HTML が返って `res.json()` が投げるケースを拾わないと `data` も `error` も
+       * `null` のままになり、指標カードは `—` を出し続ける。運用者には「まだ来ていない」
+       * のか「取れなかった」のか区別が付かず、再試行の導線も読み上げも画面に無い。
+       */
+      } catch {
+        if (!cancelled) setError('概況を取得できませんでした。通信を確認してください。');
       }
-      setData((await res.json()) as DashboardResponse);
     })();
     return () => {
       cancelled = true;

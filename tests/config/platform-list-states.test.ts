@@ -58,7 +58,7 @@ import { join } from 'node:path';
  * | `overflowX` / `role="region"` / `tabIndex` を `DataTable` から外す | `ui/DataTable.test.tsx`（13 表ぶんの契約が集約された先） |
  * | `scrollRegionLabel` を `DataTable` 側で無視する | 同上（配線を全部残したまま landmark 名が既定へ戻る） |
  * | loading の `role="status"` / `aria-live` を外す | 同上 |
- * | `catch` の中身を無音化する | 「`await fetch` を持つなら `catch` を持つ」（下記 `REQUIRE_FETCH_CATCH`） |
+ * | `catch` の中身を無音化する | 「`failed` を式で渡すファイルは失敗を報告する `catch` を持つ」（下記） |
  * | `CONSTANT_READ_STATE` に偽の理由で新規一覧を登録して逃げる | `why` 長・`testId` 実在・`LISTS` の網羅性 |
  * | `scrollRegionLabel` を片方だけ外す（同名衝突しないので通る） | 全 `DataTable` に必須＋platform 全体で一意 |
  */
@@ -340,6 +340,11 @@ describe('platform の一覧の状態表示 (#896 / 課題 06)', () => {
    * `failed` を式で渡しているファイルは、**失敗を報告する `catch`** を持つこと。
    * `} catch {` が在るだけでは足りない（中身を消す変異が通る）ので、`setError` を
    * 呼んでいることまで要求する。
+   *
+   * 🔴 **ここは「ファイル単位」なので、同じファイルの 2 つ目以降の `fetch` は見ていない。**
+   * 実際 `TenantDetail` は `load` の `catch` だけでこの主張を満たし、**破壊的操作
+   * （`runLifecycle` の PATCH）に `catch` が無いことを一度も落とせなかった** (#968)。
+   * 呼び出し 1 件ごとの検査は `tests/config/platform-fetch-failure.test.ts` が持つ。
    */
   it('failed を式で渡すファイルは、失敗を報告する catch を持つ', () => {
     const offenders = filesWiringFailed()

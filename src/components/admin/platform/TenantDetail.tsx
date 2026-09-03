@@ -19,6 +19,14 @@ type DetailResponse = { detail: TenantDetailData };
 export function TenantDetail({ tenantId }: { tenantId: string }) {
   const [data, setData] = useState<TenantDetailData | null>(null);
   const [error, setError] = useState<string | null>(null);
+  /*
+   * 🔴 **操作の失敗を読み取りの `error` に載せない (#968 AC4)。**
+   *
+   * `error` は `DataTable` の `failed` を決めている。停止/有効化に失敗しただけで
+   * サイト一覧が「読み込めませんでした。」へ落ちるのは、読めているのに読めていないと
+   * 言うことになる。操作の失敗は操作の近くに、別の state で出す。
+   */
+  const [actionError, setActionError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   /** いま画面が指しているテナント。遷移をまたいだ古い応答を捨てるために持つ。 */
   const latestTenantId = useRef(tenantId);
@@ -65,6 +73,7 @@ export function TenantDetail({ tenantId }: { tenantId: string }) {
   const runLifecycle = useCallback(
     async (action: TenantLifecycleAction, reason?: string) => {
       setBusy(true);
+      setActionError(null);
       try {
         const res = await fetch(`/api/platform/tenants/${encodeURIComponent(tenantId)}`, {
           method: 'PATCH',
@@ -72,7 +81,16 @@ export function TenantDetail({ tenantId }: { tenantId: string }) {
           body: JSON.stringify({ action, reason }),
         });
         if (res.ok) await load();
-        else setError('操作に失敗しました。');
+        else setActionError('操作に失敗しました。');
+      /*
+       * 🔴 **破壊的操作を無言で失敗させない (#968 AC1)。** `try`/`finally` だけだと
+       * `fetch` の reject（オフライン・DNS 断・接続断）は `void` に捨てられ、`busy` が
+       * 戻るだけで画面には何も出ない。押した運用者は「何も起きなかった」と読み、
+       * もう一度押すか、停止できたと誤解する ——「成功したかどうか分からない」を
+       * 残さないことが、テナントの停止/有効化では最も重い。
+       */
+      } catch {
+        setActionError('操作を送信できませんでした。通信を確認して、もう一度お試しください。');
       } finally {
         setBusy(false);
       }
@@ -142,6 +160,10 @@ export function TenantDetail({ tenantId }: { tenantId: string }) {
       {data ? (
         <div style={{ marginTop: 'var(--space-lg)', maxWidth: 760 }}>
           <h2 style={{ fontSize: '1rem', opacity: 0.7 }}>危険な操作</h2>
+          {/* 操作の失敗はボタンの隣に出す（読み取りの失敗と混ぜない・#968 AC4）。 */}
+          {actionError ? (
+            <p role="alert" style={{ color: 'var(--color-platform-warn)' }}>{actionError}</p>
+          ) : null}
           <DangerActionButton
             label={data.status === 'active' ? 'このテナントを停止する' : 'このテナントを有効化する'}
             requirement={{ requireImpactAck: true, requireReason: true }}

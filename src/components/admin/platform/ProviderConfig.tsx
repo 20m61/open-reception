@@ -65,25 +65,36 @@ export function ProviderConfig() {
 
   const load = useCallback(async () => {
     setError(null);
-    const res = await fetch(CONFIG_ENDPOINT);
-    if (!res.ok) {
-      setError(
-        res.status === 403
-          ? 'この操作の権限がありません。'
-          : res.status === 400
-            ? '対象テナントを選択してください。'
-            : '設定の取得に失敗しました。',
-      );
+    try {
+      const res = await fetch(CONFIG_ENDPOINT);
+      if (!res.ok) {
+        setError(
+          res.status === 403
+            ? 'この操作の権限がありません。'
+            : res.status === 400
+              ? '対象テナントを選択してください。'
+              : '設定の取得に失敗しました。',
+        );
+        setData(null);
+        return;
+      }
+      const body = (await res.json()) as ConfigResponse;
+      setData(body);
+      if (body.config) {
+        setProvider(body.config.provider);
+        setEnabled(body.config.enabled);
+        setApplicationId(body.config.applicationId ?? '');
+        setFromNumber(body.config.fromNumber ?? '');
+      }
+    /*
+     * 🔴 **読み取りの失敗を無言にしない (#968 AC2)。** reject を拾わないと `data` も
+     * `error` も `null` のままで、画面は「secret 未設定」の初期値をそのまま出す ——
+     * **取得できていないことを「未設定」と言い換える**形になり、運用者は secret を
+     * 上書き保存しにいく（`OperatingHoursManager` が #870 で踏んだのと同じ型）。
+     */
+    } catch {
+      setError('設定を取得できませんでした。通信を確認してください。');
       setData(null);
-      return;
-    }
-    const body = (await res.json()) as ConfigResponse;
-    setData(body);
-    if (body.config) {
-      setProvider(body.config.provider);
-      setEnabled(body.config.enabled);
-      setApplicationId(body.config.applicationId ?? '');
-      setFromNumber(body.config.fromNumber ?? '');
     }
   }, []);
 
@@ -94,18 +105,22 @@ export function ProviderConfig() {
   const saveConfig = useCallback(async () => {
     setError(null);
     setNotice(null);
-    const res = await fetch(CONFIG_ENDPOINT, {
-      method: 'PUT',
-      headers: { 'content-type': 'application/json' },
-      // secret はこのエンドポイントに送らない（別エンドポイントで write-only）。
-      body: JSON.stringify({ provider, enabled, applicationId, fromNumber }),
-    });
-    if (!res.ok) {
-      setError('設定の保存に失敗しました。');
-      return;
+    try {
+      const res = await fetch(CONFIG_ENDPOINT, {
+        method: 'PUT',
+        headers: { 'content-type': 'application/json' },
+        // secret はこのエンドポイントに送らない（別エンドポイントで write-only）。
+        body: JSON.stringify({ provider, enabled, applicationId, fromNumber }),
+      });
+      if (!res.ok) {
+        setError('設定の保存に失敗しました。');
+        return;
+      }
+      setNotice('設定を保存しました。');
+      await load();
+    } catch {
+      setError('設定を保存できませんでした。通信を確認してください。');
     }
-    setNotice('設定を保存しました。');
-    await load();
   }, [provider, enabled, applicationId, fromNumber, load]);
 
   const saveSecret = useCallback(async () => {
@@ -115,40 +130,54 @@ export function ProviderConfig() {
       setError('secret を入力してください。');
       return;
     }
-    const res = await fetch(SECRET_ENDPOINT, {
-      method: 'PUT',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ secret: secretInput, expectedProvider: data?.config?.provider }),
-    });
-    // 入力欄は成否に関わらず即クリア（画面・DOM に残さない）。
-    setSecretInput('');
-    if (!res.ok) {
-      setError(res.status === 409 ? '先に設定を保存し、対象プロバイダを確認してください。' : 'secret の保存に失敗しました。');
-      return;
+    try {
+      const res = await fetch(SECRET_ENDPOINT, {
+        method: 'PUT',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ secret: secretInput, expectedProvider: data?.config?.provider }),
+      });
+      if (!res.ok) {
+        setError(res.status === 409 ? '先に設定を保存し、対象プロバイダを確認してください。' : 'secret の保存に失敗しました。');
+        return;
+      }
+      setNotice('secret を保存しました（値は表示されません）。');
+      await load();
+    } catch {
+      setError('secret を保存できませんでした。通信を確認してください。');
+    } finally {
+      /*
+       * 入力欄は成否に関わらず即クリア（画面・DOM に残さない）。**`finally` に置く**（#968）——
+       * 送信が reject したときこそ値が画面に残り続けるので、成功枝の後ろに置くと
+       * 「失敗したときだけ secret が DOM に残る」という一番まずい形になる。
+       */
+      setSecretInput('');
     }
-    setNotice('secret を保存しました（値は表示されません）。');
-    await load();
   }, [secretInput, data, load]);
 
   const clearSecret = useCallback(async () => {
     setError(null);
     setNotice(null);
-    const res = await fetch(SECRET_ENDPOINT, {
-      method: 'DELETE',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ expectedProvider: confirmProvider }),
-    });
-    setConfirmProvider('');
-    if (!res.ok) {
-      setError(
-        res.status === 409
-          ? '確認のため、現在のプロバイダ名を正しく入力してください。'
-          : 'secret の消去に失敗しました。',
-      );
-      return;
+    try {
+      const res = await fetch(SECRET_ENDPOINT, {
+        method: 'DELETE',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ expectedProvider: confirmProvider }),
+      });
+      if (!res.ok) {
+        setError(
+          res.status === 409
+            ? '確認のため、現在のプロバイダ名を正しく入力してください。'
+            : 'secret の消去に失敗しました。',
+        );
+        return;
+      }
+      setNotice('secret を消去しました。');
+      await load();
+    } catch {
+      setError('secret を消去できませんでした。通信を確認してください。');
+    } finally {
+      setConfirmProvider('');
     }
-    setNotice('secret を消去しました。');
-    await load();
   }, [confirmProvider, load]);
 
   const presence = data ? presenceOf(data) : 'missing';

@@ -10,6 +10,7 @@ import {
   type NamedTenant,
 } from '@/lib/platform/selected-tenant';
 import { TenantSelect } from '../TenantContextView';
+import { font } from '@/components/admin/ui/tokens';
 
 /**
  * 対象テナント切り替え（#83 inc3b / #90）。
@@ -43,15 +44,25 @@ export function TenantSwitcher() {
   const pathname = usePathname() ?? '';
   const [tenants, setTenants] = useState<NamedTenant[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
+  /*
+   * 一覧が取れなかったことを言う (#968)。取れないと選択肢が空のまま「全テナント横断」
+   * だけが残り、**テナントが 1 つも無いのと同じ見た目**になる。切替の入口なので、
+   * 「選べない」を黙って「選ぶものが無い」に化けさせない。
+   */
+  const [listError, setListError] = useState<string | null>(null);
 
   useEffect(() => {
     setSelectedId(parseSelectedTenantId(document.cookie));
     let cancelled = false;
     void (async () => {
-      const res = await fetch('/api/platform/tenants');
-      if (cancelled || !res.ok) return;
-      const body = (await res.json()) as TenantsResponse;
-      if (!cancelled) setTenants(body.tenants ?? []);
+      try {
+        const res = await fetch('/api/platform/tenants');
+        if (cancelled || !res.ok) return;
+        const body = (await res.json()) as TenantsResponse;
+        if (!cancelled) setTenants(body.tenants ?? []);
+      } catch {
+        if (!cancelled) setListError('テナント一覧を取得できませんでした。');
+      }
     })();
     return () => {
       cancelled = true;
@@ -94,7 +105,15 @@ export function TenantSwitcher() {
       nullOptionLabel="全テナント横断"
       onSelect={(next) => void onSelect(next)}
       trailing={
-        viewing.tenantName !== null ? (
+        listError !== null ? (
+          <span
+            role="alert"
+            data-testid="platform-tenant-list-error"
+            style={{ fontSize: font.small, color: 'var(--color-platform-warn)' }}
+          >
+            {listError}
+          </span>
+        ) : viewing.tenantName !== null ? (
           <span
             data-testid="platform-viewing-tenant"
             style={{ fontSize: '0.8125rem', opacity: 0.9 }}
