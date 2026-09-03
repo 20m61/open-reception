@@ -101,7 +101,7 @@ export function UpdateStatus() {
       {/*
         生 `<table>` を共有 `ui/DataTable` へ寄せた (#896 AC1)。読み込み中 / 失敗 / 0 件の
         出し分けは手書きの分岐ではなく `loaded` / `failed` で `DataTable` に委ねる
-        （#947 の `TableBodyState` と同じ `resolveAdminReadState` を通る）。
+        （#947 で `<tbody>` 側に置いていたのと同じ `resolveAdminReadState` を通る）。
       */}
       <DataTable
         testId="platform-updates"

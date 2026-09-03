@@ -115,17 +115,6 @@ const READ_FAILURE_MECHANISM: Readonly<Record<string, string>> = {
    * `tests/config/platform-list-states.test.ts` が別に縛る。
    */
   'ui/DataTable.tsx': 'resolveAdminReadState',
-  /**
-   * platform の表の中で「読み込み中 / 失敗 / 0 件」を出し分ける行 (#896)。
-   * 共有の門と**同じ 3 状態の語彙**（`resolveAdminReadState`）を使う —— `data` は失敗しても
-   * `null` のままなので、`loaded` だけを見ると失敗が永遠の「読み込み中」に化ける。
-   *
-   * ⚠️ **本番の消費者はゼロ** (#896 AC1 / PR #965)。platform の 13 表を `ui/DataTable` へ
-   * 寄せた結果、`TableBodyState` を使う画面は無くなった（シンボル走査とモジュールパス走査の
-   * 2 通りで確認。残る import は自身のテストのみ）。**ここに載っていることを「守られている
-   * 画面がある」と読まないこと。** 削除は #966 で扱う。
-   */
-  'platform/primitives.tsx': 'resolveAdminReadState',
   // 明示的な phase 機械（`{ phase: 'error' }` を持ち、catch でもそこへ落とす）。
   'costs/CostManager.tsx': "phase: 'error'",
   'dashboard/Dashboard.tsx': "phase: 'error'",

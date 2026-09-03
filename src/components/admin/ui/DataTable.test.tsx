@@ -101,6 +101,14 @@ describe('DataTable の読み取り状態 (#896)', () => {
     expect(html).not.toContain('部署はありません。');
   });
 
+  it('失敗は読み上げへ届く（待ちは role="status" なのに失敗だけ黙っていた・#966）', () => {
+    const html = render({ rows: [], loaded: false, failed: true });
+    expect(html, '失敗に role="alert" が無い').toContain('role="alert"');
+    // 下界: 「常に alert を出す」で満たさない。待ちと 0 件は alert ではない。
+    expect(render({ rows: [], loaded: false, failed: false })).not.toContain('role="alert"');
+    expect(render({ rows: [], loaded: true })).not.toContain('role="alert"');
+  });
+
   it('読めていて 0 件なら 0 件と言う', () => {
     const html = render({ rows: [], loaded: true, emptyMessage: '部署はありません。' });
     expect(html).toContain('t-empty');

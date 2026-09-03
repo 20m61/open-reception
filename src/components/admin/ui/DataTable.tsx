@@ -132,10 +132,17 @@ export function DataTable<Row>({
     }
     if (state === 'failed') {
       return (
-        <EmptyState
-          testId={`${testId}-failed`}
-          message={failureMessage ?? '一覧を読み込めませんでした。'}
-        />
+        /*
+         * 🔴 **失敗は読み上げへ届ける (#966)。** 待ち状態は `role="status"` を持つのに、
+         * 失敗だけが黙っていた —— 画面を見ていない利用者には「まだ来ない」と区別が付かない。
+         * `EmptyState` は `<div>` なので、外側で `role="alert"` を持たせる。
+         */
+        <div role="alert">
+          <EmptyState
+            testId={`${testId}-failed`}
+            message={failureMessage ?? '一覧を読み込めませんでした。'}
+          />
+        </div>
       );
     }
     return <EmptyState message={emptyMessage} testId={`${testId}-empty`} />;

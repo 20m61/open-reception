@@ -20,7 +20,16 @@ const KIND_LABEL: Record<AssetKind, string> = {
 const PAGE_SIZE = 20;
 
 export function AssetsManager() {
-  const [items, setItems] = useState<Asset[]>([]);
+  /*
+   * 🔴 **「まだ読めていない」と「0 件だった」を型で分ける (#966 AC2)。**
+   *
+   * 初期値を `[]` にすると、取得前も取得失敗も「登録されたアセットはありません。」と
+   * **断定**することになる。運用者は「無い」と信じて登録をやり直す。`null`（未読）と
+   * 配列（読めた）で持ち、判断は `resolveAdminReadState` へ委ねる（`DataTable` が通す）。
+   */
+  const [items, setItems] = useState<Asset[] | null>(null);
+  /** 一覧の読み取り失敗。**登録フォームの `error` とは別**（用途が違う）。 */
+  const [listError, setListError] = useState<string | null>(null);
   const { get, setMany } = useQueryParams();
   const { sort, setSort } = useTableSort();
   const [active, setActive] = useState<ActiveAssetSet>({});
@@ -31,11 +40,19 @@ export function AssetsManager() {
   const [busy, setBusy] = useState(false);
 
   const load = useCallback(async () => {
-    const res = await fetch('/api/admin/assets');
-    if (res.ok) {
+    try {
+      const res = await fetch('/api/admin/assets');
+      if (!res.ok) {
+        setListError('アセット一覧を取得できませんでした。');
+        return;
+      }
       const data = (await res.json()) as { items: Asset[]; active: ActiveAssetSet };
+      setListError(null);
       setItems(data.items);
       setActive(data.active);
+    } catch {
+      // 通信そのものの失敗も「失敗」へ落とす。拾わないと永遠の「読み込み中」になる (#966 AC3)。
+      setListError('アセット一覧を取得できませんでした。');
     }
   }, []);
 
@@ -110,7 +127,7 @@ export function AssetsManager() {
     [active, patch],
   );
 
-  const sorted = useMemo(() => sortRows(items, columns, sort), [items, columns, sort]);
+  const sorted = useMemo(() => sortRows(items ?? [], columns, sort), [items, columns, sort]);
   const paged = useMemo(() => paginate(sorted, Number(get('page')) || 1, PAGE_SIZE), [sorted, get]);
 
   return (
@@ -146,7 +163,11 @@ export function AssetsManager() {
           rowTestId={() => 'asset-row'}
           sort={sort}
           onSortChange={setSort}
+          loaded={items !== null}
+          failed={listError !== null}
           emptyMessage="登録されたアセットはありません。"
+          failureMessage="アセット一覧を読み込めませんでした。"
+          scrollRegionLabel="アセット一覧"
         />
 
         <Pager

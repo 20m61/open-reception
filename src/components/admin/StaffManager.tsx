@@ -21,7 +21,14 @@ import { enablementState } from './state-vocabulary';
 const PAGE_SIZE = 20;
 
 export function StaffManager() {
-  const [items, setItems] = useState<Staff[]>([]);
+  /*
+   * 🔴 **「まだ読めていない」と「0 件だった」を型で分ける (#966 AC2)。**
+   * 初期値が `[]` だと、取得前も取得失敗も「登録された担当者はありません。」と**断定**し、
+   * 件数表示も「0 件中 0 件を表示」と言い切る。
+   */
+  const [items, setItems] = useState<Staff[] | null>(null);
+  /** 一覧の読み取り失敗。操作（追加・変更）の失敗は `useSaveFeedback` が持つ。 */
+  const [listError, setListError] = useState<string | null>(null);
   const [departments, setDepartments] = useState<Department[]>([]);
   /** 担当者 id → 兼務している組織 id。主所属（`staff.departmentId`）は含まない (#373 増分 8)。 */
   const [secondary, setSecondary] = useState<Record<string, string[]>>({});
@@ -39,27 +46,41 @@ export function StaffManager() {
   const status = get('status');
 
   const load = useCallback(async () => {
-    const [sRes, dRes, oRes] = await Promise.all([
-      fetch('/api/admin/staff'),
-      fetch('/api/admin/departments'),
-      // 兼務は組織ビュー（互換 + 保存済みの合成）から読む。保存済みだけを見ると
-      // 「一覧に出ているのに設定できない」になる。
-      fetch('/api/admin/organizations/memberships'),
-    ]);
-    if (oRes.ok) {
-      const body = (await oRes.json()) as { items: { staffId: string; organizationId: string; relation: string }[] };
-      const map: Record<string, string[]> = {};
-      for (const m of body.items) {
-        if (m.relation !== 'secondary') continue;
-        (map[m.staffId] ??= []).push(m.organizationId);
+    /*
+     * 🔴 **`Promise.all` の 1 本が reject すると読み込み全体が消える (#966 AC3)。**
+     * 囲っていないと、担当者一覧も部署も兼務も**まとめて無言**になる。
+     */
+    try {
+      const [sRes, dRes, oRes] = await Promise.all([
+        fetch('/api/admin/staff'),
+        fetch('/api/admin/departments'),
+        // 兼務は組織ビュー（互換 + 保存済みの合成）から読む。保存済みだけを見ると
+        // 「一覧に出ているのに設定できない」になる。
+        fetch('/api/admin/organizations/memberships'),
+      ]);
+      if (oRes.ok) {
+        const body = (await oRes.json()) as { items: { staffId: string; organizationId: string; relation: string }[] };
+        const map: Record<string, string[]> = {};
+        for (const m of body.items) {
+          if (m.relation !== 'secondary') continue;
+          (map[m.staffId] ??= []).push(m.organizationId);
+        }
+        setSecondary(map);
       }
-      setSecondary(map);
-    }
-    if (sRes.ok) setItems(((await sRes.json()) as { items: Staff[] }).items);
-    if (dRes.ok) {
-      const depts = ((await dRes.json()) as { items: Department[] }).items;
-      setDepartments(depts);
-      setDepartmentId((prev) => prev || depts[0]?.id || '');
+      if (!sRes.ok) {
+        // 担当者一覧が引けないことは、部署が引けたかどうかとは別に報告する。
+        setListError('担当者一覧を取得できませんでした。');
+      } else {
+        setListError(null);
+        setItems(((await sRes.json()) as { items: Staff[] }).items);
+      }
+      if (dRes.ok) {
+        const depts = ((await dRes.json()) as { items: Department[] }).items;
+        setDepartments(depts);
+        setDepartmentId((prev) => prev || depts[0]?.id || '');
+      }
+    } catch {
+      setListError('担当者一覧を取得できませんでした。');
     }
   }, []);
 
@@ -121,7 +142,7 @@ export function StaffManager() {
 
   const filtered = useMemo(
     () =>
-      filterStaff(items, {
+      filterStaff(items ?? [], {
         keyword: keyword || undefined,
         departmentId: filterDeptId || undefined,
         status: (status as StaffStatusFilter) || undefined,
@@ -239,7 +260,7 @@ export function StaffManager() {
             {editingId === s.id ? (
               <StaffEditor
                 staff={s}
-                allStaff={items}
+                allStaff={items ?? []}
                 onSaved={() => {
                   setEditingId(null);
                   void load();
@@ -344,9 +365,12 @@ export function StaffManager() {
           </Button>
         ) : null}
       </div>
-      <p data-testid="staff-count" style={{ opacity: 0.7, fontSize: font.small }}>
-        {items.length} 件中 {filtered.length} 件を表示
-      </p>
+      {/* 読めていないうちは件数を言わない（「0 件中 0 件」は 0 件の断定と同じ・#966 AC1）。 */}
+      {items === null ? null : (
+        <p data-testid="staff-count" style={{ opacity: 0.7, fontSize: font.small }}>
+          {items.length} 件中 {filtered.length} 件を表示
+        </p>
+      )}
 
       <DataTable
         testId="staff-table"
@@ -356,7 +380,11 @@ export function StaffManager() {
         rowTestId={() => 'staff-row'}
         sort={sort}
         onSortChange={setSort}
+        loaded={items !== null}
+        failed={listError !== null}
         emptyMessage={hasFilter ? '条件に一致する担当者はいません。' : '登録された担当者はありません。'}
+        failureMessage="担当者一覧を読み込めませんでした。"
+        scrollRegionLabel="担当者一覧"
       />
       <Pager
         page={paged.page}
