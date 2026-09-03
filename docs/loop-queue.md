@@ -8,6 +8,7 @@
 > | --- | --- | --- |
 > | AWS の窓を開ける（`./scripts/aws-issue-credentials.sh`） | 短命 STS の発行は darwin 限定で、`scripts/hooks/guard-destructive.sh` が機械強制（#675）。**窓さえ開けばデプロイ本体はクラウドから wrapper 経由で流せる** | #675 / `docs/runbook-cloud-aws-deploy.md` |
 > | 実機 iPad UAT | 横向きで部署カードが何枚見えるか / 部署を開いて戻れるか / 騒音下で不在告知が聞き取れるか | #807 / #65 |
+> | **PR #923 の可否判断**（依存バージョン＝停止境界。承認されたら「Ready for review」も要る） | `docs/handoff-2026-09-03.md` §3-a が **依存バージョン変更＝#105 のライセンス/プライバシーチェック対象**として止めている。前回の「全てマージ承認します」は #859 / #848 / #428 に対するもので**本 PR を含まない**。あわせて draft 解除もクラウドから到達できない（`gh pr ready` → GraphQL 403 / REST `PATCH draft=false` → 🔴 **黙って無視** / MCP 未接続）。マージ側も `Pull Request is still a draft (HTTP 405)` で拒否される。**`--full` は 14 段すべて PASS 済み**（`vrm (real render)` を含む） | #923 / #105 |
 > | **リモートブランチ 24 本の削除**（2026-09-02〜03 の周回ぶん） | クラウドセッションからは `git push origin --delete` が消せない。2026-09-03 に**エラーの出方まで実測**した: `error: RPC failed; HTTP 403` に続けて `Everything up-to-date` が出るので、**戻り値だけ見ると成功に見える**（proxy が write を拒否している）。全部 squash マージ済みで PR も閉じているので `orphan_branch` 検出には掛からない。一覧は本書「削除できていないリモートブランチ」節 | — |
 >
 ## 2026-09-03 の周回（darwin VRT ベースライン）
@@ -101,6 +102,44 @@ linux 側は #747 の時点で追従している。
 してある（会社名が未設定で読み込まれること）—— seed が入ると「打って消す」は単なる往復になり
 **修正が無くても通る**ので、そうなったら黙って通らず落ちる。空虚でないことは、修正を revert して
 **新しい 1 本だけが落ちる**ことで実測した。
+
+## 2026-09-03 の周回（three-vrm 3.5.5 の公式手順への整合）
+
+点検記録は `docs/three-vrm-alignment.md`。
+
+| PR | 対象 | 内容 | 状態 |
+| --- | --- | --- | --- |
+| #923 | avatar / three-vrm | `@pixiv/three-vrm` と `three-vrm-animation` を **3.5.5 に固定**し、読込後の公式手順（`removeUnnecessaryVertices` → `combineSkeletons` → `combineMorphs` → `frustumCulled=false` → `rotateVRM0` → 名前付き `VRMLookAtQuaternionProxy`）を `src/lib/three/vrm-prepare.ts` へ集約。`.vrma` の切替を `avatar/motion-player.ts` へ抽出して three を viewer 側に閉じ込め、観測属性 `data-vrm-prepared` / `data-render-state` を追加 | **`--full` 14 段すべて PASS。マージは停止境界のためユーザー判断待ち**（上の残件表） |
+
+**独立レビューが 2 つの欠陥を出した**。どちらも `--full` を素通りする型である:
+
+- **配線が観測されていなかった**（BLOCKER）… `prepareLoadedVrm` の呼び出しと
+  `setAnimationLoop(render)` を**両方落としても unit 6663 本が全部緑**だった。VRM は
+  e2e / VRT / soak では無効で、`npm run vrm:check` **だけ**が実描画を見る層である。
+  観測属性を足し、実描画検査が名指しで期待するようにして塞いだ。
+- **`.vrma` のアクションが蓄積していた**（MAJOR・**点検前からの欠陥**）… `fadeOut` は重みを
+  0 にするだけで `LoopRepeat` のアクションは mixer の評価対象に残る。状態遷移のたびに
+  1 つずつ増え、24 時間稼働の端末で毎フレームの評価対象が単調増加していた。
+
+### 分けた残り（Issue 化済み）
+
+| Issue | 内容 |
+| --- | --- |
+| #929 | 品質ゲートの change-scope skip が vrm を SKIP したまま `tier=full` を green として記録する（#640 と同型） |
+| #930 | `.vrma` の解放（`stop` + `uncacheClip`）が viewer 側で観測されておらず、変異が素通りする（`data-motion-actions`） |
+| #931 | 解放の遅延は実時計・フェードは mixer 時計。レンダーループが詰まるとハードカットになる（cosmetic） |
+| #932 | VRM 読込に一度失敗すると `vrmUrl` を変えても復帰しない（`setFailed` のリセットが無い。**点検前からの欠陥**） |
+| #933 | soak が VRM 無効のまま回っており、アクション蓄積型の退行を原理的に検出できない |
+| #934 | `vrm.lookAt.target` で眼球にも視線を持たせる（#781 の下位増分） |
+| #935 | ライト強度を実機比較して決める（本 repo 1.2 / 公式例 `Math.PI`） |
+| #936 | WebGPU + `MToonNodeMaterial` の追試（条件が揃うまで着手しない） |
+
+### 変えないと決めたこと
+
+- **three を r185 へ上げない。** three-vrm 3.5.5 が検証している版は r180 で、0.184 は既にその外側。
+  VRM に影響する変更が無いことは確認したが、上げる利益も無い。
+- **ライト強度と `vrm.lookAt` は触らない。** どちらも見た目が変わる。headless の画素検査は
+  「描かれているか」しか見ないので、実機で見てから決める（#934 / #935 へ分離）。
 
 ## 2026-09-02 の周回（UI/UX 監査 Wave 0 / Wave 1）
 
