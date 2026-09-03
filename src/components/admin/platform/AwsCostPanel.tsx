@@ -4,12 +4,13 @@ import { type ReactNode, useEffect, useMemo, useState } from 'react';
 import {
   COST_COMPONENT_FILTERS,
   COST_ENVIRONMENT_FILTERS,
+  type AwsCostBreakdownItem,
   type AwsCostSummary,
   type CostComponentFilter,
   type CostEnvironmentFilter,
   type ForecastUnavailableReason,
 } from '@/domain/platform/aws-cost';
-import { MetricCard, font } from '@/components/admin/ui';
+import { DataTable, MetricCard, font, type Column } from '@/components/admin/ui';
 
 const COMPONENT_LABELS: Record<CostComponentFilter, string> = {
   all: 'すべて',
@@ -82,6 +83,26 @@ function FilterSelect({
 }
 
 /** developer 専用の AWS Cost Explorer 可視化 (#377)。 */
+/**
+ * 内訳表の列定義。見出し（`breakdownBy`）も金額表記（`currency`）も応答に依るので、
+ * 応答が載っている枝の中で組み立てる。
+ */
+function breakdownColumns(
+  breakdownBy: string,
+  currency: string,
+): ReadonlyArray<Column<AwsCostBreakdownItem>> {
+  return [
+    { key: 'key', header: breakdownBy, cell: (item) => item.key },
+    {
+      key: 'amount',
+      header: '当月実績',
+      align: 'right',
+      cell: (item) => formatMoney(item.amount, currency),
+      cellStyle: () => ({ fontVariantNumeric: 'tabular-nums' }),
+    },
+  ];
+}
+
 export function AwsCostPanel() {
   // 空文字は「サーバー設定の Environment を初回既定にする」。API 応答後は実際の値を select に表示する。
   const [environment, setEnvironment] = useState<CostEnvironmentFilter | ''>('');
@@ -269,40 +290,25 @@ export function AwsCostPanel() {
               marginTop: 'var(--space-md)',
               border: '1px solid var(--color-border)',
               borderRadius: 12,
-              overflowX: 'auto',
             }}
           >
             <div style={{ padding: 'var(--space-md)', borderBottom: '1px solid var(--color-border)' }}>
               <strong>{data.breakdownBy === 'Component' ? 'Component別内訳' : 'AWSサービス別内訳'}</strong>
             </div>
-            {data.breakdown.length === 0 ? (
-              <p style={{ padding: '0 var(--space-md) var(--space-md)', opacity: 0.68 }}>
-                対象期間のコストデータはまだありません。
-              </p>
-            ) : (
-              <table style={{ width: '100%', borderCollapse: 'collapse', minWidth: 440 }}>
-                <thead>
-                  <tr style={{ textAlign: 'left', opacity: 0.68 }}>
-                    <th style={{ padding: '10px var(--space-md)', fontSize: '0.78rem' }}>
-                      {data.breakdownBy}
-                    </th>
-                    <th style={{ padding: '10px var(--space-md)', fontSize: '0.78rem', textAlign: 'right' }}>
-                      当月実績
-                    </th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {data.breakdown.map((item) => (
-                    <tr key={item.key} style={{ borderTop: '1px solid var(--color-border)' }}>
-                      <td style={{ padding: '10px var(--space-md)' }}>{item.key}</td>
-                      <td style={{ padding: '10px var(--space-md)', textAlign: 'right', fontVariantNumeric: 'tabular-nums' }}>
-                        {formatMoney(item.amount, data.currency)}
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            )}
+            {/*
+              生 `<table>` を共有 `ui/DataTable` へ寄せた (#896 AC1)。横スクロール領域は
+              `DataTable` が自前で持つので、外側の `overflowX` は外す（二重スクロールにしない）。
+              ここは `data` が載ってからしか描かないので、`loaded` は常に真・`failed` は常に偽。
+            */}
+            <DataTable
+              testId="aws-cost-breakdown"
+              columns={breakdownColumns(data.breakdownBy, data.currency)}
+              rows={data.breakdown}
+              rowKey={(item) => item.key}
+              loaded
+              failed={false}
+              emptyMessage="対象期間のコストデータはまだありません。"
+            />
           </div>
         </>
       ) : null}

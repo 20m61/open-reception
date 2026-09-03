@@ -2,6 +2,8 @@ import type { HTMLAttributes, ReactNode } from 'react';
 import { color, font, space } from './tokens';
 import { EmptyState } from './EmptyState';
 import { ariaSortFor, nextSortState, type SortState } from '../list-io';
+import { resolveAdminReadState } from '../read-state';
+import { Skeleton } from './Skeleton';
 
 /**
  * 管理画面 共有データテーブル (issue #92, increment 1)。
@@ -56,6 +58,9 @@ export function DataTable<Row>({
   rowProps,
   sort,
   onSortChange,
+  loaded,
+  failed,
+  failureMessage,
 }: {
   columns: ReadonlyArray<Column<Row>>;
   rows: ReadonlyArray<Row>;
@@ -73,8 +78,44 @@ export function DataTable<Row>({
   sort?: SortState;
   /** ヘッダを押したときの遷移先。`undefined` は並べ替え解除。 */
   onSortChange?: (next: SortState | undefined) => void;
+  /**
+   * 対象のデータが載っているか (#896)。**省略すると今までどおり**「常に読めている」
+   * とみなし、0 件は `EmptyState` になる（移行を一度に強制しないため）。
+   */
+  loaded?: boolean;
+  /** 直近の読み取りが失敗したか。`loaded` と対で渡す。 */
+  failed?: boolean;
+  /** 失敗時の本文。何が取れなかったかを画面ごとに書く。 */
+  failureMessage?: string;
 }) {
   if (rows.length === 0) {
+    /*
+     * 「まだ読めていない」と「0 件だった」を混ぜない (#896 / 課題 06)。
+     *
+     * 取得できていないのに「登録された部署はありません。」と**断定**すると、
+     * 利用者は「無い」と信じて操作をやめる。失敗しても行は空のままなので、
+     * `loaded` だけを見ると**失敗が永遠の「読み込み中」に化ける** ——
+     * 状態の決め方は `AdminReadGate`（#870）と同じ `resolveAdminReadState` に委ねる。
+     */
+    const state = resolveAdminReadState({ loaded: loaded ?? true, failed: failed ?? false });
+    if (state === 'loading') {
+      return (
+        <div data-testid={`${testId}-loading`} style={{ display: 'flex', flexDirection: 'column', gap: space.xs }}>
+          {/* 行の形で待たせる（「何かが出る場所」だと分かる）。読み上げは下の text が担う。 */}
+          <Skeleton height={20} />
+          <Skeleton height={20} />
+          <span style={{ fontSize: font.small, color: color.muted }}>読み込み中…</span>
+        </div>
+      );
+    }
+    if (state === 'failed') {
+      return (
+        <EmptyState
+          testId={`${testId}-failed`}
+          message={failureMessage ?? '一覧を読み込めませんでした。'}
+        />
+      );
+    }
     return <EmptyState message={emptyMessage} testId={`${testId}-empty`} />;
   }
   // 狭幅では横スクロールで全列を見せる。スクロール領域はキーボードでも到達できるよう

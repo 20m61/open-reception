@@ -99,8 +99,16 @@ const READ_FAILURE_MECHANISM: Readonly<Record<string, string>> = {
   'auth/AuthMethodSettings.tsx': 'setError',
   /** 取得失敗を `writeError` に載せ、`!flags && !writeError` のときだけ読み込み中…を出す。 */
   'platform/FeatureFlags.tsx': 'writeError',
-  /** `!data && !error` のときだけ読み込み中…を出す。 */
-  'platform/UpdateStatus.tsx': 'setError',
+  /**
+   * 共有データテーブル (#896)。`rows` が空のとき、`loaded` / `failed` から
+   * `resolveAdminReadState` で 3 状態を出し分ける。**渡さない呼び出し側は今までどおり**
+   * 0 件として扱う（移行を一度に強制しない）ので、ここに載るのは部品側の保証。
+   *
+   * `platform/UpdateStatus.tsx` はここへ寄せた結果、自分では読み込み中…を出さなくなり
+   * 登録簿から外れた（保証が消えたのではなく、この行へ移った）。移行の網羅は
+   * `tests/config/platform-list-states.test.ts` が別に縛る。
+   */
+  'ui/DataTable.tsx': 'resolveAdminReadState',
   /**
    * platform の表の中で「読み込み中 / 失敗 / 0 件」を出し分ける行 (#896)。
    * 共有の門と**同じ 3 状態の語彙**（`resolveAdminReadState`）を使う —— `data` は失敗しても

@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from 'react';
 import type { MaskedAuditRow } from '@/domain/platform/console-summary';
+import { DataTable, type Column } from '@/components/admin/ui';
 
 /**
  * 監査ログ（テナント横断・マスク済み read） (issue #90, increment 2)。
@@ -21,6 +22,64 @@ function formatDiff(before?: Record<string, string>, after?: Record<string, stri
   const keys = new Set([...Object.keys(before ?? {}), ...Object.keys(after ?? {})]);
   return [...keys].map((k) => `${k}: ${before?.[k] ?? '-'}→${after?.[k] ?? '-'}`).join(', ');
 }
+
+const COLUMNS: ReadonlyArray<Column<AuditRow>> = [
+  { key: 'at', header: '日時', cell: (log) => log.at, cellStyle: () => ({ opacity: 0.8 }) },
+  {
+    key: 'action',
+    header: '操作',
+    cell: (log) => (
+      <>
+        {log.action}
+        {log.breakGlass ? (
+          <span
+            style={{
+              marginLeft: 6,
+              padding: '1px 6px',
+              borderRadius: 6,
+              fontSize: '0.72rem',
+              color: 'var(--color-platform-danger)',
+              border: '1px solid color-mix(in srgb, var(--color-platform-danger) 50%, transparent)',
+            }}
+          >
+            break-glass
+          </span>
+        ) : null}
+      </>
+    ),
+  },
+  { key: 'actor', header: '主体', cell: (log) => log.actor, cellStyle: () => ({ opacity: 0.7 }) },
+  {
+    key: 'target',
+    header: '対象',
+    cell: (log) => (
+      <>
+        {log.targetType ?? '-'}
+        {log.targetId ? <span style={{ opacity: 0.6 }}> {log.targetId}</span> : null}
+      </>
+    ),
+    cellStyle: () => ({ opacity: 0.7 }),
+  },
+  {
+    key: 'detail',
+    header: '詳細',
+    cell: (log) => (
+      <>
+        {log.before || log.after ? <span>{formatDiff(log.before, log.after)}</span> : null}
+        {log.ip ? <span style={{ opacity: 0.6 }}> · {log.ip}</span> : null}
+        {log.userAgent ? (
+          // UA は長いので切り詰めて表示（全文は title で確認）。
+          <span style={{ opacity: 0.5 }} title={log.userAgent}>
+            {' '}
+            · {log.userAgent.length > 40 ? `${log.userAgent.slice(0, 40)}…` : log.userAgent}
+          </span>
+        ) : null}
+        {!log.before && !log.after && !log.ip && !log.userAgent ? '-' : null}
+      </>
+    ),
+    cellStyle: () => ({ opacity: 0.7, fontSize: '0.82rem' }),
+  },
+];
 
 export function AuditLogs() {
   const [data, setData] = useState<AuditResponse | null>(null);
@@ -67,66 +126,23 @@ export function AuditLogs() {
 
       {error ? <p role="alert" style={{ color: 'var(--color-platform-warn)' }}>{error}</p> : null}
 
-      {data && logs.length === 0 ? (
-        <p style={{ opacity: 0.7 }}>
-          {breakGlassOnly ? 'break-glass の利用記録はありません。' : 'まだ監査ログはありません。'}
-        </p>
-      ) : (
-        <div style={{ overflowX: 'auto' }}>
-          <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.9rem' }}>
-            <thead>
-              <tr style={{ textAlign: 'left', opacity: 0.6 }}>
-                <th style={{ padding: '6px 8px' }}>日時</th>
-                <th style={{ padding: '6px 8px' }}>操作</th>
-                <th style={{ padding: '6px 8px' }}>主体</th>
-                <th style={{ padding: '6px 8px' }}>対象</th>
-                <th style={{ padding: '6px 8px' }}>詳細</th>
-              </tr>
-            </thead>
-            <tbody>
-              {logs.map((log) => (
-                <tr key={log.id} style={{ borderTop: '1px solid var(--color-border)' }}>
-                  <td style={{ padding: '6px 8px', opacity: 0.8 }}>{log.at}</td>
-                  <td style={{ padding: '6px 8px' }}>
-                    {log.action}
-                    {log.breakGlass ? (
-                      <span
-                        style={{
-                          marginLeft: 6,
-                          padding: '1px 6px',
-                          borderRadius: 6,
-                          fontSize: '0.72rem',
-                          color: 'var(--color-platform-danger)',
-                          border: '1px solid color-mix(in srgb, var(--color-platform-danger) 50%, transparent)',
-                        }}
-                      >
-                        break-glass
-                      </span>
-                    ) : null}
-                  </td>
-                  <td style={{ padding: '6px 8px', opacity: 0.7 }}>{log.actor}</td>
-                  <td style={{ padding: '6px 8px', opacity: 0.7 }}>
-                    {log.targetType ?? '-'}
-                    {log.targetId ? <span style={{ opacity: 0.6 }}> {log.targetId}</span> : null}
-                  </td>
-                  <td style={{ padding: '6px 8px', opacity: 0.7, fontSize: '0.82rem' }}>
-                    {log.before || log.after ? <span>{formatDiff(log.before, log.after)}</span> : null}
-                    {log.ip ? <span style={{ opacity: 0.6 }}> · {log.ip}</span> : null}
-                    {log.userAgent ? (
-                      // UA は長いので切り詰めて表示（全文は title で確認）。
-                      <span style={{ opacity: 0.5 }} title={log.userAgent}>
-                        {' '}
-                        · {log.userAgent.length > 40 ? `${log.userAgent.slice(0, 40)}…` : log.userAgent}
-                      </span>
-                    ) : null}
-                    {!log.before && !log.after && !log.ip && !log.userAgent ? '-' : null}
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      )}
+      {/*
+        生 `<table>` を共有 `ui/DataTable` へ寄せた (#896 AC1)。あわせて「まだ読めていない」を
+        0 件と混ぜないようにした（移行前は `data && logs.length === 0` の分岐だったため、
+        読み込み中・失敗のときは**空の表だけ**が出ていた）。
+      */}
+      <DataTable
+        testId="platform-audit-logs"
+        columns={COLUMNS}
+        rows={logs}
+        rowKey={(log) => log.id}
+        loaded={data !== null}
+        failed={error !== null}
+        emptyMessage={
+          breakGlassOnly ? 'break-glass の利用記録はありません。' : 'まだ監査ログはありません。'
+        }
+        failureMessage="監査ログを読み込めませんでした。"
+      />
     </section>
   );
 }

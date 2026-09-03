@@ -8,7 +8,7 @@ import type {
   UpdateStatusSummary,
 } from '@/domain/platform/update-status';
 import { DangerActionPlaceholder } from './primitives';
-import { MetricCard } from '@/components/admin/ui';
+import { DataTable, MetricCard, type Column } from '@/components/admin/ui';
 
 /**
  * アップデート状況（read 中心） (issue #83 AC6)。
@@ -38,6 +38,20 @@ function scopeTarget(r: UpdateStatusRow): string {
   if (r.scope === 'platform') return '全体';
   return r.deviceId ?? r.siteId ?? r.tenantId ?? r.scope;
 }
+
+const COLUMNS: ReadonlyArray<Column<UpdateStatusRow>> = [
+  { key: 'state', header: '状況', cell: (r) => STATE_LABEL[r.state] },
+  { key: 'scope', header: '範囲', cell: (r) => SCOPE_LABEL[r.scope], cellStyle: () => ({ opacity: 0.7 }) },
+  { key: 'target', header: '対象', cell: (r) => scopeTarget(r), cellStyle: () => ({ opacity: 0.7 }) },
+  { key: 'component', header: 'コンポーネント', cell: (r) => r.component },
+  {
+    key: 'version',
+    header: '現行→最新',
+    cell: (r) => `${r.currentVersion}${r.currentVersion !== r.latestVersion ? ` → ${r.latestVersion}` : ''}`,
+    cellStyle: () => ({ opacity: 0.8 }),
+  },
+  { key: 'checkedAt', header: '確認日時', cell: (r) => r.checkedAt, cellStyle: () => ({ opacity: 0.7 }) },
+];
 
 export function UpdateStatus() {
   const [data, setData] = useState<UpdatesResponse | null>(null);
@@ -84,41 +98,22 @@ export function UpdateStatus() {
         <MetricCard label="全対象" value={data ? data.updates.totalCount : '—'} />
       </div>
 
-      {!data && !error ? <p style={{ opacity: 0.7 }}>読み込み中…</p> : null}
-      {data && rows.length === 0 ? (
-        <p style={{ opacity: 0.7 }}>アップデート状況の登録はありません。</p>
-      ) : null}
-      {rows.length > 0 ? (
-        <div style={{ overflowX: 'auto' }}>
-          <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.9rem' }}>
-            <thead>
-              <tr style={{ textAlign: 'left', opacity: 0.6 }}>
-                <th style={{ padding: '6px 8px' }}>状況</th>
-                <th style={{ padding: '6px 8px' }}>範囲</th>
-                <th style={{ padding: '6px 8px' }}>対象</th>
-                <th style={{ padding: '6px 8px' }}>コンポーネント</th>
-                <th style={{ padding: '6px 8px' }}>現行→最新</th>
-                <th style={{ padding: '6px 8px' }}>確認日時</th>
-              </tr>
-            </thead>
-            <tbody>
-              {rows.map((r) => (
-                <tr key={r.id} style={{ borderTop: '1px solid var(--color-border)', opacity: r.pending ? 1 : 0.6 }}>
-                  <td style={{ padding: '6px 8px' }}>{STATE_LABEL[r.state]}</td>
-                  <td style={{ padding: '6px 8px', opacity: 0.7 }}>{SCOPE_LABEL[r.scope]}</td>
-                  <td style={{ padding: '6px 8px', opacity: 0.7 }}>{scopeTarget(r)}</td>
-                  <td style={{ padding: '6px 8px' }}>{r.component}</td>
-                  <td style={{ padding: '6px 8px', opacity: 0.8 }}>
-                    {r.currentVersion}
-                    {r.currentVersion !== r.latestVersion ? ` → ${r.latestVersion}` : ''}
-                  </td>
-                  <td style={{ padding: '6px 8px', opacity: 0.7 }}>{r.checkedAt}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      ) : null}
+      {/*
+        生 `<table>` を共有 `ui/DataTable` へ寄せた (#896 AC1)。読み込み中 / 失敗 / 0 件の
+        出し分けは手書きの分岐ではなく `loaded` / `failed` で `DataTable` に委ねる
+        （#947 の `TableBodyState` と同じ `resolveAdminReadState` を通る）。
+      */}
+      <DataTable
+        testId="platform-updates"
+        columns={COLUMNS}
+        rows={rows}
+        rowKey={(r) => r.id}
+        rowProps={(r) => ({ style: { opacity: r.pending ? 1 : 0.6 } })}
+        loaded={data !== null}
+        failed={error !== null}
+        emptyMessage="アップデート状況の登録はありません。"
+        failureMessage="アップデート状況を読み込めませんでした。"
+      />
 
       <div style={{ marginTop: 'var(--space-lg)', maxWidth: 760 }}>
         <DangerActionPlaceholder label="アップデート実行 / ロールバック" />

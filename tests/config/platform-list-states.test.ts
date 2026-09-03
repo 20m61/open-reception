@@ -14,12 +14,30 @@ import { join } from 'node:path';
  *
  * ここが見るのは構造の退行:
  *
- *   1. 生 `<table>` が**横スクロールできる領域の中に居る**こと。外に居ると、狭い画面
+ *   1. 表が**横スクロールできる領域の中に居る**こと。外に居ると、狭い画面
  *      （iPad 縦・分割表示）で**ページごと横スクロールする**
  *   2. エラー表示が `role="alert"` を持つこと。裸の `<p>` はスクリーンリーダーに何も伝えない
+ *   3. 一覧が「読み込み中 / 失敗 / 0 件」を**描き分ける**こと
  *
- * 🔴 **下界を張る（#896 AC4）。** 上の 2 つは「表を全部消す」「エラー表示を全部消す」で
+ * 🔴 **下界を張る（#896 AC4）。** 上のどれも「表を全部消す」「エラー表示を全部消す」で
  * 空虚に満たせる。**表とエラー表示が実際に在ること**を併せて要求する。
+ *
+ * ## 方式を替えたので、前の方式が守っていた変異を当て直している
+ *
+ * #896 AC1 で 13 の生 `<table>` を共有 `ui/DataTable` へ寄せた結果、**前の方式
+ * （生 `<tbody>` に `TableBodyState` を置く）が守っていた対象がほぼ消えた**。
+ * `.claude/rules/opus5-autonomous-loop.md`「方式を替えたら〜」に従い、前の方式が
+ * 殺していた変異を新しい形に写している（対応は下の表のとおり）:
+ *
+ * | 前の方式が殺していた変異 | 新しい形での対応 |
+ * | --- | --- |
+ * | `TableBodyState` を tbody から外す | `DataTable` から `loaded`/`failed` を外す |
+ * | 片方（`loaded` だけ）を渡す | 同上（対で渡すことを要求する） |
+ * | 免除に広すぎる式（`.map(`）を足して全部免除にする | 免除はちょうど 1 つの tbody に当たること |
+ * | 表を全部消して主張を空虚に満たす | 生 + `DataTable` の合計、および状態を渡す `DataTable` の下界 |
+ * | 表を `overflowX` の外へ出す | 同左（生 `<table>` に対して継続） |
+ * | エラー表示から `role="alert"` を外す | 同左 |
+ * | 生の一覧表を新しく足して素通りさせる | `RAW_TABLE_BUDGET`（生 `<table>` を増やさせない） |
  */
 
 const PLATFORM_DIR = join(process.cwd(), 'src/components/admin/platform');
@@ -61,8 +79,23 @@ function tableBlocks(source: string): string[] {
   return [...source.matchAll(/<table\b[\s\S]*?<\/table>/g)].map((m) => m[0]);
 }
 
+/** `<DataTable ... />` を粗く切り出す。 */
+function dataTableBlocks(source: string): string[] {
+  return [...source.matchAll(/<DataTable\b[\s\S]*?\/>/g)].map((m) => m[0]);
+}
+
 /**
- * `TableBodyState` を使わない `<tbody>`。**理由を必ず書く。**
+ * 生 `<table>` の残数の上限 (#896 AC1)。
+ *
+ * 13 の一覧表を `ui/DataTable` へ寄せたあと、生で残っているのは **`ProviderConfig` の
+ * 1 つだけ**で、それは一覧ではなく**フォームの行組み**（ラベルと入力の対）である。
+ * ここを上限で縛るのは、「寄せた」を宣言したあとに**生の一覧表がまた生えてくる**のを
+ * 止めるため（`AdminReadGate` の轍。各画面が自前で書き始めると同じ穴がまた開く）。
+ */
+const RAW_TABLE_BUDGET = 1;
+
+/**
+ * `TableBodyState` も `DataTable` の状態受け渡しも使わない `<tbody>`。**理由を必ず書く。**
  *
  * 「使っていない」には 2 種類あり、どちらも正当:
  *
@@ -75,32 +108,8 @@ function tableBlocks(source: string): string[] {
  */
 const EXEMPT_TBODY: readonly { readonly field: string; readonly why: string }[] = [
   {
-    field: 'logs.map(',
-    why: 'AuditLogs: 表の外で `{data && logs.length === 0 ? …}` を出し、0 件を区別している',
-  },
-  {
-    field: 'rows.map(',
-    why: 'UpdateStatus: 表の外で `{data && rows.length === 0 ? …}` を出し、表自体を `rows.length > 0` で描いている',
-  },
-  {
-    field: 'data.breakdown.map(',
-    why: 'AwsCostPanel: `data` が載ってからしか表を描かず、`data.breakdown.length === 0` で 0 件を出し分けている',
-  },
-  {
-    field: 'data?.incidents.incidents ?? []',
-    why: 'MaintenanceStatus: 表の外で `{data && data.incidents.incidents.length === 0 ? …}` を出している',
-  },
-  {
-    field: 'data?.windows.windows ?? []',
-    why: 'MaintenanceStatus: 表の外で `{data && data.windows.windows.length === 0 ? …}` を出している',
-  },
-  {
-    field: 'data?.notices.notices ?? []',
-    why: 'MaintenanceStatus: 表の外で `{data && data.notices.notices.length === 0 ? …}` を出している',
-  },
-  {
     field: 'PROVIDER_IDS.map(',
-    why: 'ProviderConfig: 行は定数 `PROVIDER_IDS` から描くので、読み込み中も 0 件も起こらない',
+    why: 'ProviderConfig: 一覧ではなくフォームの行組みで、行は定数 `PROVIDER_IDS` から描くので読み込み中も 0 件も起こらない',
   },
 ];
 
@@ -109,9 +118,19 @@ function isExempt(body: string): boolean {
 }
 
 describe('platform の一覧の状態表示 (#896 / 課題 06)', () => {
-  it('🔴 下界: 生 <table> を持つファイルが実在する（消して通す形にしない）', () => {
-    // 表を全部消せば上の主張は空虚に満たせる。**在ることを先に固定する。**
-    expect(filesWithTable().length).toBeGreaterThanOrEqual(9);
+  /*
+   * 🔴 **下界。** 表を全部消せば以下の主張は空虚に満たせるので、**在ること**を先に固定する。
+   *
+   * ただし数えるのは**生 `<table>` だけではない** —— #896 AC1 で共有 `ui/DataTable` へ
+   * 寄せると生の数は減る。減ったことを「表が消えた」と誤検出しないよう、
+   * **生 + `DataTable` の合計**で数える（横スクロール領域は `DataTable` が自前で持つので、
+   * 寄せた表も「ページごと横スクロールしない」という主張は満たしている）。
+   */
+  it('🔴 下界: 表を描くファイルが実在する（生でも DataTable でも）', () => {
+    const rendering = platformFiles().filter(
+      (f) => /<table\b/.test(f.source) || /<DataTable\b/.test(f.source),
+    );
+    expect(rendering.length).toBeGreaterThanOrEqual(9);
   });
 
   it('生 <table> は横スクロールできる領域の中に置く（ページごと横スクロールさせない）', () => {
@@ -119,6 +138,18 @@ describe('platform の一覧の状態表示 (#896 / 課題 06)', () => {
       .filter((f) => !/overflowX/.test(f.source))
       .map((f) => f.name);
     expect(offenders).toEqual([]);
+  });
+
+  /*
+   * 生の一覧表を増やさせない (#896 AC1)。
+   *
+   * 上の下界は「表が在ること」しか言わないので、**生の表を新しく足す**変異は素通りする。
+   * 寄せ切ったあとに生えてきた生 `<table>` は、`DataTable` が持つ 3 状態も横スクロールも
+   * 自前で書き直すことになり、まさに #896 が潰した穴をもう一度開ける。
+   */
+  it('生 <table> を増やさない（一覧は ui/DataTable へ寄せる）', () => {
+    const raw = platformFiles().flatMap((f) => tableBlocks(f.source).map(() => f.name));
+    expect(raw.length).toBeLessThanOrEqual(RAW_TABLE_BUDGET);
   });
 
   it('🔴 下界: エラー表示が実在する（消して通す形にしない）', () => {
@@ -134,12 +165,43 @@ describe('platform の一覧の状態表示 (#896 / 課題 06)', () => {
     );
     expect(offenders).toEqual([]);
   });
+
   /**
    * 読み込み中 / 失敗 / 0 件を描き分ける（#896 AC2）。
    *
-   * `(data?.x ?? []).map(...)` だけで `<tbody>` を描くと、**`null`（読み込み中）でも
-   * 空配列（0 件）でも `<tbody>` が空になるだけ**になる。失敗しても `data` は `null` の
-   * ままなので、`read-state.ts` の言う「失敗が『読み込み中』に化ける」も同時に起きる。
+   * `rows={data?.x ?? []}` だけを渡すと、**`null`（読み込み中）でも空配列（0 件）でも
+   * 同じ「0 件です」になる**。失敗しても `data` は `null` のままなので、`read-state.ts` の
+   * 言う「失敗が『読み込み中』に化ける」も同時に起きる。`loaded` と `failed` は**対で**
+   * 渡す —— 片方だけでは `resolveAdminReadState` が 3 状態を分けられない。
+   */
+  it('DataTable は loaded と failed を対で渡す（失敗を「読み込み中」に化けさせない）', () => {
+    const offenders = platformFiles().flatMap((f) =>
+      dataTableBlocks(f.source)
+        .filter((block) => !(/\bloaded[=\s/>]/.test(block) && /\bfailed[=\s]/.test(block)))
+        .map((block) => `${f.name}: ${/testId="([^"]*)"/.exec(block)?.[1] ?? '(testId なし)'}`),
+    );
+    expect(offenders).toEqual([]);
+  });
+
+  /*
+   * 🔴 **下界。** 直上の主張は `DataTable` を全部消せば空虚に満たせる。
+   * **状態を渡している一覧が実際に在ること**を併せて要求する（移行した 13 表が下限）。
+   */
+  it('🔴 下界: loaded / failed を渡す DataTable が実在する', () => {
+    const stateful = platformFiles().flatMap((f) =>
+      dataTableBlocks(f.source).filter(
+        (block) => /\bloaded[=\s/>]/.test(block) && /\bfailed[=\s]/.test(block),
+      ),
+    );
+    expect(stateful.length).toBeGreaterThanOrEqual(13);
+  });
+
+  /*
+   * 生 `<tbody>` に戻ってきたときの受け皿を残す（回帰の閂）。
+   *
+   * 現状ここに当たるのは `ProviderConfig` の 1 つ（免除済み）だけだが、**生の表を足す**
+   * 変異は上の `RAW_TABLE_BUDGET` で落ちる。両方あって初めて「生でも `DataTable` でも
+   * 状態を描き分ける」が閉じる。
    */
   it('行を map で描く <tbody> は TableBodyState を持つ（読み込み中と 0 件を混ぜない）', () => {
     const offenders = platformFiles().flatMap((f) =>
@@ -150,11 +212,6 @@ describe('platform の一覧の状態表示 (#896 / 課題 06)', () => {
         .map(() => f.name),
     );
     expect(offenders).toEqual([]);
-  });
-
-  it('🔴 下界: map で描く <tbody> が実在する（消して通す形にしない）', () => {
-    const bodies = platformFiles().flatMap((f) => tbodyBlocks(f.source).filter((b) => /\.map\(/.test(b)));
-    expect(bodies.length).toBeGreaterThanOrEqual(6);
   });
 
   /*
@@ -173,6 +230,7 @@ describe('platform の一覧の状態表示 (#896 / 課題 06)', () => {
     );
     expect(offenders).toEqual([]);
   });
+
   it('免除には理由が書かれている', () => {
     const missing = EXEMPT_TBODY.filter((e) => e.why.trim().length < 10);
     expect(missing.map((e) => e.field)).toEqual([]);

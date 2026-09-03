@@ -3,8 +3,8 @@
 import Link from 'next/link';
 import { useEffect, useState } from 'react';
 import type { TenantFleetSummary, TenantRow } from '@/domain/platform/console-summary';
-import { DangerActionPlaceholder, TableBodyState } from './primitives';
-import { MetricCard, StatusBadge } from '@/components/admin/ui';
+import { DangerActionPlaceholder } from './primitives';
+import { DataTable, MetricCard, StatusBadge, type Column } from '@/components/admin/ui';
 import { tenantStatusState } from '../state-vocabulary';
 
 /**
@@ -37,6 +37,23 @@ export function TenantList() {
     };
   }, []);
 
+  const columns: ReadonlyArray<Column<TenantRow>> = [
+    {
+      key: 'name',
+      header: 'テナント',
+      cell: (t) => <Link href={`/platform/tenants/${encodeURIComponent(t.id)}`}>{t.name}</Link>,
+    },
+    { key: 'slug', header: 'slug', cell: (t) => t.slug, cellStyle: () => ({ opacity: 0.7 }) },
+    {
+      key: 'status',
+      header: '状態',
+      cell: (t) => (
+        <StatusBadge status={tenantStatusState(t.status).status} label={tenantStatusState(t.status).label} />
+      ),
+    },
+    { key: 'updatedAt', header: '更新日時', cell: (t) => t.updatedAt, cellStyle: () => ({ opacity: 0.7 }) },
+  ];
+
   return (
     <section>
       <h1 style={{ marginTop: 0 }}>テナント</h1>
@@ -54,40 +71,21 @@ export function TenantList() {
         <MetricCard label="停止中" value={data ? data.summary.suspended : '—'} />
       </div>
 
-      <div style={{ overflowX: 'auto' }}>
-        <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.9rem' }}>
-          <thead>
-            <tr style={{ textAlign: 'left', opacity: 0.6 }}>
-              <th style={{ padding: '6px 8px' }}>テナント</th>
-              <th style={{ padding: '6px 8px' }}>slug</th>
-              <th style={{ padding: '6px 8px' }}>状態</th>
-              <th style={{ padding: '6px 8px' }}>更新日時</th>
-            </tr>
-          </thead>
-          <tbody>
-            {(data?.tenants ?? []).map((t) => (
-              <tr key={t.id} style={{ borderTop: '1px solid var(--color-border)' }}>
-                <td style={{ padding: '6px 8px' }}>
-                  <Link href={`/platform/tenants/${encodeURIComponent(t.id)}`}>{t.name}</Link>
-                </td>
-                <td style={{ padding: '6px 8px', opacity: 0.7 }}>{t.slug}</td>
-                <td style={{ padding: '6px 8px' }}>
-                  <StatusBadge status={tenantStatusState(t.status).status} label={tenantStatusState(t.status).label} />
-                </td>
-                <td style={{ padding: '6px 8px', opacity: 0.7 }}>{t.updatedAt}</td>
-              </tr>
-            ))}
-            <TableBodyState
-              loaded={data !== null}
-              failed={error !== null}
-              rowCount={data?.tenants.length ?? 0}
-              columns={4}
-              emptyMessage="テナントがありません。"
-              testId="platform-tenants"
-            />
-          </tbody>
-        </table>
-      </div>
+      {/*
+        生 `<table>` を共有 `ui/DataTable` へ寄せた (#896 AC1)。横スクロール領域は
+        `DataTable` が持つので、外側の `overflowX` ラッパは要らない。3 状態は
+        `loaded` / `failed` で渡す（#947 の `TableBodyState` と同じ判断を部品側で行う）。
+      */}
+      <DataTable
+        testId="platform-tenants"
+        columns={columns}
+        rows={data?.tenants ?? []}
+        rowKey={(t) => t.id}
+        loaded={data !== null}
+        failed={error !== null}
+        emptyMessage="テナントがありません。"
+        failureMessage="テナント一覧を読み込めませんでした。"
+      />
 
       <div style={{ marginTop: 'var(--space-lg)', maxWidth: 760 }}>
         <DangerActionPlaceholder label="テナントの有効化 / 停止・プラン/制限変更" />

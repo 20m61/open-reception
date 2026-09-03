@@ -1,12 +1,11 @@
 'use client';
 
 import { useCallback, useEffect, useState } from 'react';
-import type { TenantDetail as TenantDetailData } from '@/domain/platform/console-summary';
+import type { TenantDetail as TenantDetailData, TenantSiteRow } from '@/domain/platform/console-summary';
 import type { TenantLifecycleAction } from '@/domain/platform/tenant-lifecycle';
 import { DangerActionButton } from '@/components/admin/danger/DangerActionButton';
-import { MetricCard, StatusBadge } from '@/components/admin/ui';
+import { DataTable, MetricCard, StatusBadge, type Column } from '@/components/admin/ui';
 import { siteStatusState, tenantStatusState } from '../state-vocabulary';
-import { TableBodyState } from './primitives';
 
 /**
  * テナント詳細（テナント横断 read + 有効/停止操作） (issue #90)。
@@ -60,6 +59,22 @@ export function TenantDetail({ tenantId }: { tenantId: string }) {
     [tenantId, load],
   );
 
+  const siteColumns: ReadonlyArray<Column<TenantSiteRow>> = [
+    { key: 'name', header: 'サイト', cell: (s) => s.name },
+    {
+      key: 'status',
+      header: '状態',
+      cell: (s) => <StatusBadge status={siteStatusState(s.status).status} label={siteStatusState(s.status).label} />,
+    },
+    { key: 'deviceCount', header: '端末数', cell: (s) => s.deviceCount, cellStyle: () => ({ opacity: 0.8 }) },
+    {
+      key: 'activeDeviceCount',
+      header: '稼働中',
+      cell: (s) => s.activeDeviceCount,
+      cellStyle: () => ({ opacity: 0.8 }),
+    },
+  ];
+
   return (
     <section>
       <h1 style={{ marginTop: 0 }}>
@@ -86,38 +101,21 @@ export function TenantDetail({ tenantId }: { tenantId: string }) {
       </div>
 
       <h2 style={{ fontSize: '1rem', opacity: 0.7 }}>サイト</h2>
-      <div style={{ overflowX: 'auto' }}>
-        <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.9rem' }}>
-          <thead>
-            <tr style={{ textAlign: 'left', opacity: 0.6 }}>
-              <th style={{ padding: '6px 8px' }}>サイト</th>
-              <th style={{ padding: '6px 8px' }}>状態</th>
-              <th style={{ padding: '6px 8px' }}>端末数</th>
-              <th style={{ padding: '6px 8px' }}>稼働中</th>
-            </tr>
-          </thead>
-          <tbody>
-            {(data?.sites ?? []).map((s) => (
-              <tr key={s.id} style={{ borderTop: '1px solid var(--color-border)' }}>
-                <td style={{ padding: '6px 8px' }}>{s.name}</td>
-                <td style={{ padding: '6px 8px' }}>
-                  <StatusBadge status={siteStatusState(s.status).status} label={siteStatusState(s.status).label} />
-                </td>
-                <td style={{ padding: '6px 8px', opacity: 0.8 }}>{s.deviceCount}</td>
-                <td style={{ padding: '6px 8px', opacity: 0.8 }}>{s.activeDeviceCount}</td>
-              </tr>
-            ))}
-            <TableBodyState
-              loaded={data !== null}
-              failed={error !== null}
-              rowCount={data?.sites.length ?? 0}
-              columns={4}
-              emptyMessage="このテナントに拠点がありません。"
-              testId="platform-tenant-sites"
-            />
-          </tbody>
-        </table>
-      </div>
+      {/*
+        生 `<table>` を共有 `ui/DataTable` へ寄せた (#896 AC1)。横スクロール領域は
+        `DataTable` が持つので、外側の `overflowX` ラッパは要らない。3 状態は
+        `loaded` / `failed` で渡す（#947 の `TableBodyState` と同じ判断を部品側で行う）。
+      */}
+      <DataTable
+        testId="platform-tenant-sites"
+        columns={siteColumns}
+        rows={data?.sites ?? []}
+        rowKey={(s) => s.id}
+        loaded={data !== null}
+        failed={error !== null}
+        emptyMessage="このテナントに拠点がありません。"
+        failureMessage="サイト一覧を読み込めませんでした。"
+      />
 
       {data ? (
         <div style={{ marginTop: 'var(--space-lg)', maxWidth: 760 }}>

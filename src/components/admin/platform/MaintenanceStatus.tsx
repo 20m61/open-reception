@@ -11,8 +11,8 @@ import type {
 } from '@/domain/platform/maintenance-window';
 import type { NoticeLevel, NoticeRow, NoticeSummary } from '@/domain/platform/notice';
 import { NoticePublishForm } from './NoticePublishForm';
-import { DangerActionPlaceholder, TableBodyState } from './primitives';
-import { MetricCard } from '@/components/admin/ui';
+import { DangerActionPlaceholder } from './primitives';
+import { DataTable, MetricCard, type Column } from '@/components/admin/ui';
 
 /**
  * メンテナンス状況・障害情報（read 中心） (issue #90, increment 2/3e)。
@@ -83,6 +83,37 @@ function incidentScopeLabel(i: IncidentRow): string {
   return i.deviceId ?? i.siteId ?? i.tenantId ?? i.scope;
 }
 
+const DEVICE_COLUMNS: ReadonlyArray<Column<MaintenanceSummary['devices'][number]>> = [
+  { key: 'tenant', header: 'テナント', cell: (d) => d.tenantName },
+  { key: 'device', header: '端末', cell: (d) => d.deviceName },
+  { key: 'site', header: 'サイト', cell: (d) => d.siteId, cellStyle: () => ({ opacity: 0.7 }) },
+];
+
+const INCIDENT_COLUMNS: ReadonlyArray<Column<IncidentRow>> = [
+  { key: 'severity', header: '重大度', cell: (i) => SEVERITY_LABEL[i.severity] },
+  { key: 'status', header: '状態', cell: (i) => STATUS_LABEL[i.status], cellStyle: () => ({ opacity: 0.8 }) },
+  { key: 'scope', header: '範囲', cell: (i) => incidentScopeLabel(i), cellStyle: () => ({ opacity: 0.7 }) },
+  { key: 'title', header: '概要', cell: (i) => i.title },
+  { key: 'startedAt', header: '発生', cell: (i) => i.startedAt, cellStyle: () => ({ opacity: 0.7 }) },
+];
+
+const WINDOW_COLUMNS: ReadonlyArray<Column<MaintenanceWindowRow>> = [
+  { key: 'status', header: '状態', cell: (w) => WINDOW_STATUS_LABEL[w.status] },
+  { key: 'scope', header: '範囲', cell: (w) => windowScopeLabel(w), cellStyle: () => ({ opacity: 0.7 }) },
+  { key: 'impact', header: '影響', cell: (w) => IMPACT_LABEL[w.impact], cellStyle: () => ({ opacity: 0.8 }) },
+  { key: 'message', header: '概要', cell: (w) => w.message },
+  { key: 'startsAt', header: '開始', cell: (w) => w.startsAt, cellStyle: () => ({ opacity: 0.7 }) },
+  { key: 'endsAt', header: '終了', cell: (w) => w.endsAt, cellStyle: () => ({ opacity: 0.7 }) },
+];
+
+const NOTICE_COLUMNS: ReadonlyArray<Column<NoticeRow>> = [
+  { key: 'level', header: '重要度', cell: (n) => NOTICE_LEVEL_LABEL[n.level] },
+  { key: 'status', header: '状態', cell: (n) => NOTICE_STATUS_LABEL[n.status], cellStyle: () => ({ opacity: 0.8 }) },
+  { key: 'scope', header: '範囲', cell: (n) => noticeScopeLabel(n), cellStyle: () => ({ opacity: 0.7 }) },
+  { key: 'title', header: '件名', cell: (n) => n.title },
+  { key: 'publishedAt', header: '公開', cell: (n) => n.publishedAt, cellStyle: () => ({ opacity: 0.7 }) },
+];
+
 export function MaintenanceStatus() {
   const [data, setData] = useState<MaintenanceResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -132,135 +163,75 @@ export function MaintenanceStatus() {
       </div>
 
       <h2 style={{ fontSize: '1rem', opacity: 0.7 }}>メンテナンス表示中の端末</h2>
-      <div style={{ overflowX: 'auto' }}>
-        <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.9rem' }}>
-          <thead>
-            <tr style={{ textAlign: 'left', opacity: 0.6 }}>
-              <th style={{ padding: '6px 8px' }}>テナント</th>
-              <th style={{ padding: '6px 8px' }}>端末</th>
-              <th style={{ padding: '6px 8px' }}>サイト</th>
-            </tr>
-          </thead>
-          <tbody>
-            {(data?.summary.devices ?? []).map((d) => (
-              <tr key={d.deviceId} style={{ borderTop: '1px solid var(--color-border)' }}>
-                <td style={{ padding: '6px 8px' }}>{d.tenantName}</td>
-                <td style={{ padding: '6px 8px' }}>{d.deviceName}</td>
-                <td style={{ padding: '6px 8px', opacity: 0.7 }}>{d.siteId}</td>
-              </tr>
-            ))}
-            <TableBodyState
-              loaded={data !== null}
-              failed={error !== null}
-              rowCount={data?.summary.devices.length ?? 0}
-              columns={3}
-              emptyMessage="端末がありません。"
-              testId="platform-maintenance-devices"
-            />
-          </tbody>
-        </table>
-      </div>
+      {/*
+        生 `<table>` を共有 `ui/DataTable` へ寄せた (#896 AC1)。横スクロール領域は
+        `DataTable` が持つので、外側の `overflowX` ラッパは要らない。3 状態は
+        `loaded` / `failed` で渡す（#947 の `TableBodyState` と同じ判断を部品側で行う）。
+      */}
+      <DataTable
+        testId="platform-maintenance-devices"
+        columns={DEVICE_COLUMNS}
+        rows={data?.summary.devices ?? []}
+        rowKey={(d) => d.deviceId}
+        loaded={data !== null}
+        failed={error !== null}
+        emptyMessage="端末がありません。"
+        failureMessage="メンテナンス表示中の端末を読み込めませんでした。"
+      />
 
       <h2 style={{ fontSize: '1rem', opacity: 0.7, marginTop: 'var(--space-lg)' }}>障害・インシデント</h2>
-      {data && data.incidents.incidents.length === 0 ? (
-        <p style={{ opacity: 0.7 }}>登録された障害情報はありません。</p>
-      ) : (
-        <div style={{ overflowX: 'auto' }}>
-          <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.9rem' }}>
-            <thead>
-              <tr style={{ textAlign: 'left', opacity: 0.6 }}>
-                <th style={{ padding: '6px 8px' }}>重大度</th>
-                <th style={{ padding: '6px 8px' }}>状態</th>
-                <th style={{ padding: '6px 8px' }}>範囲</th>
-                <th style={{ padding: '6px 8px' }}>概要</th>
-                <th style={{ padding: '6px 8px' }}>発生</th>
-              </tr>
-            </thead>
-            <tbody>
-              {(data?.incidents.incidents ?? []).map((i) => (
-                <tr
-                  key={i.id}
-                  style={{ borderTop: '1px solid var(--color-border)', opacity: i.active ? 1 : 0.55 }}
-                >
-                  <td style={{ padding: '6px 8px' }}>{SEVERITY_LABEL[i.severity]}</td>
-                  <td style={{ padding: '6px 8px', opacity: 0.8 }}>{STATUS_LABEL[i.status]}</td>
-                  <td style={{ padding: '6px 8px', opacity: 0.7 }}>{incidentScopeLabel(i)}</td>
-                  <td style={{ padding: '6px 8px' }}>{i.title}</td>
-                  <td style={{ padding: '6px 8px', opacity: 0.7 }}>{i.startedAt}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      )}
+      {/*
+        生 `<table>` を共有 `ui/DataTable` へ寄せた (#896 AC1)。あわせて「まだ読めていない」を
+        0 件と混ぜないようにした（移行前は `data && …length === 0` の分岐だったため、
+        読み込み中・失敗のときは**見出しの下に空の表だけ**が出ていた）。
+      */}
+      <DataTable
+        testId="platform-incidents"
+        columns={INCIDENT_COLUMNS}
+        rows={data?.incidents.incidents ?? []}
+        rowKey={(i) => i.id}
+        rowProps={(i) => ({ style: { opacity: i.active ? 1 : 0.55 } })}
+        loaded={data !== null}
+        failed={error !== null}
+        emptyMessage="登録された障害情報はありません。"
+        failureMessage="障害情報を読み込めませんでした。"
+      />
 
       <h2 style={{ fontSize: '1rem', opacity: 0.7, marginTop: 'var(--space-lg)' }}>予定メンテナンス</h2>
-      {data && data.windows.windows.length === 0 ? (
-        <p style={{ opacity: 0.7 }}>予定メンテナンスはありません。</p>
-      ) : (
-        <div style={{ overflowX: 'auto' }}>
-          <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.9rem' }}>
-            <thead>
-              <tr style={{ textAlign: 'left', opacity: 0.6 }}>
-                <th style={{ padding: '6px 8px' }}>状態</th>
-                <th style={{ padding: '6px 8px' }}>範囲</th>
-                <th style={{ padding: '6px 8px' }}>影響</th>
-                <th style={{ padding: '6px 8px' }}>概要</th>
-                <th style={{ padding: '6px 8px' }}>開始</th>
-                <th style={{ padding: '6px 8px' }}>終了</th>
-              </tr>
-            </thead>
-            <tbody>
-              {(data?.windows.windows ?? []).map((w) => (
-                <tr
-                  key={w.id}
-                  style={{ borderTop: '1px solid var(--color-border)', opacity: w.open ? 1 : 0.55 }}
-                >
-                  <td style={{ padding: '6px 8px' }}>{WINDOW_STATUS_LABEL[w.status]}</td>
-                  <td style={{ padding: '6px 8px', opacity: 0.7 }}>{windowScopeLabel(w)}</td>
-                  <td style={{ padding: '6px 8px', opacity: 0.8 }}>{IMPACT_LABEL[w.impact]}</td>
-                  <td style={{ padding: '6px 8px' }}>{w.message}</td>
-                  <td style={{ padding: '6px 8px', opacity: 0.7 }}>{w.startsAt}</td>
-                  <td style={{ padding: '6px 8px', opacity: 0.7 }}>{w.endsAt}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      )}
+      {/*
+        生 `<table>` を共有 `ui/DataTable` へ寄せた (#896 AC1)。あわせて「まだ読めていない」を
+        0 件と混ぜないようにした（移行前は `data && …length === 0` の分岐だったため、
+        読み込み中・失敗のときは**見出しの下に空の表だけ**が出ていた）。
+      */}
+      <DataTable
+        testId="platform-maintenance-windows"
+        columns={WINDOW_COLUMNS}
+        rows={data?.windows.windows ?? []}
+        rowKey={(w) => w.id}
+        rowProps={(w) => ({ style: { opacity: w.open ? 1 : 0.55 } })}
+        loaded={data !== null}
+        failed={error !== null}
+        emptyMessage="予定メンテナンスはありません。"
+        failureMessage="予定メンテナンスを読み込めませんでした。"
+      />
 
       <h2 style={{ fontSize: '1rem', opacity: 0.7, marginTop: 'var(--space-lg)' }}>お知らせ</h2>
-      {data && data.notices.notices.length === 0 ? (
-        <p style={{ opacity: 0.7 }}>お知らせはありません。</p>
-      ) : (
-        <div style={{ overflowX: 'auto' }}>
-          <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.9rem' }}>
-            <thead>
-              <tr style={{ textAlign: 'left', opacity: 0.6 }}>
-                <th style={{ padding: '6px 8px' }}>重要度</th>
-                <th style={{ padding: '6px 8px' }}>状態</th>
-                <th style={{ padding: '6px 8px' }}>範囲</th>
-                <th style={{ padding: '6px 8px' }}>件名</th>
-                <th style={{ padding: '6px 8px' }}>公開</th>
-              </tr>
-            </thead>
-            <tbody>
-              {(data?.notices.notices ?? []).map((n) => (
-                <tr
-                  key={n.id}
-                  style={{ borderTop: '1px solid var(--color-border)', opacity: n.active ? 1 : 0.55 }}
-                >
-                  <td style={{ padding: '6px 8px' }}>{NOTICE_LEVEL_LABEL[n.level]}</td>
-                  <td style={{ padding: '6px 8px', opacity: 0.8 }}>{NOTICE_STATUS_LABEL[n.status]}</td>
-                  <td style={{ padding: '6px 8px', opacity: 0.7 }}>{noticeScopeLabel(n)}</td>
-                  <td style={{ padding: '6px 8px' }}>{n.title}</td>
-                  <td style={{ padding: '6px 8px', opacity: 0.7 }}>{n.publishedAt}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      )}
+      {/*
+        生 `<table>` を共有 `ui/DataTable` へ寄せた (#896 AC1)。あわせて「まだ読めていない」を
+        0 件と混ぜないようにした（移行前は `data && …length === 0` の分岐だったため、
+        読み込み中・失敗のときは**見出しの下に空の表だけ**が出ていた）。
+      */}
+      <DataTable
+        testId="platform-notices"
+        columns={NOTICE_COLUMNS}
+        rows={data?.notices.notices ?? []}
+        rowKey={(n) => n.id}
+        rowProps={(n) => ({ style: { opacity: n.active ? 1 : 0.55 } })}
+        loaded={data !== null}
+        failed={error !== null}
+        emptyMessage="お知らせはありません。"
+        failureMessage="お知らせを読み込めませんでした。"
+      />
 
       <div style={{ marginTop: 'var(--space-lg)', maxWidth: 760, display: 'grid', gap: 'var(--space-md)' }}>
         <NoticePublishForm onPublished={() => setRefreshKey((k) => k + 1)} />
