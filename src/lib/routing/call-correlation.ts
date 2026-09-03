@@ -68,6 +68,17 @@ export type StoredCallCorrelation = {
    * （鳴っている最中に打ち切る）。判定は `resolveCallResolution` に閉じている。
    */
   readonly dialExpiresAt?: string;
+  /**
+   * この通話を制御する Vonage REST の基底 URL（webhook の `region_url`。2026-09-02 仕様照合）。
+   *
+   * Vonage は通話ごとに所属リージョンを決める。切断（`PUT /v1/calls/{uuid}`）は
+   * そのリージョンへ送るのが公式の案内で、グローバルの `api.nexmo.com` でも届くが経路が
+   * 伸びる（切断の予算は 2 秒）。webhook を 1 件でも受けた時点で分かるので、そのとき残す。
+   *
+   * **任意**＝ `voiceState` と同じ後方互換の扱い。無ければグローバルへ撃つ。値は
+   * `acceptRegionUrl`（`./vonage-webhook-body.ts`）を通った origin だけ（許可リスト済み）。
+   */
+  readonly regionUrl?: string;
   readonly status: CallCorrelationStatus;
   readonly updatedAt: string;
 };

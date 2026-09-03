@@ -43,16 +43,37 @@ export function isTerminalVoiceState(state: VoiceCallState): state is TerminalVo
   return (TERMINAL_VOICE_STATES as readonly VoiceCallState[]).includes(state);
 }
 
-/** Vonage Voice の通話ステータス（受け取る側で正規化する語彙）。 */
-export type VonageCallStatus =
-  | 'ringing'
-  | 'answered'
-  | 'busy'
-  | 'unanswered'
-  | 'timeout'
-  | 'rejected'
-  | 'failed'
-  | 'completed';
+/**
+ * Vonage Voice の通話ステータス（受け取る側で正規化する語彙）。
+ *
+ * **配列を正本にして型を導く。** 型だけを持つと、webhook ルート側の「既知ステータス一覧」と
+ * ここが別々に育ち、片方だけに足したステータスが**黙って無視される**（2026-09-02 の仕様照合で
+ * `cancelled` がまさにその状態だった）。ルートは `isVonageCallStatus` を使い、一覧を持たない。
+ *
+ * 一覧は Vonage Voice API の event webhook `status`（公式 SDK の `CallStatus` 列挙と同じ）から、
+ * **PSTN の 1 レグに届きうるもの**を採る。`human` / `machine`（留守電判定。発信時に
+ * `machine_detection` を付けていないので届かない）、`input` / `transfer` / `record`
+ * （通話の進行ではなくアクションの通知）は採らず、未知として無視する（`/events` は 204）。
+ */
+export const VONAGE_CALL_STATUSES = [
+  'started',
+  'ringing',
+  'answered',
+  'busy',
+  'cancelled',
+  'unanswered',
+  'disconnected',
+  'timeout',
+  'rejected',
+  'failed',
+  'completed',
+] as const;
+
+export type VonageCallStatus = (typeof VONAGE_CALL_STATUSES)[number];
+
+export function isVonageCallStatus(value: unknown): value is VonageCallStatus {
+  return (VONAGE_CALL_STATUSES as readonly unknown[]).includes(value);
+}
 
 export type VoiceCallEvent =
   | { readonly kind: 'status'; readonly status: VonageCallStatus }
@@ -73,6 +94,10 @@ export function applyVoiceEvent(state: VoiceCallState, event: VoiceCallEvent): V
   }
 
   switch (event.status) {
+    case 'started':
+      // 「発信を受け付けた」の通知。呼出（ringing）より前に届き、状態を動かす情報を持たない。
+      // 既知として受け取る（未知扱いだと `region_url` の記録などの付随処理も走らない）。
+      return state;
     case 'ringing':
       // 応答後に遅れて届いた ringing で巻き戻さない。
       return state === 'queued' ? 'ringing' : state;
@@ -88,11 +113,18 @@ export function applyVoiceEvent(state: VoiceCallState, event: VoiceCallEvent): V
       return 'declined';
     case 'failed':
       return 'failed';
+    case 'cancelled':
+    case 'disconnected':
     case 'completed':
       // **通話が終わったこと自体は取次結果ではない。** ここへ来る時点で terminal は
       // short-circuit 済みなので、残るのは queued / ringing / awaiting_acceptance ──
       // いずれも「誰も向かうと言っていない」。よって一律 no_answer で次の手へ進める。
       // 終端成功にすると、誰も来ないまま取次が止まって来訪者が放置される。
+      //
+      // `cancelled` は**こちらが呼出中に切った**とき（`/give-up` の後始末・引き継ぎ失敗の
+      // 切断）に届く。`disconnected` は相手側で切れたとき。どちらも「終わったが誰も向かって
+      // いない」なので completed と同じ扱い。以前は未知として無視され、`completed` が
+      // 続かなければ相関が ringing のまま呼出予算の期限まで残っていた。
       return 'no_answer';
   }
 }

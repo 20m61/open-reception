@@ -1,7 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import {
   TERMINAL_VOICE_STATES,
+  VONAGE_CALL_STATUSES,
   applyVoiceEvent,
+  isVonageCallStatus,
   initialVoiceCallState,
   isTerminalVoiceState,
   voiceStateToRouteResult,
@@ -114,6 +116,66 @@ describe('voiceStateToRouteResult — 取次語彙への写像 (#4)', () => {
   it('全ての terminal state が取次結果へ写せる（取りこぼしを型と実行の両方で塞ぐ）', () => {
     for (const state of TERMINAL_VOICE_STATES) {
       expect(voiceStateToRouteResult(state)).toBeDefined();
+    }
+  });
+});
+
+describe('Vonage のステータス語彙 (2026-09-02 仕様照合)', () => {
+  it('started は状態を動かさない（発信受付の通知。既知として受け取る）', () => {
+    const started: VoiceCallEvent = { kind: 'status', status: 'started' };
+    expect(apply(started)).toBe('queued');
+    expect(apply(ringing, started)).toBe('ringing');
+    expect(apply(ringing, answered, started)).toBe('awaiting_acceptance');
+  });
+
+  /**
+   * `cancelled` は**こちらが呼出中に切った**とき（`/give-up`・引き継ぎ失敗の切断）に届く。
+   * 以前は未知として無視され、`completed` が続かなければ相関が ringing のまま残っていた。
+   */
+  it.each(['cancelled', 'disconnected'] as const)(
+    '%s は completed と同じく「終わったが誰も向かっていない」＝ no_answer',
+    (status) => {
+      expect(apply(ringing, { kind: 'status', status })).toBe('no_answer');
+      expect(apply(ringing, answered, { kind: 'status', status })).toBe('no_answer');
+    },
+  );
+
+  it.each(['cancelled', 'disconnected'] as const)('%s でも terminal は巻き戻さない', (status) => {
+    const state = apply(ringing, answered, { kind: 'dtmf', choice: 'coming' }, { kind: 'status', status });
+    expect(state).toBe('staff_coming');
+  });
+
+  it('一覧は Vonage Voice の event webhook の status（PSTN 1 レグに届きうるもの）と一致する', () => {
+    // 公式 SDK の CallStatus 列挙のうち、留守電判定（human/machine）とアクション通知
+    // （input/transfer/record）を除いた集合。ここを縮める変異は `/events` が黙って無視する
+    // ステータスを増やすので、集合そのものを固定する。
+    expect([...VONAGE_CALL_STATUSES].sort()).toEqual(
+      [
+        'answered',
+        'busy',
+        'cancelled',
+        'completed',
+        'disconnected',
+        'failed',
+        'rejected',
+        'ringing',
+        'started',
+        'timeout',
+        'unanswered',
+      ].sort(),
+    );
+  });
+
+  it('isVonageCallStatus は一覧の値だけを通す', () => {
+    for (const status of VONAGE_CALL_STATUSES) expect(isVonageCallStatus(status)).toBe(true);
+    expect(isVonageCallStatus('machine')).toBe(false);
+    expect(isVonageCallStatus('')).toBe(false);
+    expect(isVonageCallStatus(undefined)).toBe(false);
+  });
+
+  it('一覧の全ステータスが状態機械で処理できる（取りこぼしを実行でも塞ぐ）', () => {
+    for (const status of VONAGE_CALL_STATUSES) {
+      expect(() => apply(ringing, { kind: 'status', status })).not.toThrow();
     }
   });
 });

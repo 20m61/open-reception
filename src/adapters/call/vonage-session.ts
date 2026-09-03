@@ -45,7 +45,22 @@ const defaultTransport: VonageTransport = async (url, init) => {
 
 /**
  * Vonage Video REST に対する実装。
- * NOTE: REST エンドポイント/レスポンス形は実認証情報での結合確認が必要（increment 1 は単体まで）。
+ *
+ * ## エンドポイントの形（2026-09-02 仕様照合で修正）
+ *
+ * 🔴 **`POST {base}/session/create`、本文は form-urlencoded。** 以前は
+ * `POST /v2/project/{appId}/session` へ JSON `{ mediaMode: 'routed' }` を送っていたが、
+ * その経路は存在しない（`/v2/project/{appId}/...` は archive / broadcast 等の資源用）。
+ * 公式 SDK 3 種（Node `@vonage/video`・Python `vonage-video`・Java）はいずれも
+ * `/session/create` へ `archiveMode` / `p2p.preference` / `location` を **form** で送り、
+ * `Accept: application/json` で **配列** `[{ session_id, ... }]` を受ける。
+ *
+ * `mediaMode` は REST の項目ではなく SDK 側の呼び名で、REST では `p2p.preference` に
+ * 写る（`routed` = `disabled`、`relayed` = `enabled`）。受付の遠隔顔合わせは Media Router
+ * 経由（routed）にする ── 端末側の NAT 越えを Vonage に任せ、将来 archive を有効にできる
+ * （`archiveMode=always` は routed が必須）。
+ *
+ * 実資格情報での結合確認（#65）は未了。ここで固定するのは「公式 SDK と同じ要求を出す」まで。
  */
 export class RestVonageSessionService implements VonageSessionService {
   constructor(
@@ -59,15 +74,17 @@ export class RestVonageSessionService implements VonageSessionService {
       applicationId: this.config.applicationId,
       privateKeyPem: this.config.privateKey,
     });
-    const url = `${this.baseUrl}/v2/project/${this.config.applicationId}/session`;
+    const url = `${this.baseUrl}/session/create`;
+    const form = new URLSearchParams({ archiveMode: 'manual', 'p2p.preference': 'disabled' });
     const res = await this.transport(url, {
       method: 'POST',
       headers: {
         Authorization: `Bearer ${jwt}`,
-        'Content-Type': 'application/json',
+        'Content-Type': 'application/x-www-form-urlencoded',
+        // 無いと XML で返る。
         Accept: 'application/json',
       },
-      body: JSON.stringify({ mediaMode: 'routed', archiveMode: 'manual' }),
+      body: form.toString(),
     });
     if (!res.ok) {
       throw new Error(`vonage createSession failed: HTTP ${res.status}`);

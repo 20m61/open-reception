@@ -30,6 +30,13 @@ export type NccoInput = {
   readonly type: readonly ['dtmf'];
   readonly dtmf: { readonly maxDigits: number; readonly timeOut: number };
   readonly eventUrl: readonly [string];
+  /**
+   * 結果の送り方。**POST を明示する。** この設計は署名済み**本文**だけを権威にしている
+   * （`vonage-webhook-context.ts`）ので、GET で来ると通話 ID も数字も取れず全部 403 になる。
+   * Vonage の既定も POST だが、発信側の `answer_method` / `event_method` と同じく
+   * 「既定に依存しない」形にしておく。
+   */
+  readonly eventMethod: 'POST';
 };
 
 export type NccoAction = NccoTalk | NccoInput;
@@ -95,6 +102,7 @@ function dtmfInput(eventUrl: string, timeoutSeconds: number): NccoInput {
     // 1 桁だけ受ける。複数桁を待つと、誤入力のたびにタイムアウトまで沈黙する。
     dtmf: { maxDigits: 1, timeOut: timeoutSeconds },
     eventUrl: [eventUrl],
+    eventMethod: 'POST',
   };
 }
 

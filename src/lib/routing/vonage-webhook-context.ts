@@ -21,6 +21,7 @@
  */
 import { verifyVonageWebhook } from '@/lib/security/vonage-webhook';
 import type { CallCorrelationRepository, StoredCallCorrelation } from './call-correlation';
+import { parseVonageWebhookBody } from './vonage-webhook-body';
 
 export type VonageWebhookRequest = {
   /** 署名対象そのもの。パース前の生ボディを渡すこと（再シリアライズすると hash がずれる）。 */
@@ -54,24 +55,12 @@ function rejected(logOnly: WebhookRejection): VerifiedWebhook {
   return { ok: false, logOnly };
 }
 
-/** 本文から provider の通話 ID を取り出す。Vonage は `uuid` で送る。 */
-function readProviderCallId(rawBody: string): string | undefined {
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(rawBody);
-  } catch {
-    return undefined;
-  }
-  if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) return undefined;
-  const uuid = (parsed as Record<string, unknown>).uuid;
-  return typeof uuid === 'string' && uuid !== '' ? uuid : undefined;
-}
-
 export async function resolveVerifiedWebhook(
   request: VonageWebhookRequest,
   deps: VonageWebhookDeps,
 ): Promise<VerifiedWebhook> {
-  const providerCallId = readProviderCallId(request.rawBody);
+  // 本文の形は `vonage-webhook-body.ts` だけが知る。Vonage は通話 ID を `uuid` で送る。
+  const { providerCallId } = parseVonageWebhookBody(request.rawBody);
   if (providerCallId === undefined) return rejected('malformed_body');
 
   const correlation = await deps.correlations.get(providerCallId);

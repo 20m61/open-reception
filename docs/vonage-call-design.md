@@ -109,8 +109,11 @@ iPad(受付) --confirm--> /api/kiosk/receptions/:id/call (server)
   - アプリ認証 JWT（REST 呼び出し用）と client 接続トークン（`scope: "session.connect"`）。
   - claims / 有効期限 / 署名検証（公開鍵）を単体テスト。
 - `src/adapters/call/vonage-session.ts`: `VonageSessionService` を実装。
-  - `createSession(receptionId)`: Vonage Video REST `POST /v2/project/{appId}/session` を
+  - `createSession(receptionId)`: Vonage Video REST `POST /session/create`（form-urlencoded、
+    `archiveMode=manual` / `p2p.preference=disabled`、`Accept: application/json`）を
     **注入された transport（fetch 互換）** で呼ぶ（テスト時は mock）。
+    ※ 当初は `POST /v2/project/{appId}/session` + JSON `{ mediaMode }` と書いていたが、
+    その経路は存在しない。§11（2026-09-02 仕様照合）で修正。
   - `issueToken(session, role)`: ローカルで RS256 JWT を発行（ネットワーク不要）。
 - `VonageCallAdapter.call`: session 作成 + publisher token 発行までを行い結果を返す。
   - フラグ `VONAGE_ENABLED` 既定 off。**Mock の挙動・既存 e2e は不変。**
@@ -205,3 +208,38 @@ increment（PR #632 で A〜C・G を実装。**実発信は #65**）:
 
 - 実 Vonage 認証情報・実機で REST/JWT/client SDK（グローバル名・URL・API 差異）を結合検証。
 - 受付端末↔担当者の双方向ビデオ疎通、応答/未応答/再呼び出しの実イベント確認。
+
+## 11. 仕様照合（2026-09-02）
+
+`developer.vonage.com` はこの環境の egress から読めなかったため、**公式 SDK のソース**（Node
+`@vonage/video` / `@vonage/voice` / `@vonage/jwt` 3.x、Python `vonage-video` / `vonage-voice` /
+`vonage-jwt`、Java `vonage-java-sdk` / `vonage-jwt-jdk`）と公式サンプル
+（`opentok/opentok-web-samples`）、npm レジストリ（`@vonage/client-sdk-video`）を一次資料として
+照合した。結論は「**Video のセッション作成だけが仕様と食い違っていた**。Voice は概ね正しいが、
+届きうるステータスの取りこぼしと `ringing_timer` の上限未検証があった」。
+
+| 項目 | 実装（照合前） | 仕様（一次資料） | 対応 |
+| --- | --- | --- | --- |
+| Video セッション作成 | `POST /v2/project/{appId}/session`、JSON `{ mediaMode: 'routed', archiveMode: 'manual' }` | `POST https://video.api.vonage.com/session/create`、**form-urlencoded** `archiveMode=manual&p2p.preference=disabled`、`Accept: application/json`、応答は配列 `[{ session_id }]`（Node/Python/Java SDK すべて同じ） | 🔴 **修正**。旧経路は存在せず、実資格情報を入れた時点で 404 になっていた |
+| Video client token claims | `application_id / scope=session.connect / session_id / role / iat / exp / jti` | 同左 ＋ 公式 SDK は `sub: "video"`、`acl.paths["/session/**"]` を必ず載せる（Python は「変更するな」と明記）。`initial_layout_class_list` / `connection_data` は任意。上限 30 日 | `sub` / `acl` を追加 |
+| Video アプリ JWT | `application_id / iat / exp / jti`、RS256 | 同左（SDK 既定 TTL 900s。こちらは 120s） | 変更なし |
+| Video web SDK | `https://static.opentok.com/v2/js/opentok.min.js` を動的ロード、`OT.initSession(applicationId, sessionId)` | 公式サンプルは同 URL・同シグネチャ（第 1 引数は unified では applicationId）。npm は `@vonage/client-sdk-video` 2.35.1（`dist/js/opentok.js`） | 変更なし（要ライブ検証のまま） |
+| Voice 発信 `POST /v1/calls` | `to/from` phone、`answer_url[]`、`answer_method=POST`、`event_url[]`、`event_method=POST`、`ringing_timer` | 同左。`ringing_timer` は **1〜120**（Java は例外、Python は `le=120`）、`length_timer` 1〜86400 | `ringing_timer` を 120 へ丸める（超えると 400 で発信が失敗し、来訪者が有人支援へ倒れる） |
+| Voice 基底 URL | `https://api.nexmo.com` | SDK 既定 `apiHost` も同じ。webhook の `region_url` に**通話の所属リージョン**の基底 URL が載り、通話の制御はそこへ送るのが案内 | `region_url` を許可リスト（`https://*.vonage.com` / `*.nexmo.com`）で濾して相関へ残し、切断がそこへ撃つ。無ければグローバル |
+| Voice 切断 | `PUT /v1/calls/{uuid}` + `{ action: 'hangup' }` | 同左（DELETE は存在しない） | 変更なし |
+| Voice event webhook `status` | ringing / answered / busy / unanswered / timeout / rejected / failed / completed | started / ringing / answered / **cancelled** / busy / unanswered / **disconnected** / rejected / failed / timeout / completed（＋ human / machine / input / transfer / record） | `started`（無変化）・`cancelled` / `disconnected`（completed と同じ扱い）を追加。**一覧は domain の `VONAGE_CALL_STATUSES` を正本にし、route は写しを持たない**（`cancelled` は route 側の一覧に無く黙って無視されていた） |
+| Voice signed webhook | `Authorization: Bearer <HS256 JWT>`（signature secret）＋ `payload_hash`（本文の SHA-256 hex）＋ `iat` の鮮度 ＋ `jti` | 公式 SDK の `verifySignature` は署名のみ（HS256）。`payload_hash` / `iat` の検査はドキュメント側の推奨で、こちらはそれを実装している | 変更なし（SDK より厳しい側） |
+| NCCO `talk` | `text / language / bargeIn` | 同左。任意で `style / premium / loop / level`。`voiceName` は廃止 | 変更なし |
+| NCCO `input` | `type: ['dtmf']`、`dtmf: { maxDigits, timeOut }`、`eventUrl` | 同左 ＋ `eventMethod`（既定 POST）、`speech` は任意 | `eventMethod: 'POST'` を明示（この設計は署名済み本文だけを権威にするので GET では成立しない） |
+| 通知 adapter `HttpVonageAdapter` | 任意 `endpoint` へ Bearer `token` で `{ to, requestId, text, audioBase64 }` を POST | **どの Vonage API とも一致しない**（Messages API は `POST /v1/messages` に `{ message_type, text, to, from, channel }`、認証は JWT）。骨組みのまま | 変更なし。実装するなら Messages API へ揃える必要があり、新しい外部送信の配線＝停止境界なので別 Issue |
+
+疎結合の観点で直したもの:
+
+- **webhook 本文の読み取りを 1 か所へ**（`src/lib/routing/vonage-webhook-body.ts`）。`uuid` を
+  context、`status` を `/events`、`dtmf.digits` を `/dtmf` と `/choice` が別々に `JSON.parse` していた。
+  返すのは非機微の識別子と定型値だけで、`to` / `from`（電話番号）は読める形にしない
+- **ステータス一覧の写しを route から撤去**（上表）。domain の配列から型を導く
+
+残（実資格情報が要るもの・#65）: `/session/create` の応答形、client SDK のグローバル名、
+`region_url` が answer / event の両 webhook に載ること、`cancelled` の後に `completed` が
+続くか（続かなくても状態機械は壊れない）。

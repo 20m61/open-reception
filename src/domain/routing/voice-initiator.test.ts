@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  VONAGE_RINGING_TIMER_MAX_SECONDS,
   buildCreateCallRequest,
   parseCreateCallResponse,
   type CreateCallParams,
@@ -41,6 +42,22 @@ describe('buildCreateCallRequest (#4 Inc D)', () => {
 
   it('呼び出し timeout を ringing_timer に写す', () => {
     expect(buildCreateCallRequest({ ...BASE, timeoutSeconds: 45 }).ringing_timer).toBe(45);
+  });
+
+  /**
+   * Vonage の `ringing_timer` は 1〜120（公式 SDK も同じ範囲で検証する）。超える値を
+   * そのまま送ると 400 で発信自体が失敗し、来訪者が有人支援へ倒れる。ルート設定は
+   * 端末の待ち上限（5 分）までしか検証していないので、境界の**すぐ外**で丸まることを縛る。
+   */
+  it('ringing_timer を Vonage の上限 120 秒へ丸める', () => {
+    expect(VONAGE_RINGING_TIMER_MAX_SECONDS).toBe(120);
+    expect(buildCreateCallRequest({ ...BASE, timeoutSeconds: 120 }).ringing_timer).toBe(120);
+    expect(buildCreateCallRequest({ ...BASE, timeoutSeconds: 121 }).ringing_timer).toBe(120);
+    expect(buildCreateCallRequest({ ...BASE, timeoutSeconds: 300 }).ringing_timer).toBe(120);
+  });
+
+  it('ringing_timer は整数（小数を渡されても切り捨てる）', () => {
+    expect(buildCreateCallRequest({ ...BASE, timeoutSeconds: 30.9 }).ringing_timer).toBe(30);
   });
 
   it('来訪者情報を一切含めない（PII 境界）', () => {

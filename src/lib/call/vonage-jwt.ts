@@ -66,7 +66,14 @@ export type ClientToken = {
 
 /**
  * クライアントへ渡す接続トークン（session.connect）。
- * claims: application_id / scope / session_id / role / iat / exp / jti。
+ * claims: application_id / scope / session_id / role / sub / acl / iat / exp / jti。
+ *
+ * `sub: "video"` と `acl.paths["/session/**"]` は公式 SDK（Node `@vonage/video`・
+ * Python `vonage-video`）が client token に必ず載せる claims（Python 側は「変更するな」と
+ * 明記）。2026-09-02 の仕様照合で揃えた。`initial_layout_class_list` / `connection_data` は
+ * 任意（broadcast のレイアウトと接続メタデータ）で、受付では使わないので載せない。
+ *
+ * 有効期限の上限は 30 日。ここは短命（既定 5 分）で、上限に近づく用途は無い。
  */
 export function generateClientToken(params: ClientTokenParams): ClientToken {
   const iat = params.nowSec ?? Math.floor(Date.now() / 1000);
@@ -77,6 +84,8 @@ export function generateClientToken(params: ClientTokenParams): ClientToken {
       scope: 'session.connect',
       session_id: params.sessionId,
       role: params.role,
+      sub: 'video',
+      acl: { paths: { '/session/**': {} } },
       iat,
       exp,
       jti: randomUUID(),

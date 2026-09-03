@@ -54,6 +54,11 @@ export type VoiceEventDeps = {
    * **未指定なら実発信しない** ── 1 手目（`ExecuteRoutedCallOptions.webhookBaseUrl`）と同じ規則。
    */
   readonly webhookBaseUrl?: string;
+  /**
+   * webhook 本文の `region_url`（許可リスト済み origin）。この通話の制御に使う基底 URL として
+   * 相関へ残す（`StoredCallCorrelation.regionUrl`）。無ければ既存の値を保つ。
+   */
+  readonly regionUrl?: string;
   readonly resolveInitiator?: (
     tenantId: string,
     webhookBaseUrl: string,
@@ -132,6 +137,9 @@ export async function applyVoiceEventToCorrelation(
       position: withEventBudget(next.position, next.eventCount),
       voiceState: next.voiceState,
       eventCount: next.eventCount,
+      // 同じ CAS 書き込みに相乗りさせる（別に書くと `updatedAt` が動き、並行する webhook の
+      // 楽観ロックを無用に負けさせる）。
+      ...(deps.regionUrl !== undefined ? { regionUrl: deps.regionUrl } : {}),
       status: next.settled ? 'settled' : 'in_flight',
       updatedAt: new Date().toISOString(),
     },
@@ -210,6 +218,8 @@ async function tryDialNextHop(
     repointReception,
     receptionState,
     // 撃ったが引き継げなかった通話を切る (#743)。ここでしか鳴りっぱなしは起きない。
+    // 切る相手は**今撃った 2 手目**で、その相関はまだ webhook を受けていない（region 不明）。
+    // `hangUpIfRinging` の既定の参照が相関を引き、無ければグローバルへ撃つ。
     hangUp: (providerCallId: string) => hangUpIfRinging(correlation.tenantId, providerCallId),
     now: deps.now,
   });

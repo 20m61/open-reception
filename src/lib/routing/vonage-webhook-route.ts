@@ -1,8 +1,9 @@
 /**
  * Vonage webhook ルートの共通処理 (issue #4 MVP 1)。
  *
- * 3 本（answer / events / dtmf）が同じ検証と同じ拒否応答を使うようにまとめる。
- * 分けて書くと、いつか 1 本だけ検証が緩む。
+ * 4 本（answer / dtmf / choice / events）が同じ検証と同じ拒否応答を使うようにまとめる。
+ * 分けて書くと、いつか 1 本だけ検証が緩む。本文の読み取りも同じ理由で 1 か所
+ * （`./vonage-webhook-body.ts`）に置き、`verifyRequest` が読み取り結果ごと返す。
  *
  * **拒否は常に同一応答**（403 / 固定文言）。理由で分けると、通話 ID の総当たりで
  * 「その通話は存在する」「署名だけ違う」が漏れる。診断はサーバログで行う。
@@ -13,6 +14,7 @@ import { NextResponse } from 'next/server';
 import { resolveVonageSignatureSecret } from '@/lib/call/vonage-signature';
 import { resolveWebhookBaseUrl } from '@/lib/routing/webhook-base-url';
 import { getCallCorrelationRepository } from './call-correlation';
+import { parseVonageWebhookBody, type VonageWebhookBody } from './vonage-webhook-body';
 import { resolveVerifiedWebhook, type VerifiedWebhook } from './vonage-webhook-context';
 
 /**
@@ -48,7 +50,7 @@ export function webhookUrl(request: Request, path: string): string {
 
 export async function verifyRequest(
   request: Request,
-): Promise<{ verified: VerifiedWebhook; rawBody: string }> {
+): Promise<{ verified: VerifiedWebhook; rawBody: string; body: VonageWebhookBody }> {
   // **生ボディを 1 度だけ読む。** 読み直し（再シリアライズ）は hash がずれる。
   const rawBody = await request.text();
   const verified = await resolveVerifiedWebhook(
@@ -59,5 +61,6 @@ export async function verifyRequest(
       nowSec: Math.floor(Date.now() / 1000),
     },
   );
-  return { verified, rawBody };
+  // 読み取り結果は検証が通ったときだけ意味を持つ（拒否経路は本文を使わない）。
+  return { verified, rawBody, body: parseVonageWebhookBody(rawBody) };
 }
