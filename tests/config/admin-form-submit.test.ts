@@ -234,6 +234,22 @@ describe('admin CRUD / 設定保存の form 化 (#892 / #893 / 課題 13)', () =
       expect(stale).toEqual([]);
     });
 
+    /*
+     * 🔴 **CONVERTED を「取りこぼせる一覧」にしない。** 変異検証で、CONVERTED から 1 件
+     * 落としても全部緑のままになることが分かった（テストケースが 1 つ減るだけなので）。
+     * 落とされた画面は「submit だから分類済み」で素通りし、上の下界（`onClick` を
+     * 残さない・部品を使う）だけが**黙って効かなくなる**。submit である primary は
+     * 全部 CONVERTED に居ることを要求して、一覧を実測から作らせる。
+     */
+    it('submit である primary は全部 CONVERTED に載っている（一覧の取りこぼしを許さない）', () => {
+      const converted = new Set(CONVERTED.map((c) => c.submit));
+      const missing = primaryButtons()
+        .filter((b) => b.tag.includes('type="submit"'))
+        .filter((b) => b.testId !== undefined && !converted.has(b.testId))
+        .map((b) => `${b.path}: ${b.testId}`);
+      expect(missing).toEqual([]);
+    });
+
     it('CONVERTED と PENDING / ACTIONS は重ならない', () => {
       const converted = new Set(CONVERTED.map((c) => c.submit));
       const overlap = [...PENDING, ...ACTIONS].map((x) => x.testId).filter((id) => converted.has(id));
