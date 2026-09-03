@@ -9,7 +9,7 @@
 > | AWS の窓を開ける（`./scripts/aws-issue-credentials.sh`） | 短命 STS の発行は darwin 限定で、`scripts/hooks/guard-destructive.sh` が機械強制（#675）。**窓さえ開けばデプロイ本体はクラウドから wrapper 経由で流せる** | #675 / `docs/runbook-cloud-aws-deploy.md` |
 > | 実機 iPad UAT | 横向きで部署カードが何枚見えるか / 部署を開いて戻れるか / 騒音下で不在告知が聞き取れるか | #807 / #65 |
 > | **PR #923 の可否判断**（依存バージョン＝停止境界。承認されたら「Ready for review」も要る） | `docs/handoff-2026-09-03.md` §3-a が **依存バージョン変更＝#105 のライセンス/プライバシーチェック対象**として止めている。前回の「全てマージ承認します」は #859 / #848 / #428 に対するもので**本 PR を含まない**。🔴 **draft 解除そのものは到達できる**（2026-09-03 に本項を訂正）。`gh pr ready` は GraphQL 403、REST `PATCH draft=false` は**黙って無視**される（どちらも再現）が、**GitHub MCP の `update_pull_request` に `draft: false` を渡すと外せる** —— 同日 PR #921 で実測し、REST で `draft:false` を確認した（MCP が接続されているセッションに限る）。したがって**残っているブロッカーは可否判断だけ**で、道具の問題ではない。なお draft のままではマージ側が `Pull Request is still a draft (HTTP 405)` で拒否する。**`--full` は 14 段すべて PASS 済み**（`vrm (real render)` を含む） | #923 / #105 |
-> | **リモートブランチ 33 本の削除**（2026-09-02〜03 の周回ぶん） | クラウドセッションからは `git push origin --delete` が消せない。2026-09-03 に**エラーの出方まで実測**した: `error: RPC failed; HTTP 403` に続けて `Everything up-to-date` が出るので、**戻り値だけ見ると成功に見える**（proxy が write を拒否している）。全部 squash マージ済みで PR も閉じているので `orphan_branch` 検出には掛からない。一覧は本書「削除できていないリモートブランチ」節 | — |
+> | **リモートブランチ 35 本の削除**（2026-09-02〜03 の周回ぶん） | クラウドセッションからは `git push origin --delete` が消せない。2026-09-03 に**エラーの出方まで実測**した: `error: RPC failed; HTTP 403` に続けて `Everything up-to-date` が出るので、**戻り値だけ見ると成功に見える**（proxy が write を拒否している）。全部 squash マージ済みで PR も閉じているので `orphan_branch` 検出には掛からない。一覧は本書「削除できていないリモートブランチ」節 | — |
 >
 ## 2026-09-03 の周回（darwin VRT ベースライン）
 
@@ -267,6 +267,25 @@ kill のままであることを確認した
 「着手します」を落とした。結果として**実装不要と分かって取り下げた**ので衝突の検証にはならな
 かったが、**取り下げも含めて issue に残る**ぶん、他セッションから見える状態にはなった。
 
+### 一覧の列ソートとページング（#910・PR #953）
+
+🔴 **並べ替え・ページングを入れると「行の index」を使っている操作が壊れる。** 部署は行を
+ドラッグして表示順を変えるが、`rowProps(_d, i)` の `i` は**描画中の配列**の index なので、
+並べ替えると `items` 上の位置と食い違い、**掴んだ行と動く行がずれる**（2 ページ目の 1 行目が
+index 0 になり先頭へ飛ぶ）。**データを壊す形の欠陥**で、テストでは気づきにくい
+（並べ替え自体は正しく動くため）。index を実データ上の位置へ引き直し、
+**並べ替え中は掴めなくする**。同じ画面でも ↑/↓ で**値**を patch する形（`OrganizationsManager`）は
+index 非依存なので手当て不要 —— **操作が index に依っているかで分かれる。**
+
+**「足す前に共有へ寄せる」。** ページ送りは同じ形が 6 ファイルに写されており、4 つ足すと
+10 個になるところだった。写しが増えてから寄せると移行コストが上がり、その間に食い違う
+（#895 / #897 の `MetricCard` / `StatusBadge` が実際にそうなった）。
+
+**書けないテストを緑で飾らない（#912 と同じ形）。** AC2 の「フィルタ変更でページが 1 に戻る」は
+**e2e の seed が 6 件**で `PAGE_SIZE = 20` に届かず、2 ページ目という状態を作れないので実演
+できない。確かめられることだけを主張し、**前提（ページ送りが出ないこと）を assertion で固定**
+した —— seed が増えて前提が変わったら落ちて気づける。
+
 ## 2026-09-02 の周回（UI/UX 監査 Wave 0 / Wave 1）
 
 正本は `docs/ui-review-2026-09-01.md`。Wave 0（BLOCKER 7 + D6）と Wave 1（課題 06–18 / 22–32）を
@@ -303,7 +322,7 @@ kill のままであることを確認した
 | #893 | 保存系と表の行内編集の form 化（#894 の残り）。**2026-09-03 に 11 画面を消化**（PR #938）。残りは `device-save` 1 件（`DataTable` のセル内で入力欄と保存ボタンが別 `<td>` に載るため `<form>` で囲えない）と AC8（レジストリ方式の廃止） |
 | #896 | platform の生 table・読込中と 0 件の描き分け（課題 06）。**2026-09-03 に AC2/3/4 と 横スクロールを消化**（PR #947）。残りは AC1 の `ui/DataTable` への移行（**振る舞いは変わらない純粋なリファクタ**） |
 | #899 | 状態表示をバッジへ揃えるかの設計判断（#900 の続き） |
-| #910 | 列ソートの残りの一覧 + ページング未導入 5 リスト（#911 の続き） |
+| #910 | 列ソート + ページング（#911 の続き）。**2026-09-03 に 4 一覧を消化**（PR #953）。残りは列ソートのみ未適用の 4 つと、既存 6 一覧のページ送りを共有 `ui/Pager` へ寄せる分 |
 | ~~#913~~ | **2026-09-03 に消化・クローズ**（PR #941）。方針は「比較側で正規化」——**ストアが既に `''` と未設定を同一視していた**ので、区別していたのは述語だけだった。PUT の payload は不変 |
 | ~~#915~~ | **2026-09-03 にクローズ（実装不要）。AC 1・2 とも PR #916 で既に充足していた** —— issue 本文の数字が stale で、`0.85rem` は 38 → 1、総数も 171 → 119。台帳は `tests/config/font-token-adoption.test.ts` の `REMAINING_BUDGET`（上限つきラチェット）。**残る「スケールに無い 95 件」は方針判断**（寄せると VRT が動く＝darwin ベースライン待ち）で、判断が要るときに別 issue で起こす |
 
@@ -354,7 +373,8 @@ for b in feat/admin-form-aria feat/audit-log-paging-csv feat/prefers-contrast-su
          docs/vrm-alignment-queue-row fix/routing-step-provider-timeout-limit \
          docs/branch-cleanup-vrm-round \
          fix/platform-table-scroll-and-alerts docs/round-896-closeout \
-         docs/queue-915-already-done; do
+         docs/queue-915-already-done \
+         feat/admin-list-sort-and-paging docs/round-910-closeout; do
   git push origin --delete "$b"
 done
 ```
