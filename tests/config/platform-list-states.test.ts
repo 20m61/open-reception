@@ -179,12 +179,23 @@ describe('platform の一覧の状態表示 (#896 / 課題 06)', () => {
   });
 
   /*
-   * 🔴 **免除を水増しさせない。** 実在しない式を並べて「全部免除」にできると、
-   * 上の主張は空虚に満たせる。**免除は全部、実在する tbody に当たること**を要求する。
+   * 🔴 **免除を水増しさせない。**
+   *
+   * 「実在する tbody に当たること」だけでは足りない —— 変異検証で分かった:
+   * `{ field: '.map(' }` を 1 行足すと**全部の tbody が免除**になり、それでも
+   * 「実在する」は満たされるので素通りした（実測。この主張を足す前は生存した）。
+   *
+   * 免除は**ちょうど 1 つの tbody に当たること**を要求する。広すぎる式（`.map(` 等）は
+   * 複数に当たって落ち、実在しない式は 0 に当たって落ちる。
    */
-  it('🔴 下界: 免除はすべて実在する <tbody> に当たる', () => {
+  it('🔴 下界: 免除はちょうど 1 つの <tbody> に当たる（広すぎる式で全部免除にしない）', () => {
     const bodies = platformFiles().flatMap((f) => tbodyBlocks(f.source));
-    const dangling = EXEMPT_TBODY.filter((e) => !bodies.some((b) => b.includes(e.field))).map((e) => e.field);
-    expect(dangling).toEqual([]);
+    const offenders = EXEMPT_TBODY.map((e) => ({
+      field: e.field,
+      hits: bodies.filter((b) => b.includes(e.field)).length,
+    }))
+      .filter((x) => x.hits !== 1)
+      .map((x) => `${x.field} → ${x.hits} 件`);
+    expect(offenders).toEqual([]);
   });
 });
