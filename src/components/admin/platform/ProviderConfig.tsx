@@ -50,7 +50,17 @@ function presenceOf(res: ConfigResponse): SecretPresence {
 
 export function ProviderConfig() {
   const [data, setData] = useState<ConfigResponse | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  /*
+   * 🔴 **読み取りの失敗と操作の失敗を別に持つ (#968 レビュー MJ-2)。**
+   *
+   * 1 つの `error` に束ねたまま「再読込」ボタンを添えたところ、**保存に失敗したときにも
+   * 再読込が出る**形になった。`load()` はフォーム 4 項目をサーバ値で上書きし、先頭で
+   * `setLoadError(null)` するので、押した運用者は**未保存の編集を無言で捨てたうえで
+   * 「保存できた」と読める画面**を受け取る。#968 が閉じようとした無言を、復帰導線が
+   * 新しく作っていた。`TenantDetail` の `error` / `actionError` と同じ扱いへ揃える。
+   */
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [actionError, setActionError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
 
   // 設定フォーム状態。
@@ -64,11 +74,11 @@ export function ProviderConfig() {
   const [confirmProvider, setConfirmProvider] = useState('');
 
   const load = useCallback(async () => {
-    setError(null);
+    setLoadError(null);
     try {
       const res = await fetch(CONFIG_ENDPOINT);
       if (!res.ok) {
-        setError(
+        setLoadError(
           res.status === 403
             ? 'この操作の権限がありません。'
             : res.status === 400
@@ -93,7 +103,7 @@ export function ProviderConfig() {
      * 上書き保存しにいく（`OperatingHoursManager` が #870 で踏んだのと同じ型）。
      */
     } catch {
-      setError('設定を取得できませんでした。通信を確認してください。');
+      setLoadError('設定を取得できませんでした。通信を確認してください。');
       setData(null);
     }
   }, []);
@@ -103,7 +113,7 @@ export function ProviderConfig() {
   }, [load]);
 
   const saveConfig = useCallback(async () => {
-    setError(null);
+    setActionError(null);
     setNotice(null);
     try {
       const res = await fetch(CONFIG_ENDPOINT, {
@@ -113,21 +123,21 @@ export function ProviderConfig() {
         body: JSON.stringify({ provider, enabled, applicationId, fromNumber }),
       });
       if (!res.ok) {
-        setError('設定の保存に失敗しました。');
+        setActionError('設定の保存に失敗しました。');
         return;
       }
       setNotice('設定を保存しました。');
       await load();
     } catch {
-      setError('設定を保存できませんでした。通信を確認してください。');
+      setActionError('設定を保存できませんでした。通信を確認してください。');
     }
   }, [provider, enabled, applicationId, fromNumber, load]);
 
   const saveSecret = useCallback(async () => {
-    setError(null);
+    setActionError(null);
     setNotice(null);
     if (!secretInput.trim()) {
-      setError('secret を入力してください。');
+      setActionError('secret を入力してください。');
       return;
     }
     /*
@@ -147,18 +157,22 @@ export function ProviderConfig() {
         body: JSON.stringify({ secret, expectedProvider: data?.config?.provider }),
       });
       if (!res.ok) {
-        setError(res.status === 409 ? '先に設定を保存し、対象プロバイダを確認してください。' : 'secret の保存に失敗しました。');
+        setActionError(
+          res.status === 409
+            ? '先に設定を保存し、対象プロバイダを確認してください。もう一度 secret を入力してください。'
+            : 'secret の保存に失敗しました。もう一度 secret を入力してください。',
+        );
         return;
       }
       setNotice('secret を保存しました（値は表示されません）。');
       await load();
     } catch {
-      setError('secret を保存できませんでした。通信を確認してください。');
+      setActionError('secret を保存できませんでした。通信を確認してください。もう一度 secret を入力してください。');
     }
   }, [secretInput, data, load]);
 
   const clearSecret = useCallback(async () => {
-    setError(null);
+    setActionError(null);
     setNotice(null);
     try {
       const res = await fetch(SECRET_ENDPOINT, {
@@ -167,7 +181,7 @@ export function ProviderConfig() {
         body: JSON.stringify({ expectedProvider: confirmProvider }),
       });
       if (!res.ok) {
-        setError(
+        setActionError(
           res.status === 409
             ? '確認のため、現在のプロバイダ名を正しく入力してください。'
             : 'secret の消去に失敗しました。',
@@ -184,7 +198,7 @@ export function ProviderConfig() {
       setNotice('secret を消去しました。');
       await load();
     } catch {
-      setError('secret を消去できませんでした。通信を確認してください。');
+      setActionError('secret を消去できませんでした。通信を確認してください。');
     }
   }, [confirmProvider, load]);
 
@@ -211,19 +225,24 @@ export function ProviderConfig() {
         決まります。
       </p>
 
-      {error ? (
-        <p role="alert" style={{ color: 'var(--color-platform-warn)' }}>
-          {error}{' '}
+      {loadError ? (
+        <p role="alert" data-testid="provider-config-load-error" style={{ color: 'var(--color-platform-warn)' }}>
+          {loadError}{' '}
           {/*
             🔴 **塞いだ状態から出る道を同じ画面に置く (#968 レビュー m-4)。**
             読み取りに失敗すると保存系 3 つが `disabled` になるが、`load` は
             `useCallback(…, [])` でマウント時 1 回きりなので、この画面には再読込の導線が
-            無かった。文言も「通信を確認してください。」だけで、リロードが要ることを
-            言っていない。ガードで塞ぐなら、出る道を並べて置く。
+            無かった。**読み取りの失敗にだけ添える**（レビュー MJ-2）—— 保存の失敗に
+            添えると、押した運用者が未保存の編集を無言で捨てることになる。
           */}
           <button type="button" data-testid="provider-config-reload" onClick={() => void load()}>
             再読込
           </button>
+        </p>
+      ) : null}
+      {actionError ? (
+        <p role="alert" data-testid="provider-config-action-error" style={{ color: 'var(--color-platform-warn)' }}>
+          {actionError}
         </p>
       ) : null}
       {/*

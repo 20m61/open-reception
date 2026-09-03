@@ -1,0 +1,246 @@
+import { test, expect, type Page } from '@playwright/test';
+import { loginAsAdmin } from './helpers';
+
+/**
+ * **platform の通信失敗が運用者に見える** (#968)。
+ *
+ * ## なぜ静的検査だけでは足りなかったか
+ *
+ * #968 は当初 `tests/config/platform-fetch-failure.test.ts` の**字句走査**だけで縛っていた。
+ * 独立レビューが 3 周にわたって当てた変異のうち **12 件が生存**し、そのたびに検出器へ
+ * 綴りを 1 つ足す、を繰り返した（`method: "PATCH"` → `method: PATCH_METHOD`、
+ * `!res.ok` → `const { ok } = res` → `res.ok !== true`、`{cond ? …}` → `{cond && …}`、
+ * import の引用符、…）。`.claude/rules/opus5-autonomous-loop.md`「値を調整している自分には
+ * 気づけない」がそのまま当たっており、**方式が収束していなかった**。
+ *
+ * 前提を替える。このリポジトリは #870 で**同じ欠陥族に対する正しい方式を既に持っている**
+ * —— `tests/e2e/admin-read-failure.spec.ts` は「実際に落として見る」。#968 はそれを使わずに
+ * 走査を再発明していた。ここが**族としての担保**で、字句走査は速い一次検査として残す。
+ *
+ * ## 何を注入するか
+ *
+ * 500 / 403 / 接続断の 3 通り。**握り潰しの経路が別**だから:
+ *
+ *  - 500・403 … `res.ok === false`。この console で最も起こりやすいのは **403**
+ *    （developer 権限・昇格切れ）で、オフラインより遥かに多い
+ *  - 接続断 … `fetch` 自身が throw して `void load()` に飲まれる
+ *
+ * `catch` を書き忘れると接続断だけが固まり、`!res.ok` の枝を書き忘れると 403 だけが黙る。
+ * **どちらか一方しか見ないと、もう一方が無検出で通る。**
+ */
+
+/** 対象 API を 500 で落とす。 */
+async function failWith500(page: Page, pattern: string): Promise<void> {
+  await page.route(pattern, (route) =>
+    route.fulfill({ status: 500, contentType: 'application/json', body: '{"error":"boom"}' }),
+  );
+}
+
+/** 対象 API を 403 で落とす（昇格切れ・権限不足の相当）。 */
+async function failWith403(page: Page, pattern: string): Promise<void> {
+  await page.route(pattern, (route) =>
+    route.fulfill({ status: 403, contentType: 'application/json', body: '{"error":"forbidden"}' }),
+  );
+}
+
+/** 対象 API への接続そのものを切る（オフライン相当。`fetch` が throw する）。 */
+async function failWithAbort(page: Page, pattern: string): Promise<void> {
+  await page.route(pattern, (route) => route.abort('failed'));
+}
+
+/**
+ * 読み取りの失敗が「無言」にならない画面。
+ *
+ * `testId` は**その画面の失敗表示**を指す。`role="alert"` を持つことは
+ * `tests/config/platform-list-states.test.ts` が別に縛るので、ここは
+ * **出ること**と**永遠の待ちにならないこと**を見る。
+ */
+const READS = [
+  {
+    label: '運用ダッシュボード',
+    path: '/platform',
+    api: '**/api/platform/dashboard',
+    testId: 'platform-dashboard-error',
+  },
+  {
+    label: 'プロバイダ設定',
+    path: '/platform/integrations',
+    api: '**/api/platform/integrations/provider-config',
+    testId: 'provider-config-load-error',
+  },
+  {
+    label: '機能フラグ（横断サマリ）',
+    path: '/platform/feature-flags',
+    api: '**/api/platform/feature-flags',
+    testId: 'platform-feature-flags-error',
+  },
+] as const;
+
+test.describe('platform: 読み取りの失敗が運用者に見える (#968)', () => {
+  test.beforeEach(async ({ page }) => {
+    await loginAsAdmin(page);
+  });
+
+  for (const screen of READS) {
+    test(`${screen.label}: 500 のとき失敗が出る`, async ({ page }) => {
+      await failWith500(page, screen.api);
+      await page.goto(screen.path);
+      await expect(page.getByTestId(screen.testId)).toBeVisible();
+    });
+
+    test(`${screen.label}: 403（昇格切れ）のとき失敗が出る`, async ({ page }) => {
+      await failWith403(page, screen.api);
+      await page.goto(screen.path);
+      await expect(page.getByTestId(screen.testId)).toBeVisible();
+    });
+
+    test(`${screen.label}: 接続断でも失敗が出る（reject を void に捨てない）`, async ({ page }) => {
+      await failWithAbort(page, screen.api);
+      await page.goto(screen.path);
+      await expect(page.getByTestId(screen.testId)).toBeVisible();
+    });
+  }
+
+  /*
+   * 🔴 **テナント一覧はヘッダの切替そのもの。** 取れないと選択肢が空のまま
+   * 「全テナント横断」だけが残り、**テナントが 1 つも無いのと同じ見た目**になる。
+   * 403 は昇格切れで日常的に起こる。
+   */
+  test('ヘッダのテナント切替: 403 のとき「テナントが無い」と見せない', async ({ page }) => {
+    await failWith403(page, '**/api/platform/tenants');
+    await page.goto('/platform');
+    await expect(page.getByTestId('platform-tenant-list-error')).toBeVisible();
+  });
+
+  test('ヘッダのテナント切替: 接続断でも黙らない', async ({ page }) => {
+    await failWithAbort(page, '**/api/platform/tenants');
+    await page.goto('/platform');
+    await expect(page.getByTestId('platform-tenant-list-error')).toBeVisible();
+  });
+
+  /*
+   * 🔴 **機能フラグはテナントを選べないと編集そのものが不能になる。**
+   * 狭いほう（フラグの取得失敗）にだけ再試行があり、広いほう（一覧が引けない）に
+   * 無い、という逆転を作っていた（レビュー MJ-1）。復帰導線まで見る。
+   */
+  test('機能フラグ: テナント一覧が 403 のとき、失敗と再試行が出る', async ({ page }) => {
+    await failWith403(page, '**/api/platform/tenants');
+    await page.goto('/platform/feature-flags');
+    await expect(page.getByTestId('platform-feature-flags-tenants-error')).toBeVisible();
+    await expect(page.getByTestId('feature-flags-tenants-retry')).toBeEnabled();
+  });
+
+  /*
+   * 🔴 **テナントを選んだあとの取得失敗**。ここは `flags` が `null` のときにしか立たない
+   * state なので、描画を `{flags && …}` の内側へ移すと**永遠に到達しない**（レビューが
+   * 実測で生存させた形）。字句走査では「描いている」と読めてしまうので、実際に落として見る。
+   */
+  test('機能フラグ: テナントを選んだあとの取得失敗が出る', async ({ page }) => {
+    await page.goto('/platform/feature-flags');
+    const select = page.getByTestId('tenant-feature-flag-editor').locator('select');
+    await expect(select).toBeVisible();
+    const first = await select.locator('option').nth(1).getAttribute('value');
+    expect(first, 'seed にテナントが無い').toBeTruthy();
+
+    await failWith500(page, '**/api/platform/tenants/*/feature-flags');
+    await select.selectOption(first ?? '');
+
+    await expect(page.getByTestId('platform-feature-flags-flags-error')).toBeVisible();
+    // 終わらない待ちにしない。
+    await expect(page.getByText('読み込み中…')).toHaveCount(0);
+    await expect(page.getByTestId('feature-flags-retry')).toBeEnabled();
+  });
+
+  /*
+   * 🔴 **失敗表示で終わらせない。** 復帰できることまで見ないと、「失敗を出す」だけの
+   * 実装（復帰不能）でも通る＝下界。**ボタンの `onClick` を殺す変異はここでだけ落ちる**
+   * （字句走査は「ボタンが在る」しか言えない。レビューが実測で生存させた形）。
+   */
+  test('機能フラグ: 再試行が回復すると失敗表示が消える', async ({ page }) => {
+    await failWith403(page, '**/api/platform/tenants');
+    await page.goto('/platform/feature-flags');
+    await expect(page.getByTestId('platform-feature-flags-tenants-error')).toBeVisible();
+
+    await page.unroute('**/api/platform/tenants');
+    await page.getByTestId('feature-flags-tenants-retry').click();
+    await expect(page.getByTestId('platform-feature-flags-tenants-error')).toHaveCount(0);
+  });
+
+  /*
+   * 🔴 **「再読込」が実際に読み直すことを見る。**
+   *
+   * 失敗表示が消えることでは縛れない —— この画面は**テナント未選択のとき 400 を返す**ので、
+   * 復旧させても別の理由（「対象テナントを選択してください。」）で失敗表示が残る。
+   * 縛りたいのは「ボタンが本当に再取得を撃つか」なので、**リクエストそのものを観測**する。
+   * `onClick` を `() => undefined` にする変異（レビューが実測で生存させた形）はここで落ちる。
+   */
+  test('プロバイダ設定: 再読込が実際に読み直す（死んだボタンにしない）', async ({ page }) => {
+    await failWith500(page, '**/api/platform/integrations/provider-config');
+    await page.goto('/platform/integrations');
+    await expect(page.getByTestId('provider-config-load-error')).toBeVisible();
+
+    const reread = page.waitForRequest(
+      (request) =>
+        request.url().includes('/api/platform/integrations/provider-config') &&
+        request.method() === 'GET',
+      { timeout: 5_000 },
+    );
+    await page.getByTestId('provider-config-reload').click();
+    await expect(reread).resolves.toBeTruthy();
+  });
+
+  /*
+   * 🔴 **読めていない状態から全置換 upsert を撃たせない (#968 レビュー M2)。**
+   *
+   * `PUT /api/platform/integrations/provider-config` は楽観ロックの無い全置換 upsert で、
+   * 読めていない画面の初期値（`mock` / 無効 / 空）で保存すると**実 CCaaS 設定が既定値で
+   * 上書きされる** —— 来訪者側は担当者を呼べず「取り次げません」になる。
+   */
+  test('プロバイダ設定: 読めていないとき保存系は押せず、「未設定」と断定しない', async ({ page }) => {
+    await failWith500(page, '**/api/platform/integrations/provider-config');
+    await page.goto('/platform/integrations');
+    await expect(page.getByTestId('provider-config-load-error')).toBeVisible();
+
+    await expect(page.getByRole('button', { name: '設定を保存' })).toBeDisabled();
+    await expect(page.getByRole('button', { name: 'secret を保存' })).toBeDisabled();
+    // 取得できていないことを「未設定」と言い換えない（#870 の営業時間と同じ型）。
+    await expect(page.getByText('未設定', { exact: true })).toHaveCount(0);
+  });
+
+  /*
+   * 🔴 **破壊的操作が無言で失敗しない (#968 AC1)。**
+   *
+   * テナントの停止/有効化は `try`/`finally` だけで囲われており、`fetch` の reject は
+   * `void` に捨てられて **`busy` が戻るだけ**だった。押した運用者は「何も起きなかった」と
+   * 読み、もう一度押すか、停止できたと誤解する。
+   */
+  test('テナント詳細: 停止の送信が失敗したら、失敗したと出る', async ({ page }) => {
+    await page.goto('/platform/tenants');
+    const detail = page.locator('a[href^="/platform/tenants/"]').first();
+    await expect(detail).toBeVisible();
+    await detail.click();
+    await expect(page.getByTestId('platform-tenant-sites')).toBeVisible();
+
+    // 読み取り（GET）は通したまま、**操作（PATCH）だけ**を落とす。
+    await page.route('**/api/platform/tenants/*', async (route) => {
+      if (route.request().method() === 'PATCH') return route.abort('failed');
+      return route.continue();
+    });
+
+    // DangerActionButton の確認フロー（影響範囲 ack + 理由入力 + 二段確認）を通す。
+    await page.getByTestId('danger-open').click();
+    await page.getByTestId('danger-impact').check();
+    await page.getByTestId('danger-reason').fill('e2e: 通信失敗の確認');
+    await page.getByTestId('danger-confirm').click();
+
+    const actionError = page.getByTestId('platform-tenant-action-error');
+    await expect(actionError).toBeVisible();
+    /*
+     * 🔴 **操作の失敗が読み取りを汚さない (#968 AC4)。** 同じ `error` に載せていたので、
+     * 停止に失敗しただけでサイト一覧が「読み込めませんでした。」へ落ちていた ——
+     * 読めているのに読めていないと言うことになる。
+     */
+    await expect(page.getByTestId('platform-tenant-sites-failed')).toHaveCount(0);
+    await expect(page.getByTestId('platform-tenant-sites')).toBeVisible();
+  });
+});

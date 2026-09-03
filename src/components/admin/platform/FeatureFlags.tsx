@@ -60,6 +60,7 @@ export function FeatureFlags() {
         setError(res.status === 403 ? 'この画面の閲覧権限がありません。' : '機能フラグの取得に失敗しました。');
         return;
       }
+      setError(null);
       setData((await res.json()) as FlagsResponse);
     } catch {
       // 通信そのものの失敗も「失敗」へ落とす (#968)。拾わないと表が永遠に「読み込み中」になる。
@@ -84,7 +85,11 @@ export function FeatureFlags() {
         機密値は表示しません。変更（機能制限の変更）は JIT 昇格が必要な破壊的操作で、監査に記録されます。
       </p>
 
-      {error ? <p role="alert" style={{ color: 'var(--color-platform-warn)' }}>{error}</p> : null}
+      {error ? (
+        <p role="alert" data-testid="platform-feature-flags-error" style={{ color: 'var(--color-platform-warn)' }}>
+          {error}
+        </p>
+      ) : null}
 
       <h2 style={{ fontSize: '1rem', opacity: 0.7 }}>機能フラグ</h2>
       <div style={{ display: 'flex', gap: 'var(--space-md)', flexWrap: 'wrap' }}>
@@ -375,13 +380,30 @@ function TenantFeatureFlagEditor({ onChanged }: { onChanged?: () => void }) {
       {tenantId !== '' && !flags && !flagsError ? <p style={{ margin: 0, opacity: 0.6 }}>読み込み中…</p> : null}
 
       {tenantsError ? (
-        <p role="alert" style={{ color: 'var(--color-platform-warn)', margin: 0 }}>
-          {tenantsError}
+        <p role="alert" data-testid="platform-feature-flags-tenants-error" style={{ color: 'var(--color-platform-warn)', margin: 0 }}>
+          {tenantsError}{' '}
+          {/*
+            🔴 **より広く塞ぐほうにこそ復帰導線が要る (#968 レビュー MJ-1)。**
+            テナント一覧が引けないと `<select>` は「選択してください」だけになり、
+            テナント別機能フラグの編集が**丸ごと**不能になる。狭いほう（`flagsError`）に
+            だけ再試行があり広いほうに無い、という逆転になっていた。
+          */}
+          <button
+            type="button"
+            data-testid="feature-flags-tenants-retry"
+            onClick={() => {
+              setTenantsError(null);
+              void loadTenants();
+            }}
+            style={{ ...inputStyle, cursor: 'pointer' }}
+          >
+            再試行
+          </button>
         </p>
       ) : null}
 
       {flagsError ? (
-        <p role="alert" style={{ color: 'var(--color-platform-warn)', margin: 0 }}>
+        <p role="alert" data-testid="platform-feature-flags-flags-error" style={{ color: 'var(--color-platform-warn)', margin: 0 }}>
           {flagsError}{' '}
           {/*
             🔴 **塞いだ状態から出る道を同じ画面に置く (#968 レビュー m-5)。**

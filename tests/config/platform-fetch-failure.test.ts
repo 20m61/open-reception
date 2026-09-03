@@ -98,7 +98,8 @@ function platformFiles(): { name: string; source: string; absolute: string }[] {
     const current = out[i];
     if (!current) continue;
     const dir = dirname(current.absolute);
-    for (const m of current.source.matchAll(/from\s+'([^']+)'/g)) {
+    // 🔴 引用符 1 文字に依存させない（レビュー実測: 二重引用符の import で母集団から外れた）。
+    for (const m of current.source.matchAll(/from\s+['"`]([^'"`]+)['"`]/g)) {
       const target = resolve(m[1] ?? '', dir);
       if (target && !target.includes('.test.')) add(target, relative(join(process.cwd(), 'src'), target));
     }
@@ -472,6 +473,7 @@ const MUST_NOT_DISPLACE: readonly {
 const RECOVERY_CONTROL: readonly { readonly file: string; readonly testId: string; readonly calls: string }[] = [
   { file: 'ProviderConfig.tsx', testId: 'provider-config-reload', calls: 'void load()' },
   { file: 'FeatureFlags.tsx', testId: 'feature-flags-retry', calls: 'void loadTenantFlags(' },
+  { file: 'FeatureFlags.tsx', testId: 'feature-flags-tenants-retry', calls: 'void loadTenants()' },
 ];
 
 const EXEMPT_FETCH: readonly { readonly file: string; readonly marker: string; readonly why: string }[] = [];
@@ -848,7 +850,14 @@ describe('platform の通信失敗が無言にならない (#968)', () => {
        * `const pathname = usePathname() ?? ''`）が「コンテナ」に化け、**画面全体が
        * 入れ子扱い**になる（実測。`??` の `?` を拾っていた）。`??` も除く。
        */
-      const containers = [...f.source.matchAll(/\{[ \t]*[A-Za-z_$][^{}\n]*?(?<!\?)\?(?!\?)/g)]
+      /*
+       * 🔴 **`&&` の入れ子も数える（レビュー実測）。** 三項だけをコンテナと見なすと、
+       * `{flags && (<>{flagsError ? … }</>)}` で包む変異が**入れ子として一度も観測されない**。
+       * 実挙動は三項より悪く、メッセージも「読み込み中…」も出ない空白パネルになる。
+       */
+      const containers = [
+        ...f.source.matchAll(/\{[ \t]*[A-Za-z_$][^{}\n]*?(?:(?<!\?)\?(?!\?)|&&)/g),
+      ]
         .map((m) => ({ start: m.index ?? 0, end: matchBrace(f.source, m.index ?? 0) }))
         .filter((c) => c.end > 0);
       const reported = new Set(
@@ -935,6 +944,16 @@ describe('platform の通信失敗が無言にならない (#968)', () => {
       expect(displaced, `${target.testId} が ${target.errorState} の枝の中に在る`).toBe(false);
       // 下界: 押しのけられていないだけでなく、実際に描かれていること。
       expect(source, `${target.testId} が描かれていない`).toContain(target.testId);
+      /*
+       * 🔴 **別条件で押しのける形も塞ぐ（レビュー実測）。** 字句上の入れ子だけを見ると、
+       * `{switchError === null && viewing.tenantName !== null ? (` と書くほうが素直で、
+       * そちらは通ってしまう。**押しのけられる側の描画条件**が、エラー state に
+       * 言及しないことまで要求する。
+       */
+      const renderAt = source.indexOf(`data-testid="${target.testId}"`);
+      const containerAt = source.lastIndexOf('{', renderAt);
+      const head = source.slice(source.lastIndexOf('\n', containerAt) + 1, renderAt);
+      expect(head.includes(target.errorState), `${target.testId} の描画条件が ${target.errorState} を見ている`).toBe(false);
     },
   );
 
@@ -942,8 +961,19 @@ describe('platform の通信失敗が無言にならない (#968)', () => {
     '%s: 失敗から復帰する導線が画面に在る',
     (_label, target) => {
       const file = platformFiles().find((f) => f.name === target.file);
-      expect(file?.source ?? '', `${target.testId} が無い`).toContain(`data-testid="${target.testId}"`);
-      expect(file?.source ?? '', `${target.testId} が再取得を呼んでいない`).toContain(target.calls);
+      const source = file?.source ?? '';
+      const at = source.indexOf(`data-testid="${target.testId}"`);
+      expect(at, `${target.testId} が無い`).toBeGreaterThan(-1);
+      /*
+       * 🔴 **`calls` はファイル全体ではなく、そのボタンの要素の中で探す（レビュー実測）。**
+       * ファイル全体の substring で見ていたので、`onClick` を `() => undefined` にしても
+       * `useEffect` 側の `void load()` で満たされ、**「再試行」と書いてあるのに何も
+       * 起きないボタン**が通っていた。無いより悪い。
+       */
+      const open = source.lastIndexOf('<button', at);
+      const close = source.indexOf('</button>', at);
+      expect(open, 'ボタン要素を切り出せない').toBeGreaterThan(-1);
+      expect(source.slice(open, close), `${target.testId} が再取得を呼んでいない`).toContain(target.calls);
     },
   );
 
@@ -952,7 +982,51 @@ describe('platform の通信失敗が無言にならない (#968)', () => {
     expect(RECOVERY_CONTROL.map((r) => r.testId)).toEqual([
       'provider-config-reload',
       'feature-flags-retry',
+      'feature-flags-tenants-retry',
     ]);
+  });
+
+  /*
+   * 🔴 **検出器に綴りを足すのをやめ、書き方のほうを正準へ寄せる (#968 レビュー 3 周目 B-1)。**
+   *
+   * 3 周にわたり「`method: "PATCH"` も受ける」「`window.fetch` も拾う」と**検出器側へ綴りを
+   * 足し続けた**が、そのたびに次の綴り（`const { ok } = res` / `res.ok !== true` /
+   * `method: PATCH_METHOD`）が残った。`.claude/rules/opus5-autonomous-loop.md`
+   * 「値を調整している自分には気づけない」に照らすと、これは収束していない。
+   *
+   * 前提を替える: **応答の判定と HTTP メソッドの書き方を 1 通りに固定する。**
+   * 検出器が読める形でしか書けなくなるので、綴りの族そのものが消える。族としての
+   * 最終的な担保は `tests/e2e/platform-read-failure.spec.ts`（実際に落として見る）が持つ。
+   */
+  it('応答の判定は res.ok / response.ok の直参照で書く（分解束縛や != true にしない）', () => {
+    const offenders = platformFiles().flatMap((f) => {
+      if (fetchSites(f.source).length === 0) return [];
+      const bad: string[] = [];
+      if (/const\s*\{[^}]*\bok\b[^}]*\}\s*=\s*(?:res|response)\b/.test(f.source))
+        bad.push(`${f.name}: 応答を分解束縛している`);
+      for (const m of f.source.matchAll(/\b(?:res|response)\??\.ok\s*(===|!==|==|!=)\s*\w+/g))
+        bad.push(`${f.name}: ${m[0]} —— \`!res.ok\` の形で書く`);
+      return bad;
+    });
+    expect(offenders).toEqual([]);
+  });
+
+  it('HTTP メソッドはリテラルで書く（定数へ逃がさない）', () => {
+    const offenders = platformFiles().flatMap((f) =>
+      [...f.source.matchAll(/method:\s*([^,\n]+)/g)]
+        .map((m) => (m[1] ?? '').trim())
+        .filter((value) => !/^['"`](GET|POST|PUT|PATCH|DELETE)['"`]\s*[,}]?/.test(value))
+        .map((value) => `${f.name}: method: ${value}`),
+    );
+    expect(offenders).toEqual([]);
+  });
+
+  it('🔴 下界: method の指定を実際に見つけている', () => {
+    const methods = platformFiles().reduce(
+      (n, f) => n + [...f.source.matchAll(/method:\s*/g)].length,
+      0,
+    );
+    expect(methods).toBeGreaterThanOrEqual(5);
   });
 
   it('免除には理由が書かれている', () => {

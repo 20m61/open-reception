@@ -152,7 +152,11 @@ export function TenantDetail({ tenantId }: { tenantId: string }) {
         表示しません。有効/停止は破壊的操作のため、影響範囲の確認と理由入力を伴う確認フローで実行します。
       </p>
 
-      {error ? <p role="alert" style={{ color: 'var(--color-platform-warn)' }}>{error}</p> : null}
+      {error ? (
+        <p role="alert" data-testid="platform-tenant-detail-error" style={{ color: 'var(--color-platform-warn)' }}>
+          {error}
+        </p>
+      ) : null}
 
       <div style={{ display: 'flex', gap: 'var(--space-md)', flexWrap: 'wrap', marginBottom: 'var(--space-md)' }}>
         <MetricCard label="slug" value={data ? data.slug : '—'} />
@@ -185,7 +189,9 @@ export function TenantDetail({ tenantId }: { tenantId: string }) {
           <h2 style={{ fontSize: '1rem', opacity: 0.7 }}>危険な操作</h2>
           {/* 操作の失敗はボタンの隣に出す（読み取りの失敗と混ぜない・#968 AC4）。 */}
           {actionError ? (
-            <p role="alert" style={{ color: 'var(--color-platform-warn)' }}>{actionError}</p>
+            <p role="alert" data-testid="platform-tenant-action-error" style={{ color: 'var(--color-platform-warn)' }}>
+              {actionError}
+            </p>
           ) : null}
           <DangerActionButton
             label={data.status === 'active' ? 'このテナントを停止する' : 'このテナントを有効化する'}
