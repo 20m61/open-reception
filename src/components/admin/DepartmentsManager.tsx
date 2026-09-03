@@ -3,9 +3,14 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import type { Department } from '@/domain/department/types';
 import { CsvImport } from './CsvImport';
-import { Button, DataTable, Field, Form, SaveFeedback, useSaveFeedback, type Column } from '@/components/admin/ui';
+import { Button, DataTable, Field, Form, Pager, SaveFeedback, useSaveFeedback, type Column } from '@/components/admin/ui';
+import { paginate, sortRows } from './list-io';
+import { useQueryParams } from './use-query-params';
+import { useTableSort } from './use-table-sort';
 import { space } from '@/components/admin/ui/tokens';
 import { enablementState } from './state-vocabulary';
+
+const PAGE_SIZE = 20;
 
 /** 部署管理 (issue #25)。一覧・作成・有効/無効・並び替えを管理 API 経由で行う。 */
 export function DepartmentsManager() {
@@ -15,6 +20,8 @@ export function DepartmentsManager() {
   const [busy, setBusy] = useState(false);
   const [dragIndex, setDragIndex] = useState<number | null>(null);
   const { feedback, success, failure, clear } = useSaveFeedback();
+  const { get, setMany } = useQueryParams();
+  const { sort, setSort } = useTableSort();
 
   const load = useCallback(async () => {
     const res = await fetch('/api/admin/departments');
@@ -116,18 +123,23 @@ export function DepartmentsManager() {
     [dragIndex, items, load, clear, failure],
   );
 
+  const indexInItems = useCallback((d: Department) => items.findIndex((x) => x.id === d.id), [items]);
+
   const columns = useMemo<Column<Department>[]>(() => {
     const indexOf = (d: Department) => items.findIndex((x) => x.id === d.id);
     return [
       {
         key: 'order',
         header: '順',
+        // 既定の並び（表示順）へ戻す口。解除ではなくこの列で昇順に並べても同じ順になる。
+        sortValue: (d) => indexOf(d),
         cell: (d) => <span title="ドラッグで並び替え">⠿ {indexOf(d) + 1}</span>,
       },
       {
         key: 'name',
         header: '部署名',
         cellTestId: () => 'dept-name',
+        sortValue: (d) => d.name,
         cell: (d) => (
           <>
             {d.name}
@@ -164,6 +176,14 @@ export function DepartmentsManager() {
     ];
   }, [items, move, toggle]);
 
+  const sorted = useMemo(() => sortRows(items, columns, sort), [items, columns, sort]);
+  const paged = useMemo(() => paginate(sorted, Number(get('page')) || 1, PAGE_SIZE), [sorted, get]);
+  /*
+   * ドラッグでの並び替えは**既定の並びのままでないと意味を持たない**。並べ替え中や
+   * 2 ページ目では掴んだ位置と実際の位置が食い違うので、掴めなくする。
+   */
+  const reorderable = sort === undefined && paged.pageCount === 1;
+
   return (
     <section>
       <h1 style={{ marginTop: 0 }}>部署管理</h1>
@@ -195,17 +215,36 @@ export function DepartmentsManager() {
       <DataTable
         testId="dept-table"
         columns={columns}
-        rows={items}
+        rows={paged.items}
         rowKey={(d) => d.id}
         rowTestId={() => 'dept-row'}
-        rowProps={(_d, i) => ({
-          draggable: true,
-          onDragStart: () => setDragIndex(i),
-          onDragOver: (e) => e.preventDefault(),
-          onDrop: () => handleDrop(i),
-          style: { cursor: 'grab' },
-        })}
+        /*
+         * 🔴 **並べ替え中はドラッグさせない。** 並び替えは `items` の**位置**を書き換える
+         * 操作なので、表示が別の順序になっている間に掴むと、掴んだ行と動く行が食い違う。
+         * さらに index は**描画中の配列**のものなので、`items` 上の位置へ必ず引き直す
+         * （ページを切ると 2 ページ目の 1 行目が index 0 になり、先頭へ飛ぶ）。
+         */
+        rowProps={
+          reorderable
+            ? (d) => ({
+                draggable: true,
+                onDragStart: () => setDragIndex(indexInItems(d)),
+                onDragOver: (e) => e.preventDefault(),
+                onDrop: () => handleDrop(indexInItems(d)),
+                style: { cursor: 'grab' },
+              })
+            : undefined
+        }
+        sort={sort}
+        onSortChange={setSort}
         emptyMessage="登録された部署はありません。"
+      />
+
+      <Pager
+        page={paged.page}
+        pageCount={paged.pageCount}
+        onChange={(next) => setMany({ page: String(next) })}
+        testIdPrefix="dept"
       />
     </section>
   );

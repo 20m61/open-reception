@@ -13,6 +13,7 @@ export { StatusBadge } from './StatusBadge';
 export { DataTable, type Column } from './DataTable';
 export { Field, FormRow } from './Field';
 export { Form } from './Form';
+export { Pager } from './Pager';
 export { SecretStatusField } from './SecretStatusField';
 export { DangerZone } from './DangerZone';
 export { EmptyState } from './EmptyState';

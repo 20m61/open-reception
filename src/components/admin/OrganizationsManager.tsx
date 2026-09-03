@@ -3,8 +3,11 @@
 import { useCallback, useEffect, useState } from 'react';
 import type { OrganizationUnit } from '@/domain/organization/types';
 import { organizationVisibility } from '@/domain/organization/visibility';
-import { Button, DataTable, EmptyState, Section, StatusBadge, type Column } from '@/components/admin/ui';
+import { Button, DataTable, Pager, EmptyState, Section, StatusBadge, type Column } from '@/components/admin/ui';
 import { color, space } from '@/components/admin/ui/tokens';
+import { useQueryParams } from './use-query-params';
+import { useTableSort } from './use-table-sort';
+import { paginate, sortRows } from './list-io';
 
 /**
  * 階層組織の管理 (#373 増分 6)。
@@ -53,8 +56,12 @@ const HIDDEN_REASON_LABEL: Record<
   'no-public-name': '公開表示名が空',
 };
 
+const PAGE_SIZE = 20;
+
 export function OrganizationsManager() {
   const [items, setItems] = useState<OrganizationUnit[]>([]);
+  const { get, setMany } = useQueryParams();
+  const { sort, setSort } = useTableSort();
   const [unresolvedStaffIds, setUnresolvedStaffIds] = useState<string[]>([]);
   const [busyId, setBusyId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -108,6 +115,7 @@ export function OrganizationsManager() {
     {
       key: 'official',
       header: '内部の名称',
+      sortValue: (u) => u.officialName,
       cell: (u) => <span style={{ color: color.muted }}>{u.officialName}</span>,
     },
     {
@@ -218,6 +226,9 @@ export function OrganizationsManager() {
     },
   ];
 
+  const sorted = sortRows(items, columns, sort);
+  const paged = paginate(sorted, Number(get('page')) || 1, PAGE_SIZE);
+
   return (
     <Section headingLevel="h1" title="組織（来訪者への見せ方）">
       <p style={{ color: color.muted }}>
@@ -244,7 +255,22 @@ export function OrganizationsManager() {
       {items.length === 0 ? (
         <EmptyState title="組織がありません" message="まず「部署管理」で部署を追加してください。" />
       ) : (
-        <DataTable testId="org-table" rows={items} columns={columns} rowKey={(u) => u.id} />
+        <>
+          <DataTable
+            testId="org-table"
+            rows={paged.items}
+            columns={columns}
+            rowKey={(u) => u.id}
+            sort={sort}
+            onSortChange={setSort}
+          />
+          <Pager
+            page={paged.page}
+            pageCount={paged.pageCount}
+            onChange={(next) => setMany({ page: String(next) })}
+            testIdPrefix="org"
+          />
+        </>
       )}
     </Section>
   );
