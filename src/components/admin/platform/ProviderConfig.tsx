@@ -211,7 +211,21 @@ export function ProviderConfig() {
         決まります。
       </p>
 
-      {error ? <p role="alert" style={{ color: 'var(--color-platform-warn)' }}>{error}</p> : null}
+      {error ? (
+        <p role="alert" style={{ color: 'var(--color-platform-warn)' }}>
+          {error}{' '}
+          {/*
+            🔴 **塞いだ状態から出る道を同じ画面に置く (#968 レビュー m-4)。**
+            読み取りに失敗すると保存系 3 つが `disabled` になるが、`load` は
+            `useCallback(…, [])` でマウント時 1 回きりなので、この画面には再読込の導線が
+            無かった。文言も「通信を確認してください。」だけで、リロードが要ることを
+            言っていない。ガードで塞ぐなら、出る道を並べて置く。
+          */}
+          <button type="button" data-testid="provider-config-reload" onClick={() => void load()}>
+            再読込
+          </button>
+        </p>
+      ) : null}
       {/*
         🔴 **保存の成否とは別に出す。** 保存は成功しているので `notice`（緑）だけだと
         「有効にした瞬間から受付が 503 になる」ことが伝わらない。#763 で問題にしたのは

@@ -152,7 +152,12 @@ function TenantFeatureFlagEditor({ onChanged }: { onChanged?: () => void }) {
    * そこへ載せると**黙って消える**。逆に書込成功の直後に再読込が失敗すると、緑の `done` と
    * 「変更リクエストの送信に失敗しました」が同時に出て、何が起きたか読めなくなる。
    */
-  const [readError, setReadError] = useState<string | null>(null);
+  /*
+   * 読み取りの失敗は**取得対象ごとに**持つ。1 つに束ねると、片方の再取得成功が
+   * もう片方の失敗表示を消してしまう（再試行で引き直すときに実際に競合する）。
+   */
+  const [tenantsError, setTenantsError] = useState<string | null>(null);
+  const [flagsError, setFlagsError] = useState<string | null>(null);
   const [done, setDone] = useState<string | null>(null);
   /*
    * いま画面が指しているテナント (#968 レビュー M3)。`loadTenantFlags` は世代を見ないと、
@@ -162,25 +167,53 @@ function TenantFeatureFlagEditor({ onChanged }: { onChanged?: () => void }) {
    */
   const latestTenantId = useRef('');
 
+  /** テナント一覧の取得。再試行から呼び直せるよう `useEffect` の外に置く (#968 レビュー m-5)。 */
+  const loadTenants = useCallback(async (cancelled?: () => boolean) => {
+    const aborted = () => cancelled?.() === true;
+    try {
+      const res = await fetch('/api/platform/tenants');
+      if (aborted()) return;
+      /*
+       * 🔴 **HTTP の失敗も報告する (#968 レビュー M-1)。** この画面で最も起こりやすい失敗は
+       * 403（developer 権限・昇格切れ）で、reject（オフライン）より遥かに多い。黙って
+       * `return` すると**テナントが 1 つも無いのと同じ見た目**になり、運用者は権限の問題に
+       * 辿り着けないまま「対象テナントが選べない」で止まる。
+       */
+      if (!res.ok) {
+        setTenantsError(
+          res.status === 403
+            ? 'テナント一覧の閲覧権限がありません（昇格が切れている可能性があります）。'
+            : 'テナント一覧を取得できませんでした。',
+        );
+        return;
+      }
+      const body = (await res.json()) as { tenants: TenantRow[] };
+      setTenantsError(null);
+      setTenants(body.tenants);
+    } catch {
+      // テナントを選べないまま黙って空のプルダウンを出さない (#968)。
+      if (!aborted()) setTenantsError('テナント一覧を取得できませんでした。通信を確認してください。');
+    }
+  }, []);
+
   useEffect(() => {
     let cancelled = false;
-    void (async () => {
-      try {
-        const res = await fetch('/api/platform/tenants');
-        if (cancelled || !res.ok) return;
-        const body = (await res.json()) as { tenants: TenantRow[] };
-        setTenants(body.tenants);
-      } catch {
-        // テナントを選べないまま黙って空のプルダウンを出さない (#968)。
-        if (!cancelled) setReadError('テナント一覧を取得できませんでした。通信を確認してください。');
-      }
-    })();
+    void loadTenants(() => cancelled);
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [loadTenants]);
 
   const loadTenantFlags = useCallback(async (id: string) => {
+    /*
+     * 🔴 **古い対象の再取得で、いま見ている対象の flags を消さない (#968 レビュー B-1)。**
+     *
+     * `toggle` は成功後に `loadTenantFlags(tenantId)` を呼ぶ。その間に運用者が別テナントを
+     * 選ぶと、**古い id の再取得が新しい画面の `flags` を `null` にし**、直後に世代ガードが
+     * 自分の応答を捨てるので `flags` も `flagsError` も `null` のまま残る ——「読み込み中…」
+     * すら出ない空白（#968 が消そうとしている無言そのもの）を、ガードが新しく作る。
+     */
+    if (latestTenantId.current !== id) return;
     setFlags(null);
     if (id === '') return;
     try {
@@ -188,18 +221,18 @@ function TenantFeatureFlagEditor({ onChanged }: { onChanged?: () => void }) {
       // 遷移をまたいだ古い応答は成否によらず捨てる (#968 レビュー M3)。
       if (latestTenantId.current !== id) return;
       if (!res.ok) {
-        setReadError('テナントの機能フラグの取得に失敗しました。');
+        setFlagsError('テナントの機能フラグの取得に失敗しました。');
         return;
       }
       setFlags((await res.json()) as TenantFlagsResponse);
     } catch {
       /*
        * 🔴 **拾わないと「読み込み中…」で止まる (#968)。** 描画は
-       * `tenantId !== '' && !flags && !readError` で読み込み中を出しているので、
-       * `flags` も `readError` も `null` のままだと終わらない待ちになる。
+       * `tenantId !== '' && !flags && !flagsError` で読み込み中を出しているので、
+       * `flags` も `flagsError` も `null` のままだと終わらない待ちになる。
        */
       if (latestTenantId.current === id)
-        setReadError('テナントの機能フラグを取得できませんでした。通信を確認してください。');
+        setFlagsError('テナントの機能フラグを取得できませんでした。通信を確認してください。');
     }
   }, []);
 
@@ -207,7 +240,7 @@ function TenantFeatureFlagEditor({ onChanged }: { onChanged?: () => void }) {
     latestTenantId.current = id;
     setTenantId(id);
     setWriteError(null);
-    setReadError(null);
+    setFlagsError(null);
     setDone(null);
     void loadTenantFlags(id);
   }
@@ -228,6 +261,13 @@ function TenantFeatureFlagEditor({ onChanged }: { onChanged?: () => void }) {
         body: JSON.stringify(built.payload),
       });
       const resBody: unknown = await res.json().catch(() => null);
+      /*
+       * 🔴 **昇格つき破壊的操作の成否を、別テナントの画面に出さない (#968 レビュー B-1)。**
+       * `<select>` は飛行中でも操作できたので、A への PATCH が解決したとき画面は B かも
+       * しれない。素で報告すると「『音声合成』を無効にしました（監査に記録済み）」が **B の
+       * 画面に**出る —— 監査には A と正しく残るので、運用者だけが取り違える。
+       */
+      if (latestTenantId.current !== tenantId) return;
       if (!res.ok) {
         setWriteError(featureFlagUpdateError(res.status, resBody));
         return;
@@ -240,7 +280,8 @@ function TenantFeatureFlagEditor({ onChanged }: { onChanged?: () => void }) {
       await loadTenantFlags(tenantId);
       onChanged?.();
     } catch {
-      setWriteError({ needsElevation: false, message: '機能フラグ変更リクエストの送信に失敗しました。' });
+      if (latestTenantId.current === tenantId)
+        setWriteError({ needsElevation: false, message: '機能フラグ変更リクエストの送信に失敗しました。' });
     } finally {
       setBusyKey(null);
     }
@@ -277,9 +318,11 @@ function TenantFeatureFlagEditor({ onChanged }: { onChanged?: () => void }) {
       </p>
       <label style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
         対象テナント
+        {/* 書込中の切替はレースそのもの。窓を作らない (#968 レビュー B-1)。 */}
         <select
           value={tenantId}
           onChange={(e) => selectTenant(e.target.value)}
+          disabled={busyKey !== null}
           style={{ ...inputStyle, width: 'auto' }}
         >
           <option value="">選択してください</option>
@@ -329,11 +372,33 @@ function TenantFeatureFlagEditor({ onChanged }: { onChanged?: () => void }) {
           ) : null}
         </>
       ) : null}
-      {tenantId !== '' && !flags && !readError ? <p style={{ margin: 0, opacity: 0.6 }}>読み込み中…</p> : null}
+      {tenantId !== '' && !flags && !flagsError ? <p style={{ margin: 0, opacity: 0.6 }}>読み込み中…</p> : null}
 
-      {readError ? (
+      {tenantsError ? (
         <p role="alert" style={{ color: 'var(--color-platform-warn)', margin: 0 }}>
-          {readError}
+          {tenantsError}
+        </p>
+      ) : null}
+
+      {flagsError ? (
+        <p role="alert" style={{ color: 'var(--color-platform-warn)', margin: 0 }}>
+          {flagsError}{' '}
+          {/*
+            🔴 **塞いだ状態から出る道を同じ画面に置く (#968 レビュー m-5)。**
+            `<select>` で同じテナントを選び直しても `onChange` は発火しないので、
+            再試行の導線が無いと「別テナントへ行って戻る」かリロードしか道が無い。
+          */}
+          <button
+            type="button"
+            data-testid="feature-flags-retry"
+            onClick={() => {
+              setFlagsError(null);
+              void loadTenantFlags(latestTenantId.current);
+            }}
+            style={{ ...inputStyle, cursor: 'pointer' }}
+          >
+            再試行
+          </button>
         </p>
       ) : null}
 

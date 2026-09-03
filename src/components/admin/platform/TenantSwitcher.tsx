@@ -64,9 +64,23 @@ export function TenantSwitcher() {
     void (async () => {
       try {
         const res = await fetch('/api/platform/tenants');
-        if (cancelled || !res.ok) return;
+        if (cancelled) return;
+        /*
+         * 🔴 **HTTP の失敗も報告する (#968 レビュー M-1)。** ここで最も起こりやすい失敗は
+         * 403（developer 権限・昇格切れ）で、reject より遥かに多い。黙って `return` すると
+         * 選択肢が空のまま「全テナント横断」だけが残り、**テナントが 1 つも無いのと同じ
+         * 見た目**になる —— 取れなかったことを「無い」と言い換える形になる。
+         */
+        if (!res.ok) {
+          setListError(
+            res.status === 403
+              ? 'テナント一覧の閲覧権限がありません。'
+              : 'テナント一覧を取得できませんでした。',
+          );
+          return;
+        }
         const body = (await res.json()) as TenantsResponse;
-        if (!cancelled) setTenants(body.tenants ?? []);
+        setTenants(body.tenants ?? []);
       } catch {
         if (!cancelled) setListError('テナント一覧を取得できませんでした。');
       }
@@ -119,46 +133,58 @@ export function TenantSwitcher() {
       // platform だけが持つ「未選択＝全テナント横断」。admin には出さない。
       nullOptionLabel="全テナント横断"
       onSelect={(next) => void onSelect(next)}
+      /*
+       * 🔴 **エラーは「表示中」を押しのけない (#968 レビュー M-4)。**
+       *
+       * 当初は優先順位つき三項で先頭に置いたが、`switchError` は次の切替まで消えないので、
+       * 一度切替に失敗すると `表示中: <name>` と **`（選択中と別）`（#423 の越境警告）が
+       * 恒久的に消える**。切替が成立しなかった直後は「スコープが変わったつもりで変わって
+       * いない」まさにその瞬間で、そこで越境警告を消すのは方向が逆である。**併記する。**
+       */
       trailing={
-        switchError !== null ? (
-          <span
-            role="alert"
-            data-testid="platform-tenant-switch-error"
-            style={{ fontSize: font.small, color: 'var(--color-platform-warn)' }}
-          >
-            {switchError}
-          </span>
-        ) : listError !== null ? (
-          <span
-            role="alert"
-            data-testid="platform-tenant-list-error"
-            style={{ fontSize: font.small, color: 'var(--color-platform-warn)' }}
-          >
-            {listError}
-          </span>
-        ) : viewing.tenantName !== null ? (
-          <span
-            data-testid="platform-viewing-tenant"
-            style={{ fontSize: '0.8125rem', opacity: 0.9 }}
-          >
-            表示中: <strong>{viewing.tenantName}</strong>
-            {viewing.differsFromSticky ? (
-              <span data-testid="platform-viewing-differs" style={{ opacity: 0.7 }}>
-                （選択中と別）
-              </span>
-            ) : null}
-          </span>
-        ) : selected ? (
-          <a
-            href={`/platform/tenants/${selected.id}`}
-            style={{ fontSize: '0.8125rem', opacity: 0.8 }}
-            data-testid="tenant-switcher-detail-link"
-          >
-            詳細
-          </a>
-        ) : (
-          <span style={{ fontSize: '0.8125rem', opacity: 0.5 }}>{selectedTenantLabel(null)}</span>
-        )
+        <>
+          {switchError !== null ? (
+            <span
+              role="alert"
+              data-testid="platform-tenant-switch-error"
+              style={{ fontSize: font.small, color: 'var(--color-platform-warn)' }}
+            >
+              {switchError}
+            </span>
+          ) : null}
+          {listError !== null ? (
+            <span
+              role="alert"
+              data-testid="platform-tenant-list-error"
+              style={{ fontSize: font.small, color: 'var(--color-platform-warn)' }}
+            >
+              {listError}
+            </span>
+          ) : null}
+          {viewing.tenantName !== null ? (
+            <span
+              data-testid="platform-viewing-tenant"
+              style={{ fontSize: '0.8125rem', opacity: 0.9 }}
+            >
+              表示中: <strong>{viewing.tenantName}</strong>
+              {viewing.differsFromSticky ? (
+                <span data-testid="platform-viewing-differs" style={{ opacity: 0.7 }}>
+                  （選択中と別）
+                </span>
+              ) : null}
+            </span>
+          ) : selected ? (
+            <a
+              href={`/platform/tenants/${selected.id}`}
+              style={{ fontSize: '0.8125rem', opacity: 0.8 }}
+              data-testid="tenant-switcher-detail-link"
+            >
+              詳細
+            </a>
+          ) : (
+            <span style={{ fontSize: '0.8125rem', opacity: 0.5 }}>{selectedTenantLabel(null)}</span>
+          )}
+        </>
       }
     />
   );

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { readFileSync, readdirSync } from 'node:fs';
-import { join } from 'node:path';
+import { existsSync, readFileSync, readdirSync } from 'node:fs';
+import { dirname, join, relative } from 'node:path';
 
 /**
  * platform の通信失敗が無言にならない (#968)。
@@ -48,8 +48,14 @@ function stripComments(source: string): string {
   return source.replace(/\/\*[\s\S]*?\*\//g, '').replace(/(^|[^:])\/\/.*$/gm, '$1');
 }
 
-function platformFiles(): { name: string; source: string }[] {
-  const out: { name: string; source: string }[] = [];
+function platformFiles(): { name: string; source: string; absolute: string }[] {
+  const out: { name: string; source: string; absolute: string }[] = [];
+  const seen = new Set<string>();
+  const add = (absolute: string, name: string): void => {
+    if (seen.has(absolute)) return;
+    seen.add(absolute);
+    out.push({ name, source: stripComments(readFileSync(absolute, 'utf8')), absolute });
+  };
   const walk = (dir: string, prefix: string): void => {
     for (const entry of readdirSync(dir, { withFileTypes: true })) {
       const path = join(dir, entry.name);
@@ -60,11 +66,43 @@ function platformFiles(): { name: string; source: string }[] {
        * `usePlatformPing.ts` のような hook へ `fetch` を切り出すだけで**1 バイトも
        * 読まれなくなる**（実測で生存）。ディレクトリ軸（再帰）だけ塞いでも足りない。
        */
-      else if (/\.tsx?$/.test(entry.name) && !entry.name.includes('.test.'))
-        out.push({ name, source: stripComments(readFileSync(path, 'utf8')) });
+      else if (/\.tsx?$/.test(entry.name) && !entry.name.includes('.test.')) add(path, name);
     }
   };
   walk(PLATFORM_DIR, '');
+
+  /*
+   * 🔴 **ディレクトリの外へ出す軸も塞ぐ (#968 レビュー m-3)。**
+   *
+   * 拡張子軸と再帰を塞いでも、`fetch` を `src/lib/platform/switch-tenant.ts` のような
+   * **隣のディレクトリの helper へ移す**だけで母集団から丸ごと外れる（実測で生存。
+   * `TenantSwitcher` は既に `@/lib/platform/selected-tenant` を import しているので、
+   * これは仮想的な逃げ道ではなく自然な置き場所である）。
+   *
+   * platform の画面から**到達できる module** を推移的に足す。サーバ専用の module
+   * （API route からしか呼ばれないもの、例: `aws-cost-explorer.ts`）は誰も import して
+   * いないので入らない —— そこの `fetch` は throw して route が扱うのが正しい。
+   */
+  const resolve = (spec: string, fromDir: string): string | undefined => {
+    const base = spec.startsWith('@/')
+      ? join(process.cwd(), 'src', spec.slice(2))
+      : spec.startsWith('.')
+        ? join(fromDir, spec)
+        : undefined;
+    if (base === undefined) return undefined;
+    for (const candidate of [`${base}.ts`, `${base}.tsx`, join(base, 'index.ts'), join(base, 'index.tsx')])
+      if (existsSync(candidate)) return candidate;
+    return undefined;
+  };
+  for (let i = 0; i < out.length; i += 1) {
+    const current = out[i];
+    if (!current) continue;
+    const dir = dirname(current.absolute);
+    for (const m of current.source.matchAll(/from\s+'([^']+)'/g)) {
+      const target = resolve(m[1] ?? '', dir);
+      if (target && !target.includes('.test.')) add(target, relative(join(process.cwd(), 'src'), target));
+    }
+  }
   return out;
 }
 
@@ -148,8 +186,30 @@ function fetchSites(source: string): number[] {
  * `void 0;` という**1 つの綴り**を閉じただけで族が閉じていなかった、という指摘そのもの。
  * 中身のある値（文字列リテラル・テンプレート・オブジェクト・関数呼び出し）を要求する。
  */
-const FAILURE_REPORT =
-  /\b(?:set[A-Za-z]*(?:Error|Failed|Failure)|failure)\s*\(\s*(?!\)|null\s*\)|undefined\s*\)|''\s*\)|""\s*\)|``\s*\)|false\s*\))/;
+const FAILURE_CALL = /\b(?:set[A-Za-z]*(?:Error|Failed|Failure)|failure)\s*\(/g;
+
+/**
+ * **画面に何も出ない**引数 (#968 レビュー m-2)。
+ *
+ * 最初は `null` / `undefined` / `''` / `""` / `` `` `` / `false` を列挙して弾いていたが、
+ * 独立レビューが `setActionError(' ')`（**空白 1 文字**）を当てて生存させた —— 空白だけの
+ * 文字列は truthy なので `{actionError ? …}` は真になり、`role="alert"` の**空の段落**が
+ * 描かれる。画面にも読み上げにも何も出ないのに、検査は「報告している」と判定する。
+ *
+ * 引用符の**中身が空白だけ**であることまで見る形へ替えた（`\s*` を挟む）。逆に、計算された
+ * 式（三項・関数呼び出し・オブジェクト）は静的には空かどうか判定できないので**通す** ——
+ * ここで閉じられるのは「リテラルとして空」の族だけである、と明示しておく。
+ */
+const EMPTY_ARGUMENT = /^\s*(?:null|undefined|false|0|(['"`])\s*\1)\s*[,)]/;
+
+/** 失敗を**画面へ出す**呼び出しが在るか。 */
+function reportsFailure(body: string): boolean {
+  for (const m of body.matchAll(FAILURE_CALL)) {
+    const rest = body.slice((m.index ?? 0) + m[0].length);
+    if (!EMPTY_ARGUMENT.test(rest)) return true;
+  }
+  return false;
+}
 
 /** `catch` の中で呼ばれている報告先 setter 名（`setError` → `error`）。 */
 function reportedStates(body: string): string[] {
@@ -216,19 +276,25 @@ const GENERATION_GUARDED: readonly {
     file: 'TenantDetail.tsx',
     fn: 'load',
     ref: 'latestTenantId',
-    why: 'tenantId ごとに load を作り直すので、A→B 遷移直後に A の応答が成否とも後着しうる',
+    why: '現 routing では防御的（詳細→詳細は必ず一覧を経由し unmount する）。詳細リンクが next/link 化された時点で到達するので、先に張っておく',
   },
   {
     file: 'TenantDetail.tsx',
     fn: 'runLifecycle',
     ref: 'latestTenantId',
-    why: 'PATCH の応答が遷移をまたいで後着すると、破壊的操作の失敗が別テナントの画面に出る',
+    why: '同上。PATCH の応答が遷移をまたぐと破壊的操作の失敗が別テナントの画面に出る',
   },
   {
     file: 'FeatureFlags.tsx',
     fn: 'loadTenantFlags',
     ref: 'latestTenantId',
     why: '選択し直した直後に前テナントの flags が載ると、その値を根拠に昇格つき PATCH を組み立てる',
+  },
+  {
+    file: 'FeatureFlags.tsx',
+    fn: 'toggle',
+    ref: 'latestTenantId',
+    why: '<select> は 1 マウント内で対象が変わる唯一の場所。昇格つき破壊的 PATCH の成否が別テナントの画面へ誤帰属する',
   },
 ];
 
@@ -247,7 +313,7 @@ const RESET_ON_SWITCH: readonly { readonly file: string; readonly setter: string
   },
   {
     file: 'FeatureFlags.tsx',
-    setter: 'setReadError',
+    setter: 'setFlagsError',
     why: '読み取りの失敗を writeError から分離した結果、選択し直しでの消去経路が無くなるため',
   },
   {
@@ -256,6 +322,37 @@ const RESET_ON_SWITCH: readonly { readonly file: string; readonly setter: string
     why: '前テナントへの書込失敗を、別テナントを選んだ画面に残さないため',
   },
 ];
+
+/**
+ * `failed={…}` に許す式の形 (#968 レビュー M-2)。
+ *
+ * 🔴 **式の中身から識別子を拾う形は、`const` 別名 1 つで巻き戻せる。** レビューの実測では
+ * `const readFailed = error !== null;` を挟んで `failed={readFailed}` にすると、feeder が
+ * `setReadFailed`（誰も呼ばない名前）になり、**AC4 の検査ごと空振り**した。綴りを 1 つずつ
+ * 潰しても族は閉じないので、**式の形そのものを閉じる**: `failed={<state> !== null}` だけを
+ * 許し、それ以外は定数免除（`CONSTANT_READ_STATE`）に載っていることを要求する。
+ */
+const FAILED_EXPRESSION = /^\s*([A-Za-z_$][\w$]*)\s*!==\s*null\s*$/;
+
+/** `<DataTable … />` を粗く切り出す（`platform-list-states.test.ts` と同じ形）。 */
+function dataTableBlocks(source: string): string[] {
+  return [...source.matchAll(/<DataTable\b[\s\S]*?\/>/g)].map((m) => m[0]);
+}
+
+/**
+ * `failed` を定数に束ねてよい一覧。**同一性で固定する。**
+ * 判断の正本は `tests/config/platform-list-states.test.ts` の `CONSTANT_READ_STATE` で、
+ * ここはその testId を写している（両方が同じ 1 件を指していることを下で確かめる）。
+ */
+const FAILED_CONSTANT_ALLOWED: readonly string[] = ['aws-cost-breakdown'];
+
+/** `failed={…}` が指している読み取り state の setter 名。 */
+function failedFeeders(source: string): string[] {
+  return [...source.matchAll(/\bfailed=\{([^}]*)\}/g)]
+    .map((m) => FAILED_EXPRESSION.exec(m[1] ?? '')?.[1])
+    .filter((id): id is string => Boolean(id))
+    .map((id) => `set${id.charAt(0).toUpperCase()}${id.slice(1)}`);
+}
 
 /**
  * 一覧を書き換える（＝操作系の）本体か。
@@ -274,6 +371,37 @@ function isMutating(body: string): boolean {
  * すると、同じファイルの別の `fetch` が黙って免除される —— 本テストが存在する理由
  * そのものになってしまう。
  */
+/**
+ * 報告先の描画を**排他の枝の内側**に置いてよい state (#968 レビュー M-3)。**理由を必ず書く。**
+ *
+ * 入れ子そのものが悪いのではなく、**その state が立つ状況で外側の条件が偽になる**のが悪い。
+ * 到達可能性は静的走査で取れないので、人が読んで書き、機械は**黙って増えないこと**を守る。
+ */
+const RENDER_NESTING: readonly { readonly file: string; readonly state: string; readonly why: string }[] = [
+  {
+    file: 'TenantDetail.tsx',
+    state: 'actionError',
+    why: 'actionError は「危険な操作」ボタンからしか立たず、そのボタン自体が data の枝の中にある。data は読み取り失敗でも落とさないので、外側の条件は actionError が立つ状況で必ず真',
+  },
+];
+
+/**
+ * 読み取りに失敗したら「読めている」を取り下げる（`readable` を偽へ落とす）配線 (#968 レビュー m-1)。
+ */
+const CLEAR_ON_READ_FAILURE: readonly {
+  readonly file: string;
+  readonly fn: string;
+  readonly clears: string;
+  readonly why: string;
+}[] = [
+  {
+    file: 'ProviderConfig.tsx',
+    fn: 'load',
+    clears: 'setData(null)',
+    why: 'readable = data !== null が保存導線を閉じる唯一の根拠。失敗時に stale な data を残すと、楽観ロックの無い全置換 upsert が有効なまま残る',
+  },
+];
+
 const EXEMPT_FETCH: readonly { readonly file: string; readonly marker: string; readonly why: string }[] = [];
 
 /*
@@ -352,7 +480,7 @@ describe('platform の通信失敗が無言にならない (#968)', () => {
             .sort((a, b) => b.tryBody.start - a.tryBody.start)[0];
           if (!enclosing) return [];
           const body = f.source.slice(enclosing.catchBody.start, enclosing.catchBody.end);
-          return FAILURE_REPORT.test(body)
+          return reportsFailure(body)
             ? []
             : [`${f.name}: ${f.source.slice(site, site + 48).replace(/\s+/g, ' ')}… の catch が無音`];
         });
@@ -395,12 +523,7 @@ describe('platform の通信失敗が無言にならない (#968)', () => {
        * AC4 の検査が外れる（実測で生存）。式に現れる識別子すべてを読み取り側の
        * state 候補として扱い、対応する setter を操作系から締め出す。
        */
-      const feeders = [...f.source.matchAll(/\bfailed=\{([^}]*)\}/g)].flatMap((m) =>
-        [...(m[1] ?? '').matchAll(/[A-Za-z_$][\w$]*/g)]
-          .map((id) => id[0])
-          .filter((id) => !['Boolean', 'null', 'undefined', 'true', 'false'].includes(id))
-          .map((id) => `set${id.charAt(0).toUpperCase()}${id.slice(1)}`),
-      );
+      const feeders = failedFeeders(f.source);
       return functionBodies(f.source)
         .filter((fn) => isMutating(fn.body))
         .flatMap((fn) =>
@@ -573,13 +696,139 @@ describe('platform の通信失敗が無言にならない (#968)', () => {
       'TenantDetail.tsx:load',
       'TenantDetail.tsx:runLifecycle',
       'FeatureFlags.tsx:loadTenantFlags',
+      'FeatureFlags.tsx:toggle',
     ]);
     expect(RESET_ON_SWITCH.map((r) => `${r.file}:${r.setter}`)).toEqual([
       'TenantDetail.tsx:setActionError',
-      'FeatureFlags.tsx:setReadError',
+      'FeatureFlags.tsx:setFlagsError',
       'FeatureFlags.tsx:setWriteError',
     ]);
   });
+
+  /*
+   * 🔴 **`failed={…}` の式の形を閉じる (#968 レビュー M-2)。**
+   * `const readFailed = error !== null;` を 1 つ挟むだけで AC4 の検査が空振りした（実測）。
+   */
+  it('failed に渡す式は <state> !== null の形（別名で feeder を隠さない）', () => {
+    const offenders = platformFiles().flatMap((f) =>
+      dataTableBlocks(f.source).flatMap((block) => {
+        const testId = /testId="([^"]*)"/.exec(block)?.[1] ?? '(testId なし)';
+        if (FAILED_CONSTANT_ALLOWED.includes(testId)) return [];
+        const expr = /\bfailed=\{([^}]*)\}/.exec(block)?.[1];
+        if (expr === undefined) return [`${f.name}: ${testId} が failed を渡していない`];
+        return FAILED_EXPRESSION.test(expr) ? [] : [`${f.name}: ${testId} の failed=${expr}`];
+      }),
+    );
+    expect(offenders).toEqual([]);
+  });
+
+  it('🔴 下界: failed を式で渡す DataTable が実在する（形の検査を空虚にしない）', () => {
+    expect(platformFiles().flatMap((f) => failedFeeders(f.source)).length).toBeGreaterThanOrEqual(7);
+  });
+
+  it('🔴 定数免除は固定（黙って増やせない）', () => {
+    expect([...FAILED_CONSTANT_ALLOWED]).toEqual(['aws-cost-breakdown']);
+  });
+
+  /*
+   * 🔴 **HTTP の失敗も報告する (#968 レビュー M-1)。**
+   *
+   * 新検出器は「囲む `catch` が報告する」しか要求していなかったので、`!res.ok` の枝で
+   * 黙って `return` する形が**構造上見えなかった**。この console で最も起こりやすい失敗は
+   * 403（developer 権限・昇格切れ）で、reject（オフライン）より遥かに多い。
+   */
+  it('!res.ok の枝は失敗を報告する（403 / 5xx を無言にしない）', () => {
+    const offenders = platformFiles().flatMap((f) =>
+      [...f.source.matchAll(/if\s*\(([^)]*![\w.?]*\.ok[^)]*)\)\s*\{/g)].flatMap((m) => {
+        const open = (m.index ?? 0) + m[0].length - 1;
+        const end = matchBrace(f.source, open);
+        if (end < 0) return [];
+        const body = f.source.slice(open, end);
+        return reportsFailure(body) ? [] : [`${f.name}: if (${(m[1] ?? '').trim()}) が無言`];
+      }),
+    );
+    expect(offenders).toEqual([]);
+  });
+
+  it('🔴 下界: !res.ok の枝を実際に見つけている（走査が空振りしていない）', () => {
+    const branches = platformFiles().reduce(
+      (n, f) => n + [...f.source.matchAll(/if\s*\(([^)]*![\w.?]*\.ok[^)]*)\)\s*\{/g)].length,
+      0,
+    );
+    expect(branches).toBeGreaterThanOrEqual(8);
+  });
+
+  /*
+   * 🔴 **報告先の描画が「到達する」ことまで見る (#968 レビュー M-3)。**
+   *
+   * 「描いている」は正規表現で見えるが、**描画を排他の枝の内側へ移す**と到達しなくなる ——
+   * レビューは `{flagsError ? …}` を `{flags ? ( … )}` の中へ移す変異を当てて生存させた
+   * （`flagsError` が立つのは `flags === null` のときだけなので、**永遠に描かれない**）。
+   * 著者の行列の「描かない」は削除の 1 綴りしか見ていなかった。
+   *
+   * 静的走査で到達可能性そのものは取れないので、**入れ子を禁じ、例外は理由つきで登録**させる。
+   */
+  it('報告先の描画は排他の枝の内側に置かない（描くが到達しない形にしない）', () => {
+    const offenders = platformFiles().flatMap((f) => {
+      /*
+       * JSX の条件付きコンテナ `{cond ? …}`。**識別子は `{` と同じ行にあることを要求する**
+       * —— `\s*` で改行を跨がせると、コンポーネント関数の本体そのもの（`{` の次の行に
+       * `const pathname = usePathname() ?? ''`）が「コンテナ」に化け、**画面全体が
+       * 入れ子扱い**になる（実測。`??` の `?` を拾っていた）。`??` も除く。
+       */
+      const containers = [...f.source.matchAll(/\{[ \t]*[A-Za-z_$][^{}\n]*?(?<!\?)\?(?!\?)/g)]
+        .map((m) => ({ start: m.index ?? 0, end: matchBrace(f.source, m.index ?? 0) }))
+        .filter((c) => c.end > 0);
+      const reported = new Set(
+        tryCatchBlocks(f.source).flatMap((b) =>
+          reportedStates(f.source.slice(b.catchBody.start, b.catchBody.end)),
+        ),
+      );
+      return [...reported].flatMap((state) => {
+        const at = f.source.search(new RegExp(`\\{\\s*${state}\\s*(?:!==\\s*null\\s*)?\\?`));
+        if (at < 0) return [];
+        const enclosing = containers.filter((c) => c.start < at && c.end > at);
+        if (enclosing.length === 0) return [];
+        return RENDER_NESTING.some((e) => e.file === f.name && e.state === state)
+          ? []
+          : [`${f.name}: ${state} の描画が排他の枝の内側に在る`];
+      });
+    });
+    expect(offenders).toEqual([]);
+  });
+
+  it('🔴 入れ子の免除は理由つきで固定（黙って増やせない）', () => {
+    expect(RENDER_NESTING.filter((e) => e.why.trim().length < 10)).toEqual([]);
+    expect(RENDER_NESTING.map((e) => `${e.file}:${e.state}`)).toEqual(['TenantDetail.tsx:actionError']);
+  });
+
+  /*
+   * 🔴 **読めなくなったら「読めている」を取り下げる (#968 レビュー m-1)。**
+   *
+   * `readable = data !== null` で保存導線を閉じても、失敗時に `data` を落とさなければ
+   * **stale なデータで `readable` が真のまま**残り、全置換 upsert の保存ボタンが有効になる。
+   * 実描画のオラクル（`list-read-state.test.tsx`）は `useEffect` が走らないため初期状態しか
+   * 見られず、「一度読めたあとに読めなくなった」は観測できない。ここが唯一の閂。
+   */
+  it.each(CLEAR_ON_READ_FAILURE.map((c) => [`${c.file}:${c.fn}`, c] as const))(
+    '%s: 読み取りの失敗枝で %s を落とす',
+    (_label, target) => {
+      const file = platformFiles().find((f) => f.name === target.file);
+      const fn = functionBodies(file?.source ?? '').find((b) => b.name === target.fn);
+      expect(fn, `${target.file} に ${target.fn} が無い`).toBeDefined();
+      const body = fn?.body ?? '';
+      const failurePaths = [
+        ...[...body.matchAll(/if\s*\([^)]*!res\.ok[^)]*\)\s*\{/g)].map((m) => {
+          const open = (m.index ?? 0) + m[0].length - 1;
+          return body.slice(open, matchBrace(body, open));
+        }),
+        ...tryCatchBlocks(body).map((b) => body.slice(b.catchBody.start, b.catchBody.end)),
+      ];
+      expect(failurePaths.length, '失敗枝が見つからない（登録が腐っている）').toBeGreaterThanOrEqual(2);
+      const missing = failurePaths.filter((path) => !path.includes(target.clears));
+      expect(missing.length, `${target.clears} を呼ばない失敗枝が在る`).toBe(0);
+    },
+  );
 
   it('免除には理由が書かれている', () => {
     expect(EXEMPT_FETCH.filter((e) => e.why.trim().length < 10).map((e) => e.marker)).toEqual([]);
