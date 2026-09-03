@@ -10,9 +10,12 @@ import { join } from 'node:path';
  * `AuditLogViewer` / `ReceptionsViewer`）。そのまま足すと 10 個になる ——
  * `MetricCard` / `StatusBadge` が二重定義のまま**角丸が食い違った** #895 / #897 と同じ形。
  *
- * そこで共有 `ui/Pager` へ寄せ、**新しく写すことを機械で止める**。既存 6 つの移行は
- * 振る舞いを変えない純粋なリファクタなので `PENDING` に理由つきで残す
- * （ここが空になったら `PENDING` ごと畳む）。
+ * そこで共有 `ui/Pager` へ寄せ、**新しく写すことを機械で止める**。既存 6 つも同じ増分で
+ * 寄せ切ったので、**例外の登録簿は持たない** —— 残すと「ここに足せば通る」逃げ道になる。
+ *
+ * testid の接頭辞は**既存ソースから実測して**引き継いだ。推測していたら `reservation` を
+ * `rsv`、`receptions` を `reception` と取り違えていた（実際に両方とも推測と違った）。
+ * 既存 e2e が 1 行も変わらず緑であること自体が、移行が振る舞いを変えていない証拠になる。
  */
 
 const ADMIN_DIR = join(process.cwd(), 'src/components/admin');
