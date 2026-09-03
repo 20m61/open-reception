@@ -256,4 +256,23 @@ describe('platform の一覧の状態表示 (#896 / 課題 06)', () => {
       .map((x) => `${x.field} → ${x.hits} 件`);
     expect(offenders).toEqual([]);
   });
+
+  /*
+   * 🔴 **免除の数と、免除された tbody の数が一致する。**
+   *
+   * 直上の「ちょうど 1 つに当たる」は、**残る tbody が 1 つしか無い今の状態では
+   * 効かない** —— `.map(` のような広すぎる式でも、当たる先が 1 つしか無ければ
+   * 「ちょうど 1 つ」を満たしてしまう。実際に #896 AC1 で 13 表を `DataTable` へ
+   * 寄せたあと、**前の方式なら殺せていた `.map(` 変異が生存した**（実測）。
+   * `.claude/rules/opus5-autonomous-loop.md`「方式を替えたら〜」の言う、
+   * 母集団が縮んだせいで**前の方式が守っていた保証が落ちた**型である。
+   *
+   * 母集団の大きさに依らない形へ変える: **免除 1 件につき免除される tbody が 1 つ**。
+   * 余分な免除を足せば「登録は N 件なのに免除された tbody は N-1 個」になって落ちる。
+   */
+  it('🔴 下界: 免除の件数と免除された <tbody> の数が一致する（余分な免除を足させない）', () => {
+    const bodies = platformFiles().flatMap((f) => tbodyBlocks(f.source));
+    const exempted = bodies.filter((b) => isExempt(b));
+    expect(exempted.length).toBe(EXEMPT_TBODY.length);
+  });
 });
