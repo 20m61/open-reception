@@ -119,6 +119,35 @@ DataTable に移行元の行/セル属性を保つための上書き口を追加
 | `DevicesManager` / `SignageManager` / `StayManager` / `ReservationsManager` | — | 既移行済み（本増分の対象外） |
 | `KiosksManager`                | —                                                | 本増分のスコープ外（#18 / 担当外）。次増分で検討 |
 
+## 5.5. 画面幅への応答は 2 系統ある（統一しない）
+
+受付端末と管理画面で**別の道具**を使う。競合ではなく分業で、統一するとどちらかを
+不向きな道具へ押し込むことになる (#920 / 課題 30)。
+
+| | 受付端末（`/kiosk`） | 管理画面（`/admin` `/platform`） |
+| --- | --- | --- |
+| 判定 | `components/kiosk/layout.ts` の `resolveKioskLayout`（JS） | CSS の `@media (max-width: 900px)` |
+| 決めること | **役割プロファイル**（`ipad-portrait` / `ipad-landscape` / `large-display`） | サイドバーを畳むかどうか |
+| 配置 | CSS が `[data-kiosk-layout=…]` で担う（**JS はレイアウトを持たない**） | CSS |
+
+**受付端末が media query で書けない理由**は 2 つある。
+
+1. 判定に**アスペクト比**が要る（幅 >= 高さ で「左アバター / 右操作」へ切り替える）。
+   `large-display` の幅しきい値との**排他的な優先順位**を CSS 1 箇所で表現できない。
+2. 結果が `data-kiosk-layout` として DOM に出るので、**VRM のカメラ・視線**
+   （`kiosk/avatar/vrm-gaze.ts`）など JS 側のレイヤも同じ判定を共有できる。
+   CSS だけでは JS へ伝わらない。
+
+### 新しく画面幅で分岐したくなったら
+
+- 受付端末 … `resolveKioskLayout` の結果（`data-kiosk-layout`）で分岐する。
+  **`window.innerWidth` を直接読まない**（読んでよいのは `useKioskLayout.ts` の 1 箇所だけ）。
+- 管理画面 … 既存の `max-width: 900px` に相乗りする。**新しいブレークポイントを足さない。**
+- どうしても足りないときは、足す前に本節を更新して理由を残す。
+
+`tests/config/responsive-strategy.test.ts` がこの規律を機械で守る ——
+監査（課題 30）が本当に心配しているのは「3 つ目の戦略が黙って生えること」だから。
+
 ## 6. アクセシビリティ 最低基準
 
 - **コントラスト**: 色トークンはダーク地に対し十分な明度差を持つ前景色を使う。状態は色 **だけ**
