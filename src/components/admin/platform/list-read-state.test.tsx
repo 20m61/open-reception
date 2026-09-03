@@ -145,9 +145,15 @@ describe('ProviderConfig は読めていない状態で断定しない (#968 レ
     return html.slice(open, at + 1);
   }
 
-  it('secret の状態を「未設定」と断定しない', () => {
+  it('secret の状態を「未設定」とも「取得できていません」とも断定しない', () => {
     expect(html, '取得できていないのに「未設定」と出している').not.toContain('未設定</strong>');
-    expect(html).toContain('取得できていません');
+    /*
+     * 🔴 **`renderToStaticMarkup` が観測しているのは `useEffect` 前＝「読み込み中」である。**
+     * ここに `取得できていません` を期待していたので、**テストが loading の語彙を failed に
+     * 固定していた**（#968 レビュー 4 周目 MAJOR-3）。3 状態を潰さない。
+     */
+    expect(html, '読み込み中を「取得できていません」と断定している').not.toContain('取得できていません');
+    expect(html).toContain('読み込み中…');
   });
 
   it('読めていない間は保存系を押せない（既定値で上書きさせない）', () => {

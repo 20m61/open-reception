@@ -192,9 +192,15 @@ function TenantFeatureFlagEditor({ onChanged }: { onChanged?: () => void }) {
         );
         return;
       }
-      const body = (await res.json()) as { tenants: TenantRow[] };
+      const body = (await res.json()) as { tenants?: TenantRow[] };
       setTenantsError(null);
-      setTenants(body.tenants);
+      /*
+       * 🔴 **shape の壊れた 200 でコンソールごと落とさない (#968 レビュー 4 周目 MINOR-1)。**
+       * `tenants` が無いと `tenants.map` が投げ、エラー境界が**来訪者向けの文言**
+       * 「受付を続けられませんでした」を運用コンソールに出す。同じ API を読む
+       * `TenantSwitcher` は `?? []` で守っており、防御が非対称だった。
+       */
+      setTenants(body.tenants ?? []);
     } catch {
       // テナントを選べないまま黙って空のプルダウンを出さない (#968)。
       if (!aborted()) setTenantsError('テナント一覧を取得できませんでした。通信を確認してください。');

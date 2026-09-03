@@ -82,7 +82,7 @@ export function ProviderConfig() {
           res.status === 403
             ? 'この操作の権限がありません。'
             : res.status === 400
-              ? '対象テナントを選択してください。'
+              ? '対象テナントが選ばれていません。画面上部の切替で選んでください。'
               : '設定の取得に失敗しました。',
         );
         setData(null);
@@ -213,8 +213,24 @@ export function ProviderConfig() {
    * 上書きされる** —— 来訪者側は担当者を呼べず「取り次げません」になる。
    * `OperatingHoursManager` が #870 で踏んだ「取得失敗を未設定と言い換える」型そのもの。
    */
-  const readable = data !== null;
   const presence = data ? presenceOf(data) : 'missing';
+
+  const readable = data !== null;
+  /*
+   * 🔴 **「まだ読めていない」を「読めなかった」と断定しない (#968 レビュー 4 周目 MAJOR-3)。**
+   *
+   * `readable` は 3 状態を 2 つに潰す。通信中の運用者に**失敗と同じ文言・同じ無効化**を
+   * 見せていた（しかも再読込ボタンは失敗表示の中なので出ない）。このリポジトリが
+   * `resolveAdminReadState` で明文化している「loading と failed を混ぜない」の反対側で、
+   * #870 / #896 が閉じた欠陥の向きを変えただけの形になっていた。
+   */
+  const presenceLabel = readable
+    ? presence === 'set'
+      ? '設定済み'
+      : '未設定'
+    : loadError !== null
+      ? '取得できていません'
+      : '読み込み中…';
 
   return (
     <section style={{ marginTop: 'var(--space-lg)', maxWidth: 760 }}>
@@ -309,7 +325,7 @@ export function ProviderConfig() {
       <p style={{ fontSize: font.small }}>
         現在の状態:{' '}
         <strong style={{ color: presence === 'set' ? 'var(--color-platform-ok)' : 'var(--color-platform-warn)' }}>
-          {!readable ? '取得できていません' : presence === 'set' ? '設定済み' : '未設定'}
+          {presenceLabel}
         </strong>
       </p>
       <input

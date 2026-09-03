@@ -109,7 +109,10 @@ test.describe('platform: 読み取りの失敗が運用者に見える (#968)', 
   test('ヘッダのテナント切替: 403 のとき「テナントが無い」と見せない', async ({ page }) => {
     await failWith403(page, '**/api/platform/tenants');
     await page.goto('/platform');
-    await expect(page.getByTestId('platform-tenant-list-error')).toBeVisible();
+    const alert = page.getByTestId('platform-tenant-list-error');
+    await expect(alert).toBeVisible();
+    // 🔴 403 を 500 と同じ文言に潰す変異を落とす（原因が違えば運用者の次の行動も違う）。
+    await expect(alert).toContainText('権限');
   });
 
   test('ヘッダのテナント切替: 接続断でも黙らない', async ({ page }) => {
@@ -156,14 +159,51 @@ test.describe('platform: 読み取りの失敗が運用者に見える (#968)', 
    * 実装（復帰不能）でも通る＝下界。**ボタンの `onClick` を殺す変異はここでだけ落ちる**
    * （字句走査は「ボタンが在る」しか言えない。レビューが実測で生存させた形）。
    */
-  test('機能フラグ: 再試行が回復すると失敗表示が消える', async ({ page }) => {
+  /*
+   * 🔴 **「消えたこと」で復帰を縛らない (#968 レビュー 4 周目 MAJOR-1)。**
+   *
+   * `onClick` の先頭で `setTenantsError(null)` を撃つので、**失敗表示が消えることは
+   * 同期の 1 行だけで満たせる** —— 実測で「再試行は何もしない」変異が e2e・unit とも
+   * 素通りした。取得**結果が画面に反映されたこと**を縛る。
+   */
+  test('機能フラグ: 再試行でテナント一覧が実際に戻る', async ({ page }) => {
     await failWith403(page, '**/api/platform/tenants');
     await page.goto('/platform/feature-flags');
     await expect(page.getByTestId('platform-feature-flags-tenants-error')).toBeVisible();
 
+    const select = page.getByTestId('tenant-feature-flag-editor').locator('select');
+    // 失敗中は「選択してください」だけ。
+    await expect(select.locator('option')).toHaveCount(1);
+
     await page.unroute('**/api/platform/tenants');
     await page.getByTestId('feature-flags-tenants-retry').click();
+
     await expect(page.getByTestId('platform-feature-flags-tenants-error')).toHaveCount(0);
+    // **復帰の実体**: 選択肢が戻る（seed のテナントぶん増える）。
+    await expect(select.locator('option')).not.toHaveCount(1);
+  });
+
+  /*
+   * 🔴 **`feature-flags-retry` は押されていなかった** —— `toBeEnabled()` だけでは
+   * 「死んだボタン」を通す（レビュー 4 周目 MAJOR-1）。押して、フラグが戻ることまで見る。
+   */
+  test('機能フラグ: フラグの再試行でトグルが戻る', async ({ page }) => {
+    await page.goto('/platform/feature-flags');
+    const select = page.getByTestId('tenant-feature-flag-editor').locator('select');
+    await expect(select).toBeVisible();
+    const first = await select.locator('option').nth(1).getAttribute('value');
+    expect(first, 'seed にテナントが無い').toBeTruthy();
+
+    await failWith500(page, '**/api/platform/tenants/*/feature-flags');
+    await select.selectOption(first ?? '');
+    await expect(page.getByTestId('platform-feature-flags-flags-error')).toBeVisible();
+
+    await page.unroute('**/api/platform/tenants/*/feature-flags');
+    await page.getByTestId('feature-flags-retry').click();
+
+    await expect(page.getByTestId('platform-feature-flags-flags-error')).toHaveCount(0);
+    // **復帰の実体**: 昇格つきトグルが戻る。
+    await expect(page.getByRole('button', { name: /昇格つきで(有効|無効)化/ }).first()).toBeVisible();
   });
 
   /*
@@ -239,8 +279,12 @@ test.describe('platform: 読み取りの失敗が運用者に見える (#968)', 
      * 🔴 **操作の失敗が読み取りを汚さない (#968 AC4)。** 同じ `error` に載せていたので、
      * 停止に失敗しただけでサイト一覧が「読み込めませんでした。」へ落ちていた ——
      * 読めているのに読めていないと言うことになる。
+     *
+     * 🔴 **`platform-tenant-sites-failed` の不在では縛れない**（レビュー 4 周目 MAJOR-2）——
+     * `DataTable` は `rows.length === 0` の枝でしか失敗を描かないので、サイトを持つ
+     * テナントでは**原理的に出ない**。行数に依らない**読み取りの失敗表示**で縛る。
      */
-    await expect(page.getByTestId('platform-tenant-sites-failed')).toHaveCount(0);
+    await expect(page.getByTestId('platform-tenant-detail-error')).toHaveCount(0);
     await expect(page.getByTestId('platform-tenant-sites')).toBeVisible();
   });
 });
