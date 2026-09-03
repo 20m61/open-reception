@@ -105,6 +105,7 @@ export function UpdateStatus() {
       */}
       <DataTable
         testId="platform-updates"
+        scrollRegionLabel="アップデート状況"
         columns={COLUMNS}
         rows={rows}
         rowKey={(r) => r.id}

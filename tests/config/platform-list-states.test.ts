@@ -33,11 +33,23 @@ import { join } from 'node:path';
  * | --- | --- |
  * | `TableBodyState` を tbody から外す | `DataTable` から `loaded`/`failed` を外す |
  * | 片方（`loaded` だけ）を渡す | 同上（対で渡すことを要求する） |
- * | 免除に広すぎる式（`.map(`）を足して全部免除にする | 免除はちょうど 1 つの tbody に当たること |
+ * | 免除に広すぎる式（`.map(`）を足して全部免除にする | 免除の件数 ⟺ 免除された tbody の数 |
  * | 表を全部消して主張を空虚に満たす | 生 + `DataTable` の合計、および状態を渡す `DataTable` の下界 |
  * | 表を `overflowX` の外へ出す | 同左（生 `<table>` に対して継続） |
  * | エラー表示から `role="alert"` を外す | 同左 |
- * | 生の一覧表を新しく足して素通りさせる | `RAW_TABLE_BUDGET`（生 `<table>` を増やさせない） |
+ * | 生の一覧表を新しく足して素通りさせる | `FILES_ALLOWED_RAW_TABLE`（同一性で縛る） |
+ * | `colSpan` が列数と食い違う | **構造的に閉じた**ので主張ごと削除（下記） |
+ *
+ * ## 独立レビューが足した行（自分では出てこなかった族）
+ *
+ * 上の写しは「自分が思いついた変異」でしかない、と規約は言う。実際、独立レビューが
+ * 実測で 3 つの生存を出した。**行列が全部 kill でも「穴が無い」とは言えない**の実例:
+ *
+ * | 生存した変異 | 塞いだ主張 |
+ * | --- | --- |
+ * | 配線を定数にする（`loaded={data !== null}` → `loaded`） | 「定数ではなく式へ束ねる」＋ `list-read-state.test.tsx` の実描画 |
+ * | サブディレクトリへ画面を足す | `platformFiles()` を再帰にする |
+ * | 既存の免除を**拡幅**する（`PROVIDER_IDS.map(` → `.map(`） | 「免除は名指ししたファイルの tbody にだけ当たる」 |
  */
 
 const PLATFORM_DIR = join(process.cwd(), 'src/components/admin/platform');
@@ -46,10 +58,27 @@ function stripComments(source: string): string {
   return source.replace(/\/\*[\s\S]*?\*\//g, '').replace(/(^|[^:])\/\/.*$/gm, '$1');
 }
 
+/**
+ * platform 配下の `.tsx` を**再帰的に**集める。
+ *
+ * 🔴 **非再帰（`readdirSync` 1 段）にしない (#896 レビュー M2)。** ディレクトリ名は
+ * `.tsx` で終わらないので `filter` に落ち、**サブディレクトリへ置いた画面が黙って
+ * 検査対象から外れる**。レビューで `platform/queues/QueueList.tsx` を足す変異を実測した
+ * ところ、`loaded`/`failed` を渡していないのに**どの主張も落ちなかった**。
+ */
 function platformFiles(): { name: string; source: string }[] {
-  return readdirSync(PLATFORM_DIR)
-    .filter((n) => n.endsWith('.tsx') && !n.includes('.test.'))
-    .map((name) => ({ name, source: stripComments(readFileSync(join(PLATFORM_DIR, name), 'utf8')) }));
+  const out: { name: string; source: string }[] = [];
+  const walk = (dir: string, prefix: string): void => {
+    for (const entry of readdirSync(dir, { withFileTypes: true })) {
+      const path = join(dir, entry.name);
+      const name = prefix ? `${prefix}/${entry.name}` : entry.name;
+      if (entry.isDirectory()) walk(path, name);
+      else if (entry.name.endsWith('.tsx') && !entry.name.includes('.test.'))
+        out.push({ name, source: stripComments(readFileSync(path, 'utf8')) });
+    }
+  };
+  walk(PLATFORM_DIR, '');
+  return out;
 }
 
 /** `<table>` を含むファイル。 */
@@ -79,20 +108,44 @@ function tableBlocks(source: string): string[] {
   return [...source.matchAll(/<table\b[\s\S]*?<\/table>/g)].map((m) => m[0]);
 }
 
-/** `<DataTable ... />` を粗く切り出す。 */
+/**
+ * `<DataTable ... />` を粗く切り出す。
+ *
+ * 終端を最初の `/>` で取るので、**属性値の中に自己閉じ JSX がある**と早く切れる
+ * （`emptyMessage={<span>…<br />…</span>}` 等）。切れたブロックが黙って通らないよう、
+ * 呼び出し側は「ブロックが `testId=` を含むこと」を併せて要求する (#896 レビュー m5)。
+ */
 function dataTableBlocks(source: string): string[] {
   return [...source.matchAll(/<DataTable\b[\s\S]*?\/>/g)].map((m) => m[0]);
 }
 
 /**
- * 生 `<table>` の残数の上限 (#896 AC1)。
+ * 生 `<table>` を残してよいファイル (#896 AC1)。
  *
  * 13 の一覧表を `ui/DataTable` へ寄せたあと、生で残っているのは **`ProviderConfig` の
  * 1 つだけ**で、それは一覧ではなく**フォームの行組み**（ラベルと入力の対）である。
- * ここを上限で縛るのは、「寄せた」を宣言したあとに**生の一覧表がまた生えてくる**のを
- * 止めるため（`AdminReadGate` の轍。各画面が自前で書き始めると同じ穴がまた開く）。
+ * 「寄せた」を宣言したあとに**生の一覧表がまた生えてくる**のを止める
+ * （`AdminReadGate` の轍。各画面が自前で書き始めると同じ穴がまた開く）。
+ *
+ * 🔴 **件数ではなく同一性で縛る (#896 レビュー m4)。** `const RAW_TABLE_BUDGET = 1` を
+ * `20` にする 1 行変異は、他のどの主張にも触れずに生の表を何枚でも通してしまう。
+ * ファイル名の集合で縛れば**上界と下界を同時に**張れる（増やしても、`ProviderConfig` の
+ * 表を消して別の場所へ足しても落ちる）。
  */
-const RAW_TABLE_BUDGET = 1;
+const FILES_ALLOWED_RAW_TABLE: readonly string[] = ['ProviderConfig.tsx'];
+
+/**
+ * `loaded` / `failed` を**定数**に束ねてよい一覧。**理由を必ず書く。**
+ *
+ * 「状態が起こらない」ことが呼び出し位置から言える場合に限る。式であることを一律に
+ * 要求すると、こういう箇所で嘘の式（`loaded={true === true}`）を書かせることになる。
+ */
+const CONSTANT_READ_STATE: readonly { readonly testId: string; readonly why: string }[] = [
+  {
+    testId: 'aws-cost-breakdown',
+    why: 'AwsCostPanel: `data` が載っている枝の中でしか描かないので loaded は常真・failed は常偽',
+  },
+];
 
 /**
  * `TableBodyState` も `DataTable` の状態受け渡しも使わない `<tbody>`。**理由を必ず書く。**
@@ -106,8 +159,13 @@ const RAW_TABLE_BUDGET = 1;
  * `file` ではなく **`field`（その tbody が map している式）** で持つ。ファイル単位にすると、
  * 表を 4 つ持つファイル（`MaintenanceStatus`）で 1 つ直せば残り 3 つが素通りする。
  */
-const EXEMPT_TBODY: readonly { readonly field: string; readonly why: string }[] = [
+const EXEMPT_TBODY: readonly {
+  readonly file: string;
+  readonly field: string;
+  readonly why: string;
+}[] = [
   {
+    file: 'ProviderConfig.tsx',
     field: 'PROVIDER_IDS.map(',
     why: 'ProviderConfig: 一覧ではなくフォームの行組みで、行は定数 `PROVIDER_IDS` から描くので読み込み中も 0 件も起こらない',
   },
@@ -147,9 +205,12 @@ describe('platform の一覧の状態表示 (#896 / 課題 06)', () => {
    * 寄せ切ったあとに生えてきた生 `<table>` は、`DataTable` が持つ 3 状態も横スクロールも
    * 自前で書き直すことになり、まさに #896 が潰した穴をもう一度開ける。
    */
-  it('生 <table> を増やさない（一覧は ui/DataTable へ寄せる）', () => {
-    const raw = platformFiles().flatMap((f) => tableBlocks(f.source).map(() => f.name));
-    expect(raw.length).toBeLessThanOrEqual(RAW_TABLE_BUDGET);
+  it('生 <table> を持つファイルは許可した 1 つだけ（一覧は ui/DataTable へ寄せる）', () => {
+    const raw = platformFiles()
+      .filter((f) => tableBlocks(f.source).length > 0)
+      .map((f) => f.name)
+      .sort();
+    expect(raw).toEqual([...FILES_ALLOWED_RAW_TABLE].sort());
   });
 
   it('🔴 下界: エラー表示が実在する（消して通す形にしない）', () => {
@@ -179,6 +240,84 @@ describe('platform の一覧の状態表示 (#896 / 課題 06)', () => {
       dataTableBlocks(f.source)
         .filter((block) => !(/\bloaded[=\s/>]/.test(block) && /\bfailed[=\s]/.test(block)))
         .map((block) => `${f.name}: ${/testId="([^"]*)"/.exec(block)?.[1] ?? '(testId なし)'}`),
+    );
+    expect(offenders).toEqual([]);
+  });
+
+  /*
+   * 🔴 **切り出しに失敗したブロックを黙って通さない (#896 レビュー m5)。**
+   *
+   * `dataTableBlocks` は最初の `/>` で切るので、属性値に自己閉じ JSX が入ると
+   * 早く切れる。切れたブロックは `loaded`/`failed` を含まないので直上の主張で落ちるが、
+   * 落ちたときの offender 名が `(testId なし)` になって**原因が読めない**。
+   * 「全ブロックが `testId=` を持つ」を別に要求して、切り出しの失敗を名指しさせる。
+   */
+  it('切り出した DataTable ブロックは testId を含む（正規表現の早期終端を検出する）', () => {
+    const offenders = platformFiles().flatMap((f) =>
+      dataTableBlocks(f.source)
+        .filter((block) => !/testId=/.test(block))
+        .map((block) => `${f.name}: ${block.slice(0, 60)}…`),
+    );
+    expect(offenders).toEqual([]);
+  });
+
+  /*
+   * 🔴 **`loaded` / `failed` を定数に束ねない (#896 レビュー M1)。**
+   *
+   * 「対で渡している」は**文字列の検査**なので、`loaded={data !== null}` → `loaded`
+   * （＝定数 `true`）、`failed={error !== null}` → `failed={false}` という**配線の変異**で
+   * 満たせてしまう（独立レビューが実測）。値が状態に由来する式であることを要求する。
+   *
+   * `loaded` 側は `list-read-state.test.tsx` が実際に描いて観測もしているが、`failed` 側は
+   * `useEffect` が走らない静的描画では区別できないため、**ここが唯一の閂**である。
+   */
+  it('loaded / failed は定数ではなく状態に由来する式へ束ねる', () => {
+    const offenders = platformFiles().flatMap((f) =>
+      dataTableBlocks(f.source).flatMap((block) => {
+        const testId = /testId="([^"]*)"/.exec(block)?.[1] ?? '(testId なし)';
+        if (CONSTANT_READ_STATE.some((e) => e.testId === testId)) return [];
+        const bad: string[] = [];
+        // 属性が無い（`loaded` 単体 = true）か、`{true}` / `{false}` に束ねているもの。
+        if (!/\bloaded=\{(?!true\}|false\})/.test(block)) bad.push(`${f.name}: ${testId} の loaded`);
+        if (!/\bfailed=\{(?!true\}|false\})/.test(block)) bad.push(`${f.name}: ${testId} の failed`);
+        return bad;
+      }),
+    );
+    expect(offenders).toEqual([]);
+  });
+
+  /*
+   * 🔴 **同じページに同じ名前の landmark を並べない (#896 レビュー M4)。**
+   *
+   * `DataTable` のスクロール領域は `role="region"` を持つので、`aria-label` が既定の
+   * ままだと表を 4 つ持つ `MaintenanceStatus` で**同名の landmark が 4 つ**並び、
+   * スクリーンリーダーの landmark 一覧からどれがどの表か判別できなくなる
+   * （axe の `landmark-unique`）。同一ファイル内で `DataTable` が複数あるなら、
+   * それぞれに固有の `scrollRegionLabel` を要求する。
+   */
+  it('同一ファイルに複数の DataTable があるなら scrollRegionLabel は固有である', () => {
+    const offenders = platformFiles().flatMap((f) => {
+      const blocks = dataTableBlocks(f.source);
+      if (blocks.length < 2) return [];
+      const labels = blocks.map((b) => /scrollRegionLabel="([^"]*)"/.exec(b)?.[1] ?? '(既定)');
+      const dupes = labels.filter((l, i) => labels.indexOf(l) !== i);
+      return [...new Set(dupes)].map((l) => `${f.name}: "${l}" が重複`);
+    });
+    expect(offenders).toEqual([]);
+  });
+
+  /*
+   * 🔴 **`DataTable` を `<table>` の中へ置かない (#896 レビュー m7)。**
+   *
+   * `DataTable` は `<div>` を返すので `<tbody>` の中に置くと DOM が壊れる（ブラウザが
+   * 表の外へ巻き上げ、React は `validateDOMNesting` で警告するだけ）。旧 `TableBodyState`
+   * は逆に `<tr>` を返して**必ず表の中**に置く必要があり、props 名も重なるので取り違えやすい。
+   */
+  it('DataTable は <table> の中に置かない（DOM が壊れる）', () => {
+    const offenders = platformFiles().flatMap((f) =>
+      tableBlocks(f.source)
+        .filter((table) => /<DataTable\b/.test(table))
+        .map(() => f.name),
     );
     expect(offenders).toEqual([]);
   });
@@ -215,22 +354,15 @@ describe('platform の一覧の状態表示 (#896 / 課題 06)', () => {
   });
 
   /*
-   * `colSpan` が列数と食い違うと**行が崩れる**。表の `<th>` の数と `columns` を突き合わせる。
-   * 列を足したのに `columns` を直し忘れる、という実際に起きる形をここで止める。
+   * `colSpan` と列数の食い違いを見ていた主張は**消した** (#896 レビュー m1)。
+   *
+   * `<TableBodyState>` を含む `<table>` はもう 0 件なので、残しても `offenders` は必ず
+   * `[]` になる**空虚な主張**だった。「まだ検査されている」と読めてしまうほうが害が大きい。
+   *
+   * この族は**構造的に閉じている**: `DataTable` は `columns` から `<th>` と `<td>` の
+   * 両方を作るので、列数と `colSpan` が食い違う状態を作れない（状態表示は表の外の
+   * `<div>` で、`colSpan` を使わない）。生 `<tbody>` が戻ってきたら復活させること。
    */
-  it('TableBodyState の columns は表の列数と一致する', () => {
-    const offenders = platformFiles().flatMap((f) =>
-      tableBlocks(f.source)
-        .filter((table) => /<TableBodyState\b/.test(table))
-        .flatMap((table) => {
-          const headers = (table.match(/<th\b/g) ?? []).length;
-          const declared = Number(/columns=\{(\d+)\}/.exec(table)?.[1]);
-          return headers === declared ? [] : [`${f.name}: <th>=${headers} columns=${declared}`];
-        }),
-    );
-    expect(offenders).toEqual([]);
-  });
-
   it('免除には理由が書かれている', () => {
     const missing = EXEMPT_TBODY.filter((e) => e.why.trim().length < 10);
     expect(missing.map((e) => e.field)).toEqual([]);
@@ -274,5 +406,33 @@ describe('platform の一覧の状態表示 (#896 / 課題 06)', () => {
     const bodies = platformFiles().flatMap((f) => tbodyBlocks(f.source));
     const exempted = bodies.filter((b) => isExempt(b));
     expect(exempted.length).toBe(EXEMPT_TBODY.length);
+  });
+
+  /*
+   * 🔴 **唯一の免除を「拡幅」する変異を塞ぐ (#896 レビュー m3)。**
+   *
+   * 直上の 2 つは**免除を足す**変異を殺すが、**既存の免除を広げる**変異は殺せない ——
+   * `field: 'PROVIDER_IDS.map('` を `field: '.map('` へ書き換えると、当たる先が 1 つしか
+   * 無い今の母集団では `hits === 1` も件数一致も満たして**生存する**。著者が実測で見つけた
+   * 「水増し」と同じ根（母集団が 1）から出るもう 1 本である。
+   *
+   * 免除が**名指ししたファイルの tbody にだけ**当たることを要求する。`.map(` のような
+   * 汎用の式は、他のファイルに tbody が増えた瞬間にそちらへも当たって落ちる。
+   */
+  it('🔴 下界: 免除は名指ししたファイルの <tbody> にだけ当たる（既存の免除を広げさせない）', () => {
+    const offenders = EXEMPT_TBODY.flatMap((e) =>
+      platformFiles()
+        .filter((f) => f.name !== e.file)
+        .filter((f) => tbodyBlocks(f.source).some((b) => b.includes(e.field)))
+        .map((f) => `${e.field} が ${f.name} にも当たっている`),
+    );
+    expect(offenders).toEqual([]);
+  });
+
+  it('免除は名指ししたファイルに実在する（腐った file 名を残さない）', () => {
+    const offenders = EXEMPT_TBODY.filter(
+      (e) => !platformFiles().some((f) => f.name === e.file && tbodyBlocks(f.source).some((b) => b.includes(e.field))),
+    ).map((e) => `${e.file}: ${e.field}`);
+    expect(offenders).toEqual([]);
   });
 });

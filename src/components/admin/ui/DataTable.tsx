@@ -61,6 +61,7 @@ export function DataTable<Row>({
   loaded,
   failed,
   failureMessage,
+  scrollRegionLabel,
 }: {
   columns: ReadonlyArray<Column<Row>>;
   rows: ReadonlyArray<Row>;
@@ -87,6 +88,15 @@ export function DataTable<Row>({
   failed?: boolean;
   /** 失敗時の本文。何が取れなかったかを画面ごとに書く。 */
   failureMessage?: string;
+  /**
+   * 横スクロール領域のアクセシブル名 (#896 レビュー M4)。
+   *
+   * 🔴 **1 ページに表が複数あるなら必ず渡す。** 既定の固定文言のままだと、
+   * `MaintenanceStatus`（表 4 つ）では**同じ名前の region landmark が 4 つ**並び、
+   * スクリーンリーダーの landmark 一覧が「テーブル（横スクロール可）」×4 になって
+   * どれがどの表か判別できない（axe の `landmark-unique`）。
+   */
+  scrollRegionLabel?: string;
 }) {
   if (rows.length === 0) {
     /*
@@ -100,10 +110,22 @@ export function DataTable<Row>({
     const state = resolveAdminReadState({ loaded: loaded ?? true, failed: failed ?? false });
     if (state === 'loading') {
       return (
-        <div data-testid={`${testId}-loading`} style={{ display: 'flex', flexDirection: 'column', gap: space.xs }}>
+        <div
+          data-testid={`${testId}-loading`}
+          /*
+           * 読み上げへ「待っている」を届ける (#896 レビュー M4)。同じ設計体系の
+           * `Skeleton` の `SkeletonBlock` は既に `role="status" aria-busy aria-live` を
+           * 持っており、ここだけ黙っているのは不整合だった。
+           */
+          role="status"
+          aria-busy="true"
+          aria-live="polite"
+          style={{ display: 'flex', flexDirection: 'column', gap: space.xs }}
+        >
           {/* 行の形で待たせる（「何かが出る場所」だと分かる）。読み上げは下の text が担う。 */}
-          <Skeleton height={20} />
-          <Skeleton height={20} />
+          {/* testId は表ごと・行ごとに一意にする（strict mode の locator が使えるように）。 */}
+          <Skeleton height={20} testId={`${testId}-skeleton-1`} />
+          <Skeleton height={20} testId={`${testId}-skeleton-2`} />
           <span style={{ fontSize: font.small, color: color.muted }}>読み込み中…</span>
         </div>
       );
@@ -125,7 +147,7 @@ export function DataTable<Row>({
     <div
       data-testid={`${testId}-scroll`}
       role="region"
-      aria-label="テーブル（横スクロール可）"
+      aria-label={scrollRegionLabel ?? 'テーブル（横スクロール可）'}
       tabIndex={0}
       style={{ overflowX: 'auto' }}
     >

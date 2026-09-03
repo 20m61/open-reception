@@ -24,13 +24,24 @@ export function TenantList() {
   useEffect(() => {
     let cancelled = false;
     void (async () => {
-      const res = await fetch('/api/platform/tenants');
-      if (cancelled) return;
-      if (!res.ok) {
-        setError(res.status === 403 ? 'この画面の閲覧権限がありません。' : 'テナント一覧の取得に失敗しました。');
-        return;
+      try {
+        const res = await fetch('/api/platform/tenants');
+        if (cancelled) return;
+        if (!res.ok) {
+          setError(res.status === 403 ? 'この画面の閲覧権限がありません。' : 'テナント一覧の取得に失敗しました。');
+          return;
+        }
+        setData((await res.json()) as TenantsResponse);
+      /*
+       * 🔴 **通信そのものが失敗した場合も「失敗」へ落とす (#896 レビュー M3)。**
+       * `fetch` の reject（オフライン・DNS・接続断）や、HTML が返って `res.json()` が
+       * 投げるケースを拾わないと `data` も `error` も `null` のままになり、
+       * `resolveAdminReadState` は `'loading'` を返す ——「失敗が永遠の読み込み中に
+       * 化ける」まさにその形で、画面には再試行の導線も `role="alert"` も出ない。
+       */
+      } catch {
+        if (!cancelled) setError('テナント一覧の取得に失敗しました。');
       }
-      setData((await res.json()) as TenantsResponse);
     })();
     return () => {
       cancelled = true;
@@ -78,6 +89,7 @@ export function TenantList() {
       */}
       <DataTable
         testId="platform-tenants"
+        scrollRegionLabel="テナント一覧"
         columns={columns}
         rows={data?.tenants ?? []}
         rowKey={(t) => t.id}

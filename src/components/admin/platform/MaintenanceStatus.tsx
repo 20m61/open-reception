@@ -124,14 +124,25 @@ export function MaintenanceStatus() {
   useEffect(() => {
     let cancelled = false;
     void (async () => {
-      const res = await fetch('/api/platform/maintenance');
-      if (cancelled) return;
-      if (!res.ok) {
-        setError(res.status === 403 ? 'この画面の閲覧権限がありません。' : 'メンテナンス状況の取得に失敗しました。');
-        return;
+      try {
+        const res = await fetch('/api/platform/maintenance');
+        if (cancelled) return;
+        if (!res.ok) {
+          setError(res.status === 403 ? 'この画面の閲覧権限がありません。' : 'メンテナンス状況の取得に失敗しました。');
+          return;
+        }
+        setError(null);
+        setData((await res.json()) as MaintenanceResponse);
+      /*
+       * 🔴 **通信そのものが失敗した場合も「失敗」へ落とす (#896 レビュー M3)。**
+       * `fetch` の reject（オフライン・DNS・接続断）や、HTML が返って `res.json()` が
+       * 投げるケースを拾わないと `data` も `error` も `null` のままになり、
+       * `resolveAdminReadState` は `'loading'` を返す ——「失敗が永遠の読み込み中に
+       * 化ける」まさにその形で、画面には再試行の導線も `role="alert"` も出ない。
+       */
+      } catch {
+        if (!cancelled) setError('メンテナンス状況の取得に失敗しました。');
       }
-      setError(null);
-      setData((await res.json()) as MaintenanceResponse);
     })();
     return () => {
       cancelled = true;
@@ -170,6 +181,7 @@ export function MaintenanceStatus() {
       */}
       <DataTable
         testId="platform-maintenance-devices"
+        scrollRegionLabel="メンテナンス表示中の端末"
         columns={DEVICE_COLUMNS}
         rows={data?.summary.devices ?? []}
         rowKey={(d) => d.deviceId}
@@ -187,6 +199,7 @@ export function MaintenanceStatus() {
       */}
       <DataTable
         testId="platform-incidents"
+        scrollRegionLabel="障害・インシデント"
         columns={INCIDENT_COLUMNS}
         rows={data?.incidents.incidents ?? []}
         rowKey={(i) => i.id}
@@ -205,6 +218,7 @@ export function MaintenanceStatus() {
       */}
       <DataTable
         testId="platform-maintenance-windows"
+        scrollRegionLabel="予定メンテナンス"
         columns={WINDOW_COLUMNS}
         rows={data?.windows.windows ?? []}
         rowKey={(w) => w.id}
@@ -223,6 +237,7 @@ export function MaintenanceStatus() {
       */}
       <DataTable
         testId="platform-notices"
+        scrollRegionLabel="お知らせ"
         columns={NOTICE_COLUMNS}
         rows={data?.notices.notices ?? []}
         rowKey={(n) => n.id}

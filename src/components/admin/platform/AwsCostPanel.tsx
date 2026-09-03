@@ -302,6 +302,7 @@ export function AwsCostPanel() {
             */}
             <DataTable
               testId="aws-cost-breakdown"
+              scrollRegionLabel="コスト内訳"
               columns={breakdownColumns(data.breakdownBy, data.currency)}
               rows={data.breakdown}
               rowKey={(item) => item.key}
