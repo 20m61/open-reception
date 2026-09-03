@@ -3,7 +3,7 @@
 import Link from 'next/link';
 import { useEffect, useState } from 'react';
 import type { TenantFleetSummary, TenantRow } from '@/domain/platform/console-summary';
-import { DangerActionPlaceholder } from './primitives';
+import { DangerActionPlaceholder, TableBodyState } from './primitives';
 import { MetricCard, StatusBadge } from '@/components/admin/ui';
 import { tenantStatusState } from '../state-vocabulary';
 
@@ -46,7 +46,7 @@ export function TenantList() {
         伴って実装します。
       </p>
 
-      {error ? <p style={{ color: 'var(--color-platform-warn)' }}>{error}</p> : null}
+      {error ? <p role="alert" style={{ color: 'var(--color-platform-warn)' }}>{error}</p> : null}
 
       <div style={{ display: 'flex', gap: 'var(--space-md)', flexWrap: 'wrap', marginBottom: 'var(--space-md)' }}>
         <MetricCard label="全テナント数" value={data ? data.summary.total : '—'} />
@@ -54,30 +54,40 @@ export function TenantList() {
         <MetricCard label="停止中" value={data ? data.summary.suspended : '—'} />
       </div>
 
-      <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.9rem' }}>
-        <thead>
-          <tr style={{ textAlign: 'left', opacity: 0.6 }}>
-            <th style={{ padding: '6px 8px' }}>テナント</th>
-            <th style={{ padding: '6px 8px' }}>slug</th>
-            <th style={{ padding: '6px 8px' }}>状態</th>
-            <th style={{ padding: '6px 8px' }}>更新日時</th>
-          </tr>
-        </thead>
-        <tbody>
-          {(data?.tenants ?? []).map((t) => (
-            <tr key={t.id} style={{ borderTop: '1px solid var(--color-border)' }}>
-              <td style={{ padding: '6px 8px' }}>
-                <Link href={`/platform/tenants/${encodeURIComponent(t.id)}`}>{t.name}</Link>
-              </td>
-              <td style={{ padding: '6px 8px', opacity: 0.7 }}>{t.slug}</td>
-              <td style={{ padding: '6px 8px' }}>
-                <StatusBadge status={tenantStatusState(t.status).status} label={tenantStatusState(t.status).label} />
-              </td>
-              <td style={{ padding: '6px 8px', opacity: 0.7 }}>{t.updatedAt}</td>
+      <div style={{ overflowX: 'auto' }}>
+        <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.9rem' }}>
+          <thead>
+            <tr style={{ textAlign: 'left', opacity: 0.6 }}>
+              <th style={{ padding: '6px 8px' }}>テナント</th>
+              <th style={{ padding: '6px 8px' }}>slug</th>
+              <th style={{ padding: '6px 8px' }}>状態</th>
+              <th style={{ padding: '6px 8px' }}>更新日時</th>
             </tr>
-          ))}
-        </tbody>
-      </table>
+          </thead>
+          <tbody>
+            {(data?.tenants ?? []).map((t) => (
+              <tr key={t.id} style={{ borderTop: '1px solid var(--color-border)' }}>
+                <td style={{ padding: '6px 8px' }}>
+                  <Link href={`/platform/tenants/${encodeURIComponent(t.id)}`}>{t.name}</Link>
+                </td>
+                <td style={{ padding: '6px 8px', opacity: 0.7 }}>{t.slug}</td>
+                <td style={{ padding: '6px 8px' }}>
+                  <StatusBadge status={tenantStatusState(t.status).status} label={tenantStatusState(t.status).label} />
+                </td>
+                <td style={{ padding: '6px 8px', opacity: 0.7 }}>{t.updatedAt}</td>
+              </tr>
+            ))}
+            <TableBodyState
+              loaded={data !== null}
+              failed={error !== null}
+              rowCount={data?.tenants.length ?? 0}
+              columns={4}
+              emptyMessage="テナントがありません。"
+              testId="platform-tenants"
+            />
+          </tbody>
+        </table>
+      </div>
 
       <div style={{ marginTop: 'var(--space-lg)', maxWidth: 760 }}>
         <DangerActionPlaceholder label="テナントの有効化 / 停止・プラン/制限変更" />

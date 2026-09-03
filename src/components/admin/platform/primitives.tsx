@@ -1,5 +1,6 @@
 import type { ReactNode } from 'react';
 import { font } from '@/components/admin/ui/tokens';
+import { resolveAdminReadState } from '../read-state';
 
 /**
  * プラットフォーム運用コンソール固有の表示プリミティブ (issue #90, increment 1)。
@@ -59,5 +60,64 @@ export function ReadOnlySection({
       </p>
       {children}
     </section>
+  );
+}
+
+/**
+ * 表の中の「読み込み中 / 失敗 / 0 件」 (#896 / 課題 06)。
+ *
+ * platform の一覧は `(data?.tenants ?? []).map(...)` で `<tbody>` を描いており、
+ * **`data` が `null`（読み込み中）でも空配列（0 件）でも `<tbody>` が空になるだけ**だった。
+ * 失敗しても `data` は `null` のままなので、`read-state.ts` が警告している
+ * 「**失敗が『読み込み中』に化ける**」がそのまま起きていた。
+ *
+ * 状態の決め方は `resolveAdminReadState` を使う —— #886 の `AdminReadGate` と
+ * **同じ 3 状態の語彙**にして、画面ごとに別の判断を書かせない。
+ *
+ * 失敗の**理由**は表の外の `role="alert"` が伝える（そちらが正本）。ここは表が
+ * 黙って空になるのを防ぐ役で、理由を二重に書かない。
+ */
+export function TableBodyState({
+  loaded,
+  failed,
+  rowCount,
+  columns,
+  emptyMessage,
+  testId,
+}: {
+  /** 対象のデータが載っているか。 */
+  readonly loaded: boolean;
+  /** 直近の読み取りが失敗したか。 */
+  readonly failed: boolean;
+  /** いま描いている行数。 */
+  readonly rowCount: number;
+  /** 表の列数（`colSpan` に使う。合っていないと行が崩れる）。 */
+  readonly columns: number;
+  /** 0 件のときの文言。一覧ごとに「何が」無いのかを書く。 */
+  readonly emptyMessage: string;
+  /** e2e が一覧ごとに引けるようにする接頭辞。 */
+  readonly testId: string;
+}) {
+  const state = resolveAdminReadState({ loaded, failed });
+  // 下界: 行が在るなら何も足さない（常に何か出すと一覧に余計な行が居座る）。
+  if (state === 'loaded' && rowCount > 0) return null;
+
+  const { suffix, label } =
+    state === 'loading'
+      ? { suffix: 'loading', label: '読み込み中…' }
+      : state === 'failed'
+        ? { suffix: 'failed', label: '読み込めませんでした。' }
+        : { suffix: 'empty', label: emptyMessage };
+
+  return (
+    <tr>
+      <td
+        data-testid={`${testId}-${suffix}`}
+        colSpan={columns}
+        style={{ padding: 'var(--space-md)', color: 'var(--color-muted)', textAlign: 'center' }}
+      >
+        {label}
+      </td>
+    </tr>
   );
 }

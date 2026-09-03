@@ -5,6 +5,7 @@ import type { MaskedAuditRow } from '@/domain/platform/console-summary';
 import { formatPercent } from '@/domain/util/format';
 import { MetricCard } from '@/components/admin/ui';
 import { enablementState } from '../state-vocabulary';
+import { TableBodyState } from './primitives';
 
 /**
  * 可観測性（read 中心） (issue #90, increment 2)。
@@ -74,31 +75,41 @@ export function Observability() {
         マスク済みで個人情報を露出しません。エラー率・レイテンシ等の指標は次増分で接続します。
       </p>
 
-      {error ? <p style={{ color: 'var(--color-platform-warn)' }}>{error}</p> : null}
+      {error ? <p role="alert" style={{ color: 'var(--color-platform-warn)' }}>{error}</p> : null}
 
       <h2 style={{ fontSize: '1rem', opacity: 0.7 }}>外部連携の接続状態</h2>
-      <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.9rem' }}>
-        <thead>
-          <tr style={{ textAlign: 'left', opacity: 0.6 }}>
-            <th style={{ padding: '6px 8px' }}>連携</th>
-            <th style={{ padding: '6px 8px' }}>設定</th>
-            <th style={{ padding: '6px 8px' }}>有効</th>
-            <th style={{ padding: '6px 8px' }}>直近結果</th>
-            <th style={{ padding: '6px 8px' }}>要約</th>
-          </tr>
-        </thead>
-        <tbody>
-          {(data?.integrations ?? []).map((i) => (
-            <tr key={i.id} style={{ borderTop: '1px solid var(--color-border)' }}>
-              <td style={{ padding: '6px 8px' }}>{i.label}</td>
-              <td style={{ padding: '6px 8px', opacity: 0.8 }}>{i.configured ? '済' : '未'}</td>
-              <td style={{ padding: '6px 8px', opacity: 0.8 }}>{enablementState(i.enabled).label}</td>
-              <td style={{ padding: '6px 8px', opacity: 0.8 }}>{RESULT_LABEL[i.lastResult]}</td>
-              <td style={{ padding: '6px 8px', opacity: 0.6 }}>{i.lastErrorSummary ?? '-'}</td>
+      <div style={{ overflowX: 'auto' }}>
+        <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.9rem' }}>
+          <thead>
+            <tr style={{ textAlign: 'left', opacity: 0.6 }}>
+              <th style={{ padding: '6px 8px' }}>連携</th>
+              <th style={{ padding: '6px 8px' }}>設定</th>
+              <th style={{ padding: '6px 8px' }}>有効</th>
+              <th style={{ padding: '6px 8px' }}>直近結果</th>
+              <th style={{ padding: '6px 8px' }}>要約</th>
             </tr>
-          ))}
-        </tbody>
-      </table>
+          </thead>
+          <tbody>
+            {(data?.integrations ?? []).map((i) => (
+              <tr key={i.id} style={{ borderTop: '1px solid var(--color-border)' }}>
+                <td style={{ padding: '6px 8px' }}>{i.label}</td>
+                <td style={{ padding: '6px 8px', opacity: 0.8 }}>{i.configured ? '済' : '未'}</td>
+                <td style={{ padding: '6px 8px', opacity: 0.8 }}>{enablementState(i.enabled).label}</td>
+                <td style={{ padding: '6px 8px', opacity: 0.8 }}>{RESULT_LABEL[i.lastResult]}</td>
+                <td style={{ padding: '6px 8px', opacity: 0.6 }}>{i.lastErrorSummary ?? '-'}</td>
+              </tr>
+            ))}
+            <TableBodyState
+              loaded={data !== null}
+              failed={error !== null}
+              rowCount={data?.integrations.length ?? 0}
+              columns={5}
+              emptyMessage="連携がありません。"
+              testId="platform-observability-integrations"
+            />
+          </tbody>
+        </table>
+      </div>
 
       <h2 style={{ fontSize: '1rem', opacity: 0.7, marginTop: 'var(--space-lg)' }}>受付・端末（今月・実データ）</h2>
       <div style={{ display: 'flex', gap: 'var(--space-md)', flexWrap: 'wrap' }}>
@@ -127,29 +138,39 @@ export function Observability() {
       <h2 style={{ fontSize: '1rem', opacity: 0.7, marginTop: 'var(--space-lg)' }}>
         直近アクティビティ（マスク済み）
       </h2>
-      <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.9rem' }}>
-        <thead>
-          <tr style={{ textAlign: 'left', opacity: 0.6 }}>
-            <th style={{ padding: '6px 8px' }}>日時</th>
-            <th style={{ padding: '6px 8px' }}>操作</th>
-            <th style={{ padding: '6px 8px' }}>主体</th>
-            <th style={{ padding: '6px 8px' }}>対象</th>
-          </tr>
-        </thead>
-        <tbody>
-          {(data?.recentActivity ?? []).map((r) => (
-            <tr key={r.id} style={{ borderTop: '1px solid var(--color-border)' }}>
-              <td style={{ padding: '6px 8px', opacity: 0.8 }}>{r.at}</td>
-              <td style={{ padding: '6px 8px' }}>{r.action}</td>
-              <td style={{ padding: '6px 8px', opacity: 0.7 }}>{r.actor}</td>
-              <td style={{ padding: '6px 8px', opacity: 0.7 }}>
-                {r.targetType ?? '-'}
-                {r.targetId ? <span style={{ opacity: 0.6 }}> {r.targetId}</span> : null}
-              </td>
+      <div style={{ overflowX: 'auto' }}>
+        <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.9rem' }}>
+          <thead>
+            <tr style={{ textAlign: 'left', opacity: 0.6 }}>
+              <th style={{ padding: '6px 8px' }}>日時</th>
+              <th style={{ padding: '6px 8px' }}>操作</th>
+              <th style={{ padding: '6px 8px' }}>主体</th>
+              <th style={{ padding: '6px 8px' }}>対象</th>
             </tr>
-          ))}
-        </tbody>
-      </table>
+          </thead>
+          <tbody>
+            {(data?.recentActivity ?? []).map((r) => (
+              <tr key={r.id} style={{ borderTop: '1px solid var(--color-border)' }}>
+                <td style={{ padding: '6px 8px', opacity: 0.8 }}>{r.at}</td>
+                <td style={{ padding: '6px 8px' }}>{r.action}</td>
+                <td style={{ padding: '6px 8px', opacity: 0.7 }}>{r.actor}</td>
+                <td style={{ padding: '6px 8px', opacity: 0.7 }}>
+                  {r.targetType ?? '-'}
+                  {r.targetId ? <span style={{ opacity: 0.6 }}> {r.targetId}</span> : null}
+                </td>
+              </tr>
+            ))}
+            <TableBodyState
+              loaded={data !== null}
+              failed={error !== null}
+              rowCount={data?.recentActivity.length ?? 0}
+              columns={4}
+              emptyMessage="直近の操作はありません。"
+              testId="platform-recent-activity"
+            />
+          </tbody>
+        </table>
+      </div>
     </section>
   );
 }

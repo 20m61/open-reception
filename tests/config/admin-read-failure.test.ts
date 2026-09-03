@@ -101,6 +101,12 @@ const READ_FAILURE_MECHANISM: Readonly<Record<string, string>> = {
   'platform/FeatureFlags.tsx': 'writeError',
   /** `!data && !error` のときだけ読み込み中…を出す。 */
   'platform/UpdateStatus.tsx': 'setError',
+  /**
+   * platform の表の中で「読み込み中 / 失敗 / 0 件」を出し分ける行 (#896)。
+   * 共有の門と**同じ 3 状態の語彙**（`resolveAdminReadState`）を使う —— `data` は失敗しても
+   * `null` のままなので、`loaded` だけを見ると失敗が永遠の「読み込み中」に化ける。
+   */
+  'platform/primitives.tsx': 'resolveAdminReadState',
   // 明示的な phase 機械（`{ phase: 'error' }` を持ち、catch でもそこへ落とす）。
   'costs/CostManager.tsx': "phase: 'error'",
   'dashboard/Dashboard.tsx': "phase: 'error'",

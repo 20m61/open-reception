@@ -6,6 +6,7 @@ import type { TenantLifecycleAction } from '@/domain/platform/tenant-lifecycle';
 import { DangerActionButton } from '@/components/admin/danger/DangerActionButton';
 import { MetricCard, StatusBadge } from '@/components/admin/ui';
 import { siteStatusState, tenantStatusState } from '../state-vocabulary';
+import { TableBodyState } from './primitives';
 
 /**
  * テナント詳細（テナント横断 read + 有効/停止操作） (issue #90)。
@@ -74,7 +75,7 @@ export function TenantDetail({ tenantId }: { tenantId: string }) {
         表示しません。有効/停止は破壊的操作のため、影響範囲の確認と理由入力を伴う確認フローで実行します。
       </p>
 
-      {error ? <p style={{ color: 'var(--color-platform-warn)' }}>{error}</p> : null}
+      {error ? <p role="alert" style={{ color: 'var(--color-platform-warn)' }}>{error}</p> : null}
 
       <div style={{ display: 'flex', gap: 'var(--space-md)', flexWrap: 'wrap', marginBottom: 'var(--space-md)' }}>
         <MetricCard label="slug" value={data ? data.slug : '—'} />
@@ -85,28 +86,38 @@ export function TenantDetail({ tenantId }: { tenantId: string }) {
       </div>
 
       <h2 style={{ fontSize: '1rem', opacity: 0.7 }}>サイト</h2>
-      <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.9rem' }}>
-        <thead>
-          <tr style={{ textAlign: 'left', opacity: 0.6 }}>
-            <th style={{ padding: '6px 8px' }}>サイト</th>
-            <th style={{ padding: '6px 8px' }}>状態</th>
-            <th style={{ padding: '6px 8px' }}>端末数</th>
-            <th style={{ padding: '6px 8px' }}>稼働中</th>
-          </tr>
-        </thead>
-        <tbody>
-          {(data?.sites ?? []).map((s) => (
-            <tr key={s.id} style={{ borderTop: '1px solid var(--color-border)' }}>
-              <td style={{ padding: '6px 8px' }}>{s.name}</td>
-              <td style={{ padding: '6px 8px' }}>
-                <StatusBadge status={siteStatusState(s.status).status} label={siteStatusState(s.status).label} />
-              </td>
-              <td style={{ padding: '6px 8px', opacity: 0.8 }}>{s.deviceCount}</td>
-              <td style={{ padding: '6px 8px', opacity: 0.8 }}>{s.activeDeviceCount}</td>
+      <div style={{ overflowX: 'auto' }}>
+        <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.9rem' }}>
+          <thead>
+            <tr style={{ textAlign: 'left', opacity: 0.6 }}>
+              <th style={{ padding: '6px 8px' }}>サイト</th>
+              <th style={{ padding: '6px 8px' }}>状態</th>
+              <th style={{ padding: '6px 8px' }}>端末数</th>
+              <th style={{ padding: '6px 8px' }}>稼働中</th>
             </tr>
-          ))}
-        </tbody>
-      </table>
+          </thead>
+          <tbody>
+            {(data?.sites ?? []).map((s) => (
+              <tr key={s.id} style={{ borderTop: '1px solid var(--color-border)' }}>
+                <td style={{ padding: '6px 8px' }}>{s.name}</td>
+                <td style={{ padding: '6px 8px' }}>
+                  <StatusBadge status={siteStatusState(s.status).status} label={siteStatusState(s.status).label} />
+                </td>
+                <td style={{ padding: '6px 8px', opacity: 0.8 }}>{s.deviceCount}</td>
+                <td style={{ padding: '6px 8px', opacity: 0.8 }}>{s.activeDeviceCount}</td>
+              </tr>
+            ))}
+            <TableBodyState
+              loaded={data !== null}
+              failed={error !== null}
+              rowCount={data?.sites.length ?? 0}
+              columns={4}
+              emptyMessage="このテナントに拠点がありません。"
+              testId="platform-tenant-sites"
+            />
+          </tbody>
+        </table>
+      </div>
 
       {data ? (
         <div style={{ marginTop: 'var(--space-lg)', maxWidth: 760 }}>
