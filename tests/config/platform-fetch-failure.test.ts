@@ -514,6 +514,27 @@ describe('platform の通信失敗が無言にならない (#968)', () => {
         .filter((x) => !guards.some((gAt) => gAt < x.at))
         .map((x) => `${g.fn}: ${x.call} が世代ガードより前に在る`);
       expect(unguarded).toEqual([]);
+
+      /*
+       * 🔴 **`catch` 本体は自分でガードを持つ (#968 レビュー B1)。**
+       *
+       * 「関数のどこかにガードが在る」だけでは足りない —— try 側のガードが `catch` の
+       * 報告より**テキスト上は前**に在るので、catch のガードを `if (true)` へ変える変異が
+       * 素通りした（実測で生存）。catch は try の途中から飛んでくるので、try 側のガードを
+       * 通っている保証がまったく無い。**catch 本体の中**にガードを要求する。
+       */
+      const catchOffenders = tryCatchBlocks(body).flatMap((b) => {
+        const cb = body.slice(b.catchBody.start, b.catchBody.end);
+        const sets = [...cb.matchAll(/\bset[A-Z]\w*\s*\(/g)].map((m) => ({ at: m.index ?? 0, call: m[0] }));
+        if (sets.length === 0) return [];
+        const inner = [...cb.matchAll(new RegExp(`${g.ref}\\.current\\s*[!=]==`, 'g'))].map(
+          (m) => m.index ?? 0,
+        );
+        return sets
+          .filter((x) => !inner.some((gAt) => gAt < x.at))
+          .map((x) => `${g.fn}: catch の ${x.call} が ${g.ref} のガードを通らない`);
+      });
+      expect(catchOffenders).toEqual([]);
     },
   );
 
@@ -525,7 +546,20 @@ describe('platform の通信失敗が無言にならない (#968)', () => {
     (_label, r) => {
       const file = platformFiles().find((f) => f.name === r.file);
       expect(file, `${r.file} が無い`).toBeDefined();
-      const switching = functionBodies(file?.source ?? '').filter((b) => /\w+\.current\s*=/.test(b.body));
+      /*
+       * 🔴 **「最も内側」の本体で見る。** コンポーネント関数そのものも `functionBodies` に
+       * 出るので、素朴に `filter` すると**コンポーネント全体**が「切り替え本体」に化け、
+       * 別の関数（`runLifecycle`）が持つ `setActionError(null)` で満たされてしまう
+       * ——「遷移時に捨てるのをやめる」変異が素通りした（実測で生存）。
+       */
+      const bodies = functionBodies(file?.source ?? '');
+      const assignments = [...(file?.source ?? '').matchAll(/\w+\.current\s*=[^=]/g)].map(
+        (m) => m.index ?? 0,
+      );
+      expect(assignments.length, `${r.file} に世代 ref への代入が無い`).toBeGreaterThan(0);
+      const switching = assignments
+        .map((at) => bodies.filter((b) => at > b.start && at < b.end).sort((a, b) => b.start - a.start)[0])
+        .filter((b): b is NonNullable<typeof b> => b !== undefined);
       expect(switching.length, `${r.file} に世代 ref へ代入する本体が無い`).toBeGreaterThan(0);
       const resets = switching.filter((b) => b.body.includes(`${r.setter}(null)`));
       expect(resets.length, `${r.setter}(null) を呼ぶ切り替え本体が無い`).toBeGreaterThan(0);
