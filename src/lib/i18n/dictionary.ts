@@ -112,6 +112,7 @@ export type MessageKey =
   // **ボタンを列挙しない**: 出るボタンは状態で変わる（reset だけの状態が 10 個ある）ため、
   // 列挙すると存在しない「戻る」を案内してしまう。中身は nav 内のボタンが読み上げられる。
   | 'reception.escapeBarLabel'
+  | 'reception.scrollForMore'
   // 受付進行中も画面分岐より手前で常設される来訪者向けのお知らせ (#327 follow-up)。
   | 'reception.offlineNotice'
   | 'kiosk.deviceUnavailable'
@@ -443,6 +444,7 @@ const ja: DefaultDictionary = {
   'reception.staffResponseWaitReguidance': '目安は数分です。担当者が向かい次第、この画面が切り替わります。',
   'reception.reset': '最初に戻る',
   'reception.escapeBarLabel': '受付の操作',
+  'reception.scrollForMore': 'まだ下に続きます',
   'reception.offlineNotice': '通信が不安定です。復帰までしばらくお待ちください。',
   'kiosk.deviceUnavailable': 'この受付端末は現在ご利用いただけません。担当者にお問い合わせください。',
   'kiosk.unexpectedError.title': '受付を続けられませんでした',
@@ -757,6 +759,7 @@ const en: LocaleDictionary = {
   'reception.staffResponseWaitReguidance': "It'll be about a few minutes. This screen will update once they're on the way.",
   'reception.reset': 'Start over',
   'reception.escapeBarLabel': 'Reception controls',
+  'reception.scrollForMore': 'More below',
   'reception.offlineNotice': 'The connection is unstable. Please wait a moment while it recovers.',
   'kiosk.deviceUnavailable': 'This reception terminal is currently unavailable. Please contact a staff member.',
   'kiosk.unexpectedError.title': 'We could not continue with check-in',
@@ -1068,6 +1071,7 @@ const ko: LocaleDictionary = {
   'reception.staffResponseWaitReguidance': '예상 소요 시간은 몇 분입니다. 담당자가 출발하면 화면이 바뀝니다.',
   'reception.reset': '처음으로',
   'reception.escapeBarLabel': '접수 컨트롤',
+  'reception.scrollForMore': '아래에 더 있습니다',
   'reception.offlineNotice': '통신이 불안정합니다. 복구될 때까지 잠시 기다려 주세요.',
   'kiosk.deviceUnavailable': '이 접수 단말기는 현재 이용할 수 없습니다. 담당자에게 문의해 주세요.',
   'kiosk.unexpectedError.title': '접수를 계속할 수 없었습니다',
@@ -1375,6 +1379,7 @@ const zh: LocaleDictionary = {
   'reception.staffResponseWaitReguidance': '预计需要几分钟。负责人出发后，本画面将自动更新。',
   'reception.reset': '返回首页',
   'reception.escapeBarLabel': '登记操作',
+  'reception.scrollForMore': '下方还有内容',
   'reception.offlineNotice': '网络连接不稳定。请稍候，正在恢复。',
   'kiosk.deviceUnavailable': '此登记终端当前无法使用。请联系工作人员。',
   'kiosk.unexpectedError.title': '无法继续办理登记',
@@ -1691,6 +1696,7 @@ const jaSimple: LocaleDictionary = {
   'reception.cancelled': 'うけつけを やめました',
   'reception.reset': 'さいしょに もどる',
   'reception.escapeBarLabel': 'うけつけの そうさ',
+  'reception.scrollForMore': 'したに まだ あります',
   'reception.offlineNotice': 'つうしんが ふあんていです。なおるまで すこし まってください。',
   'kiosk.deviceUnavailable': 'この うけつけたんまつは いま つかえません。かかりのひとに きいてください。',
   'kiosk.unexpectedError.title': 'うけつけを つづけられませんでした',
