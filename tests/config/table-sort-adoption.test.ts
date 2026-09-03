@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { readFileSync } from 'node:fs';
+import { readFileSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 
 /**
@@ -39,6 +39,15 @@ const DELIBERATELY_UNSORTED: readonly { readonly path: string; readonly why: str
   },
 ];
 
+/** admin 配下の .tsx を再帰的に集める（レジストリの取りこぼしを実測から止めるため）。 */
+function adminTsx(dir = 'src/components/admin'): string[] {
+  return readdirSync(join(ROOT, dir), { withFileTypes: true }).flatMap((e) => {
+    const rel = `${dir}/${e.name}`;
+    if (e.isDirectory()) return adminTsx(rel);
+    return e.isFile() && e.name.endsWith('.tsx') && !e.name.includes('.test.') ? [rel] : [];
+  });
+}
+
 function read(path: string): string {
   return readFileSync(join(ROOT, path), 'utf8');
 }
@@ -71,6 +80,18 @@ describe('列ソートの採用 (#909 / 課題 18)', () => {
     expect(why.trim().length).toBeGreaterThan(10);
     // 「入れない」と宣言したものが実は入っていた、を落とす（宣言が腐らないように）。
     expect(read(path)).not.toContain('useTableSort');
+  });
+
+  /*
+   * 🔴 **ADOPTED を「取りこぼせる一覧」にしない。** 変異検証で、ADOPTED から 1 件落としても
+   * 全部緑のままになることが分かった（テストケースが 1 つ減るだけなので）。落とされた一覧は
+   * 「並べ替えてからページを切る」の検査からも外れ、**黙って順序が壊れても気づけない**。
+   * `useTableSort` を使っている一覧は全部 ADOPTED に居ることを要求して、一覧を実測から作らせる。
+   */
+  it('useTableSort を使う一覧は全部 ADOPTED に載っている（取りこぼしを許さない）', () => {
+    const adopted = new Set<string>(ADOPTED);
+    const users = adminTsx().filter((rel) => read(rel).includes('useTableSort('));
+    expect(users.filter((rel) => !adopted.has(rel))).toEqual([]);
   });
 
   it('DataTable はソート可能な列にだけ aria-sort を出す', () => {
