@@ -11,7 +11,7 @@
 > | AWS の窓を開ける（`./scripts/aws-issue-credentials.sh`） | 短命 STS の発行は darwin 限定で、`scripts/hooks/guard-destructive.sh` が機械強制（#675）。**窓さえ開けばデプロイ本体はクラウドから wrapper 経由で流せる** | #675 / `docs/runbook-cloud-aws-deploy.md` |
 > | 実機 iPad UAT | 横向きで部署カードが何枚見えるか / 部署を開いて戻れるか / 騒音下で不在告知が聞き取れるか | #807 / #65 |
 > | **darwin ベースライン 4 枚の取り直し**（`kiosk-idle-ipad-portrait` / `-ipad-landscape` / `-large-display` / `kiosk-landscape-out-of-hours`） | #918 で `--color-border-strong` を 3:1 へ上げた（WCAG 1.4.11）。ベースライン名に `{platform}` が入るので linux の描画を darwin の名前で置けない。**linux 側は再生成済み**。閾値 0 で測って**この 4 枚だけ**が変わることを確認してある（他 12 枚は画素単位で同一） | #918 |
-> | **リモートブランチ 14 本の削除**（2026-09-02 の UI/UX 周回ぶん） | クラウドセッションからは `git push origin --delete` が **黙って「Everything up-to-date」を返して消えない**（proxy が write を拒否する）。全部 squash マージ済みで PR も閉じているので `orphan_branch` 検出には掛からない。一覧は本書「2026-09-02 の周回」節 | — |
+> | **リモートブランチ 19 本の削除**（2026-09-02〜03 の UI/UX 周回ぶん） | クラウドセッションからは `git push origin --delete` が **黙って「Everything up-to-date」を返して消えない**（proxy が write を拒否する）。全部 squash マージ済みで PR も閉じているので `orphan_branch` 検出には掛からない。一覧は本書「2026-09-02 の周回」節 | — |
 >
 ## 2026-09-02 の周回（UI/UX 監査 Wave 0 / Wave 1）
 
@@ -95,7 +95,9 @@ done
 > （PR #819 / #820 マージ、Cursor 手順書の環境変数方針）。同書は経緯の記録として残すが、
 > **着手待ちとして追いかける必要はない**。
 
-> **直近の引き継ぎは `docs/handoff-2026-08-31.md`。** その前は `docs/handoff-2026-08-28.md`。 2026-08-26 の分（`docs/handoff-2026-08-26.md`）は
+> 🔴 **直近の引き継ぎは `docs/handoff-2026-09-03.md`（クラウド → ローカル macOS）。**
+> **macOS で最初にやるのは darwin ベースライン 6 枚の取り直し**で、これが下の候補 1 位
+> （#816）の「darwin VRT 待ち」を外す。その前は `docs/handoff-2026-08-31.md` / `docs/handoff-2026-08-28.md`。 2026-08-26 の分（`docs/handoff-2026-08-26.md`）は
 > §0 を 2026-08-27 に消化済みで、経緯の記録として残すだけでよい。
 
 ## 🔁 次に着手する候補（2026-08-28 更新・上から順）
@@ -106,7 +108,7 @@ done
 
 | 順 | Issue | なぜこの順か | 着手可否 |
 | --- | --- | --- | --- |
-| 1 | **#816** → **#815** | 逃げ道バーが内容を覆う。#816 は linux/darwin 両方の VRT 取り直しが要る | darwin VRT 待ち（#789） |
+| 1 | **#816** → **#815** | 逃げ道バーが内容を覆う。#816 は linux/darwin 両方の VRT 取り直しが要る | darwin VRT 待ち（#789）。**macOS なら `docs/handoff-2026-09-03.md` §0 を先に済ませれば着手可** |
 
 > **#847 は 2026-09-01 に消化した**（本周回）。fixture の `POST /api/admin/login` `ECONNRESET`
 > は並列 backlog ではなく、Playwright のプロセス共通 keep-alive agent が死んだソケットを
