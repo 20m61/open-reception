@@ -1240,11 +1240,20 @@ describe('未知 state の temporaryOverride (#846)', () => {
 
   /** 生値を持ち回らない（`expiresAt` と同じ原則）。 */
   it('未知 state の標本は長さを切る', () => {
-    const policy = unknownStatePolicy(new Date(OUT_OF_HOURS + 3_600_000).toISOString()) as any;
-    policy.services['realtime-conversation'].temporaryOverride.state = 'x'.repeat(500);
-    const result = resolveServiceStates({ policy, now: OUT_OF_HOURS });
-    const anomaly = result.anomalies[0] as { overrideState: string };
-    expect(anomaly.overrideState.length).toBeLessThanOrEqual(80);
+    const policy = {
+      commonSchedule: COMMON_8_23,
+      services: {
+        'realtime-conversation': {
+          temporaryOverride: {
+            state: 'x'.repeat(500),
+            expiresAt: new Date(OUT_OF_HOURS + 3_600_000).toISOString(),
+          },
+        },
+      },
+    } as unknown as RuntimeOperatingPolicy;
+    const [anomaly] = resolveServiceStates({ policy, now: OUT_OF_HOURS }).anomalies;
+    expect(anomaly?.kind).toBe('unknown_override_state');
+    expect(anomaly?.overrideState.length).toBeLessThanOrEqual(80);
   });
 
   /** **下界**: 既知 state は従来どおり効き、anomaly も出さない。 */
