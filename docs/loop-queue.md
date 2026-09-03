@@ -8,8 +8,6 @@
 > | --- | --- | --- |
 > | AWS の窓を開ける（`./scripts/aws-issue-credentials.sh`） | 短命 STS の発行は darwin 限定で、`scripts/hooks/guard-destructive.sh` が機械強制（#675）。**窓さえ開けばデプロイ本体はクラウドから wrapper 経由で流せる** | #675 / `docs/runbook-cloud-aws-deploy.md` |
 > | 実機 iPad UAT | 横向きで部署カードが何枚見えるか / 部署を開いて戻れるか / 騒音下で不在告知が聞き取れるか | #807 / #65 |
-> | **PR #923 の可否判断**（依存バージョン＝停止境界。承認されたら「Ready for review」も要る） | `docs/handoff-2026-09-03.md` §3-a が **依存バージョン変更＝#105 のライセンス/プライバシーチェック対象**として止めている。前回の「全てマージ承認します」は #859 / #848 / #428 に対するもので**本 PR を含まない**。🔴 **draft 解除そのものは到達できる**（2026-09-03 に本項を訂正）。`gh pr ready` は GraphQL 403、REST `PATCH draft=false` は**黙って無視**される（どちらも再現）が、**GitHub MCP の `update_pull_request` に `draft: false` を渡すと外せる** —— 同日 PR #921 で実測し、REST で `draft:false` を確認した（MCP が接続されているセッションに限る）。したがって**残っているブロッカーは可否判断だけ**で、道具の問題ではない。なお draft のままではマージ側が `Pull Request is still a draft (HTTP 405)` で拒否する。**`--full` は 14 段すべて PASS 済み**（`vrm (real render)` を含む） | #923 / #105 |
-> | **リモートブランチ 35 本の削除**（2026-09-02〜03 の周回ぶん） | クラウドセッションからは `git push origin --delete` が消せない。2026-09-03 に**エラーの出方まで実測**した: `error: RPC failed; HTTP 403` に続けて `Everything up-to-date` が出るので、**戻り値だけ見ると成功に見える**（proxy が write を拒否している）。全部 squash マージ済みで PR も閉じているので `orphan_branch` 検出には掛からない。一覧は本書「削除できていないリモートブランチ」節 | — |
 >
 ## 2026-09-03 の周回（darwin VRT ベースライン）
 
@@ -347,46 +345,67 @@ index 非依存なので手当て不要 —— **操作が index に依ってい
   理由は `docs/component-catalog.md` §5.5、3 つ目が黙って生えないことは
   `tests/config/responsive-strategy.test.ts` が縛る。
 
-### 削除できていないリモートブランチ
+### リモートブランチの掃除（2026-09-03 に完了）
 
-> 🔴 **この一覧は 2026-09-02〜03 の周回ぶんだけで、リモートに残っている全部ではない。**
-> 2026-09-03 に実測したところ `main` 以外のリモートブランチは **100 本**あった（本一覧は 32 本）。
-> 残りは過去の周回で同じ理由（proxy が write を拒否する）により消し残ったもの。全量は
-> `git ls-remote --heads origin | sed 's#.*refs/heads/##' | grep -v '^main$'` で採れる。
-> **この一覧を消し終えても掃除は終わらない**ので、まとめてやるなら実測から作り直すこと。
+**`main` 以外のリモートブランチ 103 本を削除した。** 残件表からこの行は消えた。
+残しているのは意図的な 2 本だけ:
 
-クラウドからは消せない（上の残件表）。ローカル macOS で:
+| 残したブランチ | 理由 |
+| --- | --- |
+| `fix/routing-step-provider-timeout-limit` | PR #944 が **CLOSED（未マージ）**。消すと作業そのものが消える |
+| `fix/vrm-observability-wiring` | PR が 1 つも無い。素性が確かめられていない |
+
+#### 🔴 消す前に「MERGED な PR を持つか」を 1 本ずつ引くこと
+
+本書が以前置いていた削除リストは **`fix/routing-step-provider-timeout-limit` を含んでいた**。
+これは #944 が **CLOSED** で、そのまま流していたら**未マージの作業を消していた**。
+「squash マージ済みだから `git branch -d` が失敗する」＝「マージ済み」ではない ——
+`-d` はどちらの理由でも失敗するので、**マージの有無をローカルの git からは判定できない**。
+
+安全な作り方（実際にこれで 103 本を確定した）:
 
 ```
-for b in feat/admin-form-aria feat/audit-log-paging-csv feat/prefers-contrast-support \
-         feat/table-column-sort feat/unsaved-changes-guard fix/accent-derivation \
-         fix/admin-button-visual-contract fix/admin-danger-confirm \
-         fix/admin-dialog-focus-headings fix/token-single-source \
-         refactor/admin-state-vocabulary refactor/font-token-adoption \
-         refactor/platform-shared-primitives refactor/z-index-tokens \
-         docs/wave1-closeout fix/border-contrast-3to1 docs/responsive-strategy-guard \
-         docs/opus-5-loop-profile claude/handoff-docs-resume-ivzxq2 \
-         claude/vonage-module-spec-check-dui9jn docs/vonage-followups-queue \
-         feat/admin-settings-form-submit docs/round-893-closeout \
-         fix/unsaved-empty-string-baseline docs/round-913-closeout \
-         feat/routing-step-timeout-provider-cap docs/round-927-closeout \
-         docs/vrm-alignment-queue-row fix/routing-step-provider-timeout-limit \
-         docs/branch-cleanup-vrm-round \
-         fix/platform-table-scroll-and-alerts docs/round-896-closeout \
-         docs/queue-915-already-done \
-         feat/admin-list-sort-and-paging docs/round-910-closeout; do
-  git push origin --delete "$b"
+for b in $(git ls-remote --heads origin | sed 's#.*refs/heads/##' | grep -v '^main$'); do
+  st=$(gh pr list --head "$b" --state all --json state --jq '[.[].state] | join(",")')
+  case "$st" in *MERGED*) echo "$b" ;; *) echo "skip: $b [${st:-PR なし}]" >&2 ;; esac
 done
 ```
+
+open な PR を持つブランチも除くこと（マージ前に消すと PR が壊れる）。
+
+#### 🔴 `git push origin --delete` は**ローカル macOS でも止まる**
+
+クラウドの proxy 拒否とは**別の壁**がある。2026-09-03 に Claude Code の
+**auto mode classifier がローカル macOS でもこのコマンドをブロック**した
+（`Blocked by classifier`）。つまり「ローカルへ持ち帰れば AI が消せる」ではない。
+
+いまのところ通る道は 2 つ:
+
+1. `.claude/settings.json` に `git push origin --delete` の Bash 許可ルールを足す
+   （`CLAUDE.md` は「規約が実行を要求する書き込み系は追跡側に入れる」方針なので、これが正道）
+2. 人が `! git push origin --delete ...` で流す（2026-09-03 はこちらで消化した）
+
+**クラウド側の観測も残しておく**: クラウドセッションでは `error: RPC failed; HTTP 403` に続けて
+`Everything up-to-date` が出るため、**戻り値だけ見ると成功に見える**（proxy が write を拒否）。
+全部 squash マージ済みで PR も閉じているので `orphan_branch` 検出にも掛からない。
+
+#### 参考: `git branch -r` の `origin` はブランチではない
+
+掃除中に「`origin` という名のブランチがある」と誤読しかけた。`%(refname:short)` は
+`refs/remotes/origin/HEAD`（既定ブランチを指すシンボリック ref）を **`origin`** と短縮する。
+実体を見るなら `git ls-remote --heads origin` か `git for-each-ref refs/remotes/` を使う。
 
 > 2026-08-26 の引き継ぎ（`docs/handoff-2026-08-26.md`）の §0 は **2026-08-27 に消化済み**
 > （PR #819 / #820 マージ、Cursor 手順書の環境変数方針）。同書は経緯の記録として残すが、
 > **着手待ちとして追いかける必要はない**。
 
-> 🔴 **直近の引き継ぎは `docs/handoff-2026-09-03.md`（クラウド → ローカル macOS）。**
-> **macOS で最初にやるのは darwin ベースライン 6 枚の取り直し**で、これが下の候補 1 位
-> （#816）の「darwin VRT 待ち」を外す。その前は `docs/handoff-2026-08-31.md` / `docs/handoff-2026-08-28.md`。 2026-08-26 の分（`docs/handoff-2026-08-26.md`）は
-> §0 を 2026-08-27 に消化済みで、経緯の記録として残すだけでよい。
+> 🔴 **直近の引き継ぎは `docs/handoff-2026-09-03.md`（クラウド → ローカル macOS）。ただし
+> §0（darwin ベースライン 6 枚）と §4（ブランチ掃除）は 2026-09-03 に消化済み**で、同書は
+> 経緯の記録として読めばよい。**§0 の表には誤りがある** —— stale の 1 枚目として挙げていた
+> `kiosk-landscape-target` は #867 で再生成済みで、実際に stale だったのは
+> `kiosk-landscape-fallback` だった（本書「darwin VRT ベースライン」節の訂正を参照）。
+> その前は `docs/handoff-2026-08-31.md` / `docs/handoff-2026-08-28.md`。2026-08-26 の分
+> （`docs/handoff-2026-08-26.md`）は §0 を 2026-08-27 に消化済み。
 
 ## 🔁 次に着手する候補（2026-08-28 更新・上から順）
 
@@ -396,7 +415,8 @@ done
 
 | 順 | Issue | なぜこの順か | 着手可否 |
 | --- | --- | --- | --- |
-| 1 | **#816** → **#815** | 逃げ道バーが内容を覆う。`.screen-anim` へ一括で余白を入れると**全画面の VRT が動く** | 🔴 **macOS 限定**。#940 で既存の stale 6 枚は解消したが、**#816 は着手すると darwin ベースラインを新たに取り直す必要が生じる**（`{platform}` 込みのファイル名なので linux から作れない）。ブロッカーは「#789 の積み残し待ち」ではなく**変更そのものが darwin での再生成を要求すること**。判定は VRT ではなくヒットテストが適切（#816 本文） |
+| 1 | **#815** | 部署数が多い組織で群カードが密になる（#816 の対だった片方）。**#816 は 2026-09-03 に PR #951 で消化済み** | ローカル可。**描画を変えるなら darwin ベースラインの取り直しが要る**（`{platform}` 込みのファイル名なので linux から作れない）。#816 では `kiosk-landscape-purpose` / `kiosk-landscape-target` の 2 枚が動いた |
+| 2 | **#952** | ローカル macOS の `--fast` が `store.test.ts` の 5s 境界で**非決定的に赤くなる**（クラウドでは PASS）。内側ループの信号が濁るので早めに塞ぐ価値がある | ローカル可。🔴 **母集合を縮めて速くするなら、縮める前後で同じ変異を当てて kill が減っていないことを確かめる** —— この 1 本は #367 で 5 周見逃した欠陥を 2 つとも落としたテストである |
 
 > **#847 は 2026-09-01 に消化した**（本周回）。fixture の `POST /api/admin/login` `ECONNRESET`
 > は並列 backlog ではなく、Playwright のプロセス共通 keep-alive agent が死んだソケットを
