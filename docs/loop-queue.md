@@ -1,6 +1,6 @@
 # ループ着手キュー & 残作業マップ
 
-> 🔴 **キューより先に「人にしか出来ない残件」を見る。** 下の 3 件は Issue の周回ではないので
+> 🔴 **キューより先に「人にしか出来ない残件」を見る。** 下の 4 件は Issue の周回ではないので
 > **`/loop-round` からは拾われない**（あれは Issue の 1 周を回すスキルで、起点は Issue と本書である）。
 > ここに置くのは、キューを見る導線（`/loop-round` / `/issue-ac-mapping`）が必ず本書を通るため。
 >
@@ -8,8 +8,8 @@
 > | --- | --- | --- |
 > | AWS の窓を開ける（`./scripts/aws-issue-credentials.sh`） | 短命 STS の発行は darwin 限定で、`scripts/hooks/guard-destructive.sh` が機械強制（#675）。**窓さえ開けばデプロイ本体はクラウドから wrapper 経由で流せる** | #675 / `docs/runbook-cloud-aws-deploy.md` |
 > | 実機 iPad UAT | 横向きで部署カードが何枚見えるか / 部署を開いて戻れるか / 騒音下で不在告知が聞き取れるか | #807 / #65 |
-> | **PR #923 の可否判断**（依存バージョン＝停止境界。承認されたら「Ready for review」も要る） | `docs/handoff-2026-09-03.md` §3-a が **依存バージョン変更＝#105 のライセンス/プライバシーチェック対象**として止めている。前回の「全てマージ承認します」は #859 / #848 / #428 に対するもので**本 PR を含まない**。あわせて draft 解除もクラウドから到達できない（`gh pr ready` → GraphQL 403 / REST `PATCH draft=false` → 🔴 **黙って無視** / MCP 未接続）。マージ側も `Pull Request is still a draft (HTTP 405)` で拒否される。**`--full` は 14 段すべて PASS 済み**（`vrm (real render)` を含む） | #923 / #105 |
-> | **リモートブランチ 24 本の削除**（2026-09-02〜03 の周回ぶん） | クラウドセッションからは `git push origin --delete` が消せない。2026-09-03 に**エラーの出方まで実測**した: `error: RPC failed; HTTP 403` に続けて `Everything up-to-date` が出るので、**戻り値だけ見ると成功に見える**（proxy が write を拒否している）。全部 squash マージ済みで PR も閉じているので `orphan_branch` 検出には掛からない。一覧は本書「削除できていないリモートブランチ」節 | — |
+> | **PR #923 の可否判断**（依存バージョン＝停止境界。承認されたら「Ready for review」も要る） | `docs/handoff-2026-09-03.md` §3-a が **依存バージョン変更＝#105 のライセンス/プライバシーチェック対象**として止めている。前回の「全てマージ承認します」は #859 / #848 / #428 に対するもので**本 PR を含まない**。🔴 **draft 解除そのものは到達できる**（2026-09-03 に本項を訂正）。`gh pr ready` は GraphQL 403、REST `PATCH draft=false` は**黙って無視**される（どちらも再現）が、**GitHub MCP の `update_pull_request` に `draft: false` を渡すと外せる** —— 同日 PR #921 で実測し、REST で `draft:false` を確認した（MCP が接続されているセッションに限る）。したがって**残っているブロッカーは可否判断だけ**で、道具の問題ではない。なお draft のままではマージ側が `Pull Request is still a draft (HTTP 405)` で拒否する。**`--full` は 14 段すべて PASS 済み**（`vrm (real render)` を含む） | #923 / #105 |
+> | **リモートブランチ 26 本の削除**（2026-09-02〜03 の周回ぶん） | クラウドセッションからは `git push origin --delete` が消せない。2026-09-03 に**エラーの出方まで実測**した: `error: RPC failed; HTTP 403` に続けて `Everything up-to-date` が出るので、**戻り値だけ見ると成功に見える**（proxy が write を拒否している）。全部 squash マージ済みで PR も閉じているので `orphan_branch` 検出には掛からない。一覧は本書「削除できていないリモートブランチ」節 | — |
 >
 ## 2026-09-03 の周回（darwin VRT ベースライン）
 
@@ -59,7 +59,7 @@ linux 側は #747 の時点で追従している。
 | Issue | 内容 | 着手可否 |
 | --- | --- | --- |
 | **#926** | 通知 adapter `HttpVonageAdapter` が**どの Vonage API とも一致しない骨組み**。Messages API（`POST /v1/messages`、JWT Bearer、`{ message_type, text, to, from, channel }`）へ揃える | 🔴 **新しい外部送信の配線＝停止境界。人間承認を取ってから着手** |
-| **#927** | ルート設定 `RoutingStep.timeoutSeconds` に 1 手あたりの上限（Vonage `ringing_timer` = 120 秒）の検証が無く、**表示（「180秒待つ」）と挙動（120 秒へ丸め）が食い違う** | 自律で着手可（管理 API の検証追加。停止境界には当たらない） |
+| ~~#927~~ | **2026-09-03 に消化・クローズ**（PR #943）。`exceeds_client_wait` と同じ置き場所（service の `validateCandidate`）に足した。**既存設定は締め出さない** —— 120 超が保存済みでも既に 120 秒で動いている（丸められている）ので挙動は変わらない | — |
 
 **実資格情報が要る 4 点は #65 §5 へスタックした**（`/session/create` の応答形が配列か / client SDK の
 グローバル名と `OT.initSession(applicationId, sessionId)` / `region_url` が answer・event の
@@ -141,6 +141,20 @@ linux 側は #747 の時点で追従している。
 - **ライト強度と `vrm.lookAt` は触らない。** どちらも見た目が変わる。headless の画素検査は
   「描かれているか」しか見ないので、実機で見てから決める（#934 / #935 へ分離）。
 
+### ルート設定の 1 手あたり上限（#927・PR #943・クローズ済み）
+
+`exceeds_client_wait`（#743）は**合計**しか見ないので、1 手だけ長い構成（180s + 余裕 30s = 210s ≤
+端末上限 300s）は素通りしていた。**合計と 1 手あたりは別の検証で、両方要る。**
+
+🔴 **「新しい検証を足すと既存設定を締め出す」は、締め出しの中身を見て判断する。** 起票時は
+「既存に 120 秒超が実在したら警告に留める」を停止条件にしていたが、**弾いても挙動は変わらない**と
+分かったので不要になった —— 120 超は `buildCreateCallRequest` が丸めるので**既に 120 秒で動いている**。
+弾くことで運用者は「実際の動き」を書き下すことになるだけである。逆に**上限ちょうど（120）は通す**
+必要がある（丸めが起きない値なので、弾くと上限いっぱいの設定が保存できなくなる）。下界として固定した。
+
+**文面は「丸められること」まで言う。** 「上限は 120 秒です」だけだと、既に 180 秒で運用している人は
+「今まで動いていたのに」と読む。実際には最初から 120 秒で動いていて、表示だけが違っていた。
+
 ## 2026-09-02 の周回（UI/UX 監査 Wave 0 / Wave 1）
 
 正本は `docs/ui-review-2026-09-01.md`。Wave 0（BLOCKER 7 + D6）と Wave 1（課題 06–18 / 22–32）を
@@ -217,7 +231,8 @@ for b in feat/admin-form-aria feat/audit-log-paging-csv feat/prefers-contrast-su
          docs/opus-5-loop-profile claude/handoff-docs-resume-ivzxq2 \
          claude/vonage-module-spec-check-dui9jn docs/vonage-followups-queue \
          feat/admin-settings-form-submit docs/round-893-closeout \
-         fix/unsaved-empty-string-baseline docs/round-913-closeout; do
+         fix/unsaved-empty-string-baseline docs/round-913-closeout \
+         feat/routing-step-timeout-provider-cap docs/round-927-closeout; do
   git push origin --delete "$b"
 done
 ```
