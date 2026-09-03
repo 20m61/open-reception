@@ -8,7 +8,7 @@
 > | --- | --- | --- |
 > | AWS の窓を開ける（`./scripts/aws-issue-credentials.sh`） | 短命 STS の発行は darwin 限定で、`scripts/hooks/guard-destructive.sh` が機械強制（#675）。**窓さえ開けばデプロイ本体はクラウドから wrapper 経由で流せる** | #675 / `docs/runbook-cloud-aws-deploy.md` |
 > | 実機 iPad UAT | 横向きで部署カードが何枚見えるか / 部署を開いて戻れるか / 騒音下で不在告知が聞き取れるか | #807 / #65 |
-> | **リモートブランチ 22 本の削除**（2026-09-02〜03 の周回ぶん） | クラウドセッションからは `git push origin --delete` が消せない。2026-09-03 に**エラーの出方まで実測**した: `error: RPC failed; HTTP 403` に続けて `Everything up-to-date` が出るので、**戻り値だけ見ると成功に見える**（proxy が write を拒否している）。全部 squash マージ済みで PR も閉じているので `orphan_branch` 検出には掛からない。一覧は本書「削除できていないリモートブランチ」節 | — |
+> | **リモートブランチ 24 本の削除**（2026-09-02〜03 の周回ぶん） | クラウドセッションからは `git push origin --delete` が消せない。2026-09-03 に**エラーの出方まで実測**した: `error: RPC failed; HTTP 403` に続けて `Everything up-to-date` が出るので、**戻り値だけ見ると成功に見える**（proxy が write を拒否している）。全部 squash マージ済みで PR も閉じているので `orphan_branch` 検出には掛からない。一覧は本書「削除できていないリモートブランチ」節 | — |
 >
 ## 2026-09-03 の周回（darwin VRT ベースライン）
 
@@ -85,6 +85,23 @@ linux 側は #747 の時点で追従している。
 （Enter の暗黙送信 → 送信ボタンの click → form へバブル → `onClick` が発火し `preventDefault` が
 送信を止めるので挙動がほぼ等価になる）。落ちたのは**保存ボタンが form の外にある**サイネージだけだった。
 
+### 未保存判定の「未設定」と空文字（#913・PR #941・クローズ済み）
+
+「どちらの候補を採るか」は**好みではなく実測で決まった**。issue は「`''` を意味のある値として
+扱う設定が今後出るか」で決めると書いていたが、**サーバ側のストアが既に両者を同一視していた**
+（`branding-store.ts` の `resolve()` は「空/null はクリア」、`voice-store.ts` は
+`.trim() || undefined`）。区別していたのは `isDirty` だけだったので、比較側の正規化で閉じ、
+**PUT の payload は一切変えていない**。
+
+🔴 **正規化は「安全側」を裏返しうる。** 「空文字は全部無視」まで広げると、**値が入っていたものを
+消した**変更が見えなくなり、「確認を出す」から「黙って捨てる」へ倒れる先が反転する。落とすのは
+キーそのものに限り、下界（`値が入っていたものを空にしたら未保存`）をテストで縛った。
+
+**#912 が「e2e では示せない」として外した主張を戻せた。** 戻すときに**前提を assertion で固定**
+してある（会社名が未設定で読み込まれること）—— seed が入ると「打って消す」は単なる往復になり
+**修正が無くても通る**ので、そうなったら黙って通らず落ちる。空虚でないことは、修正を revert して
+**新しい 1 本だけが落ちる**ことで実測した。
+
 ## 2026-09-02 の周回（UI/UX 監査 Wave 0 / Wave 1）
 
 正本は `docs/ui-review-2026-09-01.md`。Wave 0（BLOCKER 7 + D6）と Wave 1（課題 06–18 / 22–32）を
@@ -122,7 +139,7 @@ linux 側は #747 の時点で追従している。
 | #896 | platform の生 table 14 個・読込中と 0 件の描き分け（課題 06） |
 | #899 | 状態表示をバッジへ揃えるかの設計判断（#900 の続き） |
 | #910 | 列ソートの残りの一覧 + ページング未導入 5 リスト（#911 の続き） |
-| #913 | 未保存判定が「未設定」と「空文字」を別物として扱う（#912 の既知の粗さ） |
+| ~~#913~~ | **2026-09-03 に消化・クローズ**（PR #941）。方針は「比較側で正規化」——**ストアが既に `''` と未設定を同一視していた**ので、区別していたのは述語だけだった。PUT の payload は不変 |
 | #915 | `fontSize` リテラルの残り 102 件（寄せると文字サイズが動く） |
 
 ### 方針判断が要ったもの（**2 件とも 2026-09-03 に決着**）
@@ -160,7 +177,8 @@ for b in feat/admin-form-aria feat/audit-log-paging-csv feat/prefers-contrast-su
          docs/wave1-closeout fix/border-contrast-3to1 docs/responsive-strategy-guard \
          docs/opus-5-loop-profile claude/handoff-docs-resume-ivzxq2 \
          claude/vonage-module-spec-check-dui9jn docs/vonage-followups-queue \
-         feat/admin-settings-form-submit docs/round-893-closeout; do
+         feat/admin-settings-form-submit docs/round-893-closeout \
+         fix/unsaved-empty-string-baseline docs/round-913-closeout; do
   git push origin --delete "$b"
 done
 ```
@@ -182,7 +200,7 @@ done
 
 | 順 | Issue | なぜこの順か | 着手可否 |
 | --- | --- | --- | --- |
-| 1 | **#816** → **#815** | 逃げ道バーが内容を覆う。#816 は linux/darwin 両方の VRT 取り直しが要る | darwin VRT 待ち（#789）。**macOS なら `docs/handoff-2026-09-03.md` §0 を先に済ませれば着手可** |
+| 1 | **#816** → **#815** | 逃げ道バーが内容を覆う。`.screen-anim` へ一括で余白を入れると**全画面の VRT が動く** | 🔴 **macOS 限定**。#940 で既存の stale 6 枚は解消したが、**#816 は着手すると darwin ベースラインを新たに取り直す必要が生じる**（`{platform}` 込みのファイル名なので linux から作れない）。ブロッカーは「#789 の積み残し待ち」ではなく**変更そのものが darwin での再生成を要求すること**。判定は VRT ではなくヒットテストが適切（#816 本文） |
 
 > **#847 は 2026-09-01 に消化した**（本周回）。fixture の `POST /api/admin/login` `ECONNRESET`
 > は並列 backlog ではなく、Playwright のプロセス共通 keep-alive agent が死んだソケットを
