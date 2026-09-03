@@ -270,6 +270,16 @@ const GENERATION_GUARDED: readonly {
   readonly file: string;
   readonly fn: string;
   readonly ref: string;
+  /**
+   * `await` の前も含め、**あらゆる state 更新より前**にガードすること。
+   *
+   * 引数で対象を受け取る関数（`loadTenantFlags(id)`）は、古い id で呼ばれること自体が
+   * 起こる。`setFlags(null)` のような「前置きの初期化」がガードより前に在ると、
+   * **古い呼び出しがいま見ている対象の表示を消す**（#968 レビュー B-1 の後半）。
+   * 現在の対象に対して働く関数（`toggle` / `runLifecycle`）は、押した時点の初期化が
+   * 先に来てよいので false。
+   */
+  readonly guardFirst?: boolean;
   readonly why: string;
 }[] = [
   {
@@ -288,7 +298,8 @@ const GENERATION_GUARDED: readonly {
     file: 'FeatureFlags.tsx',
     fn: 'loadTenantFlags',
     ref: 'latestTenantId',
-    why: '選択し直した直後に前テナントの flags が載ると、その値を根拠に昇格つき PATCH を組み立てる',
+    guardFirst: true,
+    why: '選択し直した直後に前テナントの flags が載ると、その値を根拠に昇格つき PATCH を組み立てる。さらに古い id での再取得が setFlags(null) でいま見ている対象を消し、「読み込み中…」すら出ない空白を作る',
   },
   {
     file: 'FeatureFlags.tsx',
@@ -400,6 +411,47 @@ const CLEAR_ON_READ_FAILURE: readonly {
     clears: 'setData(null)',
     why: 'readable = data !== null が保存導線を閉じる唯一の根拠。失敗時に stale な data を残すと、楽観ロックの無い全置換 upsert が有効なまま残る',
   },
+];
+
+/**
+ * エラー表示が**押しのけてはいけない**表示 (#968 レビュー M-4)。
+ *
+ * `switchError` を優先順位つき三項の先頭に置いたところ、一度切替に失敗すると
+ * `表示中: <name>` と `（選択中と別）`（#423 の越境警告）が**恒久的に消える**ことになった
+ * （`switchError` は次の切替まで `null` に戻らない）。切替が成立しなかった直後は
+ * 「スコープが変わったつもりで変わっていない」まさにその瞬間で、そこで越境警告を消すのは
+ * 方向が逆である。**エラーは併記する。**
+ */
+const MUST_NOT_DISPLACE: readonly {
+  readonly file: string;
+  readonly errorState: string;
+  readonly testId: string;
+  readonly why: string;
+}[] = [
+  {
+    file: 'TenantSwitcher.tsx',
+    errorState: 'switchError',
+    testId: 'platform-viewing-tenant',
+    why: '#423 の越境警告。切替に失敗した直後こそ「選択中と別のテナントを見ている」を出し続ける必要がある',
+  },
+  {
+    file: 'TenantSwitcher.tsx',
+    errorState: 'listError',
+    testId: 'platform-viewing-tenant',
+    why: '同上。一覧が引けないことと、いまどのテナントを見ているかは別の情報',
+  },
+];
+
+/**
+ * 失敗した状態から**画面内で復帰する導線** (#968 レビュー m-4 / m-5)。
+ *
+ * ガードで操作を塞ぐなら、塞いだ状態から出る道を同じ画面に置く。`load` が
+ * `useCallback(…, [])` の画面はマウント時 1 回きりで、再読込の導線が無いと
+ * ブラウザのリロードしか道が無い（しかも文言はそれを言わない）。
+ */
+const RECOVERY_CONTROL: readonly { readonly file: string; readonly testId: string; readonly calls: string }[] = [
+  { file: 'ProviderConfig.tsx', testId: 'provider-config-reload', calls: 'void load()' },
+  { file: 'FeatureFlags.tsx', testId: 'feature-flags-retry', calls: 'void loadTenantFlags(' },
 ];
 
 const EXEMPT_FETCH: readonly { readonly file: string; readonly marker: string; readonly why: string }[] = [];
@@ -646,6 +698,14 @@ describe('platform の通信失敗が無言にならない (#968)', () => {
        * 素通りした（実測で生存）。catch は try の途中から飛んでくるので、try 側のガードを
        * 通っている保証がまったく無い。**catch 本体の中**にガードを要求する。
        */
+      if (g.guardFirst === true) {
+        const firstGuard = guards[0] ?? Number.MAX_SAFE_INTEGER;
+        const early = [...body.matchAll(/\bset[A-Z]\w*\s*\(/g)]
+          .filter((m) => (m.index ?? 0) < firstGuard)
+          .map((m) => `${g.fn}: ${m[0]} が世代ガードより前に在る（古い呼び出しが表示を壊す）`);
+        expect(early).toEqual([]);
+      }
+
       const catchOffenders = tryCatchBlocks(body).flatMap((b) => {
         const cb = body.slice(b.catchBody.start, b.catchBody.end);
         const sets = [...cb.matchAll(/\bset[A-Z]\w*\s*\(/g)].map((m) => ({ at: m.index ?? 0, call: m[0] }));
@@ -829,6 +889,42 @@ describe('platform の通信失敗が無言にならない (#968)', () => {
       expect(missing.length, `${target.clears} を呼ばない失敗枝が在る`).toBe(0);
     },
   );
+
+  it.each(MUST_NOT_DISPLACE.map((d) => [`${d.file}:${d.errorState}`, d] as const))(
+    '%s: エラー表示が既存の表示を押しのけない',
+    (_label, target) => {
+      const file = platformFiles().find((f) => f.name === target.file);
+      expect(file, `${target.file} が無い`).toBeDefined();
+      const source = file?.source ?? '';
+      const at = source.search(
+        new RegExp(`\\{[ \\t]*${target.errorState}\\s*(?:!==\\s*null\\s*)?\\?`),
+      );
+      expect(at, `${target.errorState} の描画が無い`).toBeGreaterThan(-1);
+      const end = matchBrace(source, at);
+      expect(end, 'ブロックを切り出せない').toBeGreaterThan(at);
+      const displaced = source.slice(at, end).includes(target.testId);
+      expect(displaced, `${target.testId} が ${target.errorState} の枝の中に在る`).toBe(false);
+      // 下界: 押しのけられていないだけでなく、実際に描かれていること。
+      expect(source, `${target.testId} が描かれていない`).toContain(target.testId);
+    },
+  );
+
+  it.each(RECOVERY_CONTROL.map((r) => [`${r.file}:${r.testId}`, r] as const))(
+    '%s: 失敗から復帰する導線が画面に在る',
+    (_label, target) => {
+      const file = platformFiles().find((f) => f.name === target.file);
+      expect(file?.source ?? '', `${target.testId} が無い`).toContain(`data-testid="${target.testId}"`);
+      expect(file?.source ?? '', `${target.testId} が再取得を呼んでいない`).toContain(target.calls);
+    },
+  );
+
+  it('🔴 復帰導線と押しのけ禁止の登録簿は固定', () => {
+    expect(MUST_NOT_DISPLACE.filter((d) => d.why.trim().length < 10)).toEqual([]);
+    expect(RECOVERY_CONTROL.map((r) => r.testId)).toEqual([
+      'provider-config-reload',
+      'feature-flags-retry',
+    ]);
+  });
 
   it('免除には理由が書かれている', () => {
     expect(EXEMPT_FETCH.filter((e) => e.why.trim().length < 10).map((e) => e.marker)).toEqual([]);
