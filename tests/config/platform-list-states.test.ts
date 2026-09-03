@@ -402,6 +402,45 @@ describe('platform の一覧の状態表示 (#896 / 課題 06)', () => {
   });
 
   /*
+   * 🔴 **定数免除は「増えない」ことまで縛る (#896 レビュー m1 / 2 周目)。**
+   *
+   * 衛生検査（理由の長さ・`testId` の実在）はどれも**免除する本人が満たせる** ——
+   * もっともらしい理由を書いて実在する `testId` を指せば通る。実測でも「新規一覧を
+   * `loaded failed={false}` で描き、偽の理由で 1 行足す」変異が**衛生検査を全部
+   * 満たして生存**した。自己申告を検査で締めるのは筋が悪い。
+   *
+   * `FILES_ALLOWED_RAW_TABLE` と同じ手（件数ではなく**同一性**）で固定する。
+   * 本当に状態が起こらない一覧を足すときは、この配列を編集する＝レビューで見える形になる。
+   */
+  it('🔴 定数免除は固定（黙って増やせない）', () => {
+    expect(CONSTANT_READ_STATE.map((e) => e.testId)).toEqual(['aws-cost-breakdown']);
+  });
+
+  /*
+   * 🔴 **失敗の報告は、遷移をまたいだ古い応答に対して撃たない (#896 レビュー m4 / 2 周目)。**
+   *
+   * `catch` を足したこと自体が新しい穴を開けうる: `TenantDetail` は `tenantId` ごとに
+   * `load` を作り直すので、A から B へ遷移した直後に **A の fetch が reject すると
+   * B の画面に A の失敗が出る**。他の 6 画面は `if (!cancelled)` で守っているが、
+   * その**ガードを外す変異にオラクルが無かった**（`if (true) setError` が生存した）。
+   *
+   * `loaded`/`failed` に対してやったのと同じ形で縛る ——
+   * **失敗を報告する `catch` の条件は、定数ではなく識別子に由来する式であること。**
+   */
+  it('失敗を報告する catch は古い応答を捨てるガードを通す（条件を定数にしない）', () => {
+    const offenders = filesWiringFailed().flatMap((f) => {
+      const guards = [...f.source.matchAll(/catch[\s\S]{0,240}?if\s*\(([^)]*)\)\s*setError\(/g)].map(
+        (m) => m[1]?.trim() ?? '',
+      );
+      if (guards.length === 0) return [`${f.name}: 失敗報告に古い応答を捨てるガードが無い`];
+      return guards
+        .filter((g) => g === '' || g === 'true' || g === 'false')
+        .map((g) => `${f.name}: ガードが定数 (${g})`);
+    });
+    expect(offenders).toEqual([]);
+  });
+
+  /*
    * 🔴 **`DataTable` を `<table>` の中へ置かない (#896 レビュー m7)。**
    *
    * `DataTable` は `<div>` を返すので `<tbody>` の中に置くと DOM が壊れる（ブラウザが
