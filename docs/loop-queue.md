@@ -1578,6 +1578,20 @@ VRT の `mask` は要素の**矩形**を覆う。よって (1) 要素が高く�
   後続トラックはマージ後 main を `git pull --ff-only` で取り込んでから整合確認。
 - 状態は本ファイルの表で更新していく。**分類が実態と違ったらその周回で直す。**
 
+## 人手が必要な残務（クラウドから実行できないもの）
+
+クラウドセッション（Claude Code on the web）からは経路が塞がっている後始末をここに積む。
+**`npm run evaluate:gate-runs` では拾えないもの**を書く（マージ済み PR があるブランチは
+`orphan_branch` に該当しないので、記録しない限り誰も気づかない）。
+
+| 日付 | 残務 | 理由 |
+| --- | --- | --- |
+| 2026-09-03 | `git push origin --delete feat/datatable-read-state`（PR #965 マージ済み） | クラウドから削除不能。`git push --delete` は `send-pack: unexpected disconnect` → `Everything up-to-date` と出て**返り値だけでは成功に見える**（4 回リトライしても残存）。`gh api -X DELETE .../git/refs/heads/...` は proxy が `Write access to this GitHub API path is not permitted`（403） |
+
+🔴 **ブランチ削除は「消えたこと」を `git ls-remote --heads origin <ref>` で確かめる。**
+`git push origin --delete` の出力に `Everything up-to-date` が出ても、それは削除が成功した
+意味ではない（CLAUDE.md「squash マージ後のブランチは残る」と同じ罠の別形）。
+
 ## 完了アーカイブ
 
 過去フェーズの詳細は各ハンドオフに委譲する（本書には残さない — 陳腐化して誤誘導するため）。
