@@ -9,7 +9,7 @@
 > | AWS の窓を開ける（`./scripts/aws-issue-credentials.sh`） | 短命 STS の発行は darwin 限定で、`scripts/hooks/guard-destructive.sh` が機械強制（#675）。**窓さえ開けばデプロイ本体はクラウドから wrapper 経由で流せる** | #675 / `docs/runbook-cloud-aws-deploy.md` |
 > | 実機 iPad UAT | 横向きで部署カードが何枚見えるか / 部署を開いて戻れるか / 騒音下で不在告知が聞き取れるか | #807 / #65 |
 > | **PR #923 の可否判断**（依存バージョン＝停止境界。承認されたら「Ready for review」も要る） | `docs/handoff-2026-09-03.md` §3-a が **依存バージョン変更＝#105 のライセンス/プライバシーチェック対象**として止めている。前回の「全てマージ承認します」は #859 / #848 / #428 に対するもので**本 PR を含まない**。🔴 **draft 解除そのものは到達できる**（2026-09-03 に本項を訂正）。`gh pr ready` は GraphQL 403、REST `PATCH draft=false` は**黙って無視**される（どちらも再現）が、**GitHub MCP の `update_pull_request` に `draft: false` を渡すと外せる** —— 同日 PR #921 で実測し、REST で `draft:false` を確認した（MCP が接続されているセッションに限る）。したがって**残っているブロッカーは可否判断だけ**で、道具の問題ではない。なお draft のままではマージ側が `Pull Request is still a draft (HTTP 405)` で拒否する。**`--full` は 14 段すべて PASS 済み**（`vrm (real render)` を含む） | #923 / #105 |
-> | **リモートブランチ 26 本の削除**（2026-09-02〜03 の周回ぶん） | クラウドセッションからは `git push origin --delete` が消せない。2026-09-03 に**エラーの出方まで実測**した: `error: RPC failed; HTTP 403` に続けて `Everything up-to-date` が出るので、**戻り値だけ見ると成功に見える**（proxy が write を拒否している）。全部 squash マージ済みで PR も閉じているので `orphan_branch` 検出には掛からない。一覧は本書「削除できていないリモートブランチ」節 | — |
+> | **リモートブランチ 29 本の削除**（2026-09-02〜03 の周回ぶん） | クラウドセッションからは `git push origin --delete` が消せない。2026-09-03 に**エラーの出方まで実測**した: `error: RPC failed; HTTP 403` に続けて `Everything up-to-date` が出るので、**戻り値だけ見ると成功に見える**（proxy が write を拒否している）。全部 squash マージ済みで PR も閉じているので `orphan_branch` 検出には掛からない。一覧は本書「削除できていないリモートブランチ」節 | — |
 >
 ## 2026-09-03 の周回（darwin VRT ベースライン）
 
@@ -218,6 +218,12 @@ linux 側は #747 の時点で追従している。
 
 ### 削除できていないリモートブランチ
 
+> 🔴 **この一覧は 2026-09-02〜03 の周回ぶんだけで、リモートに残っている全部ではない。**
+> 2026-09-03 に実測したところ `main` 以外のリモートブランチは **98 本**あった（本一覧は 29 本）。
+> 残りは過去の周回で同じ理由（proxy が write を拒否する）により消し残ったもの。全量は
+> `git ls-remote --heads origin | sed 's#.*refs/heads/##' | grep -v '^main$'` で採れる。
+> **この一覧を消し終えても掃除は終わらない**ので、まとめてやるなら実測から作り直すこと。
+
 クラウドからは消せない（上の残件表）。ローカル macOS で:
 
 ```
@@ -232,7 +238,8 @@ for b in feat/admin-form-aria feat/audit-log-paging-csv feat/prefers-contrast-su
          claude/vonage-module-spec-check-dui9jn docs/vonage-followups-queue \
          feat/admin-settings-form-submit docs/round-893-closeout \
          fix/unsaved-empty-string-baseline docs/round-913-closeout \
-         feat/routing-step-timeout-provider-cap docs/round-927-closeout; do
+         feat/routing-step-timeout-provider-cap docs/round-927-closeout \
+         docs/vrm-alignment-queue-row fix/routing-step-provider-timeout-limit; do
   git push origin --delete "$b"
 done
 ```
