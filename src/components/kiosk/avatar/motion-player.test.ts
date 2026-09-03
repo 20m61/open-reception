@@ -21,8 +21,10 @@ function deferred<T>(): Deferred<T> {
 function harness(opts: { vrmLoaded?: boolean } = {}) {
   const pending = new Map<string, Deferred<string | undefined>>();
   const observed: MotionObservation[] = [];
-  const actions: Array<MotionAction & { anim: string; fadedOut: number[] }> = [];
+  const actions: Array<MotionAction & { anim: string; fadedOut: number[]; released: number }> = [];
+  const deferred_: Array<{ fn: () => void; delaySec: number }> = [];
   const player = createMotionPlayer<string>({
+    defer: (fn, delaySec) => deferred_.push({ fn, delaySec }),
     vrmLoaded: opts.vrmLoaded ?? true,
     load: (url) => {
       const d = deferred<string | undefined>();
@@ -33,8 +35,12 @@ function harness(opts: { vrmLoaded?: boolean } = {}) {
       const action = {
         anim,
         fadedOut: [] as number[],
+        released: 0,
         fadeOut(d: number) {
           this.fadedOut.push(d);
+        },
+        release() {
+          this.released += 1;
         },
       };
       actions.push(action);
@@ -43,7 +49,7 @@ function harness(opts: { vrmLoaded?: boolean } = {}) {
     observe: (o) => observed.push(o),
     fadeSec: 0.3,
   });
-  return { player, pending, observed, actions };
+  return { player, pending, observed, actions, deferred: deferred_ };
 }
 
 const flush = () => new Promise((r) => setTimeout(r, 0));
@@ -70,6 +76,34 @@ describe('createMotionPlayer', () => {
     expect(h.actions.map((x) => x.anim)).toEqual(['anim-a', 'anim-b']);
     expect(h.actions[0]!.fadedOut).toEqual([0.3]);
     expect(h.actions[1]!.fadedOut).toEqual([]);
+  });
+
+  it('切替で退いたアクションは fadeSec 後に release される（mixer に残さない）', async () => {
+    const h = harness();
+    const a = h.player.request('/a.vrma');
+    h.pending.get('/a.vrma')!.resolve('anim-a');
+    await a;
+    const b = h.player.request('/b.vrma');
+    h.pending.get('/b.vrma')!.resolve('anim-b');
+    await b;
+    // fadeOut 直後はまだ解放しない（フェード中に stop するとカクつく）。
+    expect(h.actions[0]!.released).toBe(0);
+    expect(h.deferred.map((d) => d.delaySec)).toEqual([0.3]);
+    h.deferred[0]!.fn();
+    expect(h.actions[0]!.released).toBe(1);
+    // 現役のアクションは解放されない。
+    expect(h.actions[1]!.released).toBe(0);
+  });
+
+  it('空 URL で止めたアクションも release される', async () => {
+    const h = harness();
+    const a = h.player.request('/a.vrma');
+    h.pending.get('/a.vrma')!.resolve('anim-a');
+    await a;
+    await h.player.request(undefined);
+    expect(h.deferred).toHaveLength(1);
+    h.deferred[0]!.fn();
+    expect(h.actions[0]!.released).toBe(1);
   });
 
   it('後発の要求が先に解決したら、先発の遅れた読込は再生も観測もしない', async () => {

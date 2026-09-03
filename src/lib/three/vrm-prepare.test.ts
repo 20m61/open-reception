@@ -4,6 +4,7 @@ import type { Vector3 } from 'three';
 import {
   measureHeadHeight,
   prepareLoadedVrm,
+  vrmPreparedAttribute,
   VRM_LOOK_AT_PROXY_NAME,
   type VrmPrepareDeps,
 } from './vrm-prepare';
@@ -87,6 +88,13 @@ describe('prepareLoadedVrm (three-vrm 公式例の読込後手順)', () => {
     expect(children).toHaveLength(0);
     expect(calls).not.toContain('LookAtProxy');
     expect(result.lookAtProxyAdded).toBe(false);
+  });
+});
+
+describe('vrmPreparedAttribute', () => {
+  it('proxy の有無で値が変わる（実描画検査が名指しで期待する文字列）', () => {
+    expect(vrmPreparedAttribute({ lookAtProxyAdded: true })).toBe('optimized;lookat-proxy');
+    expect(vrmPreparedAttribute({ lookAtProxyAdded: false })).toBe('optimized');
   });
 });
 

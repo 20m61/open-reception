@@ -22,19 +22,32 @@
 
 | 観点 | 点検前 | 判定 | 反映 |
 | --- | --- | --- | --- |
-| 版 | `@pixiv/three-vrm ^3.5.4` / `three-vrm-animation 3.5.4`（片方だけ固定） | 最新は 3.5.5。**caret と固定が混在**すると `npm update` で `three-vrm-core` が二重化し、`createVRMAnimationClip` の `instanceof VRMLookAtQuaternionProxy` 判定が壊れうる | 両方 **3.5.5 に固定**（`-E`）。同じ版で揃えることを規約にする |
+| 版 | `@pixiv/three-vrm ^3.5.4` / `three-vrm-animation 3.5.4`（片方だけ固定） | 最新は 3.5.5。**caret と固定が混在**すると `npm update` で 2 パッケージの版がずれる。三者は `three-vrm-core` を**各パッケージのバンドルへ静的に取り込んでいる**（外部 import は `three` だけ）ので、`VRM` を作る側と `.vrma` を解釈する側で meta / humanoid の解釈が版ごとに食い違いうる。※当初「core が二重化して `instanceof` が壊れる」と書いたが、独立レビューの実測で誤り（`VRMLookAtQuaternionProxy` の定義と `instanceof` 判定は同じバンドル内）と分かり訂正 | 両方 **3.5.5 に固定**（`-E`）。同じ版で揃えることを規約にする |
 | three | 0.184（三者 README は r180 想定、peer は `>=0.137`） | 互換。r185 は VRM に影響する変更が無いが、three-vrm の検証版を超えるので急がない | 据え置き |
-| 読込後の最適化 | `rotateVRM0` のみ。`removeUnnecessaryVertices` / `combineSkeletons` / `combineMorphs` を**呼んでいなかった** | **未準拠**。`combineMorphs` はリリースノートが「モバイル GPU のシェーダエラー防止」と明記しており、受付端末が iPad である本プロジェクトに直結 | `lib/three/vrm-prepare.ts` の `prepareLoadedVrm` に公式例の順で集約。配線の有無と順序を unit で固定 |
+| 読込後の最適化 | `rotateVRM0` のみ。`removeUnnecessaryVertices` / `combineSkeletons` / `combineMorphs` を**呼んでいなかった** | **未準拠**。`combineMorphs` はリリースノートが「モバイル GPU のシェーダエラー防止」と明記しており、受付端末が iPad である本プロジェクトに直結。**これらはジオメトリ・スキニング・モーフ束縛を書き換える**ので「純粋な最適化」ではない（`combineMorphs` 後の `morphTargetDictionary` は合成後のもの。名前でモーフを引く実装を将来足すときは注意） | `lib/three/vrm-prepare.ts` の `prepareLoadedVrm` に公式例の順で集約。**順序が効く**: `combineSkeletons` が共有ジオメトリを複製して `morphAttributes` を別物にするので、その後の `combineMorphs`（元の `morphAttributes` を空にする）が兄弟メッシュを壊さない。`rotateVRM0` は公式例（1.0 モデル）には無い本 repo の追加で順序非依存（`combineSkeletons` は bindMatrix を恒等にする）。配線の有無と順序を unit で固定し、**実際に通ったことは `data-vrm-prepared` で観測**する |
 | `frustumCulled` | 未設定（既定 true） | **未準拠**。スキンメッシュの bounding sphere は動かないので、腕を大きく振る所作や頭寄りの画角で**モデルが消えうる** | `prepareLoadedVrm` が scene 配下を全部 false にする |
 | `VRMLookAtQuaternionProxy` | 未作成。`createVRMAnimationClip` が毎モデル `console.warn` しつつ自動生成 | 挙動は同じだが警告がノイズ。公式例は明示作成 | `prepareLoadedVrm` が名前付きで足す（`lookAt` の無いモデルには足さない） |
 | 更新順 | `mixer.update` → `vrm.update` | 準拠 | — |
 | 版差の補正 | `createVRMAnimationClip` に任せ独自判定しない（#578） | 準拠 | — |
-| 破棄 | `VRMUtils.deepDispose(gltf.scene)` + `renderer.dispose()` | 準拠 | rAF 自前ループ＋未使用の `setAnimationLoop(null)` を、three 推奨の `setAnimationLoop(render)` に一本化 |
+| 破棄 | `VRMUtils.deepDispose(gltf.scene)` + `renderer.dispose()` | 準拠 | rAF 自前ループ＋未使用の `setAnimationLoop(null)` を、three 推奨の `setAnimationLoop(render)` に一本化。最初のフレームを描いたことを `data-render-state=rendering` で観測（ループが配線されていなくても fallback には落ちず透明な canvas が残るだけなので、属性で見る） |
+| `.vrma` の解放 | 切替時に前の `AnimationAction` を `fadeOut` するだけ。`LoopRepeat` のアクションは重み 0 でも mixer の評価対象に残り、クリップも `uncacheClip` されない（**点検前からの欠陥**。状態遷移のたびに 1 つ増える） | 24 時間稼働の端末で毎フレームの評価対象が単調増加する | `motion-player.ts` がフェード後に `release`（`action.stop()` + `mixer.uncacheClip(clip)`）を呼ぶ。遅延実行を注入して unit で固定 |
 | 型安全 | `gltf.userData.vrm` が `any` のため viewer 内の three-vrm API 呼び出しが**全部無検査**。ボーン名も `string` | **疎結合の穴**。`getNormalizedBoneNode('haed')` のような誤字が実機まで届く | `as VRM \| undefined` で型付け。ボーン名は `HumanoidBoneName`（`VRMHumanBoneName` の部分集合であることを型テストで固定）、表情 preset も `VRMExpressionPresetName` の部分集合であることを型テストで固定。いずれも `import type` のみで実行時依存は増えない |
 | 疎結合 | `.vrma` 切替の競合制御（後発が勝つ・空 URL で止める・破棄後の遅延読込を捨てる）が effect 内に閉じ**未テスト** | three を注入で切り離せる | `avatar/motion-player.ts` に抽出。読込と再生を注入して競合を unit で固定 |
 | ライト強度 | `DirectionalLight(0xffffff, 1.2)`。公式例は `Math.PI`（r155 の物理単位化に合わせた値） | 本プロジェクトは r17x 以降の物理単位で実描画レビュー（`docs/ui-review-2026-07-22.md`）を通して 1.2 に落ち着いているので、**見た目を変える変更は実機 UAT（#65）で判断** | 据え置き。候補として記録 |
 | `vrm.lookAt`（眼球） | 未使用。視線誘導は首・頭ボーンの回転で表現 | 公式は `vrm.lookAt.target` で眼球を向ける。受付での「目が合う」演出に使える | 候補として記録（画面上の誘導先を 3D 座標へ写す設計が要る） |
 | WebGPU / `MToonNodeMaterial` | 未使用 | README が「まだ壊れやすい」と明記。iPad Safari の WebGPU も段階的 | 見送り |
+
+### 独立レビュー（2026-09-03）で直したこと
+
+- **配線の観測**（BLOCKER）: `prepareLoadedVrm` の呼び出しと `setAnimationLoop(render)` を両方
+  落としても unit 6663 本が全部緑だった（レビューの実測）。VRM は e2e / VRT / soak では
+  無効で、実描画検査（`npm run vrm:check`）だけが見える層。そこで `data-vrm-prepared` /
+  `data-render-state` を足し、検査が名指しで期待するようにした。`.vrma` 再生も
+  `data-motion-state=playing` を期待する（「フレームが変わる」は呼吸で空虚に通る）
+- **アクションの蓄積**（MAJOR・点検前からの欠陥）: 上表「`.vrma` の解放」
+- **依存固定の根拠**（minor）: 上表「版」の訂正
+- `--full` の vrm ステップは chromium が無いと `skip_unverified` で緑になる。この種の変更では
+  `--strict` を付けるか、routine 側で chromium を必須にする（Issue 候補）
 
 ### 変えないと決めたこと（理由つき）
 
@@ -55,6 +68,8 @@
 
 ### Issue 候補（スコープ外）
 
+- 品質ゲート `--full` の vrm ステップを、VRM に触る変更では SKIP でなく FAIL にする（`--strict` 相当）
+- soak（24 時間）で VRM を有効にし、アクション蓄積のような単調増加をフレームレートで検出する
 - `vrm.lookAt.target` による眼球の視線誘導（首・頭の回転と併用）
 - ライト強度を公式例（`Math.PI`）へ寄せるかの実機比較
 - `MToonNodeMaterial` + WebGPU の追試（iPad Safari の対応状況を見てから）

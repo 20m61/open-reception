@@ -163,11 +163,30 @@ if (canvasShown) {
       version: el.getAttribute('data-vrm-version'),
       motion: el.getAttribute('data-motion-state'),
       framing: el.getAttribute('data-camera-framing'),
+      prepared: el.getAttribute('data-vrm-prepared'),
+      render: el.getAttribute('data-render-state'),
     }));
   const observed = await readObserved();
   console.log(
     `  [vrm] data-vrm-version=${observed.version} data-motion-state=${observed.motion}` +
-      ` data-camera-framing=${observed.framing}`,
+      ` data-camera-framing=${observed.framing} data-vrm-prepared=${observed.prepared}` +
+      ` data-render-state=${observed.render}`,
+  );
+  /**
+   * **配線そのものを見る**（独立レビュー B1 の実測: `prepareLoadedVrm` の呼び出しと
+   * `setAnimationLoop(render)` を両方落としても unit 6663 本が全部緑だった）。
+   * 画素は「それらしく」見えてしまうので、公式手順が通ったこと・最初のフレームを描いたことを
+   * 属性で名指しする。lookAt の有無はモデル次第なので proxy の部分は問わない。
+   */
+  note(
+    'vrm: post-load preparation ran (VRMUtils wiring, data-vrm-prepared)',
+    typeof observed.prepared === 'string' && observed.prepared.startsWith('optimized'),
+    `data-vrm-prepared=${observed.prepared}`,
+  );
+  note(
+    'vrm: first frame rendered (animation loop wired, data-render-state)',
+    observed.render === 'rendering',
+    `data-render-state=${observed.render}`,
   );
   /**
    * 🔴 **「null でも none でもない」では弱すぎる** (#731)。
@@ -348,6 +367,16 @@ if (canvasShown) {
     await page.waitForTimeout(12000);
     const mu = await canvas2.getAttribute('data-motion-url');
     note('vrma: kiosk resolves motion url', mu === '/avatar/idle.vrma', `data-motion-url=${mu}`);
+    /**
+     * **再生されたと報告していること**を見る（独立レビュー M2）。下の「フレームが変わる」は
+     * 再生が完全に壊れていても手続き的ポーズの呼吸で満たせる（空虚に通る）。
+     */
+    let motionState = await canvas2.getAttribute('data-motion-state');
+    for (let i = 0; i < 20 && motionState !== 'playing'; i += 1) {
+      await page.waitForTimeout(500);
+      motionState = await canvas2.getAttribute('data-motion-state');
+    }
+    note('vrma: motion reported playing (data-motion-state)', motionState === 'playing', `data-motion-state=${motionState}`);
     const m1 = await canvas2.screenshot();
     await sharp(m1).toFile(`${outDir}/vrm-05-vrma-playing.png`);
     const mstats = await sharp(m1).stats();

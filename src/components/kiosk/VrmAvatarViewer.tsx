@@ -10,7 +10,7 @@ import {
 import { motionStateAttribute, type MotionObservation } from '@/domain/avatar/motion-state';
 import { cameraFramingAttribute, resolveCameraFraming } from '@/domain/avatar/camera-framing';
 import { ResourceTracker } from '@/lib/three/resource-tracker';
-import { measureHeadHeight, prepareLoadedVrm } from '@/lib/three/vrm-prepare';
+import { measureHeadHeight, prepareLoadedVrm, vrmPreparedAttribute } from '@/lib/three/vrm-prepare';
 import { AvatarFallbackImage } from './avatar/fallback-image';
 import { emotionExpressionValues } from './avatar/vrm-expression';
 import { poseEntries, resolveStatePose } from './avatar/vrm-pose';
@@ -115,6 +115,16 @@ export function VrmAvatarViewer({
    * 倒され、黙って妥当域へ寄せられるので、その事実（`src=`）まで載せる。
    */
   const [cameraFramingAttr, setCameraFramingAttr] = useState<string>('none');
+  /**
+   * 配線の観測（独立レビュー B1）。`data-vrm-prepared` は読込後の公式手順が通ったこと、
+   * `data-render-state` は最初のフレームが実際に描かれたことを表す。
+   *
+   * どちらも**落としても unit は緑のまま**で、描画も「それらしく」見える（`setAnimationLoop`
+   * が呼ばれなければ透明な canvas が残るだけで fallback には落ちない）。実描画検査が
+   * この 2 つを名指しで期待する。
+   */
+  const [preparedAttr, setPreparedAttr] = useState<string>('none');
+  const [renderState, setRenderState] = useState<'pending' | 'rendering'>('pending');
   // 表情はレンダーループ（[vrmUrl] 依存）の外から更新されるため ref で最新値を渡す。
   const expressionRef = useRef<AvatarExpression>(expression ?? 'neutral');
   useEffect(() => {
@@ -162,6 +172,8 @@ export function VrmAvatarViewer({
     setVrmVersion('unknown');
     setVrmLoaded(false);
     setMotionObservation({ state: 'none' });
+    setPreparedAttr('none');
+    setRenderState('pending');
 
     let disposed = false;
     const tracker = new ResourceTracker();
@@ -239,7 +251,13 @@ export function VrmAvatarViewer({
         const vrm = gltf.userData.vrm as VRM | undefined;
         // 読込直後の公式手順（VRMUtils 最適化・frustumCulled・0.x の向き補正・lookAt proxy）。
         // 何を・どの順で呼ぶかは `lib/three/vrm-prepare.ts` に集約し unit で固定している。
-        if (vrm) prepareLoadedVrm(vrm, { utils: VRMUtils, LookAtProxy: VRMLookAtQuaternionProxy });
+        if (vrm) {
+          const prepared = prepareLoadedVrm(vrm, {
+            utils: VRMUtils,
+            LookAtProxy: VRMLookAtQuaternionProxy,
+          });
+          setPreparedAttr(vrmPreparedAttribute(prepared));
+        }
         // 版を観測可能にする (#578 増分 1)。rotateVRM0 が「何に対して」効いたのかを
         // 実機から確認できるようにする（推測で既定へ倒さない。判別不能は unknown）。
         setVrmVersion(resolveVrmSpecVersion(vrm?.meta));
@@ -270,7 +288,15 @@ export function VrmAvatarViewer({
             const clip = createVRMAnimationClip(vrmAnimation, vrm);
             const action = mixer.clipAction(clip);
             action.reset().setLoop(THREE.LoopRepeat, Infinity).fadeIn(0.3).play();
-            return action;
+            return {
+              fadeOut: (d) => void action.fadeOut(d),
+              // フェード後に mixer から外す。`fadeOut` だけでは `LoopRepeat` のアクションが
+              // 評価対象に残り続け、状態遷移のたびに増える（`motion-player.ts` 参照）。
+              release: () => {
+                action.stop();
+                mixer.uncacheClip(clip);
+              },
+            };
           },
           observe: (o) => {
             if (!disposed) setMotionObservation(o);
@@ -285,6 +311,7 @@ export function VrmAvatarViewer({
         // （Date.now()）を扱うのはここ（viewer 側）だけで、domain 側の純関数へは値として
         // 渡すのみ（`domain/avatar/auto-blink.ts` は Math.random()/Date.now() を呼ばない）。
         autoBlinkStateRef.current = createAutoBlinkState(Date.now());
+        let firstFrameReported = false;
         const render = () => {
           if (disposed) return;
           const dt = clock.getDelta();
@@ -352,6 +379,11 @@ export function VrmAvatarViewer({
           mixer.update(dt);
           vrm?.update(dt);
           gl.render(scene, camera);
+          // 最初のフレームを描いた事実だけを 1 回報告する（毎フレーム setState しない）。
+          if (!firstFrameReported) {
+            firstFrameReported = true;
+            if (!disposed) setRenderState('rendering');
+          }
         };
         tracker.track({ dispose: () => mixer.stopAllAction() });
 
@@ -432,6 +464,10 @@ export function VrmAvatarViewer({
       // 実効画角 (#578 増分 1)。`none`=未確定。`src=fallback|clamped` は頭の高さを
       // 実測できなかった／妥当域へ寄せたことを表す（黙って倒さない）。
       data-camera-framing={cameraFramingAttr}
+      // 配線の観測（独立レビュー B1）。`optimized[;lookat-proxy]`=公式手順が通った、`none`=未読込。
+      data-vrm-prepared={preparedAttr}
+      // `rendering`=最初のフレームを描いた。`pending` のままなら描画ループが配線されていない。
+      data-render-state={renderState}
     />
   );
 }

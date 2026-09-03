@@ -37,16 +37,33 @@ export type VrmPrepareDeps = {
 };
 
 export type VrmPrepareResult = {
-  /** lookAt を持つモデルで proxy を足したか（診断用）。 */
+  /** lookAt を持つモデルで proxy を足したか。`vrmPreparedAttribute` で `data-vrm-prepared` に載る。 */
   lookAtProxyAdded: boolean;
 };
 
 /**
- * 読込済み VRM に公式例どおりの後処理を施す。**順序は公式例に合わせる**
- * （最適化 → culling → 0.x 向き補正 → lookAt proxy）。
+ * `data-vrm-prepared` の値。**配線を観測可能にする。**
  *
- * `rotateVRM0` は VRM 1.0 には no-op。0.x は -Z 向き規約なので回さないと後ろ姿になる
- * （実描画検証 2026-07-22 で発覚）。
+ * `prepareLoadedVrm` の呼び出しを丸ごと落としても unit は全部緑のままで、描画も「それらしく」
+ * 見える（独立レビューの実測）。実描画検査（`scripts/vrm-visual-check.mjs`）がこの属性を
+ * 名指しで期待することで、公式手順が実際に通ったことを画素ではなく事実で確かめる。
+ * `none` は未読込／VRM でない glTF。
+ */
+export function vrmPreparedAttribute(result: VrmPrepareResult): string {
+  return result.lookAtProxyAdded ? 'optimized;lookat-proxy' : 'optimized';
+}
+
+/**
+ * 読込済み VRM に公式例どおりの後処理を施す。
+ *
+ * **順序が効くのは最適化 3 つ**（公式例と同じ `removeUnnecessaryVertices` → `combineSkeletons`
+ * → `combineMorphs`）。`combineSkeletons` が共有ジオメトリを複製して `morphAttributes` を
+ * 別物にするので、その後の `combineMorphs`（元ジオメトリの `morphAttributes` を空にする）が
+ * 兄弟メッシュを壊さない。逆にすると実際に壊れる。
+ *
+ * `rotateVRM0` は公式例（1.0 モデル）には無い本 repo の追加で、位置はどこでもよい
+ * （`combineSkeletons` は bindMatrix を恒等にするので scene の回転は 1 回だけ効く）。
+ * VRM 1.0 には no-op。0.x は -Z 向き規約なので回さないと後ろ姿になる（実描画検証 2026-07-22）。
  */
 export function prepareLoadedVrm(vrm: VRM, deps: VrmPrepareDeps): VrmPrepareResult {
   deps.utils.removeUnnecessaryVertices(vrm.scene);

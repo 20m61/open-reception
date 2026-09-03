@@ -12,8 +12,15 @@
  */
 import { resolveMotionObservation, type MotionObservation } from '@/domain/avatar/motion-state';
 
-/** 再生中のアクション。three の `AnimationAction` のうち使う面だけ。 */
-export type MotionAction = { fadeOut: (durationSec: number) => void };
+/**
+ * 再生中のアクション。three の `AnimationAction` のうち使う面だけ。
+ *
+ * `release` はクロスフェード完了後に呼ばれる。`fadeOut` は重みを 0 にするだけで
+ * `LoopRepeat` のアクションは mixer の評価対象に残り続けるため、ここで `stop()` と
+ * `mixer.uncacheClip(clip)` を行わないと**状態遷移のたびにアクションが 1 つずつ増える**
+ * （24 時間稼働の受付端末で毎フレームの評価対象が単調増加する。独立レビュー M3）。
+ */
+export type MotionAction = { fadeOut: (durationSec: number) => void; release?: () => void };
 
 export type MotionPlayerDeps<Animation> = {
   /** VRM 本体が読めているか。false なら読込を試みず `failed:no-vrm` を報告する。 */
@@ -26,6 +33,8 @@ export type MotionPlayerDeps<Animation> = {
   observe: (observation: MotionObservation) => void;
   /** 切替時のクロスフェード秒。既定 0.3。 */
   fadeSec?: number;
+  /** `fadeSec` 後に `release` を呼ぶための遅延実行。既定は `setTimeout`。テストで差し替える。 */
+  defer?: (fn: () => void, delaySec: number) => void;
 };
 
 export type MotionPlayer = {
@@ -39,13 +48,18 @@ export type MotionPlayer = {
 
 export function createMotionPlayer<Animation>(deps: MotionPlayerDeps<Animation>): MotionPlayer {
   const fadeSec = deps.fadeSec ?? 0.3;
+  const defer = deps.defer ?? ((fn, delaySec) => void setTimeout(fn, delaySec * 1000));
   let current: MotionAction | null = null;
   let token = 0;
   let disposed = false;
 
   const stopCurrent = () => {
-    current?.fadeOut(fadeSec);
+    const previous = current;
     current = null;
+    if (!previous) return;
+    previous.fadeOut(fadeSec);
+    // フェードが終わってから解放する（フェード中に stop すると切替がカクつく）。
+    defer(() => previous.release?.(), fadeSec);
   };
   const observe = (o: MotionObservation) => {
     if (!disposed) deps.observe(o);
