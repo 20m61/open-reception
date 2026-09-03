@@ -11,8 +11,32 @@
 > | AWS の窓を開ける（`./scripts/aws-issue-credentials.sh`） | 短命 STS の発行は darwin 限定で、`scripts/hooks/guard-destructive.sh` が機械強制（#675）。**窓さえ開けばデプロイ本体はクラウドから wrapper 経由で流せる** | #675 / `docs/runbook-cloud-aws-deploy.md` |
 > | 実機 iPad UAT | 横向きで部署カードが何枚見えるか / 部署を開いて戻れるか / 騒音下で不在告知が聞き取れるか | #807 / #65 |
 > | **darwin ベースライン 4 枚の取り直し**（`kiosk-idle-ipad-portrait` / `-ipad-landscape` / `-large-display` / `kiosk-landscape-out-of-hours`） | #918 で `--color-border-strong` を 3:1 へ上げた（WCAG 1.4.11）。ベースライン名に `{platform}` が入るので linux の描画を darwin の名前で置けない。**linux 側は再生成済み**。閾値 0 で測って**この 4 枚だけ**が変わることを確認してある（他 12 枚は画素単位で同一） | #918 |
-> | **リモートブランチ 19 本の削除**（2026-09-02〜03 の UI/UX 周回ぶん） | クラウドセッションからは `git push origin --delete` が **黙って「Everything up-to-date」を返して消えない**（proxy が write を拒否する）。全部 squash マージ済みで PR も閉じているので `orphan_branch` 検出には掛からない。一覧は本書「2026-09-02 の周回」節 | — |
+> | **リモートブランチ 21 本の削除**（2026-09-02〜03 の周回ぶん） | クラウドセッションからは `git push origin --delete` が消せない。2026-09-03 に**エラーの出方まで実測**した: `error: RPC failed; HTTP 403` に続けて `Everything up-to-date` が出るので、**戻り値だけ見ると成功に見える**（proxy が write を拒否している）。全部 squash マージ済みで PR も閉じているので `orphan_branch` 検出には掛からない。一覧は本書「削除できていないリモートブランチ」節 | — |
 >
+## 2026-09-03 の周回（Vonage 仕様照合）
+
+**PR #921 を `--full` green（flaky 0）で squash マージした**（merge commit `34450d2`）。Vonage
+モジュールを公式 SDK（Node / Python / Java）のソースと照合し、Video セッション作成 REST を
+`POST /session/create`（form-urlencoded）へ、client token に `sub` / `acl` を、Voice event webhook に
+`started` / `cancelled` / `disconnected` を、`ringing_timer` を上限 120 秒へ、NCCO input に
+`eventMethod: POST` を揃えた。webhook 本文の読み取りは `src/lib/routing/vonage-webhook-body.ts` に
+集約し、`region_url` は許可リスト付きで相関へ残す。照合表は `docs/vonage-call-design.md` §11。
+
+`change-risk` は 3 区分（永続スキーマ・外部送信・Journey）とも発火したが、**いずれも停止境界には
+当たらない**と判断した（任意フィールド追加で互換 / 送信先も配線も増えていない / 語彙の除外登録のみ）。
+判断の根拠は PR #921 本文の「人間承認が必要な変更」節に検出器の出力ごと貼ってある。
+
+### 照合から分けた残り（Issue 化済み）
+
+| Issue | 内容 | 着手可否 |
+| --- | --- | --- |
+| **#926** | 通知 adapter `HttpVonageAdapter` が**どの Vonage API とも一致しない骨組み**。Messages API（`POST /v1/messages`、JWT Bearer、`{ message_type, text, to, from, channel }`）へ揃える | 🔴 **新しい外部送信の配線＝停止境界。人間承認を取ってから着手** |
+| **#927** | ルート設定 `RoutingStep.timeoutSeconds` に 1 手あたりの上限（Vonage `ringing_timer` = 120 秒）の検証が無く、**表示（「180秒待つ」）と挙動（120 秒へ丸め）が食い違う** | 自律で着手可（管理 API の検証追加。停止境界には当たらない） |
+
+**実資格情報が要る 4 点は #65 §5 へスタックした**（`/session/create` の応答形が配列か / client SDK の
+グローバル名と `OT.initSession(applicationId, sessionId)` / `region_url` が answer・event の
+どちらの webhook に載るか / `cancelled` の後に `completed` が続くか）。
+
 ## 2026-09-02 の周回（UI/UX 監査 Wave 0 / Wave 1）
 
 正本は `docs/ui-review-2026-09-01.md`。Wave 0（BLOCKER 7 + D6）と Wave 1（課題 06–18 / 22–32）を
@@ -86,7 +110,8 @@ for b in feat/admin-form-aria feat/audit-log-paging-csv feat/prefers-contrast-su
          refactor/admin-state-vocabulary refactor/font-token-adoption \
          refactor/platform-shared-primitives refactor/z-index-tokens \
          docs/wave1-closeout fix/border-contrast-3to1 docs/responsive-strategy-guard \
-         docs/opus-5-loop-profile claude/handoff-docs-resume-ivzxq2; do
+         docs/opus-5-loop-profile claude/handoff-docs-resume-ivzxq2 \
+         claude/vonage-module-spec-check-dui9jn docs/vonage-followups-queue; do
   git push origin --delete "$b"
 done
 ```
