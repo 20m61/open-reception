@@ -8,10 +8,11 @@ import {
 } from './lint-warning-budget';
 
 describe('lintWarningBudgetTotal', () => {
-  it('正本の合計は 73（#813 の総数 ratchet を内訳の和として引き継ぐ）', () => {
+  it('正本の合計は 72（#813 の総数 ratchet を内訳の和として引き継ぐ）', () => {
     // **べた書きなのは意図的。** 正本から導くと「予算を下げたつもりが下がっていない」を
-    // 検出できなくなる。件数を減らしたらここも一緒に下げる（#873 で 74 → 73）。
-    expect(lintWarningBudgetTotal()).toBe(73);
+    // 検出できなくなる。件数を減らしたらここも一緒に下げる
+    // （#873 で 74 → 73、#963 で実描画検査の未使用変数を消して 73 → 72）。
+    expect(lintWarningBudgetTotal()).toBe(72);
   });
 });
 
@@ -21,19 +22,19 @@ describe('diffLintWarningBudget', () => {
   });
 
   /**
-   * 🔴 **#843 が止める交換。** 総数は 73 のまま、受付導線に set-state-in-effect を
-   * 3 件足して unused-vars を 3 件消す。`--max-warnings 73` だけだと緑。
+   * 🔴 **#843 が止める交換。** 総数は据え置きのまま、受付導線に set-state-in-effect を
+   * 2 件足して unused-vars を 2 件消す。`--max-warnings <総数>` だけだと緑。
    */
-  it('総数が同じでもルール別の 3 件交換は落ちる', () => {
+  it('総数が同じでもルール別の交換は落ちる', () => {
     const swapped = {
-      'react-hooks/set-state-in-effect': 56,
+      'react-hooks/set-state-in-effect': 55,
       '@typescript-eslint/no-unused-vars': 16,
       '@next/next/no-img-element': 1,
     };
-    expect(lintWarningBudgetTotal(swapped)).toBe(73);
+    expect(lintWarningBudgetTotal(swapped)).toBe(72);
     expect(diffLintWarningBudget(swapped)).toEqual([
-      { ruleId: '@typescript-eslint/no-unused-vars', expected: 19, actual: 16 },
-      { ruleId: 'react-hooks/set-state-in-effect', expected: 53, actual: 56 },
+      { ruleId: '@typescript-eslint/no-unused-vars', expected: 18, actual: 16 },
+      { ruleId: 'react-hooks/set-state-in-effect', expected: 53, actual: 55 },
     ]);
   });
 
@@ -50,10 +51,10 @@ describe('diffLintWarningBudget', () => {
   it('1 ルールでも減らしたら落ちる（下げ忘れ防止＝下界）', () => {
     const lowered = {
       ...LINT_WARNING_BUDGET,
-      '@typescript-eslint/no-unused-vars': 18,
+      '@typescript-eslint/no-unused-vars': 17,
     };
     expect(diffLintWarningBudget(lowered)).toEqual([
-      { ruleId: '@typescript-eslint/no-unused-vars', expected: 19, actual: 18 },
+      { ruleId: '@typescript-eslint/no-unused-vars', expected: 18, actual: 17 },
     ]);
   });
 });
