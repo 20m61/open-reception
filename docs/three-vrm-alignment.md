@@ -46,8 +46,12 @@
   `data-motion-state=playing` を期待する（「フレームが変わる」は呼吸で空虚に通る）
 - **アクションの蓄積**（MAJOR・点検前からの欠陥）: 上表「`.vrma` の解放」
 - **依存固定の根拠**（minor）: 上表「版」の訂正
-- `--full` の vrm ステップは chromium が無いと `skip_unverified` で緑になる。この種の変更では
-  `--strict` を付けるか、routine 側で chromium を必須にする（Issue 候補）
+- 2 周目（BLOCKER 0 / MAJOR 0）の minor: `dispose` 後に遅延解放が発火しても `release` しない
+  ようにし（unit で固定）、`data-vrm-prepared` は同梱モデルの実際の値 `optimized;lookat-proxy` を
+  名指しで期待、`data-render-state` は固定 sleep でなく報告されるまで待つ
+- `--full` の vrm ステップは chromium が無いと `skip_unverified`（UNVERIFIED に積まれ **exit 1・
+  スタンプ無し**）なので、そこは穴ではない。**穴は change-scope による skip**（docs スコープの
+  `--full` は vrm を SKIP したまま green を記録する）。Issue 候補はそちら
 
 ### 変えないと決めたこと（理由つき）
 
@@ -68,7 +72,15 @@
 
 ### Issue 候補（スコープ外）
 
-- 品質ゲート `--full` の vrm ステップを、VRM に触る変更では SKIP でなく FAIL にする（`--strict` 相当）
+- 品質ゲートの change-scope skip が vrm ステップを SKIP したまま green を記録する件（VRM に触る
+  変更では skip を UNVERIFIED 扱いにする）
+- `release` の配線（viewer 側の `stop()` + `uncacheClip`）にも観測を足す。play で +1 / release で −1 の
+  ライブ数を `data-motion-actions` に出し、実描画検査でモーションを 2 回切替えて 1 のままを見る
+  （unit は fake action を注入するので viewer 側の配線を見ていない。B1 と同じ変異族）
+- `release` の遅延は実時計（`setTimeout`）だがフェードは mixer 時計。レンダーループが数百 ms
+  詰まるとフェード途中で stop してハードカットになる（描画も止まっている最中なので cosmetic）
+- VRM 読込失敗で `failed` になると `vrmUrl` を変えても復帰しない（`setFailed(false)` のリセットが
+  無い。**点検前から**。管理画面でアセットを直しても端末が再読込まで静止画のまま）
 - soak（24 時間）で VRM を有効にし、アクション蓄積のような単調増加をフレームレートで検出する
 - `vrm.lookAt.target` による眼球の視線誘導（首・頭の回転と併用）
 - ライト強度を公式例（`Math.PI`）へ寄せるかの実機比較

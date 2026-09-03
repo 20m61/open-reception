@@ -59,7 +59,10 @@ export function createMotionPlayer<Animation>(deps: MotionPlayerDeps<Animation>)
     if (!previous) return;
     previous.fadeOut(fadeSec);
     // フェードが終わってから解放する（フェード中に stop すると切替がカクつく）。
-    defer(() => previous.release?.(), fadeSec);
+    // 破棄後は呼ばない（呼び出し側が mixer ごと止めている。破棄済みシーンに触らない）。
+    defer(() => {
+      if (!disposed) previous.release?.();
+    }, fadeSec);
   };
   const observe = (o: MotionObservation) => {
     if (!disposed) deps.observe(o);

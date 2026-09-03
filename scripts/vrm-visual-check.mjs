@@ -166,7 +166,13 @@ if (canvasShown) {
       prepared: el.getAttribute('data-vrm-prepared'),
       render: el.getAttribute('data-render-state'),
     }));
-  const observed = await readObserved();
+  // 最初のフレームは固定 sleep の後に 1 回読むのではなく、報告されるまで待つ（固定 sleep は
+  // 本 repo が繰り返し踏んだ「偽の赤」の型。SwiftShader の初回描画は遅い）。
+  let observed = await readObserved();
+  for (let i = 0; i < 20 && observed.render !== 'rendering'; i += 1) {
+    await page.waitForTimeout(500);
+    observed = await readObserved();
+  }
   console.log(
     `  [vrm] data-vrm-version=${observed.version} data-motion-state=${observed.motion}` +
       ` data-camera-framing=${observed.framing} data-vrm-prepared=${observed.prepared}` +
@@ -176,11 +182,13 @@ if (canvasShown) {
    * **配線そのものを見る**（独立レビュー B1 の実測: `prepareLoadedVrm` の呼び出しと
    * `setAnimationLoop(render)` を両方落としても unit 6663 本が全部緑だった）。
    * 画素は「それらしく」見えてしまうので、公式手順が通ったこと・最初のフレームを描いたことを
-   * 属性で名指しする。lookAt の有無はモデル次第なので proxy の部分は問わない。
+   * 属性で名指しする。同梱モデルは lookAt（0.x の firstPerson.lookAtTypeName=Bone）を持つので
+   * proxy まで含めて**実際の値を名指し**する（#731 と同じ原則。lookAt の無いモデルへ差し替わると
+   * `createVRMAnimationClip` の自動生成 warn 経路へ静かに戻るので、それにも気づける）。
    */
   note(
     'vrm: post-load preparation ran (VRMUtils wiring, data-vrm-prepared)',
-    typeof observed.prepared === 'string' && observed.prepared.startsWith('optimized'),
+    observed.prepared === 'optimized;lookat-proxy',
     `data-vrm-prepared=${observed.prepared}`,
   );
   note(

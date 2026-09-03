@@ -106,6 +106,18 @@ describe('createMotionPlayer', () => {
     expect(h.actions[0]!.released).toBe(1);
   });
 
+  it('dispose 後に遅延解放が発火しても release しない（破棄済みシーンに触らない）', async () => {
+    const h = harness();
+    const a = h.player.request('/a.vrma');
+    h.pending.get('/a.vrma')!.resolve('anim-a');
+    await a;
+    await h.player.request(undefined);
+    expect(h.deferred).toHaveLength(1);
+    h.player.dispose();
+    h.deferred[0]!.fn();
+    expect(h.actions[0]!.released).toBe(0);
+  });
+
   it('後発の要求が先に解決したら、先発の遅れた読込は再生も観測もしない', async () => {
     const h = harness();
     const a = h.player.request('/a.vrma');
