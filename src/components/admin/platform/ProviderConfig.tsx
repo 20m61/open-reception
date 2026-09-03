@@ -130,11 +130,21 @@ export function ProviderConfig() {
       setError('secret を入力してください。');
       return;
     }
+    /*
+     * 🔴 **送る前に画面から消す (#968 レビュー m1)。**
+     *
+     * 元は `await fetch` の**次の行**で消していたので、reject したときだけ値が
+     * 入力欄（＝DOM）に残り続けた。`finally` へ移すと今度は**成功経路で `await load()`
+     * の 1 往復ぶん残る**。送信前に消せばどちらも起きず、`finally` も要らない。
+     * `.claude/rules/pii-secret-minimization.md`「画面・DOM に残さない」。
+     */
+    const secret = secretInput;
+    setSecretInput('');
     try {
       const res = await fetch(SECRET_ENDPOINT, {
         method: 'PUT',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ secret: secretInput, expectedProvider: data?.config?.provider }),
+        body: JSON.stringify({ secret, expectedProvider: data?.config?.provider }),
       });
       if (!res.ok) {
         setError(res.status === 409 ? '先に設定を保存し、対象プロバイダを確認してください。' : 'secret の保存に失敗しました。');
@@ -144,13 +154,6 @@ export function ProviderConfig() {
       await load();
     } catch {
       setError('secret を保存できませんでした。通信を確認してください。');
-    } finally {
-      /*
-       * 入力欄は成否に関わらず即クリア（画面・DOM に残さない）。**`finally` に置く**（#968）——
-       * 送信が reject したときこそ値が画面に残り続けるので、成功枝の後ろに置くと
-       * 「失敗したときだけ secret が DOM に残る」という一番まずい形になる。
-       */
-      setSecretInput('');
     }
   }, [secretInput, data, load]);
 
@@ -171,15 +174,32 @@ export function ProviderConfig() {
         );
         return;
       }
+      /*
+       * 確認欄のクリアは**応答を受け取れたときだけ**にする (#968 レビュー m2)。
+       * `confirmProvider` は secret ではなく provider 名（`placeholder` で画面に出ている）
+       * なので消す PII 上の利得が無く、消去ボタンは `!confirmProvider` で無効化されるため、
+       * 通信断のたびに打ち直しを強いることになる。
+       */
+      setConfirmProvider('');
       setNotice('secret を消去しました。');
       await load();
     } catch {
       setError('secret を消去できませんでした。通信を確認してください。');
-    } finally {
-      setConfirmProvider('');
     }
   }, [confirmProvider, load]);
 
+  /*
+   * 🔴 **読めていないことを「未設定」と言い換えない (#968 レビュー M2)。**
+   *
+   * `data === null` は「まだ読めていない / 読めなかった」であって「未設定」ではない。
+   * ここを `'missing'` に潰すと、画面は **secret 未設定**・provider `mock`・無効と
+   * **断定**する。しかも `PUT /api/platform/integrations/provider-config` は
+   * `buildTenantProviderConfig` → `putTenantProviderConfig` の**全置換 upsert**で
+   * 楽観ロックが無いので、その状態から「設定を保存」を押すと**実 CCaaS 設定が既定値で
+   * 上書きされる** —— 来訪者側は担当者を呼べず「取り次げません」になる。
+   * `OperatingHoursManager` が #870 で踏んだ「取得失敗を未設定と言い換える」型そのもの。
+   */
+  const readable = data !== null;
   const presence = data ? presenceOf(data) : 'missing';
 
   return (
@@ -245,7 +265,8 @@ export function ProviderConfig() {
           </tbody>
         </table>
       </div>
-      <button type="button" onClick={() => void saveConfig()} style={{ marginTop: 8 }}>
+      {/* 読めていない状態からの保存は全置換 upsert なので撃たせない（#968 レビュー M2）。 */}
+      <button type="button" onClick={() => void saveConfig()} disabled={!readable} style={{ marginTop: 8 }}>
         設定を保存
       </button>
 
@@ -255,7 +276,7 @@ export function ProviderConfig() {
       <p style={{ fontSize: font.small }}>
         現在の状態:{' '}
         <strong style={{ color: presence === 'set' ? 'var(--color-platform-ok)' : 'var(--color-platform-warn)' }}>
-          {presence === 'set' ? '設定済み' : '未設定'}
+          {!readable ? '取得できていません' : presence === 'set' ? '設定済み' : '未設定'}
         </strong>
       </p>
       <input
@@ -267,7 +288,7 @@ export function ProviderConfig() {
         autoComplete="new-password"
         style={{ width: '100%' }}
       />
-      <button type="button" onClick={() => void saveSecret()} style={{ marginTop: 8 }}>
+      <button type="button" onClick={() => void saveSecret()} disabled={!readable} style={{ marginTop: 8 }}>
         secret を保存
       </button>
 
@@ -285,7 +306,7 @@ export function ProviderConfig() {
         <button
           type="button"
           onClick={() => void clearSecret()}
-          disabled={!confirmProvider || presence !== 'set'}
+          disabled={!readable || !confirmProvider || presence !== 'set'}
           style={{ marginLeft: 8, color: 'var(--color-platform-warn)' }}
         >
           secret を消去

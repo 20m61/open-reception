@@ -50,6 +50,13 @@ export function TenantSwitcher() {
    * 「選べない」を黙って「選ぶものが無い」に化けさせない。
    */
   const [listError, setListError] = useState<string | null>(null);
+  /*
+   * 切替そのものが成立しなかったこと (#968 レビュー M5)。**選択表示を戻すだけでは無言**で、
+   * 運用者から見えるのは「プルダウンが勝手に戻る」挙動だけになる。切替は監査に残す操作
+   * （#83 §5）で、失敗すると読み取りスコープが変わったつもりで変わっていない状態になる。
+   * 読み取りの失敗（`listError`）とは別に持つ —— 操作の失敗を読み取りへ載せない。
+   */
+  const [switchError, setSwitchError] = useState<string | null>(null);
 
   useEffect(() => {
     setSelectedId(parseSelectedTenantId(document.cookie));
@@ -78,15 +85,23 @@ export function TenantSwitcher() {
   async function onSelect(nextId: string | null): Promise<void> {
     const prevId = selectedId;
     setSelectedId(nextId);
+    setSwitchError(null);
     // 切替はサーバ API に通して監査へ残す（#83 §5）。Cookie はサーバが Set-Cookie する。
-    const res = await fetch('/api/platform/selected-tenant', {
-      method: 'PUT',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ tenantId: nextId }),
-    }).catch(() => null);
-    if (!res?.ok) {
-      // 切替が成立しなかった（監査に残らない切替を見かけ上も作らない）。選択表示を戻す。
+    try {
+      const res = await fetch('/api/platform/selected-tenant', {
+        method: 'PUT',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ tenantId: nextId }),
+      });
+      if (!res.ok) {
+        // 切替が成立しなかった（監査に残らない切替を見かけ上も作らない）。選択表示を戻す。
+        setSelectedId(prevId);
+        setSwitchError('テナントを切り替えられませんでした。');
+        return;
+      }
+    } catch {
       setSelectedId(prevId);
+      setSwitchError('テナントを切り替えられませんでした。通信を確認してください。');
       return;
     }
     // platform の各 read はクライアントで mount 時に fetch するため、router.refresh() では
@@ -105,7 +120,15 @@ export function TenantSwitcher() {
       nullOptionLabel="全テナント横断"
       onSelect={(next) => void onSelect(next)}
       trailing={
-        listError !== null ? (
+        switchError !== null ? (
+          <span
+            role="alert"
+            data-testid="platform-tenant-switch-error"
+            style={{ fontSize: font.small, color: 'var(--color-platform-warn)' }}
+          >
+            {switchError}
+          </span>
+        ) : listError !== null ? (
           <span
             role="alert"
             data-testid="platform-tenant-list-error"

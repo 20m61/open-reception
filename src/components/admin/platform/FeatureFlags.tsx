@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   TENANT_FEATURE_FLAG_KEYS,
   TENANT_FEATURE_FLAG_LABELS,
@@ -146,7 +146,21 @@ function TenantFeatureFlagEditor({ onChanged }: { onChanged?: () => void }) {
   const [reason, setReason] = useState('');
   const [busyKey, setBusyKey] = useState<TenantFeatureFlagKey | null>(null);
   const [writeError, setWriteError] = useState<ElevatedWriteError | null>(null);
+  /*
+   * 🔴 **読み取りの失敗を書き込みの失敗に相乗りさせない (#968 レビュー m3)。**
+   * `writeError` は `selectTenant` / `toggle` が毎回 `null` へ落とすので、一覧の取得失敗を
+   * そこへ載せると**黙って消える**。逆に書込成功の直後に再読込が失敗すると、緑の `done` と
+   * 「変更リクエストの送信に失敗しました」が同時に出て、何が起きたか読めなくなる。
+   */
+  const [readError, setReadError] = useState<string | null>(null);
   const [done, setDone] = useState<string | null>(null);
+  /*
+   * いま画面が指しているテナント (#968 レビュー M3)。`loadTenantFlags` は世代を見ないと、
+   * A → B と選び直した直後に **A の応答が後着して `flags` に載る**。`toggle` は
+   * `flags.flags[key]` から enable を計算して **B 宛に昇格つき PATCH** を撃つので、
+   * 監査には「B を変更」と正しく残りながら、値の根拠は A という状態になる。
+   */
+  const latestTenantId = useRef('');
 
   useEffect(() => {
     let cancelled = false;
@@ -158,8 +172,7 @@ function TenantFeatureFlagEditor({ onChanged }: { onChanged?: () => void }) {
         setTenants(body.tenants);
       } catch {
         // テナントを選べないまま黙って空のプルダウンを出さない (#968)。
-        if (!cancelled)
-          setWriteError({ needsElevation: false, message: 'テナント一覧を取得できませんでした。通信を確認してください。' });
+        if (!cancelled) setReadError('テナント一覧を取得できませんでした。通信を確認してください。');
       }
     })();
     return () => {
@@ -172,24 +185,29 @@ function TenantFeatureFlagEditor({ onChanged }: { onChanged?: () => void }) {
     if (id === '') return;
     try {
       const res = await fetch(`/api/platform/tenants/${encodeURIComponent(id)}/feature-flags`);
+      // 遷移をまたいだ古い応答は成否によらず捨てる (#968 レビュー M3)。
+      if (latestTenantId.current !== id) return;
       if (!res.ok) {
-        setWriteError({ needsElevation: false, message: 'テナントの機能フラグの取得に失敗しました。' });
+        setReadError('テナントの機能フラグの取得に失敗しました。');
         return;
       }
       setFlags((await res.json()) as TenantFlagsResponse);
     } catch {
       /*
        * 🔴 **拾わないと「読み込み中…」で止まる (#968)。** 描画は
-       * `tenantId !== '' && !flags && !writeError` で読み込み中を出しているので、
-       * `flags` も `writeError` も `null` のままだと終わらない待ちになる。
+       * `tenantId !== '' && !flags && !readError` で読み込み中を出しているので、
+       * `flags` も `readError` も `null` のままだと終わらない待ちになる。
        */
-      setWriteError({ needsElevation: false, message: 'テナントの機能フラグを取得できませんでした。通信を確認してください。' });
+      if (latestTenantId.current === id)
+        setReadError('テナントの機能フラグを取得できませんでした。通信を確認してください。');
     }
   }, []);
 
   function selectTenant(id: string) {
+    latestTenantId.current = id;
     setTenantId(id);
     setWriteError(null);
+    setReadError(null);
     setDone(null);
     void loadTenantFlags(id);
   }
@@ -311,7 +329,13 @@ function TenantFeatureFlagEditor({ onChanged }: { onChanged?: () => void }) {
           ) : null}
         </>
       ) : null}
-      {tenantId !== '' && !flags && !writeError ? <p style={{ margin: 0, opacity: 0.6 }}>読み込み中…</p> : null}
+      {tenantId !== '' && !flags && !readError ? <p style={{ margin: 0, opacity: 0.6 }}>読み込み中…</p> : null}
+
+      {readError ? (
+        <p role="alert" style={{ color: 'var(--color-platform-warn)', margin: 0 }}>
+          {readError}
+        </p>
+      ) : null}
 
       {writeError ? (
         <p role="alert" style={{ color: 'var(--color-platform-warn)', margin: 0 }}>

@@ -4,6 +4,7 @@ import { readFileSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { AuditLogs } from './AuditLogs';
+import { ProviderConfig } from './ProviderConfig';
 import { Integrations } from './Integrations';
 import { MaintenanceStatus } from './MaintenanceStatus';
 import { Observability } from './Observability';
@@ -114,5 +115,49 @@ describe('platform の一覧は配線として「読み込み中」を出す (#8
       .filter((t): t is string => Boolean(t));
     const stale = LISTS.filter((l) => !all.includes(l.testId)).map((l) => l.testId);
     expect(stale).toEqual([]);
+  });
+});
+
+
+/**
+ * 読めていない設定画面から**全置換 upsert を撃たせない** (#968 レビュー M2)。
+ *
+ * `ProviderConfig` は取得に失敗しても `data` が `null` のままなので、`presence` を
+ * `'missing'` に潰すと画面は「secret 未設定」「provider `mock`」「無効」と**断定**する。
+ * `PUT /api/platform/integrations/provider-config` は `buildTenantProviderConfig` →
+ * `putTenantProviderConfig` の**全置換 upsert**で楽観ロックが無いため、その状態から
+ * 「設定を保存」を押すと**実 CCaaS 設定が既定値で上書きされる** —— 来訪者は担当者を
+ * 呼べず「取り次げません」になる。#870 の `OperatingHoursManager` と同じ型
+ * （取得できていないことを「未設定」と言い換える）。
+ *
+ * `renderToStaticMarkup` は `useEffect` を走らせないので、観測できるのは
+ * **fetch 前の初期状態**（`data === null`）である。読み取り失敗も同じ状態なので、
+ * ここで縛れば失敗時の断定表示と保存導線の両方が閉じる。
+ */
+describe('ProviderConfig は読めていない状態で断定しない (#968 レビュー M2)', () => {
+  const html = renderToStaticMarkup(<ProviderConfig />);
+
+  /** 表示文字列を含む `<button …>` の開始タグ。 */
+  function buttonTagFor(label: string): string {
+    const at = html.indexOf(`>${label}<`);
+    if (at < 0) return '(ボタンが見つからない)';
+    const open = html.lastIndexOf('<button', at);
+    return html.slice(open, at + 1);
+  }
+
+  it('secret の状態を「未設定」と断定しない', () => {
+    expect(html, '取得できていないのに「未設定」と出している').not.toContain('未設定</strong>');
+    expect(html).toContain('取得できていません');
+  });
+
+  it('読めていない間は保存系を押せない（既定値で上書きさせない）', () => {
+    expect(buttonTagFor('設定を保存'), '設定を保存が押せる').toContain('disabled');
+    expect(buttonTagFor('secret を保存'), 'secret を保存が押せる').toContain('disabled');
+    expect(buttonTagFor('secret を消去'), 'secret を消去が押せる').toContain('disabled');
+  });
+
+  it('🔴 下界: ボタンを実際に見つけている（消して通す形にしない）', () => {
+    for (const label of ['設定を保存', 'secret を保存', 'secret を消去'])
+      expect(buttonTagFor(label), `${label} が描かれていない`).toContain('<button');
   });
 });

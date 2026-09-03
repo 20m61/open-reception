@@ -34,6 +34,14 @@ export function TenantDetail({ tenantId }: { tenantId: string }) {
   const load = useCallback(async () => {
     try {
       const res = await fetch(`/api/platform/tenants/${encodeURIComponent(tenantId)}`);
+      /*
+       * 🔴 **成功枝にも世代ガードを掛ける (#968 レビュー 残存リスク 2)。**
+       * catch 側だけを守っても、A の応答が**成功して**後着すれば B の画面に A の
+       * `name` / 状態バッジ / サイト表が載る。しかも危険な操作のボタンのラベルは
+       * `data.status` から決まるので、**B の画面で A の状態に応じたボタン**が出る。
+       * `runLifecycle` が成功時に `load()` を呼ぶぶん、この窓は広がっている。
+       */
+      if (latestTenantId.current !== tenantId) return;
       if (!res.ok) {
         setError(
           res.status === 403
@@ -67,6 +75,13 @@ export function TenantDetail({ tenantId }: { tenantId: string }) {
 
   useEffect(() => {
     latestTenantId.current = tenantId;
+    /*
+     * 🔴 **操作の失敗表示を遷移で捨てる (#968 レビュー B1)。**
+     * 分離前は同じ文言が `error` に載っており、遷移後の `load()` 成功が
+     * `setError(null)` で**必ず消していた**。AC4 のために state を分けた結果、
+     * その消去経路が落ちる —— A の停止失敗が B の画面に出続ける。
+     */
+    setActionError(null);
     void load();
   }, [load, tenantId]);
 
@@ -80,6 +95,13 @@ export function TenantDetail({ tenantId }: { tenantId: string }) {
           headers: { 'content-type': 'application/json' },
           body: JSON.stringify({ action, reason }),
         });
+        /*
+         * 🔴 **操作の失敗も「いま見ているテナント宛」だけ出す (#968 レビュー B1)。**
+         * `load` の catch に付けたガードと同じ理由。PATCH の応答は遷移をまたいで
+         * 後着しうるので、素で報告すると **B の停止ボタンの真上に A の失敗**が出る。
+         * 「成功したか分からない」より悪い、**誤ったテナントへの帰属**になる。
+         */
+        if (latestTenantId.current !== tenantId) return;
         if (res.ok) await load();
         else setActionError('操作に失敗しました。');
       /*
@@ -90,7 +112,8 @@ export function TenantDetail({ tenantId }: { tenantId: string }) {
        * 残さないことが、テナントの停止/有効化では最も重い。
        */
       } catch {
-        setActionError('操作を送信できませんでした。通信を確認して、もう一度お試しください。');
+        if (latestTenantId.current === tenantId)
+          setActionError('操作を送信できませんでした。通信を確認して、もう一度お試しください。');
       } finally {
         setBusy(false);
       }

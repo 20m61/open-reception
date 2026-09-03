@@ -55,7 +55,12 @@ function platformFiles(): { name: string; source: string }[] {
       const path = join(dir, entry.name);
       const name = prefix ? `${prefix}/${entry.name}` : entry.name;
       if (entry.isDirectory()) walk(path, name);
-      else if (entry.name.endsWith('.tsx') && !entry.name.includes('.test.'))
+      /*
+       * 🔴 **拡張子軸で漏らさない (#968 レビュー M4)。** `.tsx` だけを見ると、
+       * `usePlatformPing.ts` のような hook へ `fetch` を切り出すだけで**1 バイトも
+       * 読まれなくなる**（実測で生存）。ディレクトリ軸（再帰）だけ塞いでも足りない。
+       */
+      else if (/\.tsx?$/.test(entry.name) && !entry.name.includes('.test.'))
         out.push({ name, source: stripComments(readFileSync(path, 'utf8')) });
     }
   };
@@ -120,16 +125,31 @@ function tryCatchBlocks(source: string): { readonly tryBody: Block; readonly cat
   return out;
 }
 
-/** `fetch(` の呼び出し位置（`res.json().catch(` 等の別メソッドは拾わない）。 */
+/**
+ * `fetch(` の呼び出し位置（`res.json().catch(` 等の別メソッドは拾わない）。
+ *
+ * 🔴 **`window.fetch(` / `globalThis.fetch(` も拾う (#968 レビュー M4)。** `.` を一律に
+ * 除外すると、`await window.fetch(...)` へ書き換えるだけで検査から外れる（実測で生存）。
+ * レシーバは global を指すものだけ許し、`res.json().catch` のような任意の式は拾わない。
+ */
 function fetchSites(source: string): number[] {
-  return [...source.matchAll(/(?<![\w.])fetch\s*\(/g)].map((m) => m.index ?? 0);
+  return [...source.matchAll(/(?<![\w$.])(?:(?:window|globalThis|self)\.)?fetch\s*\(/g)].map(
+    (m) => m.index ?? 0,
+  );
 }
 
 /**
  * 失敗を**画面へ出す**呼び出し。**閉じた語彙にする** —— 「何か書いてあればよい」に
  * すると `void 0;` 変異の代わりに `noop();` を書けば通ってしまう。
+ *
+ * 🔴 **引数まで見る (#968 レビュー B2)。** 呼び出し名だけを見ると
+ * `setError(null)` / `setActionError('')` が通る —— 画面出力は「報告しない」と
+ * **完全に同一**（`{error ? … }` は `null` も `''` も falsy）なのに、検査は満たされる。
+ * `void 0;` という**1 つの綴り**を閉じただけで族が閉じていなかった、という指摘そのもの。
+ * 中身のある値（文字列リテラル・テンプレート・オブジェクト・関数呼び出し）を要求する。
  */
-const FAILURE_REPORT = /\bset[A-Za-z]*(Error|Failed|Failure)\s*\(|\bfailure\s*\(/;
+const FAILURE_REPORT =
+  /\b(?:set[A-Za-z]*(?:Error|Failed|Failure)|failure)\s*\(\s*(?!\)|null\s*\)|undefined\s*\)|''\s*\)|""\s*\)|``\s*\)|false\s*\))/;
 
 /** `catch` の中で呼ばれている報告先 setter 名（`setError` → `error`）。 */
 function reportedStates(body: string): string[] {
@@ -138,31 +158,113 @@ function reportedStates(body: string): string[] {
   );
 }
 
-/** `{ ident ? <…>` / `{ ident ? (<…>` の形で描かれている state 名。 */
+/**
+ * 三項の条件から JSX を出している state 名（`ident ? <…>` / `ident !== null ? (<…>`）。
+ *
+ * 🔴 **先頭の `{` を要求しない。** 三項を連ねると 2 段目以降は `) : ident !== null ? (`
+ * の形になり、`{` から始まらない。要求すると**実際に描いているのに「描いていない」**
+ * と判定してしまう（`TenantSwitcher` で実際に踏んだ）。
+ */
 function renderedStates(source: string): string[] {
-  return [...source.matchAll(/\{\s*([A-Za-z_$][\w$]*)\s*(?:!==\s*null\s*)?\?\s*\(?\s*</g)].map(
+  return [...source.matchAll(/([A-Za-z_$][\w$]*)\s*(?:!==\s*null\s*)?\?\s*\(?\s*</g)].map(
     (m) => m[1] ?? '',
   );
 }
 
-/** `const foo = useCallback(async … => { … })` / `function foo(…) { … }` の本体。 */
-function functionBodies(source: string): { readonly name: string; readonly body: string }[] {
-  const out: { name: string; body: string }[] = [];
-  for (const m of source.matchAll(/(?:const\s+(\w+)\s*=\s*useCallback\(|async\s+function\s+(\w+)\s*\()/g)) {
-    const name = m[1] ?? m[2] ?? '(無名)';
-    const arrow = source.indexOf('=> {', m.index ?? 0);
-    const brace = m[1] ? (arrow < 0 ? -1 : arrow + 3) : source.indexOf('{', (m.index ?? 0) + m[0].length);
+/**
+ * `useCallback` / `useEffect` のコールバックと、宣言された関数の本体。
+ *
+ * `useEffect` も拾う —— 遷移で state を捨てる後始末はそこに置かれる（下の
+ * `RESET_ON_SWITCH`）。拾わないと「捨てていない」を検出できない。
+ */
+function functionBodies(
+  source: string,
+): { readonly name: string; readonly body: string; readonly start: number; readonly end: number }[] {
+  const out: { name: string; body: string; start: number; end: number }[] = [];
+  const pattern = /const\s+(\w+)\s*=\s*useCallback\(|(useEffect)\(|(?:async\s+)?function\s+(\w+)\s*\(/g;
+  for (const m of source.matchAll(pattern)) {
+    const at = m.index ?? 0;
+    const isArrow = Boolean(m[1] || m[2]);
+    const name = m[1] ?? m[2] ?? m[3] ?? '(無名)';
+    const arrow = source.indexOf('=> {', at);
+    const brace = isArrow ? (arrow < 0 ? -1 : arrow + 3) : source.indexOf('{', at + m[0].length);
     if (brace < 0) continue;
     const end = matchBrace(source, brace);
     if (end < 0) continue;
-    out.push({ name, body: source.slice(brace, end) });
+    out.push({ name, body: source.slice(brace, end), start: brace, end });
   }
   return out;
 }
 
-/** 一覧を書き換える（＝操作系の）本体か。 */
+/**
+ * 応答が**遷移をまたいで後着しうる**関数。世代 ref の名前を名指しする (#968 レビュー B1 / M3)。
+ *
+ * これらの関数は「いま画面が指している対象」が `await` の前後で変わりうる。守らないと:
+ *
+ * - `TenantDetail.runLifecycle` … A の停止失敗が **B の停止ボタンの真上**に出る。
+ *   「成功したか分からない」より悪い、**誤ったテナントへの帰属**になる
+ * - `FeatureFlags.loadTenantFlags` … 後着した A の flags が載り、`toggle` はその値から
+ *   enable を計算して **B 宛に昇格つき PATCH** を撃つ。監査には「B を変更」と正しく残る
+ */
+const GENERATION_GUARDED: readonly {
+  readonly file: string;
+  readonly fn: string;
+  readonly ref: string;
+  readonly why: string;
+}[] = [
+  {
+    file: 'TenantDetail.tsx',
+    fn: 'load',
+    ref: 'latestTenantId',
+    why: 'tenantId ごとに load を作り直すので、A→B 遷移直後に A の応答が成否とも後着しうる',
+  },
+  {
+    file: 'TenantDetail.tsx',
+    fn: 'runLifecycle',
+    ref: 'latestTenantId',
+    why: 'PATCH の応答が遷移をまたいで後着すると、破壊的操作の失敗が別テナントの画面に出る',
+  },
+  {
+    file: 'FeatureFlags.tsx',
+    fn: 'loadTenantFlags',
+    ref: 'latestTenantId',
+    why: '選択し直した直後に前テナントの flags が載ると、その値を根拠に昇格つき PATCH を組み立てる',
+  },
+];
+
+/**
+ * 対象が切り替わったときに**捨てる** state (#968 レビュー B1)。
+ *
+ * 分離前は同じ文言が読み取りの `error` に載っており、遷移後の `load()` 成功が
+ * `setError(null)` で必ず消していた。AC4 のために state を分けると**その消去経路が落ちる**。
+ * 世代 ref へ代入する本体（＝切り替えを認識する場所）で捨てることを要求する。
+ */
+const RESET_ON_SWITCH: readonly { readonly file: string; readonly setter: string; readonly why: string }[] = [
+  {
+    file: 'TenantDetail.tsx',
+    setter: 'setActionError',
+    why: '操作の失敗を読み取りの error から分離した結果、遷移時の消去経路が無くなるため',
+  },
+  {
+    file: 'FeatureFlags.tsx',
+    setter: 'setReadError',
+    why: '読み取りの失敗を writeError から分離した結果、選択し直しでの消去経路が無くなるため',
+  },
+  {
+    file: 'FeatureFlags.tsx',
+    setter: 'setWriteError',
+    why: '前テナントへの書込失敗を、別テナントを選んだ画面に残さないため',
+  },
+];
+
+/**
+ * 一覧を書き換える（＝操作系の）本体か。
+ *
+ * 🔴 **引用符の種類に依存させない (#968 レビュー M1)。** `method: 'PATCH'` だけを見ると、
+ * prettier の設定を変えて `"PATCH"` にするだけで AC4 の検査が無効化される（実測で生存）。
+ */
 function isMutating(body: string): boolean {
-  return /method:\s*'(PATCH|POST|PUT|DELETE)'/.test(body);
+  return /method:\s*['"`](PATCH|POST|PUT|DELETE)/.test(body);
 }
 
 /**
@@ -172,13 +274,22 @@ function isMutating(body: string): boolean {
  * すると、同じファイルの別の `fetch` が黙って免除される —— 本テストが存在する理由
  * そのものになってしまう。
  */
-const EXEMPT_FETCH: readonly { readonly file: string; readonly marker: string; readonly why: string }[] = [
-  {
-    file: 'TenantSwitcher.tsx',
-    marker: "'/api/platform/selected-tenant'",
-    why: 'TenantSwitcher.onSelect: `.catch(() => null)` の戻りを `if (!res?.ok)` で判定し、選択表示を切替前へ戻す（失敗が画面に見える形で残る）',
-  },
-];
+const EXEMPT_FETCH: readonly { readonly file: string; readonly marker: string; readonly why: string }[] = [];
+
+/*
+ * 🔴 **いまは空である（#968 レビュー M5）。**
+ *
+ * 最初は `TenantSwitcher.onSelect` を「`.catch(() => null)` の戻りを `if (!res?.ok)` で
+ * 判定し、選択表示を戻すので失敗が画面に見える」という理由で登録していた。**その理由が
+ * 事実と違った** —— 実際にやっていたのは `setSelectedId(prevId)` だけで、メッセージも
+ * `role="alert"` も出ず、運用者から見えるのは「プルダウンが勝手に戻る」挙動だけだった。
+ * しかも切替は監査に残す操作（#83 §5）で、失敗すると読み取りスコープが変わったつもりで
+ * 変わっていない状態になる —— まさに本 issue が問題にしている無言の通信失敗である。
+ *
+ * 免除簿は「黙って増やせない」ことは縛れるが、**書かれた理由が正しいかは誰も検査できない**。
+ * 1 件目の記録が誤っていると、以降の免除の判断基準として機能しなくなる。だから免除ではなく
+ * 実装（`switchError` + `role="alert"`）で塞いだ。**空のまま保つことが最も強い状態**である。
+ */
 
 function isExemptFetch(file: string, source: string, site: number): boolean {
   return EXEMPT_FETCH.some((e) => {
@@ -278,8 +389,17 @@ describe('platform の通信失敗が無言にならない (#968)', () => {
    */
   it('操作の失敗は読み取りの失敗と別の state に載せる', () => {
     const offenders = platformFiles().flatMap((f) => {
-      const feeders = [...f.source.matchAll(/\bfailed=\{\s*([A-Za-z_$][\w$]*)\s*!==\s*null/g)].map(
-        (m) => `set${(m[1] ?? '').charAt(0).toUpperCase()}${(m[1] ?? '').slice(1)}`,
+      /*
+       * 🔴 **`failed={…}` の**式全体**から識別子を拾う (#968 レビュー M1)。**
+       * `!== null` の綴りだけを見ると `failed={Boolean(error)}` へ書き換えるだけで
+       * AC4 の検査が外れる（実測で生存）。式に現れる識別子すべてを読み取り側の
+       * state 候補として扱い、対応する setter を操作系から締め出す。
+       */
+      const feeders = [...f.source.matchAll(/\bfailed=\{([^}]*)\}/g)].flatMap((m) =>
+        [...(m[1] ?? '').matchAll(/[A-Za-z_$][\w$]*/g)]
+          .map((id) => id[0])
+          .filter((id) => !['Boolean', 'null', 'undefined', 'true', 'false'].includes(id))
+          .map((id) => `set${id.charAt(0).toUpperCase()}${id.slice(1)}`),
       );
       return functionBodies(f.source)
         .filter((fn) => isMutating(fn.body))
@@ -298,29 +418,35 @@ describe('platform の通信失敗が無言にならない (#968)', () => {
   });
 
   /*
-   * 🔴 **secret の入力欄は「成否に関わらず」クリアする (#968)。**
+   * 🔴 **secret は「送る前に」画面から消す (#968 / レビュー m1)。**
    *
    * 元のコードは `await fetch(...)` の**次の行**でクリアしていた。HTTP エラーでは通るが、
-   * **reject したときだけそこへ到達しない** —— つまり通信が切れたときにだけ secret が
-   * 入力欄（＝DOM）に残り続ける。`.claude/rules/pii-secret-minimization.md` が
-   * 「画面・DOM に残さない」と言っている当のものが、一番残ってほしくない失敗時にだけ残る。
+   * **reject したときだけそこへ到達しない** —— 通信が切れたときにだけ secret が入力欄
+   * （＝DOM）に残り続ける。`finally` へ移すと今度は**成功経路で `await load()` の 1 往復ぶん
+   * 残る**（レビュー m1 の実測）。どちらも「即クリア」というコメントを嘘にする。
    *
-   * `catch` を足すだけでは直らない（`catch` の中でクリアを書き忘れる形が残る）ので、
-   * **`finally` に置くこと**を機械で縛る。
+   * 送信前に消せば両方起こらない。**`fetch` より前**にクリアが在ることを縛る ——
+   * `finally` に置き直す変異も、元の位置へ戻す変異も、どちらもここで落ちる。
+   * `.claude/rules/pii-secret-minimization.md`「画面・DOM に残さない」。
    */
-  it('secret 入力欄のクリアは finally に置く（失敗時だけ DOM に残る形にしない）', () => {
+  it('secret 入力欄のクリアは送信より前に置く（往復のあいだ DOM に残さない）', () => {
     const offenders = platformFiles().flatMap((f) => {
       const clears = [...f.source.matchAll(/setSecretInput\(''\)/g)].map((m) => m.index ?? 0);
       if (clears.length === 0) return [];
-      const finallies = [...f.source.matchAll(/\bfinally\s*\{/g)]
-        .map((m) => {
-          const open = (m.index ?? 0) + m[0].length - 1;
-          return { start: open, end: matchBrace(f.source, open) };
-        })
-        .filter((b) => b.end > 0);
+      const bodies = functionBodies(f.source);
+      const sites = fetchSites(f.source);
       return clears
-        .filter((at) => !finallies.some((b) => at > b.start && at < b.end))
-        .map(() => `${f.name}: setSecretInput('') が finally の外に在る`);
+        .map((at) => {
+          // clear を囲む最も内側の関数の中で、送信より前に居ること。
+          const fn = bodies
+            .filter((b) => at > b.start && at < b.end)
+            .sort((a, b) => b.start - a.start)[0];
+          if (!fn) return `${f.name}: setSecretInput('') を囲む関数が見つからない`;
+          const sent = sites.find((site) => site > fn.start && site < fn.end);
+          if (sent === undefined) return `${f.name}: ${fn.name} に送信が無いのにクリアしている`;
+          return at < sent ? null : `${f.name}: ${fn.name} の setSecretInput('') が送信より後ろに在る`;
+        })
+        .filter((x): x is string => x !== null);
     });
     expect(offenders).toEqual([]);
   });
@@ -331,6 +457,94 @@ describe('platform の通信失敗が無言にならない (#968)', () => {
       0,
     );
     expect(clears).toBeGreaterThanOrEqual(1);
+  });
+
+  /*
+   * 🔴 **例外の中身を失敗メッセージへ混ぜない (#968 レビュー m4)。**
+   *
+   * 同じディレクトリの `ProviderConfig` は `WARNING_TEXT` について「応答に自由文を載せると、
+   * そこへ設定値や secret の断片が混ざりうる」と自分で書いている。いまの `fetch` の reject は
+   * `TypeError: Failed to fetch` 程度で実害は小さいが、新ガードはこれらの catch を「正しい」と
+   * 認定するので、将来 `error.cause` や応答 body を混ぜる変更を**止められない**。
+   *
+   * 文言は定型（文字列リテラル）に保つ。テンプレートリテラルを禁じれば
+   * `setError(\`… ${String(e)}\`)` の族がまとめて落ちる（実測でこの形が生存していた）。
+   */
+  it('fetch を囲む catch はテンプレートリテラルを使わない（例外の中身を混ぜない）', () => {
+    const offenders = platformFiles().flatMap((f) => {
+      const blocks = tryCatchBlocks(f.source);
+      return fetchSites(f.source)
+        .flatMap((site) => {
+          const enclosing = blocks
+            .filter((b) => site > b.tryBody.start && site < b.tryBody.end)
+            .sort((a, b) => b.tryBody.start - a.tryBody.start)[0];
+          if (!enclosing) return [];
+          const body = f.source.slice(enclosing.catchBody.start, enclosing.catchBody.end);
+          return body.includes('`') ? [`${f.name}: catch にテンプレートリテラルが在る`] : [];
+        });
+    });
+    expect([...new Set(offenders)]).toEqual([]);
+  });
+
+  /*
+   * 🔴 **`await` の後ろの state 更新は世代ガードを通す (#968 レビュー B1 / M3)。**
+   *
+   * `catch` を足すこと自体が新しい穴を開けうる、というのは #896 で一度学んだ形である。
+   * 今回もその族を 2 つ作っていた（`runLifecycle` の失敗報告・`loadTenantFlags` の成功枝）。
+   * 「ガードが在る」だけでは足りないので、**`await` より後ろのすべての `set…(` が
+   * 世代比較より後ろに在ること**を要求する（1 箇所だけ守る変異を落とす）。
+   */
+  it.each(GENERATION_GUARDED.map((g) => [`${g.file}:${g.fn}`, g] as const))(
+    '%s: await の後ろの state 更新は世代ガードを通す',
+    (_label, g) => {
+      const file = platformFiles().find((f) => f.name === g.file);
+      expect(file, `${g.file} が無い`).toBeDefined();
+      const fn = functionBodies(file?.source ?? '').find((b) => b.name === g.fn);
+      expect(fn, `${g.file} に ${g.fn} が無い`).toBeDefined();
+      const body = fn?.body ?? '';
+      const firstAwait = body.indexOf('await');
+      expect(firstAwait, `${g.fn} に await が無い（登録が腐っている）`).toBeGreaterThan(-1);
+      const guards = [...body.matchAll(new RegExp(`${g.ref}\\.current\\s*[!=]==`, 'g'))].map(
+        (m) => m.index ?? 0,
+      );
+      expect(guards.length, `${g.fn} に ${g.ref}.current の比較が無い`).toBeGreaterThan(0);
+      const unguarded = [...body.matchAll(/\bset[A-Z]\w*\s*\(/g)]
+        .map((m) => ({ at: m.index ?? 0, call: m[0] }))
+        .filter((x) => x.at > firstAwait)
+        .filter((x) => !guards.some((gAt) => gAt < x.at))
+        .map((x) => `${g.fn}: ${x.call} が世代ガードより前に在る`);
+      expect(unguarded).toEqual([]);
+    },
+  );
+
+  /*
+   * 🔴 **切り替えを認識する場所で、前の対象の失敗表示を捨てる (#968 レビュー B1)。**
+   */
+  it.each(RESET_ON_SWITCH.map((r) => [`${r.file}:${r.setter}`, r] as const))(
+    '%s: 世代 ref へ代入する本体が null で捨てる',
+    (_label, r) => {
+      const file = platformFiles().find((f) => f.name === r.file);
+      expect(file, `${r.file} が無い`).toBeDefined();
+      const switching = functionBodies(file?.source ?? '').filter((b) => /\w+\.current\s*=/.test(b.body));
+      expect(switching.length, `${r.file} に世代 ref へ代入する本体が無い`).toBeGreaterThan(0);
+      const resets = switching.filter((b) => b.body.includes(`${r.setter}(null)`));
+      expect(resets.length, `${r.setter}(null) を呼ぶ切り替え本体が無い`).toBeGreaterThan(0);
+    },
+  );
+
+  it('🔴 登録簿には理由が書かれ、固定されている（黙って外せない）', () => {
+    expect(GENERATION_GUARDED.filter((g) => g.why.trim().length < 10)).toEqual([]);
+    expect(RESET_ON_SWITCH.filter((r) => r.why.trim().length < 10)).toEqual([]);
+    expect(GENERATION_GUARDED.map((g) => `${g.file}:${g.fn}`)).toEqual([
+      'TenantDetail.tsx:load',
+      'TenantDetail.tsx:runLifecycle',
+      'FeatureFlags.tsx:loadTenantFlags',
+    ]);
+    expect(RESET_ON_SWITCH.map((r) => `${r.file}:${r.setter}`)).toEqual([
+      'TenantDetail.tsx:setActionError',
+      'FeatureFlags.tsx:setReadError',
+      'FeatureFlags.tsx:setWriteError',
+    ]);
   });
 
   it('免除には理由が書かれている', () => {
@@ -350,8 +564,6 @@ describe('platform の通信失敗が無言にならない (#968)', () => {
   });
 
   it('🔴 免除は固定（黙って増やせない）', () => {
-    expect(EXEMPT_FETCH.map((e) => `${e.file}:${e.marker}`)).toEqual([
-      "TenantSwitcher.tsx:'/api/platform/selected-tenant'",
-    ]);
+    expect(EXEMPT_FETCH.map((e) => `${e.file}:${e.marker}`)).toEqual([]);
   });
 });
