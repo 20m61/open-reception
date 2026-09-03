@@ -39,6 +39,11 @@ build/Release
 
 # Dependency directories
 node_modules/
+# 🔴 **末尾スラッシュ無しも要る。** `git worktree` を切って測るとき（変異検証・並行トラック）
+# `ln -s <repo>/node_modules` を張るのが定石だが、**シンボリックリンクは `node_modules/` に
+# マッチしない**ので `git add -A` が拾ってしまう。実際に #966 の作業ブランチで
+# 絶対パス依存の壊れたリンクをコミットしていた（独立レビューが検出）。
+node_modules
 jspm_packages/
 
 # Snowpack dependency directory (https://snowpack.dev/)

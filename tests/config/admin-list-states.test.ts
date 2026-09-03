@@ -91,21 +91,82 @@ const LIST_STATE_DECLARATION = /useState<\s*[A-Za-z_$][\w$<>, ]*\[\]\s*\|\s*null
 const FAILURE_REPORT =
   /\bset[A-Za-z]*(?:Error|Failed|Failure)\s*\(\s*(?!\)|null\s*\)|undefined\s*\)|''\s*\)|""\s*\)|false\s*\))/;
 
-/** `const load = useCallback(async () => { … })` の本体を粗く切り出す。 */
-function loadBody(source: string): string | undefined {
-  const at = source.indexOf('const load = useCallback(');
-  if (at < 0) return undefined;
-  const open = source.indexOf('=> {', at);
-  if (open < 0) return undefined;
-  let depth = 0;
-  for (let i = open + 3; i < source.length; i += 1) {
-    if (source[i] === '{') depth += 1;
-    else if (source[i] === '}') {
-      depth -= 1;
-      if (depth === 0) return source.slice(open + 3, i + 1);
+/** 文字列 / テンプレートリテラルの終端。`${}` の入れ子も飛ばす。 */
+function skipString(source: string, start: number): number {
+  const quote = source[start];
+  for (let i = start + 1; i < source.length; i += 1) {
+    const c = source[i];
+    if (c === '\\') {
+      i += 1;
+      continue;
+    }
+    if (c === quote) return i;
+    if (quote === '`' && c === '$' && source[i + 1] === '{') {
+      const end = matchBrace(source, i + 1);
+      if (end < 0) return source.length;
+      i = end - 1;
     }
   }
-  return undefined;
+  return source.length;
+}
+
+/** `from`（`{` の位置）に対応する `}` の**次**の位置。 */
+function matchBrace(source: string, from: number): number {
+  let depth = 0;
+  for (let i = from; i < source.length; i += 1) {
+    const c = source[i];
+    if (c === '"' || c === "'" || c === '`') {
+      i = skipString(source, i);
+      continue;
+    }
+    if (c === '{') depth += 1;
+    else if (c === '}') {
+      depth -= 1;
+      if (depth === 0) return i + 1;
+    }
+  }
+  return -1;
+}
+
+/**
+ * `const foo = useCallback(… => { … })` の本体。
+ *
+ * 🔴 **正規表現で本体の終端を取らない。** 最初は `/\n  \}, \[/` で閉じを探していたが、
+ * 依存配列が複数行に折られる（`},\n    [load],\n  );`）と当たらず、**操作系の本体が
+ * 1 つも見つからないまま主張が空虚に満たされていた**（実測で生存）。ブレースを数える。
+ */
+function callbackBodies(source: string): { readonly name: string; readonly body: string }[] {
+  const out: { name: string; body: string }[] = [];
+  for (const m of source.matchAll(/const\s+(\w+)\s*=\s*useCallback\(/g)) {
+    const arrow = source.indexOf('=> {', m.index ?? 0);
+    if (arrow < 0) continue;
+    const end = matchBrace(source, arrow + 3);
+    if (end < 0) continue;
+    out.push({ name: m[1] ?? '', body: source.slice(arrow + 3, end) });
+  }
+  return out;
+}
+
+/** `load` の本体。 */
+function loadBody(source: string): string | undefined {
+  return callbackBodies(source).find((b) => b.name === 'load')?.body;
+}
+
+/** `try { … } catch (…) { … }` の catch 本体。 */
+function catchBodies(source: string): string[] {
+  const out: string[] = [];
+  for (const m of source.matchAll(/\btry\s*\{/g)) {
+    const open = (m.index ?? 0) + m[0].length - 1;
+    const tryEnd = matchBrace(source, open);
+    if (tryEnd < 0) continue;
+    const head = /^\s*catch\s*(\([^)]*\)\s*)?\{/.exec(source.slice(tryEnd));
+    if (!head) continue;
+    const catchOpen = tryEnd + head[0].length - 1;
+    const catchEnd = matchBrace(source, catchOpen);
+    if (catchEnd < 0) continue;
+    out.push(source.slice(catchOpen, catchEnd));
+  }
+  return out;
 }
 
 describe('管理画面の一覧の状態表示 (#966)', () => {
@@ -186,8 +247,16 @@ describe('管理画面の一覧の状態表示 (#966)', () => {
       const body = loadBody(file?.source ?? '');
       expect(body, `${target.file} に load が無い`).toBeDefined();
       expect(body ?? '', 'load が fetch を持たない（登録が腐っている）').toContain('fetch(');
-      expect(body ?? '', 'load に catch が無い').toMatch(/\}\s*catch\b/);
-      expect(body ?? '', 'catch が失敗を報告していない').toMatch(FAILURE_REPORT);
+      /*
+       * 🔴 **`catch` の中身そのものを見る。** `load` 全体で `FAILURE_REPORT` を探すと、
+       * `if (!res.ok)` 枝の報告で満たされてしまい、**catch の中身を `void 0;` や
+       * `setListError('')` に置換する変異が素通りする**（実測で生存）。#968 レビュー B2 と
+       * 同じ根（呼び出し名だけを見て引数と位置を見ていない）。
+       */
+      const catches = catchBodies(body ?? '');
+      expect(catches.length, 'load に catch が無い').toBeGreaterThan(0);
+      const silent = catches.filter((c) => !FAILURE_REPORT.test(c));
+      expect(silent, 'catch が失敗を報告していない').toEqual([]);
       expect(body ?? '', '読み取りを .catch( で握り潰している').not.toMatch(/\.catch\s*\(/);
     },
   );
@@ -207,10 +276,9 @@ describe('管理画面の一覧の状態表示 (#966)', () => {
             .map((id) => `set${id.charAt(0).toUpperCase()}${id.slice(1)}`),
         );
       if (feeders.length === 0) return [];
-      // `method:` を含む useCallback 本体（操作系）を粗く切り出す。
-      const mutating = [...f.source.matchAll(/const\s+(\w+)\s*=\s*useCallback\([\s\S]*?\n  \}, \[/g)]
-        .map((m) => ({ name: m[1] ?? '', body: m[0] }))
-        .filter((fn) => /method:\s*['"`](PATCH|POST|PUT|DELETE)/.test(fn.body));
+      const mutating = callbackBodies(f.source).filter((fn) =>
+        /method:\s*['"`](PATCH|POST|PUT|DELETE)/.test(fn.body),
+      );
       return mutating.flatMap((fn) =>
         [...new Set(feeders)]
           .filter((setter) => fn.body.includes(`${setter}(`))
@@ -218,6 +286,18 @@ describe('管理画面の一覧の状態表示 (#966)', () => {
       );
     });
     expect(offenders).toEqual([]);
+  });
+
+  /*
+   * 🔴 **下界。** 直上は「操作系の本体を 1 つも見つけられない」と空虚に満たせる。
+   * 実際、最初の実装は依存配列が複数行に折られた `useCallback` を取り逃がしており、
+   * **保存の失敗を読み取りの state へ載せ直す変異が生存した**（実測）。
+   */
+  it('🔴 下界: 操作系の本体を実際に見つけている（走査が空振りしていない）', () => {
+    const mutating = adminFiles().flatMap((f) =>
+      callbackBodies(f.source).filter((fn) => /method:\s*['"`](PATCH|POST|PUT|DELETE)/.test(fn.body)),
+    );
+    expect(mutating.length).toBeGreaterThanOrEqual(8);
   });
 
   /*
