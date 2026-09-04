@@ -64,6 +64,42 @@ describe('運用コンソールの例外画面 (#968)', () => {
     expect(markup).toContain('data-testid="platform-unexpected-error-retry"');
   });
 
+  /*
+   * 🔴 **押しても何も起きないボタンにしない (#968 レビュー 9 周目 m3)。**
+   * testid の存在しか見ていなかったので、`onClick={reset}` を no-op にする変異が生存した。
+   * この PR 自身が `provider-config-reload` に「死んだボタンにしない」e2e を置いているのに、
+   * **最後の砦である例外画面には無かった**。行き止まりより悪い —— 運用者は復帰を試みたと誤解する。
+   */
+  it('🔴 再試行が reset に繋がっている（死んだボタンにしない）', async () => {
+    /*
+     * `PlatformError` は `useEffect` を持つので、React の外から関数として呼ぶことは
+     * できない（dispatcher が無い）。`renderToStaticMarkup` はハンドラを markup へ
+     * 出さないので、**要素木からも取れない**。そこで配線を**ソースで**見る。
+     *
+     * 字句検査であることは自覚している —— ただしここで防ぎたいのは
+     * 「`onClick={reset}` を `() => {}` へ差し替える」型の退行で、それはこの形で落ちる。
+     * `HeaderErrorBoundary` 側は `useEffect` を持たない class なので、あちらは
+     * **実際に onClick を叩いて** reset 相当の状態遷移まで観測している。
+     */
+    const { readFile } = await import('node:fs/promises');
+    const source = await readFile('src/app/platform/error.tsx', 'utf8');
+    const at = source.indexOf('data-testid="platform-unexpected-error-retry"');
+    expect(at, '再試行ボタンが無い').toBeGreaterThan(-1);
+    const open = source.lastIndexOf('<button', at);
+    const close = source.indexOf('</button>', at);
+    expect(source.slice(open, close), '再試行が reset を呼んでいない').toContain('onClick={reset}');
+  });
+
+  /*
+   * 🔴 **読み上げへ届かせる (#968 レビュー 9 周目 m2)。** #968 AC1 が明示的に要求している
+   * 通知手段。無いと VoiceOver / キーボード運用者は、コンソールが例外画面へ落ちたことを
+   * 告知されない。`role` を外す変異が生存していた。
+   */
+  it('🔴 例外画面は role="alert" で告知する', () => {
+    const markup = renderToStaticMarkup(<PlatformError error={BOOM} reset={() => {}} />);
+    expect(markup).toContain('role="alert"');
+  });
+
   it('digest が無い例外でも落ちない', () => {
     const markup = renderToStaticMarkup(
       <PlatformError error={new Error('TEST-boom')} reset={() => {}} />,
@@ -72,7 +108,20 @@ describe('運用コンソールの例外画面 (#968)', () => {
     expect(markup).not.toContain('TEST-boom');
   });
 
-  it('🔴 境界の実装がログ行の関数を通している（本文を自前で組み立て直さない）', async () => {
+  /*
+   * 🔴 **`console.` の呼び出しを「1 回だけ・引数はログ行の関数だけ」に固定する
+   * (#968 レビュー 9 周目 m1)。**
+   *
+   * 最初は `/console\.(error|warn|log)[^\n]*error\.(message|stack)/` で見ていたが、
+   * `[^\n]*` は**改行を跨がない**。prettier が普通に折り返す形
+   * （`console.error(\n  JSON.stringify(...),\n  error.message,\n)`）が**そのまま生存**した
+   * （レビューが実測）。正規表現を `[\s\S]` へ緩めるだけでは同じ族が再発するので、
+   * **呼び出しの形そのもの**を固定する。
+   *
+   * `.claude/rules/pii-secret-minimization.md`: 例外本文には来訪者の入力・トークン・
+   * 内部パスが混ざりうるので、ブラウザコンソールにも載せない。
+   */
+  it('🔴 境界は console. を 1 回だけ、ログ行の関数の結果だけを出す', async () => {
     const { readFile } = await import('node:fs/promises');
     for (const path of [
       'src/app/platform/error.tsx',
@@ -82,8 +131,17 @@ describe('運用コンソールの例外画面 (#968)', () => {
       expect(source, `${path} が unexpectedErrorLogLine を通していない`).toContain(
         'unexpectedErrorLogLine(',
       );
-      expect(source, `${path} が例外の本文をログへ渡している`).not.toMatch(
-        /console\.(error|warn|log)[^\n]*error\.(message|stack)/,
+      // コメント中の `console.` は数えない（実コードだけを見る）。
+      const code = source.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
+      const calls = [...code.matchAll(/console\.\w+\(/g)];
+      expect(calls.length, `${path} の console. 呼び出しが 1 回ではない`).toBe(1);
+      // その 1 回の引数は `JSON.stringify(unexpectedErrorLogLine(...))` のみ。
+      expect(code, `${path} の console. がログ行の関数以外を出している`).toMatch(
+        /console\.error\(JSON\.stringify\(unexpectedErrorLogLine\('platform', error\)\)\);/,
+      );
+      // 改行を跨ぐ形も含めて、本文・stack を渡していない。
+      expect(code, `${path} が例外の本文をログへ渡している`).not.toMatch(
+        /console\.\w+\([\s\S]*?error\.(message|stack)/,
       );
     }
   });
@@ -217,5 +275,22 @@ describe('ヘッダの境界 (#968)', () => {
     boundary.state = { failed: true, attempt: 0 };
     const markup = renderToStaticMarkup(boundary.render() as React.ReactElement);
     expect(markup).not.toContain('TEST-secret-internal-detail');
+  });
+
+  /*
+   * 🔴 **ヘッダの fallback にも運用者の言葉を（#968 レビュー 9 周目 m2 / m4）。**
+   *
+   * `error.tsx` には「来訪者向け文言を出さない」主張があるのに、**存在理由がまさにそれ**である
+   * ヘッダ境界には無く、文言を来訪者向けへ置換する変異が生存していた。
+   * `role="alert"` を外す変異も同様。
+   */
+  it('🔴 fallback は運用者の言葉で、role="alert" で告知する', () => {
+    const boundary = new HeaderErrorBoundary({ children: null });
+    boundary.state = { failed: true, attempt: 0 };
+    const markup = renderToStaticMarkup(boundary.render() as React.ReactElement);
+    expect(markup).toContain('role="alert"');
+    expect(markup).toContain('テナント切替');
+    expect(markup).not.toContain('受付を続けられませんでした');
+    expect(markup).not.toContain('スタッフにお声がけ');
   });
 });

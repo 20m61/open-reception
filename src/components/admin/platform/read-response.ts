@@ -1,5 +1,3 @@
-import { TENANT_FEATURE_FLAG_KEYS } from '@/domain/platform/feature-flags';
-
 /**
  * platform の read 応答が**実際に読むフィールドを持っているか** (#968 レビュー 6 周目)。
  *
@@ -85,7 +83,7 @@ function isTenantFlagSummaryShape(value: unknown): boolean {
  * この取りこぼしは「X1（error boundary を消す変異）は等価」という私の主張が
  * **誤りだった**ことの証拠でもある —— 述語が受理する応答で投げる経路が実在した。
  */
-export function isFlagsSummaryShape(body: unknown): boolean {
+export function isFlagsSummaryShape(body: unknown, summaryKeys: readonly string[]): boolean {
   if (!isRecord(body)) return false;
   const flags = body.flags;
   if (!isRecord(flags)) return false;
@@ -95,13 +93,16 @@ export function isFlagsSummaryShape(body: unknown): boolean {
   }
   if (!Array.isArray(flags.authMethods) || !flags.authMethods.every(isAuthMethodShape)) return false;
   /*
-   * 🔴 **キーは導出する。ハードコードしない (#968 レビュー 8 周目 m5)。**
-   * API は `...tenantFlagSummary`（= `TENANT_FEATURE_FLAG_KEYS` の spread）で返すので、
-   * ここで `voiceSynthesis` / `avatarReception` を手写しすると**キーを増減させたときに
-   * 片方だけ壊れる**。同じファイルの `isTenantFlagsShape` は keys を引数で受けており、
-   * 導出方法が食い違っていた。
+   * 🔴 **「画面が読むキー」を呼び出し側から受ける (#968 レビュー 9 周目 m6)。**
+   *
+   * 8 周目は `TENANT_FEATURE_FLAG_KEYS`（ドメイン定数）から導出したが、**描画側は
+   * `voiceSynthesis` / `avatarReception` を手書きしている**。キーを 1 つ増やすと
+   * 述語だけが厳しくなり、クライアント先行デプロイの skew で「**画面が一切読まない
+   * フィールドが欠けている**」ことを理由に機能フラグ画面が丸ごと落ちる ——
+   * このファイルが 20 行上で自ら戒めている「型の全項目を検査すると互換の方向が逆になる」
+   * そのもの。`isTenantFlagsShape` と同じく keys を引数で受け、描画と一致させる。
    */
-  return TENANT_FEATURE_FLAG_KEYS.every((k) => isTenantFlagSummaryShape(flags[k]));
+  return summaryKeys.every((k) => isTenantFlagSummaryShape(flags[k]));
 }
 
 /** `/api/platform/tenants/[id]/feature-flags`。画面は `flags[key]` を真偽で読む。 */
@@ -222,8 +223,16 @@ export const PLATFORM_READ_TIMEOUT_MS = 15_000;
  * 誤りが増える。それでも上限は要る: レビューの実測では、停止 PATCH を返さないまま
  * **18 秒後も画面に何も残らず**、昇格つきフラグ変更では **25 秒後も「変更中…」のまま**
  * 編集 UI 全体が固まっていた（リロード以外に出口が無い）。
+ *
+ * 🔴 **サーバの予算より長くする (#968 レビュー 9 周目 m5)。**
+ *
+ * web Lambda の `serverTimeoutSec` は 3 環境とも **30 秒**
+ * （`infra/lib/config/environments.ts`）。クライアントを同じ 30 秒にすると、
+ * **サーバ自身の 504 が必ずこちらの中断に負ける** —— 運用者は「サーバ側で確実に
+ * 完了しなかった」という**知り得たはずの事実**に到達できず、常に hedge 文言を受け取って
+ * 手で確認しに行くことになる。5 秒の余裕を持たせて、サーバの返事を先に見る。
  */
-export const PLATFORM_WRITE_TIMEOUT_MS = 30_000;
+export const PLATFORM_WRITE_TIMEOUT_MS = 35_000;
 
 /**
  * 🔴 **送信の中断は「失敗した」と言い切らない。**

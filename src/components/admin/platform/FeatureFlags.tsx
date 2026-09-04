@@ -38,6 +38,16 @@ import {
  */
 type AuthMethod = { id: string; label: string; enabled: boolean; issues: string[] };
 type TenantFlagSummary = { defaultEnabled: boolean; disabledTenants: number };
+
+/*
+ * 🔴 **この画面が横断サマリで読むキー (#968 レビュー 9 周目 m6)。**
+ *
+ * 述語へ渡す唯一の出所にする。`TENANT_FEATURE_FLAG_KEYS`（ドメイン定数）から導出すると、
+ * キーを増やしたときに**描画は増えないのに述語だけ厳しくなり**、クライアント先行
+ * デプロイの skew で「画面が読まないフィールドが欠けている」ことを理由に画面が落ちる。
+ * ここを増やすときは、下の `summaryValue(data?.flags.…)` も一緒に増やす。
+ */
+const SUMMARY_KEYS = ['voiceSynthesis', 'avatarReception'] as const;
 type FlagsResponse = {
   flags: {
     vonage: { configured: boolean; enabled: boolean };
@@ -73,7 +83,7 @@ export function FeatureFlags() {
       }
       const body: unknown = await res.json();
       // **実際に読むフィールドまで**見る。`{"flags":null}` / `{"flags":{}}` は 1 段検査を素通りしていた。
-      if (!isFlagsSummaryShape(body)) {
+      if (!isFlagsSummaryShape(body, SUMMARY_KEYS)) {
         setError('機能フラグの形式が不正です。時間をおいて再試行してください。');
         return;
       }

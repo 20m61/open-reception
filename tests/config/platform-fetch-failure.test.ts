@@ -1334,7 +1334,13 @@ describe('platform の通信失敗が無言にならない (#968)', () => {
      * 長く」という自分の根拠を、値そのもので守る。
      */
     expect(readMs).toBeGreaterThanOrEqual(15_000);
-    expect(writeMs).toBeGreaterThanOrEqual(30_000);
+    /*
+     * 🔴 **下界の根拠を「サーバの予算」に置く (#968 レビュー 9 周目 m5)。**
+     * web Lambda の `serverTimeoutSec` は 3 環境とも 30 秒。クライアントが同値だと
+     * **サーバの 504 が必ずこちらの中断に負け**、運用者は確実な結果に到達できない。
+     */
+    const serverBudgetMs = 30_000;
+    expect(writeMs, 'サーバ予算より長くないと 504 を観測できない').toBeGreaterThan(serverBudgetMs);
     // write は往復が重い。read より短くすると「成功したのに失敗と読む」が増える。
     expect(writeMs).toBeGreaterThan(readMs);
   });

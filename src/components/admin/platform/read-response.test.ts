@@ -100,6 +100,7 @@ const VALID_FLAGS_SUMMARY = {
     avatarReception: VALID_FLAG_SUMMARY,
   },
 } as const;
+const EXPECT_SUMMARY_KEYS = ['voiceSynthesis', 'avatarReception'] as const;
 const EXPECT_AUTH_METHOD_KEYS = ['id', 'label', 'enabled', 'issues'] as const;
 const VALID_TENANT_ROW = { id: 't1', name: 'テナント A', slug: 'tenant-a', status: 'active' } as const;
 const EXPECT_TENANT_ROW_STRINGS = ['id', 'name', 'slug', 'status'] as const;
@@ -181,12 +182,12 @@ describe('read-response: 述語の緊さ (#968)', () => {
 
   describe('isFlagsSummaryShape', () => {
     it('下界: 正しい形は通る', () => {
-      expect(isFlagsSummaryShape(VALID_FLAGS_SUMMARY)).toBe(true);
+      expect(isFlagsSummaryShape(VALID_FLAGS_SUMMARY, EXPECT_SUMMARY_KEYS)).toBe(true);
     });
 
     it.each(['enabled', 'configured'])('flags.vonage.%s が欠けたら通さない', (key) => {
       expect(
-        isFlagsSummaryShape({ flags: { vonage: without(VALID_FLAGS_SUMMARY.flags.vonage, key) } }),
+        isFlagsSummaryShape({ flags: { vonage: without(VALID_FLAGS_SUMMARY.flags.vonage, key) } }, EXPECT_SUMMARY_KEYS),
       ).toBe(false);
     });
 
@@ -200,7 +201,7 @@ describe('read-response: 述語の緊さ (#968)', () => {
       expect(
         isFlagsSummaryShape({
           flags: { ...VALID_FLAGS_SUMMARY.flags, authMethods: [without(VALID_AUTH_METHOD, key)] },
-        }),
+        }, EXPECT_SUMMARY_KEYS),
       ).toBe(false);
     });
 
@@ -208,7 +209,7 @@ describe('read-response: 述語の緊さ (#968)', () => {
       expect(
         isFlagsSummaryShape({
           flags: { ...VALID_FLAGS_SUMMARY.flags, authMethods: [VALID_AUTH_METHOD, null] },
-        }),
+        }, EXPECT_SUMMARY_KEYS),
       ).toBe(false);
     });
 
@@ -218,18 +219,18 @@ describe('read-response: 述語の緊さ (#968)', () => {
      * **生存していた**（`authMethods: []` を踏むものが無かった）。
      */
     it('下界: authMethods が 0 件でも通る', () => {
-      expect(isFlagsSummaryShape({ flags: { ...VALID_FLAGS_SUMMARY.flags, authMethods: [] } })).toBe(
+      expect(isFlagsSummaryShape({ flags: { ...VALID_FLAGS_SUMMARY.flags, authMethods: [] } }, EXPECT_SUMMARY_KEYS)).toBe(
         true,
       );
     });
 
     it('flags.authMethods が配列でなければ通さない', () => {
-      expect(isFlagsSummaryShape({ flags: { ...VALID_FLAGS_SUMMARY.flags, authMethods: {} } })).toBe(false);
-      expect(isFlagsSummaryShape({ flags: { ...VALID_FLAGS_SUMMARY.flags, authMethods: [null] } })).toBe(false);
+      expect(isFlagsSummaryShape({ flags: { ...VALID_FLAGS_SUMMARY.flags, authMethods: {} } }, EXPECT_SUMMARY_KEYS)).toBe(false);
+      expect(isFlagsSummaryShape({ flags: { ...VALID_FLAGS_SUMMARY.flags, authMethods: [null] } }, EXPECT_SUMMARY_KEYS)).toBe(false);
     });
 
     it.each(['voiceSynthesis', 'avatarReception'])('flags.%s が欠けたら通さない', (key) => {
-      expect(isFlagsSummaryShape({ flags: without(VALID_FLAGS_SUMMARY.flags, key) })).toBe(false);
+      expect(isFlagsSummaryShape({ flags: without(VALID_FLAGS_SUMMARY.flags, key) }, EXPECT_SUMMARY_KEYS)).toBe(false);
     });
 
     it.each(['defaultEnabled', 'disabledTenants'])(
@@ -238,15 +239,36 @@ describe('read-response: 述語の緊さ (#968)', () => {
         expect(
           isFlagsSummaryShape({
             flags: { ...VALID_FLAGS_SUMMARY.flags, voiceSynthesis: without(VALID_FLAG_SUMMARY, key) },
-          }),
+          }, EXPECT_SUMMARY_KEYS),
         ).toBe(false);
       },
     );
 
+    /*
+     * 🔴 **互換の向き (#968 レビュー 9 周目 m6)。**
+     *
+     * サーバが**画面の読まないフラグを増やしても**読めなくならないこと。8 周目は
+     * `TENANT_FEATURE_FLAG_KEYS`（ドメイン定数）から導出していたので、キーを 1 つ足すと
+     * **描画は増えないのに述語だけ厳しくなり**、クライアント先行デプロイの skew で
+     * 機能フラグ画面が丸ごと「形式が不正です」になった。
+     */
+    it('🔴 画面が読まないフラグが増えても読めなくならない', () => {
+      const withExtra = {
+        flags: { ...VALID_FLAGS_SUMMARY.flags, someNewFlag: { defaultEnabled: true } },
+      };
+      expect(isFlagsSummaryShape(withExtra, EXPECT_SUMMARY_KEYS)).toBe(true);
+    });
+
+    it('🔴 画面が読むフラグが欠けたら通さない（下界と対）', () => {
+      expect(
+        isFlagsSummaryShape({ flags: without(VALID_FLAGS_SUMMARY.flags, 'avatarReception') }, EXPECT_SUMMARY_KEYS),
+      ).toBe(false);
+    });
+
     it('flags.vonage が null / 欠落なら通さない', () => {
-      expect(isFlagsSummaryShape({ flags: { vonage: null } })).toBe(false);
-      expect(isFlagsSummaryShape({ flags: {} })).toBe(false);
-      expect(isFlagsSummaryShape({ flags: null })).toBe(false);
+      expect(isFlagsSummaryShape({ flags: { vonage: null } }, EXPECT_SUMMARY_KEYS)).toBe(false);
+      expect(isFlagsSummaryShape({ flags: {} }, EXPECT_SUMMARY_KEYS)).toBe(false);
+      expect(isFlagsSummaryShape({ flags: null }, EXPECT_SUMMARY_KEYS)).toBe(false);
     });
   });
 
