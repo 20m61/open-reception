@@ -50,14 +50,19 @@ function runPlan(argv: ReadonlyArray<string>): void {
   // 🔴 **欠けている観測を「無し」で埋めない。** 既定値で埋めると、bash 側が観測を
   // 渡し忘れた変更が「その道具は無い」という**もっともらしい SKIP** に化けて、
   // 検査が静かに消える。判定不能は判定不能として止める。
-  const required = ['dockerCli', 'dockerDaemon', 'chrome'] as const;
-  const missing = required.filter((key) => !(key in observed));
-  if (missing.length > 0) bail(`観測が足りません: ${missing.join(', ')}`);
+  //
+  // `noUncheckedIndexedAccess` の下では `observed[key]` は `boolean | undefined` なので、
+  // ここで `undefined` を潰してから組み立てる（`key in observed` では narrowing されない）。
+  const require = (key: string): boolean => {
+    const value = observed[key];
+    if (value === undefined) bail(`観測が足りません: ${key}`);
+    return value;
+  };
 
   const observation: UrlGateObservation = {
-    dockerCli: observed.dockerCli,
-    dockerDaemon: observed.dockerDaemon,
-    chrome: observed.chrome,
+    dockerCli: require('dockerCli'),
+    dockerDaemon: require('dockerDaemon'),
+    chrome: require('chrome'),
   };
   const plan = planUrlGateChecks(observation, { strict });
   for (const [name, disposition] of Object.entries(plan)) {
@@ -70,10 +75,13 @@ function runPlan(argv: ReadonlyArray<string>): void {
 }
 
 function runZapExit(argv: ReadonlyArray<string>): void {
-  if (argv.length !== 2) bail('使い方: zap-exit <exitCode> <reportWritten:0|1>');
-  const exitCode = Number(argv[0]);
-  if (!Number.isInteger(exitCode)) bail(`終了コードが整数ではありません: ${argv[0]}`);
-  console.log(classifyZapExit(exitCode, parseBool(argv[1], 'reportWritten')));
+  const [rawExit, rawReport] = argv;
+  if (argv.length !== 2 || rawExit === undefined || rawReport === undefined) {
+    bail('使い方: zap-exit <exitCode> <reportWritten:0|1>');
+  }
+  const exitCode = Number(rawExit);
+  if (!Number.isInteger(exitCode)) bail(`終了コードが整数ではありません: ${rawExit}`);
+  console.log(classifyZapExit(exitCode, parseBool(rawReport, 'reportWritten')));
 }
 
 function main(): void {
