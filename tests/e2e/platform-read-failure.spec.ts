@@ -204,6 +204,18 @@ test.describe('platform: 読み取りの失敗が運用者に見える (#968)', 
   });
 
   /*
+   * 🔴 **テナント一覧の shape 破れも「0 件」にしない (#968 レビュー 5 周目 MAJOR-2)。**
+   * `?? []` で埋める修正は**大声の失敗を沈黙の誤動作へ変換する**だけで、選択肢が空のまま
+   * 「テナントが 1 つも無い」のと同じ見た目になる（このファイル自身がそれを禁じている）。
+   */
+  test('機能フラグ: テナント一覧の形が壊れていても「0 件」にしない', async ({ page }) => {
+    await fulfillEmptyBody(page, '**/api/platform/tenants');
+    await page.goto('/platform/feature-flags');
+    await expect(page.getByTestId('platform-feature-flags-tenants-error')).toBeVisible();
+    await expect(page.getByTestId('platform-tenant-list-error')).toBeVisible();
+  });
+
+  /*
    * 🔴 **機能フラグはテナントを選べないと編集そのものが不能になる。**
    * 狭いほう（フラグの取得失敗）にだけ再試行があり、広いほう（一覧が引けない）に
    * 無い、という逆転を作っていた（レビュー MJ-1）。復帰導線まで見る。
@@ -335,6 +347,26 @@ test.describe('platform: 読み取りの失敗が運用者に見える (#968)', 
     await expect(section.getByText('未設定', { exact: true })).toHaveCount(0);
     await expect(section.getByText('読み込み中…')).toHaveCount(0);
     await expect(section.getByText('取得できていません')).toBeVisible();
+  });
+
+  /*
+   * 🔴 **`detail` の無い 200 を「読めた」にしない (#968 レビュー 5 周目 MAJOR-3)。**
+   *
+   * `setData(undefined)` すると `loaded={data !== null}` が**真**になり、画面は
+   * 「このテナントに拠点がありません。」と**断定**する。実在する拠点/端末を「無い」と
+   * 読ませる形で、#870 の営業時間設定（取得できていないことを「未設定」と言い換える）と同型。
+   */
+  test('テナント詳細: 形の壊れた 200 を「拠点が無い」と断定しない', async ({ page }) => {
+    await page.goto('/platform/tenants');
+    const detail = page.locator('a[href^="/platform/tenants/"]').first();
+    await expect(detail).toBeVisible();
+    const href = await detail.getAttribute('href');
+
+    await fulfillEmptyBody(page, '**/api/platform/tenants/*');
+    await page.goto(href ?? '/platform/tenants');
+
+    await expect(page.getByTestId('platform-tenant-detail-error')).toBeVisible();
+    await expect(page.getByText('このテナントに拠点がありません。')).toHaveCount(0);
   });
 
   /*
