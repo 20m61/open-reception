@@ -214,8 +214,13 @@ test.describe('管理: 一覧の読み取り失敗を 0 件と断定しない (#
       /*
        * 🔴 **押しても何も起きないボタンにしない (#966 レビュー 2 周目 MAJOR-2)。**
        * 部署が読めていないと `add()` は `departmentId === ''` で黙って return する。
-       * 実測では氏名を入れて押しても何の反応も無かった。
+       *
+       * 🔴 **氏名を先に入れる。** 空欄のままだと `displayName.trim() === ''` の側で
+       * **既に無効**なので、`departments === null` の guard を外す変異が素通りする
+       * （実測で生存）。レビューが MAJOR-1 で指摘した「弱い側の入力だけを踏む
+       * テスト」と同型を、その修正のテストで踏んでいた。
        */
+      await page.getByTestId('staff-name-input').fill('e2e 太郎');
       await expect(page.getByTestId('staff-add')).toBeDisabled();
       // 「部署が設定されていない」と読める `-` を全行に出さない。
       await expect(page.getByText('取得できていません').first()).toBeVisible();
@@ -252,15 +257,37 @@ test.describe('管理: 一覧の読み取り失敗を 0 件と断定しない (#
    * 成功枝の `setListError(null)` を削る変異が unit・e2e とも素通りしていた。
    * 実害は「一度失敗したら、次に読めても失敗表示が残り続ける」。
    */
-  test('部署管理: 復帰したら失敗表示が消える', async ({ page }) => {
-    await failWith500(page, '**/api/admin/departments');
-    await page.goto('/admin/departments');
-    await expect(page.getByTestId('dept-list-error')).toBeVisible();
+  for (const list of LISTS) {
+    test(`${list.label}: 復帰したら失敗表示が消える`, async ({ page }) => {
+      await failWith500(page, list.api);
+      await page.goto(list.path);
+      await expect(page.getByTestId(list.alert)).toBeVisible();
 
-    await page.unroute('**/api/admin/departments');
-    await page.reload();
+      await page.unroute(list.api);
+      await page.reload();
 
-    await expect(page.getByTestId('dept-table')).toBeVisible();
-    await expect(page.getByTestId('dept-list-error')).toHaveCount(0);
+      await expect(page.getByTestId(list.table)).toBeVisible();
+      await expect(page.getByTestId(list.alert)).toHaveCount(0);
+    });
+  }
+
+  /*
+   * 🔴 **`catch` に到達する入力を踏む (#966 レビュー 2 周目の変異 A7)。**
+   *
+   * `Promise.allSettled` にしたことで、**reject は `status === 'rejected'` の枝が
+   * 拾う**ようになり、`catch` に来るのは `json()` が投げるとき（＝壊れた本文の 200）
+   * だけになった。接続断しか注入していなかったので、`catch` の中身を
+   * `setListError('x')` へ潰す変異が素通りしていた ——
+   * **修正が経路の意味を変えたのに、テストは前の経路のままだった。**
+   */
+  test('担当者管理: 本文が壊れた 200 でも「取得できませんでした」と言う', async ({ page }) => {
+    await page.route('**/api/admin/staff', (route) =>
+      route.fulfill({ status: 200, contentType: 'application/json', body: 'not json' }),
+    );
+    await page.goto('/admin/staff');
+
+    const alert = page.getByTestId('staff-list-error');
+    await expect(alert).toBeVisible();
+    await expect(alert).toContainText('できませんでした');
   });
 });
