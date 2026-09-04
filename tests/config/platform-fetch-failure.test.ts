@@ -1169,6 +1169,37 @@ describe('platform の通信失敗が無言にならない (#968)', () => {
   });
 
   /*
+   * 🔴 **形の述語の否定枝も「報告するだけ」にできる (#973 AC4 の同型)。**
+   *
+   * AC4 は `catch` の中身を `setError(null)` へ潰す変異を落とすことを求めている。#973 で
+   * 足した「形が違う 200」の枝は**その `catch` の外**にあるので、同じ検査が届いていなかった
+   * —— 実測で `setError(null)` へ潰す変異が unit を素通りした（e2e だけが殺せた）。
+   * 静的検査の側にも同じ主張を置き、**`catch` と否定枝で守りの強さを変えない**。
+   *
+   * ここが見るのは「リテラルとして空でない値を渡していること」だけで、**文言が正しいか**は
+   * `tests/e2e/platform-read-failure.spec.ts` の注入が見る（静的検査に振る舞いの保証まで
+   * 負わせない）。
+   */
+  it('形の述語の否定枝は失敗を報告する（setError(null) へ潰せない）', () => {
+    const offenders: string[] = [];
+    let checked = 0;
+    for (const file of platformFiles()) {
+      const source = file.source;
+      for (const m of source.matchAll(/if\s*\(!is[A-Z]\w*Shape\([^)]*\)\)\s*\{/g)) {
+        const open = (m.index ?? 0) + m[0].length - 1;
+        const end = matchBrace(source, open);
+        if (end < 0) continue;
+        checked += 1;
+        const body = source.slice(open, end);
+        if (!reportsFailure(body)) offenders.push(`${file.name}@${m.index ?? 0}`);
+      }
+    }
+    expect(offenders, '形の検査に落ちたのに何も出さない枝').toEqual([]);
+    // 🔴 下界: 否定枝を見つけていること（走査が空振りすると上の主張は空虚に通る）。
+    expect(checked, '形の述語の否定枝を見つけられていない').toBeGreaterThanOrEqual(10);
+  });
+
+  /*
    * 🔴 **ハングの上限を、増やした 7 経路ぜんぶで縛る (#968 レビュー 7 周目 MAJOR-4)。**
    *
    * 6 周目は `AbortSignal.timeout` を 5 経路へ入れたが、**オラクルは e2e の 1 本だけ**
