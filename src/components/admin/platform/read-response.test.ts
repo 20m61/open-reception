@@ -1,0 +1,217 @@
+/**
+ * 述語の**緊さ**を 1 フィールドずつ縛る (#968 レビュー 6 周目の変異行列 N3 / N4 / N9 / N6)。
+ *
+ * ## なぜこのファイルが要るのか
+ *
+ * 6 周目の行列で「述語から**検査を 1 つだけ**落とす」変異が **3 件生存した**
+ * （`status` / `secretPresence` / `every`→`some`）。原因は e2e の注入が
+ * `{"detail":{}}` `{"config":{}}` のように**全フィールドを一度に落とした**形しか
+ * 持っていなかったこと —— どれか 1 つの検査が残っていれば弾かれるので、
+ * **どの 1 つを消しても緑のまま**だった。
+ *
+ * `.claude/rules/opus5-autonomous-loop.md`:
+ * 「**近似の緊さは fixture でしか縛れない。境界の“すぐ内側”を踏む入力が無いと、
+ * 境界を狭める変異が全部素通りする**」。ここがその「すぐ内側」である。
+ *
+ * ## 主張の形
+ *
+ * 各述語について **(a) 正しい形は通る（下界）** と **(b) 1 フィールド落とすと落ちる**
+ * を対で書く。(b) だけだと「常に false」で空虚に通り、(a) だけだと「常に true」で通る。
+ */
+import { describe, expect, it } from 'vitest';
+import {
+  TENANT_DETAIL_NUMBERS,
+  TENANT_DETAIL_STRINGS,
+  TENANT_SITE_NUMBERS,
+  TENANT_SITE_STRINGS,
+  isDashboardShape,
+  isFlagsSummaryShape,
+  isProviderConfigShape,
+  isRecord,
+  isTenantDetailShape,
+  isTenantFlagsShape,
+} from './read-response';
+
+/** `obj` から `key` を落とした複製（`undefined` 代入ではなくキーごと消す）。 */
+function without<T extends Record<string, unknown>>(obj: T, key: string): Record<string, unknown> {
+  const copy: Record<string, unknown> = { ...obj };
+  delete copy[key];
+  return copy;
+}
+
+const VALID_SITE = {
+  id: 's1',
+  name: '本社',
+  status: 'active',
+  deviceCount: 2,
+  activeDeviceCount: 1,
+} as const;
+
+const VALID_DETAIL = {
+  name: 'テナント A',
+  slug: 'tenant-a',
+  status: 'active',
+  siteCount: 1,
+  deviceCount: 2,
+  activeDeviceCount: 1,
+  maintenanceDeviceCount: 0,
+  sites: [VALID_SITE],
+} as const;
+
+const VALID_DASHBOARD = { fleet: { total: 3, active: 2, suspended: 1 } } as const;
+const VALID_FLAGS_SUMMARY = { flags: { vonage: { enabled: true, configured: false } } } as const;
+const VALID_CONFIG = {
+  config: { provider: 'vonage', enabled: true, secretPresence: 'missing' },
+} as const;
+const FLAG_KEYS = ['a', 'b'] as const;
+const VALID_TENANT_FLAGS = { flags: { a: true, b: false } } as const;
+
+describe('read-response: 述語の緊さ (#968)', () => {
+  /*
+   * 🔴 **`isRecord` の変異は等価だった（実測）。** 9 箇所の呼び出しが直後に必ず
+   * 名前付きフィールドを要求するので、配列を通しても結果が変わらない —— つまり
+   * **振る舞いのテストでは殺せない**。ここは「契約の固定」であって振る舞いの主張ではない。
+   * 固定する理由は `isTenantFlagsShape` が `keys.every(...)` を使っていること:
+   * keys が空になれば `every` は真になり、そのとき配列が通ってしまう。
+   */
+  it('isRecord: 配列と null はレコードでない（契約の固定）', () => {
+    expect(isRecord({})).toBe(true);
+    expect(isRecord({ a: 1 })).toBe(true);
+    expect(isRecord([])).toBe(false);
+    expect(isRecord([{ a: 1 }])).toBe(false);
+    expect(isRecord(null)).toBe(false);
+    expect(isRecord('x')).toBe(false);
+  });
+
+  describe('isDashboardShape', () => {
+    it('下界: 正しい形は通る', () => {
+      expect(isDashboardShape(VALID_DASHBOARD)).toBe(true);
+    });
+
+    it.each(['total', 'active', 'suspended'])('fleet.%s が欠けたら通さない', (key) => {
+      expect(isDashboardShape({ fleet: without(VALID_DASHBOARD.fleet, key) })).toBe(false);
+    });
+
+    it.each(['total', 'active', 'suspended'])('fleet.%s が数値でなければ通さない', (key) => {
+      expect(isDashboardShape({ fleet: { ...VALID_DASHBOARD.fleet, [key]: '3' } })).toBe(false);
+    });
+
+    it('fleet が null / 配列 / 欠落なら通さない', () => {
+      expect(isDashboardShape({ fleet: null })).toBe(false);
+      expect(isDashboardShape({ fleet: [] })).toBe(false);
+      expect(isDashboardShape({})).toBe(false);
+      expect(isDashboardShape(null)).toBe(false);
+    });
+  });
+
+  describe('isFlagsSummaryShape', () => {
+    it('下界: 正しい形は通る', () => {
+      expect(isFlagsSummaryShape(VALID_FLAGS_SUMMARY)).toBe(true);
+    });
+
+    it.each(['enabled', 'configured'])('flags.vonage.%s が欠けたら通さない', (key) => {
+      expect(
+        isFlagsSummaryShape({ flags: { vonage: without(VALID_FLAGS_SUMMARY.flags.vonage, key) } }),
+      ).toBe(false);
+    });
+
+    it('flags.vonage が null / 欠落なら通さない', () => {
+      expect(isFlagsSummaryShape({ flags: { vonage: null } })).toBe(false);
+      expect(isFlagsSummaryShape({ flags: {} })).toBe(false);
+      expect(isFlagsSummaryShape({ flags: null })).toBe(false);
+    });
+  });
+
+  describe('isTenantFlagsShape', () => {
+    it('下界: 正しい形は通る', () => {
+      expect(isTenantFlagsShape(VALID_TENANT_FLAGS, FLAG_KEYS)).toBe(true);
+    });
+
+    /*
+     * 🔴 **`every` → `some` を殺すのはこの 1 本だけ。** 6 周目に生存した変異 N9。
+     * 「全部欠けた `{}`」では `some` も偽になるので、**1 つだけ残った**形が要る。
+     */
+    it.each(FLAG_KEYS)('flags.%s だけが欠けても通さない（some では通ってしまう）', (key) => {
+      expect(isTenantFlagsShape({ flags: without(VALID_TENANT_FLAGS.flags, key) }, FLAG_KEYS)).toBe(
+        false,
+      );
+    });
+
+    it('真偽でない値を通さない', () => {
+      expect(isTenantFlagsShape({ flags: { a: true, b: 'false' } }, FLAG_KEYS)).toBe(false);
+    });
+  });
+
+  describe('isTenantDetailShape', () => {
+    it('下界: 正しい形は通る（拠点 0 件も正当）', () => {
+      expect(isTenantDetailShape(VALID_DETAIL)).toBe(true);
+      expect(isTenantDetailShape({ ...VALID_DETAIL, sites: [] })).toBe(true);
+    });
+
+    /*
+     * 🔴 **`status` の 1 件が 6 周目に生存した変異 N3。** これが欠けると
+     * `data.status === 'active' ? … : '有効化する'` が undefined で偽になり、
+     * **状態が読めていないテナントに破壊的操作を提示**する。
+     */
+    it.each(TENANT_DETAIL_STRINGS)('%s だけが欠けても通さない', (key) => {
+      expect(isTenantDetailShape(without(VALID_DETAIL, key))).toBe(false);
+    });
+
+    it.each(TENANT_DETAIL_NUMBERS)('%s だけが欠けても通さない', (key) => {
+      expect(isTenantDetailShape(without(VALID_DETAIL, key))).toBe(false);
+    });
+
+    /*
+     * 🔴 **要素まで見る。** `{"sites":[null]}` は `Array.isArray` を通ったうえで
+     * `rowKey={(s) => s.id}` が投げる（6 周目に X1 を追う途中で見つけた実欠陥）。
+     */
+    it('sites の要素が null なら通さない', () => {
+      expect(isTenantDetailShape({ ...VALID_DETAIL, sites: [null] })).toBe(false);
+    });
+
+    it.each(TENANT_SITE_STRINGS)('sites[].%s だけが欠けても通さない', (key) => {
+      expect(isTenantDetailShape({ ...VALID_DETAIL, sites: [without(VALID_SITE, key)] })).toBe(
+        false,
+      );
+    });
+
+    it.each(TENANT_SITE_NUMBERS)('sites[].%s だけが欠けても通さない', (key) => {
+      expect(isTenantDetailShape({ ...VALID_DETAIL, sites: [without(VALID_SITE, key)] })).toBe(
+        false,
+      );
+    });
+
+    it('sites が配列でなければ通さない', () => {
+      expect(isTenantDetailShape({ ...VALID_DETAIL, sites: {} })).toBe(false);
+      expect(isTenantDetailShape({ ...VALID_DETAIL, sites: null })).toBe(false);
+    });
+  });
+
+  describe('isProviderConfigShape', () => {
+    it('下界: 正しい形は通る', () => {
+      expect(isProviderConfigShape(VALID_CONFIG)).toBe(true);
+    });
+
+    /*
+     * 🔴 **下界その 2: `config: null` は「まだ設定が無い」正当な応答。**
+     * これを失敗と呼ぶと、未設定のテナントで永遠に設定できなくなる。
+     */
+    it('下界: config: null は正当（未設定であって失敗ではない）', () => {
+      expect(isProviderConfigShape({ config: null })).toBe(true);
+    });
+
+    /*
+     * 🔴 **`secretPresence` の 1 件が 6 周目に生存した変異 N4。** これが欠けると
+     * secret を「未設定」と断定したうえ、**楽観ロックの無い全置換 upsert** の
+     * 保存導線が開く —— 実在する secret を既定値で上書きできてしまう。
+     */
+    it.each(['provider', 'enabled', 'secretPresence'])('config.%s だけが欠けても通さない', (key) => {
+      expect(isProviderConfigShape({ config: without(VALID_CONFIG.config, key) })).toBe(false);
+    });
+
+    it('config キー自体が無い応答は「未設定」ではなく「読めなかった」', () => {
+      expect(isProviderConfigShape({})).toBe(false);
+      expect(isProviderConfigShape(null)).toBe(false);
+    });
+  });
+});

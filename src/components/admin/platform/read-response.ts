@@ -65,13 +65,36 @@ export function isTenantFlagsShape(body: unknown, keys: readonly string[]): bool
  * **状態が読めていないテナントに「有効化する」を提示**する。押せば PATCH は正しい
  * tenantId へ飛ぶので監査には正しく残り、運用者だけが何をしたか分からない。
  */
+export const TENANT_DETAIL_STRINGS = ['name', 'slug', 'status'] as const;
+export const TENANT_DETAIL_NUMBERS = [
+  'siteCount',
+  'deviceCount',
+  'activeDeviceCount',
+  'maintenanceDeviceCount',
+] as const;
+export const TENANT_SITE_STRINGS = ['id', 'name', 'status'] as const;
+export const TENANT_SITE_NUMBERS = ['deviceCount', 'activeDeviceCount'] as const;
+
+/**
+ * 🔴 **配列の「要素」まで見る (#968 レビュー 6 周目 変異 X1 の途中で発見)。**
+ *
+ * `Array.isArray(sites)` だけだと `{"sites":[null]}` が述語を**通ったうえで**
+ * `rowKey={(s) => s.id}` が投げる —— 表の 1 行目を描く瞬間に例外なので、
+ * `error.tsx` が無ければ運用コンソールに来訪者向けの文言が出る経路そのものである。
+ */
+function isTenantSiteRowShape(row: unknown): boolean {
+  if (!isRecord(row)) return false;
+  return (
+    TENANT_SITE_STRINGS.every((k) => typeof row[k] === 'string') &&
+    TENANT_SITE_NUMBERS.every((k) => typeof row[k] === 'number')
+  );
+}
+
 export function isTenantDetailShape(detail: unknown): boolean {
   if (!isRecord(detail)) return false;
-  return (
-    typeof detail.name === 'string' &&
-    typeof detail.status === 'string' &&
-    Array.isArray(detail.sites)
-  );
+  if (!TENANT_DETAIL_STRINGS.every((k) => typeof detail[k] === 'string')) return false;
+  if (!TENANT_DETAIL_NUMBERS.every((k) => typeof detail[k] === 'number')) return false;
+  return Array.isArray(detail.sites) && detail.sites.every(isTenantSiteRowShape);
 }
 
 /**

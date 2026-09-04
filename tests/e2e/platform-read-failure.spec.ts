@@ -307,6 +307,91 @@ test.describe('platform: 読み取りの失敗が運用者に見える (#968)', 
   }
 
   /*
+   * 🔴 **1 フィールドだけ欠けた 200 —— 「すぐ内側」を踏む (#968 レビュー 6 周目の変異 N3 / N4)。**
+   *
+   * `{"detail":{}}` `{"config":{}}` は**全部の検査に引っかかる**ので、述語から検査を
+   * **1 つだけ**外す変異では緑のままだった（実測で 3 件生存）。実運用で起こるのは
+   * まさにこちら —— デプロイ中の skew でサーバが 1 項目だけ欠いた応答を返す形である。
+   *
+   * 述語そのものの緊さは `read-response.test.ts` が全フィールド総当たりで縛る。
+   * ここで見るのは**その先の帰結**、つまり画面に残ってはいけないものが残らないこと。
+   */
+  test('テナント詳細: status だけ欠けた 200 で破壊的操作を提示しない', async ({ page }) => {
+    await page.goto('/platform/tenants');
+    const link = page.locator('a[href^="/platform/tenants/"]').first();
+    await expect(link).toBeVisible();
+    const href = await link.getAttribute('href');
+
+    // status 以外は揃っている＝「読めた」ように見える応答。
+    await fulfillBody(
+      page,
+      '**/api/platform/tenants/*',
+      JSON.stringify({
+        detail: {
+          name: 'テナント A',
+          slug: 'tenant-a',
+          siteCount: 0,
+          deviceCount: 0,
+          activeDeviceCount: 0,
+          maintenanceDeviceCount: 0,
+          sites: [],
+        },
+      }),
+    );
+    await page.goto(href ?? '/platform/tenants');
+
+    await expect(page.getByTestId('platform-tenant-detail-error')).toBeVisible();
+    // 🔴 状態が読めていないのに「有効化する」を出さない（押せば監査には正しく残る）。
+    await expect(page.getByTestId('danger-open')).toHaveCount(0);
+    await expect(page.getByText('このテナントに拠点がありません。')).toHaveCount(0);
+  });
+
+  /*
+   * 🔴 **`sites` の「要素」が壊れている 200（X1 を追う途中で見つけた実欠陥）。**
+   * `Array.isArray` だけだと述語を**通ったうえで** `rowKey={(s) => s.id}` が投げる。
+   */
+  test('テナント詳細: sites の要素が壊れていても来訪者向け画面に落ちない', async ({ page }) => {
+    await page.goto('/platform/tenants');
+    const link = page.locator('a[href^="/platform/tenants/"]').first();
+    await expect(link).toBeVisible();
+    const href = await link.getAttribute('href');
+
+    await fulfillBody(
+      page,
+      '**/api/platform/tenants/*',
+      JSON.stringify({
+        detail: {
+          name: 'テナント A',
+          slug: 'tenant-a',
+          status: 'active',
+          siteCount: 1,
+          deviceCount: 0,
+          activeDeviceCount: 0,
+          maintenanceDeviceCount: 0,
+          sites: [null],
+        },
+      }),
+    );
+    await page.goto(href ?? '/platform/tenants');
+
+    await expect(page.getByTestId('platform-tenant-detail-error')).toBeVisible();
+    await expect(page.getByText('受付を続けられませんでした')).toHaveCount(0);
+  });
+
+  test('プロバイダ設定: secretPresence だけ欠けた 200 で「未設定」と断定しない', async ({ page }) => {
+    await fulfillBody(
+      page,
+      '**/api/platform/integrations/provider-config',
+      JSON.stringify({ config: { provider: 'vonage', enabled: true } }),
+    );
+    await page.goto('/platform/integrations');
+
+    await expect(page.getByTestId('provider-config-load-error')).toBeVisible();
+    // 🔴 全置換 upsert に楽観ロックが無いので、読めていないまま保存させない。
+    await expect(page.getByRole('button', { name: '設定を保存' })).toBeDisabled();
+  });
+
+  /*
    * 🔴 **下界: 「未設定」を失敗と呼ばない。**
    *
    * 上の 2 本は「読めなかったと言うこと」しか主張しないので、**全部を失敗と断定する変異**
