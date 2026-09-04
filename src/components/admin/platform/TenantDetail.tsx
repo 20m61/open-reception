@@ -21,7 +21,6 @@ import {
  * 取得して表示する。機密値・来訪者/担当者 PII は含めない。有効/停止は破壊的操作のため
  * DangerActionButton（影響範囲ack + 理由入力 + 二段確認）で隔離し、PATCH で実行する。
  */
-type DetailResponse = { detail: TenantDetailData };
 
 export function TenantDetail({ tenantId }: { tenantId: string }) {
   const [data, setData] = useState<TenantDetailData | null>(null);

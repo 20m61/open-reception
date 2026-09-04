@@ -8,11 +8,12 @@ import {
 } from './lint-warning-budget';
 
 describe('lintWarningBudgetTotal', () => {
-  it('正本の合計は 72（#813 の総数 ratchet を内訳の和として引き継ぐ）', () => {
+  it('正本の合計は 74（#813 の総数 ratchet を内訳の和として引き継ぐ）', () => {
     // **べた書きなのは意図的。** 正本から導くと「予算を下げたつもりが下がっていない」を
     // 検出できなくなる。件数を減らしたらここも一緒に下げる
-    // （#873 で 74 → 73、#963 で実描画検査の未使用変数を消して 73 → 72）。
-    expect(lintWarningBudgetTotal()).toBe(72);
+    // （#873 で 74 → 73、#963 で実描画検査の未使用変数を消して 73 → 72、
+    //   #968 で読み取りを `useCallback` へ切り出して 72 → 74。理由は正本の注記）。
+    expect(lintWarningBudgetTotal()).toBe(74);
   });
 });
 
@@ -27,14 +28,14 @@ describe('diffLintWarningBudget', () => {
    */
   it('総数が同じでもルール別の交換は落ちる', () => {
     const swapped = {
-      'react-hooks/set-state-in-effect': 55,
+      'react-hooks/set-state-in-effect': 57,
       '@typescript-eslint/no-unused-vars': 16,
       '@next/next/no-img-element': 1,
     };
-    expect(lintWarningBudgetTotal(swapped)).toBe(72);
+    expect(lintWarningBudgetTotal(swapped)).toBe(74);
     expect(diffLintWarningBudget(swapped)).toEqual([
       { ruleId: '@typescript-eslint/no-unused-vars', expected: 18, actual: 16 },
-      { ruleId: 'react-hooks/set-state-in-effect', expected: 53, actual: 55 },
+      { ruleId: 'react-hooks/set-state-in-effect', expected: 55, actual: 57 },
     ]);
   });
 
