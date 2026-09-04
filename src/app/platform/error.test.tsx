@@ -185,6 +185,33 @@ describe('ヘッダの境界 (#968)', () => {
     expect(el.key, '子が attempt を key に持っていない').toBe('3');
   });
 
+  /*
+   * 🔴 **「作った」ではなく「配線した」を縛る (#968 レビュー 8 周目の変異 A3)。**
+   *
+   * 上のテストは境界を**単体で**叩いているので、`layout.tsx` から
+   * `HeaderErrorBoundary` を外す変異が**全部素通りした**（実測）。
+   * `.claude/rules/opus5-autonomous-loop.md`「純関数に変異を当てて『kill した』と言うが
+   * **配線を変異させていない**」—— この PR で 3 度目の再発なので、配線そのものを見る。
+   *
+   * ここは e2e でも殺せない: 述語が投げる経路を塞いだので、境界の有無で画面が変わらない。
+   * 「境界が要る」ことの根拠は**将来の未知の例外**であって、いま観測できる振る舞いではない。
+   */
+  it('🔴 layout が TenantSwitcher を境界で包んでいる（配線そのもの）', async () => {
+    const { readFile } = await import('node:fs/promises');
+    const source = await readFile('src/app/platform/layout.tsx', 'utf8');
+    expect(source, 'HeaderErrorBoundary を import していない').toContain('HeaderErrorBoundary');
+
+    // `<HeaderErrorBoundary>` … `<TenantSwitcher />` … `</HeaderErrorBoundary>` の入れ子。
+    const open = source.indexOf('<HeaderErrorBoundary>');
+    const close = source.indexOf('</HeaderErrorBoundary>');
+    expect(open, '境界の開始タグが無い').toBeGreaterThan(-1);
+    expect(close, '境界の終了タグが無い').toBeGreaterThan(open);
+    expect(
+      source.slice(open, close),
+      'TenantSwitcher が境界の内側に無い（ヘッダの例外を error.tsx は受けられない）',
+    ).toContain('<TenantSwitcher');
+  });
+
   it('🔴 例外の本文を fallback に出さない', () => {
     const boundary = new HeaderErrorBoundary({ children: null });
     boundary.state = { failed: true, attempt: 0 };
