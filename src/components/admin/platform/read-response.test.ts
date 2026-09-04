@@ -39,6 +39,32 @@ function without<T extends Record<string, unknown>>(obj: T, key: string): Record
   return copy;
 }
 
+/*
+ * 🔴 **期待値は実装の定数から**導かない** (#968 レビュー 6 周目の変異 S2 / S3 / S5)。
+ *
+ * 最初は `it.each(EXPECT_DETAIL_STRINGS)` と書いていた。すると**その定数から項目を
+ * 削る変異は、テストの反復対象も同時に削る** —— 検査されなくなったフィールドについて
+ * テストは何も言わなくなり、**緑のまま保証だけが消える**。実測で 3 件が生存した
+ * （`slug` / `maintenanceDeviceCount` / サイトの `id`）。`status` だけ死んだのは、
+ * e2e に「破壊的操作を出さない」という**帰結の主張**が別に在ったからで、
+ * それが無い 3 件は自己参照の輪だけが唯一のオラクルだった。
+ *
+ * `CLAUDE.md`「検証の作法」:「**自分で導いた述語をそのままテストにすると、テストと
+ * コードが同じ誤りを共有する**」。1 フィールドずつ縛る行列を書いた当の場所で踏んだ。
+ *
+ * だから期待値は**ここにベタ書きし**、実装の定数とは「一致すること」を別途固定する。
+ * 実装から項目が消えれば一致固定が落ちるし、反復は消えた項目を検査し続ける。
+ */
+const EXPECT_DETAIL_STRINGS = ['name', 'slug', 'status'] as const;
+const EXPECT_DETAIL_NUMBERS = [
+  'siteCount',
+  'deviceCount',
+  'activeDeviceCount',
+  'maintenanceDeviceCount',
+] as const;
+const EXPECT_SITE_STRINGS = ['id', 'name', 'status'] as const;
+const EXPECT_SITE_NUMBERS = ['deviceCount', 'activeDeviceCount'] as const;
+
 const VALID_SITE = {
   id: 's1',
   name: '本社',
@@ -74,6 +100,19 @@ describe('read-response: 述語の緊さ (#968)', () => {
    * 固定する理由は `isTenantFlagsShape` が `keys.every(...)` を使っていること:
    * keys が空になれば `every` は真になり、そのとき配列が通ってしまう。
    */
+  /*
+   * 🔴 **実装の一覧とテストの期待値が一致していること。**
+   * 反復をベタ書きへ移しただけだと、実装から項目が消えたとき「述語は緩くなったが
+   * テストは古い項目を検査し続ける」形になり、どちらが正しいのか誰も判定できない。
+   * 一致を固定しておけば、**実装を緩めた瞬間にここが落ちる**。
+   */
+  it('🔴 検査対象の一覧は、テストの期待値と一致する（黙って減らせない）', () => {
+    expect([...TENANT_DETAIL_STRINGS]).toEqual([...EXPECT_DETAIL_STRINGS]);
+    expect([...TENANT_DETAIL_NUMBERS]).toEqual([...EXPECT_DETAIL_NUMBERS]);
+    expect([...TENANT_SITE_STRINGS]).toEqual([...EXPECT_SITE_STRINGS]);
+    expect([...TENANT_SITE_NUMBERS]).toEqual([...EXPECT_SITE_NUMBERS]);
+  });
+
   it('isRecord: 配列と null はレコードでない（契約の固定）', () => {
     expect(isRecord({})).toBe(true);
     expect(isRecord({ a: 1 })).toBe(true);
@@ -157,7 +196,7 @@ describe('read-response: 述語の緊さ (#968)', () => {
       expect(isTenantDetailShape(without(VALID_DETAIL, key))).toBe(false);
     });
 
-    it.each(TENANT_DETAIL_NUMBERS)('%s だけが欠けても通さない', (key) => {
+    it.each(EXPECT_DETAIL_NUMBERS)('%s だけが欠けても通さない', (key) => {
       expect(isTenantDetailShape(without(VALID_DETAIL, key))).toBe(false);
     });
 
@@ -169,13 +208,13 @@ describe('read-response: 述語の緊さ (#968)', () => {
       expect(isTenantDetailShape({ ...VALID_DETAIL, sites: [null] })).toBe(false);
     });
 
-    it.each(TENANT_SITE_STRINGS)('sites[].%s だけが欠けても通さない', (key) => {
+    it.each(EXPECT_SITE_STRINGS)('sites[].%s だけが欠けても通さない', (key) => {
       expect(isTenantDetailShape({ ...VALID_DETAIL, sites: [without(VALID_SITE, key)] })).toBe(
         false,
       );
     });
 
-    it.each(TENANT_SITE_NUMBERS)('sites[].%s だけが欠けても通さない', (key) => {
+    it.each(EXPECT_SITE_NUMBERS)('sites[].%s だけが欠けても通さない', (key) => {
       expect(isTenantDetailShape({ ...VALID_DETAIL, sites: [without(VALID_SITE, key)] })).toBe(
         false,
       );
