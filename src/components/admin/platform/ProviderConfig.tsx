@@ -88,8 +88,20 @@ export function ProviderConfig() {
         setData(null);
         return;
       }
-      const body = (await res.json()) as ConfigResponse;
-      setData(body);
+      const body = (await res.json()) as Partial<ConfigResponse>;
+      /*
+       * 🔴 **`config` キーが無い 200 は「未設定」ではなく「読めなかった」(#968 レビュー 5 周目)。**
+       *
+       * `config: null` は**正当**（そのテナントにまだ設定が無い）。区別するのはキーの有無で、
+       * 値ではない。混ぜると #870 の営業時間設定と同じ「取得できていないことを未設定と
+       * 言い換える」になり、しかもここは楽観ロックの無い全置換 upsert の入口である。
+       */
+      if (!('config' in body)) {
+        setLoadError('設定の形式が不正です。時間をおいて再試行してください。');
+        setData(null);
+        return;
+      }
+      setData(body as ConfigResponse);
       if (body.config) {
         setProvider(body.config.provider);
         setEnabled(body.config.enabled);
@@ -324,7 +336,18 @@ export function ProviderConfig() {
       </h3>
       <p style={{ fontSize: font.small }}>
         現在の状態:{' '}
-        <strong style={{ color: presence === 'set' ? 'var(--color-platform-ok)' : 'var(--color-platform-warn)' }}>
+        {/* ラベルだけ 3 状態にして色が 2 状態のままだと、視覚的には loading と failed が同じ (#968 レビュー 5 周目 MINOR-2)。 */}
+        <strong
+          style={{
+            color: !readable
+              ? loadError !== null
+                ? 'var(--color-platform-warn)'
+                : 'var(--color-muted)'
+              : presence === 'set'
+                ? 'var(--color-platform-ok)'
+                : 'var(--color-platform-warn)',
+          }}
+        >
           {presenceLabel}
         </strong>
       </p>

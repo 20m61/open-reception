@@ -52,8 +52,19 @@ export function TenantDetail({ tenantId }: { tenantId: string }) {
         );
         return;
       }
+      const body = (await res.json()) as Partial<DetailResponse>;
+      /*
+       * 🔴 **`detail` が無い 200 を「読めた」にしない (#968 レビュー 5 周目 MAJOR-3)。**
+       * `setData(undefined)` すると `loaded={data !== null}` が**真**になり、画面は
+       * 「このテナントに拠点がありません。」と**断定**する —— #870 の営業時間設定が
+       * 「取得できていないことを未設定と言い換える」で踏んだのと同型。
+       */
+      if (body.detail === undefined) {
+        setError('テナント詳細の形式が不正です。');
+        return;
+      }
       setError(null);
-      setData(((await res.json()) as DetailResponse).detail);
+      setData(body.detail);
     /*
      * 🔴 **通信そのものが失敗した場合も「失敗」へ落とす (#896 レビュー M3)。**
      * `fetch` の reject（オフライン・DNS・接続断）や、HTML が返って `res.json()` が

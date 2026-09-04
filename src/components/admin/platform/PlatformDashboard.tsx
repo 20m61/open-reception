@@ -43,7 +43,14 @@ export function PlatformDashboard() {
           setError(res.status === 403 ? 'この画面の閲覧権限がありません。' : '概況の取得に失敗しました。');
           return;
         }
-        setData((await res.json()) as DashboardResponse);
+        const body = (await res.json()) as Partial<DashboardResponse>;
+        // 形が違う 200 は「読めなかった」。放置すると render で投げ、運用コンソールに
+        // **来訪者向けの文言**「受付を続けられませんでした」が出る (#968 レビュー 5 周目 MAJOR-1)。
+        if (body.fleet === undefined) {
+          setError('概況の形式が不正です。時間をおいて再試行してください。');
+          return;
+        }
+        setData(body as DashboardResponse);
       /*
        * 🔴 **通信そのものの失敗も「失敗」へ落とす (#968 AC2)。** `fetch` の reject や、
        * HTML が返って `res.json()` が投げるケースを拾わないと `data` も `error` も

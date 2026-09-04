@@ -1,7 +1,7 @@
 'use client';
 
 import { usePathname } from 'next/navigation';
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import {
   parseSelectedTenantId,
   resolveSelectedTenant,
@@ -27,7 +27,6 @@ import { font } from '@/components/admin/ui/tokens';
  * **admin 側の切替とは意味が違うので一本化しない**（母集合・未選択の有無・永続化と監査・
  * 反映方法がすべて別。対比表は `TenantContextView` に置いた）。共有するのは表示だけ。
  */
-type TenantsResponse = { tenants: NamedTenant[] };
 
 export function TenantSwitcher() {
   /**
@@ -58,37 +57,47 @@ export function TenantSwitcher() {
    */
   const [switchError, setSwitchError] = useState<string | null>(null);
 
+  /** テナント一覧の取得。再試行から呼び直せるよう `useEffect` の外に置く (#968 レビュー 5 周目 MAJOR-6)。 */
+  const loadTenants = useCallback(async (cancelled?: () => boolean) => {
+    const aborted = () => cancelled?.() === true;
+    try {
+      const res = await fetch('/api/platform/tenants');
+      if (aborted()) return;
+      /*
+       * 🔴 **HTTP の失敗も報告する (#968 レビュー M-1)。** ここで最も起こりやすい失敗は
+       * 403（developer 権限・昇格切れ）で、reject より遥かに多い。黙って `return` すると
+       * 選択肢が空のまま「全テナント横断」だけが残り、**テナントが 1 つも無いのと同じ
+       * 見た目**になる —— 取れなかったことを「無い」と言い換える形になる。
+       */
+      if (!res.ok) {
+        setListError(
+          res.status === 403
+            ? 'テナント一覧の閲覧権限がありません。'
+            : 'テナント一覧を取得できませんでした。',
+        );
+        return;
+      }
+      const body = (await res.json()) as { tenants?: unknown };
+      // 形が違う 200 は「テナントが無い」ではなく「読めなかった」(#968 レビュー 5 周目 MAJOR-2)。
+      if (!Array.isArray(body.tenants)) {
+        setListError('テナント一覧の形式が不正です。');
+        return;
+      }
+      setListError(null);
+      setTenants(body.tenants as NamedTenant[]);
+    } catch {
+      if (!aborted()) setListError('テナント一覧を取得できませんでした。');
+    }
+  }, []);
+
   useEffect(() => {
     setSelectedId(parseSelectedTenantId(document.cookie));
     let cancelled = false;
-    void (async () => {
-      try {
-        const res = await fetch('/api/platform/tenants');
-        if (cancelled) return;
-        /*
-         * 🔴 **HTTP の失敗も報告する (#968 レビュー M-1)。** ここで最も起こりやすい失敗は
-         * 403（developer 権限・昇格切れ）で、reject より遥かに多い。黙って `return` すると
-         * 選択肢が空のまま「全テナント横断」だけが残り、**テナントが 1 つも無いのと同じ
-         * 見た目**になる —— 取れなかったことを「無い」と言い換える形になる。
-         */
-        if (!res.ok) {
-          setListError(
-            res.status === 403
-              ? 'テナント一覧の閲覧権限がありません。'
-              : 'テナント一覧を取得できませんでした。',
-          );
-          return;
-        }
-        const body = (await res.json()) as TenantsResponse;
-        setTenants(body.tenants ?? []);
-      } catch {
-        if (!cancelled) setListError('テナント一覧を取得できませんでした。');
-      }
-    })();
+    void loadTenants(() => cancelled);
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [loadTenants]);
 
   const selected = resolveSelectedTenant(tenants, selectedId);
   // URL がテナントを名指ししている画面では「表示中」を明示する (#423)。
@@ -158,7 +167,19 @@ export function TenantSwitcher() {
               data-testid="platform-tenant-list-error"
               style={{ fontSize: font.small, color: 'var(--color-platform-warn)' }}
             >
-              {listError}
+              {listError}{' '}
+              {/*
+                🔴 **いちばん広く塞ぐところにこそ復帰導線が要る (#968 レビュー 5 周目 MAJOR-6)。**
+                ここが引けないと、他画面の「画面上部の切替で選んでください」という案内の
+                **指示先が死ぬ**。運用者に残るのはブラウザのリロードだけになる。
+              */}
+              <button
+                type="button"
+                data-testid="platform-tenant-list-retry"
+                onClick={() => void loadTenants()}
+              >
+                再試行
+              </button>
             </span>
           ) : null}
           {viewing.tenantName !== null ? (

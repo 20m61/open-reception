@@ -60,8 +60,14 @@ export function FeatureFlags() {
         setError(res.status === 403 ? 'この画面の閲覧権限がありません。' : '機能フラグの取得に失敗しました。');
         return;
       }
+      const body = (await res.json()) as Partial<FlagsResponse>;
+      // 形が違う 200 で `data.flags.*` が投げ、コンソールごとエラー境界へ落ちるのを防ぐ。
+      if (body.flags === undefined) {
+        setError('機能フラグの形式が不正です。時間をおいて再試行してください。');
+        return;
+      }
       setError(null);
-      setData((await res.json()) as FlagsResponse);
+      setData(body as FlagsResponse);
     } catch {
       // 通信そのものの失敗も「失敗」へ落とす (#968)。拾わないと表が永遠に「読み込み中」になる。
       setError('機能フラグを取得できませんでした。通信を確認してください。');
@@ -192,15 +198,21 @@ function TenantFeatureFlagEditor({ onChanged }: { onChanged?: () => void }) {
         );
         return;
       }
-      const body = (await res.json()) as { tenants?: TenantRow[] };
-      setTenantsError(null);
+      const body = (await res.json()) as { tenants?: unknown };
       /*
-       * 🔴 **shape の壊れた 200 でコンソールごと落とさない (#968 レビュー 4 周目 MINOR-1)。**
-       * `tenants` が無いと `tenants.map` が投げ、エラー境界が**来訪者向けの文言**
-       * 「受付を続けられませんでした」を運用コンソールに出す。同じ API を読む
-       * `TenantSwitcher` は `?? []` で守っており、防御が非対称だった。
+       * 🔴 **形が違う 200 は「読めなかった」であって「0 件」ではない (#968 レビュー 5 周目 MAJOR-2)。**
+       *
+       * 当初 `?? []` で防いだが、それは**大声の失敗を沈黙の誤動作へ変換する**だけだった
+       * （`CLAUDE.md`「主修正とフォールバックを同じコミットで入れない」の族）——
+       * 選択肢が空のまま「テナントが 1 つも無い」のと同じ見た目になり、しかも
+       * 失敗表示は出ない。このファイル自身が「その見た目にしてはいけない」と書いている。
        */
-      setTenants(body.tenants ?? []);
+      if (!Array.isArray(body.tenants)) {
+        setTenantsError('テナント一覧の形式が不正です。時間をおいて再試行してください。');
+        return;
+      }
+      setTenantsError(null);
+      setTenants(body.tenants as TenantRow[]);
     } catch {
       // テナントを選べないまま黙って空のプルダウンを出さない (#968)。
       if (!aborted()) setTenantsError('テナント一覧を取得できませんでした。通信を確認してください。');
@@ -235,7 +247,13 @@ function TenantFeatureFlagEditor({ onChanged }: { onChanged?: () => void }) {
         setFlagsError('テナントの機能フラグの取得に失敗しました。');
         return;
       }
-      setFlags((await res.json()) as TenantFlagsResponse);
+      const body = (await res.json()) as Partial<TenantFlagsResponse>;
+      if (body.flags === undefined) {
+        setFlagsError('テナントの機能フラグの形式が不正です。');
+        return;
+      }
+      setFlagsError(null);
+      setFlags(body as TenantFlagsResponse);
     } catch {
       /*
        * 🔴 **拾わないと「読み込み中…」で止まる (#968)。** 描画は
@@ -397,10 +415,13 @@ function TenantFeatureFlagEditor({ onChanged }: { onChanged?: () => void }) {
           <button
             type="button"
             data-testid="feature-flags-tenants-retry"
-            onClick={() => {
-              setTenantsError(null);
-              void loadTenants();
-            }}
+            /*
+             * 🔴 **押した瞬間にエラーを消さない (#968 レビュー 5 周目 MINOR-3)。**
+             * 消すと自分自身がアンマウントされ、キーボード / SR 利用者のフォーカスが
+             * 文書先頭へ落ちる。しかも「復帰した」を消えたことで縛れなくなる ——
+             * **取得が成功したときにだけ消える**ほうが、表示としても正直である。
+             */
+            onClick={() => void loadTenants()}
             style={{ ...inputStyle, cursor: 'pointer' }}
           >
             再試行
@@ -419,10 +440,7 @@ function TenantFeatureFlagEditor({ onChanged }: { onChanged?: () => void }) {
           <button
             type="button"
             data-testid="feature-flags-retry"
-            onClick={() => {
-              setFlagsError(null);
-              void loadTenantFlags(latestTenantId.current);
-            }}
+            onClick={() => void loadTenantFlags(latestTenantId.current)}
             style={{ ...inputStyle, cursor: 'pointer' }}
           >
             再試行

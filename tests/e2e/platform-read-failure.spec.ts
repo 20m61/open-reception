@@ -61,20 +61,30 @@ const READS = [
     path: '/platform',
     api: '**/api/platform/dashboard',
     testId: 'platform-dashboard-error',
+    forbiddenText: '閲覧権限',
   },
   {
     label: 'プロバイダ設定',
     path: '/platform/integrations',
     api: '**/api/platform/integrations/provider-config',
     testId: 'provider-config-load-error',
+    forbiddenText: '権限',
   },
   {
     label: '機能フラグ（横断サマリ）',
     path: '/platform/feature-flags',
     api: '**/api/platform/feature-flags',
     testId: 'platform-feature-flags-error',
+    forbiddenText: '閲覧権限',
   },
 ] as const;
+
+/** 形の壊れた 200。**「0 件」ではなく「読めなかった」**として扱われることを見る。 */
+async function fulfillEmptyBody(page: Page, pattern: string): Promise<void> {
+  await page.route(pattern, (route) =>
+    route.fulfill({ status: 200, contentType: 'application/json', body: '{}' }),
+  );
+}
 
 test.describe('platform: 読み取りの失敗が運用者に見える (#968)', () => {
   test.beforeEach(async ({ page }) => {
@@ -91,7 +101,30 @@ test.describe('platform: 読み取りの失敗が運用者に見える (#968)', 
     test(`${screen.label}: 403（昇格切れ）のとき失敗が出る`, async ({ page }) => {
       await failWith403(page, screen.api);
       await page.goto(screen.path);
+      const alert = page.getByTestId(screen.testId);
+      await expect(alert).toBeVisible();
+      /*
+       * 🔴 **原因を言い分ける (#968 レビュー 5 周目 MAJOR-4)。** 403（昇格切れ）と
+       * 500（障害）とでは運用者の次の行動が違う。文言まで縛らないと、分岐を定数へ
+       * 潰す変異が素通りする（実測で 4 箇所とも生存した）。
+       */
+      await expect(alert).toContainText(screen.forbiddenText);
+    });
+
+    /*
+     * 🔴 **形の壊れた 200 も「読めなかった」(#968 レビュー 5 周目 MAJOR-1 / MAJOR-2)。**
+     *
+     * 放置すると render で投げ、`global-error.tsx` が**来訪者向けの文言**
+     * 「受付を続けられませんでした」を運用コンソールに出す。`?? []` で埋めるのも駄目で、
+     * それは大声の失敗を沈黙の誤動作へ変換するだけ（「テナントが 1 つも無い」と同じ
+     * 見た目になる）。**失敗として報告する**のが正しい。
+     */
+    test(`${screen.label}: 形の壊れた 200 を「0 件」にせず失敗として出す`, async ({ page }) => {
+      await fulfillEmptyBody(page, screen.api);
+      await page.goto(screen.path);
       await expect(page.getByTestId(screen.testId)).toBeVisible();
+      // 来訪者向けのエラー境界へ落ちていない。
+      await expect(page.getByText('受付を続けられませんでした')).toHaveCount(0);
     });
 
     test(`${screen.label}: 接続断でも失敗が出る（reject を void に捨てない）`, async ({ page }) => {
@@ -119,6 +152,55 @@ test.describe('platform: 読み取りの失敗が運用者に見える (#968)', 
     await failWithAbort(page, '**/api/platform/tenants');
     await page.goto('/platform');
     await expect(page.getByTestId('platform-tenant-list-error')).toBeVisible();
+  });
+
+  /*
+   * 🔴 **いちばん広く塞ぐところの復帰導線 (#968 レビュー 5 周目 MAJOR-6)。**
+   * ここが引けないと、他画面の「画面上部の切替で選んでください」の**指示先が死ぬ**。
+   */
+  test('ヘッダのテナント切替: 再試行で選択肢が実際に戻る', async ({ page }) => {
+    await failWith403(page, '**/api/platform/tenants');
+    await page.goto('/platform');
+    await expect(page.getByTestId('platform-tenant-list-error')).toBeVisible();
+
+    const select = page.getByTestId('platform-tenant-switcher');
+    await expect(select.locator('option')).toHaveCount(1);
+
+    await page.unroute('**/api/platform/tenants');
+    await page.getByTestId('platform-tenant-list-retry').click();
+
+    await expect(page.getByTestId('platform-tenant-list-error')).toHaveCount(0);
+    await expect(select.locator('option')).not.toHaveCount(1);
+  });
+
+  /*
+   * 🔴 **書込中は切替させない（B-1 のレース窓を閉じた guard の証拠）。**
+   * 外す変異は unit・e2e とも素通りしていた（レビュー 5 周目 MINOR-1）。
+   */
+  test('機能フラグ: 昇格つき書込の最中はテナントを切り替えさせない', async ({ page }) => {
+    await page.goto('/platform/feature-flags');
+    const select = page.getByTestId('tenant-feature-flag-editor').locator('select');
+    const first = await select.locator('option').nth(1).getAttribute('value');
+    expect(first, 'seed にテナントが無い').toBeTruthy();
+    await select.selectOption(first ?? '');
+
+    // PATCH を宙吊りにして「書込中」を作る。
+    let release: (() => void) | undefined;
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    await page.route('**/api/platform/tenants/*/feature-flags', async (route) => {
+      if (route.request().method() !== 'PATCH') return route.continue();
+      await held;
+      return route.fulfill({ status: 500, contentType: 'application/json', body: '{}' });
+    });
+
+    await page.getByRole('textbox').last().fill('e2e: 切替禁止の確認');
+    await page.getByRole('button', { name: /昇格つきで(有効|無効)化/ }).first().click();
+
+    await expect(select).toBeDisabled();
+    release?.();
+    await expect(select).toBeEnabled();
   });
 
   /*
@@ -243,8 +325,16 @@ test.describe('platform: 読み取りの失敗が運用者に見える (#968)', 
 
     await expect(page.getByRole('button', { name: '設定を保存' })).toBeDisabled();
     await expect(page.getByRole('button', { name: 'secret を保存' })).toBeDisabled();
-    // 取得できていないことを「未設定」と言い換えない（#870 の営業時間と同じ型）。
-    await expect(page.getByText('未設定', { exact: true })).toHaveCount(0);
+    /*
+     * 🔴 **両側から縛る (#968 レビュー 5 周目 MAJOR-5)。**
+     * 「未設定と断定しない」だけだと、失敗を**読み込み中**と断定する変異が素通りする
+     * （`#870` が閉じた「失敗が永遠の読み込み中に化ける」へ戻る）。`不変条件は片側しか
+     * 主張しない。下界を併せて縛る`（`.claude/rules/opus5-autonomous-loop.md`）。
+     */
+    const section = page.locator('section', { has: page.getByTestId('provider-config-load-error') });
+    await expect(section.getByText('未設定', { exact: true })).toHaveCount(0);
+    await expect(section.getByText('読み込み中…')).toHaveCount(0);
+    await expect(section.getByText('取得できていません')).toBeVisible();
   });
 
   /*
