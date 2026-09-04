@@ -549,6 +549,11 @@ const RECOVERY_CONTROL: readonly { readonly file: string; readonly testId: strin
   { file: 'TenantSwitcher.tsx', testId: 'platform-tenant-list-retry', calls: 'void loadTenants()' },
   { file: 'PlatformDashboard.tsx', testId: 'platform-dashboard-retry', calls: 'void load()' },
   { file: 'FeatureFlags.tsx', testId: 'platform-feature-flags-retry', calls: 'void loadSummary()' },
+  /*
+   * ヘッダの境界は「再取得」ではなく**子の作り直し**で復帰する (#968 レビュー 8 周目 MAJOR-2)。
+   * `attempt` を進めると `key` が変わり、`TenantSwitcher` が再マウントされて自分で取り直す。
+   */
+  { file: 'HeaderErrorBoundary.tsx', testId: 'platform-header-error-retry', calls: 'this.setState(' },
 ];
 
 const EXEMPT_FETCH: readonly { readonly file: string; readonly marker: string; readonly why: string }[] = [];
@@ -1062,6 +1067,7 @@ describe('platform の通信失敗が無言にならない (#968)', () => {
       'platform-tenant-list-retry',
       'platform-dashboard-retry',
       'platform-feature-flags-retry',
+      'platform-header-error-retry',
     ]);
   });
 
@@ -1238,22 +1244,51 @@ describe('platform の通信失敗が無言にならない (#968)', () => {
    */
   it('write の TimeoutError は writeTimeoutMessage を通す（「失敗した」と断定しない）', () => {
     const offenders: string[] = [];
-    let checked = 0;
+    const writeSites: string[] = [];
     for (const file of platformFiles()) {
       if (!IN_SCOPE_TIMEOUT.includes(file.name)) continue;
-      for (const { catchBody } of tryCatchBlocks(file.source)) {
+      for (const { tryBody, catchBody } of tryCatchBlocks(file.source)) {
         const body = file.source.slice(catchBody.start, catchBody.end);
         if (!body.includes("name === 'TimeoutError'")) continue;
-        // read の catch は readTimeoutMessage 側。write だけを見る。
-        if (!body.includes('writeTimeoutMessage') && !body.includes('readTimeoutMessage')) {
-          offenders.push(`${file.name}: TimeoutError を定型文へ潰している`);
-          continue;
+        /*
+         * 🔴 **read / write を `try` の中身で判定する (#968 レビュー 8 周目 MAJOR-3)。**
+         *
+         * 最初は「`writeTimeoutMessage` か `readTimeoutMessage` のどちらかが在る」しか
+         * 見ておらず、**write の catch が read 用の文言を使うことを許していた**。
+         * レビューが 2 箇所を差し替えたところ unit 7611 本が素通りしている。
+         *
+         * 実害: 差し替え後の文言は「時間をおいて**再試行してください**」。テナント停止の
+         * PATCH がタイムアウトしたとき（サーバは受理して監査に残しているかもしれない）、
+         * 運用者へ**破壊的操作の再実行を明示的に指示する**ことになる。
+         */
+        const isWrite = isMutating(file.source.slice(tryBody.start, tryBody.end));
+        const label = `${file.name}:${isWrite ? 'write' : 'read'}`;
+        if (isWrite) {
+          writeSites.push(label);
+          if (!body.includes('writeTimeoutMessage')) {
+            offenders.push(`${label}: write なのに writeTimeoutMessage を通していない`);
+          }
+          if (body.includes('readTimeoutMessage')) {
+            offenders.push(`${label}: write に read 用の文言（再試行を促す）を使っている`);
+          }
+        } else if (!body.includes('readTimeoutMessage')) {
+          offenders.push(`${label}: read の TimeoutError が定型文へ潰れている`);
         }
-        if (body.includes('writeTimeoutMessage')) checked += 1;
       }
     }
-    expect(offenders, 'TimeoutError の言い分けが定数へ潰れている').toEqual([]);
-    expect(checked, 'write の TimeoutError 分岐を見つけられていない').toBeGreaterThanOrEqual(4);
+    expect(offenders, 'TimeoutError の言い分け').toEqual([]);
+    /*
+     * 🔴 **下界ではなく同一性で固定する。** `>= 4` だと 6 件のうち 2 件を落としても通る
+     * （レビューが実際に 2 件差し替えて素通りさせた）。件数が変わったら**気づかせる**。
+     */
+    expect(writeSites.sort()).toEqual([
+      'FeatureFlags.tsx:write',
+      'ProviderConfig.tsx:write',
+      'ProviderConfig.tsx:write',
+      'ProviderConfig.tsx:write',
+      'TenantDetail.tsx:write',
+      'TenantSwitcher.tsx:write',
+    ]);
   });
 
   /*
@@ -1292,9 +1327,16 @@ describe('platform の通信失敗が無言にならない (#968)', () => {
     expect(write, 'write の上限が見つからない').not.toBeNull();
     const readMs = Number((read?.[1] ?? '0').replaceAll('_', ''));
     const writeMs = Number((write?.[1] ?? '0').replaceAll('_', ''));
-    expect(readMs).toBeGreaterThanOrEqual(10_000);
+    /*
+     * 🔴 **下界を実際の値の直下に置く (#968 レビュー 8 周目 m7)。**
+     * `>= 10_000` だと `15_000 → 10_000` が素通りし、`>= readMs` だと
+     * `30_000 → 15_000` が素通りした（レビュー実測）。「write は往復が重いので read より
+     * 長く」という自分の根拠を、値そのもので守る。
+     */
+    expect(readMs).toBeGreaterThanOrEqual(15_000);
+    expect(writeMs).toBeGreaterThanOrEqual(30_000);
     // write は往復が重い。read より短くすると「成功したのに失敗と読む」が増える。
-    expect(writeMs).toBeGreaterThanOrEqual(readMs);
+    expect(writeMs).toBeGreaterThan(readMs);
   });
 
   it('応答の判定は res.ok / response.ok の直参照で書く（分解束縛や != true にしない）', () => {

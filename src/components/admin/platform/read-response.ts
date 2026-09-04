@@ -1,3 +1,5 @@
+import { TENANT_FEATURE_FLAG_KEYS } from '@/domain/platform/feature-flags';
+
 /**
  * platform の read 応答が**実際に読むフィールドを持っているか** (#968 レビュー 6 周目)。
  *
@@ -92,7 +94,14 @@ export function isFlagsSummaryShape(body: unknown): boolean {
     return false;
   }
   if (!Array.isArray(flags.authMethods) || !flags.authMethods.every(isAuthMethodShape)) return false;
-  return isTenantFlagSummaryShape(flags.voiceSynthesis) && isTenantFlagSummaryShape(flags.avatarReception);
+  /*
+   * 🔴 **キーは導出する。ハードコードしない (#968 レビュー 8 周目 m5)。**
+   * API は `...tenantFlagSummary`（= `TENANT_FEATURE_FLAG_KEYS` の spread）で返すので、
+   * ここで `voiceSynthesis` / `avatarReception` を手写しすると**キーを増減させたときに
+   * 片方だけ壊れる**。同じファイルの `isTenantFlagsShape` は keys を引数で受けており、
+   * 導出方法が食い違っていた。
+   */
+  return TENANT_FEATURE_FLAG_KEYS.every((k) => isTenantFlagSummaryShape(flags[k]));
 }
 
 /** `/api/platform/tenants/[id]/feature-flags`。画面は `flags[key]` を真偽で読む。 */

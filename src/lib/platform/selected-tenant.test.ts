@@ -12,6 +12,26 @@ import {
 } from './selected-tenant';
 
 describe('parseSelectedTenantId', () => {
+  /*
+   * 🔴 **壊れたパーセントエンコードで投げない (#968 レビュー 8 周目 m1)。**
+   *
+   * ここは `TenantSwitcher` の `useEffect` 先頭から呼ばれるので、投げると**ヘッダごと**
+   * 落ちる —— `src/app/platform/error.tsx` は layout の例外を捕まえないため、
+   * `HeaderErrorBoundary` が唯一の受け皿になる。cookie は `httpOnly:false`（クライアントが
+   * 読む前提）なので、第三者スクリプトがこの値を書ける。
+   *
+   * 同ファイルの `routeTenantIdFrom` は同じ関数を try/catch で囲んでおり、
+   * **非対称だった**（レビューが実測して見つけた）。
+   */
+  it.each(['%', '%E0%A4%A', '100%'])('壊れたエンコード %s でも投げない', (broken) => {
+    expect(() => parseSelectedTenantId(`${SELECTED_TENANT_COOKIE}=${broken}`)).not.toThrow();
+    expect(parseSelectedTenantId(`${SELECTED_TENANT_COOKIE}=${broken}`)).toBeNull();
+  });
+
+  it('壊れた cookie が他の cookie を巻き込まない', () => {
+    expect(() => parseSelectedTenantId(`a=1; ${SELECTED_TENANT_COOKIE}=%; b=2`)).not.toThrow();
+  });
+
   it('Cookie 文字列から対象テナント id を取り出す', () => {
     expect(parseSelectedTenantId(`a=1; ${SELECTED_TENANT_COOKIE}=internal; b=2`)).toBe('internal');
   });

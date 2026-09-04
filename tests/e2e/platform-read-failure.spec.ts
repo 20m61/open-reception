@@ -336,6 +336,72 @@ test.describe('platform: 読み取りの失敗が運用者に見える (#968)', 
   }
 
   /*
+   * 🔴 **`error.tsx` が実際に効いていることを見る (#968 レビュー 8 周目 MAJOR-1)。**
+   *
+   * 6〜7 周目に私は「述語を入れた後は投げる経路が無いので、境界を消す変異は等価」と
+   * **二度**主張し、二度とも独立レビューに否定された。3 例目として挙がったのがこの 2 つ
+   * —— どちらも #973 の台帳に載っている「形の検査が無い画面」で、**`/platform` の
+   * ホームと一覧**という運用者が最初に見る場所に在る。
+   *
+   * ここで縛るのは「境界が受けること」＝**来訪者向けの文言が出ないこと**であって、
+   * 台帳の 7 画面に形の検査を足すこと（#973）ではない。
+   */
+  for (const [name, api, path] of [
+    ['AWS コスト', '**/api/platform/costs', '/platform'],
+    ['テナント一覧', '**/api/platform/tenants', '/platform/tenants'],
+  ] as const) {
+    test(`${name}: 形の壊れた 200 でも来訪者向け画面に落ちない（境界が受ける）`, async ({
+      page,
+    }) => {
+      await fulfillBody(page, api, '{}');
+      await page.goto(path);
+
+      // 🔴 運用者に来訪者向けの文言を出さない（これが境界の存在意義）。
+      await expect(page.getByText('受付を続けられませんでした')).toHaveCount(0);
+      await expect(page.getByText('スタッフにお声がけ')).toHaveCount(0);
+    });
+  }
+
+  /*
+   * 🔴 **書込のハングに帰結のオラクルが 1 本も無かった (#968 レビュー 8 周目 MAJOR-3)。**
+   *
+   * 7 周目に write へ `AbortSignal.timeout` を配線したが、静的にしか縛っておらず、
+   * **30 秒後に画面へ何が出るか**は誰も見ていなかった。実際、write の catch を
+   * `readTimeoutMessage`（「時間をおいて再試行してください」）へ差し替える変異が
+   * unit 7611 本を素通りした。
+   *
+   * 🔴 テナント停止はサーバが受理して監査に残しているかもしれないので、
+   * **再実行を促してはいけない**。
+   */
+  test('テナント詳細: 停止の送信がハングしたら「送信できたか分からない」と言う', async ({
+    page,
+  }) => {
+    test.setTimeout(90_000);
+    await page.goto('/platform/tenants');
+    const link = page.locator('a[href^="/platform/tenants/"]').first();
+    await expect(link).toBeVisible();
+    await link.click();
+
+    // PATCH を返さない（ハング）。GET はそのまま通す。
+    await page.route('**/api/platform/tenants/*', async (route) => {
+      if (route.request().method() !== 'PATCH') return route.continue();
+      // 解決しない。
+    });
+
+    await page.getByTestId('danger-open').click();
+    await page.getByRole('textbox').last().fill('e2e: ハングの確認');
+    const ack = page.getByRole('checkbox');
+    if (await ack.count()) await ack.first().check();
+    await page.getByTestId('danger-confirm').click();
+
+    const alert = page.getByTestId('platform-tenant-action-error');
+    await expect(alert).toBeVisible({ timeout: 60_000 });
+    // 成功を否定しない（「失敗しました」と断定しない・再実行を促さない）。
+    await expect(alert).toContainText('分かりません');
+    await expect(alert).not.toContainText('再試行してください');
+  });
+
+  /*
    * 🔴 **テナント別フラグの形検査に、振る舞いのオラクルが 1 本も無かった
    * (#968 レビュー 7 周目 MAJOR-3)。**
    *

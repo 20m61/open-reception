@@ -204,6 +204,25 @@ describe('read-response: 述語の緊さ (#968)', () => {
       ).toBe(false);
     });
 
+    it('🔴 authMethods の 2 件目だけが壊れていても通さない', () => {
+      expect(
+        isFlagsSummaryShape({
+          flags: { ...VALID_FLAGS_SUMMARY.flags, authMethods: [VALID_AUTH_METHOD, null] },
+        }),
+      ).toBe(false);
+    });
+
+    /*
+     * 🔴 **下界: 空配列は正当。** これが無いと「常に false」で上の主張が空虚に通る。
+     * レビューの実測では、この下界が無かったために `.every` → `.some` の変異が
+     * **生存していた**（`authMethods: []` を踏むものが無かった）。
+     */
+    it('下界: authMethods が 0 件でも通る', () => {
+      expect(isFlagsSummaryShape({ flags: { ...VALID_FLAGS_SUMMARY.flags, authMethods: [] } })).toBe(
+        true,
+      );
+    });
+
     it('flags.authMethods が配列でなければ通さない', () => {
       expect(isFlagsSummaryShape({ flags: { ...VALID_FLAGS_SUMMARY.flags, authMethods: {} } })).toBe(false);
       expect(isFlagsSummaryShape({ flags: { ...VALID_FLAGS_SUMMARY.flags, authMethods: [null] } })).toBe(false);
@@ -290,6 +309,22 @@ describe('read-response: 述語の緊さ (#968)', () => {
       );
     });
 
+    /*
+     * 🔴 **混在配列（先頭は正しく、後ろが壊れている）(#968 レビュー 8 周目 m2)。**
+     *
+     * `[null]` だけを注入していると、`.every` を**「先頭要素だけ検査」**へ書き換える変異が
+     * 素通りする（レビューが実測）。`.some` への書き換えは「0 件も正当」の下界に偶然
+     * 引っかかって落ちていただけで、**混在配列を踏むオラクルではなかった**。
+     * `isTenantFlagsShape` にだけ同型の主張があり、配列述語 3 つには無かった ——
+     * `CLAUDE.md`「同型の 2 本には対策を入れており、3 本目にだけ入れ忘れていた」の族。
+     */
+    it('🔴 sites の 2 件目だけが壊れていても通さない（先頭だけ検査に退行させない）', () => {
+      expect(isTenantDetailShape({ ...VALID_DETAIL, sites: [VALID_SITE, null] })).toBe(false);
+      expect(
+        isTenantDetailShape({ ...VALID_DETAIL, sites: [VALID_SITE, without(VALID_SITE, 'id')] }),
+      ).toBe(false);
+    });
+
     it('sites が配列でなければ通さない', () => {
       expect(isTenantDetailShape({ ...VALID_DETAIL, sites: {} })).toBe(false);
       expect(isTenantDetailShape({ ...VALID_DETAIL, sites: null })).toBe(false);
@@ -317,6 +352,13 @@ describe('read-response: 述語の緊さ (#968)', () => {
 
     it.each(EXPECT_TENANT_ROW_STRINGS)('tenants[].%s だけが欠けても通さない', (key) => {
       expect(isTenantListShape({ tenants: [without(VALID_TENANT_ROW, key)] })).toBe(false);
+    });
+
+    it('🔴 tenants の 2 件目だけが壊れていても通さない', () => {
+      expect(isTenantListShape({ tenants: [VALID_TENANT_ROW, null] })).toBe(false);
+      expect(
+        isTenantListShape({ tenants: [VALID_TENANT_ROW, without(VALID_TENANT_ROW, 'id')] }),
+      ).toBe(false);
     });
 
     it('tenants が配列でない / 欠落なら通さない', () => {

@@ -20,16 +20,17 @@
  *
  * 🔴 例外の内容は画面に出さない（`/kiosk` と同じ方針・#629 / #736 Gate A）。
  */
-import { Component, type ReactNode } from 'react';
+import { Component, Fragment, type ReactNode } from 'react';
 import { unexpectedErrorLogLine } from '@/lib/observability/unexpected-error-log';
 
 type Props = { children: ReactNode };
-type State = { failed: boolean };
+/** `attempt` を key に渡して子を作り直すので、再試行で確実に再マウントされる。 */
+type State = { failed: boolean; attempt: number };
 
 export class HeaderErrorBoundary extends Component<Props, State> {
-  state: State = { failed: false };
+  state: State = { failed: false, attempt: 0 };
 
-  static getDerivedStateFromError(): State {
+  static getDerivedStateFromError(): Partial<State> {
     return { failed: true };
   }
 
@@ -39,10 +40,32 @@ export class HeaderErrorBoundary extends Component<Props, State> {
   }
 
   render() {
-    if (!this.state.failed) return this.props.children;
+    if (!this.state.failed) {
+      return <Fragment key={this.state.attempt}>{this.props.children}</Fragment>;
+    }
+    /*
+     * 🔴 **行き止まりにしない (#968 レビュー 8 周目 MAJOR-2)。**
+     *
+     * 最初の実装は文言だけを返しており、消えるものが 3 つあった:
+     * `platform-tenant-switcher`（スコープを変える唯一の手段）、
+     * `platform-viewing-tenant` / `platform-viewing-differs`（#423 の越境警告）、
+     * そして失敗表示の中の `platform-tenant-list-retry`。
+     *
+     * しかも App Router の layout は**クライアント遷移で再マウントされない**ので、
+     * 一度落ちるとそのセッションのあいだ全画面で復旧しなかった。cookie のスコープは
+     * 生きたまま各画面の read を絞り続けるのに、**いまどのテナントを見ているかを示す
+     * 唯一の表示が消える** —— 5 周目 MAJOR-6 で塞いだのと同じ実害。
+     */
     return (
       <span role="alert" data-testid="platform-header-error" style={{ opacity: 0.85 }}>
-        テナント切替を表示できません
+        テナント切替を表示できません。画面を再読み込みしてください。{' '}
+        <button
+          type="button"
+          data-testid="platform-header-error-retry"
+          onClick={() => this.setState((prev) => ({ failed: false, attempt: prev.attempt + 1 }))}
+        >
+          再試行
+        </button>
       </span>
     );
   }

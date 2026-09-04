@@ -29,7 +29,22 @@ export function parseSelectedTenantId(cookieString: string | undefined | null): 
     if (eq === -1) continue;
     const name = part.slice(0, eq).trim();
     if (name !== SELECTED_TENANT_COOKIE) continue;
-    const value = decodeURIComponent(part.slice(eq + 1).trim());
+    /*
+     * 🔴 **壊れたパーセントエンコードで画面を壊さない (#968 レビュー 8 周目 m1)。**
+     *
+     * 同ファイルの `routeTenantIdFrom` は同じ `decodeURIComponent` を try/catch で
+     * 囲んで「例外で画面を壊さない」と書いているのに、こちらだけ囲っていなかった。
+     * ここは `TenantSwitcher` の `useEffect` 先頭から呼ばれるので、投げると
+     * **ヘッダごと**落ちる（cookie は `httpOnly:false` なので第三者スクリプトが
+     * `or_platform_tenant=%` のような値を書ける）。
+     */
+    let value: string;
+    try {
+      value = decodeURIComponent(part.slice(eq + 1).trim());
+    } catch {
+      // 読めない cookie は「選択していない」として扱う（全テナント横断へ倒す）。
+      return null;
+    }
     return value === '' ? null : value;
   }
   return null;
