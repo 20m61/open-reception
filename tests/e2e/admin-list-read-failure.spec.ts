@@ -272,7 +272,23 @@ test.describe('管理: 一覧の読み取り失敗を 0 件と断定しない (#
     await page.goto('/admin/staff');
     await expect(page.getByTestId('staff-table')).toBeVisible();
 
-    // 以後の再取得だけを落とす（PATCH は通す）。
+    /*
+     * 🔴 **共有フィクスチャを書き換えない (`--full` で 54 件を巻き添えにした)。**
+     *
+     * 最初は PATCH を素通しにしていた。`patch()` は `{ enabled: !s.enabled }` を
+     * **画面上の（＝再取得に失敗して古いままの）値**から計算するので、
+     * 「無効化 → 再取得失敗 → もう一度クリック」で **2 回とも無効化**が飛び、
+     * 担当者が**無効のまま残った**。無効な担当者は受付端末から呼び出せないので、
+     * kiosk / reception の e2e が広範囲に落ちた（単独実行では緑）。
+     *
+     * MAJOR-3 で直したのと同じ族を、その修正の隣で作っていた。PATCH も握って
+     * **サーバ状態を触らずに** `load()` だけを撃つ。
+     */
+    await page.route('**/api/admin/staff/*', (route) =>
+      route.request().method() === 'PATCH'
+        ? route.fulfill({ status: 200, contentType: 'application/json', body: '{}' })
+        : route.continue(),
+    );
     await page.route('**/api/admin/staff', (route) =>
       route.request().method() === 'GET'
         ? route.fulfill({ status: 500, contentType: 'application/json', body: '{}' })
