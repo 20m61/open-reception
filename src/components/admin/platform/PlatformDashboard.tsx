@@ -1,10 +1,15 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import type { TenantFleetSummary } from '@/domain/platform/console-summary';
 import type { TodayCounts } from '@/domain/reception/dashboard-summary';
 import { AwsCostPanel } from './AwsCostPanel';
 import { MetricCard } from '@/components/admin/ui';
+import {
+  PLATFORM_READ_TIMEOUT_MS,
+  isDashboardShape,
+  readTimeoutMessage,
+} from './read-response';
 
 /**
  * プラットフォーム概況ダッシュボード (issue #90, increment 1 / #377)。
@@ -33,38 +38,55 @@ export function PlatformDashboard() {
   const [data, setData] = useState<DashboardResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
 
+  /** 概況の取得。再試行から呼び直せるよう `useEffect` の外に置く (#968 レビュー 6 周目 MINOR-2)。 */
+  const load = useCallback(async (cancelled?: () => boolean) => {
+    const aborted = () => cancelled?.() === true;
+    try {
+      const res = await fetch('/api/platform/dashboard', {
+        signal: AbortSignal.timeout(PLATFORM_READ_TIMEOUT_MS),
+      });
+      if (aborted()) return;
+      if (!res.ok) {
+        setError(res.status === 403 ? 'この画面の閲覧権限がありません。' : '概況の取得に失敗しました。');
+        return;
+      }
+      const body: unknown = await res.json();
+      /*
+       * 形が違う 200 は「読めなかった」。放置すると render で投げ、運用コンソールに
+       * **来訪者向けの文言**「受付を続けられませんでした」が出る (#968 レビュー 5〜6 周目)。
+       * **キーの有無ではなく、実際に読むフィールドまで**見る（`{"fleet":null}` /
+       * `{"fleet":{}}` が 1 段検査を素通りしていた）。
+       */
+      if (!isDashboardShape(body)) {
+        setError('概況の形式が不正です。時間をおいて再試行してください。');
+        return;
+      }
+      setError(null);
+      setData(body as DashboardResponse);
+    /*
+     * 🔴 **通信そのものの失敗も「失敗」へ落とす (#968 AC2)。** `fetch` の reject や、
+     * HTML が返って `res.json()` が投げるケースを拾わないと `data` も `error` も
+     * `null` のままになり、指標カードは `—` を出し続ける。運用者には「まだ来ていない」
+     * のか「取れなかった」のか区別が付かず、再試行の導線も読み上げも画面に無い。
+     */
+    } catch (cause) {
+      if (aborted()) return;
+      // 応答が返ってこない（ハング）も「終わらない待ち」にしない (#968 レビュー 6 周目 MAJOR-4)。
+      setError(
+        cause instanceof Error && cause.name === 'TimeoutError'
+          ? readTimeoutMessage('概況')
+          : '概況を取得できませんでした。通信を確認してください。',
+      );
+    }
+  }, []);
+
   useEffect(() => {
     let cancelled = false;
-    void (async () => {
-      try {
-        const res = await fetch('/api/platform/dashboard');
-        if (cancelled) return;
-        if (!res.ok) {
-          setError(res.status === 403 ? 'この画面の閲覧権限がありません。' : '概況の取得に失敗しました。');
-          return;
-        }
-        const body = (await res.json()) as Partial<DashboardResponse>;
-        // 形が違う 200 は「読めなかった」。放置すると render で投げ、運用コンソールに
-        // **来訪者向けの文言**「受付を続けられませんでした」が出る (#968 レビュー 5 周目 MAJOR-1)。
-        if (body.fleet === undefined) {
-          setError('概況の形式が不正です。時間をおいて再試行してください。');
-          return;
-        }
-        setData(body as DashboardResponse);
-      /*
-       * 🔴 **通信そのものの失敗も「失敗」へ落とす (#968 AC2)。** `fetch` の reject や、
-       * HTML が返って `res.json()` が投げるケースを拾わないと `data` も `error` も
-       * `null` のままになり、指標カードは `—` を出し続ける。運用者には「まだ来ていない」
-       * のか「取れなかった」のか区別が付かず、再試行の導線も読み上げも画面に無い。
-       */
-      } catch {
-        if (!cancelled) setError('概況を取得できませんでした。通信を確認してください。');
-      }
-    })();
+    void load(() => cancelled);
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [load]);
 
   return (
     <section>
@@ -76,7 +98,11 @@ export function PlatformDashboard() {
 
       {error ? (
         <p role="alert" data-testid="platform-dashboard-error" style={{ color: 'var(--color-platform-warn)' }}>
-          {error}
+          {error}{' '}
+          {/* いちばん広く塞ぐところにこそ復帰導線が要る (#968 レビュー 6 周目 MINOR-2)。 */}
+          <button type="button" data-testid="platform-dashboard-retry" onClick={() => void load()}>
+            再試行
+          </button>
         </p>
       ) : null}
 

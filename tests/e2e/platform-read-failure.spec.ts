@@ -81,8 +81,13 @@ const READS = [
 
 /** 形の壊れた 200。**「0 件」ではなく「読めなかった」**として扱われることを見る。 */
 async function fulfillEmptyBody(page: Page, pattern: string): Promise<void> {
+  await fulfillBody(page, pattern, '{}');
+}
+
+/** 任意の 200 body を返す。**1 通りの `{}` では族が閉じない**（レビュー 6 周目 MAJOR-1）。 */
+async function fulfillBody(page: Page, pattern: string, body: string): Promise<void> {
   await page.route(pattern, (route) =>
-    route.fulfill({ status: 200, contentType: 'application/json', body: '{}' }),
+    route.fulfill({ status: 200, contentType: 'application/json', body }),
   );
 }
 
@@ -158,6 +163,35 @@ test.describe('platform: 読み取りの失敗が運用者に見える (#968)', 
    * 🔴 **いちばん広く塞ぐところの復帰導線 (#968 レビュー 5 周目 MAJOR-6)。**
    * ここが引けないと、他画面の「画面上部の切替で選んでください」の**指示先が死ぬ**。
    */
+  const RECOVERABLE = [
+    {
+      label: '運用ダッシュボード',
+      path: '/platform',
+      api: '**/api/platform/dashboard',
+      errorId: 'platform-dashboard-error',
+      retryId: 'platform-dashboard-retry',
+    },
+    {
+      label: '機能フラグ（横断サマリ）',
+      path: '/platform/feature-flags',
+      api: '**/api/platform/feature-flags',
+      errorId: 'platform-feature-flags-error',
+      retryId: 'platform-feature-flags-retry',
+    },
+  ] as const;
+
+  for (const { label, path, api, errorId, retryId } of RECOVERABLE) {
+    test(`${label}: 失敗から画面内で復帰できる`, async ({ page }) => {
+      await failWith500(page, api);
+      await page.goto(path);
+      await expect(page.getByTestId(errorId)).toBeVisible();
+
+      await page.unroute(api);
+      await page.getByTestId(retryId).click();
+      await expect(page.getByTestId(errorId)).toHaveCount(0);
+    });
+  }
+
   test('ヘッダのテナント切替: 再試行で選択肢が実際に戻る', async ({ page }) => {
     await failWith403(page, '**/api/platform/tenants');
     await page.goto('/platform');
@@ -201,6 +235,110 @@ test.describe('platform: 読み取りの失敗が運用者に見える (#968)', 
     await expect(select).toBeDisabled();
     release?.();
     await expect(select).toBeEnabled();
+  });
+
+  /*
+   * 🔴 **`{}` は「形の壊れた 200」の 1 通りでしかない (#968 レビュー 6 周目 MAJOR-1)。**
+   *
+   * キーの有無だけを見る 1 段検査は `null` と**部分形**を通し、そこで render が投げて
+   * 運用コンソールに**来訪者向けの文言**が出ていた。実際に読むフィールドまで見る。
+   * `.claude/rules/opus5-autonomous-loop.md` の言う「**数値/条件パラメータを狭める**」型で、
+   * 著者の変異行列（全部「検査を丸ごと外す」型）には入っていなかった族。
+   */
+  for (const { name, body, configBody } of [
+    {
+      name: 'null',
+      body: '{"fleet":null,"flags":null,"detail":null,"tenants":null}',
+      /*
+       * 🔴 **`{"config":null}` は壊れていない。** そのテナントにまだ設定が無い正当な応答で、
+       * ここだけ他の 4 経路と同じ body を使い回すと**正しい応答を失敗と呼ぶ**主張になる。
+       * 「読めなかった」に相当するのは body そのものが `null` の場合。
+       */
+      configBody: 'null',
+    },
+    {
+      name: '部分形',
+      body: '{"fleet":{},"flags":{},"detail":{},"tenants":[{}]}',
+      configBody: '{"config":{}}',
+    },
+  ] as const) {
+    test(`運用ダッシュボード: ${name} の 200 でも来訪者向け画面に落ちない`, async ({ page }) => {
+      await fulfillBody(page, '**/api/platform/dashboard', body);
+      await page.goto('/platform');
+      await expect(page.getByTestId('platform-dashboard-error')).toBeVisible();
+      await expect(page.getByText('受付を続けられませんでした')).toHaveCount(0);
+    });
+
+    test(`機能フラグ: ${name} の 200 でも来訪者向け画面に落ちない`, async ({ page }) => {
+      await fulfillBody(page, '**/api/platform/feature-flags', body);
+      await page.goto('/platform/feature-flags');
+      await expect(page.getByTestId('platform-feature-flags-error')).toBeVisible();
+      await expect(page.getByText('受付を続けられませんでした')).toHaveCount(0);
+    });
+
+    /*
+     * 🔴 **`detail: {}` は「拠点が無い」の断定に加えて、状態不明のまま破壊的操作を提示する。**
+     * `data.status === 'active' ? '停止する' : '有効化する'` が undefined で偽になるため。
+     */
+    test(`テナント詳細: ${name} の 200 で断定も破壊的操作もしない`, async ({ page }) => {
+      await page.goto('/platform/tenants');
+      const detail = page.locator('a[href^="/platform/tenants/"]').first();
+      await expect(detail).toBeVisible();
+      const href = await detail.getAttribute('href');
+
+      await fulfillBody(page, '**/api/platform/tenants/*', body);
+      await page.goto(href ?? '/platform/tenants');
+
+      await expect(page.getByTestId('platform-tenant-detail-error')).toBeVisible();
+      await expect(page.getByText('このテナントに拠点がありません。')).toHaveCount(0);
+      await expect(page.getByTestId('danger-open')).toHaveCount(0);
+    });
+
+    /*
+     * 🔴 **`config: {}` は secret を「未設定」と断定し、全置換 upsert の保存導線を開く。**
+     * `secretPresence` は型で必須なので、欠ける `config` は壊れた応答である。
+     */
+    test(`プロバイダ設定: ${name} の 200 で「未設定」と断定せず保存もさせない`, async ({ page }) => {
+      await fulfillBody(page, '**/api/platform/integrations/provider-config', configBody);
+      await page.goto('/platform/integrations');
+      await expect(page.getByTestId('provider-config-load-error')).toBeVisible();
+      await expect(page.getByRole('button', { name: '設定を保存' })).toBeDisabled();
+    });
+  }
+
+  /*
+   * 🔴 **下界: 「未設定」を失敗と呼ばない。**
+   *
+   * 上の 2 本は「読めなかったと言うこと」しか主張しないので、**全部を失敗と断定する変異**
+   * （`isProviderConfigShape` から `config === null` の枝を外す、`return false` へ潰す）で
+   * 空虚に通る。まだ設定していないテナントは正当に `config: null` を返し、そこは
+   * **「未設定」と言い切って保存させてよい**唯一の状態である。
+   * `.claude/rules/opus5-autonomous-loop.md`「不変条件は片側しか主張しない」。
+   */
+  test('プロバイダ設定: 未設定（config: null）は失敗ではなく、保存できる', async ({ page }) => {
+    await fulfillBody(page, '**/api/platform/integrations/provider-config', '{"config":null}');
+    await page.goto('/platform/integrations');
+
+    await expect(page.getByText('未設定')).toBeVisible();
+    await expect(page.getByTestId('provider-config-load-error')).toHaveCount(0);
+    await expect(page.getByText('取得できていません')).toHaveCount(0);
+    await expect(page.getByRole('button', { name: '設定を保存' })).toBeEnabled();
+  });
+
+  /*
+   * 🔴 **応答が返ってこない（ハング）も「終わらない待ち」にしない (#968 レビュー 6 周目 MAJOR-4)。**
+   *
+   * `reject` は拾えていたが、**返ってこない**経路（Lambda のコールドスタート・NAT の詰まり・
+   * テザリング）は 5 経路とも無言だった —— 画面は「読み込み中」と正しく言い続け、
+   * 復帰導線は失敗表示の中にあるので出ない。`reject` より起こりやすい。
+   */
+  test('プロバイダ設定: 応答が返ってこなくても失敗として出る', async ({ page }) => {
+    await page.route('**/api/platform/integrations/provider-config', () => {
+      // 応答しない（route を resolve しない）。
+    });
+    await page.goto('/platform/integrations');
+    await expect(page.getByTestId('provider-config-load-error')).toBeVisible({ timeout: 25_000 });
+    await expect(page.getByTestId('provider-config-reload')).toBeVisible();
   });
 
   /*

@@ -474,6 +474,9 @@ const RECOVERY_CONTROL: readonly { readonly file: string; readonly testId: strin
   { file: 'ProviderConfig.tsx', testId: 'provider-config-reload', calls: 'void load()' },
   { file: 'FeatureFlags.tsx', testId: 'feature-flags-retry', calls: 'void loadTenantFlags(' },
   { file: 'FeatureFlags.tsx', testId: 'feature-flags-tenants-retry', calls: 'void loadTenants()' },
+  { file: 'TenantSwitcher.tsx', testId: 'platform-tenant-list-retry', calls: 'void loadTenants()' },
+  { file: 'PlatformDashboard.tsx', testId: 'platform-dashboard-retry', calls: 'void load()' },
+  { file: 'FeatureFlags.tsx', testId: 'platform-feature-flags-retry', calls: 'void loadSummary()' },
 ];
 
 const EXEMPT_FETCH: readonly { readonly file: string; readonly marker: string; readonly why: string }[] = [];
@@ -983,7 +986,32 @@ describe('platform の通信失敗が無言にならない (#968)', () => {
       'provider-config-reload',
       'feature-flags-retry',
       'feature-flags-tenants-retry',
+      'platform-tenant-list-retry',
+      'platform-dashboard-retry',
+      'platform-feature-flags-retry',
     ]);
+  });
+
+  /*
+   * 🔴 **下界: 登録簿は「書いたものを検査する」だけなので、書き忘れを止められない
+   * (#968 レビュー 6 周目 MINOR-4)。**
+   *
+   * 上の同一性固定は「登録された 6 件が実在し、実際に再取得を呼ぶこと」しか言わない。
+   * 新しい復帰導線を足して**登録しない**変異は素通りし、以降その導線は
+   * 「押しても何も起きない」へ退行しても誰も気づかない。だから逆向きにも縛る ——
+   * **ソースに在る `*-retry` / `*-reload` の testid は全部登録簿に居ること**。
+   */
+  it('🔴 ソースに在る復帰導線は全部登録されている（登録漏れを許さない）', () => {
+    const found = new Set<string>();
+    for (const file of platformFiles()) {
+      for (const m of file.source.matchAll(/data-testid="([\w-]*-(?:retry|reload))"/g)) {
+        found.add(`${file.name}:${m[1]}`);
+      }
+    }
+    const registered = new Set(RECOVERY_CONTROL.map((r) => `${r.file}:${r.testId}`));
+    expect([...found].filter((f) => !registered.has(f)), '登録簿に無い復帰導線').toEqual([]);
+    // 登録簿の側が空回りしていないこと（母集団が 0 なら上の主張は空虚に通る）。
+    expect(found.size).toBeGreaterThanOrEqual(RECOVERY_CONTROL.length);
   });
 
   /*
@@ -998,6 +1026,55 @@ describe('platform の通信失敗が無言にならない (#968)', () => {
    * 検出器が読める形でしか書けなくなるので、綴りの族そのものが消える。族としての
    * 最終的な担保は `tests/e2e/platform-read-failure.spec.ts`（実際に落として見る）が持つ。
    */
+  /*
+   * 🔴 **形の検査を、走査の母集団に載せる (#968 レビュー 6 周目 MINOR-4)。**
+   *
+   * 5 周目までの形の検査は `if (body.fleet === undefined)` のように**その場で手書き**され、
+   * どの静的検査の母集団にも入っていなかった。だから**新しい読み取り画面を足して形の検査を
+   * 書き忘れる**変異は、この登録簿にも e2e にも当たらずに通る（e2e は在る画面しか叩けない）。
+   *
+   * ここで縛るのは「**読み取りの本体は、応答を state へ載せる前に形の述語を通ること**」だけ。
+   * **述語が正しいかは主張しない** —— それは `tests/e2e/platform-read-failure.spec.ts` が
+   * `null` / 部分形を実際に注入して見る。静的検査に振る舞いの保証まで負わせると、
+   * 5 周かけて綴りを足し続けた形（`.claude/rules/opus5-autonomous-loop.md`）に戻る。
+   */
+  it('読み取りの本体は応答の形を述語で検査する（手書きの 1 段検査へ戻さない）', () => {
+    const offenders: string[] = [];
+    let checked = 0;
+    for (const file of platformFiles()) {
+      for (const fn of functionBodies(file.source)) {
+        if (!fn.body.includes('.json()') || isMutating(fn.body)) continue;
+        // 入れ子（`useEffect` の中の `useCallback` 等）は内側だけを見る。
+        if (functionBodies(file.source).some((o) => o !== fn && o.start > fn.start && o.end < fn.end && o.body.includes('.json()'))) continue;
+        checked += 1;
+        const usesPredicate = /is[A-Z]\w*Shape\(|isRecord\(|Array\.isArray\(/.test(fn.body);
+        if (!usesPredicate) offenders.push(`${file.name}:${fn.name}`);
+      }
+    }
+    /*
+     * 🔴 **未対応は「免除」ではなく「台帳」として持つ。**
+     *
+     * 免除簿は理由を書けば増やせるので、書き手が自分で自分を許せる。ここは**同一性で
+     * 固定する** —— 新しい違反は追加できず（この配列を書き換えるしかない）、直したら
+     * 配列から消えなければ落ちる。**減る方向にも縛りが効く**のがこの形の要点である。
+     *
+     * この 7 画面は #968 の AC が名指ししていない（AC1〜AC3 は `TenantDetail` /
+     * `PlatformDashboard` / `ProviderConfig`）。形の壊れた 200 に対する同じ欠陥を持つが、
+     * 直すと PR がこの周回の範囲を大きく越える。#973 へ積む。
+     */
+    expect(offenders.sort(), '形の検査が無い読み取り（台帳と一致すること）').toEqual([
+      'AuditLogs.tsx:useEffect',
+      'AwsCostPanel.tsx:useEffect',
+      'Integrations.tsx:useEffect',
+      'MaintenanceStatus.tsx:useEffect',
+      'Observability.tsx:useEffect',
+      'TenantList.tsx:useEffect',
+      'UpdateStatus.tsx:useEffect',
+    ]);
+    // 母集団が空なら上の主張は空虚に通る（本 PR が直した読み取りは 5 経路ある）。
+    expect(checked - offenders.length, '直した読み取りの本体を見つけられていない').toBeGreaterThanOrEqual(5);
+  });
+
   it('応答の判定は res.ok / response.ok の直参照で書く（分解束縛や != true にしない）', () => {
     const offenders = platformFiles().flatMap((f) => {
       if (fetchSites(f.source).length === 0) return [];

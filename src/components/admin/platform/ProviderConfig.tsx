@@ -9,6 +9,7 @@ import {
 } from '@/domain/provider-config/types';
 import type { ProviderConfigWarning } from '@/domain/provider-config/readiness';
 import { font } from '@/components/admin/ui/tokens';
+import { PLATFORM_READ_TIMEOUT_MS, isProviderConfigShape, readTimeoutMessage } from './read-response';
 
 /**
  * テナント別 CCaaS プロバイダ設定（developer 専用・write-only secret） (issue #405 Inc1)。
@@ -74,9 +75,15 @@ export function ProviderConfig() {
   const [confirmProvider, setConfirmProvider] = useState('');
 
   const load = useCallback(async () => {
-    setLoadError(null);
+    /*
+     * 🔴 **押した瞬間に消さない (#968 レビュー 6 周目 MINOR-1)。** ここだけ `FeatureFlags` と
+     * 揃っておらず、再読込ボタンが**自分をアンマウントしてフォーカスを文書先頭へ落として**
+     * いた。しかもこの画面はテナント未選択だと既定で 400 なので、常用経路だった。
+     */
     try {
-      const res = await fetch(CONFIG_ENDPOINT);
+      const res = await fetch(CONFIG_ENDPOINT, {
+        signal: AbortSignal.timeout(PLATFORM_READ_TIMEOUT_MS),
+      });
       if (!res.ok) {
         setLoadError(
           res.status === 403
@@ -88,7 +95,7 @@ export function ProviderConfig() {
         setData(null);
         return;
       }
-      const body = (await res.json()) as Partial<ConfigResponse>;
+      const body: unknown = await res.json();
       /*
        * 🔴 **`config` キーが無い 200 は「未設定」ではなく「読めなかった」(#968 レビュー 5 周目)。**
        *
@@ -96,17 +103,19 @@ export function ProviderConfig() {
        * 値ではない。混ぜると #870 の営業時間設定と同じ「取得できていないことを未設定と
        * 言い換える」になり、しかもここは楽観ロックの無い全置換 upsert の入口である。
        */
-      if (!('config' in body)) {
+      if (!isProviderConfigShape(body)) {
         setLoadError('設定の形式が不正です。時間をおいて再試行してください。');
         setData(null);
         return;
       }
-      setData(body as ConfigResponse);
-      if (body.config) {
-        setProvider(body.config.provider);
-        setEnabled(body.config.enabled);
-        setApplicationId(body.config.applicationId ?? '');
-        setFromNumber(body.config.fromNumber ?? '');
+      const parsed = body as ConfigResponse;
+      setLoadError(null);
+      setData(parsed);
+      if (parsed.config) {
+        setProvider(parsed.config.provider);
+        setEnabled(parsed.config.enabled);
+        setApplicationId(parsed.config.applicationId ?? '');
+        setFromNumber(parsed.config.fromNumber ?? '');
       }
     /*
      * 🔴 **読み取りの失敗を無言にしない (#968 AC2)。** reject を拾わないと `data` も
@@ -114,8 +123,12 @@ export function ProviderConfig() {
      * **取得できていないことを「未設定」と言い換える**形になり、運用者は secret を
      * 上書き保存しにいく（`OperatingHoursManager` が #870 で踏んだのと同じ型）。
      */
-    } catch {
-      setLoadError('設定を取得できませんでした。通信を確認してください。');
+    } catch (cause) {
+      setLoadError(
+        cause instanceof Error && cause.name === 'TimeoutError'
+          ? readTimeoutMessage('設定')
+          : '設定を取得できませんでした。通信を確認してください。',
+      );
       setData(null);
     }
   }, []);

@@ -11,6 +11,7 @@ import {
 } from '@/lib/platform/selected-tenant';
 import { TenantSelect } from '../TenantContextView';
 import { font } from '@/components/admin/ui/tokens';
+import { PLATFORM_READ_TIMEOUT_MS, readTimeoutMessage } from './read-response';
 
 /**
  * 対象テナント切り替え（#83 inc3b / #90）。
@@ -61,7 +62,9 @@ export function TenantSwitcher() {
   const loadTenants = useCallback(async (cancelled?: () => boolean) => {
     const aborted = () => cancelled?.() === true;
     try {
-      const res = await fetch('/api/platform/tenants');
+      const res = await fetch('/api/platform/tenants', {
+        signal: AbortSignal.timeout(PLATFORM_READ_TIMEOUT_MS),
+      });
       if (aborted()) return;
       /*
        * 🔴 **HTTP の失敗も報告する (#968 レビュー M-1)。** ここで最も起こりやすい失敗は
@@ -85,8 +88,13 @@ export function TenantSwitcher() {
       }
       setListError(null);
       setTenants(body.tenants as NamedTenant[]);
-    } catch {
-      if (!aborted()) setListError('テナント一覧を取得できませんでした。');
+    } catch (cause) {
+      if (!aborted())
+        setListError(
+          cause instanceof Error && cause.name === 'TimeoutError'
+            ? readTimeoutMessage('テナント一覧')
+            : 'テナント一覧を取得できませんでした。',
+        );
     }
   }, []);
 

@@ -6,6 +6,7 @@ import type { TenantLifecycleAction } from '@/domain/platform/tenant-lifecycle';
 import { DangerActionButton } from '@/components/admin/danger/DangerActionButton';
 import { DataTable, MetricCard, StatusBadge, type Column } from '@/components/admin/ui';
 import { siteStatusState, tenantStatusState } from '../state-vocabulary';
+import { PLATFORM_READ_TIMEOUT_MS, isTenantDetailShape, readTimeoutMessage } from './read-response';
 
 /**
  * テナント詳細（テナント横断 read + 有効/停止操作） (issue #90)。
@@ -33,7 +34,9 @@ export function TenantDetail({ tenantId }: { tenantId: string }) {
 
   const load = useCallback(async () => {
     try {
-      const res = await fetch(`/api/platform/tenants/${encodeURIComponent(tenantId)}`);
+      const res = await fetch(`/api/platform/tenants/${encodeURIComponent(tenantId)}`, {
+        signal: AbortSignal.timeout(PLATFORM_READ_TIMEOUT_MS),
+      });
       /*
        * 🔴 **成功枝にも世代ガードを掛ける (#968 レビュー 残存リスク 2)。**
        * catch 側だけを守っても、A の応答が**成功して**後着すれば B の画面に A の
@@ -52,19 +55,24 @@ export function TenantDetail({ tenantId }: { tenantId: string }) {
         );
         return;
       }
-      const body = (await res.json()) as Partial<DetailResponse>;
+      const body = (await res.json()) as { detail?: unknown };
       /*
        * 🔴 **`detail` が無い 200 を「読めた」にしない (#968 レビュー 5 周目 MAJOR-3)。**
        * `setData(undefined)` すると `loaded={data !== null}` が**真**になり、画面は
        * 「このテナントに拠点がありません。」と**断定**する —— #870 の営業時間設定が
        * 「取得できていないことを未設定と言い換える」で踏んだのと同型。
        */
-      if (body.detail === undefined) {
+      /*
+       * 🔴 **`detail` が「在るか」ではなく「読めるか」を見る (#968 レビュー 6 周目 MAJOR-2)。**
+       * `{"detail":null}` は永遠の読み込み中に、`{"detail":{}}` は「拠点がありません」の
+       * 断定と、**状態が読めていないテナントへの「有効化する」ボタン**になっていた。
+       */
+      if (!isTenantDetailShape(body.detail)) {
         setError('テナント詳細の形式が不正です。');
         return;
       }
       setError(null);
-      setData(body.detail);
+      setData(body.detail as TenantDetailData);
     /*
      * 🔴 **通信そのものが失敗した場合も「失敗」へ落とす (#896 レビュー M3)。**
      * `fetch` の reject（オフライン・DNS・接続断）や、HTML が返って `res.json()` が
@@ -72,7 +80,7 @@ export function TenantDetail({ tenantId }: { tenantId: string }) {
      * `resolveAdminReadState` は `'loading'` を返す ——「失敗が永遠の読み込み中に
      * 化ける」まさにその形で、画面には再試行の導線も `role="alert"` も出ない。
      */
-    } catch {
+    } catch (cause) {
       /*
        * 🔴 **古い要求の失敗を新しい画面へ出さない (#896 レビュー m4)。**
        * `load` は `tenantId` ごとに作り直されるので、A から B へ遷移した直後に
@@ -80,7 +88,12 @@ export function TenantDetail({ tenantId }: { tenantId: string }) {
        * 「テナント詳細の取得に失敗しました。」が出て、B の表が失敗側へ落ちる ——
        * B の取得はまだ成功する途中かもしれない。いま見ているテナント宛の失敗だけ出す。
        */
-      if (latestTenantId.current === tenantId) setError('テナント詳細の取得に失敗しました。');
+      if (latestTenantId.current === tenantId)
+        setError(
+          cause instanceof Error && cause.name === 'TimeoutError'
+            ? readTimeoutMessage('テナント詳細')
+            : 'テナント詳細の取得に失敗しました。',
+        );
     }
   }, [tenantId]);
 

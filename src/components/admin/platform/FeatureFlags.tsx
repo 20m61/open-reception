@@ -14,6 +14,12 @@ import {
 import { DangerActionPlaceholder } from './primitives';
 import { MetricCard, font } from '@/components/admin/ui';
 import { enablementState } from '../state-vocabulary';
+import {
+  PLATFORM_READ_TIMEOUT_MS,
+  isFlagsSummaryShape,
+  isTenantFlagsShape,
+  readTimeoutMessage,
+} from './read-response';
 
 /**
  * 機能フラグ / 利用制限 (issue #90 inc2 / #83 inc5a)。
@@ -55,22 +61,28 @@ export function FeatureFlags() {
 
   const loadSummary = useCallback(async () => {
     try {
-      const res = await fetch('/api/platform/feature-flags');
+      const res = await fetch('/api/platform/feature-flags', {
+        signal: AbortSignal.timeout(PLATFORM_READ_TIMEOUT_MS),
+      });
       if (!res.ok) {
         setError(res.status === 403 ? 'この画面の閲覧権限がありません。' : '機能フラグの取得に失敗しました。');
         return;
       }
-      const body = (await res.json()) as Partial<FlagsResponse>;
-      // 形が違う 200 で `data.flags.*` が投げ、コンソールごとエラー境界へ落ちるのを防ぐ。
-      if (body.flags === undefined) {
+      const body: unknown = await res.json();
+      // **実際に読むフィールドまで**見る。`{"flags":null}` / `{"flags":{}}` は 1 段検査を素通りしていた。
+      if (!isFlagsSummaryShape(body)) {
         setError('機能フラグの形式が不正です。時間をおいて再試行してください。');
         return;
       }
       setError(null);
       setData(body as FlagsResponse);
-    } catch {
-      // 通信そのものの失敗も「失敗」へ落とす (#968)。拾わないと表が永遠に「読み込み中」になる。
-      setError('機能フラグを取得できませんでした。通信を確認してください。');
+    } catch (cause) {
+      // 通信そのものの失敗も、応答が返らない（ハング）も「失敗」へ落とす (#968)。
+      setError(
+        cause instanceof Error && cause.name === 'TimeoutError'
+          ? readTimeoutMessage('機能フラグ')
+          : '機能フラグを取得できませんでした。通信を確認してください。',
+      );
     }
   }, []);
 
@@ -93,7 +105,10 @@ export function FeatureFlags() {
 
       {error ? (
         <p role="alert" data-testid="platform-feature-flags-error" style={{ color: 'var(--color-platform-warn)' }}>
-          {error}
+          {error}{' '}
+          <button type="button" data-testid="platform-feature-flags-retry" onClick={() => void loadSummary()}>
+            再試行
+          </button>
         </p>
       ) : null}
 
@@ -182,7 +197,9 @@ function TenantFeatureFlagEditor({ onChanged }: { onChanged?: () => void }) {
   const loadTenants = useCallback(async (cancelled?: () => boolean) => {
     const aborted = () => cancelled?.() === true;
     try {
-      const res = await fetch('/api/platform/tenants');
+      const res = await fetch('/api/platform/tenants', {
+        signal: AbortSignal.timeout(PLATFORM_READ_TIMEOUT_MS),
+      });
       if (aborted()) return;
       /*
        * 🔴 **HTTP の失敗も報告する (#968 レビュー M-1)。** この画面で最も起こりやすい失敗は
@@ -213,9 +230,14 @@ function TenantFeatureFlagEditor({ onChanged }: { onChanged?: () => void }) {
       }
       setTenantsError(null);
       setTenants(body.tenants as TenantRow[]);
-    } catch {
+    } catch (cause) {
       // テナントを選べないまま黙って空のプルダウンを出さない (#968)。
-      if (!aborted()) setTenantsError('テナント一覧を取得できませんでした。通信を確認してください。');
+      if (!aborted())
+        setTenantsError(
+          cause instanceof Error && cause.name === 'TimeoutError'
+            ? readTimeoutMessage('テナント一覧')
+            : 'テナント一覧を取得できませんでした。通信を確認してください。',
+        );
     }
   }, []);
 
@@ -240,28 +262,34 @@ function TenantFeatureFlagEditor({ onChanged }: { onChanged?: () => void }) {
     setFlags(null);
     if (id === '') return;
     try {
-      const res = await fetch(`/api/platform/tenants/${encodeURIComponent(id)}/feature-flags`);
+      const res = await fetch(`/api/platform/tenants/${encodeURIComponent(id)}/feature-flags`, {
+        signal: AbortSignal.timeout(PLATFORM_READ_TIMEOUT_MS),
+      });
       // 遷移をまたいだ古い応答は成否によらず捨てる (#968 レビュー M3)。
       if (latestTenantId.current !== id) return;
       if (!res.ok) {
         setFlagsError('テナントの機能フラグの取得に失敗しました。');
         return;
       }
-      const body = (await res.json()) as Partial<TenantFlagsResponse>;
-      if (body.flags === undefined) {
+      const body: unknown = await res.json();
+      if (!isTenantFlagsShape(body, TENANT_FEATURE_FLAG_KEYS)) {
         setFlagsError('テナントの機能フラグの形式が不正です。');
         return;
       }
       setFlagsError(null);
       setFlags(body as TenantFlagsResponse);
-    } catch {
+    } catch (cause) {
       /*
        * 🔴 **拾わないと「読み込み中…」で止まる (#968)。** 描画は
        * `tenantId !== '' && !flags && !flagsError` で読み込み中を出しているので、
        * `flags` も `flagsError` も `null` のままだと終わらない待ちになる。
        */
       if (latestTenantId.current === id)
-        setFlagsError('テナントの機能フラグを取得できませんでした。通信を確認してください。');
+        setFlagsError(
+          cause instanceof Error && cause.name === 'TimeoutError'
+            ? readTimeoutMessage('テナントの機能フラグ')
+            : 'テナントの機能フラグを取得できませんでした。通信を確認してください。',
+        );
     }
   }, []);
 
