@@ -29,14 +29,24 @@ function pathWithoutDocker(extraDir?: string): string {
 }
 
 /**
- * `docker` を名乗るが `info` が必ず失敗する偽物を置く。
- * クラウドサンドボックスの実態（CLI はあるがデーモンが落ちている）を再現する。
+ * `docker` を名乗る偽物を置く。
+ *
+ * @param infoOk `docker info` が成功するか（＝デーモンが動いているように見えるか）
+ *
+ * 🔴 **2 層あるので 2 通り要る。** デーモン停止は plan 層（SKIP）で止まり、
+ * ZAP 終了コードの解釈へ**到達しない**。`infoOk=true` の偽物だけが分類層まで届く
+ * ―― 変異検証で M2（終了コードだけで判定へ戻す）が生存して分かった。
  */
-function fakeDockerDir(): string {
+function fakeDockerDir(infoOk: boolean): string {
   const dir = mkdtempSync(join(tmpdir(), 'urlgate-docker-'));
   const bin = join(dir, 'docker');
-  // info も run も非ゼロ。run は exit 1 —— zap-baseline.py の「高リスク検出」と同じコード。
-  writeFileSync(bin, '#!/bin/sh\necho "daemon down" >&2\nexit 1\n');
+  // run は必ず exit 1 —— zap-baseline.py の「高リスク検出」と同じコード。
+  // レポートは書かない（＝ zap は一度も走っていない）。
+  const info = infoOk ? 'exit 0' : 'echo "daemon down" >&2; exit 1';
+  writeFileSync(
+    bin,
+    `#!/bin/sh\ncase "$1" in\n  info) ${info} ;;\nesac\necho "docker failed" >&2\nexit 1\n`,
+  );
   chmodSync(bin, 0o755);
   return dir;
 }
@@ -105,10 +115,32 @@ describe('url-quality-gate.sh', () => {
      */
     it('docker デーモンが落ちているだけのとき high-risk と報告しない', () => {
       const { stdout } = run([UNREACHABLE, '--no-lighthouse'], {
-        PATH: pathWithoutDocker(fakeDockerDir()),
+        PATH: pathWithoutDocker(fakeDockerDir(false)),
       });
       expect(stdout).not.toContain('high-risk');
       expect(stdout).toMatch(/ZAP: (SKIP|実行できませんでした)/);
+    }, TIMEOUT);
+
+    /**
+     * 🔴 **分類層まで到達させる試験。**
+     *
+     * 上の「デーモン停止」試験は plan 層の SKIP で止まるので、ZAP 終了コードの
+     * 解釈を一度も通らない ―― 変異検証で「終了コードだけで判定する」へ戻す変異
+     * （M2）が**生存した**ことで判明した。`CLAUDE.md`「テストの主張が落ちた先に
+     * 飲み込まれていないか」そのもの。
+     *
+     * ここではデーモンが**動いているように見える**偽 docker を置き、`docker run` だけを
+     * exit 1・レポート無しで失敗させる。plan は `run` を返すので分類層へ到達し、
+     * 「レポートが無いなら high-risk とは言わない」を実際に問える。
+     */
+    it('docker run が exit 1 でもレポートが無ければ high-risk と報告しない', () => {
+      const { stdout } = run([UNREACHABLE, '--no-lighthouse'], {
+        PATH: pathWithoutDocker(fakeDockerDir(true)),
+      });
+      // plan 層では止まっていない（＝分類層まで来ている）ことを先に確かめる。
+      expect(stdout).not.toContain('ZAP: SKIP');
+      expect(stdout).toContain('実行できませんでした');
+      expect(stdout).not.toContain('high-risk');
     }, TIMEOUT);
 
     /**
