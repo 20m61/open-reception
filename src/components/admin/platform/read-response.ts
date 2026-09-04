@@ -32,21 +32,67 @@ export function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
-/** `/api/platform/dashboard`。画面は `fleet.total` / `active` / `suspended` を読む。 */
+export const DASHBOARD_FLEET_NUMBERS = ['total', 'active', 'suspended'] as const;
+export const DASHBOARD_RECEPTION_NUMBERS = ['total', 'connected', 'timeout', 'failed'] as const;
+
+/**
+ * `/api/platform/dashboard`。
+ *
+ * 🔴 **`receptionsToday` を落としていた (#968 レビュー 7 周目 MAJOR-2)。**
+ * 画面は `data?.receptionsToday?.total ?? '—'` と optional chain で読むので、
+ * 欠けても投げない代わりに **4 枚のカードが `—` のまま無言**になる。
+ * 「まだ来ていない」と「取れなかった」が区別できない —— #968 AC2 が名指しした
+ * 無言の `—` そのもので、受付が全滅していても運用者は気づけない。
+ */
 export function isDashboardShape(body: unknown): boolean {
   if (!isRecord(body)) return false;
   const fleet = body.fleet;
   if (!isRecord(fleet)) return false;
-  return ['total', 'active', 'suspended'].every((k) => typeof fleet[k] === 'number');
+  if (!DASHBOARD_FLEET_NUMBERS.every((k) => typeof fleet[k] === 'number')) return false;
+  const receptions = body.receptionsToday;
+  if (!isRecord(receptions)) return false;
+  return DASHBOARD_RECEPTION_NUMBERS.every((k) => typeof receptions[k] === 'number');
 }
 
-/** `/api/platform/feature-flags`。画面は `flags.vonage.enabled` / `configured` を読む。 */
+/** `flags.authMethods[]`。画面は `id`（key）/ `label` / `enabled` / `issues.length` を読む。 */
+function isAuthMethodShape(row: unknown): boolean {
+  if (!isRecord(row)) return false;
+  return (
+    typeof row.id === 'string' &&
+    typeof row.label === 'string' &&
+    typeof row.enabled === 'boolean' &&
+    Array.isArray(row.issues)
+  );
+}
+
+/** `flags.voiceSynthesis` / `flags.avatarReception`。画面は 2 つとも読む。 */
+function isTenantFlagSummaryShape(value: unknown): boolean {
+  if (!isRecord(value)) return false;
+  return typeof value.defaultEnabled === 'boolean' && typeof value.disabledTenants === 'number';
+}
+
+/**
+ * `/api/platform/feature-flags`。
+ *
+ * 🔴 **`vonage` だけ見ていたのは狭すぎた (#968 レビュー 7 周目 MAJOR-1)。**
+ * 画面は同じ応答から `authMethods[].label/enabled/issues` と 2 つの
+ * `TenantFlagSummary` も**無条件に**読む。`{"authMethods":[{}]}` は 6 周目の述語を
+ * **通ったうえで** `m.issues.length` が投げ、運用者は「読めなかった」ではなく
+ * 汎用の例外画面を受け取っていた（レビューが実測）。
+ *
+ * この取りこぼしは「X1（error boundary を消す変異）は等価」という私の主張が
+ * **誤りだった**ことの証拠でもある —— 述語が受理する応答で投げる経路が実在した。
+ */
 export function isFlagsSummaryShape(body: unknown): boolean {
   if (!isRecord(body)) return false;
   const flags = body.flags;
   if (!isRecord(flags)) return false;
   const vonage = flags.vonage;
-  return isRecord(vonage) && typeof vonage.enabled === 'boolean' && typeof vonage.configured === 'boolean';
+  if (!isRecord(vonage) || typeof vonage.enabled !== 'boolean' || typeof vonage.configured !== 'boolean') {
+    return false;
+  }
+  if (!Array.isArray(flags.authMethods) || !flags.authMethods.every(isAuthMethodShape)) return false;
+  return isTenantFlagSummaryShape(flags.voiceSynthesis) && isTenantFlagSummaryShape(flags.avatarReception);
 }
 
 /** `/api/platform/tenants/[id]/feature-flags`。画面は `flags[key]` を真偽で読む。 */
@@ -108,6 +154,15 @@ export function isTenantDetailShape(detail: unknown): boolean {
  */
 export function isProviderConfigShape(body: unknown): boolean {
   if (!isRecord(body) || !('config' in body)) return false;
+  /*
+   * 🔴 **`warnings` も画面が読む (#968 レビュー 7 周目 MAJOR-1)。**
+   * `(data?.warnings ?? []).map(...)` は `warnings` が**配列でない**とき投げる
+   * （`{}` は `??` を素通りする）。任意フィールドなので「無い」は正当、
+   * 「在るが配列でない」だけを弾く。
+   */
+  if ('warnings' in body && body.warnings !== undefined && !Array.isArray(body.warnings)) {
+    return false;
+  }
   const config = body.config;
   if (config === null) return true;
   return (
@@ -116,6 +171,29 @@ export function isProviderConfigShape(body: unknown): boolean {
     typeof config.enabled === 'boolean' &&
     typeof config.secretPresence === 'string'
   );
+}
+
+export const TENANT_ROW_STRINGS = ['id', 'name', 'slug', 'status'] as const;
+
+/**
+ * `/api/platform/tenants`。**要素まで見る** (#968 レビュー 7 周目 BLOCKER-1)。
+ *
+ * 🔴 **ここだけは `error.tsx` が受けられない。** `TenantSwitcher` は
+ * `src/app/platform/layout.tsx` が描画しており、Next の `error.tsx` は**同じ
+ * セグメントの layout が投げた例外を捕まえない**。`{"tenants":[null]}` を返すと
+ * `resolveViewingContext` の `tenants.map((t) => t.id)` が投げ、例外は root まで
+ * 上がって `global-error.tsx` の**来訪者向け 4 言語**が platform の全画面に出る
+ * （レビューが実測）。`Array.isArray` の 1 段検査では止まらない。
+ */
+export function isTenantRowShape(row: unknown): boolean {
+  if (!isRecord(row)) return false;
+  return TENANT_ROW_STRINGS.every((k) => typeof row[k] === 'string');
+}
+
+/** `/api/platform/tenants` の応答全体。 */
+export function isTenantListShape(body: unknown): boolean {
+  if (!isRecord(body)) return false;
+  return Array.isArray(body.tenants) && body.tenants.every(isTenantRowShape);
 }
 
 /**
@@ -127,6 +205,27 @@ export function isProviderConfigShape(body: unknown): boolean {
  * 失敗ではなく**停止**という経路で丸ごと残っていた。
  */
 export const PLATFORM_READ_TIMEOUT_MS = 15_000;
+
+/**
+ * 送信（PATCH / PUT / DELETE）が返ってこないときの上限 (#968 レビュー 7 周目 MAJOR-5)。
+ *
+ * read より長くとる —— 書込は往復が重く、途中で切ると「成功したのに失敗と読む」側の
+ * 誤りが増える。それでも上限は要る: レビューの実測では、停止 PATCH を返さないまま
+ * **18 秒後も画面に何も残らず**、昇格つきフラグ変更では **25 秒後も「変更中…」のまま**
+ * 編集 UI 全体が固まっていた（リロード以外に出口が無い）。
+ */
+export const PLATFORM_WRITE_TIMEOUT_MS = 30_000;
+
+/**
+ * 🔴 **送信の中断は「失敗した」と言い切らない。**
+ *
+ * 中断したのは**こちらの待ち**であって、サーバは受理して監査に残しているかもしれない。
+ * 「失敗しました」と断定すると、運用者は同じ破壊的操作をもう一度実行する。
+ * 読み取り側（`readTimeoutMessage`）と違って、ここは**成功を否定しない**言い方にする。
+ */
+export function writeTimeoutMessage(what: string): string {
+  return `${what}が時間内に完了しませんでした。送信できたかどうか分かりません。画面を再読み込みして、実際の状態を確認してください。`;
+}
 
 /** 上限を過ぎたことを運用者の言葉で言う。 */
 export function readTimeoutMessage(what: string): string {

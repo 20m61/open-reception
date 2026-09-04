@@ -30,6 +30,8 @@ import {
   isRecord,
   isTenantDetailShape,
   isTenantFlagsShape,
+  isTenantListShape,
+  TENANT_ROW_STRINGS,
 } from './read-response';
 
 /** `obj` から `key` を落とした複製（`undefined` 代入ではなくキーごと消す）。 */
@@ -42,7 +44,7 @@ function without<T extends Record<string, unknown>>(obj: T, key: string): Record
 /*
  * 🔴 **期待値は実装の定数から**導かない** (#968 レビュー 6 周目の変異 S2 / S3 / S5)。
  *
- * 最初は `it.each(EXPECT_DETAIL_STRINGS)` と書いていた。すると**その定数から項目を
+ * 最初は `it.each(TENANT_DETAIL_STRINGS)`（＝**実装の定数**）と書いていた。すると**その定数から項目を
  * 削る変異は、テストの反復対象も同時に削る** —— 検査されなくなったフィールドについて
  * テストは何も言わなくなり、**緑のまま保証だけが消える**。実測で 3 件が生存した
  * （`slug` / `maintenanceDeviceCount` / サイトの `id`）。`status` だけ死んだのは、
@@ -84,8 +86,23 @@ const VALID_DETAIL = {
   sites: [VALID_SITE],
 } as const;
 
-const VALID_DASHBOARD = { fleet: { total: 3, active: 2, suspended: 1 } } as const;
-const VALID_FLAGS_SUMMARY = { flags: { vonage: { enabled: true, configured: false } } } as const;
+const VALID_DASHBOARD = {
+  fleet: { total: 3, active: 2, suspended: 1 },
+  receptionsToday: { total: 5, connected: 3, timeout: 1, failed: 1 },
+} as const;
+const VALID_AUTH_METHOD = { id: 'password', label: '共有パスワードログイン', enabled: true, issues: [] } as const;
+const VALID_FLAG_SUMMARY = { defaultEnabled: true, disabledTenants: 0 } as const;
+const VALID_FLAGS_SUMMARY = {
+  flags: {
+    vonage: { enabled: true, configured: false },
+    authMethods: [VALID_AUTH_METHOD],
+    voiceSynthesis: VALID_FLAG_SUMMARY,
+    avatarReception: VALID_FLAG_SUMMARY,
+  },
+} as const;
+const EXPECT_AUTH_METHOD_KEYS = ['id', 'label', 'enabled', 'issues'] as const;
+const VALID_TENANT_ROW = { id: 't1', name: 'テナント A', slug: 'tenant-a', status: 'active' } as const;
+const EXPECT_TENANT_ROW_STRINGS = ['id', 'name', 'slug', 'status'] as const;
 const VALID_CONFIG = {
   config: { provider: 'vonage', enabled: true, secretPresence: 'missing' },
 } as const;
@@ -135,6 +152,25 @@ describe('read-response: 述語の緊さ (#968)', () => {
       expect(isDashboardShape({ fleet: { ...VALID_DASHBOARD.fleet, [key]: '3' } })).toBe(false);
     });
 
+    /*
+     * 🔴 **`receptionsToday` は投げないが**無言になる** (#968 レビュー 7 周目 MAJOR-2)。**
+     * 画面は `data?.receptionsToday?.total ?? '—'` と optional chain で読むので、
+     * 欠けても例外にならず **4 枚のカードが `—` のまま**になる。「まだ来ていない」と
+     * 「取れなかった」が区別できない —— #968 AC2 が名指しした無言の `—` そのもの。
+     */
+    it.each(['total', 'connected', 'timeout', 'failed'])(
+      'receptionsToday.%s が欠けたら通さない',
+      (key) => {
+        expect(
+          isDashboardShape({ ...VALID_DASHBOARD, receptionsToday: without(VALID_DASHBOARD.receptionsToday, key) }),
+        ).toBe(false);
+      },
+    );
+
+    it('receptionsToday そのものが欠けたら通さない', () => {
+      expect(isDashboardShape({ fleet: VALID_DASHBOARD.fleet })).toBe(false);
+    });
+
     it('fleet が null / 配列 / 欠落なら通さない', () => {
       expect(isDashboardShape({ fleet: null })).toBe(false);
       expect(isDashboardShape({ fleet: [] })).toBe(false);
@@ -153,6 +189,40 @@ describe('read-response: 述語の緊さ (#968)', () => {
         isFlagsSummaryShape({ flags: { vonage: without(VALID_FLAGS_SUMMARY.flags.vonage, key) } }),
       ).toBe(false);
     });
+
+    /*
+     * 🔴 **`authMethods[]` の要素まで (#968 レビュー 7 周目 MAJOR-1)。**
+     * `{"authMethods":[{}]}` は 6 周目の述語を**通ったうえで** `m.issues.length` が
+     * 投げていた。これが「X1（error boundary 削除）は等価」という私の主張を
+     * 崩した実例 —— 述語が受理する応答で投げる経路が実在した。
+     */
+    it.each(EXPECT_AUTH_METHOD_KEYS)('flags.authMethods[].%s が欠けたら通さない', (key) => {
+      expect(
+        isFlagsSummaryShape({
+          flags: { ...VALID_FLAGS_SUMMARY.flags, authMethods: [without(VALID_AUTH_METHOD, key)] },
+        }),
+      ).toBe(false);
+    });
+
+    it('flags.authMethods が配列でなければ通さない', () => {
+      expect(isFlagsSummaryShape({ flags: { ...VALID_FLAGS_SUMMARY.flags, authMethods: {} } })).toBe(false);
+      expect(isFlagsSummaryShape({ flags: { ...VALID_FLAGS_SUMMARY.flags, authMethods: [null] } })).toBe(false);
+    });
+
+    it.each(['voiceSynthesis', 'avatarReception'])('flags.%s が欠けたら通さない', (key) => {
+      expect(isFlagsSummaryShape({ flags: without(VALID_FLAGS_SUMMARY.flags, key) })).toBe(false);
+    });
+
+    it.each(['defaultEnabled', 'disabledTenants'])(
+      'flags.voiceSynthesis.%s が欠けたら通さない',
+      (key) => {
+        expect(
+          isFlagsSummaryShape({
+            flags: { ...VALID_FLAGS_SUMMARY.flags, voiceSynthesis: without(VALID_FLAG_SUMMARY, key) },
+          }),
+        ).toBe(false);
+      },
+    );
 
     it('flags.vonage が null / 欠落なら通さない', () => {
       expect(isFlagsSummaryShape({ flags: { vonage: null } })).toBe(false);
@@ -192,7 +262,7 @@ describe('read-response: 述語の緊さ (#968)', () => {
      * `data.status === 'active' ? … : '有効化する'` が undefined で偽になり、
      * **状態が読めていないテナントに破壊的操作を提示**する。
      */
-    it.each(TENANT_DETAIL_STRINGS)('%s だけが欠けても通さない', (key) => {
+    it.each(EXPECT_DETAIL_STRINGS)('%s だけが欠けても通さない', (key) => {
       expect(isTenantDetailShape(without(VALID_DETAIL, key))).toBe(false);
     });
 
@@ -226,6 +296,40 @@ describe('read-response: 述語の緊さ (#968)', () => {
     });
   });
 
+  /*
+   * 🔴 **ここだけは `error.tsx` が受けられない (#968 レビュー 7 周目 BLOCKER-1)。**
+   *
+   * `TenantSwitcher` は `src/app/platform/layout.tsx` が描画しており、Next の
+   * `error.tsx` は**同じセグメントの layout が投げた例外を捕まえない**。
+   * `{"tenants":[null]}` は `Array.isArray` の 1 段検査を通り、
+   * `resolveViewingContext` の `tenants.map((t) => t.id)` が投げ、例外は root まで
+   * 上がって **platform の全画面**が来訪者向け 4 言語の文言になっていた（レビュー実測）。
+   */
+  describe('isTenantListShape', () => {
+    it('下界: 正しい形は通る（0 件も正当）', () => {
+      expect(isTenantListShape({ tenants: [VALID_TENANT_ROW] })).toBe(true);
+      expect(isTenantListShape({ tenants: [] })).toBe(true);
+    });
+
+    it('要素が null なら通さない（ヘッダが投げる形）', () => {
+      expect(isTenantListShape({ tenants: [null] })).toBe(false);
+    });
+
+    it.each(EXPECT_TENANT_ROW_STRINGS)('tenants[].%s だけが欠けても通さない', (key) => {
+      expect(isTenantListShape({ tenants: [without(VALID_TENANT_ROW, key)] })).toBe(false);
+    });
+
+    it('tenants が配列でない / 欠落なら通さない', () => {
+      expect(isTenantListShape({ tenants: {} })).toBe(false);
+      expect(isTenantListShape({})).toBe(false);
+      expect(isTenantListShape(null)).toBe(false);
+    });
+
+    it('🔴 検査対象の一覧は、テストの期待値と一致する', () => {
+      expect([...TENANT_ROW_STRINGS]).toEqual([...EXPECT_TENANT_ROW_STRINGS]);
+    });
+  });
+
   describe('isProviderConfigShape', () => {
     it('下界: 正しい形は通る', () => {
       expect(isProviderConfigShape(VALID_CONFIG)).toBe(true);
@@ -246,6 +350,20 @@ describe('read-response: 述語の緊さ (#968)', () => {
      */
     it.each(['provider', 'enabled', 'secretPresence'])('config.%s だけが欠けても通さない', (key) => {
       expect(isProviderConfigShape({ config: without(VALID_CONFIG.config, key) })).toBe(false);
+    });
+
+    /*
+     * 🔴 **`warnings` も画面が読む (#968 レビュー 7 周目 MAJOR-1)。**
+     * `(data?.warnings ?? []).map(...)` は `{}` を `??` が素通りさせるので投げる。
+     * 任意フィールドなので「無い」は正当、「在るが配列でない」だけを弾く。
+     */
+    it('warnings が在るのに配列でなければ通さない', () => {
+      expect(isProviderConfigShape({ ...VALID_CONFIG, warnings: {} })).toBe(false);
+    });
+
+    it('下界: warnings が無い / 配列なら通る', () => {
+      expect(isProviderConfigShape({ ...VALID_CONFIG, warnings: [] })).toBe(true);
+      expect(isProviderConfigShape(VALID_CONFIG)).toBe(true);
     });
 
     it('config キー自体が無い応答は「未設定」ではなく「読めなかった」', () => {

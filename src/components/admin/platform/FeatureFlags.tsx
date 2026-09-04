@@ -16,9 +16,12 @@ import { MetricCard, font } from '@/components/admin/ui';
 import { enablementState } from '../state-vocabulary';
 import {
   PLATFORM_READ_TIMEOUT_MS,
+  PLATFORM_WRITE_TIMEOUT_MS,
   isFlagsSummaryShape,
   isTenantFlagsShape,
+  isTenantListShape,
   readTimeoutMessage,
+  writeTimeoutMessage,
 } from './read-response';
 
 /**
@@ -224,7 +227,8 @@ function TenantFeatureFlagEditor({ onChanged }: { onChanged?: () => void }) {
        * 選択肢が空のまま「テナントが 1 つも無い」のと同じ見た目になり、しかも
        * 失敗表示は出ない。このファイル自身が「その見た目にしてはいけない」と書いている。
        */
-      if (!Array.isArray(body.tenants)) {
+      // 要素まで見る（`[null]` は `map` で投げる・#968 レビュー 7 周目 BLOCKER-1）。
+      if (!isTenantListShape(body)) {
         setTenantsError('テナント一覧の形式が不正です。時間をおいて再試行してください。');
         return;
       }
@@ -316,6 +320,8 @@ function TenantFeatureFlagEditor({ onChanged }: { onChanged?: () => void }) {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(built.payload),
+        // 返ってこない送信で編集 UI を固めない (#968 レビュー 7 周目 MAJOR-5)。
+        signal: AbortSignal.timeout(PLATFORM_WRITE_TIMEOUT_MS),
       });
       const resBody: unknown = await res.json().catch(() => null);
       /*
@@ -336,9 +342,16 @@ function TenantFeatureFlagEditor({ onChanged }: { onChanged?: () => void }) {
       // 楽観更新はしない: サーバ応答が正。テナントの実効値と横断サマリを再取得する。
       await loadTenantFlags(tenantId);
       onChanged?.();
-    } catch {
-      if (latestTenantId.current === tenantId)
-        setWriteError({ needsElevation: false, message: '機能フラグ変更リクエストの送信に失敗しました。' });
+    } catch (cause) {
+      if (latestTenantId.current !== tenantId) return;
+      // 中断は「失敗した」と言い切らない（送信できたかは分からない・MAJOR-5）。
+      setWriteError({
+        needsElevation: false,
+        message:
+          cause instanceof Error && cause.name === 'TimeoutError'
+            ? writeTimeoutMessage('機能フラグの変更')
+            : '機能フラグ変更リクエストの送信に失敗しました。',
+      });
     } finally {
       setBusyKey(null);
     }

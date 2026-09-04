@@ -6,7 +6,13 @@ import type { TenantLifecycleAction } from '@/domain/platform/tenant-lifecycle';
 import { DangerActionButton } from '@/components/admin/danger/DangerActionButton';
 import { DataTable, MetricCard, StatusBadge, type Column } from '@/components/admin/ui';
 import { siteStatusState, tenantStatusState } from '../state-vocabulary';
-import { PLATFORM_READ_TIMEOUT_MS, isTenantDetailShape, readTimeoutMessage } from './read-response';
+import {
+  PLATFORM_READ_TIMEOUT_MS,
+  PLATFORM_WRITE_TIMEOUT_MS,
+  isTenantDetailShape,
+  readTimeoutMessage,
+  writeTimeoutMessage,
+} from './read-response';
 
 /**
  * テナント詳細（テナント横断 read + 有効/停止操作） (issue #90)。
@@ -106,6 +112,17 @@ export function TenantDetail({ tenantId }: { tenantId: string }) {
      * その消去経路が落ちる —— A の停止失敗が B の画面に出続ける。
      */
     setActionError(null);
+    /*
+     * 🔴 **前のテナントの内容も捨てる (#968 レビュー 7 周目 m6)。**
+     *
+     * 世代ガードは「後着した A を**載せない**」ことしか防いでいない。**既に載っている A**
+     * は残るので、`tenantId` が B に変わって取得が失敗すると、画面には A の名前・状態
+     * バッジ・指標が出たまま「危険な操作」ブロックが描かれる —— ラベルは **A の
+     * `status`** から決まり、送信先は **B の `tenantId`** になる。監査には B と正しく
+     * 残るので、運用者だけが取り違える。ガードを張るなら対になるこちらも要る。
+     */
+    setData(null);
+    setError(null);
     void load();
   }, [load, tenantId]);
 
@@ -118,6 +135,8 @@ export function TenantDetail({ tenantId }: { tenantId: string }) {
           method: 'PATCH',
           headers: { 'content-type': 'application/json' },
           body: JSON.stringify({ action, reason }),
+          // 返ってこない送信も終わらせる (#968 レビュー 7 周目 MAJOR-5)。
+          signal: AbortSignal.timeout(PLATFORM_WRITE_TIMEOUT_MS),
         });
         /*
          * 🔴 **操作の失敗も「いま見ているテナント宛」だけ出す (#968 レビュー B1)。**
@@ -135,9 +154,18 @@ export function TenantDetail({ tenantId }: { tenantId: string }) {
        * もう一度押すか、停止できたと誤解する ——「成功したかどうか分からない」を
        * 残さないことが、テナントの停止/有効化では最も重い。
        */
-      } catch {
-        if (latestTenantId.current === tenantId)
-          setActionError('操作を送信できませんでした。通信を確認して、もう一度お試しください。');
+      } catch (cause) {
+        if (latestTenantId.current !== tenantId) return;
+        /*
+         * 🔴 **中断は「失敗した」と言い切らない (#968 レビュー 7 周目 MAJOR-5)。**
+         * 中断したのはこちらの待ちであって、サーバは受理して監査に残しているかも
+         * しれない。断定すると運用者は同じ破壊的操作をもう一度実行する。
+         */
+        setActionError(
+          cause instanceof Error && cause.name === 'TimeoutError'
+            ? writeTimeoutMessage('操作')
+            : '操作を送信できませんでした。通信を確認して、もう一度お試しください。',
+        );
       } finally {
         setBusy(false);
       }

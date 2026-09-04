@@ -9,7 +9,13 @@ import {
 } from '@/domain/provider-config/types';
 import type { ProviderConfigWarning } from '@/domain/provider-config/readiness';
 import { font } from '@/components/admin/ui/tokens';
-import { PLATFORM_READ_TIMEOUT_MS, isProviderConfigShape, readTimeoutMessage } from './read-response';
+import {
+  PLATFORM_READ_TIMEOUT_MS,
+  PLATFORM_WRITE_TIMEOUT_MS,
+  isProviderConfigShape,
+  readTimeoutMessage,
+  writeTimeoutMessage,
+} from './read-response';
 
 /**
  * テナント別 CCaaS プロバイダ設定（developer 専用・write-only secret） (issue #405 Inc1)。
@@ -146,6 +152,7 @@ export function ProviderConfig() {
         headers: { 'content-type': 'application/json' },
         // secret はこのエンドポイントに送らない（別エンドポイントで write-only）。
         body: JSON.stringify({ provider, enabled, applicationId, fromNumber }),
+        signal: AbortSignal.timeout(PLATFORM_WRITE_TIMEOUT_MS),
       });
       if (!res.ok) {
         setActionError('設定の保存に失敗しました。');
@@ -153,8 +160,13 @@ export function ProviderConfig() {
       }
       setNotice('設定を保存しました。');
       await load();
-    } catch {
-      setActionError('設定を保存できませんでした。通信を確認してください。');
+    } catch (cause) {
+      // 中断は「保存できなかった」と断定しない（MAJOR-5）。
+      setActionError(
+        cause instanceof Error && cause.name === 'TimeoutError'
+          ? writeTimeoutMessage('設定の保存')
+          : '設定を保存できませんでした。通信を確認してください。',
+      );
     }
   }, [provider, enabled, applicationId, fromNumber, load]);
 
@@ -180,6 +192,7 @@ export function ProviderConfig() {
         method: 'PUT',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ secret, expectedProvider: data?.config?.provider }),
+        signal: AbortSignal.timeout(PLATFORM_WRITE_TIMEOUT_MS),
       });
       if (!res.ok) {
         setActionError(
@@ -191,8 +204,12 @@ export function ProviderConfig() {
       }
       setNotice('secret を保存しました（値は表示されません）。');
       await load();
-    } catch {
-      setActionError('secret を保存できませんでした。通信を確認してください。もう一度 secret を入力してください。');
+    } catch (cause) {
+      setActionError(
+        cause instanceof Error && cause.name === 'TimeoutError'
+          ? writeTimeoutMessage('secret の保存') + 'もう一度 secret を入力してください。'
+          : 'secret を保存できませんでした。通信を確認してください。もう一度 secret を入力してください。',
+      );
     }
   }, [secretInput, data, load]);
 
@@ -204,6 +221,7 @@ export function ProviderConfig() {
         method: 'DELETE',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ expectedProvider: confirmProvider }),
+        signal: AbortSignal.timeout(PLATFORM_WRITE_TIMEOUT_MS),
       });
       if (!res.ok) {
         setActionError(
@@ -222,8 +240,12 @@ export function ProviderConfig() {
       setConfirmProvider('');
       setNotice('secret を消去しました。');
       await load();
-    } catch {
-      setActionError('secret を消去できませんでした。通信を確認してください。');
+    } catch (cause) {
+      setActionError(
+        cause instanceof Error && cause.name === 'TimeoutError'
+          ? writeTimeoutMessage('secret の消去')
+          : 'secret を消去できませんでした。通信を確認してください。',
+      );
     }
   }, [confirmProvider, load]);
 

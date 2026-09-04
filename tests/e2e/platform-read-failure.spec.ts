@@ -153,6 +153,35 @@ test.describe('platform: 読み取りの失敗が運用者に見える (#968)', 
     await expect(alert).toContainText('権限');
   });
 
+  /*
+   * 🔴 **ヘッダの例外は `platform/error.tsx` では受けられない
+   * (#968 レビュー 7 周目 BLOCKER-1)。**
+   *
+   * `TenantSwitcher` は `src/app/platform/layout.tsx` が描画しており、Next の
+   * `error.tsx` は**同じセグメントの layout が投げた例外を捕まえない**。
+   * `{"tenants":[null]}` は 6 周目の `Array.isArray` の 1 段検査を通り、
+   * `resolveViewingContext` の `tenants.map((t) => t.id)` が投げ、例外は root まで
+   * 上がって **platform の全画面**が `global-error.tsx` の来訪者向け 4 言語
+   * 「受付を続けられませんでした」になっていた（独立レビューが実測）。
+   *
+   * ヘッダは全画面共通なので、テナント一覧 API の形が壊れた瞬間に運用コンソールが
+   * 丸ごと使えなくなる —— しかも運用者は「自分は受付端末の画面を見ている」と読む。
+   */
+  test('ヘッダのテナント切替: 要素が壊れた 200 で運用コンソール全体を落とさない', async ({
+    page,
+  }) => {
+    await fulfillBody(page, '**/api/platform/tenants', '{"tenants":[null]}');
+    await page.goto('/platform');
+
+    // 来訪者向けの文言が運用コンソールに出ない（BLOCKER-1 の本体）。
+    await expect(page.getByText('受付を続けられませんでした')).toHaveCount(0);
+    // 読めなかったことは言う。
+    await expect(page.getByTestId('platform-tenant-list-error')).toBeVisible();
+    // 🔴 **本文は生きている**（ヘッダが壊れても画面全部を失わない）。
+    await expect(page.getByTestId('platform-dashboard-error')).toHaveCount(0);
+    await expect(page.getByText('テナント稼働')).toBeVisible();
+  });
+
   test('ヘッダのテナント切替: 接続断でも黙らない', async ({ page }) => {
     await failWithAbort(page, '**/api/platform/tenants');
     await page.goto('/platform');
@@ -305,6 +334,59 @@ test.describe('platform: 読み取りの失敗が運用者に見える (#968)', 
       await expect(page.getByRole('button', { name: '設定を保存' })).toBeDisabled();
     });
   }
+
+  /*
+   * 🔴 **テナント別フラグの形検査に、振る舞いのオラクルが 1 本も無かった
+   * (#968 レビュー 7 周目 MAJOR-3)。**
+   *
+   * `isTenantFlagsShape(body, TENANT_FEATURE_FLAG_KEYS)` の第 2 引数を `[]` にする変異が
+   * **unit 940 本・e2e 47 本を素通り**した。純関数は `read-response.test.ts` が叩いて
+   * いたが、**配線を変異させたテストが無かった** —— `.claude/rules/opus5-autonomous-loop.md`
+   * の「純関数に変異を当てて『kill した』と言うが配線を変異させていない」型そのもの。
+   *
+   * 実害: `keys` が空（将来キーが増えて登録漏れ、でも同じ）になると `flags[key]` が
+   * `undefined` のまま「無効」と表示され、ボタンは「昇格つきで**有効化**」になる。
+   * 押すと**現在値を知らないまま昇格つきの破壊的 PATCH** が飛び、監査には正しく残る。
+   */
+  test('機能フラグ: テナントのフラグが 1 つ欠けた 200 を「無効」と断定しない', async ({ page }) => {
+    await page.goto('/platform/feature-flags');
+    const select = page.getByTestId('tenant-feature-flag-editor').locator('select');
+    const first = await select.locator('option').nth(1).getAttribute('value');
+    expect(first, 'seed にテナントが無い').toBeTruthy();
+
+    // 1 つだけ真偽で、残りが欠けている応答（全部欠けた `{}` では some でも通らない）。
+    await page.route('**/api/platform/tenants/*/feature-flags', async (route) => {
+      if (route.request().method() !== 'GET') return route.continue();
+      return route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({ tenantId: first, flags: { voiceSynthesis: true } }),
+      });
+    });
+    await select.selectOption(first ?? '');
+
+    await expect(page.getByTestId('platform-feature-flags-flags-error')).toBeVisible();
+    // 状態が読めていないのに昇格つきの破壊的操作を提示しない。
+    await expect(page.getByRole('button', { name: /昇格つきで(有効|無効)化/ })).toHaveCount(0);
+  });
+
+  /*
+   * 🔴 **ハングの文言に下界が無かった (#968 レビュー 7 周目 m3)。**
+   * 403 と 500 は `forbiddenText` で言い分けを縛っているのに、timeout だけ空いていて、
+   * 三項を定数へ潰す変異が素通りした。運用者にとって「時間内に返らない」と
+   * 「通信を確認」は**次の行動が違う**（前者は再試行、後者は回線）。
+   */
+  test('プロバイダ設定: ハングは「時間内に返らなかった」と言う（通信断と混ぜない）', async ({
+    page,
+  }) => {
+    await page.route('**/api/platform/integrations/provider-config', () => {
+      // 解決しない = 返ってこない。
+    });
+    await page.goto('/platform/integrations');
+    await expect(page.getByTestId('provider-config-load-error')).toContainText('時間内に', {
+      timeout: 30_000,
+    });
+  });
 
   /*
    * 🔴 **1 フィールドだけ欠けた 200 —— 「すぐ内側」を踏む (#968 レビュー 6 周目の変異 N3 / N4)。**

@@ -171,6 +171,35 @@ function tryCatchBlocks(source: string): { readonly tryBody: Block; readonly cat
  * 除外すると、`await window.fetch(...)` へ書き換えるだけで検査から外れる（実測で生存）。
  * レシーバは global を指すものだけ許し、`res.json().catch` のような任意の式は拾わない。
  */
+/**
+ * `fetch(` の**対応する閉じ括弧**までを返す (#968 レビュー 7 周目)。
+ *
+ * 🔴 最初は `indexOf('{', open)` から `matchBrace` していたが、URL が
+ * テンプレートリテラルだと **`${` の波括弧に当たって**引数を短く切り、
+ * `signal:` を持つ呼び出しを「持っていない」と誤判定した（自作の検出器が
+ * 誤報を出した実例）。括弧の対応で取る。
+ */
+function fetchArguments(source: string, site: number): string {
+  const open = source.indexOf('(', site);
+  if (open < 0) return '';
+  let depth = 0;
+  for (let i = open; i < source.length; i += 1) {
+    const ch = source[i];
+    if (ch === '"' || ch === "'" || ch === '`') {
+      // `skipString` は閉じ引用符の**位置**を返す。`matchBrace` と同じく、
+      // ループの `i += 1` で次へ進める（`- 1` すると閉じ引用符を再び開始と読む）。
+      i = skipString(source, i);
+      continue;
+    }
+    if (ch === '(') depth += 1;
+    else if (ch === ')') {
+      depth -= 1;
+      if (depth === 0) return source.slice(open, i + 1);
+    }
+  }
+  return source.slice(open);
+}
+
 function fetchSites(source: string): number[] {
   return [...source.matchAll(/(?<![\w$.])(?:(?:window|globalThis|self)\.)?fetch\s*\(/g)].map(
     (m) => m.index ?? 0,
@@ -470,6 +499,25 @@ const MUST_NOT_DISPLACE: readonly {
  * `useCallback(…, [])` の画面はマウント時 1 回きりで、再読込の導線が無いと
  * ブラウザのリロードしか道が無い（しかも文言はそれを言わない）。
  */
+/**
+ * タイムアウトを機械的に強制する対象 (#968 レビュー 7 周目 MAJOR-4 / MAJOR-5)。
+ *
+ * #968 が実際に触った 5 画面。**残りは #973 の台帳**（`ElevationStatus` /
+ * `NoticePublishForm` の write と、形の検査が無い 7 画面の read）。ここを
+ * 「全ファイル」にすると #968 の範囲を大きく越えるので、**同一性で固定して
+ * 黙って減らせないようにしたうえで**対象を明示する。
+ *
+ * 🔴 この配列から名前を**消す**変異は、その画面の主張を丸ごと消す。だから
+ * 下の「同一性の固定」と対で読むこと（片方だけでは空虚に通る）。
+ */
+const IN_SCOPE_TIMEOUT: readonly string[] = [
+  'PlatformDashboard.tsx',
+  'ProviderConfig.tsx',
+  'TenantDetail.tsx',
+  'TenantSwitcher.tsx',
+  'FeatureFlags.tsx',
+];
+
 const RECOVERY_CONTROL: readonly { readonly file: string; readonly testId: string; readonly calls: string }[] = [
   { file: 'ProviderConfig.tsx', testId: 'provider-config-reload', calls: 'void load()' },
   { file: 'FeatureFlags.tsx', testId: 'feature-flags-retry', calls: 'void loadTenantFlags(' },
@@ -1047,7 +1095,14 @@ describe('platform の通信失敗が無言にならない (#968)', () => {
         // 入れ子（`useEffect` の中の `useCallback` 等）は内側だけを見る。
         if (functionBodies(file.source).some((o) => o !== fn && o.start > fn.start && o.end < fn.end && o.body.includes('.json()'))) continue;
         checked += 1;
-        const usesPredicate = /is[A-Z]\w*Shape\(|isRecord\(|Array\.isArray\(/.test(fn.body);
+        /*
+         * 🔴 **`Array.isArray(` を語彙から外した (#968 レビュー 7 周目 m1)。**
+         * `read-response.ts` 自身が「`Array.isArray` だけだと `[null]` が通って投げる」と
+         * 書いているのに、検出器はその 1 段検査を合格にしていた。実際それに依存していた
+         * 2 件（`TenantSwitcher` / `FeatureFlags` のテナント一覧）が BLOCKER-1 の実害を
+         * 出している。**PR 自身が不十分と断じた形を、検査が合格にしてはいけない。**
+         */
+        const usesPredicate = /is[A-Z]\w*Shape\(|isRecord\(/.test(fn.body);
         if (!usesPredicate) offenders.push(`${file.name}:${fn.name}`);
       }
     }
@@ -1073,6 +1128,89 @@ describe('platform の通信失敗が無言にならない (#968)', () => {
     ]);
     // 母集団が空なら上の主張は空虚に通る（本 PR が直した読み取りは 5 経路ある）。
     expect(checked - offenders.length, '直した読み取りの本体を見つけられていない').toBeGreaterThanOrEqual(5);
+  });
+
+  /*
+   * 🔴 **ハングの上限を、増やした 7 経路ぜんぶで縛る (#968 レビュー 7 周目 MAJOR-4)。**
+   *
+   * 6 周目は `AbortSignal.timeout` を 5 経路へ入れたが、**オラクルは e2e の 1 本だけ**
+   * だった（`ProviderConfig` のハング注入）。レビューが `PlatformDashboard` と
+   * `TenantSwitcher` から `signal` を外す変異を当てたところ、unit も e2e も素通りした。
+   * 「返ってこない読み取り」は 6 周目が閉じたと宣言した族なので、宣言した範囲ぜんぶに
+   * 主張を置く —— e2e で 7 経路ぶんのハングを注入するのは高くつくので、**配線の実在**を
+   * 静的に、**帰結**を e2e 1 本で見る組み合わせにする。
+   */
+  it('read の fetch はすべてタイムアウト信号を渡す（ハングを無言に戻さない）', () => {
+    const offenders: string[] = [];
+    let checked = 0;
+    for (const file of platformFiles()) {
+      const source = file.source;
+      for (const site of fetchSites(source)) {
+        const args = fetchArguments(source, site);
+        if (isMutating(args)) continue; // write は別（下の主張で縛る）
+        if (!IN_SCOPE_TIMEOUT.includes(file.name)) continue;
+        checked += 1;
+        if (!args.includes('AbortSignal.timeout(')) {
+          offenders.push(`${file.name}@${site}`);
+        }
+      }
+    }
+    expect(offenders, 'タイムアウトを渡していない read fetch').toEqual([]);
+    expect(checked, 'read の fetch を見つけられていない').toBeGreaterThanOrEqual(5);
+  });
+
+  /*
+   * 🔴 **送信も返ってこないことがある (#968 レビュー 7 周目 MAJOR-5)。**
+   * レビューの実測では停止 PATCH を返さないまま 18 秒後も画面に何も残らず、
+   * 昇格つきフラグ変更は 25 秒後も「変更中…」のまま編集 UI が固まっていた。
+   */
+  it('write の fetch もタイムアウト信号を渡す（押したまま固まらない）', () => {
+    const offenders: string[] = [];
+    let checked = 0;
+    for (const file of platformFiles()) {
+      const source = file.source;
+      for (const site of fetchSites(source)) {
+        const args = fetchArguments(source, site);
+        if (!isMutating(args)) continue;
+        if (!IN_SCOPE_TIMEOUT.includes(file.name)) continue;
+        checked += 1;
+        if (!args.includes('AbortSignal.timeout(')) offenders.push(`${file.name}@${site}`);
+      }
+    }
+    expect(offenders, 'タイムアウトを渡していない write fetch').toEqual([]);
+    expect(checked, 'write の fetch を見つけられていない').toBeGreaterThanOrEqual(6);
+  });
+
+  /*
+   * 🔴 **上限そのものにも下界が要る (#968 レビュー 7 周目 MAJOR-4)。**
+   * `15_000 → 1_500` へ**狭める**変異が素通りした。狭めると、モバイル回線の運用者は
+   * **正常な応答を失敗と読む**ようになる（誤検知は無言より悪い場合がある）。
+   * 広げる側は e2e のハング注入が拾うので、ここでは下限だけ固定する。
+   */
+  it('🔴 タイムアウトを強制する対象は固定（黙って外せない）', () => {
+    expect([...IN_SCOPE_TIMEOUT].sort()).toEqual([
+      'FeatureFlags.tsx',
+      'PlatformDashboard.tsx',
+      'ProviderConfig.tsx',
+      'TenantDetail.tsx',
+      'TenantSwitcher.tsx',
+    ]);
+  });
+
+  it('タイムアウトの値は十分に長い（狭める変異を落とす）', () => {
+    const source = readFileSync(
+      join(process.cwd(), 'src/components/admin/platform/read-response.ts'),
+      'utf8',
+    );
+    const read = /PLATFORM_READ_TIMEOUT_MS = ([0-9_]+)/.exec(source);
+    const write = /PLATFORM_WRITE_TIMEOUT_MS = ([0-9_]+)/.exec(source);
+    expect(read, 'read の上限が見つからない').not.toBeNull();
+    expect(write, 'write の上限が見つからない').not.toBeNull();
+    const readMs = Number((read?.[1] ?? '0').replaceAll('_', ''));
+    const writeMs = Number((write?.[1] ?? '0').replaceAll('_', ''));
+    expect(readMs).toBeGreaterThanOrEqual(10_000);
+    // write は往復が重い。read より短くすると「成功したのに失敗と読む」が増える。
+    expect(writeMs).toBeGreaterThanOrEqual(readMs);
   });
 
   it('応答の判定は res.ok / response.ok の直参照で書く（分解束縛や != true にしない）', () => {

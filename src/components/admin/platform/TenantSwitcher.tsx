@@ -11,7 +11,13 @@ import {
 } from '@/lib/platform/selected-tenant';
 import { TenantSelect } from '../TenantContextView';
 import { font } from '@/components/admin/ui/tokens';
-import { PLATFORM_READ_TIMEOUT_MS, readTimeoutMessage } from './read-response';
+import {
+  PLATFORM_READ_TIMEOUT_MS,
+  PLATFORM_WRITE_TIMEOUT_MS,
+  isTenantListShape,
+  readTimeoutMessage,
+  writeTimeoutMessage,
+} from './read-response';
 
 /**
  * 対象テナント切り替え（#83 inc3b / #90）。
@@ -81,8 +87,15 @@ export function TenantSwitcher() {
         return;
       }
       const body = (await res.json()) as { tenants?: unknown };
-      // 形が違う 200 は「テナントが無い」ではなく「読めなかった」(#968 レビュー 5 周目 MAJOR-2)。
-      if (!Array.isArray(body.tenants)) {
+      /*
+       * 形が違う 200 は「テナントが無い」ではなく「読めなかった」(#968 レビュー 5 周目 MAJOR-2)。
+       *
+       * 🔴 **要素まで見る (#968 レビュー 7 周目 BLOCKER-1)。** ここは layout が描く
+       * ヘッダなので、投げると `src/app/platform/error.tsx` では受け止められず
+       * （Next の error.tsx は同じセグメントの layout の例外を捕まえない）、
+       * **platform の全画面**が来訪者向けの文言に置き換わる。
+       */
+      if (!isTenantListShape(body)) {
         setListError('テナント一覧の形式が不正です。');
         return;
       }
@@ -123,6 +136,7 @@ export function TenantSwitcher() {
         method: 'PUT',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ tenantId: nextId }),
+        signal: AbortSignal.timeout(PLATFORM_WRITE_TIMEOUT_MS),
       });
       if (!res.ok) {
         // 切替が成立しなかった（監査に残らない切替を見かけ上も作らない）。選択表示を戻す。
@@ -130,9 +144,21 @@ export function TenantSwitcher() {
         setSwitchError('テナントを切り替えられませんでした。');
         return;
       }
-    } catch {
+    } catch (cause) {
       setSelectedId(prevId);
-      setSwitchError('テナントを切り替えられませんでした。通信を確認してください。');
+      /*
+       * 🔴 **「切り替えられませんでした」と断定しない (#968 レビュー 7 周目 m4)。**
+       * 送信後に接続が切れた場合、サーバ側では切替が**成立して監査に残っている**
+       * 可能性がある。切替は読み取りスコープの基点なので、「変わっていない」と
+       * 断定したまま他画面を読むと、運用者は別テナントを見ていることに気づけない。
+       * 同じ PR の `TenantDetail` は「送信できませんでした」と hedge しており、
+       * ここだけ語彙が食い違っていた。
+       */
+      setSwitchError(
+        cause instanceof Error && cause.name === 'TimeoutError'
+          ? writeTimeoutMessage('テナントの切替')
+          : 'テナントの切替を送信できませんでした。通信を確認し、画面を再読み込みして、いま選ばれているテナントを確認してください。',
+      );
       return;
     }
     // platform の各 read はクライアントで mount 時に fetch するため、router.refresh() では
