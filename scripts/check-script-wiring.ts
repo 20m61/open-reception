@@ -123,6 +123,8 @@ export const MANUAL_ONLY_ALLOWLIST: Readonly<Record<string, string>> = {
   // ワークフローからは誰も呼んでいない）を見逃す数え方はしない。
   'url-quality-gate.sh':
     'デプロイ済みの実 URL に対して走らせるもの。実環境が要るので自動化しない（#65）。',
+  'url-gate-tooling.ts':
+    '`url-quality-gate.sh`（manual-only）が、任意ツールの SKIP 判定と ZAP 終了コードの解釈に使う CLI。実 URL への外形チェックの中でしか意味が無い。',
   'aws-preflight.ts':
     'デプロイ窓の中でしか意味を持たない preflight 判定 CLI。実 AWS の観測を入力に取るため自動では走らせない。',
   'aws-command-preflight.ts':
