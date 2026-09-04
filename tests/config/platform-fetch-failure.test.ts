@@ -540,6 +540,16 @@ const IN_SCOPE_TIMEOUT: readonly string[] = [
   'TenantDetail.tsx',
   'TenantSwitcher.tsx',
   'FeatureFlags.tsx',
+  // #973 で足した残り（read 7 画面 + write 2 画面）。台帳はこれで platform 全域を覆う。
+  'AuditLogs.tsx',
+  'AwsCostPanel.tsx',
+  'Integrations.tsx',
+  'MaintenanceStatus.tsx',
+  'Observability.tsx',
+  'TenantList.tsx',
+  'UpdateStatus.tsx',
+  'ElevationStatus.tsx',
+  'NoticePublishForm.tsx',
 ];
 
 const RECOVERY_CONTROL: readonly { readonly file: string; readonly testId: string; readonly calls: string }[] = [
@@ -1148,17 +1158,14 @@ describe('platform の通信失敗が無言にならない (#968)', () => {
      * `PlatformDashboard` / `ProviderConfig`）。形の壊れた 200 に対する同じ欠陥を持つが、
      * 直すと PR がこの周回の範囲を大きく越える。#973 へ積む。
      */
-    expect(offenders.sort(), '形の検査が無い読み取り（台帳と一致すること）').toEqual([
-      'AuditLogs.tsx:useEffect',
-      'AwsCostPanel.tsx:useEffect',
-      'Integrations.tsx:useEffect',
-      'MaintenanceStatus.tsx:useEffect',
-      'Observability.tsx:useEffect',
-      'TenantList.tsx:useEffect',
-      'UpdateStatus.tsx:useEffect',
-    ]);
-    // 母集団が空なら上の主張は空虚に通る（本 PR が直した読み取りは 5 経路ある）。
-    expect(checked - offenders.length, '直した読み取りの本体を見つけられていない').toBeGreaterThanOrEqual(5);
+    /*
+     * 🔴 **台帳は #973 で空になった。** 空の配列は「まだ書いていない」と見分けが付かない
+     * ので、下の**下界**と対で読むこと —— 形の検査を通る読み取りを 12 経路以上
+     * 見つけていなければ落ちる（走査が母集団を失っただけで緑になるのを防ぐ）。
+     */
+    expect(offenders.sort(), '形の検査が無い読み取り（台帳と一致すること）').toEqual([]);
+    // 母集団が空なら上の主張は空虚に通る（#968 の 5 経路 + #973 の 7 経路）。
+    expect(checked - offenders.length, '形の検査を通る読み取りを見つけられていない').toBeGreaterThanOrEqual(12);
   });
 
   /*
@@ -1187,7 +1194,7 @@ describe('platform の通信失敗が無言にならない (#968)', () => {
       }
     }
     expect(offenders, 'タイムアウトを渡していない read fetch').toEqual([]);
-    expect(checked, 'read の fetch を見つけられていない').toBeGreaterThanOrEqual(5);
+    expect(checked, 'read の fetch を見つけられていない').toBeGreaterThanOrEqual(12);
   });
 
   /*
@@ -1209,7 +1216,7 @@ describe('platform の通信失敗が無言にならない (#968)', () => {
       }
     }
     expect(offenders, 'タイムアウトを渡していない write fetch').toEqual([]);
-    expect(checked, 'write の fetch を見つけられていない').toBeGreaterThanOrEqual(6);
+    expect(checked, 'write の fetch を見つけられていない').toBeGreaterThanOrEqual(10);
   });
 
   /*
@@ -1282,7 +1289,12 @@ describe('platform の通信失敗が無言にならない (#968)', () => {
      * （レビューが実際に 2 件差し替えて素通りさせた）。件数が変わったら**気づかせる**。
      */
     expect(writeSites.sort()).toEqual([
+      // #973 で足した 4 件（昇格の発行 / break-glass / 終了 / お知らせ登録）。
+      'ElevationStatus.tsx:write',
+      'ElevationStatus.tsx:write',
+      'ElevationStatus.tsx:write',
       'FeatureFlags.tsx:write',
+      'NoticePublishForm.tsx:write',
       'ProviderConfig.tsx:write',
       'ProviderConfig.tsx:write',
       'ProviderConfig.tsx:write',
@@ -1308,11 +1320,20 @@ describe('platform の通信失敗が無言にならない (#968)', () => {
 
   it('🔴 タイムアウトを強制する対象は固定（黙って外せない）', () => {
     expect([...IN_SCOPE_TIMEOUT].sort()).toEqual([
+      'AuditLogs.tsx',
+      'AwsCostPanel.tsx',
+      'ElevationStatus.tsx',
       'FeatureFlags.tsx',
+      'Integrations.tsx',
+      'MaintenanceStatus.tsx',
+      'NoticePublishForm.tsx',
+      'Observability.tsx',
       'PlatformDashboard.tsx',
       'ProviderConfig.tsx',
       'TenantDetail.tsx',
+      'TenantList.tsx',
       'TenantSwitcher.tsx',
+      'UpdateStatus.tsx',
     ]);
   });
 

@@ -20,17 +20,37 @@
  */
 import { describe, expect, it } from 'vitest';
 import {
+  AUDIT_ROW_STRINGS,
+  COST_AVAILABLE_STRINGS,
+  COST_PERIOD_STRINGS,
+  INCIDENT_ROW_STRINGS,
+  INTEGRATION_ROW_BOOLEANS,
+  INTEGRATION_ROW_STRINGS,
+  MAINTENANCE_DEVICE_ROW_STRINGS,
+  MAINTENANCE_WINDOW_ROW_STRINGS,
+  NOTICE_ROW_STRINGS,
+  OBSERVABILITY_DEVICE_NUMBERS,
+  OBSERVABILITY_RECEPTION_NUMBERS,
   TENANT_DETAIL_NUMBERS,
   TENANT_DETAIL_STRINGS,
   TENANT_SITE_NUMBERS,
   TENANT_SITE_STRINGS,
+  UPDATE_ROW_STRINGS,
+  UPDATE_STATE_COUNTS,
+  isAuditLogsShape,
+  isAwsCostShape,
   isDashboardShape,
   isFlagsSummaryShape,
+  isIntegrationsShape,
+  isMaintenanceShape,
+  isObservabilityShape,
   isProviderConfigShape,
   isRecord,
   isTenantDetailShape,
   isTenantFlagsShape,
+  isTenantListPageShape,
   isTenantListShape,
+  isUpdateStatusShape,
   TENANT_ROW_STRINGS,
 } from './read-response';
 
@@ -433,6 +453,485 @@ describe('read-response: 述語の緊さ (#968)', () => {
     it('config キー自体が無い応答は「未設定」ではなく「読めなかった」', () => {
       expect(isProviderConfigShape({})).toBe(false);
       expect(isProviderConfigShape(null)).toBe(false);
+    });
+  });
+});
+
+/**
+ * #973: **形の検査が無かった platform 7 画面**の述語（#968 が台帳へ積んだ残り）。
+ *
+ * 上の #968 の行列と同じ形で書く —— **(a) 正しい形は通る（下界）** と
+ * **(b) 1 フィールド落とすと落ちる**を対にする。期待値は実装の定数から導かず、
+ * ここへベタ書きしたうえで「実装の一覧と一致すること」を別に固定する
+ * （実装から項目を削る変異が、テストの反復対象まで一緒に削るのを防ぐ）。
+ *
+ * 🔴 **下界を「配列が空でも通る」まで含めて張る。** 7 画面はどれも一覧で、
+ * 0 件は**正当**である（`config: null` が正当な「未設定」なのと同じ）。
+ * 片側だけ主張すると「全部を失敗と断定する」変異が空虚に通る。
+ */
+const VALID_AUDIT_ROW = { id: 'a1', at: '2026-09-05T00:00:00Z', action: 'tenant.suspend', actor: 'dev-***' } as const;
+const EXPECT_AUDIT_ROW_STRINGS = ['id', 'at', 'action', 'actor'] as const;
+
+const VALID_INTEGRATION_ROW = {
+  id: 'vonage',
+  label: 'Vonage',
+  configured: true,
+  enabled: true,
+  lastResult: 'success',
+} as const;
+const EXPECT_INTEGRATION_ROW_STRINGS = ['id', 'label', 'lastResult'] as const;
+const EXPECT_INTEGRATION_ROW_BOOLEANS = ['configured', 'enabled'] as const;
+
+const VALID_INTEGRATIONS = {
+  integrations: [VALID_INTEGRATION_ROW],
+  authMethods: [VALID_AUTH_METHOD],
+} as const;
+
+const VALID_OBSERVABILITY = {
+  integrations: [VALID_INTEGRATION_ROW],
+  recentActivity: [VALID_AUDIT_ROW],
+  reception: { receptions: 12, successRate: 0.75, callFailures: 2, noAnswer: 1 },
+  devices: { total: 4, online: 3, offline: 1, maintenance: 0, disabled: 2 },
+} as const;
+const EXPECT_RECEPTION_NUMBERS = ['receptions', 'callFailures', 'noAnswer'] as const;
+const EXPECT_DEVICE_NUMBERS = ['total', 'online', 'offline', 'maintenance', 'disabled'] as const;
+
+const VALID_MAINTENANCE_DEVICE = {
+  tenantId: 't1',
+  tenantName: 'テナント A',
+  siteId: 's1',
+  deviceId: 'd1',
+  deviceName: '受付 1',
+} as const;
+const VALID_INCIDENT = {
+  id: 'i1',
+  scope: 'platform',
+  severity: 'major',
+  status: 'investigating',
+  title: '通話が繋がらない',
+  startedAt: '2026-09-05T00:00:00Z',
+  active: true,
+} as const;
+const VALID_WINDOW = {
+  id: 'w1',
+  scope: 'platform',
+  status: 'scheduled',
+  startsAt: '2026-09-06T00:00:00Z',
+  endsAt: '2026-09-06T01:00:00Z',
+  message: '定期メンテナンス',
+  impact: 'limited',
+  open: true,
+} as const;
+const VALID_NOTICE = {
+  id: 'n1',
+  scope: 'platform',
+  level: 'info',
+  title: 'お知らせ',
+  status: 'published',
+  publishedAt: '2026-09-05T00:00:00Z',
+  active: true,
+} as const;
+const VALID_MAINTENANCE = {
+  summary: { devicesInMaintenance: 1, devices: [VALID_MAINTENANCE_DEVICE] },
+  incidents: { activeCount: 1, incidents: [VALID_INCIDENT] },
+  windows: { scheduledCount: 1, activeCount: 0, windows: [VALID_WINDOW] },
+  notices: { activeCount: 1, notices: [VALID_NOTICE] },
+} as const;
+const EXPECT_MAINTENANCE_DEVICE_STRINGS = ['deviceId', 'deviceName', 'tenantName', 'siteId'] as const;
+const EXPECT_INCIDENT_STRINGS = ['id', 'scope', 'severity', 'status', 'title', 'startedAt'] as const;
+const EXPECT_WINDOW_STRINGS = ['id', 'scope', 'status', 'impact', 'message', 'startsAt', 'endsAt'] as const;
+const EXPECT_NOTICE_STRINGS = ['id', 'scope', 'level', 'status', 'title', 'publishedAt'] as const;
+
+const VALID_UPDATE_ROW = {
+  id: 'u1',
+  scope: 'device',
+  component: 'kiosk',
+  currentVersion: '1.0.0',
+  latestVersion: '1.1.0',
+  state: 'update_available',
+  checkedAt: '2026-09-05T00:00:00Z',
+  pending: true,
+} as const;
+const VALID_UPDATES = {
+  updates: {
+    pendingCount: 1,
+    totalCount: 2,
+    byState: { up_to_date: 1, update_available: 1, updating: 0, failed: 0 },
+    updates: [VALID_UPDATE_ROW],
+  },
+} as const;
+const EXPECT_UPDATE_ROW_STRINGS = ['id', 'scope', 'component', 'currentVersion', 'latestVersion', 'state', 'checkedAt'] as const;
+const EXPECT_UPDATE_STATE_COUNTS = ['update_available', 'failed'] as const;
+
+const VALID_TENANT_LIST_ROW = { ...VALID_TENANT_ROW, updatedAt: '2026-09-05T00:00:00Z' } as const;
+const VALID_TENANT_LIST_PAGE = {
+  summary: { total: 3, active: 2, suspended: 1 },
+  tenants: [VALID_TENANT_LIST_ROW],
+} as const;
+
+const VALID_COST_AVAILABLE = {
+  status: 'available',
+  currency: 'USD',
+  period: { monthStart: '2026-09-01', actualEndExclusive: '2026-09-05' },
+  filters: { project: 'open-reception', environment: 'dev', component: 'all' },
+  actualToDate: 12.34,
+  forecastRemaining: 5,
+  monthEndEstimate: 17.34,
+  breakdownBy: 'Component',
+  breakdown: [{ key: 'Web', amount: 1.2 }],
+  updatedAt: '2026-09-05T00:00:00Z',
+  forecastAvailable: true,
+  forecastUnavailableReason: null,
+} as const;
+const VALID_COST_UNAVAILABLE = {
+  status: 'unavailable',
+  reason: 'disabled',
+  message: 'コスト取得は無効です。',
+  filters: { project: 'open-reception', environment: 'dev', component: 'all' },
+  updatedAt: '2026-09-05T00:00:00Z',
+} as const;
+const EXPECT_COST_AVAILABLE_STRINGS = ['currency', 'breakdownBy', 'updatedAt'] as const;
+const EXPECT_COST_PERIOD_STRINGS = ['monthStart', 'actualEndExclusive'] as const;
+
+describe('read-response: 形の検査が無かった 7 画面 (#973)', () => {
+  it('🔴 検査対象の一覧は、テストの期待値と一致する（黙って減らせない）', () => {
+    expect([...AUDIT_ROW_STRINGS]).toEqual([...EXPECT_AUDIT_ROW_STRINGS]);
+    expect([...INTEGRATION_ROW_STRINGS]).toEqual([...EXPECT_INTEGRATION_ROW_STRINGS]);
+    expect([...INTEGRATION_ROW_BOOLEANS]).toEqual([...EXPECT_INTEGRATION_ROW_BOOLEANS]);
+    expect([...OBSERVABILITY_RECEPTION_NUMBERS]).toEqual([...EXPECT_RECEPTION_NUMBERS]);
+    expect([...OBSERVABILITY_DEVICE_NUMBERS]).toEqual([...EXPECT_DEVICE_NUMBERS]);
+    expect([...MAINTENANCE_DEVICE_ROW_STRINGS]).toEqual([...EXPECT_MAINTENANCE_DEVICE_STRINGS]);
+    expect([...INCIDENT_ROW_STRINGS]).toEqual([...EXPECT_INCIDENT_STRINGS]);
+    expect([...MAINTENANCE_WINDOW_ROW_STRINGS]).toEqual([...EXPECT_WINDOW_STRINGS]);
+    expect([...NOTICE_ROW_STRINGS]).toEqual([...EXPECT_NOTICE_STRINGS]);
+    expect([...UPDATE_ROW_STRINGS]).toEqual([...EXPECT_UPDATE_ROW_STRINGS]);
+    expect([...UPDATE_STATE_COUNTS]).toEqual([...EXPECT_UPDATE_STATE_COUNTS]);
+    expect([...COST_AVAILABLE_STRINGS]).toEqual([...EXPECT_COST_AVAILABLE_STRINGS]);
+    expect([...COST_PERIOD_STRINGS]).toEqual([...EXPECT_COST_PERIOD_STRINGS]);
+  });
+
+  describe('isAuditLogsShape', () => {
+    it('下界: 正しい形は通る（0 件も正当）', () => {
+      expect(isAuditLogsShape({ logs: [VALID_AUDIT_ROW] })).toBe(true);
+      expect(isAuditLogsShape({ logs: [] })).toBe(true);
+    });
+
+    /*
+     * 🔴 **`[null]` は `Array.isArray` の 1 段検査を通ったうえで `rowKey` が投げる。**
+     * #968 の BLOCKER-1 と同じ形で、運用コンソールに来訪者向け文言が出る経路。
+     */
+    it('要素が壊れていたら通さない', () => {
+      expect(isAuditLogsShape({ logs: [null] })).toBe(false);
+      expect(isAuditLogsShape({ logs: {} })).toBe(false);
+      expect(isAuditLogsShape({})).toBe(false);
+      expect(isAuditLogsShape(null)).toBe(false);
+    });
+
+    it.each([...EXPECT_AUDIT_ROW_STRINGS])('行の %s だけが欠けても通さない', (key) => {
+      expect(isAuditLogsShape({ logs: [without(VALID_AUDIT_ROW, key)] })).toBe(false);
+    });
+
+    /** 任意フィールド（詳細列）は欠けていても正当 —— 互換の方向を逆にしない。 */
+    it('下界: 任意の詳細フィールドが無くても通る', () => {
+      expect(isAuditLogsShape({ logs: [{ ...VALID_AUDIT_ROW, targetType: undefined }] })).toBe(true);
+    });
+  });
+
+  describe('isIntegrationsShape', () => {
+    it('下界: 正しい形は通る（両方 0 件も正当）', () => {
+      expect(isIntegrationsShape(VALID_INTEGRATIONS)).toBe(true);
+      expect(isIntegrationsShape({ integrations: [], authMethods: [] })).toBe(true);
+    });
+
+    it.each([...EXPECT_INTEGRATION_ROW_STRINGS])('連携行の %s だけが欠けても通さない', (key) => {
+      expect(
+        isIntegrationsShape({ ...VALID_INTEGRATIONS, integrations: [without(VALID_INTEGRATION_ROW, key)] }),
+      ).toBe(false);
+    });
+
+    it.each([...EXPECT_INTEGRATION_ROW_BOOLEANS])('連携行の %s が真偽値でなければ通さない', (key) => {
+      expect(
+        isIntegrationsShape({
+          ...VALID_INTEGRATIONS,
+          integrations: [{ ...VALID_INTEGRATION_ROW, [key]: 'true' }],
+        }),
+      ).toBe(false);
+    });
+
+    /** `issues.length` は欠けると投げる（#968 の `authMethods` と同じ経路）。 */
+    it.each(['id', 'label', 'enabled', 'issues'])('ログイン方式の %s だけが欠けても通さない', (key) => {
+      expect(
+        isIntegrationsShape({ ...VALID_INTEGRATIONS, authMethods: [without(VALID_AUTH_METHOD, key)] }),
+      ).toBe(false);
+    });
+
+    it('片方の一覧だけが在る応答は通さない', () => {
+      expect(isIntegrationsShape({ integrations: [VALID_INTEGRATION_ROW] })).toBe(false);
+      expect(isIntegrationsShape({ authMethods: [VALID_AUTH_METHOD] })).toBe(false);
+    });
+  });
+
+  describe('isObservabilityShape', () => {
+    it('下界: 正しい形は通る（一覧が 0 件でも正当）', () => {
+      expect(isObservabilityShape(VALID_OBSERVABILITY)).toBe(true);
+      expect(isObservabilityShape({ ...VALID_OBSERVABILITY, integrations: [], recentActivity: [] })).toBe(true);
+    });
+
+    /**
+     * 🔴 **`successRate` は `number | null` が正当。** 受付が 0 件の月は `null` になる
+     * （`formatPercent` が `null` を受ける）。ここを「数値必須」にすると、
+     * **正常な月初を「読めなかった」と誤報する**。
+     */
+    it('下界: successRate は null でも通る（受付 0 件の月）', () => {
+      expect(
+        isObservabilityShape({
+          ...VALID_OBSERVABILITY,
+          reception: { ...VALID_OBSERVABILITY.reception, successRate: null },
+        }),
+      ).toBe(true);
+    });
+
+    it('successRate のキーごと欠けたら通さない', () => {
+      expect(
+        isObservabilityShape({
+          ...VALID_OBSERVABILITY,
+          reception: without(VALID_OBSERVABILITY.reception, 'successRate'),
+        }),
+      ).toBe(false);
+    });
+
+    it.each([...EXPECT_RECEPTION_NUMBERS])('reception.%s だけが欠けても通さない', (key) => {
+      expect(
+        isObservabilityShape({ ...VALID_OBSERVABILITY, reception: without(VALID_OBSERVABILITY.reception, key) }),
+      ).toBe(false);
+    });
+
+    it.each([...EXPECT_DEVICE_NUMBERS])('devices.%s だけが欠けても通さない', (key) => {
+      expect(
+        isObservabilityShape({ ...VALID_OBSERVABILITY, devices: without(VALID_OBSERVABILITY.devices, key) }),
+      ).toBe(false);
+    });
+
+    it('直近アクティビティの要素が壊れていたら通さない', () => {
+      expect(isObservabilityShape({ ...VALID_OBSERVABILITY, recentActivity: [null] })).toBe(false);
+    });
+
+    it('連携行の要素が壊れていたら通さない', () => {
+      expect(isObservabilityShape({ ...VALID_OBSERVABILITY, integrations: [{}] })).toBe(false);
+    });
+  });
+
+  describe('isMaintenanceShape', () => {
+    it('下界: 正しい形は通る（4 つの一覧が全部 0 件でも正当）', () => {
+      expect(isMaintenanceShape(VALID_MAINTENANCE)).toBe(true);
+      expect(
+        isMaintenanceShape({
+          summary: { devicesInMaintenance: 0, devices: [] },
+          incidents: { activeCount: 0, incidents: [] },
+          windows: { scheduledCount: 0, activeCount: 0, windows: [] },
+          notices: { activeCount: 0, notices: [] },
+        }),
+      ).toBe(true);
+    });
+
+    it.each(['summary', 'incidents', 'windows', 'notices'])('%s の節ごと欠けたら通さない', (key) => {
+      expect(isMaintenanceShape(without(VALID_MAINTENANCE, key))).toBe(false);
+    });
+
+    /**
+     * 🔴 **件数カードは欠けても投げない ——「—」で無言になる。**
+     * `windows` は `scheduledCount + activeCount` を足すので、片方が欠けると
+     * **`NaN` が画面に出る**（#968 の `receptionsToday` と同じ族）。
+     */
+    it.each(['scheduledCount', 'activeCount'])('windows.%s だけが欠けても通さない', (key) => {
+      expect(
+        isMaintenanceShape({ ...VALID_MAINTENANCE, windows: without(VALID_MAINTENANCE.windows, key) }),
+      ).toBe(false);
+    });
+
+    it('summary.devicesInMaintenance / incidents.activeCount / notices.activeCount が欠けたら通さない', () => {
+      expect(
+        isMaintenanceShape({ ...VALID_MAINTENANCE, summary: without(VALID_MAINTENANCE.summary, 'devicesInMaintenance') }),
+      ).toBe(false);
+      expect(
+        isMaintenanceShape({ ...VALID_MAINTENANCE, incidents: without(VALID_MAINTENANCE.incidents, 'activeCount') }),
+      ).toBe(false);
+      expect(
+        isMaintenanceShape({ ...VALID_MAINTENANCE, notices: without(VALID_MAINTENANCE.notices, 'activeCount') }),
+      ).toBe(false);
+    });
+
+    it.each([...EXPECT_MAINTENANCE_DEVICE_STRINGS])('端末行の %s だけが欠けても通さない', (key) => {
+      expect(
+        isMaintenanceShape({
+          ...VALID_MAINTENANCE,
+          summary: { ...VALID_MAINTENANCE.summary, devices: [without(VALID_MAINTENANCE_DEVICE, key)] },
+        }),
+      ).toBe(false);
+    });
+
+    it.each([...EXPECT_INCIDENT_STRINGS])('障害行の %s だけが欠けても通さない', (key) => {
+      expect(
+        isMaintenanceShape({
+          ...VALID_MAINTENANCE,
+          incidents: { ...VALID_MAINTENANCE.incidents, incidents: [without(VALID_INCIDENT, key)] },
+        }),
+      ).toBe(false);
+    });
+
+    it.each([...EXPECT_WINDOW_STRINGS])('予定メンテナンス行の %s だけが欠けても通さない', (key) => {
+      expect(
+        isMaintenanceShape({
+          ...VALID_MAINTENANCE,
+          windows: { ...VALID_MAINTENANCE.windows, windows: [without(VALID_WINDOW, key)] },
+        }),
+      ).toBe(false);
+    });
+
+    it.each([...EXPECT_NOTICE_STRINGS])('お知らせ行の %s だけが欠けても通さない', (key) => {
+      expect(
+        isMaintenanceShape({
+          ...VALID_MAINTENANCE,
+          notices: { ...VALID_MAINTENANCE.notices, notices: [without(VALID_NOTICE, key)] },
+        }),
+      ).toBe(false);
+    });
+  });
+
+  describe('isUpdateStatusShape', () => {
+    it('下界: 正しい形は通る（0 件も正当）', () => {
+      expect(isUpdateStatusShape(VALID_UPDATES)).toBe(true);
+      expect(
+        isUpdateStatusShape({
+          updates: { pendingCount: 0, totalCount: 0, byState: { update_available: 0, failed: 0 }, updates: [] },
+        }),
+      ).toBe(true);
+    });
+
+    it.each(['pendingCount', 'totalCount'])('updates.%s だけが欠けても通さない', (key) => {
+      expect(isUpdateStatusShape({ updates: without(VALID_UPDATES.updates, key) })).toBe(false);
+    });
+
+    it.each([...EXPECT_UPDATE_STATE_COUNTS])('byState.%s だけが欠けても通さない', (key) => {
+      expect(
+        isUpdateStatusShape({
+          updates: { ...VALID_UPDATES.updates, byState: without(VALID_UPDATES.updates.byState, key) },
+        }),
+      ).toBe(false);
+    });
+
+    /**
+     * 🔴 **`byState` に画面が読まない状態が増えても通す。** サーバが新しい
+     * `UpdateState` を足したときに画面が丸ごと落ちるのは互換の方向が逆
+     * （`read-response.ts` 冒頭の戒め）。
+     */
+    it('下界: 画面が読まない状態が増えても通る', () => {
+      expect(
+        isUpdateStatusShape({
+          updates: {
+            ...VALID_UPDATES.updates,
+            byState: { ...VALID_UPDATES.updates.byState, rolling_back: 3 },
+          },
+        }),
+      ).toBe(true);
+    });
+
+    it.each([...EXPECT_UPDATE_ROW_STRINGS])('行の %s だけが欠けても通さない', (key) => {
+      expect(
+        isUpdateStatusShape({ updates: { ...VALID_UPDATES.updates, updates: [without(VALID_UPDATE_ROW, key)] } }),
+      ).toBe(false);
+    });
+
+    it('行の pending が真偽値でなければ通さない', () => {
+      expect(
+        isUpdateStatusShape({
+          updates: { ...VALID_UPDATES.updates, updates: [{ ...VALID_UPDATE_ROW, pending: 'yes' }] },
+        }),
+      ).toBe(false);
+    });
+  });
+
+  describe('isTenantListPageShape', () => {
+    it('下界: 正しい形は通る（0 件も正当）', () => {
+      expect(isTenantListPageShape(VALID_TENANT_LIST_PAGE)).toBe(true);
+      expect(isTenantListPageShape({ summary: { total: 0, active: 0, suspended: 0 }, tenants: [] })).toBe(true);
+    });
+
+    it.each(['total', 'active', 'suspended'])('summary.%s だけが欠けても通さない', (key) => {
+      expect(
+        isTenantListPageShape({ ...VALID_TENANT_LIST_PAGE, summary: without(VALID_TENANT_LIST_PAGE.summary, key) }),
+      ).toBe(false);
+    });
+
+    /**
+     * 🔴 **一覧画面は `updatedAt` を列に出す。** ヘッダの `TenantSwitcher`（`isTenantRowShape`）は
+     * 読まないので、**画面ごとに述語を分ける**（型の全項目を検査しない、の裏返し）。
+     */
+    it.each(['id', 'name', 'slug', 'status', 'updatedAt'])('行の %s だけが欠けても通さない', (key) => {
+      expect(
+        isTenantListPageShape({ ...VALID_TENANT_LIST_PAGE, tenants: [without(VALID_TENANT_LIST_ROW, key)] }),
+      ).toBe(false);
+    });
+
+    it('summary ごと欠けたら通さない', () => {
+      expect(isTenantListPageShape({ tenants: [VALID_TENANT_LIST_ROW] })).toBe(false);
+    });
+  });
+
+  describe('isAwsCostShape', () => {
+    it('下界: available / unavailable のどちらも通る', () => {
+      expect(isAwsCostShape(VALID_COST_AVAILABLE)).toBe(true);
+      expect(isAwsCostShape(VALID_COST_UNAVAILABLE)).toBe(true);
+    });
+
+    it('下界: 内訳 0 件・予測なしでも通る', () => {
+      expect(
+        isAwsCostShape({
+          ...VALID_COST_AVAILABLE,
+          breakdown: [],
+          forecastRemaining: null,
+          monthEndEstimate: null,
+          forecastAvailable: false,
+          forecastUnavailableReason: 'no_history',
+        }),
+      ).toBe(true);
+    });
+
+    it('知らない status は通さない（画面は何も描けない）', () => {
+      expect(isAwsCostShape({ ...VALID_COST_AVAILABLE, status: 'partial' })).toBe(false);
+      expect(isAwsCostShape({})).toBe(false);
+      expect(isAwsCostShape(null)).toBe(false);
+    });
+
+    /** `data?.filters.environment` は `filters` が無いと投げる（optional chain は `data` で止まる）。 */
+    it('filters が欠けたら通さない（どちらの status でも）', () => {
+      expect(isAwsCostShape(without(VALID_COST_AVAILABLE, 'filters'))).toBe(false);
+      expect(isAwsCostShape(without(VALID_COST_UNAVAILABLE, 'filters'))).toBe(false);
+    });
+
+    it.each([...EXPECT_COST_AVAILABLE_STRINGS])('available の %s だけが欠けても通さない', (key) => {
+      expect(isAwsCostShape(without(VALID_COST_AVAILABLE, key))).toBe(false);
+    });
+
+    it.each([...EXPECT_COST_PERIOD_STRINGS])('period.%s だけが欠けても通さない', (key) => {
+      expect(isAwsCostShape({ ...VALID_COST_AVAILABLE, period: without(VALID_COST_AVAILABLE.period, key) })).toBe(false);
+    });
+
+    it.each(['actualToDate', 'forecastRemaining', 'monthEndEstimate', 'forecastAvailable', 'breakdown'])(
+      'available の %s だけが欠けても通さない',
+      (key) => {
+        expect(isAwsCostShape(without(VALID_COST_AVAILABLE, key))).toBe(false);
+      },
+    );
+
+    it('内訳の要素が壊れていたら通さない', () => {
+      expect(isAwsCostShape({ ...VALID_COST_AVAILABLE, breakdown: [null] })).toBe(false);
+      expect(isAwsCostShape({ ...VALID_COST_AVAILABLE, breakdown: [{ key: 'Web' }] })).toBe(false);
+    });
+
+    it('unavailable の message が欠けたら通さない', () => {
+      expect(isAwsCostShape(without(VALID_COST_UNAVAILABLE, 'message'))).toBe(false);
+      expect(isAwsCostShape(without(VALID_COST_UNAVAILABLE, 'updatedAt'))).toBe(false);
     });
   });
 });

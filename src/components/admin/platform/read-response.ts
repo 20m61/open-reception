@@ -249,3 +249,205 @@ export function writeTimeoutMessage(what: string): string {
 export function readTimeoutMessage(what: string): string {
   return `${what}が時間内に返りませんでした。時間をおいて再試行してください。`;
 }
+
+/*
+ * ============================================================================
+ * #973: **形の検査が無かった 7 画面**（#968 が `tests/config/platform-fetch-failure.test.ts`
+ * の台帳へ積んだ残り）。
+ *
+ * 上と同じ原則で書く —— **画面が実際に読むフィールドだけ**を見る。7 画面はどれも
+ * 一覧なので、**0 件は正当**（失敗ではない）。片側だけを主張すると「全部を失敗と
+ * 断定する」変異が空虚に通るので、`read-response.test.ts` は下界も対で張っている。
+ * ============================================================================
+ */
+
+/** 配列の全要素が述語を満たすか（`[null]` を 1 段検査で通さない）。 */
+function isArrayOf(value: unknown, row: (v: unknown) => boolean): boolean {
+  return Array.isArray(value) && value.every(row);
+}
+
+/** 指定キーが全部その型で在るか。 */
+function hasAll(row: Record<string, unknown>, keys: readonly string[], type: 'string' | 'number' | 'boolean'): boolean {
+  return keys.every((k) => typeof row[k] === type);
+}
+
+/**
+ * 監査ログ / 直近アクティビティの行。
+ *
+ * 画面が読む列は `id`（`rowKey`）/ 日時 / 操作 / 主体の 4 つ。`targetType` 以降は
+ * すべて任意（`?? '-'` で描き分ける）ので**検査しない** —— サーバが返さない運用を
+ * 「読めなかった」にしない。
+ */
+export const AUDIT_ROW_STRINGS = ['id', 'at', 'action', 'actor'] as const;
+
+function isAuditRowShape(row: unknown): boolean {
+  return isRecord(row) && hasAll(row, AUDIT_ROW_STRINGS, 'string');
+}
+
+/** `/api/platform/audit-logs`。 */
+export function isAuditLogsShape(body: unknown): boolean {
+  return isRecord(body) && isArrayOf(body.logs, isAuditRowShape);
+}
+
+/**
+ * 外部連携の行（`Integrations` と `Observability` が同じ列を出す）。
+ *
+ * `lastResult` は `RESULT_LABEL[i.lastResult]` の添字になる。**値の集合までは縛らない** ——
+ * サーバが新しい結果を足したときに画面が丸ごと落ちるのは互換の方向が逆で、
+ * ここで守りたいのは「列が無言で空になる」ことだけである。
+ */
+export const INTEGRATION_ROW_STRINGS = ['id', 'label', 'lastResult'] as const;
+export const INTEGRATION_ROW_BOOLEANS = ['configured', 'enabled'] as const;
+
+function isIntegrationRowShape(row: unknown): boolean {
+  if (!isRecord(row)) return false;
+  return (
+    hasAll(row, INTEGRATION_ROW_STRINGS, 'string') && hasAll(row, INTEGRATION_ROW_BOOLEANS, 'boolean')
+  );
+}
+
+/** `/api/platform/integrations`。連携一覧とログイン方式一覧を**両方**描く。 */
+export function isIntegrationsShape(body: unknown): boolean {
+  if (!isRecord(body)) return false;
+  return isArrayOf(body.integrations, isIntegrationRowShape) && isArrayOf(body.authMethods, isAuthMethodShape);
+}
+
+/**
+ * `/api/platform/observability`。
+ *
+ * 🔴 **`successRate` は `number | null` が正当**（受付 0 件の月）。数値必須にすると
+ * **正常な月初を「読めなかった」と誤報する** —— `config: null` と同じ型の下界。
+ */
+export const OBSERVABILITY_RECEPTION_NUMBERS = ['receptions', 'callFailures', 'noAnswer'] as const;
+export const OBSERVABILITY_DEVICE_NUMBERS = ['total', 'online', 'offline', 'maintenance', 'disabled'] as const;
+
+export function isObservabilityShape(body: unknown): boolean {
+  if (!isRecord(body)) return false;
+  if (!isArrayOf(body.integrations, isIntegrationRowShape)) return false;
+  if (!isArrayOf(body.recentActivity, isAuditRowShape)) return false;
+  const reception = body.reception;
+  if (!isRecord(reception) || !hasAll(reception, OBSERVABILITY_RECEPTION_NUMBERS, 'number')) return false;
+  if (!('successRate' in reception)) return false;
+  if (reception.successRate !== null && typeof reception.successRate !== 'number') return false;
+  const devices = body.devices;
+  return isRecord(devices) && hasAll(devices, OBSERVABILITY_DEVICE_NUMBERS, 'number');
+}
+
+/**
+ * `/api/platform/maintenance`。4 つの一覧＋4 枚の件数カードを描く。
+ *
+ * 🔴 **`windows` は `scheduledCount + activeCount` を足す。** 片方が欠けると
+ * 例外にならず **`NaN` が画面に出る**（#968 の `receptionsToday` と同じ族で、
+ * 「まだ無い」と「取れなかった」が区別できなくなる）。
+ */
+export const MAINTENANCE_DEVICE_ROW_STRINGS = ['deviceId', 'deviceName', 'tenantName', 'siteId'] as const;
+export const INCIDENT_ROW_STRINGS = ['id', 'scope', 'severity', 'status', 'title', 'startedAt'] as const;
+export const MAINTENANCE_WINDOW_ROW_STRINGS = [
+  'id',
+  'scope',
+  'status',
+  'impact',
+  'message',
+  'startsAt',
+  'endsAt',
+] as const;
+export const NOTICE_ROW_STRINGS = ['id', 'scope', 'level', 'status', 'title', 'publishedAt'] as const;
+
+function rowsWithCounts(
+  section: unknown,
+  counts: readonly string[],
+  listKey: string,
+  row: (v: unknown) => boolean,
+): boolean {
+  if (!isRecord(section) || !hasAll(section, counts, 'number')) return false;
+  return isArrayOf(section[listKey], row);
+}
+
+export function isMaintenanceShape(body: unknown): boolean {
+  if (!isRecord(body)) return false;
+  const stringRow = (keys: readonly string[]) => (row: unknown) => isRecord(row) && hasAll(row, keys, 'string');
+  return (
+    rowsWithCounts(body.summary, ['devicesInMaintenance'], 'devices', stringRow(MAINTENANCE_DEVICE_ROW_STRINGS)) &&
+    rowsWithCounts(body.incidents, ['activeCount'], 'incidents', stringRow(INCIDENT_ROW_STRINGS)) &&
+    rowsWithCounts(body.windows, ['scheduledCount', 'activeCount'], 'windows', stringRow(MAINTENANCE_WINDOW_ROW_STRINGS)) &&
+    rowsWithCounts(body.notices, ['activeCount'], 'notices', stringRow(NOTICE_ROW_STRINGS))
+  );
+}
+
+/**
+ * `/api/platform/updates`。
+ *
+ * `byState` は**画面が読む 2 つだけ**を見る。`UpdateState` を全部要求すると、
+ * サーバが新しい状態を足したときに一覧が丸ごと落ちる。
+ */
+export const UPDATE_ROW_STRINGS = [
+  'id',
+  'scope',
+  'component',
+  'currentVersion',
+  'latestVersion',
+  'state',
+  'checkedAt',
+] as const;
+export const UPDATE_STATE_COUNTS = ['update_available', 'failed'] as const;
+
+function isUpdateRowShape(row: unknown): boolean {
+  return isRecord(row) && hasAll(row, UPDATE_ROW_STRINGS, 'string') && typeof row.pending === 'boolean';
+}
+
+export function isUpdateStatusShape(body: unknown): boolean {
+  if (!isRecord(body)) return false;
+  const updates = body.updates;
+  if (!isRecord(updates) || !hasAll(updates, ['pendingCount', 'totalCount'], 'number')) return false;
+  const byState = updates.byState;
+  if (!isRecord(byState) || !hasAll(byState, UPDATE_STATE_COUNTS, 'number')) return false;
+  return isArrayOf(updates.updates, isUpdateRowShape);
+}
+
+/**
+ * `/api/platform/tenants` を**一覧画面**が読む形。
+ *
+ * 🔴 **ヘッダの `TenantSwitcher`（`isTenantListShape`）とは別の述語にする。** 一覧画面は
+ * `updatedAt` を列に出し、`summary` の 3 枚のカードも描く。同じ API でも読むものが
+ * 違うので、片方に合わせると**読まないフィールドの欠落で画面が落ちる**（互換の方向が逆）。
+ */
+export function isTenantListPageShape(body: unknown): boolean {
+  if (!isRecord(body)) return false;
+  const summary = body.summary;
+  if (!isRecord(summary) || !hasAll(summary, DASHBOARD_FLEET_NUMBERS, 'number')) return false;
+  return isArrayOf(body.tenants, (row) => isTenantRowShape(row) && isRecord(row) && typeof row.updatedAt === 'string');
+}
+
+/**
+ * `/api/platform/costs`。
+ *
+ * `status` で分岐する応答なので、**知らない `status` は「読めなかった」**とする ——
+ * 画面はどちらの節も描かず、失敗表示も出ないまま**何も無い枠**になる。
+ * `filters` は分岐の外側で `data?.filters.environment` と読むので、両方の status で要る。
+ */
+export const COST_AVAILABLE_STRINGS = ['currency', 'breakdownBy', 'updatedAt'] as const;
+export const COST_PERIOD_STRINGS = ['monthStart', 'actualEndExclusive'] as const;
+
+/** `number | null`（予測が取れない月は `null` が正当）。 */
+function isNullableNumber(value: unknown): boolean {
+  return value === null || typeof value === 'number';
+}
+
+export function isAwsCostShape(body: unknown): boolean {
+  if (!isRecord(body)) return false;
+  const filters = body.filters;
+  if (!isRecord(filters) || typeof filters.environment !== 'string') return false;
+  if (typeof body.updatedAt !== 'string') return false;
+  if (body.status === 'unavailable') return typeof body.message === 'string';
+  if (body.status !== 'available') return false;
+  if (!hasAll(body, COST_AVAILABLE_STRINGS, 'string')) return false;
+  const period = body.period;
+  if (!isRecord(period) || !hasAll(period, COST_PERIOD_STRINGS, 'string')) return false;
+  if (typeof body.actualToDate !== 'number') return false;
+  if (!isNullableNumber(body.forecastRemaining) || !isNullableNumber(body.monthEndEstimate)) return false;
+  if (typeof body.forecastAvailable !== 'boolean') return false;
+  return isArrayOf(
+    body.breakdown,
+    (item) => isRecord(item) && typeof item.key === 'string' && typeof item.amount === 'number',
+  );
+}

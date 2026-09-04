@@ -4,6 +4,7 @@ import { useState, type FormEvent } from 'react';
 import type { NoticeLevel } from '@/domain/platform/notice';
 import { buildNoticePublishPayload, noticePublishError } from '@/lib/platform/client-elevation';
 import { font } from '@/components/admin/ui/tokens';
+import { PLATFORM_WRITE_TIMEOUT_MS, writeTimeoutMessage } from './read-response';
 
 /**
  * お知らせ登録フォーム — 昇格つき write の最初の UI 導線 (issue #83 §2 / inc4d)。
@@ -44,6 +45,7 @@ export function NoticePublishForm({ onPublished }: { onPublished?: () => void })
     setBusy(true);
     try {
       const res = await fetch('/api/platform/notices', {
+        signal: AbortSignal.timeout(PLATFORM_WRITE_TIMEOUT_MS),
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(built.payload),
@@ -58,8 +60,18 @@ export function NoticePublishForm({ onPublished }: { onPublished?: () => void })
       setBody('');
       setReason('');
       onPublished?.();
-    } catch {
-      setError({ message: 'お知らせ登録リクエストの送信に失敗しました。', needsElevation: false });
+    } catch (cause) {
+      /*
+       * 🔴 **中断は「登録できなかった」と断定しない (#973)。** サーバが受理していれば
+       * 掲示は始まっている。断定すると同じお知らせを二重に出す。
+       */
+      setError({
+        message:
+          cause instanceof Error && cause.name === 'TimeoutError'
+            ? writeTimeoutMessage('お知らせの登録')
+            : 'お知らせ登録リクエストの送信に失敗しました。',
+        needsElevation: false,
+      });
     } finally {
       setBusy(false);
     }

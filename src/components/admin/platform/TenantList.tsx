@@ -6,6 +6,7 @@ import type { TenantFleetSummary, TenantRow } from '@/domain/platform/console-su
 import { DangerActionPlaceholder } from './primitives';
 import { DataTable, MetricCard, StatusBadge, type Column } from '@/components/admin/ui';
 import { tenantStatusState } from '../state-vocabulary';
+import { PLATFORM_READ_TIMEOUT_MS, isTenantListPageShape, readTimeoutMessage } from './read-response';
 
 /**
  * テナント一覧（テナント横断 read） (issue #90, increment 1; #90, increment 2 で詳細導線追加)。
@@ -25,13 +26,26 @@ export function TenantList() {
     let cancelled = false;
     void (async () => {
       try {
-        const res = await fetch('/api/platform/tenants');
+        const res = await fetch('/api/platform/tenants', {
+          signal: AbortSignal.timeout(PLATFORM_READ_TIMEOUT_MS),
+        });
         if (cancelled) return;
         if (!res.ok) {
           setError(res.status === 403 ? 'この画面の閲覧権限がありません。' : 'テナント一覧の取得に失敗しました。');
           return;
         }
-        setData((await res.json()) as TenantsResponse);
+        const body: unknown = await res.json();
+        /*
+         * 形が違う 200 は「0 件」ではなく「読めなかった」(#973 AC7)。放置すると
+         * `summary` の 3 枚が無言で `—` になり、`tenants: [null]` は `rowKey` が投げて
+         * 運用コンソールに来訪者向けの文言が出る（#968 レビュー 7 周目 BLOCKER-1 と同じ経路）。
+         */
+        if (!isTenantListPageShape(body)) {
+          setError('テナント一覧の形式が不正です。時間をおいて再試行してください。');
+          return;
+        }
+        setError(null);
+        setData(body as TenantsResponse);
       /*
        * 🔴 **通信そのものが失敗した場合も「失敗」へ落とす (#896 レビュー M3)。**
        * `fetch` の reject（オフライン・DNS・接続断）や、HTML が返って `res.json()` が
@@ -39,8 +53,20 @@ export function TenantList() {
        * `resolveAdminReadState` は `'loading'` を返す ——「失敗が永遠の読み込み中に
        * 化ける」まさにその形で、画面には再試行の導線も `role="alert"` も出ない。
        */
-      } catch {
-        if (!cancelled) setError('テナント一覧の取得に失敗しました。');
+      } catch (cause) {
+        /*
+         * 🔴 **ガードは `if (!cancelled) setError(...)` の形のまま置く。** 早期 return へ
+         * 崩すと `tests/config/platform-list-states.test.ts` の「古い応答を捨てるガード」
+         * 検査から外れる —— 方式を替えると、前の方式が守っていた変異が黙って落ちる
+         * (`.claude/rules/opus5-autonomous-loop.md`)。返ってこない読み取りも
+         * 「終わらない待ち」にしない (#973)。
+         */
+        if (!cancelled)
+          setError(
+            cause instanceof Error && cause.name === 'TimeoutError'
+              ? readTimeoutMessage('テナント一覧')
+              : 'テナント一覧の取得に失敗しました。',
+          );
       }
     })();
     return () => {
@@ -74,7 +100,11 @@ export function TenantList() {
         伴って実装します。
       </p>
 
-      {error ? <p role="alert" style={{ color: 'var(--color-platform-warn)' }}>{error}</p> : null}
+      {error ? (
+        <p role="alert" data-testid="platform-tenants-error" style={{ color: 'var(--color-platform-warn)' }}>
+          {error}
+        </p>
+      ) : null}
 
       <div style={{ display: 'flex', gap: 'var(--space-md)', flexWrap: 'wrap', marginBottom: 'var(--space-md)' }}>
         <MetricCard label="全テナント数" value={data ? data.summary.total : '—'} />

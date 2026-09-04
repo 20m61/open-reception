@@ -11,6 +11,7 @@ import {
   formatRemaining,
   type ElevationView,
 } from '@/lib/platform/client-elevation';
+import { PLATFORM_WRITE_TIMEOUT_MS, writeTimeoutMessage } from './read-response';
 
 /**
  * JIT 昇格の状態表示 + 開始/終了 UI (issue #83 §2 / inc4d)。
@@ -70,6 +71,7 @@ export function ElevationStatus({ initial }: { initial: ElevationView | null }) 
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(built.payload),
+        signal: AbortSignal.timeout(PLATFORM_WRITE_TIMEOUT_MS),
       });
       const body: unknown = await res.json().catch(() => null);
       if (!res.ok) {
@@ -86,8 +88,17 @@ export function ElevationStatus({ initial }: { initial: ElevationView | null }) 
       setFormOpen(false);
       setReason('');
       setCredential('');
-    } catch {
-      setError('昇格リクエストの送信に失敗しました。ネットワークを確認してください。');
+    } catch (cause) {
+      /*
+       * 🔴 **中断は「失敗した」と断定しない (#973)。** 中断したのはこちらの待ちで、
+       * サーバは昇格を発行して監査に残しているかもしれない。断定すると運用者は
+       * もう一度昇格を要求する（＝二重の昇格記録）。
+       */
+      setError(
+        cause instanceof Error && cause.name === 'TimeoutError'
+          ? writeTimeoutMessage('昇格リクエスト')
+          : '昇格リクエストの送信に失敗しました。ネットワークを確認してください。',
+      );
     } finally {
       setBusy(false);
     }
@@ -108,6 +119,7 @@ export function ElevationStatus({ initial }: { initial: ElevationView | null }) 
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(built.payload),
+        signal: AbortSignal.timeout(PLATFORM_WRITE_TIMEOUT_MS),
       });
       const body: unknown = await res.json().catch(() => null);
       if (!res.ok) {
@@ -126,8 +138,12 @@ export function ElevationStatus({ initial }: { initial: ElevationView | null }) 
       setBgAcknowledged(false);
       setReason('');
       setCredential('');
-    } catch {
-      setError('break-glass リクエストの送信に失敗しました。ネットワークを確認してください。');
+    } catch (cause) {
+      setError(
+        cause instanceof Error && cause.name === 'TimeoutError'
+          ? writeTimeoutMessage('break-glass リクエスト')
+          : 'break-glass リクエストの送信に失敗しました。ネットワークを確認してください。',
+      );
     } finally {
       setBusy(false);
     }
@@ -139,15 +155,26 @@ export function ElevationStatus({ initial }: { initial: ElevationView | null }) 
     setInfo(null);
     try {
       // end は冪等（cookie 無し/失効済みでも 200）。応答を待ってから表示を戻す。
-      const res = await fetch('/api/platform/elevate/end', { method: 'POST' });
+      const res = await fetch('/api/platform/elevate/end', {
+        method: 'POST',
+        signal: AbortSignal.timeout(PLATFORM_WRITE_TIMEOUT_MS),
+      });
       if (!res.ok) {
         setError(`昇格の終了に失敗しました（HTTP ${res.status}）。`);
         return;
       }
       setElevation(null);
       setInfo('昇格を終了しました（読み取り専用に戻りました）。');
-    } catch {
-      setError('昇格終了リクエストの送信に失敗しました。');
+    } catch (cause) {
+      /*
+       * end は冪等だが、**中断は「終了できていない」を意味しない**。断定すると
+       * 「まだ昇格中だ」と思ったまま放置される（向きとしてはこちらが危険）。
+       */
+      setError(
+        cause instanceof Error && cause.name === 'TimeoutError'
+          ? writeTimeoutMessage('昇格の終了')
+          : '昇格終了リクエストの送信に失敗しました。',
+      );
     } finally {
       setBusy(false);
     }

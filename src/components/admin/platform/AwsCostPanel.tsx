@@ -10,6 +10,7 @@ import {
   type CostEnvironmentFilter,
   type ForecastUnavailableReason,
 } from '@/domain/platform/aws-cost';
+import { PLATFORM_READ_TIMEOUT_MS, isAwsCostShape, readTimeoutMessage } from './read-response';
 import { DataTable, MetricCard, font, type Column } from '@/components/admin/ui';
 
 const COMPONENT_LABELS: Record<CostComponentFilter, string> = {
@@ -124,7 +125,13 @@ export function AwsCostPanel() {
       if (refreshToken > 0) params.set('_refresh', String(refreshToken));
       try {
         const response = await fetch(`/api/platform/costs?${params.toString()}`, {
-          signal: controller.signal,
+          /*
+           * 🔴 **アンマウント時の中断と「返ってこない」は別の信号** (#973 AC7)。
+           * `controller` はフィルタ往復・アンマウントの後始末、`AbortSignal.timeout` は
+           * ハングの上限。`any` で束ねると、時間切れは `TimeoutError` として届くので
+           * 下の `AbortError` 判定（黙って無視する枝）に飲まれない。
+           */
+          signal: AbortSignal.any([controller.signal, AbortSignal.timeout(PLATFORM_READ_TIMEOUT_MS)]),
         });
         if (!response.ok) {
           setError(
@@ -134,11 +141,21 @@ export function AwsCostPanel() {
           );
           return;
         }
-        setData((await response.json()) as AwsCostSummary);
-      } catch (fetchError) {
-        if ((fetchError as Error).name !== 'AbortError') {
-          setError('AWSコスト情報の取得に失敗しました。');
+        const body: unknown = await response.json();
+        /*
+         * 形が違う 200 は「読めなかった」(#973 AC7)。`status` が未知だと画面は
+         * **どちらの節も描かず、失敗表示も出ないまま空の枠**になる。
+         */
+        if (!isAwsCostShape(body)) {
+          setError('AWSコスト情報の形式が不正です。時間をおいて再試行してください。');
+          return;
         }
+        setError(null);
+        setData(body as AwsCostSummary);
+      } catch (fetchError) {
+        const name = (fetchError as Error).name;
+        if (name === 'TimeoutError') setError(readTimeoutMessage('AWSコスト情報'));
+        else if (name !== 'AbortError') setError('AWSコスト情報の取得に失敗しました。');
       } finally {
         if (!controller.signal.aborted) setLoading(false);
       }
@@ -238,7 +255,7 @@ export function AwsCostPanel() {
       </div>
 
       {error ? (
-        <p role="alert" style={{ color: 'var(--color-platform-warn)' }}>
+        <p role="alert" data-testid="platform-aws-cost-error" style={{ color: 'var(--color-platform-warn)' }}>
           {error}
         </p>
       ) : null}

@@ -4,6 +4,7 @@ import { useEffect, useState } from 'react';
 import { DangerActionPlaceholder } from './primitives';
 import { DataTable, type Column } from '@/components/admin/ui';
 import { enablementState } from '../state-vocabulary';
+import { PLATFORM_READ_TIMEOUT_MS, isIntegrationsShape, readTimeoutMessage } from './read-response';
 
 /**
  * 外部連携状態（read 中心） (issue #90, increment 3 / #83)。
@@ -67,7 +68,9 @@ export function Integrations() {
     let cancelled = false;
     void (async () => {
       try {
-        const res = await fetch('/api/platform/integrations');
+        const res = await fetch('/api/platform/integrations', {
+          signal: AbortSignal.timeout(PLATFORM_READ_TIMEOUT_MS),
+        });
         if (cancelled) return;
         if (!res.ok) {
           setError(
@@ -75,7 +78,18 @@ export function Integrations() {
           );
           return;
         }
-        setData((await res.json()) as IntegrationsResponse);
+        const body: unknown = await res.json();
+        /*
+         * 形が違う 200 は「0 件」ではなく「読めなかった」(#973 AC7)。
+         * `authMethods` の要素が欠けると `m.issues.length` が投げ、運用者は
+         * 「読めなかった」ではなく汎用の例外画面を受け取る（#968 レビュー 7 周目 MAJOR-1）。
+         */
+        if (!isIntegrationsShape(body)) {
+          setError('連携状態の形式が不正です。時間をおいて再試行してください。');
+          return;
+        }
+        setError(null);
+        setData(body as IntegrationsResponse);
       /*
        * 🔴 **通信そのものが失敗した場合も「失敗」へ落とす (#896 レビュー M3)。**
        * `fetch` の reject（オフライン・DNS・接続断）や、HTML が返って `res.json()` が
@@ -83,8 +97,20 @@ export function Integrations() {
        * `resolveAdminReadState` は `'loading'` を返す ——「失敗が永遠の読み込み中に
        * 化ける」まさにその形で、画面には再試行の導線も `role="alert"` も出ない。
        */
-      } catch {
-        if (!cancelled) setError('連携状態の取得に失敗しました。');
+      } catch (cause) {
+        /*
+         * 🔴 **ガードは `if (!cancelled) setError(...)` の形のまま置く。** 早期 return へ
+         * 崩すと `tests/config/platform-list-states.test.ts` の「古い応答を捨てるガード」
+         * 検査から外れる —— 方式を替えると、前の方式が守っていた変異が黙って落ちる
+         * (`.claude/rules/opus5-autonomous-loop.md`)。返ってこない読み取りも
+         * 「終わらない待ち」にしない (#973)。
+         */
+        if (!cancelled)
+          setError(
+            cause instanceof Error && cause.name === 'TimeoutError'
+              ? readTimeoutMessage('連携状態')
+              : '連携状態の取得に失敗しました。',
+          );
       }
     })();
     return () => {
@@ -101,7 +127,11 @@ export function Integrations() {
         などの機密値は表示しません。
       </p>
 
-      {error ? <p role="alert" style={{ color: 'var(--color-platform-warn)' }}>{error}</p> : null}
+      {error ? (
+        <p role="alert" data-testid="platform-integrations-error" style={{ color: 'var(--color-platform-warn)' }}>
+          {error}
+        </p>
+      ) : null}
 
       <h2 style={{ fontSize: '1rem', opacity: 0.7 }}>外部連携</h2>
       {/*

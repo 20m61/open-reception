@@ -5,6 +5,7 @@ import type { MaskedAuditRow } from '@/domain/platform/console-summary';
 import { formatPercent } from '@/domain/util/format';
 import { DataTable, MetricCard, type Column } from '@/components/admin/ui';
 import { enablementState } from '../state-vocabulary';
+import { PLATFORM_READ_TIMEOUT_MS, isObservabilityShape, readTimeoutMessage } from './read-response';
 
 /**
  * 可観測性（read 中心） (issue #90, increment 2)。
@@ -79,13 +80,26 @@ export function Observability() {
     let cancelled = false;
     void (async () => {
       try {
-        const res = await fetch('/api/platform/observability');
+        const res = await fetch('/api/platform/observability', {
+          signal: AbortSignal.timeout(PLATFORM_READ_TIMEOUT_MS),
+        });
         if (cancelled) return;
         if (!res.ok) {
           setError(res.status === 403 ? 'この画面の閲覧権限がありません。' : '可観測性情報の取得に失敗しました。');
           return;
         }
-        setData((await res.json()) as ObservabilityResponse);
+        const body: unknown = await res.json();
+        /*
+         * 形が違う 200 は「読めなかった」(#973 AC7)。受付・端末のカードは
+         * `data?.reception?.receptions ?? '—'` と optional chain で読むので、
+         * **受付が全滅していても `—` が並ぶだけ**で運用者は気づけない。
+         */
+        if (!isObservabilityShape(body)) {
+          setError('可観測性情報の形式が不正です。時間をおいて再試行してください。');
+          return;
+        }
+        setError(null);
+        setData(body as ObservabilityResponse);
       /*
        * 🔴 **通信そのものが失敗した場合も「失敗」へ落とす (#896 レビュー M3)。**
        * `fetch` の reject（オフライン・DNS・接続断）や、HTML が返って `res.json()` が
@@ -93,8 +107,20 @@ export function Observability() {
        * `resolveAdminReadState` は `'loading'` を返す ——「失敗が永遠の読み込み中に
        * 化ける」まさにその形で、画面には再試行の導線も `role="alert"` も出ない。
        */
-      } catch {
-        if (!cancelled) setError('可観測性情報の取得に失敗しました。');
+      } catch (cause) {
+        /*
+         * 🔴 **ガードは `if (!cancelled) setError(...)` の形のまま置く。** 早期 return へ
+         * 崩すと `tests/config/platform-list-states.test.ts` の「古い応答を捨てるガード」
+         * 検査から外れる —— 方式を替えると、前の方式が守っていた変異が黙って落ちる
+         * (`.claude/rules/opus5-autonomous-loop.md`)。返ってこない読み取りも
+         * 「終わらない待ち」にしない (#973)。
+         */
+        if (!cancelled)
+          setError(
+            cause instanceof Error && cause.name === 'TimeoutError'
+              ? readTimeoutMessage('可観測性情報')
+              : '可観測性情報の取得に失敗しました。',
+          );
       }
     })();
     return () => {
@@ -110,7 +136,11 @@ export function Observability() {
         マスク済みで個人情報を露出しません。エラー率・レイテンシ等の指標は次増分で接続します。
       </p>
 
-      {error ? <p role="alert" style={{ color: 'var(--color-platform-warn)' }}>{error}</p> : null}
+      {error ? (
+        <p role="alert" data-testid="platform-observability-error" style={{ color: 'var(--color-platform-warn)' }}>
+          {error}
+        </p>
+      ) : null}
 
       <h2 style={{ fontSize: '1rem', opacity: 0.7 }}>外部連携の接続状態</h2>
       {/*

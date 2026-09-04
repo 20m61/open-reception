@@ -3,6 +3,7 @@
 import { useEffect, useState } from 'react';
 import type { MaskedAuditRow } from '@/domain/platform/console-summary';
 import { DataTable, type Column } from '@/components/admin/ui';
+import { PLATFORM_READ_TIMEOUT_MS, isAuditLogsShape, readTimeoutMessage } from './read-response';
 
 /**
  * 監査ログ（テナント横断・マスク済み read） (issue #90, increment 2)。
@@ -91,14 +92,26 @@ export function AuditLogs() {
     let cancelled = false;
     void (async () => {
       try {
-        const res = await fetch(`/api/platform/audit-logs${breakGlassOnly ? '?breakGlass=1' : ''}`);
+        const res = await fetch(`/api/platform/audit-logs${breakGlassOnly ? '?breakGlass=1' : ''}`, {
+          signal: AbortSignal.timeout(PLATFORM_READ_TIMEOUT_MS),
+        });
         if (cancelled) return;
         if (!res.ok) {
           setError(res.status === 403 ? 'この画面の閲覧権限がありません。' : '監査ログの取得に失敗しました。');
           return;
         }
+        const body: unknown = await res.json();
+        /*
+         * 形が違う 200 は「まだ監査ログはありません」ではなく「読めなかった」(#973 AC7)。
+         * **break-glass の利用後レビューがこの一覧だけを根拠にしている**ので、
+         * 読めていない一覧を 0 件と断定すると「緊急権限は使われていない」と誤読される。
+         */
+        if (!isAuditLogsShape(body)) {
+          setError('監査ログの形式が不正です。時間をおいて再試行してください。');
+          return;
+        }
         setError(null);
-        setData((await res.json()) as AuditResponse);
+        setData(body as AuditResponse);
       /*
        * 🔴 **通信そのものが失敗した場合も「失敗」へ落とす (#896 レビュー M3)。**
        * `fetch` の reject（オフライン・DNS・接続断）や、HTML が返って `res.json()` が
@@ -106,8 +119,20 @@ export function AuditLogs() {
        * `resolveAdminReadState` は `'loading'` を返す ——「失敗が永遠の読み込み中に
        * 化ける」まさにその形で、画面には再試行の導線も `role="alert"` も出ない。
        */
-      } catch {
-        if (!cancelled) setError('監査ログの取得に失敗しました。');
+      } catch (cause) {
+        /*
+         * 🔴 **ガードは `if (!cancelled) setError(...)` の形のまま置く。** 早期 return へ
+         * 崩すと `tests/config/platform-list-states.test.ts` の「古い応答を捨てるガード」
+         * 検査から外れる —— 方式を替えると、前の方式が守っていた変異が黙って落ちる
+         * (`.claude/rules/opus5-autonomous-loop.md`)。返ってこない読み取りも
+         * 「終わらない待ち」にしない (#973)。
+         */
+        if (!cancelled)
+          setError(
+            cause instanceof Error && cause.name === 'TimeoutError'
+              ? readTimeoutMessage('監査ログ')
+              : '監査ログの取得に失敗しました。',
+          );
       }
     })();
     return () => {
@@ -135,7 +160,11 @@ export function AuditLogs() {
         <span>break-glass のみ表示（緊急権限の利用後レビュー）</span>
       </label>
 
-      {error ? <p role="alert" style={{ color: 'var(--color-platform-warn)' }}>{error}</p> : null}
+      {error ? (
+        <p role="alert" data-testid="platform-audit-logs-error" style={{ color: 'var(--color-platform-warn)' }}>
+          {error}
+        </p>
+      ) : null}
 
       {/*
         生 `<table>` を共有 `ui/DataTable` へ寄せた (#896 AC1)。あわせて「まだ読めていない」を

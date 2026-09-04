@@ -9,6 +9,7 @@ import type {
 } from '@/domain/platform/update-status';
 import { DangerActionPlaceholder } from './primitives';
 import { DataTable, MetricCard, type Column } from '@/components/admin/ui';
+import { PLATFORM_READ_TIMEOUT_MS, isUpdateStatusShape, readTimeoutMessage } from './read-response';
 
 /**
  * アップデート状況（read 中心） (issue #83 AC6)。
@@ -61,16 +62,40 @@ export function UpdateStatus() {
     let cancelled = false;
     void (async () => {
       try {
-        const res = await fetch('/api/platform/updates');
+        const res = await fetch('/api/platform/updates', {
+          signal: AbortSignal.timeout(PLATFORM_READ_TIMEOUT_MS),
+        });
         if (cancelled) return;
         if (!res.ok) {
           setError(res.status === 403 ? 'この画面の閲覧権限がありません。' : 'アップデート状況の取得に失敗しました。');
           return;
         }
-        setData((await res.json()) as UpdatesResponse);
-      } catch {
-        // ネットワーク断・レスポンス解析失敗を握り潰さずエラー表示する。
-        if (!cancelled) setError('アップデート状況の取得に失敗しました。');
+        const body: unknown = await res.json();
+        /*
+         * 形が違う 200 は「0 件」ではなく「読めなかった」(#973 AC7)。件数カードは
+         * 欠けても投げず `—` になるだけなので、**更新失敗が全件でも運用者は気づけない**。
+         */
+        if (!isUpdateStatusShape(body)) {
+          setError('アップデート状況の形式が不正です。時間をおいて再試行してください。');
+          return;
+        }
+        setError(null);
+        setData(body as UpdatesResponse);
+      } catch (cause) {
+        // ネットワーク断・レスポンス解析失敗・ハングを握り潰さずエラー表示する。
+        /*
+         * 🔴 **ガードは `if (!cancelled) setError(...)` の形のまま置く。** 早期 return へ
+         * 崩すと `tests/config/platform-list-states.test.ts` の「古い応答を捨てるガード」
+         * 検査から外れる —— 方式を替えると、前の方式が守っていた変異が黙って落ちる
+         * (`.claude/rules/opus5-autonomous-loop.md`)。返ってこない読み取りも
+         * 「終わらない待ち」にしない (#973)。
+         */
+        if (!cancelled)
+          setError(
+            cause instanceof Error && cause.name === 'TimeoutError'
+              ? readTimeoutMessage('アップデート状況')
+              : 'アップデート状況の取得に失敗しました。',
+          );
       }
     })();
     return () => {
@@ -89,7 +114,11 @@ export function UpdateStatus() {
         昇格・監査を伴う導線に隔離します。
       </p>
 
-      {error ? <p role="alert" style={{ color: 'var(--color-platform-warn)' }}>{error}</p> : null}
+      {error ? (
+        <p role="alert" data-testid="platform-updates-error" style={{ color: 'var(--color-platform-warn)' }}>
+          {error}
+        </p>
+      ) : null}
 
       <div style={{ display: 'flex', gap: 'var(--space-md)', flexWrap: 'wrap', marginBottom: 'var(--space-md)' }}>
         <MetricCard label="要対応（更新待ち/中/失敗）" value={data ? data.updates.pendingCount : '—'} />

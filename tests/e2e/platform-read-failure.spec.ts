@@ -77,6 +77,60 @@ const READS = [
     testId: 'platform-feature-flags-error',
     forbiddenText: '閲覧権限',
   },
+  /*
+   * #973: **形の検査が無かった 7 画面**（#968 が台帳へ積んだ残り）。
+   * 上の 3 画面と**同じ 4 通り**（500 / 403 / 形の壊れた 200 / 接続断）を当てる ——
+   * 「台帳から消した」ことの証拠は、静的検査ではなく**実際に落として見た結果**である。
+   */
+  {
+    label: '監査ログ',
+    path: '/platform/audit-logs',
+    api: '**/api/platform/audit-logs*',
+    testId: 'platform-audit-logs-error',
+    forbiddenText: '閲覧権限',
+  },
+  {
+    label: '外部連携',
+    path: '/platform/integrations',
+    api: '**/api/platform/integrations',
+    testId: 'platform-integrations-error',
+    forbiddenText: '閲覧権限',
+  },
+  {
+    label: '可観測性',
+    path: '/platform/observability',
+    api: '**/api/platform/observability',
+    testId: 'platform-observability-error',
+    forbiddenText: '閲覧権限',
+  },
+  {
+    label: 'メンテナンス状況',
+    path: '/platform/maintenance',
+    api: '**/api/platform/maintenance',
+    testId: 'platform-maintenance-error',
+    forbiddenText: '閲覧権限',
+  },
+  {
+    label: 'テナント一覧',
+    path: '/platform/tenants',
+    api: '**/api/platform/tenants',
+    testId: 'platform-tenants-error',
+    forbiddenText: '閲覧権限',
+  },
+  {
+    label: 'アップデート状況',
+    path: '/platform/updates',
+    api: '**/api/platform/updates',
+    testId: 'platform-updates-error',
+    forbiddenText: '閲覧権限',
+  },
+  {
+    label: 'AWS コスト',
+    path: '/platform',
+    api: '**/api/platform/costs*',
+    testId: 'platform-aws-cost-error',
+    forbiddenText: '権限',
+  },
 ] as const;
 
 /** 形の壊れた 200。**「0 件」ではなく「読めなかった」**として扱われることを見る。 */
@@ -779,5 +833,95 @@ test.describe('platform: 読み取りの失敗が運用者に見える (#968)', 
      */
     await expect(page.getByTestId('platform-tenant-detail-error')).toHaveCount(0);
     await expect(page.getByTestId('platform-tenant-sites')).toBeVisible();
+  });
+  /*
+   * ==========================================================================
+   * #973 AC9: **部分形**の注入。
+   *
+   * 🔴 `{}` の 1 通りでは族が閉じない —— どれか 1 つの検査が残っていれば弾かれるので、
+   * **述語から 1 項目だけ落とす**変異が全部素通りする（#968 は 5 周これに気づかなかった。
+   * `.claude/rules/opus5-autonomous-loop.md`「数値/条件パラメータを狭める」型）。
+   * ここは「境界のすぐ内側」を踏む入力を置く。
+   * ==========================================================================
+   */
+
+  /**
+   * 🔴 **break-glass の利用後レビューはこの一覧だけを根拠にしている。** 主体が欠けた
+   * 行を「読めた」として描くと、誰が緊急権限を使ったか分からない表が**正常に見える**。
+   */
+  test('監査ログ: actor だけ欠けた 200 を「読めた」にしない', async ({ page }) => {
+    await fulfillBody(
+      page,
+      '**/api/platform/audit-logs*',
+      '{"logs":[{"id":"a1","at":"2026-09-05T00:00:00Z","action":"tenant.suspend"}]}',
+    );
+    await page.goto('/platform/audit-logs');
+    await expect(page.getByTestId('platform-audit-logs-error')).toBeVisible();
+    await expect(page.getByText('まだ監査ログはありません。')).toHaveCount(0);
+  });
+
+  /**
+   * 🔴 **件数カードは足し算をする。** `scheduledCount` が欠けると `undefined + 0` で
+   * **`NaN` が画面に出る** —— 例外にならないので失敗表示も出ない。
+   */
+  test('メンテナンス状況: 件数が 1 つ欠けた 200 で NaN を出さない', async ({ page }) => {
+    await fulfillBody(
+      page,
+      '**/api/platform/maintenance',
+      '{"summary":{"devicesInMaintenance":0,"devices":[]},' +
+        '"incidents":{"activeCount":0,"incidents":[]},' +
+        '"windows":{"activeCount":0,"windows":[]},' +
+        '"notices":{"activeCount":0,"notices":[]}}',
+    );
+    await page.goto('/platform/maintenance');
+    await expect(page.getByTestId('platform-maintenance-error')).toBeVisible();
+    await expect(page.getByText('NaN')).toHaveCount(0);
+  });
+
+  /**
+   * 🔴 **下界: 0 件は失敗ではない。** 片側だけ主張すると「全部を失敗と断定する」変異が
+   * 空虚に通る（`config: null` を正当とした #968 と同じ形）。
+   */
+  test('テナント一覧: 正しい形の 0 件は失敗にせず「ありません」と出す', async ({ page }) => {
+    await fulfillBody(
+      page,
+      '**/api/platform/tenants',
+      '{"summary":{"total":0,"active":0,"suspended":0},"tenants":[]}',
+    );
+    await page.goto('/platform/tenants');
+    await expect(page.getByText('テナントがありません。')).toBeVisible();
+    await expect(page.getByTestId('platform-tenants-error')).toHaveCount(0);
+  });
+
+  /**
+   * 🔴 **下界: `successRate: null` は受付 0 件の月の正当な値。** ここを数値必須にすると
+   * **正常な月初を「読めなかった」と誤報する**（誤検知は無言より悪い場合がある）。
+   */
+  test('可観測性: successRate が null でも失敗にしない', async ({ page }) => {
+    await fulfillBody(
+      page,
+      '**/api/platform/observability',
+      '{"integrations":[],"recentActivity":[],' +
+        '"reception":{"receptions":0,"successRate":null,"callFailures":0,"noAnswer":0},' +
+        '"devices":{"total":0,"online":0,"offline":0,"maintenance":0,"disabled":0}}',
+    );
+    await page.goto('/platform/observability');
+    await expect(page.getByTestId('platform-observability-error')).toHaveCount(0);
+    await expect(page.getByText('連携がありません。')).toBeVisible();
+  });
+
+  /**
+   * 🔴 **知らない `status` は「何も描かない」。** 画面は available / unavailable の
+   * どちらの節も描かず、失敗表示も出ないまま**空の枠**になる（無言の最たる形）。
+   */
+  test('AWS コスト: 知らない status の 200 を空の枠にしない', async ({ page }) => {
+    await fulfillBody(
+      page,
+      '**/api/platform/costs*',
+      '{"status":"partial","filters":{"project":"open-reception","environment":"dev","component":"all"},' +
+        '"updatedAt":"2026-09-05T00:00:00Z"}',
+    );
+    await page.goto('/platform');
+    await expect(page.getByTestId('platform-aws-cost-error')).toBeVisible();
   });
 });

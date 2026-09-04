@@ -13,6 +13,7 @@ import type { NoticeLevel, NoticeRow, NoticeSummary } from '@/domain/platform/no
 import { NoticePublishForm } from './NoticePublishForm';
 import { DangerActionPlaceholder } from './primitives';
 import { DataTable, MetricCard, type Column } from '@/components/admin/ui';
+import { PLATFORM_READ_TIMEOUT_MS, isMaintenanceShape, readTimeoutMessage } from './read-response';
 
 /**
  * メンテナンス状況・障害情報（read 中心） (issue #90, increment 2/3e)。
@@ -125,14 +126,27 @@ export function MaintenanceStatus() {
     let cancelled = false;
     void (async () => {
       try {
-        const res = await fetch('/api/platform/maintenance');
+        const res = await fetch('/api/platform/maintenance', {
+          signal: AbortSignal.timeout(PLATFORM_READ_TIMEOUT_MS),
+        });
         if (cancelled) return;
         if (!res.ok) {
           setError(res.status === 403 ? 'この画面の閲覧権限がありません。' : 'メンテナンス状況の取得に失敗しました。');
           return;
         }
+        const body: unknown = await res.json();
+        /*
+         * 形が違う 200 は「0 件」ではなく「読めなかった」(#973 AC7)。
+         * 「進行中の障害」カードは `windows.scheduledCount + activeCount` を足すので、
+         * 片方が欠けると **`NaN` が出る**。0 件と読ませると「障害は起きていない」と
+         * 誤読されるので、断定せず失敗として出す。
+         */
+        if (!isMaintenanceShape(body)) {
+          setError('メンテナンス状況の形式が不正です。時間をおいて再試行してください。');
+          return;
+        }
         setError(null);
-        setData((await res.json()) as MaintenanceResponse);
+        setData(body as MaintenanceResponse);
       /*
        * 🔴 **通信そのものが失敗した場合も「失敗」へ落とす (#896 レビュー M3)。**
        * `fetch` の reject（オフライン・DNS・接続断）や、HTML が返って `res.json()` が
@@ -140,8 +154,20 @@ export function MaintenanceStatus() {
        * `resolveAdminReadState` は `'loading'` を返す ——「失敗が永遠の読み込み中に
        * 化ける」まさにその形で、画面には再試行の導線も `role="alert"` も出ない。
        */
-      } catch {
-        if (!cancelled) setError('メンテナンス状況の取得に失敗しました。');
+      } catch (cause) {
+        /*
+         * 🔴 **ガードは `if (!cancelled) setError(...)` の形のまま置く。** 早期 return へ
+         * 崩すと `tests/config/platform-list-states.test.ts` の「古い応答を捨てるガード」
+         * 検査から外れる —— 方式を替えると、前の方式が守っていた変異が黙って落ちる
+         * (`.claude/rules/opus5-autonomous-loop.md`)。返ってこない読み取りも
+         * 「終わらない待ち」にしない (#973)。
+         */
+        if (!cancelled)
+          setError(
+            cause instanceof Error && cause.name === 'TimeoutError'
+              ? readTimeoutMessage('メンテナンス状況')
+              : 'メンテナンス状況の取得に失敗しました。',
+          );
       }
     })();
     return () => {
@@ -158,7 +184,11 @@ export function MaintenanceStatus() {
         広いため、確認・昇格・監査を伴う導線に隔離します。
       </p>
 
-      {error ? <p role="alert" style={{ color: 'var(--color-platform-warn)' }}>{error}</p> : null}
+      {error ? (
+        <p role="alert" data-testid="platform-maintenance-error" style={{ color: 'var(--color-platform-warn)' }}>
+          {error}
+        </p>
+      ) : null}
 
       <div style={{ display: 'flex', gap: 'var(--space-md)', flexWrap: 'wrap', marginBottom: 'var(--space-md)' }}>
         <MetricCard
