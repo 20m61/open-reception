@@ -48,6 +48,8 @@ const LISTS = [
     alert: 'asset-list-error',
     /** 0 件だと断定する文言。失敗時に出てはいけない。 */
     assertion: '登録されたアセットはありません。',
+    /** 表の中の失敗文言。画面ごとに違うので、定数へ潰す変異が落ちる。 */
+    failureMessage: 'アセット一覧を読み込めませんでした。',
   },
   {
     label: '部署管理',
@@ -56,6 +58,8 @@ const LISTS = [
     table: 'dept-table',
     alert: 'dept-list-error',
     assertion: '登録された部署はありません。',
+    /** 表の中の失敗文言。画面ごとに違うので、定数へ潰す変異が落ちる。 */
+    failureMessage: '部署一覧を読み込めませんでした。',
   },
   {
     label: '組織（来訪者への見せ方）',
@@ -64,6 +68,8 @@ const LISTS = [
     table: 'org-table',
     alert: 'org-error',
     assertion: '組織がありません',
+    /** 表の中の失敗文言。画面ごとに違うので、定数へ潰す変異が落ちる。 */
+    failureMessage: '組織一覧を読み込めませんでした。',
   },
   {
     label: '担当者管理',
@@ -72,6 +78,8 @@ const LISTS = [
     table: 'staff-table',
     alert: 'staff-list-error',
     assertion: '登録された担当者はありません。',
+    /** 表の中の失敗文言。画面ごとに違うので、定数へ潰す変異が落ちる。 */
+    failureMessage: '担当者一覧を読み込めませんでした。',
   },
 ] as const;
 
@@ -95,7 +103,27 @@ test.describe('管理: 一覧の読み取り失敗を 0 件と断定しない (#
         await page.goto(list.path);
 
         // 失敗として出る（理由は表の外の `role="alert"` が持つ）。
-        await expect(page.getByTestId(list.alert)).toBeVisible();
+        const alert = page.getByTestId(list.alert);
+        await expect(alert).toBeVisible();
+        /*
+         * 🔴 **読み上げへ届くこと (#966 レビュー 2 周目 m1)。**
+         * 行が載っている状態での再取得失敗では**表の中の polite は描かれない**
+         * （`resolveAdminReadState` が `loaded` を優先する）ので、ここが唯一の
+         * 読み上げ経路。`role` を落とす変異が unit・e2e とも素通りしていた。
+         */
+        await expect(alert).toHaveAttribute('role', 'alert');
+        /*
+         * 🔴 **文言が定型文へ潰れていないこと (#966 レビュー 2 周目 m4)。**
+         * `catch` の中身を `setListError('x')` にする変異は、静的検査の
+         * 「空値でない引数」を満たすので素通りしていた。実際に読まれる文字列を見る。
+         */
+        await expect(alert).toContainText('できませんでした');
+        /*
+         * 🔴 **表の中の文言が画面ごとに配線されていること (#966 レビュー 2 周目 m3)。**
+         * `DataTable` の `message={failureMessage ?? '…'}` を定数へ潰す変異
+         * （＝4 画面ぶんの配線を全部無視する）が unit・e2e とも素通りしていた。
+         */
+        await expect(page.getByText(list.failureMessage)).toBeVisible();
         // 0 件だと断定しない。
         await expect(page.getByTestId(`${list.table}-empty`)).toHaveCount(0);
         await expect(page.getByText(list.assertion)).toHaveCount(0);
@@ -119,6 +147,24 @@ test.describe('管理: 一覧の読み取り失敗を 0 件と断定しない (#
 
     // 一覧が載っている状態で、以後の取得だけを落とす。
     await failWith500(page, '**/api/admin/departments');
+    /*
+     * 🔴 **共有フィクスチャを書き換えない (#966 レビュー 2 周目 MAJOR-3)。**
+     *
+     * 並べ替えの実体は `POST /api/admin/departments/{id}/move` で、上の glob
+     * （`departments` で終わるパターン）は**この URL に一致しない**
+     * （Playwright の glob はパス末尾で止まる）。
+     * つまり intercept をすり抜けて**実サーバの表示順が本当に変わり**、`afterEach` も
+     * 無いので戻らない。同じ project には部署の既定順を読む spec
+     * （`admin-table-sort` / `admin-dnd`）が同居しており、
+     * `admin-vrt-a11y.spec.ts` には**まさにこの共有フィクスチャのせいで部署一覧の VRT を
+     * 諦めた**注記が残っている。`.claude/rules/opus5-autonomous-loop.md`
+     * 「テストの隔離は『project を分けた』では足りない」の型。
+     *
+     * `load()` だけを落としたいので、move は 200 で握って**サーバ状態を触らない**。
+     */
+    await page.route('**/api/admin/departments/*/move', (r) =>
+      r.fulfill({ status: 200, contentType: 'application/json', body: '{}' }),
+    );
     // CSV 取込の完了導線と同じく、`load()` を撃つ操作（並べ替え）で再取得させる。
     await page.getByRole('button', { name: 'down' }).first().click();
 
@@ -131,11 +177,90 @@ test.describe('管理: 一覧の読み取り失敗を 0 件と断定しない (#
    * 🔴 **担当者一覧の可否を、兼務・部署の可否と混ぜない（レビュー m6）。**
    * 兼務 API だけが落ちても、担当者一覧は取れているので「取得できませんでした」にしない。
    */
-  test('担当者管理: 兼務の取得だけが落ちても担当者一覧は出る', async ({ page }) => {
-    await failWith500(page, '**/api/admin/organizations/memberships');
-    await page.goto('/admin/staff');
+  for (const [name, inject] of [
+    ['500', failWith500],
+    ['接続断', failWithAbort],
+  ] as const) {
+    /*
+     * 🔴 **接続断を踏むこと (#966 レビュー 2 周目 MAJOR-1)。**
+     *
+     * 1 周目は `failWith500` だけを当てていた。`Promise.all` は **reject でしか
+     * 壊れない**ので、500 だけを踏むテストは**直した半分しか見ていなかった** ——
+     * レビューの実測では、兼務や部署の接続断で担当者一覧が画面から消え、
+     * 「担当者一覧を取得できませんでした」という**嘘の原因**が出ていた
+     * （担当者 API は 200 を返している）。この repo の管理 API は `Connection: close`
+     * を返すので、1 本だけ `ECONNRESET` になる形は実際に踏んだことがある。
+     */
+    test(`担当者管理: 兼務の取得が ${name} でも担当者一覧は出る`, async ({ page }) => {
+      await inject(page, '**/api/admin/organizations/memberships');
+      await page.goto('/admin/staff');
 
-    await expect(page.getByTestId('staff-table')).toBeVisible();
-    await expect(page.getByTestId('staff-list-error')).toHaveCount(0);
+      await expect(page.getByTestId('staff-table')).toBeVisible();
+      await expect(page.getByTestId('staff-list-error')).toHaveCount(0);
+      // 🔴 兼務が読めなかったことは**別に**告げる（黙って「兼務なし」にしない）。
+      await expect(page.getByTestId('staff-aux-error')).toBeVisible();
+      await expect(page.getByTestId('staff-aux-error')).toContainText('兼務');
+    });
+
+    test(`担当者管理: 部署の取得が ${name} でも担当者一覧は出る`, async ({ page }) => {
+      await inject(page, '**/api/admin/departments');
+      await page.goto('/admin/staff');
+
+      await expect(page.getByTestId('staff-table')).toBeVisible();
+      await expect(page.getByTestId('staff-list-error')).toHaveCount(0);
+      await expect(page.getByTestId('staff-aux-error')).toBeVisible();
+      await expect(page.getByTestId('staff-aux-error')).toContainText('部署');
+
+      /*
+       * 🔴 **押しても何も起きないボタンにしない (#966 レビュー 2 周目 MAJOR-2)。**
+       * 部署が読めていないと `add()` は `departmentId === ''` で黙って return する。
+       * 実測では氏名を入れて押しても何の反応も無かった。
+       */
+      await expect(page.getByTestId('staff-add')).toBeDisabled();
+      // 「部署が設定されていない」と読める `-` を全行に出さない。
+      await expect(page.getByText('取得できていません').first()).toBeVisible();
+    });
+  }
+
+  /*
+   * 🔴 **0 件のときの見出しが配線されていること (#966 レビュー 2 周目 m5)。**
+   *
+   * `OrganizationsManager` は 1 周目まで表の**外**の `EmptyState` で 0 件を断定して
+   * いたので、`DataTable` へ寄せるときに見出しを `emptyTitle` で取り戻した。
+   * その配線を落とす変異が素通りしていた（`DataTable.test.tsx` は部品側だけを縛り、
+   * **配線は縛っていない** —— このファイル自身が警告している型）。
+   */
+  test('組織: 0 件のときは見出し付きで「無い」と言う（失敗と区別する）', async ({ page }) => {
+    await page.route('**/api/admin/organizations', (route) =>
+      route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        // 🔴 `unresolvedStaffIds` も画面が読む。欠けると render が壊れる
+        //    （形の壊れた 200 —— 管理画面側の同族は #973）。
+        body: '{"items":[],"unresolvedStaffIds":[]}',
+      }),
+    );
+    await page.goto('/admin/organizations');
+
+    await expect(page.getByText('組織がありません')).toBeVisible();
+    // 0 件は失敗ではない（下界。全部を失敗と断定する変異が空虚に通るのを止める）。
+    await expect(page.getByTestId('org-error')).toHaveCount(0);
+  });
+
+  /*
+   * 🔴 **復帰したら失敗表示が消えること (#966 レビュー 2 周目 m2)。**
+   * 成功枝の `setListError(null)` を削る変異が unit・e2e とも素通りしていた。
+   * 実害は「一度失敗したら、次に読めても失敗表示が残り続ける」。
+   */
+  test('部署管理: 復帰したら失敗表示が消える', async ({ page }) => {
+    await failWith500(page, '**/api/admin/departments');
+    await page.goto('/admin/departments');
+    await expect(page.getByTestId('dept-list-error')).toBeVisible();
+
+    await page.unroute('**/api/admin/departments');
+    await page.reload();
+
+    await expect(page.getByTestId('dept-table')).toBeVisible();
+    await expect(page.getByTestId('dept-list-error')).toHaveCount(0);
   });
 });
