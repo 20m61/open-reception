@@ -3,6 +3,7 @@ import { cookies, headers } from 'next/headers';
 import type { Metadata } from 'next';
 import { AdminShell } from '@/components/admin/AdminShell';
 import { ElevationStatus } from '@/components/admin/platform/ElevationStatus';
+import { HeaderErrorBoundary } from '@/components/admin/platform/HeaderErrorBoundary';
 import { TenantSwitcher } from '@/components/admin/platform/TenantSwitcher';
 import { PLATFORM_NAV, isActivePath } from '@/components/admin/navigation';
 import { resolveAdminActorWithIdentity } from '@/lib/auth/actor';
@@ -94,7 +95,17 @@ export default async function PlatformLayout({ children }: { children: React.Rea
       nav={PLATFORM_NAV}
       roles={['developer']}
       tenantLabel="全テナント横断"
-      tenantSwitcher={<TenantSwitcher />}
+      /*
+        🔴 ヘッダの例外は `platform/error.tsx` では受けられない（Next の error.tsx は
+        同じセグメントの layout の例外を捕まえない）。境界をここに置かないと、
+        テナント一覧の形が壊れただけで platform の全画面が来訪者向け文言になる
+        (#968 レビュー 7 周目 BLOCKER-1)。
+      */
+      tenantSwitcher={
+        <HeaderErrorBoundary>
+          <TenantSwitcher />
+        </HeaderErrorBoundary>
+      }
     >
       <ElevationStatus initial={elevation} />
       {children}

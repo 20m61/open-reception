@@ -6,6 +6,13 @@ import type { TenantLifecycleAction } from '@/domain/platform/tenant-lifecycle';
 import { DangerActionButton } from '@/components/admin/danger/DangerActionButton';
 import { DataTable, MetricCard, StatusBadge, type Column } from '@/components/admin/ui';
 import { siteStatusState, tenantStatusState } from '../state-vocabulary';
+import {
+  PLATFORM_READ_TIMEOUT_MS,
+  PLATFORM_WRITE_TIMEOUT_MS,
+  isTenantDetailShape,
+  readTimeoutMessage,
+  writeTimeoutMessage,
+} from './read-response';
 
 /**
  * テナント詳細（テナント横断 read + 有効/停止操作） (issue #90)。
@@ -14,18 +21,35 @@ import { siteStatusState, tenantStatusState } from '../state-vocabulary';
  * 取得して表示する。機密値・来訪者/担当者 PII は含めない。有効/停止は破壊的操作のため
  * DangerActionButton（影響範囲ack + 理由入力 + 二段確認）で隔離し、PATCH で実行する。
  */
-type DetailResponse = { detail: TenantDetailData };
 
 export function TenantDetail({ tenantId }: { tenantId: string }) {
   const [data, setData] = useState<TenantDetailData | null>(null);
   const [error, setError] = useState<string | null>(null);
+  /*
+   * 🔴 **操作の失敗を読み取りの `error` に載せない (#968 AC4)。**
+   *
+   * `error` は `DataTable` の `failed` を決めている。停止/有効化に失敗しただけで
+   * サイト一覧が「読み込めませんでした。」へ落ちるのは、読めているのに読めていないと
+   * 言うことになる。操作の失敗は操作の近くに、別の state で出す。
+   */
+  const [actionError, setActionError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   /** いま画面が指しているテナント。遷移をまたいだ古い応答を捨てるために持つ。 */
   const latestTenantId = useRef(tenantId);
 
   const load = useCallback(async () => {
     try {
-      const res = await fetch(`/api/platform/tenants/${encodeURIComponent(tenantId)}`);
+      const res = await fetch(`/api/platform/tenants/${encodeURIComponent(tenantId)}`, {
+        signal: AbortSignal.timeout(PLATFORM_READ_TIMEOUT_MS),
+      });
+      /*
+       * 🔴 **成功枝にも世代ガードを掛ける (#968 レビュー 残存リスク 2)。**
+       * catch 側だけを守っても、A の応答が**成功して**後着すれば B の画面に A の
+       * `name` / 状態バッジ / サイト表が載る。しかも危険な操作のボタンのラベルは
+       * `data.status` から決まるので、**B の画面で A の状態に応じたボタン**が出る。
+       * `runLifecycle` が成功時に `load()` を呼ぶぶん、この窓は広がっている。
+       */
+      if (latestTenantId.current !== tenantId) return;
       if (!res.ok) {
         setError(
           res.status === 403
@@ -36,8 +60,24 @@ export function TenantDetail({ tenantId }: { tenantId: string }) {
         );
         return;
       }
+      const body = (await res.json()) as { detail?: unknown };
+      /*
+       * 🔴 **`detail` が無い 200 を「読めた」にしない (#968 レビュー 5 周目 MAJOR-3)。**
+       * `setData(undefined)` すると `loaded={data !== null}` が**真**になり、画面は
+       * 「このテナントに拠点がありません。」と**断定**する —— #870 の営業時間設定が
+       * 「取得できていないことを未設定と言い換える」で踏んだのと同型。
+       */
+      /*
+       * 🔴 **`detail` が「在るか」ではなく「読めるか」を見る (#968 レビュー 6 周目 MAJOR-2)。**
+       * `{"detail":null}` は永遠の読み込み中に、`{"detail":{}}` は「拠点がありません」の
+       * 断定と、**状態が読めていないテナントへの「有効化する」ボタン**になっていた。
+       */
+      if (!isTenantDetailShape(body.detail)) {
+        setError('テナント詳細の形式が不正です。');
+        return;
+      }
       setError(null);
-      setData(((await res.json()) as DetailResponse).detail);
+      setData(body.detail as TenantDetailData);
     /*
      * 🔴 **通信そのものが失敗した場合も「失敗」へ落とす (#896 レビュー M3)。**
      * `fetch` の reject（オフライン・DNS・接続断）や、HTML が返って `res.json()` が
@@ -45,7 +85,7 @@ export function TenantDetail({ tenantId }: { tenantId: string }) {
      * `resolveAdminReadState` は `'loading'` を返す ——「失敗が永遠の読み込み中に
      * 化ける」まさにその形で、画面には再試行の導線も `role="alert"` も出ない。
      */
-    } catch {
+    } catch (cause) {
       /*
        * 🔴 **古い要求の失敗を新しい画面へ出さない (#896 レビュー m4)。**
        * `load` は `tenantId` ごとに作り直されるので、A から B へ遷移した直後に
@@ -53,26 +93,78 @@ export function TenantDetail({ tenantId }: { tenantId: string }) {
        * 「テナント詳細の取得に失敗しました。」が出て、B の表が失敗側へ落ちる ——
        * B の取得はまだ成功する途中かもしれない。いま見ているテナント宛の失敗だけ出す。
        */
-      if (latestTenantId.current === tenantId) setError('テナント詳細の取得に失敗しました。');
+      if (latestTenantId.current === tenantId)
+        setError(
+          cause instanceof Error && cause.name === 'TimeoutError'
+            ? readTimeoutMessage('テナント詳細')
+            : 'テナント詳細の取得に失敗しました。',
+        );
     }
   }, [tenantId]);
 
   useEffect(() => {
     latestTenantId.current = tenantId;
+    /*
+     * 🔴 **操作の失敗表示を遷移で捨てる (#968 レビュー B1)。**
+     * 分離前は同じ文言が `error` に載っており、遷移後の `load()` 成功が
+     * `setError(null)` で**必ず消していた**。AC4 のために state を分けた結果、
+     * その消去経路が落ちる —— A の停止失敗が B の画面に出続ける。
+     */
+    setActionError(null);
+    /*
+     * 🔴 **前のテナントの内容も捨てる (#968 レビュー 7 周目 m6)。**
+     *
+     * 世代ガードは「後着した A を**載せない**」ことしか防いでいない。**既に載っている A**
+     * は残るので、`tenantId` が B に変わって取得が失敗すると、画面には A の名前・状態
+     * バッジ・指標が出たまま「危険な操作」ブロックが描かれる —— ラベルは **A の
+     * `status`** から決まり、送信先は **B の `tenantId`** になる。監査には B と正しく
+     * 残るので、運用者だけが取り違える。ガードを張るなら対になるこちらも要る。
+     */
+    setData(null);
+    setError(null);
     void load();
   }, [load, tenantId]);
 
   const runLifecycle = useCallback(
     async (action: TenantLifecycleAction, reason?: string) => {
       setBusy(true);
+      setActionError(null);
       try {
         const res = await fetch(`/api/platform/tenants/${encodeURIComponent(tenantId)}`, {
           method: 'PATCH',
           headers: { 'content-type': 'application/json' },
           body: JSON.stringify({ action, reason }),
+          // 返ってこない送信も終わらせる (#968 レビュー 7 周目 MAJOR-5)。
+          signal: AbortSignal.timeout(PLATFORM_WRITE_TIMEOUT_MS),
         });
+        /*
+         * 🔴 **操作の失敗も「いま見ているテナント宛」だけ出す (#968 レビュー B1)。**
+         * `load` の catch に付けたガードと同じ理由。PATCH の応答は遷移をまたいで
+         * 後着しうるので、素で報告すると **B の停止ボタンの真上に A の失敗**が出る。
+         * 「成功したか分からない」より悪い、**誤ったテナントへの帰属**になる。
+         */
+        if (latestTenantId.current !== tenantId) return;
         if (res.ok) await load();
-        else setError('操作に失敗しました。');
+        else setActionError('操作に失敗しました。');
+      /*
+       * 🔴 **破壊的操作を無言で失敗させない (#968 AC1)。** `try`/`finally` だけだと
+       * `fetch` の reject（オフライン・DNS 断・接続断）は `void` に捨てられ、`busy` が
+       * 戻るだけで画面には何も出ない。押した運用者は「何も起きなかった」と読み、
+       * もう一度押すか、停止できたと誤解する ——「成功したかどうか分からない」を
+       * 残さないことが、テナントの停止/有効化では最も重い。
+       */
+      } catch (cause) {
+        if (latestTenantId.current !== tenantId) return;
+        /*
+         * 🔴 **中断は「失敗した」と言い切らない (#968 レビュー 7 周目 MAJOR-5)。**
+         * 中断したのはこちらの待ちであって、サーバは受理して監査に残しているかも
+         * しれない。断定すると運用者は同じ破壊的操作をもう一度実行する。
+         */
+        setActionError(
+          cause instanceof Error && cause.name === 'TimeoutError'
+            ? writeTimeoutMessage('操作')
+            : '操作を送信できませんでした。通信を確認して、もう一度お試しください。',
+        );
       } finally {
         setBusy(false);
       }
@@ -111,7 +203,11 @@ export function TenantDetail({ tenantId }: { tenantId: string }) {
         表示しません。有効/停止は破壊的操作のため、影響範囲の確認と理由入力を伴う確認フローで実行します。
       </p>
 
-      {error ? <p role="alert" style={{ color: 'var(--color-platform-warn)' }}>{error}</p> : null}
+      {error ? (
+        <p role="alert" data-testid="platform-tenant-detail-error" style={{ color: 'var(--color-platform-warn)' }}>
+          {error}
+        </p>
+      ) : null}
 
       <div style={{ display: 'flex', gap: 'var(--space-md)', flexWrap: 'wrap', marginBottom: 'var(--space-md)' }}>
         <MetricCard label="slug" value={data ? data.slug : '—'} />
@@ -142,6 +238,12 @@ export function TenantDetail({ tenantId }: { tenantId: string }) {
       {data ? (
         <div style={{ marginTop: 'var(--space-lg)', maxWidth: 760 }}>
           <h2 style={{ fontSize: '1rem', opacity: 0.7 }}>危険な操作</h2>
+          {/* 操作の失敗はボタンの隣に出す（読み取りの失敗と混ぜない・#968 AC4）。 */}
+          {actionError ? (
+            <p role="alert" data-testid="platform-tenant-action-error" style={{ color: 'var(--color-platform-warn)' }}>
+              {actionError}
+            </p>
+          ) : null}
           <DangerActionButton
             label={data.status === 'active' ? 'このテナントを停止する' : 'このテナントを有効化する'}
             requirement={{ requireImpactAck: true, requireReason: true }}

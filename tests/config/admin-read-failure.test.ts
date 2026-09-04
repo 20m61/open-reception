@@ -97,8 +97,14 @@ const READ_FAILURE_MECHANISM: Readonly<Record<string, string>> = {
   'StayManager.tsx': 'setLoadFailed',
   /** 403 と取得失敗を文言で分け、`error` があるときは読み込み中…を出さない。 */
   'auth/AuthMethodSettings.tsx': 'setError',
-  /** 取得失敗を `writeError` に載せ、`!flags && !writeError` のときだけ読み込み中…を出す。 */
-  'platform/FeatureFlags.tsx': 'writeError',
+  /** 取得失敗を `flagsError` に載せ、`!flags && !flagsError` のときだけ読み込み中…を出す。 */
+  'platform/FeatureFlags.tsx': 'flagsError',
+  /**
+   * secret の presence を 3 状態で出す (#968)。**「まだ読めていない」を「未設定」とも
+   * 「取得できていません」とも断定しない** —— 断定すると、通信中の運用者が失敗と同じ
+   * 文言を見るか、取得できていないことを「未設定」と言い換えることになる。
+   */
+  'platform/ProviderConfig.tsx': 'loadError',
   /**
    * 共有データテーブル (#896)。`rows` が空のとき、`loaded` / `failed` から
    * `resolveAdminReadState` で 3 状態を出し分ける。**渡さない呼び出し側は今までどおり**

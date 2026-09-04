@@ -1,7 +1,7 @@
 'use client';
 
 import { usePathname } from 'next/navigation';
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import {
   parseSelectedTenantId,
   resolveSelectedTenant,
@@ -10,6 +10,14 @@ import {
   type NamedTenant,
 } from '@/lib/platform/selected-tenant';
 import { TenantSelect } from '../TenantContextView';
+import { font } from '@/components/admin/ui/tokens';
+import {
+  PLATFORM_READ_TIMEOUT_MS,
+  PLATFORM_WRITE_TIMEOUT_MS,
+  isTenantListShape,
+  readTimeoutMessage,
+  writeTimeoutMessage,
+} from './read-response';
 
 /**
  * 対象テナント切り替え（#83 inc3b / #90）。
@@ -26,7 +34,6 @@ import { TenantSelect } from '../TenantContextView';
  * **admin 側の切替とは意味が違うので一本化しない**（母集合・未選択の有無・永続化と監査・
  * 反映方法がすべて別。対比表は `TenantContextView` に置いた）。共有するのは表示だけ。
  */
-type TenantsResponse = { tenants: NamedTenant[] };
 
 export function TenantSwitcher() {
   /**
@@ -43,20 +50,75 @@ export function TenantSwitcher() {
   const pathname = usePathname() ?? '';
   const [tenants, setTenants] = useState<NamedTenant[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
+  /*
+   * 一覧が取れなかったことを言う (#968)。取れないと選択肢が空のまま「全テナント横断」
+   * だけが残り、**テナントが 1 つも無いのと同じ見た目**になる。切替の入口なので、
+   * 「選べない」を黙って「選ぶものが無い」に化けさせない。
+   */
+  const [listError, setListError] = useState<string | null>(null);
+  /*
+   * 切替そのものが成立しなかったこと (#968 レビュー M5)。**選択表示を戻すだけでは無言**で、
+   * 運用者から見えるのは「プルダウンが勝手に戻る」挙動だけになる。切替は監査に残す操作
+   * （#83 §5）で、失敗すると読み取りスコープが変わったつもりで変わっていない状態になる。
+   * 読み取りの失敗（`listError`）とは別に持つ —— 操作の失敗を読み取りへ載せない。
+   */
+  const [switchError, setSwitchError] = useState<string | null>(null);
+
+  /** テナント一覧の取得。再試行から呼び直せるよう `useEffect` の外に置く (#968 レビュー 5 周目 MAJOR-6)。 */
+  const loadTenants = useCallback(async (cancelled?: () => boolean) => {
+    const aborted = () => cancelled?.() === true;
+    try {
+      const res = await fetch('/api/platform/tenants', {
+        signal: AbortSignal.timeout(PLATFORM_READ_TIMEOUT_MS),
+      });
+      if (aborted()) return;
+      /*
+       * 🔴 **HTTP の失敗も報告する (#968 レビュー M-1)。** ここで最も起こりやすい失敗は
+       * 403（developer 権限・昇格切れ）で、reject より遥かに多い。黙って `return` すると
+       * 選択肢が空のまま「全テナント横断」だけが残り、**テナントが 1 つも無いのと同じ
+       * 見た目**になる —— 取れなかったことを「無い」と言い換える形になる。
+       */
+      if (!res.ok) {
+        setListError(
+          res.status === 403
+            ? 'テナント一覧の閲覧権限がありません。'
+            : 'テナント一覧を取得できませんでした。',
+        );
+        return;
+      }
+      const body = (await res.json()) as { tenants?: unknown };
+      /*
+       * 形が違う 200 は「テナントが無い」ではなく「読めなかった」(#968 レビュー 5 周目 MAJOR-2)。
+       *
+       * 🔴 **要素まで見る (#968 レビュー 7 周目 BLOCKER-1)。** ここは layout が描く
+       * ヘッダなので、投げると `src/app/platform/error.tsx` では受け止められず
+       * （Next の error.tsx は同じセグメントの layout の例外を捕まえない）、
+       * **platform の全画面**が来訪者向けの文言に置き換わる。
+       */
+      if (!isTenantListShape(body)) {
+        setListError('テナント一覧の形式が不正です。');
+        return;
+      }
+      setListError(null);
+      setTenants(body.tenants as NamedTenant[]);
+    } catch (cause) {
+      if (!aborted())
+        setListError(
+          cause instanceof Error && cause.name === 'TimeoutError'
+            ? readTimeoutMessage('テナント一覧')
+            : 'テナント一覧を取得できませんでした。',
+        );
+    }
+  }, []);
 
   useEffect(() => {
     setSelectedId(parseSelectedTenantId(document.cookie));
     let cancelled = false;
-    void (async () => {
-      const res = await fetch('/api/platform/tenants');
-      if (cancelled || !res.ok) return;
-      const body = (await res.json()) as TenantsResponse;
-      if (!cancelled) setTenants(body.tenants ?? []);
-    })();
+    void loadTenants(() => cancelled);
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [loadTenants]);
 
   const selected = resolveSelectedTenant(tenants, selectedId);
   // URL がテナントを名指ししている画面では「表示中」を明示する (#423)。
@@ -67,15 +129,36 @@ export function TenantSwitcher() {
   async function onSelect(nextId: string | null): Promise<void> {
     const prevId = selectedId;
     setSelectedId(nextId);
+    setSwitchError(null);
     // 切替はサーバ API に通して監査へ残す（#83 §5）。Cookie はサーバが Set-Cookie する。
-    const res = await fetch('/api/platform/selected-tenant', {
-      method: 'PUT',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ tenantId: nextId }),
-    }).catch(() => null);
-    if (!res?.ok) {
-      // 切替が成立しなかった（監査に残らない切替を見かけ上も作らない）。選択表示を戻す。
+    try {
+      const res = await fetch('/api/platform/selected-tenant', {
+        method: 'PUT',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ tenantId: nextId }),
+        signal: AbortSignal.timeout(PLATFORM_WRITE_TIMEOUT_MS),
+      });
+      if (!res.ok) {
+        // 切替が成立しなかった（監査に残らない切替を見かけ上も作らない）。選択表示を戻す。
+        setSelectedId(prevId);
+        setSwitchError('テナントを切り替えられませんでした。');
+        return;
+      }
+    } catch (cause) {
       setSelectedId(prevId);
+      /*
+       * 🔴 **「切り替えられませんでした」と断定しない (#968 レビュー 7 周目 m4)。**
+       * 送信後に接続が切れた場合、サーバ側では切替が**成立して監査に残っている**
+       * 可能性がある。切替は読み取りスコープの基点なので、「変わっていない」と
+       * 断定したまま他画面を読むと、運用者は別テナントを見ていることに気づけない。
+       * 同じ PR の `TenantDetail` は「送信できませんでした」と hedge しており、
+       * ここだけ語彙が食い違っていた。
+       */
+      setSwitchError(
+        cause instanceof Error && cause.name === 'TimeoutError'
+          ? writeTimeoutMessage('テナントの切替')
+          : 'テナントの切替を送信できませんでした。通信を確認し、画面を再読み込みして、いま選ばれているテナントを確認してください。',
+      );
       return;
     }
     // platform の各 read はクライアントで mount 時に fetch するため、router.refresh() では
@@ -93,30 +176,70 @@ export function TenantSwitcher() {
       // platform だけが持つ「未選択＝全テナント横断」。admin には出さない。
       nullOptionLabel="全テナント横断"
       onSelect={(next) => void onSelect(next)}
+      /*
+       * 🔴 **エラーは「表示中」を押しのけない (#968 レビュー M-4)。**
+       *
+       * 当初は優先順位つき三項で先頭に置いたが、`switchError` は次の切替まで消えないので、
+       * 一度切替に失敗すると `表示中: <name>` と **`（選択中と別）`（#423 の越境警告）が
+       * 恒久的に消える**。切替が成立しなかった直後は「スコープが変わったつもりで変わって
+       * いない」まさにその瞬間で、そこで越境警告を消すのは方向が逆である。**併記する。**
+       */
       trailing={
-        viewing.tenantName !== null ? (
-          <span
-            data-testid="platform-viewing-tenant"
-            style={{ fontSize: '0.8125rem', opacity: 0.9 }}
-          >
-            表示中: <strong>{viewing.tenantName}</strong>
-            {viewing.differsFromSticky ? (
-              <span data-testid="platform-viewing-differs" style={{ opacity: 0.7 }}>
-                （選択中と別）
-              </span>
-            ) : null}
-          </span>
-        ) : selected ? (
-          <a
-            href={`/platform/tenants/${selected.id}`}
-            style={{ fontSize: '0.8125rem', opacity: 0.8 }}
-            data-testid="tenant-switcher-detail-link"
-          >
-            詳細
-          </a>
-        ) : (
-          <span style={{ fontSize: '0.8125rem', opacity: 0.5 }}>{selectedTenantLabel(null)}</span>
-        )
+        <>
+          {switchError !== null ? (
+            <span
+              role="alert"
+              data-testid="platform-tenant-switch-error"
+              style={{ fontSize: font.small, color: 'var(--color-platform-warn)' }}
+            >
+              {switchError}
+            </span>
+          ) : null}
+          {listError !== null ? (
+            <span
+              role="alert"
+              data-testid="platform-tenant-list-error"
+              style={{ fontSize: font.small, color: 'var(--color-platform-warn)' }}
+            >
+              {listError}{' '}
+              {/*
+                🔴 **いちばん広く塞ぐところにこそ復帰導線が要る (#968 レビュー 5 周目 MAJOR-6)。**
+                ここが引けないと、他画面の「画面上部の切替で選んでください」という案内の
+                **指示先が死ぬ**。運用者に残るのはブラウザのリロードだけになる。
+              */}
+              <button
+                type="button"
+                data-testid="platform-tenant-list-retry"
+                onClick={() => void loadTenants()}
+              >
+                再試行
+              </button>
+            </span>
+          ) : null}
+          {viewing.tenantName !== null ? (
+            <span
+              data-testid="platform-viewing-tenant"
+              style={{ fontSize: '0.8125rem', opacity: 0.9 }}
+            >
+              表示中: <strong>{viewing.tenantName}</strong>
+              {viewing.differsFromSticky ? (
+                <span data-testid="platform-viewing-differs" style={{ opacity: 0.7 }}>
+                  （選択中と別）
+                </span>
+              ) : null}
+            </span>
+          ) : selected ? (
+            <a
+              href={`/platform/tenants/${selected.id}`}
+              style={{ fontSize: '0.8125rem', opacity: 0.8 }}
+              data-testid="tenant-switcher-detail-link"
+            >
+              詳細
+            </a>
+          ) : (
+            <span style={{ fontSize: '0.8125rem', opacity: 0.5 }}>{selectedTenantLabel(null)}</span>
+          )}
+        </>
       }
     />
   );

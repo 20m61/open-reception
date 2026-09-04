@@ -15,8 +15,13 @@
  * 素通りさせることを実測した）。
  */
 
-/** どの境界が受けたか。切り分けにだけ使う固定語彙。 */
-export type UnexpectedErrorScope = 'kiosk' | 'app';
+/**
+ * どの境界が受けたか。切り分けにだけ使う固定語彙。
+ *
+ * `platform` は運用コンソール専用の境界 (#968)。これが無いあいだ `/platform` の例外は
+ * `app`（`global-error.tsx`）まで上がり、**developer に来訪者向けの文言**が出ていた。
+ */
+export type UnexpectedErrorScope = 'kiosk' | 'app' | 'platform';
 
 export type UnexpectedErrorLogLine = {
   readonly event: 'unexpected_error';

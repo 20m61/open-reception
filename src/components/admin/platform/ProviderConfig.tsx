@@ -9,6 +9,13 @@ import {
 } from '@/domain/provider-config/types';
 import type { ProviderConfigWarning } from '@/domain/provider-config/readiness';
 import { font } from '@/components/admin/ui/tokens';
+import {
+  PLATFORM_READ_TIMEOUT_MS,
+  PLATFORM_WRITE_TIMEOUT_MS,
+  isProviderConfigShape,
+  readTimeoutMessage,
+  writeTimeoutMessage,
+} from './read-response';
 
 /**
  * テナント別 CCaaS プロバイダ設定（developer 専用・write-only secret） (issue #405 Inc1)。
@@ -50,7 +57,17 @@ function presenceOf(res: ConfigResponse): SecretPresence {
 
 export function ProviderConfig() {
   const [data, setData] = useState<ConfigResponse | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  /*
+   * 🔴 **読み取りの失敗と操作の失敗を別に持つ (#968 レビュー MJ-2)。**
+   *
+   * 1 つの `error` に束ねたまま「再読込」ボタンを添えたところ、**保存に失敗したときにも
+   * 再読込が出る**形になった。`load()` はフォーム 4 項目をサーバ値で上書きし、先頭で
+   * `setLoadError(null)` するので、押した運用者は**未保存の編集を無言で捨てたうえで
+   * 「保存できた」と読める画面**を受け取る。#968 が閉じようとした無言を、復帰導線が
+   * 新しく作っていた。`TenantDetail` の `error` / `actionError` と同じ扱いへ揃える。
+   */
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [actionError, setActionError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
 
   // 設定フォーム状態。
@@ -64,26 +81,61 @@ export function ProviderConfig() {
   const [confirmProvider, setConfirmProvider] = useState('');
 
   const load = useCallback(async () => {
-    setError(null);
-    const res = await fetch(CONFIG_ENDPOINT);
-    if (!res.ok) {
-      setError(
-        res.status === 403
-          ? 'この操作の権限がありません。'
-          : res.status === 400
-            ? '対象テナントを選択してください。'
-            : '設定の取得に失敗しました。',
+    /*
+     * 🔴 **押した瞬間に消さない (#968 レビュー 6 周目 MINOR-1)。** ここだけ `FeatureFlags` と
+     * 揃っておらず、再読込ボタンが**自分をアンマウントしてフォーカスを文書先頭へ落として**
+     * いた。しかもこの画面はテナント未選択だと既定で 400 なので、常用経路だった。
+     */
+    try {
+      const res = await fetch(CONFIG_ENDPOINT, {
+        signal: AbortSignal.timeout(PLATFORM_READ_TIMEOUT_MS),
+      });
+      if (!res.ok) {
+        setLoadError(
+          res.status === 403
+            ? 'この操作の権限がありません。'
+            : res.status === 400
+              ? '対象テナントが選ばれていません。画面上部の切替で選んでください。'
+              : '設定の取得に失敗しました。',
+        );
+        setData(null);
+        return;
+      }
+      const body: unknown = await res.json();
+      /*
+       * 🔴 **`config` キーが無い 200 は「未設定」ではなく「読めなかった」(#968 レビュー 5 周目)。**
+       *
+       * `config: null` は**正当**（そのテナントにまだ設定が無い）。区別するのはキーの有無で、
+       * 値ではない。混ぜると #870 の営業時間設定と同じ「取得できていないことを未設定と
+       * 言い換える」になり、しかもここは楽観ロックの無い全置換 upsert の入口である。
+       */
+      if (!isProviderConfigShape(body)) {
+        setLoadError('設定の形式が不正です。時間をおいて再試行してください。');
+        setData(null);
+        return;
+      }
+      const parsed = body as ConfigResponse;
+      setLoadError(null);
+      setData(parsed);
+      if (parsed.config) {
+        setProvider(parsed.config.provider);
+        setEnabled(parsed.config.enabled);
+        setApplicationId(parsed.config.applicationId ?? '');
+        setFromNumber(parsed.config.fromNumber ?? '');
+      }
+    /*
+     * 🔴 **読み取りの失敗を無言にしない (#968 AC2)。** reject を拾わないと `data` も
+     * `error` も `null` のままで、画面は「secret 未設定」の初期値をそのまま出す ——
+     * **取得できていないことを「未設定」と言い換える**形になり、運用者は secret を
+     * 上書き保存しにいく（`OperatingHoursManager` が #870 で踏んだのと同じ型）。
+     */
+    } catch (cause) {
+      setLoadError(
+        cause instanceof Error && cause.name === 'TimeoutError'
+          ? readTimeoutMessage('設定')
+          : '設定を取得できませんでした。通信を確認してください。',
       );
       setData(null);
-      return;
-    }
-    const body = (await res.json()) as ConfigResponse;
-    setData(body);
-    if (body.config) {
-      setProvider(body.config.provider);
-      setEnabled(body.config.enabled);
-      setApplicationId(body.config.applicationId ?? '');
-      setFromNumber(body.config.fromNumber ?? '');
     }
   }, []);
 
@@ -92,66 +144,140 @@ export function ProviderConfig() {
   }, [load]);
 
   const saveConfig = useCallback(async () => {
-    setError(null);
+    setActionError(null);
     setNotice(null);
-    const res = await fetch(CONFIG_ENDPOINT, {
-      method: 'PUT',
-      headers: { 'content-type': 'application/json' },
-      // secret はこのエンドポイントに送らない（別エンドポイントで write-only）。
-      body: JSON.stringify({ provider, enabled, applicationId, fromNumber }),
-    });
-    if (!res.ok) {
-      setError('設定の保存に失敗しました。');
-      return;
+    try {
+      const res = await fetch(CONFIG_ENDPOINT, {
+        method: 'PUT',
+        headers: { 'content-type': 'application/json' },
+        // secret はこのエンドポイントに送らない（別エンドポイントで write-only）。
+        body: JSON.stringify({ provider, enabled, applicationId, fromNumber }),
+        signal: AbortSignal.timeout(PLATFORM_WRITE_TIMEOUT_MS),
+      });
+      if (!res.ok) {
+        setActionError('設定の保存に失敗しました。');
+        return;
+      }
+      setNotice('設定を保存しました。');
+      await load();
+    } catch (cause) {
+      // 中断は「保存できなかった」と断定しない（MAJOR-5）。
+      setActionError(
+        cause instanceof Error && cause.name === 'TimeoutError'
+          ? writeTimeoutMessage('設定の保存')
+          : '設定を保存できませんでした。通信を確認してください。',
+      );
     }
-    setNotice('設定を保存しました。');
-    await load();
   }, [provider, enabled, applicationId, fromNumber, load]);
 
   const saveSecret = useCallback(async () => {
-    setError(null);
+    setActionError(null);
     setNotice(null);
     if (!secretInput.trim()) {
-      setError('secret を入力してください。');
+      setActionError('secret を入力してください。');
       return;
     }
-    const res = await fetch(SECRET_ENDPOINT, {
-      method: 'PUT',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ secret: secretInput, expectedProvider: data?.config?.provider }),
-    });
-    // 入力欄は成否に関わらず即クリア（画面・DOM に残さない）。
+    /*
+     * 🔴 **送る前に画面から消す (#968 レビュー m1)。**
+     *
+     * 元は `await fetch` の**次の行**で消していたので、reject したときだけ値が
+     * 入力欄（＝DOM）に残り続けた。`finally` へ移すと今度は**成功経路で `await load()`
+     * の 1 往復ぶん残る**。送信前に消せばどちらも起きず、`finally` も要らない。
+     * `.claude/rules/pii-secret-minimization.md`「画面・DOM に残さない」。
+     */
+    const secret = secretInput;
     setSecretInput('');
-    if (!res.ok) {
-      setError(res.status === 409 ? '先に設定を保存し、対象プロバイダを確認してください。' : 'secret の保存に失敗しました。');
-      return;
+    try {
+      const res = await fetch(SECRET_ENDPOINT, {
+        method: 'PUT',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ secret, expectedProvider: data?.config?.provider }),
+        signal: AbortSignal.timeout(PLATFORM_WRITE_TIMEOUT_MS),
+      });
+      if (!res.ok) {
+        setActionError(
+          res.status === 409
+            ? '先に設定を保存し、対象プロバイダを確認してください。もう一度 secret を入力してください。'
+            : 'secret の保存に失敗しました。もう一度 secret を入力してください。',
+        );
+        return;
+      }
+      setNotice('secret を保存しました（値は表示されません）。');
+      await load();
+    } catch (cause) {
+      setActionError(
+        cause instanceof Error && cause.name === 'TimeoutError'
+          ? writeTimeoutMessage('secret の保存') + 'もう一度 secret を入力してください。'
+          : 'secret を保存できませんでした。通信を確認してください。もう一度 secret を入力してください。',
+      );
     }
-    setNotice('secret を保存しました（値は表示されません）。');
-    await load();
   }, [secretInput, data, load]);
 
   const clearSecret = useCallback(async () => {
-    setError(null);
+    setActionError(null);
     setNotice(null);
-    const res = await fetch(SECRET_ENDPOINT, {
-      method: 'DELETE',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ expectedProvider: confirmProvider }),
-    });
-    setConfirmProvider('');
-    if (!res.ok) {
-      setError(
-        res.status === 409
-          ? '確認のため、現在のプロバイダ名を正しく入力してください。'
-          : 'secret の消去に失敗しました。',
+    try {
+      const res = await fetch(SECRET_ENDPOINT, {
+        method: 'DELETE',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ expectedProvider: confirmProvider }),
+        signal: AbortSignal.timeout(PLATFORM_WRITE_TIMEOUT_MS),
+      });
+      if (!res.ok) {
+        setActionError(
+          res.status === 409
+            ? '確認のため、現在のプロバイダ名を正しく入力してください。'
+            : 'secret の消去に失敗しました。',
+        );
+        return;
+      }
+      /*
+       * 確認欄のクリアは**応答を受け取れたときだけ**にする (#968 レビュー m2)。
+       * `confirmProvider` は secret ではなく provider 名（`placeholder` で画面に出ている）
+       * なので消す PII 上の利得が無く、消去ボタンは `!confirmProvider` で無効化されるため、
+       * 通信断のたびに打ち直しを強いることになる。
+       */
+      setConfirmProvider('');
+      setNotice('secret を消去しました。');
+      await load();
+    } catch (cause) {
+      setActionError(
+        cause instanceof Error && cause.name === 'TimeoutError'
+          ? writeTimeoutMessage('secret の消去')
+          : 'secret を消去できませんでした。通信を確認してください。',
       );
-      return;
     }
-    setNotice('secret を消去しました。');
-    await load();
   }, [confirmProvider, load]);
 
+  /*
+   * 🔴 **読めていないことを「未設定」と言い換えない (#968 レビュー M2)。**
+   *
+   * `data === null` は「まだ読めていない / 読めなかった」であって「未設定」ではない。
+   * ここを `'missing'` に潰すと、画面は **secret 未設定**・provider `mock`・無効と
+   * **断定**する。しかも `PUT /api/platform/integrations/provider-config` は
+   * `buildTenantProviderConfig` → `putTenantProviderConfig` の**全置換 upsert**で
+   * 楽観ロックが無いので、その状態から「設定を保存」を押すと**実 CCaaS 設定が既定値で
+   * 上書きされる** —— 来訪者側は担当者を呼べず「取り次げません」になる。
+   * `OperatingHoursManager` が #870 で踏んだ「取得失敗を未設定と言い換える」型そのもの。
+   */
   const presence = data ? presenceOf(data) : 'missing';
+
+  const readable = data !== null;
+  /*
+   * 🔴 **「まだ読めていない」を「読めなかった」と断定しない (#968 レビュー 4 周目 MAJOR-3)。**
+   *
+   * `readable` は 3 状態を 2 つに潰す。通信中の運用者に**失敗と同じ文言・同じ無効化**を
+   * 見せていた（しかも再読込ボタンは失敗表示の中なので出ない）。このリポジトリが
+   * `resolveAdminReadState` で明文化している「loading と failed を混ぜない」の反対側で、
+   * #870 / #896 が閉じた欠陥の向きを変えただけの形になっていた。
+   */
+  const presenceLabel = readable
+    ? presence === 'set'
+      ? '設定済み'
+      : '未設定'
+    : loadError !== null
+      ? '取得できていません'
+      : '読み込み中…';
 
   return (
     <section style={{ marginTop: 'var(--space-lg)', maxWidth: 760 }}>
@@ -162,7 +288,26 @@ export function ProviderConfig() {
         決まります。
       </p>
 
-      {error ? <p role="alert" style={{ color: 'var(--color-platform-warn)' }}>{error}</p> : null}
+      {loadError ? (
+        <p role="alert" data-testid="provider-config-load-error" style={{ color: 'var(--color-platform-warn)' }}>
+          {loadError}{' '}
+          {/*
+            🔴 **塞いだ状態から出る道を同じ画面に置く (#968 レビュー m-4)。**
+            読み取りに失敗すると保存系 3 つが `disabled` になるが、`load` は
+            `useCallback(…, [])` でマウント時 1 回きりなので、この画面には再読込の導線が
+            無かった。**読み取りの失敗にだけ添える**（レビュー MJ-2）—— 保存の失敗に
+            添えると、押した運用者が未保存の編集を無言で捨てることになる。
+          */}
+          <button type="button" data-testid="provider-config-reload" onClick={() => void load()}>
+            再読込
+          </button>
+        </p>
+      ) : null}
+      {actionError ? (
+        <p role="alert" data-testid="provider-config-action-error" style={{ color: 'var(--color-platform-warn)' }}>
+          {actionError}
+        </p>
+      ) : null}
       {/*
         🔴 **保存の成否とは別に出す。** 保存は成功しているので `notice`（緑）だけだと
         「有効にした瞬間から受付が 503 になる」ことが伝わらない。#763 で問題にしたのは
@@ -216,7 +361,8 @@ export function ProviderConfig() {
           </tbody>
         </table>
       </div>
-      <button type="button" onClick={() => void saveConfig()} style={{ marginTop: 8 }}>
+      {/* 読めていない状態からの保存は全置換 upsert なので撃たせない（#968 レビュー M2）。 */}
+      <button type="button" onClick={() => void saveConfig()} disabled={!readable} style={{ marginTop: 8 }}>
         設定を保存
       </button>
 
@@ -225,8 +371,19 @@ export function ProviderConfig() {
       </h3>
       <p style={{ fontSize: font.small }}>
         現在の状態:{' '}
-        <strong style={{ color: presence === 'set' ? 'var(--color-platform-ok)' : 'var(--color-platform-warn)' }}>
-          {presence === 'set' ? '設定済み' : '未設定'}
+        {/* ラベルだけ 3 状態にして色が 2 状態のままだと、視覚的には loading と failed が同じ (#968 レビュー 5 周目 MINOR-2)。 */}
+        <strong
+          style={{
+            color: !readable
+              ? loadError !== null
+                ? 'var(--color-platform-warn)'
+                : 'var(--color-muted)'
+              : presence === 'set'
+                ? 'var(--color-platform-ok)'
+                : 'var(--color-platform-warn)',
+          }}
+        >
+          {presenceLabel}
         </strong>
       </p>
       <input
@@ -238,7 +395,7 @@ export function ProviderConfig() {
         autoComplete="new-password"
         style={{ width: '100%' }}
       />
-      <button type="button" onClick={() => void saveSecret()} style={{ marginTop: 8 }}>
+      <button type="button" onClick={() => void saveSecret()} disabled={!readable} style={{ marginTop: 8 }}>
         secret を保存
       </button>
 
@@ -256,7 +413,7 @@ export function ProviderConfig() {
         <button
           type="button"
           onClick={() => void clearSecret()}
-          disabled={!confirmProvider || presence !== 'set'}
+          disabled={!readable || !confirmProvider || presence !== 'set'}
           style={{ marginLeft: 8, color: 'var(--color-platform-warn)' }}
         >
           secret を消去

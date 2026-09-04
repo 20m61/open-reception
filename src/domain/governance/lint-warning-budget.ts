@@ -13,7 +13,19 @@
 /** ルール ID → 許容する warning 件数。載っていないルールの warning は 0 件が期待。 */
 export const LINT_WARNING_BUDGET: Readonly<Record<string, number>> = {
   // #873 で `CallRoutesManager`（旧・呼び出しルート画面）を削除し 54 → 53 へ下がった。
-  'react-hooks/set-state-in-effect': 53,
+  /*
+   * #968 で 53 → 55。**増やした理由**（`docs/quality-gate.md` の規約に従い明記する）:
+   *
+   * `PlatformDashboard` と `FeatureFlags` の読み取りを `useCallback` へ切り出したため、
+   * `useEffect(() => { void load(); }, [load])` の形が 2 つ増えた。切り出しは
+   * 独立レビューの指摘（失敗表示の中に**再取得を呼ぶ復帰導線**を置く / #968 レビュー
+   * 5 周目 MAJOR-6・6 周目 MINOR-2）に対応するためで、**同じ関数をボタンからも
+   * 呼べるようにする**のが目的。既存 53 件と同一の idiom であり、新しい型ではない。
+   *
+   * 代替（effect の中で fetch を直書きに戻す）は、復帰導線が「押しても何も起きない
+   * ボタン」になるため採らない —— それは #968 が閉じようとしている欠陥そのもの。
+   */
+  'react-hooks/set-state-in-effect': 55,
   // #963 で実描画検査 section 4 の未使用変数を消し 19 → 18 へ下がった。
   '@typescript-eslint/no-unused-vars': 18,
   '@next/next/no-img-element': 1,
