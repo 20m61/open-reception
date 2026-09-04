@@ -257,19 +257,56 @@ test.describe('管理: 一覧の読み取り失敗を 0 件と断定しない (#
    * 成功枝の `setListError(null)` を削る変異が unit・e2e とも素通りしていた。
    * 実害は「一度失敗したら、次に読めても失敗表示が残り続ける」。
    */
-  for (const list of LISTS) {
-    test(`${list.label}: 復帰したら失敗表示が消える`, async ({ page }) => {
-      await failWith500(page, list.api);
-      await page.goto(list.path);
-      await expect(page.getByTestId(list.alert)).toBeVisible();
+  /*
+   * 🔴 **再マウントでは「復帰で消える」を測れない (#966 レビュー 2 周目の変異 A5)。**
+   *
+   * 最初は `page.reload()` で書いていたが、リロードすると**コンポーネントが作り直され**
+   * `listError` は初期値 `null` から始まる —— 成功枝の `setListError(null)` を削る変異が
+   * それでも緑のままだった（実測で 2 度生存）。**同じページのまま `load()` を撃ち直す**
+   * 必要がある。
+   *
+   * 実害は「一度失敗したら、次に読めても失敗表示が残り続ける」。運用者は最新の一覧を
+   * 見ているのに「取得できませんでした」を読み続ける。
+   */
+  test('担当者管理: 同じ画面のまま復帰したら失敗表示が消える', async ({ page }) => {
+    await page.goto('/admin/staff');
+    await expect(page.getByTestId('staff-table')).toBeVisible();
 
-      await page.unroute(list.api);
-      await page.reload();
+    // 以後の再取得だけを落とす（PATCH は通す）。
+    await page.route('**/api/admin/staff', (route) =>
+      route.request().method() === 'GET'
+        ? route.fulfill({ status: 500, contentType: 'application/json', body: '{}' })
+        : route.continue(),
+    );
+    await page.getByTestId('staff-toggle').first().click();
+    await expect(page.getByTestId('staff-list-error')).toBeVisible();
 
-      await expect(page.getByTestId(list.table)).toBeVisible();
-      await expect(page.getByTestId(list.alert)).toHaveCount(0);
-    });
-  }
+    // 復帰させて、同じページのまま `load()` を撃ち直す。
+    await page.unroute('**/api/admin/staff');
+    await page.getByTestId('staff-toggle').first().click();
+
+    await expect(page.getByTestId('staff-list-error')).toHaveCount(0);
+    await expect(page.getByTestId('staff-table')).toBeVisible();
+  });
+
+  test('部署管理: 同じ画面のまま復帰したら失敗表示が消える', async ({ page }) => {
+    await page.goto('/admin/departments');
+    await expect(page.getByTestId('dept-table')).toBeVisible();
+
+    // 共有フィクスチャを壊さないよう move は握る（MAJOR-3 と同じ理由）。
+    await page.route('**/api/admin/departments/*/move', (r) =>
+      r.fulfill({ status: 200, contentType: 'application/json', body: '{}' }),
+    );
+    await failWith500(page, '**/api/admin/departments');
+    await page.getByRole('button', { name: 'down' }).first().click();
+    await expect(page.getByTestId('dept-list-error')).toBeVisible();
+
+    await page.unroute('**/api/admin/departments');
+    await page.getByRole('button', { name: 'down' }).first().click();
+
+    await expect(page.getByTestId('dept-list-error')).toHaveCount(0);
+    await expect(page.getByTestId('dept-table')).toBeVisible();
+  });
 
   /*
    * 🔴 **`catch` に到達する入力を踏む (#966 レビュー 2 周目の変異 A7)。**
