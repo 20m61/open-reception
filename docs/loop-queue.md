@@ -9,6 +9,47 @@
 > | AWS の窓を開ける（`./scripts/aws-issue-credentials.sh`） | 短命 STS の発行は darwin 限定で、`scripts/hooks/guard-destructive.sh` が機械強制（#675）。**窓さえ開けばデプロイ本体はクラウドから wrapper 経由で流せる** | #675 / `docs/runbook-cloud-aws-deploy.md` |
 > | 実機 iPad UAT | 横向きで部署カードが何枚見えるか / 部署を開いて戻れるか / 騒音下で不在告知が聞き取れるか | #807 / #65 |
 >
+## 2026-09-05 の周回（platform の形の検査とハングの上限・#973 増分 1）
+
+**#968 が台帳へ積んだ platform 側の残りを空にした。** #973 は 2 つの母集団を持つ
+（platform 7 画面の形の検査 ＋ 管理画面 45 箇所の `fetch`）。本周回は**前者だけ**を消化し、
+`tests/config/platform-fetch-failure.test.ts` の形の台帳を**空**にした。
+
+- 述語は `src/components/admin/platform/read-response.ts` に 7 本追加。**画面が実際に読む
+  フィールドだけ**を見る（型の全項目を検査するとサーバの任意フィールド追加で読めなくなり、
+  互換の方向が逆になる）
+- `AbortSignal.timeout` を read 7 経路と write 4 経路（`ElevationStatus` 3 / `NoticePublishForm` 1）
+  へ通し、`IN_SCOPE_TIMEOUT` を 5 → 14 ファイルへ。**write の中断は「失敗した」と断定しない**
+  （サーバは昇格を発行して監査に残しているかもしれない）
+- 下界を対で張った: **0 件・`successRate: null`・任意フィールド不在は正当**。片側だけ主張すると
+  「全部を失敗と断定する」変異が空虚に通る（#968 の `config: null` と同じ形）
+
+### 🔴 ガードの「形」を崩したら、前の方式が守っていた検査から外れた
+
+`catch` を `catch (cause) { if (cancelled) return; setError(…) }` と書き直したところ、
+`tests/config/platform-list-states.test.ts` の「古い応答を捨てるガードを通す」が**6 画面ぶん
+落ちた** —— あの検出器は `if (<式>) setError(` の**隣接**を見ており、早期 return へ崩すと
+母集団から外れる。TimeoutError の言い分けを足すという**別の目的**の変更が、世代ガードの
+保証を黙って落としかけた形である（`.claude/rules/opus5-autonomous-loop.md`「方式を替えたら〜」）。
+`if (!cancelled) setError(…)` の形へ戻して解消し、**なぜこの形なのか**を各ファイルに書いた。
+
+### 変異検証（15 種・kill 15）
+
+述語 6 / 配線 6 を当て、**方式を替えた（下の静的検査を足した）あと 12 種を全部当て直して
+kill が減っていないことを確認**した。加えて:
+
+- 🔴 **`setError(null)` へ潰す変異が最初は unit を素通りした。** #968 の AC4 はこの族を
+  `catch` について閉じていたが、#973 が足した「形が違う 200」の枝は**その `catch` の外**に
+  あり、同じ検査が届いていなかった。静的検査を 1 本足して閉じた（空白 1 文字も落ちる）
+- **`data-testid` を外す変異は e2e だけが殺せる**（静的には意味を持たない）。これは
+  正しい分担なので閉じない
+
+### 残り（#973 は閉じない）
+
+AC1〜AC6 の**管理画面 45 箇所**が丸ごと残っている（`DemoStudio` 11 / `ReservationsManager` 5 /
+`RoutingPolicyManager` 5 ほか。**ログインの送信** `AdminPasswordLogin` も含む）。
+検出器を `src/components/admin/**` へ広げる作業とセットなので、次の増分で扱う。
+
 ## 2026-09-03 の周回（darwin VRT ベースライン）
 
 **darwin ベースライン 6 枚を取り直した。** 残件表からこの行は消えた。手順と実測:
