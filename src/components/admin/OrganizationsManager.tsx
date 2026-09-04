@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import type { OrganizationUnit } from '@/domain/organization/types';
 import { organizationVisibility } from '@/domain/organization/visibility';
-import { Button, DataTable, Pager, EmptyState, Section, StatusBadge, type Column } from '@/components/admin/ui';
+import { Button, DataTable, Pager, Section, StatusBadge, type Column } from '@/components/admin/ui';
 import { color, space } from '@/components/admin/ui/tokens';
 import { useQueryParams } from './use-query-params';
 import { useTableSort } from './use-table-sort';
@@ -59,28 +59,45 @@ const HIDDEN_REASON_LABEL: Record<
 const PAGE_SIZE = 20;
 
 export function OrganizationsManager() {
-  const [items, setItems] = useState<OrganizationUnit[]>([]);
+  /*
+   * 🔴 **「まだ読めていない」と「0 件だった」を型で分ける (#966 AC2)。**
+   * 初期値が `[]` だと、取得前も取得失敗も「組織がありません」と**断定**し、
+   * 運用者を「まず部署管理で追加してください」へ誘導してしまう。
+   */
+  const [items, setItems] = useState<OrganizationUnit[] | null>(null);
   const { get, setMany } = useQueryParams();
   const { sort, setSort } = useTableSort();
   const [unresolvedStaffIds, setUnresolvedStaffIds] = useState<string[]>([]);
   const [busyId, setBusyId] = useState<string | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  /** 一覧の読み取り失敗。**`DataTable` の `failed` を決めるのはこれだけ**。 */
+  const [listError, setListError] = useState<string | null>(null);
+  /*
+   * 保存（PATCH）の失敗 (#968 AC4 と同じ理由で読み取りと分ける)。同じ state に載せると、
+   * 保存に失敗しただけで一覧が「読み込めませんでした」へ落ちる —— 読めているのに
+   * 読めていないと言うことになる。
+   */
+  const [saveError, setSaveError] = useState<string | null>(null);
   const [drafts, setDrafts] = useState<Record<string, string>>({});
 
   const load = useCallback(async () => {
-    const res = await fetch('/api/admin/organizations');
-    if (!res.ok) {
-      setError('組織一覧を取得できませんでした');
-      return;
+    try {
+      const res = await fetch('/api/admin/organizations');
+      if (!res.ok) {
+        setListError('組織一覧を取得できませんでした');
+        return;
+      }
+      const body = (await res.json()) as {
+        items: OrganizationUnit[];
+        unresolvedStaffIds: string[];
+      };
+      setItems(body.items);
+      setUnresolvedStaffIds(body.unresolvedStaffIds);
+      setListError(null);
+      setDrafts({});
+    } catch {
+      // 通信そのものの失敗も「失敗」へ落とす (#966 AC3)。
+      setListError('組織一覧を取得できませんでした');
     }
-    const body = (await res.json()) as {
-      items: OrganizationUnit[];
-      unresolvedStaffIds: string[];
-    };
-    setItems(body.items);
-    setUnresolvedStaffIds(body.unresolvedStaffIds);
-    setError(null);
-    setDrafts({});
   }, []);
 
   useEffect(() => {
@@ -90,6 +107,7 @@ export function OrganizationsManager() {
   const patch = useCallback(
     async (id: string, body: Record<string, unknown>) => {
       setBusyId(id);
+      setSaveError(null);
       try {
         const res = await fetch(`/api/admin/organizations/${id}`, {
           method: 'PATCH',
@@ -100,10 +118,14 @@ export function OrganizationsManager() {
           // **失敗を黙って飲まない。** 保存できていないのに一覧が変わらないだけだと、
           // 運用者は「反映が遅いのか」と待ってしまう。
           const detail = (await res.json().catch(() => null)) as { message?: string } | null;
-          setError(detail?.message ?? '保存できませんでした');
+          setSaveError(detail?.message ?? '保存できませんでした');
           return;
         }
+        setSaveError(null);
         await load();
+      } catch {
+        // 送信そのものが失敗したときも黙らない（押しても何も起きない、を作らない）。
+        setSaveError('保存できませんでした。通信を確認してください。');
       } finally {
         setBusyId(null);
       }
@@ -158,8 +180,10 @@ export function OrganizationsManager() {
           onChange={(e) => void patch(u.id, { parentId: e.target.value === '' ? null : e.target.value })}
         >
           <option value="">（トップレベル）</option>
-          {items
-            .filter((candidate) => candidate.id !== u.id && !descendantIds(items, u.id).has(candidate.id))
+          {(items ?? [])
+            .filter(
+              (candidate) => candidate.id !== u.id && !descendantIds(items ?? [], u.id).has(candidate.id),
+            )
             .map((candidate) => (
               <option key={candidate.id} value={candidate.id}>
                 {candidate.publicDisplayName}
@@ -226,7 +250,7 @@ export function OrganizationsManager() {
     },
   ];
 
-  const sorted = sortRows(items, columns, sort);
+  const sorted = sortRows(items ?? [], columns, sort);
   const paged = paginate(sorted, Number(get('page')) || 1, PAGE_SIZE);
 
   return (
@@ -236,9 +260,14 @@ export function OrganizationsManager() {
         <strong>どの名前で・どの順で出すか</strong>を決めます。
       </p>
 
-      {error === null ? null : (
+      {listError === null ? null : (
         <p role="alert" data-testid="org-error" style={{ color: color.danger }}>
-          {error}
+          {listError}
+        </p>
+      )}
+      {saveError === null ? null : (
+        <p role="alert" data-testid="org-save-error" style={{ color: color.danger }}>
+          {saveError}
         </p>
       )}
 
@@ -252,26 +281,32 @@ export function OrganizationsManager() {
         </p>
       )}
 
-      {items.length === 0 ? (
-        <EmptyState title="組織がありません" message="まず「部署管理」で部署を追加してください。" />
-      ) : (
-        <>
-          <DataTable
-            testId="org-table"
-            rows={paged.items}
-            columns={columns}
-            rowKey={(u) => u.id}
-            sort={sort}
-            onSortChange={setSort}
-          />
-          <Pager
-            page={paged.page}
-            pageCount={paged.pageCount}
-            onChange={(next) => setMany({ page: String(next) })}
-            testIdPrefix="org"
-          />
-        </>
-      )}
+      {/*
+        🔴 **表の外で 0 件を断定しない (#966 AC1)。** ここは `items.length === 0` で
+        「組織がありません」を出していたが、**取得前も取得失敗も長さ 0** なので、
+        読めていないことを「無い」と言い換えていた。3 状態の判断は `DataTable` が
+        `resolveAdminReadState` へ委ねるので、画面ごとに再実装しない。
+      */}
+      <DataTable
+        testId="org-table"
+        rows={paged.items}
+        columns={columns}
+        rowKey={(u) => u.id}
+        sort={sort}
+        onSortChange={setSort}
+        loaded={items !== null}
+        failed={listError !== null}
+        emptyTitle="組織がありません"
+        emptyMessage="まず「部署管理」で部署を追加してください。"
+        failureMessage="組織一覧を読み込めませんでした。"
+        scrollRegionLabel="組織一覧"
+      />
+      <Pager
+        page={paged.page}
+        pageCount={paged.pageCount}
+        onChange={(next) => setMany({ page: String(next) })}
+        testIdPrefix="org"
+      />
     </Section>
   );
 }

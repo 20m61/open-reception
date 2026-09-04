@@ -14,7 +14,13 @@ const PAGE_SIZE = 20;
 
 /** 部署管理 (issue #25)。一覧・作成・有効/無効・並び替えを管理 API 経由で行う。 */
 export function DepartmentsManager() {
-  const [items, setItems] = useState<Department[]>([]);
+  /*
+   * 🔴 **「まだ読めていない」と「0 件だった」を型で分ける (#966 AC2)。**
+   * 初期値が `[]` だと、取得前も取得失敗も「登録された部署はありません。」と**断定**する。
+   */
+  const [items, setItems] = useState<Department[] | null>(null);
+  /** 一覧の読み取り失敗。操作（追加・並べ替え）の失敗は `useSaveFeedback` が持つ。 */
+  const [listError, setListError] = useState<string | null>(null);
   const [name, setName] = useState('');
   const [kana, setKana] = useState('');
   const [busy, setBusy] = useState(false);
@@ -24,8 +30,18 @@ export function DepartmentsManager() {
   const { sort, setSort } = useTableSort();
 
   const load = useCallback(async () => {
-    const res = await fetch('/api/admin/departments');
-    if (res.ok) setItems(((await res.json()) as { items: Department[] }).items);
+    try {
+      const res = await fetch('/api/admin/departments');
+      if (!res.ok) {
+        setListError('部署一覧を取得できませんでした。');
+        return;
+      }
+      setListError(null);
+      setItems(((await res.json()) as { items: Department[] }).items);
+    } catch {
+      // 通信そのものの失敗も「失敗」へ落とす (#966 AC3)。拾わないと永遠の「読み込み中」になる。
+      setListError('部署一覧を取得できませんでした。');
+    }
   }, []);
 
   useEffect(() => {
@@ -100,7 +116,7 @@ export function DepartmentsManager() {
   const handleDrop = useCallback(
     async (targetIndex: number) => {
       if (dragIndex === null || dragIndex === targetIndex) return setDragIndex(null);
-      const next = [...items];
+      const next = [...(items ?? [])];
       const [moved] = next.splice(dragIndex, 1);
       if (moved) next.splice(targetIndex, 0, moved);
       // 先に画面上の並びを動かしているので、失敗したときは**必ず取り直して戻す**。
@@ -123,10 +139,13 @@ export function DepartmentsManager() {
     [dragIndex, items, load, clear, failure],
   );
 
-  const indexInItems = useCallback((d: Department) => items.findIndex((x) => x.id === d.id), [items]);
+  const indexInItems = useCallback(
+    (d: Department) => (items ?? []).findIndex((x) => x.id === d.id),
+    [items],
+  );
 
   const columns = useMemo<Column<Department>[]>(() => {
-    const indexOf = (d: Department) => items.findIndex((x) => x.id === d.id);
+    const indexOf = (d: Department) => (items ?? []).findIndex((x) => x.id === d.id);
     return [
       {
         key: 'order',
@@ -163,7 +182,7 @@ export function DepartmentsManager() {
               <Button aria-label="up" onClick={() => move(d, 'up')} disabled={i === 0}>
                 ↑
               </Button>
-              <Button aria-label="down" onClick={() => move(d, 'down')} disabled={i === items.length - 1}>
+              <Button aria-label="down" onClick={() => move(d, 'down')} disabled={i === (items ?? []).length - 1}>
                 ↓
               </Button>
               <Button data-testid="dept-toggle" onClick={() => toggle(d)}>
@@ -176,7 +195,7 @@ export function DepartmentsManager() {
     ];
   }, [items, move, toggle]);
 
-  const sorted = useMemo(() => sortRows(items, columns, sort), [items, columns, sort]);
+  const sorted = useMemo(() => sortRows(items ?? [], columns, sort), [items, columns, sort]);
   const paged = useMemo(() => paginate(sorted, Number(get('page')) || 1, PAGE_SIZE), [sorted, get]);
   /*
    * ドラッグでの並び替えは**既定の並びのままでないと意味を持たない**。並べ替え中や
@@ -212,6 +231,11 @@ export function DepartmentsManager() {
         testId="dept"
       />
 
+      {listError ? (
+        <p role="alert" data-testid="dept-list-error" style={{ color: 'var(--color-danger)' }}>
+          {listError}
+        </p>
+      ) : null}
       <DataTable
         testId="dept-table"
         columns={columns}
@@ -237,7 +261,11 @@ export function DepartmentsManager() {
         }
         sort={sort}
         onSortChange={setSort}
+        loaded={items !== null}
+        failed={listError !== null}
         emptyMessage="登録された部署はありません。"
+        failureMessage="部署一覧を読み込めませんでした。"
+        scrollRegionLabel="部署一覧"
       />
 
       <Pager

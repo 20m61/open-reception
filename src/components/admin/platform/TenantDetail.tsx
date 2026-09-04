@@ -221,7 +221,7 @@ export function TenantDetail({ tenantId }: { tenantId: string }) {
       {/*
         生 `<table>` を共有 `ui/DataTable` へ寄せた (#896 AC1)。横スクロール領域は
         `DataTable` が持つので、外側の `overflowX` ラッパは要らない。3 状態は
-        `loaded` / `failed` で渡す（#947 の `TableBodyState` と同じ判断を部品側で行う）。
+        `loaded` / `failed` で渡す（#947 で生 `<tbody>` に置いていた 3 状態の判断を、部品側へ移したもの）。
       */}
       <DataTable
         testId="platform-tenant-sites"

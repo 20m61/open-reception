@@ -475,18 +475,23 @@ describe('platform の一覧の状態表示 (#896 / 課題 06)', () => {
   });
 
   /*
-   * 生 `<tbody>` に戻ってきたときの受け皿を残す（回帰の閂）。
+   * 🔴 **生 `<tbody>` で一覧を描き直させない（回帰の閂）。**
    *
-   * 現状ここに当たるのは `ProviderConfig` の 1 つ（免除済み）だけだが、**生の表を足す**
-   * 変異は上の `RAW_TABLE_BUDGET` で落ちる。両方あって初めて「生でも `DataTable` でも
-   * 状態を描き分ける」が閉じる。
+   * かつてここは「行を `map` で描く `<tbody>` は `TableBodyState` を持つ」を要求していた。
+   * **`TableBodyState` は #966 で削除した** —— #896 AC1 で 13 表を `ui/DataTable` へ寄せた
+   * 結果、本番の消費者がゼロになったためである（シンボル走査とモジュールパス走査の 2 通りで
+   * 確認済み）。存在しない部品を要求し続けると、次に生 `<tbody>` を書いた人は
+   * **満たしようのない主張**に当たる。
+   *
+   * 要求を「部品を持て」から「**そもそも生の一覧を書くな**」へ移す。行を `map` で描く
+   * `<tbody>` は、免除簿（`EXEMPT_TBODY`）に載っているものだけであること ——
+   * 一覧を描くなら `ui/DataTable` を通る（3 状態も横スクロールも部品側が持つ）。
    */
-  it('行を map で描く <tbody> は TableBodyState を持つ（読み込み中と 0 件を混ぜない）', () => {
+  it('行を map で描く <tbody> は免除されたものだけ（生の一覧を書かせない）', () => {
     const offenders = platformFiles().flatMap((f) =>
       tbodyBlocks(f.source)
         .filter((body) => /\.map\(/.test(body))
         .filter((body) => !isExempt(body))
-        .filter((body) => !/<TableBodyState\b/.test(body))
         .map(() => f.name),
     );
     expect(offenders).toEqual([]);

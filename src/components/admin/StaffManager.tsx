@@ -20,11 +20,49 @@ import { enablementState } from './state-vocabulary';
  */
 const PAGE_SIZE = 20;
 
+/**
+ * 付加情報の読み取り結果を `T | null` に潰す (#966 レビュー 2 周目 MAJOR-1/2)。
+ *
+ * `load` の中に `try`/`catch` を並べると、`tests/config/admin-list-states.test.ts` の
+ * 「`catch` は失敗を**報告**する」を満たせない —— ここでの `catch` は報告ではなく
+ * **`null` へ畳む**役だから。報告は呼び出し側が `setAuxError` で 1 回だけ行う。
+ *
+ * 🔴 guard を緩めずに構造で解いている。`load` 自身の `catch`（担当者一覧）は
+ * これまでどおり報告を義務づけられたままにする。
+ */
+async function readSettled<T>(result: PromiseSettledResult<Response>): Promise<T | null> {
+  if (result.status === 'rejected' || !result.value.ok) return null;
+  try {
+    return (await result.value.json()) as T;
+  } catch {
+    return null;
+  }
+}
+
 export function StaffManager() {
-  const [items, setItems] = useState<Staff[]>([]);
-  const [departments, setDepartments] = useState<Department[]>([]);
+  /*
+   * 🔴 **「まだ読めていない」と「0 件だった」を型で分ける (#966 AC2)。**
+   * 初期値が `[]` だと、取得前も取得失敗も「登録された担当者はありません。」と**断定**し、
+   * 件数表示も「0 件中 0 件を表示」と言い切る。
+   */
+  const [items, setItems] = useState<Staff[] | null>(null);
+  /** 一覧の読み取り失敗。操作（追加・変更）の失敗は `useSaveFeedback` が持つ。 */
+  const [listError, setListError] = useState<string | null>(null);
+  /*
+   * 🔴 **部署が読めているかを型で分ける (#966 レビュー 2 周目 MAJOR-2)。**
+   *
+   * `[]` のままだと「部署が 0 件」と「部署が読めていない」が同じ見た目になる ——
+   * 実測では部署 API が 403 のとき、**全行の部署列が `-`**、兼務欄が空、追加フォームの
+   * `<option>` が 0 個になり、しかも「追加」ボタンは押せてしまう（押すと `add()` が
+   * `departmentId === ''` で**黙って return** する）。#966 が潰そうとしている
+   * 「読めていないことを『無い』と言い換える」欠陥が、同じ `load()` の中に残っていた。
+   */
+  const [departments, setDepartments] = useState<Department[] | null>(null);
+  /** 部署／兼務の読み取り失敗（担当者一覧の可否とは別に報告する）。 */
+  const [auxError, setAuxError] = useState<string | null>(null);
   /** 担当者 id → 兼務している組織 id。主所属（`staff.departmentId`）は含まない (#373 増分 8)。 */
-  const [secondary, setSecondary] = useState<Record<string, string[]>>({});
+  /** 担当者 id → 兼務している組織 id。`null` は**未読**（「兼務なし」と断定しない）。 */
+  const [secondary, setSecondary] = useState<Record<string, string[]> | null>(null);
   const [displayName, setDisplayName] = useState('');
   const [kana, setKana] = useState('');
   const [departmentId, setDepartmentId] = useState('');
@@ -39,28 +77,80 @@ export function StaffManager() {
   const status = get('status');
 
   const load = useCallback(async () => {
-    const [sRes, dRes, oRes] = await Promise.all([
+    /*
+     * 🔴 **`Promise.all` の 1 本が reject すると読み込み全体が消える (#966 AC3)。**
+     * 囲っていないと、担当者一覧も部署も兼務も**まとめて無言**になる。
+     */
+    /*
+     * 🔴 **3 本を独立に決着させる (#966 レビュー 2 周目 MAJOR-1)。**
+     *
+     * `Promise.all` は **1 本でも reject すると 3 本ぶんの分岐が 1 つも走らない**。
+     * 1 周目の修正は「resolve した後の順序」しか直しておらず、reject の経路は
+     * そのままだった —— レビューが実測したとおり、兼務や部署の**接続断**だけで
+     * 担当者一覧が画面から消え、「担当者一覧を取得できませんでした」という
+     * **嘘の原因**が出ていた（担当者 API は 200 を返している）。
+     *
+     * このリポジトリの管理 API は `Connection: close` を返すので、ソケット再利用で
+     * 1 本だけ `ECONNRESET` になる形は実際に踏んだことがある（`tests/e2e/helpers.ts`）。
+     *
+     * `allSettled` にして、**担当者一覧の可否は `sRes` だけで決める**。
+     */
+    const [sResult, dResult, oResult] = await Promise.allSettled([
       fetch('/api/admin/staff'),
       fetch('/api/admin/departments'),
       // 兼務は組織ビュー（互換 + 保存済みの合成）から読む。保存済みだけを見ると
       // 「一覧に出ているのに設定できない」になる。
       fetch('/api/admin/organizations/memberships'),
     ]);
-    if (oRes.ok) {
-      const body = (await oRes.json()) as { items: { staffId: string; organizationId: string; relation: string }[] };
+
+    // --- 担当者一覧（この画面の主対象）。
+    try {
+      if (sResult.status === 'rejected' || !sResult.value.ok) {
+        setListError('担当者一覧を取得できませんでした。');
+      } else {
+        setItems(((await sResult.value.json()) as { items: Staff[] }).items);
+        setListError(null);
+      }
+    } catch {
+      setListError('担当者一覧を取得できませんでした。');
+    }
+
+    /*
+     * --- 部署と兼務（付加情報）。
+     *
+     * 🔴 **読めなかったことを黙らない (#966 レビュー 2 周目 MAJOR-2)。**
+     * 従来は `if (dRes.ok)` に `else` が無く、403/500 で**何の表示も出なかった**。
+     * 部署が読めないと全行の部署列が `-` になり、運用者は「部署が消えた」と読む。
+     */
+    const auxFailures: string[] = [];
+    const deptBody = await readSettled<{ items: Department[] }>(dResult);
+    if (deptBody === null) {
+      auxFailures.push('部署');
+      setDepartments(null);
+    } else {
+      setDepartments(deptBody.items);
+      setDepartmentId((prev) => prev || deptBody.items[0]?.id || '');
+    }
+
+    const orgBody = await readSettled<{
+      items: { staffId: string; organizationId: string; relation: string }[];
+    }>(oResult);
+    if (orgBody === null) {
+      auxFailures.push('兼務');
+      setSecondary(null);
+    } else {
       const map: Record<string, string[]> = {};
-      for (const m of body.items) {
+      for (const m of orgBody.items) {
         if (m.relation !== 'secondary') continue;
         (map[m.staffId] ??= []).push(m.organizationId);
       }
       setSecondary(map);
     }
-    if (sRes.ok) setItems(((await sRes.json()) as { items: Staff[] }).items);
-    if (dRes.ok) {
-      const depts = ((await dRes.json()) as { items: Department[] }).items;
-      setDepartments(depts);
-      setDepartmentId((prev) => prev || depts[0]?.id || '');
-    }
+    setAuxError(
+      auxFailures.length === 0
+        ? null
+        : `${auxFailures.join('と')}の情報を取得できませんでした。担当者の追加と兼務の変更はできません。`,
+    );
   }, []);
 
   useEffect(() => {
@@ -114,14 +204,22 @@ export function StaffManager() {
     [load, clear, success, failure],
   );
 
+  /*
+   * 🔴 **未読を `-` と書かない (#966 レビュー 2 周目 MAJOR-2)。**
+   * 部署が読めていないときに `-` を出すと「部署が設定されていない」と読める ——
+   * 実測では全行が `-` になり、運用者は「部署が消えた」と判断していた。
+   */
   const deptName = useCallback(
-    (id: string) => departments.find((d) => d.id === id)?.name ?? '-',
+    (id: string) => {
+      if (departments === null) return '取得できていません';
+      return departments.find((d) => d.id === id)?.name ?? '-';
+    },
     [departments],
   );
 
   const filtered = useMemo(
     () =>
-      filterStaff(items, {
+      filterStaff(items ?? [], {
         keyword: keyword || undefined,
         departmentId: filterDeptId || undefined,
         status: (status as StaffStatusFilter) || undefined,
@@ -171,7 +269,11 @@ export function StaffManager() {
         // 設定経路が無いとその表示は永久に空のままなので、ここで足し引きできるようにする。
         cell: (s) => (
           <span style={{ display: 'inline-flex', gap: '0.5rem', flexWrap: 'wrap', alignItems: 'center' }}>
-            {(secondary[s.id] ?? []).map((orgId) => (
+            {secondary === null ? (
+              // 未読を「兼務なし」と断定しない（空欄は「無い」と読まれる）。
+              <span style={{ opacity: 0.7 }}>取得できていません</span>
+            ) : null}
+            {(secondary?.[s.id] ?? []).map((orgId) => (
               <span key={orgId} data-testid={`staff-${s.id}-secondary-${orgId}`}>
                 {deptName(orgId)}
                 <button
@@ -192,9 +294,9 @@ export function StaffManager() {
               }}
             >
               <option value="">兼務を追加…</option>
-              {departments
+              {(departments ?? [])
                 // 主所属と既存の兼務は候補から外す（追加しても 400 になるだけ）。
-                .filter((d) => d.id !== s.departmentId && !(secondary[s.id] ?? []).includes(d.id))
+                .filter((d) => d.id !== s.departmentId && !(secondary?.[s.id] ?? []).includes(d.id))
                 .map((d) => (
                   <option key={d.id} value={d.id}>
                     {d.name}
@@ -239,7 +341,7 @@ export function StaffManager() {
             {editingId === s.id ? (
               <StaffEditor
                 staff={s}
-                allStaff={items}
+                allStaff={items ?? []}
                 onSaved={() => {
                   setEditingId(null);
                   void load();
@@ -271,15 +373,34 @@ export function StaffManager() {
           <input id="staff-kana-input" data-testid="staff-kana-input" value={kana} onChange={(e) => setKana(e.target.value)} style={inputStyle} />
         </Field>
         <Field label="部署" htmlFor="staff-dept-select">
-          <select id="staff-dept-select" data-testid="staff-dept-select" value={departmentId} onChange={(e) => setDepartmentId(e.target.value)} style={inputStyle}>
-            {departments.map((d) => (
+          <select
+            id="staff-dept-select"
+            data-testid="staff-dept-select"
+            value={departmentId}
+            onChange={(e) => setDepartmentId(e.target.value)}
+            style={inputStyle}
+            // 部署が読めていないと `add()` は departmentId === '' で黙って return する。
+            disabled={departments === null}
+          >
+            {(departments ?? []).map((d) => (
               <option key={d.id} value={d.id}>
                 {d.name}
               </option>
             ))}
           </select>
         </Field>
-        <Button variant="primary" type="submit" data-testid="staff-add" disabled={busy || displayName.trim() === ''}>
+        {/*
+          🔴 **押しても何も起きないボタンにしない (#966 レビュー 2 周目 MAJOR-2)。**
+          部署が読めていないと `add()` は `departmentId === ''` で**黙って return** する。
+          実測では氏名を入れて押しても `staff-saved` も `staff-save-error` も出ず、
+          運用者は反応しないボタンを何度も押していた。
+        */}
+        <Button
+          variant="primary"
+          type="submit"
+          data-testid="staff-add"
+          disabled={busy || displayName.trim() === '' || departments === null}
+        >
           追加
         </Button>
         <SaveFeedback feedback={feedback} successTestId="staff-saved" errorTestId="staff-save-error" />
@@ -314,7 +435,7 @@ export function StaffManager() {
             style={inputStyle}
           >
             <option value="">すべて</option>
-            {departments.map((d) => (
+            {(departments ?? []).map((d) => (
               <option key={d.id} value={d.id}>
                 {d.name}
               </option>
@@ -344,10 +465,28 @@ export function StaffManager() {
           </Button>
         ) : null}
       </div>
-      <p data-testid="staff-count" style={{ opacity: 0.7, fontSize: font.small }}>
-        {items.length} 件中 {filtered.length} 件を表示
-      </p>
+      {/* 読めていないうちは件数を言わない（「0 件中 0 件」は 0 件の断定と同じ・#966 AC1）。 */}
+      {items === null ? null : (
+        <p data-testid="staff-count" style={{ opacity: 0.7, fontSize: font.small }}>
+          {items.length} 件中 {filtered.length} 件を表示
+        </p>
+      )}
 
+      {listError ? (
+        <p role="alert" data-testid="staff-list-error" style={{ color: color.danger }}>
+          {listError}
+        </p>
+      ) : null}
+      {/*
+        🔴 **部署・兼務の読み取り失敗を、担当者一覧とは別に告げる
+        (#966 レビュー 2 周目 MAJOR-2)。** 従来は `if (dRes.ok)` に `else` が無く、
+        403/500 でも**何の表示も出なかった**。
+      */}
+      {auxError ? (
+        <p role="alert" data-testid="staff-aux-error" style={{ color: color.danger }}>
+          {auxError}
+        </p>
+      ) : null}
       <DataTable
         testId="staff-table"
         columns={columns}
@@ -356,7 +495,11 @@ export function StaffManager() {
         rowTestId={() => 'staff-row'}
         sort={sort}
         onSortChange={setSort}
+        loaded={items !== null}
+        failed={listError !== null}
         emptyMessage={hasFilter ? '条件に一致する担当者はいません。' : '登録された担当者はありません。'}
+        failureMessage="担当者一覧を読み込めませんでした。"
+        scrollRegionLabel="担当者一覧"
       />
       <Pager
         page={paged.page}
