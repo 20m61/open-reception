@@ -353,6 +353,14 @@ const RESET_ON_SWITCH: readonly { readonly file: string; readonly setter: string
     why: '操作の失敗を読み取りの error から分離した結果、遷移時の消去経路が無くなるため',
   },
   {
+    file: 'TenantDetail.tsx',
+    setter: 'setData',
+    why:
+      '世代ガードは「後着した A を載せない」しか防がず、既に載っている A は残る。' +
+      '取得が失敗すると A の名前・状態バッジ・指標のまま「危険な操作」が描かれ、' +
+      'ラベルは A の status、送信先は B の tenantId になる（監査には B と正しく残る）',
+  },
+  {
     file: 'FeatureFlags.tsx',
     setter: 'setFlagsError',
     why: '読み取りの失敗を writeError から分離した結果、選択し直しでの消去経路が無くなるため',
@@ -510,6 +518,22 @@ const MUST_NOT_DISPLACE: readonly {
  * 🔴 この配列から名前を**消す**変異は、その画面の主張を丸ごと消す。だから
  * 下の「同一性の固定」と対で読むこと（片方だけでは空虚に通る）。
  */
+/**
+ * 「形の述語を通しているか」の判定 (#968 レビュー 7 周目 m1)。
+ *
+ * 🔴 **`Array.isArray(` は語彙に入れない。** `read-response.ts` 自身が
+ * 「`Array.isArray` だけだと `[null]` が通って投げる」と書いているのに、当初の検出器は
+ * その 1 段検査を合格にしていた —— 実際にそれへ依存していた 2 件が BLOCKER-1
+ * （運用コンソール全体が来訪者向け文言になる）の実害を出した。
+ *
+ * 関数として切り出したのは、**合成ソースで直接縛れるようにする**ため。実ファイルに
+ * 対する主張だけだと、いまたまたま違反者がゼロなので**語彙を緩める変異が素通りする**
+ * （実測で生存）。ここは将来の違反を止めるための guard なので、guard 自身を測る。
+ */
+export function usesShapePredicate(body: string): boolean {
+  return /is[A-Z]\w*Shape\(|isRecord\(/.test(body);
+}
+
 const IN_SCOPE_TIMEOUT: readonly string[] = [
   'PlatformDashboard.tsx',
   'ProviderConfig.tsx',
@@ -833,6 +857,7 @@ describe('platform の通信失敗が無言にならない (#968)', () => {
     ]);
     expect(RESET_ON_SWITCH.map((r) => `${r.file}:${r.setter}`)).toEqual([
       'TenantDetail.tsx:setActionError',
+      'TenantDetail.tsx:setData',
       'FeatureFlags.tsx:setFlagsError',
       'FeatureFlags.tsx:setWriteError',
     ]);
@@ -1102,7 +1127,7 @@ describe('platform の通信失敗が無言にならない (#968)', () => {
          * 2 件（`TenantSwitcher` / `FeatureFlags` のテナント一覧）が BLOCKER-1 の実害を
          * 出している。**PR 自身が不十分と断じた形を、検査が合格にしてはいけない。**
          */
-        const usesPredicate = /is[A-Z]\w*Shape\(|isRecord\(/.test(fn.body);
+        const usesPredicate = usesShapePredicate(fn.body);
         if (!usesPredicate) offenders.push(`${file.name}:${fn.name}`);
       }
     }
@@ -1187,6 +1212,65 @@ describe('platform の通信失敗が無言にならない (#968)', () => {
    * **正常な応答を失敗と読む**ようになる（誤検知は無言より悪い場合がある）。
    * 広げる側は e2e のハング注入が拾うので、ここでは下限だけ固定する。
    */
+  /*
+   * 🔴 **guard 自身を測る（実ファイルの違反者がゼロでも縛れるように）。**
+   * 語彙に `Array.isArray(` を戻す変異は、いま違反者が居ないので**実ファイルに対する
+   * 主張では殺せない**（実測で生存）。合成ソースなら殺せる。
+   */
+  it('形の述語の語彙: Array.isArray だけの 1 段検査は「検査した」と認めない', () => {
+    expect(usesShapePredicate('const b = await res.json(); if (!isTenantListShape(b)) return;')).toBe(true);
+    expect(usesShapePredicate('const b = await res.json(); if (!isRecord(b)) return;')).toBe(true);
+    // 🔴 これを true にする変異が BLOCKER-1 を通した形。
+    expect(usesShapePredicate('const b = await res.json(); if (!Array.isArray(b.tenants)) return;')).toBe(false);
+    expect(usesShapePredicate('const b = await res.json(); setData(b);')).toBe(false);
+  });
+
+  /*
+   * 🔴 **送信の中断は「失敗した」と断定しない (#968 レビュー 7 周目 MAJOR-5)。**
+   *
+   * 文言を hedge したコミットに、その hedge を守る主張が無かった —— 定数へ戻す変異が
+   * 素通りした（実測で生存）。**害の向きが他と逆**で、「失敗を報告しない」ではなく
+   * **成功したかもしれない破壊的操作を『失敗した』と断定して、運用者にもう一度
+   * 実行させる**欠陥である。テナントの停止/有効化で最も避けたい。
+   *
+   * 純関数のテストでは殺せない（変異は**呼び出し側**が関数を捨てて定数に置く形）ので、
+   * 配線 —— write の catch が TimeoutError を `writeTimeoutMessage` へ渡すこと —— を縛る。
+   */
+  it('write の TimeoutError は writeTimeoutMessage を通す（「失敗した」と断定しない）', () => {
+    const offenders: string[] = [];
+    let checked = 0;
+    for (const file of platformFiles()) {
+      if (!IN_SCOPE_TIMEOUT.includes(file.name)) continue;
+      for (const { catchBody } of tryCatchBlocks(file.source)) {
+        const body = file.source.slice(catchBody.start, catchBody.end);
+        if (!body.includes("name === 'TimeoutError'")) continue;
+        // read の catch は readTimeoutMessage 側。write だけを見る。
+        if (!body.includes('writeTimeoutMessage') && !body.includes('readTimeoutMessage')) {
+          offenders.push(`${file.name}: TimeoutError を定型文へ潰している`);
+          continue;
+        }
+        if (body.includes('writeTimeoutMessage')) checked += 1;
+      }
+    }
+    expect(offenders, 'TimeoutError の言い分けが定数へ潰れている').toEqual([]);
+    expect(checked, 'write の TimeoutError 分岐を見つけられていない').toBeGreaterThanOrEqual(4);
+  });
+
+  /*
+   * 🔴 **hedge の中身そのもの。** 「失敗した」と言い切る語を含まないこと、
+   * かつ「分からない」と言っていること。文言を書き換える変異を落とす。
+   */
+  it('writeTimeoutMessage は成功を否定しない', () => {
+    const source = readFileSync(
+      join(process.cwd(), 'src/components/admin/platform/read-response.ts'),
+      'utf8',
+    );
+    const fn = /export function writeTimeoutMessage[\s\S]*?\n}/.exec(source)?.[0] ?? '';
+    expect(fn, 'writeTimeoutMessage が見つからない').not.toBe('');
+    expect(fn).not.toContain('失敗しました');
+    expect(fn).toContain('分かりません');
+  });
+
   it('🔴 タイムアウトを強制する対象は固定（黙って外せない）', () => {
     expect([...IN_SCOPE_TIMEOUT].sort()).toEqual([
       'FeatureFlags.tsx',
