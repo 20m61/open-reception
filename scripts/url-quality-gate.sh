@@ -8,7 +8,7 @@
 #   - zap        : OWASP ZAP baseline（受動スキャン・既知の警告を棚卸し）
 #
 # 使い方:
-#   scripts/url-quality-gate.sh <BASE_URL> [--no-zap] [--no-lighthouse]
+#   scripts/url-quality-gate.sh <BASE_URL> [--no-zap] [--no-lighthouse] [--strict]
 # 例:
 #   scripts/url-quality-gate.sh http://localhost:3000
 #   scripts/url-quality-gate.sh https://d342uosvp8649l.cloudfront.net
@@ -16,20 +16,41 @@
 # 前提: curl / docker（ZAP 用・colima 起動済み）/ npx（lighthouse 用）。
 # 注意: ローカル(localhost)を ZAP(docker) からスキャンする場合、サーバを 0.0.0.0 で
 #       起動し、URL は host.docker.internal に読み替える（本スクリプトが自動置換）。
+#
+# ## 任意ツールの扱い（SKIP 規約・2026-09-04 / クラウド実行で判明）
+#
+# `scripts/quality-gate.sh` と同じ規約に揃えた ―― **未導入の任意ツールは SKIP**、
+# `--strict` のときだけ FAIL。以前は無条件 FAIL だったため、docker デーモンの無い
+# クラウドサンドボックスでは **dev が健全でも smoke が必ず赤くなり**、
+# runbook ステップ 10 が原理的に完走しなかった。
+#
+# 🔴 **SKIP は green ではない。** RESULT 行に必ず SKIP を併記する（#640 と同型 ――
+# 「落ちなかった」を「通った」と読ませない）。
+#
+# ## lighthouse 用の Chrome
+#
+# lhci は `CHROME_PATH` を尊重する。クラウドサンドボックスには Playwright 同梱の
+# chromium があるので、それを指せば実際に走る。例:
+#   CHROME_PATH=/opt/pw-browsers/chromium-1194/chrome-linux/chrome
+# 解決できないときは SKIP（無いものを FAIL にしない）。
+#
+# 判定ロジックはこのファイルに書かない（bash はテストしづらい）。観測を集めて
+# scripts/url-gate-tooling.ts → src/domain/governance/url-gate-tooling.ts へ渡す。
 # =============================================================================
 set -uo pipefail
 
 BASE="${1:-}"
 if [[ -z "$BASE" || "$BASE" == --* ]]; then
-  echo "Usage: $0 <BASE_URL> [--no-zap] [--no-lighthouse]" >&2
+  echo "Usage: $0 <BASE_URL> [--no-zap] [--no-lighthouse] [--strict]" >&2
   exit 2
 fi
 shift || true
-RUN_ZAP=1; RUN_LH=1
+RUN_ZAP=1; RUN_LH=1; STRICT=0
 for a in "$@"; do
   case "$a" in
     --no-zap) RUN_ZAP=0 ;;
     --no-lighthouse) RUN_LH=0 ;;
+    --strict) STRICT=1 ;;
   esac
 done
 BASE="${BASE%/}"
@@ -38,24 +59,84 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 OUT="$ROOT/.url-quality-gate"
 mkdir -p "$OUT"
 FAILED=()
+SKIPPED=()
 PATHS=(/ /kiosk /admin/login)
 
 echo "════════════════════════════════════════════════"
 echo " URL quality gate: $BASE"
 echo "════════════════════════════════════════════════"
 
+# ---- 0. 道具の観測 -----------------------------------------------------------
+# 🔴 **CLI の有無だけでは足りない。** クラウドサンドボックスには docker CLI があるが
+# デーモンが無い（`/var/run/docker.sock` が存在しない）。CLI だけを見て実行すると
+# `docker run` が exit 1 で落ち、それが zap の「高リスク検出」と同じコードなので
+# **インフラ障害がセキュリティ指摘として報告される**（下の zap 節を参照）。
+obs_docker_cli=false; obs_docker_daemon=false; obs_chrome=false
+command -v docker >/dev/null 2>&1 && obs_docker_cli=true
+[[ "$obs_docker_cli" == true ]] && docker info >/dev/null 2>&1 && obs_docker_daemon=true
+# lhci は CHROME_PATH を尊重する。明示されていればそれを、無ければ PATH 上の Chrome を見る。
+if [[ -n "${CHROME_PATH:-}" && -x "${CHROME_PATH}" ]]; then
+  obs_chrome=true
+elif command -v google-chrome >/dev/null 2>&1 \
+  || command -v google-chrome-stable >/dev/null 2>&1 \
+  || command -v chromium >/dev/null 2>&1 \
+  || command -v chromium-browser >/dev/null 2>&1; then
+  obs_chrome=true
+fi
+
+PLAN_LH="run"; PLAN_LH_REASON=""
+PLAN_ZAP="run"; PLAN_ZAP_REASON=""
+if plan_out="$(npx --no-install tsx "$ROOT/scripts/url-gate-tooling.ts" plan \
+    "--strict=${STRICT}" \
+    "dockerCli=${obs_docker_cli}" \
+    "dockerDaemon=${obs_docker_daemon}" \
+    "chrome=${obs_chrome}" 2>/dev/null)"; then
+  while IFS=$'\t' read -r kv reason; do
+    case "$kv" in
+      lighthouse=*) PLAN_LH="${kv#lighthouse=}"; PLAN_LH_REASON="$reason" ;;
+      zap=*)        PLAN_ZAP="${kv#zap=}";       PLAN_ZAP_REASON="$reason" ;;
+    esac
+  done <<< "$plan_out"
+else
+  # 🔴 判定器が動かないことを「道具は揃っている」に倒さない。走らせずに FAIL する
+  # （`quality-gate.sh` の skip_unverified と同じで、検査できなかったものを green にしない）。
+  echo "  ⛔ 判定器（scripts/url-gate-tooling.ts）を実行できませんでした" >&2
+  FAILED+=("url-gate-tooling(判定不能)")
+  PLAN_LH="fail"; PLAN_LH_REASON="判定器が実行できません"
+  PLAN_ZAP="fail"; PLAN_ZAP_REASON="判定器が実行できません"
+fi
+
 # ---- 1. smoke（到達性） -------------------------------------------------------
 echo "── smoke（主要ルート 200）"
 for p in "${PATHS[@]}"; do
-  code="$(curl -s -o /dev/null -w '%{http_code}' "$BASE$p" || echo 000)"
+  # 🔴 **`|| echo 000` を付けない。** curl は接続失敗時も `-w '%{http_code}'` で `000` を
+  # 出力し、**かつ非ゼロで終了する**。`||` を付けると 2 つ目の `000` が連結され、
+  # 出力が `000000` になる（実測。長さ 6）。運用者には HTTP コードとして読めない値が出る。
+  code="$(curl -s -o /dev/null -w '%{http_code}' "$BASE$p")"
   printf '  %-16s HTTP %s\n' "$p" "$code"
-  [[ "$code" == "200" ]] || FAILED+=("smoke $p ($code)")
+  if [[ "$code" == "000" ]]; then
+    # 接続そのものが成立していない（DNS / TLS / プロキシ拒否）。HTTP エラーとは別物なので
+    # そう書く ―― 「503 を返した」と「一度も届かなかった」を同じ文言にしない。
+    FAILED+=("smoke $p (接続不成立)")
+  elif [[ "$code" != "200" ]]; then
+    FAILED+=("smoke $p ($code)")
+  fi
 done
 
 # ---- 2. lighthouse ----------------------------------------------------------
 if [[ "$RUN_LH" == 1 ]]; then
   echo "── lighthouse（性能/a11y/best-practices）"
-  cat > "$OUT/lhci.json" <<JSON
+  case "$PLAN_LH" in
+    skip)
+      echo "  lighthouse: SKIP（${PLAN_LH_REASON}）"
+      SKIPPED+=("lighthouse")
+      ;;
+    fail)
+      echo "  lighthouse: FAIL（${PLAN_LH_REASON}）"
+      FAILED+=("lighthouse(${PLAN_LH_REASON})")
+      ;;
+    *)
+      cat > "$OUT/lhci.json" <<JSON
 {
   "ci": {
     "collect": {
@@ -72,38 +153,78 @@ if [[ "$RUN_LH" == 1 ]]; then
   }
 }
 JSON
-  if npx --yes @lhci/cli@0.15.x autorun --config="$OUT/lhci.json" > "$OUT/lighthouse.log" 2>&1; then
-    echo "  lighthouse: PASS（詳細 $OUT/lighthouse）"
-  else
-    echo "  lighthouse: 閾値未達/失敗（$OUT/lighthouse.log 参照）"
-    FAILED+=("lighthouse")
-  fi
+      if npx --yes @lhci/cli@0.15.x autorun --config="$OUT/lhci.json" > "$OUT/lighthouse.log" 2>&1; then
+        echo "  lighthouse: PASS（詳細 $OUT/lighthouse）"
+      else
+        echo "  lighthouse: 閾値未達/失敗（$OUT/lighthouse.log 参照）"
+        FAILED+=("lighthouse")
+      fi
+      ;;
+  esac
 fi
 
 # ---- 3. OWASP ZAP baseline --------------------------------------------------
 if [[ "$RUN_ZAP" == 1 ]]; then
   echo "── OWASP ZAP baseline（受動スキャン）"
-  ZAP_TARGET="$BASE"
-  # localhost をコンテナから見えるホスト名へ置換。
-  ZAP_TARGET="${ZAP_TARGET/http:\/\/localhost/http://host.docker.internal}"
-  ZAP_TARGET="${ZAP_TARGET/http:\/\/127.0.0.1/http://host.docker.internal}"
-  if docker run --rm -t -v "$OUT:/zap/wrk:rw" ghcr.io/zaproxy/zaproxy:stable \
-      zap-baseline.py -t "$ZAP_TARGET/kiosk" -m 2 -r zap-report.html -I > "$OUT/zap.log" 2>&1; then
-    echo "  ZAP: 完了（警告なし or 既知のみ）。レポート: $OUT/zap-report.html"
-  else
-    rc=$?
-    # zap-baseline.py: 終了コード 1=FAIL(高リスク) / 2=WARN。-I で WARN は無視するが念のため記録。
-    echo "  ZAP: 終了コード $rc（$OUT/zap.log / $OUT/zap-report.html を確認）"
-    [[ "$rc" == 1 ]] && FAILED+=("zap(high-risk)")
-  fi
+  case "$PLAN_ZAP" in
+    skip)
+      echo "  ZAP: SKIP（${PLAN_ZAP_REASON}）"
+      SKIPPED+=("zap")
+      ;;
+    fail)
+      echo "  ZAP: FAIL（${PLAN_ZAP_REASON}）"
+      FAILED+=("zap(${PLAN_ZAP_REASON})")
+      ;;
+    *)
+      ZAP_TARGET="$BASE"
+      # localhost をコンテナから見えるホスト名へ置換。
+      ZAP_TARGET="${ZAP_TARGET/http:\/\/localhost/http://host.docker.internal}"
+      ZAP_TARGET="${ZAP_TARGET/http:\/\/127.0.0.1/http://host.docker.internal}"
+      # 🔴 **前回のレポートを消してから走らせる。** 残っていると「zap が走った」証拠に
+      # 化け、docker 側の失敗を high-risk と誤読する（下の判定はレポートの有無を見る）。
+      rm -f "$OUT/zap-report.html"
+      rc=0
+      docker run --rm -t -v "$OUT:/zap/wrk:rw" ghcr.io/zaproxy/zaproxy:stable \
+        zap-baseline.py -t "$ZAP_TARGET/kiosk" -m 2 -r zap-report.html -I \
+        > "$OUT/zap.log" 2>&1 || rc=$?
+      report_written=false
+      [[ -s "$OUT/zap-report.html" ]] && report_written=true
+      # 🔴 **終了コードだけで判定しない。** `zap-baseline.py` は 1=高リスク / 2=WARN だが、
+      # `docker run` 自体の失敗（デーモン停止・pull 失敗）も 1 を返す。実測で確認済み。
+      # レポートが書かれていなければ zap は一度も走っていないので unverified。
+      outcome="$(npx --no-install tsx "$ROOT/scripts/url-gate-tooling.ts" \
+        zap-exit "$rc" "$report_written" 2>/dev/null || echo unverified)"
+      case "$outcome" in
+        pass)
+          echo "  ZAP: 完了（警告なし or 既知のみ）。レポート: $OUT/zap-report.html" ;;
+        warn)
+          echo "  ZAP: WARN のみ（-I で無視）。レポート: $OUT/zap-report.html" ;;
+        high-risk)
+          echo "  ZAP: 高リスク検出（$OUT/zap.log / $OUT/zap-report.html を確認）"
+          FAILED+=("zap(high-risk)") ;;
+        *)
+          # 走らなかった／読めなかった。green にも red にもしない ―― SKIP として記録し、
+          # 「高リスクが出た」とは**言わない**（それが今回直している誤ラベル）。
+          echo "  ZAP: 実行できませんでした（exit ${rc}・レポート無し。$OUT/zap.log 参照）"
+          SKIPPED+=("zap(未実行)")
+          if [[ "$STRICT" -eq 1 ]]; then
+            FAILED+=("zap(未実行; --strict)")
+          fi ;;
+      esac
+      ;;
+  esac
 fi
 
 # ---- 結果 -------------------------------------------------------------------
 echo "════════════════════════════════════════════════"
+# 🔴 **SKIP を必ず併記する。** SKIP があるのに素の `PASS` と出すと、#640（45 件 SKIP の
+# まま tier=full を green 記録）と同じ誤読を生む。赤ではないが green でもない。
+SKIP_NOTE=""
+[[ ${#SKIPPED[@]} -gt 0 ]] && SKIP_NOTE=" — SKIP: ${SKIPPED[*]}"
 if [[ ${#FAILED[@]} -eq 0 ]]; then
-  echo " RESULT: PASS"
+  echo " RESULT: PASS${SKIP_NOTE}"
   exit 0
 else
-  echo " RESULT: FAIL — ${FAILED[*]}"
+  echo " RESULT: FAIL — ${FAILED[*]}${SKIP_NOTE}"
   exit 1
 fi
