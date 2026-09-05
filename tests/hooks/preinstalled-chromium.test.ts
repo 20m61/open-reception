@@ -103,10 +103,18 @@ describe('gate_tool_export_chromium_executable', () => {
     expect(r.stdout.trim()).toBe('/my/own/chrome');
   }, TIMEOUT);
 
+  /**
+   * 🔴 **`${VAR:-...}` ではなく `${VAR-...}` で見る（コロン無し）。**
+   *
+   * コロン付きは「未設定」と「空文字に設定」を同じに畳むので、`|| return 0` を外して
+   * 空文字を export する変異が**素通りした**（変異検証 N6 が生存して判明）。
+   * 契約は「触らない」であって「空にする」ではない。子プロセスで明示的に unset して、
+   * 実装が本当に手を出していないことを問う。
+   */
   it('プリインストール版が無ければ未設定のままにする（存在しないパスを掴ませない）', () => {
     const r = runBash(
-      'gate_tool_export_chromium_executable; printf "%s" "${PW_EXECUTABLE_PATH:-unset}"',
-      { GATE_PREINSTALLED_CHROMIUM: '/nonexistent/chromium', PW_EXECUTABLE_PATH: '' },
+      'unset PW_EXECUTABLE_PATH; gate_tool_export_chromium_executable; printf "%s" "${PW_EXECUTABLE_PATH-unset}"',
+      { GATE_PREINSTALLED_CHROMIUM: '/nonexistent/chromium' },
     );
     expect(r.stdout.trim()).toBe('unset');
   }, TIMEOUT);
