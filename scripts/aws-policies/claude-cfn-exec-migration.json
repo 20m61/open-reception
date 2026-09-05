@@ -36,16 +36,12 @@
       "Resource": "*"
     },
     {
-      "Sid": "AllowPassRoleOnlyToTaggedDevWorkloads",
+      "Sid": "AllowPassRoleOnlyToDevWorkloadRoles",
       "Effect": "Allow",
       "Action": "iam:PassRole",
-      "Resource": "*",
+      "Resource": "arn:aws:iam::822063948773:role/OpenReception-*-dev-*",
       "Condition": {
-        "StringEquals": {
-          "iam:PassedToService": ["lambda.amazonaws.com"],
-          "aws:ResourceTag/Project": "open-reception",
-          "aws:ResourceTag/Environment": "dev"
-        }
+        "StringEquals": { "iam:PassedToService": "lambda.amazonaws.com" }
       }
     },
     {

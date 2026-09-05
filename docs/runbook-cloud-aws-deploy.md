@@ -45,10 +45,11 @@ qualifier: `orcloud01`。
 **人間が Admin 権限を持つ IAM user（`user/CDK`）で実行する。**
 
 > 🔴 **`claude-boundary.json` は managed policy の 6,144 文字上限に近い。**
-> 2026-08-15 時点で **5,978 文字（空白を除いた実サイズ。残り 166 文字）**。
+> 2026-09-05 時点で **5,946 文字（空白を除いた実サイズ。残り 198 文字）**。
 > 変遷: carve-out で 5,148 → 5,682（+534）、`DenyBoundaryEscape` 分割で 5,876（+194）、
 > `PutRolePermissionsBoundary` の Allow で 5,909（+33）、Secrets Manager の
 > 読み取り許可で 6,240 相当まで膨らんだが、**Deny を削らずに詰めて** 6,037 まで戻した。
+> 2026-09-05 に PassRole をタグ条件から ARN スコープへ替えて 5,978 → 5,946（−32）。
 >
 > 🔴 **詰め方の正解（2026-08-15）**: 「入らないから Deny を削る」ではなく
 > **(a) 実効的に重複している列挙を外す**（`iam:UpdateAssumeRolePolicy` は
@@ -63,7 +64,7 @@ qualifier: `orcloud01`。
 > ポリシーになるので、`aws-policy-shape.test.ts` の「IAM の許すパスで始まる」テストで
 > 固定してある。2026-08-15 に実際にこれで `create-policy-version` が落ちた。
 >
-> **残りは 107 文字。**
+> **残りは 198 文字。**
 > 次にステートメントを足す人は、まず余白を測ること:
 >
 > ```bash
@@ -76,7 +77,7 @@ qualifier: `orcloud01`。
 > どちらも attach する**（IAM は 1 プリンシパルに boundary を 1 本しか付けられないので、
 > **分割はできない**）—— つまり実質的には**アクションの列挙を整理するしかない**。
 > 「入らないから Deny を削る」は境界の後退なので、必ず人間の承認を取ること。
-> `claude-cfn-exec.json` は 5,141 / 6,144（残り 1,003）で余裕がある。
+> `claude-cfn-exec.json` は 5,109 / 6,144（残り 1,035）で余裕がある。
 >
 > 🔴 **層 2（cfn-exec）と層 4（boundary）は同じ規則の 2 つの写しである。** 実効権限は
 > `identity ∩ boundary` なので、**片方だけ直しても効かない**。2026-08-15 にこれで 2 度落ちた
@@ -276,7 +277,7 @@ stack ARN で認可されると確定した。change set 系に未証明の資�
 初回デプロイが実際に成功している。よって changeSet ARN のエントリは一度も実効しない
 死んだエントリであり、`ReadOwnChangeSetsForDiffGate` と同じ理由で削除した。
 
-### 4a. 自動化されている分（S1〜S22）
+### 4a. 自動化されている分（S1〜S24）
 
 🔴 **各 check は「どのロールに対して」「どのリージョンで」評価するかを自分で宣言している。
 5 つの ARN をすべて渡すこと。1 つでも欠けていると、スクリプトは既定値で埋めずに
@@ -335,18 +336,30 @@ EvalDecision=...` → `verdict=...` というログとその根拠が続く ―�
 `ROLLBACK_FAILED` になる。** S18 / S20 が `allowed` なら carve-out が広すぎる。
 **対の片方だけを見て進まないこと。**
 
-**S21 / S22 は `iam:PassRole` の対である（#680 R10 で追加）。**
+**S21〜S24 は `iam:PassRole` の 2 対である（S21/S22 は #680 R10、S23/S24 は 2026-09-05）。**
 
 | id | 期待 | 意味 |
 | --- | --- | --- |
-| S21 | **allowed** | carve-out の provider role へは、タグ無しでも `lambda.amazonaws.com` として渡せる |
-| S22 | denied | carve-out の外はタグ条件が残るので、タグの無いロールは渡せない |
+| S21 | **allowed** | carve-out の provider role へ `lambda.amazonaws.com` として渡せる |
+| S22 | denied | 渡し先 ARN の外（`OpenReception-*-dev-*` に一致しない）は渡せない |
+| S23 | **allowed** | **dev の Lambda 実行ロール**へ `lambda.amazonaws.com` として渡せる |
+| S24 | denied | 同じ渡し先でも `lambda` 以外へは渡せない（`iam:PassedToService` が効いている） |
 
-> 以前ここには「`iam:PassRole` は S 系に入っていない。`iam:PassedToService` は
-> リクエスト側の context key なので評価できない」と書いていた。**渡せる。**
+> 🔴 **S23 が無かったせいで、2026-08-15 の「50/50 PASS」は PassRole について空虚だった
+> （2026-09-05 に判明）。** 当時の S 系は PassRole について carve-out の `allowed`（S21）と
+> スコープ外の `denied`（S22）しか持たず、**本番の Lambda 実行ロールを渡せること**を
+> 誰も問うていなかった。`AllowPassRoleOnlyToTaggedDevWorkloads` が
+> `aws:ResourceTag/*` 条件（`iam:PassRole` では IAM が評価しないキー）を持っていて
+> **一度も成立していなかった**のに、全件 PASS のまま初回デプロイへ進み、
+> 2026-09-05 の dev デプロイが `AccessDenied ... iam:PassRole` →
+> `UPDATE_ROLLBACK_FAILED` で止まった。**「denied を期待する検査」だけでは、
+> 全部が denied になる世界でも緑になる**（`CLAUDE.md`「下界を併せて縛る」）。
+>
 > `--context-entries ContextKeyName=iam:PassedToService,ContextKeyValues=lambda.amazonaws.com,ContextKeyType=string`
-> をスクリプトが供給する。**対の両方に同じ context を与えている**ので、S22 の
-> `denied` が「タグ条件が効いた」ためであって「context が無かった」ためでないと言える。
+> をスクリプトが供給する。**対の両方に同じ context を与えている**ので、S22 / S24 の
+> `denied` が「条件が効いた」ためであって「context が無かった」ためでないと言える。
+> 🔴 **タグの context は供給しない。** 実リクエストに現れないキーを検査だけが供給すると、
+> 成立しない Allow が allowed に見える ―― これが上の空虚な PASS の直接の原因だった。
 > ステップ 4b の 14〜16 は引き続き実経路での確認として残す。
 
 🔴 **Permissions Boundary は simulate へ明示的に渡している（#680 R10）。**
@@ -370,13 +383,18 @@ boundary を渡すのは `exec` だけである（`--custom-permissions-boundary
 > `SIMULATE_PRINCIPAL_ARN` は**廃止**され、設定されていると `exit 2` で止まる
 > （古い手順を無言で受け付けない）。
 
-#### 実施記録: 2026-08-15（✅ 50/50 PASS）
+#### 実施記録: 2026-08-15（✅ 50/50 PASS。**PassRole については無効**）
 
 **実施済み。** 上のコマンドをそのまま Admin（`arn:aws:iam::822063948773:user/CDK`）から実行した。
 
+> 🔴 **この 50/50 を「PassRole も検証済み」と読まないこと（2026-09-05 追記）。**
+> 当時の S 系には S23（dev の Lambda 実行ロールへ渡せること）が無く、
+> `AllowPassRoleOnlyToTaggedDevWorkloads` は実際には一度も成立していなかった。
+> **S23 / S24 を足したうえで再実行するまで、PassRole の実測記録は存在しない。**
+
 | 項目 | 結果 |
 | --- | --- |
-| 実行範囲 | `simulate のみ`（S1〜S22 × principal × region = **50 件**） |
+| 実行範囲 | `simulate のみ`（S1〜S22 × principal × region = **50 件**。S23/S24 は当時未実装） |
 | 集計 | `passed=50 failed=0 notSimulatable=0` |
 | `S15` / `S16` | **どちらも `✅ allowed`** ―― stack ARN への向け直しが実 IAM で効いていることを確認 |
 | carve-out の対 | `S17`/`S19`/`S21` = `allowed`、`S18`/`S20`/`S22` = `denied`（対の両方が期待どおり） |
@@ -431,8 +449,20 @@ FAIL した 3 本（`7` / `7u` / `11`）はいずれも
 | --- | --- |
 | 4b 1〜9（ap-northeast-1） | 9/9 PASS（7 は訂正後） |
 | 4b 10（us-east-1 反復 1u〜9u） | 9/9 PASS（7u は訂正後） |
-| 4b 11〜16 | 8/8 PASS（12 は dev 3 スタック全部を個別に確認、11 は訂正後） |
+| 4b 11〜16 | 8/8 PASS（12 は dev 3 スタック全部を個別に確認、11 は訂正後）。🔴 **14〜16 の PASS は無効**（下記） |
 | 4c 17〜20 | 5/5 PASS（18 は 2 アクションを個別に評価） |
+
+🔴 **14〜16 の「8/8 PASS」は空虚だった（2026-09-05 判明）。** 旧 14〜16 は
+`--context-entries` で `aws:ResourceTag/Project` と `aws:ResourceTag/Environment` の値を
+**注入して**問うていた。`iam:PassRole` は渡される Role のタグでは認可できず、実リクエストに
+そのキーは現れないので、**検査だけが供給していた条件で allowed を得ていた**。
+実際にはこの Allow は 2026-08-15 以来一度も成立しておらず、2026-09-05 の dev デプロイが
+`AccessDenied ... iam:PassRole` → `UPDATE_ROLLBACK_FAILED` で止まって初めて表面化した。
+**リクエストに現れないキーを注入して問うてはいけない。** 14〜16 は
+`iam:PassedToService` だけを供給する形へ訂正済み。ポリシー側は渡し先 ARN
+（`OpenReception-*-dev-*`）で絞る形へ替えた（ADR 決定 6 の撤回）。
+
+⚠️ **訂正後の 14〜16 は未実行である**（実 IAM への適用と再実行が要る。ステップ 3 → 4b）。
 
 以下、元の手順（訂正済み）。
 
@@ -587,60 +617,66 @@ aws iam simulate-principal-policy \
 # ---------------------------------------------------------------------------
 # 🔴 14〜16: iam:PassRole の条件付き Allow（ADR 決定 6 / Important 4）。
 #
-# **初回デプロイが AccessDenied になるなら、まずここを疑う。** `iam:PassRole` を
-# `Resource: "*"` の無条件 Allow から
-#   iam:PassedToService = lambda.amazonaws.com
-#   aws:ResourceTag/Project = open-reception
-#   aws:ResourceTag/Environment = dev
-# の条件付きへ絞った。この 3 条件は AND であり、**渡される Role に 2 つのタグが
-# 実際に付いていること**に依存する（`applyCostTags` が `Tags.of(stack)` で付与。
-# タグが付くこと自体は `infra/test/claude-deploy-boundary.test.ts` が synth で
-# 確認済みだが、**IAM が実際にそう評価するかは未検証**）。
+# **初回デプロイが AccessDenied になるなら、まずここを疑う。** `iam:PassRole` は
+# 渡し先 ARN（`OpenReception-*-dev-*`）で絞り、条件は `iam:PassedToService` だけを持つ。
+#
+# 🔴 **2026-09-05: タグ条件は撤回した（ADR 決定 6 の訂正）。** 以前は `Resource: "*"` ＋
+# `aws:ResourceTag/Project` ＋ `aws:ResourceTag/Environment` で絞っていたが、
+# **`iam:PassRole` は渡される Role のタグでは認可できない**（IAM のサービス認可
+# リファレンスが `PassRole` に挙げる条件キーは `iam:PassedToService` と
+# `iam:AssociatedResourceArn` だけ）。タグ条件は評価されず `StringEquals` が false に
+# なるため、**この Allow は 2026-08-15 以来一度も成立していなかった**。
+# 2026-09-05 の dev デプロイが `AccessDenied ... iam:PassRole` で
+# `UPDATE_ROLLBACK_FAILED` に落ちて初めて表面化した。
+#
+# 🔴 **なぜ「8/8 PASS」だったのか（空虚な検査の型）。** 旧 14〜16 は
+# `--context-entries` で `aws:ResourceTag/Project` と `aws:ResourceTag/Environment` の
+# 値を**注入して**問うていた。実リクエストには絶対に現れないキーを検査だけが供給して
+# いたので、simulate は allowed を返し、runbook には「検証済み」と記録された。
+# **リクエストに現れないキーを注入して問うてはいけない。** 供給してよいのは
+# `iam:PassedToService` のように AWS が実際にリクエストへ載せるキーだけである。
 #
 # 14 が denied だった場合の切り分け順序:
-#   1) タグ条件（`aws:ResourceTag/*` の 2 行）を外して `iam:PassedToService` だけに緩める
+#   1) 渡し先 ARN パターンが実際のロール名を覆っているか確かめる
+#      （`aws-policy-shape.test.ts` の被覆テストと同じ照合を手でやる）
 #   2) それでも denied なら `iam:PassedToService` の値を増やす
 #      （`edgelambda.amazonaws.com` / `apigateway.amazonaws.com` 等）
 #   3) 最後の手段として `Resource: "*"` の無条件 Allow に戻す。**戻したら
 #      ADR 決定 6 を「撤回」として更新すること**（黙って戻さない）
 # ---------------------------------------------------------------------------
 
-# 14) cfn-exec role: dev の Lambda 実行ロール（タグ付き）への PassRole → allowed 期待
-#     --context-entries で条件キーの値を明示しないと simulate はキー未設定として
-#     評価するため、必ず 3 つとも渡す。
+# 14) cfn-exec role: dev の Lambda 実行ロールへの PassRole → allowed 期待
+#     🔴 渡す context は `iam:PassedToService` **だけ**。タグを注入すると、
+#        実リクエストでは起こらない条件で allowed を得てしまう（上記の空虚な検査）。
 aws iam simulate-principal-policy \
   --policy-source-arn arn:aws:iam::822063948773:role/cdk-orcloud01-cfn-exec-role-822063948773-ap-northeast-1 \
   --action-names iam:PassRole \
   --resource-arns 'arn:aws:iam::822063948773:role/OpenReception-Web-dev-ServerFnServiceRoleDUMMY' \
   --context-entries \
       'ContextKeyName=iam:PassedToService,ContextKeyValues=lambda.amazonaws.com,ContextKeyType=string' \
-      'ContextKeyName=aws:ResourceTag/Project,ContextKeyValues=open-reception,ContextKeyType=string' \
-      'ContextKeyName=aws:ResourceTag/Environment,ContextKeyValues=dev,ContextKeyType=string' \
   --query 'EvaluationResults[0].EvalDecision' --output text
 
-# 15) cfn-exec role: 別プロジェクトのタグが付いたロールへの PassRole → denied 期待
-#     （タグ条件が実際に効いていることの直接確認。ここが allowed なら
-#      `aws:ResourceTag` 条件が機能しておらず、Important 4 は塞げていない）
+# 15) cfn-exec role: 別プロジェクトのロールへの PassRole → denied 期待
+#     （渡し先 ARN の絞りが効いていることの直接確認。ここが allowed なら
+#      `OpenReception-*-dev-*` のスコープが機能しておらず、Important 4 は塞げていない）
+#     **14 と同じ context を渡す**ので、denied の理由が「context 不足」でないと言える。
 aws iam simulate-principal-policy \
   --policy-source-arn arn:aws:iam::822063948773:role/cdk-orcloud01-cfn-exec-role-822063948773-ap-northeast-1 \
   --action-names iam:PassRole \
   --resource-arns 'arn:aws:iam::822063948773:role/salon-loop-staging-SomeRole' \
   --context-entries \
       'ContextKeyName=iam:PassedToService,ContextKeyValues=lambda.amazonaws.com,ContextKeyType=string' \
-      'ContextKeyName=aws:ResourceTag/Project,ContextKeyValues=salon-loop,ContextKeyType=string' \
-      'ContextKeyName=aws:ResourceTag/Environment,ContextKeyValues=staging,ContextKeyType=string' \
   --query 'EvaluationResults[0].EvalDecision' --output text
 
 # 16) cfn-exec role: lambda 以外のサービスへの PassRole → denied 期待
-#     （PassedToService 条件が効いていることの直接確認）
+#     （PassedToService 条件が効いていることの直接確認。渡し先は 14 と同じ ARN なので、
+#      違いは `iam:PassedToService` の値だけ ―― 条件そのものを問えている）
 aws iam simulate-principal-policy \
   --policy-source-arn arn:aws:iam::822063948773:role/cdk-orcloud01-cfn-exec-role-822063948773-ap-northeast-1 \
   --action-names iam:PassRole \
   --resource-arns 'arn:aws:iam::822063948773:role/OpenReception-Web-dev-ServerFnServiceRoleDUMMY' \
   --context-entries \
       'ContextKeyName=iam:PassedToService,ContextKeyValues=ec2.amazonaws.com,ContextKeyType=string' \
-      'ContextKeyName=aws:ResourceTag/Project,ContextKeyValues=open-reception,ContextKeyType=string' \
-      'ContextKeyName=aws:ResourceTag/Environment,ContextKeyValues=dev,ContextKeyType=string' \
   --query 'EvaluationResults[0].EvalDecision' --output text
 ```
 

@@ -212,7 +212,8 @@ AccessDenied になる状態でもあった。`infra/lib/config/claude-deploy-bo
 その Lambda は boundary の外で動く。change set 上は `AWS::Lambda::Function` の
 `Add`（`SAFE_ACTION`）にしか見えず、gate は止めも記録もしない。決定 4 を維持するには
 PassRole 側の制約が要るため、`iam:PassRole` を `iam:PassedToService` ＋
-`aws:ResourceTag/Project` ＋ `aws:ResourceTag/Environment` で絞った（決定 6）。
+渡し先 ARN（`OpenReception-*-dev-*`）で絞った（決定 6。2026-08-15 のタグ条件版は
+**IAM が評価しないキーを使っていて成立していなかった**ため 2026-09-05 に撤回）。
 
 ### 決定 5: CDK の承認プロンプトを使わず、diff gate を唯一の承認者にする
 
@@ -260,23 +261,51 @@ HEAD が push 済みか）と negative security test 8 本が**まるごと省�
 **既定は `diff`（承認を無視する側）**。`tests/hooks/aws-cloud-deploy.test.ts` が
 「gate を呼ぶ箇所はすべてモードを明示している」ことと既定値を固定している。
 
-### 決定 6: `iam:PassRole` は「渡す先のサービス」と「タグ」で絞る
+### 決定 6: `iam:PassRole` は「渡す先のサービス」と「渡し先 ARN」で絞る
+
+> 🔴 **2026-09-05 改訂（旧「渡す先のサービスとタグで絞る」の撤回）。**
+> 旧決定はタグ条件（`aws:ResourceTag/Project` ＋ `aws:ResourceTag/Environment`）で
+> 絞るとしていたが、**前提そのものが誤りだった** ―― `iam:PassRole` は渡される Role の
+> タグでは認可できない。IAM のサービス認可リファレンスが `PassRole` に挙げる条件キーは
+> `iam:PassedToService` と `iam:AssociatedResourceArn` だけである。書いたタグ条件は
+> 評価されず `StringEquals` が false になるので、**この Allow は 2026-08-15 の適用以来
+> 一度も成立していなかった**。実効的には `AllowPassRoleToCdkProviderRoles`
+> （`Custom*` の carve-out）だけが PassRole を与えていた。
+>
+> **表面化したのは 2026-09-05 の dev デプロイ**で、`iam:PassRole` の `AccessDenied` により
+> `OpenReception-Web-dev` が `UPDATE_ROLLBACK_FAILED` に落ちた。確定の根拠は 2 つ:
+> (1) 実 CloudFormation の `AccessDenied`（ロールにはタグが実在する）、
+> (2) `simulate-principal-policy` の差分 ―― タグ context を**注入しないと**
+> `implicitDeny`、注入すると `allowed`。つまり「実リクエストには現れないキー」に
+> 依存していた。
+>
+> **なぜ 3 週間気づかなかったか。** runbook 4b の 14〜16 と S 系の両方が空虚だった。
+> 前者は `--context-entries` でタグ値を注入して問い、後者は PassRole について
+> `denied` を期待する検査しか持たず、**本番の Lambda 実行ロールを渡せること**（下界）を
+> 誰も問うていなかった。「50/50 PASS」「8/8 PASS」はどちらもこの Allow が死んでいる
+> 世界で成立する。検出器（`aws-policy-shape.ts`）も `aws:ResourceTag/*` を
+> 「絞る条件」として**認めて**おり、テスト・runbook・検出器の 3 つが同じ誤った前提を
+> 共有していた。
 
 `claude-cfn-exec.json` / `claude-boundary.json` の `iam:PassRole` を
 `Resource: "*"` の無条件 Allow から、次の条件付き Allow へ変更する。
 
-- `iam:PassedToService` が dev スタックが実際に必要とするサービスであること
-- `aws:ResourceTag/Project` = `open-reception` かつ `aws:ResourceTag/Environment` = `dev`
+- 渡し先が `arn:aws:iam::822063948773:role/OpenReception-*-dev-*` であること
+- `iam:PassedToService` = `lambda.amazonaws.com`
 
 | 案 | Pros | Cons | 採否 |
 | --- | --- | --- | --- |
-| **PassedToService ＋ タグ条件**（採用） | 「テンプレートが要求したときにしか行使されない」という層 2 の論拠に依存しなくなる。テンプレートを書くのは**脅威モデルが侵害を仮定しているサンドボックス自身**（spec §3）なので、その論拠だけでは弱い | 全 dev リソースにタグが付いていることに依存する（`applyCostTags` が `Tags.of(stack)` で `Project`/`Environment` を全 taggable リソースへ付与しているので成立するが、**AWS 認証情報が無いため実測で確認できていない**） | ○ |
+| **PassedToService ＋ 渡し先 ARN スコープ**（採用、2026-09-05） | 「テンプレートが要求したときにしか行使されない」という層 2 の論拠に依存しなくなる。**IAM が実際に評価する仕組みだけで書けている**（ARN 照合と `iam:PassedToService`）ので、書けたこと＝効いていることになる | 名前の綴りに依存する。ロール名の付け方を変えると静かに広がる／狭まるため、`aws-policy-shape.test.ts` が実 ARN を組み立てた被覆テストで両側（dev は覆う / prod・他プロジェクト・`cdk-*` は覆わない）を固定している | ○ |
+| PassedToService ＋ タグ条件（2026-08-15 採用 → **撤回**） | — | **IAM が `iam:PassRole` に対して評価しない条件キーなので、Allow ごと成立しない。** 静的には正しい条件付き Allow に見えるため、綴りだけでは死んでいることが分からない | ✗ |
 | `Resource: "*"` のまま | 壊れない | `Role.fromRoleArn('<lambda.amazonaws.com を信頼する既存ロール>')` を足すだけで boundary の外に出られる。diff gate からは `AWS::Lambda::Function` の `Add` にしか見えない | ✗ |
 
-🔴 **これが初回デプロイで AccessDenied になる最有力候補である。** 検証は
-`docs/runbook-cloud-aws-deploy.md` ステップ 4b の 14〜16 で行う。
-1 本でも denied なら、タグ条件（`aws:ResourceTag/*`）を外して
-`iam:PassedToService` だけに緩めるのが最初の切り分けである。
+検証は `docs/runbook-cloud-aws-deploy.md` ステップ 4b の 14〜16（実 IAM）と
+ステップ 4a の **S21〜S24**（`aws:negative-tests`）で行う。S23（dev の Lambda 実行ロールへ
+渡せること）が**下界**であり、これが無かったことが今回の見逃しの直接原因である。
+
+🔴 **一般化できる教訓: リクエストに現れない条件キーを検査だけが注入してはいけない。**
+`--context-entries` に渡してよいのは、AWS が実際にそのリクエストへ載せるキーだけである。
+注入した瞬間、その検査は「実運用では絶対に起きない世界」を測ることになる。
 
 ### 決定 7: 他プロジェクトの IAM ロール / ポリシーへの書き込みを明示 Deny する
 
@@ -458,10 +487,19 @@ Deny でも通る**ため、この性質を固定できない。`aws-policy-shap
   （番号は 1〜20 まで振ってあるが、ステップ 4b の**10 番はコマンドではなく
   「1〜9 を us-east-1 で繰り返せ」という指示**なので実コマンドは 19 本。
   「20 コマンド」は誤記だった ―― 2026-08-12 残件レビュー R7）
-- 🔴 **決定 6（PassRole のタグ条件）が初回デプロイで AccessDenied になる最有力候補である。**
-  条件は「渡される IAM Role に `Project`/`Environment` タグが実際に付いていること」に
-  依存する。タグが付くこと自体は synth テストで確認済みだが、**IAM がそう評価するかは
-  未検証**。切り分け順序は runbook ステップ 4b の 14〜16 のコメントに書いた。
+- 🔴 **決定 6（PassRole のタグ条件）は 2026-09-05 に実際に AccessDenied を起こし、撤回した。**
+  「初回デプロイで AccessDenied になる最有力候補」というこの予測は当たっていたが、
+  **予測を確かめるはずの検査（runbook 4b 14〜16 / S21・S22）が空虚だった**ため、
+  3 週間のあいだ「検証済み」と記録され続けた。渡し先 ARN スコープへ替え、下界の
+  S23 / S24 を足してある。詳細は決定 6 の改訂ブロックを参照。
+- ⚠️ **同型の疑いが `DenyIamRoleWriteOutsideProject`（決定 7）に残っている。** これは
+  `iam:DeleteRole` 等に `StringNotEquals aws:ResourceTag/Project` を掛けており、
+  runbook 4b の **20 番はタグ context を注入して** `allowed` を確認している ―― 決定 6 で
+  空虚だったのと同じ形である。`iam:PassRole` と違い role 系アクションはタグ認可を
+  サポートしている**はず**だが、**実測はしていない**。もしサポートしていなければ、
+  この Deny は（キー欠如で `StringNotEquals` が真になり）**dev 自身のロール削除まで
+  Deny する**ので、rollback / teardown が `ROLLBACK_FAILED` になる。
+  次回の 4b 実行で 20 番からタグ context を外して問い直すこと。
 - 🔴 **決定 8 の carve-out は実 IAM で一度も評価していない。** `NotResource` による
   Deny の除外が期待どおり働くか（＝carve-out に一致するロールの `iam:CreateRole` /
   `iam:DeleteRole` が allowed になるか）は、runbook ステップ 4a の **S17〜S20**
@@ -473,8 +511,9 @@ Deny でも通る**ため、この性質を固定できない。`aws-policy-shap
   明示的に渡す**ようにした（#680 R10）。carve-out は cfn-exec ポリシーと boundary の
   2 枚で成立しており、`SimulatePrincipalPolicy` がアタッチ済み boundary を自動で
   含めるかどうかを AWS 抜きで確かめられない以上、**曖昧なまま「検証済み」と
-  記録しない**ため。`iam:PassRole` の対（S21/S22）も `--context-entries` で
-  `iam:PassedToService` を供給して追加した。
+  記録しない**ため。`iam:PassRole` の対（S21/S22、および 2026-09-05 に足した
+  S23/S24）も `--context-entries` で `iam:PassedToService` を供給して追加した
+  （🔴 **タグ値は供給しない。** 決定 6 の改訂を参照）。
 - 🔴 **決定 7 のポリシー系 Deny は名前の列挙のみである。** `AWS::IAM::ManagedPolicy` は
   CloudFormation に `Tags` を持たずタグ条件が使えないため、**列挙から漏れた第三者
   ポリシーは覆えない**。この account に新しいプロジェクトが増えたら列挙を見直すこと。

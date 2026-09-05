@@ -474,10 +474,10 @@ const SIMULATED_CHECKS: ReadonlyArray<SimulatedCheck> = [
     contextEntries: [
       'ContextKeyName=iam:PassedToService,ContextKeyValues=lambda.amazonaws.com,ContextKeyType=string',
     ],
-    guards: '層 3・4 AllowPassRoleToCdkProviderRoles（タグ条件を外し PassedToService は維持）',
+    guards: '層 3・4 AllowPassRoleToCdkProviderRoles（渡し先 ARN + PassedToService）',
   },
   {
-    // S21 の対。carve-out の外はタグ条件が残るので、タグの無いロールは渡せない。
+    // S21 の対。渡し先 ARN の絞りが効いていれば、プロジェクト外のロールは渡せない。
     // **同じ context を渡している**ので、denied の理由が「context 不足」でないと言える。
     id: 'S22',
     action: 'iam:PassRole',
@@ -488,7 +488,48 @@ const SIMULATED_CHECKS: ReadonlyArray<SimulatedCheck> = [
     contextEntries: [
       'ContextKeyName=iam:PassedToService,ContextKeyValues=lambda.amazonaws.com,ContextKeyType=string',
     ],
-    guards: '層 3 AllowPassRoleOnlyToTaggedDevWorkloads（タグ条件が残る＝Allow が成立しない）',
+    guards: '層 3・4 AllowPassRoleOnlyToDevWorkloadRoles（渡し先 ARN の外＝Allow が成立しない）',
+  },
+  // ---- 2026-09-05: PassRole の**下界**。ADR 決定 6 の撤回に対応する回帰 ----
+  {
+    /**
+     * 🔴 **これが 2026-09-05 の障害を落とすはずだった 1 本。**
+     *
+     * それまでの S 系は PassRole について `denied` を期待する検査（S22）と、
+     * carve-out（`Custom*`）の `allowed`（S21）しか持っていなかった。
+     * **本番の Lambda 実行ロールを渡せること**を誰も問うていなかったため、
+     * `AllowPassRoleOnlyToTaggedDevWorkloads` が一度も成立しない綴りになっていても
+     * 8/8 PASS のままだった（`CLAUDE.md`「下界を併せて縛る」の型）。
+     *
+     * 🔴 **タグの context を注入しない。** 実リクエストに現れないキーを検査だけが
+     * 供給すると、成立しない Allow が allowed に見える。ここで渡してよいのは
+     * `iam:PassedToService` ―― AWS が実際にリクエストへ載せるキーだけである。
+     * runbook 4b の旧 14 はタグ 2 つを注入しており、まさにこれで空虚に通っていた。
+     */
+    id: 'S23',
+    action: 'iam:PassRole',
+    resource: () => `arn:aws:iam::${ACCOUNT}:role/OpenReception-Web-dev-ServerFnServiceRole-xxxx`,
+    principals: ['exec'],
+    coverage: BOTH,
+    expected: 'allowed',
+    contextEntries: [
+      'ContextKeyName=iam:PassedToService,ContextKeyValues=lambda.amazonaws.com,ContextKeyType=string',
+    ],
+    guards: '層 3・4 AllowPassRoleOnlyToDevWorkloadRoles（dev の Lambda 実行ロールを渡せる）',
+  },
+  {
+    // S23 の対。渡し先が同じでも、lambda 以外へ渡そうとすれば通らない。
+    // **S23 と違うのは `iam:PassedToService` の値だけ**なので、条件そのものを問えている。
+    id: 'S24',
+    action: 'iam:PassRole',
+    resource: () => `arn:aws:iam::${ACCOUNT}:role/OpenReception-Web-dev-ServerFnServiceRole-xxxx`,
+    principals: ['exec'],
+    coverage: BOTH,
+    expected: 'denied',
+    contextEntries: [
+      'ContextKeyName=iam:PassedToService,ContextKeyValues=ec2.amazonaws.com,ContextKeyType=string',
+    ],
+    guards: '層 3・4 AllowPassRoleOnlyToDevWorkloadRoles（PassedToService 条件が効いている）',
   },
 ];
 

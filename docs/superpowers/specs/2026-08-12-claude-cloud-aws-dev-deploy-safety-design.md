@@ -743,7 +743,15 @@ principal ARN も 1 リージョン分しか受け取らなかった。runbook �
 | S19 | `iam:DeleteRole` on carve-out のロール名（rollback 経路。#680 R3） | exec | 両方 | **ALLOW** |
 | S20 | `iam:DeleteRole` on タグの無い別のロール | exec | 両方 | DENY |
 | S21 | `iam:PassRole` on carve-out のロール（`iam:PassedToService=lambda.amazonaws.com` を供給。#680 R10） | exec | 両方 | **ALLOW** |
-| S22 | `iam:PassRole` on タグの無い別のロール（同じ context を供給） | exec | 両方 | DENY |
+| S22 | `iam:PassRole` on 渡し先 ARN の外のロール（同じ context を供給） | exec | 両方 | DENY |
+| S23 | `iam:PassRole` on **dev の Lambda 実行ロール**（同じ context を供給。2026-09-05） | exec | 両方 | **ALLOW** |
+| S24 | `iam:PassRole` on 同じロールへ `iam:PassedToService=ec2.amazonaws.com`（2026-09-05） | exec | 両方 | DENY |
+
+🔴 **S23 は下界である。** S21/S22 だけだった頃、`iam:PassRole` の主 Allow が
+`aws:ResourceTag/*`（IAM が `PassRole` に対して評価しないキー）を条件に持っていて
+**一度も成立しない**状態が 3 週間 PASS のまま通った。2026-09-05 の dev デプロイが
+`AccessDenied ... iam:PassRole` で `UPDATE_ROLLBACK_FAILED` に落ちて初めて表面化した。
+**「denied を期待する検査」だけでは、全部が denied になる世界でも緑になる。**
 
 **S17〜S20 は 2 対で 1 つの主張である。** 片方だけ見ると、carve-out を消しても
 （S18/S20 が緑）carve-out を `*` へ広げても（S17/S19 が緑）気づけない。
@@ -922,7 +930,7 @@ spec 原文 STOP CONDITIONS の「既存 production deploy 経路を壊す可能
 | `src/domain/governance/bash-source.ts` + `.test.ts` | シェルソースからコメント／文字列リテラルを落とす（**純関数**。ソース検査が偽の緑にならないように。#680 R5） |
 | `infra/lib/config/claude-deploy-boundary.ts` + `infra/test/claude-deploy-boundary.test.ts` | 層 4 の Permissions Boundary を CDK アプリ側で適用する（§4.2 層 4 の注記。bootstrap だけでは付かない） |
 | `scripts/aws-diff-gate.ts` | 上記を呼ぶ薄い CLI |
-| `scripts/aws-negative-tests.ts` | N1-N7 + N9 実試行（`--live-only`）/ S1-S22 シミュレーション（`--simulate-only`。principal × region ごとに評価。旧 N8 は S11 へ移動済み） |
+| `scripts/aws-negative-tests.ts` | N1-N7 + N9 実試行（`--live-only`）/ S1-S24 シミュレーション（`--simulate-only`。principal × region ごとに評価。旧 N8 は S11 へ移動済み） |
 | `scripts/aws-issue-credentials.sh` | 人間が窓を開ける（ローカル Mac） |
 | `tests/hooks/aws-cloud-deploy.test.ts` | wrapper の preflight を実起動して検証 |
 | `docs/runbook-cloud-aws-deploy.md` | runbook（§12 の 10 ステップ） |
@@ -998,7 +1006,7 @@ spec 原文 STOP CONDITIONS の「既存 production deploy 経路を壊す可能
 | staging / prod を作るとき境界の拡張が要る | 意図的。そのとき改めて承認する |
 | ~~`ExecuteChangeSet`/`DeleteChangeSet` の資源型が未証明・changeSet 名スコープの潜在的な account-wide 露出~~ | 🔴 **解消（2026-08-15）。** change set 系 3 アクションは**すべて stack ARN で認可される**と 3 通りで実測（最小 Allow probe / 実ポリシー評価 / 初回デプロイ成功）。changeSet 名スコープの許可エントリは一度も実効しない死んだエントリだったので削除した。名前スコープに依存していないため、account-wide 露出の懸念そのものが成立しない。詳細は §4.2 層 1 の訂正 |
 | 列挙から漏れた第三者 IAM ポリシーの書き換え | **タグでは閉じられない。** 下記 |
-| `iam:PassRole` のタグ条件が実 IAM でどう評価されるか | **未検証。** 初回デプロイで AccessDenied になる最有力候補。runbook 4b の 14〜16。simulate 側は S21/S22 が `--context-entries` で `iam:PassedToService` を供給して問う（#680 R10） |
+| ~~`iam:PassRole` のタグ条件が実 IAM でどう評価されるか~~ | 🔴 **解消（2026-09-05）。答えは「評価されない」だった。** `iam:PassRole` は渡される Role のタグでは認可できず、タグ条件付きの Allow は成立しない。2026-09-05 の dev デプロイが実際に `AccessDenied ... iam:PassRole` → `UPDATE_ROLLBACK_FAILED` で止まって表面化した。渡し先 ARN スコープ（`OpenReception-*-dev-*`）＋ `iam:PassedToService` へ変更（ADR 決定 6 の撤回）。下界 S23/S24 を追加。**旧 4b 14〜16 と S21/S22 はどちらもこの欠陥がある世界で PASS する形だった** |
 | carve-out された名前空間に境界の無いロールを作られる | **IAM では閉じられない**（サンドボックスがテンプレートを書き、名前グロブは論理 ID / `RoleName` / `Path` を縛れない）。**diff gate で制動している。** 到達しうる上限はアカウント Admin。下記 |
 | 境界の無いロールの trust policy を外部アカウントへ向けられる | **IAM に trust policy を縛る条件キーが無い。** デプロイ窓を越えて残る。gate の `carveOutRoleShape` / `roleTrustPolicyEscape` が止める。下記 |
 | `AuthType: NONE` の Function URL で公開入口を残される | 同上。gate の `functionUrlExposure` / `publicInvokePermission` が止める。下記 |

@@ -69,10 +69,39 @@ export type PolicyAudit = {
    * `AWS::Lambda::Function` の `Add`（`SAFE_ACTION`）にしか見えず gate は止めも記録も
    * せず、その Lambda は Permissions Boundary の**外**で動く。
    *
-   * 「絞る条件」と認めるのは `iam:PassedToService` または `aws:ResourceTag/*`。
+   * 「絞る条件」と認めるのは **IAM が `iam:PassRole` に対して実際に評価するキー**だけ
+   * ―― `iam:PassedToService` と `iam:AssociatedResourceArn`。
    * `*IfExists` / `Null` 演算子は（キー欠如時に真になるので）認めない。
+   *
+   * 🔴 **`aws:ResourceTag/*` は「絞る条件」に数えない（2026-09-05）。** 下記
+   * `deadPassRoleConditionKeys` を参照。評価されないキーは、絞ってもいなければ
+   * 通してもいない ―― どちらとも言えないので fail-closed 側（＝絞れていない）に倒す。
    */
   readonly unscopedPassRole: boolean;
+  /**
+   * 🔴 **`iam:PassRole` の Allow に付いた「IAM が評価しない条件キー」（2026-09-05 の実害）。**
+   *
+   * `iam:PassRole` は**渡される Role のタグでは認可できない**。IAM のサービス認可リファレンス
+   * が `PassRole` に挙げる条件キーは `iam:PassedToService` と `iam:AssociatedResourceArn`
+   * だけで、`aws:ResourceTag/*` も `iam:ResourceTag/*` も含まれない。書いても
+   * 「キーが存在しないリクエスト」として `StringEquals` が false になり、
+   * **その Allow は一度も成立しない**。
+   *
+   * これは `*IfExists` の逆側の欠陥である。`IfExists` は「条件があるように見えて
+   * 何も強制しない」、こちらは「条件があるように見えて **Allow ごと消える**」。
+   * 静的には両方とも「条件付きの Allow」に見えるので、綴りだけでは区別できない。
+   *
+   * 実害: 2026-08-15 に `AllowPassRoleOnlyToTaggedDevWorkloads`（`Resource: "*"` ＋
+   * `aws:ResourceTag/Project` ＋ `aws:ResourceTag/Environment`）を入れて以来、
+   * cfn-exec role は **dev の Lambda 実行ロールを一度も渡せなかった**。
+   * 2026-09-05 の dev デプロイが `AccessDenied ... iam:PassRole` で
+   * `UPDATE_ROLLBACK_FAILED` に落ちて初めて表面化した。runbook 4b の 14〜16 は
+   * `--context-entries` でタグの値を**注入して**問うていたため、
+   * simulate は allowed を返し「8/8 PASS」と記録されていた（空虚な検査）。
+   *
+   * ここに 1 件でも入っていたら、その Allow は死んでいる。
+   */
+  readonly deadPassRoleConditionKeys: ReadonlyArray<string>;
   /**
    * 顧客管理ポリシーの中身を差し替えられる操作を `Resource: "*"` で Allow しているか。
    * `iam:CreatePolicyVersion --set-as-default` は他プロジェクトの実行ポリシーを
@@ -179,10 +208,34 @@ export function conditionOperatorsForKey(s: PolicyStatement, conditionKey: strin
   return operators;
 }
 
-/** `iam:PassRole` の渡し先を絞る条件が付いているか。 */
+/**
+ * IAM が `iam:PassRole` に対して実際に評価する条件キー（小文字）。
+ * サービス認可リファレンスの `PassRole` 行に載っているのはこの 2 つだけである。
+ */
+const PASS_ROLE_SUPPORTED_CONDITION_KEYS: ReadonlyArray<string> = [
+  'iam:passedtoservice',
+  'iam:associatedresourcearn',
+];
+
+/** リソースのタグで認可しようとする条件キー族（`iam:PassRole` では評価されない）。 */
+const RESOURCE_TAG_CONDITION_PREFIXES: ReadonlyArray<string> = ['aws:resourcetag/', 'iam:resourcetag/'];
+
+/**
+ * `iam:PassRole` の渡し先を絞る条件が付いているか。
+ *
+ * 🔴 **タグ条件は数えない。** `aws:ResourceTag/*` を書いても IAM は `PassRole` に対して
+ * 評価しないので、絞ってはいない（そして通してもいない ―― Allow ごと死ぬ）。
+ * どちらとも言えないものは fail-closed 側に倒す。死んでいること自体は
+ * `deadPassRoleConditionKeys` が別途名指しする。
+ */
 function hasPassRoleScopingCondition(s: PolicyStatement): boolean {
-  return strictConditionKeys(s).some(
-    (key) => key === 'iam:passedtoservice' || key.startsWith('aws:resourcetag/'),
+  return strictConditionKeys(s).some((key) => PASS_ROLE_SUPPORTED_CONDITION_KEYS.includes(key));
+}
+
+/** `iam:PassRole` の Allow に付いた、IAM が評価しない条件キー。 */
+function deadPassRoleKeys(s: PolicyStatement): ReadonlyArray<string> {
+  return strictConditionKeys(s).filter((key) =>
+    RESOURCE_TAG_CONDITION_PREFIXES.some((prefix) => key.startsWith(prefix)),
   );
 }
 
@@ -194,6 +247,7 @@ export function auditPolicyDocument(doc: PolicyDocument): PolicyAudit {
   let unboundedRoleCreation = false;
   const unboundedRoleCreationResources: string[] = [];
   let unscopedPassRole = false;
+  const deadPassRoleConditionKeys: string[] = [];
   let unscopedPolicyRewrite = false;
   let unscopedRoleWrite = false;
   const deniedActions: string[] = [];
@@ -224,12 +278,11 @@ export function auditPolicyDocument(doc: PolicyDocument): PolicyAudit {
       unboundedRoleCreation = true;
       unboundedRoleCreationResources.push(...resources);
     }
-    if (
-      matchesAction(actions, 'iam:PassRole') &&
-      resources.includes('*') &&
-      !hasPassRoleScopingCondition(s)
-    ) {
-      unscopedPassRole = true;
+    if (matchesAction(actions, 'iam:PassRole')) {
+      if (resources.includes('*') && !hasPassRoleScopingCondition(s)) unscopedPassRole = true;
+      // 🔴 `Resource` が絞られていても関係なく集める。タグ条件は渡し先の広さと無関係に
+      //    Allow を殺すので、「ARN で絞ってあるから安全」では見逃す。
+      deadPassRoleConditionKeys.push(...deadPassRoleKeys(s));
     }
     if (resources.includes('*')) {
       if (POLICY_REWRITE_ACTIONS.some((a) => matchesAction(actions, a))) unscopedPolicyRewrite = true;
@@ -242,6 +295,7 @@ export function auditPolicyDocument(doc: PolicyDocument): PolicyAudit {
     unboundedRoleCreation,
     unboundedRoleCreationResources,
     unscopedPassRole,
+    deadPassRoleConditionKeys,
     unscopedPolicyRewrite,
     unscopedRoleWrite,
     deniedActions,
