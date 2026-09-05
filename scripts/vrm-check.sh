@@ -125,4 +125,16 @@ if [[ "${ready}" -ne 1 ]]; then
   exit 1
 fi
 
+# 🔴 **プリインストール済み Chromium を解決してから起動する（2026-09-05）。**
+#
+# `vrm-visual-check.mjs` は `PW_EXECUTABLE_PATH` を読むが、`playwright.config.ts` が持つ
+# **自動検出を持っていなかった**。そのため、インストール済み @playwright/test が期待する
+# ビルド番号とプリインストール版がずれる環境（Claude Code on the web の /opt/pw-browsers）で
+# VRM ステップだけが `Executable doesn't exist` で落ちた。e2e は config の逃げ道を通るので
+# 通っており、**同じ環境で片方だけ落ちる**ため「VRM の退行」と誤読しやすい。
+# 解決の正本は scripts/lib/gate-tooling.sh（写しを増やさない）。
+# shellcheck source=lib/gate-tooling.sh
+. "${ROOT}/scripts/lib/gate-tooling.sh"
+gate_tool_export_chromium_executable
+
 node "${ROOT}/scripts/vrm-visual-check.mjs" "${BASE}" "${OUT}"

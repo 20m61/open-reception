@@ -6,12 +6,45 @@ gate_tool_command_present() {
   command -v "$1" >/dev/null 2>&1
 }
 
+# プリインストール済み Chromium のパス（`playwright install` を走らせずに使う逃げ道）。
+#
+# 🔴 **この規則の写しを増やさない（2026-09-05）。** 同じ判断が bash 2 箇所（この probe と
+# `quality-gate.sh` の lighthouse）と `playwright.config.ts` に散っており、
+# **`scripts/vrm-visual-check.mjs` だけが持っていなかった**。そのため `--full` の VRM
+# ステップだけが `browserType.launch: Executable doesn't exist at
+# .../chromium_headless_shell-1228/...` で落ちた ―― e2e は逃げ道を通るので 483 件 PASS
+# しており、「この環境では VRM は動かない」と誤結論しかけた。実際には
+# `PW_EXECUTABLE_PATH` を与えれば **30/30 PASS** する。
+# `playwright.config.ts` のコメントが警告していた失敗（「env を明示し忘れると動かないと
+# 誤って結論づけられる」）を、別のスクリプトで繰り返していた。
+#
+# env で上書きできるようにしてあるのは、イメージのレイアウトが違う実行環境と、
+# テストのため（`tests/hooks/preinstalled-chromium.test.ts`）。
+gate_tool_preinstalled_chromium() {
+  local path="${GATE_PREINSTALLED_CHROMIUM:-/opt/pw-browsers/chromium}"
+  [[ -x "${path}" ]] || return 1
+  printf '%s' "${path}"
+}
+
+# `PW_EXECUTABLE_PATH` を未設定のときだけ解決して export する。
+#
+# `scripts/vrm-visual-check.mjs` は `PW_EXECUTABLE_PATH` しか読まないので、起動する側が
+# 解決して渡す。**既に設定されていれば触らない** —— 呼び出し側の明示指定を奪わない。
+# プリインストール版が無ければ**未設定のまま**にして Playwright の既定解決へ委ねる
+# （存在しないパスを掴ませると、素の「入っていない」より分かりにくい失敗になる）。
+gate_tool_export_chromium_executable() {
+  [[ -z "${PW_EXECUTABLE_PATH:-}" ]] || return 0
+  local resolved
+  resolved="$(gate_tool_preinstalled_chromium)" || return 0
+  export PW_EXECUTABLE_PATH="${resolved}"
+}
+
 # Playwright chromium の実体。パッケージだけ入ってバイナリが無い状態は false。
 gate_tool_playwright_chromium_present() {
   if [[ -n "${PW_EXECUTABLE_PATH:-}" && -e "${PW_EXECUTABLE_PATH}" ]]; then
     return 0
   fi
-  if [[ -x /opt/pw-browsers/chromium ]]; then
+  if gate_tool_preinstalled_chromium >/dev/null; then
     return 0
   fi
   local cache="${HOME}/.cache/ms-playwright"

@@ -671,8 +671,11 @@ elif [[ "$RUN_LH" -eq 1 ]]; then
   # playwright.config.ts が同じ理由で同じパスを自動検出しているので、ここでも合わせる
   # （env を明示し忘れて「この環境では lighthouse は動かない」と誤結論するのを防ぐ。
   # e2e で実際にその誤結論が 5 周引き継がれた前例がある）。
-  if [[ -z "${CHROME_PATH:-}" && -x /opt/pw-browsers/chromium ]]; then
-    export CHROME_PATH=/opt/pw-browsers/chromium
+  # 解決の正本は scripts/lib/gate-tooling.sh（パスの写しを増やさない。VRM がこの写しを
+  # 持っていなかったために --full の VRM だけが落ちた ―― 2026-09-05）。
+  if [[ -z "${CHROME_PATH:-}" ]]; then
+    _preinstalled_chromium="$(gate_tool_preinstalled_chromium)" \
+      && export CHROME_PATH="${_preinstalled_chromium}"
   fi
   if command -v lhci >/dev/null 2>&1 || npx --no-install lhci --version >/dev/null 2>&1; then
     step "lighthouse (lhci)" npm run --silent lighthouse
