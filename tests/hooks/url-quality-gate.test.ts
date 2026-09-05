@@ -164,6 +164,57 @@ describe('url-quality-gate.sh', () => {
     }, TIMEOUT);
   });
 
+  describe('lighthouse の結果解釈', () => {
+    /**
+     * lhci だけを差し替える偽 `npx` を置く。`npx --no-install tsx ...`（判定器の呼び出し）は
+     * 本物へ委譲するので、判定の配線ごと通る。
+     *
+     * @param writesReport lhci が outputDir に結果を書いたことにするか
+     */
+    function fakeNpxDir(writesReport: boolean): string {
+      const dir = mkdtempSync(join(tmpdir(), 'urlgate-npx-'));
+      const realNpx = spawnSync('bash', ['-lc', 'command -v npx'], {
+        encoding: 'utf8',
+      }).stdout.trim();
+      const out = join(resolve(process.cwd()), '.url-quality-gate/lighthouse');
+      const body = writesReport ? `mkdir -p "${out}"; : > "${out}/report.json"` : ':';
+      writeFileSync(
+        join(dir, 'npx'),
+        `#!/bin/sh\ncase "$*" in\n  *@lhci/cli*) ${body}; exit 1 ;;\nesac\nexec "${realNpx}" "$@"\n`,
+      );
+      chmodSync(join(dir, 'npx'), 0o755);
+      return dir;
+    }
+
+    /**
+     * 🔴 **macOS 退行と、到達不能の両方を覆う。** lhci が結果を書けなかったなら
+     * 「測れなかった」であって「閾値を割った」ではない。
+     */
+    it('lhci が失敗しレポートも無ければ、閾値未達とは言わず SKIP にする', () => {
+      const { stdout, status } = run([UNREACHABLE, '--no-zap'], {
+        PATH: `${fakeNpxDir(false)}:${process.env.PATH ?? ''}`,
+      });
+      expect(stdout).toContain('測れませんでした');
+      expect(stdout).not.toContain('閾値未達');
+      expect(stdout).toMatch(/RESULT: .*SKIP: .*lighthouse/);
+      // smoke が接続不成立で FAIL するので全体は 1。lighthouse 由来の FAIL は無い。
+      expect(stdout).not.toMatch(/RESULT: FAIL —[^—]*lighthouse(?!\()/);
+      expect(status).toBe(1);
+    }, TIMEOUT);
+
+    /**
+     * **下界も縛る。** 「常に SKIP」にする変異を止める ―― 実際に測って割ったなら FAIL。
+     */
+    it('lhci が失敗してレポートがあれば閾値未達として FAIL にする', () => {
+      const { stdout } = run([UNREACHABLE, '--no-zap'], {
+        PATH: `${fakeNpxDir(true)}:${process.env.PATH ?? ''}`,
+      });
+      expect(stdout).toContain('閾値未達');
+      expect(stdout).not.toContain('測れませんでした');
+      expect(stdout).toMatch(/RESULT: FAIL —.*lighthouse/);
+    }, TIMEOUT);
+  });
+
   it('BASE_URL が無ければ usage を出して exit 2', () => {
     const { status, stderr } = run([]);
     expect(status).toBe(2);
