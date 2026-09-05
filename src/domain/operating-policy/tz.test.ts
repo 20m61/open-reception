@@ -83,6 +83,90 @@ describe('getZonedParts', () => {
     const zoned = getZonedParts(ms, 'Asia/Tokyo');
     expect(zoned).toEqual({ year: 2026, month: 7, day: 23, hour: 0, minute: 30, second: 0, weekday: 'thu' });
   });
+
+  /**
+   * 🔴 **`Intl.DateTimeFormat` の構築はタイムゾーンごとに 1 度だけ (#952)。**
+   *
+   * 構築は `formatToParts` の **13 倍**重い（実測 115.4µs vs 8.7µs / 呼び出し）。
+   * `zonedTimeToUtcMs` は 1 変換につき `getZonedParts` を 2 回呼ぶので、営業時間の判定は
+   * 呼び出しのたびにこれを払っていた。結果、`src/lib/runtime-policy/store.test.ts` の
+   * 総当たり 1 本（`resolveServiceStates` を約 1,958 回叩く）が **3,743ms** に達し、
+   * vitest 既定の `testTimeout: 5000ms` に対して余裕が 25% しか無くなって、
+   * ローカル macOS では負荷次第で**アサーションに到達する前に落ちて**いた。
+   *
+   * **壁時計をアサートしない**（負荷に依存して flaky になる）。代わりに、遅さの
+   * **原因である構築回数**を数える —— こちらは負荷に依らない事実である。
+   */
+  it('同じタイムゾーンへの繰り返し呼び出しで Intl.DateTimeFormat を作り直さない (#952)', () => {
+    const Original = Intl.DateTimeFormat;
+    let constructed = 0;
+    const spy = function (this: unknown, ...args: ConstructorParameters<typeof Intl.DateTimeFormat>) {
+      constructed += 1;
+      return new Original(...args);
+    } as unknown as typeof Intl.DateTimeFormat;
+    spy.supportedLocalesOf = Original.supportedLocalesOf;
+    Intl.DateTimeFormat = spy;
+    try {
+      for (let i = 0; i < 50; i++) getZonedParts(Date.UTC(2026, 6, 22, i % 24, 0, 0), 'Asia/Tokyo');
+      expect(constructed).toBeLessThanOrEqual(1);
+      // **下界**: 別のタイムゾーンには別の formatter が要る。`constructed` を常に 0 に
+      // する変異（＝何も構築しない＝壊れている）をここで落とす。
+      const before = constructed;
+      getZonedParts(Date.UTC(2026, 6, 22, 0, 0, 0), 'America/Los_Angeles');
+      expect(constructed).toBe(before + 1);
+    } finally {
+      Intl.DateTimeFormat = Original;
+    }
+  });
+
+  /**
+   * 🔴 **キャッシュは上限を持つ (#952)。**
+   *
+   * `timeZone` は保存済みのテナント設定から来る文字列で、`getZonedParts` 自身は検証しない
+   * （`isValidTimeZone` を通らない生オフセットも到達する）。上限が無いと長命な Lambda で
+   * **入力の異なり数だけ増え続ける**。上限そのものをテストしないと、次に触る人が黙って
+   * 外せてしまう —— 効果が「メモリが増える」だけで、どのテストも赤くならないからである。
+   */
+  it('キャッシュは無制限に増えない（上限を超えたら捨てる）(#952)', () => {
+    const Original = Intl.DateTimeFormat;
+    let constructed = 0;
+    const spy = function (this: unknown, ...args: ConstructorParameters<typeof Intl.DateTimeFormat>) {
+      constructed += 1;
+      return new Original(...args);
+    } as unknown as typeof Intl.DateTimeFormat;
+    spy.supportedLocalesOf = Original.supportedLocalesOf;
+    Intl.DateTimeFormat = spy;
+    try {
+      const ms = Date.UTC(2026, 6, 22, 0, 0, 0);
+      // `Intl` は生オフセットを ±23:59 まで受理する。異なりを 70 個作って上限を越えさせる。
+      const first = '+00:01';
+      getZonedParts(ms, first);
+      for (let i = 2; i <= 70; i++) {
+        getZonedParts(ms, `+${String(Math.floor(i / 60)).padStart(2, '0')}:${String(i % 60).padStart(2, '0')}`);
+      }
+      const before = constructed;
+      // 上限で捨てられているので、最初のゾーンは作り直しになる。
+      getZonedParts(ms, first);
+      expect(constructed).toBe(before + 1);
+    } finally {
+      Intl.DateTimeFormat = Original;
+    }
+  });
+
+  /**
+   * 🔴 **キャッシュしてよいのは formatter であって、結果ではない。**
+   *
+   * `Intl.DateTimeFormat` は瞬間を保持せず、瞬間は `formatToParts` の引数で渡る。
+   * よってゾーンごとに使い回して安全である。**分解結果をキャッシュすると DST が壊れる** ——
+   * その変異をここで落とす（同じゾーンでも夏と冬でオフセットが違う）。
+   */
+  it('formatter を使い回しても DST の切り替わりを取りこぼさない (#952)', () => {
+    // America/Los_Angeles: 1 月は PST(-08:00)、7 月は PDT(-07:00)。
+    const winter = getZonedParts(Date.UTC(2026, 0, 15, 20, 0, 0), 'America/Los_Angeles');
+    const summer = getZonedParts(Date.UTC(2026, 6, 15, 20, 0, 0), 'America/Los_Angeles');
+    expect(winter.hour).toBe(12);
+    expect(summer.hour).toBe(13);
+  });
 });
 
 describe('zonedTimeToUtcMs', () => {
@@ -96,6 +180,34 @@ describe('zonedTimeToUtcMs', () => {
     const ms = zonedTimeToUtcMs(local, 'Asia/Tokyo');
     const back = getZonedParts(ms, 'Asia/Tokyo');
     expect(back).toMatchObject(local);
+  });
+
+  /**
+   * 🔴 **2nd pass（DST 境界の再補正）を縛る。**
+   *
+   * #952 の変異検証で**元から生存していた**穴。`return guess - offsetAt(candidate)` を
+   * `return candidate` へ変えても、`src/domain/operating-policy/` と
+   * `src/lib/runtime-policy/` の **149 本が全部緑のまま**だった（実測）。
+   * 無 DST の `Asia/Tokyo` では 1st pass と 2nd pass が一致するので、
+   * 既存のケースでは原理的に検出できない。
+   *
+   * 実害の経路: `expiresAtMs` → 一時 override の失効判定。DST 境界の前後 1 時間、
+   * 「まだ有効」と「もう失効」が入れ替わる。
+   *
+   * America/Los_Angeles の 2026 年夏時間は 3/8 02:00 に PST(-08:00) → PDT(-07:00)。
+   * 現地 03:00 は PDT なので UTC 10:00。1st pass は guess(03:00Z) 時点の PST を見て
+   * 11:00Z を出すため、2nd pass が無いと 1 時間ずれる。
+   */
+  it('DST 開始日の現地時刻を、切り替わり後のオフセットで解決する', () => {
+    const ms = zonedTimeToUtcMs(
+      { year: 2026, month: 3, day: 8, hour: 3, minute: 0 },
+      'America/Los_Angeles',
+    );
+    expect(ms).toBe(Date.UTC(2026, 2, 8, 10, 0, 0));
+    // 対: 切り替わり前（同じ日の 01:00 は PST のまま）。片側だけ合う変異を落とす。
+    expect(
+      zonedTimeToUtcMs({ year: 2026, month: 3, day: 8, hour: 1, minute: 0 }, 'America/Los_Angeles'),
+    ).toBe(Date.UTC(2026, 2, 8, 9, 0, 0));
   });
 });
 
