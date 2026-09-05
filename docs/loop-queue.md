@@ -9,6 +9,43 @@
 > | AWS の窓を開ける（`./scripts/aws-issue-credentials.sh`） | 短命 STS の発行は darwin 限定で、`scripts/hooks/guard-destructive.sh` が機械強制（#675）。**窓さえ開けばデプロイ本体はクラウドから wrapper 経由で流せる** | #675 / `docs/runbook-cloud-aws-deploy.md` |
 > | 実機 iPad UAT | 横向きで部署カードが何枚見えるか / 部署を開いて戻れるか / 騒音下で不在告知が聞き取れるか | #807 / #65 |
 >
+## 🔴 2026-09-05 のインシデント: #973 増分 1 が main へ直接入った
+
+**ブランチを切ったのに `main` へ直接 3 コミット push した**（`5ee5e42..87f2a93`）。
+`--pr` / `--full` を通していないので、**追加した e2e 33 本は push の時点で一度も走っていなかった**。
+ユーザーの判断は**前進で直す**（revert も force-push もしない）。
+
+### なぜ止まらなかったか
+
+- `git switch -c` は実際に成功していた。reflog は `checkout: moving from fix/... to main` を
+  記録しているが、**何が戻したかは特定できなかった**（`quality-gate.sh` はブランチを切り替えない。
+  `record-gate-run.sh` の `git checkout -b` は `--publish` のときだけ）
+- 🔴 **`scripts/hooks/pr-gate-guard.sh` は `gh pr create` / `gh pr merge` を守るが、
+  生の `git push` は守らない。** 機械強制の穴で、ここは「切ったはず」という記憶しか
+  防壁が無かった。`git push -u origin HEAD` は現在地を隠すので、**ブランチ名を明示して
+  push する**（`git push -u origin <branch>`）だけでも事故は起きにくくなる
+
+### 事後にローカルで代替検証した結果（main @87f2a93）
+
+| 検証 | 結果 |
+| --- | --- |
+| typecheck / lint / build | PASS / 0 error / PASS |
+| unit | 7763 / 7765（赤 2 本は #952 の既知の偽の赤。`Test timed out in 5000ms` でアサーション到達前） |
+| e2e `platform-developer` project | **86 passed / 0 flaky**（`--retries=0`。うち `platform-read-failure.spec.ts` が 79 本） |
+| e2e `area-switch.spec.ts` | **26 passed / 0 flaky**。`/platform` を訪れる**唯一の非 platform spec**（実測で確認） |
+| secrets(gitleaks) / sast(semgrep) / audit | 3 つとも PASS |
+| change-risk | 停止境界に触れていない |
+
+**未実施は `--full` の通し**（kiosk / admin の e2e・VRT・lighthouse）。`read-response.ts` の
+import 元は platform コンポーネント 14 本だけなので到達しないと考えられるが、**通しでは
+測っていない**。週次ゲートで拾う。
+
+### 🔴 クラウド委譲が使えなかった
+
+`RemoteTrigger` の `action: "create"` が**本文の長短に関わらず 6 回連続で
+`InputValidationError`**（`action: "list"` は正常）。`--pr` / `--full` をクラウドへ出す経路が
+塞がっているため、上の代替検証はすべてローカルで行った。**次に委譲する人はまずここを確かめる。**
+
 ## 2026-09-05 の周回（platform の形の検査とハングの上限・#973 増分 1）
 
 **#968 が台帳へ積んだ platform 側の残りを空にした。** #973 は 2 つの母集団を持つ
