@@ -50,8 +50,12 @@ green 記録が無ければブロックする。記録はゲートが実際に�
 - **ローカルで回すのは `--fast` まで。** 実装・TDD の内側ループはローカルで回してよい
 - **`--pr` / `--full` はクラウド routine へ委譲する。** ブランチを push し、
   `Skill` で `schedule` を呼んで一度限りの routine を作る（環境 ID は
-  `env_012h7PiJKNb4EYzKRSuBwpX3`）。手順と既知の罠は `docs/cloud-dev-environment.md`。
+  `env_014bqpK5jWNvBq6oU2qLtybs`）。手順と既知の罠は `docs/cloud-dev-environment.md`。
   **人がやること（web セッションの回し方・AWS の窓の開閉・環境の健康診断）は同 §0**
+  🔴 **環境 ID を名前で探さない。** 2026-09-05 まで `open-reception` という名前の環境が
+  **2 つ**存在し（旧 `env_012h7PiJKNb4EYzKRSuBwpX3` / 現 `env_014bqpK5jWNvBq6oU2qLtybs`）、
+  設定を片方へ入れて別の方でセッションが動く事故が起きた（旧環境はアーカイブ済み。
+  経緯と実測は `docs/cloud-dev-environment.md` §0-A / §0-G）
 - 🔴 **PR 作成とマージまでクラウド内で完結させる。** ゲートスタンプは `.git` 配下の
   **ローカル記録**なので、クラウドで green を取ってもローカルの `gh pr merge` は
   フックにブロックされる。マージまで向こうでやらせれば持ち運びを考えずに済む

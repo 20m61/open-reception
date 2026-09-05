@@ -16,17 +16,39 @@
 
 **このファイルの残りは「なぜそうなっているか」の記録。ここは「あなたが何をするか」だけ。**
 
-### 0-A. 環境の初期設定 — 1 回だけ（✅ 2026-08-18 時点で設定済み）
+### 0-A. 環境の初期設定 — 1 回だけ
 
-claude.ai/code の環境 **open-reception**（`env_012h7PiJKNb4EYzKRSuBwpX3`）に対して:
+claude.ai/code の環境 **open-reception**（**`env_014bqpK5jWNvBq6oU2qLtybs`**）に対して:
 
-1. **Network access を Custom** にし、「Also include default list of common package managers」に
-   チェックを入れたうえで `cdn.playwright.dev` と `awscli.amazonaws.com` を足す（§1）
+1. **Network access**（§1）。少なくとも `cdn.playwright.dev` と `awscli.amazonaws.com`、
+   および **dev の CloudFront ドメイン**へ到達できること（後者は runbook ステップ 10 の
+   smoke が叩く先。許可が無いとプロキシが CONNECT に 403 を返し、**dev が健全でも
+   smoke が到達不能になる**）
 2. **Setup script 欄**に `scripts/cloud-setup.sh` の**中身をそのまま貼る**。
    🔴 **このファイル自体は実行されない。** 実体は貼られた文字列なので、
    `cloud-setup.sh` を変更したら**環境ダイアログ側も貼り替える**
 
 **済んでいるかの判定は §0-E の点検で付く**（設定を眺めるより、実物を見る方が確実）。
+🔴 **「設定済み」と書いてあることを信用しない。** 2026-09-05 の実測では、この環境で
+`gh` / `aws` / `gitleaks` / `semgrep` の 4 つとも入っておらず、Setup script が効いて
+いなかった。セッションのたびに `aws` を入れ直す羽目になり、`semgrep` 欠落は
+**`--full` の sast を黙って SKIP へ落とす**。§0-E を実際に流して確かめること。
+
+#### 🔴 環境 ID を名前で探さない（2026-09-05 の事故）
+
+**`open-reception` という名前の環境が 2 つ存在した。**
+
+| environment_id | 作成 | 状態 |
+| --- | --- | --- |
+| `env_012h7PiJKNb4EYzKRSuBwpX3` | 2026-07-30 | **アーカイブ済み**（旧。本書が長く記載していた ID） |
+| `env_014bqpK5jWNvBq6oU2qLtybs` | 2026-08-18 | **現行** |
+
+デプロイ用の環境変数を片方へ入れ、セッションはもう片方で起動していたため、
+**2 つのセッションが `OR_*` 未設定で連続して停止した**。名前は一意ではないので、
+`list_environments` で **ID を確認してから**設定・セッション作成を行うこと。
+
+**アーカイブしても環境変数は移動しない。** 旧環境へ入れた値は使えないので、
+現行環境へ入れ直す必要がある。
 
 ### 0-G. Cursor Cloud Agents — 環境パネルで Save（✅ 2026-09-01 検証済み）
 
@@ -128,6 +150,31 @@ AWS_* が 5 つ残存                                    ← 窓が開けっぱ�
 `aws` の mtime = `2026-08-13 18:59`、`semgrep` = `19:02` ―― #680 で AWS CLI を
 `cloud-setup.sh` へ足した時期と一致する。**素のイメージでは説明が付かない**ので、
 Setup script は貼られていると判断できる。
+
+⚠️ **この記録がどちらの環境のものかは特定できない。** 当時 `open-reception` という名前の
+環境は 2 つあり（§0-A）、本書は旧 ID を記載していた。下の 2026-09-05 の記録と食い違うのは
+そのためかもしれない。
+
+### 0-G. 実測の記録（2026-09-05・現行環境 `env_014bqpK5jWNvBq6oU2qLtybs`）
+
+runbook ステップ 7〜10 をクラウドから通そうとした際の実測。**§0-F と食い違う。**
+
+```
+gh MISSING     aws MISSING     gitleaks MISSING     semgrep MISSING
+  → 4 つとも入っていない。Setup script が効いていない
+/opt/pw-browsers: chromium / chromium-1194 / chromium_headless_shell-1194
+  → @playwright/test@1.61.1 が要求する 1228 は無い（e2e は
+    playwright.config.ts の executablePath 逃げ道で動く。VRM も #977 で同じ逃げ道を通した）
+cdn.playwright.dev / dev の CloudFront  → 当初 CONNECT 403（後に人が許可を広げて到達）
+AWS API（CloudFormation 両リージョン・S3 アセット bucket・SSM us-east-1・IAM・
+  Secrets Manager・Lambda・CloudFront）→ すべて到達
+Chrome から dev の CloudFront → ERR_CONNECTION_RESET（curl は同じプロキシで 200）
+  → クラウドから lighthouse は測れない。原因未特定
+```
+
+**含意**: `--full` はこの環境で回せるが、`aws` / `gitleaks` / `semgrep` を毎回入れ直す
+必要がある。入れ忘れると `secrets` と `sast` が**黙って SKIP** になり、マージゲートが
+弱くなる（#545 と同型）。§0-A 2. の貼り直しが恒久的な対処。
 
 ---
 
