@@ -1339,15 +1339,15 @@ CloudFront の設定へ入る。**同じ `cdk deploy` の中で両方入る**の
 GitHub MCP サーバにもブランチ削除のツールは無い。よって**ローカルの後始末として扱う**
 （`CLAUDE.md` の「squash マージ後のブランチは残る」に同じ）。
 
-削除してよい条件は「対応する PR 番号の squash コミットが `main` に在ること」。
+削除してよい条件は「対応する PR 番号の squash コミットが `origin/main` に在ること」。
 次のコマンドが、それを 1 本ずつ確かめてから削除する:
 
 ```bash
-# 全リモートブランチについて、main に "(#<PR番号>)" の squash コミットがあるものだけ消す。
+# 全リモートブランチについて、origin/main に "(#<PR番号>)" の squash コミットがあるものだけ消す。
 git fetch origin --prune
-for b in $(git branch -r --format='%(refname:short)' | grep -v 'origin/main\|origin/HEAD' | sed 's|origin/||'); do
+for b in $(git branch -r --format='%(refname:lstrip=3)' | grep -vx 'main\|HEAD'); do
   pr=$(gh pr list --state merged --head "$b" --json number --jq '.[0].number' 2>/dev/null)
-  if [ -n "$pr" ] && git log main --oneline --grep="(#${pr})" | grep -q .; then
+  if [ -n "$pr" ] && git log origin/main --oneline --grep="(#${pr})" | grep -q .; then
     echo "delete $b (#$pr)"
     git push origin --delete "$b" && git branch -D "$b" 2>/dev/null || true
   else
@@ -1355,6 +1355,22 @@ for b in $(git branch -r --format='%(refname:short)' | grep -v 'origin/main\|ori
   fi
 done
 ```
+
+🔴 **裏取りは `main` ではなく `origin/main` を見る（2026-09-05 に実測）。** 直前の
+`git fetch origin --prune` は **`origin/main` を進めるがローカルの `main` は動かさない**。
+`git log main` で問うと、**ローカル main を最後に更新した後にマージされた PR だけが
+「マージを確認できず」で keep になる** —— つまり**一番新しい 1 本、いま消したいまさにその
+ブランチ**が落ちる。実際、3 本が正しく削除される中で `fix/tz-formatter-cache-952`（PR #982、
+マージ済み）だけが keep になった。壊れ方は安全側（消さずに残す）なので黙って通り、
+運用者が毎回「なぜこれだけ残るのか」を調べ直すことになる。
+
+🔴 **`sed` を使わない（同日に実測）。** 旧版は `%(refname:short)` で `origin/foo` を得てから
+`sed 's|origin/||'` で接頭辞を落としていたが、**`sed` が別コマンドへ alias されている環境で
+ループ全体が死ぬ**（`sd <FIND> <REPLACE_WITH>` の usage を出して停止した実例）。
+`%(refname:lstrip=3)` なら git 自身が `refs/remotes/origin/` を落とすので外部コマンドが要らない。
+副次的に、`sed 's|origin/||'` が**ブランチ名の途中の `origin/` まで削る**問題と、
+`grep -v 'origin/main\|origin/HEAD'` が**部分一致**なので `fix/origin/main-xxx` のような名前を
+黙って除外する問題も同時に消える（`grep -vx` で完全一致にした）。
 
 🔴 **`git branch -d` は使わない**（squash なので「マージ済み」と判定されず失敗する）。`-D` を使う。
 
