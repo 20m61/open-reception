@@ -194,7 +194,17 @@ describe('auditPolicyDocument', () => {
       expect(audit.unscopedPassRole).toBe(false);
     });
 
-    it('aws:ResourceTag で絞ってあれば検出しない', () => {
+    /**
+     * 🔴 **2026-09-05 に反転したアサーション。**
+     *
+     * かつてここは「`aws:ResourceTag` で絞ってあれば検出しない」と書いてあり、
+     * 検出器もそう実装されていた ―― **テストと実装が同じ誤った前提を共有していた**
+     * （`CLAUDE.md`「検証の作法」冒頭の型）。誤りは「IAM は Role のタグで
+     * `iam:PassRole` を認可できる」で、実際には評価されず Allow ごと消える。
+     *
+     * どちらとも言えないものは fail-closed 側（絞れていない）に倒す。
+     */
+    it('aws:ResourceTag は PassRole を絞らない（IAM が評価しないので絞れていない扱い）', () => {
       const audit = auditPolicyDocument({
         Version: '2012-10-17',
         Statement: [
@@ -206,7 +216,71 @@ describe('auditPolicyDocument', () => {
           },
         ],
       });
+      expect(audit.unscopedPassRole).toBe(true);
+    });
+
+    it.each(['aws:ResourceTag/Project', 'iam:ResourceTag/Project'])(
+      '%s を条件に持つ PassRole の Allow は「死んでいる」として名指しする',
+      (key) => {
+        const audit = auditPolicyDocument({
+          Version: '2012-10-17',
+          Statement: [
+            {
+              Effect: 'Allow',
+              Action: 'iam:PassRole',
+              Resource: '*',
+              Condition: { StringEquals: { [key]: 'open-reception' } },
+            },
+          ],
+        });
+        expect(audit.deadPassRoleConditionKeys).toEqual([key.toLowerCase()]);
+      },
+    );
+
+    /**
+     * **下界。** 「空になる」だけを主張すると、検出器を常に空にする変異が素通りする。
+     * 上の 2 本が「入る」側、これが「入らない」側。
+     */
+    it('渡し先を ARN で絞った PassedToService だけの Allow は死んでいない', () => {
+      const audit = auditPolicyDocument({
+        Version: '2012-10-17',
+        Statement: [
+          {
+            Effect: 'Allow',
+            Action: 'iam:PassRole',
+            Resource: 'arn:aws:iam::822063948773:role/OpenReception-*-dev-*',
+            Condition: { StringEquals: { 'iam:PassedToService': 'lambda.amazonaws.com' } },
+          },
+        ],
+      });
+      expect(audit.deadPassRoleConditionKeys).toEqual([]);
       expect(audit.unscopedPassRole).toBe(false);
+    });
+
+    /**
+     * 🔴 **`Resource` が絞られていても死ぬ。** 「ARN で絞ってあるから安全」と思って
+     * タグ条件を足すと、Allow は静かに消える。`unscopedPassRole` は false のままなので、
+     * そちらだけを見ていると検出できない。
+     */
+    it('Resource を絞ってあってもタグ条件が付いていれば死んでいると名指しする', () => {
+      const audit = auditPolicyDocument({
+        Version: '2012-10-17',
+        Statement: [
+          {
+            Effect: 'Allow',
+            Action: 'iam:PassRole',
+            Resource: 'arn:aws:iam::822063948773:role/OpenReception-*-dev-*',
+            Condition: {
+              StringEquals: {
+                'iam:PassedToService': 'lambda.amazonaws.com',
+                'aws:ResourceTag/Project': 'open-reception',
+              },
+            },
+          },
+        ],
+      });
+      expect(audit.unscopedPassRole).toBe(false);
+      expect(audit.deadPassRoleConditionKeys).toEqual(['aws:resourcetag/project']);
     });
 
     // boundary 条件で踏んだのと同じ罠。`*IfExists` はキー欠如時に無条件で true を返すので
@@ -337,13 +411,53 @@ describe.each(ESCALATION_SCOPED_POLICIES)('%s の IAM 昇格経路', (name) => {
     expect(audit.unscopedPassRole).toBe(false);
   });
 
-  it('iam:PassRole の Allow は PassedToService とタグの両方で絞っている', () => {
+  /**
+   * 🔴 **2026-09-05: タグ条件から ARN 条件へ切り替えた（ADR 0009 決定 6 の撤回）。**
+   *
+   * 旧実装は `Resource: "*"` ＋ `aws:ResourceTag/Project` ＋ `aws:ResourceTag/Environment`
+   * で絞ったつもりだったが、`iam:PassRole` はリソース（Role）のタグでは認可できない。
+   * その結果この Allow は**一度も成立せず**、dev デプロイの `iam:PassRole` が
+   * `AccessDenied` になって `UPDATE_ROLLBACK_FAILED` に落ちた。
+   * 渡し先は ARN で絞り、条件は IAM が実際に評価する `iam:PassedToService` だけにする。
+   */
+  it('iam:PassRole の Allow は渡し先を ARN で絞り、PassedToService を条件に持つ', () => {
     // 🔴 Sid で取る。`find(Action に iam:PassRole を含む最初の Allow)` だと、#680 R2 で
-    // 追加した carve-out（タグ条件を意図的に持たない）を掴んで意味が反転しうる。
-    const keys = strictConditionKeys(bySid(load(name), 'AllowPassRoleOnlyToTaggedDevWorkloads'));
-    expect(keys).toContain('iam:passedtoservice');
-    expect(keys).toContain('aws:resourcetag/project');
-    expect(keys).toContain('aws:resourcetag/environment');
+    // 追加した carve-out を掴んで意味が反転しうる。
+    const stmt = bySid(load(name), 'AllowPassRoleOnlyToDevWorkloadRoles');
+    expect(stmt.Resource).toBe('arn:aws:iam::822063948773:role/OpenReception-*-dev-*');
+    expect(stmt.Condition).toEqual({
+      StringEquals: { 'iam:PassedToService': 'lambda.amazonaws.com' },
+    });
+    expect(strictConditionKeys(stmt)).toEqual(['iam:passedtoservice']);
+  });
+
+  /**
+   * 🔴 **下界。** 上のテストは「この綴りであること」しか言わない。渡し先が実際に
+   * dev の Lambda 実行ロールを覆っていること（＝ 2026-09-05 に落ちた当のリクエストが
+   * 通ること）と、他プロジェクトを覆っていないことを、グロブ照合で直接確かめる。
+   */
+  it.each([
+    ['OpenReception-Web-dev-ServerFnServiceRole-xxxx', true],
+    ['OpenReception-Web-dev-CustomCrossRegionExportWriter-mWjZeIPYdVgw', true],
+    ['OpenReception-Web-prod-ServerFnServiceRole-xxxx', false],
+    ['salon-loop-staging-SomeRole', false],
+    ['cdk-hnb659fds-cfn-exec-role-822063948773-ap-northeast-1', false],
+  ] as const)('PassRole の渡し先 %s を覆うか = %s', (roleName, expected) => {
+    const stmt = bySid(load(name), 'AllowPassRoleOnlyToDevWorkloadRoles');
+    const pattern = stmt.Resource;
+    if (typeof pattern !== 'string') throw new Error('Resource が単一の文字列ではない');
+    expect(iamArnGlobMatches(pattern, `arn:aws:iam::822063948773:role/${roleName}`)).toBe(expected);
+  });
+
+  /**
+   * 🔴 **`*IfExists` の逆側の欠陥を検出器で固定する（2026-09-05）。**
+   *
+   * 「条件を書いたのに IAM が評価しない」型は、綴りの上では正しい条件付き Allow に
+   * 見える。**書けたことと効いていることは別**であり、この型は
+   * 「デプロイが AccessDenied で落ちる」までどのテストにも現れなかった。
+   */
+  it('iam:PassRole の Allow に、IAM が評価しない条件キーが残っていない', () => {
+    expect(audit.deadPassRoleConditionKeys).toEqual([]);
   });
 
   // 🔴 Important 5: 出荷しているポリシーは `iam:DeleteRole` / `CreatePolicyVersion` 等を
