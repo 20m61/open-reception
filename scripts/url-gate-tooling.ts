@@ -8,10 +8,12 @@
  * ## サブコマンド
  *
  * ```
- *   url-gate-tooling.ts plan --strict=<0|1> dockerCli=<b> dockerDaemon=<b> chrome=<b>
- *       → `lighthouse=run` / `zap=skip\t<理由>` を 1 行ずつ
+ *   url-gate-tooling.ts plan --strict=<0|1> dockerCli=<b> dockerDaemon=<b>
+ *       → `zap=run` / `zap=skip\t<理由>`
  *   url-gate-tooling.ts zap-exit <exitCode> <reportWritten:0|1>
  *       → `pass` | `high-risk` | `warn` | `unverified`
+ *   url-gate-tooling.ts lighthouse-exit <exitCode> <reportWritten:0|1>
+ *       → `pass` | `threshold` | `unverified`
  * ```
  *
  * 出力を `key=value` とタブ区切りにしているのは、bash 側が `IFS` で素直に読めるため。
@@ -19,6 +21,7 @@
  */
 import {
   type UrlGateObservation,
+  classifyLighthouseExit,
   classifyZapExit,
   planUrlGateChecks,
 } from '../src/domain/governance/url-gate-tooling';
@@ -62,7 +65,6 @@ function runPlan(argv: ReadonlyArray<string>): void {
   const observation: UrlGateObservation = {
     dockerCli: require('dockerCli'),
     dockerDaemon: require('dockerDaemon'),
-    chrome: require('chrome'),
   };
   const plan = planUrlGateChecks(observation, { strict });
   for (const [name, disposition] of Object.entries(plan)) {
@@ -75,20 +77,36 @@ function runPlan(argv: ReadonlyArray<string>): void {
 }
 
 function runZapExit(argv: ReadonlyArray<string>): void {
+  const [exitCode, reportWritten] = parseOutcomeArgs(
+    argv,
+    '使い方: zap-exit <exitCode> <reportWritten:0|1>',
+  );
+  console.log(classifyZapExit(exitCode, reportWritten));
+}
+
+/** `<exitCode> <reportWritten>` を読む。両サブコマンドで同じ形。 */
+function parseOutcomeArgs(argv: ReadonlyArray<string>, usage: string): [number, boolean] {
   const [rawExit, rawReport] = argv;
-  if (argv.length !== 2 || rawExit === undefined || rawReport === undefined) {
-    bail('使い方: zap-exit <exitCode> <reportWritten:0|1>');
-  }
+  if (argv.length !== 2 || rawExit === undefined || rawReport === undefined) bail(usage);
   const exitCode = Number(rawExit);
   if (!Number.isInteger(exitCode)) bail(`終了コードが整数ではありません: ${rawExit}`);
-  console.log(classifyZapExit(exitCode, parseBool(rawReport, 'reportWritten')));
+  return [exitCode, parseBool(rawReport, 'reportWritten')];
+}
+
+function runLighthouseExit(argv: ReadonlyArray<string>): void {
+  const [exitCode, reportWritten] = parseOutcomeArgs(
+    argv,
+    '使い方: lighthouse-exit <exitCode> <reportWritten:0|1>',
+  );
+  console.log(classifyLighthouseExit(exitCode, reportWritten));
 }
 
 function main(): void {
   const [sub, ...rest] = process.argv.slice(2);
   if (sub === 'plan') return runPlan(rest);
   if (sub === 'zap-exit') return runZapExit(rest);
-  bail(`未知のサブコマンド: ${sub ?? '(なし)'}（plan | zap-exit）`);
+  if (sub === 'lighthouse-exit') return runLighthouseExit(rest);
+  bail(`未知のサブコマンド: ${sub ?? '(なし)'}（plan | zap-exit | lighthouse-exit）`);
 }
 
 main();

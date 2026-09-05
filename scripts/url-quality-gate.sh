@@ -71,30 +71,18 @@ echo "════════════════════════�
 # デーモンが無い（`/var/run/docker.sock` が存在しない）。CLI だけを見て実行すると
 # `docker run` が exit 1 で落ち、それが zap の「高リスク検出」と同じコードなので
 # **インフラ障害がセキュリティ指摘として報告される**（下の zap 節を参照）。
-obs_docker_cli=false; obs_docker_daemon=false; obs_chrome=false
+obs_docker_cli=false; obs_docker_daemon=false
 command -v docker >/dev/null 2>&1 && obs_docker_cli=true
 [[ "$obs_docker_cli" == true ]] && docker info >/dev/null 2>&1 && obs_docker_daemon=true
-# lhci は CHROME_PATH を尊重する。明示されていればそれを、無ければ PATH 上の Chrome を見る。
-if [[ -n "${CHROME_PATH:-}" && -x "${CHROME_PATH}" ]]; then
-  obs_chrome=true
-elif command -v google-chrome >/dev/null 2>&1 \
-  || command -v google-chrome-stable >/dev/null 2>&1 \
-  || command -v chromium >/dev/null 2>&1 \
-  || command -v chromium-browser >/dev/null 2>&1; then
-  obs_chrome=true
-fi
 
-PLAN_LH="run"; PLAN_LH_REASON=""
 PLAN_ZAP="run"; PLAN_ZAP_REASON=""
 if plan_out="$(npx --no-install tsx "$ROOT/scripts/url-gate-tooling.ts" plan \
     "--strict=${STRICT}" \
     "dockerCli=${obs_docker_cli}" \
-    "dockerDaemon=${obs_docker_daemon}" \
-    "chrome=${obs_chrome}" 2>/dev/null)"; then
+    "dockerDaemon=${obs_docker_daemon}" 2>/dev/null)"; then
   while IFS=$'\t' read -r kv reason; do
     case "$kv" in
-      lighthouse=*) PLAN_LH="${kv#lighthouse=}"; PLAN_LH_REASON="$reason" ;;
-      zap=*)        PLAN_ZAP="${kv#zap=}";       PLAN_ZAP_REASON="$reason" ;;
+      zap=*) PLAN_ZAP="${kv#zap=}"; PLAN_ZAP_REASON="$reason" ;;
     esac
   done <<< "$plan_out"
 else
@@ -102,7 +90,6 @@ else
   # （`quality-gate.sh` の skip_unverified と同じで、検査できなかったものを green にしない）。
   echo "  ⛔ 判定器（scripts/url-gate-tooling.ts）を実行できませんでした" >&2
   FAILED+=("url-gate-tooling(判定不能)")
-  PLAN_LH="fail"; PLAN_LH_REASON="判定器が実行できません"
   PLAN_ZAP="fail"; PLAN_ZAP_REASON="判定器が実行できません"
 fi
 
@@ -126,16 +113,14 @@ done
 # ---- 2. lighthouse ----------------------------------------------------------
 if [[ "$RUN_LH" == 1 ]]; then
   echo "── lighthouse（性能/a11y/best-practices）"
-  case "$PLAN_LH" in
-    skip)
-      echo "  lighthouse: SKIP（${PLAN_LH_REASON}）"
-      SKIPPED+=("lighthouse")
-      ;;
-    fail)
-      echo "  lighthouse: FAIL（${PLAN_LH_REASON}）"
-      FAILED+=("lighthouse(${PLAN_LH_REASON})")
-      ;;
-    *)
+  # 🔴 **Chrome の探索を自前でやらない（2026-09-05 の退行）。** 以前ここには
+  # `command -v google-chrome` 等の事前判定があったが、**Linux のコマンド名だけ**を見て
+  # いたため、macOS の Chrome（`/Applications/...app/Contents/MacOS/...`）を見つけられず
+  # **Chrome が入っている Mac でも必ず SKIP** していた ―― runbook が「ローカル macOS で
+  # 回せ」と言っている当の環境で、走っていた検査を黙って止めていた。
+  # lhci は chrome-launcher で OS ごとの探索を持っている。写せば必ずドリフトするので、
+  # **探索は lhci に任せ、結果を解釈する**（ZAP と同じ形）。
+  {
       cat > "$OUT/lhci.json" <<JSON
 {
   "ci": {
@@ -153,14 +138,34 @@ if [[ "$RUN_LH" == 1 ]]; then
   }
 }
 JSON
-      if npx --yes @lhci/cli@0.15.x autorun --config="$OUT/lhci.json" > "$OUT/lighthouse.log" 2>&1; then
-        echo "  lighthouse: PASS（詳細 $OUT/lighthouse）"
-      else
-        echo "  lighthouse: 閾値未達/失敗（$OUT/lighthouse.log 参照）"
-        FAILED+=("lighthouse")
-      fi
-      ;;
-  esac
+      # 🔴 **前回のレポートを消してから走らせる。** 残っていると「測れた」証拠に化け、
+      # Chrome 不在や到達不能を「閾値未達」と誤読する。
+      rm -rf "$OUT/lighthouse"
+      lh_rc=0
+      npx --yes @lhci/cli@0.15.x autorun --config="$OUT/lhci.json" \
+        > "$OUT/lighthouse.log" 2>&1 || lh_rc=$?
+      lh_report=false
+      # lhci は収集できたときだけ outputDir へ結果を書く。healthcheck や収集段で落ちれば空。
+      [[ -d "$OUT/lighthouse" ]] && [[ -n "$(ls -A "$OUT/lighthouse" 2>/dev/null)" ]] \
+        && lh_report=true
+      lh_outcome="$(npx --no-install tsx "$ROOT/scripts/url-gate-tooling.ts" \
+        lighthouse-exit "$lh_rc" "$lh_report" 2>/dev/null || echo unverified)"
+      case "$lh_outcome" in
+        pass)
+          echo "  lighthouse: PASS（詳細 $OUT/lighthouse）" ;;
+        threshold)
+          echo "  lighthouse: 閾値未達（$OUT/lighthouse.log 参照）"
+          FAILED+=("lighthouse") ;;
+        *)
+          # 測れなかった。Chrome が無い / 対象へ到達できない等。green にも red にもしない
+          # ―― 対象サイトの品質については何も言えていない。
+          echo "  lighthouse: 測れませんでした（exit ${lh_rc}・レポート無し。$OUT/lighthouse.log 参照）"
+          SKIPPED+=("lighthouse(未実行)")
+          if [[ "$STRICT" -eq 1 ]]; then
+            FAILED+=("lighthouse(未実行; --strict)")
+          fi ;;
+      esac
+  }
 fi
 
 # ---- 3. OWASP ZAP baseline --------------------------------------------------
