@@ -569,6 +569,9 @@ open な PR を持つブランチも除くこと（マージ前に消すと PR �
 `refs/remotes/origin/HEAD`（既定ブランチを指すシンボリック ref）を **`origin`** と短縮する。
 実体を見るなら `git ls-remote --heads origin` か `git for-each-ref refs/remotes/` を使う。
 
+> 2026-09-05 追記: runbook ステップ 10c の掃除コマンドは `%(refname:lstrip=3)` へ替えた。
+> こちらは同じ ref を **`HEAD`** と出すので、上の誤読は起きない（`sed` への依存も消える）。
+
 > 2026-08-26 の引き継ぎ（`docs/handoff-2026-08-26.md`）の §0 は **2026-08-27 に消化済み**
 > （PR #819 / #820 マージ、Cursor 手順書の環境変数方針）。同書は経緯の記録として残すが、
 > **着手待ちとして追いかける必要はない**。
