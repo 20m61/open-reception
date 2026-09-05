@@ -10,10 +10,33 @@
  */
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { describe, expect, it } from 'vitest';
+import { beforeAll, describe, expect, it } from 'vitest';
 
 const ROOT = process.cwd();
 const RULE = 'react-hooks/exhaustive-deps';
+
+type FlatConfigEntry = { rules?: Record<string, unknown>; ignores?: string[] };
+
+/**
+ * 🔴 **`eslint.config.mjs` の import は個々のテストの持ち時間で払わない (#952)。**
+ *
+ * 直下のコメントは「eslint を回さないので数百 ms」と書いていたが、**実測は違った**。
+ * flat config の import は `next/core-web-vitals` と typescript-eslint を丸ごと引き込み、
+ * vite の transform キャッシュが冷えていると **8,680ms** かかる（暖まっていれば 2,500ms）。
+ * vitest 既定の `testTimeout` は 5,000ms なので、**どちらに転ぶかで同じテストが赤くも緑にも
+ * なる** —— しかも初回 import を払うのは「たまたま最初に走ったテスト」で、隣のテストは
+ * モジュールキャッシュのおかげで 23ms で済む。犯人と被害者が実行順で入れ替わる。
+ *
+ * 共有 fixture の読み込みは 1 度だけ、hook で払う。hook に広い timeout を置くのは、
+ * ここが**アサートしている性質と無関係な I/O 時間**だからである（本体が遅くなっても
+ * このテストが守る「config の形」は壊れない）。テスト本体の timeout は既定のまま ——
+ * そちらを緩めると本物のハングを飲み込む。
+ */
+let flatConfig: FlatConfigEntry[];
+
+beforeAll(async () => {
+  flatConfig = (await import('../../eslint.config.mjs')).default as FlatConfigEntry[];
+}, 120_000);
 
 
 /** `npm run lint` の実体。`noUncheckedIndexedAccess` があるので undefined を畳んでおく。 */
@@ -54,12 +77,8 @@ describe('lint の warning 予算 (#813)', () => {
    * **既知 3 ファイル以外へスコープした上書き・`ignores` 追加は期待値を 1 ミリも動かさない**。
    * config の形そのものをここで縛る（eslint を回さないので数百 ms）。
    */
-  it('react-hooks/exhaustive-deps を設定するエントリが 2 つで、実効（後勝ち）が error', async () => {
-    const cfg = (await import('../../eslint.config.mjs')).default as {
-      rules?: Record<string, unknown>;
-      ignores?: string[];
-    }[];
-    const setters = cfg.filter((c) => c.rules?.[RULE] !== undefined);
+  it('react-hooks/exhaustive-deps を設定するエントリが 2 つで、実効（後勝ち）が error', () => {
+    const setters = flatConfig.filter((c) => c.rules?.[RULE] !== undefined);
     expect(
       setters.map((c) => c.rules?.[RULE]),
       'setter が増減した。後段の上書きで実効 severity が変わっていないか',
@@ -70,9 +89,8 @@ describe('lint の warning 予算 (#813)', () => {
    * `ignores` に 1 行足すだけで、そのファイルは lint 対象から外れる。棚卸しにも予算にも
    * 現れないので、ここで固定する。増やすときはこのテストを直す＝レビューに目が入る。
    */
-  it('eslint.config.mjs の ignores が期待どおり', async () => {
-    const cfg = (await import('../../eslint.config.mjs')).default as { ignores?: string[] }[];
-    expect(cfg.flatMap((c) => c.ignores ?? [])).toEqual([
+  it('eslint.config.mjs の ignores が期待どおり', () => {
+    expect(flatConfig.flatMap((c) => c.ignores ?? [])).toEqual([
       'node_modules/**',
       '.next/**',
       '.open-next/**',

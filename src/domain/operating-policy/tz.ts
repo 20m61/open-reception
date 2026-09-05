@@ -81,20 +81,46 @@ function part(parts: Intl.DateTimeFormatPart[], type: Intl.DateTimeFormatPartTyp
   return parts.find((p) => p.type === type)?.value ?? '';
 }
 
+const ZONED_PARTS_FORMAT: Intl.DateTimeFormatOptions = {
+  year: 'numeric',
+  month: '2-digit',
+  day: '2-digit',
+  hour: '2-digit',
+  minute: '2-digit',
+  second: '2-digit',
+  weekday: 'short',
+  hour12: false,
+};
+
+/**
+ * タイムゾーンごとの formatter キャッシュ (#952)。
+ *
+ * **キャッシュしてよいのは formatter だけで、分解結果ではない。** `Intl.DateTimeFormat` は
+ * 瞬間を保持せず、瞬間は `formatToParts` の引数で渡るので、ゾーンごとに使い回して安全である
+ * （結果をキャッシュすると DST が壊れる。`tz.test.ts` が両方を縛っている）。
+ *
+ * 🔴 **上限を持たせる。** `timeZone` は保存済みのテナント設定から来る文字列で、
+ * `getZonedParts` 自身は検証しない（`isValidTimeZone` を通らない生オフセットも到達する。
+ * 実際 `store.test.ts` は `±23:59` を流している）。長命な Lambda で無制限に生やすと
+ * **入力次第で増え続ける**ので、超えたら丸ごと捨てる。LRU にしないのは、実運用の異なり数が
+ * 数個で、溢れること自体が想定外だから —— 複雑な追い出し規則を持つほうが壊れやすい。
+ */
+const CACHE_LIMIT = 64;
+const zonedPartsFormatters = new Map<string, Intl.DateTimeFormat>();
+
+function zonedPartsFormatter(timeZone: string): Intl.DateTimeFormat {
+  const cached = zonedPartsFormatters.get(timeZone);
+  if (cached !== undefined) return cached;
+  // 不正なゾーンはここで throw する（キャッシュ前なので、失敗を覚え込まない）。
+  const dtf = new Intl.DateTimeFormat('en-US', { timeZone, ...ZONED_PARTS_FORMAT });
+  if (zonedPartsFormatters.size >= CACHE_LIMIT) zonedPartsFormatters.clear();
+  zonedPartsFormatters.set(timeZone, dtf);
+  return dtf;
+}
+
 /** epoch ms を指定タイムゾーンの現地日時（曜日込み）へ分解する。 */
 export function getZonedParts(ms: number, timeZone: string): ZonedParts {
-  const dtf = new Intl.DateTimeFormat('en-US', {
-    timeZone,
-    year: 'numeric',
-    month: '2-digit',
-    day: '2-digit',
-    hour: '2-digit',
-    minute: '2-digit',
-    second: '2-digit',
-    weekday: 'short',
-    hour12: false,
-  });
-  const parts = dtf.formatToParts(new Date(ms));
+  const parts = zonedPartsFormatter(timeZone).formatToParts(new Date(ms));
   // hour12:false でも実装によっては深夜 0 時を "24" と表す場合がある（正規化する）。
   let hour = Number(part(parts, 'hour'));
   if (hour === 24) hour = 0;
