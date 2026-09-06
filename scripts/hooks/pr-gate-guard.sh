@@ -121,10 +121,10 @@ PLAIN_READ_PREDICATE='
   # 読み取り専用の道具。**他プロセスを起動できる／ファイルを書けるものは入れない**
   # （`find` / `fd` の -exec、`sort --compress-program`、`awk` の system()、
   #  `less` / `more` の `!` と LESSOPEN、`xargs`、`sed` の `w` `e` `r`、`tee`、
-  #  そして `uniq` —— 第 2 位置引数が**出力ファイル**になる）。
+  #  `uniq` —— 第 2 位置引数が**出力ファイル**になる ―― `file` —— `-C -m` で .mgc を書く）。
   my %READ = map { $_ => 1 } qw(
     grep egrep fgrep rg cat head tail wc nl cut tr
-    diff colordiff ls stat file column basename dirname realpath jq git
+    diff colordiff ls stat column basename dirname realpath jq git
   );
   my %GIT_READ = map { $_ => 1 } qw(
     log show diff grep blame cat-file ls-files ls-tree describe status rev-parse
@@ -161,42 +161,45 @@ PLAIN_READ_PREDICATE='
   }
   for my $stage (@stages) {
     my @t = @$stage;
-    while (@t && $t[0] =~ /^([A-Za-z_]\w*)=/) {
+    while (@t && $t[0] =~ /^([A-Za-z_]\w*)=(.*)$/s) {
+      # 🔴 **名前だけでは足りない。値も縛る。** `git --config-env=diff.external=LC_ALL` は
+      # 任意の git config を任意の環境変数から供給するので、`LC_ALL` の中身がそのまま
+      # 起動される（6 周目のレビューが実測で任意スクリプトを走らせた）。
+      # ロケール指定に要るのは英数と少しの記号だけなので、そこまで絞る。
       exit 1 unless $SAFE_ENV{$1};
+      exit 1 unless $2 =~ /^[A-Za-z0-9_.:+-]*$/;
       shift @t;
     }
     # basename へ正規化しないので、`./bin/cat` のようなフルパス起動はここで落ちる
     # （綴りを詐称して allowlist を通る形を作らせない）。
     my $c = @t ? $t[0] : "";
     exit 1 unless $READ{$c};
-    # パスを値に取る option（`--out=/tmp/x`）。読んだ結果を別の場所へ置けると、
-    # そこから実行できる（`cat X > /tmp/m.ts` と同じ族）。
-    exit 1 if grep { /^-/ && m{=.*/} } @t;
     if ($c eq "git") {
+      # 🔴 **前置 option は「読み飛ばす」のではなく allowlist にする。**
+      # 読み飛ばすと `--config-env` / `--exec-path` / `-c` が素通りし、綴りを 1 つずつ
+      # 潰すループへ戻る（6 周目のレビュー）。知っているものだけ通し、他は 2 段目へ落とす。
       my $i = 1;
-      while ($i < @t) {
+      while ($i < @t && $t[$i] =~ /^-/) {
         if ($t[$i] eq "-C" || $t[$i] eq "--git-dir" || $t[$i] eq "--work-tree") { $i += 2; next }
-        last if $t[$i] !~ /^-/;
+        exit 1 unless $t[$i] =~ /^--(no-pager|literal-pathspecs|no-optional-locks|paginate)$/;
         $i++;
       }
       exit 1 unless $i < @t && $GIT_READ{$t[$i]};
-      # `git show HEAD --output /tmp/m.ts -- <検出語>` は**内容をファイルへ書ける**。
-      # 空白区切りだと上の `=.*/` 検査に掛からないので、綴りに関わらず拒む。
-      exit 1 if grep { /^--output(=|$)/ } @t;
     }
-    # 検出語は**位置引数**として現れていなければならない。option の値として渡す形
-    # （`git grep --open-files-in-pager=<検出語>` / `rg --pre <検出語>`）は通さない ――
-    # option の値に置くと、読み取りの道具がそれを**起動する**。
-    for my $i (1 .. $#t) {
-      next unless $t[$i] =~ $MENTION;
-      exit 1 if $t[$i] =~ /^-/;
-      my $prev = $t[$i - 1];
-      next unless $prev =~ /^-/;
-      exit 1 if $prev =~ $VALUE_TAKES_PROGRAM;
+    # 🔴 **道具を起動させる option は、値が何であれ拒む。** 「値が検出語のときだけ拒む」
+    # 向きにしていたため、`rg --pre=sh -n x <検出語>` が通っていた（6 周目のレビュー）――
+    # 1 段目の不変条件は「読み取り専用の道具しか動かない」なので、起動器を渡せる時点で外れる。
+    for my $tok (@t) {
+      next unless $tok =~ /^-/;
+      next if $tok =~ /^--no-/;   # `--no-pager` は pager を**止める**（値も取らない）
+      exit 1 if $tok =~ m{^--?[A-Za-z-]*(pager|pre|exec|program|output|file)(=|$)};
       # `-O` は git grep の pager 指定。他の道具の `-o` は値を取らないほうが普通
       # （`rg -o` = --only-matching）なので、git のときだけ見る。
-      exit 1 if $c eq "git" && $prev =~ /^-[A-Za-z]*O$/;
+      exit 1 if $c eq "git" && $tok =~ /^-[A-Za-z]*O/;
     }
+    # 検出語が `-` で始まる語の中にある形（`--pre=<検出語>`）は、上の option 名検査が
+    # 拾う（起動器を渡せる option はその存在自体で拒む）。ここでは重ねて見ない ――
+    # 変異を当てても行列が気づかない枝を残さないため。
   }
   # 🔴 **作業証明を出す。** 終了コードだけで「素朴な読み取り」と断定すると、
   # perl が「落ちずに何もせず成功」しただけで**判定が丸ごと許可へ倒れる**（5 周目のレビュー）。
@@ -236,7 +239,10 @@ LEGACY_SCAN='
   # 実行されるので、先に畳んでおかないと行単位の grep が取りこぼす（5 周目のレビュー）。
   $cmd =~ s/\\\n//g;
   # ヒアドキュメントの本文（コミットメッセージ・ドキュメント生成）は判定対象外
-  $cmd =~ s/<<-?\s*(["\x27]?)(\w+)\1.*?^[ \t]*\2[ \t]*$//gms;
+  # `<<<`（here-string）は**次の行を実行する**ので、ヒアドキュメントとして消さない
+  # （消すと末尾に区切り語を置くだけで判定材料ごと隠せる。6 周目のレビュー m1）。
+  $cmd =~ s/(?<!<)<<-(?!<)\s*(["\x27]?)(\w+)\1.*?^[ \t]*\2[ \t]*$//gms;
+  $cmd =~ s/(?<!<)<<(?!<)\s*(["\x27]?)(\w+)\1.*?^[ \t]*\2[ \t]*$//gms;
   my @out; my $cur = ""; my $has = 0; my $prose = 0; my $expand = 0; my $state = "none";
   my @ch = split //, $cmd;
   # 🔴 二重引用符の中でも `$(...)` と backtick は**展開されて実行される**ので、
@@ -262,16 +268,13 @@ LEGACY_SCAN='
       # （4 周目のレビュー。変更前の正規表現は「前が空白」を要求していた）。
       if ($c eq "#" && !$has) { $i++ while $i < @ch && $ch[$i] ne "\n"; $flush->(); next }
       if ($c =~ /\s/)    { $flush->(); next }
-      # 🔴 リダイレクトは**語の間に置ける**（`gh pr >/dev/null merge 12`）。演算子を
-      # 区切りとして残すと `gh pr` と `merge` が分断されて判定から落ちるので、
-      # 演算子とその行き先を捨てる。
-      if ($c eq "<" || $c eq ">") {
-        $flush->();
-        $i++ while $i + 1 < @ch && $ch[$i + 1] =~ /[>&\s]/;
-        $i++ while $i + 1 < @ch && $ch[$i + 1] !~ /\s/;
-        next;
-      }
-      if ($c =~ /[;&|()`]/) { $flush->(); push @out, $c; next }
+      # 🔴 **リダイレクトの行き先を「食べる」処理は置かない。** 一度入れたところ、
+      # 空白まで無条件に飲む実装が `;` と次のコマンド名ごと消し、
+      # `npm run build >/tmp/b.log 2>&1;gh pr merge 997` が素通りした（6 周目のレビュー）。
+      # 得ようとしたのは `gh pr >/dev/null merge 12` を捕まえることだったが、それは
+      # **変更前から通っていた**形で、ここで新しい機構を足すほうが危ない。
+      # 演算子は区切りとして残すだけにする（残る穴は #960 のフォローとして issue 化）。
+      if ($c =~ /[;&|<>()`]/) { $flush->(); push @out, $c; next }
       $cur .= $c; $has = 1; next;
     }
     my $q = $state eq "single" ? chr(39) : chr(34);
@@ -308,7 +311,10 @@ if [ "${payload_readable}" = "0" ]; then
   elif printf '%s' "${scan}" | grep -q 'mcp__github__create_pull_request'; then
     required="pr"; action="GitHub MCP での PR 作成 (payload を読めていない)"
   fi
-elif ! scan="$(printf '%s' "${cmd}" | perl -e "${LEGACY_SCAN}" 2>/dev/null)"; then
+elif ! scan="$(printf '%s' "${cmd}" | perl -e "${LEGACY_SCAN}" 2>/dev/null)" || [ -z "${scan}" ]; then
+  # 🔴 終了コードだけでなく**空**も判定不能として扱う。perl が「落ちずに何もせず成功」
+  # すると scan が空になり、以降の grep が全部外れてガードが丸ごと無効化される
+  # （1 段目には作業証明を入れたのに、2 段目に入れていなかった。6 周目のレビュー）。
   scan="${cmd}"
 fi
 
@@ -349,12 +355,14 @@ fi
 # 残るぶん監査上も望ましい。判定には引用符・heredoc を落とした ${scan} を使うので、
 # 「文中で迂回方法に言及しただけ」では迂回できない。
 #
-# 🔴 **代入は「塊の先頭」でしか認めない** (#960)。上で空白を含まない引用の引用符を外す
+# 🔴 **代入は「塊の先頭」でしか認めない** (#960)。空白を含まない引用の引用符を外す
 # ようにしたため、`echo "OPEN_RECEPTION_SKIP_GATE_GUARD=1" && gh pr merge 12` が
 # 迂回として通ってしまった（既存テストが検出）。シェルとしてもこの形は代入ではない。
-# ${scan} は塊ごとに改行済みなので、行頭に立っているものだけを見る。
+# ${scan} は**空白で連結した 1 行**（区切り記号は独立したトークンとして残る）なので、
+# 「行頭」または「区切りの直後」を塊の先頭とみなす ―― 行頭だけを見ていたときは
+# `git push && OPEN_RECEPTION_SKIP_GATE_GUARD=1 gh pr merge` が効かなかった（6 周目）。
 if [ "${OPEN_RECEPTION_SKIP_GATE_GUARD:-0}" = "1" ] ||
-   printf '%s' "${scan}" | grep -Eq '^[[:space:]]*(export[[:space:]]+)?OPEN_RECEPTION_SKIP_GATE_GUARD=1([[:space:]]|$)'; then
+   printf '%s' "${scan}" | grep -Eq '(^|[;&|][[:space:]])[[:space:]]*(export[[:space:]]+)?OPEN_RECEPTION_SKIP_GATE_GUARD=1([[:space:]]|$)'; then
   exit 0
 fi
 

@@ -324,21 +324,24 @@ describe('pr-gate-guard: 明示的な脱出ハッチ', () => {
  * `sed`（`w` でファイルを書ける・GNU では `e` で起動できる）と
  * フルパス起動（`./bin/cat` で綴りを詐称できる）を whitelist から外した。
  *
- * 同じ入力を 6 版へ当てた実測（135 形）:
+ * 同じ入力を 7 版へ当てた実測（151 形）:
  *
- * | 版 | 実行しうる形 95 | 読み取り形 40 |
+ * | 版 | 実行しうる形 110 | 読み取り形 41 |
  * | --- | --- | --- |
- * | 変更前 `b9f9718` | 82 | 6 |
- * | blacklist 版 `6bba78b` | 55 | 37 |
- * | whitelist 版 `1616e8f` | 66 | 31 |
- * | 走査版 `04ebbc1` | 77 | 39 |
- * | 走査版 2 `84dd9c0` | 85 | 40 |
- * | 非解釈版（現在） | **95** | **40** |
+ * | 変更前 `b9f9718` | 97 | 7 |
+ * | blacklist 版 `6bba78b` | 62 | 38 |
+ * | whitelist 版 `1616e8f` | 74 | 31 |
+ * | 走査版 `04ebbc1` | 86 | 39 |
+ * | 走査版 2 `84dd9c0` | 94 | 40 |
+ * | 非解釈版 `f78735f` | 98 | 40 |
+ * | 現在 | **110** | **41** |
  *
- * 🔴 **5 周のレビューで毎回「変更前が止めていた実行形が通る」が出た。** 原因はすべて
+ * 🔴 **6 周のレビューで毎回「変更前が止めていた実行形が通る」が出た。** 原因はすべて
  * 「シェルを解釈しようとして bash とずれた」ことで、綴りを 1 つずつ足しても終わらなかった。
- * 6 版目で**解釈をやめた** —— バックスラッシュ・`$`・backtick・波括弧・改行が現れたら
- * その時点で 2 段目へ落とす。残った部分集合では語の切れ目が bash と一致する。
+ * 6 版目で**解釈をやめ**（バックスラッシュ・`$`・backtick・波括弧・改行が現れたら
+ * その時点で 2 段目へ落とす）、7 版目で**新しい機構を足すのをやめた** ――
+ * リダイレクト先を食う処理が `;` ごと飲み込んで、日常的な
+ * `npm run build >/tmp/b.log 2>&1;gh pr merge 997` を素通しにしていた。
  *
  * 🔴 **一覧は「自分が思いついた形」でしかない。** 各周とも「自分で当てた変異は全部 kill」と
  * 報告しており、**族ごとの見落としは独立レビューでしか出ていない**（9 族 → 4 族 → 3 族）。
@@ -442,8 +445,23 @@ const EXECUTION_FORMS: readonly string[] = [
   "echo \"$(gh pr merge 12)\"",
   "OUT=\"$(gh pr merge 12 --squash)\"",
   "echo \"`gh pr create --fill`\"",
-  "gh pr >/dev/null merge 12",
   "gh pr merge 12 >/dev/null",
+  "echo x >/tmp/y;gh pr merge 12 --squash",
+  "npm run build >/tmp/b.log 2>&1;gh pr merge 997 --squash --delete-branch",
+  "./scripts/quality-gate.sh --full >/tmp/gate.log;gh pr merge 997 --squash",
+  "echo x >/tmp/y|gh pr merge 12",
+  "wc -l </tmp/a.txt;gh pr create --fill",
+  "LC_ALL=./scripts/merge-pull-request.ts git --config-env=diff.external=LC_ALL diff",
+  "TZ=./scripts/create-pull-request.ts git --config-env=core.fsmonitor=TZ status",
+  "git grep --open-files-in-pager=sh scripts/merge-pull-request.ts",
+  "rg --pre=sh -n x scripts/merge-pull-request.ts",
+  "git --exec-path=/tmp/x log -- scripts/merge-pull-request.ts",
+  "LC_ALL=./scripts/merge-pull-request.ts grep -n x a.txt",
+  "git --config-env=diff.external=LC_ALL log -- scripts/merge-pull-request.ts",
+  "GIT_EXTERNAL_DIFF=sh grep -n x scripts/merge-pull-request.ts",
+  "git add scripts/merge-pull-request.ts",
+  "git checkout -- scripts/merge-pull-request.ts",
+  "grep foo <<<Xbar\ngh pr merge 12 --squash\nXbar",
 ];
 
 /** 何も実行しない読み取り形。ここが通るようになるのが #960 の本体。 */
@@ -488,6 +506,7 @@ const READ_FORMS: readonly string[] = [
   "rg -o scripts/merge-pull-request.ts",
   "grep \"don't\" scripts/merge-pull-request.ts",
   "grep -n foo scripts/merge-pull-request.ts 2>&1",
+  "git push && OPEN_RECEPTION_SKIP_GATE_GUARD=1 gh pr merge 12 --squash",
 ];
 
 /**
@@ -513,6 +532,22 @@ const DELIBERATELY_BLOCKED: readonly string[] = [
   "diff <(cat scripts/merge-pull-request.ts) <(cat README.md)",
 ];
 
+/**
+ * 🔴 **変更前から通っている形（本 PR では塞がない）。**
+ *
+ * ここに並ぶのは「`b9f9718` から一貫して素通りしている」もので、**本 PR の退行ではない**。
+ * 5 周目のレビューが `gh pr >/dev/null merge 12` を挙げたので 1 度は塞ぎにいったが、
+ * そのために足したリダイレクト処理が `;` と次のコマンド名まで飲み込み、
+ * `npm run build >/tmp/b.log 2>&1;gh pr merge 997` という**日常的な形**を素通しにした
+ * （6 周目のレビュー。BLOCKER）。**新しい機構を足すほうが危ない**と判断して外し、
+ * 元の穴は issue で追跡する。
+ *
+ * 通ることを**明示的に固定**しておく ―― 台帳が黙って伸びないように。塞いだらここを消す。
+ */
+const KNOWN_PRE_EXISTING_GAPS: readonly string[] = [
+  "gh pr >/dev/null merge 12",
+];
+
 describe('pr-gate-guard: 読み取りは通し、実行は止める (#960)', () => {
   it.each(READ_FORMS)('読み取りは通す: %s', (cmd) => {
     const { status, stderr } = runHook(cmd);
@@ -525,6 +560,10 @@ describe('pr-gate-guard: 読み取りは通し、実行は止める (#960)', () 
 
   it.each(DELIBERATELY_BLOCKED)('意図的に通さない読み取り（誤発火として受け入れた形）: %s', (cmd) => {
     expect(runHook(cmd).status, cmd).toBe(2);
+  });
+
+  it.each(KNOWN_PRE_EXISTING_GAPS)('変更前から通っている形（本 PR の範囲外・issue で追跡）: %s', (cmd) => {
+    expect(runHook(cmd).status, `${cmd}\n塞げたならこの配列から消すこと`).toBe(0);
   });
 
   /**
@@ -598,10 +637,11 @@ describe('pr-gate-guard: 読み取りは通し、実行は止める (#960)', () 
     ['空を返す jq', '#!/bin/sh\nexit 0\n'],
     ['command だけ読めない jq', '#!/bin/sh\nfor a in "$@"; do case "$a" in *tool_input*) exit 1;; esac; done\nexec /usr/bin/jq "$@"\n'],
     ['command に空を返す jq', '#!/bin/sh\nfor a in "$@"; do case "$a" in *tool_input*) echo ""; exit 0;; esac; done\nexec /usr/bin/jq "$@"\n'],
-  ])('🔴 jq が %s でもブロックする', (_label, script) => {
-    const shimDir = mkdtempSync(join(tmpdir(), 'degraded-jq-'));
+    ['何もせず成功する perl', '#!/bin/sh\nexit 0\n'],
+  ])('🔴 道具が %s でもブロックする', (_label, script) => {
+    const shimDir = mkdtempSync(join(tmpdir(), 'degraded-tool-'));
     try {
-      writeFileSync(join(shimDir, 'jq'), script, { mode: 0o755 });
+      writeFileSync(join(shimDir, _label.includes('perl') ? 'perl' : 'jq'), script, { mode: 0o755 });
       const env = { PATH: `${shimDir}:${process.env.PATH ?? ''}` };
       expect(runHook('gh pr merge 1 --squash', { env }).status, 'Bash 経路が素通りする').toBe(2);
       expect(runHook('', { tool: 'mcp__github__merge_pull_request', env }).status, 'MCP 経路が素通りする').toBe(2);
