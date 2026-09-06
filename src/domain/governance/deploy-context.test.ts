@@ -167,7 +167,10 @@ describe('parseDeployContextFile', () => {
       ['', '# 窓を開けるとき用', '  OR_APP_SECRETS_NAME =  spaced  ', '   ', '#OR_X=y'].join('\n'),
     );
     expect(parsed.OR_APP_SECRETS_NAME).toBe('spaced');
-    expect(parsed.OR_X).toBeUndefined();
+    // 🔴 **`parsed.OR_X` が undefined であることを主張しても空虚**（実測で生存した変異）。
+    // コメント判定を消しても、`#OR_X=y` のキーは `#OR_X` になるので `OR_X` は結局 undefined。
+    // 「コメント行を落とした」を本当に言うには、**キー集合そのもの**を縛るしかない。
+    expect(Object.keys(parsed)).toEqual(['OR_APP_SECRETS_NAME']);
   });
 
   it('値の中の = は保つ（secret に = が入りうる）', () => {

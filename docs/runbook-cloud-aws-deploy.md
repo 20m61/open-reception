@@ -923,6 +923,40 @@ scripts/aws-issue-credentials.sh --hours 4
 値は既定では表示されず、macOS のクリップボードへ直接入る（`--print` を明示したときのみ表示）。
 **値をこの runbook や git や log に書かない。**
 
+### クリップボードには 9 変数が入る（2026-09-06 / #989）
+
+AWS の 5 つ（`AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` / `AWS_SESSION_TOKEN` /
+`AWS_REGION` / `AWS_CREDENTIAL_EXPIRATION`）に加えて、**デプロイ必須 context の 4 つ**
+（ステップ 8b）も同じブロックに入る。**まとめて 1 回で貼れる。**
+
+以前は AWS の 5 つだけをコピーしていたため、残り 4 つが「リポジトリに書いてあるから後で」に
+なり、2026-09-06 の 3 回目のデプロイで **`OR_APP_SECRETS_NAME` だけが未登録**のまま窓を開けて
+`diff` が止まった。落ちたのは 4 つのうち唯一「秘密の値ではない」もので、
+**秘密 3 つは貼る意識が働くのに非秘密の 1 つだけ抜ける**という形だった。
+
+**初回だけ、値の置き場所を作る**（**リポジトリの外**。`OR_ORIGIN_VERIFY_SECRET` は秘密そのもので、
+`.gitignore` に頼ると ignore 行が消えた瞬間に commit され得る）:
+
+```bash
+mkdir -p ~/.config/open-reception
+cat > ~/.config/open-reception/deploy-context.env <<'EOF'
+OR_APP_SECRETS_NAME=open-reception/dev/app-v2
+OR_ORIGIN_VERIFY_SECRET=＜実際の高エントロピー値＞
+OR_PUBLIC_ORIGIN_OVERRIDE=https://dvxkh8nfwl334.cloudfront.net
+OR_PROVIDER_SECRET_BACKEND=secrets-manager
+EOF
+chmod 600 ~/.config/open-reception/deploy-context.env
+```
+
+置き場所は `OR_DEPLOY_CONTEXT_FILE` で変えられる。環境変数が設定されていればそちらが優先される
+（一時的に別の値で試せる）。
+
+🔴 **4 変数が欠けていると、窓を開けずに止まる。** 解決は `aws sts assume-role` **より前**に
+走るので、資格情報は発行されない ―― 「開いたが使えない窓」を作らないため。欠落を `diff` で
+知ると、そこまでの往復（verify 約 6 分を含む）が丸ごと窓を食う。
+
+`--no-context` を付ければ従来どおり AWS の 5 つだけになる（context を別経路で登録済みのとき）。
+
 ### 🔴 窓は「環境が整ってから」開ける（2026-09-06 追加）
 
 **窓が閉じるまでの時間は、AWS を触っている時間ではなく実時間で減る。** 環境不備の復旧も、
@@ -965,7 +999,9 @@ claude.ai/code で同じ環境 ＋ リポジトリを選んでセッションを
 3. **ゲートの任意ツールが揃っているか。** セッション開始時の `gate-tooling:` 行を読む。
    `missing gitleaks` が出ていたら `--pr` の unit が**14 件赤になる**（原因はツール不在。
    詳細は `docs/cloud-dev-environment.md` §4）。`bash scripts/cloud-setup.sh` で入れ直す
-4. **必須 context 4 変数が環境ダイアログに揃っているか**（ステップ 8b）。**値は出さない**:
+4. **必須 context 4 変数が環境ダイアログに揃っているか**（ステップ 8b）。**値は出さない**。
+   ステップ 5 のコピーに 4 変数も入るようになったので（#989）、9 つまとめて貼っていれば
+   ここは揃っているはず。既存セッションで確かめるときは:
 
 ```bash
 for v in OR_APP_SECRETS_NAME OR_ORIGIN_VERIFY_SECRET OR_PUBLIC_ORIGIN_OVERRIDE OR_PROVIDER_SECRET_BACKEND; do
