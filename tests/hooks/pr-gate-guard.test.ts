@@ -324,15 +324,21 @@ describe('pr-gate-guard: 明示的な脱出ハッチ', () => {
  * `sed`（`w` でファイルを書ける・GNU では `e` で起動できる）と
  * フルパス起動（`./bin/cat` で綴りを詐称できる）を whitelist から外した。
  *
- * 同じ入力を 5 版へ当てた実測（127 形）:
+ * 同じ入力を 6 版へ当てた実測（135 形）:
  *
- * | 版 | 実行しうる形 84 | 読み取り形 43 |
+ * | 版 | 実行しうる形 95 | 読み取り形 40 |
  * | --- | --- | --- |
- * | 変更前 `b9f9718` | 79 | 6 |
- * | blacklist 版 `6bba78b` | 52 | 38 |
- * | whitelist 版 `1616e8f` | 65 | 34 |
- * | 走査版 `04ebbc1` | 76 | 42 |
- * | 現在 | **84** | **43** |
+ * | 変更前 `b9f9718` | 82 | 6 |
+ * | blacklist 版 `6bba78b` | 55 | 37 |
+ * | whitelist 版 `1616e8f` | 66 | 31 |
+ * | 走査版 `04ebbc1` | 77 | 39 |
+ * | 走査版 2 `84dd9c0` | 85 | 40 |
+ * | 非解釈版（現在） | **95** | **40** |
+ *
+ * 🔴 **5 周のレビューで毎回「変更前が止めていた実行形が通る」が出た。** 原因はすべて
+ * 「シェルを解釈しようとして bash とずれた」ことで、綴りを 1 つずつ足しても終わらなかった。
+ * 6 版目で**解釈をやめた** —— バックスラッシュ・`$`・backtick・波括弧・改行が現れたら
+ * その時点で 2 段目へ落とす。残った部分集合では語の切れ目が bash と一致する。
  *
  * 🔴 **一覧は「自分が思いついた形」でしかない。** 各周とも「自分で当てた変異は全部 kill」と
  * 報告しており、**族ごとの見落としは独立レビューでしか出ていない**（9 族 → 4 族 → 3 族）。
@@ -427,6 +433,17 @@ const EXECUTION_FORMS: readonly string[] = [
   "ls -la\ngit push -u origin HEAD\nnpx tsx scripts/create-pull-request.ts --head x --title y",
   "rg -n foo src\ngh api repos/o/r/pulls/997/merge -X PUT",
   "cat scripts/merge-pull-request.ts \\",
+  "uniq scripts/merge-pull-request.ts /tmp/m.ts",
+  "git show HEAD:scripts/merge-pull-request.ts | uniq - /tmp/m.ts",
+  "rg --pre ./scripts/merge-pull-request\\\n.ts x .",
+  "git grep -O./scripts/merge-pull-request\\\n.ts x",
+  "gh pr \\\n merge 12",
+  "npx tsx scripts/merge-pull-request\\\n.ts 123",
+  "echo \"$(gh pr merge 12)\"",
+  "OUT=\"$(gh pr merge 12 --squash)\"",
+  "echo \"`gh pr create --fill`\"",
+  "gh pr >/dev/null merge 12",
+  "gh pr merge 12 >/dev/null",
 ];
 
 /** 何も実行しない読み取り形。ここが通るようになるのが #960 の本体。 */
@@ -435,7 +452,6 @@ const READ_FORMS: readonly string[] = [
   "rg -n delete scripts/merge-pull-request.ts",
   "rg -n 'create|merge' scripts/merge-pull-request.ts",
   "grep -E 'a|b' scripts/merge-pull-request.ts",
-  "rg -n 'mergePr\\(' scripts/merge-pull-request.ts",
   "grep -n 'x;y' scripts/merge-pull-request.ts",
   "cat scripts/merge-pull-request.ts",
   "head -20 scripts/create-pull-request.ts",
@@ -457,7 +473,6 @@ const READ_FORMS: readonly string[] = [
   "grep -x foo scripts/merge-pull-request.ts",
   "rg -x foo scripts/merge-pull-request.ts",
   "grep -v -x foo scripts/merge-pull-request.ts",
-  "cat scripts/merge-pull-request.ts | uniq | head",
   "git log -p -- scripts/merge-pull-request.ts",
   "git blame scripts/merge-pull-request.ts",
   "git --no-pager log --oneline -- scripts/merge-pull-request.ts",
@@ -472,8 +487,30 @@ const READ_FORMS: readonly string[] = [
   "rg -n \"create|merge\" scripts/merge-pull-request.ts",
   "rg -o scripts/merge-pull-request.ts",
   "grep \"don't\" scripts/merge-pull-request.ts",
-  "grep -n mergePr\\( scripts/merge-pull-request.ts",
   "grep -n foo scripts/merge-pull-request.ts 2>&1",
+];
+
+/**
+ * 🔴 **意図的に通さない読み取り。** #960 が消したかった痛み（誤発火）は残るが、
+ * いずれも「解釈をやめる」ことと引き換えに得た安全側の判定であり、**変更前と同じ挙動**である。
+ *
+ * - バックスラッシュを含む形 … エスケープを解釈すると bash との差が必ず出る
+ *   （行継続で語をつなぐ攻撃が実在した）。解釈しないので、含んでいたら 2 段目へ落とす
+ * - `uniq` … 第 2 位置引数が**出力ファイル**になる（`uniq <検出語> /tmp/m.ts` で
+ *   内容を書き出せる）。allowlist から外した
+ * - 複数行・`sed`・フルパス起動・プロセス置換 … 同じ理由（解釈しない／書ける／詐称できる）
+ *
+ * **穴を開けるより誤発火を残すほうが安い。** ここを緩めたくなったら、まず
+ * `docs/quality-gate.md` の 5 版比較表を読むこと。
+ */
+const DELIBERATELY_BLOCKED: readonly string[] = [
+  "rg -n 'mergePr\\(' scripts/merge-pull-request.ts",
+  "grep -n mergePr\\( scripts/merge-pull-request.ts",
+  "cat scripts/merge-pull-request.ts | uniq | head",
+  "cat scripts/merge-pull-request.ts\nwc -l scripts/create-pull-request.ts",
+  "sed -n 1,40p scripts/merge-pull-request.ts",
+  "/usr/bin/grep -n x scripts/merge-pull-request.ts",
+  "diff <(cat scripts/merge-pull-request.ts) <(cat README.md)",
 ];
 
 describe('pr-gate-guard: 読み取りは通し、実行は止める (#960)', () => {
@@ -483,6 +520,10 @@ describe('pr-gate-guard: 読み取りは通し、実行は止める (#960)', () 
   });
 
   it.each(EXECUTION_FORMS)('🔴 実行しうる形はブロックする: %s', (cmd) => {
+    expect(runHook(cmd).status, cmd).toBe(2);
+  });
+
+  it.each(DELIBERATELY_BLOCKED)('意図的に通さない読み取り（誤発火として受け入れた形）: %s', (cmd) => {
     expect(runHook(cmd).status, cmd).toBe(2);
   });
 

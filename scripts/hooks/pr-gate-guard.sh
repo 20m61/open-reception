@@ -106,17 +106,24 @@ fi
 # 止めたいのは「ゲートを回し忘れたまま PR / マージへ進む」ことだけである。
 PLAIN_READ_PREDICATE='
   my $cmd = do { local $/; <STDIN> };
-  # stderr を捨てるだけの `2>/dev/null` は読み取り調査で日常的に打つので先に外す。
-  # 他のリダイレクトは走査で落ちる（読んだ結果を置いてから実行する形を作れる）。
+  # stderr の始末は読み取り調査で日常的に打つ。ファイルは作れないので先に外す。
   $cmd =~ s{2>\s*/dev/null}{}g;
   $cmd =~ s{2>&1}{}g;
 
-  my $MENTION = qr{scripts/(merge|create)-pull-request\.ts|repos/[^\s]+/pulls/[0-9]+/merge};
+  # 🔴 **解釈しない。** バックスラッシュ・`$`・backtick・波括弧・改行が現れたら、
+  # その時点で 2 段目へ落とす。ここを「正しく解釈しよう」とした版は、レビューのたびに
+  # bash との差を出した（行継続で語をつなぐ / `$(...)` / `${IFS}` / `{a,b}` 展開 /
+  # 語中の `#`）。**解釈しなければ差は生まれない** —— 残った部分集合では、語の切れ目は
+  # 「引用の外の空白」だけで決まり、bash と一致する（エスケープも展開も無いため）。
+  exit 1 if $cmd =~ /[\\\$`{}\n\r]/;
+
+  my $MENTION = qr{scripts/(merge|create)-pull-request\.ts};
   # 読み取り専用の道具。**他プロセスを起動できる／ファイルを書けるものは入れない**
   # （`find` / `fd` の -exec、`sort --compress-program`、`awk` の system()、
-  #  `less` / `more` の `!` と LESSOPEN、`xargs`、`sed` の `w` `e` `r`、`tee`）。
+  #  `less` / `more` の `!` と LESSOPEN、`xargs`、`sed` の `w` `e` `r`、`tee`、
+  #  そして `uniq` —— 第 2 位置引数が**出力ファイル**になる）。
   my %READ = map { $_ => 1 } qw(
-    grep egrep fgrep rg cat head tail wc nl cut tr uniq
+    grep egrep fgrep rg cat head tail wc nl cut tr
     diff colordiff ls stat file column basename dirname realpath jq git
   );
   my %GIT_READ = map { $_ => 1 } qw(
@@ -128,34 +135,22 @@ PLAIN_READ_PREDICATE='
   # 値としてプログラムや出力先を取る option。この直後に検出語が来たら通さない。
   my $VALUE_TAKES_PROGRAM = qr{(pager|pre|exec|program|output|file)$};
 
-  # --- トークナイザ ---------------------------------------------------------
-  # シェルの引用規則をそのまま辿る。正規表現で引用を対消しすると、シェルとは違う
-  # 対応付けになって区切り文字が消える（3 周目のレビューが実証した）。
+  # --- 語へ割る ------------------------------------------------------------
+  # エスケープが無いので、引用の対応は左から素朴に取れる（bash と一致する）。
   my @tokens; my $cur = ""; my $has = 0; my $state = "none";
-  my @ch = split //, $cmd;
-  for (my $i = 0; $i < @ch; $i++) {
-    my $c = $ch[$i];
+  for my $c (split //, $cmd) {
     if ($state eq "none") {
-      if ($c eq chr(92)) { $i++; exit 1 if $i >= @ch; $cur .= $ch[$i]; $has = 1; next }
       if ($c eq chr(39)) { $state = "single"; $has = 1; next }
       if ($c eq chr(34)) { $state = "double"; $has = 1; next }
-      # 🔴 **改行は「ただの空白」ではない。** 前の版は改行を明示的に落としていたが、
-      # 走査へ替えたときに /\s/ へ食われて区切りでなくなり、
-      # `git status --short<改行>gh pr merge 997` が 1 段目を通った（4 周目のレビュー）。
-      # 「確認してからマージ」を 1 回の Bash 呼び出しに書くだけで外れる ―― うっかりの主経路。
-      exit 1 if $c eq "\n" || $c eq "\r";
       if ($c =~ /\s/)    { push @tokens, $cur if $has; $cur = ""; $has = 0; next }
       if ($c eq "|")     { push @tokens, $cur if $has; $cur = ""; $has = 0; push @tokens, "\x00PIPE"; next }
-      exit 1 if $c =~ /[;&<>()`\$]/;   # 区切り・背景実行・リダイレクト・置換
+      exit 1 if $c =~ /[;&<>()]/;   # 区切り・背景実行・リダイレクト・サブシェル
       $cur .= $c; $has = 1; next;
     }
-    if ($state eq "single") { if ($c eq chr(39)) { $state = "none" } else { $cur .= $c } next }
-    if ($c eq chr(34))  { $state = "none"; next }
-    if ($c eq chr(92))  { $i++; exit 1 if $i >= @ch; $cur .= $ch[$i]; next }
-    exit 1 if $c eq chr(36) || $c eq chr(96);   # 二重引用符の中でも展開は起きる
+    if ($c eq ($state eq "single" ? chr(39) : chr(34))) { $state = "none"; next }
     $cur .= $c;
   }
-  exit 1 unless $state eq "none";   # 引用が閉じていない = 素朴ではない
+  exit 1 unless $state eq "none";   # 引用が閉じていない = 素朴に読めない
   push @tokens, $cur if $has;
 
   # --- 段ごとの判定 ---------------------------------------------------------
@@ -166,17 +161,16 @@ PLAIN_READ_PREDICATE='
   }
   for my $stage (@stages) {
     my @t = @$stage;
-    while (@t && $t[0] =~ /^([A-Za-z_]\w*)=(.*)$/s) {
+    while (@t && $t[0] =~ /^([A-Za-z_]\w*)=/) {
       exit 1 unless $SAFE_ENV{$1};
       shift @t;
     }
-    exit 1 unless @t;
-    my $c = $t[0];
     # basename へ正規化しないので、`./bin/cat` のようなフルパス起動はここで落ちる
     # （綴りを詐称して allowlist を通る形を作らせない）。
+    my $c = @t ? $t[0] : "";
     exit 1 unless $READ{$c};
-    # パスを値に取る option（`git show --output=/tmp/m.ts <検出語>`）。読んだ結果を
-    # 別の場所へ置けると、そこから実行できる（`cat X > /tmp/m.ts` と同じ族）。
+    # パスを値に取る option（`--out=/tmp/x`）。読んだ結果を別の場所へ置けると、
+    # そこから実行できる（`cat X > /tmp/m.ts` と同じ族）。
     exit 1 if grep { /^-/ && m{=.*/} } @t;
     if ($c eq "git") {
       my $i = 1;
@@ -187,31 +181,34 @@ PLAIN_READ_PREDICATE='
       }
       exit 1 unless $i < @t && $GIT_READ{$t[$i]};
       # `git show HEAD --output /tmp/m.ts -- <検出語>` は**内容をファイルへ書ける**。
-      # `--output=` の綴りだけは下の `=.*/` 検査に掛かるが、空白区切りは掛からない。
-      exit 1 if grep { /^(-o|--output)(=|$)/ } @t;
+      # 空白区切りだと上の `=.*/` 検査に掛からないので、綴りに関わらず拒む。
+      exit 1 if grep { /^--output(=|$)/ } @t;
     }
     # 検出語は**位置引数**として現れていなければならない。option の値として渡す形
     # （`git grep --open-files-in-pager=<検出語>` / `rg --pre <検出語>`）は通さない ――
-    # option の値に置くと、読み取りの道具がそれを**起動する**（3 周目のレビューが
-    # 実際に任意スクリプトを走らせて見せた）。
-    for my $i (0 .. $#t) {
+    # option の値に置くと、読み取りの道具がそれを**起動する**。
+    for my $i (1 .. $#t) {
       next unless $t[$i] =~ $MENTION;
       exit 1 if $t[$i] =~ /^-/;
-      next if $i == 0;
       my $prev = $t[$i - 1];
-      next unless $prev =~ /^-/ && $prev ne "--";
+      next unless $prev =~ /^-/;
       exit 1 if $prev =~ $VALUE_TAKES_PROGRAM;
-      # `-O` は git grep の pager 指定。他の道具の `-o` は値を取らないほうが普通なので
-      # （`rg -o` = --only-matching）、git のときだけ見る。
-      exit 1 if $c eq "git" && $prev =~ /^-[A-Za-z]*[oO]$/;
+      # `-O` は git grep の pager 指定。他の道具の `-o` は値を取らないほうが普通
+      # （`rg -o` = --only-matching）なので、git のときだけ見る。
+      exit 1 if $c eq "git" && $prev =~ /^-[A-Za-z]*O$/;
     }
   }
+  # 🔴 **作業証明を出す。** 終了コードだけで「素朴な読み取り」と断定すると、
+  # perl が「落ちずに何もせず成功」しただけで**判定が丸ごと許可へ倒れる**（5 周目のレビュー）。
+  print "PLAIN_READ_OK";
   exit 0;
 
 '
 
 if [ -z "${required}" ] && [ -n "${cmd}" ]; then
-  if printf '%s' "${cmd}" | perl -e "${PLAIN_READ_PREDICATE}" 2>/dev/null; then
+  # 🔴 終了コードではなく**作業証明**を見る（perl が何もせず成功しただけで
+  # 許可へ倒れないように）。
+  if [ "$(printf '%s' "${cmd}" | perl -e "${PLAIN_READ_PREDICATE}" 2>/dev/null)" = "PLAIN_READ_OK" ]; then
     exit 0
   fi
 fi
@@ -235,6 +232,9 @@ fi
 # 判定できないときは生のコマンドをそのまま渡す。
 LEGACY_SCAN='
   my $cmd = do { local $/; <STDIN> };
+  # 🔴 **行継続はシェルが畳む。** `gh pr \<改行> merge 12` は `gh pr merge 12` として
+  # 実行されるので、先に畳んでおかないと行単位の grep が取りこぼす（5 周目のレビュー）。
+  $cmd =~ s/\\\n//g;
   # ヒアドキュメントの本文（コミットメッセージ・ドキュメント生成）は判定対象外
   $cmd =~ s/<<-?\s*(["\x27]?)(\w+)\1.*?^[ \t]*\2[ \t]*$//gms;
   my @out; my $cur = ""; my $has = 0; my $prose = 0; my $expand = 0; my $state = "none";
@@ -242,7 +242,15 @@ LEGACY_SCAN='
   # 🔴 二重引用符の中でも `$(...)` と backtick は**展開されて実行される**ので、
   # 空白を含んでいても散文として捨てない（`grep "$(npx tsx scripts/...)" x` が
   # 素通りしていた。実測）。
-  my $flush = sub { push @out, $cur if $has && (!$prose || $expand); $cur = ""; $has = 0; $prose = 0; $expand = 0 };
+  my $flush = sub {
+    if ($has && (!$prose || $expand)) {
+      # `$(` `)` backtick は語の切れ目。潰さないと `"$(gh pr merge 12)"` の `gh` が
+      # `(` に隣接して、判定側の `(^|[;&|[:space:]])gh` に一致しない（5 周目のレビュー）。
+      my $t = $cur; $t =~ s/[\$`()]/ /g;
+      push @out, $t;
+    }
+    $cur = ""; $has = 0; $prose = 0; $expand = 0;
+  };
   for (my $i = 0; $i < @ch; $i++) {
     my $c = $ch[$i];
     if ($state eq "none") {
@@ -254,7 +262,16 @@ LEGACY_SCAN='
       # （4 周目のレビュー。変更前の正規表現は「前が空白」を要求していた）。
       if ($c eq "#" && !$has) { $i++ while $i < @ch && $ch[$i] ne "\n"; $flush->(); next }
       if ($c =~ /\s/)    { $flush->(); next }
-      if ($c =~ /[;&|<>()`]/) { $flush->(); push @out, $c; next }
+      # 🔴 リダイレクトは**語の間に置ける**（`gh pr >/dev/null merge 12`）。演算子を
+      # 区切りとして残すと `gh pr` と `merge` が分断されて判定から落ちるので、
+      # 演算子とその行き先を捨てる。
+      if ($c eq "<" || $c eq ">") {
+        $flush->();
+        $i++ while $i + 1 < @ch && $ch[$i + 1] =~ /[>&\s]/;
+        $i++ while $i + 1 < @ch && $ch[$i + 1] !~ /\s/;
+        next;
+      }
+      if ($c =~ /[;&|()`]/) { $flush->(); push @out, $c; next }
       $cur .= $c; $has = 1; next;
     }
     my $q = $state eq "single" ? chr(39) : chr(34);
@@ -262,7 +279,11 @@ LEGACY_SCAN='
     if ($state eq "double" && $c eq chr(92)) { $i++; last if $i >= @ch; $cur .= $ch[$i]; next }
     # 空白を含む引用は散文（コミットメッセージ・説明文）。そのトークンごと捨てる
     $prose = 1 if $c =~ /\s/;
-    $expand = 1 if $state eq "double" && ($c eq chr(36) || $c eq chr(96));
+    # 🔴 展開されて**実行される**のは `$(...)` と backtick だけ。裸の `$VAR` まで
+    # expand 扱いにすると、`git commit -m "… ($USER)"` のような散文が誤ブロックになる
+    # （5 周目のレビュー。このフックが最初に踏んだ誤検知と同じ形）。
+    $expand = 1 if $state eq "double" && $c eq chr(96);
+    $expand = 1 if $state eq "double" && $c eq chr(36) && $i + 1 < @ch && $ch[$i + 1] eq "(";
     $cur .= $c;
   }
   exit 1 unless $state eq "none";   # 引用が閉じていない = 素朴に読めない
