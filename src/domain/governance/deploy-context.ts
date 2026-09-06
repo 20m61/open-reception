@@ -134,3 +134,71 @@ export function resolveDeployContext(
 
   return { ok: true, args };
 }
+
+/**
+ * 窓を開けるときに貼る `KEY=VALUE` ブロックを組み立てる（`--with-context`）。
+ *
+ * ## なぜ要るか
+ *
+ * 環境ダイアログへ登録するのは **9 変数**（AWS の 5 つ ＋ デプロイ context の 4 つ）だが、
+ * `aws-issue-credentials.sh` がクリップボードへ入れていたのは **AWS の 5 つだけ**だった。
+ * 残り 4 つは「リポジトリに書いてあるから後で」になり、2026-09-06 の 3 回目のデプロイでは
+ * **`OR_APP_SECRETS_NAME` だけが未登録**のまま窓を開けてしまい、`diff` が止まった（#989）。
+ *
+ * 落ちたのは 4 つのうち唯一「秘密の値ではない」もので、**秘密 3 つは貼る意識が働くのに
+ * 非秘密の 1 つだけ抜ける**という形だった。9 つまとめて 1 回のコピーにすれば、
+ * 「一部だけ貼る」余地そのものが消える。
+ *
+ * 判定は `resolveDeployContext` と**同じ**（欠落・語彙外を同じ基準で弾く）。窓を開けてから
+ * `diff` で気づくのでは、その往復ぶん窓を食う ―― **窓を開ける前に落とす**のが要点である。
+ */
+export type DeployContextEnvBlockResult =
+  | { readonly ok: true; readonly block: string }
+  | {
+      readonly ok: false;
+      readonly missing: ReadonlyArray<string>;
+      readonly invalid: ReadonlyArray<string>;
+      readonly message: string;
+    };
+
+export function resolveDeployContextEnvBlock(
+  env: Readonly<Record<string, string | undefined>>,
+): DeployContextEnvBlockResult {
+  const resolved = resolveDeployContext(env);
+  if (!resolved.ok) return resolved;
+  // `resolveDeployContext` が ok を返した時点で全キーが揃い、語彙も検証済み。
+  // 値の正規化（trim）もそちらに揃えたいので、env から読み直さずに同じ手順を踏む。
+  const block = REQUIRED.map(([envVar]) => `${envVar}=${(env[envVar] ?? '').trim()}`).join('\n');
+  return { ok: true, block };
+}
+
+/**
+ * `KEY=VALUE` 形式のローカルファイルを読む（既定は**リポジトリの外**に置く）。
+ *
+ * 🔴 **リポジトリ内に置かせない。** `OR_ORIGIN_VERIFY_SECRET` は秘密の値そのものなので、
+ * 既定の置き場所を作業ツリーの外（`~/.config/open-reception/deploy-context.env`）にしてある。
+ * `.gitignore` に頼ると、ignore 行を消した瞬間に秘密が commit され得る。
+ *
+ * dotenv の完全実装ではない。**貼り付け事故の吸収**だけを担う:
+ * 前後の空白、行頭 `#` のコメント、値を丸ごと囲んだ引用符。
+ * 値の中の `=` は保つ（base64 の padding が入りうる）。
+ */
+export function parseDeployContextFile(text: string): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const rawLine of text.split('\n')) {
+    const line = rawLine.trim();
+    if (line === '' || line.startsWith('#')) continue;
+    const eq = line.indexOf('=');
+    if (eq <= 0) continue;
+    const key = line.slice(0, eq).trim();
+    if (key === '') continue;
+    let value = line.slice(eq + 1).trim();
+    // 両端が同じ引用符で囲われているときだけ外す（片側だけなら値の一部とみなす）。
+    if (value.length >= 2) {
+      const head = value[0];
+      if ((head === '"' || head === "'") && value.endsWith(head)) value = value.slice(1, -1);
+    }
+    out[key] = value;
+  }
+  return out;
+}
