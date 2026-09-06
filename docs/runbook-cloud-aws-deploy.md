@@ -1274,9 +1274,32 @@ aws cloudformation describe-change-set --stack-name "$STACK" --change-set-name "
 ```
 
 `--include-property-values` は **`cloudformation:DescribeChangeSet` と同じ action** なので、
-GetTemplate の Deny には当たらない見込みである。⚠️ **2026-09-06 時点で entry role からは
-未実測**（窓が閉じたため）。次のセッションで最初に確かめ、結果をこの節へ追記すること。
-denied なら手順 B へ落ちる。
+GetTemplate の Deny には当たらない見込みである。
+
+#### 実施記録: 2026-09-06（✅ entry role から通る。ただし**現行の秘密が平文で出る**）
+
+`OpenReceptionClaudeDeploy-dev`（`claude-cloud-20260907-0002`）で `OpenReception-Web-dev` に対し
+上の 2 番目のコマンドを実行し、**`AccessDenied` にならず property 値が返った**。手順 A は
+成立し、手順 B へ落ちる必要はない。「現行にあって synth から消えたもの」は実際に読める。
+
+⚠️ **ただし出力に現行の origin-verify シークレットが平文で載る。**
+`/Properties/DistributionConfig/Origins/0/OriginCustomHeaders/0/HeaderValue` の `BeforeValue` は
+現在デプロイされているテンプレートの生値そのもの（44 文字）だった。つまりこのコマンドは
+**`DescribeChangeSet` 権限を持つ者への秘密の開示経路**でもある。承認のために読むときは
+値を絞ること:
+
+```bash
+# OriginCustomHeaders を除外して読む（承認に必要な IAM 文・環境変数は残る）
+aws cloudformation describe-change-set --stack-name "$STACK" --change-set-name "$CS" --region "$REGION" \
+  --include-property-values \
+  --query 'Changes[].ResourceChange.Details[].Target.{Prop:Path,Before:BeforeValue,After:AfterValue}' \
+  --output json | jq '[.[] | select(.Prop | test("OriginCustomHeaders") | not)]'
+```
+
+**秘密を含む property を PR・Issue・セッションログへ貼らない**（貼ったら窓を閉じたうえで
+ローテーションが要る）。`After` 側が `?????????????` に見えることがあるが、これは
+CloudFormation 側のマスクであって「synth の値がマスクされている」ではない ――
+**synth の実値は `infra/cdk.out/<Stack>.template.json` で確かめる**（下記 8b の実施記録）。
 
 **手順 B（`--include-property-values` が通らない場合）: 読める側だけで判断し、足りない分は
 局所化する。**
@@ -1340,10 +1363,83 @@ dev の値は `docs/deploy-aws.md`「dev をゼロから立ち上げる手順」
 ```bash
 export OR_APP_SECRETS_NAME=open-reception/dev/app-v2
 export OR_ORIGIN_VERIFY_SECRET=...        # 高エントロピー値。履歴・ログに残さない
+                                          # 🔴 山括弧つきの説明文をそのまま貼らない（下記 2026-09-06）
 export OR_PUBLIC_ORIGIN_OVERRIDE=https://dvxkh8nfwl334.cloudfront.net
 # 実 Vonage を使うなら secrets-manager。mock だけで動かすなら memory と**明示**する
 export OR_PROVIDER_SECRET_BACKEND=secrets-manager
 ```
+
+### 🔴 「set されている」は「正しい値が入っている」ではない（2026-09-06）
+
+4 回目のデプロイで、`OR_ORIGIN_VERIFY_SECRET` に**この runbook の散文に出てくる
+プレースホルダ文字列そのもの**（山括弧つきの `＜実際の高エントロピー値＞`。13 文字 / 39 バイト）が
+入っていた。デプロイは実行せず停止した。
+
+**上のガードも、ステップ 5 の事前チェックも、これを止められない。** どちらも
+**set / unset しか見ていない**からで、プレースホルダは堂々と SET と出る。前節
+（`OR_APP_SECRETS_NAME` の未登録）は「登録し忘れ」だったが、こちらは
+**「登録したが中身が説明文」**であり、症状が正反対である ―― 前者は大声で止まり、
+後者は**全部緑のまま通過する**。
+
+実際、以下は**すべて PASS した**:
+
+| 段 | 結果 |
+| --- | --- |
+| ステップ 5 の 4 変数チェック | 4/4 SET |
+| ステップ 7 `verify`（`--pr` 8 ステップ） | ✅ PASS |
+| ステップ 8 `preflight`（negative security test） | ✅ 8/8 PASS |
+| ステップ 9 `diff` gate の findings | `CDKMetadata` の `replacement=Conditional` が 3 スタックぶんのみ |
+
+findings は**事前にユーザーが承認していた形**（`Remove` 0 件 / `Replacement: True` 0 件 /
+WebMonitoring の新規は `KioskRealDialingUnavailable*` の Alarm と MetricFilter 各 1 件）を
+**満たしていた**。トークンを渡していれば通っていた。
+
+**デプロイしていたらどうなったか。** CloudFront の `x-origin-verify` ヘッダと ServerFn の
+`ORIGIN_VERIFY_SECRET` env は**同じ context から組み立てられる**ので、両方が同じ
+プレースホルダになる ―― つまり**アプリは正常に動く**。壊れないので運用では気づけない。
+しかし `src/lib/security/origin-verify.ts` は単純比較なので、**リポジトリの散文を読んだ者は
+誰でもヘッダを偽造でき、CloudFront を迂回して Lambda Function URL を直叩きできる**。
+現行の 44 文字の高エントロピー値を、公開文字列で上書きすることになる。
+
+**検出のしかた（値を出さずに測る）。** synth 済みテンプレートはローカルなので IAM に
+関係なく読める。承認前に必ずこれを通す:
+
+```bash
+jq -r '.Resources | to_entries[] | select(.value.Type=="AWS::CloudFront::Distribution")
+       | .value.Properties.DistributionConfig.Origins[].OriginCustomHeaders[]?
+       | select(.HeaderName=="x-origin-verify")
+       | "len=\(.HeaderValue|length)  looks_like_placeholder=\(.HeaderValue|test("[＜＞<>]"))"' \
+  infra/cdk.out/OpenReception-Web-dev.template.json
+```
+
+`looks_like_placeholder=true`、または `len` が現行値（44）と大きく違うなら**止める**。
+🔴 **`describe-change-set` の `AfterValue` で判定しない。** CloudFront のヘッダ値は
+CloudFormation 側が `?????????????` にマスクして返すので、「マスクされている＝安全に
+解決される」と読めてしまう。**マスクは値の性質を何も保証しない**（9b-1 の実施記録）。
+
+**入れ直すときは、現行 dev に載っている値と同じものを再登録する。** 別の値へ変えると、
+CloudFront の配信更新と ServerFn の env 更新が同時に効くとは限らず、切り替え中に
+`x-origin-verify` の不一致で 403 になる窓が出うる（未実測。`web-stack.ts` の警告の型）。
+
+**Issue 候補（この周回では未実施）**: ガードを presence から plausibility へ広げる
+（山括弧・既知プレースホルダ・最小長・現行値との桁違いを wrapper が拒否する）。
+本筋は #612 の `originVerifySecretName` 移行で、生値を context に載せる方式である限り
+この型は何度でも再現する。
+
+#### 実施記録: 2026-09-06 のデプロイ（⛔ 未実行。9 まで到達して停止）
+
+窓は 2 度開けた（1 度目は `OR_APP_SECRETS_NAME` 未登録＋資格情報が発行から約 8 時間後に
+失効しており着手できず、2 度目で両方解消）。到達点は `verify` → `preflight` → `diff` →
+**停止**。所要は `verify` 約 4 分（unit 174 tests / 8 ステップ全 PASS）、`preflight` 約 1 分、
+`diff` 約 2 分。ディスクは 27G 空き・`/tmp/cdk.out*` 残骸 0 件で、#721 の型は該当しなかった。
+
+副次的な確認として、2026-08-15 の 500（`secretsmanager:GetSecretValue` の消失）は
+**再発していない** ―― synth 済みテンプレートの ServerFn ロールに
+`open-reception/dev/app-v2` への `DescribeSecret` / `GetSecretValue` があり、
+`PROVIDER_SECRET_BACKEND=secrets-manager` も env に入っていた。
+
+`diff` が作った change set（`claude-gate-aa75943`）は `--no-execute` のまま 3 スタックに
+残っている。次に同じ HEAD で `diff` を回すと作り直される。
 
 ### 🔴 `OR_PROVIDER_SECRET_BACKEND` を明示しないと止まる理由（2026-08-24 追加）
 
