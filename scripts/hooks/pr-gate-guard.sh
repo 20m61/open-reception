@@ -132,8 +132,24 @@ PLAIN_READ_PREDICATE='
   # 先頭に置いても道具の振る舞いを変えない変数だけ。`PATH` / `GIT_*` / `*_PAGER` /
   # `*_CONFIG*` / `LESSOPEN` は**起動するものを差し替えられる**ので通さない。
   my %SAFE_ENV = map { $_ => 1 } qw(LANG LC_ALL LC_COLLATE LC_CTYPE LC_MESSAGES LC_NUMERIC LC_TIME TZ);
-  # 値としてプログラムや出力先を取る option。この直後に検出語が来たら通さない。
-  my $VALUE_TAKES_PROGRAM = qr{(pager|pre|exec|program|output|file)$};
+  # 1 段目が通す long option。**知らないものは通さない**（値にプログラムを取る option を
+  # 数え上げる向きは 7 周目のレビューで破れた ―― `rg --hostname-bin` が漏れた）。
+  # 読み取り調査で日常的に打つものだけを置き、足すときは「値にプログラム・出力先を
+  # 取らないか」を必ず確かめること。
+  my %SAFE_LONG_OPT = map { $_ => 1 } qw(
+    --color --colour --no-color --no-colour --line-number --no-heading --with-filename
+    --no-filename --only-matching --word-regexp --line-regexp --fixed-strings
+    --extended-regexp --basic-regexp --perl-regexp --ignore-case --smart-case --case-sensitive
+    --invert-match --count --count-matches --files-with-matches --files-without-match
+    --recursive --no-recursive --binary-files --text --null --hidden --no-ignore --max-count
+    --context --after-context --before-context --number --number-nonblank --squeeze-blank
+    --show-all --lines --bytes --chars --words --unified --brief --side-by-side
+    --ignore-all-space --ignore-blank-lines --human-readable --almost-all --all --long
+    --oneline --graph --decorate --no-decorate --stat --numstat --shortstat --name-only
+    --name-status --patch --no-patch --follow --cached --staged --reverse --first-parent
+    --show-current --short --porcelain --branch --pretty --format --date --author --grep
+    --since --until --max-count --skip --abbrev-commit --no-pager --raw --tab
+  );
 
   # --- 語へ割る ------------------------------------------------------------
   # エスケープが無いので、引用の対応は左から素朴に取れる（bash と一致する）。
@@ -175,28 +191,34 @@ PLAIN_READ_PREDICATE='
     my $c = @t ? $t[0] : "";
     exit 1 unless $READ{$c};
     if ($c eq "git") {
-      # 🔴 **前置 option は「読み飛ばす」のではなく allowlist にする。**
-      # 読み飛ばすと `--config-env` / `--exec-path` / `-c` が素通りし、綴りを 1 つずつ
-      # 潰すループへ戻る（6 周目のレビュー）。知っているものだけ通し、他は 2 段目へ落とす。
+      # 前置 option を読み飛ばしてサブコマンドを探す。**ここで綴りを判定しない** ――
+      # 未知の long option（`--config-env` / `--exec-path`）は上の %SAFE_LONG_OPT が、
+      # 短い `-c` は「値がサブコマンド位置に来て GIT_READ に無い」ことで落ちる。
+      # 6 周目に置いた git 専用の allowlist は、その後 option 全体を allowlist にしたことで
+      # 冗長になった（変異を当てても行列が気づかない＝死んだ枝）。
       my $i = 1;
       while ($i < @t && $t[$i] =~ /^-/) {
         if ($t[$i] eq "-C" || $t[$i] eq "--git-dir" || $t[$i] eq "--work-tree") { $i += 2; next }
-        exit 1 unless $t[$i] =~ /^--(no-pager|literal-pathspecs|no-optional-locks|paginate)$/;
         $i++;
       }
       exit 1 unless $i < @t && $GIT_READ{$t[$i]};
     }
-    # 🔴 **道具を起動させる option は、値が何であれ拒む。** 「値が検出語のときだけ拒む」
-    # 向きにしていたため、`rg --pre=sh -n x <検出語>` が通っていた（6 周目のレビュー）――
-    # 1 段目の不変条件は「読み取り専用の道具しか動かない」なので、起動器を渡せる時点で外れる。
+    # 🔴 **知らない long option は通さない。**
+    #
+    # 「起動器を渡せる option 名」を数え上げる向き（`pager|pre|exec|program|output|file`）に
+    # していたところ、`rg --hostname-bin=<検出語>` が漏れて**実際にプログラムが起動した**
+    # （7 周目のレビュー）。列挙は道具が増えるたびに漏れる ―― 綴りを 1 つずつ足す型そのもの。
+    # 1 段目は whitelist なのだから、**option も whitelist にする**。知らないものが出たら
+    # 2 段目へ落とす（誤ブロックは増えるが、穴は開かない）。
+    #
+    # 短い option は値にプログラムを取らないのが普通だが、`git grep -O<pager>` だけは
+    # 例外なので git のときに見る。
     for my $tok (@t) {
-      next unless $tok =~ /^-/;
-      next if $tok =~ /^--no-/;   # `--no-pager` は pager を**止める**（値も取らない）
-      exit 1 if $tok =~ m{^--?[A-Za-z-]*(pager|pre|exec|program|output|file)(=|$)};
-      # `-O` は git grep の pager 指定。他の道具の `-o` は値を取らないほうが普通
-      # （`rg -o` = --only-matching）なので、git のときだけ見る。
-      exit 1 if $c eq "git" && $tok =~ /^-[A-Za-z]*O/;
+      next unless $tok =~ /^--./;                 # `-x` と `--` はここでは見ない
+      my $name = $tok; $name =~ s/=.*$//s;
+      exit 1 unless $SAFE_LONG_OPT{$name};
     }
+    if ($c eq "git") { for my $tok (@t) { exit 1 if $tok =~ /^-[A-Za-z]*O/ } }
     # 検出語が `-` で始まる語の中にある形（`--pre=<検出語>`）は、上の option 名検査が
     # 拾う（起動器を渡せる option はその存在自体で拒む）。ここでは重ねて見ない ――
     # 変異を当てても行列が気づかない枝を残さないため。
@@ -243,26 +265,39 @@ LEGACY_SCAN='
   # （消すと末尾に区切り語を置くだけで判定材料ごと隠せる。6 周目のレビュー m1）。
   $cmd =~ s/(?<!<)<<-(?!<)\s*(["\x27]?)(\w+)\1.*?^[ \t]*\2[ \t]*$//gms;
   $cmd =~ s/(?<!<)<<(?!<)\s*(["\x27]?)(\w+)\1.*?^[ \t]*\2[ \t]*$//gms;
-  my @out; my $cur = ""; my $has = 0; my $prose = 0; my $expand = 0; my $state = "none";
+  my @out; my $cur = ""; my $has = 0; my $prose = 0; my $expand = 0; my $quoted = 0; my $state = "none";
   my @ch = split //, $cmd;
   # 🔴 二重引用符の中でも `$(...)` と backtick は**展開されて実行される**ので、
   # 空白を含んでいても散文として捨てない（`grep "$(npx tsx scripts/...)" x` が
   # 素通りしていた。実測）。
   my $flush = sub {
-    if ($has && (!$prose || $expand)) {
-      # `$(` `)` backtick は語の切れ目。潰さないと `"$(gh pr merge 12)"` の `gh` が
-      # `(` に隣接して、判定側の `(^|[;&|[:space:]])gh` に一致しない（5 周目のレビュー）。
-      my $t = $cur; $t =~ s/[\$`()]/ /g;
-      push @out, $t;
+    if ($has && !$prose) {
+      # 🔴 引用が関与したトークンには印を付ける。`echo x; "OPEN_RECEPTION_SKIP_GATE_GUARD=1"; gh pr merge`
+      # は bash では**代入ではない**（`command not found` になる）のに、脱出ハッチとして
+      # 効いてしまっていた（7 周目のレビュー）。印は判定側だけが見る。
+      push @out, "\x02" if $quoted;
+      push @out, $cur;
+    } elsif ($has && $expand) {
+      # 🔴 **散文の中の `$( … )` は、中身だけを取り出す。** トークンごと残すと、
+      # 置換と無関係な本文まで判定材料になり、`git commit -m "fix: $(date +%F) gh pr merge を…"`
+      # が誤ブロックになる（7 周目のレビュー。このフックが最初に踏んだ誤検知の再来）。
+      # `$(` `)` backtick は語の切れ目なので空白へ潰す（潰さないと `"$(gh pr merge 12)"` の
+      # `gh` が `(` に隣接して判定側の境界に一致しない。5 周目のレビュー）。
+      my $t = $cur;
+      my @inner = ($t =~ m/\$\(([^)]*)\)/g, $t =~ m/`([^`]*)`/g);
+      push @out, map { my $x = $_; $x =~ s/[\$`()]/ /g; $x } @inner;
     }
-    $cur = ""; $has = 0; $prose = 0; $expand = 0;
+    $cur = ""; $has = 0; $prose = 0; $expand = 0; $quoted = 0;
   };
   for (my $i = 0; $i < @ch; $i++) {
     my $c = $ch[$i];
     if ($state eq "none") {
       if ($c eq chr(92)) { $i++; last if $i >= @ch; $cur .= $ch[$i]; $has = 1; next }
-      if ($c eq chr(39)) { $state = "single"; $has = 1; next }
-      if ($c eq chr(34)) { $state = "double"; $has = 1; next }
+      # 🔴 引用が関与したトークンには印を付ける。`echo x; "OPEN_RECEPTION_SKIP_GATE_GUARD=1"; gh pr merge`
+      # は bash では**代入ではない**（`command not found` になる）のに、脱出ハッチとして
+      # 効いてしまっていた（7 周目のレビュー）。印は脱出ハッチの判定だけが見る。
+      if ($c eq chr(39)) { $state = "single"; $has = 1; $quoted = 1; next }
+      if ($c eq chr(34)) { $state = "double"; $has = 1; $quoted = 1; next }
       # 🔴 **`#` がコメントを始めるのは語の先頭だけ**（bash の規則）。語中の `#` まで
       # コメント扱いにすると `cat a.txt#z; gh pr merge 12` の `;` 以降が消える
       # （4 周目のレビュー。変更前の正規表現は「前が空白」を要求していた）。

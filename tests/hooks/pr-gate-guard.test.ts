@@ -324,24 +324,26 @@ describe('pr-gate-guard: 明示的な脱出ハッチ', () => {
  * `sed`（`w` でファイルを書ける・GNU では `e` で起動できる）と
  * フルパス起動（`./bin/cat` で綴りを詐称できる）を whitelist から外した。
  *
- * 同じ入力を 7 版へ当てた実測（151 形）:
+ * 同じ入力を 8 版へ当てた実測（159 形）:
  *
- * | 版 | 実行しうる形 110 | 読み取り形 41 |
+ * | 版 | 実行しうる形 116 | 読み取り形 43 |
  * | --- | --- | --- |
- * | 変更前 `b9f9718` | 97 | 7 |
- * | blacklist 版 `6bba78b` | 62 | 38 |
- * | whitelist 版 `1616e8f` | 74 | 31 |
- * | 走査版 `04ebbc1` | 86 | 39 |
- * | 走査版 2 `84dd9c0` | 94 | 40 |
- * | 非解釈版 `f78735f` | 98 | 40 |
- * | 現在 | **110** | **41** |
+ * | 変更前 `b9f9718` | 101 | 9 |
+ * | blacklist 版 `6bba78b` | 65 | 40 |
+ * | whitelist 版 `1616e8f` | 80 | 33 |
+ * | 走査版 `04ebbc1` | 91 | 39 |
+ * | 走査版 2 `84dd9c0` | 99 | 40 |
+ * | 非解釈版 `f78735f` | 103 | 40 |
+ * | 機構を外した版 `b2848b0` | 112 | 41 |
+ * | 現在（option も allowlist） | **116** | **43** |
  *
- * 🔴 **6 周のレビューで毎回「変更前が止めていた実行形が通る」が出た。** 原因はすべて
- * 「シェルを解釈しようとして bash とずれた」ことで、綴りを 1 つずつ足しても終わらなかった。
- * 6 版目で**解釈をやめ**（バックスラッシュ・`$`・backtick・波括弧・改行が現れたら
- * その時点で 2 段目へ落とす）、7 版目で**新しい機構を足すのをやめた** ――
- * リダイレクト先を食う処理が `;` ごと飲み込んで、日常的な
- * `npm run build >/tmp/b.log 2>&1;gh pr merge 997` を素通しにしていた。
+ * 🔴 **7 周のレビューで毎回「変更前が止めていた実行形が通る」が出た。** 原因はすべて
+ * 「シェルを解釈しようとして bash とずれた」か「blacklist を数え上げた」ことで、綴りを
+ * 1 つずつ足しても終わらなかった。到達した形は 3 つの原則に落ちる:
+ *
+ *   1. **解釈しない** … バックスラッシュ・`$`・backtick・波括弧・改行が現れたら 2 段目へ落とす
+ *   2. **数え上げない** … 道具も option も allowlist。知らないものは通さない
+ *   3. **機構を足さない** … 塞ぎにいった穴より、足した機構のほうが危なかった（6 周目）
  *
  * 🔴 **一覧は「自分が思いついた形」でしかない。** 各周とも「自分で当てた変異は全部 kill」と
  * 報告しており、**族ごとの見落としは独立レビューでしか出ていない**（9 族 → 4 族 → 3 族）。
@@ -462,6 +464,12 @@ const EXECUTION_FORMS: readonly string[] = [
   "git add scripts/merge-pull-request.ts",
   "git checkout -- scripts/merge-pull-request.ts",
   "grep foo <<<Xbar\ngh pr merge 12 --squash\nXbar",
+  "rg --hostname-bin=./scripts/merge-pull-request.ts --color=always -n x a.txt",
+  "rg --hostname-bin ./scripts/merge-pull-request.ts -n x a.txt",
+  "echo x; \"OPEN_RECEPTION_SKIP_GATE_GUARD=1\"; gh pr merge 12 --squash",
+  "echo x | \"OPEN_RECEPTION_SKIP_GATE_GUARD=1\" | gh pr merge 12 --squash",
+  "\"gh\" pr merge 12",
+  "g'h' pr merge 12",
 ];
 
 /** 何も実行しない読み取り形。ここが通るようになるのが #960 の本体。 */
@@ -507,6 +515,8 @@ const READ_FORMS: readonly string[] = [
   "grep \"don't\" scripts/merge-pull-request.ts",
   "grep -n foo scripts/merge-pull-request.ts 2>&1",
   "git push && OPEN_RECEPTION_SKIP_GATE_GUARD=1 gh pr merge 12 --squash",
+  "git commit -m \"fix(hooks): $(date +%F) gh pr merge を捕まえる\"",
+  "git commit -m \"chore: $(git branch --show-current) で scripts/merge-pull-request.ts を直す\"",
 ];
 
 /**
@@ -547,6 +557,9 @@ const DELIBERATELY_BLOCKED: readonly string[] = [
  */
 const KNOWN_PRE_EXISTING_GAPS: readonly string[] = [
   "gh pr >/dev/null merge 12",
+  "gh pr 2>/dev/null merge 12",
+  "gh >/dev/null pr merge 12",
+  "gh pr <a.txt merge 12",
 ];
 
 describe('pr-gate-guard: 読み取りは通し、実行は止める (#960)', () => {
