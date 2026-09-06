@@ -170,10 +170,21 @@ describe('resolveDeployContext', () => {
    * **リポジトリの散文を読んだ者は誰でもヘッダを偽造し、CloudFront を迂回できる**。
    */
   describe('プレースホルダ・説明文の混入 (2026-09-06)', () => {
-    /** 実際に環境ダイアログへ入っていた値（全角山括弧つき）。 */
+    /** 実際に環境ダイアログへ入っていた値（全角山括弧 ＋ 日本語）。 */
     const PLACEHOLDER_FULLWIDTH = '＜実際の高エントロピー値＞';
-    /** 同じ型の ASCII 山括弧版（docs/deploy-aws.md の記法）。 */
-    const PLACEHOLDER_ASCII = '<高エントロピー値>';
+    /**
+     * 🔴 **山括弧だけで弾かれる形**（中身は ASCII、長さも下限以上）。
+     *
+     * これが要るのは、実際に踏んだ `PLACEHOLDER_FULLWIDTH` が**山括弧判定と非 ASCII 判定の
+     * 両方に当たる**からである。両方に当たる値しか置かないと、どちらのルールを消しても
+     * もう一方が飲み込み、**どちらの変異も生存する**（実測: 方式ごと消す変異が 2 件生存した）。
+     */
+    const PLACEHOLDER_ASCII_ONLY = '<HIGH_ENTROPY_VALUE_HERE>';
+    /**
+     * 🔴 **非 ASCII だけで弾かれる形**（山括弧なし、下限以上の長さ）。
+     * 短くすると `too-short` に飲み込まれて、やはり非 ASCII 判定を縛れない。
+     */
+    const NON_ASCII_ONLY = '高エントロピーな値をここに入れてください0123456789';
 
     it.each(Object.keys(COMPLETE))('🔴 %s に山括弧つきプレースホルダが入っていたら止める', (key) => {
       const result = resolveDeployContext({ ...COMPLETE, [key]: PLACEHOLDER_FULLWIDTH });
@@ -182,8 +193,8 @@ describe('resolveDeployContext', () => {
       expect(result.invalid).toContain(key);
     });
 
-    it.each(Object.keys(COMPLETE))('🔴 %s の ASCII 山括弧版も止める', (key) => {
-      const result = resolveDeployContext({ ...COMPLETE, [key]: PLACEHOLDER_ASCII });
+    it.each(Object.keys(COMPLETE))('🔴 %s の ASCII 山括弧のみの形も止める', (key) => {
+      const result = resolveDeployContext({ ...COMPLETE, [key]: PLACEHOLDER_ASCII_ONLY });
       expect(result.ok).toBe(false);
       if (result.ok) return;
       expect(result.invalid).toContain(key);
@@ -196,13 +207,36 @@ describe('resolveDeployContext', () => {
      * 非 ASCII が入る余地は「説明文を貼った」以外にない。
      */
     it('🔴 山括弧が無くても、非 ASCII を含む値は止める', () => {
-      const result = resolveDeployContext({
-        ...COMPLETE,
-        OR_ORIGIN_VERIFY_SECRET: '高エントロピーな値をここに入れる',
-      });
+      const result = resolveDeployContext({ ...COMPLETE, OR_ORIGIN_VERIFY_SECRET: NON_ASCII_ONLY });
       expect(result.ok).toBe(false);
       if (result.ok) return;
       expect(result.invalid).toContain('OR_ORIGIN_VERIFY_SECRET');
+    });
+
+    /**
+     * 🔴 **どのルールで弾いたかまで縛る。**
+     *
+     * 「弾けた」だけを主張すると、全角山括弧を判定から落とす変異が**生存する**
+     * （非 ASCII 判定が同じ値を拾ってしまうため。実測で生存を確認した）。
+     * 報告する理由が変われば直し方も変わるので、理由そのものを固定する。
+     */
+    it('🔴 全角山括弧は「プレースホルダ」として報告する（非 ASCII に飲み込ませない）', () => {
+      const result = resolveDeployContext({
+        ...COMPLETE,
+        OR_ORIGIN_VERIFY_SECRET: PLACEHOLDER_FULLWIDTH,
+      });
+      expect(result.ok).toBe(false);
+      if (result.ok) return;
+      expect(result.message).toContain('山括弧');
+      expect(result.message).not.toContain('印字可能 ASCII 以外');
+    });
+
+    it('🔴 山括弧の無い説明文は「非 ASCII」として報告する', () => {
+      const result = resolveDeployContext({ ...COMPLETE, OR_ORIGIN_VERIFY_SECRET: NON_ASCII_ONLY });
+      expect(result.ok).toBe(false);
+      if (result.ok) return;
+      expect(result.message).toContain('印字可能 ASCII 以外');
+      expect(result.message).not.toContain('山括弧');
     });
 
     /**
