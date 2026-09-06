@@ -53,6 +53,71 @@ const REQUIRED: ReadonlyArray<readonly [envVar: string, contextKey: string, why:
  */
 const PROVIDER_SECRET_BACKENDS: ReadonlyArray<string> = ['memory', 'secrets-manager'];
 
+/**
+ * `originVerifySecret` に要求する最小長。
+ *
+ * 128 bit を base64url で表す最小長（`ceil(128 / 6) = 22`）。現行 dev は 44 文字（32 バイト）。
+ * **上げすぎない** ―― 運用者が選んだ正当な値を弾くと、このガード自体が deploy を止める。
+ */
+const ORIGIN_VERIFY_MIN_LENGTH = 22;
+
+/**
+ * 🔴 **「set されている」は「正しい値が入っている」ではない**（2026-09-06）。
+ *
+ * 4 回目のデプロイで `OR_ORIGIN_VERIFY_SECRET` に、**runbook の散文に出てくる
+ * プレースホルダ文字列そのもの**（`＜実際の高エントロピー値＞`）が入っていた。
+ * 上の presence / 空文字の判定は**堂々と通す**し、`verify` も `preflight` も緑、
+ * `diff` gate の findings も事前に承認された形を満たしていた ―― **一段も止まらなかった**。
+ *
+ * 前段（未登録）とは症状が正反対である。あちらは大声で止まるが、こちらは
+ * **全部緑のまま通過し、しかもデプロイ後もアプリは正常に動く**。CloudFront のヘッダと
+ * ServerFn の env は同じ context から組み立てられるので、両方が同じプレースホルダになる。
+ * 壊れないので運用でも気づけず、`src/lib/security/origin-verify.ts` は単純比較なので
+ * **リポジトリの散文を読んだ者は誰でもヘッダを偽造して CloudFront を迂回できる**。
+ *
+ * そこで presence だけでなく**値の見た目**も見る。判定は「明らかにその値ではない」形に
+ * 限る ―― 強度を測るのではなく、**説明文の貼り付けを落とす**のが目的である。
+ */
+type InvalidReason = 'vocabulary' | 'placeholder' | 'non-ascii' | 'too-short';
+
+/** 山括弧（ASCII / 全角）。この 4 変数の正当な値に山括弧は現れない。 */
+const PLACEHOLDER_BRACKETS = /[<>＜＞]/u;
+
+/**
+ * 印字可能 ASCII 以外（空白・制御文字・全角を含む）。
+ *
+ * `x-origin-verify` は **HTTP ヘッダ値**なので非 ASCII をそもそも載せられない
+ * （RFC 9110 field value）。他の 3 つも Secrets Manager 名・URL・語彙であり、
+ * 非 ASCII が入る余地は「説明文を貼った」以外にない。
+ */
+const NON_PRINTABLE_ASCII = /[^\x21-\x7e]/u;
+
+const REASON_HINT: Readonly<Record<InvalidReason, string>> = {
+  vocabulary: `${PROVIDER_SECRET_BACKENDS.join(' | ')} のいずれか`,
+  placeholder: '山括弧つきのプレースホルダのままです（runbook の記法をそのまま貼っていませんか）',
+  'non-ascii':
+    '印字可能 ASCII 以外を含みます（説明文の貼り付けが疑われます。空白・全角も不可）',
+  'too-short': `${ORIGIN_VERIFY_MIN_LENGTH} 文字以上が必要です（128 bit 未満）`,
+};
+
+/**
+ * 値が「明らかにその値ではない」かを判定する。正当なら `null`。
+ *
+ * 🔴 **値そのものを返さない。** 呼び出し側は理由だけを診断に出す ――
+ * 「短すぎる」で弾かれるのは**本物の secret でありうる**ので、載せれば漏れる。
+ */
+function classifyInvalid(envVar: string, contextKey: string, value: string): InvalidReason | null {
+  if (contextKey === 'providerSecretBackend' && !PROVIDER_SECRET_BACKENDS.includes(value)) {
+    return 'vocabulary';
+  }
+  if (PLACEHOLDER_BRACKETS.test(value)) return 'placeholder';
+  if (NON_PRINTABLE_ASCII.test(value)) return 'non-ascii';
+  if (envVar === 'OR_ORIGIN_VERIFY_SECRET' && value.length < ORIGIN_VERIFY_MIN_LENGTH) {
+    return 'too-short';
+  }
+  return null;
+}
+
 export const REQUIRED_DEPLOY_CONTEXT_VARS: ReadonlyArray<string> = REQUIRED.map(([envVar]) => envVar);
 
 export type DeployContextResult =
@@ -78,7 +143,7 @@ export function resolveDeployContext(
   env: Readonly<Record<string, string | undefined>>,
 ): DeployContextResult {
   const missing: string[] = [];
-  const invalid: string[] = [];
+  const invalidReasons: Array<readonly [envVar: string, reason: InvalidReason]> = [];
   const args: string[] = [];
 
   for (const [envVar, contextKey] of REQUIRED) {
@@ -88,27 +153,40 @@ export function resolveDeployContext(
       missing.push(envVar);
       continue;
     }
-    if (contextKey === 'providerSecretBackend' && !PROVIDER_SECRET_BACKENDS.includes(value)) {
-      invalid.push(envVar);
+    const reason = classifyInvalid(envVar, contextKey, value);
+    if (reason !== null) {
+      invalidReasons.push([envVar, reason]);
       continue;
     }
     args.push('-c', `${contextKey}=${value}`);
   }
 
+  const invalid = invalidReasons.map(([envVar]) => envVar);
+
   if (invalid.length > 0) {
+    const reasons = new Set(invalidReasons.map(([, reason]) => reason));
     return {
       ok: false,
       missing,
       invalid,
       message: [
         'デプロイ context の値が不正です:',
-        // 🔴 値そのものは載せない（他の必須変数は秘密を運ぶ。ここだけ例外にすると型が崩れる）。
-        ...invalid.map(
-          (envVar) => `  ${envVar}  →  ${PROVIDER_SECRET_BACKENDS.join(' | ')} のいずれか`,
-        ),
+        // 🔴 値そのものは載せない（必須変数は秘密を運ぶ。ここだけ例外にすると型が崩れる）。
+        ...invalidReasons.map(([envVar, reason]) => `  ${envVar}  →  ${REASON_HINT[reason]}`),
         '',
-        '綴り違いは web-stack の判定に一致せず、静かに in-memory へ倒れます。',
-        '設定したつもりで揮発するので、ここで止めます。',
+        ...(reasons.has('vocabulary')
+          ? [
+              '綴り違いは web-stack の判定に一致せず、静かに in-memory へ倒れます。',
+              '設定したつもりで揮発するので、ここで止めます。',
+            ]
+          : []),
+        ...(reasons.has('placeholder') || reasons.has('non-ascii') || reasons.has('too-short')
+          ? [
+              '2026-09-06 に、runbook の説明文をそのまま貼った値で deploy 直前まで進みました。',
+              'この型はデプロイしても壊れず（ヘッダと env が同じ値になる）、運用では気づけません。',
+              '値は docs/runbook-cloud-aws-deploy.md を参照してください（リポジトリには置きません）。',
+            ]
+          : []),
       ].join('\n'),
     };
   }

@@ -151,6 +151,116 @@ describe('resolveDeployContext', () => {
       expect(result.message).not.toContain(COMPLETE.OR_ORIGIN_VERIFY_SECRET);
     });
   });
+
+  /**
+   * 🔴 **「set されている」は「正しい値が入っている」ではない**（2026-09-06 / #993）。
+   *
+   * 4 回目のデプロイで、`OR_ORIGIN_VERIFY_SECRET` に **runbook の散文に出てくる
+   * プレースホルダ文字列そのもの**（山括弧つきの `＜実際の高エントロピー値＞`）が入っていた。
+   *
+   * このとき **機械は一段も止められなかった**。`resolveDeployContext` は presence と
+   * 空文字しか見ておらず、`verify`（`--pr` 8 ステップ）も `preflight`（negative security
+   * test 8 本）も緑で、`diff` gate の findings は `CDKMetadata` の `Conditional` だけ ――
+   * つまり**事前に人が承認していた findings の形を満たしていた**。
+   *
+   * 前節（`OR_APP_SECRETS_NAME` の未登録）とは症状が正反対である。あちらは大声で止まるが、
+   * こちらは**全部緑のまま通過する**。しかも CloudFront のヘッダと ServerFn の env は
+   * 同じ context から組み立てられるので**両方が同じプレースホルダになり、アプリは動く**。
+   * 壊れないので運用でも気づけない ―― `src/lib/security/origin-verify.ts` は単純比較なので、
+   * **リポジトリの散文を読んだ者は誰でもヘッダを偽造し、CloudFront を迂回できる**。
+   */
+  describe('プレースホルダ・説明文の混入 (2026-09-06)', () => {
+    /** 実際に環境ダイアログへ入っていた値（全角山括弧つき）。 */
+    const PLACEHOLDER_FULLWIDTH = '＜実際の高エントロピー値＞';
+    /** 同じ型の ASCII 山括弧版（docs/deploy-aws.md の記法）。 */
+    const PLACEHOLDER_ASCII = '<高エントロピー値>';
+
+    it.each(Object.keys(COMPLETE))('🔴 %s に山括弧つきプレースホルダが入っていたら止める', (key) => {
+      const result = resolveDeployContext({ ...COMPLETE, [key]: PLACEHOLDER_FULLWIDTH });
+      expect(result.ok).toBe(false);
+      if (result.ok) return;
+      expect(result.invalid).toContain(key);
+    });
+
+    it.each(Object.keys(COMPLETE))('🔴 %s の ASCII 山括弧版も止める', (key) => {
+      const result = resolveDeployContext({ ...COMPLETE, [key]: PLACEHOLDER_ASCII });
+      expect(result.ok).toBe(false);
+      if (result.ok) return;
+      expect(result.invalid).toContain(key);
+    });
+
+    /**
+     * 山括弧だけを見ていると、括弧を外して貼られた説明文を素通しする。
+     * `x-origin-verify` は **HTTP ヘッダ値**なので、そもそも非 ASCII を載せられない
+     * （RFC 9110 の field value）。4 変数はいずれも ASCII の識別子・URL・ヘッダ値であり、
+     * 非 ASCII が入る余地は「説明文を貼った」以外にない。
+     */
+    it('🔴 山括弧が無くても、非 ASCII を含む値は止める', () => {
+      const result = resolveDeployContext({
+        ...COMPLETE,
+        OR_ORIGIN_VERIFY_SECRET: '高エントロピーな値をここに入れる',
+      });
+      expect(result.ok).toBe(false);
+      if (result.ok) return;
+      expect(result.invalid).toContain('OR_ORIGIN_VERIFY_SECRET');
+    });
+
+    /**
+     * 🔴 **境界のすぐ内側を踏む** ―― 下限を狭める変異が素通りしないように、
+     * 21 文字（弾く）と 22 文字（通す）を対で縛る。
+     * 22 は 128 bit を base64url で表す最小長（ceil(128/6)）。
+     */
+    it('🔴 22 文字未満の origin-verify secret は止める（128 bit 未満）', () => {
+      const result = resolveDeployContext({ ...COMPLETE, OR_ORIGIN_VERIFY_SECRET: 'a'.repeat(21) });
+      expect(result.ok).toBe(false);
+      if (result.ok) return;
+      expect(result.invalid).toContain('OR_ORIGIN_VERIFY_SECRET');
+    });
+
+    it('22 文字ちょうどは通す（下限を上へずらす変異を殺す）', () => {
+      const result = resolveDeployContext({ ...COMPLETE, OR_ORIGIN_VERIFY_SECRET: 'a'.repeat(22) });
+      expect(result.ok).toBe(true);
+    });
+
+    /**
+     * 🔴 **下界を併せて縛る。** 「弾ける」だけを主張すると、全部弾く実装でも空虚に通る。
+     * 現に運用している形（44 文字の base64url、`/` を含む Secrets Manager 名、
+     * `https://` の URL）が**通ること**まで言わないと、ガードが deploy を止めてしまう。
+     */
+    it('🔴 実運用の形は弾かない（全部弾く実装を殺す）', () => {
+      const result = resolveDeployContext({
+        OR_APP_SECRETS_NAME: 'open-reception/dev/app-v2',
+        // 44 文字 base64url（32 バイト）。現行 dev と同じ形。値そのものではない。
+        OR_ORIGIN_VERIFY_SECRET: 'TEST0abcdefghijklmnopqrstuvwxyz0123456789ABC',
+        OR_PUBLIC_ORIGIN_OVERRIDE: 'https://dvxkh8nfwl334.cloudfront.net',
+        OR_PROVIDER_SECRET_BACKEND: 'secrets-manager',
+      });
+      expect(result.ok).toBe(true);
+    });
+
+    it('🔴 プレースホルダは「未指定」と混ぜない（直し方が変わる）', () => {
+      const result = resolveDeployContext({
+        ...COMPLETE,
+        OR_ORIGIN_VERIFY_SECRET: PLACEHOLDER_FULLWIDTH,
+      });
+      expect(result.ok).toBe(false);
+      if (result.ok) return;
+      expect(result.missing).not.toContain('OR_ORIGIN_VERIFY_SECRET');
+    });
+
+    /**
+     * 🔴 **診断に値を載せない。** 弾いた値がプレースホルダとは限らない ――
+     * 「短すぎる」で弾かれるのは本物の secret でありうる。理由だけを出す。
+     */
+    it('🔴 弾いた値そのものを診断に載せない', () => {
+      const short = 'a'.repeat(21);
+      const result = resolveDeployContext({ ...COMPLETE, OR_ORIGIN_VERIFY_SECRET: short });
+      expect(result.ok).toBe(false);
+      if (result.ok) return;
+      expect(result.message).not.toContain(short);
+      expect(result.message).toContain('OR_ORIGIN_VERIFY_SECRET');
+    });
+  });
 });
 
 describe('parseDeployContextFile', () => {
@@ -232,5 +342,20 @@ describe('resolveDeployContextEnvBlock', () => {
     expect(result.ok).toBe(false);
     if (result.ok) return;
     expect(result.message).not.toContain(COMPLETE.OR_ORIGIN_VERIFY_SECRET);
+  });
+
+  /**
+   * 🔴 **窓を開ける前に落とす。** 2026-09-06 の混入は環境ダイアログへ貼った時点で
+   * 成立しており、気づいたのは窓を開けて `diff` まで回した後だった。ここで弾けば
+   * その往復ぶんの窓を食わずに済む（判定は `resolveDeployContext` と同一のもの）。
+   */
+  it('🔴 プレースホルダが混ざったブロックは作らせない', () => {
+    const result = resolveDeployContextEnvBlock({
+      ...COMPLETE,
+      OR_ORIGIN_VERIFY_SECRET: '＜実際の高エントロピー値＞',
+    });
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.invalid).toEqual(['OR_ORIGIN_VERIFY_SECRET']);
   });
 });
