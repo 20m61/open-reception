@@ -317,17 +317,29 @@ describe('pr-gate-guard: 明示的な脱出ハッチ', () => {
  * 「シェルの機能を一切使わない読み取りパイプラインだけを通す」whitelist にした ――
  * 見落とした綴りが**常にブロック側へ倒れる**設計である。
  *
- * 同じ入力を 3 版へ当てた実測（`90` 形）:
+ * 4 版目（3 周目のレビュー後）で、**引用の扱いを正規表現から走査へ替えた**。
+ * `cat "'" a.txt; gh pr merge 12 "'"` は、正規表現の対消しだと引用が
+ * 「二重引用符の中の単引用符 2 つ」で対になり、**その間の `;` ごと消える**（変更前からの穴）。
+ * 同時に、環境変数代入（`GIT_EXTERNAL_DIFF=<検出語> git diff` で**実際に起動した**）と
+ * `sed`（`w` でファイルを書ける・GNU では `e` で起動できる）と
+ * フルパス起動（`./bin/cat` で綴りを詐称できる）を whitelist から外した。
  *
- * | 版 | 実行形 55 | 読み取り形 35 |
+ * 同じ入力を 3 版へ当てた実測（115 形）:
+ *
+  * | 版 | 実行しうる形 73 | 読み取り形 42 |
  * | --- | --- | --- |
- * | 変更前 `b9f9718` | 53 | 6 |
- * | blacklist 版 `6bba78b` | 44 | 31 |
- * | whitelist 版（現在） | **55** | **35** |
+ * | 変更前 `b9f9718` | 68 | 6 |
+ * | blacklist 版 `6bba78b` | 46 | 37 |
+ * | whitelist 版 `1616e8f` | 59 | 34 |
+ * | 走査版（現在） | **73** | **42** |
  *
- * 🔴 **一覧は「自分が思いついた形」でしかない。** 1 周目は 18 形で「全部 kill」と報告し、
- * レビューが**族ごと 9 つ**の見落としを出した。2 周目も同様に 4 族。行列が全部 kill でも
- * 「穴が無い」とは言えない。ここに並ぶ形の大半は**独立レビューが見つけたもの**である。
+ * 🔴 **一覧は「自分が思いついた形」でしかない。** 各周とも「自分で当てた変異は全部 kill」と
+ * 報告しており、**族ごとの見落としは独立レビューでしか出ていない**（9 族 → 4 族 → 3 族）。
+ * 行列が全部 kill でも「穴が無い」とは言えない。
+ *
+ * 意図的に**通さない**読み取り（誤ブロックとして受け入れたもの。いずれも変更前と同じ挙動）:
+ * `sed -n 1,40p <path>` / `/usr/bin/grep …`（フルパス起動）/ `… < /dev/null`（リダイレクト）/
+ * `diff <(a) <(b)`（プロセス置換）。**穴を開けるより誤発火を残すほうが安い**。
  */
 const EXECUTION_FORMS: readonly string[] = [
   "npx tsx scripts/merge-pull-request.ts 123",
@@ -367,7 +379,6 @@ const EXECUTION_FORMS: readonly string[] = [
   "cat scripts/merge-pull-request.ts | tee /tmp/m.ts",
   "sort --compress-program=./scripts/merge-pull-request.ts a.txt",
   "git -c core.pager=./scripts/merge-pull-request.ts log",
-  "sed -i s/a/b/ scripts/merge-pull-request.ts",
   "grep -n x scripts/merge-pull-request.ts && npx tsx scripts/merge-pull-request.ts 1",
   "cat README.md; gh pr merge 1 --squash",
   "grep foo $(npx tsx scripts/create-pull-request.ts)",
@@ -379,13 +390,31 @@ const EXECUTION_FORMS: readonly string[] = [
   "cat scripts/merge-pull-request.ts 2>&1 > /tmp/m.ts",
   "cat scripts/merge-pull-request.ts 3>/tmp/m.ts",
   "cat scripts/merge-pull-request.ts & cat x > /tmp/m.ts",
-  "sed --in-place s/a/b/ scripts/merge-pull-request.ts",
-  "sed --in-place=.bak s/a/b/ scripts/merge-pull-request.ts",
   "git grep --open-files-in-pager=./scripts/merge-pull-request.ts x",
-  "git grep --open-files-in-pager ./scripts/merge-pull-request.ts x",
   "git show --output=/tmp/m.ts HEAD:scripts/merge-pull-request.ts",
   "bat --pager=./scripts/merge-pull-request.ts README.md",
   "git grep -O ./scripts/merge-pull-request.ts x",
+  "git grep --open-files-in-pager ./scripts/merge-pull-request.ts x",
+  "GIT_EXTERNAL_DIFF=./scripts/merge-pull-request.ts git diff",
+  "GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=diff.external GIT_CONFIG_VALUE_0=./scripts/merge-pull-request.ts git diff",
+  "PATH=./bin:/usr/bin cat scripts/merge-pull-request.ts",
+  "RIPGREP_CONFIG_PATH=./cfg rg -n x scripts/merge-pull-request.ts",
+  "GIT_SEQUENCE_EDITOR=./scripts/merge-pull-request.ts git status",
+  "sed -n w /tmp/m.ts scripts/merge-pull-request.ts",
+  "sed -n 1,40p scripts/merge-pull-request.ts",
+  "./bin/cat scripts/merge-pull-request.ts",
+  "/usr/bin/grep -n x scripts/merge-pull-request.ts",
+  "rg --pre ./scripts/merge-pull-request.ts x .",
+  "sed -i s/a/b/ scripts/merge-pull-request.ts",
+  "sed --in-place s/a/b/ scripts/merge-pull-request.ts",
+  "cat \"'\" a.txt; gh pr merge 12 --squash \"'\"",
+  "grep \"don't\" a.txt; gh pr merge 1 --squash",
+  "cat scripts/merge-pull-request.ts; gh pr merge 1",
+  "sed e npx tsx scripts/merge-pull-request.ts 997 a.txt",
+  "cat \"unclosed scripts/merge-pull-request.ts",
+  "git grep -O./scripts/merge-pull-request.ts x",
+  "grep \"$(npx tsx scripts/create-pull-request.ts)\" a.txt",
+  "grep \"`npx tsx scripts/create-pull-request.ts`\" a.txt",
 ];
 
 /** 何も実行しない読み取り形。ここが通るようになるのが #960 の本体。 */
@@ -394,11 +423,10 @@ const READ_FORMS: readonly string[] = [
   "rg -n delete scripts/merge-pull-request.ts",
   "rg -n 'create|merge' scripts/merge-pull-request.ts",
   "grep -E 'a|b' scripts/merge-pull-request.ts",
-  "rg -n 'mergePr\\(' scripts/merge-pull-request.ts",
+  "rg -n 'mergePr\(' scripts/merge-pull-request.ts",
   "grep -n 'x;y' scripts/merge-pull-request.ts",
   "cat scripts/merge-pull-request.ts",
   "head -20 scripts/create-pull-request.ts",
-  "sed -n 1,40p scripts/merge-pull-request.ts",
   "wc -l scripts/merge-pull-request.ts",
   "git log --oneline -- scripts/merge-pull-request.ts",
   "git diff scripts/create-pull-request.ts",
@@ -406,10 +434,8 @@ const READ_FORMS: readonly string[] = [
   "git -C . log --oneline -- scripts/create-pull-request.ts",
   "ls -la scripts/merge-pull-request.ts",
   "grep -n delete scripts/merge-pull-request.ts | head -20",
-  "sed -n 1,40p scripts/merge-pull-request.ts | wc -l",
   "grep -n x scripts/merge-pull-request.ts 2>/dev/null",
   "LC_ALL=C grep -n x scripts/merge-pull-request.ts",
-  "/usr/bin/grep -n x scripts/merge-pull-request.ts",
   "gh pr view 1",
   "gh api repos/o/r/pulls/1",
   "echo done  # gh pr create はゲートの後で",
@@ -423,8 +449,18 @@ const READ_FORMS: readonly string[] = [
   "git log -p -- scripts/merge-pull-request.ts",
   "git blame scripts/merge-pull-request.ts",
   "git --no-pager log --oneline -- scripts/merge-pull-request.ts",
-  "grep -n x scripts/merge-pull-request.ts < /dev/null",
   "git log --oneline -- scripts/merge-pull-request.ts",
+  "git diff --stat scripts/merge-pull-request.ts",
+  "git diff --cached scripts/merge-pull-request.ts",
+  "git log -p --follow scripts/merge-pull-request.ts",
+  "cat --number scripts/merge-pull-request.ts",
+  "head --lines=20 scripts/merge-pull-request.ts",
+  "diff --unified scripts/merge-pull-request.ts scripts/create-pull-request.ts",
+  "ls -la --color scripts/merge-pull-request.ts",
+  "rg -n \"create|merge\" scripts/merge-pull-request.ts",
+  "rg -o scripts/merge-pull-request.ts",
+  "grep \"don't\" scripts/merge-pull-request.ts",
+  "grep -n mergePr\\( scripts/merge-pull-request.ts",
 ];
 
 describe('pr-gate-guard: 読み取りは通し、実行は止める (#960)', () => {
@@ -439,11 +475,11 @@ describe('pr-gate-guard: 読み取りは通し、実行は止める (#960)', () 
 
   /**
    * 🔴 **道具の allowlist を静的に縛る。** 振る舞いの行列だけでは、allowlist へ
-   * `xargs` を足すといった変異が**生存する**（独立レビューの実測で 13 変異中 8 生存）。
+   * `xargs` を足すといった変異が**生存する**（1 周目のレビューの実測で 13 変異中 8 生存）。
    * 「入っていないこと」は下界なので、行列とは別に主張する必要がある。
    *
    * 🔴 **コメントを外してから見る。** 実装のコメントには `--compress-program` のような
-   * 語が説明として現れるので、コメント込みで探すと**検査が空虚に通る**（同レビュー m1）。
+   * 語が説明として現れるので、コメント込みで探すと**検査が空虚に通る**（2 周目 m1）。
    */
   it('🔴 読み取り allowlist に他プロセスを起動できる道具を入れない', () => {
     const source = readFileSync(HOOK, 'utf8')
@@ -452,34 +488,46 @@ describe('pr-gate-guard: 読み取りは通し、実行は止める (#960)', () 
       .join('\n');
     const readList = /my %READ = map \{ \$_ => 1 \} qw\(([^)]*)\)/.exec(source)?.[1] ?? '';
     const gitList = /my %GIT_READ = map \{ \$_ => 1 \} qw\(([^)]*)\)/.exec(source)?.[1] ?? '';
+    const envList = /my %SAFE_ENV = map \{ \$_ => 1 \} qw\(([^)]*)\)/.exec(source)?.[1] ?? '';
     expect(readList.trim(), 'READ allowlist が読めない（実装の形が変わった）').not.toBe('');
     expect(gitList.trim(), 'GIT_READ allowlist が読めない').not.toBe('');
+    expect(envList.trim(), 'SAFE_ENV allowlist が読めない').not.toBe('');
 
     const readTools = readList.split(/\s+/).filter(Boolean);
-    for (const forbidden of ['xargs', 'bash', 'sh', 'zsh', 'env', 'eval', 'exec', 'find', 'fd', 'sort', 'awk', 'less', 'more', 'node', 'npx', 'tsx', 'time', 'tee']) {
+    for (const forbidden of ['xargs', 'bash', 'sh', 'zsh', 'env', 'eval', 'exec', 'find', 'fd', 'sort', 'awk', 'sed', 'less', 'more', 'node', 'npx', 'tsx', 'time', 'tee']) {
       expect(readTools, `${forbidden} が読み取り扱いになっている`).not.toContain(forbidden);
     }
-    const gitSubcommands = gitList.split(/\s+/).filter(Boolean);
-    for (const forbidden of ['merge', 'push', 'commit', 'rebase', 'reset', 'checkout', 'difftool', 'filter-branch']) {
-      expect(gitSubcommands, `git ${forbidden} が読み取り扱いになっている`).not.toContain(forbidden);
+    for (const forbidden of ['merge', 'push', 'commit', 'rebase', 'reset', 'checkout', 'difftool']) {
+      expect(gitList.split(/\s+/).filter(Boolean), `git ${forbidden} が読み取り扱いになっている`).not.toContain(forbidden);
+    }
+    // 🔴 環境変数は「起動するものを差し替えられる」ので、無害な名前だけを許す
+    // （`GIT_EXTERNAL_DIFF=<検出語> git diff` は実際にスクリプトを起動した）
+    const envNames = envList.split(/\s+/).filter(Boolean);
+    for (const name of envNames) {
+      expect(name, `${name} は道具の振る舞いを変えうる`).toMatch(/^(LANG|LC_[A-Z]+|TZ)$/);
     }
   });
 
   /**
    * 🔴 **判定に使う道具が落ちたら deny 側へ倒す。** 空の判定結果を返すと、以降の grep が
-   * 全部外れて**ガードが丸ごと無言で無効化**される（fail-open）。判定は perl と jq に
-   * 依存しているので、両方について測る（jq の側は独立レビュー m4）。
+   * 全部外れて**ガードが丸ごと無言で無効化**される（fail-open）。判定は perl / jq / tr に
+   * 依存しているので全部について測る。**MCP 経路も一緒に見る** ―― 3 周目のレビューで、
+   * jq が落ちたとき MCP だけ素通りしていた（2026-08-21 に main を red にした経路）。
    */
-  it.each([
-    ['perl', 'perl'],
-    ['jq', 'jq'],
-  ])('🔴 %s が落ちてもブロックする（fail-open にしない）', (_label, tool) => {
+  it.each([['perl'], ['jq'], ['perl', 'jq']])('🔴 %s が落ちてもブロックする（fail-open にしない）', (...tools) => {
     const shimDir = mkdtempSync(join(tmpdir(), 'broken-tool-'));
     try {
-      writeFileSync(join(shimDir, tool), '#!/bin/sh\nexit 1\n', { mode: 0o755 });
+      // 単独と両方の 3 通りを測る。判定は perl と jq にしか依存しない
+      // （payload を読めない枝の記号潰しは bash の置換で行う ―― そこで `tr` を挟むと
+      //  「道具が落ちている」経路に穴がもう 1 段増える。実測でそうなった）。
+      for (const tool of tools) writeFileSync(join(shimDir, tool), '#!/bin/sh\nexit 1\n', { mode: 0o755 });
       const env = { PATH: `${shimDir}:${process.env.PATH ?? ''}` };
-      expect(runHook('npx tsx scripts/merge-pull-request.ts 123', { env }).status, `${tool} が落ちると素通りする`).toBe(2);
-      expect(runHook('gh pr merge 1 --squash', { env }).status, `${tool} が落ちると素通りする`).toBe(2);
+      for (const cmd of ['npx tsx scripts/merge-pull-request.ts 123', 'gh pr merge 1 --squash']) {
+        expect(runHook(cmd, { env }).status, `${tools.join('/')} が落ちると素通りする: ${cmd}`).toBe(2);
+      }
+      for (const mcp of ['mcp__github__merge_pull_request', 'mcp__github__create_pull_request']) {
+        expect(runHook('', { tool: mcp, env }).status, `${tools.join('/')} が落ちると MCP が素通りする`).toBe(2);
+      }
       // 下界: 壊れた環境で「全部ブロック」に倒れているだけではない
       expect(runHook('ls -la', { env }).status).toBe(0);
     } finally {
@@ -487,7 +535,7 @@ describe('pr-gate-guard: 読み取りは通し、実行は止める (#960)', () 
     }
   });
 
-  /** 脱出ハッチの `export` 形（独立レビュー m1 で足したもの。消しても行列は気づかない）。 */
+  /** 脱出ハッチの `export` 形（1 周目 m1 で足したもの。消しても行列は気づかない）。 */
   it('export したインライン代入でも素通しできる', () => {
     expect(runHook('export OPEN_RECEPTION_SKIP_GATE_GUARD=1 && gh pr merge 12').status).toBe(0);
   });

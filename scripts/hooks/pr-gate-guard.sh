@@ -72,49 +72,99 @@ fi
 # `.claude/rules/opus5-autonomous-loop.md`「値を調整している自分には気づけない」の型なので、
 # 前提を替えた: **落とすのではなく、通すものを列挙する。**
 #
-# 通すのは「シェルの機能を一切使わない、読み取り専用コマンドのパイプライン」だけ:
+# 🔴 **whitelist は「狭くて退屈」でなければならない。** 3 周目のレビューは、緩い whitelist が
+# そのまま実行経路になることを 3 つ実証した:
 #
-#   - `;` `&` `&&` `||` backtick `$(` `<(` `>(` `>` ヒアドキュメント を含まない
-#     （リダイレクトも背景実行も置換も無い ―― 「読んだ結果を置いてから実行する」形が作れない）
-#   - 各段の先頭語が読み取り専用の道具（`git` は読み取りサブコマンドのみ）
-#   - 検出語が**位置引数**として現れている（`--pager=<検出語>` のように option の値として
-#     渡されていたら通さない ―― `sort --compress-program` / `git grep -O` はこの形）
-#   - パスを値に取る option（`--out=/tmp/x`）を含まない
+#   - `GIT_EXTERNAL_DIFF=./scripts/merge-pull-request.ts git diff` … 先頭の環境変数代入を
+#     読み飛ばしていたため、**実際にスクリプトが起動した**
+#   - `cat "'" a.txt; gh pr merge 12 "'"` … 引用を正規表現で潰していたため、シェルとは
+#     違う対応付けになり `;` が消えた
+#   - `sed -n "w /tmp/m.ts" <path>` / `./bin/cat <path>` … `sed` はファイルを書けて
+#     （GNU sed は `e` でコマンドも起動する）、basename だけ見ると綴りを詐称できる
+#
+# よって:
+#   - **引用はシェルの規則どおりに辿る**（正規表現の対消しをやめ、状態機械で走査する）
+#   - **環境変数代入は無害な名前だけ**（`LC_*` / `LANG` / `TZ`）。値にも検出語を許さない
+#   - **先頭語に `/` を含むものは通さない**（綴りの詐称を防ぐ）
+#   - **`sed` は allowlist に入れない**（`w` / `e` / `r` を素朴に判定できない）
+#   - `$` と backtick は引用の中でも展開が起きるので、現れた時点で落とす
 #
 # ここから 1 つでも外れたら 2 の従来判定へ落ちる。**つまり「見落とした綴り」は
-# 常に従来どおりブロックされる側へ倒れる** —— 綴りを足し忘れても穴にならない。
+# 常にブロックされる側へ倒れる** —— 綴りを足し忘れても穴にならない。
 # 代償は誤ブロックが残ることで、それは #960 が消したかった痛みだが、
 # **穴を開けるより誤発火を残すほうが安い**（迂回は transcript に残る脱出ハッチがある）。
+#
+# 🔴 **このガードが止めているのは「うっかり」であって、故意の迂回ではない。**
+# 2 コマンドに分ければ何でもできるし、`bash -c "..."` は 1 段目にも 2 段目にも掛からない。
+# 止めたいのは「ゲートを回し忘れたまま PR / マージへ進む」ことだけである。
 PLAIN_READ_PREDICATE='
   my $cmd = do { local $/; <STDIN> };
-  # 読み取り専用の道具。**他プロセスを起動できるものは入れない**
+  # stderr を捨てるだけの `2>/dev/null` は読み取り調査で日常的に打つので先に外す。
+  # 他のリダイレクトは走査で落ちる（読んだ結果を置いてから実行する形を作れる）。
+  $cmd =~ s{2>\s*/dev/null}{}g;
+
+  my $MENTION = qr{scripts/(merge|create)-pull-request\.ts|repos/[^\s]+/pulls/[0-9]+/merge};
+  # 読み取り専用の道具。**他プロセスを起動できる／ファイルを書けるものは入れない**
   # （`find` / `fd` の -exec、`sort --compress-program`、`awk` の system()、
-  #  `less` / `more` の `!` と LESSOPEN、`xargs`）。
+  #  `less` / `more` の `!` と LESSOPEN、`xargs`、`sed` の `w` `e` `r`、`tee`）。
   my %READ = map { $_ => 1 } qw(
-    grep egrep fgrep rg ag ack cat bat head tail sed wc nl cut tr uniq
-    diff colordiff ls stat file column basename dirname realpath jq yq git
+    grep egrep fgrep rg cat head tail wc nl cut tr uniq
+    diff colordiff ls stat file column basename dirname realpath jq git
   );
   my %GIT_READ = map { $_ => 1 } qw(
     log show diff grep blame cat-file ls-files ls-tree describe status rev-parse
   );
-  # 引用の中身は構造の判定から隠す（メタ文字だけ潰す。中身は位置の判定で使う）
-  $cmd =~ s/\x27([^\x27]*)\x27/ my $t = $1; $t =~ tr{|&;()`<>\n}{\x01}; $t /ge;
-  $cmd =~ s/"([^"]*)"/ my $t = $1; $t =~ tr{|&;()`<>\n}{\x01}; $t /ge;
-  # `2>/dev/null` だけは通す（読み取り調査で日常的に打つ。stderr を捨てるだけで
-  # 「読んだ結果を置いてから実行する」形は作れない）。他の `>` は全部拒む ――
-  # `cat X 2>&1 > /tmp/m.ts` は 2 つ目の `>` で落ちる。
-  $cmd =~ s{2>\s*/dev/null}{}g;
-  exit 1 if $cmd =~ /[;&`>\n]/;                 # 区切り・背景実行・置換・リダイレクト
-  exit 1 if $cmd =~ /\$\(|<\(|\|\|/;
-  my @stages = split /\|/, $cmd, -1;
-  exit 1 unless @stages;
+  # 先頭に置いても道具の振る舞いを変えない変数だけ。`PATH` / `GIT_*` / `*_PAGER` /
+  # `*_CONFIG*` / `LESSOPEN` は**起動するものを差し替えられる**ので通さない。
+  my %SAFE_ENV = map { $_ => 1 } qw(LANG LC_ALL LC_COLLATE LC_CTYPE LC_MESSAGES LC_NUMERIC LC_TIME TZ);
+  # 値としてプログラムや出力先を取る option。この直後に検出語が来たら通さない。
+  my $VALUE_TAKES_PROGRAM = qr{(pager|pre|exec|program|output|file)$};
+
+  # --- トークナイザ ---------------------------------------------------------
+  # シェルの引用規則をそのまま辿る。正規表現で引用を対消しすると、シェルとは違う
+  # 対応付けになって区切り文字が消える（3 周目のレビューが実証した）。
+  my @tokens; my $cur = ""; my $has = 0; my $state = "none";
+  my @ch = split //, $cmd;
+  for (my $i = 0; $i < @ch; $i++) {
+    my $c = $ch[$i];
+    if ($state eq "none") {
+      if ($c eq chr(92)) { $i++; exit 1 if $i >= @ch; $cur .= $ch[$i]; $has = 1; next }
+      if ($c eq chr(39)) { $state = "single"; $has = 1; next }
+      if ($c eq chr(34)) { $state = "double"; $has = 1; next }
+      if ($c =~ /\s/)    { push @tokens, $cur if $has; $cur = ""; $has = 0; next }
+      if ($c eq "|")     { push @tokens, $cur if $has; $cur = ""; $has = 0; push @tokens, "\x00PIPE"; next }
+      exit 1 if $c =~ /[;&<>()`\$]/;   # 区切り・背景実行・リダイレクト・置換
+      $cur .= $c; $has = 1; next;
+    }
+    if ($state eq "single") { if ($c eq chr(39)) { $state = "none" } else { $cur .= $c } next }
+    if ($c eq chr(34))  { $state = "none"; next }
+    if ($c eq chr(92))  { $i++; exit 1 if $i >= @ch; $cur .= $ch[$i]; next }
+    exit 1 if $c eq chr(36) || $c eq chr(96);   # 二重引用符の中でも展開は起きる
+    $cur .= $c;
+  }
+  exit 1 unless $state eq "none";   # 引用が閉じていない = 素朴ではない
+  push @tokens, $cur if $has;
+
+  # --- 段ごとの判定 ---------------------------------------------------------
+  my @stages = ([]);
+  for my $t (@tokens) {
+    if ($t eq "\x00PIPE") { push @stages, []; next }
+    push @{$stages[-1]}, $t;
+  }
   for my $stage (@stages) {
-    my @t = grep { length } split /\s+/, $stage;
-    shift @t while @t && $t[0] =~ /^[A-Za-z_]\w*=/;   # 先頭の環境変数代入
+    my @t = @$stage;
+    while (@t && $t[0] =~ /^([A-Za-z_]\w*)=(.*)$/s) {
+      exit 1 unless $SAFE_ENV{$1};
+      shift @t;
+    }
     exit 1 unless @t;
-    my $c = $t[0]; $c =~ s{.*/}{};                    # /usr/bin/grep → grep
+    my $c = $t[0];
+    # basename へ正規化しないので、`./bin/cat` のようなフルパス起動はここで落ちる
+    # （綴りを詐称して allowlist を通る形を作らせない）。
     exit 1 unless $READ{$c};
-    exit 1 if $c eq "sed" && grep { /^(-i|--in-place)/ } @t;
+    # パスを値に取る option（`git show --output=/tmp/m.ts <検出語>`）。読んだ結果を
+    # 別の場所へ置けると、そこから実行できる（`cat X > /tmp/m.ts` と同じ族）。
+    exit 1 if grep { /^-/ && m{=.*/} } @t;
     if ($c eq "git") {
       my $i = 1;
       while ($i < @t) {
@@ -125,27 +175,23 @@ PLAIN_READ_PREDICATE='
       exit 1 unless $i < @t && $GIT_READ{$t[$i]};
     }
     # 検出語は**位置引数**として現れていなければならない。option の値として渡す形
-    # （`--open-files-in-pager=<検出語>` / `--open-files-in-pager <検出語>`）は通さない ――
-    # option の値に置くと、読み取りの道具がそれを**起動する**（git grep の pager がその例で、
-    # 独立レビューが実際に任意スクリプトを走らせて見せた）。
-    # ヒアドキュメント（`<<`）とパスを値に取る option（`--out=/tmp/x`）を明示的に拒む枝は
-    # 置いていない ―― どちらも「改行を含む」「サブコマンド位置に値が来る」で既に落ちており、
-    # 変異を当てても行列が気づかなかった（＝死んだ枝）。
+    # （`git grep --open-files-in-pager=<検出語>` / `rg --pre <検出語>`）は通さない ――
+    # option の値に置くと、読み取りの道具がそれを**起動する**（3 周目のレビューが
+    # 実際に任意スクリプトを走らせて見せた）。
     for my $i (0 .. $#t) {
-      next unless $t[$i] =~ m{scripts/(merge|create)-pull-request\.ts|repos/[^\s]+/pulls/[0-9]+/merge};
+      next unless $t[$i] =~ $MENTION;
       exit 1 if $t[$i] =~ /^-/;
-      # 直前が「値としてプログラム／出力先を取る option」なら通さない。
-      # 長い option 全部（`--compress-program <検出語>`）と、`-o` / `-O` で終わる
-      # 短い option（`git grep -O <検出語>` は pager としてそれを起動する）。
-      # `--` は位置引数の区切りなので除く。`head -20 <検出語>` のような
-      # 「値を取らない短い option の直後」は通す（読み取りの日常形）。
       next if $i == 0;
       my $prev = $t[$i - 1];
-      exit 1 if $prev =~ /^--./;
-      exit 1 if $prev =~ /^-[A-Za-z]*[oO]$/;
+      next unless $prev =~ /^-/ && $prev ne "--";
+      exit 1 if $prev =~ $VALUE_TAKES_PROGRAM;
+      # `-O` は git grep の pager 指定。他の道具の `-o` は値を取らないほうが普通なので
+      # （`rg -o` = --only-matching）、git のときだけ見る。
+      exit 1 if $c eq "git" && $prev =~ /^-[A-Za-z]*[oO]$/;
     }
   }
   exit 0;
+
 '
 
 if [ -z "${required}" ] && [ -n "${cmd}" ]; then
@@ -156,35 +202,73 @@ fi
 
 # 2. 従来判定。「データとして書かれた言及」を落としてから、コマンド文字列へパターンを当てる。
 # これをしないと、本フック自身を説明するコミットメッセージ（`gh pr merge` という文字列を
-# 含む）で git commit がブロックされる、という誤検知を踏む。落とす対象は順に:
-#   1. ヒアドキュメントの本文（コミットメッセージ・ドキュメント生成）
-#   2. 引用符で囲まれた**散文**（guard-destructive.sh と同じ方針）
-#   3. `#` 以降の行コメント
+# 含む）で git commit がブロックされる、という誤検知を踏む。
 #
-# 🔴 **引用符を一律に落とすと、引用したパスでの実行が素通りする** (#960)。
-# `npx tsx "scripts/merge-pull-request.ts" 1` は変更前の実測で通っていた ―― 迂回が
-# 「クォートを 2 つ足す」で済むなら、止めたい実行も同じ手ですり抜ける。
-# 空白を含まない引用は**トークン（パス・引数）**なので中身を残し、空白を含む引用を
-# 散文として落とす。コミットメッセージは空白を含むので従来どおり落ちる。
+# 🔴 **引用の対消しを正規表現でやらない。** シェルとは違う対応付けになる:
+# `cat "<単引用符>" a.txt; gh pr merge 12 "<単引用符>"` は、正規表現だと引用が
+# 「二重引用符の中の単引用符 2 つ」で対になり、**その間の `;` ごと消えて**
+# `gh pr merge` が判定から落ちる（3 周目のレビューが実証。変更前からの穴）。
+# 1 段目と同じ走査でトークンへ割り、**空白を含む引用（＝散文）から来たトークンだけ**を捨てる。
 #
-# 🔴 **抽出に失敗したら deny 側へ倒す。** perl が無い環境で空文字を返すと、以降の grep が
-# 全部外れて**ガードが丸ごと無言で無効化**される（fail-open）。判定できないときは
-# 生のコマンドをそのまま渡す。
-LEGACY_FILTER="
-  s/<<-?\s*(['\"]?)(\w+)\1.*?^[ \t]*\2[ \t]*\$//gms;
-  s/'([^'\s]*)'/\$1/g;
-  s/\"([^\"\s]*)\"/\$1/g;
-  s/'[^']*'//g;
-  s/\"[^\"]*\"//g;
-  s/(^|\s)#[^\n]*//g;
-"
+# 🔴 **引用したパスでの実行を素通りさせない。** `npx tsx "scripts/merge-pull-request.ts" 1` は
+# 変更前の実測で通っていた ―― 迂回が「クォートを 2 つ足す」で済むなら、止めたい実行も
+# 同じ手ですり抜ける。空白を含まない引用はトークンなので中身を残す。
+#
+# 🔴 **抽出に失敗したら deny 側へ倒す。** perl が無い／引用が閉じていない場合に空文字を
+# 返すと、以降の grep が全部外れて**ガードが丸ごと無言で無効化**される（fail-open）。
+# 判定できないときは生のコマンドをそのまま渡す。
+LEGACY_SCAN='
+  my $cmd = do { local $/; <STDIN> };
+  # ヒアドキュメントの本文（コミットメッセージ・ドキュメント生成）は判定対象外
+  $cmd =~ s/<<-?\s*(["\x27]?)(\w+)\1.*?^[ \t]*\2[ \t]*$//gms;
+  my @out; my $cur = ""; my $has = 0; my $prose = 0; my $expand = 0; my $state = "none";
+  my @ch = split //, $cmd;
+  # 🔴 二重引用符の中でも `$(...)` と backtick は**展開されて実行される**ので、
+  # 空白を含んでいても散文として捨てない（`grep "$(npx tsx scripts/...)" x` が
+  # 素通りしていた。実測）。
+  my $flush = sub { push @out, $cur if $has && (!$prose || $expand); $cur = ""; $has = 0; $prose = 0; $expand = 0 };
+  for (my $i = 0; $i < @ch; $i++) {
+    my $c = $ch[$i];
+    if ($state eq "none") {
+      if ($c eq chr(92)) { $i++; last if $i >= @ch; $cur .= $ch[$i]; $has = 1; next }
+      if ($c eq chr(39)) { $state = "single"; $has = 1; next }
+      if ($c eq chr(34)) { $state = "double"; $has = 1; next }
+      if ($c eq "#")     { $i++ while $i < @ch && $ch[$i] ne "\n"; $flush->(); next }
+      if ($c =~ /\s/)    { $flush->(); next }
+      if ($c =~ /[;&|<>()`]/) { $flush->(); push @out, $c; next }
+      $cur .= $c; $has = 1; next;
+    }
+    my $q = $state eq "single" ? chr(39) : chr(34);
+    if ($c eq $q) { $state = "none"; next }
+    if ($state eq "double" && $c eq chr(92)) { $i++; last if $i >= @ch; $cur .= $ch[$i]; next }
+    # 空白を含む引用は散文（コミットメッセージ・説明文）。そのトークンごと捨てる
+    $prose = 1 if $c =~ /\s/;
+    $expand = 1 if $state eq "double" && ($c eq chr(36) || $c eq chr(96));
+    $cur .= $c;
+  }
+  exit 1 unless $state eq "none";   # 引用が閉じていない = 素朴に読めない
+  $flush->();
+  print join(" ", @out);
+  exit 0;
+'
 if [ "${payload_readable}" = "0" ]; then
   # 🔴 payload を読めなかったときは、引用の除去そのものが危険になる。
   # payload は JSON なのでコマンド全体が二重引用符の中にあり、「空白を含む引用＝散文」の
   # 規則がコマンドを丸ごと捨ててしまう（実測でこれが fail-open だった）。
   # 記号を空白へ潰して、素朴な語の並びとして検査する。
-  scan="$(printf '%s' "${payload}" | tr -c 'A-Za-z0-9/._=-' ' ')"
-elif ! scan="$(printf '%s' "${cmd}" | perl -0777 -pe "${LEGACY_FILTER}" 2>/dev/null)"; then
+  # 記号を空白へ潰して、素朴な語の並びとして検査する。**外部コマンドを使わない** ――
+  # ここは「道具が落ちている」経路なので、`tr` を挟むと同じ穴がもう 1 段増える
+  # （実測: jq と tr が同時に落ちると `gh pr merge` が JSON の引用に囲まれて素通りした）。
+  scan="${payload//[!A-Za-z0-9\/._=-]/ }"
+  # 🔴 **MCP のツール名も見る。** payload を読めていないので `tool` は "Bash" に倒して
+  # あるが、素通しすると 2026-08-21 に main を red にした経路（MCP でのマージ）が
+  # 無言で開く。`tr` の後も `_` は残るので素朴に拾える。
+  if printf '%s' "${scan}" | grep -q 'mcp__github__merge_pull_request'; then
+    required="full"; action="GitHub MCP でのマージ (payload を読めていない)"
+  elif printf '%s' "${scan}" | grep -q 'mcp__github__create_pull_request'; then
+    required="pr"; action="GitHub MCP での PR 作成 (payload を読めていない)"
+  fi
+elif ! scan="$(printf '%s' "${cmd}" | perl -e "${LEGACY_SCAN}" 2>/dev/null)"; then
   scan="${cmd}"
 fi
 
