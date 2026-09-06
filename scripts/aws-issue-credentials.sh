@@ -2,10 +2,26 @@
 # =============================================================================
 # デプロイ窓を開ける (spec §8)。**ローカル Mac の Admin 環境で人間が実行する。**
 #
-#   scripts/aws-issue-credentials.sh [--hours N] [--print]
+#   scripts/aws-issue-credentials.sh [--hours N] [--print] [--no-context]
 #
 # OpenReceptionClaudeDeploy-dev を assume して短命 STS を発行し、
 # claude.ai/code の環境ダイアログへ貼るための値をクリップボードへ入れる。
+#
+# 🔴 **9 変数まとめて入れる（#989）。** AWS の 5 つに加えて、デプロイに必須の context
+#    4 つ（`OR_APP_SECRETS_NAME` / `OR_ORIGIN_VERIFY_SECRET` / `OR_PUBLIC_ORIGIN_OVERRIDE` /
+#    `OR_PROVIDER_SECRET_BACKEND`）も同じブロックに載せる。以前は AWS の 5 つだけを
+#    コピーしていたため、残り 4 つが「リポジトリに書いてあるから後で」になり、
+#    2026-09-06 の 3 回目のデプロイで **`OR_APP_SECRETS_NAME` だけが未登録**のまま窓を開けて
+#    `diff` が止まった。落ちたのは 4 つのうち唯一「秘密の値ではない」もので、
+#    **秘密 3 つは貼る意識が働くのに非秘密の 1 つだけ抜ける**という形だった。
+#    9 つを 1 回のコピーにすれば「一部だけ貼る」余地そのものが消える。
+#
+#    値は `~/.config/open-reception/deploy-context.env`（`OR_DEPLOY_CONTEXT_FILE` で変更可）
+#    か環境変数から取る。**リポジトリの中には置かない** —— `OR_ORIGIN_VERIFY_SECRET` は
+#    秘密そのもので、`.gitignore` に頼る形にすると ignore 行が消えた瞬間に commit され得る。
+#
+#    🔴 解決は **assume-role より前**に置く。欠けていれば資格情報を発行せずに終わる ――
+#    使えない窓を開けない（欠落に `diff` で気づくと、そこまでの往復が丸ごと窓を食う）。
 #
 # 🔴 値は既定で表示しない。ファイルにも書かない。ログにも残さない。
 #    「窓が開いている＝credential が生きている」なので、状態を二重に持たない。
@@ -24,6 +40,8 @@ EXTERNAL_ID="open-reception-claude-cloud-dev"
 REGION="ap-northeast-1"
 HOURS=4
 PRINT=false
+WITH_CONTEXT=true
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -33,6 +51,11 @@ while [ $# -gt 0 ]; do
       ;;
     --print)
       PRINT=true
+      shift
+      ;;
+    --no-context)
+      # AWS の 5 つだけを入れる。context を別経路で登録済みのときの逃げ道。
+      WITH_CONTEXT=false
       shift
       ;;
     *)
@@ -49,6 +72,21 @@ fi
 if [ "${HOURS}" -lt 1 ] || [ "${HOURS}" -gt 12 ]; then
   echo "--hours は 1〜12 の範囲で指定してください（指定: ${HOURS}）" >&2
   exit 2
+fi
+
+# 🔴 **context の解決は assume-role より前**（#989）。ここで落とせば資格情報は発行されず、
+# 「開いたが使えない窓」を作らずに済む。判定は `src/domain/governance/deploy-context.ts` の
+# 純関数が持ち、`aws-cloud-deploy.sh` の必須 context ガードと同じ基準を使う
+# （ここで基準を写経すると、片方だけ直る型の欠陥になる）。
+#
+# 値は stdout 経由でのみ受け取る（argv に載せない＝ `ps` に秘密が出ない）。
+# 失敗時の stderr はそのまま通す ―― 純関数側が「変数名だけで値を出さない」診断を作る。
+CONTEXT_BLOCK=""
+if [ "${WITH_CONTEXT}" = true ]; then
+  if ! CONTEXT_BLOCK="$(npx --no-install tsx "${ROOT}/scripts/deploy-context-block.ts")"; then
+    echo "デプロイ context を解決できないため、窓を開けずに終了します（--no-context で省略できます）" >&2
+    exit 2
+  fi
 fi
 
 # 🔴 **VITEST 実行中は絶対に AWS へ到達しない。** `scripts/aws-cloud-deploy.sh` の
@@ -120,6 +158,15 @@ process.stdin.on("end", () => {
 EXPIRY="${BLOCK##*AWS_CREDENTIAL_EXPIRATION=}"
 EXPIRY="${EXPIRY%$'\n'}"
 
+# 🔴 **期限を取り出した後に連結する。** 先に足すと `${BLOCK##*AWS_CREDENTIAL_EXPIRATION=}`
+# が context の行まで拾い、表示する期限が壊れる（値そのものが漏れる形にはならないが、
+# 「窓が閉じる時刻」を読み違える）。
+VAR_COUNT=5
+if [ -n "${CONTEXT_BLOCK}" ]; then
+  BLOCK="${BLOCK}"$'\n'"${CONTEXT_BLOCK}"
+  VAR_COUNT=9
+fi
+
 if [ "${PRINT}" = true ]; then
   printf '%s\n' "${BLOCK}"
 else
@@ -139,5 +186,9 @@ else
 fi
 
 echo "窓が閉じる時刻: ${EXPIRY}（${HOURS} 時間）"
-echo "claude.ai/code の環境ダイアログへ 5 つの環境変数を登録してください。"
-echo "窓を閉じるときは、同じダイアログから削除してください。"
+echo "claude.ai/code の環境ダイアログへ ${VAR_COUNT} つの環境変数を登録してください。"
+if [ "${VAR_COUNT}" -eq 5 ]; then
+  echo "（--no-context のため AWS の 5 つだけです。デプロイ context 4 つは別途登録してください）"
+fi
+echo "🔴 貼り終えてから新しいセッションを作ってください（env はコンテナ起動時に焼き込まれます）。"
+echo "窓を閉じるときは、同じダイアログから AWS の 5 つを削除してください。"

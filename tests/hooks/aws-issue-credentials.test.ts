@@ -43,6 +43,28 @@ function run(args: ReadonlyArray<string>, env: Record<string, string> = {}) {
 
 
 /**
+ * デプロイ context 4 変数もクリップボードへ載せる（#989 / `--with-context`）。
+ *
+ * 🔴 **窓を開ける前に落とす。** 4 変数の欠落に `diff` で気づくと、そこまでの往復が
+ * 丸ごと窓を食う（2026-09-06 の 3 回目は `OR_APP_SECRETS_NAME` だけが未登録だった）。
+ * したがって解決は **`aws sts assume-role` より前**に置き、欠けていれば資格情報を
+ * 発行せずに終わる ―― 使えない窓を開けない。
+ *
+ * VITEST インターロック（AWS を呼ぶ直前）より**さらに前**なので、
+ * 「VITEST で止まった」= context の解決は通った、と読める。
+ */
+const CONTEXT_ENV = {
+  OR_APP_SECRETS_NAME: 'open-reception/dev/app-v2',
+  OR_ORIGIN_VERIFY_SECRET: 'TEST-high-entropy-value',
+  OR_PUBLIC_ORIGIN_OVERRIDE: 'https://example.cloudfront.net',
+  OR_PROVIDER_SECRET_BACKEND: 'secrets-manager',
+} as const;
+
+/** context ファイルを探しに行かせない（実行者の Mac にある本物を読ませない）。 */
+const NO_CONTEXT_FILE = { OR_DEPLOY_CONTEXT_FILE: '/nonexistent/deploy-context.env' };
+
+
+/**
  * 🔴 **既定の 5s では足りない。** このファイルのテストは `tsx` を子プロセスとして起動する
  * （1 件あたり素の状態でも 1〜2 秒）。ゲート実行中はマシンの負荷が上がるため ―― `--fast` 自身が
  * load を押し上げる ―― **5.1〜7.8s でタイムアウトし、アサーションに到達する前に落ちる**。
@@ -121,6 +143,11 @@ describe('VITEST 実行中は AWS を呼ばない（実測で見つかった事�
   // 使われずに終わる（AWS へ到達する前に止まるため）。
   it('妥当な --hours でも VITEST 配下では AWS を呼ばずに止まる', () => {
     const { status, stderr } = run(['--hours', '1'], {
+      // 🔴 context 解決（#989）が assume-role の手前に入ったので、ここを供給しないと
+      // **インターロックへ到達する前に止まり、この検査が空虚に通る**（実際に一度落ちた）。
+      // 主張は変えていない ―― 「妥当な引数でも AWS を呼ばずに止まる」ことを見ている。
+      ...NO_CONTEXT_FILE,
+      ...CONTEXT_ENV,
       AWS_ACCESS_KEY_ID: 'AKIAFAKEFAKEFAKEFAKE',
       AWS_SECRET_ACCESS_KEY: 'fakefakefakefakefakefakefakefakefakefake',
       AWS_SESSION_TOKEN: 'fake-session-token-fake-session-token-fake',
@@ -131,5 +158,103 @@ describe('VITEST 実行中は AWS を呼ばない（実測で見つかった事�
     });
     expect(status).not.toBe(0);
     expect(stderr).toContain('VITEST');
+  });
+});
+
+
+describe('デプロイ context もクリップボードへ載せる (#989)', () => {
+  it('4 変数が揃っていれば context 解決を抜けて VITEST インターロックまで進む', () => {
+    const { status, stderr } = run(['--hours', '1'], { ...NO_CONTEXT_FILE, ...CONTEXT_ENV });
+    expect(status).not.toBe(0);
+    expect(stderr).toContain('VITEST');
+  });
+
+  it('🔴 欠けていれば AWS を呼ぶ前に止まる（使えない窓を開けない）', () => {
+    const { status, stderr } = run(['--hours', '1'], {
+      ...NO_CONTEXT_FILE,
+      ...CONTEXT_ENV,
+      OR_APP_SECRETS_NAME: '',
+    });
+    expect(status).not.toBe(0);
+    expect(stderr).toContain('OR_APP_SECRETS_NAME');
+    // VITEST インターロックへ到達していない＝ assume-role より前で止まっている。
+    expect(stderr).not.toContain('VITEST');
+  });
+
+  it('🔴 語彙の外の値でも AWS を呼ぶ前に止まる', () => {
+    const { status, stderr } = run(['--hours', '1'], {
+      ...NO_CONTEXT_FILE,
+      ...CONTEXT_ENV,
+      OR_PROVIDER_SECRET_BACKEND: 'secretsmanager',
+    });
+    expect(status).not.toBe(0);
+    expect(stderr).toContain('OR_PROVIDER_SECRET_BACKEND');
+    expect(stderr).not.toContain('VITEST');
+  });
+
+  it('🔴 診断に secret の値を出さない', () => {
+    const { stdout, stderr } = run(['--hours', '1'], {
+      ...NO_CONTEXT_FILE,
+      ...CONTEXT_ENV,
+      OR_APP_SECRETS_NAME: '',
+    });
+    expect(stderr).not.toContain(CONTEXT_ENV.OR_ORIGIN_VERIFY_SECRET);
+    expect(stdout).not.toContain(CONTEXT_ENV.OR_ORIGIN_VERIFY_SECRET);
+  });
+
+  it('--no-context なら 4 変数が無くても context では止まらない', () => {
+    const { status, stderr } = run(['--hours', '1', '--no-context'], NO_CONTEXT_FILE);
+    expect(status).not.toBe(0);
+    // context ではなく VITEST インターロックで止まる。
+    expect(stderr).toContain('VITEST');
+  });
+
+  it('🔴 既定の置き場所はリポジトリの外（ignore 行を消して secret を commit する事故を作らない）', () => {
+    const helper = readFileSync(resolve(process.cwd(), 'scripts/deploy-context-block.ts'), 'utf8');
+    expect(helper).toContain('.config');
+    expect(helper).toContain('homedir');
+    // 作業ツリー内を既定にしない（`.gitignore` 頼みにすると ignore 行が消えた瞬間に漏れる）。
+    expect(helper).not.toMatch(/process\.cwd\(\)|__dirname\s*,\s*['"]\.\.['"]\s*,\s*['"]\./);
+  });
+});
+
+/**
+ * 🔴 **順序そのものを縛る（#989）。**
+ *
+ * context 解決を assume-role の手前へ入れたことで、既存の「VITEST インターロック」検査は
+ * **context を供給しないと到達できなくなった**（実際に一度落ち、供給を足して直した）。
+ * この型は「後から入れた検査が、前からある検査を空虚にする」もので、緑を見ているだけでは
+ * 気づけない ―― CLAUDE.md「仕様を足したら既存の回帰テストが空虚に通るようになっていないか測る」。
+ *
+ * インターロックそのものを外す変異は**実 STS 呼び出しを起こしうる**ので当てない
+ * （このリポジトリは過去に一度その事故を踏んでいる。上の describe のコメント参照）。
+ * 代わりに、守りたい不変条件＝**並び順**を位置で固定する。写経ではなく相対順序だけを見る。
+ */
+describe('危険な順序を作らない (#989)', () => {
+  const at = (needle: string): number => {
+    const index = code.indexOf(needle);
+    expect(index, `${needle} が本文に無い`).toBeGreaterThanOrEqual(0);
+    return index;
+  };
+
+  it('context 解決 → VITEST インターロック → assume-role の順である', () => {
+    const context = at('deploy-context-block.ts');
+    const interlock = at('VITEST');
+    const assume = at('assume-role');
+    expect(context).toBeLessThan(interlock);
+    expect(interlock).toBeLessThan(assume);
+  });
+
+  it('🔴 期限の取り出しは context を連結する前に済ませる', () => {
+    // 逆順だと `${BLOCK##*AWS_CREDENTIAL_EXPIRATION=}` が context の行まで拾い、
+    // 表示する「窓が閉じる時刻」が壊れる。
+    expect(at('EXPIRY=')).toBeLessThan(at('CONTEXT_BLOCK}'));
+  });
+
+  it('🔴 2 つのブロックは改行で連結する', () => {
+    // 連結が改行を落とすと 5 行目と 6 行目が 1 行に潰れ、貼った先で
+    // AWS_CREDENTIAL_EXPIRATION と OR_APP_SECRETS_NAME の両方が壊れる。
+    // 実行して確かめるには assume-role を通す必要があるので、ここは静的に見る。
+    expect(code).toMatch(/BLOCK="\$\{BLOCK\}"\$'\\n'"\$\{CONTEXT_BLOCK\}"/);
   });
 });

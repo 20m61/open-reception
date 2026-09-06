@@ -113,6 +113,8 @@ export const MANUAL_ONLY_ALLOWLIST: Readonly<Record<string, string>> = {
     'クラウドセッション / routine から呼ぶ入口そのもの。リポジトリ内に呼び出し元は無くて正しい。',
   'aws-issue-credentials.sh':
     '人間がローカル Mac の Admin 環境でデプロイ窓を開けるときだけ走る（値をリポジトリに残さない）。',
+  'deploy-context-block.ts':
+    '`aws-issue-credentials.sh`（manual-only）が、窓を開けるときにデプロイ context 4 変数を貼り付け用ブロックへ組み立てるのに使う CLI。窓を開ける操作の中でしか意味が無く、秘密の値を扱うので自動では走らせない (#989)。',
   // ---- 以下は #681 で追加。すべて `aws-cloud-deploy.sh`（manual-only の入口）からのみ
   // 呼ばれる。以前は「manual-only の入口から呼ばれている」ことで配線済みと数えられており、
   // 手動である理由がどこにも記録されていなかった。

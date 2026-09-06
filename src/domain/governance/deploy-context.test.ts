@@ -14,7 +14,12 @@
  * 「省いても成功してしまう」ことが事故の起点なので、**未指定なら止める**。
  */
 import { describe, expect, it } from 'vitest';
-import { REQUIRED_DEPLOY_CONTEXT_VARS, resolveDeployContext } from './deploy-context';
+import {
+  REQUIRED_DEPLOY_CONTEXT_VARS,
+  parseDeployContextFile,
+  resolveDeployContext,
+  resolveDeployContextEnvBlock,
+} from './deploy-context';
 
 const COMPLETE = {
   OR_APP_SECRETS_NAME: 'open-reception/dev/app-v2',
@@ -145,5 +150,87 @@ describe('resolveDeployContext', () => {
       if (result.ok) return;
       expect(result.message).not.toContain(COMPLETE.OR_ORIGIN_VERIFY_SECRET);
     });
+  });
+});
+
+describe('parseDeployContextFile', () => {
+  it('KEY=VALUE を読む', () => {
+    const parsed = parseDeployContextFile(
+      ['OR_APP_SECRETS_NAME=open-reception/dev/app-v2', 'OR_PROVIDER_SECRET_BACKEND=memory'].join('\n'),
+    );
+    expect(parsed.OR_APP_SECRETS_NAME).toBe('open-reception/dev/app-v2');
+    expect(parsed.OR_PROVIDER_SECRET_BACKEND).toBe('memory');
+  });
+
+  it('空行・コメント・前後の空白を落とす', () => {
+    const parsed = parseDeployContextFile(
+      ['', '# 窓を開けるとき用', '  OR_APP_SECRETS_NAME =  spaced  ', '   ', '#OR_X=y'].join('\n'),
+    );
+    expect(parsed.OR_APP_SECRETS_NAME).toBe('spaced');
+    // 🔴 **`parsed.OR_X` が undefined であることを主張しても空虚**（実測で生存した変異）。
+    // コメント判定を消しても、`#OR_X=y` のキーは `#OR_X` になるので `OR_X` は結局 undefined。
+    // 「コメント行を落とした」を本当に言うには、**キー集合そのもの**を縛るしかない。
+    expect(Object.keys(parsed)).toEqual(['OR_APP_SECRETS_NAME']);
+  });
+
+  it('値の中の = は保つ（secret に = が入りうる）', () => {
+    expect(parseDeployContextFile('OR_ORIGIN_VERIFY_SECRET=a=b==').OR_ORIGIN_VERIFY_SECRET).toBe('a=b==');
+  });
+
+  it('前後の引用符を外す（貼り付けたまま囲ってしまう事故を吸収する）', () => {
+    expect(parseDeployContextFile("OR_APP_SECRETS_NAME='quoted'").OR_APP_SECRETS_NAME).toBe('quoted');
+    expect(parseDeployContextFile('OR_APP_SECRETS_NAME="quoted"').OR_APP_SECRETS_NAME).toBe('quoted');
+    // 🔴 片側だけの引用符は外さない（値の一部かもしれない）。
+    expect(parseDeployContextFile('OR_APP_SECRETS_NAME="half').OR_APP_SECRETS_NAME).toBe('"half');
+  });
+
+  it('= を含まない行と、キーが空の行は無視する', () => {
+    const parsed = parseDeployContextFile(['garbage line', '=value', 'OR_APP_SECRETS_NAME=ok'].join('\n'));
+    expect(Object.keys(parsed)).toEqual(['OR_APP_SECRETS_NAME']);
+  });
+});
+
+describe('resolveDeployContextEnvBlock', () => {
+  it('揃っていれば貼り付け用の KEY=VALUE ブロックを返す', () => {
+    const result = resolveDeployContextEnvBlock(COMPLETE);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.block.split('\n')).toEqual([
+      'OR_APP_SECRETS_NAME=open-reception/dev/app-v2',
+      'OR_ORIGIN_VERIFY_SECRET=TEST-high-entropy-value',
+      'OR_PUBLIC_ORIGIN_OVERRIDE=https://example.cloudfront.net',
+      'OR_PROVIDER_SECRET_BACKEND=secrets-manager',
+    ]);
+  });
+
+  it('🔴 順序は REQUIRED と同じで安定している（貼る順が毎回変わらない）', () => {
+    const a = resolveDeployContextEnvBlock(COMPLETE);
+    const b = resolveDeployContextEnvBlock({ ...COMPLETE });
+    expect(a.ok && b.ok && a.block).toEqual(b.ok ? b.block : null);
+    if (!a.ok) return;
+    expect(a.block.split('\n').map((line) => line.split('=')[0])).toEqual([
+      ...REQUIRED_DEPLOY_CONTEXT_VARS,
+    ]);
+  });
+
+  it('欠けていれば resolveDeployContext と同じ判定で止める', () => {
+    const result = resolveDeployContextEnvBlock({ ...COMPLETE, OR_APP_SECRETS_NAME: '' });
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.missing).toEqual(['OR_APP_SECRETS_NAME']);
+  });
+
+  it('🔴 語彙の外の値で止める（窓を開けてから気づくのでは遅い）', () => {
+    const result = resolveDeployContextEnvBlock({ ...COMPLETE, OR_PROVIDER_SECRET_BACKEND: 'secretsmanager' });
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.invalid).toEqual(['OR_PROVIDER_SECRET_BACKEND']);
+  });
+
+  it('🔴 診断に secret の値を載せない', () => {
+    const result = resolveDeployContextEnvBlock({ ...COMPLETE, OR_APP_SECRETS_NAME: '' });
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.message).not.toContain(COMPLETE.OR_ORIGIN_VERIFY_SECRET);
   });
 });
