@@ -30,9 +30,12 @@ payload="$(cat)"
 # 🔴 **jq が落ちたら deny 側へ倒す。** 失敗を空文字として扱うと `tool` が "" になり、
 # Bash 経路も MCP 経路も判定されずに素通りする（ガードが丸ごと無言で無効化される）。
 # 読めなかったときは payload 全体を Bash のコマンドとみなして素朴に検査する。
-if tool="$(printf '%s' "${payload}" | jq -r '.tool_name // ""' 2>/dev/null)"; then
+if tool="$(printf '%s' "${payload}" | jq -r '.tool_name // ""' 2>/dev/null)" && [ -n "${tool}" ]; then
   payload_readable=1
 else
+  # 🔴 **「落ちた」だけでなく「空を返した」も判定不能である。** jq が exit 0 で空を返す・
+  # payload に tool_name が無い場合、`tool=""` は `[ "${tool}" = "Bash" ] || exit 0` を通って
+  # **Bash 経路も MCP 経路も無検査で許可**になっていた（4 周目のレビュー）。
   tool="Bash"; payload_readable=0
 fi
 
@@ -52,7 +55,11 @@ if [ -n "${required}" ]; then
 else
   [ "${tool}" = "Bash" ] || exit 0
   if [ "${payload_readable}" = "1" ]; then
-    cmd="$(printf '%s' "${payload}" | jq -r '.tool_input.command // ""' 2>/dev/null)" || cmd="${payload}"
+    # tool_name は読めたのに command が読めない／空、という劣化もある。判定材料が
+    # 無いのだから deny 側（payload をそのまま素朴に検査する枝）へ倒す。
+    if ! cmd="$(printf '%s' "${payload}" | jq -r '.tool_input.command // ""' 2>/dev/null)" || [ -z "${cmd}" ]; then
+      cmd="${payload}"; payload_readable=0
+    fi
   else
     cmd="${payload}"
   fi
@@ -102,6 +109,7 @@ PLAIN_READ_PREDICATE='
   # stderr を捨てるだけの `2>/dev/null` は読み取り調査で日常的に打つので先に外す。
   # 他のリダイレクトは走査で落ちる（読んだ結果を置いてから実行する形を作れる）。
   $cmd =~ s{2>\s*/dev/null}{}g;
+  $cmd =~ s{2>&1}{}g;
 
   my $MENTION = qr{scripts/(merge|create)-pull-request\.ts|repos/[^\s]+/pulls/[0-9]+/merge};
   # 読み取り専用の道具。**他プロセスを起動できる／ファイルを書けるものは入れない**
@@ -131,6 +139,11 @@ PLAIN_READ_PREDICATE='
       if ($c eq chr(92)) { $i++; exit 1 if $i >= @ch; $cur .= $ch[$i]; $has = 1; next }
       if ($c eq chr(39)) { $state = "single"; $has = 1; next }
       if ($c eq chr(34)) { $state = "double"; $has = 1; next }
+      # 🔴 **改行は「ただの空白」ではない。** 前の版は改行を明示的に落としていたが、
+      # 走査へ替えたときに /\s/ へ食われて区切りでなくなり、
+      # `git status --short<改行>gh pr merge 997` が 1 段目を通った（4 周目のレビュー）。
+      # 「確認してからマージ」を 1 回の Bash 呼び出しに書くだけで外れる ―― うっかりの主経路。
+      exit 1 if $c eq "\n" || $c eq "\r";
       if ($c =~ /\s/)    { push @tokens, $cur if $has; $cur = ""; $has = 0; next }
       if ($c eq "|")     { push @tokens, $cur if $has; $cur = ""; $has = 0; push @tokens, "\x00PIPE"; next }
       exit 1 if $c =~ /[;&<>()`\$]/;   # 区切り・背景実行・リダイレクト・置換
@@ -173,6 +186,9 @@ PLAIN_READ_PREDICATE='
         $i++;
       }
       exit 1 unless $i < @t && $GIT_READ{$t[$i]};
+      # `git show HEAD --output /tmp/m.ts -- <検出語>` は**内容をファイルへ書ける**。
+      # `--output=` の綴りだけは下の `=.*/` 検査に掛かるが、空白区切りは掛からない。
+      exit 1 if grep { /^(-o|--output)(=|$)/ } @t;
     }
     # 検出語は**位置引数**として現れていなければならない。option の値として渡す形
     # （`git grep --open-files-in-pager=<検出語>` / `rg --pre <検出語>`）は通さない ――
@@ -233,7 +249,10 @@ LEGACY_SCAN='
       if ($c eq chr(92)) { $i++; last if $i >= @ch; $cur .= $ch[$i]; $has = 1; next }
       if ($c eq chr(39)) { $state = "single"; $has = 1; next }
       if ($c eq chr(34)) { $state = "double"; $has = 1; next }
-      if ($c eq "#")     { $i++ while $i < @ch && $ch[$i] ne "\n"; $flush->(); next }
+      # 🔴 **`#` がコメントを始めるのは語の先頭だけ**（bash の規則）。語中の `#` まで
+      # コメント扱いにすると `cat a.txt#z; gh pr merge 12` の `;` 以降が消える
+      # （4 周目のレビュー。変更前の正規表現は「前が空白」を要求していた）。
+      if ($c eq "#" && !$has) { $i++ while $i < @ch && $ch[$i] ne "\n"; $flush->(); next }
       if ($c =~ /\s/)    { $flush->(); next }
       if ($c =~ /[;&|<>()`]/) { $flush->(); push @out, $c; next }
       $cur .= $c; $has = 1; next;

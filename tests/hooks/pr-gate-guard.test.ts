@@ -324,14 +324,15 @@ describe('pr-gate-guard: 明示的な脱出ハッチ', () => {
  * `sed`（`w` でファイルを書ける・GNU では `e` で起動できる）と
  * フルパス起動（`./bin/cat` で綴りを詐称できる）を whitelist から外した。
  *
- * 同じ入力を 3 版へ当てた実測（115 形）:
+ * 同じ入力を 5 版へ当てた実測（127 形）:
  *
-  * | 版 | 実行しうる形 73 | 読み取り形 42 |
+ * | 版 | 実行しうる形 84 | 読み取り形 43 |
  * | --- | --- | --- |
- * | 変更前 `b9f9718` | 68 | 6 |
- * | blacklist 版 `6bba78b` | 46 | 37 |
- * | whitelist 版 `1616e8f` | 59 | 34 |
- * | 走査版（現在） | **73** | **42** |
+ * | 変更前 `b9f9718` | 79 | 6 |
+ * | blacklist 版 `6bba78b` | 52 | 38 |
+ * | whitelist 版 `1616e8f` | 65 | 34 |
+ * | 走査版 `04ebbc1` | 76 | 42 |
+ * | 現在 | **84** | **43** |
  *
  * 🔴 **一覧は「自分が思いついた形」でしかない。** 各周とも「自分で当てた変異は全部 kill」と
  * 報告しており、**族ごとの見落としは独立レビューでしか出ていない**（9 族 → 4 族 → 3 族）。
@@ -413,8 +414,19 @@ const EXECUTION_FORMS: readonly string[] = [
   "sed e npx tsx scripts/merge-pull-request.ts 997 a.txt",
   "cat \"unclosed scripts/merge-pull-request.ts",
   "git grep -O./scripts/merge-pull-request.ts x",
+  "rg --pre=./tool.sh -n x scripts/merge-pull-request.ts",
   "grep \"$(npx tsx scripts/create-pull-request.ts)\" a.txt",
   "grep \"`npx tsx scripts/create-pull-request.ts`\" a.txt",
+  "cat a.txt#z; gh pr merge 12",
+  "echo hi# ; npx tsx scripts/create-pull-request.ts",
+  "git show HEAD --output /tmp/m.ts -- scripts/merge-pull-request.ts",
+  "git log -p --output /tmp/m.ts -- scripts/merge-pull-request.ts",
+  "git show HEAD --output=/tmp/m.ts -- scripts/merge-pull-request.ts",
+  "git status --short\ngh pr merge 997 --squash --delete-branch",
+  "git log --oneline -5\ngh pr create --fill",
+  "ls -la\ngit push -u origin HEAD\nnpx tsx scripts/create-pull-request.ts --head x --title y",
+  "rg -n foo src\ngh api repos/o/r/pulls/997/merge -X PUT",
+  "cat scripts/merge-pull-request.ts \\",
 ];
 
 /** 何も実行しない読み取り形。ここが通るようになるのが #960 の本体。 */
@@ -423,7 +435,7 @@ const READ_FORMS: readonly string[] = [
   "rg -n delete scripts/merge-pull-request.ts",
   "rg -n 'create|merge' scripts/merge-pull-request.ts",
   "grep -E 'a|b' scripts/merge-pull-request.ts",
-  "rg -n 'mergePr\(' scripts/merge-pull-request.ts",
+  "rg -n 'mergePr\\(' scripts/merge-pull-request.ts",
   "grep -n 'x;y' scripts/merge-pull-request.ts",
   "cat scripts/merge-pull-request.ts",
   "head -20 scripts/create-pull-request.ts",
@@ -461,6 +473,7 @@ const READ_FORMS: readonly string[] = [
   "rg -o scripts/merge-pull-request.ts",
   "grep \"don't\" scripts/merge-pull-request.ts",
   "grep -n mergePr\\( scripts/merge-pull-request.ts",
+  "grep -n foo scripts/merge-pull-request.ts 2>&1",
 ];
 
 describe('pr-gate-guard: 読み取りは通し、実行は止める (#960)', () => {
@@ -529,6 +542,28 @@ describe('pr-gate-guard: 読み取りは通し、実行は止める (#960)', () 
         expect(runHook('', { tool: mcp, env }).status, `${tools.join('/')} が落ちると MCP が素通りする`).toBe(2);
       }
       // 下界: 壊れた環境で「全部ブロック」に倒れているだけではない
+      expect(runHook('ls -la', { env }).status).toBe(0);
+    } finally {
+      rmSync(shimDir, { recursive: true, force: true });
+    }
+  });
+
+  /**
+   * 🔴 **道具の劣化は「全部落ちる」だけではない。** jq が成功して空を返す形・
+   * `tool_name` は読めるが `command` は読めない形でも deny 側へ倒れること
+   * （4 周目のレビューで、前者は素通り・後者は変異が生存していた）。
+   */
+  it.each([
+    ['空を返す jq', '#!/bin/sh\nexit 0\n'],
+    ['command だけ読めない jq', '#!/bin/sh\nfor a in "$@"; do case "$a" in *tool_input*) exit 1;; esac; done\nexec /usr/bin/jq "$@"\n'],
+    ['command に空を返す jq', '#!/bin/sh\nfor a in "$@"; do case "$a" in *tool_input*) echo ""; exit 0;; esac; done\nexec /usr/bin/jq "$@"\n'],
+  ])('🔴 jq が %s でもブロックする', (_label, script) => {
+    const shimDir = mkdtempSync(join(tmpdir(), 'degraded-jq-'));
+    try {
+      writeFileSync(join(shimDir, 'jq'), script, { mode: 0o755 });
+      const env = { PATH: `${shimDir}:${process.env.PATH ?? ''}` };
+      expect(runHook('gh pr merge 1 --squash', { env }).status, 'Bash 経路が素通りする').toBe(2);
+      expect(runHook('', { tool: 'mcp__github__merge_pull_request', env }).status, 'MCP 経路が素通りする').toBe(2);
       expect(runHook('ls -la', { env }).status).toBe(0);
     } finally {
       rmSync(shimDir, { recursive: true, force: true });
