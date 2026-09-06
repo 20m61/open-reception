@@ -404,6 +404,35 @@ boundary を渡すのは `exec` だけである（`--custom-permissions-boundary
 `ℹ️` 行として先に印字された未評価範囲は `S15` / `S16` の ap-northeast-1 のみ
 （`OpenReception-CfMon-dev` は us-east-1 にしか存在しないため。宣言済みの `coverage`）。
 
+#### 実施記録: 2026-09-05（✅ PassRole の実測。ADR 決定 6 の撤回を裏取り）
+
+ADR 決定 6 の撤回（`iam:PassRole` をタグ条件 → 渡し先 ARN スコープ `OpenReception-*-dev-*` ＋
+`iam:PassedToService`）を実 IAM へ適用し、Admin（`user/CDK`）から再実行した。
+**2026-08-15 の記録が PassRole について空虚だった件は、これで閉じる。**
+
+| 検査 | 結果 |
+| --- | --- |
+| **`S23`**（dev の Lambda 実行ロールへ渡せる） | **`allowed`（ap-northeast-1 / us-east-1 の両方）** |
+| `S24`（同じロールへ `ec2.amazonaws.com`） | `denied` |
+| `S21` / `S22` | `allowed` / `denied` |
+| boundary | 結果行の `boundary=` で `claude-boundary.json` の明示供給を確認 |
+| context | `iam:PassedToService` のみ。**タグは注入していない** |
+
+🔴 **裏取りは 3 通り揃った。** simulate だけでは「検査だけが供給した条件で通った」可能性を
+排除しきれない ―― それが 2026-08-15 の失敗そのものだった。**実 API 経路まで見ること。**
+
+| # | 証拠 | 種類 |
+| --- | --- | --- |
+| 1 | `S23` が両リージョンで `allowed`（タグ context 無し） | simulate |
+| 2 | 4b 14〜16 が期待どおり | simulate |
+| 3 | **`continue-update-rollback` が `--resources-to-skip` なしで完了**（`exit=0`） | **実 API** |
+
+3 が効いている理由: 2026-09-05 の `UPDATE_ROLLBACK_FAILED` は
+`ServerFn4F3A536E` の `iam:PassRole` AccessDenied（渡し先
+`OpenReception-Web-dev-ServerFnServiceRole282D3E61-3GVzJT0DbZzS`）が唯一の実失敗だった。
+**ポリシーを直しただけで同じ操作が通った**＝検査ではなく本番の認可経路で効いている。
+詳細はステップ 9c。
+
 `npm run aws:negative-tests`（フラグ無し）は N 系（実試行）と S 系（シミュレーション）の**両方**を
 走らせるので **Admin 専用**である。クラウドセッションからこのコマンドを叩くと、
 `OpenReceptionClaudeDeploy-dev` は `iam:SimulatePrincipalPolicy` を持たないため S 系が全部
@@ -449,7 +478,7 @@ FAIL した 3 本（`7` / `7u` / `11`）はいずれも
 | --- | --- |
 | 4b 1〜9（ap-northeast-1） | 9/9 PASS（7 は訂正後） |
 | 4b 10（us-east-1 反復 1u〜9u） | 9/9 PASS（7u は訂正後） |
-| 4b 11〜16 | 8/8 PASS（12 は dev 3 スタック全部を個別に確認、11 は訂正後）。🔴 **14〜16 の PASS は無効**（下記） |
+| 4b 11〜16 | 8/8 PASS（12 は dev 3 スタック全部を個別に確認、11 は訂正後）。🔴 **当時の 14〜16 の PASS は無効**、訂正後は 2026-09-05 に再実行済み（下記） |
 | 4c 17〜20 | 5/5 PASS（18 は 2 アクションを個別に評価） |
 
 🔴 **14〜16 の「8/8 PASS」は空虚だった（2026-09-05 判明）。** 旧 14〜16 は
@@ -462,7 +491,7 @@ FAIL した 3 本（`7` / `7u` / `11`）はいずれも
 `iam:PassedToService` だけを供給する形へ訂正済み。ポリシー側は渡し先 ARN
 （`OpenReception-*-dev-*`）で絞る形へ替えた（ADR 決定 6 の撤回）。
 
-⚠️ **訂正後の 14〜16 は未実行である**（実 IAM への適用と再実行が要る。ステップ 3 → 4b）。
+✅ **訂正後の 14〜16 と S21〜S24 は 2026-09-05 に実行済み**（下記「実施記録: 2026-09-05」）。
 
 以下、元の手順（訂正済み）。
 
@@ -1429,9 +1458,42 @@ dev の Lambda 実行ロールは境界の仕組みが入る前（2026-08-06）�
 **`CreateRole` は通る**（境界は CreateRole のパラメータとして渡る）。つまり
 「新規ロールなら通るが、既存ロールへの後付けだけ通らない」という穴だった。
 
-**復旧**: Put も Delete も拒否されたロールは**一度も変更されていない**ので、実体は更新前の
-ままである。rollback から除外するのが事実に合致する。**admin（`user/CDK`）で実行する**
-（deploy role に `ContinueUpdateRollback` は無い）:
+**復旧**は 2 段で考える。**admin（`user/CDK`）で実行する**（deploy role に
+`ContinueUpdateRollback` は無い）。
+
+### 1. まず `--resources-to-skip` **なし**で再試行する
+
+🔴 **skip は最後の手段であって、最初の一手ではない（2026-09-05 に実証）。**
+`--resources-to-skip` は「このリソースは rollback が期待する状態のままだと見なせ」という
+宣言なので、**成功しても drift が残る**。**拒否の原因そのものを直せたなら、同じ操作が
+今度は通る** —— そのときは skip が 1 件も要らず、drift もゼロになる。
+
+```bash
+aws cloudformation continue-update-rollback \
+  --stack-name OpenReception-Web-dev --region ap-northeast-1
+
+# 30 秒間隔・最大 60 分。UPDATE_ROLLBACK_COMPLETE で 0、UPDATE_ROLLBACK_FAILED で非 0。
+aws cloudformation wait stack-rollback-complete \
+  --stack-name OpenReception-Web-dev --region ap-northeast-1
+echo "exit=$?"
+```
+
+> `watch` は **macOS に標準で入っていない**（GNU coreutils ではなく procps 系）。
+> ポーリングを自作せず、上の waiter を使う ―― 成功／失敗の判定条件が
+> `UPDATE_ROLLBACK_COMPLETE` / `UPDATE_ROLLBACK_FAILED` として定義済みで、
+> 「落ち着いたかどうか」を目視で読み違えずに済む。
+
+**実測（2026-09-05）**: `iam:PassRole` の AccessDenied で `UPDATE_ROLLBACK_FAILED` に
+落ちていた `OpenReception-Web-dev` は、ADR 決定 6 の撤回（タグ条件 → 渡し先 ARN スコープ）を
+実 IAM へ適用しただけで、**skip を 1 件も使わずに `UPDATE_ROLLBACK_COMPLETE` へ到達した**
+（`exit=0`）。2026-08-14 のケースで skip が必要だったのは、**原因（boundary の自縄自縛）を
+直せないまま rollback を通す必要があった**からであって、`UPDATE_ROLLBACK_FAILED` だから
+ではない。
+
+### 2. それでも失敗するときだけ skip する
+
+Put も Delete も拒否されたロールは**一度も変更されていない**ので、実体は更新前のままである。
+rollback から除外するのが事実に合致する。
 
 ```bash
 aws cloudformation continue-update-rollback \
@@ -1439,13 +1501,31 @@ aws cloudformation continue-update-rollback \
   --resources-to-skip <失敗した論理 ID を列挙>
 ```
 
-失敗した論理 ID は次で拾える:
+失敗した論理 ID は次で拾う。🔴 **`sort -u` で畳まない。**
 
 ```bash
+# 直近の失敗だけを、時刻と理由つきで見る。
 aws cloudformation describe-stack-events --stack-name OpenReception-Web-dev \
-  --region ap-northeast-1 --output json \
-  | jq -r '.StackEvents[] | select(.ResourceStatus=="UPDATE_FAILED") | .LogicalResourceId' | sort -u
+  --region ap-northeast-1 --max-items 60 --output json \
+  | jq -r '.StackEvents[] | select(.ResourceStatus=="UPDATE_FAILED")
+           | "\(.Timestamp)  \(.LogicalResourceId)  \(.ResourceStatusReason // "")"'
 ```
+
+🔴 **旧版は `| sort -u` で論理 ID だけを畳んでいた（2026-09-05 に実害）。**
+`describe-stack-events` は**スタックの全履歴**（最大 1000 件 / 90 日）を返すので、
+2 度目以降の失敗で使うと**過去の失敗まで混ざる**。実際、2026-09-05 の復旧では旧版が
+**14 件**を返したが、当日の失敗に属するのは **3 件だけ**だった（残り 11 件は 2026-08-14 の
+boundary 事故の分）。関係ないリソースを `--resources-to-skip` へ渡すと、**本当は部分的に
+変わったものまで素通しして drift を残す**。時刻を見て、直近の 1 回ぶんだけを取ること。
+
+🔴 **`describe-stack-resources` の `ResourceStatus=='UPDATE_FAILED'` では拾えない**
+（同日に試して空が返った）。rollback が失敗した後のリソース状態は `UPDATE_FAILED` ではなく
+`UPDATE_ROLLBACK_FAILED` / `UPDATE_COMPLETE` に落ち着くため。イベント側で見ること。
+
+理由まで読むこと ―― `Resource update cancelled` は**巻き添え**で、原因ではない。
+2026-09-05 の 3 件のうち実失敗は `ServerFn4F3A536E`（`iam:PassRole` の AccessDenied）1 件で、
+`AssetDeploymentCustomResource810D2826` と `ImageFnCD541B83` はどちらも cancelled だった。
+**原因の 1 件を直せば、残り 2 件は勝手に片付く**（上記の実測はまさにそれ）。
 
 **恒久対策**（適用済み）: `DenyBoundaryEscape` を 2 文へ割った。
 `iam:DeleteRolePermissionsBoundary` は無条件 Deny のまま（外させない）、
