@@ -1301,6 +1301,72 @@ aws cloudformation describe-change-set --stack-name "$STACK" --change-set-name "
 CloudFormation 側のマスクであって「synth の値がマスクされている」ではない ――
 **synth の実値は `infra/cdk.out/<Stack>.template.json` で確かめる**（下記 8b の実施記録）。
 
+##### `BeforeContext` / `AfterContext` が付く ―― 手順 C は要らない
+
+同日に `deploy` まで進めた側のセッションの実測（PR #994）。各 `ResourceChange` には
+`Details[]` とは別に **`BeforeContext` / `AfterContext`** が付き、**リソース定義の前後全体**が
+読める。この節が本当に見たかった「現行にあって synth から消えたもの」は、**`BeforeContext` を
+読めばそのまま見える**。したがって**手順 C（`cloudformation:GetTemplate` を entry role の
+allowlist へ足す）は要らない** ―― ADR 0009 の境界を後退させずに済む。
+
+実際 `ServerFnServiceRoleDefaultPolicy`（まさに 2026-08-15 に dev を 500 にしたリソース）は、
+前後を並べて**純粋な追加**だと確認できた:
+
+| | Statement |
+| --- | --- |
+| Before（3 件） | dynamodb / **app-v2 `GetSecretValue`** / ce |
+| After（4 件） | dynamodb / **app-v2 `GetSecretValue`（不変）** / tenants/*（新規） / ce |
+
+🔴 **`Details[].Target.Path` の配列 index はあてにならない。** この例では
+`Statement/0` と `Statement/3` に**同じ `AfterValue`** が出た（実体は index 2 への 1 件の挿入）。
+**`Path` で読まず、`BeforeContext` / `AfterContext` を突き合わせること。**
+
+##### 🔴 12 件中 6 件しか返らない。しかも `NextToken` が出ない
+
+同じ change set を 2 通りで数えた（`OpenReception-Web-dev` / `claude-gate-e2ef42a`）:
+
+| 呼び方 | 返る変更数 | `NextToken` |
+| --- | --- | --- |
+| `--include-property-values` **あり** | **6** | 無し |
+| `--include-property-values` **なし** | **12** | 無し |
+
+**落ちた 6 件は `AWS::Lambda::Permission` 4 本と `AWS::Lambda::Url` 2 本** ―― つまり
+**公開範囲と invoke 認可、承認者がいちばん見たいものだけが丸ごと消えた**。
+`NextToken` が無いので、**欠けていること自体に気づく手がかりがレスポンスの中に無い**。
+「property values を見たから全部見た」は成り立たない ―― この節が防ごうとしている
+空虚な検査そのものである。
+
+**したがって 2 回呼び、件数を突き合わせること:**
+
+```bash
+# a) 変更の全件（これが正しい母数）
+aws cloudformation describe-change-set --stack-name "$STACK" --change-set-name "$CS" --region "$REGION" \
+  --query 'Changes[].ResourceChange.{Id:LogicalResourceId,T:ResourceType,A:Action,R:Replacement}' --output table
+
+# b) 前後の値（a より少ないのが既定。件数を必ず a と突き合わせる）
+aws cloudformation describe-change-set --stack-name "$STACK" --change-set-name "$CS" --region "$REGION" \
+  --include-property-values --output json > /tmp/cs.json
+node -e 'console.log("props返却:", require("/tmp/cs.json").Changes.length)'
+```
+
+b) に出てこなかったリソースは手順 B（`Details[].Evaluation` / `ChangeSource` ＋
+`infra/cdk.out/<Stack>.template.json`）で読む。2026-09-06 の 6 件はすべて
+`Evaluation: Dynamic` ＋ `ChangeSource: ResourceAttribute`（`CausingEntity` は
+`ServerFn4F3A536E.Arn` / `ImageFnCD541B83.Arn` 等）で、**参照先が `Replacement: False`**
+だったため実体は置換されない派生変更だと確定できた。
+
+##### `describe-stack-resources` も塞がっている
+
+```
+AccessDenied: ... is not authorized to perform: cloudformation:DescribeStackResources
+on resource: .../stack/OpenReception-WebMonitoring-dev/... with an explicit deny in an identity-based policy
+```
+
+**「デプロイ後に何が出来たか」を entry role から確かめる手段は無い。** 確認は
+`DescribeStacks` の `StackStatus` / `LastUpdatedTime` と smoke（実 HTTP）で行う。
+とくに `LastUpdatedTime` は「そのスタックが今回実際に更新されたか」を判定できる
+唯一の手掛かりなので、**部分的に失敗したデプロイの到達点を読むときに要る**（ステップ 10 の実施記録）。
+
 **手順 B（`--include-property-values` が通らない場合）: 読める側だけで判断し、足りない分は
 局所化する。**
 
@@ -1426,7 +1492,13 @@ CloudFront の配信更新と ServerFn の env 更新が同時に効くとは限
 本筋は #612 の `originVerifySecretName` 移行で、生値を context に載せる方式である限り
 この型は何度でも再現する。
 
-#### 実施記録: 2026-09-06 のデプロイ（⛔ 未実行。9 まで到達して停止）
+#### 実施記録: 2026-09-06 のデプロイ ―― このセッションは 9 で停止した
+
+🔴 **「2026-09-06 は誰もデプロイしなかった」と読まないこと。** この日は**クラウドセッションが
+2 つ並走**しており、**もう一方は実際に `deploy` を実行して CloudFront に拒否された**
+（ステップ 10 の「実施記録: 2026-09-06（4 回目）」。ロールバックは完走し dev は無傷）。
+本節は**停止した側**の記録である。並走そのものが事故のもとなので、
+**デプロイ委譲は 1 セッションに限ること。**
 
 窓は 2 度開けた（1 度目は `OR_APP_SECRETS_NAME` 未登録＋資格情報が発行から約 8 時間後に
 失効しており着手できず、2 度目で両方解消）。到達点は `verify` → `preflight` → `diff` →
@@ -1692,6 +1764,68 @@ OR_SMOKE_URL=https://<デプロイ後のドメイン> bash scripts/aws-cloud-dep
 ```
 
 `scripts/url-quality-gate.sh` と `npm run test:e2e:live` を呼ぶ。
+
+### 実施記録: 2026-09-06（4 回目 ―― ❌ `deploy` を実行して失敗。**ロールバック完走・dev は無傷**）
+
+🔴 **同日に 2 つのクラウドセッションが同じ窓で並走した。** もう 1 つのセッション
+（PR #993。上のステップ 8b「`set されている` は…」と 9b-1 の記録がそれ）は
+**`deploy` へ進まずに停止**したが、**本セッションは実際に `deploy` を実行した**。
+以下がその実測である。**同じ AWS 窓・同じ dev スタックに対して 2 セッションが同時に
+change set を作る**のは事故のもとなので（CLAUDE.md「マージは直列」「同一ファイルを
+触らせない」と同じ理由）、**デプロイ委譲は 1 セッションに限ること**。
+2 つの記録が同じ節を取り合った結果、runbook 側もマージ衝突を起こしている（PR #993 → #994）。
+
+HEAD `e2ef42a`（#992）。窓の残りは開始時 476 分。
+
+| 段 | 結果 | 所要 |
+| --- | --- | --- |
+| 診断 | `gitleaks` / `semgrep` が MISSING → `scripts/cloud-setup.sh` で復旧 | 約 6 分 |
+| `verify` | ✅ green（8 ステップ全 PASS。gitleaks 復旧により #988 の unit 14 件赤は**再発せず**） | 約 6 分 |
+| `preflight` | ✅ 全項目 PASS（negative test `passed=8 failed=0`） | 約 30 秒 |
+| `diff` | ⛔ 3 スタックともブロック（設計どおり） | 約 2.5 分 |
+| findings 精査（9b-1） | ✅ 事前承認の形と一致 | 約 6 分 |
+| `deploy` | ❌ **CloudFront が `originCustomHeader` を 400 で拒否** | 約 8 分 |
+
+**findings は事前承認の形と一致していた**: `Remove` **0 件** / `Replacement: True` **0 件**。
+`Web-dev` は 12 変更中 8 件が `[resourceReplacement] ... replacement=Conditional`（うち 6 件は
+上記のとおり `Evaluation: Dynamic` の派生で、参照先は `Replacement: False`）、
+`WebMonitoring-dev` の新規は `KioskRealDialingUnavailable96F08725`（Alarm）と
+`KioskRealDialingUnavailableFilter3950C7C3`（MetricFilter）の**各 1 件のみ**、
+`CfMon-dev` は `CDKMetadata` 1 件だけ。**承認トークンは 3 スタックぶんとも一致して通った。**
+
+失敗したのは差分ではなく**入力値**である:
+
+```
+Resource handler returned message: "Invalid request provided: The parameter originCustomHeader
+contains ????????????? that has illegal characters. (Service: CloudFront, Status Code: 400 ...)"
+```
+
+`OR_ORIGIN_VERIFY_SECRET` がプレースホルダのままだった（同日の別セッションが
+ステップ 8b に記録済み）。**`diff` gate は値を見ないので止められない。**
+
+🔴 **到達点: 何もデプロイされていない。**
+
+| スタック | 状態 | `LastUpdatedTime` |
+| --- | --- | --- |
+| `OpenReception-Web-dev` | `UPDATE_ROLLBACK_COMPLETE` | 2026-09-06T15:21:54Z（**今回**） |
+| `OpenReception-WebMonitoring-dev` | `UPDATE_COMPLETE` | **2026-08-15**（＝今回は未実行） |
+| `OpenReception-CfMon-dev` | `CREATE_COMPLETE` | **2026-08-15**（＝今回は未実行） |
+
+Web-dev が依存の先頭なので、失敗した時点で残り 2 スタックは**実行に入っていない**
+（`LastUpdatedTime` が 8/15 のままであることが唯一の証拠 ―― `deploy` のログには
+`✅ OpenReception-WebMonitoring-dev` と出るが、それは `--no-execute` の change set 作成であって
+デプロイではない。**ログの ✅ を到達点と読み違えないこと**）。
+**#766 の取次不能アラームはまだ dev に無い。**
+
+✅ **ロールバックは `--resources-to-skip` なしで完走した**（`UPDATE_ROLLBACK_COMPLETE`）。
+2026-08-14 / 2026-09-05 のような `UPDATE_ROLLBACK_FAILED` にはならず、**ステップ 9c の
+復旧手順は不要**。`ServerFn` / `ImageFn` / `IAM::Policy` は一度 `UPDATE_COMPLETE` まで進んだ後、
+rollback で元の版へ戻っている（イベントを 1 件ずつ確認済み）。drift は無い。
+
+**再開手順**: 実値の `OR_ORIGIN_VERIFY_SECRET` を環境ダイアログへ入れて**新規セッション**を
+作り、ステップ 7 からやり直す（スタンプは持ち越せない ―― ステップ 5 の表）。
+findings は同じ形になるはずだが、**承認トークンは差分に固定されているので今回の値を
+再利用しない**。必ずその回の `diff` が印字した値を使う。
 
 ---
 
