@@ -1279,8 +1279,20 @@ GetTemplate の Deny には当たらない見込みである。
 #### 実施記録: 2026-09-06（✅ entry role から通る。ただし**現行の秘密が平文で出る**）
 
 `OpenReceptionClaudeDeploy-dev`（`claude-cloud-20260907-0002`）で `OpenReception-Web-dev` に対し
-上の 2 番目のコマンドを実行し、**`AccessDenied` にならず property 値が返った**。手順 A は
-成立し、手順 B へ落ちる必要はない。「現行にあって synth から消えたもの」は実際に読める。
+上の 2 番目のコマンドを実行し、**`AccessDenied` にならず property 値が返った**。
+**権限としては**手順 A が成立する ―― `GetTemplate` の Deny には当たらない。
+
+🔴 **ただし「通った」は「全部読めた」ではない。** 本節は当初「手順 B へ落ちる必要はない」と
+書いていたが、**これは 1 回の呼び出しだけから導いた誤りだった**。同日に並走していた
+もう 1 つのセッションが件数を数えたところ、`--include-property-values` は
+**12 件中 6 件しか返さず、`NextToken` も出ない**（下記「12 件中 6 件しか返らない」）。
+落ちたのは `AWS::Lambda::Permission` と `AWS::Lambda::Url` ―― 承認者がいちばん見たい
+公開範囲と invoke 認可である。**件数の突き合わせと手順 B は引き続き要る。**
+
+この誤りは CLAUDE.md「調査の作法」と同型である。「見つからなかった＝無い」を疑えとは
+書いてあるが、**逆向き（見えた＝全部見えた）も同じだけ危うい** ―― とくに
+**欠けを応答の中で知らせない API**（`NextToken` なしの打ち切り）では、
+1 通りの観測から十分性を主張できない。
 
 ⚠️ **ただし出力に現行の origin-verify シークレットが平文で載る。**
 `/Properties/DistributionConfig/Origins/0/OriginCustomHeaders/0/HeaderValue` の `BeforeValue` は
@@ -1439,7 +1451,19 @@ export OR_PROVIDER_SECRET_BACKEND=secrets-manager
 
 4 回目のデプロイで、`OR_ORIGIN_VERIFY_SECRET` に**この runbook の散文に出てくる
 プレースホルダ文字列そのもの**（山括弧つきの `＜実際の高エントロピー値＞`。13 文字 / 39 バイト）が
-入っていた。デプロイは実行せず停止した。
+入っていた。
+
+🔴 **この回はクラウドセッションが 2 つ並走した。本節は停止した側（PR #993）の記録である。**
+**もう一方は `deploy` を実行し、CloudFront が `originCustomHeader` を 400 で拒否した**
+（`illegal characters`。ロールバック完走・dev は無傷。ステップ 10「実施記録: 2026-09-06
+（4 回目）」）。つまりこの型は**運が良ければ外部 API に弾かれるが、それは保証ではない** ――
+CloudFront が弾いたのは値が**非 ASCII だった**からであって、`changeme` のような
+ASCII のプレースホルダなら**そのまま通り、デプロイは成功していた**。
+
+🔴 **機械的なガードは入った（#995）。** `resolveDeployContext` が山括弧・非 ASCII・
+`OR_ORIGIN_VERIFY_SECRET` の 22 文字未満を弾くので、この型は**窓を開ける前**か
+`verify` より手前で落ちる。ただしこれは症状を止めるものであり、生値を CDK context に
+載せる方式が続く限り貼り付け事故の余地は残る（本筋は #612）。
 
 **上のガードも、ステップ 5 の事前チェックも、これを止められない。** どちらも
 **set / unset しか見ていない**からで、プレースホルダは堂々と SET と出る。前節
