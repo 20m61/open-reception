@@ -907,25 +907,49 @@ scripts/aws-issue-credentials.sh --hours 4
 | findings の精査と人間への承認ヒアリング待ち | 約 3 時間 |
 | verify / preflight / diff の実行そのもの | 約 10 分 |
 
-**窓を開ける前に、次を全部済ませる**（どれもクラウド側で AWS 資格情報なしにできる）:
+#### 何が持ち越せて、何が持ち越せないか
 
-1. **セッションにリポジトリが紐づいているか。** `ls scripts/aws-cloud-deploy.sh` が通ること。
-   通らないなら、そのセッションを捨てて作り直す（ステップ 6b）
-2. **依存が入っているか。** `ls node_modules infra/node_modules` が両方通ること。
-   無ければ `npm ci` と `npm ci --prefix infra`（合わせて数分かかる）
+🔴 **順序は 2 つの制約で確定する。動かせない。**
+
+| | 持ち越せるか | 理由 |
+| --- | --- | --- |
+| 環境ダイアログの env | **新規セッションにだけ** | env はコンテナ起動時に焼き込まれる |
+| ゲートの green スタンプ | **持ち越せない** | `.git/open-reception-gate-stamp`（`gate_stamp_file()`）に置かれ、セッションごとに repo は新しく clone される |
+| 環境そのものの性質（Setup script が入れる道具・repo が紐づくか・依存の有無） | **持ち越せる** | 同じ環境なら次のコンテナでも同じ |
+
+したがって **`verify` は窓の中で回すしかない**（実測 約 6 分）。「窓を開ける前にスタンプを
+取っておく」は**できない** —— 別セッションで取ったスタンプはそのコンテナと一緒に消える。
+窓の予算に verify を必ず含めること。
+
+一方、**環境の性質は捨てセッションで先に確かめられる**。上の表の 3 行目がそれで、
+2026-09-06 に 50 分を溶かした ①②③ は全部この行に属する。
+
+#### 窓を開ける前に、捨てセッションで確かめる（AWS 資格情報なしでよい）
+
+claude.ai/code で同じ環境 ＋ リポジトリを選んでセッションを 1 つ作り、次を見る。
+**このセッションは使い捨てで、スタンプは持ち越せない**（上表）。
+
+1. **リポジトリが紐づいているか。** `ls scripts/aws-cloud-deploy.sh` が通ること。
+   通らないなら `source_url` を渡していない（ステップ 6b）
+2. **依存が入っているか。** `ls -d node_modules infra/node_modules` が両方通ること。
+   無ければ本番セッションでも `npm ci` と `npm ci --prefix infra` が要る（数分。窓に乗る）
 3. **ゲートの任意ツールが揃っているか。** セッション開始時の `gate-tooling:` 行を読む。
    `missing gitleaks` が出ていたら `--pr` の unit が**14 件赤になる**（原因はツール不在。
-   詳細は `docs/cloud-dev-environment.md` §4）。先に入れ直す
-4. **`verify` を通しておく。** 窓の中で `verify` を回す必要はない ―― green スタンプは
-   ツリーに紐づくので、**窓を開ける前に取っておける**（ステップ 7）
-5. **必須 context 4 変数が環境ダイアログに揃っているか**（ステップ 8b）。
-   `for v in OR_APP_SECRETS_NAME OR_ORIGIN_VERIFY_SECRET OR_PUBLIC_ORIGIN_OVERRIDE
-   OR_PROVIDER_SECRET_BACKEND; do printf '%s %s\n' "$v" "${!v:+SET}${!v:-UNSET}"; done`
-   （**値は出さない**。set/unset だけ見る）
+   詳細は `docs/cloud-dev-environment.md` §4）。`bash scripts/cloud-setup.sh` で入れ直す
+4. **必須 context 4 変数が環境ダイアログに揃っているか**（ステップ 8b）。**値は出さない**:
+
+```bash
+for v in OR_APP_SECRETS_NAME OR_ORIGIN_VERIFY_SECRET OR_PUBLIC_ORIGIN_OVERRIDE OR_PROVIDER_SECRET_BACKEND; do
+  printf '%-28s %s\n' "$v" "$(printenv "$v" >/dev/null && echo SET || echo UNSET)"
+done
+```
+
+（`${!v}` のような bash 固有の間接展開を使わない。ローカル macOS の zsh でも同じものが動く）
 
 **`--hours` の選び方。** preflight が deploy に要求する残時間は **2400s（40 分）**、
-`diff` などは 1200s。上の 1〜5 が済んでいれば実作業は 30 分程度に収まるので `--hours 4`
-で足りる。**ただし findings の承認を人間に仰ぐ運用なら、その待ち時間ぶんを足す** ――
+`diff` などは 1200s。窓の中で必ず要るのは **verify 約 6 分 ＋ preflight/diff 約 3 分 ＋
+deploy 用の 40 分**で、上の 1〜4 が済んでいれば `--hours 4` で足りる。
+**ただし findings の承認を人間に仰ぐ運用なら、その待ち時間ぶんを足す** ――
 承認者が席に居ない可能性があるなら `--hours 8` で開ける。
 
 既定を 4 のままにしてあるのは意図的である。窓を長くすることは**資格情報の露出時間を
