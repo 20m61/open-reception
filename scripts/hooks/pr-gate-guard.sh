@@ -47,26 +47,52 @@ else
   cmd="$(printf '%s' "${payload}" | jq -r '.tool_input.command // ""')"
 fi
 
-# 「データとして書かれた言及」を落としてから判定する。これをしないと、本フック自身を
-# 説明するコミットメッセージ（`gh pr merge` という文字列を含む）で git commit が
-# ブロックされる、という誤検知を踏む。落とす対象は順に:
+# 判定対象を抽出する。「データとして書かれた言及」と「読み取りコマンドの引数としての言及」を
+# 落としてから、パターンを当てる。
+#
+# 落とす対象は順に:
 #   1. ヒアドキュメントの本文（コミットメッセージ・ドキュメント生成）
 #   2. 引用符で囲まれた**散文**（guard-destructive.sh と同じ方針）
 #   3. `#` 以降の行コメント
+#   4. 全段が読み取り専用コマンドのパイプライン (#960)
+#
+# 🔴 **このガードが止めているのは「うっかり」であって、意図的な迂回ではない**
+# （docs/quality-gate.md の委譲プロンプトの項と同じ立場）。迂回したい人には
+# `OPEN_RECEPTION_SKIP_GATE_GUARD=1` という、transcript に残る道が用意してある。
+# だから判定の設計方針は「あらゆる書き方を封じる」ではなく、**日常的に打つ形について
+# 誤発火せず、日常的に打つ実行形を漏らさない**である。ただし緩める方向の変更では、
+# 変更前に止まっていた形を必ず測り直す（.claude/rules/opus5-autonomous-loop.md）。
 #
 # 🔴 **引用符を一律に落とすと、引用したパスでの実行が素通りする** (#960)。
 # `npx tsx "scripts/merge-pull-request.ts" 1` は変更前の実測で通っていた ―― 迂回が
 # 「クォートを 2 つ足す」で済むなら、止めたい実行も同じ手ですり抜ける。
-# 空白を含まない引用は**トークン（パス・引数）**なので引用だけを外し、空白を含む引用を
+# 空白を含まない引用は**トークン（パス・引数）**なので中身を残し、空白を含む引用を
 # 散文として落とす。コミットメッセージは空白を含むので従来どおり落ちる。
-scan="$(printf '%s' "${cmd}" | perl -0777 -pe "
+#
+# 🔴 **ただし引用を外すと、引用の中のメタ文字がシェルの区切りとして再解釈される。**
+# `rg -n 'create|merge' scripts/merge-pull-request.ts` が `|` で割れ、後半の塊の先頭語が
+# `merge` になって読み取り扱いから外れる（＝誤ブロック）。中身は残しつつ、区切りに
+# 使う文字だけを \x01 へ潰しておく（判定パターンにこれらの文字は現れない）。
+QUOTE_AND_COMMENT_FILTER="
   s/<<-?\s*(['\"]?)(\w+)\1.*?^[ \t]*\2[ \t]*\$//gms;
-  s/'([^'\s]*)'/\$1/g;
-  s/\"([^\"\s]*)\"/\$1/g;
+  s/'([^'\s]*)'/ my \$t = \$1; \$t =~ tr{|&;()\`<>}{\x01}; \$t /ge;
+  s/\"([^\"\s]*)\"/ my \$t = \$1; \$t =~ tr{|&;()\`<>}{\x01}; \$t /ge;
   s/'[^']*'//g;
   s/\"[^\"]*\"//g;
   s/(^|\s)#[^\n]*//g;
-")"
+"
+
+# 塊へ割る。区別が 2 つある:
+#
+#   - **段の連結**（`|` / `|&` / サブシェル・コマンド置換・プロセス置換の括弧・backtick）
+#     … 同じ塊の中の段として残す。中身が実行系なら塊ごと判定対象に残るので、
+#     `bash <(cat scripts/merge-pull-request.ts)` や `cat X |& bash` が読み取り扱いに
+#     落ちない（🔴 ここを境界にすると、読み取りの段だけが落ちて実行の段に検出語が
+#     残らない ―― `cat X | bash` と同じ穴が別の綴りで開く）
+#   - **実行の境界**（`;` / `&&` / `||` / `&` / 改行）… 別々に判定する
+#
+# `|&` は `&&` / `&` より先に食わせる（`&` 単独の文字クラスに先に当たると塊が割れる）。
+SEGMENT_SPLITTER='s/\|\&/|/g; s/[`()]/|/g; s/(\&\&|\|\||[;&\n])/\n/g'
 
 # 読み取りコマンドの引数として現れただけの塊を落とす (#960)。
 #
@@ -76,38 +102,48 @@ scan="$(printf '%s' "${cmd}" | perl -0777 -pe "
 # 一方で調査が止まり、誤発火が続けば OPEN_RECEPTION_SKIP_GATE_GUARD=1 の常用 ――
 # 本リポジトリが繰り返し警告している「override の習慣化」―― へ倒れる。
 #
-# 判定は**既定 deny**にする。落とすのは「そのパイプラインの全段が読み取り専用コマンド」の
-# ときだけで、実行しうる語（npx / node / tsx / xargs / bash / time / 未知のコマンド）が
-# 1 つでも混じれば従来どおり見る。
+# 判定は**既定 deny**。落とすのは「そのパイプラインの全段が読み取り専用コマンド」のときだけで、
+# 実行しうる語（npx / node / xargs / bash / time / 未知のコマンド）が 1 つでも混じれば従来どおり見る。
 #
-# 🔴 **読み取りの出力が実行系へ流れる形を落とさない**のがここの肝である
-# （`cat scripts/merge-pull-request.ts | bash`）。段ごとに落とすと、この形が
-# 「cat の段だけ落ちて bash の段には言及が無い」で素通りする ―― 読み取りを通した結果
-# 実行の検出が弱くなる、という今回の変更が作りうる穴そのものなので、判定単位は
-# **パイプライン全体**にしてある。
-scan="$(printf '%s' "${scan}" |
-  perl -0777 -pe 's/(\&\&|\|\||[;&()`\n])/\n/g' |
-  awk '
+# 🔴 **段ごとに落とすと `cat scripts/merge-pull-request.ts | bash` が素通りする** ――
+# 「読み取りを通した結果、実行の検出が弱くなる」形なので、判定単位はパイプライン全体。
+#
+# 🔴 **allowlist には「他プロセスを起動しない道具」しか入れない。** `find` / `fd` /
+# `sort`（`--compress-program`）/ `awk`（`system()`）は起動できるので入れない ――
+# 道具を 1 つ足すたびに同型の穴が増える族なので、疑わしいものは deny 側に置く。
+# `tests/hooks/pr-gate-guard.test.ts` が allowlist の中身を静的に縛っている。
+READ_ONLY_FILTER='
     function stage_is_read(text,   m, t, i, j, cmd) {
       m = split(text, t, /[ \t]+/)
       i = 1
-      # 先頭の空要素と環境変数代入（FOO=1 cmd ...）を読み飛ばす
       while (i <= m && (t[i] == "" || t[i] ~ /^[A-Za-z_][A-Za-z0-9_]*=/)) i++
-      if (i > m) return 1          # 実行語が無い（空の塊）
-      # 🔴 読み取りコマンドでも、他のコマンドを起動する形は読み取りではない
-      # （`find . -name x -exec npx tsx scripts/merge-pull-request.ts \;`）。
-      for (j = i; j <= m; j++)
-        if (t[j] == "-exec" || t[j] == "-execdir" || t[j] == "-ok" || t[j] == "-okdir") return 0
+      # 🔴 代入だけの塊を read にしない。`SCRIPT=scripts/merge-pull-request.ts; npx tsx $SCRIPT`
+      # で検出語が消える（実行そのものは次の塊で起こる）。空白だけの塊は read でよい。
+      if (i > m) return (text ~ /^[ \t]*$/)
+      for (j = i; j <= m; j++) {
+        if (t[j] ~ /^(-exec|-execdir|-ok|-okdir|-x|-X)$/) return 0
+        if (t[j] ~ /^--(exec|exec-batch|compress-program)(=|$)/) return 0
+        # 標準出力のリダイレクトと tee。読み取りの結果を別の場所へ置ける＝あとで実行できる
+        # （stderr の `2>` は対象外。`grep ... 2>/dev/null` は日常的に打つ）
+        if (t[j] ~ /^(1?>|>>|&>|>\|)/) return 0
+      }
       cmd = t[i]
-      sub(/^.*\//, "", cmd)       # /usr/bin/grep → grep（./scripts/x.ts → x.ts なので deny 側）
+      sub(/^.*\//, "", cmd)
+      if (cmd == "sed") { for (j = i; j <= m; j++) if (t[j] ~ /^-i/) return 0 }
       if (cmd != "git") return (cmd in READ)
-      # git はサブコマンドで読み書きが割れる。global option を飛ばして最初の語を見る
+      # git はサブコマンドで読み書きが割れる。`-c core.pager=...` のような
+      # 「任意コマンドを起動しうる option」は、値がサブコマンド位置に来て GIT_READ に
+      # 無いので deny 側へ落ちる（値を読み飛ばすのは -C / --git-dir / --work-tree だけ）。
       j = i + 1
-      while (j <= m && t[j] ~ /^-/) { if (t[j] == "-C" || t[j] == "-c") j++; j++ }
+      while (j <= m) {
+        if (t[j] == "-C" || t[j] == "--git-dir" || t[j] == "--work-tree") { j += 2; continue }
+        if (t[j] ~ /^-/) { j++; continue }
+        break
+      }
       return (j <= m && (t[j] in GIT_READ))
     }
     BEGIN {
-      split("grep egrep fgrep rg ag ack cat bat head tail sed awk less more wc nl sort uniq cut tr diff colordiff ls stat file find fd tree jq yq column basename dirname realpath", r, " ")
+      split("grep egrep fgrep rg ag ack cat bat head tail sed wc nl cut tr diff colordiff ls stat file column basename dirname realpath jq yq", r, " ")
       for (i in r) READ[r[i]] = 1
       split("log show diff grep blame cat-file ls-files ls-tree describe status rev-parse", g, " ")
       for (i in g) GIT_READ[g[i]] = 1
@@ -116,7 +152,29 @@ scan="$(printf '%s' "${scan}" |
       n = split($0, stage, "|")
       for (s = 1; s <= n; s++) if (!stage_is_read(stage[s])) { print; next }
     }
-  ')"
+'
+
+# 🔴 **抽出に失敗したら deny 側へ倒す。** perl / awk が無い環境や、フィルタが落ちた場合に
+# 空文字を返すと、以降の grep が全部外れて**ガードが丸ごと無言で無効化**される（fail-open）。
+# 判定できないときは生のコマンドをそのまま渡し、従来どおりの素朴な包含判定に落とす。
+extract_scan() {
+  local raw="$1" out status
+  out="$(
+    set -o pipefail
+    printf '%s' "${raw}" |
+      perl -0777 -pe "${QUOTE_AND_COMMENT_FILTER}" |
+      perl -0777 -pe "${SEGMENT_SPLITTER}" |
+      awk "${READ_ONLY_FILTER}"
+  )"
+  status=$?
+  if [ "${status}" -ne 0 ]; then
+    printf '%s' "${raw}"
+    return 0
+  fi
+  printf '%s' "${out}"
+}
+
+scan="$(extract_scan "${cmd}")"
 
 # Bash 経路の判定。**MCP 経路で既に決まっているならここは通さない**
 # （空の scan が `else exit 0` に落ちて、せっかくの判定が捨てられる）。
@@ -160,7 +218,7 @@ fi
 # 迂回として通ってしまった（既存テストが検出）。シェルとしてもこの形は代入ではない。
 # ${scan} は塊ごとに改行済みなので、行頭に立っているものだけを見る。
 if [ "${OPEN_RECEPTION_SKIP_GATE_GUARD:-0}" = "1" ] ||
-   printf '%s' "${scan}" | grep -Eq '^[[:space:]]*OPEN_RECEPTION_SKIP_GATE_GUARD=1([[:space:]]|$)'; then
+   printf '%s' "${scan}" | grep -Eq '^[[:space:]]*(export[[:space:]]+)?OPEN_RECEPTION_SKIP_GATE_GUARD=1([[:space:]]|$)'; then
   exit 0
 fi
 
