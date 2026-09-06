@@ -14,7 +14,8 @@ import { execFileSync, spawnSync } from 'node:child_process';
 import { mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import { missingToolTestPrerequisiteMessage } from '../../src/domain/governance/gate-tooling';
 
 /**
  * 🔴 **既定の 5 秒では足りない。**
@@ -86,6 +87,31 @@ function commit(dir: string, file: string, content: string, message: string): vo
   execFileSync('git', ['commit', '-qm', message], { cwd: dir, stdio: 'ignore' });
 }
 
+/**
+ * gitleaks を要するケースの前提を、**gitleaks という語を出して**落とす。
+ *
+ * 🔴 2026-09-06、gitleaks が入っていないクラウドセッションでこのファイルが **14 件赤**に
+ * なった。ところが個々の失敗は `expected +0 to be 2` で、**gitleaks という語が出力に一度も
+ * 現れない**。フックは gitleaks が無いと（既定で）警告して素通しするので exit 0 になり、
+ * 「ブロックされるはず」の assertion が全部落ちる ―― 症状は「フックが壊れた」ようにしか
+ * 見えないが、実際は**環境に道具が無いだけ**である。原因（`scripts/cloud-setup.sh` が
+ * install を全部 `|| true` で握り潰す）へ到達するのに時間を使った。
+ *
+ * SessionStart の gate-tooling 報告は既に欠落を名指ししているが、**赤くなったテストの側から
+ * そこへ辿る導線が無かった**。この前提アサートがその導線になる。
+ *
+ * skip ではなく **throw** する。skip にすると「道具が無い環境ではゲートが静かに緑」になり、
+ * CLAUDE.md ガード（テストの skip / 弱体化で green にしない）に反する。
+ */
+function assertGitleaksAvailable(pathEnv: string = process.env.PATH ?? ''): void {
+  const found = spawnSync(BASH, ['-c', 'command -v gitleaks'], {
+    env: { ...process.env, PATH: pathEnv },
+    encoding: 'utf8',
+  });
+  if (found.status === 0) return;
+  throw new Error(missingToolTestPrerequisiteMessage('gitleaks'));
+}
+
 /** gitleaks を含まない PATH を作る（他の必須コマンドは実体を symlink する）。 */
 function pathWithoutGitleaks(): string {
   const dir = mkdtempSync(join(tmpdir(), 'no-gitleaks-path-'));
@@ -93,6 +119,20 @@ function pathWithoutGitleaks(): string {
     const real = execFileSync(BASH, ['-c', `command -v ${bin}`], { encoding: 'utf8' }).trim();
     symlinkSync(real, join(dir, bin));
   }
+  return dir;
+}
+
+/**
+ * `gitleaks` という名前の実行可能ファイルが**必ず**居る PATH を作る。
+ *
+ * 前提アサートの下界（「あるときは throw しない」）を `process.env.PATH` で書くと、
+ * **gitleaks が無い環境ではその下界自身が落ちる** —— つまり下界が「実装が常に throw する」
+ * ではなく「環境に道具が無い」を測ってしまい、主張が環境に依存する。ここで作る PATH は
+ * 中身を実行しない（アサートは `command -v` しか見ない）ので、本物の gitleaks は要らない。
+ */
+function pathWithGitleaks(): string {
+  const dir = mkdtempSync(join(tmpdir(), 'with-gitleaks-path-'));
+  writeFileSync(join(dir, 'gitleaks'), '#!/bin/sh\nexit 0\n', { mode: 0o755 });
   return dir;
 }
 
@@ -134,6 +174,8 @@ afterEach(() => {
 });
 
 describe('push-secret-guard: 対象外は素通しする', () => {
+  beforeAll(() => assertGitleaksAvailable());
+
   it('Bash 以外のツールには関与しない', () => {
     expect(runHook('git push', { tool: 'Edit' }).status).toBe(0);
   });
@@ -164,6 +206,8 @@ describe('push-secret-guard: 対象外は素通しする', () => {
 });
 
 describe('push-secret-guard: コマンド位置の git push を捕まえる', () => {
+  beforeAll(() => assertGitleaksAvailable());
+
   it('連結されていても捕まえる（秘密情報ありで差分テスト）', () => {
     // 🔴 秘密情報が無いリポジトリで status===0 を見るだけでは「push として捕まえた上で
     // 許可した」のか「そもそも push として認識していない」のか区別できない
@@ -208,6 +252,8 @@ describe('push-secret-guard: コマンド位置の git push を捕まえる', ()
 });
 
 describe('push-secret-guard: git push をサブコマンド位置で検出する（global option を挟んでも）', () => {
+  beforeAll(() => assertGitleaksAvailable());
+
   // 単純な `git\s+push` 正規表現だと `git -C <path> push` のように global option を挟んだ
   // 呼び出しを取りこぼす。worktree 作業では `-C` を素直に使う（実際にこのセッションで
   // 複数回使った）。差分テスト: 秘密情報を含むコミットを積んだ上で、各種の書き方が
@@ -249,6 +295,8 @@ describe('push-secret-guard: git push をサブコマンド位置で検出する
 });
 
 describe('push-secret-guard: 秘密情報を検出したらブロックする', () => {
+  beforeAll(() => assertGitleaksAvailable());
+
   it('push しようとしている範囲に AWS アクセスキー ID があればブロックする', () => {
     commit(repo, 'leak.env', `AWS_ACCESS_KEY_ID=${FAKE_AWS_KEY}\n`, 'oops: leak');
     const { status, stderr } = runHook('git push origin HEAD');
@@ -279,6 +327,8 @@ describe('push-secret-guard: 秘密情報を検出したらブロックする', 
 });
 
 describe('push-secret-guard: 明示的な脱出ハッチ', () => {
+  beforeAll(() => assertGitleaksAvailable());
+
   it('フックの環境に OPEN_RECEPTION_SKIP_SECRET_SCAN=1 があれば秘密情報があっても通す', () => {
     commit(repo, 'leak.env', `AWS_ACCESS_KEY_ID=${FAKE_AWS_KEY}\n`, 'oops: leak');
     const { status } = runHook('git push origin HEAD', {
@@ -294,6 +344,26 @@ describe('push-secret-guard: 明示的な脱出ハッチ', () => {
 });
 
 describe('push-secret-guard: gitleaks が無い場合', () => {
+  // 🔴 この describe は**不在そのものを検証対象にしている**ので、
+  // `assertGitleaksAvailable` の beforeAll を付けない（付けると検証したい条件を自ら禁じる）。
+
+  it('前提アサートは gitleaks 不在を gitleaks という語で落とす', () => {
+    const dir = pathWithoutGitleaks();
+    expect(() => assertGitleaksAvailable(dir)).toThrowError(/gitleaks/);
+    // 「道具が無い」から「なぜ無言なのか」まで 1 本で辿れること。
+    expect(() => assertGitleaksAvailable(dir)).toThrowError(/cloud-setup\.sh/);
+  });
+
+  it('gitleaks があるときは前提アサートが通る（常に throw する変異を落とす下界）', () => {
+    // 下界が無いと「常に throw する」実装でも上のケースだけは緑になる。
+    const dir = pathWithGitleaks();
+    try {
+      expect(() => assertGitleaksAvailable(dir)).not.toThrow();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it('既定では警告した上で通す（無言では通さない）', () => {
     const dir = pathWithoutGitleaks();
     const { status, stderr } = runHook('git push origin HEAD', { env: { PATH: dir } });

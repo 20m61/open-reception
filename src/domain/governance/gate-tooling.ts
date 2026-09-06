@@ -77,6 +77,39 @@ export function formatGateToolSessionReport(observed: Partial<GateToolObservatio
   return lines;
 }
 
+/**
+ * **その道具を要するテストが「不在」で落ちたとき**に、原因へ到達できる 1 本の文字列。
+ *
+ * ## なぜ要るか（2026-09-06 に実際に踏んだ）
+ *
+ * gitleaks が入っていないクラウドセッションで `tests/hooks/push-secret-guard.test.ts` が
+ * **14 件赤**になった。ところが個々の失敗は `expected +0 to be 2` で、**gitleaks という語が
+ * 出力に一度も現れない**。フックは gitleaks が無いと（既定で）警告して素通しするため
+ * exit 0 になり、「ブロックされるはず」の assertion が全部落ちる —— 症状は「フックが壊れた」
+ * ようにしか見えないが、実際は**環境に道具が無いだけ**である。
+ *
+ * 道具が無言で欠けるのは `scripts/cloud-setup.sh` が install を全部 `|| true` で握り潰す
+ * ためで、これは意図的（非ゼロ終了するとセッションごと起動しない）。つまり
+ * **「握り潰しをやめる」は取れない**。取れるのは、欠けた結果として落ちたテストから
+ * 原因へ辿れるようにすることだけである。
+ *
+ * `formatGateToolSessionReport` は SessionStart で既に欠落を名指ししているが、
+ * **赤くなったテストの側からその報告へ辿る導線が無かった**。この文字列がその導線になる。
+ */
+export function missingToolTestPrerequisiteMessage(tool: GateOptionalTool): string {
+  // 🔴 **`cloud-setup.sh` を `scripts/` 付きのパスとして書かない。** `check-script-wiring.ts` の
+  // `SCRIPT_REF` は `scripts/<name>` を配線とみなすので、ここに完全パスを書くと
+  // 「もう自動配線された」と誤判定され、allowlist の「なぜ手動なのか」という記録が
+  // 消える方向へ倒れる（#681 と同型。実際にこの関数を書いた時点で一度落とした）。
+  // `execution-lane.ts` が同じ理由で同じ書き方をしている。
+  return [
+    `${tool} が PATH にありません。このテストは ${tool} の実挙動を検証するため、不在のままでは結果に意味がありません（不在時は検査が素通りし、無関係に見える assertion が落ちます）。`,
+    `無言で欠ける理由: cloud-setup.sh（\`scripts/\` 配下）は install を全て \`|| true\` で握り潰します（非ゼロ終了するとセッションごと起動しないため）。`,
+    `確認: セッション開始時の gate-tooling 報告（"gate-tooling: missing ..."）に ${tool} が挙がっていないか。`,
+    `復旧: cloud-setup.sh の ${tool} 導入部分を手で実行する（docs/cloud-dev-environment.md）。`,
+  ].join('\n');
+}
+
 /** quality-gate が e2e 前に出す 1 行理由（skip_unverified の reason にそのまま載せる）。 */
 export function playwrightChromiumMissingReason(): string {
   return 'playwright chromium not installed (npx playwright install chromium)';

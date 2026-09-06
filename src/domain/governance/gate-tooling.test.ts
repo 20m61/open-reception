@@ -3,6 +3,7 @@ import {
   GATE_OPTIONAL_TOOLS,
   formatGateToolSessionReport,
   missingGateTools,
+  missingToolTestPrerequisiteMessage,
   playwrightChromiumMissingReason,
   playwrightChromiumReady,
   presentGateTools,
@@ -68,6 +69,26 @@ describe('gate-tooling (#838)', () => {
     expect(text).toContain('all optional tools present');
     expect(text).not.toContain('MISSING');
     expect(text).not.toContain('push-secret-guard will SKIP');
+  });
+
+  it('道具前提の失敗メッセージは道具名と無言化の原因を名指しする', () => {
+    const message = missingToolTestPrerequisiteMessage('gitleaks');
+    expect(message).toContain('gitleaks');
+    // 「なぜ無言で欠けるのか」へ到達できること（cloud-setup.sh の `|| true`）。
+    expect(message).toContain('cloud-setup.sh');
+    expect(message).toContain('|| true');
+    // 既に存在する SessionStart 報告へ辿れること。
+    expect(message).toContain('gate-tooling');
+  });
+
+  it('道具名を差し替えるとメッセージも変わる（定数を返す変異を落とす）', () => {
+    const forGitleaks = missingToolTestPrerequisiteMessage('gitleaks');
+    const forSemgrep = missingToolTestPrerequisiteMessage('semgrep');
+    expect(forGitleaks).not.toEqual(forSemgrep);
+    // 下界: どちらも自分の道具名だけを名指しし、他方を混ぜない。
+    expect(forSemgrep).toContain('semgrep');
+    expect(forSemgrep).not.toContain('gitleaks');
+    expect(forGitleaks).not.toContain('semgrep');
   });
 
   it('e2e 早期失敗の理由文はインストール手順を名指しする', () => {

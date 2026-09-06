@@ -325,6 +325,51 @@ GitHub の署名で `verified: true` になっている（`gh api repos/:owner/:
 | **`.open-next/`** | fresh checkout には無い。以前は `infra WebStack synth` が SKIP → `--strict` で FAIL になっていたが、**`quality-gate.sh` が自分でビルドするようになった**（#677）。手で `npm run build:open-next` を先に打つ必要はもう無い |
 | **lighthouse** | `lhci` は npm 依存なので `npm ci` で入る。Chrome は `playwright.config.ts` と同じ理由で `quality-gate.sh` が `CHROME_PATH` を補完する |
 
+#### 🔴 gitleaks 不在は「SKIP」ではなく `--pr` の **FAIL** として出る（2026-09-06 実測）
+
+§6.1 は semgrep について「セッションは正常に起動するのに黙って入っていない」型を記録して
+いる。そこでの症状は **`--full` の sast が SKIP**（マージゲートが黙って弱くなる）だった。
+**gitleaks では症状が違う。**
+
+`gitleaks` が入っていないと `./scripts/quality-gate.sh --pr` の unit が **14 件失敗**する。
+全件が `tests/hooks/push-secret-guard.test.ts` で、しかも個々の失敗はこうなる:
+
+```
+AssertionError: npm run build && git push: expected +0 to be 2
+```
+
+フックは gitleaks が無いと（既定で）警告して **exit 0** する ―― 設計どおりの SKIP 挙動なので、
+「ブロックするはず（exit 2）」を主張する assertion が全部落ちる。**出力に gitleaks という語が
+一度も出ない**ため、症状はフックの欠陥にしか見えない。2026-09-06 のデプロイでは、ここで
+verify を 2 回まわす羽目になり、**窓を最も消費した要因**になった。
+
+**対策（実装済み）**: 同テストの gitleaks 依存 describe は `beforeAll` で前提を検査し、
+不在なら `missingToolTestPrerequisiteMessage`（`src/domain/governance/gate-tooling.ts`）を
+throw する。以後は不在の環境でこう出る:
+
+```
+gitleaks が PATH にありません。…（不在時は検査が素通りし、無関係に見える assertion が落ちます）
+無言で欠ける理由: scripts/cloud-setup.sh は install を全て `|| true` で握り潰します…
+確認: セッション開始時の gate-tooling 報告（"gate-tooling: missing ..."）に gitleaks が挙がっていないか。
+復旧: scripts/cloud-setup.sh の gitleaks 導入部分を手で実行する…
+```
+
+skip ではなく **throw** にしてある。skip にすると「道具が無い環境ではゲートが静かに緑」に
+なり、CLAUDE.md ガード（テストの skip / 弱体化で green にしない）に反する。
+
+**`|| true` は外さない。** `scripts/cloud-setup.sh` が install を全部 `|| true` で握り潰すのは
+意図的で、非ゼロ終了すると**セッションごと起動しない**（同スクリプトの注記）。つまり
+「握り潰しをやめる」は取れる手ではない。取れるのは ①SessionStart の `gate-tooling:` 行で
+欠落を名指しすること（#838、実装済み）と、②欠落の結果として落ちたテストから原因へ
+辿れるようにすること（上記）の 2 つだけである。
+
+復旧コマンドは §0-E の健康診断と同じ:
+
+```bash
+for c in gh aws gitleaks semgrep; do printf '%-10s %s\n' "$c" "$(command -v $c || echo MISSING)"; done
+bash scripts/cloud-setup.sh   # 全部入れ直す（失敗しても非ゼロにならないので、上の一覧で確認する）
+```
+
 #### GitHub のレート制限は「別々のバケツ」（2026-08-27 実測）
 
 🔴 **`gh api rate_limit` を見て「5000/5000 だから大丈夫」と判断しない。あれは

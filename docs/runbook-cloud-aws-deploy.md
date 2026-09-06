@@ -894,6 +894,44 @@ scripts/aws-issue-credentials.sh --hours 4
 値は既定では表示されず、macOS のクリップボードへ直接入る（`--print` を明示したときのみ表示）。
 **値をこの runbook や git や log に書かない。**
 
+### 🔴 窓は「環境が整ってから」開ける（2026-09-06 追加）
+
+**窓が閉じるまでの時間は、AWS を触っている時間ではなく実時間で減る。** 環境不備の復旧も、
+人間の承認待ちも、丸ごと窓に乗る。2026-09-06 の 3 回目のデプロイは `--hours 4` で開けて
+**deploy に到達する前に尽きた**（preflight が「残り 1011s < 必要 2400s」で停止。止まったのは
+設計どおり）。内訳は次のとおりで、**AWS を実際に呼んでいた時間は 3 分しかない**:
+
+| 消費 | 時間 |
+| --- | --- |
+| 環境不備の復旧（repo 未 clone・`npm ci` ×2・gitleaks 不在で verify 2 回） | 約 50 分 |
+| findings の精査と人間への承認ヒアリング待ち | 約 3 時間 |
+| verify / preflight / diff の実行そのもの | 約 10 分 |
+
+**窓を開ける前に、次を全部済ませる**（どれもクラウド側で AWS 資格情報なしにできる）:
+
+1. **セッションにリポジトリが紐づいているか。** `ls scripts/aws-cloud-deploy.sh` が通ること。
+   通らないなら、そのセッションを捨てて作り直す（ステップ 6b）
+2. **依存が入っているか。** `ls node_modules infra/node_modules` が両方通ること。
+   無ければ `npm ci` と `npm ci --prefix infra`（合わせて数分かかる）
+3. **ゲートの任意ツールが揃っているか。** セッション開始時の `gate-tooling:` 行を読む。
+   `missing gitleaks` が出ていたら `--pr` の unit が**14 件赤になる**（原因はツール不在。
+   詳細は `docs/cloud-dev-environment.md` §4）。先に入れ直す
+4. **`verify` を通しておく。** 窓の中で `verify` を回す必要はない ―― green スタンプは
+   ツリーに紐づくので、**窓を開ける前に取っておける**（ステップ 7）
+5. **必須 context 4 変数が環境ダイアログに揃っているか**（ステップ 8b）。
+   `for v in OR_APP_SECRETS_NAME OR_ORIGIN_VERIFY_SECRET OR_PUBLIC_ORIGIN_OVERRIDE
+   OR_PROVIDER_SECRET_BACKEND; do printf '%s %s\n' "$v" "${!v:+SET}${!v:-UNSET}"; done`
+   （**値は出さない**。set/unset だけ見る）
+
+**`--hours` の選び方。** preflight が deploy に要求する残時間は **2400s（40 分）**、
+`diff` などは 1200s。上の 1〜5 が済んでいれば実作業は 30 分程度に収まるので `--hours 4`
+で足りる。**ただし findings の承認を人間に仰ぐ運用なら、その待ち時間ぶんを足す** ――
+承認者が席に居ない可能性があるなら `--hours 8` で開ける。
+
+既定を 4 のままにしてあるのは意図的である。窓を長くすることは**資格情報の露出時間を
+長くすること**であり、「毎回長く開ける」が習慣になるほうが危ない。長さは、その回に
+承認待ちが挟まるかどうかを人間が見て決める。
+
 ---
 
 ## ステップ 6: 環境ダイアログへ登録
@@ -906,6 +944,47 @@ claude.ai/code の環境ダイアログへ、次の**変数名 5 つ**を登録�
 - `AWS_SESSION_TOKEN`
 - `AWS_REGION`
 - `AWS_CREDENTIAL_EXPIRATION`
+
+---
+
+## ステップ 6b: 🔴 セッションを作る（リポジトリを紐づける）
+
+環境変数を登録したら、**その後に**セッションを作る。既存セッションのコンテナは起動時に
+env を焼き込んでいるので、**ダイアログの更新は新規セッションにしか効かない**
+（`docs/cloud-dev-environment.md`）。
+
+### `source_url` を必ず渡す（2026-09-06 追加）
+
+2026-09-06 の 3 回目、委譲先セッションが `/home/user` が空の状態で起動し、
+`bash scripts/aws-cloud-deploy.sh verify` が `No such file or directory` で即死した。
+`aws` CLI は入っていた（＝ Setup script は走っている）ので**環境の不具合に見えた**が、
+原因は呼び出し側 ―― `create_session` に **`source_url` を渡していなかった**。
+リポジトリはセッションの source として明示的に指定しない限り紐づかない。
+
+```
+create_session(
+  environment_id = "env_014bqpK5jWNvBq6oU2qLtybs",
+  source_url     = "https://github.com/20m61/open-reception",   # ← これが無いと空で起動する
+  source_revision= "main",
+  ...
+)
+```
+
+復旧は手で clone すればよいが、**その復旧時間は窓に乗る**（このときは clone と
+`npm ci` ×2 で約 10 分。ステップ 5 の「窓は環境が整ってから開ける」を参照）。
+
+### 起動直後に確かめること
+
+セッションの最初のターンで、**AWS を一度も呼ばずに**次を確認する:
+
+```bash
+ls scripts/aws-cloud-deploy.sh && ls -d node_modules infra/node_modules
+```
+
+- `scripts/...` が無い → `source_url` を渡し忘れている。セッションを作り直す
+- `node_modules` が無い → `npm ci` と `npm ci --prefix infra`。
+  🔴 **`quality-gate.sh` の bootstrap による自己修復を当てにしない。** `verify` は
+  `npm run build:open-next` を**ゲートより先に**走らせるので、その時点で依存が要る
 
 ---
 
@@ -1040,7 +1119,7 @@ diff gate は `resourceReplacement` / `resourceRemoval` などを見つけると
 ```
 
 1. **人間が findings を読む。** 何が置換・削除されるのか、可用性・認可にどう影響するのかを
-   実際に確かめる（`aws cloudformation get-template` で現行と synth を突き合わせる等）
+   実際に確かめる（**手順は下の「9b-1: entry role で findings を読む」**）
 2. 承認するなら、そのトークンを `OR_APPROVED_DIFF` に渡して deploy する。
    複数スタックぶんはカンマ区切り
 
@@ -1059,6 +1138,76 @@ findings が 1 件でも増減・変化すれば値が変わり、**古い承認
 - 承認が効いたときは、何を承認したのかが **findings ごとログに残る**
 - トークンは秘密ではない（誰でも計算できる）。これは*認証*ではなく**取り違え防止**であり、
   実行を止める力は IAM 境界（boundary / restriction ポリシー）が持っている
+
+### 9b-1: entry role で findings を読む（2026-09-06 追加）
+
+🔴 **`aws cloudformation get-template` は使えない。** 以前この節は「get-template で現行と
+synth を突き合わせる」と書いていたが、`OpenReceptionClaudeDeploy-dev` は
+`cloudformation:GetTemplate` を**明示 Deny** されている（2026-09-06 実測）:
+
+```
+AccessDenied: User: arn:aws:sts::822063948773:assumed-role/OpenReceptionClaudeDeploy-dev/...
+is not authorized to perform: cloudformation:GetTemplate ... with an explicit deny in an identity-based policy
+```
+
+つまり**クラウドから承認する運用なのに、runbook が指定していた検証手段が塞がっていた**。
+承認者が本当に見たいのは「**現行にあって synth から消えたもの**」である ―― これはまさに
+2026-08-15 に dev を 500 にした型（`secretsmanager:GetSecretValue` の消失）なので、
+「新しい姿を眺める」だけでは足りない。
+
+**手順 A（既定）: change set の property 値を前後で見る。**
+
+🔴 **`aws cloudformation list-change-sets` も使えない。** entry role の CloudFormation
+Allow は `DescribeStacks` と `DescribeChangeSet` の **2 つだけ**である
+（`scripts/aws-policies/claude-deploy-entry.json` の `ReadOwnDevStacksForDiffGate`）。
+change set 名は探さなくてよい ―― wrapper が **`claude-gate-<short HEAD>`** という決め打ちの
+名前で作る（`scripts/aws-cloud-deploy.sh` の `changeset_name()`）。`diff` の作った change set は
+`--no-execute` なのでそのまま残っており、あとから読める。
+
+🔴 **`--region` を明示する。** `OpenReception-CfMon-dev` は us-east-1 で、既定リージョン
+（ap-northeast-1）で引くと「スタックが存在しない」という不可解な ValidationError になる。
+
+```bash
+CS="claude-gate-$(git rev-parse --short HEAD)"
+STACK=OpenReception-Web-dev
+REGION=ap-northeast-1          # CfMon-dev のときだけ us-east-1
+
+# 1. 何がどう変わるか（Replacement と変更源）
+aws cloudformation describe-change-set --stack-name "$STACK" --change-set-name "$CS" --region "$REGION" \
+  --query 'Changes[].ResourceChange.{Id:LogicalResourceId,T:ResourceType,A:Action,R:Replacement,D:Details[].{Prop:Target.Name,Req:Target.RequiresRecreation,Ev:Evaluation,Src:ChangeSource}}' \
+  --output json
+
+# 2. 🔴 消えたものを見る（前後の値そのもの）
+aws cloudformation describe-change-set --stack-name "$STACK" --change-set-name "$CS" --region "$REGION" \
+  --include-property-values \
+  --query 'Changes[].ResourceChange.Details[].Target.{Prop:Path,Before:BeforeValue,After:AfterValue}' \
+  --output json
+```
+
+`--include-property-values` は **`cloudformation:DescribeChangeSet` と同じ action** なので、
+GetTemplate の Deny には当たらない見込みである。⚠️ **2026-09-06 時点で entry role からは
+未実測**（窓が閉じたため）。次のセッションで最初に確かめ、結果をこの節へ追記すること。
+denied なら手順 B へ落ちる。
+
+**手順 B（`--include-property-values` が通らない場合）: 読める側だけで判断し、足りない分は
+局所化する。**
+
+- synth 側（これからの姿）は `infra/cdk.out/<Stack>.template.json` にある。**ローカル
+  ファイルなので IAM に関係なく読める**。「付くはずのものが付いているか」はこれで確認できる
+- `describe-change-set` の `Details[].Evaluation` / `ChangeSource` は読める。
+  `Evaluation: Dynamic` ＋ `ChangeSource: ResourceAttribute` は「参照先が変わったから
+  自分も Modify 扱い」という**派生**であり、参照先本体が `Replacement: False` なら
+  実体は置換されない
+- それでも**「消えたもの」は原理的に見えない**。ここが手順 B の限界である
+
+**手順 C（判断が要る）: `cloudformation:GetTemplate` を entry role の allowlist へ足すか。**
+読み取り専用ではあるが、テンプレートには構成情報が載るので **`docs/adr/0009-...` の
+境界の後退にあたるかどうかの判断が要る**（CLAUDE.md 停止境界「認可の境界変更」）。
+勝手に足さない。足すなら ADR に決定として記録する。
+
+**忘れないこと: 承認は第 2 の防波堤である。** 2026-08-15 の消失を実際に止めているのは
+承認手順ではなく、**ステップ 8b の必須 context ガード（未指定なら始めない）と negative
+security test 8 本**である。9b で全部を見切れないことを、ガードを緩める理由にしない。
 
 ---
 
@@ -1082,6 +1231,22 @@ findings が 1 件でも増減・変化すれば値が変わり、**古い承認
 
 dev の値は `docs/deploy-aws.md`「dev をゼロから立ち上げる手順」を参照
 （**リポジトリには置かない**。`originVerifySecret` は秘密の値そのもの）。
+
+### 🔴 `OR_APP_SECRETS_NAME` は「非秘密だから」落ちやすい（2026-09-06）
+
+3 回目のデプロイで、**4 つのうち `OR_APP_SECRETS_NAME` だけが環境ダイアログに未登録**で
+`diff` が停止した（ガードは正しく効いた。2026-08-15 の 500 は再発していない）。
+落ちたのは 4 つのうち**唯一「秘密の値ではない」もの**（Secrets Manager の名前）で、
+しかもリポジトリに平文で 2 箇所書いてある（この節と `docs/deploy-aws.md`）。
+秘密 3 つは「貼る」意識が働くが、非秘密の 1 つは「書いてあるから後で」で落ちる。
+**ステップ 5 の事前チェックで 4 つまとめて set/unset を見る**のはこのためである。
+
+**wrapper に既定値フォールバックを入れない（決定）。** 「runbook に書いてあるのだから
+未設定なら埋めればよい」は筋が悪い。このガードの目的は*値を埋めること*ではなく
+**別構成のスタックが黙って出来るのを防ぐこと**であり、フォールバックを入れると
+「環境が壊れている」という大声の失敗が「たぶん合っている値で進む」という沈黙の
+誤動作に変わる（CLAUDE.md「主修正とフォールバックを同じコミットで入れない」と同型）。
+未設定なら**止まるのが正しい**。
 
 ```bash
 export OR_APP_SECRETS_NAME=open-reception/dev/app-v2
