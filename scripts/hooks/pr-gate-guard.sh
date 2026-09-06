@@ -27,7 +27,14 @@ set -u
 # 早期 exit を最優先する: 本フックは全 Bash 呼び出しで起動されるため、
 # 対象コマンドでなければ git にも触れずに即座に抜ける。
 payload="$(cat)"
-tool="$(printf '%s' "${payload}" | jq -r '.tool_name // ""')"
+# 🔴 **jq が落ちたら deny 側へ倒す。** 失敗を空文字として扱うと `tool` が "" になり、
+# Bash 経路も MCP 経路も判定されずに素通りする（ガードが丸ごと無言で無効化される）。
+# 読めなかったときは payload 全体を Bash のコマンドとみなして素朴に検査する。
+if tool="$(printf '%s' "${payload}" | jq -r '.tool_name // ""' 2>/dev/null)"; then
+  payload_readable=1
+else
+  tool="Bash"; payload_readable=0
+fi
 
 required=""
 action=""
@@ -44,24 +51,115 @@ if [ -n "${required}" ]; then
   cmd=""
 else
   [ "${tool}" = "Bash" ] || exit 0
-  cmd="$(printf '%s' "${payload}" | jq -r '.tool_input.command // ""')"
+  if [ "${payload_readable}" = "1" ]; then
+    cmd="$(printf '%s' "${payload}" | jq -r '.tool_input.command // ""' 2>/dev/null)" || cmd="${payload}"
+  else
+    cmd="${payload}"
+  fi
 fi
 
-# 判定対象を抽出する。「データとして書かれた言及」と「読み取りコマンドの引数としての言及」を
-# 落としてから、パターンを当てる。
+# ---------------------------------------------------------------------------
+# 判定は 2 段。
 #
-# 落とす対象は順に:
+#   1. **素朴な読み取りコマンドなら、そこで通す**（#960）
+#   2. それ以外は、従来どおりコマンド文字列そのものへパターンを当てる
+#
+# 🔴 **1 は whitelist であって、実行形の blacklist ではない。**
+#
+# 最初の実装は逆向きだった ―― コマンドを塊へ割り、「読み取りに見える塊」を判定対象から
+# 落としていた。独立レビューが 2 周にわたって抜け道を出し、**そのたびに綴りを 1 つ足す**
+# 形になった（`|&` → プロセス置換 → `&>` → `sed --in-place` → `git grep -O` …）。
+# `.claude/rules/opus5-autonomous-loop.md`「値を調整している自分には気づけない」の型なので、
+# 前提を替えた: **落とすのではなく、通すものを列挙する。**
+#
+# 通すのは「シェルの機能を一切使わない、読み取り専用コマンドのパイプライン」だけ:
+#
+#   - `;` `&` `&&` `||` backtick `$(` `<(` `>(` `>` ヒアドキュメント を含まない
+#     （リダイレクトも背景実行も置換も無い ―― 「読んだ結果を置いてから実行する」形が作れない）
+#   - 各段の先頭語が読み取り専用の道具（`git` は読み取りサブコマンドのみ）
+#   - 検出語が**位置引数**として現れている（`--pager=<検出語>` のように option の値として
+#     渡されていたら通さない ―― `sort --compress-program` / `git grep -O` はこの形）
+#   - パスを値に取る option（`--out=/tmp/x`）を含まない
+#
+# ここから 1 つでも外れたら 2 の従来判定へ落ちる。**つまり「見落とした綴り」は
+# 常に従来どおりブロックされる側へ倒れる** —— 綴りを足し忘れても穴にならない。
+# 代償は誤ブロックが残ることで、それは #960 が消したかった痛みだが、
+# **穴を開けるより誤発火を残すほうが安い**（迂回は transcript に残る脱出ハッチがある）。
+PLAIN_READ_PREDICATE='
+  my $cmd = do { local $/; <STDIN> };
+  # 読み取り専用の道具。**他プロセスを起動できるものは入れない**
+  # （`find` / `fd` の -exec、`sort --compress-program`、`awk` の system()、
+  #  `less` / `more` の `!` と LESSOPEN、`xargs`）。
+  my %READ = map { $_ => 1 } qw(
+    grep egrep fgrep rg ag ack cat bat head tail sed wc nl cut tr uniq
+    diff colordiff ls stat file column basename dirname realpath jq yq git
+  );
+  my %GIT_READ = map { $_ => 1 } qw(
+    log show diff grep blame cat-file ls-files ls-tree describe status rev-parse
+  );
+  # 引用の中身は構造の判定から隠す（メタ文字だけ潰す。中身は位置の判定で使う）
+  $cmd =~ s/\x27([^\x27]*)\x27/ my $t = $1; $t =~ tr{|&;()`<>\n}{\x01}; $t /ge;
+  $cmd =~ s/"([^"]*)"/ my $t = $1; $t =~ tr{|&;()`<>\n}{\x01}; $t /ge;
+  # `2>/dev/null` だけは通す（読み取り調査で日常的に打つ。stderr を捨てるだけで
+  # 「読んだ結果を置いてから実行する」形は作れない）。他の `>` は全部拒む ――
+  # `cat X 2>&1 > /tmp/m.ts` は 2 つ目の `>` で落ちる。
+  $cmd =~ s{2>\s*/dev/null}{}g;
+  exit 1 if $cmd =~ /[;&`>\n]/;                 # 区切り・背景実行・置換・リダイレクト
+  exit 1 if $cmd =~ /\$\(|<\(|\|\|/;
+  my @stages = split /\|/, $cmd, -1;
+  exit 1 unless @stages;
+  for my $stage (@stages) {
+    my @t = grep { length } split /\s+/, $stage;
+    shift @t while @t && $t[0] =~ /^[A-Za-z_]\w*=/;   # 先頭の環境変数代入
+    exit 1 unless @t;
+    my $c = $t[0]; $c =~ s{.*/}{};                    # /usr/bin/grep → grep
+    exit 1 unless $READ{$c};
+    exit 1 if $c eq "sed" && grep { /^(-i|--in-place)/ } @t;
+    if ($c eq "git") {
+      my $i = 1;
+      while ($i < @t) {
+        if ($t[$i] eq "-C" || $t[$i] eq "--git-dir" || $t[$i] eq "--work-tree") { $i += 2; next }
+        last if $t[$i] !~ /^-/;
+        $i++;
+      }
+      exit 1 unless $i < @t && $GIT_READ{$t[$i]};
+    }
+    # 検出語は**位置引数**として現れていなければならない。option の値として渡す形
+    # （`--open-files-in-pager=<検出語>` / `--open-files-in-pager <検出語>`）は通さない ――
+    # option の値に置くと、読み取りの道具がそれを**起動する**（git grep の pager がその例で、
+    # 独立レビューが実際に任意スクリプトを走らせて見せた）。
+    # ヒアドキュメント（`<<`）とパスを値に取る option（`--out=/tmp/x`）を明示的に拒む枝は
+    # 置いていない ―― どちらも「改行を含む」「サブコマンド位置に値が来る」で既に落ちており、
+    # 変異を当てても行列が気づかなかった（＝死んだ枝）。
+    for my $i (0 .. $#t) {
+      next unless $t[$i] =~ m{scripts/(merge|create)-pull-request\.ts|repos/[^\s]+/pulls/[0-9]+/merge};
+      exit 1 if $t[$i] =~ /^-/;
+      # 直前が「値としてプログラム／出力先を取る option」なら通さない。
+      # 長い option 全部（`--compress-program <検出語>`）と、`-o` / `-O` で終わる
+      # 短い option（`git grep -O <検出語>` は pager としてそれを起動する）。
+      # `--` は位置引数の区切りなので除く。`head -20 <検出語>` のような
+      # 「値を取らない短い option の直後」は通す（読み取りの日常形）。
+      next if $i == 0;
+      my $prev = $t[$i - 1];
+      exit 1 if $prev =~ /^--./;
+      exit 1 if $prev =~ /^-[A-Za-z]*[oO]$/;
+    }
+  }
+  exit 0;
+'
+
+if [ -z "${required}" ] && [ -n "${cmd}" ]; then
+  if printf '%s' "${cmd}" | perl -e "${PLAIN_READ_PREDICATE}" 2>/dev/null; then
+    exit 0
+  fi
+fi
+
+# 2. 従来判定。「データとして書かれた言及」を落としてから、コマンド文字列へパターンを当てる。
+# これをしないと、本フック自身を説明するコミットメッセージ（`gh pr merge` という文字列を
+# 含む）で git commit がブロックされる、という誤検知を踏む。落とす対象は順に:
 #   1. ヒアドキュメントの本文（コミットメッセージ・ドキュメント生成）
 #   2. 引用符で囲まれた**散文**（guard-destructive.sh と同じ方針）
 #   3. `#` 以降の行コメント
-#   4. 全段が読み取り専用コマンドのパイプライン (#960)
-#
-# 🔴 **このガードが止めているのは「うっかり」であって、意図的な迂回ではない**
-# （docs/quality-gate.md の委譲プロンプトの項と同じ立場）。迂回したい人には
-# `OPEN_RECEPTION_SKIP_GATE_GUARD=1` という、transcript に残る道が用意してある。
-# だから判定の設計方針は「あらゆる書き方を封じる」ではなく、**日常的に打つ形について
-# 誤発火せず、日常的に打つ実行形を漏らさない**である。ただし緩める方向の変更では、
-# 変更前に止まっていた形を必ず測り直す（.claude/rules/opus5-autonomous-loop.md）。
 #
 # 🔴 **引用符を一律に落とすと、引用したパスでの実行が素通りする** (#960)。
 # `npx tsx "scripts/merge-pull-request.ts" 1` は変更前の実測で通っていた ―― 迂回が
@@ -69,112 +167,26 @@ fi
 # 空白を含まない引用は**トークン（パス・引数）**なので中身を残し、空白を含む引用を
 # 散文として落とす。コミットメッセージは空白を含むので従来どおり落ちる。
 #
-# 🔴 **ただし引用を外すと、引用の中のメタ文字がシェルの区切りとして再解釈される。**
-# `rg -n 'create|merge' scripts/merge-pull-request.ts` が `|` で割れ、後半の塊の先頭語が
-# `merge` になって読み取り扱いから外れる（＝誤ブロック）。中身は残しつつ、区切りに
-# 使う文字だけを \x01 へ潰しておく（判定パターンにこれらの文字は現れない）。
-QUOTE_AND_COMMENT_FILTER="
+# 🔴 **抽出に失敗したら deny 側へ倒す。** perl が無い環境で空文字を返すと、以降の grep が
+# 全部外れて**ガードが丸ごと無言で無効化**される（fail-open）。判定できないときは
+# 生のコマンドをそのまま渡す。
+LEGACY_FILTER="
   s/<<-?\s*(['\"]?)(\w+)\1.*?^[ \t]*\2[ \t]*\$//gms;
-  s/'([^'\s]*)'/ my \$t = \$1; \$t =~ tr{|&;()\`<>}{\x01}; \$t /ge;
-  s/\"([^\"\s]*)\"/ my \$t = \$1; \$t =~ tr{|&;()\`<>}{\x01}; \$t /ge;
+  s/'([^'\s]*)'/\$1/g;
+  s/\"([^\"\s]*)\"/\$1/g;
   s/'[^']*'//g;
   s/\"[^\"]*\"//g;
   s/(^|\s)#[^\n]*//g;
 "
-
-# 塊へ割る。区別が 2 つある:
-#
-#   - **段の連結**（`|` / `|&` / サブシェル・コマンド置換・プロセス置換の括弧・backtick）
-#     … 同じ塊の中の段として残す。中身が実行系なら塊ごと判定対象に残るので、
-#     `bash <(cat scripts/merge-pull-request.ts)` や `cat X |& bash` が読み取り扱いに
-#     落ちない（🔴 ここを境界にすると、読み取りの段だけが落ちて実行の段に検出語が
-#     残らない ―― `cat X | bash` と同じ穴が別の綴りで開く）
-#   - **実行の境界**（`;` / `&&` / `||` / `&` / 改行）… 別々に判定する
-#
-# `|&` は `&&` / `&` より先に食わせる（`&` 単独の文字クラスに先に当たると塊が割れる）。
-SEGMENT_SPLITTER='s/\|\&/|/g; s/[`()]/|/g; s/(\&\&|\|\||[;&\n])/\n/g'
-
-# 読み取りコマンドの引数として現れただけの塊を落とす (#960)。
-#
-# 変更前は「コマンド文字列に scripts/merge-pull-request.ts が含まれるか」だけを見ており、
-# `grep -n delete scripts/merge-pull-request.ts | head -20` までブロックしていた。grep は
-# 何もマージしないので、この発火はガードの目的（red のままマージさせない）に寄与しない。
-# 一方で調査が止まり、誤発火が続けば OPEN_RECEPTION_SKIP_GATE_GUARD=1 の常用 ――
-# 本リポジトリが繰り返し警告している「override の習慣化」―― へ倒れる。
-#
-# 判定は**既定 deny**。落とすのは「そのパイプラインの全段が読み取り専用コマンド」のときだけで、
-# 実行しうる語（npx / node / xargs / bash / time / 未知のコマンド）が 1 つでも混じれば従来どおり見る。
-#
-# 🔴 **段ごとに落とすと `cat scripts/merge-pull-request.ts | bash` が素通りする** ――
-# 「読み取りを通した結果、実行の検出が弱くなる」形なので、判定単位はパイプライン全体。
-#
-# 🔴 **allowlist には「他プロセスを起動しない道具」しか入れない。** `find` / `fd` /
-# `sort`（`--compress-program`）/ `awk`（`system()`）は起動できるので入れない ――
-# 道具を 1 つ足すたびに同型の穴が増える族なので、疑わしいものは deny 側に置く。
-# `tests/hooks/pr-gate-guard.test.ts` が allowlist の中身を静的に縛っている。
-READ_ONLY_FILTER='
-    function stage_is_read(text,   m, t, i, j, cmd) {
-      m = split(text, t, /[ \t]+/)
-      i = 1
-      while (i <= m && (t[i] == "" || t[i] ~ /^[A-Za-z_][A-Za-z0-9_]*=/)) i++
-      # 🔴 代入だけの塊を read にしない。`SCRIPT=scripts/merge-pull-request.ts; npx tsx $SCRIPT`
-      # で検出語が消える（実行そのものは次の塊で起こる）。空白だけの塊は read でよい。
-      if (i > m) return (text ~ /^[ \t]*$/)
-      for (j = i; j <= m; j++) {
-        if (t[j] ~ /^(-exec|-execdir|-ok|-okdir|-x|-X)$/) return 0
-        if (t[j] ~ /^--(exec|exec-batch|compress-program)(=|$)/) return 0
-        # 標準出力のリダイレクトと tee。読み取りの結果を別の場所へ置ける＝あとで実行できる
-        # （stderr の `2>` は対象外。`grep ... 2>/dev/null` は日常的に打つ）
-        if (t[j] ~ /^(1?>|>>|&>|>\|)/) return 0
-      }
-      cmd = t[i]
-      sub(/^.*\//, "", cmd)
-      if (cmd == "sed") { for (j = i; j <= m; j++) if (t[j] ~ /^-i/) return 0 }
-      if (cmd != "git") return (cmd in READ)
-      # git はサブコマンドで読み書きが割れる。`-c core.pager=...` のような
-      # 「任意コマンドを起動しうる option」は、値がサブコマンド位置に来て GIT_READ に
-      # 無いので deny 側へ落ちる（値を読み飛ばすのは -C / --git-dir / --work-tree だけ）。
-      j = i + 1
-      while (j <= m) {
-        if (t[j] == "-C" || t[j] == "--git-dir" || t[j] == "--work-tree") { j += 2; continue }
-        if (t[j] ~ /^-/) { j++; continue }
-        break
-      }
-      return (j <= m && (t[j] in GIT_READ))
-    }
-    BEGIN {
-      split("grep egrep fgrep rg ag ack cat bat head tail sed wc nl cut tr diff colordiff ls stat file column basename dirname realpath jq yq", r, " ")
-      for (i in r) READ[r[i]] = 1
-      split("log show diff grep blame cat-file ls-files ls-tree describe status rev-parse", g, " ")
-      for (i in g) GIT_READ[g[i]] = 1
-    }
-    {
-      n = split($0, stage, "|")
-      for (s = 1; s <= n; s++) if (!stage_is_read(stage[s])) { print; next }
-    }
-'
-
-# 🔴 **抽出に失敗したら deny 側へ倒す。** perl / awk が無い環境や、フィルタが落ちた場合に
-# 空文字を返すと、以降の grep が全部外れて**ガードが丸ごと無言で無効化**される（fail-open）。
-# 判定できないときは生のコマンドをそのまま渡し、従来どおりの素朴な包含判定に落とす。
-extract_scan() {
-  local raw="$1" out status
-  out="$(
-    set -o pipefail
-    printf '%s' "${raw}" |
-      perl -0777 -pe "${QUOTE_AND_COMMENT_FILTER}" |
-      perl -0777 -pe "${SEGMENT_SPLITTER}" |
-      awk "${READ_ONLY_FILTER}"
-  )"
-  status=$?
-  if [ "${status}" -ne 0 ]; then
-    printf '%s' "${raw}"
-    return 0
-  fi
-  printf '%s' "${out}"
-}
-
-scan="$(extract_scan "${cmd}")"
+if [ "${payload_readable}" = "0" ]; then
+  # 🔴 payload を読めなかったときは、引用の除去そのものが危険になる。
+  # payload は JSON なのでコマンド全体が二重引用符の中にあり、「空白を含む引用＝散文」の
+  # 規則がコマンドを丸ごと捨ててしまう（実測でこれが fail-open だった）。
+  # 記号を空白へ潰して、素朴な語の並びとして検査する。
+  scan="$(printf '%s' "${payload}" | tr -c 'A-Za-z0-9/._=-' ' ')"
+elif ! scan="$(printf '%s' "${cmd}" | perl -0777 -pe "${LEGACY_FILTER}" 2>/dev/null)"; then
+  scan="${cmd}"
+fi
 
 # Bash 経路の判定。**MCP 経路で既に決まっているならここは通さない**
 # （空の scan が `else exit 0` に落ちて、せっかくの判定が捨てられる）。
