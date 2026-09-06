@@ -297,3 +297,89 @@ describe('pr-gate-guard: 明示的な脱出ハッチ', () => {
     expect(runHook('echo "OPEN_RECEPTION_SKIP_GATE_GUARD=1" && gh pr merge 12').status).toBe(2);
   });
 });
+
+/**
+ * #960: 読み取りコマンドの引数として現れただけではブロックしない。
+ *
+ * 由来: 2026-09-03、`grep -n delete scripts/merge-pull-request.ts | head -20` が
+ * ブロックされた。grep は何もマージしないのに `--full` の green を要求され、事実確認に
+ * 一手を余計に使った。誤発火が続くと `OPEN_RECEPTION_SKIP_GATE_GUARD=1` を習慣的に
+ * 付けるようになる ―― 本リポジトリが繰り返し警告している「override の習慣化」そのもの。
+ *
+ * 🔴 **判定方式を変えたので、前の方式が止めていた実行形を全部当て直す**
+ * （`.claude/rules/opus5-autonomous-loop.md`「方式を替えたら、前の方式が守っていた変異を
+ * 当て直す」）。`EXECUTION_FORMS` がその一覧で、変更前の実測はこのうち 14/16 ブロック
+ * （引用符付きの 2 形は素通りしていた ―― 方式変更で塞いだぶんであって、緩めていない）。
+ */
+const EXECUTION_FORMS: readonly [string, string][] = [
+  ['直接実行', './scripts/merge-pull-request.ts 123'],
+  ['npx tsx 経由', 'npx tsx scripts/merge-pull-request.ts 123'],
+  ['npx tsx 経由（作成側）', 'npx tsx scripts/create-pull-request.ts --title x'],
+  ['tsx 経由', 'tsx scripts/merge-pull-request.ts 123'],
+  ['node 経由', 'node scripts/merge-pull-request.ts 123'],
+  ['引用符付き（二重）', 'npx tsx "scripts/merge-pull-request.ts" 123'],
+  ['引用符付き（単一）', "npx tsx 'scripts/merge-pull-request.ts' 123"],
+  ['環境変数を前置', 'FOO=1 npx tsx scripts/merge-pull-request.ts 123'],
+  ['&& で連結', 'git push && npx tsx scripts/merge-pull-request.ts 123'],
+  ['; で連結', 'git push; npx tsx scripts/create-pull-request.ts --fill'],
+  ['サブシェル', '(npx tsx scripts/merge-pull-request.ts 123)'],
+  ['コマンド置換', 'echo $(npx tsx scripts/merge-pull-request.ts 123)'],
+  ['gh pr merge', 'gh pr merge 1 --squash'],
+  ['gh pr create', 'gh pr create --fill'],
+  ['生の REST マージ', 'gh api repos/o/r/pulls/1/merge -X PUT'],
+  ['xargs 経由', 'echo x | xargs -I{} gh pr create --fill'],
+  ['time を前置', 'time npx tsx scripts/merge-pull-request.ts 123'],
+  ['find -exec 経由', 'find . -name x -exec npx tsx scripts/merge-pull-request.ts {} ;'],
+];
+
+/**
+ * 🔴 **読み取りを通した結果、実行の検出が弱くなっていないこと**（#960 の 4 番目の AC）。
+ *
+ * 読み取りコマンドは「引数として言及しただけ」だから通してよいのであって、その出力が
+ * **実行系へ流れるなら話が別**である。パイプラインは**全段が読み取り専用のときだけ**
+ * 落とす ―― 1 段でも実行系が混じれば従来どおり見る。
+ */
+const READ_INTO_EXECUTOR: readonly string[] = [
+  'cat scripts/merge-pull-request.ts | bash',
+  'echo npx tsx scripts/create-pull-request.ts --fill | sh',
+];
+
+/** 何も実行しない読み取り形。ここが今回通るようになる本体。 */
+const READ_FORMS: readonly string[] = [
+  'grep -n delete scripts/merge-pull-request.ts',
+  'grep -n delete scripts/merge-pull-request.ts | head -20',
+  'rg -n delete scripts/merge-pull-request.ts',
+  'cat scripts/merge-pull-request.ts',
+  'head -20 scripts/create-pull-request.ts',
+  'sed -n 1,40p scripts/merge-pull-request.ts',
+  'wc -l scripts/merge-pull-request.ts',
+  'ls -la scripts/merge-pull-request.ts',
+  'git log --oneline -- scripts/merge-pull-request.ts',
+  'git diff scripts/create-pull-request.ts',
+  'git show HEAD:scripts/merge-pull-request.ts',
+];
+
+describe('pr-gate-guard: 読み取りは通し、実行は止める (#960)', () => {
+  it.each(READ_FORMS)('読み取りコマンドの引数としての言及は通す: %s', (cmd) => {
+    const { status, stderr } = runHook(cmd);
+    expect(status, `${cmd}\n${stderr}`).toBe(0);
+  });
+
+  it.each(EXECUTION_FORMS)('🔴 実行形は従来どおりブロックする（%s）', (_label, cmd) => {
+    expect(runHook(cmd).status, cmd).toBe(2);
+  });
+
+  it.each(READ_INTO_EXECUTOR)('🔴 読み取りの出力が実行系へ流れるならブロックする: %s', (cmd) => {
+    expect(runHook(cmd).status, cmd).toBe(2);
+  });
+
+  /**
+   * 下界: 読み取りを通す仕組みが「全部通す」へ潰れていないこと。上の EXECUTION_FORMS が
+   * 本体だが、**読み取りコマンドの名前を持つセグメントの中に実行形が同居する**形は
+   * 別の族なので個別に置く（`grep` を先頭に置けば何でも通る、にはならない）。
+   */
+  it('🔴 読み取りコマンドで始まっても、後続の実行形は捕まえる', () => {
+    expect(runHook('grep -n x scripts/merge-pull-request.ts && npx tsx scripts/merge-pull-request.ts 1').status).toBe(2);
+    expect(runHook('cat README.md; gh pr merge 1 --squash').status).toBe(2);
+  });
+});

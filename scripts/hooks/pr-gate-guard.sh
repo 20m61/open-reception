@@ -51,14 +51,72 @@ fi
 # 説明するコミットメッセージ（`gh pr merge` という文字列を含む）で git commit が
 # ブロックされる、という誤検知を踏む。落とす対象は順に:
 #   1. ヒアドキュメントの本文（コミットメッセージ・ドキュメント生成）
-#   2. 引用符で囲まれた文字列（guard-destructive.sh と同じ方針）
+#   2. 引用符で囲まれた**散文**（guard-destructive.sh と同じ方針）
 #   3. `#` 以降の行コメント
+#
+# 🔴 **引用符を一律に落とすと、引用したパスでの実行が素通りする** (#960)。
+# `npx tsx "scripts/merge-pull-request.ts" 1` は変更前の実測で通っていた ―― 迂回が
+# 「クォートを 2 つ足す」で済むなら、止めたい実行も同じ手ですり抜ける。
+# 空白を含まない引用は**トークン（パス・引数）**なので引用だけを外し、空白を含む引用を
+# 散文として落とす。コミットメッセージは空白を含むので従来どおり落ちる。
 scan="$(printf '%s' "${cmd}" | perl -0777 -pe "
   s/<<-?\s*(['\"]?)(\w+)\1.*?^[ \t]*\2[ \t]*\$//gms;
+  s/'([^'\s]*)'/\$1/g;
+  s/\"([^\"\s]*)\"/\$1/g;
   s/'[^']*'//g;
   s/\"[^\"]*\"//g;
   s/(^|\s)#[^\n]*//g;
-" | tr '\n' ' ')"
+")"
+
+# 読み取りコマンドの引数として現れただけの塊を落とす (#960)。
+#
+# 変更前は「コマンド文字列に scripts/merge-pull-request.ts が含まれるか」だけを見ており、
+# `grep -n delete scripts/merge-pull-request.ts | head -20` までブロックしていた。grep は
+# 何もマージしないので、この発火はガードの目的（red のままマージさせない）に寄与しない。
+# 一方で調査が止まり、誤発火が続けば OPEN_RECEPTION_SKIP_GATE_GUARD=1 の常用 ――
+# 本リポジトリが繰り返し警告している「override の習慣化」―― へ倒れる。
+#
+# 判定は**既定 deny**にする。落とすのは「そのパイプラインの全段が読み取り専用コマンド」の
+# ときだけで、実行しうる語（npx / node / tsx / xargs / bash / time / 未知のコマンド）が
+# 1 つでも混じれば従来どおり見る。
+#
+# 🔴 **読み取りの出力が実行系へ流れる形を落とさない**のがここの肝である
+# （`cat scripts/merge-pull-request.ts | bash`）。段ごとに落とすと、この形が
+# 「cat の段だけ落ちて bash の段には言及が無い」で素通りする ―― 読み取りを通した結果
+# 実行の検出が弱くなる、という今回の変更が作りうる穴そのものなので、判定単位は
+# **パイプライン全体**にしてある。
+scan="$(printf '%s' "${scan}" |
+  perl -0777 -pe 's/(\&\&|\|\||[;&()`\n])/\n/g' |
+  awk '
+    function stage_is_read(text,   m, t, i, j, cmd) {
+      m = split(text, t, /[ \t]+/)
+      i = 1
+      # 先頭の空要素と環境変数代入（FOO=1 cmd ...）を読み飛ばす
+      while (i <= m && (t[i] == "" || t[i] ~ /^[A-Za-z_][A-Za-z0-9_]*=/)) i++
+      if (i > m) return 1          # 実行語が無い（空の塊）
+      # 🔴 読み取りコマンドでも、他のコマンドを起動する形は読み取りではない
+      # （`find . -name x -exec npx tsx scripts/merge-pull-request.ts \;`）。
+      for (j = i; j <= m; j++)
+        if (t[j] == "-exec" || t[j] == "-execdir" || t[j] == "-ok" || t[j] == "-okdir") return 0
+      cmd = t[i]
+      sub(/^.*\//, "", cmd)       # /usr/bin/grep → grep（./scripts/x.ts → x.ts なので deny 側）
+      if (cmd != "git") return (cmd in READ)
+      # git はサブコマンドで読み書きが割れる。global option を飛ばして最初の語を見る
+      j = i + 1
+      while (j <= m && t[j] ~ /^-/) { if (t[j] == "-C" || t[j] == "-c") j++; j++ }
+      return (j <= m && (t[j] in GIT_READ))
+    }
+    BEGIN {
+      split("grep egrep fgrep rg ag ack cat bat head tail sed awk less more wc nl sort uniq cut tr diff colordiff ls stat file find fd tree jq yq column basename dirname realpath", r, " ")
+      for (i in r) READ[r[i]] = 1
+      split("log show diff grep blame cat-file ls-files ls-tree describe status rev-parse", g, " ")
+      for (i in g) GIT_READ[g[i]] = 1
+    }
+    {
+      n = split($0, stage, "|")
+      for (s = 1; s <= n; s++) if (!stage_is_read(stage[s])) { print; next }
+    }
+  ')"
 
 # Bash 経路の判定。**MCP 経路で既に決まっているならここは通さない**
 # （空の scan が `else exit 0` に落ちて、せっかくの判定が捨てられる）。
@@ -96,8 +154,13 @@ fi
 # ドキュメントしている迂回方法はこの形であり、かつ迂回がコマンドとして transcript に
 # 残るぶん監査上も望ましい。判定には引用符・heredoc を落とした ${scan} を使うので、
 # 「文中で迂回方法に言及しただけ」では迂回できない。
+#
+# 🔴 **代入は「塊の先頭」でしか認めない** (#960)。上で空白を含まない引用の引用符を外す
+# ようにしたため、`echo "OPEN_RECEPTION_SKIP_GATE_GUARD=1" && gh pr merge 12` が
+# 迂回として通ってしまった（既存テストが検出）。シェルとしてもこの形は代入ではない。
+# ${scan} は塊ごとに改行済みなので、行頭に立っているものだけを見る。
 if [ "${OPEN_RECEPTION_SKIP_GATE_GUARD:-0}" = "1" ] ||
-   printf '%s' "${scan}" | grep -Eq '(^|[;&|[:space:]])OPEN_RECEPTION_SKIP_GATE_GUARD=1([[:space:]]|$)'; then
+   printf '%s' "${scan}" | grep -Eq '^[[:space:]]*OPEN_RECEPTION_SKIP_GATE_GUARD=1([[:space:]]|$)'; then
   exit 0
 fi
 
