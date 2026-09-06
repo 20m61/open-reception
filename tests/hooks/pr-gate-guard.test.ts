@@ -543,6 +543,7 @@ const DELIBERATELY_BLOCKED: readonly string[] = [
  * 元の穴は issue で追跡する。
  *
  * 通ることを**明示的に固定**しておく ―― 台帳が黙って伸びないように。塞いだらここを消す。
+ * 追跡は #998（変更前から残る素通り 4 族）。
  */
 const KNOWN_PRE_EXISTING_GAPS: readonly string[] = [
   "gh pr >/dev/null merge 12",

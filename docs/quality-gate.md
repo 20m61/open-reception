@@ -539,7 +539,8 @@ CI が無い以上、「PR 前に `--pr` / マージ前に `--full`」は**規�
   `gh pr >/dev/null merge 12`（**変更前から通っていた**形）を塞ごうとし、その処理が `;` と
   次のコマンド名まで飲み込んで `npm run build >/tmp/b.log 2>&1;gh pr merge 997` という
   **日常的な形**を素通しにした。塞ぎにいった穴より、足した機構のほうが危なかった。
-  元の穴は `KNOWN_PRE_EXISTING_GAPS` として固定し、issue で追跡する。
+  元の穴は `KNOWN_PRE_EXISTING_GAPS` として固定し、**#998** で追跡する
+  （`bash -c "…"` / 2 コマンド分割 / コマンド名の詐称も同 issue にまとめてある）。
 
   意図的に**通さない**読み取り（`DELIBERATELY_BLOCKED`。誤発火として受け入れたもので、
   いずれも変更前と同じ挙動）: バックスラッシュを含む形 / `uniq` / `sed -n 1,40p <path>` /
