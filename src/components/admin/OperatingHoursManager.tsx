@@ -468,8 +468,6 @@ export function OperatingHoursManager({
   );
 }
 
-
-
 const input: React.CSSProperties = {
   minHeight: 40,
   padding: '8px 12px',

@@ -78,6 +78,6 @@ export function saveFailureMessage(failure: SaveFailure, about?: string): string
  * （同名の拠点を持つ別テナントを区別する）は Issue へ回してあるので、
  * 次に触るときも**ここ 1 箇所**を直せば両方へ効く。
  */
-export function siteLabel(sites: readonly { id: string; name?: string }[], id: string): string {
+export function siteLabel(sites: readonly { id: string; name: string }[], id: string): string {
   return sites.find((s) => s.id === id)?.name ?? id;
 }

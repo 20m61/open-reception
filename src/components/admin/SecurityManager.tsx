@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { Button, Field, Form, SaveFeedback, saveFailureMessage, useSaveFeedback } from '@/components/admin/ui';
 import { space } from '@/components/admin/ui/tokens';
 import { AdminReadGate } from './AdminReadGate';
@@ -71,12 +71,33 @@ export function SecurityManager() {
    */
   const [viewStale, setViewStale] = useState(false);
 
-  /** 取得した（あるいは書き込みが返した）状態を画面へ載せる。 */
-  const applyView = useCallback((v: SecurityView) => {
-    setView(v);
+  /**
+   * 緊急停止の書き込み世代。**押されるたびに進む。**
+   *
+   * 🔴 保存の応答は「**サーバがその保存を処理した時点**のスナップショット」であって、
+   * 現在の状態ではない。本ブランチは「保存が返ってこなくても緊急停止は押せる」ように
+   * したので、遅れて届いた保存の応答が**確定済みの緊急停止を巻き戻す**経路がある
+   * （独立レビュー 6 周目 MAJOR-1）。保存は `emergencyStop` を送っていない＝その値の
+   * 権威を持たないので、飛行中に緊急停止が動いていたらそこだけ据え置く。
+   */
+  const emergencySeq = useRef(0);
+
+  /**
+   * 取得した（あるいは書き込みが返した）状態を画面へ載せる。
+   *
+   * `emergencyUnknown` は「この応答は緊急停止について当てにならない」。据え置いたうえで
+   * `viewStale` を立て、**確かめられたことしか報告しない**という本画面の前提を守る。
+   */
+  const applyView = useCallback((v: SecurityView, emergencyUnknown = false) => {
     setPinRequired(v.pinRequired);
     setIpText(v.ipAllowlist.join('\n'));
     setLoadFailed(false);
+    if (emergencyUnknown) {
+      setView((cur) => (cur === null ? v : { ...v, emergencyStop: cur.emergencyStop }));
+      setViewStale(true);
+      return;
+    }
+    setView(v);
     setViewStale(false);
   }, []);
 
@@ -114,6 +135,8 @@ export function SecurityManager() {
     if (busy) return;
     setBusy(true);
     clear();
+    // 応答を載せるときに「飛行中に緊急停止が動いたか」を見るための基準。
+    const seq = emergencySeq.current;
     try {
       const ipAllowlist = ipText.split('\n').map((s) => s.trim()).filter(Boolean);
       const body: Record<string, unknown> = { pinRequired, ipAllowlist };
@@ -136,7 +159,7 @@ export function SecurityManager() {
         return;
       }
       setPin('');
-      applyView(applied);
+      applyView(applied, emergencySeq.current !== seq);
       success();
     } catch {
       /*
@@ -155,6 +178,8 @@ export function SecurityManager() {
   const setEmergency = useCallback(
     async (emergencyStop: boolean) => {
       if (emergencyBusy) return;
+      // 飛行中の保存の応答に、この操作より古い `emergencyStop` を載せさせない。
+      emergencySeq.current += 1;
       setConfirmingEmergency(false);
       setEmergencyBusy(true);
       clearEmergencyFeedback();
@@ -213,8 +238,7 @@ export function SecurityManager() {
         emergencySucceeded(emergencyStop ? '緊急停止を有効にしました。' : '緊急停止を解除しました。');
       } catch {
         // ここへ来るのは `fetch` 自身の reject だけ（本文の解釈は上で畳んである）。
-        // 表示が実態と違いうるのは in-band 側と同じなので、取り直す導線もここで出す
-        // （独立レビュー 4 周目 MINOR-2）。
+        // 表示が実態と違いうるのは in-band 側と同じなので、注意書きもここで出す。
         setViewStale(true);
         setEmergencyFailed(saveFailureMessage('unreachable', label));
       } finally {
@@ -314,12 +338,6 @@ export function SecurityManager() {
             errorTestId="emergency-error"
           />
         </div>
-        {/*
-          🔴 **「表示が古い」は保存の結果ではなく view の性質**なので、保存フィードバックに
-          載せず独立して持つ（載せると、次の取得で新しくなっても文言が残る。
-          独立レビュー 2 周目 MINOR-3）。適用そのものは 200 で確定しているので、
-          ここで言うのは「反映できなかった」だけである。
-        */}
         {/*
           🔴 **「表示が古い」は保存の結果ではなく view の性質**なので、保存フィードバックに
           載せず独立して持つ（載せると、次の取得で新しくなっても文言が残る）。

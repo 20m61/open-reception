@@ -49,6 +49,27 @@ async function failWrites(page: Page, pattern: string, mode: FailMode): Promise<
   });
 }
 
+/**
+ * 拠点セレクタが表示している**確定した**拠点名。
+ *
+ * 🔴 **一覧が載る前に読まない。** `SiteScopeSelect` は一覧が空の間
+ * `<option value={siteId}>{siteId}</option>`（＝拠点 ID）を描く。そこで読むと ID を掴み、
+ * 保存側は載った後の**名前**を使うので食い違う —— `--full` で実際に flaky として現れた。
+ * retry で緑になるので待ち方の問題に見えるが、**掴んだ値が別物**なのが原因である。
+ * 名前が載った（option の表示が value と違う）ことを待ってから読む。
+ */
+async function settledSiteLabel(page: Page, testId: string): Promise<string> {
+  const read = async (): Promise<string> =>
+    page.getByTestId(testId).evaluate((el) => {
+      const option = (el as HTMLSelectElement).selectedOptions[0];
+      if (!option) return '';
+      const text = option.textContent?.trim() ?? '';
+      return text === option.value ? '' : text;
+    });
+  await expect.poll(read, { message: `${testId} に拠点名が載らない（一覧が取れていない）` }).not.toBe('');
+  return read();
+}
+
 /** 読み取りも書き込みも落とす（「保存はしたが取り直せない」を作るため）。 */
 async function failAll(page: Page, pattern: string): Promise<void> {
   await page.route(pattern, (route) => route.abort('failed'));
@@ -299,10 +320,7 @@ test.describe('管理: 書き込み失敗が運用者に見える (#870 増分 0
   test('サイネージ: 失敗の文言に拠点が入る (#973)', async ({ page }) => {
     await page.goto('/admin/signage');
     await expect(page.getByTestId('signage-save')).toBeVisible();
-    const label = await page
-      .getByTestId('signage-site-select')
-      .evaluate((el) => (el as HTMLSelectElement).selectedOptions[0]?.textContent?.trim() ?? '');
-    expect(label, '拠点セレクタに選択が無い（下界）').toBeTruthy();
+    const label = await settledSiteLabel(page, 'signage-site-select');
     await failWrites(page, '**/api/admin/signage**', 'abort');
 
     await page.getByTestId('signage-save').click();
@@ -338,10 +356,7 @@ test.describe('管理: 書き込み失敗が運用者に見える (#870 増分 0
     await expect(page.getByTestId('operating-hours-save')).toBeVisible();
     // 選択中の option の表示名＝画面に出るはずの宛先（`siteLabel` は name、無ければ id）。
     // `option:checked` は Playwright の CSS エンジンで解決できない（実測でタイムアウト）。
-    const label = await page
-      .getByTestId('operating-hours-site-select')
-      .evaluate((el) => (el as HTMLSelectElement).selectedOptions[0]?.textContent?.trim() ?? '');
-    expect(label, '拠点セレクタに選択が無い（下界）').toBeTruthy();
+    const label = await settledSiteLabel(page, 'operating-hours-site-select');
     await failWrites(page, '**/api/admin/operating-policy**', 'abort');
 
     await page.getByTestId('operating-hours-save').click();
@@ -439,6 +454,53 @@ test.describe('管理: 書き込み失敗が運用者に見える (#870 増分 0
 
     // **これが本題。** 保存が返らなくても緊急停止は押せる。
     await expect(page.getByTestId('emergency-stop')).toBeEnabled();
+  });
+
+  /**
+   * 🔴 **遅れて届いた保存の応答が、確定済みの緊急停止を巻き戻さない** (#973)。
+   *
+   * 保存の応答は「サーバが**その保存を処理した時点**のスナップショット」なので、
+   * 上のテストが許可した同時飛行では `emergencyStop: false` を運んでくる。そのまま
+   * 載せると、全端末が実際には停止しているのに画面は「現在: 通常稼働」と**断定**する
+   * （`docs/runbook.md` §2.2 手順 4 は表示で確認せよと書いている）。
+   */
+  test('保存の遅い応答が、確定した緊急停止を巻き戻さない (#973)', async ({ page }) => {
+    await page.goto('/admin/security');
+    await expect(page.getByTestId('security-save')).toBeVisible();
+
+    // 1 本目の PUT（保存）は保留。2 本目以降（緊急停止）は成功させる。
+    let release: (() => void) | undefined;
+    const held = new Promise<void>((r) => {
+      release = r;
+    });
+    const body = (emergencyStop: boolean): string =>
+      JSON.stringify({ pinRequired: false, ipAllowlist: [], pinConfigured: false, emergencyStop });
+    let seen = 0;
+    await page.route('**/api/admin/security**', async (route) => {
+      if (route.request().method() === 'GET') return route.continue();
+      seen += 1;
+      if (seen === 1) {
+        await held;
+        // 保存が処理された時点の状態＝まだ停止していない。
+        return route.fulfill({ status: 200, contentType: 'application/json', body: body(false) });
+      }
+      return route.fulfill({ status: 200, contentType: 'application/json', body: body(true) });
+    });
+
+    await page.getByTestId('security-save').click();
+    await expect(page.getByTestId('security-save')).toContainText('保存中');
+
+    await page.getByTestId('emergency-stop').click();
+    await page.getByTestId('emergency-confirm').click();
+    await expect(page.getByTestId('emergency-state')).toContainText('停止中');
+
+    release?.();
+    await expect(page.getByTestId('security-saved')).toBeVisible();
+
+    // **これが本題。** 古い応答で「通常稼働」へ戻さない。
+    await expect(page.getByTestId('emergency-state')).toContainText('停止中');
+    // 当てにならないことは黙らずに言う。
+    await expect(page.getByTestId('security-view-stale')).toBeVisible();
   });
 
   /**
