@@ -68,6 +68,15 @@ const WIRING_SOURCES: readonly string[] = [
   'package.json',
   'scripts/quality-gate.sh',
   'scripts/record-gate-run.sh',
+  // `.claude/settings.json` の SessionStart フックが毎回叩く入口 (#681 で allowlist から
+  // 外したのと同じ根拠)。**ここから呼ばれるものは自動で走る**ので、配線元に数える
+  // ―― 数えないと `restore-gate-tools.sh` (#985) が「未配線」に見え、allowlist へ
+  // 「手動でしか走らない」という嘘の理由を書く羽目になる。
+  //
+  // 🔴 **入口を無条件に増やさないこと。** 逆向きの規則（手動でしか走らないものから
+  // 呼ばれることは配線ではない / #681 defect 2）を壊す。ここに足してよいのは
+  // 「自動で走ることが settings.json / package.json で確かめられる」ものだけ。
+  'scripts/install_pkgs.sh',
 ];
 
 /**

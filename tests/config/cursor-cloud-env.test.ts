@@ -69,9 +69,14 @@ describe('cursor-cloud-install.sh', () => {
 
   it('品質ゲートが SKIP に落ちない道具を入れる（gitleaks / semgrep / aws）', () => {
     const src = body(INSTALL);
-    expect(src).toContain('gitleaks');
-    expect(src).toContain('semgrep');
+    // 🔴 gitleaks / semgrep は `restore-gate-tools.sh` へ寄せた (#985)。**版の写しを
+    // 増やさない**ため、ここは「呼んでいること」だけを見て、中身は復旧側で縛る
+    // （`tests/config/gate-tooling-wiring.test.ts` が cloud-setup.sh との版一致を検査する）。
+    expect(src).toContain('restore-gate-tools.sh');
     expect(src).toMatch(/\baws\b/);
+    const restore = readFileSync(resolve(ROOT, 'scripts/restore-gate-tools.sh'), 'utf8');
+    expect(restore).toContain('gitleaks');
+    expect(restore).toContain('semgrep');
   });
 
   it('dev server を起動しない（install は終了しなければならない）', () => {
