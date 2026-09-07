@@ -1,4 +1,4 @@
-import { test, expect, type Page } from '@playwright/test';
+import { test, expect, type Page, type Route } from '@playwright/test';
 import { loginAsAdmin } from './helpers';
 
 /**
@@ -451,11 +451,14 @@ test.describe('管理: 書き込み失敗が運用者に見える (#870 増分 0
     const heldSave = new Promise<void>((r) => {
       releaseSave = r;
     });
-    let seen = 0;
+    // 🔴 **到着順ではなく本文で振り分ける。** `seen === 1` だと、この画面へ PUT が 1 本
+    // 増えただけで**前提が崩れたまま緑**になる（8 周目 MINOR-4）。保存の body に
+    // `emergencyStop` は入らない。
+    const isEmergency = (route: Route): boolean =>
+      route.request().postData()?.includes('emergencyStop') === true;
     await page.route('**/api/admin/security**', async (route) => {
       if (route.request().method() === 'GET') return route.continue();
-      seen += 1;
-      if (seen === 1) {
+      if (isEmergency(route)) {
         await heldEmergency;
         return route.fulfill({ status: 200, contentType: 'application/json', body: body(true) });
       }
@@ -486,6 +489,106 @@ test.describe('管理: 書き込み失敗が運用者に見える (#870 増分 0
   });
 
   /**
+   * 🔴 **保存の 5xx も「失敗した」と断定しない** (#973)。緊急停止と同じ条件に
+   * 同じ結論を出す（片方だけ直すと、押したボタンで意味が変わる画面になる）。
+   */
+  test('セキュリティ設定: 保存の 5xx でも「失敗しました」と断定しない (#973)', async ({ page }) => {
+    await page.goto('/admin/security');
+    await expect(page.getByTestId('security-save')).toBeVisible();
+    await failWrites(page, '**/api/admin/security**', '500');
+
+    await page.getByTestId('security-save').click();
+
+    const error = page.getByTestId('security-error');
+    await expect(error).toBeVisible();
+    await expect(error).toContainText('分かりません');
+    await expect(page.getByTestId('security-view-stale')).toBeVisible();
+  });
+
+  /**
+   * 🔴 **注意書きを経路で消し合わない** (#973)。`viewStale` は「表示がサーバと食い違いうる」
+   * というビュー全体の性質なので、下ろせるのは全フィールドの権威を持つ GET だけである。
+   * 書き込み経路が無条件に false を書くと、別経路が立てた注意書きが消える。
+   */
+  test('別経路が立てた「最新でない」注意書きを、後続の保存が消さない (#973)', async ({ page }) => {
+    await page.goto('/admin/security');
+    await expect(page.getByTestId('emergency-stop')).toBeVisible();
+
+    const isEmergency = (route: Route): boolean =>
+      route.request().postData()?.includes('emergencyStop') === true;
+    await page.route('**/api/admin/security**', (route) => {
+      if (route.request().method() === 'GET') return route.continue();
+      // 緊急停止は 200 だが読めない → 注意書きが立つ。
+      if (isEmergency(route)) {
+        return route.fulfill({ status: 200, contentType: 'application/json', body: '{"' });
+      }
+      // 保存は成功し、緊急停止の値は表示と一致する（＝食い違いは無い）。
+      return route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({ pinRequired: false, ipAllowlist: [], pinConfigured: false, emergencyStop: false }),
+      });
+    });
+
+    await page.getByTestId('emergency-stop').click();
+    await page.getByTestId('emergency-confirm').click();
+    await expect(page.getByTestId('security-view-stale')).toBeVisible();
+
+    await page.getByTestId('security-save').click();
+    await expect(page.getByTestId('security-saved')).toBeVisible();
+
+    // **これが本題。** 保存が成功しても、まだ確かめられていないことは消えない。
+    await expect(page.getByTestId('security-view-stale')).toBeVisible();
+  });
+
+  /**
+   * 🔴 **成功は「押した値」ではなく「返ってきた値」で言う** (#973)。
+   * 形は正しいが内容が食い違う 200（`emergencyStop` を無視する版・キャッシュ層の古い応答）で、
+   * 「現在: 通常稼働」と「緊急停止を有効にしました。」を**同時に**出していた。
+   */
+  test('緊急停止: 返ってきた状態が要求と違えば、成功と言わない (#973)', async ({ page }) => {
+    await page.goto('/admin/security');
+    await expect(page.getByTestId('emergency-stop')).toBeVisible();
+    await page.route('**/api/admin/security**', (route) => {
+      if (route.request().method() === 'GET') return route.continue();
+      // 「止めろ」と言ったのに「動いている」と返す。
+      return route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({ pinRequired: false, ipAllowlist: [], pinConfigured: false, emergencyStop: false }),
+      });
+    });
+
+    await page.getByTestId('emergency-stop').click();
+    await page.getByTestId('emergency-confirm').click();
+
+    await expect(page.getByTestId('emergency-error')).toBeVisible();
+    await expect(page.getByTestId('emergency-saved')).toHaveCount(0);
+    await expect(page.getByTestId('emergency-state')).toContainText('通常稼働');
+    await expect(page.getByTestId('security-view-stale')).toBeVisible();
+  });
+
+  /**
+   * 🔴 **5xx を「断られた」と断定しない** (#973)。この API は**永続化してから**監査ログを
+   * 書くので、監査側が落ちると**適用済みなのに 500** が返る（502/504 も同型）。
+   * `docs/runbook.md` はこの分岐で「数秒おいて押し直す」と指示している。
+   */
+  test('緊急停止: 5xx では「できませんでした」と断定しない (#973)', async ({ page }) => {
+    await page.goto('/admin/security');
+    await expect(page.getByTestId('emergency-stop')).toBeVisible();
+    await failWrites(page, '**/api/admin/security**', '500');
+
+    await page.getByTestId('emergency-stop').click();
+    await page.getByTestId('emergency-confirm').click();
+
+    const error = page.getByTestId('emergency-error');
+    await expect(error).toBeVisible();
+    await expect(error).toContainText('分かりません');
+    await expect(error).not.toContainText('できませんでした');
+    await expect(page.getByTestId('security-view-stale')).toBeVisible();
+  });
+
+  /**
    * 🔴 **鏡像も同じ規則で守る** (#973)。緊急停止の応答が権威を持つのは `emergencyStop` だけで、
    * 直前に保存が確定させた `pinConfigured` を古い値へ戻さない。
    */
@@ -498,11 +601,14 @@ test.describe('管理: 書き込み失敗が運用者に見える (#870 増分 0
     const heldEmergency = new Promise<void>((r) => {
       releaseEmergency = r;
     });
-    let seen = 0;
+    // 🔴 **到着順ではなく本文で振り分ける。** `seen === 1` だと、この画面へ PUT が 1 本
+    // 増えただけで**前提が崩れたまま緑**になる（8 周目 MINOR-4）。保存の body に
+    // `emergencyStop` は入らない。
+    const isEmergency = (route: Route): boolean =>
+      route.request().postData()?.includes('emergencyStop') === true;
     await page.route('**/api/admin/security**', async (route) => {
       if (route.request().method() === 'GET') return route.continue();
-      seen += 1;
-      if (seen === 1) {
+      if (isEmergency(route)) {
         // 緊急停止。PIN については停止前の（古い）スナップショットを運ぶ。
         await heldEmergency;
         return route.fulfill({
@@ -590,16 +696,20 @@ test.describe('管理: 書き込み失敗が運用者に見える (#870 増分 0
     });
     const body = (emergencyStop: boolean): string =>
       JSON.stringify({ pinRequired: false, ipAllowlist: [], pinConfigured: false, emergencyStop });
-    let seen = 0;
+    // 🔴 **到着順ではなく本文で振り分ける。** `seen === 1` だと、この画面へ PUT が 1 本
+    // 増えただけで**前提が崩れたまま緑**になる（8 周目 MINOR-4）。保存の body に
+    // `emergencyStop` は入らない。
+    const isEmergency = (route: Route): boolean =>
+      route.request().postData()?.includes('emergencyStop') === true;
     await page.route('**/api/admin/security**', async (route) => {
       if (route.request().method() === 'GET') return route.continue();
-      seen += 1;
-      if (seen === 1) {
-        await held;
-        // 保存が処理された時点の状態＝まだ停止していない。
-        return route.fulfill({ status: 200, contentType: 'application/json', body: body(false) });
+      // 緊急停止は即座に成功させる。
+      if (isEmergency(route)) {
+        return route.fulfill({ status: 200, contentType: 'application/json', body: body(true) });
       }
-      return route.fulfill({ status: 200, contentType: 'application/json', body: body(true) });
+      // 保存は保留し、緊急停止の確定後に**停止前のスナップショット**を返す。
+      await held;
+      return route.fulfill({ status: 200, contentType: 'application/json', body: body(false) });
     });
 
     await page.getByTestId('security-save').click();

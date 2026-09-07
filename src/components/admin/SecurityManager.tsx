@@ -124,7 +124,10 @@ export function SecurityManager() {
       setIpText(applied.ipAllowlist.join('\n'));
       setLoadFailed(false);
       setView(emergencyDiffers ? { ...applied, emergencyStop: shown.emergencyStop } : applied);
-      setViewStale(emergencyDiffers);
+      // 🔴 **下ろさない。** `viewStale` は「表示がサーバと食い違いうる」というビュー全体の
+      // 性質なので、下ろせるのは全フィールドの権威を持つ GET だけである。書き込み経路が
+      // 無条件に false を書くと、別経路が立てた注意書きを**消し合う**（8 周目 MINOR-1）。
+      if (emergencyDiffers) setViewStale(true);
     },
     [setView],
   );
@@ -134,7 +137,7 @@ export function SecurityManager() {
     (applied: SecurityView) => {
       const shown = viewRef.current;
       setView(shown === null ? applied : { ...shown, emergencyStop: applied.emergencyStop });
-      setViewStale(false);
+      // `viewStale` は触らない（下ろせるのは GET だけ。上の解説を見ること）。
     },
     [setView],
   );
@@ -183,7 +186,9 @@ export function SecurityManager() {
         body: JSON.stringify(body),
       });
       if (!res.ok) {
-        failure();
+        // 緊急停止と同じ規則（5xx は適用済みかもしれない）。同じ条件に別の結論を出さない。
+        if (res.status >= 500) setViewStale(true);
+        failure(res.status >= 500 ? saveFailureMessage('server-error') : undefined);
         return;
       }
       // 🔴 **応答本体を表示にする**（`load()` で取り直さない。上の `load` の解説を見ること）。
@@ -242,9 +247,15 @@ export function SecurityManager() {
           signal: controller.signal,
         });
         if (!res.ok) {
-          setEmergencyFailed(
-            emergencyStop ? '緊急停止を有効にできませんでした。' : '緊急停止を解除できませんでした。',
-          );
+          // 🔴 5xx は「断った」ではない（適用済みで監査だけ落ちた等がある）。行動が違うので分ける。
+          if (res.status >= 500) {
+            setViewStale(true);
+            setEmergencyFailed(saveFailureMessage('server-error', label));
+          } else {
+            setEmergencyFailed(
+              emergencyStop ? '緊急停止を有効にできませんでした。' : '緊急停止を解除できませんでした。',
+            );
+          }
           return;
         }
         /*
@@ -265,6 +276,24 @@ export function SecurityManager() {
           */
           setViewStale(true);
           setEmergencyFailed(saveFailureMessage('unreadable', label));
+          return;
+        }
+        /*
+          🔴 **成功は「押した値」ではなく「返ってきた値」で言う。**
+
+          トグルは `applied.emergencyStop` で更新するのに文言を引数 `emergencyStop` で
+          選ぶと、食い違う 200（`emergencyStop` を無視する版・キャッシュ層の古い整形済み
+          応答）で **「現在: 通常稼働」と「緊急停止を有効にしました。」を同時に**出す。
+          `asSecurityView` が閉じたのは「本文が壊れた 200」だけで、
+          **「形は正しいが内容が違う 200」はここを素通りしていた**（独立レビュー 8 周目 MAJOR-1。
+          3 周目 MAJOR-1 と同じ族が閉じ切れていなかった）。
+        */
+        if (applied.emergencyStop !== emergencyStop) {
+          applyEmergencyResult(applied);
+          setViewStale(true);
+          setEmergencyFailed(
+            `${label}: サーバーが別の状態を返しました。上の表示を確かめ、必要ならもう一度お試しください。`,
+          );
           return;
         }
         applyEmergencyResult(applied);
