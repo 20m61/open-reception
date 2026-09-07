@@ -192,10 +192,11 @@ export function SignageManager({
         （`setConfig` / `setConfigScopeKey` / `setFieldErrors`）だけを門の内側に置く
         —— こちらは A の内容を B の画面へ書くことになる（独立レビュー 2 周目 MAJOR-C）。
       */
-      const stillHere = isCurrentScope(startedWith);
       if (res.ok) {
         const applied = (await res.json()) as SignageConfig;
-        if (stillHere) {
+        // 🔴 **書き込みの直前で評価し直す。** `await res.json()` を跨ぐので、パース中に
+        // 切り替わると A の内容が B の state へ入る（独立レビュー 3 周目 MINOR-4）。
+        if (isCurrentScope(startedWith)) {
           // 載せるスコープも同時に更新する（「載っているデータのスコープ」を嘘にしない）。
           setConfigScopeKey(startedWith);
           setConfig(applied);
@@ -211,7 +212,7 @@ export function SignageManager({
             ? saveFailureMessage('rejected', startedFor)
             : `${startedFor}: ${data.message}`,
         );
-        if (stillHere) setFieldErrors(data.fields ?? []);
+        if (isCurrentScope(startedWith)) setFieldErrors(data.fields ?? []);
       }
     } catch {
       /*

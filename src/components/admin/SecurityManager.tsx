@@ -13,6 +13,29 @@ type SecurityView = { pinRequired: boolean; ipAllowlist: string[]; pinConfigured
  */
 const EMERGENCY_TIMEOUT_MS = 10_000;
 
+/**
+ * 応答が `SecurityView` の形をしているか (#973)。
+ *
+ * 🔴 **この画面の前提は 1 つだけ:「確かめられたことしか報告しない」。**
+ * `as SecurityView` で通すと、企業プロキシや API のバージョンスキューが返す
+ * `200 {"ok":true}` が `view` に入り、`emergencyStop` が `undefined` になる ——
+ * 画面は**「現在: 通常稼働」と「緊急停止を有効にしました」を同時に**出し、
+ * `pinConfigured` も `undefined` で「未設定」に化ける（独立レビュー 3 周目 MAJOR-1）。
+ *
+ * 読めなかった 200 も、形を確かめられなかった 200 も、**結果を確認できていない**点では
+ * 同じである。`save` と `setEmergency` は同じ結論（`unreadable`）へ揃える —— 同じ条件に
+ * 別の結論を出す状態を残さない。
+ */
+function asSecurityView(value: unknown): SecurityView | null {
+  if (typeof value !== 'object' || value === null) return null;
+  const v = value as Record<string, unknown>;
+  if (typeof v.pinRequired !== 'boolean') return null;
+  if (typeof v.pinConfigured !== 'boolean') return null;
+  if (typeof v.emergencyStop !== 'boolean') return null;
+  if (!Array.isArray(v.ipAllowlist) || v.ipAllowlist.some((x) => typeof x !== 'string')) return null;
+  return v as unknown as SecurityView;
+}
+
 /** セキュリティ設定 (issue #23, #29)。PIN 必須・PIN 変更・IP 許可リストを編集する。 */
 export function SecurityManager() {
   const [view, setView] = useState<SecurityView | null>(null);
@@ -79,7 +102,7 @@ export function SecurityManager() {
       setLoadFailed(true);
       return;
     }
-    const v = (await res.json().catch(() => null)) as SecurityView | null;
+    const v = asSecurityView(await res.json().catch(() => null));
     if (v === null) {
       setLoadFailed(true);
       return;
@@ -112,14 +135,19 @@ export function SecurityManager() {
         failure();
         return;
       }
-      setPin('');
       // 🔴 **応答本体を表示にする**（`load()` で取り直さない。上の `load` の解説を見ること）。
-      applyView((await res.json()) as SecurityView);
+      const applied = asSecurityView(await res.json().catch(() => null));
+      if (applied === null) {
+        // 結果を確認できていない。**成功と呼ばない**（`asSecurityView` の解説を見ること）。
+        setViewStale(true);
+        failure(saveFailureMessage('unreadable'));
+        return;
+      }
+      setPin('');
+      applyView(applied);
       success();
     } catch {
-      // 応答が**届いたのか**で言い分けを変える。`reached` の後に throw しうるのは
-      // `res.json()`（200 だが本文が壊れている）で、そこまで「接続できませんでした」に
-      // 丸めると、保存できているのに運用者を通信の調査へ行かせる。
+      // ここへ来るのは fetch 自身の reject だけ（本文の解釈は上で畳んである）。
       failure(saveFailureMessage(reached ? 'unreadable' : 'unreachable'));
     } finally {
       setBusy(false);
@@ -145,6 +173,8 @@ export function SecurityManager() {
         それ自体が成功しない —— `use-site-list.ts` が一覧取得で踏んで対策済みの型で、
         受付を止める操作はそれより止まってはいけない（独立レビュー 2 周目 MAJOR-E）。
       */
+      // 宛先。押したのは「保存」ではないので、既定の文言のまま出さない。
+      const label = emergencyStop ? '緊急停止' : '受付再開';
       const controller = new AbortController();
       const deadline = setTimeout(() => controller.abort(), EMERGENCY_TIMEOUT_MS);
       let reached = false;
@@ -169,17 +199,24 @@ export function SecurityManager() {
           （独立レビュー 2 周目 MAJOR-A）。ここでは編集中のフォーム（IP 許可リスト・
           PIN 必須）へは触らない —— 押していない入力を書き換えない。
         */
-        const applied = (await res.json().catch(() => null)) as SecurityView | null;
+        const applied = asSecurityView(await res.json().catch(() => null));
         if (applied === null) {
-          // 200 なので**適用はされている**。反映できなかったのは表示のほうだと言う。
+          /*
+            🔴 **成功と呼ばない。** 200 は受理を意味するが、返ってきた状態を確認できて
+            いない以上「有効にしました」と断定できない。しかもここには**自分で張った
+            締切の abort**（ヘッダ受信後に本文が滞留した場合）が混ざる —— 断定すると
+            **タイムアウトが成功報告へ化ける**（独立レビュー 3 周目 MAJOR-1）。
+            `save` と同じ結論（`unreadable`）へ揃える。
+          */
           setViewStale(true);
-        } else {
-          setView(applied);
-          setViewStale(false);
+          setEmergencyFailed(saveFailureMessage('unreadable', label));
+          return;
         }
+        setView(applied);
+        setViewStale(false);
         emergencySucceeded(emergencyStop ? '緊急停止を有効にしました。' : '緊急停止を解除しました。');
       } catch {
-        setEmergencyFailed(saveFailureMessage(reached ? 'unreadable' : 'unreachable'));
+        setEmergencyFailed(saveFailureMessage(reached ? 'unreadable' : 'unreachable', label));
       } finally {
         clearTimeout(deadline);
         setEmergencyBusy(false);
@@ -213,26 +250,32 @@ export function SecurityManager() {
         <p style={{ margin: '8px 0' }} data-testid="emergency-state">
           現在: {view.emergencyStop ? '停止中（全端末で受付を停止）' : '通常稼働'}
         </p>
+        {/*
+          🔴 **「処理中」に「押せない」の見た目を当てない**（`docs/experience/README.md`
+          「Processing」）。`disabled` だけだと `Button` は破線・灰色・危険色なしで描く ——
+          障害対応中の運用者は「押せなくなった／タップが失敗した」と読み、10 秒待たずに
+          離脱する。`aria-busy` を渡すと無効表現から外れ、ラベルの差し替えで進行中を示す
+          （独立レビュー 3 周目 MAJOR-2）。
+          `save` と相互に塞ぐのは、同じレコードの read-modify-write を同時に飛ばさない
+          ため（緊急停止が黙って巻き戻り、その上に「有効にしました」が残る）。
+        */}
         {view.emergencyStop ? (
           <Button
             variant="primary"
             data-testid="emergency-resume"
             onClick={() => void setEmergency(false)}
-            disabled={emergencyBusy}
+            disabled={emergencyBusy || busy}
+            aria-busy={emergencyBusy || undefined}
           >
             {emergencyBusy ? '送信中…' : '受付を再開する'}
           </Button>
         ) : confirmingEmergency ? (
           <div style={{ display: 'flex', gap: space.sm }}>
-            <Button
-              variant="danger"
-              data-testid="emergency-confirm"
-              onClick={() => void setEmergency(true)}
-              disabled={emergencyBusy}
-            >
-              {emergencyBusy ? '送信中…' : '本当に全端末を停止する'}
+            {/* 送信中はこの枝ごと描かれない（冒頭で `confirmingEmergency` を閉じるため）。 */}
+            <Button variant="danger" data-testid="emergency-confirm" onClick={() => void setEmergency(true)} disabled={busy}>
+              本当に全端末を停止する
             </Button>
-            <Button data-testid="emergency-cancel" onClick={() => setConfirmingEmergency(false)} disabled={emergencyBusy}>
+            <Button data-testid="emergency-cancel" onClick={() => setConfirmingEmergency(false)}>
               やめる
             </Button>
           </div>
@@ -241,7 +284,8 @@ export function SecurityManager() {
             variant="danger"
             data-testid="emergency-stop"
             onClick={() => setConfirmingEmergency(true)}
-            disabled={emergencyBusy}
+            disabled={emergencyBusy || busy}
+            aria-busy={emergencyBusy || undefined}
           >
             {emergencyBusy ? '送信中…' : '緊急停止する'}
           </Button>
@@ -271,9 +315,20 @@ export function SecurityManager() {
           ここで言うのは「反映できなかった」だけである。
         */}
         {viewStale ? (
-          <p data-testid="security-view-stale" role="status" aria-live="polite" style={{ margin: '8px 0 0' }}>
-            適用しましたが、最新の状態を表示に反映できませんでした。画面を再読み込みして確かめてください。
-          </p>
+          <div style={{ marginTop: space.sm, display: 'flex', gap: space.sm, alignItems: 'center' }}>
+            <p data-testid="security-view-stale" role="status" aria-live="polite" style={{ margin: 0 }}>
+              上の表示は最新でない可能性があります。取り直して確かめてください。
+            </p>
+            {/*
+              🔴 **取り直す導線をここに置く。** 初回取得に成功すると `view` は二度と null に
+              戻らないので、`AdminReadGate` の再試行には届かない —— 導線が無いと運用者は
+              ブラウザごと再読み込みするしかなく、**編集中の IP 許可リストを捨てる**ことになる
+              （独立レビュー 3 周目 MINOR-2）。
+            */}
+            <Button data-testid="security-view-reload" onClick={() => void load()}>
+              取り直す
+            </Button>
+          </div>
         ) : null}
       </div>
 
@@ -297,7 +352,13 @@ export function SecurityManager() {
           <textarea id="security-ip" data-testid="security-ip" value={ipText} onChange={(e) => setIpText(e.target.value)} rows={4} style={input} />
         </Field>
         <div style={{ display: 'flex', gap: space.sm, alignItems: 'center' }}>
-          <Button variant="primary" type="submit" data-testid="security-save" disabled={busy}>
+          <Button
+            variant="primary"
+            type="submit"
+            data-testid="security-save"
+            disabled={busy || emergencyBusy}
+            aria-busy={busy || undefined}
+          >
             保存
           </Button>
           <SaveFeedback feedback={feedback} successTestId="security-saved" errorTestId="security-error" />

@@ -218,10 +218,11 @@ export function OperatingHoursManager({
         （`applyPolicy` / `setIssues` / `setConflict`）だけを門の内側に置く —— こちらは
         A の内容を B のフォームへ書くことになるので、載せてはいけない。
       */
-      const stillHere = isCurrentScope(startedWith);
       if (res.ok) {
         const body = (await res.json()) as { policy: PolicyView };
-        if (stillHere) {
+        // 🔴 **書き込みの直前で評価し直す。** `await res.json()` を跨ぐので、パース中に
+        // 切り替わると A の内容が B の state へ入る（独立レビュー 3 周目 MINOR-4）。
+        if (isCurrentScope(startedWith)) {
           applyPolicy(body.policy);
           setLoadedScopeKey(startedWith);
         }
@@ -231,7 +232,9 @@ export function OperatingHoursManager({
           error?: string;
           issues?: { field: string; message: string }[];
         } | null;
-        if (stillHere) {
+        // 🔴 **書き込みの直前で評価し直す。** `await res.json()` を跨ぐので、パース中に
+        // 切り替わると A の内容が B の state へ入る（独立レビュー 3 周目 MINOR-4）。
+        if (isCurrentScope(startedWith)) {
           if (res.status === 409) {
             // 競合は「入力の誤り」ではない。検証 issue のリストへ相乗りさせず、専用の通知に
             // する（見出しが「入力に誤りがあります」になり、`version:` という内部フィールド名が

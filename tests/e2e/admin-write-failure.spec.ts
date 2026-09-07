@@ -248,6 +248,8 @@ test.describe('管理: 書き込み失敗が運用者に見える (#870 増分 0
    * 付かない**。オフラインの iPad では reject まで数十秒かかる。
    */
   test('緊急停止: 送信中は無言にならず、二度押しもできない (#973)', async ({ page }) => {
+    // 締切（10s）を跨ぐので既定の 30s では余裕が薄い。retries に吸収させない。
+    test.setTimeout(60_000);
     await page.goto('/admin/security');
     await expect(page.getByTestId('emergency-stop')).toBeVisible();
     await failWrites(page, '**/api/admin/security**', 'slow');
@@ -260,6 +262,9 @@ test.describe('管理: 書き込み失敗が運用者に見える (#870 増分 0
     // **DOM ごと消える**ので、無効化を見るのは残っているほうのボタンである。
     await expect(page.getByTestId('emergency-confirm')).toHaveCount(0);
     await expect(page.getByTestId('emergency-stop')).toBeDisabled();
+    // 🔴 **「処理中」に「押せない」の見た目を当てない**（`docs/experience/README.md`）。
+    // `aria-busy` が無いと危険色が消えて破線になり、「タップが失敗した」と読まれる。
+    await expect(page.getByTestId('emergency-stop')).toHaveAttribute('data-state', 'busy');
     // 窓が閉じたら必ず戻る（締切があるので、応答が返らなくても固まらない）。
     await expect(page.getByTestId('emergency-error')).toBeVisible({ timeout: 15_000 });
     await expect(page.getByTestId('emergency-stop')).toBeEnabled();
@@ -289,6 +294,22 @@ test.describe('管理: 書き込み失敗が運用者に見える (#870 増分 0
    * 宛先ラベル (#973)。拠点別の画面は保存が飛行中に切り替えられるので、
    * **どの拠点の話か**が文言に無いと B を見ている運用者が誤って安心する。
    */
+  test('サイネージ: 失敗の文言に拠点が入る (#973)', async ({ page }) => {
+    await page.goto('/admin/signage');
+    await expect(page.getByTestId('signage-save')).toBeVisible();
+    const label = await page
+      .getByTestId('signage-site-select')
+      .evaluate((el) => (el as HTMLSelectElement).selectedOptions[0]?.textContent?.trim() ?? '');
+    expect(label, '拠点セレクタに選択が無い（下界）').toBeTruthy();
+    await failWrites(page, '**/api/admin/signage**', 'abort');
+
+    await page.getByTestId('signage-save').click();
+
+    const error = page.getByTestId('signage-save-error');
+    await expect(error).toBeVisible();
+    await expect(error).toContainText(label);
+  });
+
   test('営業時間: 失敗の文言に拠点が入る (#973)', async ({ page }) => {
     await page.goto('/admin/operating-hours');
     await expect(page.getByTestId('operating-hours-save')).toBeVisible();
@@ -312,7 +333,7 @@ test.describe('管理: 書き込み失敗が運用者に見える (#870 増分 0
    * 200 だが本文が読めなかったときの緊急停止 (#973)。**適用はされている**ので失敗とは
    * 言わず、「反映できなかったのは表示のほう」だと言う。
    */
-  test('緊急停止: 200 で本文が読めないとき、表示が古いことだけを言う (#973)', async ({ page }) => {
+  test('緊急停止: 200 でも結果を確認できなければ「有効にしました」と言わない (#973)', async ({ page }) => {
     await page.goto('/admin/security');
     await expect(page.getByTestId('emergency-stop')).toBeVisible();
     await failWrites(page, '**/api/admin/security**', 'broken-200');
@@ -320,11 +341,98 @@ test.describe('管理: 書き込み失敗が運用者に見える (#870 増分 0
     await page.getByTestId('emergency-stop').click();
     await page.getByTestId('emergency-confirm').click();
 
-    // 200 は受理。失敗にしない。
-    await expect(page.getByTestId('emergency-saved')).toBeVisible();
-    await expect(page.getByTestId('emergency-error')).toHaveCount(0);
-    // 反映できなかったことは別に言う（保存フィードバックへ相乗りさせない）。
+    // **これが本題。** 200 は受理だが、返ってきた状態を確認できていない。断定しない。
+    await expect(page.getByTestId('emergency-error')).toBeVisible();
+    await expect(page.getByTestId('emergency-saved')).toHaveCount(0);
+    // 表示が当てにならないことと、取り直す導線。
     await expect(page.getByTestId('security-view-stale')).toBeVisible();
+    await expect(page.getByTestId('security-view-reload')).toBeVisible();
+  });
+
+  /**
+   * 🔴 **同じ条件に別の結論を出さない** (#973)。フォーム保存も緊急停止も同じ
+   * `PUT /api/admin/security` を叩く。片方だけ「読めなかった 200 は成功」にすると、
+   * 押したボタンで意味が変わる画面になる（3 周目 MAJOR-1 の根拠 3）。
+   */
+  test('セキュリティ設定: 200 で本文が読めないとき、保存も成功と言わない (#973)', async ({ page }) => {
+    await page.goto('/admin/security');
+    await expect(page.getByTestId('security-save')).toBeVisible();
+    await failWrites(page, '**/api/admin/security**', 'broken-200');
+
+    await page.getByTestId('security-save').click();
+
+    await expect(page.getByTestId('security-error')).toBeVisible();
+    await expect(page.getByTestId('security-saved')).toHaveCount(0);
+    await expect(page.getByTestId('security-view-stale')).toBeVisible();
+  });
+
+  /**
+   * 🔴 **形の壊れた 200 も同じ扱い。** `{"ok":true}` は `res.json()` を通るので、
+   * `as SecurityView` で受けるとトグルが `undefined` になり、画面は
+   * 「現在: 通常稼働」と「緊急停止を有効にしました」を**同時に**出す（3 周目 MAJOR-1）。
+   */
+  const MALFORMED_BODIES = [
+    // まったく別物（バージョンスキュー・企業プロキシの応答）。
+    { name: '別の形', body: '{"ok":true}' },
+    /*
+      🔴 **1 フィールドだけ欠けた形**。全部欠けた本文だと、述語のどのチェックを外しても
+      別のチェックが拾ってしまい、**述語を弱める変異が生存する**（実測 P1）。
+      境界のすぐ内側を踏む入力が要る、という `.claude/rules` の指摘と同型。
+    */
+    {
+      name: 'emergencyStop だけ欠けた形',
+      body: '{"pinRequired":false,"ipAllowlist":[],"pinConfigured":false}',
+    },
+  ] as const;
+
+  for (const malformed of MALFORMED_BODIES) {
+    test(`緊急停止: 形の違う 200（${malformed.name}）を状態として載せない (#973)`, async ({ page }) => {
+      await page.goto('/admin/security');
+      await expect(page.getByTestId('emergency-stop')).toBeVisible();
+      await page.route('**/api/admin/security**', (route) => {
+        if (route.request().method() === 'GET') return route.continue();
+        return route.fulfill({ status: 200, contentType: 'application/json', body: malformed.body });
+      });
+
+      await page.getByTestId('emergency-stop').click();
+      await page.getByTestId('emergency-confirm').click();
+
+      await expect(page.getByTestId('emergency-error')).toBeVisible();
+      await expect(page.getByTestId('emergency-saved')).toHaveCount(0);
+      // トグルは古い値のまま（`undefined` を載せて「通常稼働」に化けさせない）。
+      await expect(page.getByTestId('emergency-state')).toContainText('通常稼働');
+    });
+  }
+
+  /**
+   * 🔴 **成功経路の証拠** (#973)。ここまでの注入は全部失敗側で、`setView(applied)` を
+   * 落とす変異が素通りしていた（3 周目 MAJOR-1）。応答を注入で返すので共有 seed は変えない。
+   */
+  test('緊急停止: 応答本体でトグルが更新される (#973)', async ({ page }) => {
+    await page.goto('/admin/security');
+    await expect(page.getByTestId('emergency-state')).toContainText('通常稼働');
+    await page.route('**/api/admin/security**', (route) => {
+      if (route.request().method() === 'GET') return route.continue();
+      return route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          pinRequired: false,
+          ipAllowlist: [],
+          pinConfigured: false,
+          emergencyStop: true,
+        }),
+      });
+    });
+
+    await page.getByTestId('emergency-stop').click();
+    await page.getByTestId('emergency-confirm').click();
+
+    await expect(page.getByTestId('emergency-saved')).toBeVisible();
+    // **これが本題。** 取り直さずに、返ってきた状態がそのままトグルになる。
+    await expect(page.getByTestId('emergency-state')).toContainText('停止中');
+    await expect(page.getByTestId('emergency-resume')).toBeVisible();
+    await expect(page.getByTestId('security-view-stale')).toHaveCount(0);
   });
 
   /**
