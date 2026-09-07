@@ -161,21 +161,33 @@ export function OperatingHoursManager({
     // **応答の適用にも同じ門が要る** (#554 レビュー B1 と同型)。PUT が飛行中に拠点を
     // 切り替えると、遅れて届いた A の応答が B の画面へ載り、以後 B として保存できてしまう。
     const startedWith = scopeKey;
+    // 失敗の宛先は、保存を**始めた時点**の拠点である（切り替え後の名前を出すと嘘になる）。
+    const startedFor = siteLabel(sites, siteId);
+
+    /*
+      🔴 **入力の解釈は `try` の外でやる。** ここを `try` の中に置くと、`parseTimeRangesText`
+      などの例外（入力起因・実装バグ）まで `catch` が拾い、「サーバーに接続できませんでした」
+      という**まったく無関係な文言**になる（独立レビュー MINOR）。`try` に入れるのは
+      送信と応答の解釈だけにする。
+    */
+    const weeklySchedule: Partial<Record<Weekday, ReturnType<typeof parseTimeRangesText>>> = {};
+    for (const d of WEEKDAYS) {
+      const ranges = parseTimeRangesText(weeklyText[d]);
+      if (ranges.length > 0) weeklySchedule[d] = ranges;
+    }
+    const fixedHolidays = fixedHolidaysText
+      .split('\n')
+      .map((s) => s.trim())
+      .filter(Boolean);
+    const exceptionDates = parseExceptionsText(exceptionsText);
+
     setBusy(true);
     clear();
     setIssues([]);
+    // 「応答が届いたか」を持つ。`catch` は fetch の reject と、届いた後の例外の
+    // **両方**を拾うので、綴りだけでは区別できない。
+    let reached = false;
     try {
-      const weeklySchedule: Partial<Record<Weekday, ReturnType<typeof parseTimeRangesText>>> = {};
-      for (const d of WEEKDAYS) {
-        const ranges = parseTimeRangesText(weeklyText[d]);
-        if (ranges.length > 0) weeklySchedule[d] = ranges;
-      }
-      const fixedHolidays = fixedHolidaysText
-        .split('\n')
-        .map((s) => s.trim())
-        .filter(Boolean);
-      const exceptionDates = parseExceptionsText(exceptionsText);
-
       const res = await fetch('/api/admin/operating-policy', {
         method: 'PUT',
         headers: { 'content-type': 'application/json' },
@@ -192,6 +204,7 @@ export function OperatingHoursManager({
           ...(policy ? { expectedVersion: policy.version } : {}),
         }),
       });
+      reached = true;
       if (!isCurrentScope(startedWith)) return;
       if (res.ok) {
         const body = (await res.json()) as { policy: PolicyView };
@@ -213,7 +226,7 @@ export function OperatingHoursManager({
           setConflict(false);
           setIssues(body?.issues ?? []);
         }
-        failure();
+        failure(saveFailureMessage('rejected', startedFor));
       }
     } catch {
       /*
@@ -224,11 +237,11 @@ export function OperatingHoursManager({
         データを書かない —— 押した操作が失敗した事実は、その後どの拠点を見ていても
         運用者に伝えるべきもので、門を足すと「切り替えたら黙る」という元の欠陥へ戻る。
       */
-      failure(saveFailureMessage('unreachable'));
+      failure(saveFailureMessage(reached ? 'unreadable' : 'unreachable', startedFor));
     } finally {
       setBusy(false);
     }
-  }, [gate.canMutate, scopeKey, isCurrentScope, clear, weeklyText, fixedHolidaysText, exceptionsText, timezone, emergencyContactLabel, tenantId, siteId, policy, applyPolicy, success, failure]);
+  }, [gate.canMutate, scopeKey, isCurrentScope, clear, weeklyText, fixedHolidaysText, exceptionsText, timezone, emergencyContactLabel, tenantId, siteId, sites, policy, applyPolicy, success, failure]);
 
   if (gate.unavailable !== null) {
     // **理由で出し分ける。** 失敗を「読み込み中…」と出すと運用者は終わらない待ちに入り、
@@ -237,6 +250,12 @@ export function OperatingHoursManager({
     return (
       <section>
         <h1 style={{ marginTop: 0 }}>営業時間設定</h1>
+        {/*
+          🔴 **保存の結果はこちらの枝にも出す**（独立レビュー MAJOR-2）。拠点を切り替えると
+          `gate.unavailable` が非 null になってフォームごと差し替わる。切替先の取得も失敗すると、
+          直前の保存失敗は**永久に描画されない** —— 門を外しても「切り替えたら黙る」が残る。
+        */}
+        <SaveFeedback feedback={feedback} successTestId="operating-hours-saved" errorTestId="operating-hours-error" />
         {failed ? (
           <EmptyState
             testId="operating-hours-unavailable"
@@ -427,6 +446,19 @@ export function OperatingHoursManager({
       </Form>
     </section>
   );
+}
+
+
+/**
+ * 失敗の宛先ラベル。**どの拠点の保存の話か**を文言に載せるために使う (#973)。
+ *
+ * 🔴 保存が飛行中に拠点を切り替えられるので、宛先を書かないと **B を見ている運用者が
+ * A の失敗を自分の画面の話として読む**。文言が「再読み込みして確かめてください」と
+ * 具体的な行動を指示しているぶん、宛先違いは**誤った安心**に直結する
+ * （独立レビュー MAJOR-2）。名前が引けなければ ID を出す（無記名にはしない）。
+ */
+function siteLabel(sites: { id: string; name: string }[], id: string): string {
+  return sites.find((s) => s.id === id)?.name ?? id;
 }
 
 const input: React.CSSProperties = {

@@ -17,6 +17,12 @@ import {
  * 起票時点で **77 箇所**が「reject を報告しない」側に落ちる。一度に直せる量ではないので、
  * issue の AC6 が明示するとおり**ラチェット**を置く。
  *
+ * 🔴 **この数は「無言の箇所の数」ではなく「走査形の数」である。** 走査は
+ * 「`try`/`catch` に囲まれていて、その `catch` が報告するか」しか見ないので、
+ * `await fetch(…).catch(() => null)` ＋ `if (!res?.ok) setError(…)` の形
+ * （`Departments` / `Kiosks` / `Sites` / `Staff` の各 `load` 等、26 件）は
+ * **実際には失敗を画面へ出しているのに計上される**。減らすときは中身を読んでから判断する。
+ *
  * 🔴 **これは「直さなくてよい」一覧ではない。** 直したら**配列から消す**（消さないと
  * 「まだ残っている」と嘘をつく検査になる）。増やすには配列を触るしかないので、黙って
  * 増えることはない。`check-cjk-literals.ts` の例外リストと同じ型で、**ドリフト**
@@ -46,6 +52,7 @@ const ADMIN_DIR = join(process.cwd(), 'src/components/admin');
 const REMAINING: ReadonlyMap<string, number> = new Map([
   ['AiGuidanceManager.tsx', 1],
   ['AssetsManager.tsx', 2],
+  ['auth/AuthMethodSettings.tsx', 1],
   ['BrandingManager.tsx', 1],
   ['costs/CostManager.tsx', 1],
   ['CsvImport.tsx', 1],
@@ -68,7 +75,6 @@ const REMAINING: ReadonlyMap<string, number> = new Map([
   ['StayManager.tsx', 1],
   ['usage/UsageManager.tsx', 1],
   ['use-site-list.ts', 1],
-  ['auth/AuthMethodSettings.tsx', 1],
   ['VoiceManager.tsx', 1],
 ]);
 

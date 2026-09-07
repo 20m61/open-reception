@@ -155,6 +155,8 @@ export function SignageManager({
      * 読み（`load`）には写してあった守りを、書きにも写す。
      */
     const startedWith = scopeKey;
+    // 失敗の宛先は、保存を**始めた時点**の拠点である（切り替え後の名前を出すと嘘になる）。
+    const startedFor = siteLabel(sites, siteId);
     setBusy(true);
     setError(null);
     setFieldErrors([]);
@@ -165,6 +167,9 @@ export function SignageManager({
       **どちらも通らず、保存ボタンが押せないまま固まった**。画面には何も出ないので、
       運用者からは「押しても反応しない端末」に見える。
     */
+    // 「応答が届いたか」を持つ。`catch` は fetch の reject と、届いた後の例外の
+    // **両方**を拾うので、綴りだけでは区別できない。
+    let reached = false;
     try {
       const res = await fetch('/api/admin/signage', {
         method: 'PUT',
@@ -177,6 +182,7 @@ export function SignageManager({
           items: config.items,
         }),
       });
+      reached = true;
       // 応答が届いた時点で別スコープを見ていたら、結果を画面へ載せない。
       if (!isCurrentScope(startedWith)) return;
       if (res.ok) {
@@ -189,7 +195,7 @@ export function SignageManager({
           message?: string;
           fields?: FieldError[];
         };
-        failure(data.message ?? saveFailureMessage('rejected'));
+        failure(data.message ?? saveFailureMessage('rejected', startedFor));
         setFieldErrors(data.fields ?? []);
       }
     } catch {
@@ -201,11 +207,11 @@ export function SignageManager({
         データを書かない —— 押した操作が失敗した事実は、その後どの拠点を見ていても
         運用者に伝えるべきもので、門を足すと「切り替えたら黙る」という元の欠陥へ戻る。
       */
-      failure(saveFailureMessage('unreachable'));
+      failure(saveFailureMessage(reached ? 'unreadable' : 'unreachable', startedFor));
     } finally {
       setBusy(false);
     }
-  }, [config, tenantId, siteId, scopeKey, isCurrentScope, success, failure, clear, gate.canMutate]);
+  }, [config, tenantId, siteId, sites, scopeKey, isCurrentScope, success, failure, clear, gate.canMutate]);
 
   const errorFor = useCallback(
     (field: string) => fieldErrors.find((e) => e.field === field)?.message,
@@ -483,6 +489,19 @@ function SignageItemEditor({
       </div>
     </div>
   );
+}
+
+
+/**
+ * 失敗の宛先ラベル。**どの拠点の保存の話か**を文言に載せるために使う (#973)。
+ *
+ * 🔴 保存が飛行中に拠点を切り替えられるので、宛先を書かないと **B を見ている運用者が
+ * A の失敗を自分の画面の話として読む**。文言が「再読み込みして確かめてください」と
+ * 具体的な行動を指示しているぶん、宛先違いは**誤った安心**に直結する
+ * （独立レビュー MAJOR-2）。名前が引けなければ ID を出す（無記名にはしない）。
+ */
+function siteLabel(sites: { id: string; name: string }[], id: string): string {
+  return sites.find((s) => s.id === id)?.name ?? id;
 }
 
 const inputStyle: React.CSSProperties = {

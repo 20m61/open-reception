@@ -102,6 +102,107 @@ test.describe('管理: 書き込み失敗が運用者に見える (#870 増分 0
     });
   }
 
+  /**
+   * 設定保存（PUT）の画面 (#973 増分 02)。
+   *
+   * ## なぜ別の配列なのか
+   *
+   * 上の `SCREENS` は「値を入れて追加する」形（`input` → `submit`）だが、設定画面は
+   * **既に載っている値を保存し直す**だけで入力欄が要らない。同じループに載せると
+   * `input` が空の形を作ることになる。
+   *
+   * ## なぜ e2e が要るか（構造テストの限界）
+   *
+   * `src/components/admin/ui/save-outcome.test.ts` の配線検査は**綴りの存在検査**なので、
+   * 独立レビューの実測で次の変異が全部生存した:
+   *
+   * - 報告を恒偽の条件で包む
+   * - `save` の越境ガードを消す
+   * - `if (res.ok)` を反転させ、**失敗したのに「有効にしました」と出す**
+   *
+   * どれも「押して、通信を落として、画面を見る」でしか落ちない。
+   */
+  const SAVE_SCREENS = [
+    { name: 'AI 案内', path: '/admin/ai-guidance', api: '**/api/admin/ai-guidance**', submit: 'ai-guidance-save', errorTestId: 'ai-guidance-error' },
+    { name: 'ブランディング', path: '/admin/branding', api: '**/api/admin/branding**', submit: 'brand-save', errorTestId: 'brand-save-error' },
+    { name: '言語設定', path: '/admin/languages', api: '**/api/admin/languages**', submit: 'lang-save', errorTestId: 'lang-error' },
+    { name: 'セキュリティ設定', path: '/admin/security', api: '**/api/admin/security**', submit: 'security-save', errorTestId: 'security-error' },
+    { name: '音声設定', path: '/admin/voice', api: '**/api/admin/voice**', submit: 'voice-save', errorTestId: 'voice-error' },
+    { name: 'サイネージ', path: '/admin/signage', api: '**/api/admin/signage**', submit: 'signage-save', errorTestId: 'signage-save-error' },
+    { name: '営業時間', path: '/admin/operating-hours', api: '**/api/admin/operating-policy**', submit: 'operating-hours-save', errorTestId: 'operating-hours-error' },
+  ] as const;
+
+  for (const screen of SAVE_SCREENS) {
+    test(`${screen.name}: 接続断のとき保存の失敗が表示される (#973)`, async ({ page }) => {
+      await page.goto(screen.path);
+      // 保存ボタンが出る＝読み取りは済んでいる。ここから書き込みだけ落とす。
+      await expect(page.getByTestId(screen.submit)).toBeVisible();
+      await failWrites(page, screen.api, 'abort');
+
+      await page.getByTestId(screen.submit).click();
+
+      // **これが本題。** `catch` が無かったときはボタンが戻るだけで何も出なかった。
+      await expect(page.getByTestId(screen.errorTestId)).toBeVisible();
+      await expect(page.getByTestId(screen.errorTestId)).toHaveAttribute('role', 'alert');
+    });
+
+    test(`${screen.name}: 500 のとき保存の失敗が表示される`, async ({ page }) => {
+      await page.goto(screen.path);
+      await expect(page.getByTestId(screen.submit)).toBeVisible();
+      await failWrites(page, screen.api, '500');
+
+      await page.getByTestId(screen.submit).click();
+
+      await expect(page.getByTestId(screen.errorTestId)).toBeVisible();
+    });
+
+    test(`${screen.name}: 失敗しても押し直せる（ボタンが固まらない）`, async ({ page }) => {
+      // **下界。** 失敗を出すだけの実装でも上の 2 本は通る。`SignageManager` は実際に
+      // `finally` が無く、reject すると `busy` が true のまま**押せなくなった**。
+      await page.goto(screen.path);
+      await expect(page.getByTestId(screen.submit)).toBeVisible();
+      await failWrites(page, screen.api, 'abort');
+
+      await page.getByTestId(screen.submit).click();
+      await expect(page.getByTestId(screen.errorTestId)).toBeVisible();
+
+      await expect(page.getByTestId(screen.submit)).toBeEnabled();
+    });
+  }
+
+  /**
+   * 緊急停止は**受付を止める操作**なので、成否の取り違えの代償が最も大きい (#973)。
+   * `if (res.ok)` を反転させる変異が unit 8114 本を素通りした（独立レビューの実測）。
+   */
+  test('緊急停止: 失敗したときに「有効にしました」と言わない (#973)', async ({ page }) => {
+    await page.goto('/admin/security');
+    await expect(page.getByTestId('emergency-stop')).toBeVisible();
+    await failWrites(page, '**/api/admin/security**', '500');
+
+    await page.getByTestId('emergency-stop').click();
+    await page.getByTestId('emergency-confirm').click();
+
+    await expect(page.getByTestId('emergency-error')).toBeVisible();
+    await expect(page.getByTestId('emergency-error')).toHaveAttribute('role', 'alert');
+    // 成功側が出ていないこと（分岐が逆になっていたら、これが落ちる）。
+    await expect(page.getByTestId('emergency-saved')).toHaveCount(0);
+    // 表示は「通常稼働」のまま（止まっていないのに止まったように見せない）。
+    await expect(page.getByTestId('emergency-state')).toContainText('通常稼働');
+  });
+
+  test('緊急停止: 接続断でも黙らない (#973)', async ({ page }) => {
+    await page.goto('/admin/security');
+    await expect(page.getByTestId('emergency-stop')).toBeVisible();
+    await failWrites(page, '**/api/admin/security**', 'abort');
+
+    await page.getByTestId('emergency-stop').click();
+    await page.getByTestId('emergency-confirm').click();
+
+    await expect(page.getByTestId('emergency-error')).toBeVisible();
+    // 送信中の窓が終わって、押し直せる状態に戻っていること。
+    await expect(page.getByTestId('emergency-stop')).toBeEnabled();
+  });
+
   test('部署: 有効/無効の切り替えが失敗したら伝える（行が黙って戻らない）', async ({ page }) => {
     await page.goto('/admin/departments');
     // 行が出てから注入する（読み取りは通すが、念のため描画を待つ）。

@@ -26,19 +26,41 @@ export type SaveFailure =
   /** サーバが答えを返し、それが「保存しない」だった（4xx/5xx）。押し直しても同じ。 */
   | 'rejected'
   /** 応答を受け取れなかった。**保存されたかどうかは分かっていない**。 */
-  | 'unreachable';
+  | 'unreachable'
+  /**
+   * 応答は届いたのに読み取れなかった（200 だが本文が壊れている・途中で切れた）。
+   *
+   * 🔴 **`unreachable` に丸めない。** 届いている以上、サーバは保存した可能性が高く、
+   * 「通信状態を確かめてください」は**運用者を誤った方向へ調べに行かせる**
+   * （プロキシによる切断・`Content-Length` 途中終了で実際に起こる）。
+   */
+  | 'unreadable';
+
+function baseMessage(failure: SaveFailure): string {
+  switch (failure) {
+    case 'rejected':
+      return '保存に失敗しました。';
+    case 'unreachable':
+      return 'サーバーに接続できませんでした。保存できたか分かりません。通信状態を確かめてから、画面を再読み込みして確かめてください。';
+    case 'unreadable':
+      return 'サーバーからの応答を読み取れませんでした。保存できたか分かりません。画面を再読み込みして確かめてください。';
+  }
+}
 
 /**
  * 画面と読み上げに出す文言。
  *
  * `rejected` は `useSaveFeedback` の既定文言と同一にしてある（既存の e2e / 画面表示を
  * 変えないため）。**ここが正本**で、フックの既定はこれを引く。
+ *
+ * 🔴 **`about` は「どの対象の保存か」。** 拠点別の画面（営業時間・サイネージ）は、保存が
+ * 飛行中に拠点を切り替えられる。宛先を書かないと、**B を見ている運用者が A の失敗を
+ * 自分の画面の話として読み**、B を再読み込みして「問題なし」と結論する ―― 断定を避けた
+ * 文言が、宛先違いのせいで誤った安心に変わる（独立レビュー MAJOR-2 の実測）。
  */
-export function saveFailureMessage(failure: SaveFailure): string {
-  switch (failure) {
-    case 'rejected':
-      return '保存に失敗しました。';
-    case 'unreachable':
-      return 'サーバーに接続できませんでした。保存できたか分かりません。通信状態を確かめてから、画面を再読み込みして確かめてください。';
-  }
+export function saveFailureMessage(failure: SaveFailure, about?: string): string {
+  const base = baseMessage(failure);
+  // 空・空白だけの見出しを付けない（`「」:` が画面に出るのは報告していないのと同じくらい悪い）。
+  const label = about?.trim() ?? '';
+  return label === '' ? base : `${label}: ${base}`;
 }
