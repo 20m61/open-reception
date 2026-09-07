@@ -205,26 +205,43 @@ export function OperatingHoursManager({
         }),
       });
       reached = true;
-      if (!isCurrentScope(startedWith)) return;
+      /*
+        🔴 **門は「画面へ書き込む行」だけに掛ける。**
+
+        それまでは `if (!isCurrentScope(startedWith)) return;` を応答の直後に置いていたので、
+        飛行中に拠点を切り替えると **成功も失敗も丸ごと飲み込まれた** —— A の保存が 409
+        （他の管理者が先に保存）や 400（検証エラー）で失敗しても画面には何も出ず、運用者は
+        A が保存されたと信じる。営業時間は営業時間外案内と発信可否を決めるので、来訪者の
+        受付完遂に直結する（独立レビュー 2 周目 MAJOR-C）。
+
+        報告（`success` / `failure`）は宛先ラベル付きで**必ず出す**。フォームに紐づく表示
+        （`applyPolicy` / `setIssues` / `setConflict`）だけを門の内側に置く —— こちらは
+        A の内容を B のフォームへ書くことになるので、載せてはいけない。
+      */
+      const stillHere = isCurrentScope(startedWith);
       if (res.ok) {
         const body = (await res.json()) as { policy: PolicyView };
-        applyPolicy(body.policy);
-        setLoadedScopeKey(startedWith);
-        success();
+        if (stillHere) {
+          applyPolicy(body.policy);
+          setLoadedScopeKey(startedWith);
+        }
+        success(`${startedFor}: 保存しました`);
       } else {
         const body = (await res.json().catch(() => null)) as {
           error?: string;
           issues?: { field: string; message: string }[];
         } | null;
-        if (res.status === 409) {
-          // 競合は「入力の誤り」ではない。検証 issue のリストへ相乗りさせず、専用の通知に
-          // する（見出しが「入力に誤りがあります」になり、`version:` という内部フィールド名が
-          // 運用者に出ていた）。**次に何をすべきか**は押せる導線として置く。
-          setConflict(true);
-          setIssues([]);
-        } else {
-          setConflict(false);
-          setIssues(body?.issues ?? []);
+        if (stillHere) {
+          if (res.status === 409) {
+            // 競合は「入力の誤り」ではない。検証 issue のリストへ相乗りさせず、専用の通知に
+            // する（見出しが「入力に誤りがあります」になり、`version:` という内部フィールド名が
+            // 運用者に出ていた）。**次に何をすべきか**は押せる導線として置く。
+            setConflict(true);
+            setIssues([]);
+          } else {
+            setConflict(false);
+            setIssues(body?.issues ?? []);
+          }
         }
         failure(saveFailureMessage('rejected', startedFor));
       }

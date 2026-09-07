@@ -7,6 +7,12 @@ import { AdminReadGate } from './AdminReadGate';
 
 type SecurityView = { pinRequired: boolean; ipAllowlist: string[]; pinConfigured: boolean; emergencyStop: boolean };
 
+/**
+ * 緊急停止の送信に張る締切 (#973)。応答が返らない経路でボタンが恒久的に無効化されるのを防ぐ。
+ * 一覧取得（`use-site-list.ts` の `SITE_LIST_TIMEOUT_MS`）と同じ長さに合わせてある。
+ */
+const EMERGENCY_TIMEOUT_MS = 10_000;
+
 /** セキュリティ設定 (issue #23, #29)。PIN 必須・PIN 変更・IP 許可リストを編集する。 */
 export function SecurityManager() {
   const [view, setView] = useState<SecurityView | null>(null);
@@ -34,36 +40,52 @@ export function SecurityManager() {
   } = useSaveFeedback();
   /** 緊急停止の送信中。**押下から確定までの窓**を無言にしない（独立レビュー MAJOR-4）。 */
   const [emergencyBusy, setEmergencyBusy] = useState(false);
+  /**
+   * 応答は 200 だったのに本文を読めず、**表示へ反映できなかった**。
+   *
+   * 🔴 これは「保存の結果」ではなく**表示の性質**なので、保存フィードバックに載せない
+   * （載せると、あとで取り直して新しくなっても文言が残る。独立レビュー 2 周目 MINOR-3）。
+   */
+  const [viewStale, setViewStale] = useState(false);
+
+  /** 取得した（あるいは書き込みが返した）状態を画面へ載せる。 */
+  const applyView = useCallback((v: SecurityView) => {
+    setView(v);
+    setPinRequired(v.pinRequired);
+    setIpText(v.ipAllowlist.join('\n'));
+    setLoadFailed(false);
+    setViewStale(false);
+  }, []);
 
   /**
-   * 取得し直す。**成否を返す。**
+   * 初回取得と再試行。**書き込みの後には呼ばない。**
    *
-   * 🔴 `loadFailed` を描くのは `if (!view)` の枝だけで、`view` は初回取得後に `null` へ
-   * 戻らない。つまり**2 回目以降の取得失敗は画面のどこにも出ない**ので、呼び出し側が
-   * 「表示はサーバの状態を映している」と言い張れないことを知る必要がある
-   * （独立レビュー MAJOR-1）。
+   * 🔴 **書き込みの後にもう一度取りに行かない**（独立レビュー 2 周目 MAJOR-A/B）。
+   * `PUT /api/admin/security` は更新後の `SecurityView` をそのまま返すので、2 度目の往復は
+   * 情報を増やさずに**壊れ方だけ増やす**:
+   *
+   * - GET が失敗すると、直前に出した「保存できたか分かりません」を「表示が古いかも」で
+   *   上書きしてしまい、**要求が届いていない可能性が画面から消える**
+   * - 逆に PUT が成功していても、GET の失敗で確定した真が「不明」へ格下げされる
+   * - 2 本の `load()` が競合すると、遅い方が勝ってトグルが巻き戻る
+   *
+   * 応答本体を採ればどれも起きない。ここに残るのは「まだ何も無い」ときの取得だけである。
    */
-  const load = useCallback(async (): Promise<boolean> => {
+  const load = useCallback(async () => {
     // `catch` を省くとオフラインで例外になり、`void load()` が握り潰して
     // **失敗にすら落ちない**（画面は「読み込み中…」のまま固まる）。
     const res = await fetch('/api/admin/security').catch(() => null);
     if (!res?.ok) {
       setLoadFailed(true);
-      return false;
+      return;
     }
-    // 本文が壊れていると `json()` が throw する。呼び出し側（`finally` の中を含む）へ
-    // 例外を投げ返すと unhandled rejection になるので、ここで失敗として畳む。
     const v = (await res.json().catch(() => null)) as SecurityView | null;
     if (v === null) {
       setLoadFailed(true);
-      return false;
+      return;
     }
-    setView(v);
-    setPinRequired(v.pinRequired);
-    setIpText(v.ipAllowlist.join('\n'));
-    setLoadFailed(false);
-    return true;
-  }, []);
+    applyView(v);
+  }, [applyView]);
 
   useEffect(() => {
     void load();
@@ -86,22 +108,23 @@ export function SecurityManager() {
         body: JSON.stringify(body),
       });
       reached = true;
-      if (res.ok) {
-        setPin('');
-        success();
-        await load();
-      } else {
+      if (!res.ok) {
         failure();
+        return;
       }
+      setPin('');
+      // 🔴 **応答本体を表示にする**（`load()` で取り直さない。上の `load` の解説を見ること）。
+      applyView((await res.json()) as SecurityView);
+      success();
     } catch {
-      // 応答が**届いたのか**で言い分けを変える。届いた後の例外（本文が壊れている・
-      // `load()` の中）まで「接続できませんでした」に丸めると、保存できているのに
-      // 運用者を通信の調査へ行かせる（独立レビュー MINOR）。
+      // 応答が**届いたのか**で言い分けを変える。`reached` の後に throw しうるのは
+      // `res.json()`（200 だが本文が壊れている）で、そこまで「接続できませんでした」に
+      // 丸めると、保存できているのに運用者を通信の調査へ行かせる。
       failure(saveFailureMessage(reached ? 'unreadable' : 'unreachable'));
     } finally {
       setBusy(false);
     }
-  }, [busy, ipText, pinRequired, pin, load, success, failure, clear]);
+  }, [busy, ipText, pinRequired, pin, applyView, success, failure, clear]);
 
   const setEmergency = useCallback(
     async (emergencyStop: boolean) => {
@@ -115,42 +138,54 @@ export function SecurityManager() {
         **止めたつもりで止まっていない**状態に置かれる（受付を止める操作なので、
         取り違えの代償が最も大きい）。
       */
+      /*
+        🔴 **締切を張る。** 応答が返らない経路（キャプティブポータル・half-open TCP・
+        LB のブラックホール）では `emergencyBusy` が真のまま固定され、**停止も再開も
+        押せない画面**になる。復帰手段が再読み込みだけになるが、通信が半死のときは
+        それ自体が成功しない —— `use-site-list.ts` が一覧取得で踏んで対策済みの型で、
+        受付を止める操作はそれより止まってはいけない（独立レビュー 2 周目 MAJOR-E）。
+      */
+      const controller = new AbortController();
+      const deadline = setTimeout(() => controller.abort(), EMERGENCY_TIMEOUT_MS);
       let reached = false;
       try {
         const res = await fetch('/api/admin/security', {
           method: 'PUT',
           headers: { 'content-type': 'application/json' },
           body: JSON.stringify({ emergencyStop }),
+          signal: controller.signal,
         });
         reached = true;
-        if (res.ok) {
-          emergencySucceeded(emergencyStop ? '緊急停止を有効にしました。' : '緊急停止を解除しました。');
-        } else {
+        if (!res.ok) {
           setEmergencyFailed(
             emergencyStop ? '緊急停止を有効にできませんでした。' : '緊急停止を解除できませんでした。',
           );
+          return;
         }
+        /*
+          🔴 **応答本体でトグルを更新する**（`load()` で取り直さない）。
+          取り直すと、GET が失敗したときに直前の結論（届いていないかもしれない／
+          確かに止めた）を「表示が古いかも」で**上書きして消して**しまう
+          （独立レビュー 2 周目 MAJOR-A）。ここでは編集中のフォーム（IP 許可リスト・
+          PIN 必須）へは触らない —— 押していない入力を書き換えない。
+        */
+        const applied = (await res.json().catch(() => null)) as SecurityView | null;
+        if (applied === null) {
+          // 200 なので**適用はされている**。反映できなかったのは表示のほうだと言う。
+          setViewStale(true);
+        } else {
+          setView(applied);
+          setViewStale(false);
+        }
+        emergencySucceeded(emergencyStop ? '緊急停止を有効にしました。' : '緊急停止を解除しました。');
       } catch {
         setEmergencyFailed(saveFailureMessage(reached ? 'unreadable' : 'unreachable'));
       } finally {
-        /*
-          🔴 **取り直せなかったら、そう言う。**
-
-          下のトグルは `view.emergencyStop` を映すが、`load()` が失敗しても `view` は
-          前の値のまま残り、`loadFailed` は `if (!view)` の枝にしか出ない。黙って戻ると
-          「緊急停止を有効にしました」と書いてあるすぐ上で**トグルが「通常稼働」と言う**
-          （解除側はもっと悪く、成功したのに「停止中」が残って次に見た人が読み違える）。
-          成功の報告を**上書きして**、表示が当てにならないことを先に伝える。
-        */
-        if (!(await load())) {
-          setEmergencyFailed(
-            '現在の状態を取得できませんでした。上の表示は古い可能性があります。画面を再読み込みして確かめてください。',
-          );
-        }
+        clearTimeout(deadline);
         setEmergencyBusy(false);
       }
     },
-    [emergencyBusy, load, clearEmergencyFeedback, emergencySucceeded, setEmergencyFailed],
+    [emergencyBusy, clearEmergencyFeedback, emergencySucceeded, setEmergencyFailed],
   );
 
   if (!view) {
@@ -229,6 +264,17 @@ export function SecurityManager() {
             errorTestId="emergency-error"
           />
         </div>
+        {/*
+          🔴 **「表示が古い」は保存の結果ではなく view の性質**なので、保存フィードバックに
+          載せず独立して持つ（載せると、次の取得で新しくなっても文言が残る。
+          独立レビュー 2 周目 MINOR-3）。適用そのものは 200 で確定しているので、
+          ここで言うのは「反映できなかった」だけである。
+        */}
+        {viewStale ? (
+          <p data-testid="security-view-stale" role="status" aria-live="polite" style={{ margin: '8px 0 0' }}>
+            適用しましたが、最新の状態を表示に反映できませんでした。画面を再読み込みして確かめてください。
+          </p>
+        ) : null}
       </div>
 
       <Form onSubmit={save} style={{ display: 'flex', flexDirection: 'column', gap: space.md }}>

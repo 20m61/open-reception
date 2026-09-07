@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { stripComments, tryCatchBlocks } from '../../../domain/governance/fetch-failure-scan';
+import { fetchSites, stripComments, tryCatchBlocks } from '../../../domain/governance/fetch-failure-scan';
 import { type SaveFailure, saveFailureMessage } from './save-outcome';
 
 /**
@@ -112,9 +112,11 @@ describe('管理画面の保存失敗表示 (#973)', () => {
    * 綴りとして残るのでここも台帳も素通りする（変異 M13 で実測。当初この 2 ファイルには
    * 実際にスコープの門が入っていたので、外して当たり所そのものを消した）。
    *
-   * **踏めるのは e2e だけ**なので、`tests/e2e/admin-write-failure.spec.ts` に 7 画面ぶんの
-   * 接続断ケースを置いた。同じ変異を当て直して **kill されることを実測済み**である
-   * （`if (res.ok)` を反転して緊急停止で「有効にしました」と嘘をつく変異も同様）。
+   * **踏めるのは e2e だけ**なので、`tests/e2e/admin-write-failure.spec.ts` に注入ケースを
+   * 置いた。この検査で生存する変異が**そちらで kill されることを実測済み**である ——
+   * 報告を条件で包む / `if (res.ok)` を反転して「有効にしました」と嘘をつく /
+   * スコープの門を広げて報告ごと飲み込む / 締切を外して画面を固まらせる / 送信中の表示を
+   * 消す / 宛先ラベルを落とす / `unreadable` を `unreachable` に丸める。
    * ここを読んで「静的検査で足りる」と結論しないこと —— 足りていない。
    */
   describe('設定保存への配線', () => {
@@ -139,16 +141,24 @@ describe('管理画面の保存失敗表示 (#973)', () => {
      * （`Signage` / `OperatingHours` は `load` 側にも `try`/`catch` がある。独立レビューの
      * 指摘そのもの）。走査は台帳と同じ `fetch-failure-scan` を使い、写しを作らない。
      */
-    const catchBodies = (source: string): string[] =>
-      tryCatchBlocks(source).map((b) => source.slice(b.catchBody.start, b.catchBody.end));
+    /**
+     * 🔴 **`fetch` を囲んでいる `catch` に限る。** 「どれかの `catch` に在ればよい」に
+     * すると、`save` の `catch` を空にして同じ綴りをダミーの `catch` へ移す変異が
+     * 素通りする（独立レビュー 2 周目 MINOR-7 の実測。台帳のラチェットが落としては
+     * いたが、この検査は「効いている理由」を誤って書いていた）。
+     */
+    const writeCatchBodies = (source: string): string[] =>
+      tryCatchBlocks(source)
+        .filter((b) => fetchSites(source).some((site) => site >= b.tryBody.start && site < b.tryBody.end))
+        .map((b) => source.slice(b.catchBody.start, b.catchBody.end));
 
-    it.each(WIRED)('%s は catch の中で「届かなかった」を出す', (name) => {
+    it.each(WIRED)('%s は fetch を囲む catch の中で「届かなかった」を出す', (name) => {
       const source = sourceOf(name);
-      const bodies = catchBodies(source);
-      expect(bodies.length, 'catch が 1 つも無い').toBeGreaterThan(0);
+      const bodies = writeCatchBodies(source);
+      expect(bodies.length, 'fetch を囲む catch が 1 つも無い').toBeGreaterThan(0);
       expect(
-        bodies.some((b) => b.includes("saveFailureMessage(") && b.includes("'unreachable'")),
-        '届かなかった側を出す catch が無い',
+        bodies.some((b) => b.includes('saveFailureMessage(') && b.includes("'unreachable'")),
+        '届かなかった側を出す catch が、fetch を囲む位置に無い',
       ).toBe(true);
     });
 

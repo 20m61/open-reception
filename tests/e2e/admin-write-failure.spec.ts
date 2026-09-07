@@ -21,14 +21,37 @@ import { loginAsAdmin } from './helpers';
  * **この spec は書き込みを注入で全部落とすので、共有 seed を変更しない。** ルートは
  * この page context にしか効かないため、並行実行しているほかの spec にも影響しない。
  */
-async function failWrites(page: Page, pattern: string, mode: '500' | 'abort'): Promise<void> {
-  await page.route(pattern, (route) => {
+type FailMode = '500' | 'abort' | 'broken-200' | 'slow';
+
+async function failWrites(page: Page, pattern: string, mode: FailMode): Promise<void> {
+  await page.route(pattern, async (route) => {
     // 読み取り（GET）は通す。書き込みだけ落とすことで「読めているのに書けない」を作る。
     if (route.request().method() === 'GET') return route.continue();
-    return mode === '500'
-      ? route.fulfill({ status: 500, contentType: 'application/json', body: '{"error":"boom"}' })
-      : route.abort('failed');
+    if (mode === '500') {
+      return route.fulfill({ status: 500, contentType: 'application/json', body: '{"error":"boom"}' });
+    }
+    if (mode === 'broken-200') {
+      // 🔴 **200 だが本文が壊れている。** プロキシによる切断・`Content-Length` 途中終了で
+      // 実際に起こる。`abort` と `500` だけ注入していると、この経路（`unreadable`）を
+      // **一度も踏まない**（独立レビュー 2 周目 MAJOR-D の実測）。
+      return route.fulfill({ status: 200, contentType: 'application/json', body: '{"' });
+    }
+    if (mode === 'slow') {
+      /*
+        🔴 **応答を返さない**（`abort` すら遅らせて返す、ではない）。キャプティブポータル・
+        half-open TCP・LB のブラックホールで実際に起きる形で、**締切が無いと画面が
+        恒久的に固まる**。遅延して abort する書き方にすると、締切を消す変異が
+        素通りする（実測で確認した）。ハンドラは解決させないまま置く。
+      */
+      return new Promise(() => {});
+    }
+    return route.abort('failed');
   });
+}
+
+/** 読み取りも書き込みも落とす（「保存はしたが取り直せない」を作るため）。 */
+async function failAll(page: Page, pattern: string): Promise<void> {
+  await page.route(pattern, (route) => route.abort('failed'));
 }
 
 const SCREENS = [
@@ -201,6 +224,181 @@ test.describe('管理: 書き込み失敗が運用者に見える (#870 増分 0
     await expect(page.getByTestId('emergency-error')).toBeVisible();
     // 送信中の窓が終わって、押し直せる状態に戻っていること。
     await expect(page.getByTestId('emergency-stop')).toBeEnabled();
+  });
+
+  /**
+   * 応答は 200 なのに本文が読めない経路 (#973)。`abort` / `500` だけでは踏めない。
+   * ここで見るのは「通信を疑わせない別の文言が出ること」である。
+   */
+  test('音声設定: 200 だが本文が壊れているとき、通信のせいにしない (#973)', async ({ page }) => {
+    await page.goto('/admin/voice');
+    await expect(page.getByTestId('voice-save')).toBeVisible();
+    await failWrites(page, '**/api/admin/voice**', 'broken-200');
+
+    await page.getByTestId('voice-save').click();
+
+    const error = page.getByTestId('voice-error');
+    await expect(error).toBeVisible();
+    await expect(error).toContainText('読み取れませんでした');
+    await expect(error).not.toContainText('接続できませんでした');
+  });
+
+  /**
+   * 送信中の窓 (#973)。冒頭で確認ボタンを閉じるので、何も出ないと**やめたのと区別が
+   * 付かない**。オフラインの iPad では reject まで数十秒かかる。
+   */
+  test('緊急停止: 送信中は無言にならず、二度押しもできない (#973)', async ({ page }) => {
+    await page.goto('/admin/security');
+    await expect(page.getByTestId('emergency-stop')).toBeVisible();
+    await failWrites(page, '**/api/admin/security**', 'slow');
+
+    await page.getByTestId('emergency-stop').click();
+    await page.getByTestId('emergency-confirm').click();
+
+    await expect(page.getByTestId('emergency-pending')).toBeVisible();
+    // 送信中は押し直せない（重複した停止要求を投げさせない）。確認ボタンは押した時点で
+    // **DOM ごと消える**ので、無効化を見るのは残っているほうのボタンである。
+    await expect(page.getByTestId('emergency-confirm')).toHaveCount(0);
+    await expect(page.getByTestId('emergency-stop')).toBeDisabled();
+    // 窓が閉じたら必ず戻る（締切があるので、応答が返らなくても固まらない）。
+    await expect(page.getByTestId('emergency-error')).toBeVisible({ timeout: 15_000 });
+    await expect(page.getByTestId('emergency-stop')).toBeEnabled();
+  });
+
+  /**
+   * 🔴 **GET も落とす。** `failWrites` は GET を通すので、書き込み後の再取得が必ず成功し、
+   * 「保存はしたが表示を取り直せない」経路を一度も踏めない（独立レビュー 2 周目 MAJOR-D）。
+   * 緊急停止は**応答本体でトグルを更新する**ので、GET が死んでいても結論は変わらない
+   * ことをここで固定する（`load()` で取り直す実装へ戻すと、この 1 本が落ちる）。
+   */
+  test('緊急停止: 読み取りごと落ちていても、届かなかったことを言い切る (#973)', async ({ page }) => {
+    await page.goto('/admin/security');
+    await expect(page.getByTestId('emergency-stop')).toBeVisible();
+    await failAll(page, '**/api/admin/security**');
+
+    await page.getByTestId('emergency-stop').click();
+    await page.getByTestId('emergency-confirm').click();
+
+    const error = page.getByTestId('emergency-error');
+    await expect(error).toBeVisible();
+    // 「保存できたか分かりません」が残っていること（「表示が古いかも」で上書きしない）。
+    await expect(error).toContainText('分かりません');
+  });
+
+  /**
+   * 宛先ラベル (#973)。拠点別の画面は保存が飛行中に切り替えられるので、
+   * **どの拠点の話か**が文言に無いと B を見ている運用者が誤って安心する。
+   */
+  test('営業時間: 失敗の文言に拠点が入る (#973)', async ({ page }) => {
+    await page.goto('/admin/operating-hours');
+    await expect(page.getByTestId('operating-hours-save')).toBeVisible();
+    // 選択中の option の表示名＝画面に出るはずの宛先（`siteLabel` は name、無ければ id）。
+    // `option:checked` は Playwright の CSS エンジンで解決できない（実測でタイムアウト）。
+    const label = await page
+      .getByTestId('operating-hours-site-select')
+      .evaluate((el) => (el as HTMLSelectElement).selectedOptions[0]?.textContent?.trim() ?? '');
+    expect(label, '拠点セレクタに選択が無い（下界）').toBeTruthy();
+    await failWrites(page, '**/api/admin/operating-policy**', 'abort');
+
+    await page.getByTestId('operating-hours-save').click();
+
+    const error = page.getByTestId('operating-hours-error');
+    await expect(error).toBeVisible();
+    // **これが本題。** 宛先が無いと、切替後の運用者が他拠点の失敗を自分の話として読む。
+    await expect(error).toContainText(label);
+  });
+
+  /**
+   * 200 だが本文が読めなかったときの緊急停止 (#973)。**適用はされている**ので失敗とは
+   * 言わず、「反映できなかったのは表示のほう」だと言う。
+   */
+  test('緊急停止: 200 で本文が読めないとき、表示が古いことだけを言う (#973)', async ({ page }) => {
+    await page.goto('/admin/security');
+    await expect(page.getByTestId('emergency-stop')).toBeVisible();
+    await failWrites(page, '**/api/admin/security**', 'broken-200');
+
+    await page.getByTestId('emergency-stop').click();
+    await page.getByTestId('emergency-confirm').click();
+
+    // 200 は受理。失敗にしない。
+    await expect(page.getByTestId('emergency-saved')).toBeVisible();
+    await expect(page.getByTestId('emergency-error')).toHaveCount(0);
+    // 反映できなかったことは別に言う（保存フィードバックへ相乗りさせない）。
+    await expect(page.getByTestId('security-view-stale')).toBeVisible();
+  });
+
+  /**
+   * 🔴 **飛行中に拠点を切り替えても、報告は消えない** (#973)。
+   *
+   * 応答の直後で `if (!isCurrentScope(startedWith)) return;` していたときは、
+   * **成功も失敗も丸ごと飲み込まれた** —— A の保存が 409 / 400 で失敗しても画面に何も
+   * 出ず、運用者は A が保存されたと信じる。門はフォームへ書く行だけに掛ける。
+   */
+  test.describe('拠点を切り替えても報告が消えない (#973)', () => {
+    test.skip(
+      !!process.env.PLAYWRIGHT_BASE_URL,
+      'branch-site は seed 由来で、dynamodb backend では seed が無視されるため実環境には存在しない',
+    );
+
+    /*
+      🔴 **サイネージ側は e2e で踏めない**（正直に書く）。`signage-site-select` は
+      `disabled={sitePending || busy}` なので、保存中は拠点セレクタから切り替えられない。
+      この画面で飛行中の切替が起こるのは **TenantSwitcher による `router.refresh()`**
+      （同 manager が再利用され、同じ拠点 ID を持つ別テナントとして A の応答が B へ載る）
+      だけで、そこを e2e で駆動するには別の足場が要る。営業時間側（セレクタが
+      `disabled={sitePending}` だけ）で同じ性質を縛り、変異もそちらで測った。
+    */
+
+    /**
+     * 🔴 **応答が「切り替えた後に」届く経路。** これが門の広さを踏む唯一の形である。
+     * 門を応答の直後に置くと、A の 500 / 409 / 400 が**丸ごと飲み込まれ**、運用者は
+     * A が保存されたと信じたまま B の画面を見る（独立レビュー 2 周目 MAJOR-C）。
+     */
+    test('営業時間: 切り替えた後に届いた失敗も報告される', async ({ page }) => {
+      await page.goto('/admin/operating-hours');
+      await expect(page.getByTestId('operating-hours-save')).toBeVisible();
+
+      // PUT を保留し、切替を挟んでから 500 を返す（GET は通すので切替先は表示できる）。
+      let release: (() => void) | undefined;
+      const held = new Promise<void>((r) => {
+        release = r;
+      });
+      await page.route('**/api/admin/operating-policy**', async (route) => {
+        if (route.request().method() === 'GET') return route.continue();
+        await held;
+        return route.fulfill({ status: 500, contentType: 'application/json', body: '{"error":"boom"}' });
+      });
+
+      await page.getByTestId('operating-hours-save').click();
+      await page.getByTestId('operating-hours-site-select').selectOption('branch-site');
+      await expect(page).toHaveURL(/siteId=branch-site/);
+      release?.();
+
+      // **これが本題。** 門が広いとここで何も出ない。
+      await expect(page.getByTestId('operating-hours-error')).toBeVisible();
+    });
+
+    /**
+     * 切替先の取得も失敗する経路。フォームごと差し替わるので、`SaveFeedback` が
+     * 差し替え枝にも無いと**直前の失敗が永久に描画されない**。
+     */
+    test('営業時間: 切替先の取得が失敗しても、直前の失敗が消えない', async ({ page }) => {
+      await page.goto('/admin/operating-hours');
+      await expect(page.getByTestId('operating-hours-save')).toBeVisible();
+
+      // 以後は読み取りも書き込みも落とす（初回描画は済んでいる）。
+      await failAll(page, '**/api/admin/operating-policy**');
+
+      await page.getByTestId('operating-hours-save').click();
+      const error = page.getByTestId('operating-hours-error');
+      await expect(error).toBeVisible();
+
+      await page.getByTestId('operating-hours-site-select').selectOption('branch-site');
+      // 切替先の取得が落ちるので、フォームは差し替え枝になる。
+      await expect(page.getByTestId('operating-hours-unavailable')).toBeVisible();
+      // **これが本題。** 差し替え枝に SaveFeedback が無いと、ここで消える。
+      await expect(error).toBeVisible();
+    });
   });
 
   test('部署: 有効/無効の切り替えが失敗したら伝える（行が黙って戻らない）', async ({ page }) => {

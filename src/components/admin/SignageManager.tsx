@@ -183,20 +183,35 @@ export function SignageManager({
         }),
       });
       reached = true;
-      // 応答が届いた時点で別スコープを見ていたら、結果を画面へ載せない。
-      if (!isCurrentScope(startedWith)) return;
+      /*
+        🔴 **門は「画面へ書き込む行」だけに掛ける。**
+
+        それまでは応答の直後で `return` していたので、飛行中に拠点を切り替えると
+        **成功も失敗も丸ごと飲み込まれた**（4xx / 5xx でも画面に何も出ない）。報告は
+        データを書かないので、宛先ラベル付きで必ず出す。フォームに紐づく表示
+        （`setConfig` / `setConfigScopeKey` / `setFieldErrors`）だけを門の内側に置く
+        —— こちらは A の内容を B の画面へ書くことになる（独立レビュー 2 周目 MAJOR-C）。
+      */
+      const stillHere = isCurrentScope(startedWith);
       if (res.ok) {
-        // 載せるスコープも同時に更新する（「載っているデータのスコープ」を嘘にしない）。
-        setConfigScopeKey(startedWith);
-        setConfig((await res.json()) as SignageConfig);
-        success(`保存しました（${new Date().toLocaleTimeString()}）`);
+        const applied = (await res.json()) as SignageConfig;
+        if (stillHere) {
+          // 載せるスコープも同時に更新する（「載っているデータのスコープ」を嘘にしない）。
+          setConfigScopeKey(startedWith);
+          setConfig(applied);
+        }
+        success(`${startedFor}: 保存しました（${new Date().toLocaleTimeString()}）`);
       } else {
         const data = (await res.json().catch(() => ({}))) as {
           message?: string;
           fields?: FieldError[];
         };
-        failure(data.message ?? saveFailureMessage('rejected', startedFor));
-        setFieldErrors(data.fields ?? []);
+        failure(
+          data.message === undefined
+            ? saveFailureMessage('rejected', startedFor)
+            : `${startedFor}: ${data.message}`,
+        );
+        if (stillHere) setFieldErrors(data.fields ?? []);
       }
     } catch {
       /*
