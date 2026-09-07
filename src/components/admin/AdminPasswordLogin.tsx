@@ -3,20 +3,26 @@
 import { useRouter } from 'next/navigation';
 import { useState } from 'react';
 import { font } from '@/components/admin/ui/tokens';
+import { type LoginFailure, loginFailureMessage } from './login-outcome';
 
 /** パスワードによる管理ログインフォーム (issue #24)。検証は server 側で行う。 */
 export function AdminPasswordLogin() {
   const router = useRouter();
   const [password, setPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
-  const [error, setError] = useState(false);
+  /**
+   * 🔴 **失敗の原因を区別して持つ (#973)。** boolean で持っていたころは、
+   * `catch` が無いことと相まって**通信が届かないときは何も出なかった**。`catch` を足すだけで
+   * boolean のままにすると、今度は「パスワードが正しくありません」と嘘をつく。
+   */
+  const [failure, setFailure] = useState<LoginFailure | null>(null);
   const [busy, setBusy] = useState(false);
 
   const submit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (busy) return;
     setBusy(true);
-    setError(false);
+    setFailure(null);
     try {
       const res = await fetch('/api/admin/login', {
         method: 'POST',
@@ -27,8 +33,12 @@ export function AdminPasswordLogin() {
         router.push('/admin');
         router.refresh();
       } else {
-        setError(true);
+        setFailure('rejected');
       }
+    } catch {
+      // オフライン・DNS 失敗・API 停止。**パスワードの正否は分かっていない**ので、
+      // 「正しくありません」とは言わない。
+      setFailure('unreachable');
     } finally {
       setBusy(false);
     }
@@ -83,9 +93,13 @@ export function AdminPasswordLogin() {
           </button>
         </span>
       </label>
-      {error ? (
-        <p data-testid="admin-login-error" style={{ color: 'var(--color-danger)', margin: 0 }}>
-          パスワードが正しくありません。
+      {failure !== null ? (
+        <p
+          data-testid="admin-login-error"
+          role="alert"
+          style={{ color: 'var(--color-danger)', margin: 0 }}
+        >
+          {loginFailureMessage(failure)}
         </p>
       ) : null}
       <button

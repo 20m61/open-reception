@@ -1,6 +1,21 @@
 import { describe, expect, it } from 'vitest';
 import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { dirname, join, relative } from 'node:path';
+/**
+ * 🔴 **走査は共有モジュールへ切り出した (#973 AC1)。** ここに写しを持つと、片方に入った
+ * 修正（どれも独立レビューが実測で見つけたもの）がもう片方へ入らず、しかも気づけない。
+ * `tests/config/admin-fetch-failure.test.ts` が同じ走査で母集団だけを差し替える。
+ */
+import {
+  fetchArguments,
+  fetchSites,
+  matchBrace,
+  reportedStates,
+  reportsFailure,
+  renderedStates,
+  stripComments,
+  tryCatchBlocks,
+} from '../../src/domain/governance/fetch-failure-scan';
 
 /**
  * platform の通信失敗が無言にならない (#968)。
@@ -43,10 +58,6 @@ import { dirname, join, relative } from 'node:path';
  */
 
 const PLATFORM_DIR = join(process.cwd(), 'src/components/admin/platform');
-
-function stripComments(source: string): string {
-  return source.replace(/\/\*[\s\S]*?\*\//g, '').replace(/(^|[^:])\/\/.*$/gm, '$1');
-}
 
 function platformFiles(): { name: string; source: string; absolute: string }[] {
   const out: { name: string; source: string; absolute: string }[] = [];
@@ -105,160 +116,6 @@ function platformFiles(): { name: string; source: string; absolute: string }[] {
     }
   }
   return out;
-}
-
-/** 文字列 / テンプレートリテラルの終端（閉じ引用符）の位置。`${}` の入れ子も飛ばす。 */
-function skipString(source: string, start: number): number {
-  const quote = source[start];
-  for (let i = start + 1; i < source.length; i += 1) {
-    const c = source[i];
-    if (c === '\\') {
-      i += 1;
-      continue;
-    }
-    if (c === quote) return i;
-    if (quote === '`' && c === '$' && source[i + 1] === '{') {
-      const end = matchBrace(source, i + 1);
-      if (end < 0) return source.length;
-      i = end - 1;
-    }
-  }
-  return source.length;
-}
-
-/** `from`（`{` の位置）に対応する `}` の**次**の位置。見つからなければ -1。 */
-function matchBrace(source: string, from: number): number {
-  let depth = 0;
-  for (let i = from; i < source.length; i += 1) {
-    const c = source[i];
-    if (c === '"' || c === "'" || c === '`') {
-      i = skipString(source, i);
-      continue;
-    }
-    if (c === '{') depth += 1;
-    else if (c === '}') {
-      depth -= 1;
-      if (depth === 0) return i + 1;
-    }
-  }
-  return -1;
-}
-
-type Block = { readonly start: number; readonly end: number };
-
-/** `try { … } catch (…) { … }` の try 本体と catch 本体。入れ子も全部返す。 */
-function tryCatchBlocks(source: string): { readonly tryBody: Block; readonly catchBody: Block }[] {
-  const out: { tryBody: Block; catchBody: Block }[] = [];
-  for (const m of source.matchAll(/\btry\s*\{/g)) {
-    const open = (m.index ?? 0) + m[0].length - 1;
-    const tryEnd = matchBrace(source, open);
-    if (tryEnd < 0) continue;
-    const rest = source.slice(tryEnd);
-    const catchHead = /^\s*catch\s*(\([^)]*\)\s*)?\{/.exec(rest);
-    if (!catchHead) continue;
-    const catchOpen = tryEnd + catchHead[0].length - 1;
-    const catchEnd = matchBrace(source, catchOpen);
-    if (catchEnd < 0) continue;
-    out.push({ tryBody: { start: open, end: tryEnd }, catchBody: { start: catchOpen, end: catchEnd } });
-  }
-  return out;
-}
-
-/**
- * `fetch(` の呼び出し位置（`res.json().catch(` 等の別メソッドは拾わない）。
- *
- * 🔴 **`window.fetch(` / `globalThis.fetch(` も拾う (#968 レビュー M4)。** `.` を一律に
- * 除外すると、`await window.fetch(...)` へ書き換えるだけで検査から外れる（実測で生存）。
- * レシーバは global を指すものだけ許し、`res.json().catch` のような任意の式は拾わない。
- */
-/**
- * `fetch(` の**対応する閉じ括弧**までを返す (#968 レビュー 7 周目)。
- *
- * 🔴 最初は `indexOf('{', open)` から `matchBrace` していたが、URL が
- * テンプレートリテラルだと **`${` の波括弧に当たって**引数を短く切り、
- * `signal:` を持つ呼び出しを「持っていない」と誤判定した（自作の検出器が
- * 誤報を出した実例）。括弧の対応で取る。
- */
-function fetchArguments(source: string, site: number): string {
-  const open = source.indexOf('(', site);
-  if (open < 0) return '';
-  let depth = 0;
-  for (let i = open; i < source.length; i += 1) {
-    const ch = source[i];
-    if (ch === '"' || ch === "'" || ch === '`') {
-      // `skipString` は閉じ引用符の**位置**を返す。`matchBrace` と同じく、
-      // ループの `i += 1` で次へ進める（`- 1` すると閉じ引用符を再び開始と読む）。
-      i = skipString(source, i);
-      continue;
-    }
-    if (ch === '(') depth += 1;
-    else if (ch === ')') {
-      depth -= 1;
-      if (depth === 0) return source.slice(open, i + 1);
-    }
-  }
-  return source.slice(open);
-}
-
-function fetchSites(source: string): number[] {
-  return [...source.matchAll(/(?<![\w$.])(?:(?:window|globalThis|self)\.)?fetch\s*\(/g)].map(
-    (m) => m.index ?? 0,
-  );
-}
-
-/**
- * 失敗を**画面へ出す**呼び出し。**閉じた語彙にする** —— 「何か書いてあればよい」に
- * すると `void 0;` 変異の代わりに `noop();` を書けば通ってしまう。
- *
- * 🔴 **引数まで見る (#968 レビュー B2)。** 呼び出し名だけを見ると
- * `setError(null)` / `setActionError('')` が通る —— 画面出力は「報告しない」と
- * **完全に同一**（`{error ? … }` は `null` も `''` も falsy）なのに、検査は満たされる。
- * `void 0;` という**1 つの綴り**を閉じただけで族が閉じていなかった、という指摘そのもの。
- * 中身のある値（文字列リテラル・テンプレート・オブジェクト・関数呼び出し）を要求する。
- */
-const FAILURE_CALL = /\b(?:set[A-Za-z]*(?:Error|Failed|Failure)|failure)\s*\(/g;
-
-/**
- * **画面に何も出ない**引数 (#968 レビュー m-2)。
- *
- * 最初は `null` / `undefined` / `''` / `""` / `` `` `` / `false` を列挙して弾いていたが、
- * 独立レビューが `setActionError(' ')`（**空白 1 文字**）を当てて生存させた —— 空白だけの
- * 文字列は truthy なので `{actionError ? …}` は真になり、`role="alert"` の**空の段落**が
- * 描かれる。画面にも読み上げにも何も出ないのに、検査は「報告している」と判定する。
- *
- * 引用符の**中身が空白だけ**であることまで見る形へ替えた（`\s*` を挟む）。逆に、計算された
- * 式（三項・関数呼び出し・オブジェクト）は静的には空かどうか判定できないので**通す** ——
- * ここで閉じられるのは「リテラルとして空」の族だけである、と明示しておく。
- */
-const EMPTY_ARGUMENT = /^\s*(?:null|undefined|false|0|(['"`])\s*\1)\s*[,)]/;
-
-/** 失敗を**画面へ出す**呼び出しが在るか。 */
-function reportsFailure(body: string): boolean {
-  for (const m of body.matchAll(FAILURE_CALL)) {
-    const rest = body.slice((m.index ?? 0) + m[0].length);
-    if (!EMPTY_ARGUMENT.test(rest)) return true;
-  }
-  return false;
-}
-
-/** `catch` の中で呼ばれている報告先 setter 名（`setError` → `error`）。 */
-function reportedStates(body: string): string[] {
-  return [...body.matchAll(/\bset([A-Z][A-Za-z]*(?:Error|Failed|Failure))\s*\(/g)].map(
-    (m) => `${(m[1] ?? '').charAt(0).toLowerCase()}${(m[1] ?? '').slice(1)}`,
-  );
-}
-
-/**
- * 三項の条件から JSX を出している state 名（`ident ? <…>` / `ident !== null ? (<…>`）。
- *
- * 🔴 **先頭の `{` を要求しない。** 三項を連ねると 2 段目以降は `) : ident !== null ? (`
- * の形になり、`{` から始まらない。要求すると**実際に描いているのに「描いていない」**
- * と判定してしまう（`TenantSwitcher` で実際に踏んだ）。
- */
-function renderedStates(source: string): string[] {
-  return [...source.matchAll(/([A-Za-z_$][\w$]*)\s*(?:!==\s*null\s*)?\?\s*\(?\s*</g)].map(
-    (m) => m[1] ?? '',
-  );
 }
 
 /**
