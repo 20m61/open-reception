@@ -33,13 +33,10 @@ as_root() { if [ "$(id -u)" -eq 0 ]; then "$@"; else sudo "$@"; fi; }
 if needs_install; then npm ci; fi
 if [ -d infra ] && needs_install infra; then npm ci --prefix infra; fi
 npx playwright install --with-deps chromium
-if ! command -v gitleaks >/dev/null 2>&1; then
-  curl -fsSL https://github.com/gitleaks/gitleaks/releases/download/v8.29.0/gitleaks_8.29.0_linux_x64.tar.gz -o /tmp/gl.tgz
-  as_root tar -xzf /tmp/gl.tgz -C /usr/local/bin gitleaks
-fi
-if ! command -v semgrep >/dev/null 2>&1; then
-  as_root pip3 install --break-system-packages --ignore-installed PyJWT semgrep
-fi
+# gitleaks / semgrep は復旧スクリプトへ寄せる (#985)。**版の写しを増やさない** ――
+# ここに書き写すと `cloud-setup.sh` とズレたときに気づけない
+# （`tests/config/gate-tooling-wiring.test.ts` が 3 者の一致を縛っている）。
+"$(cd "$(dirname "$0")/.." && pwd)/scripts/restore-gate-tools.sh" || true
 if ! command -v aws >/dev/null 2>&1; then
   command -v unzip >/dev/null 2>&1 || { as_root apt-get update -y; as_root apt-get install -y unzip; }
   curl -fsSL https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip -o /tmp/awscliv2.zip

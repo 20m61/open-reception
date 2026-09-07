@@ -173,7 +173,18 @@ Chrome から dev の CloudFront → ERR_CONNECTION_RESET（curl は同じプロ
 ```
 
 **含意**: `--full` はこの環境で回せるが、`aws` / `gitleaks` / `semgrep` を毎回入れ直す
-必要がある。入れ忘れると `secrets` と `sast` が**黙って SKIP** になり、マージゲートが
+必要がある。
+
+> 🔴 **2026-09-07 追記 (#985): `gitleaks` / `semgrep` は SessionStart が自動で戻す。**
+> `scripts/install_pkgs.sh` が `scripts/restore-gate-tools.sh` を呼び、欠けている 2 つだけを
+> 復旧する（揃っていれば `command -v` を 2 回叩いて即抜ける）。**正規の経路は環境ダイアログの
+> Setup script のままで、これは欠けていたときに戻す保険**である ―― 2 セッション連続で
+> 素材が入っていなかったため（§0-G）。
+> `aws` は対象外（本セッションでは入っていた。必要になったら同じ場所へ足す）。
+> 復旧に失敗しても SessionStart は落とさないが、**黙りもしない**（`FAILED` を stderr に出し、
+> 直後の `gate-tooling` 報告が欠落を名指しする）。オフライン環境では
+> `OPEN_RECEPTION_SKIP_TOOL_RESTORE=1` で止められる。
+> 版は `cloud-setup.sh` と一致していることを `tests/config/gate-tooling-wiring.test.ts` が縛る。入れ忘れると `secrets` と `sast` が**黙って SKIP** になり、マージゲートが
 弱くなる（#545 と同型）。§0-A 2. の貼り直しが恒久的な対処。
 
 ---
@@ -326,6 +337,10 @@ GitHub の署名で `verified: true` になっている（`gh api repos/:owner/:
 | **lighthouse** | `lhci` は npm 依存なので `npm ci` で入る。Chrome は `playwright.config.ts` と同じ理由で `quality-gate.sh` が `CHROME_PATH` を補完する |
 
 #### 🔴 gitleaks 不在は「SKIP」ではなく `--pr` の **FAIL** として出る（2026-09-06 実測）
+
+> **2026-09-07 追記 (#985)**: SessionStart（`scripts/install_pkgs.sh`）が
+> `scripts/restore-gate-tools.sh` を呼んで欠けを戻すようにした。以下は
+> **戻せなかったとき**（オフライン・ダウンロード先が塞がれている等）に読む記録である。
 
 §6.1 は semgrep について「セッションは正常に起動するのに黙って入っていない」型を記録して
 いる。そこでの症状は **`--full` の sast が SKIP**（マージゲートが黙って弱くなる）だった。
