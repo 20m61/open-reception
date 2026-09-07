@@ -38,7 +38,18 @@ export function asSecurityView(value: unknown): SecurityView | null {
 
 /** セキュリティ設定 (issue #23, #29)。PIN 必須・PIN 変更・IP 許可リストを編集する。 */
 export function SecurityManager() {
-  const [view, setView] = useState<SecurityView | null>(null);
+  const [view, setViewState] = useState<SecurityView | null>(null);
+  /**
+   * 画面に**今出ている**状態。書き込みの応答を載せるときに参照する。
+   *
+   * `view` を直接読むと、非同期のハンドラの中では**押した時点の値**になる。ここで要るのは
+   * 「今どう見えているか」なので ref で追う（レンダリング中には読まない）。
+   */
+  const viewRef = useRef<SecurityView | null>(null);
+  const setView = useCallback((next: SecurityView) => {
+    viewRef.current = next;
+    setViewState(next);
+  }, []);
   const [loadFailed, setLoadFailed] = useState(false);
   const [pinRequired, setPinRequired] = useState(false);
   const [pin, setPin] = useState('');
@@ -71,35 +82,62 @@ export function SecurityManager() {
    */
   const [viewStale, setViewStale] = useState(false);
 
-  /**
-   * 緊急停止の書き込み世代。**押されるたびに進む。**
-   *
-   * 🔴 保存の応答は「**サーバがその保存を処理した時点**のスナップショット」であって、
-   * 現在の状態ではない。本ブランチは「保存が返ってこなくても緊急停止は押せる」ように
-   * したので、遅れて届いた保存の応答が**確定済みの緊急停止を巻き戻す**経路がある
-   * （独立レビュー 6 周目 MAJOR-1）。保存は `emergencyStop` を送っていない＝その値の
-   * 権威を持たないので、飛行中に緊急停止が動いていたらそこだけ据え置く。
-   */
-  const emergencySeq = useRef(0);
+  /*
+    🔴 **書き込みの応答は、その書き込みが送ったフィールドの権威しか持たない。**
+
+    書き込み後に再 GET しない設計（2 周目）にしたので、応答は「**サーバがその書き込みを
+    処理した時点**のスナップショット」である。保存と緊急停止は同時に飛べる（4 周目に
+    意図してそうした）ので、遅れて届いた応答が**確定済みの別の操作を巻き戻す**。
+
+    6 周目は「保存の飛行中に緊急停止が動いたか」を世代で見たが、**順序が鏡像のとき**
+    （緊急停止が先に飛行中で、その間に保存を押す）は世代が動かず素通りした
+    （独立レビュー 7 周目 MAJOR-1。実測で再現）。世代を数え直すのではなく、
+    **順序に依存しない不変条件**へ替える —— 保存は `emergencyStop` を送っていないので
+    その値を載せない。載せようとした値が表示と食い違うなら、**黙って据え置かず**
+    `viewStale` を立てる（緊急停止は表示が事実として読まれるので、黙る側に倒さない）。
+    緊急停止も同じで、`emergencyStop` 以外は載せない。
+  */
+
+  /** 取得した状態を画面へ載せる。**GET 専用**（全フィールドの権威を持つのは GET だけ）。 */
+  const applyView = useCallback(
+    (v: SecurityView) => {
+      setPinRequired(v.pinRequired);
+      setIpText(v.ipAllowlist.join('\n'));
+      setLoadFailed(false);
+      setView(v);
+      setViewStale(false);
+    },
+    [setView],
+  );
 
   /**
-   * 取得した（あるいは書き込みが返した）状態を画面へ載せる。
+   * **保存**の応答を載せる。`emergencyStop` は載せない（保存は送っていない）。
    *
-   * `emergencyUnknown` は「この応答は緊急停止について当てにならない」。据え置いたうえで
-   * `viewStale` を立て、**確かめられたことしか報告しない**という本画面の前提を守る。
+   * 食い違っていたら「表示は最新でないかもしれない」を立てる —— 据え置いたことを
+   * 黙っていると、今度は据え置いた側が嘘になりうる。
    */
-  const applyView = useCallback((v: SecurityView, emergencyUnknown = false) => {
-    setPinRequired(v.pinRequired);
-    setIpText(v.ipAllowlist.join('\n'));
-    setLoadFailed(false);
-    if (emergencyUnknown) {
-      setView((cur) => (cur === null ? v : { ...v, emergencyStop: cur.emergencyStop }));
-      setViewStale(true);
-      return;
-    }
-    setView(v);
-    setViewStale(false);
-  }, []);
+  const applySaveResult = useCallback(
+    (applied: SecurityView) => {
+      const shown = viewRef.current;
+      const emergencyDiffers = shown !== null && shown.emergencyStop !== applied.emergencyStop;
+      setPinRequired(applied.pinRequired);
+      setIpText(applied.ipAllowlist.join('\n'));
+      setLoadFailed(false);
+      setView(emergencyDiffers ? { ...applied, emergencyStop: shown.emergencyStop } : applied);
+      setViewStale(emergencyDiffers);
+    },
+    [setView],
+  );
+
+  /** **緊急停止**の応答を載せる。`emergencyStop` **だけ**が権威である。 */
+  const applyEmergencyResult = useCallback(
+    (applied: SecurityView) => {
+      const shown = viewRef.current;
+      setView(shown === null ? applied : { ...shown, emergencyStop: applied.emergencyStop });
+      setViewStale(false);
+    },
+    [setView],
+  );
 
   /**
    * 初回取得と再試行。**書き込みの後には呼ばない。**
@@ -135,8 +173,6 @@ export function SecurityManager() {
     if (busy) return;
     setBusy(true);
     clear();
-    // 応答を載せるときに「飛行中に緊急停止が動いたか」を見るための基準。
-    const seq = emergencySeq.current;
     try {
       const ipAllowlist = ipText.split('\n').map((s) => s.trim()).filter(Boolean);
       const body: Record<string, unknown> = { pinRequired, ipAllowlist };
@@ -159,7 +195,7 @@ export function SecurityManager() {
         return;
       }
       setPin('');
-      applyView(applied, emergencySeq.current !== seq);
+      applySaveResult(applied);
       success();
     } catch {
       /*
@@ -173,13 +209,11 @@ export function SecurityManager() {
     } finally {
       setBusy(false);
     }
-  }, [busy, ipText, pinRequired, pin, applyView, success, failure, clear]);
+  }, [busy, ipText, pinRequired, pin, applySaveResult, success, failure, clear]);
 
   const setEmergency = useCallback(
     async (emergencyStop: boolean) => {
       if (emergencyBusy) return;
-      // 飛行中の保存の応答に、この操作より古い `emergencyStop` を載せさせない。
-      emergencySeq.current += 1;
       setConfirmingEmergency(false);
       setEmergencyBusy(true);
       clearEmergencyFeedback();
@@ -233,8 +267,7 @@ export function SecurityManager() {
           setEmergencyFailed(saveFailureMessage('unreadable', label));
           return;
         }
-        setView(applied);
-        setViewStale(false);
+        applyEmergencyResult(applied);
         emergencySucceeded(emergencyStop ? '緊急停止を有効にしました。' : '緊急停止を解除しました。');
       } catch {
         // ここへ来るのは `fetch` 自身の reject だけ（本文の解釈は上で畳んである）。
@@ -246,7 +279,7 @@ export function SecurityManager() {
         setEmergencyBusy(false);
       }
     },
-    [emergencyBusy, clearEmergencyFeedback, emergencySucceeded, setEmergencyFailed],
+    [emergencyBusy, applyEmergencyResult, clearEmergencyFeedback, emergencySucceeded, setEmergencyFailed],
   );
 
   if (!view) {

@@ -318,6 +318,10 @@ test.describe('管理: 書き込み失敗が運用者に見える (#870 増分 0
    * **どの拠点の話か**が文言に無いと B を見ている運用者が誤って安心する。
    */
   test('サイネージ: 失敗の文言に拠点が入る (#973)', async ({ page }) => {
+    test.skip(
+      !!process.env.PLAYWRIGHT_BASE_URL,
+      '宛先ラベルは「拠点名 ≠ 拠点 ID」を前提に読む。実環境の拠点名は運用者が付けるので前提が立たない',
+    );
     await page.goto('/admin/signage');
     await expect(page.getByTestId('signage-save')).toBeVisible();
     const label = await settledSiteLabel(page, 'signage-site-select');
@@ -352,6 +356,10 @@ test.describe('管理: 書き込み失敗が運用者に見える (#870 増分 0
   });
 
   test('営業時間: 失敗の文言に拠点が入る (#973)', async ({ page }) => {
+    test.skip(
+      !!process.env.PLAYWRIGHT_BASE_URL,
+      '宛先ラベルは「拠点名 ≠ 拠点 ID」を前提に読む。実環境の拠点名は運用者が付けるので前提が立たない',
+    );
     await page.goto('/admin/operating-hours');
     await expect(page.getByTestId('operating-hours-save')).toBeVisible();
     // 選択中の option の表示名＝画面に出るはずの宛先（`siteLabel` は name、無ければ id）。
@@ -417,6 +425,113 @@ test.describe('管理: 書き込み失敗が運用者に見える (#870 増分 0
     await expect(page.getByTestId('security-pin')).toHaveValue('');
     await expect(page.getByTestId('security-ip')).toHaveValue('203.0.113.10');
     await expect(page.getByTestId('security-view-stale')).toHaveCount(0);
+  });
+
+  /**
+   * 🔴 **順序が逆でも巻き戻さない** (#973)。
+   *
+   * 「保存が先に飛行中」だけを塞ぐと、**緊急停止が先に飛行中**（その間に保存を押す）で
+   * 素通りする —— 世代を数える形はこの鏡像を取りこぼす（独立レビュー 7 周目 MAJOR-1、
+   * 実測で再現）。順序に依存しない不変条件（保存は `emergencyStop` の権威を持たない）を
+   * 入れたので、**両方の順序**を縛る。
+   */
+  test('緊急停止が先に飛行中でも、保存の応答が巻き戻さない (#973)', async ({ page }) => {
+    await page.goto('/admin/security');
+    await expect(page.getByTestId('emergency-stop')).toBeVisible();
+
+    const body = (emergencyStop: boolean): string =>
+      JSON.stringify({ pinRequired: false, ipAllowlist: [], pinConfigured: false, emergencyStop });
+    // 🔴 **両方を保留してから、順に離す。** 保存の応答を保留しないと、それが先に届いて
+    // しまい「遅れて届いた古い応答」を作れない（premise が成立しないまま緑になる）。
+    let releaseEmergency: (() => void) | undefined;
+    let releaseSave: (() => void) | undefined;
+    const heldEmergency = new Promise<void>((r) => {
+      releaseEmergency = r;
+    });
+    const heldSave = new Promise<void>((r) => {
+      releaseSave = r;
+    });
+    let seen = 0;
+    await page.route('**/api/admin/security**', async (route) => {
+      if (route.request().method() === 'GET') return route.continue();
+      seen += 1;
+      if (seen === 1) {
+        await heldEmergency;
+        return route.fulfill({ status: 200, contentType: 'application/json', body: body(true) });
+      }
+      // 保存。サーバは停止前に処理した＝古いスナップショットを返す。
+      await heldSave;
+      return route.fulfill({ status: 200, contentType: 'application/json', body: body(false) });
+    });
+
+    await page.getByTestId('emergency-stop').click();
+    await page.getByTestId('emergency-confirm').click();
+    await expect(page.getByTestId('emergency-pending')).toBeVisible();
+
+    // 緊急停止が飛行中のまま保存を押す（この画面は意図的に塞いでいない）。
+    await page.getByTestId('security-save').click();
+
+    // 先に緊急停止を確定させる。
+    releaseEmergency?.();
+    await expect(page.getByTestId('emergency-saved')).toBeVisible();
+    await expect(page.getByTestId('emergency-state')).toContainText('停止中');
+
+    // そのあとで、停止前のスナップショットを持った保存の応答が届く。
+    releaseSave?.();
+    await expect(page.getByTestId('security-saved')).toBeVisible();
+
+    // **これが本題。** 保存の古い応答で「通常稼働」へ戻さない。
+    await expect(page.getByTestId('emergency-state')).toContainText('停止中');
+    await expect(page.getByTestId('security-view-stale')).toBeVisible();
+  });
+
+  /**
+   * 🔴 **鏡像も同じ規則で守る** (#973)。緊急停止の応答が権威を持つのは `emergencyStop` だけで、
+   * 直前に保存が確定させた `pinConfigured` を古い値へ戻さない。
+   */
+  test('緊急停止の応答が、保存で確定した PIN 設定状態を戻さない (#973)', async ({ page }) => {
+    await page.goto('/admin/security');
+    await expect(page.getByTestId('emergency-stop')).toBeVisible();
+
+    // 出発点は seed 依存なので固定しない。**保存が確定させた値が戻らないこと**だけを見る。
+    let releaseEmergency: (() => void) | undefined;
+    const heldEmergency = new Promise<void>((r) => {
+      releaseEmergency = r;
+    });
+    let seen = 0;
+    await page.route('**/api/admin/security**', async (route) => {
+      if (route.request().method() === 'GET') return route.continue();
+      seen += 1;
+      if (seen === 1) {
+        // 緊急停止。PIN については停止前の（古い）スナップショットを運ぶ。
+        await heldEmergency;
+        return route.fulfill({
+          status: 200,
+          contentType: 'application/json',
+          body: JSON.stringify({ pinRequired: false, ipAllowlist: [], pinConfigured: false, emergencyStop: true }),
+        });
+      }
+      // 保存。PIN を設定した。
+      return route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({ pinRequired: false, ipAllowlist: [], pinConfigured: true, emergencyStop: false }),
+      });
+    });
+
+    await page.getByTestId('emergency-stop').click();
+    await page.getByTestId('emergency-confirm').click();
+    await expect(page.getByTestId('emergency-pending')).toBeVisible();
+
+    await page.getByTestId('security-pin').fill('123456');
+    await page.getByTestId('security-save').click();
+    await expect(page.getByTestId('security-saved')).toBeVisible();
+    await expect(page.getByText('現在: 設定済み')).toBeVisible();
+
+    releaseEmergency?.();
+    await expect(page.getByTestId('emergency-state')).toContainText('停止中');
+    // **これが本題。** 緊急停止の応答は PIN の権威を持たない。
+    await expect(page.getByText('現在: 設定済み')).toBeVisible();
   });
 
   /**

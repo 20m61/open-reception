@@ -507,6 +507,8 @@ function SignageItemEditor({
   );
 }
 
+
+
 const inputStyle: React.CSSProperties = {
   minHeight: 40,
   padding: '8px 12px',
