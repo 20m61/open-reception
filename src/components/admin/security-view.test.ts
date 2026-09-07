@@ -53,6 +53,9 @@ describe('asSecurityView (#973)', () => {
   it('ipAllowlist の中身が文字列でなければ通さない', () => {
     // 要素まで見ないと `join('\n')` が `[object Object]` を画面へ出す。
     expect(asSecurityView({ ...valid, ipAllowlist: [1, 2] })).toBeNull();
+    // 🔴 **境界のすぐ内側。** 全要素が非文字列だと `some` を `every` へ替える変異が
+    // 生存する（実測）。**1 要素だけ違う**入力でないと縛れない。
+    expect(asSecurityView({ ...valid, ipAllowlist: ['203.0.113.10', 42] })).toBeNull();
   });
 
   it('オブジェクトでなければ通さない', () => {

@@ -7,7 +7,7 @@ import {
   type SignageContentType,
   type SignageItem,
 } from '@/domain/signage/types';
-import { Button, Field, Form, FormRow, SaveFeedback, Section, saveFailureMessage, useSaveFeedback } from '@/components/admin/ui';
+import { Button, Field, Form, FormRow, SaveFeedback, Section, saveFailureMessage, siteLabel, useSaveFeedback } from '@/components/admin/ui';
 import { color, radius, space } from '@/components/admin/ui/tokens';
 import { useSiteScope } from './use-site-scope';
 import { SiteScopeSelect } from './SiteScopeSelect';
@@ -207,11 +207,11 @@ export function SignageManager({
           message?: string;
           fields?: FieldError[];
         };
-        failure(
-          data.message === undefined
-            ? saveFailureMessage('rejected', startedFor)
-            : `${startedFor}: ${data.message}`,
-        );
+        // 🔴 サーバの `message` が空・空白だけなら**画面に何も出ない**（`role="alert"` の
+        // 空の段落は報告していないのと同じ）。`saveFailureMessage` は `about` の空白を
+        // 弾いているのに、こちらは素通しだった。
+        const detail = data.message?.trim() ?? '';
+        failure(detail === '' ? saveFailureMessage('rejected', startedFor) : `${startedFor}: ${detail}`);
         if (isCurrentScope(startedWith)) setFieldErrors(data.fields ?? []);
       }
     } catch {
@@ -508,17 +508,6 @@ function SignageItemEditor({
 }
 
 
-/**
- * 失敗の宛先ラベル。**どの拠点の保存の話か**を文言に載せるために使う (#973)。
- *
- * 🔴 保存が飛行中に拠点を切り替えられるので、宛先を書かないと **B を見ている運用者が
- * A の失敗を自分の画面の話として読む**。文言が「再読み込みして確かめてください」と
- * 具体的な行動を指示しているぶん、宛先違いは**誤った安心**に直結する
- * （独立レビュー MAJOR-2）。名前が引けなければ ID を出す（無記名にはしない）。
- */
-function siteLabel(sites: { id: string; name: string }[], id: string): string {
-  return sites.find((s) => s.id === id)?.name ?? id;
-}
 
 const inputStyle: React.CSSProperties = {
   minHeight: 40,

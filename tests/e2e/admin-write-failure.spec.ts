@@ -179,6 +179,25 @@ test.describe('管理: 書き込み失敗が運用者に見える (#870 増分 0
       await expect(page.getByTestId(screen.errorTestId)).toBeVisible();
     });
 
+    /**
+     * 🔴 **200 だが本文が読めない経路**を 7 画面すべてで踏む (#973)。
+     * `abort` / `500` だけだと `reached ? 'unreadable' : 'unreachable'` の三項が
+     * **綴りとしてしか検査されず**、`'unreachable'` へ潰す変異が素通りする（実測）。
+     * 見るのは「通信を疑わせない別の文言になること」。
+     */
+    test(`${screen.name}: 200 で本文が読めないとき、通信のせいにしない (#973)`, async ({ page }) => {
+      await page.goto(screen.path);
+      await expect(page.getByTestId(screen.submit)).toBeVisible();
+      await failWrites(page, screen.api, 'broken-200');
+
+      await page.getByTestId(screen.submit).click();
+
+      const error = page.getByTestId(screen.errorTestId);
+      await expect(error).toBeVisible();
+      await expect(error).toContainText('読み取れませんでした');
+      await expect(error).not.toContainText('接続できませんでした');
+    });
+
     test(`${screen.name}: 失敗しても押し直せる（ボタンが固まらない）`, async ({ page }) => {
       // **下界。** 失敗を出すだけの実装でも上の 2 本は通る。`SignageManager` は実際に
       // `finally` が無く、reject すると `busy` が true のまま**押せなくなった**。
@@ -224,23 +243,6 @@ test.describe('管理: 書き込み失敗が運用者に見える (#870 増分 0
     await expect(page.getByTestId('emergency-error')).toBeVisible();
     // 送信中の窓が終わって、押し直せる状態に戻っていること。
     await expect(page.getByTestId('emergency-stop')).toBeEnabled();
-  });
-
-  /**
-   * 応答は 200 なのに本文が読めない経路 (#973)。`abort` / `500` だけでは踏めない。
-   * ここで見るのは「通信を疑わせない別の文言が出ること」である。
-   */
-  test('音声設定: 200 だが本文が壊れているとき、通信のせいにしない (#973)', async ({ page }) => {
-    await page.goto('/admin/voice');
-    await expect(page.getByTestId('voice-save')).toBeVisible();
-    await failWrites(page, '**/api/admin/voice**', 'broken-200');
-
-    await page.getByTestId('voice-save').click();
-
-    const error = page.getByTestId('voice-error');
-    await expect(error).toBeVisible();
-    await expect(error).toContainText('読み取れませんでした');
-    await expect(error).not.toContainText('接続できませんでした');
   });
 
   /**
@@ -310,6 +312,27 @@ test.describe('管理: 書き込み失敗が運用者に見える (#870 増分 0
     await expect(error).toContainText(label);
   });
 
+  /**
+   * 🔴 **サーバの `message` が空・空白だけでも、画面に何か出る** (#973)。
+   * `role="alert"` の空の段落は、報告していないのと同じ（`fetch-failure-scan.ts` が
+   * 過去に踏んだ「空白 1 文字の報告」と同型）。宛先ラベルだけを出して終わらない。
+   */
+  test('サイネージ: サーバの message が空でも報告になる (#973)', async ({ page }) => {
+    await page.goto('/admin/signage');
+    await expect(page.getByTestId('signage-save')).toBeVisible();
+    await page.route('**/api/admin/signage**', (route) => {
+      if (route.request().method() === 'GET') return route.continue();
+      return route.fulfill({ status: 400, contentType: 'application/json', body: '{"message":"  "}' });
+    });
+
+    await page.getByTestId('signage-save').click();
+
+    const error = page.getByTestId('signage-save-error');
+    await expect(error).toBeVisible();
+    // 宛先だけの「本社: 」で終わらせない。
+    await expect(error).toContainText('保存に失敗しました');
+  });
+
   test('営業時間: 失敗の文言に拠点が入る (#973)', async ({ page }) => {
     await page.goto('/admin/operating-hours');
     await expect(page.getByTestId('operating-hours-save')).toBeVisible();
@@ -344,9 +367,41 @@ test.describe('管理: 書き込み失敗が運用者に見える (#870 増分 0
     // **これが本題。** 200 は受理だが、返ってきた状態を確認できていない。断定しない。
     await expect(page.getByTestId('emergency-error')).toBeVisible();
     await expect(page.getByTestId('emergency-saved')).toHaveCount(0);
-    // 表示が当てにならないことと、取り直す導線。
+    // 表示が当てにならないことは別に言う（保存フィードバックへ相乗りさせない）。
     await expect(page.getByTestId('security-view-stale')).toBeVisible();
-    await expect(page.getByTestId('security-view-reload')).toBeVisible();
+  });
+
+  /**
+   * 🔴 **保存の成功経路にも証拠を置く** (#973)。ここまでの注入は全部失敗側で、
+   * `applyView(applied)` や `setPin('')` を落とす変異が素通りしていた
+   * （PIN を設定して「保存しました」が出ても「現在: 未設定」のまま、が見えない）。
+   * 応答は注入で返すので共有 seed を変えない。
+   */
+  test('セキュリティ設定: 応答本体が表示へ載る (#973)', async ({ page }) => {
+    await page.goto('/admin/security');
+    await expect(page.getByTestId('security-save')).toBeVisible();
+    await page.getByTestId('security-pin').fill('123456');
+    await page.route('**/api/admin/security**', (route) => {
+      if (route.request().method() === 'GET') return route.continue();
+      return route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          pinRequired: true,
+          ipAllowlist: ['203.0.113.10'],
+          pinConfigured: true,
+          emergencyStop: false,
+        }),
+      });
+    });
+
+    await page.getByTestId('security-save').click();
+
+    await expect(page.getByTestId('security-saved')).toBeVisible();
+    // 応答本体がフォームへ載る（PIN 欄は空に戻り、IP 許可リストは応答の値になる）。
+    await expect(page.getByTestId('security-pin')).toHaveValue('');
+    await expect(page.getByTestId('security-ip')).toHaveValue('203.0.113.10');
+    await expect(page.getByTestId('security-view-stale')).toHaveCount(0);
   });
 
   /**
@@ -384,55 +439,6 @@ test.describe('管理: 書き込み失敗が運用者に見える (#870 増分 0
 
     // **これが本題。** 保存が返らなくても緊急停止は押せる。
     await expect(page.getByTestId('emergency-stop')).toBeEnabled();
-  });
-
-  /**
-   * 🔴 **新設した「取り直す」が黙って失敗しない** (#973)。
-   * `loadFailed` は `if (!view)` の枝にしか出ないので、報告を足さないと
-   * **「押しても何も起きない導線」をこの PR が新設する**ことになる。
-   */
-  test('取り直すが失敗したら、そう言う (#973)', async ({ page }) => {
-    await page.goto('/admin/security');
-    await expect(page.getByTestId('emergency-stop')).toBeVisible();
-    await failAll(page, '**/api/admin/security**');
-
-    await page.getByTestId('emergency-stop').click();
-    await page.getByTestId('emergency-confirm').click();
-    await expect(page.getByTestId('emergency-error')).toBeVisible();
-
-    const reload = page.getByTestId('security-view-reload');
-    await expect(reload).toBeVisible();
-    await reload.click();
-
-    await expect(page.getByTestId('security-view-reload-error')).toBeVisible();
-    await expect(page.getByTestId('security-view-reload-error')).toHaveAttribute('role', 'alert');
-    // 押し直せる状態に戻る。
-    await expect(reload).toBeEnabled();
-  });
-
-  /**
-   * 🔴 **「取り直す」が編集中の入力を捨てない** (#973)。
-   *
-   * この導線を置いた理由は「導線が無いとブラウザごと再読み込みするしかなく、編集中の
-   * IP 許可リストを捨てることになる」だった。表示だけ取り直す（`applyView` を呼ばない）
-   * ようにしていないと、ボタン自身がその理由を破る。
-   */
-  test('取り直すは編集中の入力を捨てない (#973)', async ({ page }) => {
-    await page.goto('/admin/security');
-    await expect(page.getByTestId('security-ip')).toBeVisible();
-    await page.getByTestId('security-ip').fill('203.0.113.99');
-
-    // 書き込みだけ壊す（GET は通るので、取り直しは成功する）。
-    await failWrites(page, '**/api/admin/security**', 'broken-200');
-    await page.getByTestId('emergency-stop').click();
-    await page.getByTestId('emergency-confirm').click();
-    await expect(page.getByTestId('security-view-stale')).toBeVisible();
-
-    await page.getByTestId('security-view-reload').click();
-    // 取り直しは成功したので、注意書きは消える。
-    await expect(page.getByTestId('security-view-stale')).toHaveCount(0);
-    // **これが本題。** 打ち込んだ値は残っている。
-    await expect(page.getByTestId('security-ip')).toHaveValue('203.0.113.99');
   });
 
   /**

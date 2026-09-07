@@ -64,3 +64,20 @@ export function saveFailureMessage(failure: SaveFailure, about?: string): string
   const label = about?.trim() ?? '';
   return label === '' ? base : `${label}: ${base}`;
 }
+
+/**
+ * 失敗の宛先ラベル。**どの拠点の保存の話か**を文言に載せるために使う (#973)。
+ *
+ * 🔴 保存が飛行中に拠点を切り替えられるので、宛先を書かないと **B を見ている運用者が
+ * A の失敗を自分の画面の話として読む**。文言が「再読み込みして確かめてください」と
+ * 具体的な行動を指示しているぶん、宛先違いは**誤った安心**に直結する。
+ * 名前が引けなければ ID を出す（無記名にはしない）。
+ *
+ * 🔴 **写しを作らない。** 拠点別画面は 2 つあり、片方だけ直る形になる
+ * （`fetch-failure-scan.ts` 冒頭が記録している型）。テナント名まで載せる案
+ * （同名の拠点を持つ別テナントを区別する）は Issue へ回してあるので、
+ * 次に触るときも**ここ 1 箇所**を直せば両方へ効く。
+ */
+export function siteLabel(sites: readonly { id: string; name?: string }[], id: string): string {
+  return sites.find((s) => s.id === id)?.name ?? id;
+}

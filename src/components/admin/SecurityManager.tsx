@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useState } from 'react';
 import { Button, Field, Form, SaveFeedback, saveFailureMessage, useSaveFeedback } from '@/components/admin/ui';
-import { color, space } from '@/components/admin/ui/tokens';
+import { space } from '@/components/admin/ui/tokens';
 import { AdminReadGate } from './AdminReadGate';
 
 export type SecurityView = { pinRequired: boolean; ipAllowlist: string[]; pinConfigured: boolean; emergencyStop: boolean };
@@ -70,9 +70,6 @@ export function SecurityManager() {
    * （載せると、あとで取り直して新しくなっても文言が残る。独立レビュー 2 周目 MINOR-3）。
    */
   const [viewStale, setViewStale] = useState(false);
-  /** 「取り直す」の送信中と失敗。**押しても何も起きない導線を作らない**（4 周目 MAJOR-2）。 */
-  const [refreshing, setRefreshing] = useState(false);
-  const [refreshFailed, setRefreshFailed] = useState(false);
 
   /** 取得した（あるいは書き込みが返した）状態を画面へ載せる。 */
   const applyView = useCallback((v: SecurityView) => {
@@ -97,51 +94,17 @@ export function SecurityManager() {
    *
    * 応答本体を採ればどれも起きない。ここに残るのは「まだ何も無い」ときの取得だけである。
    */
-  /** 取得して `SecurityView` を返す。失敗したら null（**投げない**）。 */
-  const fetchView = useCallback(async (): Promise<SecurityView | null> => {
+  const load = useCallback(async () => {
     // `catch` を省くとオフラインで例外になり、`void load()` が握り潰して
     // **失敗にすら落ちない**（画面は「読み込み中…」のまま固まる）。
     const res = await fetch('/api/admin/security').catch(() => null);
-    if (!res?.ok) return null;
-    return asSecurityView(await res.json().catch(() => null));
-  }, []);
-
-  const load = useCallback(async () => {
-    const v = await fetchView();
+    const v = res?.ok === true ? asSecurityView(await res.json().catch(() => null)) : null;
     if (v === null) {
       setLoadFailed(true);
       return;
     }
     applyView(v);
-  }, [applyView, fetchView]);
-
-  /**
-   * 「取り直す」導線 (#973)。**表示だけ取り直す。**
-   *
-   * 🔴 **フォームを上書きしない。** `applyView` を呼ぶと `ipText` / `pinRequired` が
-   * 上書きされ、この導線を置いた理由（「再読み込みだと編集中の IP 許可リストを捨てる」）を
-   * ボタン自身が破る（独立レビュー 4 周目 MINOR-4）。
-   *
-   * 🔴 **失敗を報告する。** `loadFailed` を描くのは `if (!view)` の枝だけで、`view` は
-   * 初回取得後に null へ戻らない。黙って戻すと、#973 が無くそうとしている
-   * 「押しても何も起きない導線」を**この PR が新設する**ことになる（同 MAJOR-2）。
-   */
-  const refreshView = useCallback(async () => {
-    if (refreshing) return;
-    setRefreshing(true);
-    setRefreshFailed(false);
-    try {
-      const v = await fetchView();
-      if (v === null) {
-        setRefreshFailed(true);
-        return;
-      }
-      setView(v);
-      setViewStale(false);
-    } finally {
-      setRefreshing(false);
-    }
-  }, [refreshing, fetchView]);
+  }, [applyView]);
 
   useEffect(() => {
     void load();
@@ -357,35 +320,23 @@ export function SecurityManager() {
           独立レビュー 2 周目 MINOR-3）。適用そのものは 200 で確定しているので、
           ここで言うのは「反映できなかった」だけである。
         */}
+        {/*
+          🔴 **「表示が古い」は保存の結果ではなく view の性質**なので、保存フィードバックに
+          載せず独立して持つ（載せると、次の取得で新しくなっても文言が残る）。
+          適用そのものは 200 で確定しているので、ここで言うのは「反映できなかった」だけである。
+
+          🔴 **ここに「取り直す」ボタンを置かない。** 4 周目に置いてみたが、押下中に緊急停止を
+          押されると**遅れて返った GET が確定した書き込みを上書きし、しかも `viewStale` を
+          false に戻す**（＝表示が実態と違うのに注意書きが消える）。上の `load` の解説が
+          「書き込みの後にもう一度取りに行かない」理由として挙げているレースそのもので、
+          手動トリガの GET として作り直していた。世代ガードを足せば塞げるが、それは
+          #973（通信失敗が無言にならない）の外側の作り込みなので、**導線ごと外して**
+          Issue へ回す（独立レビュー 5 周目 MAJOR-1 / MAJOR-2）。
+          運用者へ渡すのは、この画面で完結する押し所ではなく**確かめる行動**である。
+        */}
         {viewStale ? (
-          <div style={{ marginTop: space.sm, display: 'flex', gap: space.sm, alignItems: 'center' }}>
-            <p data-testid="security-view-stale" role="status" aria-live="polite" style={{ margin: 0 }}>
-              上の表示は最新でない可能性があります。取り直して確かめてください。
-            </p>
-            {/*
-              🔴 **取り直す導線をここに置く。** 初回取得に成功すると `view` は二度と null に
-              戻らないので、`AdminReadGate` の再試行には届かない —— 導線が無いと運用者は
-              ブラウザごと再読み込みするしかなく、**編集中の IP 許可リストを捨てる**ことになる
-              （独立レビュー 3 周目 MINOR-2）。
-            */}
-            <Button
-              data-testid="security-view-reload"
-              onClick={() => void refreshView()}
-              disabled={refreshing}
-              aria-busy={refreshing || undefined}
-            >
-              {refreshing ? '取り直しています…' : '取り直す'}
-            </Button>
-          </div>
-        ) : null}
-        {refreshFailed ? (
-          <p
-            data-testid="security-view-reload-error"
-            role="alert"
-            aria-live="assertive"
-            style={{ margin: '8px 0 0', color: color.danger }}
-          >
-            最新の状態を取得できませんでした。通信状態を確かめて、もう一度お試しください。
+          <p data-testid="security-view-stale" role="status" aria-live="polite" style={{ margin: '8px 0 0' }}>
+            上の表示は最新でない可能性があります。画面を再読み込みして確かめてください。
           </p>
         ) : null}
       </div>
