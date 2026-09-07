@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useState } from 'react';
 import type { VoiceSettings } from '@/domain/voice/types';
-import { Button, Field, Form, FormRow, SaveFeedback, useSaveFeedback } from '@/components/admin/ui';
+import { Button, Field, Form, FormRow, SaveFeedback, saveFailureMessage, useSaveFeedback } from '@/components/admin/ui';
 import { color, font, space } from '@/components/admin/ui/tokens';
 import { isSttRecognitionSimulated } from '@/domain/voice/stt-capability';
 import { AdminReadGate } from './AdminReadGate';
@@ -61,6 +61,9 @@ export function VoiceManager() {
       } else {
         failure();
       }
+    } catch {
+      // 応答を受け取れていない。`failure()` の既定（サーバが拒否した）を使うと嘘になる。
+      failure(saveFailureMessage('unreachable'));
     } finally {
       setBusy(false);
     }

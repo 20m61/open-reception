@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useState } from 'react';
 import type { AiGuidanceConfig } from '@/domain/ai-guidance/config';
-import { Button, Field, Form, SaveFeedback, useSaveFeedback } from '@/components/admin/ui';
+import { Button, Field, Form, SaveFeedback, saveFailureMessage, useSaveFeedback } from '@/components/admin/ui';
 import { color, space } from '@/components/admin/ui/tokens';
 import { AdminReadGate } from './AdminReadGate';
 
@@ -54,6 +54,9 @@ export function AiGuidanceManager() {
       } else {
         failure();
       }
+    } catch {
+      // 応答を受け取れていない。`failure()` の既定（サーバが拒否した）を使うと嘘になる。
+      failure(saveFailureMessage('unreachable'));
     } finally {
       setBusy(false);
     }

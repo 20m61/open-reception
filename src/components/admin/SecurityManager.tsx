@@ -1,7 +1,7 @@
 'use client';
 
 import { useCallback, useEffect, useState } from 'react';
-import { Button, Field, Form, SaveFeedback, useSaveFeedback } from '@/components/admin/ui';
+import { Button, Field, Form, SaveFeedback, saveFailureMessage, useSaveFeedback } from '@/components/admin/ui';
 import { space } from '@/components/admin/ui/tokens';
 import { AdminReadGate } from './AdminReadGate';
 
@@ -57,6 +57,9 @@ export function SecurityManager() {
       } else {
         failure();
       }
+    } catch {
+      // 応答を受け取れていない。`failure()` の既定（サーバが拒否した）を使うと嘘になる。
+      failure(saveFailureMessage('unreachable'));
     } finally {
       setBusy(false);
     }
@@ -65,14 +68,36 @@ export function SecurityManager() {
   const setEmergency = useCallback(
     async (emergencyStop: boolean) => {
       setConfirmingEmergency(false);
-      await fetch('/api/admin/security', {
-        method: 'PUT',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ emergencyStop }),
-      });
-      await load();
+      clear();
+      /*
+        **緊急停止は結果を確かめる。** それまでは応答を見ずに `load()` していたので、
+        403 / 5xx でもオフラインでも「押したのに何も言われない」だけになり、運用者は
+        **止めたつもりで止まっていない**状態に置かれる（受付を止める操作なので、
+        取り違えの代償が最も大きい）。
+      */
+      try {
+        const res = await fetch('/api/admin/security', {
+          method: 'PUT',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ emergencyStop }),
+        });
+        if (res.ok) {
+          success(emergencyStop ? '緊急停止を有効にしました。' : '緊急停止を解除しました。');
+        } else {
+          failure(
+            emergencyStop ? '緊急停止を有効にできませんでした。' : '緊急停止を解除できませんでした。',
+          );
+        }
+      } catch {
+        // 応答を受け取れていない。適用されたかどうかは分からないので断定しない。
+        failure(saveFailureMessage('unreachable'));
+      } finally {
+        // 成否によらず取り直す。**画面のトグルはサーバの状態を映す**（失敗したのに
+        // 押した側へ倒れたままだと、次に見る人が「止まっている」と読む）。
+        await load();
+      }
     },
-    [load],
+    [load, clear, success, failure],
   );
 
   if (!view) {

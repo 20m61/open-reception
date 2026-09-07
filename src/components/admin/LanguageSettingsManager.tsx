@@ -7,7 +7,7 @@ import {
   type Locale,
 } from '@/lib/i18n';
 import type { LanguageSettings } from '@/lib/i18n/language-settings';
-import { Button, Field, Form, SaveFeedback, useSaveFeedback } from '@/components/admin/ui';
+import { Button, Field, Form, SaveFeedback, saveFailureMessage, useSaveFeedback } from '@/components/admin/ui';
 import { AdminReadGate } from './AdminReadGate';
 import { useUnsavedChanges } from './use-unsaved-changes';
 import { useUnsavedChangesGuard } from './use-unsaved-changes-guard';
@@ -77,6 +77,9 @@ export function LanguageSettingsManager() {
       } else {
         failure();
       }
+    } catch {
+      // 応答を受け取れていない。`failure()` の既定（サーバが拒否した）を使うと嘘になる。
+      failure(saveFailureMessage('unreachable'));
     } finally {
       setBusy(false);
     }

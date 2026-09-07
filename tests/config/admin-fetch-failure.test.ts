@@ -44,10 +44,9 @@ const ADMIN_DIR = join(process.cwd(), 'src/components/admin');
  * 🔴 **直したら消す。減らす以外の更新は PR に理由を書くこと。**
  */
 const REMAINING: ReadonlyMap<string, number> = new Map([
-  ['AiGuidanceManager.tsx', 2],
+  ['AiGuidanceManager.tsx', 1],
   ['AssetsManager.tsx', 2],
-  ['auth/AuthMethodSettings.tsx', 1],
-  ['BrandingManager.tsx', 2],
+  ['BrandingManager.tsx', 1],
   ['costs/CostManager.tsx', 1],
   ['CsvImport.tsx', 1],
   ['dashboard/Dashboard.tsx', 1],
@@ -56,21 +55,21 @@ const REMAINING: ReadonlyMap<string, number> = new Map([
   ['DevicesManager.tsx', 1],
   ['integrations/IntegrationsManager.tsx', 4],
   ['KiosksManager.tsx', 3],
-  ['LanguageSettingsManager.tsx', 2],
+  ['LanguageSettingsManager.tsx', 1],
   ['MotionsManager.tsx', 2],
-  ['OperatingHoursManager.tsx', 2],
+  ['OperatingHoursManager.tsx', 1],
   ['ReceptionFlowsManager.tsx', 5],
   ['ReservationsManager.tsx', 5],
   ['RoutingPolicyManager.tsx', 7],
-  ['SecurityManager.tsx', 3],
-  ['SignageManager.tsx', 1],
+  ['SecurityManager.tsx', 1],
   ['SitesManager.tsx', 2],
   ['StaffEditor.tsx', 1],
   ['StaffManager.tsx', 6],
   ['StayManager.tsx', 1],
   ['usage/UsageManager.tsx', 1],
   ['use-site-list.ts', 1],
-  ['VoiceManager.tsx', 2],
+  ['auth/AuthMethodSettings.tsx', 1],
+  ['VoiceManager.tsx', 1],
 ]);
 
 /** 台帳の合計。**上げるときは PR に理由を書く。** */
@@ -150,7 +149,7 @@ describe('管理画面の通信失敗 (#973)', () => {
   );
 
   /**
-   * 🔴 **ドリフトを落とす。** 直したのに台帳へ残っていると、「まだ 76 箇所ある」という
+   * 🔴 **ドリフトを落とす。** 直したのに台帳へ残っていると、残り件数という
    * 数字が実態から離れ、次に読む人の判断材料が汚れる（`check-cjk-literals.ts` の例外リストと
    * 同じ型）。#968 が台帳を空にできたのは、この検査があったからである。
    */
@@ -186,12 +185,13 @@ describe('管理画面の通信失敗 (#973)', () => {
    * この増分で直したもの。**台帳から消えていること**を名指しで固定する ――
    * 「直した」と書いた PR が実際には直していない、を落とす。
    */
-  it(
-    'ログインの送信は失敗を報告する（この増分で直した）',
-    () => {
-      expect(unguardedByFile().has('AdminPasswordLogin.tsx')).toBe(false);
-      expect(REMAINING.has('AdminPasswordLogin.tsx')).toBe(false);
-    },
-    IO_TIMEOUT,
-  );
+  it.each([
+    // 第 1 増分。押しても何も起きない管理ログイン。
+    'AdminPasswordLogin.tsx',
+    // 第 2 増分。`try`/`finally` だけで `catch` が無く、保存ボタンが固まっていた待機画面。
+    'SignageManager.tsx',
+  ])('%s は失敗を報告する（台帳から出た）', (name) => {
+    expect(unguardedByFile().has(name)).toBe(false);
+    expect(REMAINING.has(name)).toBe(false);
+  });
 });

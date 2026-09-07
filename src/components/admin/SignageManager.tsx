@@ -7,7 +7,7 @@ import {
   type SignageContentType,
   type SignageItem,
 } from '@/domain/signage/types';
-import { Button, Field, Form, FormRow, SaveFeedback, Section, useSaveFeedback } from '@/components/admin/ui';
+import { Button, Field, Form, FormRow, SaveFeedback, Section, saveFailureMessage, useSaveFeedback } from '@/components/admin/ui';
 import { color, radius, space } from '@/components/admin/ui/tokens';
 import { useSiteScope } from './use-site-scope';
 import { SiteScopeSelect } from './SiteScopeSelect';
@@ -159,36 +159,52 @@ export function SignageManager({
     setError(null);
     setFieldErrors([]);
     clear();
-    const res = await fetch('/api/admin/signage', {
-      method: 'PUT',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({
-        tenantId,
-        siteId,
-        enabled: config.enabled,
-        defaultIntervalSeconds: config.defaultIntervalSeconds,
-        items: config.items,
-      }),
-    });
-    // 応答が届いた時点で別スコープを見ていたら、結果を画面へ載せない。
-    if (!isCurrentScope(startedWith)) {
+    /*
+      **`finally` で `busy` を戻す。** それまでは成功経路と失敗経路にそれぞれ
+      `setBusy(false)` を置いていたので、`fetch` が reject すると（オフライン・DNS 失敗）
+      **どちらも通らず、保存ボタンが押せないまま固まった**。画面には何も出ないので、
+      運用者からは「押しても反応しない端末」に見える。
+    */
+    try {
+      const res = await fetch('/api/admin/signage', {
+        method: 'PUT',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          tenantId,
+          siteId,
+          enabled: config.enabled,
+          defaultIntervalSeconds: config.defaultIntervalSeconds,
+          items: config.items,
+        }),
+      });
+      // 応答が届いた時点で別スコープを見ていたら、結果を画面へ載せない。
+      if (!isCurrentScope(startedWith)) return;
+      if (res.ok) {
+        // 載せるスコープも同時に更新する（「載っているデータのスコープ」を嘘にしない）。
+        setConfigScopeKey(startedWith);
+        setConfig((await res.json()) as SignageConfig);
+        success(`保存しました（${new Date().toLocaleTimeString()}）`);
+      } else {
+        const data = (await res.json().catch(() => ({}))) as {
+          message?: string;
+          fields?: FieldError[];
+        };
+        failure(data.message ?? saveFailureMessage('rejected'));
+        setFieldErrors(data.fields ?? []);
+      }
+    } catch {
+      /*
+        応答を受け取れていない。`failure()` の既定（サーバが拒否した）を使うと嘘になる。
+
+        🔴 **ここにスコープの門を置かない。** 成功経路が `isCurrentScope` を見るのは、
+        A の応答を B の画面へ**書き込む**と状態が壊れるからである。失敗の報告は
+        データを書かない —— 押した操作が失敗した事実は、その後どの拠点を見ていても
+        運用者に伝えるべきもので、門を足すと「切り替えたら黙る」という元の欠陥へ戻る。
+      */
+      failure(saveFailureMessage('unreachable'));
+    } finally {
       setBusy(false);
-      return;
     }
-    if (res.ok) {
-      // 載せるスコープも同時に更新する（「載っているデータのスコープ」を嘘にしない）。
-      setConfigScopeKey(startedWith);
-      setConfig((await res.json()) as SignageConfig);
-      success(`保存しました（${new Date().toLocaleTimeString()}）`);
-    } else {
-      const data = (await res.json().catch(() => ({}))) as {
-        message?: string;
-        fields?: FieldError[];
-      };
-      failure(data.message ?? '保存に失敗しました。');
-      setFieldErrors(data.fields ?? []);
-    }
-    setBusy(false);
   }, [config, tenantId, siteId, scopeKey, isCurrentScope, success, failure, clear, gate.canMutate]);
 
   const errorFor = useCallback(

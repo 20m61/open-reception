@@ -1,7 +1,7 @@
 'use client';
 
 import { useCallback, useEffect, useState } from 'react';
-import { Button, Field, Form, SaveFeedback, useSaveFeedback } from '@/components/admin/ui';
+import { Button, Field, Form, SaveFeedback, saveFailureMessage, useSaveFeedback } from '@/components/admin/ui';
 import { useSiteScope } from './use-site-scope';
 import { resolveScopeGate } from './scope-gate';
 import { EmptyState } from '@/components/admin/ui';
@@ -215,6 +215,16 @@ export function OperatingHoursManager({
         }
         failure();
       }
+    } catch {
+      /*
+        応答を受け取れていない。`failure()` の既定（サーバが拒否した）を使うと嘘になる。
+
+        🔴 **ここにスコープの門を置かない。** 成功経路が `isCurrentScope` を見るのは、
+        A の応答を B の画面へ**書き込む**と状態が壊れるからである。失敗の報告は
+        データを書かない —— 押した操作が失敗した事実は、その後どの拠点を見ていても
+        運用者に伝えるべきもので、門を足すと「切り替えたら黙る」という元の欠陥へ戻る。
+      */
+      failure(saveFailureMessage('unreachable'));
     } finally {
       setBusy(false);
     }

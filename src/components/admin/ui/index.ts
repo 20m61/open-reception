@@ -25,3 +25,4 @@ export {
   type FeedbackStatus,
   type SaveFeedbackState,
 } from './Feedback';
+export { saveFailureMessage, type SaveFailure } from './save-outcome';
