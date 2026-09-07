@@ -2,10 +2,10 @@
 
 import { useCallback, useEffect, useState } from 'react';
 import { Button, Field, Form, SaveFeedback, saveFailureMessage, useSaveFeedback } from '@/components/admin/ui';
-import { space } from '@/components/admin/ui/tokens';
+import { color, space } from '@/components/admin/ui/tokens';
 import { AdminReadGate } from './AdminReadGate';
 
-type SecurityView = { pinRequired: boolean; ipAllowlist: string[]; pinConfigured: boolean; emergencyStop: boolean };
+export type SecurityView = { pinRequired: boolean; ipAllowlist: string[]; pinConfigured: boolean; emergencyStop: boolean };
 
 /**
  * 緊急停止の送信に張る締切 (#973)。応答が返らない経路でボタンが恒久的に無効化されるのを防ぐ。
@@ -26,7 +26,7 @@ const EMERGENCY_TIMEOUT_MS = 10_000;
  * 同じである。`save` と `setEmergency` は同じ結論（`unreadable`）へ揃える —— 同じ条件に
  * 別の結論を出す状態を残さない。
  */
-function asSecurityView(value: unknown): SecurityView | null {
+export function asSecurityView(value: unknown): SecurityView | null {
   if (typeof value !== 'object' || value === null) return null;
   const v = value as Record<string, unknown>;
   if (typeof v.pinRequired !== 'boolean') return null;
@@ -70,6 +70,9 @@ export function SecurityManager() {
    * （載せると、あとで取り直して新しくなっても文言が残る。独立レビュー 2 周目 MINOR-3）。
    */
   const [viewStale, setViewStale] = useState(false);
+  /** 「取り直す」の送信中と失敗。**押しても何も起きない導線を作らない**（4 周目 MAJOR-2）。 */
+  const [refreshing, setRefreshing] = useState(false);
+  const [refreshFailed, setRefreshFailed] = useState(false);
 
   /** 取得した（あるいは書き込みが返した）状態を画面へ載せる。 */
   const applyView = useCallback((v: SecurityView) => {
@@ -94,21 +97,51 @@ export function SecurityManager() {
    *
    * 応答本体を採ればどれも起きない。ここに残るのは「まだ何も無い」ときの取得だけである。
    */
-  const load = useCallback(async () => {
+  /** 取得して `SecurityView` を返す。失敗したら null（**投げない**）。 */
+  const fetchView = useCallback(async (): Promise<SecurityView | null> => {
     // `catch` を省くとオフラインで例外になり、`void load()` が握り潰して
     // **失敗にすら落ちない**（画面は「読み込み中…」のまま固まる）。
     const res = await fetch('/api/admin/security').catch(() => null);
-    if (!res?.ok) {
-      setLoadFailed(true);
-      return;
-    }
-    const v = asSecurityView(await res.json().catch(() => null));
+    if (!res?.ok) return null;
+    return asSecurityView(await res.json().catch(() => null));
+  }, []);
+
+  const load = useCallback(async () => {
+    const v = await fetchView();
     if (v === null) {
       setLoadFailed(true);
       return;
     }
     applyView(v);
-  }, [applyView]);
+  }, [applyView, fetchView]);
+
+  /**
+   * 「取り直す」導線 (#973)。**表示だけ取り直す。**
+   *
+   * 🔴 **フォームを上書きしない。** `applyView` を呼ぶと `ipText` / `pinRequired` が
+   * 上書きされ、この導線を置いた理由（「再読み込みだと編集中の IP 許可リストを捨てる」）を
+   * ボタン自身が破る（独立レビュー 4 周目 MINOR-4）。
+   *
+   * 🔴 **失敗を報告する。** `loadFailed` を描くのは `if (!view)` の枝だけで、`view` は
+   * 初回取得後に null へ戻らない。黙って戻すと、#973 が無くそうとしている
+   * 「押しても何も起きない導線」を**この PR が新設する**ことになる（同 MAJOR-2）。
+   */
+  const refreshView = useCallback(async () => {
+    if (refreshing) return;
+    setRefreshing(true);
+    setRefreshFailed(false);
+    try {
+      const v = await fetchView();
+      if (v === null) {
+        setRefreshFailed(true);
+        return;
+      }
+      setView(v);
+      setViewStale(false);
+    } finally {
+      setRefreshing(false);
+    }
+  }, [refreshing, fetchView]);
 
   useEffect(() => {
     void load();
@@ -118,9 +151,6 @@ export function SecurityManager() {
     if (busy) return;
     setBusy(true);
     clear();
-    // 「応答が届いたか」を持つ。`catch` は fetch の reject と、届いた後の例外の
-    // **両方**を拾うので、綴りだけでは区別できない。
-    let reached = false;
     try {
       const ipAllowlist = ipText.split('\n').map((s) => s.trim()).filter(Boolean);
       const body: Record<string, unknown> = { pinRequired, ipAllowlist };
@@ -130,7 +160,6 @@ export function SecurityManager() {
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify(body),
       });
-      reached = true;
       if (!res.ok) {
         failure();
         return;
@@ -147,8 +176,14 @@ export function SecurityManager() {
       applyView(applied);
       success();
     } catch {
-      // ここへ来るのは fetch 自身の reject だけ（本文の解釈は上で畳んである）。
-      failure(saveFailureMessage(reached ? 'unreadable' : 'unreachable'));
+      /*
+        ここへ来るのは `fetch` 自身の reject だけである（本文の解釈は `.catch(() => null)`
+        で畳んであり、`asSecurityView` も setState も投げない）。`reached` の三項を残すと
+        **到達しない綴り**が検査の当たり所になり、次に読む人が「ここで unreadable が出る」
+        と誤読する（独立レビュー 4 周目 MINOR-6）。
+      */
+      setViewStale(true);
+      failure(saveFailureMessage('unreachable'));
     } finally {
       setBusy(false);
     }
@@ -177,7 +212,6 @@ export function SecurityManager() {
       const label = emergencyStop ? '緊急停止' : '受付再開';
       const controller = new AbortController();
       const deadline = setTimeout(() => controller.abort(), EMERGENCY_TIMEOUT_MS);
-      let reached = false;
       try {
         const res = await fetch('/api/admin/security', {
           method: 'PUT',
@@ -185,7 +219,6 @@ export function SecurityManager() {
           body: JSON.stringify({ emergencyStop }),
           signal: controller.signal,
         });
-        reached = true;
         if (!res.ok) {
           setEmergencyFailed(
             emergencyStop ? '緊急停止を有効にできませんでした。' : '緊急停止を解除できませんでした。',
@@ -216,7 +249,11 @@ export function SecurityManager() {
         setViewStale(false);
         emergencySucceeded(emergencyStop ? '緊急停止を有効にしました。' : '緊急停止を解除しました。');
       } catch {
-        setEmergencyFailed(saveFailureMessage(reached ? 'unreadable' : 'unreachable', label));
+        // ここへ来るのは `fetch` 自身の reject だけ（本文の解釈は上で畳んである）。
+        // 表示が実態と違いうるのは in-band 側と同じなので、取り直す導線もここで出す
+        // （独立レビュー 4 周目 MINOR-2）。
+        setViewStale(true);
+        setEmergencyFailed(saveFailureMessage('unreachable', label));
       } finally {
         clearTimeout(deadline);
         setEmergencyBusy(false);
@@ -256,15 +293,21 @@ export function SecurityManager() {
           障害対応中の運用者は「押せなくなった／タップが失敗した」と読み、10 秒待たずに
           離脱する。`aria-busy` を渡すと無効表現から外れ、ラベルの差し替えで進行中を示す
           （独立レビュー 3 周目 MAJOR-2）。
-          `save` と相互に塞ぐのは、同じレコードの read-modify-write を同時に飛ばさない
-          ため（緊急停止が黙って巻き戻り、その上に「有効にしました」が残る）。
+          🔴 **`save` と相互に塞がない。** 3 周目で同時飛行（同じレコードの
+          read-modify-write）を塞ごうとして `disabled={emergencyBusy || busy}` にしたが、
+          `save` には締切が無いので `busy` は**有界でない** —— 保存を 1 回押しただけで、
+          通信が半死の間ずっと**緊急停止が押せなくなる**（2 周目に締切で直した
+          「押せない画面」を、保存経路から作り直していた）。受付を止める操作が、
+          設定保存の都合で塞がってはいけない。同時飛行は**別タブ・別運用者では
+          どのみち塞げない**ので、守るなら API 側の楽観ロックであってここではない
+          （Issue 候補として PR 本文に残す）。
         */}
         {view.emergencyStop ? (
           <Button
             variant="primary"
             data-testid="emergency-resume"
             onClick={() => void setEmergency(false)}
-            disabled={emergencyBusy || busy}
+            disabled={emergencyBusy}
             aria-busy={emergencyBusy || undefined}
           >
             {emergencyBusy ? '送信中…' : '受付を再開する'}
@@ -272,7 +315,7 @@ export function SecurityManager() {
         ) : confirmingEmergency ? (
           <div style={{ display: 'flex', gap: space.sm }}>
             {/* 送信中はこの枝ごと描かれない（冒頭で `confirmingEmergency` を閉じるため）。 */}
-            <Button variant="danger" data-testid="emergency-confirm" onClick={() => void setEmergency(true)} disabled={busy}>
+            <Button variant="danger" data-testid="emergency-confirm" onClick={() => void setEmergency(true)}>
               本当に全端末を停止する
             </Button>
             <Button data-testid="emergency-cancel" onClick={() => setConfirmingEmergency(false)}>
@@ -284,7 +327,7 @@ export function SecurityManager() {
             variant="danger"
             data-testid="emergency-stop"
             onClick={() => setConfirmingEmergency(true)}
-            disabled={emergencyBusy || busy}
+            disabled={emergencyBusy}
             aria-busy={emergencyBusy || undefined}
           >
             {emergencyBusy ? '送信中…' : '緊急停止する'}
@@ -325,10 +368,25 @@ export function SecurityManager() {
               ブラウザごと再読み込みするしかなく、**編集中の IP 許可リストを捨てる**ことになる
               （独立レビュー 3 周目 MINOR-2）。
             */}
-            <Button data-testid="security-view-reload" onClick={() => void load()}>
-              取り直す
+            <Button
+              data-testid="security-view-reload"
+              onClick={() => void refreshView()}
+              disabled={refreshing}
+              aria-busy={refreshing || undefined}
+            >
+              {refreshing ? '取り直しています…' : '取り直す'}
             </Button>
           </div>
+        ) : null}
+        {refreshFailed ? (
+          <p
+            data-testid="security-view-reload-error"
+            role="alert"
+            aria-live="assertive"
+            style={{ margin: '8px 0 0', color: color.danger }}
+          >
+            最新の状態を取得できませんでした。通信状態を確かめて、もう一度お試しください。
+          </p>
         ) : null}
       </div>
 
@@ -356,10 +414,16 @@ export function SecurityManager() {
             variant="primary"
             type="submit"
             data-testid="security-save"
-            disabled={busy || emergencyBusy}
+            disabled={busy}
             aria-busy={busy || undefined}
           >
-            保存
+            {/*
+              🔴 **`aria-busy` はラベルの差し替えとセットでしか意味を持たない**
+              （`docs/experience/README.md`「Processing」）。無効表現から外れるので、
+              ラベルを変えないと**押しても画面が一切変化しない**（`cursor: progress` は
+              タッチ端末で見えない）。片方だけ入れて「処理中を出した」ことにしない。
+            */}
+            {busy ? '保存中…' : '保存'}
           </Button>
           <SaveFeedback feedback={feedback} successTestId="security-saved" errorTestId="security-error" />
         </div>

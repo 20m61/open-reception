@@ -367,6 +367,75 @@ test.describe('管理: 書き込み失敗が運用者に見える (#870 増分 0
   });
 
   /**
+   * 🔴 **設定保存の往復が、緊急停止を塞がない** (#973)。
+   *
+   * 3 周目で同時飛行を塞ごうとして緊急停止のボタンに `busy` を足したが、`save` には
+   * 締切が無いので `busy` は有界でない —— **保存を 1 回押しただけで、通信が半死の間ずっと
+   * 受付を止められなくなる**。受付を止める操作が設定保存の都合で塞がってはいけない。
+   */
+  test('保存が返ってこなくても、緊急停止は押せる (#973)', async ({ page }) => {
+    await page.goto('/admin/security');
+    await expect(page.getByTestId('security-save')).toBeVisible();
+    await failWrites(page, '**/api/admin/security**', 'slow');
+
+    await page.getByTestId('security-save').click();
+    // 保存は往復中（ラベルが変わる＝処理中が見えている）。
+    await expect(page.getByTestId('security-save')).toContainText('保存中');
+
+    // **これが本題。** 保存が返らなくても緊急停止は押せる。
+    await expect(page.getByTestId('emergency-stop')).toBeEnabled();
+  });
+
+  /**
+   * 🔴 **新設した「取り直す」が黙って失敗しない** (#973)。
+   * `loadFailed` は `if (!view)` の枝にしか出ないので、報告を足さないと
+   * **「押しても何も起きない導線」をこの PR が新設する**ことになる。
+   */
+  test('取り直すが失敗したら、そう言う (#973)', async ({ page }) => {
+    await page.goto('/admin/security');
+    await expect(page.getByTestId('emergency-stop')).toBeVisible();
+    await failAll(page, '**/api/admin/security**');
+
+    await page.getByTestId('emergency-stop').click();
+    await page.getByTestId('emergency-confirm').click();
+    await expect(page.getByTestId('emergency-error')).toBeVisible();
+
+    const reload = page.getByTestId('security-view-reload');
+    await expect(reload).toBeVisible();
+    await reload.click();
+
+    await expect(page.getByTestId('security-view-reload-error')).toBeVisible();
+    await expect(page.getByTestId('security-view-reload-error')).toHaveAttribute('role', 'alert');
+    // 押し直せる状態に戻る。
+    await expect(reload).toBeEnabled();
+  });
+
+  /**
+   * 🔴 **「取り直す」が編集中の入力を捨てない** (#973)。
+   *
+   * この導線を置いた理由は「導線が無いとブラウザごと再読み込みするしかなく、編集中の
+   * IP 許可リストを捨てることになる」だった。表示だけ取り直す（`applyView` を呼ばない）
+   * ようにしていないと、ボタン自身がその理由を破る。
+   */
+  test('取り直すは編集中の入力を捨てない (#973)', async ({ page }) => {
+    await page.goto('/admin/security');
+    await expect(page.getByTestId('security-ip')).toBeVisible();
+    await page.getByTestId('security-ip').fill('203.0.113.99');
+
+    // 書き込みだけ壊す（GET は通るので、取り直しは成功する）。
+    await failWrites(page, '**/api/admin/security**', 'broken-200');
+    await page.getByTestId('emergency-stop').click();
+    await page.getByTestId('emergency-confirm').click();
+    await expect(page.getByTestId('security-view-stale')).toBeVisible();
+
+    await page.getByTestId('security-view-reload').click();
+    // 取り直しは成功したので、注意書きは消える。
+    await expect(page.getByTestId('security-view-stale')).toHaveCount(0);
+    // **これが本題。** 打ち込んだ値は残っている。
+    await expect(page.getByTestId('security-ip')).toHaveValue('203.0.113.99');
+  });
+
+  /**
    * 🔴 **形の壊れた 200 も同じ扱い。** `{"ok":true}` は `res.json()` を通るので、
    * `as SecurityView` で受けるとトグルが `undefined` になり、画面は
    * 「現在: 通常稼働」と「緊急停止を有効にしました」を**同時に**出す（3 周目 MAJOR-1）。
