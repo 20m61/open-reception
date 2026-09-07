@@ -9,6 +9,56 @@
 > | AWS の窓を開ける（`./scripts/aws-issue-credentials.sh`） | 短命 STS の発行は darwin 限定で、`scripts/hooks/guard-destructive.sh` が機械強制（#675）。**窓さえ開けばデプロイ本体はクラウドから wrapper 経由で流せる** | #675 / `docs/runbook-cloud-aws-deploy.md` |
 > | 実機 iPad UAT | 横向きで部署カードが何枚見えるか / 部署を開いて戻れるか / 騒音下で不在告知が聞き取れるか | #807 / #65 |
 >
+## 2026-09-07 の周回（#985 のゲート道具復旧・#973 第 1 増分）
+
+### #985: 欠けたゲート道具を SessionStart で戻す（PR #1000・クローズ済み）
+
+クラウドが **2 セッション連続**で `gitleaks` / `semgrep` 不在で起動していた。gitleaks 不在は
+SKIP では済まず **`--pr` が原理的に完走しない**（#986 / #988）。正規の経路（環境ダイアログの
+Setup script）はそのままに、`scripts/restore-gate-tools.sh` を SessionStart から呼ぶ。
+
+- 揃っていれば `command -v` を 2 回叩いて即抜ける（起動を延ばさない）
+- 落ちても SessionStart を落とさないが**黙りもしない**（`FAILED` を出し、報告が名指しする）
+- 版は `cloud-setup.sh` と一致していることをテストで縛る（写しを増やさない）
+
+🔴 **配線検出器（#656）が新スクリプトを捕まえた。** `install_pkgs.sh` を配線元へ足す最小の
+対処にした ―― 最初は「自動で走るスクリプトから呼ばれるものも配線済み」と一般化したが、それでは
+`aws-cloud-deploy.sh` / `vrm-visual-check.mjs` が allowlist から外れ、**#681 が記録した理由が
+失われる**ことを実測で検出した。
+
+### #973 第 1 増分: 管理画面の fetch（PR #1001）
+
+🔴 **着手前の AC マッピングで、issue とキューの分類が古いことが分かった。**
+
+| | issue 起票時（2026-09-04） | 2026-09-07 の実測 |
+| --- | --- | --- |
+| issue が「目視で本物」と挙げる `KiosksManager` / `StaffManager` | 未修正 | **すでに直っている**（#966 / #968 の周回） |
+| AC7（platform 7 画面の形の述語） | 未 | **充足済み**（台帳は空） |
+| 無防備な `fetch` | 45 | **77**（「catch はあるが報告しない」も数えた） |
+
+直したのは 1 件（ログインの送信）。`AdminPasswordLogin` は `try{…}finally` で **`catch` が
+無く**、オフラインでは押しても何も起きなかった。**`catch` を足すだけでは足りない** ――
+boolean の `error` に載せると「パスワードが正しくありません」と嘘をつく（サーバは見ていない）。
+
+残り 76 箇所は `tests/config/admin-fetch-failure.test.ts` の台帳（同一性固定・ラチェット・
+ドリフト検出・走査の下界）で止めた。走査は `src/domain/governance/fetch-failure-scan.ts` へ
+切り出して platform 側と共有する。
+
+🔴 **変異が走査の穴を出した。** `catch (e) { throw e; setError('…'); }` は報告が**在るのに
+実行されない**（規約が必須とする「早期 return が後段を飲み込む」型）。到達判定を足し、
+**条件付きの早期 return（世代ガードの定型）は切らない**下界も張った。
+さらに **その到達判定は現ツリーに該当形が無いため行列では殺せない**（外す変異が生存）ので、
+fixture で直接踏む unit を足した ―― 「近似の緊さは fixture でしか縛れない」の実例。
+
+### 人手が必要な残務
+
+- 🔴 **リモートブランチ 3 本がクラウドから消せない**（`the remote end hung up`）。
+  `claude/handover-info-followup-lgu1c4` / `fix/session-start-restore-gate-tools` /
+  `fix/admin-fetch-failure-ledger`。**恒久対処はユーザー判断で決まった** ――
+  GitHub の Settings → General → 「Automatically delete head branches」を有効化する
+  （`gh api -X PATCH repos/20m61/open-reception -F delete_branch_on_merge=true`）。
+  有効化しても**既存の 3 本は消えない**ので、1 度だけ手で削除する
+
 ## 2026-09-06〜07 の周回（pr-gate-guard の誤発火・#960）
 
 **PR #997（`48a8d73`）。独立レビューを 7 周回した。** 由来は 2026-09-03 の後始末中に
