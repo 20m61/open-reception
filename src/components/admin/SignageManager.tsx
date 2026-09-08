@@ -7,7 +7,7 @@ import {
   type SignageContentType,
   type SignageItem,
 } from '@/domain/signage/types';
-import { Button, Field, Form, FormRow, SaveFeedback, Section, useSaveFeedback } from '@/components/admin/ui';
+import { Button, Field, Form, FormRow, SaveFeedback, Section, saveFailureMessage, siteLabel, useSaveFeedback } from '@/components/admin/ui';
 import { color, radius, space } from '@/components/admin/ui/tokens';
 import { useSiteScope } from './use-site-scope';
 import { SiteScopeSelect } from './SiteScopeSelect';
@@ -155,41 +155,79 @@ export function SignageManager({
      * 読み（`load`）には写してあった守りを、書きにも写す。
      */
     const startedWith = scopeKey;
+    // 失敗の宛先は、保存を**始めた時点**の拠点である（切り替え後の名前を出すと嘘になる）。
+    const startedFor = siteLabel(sites, siteId);
     setBusy(true);
     setError(null);
     setFieldErrors([]);
     clear();
-    const res = await fetch('/api/admin/signage', {
-      method: 'PUT',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({
-        tenantId,
-        siteId,
-        enabled: config.enabled,
-        defaultIntervalSeconds: config.defaultIntervalSeconds,
-        items: config.items,
-      }),
-    });
-    // 応答が届いた時点で別スコープを見ていたら、結果を画面へ載せない。
-    if (!isCurrentScope(startedWith)) {
+    /*
+      **`finally` で `busy` を戻す。** それまでは成功経路と失敗経路にそれぞれ
+      `setBusy(false)` を置いていたので、`fetch` が reject すると（オフライン・DNS 失敗）
+      **どちらも通らず、保存ボタンが押せないまま固まった**。画面には何も出ないので、
+      運用者からは「押しても反応しない端末」に見える。
+    */
+    // 「応答が届いたか」を持つ。`catch` は fetch の reject と、届いた後の例外の
+    // **両方**を拾うので、綴りだけでは区別できない。
+    let reached = false;
+    try {
+      const res = await fetch('/api/admin/signage', {
+        method: 'PUT',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          tenantId,
+          siteId,
+          enabled: config.enabled,
+          defaultIntervalSeconds: config.defaultIntervalSeconds,
+          items: config.items,
+        }),
+      });
+      reached = true;
+      /*
+        🔴 **門は「画面へ書き込む行」だけに掛ける。**
+
+        それまでは応答の直後で `return` していたので、飛行中に拠点を切り替えると
+        **成功も失敗も丸ごと飲み込まれた**（4xx / 5xx でも画面に何も出ない）。報告は
+        データを書かないので、宛先ラベル付きで必ず出す。フォームに紐づく表示
+        （`setConfig` / `setConfigScopeKey` / `setFieldErrors`）だけを門の内側に置く
+        —— こちらは A の内容を B の画面へ書くことになる（独立レビュー 2 周目 MAJOR-C）。
+      */
+      if (res.ok) {
+        const applied = (await res.json()) as SignageConfig;
+        // 🔴 **書き込みの直前で評価し直す。** `await res.json()` を跨ぐので、パース中に
+        // 切り替わると A の内容が B の state へ入る（独立レビュー 3 周目 MINOR-4）。
+        if (isCurrentScope(startedWith)) {
+          // 載せるスコープも同時に更新する（「載っているデータのスコープ」を嘘にしない）。
+          setConfigScopeKey(startedWith);
+          setConfig(applied);
+        }
+        success(`${startedFor}: 保存しました（${new Date().toLocaleTimeString()}）`);
+      } else {
+        const data = (await res.json().catch(() => ({}))) as {
+          message?: string;
+          fields?: FieldError[];
+        };
+        // 🔴 サーバの `message` が空・空白だけなら**画面に何も出ない**（`role="alert"` の
+        // 空の段落は報告していないのと同じ）。`saveFailureMessage` は `about` の空白を
+        // 弾いているのに、こちらは素通しだった。
+        const detail = data.message?.trim() ?? '';
+        failure(detail === '' ? saveFailureMessage('rejected', startedFor) : `${startedFor}: ${detail}`);
+        if (isCurrentScope(startedWith)) setFieldErrors(data.fields ?? []);
+      }
+    } catch {
+      /*
+        応答を受け取れていない。`failure()` の既定（サーバが拒否した）を使うと嘘になる。
+
+        🔴 **ここにスコープの門を置かない。** 成功経路が `isCurrentScope` を見るのは、
+        A の応答を B の画面へ**書き込む**と状態が壊れるからである。失敗の報告は
+        データを書かない —— 押した操作が失敗した事実は、その後どの拠点を見ていても
+        運用者に伝えるべきもので、門を足すと「切り替えたら黙る」という元の欠陥へ戻る。
+      */
+      failure(saveFailureMessage(reached ? 'unreadable' : 'unreachable', startedFor));
+    } finally {
       setBusy(false);
-      return;
     }
-    if (res.ok) {
-      // 載せるスコープも同時に更新する（「載っているデータのスコープ」を嘘にしない）。
-      setConfigScopeKey(startedWith);
-      setConfig((await res.json()) as SignageConfig);
-      success(`保存しました（${new Date().toLocaleTimeString()}）`);
-    } else {
-      const data = (await res.json().catch(() => ({}))) as {
-        message?: string;
-        fields?: FieldError[];
-      };
-      failure(data.message ?? '保存に失敗しました。');
-      setFieldErrors(data.fields ?? []);
-    }
-    setBusy(false);
-  }, [config, tenantId, siteId, scopeKey, isCurrentScope, success, failure, clear, gate.canMutate]);
+  }, [config, tenantId, siteId, sites, scopeKey, isCurrentScope, success, failure, clear, gate.canMutate]);
 
   const errorFor = useCallback(
     (field: string) => fieldErrors.find((e) => e.field === field)?.message,
@@ -468,6 +506,8 @@ function SignageItemEditor({
     </div>
   );
 }
+
+
 
 const inputStyle: React.CSSProperties = {
   minHeight: 40,

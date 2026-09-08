@@ -62,6 +62,8 @@ const FIXED = [
   'ReceptionFlowsManager.tsx',
   'KiosksManager.tsx',
   'MotionsManager.tsx',
+  /** #973 増分 02 で `setEmergency`（緊急停止）が応答を見るようになった。 */
+  'SecurityManager.tsx',
 ] as const;
 
 /**
@@ -74,8 +76,6 @@ const KNOWN_REMAINING: Readonly<Record<string, string>> = {
   /** #873（PR #879）で画面ごと削除される。 */
   'CallRoutesManager.tsx': '削除予定',
   /** #870 増分 03/04（PR #881）が読み取り側を触っている。 */
-  'SecurityManager.tsx': '別 PR が同ファイルを変更中',
-  /** 同上。 */
   'integrations/IntegrationsManager.tsx': '別 PR が同ファイルを変更中',
   /** Issue のリストに無く、本増分の対象外。 */
   'AssetsManager.tsx': '未対応（Issue のリスト外）',

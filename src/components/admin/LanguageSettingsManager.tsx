@@ -7,7 +7,7 @@ import {
   type Locale,
 } from '@/lib/i18n';
 import type { LanguageSettings } from '@/lib/i18n/language-settings';
-import { Button, Field, Form, SaveFeedback, useSaveFeedback } from '@/components/admin/ui';
+import { Button, Field, Form, SaveFeedback, saveFailureMessage, useSaveFeedback } from '@/components/admin/ui';
 import { AdminReadGate } from './AdminReadGate';
 import { useUnsavedChanges } from './use-unsaved-changes';
 import { useUnsavedChangesGuard } from './use-unsaved-changes-guard';
@@ -63,12 +63,16 @@ export function LanguageSettingsManager() {
     if (!s || busy) return;
     setBusy(true);
     clear();
+    // 「応答が届いたか」を持つ。`catch` は fetch の reject と、届いた後の例外の
+    // **両方**を拾うので、綴りだけでは区別できない。
+    let reached = false;
     try {
       const res = await fetch('/api/admin/languages', {
         method: 'PUT',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify(s),
       });
+      reached = true;
       if (res.ok) {
         const next = (await res.json()) as LanguageSettings;
         setS(next);
@@ -77,6 +81,10 @@ export function LanguageSettingsManager() {
       } else {
         failure();
       }
+    } catch {
+      // 応答が**届いたのか**で言い分けを変える。届いた後の例外（本文が壊れている）まで
+      // 「接続できませんでした」に丸めると、保存できているのに運用者を通信の調査へ行かせる。
+      failure(saveFailureMessage(reached ? 'unreadable' : 'unreachable'));
     } finally {
       setBusy(false);
     }

@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { MAX_LOGO_DATA_URI_LENGTH, type BrandingSettings } from '@/domain/branding/types';
-import { Button, Field, Form, SaveFeedback, useSaveFeedback } from '@/components/admin/ui';
+import { Button, Field, Form, SaveFeedback, saveFailureMessage, useSaveFeedback } from '@/components/admin/ui';
 import { color, space } from '@/components/admin/ui/tokens';
 import { AdminReadGate } from './AdminReadGate';
 import { useUnsavedChanges } from './use-unsaved-changes';
@@ -66,12 +66,16 @@ export function BrandingManager() {
     setBusy(true);
     clear();
     setError(null);
+    // 「応答が届いたか」を持つ。`catch` は fetch の reject と、届いた後の例外の
+    // **両方**を拾うので、綴りだけでは区別できない。
+    let reached = false;
     try {
       const res = await fetch('/api/admin/branding', {
         method: 'PUT',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify(b),
       });
+      reached = true;
       if (res.ok) {
         const next = (await res.json()) as BrandingSettings;
         setB(next);
@@ -80,6 +84,10 @@ export function BrandingManager() {
       } else {
         failure();
       }
+    } catch {
+      // 応答が**届いたのか**で言い分けを変える。届いた後の例外（本文が壊れている）まで
+      // 「接続できませんでした」に丸めると、保存できているのに運用者を通信の調査へ行かせる。
+      failure(saveFailureMessage(reached ? 'unreadable' : 'unreachable'));
     } finally {
       setBusy(false);
     }

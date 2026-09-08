@@ -2,6 +2,7 @@
 
 import { useCallback, useState } from 'react';
 import { color as colorTokens, font } from './tokens';
+import { saveFailureMessage } from './save-outcome';
 
 /**
  * 管理画面 共有 保存フィードバック プリミティブ (issue #330 item6)。
@@ -34,7 +35,10 @@ export function feedbackMeta(status: FeedbackStatus): {
 
 /**
  * 保存操作の結果状態を管理する薄いフック。
- * 既定メッセージは「保存しました」「保存に失敗しました。」だが呼び出し側で上書きできる。
+ * 既定メッセージは「保存しました」と `saveFailureMessage('rejected')` だが、呼び出し側で
+ * 上書きできる。**届かなかった場合は既定を使わず** `saveFailureMessage('unreachable')` を
+ * 渡すこと —— 既定は「サーバが拒否した」ときの言い方なので、届いていない失敗に使うと嘘になる
+ * （`./save-outcome.ts`）。
  */
 export function useSaveFeedback(): {
   feedback: SaveFeedbackState;
@@ -47,7 +51,7 @@ export function useSaveFeedback(): {
   const success = useCallback((message = '保存しました') => {
     setFeedback({ status: 'success', message });
   }, []);
-  const failure = useCallback((message = '保存に失敗しました。') => {
+  const failure = useCallback((message = saveFailureMessage('rejected')) => {
     setFeedback({ status: 'error', message });
   }, []);
   const clear = useCallback(() => setFeedback(null), []);
