@@ -666,16 +666,11 @@ export function KioskFlow({
           が false なので**画面からボタンが 1 つも無くなる**。到達はしているので `server`
           （＝代替導線を主 CTA にする）が正しい。
         */
-        const parsed = asCallResult(await callRes.json().catch(() => null));
-        if (parsed === null) {
+        const result = asCallResult(await callRes.json().catch(() => null));
+        if (result === null) {
           if (!cancelled) dispatch({ type: 'CALL_FAILED', sessionId: session.id, reason: 'server' });
           return;
         }
-        const result = parsed as {
-          state: ReceptionState;
-          vonageSessionId?: string | null;
-          error?: string;
-        };
         if (cancelled) return;
         // サーバが理由を返したなら、それを来訪者向けの理由へ写す (#736)。
         // 🔴 **`unrouted` だけを名指しで拾わない。** かつてここは `unrouted` の `if` が 1 つ
@@ -703,7 +698,10 @@ export function KioskFlow({
         //   - ビデオ: セッションが確立済み。ビデオビューが応答/未応答を確定する
         //   - PSTN:  電話を鳴らした直後。セッションは無く、結果は provider webhook で届く
         // セッションが無いのにビデオビューを開くと、存在しないトークンを取りに行って失敗する。
-        else if (shouldOpenVideoView(result)) setVonageCallId(session.id);
+        // `state` は任意（営業時間外の 409 は持たない）。媒体判定は「`calling` か」だけを
+        // 見るので、欠落は空文字で渡して「ビデオではない」に倒す。
+        else if (shouldOpenVideoView({ state: result.state ?? '', vonageSessionId: result.vonageSessionId }))
+          setVonageCallId(session.id);
         else if (result.state === 'calling') {
           // PSTN 発信中は呼び出し中画面（段階的ケア #323）のまま、`/status` を取りに行く。
           setVonageCallId(null);

@@ -65,14 +65,27 @@ function isAbsentOrString(value: unknown): boolean {
   return value === undefined || value === null || typeof value === 'string';
 }
 
-function isPresentStay(value: unknown): value is PresentStaySummary {
-  if (!isRecord(value)) return false;
-  if (typeof value.stayId !== 'string') return false;
-  if (typeof value.checkedInAt !== 'string') return false;
+/**
+ * 在館者 1 件。**通れば正規化して返す**（型述語 `value is T` にしない）。
+ *
+ * 🔴 `isAbsentOrString` は `null` を通すのに `PresentStaySummary` は `targetLabel?: string`
+ * なので、型述語のままだと**型が嘘をつく**（独立レビュー 2 周目 MINOR-2）。いまの消費者は
+ * どちらも null 安全だが、将来 `=== undefined` で分岐する読み手が現れると `null.trim()` に
+ * なる。`asSelfIdSummary` が空文字へ寄せているのと**同じ扱いに揃える**。
+ */
+function asPresentStay(value: unknown): PresentStaySummary | null {
+  if (!isRecord(value)) return null;
+  if (typeof value.stayId !== 'string') return null;
+  if (typeof value.checkedInAt !== 'string') return null;
   // 一覧の各行に出る。非文字列だと表示が化ける（`targetLabel` は行の主見出し）。
-  if (!isAbsentOrString(value.targetLabel)) return false;
-  if (!isAbsentOrString(value.purpose)) return false;
-  return true;
+  if (!isAbsentOrString(value.targetLabel)) return null;
+  if (!isAbsentOrString(value.purpose)) return null;
+  return {
+    stayId: value.stayId,
+    checkedInAt: value.checkedInAt,
+    ...(typeof value.targetLabel === 'string' ? { targetLabel: value.targetLabel } : {}),
+    ...(typeof value.purpose === 'string' ? { purpose: value.purpose } : {}),
+  };
 }
 
 /** `GET /api/kiosk/checkout` の `{ stays }`。形が違えば null（**投げない**）。 */
@@ -81,8 +94,18 @@ export function asPresentStayList(value: unknown): PresentStaySummary[] | null {
   const stays = value.stays;
   // 🔴 **要素まで見る。** `stays: [1,2]` は `.length` を持つので上の検査だけでは素通りし、
   // 行の描画（`s.stayId` を key に使う）で落ちる。
-  if (!Array.isArray(stays) || !stays.every(isPresentStay)) return null;
-  return stays as PresentStaySummary[];
+  if (!Array.isArray(stays)) return null;
+  const parsed = stays.map(asPresentStay);
+  /*
+    🔴 **壊れた行だけ落として部分表示する、はしない**（独立レビュー 2 周目 MINOR-4 への回答）。
+    レビューは「一覧が丸ごと消えるより部分表示のほうが導線を残せる」と提案したが、採らない。
+    この一覧は**staff が来訪者を特定するための照合材料**であって、装飾ではない。3 件中 2 件
+    だけ出すのは「その来訪者は在館していない」という**誤った情報**になり、黙って人を取り
+    違えさせる。読めなかったことは黙るより出すほうが安全なので、all-or-nothing を選ぶ。
+    ―― 一覧が消えても QR / コードの退館導線は残る（`loadPresent` の catch と同じ扱い）。
+  */
+  if (parsed.some((s) => s === null)) return null;
+  return parsed as PresentStaySummary[];
 }
 
 /**

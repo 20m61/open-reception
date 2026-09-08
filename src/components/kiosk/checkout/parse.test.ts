@@ -89,8 +89,13 @@ describe('asPresentStayList (#1004)', () => {
    * serializer が変わった瞬間に**在館一覧が丸ごと消える** ―― QR もコードも失くした
    * 来訪者の最後の手段である。画面側は `?? ''` で受けているので通しても壊れない。
    */
-  it('任意フィールドの null は「無い」として通す', () => {
-    expect(asPresentStayList({ stays: [{ ...stay(), targetLabel: null, purpose: null }] })).not.toBeNull();
+  it('任意フィールドの null は「無い」として通し、キーごと落として返す', () => {
+    // 🔴 型述語ではなく**正規化**して返す（独立レビュー 2 周目 MINOR-2）。`null` を通すのに
+    // `targetLabel?: string` と宣言していると型が嘘をつき、`=== undefined` で分岐する
+    // 読み手が現れた瞬間に `null.trim()` になる。
+    expect(asPresentStayList({ stays: [{ ...stay(), targetLabel: null, purpose: null }] })).toEqual([
+      { stayId: 's1', checkedInAt: '2026-01-01T00:00:00.000Z' },
+    ]);
   });
 
   it('封筒がオブジェクトでなければ通さない', () => {

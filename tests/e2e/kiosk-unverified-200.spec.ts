@@ -119,6 +119,18 @@ test.describe('来訪者導線: 形の違う 200 で受付・退館を止めな�
     */
     await expect(error).toContainText('受付にお問い合わせください');
     await expect(error).not.toContainText('受付番号を入力してください');
+    /*
+      🔴 **出した文言が見えることまで縛る**（独立レビュー 2 周目 MAJOR-2）。
+      `toBeVisible()` は Playwright の可視判定で、**ビューポート外でも真**になる。
+      このアラートは `screen__body` の先頭にあり、コード送信ボタンは画面下方なので、
+      実測では `top = -470`（画面外）だった ―― 有人導線を、それを最も必要とする経路で
+      1 度も見せていなかった。**見えているか**を直接測る。
+    */
+    const inView = await error.evaluate((el) => {
+      const r = el.getBoundingClientRect();
+      return r.top >= 0 && r.bottom <= window.innerHeight;
+    });
+    expect(inView).toBe(true);
     // 確認画面へは進めない（進むと `summary` を読んで落ちる）。
     await expect(page.getByTestId('checkout-confirm')).toHaveCount(0);
   });

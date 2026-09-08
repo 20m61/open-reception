@@ -23,12 +23,16 @@ export type PresentStaySummary = {
   purpose?: string;
 };
 
-/** 退館の自己特定サマリ（確認ステップ表示用・非 PII）。 */
-export type CheckoutSelfIdSummary = {
-  checkedInAt: string;
-  targetLabel: string;
-  purpose: string;
-};
+/**
+ * 退館の自己特定サマリ（確認ステップ表示用・非 PII）。
+ *
+ * 🔴 **再宣言せず、サーバが返す型そのものを再輸出する**（独立レビュー 2 周目 MAJOR-1）。
+ * ここに構造的に同一な写しを置いていたので、`tsc` は**サーバ応答型とクライアント述語を
+ * 結ばなかった** ―― 片方だけ変えてもコンパイルが通り、増分 2 で述語を「形が違えば拒否」へ
+ * 厳しくした後は、サーバ側が 1 フィールドずらすだけで**自己特定退館が全滅**する
+ * （画面は `unexpected` を出すだけで、テストは緑のまま）。写しは必ずズレる。
+ */
+export type { CheckoutSelfIdSummary } from './self-id';
 
 /** 退館の自己特定手段。 */
 export type CheckoutMethod = 'qr' | 'code';

@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   DEFAULT_LOCALE,
   htmlLangFor,
@@ -86,6 +86,30 @@ export function CheckoutFlow() {
     const fromQuery = new URLSearchParams(window.location.search).get('locale');
     if (isSupportedLocale(fromQuery)) setLocale(fromQuery);
   }, []);
+
+  /*
+    🔴 **出した文言が見えなければ、出していないのと同じ**（独立レビュー 2 周目 MAJOR-2）。
+
+    このアラートは `screen__body` の**先頭**にあるが、コード経路の送信ボタンは画面下方に
+    ある。iPad portrait（810x1080）で退館コードを送ると、実測で
+    `boundingClientRect().top = -470`（＝**ビューポート外**）だった。来訪者から見た変化は
+    「処理中…」がラベルへ戻るだけで、増分 2 で足した**有人導線が、それを最も必要とする
+    経路で 1 度も見えない**（原則 3「システム状態を沈黙させない」/ 5「人につながる逃げ道」）。
+
+    `role="alert"` は読み上げるが**スクロールもフォーカスも動かさない**。失敗を出したら
+    そこへ運ぶ。`focus()` にしているのは、視覚だけでなくキーボード / VoiceOver の位置も
+    揃えるため（`tabIndex={-1}` は「プログラムからのみフォーカス可能」の意）。
+
+    ⚠️ これは**この増分が作った欠陥ではない**（`not_recognized` など既存の失敗も同じ位置に
+    出る。レビューの実測で確認済み）。それでも本 PR で直すのは、増分 2 が「読めない 200 でも
+    受付にお問い合わせくださいと出す」を**主張として掲げた**以上、見えないままでは
+    その主張が実態より強くなるからである。
+  */
+  const errorRef = useRef<HTMLParagraphElement | null>(null);
+  useEffect(() => {
+    if (errorReason === null) return;
+    errorRef.current?.focus({ preventScroll: false });
+  }, [errorReason]);
 
   const loadPresent = useCallback(async () => {
     try {
@@ -327,7 +351,14 @@ export function CheckoutFlow() {
         <p className="screen__lead">{tr('checkout.lead')}</p>
 
         {error ? (
-          <p data-testid="checkout-error" role="alert" className="notice" style={errorStyle}>
+          <p
+            ref={errorRef}
+            tabIndex={-1}
+            data-testid="checkout-error"
+            role="alert"
+            className="notice"
+            style={errorStyle}
+          >
             {error}
           </p>
         ) : null}

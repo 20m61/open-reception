@@ -72,10 +72,25 @@ export function asCreatedReception(value: unknown): { id: string } | null {
  * `state` を持たない ―― 必須にすると**閉店後の来訪者向けの正しい案内を弾く**
  * （`kiosk-out-of-hours-call.spec.ts` が固定している経路）。
  */
-export function asCallResult(value: unknown): Record<string, unknown> | null {
+export type CallResult = Record<string, unknown> & {
+  state?: string;
+  error?: string;
+  vonageSessionId?: string | null;
+};
+
+export function asCallResult(value: unknown): CallResult | null {
   if (!isRecord(value)) return null;
-  // `callFailureReasonFrom(error: string | undefined)` と `shouldOpenVideoView` が読む。
+  // 呼び出し側が読む 3 つだけを見る。**戻り値の型で保証する**ので、呼び出し側に `as` を
+  // 残さない（独立レビュー 2 周目 MINOR-3。`as` を消すのが目的の増分で `as` を残さない）。
   if (value.error !== undefined && typeof value.error !== 'string') return null;
   if (value.state !== undefined && typeof value.state !== 'string') return null;
-  return value;
+  // PSTN 発信では付かない（`shouldOpenVideoView` が `trim()` を呼ぶ）。
+  if (
+    value.vonageSessionId !== undefined &&
+    value.vonageSessionId !== null &&
+    typeof value.vonageSessionId !== 'string'
+  ) {
+    return null;
+  }
+  return value as CallResult;
 }

@@ -1183,7 +1183,7 @@ const ko: LocaleDictionary = {
   'checkout.error.expired': '퇴실 코드의 유효 기간이 지났습니다. 접수처에 문의해 주세요.',
   'checkout.error.throttled': '퇴실 코드 시도가 많아 잠시 접수를 제한하고 있습니다. 잠시 후 다시 시도하거나 퇴실 QR을 이용하거나 접수처에 문의해 주세요.',
   'checkout.error.notRecognized': '퇴실 코드 또는 방문 대상을 확인할 수 없습니다. 다시 확인해 주세요.',
-  'checkout.error.unexpected': '퇴실 절차를 완료하지 못했습니다. 다시 시도하시거나 안내데스크에 문의해 주세요.',
+  'checkout.error.unexpected': '퇴실 절차를 완료하지 못했습니다. 다시 시도하시거나 접수처에 문의해 주세요.',
   'checkout.credential.title': '퇴실 안내',
   'checkout.credential.instruction': '나가실 때 이 QR 코드 또는 퇴실 코드를 접수 단말기에 제시해 주세요.',
   'checkout.credential.codeLabel': '퇴실 코드',

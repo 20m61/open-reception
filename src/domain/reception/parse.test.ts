@@ -97,5 +97,15 @@ describe('asCallResult (#1004)', () => {
     // `callFailureReasonFrom(error: string | undefined)` と `shouldOpenVideoView` が読む。
     expect(asCallResult({ error: 42 })).toBeNull();
     expect(asCallResult({ state: 42 })).toBeNull();
+    // `shouldOpenVideoView` が `trim()` を呼ぶ。
+    expect(asCallResult({ state: 'calling', vonageSessionId: 42 })).toBeNull();
+  });
+
+  /**
+   * PSTN 発信ではセッションが付かない。`null` も省略も正当（`call-medium.ts` の型どおり）。
+   */
+  it('vonageSessionId は省略・null が正当', () => {
+    expect(asCallResult({ state: 'calling' })).not.toBeNull();
+    expect(asCallResult({ state: 'calling', vonageSessionId: null })).not.toBeNull();
   });
 });
