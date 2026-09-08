@@ -201,6 +201,8 @@ fixture で直接踏む unit を足した ―― 「近似の緊さは fixture �
   GitHub の Settings → General → 「Automatically delete head branches」を有効化する
   （`gh api -X PATCH repos/20m61/open-reception -F delete_branch_on_merge=true`）。
   有効化しても**既存の 3 本は消えない**ので、1 度だけ手で削除する
+  → **✅ 2026-09-08 に実行済み**（この 3 本を含む 8 本を一括削除。詳細は
+  「人手が必要な残務」節）
 
 ## 2026-09-06〜07 の周回（pr-gate-guard の誤発火・#960）
 
@@ -1933,13 +1935,26 @@ VRT の `mask` は要素の**矩形**を覆う。よって (1) 要素が高く�
 **`npm run evaluate:gate-runs` では拾えないもの**を書く（マージ済み PR があるブランチは
 `orphan_branch` に該当しないので、記録しない限り誰も気づかない）。
 
+### ✅ ブランチ削除の残務は 2026-09-08 に解消した（表は履歴として残す）
+
+ユーザーが恒久対処
+（`gh api -X PATCH repos/20m61/open-reception --field delete_branch_on_merge=true`）を
+適用し、溜まっていた 8 本も一括削除した。`git ls-remote --heads origin` で
+**`main` だけ**になったことを確認済み。
+
+🔴 **未確認なのは設定値そのもの**である。クラウドセッションから叩ける GitHub API
+（search）は `delete_branch_on_merge` を返さないので、「有効になっている」ことは
+**確かめていない**。実地の確認は**次のマージでブランチが自動で消えるか**である。
+消えていなければ設定が入っていないので、その時点で表へ 1 行足すこと
+（下の表と同じ理由 ―― マージ済み PR があるブランチは `orphan_branch` に該当しない）。
+
 | 日付 | 残務 | 理由 |
 | --- | --- | --- |
-| 2026-09-03 | `git push origin --delete feat/datatable-read-state`（PR #965 マージ済み） | クラウドから削除不能。`git push --delete` は `send-pack: unexpected disconnect` → `Everything up-to-date` と出て**返り値だけでは成功に見える**（4 回リトライしても残存）。`gh api -X DELETE .../git/refs/heads/...` は proxy が `Write access to this GitHub API path is not permitted`（403） |
-| 2026-09-04 | `git push origin --delete fix/platform-silent-fetch-failures`（PR #972 / #968 マージ済み・squash `db43964`） | 同上。`RPC failed; HTTP 403` → `send-pack: unexpected disconnect` → `Everything up-to-date`、**`rc=0`**。`git ls-remote --heads origin <ref>` で残存を確認済み |
-| 2026-09-04 | `git push origin --delete fix/admin-list-read-states`（PR #974 / #966 マージ済み・squash `d98f122`） | 同上（`rc=0` のまま `git ls-remote` で残存を確認）|
-| 2026-09-08 | `git push origin --delete fix/admin-save-unreachable`（PR #1003 マージ済み・squash `5b874fa`） | 同上。**恒久対処は GitHub の自動削除**: `gh api -X PATCH repos/20m61/open-reception --field delete_branch_on_merge=true`（これを入れれば以後この行は増えない）|
-| 2026-09-08 | `git push origin --delete fix/admin-unverified-200`（PR #1011 マージ済み・squash `fa341a4`） | 同上。`rc=0` のまま `git ls-remote --heads origin` で残存を確認済み。**恒久対処は上と同じ 1 コマンド**（未適用のあいだ、この行は周回ごとに増え続ける）|
+| 2026-09-03 | ✅ 解消（2026-09-08 一括削除）`git push origin --delete feat/datatable-read-state`（PR #965 マージ済み） | クラウドから削除不能。`git push --delete` は `send-pack: unexpected disconnect` → `Everything up-to-date` と出て**返り値だけでは成功に見える**（4 回リトライしても残存）。`gh api -X DELETE .../git/refs/heads/...` は proxy が `Write access to this GitHub API path is not permitted`（403） |
+| 2026-09-04 | ✅ 解消（2026-09-08 一括削除）`git push origin --delete fix/platform-silent-fetch-failures`（PR #972 / #968 マージ済み・squash `db43964`） | 同上。`RPC failed; HTTP 403` → `send-pack: unexpected disconnect` → `Everything up-to-date`、**`rc=0`**。`git ls-remote --heads origin <ref>` で残存を確認済み |
+| 2026-09-04 | ✅ 解消（2026-09-08 一括削除）`git push origin --delete fix/admin-list-read-states`（PR #974 / #966 マージ済み・squash `d98f122`） | 同上（`rc=0` のまま `git ls-remote` で残存を確認）|
+| 2026-09-08 | ✅ 解消（2026-09-08 一括削除）`git push origin --delete fix/admin-save-unreachable`（PR #1003 マージ済み・squash `5b874fa`） | 同上。**恒久対処は GitHub の自動削除**: `gh api -X PATCH repos/20m61/open-reception --field delete_branch_on_merge=true`（これを入れれば以後この行は増えない）|
+| 2026-09-08 | ✅ 解消（2026-09-08 一括削除）`git push origin --delete fix/admin-unverified-200`（PR #1011 マージ済み・squash `fa341a4`） | 同上。`rc=0` のまま `git ls-remote --heads origin` で残存を確認済み。**恒久対処は上と同じ 1 コマンド**（未適用のあいだ、この行は周回ごとに増え続ける）|
 
 🔴 **ブランチ削除は「消えたこと」を `git ls-remote --heads origin <ref>` で確かめる。**
 `git push origin --delete` の出力に `Everything up-to-date` が出ても、それは削除が成功した
