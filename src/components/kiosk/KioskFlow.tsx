@@ -1,6 +1,6 @@
 'use client';
 
-import { asCreatedReception } from '@/domain/reception/parse';
+import { asCallResult, asCreatedReception } from '@/domain/reception/parse';
 import { callFailureReasonFrom } from '@/domain/reception/call-failure';
 import {
   useCallback,
@@ -658,7 +658,20 @@ export function KioskFlow({
         // 状態は動かさない（calling のまま）。
         if (!cancelled) dispatch({ type: 'SESSION_CREATED', sessionId: session.id });
         const callRes = await fetch(`/api/kiosk/receptions/${session.id}/call`, { method: 'POST' });
-        const result = (await callRes.json()) as {
+        /*
+          🔴 **ここも形を確かめる**（独立レビュー 1 周目 MAJOR-3）。当初「下流が unknown 安全
+          だから実害なし」と判定したが、**`res.json()` 自身が throw する経路**を見落として
+          いた。`200 text/html` や `200 null` で throw すると外側の catch が
+          `CALL_FAILED reason: 'network'` を出し、`shouldOfferAlternativeContact('network')`
+          が false なので**画面からボタンが 1 つも無くなる**。到達はしているので `server`
+          （＝代替導線を主 CTA にする）が正しい。
+        */
+        const parsed = asCallResult(await callRes.json().catch(() => null));
+        if (parsed === null) {
+          if (!cancelled) dispatch({ type: 'CALL_FAILED', sessionId: session.id, reason: 'server' });
+          return;
+        }
+        const result = parsed as {
           state: ReceptionState;
           vonageSessionId?: string | null;
           error?: string;

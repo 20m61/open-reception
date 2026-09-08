@@ -229,6 +229,7 @@ export type MessageKey =
   | 'checkout.error.expired'
   | 'checkout.error.throttled'
   | 'checkout.error.notRecognized'
+  | 'checkout.error.unexpected'
   // 受付完了画面の退館クレデンシャル提示 (#342)。退館 QR / 短コード / 有効期限（{time} 補間）。
   | 'checkout.credential.title'
   | 'checkout.credential.instruction'
@@ -555,6 +556,9 @@ const ja: DefaultDictionary = {
   'checkout.error.expired': '退館コードの有効期限が切れています。受付にお問い合わせください。',
   'checkout.error.throttled': '退館コードの試行が続いたため、しばらく受け付けを制限しています。少し時間をおくか、退館 QR をご利用いただくか、受付にお問い合わせください。',
   'checkout.error.notRecognized': '退館コードまたは呼び出し先が確認できませんでした。もう一度ご確認ください。',
+  // 応答は届いたが、この画面が読める形ではなかった (#1004 増分 2)。**来訪者の入力のせいにしない**
+  // ―― 再試行では直らないことがあるので、`expired` / `throttled` と同じく有人導線を添える。
+  'checkout.error.unexpected': '退館の手続きを完了できませんでした。もう一度お試しいただくか、受付にお問い合わせください。',
   'checkout.credential.title': '退館用のご案内',
   'checkout.credential.instruction': 'お帰りの際は、この QR コードまたは退館コードを受付端末でご提示ください。',
   'checkout.credential.codeLabel': '退館コード',
@@ -867,6 +871,7 @@ const en: LocaleDictionary = {
   'checkout.error.expired': 'This checkout code has expired. Please ask reception for help.',
   'checkout.error.throttled': 'Too many checkout code attempts. Please wait a moment, use your checkout QR, or ask reception for help.',
   'checkout.error.notRecognized': 'We could not recognize that checkout code or visit target. Please check and try again.',
+  'checkout.error.unexpected': 'We could not complete your checkout. Please try again, or ask reception for help.',
   'checkout.credential.title': 'For your checkout',
   'checkout.credential.instruction': 'When you leave, show this QR code or checkout code at the reception device.',
   'checkout.credential.codeLabel': 'Checkout code',
@@ -1178,6 +1183,7 @@ const ko: LocaleDictionary = {
   'checkout.error.expired': '퇴실 코드의 유효 기간이 지났습니다. 접수처에 문의해 주세요.',
   'checkout.error.throttled': '퇴실 코드 시도가 많아 잠시 접수를 제한하고 있습니다. 잠시 후 다시 시도하거나 퇴실 QR을 이용하거나 접수처에 문의해 주세요.',
   'checkout.error.notRecognized': '퇴실 코드 또는 방문 대상을 확인할 수 없습니다. 다시 확인해 주세요.',
+  'checkout.error.unexpected': '퇴실 절차를 완료하지 못했습니다. 다시 시도하시거나 안내데스크에 문의해 주세요.',
   'checkout.credential.title': '퇴실 안내',
   'checkout.credential.instruction': '나가실 때 이 QR 코드 또는 퇴실 코드를 접수 단말기에 제시해 주세요.',
   'checkout.credential.codeLabel': '퇴실 코드',
@@ -1486,6 +1492,7 @@ const zh: LocaleDictionary = {
   'checkout.error.expired': '退馆码已过期，请联系前台。',
   'checkout.error.throttled': '退馆码尝试次数过多，暂时限制受理。请稍后再试，或使用退馆二维码，或联系前台。',
   'checkout.error.notRecognized': '无法识别该退馆码或拜访对象，请确认后重试。',
+  'checkout.error.unexpected': '未能完成退馆手续。请重试，或向前台咨询。',
   'checkout.credential.title': '退馆指引',
   'checkout.credential.instruction': '离开时，请在接待终端出示此二维码或退馆码。',
   'checkout.credential.codeLabel': '退馆码',

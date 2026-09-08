@@ -133,7 +133,14 @@ export function CheckoutFlow() {
           */
           const data = asCheckoutResolveResult(await res.json().catch(() => null));
           if (data === null) {
-            setErrorReason('invalid');
+            /*
+              🔴 **`invalid` へ寄せない**（独立レビュー 1 周目 MAJOR-2）。それは
+              「受付番号を入力してください」で、(1) 来訪者の入力のせいにし (2) いまの画面に
+              無い欄を指し (3) 再試行では直らないのに有人導線が無い。
+              加えて `invalid` は**回帰**でもあった ―― 変更前は本文が途中で切れた 200 で
+              `res.json()` が reject し、外側の catch が `network` を出していた。
+            */
+            setErrorReason('unexpected');
             return;
           }
           setPending({ kind: 'credential', method: data.method ?? method, input: body, summary: data.summary });

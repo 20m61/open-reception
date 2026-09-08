@@ -44,9 +44,20 @@ test.describe('来訪者導線: 形の違う 200 で受付・退館を止めな�
    * が TypeError を投げる。`/kiosk/checkout` に error boundary は無いので root まで上がる。
    */
   test('退館: 一覧の形が違っても画面が落ちず、QR/コードで退館できる', async ({ page }) => {
+    /*
+      🔴 **踏んだことを主張する**（独立レビュー 1 周目 MINOR-1）。これが無いと、
+      `loadPresent` の冒頭に早期 return を入れて **GET を 1 度も飛ばさない**変異でも
+      緑のままだった（レビューの実測）。K2 で学んだのと同じ形が、この 1 本にも残っていた。
+    */
+    const listCalls: string[] = [];
+    page.on('request', (req) => {
+      if (/\/api\/kiosk\/checkout(\?|$)/.test(req.url())) listCalls.push(req.method());
+    });
+
     await respondWrongShape(page, '**/api/kiosk/checkout');
     await page.goto('/kiosk/checkout');
 
+    await expect.poll(() => listCalls.length).toBeGreaterThan(0);
     await expectNotCrashed(page);
 
     /*
@@ -140,11 +151,59 @@ test.describe('来訪者導線: 形の違う 200 で受付・退館を止めな�
       🔴 **これが本題。** `undefined` / 空文字が URL に入っていないこと。
       `id` を検査しない実装ではここに `/api/kiosk/receptions/undefined/call` が現れる。
     */
+    // **踏んだことの表明**（独立レビュー 1 周目 MINOR-2）。`called` が空だと下の 2 本は
+    // 空虚に真になる。作成 POST が実際に飛んだことを先に主張する。
+    expect(called.some((u) => u.startsWith('POST') && u.endsWith('/api/kiosk/receptions'))).toBe(true);
     expect(called.filter((u) => /\/receptions\/(undefined|null)\//.test(u))).toEqual([]);
     expect(called.filter((u) => /\/receptions\/\/+/.test(u))).toEqual([]);
 
     // 行き止まりにしない（逃げ道バーは常設）。
     await page.getByTestId('escape-reset').click();
     await expect(page.getByTestId('start-reception')).toBeVisible();
+  });
+
+  /**
+   * 🔴 **呼び出し応答が読めないとき、代替導線まで消してはいけない**
+   * （#1004、独立レビュー 1 周目 MAJOR-3）。
+   *
+   * 当初この経路は「下流が `unknown` 安全だから実害なし」と判定して**直さなかった**。
+   * 誤りだった ―― 下流の前に **`res.json()` 自身が throw する**。`200 text/html` が返ると
+   * 外側の catch が `CALL_FAILED reason: 'network'` を出し、
+   * `shouldOfferAlternativeContact('network') === false` なので**画面からボタンが 1 つも
+   * 無くなる**（レビューの実測: `PANEL_BUTTONS>>> []`）。
+   *
+   * 受付作成側（`server`）より**重い**経路が、判定漏れで放置されていた。到達はしているので
+   * `server` へ倒し、「代表窓口へ」を残す。
+   */
+  test('受付: 呼び出し応答が読めなくても、代替導線を消さない', async ({ page }) => {
+    const callCalls: string[] = [];
+    page.on('request', (req) => {
+      if (/\/api\/kiosk\/receptions\/[^/]+\/call/.test(req.url())) callCalls.push(req.method());
+    });
+    // 200 だが JSON ではない（企業プロキシが差し込むログイン画面などの形）。
+    await page.route('**/api/kiosk/receptions/*/call', (route) =>
+      route.fulfill({ status: 200, contentType: 'text/html', body: '<html>proxy</html>' }),
+    );
+
+    await page.goto('/kiosk');
+    await page.getByTestId('start-reception').click();
+    await page.getByTestId('purpose-meeting').click();
+    await revealStaff(page, 'staff-staff-sato');
+    await page.getByTestId('staff-staff-sato').click();
+    await page.getByTestId('visitor-name').fill('来客 一郎');
+    await page.getByTestId('to-confirm').click();
+    await page.getByTestId('confirm-call').click();
+
+    // **踏んだことの表明。** これが無いと以降は空虚に真になりうる。
+    await expect.poll(() => callCalls.length).toBeGreaterThan(0);
+
+    await expect(page.getByTestId('result-failed')).toBeVisible();
+    await expectNotCrashed(page);
+
+    /*
+      🔴 **これが本題。** `network` へ倒れると `use-fallback` が消える。
+      到達はしているので代表窓口の約束は果たせる ―― 行き止まりにしない。
+    */
+    await expect(page.getByTestId('use-fallback')).toBeVisible();
   });
 });

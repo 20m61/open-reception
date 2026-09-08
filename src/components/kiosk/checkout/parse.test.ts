@@ -83,6 +83,16 @@ describe('asPresentStayList (#1004)', () => {
     expect(asPresentStayList({ stays: [{ ...stay(), purpose: 42 }] })).toBeNull();
   });
 
+  /**
+   * 🔴 **JSON の `null` を「無い」と同じに扱う**（独立レビュー 1 周目 MINOR-3）。
+   * 今のサーバは `NextResponse.json` が `undefined` キーを落とすので `null` は来ないが、
+   * serializer が変わった瞬間に**在館一覧が丸ごと消える** ―― QR もコードも失くした
+   * 来訪者の最後の手段である。画面側は `?? ''` で受けているので通しても壊れない。
+   */
+  it('任意フィールドの null は「無い」として通す', () => {
+    expect(asPresentStayList({ stays: [{ ...stay(), targetLabel: null, purpose: null }] })).not.toBeNull();
+  });
+
   it('封筒がオブジェクトでなければ通さない', () => {
     for (const notObject of [null, undefined, 'x', 3, true, []]) {
       expect(asPresentStayList(notObject)).toBeNull();
@@ -110,8 +120,21 @@ describe('asCheckoutResolveResult (#1004)', () => {
     });
   });
 
-  it('method が語彙外なら通さない', () => {
-    expect(asCheckoutResolveResult({ method: 'nfc', summary: summary() })).toBeNull();
+  /**
+   * 🔴 **未知の `method` で応答ごと捨てない**（独立レビュー 1 周目 MAJOR-1）。
+   * `pending.method` は**書かれるだけで一度も読まれない**。当初は語彙外を null にして
+   * いたが、それは**消費者ゼロのフィールドで退館導線を止める**設計で、サーバが手段を
+   * 1 つ増やした瞬間に QR もコードも全部弾かれる。未知値は無視して先へ通す。
+   */
+  it('method が語彙外でも応答は通す（未知値は無視する）', () => {
+    expect(asCheckoutResolveResult({ method: 'nfc', summary: summary() })).toEqual({
+      method: undefined,
+      summary: summary(),
+    });
+    expect(asCheckoutResolveResult({ method: 42, summary: summary() })).toEqual({
+      method: undefined,
+      summary: summary(),
+    });
   });
 
   /**
@@ -123,20 +146,30 @@ describe('asCheckoutResolveResult (#1004)', () => {
     expect(asCheckoutResolveResult({ ok: true })).toBeNull();
   });
 
-  const SUMMARY_REQUIRED: Record<RequiredKeys<CheckoutSelfIdSummary>, true> = {
-    checkedInAt: true,
-    targetLabel: true,
-    purpose: true,
-  };
+  it('summary の checkedInAt が無ければ通さない（確認画面の判別材料）', () => {
+    expect(asCheckoutResolveResult({ method: 'qr', summary: { targetLabel: 'a', purpose: 'b' } })).toBeNull();
+    expect(
+      asCheckoutResolveResult({ method: 'qr', summary: { ...summary(), checkedInAt: 42 } }),
+    ).toBeNull();
+  });
 
   /**
-   * 🔴 **`targetLabel` / `purpose` は必須である。** 画面が `.trim()` を呼ぶので、
-   * 欠けると確認画面で throw する（`summary` ごと欠けるのと同じ害）。
+   * 🔴 **表示専用のフィールドで退館を止めない**（独立レビュー 1 周目 MINOR-4）。
+   * `targetLabel` / `purpose` は確認画面に出るだけで、画面側に既定値（「（不明）」）がある。
+   * 本人性は token またはコード＋ラベル一致で既に立っているので、ラベルが欠けたことを
+   * 理由に導線を止める理由が無い（`docs/experience/README.md` 原則 5）。空文字へ寄せる。
    */
-  it.each(Object.keys(SUMMARY_REQUIRED))('summary の必須フィールド %s が欠けていれば通さない', (key) => {
-    const broken: Record<string, unknown> = { ...summary() };
-    delete broken[key];
-    expect(asCheckoutResolveResult({ method: 'qr', summary: broken })).toBeNull();
+  it('summary の表示専用フィールドは欠けても通し、空文字へ寄せる', () => {
+    expect(asCheckoutResolveResult({ summary: { checkedInAt: 'x' } })).toEqual({
+      method: undefined,
+      summary: { checkedInAt: 'x', targetLabel: '', purpose: '' },
+    });
+    expect(asCheckoutResolveResult({ summary: { checkedInAt: 'x', targetLabel: null, purpose: null } })).toEqual({
+      method: undefined,
+      summary: { checkedInAt: 'x', targetLabel: '', purpose: '' },
+    });
+    // 型が違うもの（数値など）は通さない ―― `.trim()` が throw する。
+    expect(asCheckoutResolveResult({ summary: { checkedInAt: 'x', targetLabel: 42 } })).toBeNull();
   });
 
   it('封筒がオブジェクトでなければ通さない', () => {

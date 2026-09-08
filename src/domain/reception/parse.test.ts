@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { asCreatedReception } from './parse';
+import { asCallResult, asCreatedReception } from './parse';
 
 /**
  * 受付作成 `POST /api/kiosk/receptions` の応答が**確かめられた形か** (#1004 増分 2)。
@@ -62,5 +62,40 @@ describe('asCreatedReception (#1004)', () => {
     for (const notObject of [null, undefined, 'r-1', 3, true, []]) {
       expect(asCreatedReception(notObject)).toBeNull();
     }
+  });
+});
+
+describe('asCallResult (#1004)', () => {
+  it('通常の呼び出し応答はそのまま通る', () => {
+    const res = { state: 'calling', vonageSessionId: 'v-1', stages: [] };
+    expect(asCallResult(res)).toEqual(res);
+  });
+
+  /**
+   * 🔴 **`state` を必須にしない。** 営業時間外の 409 は `{ error, reason, reopenAt }` を返し、
+   * `state` を持たない。必須にすると**閉店後の来訪者向けの正しい案内を弾く**
+   * （`kiosk-out-of-hours-call.spec.ts` が固定している経路）。
+   */
+  it('state を持たない失敗応答（営業時間外の 409 など）も通す', () => {
+    const outOfHours = { error: 'out_of_hours', reason: 'out_of_hours', reopenAt: '2026-08-21T00:00:00.000Z' };
+    expect(asCallResult(outOfHours)).toEqual(outOfHours);
+  });
+
+  /**
+   * 🔴 **これが本題。** `200 text/html` や `200 null` で `res.json()` が throw すると
+   * 外側の catch が `CALL_FAILED reason: 'network'` を出し、
+   * `shouldOfferAlternativeContact('network') === false` なので**画面からボタンが 1 つも
+   * 無くなる**。到達はしているので `server`（＝代替導線を主 CTA にする）へ倒す。
+   */
+  it('オブジェクトでなければ通さない（読めなかった 200）', () => {
+    for (const notObject of [null, undefined, 'x', 3, true, []]) {
+      expect(asCallResult(notObject)).toBeNull();
+    }
+  });
+
+  it('読むフィールドの型が違えば通さない', () => {
+    // `callFailureReasonFrom(error: string | undefined)` と `shouldOpenVideoView` が読む。
+    expect(asCallResult({ error: 42 })).toBeNull();
+    expect(asCallResult({ state: 42 })).toBeNull();
   });
 });

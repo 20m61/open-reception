@@ -21,9 +21,18 @@
  * **見ない**のは値の妥当性（時刻表記・ラベルの内容）。表示するだけなので、ここで縛ると
  * サーバの表記変更で退館できなくなる。
  *
- * 🔴 **`method` は必須にしない。** 画面は `data.method ?? method`（要求した手段）で
- * フォールバックしており、サーバが返さなくても正しく動く。必須にすると、今まで動いていた
- * 応答を弾いて**来訪者が退館できなくなる** ―― 述語の偽陽性が導線を止める側の典型である。
+ * 🔴 **`method` は必須にせず、未知値でも応答を捨てない。** 画面は `data.method ?? method`
+ * （要求した手段）でフォールバックするので、サーバが返さなくても正しく動く。しかも
+ * `pending.method` は**書かれるだけで一度も読まれない**（独立レビュー 1 周目 MAJOR-1 の実測）。
+ * 当初は「省略は許すが未知値なら応答ごと null」にしていたが、それは**消費者ゼロの
+ * フィールドで退館導線を止める**設計だった ―― サーバが手段を 1 つ増やした瞬間に
+ * QR もコードも全部弾かれて、来訪者が退館できなくなる。未知値は無視する。
+ *
+ * 🔴 **表示専用のフィールドで導線を止めない。** `summary.targetLabel` / `purpose` は
+ * 確認画面に出るだけで、画面側に既定値（「（不明）」）がある。当初は必須にしていたが、
+ * 本人性は token またはコード＋ラベル一致で既に立っているので、**ラベルが欠けたことを
+ * 理由に退館を止める理由が無い**（`docs/experience/README.md` 原則 5）。空文字へ寄せて
+ * 確認画面は出す ―― `.trim()` が throw しないことだけを保証すればよい。
  */
 import type { CheckoutMethod, CheckoutSelfIdSummary, PresentStaySummary } from './logic';
 
@@ -44,8 +53,16 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
-function isOptionalString(value: unknown): boolean {
-  return value === undefined || typeof value === 'string';
+/**
+ * 省略（`undefined`）と JSON の `null` を同じ「無い」として扱う。
+ *
+ * 🔴 **`null` を弾かない**（独立レビュー 1 周目 MINOR-3）。今のサーバは `NextResponse.json` が
+ * `undefined` キーを落とすので `null` は来ないが、serializer が変わった瞬間に**在館一覧が
+ * 丸ごと消える**（QR もコードも失くした来訪者の最後の手段である）。画面側は `?? ''` で
+ * 受けているので、通しても壊れない。
+ */
+function isAbsentOrString(value: unknown): boolean {
+  return value === undefined || value === null || typeof value === 'string';
 }
 
 function isPresentStay(value: unknown): value is PresentStaySummary {
@@ -53,8 +70,8 @@ function isPresentStay(value: unknown): value is PresentStaySummary {
   if (typeof value.stayId !== 'string') return false;
   if (typeof value.checkedInAt !== 'string') return false;
   // 一覧の各行に出る。非文字列だと表示が化ける（`targetLabel` は行の主見出し）。
-  if (!isOptionalString(value.targetLabel)) return false;
-  if (!isOptionalString(value.purpose)) return false;
+  if (!isAbsentOrString(value.targetLabel)) return false;
+  if (!isAbsentOrString(value.purpose)) return false;
   return true;
 }
 
@@ -68,13 +85,24 @@ export function asPresentStayList(value: unknown): PresentStaySummary[] | null {
   return stays as PresentStaySummary[];
 }
 
-function isSelfIdSummary(value: unknown): value is CheckoutSelfIdSummary {
-  if (!isRecord(value)) return false;
-  // 3 つとも画面が読む。`targetLabel` / `purpose` は `.trim()` を呼ぶので欠けると throw する。
-  if (typeof value.checkedInAt !== 'string') return false;
-  if (typeof value.targetLabel !== 'string') return false;
-  if (typeof value.purpose !== 'string') return false;
-  return true;
+/**
+ * 確認画面のサマリ。**`checkedInAt` だけが必須**で、他 2 つは空文字へ寄せる。
+ *
+ * `targetLabel` / `purpose` は画面が `.trim() || tr('checkout.targetUnknown')` で受けるので、
+ * 空文字なら「（不明）」と出るだけで**退館は続けられる**。保証すべきは「`.trim()` が
+ * throw しないこと」であって、「サーバがラベルを返したこと」ではない。
+ */
+function asSelfIdSummary(value: unknown): CheckoutSelfIdSummary | null {
+  if (!isRecord(value)) return null;
+  // 確認画面の主たる判別材料。これが無いと来訪者は「自分の受付か」を確かめられない。
+  if (typeof value.checkedInAt !== 'string') return null;
+  if (!isAbsentOrString(value.targetLabel)) return null;
+  if (!isAbsentOrString(value.purpose)) return null;
+  return {
+    checkedInAt: value.checkedInAt,
+    targetLabel: typeof value.targetLabel === 'string' ? value.targetLabel : '',
+    purpose: typeof value.purpose === 'string' ? value.purpose : '',
+  };
 }
 
 /** `POST /api/kiosk/checkout/resolve` の応答。形が違えば null（**投げない**）。 */
@@ -82,9 +110,11 @@ export function asCheckoutResolveResult(
   value: unknown,
 ): { method: CheckoutMethod | undefined; summary: CheckoutSelfIdSummary } | null {
   if (!isRecord(value)) return null;
-  const method = value.method;
-  // 省略は正当（画面が要求した手段へフォールバックする）。あるなら語彙内であること。
-  if (method !== undefined && !METHODS.includes(method as CheckoutMethod)) return null;
-  if (!isSelfIdSummary(value.summary)) return null;
-  return { method: method as CheckoutMethod | undefined, summary: value.summary };
+  // 未知値は「無かったこと」にする（応答ごと捨てない）。画面が要求手段へフォールバックする。
+  const method = METHODS.includes(value.method as CheckoutMethod)
+    ? (value.method as CheckoutMethod)
+    : undefined;
+  const summary = asSelfIdSummary(value.summary);
+  if (summary === null) return null;
+  return { method, summary };
 }

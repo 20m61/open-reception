@@ -19,7 +19,8 @@
  * **呼ぶことも・完了することも・取り消すこともできない**。この孤児は述語では防げない
  * ―― ID を知らないものは取り消しようがないので、サーバ側の TTL/掃除の領分である。
  * ここが担うのは「これ以上悪化させない」（嘘の理由を出さない、`/undefined/call` を
- * 叩かない）ことだけである。
+ * 叩かない）ことだけである。孤児は `DEFAULT_RECEPTION_TTL_SEC`（24h。
+ * `src/lib/data-stores/reception-repository.ts`）で消える ―― 無限には残らない。
  */
 
 /*
@@ -49,4 +50,32 @@ export function asCreatedReception(value: unknown): { id: string } | null {
   */
   if (id.trim().length === 0) return null;
   return { id };
+}
+
+/**
+ * 呼び出し `POST /api/kiosk/receptions/{id}/call` の応答 (#1004 増分 2、独立レビュー 1 周目 MAJOR-3)。
+ *
+ * 🔴 **当初これは「実害なし・対応不要」と判定していた。誤りだった。**
+ * 下流（`parseCallStages` は `unknown` 安全、`shouldOpenVideoView` は型検査あり、`state` 不一致は
+ * else で `CALL_FAILED`）だけを見て、**`res.json()` 自身が throw する経路を見落としていた**。
+ * `200 text/html` や `200 null` が返ると `.json()` または `result.error` の読みが throw し、
+ * 外側の catch が `CALL_FAILED reason: 'network'` を出す。そして
+ * `shouldOfferAlternativeContact('network') === false` なので、
+ * **来訪者の画面からボタンが 1 つも無くなる**（レビューの実測）。
+ * 受付作成側で直したのと同じ「理由が嘘になる」害が、**より重い形**で残っていた。
+ *
+ * ## 何を見て、何を見ないか
+ *
+ * **見る**のは「オブジェクトであること」と、読む 2 フィールドの型だけ。
+ *
+ * 🔴 **`state` を必須にしない。** 営業時間外の 409 は `{ error, reason, reopenAt }` を返し、
+ * `state` を持たない ―― 必須にすると**閉店後の来訪者向けの正しい案内を弾く**
+ * （`kiosk-out-of-hours-call.spec.ts` が固定している経路）。
+ */
+export function asCallResult(value: unknown): Record<string, unknown> | null {
+  if (!isRecord(value)) return null;
+  // `callFailureReasonFrom(error: string | undefined)` と `shouldOpenVideoView` が読む。
+  if (value.error !== undefined && typeof value.error !== 'string') return null;
+  if (value.state !== undefined && typeof value.state !== 'string') return null;
+  return value;
 }
