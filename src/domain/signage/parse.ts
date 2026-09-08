@@ -27,11 +27,29 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
+function isOptionalString(value: unknown): boolean {
+  return value === undefined || typeof value === 'string';
+}
+
 function isSignageItem(value: unknown): value is SignageItem {
   if (!isRecord(value)) return false;
   if (typeof value.id !== 'string') return false;
   if (!isSignageContentType(value.type)) return false;
   if (typeof value.enabled !== 'boolean') return false;
+  // 🔴 **任意フィールドも「描けるか」に効く。** `slideUrls` が配列でないと
+  // `(item.slideUrls ?? []).join('\n')` が throw する（独立レビュー MINOR-2）。
+  // 「この設定を画面が壊れずに描けるか」がこの述語の不変条件なので、そこは見る。
+  if (
+    value.slideUrls !== undefined &&
+    (!Array.isArray(value.slideUrls) || !value.slideUrls.every((u) => typeof u === 'string'))
+  ) {
+    return false;
+  }
+  if (value.durationSeconds !== undefined && typeof value.durationSeconds !== 'number') return false;
+  if (!isOptionalString(value.title)) return false;
+  if (!isOptionalString(value.message)) return false;
+  if (!isOptionalString(value.imageUrl)) return false;
+  if (!isOptionalString(value.imageAlt)) return false;
   return true;
 }
 

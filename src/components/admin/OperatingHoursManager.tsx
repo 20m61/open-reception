@@ -10,7 +10,10 @@ import { color, space } from '@/components/admin/ui/tokens';
 import { WEEKDAYS, type Weekday } from '@/domain/operating-policy/tz';
 import { duplicateExceptionDates } from '@/domain/operating-policy/schedule';
 import { formatExceptionsText, formatTimeRanges, parseExceptionsText, parseTimeRangesText } from '@/domain/operating-policy/text-format';
-import { asOperatingPolicyResponse } from '@/domain/operating-policy/parse';
+import {
+  asOperatingPolicyResponse,
+  asSavedOperatingPolicyResponse,
+} from '@/domain/operating-policy/parse';
 import type { ServiceOperatingPolicy } from '@/domain/operating-policy/types';
 
 const WEEKDAY_LABEL: Record<Weekday, string> = {
@@ -228,15 +231,18 @@ export function OperatingHoursManager({
       */
       if (res.ok) {
         // 🔴 **確かめられた 200 だけを成功と呼ぶ**（#973 増分 02 の規則を広げる。#1004）。
-        const body = asOperatingPolicyResponse(await res.json().catch(() => null));
-        if (body === null) {
+        // 🔴 **保存の応答に `policy: null` はあり得ない**（GET の「未設定」と共用しない）。
+        // 通すと画面が「まだ設定がありません」へ化けたうえで「保存しました」を出し、次の保存で
+        // `expectedVersion` が落ちて 409 →「ほかの管理者が更新済み」という嘘になる（レビュー MAJOR-4）。
+        const saved = asSavedOperatingPolicyResponse(await res.json().catch(() => null));
+        if (saved === null) {
           failure(saveFailureMessage('unreadable', startedFor));
           return;
         }
         // 🔴 **書き込みの直前で評価し直す。** `await res.json()` を跨ぐので、パース中に
         // 切り替わると A の内容が B の state へ入る（独立レビュー 3 周目 MINOR-4）。
         if (isCurrentScope(startedWith)) {
-          applyPolicy(body.policy);
+          applyPolicy(saved);
           setLoadedScopeKey(startedWith);
         }
         success(`${startedFor}: 保存しました`);
@@ -334,6 +340,24 @@ export function OperatingHoursManager({
         )}
       </p>
 
+      {/*
+        🔴 **一度読めた後の取得失敗は、どこにも出ていなかった**（独立レビュー MAJOR-3）。
+        `loadFailed` を描くのは `resolveScopeGate` 経由の差し替え枝だけで、そこは
+        `dataLoaded` が真になると通らない。つまり 409 の復旧導線「最新を読み込む」を押して
+        失敗しても**バナーが消えるだけ**で、運用者は最新を掴んだと信じて保存し、また 409 になる。
+        編集中の内容を捨てないために `loadedScopeKey` は落とさず、**失敗したことだけ**を言う。
+      */}
+      {loadFailed && loaded ? (
+        <p
+          data-testid="operating-hours-reload-error"
+          role="alert"
+          aria-live="assertive"
+          style={{ color: color.danger, marginBottom: space.md }}
+        >
+          最新の営業時間を取得できませんでした。画面の内容は古い可能性があります。通信状態を
+          確かめて、もう一度お試しください。
+        </p>
+      ) : null}
       {conflict ? (
         <div
           className="notice notice--warning"

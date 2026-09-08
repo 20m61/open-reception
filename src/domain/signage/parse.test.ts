@@ -65,6 +65,23 @@ describe('asSignageConfig (#1004)', () => {
     expect(asSignageConfig({ ...valid(), items: [{ id: 'a', type: 'clock', enabled: true }, 42] })).toBeNull();
   });
 
+  /**
+   * 🔴 **任意フィールドも「描けるか」に効く。** `slideUrls` が配列でないと
+   * `(item.slideUrls ?? []).join('\n')` が throw する。
+   */
+  it('🔴 項目の任意フィールドが壊れていれば通さない', () => {
+    const base = { id: 'a', type: 'slides', enabled: true };
+    expect(asSignageConfig({ ...valid(), items: [{ ...base, slideUrls: 'x' }] })).toBeNull();
+    // 1 要素だけ壊れた形（全部壊すと `every`→`some` の変異が生存する）。
+    expect(asSignageConfig({ ...valid(), items: [{ ...base, slideUrls: ['u', 7] }] })).toBeNull();
+    expect(asSignageConfig({ ...valid(), items: [{ ...base, durationSeconds: '10' }] })).toBeNull();
+    expect(asSignageConfig({ ...valid(), items: [{ ...base, message: 42 }] })).toBeNull();
+  });
+
+  it('任意フィールドが無い項目は正当', () => {
+    expect(asSignageConfig({ ...valid(), items: [{ id: 'a', type: 'slides', enabled: true }] })).not.toBeNull();
+  });
+
   it('項目の type が語彙外なら通さない', () => {
     expect(
       asSignageConfig({ ...valid(), items: [{ id: 'a', type: 'marquee', enabled: true }] }),

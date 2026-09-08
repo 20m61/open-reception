@@ -87,6 +87,83 @@ test.describe('管理: 読み取り失敗が運用者に見える (#870)', () =>
     });
   }
 
+  /**
+   * 🔴 **形は正しい JSON だが、その画面の型ではない 200** (#1004)。
+   *
+   * `as SignageConfig` / `as { policy }` は実行時に何も検査しないので、企業プロキシや
+   * API のバージョンスキューが返す `{"ok":true}` がそのまま state に入る。
+   * 500 とは別の族なので、別に踏む。
+   */
+  const WRONG_SHAPE = '{"ok":true}';
+
+  async function respondWrongShape(page: Page, pattern: string): Promise<void> {
+    await page.route(pattern, (route) =>
+      route.fulfill({ status: 200, contentType: 'application/json', body: WRONG_SHAPE }),
+    );
+  }
+
+  test('サイネージ: 形の違う 200 を読んでも画面が落ちない (#1004)', async ({ page }) => {
+    await respondWrongShape(page, '**/api/admin/signage**');
+    await page.goto('/admin/signage');
+
+    // 読めなかったことを言う（黙って空の画面にしない）。
+    await expect(page.getByTestId('signage-error')).toBeVisible();
+    // 🔴 **落ちていないことを直接見る。** 描画例外は root の `global-error.tsx` が受け、
+    // 管理者に**来訪者向けの文言**が出る（`pageerror` は発火しないので、それをオラクルに
+    // すると空虚になる ―― 独立レビュー MINOR-1 の指摘を実測で確かめた）。
+    await expect(page.getByRole('heading', { name: '受付を続けられませんでした' })).toHaveCount(0);
+  });
+
+  /**
+   * 🔴 **load 側にも検査が要る** (#1004)。`policy` キーが欠けた 200 で
+   * `applyPolicy(undefined)` が走ると、フォームが黙って既定値へ初期化され、
+   * `expectedVersion` が落ちて **#367 の楽観ロックが外れる**。
+   */
+  test('営業時間: 形の違う 200 を読んだら取得失敗として出す (#1004)', async ({ page }) => {
+    await respondWrongShape(page, '**/api/admin/operating-policy?*');
+    await page.goto('/admin/operating-hours');
+
+    await expect(page.getByTestId('operating-hours-unavailable')).toBeVisible();
+    // 「未設定」と言い換えない（500 のときと同じ下界）。
+    await expect(page.getByText('まだ設定がありません')).toHaveCount(0);
+    // 保存ボタンごと出さない＝`expectedVersion` を落とした PUT を飛ばさせない。
+    await expect(page.getByTestId('operating-hours-save')).toHaveCount(0);
+    await expect(page.getByRole('heading', { name: '受付を続けられませんでした' })).toHaveCount(0);
+  });
+
+  /**
+   * 🔴 **一度読めた後の取得失敗が黙らない** (#1004)。`loadFailed` を描くのは
+   * `resolveScopeGate` 経由の差し替え枝だけで、そこは `dataLoaded` が真になると通らない。
+   * つまり 409 の復旧導線「最新を読み込む」を押して失敗しても**バナーが消えるだけ**で、
+   * 運用者は最新を掴んだと信じて保存し、また 409 になる。
+   */
+  test('営業時間: 409 からの「最新を読み込む」が失敗したら、そう言う (#1004)', async ({ page }) => {
+    await page.goto('/admin/operating-hours');
+    await expect(page.getByTestId('operating-hours-save')).toBeVisible();
+
+    // 保存を 409 にして復旧導線を出す。GET は通したままにする（拠点は変えない）。
+    await page.route('**/api/admin/operating-policy**', (route) => {
+      if (route.request().method() === 'GET') return route.continue();
+      return route.fulfill({
+        status: 409,
+        contentType: 'application/json',
+        body: '{"error":"conflict"}',
+      });
+    });
+    await page.getByTestId('operating-hours-save').click();
+    await expect(page.getByTestId('operating-hours-conflict')).toBeVisible();
+
+    // ここから GET も壊す。**同じ拠点のまま**押すので `loadedScopeKey` は落ちない
+    // ＝差し替え枝（再試行ボタン付き）には入らない経路である。
+    await respondWrongShape(page, '**/api/admin/operating-policy?*');
+    await page.getByTestId('operating-hours-reload').click();
+
+    // **これが本題。** 掴み直せなかったことを黙らない（バナーだけ消して終わらせない）。
+    const error = page.getByTestId('operating-hours-reload-error');
+    await expect(error).toBeVisible();
+    await expect(error).toHaveAttribute('role', 'alert');
+  });
+
   test('営業時間: 取得に失敗したとき「未設定＝常時営業」と断定しない', async ({ page }) => {
     await failWith500(page, '**/api/admin/operating-policy?*');
     await page.goto('/admin/operating-hours');

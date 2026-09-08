@@ -47,7 +47,17 @@ export function asServiceOperatingPolicy(value: unknown): ServiceOperatingPolicy
   if (typeof value.updatedBy !== 'string') return null;
   // 🔴 楽観ロックの要。文字列の "3" を通すと `expectedVersion` に載って後勝ち検出が壊れる。
   if (typeof value.version !== 'number') return null;
+  /*
+    🔴 **値まで見る。** キーの存在だけ見て通すと `{ mon: { start, end } }`（配列でない）が
+    素通りし、`formatTimeRanges` の `ranges.map` が throw する。`load()` は `void load()` で
+    呼ばれているので**未処理 rejection** になり、`setLoadedScopeKey` へ到達しない ――
+    画面は「読み込み中…」のまま止まり、**その枝には再試行ボタンが無い**（独立レビュー MAJOR-1）。
+    この増分がサイネージで潰したのと同じ「画面が使えなくなる」害である。
+  */
   if (!isRecord(value.weeklySchedule)) return null;
+  for (const ranges of Object.values(value.weeklySchedule)) {
+    if (!Array.isArray(ranges) || !ranges.every(isTimeRange)) return null;
+  }
   if (!Array.isArray(value.fixedHolidays) || !value.fixedHolidays.every((d) => typeof d === 'string')) {
     return null;
   }
@@ -74,4 +84,18 @@ export function asOperatingPolicyResponse(
   if (value.policy === null) return { policy: null };
   const policy = asServiceOperatingPolicy(value.policy);
   return policy === null ? null : { policy };
+}
+
+/**
+ * **保存の**応答。`policy: null` を通さない。
+ *
+ * 🔴 GET では `policy: null` が正当（そのサイトは未設定）だが、**PUT の応答に null はあり得ない**
+ * （`src/app/api/admin/operating-policy/route.ts` は必ず更新後の値を返す）。共用すると、
+ * `{"policy":null}` な 200 で `applyPolicy(null)` が走り、画面が「まだ設定がありません」へ化けた
+ * うえで「保存しました」を出す。次の保存は `expectedVersion` を落とすのでサーバが 409 を返し、
+ * 画面は「ほかの管理者が更新済み」という**嘘**を出す（独立レビュー MAJOR-4）。
+ */
+export function asSavedOperatingPolicyResponse(value: unknown): ServiceOperatingPolicy | null {
+  const parsed = asOperatingPolicyResponse(value);
+  return parsed === null ? null : parsed.policy;
 }

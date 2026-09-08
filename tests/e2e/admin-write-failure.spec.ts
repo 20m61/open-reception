@@ -890,21 +890,6 @@ test.describe('管理: 書き込み失敗が運用者に見える (#870 増分 0
    */
   const WRONG_SHAPE = '{"ok":true}';
 
-  test('サイネージ: 形の違う 200 を読んでも画面が落ちない (#1004)', async ({ page }) => {
-    // **未処理例外を捕まえる。** 落ちる形では `items.map` の TypeError がここに出る。
-    const crashes: string[] = [];
-    page.on('pageerror', (e) => crashes.push(String(e)));
-
-    await page.route('**/api/admin/signage**', (route) =>
-      route.fulfill({ status: 200, contentType: 'application/json', body: WRONG_SHAPE }),
-    );
-    await page.goto('/admin/signage');
-
-    // 読めなかったことを言う（黙って空の画面にしない）。
-    await expect(page.getByTestId('signage-error')).toBeVisible();
-    expect(crashes, `未処理例外が出た: ${crashes.join(' / ')}`).toEqual([]);
-  });
-
   test('サイネージ: 形の違う 200 を保存の応答として成功と言わない (#1004)', async ({ page }) => {
     await page.goto('/admin/signage');
     await expect(page.getByTestId('signage-save')).toBeVisible();

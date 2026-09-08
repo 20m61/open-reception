@@ -1,5 +1,9 @@
 import { describe, expect, it } from 'vitest';
-import { asOperatingPolicyResponse, asServiceOperatingPolicy } from './parse';
+import {
+  asOperatingPolicyResponse,
+  asSavedOperatingPolicyResponse,
+  asServiceOperatingPolicy,
+} from './parse';
 import type { ServiceOperatingPolicy } from './types';
 
 /**
@@ -81,6 +85,38 @@ describe('asServiceOperatingPolicy (#1004)', () => {
     expect(asServiceOperatingPolicy({ ...valid(), weeklySchedule: 'mon' })).toBeNull();
   });
 
+  /**
+   * 🔴 **値まで見る。** キーの存在だけ見て通すと配列でない値が素通りし、
+   * `formatTimeRanges` の `ranges.map` が throw → `void load()` が未処理 rejection になり、
+   * 画面が「読み込み中…」で止まる（**その枝には再試行ボタンが無い**）。
+   */
+  it('🔴 weeklySchedule の値が時間帯の配列でなければ通さない（1 曜日だけ壊れた形）', () => {
+    // 全曜日を壊すと `every` を `some` へ替える変異が生存する。1 つだけ壊す。
+    expect(
+      asServiceOperatingPolicy({
+        ...valid(),
+        weeklySchedule: { mon: [{ start: '09:00', end: '18:00' }], tue: 'x' },
+      }),
+    ).toBeNull();
+    expect(
+      asServiceOperatingPolicy({
+        ...valid(),
+        weeklySchedule: { mon: [{ start: '09:00', end: '18:00' }], tue: { start: '09:00', end: '18:00' } },
+      }),
+    ).toBeNull();
+    expect(
+      asServiceOperatingPolicy({
+        ...valid(),
+        weeklySchedule: { mon: [{ start: '09:00', end: '18:00' }, { start: 9 }] },
+      }),
+    ).toBeNull();
+  });
+
+  it('weeklySchedule が空（全曜日休業）は正当', () => {
+    expect(asServiceOperatingPolicy({ ...valid(), weeklySchedule: {} })).not.toBeNull();
+    expect(asServiceOperatingPolicy({ ...valid(), weeklySchedule: { mon: [] } })).not.toBeNull();
+  });
+
   it('オブジェクトでなければ通さない', () => {
     for (const notObject of [null, undefined, 'x', 3, true, []]) {
       expect(asServiceOperatingPolicy(notObject)).toBeNull();
@@ -118,5 +154,26 @@ describe('asOperatingPolicyResponse (#1004)', () => {
     for (const notObject of [null, undefined, 'x', 3, true, []]) {
       expect(asOperatingPolicyResponse(notObject)).toBeNull();
     }
+  });
+});
+
+describe('asSavedOperatingPolicyResponse (#1004)', () => {
+  it('保存の応答に policy が入っていれば返す', () => {
+    const policy = valid();
+    expect(asSavedOperatingPolicyResponse({ policy })).toEqual(policy);
+  });
+
+  /**
+   * 🔴 **これが本題。** GET では `policy: null` が正当だが、**PUT の応答に null はあり得ない**。
+   * 通すと画面が「まだ設定がありません」へ化けたうえで「保存しました」を出し、次の保存で
+   * `expectedVersion` が落ちてサーバが 409 → 画面は「ほかの管理者が更新済み」という嘘を出す。
+   */
+  it('policy: null は保存の応答としては通さない', () => {
+    expect(asSavedOperatingPolicyResponse({ policy: null })).toBeNull();
+  });
+
+  it('形が違えば通さない', () => {
+    expect(asSavedOperatingPolicyResponse({ ok: true })).toBeNull();
+    expect(asSavedOperatingPolicyResponse({ policy: { ...valid(), version: '3' } })).toBeNull();
   });
 });
