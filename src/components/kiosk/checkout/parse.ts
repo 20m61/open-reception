@@ -29,6 +29,17 @@ import type { CheckoutMethod, CheckoutSelfIdSummary, PresentStaySummary } from '
 
 const METHODS: readonly CheckoutMethod[] = ['qr', 'code'];
 
+/*
+  🔴 **`!Array.isArray` は、この 2 モジュールでは現在「等価」である**（実測。#1004 増分 2）。
+  JSON は配列に名前付きプロパティを載せられないので、配列を渡してもフィールド読みは全部
+  `undefined` になり、後続の型検査が必ず落とす ―― つまりこの行を消しても結果は変わらず、
+  **変異を当てても kill されない**。それでも残すのは 2 つの理由による:
+    1. 増分 1 の `signage/parse.ts` / `operating-policy/parse.ts` では**この行は効いている**
+       （`weeklySchedule` のように「オブジェクトであること」自体を要求する枝がある）。
+       4 つの写しで挙動を揃えておかないと、読み手がどれを信じてよいか分からなくなる
+    2. `Array.isArray` を使う枝をこのモジュールに足した瞬間、**この行は効き始める**
+  「テストで縛られている」とは言えないことを、ここに書いておく（覆われている錯覚を作らない）。
+*/
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
