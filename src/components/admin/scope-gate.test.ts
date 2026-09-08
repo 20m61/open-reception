@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { resolveScopeGate } from './scope-gate';
+import { resolveScopeGate, type ScopeGateInput } from './scope-gate';
 
 /**
  * 拠点別画面に共通の「いま何をしてよいか」判定 (#554)。
@@ -154,5 +154,68 @@ describe('resolveScopeGate', () => {
 
   it('データが載っていないときは断定しない', () => {
     expect(resolveScopeGate({ ...loaded, dataLoaded: false }).dataTrusted).toBe(false);
+  });
+
+  /**
+   * 🔴 **不変条件: `unavailable === null` ⟺ `dataLoaded`**（総当たり）。
+   *
+   * 各画面はこれに**依存して**枝を書いている ―― `gate.unavailable !== null` で早期 return
+   * したあとの JSX は「`dataLoaded` が真」を前提にしてよい。`OperatingHoursManager` は
+   * この含意を根拠に `loadFailed && loaded` の `&& loaded` を落とした（効いていないガードを
+   * 残さないため。独立レビュー 3 周目 MINOR-7）。
+   *
+   * ここまでは**例が 4 つ**あるだけで、同値そのものは縛られていなかった（4 周目 MINOR-5）。
+   * 例で押さえた不変条件は、分岐が増えたときに静かに破れる。**入力を総当たりする。**
+   * これが落ちたら、依存している画面側の枝も見直すこと。
+   */
+  it('🔴 不変条件: unavailable が null になるのは dataLoaded のときだけ（総当たり）', () => {
+    const bools = [true, false];
+    const statuses: ScopeGateInput['listStatus'][] = ['idle', 'loading', 'ready', 'error'];
+    let sawNull = 0;
+    let sawNonNull = 0;
+    for (const scopeReady of bools)
+      for (const dataLoaded of bools)
+        for (const sitePending of bools)
+          for (const busy of bools)
+            for (const listStatus of statuses)
+              for (const loadFailed of bools)
+                for (const hasSites of bools) {
+                  const input: ScopeGateInput = {
+                    scopeReady,
+                    dataLoaded,
+                    sitePending,
+                    busy,
+                    listStatus,
+                    loadFailed,
+                    hasSites,
+                  };
+                  const g = resolveScopeGate(input);
+                  const where = JSON.stringify(input);
+                  expect(g.unavailable === null, where).toBe(dataLoaded);
+                  if (g.unavailable === null) {
+                    sawNull += 1;
+                    continue;
+                  }
+                  sawNonNull += 1;
+                  /*
+                    🔴 **「拠点側を優先する」も総当たりで縛る**（独立レビュー 5 周目 MINOR-4）。
+                    null か否かだけを見ていたので、`loadFailed` を `no-site` の**前**へ動かす
+                    変異が 18 本すべてを素通りしていた（実測）。この関数の doc は
+                    「拠点が確認できていないのに『データを取得できませんでした』と出すと
+                    原因を取り違える」と明記しており、そこが壊れると運用者は
+                    「拠点を登録してください」ではなく**決して成功しない再試行ボタン**を見る。
+
+                    実装を写した期待値表は作らない（同じ誤りを共有する）。**片側の含意**
+                    ―― 拠点側の理由が立つときは必ずそれが出る ―― だけを主張する。
+                  */
+                  if (listStatus === 'error') {
+                    expect(g.unavailable, where).toBe('site-list-error');
+                  } else if (!hasSites && listStatus === 'ready') {
+                    expect(g.unavailable, where).toBe('no-site');
+                  }
+                }
+    // **下界。** 片側だけを主張すると、全部を非 null にする実装でも空虚に通る。
+    expect(sawNull).toBeGreaterThan(0);
+    expect(sawNonNull).toBeGreaterThan(0);
   });
 });

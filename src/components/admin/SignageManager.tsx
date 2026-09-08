@@ -1,6 +1,7 @@
 'use client';
 
 import { useCallback, useEffect, useState } from 'react';
+import { asSignageConfig } from '@/domain/signage/parse';
 import {
   SIGNAGE_CONTENT_TYPES,
   type SignageConfig,
@@ -104,9 +105,35 @@ export function SignageManager({
     // 取得中に拠点／テナントが変わっていたら捨てる。
     if (!isCurrentScope(startedWith)) return;
     if (res.ok) {
+      // 🔴 **形を確かめてから載せる**（#1004）。`as` は実行時に何も検査しないので、
+      // `200 {"ok":true}` がそのまま state に入り、次のレンダーで `config.items.map` が
+      // TypeError → **この画面ごと落ちる**（admin 配下に error boundary は無い）。
+      const loaded = asSignageConfig(await res.json().catch(() => null));
+      /*
+        🔴 **書き込みの直前で評価し直す。** `await res.json()` は**新しい中断点**で、この増分が
+        作った。跨いでいる間に拠点が変わると、下の 3 つが拠点 B の画面へ書かれる ――
+        (1) 壊れた A の応答が B に偽の「読み込みに失敗しました」を出す、(2) **正常な** A の応答が
+        `setConfigScopeKey(A)` を通して `dataLoaded` を偽へ落とす。
+        🔴 **(2) の症状は完全な沈黙である**（実測。当初ここに `OperatingHoursManager` の症状を
+        そのまま写して「読み込み中…で恒久停止」と書いていたが、**この画面の描画門は
+        `dataLoaded` ではなく `config`** なので、`setConfig(A)` を通った時点でその枝には入らない
+        —— 独立レビュー 4 周目 MINOR-1）。実際に起こるのは
+        **B のセレクタのまま A の設定が表示され、保存ボタンが恒久的に disabled**、
+        しかもメッセージも再試行導線も一切出ない、という状態である。#870 が 1 spec 割いて
+        閉じた欠陥族より**沈黙的で悪い**。
+        同じコミットで `OperatingHoursManager` には入れたのに、**こちらへ写し忘れていた**
+        （独立レビュー 3 周目 MAJOR-1）。`scope-gate.ts` の doc が「拠点スコープ移行の P1 は
+        ほぼ全部この型」と名指ししている型。
+      */
+      if (!isCurrentScope(startedWith)) return;
+      if (loaded === null) {
+        setLoadFailed(true);
+        setError('読み込みに失敗しました');
+        return;
+      }
       setLoadFailed(false);
       setConfigScopeKey(startedWith);
-      setConfig((await res.json()) as SignageConfig);
+      setConfig(loaded);
     } else {
       setLoadFailed(true);
       setError('読み込みに失敗しました');
@@ -193,13 +220,26 @@ export function SignageManager({
         —— こちらは A の内容を B の画面へ書くことになる（独立レビュー 2 周目 MAJOR-C）。
       */
       if (res.ok) {
-        const applied = (await res.json()) as SignageConfig;
+        // 🔴 **確かめられた 200 だけを成功と呼ぶ**（#973 増分 02 の規則を広げる。#1004）。
+        const applied = asSignageConfig(await res.json().catch(() => null));
+        if (applied === null) {
+          failure(saveFailureMessage('unreadable', startedFor));
+          return;
+        }
         // 🔴 **書き込みの直前で評価し直す。** `await res.json()` を跨ぐので、パース中に
         // 切り替わると A の内容が B の state へ入る（独立レビュー 3 周目 MINOR-4）。
         if (isCurrentScope(startedWith)) {
           // 載せるスコープも同時に更新する（「載っているデータのスコープ」を嘘にしない）。
           setConfigScopeKey(startedWith);
           setConfig(applied);
+          /*
+            ここに `setLoadFailed(false)` は**要らない**（`OperatingHoursManager` には在るので
+            非対称に見える。独立レビュー 4 周目 MINOR-3）。この画面の `loadFailed` は
+            `resolveScopeGate` 経由でしか読まれず、`unavailable()` は `dataLoaded` を先に見るので
+            **`dataLoaded` が真の間は不活性**である。かつ `config` が null の間は保存ボタン自体が
+            押せないので、この行に到達したとき `loadFailed` が描画へ効いている状態はあり得ない。
+            営業時間側は `loadFailed` を主フォーム枝でも描くので、あちらには要る。
+          */
         }
         success(`${startedFor}: 保存しました（${new Date().toLocaleTimeString()}）`);
       } else {

@@ -1,0 +1,141 @@
+/**
+ * 営業時間ポリシーの応答が**確かめられた形か**を判定する (#1004)。
+ *
+ * ## なぜ型注釈では足りないか
+ *
+ * `(await res.json()) as { policy: PolicyView }` の `as` は実行時に何も検査しない。
+ * `policy` が欠けた 200 が返ると `applyPolicy(undefined)` が走り、**フォームが黙って
+ * 既定値へ初期化される**（＝運用者の編集が消える）。さらに `setPolicy(undefined)` で
+ * 以後の保存から `expectedVersion` が落ちるので、**#367 の楽観ロックが外れる** ――
+ * 同時編集の後勝ちがサーバ側で 409 にならなくなる。そのうえで画面は「保存しました」と出す。
+ *
+ * ## 何を見て、何を見ないか（正直に書く）
+ *
+ * **見る**のは必須フィールドの存在と型、および配列の**要素**の形。とくに `version` は
+ * 楽観ロックの要なので、数値であることを必ず見る。
+ *
+ * **見ない**のは値の妥当性（時刻表記・日付表記・タイムゾーン名の実在）。そこは保存時に
+ * サーバが検証する領域で、ここで二重に持つと写しがズレる。
+ *
+ * ## `platform/read-response.ts` とは**意図的に方針が違う**（独立レビュー 2 周目 MINOR-4）
+ *
+ * あちらは「画面が実際に読むフィールドだけを見る」——サーバが任意フィールドを足したときに
+ * 読めなくなるのを避けるためである。こちらは逆に**必須フィールドを網羅**し、それを
+ * `Record<RequiredKeys<T>, true>` で機械強制している。理由は害の非対称性で、この画面は
+ * 取りこぼすと**楽観ロックが外れて他の管理者の更新を黙って上書きする**（#367）ので、
+ * 「読めない」より「載せてしまう」ほうが重い。互換の向きが逆になる代償は承知のうえで、
+ * 応答型と述語が同じ `ServiceOperatingPolicy` を参照することで封じている——型から必須
+ * フィールドを消せばテストの `REQUIRED` がコンパイルエラーになる。
+ */
+import type { OperatingException, ServiceOperatingPolicy, TimeRange } from './types';
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function isOptionalString(value: unknown): boolean {
+  return value === undefined || typeof value === 'string';
+}
+
+function isTimeRange(value: unknown): value is TimeRange {
+  if (!isRecord(value)) return false;
+  if (typeof value.start !== 'string') return false;
+  if (typeof value.end !== 'string') return false;
+  /*
+    🔴 `formatTimeRanges` は `r.crossesMidnight ? '*' : ''` と**真偽性**で判定する。
+    `"no"` は truthy なので `09:00-18:00*`（日跨ぎ）と表示され、往復で
+    `crossesMidnight: true` として**再保存される** ―― `start`/`end` を縛ったのと同じ理由
+    （独立レビュー 3 周目 MINOR-8）。
+  */
+  if (value.crossesMidnight !== undefined && typeof value.crossesMidnight !== 'boolean') return false;
+  return true;
+}
+
+function isOperatingException(value: unknown): value is OperatingException {
+  if (!isRecord(value)) return false;
+  if (typeof value.date !== 'string') return false;
+  if (typeof value.closed !== 'boolean') return false;
+  if (value.ranges !== undefined && (!Array.isArray(value.ranges) || !value.ranges.every(isTimeRange))) {
+    return false;
+  }
+  return true;
+}
+
+/** 応答が `ServiceOperatingPolicy` の形なら返す。違えば null（**投げない**）。 */
+export function asServiceOperatingPolicy(value: unknown): ServiceOperatingPolicy | null {
+  if (!isRecord(value)) return null;
+  if (typeof value.tenantId !== 'string') return null;
+  if (typeof value.siteId !== 'string') return null;
+  if (typeof value.timezone !== 'string') return null;
+  if (typeof value.updatedAt !== 'string') return null;
+  if (typeof value.updatedBy !== 'string') return null;
+  // 🔴 楽観ロックの要。文字列の "3" を通すと `expectedVersion` に載って後勝ち検出が壊れる。
+  if (typeof value.version !== 'number') return null;
+  /*
+    🔴 **値まで見る。** キーの存在だけ見て通すと `{ mon: { start, end } }`（配列でない）が
+    素通りし、`formatTimeRanges` の `ranges.map` が throw する。`load()` は `void load()` で
+    呼ばれているので**未処理 rejection** になり、`setLoadedScopeKey` へ到達しない ――
+    画面は「読み込み中…」のまま止まり、**その枝には再試行ボタンが無い**（独立レビュー MAJOR-1）。
+    この増分がサイネージで潰したのと同じ「画面が使えなくなる」害である。
+  */
+  if (!isRecord(value.weeklySchedule)) return null;
+  for (const ranges of Object.values(value.weeklySchedule)) {
+    if (!Array.isArray(ranges) || !ranges.every(isTimeRange)) return null;
+  }
+  if (!Array.isArray(value.fixedHolidays) || !value.fixedHolidays.every((d) => typeof d === 'string')) {
+    return null;
+  }
+  if (!Array.isArray(value.exceptionDates) || !value.exceptionDates.every(isOperatingException)) {
+    return null;
+  }
+  /*
+    🔴 **画面が `.trim()` を呼ぶフィールドは見る**（独立レビュー 2 周目 MINOR-3）。
+    非文字列が入ると `emergencyContactLabel.trim is not a function` が保存の `try` の**中**で
+    throw し、`catch` が「サーバーに接続できませんでした」を出す ―― 同ファイルが
+    「入力の解釈は `try` の外でやる」と自戒しているのと同じ、**まったく無関係な文言**になる経路。
+  */
+  if (!isOptionalString(value.emergencyContactLabel)) return null;
+  return value as unknown as ServiceOperatingPolicy;
+}
+
+/**
+ * `GET/PUT /api/admin/operating-policy` の封筒 `{ policy }`。
+ *
+ * 🔴 **`policy: null` は正当**（そのサイトにまだ設定が無い＝未設定）。だが**キーごと
+ * 欠けている**のは別物で、それが `applyPolicy(undefined)` を呼んでフォームを黙って
+ * 初期化し、`expectedVersion` を落としていた当の形である。両者を混同しない。
+ */
+export function asOperatingPolicyResponse(
+  value: unknown,
+): { policy: ServiceOperatingPolicy | null } | null {
+  if (!isRecord(value)) return null;
+  // `policy` が無い／`undefined` は下の `asServiceOperatingPolicy` が弾く。
+  // ここで `'policy' in value` を重ねても結果は変わらないので置かない（読み手に
+  // 「この行が効いている」と誤読させるだけ ―― 変異検証で等価と確認済み）。
+  if (value.policy === null) return { policy: null };
+  const policy = asServiceOperatingPolicy(value.policy);
+  return policy === null ? null : { policy };
+}
+
+/**
+ * **保存の**応答。`policy: null` を通さない。
+ *
+ * 🔴 GET では `policy: null` が正当（そのサイトは未設定）だが、**PUT の応答に null はあり得ない**
+ * （`src/app/api/admin/operating-policy/route.ts` は必ず更新後の値を返す）。共用すると、
+ * `{"policy":null}` な 200 で `applyPolicy(null)` が走り、画面が「まだ設定がありません」へ化けた
+ * うえで「保存しました」を出す。次の保存は `expectedVersion` を落とすのでサーバが 409 を返し、
+ * 画面は「ほかの管理者が更新済み」という**嘘**を出す（独立レビュー MAJOR-4）。
+ *
+ * 🔴 **戻り値を判別可能にする**（独立レビュー 3 周目 MINOR-2）。`ServiceOperatingPolicy | null`
+ * を返していたときは「読めなかった」と「`policy` が null だった」が**どちらも `null`** に
+ * 畳まれ、この関数を GET 用の述語へ戻す変異が **unit では原理的に殺せなかった**
+ * （e2e 1 本だけが区別を持っていた）。私が最初に当てた変異が等価になったのも、変異設計では
+ * なく**この戻り値の型**が原因である。区別を型で持てば unit で縛れる。
+ */
+export type SavedOperatingPolicy = { ok: true; policy: ServiceOperatingPolicy } | { ok: false };
+
+export function asSavedOperatingPolicyResponse(value: unknown): SavedOperatingPolicy {
+  const parsed = asOperatingPolicyResponse(value);
+  if (parsed === null || parsed.policy === null) return { ok: false };
+  return { ok: true, policy: parsed.policy };
+}

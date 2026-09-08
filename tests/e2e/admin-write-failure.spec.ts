@@ -875,6 +875,121 @@ test.describe('管理: 書き込み失敗が運用者に見える (#870 増分 0
     });
   });
 
+  /**
+   * 🔴 **形は正しい JSON だが、その画面の型ではない 200** (#1004)。
+   *
+   * `as SignageConfig` / `as { policy }` は実行時に何も検査しないので、企業プロキシや
+   * API のバージョンスキューが返す `{"ok":true}` がそのまま state に入る。害は画面ごとに違う:
+   *
+   * - サイネージ … 次のレンダーで `config.items.map` が TypeError → **画面ごと落ちる**
+   *   （`src/app/admin` 配下に error boundary は無い）
+   * - 営業時間 … `applyPolicy(undefined)` が**フォームを黙って既定値へ初期化**し、
+   *   `expectedVersion` を落とす（**#367 の楽観ロックが外れる**）
+   *
+   * `broken-200`（本文が壊れている）とは別の族なので、別に踏む。
+   */
+  const WRONG_SHAPE = '{"ok":true}';
+
+  test('サイネージ: 形の違う 200 を保存の応答として成功と言わない (#1004)', async ({ page }) => {
+    await page.goto('/admin/signage');
+    await expect(page.getByTestId('signage-save')).toBeVisible();
+    await page.route('**/api/admin/signage**', (route) => {
+      if (route.request().method() === 'GET') return route.continue();
+      return route.fulfill({ status: 200, contentType: 'application/json', body: WRONG_SHAPE });
+    });
+
+    await page.getByTestId('signage-save').click();
+
+    const error = page.getByTestId('signage-save-error');
+    await expect(error).toBeVisible();
+    await expect(error).toContainText('読み取れませんでした');
+    await expect(page.getByTestId('signage-saved')).toHaveCount(0);
+  });
+
+  test('営業時間: policy キーが欠けた 200 でフォームを初期化しない (#1004)', async ({ page }) => {
+    await page.goto('/admin/operating-hours');
+    await expect(page.getByTestId('operating-hours-save')).toBeVisible();
+    // 打ち込んだ内容が、壊れた応答で消えないことを見る。
+    await page.getByTestId('operating-hours-timezone').fill('Asia/Osaka');
+
+    await page.route('**/api/admin/operating-policy**', (route) => {
+      if (route.request().method() === 'GET') return route.continue();
+      return route.fulfill({ status: 200, contentType: 'application/json', body: WRONG_SHAPE });
+    });
+
+    await page.getByTestId('operating-hours-save').click();
+
+    const error = page.getByTestId('operating-hours-error');
+    await expect(error).toBeVisible();
+    await expect(error).toContainText('読み取れませんでした');
+    await expect(page.getByTestId('operating-hours-saved')).toHaveCount(0);
+    // **これが本題。** 黙って既定値へ戻さない。
+    await expect(page.getByTestId('operating-hours-timezone')).toHaveValue('Asia/Osaka');
+  });
+
+  /**
+   * 🔴 **保存の応答に `policy: null` はあり得ない** (#1004、独立レビュー 2 周目 MAJOR-B)。
+   *
+   * GET では `policy: null` が正当（そのサイトは未設定）なので、述語を共用すると
+   * `{"policy":null}` な 200 が保存の応答として通る。すると `applyPolicy(null)` が走り、
+   * 画面が**「まだ設定がありません（未設定の間は常時営業として扱われます）」へ化けたうえで**
+   * 「保存しました」を出す。次の保存は `expectedVersion` を落とすのでサーバが 409 を返し、
+   * 画面は「ほかの管理者が更新済み」という**嘘**を出す。運用者は設定できたと誤認したまま、
+   * 来訪者側（営業時間外案内・新規発信抑止 #4）の挙動は変わらない。
+   *
+   * この 1 本が無いと、`asSavedOperatingPolicyResponse` を `asOperatingPolicyResponse` へ戻す
+   * 変異が **unit・e2e とも全部素通りする**（レビューの実測）。純関数は縛られていたが、
+   * **配線が縛られていなかった** —— `.claude/rules/opus5-autonomous-loop.md`「方式を替えたら、
+   * 前の方式が守っていた変異を当て直す」が #826 の由来として名指ししているのと同じ形である。
+   */
+  test('営業時間: policy:null な保存応答を成功と言わない (#1004)', async ({ page }) => {
+    /*
+      🔴 **設定済みの拠点から始める。** seed の拠点はポリシー未設定なので、素で開くと
+      画面には最初から「まだ設定がありません」が出ている ―― その状態で下界を主張しても
+      **最初から偽なので測れない**（実測で落ちた）。かといって実際に保存して seed を
+      書き換えると、共有状態を書く spec になって #787 の並行干渉を招く。GET を
+      **クライアント側で**差し替え、「版が載った画面」を作ってから測る。
+    */
+    const LOADED = JSON.stringify({
+      policy: {
+        tenantId: 'internal',
+        siteId: 'default-site',
+        timezone: 'Asia/Tokyo',
+        weeklySchedule: { mon: [{ start: '09:00', end: '18:00' }] },
+        fixedHolidays: [],
+        exceptionDates: [],
+        version: 3,
+        updatedAt: '2026-01-01T00:00:00.000Z',
+        updatedBy: 'admin',
+      },
+    });
+    await page.route('**/api/admin/operating-policy**', (route) =>
+      route.request().method() === 'GET'
+        ? route.fulfill({ status: 200, contentType: 'application/json', body: LOADED })
+        : route.fulfill({ status: 200, contentType: 'application/json', body: '{"policy":null}' }),
+    );
+
+    await page.goto('/admin/operating-hours');
+    await expect(page.getByTestId('operating-hours-save')).toBeVisible();
+    // 測る前に「未設定でない」ことを固定する（ここが偽だと最後の主張が空虚になる）。
+    await expect(page.getByText('まだ設定がありません')).toHaveCount(0);
+    await page.getByTestId('operating-hours-timezone').fill('Asia/Osaka');
+
+    await page.getByTestId('operating-hours-save').click();
+
+    const error = page.getByTestId('operating-hours-error');
+    await expect(error).toBeVisible();
+    await expect(error).toContainText('読み取れませんでした');
+    await expect(page.getByTestId('operating-hours-saved')).toHaveCount(0);
+    /*
+      🔴 **これが本題（下界）。** 「保存しました」が出ないことだけを見ると、`policy: null` を
+      通す変異でも `failure` は出ないので**空虚に通り得る**。**画面が「未設定」へ化けていない**
+      ことを直接主張する。
+    */
+    await expect(page.getByText('まだ設定がありません')).toHaveCount(0);
+    await expect(page.getByTestId('operating-hours-timezone')).toHaveValue('Asia/Osaka');
+  });
+
   test('部署: 有効/無効の切り替えが失敗したら伝える（行が黙って戻らない）', async ({ page }) => {
     await page.goto('/admin/departments');
     // 行が出てから注入する（読み取りは通すが、念のため描画を待つ）。
