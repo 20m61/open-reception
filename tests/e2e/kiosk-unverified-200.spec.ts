@@ -64,14 +64,34 @@ test.describe('来訪者導線: 形の違う 200 で受付・退館を止めな�
    * 一覧と違ってここは**退館そのものの導線**なので、落ちると来訪者は退館できない。
    */
   test('退館: 自己特定の応答の形が違っても落ちず、理由が出る', async ({ page }) => {
+    /*
+      🔴 **要求が実際に飛んだことを観測する。**
+
+      最初に書いたこのテストは**完全に空虚だった**（変異が生存して判明）。退館コードは
+      `CHECKOUT_CODE_LENGTH = 4` 桁必須で、6 桁を入れていたので `normalizeCheckoutCode` が
+      null を返し、**resolve へ 1 度も要求が飛んでいなかった**。それでも下の 3 本は
+      クライアント側検証だけで満たされる（エラーは出る・確認画面へは進まない・落ちない）
+      ので、**修正の有無にかかわらず通っていた**。
+
+      増分 1 の 5 周目と同じ型である ―― 別の機構が保証している結果をオラクルにすると、
+      測りたい経路を一度も踏まずに緑になる。**踏んだことを先に主張する。**
+    */
+    const resolveCalls: string[] = [];
+    page.on('request', (req) => {
+      if (req.url().includes('/api/kiosk/checkout/resolve')) resolveCalls.push(req.method());
+    });
+
     await respondWrongShape(page, '**/api/kiosk/checkout/resolve');
     await page.goto('/kiosk/checkout');
     await expect(page.getByTestId('checkout-code')).toBeVisible();
 
-    // コード経路は「退館コード」と「呼び出し先」の両方が要る（片方だけでは送信できない）。
-    await page.getByTestId('checkout-code').fill('123456');
+    // コード経路は「退館コード（**4 桁**）」と「呼び出し先」の両方が要る。
+    await page.getByTestId('checkout-code').fill('1234');
     await page.getByTestId('checkout-target-label').fill('総務部');
     await page.getByTestId('checkout-resolve-submit').click();
+
+    // **踏んだことの表明。** これが無いと、以降の 3 本はクライアント側検証でも満たされる。
+    await expect.poll(() => resolveCalls.length).toBeGreaterThan(0);
 
     await expectNotCrashed(page);
     // 黙って入力画面に留まらせない（何が起きたか分からないまま押し続けることになる）。
