@@ -16,11 +16,25 @@
  *
  * **見ない**のは値の妥当性（時刻表記・日付表記・タイムゾーン名の実在）。そこは保存時に
  * サーバが検証する領域で、ここで二重に持つと写しがズレる。
+ *
+ * ## `platform/read-response.ts` とは**意図的に方針が違う**（独立レビュー 2 周目 MINOR-4）
+ *
+ * あちらは「画面が実際に読むフィールドだけを見る」——サーバが任意フィールドを足したときに
+ * 読めなくなるのを避けるためである。こちらは逆に**必須フィールドを網羅**し、それを
+ * `Record<RequiredKeys<T>, true>` で機械強制している。理由は害の非対称性で、この画面は
+ * 取りこぼすと**楽観ロックが外れて他の管理者の更新を黙って上書きする**（#367）ので、
+ * 「読めない」より「載せてしまう」ほうが重い。互換の向きが逆になる代償は承知のうえで、
+ * 応答型と述語が同じ `ServiceOperatingPolicy` を参照することで封じている——型から必須
+ * フィールドを消せばテストの `REQUIRED` がコンパイルエラーになる。
  */
 import type { OperatingException, ServiceOperatingPolicy, TimeRange } from './types';
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function isOptionalString(value: unknown): boolean {
+  return value === undefined || typeof value === 'string';
 }
 
 function isTimeRange(value: unknown): value is TimeRange {
@@ -64,6 +78,13 @@ export function asServiceOperatingPolicy(value: unknown): ServiceOperatingPolicy
   if (!Array.isArray(value.exceptionDates) || !value.exceptionDates.every(isOperatingException)) {
     return null;
   }
+  /*
+    🔴 **画面が `.trim()` を呼ぶフィールドは見る**（独立レビュー 2 周目 MINOR-3）。
+    非文字列が入ると `emergencyContactLabel.trim is not a function` が保存の `try` の**中**で
+    throw し、`catch` が「サーバーに接続できませんでした」を出す ―― 同ファイルが
+    「入力の解釈は `try` の外でやる」と自戒しているのと同じ、**まったく無関係な文言**になる経路。
+  */
+  if (!isOptionalString(value.emergencyContactLabel)) return null;
   return value as unknown as ServiceOperatingPolicy;
 }
 

@@ -112,6 +112,71 @@ describe('asServiceOperatingPolicy (#1004)', () => {
     ).toBeNull();
   });
 
+  /**
+   * 🔴 **`exceptionDates[i].ranges` にも同じ hazard がある**（独立レビュー 2 周目 MINOR-1）。
+   * 実装は見ているのに、テストが `weeklySchedule` 側にしか無かった —— 変異行列で
+   * 「`ranges` の検査を丸ごと削除」「`.every(isTimeRange)` だけ削除」「`Array.isArray` だけ削除」
+   * の 3 種がすべて生存した。害は上と同一で、`formatExceptionsText` → `formatTimeRanges` の
+   * `.map` が throw し、画面が「読み込み中…」で止まる。
+   */
+  it('🔴 exceptionDates の ranges が時間帯の配列でなければ通さない（1 件だけ壊れた形）', () => {
+    const ok = { date: '2026-05-03', closed: true };
+    // 1 件だけ壊す（全部壊すと `every` → `some` の変異が生存する）。
+    expect(
+      asServiceOperatingPolicy({ ...valid(), exceptionDates: [ok, { date: '2026-05-04', closed: false, ranges: 'x' }] }),
+    ).toBeNull();
+    expect(
+      asServiceOperatingPolicy({
+        ...valid(),
+        exceptionDates: [ok, { date: '2026-05-04', closed: false, ranges: { start: '10:00', end: '12:00' } }],
+      }),
+    ).toBeNull();
+    expect(
+      asServiceOperatingPolicy({
+        ...valid(),
+        exceptionDates: [
+          ok,
+          { date: '2026-05-04', closed: false, ranges: [{ start: '10:00', end: '12:00' }, { start: 10 }] },
+        ],
+      }),
+    ).toBeNull();
+  });
+
+  it('exceptionDates の ranges 省略（終日休業）は正当', () => {
+    expect(
+      asServiceOperatingPolicy({ ...valid(), exceptionDates: [{ date: '2026-05-03', closed: true }] }),
+    ).not.toBeNull();
+  });
+
+  /**
+   * 時間帯の `end` と例外日の `closed` は throw させないが、**表示が化けたまま再保存され得る**
+   * （`"09:00-undefined"`、チェックボックスに文字列）。独立レビュー 2 周目 MINOR-2 の生存変異。
+   */
+  it('TimeRange の start / end はどちらも文字列であること', () => {
+    for (const bad of [{ start: '09:00' }, { end: '18:00' }, { start: '09:00', end: 18 }]) {
+      expect(asServiceOperatingPolicy({ ...valid(), weeklySchedule: { mon: [bad] } })).toBeNull();
+    }
+  });
+
+  it('例外日の closed が真偽値でなければ通さない', () => {
+    expect(
+      asServiceOperatingPolicy({ ...valid(), exceptionDates: [{ date: '2026-05-03', closed: 'true' }] }),
+    ).toBeNull();
+    expect(asServiceOperatingPolicy({ ...valid(), exceptionDates: [{ date: '2026-05-03' }] })).toBeNull();
+  });
+
+  /**
+   * 🔴 **画面が `.trim()` を呼ぶ任意フィールド**（独立レビュー 2 周目 MINOR-3）。非文字列が
+   * 入ると保存の `try` の中で throw し、`catch` が「サーバーに接続できませんでした」という
+   * **まったく無関係な文言**を出す。
+   */
+  it('emergencyContactLabel は省略できるが、あるなら文字列であること', () => {
+    expect(asServiceOperatingPolicy({ ...valid(), emergencyContactLabel: '内線 100' })).not.toBeNull();
+    expect(asServiceOperatingPolicy(valid())).not.toBeNull();
+    expect(asServiceOperatingPolicy({ ...valid(), emergencyContactLabel: 42 })).toBeNull();
+    expect(asServiceOperatingPolicy({ ...valid(), emergencyContactLabel: null })).toBeNull();
+  });
+
   it('weeklySchedule が空（全曜日休業）は正当', () => {
     expect(asServiceOperatingPolicy({ ...valid(), weeklySchedule: {} })).not.toBeNull();
     expect(asServiceOperatingPolicy({ ...valid(), weeklySchedule: { mon: [] } })).not.toBeNull();

@@ -162,6 +162,27 @@ test.describe('管理: 読み取り失敗が運用者に見える (#870)', () =>
     const error = page.getByTestId('operating-hours-reload-error');
     await expect(error).toBeVisible();
     await expect(error).toHaveAttribute('role', 'alert');
+
+    /*
+      🔴 **理由だけでなく手段も出す**（独立レビュー 2 周目 MAJOR-A）。この枝へ来る経路は
+      事実上「409 →『最新を読み込む』→失敗」の 1 本だけで、押した瞬間にその
+      「最新を読み込む」ボタン自身が unmount する。導線が無いと、運用者に残るのは
+      (1) また 409 になると分かっている保存を押して 409 の箱を呼び戻す
+      (2) 編集中の内容を捨ててページごとリロード、の 2 つしかない。
+      この spec が他 6 画面へ `:65` で機械要求しているのと同じ規約である。
+    */
+    const retry = page.getByTestId('operating-hours-reload-error-retry');
+    await expect(retry).toBeEnabled();
+
+    /*
+      **失敗表示で終わらせない（下界）。** 復帰できることまで見ないと、「失敗を出すだけ・
+      復帰不能」な実装でも通ってしまう。`unroute` すると GET は先に登録した 409 ハンドラの
+      `route.continue()` へ落ちる（PUT だけが 409 のまま）。
+    */
+    await page.unroute('**/api/admin/operating-policy?*');
+    await retry.click();
+    await expect(error).toHaveCount(0);
+    await expect(page.getByTestId('operating-hours-save')).toBeVisible();
   });
 
   test('営業時間: 取得に失敗したとき「未設定＝常時営業」と断定しない', async ({ page }) => {

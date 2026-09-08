@@ -76,6 +76,23 @@ describe('asSignageConfig (#1004)', () => {
     expect(asSignageConfig({ ...valid(), items: [{ ...base, slideUrls: ['u', 7] }] })).toBeNull();
     expect(asSignageConfig({ ...valid(), items: [{ ...base, durationSeconds: '10' }] })).toBeNull();
     expect(asSignageConfig({ ...valid(), items: [{ ...base, message: 42 }] })).toBeNull();
+    /*
+      🔴 **同じヘルパを使う行は、行ごとに縛る**（独立レビュー 2 周目 MINOR-2）。`message` だけを
+      置いていたので、`title` / `imageUrl` / `imageAlt` の `isOptionalString` 行を**個別に**消す
+      変異が 3 種とも生存した。ヘルパが共通でも、呼び出し行は別々に落とせる。
+    */
+    expect(asSignageConfig({ ...valid(), items: [{ ...base, title: 42 }] })).toBeNull();
+    expect(asSignageConfig({ ...valid(), items: [{ ...base, imageUrl: 42 }] })).toBeNull();
+    expect(asSignageConfig({ ...valid(), items: [{ ...base, imageAlt: 42 }] })).toBeNull();
+  });
+
+  /**
+   * `enabled` は checkbox の `checked` に載る。文字列が入っても throw しないが、React が
+   * controlled/uncontrolled の警告を出し、**運用者が触るまで表示と実体がずれる**。
+   */
+  it('項目の enabled が真偽値でなければ通さない', () => {
+    expect(asSignageConfig({ ...valid(), items: [{ id: 'a', type: 'clock', enabled: 'true' }] })).toBeNull();
+    expect(asSignageConfig({ ...valid(), items: [{ id: 'a', type: 'clock' }] })).toBeNull();
   });
 
   it('任意フィールドが無い項目は正当', () => {

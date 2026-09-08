@@ -146,6 +146,12 @@ export function OperatingHoursManager({
     // `applyPolicy(undefined)` が走ると、フォームが黙って既定値へ初期化され、
     // `expectedVersion` が落ちて **#367 の楽観ロックが外れる**。`policy: null`（未設定）とは別物。
     const body = asOperatingPolicyResponse(await res.json().catch(() => null));
+    // 🔴 **書き込みの直前で評価し直す。** `await res.json()` を跨ぐので、パース中に拠点が
+    // 切り替わると A の応答が B の画面へ載る。保存側は `:242` で同じことを明記して守って
+    // いたのに、読み側へ写されていなかった（独立レビュー 2 周目 残存リスク 2）。この増分が
+    // 下の `setLoadFailed(true)` をこの窓へ足したので、放置すると **A の壊れた応答が B の
+    // 画面に「取得できませんでした」を出す**。
+    if (!isCurrentScope(requestedScope)) return;
     if (body === null) {
       setLoadFailed(true);
       return;
@@ -244,6 +250,9 @@ export function OperatingHoursManager({
         if (isCurrentScope(startedWith)) {
           applyPolicy(saved);
           setLoadedScopeKey(startedWith);
+          // フォームはサーバの確定値そのものになった。取得失敗のバナー（「古い可能性が
+          // あります」）を残すと嘘になる（独立レビュー 2 周目 MINOR-5）。
+          setLoadFailed(false);
         }
         success(`${startedFor}: 保存しました`);
       } else {
@@ -348,15 +357,35 @@ export function OperatingHoursManager({
         編集中の内容を捨てないために `loadedScopeKey` は落とさず、**失敗したことだけ**を言う。
       */}
       {loadFailed && loaded ? (
-        <p
+        <div
+          className="notice notice--danger"
           data-testid="operating-hours-reload-error"
           role="alert"
-          aria-live="assertive"
-          style={{ color: color.danger, marginBottom: space.md }}
+          style={{ marginBottom: space.md }}
         >
-          最新の営業時間を取得できませんでした。画面の内容は古い可能性があります。通信状態を
-          確かめて、もう一度お試しください。
-        </p>
+          <strong>最新の営業時間を取得できませんでした</strong>
+          <p style={{ margin: '8px 0 0' }}>
+            画面の内容は古い可能性があります。通信状態を確かめて、もう一度読み込んでください。
+          </p>
+          {/*
+            🔴 **理由だけでなく手段も出す。** この枝へ来る経路は事実上「409 →『最新を読み込む』
+            →失敗」の 1 本だけで、押した瞬間にその「最新を読み込む」ボタン自身が unmount する。
+            導線を置かないと、運用者に残るのは (1) また 409 になると分かっている保存を押して
+            409 の箱を呼び戻す (2) 編集中の内容を捨ててページごとリロード、の 2 つしかない
+            ―― `tests/e2e/admin-read-failure.spec.ts` が他 6 画面へ機械で要求している規約を、
+            このバナーだけが破っていた（独立レビュー 2 周目 MAJOR-A）。
+          */}
+          <div style={{ marginTop: space.sm }}>
+            <Button
+              variant="secondary"
+              data-testid="operating-hours-reload-error-retry"
+              onClick={() => void load()}
+              disabled={!gate.canRefresh}
+            >
+              再試行
+            </Button>
+          </div>
+        </div>
       ) : null}
       {conflict ? (
         <div
