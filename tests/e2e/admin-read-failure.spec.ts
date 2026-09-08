@@ -227,6 +227,65 @@ test.describe('管理: 読み取り失敗が運用者に見える (#870)', () =>
     await expect(page.getByTestId('operating-hours-save')).toBeVisible();
   });
 
+  /**
+   * 🔴 **保存が成功したら、取得失敗のバナーは嘘になる** (#1004)。
+   *
+   * 保存の応答はサーバの確定値そのもので、`applyPolicy(saved.policy)` がフォームへ載せる。
+   * それでも「画面の内容は古い可能性があります」を `role="alert"` で出し続けると、
+   * 運用者は保存できたのか分からない。
+   *
+   * この 1 本が無いと `setLoadFailed(false)` を消す変異が e2e 111 本を素通りする（実測）。
+   * バナーを出す枝（409 →「最新を読み込む」→失敗）を通ってからでないと測れないので、
+   * 上のテストと同じ前置きが要る。
+   */
+  test('営業時間: 保存に成功したら取得失敗のバナーが消える (#1004)', async ({ page }) => {
+    const LOADED = JSON.stringify({
+      policy: {
+        tenantId: 'internal',
+        siteId: 'default-site',
+        timezone: 'Asia/Tokyo',
+        weeklySchedule: { mon: [{ start: '09:00', end: '18:00' }] },
+        fixedHolidays: [],
+        exceptionDates: [],
+        version: 4,
+        updatedAt: '2026-01-01T00:00:00.000Z',
+        updatedBy: 'admin',
+      },
+    });
+
+    await page.goto('/admin/operating-hours');
+    await expect(page.getByTestId('operating-hours-save')).toBeVisible();
+
+    // 409 で復旧導線を出す（GET は通す）。
+    await page.route('**/api/admin/operating-policy**', (route) => {
+      if (route.request().method() === 'GET') return route.continue();
+      return route.fulfill({ status: 409, contentType: 'application/json', body: '{"error":"conflict"}' });
+    });
+    await page.getByTestId('operating-hours-save').click();
+    await expect(page.getByTestId('operating-hours-conflict')).toBeVisible();
+
+    // GET を壊して「最新を読み込む」を失敗させ、バナーを立てる。
+    await respondWrongShape(page, '**/api/admin/operating-policy?*');
+    await page.getByTestId('operating-hours-reload').click();
+    const error = page.getByTestId('operating-hours-reload-error');
+    await expect(error).toBeVisible();
+
+    // **GET は壊したまま**、保存だけ成功させる。バナーを消すのが load ではなく保存の応答で
+    // あることを、これで固定する（GET を直すと、どちらが消したのか区別できない）。
+    await page.unroute('**/api/admin/operating-policy**');
+    await respondWrongShape(page, '**/api/admin/operating-policy?*');
+    await page.route('**/api/admin/operating-policy', (route) =>
+      route.request().method() === 'PUT'
+        ? route.fulfill({ status: 200, contentType: 'application/json', body: LOADED })
+        : route.continue(),
+    );
+    await page.getByTestId('operating-hours-save').click();
+
+    await expect(page.getByTestId('operating-hours-saved')).toBeVisible();
+    // **これが本題。** 確定値を載せたのに「古い可能性があります」を出し続けない。
+    await expect(error).toHaveCount(0);
+  });
+
   test('営業時間: 取得に失敗したとき「未設定＝常時営業」と断定しない', async ({ page }) => {
     await failWith500(page, '**/api/admin/operating-policy?*');
     await page.goto('/admin/operating-hours');
