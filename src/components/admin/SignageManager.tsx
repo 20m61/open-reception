@@ -112,11 +112,15 @@ export function SignageManager({
       /*
         🔴 **書き込みの直前で評価し直す。** `await res.json()` は**新しい中断点**で、この増分が
         作った。跨いでいる間に拠点が変わると、下の 3 つが拠点 B の画面へ書かれる ――
-        (1) 壊れた A の応答が B に偽の「読み込みに失敗しました」を出す、(2) 正常な A の応答が
-        `setConfigScopeKey(A)` を通して B の `dataLoaded` を偽へ落とし、
-        `gate.unavailable` が `'load-failed'` ではなく **`'loading'`** になるので**再試行ボタンも
-        出ない**（`load` の依存は変わらないので再取得も起きない）＝「読み込み中…」で恒久停止。
-        #870 が 1 spec 割いて閉じた欠陥族そのものである。
+        (1) 壊れた A の応答が B に偽の「読み込みに失敗しました」を出す、(2) **正常な** A の応答が
+        `setConfigScopeKey(A)` を通して `dataLoaded` を偽へ落とす。
+        🔴 **(2) の症状は完全な沈黙である**（実測。当初ここに `OperatingHoursManager` の症状を
+        そのまま写して「読み込み中…で恒久停止」と書いていたが、**この画面の描画門は
+        `dataLoaded` ではなく `config`** なので、`setConfig(A)` を通った時点でその枝には入らない
+        —— 独立レビュー 4 周目 MINOR-1）。実際に起こるのは
+        **B のセレクタのまま A の設定が表示され、保存ボタンが恒久的に disabled**、
+        しかもメッセージも再試行導線も一切出ない、という状態である。#870 が 1 spec 割いて
+        閉じた欠陥族より**沈黙的で悪い**。
         同じコミットで `OperatingHoursManager` には入れたのに、**こちらへ写し忘れていた**
         （独立レビュー 3 周目 MAJOR-1）。`scope-gate.ts` の doc が「拠点スコープ移行の P1 は
         ほぼ全部この型」と名指ししている型。
@@ -228,6 +232,14 @@ export function SignageManager({
           // 載せるスコープも同時に更新する（「載っているデータのスコープ」を嘘にしない）。
           setConfigScopeKey(startedWith);
           setConfig(applied);
+          /*
+            ここに `setLoadFailed(false)` は**要らない**（`OperatingHoursManager` には在るので
+            非対称に見える。独立レビュー 4 周目 MINOR-3）。この画面の `loadFailed` は
+            `resolveScopeGate` 経由でしか読まれず、`unavailable()` は `dataLoaded` を先に見るので
+            **`dataLoaded` が真の間は不活性**である。かつ `config` が null の間は保存ボタン自体が
+            押せないので、この行に到達したとき `loadFailed` が描画へ効いている状態はあり得ない。
+            営業時間側は `loadFailed` を主フォーム枝でも描くので、あちらには要る。
+          */
         }
         success(`${startedFor}: 保存しました（${new Date().toLocaleTimeString()}）`);
       } else {

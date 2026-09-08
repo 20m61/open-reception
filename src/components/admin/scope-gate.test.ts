@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { resolveScopeGate } from './scope-gate';
+import { resolveScopeGate, type ScopeGateInput } from './scope-gate';
 
 /**
  * 拠点別画面に共通の「いま何をしてよいか」判定 (#554)。
@@ -154,5 +154,47 @@ describe('resolveScopeGate', () => {
 
   it('データが載っていないときは断定しない', () => {
     expect(resolveScopeGate({ ...loaded, dataLoaded: false }).dataTrusted).toBe(false);
+  });
+
+  /**
+   * 🔴 **不変条件: `unavailable === null` ⟺ `dataLoaded`**（総当たり）。
+   *
+   * 各画面はこれに**依存して**枝を書いている ―― `gate.unavailable !== null` で早期 return
+   * したあとの JSX は「`dataLoaded` が真」を前提にしてよい。`OperatingHoursManager` は
+   * この含意を根拠に `loadFailed && loaded` の `&& loaded` を落とした（効いていないガードを
+   * 残さないため。独立レビュー 3 周目 MINOR-7）。
+   *
+   * ここまでは**例が 4 つ**あるだけで、同値そのものは縛られていなかった（4 周目 MINOR-5）。
+   * 例で押さえた不変条件は、分岐が増えたときに静かに破れる。**入力を総当たりする。**
+   * これが落ちたら、依存している画面側の枝も見直すこと。
+   */
+  it('🔴 不変条件: unavailable が null になるのは dataLoaded のときだけ（総当たり）', () => {
+    const bools = [true, false];
+    const statuses: ScopeGateInput['listStatus'][] = ['idle', 'loading', 'ready', 'error'];
+    let sawNull = 0;
+    let sawNonNull = 0;
+    for (const scopeReady of bools)
+      for (const dataLoaded of bools)
+        for (const sitePending of bools)
+          for (const busy of bools)
+            for (const listStatus of statuses)
+              for (const loadFailed of bools)
+                for (const hasSites of bools) {
+                  const g = resolveScopeGate({
+                    scopeReady,
+                    dataLoaded,
+                    sitePending,
+                    busy,
+                    listStatus,
+                    loadFailed,
+                    hasSites,
+                  });
+                  expect(g.unavailable === null).toBe(dataLoaded);
+                  if (g.unavailable === null) sawNull += 1;
+                  else sawNonNull += 1;
+                }
+    // **下界。** 片側だけを主張すると、全部を非 null にする実装でも空虚に通る。
+    expect(sawNull).toBeGreaterThan(0);
+    expect(sawNonNull).toBeGreaterThan(0);
   });
 });

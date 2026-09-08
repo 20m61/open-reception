@@ -141,7 +141,86 @@ test.describe('管理: 読み取り失敗が運用者に見える (#870)', () =>
 
     await expect(page.getByTestId('signage-error')).toBeVisible();
     await expect(page.getByText('読み込み中…')).toHaveCount(0);
+    /*
+      🔴 **理由だけでなく手段も出す**（営業時間側 `:132` と同じ下界。独立レビュー 4 周目 MINOR-2）。
+      これが無いと、`signage-retry` を**丸ごと削除する変異が e2e 112 本を素通りする**（実測）。
+      落ちるのは構造テストのトークン検査だけで、振る舞い層は無防備だった。
+    */
+    await expect(page.getByTestId('signage-unavailable')).toBeVisible();
+    await expect(page.getByTestId('signage-retry')).toBeEnabled();
     await expect(page.getByRole('heading', { name: '受付を続けられませんでした' })).toHaveCount(0);
+  });
+
+  /**
+   * 🔴 **`await res.json()` を跨いでいる間に拠点が変わる** (#1004、独立レビュー 4 周目 MAJOR-1)。
+   *
+   * `#1004` は各画面に**新しい中断点**（`res.json()`）を作った。跨いだ後に画面へ書く行の前で
+   * `isCurrentScope` を評価し直さないと、拠点 A の応答が拠点 B の画面へ載る。実測した症状は
+   * **完全な沈黙**である —— B のセレクタのまま A の設定が表示され、`configScopeKey` が A に
+   * なるので `dataLoaded` が偽 ⇒ **保存が恒久的に disabled**。`config` は非 null なので
+   * 「読み込み中…」にもならず、メッセージも再試行導線も出ない。
+   *
+   * 🔴 **この窓は `route.fulfill` では作れないが、e2e で作れないわけではない。**
+   * 3 周目の私の判定は「原理的に縛れない」だったが、**それは誤り**だった（4 周目レビューが
+   * 実測で反証した）。`route` はヘッダと本文を分割配送できないだけで、`addInitScript` で
+   * `Response.json()` の解決を保留すれば窓は決定的に作れる。同じ idiom が
+   * `kiosk-calling-stage.spec.ts` / `kiosk-fallback.spec.ts` に既にある。
+   */
+  test('サイネージ: json を読んでいる間に拠点が変わったら、前の拠点の応答を載せない (#1004)', async ({
+    page,
+  }) => {
+    test.skip(
+      !!process.env.PLAYWRIGHT_BASE_URL,
+      'branch-site は seed 由来で、dynamodb backend では seed が無視されるため実環境には存在しない',
+    );
+
+    // 最初の GET だけ `json()` の解決を保留する。**goto より前**でないと既存 document に載らない。
+    await page.addInitScript(() => {
+      const orig = window.fetch.bind(window);
+      let held = false;
+      window.fetch = async (...args: Parameters<typeof fetch>) => {
+        const req = args[0];
+        const url = typeof req === 'string' ? req : req instanceof URL ? req.href : req.url;
+        const method = args[1]?.method ?? (req instanceof Request ? req.method : 'GET');
+        const res = await orig(...args);
+        if (!held && method === 'GET' && url.includes('/api/admin/signage')) {
+          held = true;
+          const origJson = res.json.bind(res);
+          Object.defineProperty(res, 'json', {
+            value: () =>
+              new Promise((resolve) => {
+                (window as unknown as { __release?: () => Promise<void> }).__release = async () => {
+                  resolve(await origJson());
+                };
+              }),
+          });
+        }
+        return res;
+      };
+    });
+
+    await page.goto('/admin/signage');
+    // 1 本目は json で止まっているので、まだ載っていない。
+    await expect(page.getByText('読み込み中…')).toBeVisible();
+
+    // 別拠点へ切り替える。2 本目は保留していないので普通に載る。
+    await page.getByTestId('signage-site-select').selectOption('branch-site');
+    await expect(page.getByTestId('signage-save')).toBeEnabled();
+
+    // ここで 1 本目（前の拠点）の json を解決させる。
+    await page.evaluate(() =>
+      (window as unknown as { __release?: () => Promise<void> }).__release?.(),
+    );
+
+    /*
+      **これが本題。** 前の拠点の応答を載せないので、画面は何も変わらない。
+      門を外すと `setConfigScopeKey(前の拠点)` が走って `dataLoaded` が偽になり、
+      **保存ボタンが恒久的に disabled** になる（実測した変異の症状）。
+    */
+    await expect(page.getByTestId('signage-site-select')).toHaveValue('branch-site');
+    await expect(page.getByTestId('signage-save')).toBeEnabled();
+    await expect(page.getByTestId('signage-error')).toHaveCount(0);
+    await expect(page.getByTestId('signage-unavailable')).toHaveCount(0);
   });
 
   test('サイネージ: 形の違う 200 を読んでも画面が落ちない (#1004)', async ({ page }) => {
