@@ -230,6 +230,8 @@ export type MessageKey =
   | 'checkout.error.throttled'
   | 'checkout.error.notRecognized'
   | 'checkout.error.unexpected'
+  | 'checkout.presentListUnavailable'
+  | 'checkout.presentListRetry'
   // 受付完了画面の退館クレデンシャル提示 (#342)。退館 QR / 短コード / 有効期限（{time} 補間）。
   | 'checkout.credential.title'
   | 'checkout.credential.instruction'
@@ -518,6 +520,9 @@ const ja: DefaultDictionary = {
   'checkout.stayIdLabel': '受付番号',
   'checkout.submit': '退館する',
   'checkout.presentListTitle': '在館中の来訪者',
+  // 🔴 **取得できていないことを、在館者がいないことと言い換えない**（#870 / #973 と同じ規則）。
+  'checkout.presentListUnavailable': '在館中の来訪者を確認できませんでした。退館 QR または退館コードはそのままお使いいただけます。',
+  'checkout.presentListRetry': '一覧を再読み込み',
   'checkout.emptyPresent': '在館中の来訪者はいません。',
   'checkout.checkedInAt': '{time} 入館',
   'checkout.checkoutButton': '退館',
@@ -833,6 +838,8 @@ const en: LocaleDictionary = {
   'checkout.stayIdLabel': 'Reception number',
   'checkout.submit': 'Check out',
   'checkout.presentListTitle': 'Visitors currently on site',
+  'checkout.presentListUnavailable': 'We could not load the list of visitors on site. Your checkout QR or code still works.',
+  'checkout.presentListRetry': 'Reload list',
   'checkout.emptyPresent': 'No visitors are currently on site.',
   'checkout.checkedInAt': 'Checked in at {time}',
   'checkout.checkoutButton': 'Check out',
@@ -1145,6 +1152,8 @@ const ko: LocaleDictionary = {
   'checkout.stayIdLabel': '접수 번호',
   'checkout.submit': '퇴실하기',
   'checkout.presentListTitle': '현재 재실 중인 방문객',
+  'checkout.presentListUnavailable': '재실 중인 방문객 목록을 불러오지 못했습니다. 퇴실 QR 또는 퇴실 코드는 그대로 사용하실 수 있습니다.',
+  'checkout.presentListRetry': '목록 다시 불러오기',
   'checkout.emptyPresent': '현재 재실 중인 방문객이 없습니다.',
   'checkout.checkedInAt': '{time} 입실',
   'checkout.checkoutButton': '퇴실',
@@ -1454,6 +1463,8 @@ const zh: LocaleDictionary = {
   'checkout.stayIdLabel': '受理编号',
   'checkout.submit': '办理退馆',
   'checkout.presentListTitle': '在馆访客',
+  'checkout.presentListUnavailable': '未能加载在馆访客列表。您仍可使用退馆二维码或退馆码。',
+  'checkout.presentListRetry': '重新加载列表',
   'checkout.emptyPresent': '目前没有在馆访客。',
   'checkout.checkedInAt': '{time} 入馆',
   'checkout.checkoutButton': '退馆',

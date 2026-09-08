@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   DEFAULT_LOCALE,
   htmlLangFor,
@@ -63,6 +63,18 @@ export function CheckoutFlow() {
   const [code, setCode] = useState('');
   const [targetLabel, setTargetLabel] = useState('');
   const [present, setPresent] = useState<PresentStaySummary[]>([]);
+  /**
+   * 🔴 **取得できていないことを、在館者がいないことと言い換えない**（独立レビュー 3 周目 MAJOR-A）。
+   *
+   * この増分は `stays` が読めないときの**クラッシュ**を消したが、その結果
+   * 「在館中の来訪者はいません。」と**断言する**画面になっていた（実測）。
+   * **大声の失敗を沈黙の誤情報へ変換した**ことになる ―― #870 / #973 が管理画面で
+   * 潰したのとまったく同じ型を、来訪者導線に作っていた。
+   *
+   * この一覧は QR もコードも失くした来訪者を staff が照合する材料なので、
+   * 「いません」の誤情報は人の取り違えに直結する。
+   */
+  const [presentLoadFailed, setPresentLoadFailed] = useState(false);
   const [pending, setPending] = useState<Pending | null>(null);
   // エラーは「理由コード」で保持し、表示時に現在の locale で解決する。
   // これにより (a) 言語切替でエラーも再ローカライズされ、(b) `?ct=`/`?locale=` の
@@ -88,33 +100,32 @@ export function CheckoutFlow() {
   }, []);
 
   /*
-    🔴 **出した文言が見えなければ、出していないのと同じ**（独立レビュー 2 周目 MAJOR-2）。
+    🔴 **失敗の文言が画面外に出る問題は、この増分では直さない**（独立レビュー 3 周目 MAJOR-B/C）。
 
-    このアラートは `screen__body` の**先頭**にあるが、コード経路の送信ボタンは画面下方に
-    ある。iPad portrait（810x1080）で退館コードを送ると、実測で
-    `boundingClientRect().top = -470`（＝**ビューポート外**）だった。来訪者から見た変化は
-    「処理中…」がラベルへ戻るだけで、増分 2 で足した**有人導線が、それを最も必要とする
-    経路で 1 度も見えない**（原則 3「システム状態を沈黙させない」/ 5「人につながる逃げ道」）。
+    2 周目に「`errorReason` が付いたらアラートへフォーカスを移す」を入れたが、**それ自体が
+    2 つの欠陥を作った**（実測）:
+      B. `?ct=` 自動解決の応答が返ったとき、**コード欄に入力中の来訪者からフォーカスを奪う**
+         （iPad ではソフトウェアキーボードが閉じる）。期限切れ QR で来た来訪者の
+         もっとも自然な回復行動を、割り込みで壊していた
+      C. 打ち間違い（最頻の失敗）は `setErrorReason` が同値なので React がベイルアウトし、
+         **2 回目以降は effect が走らない**。走ったら走ったで、今度は直すべき入力欄が
+         フォールドの下（`top=1246`）へ落ちる
 
-    `role="alert"` は読み上げるが**スクロールもフォーカスも動かさない**。失敗を出したら
-    そこへ運ぶ。`focus()` にしているのは、視覚だけでなくキーボード / VoiceOver の位置も
-    揃えるため（`tabIndex={-1}` は「プログラムからのみフォーカス可能」の意）。
+    アラートと当該入力欄が**同じビューポートに入らない**のが根because で、スクロールや
+    フォーカスの調整では解けない（情報設計の問題）。3 周続けて「直した結果が次の欠陥」に
+    なったので、規約どおり**足すのをやめて外す**。#1018 で別に扱う。
 
-    ⚠️ これは**この増分が作った欠陥ではない**（`not_recognized` など既存の失敗も同じ位置に
-    出る。レビューの実測で確認済み）。それでも本 PR で直すのは、増分 2 が「読めない 200 でも
-    受付にお問い合わせくださいと出す」を**主張として掲げた**以上、見えないままでは
-    その主張が実態より強くなるからである。
+    この増分が担うのは「確かめられた 200 だけを載せる」ことであって、失敗表示の配置ではない。
   */
-  const errorRef = useRef<HTMLParagraphElement | null>(null);
-  useEffect(() => {
-    if (errorReason === null) return;
-    errorRef.current?.focus({ preventScroll: false });
-  }, [errorReason]);
 
   const loadPresent = useCallback(async () => {
     try {
       const res = await fetch('/api/kiosk/checkout');
-      if (res.ok) {
+      if (!res.ok) {
+        setPresentLoadFailed(true);
+        return;
+      }
+      {
         /*
           🔴 **形を確かめてから載せる**（#1004 増分 2）。`as` は実行時に何も検査しないので、
           `stays` が欠けた 200 で `setPresent(undefined)` が走り、次のレンダーの
@@ -124,10 +135,16 @@ export function CheckoutFlow() {
           （下の catch と同じ扱い。一覧取得の失敗は致命的でない）。
         */
         const stays = asPresentStayList(await res.json().catch(() => null));
-        if (stays !== null) setPresent(stays);
+        if (stays === null) {
+          setPresentLoadFailed(true);
+          return;
+        }
+        setPresent(stays);
+        setPresentLoadFailed(false);
       }
     } catch {
-      // 一覧取得失敗は致命的でない（QR/コードで退館できる）。
+      // 一覧取得失敗は致命的でない（QR/コードで退館できる）が、**黙らない**。
+      setPresentLoadFailed(true);
     }
   }, []);
 
@@ -351,14 +368,7 @@ export function CheckoutFlow() {
         <p className="screen__lead">{tr('checkout.lead')}</p>
 
         {error ? (
-          <p
-            ref={errorRef}
-            tabIndex={-1}
-            data-testid="checkout-error"
-            role="alert"
-            className="notice"
-            style={errorStyle}
-          >
+          <p data-testid="checkout-error" role="alert" className="notice" style={errorStyle}>
             {error}
           </p>
         ) : null}
@@ -452,7 +462,21 @@ export function CheckoutFlow() {
           <h2 id="checkout-present-title" style={sectionTitle}>
             {tr('checkout.presentListTitle')}
           </h2>
-          {present.length === 0 ? (
+          {presentLoadFailed ? (
+            <>
+              <p data-testid="checkout-present-unavailable" role="status" className="field__label">
+                {tr('checkout.presentListUnavailable')}
+              </p>
+              <button
+                type="button"
+                className="btn btn--secondary"
+                data-testid="checkout-present-retry"
+                onClick={() => void loadPresent()}
+              >
+                {tr('checkout.presentListRetry')}
+              </button>
+            </>
+          ) : present.length === 0 ? (
             <p data-testid="checkout-empty" className="field__label">
               {tr('checkout.emptyPresent')}
             </p>

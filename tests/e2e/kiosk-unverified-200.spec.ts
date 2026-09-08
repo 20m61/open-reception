@@ -66,6 +66,19 @@ test.describe('来訪者導線: 形の違う 200 で受付・退館を止めな�
       残っていること**まで主張する。
     */
     await expect(page.getByTestId('checkout-code')).toBeVisible();
+
+    /*
+      🔴 **取得できていないことを、在館者がいないことと言い換えない**
+      （独立レビュー 3 周目 MAJOR-A）。この増分は当初、`stays` が読めないときの
+      **クラッシュ**を消した結果「在館中の来訪者はいません。」と**断言する**画面にして
+      いた ―― **大声の失敗を沈黙の誤情報へ変換**していた。この一覧は staff が来訪者を
+      照合する材料なので、「いません」は人の取り違えに直結する。
+      #870 / #973 が管理画面で潰したのと同じ型を、来訪者導線に作っていた。
+    */
+    await expect(page.getByTestId('checkout-present-unavailable')).toBeVisible();
+    await expect(page.getByTestId('checkout-empty')).toHaveCount(0);
+    // 理由だけでなく手段も出す（#870 が 7 画面へ機械要求しているのと同じ規約）。
+    await expect(page.getByTestId('checkout-present-retry')).toBeEnabled();
   });
 
   /**
@@ -120,17 +133,16 @@ test.describe('来訪者導線: 形の違う 200 で受付・退館を止めな�
     await expect(error).toContainText('受付にお問い合わせください');
     await expect(error).not.toContainText('受付番号を入力してください');
     /*
-      🔴 **出した文言が見えることまで縛る**（独立レビュー 2 周目 MAJOR-2）。
-      `toBeVisible()` は Playwright の可視判定で、**ビューポート外でも真**になる。
-      このアラートは `screen__body` の先頭にあり、コード送信ボタンは画面下方なので、
-      実測では `top = -470`（画面外）だった ―― 有人導線を、それを最も必要とする経路で
-      1 度も見せていなかった。**見えているか**を直接測る。
+      ⚠️ **「見えているか」はここでは主張しない**（独立レビュー 3 周目 MAJOR-B/C）。
+
+      2 周目に「アラートへフォーカスを移す」修正とビューポート内判定を入れたが、それ自体が
+      (a) 入力中の来訪者からフォーカスを奪う (b) 同値の再セットでは effect が走らず 2 回目は
+      また画面外、という**2 つの欠陥を作った**。アラートと当該入力欄が同じビューポートに
+      入らないのが根で、スクロール調整では解けない（情報設計の問題）。**#1018 で別に扱う。**
+
+      したがってこの spec が主張するのは「**正しい文言が描かれること**」までである。
+      「来訪者に見えること」は**まだ縛れていない** ―― PR の主張をここより強くしない。
     */
-    const inView = await error.evaluate((el) => {
-      const r = el.getBoundingClientRect();
-      return r.top >= 0 && r.bottom <= window.innerHeight;
-    });
-    expect(inView).toBe(true);
     // 確認画面へは進めない（進むと `summary` を読んで落ちる）。
     await expect(page.getByTestId('checkout-confirm')).toHaveCount(0);
   });
@@ -170,6 +182,14 @@ test.describe('来訪者導線: 形の違う 200 で受付・退館を止めな�
     // 呼び出しは成立しないので失敗画面へ倒れる（黙って calling に留まらせない）。
     await expect(page.getByTestId('result-failed')).toBeVisible();
     await expectNotCrashed(page);
+    /*
+      🔴 **理由の選択まで縛る**（独立レビュー 3 周目 MAJOR-E）。`server` を `network` へ戻す
+      変異が生存していた ―― `shouldOfferAlternativeContact('network')` は false なので
+      **失敗画面から代替導線が消える**（実測でボタンが 1 つ減る）。
+      2 周目に「理由の選択まで縛る」を入れたとき、**同型 3 本のうちこの 1 本に入れ忘れて
+      いた**（#788 の教訓と同型）。到達はしているので代表窓口の約束は果たせる。
+    */
+    await expect(page.getByTestId('use-fallback')).toBeVisible();
 
     /*
       🔴 **これが本題。** `undefined` / 空文字が URL に入っていないこと。
