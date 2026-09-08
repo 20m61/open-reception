@@ -502,6 +502,7 @@ test.describe('管理: 書き込み失敗が運用者に見える (#870 増分 0
     const error = page.getByTestId('security-error');
     await expect(error).toBeVisible();
     await expect(error).toContainText('分かりません');
+    await expect(error).toContainText('時間をおいて');
     await expect(page.getByTestId('security-view-stale')).toBeVisible();
   });
 
@@ -562,9 +563,10 @@ test.describe('管理: 書き込み失敗が運用者に見える (#870 増分 0
     await page.getByTestId('emergency-stop').click();
     await page.getByTestId('emergency-confirm').click();
 
-    await expect(page.getByTestId('emergency-error')).toBeVisible();
+    const mismatch = page.getByTestId('emergency-error');
+    await expect(mismatch).toBeVisible();
+    await expect(mismatch).toContainText('反映されませんでした');
     await expect(page.getByTestId('emergency-saved')).toHaveCount(0);
-    await expect(page.getByTestId('emergency-state')).toContainText('通常稼働');
     await expect(page.getByTestId('security-view-stale')).toBeVisible();
   });
 
@@ -585,6 +587,8 @@ test.describe('管理: 書き込み失敗が運用者に見える (#870 増分 0
     await expect(error).toBeVisible();
     await expect(error).toContainText('分かりません');
     await expect(error).not.toContainText('できませんでした');
+    // 🔴 `unreadable` と同じ文言へ潰す変異を落とす。5xx にだけある「押し直してよい」が本題。
+    await expect(error).toContainText('時間をおいて');
     await expect(page.getByTestId('security-view-stale')).toBeVisible();
   });
 

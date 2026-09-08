@@ -98,7 +98,16 @@ export function SecurityManager() {
     緊急停止も同じで、`emergencyStop` 以外は載せない。
   */
 
-  /** 取得した状態を画面へ載せる。**GET 専用**（全フィールドの権威を持つのは GET だけ）。 */
+  /**
+   * 取得した状態を画面へ載せる。**GET 専用**（全フィールドの権威を持つのは GET だけ）。
+   *
+   * 🔴 **`viewStale` は事実上「再読み込みするまで消えない」。** `load()` は mount と
+   * `AdminReadGate` の再試行からしか呼ばれず、`view` が非 null になった後の再取得導線は
+   * 無い（4 周目に置いた「取り直す」は 5 周目に撤回した）。書き込みの応答で下ろすことも
+   * **しない** —— 書き込みの応答はスナップショットなので、表示と一致していても
+   * 「一致するはずの順序で処理された」ことまでは言えない。ラッチであることを承知で
+   * こちらへ倒している（文言が案内する行動＝再読み込みは実際に実行できる）。
+   */
   const applyView = useCallback(
     (v: SecurityView) => {
       setPinRequired(v.pinRequired);
@@ -289,10 +298,15 @@ export function SecurityManager() {
           3 周目 MAJOR-1 と同じ族が閉じ切れていなかった）。
         */
         if (applied.emergencyStop !== emergencyStop) {
-          applyEmergencyResult(applied);
+          /*
+            要求と違う状態が返った＝**要求は反映されていない**。この画面ではボタンの枝が
+            `view.emergencyStop` で決まるので、ここでの `applied.emergencyStop` は必ず
+            表示中の値と同値になる（＝載せ直す意味が無いので `applyEmergencyResult` は
+            呼ばない。呼ぶと「サーバーの値で訂正している」と誤読される。8 周目 MINOR-1）。
+          */
           setViewStale(true);
           setEmergencyFailed(
-            `${label}: サーバーが別の状態を返しました。上の表示を確かめ、必要ならもう一度お試しください。`,
+            `${label}: 要求が反映されませんでした。時間をおいて、もう一度お試しください。`,
           );
           return;
         }

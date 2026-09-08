@@ -40,7 +40,16 @@ describe('管理画面の保存失敗表示 (#973)', () => {
   });
 
   it('どの失敗も空でない（空文字は画面にも読み上げにも出ない）', () => {
-    for (const failure of ['rejected', 'unreachable', 'unreadable'] satisfies SaveFailure[]) {
+    // 🔴 **配列で列挙しない。** `satisfies SaveFailure[]` は**部分集合でも通る**ので、
+    // 値を足しても落ちない（`server-error` を足したときに実際そうだった）。
+    // `Record<SaveFailure, …>` にすると、足した瞬間に型で落ちる。
+    const ALL: Record<SaveFailure, true> = {
+      rejected: true,
+      'server-error': true,
+      unreachable: true,
+      unreadable: true,
+    };
+    for (const failure of Object.keys(ALL) as SaveFailure[]) {
       expect(saveFailureMessage(failure).trim().length).toBeGreaterThan(0);
     }
   });
@@ -51,11 +60,16 @@ describe('管理画面の保存失敗表示 (#973)', () => {
    * 高く、「通信状態を確かめてください」は運用者を**誤った方向へ調べに行かせる**。
    */
   describe('unreadable（届いたが読めなかった）', () => {
-    it('3 つとも別の文言になる', () => {
-      const all = (['rejected', 'unreachable', 'unreadable'] satisfies SaveFailure[]).map((f) =>
-        saveFailureMessage(f),
-      );
-      expect(new Set(all).size).toBe(3);
+    it('すべて別の文言になる', () => {
+      const every: Record<SaveFailure, true> = {
+        rejected: true,
+        'server-error': true,
+        unreachable: true,
+        unreadable: true,
+      };
+      const keys = Object.keys(every) as SaveFailure[];
+      const all = keys.map((f) => saveFailureMessage(f));
+      expect(new Set(all).size).toBe(keys.length);
     });
 
     it('通信を疑わせない（届いてはいる）', () => {
