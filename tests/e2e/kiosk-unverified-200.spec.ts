@@ -106,7 +106,19 @@ test.describe('来訪者導線: 形の違う 200 で受付・退館を止めな�
 
     await expectNotCrashed(page);
     // 黙って入力画面に留まらせない（何が起きたか分からないまま押し続けることになる）。
-    await expect(page.getByTestId('checkout-error')).toBeVisible();
+    const error = page.getByTestId('checkout-error');
+    await expect(error).toBeVisible();
+    /*
+      🔴 **理由の選択まで縛る。** 「エラーが出た」だけを見ていると、理由を `invalid` へ
+      戻す変異が素通りする（実測で生存した）。`invalid` は
+      (1) **来訪者の入力のせいにし**（「受付番号を入力してください」）
+      (2) いまの画面に無い欄を指し（#328 で「退館コード」と「呼び出し先」に変わった）
+      (3) 再試行では直らないのに**有人導線が無い**。
+      応答が読めなかったのは来訪者の落ち度ではないので、`expired` / `throttled` と同じく
+      受付への導線を出す（`docs/experience/README.md` 原則 5）。
+    */
+    await expect(error).toContainText('受付にお問い合わせください');
+    await expect(error).not.toContainText('受付番号を入力してください');
     // 確認画面へは進めない（進むと `summary` を読んで落ちる）。
     await expect(page.getByTestId('checkout-confirm')).toHaveCount(0);
   });
