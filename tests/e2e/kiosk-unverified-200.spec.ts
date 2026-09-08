@@ -82,6 +82,31 @@ test.describe('来訪者導線: 形の違う 200 で受付・退館を止めな�
   });
 
   /**
+   * 🔴 **「まだ読んでいない」を「0 件」と言わない**（独立レビュー 3 周目 MAJOR-A / 4 周目 MAJOR-2 /
+   * 5 周目 MAJOR-1）。
+   *
+   * 同じ欠陥を 2 度指摘され、4 周目で `loading` 状態を足して直したのに、**縛りを 1 本も
+   * 付けていなかった** ―― `presentReadState === 'loading'` を `false` にする 1 トークンの変異が
+   * e2e 11 本すべてを素通りし、遅い初回ロード中に「在館中の来訪者はいません。」と断言する
+   * 画面へ戻れた（5 周目の実測）。規約「修正の前後で同じ変異を当て、kill が減っていないことを
+   * 確かめる」に真正面から当たる。
+   */
+  test('退館: 読み込み中に「いません」と断言しない', async ({ page }) => {
+    // 応答を遅らせて loading の窓を作る（`route` で握って 3 秒後に通す）。
+    await page.route('**/api/kiosk/checkout', async (route) => {
+      await new Promise((r) => setTimeout(r, 3000));
+      return route.continue();
+    });
+    await page.goto('/kiosk/checkout');
+
+    // **これが本題。** まだ読んでいない間は「確認しています…」であって「いません」ではない。
+    await expect(page.getByTestId('checkout-present-loading')).toBeVisible();
+    await expect(page.getByTestId('checkout-empty')).toHaveCount(0);
+    // 下界。一覧を待っている間も QR / コードの退館導線は使える。
+    await expect(page.getByTestId('checkout-code')).toBeVisible();
+  });
+
+  /**
    * 🔴 **実運用でいちばん起きるのは 503 / 通信断**（独立レビュー 4 周目 MAJOR-4）。
    * 形の違う 200 の枝だけを縛っていたので、`!res.ok` で黙る変異が生存していた。
    */
@@ -162,6 +187,12 @@ test.describe('来訪者導線: 形の違う 200 で受付・退館を止めな�
 
     // **これが本題。** 失敗は添えるだけで、載っているものは消さない。
     await expect(page.getByTestId('checkout-present-item')).toHaveCount(before);
+    /*
+      🔴 **添える文言まで縛る**（独立レビュー 5 周目 MINOR-1）。testid は
+      「取得できなかった」と共有なので、一覧を出しながら「確認できませんでした」と言う
+      **矛盾画面**にする変異が素通りしていた。載っているなら「前回時点」と言う。
+    */
+    await expect(page.getByTestId('checkout-present-unavailable')).toContainText('前回時点');
   });
 
   /**
@@ -221,7 +252,7 @@ test.describe('来訪者導線: 形の違う 200 で受付・退館を止めな�
       2 周目に「アラートへフォーカスを移す」修正とビューポート内判定を入れたが、それ自体が
       (a) 入力中の来訪者からフォーカスを奪う (b) 同値の再セットでは effect が走らず 2 回目は
       また画面外、という**2 つの欠陥を作った**。アラートと当該入力欄が同じビューポートに
-      入らないのが根で、スクロール調整では解けない（情報設計の問題）。**#1018 で別に扱う。**
+      入らないのが根因で、スクロール調整では解けない（情報設計の問題）。**#1018 で別に扱う。**
 
       したがってこの spec が主張するのは「**正しい文言が描かれること**」までである。
       「来訪者に見えること」は**まだ縛れていない** ―― PR の主張をここより強くしない。

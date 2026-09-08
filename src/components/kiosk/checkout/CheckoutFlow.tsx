@@ -497,7 +497,14 @@ export function CheckoutFlow() {
                 className="btn btn--secondary"
                 data-testid="checkout-present-retry"
                 onClick={() => void loadPresent()}
-                disabled={presentBusy}
+                /*
+                  🔴 **`disabled` は付けない**（独立レビュー 5 周目 MINOR-2）。応答が返らない
+                  回線（ブラックホール）だと `finally` に到達せず、**再読み込みが永久に
+                  押せなくなる** ―― 4 周目で再入防止のために足した `disabled` が、
+                  新しい行き止まりを作っていた。再入そのものは `presentSeq` の連番が
+                  既に安全にしている（古い応答は捨てられる）ので、`disabled` は要らない。
+                  進行中であることは `aria-busy` とラベルで伝える（#792 の「処理中≠押せない」）。
+                */
                 aria-busy={presentBusy}
               >
                 {presentBusy ? tr('common.processing') : tr('checkout.presentListRetry')}
@@ -509,9 +516,13 @@ export function CheckoutFlow() {
               {tr('checkout.presentListLoading')}
             </p>
           ) : presentReadState === 'failed' ? null : present.length === 0 ? (
+            // 🔴 前回時点が 0 件でも、再取得に失敗しているなら**断言しない**
+            // （独立レビュー 5 周目 MINOR-5。上の「前回時点」の但し書きだけが残る）。
+            presentFailed ? null : (
             <p data-testid="checkout-empty" className="field__label">
               {tr('checkout.emptyPresent')}
             </p>
+            )
           ) : (
             <ul data-testid="checkout-present-list" style={listStyle}>
               {present.map((s) => (
