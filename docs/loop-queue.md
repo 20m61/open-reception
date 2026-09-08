@@ -9,6 +9,73 @@
 > | AWS の窓を開ける（`./scripts/aws-issue-credentials.sh`） | 短命 STS の発行は darwin 限定で、`scripts/hooks/guard-destructive.sh` が機械強制（#675）。**窓さえ開けばデプロイ本体はクラウドから wrapper 経由で流せる** | #675 / `docs/runbook-cloud-aws-deploy.md` |
 > | 実機 iPad UAT | 横向きで部署カードが何枚見えるか / 部署を開いて戻れるか / 騒音下で不在告知が聞き取れるか | #807 / #65 |
 >
+## 2026-09-08 の周回（#973 第 2 増分・独立レビュー 9 周）
+
+### #973 第 2 増分: 設定保存の通信失敗（PR #1003・squash `5b874fa`）
+
+設定系 7 画面の `save` は `try { … } finally { setBusy(false) }` で **`catch` が無く**、
+`fetch` が reject するとボタンが戻るだけだった。台帳は **76 → 69**。
+
+**この周回の主題は増分そのものではなく、独立レビューを 9 周要したこと**である。
+BLOCKER は 9 周とも 0、MAJOR は **4 → 5 → 2 → 3 → 2 → 2 → 1 → 2 → 0**。
+
+#### 🔴 4〜6 周目の指摘は「直前の自分の修正が作った欠陥」だった
+
+`.claude/rules/opus5-autonomous-loop.md`「レビューの停止条件」が言う**収束していない**状態に
+3 周連続で入った。抜け方は毎回**足すのではなく外す**ことだった:
+
+| 周 | 自分が足したもの | それが作った欠陥 | 対処 |
+| --- | --- | --- | --- |
+| 3 | 保存と緊急停止の相互 `disabled`（ロストアップデート対策） | `save` に締切が無く `busy` が**有界でない**ので、保存 1 回で**緊急停止が恒久的に押せなくなる** | 結合を撤回（守るなら API 側の楽観ロック → #1006） |
+| 4 | 「取り直す」導線 | 失敗が**完全に無言**（`loadFailed` は `if (!view)` の枝にしか出ない）＝ **#973 が無くそうとしている欠陥を新設していた** | 導線ごと撤回（#973 の外側の作り込み） |
+| 6 | 世代ガード `emergencySeq` | 順序の**片方しか塞がない**（緊急停止が先に飛行中だと素通り） | 世代を数えるのをやめ、**順序に依存しない不変条件**へ（機構は減った） |
+
+**教訓の候補**（`/loop-retro` へ）: 「値を調整している」と同型で、**「機構を足している」も
+自分では気づけない**。3・4・6 周目の追加はどれもその場では正当な前進に見えた。気づいたのは
+毎回レビューに名指しされてからで、しかも 3 度とも**正しい対処は撤回**だった。
+
+#### 🔴 静的検査は「呼び出しが在る」しか見ない ―― 7 種の変異が e2e でしか落ちない
+
+配線検査（`fetch-failure-scan` を共有）は綴りの存在検査なので、次はすべて**素通り**する:
+報告を条件で包む / `if (res.ok)` を反転して嘘をつく / 門を広げて報告ごと飲み込む /
+締切を外して画面を固まらせる / 送信中の表示を消す / 宛先ラベルを落とす /
+`unreadable` を `unreachable` に丸める。実測で確かめ、注入 e2e（`broken-200` /
+応答を返さない `slow` / GET も落とす `failAll` / 形の違う 200）を足して全部 kill した。
+
+#### 🔴 「片方の順序だけ縛った検査」は鏡像を取りこぼす
+
+6 周目の世代ガードは e2e 付きでレビューを通ったが、**逆順を踏むテストが無かった**ため
+半分開いたまま「直った」と記録された。7 周目に両方の順序を縛って初めて落ちた。
+**順序が絡む不変条件は、必ず両方向を書く。**
+
+#### 🔴 `satisfies T[]` は部分集合でも通る ―― 値を足しても落ちない
+
+8 周目に足した `server-error` を縛るオラクルが無く、文言を `unreadable` と同じに潰す変異が
+**unit・e2e 82 本を全部素通り**した。原因は
+`['rejected','unreachable','unreadable'] satisfies SaveFailure[]` が**部分集合でも型検査を
+通る**こと。`Record<SaveFailure, true>` へ替えると、値を足した瞬間に型で落ちる。
+**「網羅」を配列リテラルで表現しない。**
+
+#### 偽の赤 / flaky を 2 件、原因まで戻して直した
+
+- **偽の赤**: e2e 1 本が落ちたが、自分のプロセス掃除で `.next` を壊したまま走らせていた。
+  マーカーを埋めた再ビルドで正しい経路を通ることを確認し、**テストは消していない**
+- **flaky**: 「サイネージ: 失敗の文言に拠点が入る」。retry で緑になるので待ち方に見えるが、
+  原因は**掴んだ値が別物**だった ―― 拠点一覧が載る前の `SiteScopeSelect` は
+  `<option value={siteId}>{siteId}</option>`（＝拠点 ID）を描くので、そこで読むと ID を掴み、
+  保存側は載った後の**名前**を使う。待ち方ではなく**読む対象**を直した
+
+#### スコープ外として起票したもの
+
+| Issue | 内容 |
+| --- | --- |
+| #1004 | 形を確かめない 200 を状態として載せている（6 manager。サイネージは画面が落ちる） |
+| #1005 | 設定保存に締切が無く、応答が返らないと保存ボタンが固まったまま戻らない |
+| #1006 | `PUT /api/admin/security` に楽観ロックが無く、設定保存が緊急停止を黙って巻き戻せる |
+| #1007 | 失敗の宛先ラベルにテナントが入らない |
+| #1008 | 保存が「送った値どおりに適用されたか」を見ておらず、認可設定が黙って元へ戻る |
+| #1009 | 5xx の扱いが 7 画面で非対称（正本が宣言した規則を 6 画面が破っている） |
+
 ## 2026-09-07 の周回（#985 のゲート道具復旧・#973 第 1 増分）
 
 ### #985: 欠けたゲート道具を SessionStart で戻す（PR #1000・クローズ済み）
@@ -1795,6 +1862,7 @@ VRT の `mask` は要素の**矩形**を覆う。よって (1) 要素が高く�
 | 2026-09-03 | `git push origin --delete feat/datatable-read-state`（PR #965 マージ済み） | クラウドから削除不能。`git push --delete` は `send-pack: unexpected disconnect` → `Everything up-to-date` と出て**返り値だけでは成功に見える**（4 回リトライしても残存）。`gh api -X DELETE .../git/refs/heads/...` は proxy が `Write access to this GitHub API path is not permitted`（403） |
 | 2026-09-04 | `git push origin --delete fix/platform-silent-fetch-failures`（PR #972 / #968 マージ済み・squash `db43964`） | 同上。`RPC failed; HTTP 403` → `send-pack: unexpected disconnect` → `Everything up-to-date`、**`rc=0`**。`git ls-remote --heads origin <ref>` で残存を確認済み |
 | 2026-09-04 | `git push origin --delete fix/admin-list-read-states`（PR #974 / #966 マージ済み・squash `d98f122`） | 同上（`rc=0` のまま `git ls-remote` で残存を確認）|
+| 2026-09-08 | `git push origin --delete fix/admin-save-unreachable`（PR #1003 マージ済み・squash `5b874fa`） | 同上。**恒久対処は GitHub の自動削除**: `gh api -X PATCH repos/20m61/open-reception --field delete_branch_on_merge=true`（これを入れれば以後この行は増えない）|
 
 🔴 **ブランチ削除は「消えたこと」を `git ls-remote --heads origin <ref>` で確かめる。**
 `git push origin --delete` の出力に `Everything up-to-date` が出ても、それは削除が成功した
