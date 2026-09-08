@@ -90,6 +90,15 @@ describe('asSignageConfig (#1004)', () => {
    * `enabled` は checkbox の `checked` に載る。文字列が入っても throw しないが、React が
    * controlled/uncontrolled の警告を出し、**運用者が触るまで表示と実体がずれる**。
    */
+  /**
+   * 🔴 生存変異の位置が、私が書かなかったテストと一致していた（独立レビュー 3 周目 MINOR-1）。
+   * `id` は `key` と HTML の `id`/`htmlFor` に載るので、数値だと属性が数字始まりになる。
+   */
+  it('項目の id が文字列でなければ通さない', () => {
+    expect(asSignageConfig({ ...valid(), items: [{ id: 42, type: 'clock', enabled: true }] })).toBeNull();
+    expect(asSignageConfig({ ...valid(), items: [{ type: 'clock', enabled: true }] })).toBeNull();
+  });
+
   it('項目の enabled が真偽値でなければ通さない', () => {
     expect(asSignageConfig({ ...valid(), items: [{ id: 'a', type: 'clock', enabled: 'true' }] })).toBeNull();
     expect(asSignageConfig({ ...valid(), items: [{ id: 'a', type: 'clock' }] })).toBeNull();

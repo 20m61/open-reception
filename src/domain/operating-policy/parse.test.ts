@@ -158,6 +158,25 @@ describe('asServiceOperatingPolicy (#1004)', () => {
     }
   });
 
+  /**
+   * 🔴 **生存変異の位置が、私が書かなかったテストと一致していた**（独立レビュー 3 周目 MINOR-1）。
+   * 行列を「コードの各 `if`」からではなく「自分が書いたテスト」から導くと、穴がそのまま写る
+   * ―― CLAUDE.md「自分で導いた述語をそのままテストにすると、テストとコードが同じ誤りを
+   * 共有する」の同型。今回は `parse.ts` の `if` を機械的に列挙して当て直した。
+   */
+  it('例外日の date が文字列でなければ通さない', () => {
+    expect(asServiceOperatingPolicy({ ...valid(), exceptionDates: [{ date: 42, closed: true }] })).toBeNull();
+    expect(asServiceOperatingPolicy({ ...valid(), exceptionDates: [{ closed: true }] })).toBeNull();
+  });
+
+  it('crossesMidnight は省略できるが、あるなら真偽値であること', () => {
+    const mk = (r: unknown) => asServiceOperatingPolicy({ ...valid(), weeklySchedule: { mon: [r] } });
+    expect(mk({ start: '22:00', end: '02:00', crossesMidnight: true })).not.toBeNull();
+    expect(mk({ start: '09:00', end: '18:00' })).not.toBeNull();
+    // truthy な非真偽値は `formatTimeRanges` が日跨ぎとして描き、往復で true として再保存される。
+    expect(mk({ start: '09:00', end: '18:00', crossesMidnight: 'no' })).toBeNull();
+  });
+
   it('例外日の closed が真偽値でなければ通さない', () => {
     expect(
       asServiceOperatingPolicy({ ...valid(), exceptionDates: [{ date: '2026-05-03', closed: 'true' }] }),
@@ -225,7 +244,22 @@ describe('asOperatingPolicyResponse (#1004)', () => {
 describe('asSavedOperatingPolicyResponse (#1004)', () => {
   it('保存の応答に policy が入っていれば返す', () => {
     const policy = valid();
-    expect(asSavedOperatingPolicyResponse({ policy })).toEqual(policy);
+    expect(asSavedOperatingPolicyResponse({ policy })).toEqual({ ok: true, policy });
+  });
+
+  /**
+   * 🔴 **これが unit で縛れるようになった理由**（独立レビュー 3 周目 MINOR-2）。
+   * 以前は `ServiceOperatingPolicy | null` を返していたので「読めなかった」と
+   * 「`policy` が null だった」が**どちらも null** に畳まれ、この関数を GET 用の述語へ戻す
+   * 変異を **unit では原理的に殺せなかった**（区別を持つのは e2e 1 本だけだった）。
+   * 判別可能な戻り値にしたので、ここで直接主張できる。
+   */
+  it('🔴 GET 用の述語との違いが戻り値に出る（読めなかった／未設定を畳まない）', () => {
+    // GET 用は「未設定」を正当として通す。保存用は同じ入力を ok:false にする。
+    expect(asOperatingPolicyResponse({ policy: null })).toEqual({ policy: null });
+    expect(asSavedOperatingPolicyResponse({ policy: null })).toEqual({ ok: false });
+    // 読めなかった 200 も ok:false。両者は同じ扱いでよいが、**成功と混ざらない**ことが要点。
+    expect(asSavedOperatingPolicyResponse({ ok: true })).toEqual({ ok: false });
   });
 
   /**
@@ -234,11 +268,11 @@ describe('asSavedOperatingPolicyResponse (#1004)', () => {
    * `expectedVersion` が落ちてサーバが 409 → 画面は「ほかの管理者が更新済み」という嘘を出す。
    */
   it('policy: null は保存の応答としては通さない', () => {
-    expect(asSavedOperatingPolicyResponse({ policy: null })).toBeNull();
+    expect(asSavedOperatingPolicyResponse({ policy: null }).ok).toBe(false);
   });
 
   it('形が違えば通さない', () => {
-    expect(asSavedOperatingPolicyResponse({ ok: true })).toBeNull();
-    expect(asSavedOperatingPolicyResponse({ policy: { ...valid(), version: '3' } })).toBeNull();
+    expect(asSavedOperatingPolicyResponse({ ok: true }).ok).toBe(false);
+    expect(asSavedOperatingPolicyResponse({ policy: { ...valid(), version: '3' } }).ok).toBe(false);
   });
 });

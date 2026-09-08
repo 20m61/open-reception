@@ -102,6 +102,48 @@ test.describe('管理: 読み取り失敗が運用者に見える (#870)', () =>
     );
   }
 
+  /**
+   * 🔴 **握り潰しの第 3 の経路**（独立レビュー 3 周目 MAJOR-2）。
+   *
+   * 本 spec は先頭で「500 と接続断の 2 通りを注入するのは、**握り潰しの経路が別**だから」と
+   * 宣言している。#1004 は読み側に**第 3 の経路**を作った ―― ヘッダは読めるが**本文が
+   * 途中で切れている 200**。`res.ok` は真、`fetch` も throw しないので、前 2 つでは踏めない。
+   *
+   * `.catch(() => null)` を落とすと `res.json()` の throw が `void load()` に飲まれ、
+   * `setLoadedScopeKey` にも `setLoadFailed` にも到達しない ―― `gate.unavailable` は
+   * `'loading'` になるので**再試行ボタンすら出ない**「読み込み中…」の恒久停止に戻る。
+   * 書き込み側は `failWrites(..., 'broken-200')` で 7 画面すべて踏んでいたのに、
+   * 読み側には対応する注入が無かった。
+   */
+  async function respondBrokenBody(page: Page, pattern: string): Promise<void> {
+    // 途中で切れた JSON。`res.json()` が SyntaxError を投げる。
+    await page.route(pattern, (route) =>
+      route.fulfill({ status: 200, contentType: 'application/json', body: '{"' }),
+    );
+  }
+
+  test('営業時間: 本文が途中で切れた 200 も取得失敗として出す (#1004)', async ({ page }) => {
+    await respondBrokenBody(page, '**/api/admin/operating-policy?*');
+    await page.goto('/admin/operating-hours');
+
+    await expect(page.getByTestId('operating-hours-unavailable')).toBeVisible();
+    // 「読み込み中…」の恒久停止に戻さない（この spec が閉じた欠陥そのもの）。
+    await expect(page.getByText('読み込み中…')).toHaveCount(0);
+    await expect(page.getByTestId('operating-hours-unavailable-retry')).toBeEnabled();
+    // 未設定と言い換えない・保存させない（500 のときと同じ下界）。
+    await expect(page.getByText('まだ設定がありません')).toHaveCount(0);
+    await expect(page.getByTestId('operating-hours-save')).toHaveCount(0);
+  });
+
+  test('サイネージ: 本文が途中で切れた 200 も取得失敗として出す (#1004)', async ({ page }) => {
+    await respondBrokenBody(page, '**/api/admin/signage**');
+    await page.goto('/admin/signage');
+
+    await expect(page.getByTestId('signage-error')).toBeVisible();
+    await expect(page.getByText('読み込み中…')).toHaveCount(0);
+    await expect(page.getByRole('heading', { name: '受付を続けられませんでした' })).toHaveCount(0);
+  });
+
   test('サイネージ: 形の違う 200 を読んでも画面が落ちない (#1004)', async ({ page }) => {
     await respondWrongShape(page, '**/api/admin/signage**');
     await page.goto('/admin/signage');

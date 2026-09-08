@@ -241,14 +241,14 @@ export function OperatingHoursManager({
         // 通すと画面が「まだ設定がありません」へ化けたうえで「保存しました」を出し、次の保存で
         // `expectedVersion` が落ちて 409 →「ほかの管理者が更新済み」という嘘になる（レビュー MAJOR-4）。
         const saved = asSavedOperatingPolicyResponse(await res.json().catch(() => null));
-        if (saved === null) {
+        if (!saved.ok) {
           failure(saveFailureMessage('unreadable', startedFor));
           return;
         }
         // 🔴 **書き込みの直前で評価し直す。** `await res.json()` を跨ぐので、パース中に
         // 切り替わると A の内容が B の state へ入る（独立レビュー 3 周目 MINOR-4）。
         if (isCurrentScope(startedWith)) {
-          applyPolicy(saved);
+          applyPolicy(saved.policy);
           setLoadedScopeKey(startedWith);
           // フォームはサーバの確定値そのものになった。取得失敗のバナー（「古い可能性が
           // あります」）を残すと嘘になる（独立レビュー 2 周目 MINOR-5）。
@@ -356,7 +356,13 @@ export function OperatingHoursManager({
         失敗しても**バナーが消えるだけ**で、運用者は最新を掴んだと信じて保存し、また 409 になる。
         編集中の内容を捨てないために `loadedScopeKey` は落とさず、**失敗したことだけ**を言う。
       */}
-      {loadFailed && loaded ? (
+      {/*
+        `&& loaded` は置かない ―― **到達しない**（独立レビュー 3 周目 MINOR-7）。
+        `gate.unavailable` は `dataLoaded` が偽なら必ず非 null で、非 null ならこの JSX の
+        手前で早期 return する。効いていないガードを残すと「この行が守っている」と読ませる
+        （`parse.ts` で `'policy' in value` を消したのと同じ理由）。
+      */}
+      {loadFailed ? (
         <div
           className="notice notice--danger"
           data-testid="operating-hours-reload-error"

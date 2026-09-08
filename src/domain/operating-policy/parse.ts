@@ -38,7 +38,17 @@ function isOptionalString(value: unknown): boolean {
 }
 
 function isTimeRange(value: unknown): value is TimeRange {
-  return isRecord(value) && typeof value.start === 'string' && typeof value.end === 'string';
+  if (!isRecord(value)) return false;
+  if (typeof value.start !== 'string') return false;
+  if (typeof value.end !== 'string') return false;
+  /*
+    🔴 `formatTimeRanges` は `r.crossesMidnight ? '*' : ''` と**真偽性**で判定する。
+    `"no"` は truthy なので `09:00-18:00*`（日跨ぎ）と表示され、往復で
+    `crossesMidnight: true` として**再保存される** ―― `start`/`end` を縛ったのと同じ理由
+    （独立レビュー 3 周目 MINOR-8）。
+  */
+  if (value.crossesMidnight !== undefined && typeof value.crossesMidnight !== 'boolean') return false;
+  return true;
 }
 
 function isOperatingException(value: unknown): value is OperatingException {
@@ -115,8 +125,17 @@ export function asOperatingPolicyResponse(
  * `{"policy":null}` な 200 で `applyPolicy(null)` が走り、画面が「まだ設定がありません」へ化けた
  * うえで「保存しました」を出す。次の保存は `expectedVersion` を落とすのでサーバが 409 を返し、
  * 画面は「ほかの管理者が更新済み」という**嘘**を出す（独立レビュー MAJOR-4）。
+ *
+ * 🔴 **戻り値を判別可能にする**（独立レビュー 3 周目 MINOR-2）。`ServiceOperatingPolicy | null`
+ * を返していたときは「読めなかった」と「`policy` が null だった」が**どちらも `null`** に
+ * 畳まれ、この関数を GET 用の述語へ戻す変異が **unit では原理的に殺せなかった**
+ * （e2e 1 本だけが区別を持っていた）。私が最初に当てた変異が等価になったのも、変異設計では
+ * なく**この戻り値の型**が原因である。区別を型で持てば unit で縛れる。
  */
-export function asSavedOperatingPolicyResponse(value: unknown): ServiceOperatingPolicy | null {
+export type SavedOperatingPolicy = { ok: true; policy: ServiceOperatingPolicy } | { ok: false };
+
+export function asSavedOperatingPolicyResponse(value: unknown): SavedOperatingPolicy {
   const parsed = asOperatingPolicyResponse(value);
-  return parsed === null ? null : parsed.policy;
+  if (parsed === null || parsed.policy === null) return { ok: false };
+  return { ok: true, policy: parsed.policy };
 }

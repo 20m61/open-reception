@@ -109,6 +109,19 @@ export function SignageManager({
       // `200 {"ok":true}` がそのまま state に入り、次のレンダーで `config.items.map` が
       // TypeError → **この画面ごと落ちる**（admin 配下に error boundary は無い）。
       const loaded = asSignageConfig(await res.json().catch(() => null));
+      /*
+        🔴 **書き込みの直前で評価し直す。** `await res.json()` は**新しい中断点**で、この増分が
+        作った。跨いでいる間に拠点が変わると、下の 3 つが拠点 B の画面へ書かれる ――
+        (1) 壊れた A の応答が B に偽の「読み込みに失敗しました」を出す、(2) 正常な A の応答が
+        `setConfigScopeKey(A)` を通して B の `dataLoaded` を偽へ落とし、
+        `gate.unavailable` が `'load-failed'` ではなく **`'loading'`** になるので**再試行ボタンも
+        出ない**（`load` の依存は変わらないので再取得も起きない）＝「読み込み中…」で恒久停止。
+        #870 が 1 spec 割いて閉じた欠陥族そのものである。
+        同じコミットで `OperatingHoursManager` には入れたのに、**こちらへ写し忘れていた**
+        （独立レビュー 3 周目 MAJOR-1）。`scope-gate.ts` の doc が「拠点スコープ移行の P1 は
+        ほぼ全部この型」と名指ししている型。
+      */
+      if (!isCurrentScope(startedWith)) return;
       if (loaded === null) {
         setLoadFailed(true);
         setError('読み込みに失敗しました');
