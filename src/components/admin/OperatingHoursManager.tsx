@@ -10,6 +10,7 @@ import { color, space } from '@/components/admin/ui/tokens';
 import { WEEKDAYS, type Weekday } from '@/domain/operating-policy/tz';
 import { duplicateExceptionDates } from '@/domain/operating-policy/schedule';
 import { formatExceptionsText, formatTimeRanges, parseExceptionsText, parseTimeRangesText } from '@/domain/operating-policy/text-format';
+import { asOperatingPolicyResponse } from '@/domain/operating-policy/parse';
 import type { ServiceOperatingPolicy } from '@/domain/operating-policy/types';
 
 const WEEKDAY_LABEL: Record<Weekday, string> = {
@@ -138,7 +139,14 @@ export function OperatingHoursManager({
       setLoadFailed(true);
       return;
     }
-    const body = (await res.json()) as { policy: PolicyView };
+    // 🔴 **形を確かめてから載せる**（#1004）。`policy` キーごと欠けた 200 で
+    // `applyPolicy(undefined)` が走ると、フォームが黙って既定値へ初期化され、
+    // `expectedVersion` が落ちて **#367 の楽観ロックが外れる**。`policy: null`（未設定）とは別物。
+    const body = asOperatingPolicyResponse(await res.json().catch(() => null));
+    if (body === null) {
+      setLoadFailed(true);
+      return;
+    }
     applyPolicy(body.policy);
     setLoadFailed(false);
     setLoadedScopeKey(requestedScope);
@@ -219,7 +227,12 @@ export function OperatingHoursManager({
         A の内容を B のフォームへ書くことになるので、載せてはいけない。
       */
       if (res.ok) {
-        const body = (await res.json()) as { policy: PolicyView };
+        // 🔴 **確かめられた 200 だけを成功と呼ぶ**（#973 増分 02 の規則を広げる。#1004）。
+        const body = asOperatingPolicyResponse(await res.json().catch(() => null));
+        if (body === null) {
+          failure(saveFailureMessage('unreadable', startedFor));
+          return;
+        }
         // 🔴 **書き込みの直前で評価し直す。** `await res.json()` を跨ぐので、パース中に
         // 切り替わると A の内容が B の state へ入る（独立レビュー 3 周目 MINOR-4）。
         if (isCurrentScope(startedWith)) {

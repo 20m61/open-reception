@@ -1,6 +1,7 @@
 'use client';
 
 import { useCallback, useEffect, useState } from 'react';
+import { asSignageConfig } from '@/domain/signage/parse';
 import {
   SIGNAGE_CONTENT_TYPES,
   type SignageConfig,
@@ -104,9 +105,18 @@ export function SignageManager({
     // 取得中に拠点／テナントが変わっていたら捨てる。
     if (!isCurrentScope(startedWith)) return;
     if (res.ok) {
+      // 🔴 **形を確かめてから載せる**（#1004）。`as` は実行時に何も検査しないので、
+      // `200 {"ok":true}` がそのまま state に入り、次のレンダーで `config.items.map` が
+      // TypeError → **この画面ごと落ちる**（admin 配下に error boundary は無い）。
+      const loaded = asSignageConfig(await res.json().catch(() => null));
+      if (loaded === null) {
+        setLoadFailed(true);
+        setError('読み込みに失敗しました');
+        return;
+      }
       setLoadFailed(false);
       setConfigScopeKey(startedWith);
-      setConfig((await res.json()) as SignageConfig);
+      setConfig(loaded);
     } else {
       setLoadFailed(true);
       setError('読み込みに失敗しました');
@@ -193,7 +203,12 @@ export function SignageManager({
         —— こちらは A の内容を B の画面へ書くことになる（独立レビュー 2 周目 MAJOR-C）。
       */
       if (res.ok) {
-        const applied = (await res.json()) as SignageConfig;
+        // 🔴 **確かめられた 200 だけを成功と呼ぶ**（#973 増分 02 の規則を広げる。#1004）。
+        const applied = asSignageConfig(await res.json().catch(() => null));
+        if (applied === null) {
+          failure(saveFailureMessage('unreadable', startedFor));
+          return;
+        }
         // 🔴 **書き込みの直前で評価し直す。** `await res.json()` を跨ぐので、パース中に
         // 切り替わると A の内容が B の state へ入る（独立レビュー 3 周目 MINOR-4）。
         if (isCurrentScope(startedWith)) {

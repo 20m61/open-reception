@@ -875,6 +875,73 @@ test.describe('管理: 書き込み失敗が運用者に見える (#870 増分 0
     });
   });
 
+  /**
+   * 🔴 **形は正しい JSON だが、その画面の型ではない 200** (#1004)。
+   *
+   * `as SignageConfig` / `as { policy }` は実行時に何も検査しないので、企業プロキシや
+   * API のバージョンスキューが返す `{"ok":true}` がそのまま state に入る。害は画面ごとに違う:
+   *
+   * - サイネージ … 次のレンダーで `config.items.map` が TypeError → **画面ごと落ちる**
+   *   （`src/app/admin` 配下に error boundary は無い）
+   * - 営業時間 … `applyPolicy(undefined)` が**フォームを黙って既定値へ初期化**し、
+   *   `expectedVersion` を落とす（**#367 の楽観ロックが外れる**）
+   *
+   * `broken-200`（本文が壊れている）とは別の族なので、別に踏む。
+   */
+  const WRONG_SHAPE = '{"ok":true}';
+
+  test('サイネージ: 形の違う 200 を読んでも画面が落ちない (#1004)', async ({ page }) => {
+    // **未処理例外を捕まえる。** 落ちる形では `items.map` の TypeError がここに出る。
+    const crashes: string[] = [];
+    page.on('pageerror', (e) => crashes.push(String(e)));
+
+    await page.route('**/api/admin/signage**', (route) =>
+      route.fulfill({ status: 200, contentType: 'application/json', body: WRONG_SHAPE }),
+    );
+    await page.goto('/admin/signage');
+
+    // 読めなかったことを言う（黙って空の画面にしない）。
+    await expect(page.getByTestId('signage-error')).toBeVisible();
+    expect(crashes, `未処理例外が出た: ${crashes.join(' / ')}`).toEqual([]);
+  });
+
+  test('サイネージ: 形の違う 200 を保存の応答として成功と言わない (#1004)', async ({ page }) => {
+    await page.goto('/admin/signage');
+    await expect(page.getByTestId('signage-save')).toBeVisible();
+    await page.route('**/api/admin/signage**', (route) => {
+      if (route.request().method() === 'GET') return route.continue();
+      return route.fulfill({ status: 200, contentType: 'application/json', body: WRONG_SHAPE });
+    });
+
+    await page.getByTestId('signage-save').click();
+
+    const error = page.getByTestId('signage-save-error');
+    await expect(error).toBeVisible();
+    await expect(error).toContainText('読み取れませんでした');
+    await expect(page.getByTestId('signage-saved')).toHaveCount(0);
+  });
+
+  test('営業時間: policy キーが欠けた 200 でフォームを初期化しない (#1004)', async ({ page }) => {
+    await page.goto('/admin/operating-hours');
+    await expect(page.getByTestId('operating-hours-save')).toBeVisible();
+    // 打ち込んだ内容が、壊れた応答で消えないことを見る。
+    await page.getByTestId('operating-hours-timezone').fill('Asia/Osaka');
+
+    await page.route('**/api/admin/operating-policy**', (route) => {
+      if (route.request().method() === 'GET') return route.continue();
+      return route.fulfill({ status: 200, contentType: 'application/json', body: WRONG_SHAPE });
+    });
+
+    await page.getByTestId('operating-hours-save').click();
+
+    const error = page.getByTestId('operating-hours-error');
+    await expect(error).toBeVisible();
+    await expect(error).toContainText('読み取れませんでした');
+    await expect(page.getByTestId('operating-hours-saved')).toHaveCount(0);
+    // **これが本題。** 黙って既定値へ戻さない。
+    await expect(page.getByTestId('operating-hours-timezone')).toHaveValue('Asia/Osaka');
+  });
+
   test('部署: 有効/無効の切り替えが失敗したら伝える（行が黙って戻らない）', async ({ page }) => {
     await page.goto('/admin/departments');
     // 行が出てから注入する（読み取りは通すが、念のため描画を待つ）。
