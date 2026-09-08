@@ -15,6 +15,7 @@ import {
   type CheckoutSelfIdSummary,
   type PresentStaySummary,
 } from './logic';
+import { asCheckoutResolveResult, asPresentStayList } from './parse';
 import { CHECKOUT_TOKEN_QUERY, normalizeCheckoutCode } from './self-id';
 
 /**
@@ -90,8 +91,16 @@ export function CheckoutFlow() {
     try {
       const res = await fetch('/api/kiosk/checkout');
       if (res.ok) {
-        const data = (await res.json()) as { stays: PresentStaySummary[] };
-        setPresent(data.stays);
+        /*
+          🔴 **形を確かめてから載せる**（#1004 増分 2）。`as` は実行時に何も検査しないので、
+          `stays` が欠けた 200 で `setPresent(undefined)` が走り、次のレンダーの
+          `present.length` が **TypeError → 退館画面ごと落ちる**（`/kiosk/checkout` に
+          error boundary は無く、root の `global-error.tsx` が出る）。
+          読めなければ**空のまま**にする ―― 一覧が出ないだけで、QR/コードの退館は続けられる
+          （下の catch と同じ扱い。一覧取得の失敗は致命的でない）。
+        */
+        const stays = asPresentStayList(await res.json().catch(() => null));
+        if (stays !== null) setPresent(stays);
       }
     } catch {
       // 一覧取得失敗は致命的でない（QR/コードで退館できる）。
@@ -116,7 +125,17 @@ export function CheckoutFlow() {
           body: JSON.stringify(body),
         });
         if (res.ok) {
-          const data = (await res.json()) as { method: CheckoutMethod; summary: CheckoutSelfIdSummary };
+          /*
+            🔴 **形を確かめてから進む**（#1004 増分 2）。`summary` が欠けた 200 を通すと
+            `pending.summary.checkedInAt` が throw し、**退館の確認画面**（来訪者が
+            「退館する」を押す直前）で落ちる。読めなければ確認画面へ進めず、届いてはいるので
+            通信を疑わせない文言（`invalid`）で戻す。
+          */
+          const data = asCheckoutResolveResult(await res.json().catch(() => null));
+          if (data === null) {
+            setErrorReason('invalid');
+            return;
+          }
           setPending({ kind: 'credential', method: data.method ?? method, input: body, summary: data.summary });
           setState('confirm');
         } else {

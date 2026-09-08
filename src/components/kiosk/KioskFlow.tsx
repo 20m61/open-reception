@@ -1,5 +1,6 @@
 'use client';
 
+import { asCreatedReception } from '@/domain/reception/parse';
 import { callFailureReasonFrom } from '@/domain/reception/call-failure';
 import {
   useCallback,
@@ -630,7 +631,27 @@ export function KioskFlow({
           if (!cancelled) dispatch({ type: 'CALL_FAILED', reason: 'server' });
           return;
         }
-        const session = (await createRes.json()) as { id: string };
+        /*
+          🔴 **形を確かめてから使う**（#1004 増分 2）。`as` は実行時に何も検査しないので、
+          `id` が欠けた 200 の `undefined` が**そのまま 2 か所へ流れていた** ――
+          状態機械（`SESSION_CREATED`）と URL（`/api/kiosk/receptions/undefined/call`）である。
+          後者はサーバが `getReception('undefined')` に失敗して非 200 を返すので、来訪者には
+          呼び出し失敗が出る。ただし**理由が嘘になる**（呼び出しは一度も行われていないのに
+          `server` ＝「呼び出しを完了できなかった」と読める文言になる）。
+
+          🔴 **述語で防げないもの**: ここへ来た時点で受付レコードは**サーバ側に存在する**
+          （作成の POST は 200 を返している）。端末はその ID を知らないので、呼ぶことも・
+          完了することも・取り消すこともできない（`leaveWithServer` の `shouldCancelOnServer`
+          は `sessionId` を要求する）。この孤児は述語では防げない ―― サーバ側の TTL/掃除の
+          領分である。ここが担うのは「これ以上悪化させない」ことだけ。
+        */
+        const session = asCreatedReception(await createRes.json().catch(() => null));
+        if (session === null) {
+          // 到達はしたが応答が使えない。`server` は「到達はしたが呼び出しを完了できなかった
+          // （HTTP エラー・**想定外の応答**）」と定義済みなので、語彙を増やさずに写せる。
+          if (!cancelled) dispatch({ type: 'CALL_FAILED', reason: 'server' });
+          return;
+        }
         // 受付 ID が確定した時点で状態機械へ載せる (#649)。`/call` の結果を待たないのは、
         // **呼び出し中**の担当者応答ポーリング（#99 `useStaffResponse`）が受付 ID を必要と
         // するため。結果と一緒にしか立たなかった頃は calling 中に 1 度も走っていなかった。
