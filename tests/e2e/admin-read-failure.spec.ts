@@ -176,6 +176,7 @@ test.describe('管理: 読み取り失敗が運用者に見える (#870)', () =>
 
     // 最初の GET だけ `json()` の解決を保留する。**goto より前**でないと既存 document に載らない。
     await page.addInitScript(() => {
+      const w = window as unknown as { __release?: () => Promise<void>; __released?: boolean };
       const orig = window.fetch.bind(window);
       let held = false;
       window.fetch = async (...args: Parameters<typeof fetch>) => {
@@ -189,8 +190,12 @@ test.describe('管理: 読み取り失敗が運用者に見える (#870)', () =>
           Object.defineProperty(res, 'json', {
             value: () =>
               new Promise((resolve) => {
-                (window as unknown as { __release?: () => Promise<void> }).__release = async () => {
+                w.__release = async () => {
                   resolve(await origJson());
+                  // **解放が実際に起きたことの正の観測点。** negative assertion の前に
+                  // これを待たないと、CDP の往復が React のコミットより遅いことに
+                  // 暗黙に依存する（独立レビュー 5 周目 残存リスク 1）。
+                  w.__released = true;
                 };
               }),
           });
@@ -200,23 +205,44 @@ test.describe('管理: 読み取り失敗が運用者に見える (#870)', () =>
     });
 
     await page.goto('/admin/signage');
-    // 1 本目は json で止まっているので、まだ載っていない。
+    // この時点では 1 本目はまだ**応答すらしていない**（「読み込み中…」が見えるのは単に
+    // 初回レンダーだから）。窓が開いたことは下の `__release` の定義で確かめる。
     await expect(page.getByText('読み込み中…')).toBeVisible();
 
     // 別拠点へ切り替える。2 本目は保留していないので普通に載る。
     await page.getByTestId('signage-site-select').selectOption('branch-site');
     await expect(page.getByTestId('signage-save')).toBeEnabled();
 
-    // ここで 1 本目（前の拠点）の json を解決させる。
-    await page.evaluate(() =>
-      (window as unknown as { __release?: () => Promise<void> }).__release?.(),
-    );
+    /*
+      🔴 **窓が開いたことを主張してから解放する。**
+
+      これが無いと、この spec は**欠陥入りビルドでも緑になる**（独立レビュー 5 周目 MAJOR-1 が
+      実測で示した）。前の拠点の応答が遅れて `res.json()` の手前の門で早期 return すると、
+      `__release` は未定義のまま ―― `?.()` は無言で no-op し、下の 4 本は全部通る。
+      窓が開くかどうかは応答順の競争なので、**開いたことを表明しない限りこの spec は
+      何も測っていない**。`?.()` にしないのも同じ理由（静かな緑を大声の赤にする）。
+    */
+    await expect
+      .poll(() => page.evaluate(() => (window as unknown as { __release?: unknown }).__release !== undefined))
+      .toBe(true);
+
+    // 前の拠点の設定が載れば必ず上書きされる値を置いておく（`setConfig` の副作用は
+    // `dataLoaded` とは独立なので、下の 4 本だけでは**内容の越境**を主張できない
+    // ―― 5 周目 MINOR-2）。seed の差に頼らず、自分で目印を作る。
+    await page.getByTestId('signage-interval').fill('37');
+
+    await page.evaluate(() => (window as unknown as { __release: () => Promise<void> }).__release());
+    await expect
+      .poll(() => page.evaluate(() => (window as unknown as { __released?: boolean }).__released === true))
+      .toBe(true);
 
     /*
       **これが本題。** 前の拠点の応答を載せないので、画面は何も変わらない。
-      門を外すと `setConfigScopeKey(前の拠点)` が走って `dataLoaded` が偽になり、
-      **保存ボタンが恒久的に disabled** になる（実測した変異の症状）。
+      門を外すと `setConfigScopeKey(前の拠点)` が走って `dataLoaded` が偽になり
+      **保存ボタンが恒久的に disabled**、同時に `setConfig(前の拠点)` がフォームを
+      上書きする（実測した変異の症状）。
     */
+    await expect(page.getByTestId('signage-interval')).toHaveValue('37');
     await expect(page.getByTestId('signage-site-select')).toHaveValue('branch-site');
     await expect(page.getByTestId('signage-save')).toBeEnabled();
     await expect(page.getByTestId('signage-error')).toHaveCount(0);

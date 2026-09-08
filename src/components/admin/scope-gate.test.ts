@@ -180,7 +180,7 @@ describe('resolveScopeGate', () => {
             for (const listStatus of statuses)
               for (const loadFailed of bools)
                 for (const hasSites of bools) {
-                  const g = resolveScopeGate({
+                  const input: ScopeGateInput = {
                     scopeReady,
                     dataLoaded,
                     sitePending,
@@ -188,10 +188,31 @@ describe('resolveScopeGate', () => {
                     listStatus,
                     loadFailed,
                     hasSites,
-                  });
-                  expect(g.unavailable === null).toBe(dataLoaded);
-                  if (g.unavailable === null) sawNull += 1;
-                  else sawNonNull += 1;
+                  };
+                  const g = resolveScopeGate(input);
+                  const where = JSON.stringify(input);
+                  expect(g.unavailable === null, where).toBe(dataLoaded);
+                  if (g.unavailable === null) {
+                    sawNull += 1;
+                    continue;
+                  }
+                  sawNonNull += 1;
+                  /*
+                    🔴 **「拠点側を優先する」も総当たりで縛る**（独立レビュー 5 周目 MINOR-4）。
+                    null か否かだけを見ていたので、`loadFailed` を `no-site` の**前**へ動かす
+                    変異が 18 本すべてを素通りしていた（実測）。この関数の doc は
+                    「拠点が確認できていないのに『データを取得できませんでした』と出すと
+                    原因を取り違える」と明記しており、そこが壊れると運用者は
+                    「拠点を登録してください」ではなく**決して成功しない再試行ボタン**を見る。
+
+                    実装を写した期待値表は作らない（同じ誤りを共有する）。**片側の含意**
+                    ―― 拠点側の理由が立つときは必ずそれが出る ―― だけを主張する。
+                  */
+                  if (listStatus === 'error') {
+                    expect(g.unavailable, where).toBe('site-list-error');
+                  } else if (!hasSites && listStatus === 'ready') {
+                    expect(g.unavailable, where).toBe('no-site');
+                  }
                 }
     // **下界。** 片側だけを主張すると、全部を非 null にする実装でも空虚に通る。
     expect(sawNull).toBeGreaterThan(0);
