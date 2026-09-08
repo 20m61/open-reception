@@ -82,6 +82,89 @@ test.describe('来訪者導線: 形の違う 200 で受付・退館を止めな�
   });
 
   /**
+   * 🔴 **実運用でいちばん起きるのは 503 / 通信断**（独立レビュー 4 周目 MAJOR-4）。
+   * 形の違う 200 の枝だけを縛っていたので、`!res.ok` で黙る変異が生存していた。
+   */
+  test('退館: 一覧が 503 でも「いません」と断言しない', async ({ page }) => {
+    await page.route('**/api/kiosk/checkout', (route) =>
+      route.fulfill({ status: 503, contentType: 'application/json', body: '{"error":"unavailable"}' }),
+    );
+    await page.goto('/kiosk/checkout');
+
+    await expect(page.getByTestId('checkout-present-unavailable')).toBeVisible();
+    await expect(page.getByTestId('checkout-empty')).toHaveCount(0);
+    await expect(page.getByTestId('checkout-present-retry')).toBeEnabled();
+    await expect(page.getByTestId('checkout-code')).toBeVisible();
+  });
+
+  /**
+   * 🔴 **提示した手段が実際に効くこと**（独立レビュー 4 周目 MAJOR-4）。
+   * 再読み込みの `onClick` を no-op にする変異が生存していた ―― `toBeEnabled()` は
+   * **死んだボタンでも真**になる。押して回復するところまで見る（下界）。
+   */
+  test('退館: 一覧の再読み込みが回復すると一覧が出る', async ({ page }) => {
+    const calls: string[] = [];
+    page.on('request', (req) => {
+      if (/\/api\/kiosk\/checkout(\?|$)/.test(req.url())) calls.push(req.method());
+    });
+    // 1 回目だけ落とす。
+    let failed = false;
+    await page.route('**/api/kiosk/checkout', (route) => {
+      if (failed) return route.continue();
+      failed = true;
+      return route.fulfill({ status: 503, contentType: 'application/json', body: '{}' });
+    });
+
+    await page.goto('/kiosk/checkout');
+    await expect(page.getByTestId('checkout-present-unavailable')).toBeVisible();
+
+    await page.getByTestId('checkout-present-retry').click();
+    // 押した結果 GET が実際に飛ぶ（死んだボタンなら増えない）。
+    await expect.poll(() => calls.length).toBeGreaterThan(1);
+    // 回復したら失敗表示は消える（`setPresentFailed(false)` を消す変異がここで落ちる）。
+    await expect(page.getByTestId('checkout-present-unavailable')).toHaveCount(0);
+  });
+
+  /**
+   * 🔴 **一度載った一覧を、再取得の失敗で消さない**（独立レビュー 4 周目 MAJOR-1）。
+   *
+   * 3 周目の修正が作った退行。`presentFailed` を `present` より優先していたので、
+   * ネットワークが一瞬揺れただけで**有効なデータを持ったまま画面から消えて**いた。
+   * 退館完了 6 秒後の `resetToIdentify` が自動で `loadPresent` を呼ぶので、
+   * 意図的な操作なしに踏む。`src/domain/ui/read-state.ts` が #870 で
+   * 「載っていることを優先する」と明文化していたのに、手で導き直して外していた。
+   */
+  test('退館: 再取得に失敗しても、載っている一覧を消さない', async ({ page }) => {
+    // seed の在館者数に依存しない（共有状態も書かない。#787）。1 回目だけ在館者を返す。
+    const LOADED = JSON.stringify({
+      stays: [
+        { stayId: 's1', checkedInAt: '2026-01-01T09:00:00.000Z', targetLabel: '総務部', purpose: '打ち合わせ' },
+        { stayId: 's2', checkedInAt: '2026-01-01T10:00:00.000Z' },
+      ],
+    });
+    let calls = 0;
+    await page.route('**/api/kiosk/checkout', (route) => {
+      calls += 1;
+      return calls === 1
+        ? route.fulfill({ status: 200, contentType: 'application/json', body: LOADED })
+        : route.fulfill({ status: 503, contentType: 'application/json', body: '{}' });
+    });
+
+    await page.goto('/kiosk/checkout');
+    // 一覧が載るまで待つ（載っていないと「消さない」を測れない＝空虚になる）。
+    await expect(page.getByTestId('checkout-present-list')).toBeVisible();
+    const before = await page.getByTestId('checkout-present-item').count();
+    expect(before).toBeGreaterThan(0);
+
+    // 逃げ道から戻ると `loadPresent` が再実行される（自動リセットと同じ経路）。
+    await page.getByTestId('checkout-start-over').click();
+    await expect(page.getByTestId('checkout-present-unavailable')).toBeVisible();
+
+    // **これが本題。** 失敗は添えるだけで、載っているものは消さない。
+    await expect(page.getByTestId('checkout-present-item')).toHaveCount(before);
+  });
+
+  /**
    * 🔴 **確認画面は「退館する」を押す直前である。**
    *
    * `summary` が欠けた 200 を通すと `pending.summary.checkedInAt` が throw する。

@@ -232,6 +232,8 @@ export type MessageKey =
   | 'checkout.error.unexpected'
   | 'checkout.presentListUnavailable'
   | 'checkout.presentListRetry'
+  | 'checkout.presentListStale'
+  | 'checkout.presentListLoading'
   // 受付完了画面の退館クレデンシャル提示 (#342)。退館 QR / 短コード / 有効期限（{time} 補間）。
   | 'checkout.credential.title'
   | 'checkout.credential.instruction'
@@ -523,6 +525,9 @@ const ja: DefaultDictionary = {
   // 🔴 **取得できていないことを、在館者がいないことと言い換えない**（#870 / #973 と同じ規則）。
   'checkout.presentListUnavailable': '在館中の来訪者を確認できませんでした。退館 QR または退館コードはそのままお使いいただけます。',
   'checkout.presentListRetry': '一覧を再読み込み',
+  // 載っているものは消さず、最新でないことだけを言う（#870 の「載っていることを優先する」）。
+  'checkout.presentListStale': '最新の状態を取得できませんでした。表示は前回時点のものです。',
+  'checkout.presentListLoading': '在館中の来訪者を確認しています…',
   'checkout.emptyPresent': '在館中の来訪者はいません。',
   'checkout.checkedInAt': '{time} 入館',
   'checkout.checkoutButton': '退館',
@@ -840,6 +845,8 @@ const en: LocaleDictionary = {
   'checkout.presentListTitle': 'Visitors currently on site',
   'checkout.presentListUnavailable': 'We could not load the list of visitors on site. Your checkout QR or code still works.',
   'checkout.presentListRetry': 'Reload list',
+  'checkout.presentListStale': 'We could not refresh this list. It shows the last known state.',
+  'checkout.presentListLoading': 'Checking who is currently on site…',
   'checkout.emptyPresent': 'No visitors are currently on site.',
   'checkout.checkedInAt': 'Checked in at {time}',
   'checkout.checkoutButton': 'Check out',
@@ -1154,6 +1161,8 @@ const ko: LocaleDictionary = {
   'checkout.presentListTitle': '현재 재실 중인 방문객',
   'checkout.presentListUnavailable': '재실 중인 방문객 목록을 불러오지 못했습니다. 퇴실 QR 또는 퇴실 코드는 그대로 사용하실 수 있습니다.',
   'checkout.presentListRetry': '목록 다시 불러오기',
+  'checkout.presentListStale': '최신 상태를 가져오지 못했습니다. 이전 시점의 내용입니다.',
+  'checkout.presentListLoading': '재실 중인 방문객을 확인하고 있습니다…',
   'checkout.emptyPresent': '현재 재실 중인 방문객이 없습니다.',
   'checkout.checkedInAt': '{time} 입실',
   'checkout.checkoutButton': '퇴실',
@@ -1465,6 +1474,8 @@ const zh: LocaleDictionary = {
   'checkout.presentListTitle': '在馆访客',
   'checkout.presentListUnavailable': '未能加载在馆访客列表。您仍可使用退馆二维码或退馆码。',
   'checkout.presentListRetry': '重新加载列表',
+  'checkout.presentListStale': '未能获取最新状态，显示的是上次的内容。',
+  'checkout.presentListLoading': '正在确认在馆访客…',
   'checkout.emptyPresent': '目前没有在馆访客。',
   'checkout.checkedInAt': '{time} 入馆',
   'checkout.checkoutButton': '退馆',

@@ -20,6 +20,8 @@
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { asCheckoutResolveResult, asPresentStayList } from '@/components/kiosk/checkout/parse';
+import { asStayId, type VisitStay } from '@/domain/visit/types';
+import { asSiteId, asTenantId } from '@/domain/tenant/types';
 
 const requireKioskSession = vi.fn();
 const resolveStayScope = vi.fn();
@@ -54,18 +56,34 @@ beforeEach(() => {
 
 describe('GET /api/kiosk/checkout の封筒契約 (#1004)', () => {
   it('在館一覧の応答が asPresentStayList を通る', async () => {
-    listPresent.mockResolvedValue([
+    /*
+      🔴 **fixture を実物の型で縛る**（独立レビュー 4 周目 MINOR-1）。当初は `stayId` を
+      持つ形を手で書いていたが、実物の `VisitStay` に `stayId` は無く、ルートが `s.id` を
+      写している。mock が実物より広いと契約テストがまた「写し」になるので、`VisitStay[]` で
+      型付けして tsc に縛らせる。
+    */
+    const base = {
+      tenantId: asTenantId('internal'),
+      siteId: asSiteId('default-site'),
+      retentionDays: 30,
+      createdAt: '2026-01-01T09:00:00.000Z',
+      updatedAt: '2026-01-01T09:00:00.000Z',
+    };
+    // **`as` を使わない。** cast すると必須フィールドの欠落を tsc が見逃し、mock がまた
+    // 実物より広くなる（この契約テストが防ごうとしているもの）。
+    const stays: VisitStay[] = [
       {
-        id: 's1',
-        stayId: 's1',
+        ...base,
+        id: asStayId('s1'),
         checkedInAt: '2026-01-01T09:00:00.000Z',
         targetLabel: '総務部',
         purpose: '打ち合わせ',
         status: 'present',
       },
       // 任意フィールドが無い在館者（`NextResponse.json` がキーごと落とす形）。
-      { id: 's2', stayId: 's2', checkedInAt: '2026-01-01T10:00:00.000Z', status: 'present' },
-    ]);
+      { ...base, id: asStayId('s2'), checkedInAt: '2026-01-01T10:00:00.000Z', status: 'present' },
+    ];
+    listPresent.mockResolvedValue(stays);
 
     const parsed = asPresentStayList(await (await GET()).json());
 

@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   DEFAULT_LOCALE,
   htmlLangFor,
@@ -16,6 +16,7 @@ import {
   type PresentStaySummary,
 } from './logic';
 import { asCheckoutResolveResult, asPresentStayList } from './parse';
+import { resolveReadState } from '@/domain/ui/read-state';
 import { CHECKOUT_TOKEN_QUERY, normalizeCheckoutCode } from './self-id';
 
 /**
@@ -63,18 +64,26 @@ export function CheckoutFlow() {
   const [code, setCode] = useState('');
   const [targetLabel, setTargetLabel] = useState('');
   const [present, setPresent] = useState<PresentStaySummary[]>([]);
-  /**
-   * 🔴 **取得できていないことを、在館者がいないことと言い換えない**（独立レビュー 3 周目 MAJOR-A）。
-   *
-   * この増分は `stays` が読めないときの**クラッシュ**を消したが、その結果
-   * 「在館中の来訪者はいません。」と**断言する**画面になっていた（実測）。
-   * **大声の失敗を沈黙の誤情報へ変換した**ことになる ―― #870 / #973 が管理画面で
-   * 潰したのとまったく同じ型を、来訪者導線に作っていた。
-   *
-   * この一覧は QR もコードも失くした来訪者を staff が照合する材料なので、
-   * 「いません」の誤情報は人の取り違えに直結する。
-   */
-  const [presentLoadFailed, setPresentLoadFailed] = useState(false);
+  /*
+    🔴 **「まだ」「だめだった」「載っている」を混ぜない** ―― `resolveReadState` を使う。
+
+    この増分は `stays` が読めないときの**クラッシュ**を消したが、そこから 2 周かけて
+    自分で状態機械を導き直し、**規則を 2 つとも外した**（独立レビュー 3・4 周目）:
+      - 「まだ読んでいない」を「0 件」と言い、初回ロード中に
+        **「在館中の来訪者はいません。」と断言**していた
+      - 再取得が失敗すると、**既に載っている一覧を消して**いた（退館完了 6 秒後の
+        `resetToIdentify` が自動で踏む）。失敗が状況を悪化させる形
+
+    どちらも `src/domain/ui/read-state.ts` が #870 で明文化済みだった
+    （「載っていることを優先する。再取得が失敗しても既に載っているデータは消さない」）。
+    **正解がリポジトリに在るのに手で導き直したのが原因**なので、その述語を使う。
+    失敗は消す理由ではなく**添える理由**である。
+  */
+  const [presentLoaded, setPresentLoaded] = useState(false);
+  const [presentFailed, setPresentFailed] = useState(false);
+  const [presentBusy, setPresentBusy] = useState(false);
+  /** 古い応答で新しい結果を上書きしないための連番（再読み込み連打・回線の追い越し対策）。 */
+  const presentSeq = useRef(0);
   const [pending, setPending] = useState<Pending | null>(null);
   // エラーは「理由コード」で保持し、表示時に現在の locale で解決する。
   // これにより (a) 言語切替でエラーも再ローカライズされ、(b) `?ct=`/`?locale=` の
@@ -91,6 +100,8 @@ export function CheckoutFlow() {
   const [locale, setLocale] = useState<Locale>(DEFAULT_LOCALE);
 
   const tr = useMemo(() => makeT(locale), [locale]);
+  // 「まだ」「だめだった」「載っている」の判断は 1 箇所へ寄せる（#870 の述語を共有）。
+  const presentReadState = resolveReadState({ loaded: presentLoaded, failed: presentFailed });
   const error = errorReason ? CHECKOUT_FAILURE_MESSAGE(errorReason, tr) : null;
 
   // 待機画面の CheckoutLink が付与する `?locale=` を初期値として引き継ぐ（#327）。
@@ -107,11 +118,13 @@ export function CheckoutFlow() {
       B. `?ct=` 自動解決の応答が返ったとき、**コード欄に入力中の来訪者からフォーカスを奪う**
          （iPad ではソフトウェアキーボードが閉じる）。期限切れ QR で来た来訪者の
          もっとも自然な回復行動を、割り込みで壊していた
-      C. 打ち間違い（最頻の失敗）は `setErrorReason` が同値なので React がベイルアウトし、
-         **2 回目以降は effect が走らない**。走ったら走ったで、今度は直すべき入力欄が
+      C. 打ち間違い（**クライアント側検証**の経路。最頻の失敗）は `setErrorReason` が同値なので
+         React がベイルアウトし、**2 回目以降は effect が走らない**（サーバ拒否の経路は
+         `resolveCredential` 冒頭で `setErrorReason(null)` を挟むので走る）。走ったら走ったで、
+         今度は直すべき入力欄が
          フォールドの下（`top=1246`）へ落ちる
 
-    アラートと当該入力欄が**同じビューポートに入らない**のが根because で、スクロールや
+    アラートと当該入力欄が**同じビューポートに入らない**のが根 で、スクロールや
     フォーカスの調整では解けない（情報設計の問題）。3 周続けて「直した結果が次の欠陥」に
     なったので、規約どおり**足すのをやめて外す**。#1018 で別に扱う。
 
@@ -119,32 +132,36 @@ export function CheckoutFlow() {
   */
 
   const loadPresent = useCallback(async () => {
+    const seq = ++presentSeq.current;
+    // 古い応答が新しい結果を上書きしないよう、自分が最新のときだけ書く。
+    const isLatest = (): boolean => presentSeq.current === seq;
+    setPresentBusy(true);
     try {
       const res = await fetch('/api/kiosk/checkout');
       if (!res.ok) {
-        setPresentLoadFailed(true);
+        if (isLatest()) setPresentFailed(true);
         return;
       }
-      {
-        /*
-          🔴 **形を確かめてから載せる**（#1004 増分 2）。`as` は実行時に何も検査しないので、
-          `stays` が欠けた 200 で `setPresent(undefined)` が走り、次のレンダーの
-          `present.length` が **TypeError → 退館画面ごと落ちる**（`/kiosk/checkout` に
-          error boundary は無く、root の `global-error.tsx` が出る）。
-          読めなければ**空のまま**にする ―― 一覧が出ないだけで、QR/コードの退館は続けられる
-          （下の catch と同じ扱い。一覧取得の失敗は致命的でない）。
-        */
-        const stays = asPresentStayList(await res.json().catch(() => null));
-        if (stays === null) {
-          setPresentLoadFailed(true);
-          return;
-        }
-        setPresent(stays);
-        setPresentLoadFailed(false);
+      /*
+        🔴 **形を確かめてから載せる**（#1004 増分 2）。`as` は実行時に何も検査しないので、
+        `stays` が欠けた 200 で `setPresent(undefined)` が走り、次のレンダーの
+        `present.length` が **TypeError → 退館画面ごと落ちる**（`/kiosk/checkout` に
+        error boundary は無く、root の `global-error.tsx` が出る）。
+      */
+      const stays = asPresentStayList(await res.json().catch(() => null));
+      if (!isLatest()) return;
+      if (stays === null) {
+        setPresentFailed(true);
+        return;
       }
+      setPresent(stays);
+      setPresentLoaded(true);
+      setPresentFailed(false);
     } catch {
-      // 一覧取得失敗は致命的でない（QR/コードで退館できる）が、**黙らない**。
-      setPresentLoadFailed(true);
+      // 一覧取得の失敗は致命的でない（QR/コードで退館できる）が、**黙らない**。
+      if (isLatest()) setPresentFailed(true);
+    } finally {
+      if (isLatest()) setPresentBusy(false);
     }
   }, []);
 
@@ -462,21 +479,36 @@ export function CheckoutFlow() {
           <h2 id="checkout-present-title" style={sectionTitle}>
             {tr('checkout.presentListTitle')}
           </h2>
-          {presentLoadFailed ? (
+          {/*
+            🔴 **失敗は「消す理由」ではなく「添える理由」**（独立レビュー 4 周目 MAJOR-1）。
+            載っているものがあるなら出したうえで、最新でないことを併記する。
+            消してしまうと、再取得の失敗が**状況を悪化させる**（一覧は QR もコードも失くした
+            来訪者を staff が照合する唯一の材料で、退館完了 6 秒後の自動リセットでも踏む）。
+          */}
+          {presentFailed ? (
             <>
               <p data-testid="checkout-present-unavailable" role="status" className="field__label">
-                {tr('checkout.presentListUnavailable')}
+                {presentLoaded
+                  ? tr('checkout.presentListStale')
+                  : tr('checkout.presentListUnavailable')}
               </p>
               <button
                 type="button"
                 className="btn btn--secondary"
                 data-testid="checkout-present-retry"
                 onClick={() => void loadPresent()}
+                disabled={presentBusy}
+                aria-busy={presentBusy}
               >
-                {tr('checkout.presentListRetry')}
+                {presentBusy ? tr('common.processing') : tr('checkout.presentListRetry')}
               </button>
             </>
-          ) : present.length === 0 ? (
+          ) : null}
+          {presentReadState === 'loading' ? (
+            <p data-testid="checkout-present-loading" className="field__label">
+              {tr('checkout.presentListLoading')}
+            </p>
+          ) : presentReadState === 'failed' ? null : present.length === 0 ? (
             <p data-testid="checkout-empty" className="field__label">
               {tr('checkout.emptyPresent')}
             </p>
