@@ -10,13 +10,19 @@ import {
 } from '@/lib/i18n';
 import { LanguageSwitcher } from '../LanguageSwitcher';
 import {
+  CHECKOUT_CONFIRM_TIMEOUT_MS,
+  CHECKOUT_CONFIRM_UNKNOWN_REASON,
   CHECKOUT_FAILURE_MESSAGE,
+  CHECKOUT_READ_TIMEOUT_MS,
+  confirmFailureFromAbort,
+  confirmFailureReason,
   type CheckoutMethod,
   type CheckoutSelfIdSummary,
   type PresentStaySummary,
 } from './logic';
 import { asCheckoutFailureReason, asCheckoutResolveResult, asPresentStayList } from './parse';
 import { resolveReadState } from '@/domain/ui/read-state';
+import { startDeadline, type Deadline } from '@/domain/ui/deadline';
 import { CHECKOUT_TOKEN_QUERY, normalizeCheckoutCode } from './self-id';
 
 /**
@@ -58,9 +64,43 @@ type Pending = {
   | { kind: 'stay'; stayId: string }
 );
 
+/**
+ * 応答の本文を読み、**読めなかった理由が締切かどうか**まで返す (#1029)。
+ *
+ * 🔴 **`res.json().catch(() => null)` を直に書かない**（独立レビュー 4・5 周目 MINOR-1）。
+ * あの形は締切の abort を**外側 catch より先に飲む**ので、締切切れなのに
+ * 「読めなかった」（＝失敗の断定や「通信エラー」）へ落ちる。4 周目は `res.ok` 側の
+ * 1 箇所だけを直し、**同じ関数の兄弟枝 2 つを取りこぼした**（5 周目 MINOR-1 の実測:
+ * 非 200 + 本文停止で 16.0 秒後に「通信エラー」）。
+ *
+ * ⚠️ **「唯一の入口」ではない**（独立レビュー 6 周目 MINOR-3 の訂正）。在館一覧の GET だけは
+ * 生の `res.json().catch(() => null)` のままで、**意図的な例外**である（理由は当該行に書いた）。
+ * 台帳（`tests/config/kiosk-checkout-deadline.test.ts`）が縛るのは `fetch` の締切だけなので、
+ * **本文の読み方は機械で縛られていない** —— 5 つ目の `fetch` を足す人は、締切は止められるが
+ * 本文の読み方は止められない。ここが潰すのは「非 200 と成功本文」の 3 経路である。
+ */
+async function readBody(
+  res: Response,
+  deadline: Deadline,
+): Promise<{ payload: unknown; timedOut: boolean }> {
+  try {
+    return { payload: await res.json(), timedOut: false };
+  } catch {
+    return { payload: null, timedOut: deadline.expired() };
+  }
+}
+
 export function CheckoutFlow() {
   const [state, setState] = useState<FlowState>('identify');
   const [token, setToken] = useState('');
+  /*
+    退館 QR (`?ct=`) で開かれたときの credential。**画面には出さない**。
+    token 欄へ入れてしまうと、共有端末に 256bit の bearer が人間可読・撮影可能な形で
+    残る（独立レビュー 9 周目 MINOR-6 の実測。`.claude/rules/pii-secret-minimization.md`
+    「token/secret の平文を残さない」、`credential-display.ts` の配慮と方向が逆）。
+    保持するのは「押し直せる」ためだけなので、欄ではなく状態に置く。
+  */
+  const [autoCredential, setAutoCredential] = useState<string | null>(null);
   const [code, setCode] = useState('');
   const [targetLabel, setTargetLabel] = useState('');
   const [present, setPresent] = useState<PresentStaySummary[]>([]);
@@ -136,8 +176,26 @@ export function CheckoutFlow() {
     // 古い応答が新しい結果を上書きしないよう、自分が最新のときだけ書く。
     const isLatest = (): boolean => presentSeq.current === seq;
     setPresentBusy(true);
+    /*
+      🔴 **`try` の外で作れるのは、`startDeadline` が投げないからである**（4 周目 MINOR-3）。
+      投げる生成をここに置くと `catch` にも `finally` にも入らず `busy` が永久に true に
+      なる —— #1029 が直そうとした行き止まりの恒久化である。`let` + 代入で `try` へ
+      入れる手もあるが、それは締切の照合形を増やして 4 周目 MAJOR-1 で塞いだ
+      「綴りを足す」罠を開け直す。**投げないことをヘルパ側で保証する**
+      （`deadline.test.ts` が縛る）。
+    */
+    const presentDeadline = startDeadline(CHECKOUT_READ_TIMEOUT_MS);
     try {
-      const res = await fetch('/api/kiosk/checkout');
+      /*
+        🔴 **一覧にも締切が要る**（独立レビュー 1 周目 MAJOR-3）。無いと、応答が返らない
+        回線で `catch` に到達せず `presentFailed` が永久に false のままになる。
+        再読み込みボタンは `presentFailed` のときだけ描画されるので、**押せるボタンが
+        1 つも無いまま「確認しています…」と言い続ける**（実測: 20 秒後も retry ボタン 0 件）。
+        「再読み込みが押せるから行き止まりではない」は事実に反していた。
+        これは #870 / #896 が 2 度閉じた「永遠の読み込み中」と同型で、
+        `PLATFORM_READ_TIMEOUT_MS` を作った動機そのものである。
+      */
+      const res = await fetch('/api/kiosk/checkout', { signal: presentDeadline.signal });
       if (!res.ok) {
         if (isLatest()) setPresentFailed(true);
         return;
@@ -147,6 +205,11 @@ export function CheckoutFlow() {
         `stays` が欠けた 200 で `setPresent(undefined)` が走り、次のレンダーの
         `present.length` が **TypeError → 退館画面ごと落ちる**（`/kiosk/checkout` に
         error boundary は無く、root の `global-error.tsx` が出る）。
+      */
+      /*
+        🔴 **ここは締切と読めなさを分けない**（5 周目 MINOR-1 で数えた 3 箇所目）。
+        どちらでも出す結論が同じ（`presentFailed` → 「確認できませんでした」＋再読み込み）で、
+        来訪者にできることも変わらないため。**分けない判断であって、数え漏らしではない。**
       */
       const stays = asPresentStayList(await res.json().catch(() => null));
       if (!isLatest()) return;
@@ -161,6 +224,7 @@ export function CheckoutFlow() {
       // 一覧取得の失敗は致命的でない（QR/コードで退館できる）が、**黙らない**。
       if (isLatest()) setPresentFailed(true);
     } finally {
+      presentDeadline.done();
       if (isLatest()) setPresentBusy(false);
     }
   }, []);
@@ -176,11 +240,20 @@ export function CheckoutFlow() {
       setBusy(true);
       setInFlight(action);
       setErrorReason(null);
+      const resolveDeadline = startDeadline(CHECKOUT_READ_TIMEOUT_MS);
       try {
         const res = await fetch('/api/kiosk/checkout/resolve', {
           method: 'POST',
           headers: { 'content-type': 'application/json' },
           body: JSON.stringify(body),
+          /*
+            🔴 **締切が無いと `busy` は永久に下りない**（#1029）。`setBusy(false)` は
+            `finally` にしか無いので、サーバが受け取ったまま何も返さない回線では
+            退館の手段 3 つが全部 `disabled` のまま固まり、「最初から」でも戻らない。
+            `signal` は本文の読み取りまで効くので、ヘッダだけ来て body が止まる形も拾う
+            （`use-site-list.ts` が #554 で踏んだ型）。
+          */
+          signal: resolveDeadline.signal,
         });
         if (res.ok) {
           /*
@@ -189,7 +262,20 @@ export function CheckoutFlow() {
             「退館する」を押す直前）で落ちる。読めなければ確認画面へ進めず、届いてはいるので
             通信を疑わせない文言（`invalid`）で戻す。
           */
-          const data = asCheckoutResolveResult(await res.json().catch(() => null));
+          /*
+            🔴 **本文の読み取りが締切で止まった場合を `unexpected` に飲ませない**
+            （独立レビュー 4 周目 MINOR-1 の実測）。`res.json().catch(() => null)` は
+            AbortError を**外側 catch より先に飲む**ので、ヘッダは 200 で来て body が
+            止まる回線では、15.5 秒後に「退館の手続きを**完了できませんでした**」という
+            **失敗の断定**が出ていた（締切切れなのに）。まだ確認画面にも進んでいない
+            段階で断定される。読めなかった理由で分ける。
+          */
+          const { payload, timedOut } = await readBody(res, resolveDeadline);
+          if (timedOut) {
+            setErrorReason('timeout');
+            return;
+          }
+          const data = asCheckoutResolveResult(payload);
           if (data === null) {
             /*
               🔴 **`invalid` へ寄せない**（独立レビュー 1 周目 MAJOR-2）。それは
@@ -204,11 +290,19 @@ export function CheckoutFlow() {
           setPending({ kind: 'credential', method: data.method ?? method, input: body, summary: data.summary });
           setState('confirm');
         } else {
-          setErrorReason(asCheckoutFailureReason(await res.json().catch(() => null)));
+          const { payload: errBody, timedOut: errTimedOut } = await readBody(res, resolveDeadline);
+          setErrorReason(errTimedOut ? 'timeout' : asCheckoutFailureReason(errBody));
         }
       } catch {
-        setErrorReason('network');
+        /*
+          🔴 **締切切れを「通信エラー」と呼ばない**（独立レビュー 3 周目 MINOR-1）。
+          回線は生きていて 15 秒で**こちらが**打ち切っただけなので事実と違う。
+          resolve は再試行が安全なので害は小さいが、staff に存在しない通信障害を
+          疑わせる。確定側で入れた区別を、同じファイルの読み取り側にも入れる。
+        */
+        setErrorReason(resolveDeadline.expired() ? 'timeout' : 'network');
       } finally {
+        resolveDeadline.done();
         setBusy(false);
         setInFlight(null);
       }
@@ -219,15 +313,42 @@ export function CheckoutFlow() {
   // 退館 QR/URL（`?ct=<token>`）で開かれたら自動で解決し確認へ（#98 QR 機構の流用）。
   useEffect(() => {
     const ct = new URLSearchParams(window.location.search).get(CHECKOUT_TOKEN_QUERY);
-    if (ct) void resolveCredential({ payload: ct }, 'qr');
+    if (ct) {
+      /*
+        🔴 **押し直せる手段を残す**（独立レビュー 8 周目 MINOR-3 の実測）。残さないと、
+        締切切れで「もう一度お試しください」と言われた来訪者の画面に**押せる復旧手段が
+        1 つも無い** —— token 欄は空なので「確認へ進む」は disabled、退館コードを
+        持っていなければ QR を読ませ直す以外に手がない。**指示と画面上の可能な操作が
+        食い違う。**
+
+        🔴 **ただし token 欄へは入れない**（9 周目 MINOR-6）。8 周目の修正は `setToken(ct)`
+        だったが、共有端末の画面に **256bit・レート制限なし・TTL 12h の bearer が
+        人間可読で残る**（実測: `inputValue()` が平文を返し、`type` も password ではない）。
+        「押し直せる」ために必要なのは値の**保持**であって**表示**ではない。
+
+        併せて URL からも落とす。アドレスバーは受付端末で見えており、再読み込みでも復活する。
+
+        ⚠️ **この経路には進行中表示がまだ無い**（最大 15 秒沈黙する。#1041）。`action` を
+        渡してボタンを busy にする直し方は `kiosk-state-affordance.spec.ts`（#792 B1）が
+        禁止している ―― 条件未達で押せないボタンが主 CTA の見た目へ戻るため。専用の
+        `role="status"` が要るので、どちらの spec の意図を優先するかごと #1041 で扱う。
+      */
+      setAutoCredential(ct);
+      const clean = new URL(window.location.href);
+      clean.searchParams.delete(CHECKOUT_TOKEN_QUERY);
+      window.history.replaceState(null, '', `${clean.pathname}${clean.search}${clean.hash}`);
+      void resolveCredential({ payload: ct }, 'qr');
+    }
     // 初回のみ。resolveCredential は tr/busy に依存するため意図的に依存を絞る。
     // eslint-disable-next-line react-hooks/exhaustive-deps -- 初回のみ実行する意図（resolveCredential は tr/busy に依存する）
   }, []);
 
   const submitToken = useCallback(() => {
-    if (token.trim() === '') return;
-    void resolveCredential({ payload: token.trim() }, 'qr', 'token');
-  }, [token, resolveCredential]);
+    // 欄が空でも、QR で開かれていれば保持した credential で押し直せる（9 周目 MINOR-6）。
+    const payload = token.trim() === '' ? autoCredential : token.trim();
+    if (payload === null || payload === '') return;
+    void resolveCredential({ payload }, 'qr', 'token');
+  }, [token, autoCredential, resolveCredential]);
 
   const submitCode = useCallback(() => {
     const normalized = normalizeCheckoutCode(code);
@@ -259,6 +380,17 @@ export function CheckoutFlow() {
     setBusy(true);
     setInFlight('confirm');
     setErrorReason(null);
+    /*
+      🔴 **締切は「自分が張った signal」で見分ける**（独立レビュー 1 周目 MINOR-2 /
+      残存リスク 1）。例外の `name` は相とエンジンで変わる（Chromium 実測で
+      `TimeoutError` / `AbortError` の 2 種。WebKit は**この環境では実測できない**）。
+      名前で分けると、別の名前を使うエンジンでは締切が黙って `network` へ落ちる。
+
+      🔴 **標準の 1 行 API を直接呼ばない。** 理由は「`expired()` をエンジンに依存させない」
+      ことで、作り方と根拠は `src/domain/ui/deadline.ts` に集約してある
+      （3 周目 BLOCKER-1 / 4 周目 MINOR-4 の訂正を含む）。
+    */
+    const confirmDeadline = startDeadline(CHECKOUT_CONFIRM_TIMEOUT_MS);
     try {
       const res =
         pending.kind === 'credential'
@@ -266,25 +398,50 @@ export function CheckoutFlow() {
               method: 'POST',
               headers: { 'content-type': 'application/json' },
               body: JSON.stringify(pending.input),
+              signal: confirmDeadline.signal,
             })
           : await fetch('/api/kiosk/checkout', {
               method: 'POST',
               headers: { 'content-type': 'application/json' },
               body: JSON.stringify({ stayId: pending.stayId }),
+              signal: confirmDeadline.signal,
             });
       if (res.ok) {
         setState('done');
         setPending(null);
       } else {
-        setErrorReason(asCheckoutFailureReason(await res.json().catch(() => null)));
+        /*
+          🔴 **5xx を「拒否された」と同じ扱いにしない**（独立レビュー 1 周目 MAJOR-1）。
+          本番の origin は `serverTimeoutSec` と同じ 30 秒で読み切りを打ち切るので、
+          サーバがハングしたとき**ブラウザへ先に届くのは CloudFront の 504** であって、
+          35 秒の締切ではない。5xx を既定の `network`（「もう一度お試しください」）に
+          残すと、`confirm_unknown` を足した意味が**本番の主経路で失われる**。
+          `src/components/admin/ui/save-outcome.ts` が #973 で同じ結論に達している。
+        */
+        const { payload: errBody, timedOut: errTimedOut } = await readBody(res, confirmDeadline);
+        setErrorReason(
+          errTimedOut
+            ? CHECKOUT_CONFIRM_UNKNOWN_REASON
+            : confirmFailureReason(res.status, asCheckoutFailureReason(errBody)),
+        );
         setState('identify');
         setPending(null);
       }
     } catch {
-      setErrorReason('network');
+      /*
+        🔴 **書き込みの中断は「失敗した」と言い切らない**（#968 が
+        `src/components/admin/platform/read-response.ts` に明文化済み。#1029 で来訪者導線へ）。
+        締切に達したとき、中断したのは**こちらの待ち**であって、サーバは退館を受理して
+        監査に残しているかもしれない。既定の `network`（「もう一度お試しください」）へ倒すと、
+        **既に退館済みの来訪者に未完だと信じさせて**操作を繰り返させ、
+        `already_checked_out` / `not_found` を踏ませることになる。
+        接続そのものが失敗した（＝サーバに届いていない）ときは従来どおり `network` でよい。
+      */
+      setErrorReason(confirmFailureFromAbort(confirmDeadline.expired()));
       setState('identify');
       setPending(null);
     } finally {
+      confirmDeadline.done();
       setBusy(false);
       setInFlight(null);
     }
@@ -294,6 +451,8 @@ export function CheckoutFlow() {
     setState('identify');
     setPending(null);
     setToken('');
+    // 「最初から」は文字どおり最初から ―― 保持した credential も落とす（PII を残さない）。
+    setAutoCredential(null);
     setCode('');
     setTargetLabel('');
     setErrorReason(null);
@@ -413,7 +572,7 @@ export function CheckoutFlow() {
             className="btn btn--primary"
             data-testid="checkout-token-submit"
             onClick={submitToken}
-            disabled={busy || token.trim() === ''}
+            disabled={busy || (token.trim() === '' && autoCredential === null)}
             aria-busy={inFlight === 'token'}
           >
             {inFlight === 'token' ? tr('common.processing') : tr('checkout.scanButton')}
