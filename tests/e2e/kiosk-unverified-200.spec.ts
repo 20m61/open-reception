@@ -120,6 +120,15 @@ test.describe('来訪者導線: 形の違う 200 で受付・退館を止めな�
     await expect(page.getByTestId('checkout-empty')).toHaveCount(0);
     await expect(page.getByTestId('checkout-present-retry')).toBeEnabled();
     await expect(page.getByTestId('checkout-code')).toBeVisible();
+    /*
+      🔴 **「一度も取得できていない」と「前回時点」を取り違えない**（独立レビュー 7 周目 MINOR-1）。
+      枝は 4 周目に入ったが縛りは「前回時点」側にしか無く、常に stale 側へ倒す変異が
+      e2e 34 本を素通りしていた。倒れると、一覧が 1 行も無い画面で
+      「表示は前回時点のものです」と言う ―― 6 周目 MINOR-1 が潰した
+      **指す先の無い文言**と同型の画面が復活する。
+    */
+    await expect(page.getByTestId('checkout-present-unavailable')).toContainText('確認できませんでした');
+    await expect(page.getByTestId('checkout-present-unavailable')).not.toContainText('前回時点');
   });
 
   /**
@@ -344,6 +353,101 @@ test.describe('来訪者導線: 形の違う 200 で受付・退館を止めな�
     await expect(page.getByTestId('checkout-present-item')).toHaveCount(1);
     await expect(page.getByTestId('checkout-present-list')).toContainText('新しい応答');
     await expect(page.getByTestId('checkout-present-list')).not.toContainText('古い応答');
+  });
+
+  /**
+   * 🔴 **連番ガードは 4 箇所あるのに、縛られていたのは 1 箇所だけだった**
+   * （独立レビュー 7 周目 MINOR-3）。`!res.ok` 側の `if (isLatest())` を無条件にする変異が
+   * e2e 34 本を素通りする。上の連打テストが縛るのは JSON を読んだ側の 1 箇所である。
+   *
+   * 実害: 遅い 503 が**新しい成功応答の後**に着地すると、最新の一覧の上に
+   * 「表示は前回時点のものです」という**嘘の警告**が出る。staff は最新の一覧を
+   * 「古いかもしれない」と疑うことになる。
+   */
+  test('退館: 遅れて着地した失敗が、新しい一覧に嘘の警告を付けない', async ({ page }) => {
+    const SLOW_MS = 3000;
+    const FRESH = JSON.stringify({
+      stays: [
+        { stayId: 'fresh1', checkedInAt: '2026-01-01T10:00:00.000Z', targetLabel: '新しい応答', purpose: '打ち合わせ' },
+      ],
+    });
+
+    let calls = 0;
+    let slowSettled = false;
+    await page.route('**/api/kiosk/checkout', async (route) => {
+      calls += 1;
+      // 1 回目は落として再読み込みボタンを出す（連打の入口）。
+      if (calls === 1) {
+        return route.fulfill({ status: 503, contentType: 'application/json', body: '{}' });
+      }
+      if (calls === 2) {
+        // 2 回目は**遅い 503**。3 回目より後に着地する。
+        await new Promise((r) => setTimeout(r, SLOW_MS));
+        await route.fulfill({ status: 503, contentType: 'application/json', body: '{}' });
+        slowSettled = true;
+        return;
+      }
+      return route.fulfill({ status: 200, contentType: 'application/json', body: FRESH });
+    });
+
+    await page.goto('/kiosk/checkout');
+    await expect(page.getByTestId('checkout-present-unavailable')).toBeVisible();
+
+    await page.getByTestId('checkout-present-retry').click(); // 2 回目: 遅い 503
+    await expect.poll(() => calls).toBe(2);
+    await page.getByTestId('checkout-present-retry').click(); // 3 回目: 速い 200
+    await expect.poll(() => calls).toBe(3);
+
+    // 最後に押した結果が載る。
+    await expect(page.getByTestId('checkout-present-item')).toHaveCount(1);
+    await expect(page.getByTestId('checkout-present-unavailable')).toHaveCount(0);
+
+    // **これが本題。** 遅い 503 が後から着地しても、最新の一覧に警告を付けない。
+    await expect.poll(() => slowSettled, { timeout: SLOW_MS + 5000 }).toBe(true);
+    await page.waitForTimeout(1000);
+    await expect(page.getByTestId('checkout-present-unavailable')).toHaveCount(0);
+    await expect(page.getByTestId('checkout-present-item')).toHaveCount(1);
+  });
+
+  /**
+   * 🔴 **「2 箇所に配線した」と書きながら、測ったのは 1 箇所だけだった**
+   * （独立レビュー 7 周目 MINOR-2）。退館確定（`confirmCheckout`）側だけを
+   * `data?.error ?? 'network'` へ戻す変異が e2e 34 本を素通りする。
+   *
+   * しかもこちらは**押した後のいちばん重い瞬間**である ―― 来訪者は「退館する」を押し、
+   * 何も出ないまま入力画面へ戻される。6 周目 MINOR-5 と同じ欠陥が、より悪い場所に残っていた。
+   */
+  test('退館確定: 失敗理由が文字列でない非 200 でも、来訪者に理由が出る', async ({ page }) => {
+    const PRESENT = JSON.stringify({
+      stays: [
+        { stayId: 'pick1', checkedInAt: '2026-01-01T10:00:00.000Z', targetLabel: '総務部', purpose: '打ち合わせ' },
+      ],
+    });
+    const confirmCalls: string[] = [];
+    // 一覧の GET と退館確定の POST は同じ URL。メソッドで分ける。
+    await page.route('**/api/kiosk/checkout', (route) => {
+      const req = route.request();
+      if (req.method() === 'POST') {
+        confirmCalls.push(req.method());
+        return route.fulfill({ status: 400, contentType: 'application/json', body: '{"error":0}' });
+      }
+      return route.fulfill({ status: 200, contentType: 'application/json', body: PRESENT });
+    });
+
+    await page.goto('/kiosk/checkout');
+    await expect(page.getByTestId('checkout-present-list')).toBeVisible();
+    await page.getByTestId('checkout-present-item').first().click();
+
+    // 確認画面まで来た（ここまでは通信を伴わない）。
+    await expect(page.getByTestId('checkout-confirm')).toBeVisible();
+    await page.getByTestId('checkout-confirm-yes').click();
+
+    // 踏んだことの表明（POST が実際に飛んでいないと以降は空虚になる）。
+    await expect.poll(() => confirmCalls.length).toBeGreaterThan(0);
+
+    // **これが本題。** 理由が読めなくても、黙って入力画面へ戻さない。
+    await expect(page.getByTestId('checkout-error')).toBeVisible();
+    await expectNotCrashed(page);
   });
 
   /**
