@@ -47,10 +47,13 @@ describe('startDeadline (#1029)', () => {
 
   /*
     🔴 **`AbortSignal.timeout` を使っていないこと**（3 周目 BLOCKER-1）。
-    あれは Safari 16 からで、iPadOS 15 以前では**呼んだ瞬間に投げて要求が 1 本も飛ばない**。
+    その API が無い環境では**呼んだ瞬間に投げて要求が 1 本も飛ばない**。
+    ⚠️ ビルド対象の下限（`safari 16.4`）には当該 API が在るので「iPadOS 15 で壊れる」とは
+    書かない（4 周目 MINOR-4 の訂正）。ここが守るのは「`expired()` をエンジンに
+    依存させない」ことである。
     実装がそちらへ戻る変異を、この 1 本が落とす。
   */
-  it('AbortSignal.timeout に依存しない（古い iPadOS Safari で要求が飛ばなくなる）', () => {
+  it('AbortSignal.timeout に依存しない（無い環境で要求が飛ばなくなる）', () => {
     const original = AbortSignal.timeout;
     // @ts-expect-error 非対応環境を再現する
     delete AbortSignal.timeout;

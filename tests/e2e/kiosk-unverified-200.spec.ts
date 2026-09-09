@@ -516,6 +516,15 @@ test.describe('来訪者導線: 形の違う 200 で受付・退館を止めな�
       受付への導線を出す（`docs/experience/README.md` 原則 5）。
     */
     await expect(error).toContainText('受付にお問い合わせください');
+    /*
+      🔴 **`受付にお問い合わせください` は 4 種の文言が含む**（#1029 の独立レビュー 5 周目
+      MAJOR-1）。それだけを見ると、`unexpected` を `confirm_unknown` へ倒す変異が
+      素通りする ―― **`/confirm` を一度も呼んでいない**自己特定の段階で
+      「退館できたかどうか確認できませんでした」が出て、来訪者は「退館できたかも」と
+      受け取って帰る（実際は在館のまま）。理由を見分ける語で照合する。
+    */
+    await expect(error).toContainText('完了できませんでした');
+    await expect(error).not.toContainText('確認できませんでした');
     await expect(error).not.toContainText('受付番号を入力してください');
     /*
       ⚠️ **「見えているか」はここでは主張しない**（独立レビュー 3 周目 MAJOR-B/C）。

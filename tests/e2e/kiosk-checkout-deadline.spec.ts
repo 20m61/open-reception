@@ -375,27 +375,33 @@ test.describe('来訪者導線: 応答が返らなくても退館の手段を失
     const error = page.getByTestId('checkout-error');
     await expect(error).toBeVisible();
     // **これが本題。** 締切は切れていないので、再試行の督促ではなく有人導線を出す。
-    await expect(error).toContainText('受付にお問い合わせください');
+    /*
+      🔴 **`受付にお問い合わせください` を含むかだけでは緩い**（独立レビュー 5 周目 MAJOR-1）。
+      `checkout.error.*` 9 種のうち **4 種**がこの語を含むので、その 4 種のあいだで
+      入れ替える変異が全部生存する（実測: `unexpected` → `confirm_unknown` が
+      e2e 46 本・unit 67 本を素通り）。倒れると、**`/confirm` を一度も呼んでいない**
+      自己特定の段階で「退館できたかどうか確認できませんでした」が出て、来訪者は
+      「退館できたかもしれない」と受け取って帰る —— 実際は在館のまま残る。
+    */
+    await expect(error).toContainText('完了できませんでした');
+    await expect(error).not.toContainText('確認できませんでした');
     await expect(error).not.toContainText('時間内に応答がありませんでした');
   });
 
   /**
-   * 🔴 **標準の 1 行締切 API が無い端末で、退館の 3 手段が全滅していた**
-   * （独立レビュー 3 周目 BLOCKER-1）。`AbortSignal.timeout` は Safari 16（2022-09）からで、
-   * iPadOS 15 以前には無い。`fetch` の引数として評価すると**呼んだ瞬間に投げる**ので、
-   * 要求が 1 本も飛ばない。レビューの実測: `gets=0 resolves=0 posts=0`、画面は
-   * 「通信エラーが発生しました。もう一度お試しください。」。回線は正常なのに何度押しても同じで、
-   * staff は存在しないネットワーク障害を追うことになる。
+   * 🔴 **締切 API を `fetch` の引数として直接評価しない**（独立レビュー 3 周目 BLOCKER-1）。
+   * その API が無い環境では**呼んだ瞬間に投げる**ので、要求が 1 本も飛ばない
+   * （実測: `gets=0 resolves=0 posts=0`、画面は「通信エラーが発生しました」。
+   * 回線は正常なのに何度押しても同じで、staff は存在しない障害を追うことになる）。
    *
-   * **#1029 は「悪い回線でだけ固まる」を直そうとして「特定の端末クラスで常に失敗する」へ
-   * 変換していた。** `docs/ipad-uat.md` の端末方針は「可能な限り最新のメジャー版」＝
-   * 努力目標なので、16 以上を前提にできない。
-   *
-   * この環境には webkit バイナリが無く実機で測れないので、**API を消して再現する**。
+   * ⚠️ **「iPadOS 15 で壊れる」とは書かない**（4 周目 MINOR-4 の訂正）。
+   * ビルド対象の下限は `safari 16.4`（`browserslist` の上書きが無く Next の既定が効く）で、
+   * 当該 API はそこに在る。ここで測るのは**人為的に API を消した環境**であって、
+   * 実機の再現ではない。実機 WebKit は未検証（この環境に webkit バイナリが無い）。
    */
   test('退館: 標準の 1 行締切 API が無い端末でも、退館の導線が生きている', async ({ page }) => {
     await page.addInitScript(() => {
-      // iPadOS 15 以前の Safari 相当。
+      // 締切 API が無い環境を人為的に作る（実機の再現ではない）。
       // @ts-expect-error 非対応環境を再現する
       delete AbortSignal.timeout;
     });

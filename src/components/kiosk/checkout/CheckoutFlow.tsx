@@ -11,6 +11,7 @@ import {
 import { LanguageSwitcher } from '../LanguageSwitcher';
 import {
   CHECKOUT_CONFIRM_TIMEOUT_MS,
+  CHECKOUT_CONFIRM_UNKNOWN_REASON,
   CHECKOUT_FAILURE_MESSAGE,
   CHECKOUT_READ_TIMEOUT_MS,
   confirmFailureFromAbort,
@@ -21,7 +22,7 @@ import {
 } from './logic';
 import { asCheckoutFailureReason, asCheckoutResolveResult, asPresentStayList } from './parse';
 import { resolveReadState } from '@/domain/ui/read-state';
-import { startDeadline } from '@/domain/ui/deadline';
+import { startDeadline, type Deadline } from '@/domain/ui/deadline';
 import { CHECKOUT_TOKEN_QUERY, normalizeCheckoutCode } from './self-id';
 
 /**
@@ -62,6 +63,28 @@ type Pending = {
   | { kind: 'credential'; method: CheckoutMethod; input: Record<string, string> }
   | { kind: 'stay'; stayId: string }
 );
+
+/**
+ * 応答の本文を読み、**読めなかった理由が締切かどうか**まで返す (#1029)。
+ *
+ * 🔴 **`res.json().catch(() => null)` を直に書かない**（独立レビュー 4・5 周目 MINOR-1）。
+ * あの形は締切の abort を**外側 catch より先に飲む**ので、締切切れなのに
+ * 「読めなかった」（＝失敗の断定や「通信エラー」）へ落ちる。4 周目は `res.ok` 側の
+ * 1 箇所だけを直し、**同じ関数の兄弟枝 2 つを取りこぼした**（5 周目 MINOR-1 の実測:
+ * 非 200 + 本文停止で 16.0 秒後に「通信エラー」）。
+ *
+ * ここを唯一の入口にして、**数え漏らしを構造で潰す**。
+ */
+async function readBody(
+  res: Response,
+  deadline: Deadline,
+): Promise<{ payload: unknown; timedOut: boolean }> {
+  try {
+    return { payload: await res.json(), timedOut: false };
+  } catch {
+    return { payload: null, timedOut: deadline.expired() };
+  }
+}
 
 export function CheckoutFlow() {
   const [state, setState] = useState<FlowState>('identify');
@@ -171,6 +194,11 @@ export function CheckoutFlow() {
         `present.length` が **TypeError → 退館画面ごと落ちる**（`/kiosk/checkout` に
         error boundary は無く、root の `global-error.tsx` が出る）。
       */
+      /*
+        🔴 **ここは締切と読めなさを分けない**（5 周目 MINOR-1 で数えた 3 箇所目）。
+        どちらでも出す結論が同じ（`presentFailed` → 「確認できませんでした」＋再読み込み）で、
+        来訪者にできることも変わらないため。**分けない判断であって、数え漏らしではない。**
+      */
       const stays = asPresentStayList(await res.json().catch(() => null));
       if (!isLatest()) return;
       if (stays === null) {
@@ -230,14 +258,8 @@ export function CheckoutFlow() {
             **失敗の断定**が出ていた（締切切れなのに）。まだ確認画面にも進んでいない
             段階で断定される。読めなかった理由で分ける。
           */
-          let payload: unknown = null;
-          let readFailed = false;
-          try {
-            payload = await res.json();
-          } catch {
-            readFailed = true;
-          }
-          if (readFailed && resolveDeadline.expired()) {
+          const { payload, timedOut } = await readBody(res, resolveDeadline);
+          if (timedOut) {
             setErrorReason('timeout');
             return;
           }
@@ -256,7 +278,8 @@ export function CheckoutFlow() {
           setPending({ kind: 'credential', method: data.method ?? method, input: body, summary: data.summary });
           setState('confirm');
         } else {
-          setErrorReason(asCheckoutFailureReason(await res.json().catch(() => null)));
+          const { payload: errBody, timedOut: errTimedOut } = await readBody(res, resolveDeadline);
+          setErrorReason(errTimedOut ? 'timeout' : asCheckoutFailureReason(errBody));
         }
       } catch {
         /*
@@ -356,8 +379,11 @@ export function CheckoutFlow() {
           残すと、`confirm_unknown` を足した意味が**本番の主経路で失われる**。
           `src/components/admin/ui/save-outcome.ts` が #973 で同じ結論に達している。
         */
+        const { payload: errBody, timedOut: errTimedOut } = await readBody(res, confirmDeadline);
         setErrorReason(
-          confirmFailureReason(res.status, asCheckoutFailureReason(await res.json().catch(() => null))),
+          errTimedOut
+            ? CHECKOUT_CONFIRM_UNKNOWN_REASON
+            : confirmFailureReason(res.status, asCheckoutFailureReason(errBody)),
         );
         setState('identify');
         setPending(null);

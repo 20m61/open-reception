@@ -142,10 +142,16 @@ describe('退館フローの締切 (#1029)', () => {
    * 「iPadOS 15 で壊れる」という断定はしない（4 周目 MINOR-4 の訂正）。
    */
   it('退館フローが AbortSignal.timeout を直接呼ばない（要求が飛ばなくなる）', () => {
-    // 🔴 **締切を実際に作っているモジュールにも掛ける**（4 周目 MINOR-5）。
-    // 禁止条項が、集約先である `deadline.ts` に掛かっていなかった。
-    const files = [...checkoutSources(), ...checkoutSources('src/domain/ui')];
-    for (const { rel, source } of files) {
+    /*
+      🔴 **`src/domain/ui` へ広げない**（独立レビュー 5 周目 MINOR-3）。4 周目に母集団へ
+      足したが、**独立した検出力はゼロ**だった（外す変異が 67 テストを素通り。
+      `deadline.ts` の違反は `deadline.test.ts` が落とす）。しかも `src/domain/ui` は
+      共有ディレクトリで `read-state.ts`（管理画面 15 箇所が使用）が同居しており、
+      **「退館フローの締切」という名前の検査が admin 側の変更で落ちる**位置に来ていた。
+      platform 側の台帳は逆に `AbortSignal.timeout` を必須にしている（#1038）ので、
+      ここで越境すると矛盾が噛み合う。禁止の正本は `deadline.test.ts` に置く。
+    */
+    for (const { rel, source } of checkoutSources()) {
       expect(source, `${rel} が AbortSignal.timeout を直接呼んでいる`).not.toContain('AbortSignal.timeout');
     }
   });
