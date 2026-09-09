@@ -127,7 +127,15 @@ test.describe('来訪者導線: 応答が返らなくても退館の手段を失
     const error = page.getByTestId('checkout-error');
     await expect(error).toBeVisible({ timeout: CHECKOUT_CONFIRM_TIMEOUT_MS + 10_000 });
 
-    // **これが本題。** 成功を否定せず、受付へ繋ぐ。
+    /*
+      🔴 **`受付` を含むかだけでは緩い**（独立レビュー 3 周目 MAJOR-2）。`checkout.error.*`
+      9 種のうち 5 種が `受付` を含み、`もう一度お試しください` を完全一致で含むのは
+      `network` だけなので、この対では **5 種のうち 4 種が満たされる** ―― 配線を
+      `already_checked_out`（「すでに退館済みです」と**断言**する）へ倒す変異が素通りした。
+      退館できたか分からない状況で断言されると、来訪者はそのまま帰り、実際には在館のまま
+      かもしれない。実際の文言で照合する。
+    */
+    await expect(error).toContainText('確認できませんでした');
     await expect(error).toContainText('受付');
     /*
       **下界。** 「通信エラーが発生しました。もう一度お試しください。」（既定の `network`）へ
@@ -185,6 +193,7 @@ test.describe('来訪者導線: 応答が返らなくても退館の手段を失
     const error = page.getByTestId('checkout-error');
     await expect(error).toBeVisible();
     // **これが本題。** 適用されたか分からないので、断定も再試行の督促もしない。
+    await expect(error).toContainText('確認できませんでした');
     await expect(error).toContainText('受付');
     await expect(error).not.toContainText('もう一度お試しください');
   });
@@ -276,6 +285,89 @@ test.describe('来訪者導線: 応答が返らなくても退館の手段を失
     await expect(error).toContainText('もう一度お試しください');
     // 「分からない」へ寄せる変異をここで落とす ―― 受付へ歩かせる理由が無い。
     await expect(error).not.toContainText('確認できませんでした');
+  });
+
+  /**
+   * 🔴 **標準の 1 行締切 API が無い端末で、退館の 3 手段が全滅していた**
+   * （独立レビュー 3 周目 BLOCKER-1）。`AbortSignal.timeout` は Safari 16（2022-09）からで、
+   * iPadOS 15 以前には無い。`fetch` の引数として評価すると**呼んだ瞬間に投げる**ので、
+   * 要求が 1 本も飛ばない。レビューの実測: `gets=0 resolves=0 posts=0`、画面は
+   * 「通信エラーが発生しました。もう一度お試しください。」。回線は正常なのに何度押しても同じで、
+   * staff は存在しないネットワーク障害を追うことになる。
+   *
+   * **#1029 は「悪い回線でだけ固まる」を直そうとして「特定の端末クラスで常に失敗する」へ
+   * 変換していた。** `docs/ipad-uat.md` の端末方針は「可能な限り最新のメジャー版」＝
+   * 努力目標なので、16 以上を前提にできない。
+   *
+   * この環境には webkit バイナリが無く実機で測れないので、**API を消して再現する**。
+   */
+  test('退館: 標準の 1 行締切 API が無い端末でも、退館の導線が生きている', async ({ page }) => {
+    await page.addInitScript(() => {
+      // iPadOS 15 以前の Safari 相当。
+      // @ts-expect-error 非対応環境を再現する
+      delete AbortSignal.timeout;
+    });
+    const calls: string[] = [];
+    page.on('request', (req) => {
+      if (req.url().includes('/api/kiosk/checkout')) calls.push(req.method());
+    });
+
+    await page.goto('/kiosk/checkout');
+
+    // **これが本題。** 要求が実際に飛ぶ（`gets=0` にならない）。
+    await expect.poll(() => calls.length).toBeGreaterThan(0);
+    // 一覧が読めている＝締切の生成が投げていない。
+    await expect(
+      page.getByTestId('checkout-present-list').or(page.getByTestId('checkout-empty')),
+    ).toBeVisible();
+    // 自己特定も飛ぶ。
+    await page.getByTestId('checkout-code').fill('1234');
+    await page.getByTestId('checkout-target-label').fill('総務部');
+    const before = calls.length;
+    await page.getByTestId('checkout-resolve-submit').click();
+    await expect.poll(() => calls.length).toBeGreaterThan(before);
+  });
+
+  /**
+   * 🔴 **締切の「値」は静的走査では縛れない**（独立レビュー 3 周目 MAJOR-1）。
+   *
+   * 台帳の綴りは 3 度替えて 3 度別の書き方で抜けられた（リテラル一致 → 一意束縛 →
+   * 行頭でない再代入）。#813（ESLint の文法を手写しして 3 度突破された）と同型なので、
+   * **前提の側を替える** ―― 値の効き方を**本番ビルドで観測する**。
+   *
+   * 確定を 20 秒握ってから成功させる。確定の締切（35s）なら通り、読み取り用（15s）へ
+   * 差し替えられていれば**先に切れて失敗する**。サーバの予算は 30 秒なので、
+   * 15 秒はそもそも「サーバの答えを先に見る」という設計を壊している。
+   */
+  test('退館確定: 20 秒かかっても待ち切る（読み取り用の締切へ差し替えられていない）', async ({ page }) => {
+    test.setTimeout(CHECKOUT_CONFIRM_TIMEOUT_MS + 60_000);
+    const PRESENT = JSON.stringify({
+      stays: [
+        {
+          stayId: 'slow1',
+          checkedInAt: '2026-01-01T10:00:00.000Z',
+          targetLabel: '総務部',
+          purpose: '打ち合わせ',
+        },
+      ],
+    });
+    await page.route('**/api/kiosk/checkout', async (route) => {
+      if (route.request().method() !== 'POST') {
+        return route.fulfill({ status: 200, contentType: 'application/json', body: PRESENT });
+      }
+      // サーバの予算（30s）の内側だが、読み取り用の締切（15s）は超える。
+      await new Promise((r) => setTimeout(r, 20_000));
+      return route.fulfill({ status: 200, contentType: 'application/json', body: '{}' });
+    });
+
+    await page.goto('/kiosk/checkout');
+    await expect(page.getByTestId('checkout-present-list')).toBeVisible();
+    await page.getByTestId('checkout-present-item').first().click();
+    await page.getByTestId('checkout-confirm-yes').click();
+
+    // **これが本題。** 20 秒待ってから成功する。15 秒で切る実装ではここに到達しない。
+    await expect(page.getByTestId('checkout-done')).toBeVisible({ timeout: 40_000 });
+    await expect(page.getByTestId('checkout-error')).toHaveCount(0);
   });
 
   /**

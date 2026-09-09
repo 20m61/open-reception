@@ -21,6 +21,7 @@ import {
 } from './logic';
 import { asCheckoutFailureReason, asCheckoutResolveResult, asPresentStayList } from './parse';
 import { resolveReadState } from '@/domain/ui/read-state';
+import { startDeadline } from '@/domain/ui/deadline';
 import { CHECKOUT_TOKEN_QUERY, normalizeCheckoutCode } from './self-id';
 
 /**
@@ -140,6 +141,7 @@ export function CheckoutFlow() {
     // 古い応答が新しい結果を上書きしないよう、自分が最新のときだけ書く。
     const isLatest = (): boolean => presentSeq.current === seq;
     setPresentBusy(true);
+    const presentDeadline = startDeadline(CHECKOUT_READ_TIMEOUT_MS);
     try {
       /*
         🔴 **一覧にも締切が要る**（独立レビュー 1 周目 MAJOR-3）。無いと、応答が返らない
@@ -150,9 +152,7 @@ export function CheckoutFlow() {
         これは #870 / #896 が 2 度閉じた「永遠の読み込み中」と同型で、
         `PLATFORM_READ_TIMEOUT_MS` を作った動機そのものである。
       */
-      const res = await fetch('/api/kiosk/checkout', {
-        signal: AbortSignal.timeout(CHECKOUT_READ_TIMEOUT_MS),
-      });
+      const res = await fetch('/api/kiosk/checkout', { signal: presentDeadline.signal });
       if (!res.ok) {
         if (isLatest()) setPresentFailed(true);
         return;
@@ -176,6 +176,7 @@ export function CheckoutFlow() {
       // 一覧取得の失敗は致命的でない（QR/コードで退館できる）が、**黙らない**。
       if (isLatest()) setPresentFailed(true);
     } finally {
+      presentDeadline.done();
       if (isLatest()) setPresentBusy(false);
     }
   }, []);
@@ -191,6 +192,7 @@ export function CheckoutFlow() {
       setBusy(true);
       setInFlight(action);
       setErrorReason(null);
+      const resolveDeadline = startDeadline(CHECKOUT_READ_TIMEOUT_MS);
       try {
         const res = await fetch('/api/kiosk/checkout/resolve', {
           method: 'POST',
@@ -203,7 +205,7 @@ export function CheckoutFlow() {
             `signal` は本文の読み取りまで効くので、ヘッダだけ来て body が止まる形も拾う
             （`use-site-list.ts` が #554 で踏んだ型）。
           */
-          signal: AbortSignal.timeout(CHECKOUT_READ_TIMEOUT_MS),
+          signal: resolveDeadline.signal,
         });
         if (res.ok) {
           /*
@@ -230,8 +232,15 @@ export function CheckoutFlow() {
           setErrorReason(asCheckoutFailureReason(await res.json().catch(() => null)));
         }
       } catch {
-        setErrorReason('network');
+        /*
+          🔴 **締切切れを「通信エラー」と呼ばない**（独立レビュー 3 周目 MINOR-1）。
+          回線は生きていて 15 秒で**こちらが**打ち切っただけなので事実と違う。
+          resolve は再試行が安全なので害は小さいが、staff に存在しない通信障害を
+          疑わせる。確定側で入れた区別を、同じファイルの読み取り側にも入れる。
+        */
+        setErrorReason(resolveDeadline.expired() ? 'timeout' : 'network');
       } finally {
+        resolveDeadline.done();
         setBusy(false);
         setInFlight(null);
       }
@@ -288,28 +297,26 @@ export function CheckoutFlow() {
       `TimeoutError` / `AbortError` の 2 種。WebKit は**この環境では実測できない**）。
       名前で分けると、別の名前を使うエンジンでは締切が黙って `network` へ落ちる。
 
-      🔴 **`try` の中で作る**（独立レビュー 2 周目 MINOR-3）。外に置くと、
-      `AbortSignal.timeout` 自体が投げる環境（古い iPadOS Safari 等）で `finally` に
-      到達せず `setBusy(false)` が走らない。確認画面には逃げ道バーが無く（#1036）
-      「はい」も「いいえ」も `disabled={busy}` なので、**押せるものが 0 個の画面が
-      恒久的に残る** ―― #1029 が消そうとした症状の最悪版になる。
+      🔴 **標準の 1 行 API を直接呼ばない**（独立レビュー 3 周目 BLOCKER-1 の実測）。
+      あれは Safari 16 からで、iPadOS 15 以前では**呼んだ瞬間に投げ、要求が 1 本も
+      飛ばなかった**（`gets=0 resolves=0 posts=0`）。回線は正常なのに退館の 3 手段が
+      全滅する。作り方は `src/domain/ui/deadline.ts` に集約してある。
     */
-    let deadline: AbortSignal | undefined;
+    const confirmDeadline = startDeadline(CHECKOUT_CONFIRM_TIMEOUT_MS);
     try {
-      deadline = AbortSignal.timeout(CHECKOUT_CONFIRM_TIMEOUT_MS);
       const res =
         pending.kind === 'credential'
           ? await fetch('/api/kiosk/checkout/confirm', {
               method: 'POST',
               headers: { 'content-type': 'application/json' },
               body: JSON.stringify(pending.input),
-              signal: deadline,
+              signal: confirmDeadline.signal,
             })
           : await fetch('/api/kiosk/checkout', {
               method: 'POST',
               headers: { 'content-type': 'application/json' },
               body: JSON.stringify({ stayId: pending.stayId }),
-              signal: deadline,
+              signal: confirmDeadline.signal,
             });
       if (res.ok) {
         setState('done');
@@ -339,10 +346,11 @@ export function CheckoutFlow() {
         `already_checked_out` / `not_found` を踏ませることになる。
         接続そのものが失敗した（＝サーバに届いていない）ときは従来どおり `network` でよい。
       */
-      setErrorReason(confirmFailureFromAbort(deadline?.aborted === true));
+      setErrorReason(confirmFailureFromAbort(confirmDeadline.expired()));
       setState('identify');
       setPending(null);
     } finally {
+      confirmDeadline.done();
       setBusy(false);
       setInFlight(null);
     }

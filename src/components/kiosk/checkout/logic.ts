@@ -160,7 +160,14 @@ export function CHECKOUT_FAILURE_MESSAGE(
       return tr('checkout.error.expired');
     case 'throttled':
       return tr('checkout.error.throttled');
-    // 🔴 成功を否定しない言い方（`CHECKOUT_CONFIRM_TIMEOUT_REASON` の doc を参照）。
+    /*
+      🔴 **読み取りの締切切れは「通信エラー」ではない**（独立レビュー 3 周目 MINOR-1）。
+      回線は生きていて、こちらが 15 秒で打ち切っただけである。resolve は再試行が安全なので
+      促してよいが、**通信のせいにはしない** —— staff に存在しない障害を疑わせる。
+    */
+    case 'timeout':
+      return tr('checkout.error.timeout');
+    // 🔴 成功を否定しない言い方（`CHECKOUT_CONFIRM_UNKNOWN_REASON` の doc を参照）。
     case CHECKOUT_CONFIRM_UNKNOWN_REASON:
       return tr('checkout.error.confirmUnknown');
     default:

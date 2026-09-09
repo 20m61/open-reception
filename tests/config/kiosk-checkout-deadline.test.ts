@@ -40,13 +40,16 @@ const CHECKOUT_DIR = 'src/components/kiosk/checkout';
  * 1 バイトも読まれなくなる」を**どちらも実測で生存させた**うえで塞いでいる。
  * 単一ファイルのハードコードはその逃げ道を再び開ける。
  */
-function checkoutSources(): { rel: string; source: string }[] {
-  return readdirSync(join(ROOT, CHECKOUT_DIR))
-    .filter((n) => (n.endsWith('.ts') || n.endsWith('.tsx')) && !n.includes('.test.'))
-    .map((n) => ({
-      rel: `${CHECKOUT_DIR}/${n}`,
-      source: stripComments(readFileSync(join(ROOT, CHECKOUT_DIR, n), 'utf8')),
-    }));
+function checkoutSources(dir: string = CHECKOUT_DIR): { rel: string; source: string }[] {
+  const out: { rel: string; source: string }[] = [];
+  for (const entry of readdirSync(join(ROOT, dir), { withFileTypes: true })) {
+    const rel = `${dir}/${entry.name}`;
+    // 🔴 **再帰する**（3 周目 MINOR-2）。非再帰だとサブディレクトリへ移すだけで外れる。
+    if (entry.isDirectory()) out.push(...checkoutSources(rel));
+    else if ((entry.name.endsWith('.ts') || entry.name.endsWith('.tsx')) && !entry.name.includes('.test.'))
+      out.push({ rel, source: stripComments(readFileSync(join(ROOT, rel), 'utf8')) });
+  }
+  return out;
 }
 
 const READ = 'CHECKOUT_READ_TIMEOUT_MS';
@@ -67,45 +70,34 @@ function expectedDeadline(args: string): string {
 }
 
 /**
- * `const x = AbortSignal.timeout(<constant>)` で**一意に**束縛された名前。
+ * `const x = startDeadline(<constant>)` で**一意に**束縛された名前。
  *
- * 🔴 **束縛が 1 つだけであることまで見る** (2 周目 MINOR-1)。名前一致だけにすると、
- * 内側スコープで `const deadline = new AbortController().signal;` と**影付け**する変異が
- * 素通りした（実測。credential 枝では e2e も落とせないので検出手段が無くなる）。
- * 同名の束縛が 2 つ以上あるなら、どちらが渡っているか静的には決まらない ―― 通さない。
+ * 🔴 **綴りを足し続けない**（3 周目 MAJOR-1）。1 周目「リテラル一致」→ 2 周目「一意束縛」→
+ * 3 周目「行頭でない再代入」と、**3 度別の綴りで抜けられた**。#813（ESLint の文法を
+ * 手写しして 3 度突破された）と同型である。
+ *
+ * 前提の側を替えた ―― 締切の生成を `src/domain/ui/deadline.ts` の `startDeadline` 1 箇所へ
+ * 集約したので、ここが見るのは **`const` 束縛 1 形だけ**になった（代入形は消えた）。
+ * それでも「同名の束縛が 2 つ以上あるなら通さない」は残す（影付けを通さないため）。
+ *
+ * 🔴 **値そのものは e2e が観測する。** 静的走査だけに頼らない ――
+ * `kiosk-checkout-deadline.spec.ts` の「確定は読み取りより長く待つ」が、
+ * 定数の**実際の効き方**を本番ビルドで測る。
  */
 function uniqueDeadlineNames(source: string, constant: string): string[] {
   const bound = [...source.matchAll(/\b(?:const|let|var)\s+(\w+)\s*=/g)].map((m) => m[1] as string);
-  const fromTimeout = [
-    ...source.matchAll(new RegExp(`\\b(?:const|let|var)\\s+(\\w+)\\s*=\\s*AbortSignal\\.timeout\\(${constant}\\)`, 'g')),
+  const fromHelper = [
+    ...source.matchAll(new RegExp(`\\bconst\\s+(\\w+)\\s*=\\s*startDeadline\\(${constant}\\)`, 'g')),
   ].map((m) => m[1] as string);
-  return fromTimeout.filter((n) => bound.filter((b) => b === n).length === 1);
-}
-
-/**
- * `let x: AbortSignal | undefined;` ＋ `try { x = AbortSignal.timeout(<constant>); }` の形。
- *
- * 締切の生成を `try` の中へ入れる（2 周目 MINOR-3）と `const` では書けないので、
- * 代入の形も締切として認める。**代入も 1 箇所だけ**であることを要求する。
- */
-function uniqueAssignedDeadlineNames(source: string, constant: string): string[] {
-  const assigned = [...source.matchAll(/^\s*(\w+)\s*=\s*AbortSignal\.timeout\((\w+)\)/gm)];
-  const names = assigned.filter((m) => m[2] === constant).map((m) => m[1] as string);
-  return names.filter((n) => {
-    const allAssign = [...source.matchAll(new RegExp(`^\\s*${n}\\s*=`, 'gm'))].length;
-    const allBind = [...source.matchAll(new RegExp(`\\b(?:const|let|var)\\s+${n}\\b`, 'g'))].length;
-    return allAssign === 1 && allBind === 1;
-  });
+  // 代入で締切を作る形は残っていないこと（残っていれば下の検査が offender として落とす）。
+  return fromHelper.filter((n) => bound.filter((b) => b === n).length === 1);
 }
 
 /** この `fetch` 引数が、期待する締切を渡しているか。 */
 function passesExpectedDeadline(args: string, source: string, constant: string): boolean {
-  if (args.includes(`AbortSignal.timeout(${constant})`)) return true;
-  const names = [
-    ...uniqueDeadlineNames(source, constant),
-    ...uniqueAssignedDeadlineNames(source, constant),
-  ];
-  return names.some((n) => new RegExp(`signal\\s*:\\s*${n}\\b`).test(args));
+  return uniqueDeadlineNames(source, constant).some((n) =>
+    new RegExp(`signal\\s*:\\s*${n}\\.signal\\b`).test(args),
+  );
 }
 
 describe('退館フローの締切 (#1029)', () => {
@@ -141,11 +133,23 @@ describe('退館フローの締切 (#1029)', () => {
    * （`expectedDeadline` を常に READ にする変異）。**両方の締切が実際に使われている**
    * ことを別に固定して、片方へ寄せる変異を落とす。
    */
+  /*
+   * 🔴 **標準の 1 行 API（`AbortSignal.timeout`）を直接呼ばない**（3 周目 BLOCKER-1）。
+   * Safari 16 からの API なので、iPadOS 15 以前では**呼んだ瞬間に投げて要求が 1 本も
+   * 飛ばない**（実測: `gets=0 resolves=0 posts=0`、画面は「通信エラー」）。回線は正常なのに
+   * 退館の 3 手段が全滅する。締切の生成は `src/domain/ui/deadline.ts` へ集約する。
+   */
+  it('退館フローが AbortSignal.timeout を直接呼ばない（古い iPadOS Safari で要求が飛ばない）', () => {
+    for (const { rel, source } of checkoutSources()) {
+      expect(source, `${rel} が AbortSignal.timeout を直接呼んでいる`).not.toContain('AbortSignal.timeout');
+    }
+  });
+
   it('読み取りと確定の締切が両方とも使われている', () => {
     const all = checkoutSources()
       .map((f) => f.source)
       .join('\n');
-    expect(all).toContain(`AbortSignal.timeout(${READ})`);
-    expect(all).toContain(`AbortSignal.timeout(${CONFIRM})`);
+    expect(all).toContain(`startDeadline(${READ})`);
+    expect(all).toContain(`startDeadline(${CONFIRM})`);
   });
 });
