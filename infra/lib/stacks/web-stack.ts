@@ -18,6 +18,7 @@ import { EnvConfig } from '../config/environments';
 import { toRetentionDays, prodRemovalPolicy } from '../config/aws-helpers';
 import { applyCostTags } from '../constructs/cost-tags';
 import { openNextArtifactState } from '../build-artifacts';
+import { ADMIN_PASSWORD_POLICY } from '../../../src/domain/auth/admin-user-provisioning';
 
 /** リポジトリルート（infra/ の 1 つ上）。 */
 const REPO_ROOT = path.join(__dirname, '..', '..', '..');
@@ -430,14 +431,13 @@ export class WebStack extends Stack {
     if (cognitoAuth) {
       const userPool = new cognito.UserPool(this, 'AdminUserPool', {
         selfSignUpEnabled: false, // 管理者がユーザーを作成（セルフサインアップ無効）
+        // 🔴 email は**エイリアス**（username は別に要る）。ここを usernameAttributes へ
+        // 変えると username 自体がメールになり、`scripts/admin-user-provision.sh` の
+        // 「username は非メール形式」という前提が崩れる。
         signInAliases: { username: true, email: true },
-        passwordPolicy: {
-          minLength: 12,
-          requireLowercase: true,
-          requireUppercase: true,
-          requireDigits: true,
-          requireSymbols: true,
-        },
+        // 🔴 数値を直書きしない。スクリプト側の検査と同じ定数を使う（ドリフト防止）。
+        //     一致は infra/test/web-stack.test.ts が縛る。
+        passwordPolicy: { ...ADMIN_PASSWORD_POLICY },
         accountRecovery: cognito.AccountRecovery.EMAIL_ONLY,
         removalPolicy,
       });

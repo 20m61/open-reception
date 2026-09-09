@@ -6,6 +6,7 @@ import { WebStack } from '../lib/stacks/web-stack';
 import { openNextArtifactState, describeArtifactState } from '../lib/build-artifacts';
 import { resolveEnv, ENVIRONMENTS } from '../lib/config/environments';
 import { SERVICE_HOLD_PAGE_PATH } from '../../src/domain/reception/service-hold-page';
+import { ADMIN_PASSWORD_POLICY } from '../../src/domain/auth/admin-user-provisioning';
 
 describe('environments config', () => {
   it('resolves known environments and defaults to dev', () => {
@@ -958,6 +959,38 @@ describe.runIf(OPEN_NEXT_READY)('WebStack admin Cognito auth', () => {
     template.hasResourceProperties('AWS::Cognito::UserPool', {
       AdminCreateUserConfig: { AllowAdminCreateUserOnly: true },
     });
+  });
+
+  // 🔴 パスワードポリシーは `src/domain/auth/admin-user-provisioning.ts` の
+  //    ADMIN_PASSWORD_POLICY が唯一の定義で、`scripts/admin-user-provision.sh` の対話検査も
+  //    同じ定数を使う。CDK 側に数値を直書きすると、**スクリプトが通したパスワードを Cognito が
+  //    拒否する**という実行するまで見えないドリフトになる。合成テンプレートに対して縛る。
+  it('password policy in the template matches ADMIN_PASSWORD_POLICY (no drift)', () => {
+    template.hasResourceProperties('AWS::Cognito::UserPool', {
+      Policies: {
+        PasswordPolicy: {
+          MinimumLength: ADMIN_PASSWORD_POLICY.minLength,
+          RequireLowercase: ADMIN_PASSWORD_POLICY.requireLowercase,
+          RequireUppercase: ADMIN_PASSWORD_POLICY.requireUppercase,
+          RequireNumbers: ADMIN_PASSWORD_POLICY.requireDigits,
+          RequireSymbols: ADMIN_PASSWORD_POLICY.requireSymbols,
+        },
+      },
+    });
+  });
+
+  // 🔴 email は**エイリアス**であって username 属性ではない。この形だからこそ
+  //    「username 自体をメール形式にできない」（AWS が InvalidParameterException で弾く）。
+  //    2026-09-09 に dev で実際に踏んだ。UsernameAttributes へ変えると
+  //    `deriveUsernameFromEmail` の前提が黙って崩れるので、ここで固定する。
+  it('email is an alias, not a username attribute (admin-create-user の前提)', () => {
+    template.hasResourceProperties('AWS::Cognito::UserPool', {
+      AliasAttributes: Match.arrayWith(['email']),
+    });
+    const pools = template.findResources('AWS::Cognito::UserPool');
+    for (const pool of Object.values(pools)) {
+      expect(pool.Properties?.UsernameAttributes).toBeUndefined();
+    }
   });
 
   it('App Client enables USER_SRP_AUTH only and no client secret / no hosted UI', () => {

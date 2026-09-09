@@ -416,9 +416,47 @@ CloudFront が `x-origin-verify` を付与、`src/proxy.ts` が照合して直�
 ### 4. 管理者を作る
 
 ```sh
+bash scripts/admin-user-provision.sh
+```
+
+メールアドレスとパスワードを**対話で聞き取り**、グループ作成 → ユーザー作成（既存なら属性更新）
+→ 恒久パスワード設定 → グループ付与 → **検証**まで通す。何度流しても同じ状態になる（冪等）。
+`--user-pool-id` / `--region` / `--group` / `--username` で上書きできる。
+
+🔴 **`--username` にメールアドレスを渡さないこと。** プールは
+`signInAliases: { username: true, email: true }` ＝ **email はエイリアス**なので、username 自体が
+メール形式だと AWS が弾く:
+
+```
+InvalidParameterException: Username cannot be of email format,
+since user pool is configured for email alias.
+```
+
+**メールアドレスでログインさせたいなら「username は非メール形式 ＋ email 属性を
+`email_verified=true` で付ける」が正しい形**で、スクリプトはそれをやる（username は
+メールアドレスから導出し、導出結果が必ず妥当であることは
+`src/domain/auth/admin-user-provisioning.test.ts` が総当たりで縛っている）。
+2026-09-09 に dev でこの手順を手で流して実際に踏んだので、述語として固定してある。
+
+🔴 **クラウドセッションからは実行できない。** デプロイ用の資格情報は
+`claude-deploy-entry.json` の `DenyEverythingElseOutsideTheChain` により
+`sts:AssumeRole` / `sts:GetCallerIdentity` / `cloudformation:Describe{Stacks,ChangeSet}` の
+4 つ以外がすべて明示 Deny で、Cognito は読み取りすら通らない（CLAUDE.md の停止境界
+「Cognito・認可の境界変更」の機械強制）。**Admin 資格情報を持つ人が手元で流す。**
+
+パスワードは `read -rs` で受け取り、`--cli-input-json` に stdin 経由で渡すので
+**argv（`ps` から見える）にもディスクにも出ない**。パスワードポリシーは
+`ADMIN_PASSWORD_POLICY`（`src/domain/auth/admin-user-provisioning.ts`）が唯一の定義で、
+CDK 側も同じ定数を使う。一致は `infra/test/web-stack.test.ts` が合成テンプレートに対して縛る。
+
+手で流す場合は上記の制約を自分で守ること:
+
+```sh
 POOL=<AdminUserPoolId>   # スタック出力
 aws cognito-idp create-group --user-pool-id $POOL --group-name Admin
-aws cognito-idp admin-create-user --user-pool-id $POOL --username admin --message-action SUPPRESS
+aws cognito-idp admin-create-user --user-pool-id $POOL --username admin \
+  --user-attributes Name=email,Value=<メールアドレス> Name=email_verified,Value=true \
+  --message-action SUPPRESS
 aws cognito-idp admin-set-user-password --user-pool-id $POOL --username admin --password <値> --permanent
 aws cognito-idp admin-add-user-to-group --user-pool-id $POOL --username admin --group-name Admin
 ```
