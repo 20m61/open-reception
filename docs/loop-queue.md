@@ -9,6 +9,50 @@
 > | AWS の窓を開ける（`./scripts/aws-issue-credentials.sh`） | 短命 STS の発行は darwin 限定で、`scripts/hooks/guard-destructive.sh` が機械強制（#675）。**窓さえ開けばデプロイ本体はクラウドから wrapper 経由で流せる** | #675 / `docs/runbook-cloud-aws-deploy.md` |
 > | 実機 iPad UAT | 横向きで部署カードが何枚見えるか / 部署を開いて戻れるか / 騒音下で不在告知が聞き取れるか | #807 / #65 |
 >
+## 2026-09-09 の周回（AWS dev デプロイ ―― ✅ **成功**。5 回目にして 3 度目）
+
+Issue の周回ではなく**窓を使い切る周回**。HEAD `442aca3` を dev へ反映し、
+**2026-08-15 以来 25 日ぶり・197 コミットぶん**の差を解消した。3 スタックとも
+`UPDATE_COMPLETE`。実測と教訓は `docs/runbook-cloud-aws-deploy.md` ステップ 10 の
+「実施記録: 2026-09-09」に置いた。要点だけ:
+
+- **4 回目に届かなかった `WebMonitoring-dev` / `CfMon-dev` が今回は実行へ入った。**
+  #766 の取次不能アラーム（`KioskRealDialingUnavailable` ＋ MetricFilter）が dev に載った
+- `OR_ORIGIN_VERIFY_SECRET` のローテーションは無事に着地（smoke が 403 ではなく 200）
+- `diff` の findings は事前承認の形と一致（`Remove` 0 / `Replacement: True` 0）。承認トークン 3 本で通した
+
+### 🔴 デプロイ周回では `change-risk` の「停止境界に触れていません」は空虚に green
+
+`verify` の `change-risk` は**作業ツリーと HEAD の差分**を見る。デプロイ周回では起点＝HEAD
+なので、変更ファイルは構造上いつでも 0 件になり、**dev へ未反映の 197 コミットは 1 行も
+見ていない**。実際、同じ周回の `diff` は `ServerFn` の `AWS::IAM::Policy` 変更を
+`iamPolicyChange` として記録している ―― それが 197 コミットぶんの grant 差分である。
+
+「散文で書いた保証は、測った範囲を超えない」（規約 版 3）の実例なので、
+**デプロイの安全性を `change-risk` の 1 行で代弁させないこと。** デプロイ周回で停止境界を
+見るなら、起点は HEAD ではなく**スタックに載っている版**である。
+
+### 🔴 「ゲートが何も言わなかった」は「変更が無かった」ではない
+
+`diff` gate が印字するのは**ブロックした変更だけ**で、通した変更は出ない。
+`WebMonitoring-dev` は「変更 3 件」と出るのに findings は 1 件しか出ないので、
+残り 2 件が事前承認の形と一致するかは**出力からは判定できない**。
+今回は synth テンプレートの資源型から推定し、デプロイのイベントログで裏を取った。
+
+`describe-change-set` で直接読む道は無い ―― caller の資格情報には `DescribeChangeSet` も
+`GetTemplate` も無い（最小権限として正しい。**権限を足して解決しないこと**）。
+代わりに**検出器の実装**（`src/domain/governance/deploy-diff-gate.ts`）で
+「その族を実際に見ているか」を確かめてから「出なかった」を根拠にする。
+
+### 残: live e2e の資格情報が環境に無い（次回の窓で解決できる）
+
+`smoke` は `/` `/kiosk` `/admin/login` の 200 まで到達したあと、`npm run test:e2e:live` が
+`LIVE_BASE_URL` / `LIVE_ADMIN_USER` / `LIVE_ADMIN_PASSWORD` の欠落で落ちて exit 1 になった
+（3 つとも `UNSET`。環境ダイアログの 9 変数に含まれていない）。**デプロイの失敗ではない。**
+次回は窓を開けるときに併せて登録する。lighthouse はクラウドからは原理的に測れない
+（agent proxy の TLS 傍受を Chrome が信頼せず `CHROME_INTERSTITIAL_ERROR`。
+TLS 検証を切って回避しない）。
+
 ## 2026-09-08 の周回 その 2（#1004 第 1 増分・独立レビュー 5 周）
 
 ### #1004 第 1 増分: 形を確かめない 200（PR #1011・squash `fa341a4`）
@@ -1284,9 +1328,9 @@ open な PR を持つブランチも除くこと（マージ前に消すと PR �
 
 | # | 種別 | 状態 | 分類 |
 | --- | --- | --- | --- |
-| **#290** | platform ops | ローカル可能分は消化完了（item1-4）。残: 実 deploy 実行本体 | #195 外部待ち |
+| **#290** | platform ops | **実 deploy 実行本体を 2026-09-09 に完遂**（dev 3 スタック `UPDATE_COMPLETE`）。残: live e2e の資格情報が環境に無く未実行 | 窓を開けるとき `LIVE_*` も登録する |
 | **#196** | perf | バンドル -19%・a11y 1.0/BP 0.96 live 確定・TTFB 50-90ms。残: PSI で perf 値取得 | PSI クォータ待ち |
-| **#195** | infra | dev 分完了（Notification/Monitoring 稼働・authorizer 検証済）。残: prod deploy | prod 見送り中 |
+| **#195** | infra | dev 分完了（Notification/Monitoring 稼働・authorizer 検証済）。**2026-09-09 に dev が `main` へ追いつき、#766 の取次不能アラームが実環境に載った**。残: prod deploy | prod 見送り中 |
 | **#4** | feature | Vonage 実通話（基盤・interface 済） | #65 スタック |
 | **#31** | feature | VRM 状態別モーション（実描画済・残 idle `.vrma`） | #65 スタック |
 | **#65** | 集約 | 実機 UAT / 実認証 / WebKit E2E のスタック先 | 外部リソース待ち |

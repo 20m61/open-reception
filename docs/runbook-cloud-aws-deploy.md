@@ -1034,6 +1034,22 @@ claude.ai/code の環境ダイアログへ、次の**変数名 5 つ**を登録�
 - `AWS_REGION`
 - `AWS_CREDENTIAL_EXPIRATION`
 
+ステップ 8b の context 4 変数（`OR_APP_SECRETS_NAME` / `OR_ORIGIN_VERIFY_SECRET` /
+`OR_PUBLIC_ORIGIN_OVERRIDE` / `OR_PROVIDER_SECRET_BACKEND`）も同じダイアログへ入れる。
+合わせて 9 つ。
+
+### 🔴 live e2e の 3 変数も一緒に入れる（2026-09-09 追加）
+
+上の 9 つだけだと、**`smoke` の後半（`npm run test:e2e:live`）が必ず落ちる**:
+
+```
+ERROR: 次の環境変数が要ります: LIVE_BASE_URL LIVE_ADMIN_USER LIVE_ADMIN_PASSWORD
+```
+
+2026-09-09 の 5 回目は 3 つとも `UNSET` で、デプロイ自体は成功したのに `smoke` が exit 1 に
+なった。**デプロイの失敗と紛らわしいので、窓を開けるときに併せて登録する。**
+`LIVE_BASE_URL` は CloudFront ドメイン（`https://<DistributionDomainName>`）で足りる。
+
 ---
 
 ## ステップ 6b: 🔴 セッションを作る（リポジトリを紐づける）
@@ -1788,6 +1804,114 @@ OR_SMOKE_URL=https://<デプロイ後のドメイン> bash scripts/aws-cloud-dep
 ```
 
 `scripts/url-quality-gate.sh` と `npm run test:e2e:live` を呼ぶ。
+
+### 実施記録: 2026-09-09（5 回目 ―― ✅ **成功**。197 コミットぶんが dev へ反映された）
+
+HEAD `442aca3`（#1049）。3 スタックとも `UPDATE_COMPLETE`。2026-08-15 / 2026-09-05 に続く
+3 度目の成功で、**dev が 25 日ぶりに `main` に追いついた**。
+
+| 段 | 結果 | 所要 |
+| --- | --- | --- |
+| §0 診断 | ✅ `gate-tooling: all optional tools present`（#988 の型ではない）。context 4 変数とも SET。`node_modules` は SessionStart フックが導入済みで `npm ci` は不要だった | 約 1 分 |
+| `verify` | ✅ green（8 ステップ全 PASS。unit 8268 passed / 631 files、infra cdk 174 passed / 12 files、`flaky` **0**） | 約 6 分 |
+| `preflight` | ✅ 全項目 PASS（negative security test `passed=8 failed=0 notSimulatable=0`） | 約 30 秒 |
+| `diff` | ⛔ 3 スタックともブロック（設計どおり） | 約 2.5 分 |
+| findings 精査（9b-1） | ✅ 事前承認の形と一致 → 承認 | 約 3 分 |
+| `deploy` | ✅ **3 スタックとも `UPDATE_COMPLETE`** | 約 3 分（`Total time: 171.19s`） |
+| `smoke` | ⚠️ 主要ルート 200。live e2e は資格情報が無く未実行（後述） | 約 2 分 |
+
+**到達点**（`describe-stacks` の実測。ログの ✅ ではなく `LastUpdatedTime` で確認した）:
+
+| スタック | 状態 | `LastUpdatedTime` |
+| --- | --- | --- |
+| `OpenReception-Web-dev` | `UPDATE_COMPLETE` | 2026-09-09T21:28:08Z |
+| `OpenReception-WebMonitoring-dev` | `UPDATE_COMPLETE` | 2026-09-09T21:29:55Z |
+| `OpenReception-CfMon-dev` | `UPDATE_COMPLETE` | 2026-09-09T21:30:17Z |
+
+4 回目に**実行へ入れなかった**残り 2 スタックが、今回は実際に更新されている。
+**#766 の取次不能アラームが dev に載った** ―― `KioskRealDialingUnavailable`（Alarm）と
+`KioskRealDialingUnavailableFilter`（MetricFilter）が `CREATE_COMPLETE`。
+
+findings は 4 回目と同じ形だった: `Remove` **0 件** / `Replacement: True` **0 件**。
+`Web-dev` は 12 変更中 8 件が `[resourceReplacement] ... replacement=Conditional`、
+`WebMonitoring-dev` は `CDKMetadata` 1 件、`CfMon-dev` は `CDKMetadata` 1 件。
+承認トークンは 3 スタックぶんとも一致して通り、`deploy` は再 synth 後も同じ findings だった
+（違っていればトークンが無効になって止まる）。
+
+**`OR_ORIGIN_VERIFY_SECRET` のローテーションは無事に着地した。** CloudFront の
+origin custom header と server Lambda の env は同じデプロイで書かれ、`deploy` 完了後に打った
+smoke で `/` `/kiosk` `/admin/login` が**いずれも 200**（403 ではない）。値はログにも
+本記録にも出していない（`grep -c -F` で deploy/smoke ログに 0 回であることを確認済み）。
+
+#### 🔴 ゲートが列挙するのは「ブロックした変更」だけで、通した変更は出ない
+
+`WebMonitoring-dev` は「変更 3 件」と出るが、findings は `CDKMetadata` 1 件しか印字しない。
+残り 2 件が事前承認の形（Alarm と MetricFilter 各 1）と一致するかは、**出力からは分からない**。
+
+今回は `infra/cdk.out/OpenReception-WebMonitoring-dev.template.json` の資源型を数え、
+Alarm 12・MetricFilter 3 のうち唯一の新顔が `KioskRealDialingUnavailable` 系であることから
+推定した。**推定はデプロイのイベントログで裏が取れた**（`CREATE_COMPLETE` がその 2 件）。
+`describe-change-set` で直接読む道は無い ―― 下記のとおり caller には権限が無い。
+
+#### 🔴 caller の資格情報では change set を読めない（`DescribeChangeSet` / `GetTemplate` が Deny）
+
+「findings の形を change set 実体で裏取りする」ことは**この経路ではできない**:
+
+```
+An error occurred (AccessDenied) when calling the DescribeChangeSet operation:
+User: .../OpenReceptionClaudeDeploy-dev/... is not authorized to perform: cloudformation:DescribeChangeSet
+```
+
+`GetTemplate` も同じく Deny。change set を作るのは wrapper が assume する CDK の deploy role で、
+セッションの caller ではないため。最小権限として正しい状態なので**権限を足すべきではない**。
+
+裏取りは代わりに**検出器の実装**で行う。`src/domain/governance/deploy-diff-gate.ts` は
+`action === 'Remove'` に対して必ず `resourceRemoval` を、`replacement` が `'True'` または
+`'Conditional'` のとき必ず `resourceReplacement` を積む。したがって
+**「`[resourceRemoval]` が出ていない ⟹ Remove 0 件」「出た findings が全部 `Conditional` ⟹
+`Replacement: True` 0 件」が言える。** 「出なかった」を根拠にする前に、
+**検出器がその族を実際に見ているか**をソースで確かめること（CLAUDE.md「調査の作法」）。
+
+#### 🔴 `verify` の `change-risk` は、この周回では**空虚に green** だった
+
+`verify` は「変更ファイル: 0 件（起点: 442aca3b）／停止境界に触れていません」と出す。
+これは**作業ツリーと HEAD の差分**を見たもので、**dev へ未反映の 197 コミットは見ていない**。
+デプロイ周回では起点＝HEAD なので、この検査は構造上いつでも 0 件になる。
+
+実際、今回の `diff` は `ServerFn/ServiceRole/DefaultPolicy`（`AWS::IAM::Policy`）の変更を
+`iamPolicyChange` として記録している ―― まさに 197 コミットぶんの grant の差分である。
+ゲートの区分では「記録のみ・FAIL させない」で、`replacement=False` の Modify なので通したが、
+**`change-risk` の "停止境界に触れていません" をデプロイ内容に対する保証として読まないこと。**
+デプロイ周回で停止境界を見たいなら、起点は HEAD ではなく**スタックに載っている版**である。
+
+#### `smoke` の exit 1 は環境の欠落であって、デプロイの失敗ではない
+
+`scripts/url-quality-gate.sh` は `RESULT: PASS`（`/` `/kiosk` `/admin/login` すべて 200）。
+`smoke` 全体が exit 1 になったのはその後の `npm run test:e2e:live` で、
+
+```
+ERROR: 次の環境変数が要ります: LIVE_BASE_URL LIVE_ADMIN_USER LIVE_ADMIN_PASSWORD
+```
+
+**この 3 つは環境ダイアログの 9 変数に含まれていない。** 3 つとも `UNSET`。
+次回のデプロイでも同じ所で止まるので、live e2e まで回したいなら**窓を開けるときに
+併せて登録する**こと（`LIVE_BASE_URL` は CloudFront ドメインで足りる）。
+
+#### lighthouse はクラウドサンドボックスからは測れない（TLS 傍受）
+
+`lighthouse: 測れませんでした（exit 1・レポート無し）` の原因は 2 段ある:
+
+1. `Chrome installation not found` … `CHROME_PATH=/opt/pw-browsers/chromium-1194/chrome-linux/chrome`
+   を渡せば healthcheck は通る（Playwright の Chromium が使える）
+2. その先で `Runtime error: Chrome prevented page load with an interstitial`
+   （`CHROME_INTERSTITIAL_ERROR`）… agent proxy の TLS 傍受を Chrome が信頼しないため。
+   curl は CA バンドルを使うので 200 を返す一方、Chrome だけが落ちる
+
+**TLS 検証を切って回避しない。** ゲートは lighthouse を SKIP として `PASS` にするので、
+クラウドからの smoke は「主要ルートの 200」までを証拠と見なし、
+lighthouse は**ローカル macOS かデプロイ後の手動確認**に回す。
+
+---
 
 ### 実施記録: 2026-09-06（4 回目 ―― ❌ `deploy` を実行して失敗。**ロールバック完走・dev は無傷**）
 
