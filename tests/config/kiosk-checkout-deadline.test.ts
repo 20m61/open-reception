@@ -135,12 +135,17 @@ describe('退館フローの締切 (#1029)', () => {
    */
   /*
    * 🔴 **標準の 1 行 API（`AbortSignal.timeout`）を直接呼ばない**（3 周目 BLOCKER-1）。
-   * Safari 16 からの API なので、iPadOS 15 以前では**呼んだ瞬間に投げて要求が 1 本も
-   * 飛ばない**（実測: `gets=0 resolves=0 posts=0`、画面は「通信エラー」）。回線は正常なのに
-   * 退館の 3 手段が全滅する。締切の生成は `src/domain/ui/deadline.ts` へ集約する。
+   * `fetch` の引数として評価すると、その API が無い環境では**呼んだ瞬間に投げて要求が
+   * 1 本も飛ばない**（実測: `gets=0 resolves=0 posts=0`、画面は「通信エラー」）。
+   * 締切の生成は `src/domain/ui/deadline.ts` へ集約し、`expired()` を例外名に
+   * 依存させない。⚠️ ビルド対象（Next 既定の `safari 16.4` 以上）には当該 API は在るので、
+   * 「iPadOS 15 で壊れる」という断定はしない（4 周目 MINOR-4 の訂正）。
    */
-  it('退館フローが AbortSignal.timeout を直接呼ばない（古い iPadOS Safari で要求が飛ばない）', () => {
-    for (const { rel, source } of checkoutSources()) {
+  it('退館フローが AbortSignal.timeout を直接呼ばない（要求が飛ばなくなる）', () => {
+    // 🔴 **締切を実際に作っているモジュールにも掛ける**（4 周目 MINOR-5）。
+    // 禁止条項が、集約先である `deadline.ts` に掛かっていなかった。
+    const files = [...checkoutSources(), ...checkoutSources('src/domain/ui')];
+    for (const { rel, source } of files) {
       expect(source, `${rel} が AbortSignal.timeout を直接呼んでいる`).not.toContain('AbortSignal.timeout');
     }
   });

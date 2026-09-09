@@ -296,6 +296,54 @@ test.describe('来訪者導線: 応答が返らなくても退館の手段を失
   });
 
   /**
+   * 🔴 **締切は「ヘッダが来ない」と「body が止まる」の 2 相で切れる**
+   * （独立レビュー 4 周目 MINOR-1 の実測）。後者では `res.json()` が reject するが、
+   * `.catch(() => null)` が**外側 catch より先に飲む**ので、締切切れなのに
+   * `unexpected`（「退館の手続きを**完了できませんでした**」＝**失敗の断定**）が
+   * 出ていた。まだ確認画面にも進んでいない段階で断定される。
+   *
+   * 実測では 15.5 秒後に断定文言が出ていた（＝締切は効いているが、分類が誤っていた）。
+   */
+  test('退館: ヘッダは届いて本文が止まっても、失敗と断定しない', async ({ page }) => {
+    test.setTimeout(CHECKOUT_READ_TIMEOUT_MS + 60_000);
+    /*
+      `route.fulfill` はヘッダと本文を分けられないので、ページ側で `fetch` を包み、
+      **本文の読み取りだけ**を締切に連動させる（`kiosk-calling-stage.spec.ts` と同じ手口）。
+    */
+    await page.addInitScript(() => {
+      const original = window.fetch;
+      window.fetch = async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = typeof input === 'string' ? input : input.toString();
+        if (!url.includes('/api/kiosk/checkout/resolve')) return original(input, init);
+        const signal = init?.signal;
+        // ヘッダは 200 で返す。本文は締切が来るまで解決しない。
+        return {
+          ok: true,
+          status: 200,
+          json: () =>
+            new Promise((_resolve, reject) => {
+              signal?.addEventListener('abort', () => reject(new DOMException('aborted', 'AbortError')));
+            }),
+        } as unknown as Response;
+      };
+    });
+
+    await page.goto('/kiosk/checkout');
+    await expect(page.getByTestId('checkout-code')).toBeVisible();
+    await page.getByTestId('checkout-code').fill('1234');
+    await page.getByTestId('checkout-target-label').fill('総務部');
+    await page.getByTestId('checkout-resolve-submit').click();
+
+    const error = page.getByTestId('checkout-error');
+    await expect(error).toBeVisible({ timeout: CHECKOUT_READ_TIMEOUT_MS + 10_000 });
+    // **これが本題。** 締切で切れたのだから、失敗と断定しない。
+    await expect(error).toContainText('時間内に応答がありませんでした');
+    await expect(error).not.toContainText('完了できませんでした');
+    // 確認画面へは進めない（`summary` を読めていない）。
+    await expect(page.getByTestId('checkout-confirm')).toHaveCount(0);
+  });
+
+  /**
    * 🔴 **標準の 1 行締切 API が無い端末で、退館の 3 手段が全滅していた**
    * （独立レビュー 3 周目 BLOCKER-1）。`AbortSignal.timeout` は Safari 16（2022-09）からで、
    * iPadOS 15 以前には無い。`fetch` の引数として評価すると**呼んだ瞬間に投げる**ので、
@@ -402,6 +450,13 @@ test.describe('来訪者導線: 応答が返らなくても退館の手段を失
       timeout: CHECKOUT_READ_TIMEOUT_MS + 10_000,
     });
     await expect(page.getByTestId('checkout-present-retry')).toBeEnabled();
+    /*
+      🔴 **進行中の行が消えること**（独立レビュー 4 周目 MINOR-2）。`setPresentBusy(false)` を
+      落とす変異が unit 100 本・e2e 44 本を素通りしていた。消えないと「一覧を確認できません
+      でした」と「確認しています…」が**同時に**出て、画面が自分と矛盾する。どちらも
+      live region なので iPad + VoiceOver では読み上げノイズが残り続ける。
+    */
+    await expect(page.getByTestId('checkout-present-loading')).toHaveCount(0);
 
     hung.release();
   });

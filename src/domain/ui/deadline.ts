@@ -3,24 +3,23 @@
  *
  * ## なぜ `AbortSignal.timeout` を使わないか
  *
- * 🔴 **`AbortSignal.timeout` は Safari 16（2022-09）からで、iPadOS 15 以前には無い。**
- * しかも呼ぶと `TypeError` を投げるので、`fetch` の引数として評価すると
- * **要求が 1 本も飛ばない**。独立レビュー 3 周目が本番ビルドで実測した:
+ * 🔴 **理由は「`expired()` をエンジンに依存させないため」である。**
+ * `AbortSignal.timeout` を `fetch` の引数として直接評価すると、**その API が無い環境では
+ * 呼んだ瞬間に投げ、要求が 1 本も飛ばない**（独立レビュー 3 周目が `delete
+ * AbortSignal.timeout` した本番ビルドで実測: `gets=0 resolves=0 posts=0`、画面は
+ * 「通信エラーが発生しました」）。自分で `AbortController` を持てば、締切の有無を
+ * `signal.aborted` で見られるので**例外の名前に依存しない**判定ができる。
  *
- * ```
- * delete AbortSignal.timeout した /kiosk/checkout
- *   gets=0 resolves=0 posts=0   ← リクエストが 1 本も送信されていない
- *   画面: 「通信エラーが発生しました。もう一度お試しください。」
- * ```
+ * ⚠️ **「iPadOS 15 では動かない」とは書かない**（独立レビュー 4 周目 MINOR-4 の訂正）。
+ * 3 周目はそう書いたが、**このリポジトリのビルド対象はそれより新しい** ――
+ * `browserslist` の上書きが無いので Next 16 の既定（`safari 16.4` 以上）が効き、
+ * `AbortSignal.timeout`（Safari 16.0〜）は**対象のどのブラウザにも在る**。
+ * 上の実測は API を人為的に消した環境のものであって、実機の再現ではない。
+ * それでも `AbortController` を選ぶのは、**例外名に依存しない判定**という独立した理由が
+ * あるからである（下記）。実機 WebKit での検証は未実施（この環境に webkit バイナリが無い）。
  *
- * 回線は正常なのに退館の 3 手段が全滅し、staff は存在しないネットワーク障害を追うことになる。
- * **「悪い回線でだけ固まる」を直そうとして「特定の端末クラスで常に失敗する」へ変換していた。**
- * `docs/ipad-uat.md` の端末方針は「iPadOS は**可能な限り**最新のメジャー版」＝努力目標なので、
- * 16 以上を前提にできない。
- *
- * `AbortController` + `setTimeout` は Safari 12.1 / iOS 12.2 から使える。このリポジトリの
- * クライアント側は元々こちらを使っていた（`src/components/admin/use-site-list.ts`,
- * `src/lib/kiosk/operating-status-poll.ts`）。
+ * このリポジトリのクライアント側は元々 `AbortController` + `setTimeout` を使っている
+ * （`src/components/admin/use-site-list.ts`, `src/lib/kiosk/operating-status-poll.ts`）。
  *
  * ## なぜ `expired()` を返すか
  *

@@ -141,6 +141,14 @@ export function CheckoutFlow() {
     // 古い応答が新しい結果を上書きしないよう、自分が最新のときだけ書く。
     const isLatest = (): boolean => presentSeq.current === seq;
     setPresentBusy(true);
+    /*
+      🔴 **`try` の外で作れるのは、`startDeadline` が投げないからである**（4 周目 MINOR-3）。
+      投げる生成をここに置くと `catch` にも `finally` にも入らず `busy` が永久に true に
+      なる —— #1029 が直そうとした行き止まりの恒久化である。`let` + 代入で `try` へ
+      入れる手もあるが、それは締切の照合形を増やして 4 周目 MAJOR-1 で塞いだ
+      「綴りを足す」罠を開け直す。**投げないことをヘルパ側で保証する**
+      （`deadline.test.ts` が縛る）。
+    */
     const presentDeadline = startDeadline(CHECKOUT_READ_TIMEOUT_MS);
     try {
       /*
@@ -214,7 +222,26 @@ export function CheckoutFlow() {
             「退館する」を押す直前）で落ちる。読めなければ確認画面へ進めず、届いてはいるので
             通信を疑わせない文言（`invalid`）で戻す。
           */
-          const data = asCheckoutResolveResult(await res.json().catch(() => null));
+          /*
+            🔴 **本文の読み取りが締切で止まった場合を `unexpected` に飲ませない**
+            （独立レビュー 4 周目 MINOR-1 の実測）。`res.json().catch(() => null)` は
+            AbortError を**外側 catch より先に飲む**ので、ヘッダは 200 で来て body が
+            止まる回線では、15.5 秒後に「退館の手続きを**完了できませんでした**」という
+            **失敗の断定**が出ていた（締切切れなのに）。まだ確認画面にも進んでいない
+            段階で断定される。読めなかった理由で分ける。
+          */
+          let payload: unknown = null;
+          let readFailed = false;
+          try {
+            payload = await res.json();
+          } catch {
+            readFailed = true;
+          }
+          if (readFailed && resolveDeadline.expired()) {
+            setErrorReason('timeout');
+            return;
+          }
+          const data = asCheckoutResolveResult(payload);
           if (data === null) {
             /*
               🔴 **`invalid` へ寄せない**（独立レビュー 1 周目 MAJOR-2）。それは
@@ -297,10 +324,9 @@ export function CheckoutFlow() {
       `TimeoutError` / `AbortError` の 2 種。WebKit は**この環境では実測できない**）。
       名前で分けると、別の名前を使うエンジンでは締切が黙って `network` へ落ちる。
 
-      🔴 **標準の 1 行 API を直接呼ばない**（独立レビュー 3 周目 BLOCKER-1 の実測）。
-      あれは Safari 16 からで、iPadOS 15 以前では**呼んだ瞬間に投げ、要求が 1 本も
-      飛ばなかった**（`gets=0 resolves=0 posts=0`）。回線は正常なのに退館の 3 手段が
-      全滅する。作り方は `src/domain/ui/deadline.ts` に集約してある。
+      🔴 **標準の 1 行 API を直接呼ばない。** 理由は「`expired()` をエンジンに依存させない」
+      ことで、作り方と根拠は `src/domain/ui/deadline.ts` に集約してある
+      （3 周目 BLOCKER-1 / 4 周目 MINOR-4 の訂正を含む）。
     */
     const confirmDeadline = startDeadline(CHECKOUT_CONFIRM_TIMEOUT_MS);
     try {

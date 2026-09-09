@@ -34,6 +34,18 @@ describe('startDeadline (#1029)', () => {
   });
 
   /*
+    🔴 **投げないこと**（独立レビュー 4 周目 MINOR-3）。呼び出し側は締切を `try` の**外**で
+    作る（`try` の内側にすると `let` + 代入になり、締切の照合形が増えて 4 周目 MAJOR-1 で
+    塞いだ「綴りを足す」罠を開け直す）。外で作れる前提は**ここが投げないこと**であって、
+    投げると `catch` にも `finally` にも入らず `busy` が永久に true のまま残る ——
+    #1029 が直そうとした行き止まりの恒久化になる。
+  */
+  it('生成が投げない（呼び出し側が try の外で作れる前提）', () => {
+    expect(() => startDeadline(1_000).done()).not.toThrow();
+    expect(() => startDeadline(0).done()).not.toThrow();
+  });
+
+  /*
     🔴 **`AbortSignal.timeout` を使っていないこと**（3 周目 BLOCKER-1）。
     あれは Safari 16 からで、iPadOS 15 以前では**呼んだ瞬間に投げて要求が 1 本も飛ばない**。
     実装がそちらへ戻る変異を、この 1 本が落とす。
