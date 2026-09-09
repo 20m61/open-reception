@@ -99,37 +99,27 @@ export function confirmFailureReason(status: number, reasonFromBody: string): st
   return status >= 500 ? CHECKOUT_CONFIRM_UNKNOWN_REASON : reasonFromBody;
 }
 
-/** 締切が投げうる 2 つの相（実測。下の doc を参照）。 */
-const DEADLINE_ERROR_NAMES: readonly string[] = ['TimeoutError', 'AbortError'];
-
 /**
- * 締切による中断か。
+ * 退館確定が失敗したとき、**自分が張った締切が切れていたか**で理由を分ける (#1029)。
  *
- * 🔴 **締切は相によって別の名前で投げる**（独立レビュー 1 周目 MINOR-2 の実測。Chromium）:
+ * 🔴 **例外の `name` を見ない**（独立レビュー 1 周目 MINOR-2 / 残存リスク 1）。
+ * 締切は相によって別の名前で投げる —— Chromium の実測では、ヘッダが来なければ
+ * `TimeoutError`、ヘッダは 200 で **body が止まる**と `res.json()` が `AbortError`。
+ * さらに **WebKit（実機の iPad Safari）で同じ名前を使う保証が無く、この環境には
+ * webkit バイナリが無いので実測できない**。名前で分けると、別の名前を使うエンジンでは
+ * 締切が黙って `network`（再試行だけを促す）へ落ちる ―― 画面にも痕跡が残らない。
  *
- * | 状況 | 投げられるもの |
- * | --- | --- |
- * | ヘッダが来ない | `DOMException{name:'TimeoutError'}` |
- * | ヘッダは 200 だが **body が止まる** | `res.json()` が `DOMException{name:'AbortError'}` |
- * | 接続失敗（届いていない） | `TypeError: Failed to fetch` |
+ * `signal.aborted` は**自分が張った締切そのもの**なので、エンジンに依らない。
  *
- * `TimeoutError` だけを見ると、**body 相の締切が黙って `network` へ落ちる**。
+ * - `true`  … 締切が切れた。サーバは退館を受理しているかもしれない ⇒ 断定しない
+ * - `false` … 接続そのものが失敗した（サーバへ**届いていない**）⇒ 再試行を促してよい
  *
- * 🔴 **`AbortError` をここへ入れられるのは、このコンポーネントに `AbortController` が
- * 1 つも無いからである。** 手動 abort を足したら、その `AbortError` と締切の
- * `AbortError` は見分けられなくなる。`tests/config/kiosk-fetch-failure.test.ts` が
- * 「`CheckoutFlow` に `AbortController` を持ち込まない」を機械で縛っている ――
- * 持ち込むならこの述語を作り直すこと。
- *
- * 🔴 **接続そのものの失敗とは区別する。** サーバへ**届いていない**失敗（`TypeError`）まで
- * 「退館できたか分かりません」と言うと、**再試行すれば済む来訪者を受付へ歩かせる**。
- * 逆に締切を `network` に含めると、既に退館済みかもしれない来訪者に再試行を促す。
- * どちらの側へ倒しても害があるので、両方向を `logic.test.ts` が縛る。
+ * 🔴 **両方向に害がある。** 締切側へ倒しすぎると再試行すれば済む来訪者を受付へ歩かせ、
+ * `network` 側へ倒すと既に退館済みかもしれない来訪者に再試行を促す。`logic.test.ts` が
+ * 両方を縛る。
  */
-export function isDeadlineExceeded(err: unknown): boolean {
-  if (typeof err !== 'object' || err === null) return false;
-  const name = (err as { name?: unknown }).name;
-  return typeof name === 'string' && DEADLINE_ERROR_NAMES.includes(name);
+export function confirmFailureFromAbort(deadlineAborted: boolean): string {
+  return deadlineAborted ? CHECKOUT_CONFIRM_UNKNOWN_REASON : 'network';
 }
 
 /**

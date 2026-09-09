@@ -37,16 +37,38 @@ function read(rel: string): string {
   return stripComments(readFileSync(join(ROOT, rel), 'utf8'));
 }
 
+/**
+ * `const x = AbortSignal.timeout(...)` で束縛された名前。
+ *
+ * 🔴 **リテラル一致だけにしない。** 同じ締切を 2 つの `fetch` で共有するとき
+ * （退館確定の credential 枝 / stay 枝）、`signal` を変数へ持ち上げるのは正しい書き方で、
+ * それを「締切が無い」と数えると**検査が正しいコードを罰する**。逆に `signal:` が
+ * 在りさえすればよいことにすると、`signal: someOtherController.signal` を通してしまう。
+ * **束縛元まで見る**ことで、どちらにも倒さない。
+ */
+function deadlineNames(source: string): string[] {
+  return [...source.matchAll(/\b(?:const|let|var)\s+(\w+)\s*=\s*AbortSignal\.timeout\(/g)].map(
+    (m) => m[1] as string,
+  );
+}
+
+/** この `fetch` 引数が締切を渡しているか。 */
+function hasDeadline(args: string, names: readonly string[]): boolean {
+  if (args.includes('AbortSignal.timeout(')) return true;
+  return names.some((n) => new RegExp(`signal\\s*:\\s*${n}\\b`).test(args));
+}
+
 describe('退館フローの締切 (#1029)', () => {
   it('退館フローの fetch はすべて締切信号を渡す', () => {
     const offenders: string[] = [];
     let checked = 0;
     for (const rel of CHECKOUT_FETCH_FILES) {
       const source = read(rel);
+      const names = deadlineNames(source);
       for (const site of fetchSites(source)) {
         checked += 1;
         const args = fetchArguments(source, site);
-        if (!args.includes('AbortSignal.timeout(')) offenders.push(`${rel}@${site}`);
+        if (!hasDeadline(args, names)) offenders.push(`${rel}@${site}`);
       }
     }
     expect(offenders, '締切を渡していない fetch（応答が返らないと押せるものが無くなる）').toEqual([]);
@@ -58,22 +80,4 @@ describe('退館フローの締切 (#1029)', () => {
     expect(checked, '退館フローの fetch を見つけられていない').toBeGreaterThanOrEqual(4);
   });
 
-  /*
-   * 🔴 **`isDeadlineExceeded` が `AbortError` を締切と見なせる前提を守る** (#1029)。
-   *
-   * 締切は相によって別の名前で投げる（ヘッダが来ない → `TimeoutError`、
-   * ヘッダは来て body が止まる → `AbortError`）。両方を締切と読めるのは、
-   * **このコンポーネントに `AbortController` が 1 つも無いから**である。
-   * 手動 abort を足すと、その `AbortError` と締切の `AbortError` は見分けられなくなり、
-   * 「退館できたか分かりません」が意図せず出るようになる。
-   *
-   * 持ち込むなら述語を作り直すこと ―― この検査はそれを**気づかせる**ためにある。
-   */
-  it('CheckoutFlow に手動 abort を持ち込まない（述語の前提）', () => {
-    for (const rel of CHECKOUT_FETCH_FILES) {
-      expect(read(rel), `${rel} に AbortController がある。isDeadlineExceeded の前提が崩れる`).not.toContain(
-        'AbortController',
-      );
-    }
-  });
 });

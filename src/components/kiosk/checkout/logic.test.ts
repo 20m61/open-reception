@@ -5,8 +5,8 @@ import {
   CHECKOUT_CONFIRM_UNKNOWN_REASON,
   CHECKOUT_FAILURE_MESSAGE,
   CHECKOUT_READ_TIMEOUT_MS,
+  confirmFailureFromAbort,
   confirmFailureReason,
-  isDeadlineExceeded,
 } from './logic';
 
 describe('CHECKOUT_FAILURE_MESSAGE (issue #102 / #327 i18n)', () => {
@@ -60,24 +60,23 @@ describe('締切による中断の扱い (#1029)', () => {
   const ja = makeT('ja');
 
   /*
-    🔴 **締切は相によって別の名前で投げる**（独立レビュー 1 周目 MINOR-2 の実測）。
-    ヘッダが来なければ `TimeoutError`、ヘッダは来て body が止まれば `AbortError`。
-    後者を落とすと、body 相の締切が黙って `network`（再試行だけを促す）へ落ちる。
+    🔴 **例外の `name` を見ない**（1 周目 MINOR-2 / 残存リスク 1）。締切は相によって
+    別の名前で投げ（Chromium 実測: ヘッダ欠 → `TimeoutError` / body 停止 → `AbortError`）、
+    **WebKit（実機の iPad Safari）が同じ名前を使う保証は無い**。名前で分けると、
+    別の名前を使うエンジンでは締切が黙って `network` へ落ちる ―― 画面に痕跡が残らない。
+    自分が張った signal の `aborted` はエンジンに依らない。
   */
-  it('締切は 2 つの相のどちらでも締切と分かる', () => {
-    expect(isDeadlineExceeded(new DOMException('timed out', 'TimeoutError'))).toBe(true);
-    expect(isDeadlineExceeded(new DOMException('aborted', 'AbortError'))).toBe(true);
+  it('締切が切れたなら、退館できたか分からないとして扱う', () => {
+    expect(confirmFailureFromAbort(true)).toBe(CHECKOUT_CONFIRM_UNKNOWN_REASON);
   });
 
   /*
-    🔴 **下界。** ここを「例外なら全部締切」に倒すと、サーバへ**届いていない**失敗まで
+    🔴 **下界。** 締切側へ倒しすぎると、サーバへ**届いていない**失敗まで
     「退館できたか分かりません」と言い、再試行すれば済む来訪者を受付へ歩かせることになる。
   */
-  it('接続そのものの失敗は締切ではない', () => {
-    expect(isDeadlineExceeded(new TypeError('Failed to fetch'))).toBe(false);
-    for (const other of [null, undefined, 'TimeoutError', 42, {}, { name: 'Error' }, { name: 42 }]) {
-      expect(isDeadlineExceeded(other)).toBe(false);
-    }
+  it('締切が切れていないなら、届いていない失敗として扱う', () => {
+    expect(confirmFailureFromAbort(false)).toBe('network');
+    expect(confirmFailureFromAbort(false)).not.toBe(CHECKOUT_CONFIRM_UNKNOWN_REASON);
   });
 
   /*

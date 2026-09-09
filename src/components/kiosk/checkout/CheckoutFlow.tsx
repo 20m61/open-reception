@@ -14,8 +14,8 @@ import {
   CHECKOUT_CONFIRM_UNKNOWN_REASON,
   CHECKOUT_FAILURE_MESSAGE,
   CHECKOUT_READ_TIMEOUT_MS,
+  confirmFailureFromAbort,
   confirmFailureReason,
-  isDeadlineExceeded,
   type CheckoutMethod,
   type CheckoutSelfIdSummary,
   type PresentStaySummary,
@@ -283,6 +283,13 @@ export function CheckoutFlow() {
     setBusy(true);
     setInFlight('confirm');
     setErrorReason(null);
+    /*
+      🔴 **締切は「自分が張った signal」で見分ける**（独立レビュー 1 周目 MINOR-2 /
+      残存リスク 1）。例外の `name` は相とエンジンで変わる（Chromium 実測で
+      `TimeoutError` / `AbortError` の 2 種。WebKit は**この環境では実測できない**）。
+      名前で分けると、別の名前を使うエンジンでは締切が黙って `network` へ落ちる。
+    */
+    const deadline = AbortSignal.timeout(CHECKOUT_CONFIRM_TIMEOUT_MS);
     try {
       const res =
         pending.kind === 'credential'
@@ -290,13 +297,13 @@ export function CheckoutFlow() {
               method: 'POST',
               headers: { 'content-type': 'application/json' },
               body: JSON.stringify(pending.input),
-              signal: AbortSignal.timeout(CHECKOUT_CONFIRM_TIMEOUT_MS),
+              signal: deadline,
             })
           : await fetch('/api/kiosk/checkout', {
               method: 'POST',
               headers: { 'content-type': 'application/json' },
               body: JSON.stringify({ stayId: pending.stayId }),
-              signal: AbortSignal.timeout(CHECKOUT_CONFIRM_TIMEOUT_MS),
+              signal: deadline,
             });
       if (res.ok) {
         setState('done');
@@ -316,7 +323,7 @@ export function CheckoutFlow() {
         setState('identify');
         setPending(null);
       }
-    } catch (err) {
+    } catch {
       /*
         🔴 **書き込みの中断は「失敗した」と言い切らない**（#968 が
         `src/components/admin/platform/read-response.ts` に明文化済み。#1029 で来訪者導線へ）。
@@ -326,7 +333,7 @@ export function CheckoutFlow() {
         `already_checked_out` / `not_found` を踏ませることになる。
         接続そのものが失敗した（＝サーバに届いていない）ときは従来どおり `network` でよい。
       */
-      setErrorReason(isDeadlineExceeded(err) ? CHECKOUT_CONFIRM_UNKNOWN_REASON : 'network');
+      setErrorReason(confirmFailureFromAbort(deadline.aborted));
       setState('identify');
       setPending(null);
     } finally {
