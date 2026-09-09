@@ -9,11 +9,13 @@
 > | AWS の窓を開ける（`./scripts/aws-issue-credentials.sh`） | 短命 STS の発行は darwin 限定で、`scripts/hooks/guard-destructive.sh` が機械強制（#675）。**窓さえ開けばデプロイ本体はクラウドから wrapper 経由で流せる** | #675 / `docs/runbook-cloud-aws-deploy.md` |
 > | 実機 iPad UAT | 横向きで部署カードが何枚見えるか / 部署を開いて戻れるか / 騒音下で不在告知が聞き取れるか | #807 / #65 |
 >
-## 2026-09-09 の周回（AWS dev デプロイ ―― ✅ **成功**。5 回目にして 3 度目）
+## 2026-09-09 の周回（AWS dev デプロイ ―― ✅ **成功**。5 回目にして 2 度目）
 
 Issue の周回ではなく**窓を使い切る周回**。HEAD `442aca3` を dev へ反映し、
-**2026-08-15 以来 25 日ぶり・197 コミットぶん**の差を解消した。3 スタックとも
-`UPDATE_COMPLETE`。実測と教訓は `docs/runbook-cloud-aws-deploy.md` ステップ 10 の
+**2026-08-15 以来 25 日ぶり・197 コミットぶん**（実測）の差を解消した。3 スタックとも
+`UPDATE_COMPLETE`。**引き継ぎメモは 2026-09-05 を「成功」と書いていたが誤りで、
+同日のデプロイは `iam:PassRole` の AccessDenied で失敗している** ―― 引き継いだ数字は
+記録へ書く前に runbook で裏を取ること。実測と教訓は `docs/runbook-cloud-aws-deploy.md` ステップ 10 の
 「実施記録: 2026-09-09」に置いた。要点だけ:
 
 - **4 回目に届かなかった `WebMonitoring-dev` / `CfMon-dev` が今回は実行へ入った。**
