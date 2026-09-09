@@ -199,6 +199,7 @@ export type MessageKey =
   | 'checkout.error.alreadyCheckedOut'
   | 'checkout.error.invalid'
   | 'checkout.error.network'
+  | 'checkout.error.confirmUnknown'
   // 退館の自己特定 再設計 (#328)。QR/短コード + ラベル照合 + 確認ステップ。
   | 'checkout.lead'
   | 'checkout.tokenSectionTitle'
@@ -235,7 +236,6 @@ export type MessageKey =
   | 'checkout.presentListStale'
   | 'checkout.presentListLoading'
   | 'checkout.presentListStaleEmpty'
-  | 'checkout.error.confirmTimeout'
   // 受付完了画面の退館クレデンシャル提示 (#342)。退館 QR / 短コード / 有効期限（{time} 補間）。
   | 'checkout.credential.title'
   | 'checkout.credential.instruction'
@@ -540,7 +540,7 @@ const ja: DefaultDictionary = {
   'checkout.error.alreadyCheckedOut': 'この受付番号はすでに退館済みです。',
   'checkout.error.invalid': '受付番号を入力してください。',
   'checkout.error.network': '通信エラーが発生しました。もう一度お試しください。',
-  'checkout.error.confirmTimeout': '退館の手続きが時間内に完了しませんでした。退館できているかどうか分かりません。受付にお問い合わせください。',
+  'checkout.error.confirmUnknown': '退館できたかどうか確認できませんでした。受付にお問い合わせください。',
   'checkout.lead': '退館用の QR コード、または受付時にお渡しした退館コードで退館できます。',
   'checkout.tokenSectionTitle': '退館 QR で退館',
   'checkout.tokenSectionHint': '受付完了時の QR コードをかざすか、リンクを貼り付けてください。',
@@ -861,7 +861,7 @@ const en: LocaleDictionary = {
   'checkout.error.alreadyCheckedOut': 'This reception number has already been checked out.',
   'checkout.error.invalid': 'Please enter a reception number.',
   'checkout.error.network': 'A network error occurred. Please try again.',
-  'checkout.error.confirmTimeout': 'Checkout did not complete in time. We cannot tell whether it went through. Please ask reception for help.',
+  'checkout.error.confirmUnknown': 'We could not confirm whether your checkout went through. Please ask reception for help.',
   'checkout.lead': 'Check out with your checkout QR code, or with the checkout code given to you at reception.',
   'checkout.tokenSectionTitle': 'Check out with QR',
   'checkout.tokenSectionHint': 'Hold up the QR code from your check-in, or paste the link.',
@@ -1179,7 +1179,7 @@ const ko: LocaleDictionary = {
   'checkout.error.alreadyCheckedOut': '이 접수 번호는 이미 퇴실 처리되었습니다.',
   'checkout.error.invalid': '접수 번호를 입력해 주세요.',
   'checkout.error.network': '통신 오류가 발생했습니다. 다시 시도해 주세요.',
-  'checkout.error.confirmTimeout': '퇴실 처리가 시간 내에 완료되지 않았습니다. 처리되었는지 확인할 수 없습니다. 접수처에 문의해 주세요.',
+  'checkout.error.confirmUnknown': '퇴실 처리가 되었는지 확인할 수 없었습니다. 접수처에 문의해 주세요.',
   'checkout.lead': '퇴실용 QR 코드 또는 접수 시 받은 퇴실 코드로 퇴실할 수 있습니다.',
   'checkout.tokenSectionTitle': 'QR로 퇴실',
   'checkout.tokenSectionHint': '체크인 시 받은 QR 코드를 대거나 링크를 붙여넣으세요.',
@@ -1494,7 +1494,7 @@ const zh: LocaleDictionary = {
   'checkout.error.alreadyCheckedOut': '该受理编号已办理退馆。',
   'checkout.error.invalid': '请输入受理编号。',
   'checkout.error.network': '发生网络错误，请重试。',
-  'checkout.error.confirmTimeout': '退馆手续未在规定时间内完成。无法确认是否已办理。请联系前台。',
+  'checkout.error.confirmUnknown': '无法确认您的退馆是否已完成。请联系前台。',
   'checkout.lead': '可使用退馆二维码，或使用登记时提供的退馆码办理退馆。',
   'checkout.tokenSectionTitle': '扫码退馆',
   'checkout.tokenSectionHint': '出示登记时的二维码，或粘贴链接。',

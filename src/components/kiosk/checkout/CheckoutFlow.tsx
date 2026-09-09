@@ -11,10 +11,11 @@ import {
 import { LanguageSwitcher } from '../LanguageSwitcher';
 import {
   CHECKOUT_CONFIRM_TIMEOUT_MS,
-  CHECKOUT_CONFIRM_TIMEOUT_REASON,
+  CHECKOUT_CONFIRM_UNKNOWN_REASON,
   CHECKOUT_FAILURE_MESSAGE,
-  CHECKOUT_RESOLVE_TIMEOUT_MS,
-  isTimeout,
+  CHECKOUT_READ_TIMEOUT_MS,
+  confirmFailureReason,
+  isDeadlineExceeded,
   type CheckoutMethod,
   type CheckoutSelfIdSummary,
   type PresentStaySummary,
@@ -141,7 +142,18 @@ export function CheckoutFlow() {
     const isLatest = (): boolean => presentSeq.current === seq;
     setPresentBusy(true);
     try {
-      const res = await fetch('/api/kiosk/checkout');
+      /*
+        🔴 **一覧にも締切が要る**（独立レビュー 1 周目 MAJOR-3）。無いと、応答が返らない
+        回線で `catch` に到達せず `presentFailed` が永久に false のままになる。
+        再読み込みボタンは `presentFailed` のときだけ描画されるので、**押せるボタンが
+        1 つも無いまま「確認しています…」と言い続ける**（実測: 20 秒後も retry ボタン 0 件）。
+        「再読み込みが押せるから行き止まりではない」は事実に反していた。
+        これは #870 / #896 が 2 度閉じた「永遠の読み込み中」と同型で、
+        `PLATFORM_READ_TIMEOUT_MS` を作った動機そのものである。
+      */
+      const res = await fetch('/api/kiosk/checkout', {
+        signal: AbortSignal.timeout(CHECKOUT_READ_TIMEOUT_MS),
+      });
       if (!res.ok) {
         if (isLatest()) setPresentFailed(true);
         return;
@@ -192,7 +204,7 @@ export function CheckoutFlow() {
             `signal` は本文の読み取りまで効くので、ヘッダだけ来て body が止まる形も拾う
             （`use-site-list.ts` が #554 で踏んだ型）。
           */
-          signal: AbortSignal.timeout(CHECKOUT_RESOLVE_TIMEOUT_MS),
+          signal: AbortSignal.timeout(CHECKOUT_READ_TIMEOUT_MS),
         });
         if (res.ok) {
           /*
@@ -290,7 +302,17 @@ export function CheckoutFlow() {
         setState('done');
         setPending(null);
       } else {
-        setErrorReason(asCheckoutFailureReason(await res.json().catch(() => null)));
+        /*
+          🔴 **5xx を「拒否された」と同じ扱いにしない**（独立レビュー 1 周目 MAJOR-1）。
+          本番の origin は `serverTimeoutSec` と同じ 30 秒で読み切りを打ち切るので、
+          サーバがハングしたとき**ブラウザへ先に届くのは CloudFront の 504** であって、
+          35 秒の締切ではない。5xx を既定の `network`（「もう一度お試しください」）に
+          残すと、`confirm_unknown` を足した意味が**本番の主経路で失われる**。
+          `src/components/admin/ui/save-outcome.ts` が #973 で同じ結論に達している。
+        */
+        setErrorReason(
+          confirmFailureReason(res.status, asCheckoutFailureReason(await res.json().catch(() => null))),
+        );
         setState('identify');
         setPending(null);
       }
@@ -304,7 +326,7 @@ export function CheckoutFlow() {
         `already_checked_out` / `not_found` を踏ませることになる。
         接続そのものが失敗した（＝サーバに届いていない）ときは従来どおり `network` でよい。
       */
-      setErrorReason(isTimeout(err) ? CHECKOUT_CONFIRM_TIMEOUT_REASON : 'network');
+      setErrorReason(isDeadlineExceeded(err) ? CHECKOUT_CONFIRM_UNKNOWN_REASON : 'network');
       setState('identify');
       setPending(null);
     } finally {

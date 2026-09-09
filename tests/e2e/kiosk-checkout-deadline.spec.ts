@@ -1,7 +1,7 @@
 import { test, expect } from './kiosk-fixtures';
 import {
   CHECKOUT_CONFIRM_TIMEOUT_MS,
-  CHECKOUT_RESOLVE_TIMEOUT_MS,
+  CHECKOUT_READ_TIMEOUT_MS,
 } from '@/components/kiosk/checkout/logic';
 
 /**
@@ -17,20 +17,25 @@ import {
  *
  * ## 🔴 締切を e2e のために縮めない
  *
- * 実測に使う値は本番と同じ（`CHECKOUT_RESOLVE_TIMEOUT_MS` / `CHECKOUT_CONFIRM_TIMEOUT_MS`）。
+ * 実測に使う値は本番と同じ（`CHECKOUT_READ_TIMEOUT_MS` / `CHECKOUT_CONFIRM_TIMEOUT_MS`）。
  * #826 で「e2e のためにしきい値を圧縮したら、本番の窓では起きない条件でしか再現しない
  * テストになっていた」を踏んでいる。テストが長くなることを理由に縮めない。
  */
 
-/** 応答を返さない route を張り、teardown 用の解放子を返す。 */
-function blackhole(page: import('@playwright/test').Page, pattern: string, method?: 'POST'): {
-  release: () => void;
-  calls: () => number;
-} {
+/**
+ * 応答を返さない route を張り、teardown 用の解放子を返す。
+ *
+ * 🔴 **登録を `await` する**（独立レビュー 1 周目 MINOR-5）。`void page.route(...)` だと
+ * 登録完了前に `page.goto` が走りうるので、ブラックホールが張られず
+ * `expect.poll(() => calls()).toBe(1)` が落ちる（空虚化ではなく flake）。
+ */
+async function blackhole(
+  page: import('@playwright/test').Page,
+  pattern: string,
+): Promise<{ release: () => void; calls: () => number }> {
   const releases: Array<() => void> = [];
   let count = 0;
-  void page.route(pattern, async (route) => {
-    if (method !== undefined && route.request().method() !== method) return route.continue();
+  await page.route(pattern, async (route) => {
     count += 1;
     await new Promise<void>((resolve) => releases.push(resolve));
     return route.abort('failed');
@@ -49,8 +54,8 @@ test.describe('来訪者導線: 応答が返らなくても退館の手段を失
    * **新設した 1 ボタンにしか適用していなかった**。元からある 3 ボタンはそのままだった。
    */
   test('退館: 自己特定の応答が返らなくても、締切を過ぎれば送信し直せる', async ({ page }) => {
-    test.setTimeout(CHECKOUT_RESOLVE_TIMEOUT_MS + 60_000);
-    const hung = blackhole(page, '**/api/kiosk/checkout/resolve');
+    test.setTimeout(CHECKOUT_READ_TIMEOUT_MS + 60_000);
+    const hung = await blackhole(page, '**/api/kiosk/checkout/resolve');
 
     await page.goto('/kiosk/checkout');
     await expect(page.getByTestId('checkout-code')).toBeVisible();
@@ -70,7 +75,7 @@ test.describe('来訪者導線: 応答が返らなくても退館の手段を失
 
     // **これが本題。** 締切を過ぎたら理由が出て、もう一度送れる。
     await expect(page.getByTestId('checkout-error')).toBeVisible({
-      timeout: CHECKOUT_RESOLVE_TIMEOUT_MS + 10_000,
+      timeout: CHECKOUT_READ_TIMEOUT_MS + 10_000,
     });
     await expect(page.getByTestId('checkout-resolve-submit')).toBeEnabled();
     await page.getByTestId('checkout-resolve-submit').click();
@@ -136,5 +141,120 @@ test.describe('来訪者導線: 応答が返らなくても退館の手段を失
     await expect(page.getByTestId('checkout-resolve-submit')).toBeEnabled();
 
     releases.forEach((r) => r());
+  });
+  /**
+   * 🔴 **本番でいちばん起きるのは締切ではなく 504 である**（独立レビュー 1 周目 MAJOR-1）。
+   *
+   * origin（Lambda Function URL）の読み切りは `serverTimeoutSec` と同じ 30 秒なので、
+   * サーバがハングしたときブラウザへ**先に届くのは CloudFront の 504** であって、
+   * 35 秒の締切ではない。5xx を既定の `network`（「もう一度お試しください」）に残すと、
+   * `confirm_unknown` を足した意味が**主経路で失われる** ―― 実際に退館が通っていた場合、
+   * 来訪者は再試行して `already_checked_out` / `not_found` を踏むことになる。
+   *
+   * この 1 本は締切を待たないので速い。**締切の e2e より先にここが落ちる**のが正しい。
+   */
+  test('退館確定: 504 でも「もう一度」と促さず、退館できたか分からないと伝える', async ({ page }) => {
+    const PRESENT = JSON.stringify({
+      stays: [
+        {
+          stayId: 'gw1',
+          checkedInAt: '2026-01-01T10:00:00.000Z',
+          targetLabel: '総務部',
+          purpose: '打ち合わせ',
+        },
+      ],
+    });
+    let posts = 0;
+    await page.route('**/api/kiosk/checkout', (route) => {
+      if (route.request().method() !== 'POST') {
+        return route.fulfill({ status: 200, contentType: 'application/json', body: PRESENT });
+      }
+      posts += 1;
+      // CloudFront / ALB が返す 504 は JSON ですらない。
+      return route.fulfill({ status: 504, contentType: 'text/html', body: '<html>504</html>' });
+    });
+
+    await page.goto('/kiosk/checkout');
+    await expect(page.getByTestId('checkout-present-list')).toBeVisible();
+    await page.getByTestId('checkout-present-item').first().click();
+    await expect(page.getByTestId('checkout-confirm')).toBeVisible();
+    await page.getByTestId('checkout-confirm-yes').click();
+
+    await expect.poll(() => posts).toBe(1);
+
+    const error = page.getByTestId('checkout-error');
+    await expect(error).toBeVisible();
+    // **これが本題。** 適用されたか分からないので、断定も再試行の督促もしない。
+    await expect(error).toContainText('受付');
+    await expect(error).not.toContainText('もう一度お試しください');
+  });
+
+  /**
+   * 🔴 **下界。** 4xx まで「分からない」へ寄せると、サーバが**見たうえで断った**ことが
+   * 伝わらなくなる。「もう退館済みです」と言えるのが正しい状況で受付へ歩かせない。
+   */
+  test('退館確定: 4xx はサーバが見て断ったので、その理由をそのまま伝える', async ({ page }) => {
+    const PRESENT = JSON.stringify({
+      stays: [
+        {
+          stayId: 'dup1',
+          checkedInAt: '2026-01-01T10:00:00.000Z',
+          targetLabel: '総務部',
+          purpose: '打ち合わせ',
+        },
+      ],
+    });
+    let posts = 0;
+    await page.route('**/api/kiosk/checkout', (route) => {
+      if (route.request().method() !== 'POST') {
+        return route.fulfill({ status: 200, contentType: 'application/json', body: PRESENT });
+      }
+      posts += 1;
+      return route.fulfill({
+        status: 409,
+        contentType: 'application/json',
+        body: '{"error":"already_checked_out"}',
+      });
+    });
+
+    await page.goto('/kiosk/checkout');
+    await expect(page.getByTestId('checkout-present-list')).toBeVisible();
+    await page.getByTestId('checkout-present-item').first().click();
+    await page.getByTestId('checkout-confirm-yes').click();
+    await expect.poll(() => posts).toBe(1);
+
+    const error = page.getByTestId('checkout-error');
+    await expect(error).toBeVisible();
+    await expect(error).toContainText('退館');
+    // 「分からない」へ寄せる変異をここで落とす。
+    await expect(error).not.toContainText('確認できませんでした');
+  });
+
+  /**
+   * 🔴 **在館一覧にも締切が要る**（独立レビュー 1 周目 MAJOR-3）。
+   *
+   * 締切が無いと `catch` に到達せず `presentFailed` が永久に false のままになる。
+   * 再読み込みボタンは `presentFailed` のときだけ描画されるので、**押せるボタンが
+   * 1 つも無いまま「確認しています…」と言い続ける**（レビューの実測: 20 秒後も
+   * `checkout-present-retry` は 0 件）。#870 / #896 が 2 度閉じた「永遠の読み込み中」と同型。
+   */
+  test('退館: 在館一覧の応答が返らなくても、締切を過ぎれば再読み込みが出る', async ({ page }) => {
+    test.setTimeout(CHECKOUT_READ_TIMEOUT_MS + 60_000);
+    const hung = await blackhole(page, '**/api/kiosk/checkout');
+
+    await page.goto('/kiosk/checkout');
+    await expect.poll(() => hung.calls()).toBe(1);
+
+    // 締切前は「確認しています…」であって、失敗表示ではない（下界）。
+    await expect(page.getByTestId('checkout-present-loading')).toBeVisible();
+    await expect(page.getByTestId('checkout-present-retry')).toHaveCount(0);
+
+    // **これが本題。** 締切を過ぎたら失敗として出て、押せるものが現れる。
+    await expect(page.getByTestId('checkout-present-unavailable')).toBeVisible({
+      timeout: CHECKOUT_READ_TIMEOUT_MS + 10_000,
+    });
+    await expect(page.getByTestId('checkout-present-retry')).toBeEnabled();
+
+    hung.release();
   });
 });

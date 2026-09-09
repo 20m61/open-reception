@@ -38,7 +38,7 @@ export type { CheckoutSelfIdSummary } from './self-id';
 export type CheckoutMethod = 'qr' | 'code';
 
 /**
- * 自己特定（resolve）の**締切** (#1029)。
+ * 読み取り（自己特定 resolve・在館一覧 GET）の**締切** (#1029)。
  *
  * 🔴 **これが無いと `busy` が永久に下りない。** `CheckoutFlow` の `busy` は `finally` でしか
  * false へ戻らないので、サーバが受け取ったまま何も返さない回線（Lambda のコールドスタート・
@@ -46,10 +46,15 @@ export type CheckoutMethod = 'qr' | 'code';
  * ―― コード送信・QR 送信・在館一覧からの選択。逃げ道の「最初から」も `setBusy(false)` を
  * 呼ばないので、来訪者はリロード以外に出口を持たない。
  *
- * 値は `PLATFORM_READ_TIMEOUT_MS`（#968）と揃える。resolve は**読み取り**なので、
- * 中断しても取り返しがつく（もう一度送ればよい）。
+ * 値は `PLATFORM_READ_TIMEOUT_MS`（#968）と揃える。読み取りなので中断しても取り返しがつく。
+ *
+ * ⚠️ **「取り返しがつく」は resolve では厳密ではない**（独立レビュー 1 周目 残存リスク 2）。
+ * コード経路の失敗は `src/lib/visit/checkout-credential.ts` がスロットルへ計上するので、
+ * 中断が続けば `throttled` に達しうる。それでも**固まったままより良い**という判断で
+ * 15 秒を選んでいる。ここを縮めると誤検知でスロットルを焚くので、下界を
+ * `logic.test.ts` が縛る。
  */
-export const CHECKOUT_RESOLVE_TIMEOUT_MS = 15_000;
+export const CHECKOUT_READ_TIMEOUT_MS = 15_000;
 
 /**
  * 退館確定（confirm）の**締切** (#1029)。
@@ -66,26 +71,65 @@ export const CHECKOUT_RESOLVE_TIMEOUT_MS = 15_000;
 export const CHECKOUT_CONFIRM_TIMEOUT_MS = 35_000;
 
 /**
- * 退館確定が締切に達したときの失敗理由 (#1029)。
+ * 退館確定が**適用されたか分からない**ときの失敗理由 (#1029)。
  *
  * 🔴 **「失敗した」と言い切らないための専用の理由である。** 中断したのは**こちらの待ち**で
  * あって、サーバは退館を受理して監査に残しているかもしれない。既定の `network`
  * （「通信エラーが発生しました。もう一度お試しください。」）へ倒すと、**既に退館済みの
  * 来訪者に未完だと信じさせて**操作を繰り返させ、`already_checked_out` / `not_found` を
  * 踏ませることになる。成功を否定せず、有人導線へ繋ぐ（`docs/experience/README.md` 原則 5）。
+ *
+ * 🔴 **締切だけでなく 5xx もここへ入れる**（独立レビュー 1 周目 MAJOR-1）。
+ * 本番の origin は `serverTimeoutSec` と同じ 30 秒で読み切りを打ち切るので、ハング時に
+ * ブラウザへ**先に届くのは CloudFront の 504** であり、35 秒の締切はほとんど発火しない。
+ * 5xx を既定の `network` に残すと、**この理由コードを足した意味が主経路で失われる**。
+ * `src/components/admin/ui/save-outcome.ts` が #973 で同じ結論に達している ――
+ * 「5xx は『拒否した』と同値ではない。LB の 502 / 504 も同型」。
  */
-export const CHECKOUT_CONFIRM_TIMEOUT_REASON = 'confirm_timeout';
+export const CHECKOUT_CONFIRM_UNKNOWN_REASON = 'confirm_unknown';
 
 /**
- * 締切による中断か（`AbortSignal.timeout` は `TimeoutError` で abort する）。
+ * 退館確定の**非 200** 応答を、来訪者にできることが変わる粒度へ写す (#1029)。
  *
- * 🔴 **接続そのものの失敗と区別する。** サーバへ**届いていない**失敗（`TypeError`）まで
+ * - 4xx … サーバが要求を**見たうえで**断った。本文の理由をそのまま使う
+ *   （`already_checked_out` / `not_found` / `expired` …）
+ * - 5xx … 適用されたか**分からない**。断定しない語彙へ寄せる
+ */
+export function confirmFailureReason(status: number, reasonFromBody: string): string {
+  return status >= 500 ? CHECKOUT_CONFIRM_UNKNOWN_REASON : reasonFromBody;
+}
+
+/** 締切が投げうる 2 つの相（実測。下の doc を参照）。 */
+const DEADLINE_ERROR_NAMES: readonly string[] = ['TimeoutError', 'AbortError'];
+
+/**
+ * 締切による中断か。
+ *
+ * 🔴 **締切は相によって別の名前で投げる**（独立レビュー 1 周目 MINOR-2 の実測。Chromium）:
+ *
+ * | 状況 | 投げられるもの |
+ * | --- | --- |
+ * | ヘッダが来ない | `DOMException{name:'TimeoutError'}` |
+ * | ヘッダは 200 だが **body が止まる** | `res.json()` が `DOMException{name:'AbortError'}` |
+ * | 接続失敗（届いていない） | `TypeError: Failed to fetch` |
+ *
+ * `TimeoutError` だけを見ると、**body 相の締切が黙って `network` へ落ちる**。
+ *
+ * 🔴 **`AbortError` をここへ入れられるのは、このコンポーネントに `AbortController` が
+ * 1 つも無いからである。** 手動 abort を足したら、その `AbortError` と締切の
+ * `AbortError` は見分けられなくなる。`tests/config/kiosk-fetch-failure.test.ts` が
+ * 「`CheckoutFlow` に `AbortController` を持ち込まない」を機械で縛っている ――
+ * 持ち込むならこの述語を作り直すこと。
+ *
+ * 🔴 **接続そのものの失敗とは区別する。** サーバへ**届いていない**失敗（`TypeError`）まで
  * 「退館できたか分かりません」と言うと、**再試行すれば済む来訪者を受付へ歩かせる**。
  * 逆に締切を `network` に含めると、既に退館済みかもしれない来訪者に再試行を促す。
  * どちらの側へ倒しても害があるので、両方向を `logic.test.ts` が縛る。
  */
-export function isTimeout(err: unknown): boolean {
-  return typeof err === 'object' && err !== null && (err as { name?: unknown }).name === 'TimeoutError';
+export function isDeadlineExceeded(err: unknown): boolean {
+  if (typeof err !== 'object' || err === null) return false;
+  const name = (err as { name?: unknown }).name;
+  return typeof name === 'string' && DEADLINE_ERROR_NAMES.includes(name);
 }
 
 /**
@@ -127,8 +171,8 @@ export function CHECKOUT_FAILURE_MESSAGE(
     case 'throttled':
       return tr('checkout.error.throttled');
     // 🔴 成功を否定しない言い方（`CHECKOUT_CONFIRM_TIMEOUT_REASON` の doc を参照）。
-    case CHECKOUT_CONFIRM_TIMEOUT_REASON:
-      return tr('checkout.error.confirmTimeout');
+    case CHECKOUT_CONFIRM_UNKNOWN_REASON:
+      return tr('checkout.error.confirmUnknown');
     default:
       return tr('checkout.error.network');
   }
