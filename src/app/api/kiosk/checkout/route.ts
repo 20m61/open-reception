@@ -22,13 +22,13 @@ import {
 /**
  * PII を含まない在館サマリ（受付端末の一覧表示用）。
  * 判別材料として呼び出し先ラベル・用件を含む（氏名等 PII は含めない、#328）。
+ *
+ * 🔴 **再宣言しない**（独立レビュー 3 周目 MINOR-1）。ここに構造的に同一な写しを置くと
+ * `tsc` がクライアント述語（`asPresentStayList`）と結ばず、片方だけ変えてもコンパイルが
+ * 通る。増分 2 で述語を「形が違えば拒否」へ厳しくした以上、ズレは**在館一覧の消失**に
+ * 直結する。写しは必ずズレる。
  */
-type PresentStaySummary = {
-  stayId: string;
-  checkedInAt: string;
-  targetLabel?: string;
-  purpose?: string;
-};
+import type { PresentStaySummary } from '@/components/kiosk/checkout/logic';
 
 export async function GET(): Promise<NextResponse> {
   const session = await requireKioskSession();

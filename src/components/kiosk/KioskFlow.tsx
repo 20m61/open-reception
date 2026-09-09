@@ -1,5 +1,6 @@
 'use client';
 
+import { asCallResult, asCreatedReception } from '@/domain/reception/parse';
 import { callFailureReasonFrom } from '@/domain/reception/call-failure';
 import {
   useCallback,
@@ -630,18 +631,46 @@ export function KioskFlow({
           if (!cancelled) dispatch({ type: 'CALL_FAILED', reason: 'server' });
           return;
         }
-        const session = (await createRes.json()) as { id: string };
+        /*
+          🔴 **形を確かめてから使う**（#1004 増分 2）。`as` は実行時に何も検査しないので、
+          `id` が欠けた 200 の `undefined` が**そのまま 2 か所へ流れていた** ――
+          状態機械（`SESSION_CREATED`）と URL（`/api/kiosk/receptions/undefined/call`）である。
+          後者はサーバが `getReception('undefined')` に失敗して非 200 を返すので、来訪者には
+          呼び出し失敗が出る。ただし**理由が嘘になる**（呼び出しは一度も行われていないのに
+          `server` ＝「呼び出しを完了できなかった」と読める文言になる）。
+
+          🔴 **述語で防げないもの**: ここへ来た時点で受付レコードは**サーバ側に存在する**
+          （作成の POST は 200 を返している）。端末はその ID を知らないので、呼ぶことも・
+          完了することも・取り消すこともできない（`leaveWithServer` の `shouldCancelOnServer`
+          は `sessionId` を要求する）。この孤児は述語では防げない ―― サーバ側の TTL/掃除の
+          領分である。ここが担うのは「これ以上悪化させない」ことだけ。
+        */
+        const session = asCreatedReception(await createRes.json().catch(() => null));
+        if (session === null) {
+          // 到達はしたが応答が使えない。`server` は「到達はしたが呼び出しを完了できなかった
+          // （HTTP エラー・**想定外の応答**）」と定義済みなので、語彙を増やさずに写せる。
+          if (!cancelled) dispatch({ type: 'CALL_FAILED', reason: 'server' });
+          return;
+        }
         // 受付 ID が確定した時点で状態機械へ載せる (#649)。`/call` の結果を待たないのは、
         // **呼び出し中**の担当者応答ポーリング（#99 `useStaffResponse`）が受付 ID を必要と
         // するため。結果と一緒にしか立たなかった頃は calling 中に 1 度も走っていなかった。
         // 状態は動かさない（calling のまま）。
         if (!cancelled) dispatch({ type: 'SESSION_CREATED', sessionId: session.id });
         const callRes = await fetch(`/api/kiosk/receptions/${session.id}/call`, { method: 'POST' });
-        const result = (await callRes.json()) as {
-          state: ReceptionState;
-          vonageSessionId?: string | null;
-          error?: string;
-        };
+        /*
+          🔴 **ここも形を確かめる**（独立レビュー 1 周目 MAJOR-3）。当初「下流が unknown 安全
+          だから実害なし」と判定したが、**`res.json()` 自身が throw する経路**を見落として
+          いた。`200 text/html` や `200 null` で throw すると外側の catch が
+          `CALL_FAILED reason: 'network'` を出し、`shouldOfferAlternativeContact('network')`
+          が false なので**画面からボタンが 1 つも無くなる**。到達はしているので `server`
+          （＝代替導線を主 CTA にする）が正しい。
+        */
+        const result = asCallResult(await callRes.json().catch(() => null));
+        if (result === null) {
+          if (!cancelled) dispatch({ type: 'CALL_FAILED', sessionId: session.id, reason: 'server' });
+          return;
+        }
         if (cancelled) return;
         // サーバが理由を返したなら、それを来訪者向けの理由へ写す (#736)。
         // 🔴 **`unrouted` だけを名指しで拾わない。** かつてここは `unrouted` の `if` が 1 つ
@@ -669,7 +698,10 @@ export function KioskFlow({
         //   - ビデオ: セッションが確立済み。ビデオビューが応答/未応答を確定する
         //   - PSTN:  電話を鳴らした直後。セッションは無く、結果は provider webhook で届く
         // セッションが無いのにビデオビューを開くと、存在しないトークンを取りに行って失敗する。
-        else if (shouldOpenVideoView(result)) setVonageCallId(session.id);
+        // `state` は任意（営業時間外の 409 は持たない）。媒体判定は「`calling` か」だけを
+        // 見るので、欠落は空文字で渡して「ビデオではない」に倒す。
+        else if (shouldOpenVideoView({ state: result.state ?? '', vonageSessionId: result.vonageSessionId }))
+          setVonageCallId(session.id);
         else if (result.state === 'calling') {
           // PSTN 発信中は呼び出し中画面（段階的ケア #323）のまま、`/status` を取りに行く。
           setVonageCallId(null);
