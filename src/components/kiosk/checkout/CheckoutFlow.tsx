@@ -93,6 +93,14 @@ async function readBody(
 export function CheckoutFlow() {
   const [state, setState] = useState<FlowState>('identify');
   const [token, setToken] = useState('');
+  /*
+    退館 QR (`?ct=`) で開かれたときの credential。**画面には出さない**。
+    token 欄へ入れてしまうと、共有端末に 256bit の bearer が人間可読・撮影可能な形で
+    残る（独立レビュー 9 周目 MINOR-6 の実測。`.claude/rules/pii-secret-minimization.md`
+    「token/secret の平文を残さない」、`credential-display.ts` の配慮と方向が逆）。
+    保持するのは「押し直せる」ためだけなので、欄ではなく状態に置く。
+  */
+  const [autoCredential, setAutoCredential] = useState<string | null>(null);
   const [code, setCode] = useState('');
   const [targetLabel, setTargetLabel] = useState('');
   const [present, setPresent] = useState<PresentStaySummary[]>([]);
@@ -307,14 +315,28 @@ export function CheckoutFlow() {
     const ct = new URLSearchParams(window.location.search).get(CHECKOUT_TOKEN_QUERY);
     if (ct) {
       /*
-        🔴 **token 欄へ戻してから解決する**（独立レビュー 8 周目 MINOR-3 の実測）。
-        戻さないと、締切切れで「もう一度お試しください」と言われた来訪者の画面に
-        **押せる復旧手段が 1 つも無い** —— token 欄は空なので「確認へ進む」は disabled、
-        退館コードを持っていなければ QR を読ませ直す以外に手がない。
-        **指示と画面上の可能な操作が食い違う。**
-        `ct` は既に URL に載っており、新しい保持でも PII でもない。
+        🔴 **押し直せる手段を残す**（独立レビュー 8 周目 MINOR-3 の実測）。残さないと、
+        締切切れで「もう一度お試しください」と言われた来訪者の画面に**押せる復旧手段が
+        1 つも無い** —— token 欄は空なので「確認へ進む」は disabled、退館コードを
+        持っていなければ QR を読ませ直す以外に手がない。**指示と画面上の可能な操作が
+        食い違う。**
+
+        🔴 **ただし token 欄へは入れない**（9 周目 MINOR-6）。8 周目の修正は `setToken(ct)`
+        だったが、共有端末の画面に **256bit・レート制限なし・TTL 12h の bearer が
+        人間可読で残る**（実測: `inputValue()` が平文を返し、`type` も password ではない）。
+        「押し直せる」ために必要なのは値の**保持**であって**表示**ではない。
+
+        併せて URL からも落とす。アドレスバーは受付端末で見えており、再読み込みでも復活する。
+
+        ⚠️ **この経路には進行中表示がまだ無い**（最大 15 秒沈黙する。#1041）。`action` を
+        渡してボタンを busy にする直し方は `kiosk-state-affordance.spec.ts`（#792 B1）が
+        禁止している ―― 条件未達で押せないボタンが主 CTA の見た目へ戻るため。専用の
+        `role="status"` が要るので、どちらの spec の意図を優先するかごと #1041 で扱う。
       */
-      setToken(ct);
+      setAutoCredential(ct);
+      const clean = new URL(window.location.href);
+      clean.searchParams.delete(CHECKOUT_TOKEN_QUERY);
+      window.history.replaceState(null, '', `${clean.pathname}${clean.search}${clean.hash}`);
       void resolveCredential({ payload: ct }, 'qr');
     }
     // 初回のみ。resolveCredential は tr/busy に依存するため意図的に依存を絞る。
@@ -322,9 +344,11 @@ export function CheckoutFlow() {
   }, []);
 
   const submitToken = useCallback(() => {
-    if (token.trim() === '') return;
-    void resolveCredential({ payload: token.trim() }, 'qr', 'token');
-  }, [token, resolveCredential]);
+    // 欄が空でも、QR で開かれていれば保持した credential で押し直せる（9 周目 MINOR-6）。
+    const payload = token.trim() === '' ? autoCredential : token.trim();
+    if (payload === null || payload === '') return;
+    void resolveCredential({ payload }, 'qr', 'token');
+  }, [token, autoCredential, resolveCredential]);
 
   const submitCode = useCallback(() => {
     const normalized = normalizeCheckoutCode(code);
@@ -427,6 +451,8 @@ export function CheckoutFlow() {
     setState('identify');
     setPending(null);
     setToken('');
+    // 「最初から」は文字どおり最初から ―― 保持した credential も落とす（PII を残さない）。
+    setAutoCredential(null);
     setCode('');
     setTargetLabel('');
     setErrorReason(null);
@@ -546,7 +572,7 @@ export function CheckoutFlow() {
             className="btn btn--primary"
             data-testid="checkout-token-submit"
             onClick={submitToken}
-            disabled={busy || token.trim() === ''}
+            disabled={busy || (token.trim() === '' && autoCredential === null)}
             aria-busy={inFlight === 'token'}
           >
             {inFlight === 'token' ? tr('common.processing') : tr('checkout.scanButton')}

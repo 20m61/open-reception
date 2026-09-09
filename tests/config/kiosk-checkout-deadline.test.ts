@@ -160,6 +160,27 @@ describe('退館フローの締切 (#1029)', () => {
     }
   });
 
+  /*
+   * 🔴 **台帳と分類器の「配線」を縛る**（独立レビュー 9 周目 MINOR-3）。
+   * `expectedDeadline(args, source)` を `expectedDeadline(args, '')` へ変える変異が
+   * **15 本を素通りした**。現在の退館ディレクトリには URL/method を括り出した文字列定数が
+   * 1 つも無いので `resolveConstants` は**恒等写像**であり、配線は正しいのに
+   * 一度も効いていなかった ―― 「在るが縛られていない」型である。
+   *
+   * fixture は**合成ソース**にする。実源に定数が現れるかどうかに依存させない
+   * （依存させると、実源をリファクタした瞬間にこの検査が空虚に戻る）。
+   */
+  it('母集団のソースを分類器へ渡している（定数の解決が効いている）', () => {
+    const source = "const CONFIRM_URL = '/api/kiosk/checkout/confirm';";
+    const args = '(CONFIRM_URL, { signal: confirmDeadline.signal })';
+    expect(
+      expectedDeadline(args, source),
+      'source を渡していないか、定数の解決を通していない',
+    ).toBe(CONFIRM);
+    // 対照: source を落とすと URL が読めず読み取りへ落ちる ―― 上の主張が空虚でないこと。
+    expect(expectedDeadline(args, '')).toBe(READ);
+  });
+
   it('読み取りと確定の締切が両方とも使われている', () => {
     const all = checkoutSources()
       .map((f) => f.source)

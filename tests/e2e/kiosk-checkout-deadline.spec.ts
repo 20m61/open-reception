@@ -162,6 +162,15 @@ test.describe('来訪者導線: 応答が返らなくても退館の手段を失
     */
     expect(await page.getByTestId('checkout-confirm-yes').getAttribute('aria-busy')).toBe('true');
     await expect(page.getByTestId('checkout-confirm-yes')).toHaveText('処理しています…');
+    /*
+      🔴 **押せないことの下界**（独立レビュー 9 周目 MINOR-5 の実測）。`disabled={busy}` を
+      外す変異が **56 本を素通り**した ―― `checkout-confirm-yes` に `toBeDisabled()` /
+      `toBeEnabled()` の主張がリポジトリ全体で **0 件**だった。二重 POST は
+      `confirmCheckout` 冒頭の再入ガードが止めるので害は「35 秒のあいだ押せるように見えて、
+      押しても何も起きない」＝ #792 が閉じようとした型である。QR / コードの兄弟 2 つには
+      入っていて確定側だけ無い、という 7・8 周目と同型の取りこぼしだった。
+    */
+    await expect(page.getByTestId('checkout-confirm-yes')).toBeDisabled();
 
     const error = page.getByTestId('checkout-error');
     await expect(error).toBeVisible({ timeout: CHECKOUT_CONFIRM_TIMEOUT_MS + 10_000 });
@@ -539,10 +548,28 @@ test.describe('来訪者導線: 応答が返らなくても退館の手段を失
 
     /*
       **これが本題。** 「もう一度」と言うなら、その手段が画面に無ければならない。
-      URL の token が欄へ戻っているので、押し直せる。
+      QR で開かれた credential を保持しているので、欄が空のまま押し直せる。
     */
-    await expect(page.getByTestId('checkout-token')).toHaveValue('dummy-checkout-token');
-    await expect(page.getByTestId('checkout-token-submit')).toBeEnabled();
+    const submit = page.getByTestId('checkout-token-submit');
+    await expect(submit).toBeEnabled();
+
+    /*
+      🔴 **保持は「表示」ではない**（独立レビュー 9 周目 MINOR-6 の実測）。
+      8 周目の修正は token を欄へ書き戻していたので、共有端末の画面に
+      **256bit・レート制限なし・TTL 12h の bearer が人間可読で残った**
+      （`inputValue()` が平文を返し、`type` も password ではない ―― 撮影できる）。
+      `.claude/rules/pii-secret-minimization.md`「token/secret の平文を残さない」に反する。
+      **欄が空であること**と**アドレスバーに残っていないこと**を下界として縛る。
+    */
+    await expect(page.getByTestId('checkout-token')).toHaveValue('');
+    expect(page.url(), '退館 token がアドレスバーに残っている').not.toContain('ct=');
+
+    /*
+      🔴 **押せることだけでは足りない。** 押しても何も起きなければ「押せる見た目の
+      行き止まり」で、#792 が閉じようとした型そのものになる。**実際に再送される**ことまで見る。
+    */
+    await submit.click();
+    await expect.poll(() => hung.calls(), { timeout: 10_000 }).toBe(2);
 
     hung.release();
   });

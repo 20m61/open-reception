@@ -80,6 +80,45 @@ const CASES: readonly { name: string; source: string; args: string; expect: 'rea
     args: "('/api/kiosk/checkout', { method: GET_METHOD, signal: presentDeadline.signal })",
     expect: 'read',
   },
+  {
+    /*
+      9 周目: `method:` を `body:` **より先に**見ていたので、body の中に入れ子で現れた
+      `method` を fetch の method と取り違えて `read` へ落とした。7 周目の `body:` 規則は
+      この入力を kill していたので、**方式の入替えで kill が減った = 退行**である。
+      `.claude/rules/opus5-autonomous-loop.md`「方式を替えたら、前の方式が守っていた変異を
+      当て直す」に当たる。行列が「抜けられた綴り」しか持たず、**前の方式が守っていた入力**を
+      持っていなかったため機械では検出できなかった。
+    */
+    name: '🔴 見逃し例 3: body の中に入れ子で現れた method（7 周目方式が守っていた）',
+    source: '',
+    args: "('/api/kiosk/checkout', { body: JSON.stringify({ method: 'get' }), method: 'POST', signal: d.signal })",
+    expect: 'confirm',
+  },
+  {
+    // 9 周目レビューの入力探査。以下 4 つは**振る舞いを変えない書き換え**なのに read へ落ちていた。
+    name: '🔴 見逃し例 4: shorthand で init を組む',
+    source: '',
+    args: "('/api/kiosk/checkout', { method, headers, body, signal: d.signal })",
+    expect: 'confirm',
+  },
+  {
+    name: '🔴 見逃し例 5: spread で init を組む（args から読めない）',
+    source: '',
+    args: "('/api/kiosk/checkout', { ...POST_INIT, signal: d.signal })",
+    expect: 'confirm',
+  },
+  {
+    name: '🔴 見逃し例 6: 引用符付きキー',
+    source: '',
+    args: "('/api/kiosk/checkout', { 'method': 'POST', 'body': x, signal: d.signal })",
+    expect: 'confirm',
+  },
+  {
+    name: '🔴 見逃し例 7: 計算キー（定数を解決して初めて読める）',
+    source: "const METHOD_KEY = 'method';",
+    args: "('/api/kiosk/checkout', { [METHOD_KEY]: 'POST', signal: d.signal })",
+    expect: 'confirm',
+  },
 ];
 
 describe('退館フローの締切分類の回帰行列 (#1029)', () => {
@@ -98,12 +137,50 @@ describe('退館フローの締切分類の回帰行列 (#1029)', () => {
     expect(CASES.some((c) => c.expect === 'read')).toBe(true);
     expect(CASES.some((c) => c.expect === 'confirm')).toBe(true);
     // 実際に抜けられた綴りが記録されていること（減らすときは理由を書く）。
-    expect(CASES.filter((c) => c.name.startsWith('🔴')).length).toBeGreaterThanOrEqual(5);
+    expect(CASES.filter((c) => c.name.startsWith('🔴')).length).toBeGreaterThanOrEqual(10);
   });
 
   it('method が動的で読めないときは書き込み側へ倒す（安全側）', () => {
     expect(classifyDeadline("('/api/kiosk/checkout', { method: computeMethod(), signal: d.signal })")).toBe(
       'confirm',
     );
+  });
+
+  /*
+    🔴 **誇張しない。** 上の表は「args に init が現れる」形しか押さえられない。
+    `args` の外に init を置く形は原理的に読めず、**読み取りへ落ちる**。
+    これは方式の限界であって行を足せば直るものではない（前提の置き換えは #1040）。
+    塞げていないことを**測って記録する** —— 黙って通すと「行列が全部 kill だから穴が無い」
+    という誤読を招く。
+  */
+  it('🔴 塞げていない: args の外に init を置くと読み取りへ落ちる (#1040)', () => {
+    expect(classifyDeadline("('/api/kiosk/checkout', buildInit())")).toBe('read');
+  });
+});
+
+/**
+ * `resolveConstants` の置換範囲。
+ *
+ * 🔴 **分類を経由しないで直接縛る**（9 周目 MINOR-4）。否定先読み
+ * `(?<![\w$.'"`])` を丸ごと削除しても行列 15 本が素通りした ―― 先読みを踏む入力が
+ * 表に 1 つも無く、**保証の存在だけがあって検出力がゼロ**だった。
+ */
+describe('resolveConstants は識別子の出現だけを置き換える (#1029)', () => {
+  const constants = stringConstants("const NAME = 'POST';");
+
+  it('素の識別子は置き換える（下界。この検査が空虚でないこと）', () => {
+    expect(resolveConstants('(u, { method: NAME })', constants)).toBe("(u, { method: 'POST' })");
+  });
+
+  it('プロパティ名は置き換えない', () => {
+    expect(resolveConstants('(u, { init: o.NAME })', constants)).toBe('(u, { init: o.NAME })');
+  });
+
+  it('既に引用符で囲まれたキーは置き換えない', () => {
+    expect(resolveConstants("(u, { 'NAME': 1 })", constants)).toBe("(u, { 'NAME': 1 })");
+  });
+
+  it('識別子の一部には当たらない', () => {
+    expect(resolveConstants('(u, { NAMES: 1, XNAME: 2 })', constants)).toBe('(u, { NAMES: 1, XNAME: 2 })');
   });
 });
