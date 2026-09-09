@@ -77,6 +77,14 @@ test.describe('来訪者導線: 応答が返らなくても退館の手段を失
     const error = page.getByTestId('checkout-error');
     await expect(error).toBeVisible({ timeout: CHECKOUT_READ_TIMEOUT_MS + 10_000 });
     /*
+      🔴 **進行中の表示も戻ること**（独立レビュー 6 周目 MINOR-2）。`setInFlight(null)` を
+      落とす変異が e2e 52 本を素通りしていた。倒れると、押せるのにラベルが
+      「処理しています…」のまま `aria-busy="true"` が張り付く —— このファイル自身が
+      再読み込みボタンについて書いた「押せるのに押せない語で覆うと、消したはずの
+      行き止まりが見た目の上では残る」がそのまま当てはまる。
+    */
+    await expect(page.getByTestId('checkout-resolve-submit')).toHaveAttribute('aria-busy', 'false');
+    /*
       🔴 **どの理由かまで見る**（独立レビュー 3 周目 MINOR-1 の修正を縛る）。
       「エラーが出た」だけを見ていたので、締切切れを `network` へ戻す変異が生存していた
       （実測）。回線は生きていて**こちらが 15 秒で打ち切っただけ**なので「通信エラー」は
@@ -484,6 +492,71 @@ test.describe('来訪者導線: 応答が返らなくても退館の手段を失
     // **これが本題。** 理由が読めなかったのだから、断定も再試行の督促もしない。
     await expect(error).toContainText('確認できませんでした');
     await expect(error).not.toContainText('通信エラー');
+  });
+
+  /**
+   * 🔴 **非 200 の理由に、どこにもオラクルが無かった**（独立レビュー 6 周目 MAJOR-1）。
+   * `asCheckoutFailureReason(errBody)` を `'network'` 固定にする変異が e2e 52 本を
+   * 素通りする。倒れると `src/lib/visit/request.ts` が返す失敗 6 種
+   * （`expired` 410 / `throttled` 429 / `already_checked_out` 409 / `not_found` /
+   * `not_recognized` 404 / `invalid` 400）が**全部「通信エラー」に潰れる**。
+   *
+   * 実害が最も重いのは 2 つ:
+   * - **期限切れ**の来訪者は、唯一 受付導線を持つ `expired` の文言を失って無限に再送する
+   * - **throttled** の来訪者は「もう一度お試しください」に従い、**自分でスロットル窓を
+   *   焼き続ける**（10 分 / 10 回。`src/lib/visit/checkout-credential.ts`）
+   */
+  test('退館: 非 200 の理由をそのまま伝える（通信エラーに潰さない）', async ({ page }) => {
+    const cases = [
+      { status: 410, error: 'expired', shows: '有効期限' },
+      { status: 429, error: 'throttled', shows: '試行が続いたため' },
+    ] as const;
+
+    for (const c of cases) {
+      await page.route('**/api/kiosk/checkout/resolve', (route) =>
+        route.fulfill({
+          status: c.status,
+          contentType: 'application/json',
+          body: JSON.stringify({ error: c.error }),
+        }),
+      );
+      await page.goto('/kiosk/checkout');
+      await expect(page.getByTestId('checkout-code')).toBeVisible();
+      await page.getByTestId('checkout-code').fill('1234');
+      await page.getByTestId('checkout-target-label').fill('総務部');
+      await page.getByTestId('checkout-resolve-submit').click();
+
+      const error = page.getByTestId('checkout-error');
+      await expect(error).toBeVisible();
+      // **これが本題。** サーバが名乗った理由が来訪者へ届く。
+      await expect(error).toContainText(c.shows);
+      await expect(error).not.toContainText('通信エラー');
+      await page.unroute('**/api/kiosk/checkout/resolve');
+    }
+  });
+
+  /**
+   * 🔴 **下界。** 締切側へ倒す変異（`'timeout'` 固定）が e2e 52 本を素通りしていた
+   * （独立レビュー 6 周目 MINOR-1）。スイート全体で `/checkout/resolve` に
+   * `route.abort()` を注入する spec が **1 本も無かった**。
+   *
+   * 倒れると、iPad が Wi-Fi を落として**サーバへ届いていない**のに
+   * 「時間内に応答がありませんでした」と出る —— 実在する回線障害を隠す。
+   */
+  test('退館: 自己特定の接続そのものが失敗したときは、通信の問題として伝える', async ({ page }) => {
+    await page.route('**/api/kiosk/checkout/resolve', (route) => route.abort('failed'));
+
+    await page.goto('/kiosk/checkout');
+    await expect(page.getByTestId('checkout-code')).toBeVisible();
+    await page.getByTestId('checkout-code').fill('1234');
+    await page.getByTestId('checkout-target-label').fill('総務部');
+    await page.getByTestId('checkout-resolve-submit').click();
+
+    const error = page.getByTestId('checkout-error');
+    await expect(error).toBeVisible();
+    // **これが本題。** 締切ではなく接続の失敗である。
+    await expect(error).toContainText('通信エラー');
+    await expect(error).not.toContainText('時間内に応答がありませんでした');
   });
 
   /**

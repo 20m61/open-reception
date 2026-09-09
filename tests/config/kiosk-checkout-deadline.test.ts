@@ -66,7 +66,16 @@ const CONFIRM = 'CHECKOUT_CONFIRM_TIMEOUT_MS';
 function expectedDeadline(args: string): string {
   if (args.includes('/checkout/confirm')) return CONFIRM;
   if (args.includes('/checkout/resolve')) return READ;
-  return /method\s*:\s*'POST'/.test(args) ? CONFIRM : READ;
+  /*
+    🔴 **`method: 'POST'` の綴りに依存しない**（独立レビュー 6 周目 MINOR-4）。
+    `const POST = 'POST'` と書き替えるだけで分類が READ へ落ち、**確定に読み取り用の
+    15 秒を渡す変異が台帳を素通り**した（実測）。台帳の doc 自身が「3 度別の綴りで
+    抜けられた」「#813 と同型」と書いているのに、**照合側だけ直して分類側に同じ
+    綴り依存を残していた**（同族 4 回目）。
+
+    `method` キーが在るかどうか（＝ GET 以外）で広く取る。値の綴りは見ない。
+  */
+  return /\bmethod\s*:/.test(args) ? CONFIRM : READ;
 }
 
 /**
