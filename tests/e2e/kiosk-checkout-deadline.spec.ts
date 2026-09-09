@@ -389,6 +389,104 @@ test.describe('来訪者導線: 応答が返らなくても退館の手段を失
   });
 
   /**
+   * 🔴 **非 200 の本文が締切で止まる相**（独立レビュー 5 周目 MINOR-1 で数えた兄弟その 1）。
+   *
+   * 4 周目は `res.ok` 側だけを直し、ここを取りこぼしていた。倒れると、回線は生きていて
+   * こちらが 15 秒で打ち切っただけなのに「通信エラー」と出る —— staff に存在しない
+   * 障害を疑わせる。実測では 16.0 秒後に「通信エラー」だった。
+   */
+  test('退館: 非 200 の本文が締切で止まっても、通信のせいにしない', async ({ page }) => {
+    test.setTimeout(CHECKOUT_READ_TIMEOUT_MS + 60_000);
+    await page.addInitScript(() => {
+      const original = window.fetch;
+      window.fetch = async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = typeof input === 'string' ? input : input.toString();
+        if (!url.includes('/api/kiosk/checkout/resolve')) return original(input, init);
+        const signal = init?.signal;
+        // ヘッダは 503 で返す。本文は締切が来るまで解決しない。
+        return {
+          ok: false,
+          status: 503,
+          json: () =>
+            new Promise((_r, reject) => {
+              signal?.addEventListener('abort', () => reject(new DOMException('aborted', 'AbortError')));
+            }),
+        } as unknown as Response;
+      };
+    });
+
+    await page.goto('/kiosk/checkout');
+    await expect(page.getByTestId('checkout-code')).toBeVisible();
+    await page.getByTestId('checkout-code').fill('1234');
+    await page.getByTestId('checkout-target-label').fill('総務部');
+    await page.getByTestId('checkout-resolve-submit').click();
+
+    const error = page.getByTestId('checkout-error');
+    await expect(error).toBeVisible({ timeout: CHECKOUT_READ_TIMEOUT_MS + 10_000 });
+    // **これが本題。** 締切で切ったのだから、通信のせいにしない。
+    await expect(error).toContainText('時間内に応答がありませんでした');
+    await expect(error).not.toContainText('通信エラー');
+  });
+
+  /**
+   * 🔴 **確定の非 200 の本文が締切で止まる相**（同・兄弟その 2）。
+   *
+   * 4xx は本来「サーバが見て断った」なので本文の理由をそのまま使うが、**その本文が
+   * 締切で読めなかった**のなら話が違う —— 適用されたかどうか分からない。
+   * `network`（「もう一度お試しください」）へ落ちると、**既に退館済みかもしれない
+   * 来訪者に再試行を促す**ことになる。
+   */
+  test('退館確定: 非 200 の本文が締切で止まったら、退館できたか分からないと伝える', async ({ page }) => {
+    test.setTimeout(CHECKOUT_CONFIRM_TIMEOUT_MS + 60_000);
+    const PRESENT = JSON.stringify({
+      stays: [
+        {
+          stayId: 'stall1',
+          checkedInAt: '2026-01-01T10:00:00.000Z',
+          targetLabel: '総務部',
+          purpose: '打ち合わせ',
+        },
+      ],
+    });
+    await page.route('**/api/kiosk/checkout', (route) => {
+      if (route.request().method() !== 'POST') {
+        return route.fulfill({ status: 200, contentType: 'application/json', body: PRESENT });
+      }
+      return route.continue();
+    });
+    await page.addInitScript(() => {
+      const original = window.fetch;
+      window.fetch = async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = typeof input === 'string' ? input : input.toString();
+        if (!url.includes('/api/kiosk/checkout') || init?.method !== 'POST') {
+          return original(input, init);
+        }
+        const signal = init?.signal;
+        // 4xx のヘッダは返る。本文は締切まで解決しない。
+        return {
+          ok: false,
+          status: 400,
+          json: () =>
+            new Promise((_r, reject) => {
+              signal?.addEventListener('abort', () => reject(new DOMException('aborted', 'AbortError')));
+            }),
+        } as unknown as Response;
+      };
+    });
+
+    await page.goto('/kiosk/checkout');
+    await expect(page.getByTestId('checkout-present-list')).toBeVisible();
+    await page.getByTestId('checkout-present-item').first().click();
+    await page.getByTestId('checkout-confirm-yes').click();
+
+    const error = page.getByTestId('checkout-error');
+    await expect(error).toBeVisible({ timeout: CHECKOUT_CONFIRM_TIMEOUT_MS + 10_000 });
+    // **これが本題。** 理由が読めなかったのだから、断定も再試行の督促もしない。
+    await expect(error).toContainText('確認できませんでした');
+    await expect(error).not.toContainText('通信エラー');
+  });
+
+  /**
    * 🔴 **締切 API を `fetch` の引数として直接評価しない**（独立レビュー 3 周目 BLOCKER-1）。
    * その API が無い環境では**呼んだ瞬間に投げる**ので、要求が 1 本も飛ばない
    * （実測: `gets=0 resolves=0 posts=0`、画面は「通信エラーが発生しました」。
