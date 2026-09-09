@@ -344,6 +344,42 @@ test.describe('来訪者導線: 応答が返らなくても退館の手段を失
   });
 
   /**
+   * 🔴 **下界。** 本文が読めなかった理由を締切と混ぜない（4 周目 MINOR-1 の修正の逆側）。
+   * `if (readFailed && expired())` を `if (readFailed)` にする変異が e2e 30 本を
+   * 素通りした（実測）。倒れると、**本文が途中で切れた 200** まで
+   * 「時間内に応答がありませんでした」＝再試行の督促になる。再試行しても直らないうえ、
+   * `unexpected` が持っている**有人導線を失う**。
+   *
+   * 既存の「形の違う 200」テストは `{"ok":true}` という**妥当な JSON** なので
+   * `res.json()` は成功し、この枝を踏まない。壊れた本文が要る。
+   */
+  test('退館: 本文が壊れた 200 は、締切切れではなく読めなかったとして扱う', async ({ page }) => {
+    const resolveCalls: string[] = [];
+    page.on('request', (req) => {
+      if (req.url().includes('/api/kiosk/checkout/resolve')) resolveCalls.push(req.method());
+    });
+    // 途中で切れた JSON（企業プロキシ・`Content-Length` 途中終了で実際に起こる形）。
+    await page.route('**/api/kiosk/checkout/resolve', (route) =>
+      route.fulfill({ status: 200, contentType: 'application/json', body: '{"summary":{"checkedIn' }),
+    );
+
+    await page.goto('/kiosk/checkout');
+    await expect(page.getByTestId('checkout-code')).toBeVisible();
+    await page.getByTestId('checkout-code').fill('1234');
+    await page.getByTestId('checkout-target-label').fill('総務部');
+    await page.getByTestId('checkout-resolve-submit').click();
+
+    // 踏んだことの表明。
+    await expect.poll(() => resolveCalls.length).toBeGreaterThan(0);
+
+    const error = page.getByTestId('checkout-error');
+    await expect(error).toBeVisible();
+    // **これが本題。** 締切は切れていないので、再試行の督促ではなく有人導線を出す。
+    await expect(error).toContainText('受付にお問い合わせください');
+    await expect(error).not.toContainText('時間内に応答がありませんでした');
+  });
+
+  /**
    * 🔴 **標準の 1 行締切 API が無い端末で、退館の 3 手段が全滅していた**
    * （独立レビュー 3 周目 BLOCKER-1）。`AbortSignal.timeout` は Safari 16（2022-09）からで、
    * iPadOS 15 以前には無い。`fetch` の引数として評価すると**呼んだ瞬間に投げる**ので、
