@@ -38,6 +38,57 @@ export type { CheckoutSelfIdSummary } from './self-id';
 export type CheckoutMethod = 'qr' | 'code';
 
 /**
+ * 自己特定（resolve）の**締切** (#1029)。
+ *
+ * 🔴 **これが無いと `busy` が永久に下りない。** `CheckoutFlow` の `busy` は `finally` でしか
+ * false へ戻らないので、サーバが受け取ったまま何も返さない回線（Lambda のコールドスタート・
+ * NAT の詰まり・テザリング）では、**退館の手段 3 つが全部 `disabled` のまま固まる**
+ * ―― コード送信・QR 送信・在館一覧からの選択。逃げ道の「最初から」も `setBusy(false)` を
+ * 呼ばないので、来訪者はリロード以外に出口を持たない。
+ *
+ * 値は `PLATFORM_READ_TIMEOUT_MS`（#968）と揃える。resolve は**読み取り**なので、
+ * 中断しても取り返しがつく（もう一度送ればよい）。
+ */
+export const CHECKOUT_RESOLVE_TIMEOUT_MS = 15_000;
+
+/**
+ * 退館確定（confirm）の**締切** (#1029)。
+ *
+ * 🔴 **read より長くとり、サーバの予算より長くする**（#968 が `read-response.ts` に
+ * 明文化した理由をそのまま踏襲する）。web Lambda の `serverTimeoutSec` は 3 環境とも
+ * **30 秒**（`infra/lib/config/environments.ts`）。クライアントを同じかそれ以下にすると
+ * **サーバ自身の応答が必ずこちらの中断に負け**、「サーバ側で確実に完了しなかった」という
+ * 知り得たはずの事実に到達できなくなる。5 秒の余裕を持たせて、サーバの返事を先に見る。
+ *
+ * 🔴 **e2e のために縮めないこと。** #826 で「しきい値を圧縮したら、本番の窓では起きない
+ * 条件でしか再現しないテストになっていた」を踏んでいる。
+ */
+export const CHECKOUT_CONFIRM_TIMEOUT_MS = 35_000;
+
+/**
+ * 退館確定が締切に達したときの失敗理由 (#1029)。
+ *
+ * 🔴 **「失敗した」と言い切らないための専用の理由である。** 中断したのは**こちらの待ち**で
+ * あって、サーバは退館を受理して監査に残しているかもしれない。既定の `network`
+ * （「通信エラーが発生しました。もう一度お試しください。」）へ倒すと、**既に退館済みの
+ * 来訪者に未完だと信じさせて**操作を繰り返させ、`already_checked_out` / `not_found` を
+ * 踏ませることになる。成功を否定せず、有人導線へ繋ぐ（`docs/experience/README.md` 原則 5）。
+ */
+export const CHECKOUT_CONFIRM_TIMEOUT_REASON = 'confirm_timeout';
+
+/**
+ * 締切による中断か（`AbortSignal.timeout` は `TimeoutError` で abort する）。
+ *
+ * 🔴 **接続そのものの失敗と区別する。** サーバへ**届いていない**失敗（`TypeError`）まで
+ * 「退館できたか分かりません」と言うと、**再試行すれば済む来訪者を受付へ歩かせる**。
+ * 逆に締切を `network` に含めると、既に退館済みかもしれない来訪者に再試行を促す。
+ * どちらの側へ倒しても害があるので、両方向を `logic.test.ts` が縛る。
+ */
+export function isTimeout(err: unknown): boolean {
+  return typeof err === 'object' && err !== null && (err as { name?: unknown }).name === 'TimeoutError';
+}
+
+/**
  * API の失敗コード → 来訪者向け文言（`tr` で locale に応じて解決）。
  *
  * 退館の自己特定（#328）の resolve/confirm 由来コードも含めて写す:
@@ -75,6 +126,9 @@ export function CHECKOUT_FAILURE_MESSAGE(
       return tr('checkout.error.expired');
     case 'throttled':
       return tr('checkout.error.throttled');
+    // 🔴 成功を否定しない言い方（`CHECKOUT_CONFIRM_TIMEOUT_REASON` の doc を参照）。
+    case CHECKOUT_CONFIRM_TIMEOUT_REASON:
+      return tr('checkout.error.confirmTimeout');
     default:
       return tr('checkout.error.network');
   }

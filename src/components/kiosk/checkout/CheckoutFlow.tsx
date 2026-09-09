@@ -10,7 +10,11 @@ import {
 } from '@/lib/i18n';
 import { LanguageSwitcher } from '../LanguageSwitcher';
 import {
+  CHECKOUT_CONFIRM_TIMEOUT_MS,
+  CHECKOUT_CONFIRM_TIMEOUT_REASON,
   CHECKOUT_FAILURE_MESSAGE,
+  CHECKOUT_RESOLVE_TIMEOUT_MS,
+  isTimeout,
   type CheckoutMethod,
   type CheckoutSelfIdSummary,
   type PresentStaySummary,
@@ -181,6 +185,14 @@ export function CheckoutFlow() {
           method: 'POST',
           headers: { 'content-type': 'application/json' },
           body: JSON.stringify(body),
+          /*
+            🔴 **締切が無いと `busy` は永久に下りない**（#1029）。`setBusy(false)` は
+            `finally` にしか無いので、サーバが受け取ったまま何も返さない回線では
+            退館の手段 3 つが全部 `disabled` のまま固まり、「最初から」でも戻らない。
+            `signal` は本文の読み取りまで効くので、ヘッダだけ来て body が止まる形も拾う
+            （`use-site-list.ts` が #554 で踏んだ型）。
+          */
+          signal: AbortSignal.timeout(CHECKOUT_RESOLVE_TIMEOUT_MS),
         });
         if (res.ok) {
           /*
@@ -266,11 +278,13 @@ export function CheckoutFlow() {
               method: 'POST',
               headers: { 'content-type': 'application/json' },
               body: JSON.stringify(pending.input),
+              signal: AbortSignal.timeout(CHECKOUT_CONFIRM_TIMEOUT_MS),
             })
           : await fetch('/api/kiosk/checkout', {
               method: 'POST',
               headers: { 'content-type': 'application/json' },
               body: JSON.stringify({ stayId: pending.stayId }),
+              signal: AbortSignal.timeout(CHECKOUT_CONFIRM_TIMEOUT_MS),
             });
       if (res.ok) {
         setState('done');
@@ -280,8 +294,17 @@ export function CheckoutFlow() {
         setState('identify');
         setPending(null);
       }
-    } catch {
-      setErrorReason('network');
+    } catch (err) {
+      /*
+        🔴 **書き込みの中断は「失敗した」と言い切らない**（#968 が
+        `src/components/admin/platform/read-response.ts` に明文化済み。#1029 で来訪者導線へ）。
+        締切に達したとき、中断したのは**こちらの待ち**であって、サーバは退館を受理して
+        監査に残しているかもしれない。既定の `network`（「もう一度お試しください」）へ倒すと、
+        **既に退館済みの来訪者に未完だと信じさせて**操作を繰り返させ、
+        `already_checked_out` / `not_found` を踏ませることになる。
+        接続そのものが失敗した（＝サーバに届いていない）ときは従来どおり `network` でよい。
+      */
+      setErrorReason(isTimeout(err) ? CHECKOUT_CONFIRM_TIMEOUT_REASON : 'network');
       setState('identify');
       setPending(null);
     } finally {
