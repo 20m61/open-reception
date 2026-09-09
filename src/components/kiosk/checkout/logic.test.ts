@@ -5,7 +5,6 @@ import {
   CHECKOUT_CONFIRM_UNKNOWN_REASON,
   CHECKOUT_FAILURE_MESSAGE,
   CHECKOUT_READ_TIMEOUT_MS,
-  confirmFailureFromAbort,
   confirmFailureReason,
 } from './logic';
 
@@ -58,26 +57,6 @@ describe('CHECKOUT_FAILURE_MESSAGE (issue #102 / #327 i18n)', () => {
 
 describe('締切による中断の扱い (#1029)', () => {
   const ja = makeT('ja');
-
-  /*
-    🔴 **例外の `name` を見ない**（1 周目 MINOR-2 / 残存リスク 1）。締切は相によって
-    別の名前で投げ（Chromium 実測: ヘッダ欠 → `TimeoutError` / body 停止 → `AbortError`）、
-    **WebKit（実機の iPad Safari）が同じ名前を使う保証は無い**。名前で分けると、
-    別の名前を使うエンジンでは締切が黙って `network` へ落ちる ―― 画面に痕跡が残らない。
-    自分が張った signal の `aborted` はエンジンに依らない。
-  */
-  it('締切が切れたなら、退館できたか分からないとして扱う', () => {
-    expect(confirmFailureFromAbort(true)).toBe(CHECKOUT_CONFIRM_UNKNOWN_REASON);
-  });
-
-  /*
-    🔴 **下界。** 締切側へ倒しすぎると、サーバへ**届いていない**失敗まで
-    「退館できたか分かりません」と言い、再試行すれば済む来訪者を受付へ歩かせることになる。
-  */
-  it('締切が切れていないなら、届いていない失敗として扱う', () => {
-    expect(confirmFailureFromAbort(false)).toBe('network');
-    expect(confirmFailureFromAbort(false)).not.toBe(CHECKOUT_CONFIRM_UNKNOWN_REASON);
-  });
 
   /*
     🔴 **成功を否定しない言い方であること**（#968 が `read-response.ts` に明文化した理由）。

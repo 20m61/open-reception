@@ -14,7 +14,6 @@ import {
   CHECKOUT_CONFIRM_UNKNOWN_REASON,
   CHECKOUT_FAILURE_MESSAGE,
   CHECKOUT_READ_TIMEOUT_MS,
-  confirmFailureFromAbort,
   confirmFailureReason,
   type CheckoutMethod,
   type CheckoutSelfIdSummary,
@@ -431,13 +430,31 @@ export function CheckoutFlow() {
       /*
         🔴 **書き込みの中断は「失敗した」と言い切らない**（#968 が
         `src/components/admin/platform/read-response.ts` に明文化済み。#1029 で来訪者導線へ）。
-        締切に達したとき、中断したのは**こちらの待ち**であって、サーバは退館を受理して
-        監査に残しているかもしれない。既定の `network`（「もう一度お試しください」）へ倒すと、
-        **既に退館済みの来訪者に未完だと信じさせて**操作を繰り返させ、
-        `already_checked_out` / `not_found` を踏ませることになる。
-        接続そのものが失敗した（＝サーバに届いていない）ときは従来どおり `network` でよい。
+        中断したのは**こちらの待ち**であって、サーバは退館を受理して監査に残しているかも
+        しれない。既定の `network`（「もう一度お試しください」）へ倒すと、**既に退館済みの
+        来訪者に未完だと信じさせて**操作を繰り返させ、`already_checked_out` / `not_found` を
+        踏ませることになる。
+
+        🔴 **締切の有無で分けない**（#1042。人間承認済み）。ここは以前
+        `confirmFailureFromAbort(confirmDeadline.expired())` で分岐しており、締切が切れて
+        いなければ「接続そのものが失敗した＝サーバに届いていない」とみなして `network` へ
+        倒していた。**その前提は証明できない** —— `fetch` の `TypeError` は要求を送る前の
+        失敗（DNS・接続拒否・TLS）と、送った後の接続リセットの**両方**で出るが、ブラウザは
+        両者を区別する情報を出さない。**確定的な応答が無い限り「分からない」が正しい。**
+
+        受け入れたコスト: Wi-Fi 断で本当に届かなかった場合も受付へ繋ぐ。読み取り
+        （自己特定 `resolve`）はこの判断の対象外で、あちらは何も確定しないので
+        `network` のままでよい。下界は e2e の
+        **`退館: 自己特定の接続そのものが失敗したときは、通信の問題として伝える`** が持つ。
+        🔴 **行番号で指さない**（独立レビュー 1 周目 MINOR-1）。同じファイルを編集するたびに
+        腐り、次に読む人が**空の保証を確認済みと誤認する**（実際この PR がそれを作った）。
+
+        🔴 **この catch を広げない。** いま `try` 内で投げうるのは実質 `fetch` だけである
+        （`readBody` は自前で catch 済み、`JSON.stringify` の対象は `Record<string, string>`、
+        `asCheckoutFailureReason` は throw しない）。ここへ自前ロジックを足すと、**そのバグが
+        「退館できたか分かりません・受付へ」へ化けて全来訪者を受付へ流す**。
       */
-      setErrorReason(confirmFailureFromAbort(confirmDeadline.expired()));
+      setErrorReason(CHECKOUT_CONFIRM_UNKNOWN_REASON);
       setState('identify');
       setPending(null);
     } finally {

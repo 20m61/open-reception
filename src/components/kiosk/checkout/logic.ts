@@ -100,29 +100,6 @@ export function confirmFailureReason(status: number, reasonFromBody: string): st
 }
 
 /**
- * 退館確定が失敗したとき、**自分が張った締切が切れていたか**で理由を分ける (#1029)。
- *
- * 🔴 **例外の `name` を見ない**（独立レビュー 1 周目 MINOR-2 / 残存リスク 1）。
- * 締切は相によって別の名前で投げる —— Chromium の実測では、ヘッダが来なければ
- * `TimeoutError`、ヘッダは 200 で **body が止まる**と `res.json()` が `AbortError`。
- * さらに **WebKit（実機の iPad Safari）で同じ名前を使う保証が無く、この環境には
- * webkit バイナリが無いので実測できない**。名前で分けると、別の名前を使うエンジンでは
- * 締切が黙って `network`（再試行だけを促す）へ落ちる ―― 画面にも痕跡が残らない。
- *
- * `signal.aborted` は**自分が張った締切そのもの**なので、エンジンに依らない。
- *
- * - `true`  … 締切が切れた。サーバは退館を受理しているかもしれない ⇒ 断定しない
- * - `false` … 接続そのものが失敗した（サーバへ**届いていない**）⇒ 再試行を促してよい
- *
- * 🔴 **両方向に害がある。** 締切側へ倒しすぎると再試行すれば済む来訪者を受付へ歩かせ、
- * `network` 側へ倒すと既に退館済みかもしれない来訪者に再試行を促す。`logic.test.ts` が
- * 両方を縛る。
- */
-export function confirmFailureFromAbort(deadlineAborted: boolean): string {
-  return deadlineAborted ? CHECKOUT_CONFIRM_UNKNOWN_REASON : 'network';
-}
-
-/**
  * API の失敗コード → 来訪者向け文言（`tr` で locale に応じて解決）。
  *
  * 退館の自己特定（#328）の resolve/confirm 由来コードも含めて写す:
