@@ -15,7 +15,7 @@ import {
   type CheckoutSelfIdSummary,
   type PresentStaySummary,
 } from './logic';
-import { asCheckoutResolveResult, asPresentStayList } from './parse';
+import { asCheckoutFailureReason, asCheckoutResolveResult, asPresentStayList } from './parse';
 import { resolveReadState } from '@/domain/ui/read-state';
 import { CHECKOUT_TOKEN_QUERY, normalizeCheckoutCode } from './self-id';
 
@@ -204,8 +204,7 @@ export function CheckoutFlow() {
           setPending({ kind: 'credential', method: data.method ?? method, input: body, summary: data.summary });
           setState('confirm');
         } else {
-          const data = (await res.json().catch(() => null)) as { error?: string } | null;
-          setErrorReason(data?.error ?? 'network');
+          setErrorReason(asCheckoutFailureReason(await res.json().catch(() => null)));
         }
       } catch {
         setErrorReason('network');
@@ -277,8 +276,7 @@ export function CheckoutFlow() {
         setState('done');
         setPending(null);
       } else {
-        const data = (await res.json().catch(() => null)) as { error?: string } | null;
-        setErrorReason(data?.error ?? 'network');
+        setErrorReason(asCheckoutFailureReason(await res.json().catch(() => null)));
         setState('identify');
         setPending(null);
       }
@@ -503,25 +501,50 @@ export function CheckoutFlow() {
                   押せなくなる** ―― 4 周目で再入防止のために足した `disabled` が、
                   新しい行き止まりを作っていた。再入そのものは `presentSeq` の連番が
                   既に安全にしている（古い応答は捨てられる）ので、`disabled` は要らない。
-                  進行中であることは `aria-busy` とラベルで伝える（#792 の「処理中≠押せない」）。
+
+                  🔴 **ラベルも「処理しています…」へ変えない**（6 周目 MINOR-2）。押せるのに
+                  押せない語で覆うと、消したはずの行き止まりが**見た目の上では残る**。
+                  進行中は下の `checkout-present-loading` が live region で伝える
+                  （#792 の「処理中≠押せない」）。
                 */
                 aria-busy={presentBusy}
               >
-                {presentBusy ? tr('common.processing') : tr('checkout.presentListRetry')}
+                {tr('checkout.presentListRetry')}
               </button>
             </>
           ) : null}
-          {presentReadState === 'loading' ? (
-            <p data-testid="checkout-present-loading" className="field__label">
+          {/*
+            🔴 **進行中は初回も再取得も同じ 1 行で伝える**（6 周目 MINOR-3）。#870 の正本
+            （`src/components/admin/ui/DataTable.tsx`）は loading も failed も
+            `role="status" aria-live="polite"` を持つ。ここだけ黙っていると、iPad +
+            VoiceOver の staff に「確認しています…」も「一覧が出た」も一度も読み上げられない。
+          */}
+          {presentReadState === 'loading' || presentBusy ? (
+            <p
+              data-testid="checkout-present-loading"
+              role="status"
+              aria-live="polite"
+              className="field__label"
+            >
               {tr('checkout.presentListLoading')}
             </p>
-          ) : presentReadState === 'failed' ? null : present.length === 0 ? (
-            // 🔴 前回時点が 0 件でも、再取得に失敗しているなら**断言しない**
-            // （独立レビュー 5 周目 MINOR-5。上の「前回時点」の但し書きだけが残る）。
-            presentFailed ? null : (
-            <p data-testid="checkout-empty" className="field__label">
-              {tr('checkout.emptyPresent')}
-            </p>
+          ) : null}
+          {presentReadState !== 'loaded' ? null : present.length === 0 ? (
+            /*
+              🔴 **「0 件を読めている」ことも載っているデータである**（6 周目 MINOR-1）。
+              5 周目は再取得に失敗したら断言しないよう**何も出さなく**したが、それだと上の
+              「表示は前回時点のものです」が**指す先の無い文言**になり、画面と矛盾する
+              （「前回は 0 名」なのか「そもそも出せていない」のか staff に区別できない）。
+              消すのではなく、前回時点の話であると明示した文言へ寄せる。
+            */
+            presentFailed ? (
+              <p data-testid="checkout-empty-stale" role="status" className="field__label">
+                {tr('checkout.presentListStaleEmpty')}
+              </p>
+            ) : (
+              <p data-testid="checkout-empty" className="field__label">
+                {tr('checkout.emptyPresent')}
+              </p>
             )
           ) : (
             <ul data-testid="checkout-present-list" style={listStyle}>

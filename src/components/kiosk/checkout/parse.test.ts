@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { asCheckoutResolveResult, asPresentStayList } from './parse';
+import { asCheckoutFailureReason, asCheckoutResolveResult, asPresentStayList } from './parse';
 import type { CheckoutSelfIdSummary, PresentStaySummary } from './logic';
 
 /**
@@ -180,6 +180,40 @@ describe('asCheckoutResolveResult (#1004)', () => {
   it('封筒がオブジェクトでなければ通さない', () => {
     for (const notObject of [null, undefined, 'x', 3, true, []]) {
       expect(asCheckoutResolveResult(notObject)).toBeNull();
+    }
+  });
+});
+
+describe('asCheckoutFailureReason (#1004 増分 2・6 周目 MINOR-5)', () => {
+  it('文字列の理由はそのまま使う', () => {
+    expect(asCheckoutFailureReason({ error: 'expired' })).toBe('expired');
+  });
+
+  /*
+    🔴 **これが本題**。`data?.error ?? 'network'` は `??` なので falsy な `0` を素通しし、
+    画面側の `errorReason ? MESSAGE : null` が握り潰す ―― 来訪者は押した結果を
+    **何も見ない**まま入力画面に留まる。理由が読めないなら読めないなりに何か出す。
+  */
+  it('falsy だが null/undefined ではない値を素通ししない', () => {
+    for (const falsy of [0, '', false, Number.NaN]) {
+      expect(asCheckoutFailureReason({ error: falsy })).toBe('network');
+    }
+  });
+
+  it('文字列でない理由は使わない', () => {
+    for (const notString of [42, {}, [], true, { message: 'x' }]) {
+      expect(asCheckoutFailureReason({ error: notString })).toBe('network');
+    }
+  });
+
+  it('空白のみの理由も使わない（画面で消えるため）', () => {
+    expect(asCheckoutFailureReason({ error: '   ' })).toBe('network');
+  });
+
+  // 現行の挙動（`{}` は `network`）は変えない ―― この述語が直すのは「何も出ない」だけ。
+  it('理由が無い応答・読めなかった応答は network のまま', () => {
+    for (const empty of [{}, null, undefined, 'x', 3, []]) {
+      expect(asCheckoutFailureReason(empty)).toBe('network');
     }
   });
 });

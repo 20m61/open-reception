@@ -141,3 +141,25 @@ export function asCheckoutResolveResult(
   if (summary === null) return null;
   return { method, summary };
 }
+
+/**
+ * 非 200 応答の**失敗理由**を、確かめた文字列として取り出す (#1004 増分 2・独立レビュー 6 周目)。
+ *
+ * 🔴 **`data?.error ?? 'network'` では落ちない穴がある。** `??` が見るのは
+ * `null | undefined` だけなので、`{"error": 0}` のような 200 以外の応答が来ると `0` が
+ * そのまま `errorReason` に入る。画面は `errorReason ? MESSAGE(...) : null` で読むので、
+ * **falsy な `0` は握り潰され、来訪者は押した結果を何も見ないまま入力画面に留まる**
+ * （`useState<string | null>` に数値が入る型穴でもある）。
+ *
+ * 空文字も同じ理由で弾く（`'' ? ... : null` で消える）。
+ *
+ * 既定を `'network'` に据えるのは**現行の挙動を変えないため**である。`error` が単に
+ * 無い応答（`{}`）は今日も `'network'` を出しており、そこを変えるのはこの増分の担当ではない。
+ * ここが直すのは「**何も出ない**」ケースだけである。
+ */
+export function asCheckoutFailureReason(value: unknown): string {
+  if (!isRecord(value)) return 'network';
+  const reason = value.error;
+  if (typeof reason !== 'string' || reason.trim() === '') return 'network';
+  return reason;
+}

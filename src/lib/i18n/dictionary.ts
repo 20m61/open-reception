@@ -234,6 +234,7 @@ export type MessageKey =
   | 'checkout.presentListRetry'
   | 'checkout.presentListStale'
   | 'checkout.presentListLoading'
+  | 'checkout.presentListStaleEmpty'
   // 受付完了画面の退館クレデンシャル提示 (#342)。退館 QR / 短コード / 有効期限（{time} 補間）。
   | 'checkout.credential.title'
   | 'checkout.credential.instruction'
@@ -529,6 +530,7 @@ const ja: DefaultDictionary = {
   'checkout.presentListStale': '最新の状態を取得できませんでした。表示は前回時点のものです。',
   'checkout.presentListLoading': '在館中の来訪者を確認しています…',
   'checkout.emptyPresent': '在館中の来訪者はいません。',
+  'checkout.presentListStaleEmpty': '前回時点では在館中の来訪者はいませんでした。最新の状態は取得できていません。',
   'checkout.checkedInAt': '{time} 入館',
   'checkout.checkoutButton': '退館',
   'checkout.doneTitle': '退館を受け付けました',
@@ -848,6 +850,7 @@ const en: LocaleDictionary = {
   'checkout.presentListStale': 'We could not refresh this list. It shows the last known state.',
   'checkout.presentListLoading': 'Checking who is currently on site…',
   'checkout.emptyPresent': 'No visitors are currently on site.',
+  'checkout.presentListStaleEmpty': 'As of the last update, no visitors were on site. We could not refresh it.',
   'checkout.checkedInAt': 'Checked in at {time}',
   'checkout.checkoutButton': 'Check out',
   'checkout.doneTitle': 'Checkout complete',
@@ -1164,6 +1167,7 @@ const ko: LocaleDictionary = {
   'checkout.presentListStale': '최신 상태를 가져오지 못했습니다. 이전 시점의 내용입니다.',
   'checkout.presentListLoading': '재실 중인 방문객을 확인하고 있습니다…',
   'checkout.emptyPresent': '현재 재실 중인 방문객이 없습니다.',
+  'checkout.presentListStaleEmpty': '이전 시점에는 재실 중인 방문객이 없었습니다. 최신 상태는 가져오지 못했습니다.',
   'checkout.checkedInAt': '{time} 입실',
   'checkout.checkoutButton': '퇴실',
   'checkout.doneTitle': '퇴실이 접수되었습니다',
@@ -1477,6 +1481,7 @@ const zh: LocaleDictionary = {
   'checkout.presentListStale': '未能获取最新状态，显示的是上次的内容。',
   'checkout.presentListLoading': '正在确认在馆访客…',
   'checkout.emptyPresent': '目前没有在馆访客。',
+  'checkout.presentListStaleEmpty': '上次更新时没有在馆访客。未能获取最新状态。',
   'checkout.checkedInAt': '{time} 入馆',
   'checkout.checkoutButton': '退馆',
   'checkout.doneTitle': '退馆登记已完成',

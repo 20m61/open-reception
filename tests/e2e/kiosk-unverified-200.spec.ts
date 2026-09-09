@@ -196,6 +196,173 @@ test.describe('来訪者導線: 形の違う 200 で受付・退館を止めな�
   });
 
   /**
+   * 🔴 **5 周目に `disabled` を外したのに、外れたことを誰も測っていなかった**
+   * （独立レビュー 6 周目 MAJOR-1）。`disabled={presentBusy}` へ差し戻す変異が
+   * e2e 13 本すべてを素通りした ―― 応答が返らない回線では `finally` に到達しないので、
+   * 差し戻すと**再読み込みが永久に押せなくなる**（4 周目に足した `disabled` が作った
+   * 行き止まりそのもの）。規約「修正の前後で同じ変異を当て、kill が減っていないことを
+   * 確かめる」に当たる型で、**5 周目自身の指摘と同型のものを同じコミットで作っていた**。
+   */
+  test('退館: 応答が返らない回線でも、一覧の再読み込みを押し続けられる', async ({ page }) => {
+    const calls: string[] = [];
+    page.on('request', (req) => {
+      if (/\/api\/kiosk\/checkout(\?|$)/.test(req.url())) calls.push(req.method());
+    });
+
+    // 2 回目以降は応答を返さない（ブラックホール）。teardown のために解放子を持っておく。
+    const release: Array<() => void> = [];
+    let served = 0;
+    await page.route('**/api/kiosk/checkout', async (route) => {
+      served += 1;
+      if (served === 1) {
+        return route.fulfill({ status: 503, contentType: 'application/json', body: '{}' });
+      }
+      await new Promise<void>((resolve) => release.push(resolve));
+      return route.abort('failed');
+    });
+
+    await page.goto('/kiosk/checkout');
+    await expect(page.getByTestId('checkout-present-unavailable')).toBeVisible();
+
+    const afterFirst = calls.length;
+    await page.getByTestId('checkout-present-retry').click();
+    await expect.poll(() => calls.length).toBeGreaterThan(afterFirst);
+
+    /*
+      **これが本題。** 応答が返らないので `finally` は永久に走らない。それでももう一度
+      押せて、GET が実際に飛ぶ。`toBeEnabled()` は死んだボタンでも真なので**下界にしない** ――
+      `disabled` へ差し戻す変異では、この 2 度目の `click()` が actionability で落ちる。
+    */
+    const afterSecond = calls.length;
+    await page.getByTestId('checkout-present-retry').click();
+    await expect.poll(() => calls.length).toBeGreaterThan(afterSecond);
+
+    // 進行中であることは伝わっている（押せない語で覆ってはいない。6 周目 MINOR-2）。
+    await expect(page.getByTestId('checkout-present-retry')).toHaveAttribute('aria-busy', 'true');
+    await expect(page.getByTestId('checkout-present-retry')).toHaveText('一覧を再読み込み');
+    await expect(page.getByTestId('checkout-present-loading')).toBeVisible();
+    /*
+      🔴 **live region であることまで縛る**（6 周目 MINOR-3）。#870 の正本
+      （`src/components/admin/ui/DataTable.tsx`）は loading も failed も `role="status"` を
+      持つ。ここだけ黙っていると、iPad + VoiceOver の staff に進行中が一度も読まれない。
+    */
+    await expect(page.getByTestId('checkout-present-loading')).toHaveAttribute('role', 'status');
+
+    for (const r of release) r();
+  });
+
+  /**
+   * 🔴 **「0 件を読めている」ことも載っているデータである**（独立レビュー 6 周目 MAJOR-1 / MINOR-1）。
+   *
+   * 5 周目は「再取得に失敗したら断言しない」を**何も出さない**ことで実現したが、
+   * (1) 差し戻す変異が e2e 全部を素通りし (2) 上の「表示は前回時点のものです」が
+   * **指す先の無い文言**になっていた（staff は「前回は 0 名」なのか「そもそも出せていない」のか
+   * 区別できない）。現在形で断言せず、かつ前回時点は残す。
+   */
+  test('退館: 前回時点が 0 件でも、再取得の失敗を「いません」と言い換えない', async ({ page }) => {
+    let calls = 0;
+    await page.route('**/api/kiosk/checkout', (route) => {
+      calls += 1;
+      return calls === 1
+        ? route.fulfill({ status: 200, contentType: 'application/json', body: '{"stays":[]}' })
+        : route.fulfill({ status: 503, contentType: 'application/json', body: '{}' });
+    });
+
+    await page.goto('/kiosk/checkout');
+    // 0 件が「載った」ことを先に確かめる（載っていないと「前回時点」を測れない＝空虚になる）。
+    await expect(page.getByTestId('checkout-empty')).toBeVisible();
+
+    await page.getByTestId('checkout-start-over').click();
+    await expect(page.getByTestId('checkout-present-unavailable')).toBeVisible();
+
+    // **これが本題。** 現在形の断言はしない。
+    await expect(page.getByTestId('checkout-empty')).toHaveCount(0);
+    // **下界。** 何も出さないのも不可 ―― 「表示は前回時点のものです」が指す先が消える。
+    await expect(page.getByTestId('checkout-empty-stale')).toBeVisible();
+    await expect(page.getByTestId('checkout-present-unavailable')).toContainText('前回時点');
+  });
+
+  /**
+   * 🔴 **再入防止の方式を替えたのに、前の方式が守っていた変異を当て直していなかった**
+   * （独立レビュー 6 周目 MAJOR-2）。5 周目は `disabled` を外す根拠に「再入は `presentSeq` の
+   * 連番が既に安全にしている」を挙げたが、その連番には**縛りが 1 本も無く**、
+   * `presentSeq.current === seq` を `>= seq`（常に最新とみなす）にする変異が生存していた。
+   * しかも `disabled` を外したことで**連打自体が新たに可能になった**ので、この競合は
+   * 4 周目には原理的に到達不能で、5 周目以降だけ到達可能である。
+   *
+   * 実害: 遅い回線で 2 度押し、1 度目（在館 2 名）が 2 度目（在館 1 名）より後に返ると、
+   * **古い一覧が「最新」として表示される**。staff が来訪者を照合する唯一の材料なので、
+   * 人の取り違えに直結する。
+   */
+  test('退館: 一覧を連打しても、古い応答が新しい結果を上書きしない', async ({ page }) => {
+    const SLOW_MS = 3000;
+    const SLOW = JSON.stringify({
+      stays: [
+        { stayId: 'old1', checkedInAt: '2026-01-01T09:00:00.000Z', targetLabel: '古い応答A', purpose: '打ち合わせ' },
+        { stayId: 'old2', checkedInAt: '2026-01-01T09:30:00.000Z', targetLabel: '古い応答B', purpose: '打ち合わせ' },
+      ],
+    });
+    const FAST = JSON.stringify({
+      stays: [
+        { stayId: 'new1', checkedInAt: '2026-01-01T10:00:00.000Z', targetLabel: '新しい応答', purpose: '打ち合わせ' },
+      ],
+    });
+
+    let calls = 0;
+    let slowSettled = false;
+    await page.route('**/api/kiosk/checkout', async (route) => {
+      calls += 1;
+      // 1 回目は落として再読み込みボタンを出す（連打の入口はここにしか無い）。
+      if (calls === 1) {
+        return route.fulfill({ status: 503, contentType: 'application/json', body: '{}' });
+      }
+      if (calls === 2) {
+        await new Promise((r) => setTimeout(r, SLOW_MS));
+        await route.fulfill({ status: 200, contentType: 'application/json', body: SLOW });
+        slowSettled = true;
+        return;
+      }
+      return route.fulfill({ status: 200, contentType: 'application/json', body: FAST });
+    });
+
+    await page.goto('/kiosk/checkout');
+    await expect(page.getByTestId('checkout-present-unavailable')).toBeVisible();
+
+    await page.getByTestId('checkout-present-retry').click(); // 2 回目: 遅い・2 名
+    await expect.poll(() => calls).toBe(2);
+    await page.getByTestId('checkout-present-retry').click(); // 3 回目: 速い・1 名
+    await expect.poll(() => calls).toBe(3);
+
+    // 速い方（＝最後に押した方）が先に描かれる。
+    await expect(page.getByTestId('checkout-present-item')).toHaveCount(1);
+    await expect(page.getByTestId('checkout-present-list')).toContainText('新しい応答');
+
+    // **これが本題。** 遅い方が後から返っても上書きしない。
+    await expect.poll(() => slowSettled, { timeout: SLOW_MS + 5000 }).toBe(true);
+    // 上書きが起きるならこの窓で起きる（変異 `>= seq` では 2 名へ増える）。
+    await page.waitForTimeout(1000);
+    await expect(page.getByTestId('checkout-present-item')).toHaveCount(1);
+    await expect(page.getByTestId('checkout-present-list')).toContainText('新しい応答');
+    await expect(page.getByTestId('checkout-present-list')).not.toContainText('古い応答');
+  });
+
+  /**
+   * 🔴 **実運用でいちばん起きるのは「iPad が Wi-Fi を落とす」である**
+   * （独立レビュー 6 周目 MINOR-4）。`!res.ok` と形の違う 200 は縛られていたが、
+   * `fetch` 自身が reject する経路の `catch` を空にする変異は生存していた ――
+   * 4 周目 MAJOR-4 が「503 も縛れ」と言ったのとまったく同じ理由が、こちら側に残っていた。
+   */
+  test('退館: 一覧の取得が通信断で落ちても黙らない', async ({ page }) => {
+    await page.route('**/api/kiosk/checkout', (route) => route.abort('failed'));
+    await page.goto('/kiosk/checkout');
+
+    await expect(page.getByTestId('checkout-present-unavailable')).toBeVisible();
+    await expect(page.getByTestId('checkout-empty')).toHaveCount(0);
+    // 下界。一覧が取れなくても QR / コードの退館導線は残る。
+    await expect(page.getByTestId('checkout-code')).toBeVisible();
+  });
+
+  /**
    * 🔴 **確認画面は「退館する」を押す直前である。**
    *
    * `summary` が欠けた 200 を通すと `pending.summary.checkedInAt` が throw する。
@@ -259,6 +426,37 @@ test.describe('来訪者導線: 形の違う 200 で受付・退館を止めな�
     */
     // 確認画面へは進めない（進むと `summary` を読んで落ちる）。
     await expect(page.getByTestId('checkout-confirm')).toHaveCount(0);
+  });
+
+  /**
+   * 🔴 **`data?.error ?? 'network'` は falsy を素通しする**（独立レビュー 6 周目 MINOR-5）。
+   *
+   * `??` が見るのは `null | undefined` だけなので、`{"error":0}` を返す非 200 応答では
+   * `0` が `errorReason` に入る。画面は `errorReason ? MESSAGE : null` で読むので
+   * **falsy な `0` は握り潰され、来訪者は押した結果を何も見ないまま入力画面に留まる**。
+   * 述語（`asCheckoutFailureReason`）は unit が縛るので、ここは**配線**を縛る。
+   */
+  test('退館: 失敗理由が文字列でない非 200 でも、来訪者に理由が出る', async ({ page }) => {
+    const resolveCalls: string[] = [];
+    page.on('request', (req) => {
+      if (req.url().includes('/api/kiosk/checkout/resolve')) resolveCalls.push(req.method());
+    });
+    await page.route('**/api/kiosk/checkout/resolve', (route) =>
+      route.fulfill({ status: 400, contentType: 'application/json', body: '{"error":0}' }),
+    );
+
+    await page.goto('/kiosk/checkout');
+    await expect(page.getByTestId('checkout-code')).toBeVisible();
+    await page.getByTestId('checkout-code').fill('1234');
+    await page.getByTestId('checkout-target-label').fill('総務部');
+    await page.getByTestId('checkout-resolve-submit').click();
+
+    // 踏んだことの表明（クライアント側検証だけで満たされる形にしない）。
+    await expect.poll(() => resolveCalls.length).toBeGreaterThan(0);
+
+    // **これが本題。** 理由が読めなくても、黙って入力画面に留まらせない。
+    await expect(page.getByTestId('checkout-error')).toBeVisible();
+    await expectNotCrashed(page);
   });
 
   /**
