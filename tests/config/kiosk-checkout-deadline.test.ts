@@ -67,15 +67,22 @@ function expectedDeadline(args: string): string {
   if (args.includes('/checkout/confirm')) return CONFIRM;
   if (args.includes('/checkout/resolve')) return READ;
   /*
-    🔴 **`method: 'POST'` の綴りに依存しない**（独立レビュー 6 周目 MINOR-4）。
-    `const POST = 'POST'` と書き替えるだけで分類が READ へ落ち、**確定に読み取り用の
-    15 秒を渡す変異が台帳を素通り**した（実測）。台帳の doc 自身が「3 度別の綴りで
-    抜けられた」「#813 と同型」と書いているのに、**照合側だけ直して分類側に同じ
-    綴り依存を残していた**（同族 4 回目）。
+    🔴 **綴りにも `method` キーの有無にも依存しない**（独立レビュー 6・7 周目）。
 
-    `method` キーが在るかどうか（＝ GET 以外）で広く取る。値の綴りは見ない。
+    6 周目までは `method: 'POST'` の**綴り**で見ており、`const POST = 'POST'` と書き替える
+    だけで分類が READ へ落ちた（確定に読み取り用の 15 秒を渡す変異が台帳を素通り）。
+    そこで `method` キーの有無へ替えたところ、今度は **`method: 'GET'` を明示しただけで
+    確定用の締切を要求する偽陽性**が生まれた（7 周目 MINOR-1。旧規則には無かった）。
+
+    分類の方式を替えるのはこれで **5 回目**である。毎回「見逃し」側だけを測っていた。
+    🔴 **方式を替えたら、振る舞いを変えない書き換え（等価変換）を当てて偽陽性が出ないことも
+    測る。** 見逃しと偽陽性は別の失敗で、片方だけ測っても収束しない。
+
+    ここは**書き込みの実体**で取る —— `body:` を持つのが書き込みである。GET は body を
+    持てないので偽陽性が構造的に消える。読み取りの POST（`/checkout/resolve`）は
+    パス規則が先に当たるので影響しない。
   */
-  return /\bmethod\s*:/.test(args) ? CONFIRM : READ;
+  return /\bbody\s*:/.test(args) ? CONFIRM : READ;
 }
 
 /**

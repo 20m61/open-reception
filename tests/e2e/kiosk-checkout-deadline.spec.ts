@@ -67,6 +67,22 @@ test.describe('来訪者導線: 応答が返らなくても退館の手段を失
     await expect.poll(() => hung.calls()).toBe(1);
 
     /*
+      🔴 **下界。** `aria-busy` は締切**後**に false へ戻ることしか縛っていなかった
+      （6 周目 MINOR-2 の修正が半分で止まっていた）。往復**中**に true である側を
+      落とす変異（`setInFlight` を潰す）が unit 8245 本・e2e 57 本を素通りする。
+
+      倒れると `globals.css` の `.btn:disabled:not([aria-busy='true'])` が当たり、
+      シアンの主 CTA が**フラット面 + 破線**＝「条件未達（押せない）」の見た目へ変わる
+      （#792 / #778 AC3 が名指しした型）。ラベルも「処理しています…」にならず、
+      来訪者は 15〜35 秒の沈黙を「タップが失敗した」と読む。
+
+      🔴 `toHaveAttribute` は自動リトライするので**使わない** —— 締切後に false へ
+      変わるのを待って通ってしまう。握ったまま 1 度だけ読む。
+    */
+    expect(await page.getByTestId('checkout-resolve-submit').getAttribute('aria-busy')).toBe('true');
+    await expect(page.getByTestId('checkout-resolve-submit')).toHaveText('処理しています…');
+
+    /*
       **下界。** 締切前は進行中であって、押せてはいけない ―― `disabled` を外すだけの
       「修正」（＝二重送信を許す）でこのテストを通させない。直すのは締切であって
       ガードの撤去ではない。
@@ -139,6 +155,13 @@ test.describe('来訪者導線: 応答が返らなくても退館の手段を失
 
     // 踏んだことの表明。
     await expect.poll(() => posts).toBe(1);
+
+    /*
+      🔴 **下界**（7 周目 MAJOR-1）。往復中は進行中であることが**見えて読み上げられる**。
+      握ったまま 1 度だけ読む（`toHaveAttribute` は締切後の false を待って通る）。
+    */
+    expect(await page.getByTestId('checkout-confirm-yes').getAttribute('aria-busy')).toBe('true');
+    await expect(page.getByTestId('checkout-confirm-yes')).toHaveText('処理しています…');
 
     const error = page.getByTestId('checkout-error');
     await expect(error).toBeVisible({ timeout: CHECKOUT_CONFIRM_TIMEOUT_MS + 10_000 });
