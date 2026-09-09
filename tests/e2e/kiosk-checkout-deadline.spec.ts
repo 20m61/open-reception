@@ -518,6 +518,69 @@ test.describe('来訪者導線: 応答が返らなくても退館の手段を失
   });
 
   /**
+   * 🔴 **`?ct=` で失敗したとき、画面に押せる復旧手段が残ること**
+   * （独立レビュー 8 周目 MINOR-3）。`setToken(ct)` を落とす変異が e2e 36 本を素通りする。
+   *
+   * 倒れると、締切切れで「**もう一度お試しください**」と言われた来訪者の画面に
+   * **押せるものが 1 つも無い** —— token 欄は空なので「確認へ進む」は disabled、
+   * 退館コードを持っていなければ QR を読ませ直す以外に手がない。
+   * **指示と画面上の可能な操作が食い違う。**
+   */
+  test('退館: QR で開いて締切切れになっても、そのまま押し直せる', async ({ page }) => {
+    test.setTimeout(CHECKOUT_READ_TIMEOUT_MS + 60_000);
+    const hung = await blackhole(page, '**/api/kiosk/checkout/resolve');
+
+    await page.goto('/kiosk/checkout?ct=dummy-checkout-token');
+    await expect.poll(() => hung.calls()).toBe(1);
+
+    const error = page.getByTestId('checkout-error');
+    await expect(error).toBeVisible({ timeout: CHECKOUT_READ_TIMEOUT_MS + 10_000 });
+    await expect(error).toContainText('もう一度お試しください');
+
+    /*
+      **これが本題。** 「もう一度」と言うなら、その手段が画面に無ければならない。
+      URL の token が欄へ戻っているので、押し直せる。
+    */
+    await expect(page.getByTestId('checkout-token')).toHaveValue('dummy-checkout-token');
+    await expect(page.getByTestId('checkout-token-submit')).toBeEnabled();
+
+    hung.release();
+  });
+
+  /**
+   * 🔴 **進行中表示の下界が 3 兄弟のうち 2 つにしか入っていなかった**
+   * （独立レビュー 8 周目 MAJOR-1）。7 周目でコード送信と退館確定には足したが、
+   * **退館 QR（token）だけ素通り**した。`aria-busy` を false 固定にする変異が
+   * e2e 55 本を通り抜ける。
+   *
+   * QR は設計上の**主経路**である（在館一覧は staff 補助）。倒れると
+   * `globals.css` の `.btn:disabled:not([aria-busy='true'])` が当たり、シアンの主 CTA が
+   * **フラット面 + 破線**＝「条件未達（押せない）」の見た目へ変わる。応答が遅い回線では
+   * 15 秒間、来訪者には**タップが失敗したように見える**。
+   *
+   * 🔴 この変異は現実的である —— `kiosk-state-affordance.spec.ts` は同じボタンに
+   * 「`?ct=` 自動解決中は `aria-busy` が false」を要求しており、それを落とした人が
+   * **`aria-busy={false}` とハードコードして緑にする**のは自然な直し方である。
+   */
+  test('退館: 退館 QR の送信中も、進行中であることが見えて読み上げられる', async ({ page }) => {
+    test.setTimeout(CHECKOUT_READ_TIMEOUT_MS + 60_000);
+    const hung = await blackhole(page, '**/api/kiosk/checkout/resolve');
+
+    await page.goto('/kiosk/checkout');
+    await expect(page.getByTestId('checkout-token')).toBeVisible();
+    await page.getByTestId('checkout-token').fill('dummy-checkout-token');
+    await page.getByTestId('checkout-token-submit').click();
+
+    await expect.poll(() => hung.calls()).toBe(1);
+
+    // 握ったまま 1 度だけ読む（`toHaveAttribute` は締切後の false を待って通る）。
+    expect(await page.getByTestId('checkout-token-submit').getAttribute('aria-busy')).toBe('true');
+    await expect(page.getByTestId('checkout-token-submit')).toHaveText('処理しています…');
+
+    hung.release();
+  });
+
+  /**
    * 🔴 **非 200 の理由に、どこにもオラクルが無かった**（独立レビュー 6 周目 MAJOR-1）。
    * `asCheckoutFailureReason(errBody)` を `'network'` 固定にする変異が e2e 52 本を
    * 素通りする。倒れると `src/lib/visit/request.ts` が返す失敗 6 種

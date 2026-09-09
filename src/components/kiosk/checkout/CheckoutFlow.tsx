@@ -305,7 +305,18 @@ export function CheckoutFlow() {
   // 退館 QR/URL（`?ct=<token>`）で開かれたら自動で解決し確認へ（#98 QR 機構の流用）。
   useEffect(() => {
     const ct = new URLSearchParams(window.location.search).get(CHECKOUT_TOKEN_QUERY);
-    if (ct) void resolveCredential({ payload: ct }, 'qr');
+    if (ct) {
+      /*
+        🔴 **token 欄へ戻してから解決する**（独立レビュー 8 周目 MINOR-3 の実測）。
+        戻さないと、締切切れで「もう一度お試しください」と言われた来訪者の画面に
+        **押せる復旧手段が 1 つも無い** —— token 欄は空なので「確認へ進む」は disabled、
+        退館コードを持っていなければ QR を読ませ直す以外に手がない。
+        **指示と画面上の可能な操作が食い違う。**
+        `ct` は既に URL に載っており、新しい保持でも PII でもない。
+      */
+      setToken(ct);
+      void resolveCredential({ payload: ct }, 'qr');
+    }
     // 初回のみ。resolveCredential は tr/busy に依存するため意図的に依存を絞る。
     // eslint-disable-next-line react-hooks/exhaustive-deps -- 初回のみ実行する意図（resolveCredential は tr/busy に依存する）
   }, []);

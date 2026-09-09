@@ -2,6 +2,11 @@ import { describe, expect, it } from 'vitest';
 import { readFileSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { fetchArguments, fetchSites, stripComments } from '../../src/domain/governance/fetch-failure-scan';
+import {
+  classifyDeadline,
+  resolveConstants,
+  stringConstants,
+} from '../../src/domain/governance/checkout-deadline-scan';
 
 /**
  * 退館フローの `fetch` が**すべて、正しい締切を**渡す (#1029)。
@@ -58,31 +63,14 @@ const CONFIRM = 'CHECKOUT_CONFIRM_TIMEOUT_MS';
 /**
  * この `fetch` が使うべき締切。
  *
- * - `/confirm` … 退館を確定する書き込み
- * - `/resolve` … 自己特定。POST だが退館は確定しないので読み取り扱い
- * - `/api/kiosk/checkout` へ POST … 在館一覧から選んだ退館の確定
- * - それ以外（GET） … 在館一覧の読み取り
+ * 🔴 **判定は `src/domain/governance/checkout-deadline-scan.ts` へ出した**（8 周目）。
+ * 分類の綴りを 5 回替え、5 回とも別の側を壊したため（見逃し 3 回・偽陽性 2 回）。
+ * 実際に抜けられた綴りは `checkout-deadline-scan.test.ts` の**回帰行列**が保持しており、
+ * 方式を替えるときは全部当て直すことが機械的に強制される。ここは母集団の指定だけを持つ。
  */
-function expectedDeadline(args: string): string {
-  if (args.includes('/checkout/confirm')) return CONFIRM;
-  if (args.includes('/checkout/resolve')) return READ;
-  /*
-    🔴 **綴りにも `method` キーの有無にも依存しない**（独立レビュー 6・7 周目）。
-
-    6 周目までは `method: 'POST'` の**綴り**で見ており、`const POST = 'POST'` と書き替える
-    だけで分類が READ へ落ちた（確定に読み取り用の 15 秒を渡す変異が台帳を素通り）。
-    そこで `method` キーの有無へ替えたところ、今度は **`method: 'GET'` を明示しただけで
-    確定用の締切を要求する偽陽性**が生まれた（7 周目 MINOR-1。旧規則には無かった）。
-
-    分類の方式を替えるのはこれで **5 回目**である。毎回「見逃し」側だけを測っていた。
-    🔴 **方式を替えたら、振る舞いを変えない書き換え（等価変換）を当てて偽陽性が出ないことも
-    測る。** 見逃しと偽陽性は別の失敗で、片方だけ測っても収束しない。
-
-    ここは**書き込みの実体**で取る —— `body:` を持つのが書き込みである。GET は body を
-    持てないので偽陽性が構造的に消える。読み取りの POST（`/checkout/resolve`）は
-    パス規則が先に当たるので影響しない。
-  */
-  return /\bbody\s*:/.test(args) ? CONFIRM : READ;
+function expectedDeadline(args: string, source: string): string {
+  const resolved = resolveConstants(args, stringConstants(source));
+  return classifyDeadline(resolved) === 'confirm' ? CONFIRM : READ;
 }
 
 /**
@@ -124,7 +112,7 @@ describe('退館フローの締切 (#1029)', () => {
       for (const site of fetchSites(source)) {
         checked += 1;
         const args = fetchArguments(source, site);
-        const constant = expectedDeadline(args);
+        const constant = expectedDeadline(args, source);
         if (!passesExpectedDeadline(args, source, constant)) {
           offenders.push(`${rel}@${site} (要 ${constant})`);
         }
