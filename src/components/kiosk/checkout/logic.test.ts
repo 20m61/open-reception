@@ -78,6 +78,50 @@ describe('締切による中断の扱い (#1029)', () => {
   });
 
   /*
+    🔴 **ja しか縛られていなかった**（PR #1044 の独立レビュー 1 周目 MINOR-6）。
+    他の理由（`expired` / `throttled` / `not_recognized` / `not_found`）は en を完全一致で、
+    ko / zh も語で縛っているのに、**`confirm_unknown` だけ ja だけ**だった。
+    `i18n.test.ts` の「全 locale が同一キー集合・全キー非空」は通ってしまうので、
+    **翻訳を取り違えても（例: en を `network` の文へ差し替えても）誰も落ちない**。
+    iPad は多言語運用が前提である。
+
+    en は完全一致で縛る。ko / zh は「**成功を否定しない**」という #968 の要件を語で縛る ――
+    完全一致だと表現の改善が機械的に落ちてしまい、規約が翻訳の改善を妨げる。
+  */
+  it('適用されたか分からない失敗は、他 3 ロケールでも成功を否定しない', () => {
+    expect(CHECKOUT_FAILURE_MESSAGE(CHECKOUT_CONFIRM_UNKNOWN_REASON, makeT('en'))).toBe(
+      'We could not confirm whether your checkout went through. Please ask reception for help.',
+    );
+
+    const ko = CHECKOUT_FAILURE_MESSAGE(CHECKOUT_CONFIRM_UNKNOWN_REASON, makeT('ko'));
+    expect(ko, '確認できなかったことを言っていない').toContain('확인할 수 없');
+    expect(ko, '受付へ繋いでいない').toContain('접수처');
+
+    const zh = CHECKOUT_FAILURE_MESSAGE(CHECKOUT_CONFIRM_UNKNOWN_REASON, makeT('zh'));
+    expect(zh, '確認できなかったことを言っていない').toContain('无法确认');
+    expect(zh, '受付へ繋いでいない').toContain('前台');
+  });
+
+  /*
+    🔴 **下界。** 上の 3 本は「その locale の `network` の文」でも一部が通りうる
+    （ko の `접수처` は `unexpected` にも出る）。**`network` / `unexpected` と
+    別の文であること**を locale ごとに固定して、既定へ倒す変異を落とす。
+    ja だけを縛っていた頃は、この検査が 4 ロケールのうち 1 つにしか掛かっていなかった。
+  */
+  it('どのロケールでも、既定や「完了できませんでした」と同じ文にならない', () => {
+    for (const locale of ['ja', 'en', 'ko', 'zh'] as const) {
+      const tr = makeT(locale);
+      const message = CHECKOUT_FAILURE_MESSAGE(CHECKOUT_CONFIRM_UNKNOWN_REASON, tr);
+      expect(message, `${locale}: 既定（network）と同じ文になっている`).not.toBe(
+        CHECKOUT_FAILURE_MESSAGE(undefined, tr),
+      );
+      expect(message, `${locale}: 失敗を断定する unexpected と同じ文になっている`).not.toBe(
+        CHECKOUT_FAILURE_MESSAGE('unexpected', tr),
+      );
+    }
+  });
+
+  /*
     🔴 **5xx は「拒否された」と同値ではない**（1 周目 MAJOR-1）。本番の origin は
     `serverTimeoutSec` と同じ 30 秒で読み切りを打ち切るので、ハング時にブラウザへ
     **先に届くのは CloudFront の 504** であり、35 秒の締切はほとんど発火しない。
