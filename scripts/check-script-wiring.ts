@@ -124,6 +124,10 @@ export const MANUAL_ONLY_ALLOWLIST: Readonly<Record<string, string>> = {
     '人間がローカル Mac の Admin 環境でデプロイ窓を開けるときだけ走る（値をリポジトリに残さない）。',
   'deploy-context-block.ts':
     '`aws-issue-credentials.sh`（manual-only）が、窓を開けるときにデプロイ context 4 変数を貼り付け用ブロックへ組み立てるのに使う CLI。窓を開ける操作の中でしか意味が無く、秘密の値を扱うので自動では走らせない (#989)。',
+  'admin-user-provision.sh':
+    '管理者 Cognito ユーザーを人が用意する入口そのもの (#1051)。クラウドセッションの資格情報は `claude-deploy-entry.json` の `DenyEverythingElseOutsideTheChain` により Cognito が明示 Deny（停止境界「Cognito・認可の境界変更」の機械強制）なので、Admin 資格情報を持つ人が手元で流すしかない。パスワードを対話で受け取るため自動では走らせない。',
+  'admin-user-credentials.ts':
+    '`admin-user-provision.sh`（manual-only）が、対話で集めた資格情報を検査して `--cli-input-json` の payload を組み立てるのに使う CLI (#1051)。パスワードを stdin で受け取るので自動では走らせない。',
   // ---- 以下は #681 で追加。すべて `aws-cloud-deploy.sh`（manual-only の入口）からのみ
   // 呼ばれる。以前は「manual-only の入口から呼ばれている」ことで配線済みと数えられており、
   // 手動である理由がどこにも記録されていなかった。
