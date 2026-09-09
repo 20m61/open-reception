@@ -59,13 +59,19 @@ describe('validateAdminCredentials — 不変条件', () => {
     expect(validateAdminCredentials({ ...VALID, username: '   ' })).toContain('username-empty');
   });
 
-  it('境界: minLength ちょうどは通り、1 文字足りないと落ちる', () => {
-    const atLimit = `Aa1!${'a'.repeat(ADMIN_PASSWORD_POLICY.minLength - 4)}`;
-    expect(atLimit).toHaveLength(ADMIN_PASSWORD_POLICY.minLength);
-    expect(validateAdminCredentials({ ...VALID, password: atLimit })).toEqual([]);
-    expect(validateAdminCredentials({ ...VALID, password: atLimit.slice(1) })).toContain(
+  // 🔴 **期待値を ADMIN_PASSWORD_POLICY から導出しない。** 以前ここは
+  //    `'a'.repeat(policy.minLength - 4)` で素材を作っていたが、それだと定数を緩める変異
+  //    （12 → 11）に対してテストが一緒にずれ、**変異が生存した**（実測）。
+  //    近似の緊さは fixture でしか縛れない ―― 境界のすぐ内側と外側をリテラルで置く。
+  it('境界: 12 文字ちょうどは通り、11 文字は落ちる（リテラルで縛る）', () => {
+    expect('Aa1!aaaaaaaa').toHaveLength(12);
+    expect('Aa1!aaaaaaa').toHaveLength(11);
+    expect(validateAdminCredentials({ ...VALID, password: 'Aa1!aaaaaaaa' })).toEqual([]);
+    expect(validateAdminCredentials({ ...VALID, password: 'Aa1!aaaaaaa' })).toContain(
       'password-too-short',
     );
+    // 定数そのものが動いていないことも併せて固定する（CDK 側と共有しているため）。
+    expect(ADMIN_PASSWORD_POLICY.minLength).toBe(12);
   });
 
   it('Cognito の記号集合の外の文字は「記号」として数えない', () => {
@@ -101,6 +107,25 @@ describe('deriveUsernameFromEmail — 不変条件', () => {
       const violations = validateAdminCredentials({ ...VALID, username });
       expect(violations, `email=${JSON.stringify(email)} -> username=${JSON.stringify(username)}`)
         .toEqual([]);
+    }
+  });
+
+  // 🔴 「@ を含まない・空でない」だけでは弱い。サニタイズを丸ごと外す変異が
+  //    **生存した**（'ｆｕｌｌ幅@example.com' が全角のまま通っていた。実測）。
+  //    導出の契約は「保守的な文字集合に収まること」なので、それを直接主張する。
+  it('導出結果は保守的な文字集合に収まる', () => {
+    const emails = [
+      'changhwi.chang@gmail.com',
+      'UPPER.Case@Example.COM',
+      'plus+tag@example.com',
+      'ｆｕｌｌ幅@example.com',
+      'sp ace@example.com',
+      '',
+    ];
+    for (const email of emails) {
+      expect(deriveUsernameFromEmail(email), `email=${JSON.stringify(email)}`).toMatch(
+        /^[a-z0-9._-]+$/,
+      );
     }
   });
 
