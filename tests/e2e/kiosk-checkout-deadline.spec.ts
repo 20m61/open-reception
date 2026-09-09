@@ -231,6 +231,54 @@ test.describe('来訪者導線: 応答が返らなくても退館の手段を失
   });
 
   /**
+   * 🔴 **下界。** `confirmFailureFromAbort(true)` 固定にする変異が unit 961 本・
+   * e2e 5 本を全部素通りした（独立レビュー 2 周目 MAJOR-3）。締切が切れた側は
+   * 上の 2 本が縛っているが、**切れていない側を縛る spec が 1 本も無かった** ――
+   * 確定 POST に接続失敗を注入する spec が存在しなかったためである。
+   *
+   * 実害: iPad が Wi-Fi を落とすと（`kiosk-unverified-200.spec.ts` が「実運用でいちばん
+   * 起きる」と名指ししている失敗）、**サーバに一度も届いていない**のに
+   * 「退館できたか分かりません。受付へ」と出る。押し直せば済む来訪者を全員受付へ歩かせる。
+   * しかも `network` より**強い**言い方なので、誤誘導は増える。
+   */
+  test('退館確定: 接続そのものが失敗したときは、再試行を促す（受付へ回さない）', async ({ page }) => {
+    const PRESENT = JSON.stringify({
+      stays: [
+        {
+          stayId: 'off1',
+          checkedInAt: '2026-01-01T10:00:00.000Z',
+          targetLabel: '総務部',
+          purpose: '打ち合わせ',
+        },
+      ],
+    });
+    let posts = 0;
+    await page.route('**/api/kiosk/checkout', (route) => {
+      if (route.request().method() !== 'POST') {
+        return route.fulfill({ status: 200, contentType: 'application/json', body: PRESENT });
+      }
+      posts += 1;
+      // サーバへ届いていない（Wi-Fi 断・DNS 失敗）。締切は切れていない。
+      return route.abort('failed');
+    });
+
+    await page.goto('/kiosk/checkout');
+    await expect(page.getByTestId('checkout-present-list')).toBeVisible();
+    await page.getByTestId('checkout-present-item').first().click();
+    await expect(page.getByTestId('checkout-confirm')).toBeVisible();
+    await page.getByTestId('checkout-confirm-yes').click();
+
+    await expect.poll(() => posts).toBe(1);
+
+    const error = page.getByTestId('checkout-error');
+    await expect(error).toBeVisible();
+    // **これが本題。** 届いていないので、再試行を促してよい。
+    await expect(error).toContainText('もう一度お試しください');
+    // 「分からない」へ寄せる変異をここで落とす ―― 受付へ歩かせる理由が無い。
+    await expect(error).not.toContainText('確認できませんでした');
+  });
+
+  /**
    * 🔴 **在館一覧にも締切が要る**（独立レビュー 1 周目 MAJOR-3）。
    *
    * 締切が無いと `catch` に到達せず `presentFailed` が永久に false のままになる。

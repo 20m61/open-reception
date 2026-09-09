@@ -11,7 +11,6 @@ import {
 import { LanguageSwitcher } from '../LanguageSwitcher';
 import {
   CHECKOUT_CONFIRM_TIMEOUT_MS,
-  CHECKOUT_CONFIRM_UNKNOWN_REASON,
   CHECKOUT_FAILURE_MESSAGE,
   CHECKOUT_READ_TIMEOUT_MS,
   confirmFailureFromAbort,
@@ -288,9 +287,16 @@ export function CheckoutFlow() {
       残存リスク 1）。例外の `name` は相とエンジンで変わる（Chromium 実測で
       `TimeoutError` / `AbortError` の 2 種。WebKit は**この環境では実測できない**）。
       名前で分けると、別の名前を使うエンジンでは締切が黙って `network` へ落ちる。
+
+      🔴 **`try` の中で作る**（独立レビュー 2 周目 MINOR-3）。外に置くと、
+      `AbortSignal.timeout` 自体が投げる環境（古い iPadOS Safari 等）で `finally` に
+      到達せず `setBusy(false)` が走らない。確認画面には逃げ道バーが無く（#1036）
+      「はい」も「いいえ」も `disabled={busy}` なので、**押せるものが 0 個の画面が
+      恒久的に残る** ―― #1029 が消そうとした症状の最悪版になる。
     */
-    const deadline = AbortSignal.timeout(CHECKOUT_CONFIRM_TIMEOUT_MS);
+    let deadline: AbortSignal | undefined;
     try {
+      deadline = AbortSignal.timeout(CHECKOUT_CONFIRM_TIMEOUT_MS);
       const res =
         pending.kind === 'credential'
           ? await fetch('/api/kiosk/checkout/confirm', {
@@ -333,7 +339,7 @@ export function CheckoutFlow() {
         `already_checked_out` / `not_found` を踏ませることになる。
         接続そのものが失敗した（＝サーバに届いていない）ときは従来どおり `network` でよい。
       */
-      setErrorReason(confirmFailureFromAbort(deadline.aborted));
+      setErrorReason(confirmFailureFromAbort(deadline?.aborted === true));
       setState('identify');
       setPending(null);
     } finally {
