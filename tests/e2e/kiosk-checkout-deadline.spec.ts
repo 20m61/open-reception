@@ -74,9 +74,17 @@ test.describe('来訪者導線: 応答が返らなくても退館の手段を失
     await expect(page.getByTestId('checkout-resolve-submit')).toBeDisabled();
 
     // **これが本題。** 締切を過ぎたら理由が出て、もう一度送れる。
-    await expect(page.getByTestId('checkout-error')).toBeVisible({
-      timeout: CHECKOUT_READ_TIMEOUT_MS + 10_000,
-    });
+    const error = page.getByTestId('checkout-error');
+    await expect(error).toBeVisible({ timeout: CHECKOUT_READ_TIMEOUT_MS + 10_000 });
+    /*
+      🔴 **どの理由かまで見る**（独立レビュー 3 周目 MINOR-1 の修正を縛る）。
+      「エラーが出た」だけを見ていたので、締切切れを `network` へ戻す変異が生存していた
+      （実測）。回線は生きていて**こちらが 15 秒で打ち切っただけ**なので「通信エラー」は
+      事実と違い、staff に存在しない障害を疑わせる。両方の文言が
+      「もう一度お試しください」で終わるため、**そこだけを見ると区別できない**。
+    */
+    await expect(error).toContainText('時間内に応答がありませんでした');
+    await expect(error).not.toContainText('通信エラー');
     await expect(page.getByTestId('checkout-resolve-submit')).toBeEnabled();
     await page.getByTestId('checkout-resolve-submit').click();
     await expect.poll(() => hung.calls()).toBe(2);
