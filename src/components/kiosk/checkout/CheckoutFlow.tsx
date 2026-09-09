@@ -444,7 +444,15 @@ export function CheckoutFlow() {
 
         受け入れたコスト: Wi-Fi 断で本当に届かなかった場合も受付へ繋ぐ。読み取り
         （自己特定 `resolve`）はこの判断の対象外で、あちらは何も確定しないので
-        `network` のままでよい（`kiosk-checkout-deadline.spec.ts` の `:659` が縛る）。
+        `network` のままでよい。下界は e2e の
+        **`退館: 自己特定の接続そのものが失敗したときは、通信の問題として伝える`** が持つ。
+        🔴 **行番号で指さない**（独立レビュー 1 周目 MINOR-1）。同じファイルを編集するたびに
+        腐り、次に読む人が**空の保証を確認済みと誤認する**（実際この PR がそれを作った）。
+
+        🔴 **この catch を広げない。** いま `try` 内で投げうるのは実質 `fetch` だけである
+        （`readBody` は自前で catch 済み、`JSON.stringify` の対象は `Record<string, string>`、
+        `asCheckoutFailureReason` は throw しない）。ここへ自前ロジックを足すと、**そのバグが
+        「退館できたか分かりません・受付へ」へ化けて全来訪者を受付へ流す**。
       */
       setErrorReason(CHECKOUT_CONFIRM_UNKNOWN_REASON);
       setState('identify');
