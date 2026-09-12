@@ -18,6 +18,7 @@ import { announcementPhrase, shouldAnnounce } from './voice-announcement';
 import type { VoiceKioskState } from '@/domain/voice-session/kiosk-view';
 import { useVoiceSession } from './useVoiceSession';
 import { VoiceReadbackConfirm } from './VoiceReadbackConfirm';
+import { publishCommittedUtterance } from './natural-conversation-bus';
 
 export type VoiceSessionLayerProps = {
   factory: VoiceSessionFactory;
@@ -26,8 +27,8 @@ export type VoiceSessionLayerProps = {
   /** 旧target-only経路。natural conversationがclaimしない発話では従来どおり使う。 */
   onResolved?: OnResolved;
   /**
-   * #1077 multi-slot会話。確定発話をKioskへ一時通知し、claimした場合は旧target-only解決を抑止する。
-   * transcript はUI/メモリ内処理だけで、ログへ書かない。
+   * #1077 multi-slot会話。明示注入が無ければ、履歴を持たない同期busへ確定発話を流す。
+   * listenerがclaimしなければfalseとなり、旧target-only解決がそのまま動く。
    */
   onCommittedUtterance?: OnCommittedUtterance;
   /** 字幕と同じ意味の案内を端末から読み上げる。 */
@@ -42,16 +43,15 @@ export function VoiceSessionLayer({
   onCommittedUtterance,
   onAnnounce,
 }: VoiceSessionLayerProps) {
+  const committedHandler = onCommittedUtterance ?? publishCommittedUtterance;
   const { state, confirmYes, confirmNo } = useVoiceSession(
     factory,
     receptionState,
     onResolved,
-    onCommittedUtterance,
+    committedHandler,
   );
 
-  /*
-   * 局面へ入った瞬間に1度だけ読み上げる (#803)。覚えるのは文言ではなく局面。
-   */
+  /* 局面へ入った瞬間に1度だけ読み上げる (#803)。覚えるのは文言ではなく局面。 */
   const announcedRef = useRef<VoiceKioskState | null>(null);
   useEffect(() => {
     if (!shouldAnnounce(announcedRef.current, state)) return;
