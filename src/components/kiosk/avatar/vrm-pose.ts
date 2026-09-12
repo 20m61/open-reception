@@ -8,10 +8,13 @@
  *
  * #1085 では固定周期だけの「揺れている人形」感を減らすため、呼吸/揺れに加えて
  * deterministic な低周波 micro-motion を頭・首・上体へ薄く重ねる。
+ * #1098 では既存 `AvatarBehavior.phase` を presentation-only の倍率として重ね、受付上の
+ * AvatarState / gesture / semantic gaze を変えずに会話局面ごとの「静けさ」だけを調整する。
  *
  * 値は安全側（rest からの小さな変位）に留め、未調整でも破綻しないようにしている。
  * 腕の向きの符号は dev 実描画で確定（左 upperArm +Z / 右 -Z で下ろす）。
  */
+import type { AvatarBehaviorPhase } from '@/domain/avatar/behavior';
 import type { AvatarState } from '@/domain/reception/ui-contract';
 import {
   DEFAULT_NATURAL_MOTION_SEED,
@@ -62,6 +65,18 @@ const MICRO_MOTION_INTENSITY: Record<AvatarState, number> = {
   farewell: 0.6,
 };
 
+/**
+ * 会話局面による presentation-only の natural-motion 倍率 (#1098)。
+ * `ambient=1` は従来挙動を完全維持する。既存 AvatarState 別強度との積にも使い、
+ * 呼吸・状態固有 gesture・semantic gaze は変更しない。
+ */
+const BEHAVIOR_MICRO_MOTION_SCALE: Record<AvatarBehaviorPhase, number> = {
+  ambient: 1,
+  listening: 0.5,
+  thinking: 0.8,
+  speaking: 0.65,
+};
+
 /** `Object.entries` はキーを `string` に落とすので、ボーン名の型を保って列挙する。 */
 export function poseEntries(pose: Readonly<BonePose>): Array<[HumanoidBoneName, BoneEuler]> {
   return Object.entries(pose).filter((entry): entry is [HumanoidBoneName, BoneEuler] => Boolean(entry[1]));
@@ -103,6 +118,11 @@ export type ResolveStatePoseOptions = {
   buffer?: StatePoseBuffer;
   /** VRT / harness は固定値、本番 viewer は VRM 読込単位の seed を渡す。 */
   naturalMotionSeed?: number;
+  /**
+   * 描画専用の会話局面 (#1098)。未指定は `ambient` = 従来挙動。
+   * AvatarState の意味・状態固有 gesture は変えず、natural motion の振幅だけを調整する。
+   */
+  behaviorPhase?: AvatarBehaviorPhase;
 };
 
 function clearPose(pose: BonePose): void {
@@ -156,13 +176,14 @@ export function resolveStatePose(
   }
 
   const seed = options?.naturalMotionSeed ?? DEFAULT_NATURAL_MOTION_SEED;
-  // 常時の生命感: 呼吸(spine.x) と非反復の揺れ(chest.z) を加算。
+  const behaviorScale = BEHAVIOR_MICRO_MOTION_SCALE[options?.behaviorPhase ?? 'ambient'];
+  // 常時の生命感: 呼吸(spine.x) は維持し、左右の sway(chest.z) だけ会話phaseに合わせて静かにする。
   addAxis(pose, 'spine', 'x', breathingRotation(elapsedSec, seed));
-  addAxis(pose, 'chest', 'z', swayRotation(elapsedSec, seed));
+  addAxis(pose, 'chest', 'z', swayRotation(elapsedSec, seed) * behaviorScale);
 
   // さらに微小な非反復 motion を頭/首/上体へ。UI gaze は viewer 側でこの後に加算される。
   const micro = naturalMicroMotion(elapsedSec, seed, buffer?.microMotion);
-  const microIntensity = MICRO_MOTION_INTENSITY[state];
+  const microIntensity = MICRO_MOTION_INTENSITY[state] * behaviorScale;
   addAxis(pose, 'head', 'x', micro.headX * microIntensity);
   addAxis(pose, 'head', 'y', micro.headY * microIntensity);
   addAxis(pose, 'neck', 'x', micro.neckX * microIntensity);
