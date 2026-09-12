@@ -86,34 +86,51 @@ describe('createMotionPlayer', () => {
     const b = h.player.request('/b.vrma');
     h.pending.get('/b.vrma')!.resolve('anim-b');
     await b;
-    // fadeOut 直後はまだ解放しない（フェード中に stop するとカクつく）。
     expect(h.actions[0]!.released).toBe(0);
     expect(h.deferred.map((d) => d.delaySec)).toEqual([0.3]);
     h.deferred[0]!.fn();
     expect(h.actions[0]!.released).toBe(1);
-    // 現役のアクションは解放されない。
     expect(h.actions[1]!.released).toBe(0);
   });
 
-  it('空 URL で止めたアクションも release される', async () => {
+  it('空 URL で止めても fadeOut 完了までは motion が骨を所有する', async () => {
     const h = harness();
     const a = h.player.request('/a.vrma');
     h.pending.get('/a.vrma')!.resolve('anim-a');
     await a;
     await h.player.request(undefined);
+    expect(h.actions[0]!.fadedOut).toEqual([0.3]);
+    expect(h.player.isPlaying()).toBe(true);
     expect(h.deferred).toHaveLength(1);
     h.deferred[0]!.fn();
     expect(h.actions[0]!.released).toBe(1);
+    expect(h.player.isPlaying()).toBe(false);
   });
 
-  it('dispose 後に遅延解放が発火しても release しない（破棄済みシーンに触らない）', async () => {
+  it('release が例外でも ownership を残さない', async () => {
+    const h = harness();
+    const a = h.player.request('/a.vrma');
+    h.pending.get('/a.vrma')!.resolve('anim-a');
+    await a;
+    h.actions[0]!.release = () => {
+      throw new Error('release failed');
+    };
+    await h.player.request(undefined);
+    expect(h.player.isPlaying()).toBe(true);
+    expect(() => h.deferred[0]!.fn()).toThrow('release failed');
+    expect(h.player.isPlaying()).toBe(false);
+  });
+
+  it('dispose 後に遅延解放が発火しても release せず ownership も閉じる', async () => {
     const h = harness();
     const a = h.player.request('/a.vrma');
     h.pending.get('/a.vrma')!.resolve('anim-a');
     await a;
     await h.player.request(undefined);
+    expect(h.player.isPlaying()).toBe(true);
     expect(h.deferred).toHaveLength(1);
     h.player.dispose();
+    expect(h.player.isPlaying()).toBe(false);
     h.deferred[0]!.fn();
     expect(h.actions[0]!.released).toBe(0);
   });
@@ -133,7 +150,7 @@ describe('createMotionPlayer', () => {
     expect(h.player.isPlaying()).toBe(true);
   });
 
-  it('空 URL は再生中を止め、飛行中の読込を無効化し、none を観測する', async () => {
+  it('空 URL は再生中を fadeOut し、飛行中の読込を無効化し、none を観測する', async () => {
     const h = harness();
     const a = h.player.request('/a.vrma');
     h.pending.get('/a.vrma')!.resolve('anim-a');
@@ -142,15 +159,16 @@ describe('createMotionPlayer', () => {
     await h.player.request(undefined);
     expect(h.actions[0]!.fadedOut).toEqual([0.3]);
     expect(h.observed.at(-1)).toEqual({ state: 'none' });
+    expect(h.player.isPlaying()).toBe(true);
+    h.deferred[0]!.fn();
     expect(h.player.isPlaying()).toBe(false);
-    // 飛行中だった b が後から届いても復活しない。
     h.pending.get('/b.vrma')!.resolve('anim-b');
     await b;
     expect(h.actions.map((x) => x.anim)).toEqual(['anim-a']);
     expect(h.player.isPlaying()).toBe(false);
   });
 
-  it('読込失敗: 前のモーションを止めて failed:load-error を観測する（黙らない）', async () => {
+  it('読込失敗: 前のモーションを fadeOut して failed:load-error を観測する（黙らない）', async () => {
     const h = harness();
     const a = h.player.request('/a.vrma');
     h.pending.get('/a.vrma')!.resolve('anim-a');
@@ -160,6 +178,8 @@ describe('createMotionPlayer', () => {
     await b;
     expect(h.observed.at(-1)).toEqual({ state: 'failed', failure: 'load-error' });
     expect(h.actions[0]!.fadedOut).toEqual([0.3]);
+    expect(h.player.isPlaying()).toBe(true);
+    h.deferred[0]!.fn();
     expect(h.player.isPlaying()).toBe(false);
   });
 
@@ -170,9 +190,10 @@ describe('createMotionPlayer', () => {
     await a;
     expect(h.observed.at(-1)).toEqual({ state: 'failed', failure: 'no-animation' });
     expect(h.actions).toHaveLength(0);
+    expect(h.player.isPlaying()).toBe(false);
   });
 
-  it('再生中に VRMAnimation の無い .vrma へ切替えたら、前のモーションを止めて failed を報告する', async () => {
+  it('再生中に VRMAnimation の無い .vrma へ切替えたら、前のモーションを fadeOut して failed を報告する', async () => {
     const h = harness();
     const a = h.player.request('/a.vrma');
     h.pending.get('/a.vrma')!.resolve('anim-a');
@@ -180,10 +201,28 @@ describe('createMotionPlayer', () => {
     const b = h.player.request('/empty.vrma');
     h.pending.get('/empty.vrma')!.resolve(undefined);
     await b;
-    // `failed:*` を見た運用者は「再生されていない」と読む。前のを回し続けると嘘になる。
     expect(h.actions[0]!.fadedOut).toEqual([0.3]);
-    expect(h.player.isPlaying()).toBe(false);
+    expect(h.player.isPlaying()).toBe(true);
     expect(h.observed.at(-1)).toEqual({ state: 'failed', failure: 'no-animation' });
+    h.deferred[0]!.fn();
+    expect(h.player.isPlaying()).toBe(false);
+  });
+
+  it('複数の fadeOut が重なっても、最後の release までは ownership を維持する', async () => {
+    const h = harness();
+    const a = h.player.request('/a.vrma');
+    h.pending.get('/a.vrma')!.resolve('anim-a');
+    await a;
+    const b = h.player.request('/b.vrma');
+    h.pending.get('/b.vrma')!.resolve('anim-b');
+    await b;
+    await h.player.request(undefined);
+    expect(h.deferred).toHaveLength(2);
+    expect(h.player.isPlaying()).toBe(true);
+    h.deferred[0]!.fn();
+    expect(h.player.isPlaying()).toBe(true);
+    h.deferred[1]!.fn();
+    expect(h.player.isPlaying()).toBe(false);
   });
 
   it('dispose 後の request は読込も観測もしない', async () => {

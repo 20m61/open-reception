@@ -40,7 +40,13 @@ export type MotionPlayerDeps<Animation> = {
 export type MotionPlayer = {
   /** モーションを要求する。`undefined` は「モーション無し＝手続き的ポーズへ戻す」。 */
   request: (url: string | undefined) => Promise<void>;
-  /** `.vrma` が再生中か（手続き的ポーズを適用するかの判定に使う）。 */
+  /**
+   * `.vrma` が正規化ボーンを所有しているか。
+   *
+   * 現役 action だけでなく fadeOut 中の action も true とする。fadeOut 中に procedural pose を
+   * 再開すると、同じボーンへ AnimationMixer と procedural pose が同時に書き込み、終了時の
+   * snap / jitter の原因になるため（#1085）。
+   */
   isPlaying: () => boolean;
   /** 以降の読込結果を全部捨てる。再生中のアクションは呼び出し側が mixer ごと止める。 */
   dispose: () => void;
@@ -50,6 +56,7 @@ export function createMotionPlayer<Animation>(deps: MotionPlayerDeps<Animation>)
   const fadeSec = deps.fadeSec ?? 0.3;
   const defer = deps.defer ?? ((fn, delaySec) => void setTimeout(fn, delaySec * 1000));
   let current: MotionAction | null = null;
+  let fadingOut = 0;
   let token = 0;
   let disposed = false;
 
@@ -57,11 +64,19 @@ export function createMotionPlayer<Animation>(deps: MotionPlayerDeps<Animation>)
     const previous = current;
     current = null;
     if (!previous) return;
+    fadingOut += 1;
     previous.fadeOut(fadeSec);
-    // フェードが終わってから解放する（フェード中に stop すると切替がカクつく）。
-    // 破棄後は呼ばない（呼び出し側が mixer ごと止めている。破棄済みシーンに触らない）。
+    // フェードが終わってから解放する（フェード中に stop するとカクつく）。
+    // fadeOut 中も mixer はボーンを評価するため、`fadingOut` を維持して procedural pose の
+    // 再開を遅らせる。これで「観測上 none/failed なのに骨はまだ motion 所有」の窓を明示する。
     defer(() => {
-      if (!disposed) previous.release?.();
+      if (disposed) return;
+      try {
+        previous.release?.();
+      } finally {
+        // release 実装が例外になっても ownership を永久に保持しない。
+        fadingOut = Math.max(0, fadingOut - 1);
+      }
     }, fadeSec);
   };
   const observe = (o: MotionObservation) => {
@@ -117,10 +132,13 @@ export function createMotionPlayer<Animation>(deps: MotionPlayerDeps<Animation>)
 
   return {
     request,
-    isPlaying: () => current !== null,
+    isPlaying: () => current !== null || fadingOut > 0,
     dispose: () => {
       disposed = true;
       ++token;
+      // mixer 自体は呼び出し側が止める。ここでは ownership の観測だけ即座に閉じる。
+      current = null;
+      fadingOut = 0;
     },
   };
 }
