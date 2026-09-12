@@ -1,8 +1,8 @@
 /**
  * 接続トークンの提示から実接続許可までを結ぶ唯一の検証経路 (issue #369)。
  *
- * 実 WSS サーバ（AWS 上は API Gateway WebSocket API の `$connect` 相当。実配備は #65／
- * インフラ増分）が呼び出す想定の関数。ここでは:
+ * EC2 上の Realtime Node gateway accept path（`src/server/realtime/voice-gateway.ts`）から呼ぶ。
+ * ここでは:
  *  1. 署名・role・exp（`readVoiceTransportToken`）
  *  2. tenant/site/kiosk/reception への境界一致（`checkTokenBinding`）
  *  3. 同時接続上限（`streamLimiter`）
@@ -11,9 +11,9 @@
  * 消費してしまい、拒否されたはずの接続が token を無駄に消費する（正規の再試行が replayed
  * 扱いになる）ため、消費は最後にする。
  *
- * 同時接続上限の枠は「token の残存 TTL 分だけ確保」する（実ソケットがまだ無いため、
- * 明示 release の代わりに TTL 失効で自動解放する。実 WS 実装が入ったら close hook から
- * 明示 `release` を呼び、TTL より早く解放できるようにする）。
+ * 同時接続上限の枠には安全側の TTL も付ける。正常な実 socket close では
+ * `VoiceTransportGatewaySession.close()` が `streamLimiter.release()` を即時に呼ぶが、
+ * process/adapter 異常で close hook が走らない場合も TTL で最終的に回収できる。
  */
 import { readVoiceTransportToken } from './token';
 import type { VoiceTransportReplayGuard } from './replay-guard';
