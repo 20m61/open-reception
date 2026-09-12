@@ -55,30 +55,17 @@ export async function expectCheckinState(page: Page, state: string): Promise<voi
 export { expect, type Page };
 
 /**
- * 担当者カードを出す (#787)。
+ * 担当者カードを出す (#787 / #1057)。
  *
- * 相手選択画面は**未入力時に部署カードを出す**ようになった（担当者が数十人のテナントで
- * ファーストビューが埋まるのを避けるため）。担当者カードへ到達するには部署を 1 つ開く。
+ * No Typing 化後は自由文字検索を使わない。担当者カードへは**部署群をタップして到達**する。
+ * どの担当者がどの部署に居るかは fixture の都合で変わるため、この helper が
+ * 「その担当者を含む群を開く」まで面倒を見る。spec は「誰を選ぶか」だけを書けばよい。
  *
- * 🔴 **spec 側で `staff-group-*` を直接押さない。** どの担当者がどの部署に居るかは
- * fixture の都合で変わる。ここで「その担当者を含む群を開く」まで面倒を見る ——
- * spec は「誰を選ぶか」だけを書けばよい。
- *
- * 検索経路は群を跨ぐので、こちらは**検索でも到達できる**ことの裏返しでもある。
+ * 音声検索の確認は `kiosk-stt.spec.ts` が別途担当し、ここで吸収しない。
  */
 export async function revealStaff(page: Page, staffTestId: string): Promise<void> {
   const card = page.getByTestId(staffTestId);
   if (await card.isVisible().catch(() => false)) return;
-
-  /*
-   * 🔴 **検索中は群を開かない** (#787)。検索は群を跨いで結果を直接出すので、ここで群を
-   * 開くと「検索したら結果がそのまま出る」という**検索系 spec の主題を吸収してしまう**
-   * （独立レビューの実測: 群カードを検索中も出す変異が、このヘルパ越しだと素通りする）。
-   */
-  const query = await page.getByTestId('staff-search').inputValue().catch(() => '');
-  if (query.trim() !== '') {
-    throw new Error(`検索中に revealStaff を呼んでいます（${staffTestId}）。検索結果は群を跨いで直接出ます`);
-  }
 
   const groups = page.getByTestId('staff-groups');
   if (!(await groups.isVisible().catch(() => false))) {
