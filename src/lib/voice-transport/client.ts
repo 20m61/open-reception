@@ -15,6 +15,9 @@
  *    自動的な終了ではない。呼び出し側（Kiosk 配線）がタッチ受付へ切り替えると判断した時点で
  *    明示的に `close()` を呼び、そこで初めて外部 session が閉じる。この分離により、
  *    「まだリトライする可能性がある状態」で早まって STT/TTS session を破棄しない。
+ *  - WSS の接続 token は単回性なので、実ネットワーク接続では `prepareSocketFactory` を使い、
+ *    **初回接続・再接続のたびに新しい token を取得した factory** を返す。static `socketFactory`
+ *    は loopback/mock 等、単回 credential を必要としない transport の互換経路。
  */
 import {
   transition,
@@ -62,7 +65,14 @@ export type VoiceTransportReconnectConfig = {
 
 export type VoiceTransportClientConfig = {
   url: string;
+  /** loopback/mock または credential 不要 transport の同期 factory。 */
   socketFactory: VoiceTransportSocketFactory;
+  /**
+   * 実 WSS 用。初回接続と**各 reconnect**の直前に毎回呼ばれる。
+   * `/api/kiosk/voice-transport/token` で新しい単回 token を取得し、その token を
+   * subprotocol に閉じ込めた factory を返す。指定時は `socketFactory` より優先する。
+   */
+  prepareSocketFactory?: () => Promise<VoiceTransportSocketFactory>;
   queueLimits: VoiceTransportQueueLimits;
   rateLimit: VoiceTransportRateLimiterConfig;
   heartbeatIntervalMs: number;
@@ -88,6 +98,7 @@ export class VoiceTransportClient {
   private rateLimiterState: VoiceTransportRateLimiterState;
   private seq = 0;
   private reconnectAttempt = 0;
+  private socketPreparationGeneration = 0;
   private closed = false;
   private dropped = 0;
   private readonly closeHooks: Array<() => void | Promise<void>> = [];
@@ -179,12 +190,53 @@ export class VoiceTransportClient {
   }
 
   private openSocket(): void {
-    const socket = this.config.socketFactory(this.config.url);
+    const prepare = this.config.prepareSocketFactory;
+    if (!prepare) {
+      try {
+        this.attachSocket(this.config.socketFactory(this.config.url));
+      } catch {
+        this.handleConnectionPreparationFailure();
+      }
+      return;
+    }
+
+    const generation = ++this.socketPreparationGeneration;
+    void prepare()
+      .then((factory) => {
+        if (
+          this.closed ||
+          generation !== this.socketPreparationGeneration ||
+          this.lifecycleState !== 'connecting'
+        ) {
+          return;
+        }
+        try {
+          this.attachSocket(factory(this.config.url));
+        } catch {
+          this.handleConnectionPreparationFailure(generation);
+        }
+      })
+      .catch(() => this.handleConnectionPreparationFailure(generation));
+  }
+
+  private attachSocket(socket: VoiceTransportSocket): void {
     this.socket = socket;
     socket.onopen = () => this.handleOpen();
     socket.onclose = (info) => this.handleSocketClose(info);
     socket.onerror = () => this.handleSocketError();
     socket.onmessage = (data) => this.handleMessage(data);
+  }
+
+  /** token fetch / factory creation が失敗した場合も、接続失敗として同じ reconnect policy に載せる。 */
+  private handleConnectionPreparationFailure(generation?: number): void {
+    if (this.closed) return;
+    if (generation !== undefined && generation !== this.socketPreparationGeneration) return;
+    if (this.lifecycleState !== 'connecting') return;
+
+    this.lifecycleState = transition(this.lifecycleState, { type: 'DISCONNECTED', reason: 'network' });
+    this.emitLifecycle();
+    this.emitEval(transportDisconnectedEvent(this.tMs(), 'network'));
+    if (this.lifecycleState === 'reconnecting') this.scheduleReconnect();
   }
 
   /** callback だけ外して参照を捨てる（ソケット自身の close は呼ばない — 既に閉じている想定）。 */
@@ -364,6 +416,7 @@ export class VoiceTransportClient {
   private async terminate(event: { type: 'CLOSE' } | { type: 'IDLE_TIMEOUT' }): Promise<void> {
     if (this.closed) return;
     this.closed = true;
+    this.socketPreparationGeneration += 1; // pending token fetch/factory を失効させる
     this.clearAllTimers();
     this.lifecycleState = transition(this.lifecycleState, event);
     this.emitLifecycle();
