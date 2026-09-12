@@ -35,6 +35,8 @@ iPad Safari / PWA の受付キオスクからリアルタイム会話ランタ�
 - 実機（iPad Safari の AudioWorklet 実測レイテンシ・実回線）での確定は #65 で行う。
   `isValidVoiceTransportAudioConfig` がこの範囲を機械的に強制し、実装がドリフトしても
   気づけるようにしてある。
+- Realtime gateway は PCM16 mono 16kHz の 20〜40ms に対応する **640〜1280 byte** の binary frame
+  のみを音声として受ける。1 byte `[0]` は heartbeat、text frame と oversized frame は拒否する。
 
 ### 4. WebRTC/LiveKit へ置換可能な境界
 
@@ -58,11 +60,11 @@ DataChannel も同じ interface で包めるため、置換時に `VoiceTranspor
 不要という設計にした（`client.test.ts` の `MockVoiceTransportSocket` が実際にこの境界の
 テスト容易性を証明している）。
 
-### 5. セキュリティ: 短命接続トークン + サーバ側検証の 4 段ゲート
+### 5. セキュリティ: 短命接続トークン + Realtime gateway の 4 段ゲート
 
-`src/lib/voice-transport/connection-authorizer.ts` の `authorizeVoiceTransportConnection`
-が実 WSS サーバ（AWS では API Gateway WebSocket API の `$connect` 相当）から呼ばれる想定の
-唯一の検証入口。順序は固定:
+EC2 上の Node gateway は `src/server/realtime/voice-gateway.ts` の
+`acceptVoiceTransportGatewayConnection` を HTTP upgrade 前の唯一の accept path とする。
+内部では `authorizeVoiceTransportConnection` を呼び、順序を固定する:
 
 1. 署名・role・exp（`readVoiceTransportToken`） — 改ざん・期限切れを拒否。
 2. tenant/site/kiosk/reception への境界一致（`checkTokenBinding`） — 他テナント・
@@ -73,12 +75,25 @@ DataChannel も同じ interface で包めるため、置換時に `VoiceTranspor
 3→4 の順序は意図的（コメント参照）。逆にすると、同時接続上限で弾かれるはずの正規リトライが
 token を無駄に consume してしまう。
 
+接続契約は次で固定する。
+
+- path: `/v1/voice?kioskId=<id>&receptionSessionId=<id>`
+- `tenantId/siteId`: **runtime/deployment binding 由来**。URL/query から受け取らない。
+- WebSocket subprotocol: `open-reception.voice.v1, auth.<short-lived-token>`
+- server が handshake で選択して返すのは `open-reception.voice.v1` のみ。auth token は echo しない。
+- token は URL/query に載せない。Caddy/access log が URL を記録しても credential が残らない既定にする。
+- #366 の `not_ready/draining` は token consume より前に拒否し、ready 復帰後の安全な再試行を妨げない。
+
 トークンの claims (`tenantId/siteId/kioskId/receptionSessionId/jti`) はすべて
 **サーバ権威**で決める。発行 API (`POST /api/kiosk/voice-transport/token`) は
 kiosk セッション cookie から kioskId を、device レジストリから tenantId/siteId を、
 対象 reception の所有権チェック（`reception.kioskId === session.kioskId`）で
 receptionSessionId を確定する。リクエスト body の同名フィールドはクライアント詐称防止の
 ため無視する。
+
+`kioskId/receptionSessionId` の query は routing/binding consistency の入力であり、それ自体を
+認証情報とはみなさない。Bearer token の署名・短命性・単回性が接続資格を担い、tenant/site は
+Site 1:1 runtime の deployment binding と独立照合する。
 
 ### 6. lifecycle: reconnect / heartbeat / idle timeout / backpressure / degraded fallback
 
@@ -93,6 +108,10 @@ backpressure は `src/domain/voice-transport/queue.ts` の有界キュー（`max
 `maxBytes` / drop policy）で吸収する。どのポリシーでも「無制限にメモリ・キューが増えない」
 ことを関数の事後条件として保証する。
 
+server側では認可済み socket 1本を `VoiceTransportGatewaySession` とし、socket close時に
+`streamLimiter.release(kioskId, jti)` を冪等に呼ぶ。close hook が走らない異常時の安全弁として
+既存TTLも維持する。
+
 ### 7. 音声はデフォルト保存しない
 
 Transport 層は音声チャンクをメモリ上のキュー（送信待ちの間だけ）以外に永続化しない。
@@ -101,25 +120,22 @@ Transport 層は音声チャンクをメモリ上のキュー（送信待ちの�
 
 ## この increment（#369）でやったこと / やっていないこと
 
-**やったこと（ローカルで mock 検証済み）**:
+**やったこと（mock / pure boundary）**:
 - Transport 内部ロジック一式（`src/domain/voice-transport/`）: 型・token 境界検証・
   有界キュー・レート制限・lifecycle 状態機械・#365 イベント橋渡し・フォールバック導出。
 - I/O 層（`src/lib/voice-transport/`）: 接続トークンの署名発行/検証、リプレイガード、
-  同時接続上限、kiosk→tenant/site 解決、接続許可の唯一の検証経路
-  （`authorizeVoiceTransportConnection`）、`VoiceTransportClient`（lifecycle を実際に
-  駆動するクライアント側実装、mock socket で継続送信・再接続・backpressure・
-  degraded/fallback・二重 close 安全性を検証）。
+  同時接続上限、kiosk→tenant/site 解決、接続許可の検証経路
+  （`authorizeVoiceTransportConnection`）、`VoiceTransportClient`。
 - token 発行 API（`POST /api/kiosk/voice-transport/token`）。
+- server accept/session 境界（`src/server/realtime/voice-gateway.ts`）: path/subprotocol契約、
+  runtime tenant/site binding、ready/drain gate、認可呼出、close時slot解放、frame上限・heartbeat分類。
 
-**やっていないこと（次 increment / #65 スコープ）**:
-- **実 WSS サーバ**（AWS 上の実配線）。`authorizeVoiceTransportConnection` は実 WS
-  accept ハンドラ（API Gateway WebSocket API の Lambda 等、infra/lib 側の追加が必要）
-  から呼ばれる想定で書いてあるが、そのハンドラ自体・CDK スタックはこの increment の
-  スコープ外（触ってよいディレクトリの制約、かつ実配備は #65／将来のインフラ増分）。
+**まだやっていないこと**:
+- **RFC6455/WSS listener adapter**。`voice-gateway.ts` を実ソケットへ結ぶ thin adapter は、WebSocket
+  library を production dependency として追加する必要があるため、依存追加の Human Gate 後に行う。
+  Caddy/TLS・systemd・S3 artifact 配布と AWS dev deploy は #366/#65 の責務。
 - **AudioWorklet 実装**（実マイク入力・AEC/NS/AGC 設定）。ブラウザ実機が必要なため #65。
-- **Kiosk UI 配線**（`src/components/kiosk/` は他トラック占有のためこの increment では
-  触らない）。フォールバックイベントは `fallback.ts` の中立な形で用意済みで、Kiosk 側は
-  これを `useFallback` アクション（`ui-contract.ts`）へ変換するだけで配線できる。
+- **Kiosk UI 配線**。フォールバックイベントは `fallback.ts` の中立な形で用意済み。
 - STT/TTS の実 session close（`registerCloseHook` の interface は用意済み。実 STT/TTS
   session を渡す配線は #370/#371 側で行う）。
 
