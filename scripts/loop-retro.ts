@@ -77,7 +77,9 @@ function main(): number {
       ...g.issues.map((n) => `#${n}`),
       ...g.pulls.map((n) => `PR #${n}`),
     ].join(' ');
-    console.log(`  ${g.date ?? '日付なし'}  ${refs || '帰属なし'}  — ${g.heading || '見出しなし'} (行 ${g.line})`);
+    // 改訂があるなら**両方**出す。初出だけだと「入れてから再発が減ったか」を後から測れない。
+    const when = g.lastRevised === undefined ? (g.date ?? '日付なし') : `${g.date} → 改訂 ${g.lastRevised}`;
+    console.log(`  ${when}  ${refs || '帰属なし'}  — ${g.heading || '見出しなし'} (行 ${g.line})`);
   }
 
   const findings = evaluateLoopRetro({ guidelines, runs, rulesRevision, now: new Date() });

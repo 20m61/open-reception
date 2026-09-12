@@ -45,8 +45,19 @@ const REVISION_MARKER = /<!--\s*loop-rules-revision:\s*(\d+)\s*-->/;
 export type LearnedGuideline = {
   /** 直近の見出し（どの規律に属する教訓か）。 */
   heading: string;
-  /** `由来: 2026-08-26 / ...` の日付。読めなければ undefined。 */
+  /** `由来: 2026-08-26 / ...` の**最初の**日付＝その教訓が生まれた日。読めなければ undefined。 */
   date?: string;
+  /**
+   * 同じ由来ブロックに現れた**最後の**日付＝最終改訂日。日付が 1 つだけなら undefined。
+   *
+   * 🔴 **初出だけでは外側ループの目的を果たせない**（PR #1043 のレビュー指摘）。
+   * 本リポジトリは再発を同じ由来ブロックへ追記する形をとっており（「レビューの停止条件」
+   * と「方式を替えたら〜」がどちらもそう）、初出の日付しか持たないと
+   * **「その教訓を入れてから再発が減ったか」を後から測れない** —— 棚卸しは改訂を
+   * 初出の日として表示してしまう。ブロックを分けて解決しないのは、パーサが
+   * ブロック単位で教訓を数えるため**1 つの教訓が上限 15 件を 2 枠食う**からである。
+   */
+  lastRevised?: string;
   /** 由来に現れる issue 番号。 */
   issues: number[];
   /** 由来に現れる PR 番号。 */
@@ -121,9 +132,11 @@ export function parseLearnedGuidelines(markdown: string): LearnedGuideline[] {
       j += 1;
     }
     const raw = block.join('\n');
+    const dates = [...raw.matchAll(/(\d{4}-\d{2}-\d{2})/g)].map((m) => m[1] as string);
     guidelines.push({
       heading,
-      date: /(\d{4}-\d{2}-\d{2})/.exec(raw)?.[1],
+      date: dates[0],
+      lastRevised: dates.length > 1 ? (dates[dates.length - 1] as string) : undefined,
       issues: refNumbers(raw, false),
       pulls: refNumbers(raw, true),
       raw,
@@ -308,7 +321,16 @@ export function evaluateLoopRetro(input: LoopRetroInput): LoopRetroFinding[] {
   const graceDay = new Date(`${latestRunDay}T00:00:00Z`);
   graceDay.setUTCDate(graceDay.getUTCDate() + 1);
   const cutoff = graceDay.toISOString().slice(0, 10);
-  const unrecorded = guidelines.filter((g) => g.date !== undefined && g.date > cutoff);
+  /*
+    🔴 **改訂日で見る**（PR #1043 のレビュー指摘）。初出だけを見ると、既存の教訓へ
+    **再発を追記しただけの改訂が外側ループを通さずに入っても検出できない**。
+    「ループを通さず規約が動いた」を捕まえるのがこの検査の目的なので、
+    ブロック内でいちばん新しい日付を見る。
+  */
+  const unrecorded = guidelines.filter((g) => {
+    const touched = g.lastRevised ?? g.date;
+    return touched !== undefined && touched > cutoff;
+  });
   if (unrecorded.length > 0) {
     findings.push({
       code: 'unrecorded_guideline',

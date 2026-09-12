@@ -57,6 +57,33 @@ describe('parseLearnedGuidelines', () => {
     expect(first?.pulls).toEqual([804]);
   });
 
+  /*
+    🔴 **改訂日を落とさない**（PR #1043 のレビュー指摘）。本リポジトリは再発を
+    **同じ由来ブロックへ追記する**形をとっているので、最初の日付しか持たないと
+    棚卸しが改訂を初出の日として表示し、「その教訓を入れてから再発が減ったか」を
+    後から測れない ―― 帰属を付けている目的そのものが失われる。
+  */
+  it('同じ由来ブロックに複数の日付があれば、初出と最終改訂の両方を持つ', () => {
+    const revised = [
+      '## 改訂された教訓',
+      '',
+      '> 由来: 2026-08-31 / #813（PR #840）。最初に観測した。',
+      '>',
+      '> **版 2 以降に再発した（2026-09-09 / #1029・PR #1035）。**',
+      '',
+    ].join('\n');
+    const [g] = parseLearnedGuidelines(revised);
+    expect(g?.date, '初出が最初の日付でない').toBe('2026-08-31');
+    expect(g?.lastRevised, '改訂日を落としている').toBe('2026-09-09');
+    // 下界: 教訓は 1 件のまま（ブロックを分けて上限 15 件を 2 枠食う形にしない）。
+    expect(parseLearnedGuidelines(revised)).toHaveLength(1);
+  });
+
+  it('日付が 1 つだけなら改訂日を持たない（空虚に埋めない）', () => {
+    const [first] = parseLearnedGuidelines(md);
+    expect(first?.lastRevised).toBeUndefined();
+  });
+
   it('引用の継続行まで 1 件の教訓として畳む（2 件に割らない）', () => {
     const [first] = parseLearnedGuidelines(md);
     expect(first?.raw).toContain('2 周目の時点で気づくべきだった');
@@ -246,6 +273,30 @@ describe('evaluateLoopRetro', () => {
       runs: [run('2026-08-28T16:00Z', 2)],
     });
     expect(f.map((x) => x.code)).toContain('unrecorded_guideline');
+  });
+
+  /*
+    🔴 **改訂も「ループを通さず動いた規約」である**（PR #1043 のレビュー指摘）。
+    初出だけを見ると、**古い教訓へ再発を追記しただけの改訂**は初出が古いままなので
+    素通りする。本リポジトリは再発を同じ由来ブロックへ追記する形をとっているので、
+    この抜け道は理論上のものではなく**既定の書き方**である。
+  */
+  it('初出が古くても、改訂日が直近の実行より後なら unrecorded_guideline', () => {
+    const f = evaluateLoopRetro({
+      ...healthy,
+      guidelines: [{ ...guideline('2026-08-26'), lastRevised: '2026-08-30' }],
+      runs: [run('2026-08-28T00:00Z', 2)],
+    });
+    expect(f.map((x) => x.code)).toContain('unrecorded_guideline');
+  });
+
+  it('改訂日が直近の実行より前なら指摘しない（改訂日で見ることが空虚でない）', () => {
+    const f = evaluateLoopRetro({
+      ...healthy,
+      guidelines: [{ ...guideline('2026-08-26'), lastRevised: '2026-08-27' }],
+      runs: [run('2026-08-28T00:00Z', 2)],
+    });
+    expect(f.map((x) => x.code)).not.toContain('unrecorded_guideline');
   });
 
   it('実行と同日に足された教訓は指摘しない（その実行の産物）', () => {
