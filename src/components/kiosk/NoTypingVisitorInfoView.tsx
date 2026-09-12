@@ -4,7 +4,8 @@ import { useCallback, useState, type ReactNode } from 'react';
 import type { VisitorInfo } from '@/domain/reception/session';
 import { htmlLangFor, type Locale } from '@/lib/i18n';
 import {
-  normalizeVisitorNameCandidates,
+  visitorNameRecognitionDisposition,
+  type VisitorNameCandidate,
   type VisitorNameRecognizerFactory,
 } from './visitor-name-recognizer';
 
@@ -25,14 +26,18 @@ export type NoTypingVisitorInfoCopy = {
 type Phase = 'idle' | 'listening' | 'choose' | 'confirm' | 'error';
 
 /**
- * #1057: 来訪者氏名を software keyboard なしで受け取る会話ターン。
+ * #1057 / #1077: 来訪者氏名を software keyboard なしで受け取る会話ターン。
  *
- * - 自由発話 recognizer は外から注入し、担当者検索用 phrase-list STT を流用しない
- * - 認識結果をそのまま VisitorInfo へ保存しない
- * - 複数候補は2〜4件程度のボタンへ落とし、候補選択後も明示確認を挟む
- * - 失敗時は再発話。有人支援は #1074 の状態契約が接続された時だけ CTA を有効化する
- * - company / note をこのターンでは新規収集しない。戻り編集時に既存値があれば保持する
+ * Minimum-Turn policy:
+ * - high-confidence の単一候補は氏名だけの yes/no を挟まず、provisional VisitorInfo として
+ *   `onSubmit` へ渡す。呼び出し確定は次の `confirming` で必ず明示タッチする。
+ * - 複数候補は候補ボタンを押すこと自体が氏名の明示選択。選択後に同じ氏名をもう一度
+ *   yes/no させない。
+ * - low-confidence の単一候補だけ short readback + yes/no を挟む。
+ * - 失敗時は再発話。有人支援は #1074 の状態契約が接続された時だけ CTA を有効化する。
+ * - company / note をこのターンでは新規収集しない。戻り編集時に既存値があれば保持する。
  *
+ * 自由発話 recognizer は外から注入し、担当者検索用 phrase-list STT を流用しない。
  * copy は i18n 辞書から呼び出し側が渡す。ここに visitor-facing 生文言を置かない。
  */
 export function NoTypingVisitorInfoView({
@@ -57,12 +62,25 @@ export function NoTypingVisitorInfoView({
   locale: Locale;
 }) {
   const initialName = initial?.name.trim() ?? '';
+  // confirming から「修正する」で戻った場合だけ、既存氏名を明示して修正可否を選べるようにする。
+  // 通常の新規認識 high path ではこの phase を通らない。
   const [phase, setPhase] = useState<Phase>(initialName === '' ? 'idle' : 'confirm');
-  const [candidates, setCandidates] = useState<string[]>(
-    initialName === '' ? [] : [initialName],
-  );
+  const [candidates, setCandidates] = useState<VisitorNameCandidate[]>([]);
   const [selectedName, setSelectedName] = useState<string | null>(
     initialName === '' ? null : initialName,
+  );
+
+  const submitName = useCallback(
+    (name: string) => {
+      onVoiceUse?.();
+      onSubmit({
+        name,
+        // No Typing 化の途中で既に取得済みの値を BACK 編集だけで消さない。
+        company: initial?.company,
+        note: initial?.note,
+      });
+    },
+    [initial?.company, initial?.note, onSubmit, onVoiceUse],
   );
 
   const listen = useCallback(async () => {
@@ -72,24 +90,36 @@ export function NoTypingVisitorInfoView({
     setSelectedName(null);
 
     try {
-      const next = normalizeVisitorNameCandidates(await recognizerFactory().recognize());
-      setCandidates(next);
-      onRecognitionResult?.(next.length > 0);
-      if (next.length === 0) {
+      const disposition = visitorNameRecognitionDisposition(
+        await recognizerFactory().recognize(),
+      );
+      onRecognitionResult?.(disposition.kind !== 'error');
+
+      if (disposition.kind === 'error') {
         setPhase('error');
         return;
       }
-      if (next.length === 1) {
-        setSelectedName(next[0] ?? null);
+
+      if (disposition.kind === 'accept') {
+        // high-confidence single candidate: local yes/no を増やさず final confirmation へ。
+        submitName(disposition.candidate.text);
+        return;
+      }
+
+      if (disposition.kind === 'confirm') {
+        // low-confidence single candidateだけ、そのslotをshort readbackで修復する。
+        setSelectedName(disposition.candidate.text);
         setPhase('confirm');
         return;
       }
+
+      setCandidates(disposition.candidates);
       setPhase('choose');
     } catch {
       onRecognitionResult?.(false);
       setPhase('error');
     }
-  }, [onRecognitionResult, phase, recognizerFactory]);
+  }, [onRecognitionResult, phase, recognizerFactory, submitName]);
 
   const retry = useCallback(() => {
     setCandidates([]);
@@ -97,16 +127,10 @@ export function NoTypingVisitorInfoView({
     setPhase('idle');
   }, []);
 
-  const confirm = useCallback(() => {
+  const confirmLowConfidence = useCallback(() => {
     if (!selectedName) return;
-    onVoiceUse?.();
-    onSubmit({
-      name: selectedName,
-      // No Typing 化の途中で既に取得済みの値を BACK 編集だけで消さない。
-      company: initial?.company,
-      note: initial?.note,
-    });
-  }, [initial?.company, initial?.note, onSubmit, onVoiceUse, selectedName]);
+    submitName(selectedName);
+  }, [selectedName, submitName]);
 
   const statusText =
     phase === 'listening'
@@ -179,16 +203,17 @@ export function NoTypingVisitorInfoView({
             <div className="card-grid">
               {candidates.map((candidate, index) => (
                 <button
-                  key={`${candidate}-${index}`}
+                  key={`${candidate.text}-${index}`}
                   type="button"
                   className="card"
                   data-testid={`visitor-name-candidate-${index}`}
+                  data-certainty={candidate.certainty}
                   onClick={() => {
-                    setSelectedName(candidate);
-                    setPhase('confirm');
+                    // 候補ボタン自体が明示選択。同じ氏名をさらに yes/no させない。
+                    submitName(candidate.text);
                   }}
                 >
-                  {candidate}
+                  {candidate.text}
                 </button>
               ))}
             </div>
@@ -216,7 +241,7 @@ export function NoTypingVisitorInfoView({
                 type="button"
                 className="btn btn--primary"
                 data-testid="visitor-name-confirm"
-                onClick={confirm}
+                onClick={confirmLowConfidence}
               >
                 {copy.confirmYes}
               </button>
