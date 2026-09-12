@@ -1,7 +1,8 @@
-import type {
-  ReceptionPurposeId,
-  ReceptionTargetType,
-  VisitorInfo,
+import {
+  isReceptionPurposeId,
+  type ReceptionPurposeId,
+  type ReceptionTargetType,
+  type VisitorInfo,
 } from './session';
 import {
   transition,
@@ -116,17 +117,58 @@ export type ConversationFocus =
     }
   | { kind: 'finalConfirmation' };
 
-function slotFor(
-  draft: ConversationDraft,
-  key: RequiredConversationSlot,
-): ConversationDraft[RequiredConversationSlot] {
-  return draft[key];
-}
-
 export function isResolvedConversationSlot<T>(
   slot: ConversationSlot<T> | undefined,
 ): slot is ResolvedConversationSlot<T> {
   return slot?.kind === 'resolved';
+}
+
+function validTarget(target: ConversationTarget): boolean {
+  return target.id.trim() !== '' && target.label.trim() !== '';
+}
+
+/**
+ * `kind: resolved` だけでは十分ではない。外部parser/adapter由来の空文字や空IDを
+ * final confirmation まで運ばないため、required slotの意味的妥当性もここで見る。
+ */
+function hasMeaningfulResolvedSlot(
+  draft: ConversationDraft,
+  key: RequiredConversationSlot,
+): boolean {
+  switch (key) {
+    case 'purpose':
+      return (
+        isResolvedConversationSlot(draft.purpose) &&
+        isReceptionPurposeId(draft.purpose.value)
+      );
+    case 'target':
+      return isResolvedConversationSlot(draft.target) && validTarget(draft.target.value);
+    case 'visitorName':
+      return (
+        isResolvedConversationSlot(draft.visitorName) &&
+        draft.visitorName.value.trim() !== ''
+      );
+  }
+}
+
+function meaningfulCandidateCount(
+  draft: ConversationDraft,
+  key: RequiredConversationSlot,
+): number {
+  switch (key) {
+    case 'purpose':
+      return draft.purpose?.kind === 'ambiguous'
+        ? draft.purpose.candidates.filter(isReceptionPurposeId).length
+        : 0;
+    case 'target':
+      return draft.target?.kind === 'ambiguous'
+        ? draft.target.candidates.filter(validTarget).length
+        : 0;
+    case 'visitorName':
+      return draft.visitorName?.kind === 'ambiguous'
+        ? draft.visitorName.candidates.filter((name) => name.trim() !== '').length
+        : 0;
+  }
 }
 
 /**
@@ -135,9 +177,9 @@ export function isResolvedConversationSlot<T>(
  */
 export function isDraftReadyForFinalConfirmation(draft: ConversationDraft): boolean {
   return (
-    isResolvedConversationSlot(draft.purpose) &&
-    isResolvedConversationSlot(draft.target) &&
-    isResolvedConversationSlot(draft.visitorName)
+    hasMeaningfulResolvedSlot(draft, 'purpose') &&
+    hasMeaningfulResolvedSlot(draft, 'target') &&
+    hasMeaningfulResolvedSlot(draft, 'visitorName')
   );
 }
 
@@ -174,19 +216,15 @@ export function nextConversationFocus(
 
   // まず、既に候補まで分かった曖昧さだけを修復する。
   for (const key of order) {
-    const slot = slotFor(draft, key);
-    if (slot?.kind !== 'ambiguous') continue;
-    if (slot.candidates.length > 0) {
-      return { kind: 'disambiguate', slot: key, candidateCount: slot.candidates.length };
+    const candidateCount = meaningfulCandidateCount(draft, key);
+    if (candidateCount > 0) {
+      return { kind: 'disambiguate', slot: key, candidateCount };
     }
-    // 空の ambiguous は実質 missing として下段で扱う。
   }
 
   // 次に本当に足りない情報だけを1つ聞く。
   for (const key of order) {
-    const slot = slotFor(draft, key);
-    if (slot?.kind === 'resolved') continue;
-    if (slot?.kind === 'ambiguous' && slot.candidates.length > 0) continue;
+    if (hasMeaningfulResolvedSlot(draft, key)) continue;
 
     if (canCollect(key, capabilities)) {
       return { kind: 'collect', slot: key };
@@ -228,20 +266,17 @@ export function mergeConversationDraft(
   current: ConversationDraft,
   incoming: Partial<ConversationDraft>,
 ): ConversationDraft {
+  const purpose = mergeSlot(current.purpose, incoming.purpose);
+  const target = mergeSlot(current.target, incoming.target);
+  const visitorName = mergeSlot(current.visitorName, incoming.visitorName);
+  const company = mergeSlot(current.company, incoming.company);
+
   return {
-    ...(mergeSlot(current.purpose, incoming.purpose) === undefined
-      ? {}
-      : { purpose: mergeSlot(current.purpose, incoming.purpose) }),
-    ...(mergeSlot(current.target, incoming.target) === undefined
-      ? {}
-      : { target: mergeSlot(current.target, incoming.target) }),
-    ...(mergeSlot(current.visitorName, incoming.visitorName) === undefined
-      ? {}
-      : { visitorName: mergeSlot(current.visitorName, incoming.visitorName) }),
-    ...(mergeSlot(current.company, incoming.company) === undefined
-      ? {}
-      : { company: mergeSlot(current.company, incoming.company) }),
-  } as ConversationDraft;
+    ...(purpose === undefined ? {} : { purpose }),
+    ...(target === undefined ? {} : { target }),
+    ...(visitorName === undefined ? {} : { visitorName }),
+    ...(company === undefined ? {} : { company }),
+  };
 }
 
 /**
@@ -253,7 +288,7 @@ export function replaceConversationSlot<K extends keyof ConversationDraft>(
   value: ConversationDraft[K],
 ): ConversationDraft {
   if (value === undefined) {
-    const next = { ...draft };
+    const next: ConversationDraft = { ...draft };
     delete next[key];
     return next;
   }
@@ -296,17 +331,24 @@ export function materializationActionsForDraft(
   }
 
   if (state === 'selectingPurpose') {
-    if (!isResolvedConversationSlot(draft.purpose)) return actions;
-    if (!append({ type: 'SELECT_PURPOSE', purpose: draft.purpose.value })) return actions;
+    if (!hasMeaningfulResolvedSlot(draft, 'purpose')) return actions;
+    const purpose = draft.purpose;
+    if (!isResolvedConversationSlot(purpose)) return actions;
+    if (!append({ type: 'SELECT_PURPOSE', purpose: purpose.value })) return actions;
   }
 
   if (state === 'selectingTarget') {
-    if (!isResolvedConversationSlot(draft.target)) return actions;
-    if (!append({ type: 'SELECT_TARGET', target: draft.target.value })) return actions;
+    if (!hasMeaningfulResolvedSlot(draft, 'target')) return actions;
+    const target = draft.target;
+    if (!isResolvedConversationSlot(target)) return actions;
+    if (!append({ type: 'SELECT_TARGET', target: target.value })) return actions;
   }
 
   if (state === 'inputVisitorInfo') {
-    if (!isResolvedConversationSlot(draft.visitorName)) return actions;
+    if (!hasMeaningfulResolvedSlot(draft, 'visitorName')) return actions;
+    const visitorName = draft.visitorName;
+    if (!isResolvedConversationSlot(visitorName)) return actions;
+
     const company = isResolvedConversationSlot(draft.company)
       ? draft.company.value.trim() || undefined
       : undefined;
@@ -314,7 +356,7 @@ export function materializationActionsForDraft(
       !append({
         type: 'SUBMIT_VISITOR_INFO',
         visitor: {
-          name: draft.visitorName.value.trim(),
+          name: visitorName.value.trim(),
           ...(company ? { company } : {}),
         },
       })
