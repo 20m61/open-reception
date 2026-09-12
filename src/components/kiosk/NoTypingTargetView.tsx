@@ -1,7 +1,14 @@
 'use client';
 
-import { useCallback, useMemo, useRef, useState } from 'react';
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from 'react';
 import { htmlLangFor, makeT, type Locale } from '@/lib/i18n';
+import { screenTitleFor } from './conversation-turn';
 import type { Target } from './flow-state';
 import type { Directory } from './useEffectiveConfiguration';
 import { staffAffiliationText } from './staff-affiliation-text';
@@ -19,17 +26,22 @@ import {
 import { voiceTargetCandidatesFor } from './voice-target-candidates';
 
 /**
- * #1057 の No Typing 方針を Target 選択だけに閉じて先行実装したビュー。
+ * #1057: 来訪者に文字入力を要求しない担当者/部署選択。
  *
- * 既存 TargetView の state machine 契約は変えず、来訪者の入力を次だけに限定する。
+ * 入力は次だけに限定する。
  * - 部署/担当者カードのタップ
- * - 音声認識 → 2〜4 件の候補カード → 明示タップ確定
+ * - 音声認識 -> 実在する担当者候補（最大4件） -> 明示タップ確定
  *
+ * STT の transcript は担当者として自動確定しない。`voiceTargetCandidatesFor` で
+ * directory 上の在席担当者へ解決し、来訪者が候補カードを押した時だけ `onSelect` する。
  * `<input>` / `<textarea>` / contenteditable は描画しない。
- * STT が使えない場合も software keyboard へ戻さず、部署/担当者カードまたは有人支援へ逃がす。
  *
- * このコンポーネントは #1057 の段階移行用。既存 TargetView と同じ props 語彙をできるだけ保ち、
- * wiring 時に ReceptionState / SELECT_TARGET を変更しなくて済むようにしている。
+ * #776 / #787 の品質契約も維持する。
+ * - 担当者/部署は同時に並べずタブで切替
+ * - 担当者は部署群 -> 担当者の段階開示
+ * - 群を開閉した時にフォーカスを追従
+ * - 不在者は非ボタン + バッジ/文言で表現
+ * - live region を変化前から常設
  */
 export function NoTypingTargetView({
   directory,
@@ -37,6 +49,7 @@ export function NoTypingTargetView({
   sttAdapterFactory,
   onSelect,
   onVoiceUse,
+  onSearchResult,
   onRequestAssistance,
   tab,
   onTabChange,
@@ -48,8 +61,14 @@ export function NoTypingTargetView({
   sttEnabled: boolean;
   sttAdapterFactory?: SttAdapterFactory;
   onSelect: (target: Target) => void;
+  /** 音声候補が採用されたことをメトリクスへ通知する。 */
   onVoiceUse?: () => void;
-  /** STT が使えない/解決できないときの有人支援。未注入なら CTA 自体を出さない。 */
+  /** 音声検索のヒット有無だけを通知する。transcript は渡さない。 */
+  onSearchResult?: (hasHit: boolean) => void;
+  /**
+   * STT 不能/解決不能時の有人支援。状態機械との接続は呼び出し側が所有する。
+   * 未注入なら CTA は出さず、タッチ経路/再発話だけを残す。
+   */
   onRequestAssistance?: () => void;
   tab: TargetTab;
   onTabChange: (next: TargetTab) => void;
@@ -58,9 +77,18 @@ export function NoTypingTargetView({
   locale: Locale;
 }) {
   const tr = makeT(locale);
+  const title = screenTitleFor('selectingTarget', locale);
   const [sttListening, setSttListening] = useState(false);
   const [sttTranscripts, setSttTranscripts] = useState<string[]>([]);
+  const [voiceAttempted, setVoiceAttempted] = useState(false);
+  const [voiceFailed, setVoiceFailed] = useState(false);
+  const [groupAnnouncement, setGroupAnnouncement] = useState('');
+
   const tabRefs = useRef<Partial<Record<TargetTab, HTMLButtonElement | null>>>({});
+  const groupRefs = useRef<Record<string, HTMLButtonElement | null>>({});
+  const firstStaffRef = useRef<HTMLButtonElement | HTMLDivElement | null>(null);
+  const groupBackRef = useRef<HTMLButtonElement | null>(null);
+  const pendingFocus = useRef<'staff' | string | null>(null);
 
   const voiceCandidates = useMemo(
     () => voiceTargetCandidatesFor(directory, sttTranscripts),
@@ -73,7 +101,10 @@ export function NoTypingTargetView({
   const soleGroup = staffGroups.length === 1 ? (staffGroups[0] ?? null) : null;
   const openGroup =
     soleGroup ??
-    (openGroupId === null ? null : (staffGroups.find((group) => group.id === openGroupId) ?? null));
+    (openGroupId === null
+      ? null
+      : (staffGroups.find((group) => group.id === openGroupId) ?? null));
+  const firstSelectableIndex = openGroup?.staff.findIndex((staff) => staff.available) ?? -1;
 
   const switchTab = useCallback(
     (next: TargetTab) => {
@@ -83,9 +114,36 @@ export function NoTypingTargetView({
     [onTabChange],
   );
 
+  const changeOpenGroup = useCallback(
+    (next: string | null) => {
+      onOpenGroupChange(next);
+      pendingFocus.current = next === null ? (openGroupId ?? null) : 'staff';
+    },
+    [onOpenGroupChange, openGroupId],
+  );
+
+  useEffect(() => {
+    const target = pendingFocus.current;
+    if (target === null) return;
+    pendingFocus.current = null;
+    if (target === 'staff') {
+      (firstStaffRef.current ?? groupBackRef.current)?.focus();
+      return;
+    }
+    groupRefs.current[target]?.focus();
+  }, [openGroupId]);
+
+  const resetVoiceAttempt = useCallback(() => {
+    setSttTranscripts([]);
+    setVoiceAttempted(false);
+    setVoiceFailed(false);
+  }, []);
+
   const listen = useCallback(async () => {
     if (sttListening) return;
     setSttListening(true);
+    setVoiceAttempted(false);
+    setVoiceFailed(false);
     setSttTranscripts([]);
     try {
       const phrases = directory.staff
@@ -93,49 +151,125 @@ export function NoTypingTargetView({
         .map((staff) => staff.kana ?? staff.displayName);
       const factory = sttAdapterFactory ?? defaultSttAdapterFactory;
       const transcripts = await factory(phrases).listen();
+      const candidates = voiceTargetCandidatesFor(directory, transcripts);
       setSttTranscripts(transcripts);
+      setVoiceAttempted(true);
+      onSearchResult?.(candidates.length > 0);
+    } catch {
+      // provider unavailable / permission denied / recognition failure を UI 内で回復する。
+      // software keyboard にはフォールバックしない。
+      setVoiceFailed(true);
+      setVoiceAttempted(true);
+      onSearchResult?.(false);
     } finally {
       setSttListening(false);
     }
-  }, [directory.staff, sttAdapterFactory, sttListening]);
+  }, [directory, onSearchResult, sttAdapterFactory, sttListening]);
 
-  const renderStaffCard = (staff: Directory['staff'][number], testIdPrefix = 'staff') =>
-    staff.available ? (
-      <button
-        key={staff.id}
-        type="button"
-        className="card"
-        data-testid={`${testIdPrefix}-${staff.id}`}
-        onClick={() => onSelect(staffTargetFor(staff, directory.departments, tr))}
-      >
-        {staff.displayName}
-        <span className="card__sub">
-          {staffAffiliationText(staff, directory.departments, tr)}
-        </span>
-      </button>
-    ) : (
+  const voiceAnnouncement =
+    voiceAttempted && (voiceFailed || voiceCandidates.length === 0)
+      ? tr('reception.staffNotFound')
+      : voiceAttempted && voiceCandidates.length > 0
+        ? tr('reception.voiceHint')
+        : '';
+
+  const renderStaffCard = (
+    staff: Directory['staff'][number],
+    index: number,
+  ) => {
+    const isFocusTarget = index === firstSelectableIndex;
+    if (staff.available) {
+      return (
+        <button
+          key={staff.id}
+          type="button"
+          className="card"
+          data-testid={`staff-${staff.id}`}
+          ref={(element) => {
+            if (isFocusTarget) firstStaffRef.current = element;
+          }}
+          onClick={() => onSelect(staffTargetFor(staff, directory.departments, tr))}
+        >
+          {staff.displayName}
+          <span className="card__sub" data-testid={`staff-${staff.id}-affiliation`}>
+            {staffAffiliationText(staff, directory.departments, tr)}
+          </span>
+        </button>
+      );
+    }
+    return (
       <div
         key={staff.id}
         className="card card--unavailable"
-        data-testid={`${testIdPrefix}-${staff.id}`}
+        data-testid={`staff-${staff.id}`}
         data-unavailable="true"
         aria-disabled="true"
       >
-        <span className="card__badge card__badge--unavailable" lang={htmlLangFor(locale)}>
+        <span
+          className="card__badge card__badge--unavailable"
+          data-testid={`staff-${staff.id}-absent-badge`}
+          lang={htmlLangFor(locale)}
+        >
           {tr('reception.staffAbsentBadge')}
         </span>
         {staff.displayName}
-        <span className="card__sub" lang={htmlLangFor(locale)}>
+        <span
+          className="card__sub"
+          data-testid={`staff-${staff.id}-absent`}
+          lang={htmlLangFor(locale)}
+        >
           {tr('reception.staffAbsent')}
         </span>
       </div>
     );
+  };
+
+  const recovery = (
+    <div className="notice notice--warning" data-testid="target-recovery" lang={htmlLangFor(locale)}>
+      <p style={{ margin: 0 }}>{tr('reception.staffNotFound')}</p>
+      <div className="card-grid" style={{ marginTop: 'var(--space-md)' }}>
+        {sttEnabled ? (
+          <button
+            type="button"
+            className="btn btn--secondary"
+            data-testid="stt-retry"
+            onClick={() => void listen()}
+            disabled={sttListening}
+          >
+            {sttListening ? tr('reception.listening') : tr('reception.voiceSearch')}
+          </button>
+        ) : null}
+        {directory.departments.length > 0 ? (
+          <button
+            type="button"
+            className="btn btn--secondary"
+            data-testid="target-recovery-department-cta"
+            onClick={() => switchTab('department')}
+          >
+            {tr('reception.byDepartment')}
+          </button>
+        ) : null}
+        {onRequestAssistance ? (
+          <button
+            type="button"
+            className="btn btn--secondary"
+            data-testid="target-recovery-assistance-cta"
+            onClick={onRequestAssistance}
+          >
+            {tr('reception.toDesk')}
+          </button>
+        ) : null}
+      </div>
+    </div>
+  );
 
   return (
     <>
-      <h1 className="screen__title" lang={htmlLangFor(locale)}>
-        {tr('reception.targetPrompt')}
-      </h1>
+      {title ? (
+        <h1 className="screen__title" lang={htmlLangFor(locale)}>
+          {title}
+        </h1>
+      ) : null}
       <div className="screen__body" data-testid="no-typing-target-view">
         <div
           className="target-tabs"
@@ -153,16 +287,19 @@ export function NoTypingTargetView({
               key={id}
               type="button"
               role="tab"
-              id={`no-typing-target-tab-${id}`}
+              id={`target-tab-${id}`}
               ref={(element) => {
                 tabRefs.current[id] = element;
               }}
               className="target-tabs__tab"
-              data-testid={`no-typing-target-tab-${id}`}
+              data-testid={`target-tab-${id}`}
               aria-selected={tab === id}
-              aria-controls={tab === id ? `no-typing-target-panel-${id}` : undefined}
+              aria-controls={tab === id ? `target-panel-${id}` : undefined}
               tabIndex={tab === id ? 0 : -1}
-              onClick={() => switchTab(id)}
+              onClick={() => {
+                resetVoiceAttempt();
+                switchTab(id);
+              }}
               lang={htmlLangFor(locale)}
             >
               {tr(id === 'staff' ? 'reception.byStaff' : 'reception.byDepartment')}
@@ -170,61 +307,64 @@ export function NoTypingTargetView({
           ))}
         </div>
 
+        {/* 変化前から存在する live region。後付け role では読み上げられない (#776)。 */}
+        <p className="a11y-live" role="status" data-testid="target-live" lang={htmlLangFor(locale)}>
+          {voiceAnnouncement || groupAnnouncement}
+        </p>
+
         <div
           role="tabpanel"
-          id={`no-typing-target-panel-${tab}`}
-          aria-labelledby={`no-typing-target-tab-${tab}`}
-          data-testid={`no-typing-target-panel-${tab}`}
+          id={`target-panel-${tab}`}
+          aria-labelledby={`target-tab-${tab}`}
+          data-testid={`target-panel-${tab}`}
         >
           {tab === 'staff' ? (
-            <div className="field">
+            <>
               {sttEnabled ? (
-                <div className="target-search__voice" data-testid="no-typing-stt-panel">
-                  <button
-                    type="button"
-                    className="btn btn--primary"
-                    data-testid="no-typing-stt-listen"
-                    onClick={() => void listen()}
-                    disabled={sttListening}
-                    aria-busy={sttListening}
-                    lang={htmlLangFor(locale)}
-                  >
-                    {sttListening ? tr('reception.listening') : tr('reception.voiceSearch')}
-                  </button>
-                </div>
-              ) : onRequestAssistance ? (
-                <div className="notice notice--warning" data-testid="no-typing-stt-unavailable">
-                  <button
-                    type="button"
-                    className="btn btn--secondary"
-                    data-testid="no-typing-assistance"
-                    onClick={onRequestAssistance}
-                    lang={htmlLangFor(locale)}
-                  >
-                    {tr('reception.toDesk')}
-                  </button>
+                <div className="field" data-testid="stt-panel">
+                  <div className="target-search__voice">
+                    <button
+                      type="button"
+                      className="btn btn--primary"
+                      data-testid="stt-listen"
+                      onClick={() => void listen()}
+                      disabled={sttListening}
+                      aria-busy={sttListening}
+                      lang={htmlLangFor(locale)}
+                    >
+                      {sttListening ? tr('reception.listening') : tr('reception.voiceSearch')}
+                    </button>
+                  </div>
                 </div>
               ) : null}
 
-              {sttEnabled && sttTranscripts.length > 0 ? (
-                voiceCandidates.length > 0 ? (
-                  <div className="field" data-testid="no-typing-voice-candidates">
-                    <p className="card__sub" lang={htmlLangFor(locale)}>
+              {voiceAttempted ? (
+                voiceFailed || voiceCandidates.length === 0 ? (
+                  recovery
+                ) : (
+                  <div className="field" data-testid="stt-candidates">
+                    <p className="card__sub" data-testid="stt-hint" lang={htmlLangFor(locale)}>
                       {tr('reception.voiceHint')}
                     </p>
                     <div className="card-grid">
-                      {voiceCandidates.map(({ staff, tier }) => (
+                      {voiceCandidates.map(({ staff, tier }, index) => (
                         <button
                           key={staff.id}
                           type="button"
                           className="card"
-                          data-testid={`no-typing-voice-candidate-${staff.id}`}
+                          data-testid={`stt-candidate-${index}`}
+                          data-staff-id={staff.id}
                           data-match-tier={tier}
                           onClick={() => {
                             onVoiceUse?.();
                             onSelect(staffTargetFor(staff, directory.departments, tr));
                           }}
                         >
+                          {tier === 'fuzzy' ? (
+                            <span className="card__badge" lang={htmlLangFor(locale)}>
+                              {tr('reception.searchMaybeMatch')}
+                            </span>
+                          ) : null}
                           {staff.displayName}
                           <span className="card__sub">
                             {staffAffiliationText(staff, directory.departments, tr)}
@@ -232,38 +372,22 @@ export function NoTypingTargetView({
                         </button>
                       ))}
                     </div>
-                  </div>
-                ) : (
-                  <div
-                    className="notice notice--warning"
-                    data-testid="no-typing-voice-no-match"
-                    lang={htmlLangFor(locale)}
-                  >
-                    <p>{tr('reception.staffNotFound')}</p>
-                    <div className="card-grid">
-                      <button
-                        type="button"
-                        className="btn btn--secondary"
-                        data-testid="no-typing-stt-retry"
-                        onClick={() => void listen()}
-                      >
-                        {tr('reception.voiceSearch')}
-                      </button>
-                      {onRequestAssistance ? (
-                        <button
-                          type="button"
-                          className="btn btn--secondary"
-                          data-testid="no-typing-assistance"
-                          onClick={onRequestAssistance}
-                        >
-                          {tr('reception.toDesk')}
-                        </button>
-                      ) : null}
-                    </div>
+                    <button
+                      type="button"
+                      className="btn btn--secondary"
+                      data-testid="stt-retry"
+                      onClick={() => void listen()}
+                      disabled={sttListening}
+                      style={{ marginTop: 'var(--space-sm)' }}
+                    >
+                      {sttListening ? tr('reception.listening') : tr('reception.voiceSearch')}
+                    </button>
                   </div>
                 )
+              ) : staffGroups.length === 0 ? (
+                recovery
               ) : openGroup === null ? (
-                <div className="card-grid" data-testid="no-typing-staff-groups">
+                <div className="card-grid" data-testid="staff-groups">
                   {staffGroups.map((group) => {
                     const selectable = group.staff.filter((staff) => staff.available).length;
                     return (
@@ -271,13 +395,34 @@ export function NoTypingTargetView({
                         key={group.id}
                         type="button"
                         className="card"
-                        data-testid={`no-typing-staff-group-${group.id}`}
-                        onClick={() => onOpenGroupChange(group.id)}
+                        data-testid={`staff-group-${group.id}`}
+                        data-selectable={selectable}
+                        ref={(element) => {
+                          groupRefs.current[group.id] = element;
+                        }}
+                        onClick={() => {
+                          changeOpenGroup(group.id);
+                          setGroupAnnouncement(
+                            tr('reception.staffGroupOpened', {
+                              name: group.name ?? tr('reception.staffGroupOther'),
+                              count: String(selectable),
+                            }),
+                          );
+                        }}
                       >
+                        {selectable === 0 ? (
+                          <span
+                            className="card__badge card__badge--unavailable"
+                            data-testid={`staff-group-${group.id}-absent-badge`}
+                            lang={htmlLangFor(locale)}
+                          >
+                            {tr('reception.staffAbsentBadge')}
+                          </span>
+                        ) : null}
                         {tr('reception.staffGroupLabel', {
                           name: group.name ?? tr('reception.staffGroupOther'),
                         })}
-                        <span className="card__sub">
+                        <span className="card__sub" data-testid={`staff-group-${group.id}-count`}>
                           {tr('reception.staffGroupCount', { count: String(selectable) })}
                         </span>
                       </button>
@@ -285,29 +430,34 @@ export function NoTypingTargetView({
                   })}
                 </div>
               ) : (
-                <div className="card-grid" data-testid="no-typing-staff-list">
+                <div className="card-grid" data-testid="staff-list">
                   {soleGroup === null ? (
                     <button
                       type="button"
                       className="card card--ghost"
-                      data-testid="no-typing-staff-group-back"
-                      onClick={() => onOpenGroupChange(null)}
+                      data-testid="staff-group-back"
+                      ref={groupBackRef}
+                      aria-label={`${openGroup.name ?? tr('reception.staffGroupOther')} / ${tr('reception.staffGroupBack')}`}
+                      onClick={() => {
+                        changeOpenGroup(null);
+                        setGroupAnnouncement('');
+                      }}
                     >
                       {tr('reception.staffGroupBack')}
                     </button>
                   ) : null}
-                  {openGroup.staff.map((staff) => renderStaffCard(staff, 'no-typing-staff'))}
+                  {openGroup.staff.map((staff, index) => renderStaffCard(staff, index))}
                 </div>
               )}
-            </div>
-          ) : (
-            <div className="card-grid" data-testid="no-typing-departments">
+            </>
+          ) : directory.departments.length > 0 ? (
+            <div className="card-grid" data-testid="departments">
               {directory.departments.map((department) => (
                 <button
                   key={department.id}
                   type="button"
                   className="card"
-                  data-testid={`no-typing-dept-${department.id}`}
+                  data-testid={`dept-${department.id}`}
                   onClick={() =>
                     onSelect({
                       type: 'department',
@@ -320,6 +470,8 @@ export function NoTypingTargetView({
                 </button>
               ))}
             </div>
+          ) : (
+            recovery
           )}
         </div>
       </div>

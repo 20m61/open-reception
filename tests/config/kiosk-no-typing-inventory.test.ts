@@ -5,14 +5,12 @@ import { describe, expect, it } from 'vitest';
 /**
  * 来訪者向け Kiosk の No Typing 移行ガード (#1057)。
  *
- * 現在の main には文字入力前提が残っているため、このテストは最初から 0 件を要求しない。
- * 代わりに **既知の負債を正確な件数で固定**し、新しい text input / textarea /
- * contentEditable を追加した時点で落とす。#1057 の各置換 PR は、対応したファイルの
- * 件数を減らしてこの inventory を更新する。最終状態は空オブジェクト。
+ * 現在は段階移行中なので、既知の typing UI を正確な件数で固定する。
+ * `reception-screens-legacy.tsx` は runtime の selectingTarget から外れた旧実装だが、
+ * dead code として typing control が残っている間は inventory から隠さない。
  *
- * NoTypingTargetView のような新しい visitor UI は、この inventory に新規エントリを増やさない
- * こと自体が受け入れ条件になる。既存入力を隠すだけでは件数は減らないため、最終的には DOM から
- * typing control を削除する。
+ * 新しい visitor UI は inventory に新規エントリを増やさないことが受け入れ条件。
+ * 既存入力を CSS で隠すだけでは件数は減らないため、最終状態は空オブジェクトを目指す。
  *
  * checkbox/radio/file/hidden/range/color は typing ではないので対象外。
  * password/numeric/search/tel 等は OS software keyboard を開き得るため対象に含める
@@ -68,7 +66,17 @@ describe('Kiosk visitor no-typing inventory (#1057)', () => {
       'src/components/kiosk/KioskFlow.tsx': 1,
       'src/components/kiosk/checkout/CheckoutFlow.tsx': 1,
       'src/components/kiosk/custom-flow/VisitorInfoForm.tsx': 2,
-      'src/components/kiosk/reception-screens.tsx': 4,
+      'src/components/kiosk/reception-screens-legacy.tsx': 4,
     });
+  });
+
+  it('active selectingTarget route は NoTypingTargetView を使い typing control を持たない', () => {
+    const router = readFileSync(join(ROOT, 'reception-screens.tsx'), 'utf8');
+    const targetView = readFileSync(join(ROOT, 'NoTypingTargetView.tsx'), 'utf8');
+
+    expect(router).toContain("props.data.state !== 'selectingTarget'");
+    expect(router).toContain('<NoTypingTargetView');
+    expect(typingControlCount(router)).toBe(0);
+    expect(typingControlCount(targetView)).toBe(0);
   });
 });
