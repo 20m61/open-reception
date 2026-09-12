@@ -27,6 +27,29 @@ Motion Lab は、mocopi 等で収録したモーションを受付用途の標�
 
 初期閾値は `src/domain/motion/qa.ts` に置く。閾値は実機UAT結果を根拠に調整し、暗黙の感覚値にしない。
 
+## BVH analyzer
+
+`src/domain/motion/bvh.ts` は conventional BVH の `HIERARCHY` / `MOTION` を解析し、各 joint のチャンネル順を XYZ に正規化して QA メトリクスへ変換する。
+
+BVH から直接算出する値:
+
+- duration
+- neutral start / end rotation error
+- loop seam rotation error
+- maximum joint rotation
+- peak angular jerk
+- low-motion frame ratio
+- head / neck animated ratio
+
+`framingOverflowRatio` は骨格データだけでは正しく判定できないため、VRM レンダリング段階で計測した値を analyzer に注入する。
+
+### Analyzer limitations
+
+- Euler 角ベースの判定は一次 gate。最終的な自然さは VRM retarget 後の見た目で評価する。
+- neutral error は現時点ではゼロ回転を基準にする。mocopi 実データ確認後、capture calibration / reference frame を導入する。
+- head / neck の別名は options で渡せる。特定ベンダーのボーン名を domain model に固定しない。
+- FBX はまだ対象外。将来は BVH と同じ正規化フレームへ変換する adapter として実装する。
+
 ## Review principle
 
 自動QAは採用候補を絞るための gate であり、自然さそのものの最終判定ではない。AIレビューも同様に補助とし、標準ライブラリへの採用は必ず人間が確定する。
@@ -55,3 +78,13 @@ motions/
 ```
 
 各 take には motionId, take, source, capturedAt, intendedBehavior, sourceHash を持たせ、provenance を追跡できるようにする。
+
+## Next increments
+
+1. 管理画面または API から BVH を投入して analyzer を実行する
+2. joint alias / rest-pose calibration を追加する
+3. `default.vrm` へ retarget し、4:3 iPad 構図を自動レンダリングする
+4. framing overflow を実測する
+5. timeline 上に警告区間を表示する
+6. amplitude / smoothing / delay / blend-to-neutral / loop-normalize を非破壊補正として実装する
+7. AI review へ timecode + bone + suggested adjustment を渡す
