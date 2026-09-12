@@ -23,9 +23,14 @@ export type ParsedBvh = {
   frameTimeSec: number;
 };
 
+type Quaternion = [number, number, number, number];
+
 export type BvhJointSample = {
   position?: [number, number, number];
+  /** XYZ values are retained for diagnostics/display only. */
   rotationDeg?: [number, number, number];
+  /** Rotation composed in the BVH-declared channel order. */
+  rotationQuaternion?: Quaternion;
 };
 
 export type NormalizedBvhFrame = Record<string, BvhJointSample>;
@@ -35,7 +40,10 @@ export type BvhQaOptions = {
   neckJointNames?: readonly string[];
   stillnessVelocityDegPerSec?: number;
   gazeAnimatedVelocityDegPerSec?: number;
+  /** Measured after retarget/render. Omit until that stage exists. */
   framingOverflowRatio?: number;
+  /** Calibrated rest/reference pose. Omit until capture calibration is available. */
+  neutralReference?: NormalizedBvhFrame;
 };
 
 const ROTATION_CHANNEL_INDEX: Record<Extract<BvhChannel, `${string}rotation`>, number> = {
@@ -138,6 +146,32 @@ export function parseBvh(source: string): ParsedBvh {
   return { joints, frames, frameTimeSec };
 }
 
+function multiplyQuaternion(a: Quaternion, b: Quaternion): Quaternion {
+  const [ax, ay, az, aw] = a;
+  const [bx, by, bz, bw] = b;
+  return [
+    aw * bx + ax * bw + ay * bz - az * by,
+    aw * by - ax * bz + ay * bw + az * bx,
+    aw * bz + ax * by - ay * bx + az * bw,
+    aw * bw - ax * bx - ay * by - az * bz,
+  ];
+}
+
+function axisQuaternion(channel: Extract<BvhChannel, `${string}rotation`>, degrees: number): Quaternion {
+  const radians = degrees * Math.PI / 180;
+  const half = radians / 2;
+  const s = Math.sin(half);
+  const c = Math.cos(half);
+  if (channel === 'Xrotation') return [s, 0, 0, c];
+  if (channel === 'Yrotation') return [0, s, 0, c];
+  return [0, 0, s, c];
+}
+
+function normalizeQuaternion(q: Quaternion): Quaternion {
+  const length = Math.hypot(...q);
+  return length === 0 ? [0, 0, 0, 1] : q.map((v) => v / length) as Quaternion;
+}
+
 export function normalizeBvhFrames(parsed: ParsedBvh): NormalizedBvhFrame[] {
   return parsed.frames.map((frame) => {
     let cursor = 0;
@@ -145,6 +179,7 @@ export function normalizeBvhFrames(parsed: ParsedBvh): NormalizedBvhFrame[] {
     for (const joint of parsed.joints) {
       const position: [number, number, number] = [0, 0, 0];
       const rotation: [number, number, number] = [0, 0, 0];
+      let quaternion: Quaternion = [0, 0, 0, 1];
       let hasPosition = false;
       let hasRotation = false;
       for (const channel of joint.channels) {
@@ -153,56 +188,70 @@ export function normalizeBvhFrames(parsed: ParsedBvh): NormalizedBvhFrame[] {
           hasPosition = true;
           position[channel[0] === 'X' ? 0 : channel[0] === 'Y' ? 1 : 2] = value;
         } else if (channel.endsWith('rotation')) {
+          const rotationChannel = channel as Extract<BvhChannel, `${string}rotation`>;
           hasRotation = true;
-          rotation[ROTATION_CHANNEL_INDEX[channel as Extract<BvhChannel, `${string}rotation`>]] = value;
+          rotation[ROTATION_CHANNEL_INDEX[rotationChannel]] = value;
+          quaternion = multiplyQuaternion(quaternion, axisQuaternion(rotationChannel, value));
         }
       }
       normalized[joint.name] = {
         ...(hasPosition ? { position } : {}),
-        ...(hasRotation ? { rotationDeg: rotation } : {}),
+        ...(hasRotation ? { rotationDeg: rotation, rotationQuaternion: normalizeQuaternion(quaternion) } : {}),
       };
     }
     return normalized;
   });
 }
 
-function magnitude3(v: readonly number[]): number {
-  return Math.hypot(v[0] ?? 0, v[1] ?? 0, v[2] ?? 0);
+function quaternionAngularDistanceDeg(a: Quaternion, b: Quaternion): number {
+  const dot = Math.abs(a[0] * b[0] + a[1] * b[1] + a[2] * b[2] + a[3] * b[3]);
+  const clamped = Math.min(1, Math.max(-1, dot));
+  return 2 * Math.acos(clamped) * 180 / Math.PI;
 }
 
-function angularDeltaDeg(a: readonly number[], b: readonly number[]): number {
-  return magnitude3(
-    a.map((value, i) => {
-      const raw = value - (b[i] ?? 0);
-      return ((raw + 180) % 360 + 360) % 360 - 180;
-    }),
+function jointRotationDistanceDeg(a?: BvhJointSample, b?: BvhJointSample): number | undefined {
+  if (!a?.rotationQuaternion || !b?.rotationQuaternion) return undefined;
+  return quaternionAngularDistanceDeg(a.rotationQuaternion, b.rotationQuaternion);
+}
+
+function maxRotationError(frame: NormalizedBvhFrame, reference: NormalizedBvhFrame): number {
+  let max = 0;
+  for (const [name, sample] of Object.entries(frame)) {
+    const error = jointRotationDistanceDeg(sample, reference[name]);
+    if (error != null) max = Math.max(max, error);
+  }
+  return max;
+}
+
+function identityFrame(frame: NormalizedBvhFrame): NormalizedBvhFrame {
+  return Object.fromEntries(
+    Object.keys(frame).map((name) => [name, { rotationQuaternion: [0, 0, 0, 1] as Quaternion }]),
   );
 }
 
-function maxRotationError(frame: NormalizedBvhFrame, reference?: NormalizedBvhFrame): number {
-  let max = 0;
-  for (const [name, sample] of Object.entries(frame)) {
-    if (!sample.rotationDeg) continue;
-    max = Math.max(max, angularDeltaDeg(sample.rotationDeg, reference?.[name]?.rotationDeg ?? [0, 0, 0]));
-  }
-  return max;
-}
-
-function frameAngularVelocity(
+function jointVelocities(
   previous: NormalizedBvhFrame,
   current: NormalizedBvhFrame,
   frameTimeSec: number,
-  jointNames?: ReadonlySet<string>,
-): number {
-  let max = 0;
+): Map<string, number> {
+  const result = new Map<string, number>();
   for (const [name, sample] of Object.entries(current)) {
-    if (jointNames && !jointNames.has(name.toLowerCase())) continue;
-    if (!sample.rotationDeg) continue;
-    const before = previous[name]?.rotationDeg;
-    if (!before) continue;
-    max = Math.max(max, angularDeltaDeg(sample.rotationDeg, before) / frameTimeSec);
+    const distance = jointRotationDistanceDeg(sample, previous[name]);
+    if (distance != null) result.set(name, distance / frameTimeSec);
   }
-  return max;
+  return result;
+}
+
+function canonicalJointName(name: string): string {
+  return name.toLowerCase().replace(/[^a-z0-9]/g, '');
+}
+
+function matchesSemanticJoint(name: string, aliases: readonly string[]): boolean {
+  const canonical = canonicalJointName(name);
+  return aliases.some((alias) => {
+    const candidate = canonicalJointName(alias);
+    return canonical === candidate || canonical.endsWith(candidate);
+  });
 }
 
 /** Convert parsed motion into the metrics consumed by Motion Lab QA gates. */
@@ -210,35 +259,55 @@ export function deriveBvhQaMetrics(parsed: ParsedBvh, options: BvhQaOptions = {}
   const frames = normalizeBvhFrames(parsed);
   if (frames.length === 0) throw new Error('BVH contains no frames');
 
-  const durationSec = frames.length * parsed.frameTimeSec;
-  const neutralStartErrorDeg = maxRotationError(frames[0]);
-  const neutralEndErrorDeg = maxRotationError(frames.at(-1)!);
+  // N frames contain N-1 elapsed intervals.
+  const durationSec = Math.max(0, (frames.length - 1) * parsed.frameTimeSec);
+  const neutralStartErrorDeg = options.neutralReference
+    ? maxRotationError(frames[0], options.neutralReference)
+    : undefined;
+  const neutralEndErrorDeg = options.neutralReference
+    ? maxRotationError(frames.at(-1)!, options.neutralReference)
+    : undefined;
   const loopSeamErrorDeg = maxRotationError(frames.at(-1)!, frames[0]);
-  let maxJointAngleDeg = 0;
-  for (const frame of frames) maxJointAngleDeg = Math.max(maxJointAngleDeg, maxRotationError(frame));
 
-  const velocities: number[] = [];
-  for (let i = 1; i < frames.length; i += 1) {
-    velocities.push(frameAngularVelocity(frames[i - 1], frames[i], parsed.frameTimeSec));
+  let maxJointAngleDeg = 0;
+  for (const frame of frames) {
+    maxJointAngleDeg = Math.max(maxJointAngleDeg, maxRotationError(frame, identityFrame(frame)));
   }
-  const accelerations = velocities.slice(1).map((velocity, i) => (velocity - velocities[i]) / parsed.frameTimeSec);
-  const jerks = accelerations.slice(1).map((acceleration, i) => Math.abs(acceleration - accelerations[i]) / parsed.frameTimeSec);
-  const peakJerkDegPerSec3 = jerks.length ? Math.max(...jerks) : 0;
+
+  const velocityFrames: Map<string, number>[] = [];
+  for (let i = 1; i < frames.length; i += 1) {
+    velocityFrames.push(jointVelocities(frames[i - 1], frames[i], parsed.frameTimeSec));
+  }
+
+  // Derivatives are computed per joint. Taking a frame-wide max first can switch
+  // the winning joint between frames and manufacture acceleration/jerk spikes.
+  let peakJerkDegPerSec3 = 0;
+  const jointNames = new Set(velocityFrames.flatMap((frame) => [...frame.keys()]));
+  for (const jointName of jointNames) {
+    const velocities = velocityFrames.map((frame) => frame.get(jointName) ?? 0);
+    const accelerations = velocities.slice(1).map((value, i) => (value - velocities[i]) / parsed.frameTimeSec);
+    const jerks = accelerations.slice(1).map((value, i) => Math.abs(value - accelerations[i]) / parsed.frameTimeSec);
+    if (jerks.length) peakJerkDegPerSec3 = Math.max(peakJerkDegPerSec3, ...jerks);
+  }
 
   const stillThreshold = options.stillnessVelocityDegPerSec ?? 8;
-  const stillnessRatio = velocities.length
-    ? velocities.filter((velocity) => velocity <= stillThreshold).length / velocities.length
+  const framePeakVelocities = velocityFrames.map((frame) => Math.max(0, ...frame.values()));
+  const stillnessRatio = framePeakVelocities.length
+    ? framePeakVelocities.filter((velocity) => velocity <= stillThreshold).length / framePeakVelocities.length
     : 1;
 
-  const gazeSet = new Set(
-    [...(options.headJointNames ?? ['head']), ...(options.neckJointNames ?? ['neck'])].map((name) => name.toLowerCase()),
-  );
+  const gazeAliases = [
+    ...(options.headJointNames ?? ['head']),
+    ...(options.neckJointNames ?? ['neck']),
+  ];
   const gazeThreshold = options.gazeAnimatedVelocityDegPerSec ?? 12;
   let animatedHeadNeckFrames = 0;
-  for (let i = 1; i < frames.length; i += 1) {
-    if (frameAngularVelocity(frames[i - 1], frames[i], parsed.frameTimeSec, gazeSet) > gazeThreshold) {
-      animatedHeadNeckFrames += 1;
+  for (const frame of velocityFrames) {
+    let peak = 0;
+    for (const [name, velocity] of frame.entries()) {
+      if (matchesSemanticJoint(name, gazeAliases)) peak = Math.max(peak, velocity);
     }
+    if (peak > gazeThreshold) animatedHeadNeckFrames += 1;
   }
 
   return {
@@ -249,7 +318,7 @@ export function deriveBvhQaMetrics(parsed: ParsedBvh, options: BvhQaOptions = {}
     maxJointAngleDeg,
     peakJerkDegPerSec3,
     stillnessRatio,
-    framingOverflowRatio: options.framingOverflowRatio ?? 0,
-    headNeckAnimatedRatio: frames.length > 1 ? animatedHeadNeckFrames / (frames.length - 1) : 0,
+    framingOverflowRatio: options.framingOverflowRatio,
+    headNeckAnimatedRatio: velocityFrames.length ? animatedHeadNeckFrames / velocityFrames.length : 0,
   };
 }
