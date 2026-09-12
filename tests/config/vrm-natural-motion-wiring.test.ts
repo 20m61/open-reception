@@ -1,5 +1,5 @@
 /**
- * natural micro-motion の hot path / deterministic harness 配線を固定する (#1085)。
+ * natural micro-motion の hot path / deterministic harness / motion 復帰配線を固定する (#1085)。
  *
  * VRM 実描画は node の unit test では動かないため、純関数が green でも viewer が毎フレーム
  * buffer を作る実装へ戻れば検出できない。実行時に見られない境界だけを静的に確認する。
@@ -39,6 +39,33 @@ describe('VRM natural motion の配線 (#1085)', () => {
     expect(viewer).toContain('neck.x =');
     expect(viewer).toContain('head.x =');
     expect(viewer).not.toMatch(/pose\.(?:neck|head)\s*=\s*\{/);
+  });
+
+  it('🔴 motion ownership 中は procedural を止め、解放後だけ指数追従で戻す', () => {
+    const viewer = code(VIEWER);
+    expect(viewer).toContain('const motionOwned = motionPlayer.isPlaying()');
+    expect(viewer).toMatch(/if \(motionOwned\) \{\s*proceduralResumeWeight = 0;/);
+    expect(viewer).toContain('proceduralResumeWeight = expDecay(');
+    expect(viewer).toContain('expDecay(sourceX, targetX');
+    expect(viewer).toContain('expDecay(sourceY, targetY');
+    expect(viewer).toContain('expDecay(sourceZ, targetZ');
+  });
+
+  it('🔴 action.stop より前に最後の normalized motion pose を capture して復帰始点に使う', () => {
+    const viewer = code(VIEWER);
+    const captureAt = viewer.indexOf('captureMotionExitPose();');
+    const stopAt = viewer.indexOf('action.stop();');
+    const renderAt = viewer.indexOf('const render = () =>');
+    const exitBufferAt = viewer.indexOf('const motionExitPoseBuffer = createStatePoseBuffer()');
+
+    expect(exitBufferAt).toBeGreaterThan(-1);
+    expect(exitBufferAt).toBeLessThan(renderAt);
+    expect(captureAt).toBeGreaterThan(-1);
+    expect(stopAt).toBeGreaterThan(captureAt);
+    expect(viewer).toContain(
+      'const captured = hasMotionExitPose ? motionExitPoseBuffer.pose[bone] : undefined;',
+    );
+    expect(viewer).toContain('hasMotionExitPose = false;');
   });
 
   it('harness だけが固定 seed を渡し、通常受付は読込単位の seed に任せる', () => {
