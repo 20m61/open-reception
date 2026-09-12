@@ -16,6 +16,7 @@ import {
   type ReceptionState,
 } from '@/domain/reception/state';
 import type { CallFailureReason } from '@/domain/reception/call-failure';
+import type { ConversationMaterializationAction } from '@/domain/reception/conversation-draft';
 import type { ReceptionTarget } from './voice-target-binding';
 
 export type Target = ReceptionTarget;
@@ -54,6 +55,14 @@ export type Action =
   | { type: 'SUBMIT_VISITOR_INFO'; visitor: VisitorInfo }
   | { type: 'CONFIRM' }
   /**
+   * #1077: 会話draftから得た複数の**既存イベント**を、来訪者へ中間画面を描画せず
+   * 1 reducer 更新で適用する内部専用action。
+   *
+   * actions の型は `ConversationMaterializationAction` なので `CONFIRM` を含められない。
+   * 発信確定は従来どおり confirming 画面の明示タッチだけが行う。
+   */
+  | { type: 'APPLY_CONVERSATION'; actions: readonly ConversationMaterializationAction[] }
+  /**
    * 受付が作られ、受付 ID が確定した (#649)。**状態は動かさない**（`calling` のまま）。
    * 呼び出し中から担当者応答（`useStaffResponse`）や結果ポーリングが受付 ID を必要とするため、
    * 「ID は結果と一緒に来る」旧設計を、ID だけ先に立てる形へ改める。
@@ -72,6 +81,16 @@ export type Action =
 export const INITIAL: FlowData = { state: 'idle' };
 
 export function reducer(data: FlowData, action: Action): FlowData {
+  // #1077: intermediate UI を出さないことを React の batching 実装詳細に依存させない。
+  // 既存 reducer を順に通すので、各stepの遷移可否は引き続き domain/state.ts が唯一の権威。
+  if (action.type === 'APPLY_CONVERSATION') {
+    let next = data;
+    for (const step of action.actions) {
+      next = reducer(next, step);
+    }
+    return next;
+  }
+
   // 状態を動かさない action は遷移表を引く前に処理する (#649)。呼び出し中に限るのは、
   // 来訪者がキャンセルした後に届いた受付作成の応答で ID を立て直さないため
   // （「不正遷移は現状維持」と同じ考え方）。
@@ -86,10 +105,8 @@ export function reducer(data: FlowData, action: Action): FlowData {
 
   switch (action.type) {
     case 'START':
-      // クイックアクションで用件を先取りした目的を保持し、selectingPurpose で自動選択する。
       return { ...data, state: next, pendingPurpose: action.pendingPurpose };
     case 'SELECT_PURPOSE':
-      // 目的が確定したら先取りヒントは消費済み。target も作り直す。
       return { ...data, state: next, purpose: action.purpose, target: undefined, pendingPurpose: undefined };
     case 'SELECT_TARGET':
       return { ...data, state: next, target: action.target };
@@ -103,9 +120,6 @@ export function reducer(data: FlowData, action: Action): FlowData {
       return {
         ...data,
         state: next,
-        // ID を伴わない失敗（`/call` が例外で落ちた等）で、確定済みの受付 ID を消さない (#649)。
-        // 「action が ID を持たない」と「受付が存在しない」は別物。消すと終端画面からの
-        // /fallback・/feedback の送信先が失われる。
         sessionId: action.sessionId ?? data.sessionId,
         outcome: 'failed',
         failureReason: action.reason,

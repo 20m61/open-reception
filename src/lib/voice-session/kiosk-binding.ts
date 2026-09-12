@@ -66,15 +66,26 @@ export interface VoiceSessionController {
 export type OnResolved = (candidate: EntityCandidate | null) => void;
 
 /**
- * マウント時に Kiosk（`KioskFlow`）が factory へ差し込む結線 hooks (issue #364)。
- *
- * `onResolved` は「音声で確定した相手候補」を Kiosk の相手選択（`SELECT_TARGET`）へ渡す実結線点。
- * factory を構築するのは demo-studio / 呼び出し側だが、実際に selection を進める `dispatch` を持つのは
- * KioskFlow である。そこで onResolved は**構築時の `deps.onResolved` ではなくマウント時の hook**で
- * 与えられる（構築側が Kiosk の dispatch を知らなくてよい）。両方与えられた場合は hook を優先する。
+ * #1077: STT が確定した1発話をKioskのmulti-slot会話へ渡す一時イベント。
+ * `text` は来訪者PIIを含みうるためメモリ内処理専用。ログ/eval/監査へ渡さない。
+ */
+export type CommittedVoiceUtterance = {
+  text: string;
+  sttConfidence: number;
+};
+
+/**
+ * true = Kiosk側の自然会話runtimeがこの発話をclaimした。
+ * claim時は従来の「担当者だけEntity解決」経路を二重実行しない。
+ */
+export type OnCommittedUtterance = (utterance: CommittedVoiceUtterance) => boolean;
+
+/**
+ * マウント時に Kiosk（`KioskFlow`）が factory へ差し込む結線 hooks (issue #364 / #1077)。
  */
 export type VoiceSessionHooks = {
   onResolved?: OnResolved;
+  onCommittedUtterance?: OnCommittedUtterance;
 };
 
 /**
@@ -120,6 +131,17 @@ function bridge(deps: VoiceSessionBridgeDeps, text: string): BridgeCommittedTurn
   });
 }
 
+function claimCommittedUtterance(
+  hooks: VoiceSessionHooks | undefined,
+  deps: VoiceSessionBridgeDeps,
+  text: string,
+): boolean {
+  return hooks?.onCommittedUtterance?.({
+    text,
+    sttConfidence: confidenceFor(deps.sttConfidence, text),
+  }) ?? false;
+}
+
 // =============================================================================
 // Synthetic（mock 合成駆動 / demo-studio 再現）
 // =============================================================================
@@ -129,10 +151,7 @@ export type SyntheticVoiceDriver = {
   factory: VoiceSessionFactory;
   /** リスニング開始（マイク取り込み開始）を合成する。 */
   beginListening(): void;
-  /**
-   * 確定前の interim（逐次字幕）を 1 段流す (issue #361/#364 第11wave)。listening 中に複数回呼び、
-   * 「さ」→「さとう」のように字幕が育つ様子を合成する。表示専用で確定はしない（PII をログへ出さない）。
-   */
+  /** 確定前の interim（逐次字幕）を 1 段流す。 */
   hearPartial(text: string): void;
   /** 発話が確定した体で Entity 解決へ回す（確定テキストを与える）。 */
   hearTurn(text: string): void;
@@ -145,18 +164,11 @@ export type SyntheticVoiceDriver = {
   fail(source: VoiceSessionFallbackSource): void;
 };
 
-/**
- * 実 orchestrator/実機なしで音声対話 UI を合成駆動する factory を作る。
- * demo-studio のシナリオ再現・コンポーネント/統合テストの固定に使う。
- */
 export function createSyntheticVoiceSession(deps: VoiceSessionBridgeDeps): SyntheticVoiceDriver {
   let emit: VoiceKioskEmit = () => {};
-  /** マウント時に KioskFlow が差し込む結線 hooks（onResolved 実結線）。 */
   let activeHooks: VoiceSessionHooks | undefined;
-  /** 直近の復唱で保留中の解決済み候補（confirmYes で選択へ渡す）。 */
   let pendingResolved: EntityCandidate | null = null;
 
-  // 確定候補の橋渡し先: マウント時 hook を優先し、無ければ構築時 deps.onResolved（直接テスト/後方互換）。
   const resolve = (candidate: EntityCandidate | null): void => {
     (activeHooks?.onResolved ?? deps.onResolved)?.(candidate);
   };
@@ -184,6 +196,12 @@ export function createSyntheticVoiceSession(deps: VoiceSessionBridgeDeps): Synth
     beginListening: () => emit({ type: 'listenStart' }),
     hearPartial: (text) => emit({ type: 'hearPartial', text }),
     hearTurn: (text) => {
+      // #1077 natural conversation がclaimしたら、旧target-only解決は二重実行しない。
+      if (claimCommittedUtterance(activeHooks, deps, text)) {
+        pendingResolved = null;
+        emit({ type: 'heardAccepted' });
+        return;
+      }
       const { event, resolved } = bridge(deps, text);
       if (event.type === 'heardAccepted') {
         emit(event);
@@ -192,7 +210,7 @@ export function createSyntheticVoiceSession(deps: VoiceSessionBridgeDeps): Synth
         pendingResolved = resolved;
         emit(event);
       } else {
-        emit(event); // listenStart（聞き直し）
+        emit(event);
       }
     },
     startSpeaking: () => emit({ type: 'speakStart' }),
@@ -206,10 +224,6 @@ export function createSyntheticVoiceSession(deps: VoiceSessionBridgeDeps): Synth
 // Orchestrator wrapper（実 VoiceSessionOrchestrator を束ねる seam）
 // =============================================================================
 
-/**
- * `createOrchestratorVoiceSession` が必要とする orchestrator の最小構造。
- * `VoiceSessionOrchestrator` はこれを構造的に満たす（`start`/`close`/`resetTurn`）。fake で差し替え可能。
- */
 export interface VoiceSessionLike {
   start(): Promise<void> | void;
   close(): Promise<void> | void;
@@ -218,23 +232,7 @@ export interface VoiceSessionLike {
 
 /**
  * 実 orchestrator を束ねて Kiosk UI イベントへ写像する factory を作る。
- *
- * `construct` は与えた `VoiceSessionCallbacks` から orchestrator を生成するクロージャ
- * （例: `(cb) => new VoiceSessionOrchestrator(config, providers, cb)`）。orchestrator の重い依存を
- * 本モジュールへ持ち込まないための注入点。
- *
- * 写像:
- *  - `onTurnCommitted(text)` → Entity 解決（#370）→ heardAccepted / heardNeedsConfirmation / listenStart。
- *  - `onVrmStateChange('speaking'|'listening')` → speakStart / speakEnd。
- *  - `onEvalEvent('stt.partial', stable)` → hearPartial（interim 逐次字幕、#361/#364 第11wave）。
- *    **安定化済み（`stable:true`）の partial だけ**を UI 字幕へ流す（#370 の先読み `stable:false` は
- *    ちらつくため出さない）。interim は表示専用で確定はしない（復唱確認の不変条件を維持）。partial
- *    テキストは PII を含みうるため UI 一時表示に留め、監査ログ・評価イベントへは書き出さない
- *    （`.claude/rules/pii-secret-minimization.md`）。eval ハーネス（#365）が別途 onEvalEvent を必要と
- *    する場合は呼び出し側で合成する（この seam は UI 写像のみを担う）。
- *  - `onFallback`（transport/stt/turn 由来）→ fallbackRequired。**tts 由来は継続可能なので UI を縮退させない**
- *    （字幕/キャッシュで受付継続できる #371 設計に従い、診断シグナルとしてのみ扱う）。
- *  - `confirmYes/No` → 確定/否定を emit し、orchestrator の `resetTurn` で次ターンへ備える。
+ * committed発話をKioskがclaimしない場合だけ、従来のEntity target解決を行う。
  */
 export function createOrchestratorVoiceSession(
   construct: (callbacks: VoiceSessionCallbacks) => VoiceSessionLike,
@@ -242,7 +240,6 @@ export function createOrchestratorVoiceSession(
 ): VoiceSessionFactory {
   return (emit, hooks) => {
     let pendingResolved: EntityCandidate | null = null;
-    // マウント時 hook を優先し、無ければ構築時 deps.onResolved（直接テスト/後方互換）。
     const resolve = (candidate: EntityCandidate | null): void => {
       (hooks?.onResolved ?? deps.onResolved)?.(candidate);
     };
@@ -250,6 +247,12 @@ export function createOrchestratorVoiceSession(
     const orchestrator = construct({
       now: deps.now,
       onTurnCommitted: (text) => {
+        if (claimCommittedUtterance(hooks, deps, text)) {
+          pendingResolved = null;
+          // interimを消し、readbackを出さず自然会話runtimeへ委ねる。
+          emit({ type: 'heardAccepted' });
+          return;
+        }
         const { event, resolved } = bridge(deps, text);
         if (event.type === 'heardAccepted') {
           emit(event);
@@ -265,14 +268,11 @@ export function createOrchestratorVoiceSession(
         emit(state === 'speaking' ? { type: 'speakStart' } : { type: 'speakEnd' });
       },
       onEvalEvent: (evalEvent) => {
-        // 安定化済み partial のみを interim 逐次字幕へ写像する（#361/#364 第11wave）。
-        // それ以外（stt.final / turn / tts / error 等）は UI 状態へ影響させない。
         if (evalEvent.type === 'stt.partial' && evalEvent.stable) {
           emit({ type: 'hearPartial', text: evalEvent.text });
         }
       },
       onFallback: (fallback) => {
-        // TTS は字幕/キャッシュで継続できるため UI をタッチへ縮退させない（診断のみ）。
         if (fallback.source === 'tts') return;
         emit({ type: 'fallbackRequired', source: fallback.source });
       },
