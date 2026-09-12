@@ -14,13 +14,13 @@ export type MotionReviewDecision = 'pending' | 'pass' | 'needs-tuning' | 'reject
 
 export type MotionQaMetrics = {
   durationSec: number;
-  neutralStartErrorDeg: number;
-  neutralEndErrorDeg: number;
+  neutralStartErrorDeg?: number;
+  neutralEndErrorDeg?: number;
   loopSeamErrorDeg?: number;
   maxJointAngleDeg: number;
   peakJerkDegPerSec3: number;
   stillnessRatio: number;
-  framingOverflowRatio: number;
+  framingOverflowRatio?: number;
   headNeckAnimatedRatio: number;
 };
 
@@ -71,6 +71,19 @@ function lowerIsBetter(
   return { id, status, value, message: `${value.toFixed(2)}${unit} (warn ${warn}, fail ${fail})` };
 }
 
+function optionalLowerIsBetter(
+  id: MotionQaGateId,
+  value: number | undefined,
+  warn: number,
+  fail: number,
+  unit: string,
+  unavailableMessage: string,
+): MotionQaGateResult {
+  return value == null
+    ? { id, status: 'not-applicable', message: unavailableMessage }
+    : lowerIsBetter(id, value, warn, fail, unit);
+}
+
 export function evaluateMotionQa(
   metrics: MotionQaMetrics,
   profile: MotionQaProfile = DEFAULT_MOTION_QA_PROFILE,
@@ -88,8 +101,22 @@ export function evaluateMotionQa(
     message: `${metrics.durationSec.toFixed(2)}s (expected ${profile.duration.minSec}-${profile.duration.maxSec}s)`,
   });
 
-  gates.push(lowerIsBetter('neutral-start', metrics.neutralStartErrorDeg, profile.neutralError.warnDeg, profile.neutralError.failDeg, '°'));
-  gates.push(lowerIsBetter('neutral-end', metrics.neutralEndErrorDeg, profile.neutralError.warnDeg, profile.neutralError.failDeg, '°'));
+  gates.push(optionalLowerIsBetter(
+    'neutral-start',
+    metrics.neutralStartErrorDeg,
+    profile.neutralError.warnDeg,
+    profile.neutralError.failDeg,
+    '°',
+    'neutral reference not calibrated',
+  ));
+  gates.push(optionalLowerIsBetter(
+    'neutral-end',
+    metrics.neutralEndErrorDeg,
+    profile.neutralError.warnDeg,
+    profile.neutralError.failDeg,
+    '°',
+    'neutral reference not calibrated',
+  ));
 
   if (profile.loop) {
     if (metrics.loopSeamErrorDeg == null) {
@@ -117,7 +144,14 @@ export function evaluateMotionQa(
     message: `${(metrics.stillnessRatio * 100).toFixed(1)}% low-motion frames`,
   });
 
-  gates.push(lowerIsBetter('framing', metrics.framingOverflowRatio, profile.framing.warnOverflowRatio, profile.framing.failOverflowRatio, ' ratio'));
+  gates.push(optionalLowerIsBetter(
+    'framing',
+    metrics.framingOverflowRatio,
+    profile.framing.warnOverflowRatio,
+    profile.framing.failOverflowRatio,
+    ' ratio',
+    'requires rendered 4:3 framing measurement',
+  ));
   gates.push(lowerIsBetter('gaze-conflict', metrics.headNeckAnimatedRatio, profile.gazeConflict.warnAnimatedRatio, profile.gazeConflict.failAnimatedRatio, ' ratio'));
 
   const hasFail = gates.some((gate) => gate.status === 'fail');
