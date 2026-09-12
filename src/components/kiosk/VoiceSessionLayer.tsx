@@ -7,14 +7,14 @@
  */
 'use client';
 
+import type { ReceptionState } from '@/domain/reception/state';
+import type { VoiceKioskMode, VoiceKioskState } from '@/domain/voice-session/kiosk-view';
 import type { Locale } from '@/lib/i18n';
 import type { OnResolved, VoiceSessionFactory } from '@/lib/voice-session/kiosk-binding';
-import type { ReceptionState } from '@/domain/reception/state';
 import { useEffect, useRef } from 'react';
-import { announcementPhrase, shouldAnnounce } from './voice-announcement';
-import type { VoiceKioskState } from '@/domain/voice-session/kiosk-view';
-import { useVoiceSession } from './useVoiceSession';
 import { VoiceReadbackConfirm } from './VoiceReadbackConfirm';
+import { useVoiceSession } from './useVoiceSession';
+import { announcementPhrase, shouldAnnounce } from './voice-announcement';
 
 export type VoiceSessionLayerProps = {
   factory: VoiceSessionFactory;
@@ -39,6 +39,15 @@ export type VoiceSessionLayerProps = {
    * 食い違うと、聞いた内容と読んだ内容のどちらを信じるかを来訪者に選ばせることになる。
    */
   onAnnounce?: (text: string) => void;
+  /**
+   * 音声 UI の**非PIIな局面だけ**を観測する通知口 (#1084)。
+   *
+   * Avatar 側は `VoiceKioskState` 全体（interimText / readbackName 等を含みうる）を必要としない。
+   * `mode` だけを外へ出すことで、音声 state の所有権は `useVoiceSession` に残したまま、
+   * 描画用 `AvatarBehavior` を導出できる。これは state owner ではなく observation callback。
+   * unmount 時は `inactive` を通知し、古い listening/speaking が描画側へ残らないようにする。
+   */
+  onModeChange?: (mode: VoiceKioskMode) => void;
 };
 
 export function VoiceSessionLayer({
@@ -47,8 +56,22 @@ export function VoiceSessionLayer({
   receptionState,
   onResolved,
   onAnnounce,
+  onModeChange,
 }: VoiceSessionLayerProps) {
   const { state, confirmYes, confirmNo } = useVoiceSession(factory, receptionState, onResolved);
+
+  // Avatar 等の表示層へは PII を含みうる VoiceKioskState 全体ではなく mode だけを通知する (#1084)。
+  useEffect(() => {
+    onModeChange?.(state.mode);
+  }, [state.mode, onModeChange]);
+
+  // 音声レイヤが消えたとき、最後の局面を表示層に残さない。
+  useEffect(
+    () => () => {
+      onModeChange?.('inactive');
+    },
+    [onModeChange],
+  );
 
   /*
    * 局面へ**入った瞬間に 1 度だけ**読み上げる (#803)。判定は純関数へ出してある ——
