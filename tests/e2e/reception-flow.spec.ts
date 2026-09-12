@@ -101,49 +101,30 @@ test('部署選択でも呼び出しできる', async ({ page }) => {
   await expect(page.getByTestId('result-connected')).toBeVisible();
 });
 
-test('担当者検索で絞り込める', async ({ page }) => {
+test('担当者は文字検索なしで部署群からタッチだけで到達できる (#787/#1057)', async ({ page }) => {
   await page.goto('/kiosk');
   await page.getByTestId('start-reception').click();
   await page.getByTestId('purpose-meeting').click();
-  await page.getByTestId('staff-search').fill('すずき');
-  await expect(page.getByTestId('staff-staff-suzuki')).toBeVisible();
-  await expect(page.getByTestId('staff-staff-sato')).toHaveCount(0);
+
+  await expect(page.getByTestId('staff-search')).toHaveCount(0);
+  await expect(page.getByTestId('staff-groups')).toBeVisible();
+  await revealStaff(page, 'staff-staff-sato');
+  await expect(page.getByTestId('staff-staff-sato')).toBeVisible();
 });
 
-test('1 文字 typo でも「もしかして」候補として見つかる (#322)', async ({ page }) => {
+test('相手選択の visitor UI に software keyboard を呼ぶ control が存在しない (#1057)', async ({ page }) => {
   await page.goto('/kiosk');
   await page.getByTestId('start-reception').click();
   await page.getByTestId('purpose-meeting').click();
-  // 「たかはし」の 1 文字 typo。従来の完全部分一致では 0 件だった。
-  await page.getByTestId('staff-search').fill('たかばし');
-  await expect(page.getByTestId('staff-staff-takahashi')).toBeVisible();
-  await expect(page.getByTestId('staff-staff-takahashi-maybe')).toBeVisible();
-  // 0 件時の誘導は出ない（ヒットしているため）。
-  await expect(page.getByTestId('target-recovery')).toHaveCount(0);
-});
 
-test('検索 0 件でも行き止まりにならず、部署一覧・チャット相談への導線が出る (#322 AC3)', async ({ page }) => {
-  await page.goto('/kiosk');
-  await page.getByTestId('start-reception').click();
-  await page.getByTestId('purpose-meeting').click();
-  await page.getByTestId('staff-search').fill('存在しない名前です');
+  const targetPanel = page.getByTestId('target-panel-staff');
+  await expect(targetPanel.locator('input')).toHaveCount(0);
+  await expect(targetPanel.locator('textarea')).toHaveCount(0);
+  await expect(targetPanel.locator('[contenteditable="true"]')).toHaveCount(0);
 
-  // 警告と案内を 2 枚重ねず、recovery パネル 1 枚に集約する (#776)。
-  const recovery = page.getByTestId('target-recovery');
-  await expect(recovery).toBeVisible();
-  await expect(page.getByTestId('staff-empty')).toHaveCount(0);
-  await expect(page.getByTestId('search-no-results-guidance')).toHaveCount(0);
-
-  // 次の一手 1: 1 操作で部署タブへ切り替わる（スクロール誘導ではない）。
-  await page.getByTestId('target-recovery-department-cta').click();
+  // 名前を知らなくても部署へ切り替えられ、行き止まりにならない。
+  await page.getByTestId('target-tab-department').click();
   await expect(page.getByTestId('dept-dept-sales')).toBeVisible();
-  await expect(recovery).toHaveCount(0);
-
-  // 次の一手 2: チャットで受付係に相談する（Chat-assisted ドロワーが開く）。
-  await page.getByTestId('target-tab-staff').click();
-  await expect(recovery).toBeVisible();
-  await page.getByTestId('target-recovery-chat-cta').click();
-  await expect(page.getByTestId('kiosk-chat-drawer')).toHaveAttribute('data-open', 'true');
 });
 
 test('確認画面から修正に戻れる', async ({ page }) => {
