@@ -55,6 +55,12 @@ function render(
   );
 }
 
+function tagOf(html: string, testId: string): string {
+  const at = html.indexOf(`data-testid="${testId}"`);
+  expect(at, `data-testid=${testId} が無い`).toBeGreaterThan(-1);
+  return html.slice(html.lastIndexOf('<', at), html.indexOf('>', at) + 1);
+}
+
 describe('NoTypingTargetView (#1057)', () => {
   it('visitor-facing typing control を一切描画しない', () => {
     const html = render();
@@ -93,11 +99,33 @@ describe('NoTypingTargetView (#1057)', () => {
     expect(html).toContain('data-testid="no-typing-staff-group-back"');
   });
 
+  it('不在担当者は button にせず aria-disabled のカードで示す', () => {
+    const html = render({ openGroupId: 'dept-dev' });
+    const tag = tagOf(html, 'no-typing-staff-staff-suzuki');
+    expect(tag.startsWith('<div')).toBe(true);
+    expect(tag).toContain('aria-disabled="true"');
+    expect(tag).toContain('data-unavailable="true"');
+  });
+
+  it('担当者/部署タブは roving tabindex と aria-selected を維持する', () => {
+    const html = render();
+    expect(tagOf(html, 'no-typing-target-tab-staff')).toContain('aria-selected="true"');
+    expect(tagOf(html, 'no-typing-target-tab-staff')).toContain('tabindex="0"');
+    expect(tagOf(html, 'no-typing-target-tab-department')).toContain('aria-selected="false"');
+    expect(tagOf(html, 'no-typing-target-tab-department')).toContain('tabindex="-1"');
+  });
+
   it('部署タブは部署ボタンだけを描画する', () => {
     const html = render({ tab: 'department' });
     expect(html).toContain('data-testid="no-typing-departments"');
     expect(html).toContain('data-testid="no-typing-dept-dept-sales"');
     expect(html).not.toContain('data-testid="no-typing-stt-listen"');
+    expect(html).not.toContain('<input');
+  });
+
+  it('英語表示でも No Typing 構造を維持する', () => {
+    const html = render({ locale: 'en' });
+    expect(html).toContain('Choose a person or department');
     expect(html).not.toContain('<input');
   });
 });
