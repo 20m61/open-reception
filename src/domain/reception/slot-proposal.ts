@@ -129,7 +129,17 @@ function resolveTargetProposal(
   const query = proposal.value.trim();
   if (query === '') return undefined;
 
-  const resolution = resolveEntities(options.directory, query);
+  /*
+   * `resolveEntities` は enabled を見るが staff.available は見ない。
+   * 自然発話の high-confidence path で不在担当者をそのまま final confirmation へ運ばないため、
+   * この境界では staff target を在席者に限定する。明示的な「不在です → 部署/受付へ」のrepairは
+   * #1082 / #1074 の別契約で扱う。
+   */
+  const callableDirectory: EntityDirectory = {
+    ...options.directory,
+    staff: options.directory.staff.filter((staff) => staff.available),
+  };
+  const resolution = resolveEntities(callableDirectory, query);
   if (!resolution.top1) return undefined;
 
   const targets = resolution.top3
@@ -159,6 +169,7 @@ function resolveTargetProposal(
  * 安全境界:
  * - state transition / dispatch / CONFIRM を行わない
  * - target id は extractor の出力ではなく、必ず実 directory resolver 由来
+ * - unavailable staff を high-confidence resolved target にしない
  * - low-confidence は resolved にせず ambiguous として planner に修復させる
  * - 空文字は捨てる
  * - transcript や氏名をログへ送る副作用を持たない
