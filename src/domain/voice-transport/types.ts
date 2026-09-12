@@ -62,7 +62,11 @@ export type VoiceTransportTokenClaims = {
   jti: string;
 };
 
-/** クライアントが接続時に主張する文脈（サーバ権威の claims と突き合わせる）。 */
+/**
+ * gateway が接続時に構成する「期待文脈」。
+ * EC2 runtime では tenant/site は deployment binding 由来、kiosk/reception は接続 routing context 由来で、
+ * `authorizeVoiceTransportConnection` が署名済み claims と一致することを検証する。
+ */
 export type VoiceTransportConnectionContext = {
   tenantId: string;
   siteId: string;
