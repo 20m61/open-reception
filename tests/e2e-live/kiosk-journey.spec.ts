@@ -56,10 +56,17 @@ async function enroll(page: Page): Promise<void> {
 
 /**
  * No Typing の段階開示から、実在する最初の押せる担当者へ到達する。
- * 部署と担当者の実データ構成は環境依存なので、固定 id を仮定しない。
+ * 部署が1群だけのときはビュー側が群選択を飛ばすので、その形も許容する。
  */
 async function chooseFirstAvailableStaff(page: Page): Promise<void> {
   await expect(page.getByTestId('staff-search')).toHaveCount(0);
+
+  const directStaff = page.locator('button[data-testid^="staff-staff-"]').first();
+  if (await directStaff.isVisible().catch(() => false)) {
+    await directStaff.click();
+    return;
+  }
+
   const groups = page.locator('button[data-testid^="staff-group-"][data-selectable]');
   const count = await groups.count();
   expect(count, '担当者の部署群が 0 件（初期データ未投入の可能性）').toBeGreaterThan(0);
@@ -100,7 +107,6 @@ test('担当者をタッチで選んで発信直前まで進める', async ({ pa
   await expect(page.getByTestId('confirm-call')).toBeVisible();
 });
 
-/** 横向き iPad で主要導線が画面内に収まっていること。 */
 test('横向きで受付開始がファーストビューに収まる', async ({ page }) => {
   await enroll(page);
 
