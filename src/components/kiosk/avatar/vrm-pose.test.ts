@@ -1,8 +1,8 @@
-import { describe, it, expect } from 'vitest';
 import type { VRMHumanBoneName } from '@pixiv/three-vrm';
+import { describe, expect, it } from 'vitest';
 import { AVATAR_STATES } from '@/domain/reception/ui-contract';
-import { poseEntries, resolveStatePose } from './vrm-pose';
 import { IDLE_REST_POSE, type HumanoidBoneName } from './vrm-idle';
+import { poseEntries, resolveStatePose } from './vrm-pose';
 
 /**
  * 型レベルの固定: 手続き的ポーズが触るボーン名は VRM 仕様の `VRMHumanBoneName` の部分集合。
@@ -12,7 +12,7 @@ import { IDLE_REST_POSE, type HumanoidBoneName } from './vrm-idle';
 const _boneNamesAreVrmHumanBones: VRMHumanBoneName = null as unknown as HumanoidBoneName;
 void _boneNamesAreVrmHumanBones;
 
-describe('vrm-pose (#31 motion variations)', () => {
+describe('vrm-pose (#31 / #1085 motion variations)', () => {
   it('全ての avatarState でポーズを解決でき、腕（rest）が含まれる', () => {
     for (const state of AVATAR_STATES) {
       const pose = resolveStatePose(state, 1.2);
@@ -49,6 +49,19 @@ describe('vrm-pose (#31 motion variations)', () => {
     const a = resolveStatePose('greeting', 0.0).rightLowerArm?.z ?? 0;
     const b = resolveStatePose('greeting', 0.26).rightLowerArm?.z ?? 0; // sin(6t) が変化
     expect(a).not.toBeCloseTo(b);
+  });
+
+  it('micro-motion は idle より connected の方が静か', () => {
+    const elapsed = 7.3;
+    const idle = resolveStatePose('idle', elapsed);
+    const connected = resolveStatePose('connected', elapsed);
+    // head は状態固有 override を持たないため、同一 micro sample × intensity の比較ができる。
+    expect(Math.abs(connected.head?.x ?? 0)).toBeLessThan(Math.abs(idle.head?.x ?? 0));
+    expect(Math.abs(connected.head?.y ?? 0)).toBeLessThan(Math.abs(idle.head?.y ?? 0));
+  });
+
+  it('同じ state/time なら procedural pose は完全に再現できる', () => {
+    expect(resolveStatePose('idle', 12.345)).toEqual(resolveStatePose('idle', 12.345));
   });
 
   it('poseEntries は値のあるボーンだけを、ボーン名の型を保って列挙する', () => {
