@@ -15,6 +15,7 @@ import { measureHeadHeight, prepareLoadedVrm, vrmPreparedAttribute } from '@/lib
 import { AvatarFallbackImage } from './avatar/fallback-image';
 import { shouldShowVrmFallback } from './avatar/fallback-state';
 import { emotionExpressionValues } from './avatar/vrm-expression';
+import { expDecay } from './avatar/vrm-idle';
 import { createStatePoseBuffer, poseEntries, resolveStatePose } from './avatar/vrm-pose';
 import { createMotionPlayer } from './avatar/motion-player';
 import { gazeOffsetFor, type GazeOffset } from './avatar/vrm-gaze';
@@ -23,6 +24,9 @@ import { createAutoBlinkState, stepAutoBlink, type AutoBlinkState } from '@/doma
 import type { AvatarExpression } from './avatar/guidance';
 import type { AvatarState, GazeTarget } from '@/domain/reception/ui-contract';
 import type { KioskLayout } from './layout';
+
+const PROCEDURAL_RESUME_RATE_PER_SEC = 10;
+const PROCEDURAL_RESUME_DONE_WEIGHT = 0.995;
 
 /**
  * VRM アバター表示基盤 (issue #36)。
@@ -312,6 +316,29 @@ export function VrmAvatarViewer({
           if (!disposed) setLiveMotionActions(live);
         };
 
+        // Three r184 の AnimationMixer は最後の binding を deactivate すると original state を戻す。
+        // その直前の normalized bone rotation を保持し、procedural resume の開始点にする（#1085）。
+        // VRM load ごとに一度だけ確保し、capture 時は既存 object を上書きするので hot path に
+        // allocation を追加しない。
+        const motionExitPoseBuffer = createStatePoseBuffer();
+        const motionExitBones = poseEntries(motionExitPoseBuffer.pose).map(([bone]) => bone);
+        let hasMotionExitPose = false;
+        const captureMotionExitPose = () => {
+          const humanoid = vrm?.humanoid;
+          if (!humanoid) return;
+          for (let index = 0; index < motionExitBones.length; index += 1) {
+            const bone = motionExitBones[index];
+            if (!bone) continue;
+            const node = humanoid.getNormalizedBoneNode(bone);
+            const captured = motionExitPoseBuffer.pose[bone];
+            if (!node || !captured) continue;
+            captured.x = node.rotation.x;
+            captured.y = node.rotation.y;
+            captured.z = node.rotation.z;
+          }
+          hasMotionExitPose = true;
+        };
+
         const motionPlayer = createMotionPlayer({
           vrmLoaded: Boolean(vrm),
           load: async (url) => {
@@ -334,6 +361,9 @@ export function VrmAvatarViewer({
               // フェード後に mixer から外す。`fadeOut` だけでは `LoopRepeat` のアクションが
               // 評価対象に残り続け、状態遷移のたびに増える（`motion-player.ts` 参照）。
               release: () => {
+                // `stop()` は binding の original state を復元し得る。最後に画面へ出ていた
+                // normalized pose を失う前に capture して、procedural への復帰始点にする。
+                captureMotionExitPose();
                 action.stop();
                 mixer.uncacheClip(clip);
                 reportLiveActions();
@@ -357,6 +387,9 @@ export function VrmAvatarViewer({
           buffer: statePoseBuffer,
           naturalMotionSeed: naturalMotionSeedRef.current ?? generatedNaturalMotionSeed,
         };
+        // motion ownership が解放された直後だけ、最後に capture した motion pose から
+        // procedural target へ FPS 非依存で復帰する。初期表示では 1 のままなので従来動作を維持。
+        let proceduralResumeWeight = 1;
         // auto-blink（#31 増分）: 描画ループ開始時刻を種に初期状態を生成する。実時刻
         // （Date.now()）を扱うのはここ（viewer 側）だけで、domain 側の純関数へは値として
         // 渡すのみ（`domain/avatar/auto-blink.ts` は Math.random()/Date.now() を呼ばない）。
@@ -398,9 +431,20 @@ export function VrmAvatarViewer({
             expressionManager.setValue('blink', frameWeights.blink);
           }
           // .vrma モーションが無いときは受付状態に応じた手続き的ポーズ/所作を適用する（#31）。
-          // モーション再生中は AnimationMixer がボーンを駆動するため適用しない。
+          // motion ownership は fadeOut 完了まで維持される (#1085)。その間 procedural pose は
+          // 同じ normalized bones へ書かない。ownership 解放後だけ capture 済み motion pose から
+          // procedural target へ滑らかに復帰する。
           const humanoid = vrm?.humanoid;
-          if (!motionPlayer.isPlaying() && humanoid) {
+          const motionOwned = motionPlayer.isPlaying();
+          if (motionOwned) {
+            proceduralResumeWeight = 0;
+          } else if (humanoid) {
+            proceduralResumeWeight = expDecay(
+              proceduralResumeWeight,
+              1,
+              PROCEDURAL_RESUME_RATE_PER_SEC,
+              dt,
+            );
             statePoseOptions.naturalMotionSeed =
               naturalMotionSeedRef.current ?? generatedNaturalMotionSeed;
             const pose = resolveStatePose(avatarStateRef.current, clock.elapsedTime, statePoseOptions);
@@ -421,12 +465,32 @@ export function VrmAvatarViewer({
                 head.y = (head.y ?? 0) + gaze.yaw * 0.6;
               }
             }
-            // 正規化ボーンへ書く。`vrm.update()` の humanoid.update が raw ボーンへ転写する
-            // （`autoUpdateHumanBones` 既定 true）。
+            const smoothingResume = proceduralResumeWeight < PROCEDURAL_RESUME_DONE_WEIGHT;
+            // 正規化ボーンへ書く。motion から戻る約0.5秒だけ source → target を指数追従する。
+            // 復帰1frame目の source は `action.stop()` より前に capture した最後の motion pose。
+            // 2frame目以降は node.rotation（前frameの補間結果）を使う。
             for (const [bone, rot] of poseEntries(pose)) {
               const node = humanoid.getNormalizedBoneNode(bone);
-              if (node) node.rotation.set(rot.x ?? 0, rot.y ?? 0, rot.z ?? 0);
+              if (!node) continue;
+              const targetX = rot.x ?? 0;
+              const targetY = rot.y ?? 0;
+              const targetZ = rot.z ?? 0;
+              if (smoothingResume) {
+                const captured = hasMotionExitPose ? motionExitPoseBuffer.pose[bone] : undefined;
+                const sourceX = captured?.x ?? node.rotation.x;
+                const sourceY = captured?.y ?? node.rotation.y;
+                const sourceZ = captured?.z ?? node.rotation.z;
+                node.rotation.set(
+                  expDecay(sourceX, targetX, PROCEDURAL_RESUME_RATE_PER_SEC, dt),
+                  expDecay(sourceY, targetY, PROCEDURAL_RESUME_RATE_PER_SEC, dt),
+                  expDecay(sourceZ, targetZ, PROCEDURAL_RESUME_RATE_PER_SEC, dt),
+                );
+              } else {
+                node.rotation.set(targetX, targetY, targetZ);
+              }
             }
+            // capture は復帰1frame目だけの開始点。以降は補間済み node.rotation から継続する。
+            hasMotionExitPose = false;
           }
           // 公式例と同じ順: mixer が正規化ボーン/表情/lookAt proxy を書き、vrm.update が
           // humanoid → raw 転写・lookAt・expression・constraint・springBone を適用する。
