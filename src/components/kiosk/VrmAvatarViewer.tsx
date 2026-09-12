@@ -15,7 +15,7 @@ import { measureHeadHeight, prepareLoadedVrm, vrmPreparedAttribute } from '@/lib
 import { AvatarFallbackImage } from './avatar/fallback-image';
 import { shouldShowVrmFallback } from './avatar/fallback-state';
 import { emotionExpressionValues } from './avatar/vrm-expression';
-import { poseEntries, resolveStatePose } from './avatar/vrm-pose';
+import { createStatePoseBuffer, poseEntries, resolveStatePose } from './avatar/vrm-pose';
 import { createMotionPlayer } from './avatar/motion-player';
 import { gazeOffsetFor, type GazeOffset } from './avatar/vrm-gaze';
 import { resolveFrameExpressionWeights } from './avatar/frame-weights';
@@ -61,6 +61,7 @@ export function VrmAvatarViewer({
   expressionIntensity,
   speaking,
   avatarState,
+  naturalMotionSeed,
   gazeTarget,
   layout,
   className,
@@ -84,6 +85,11 @@ export function VrmAvatarViewer({
   speaking?: boolean;
   /** 受付アバター状態（#31）。.vrma 非再生時に状態別の手続き的ポーズ/所作を適用する。 */
   avatarState?: AvatarState;
+  /**
+   * natural micro-motion の再現用 seed。検査ハーネス/VRT だけが固定値を渡し、
+   * 省略する本番経路では VRM 読込ごとに自然な seed を生成する（#1085）。
+   */
+  naturalMotionSeed?: number;
   /**
    * 視線誘導先 (#422 inc5-c 増分 3)。契約 `gazeTargetFor(screenState)` の値。
    * `layout` と組で向く方向が決まる（横向きは右レール、縦向きは真下）。
@@ -151,12 +157,16 @@ export function VrmAvatarViewer({
   }, [speaking]);
   // 受付状態もレンダーループ外から変化するため ref で渡す（#31 状態別ポーズ）。
   const avatarStateRef = useRef<AvatarState>(avatarState ?? 'idle');
+  const naturalMotionSeedRef = useRef<number | undefined>(naturalMotionSeed);
   // 視線は毎フレーム参照するので ref に持つ（再マウントせず追従させる）。
   const gazeRef = useRef<GazeOffset>(gazeOffsetFor(gazeTarget ?? 'none', layout ?? 'ipad-landscape'));
   useEffect(() => {
     avatarStateRef.current = avatarState ?? 'idle';
     gazeRef.current = gazeOffsetFor(gazeTarget ?? 'none', layout ?? 'ipad-landscape');
   }, [avatarState, gazeTarget, layout]);
+  useEffect(() => {
+    naturalMotionSeedRef.current = naturalMotionSeed;
+  }, [naturalMotionSeed]);
 
   // モーション URL も [vrmUrl] エフェクト外から変化するため ref 経由で渡す。
   // VRM ロード完了後に loadMotionRef.current が設定され、状態遷移ごとに .vrma を切替える（#31）。
@@ -339,6 +349,14 @@ export function VrmAvatarViewer({
         void motionPlayer.request(motionUrlRef.current);
 
         const clock = new THREE.Clock();
+        // 24h kiosk の描画ループで pose / bone / micro-motion object を作り続けない。
+        // harness は固定 seed、本番は VRM 読込単位の seed。prop 更新時も object は再生成しない。
+        const statePoseBuffer = createStatePoseBuffer();
+        const generatedNaturalMotionSeed = Date.now() | 0;
+        const statePoseOptions = {
+          buffer: statePoseBuffer,
+          naturalMotionSeed: naturalMotionSeedRef.current ?? generatedNaturalMotionSeed,
+        };
         // auto-blink（#31 増分）: 描画ループ開始時刻を種に初期状態を生成する。実時刻
         // （Date.now()）を扱うのはここ（viewer 側）だけで、domain 側の純関数へは値として
         // 渡すのみ（`domain/avatar/auto-blink.ts` は Math.random()/Date.now() を呼ばない）。
@@ -383,21 +401,25 @@ export function VrmAvatarViewer({
           // モーション再生中は AnimationMixer がボーンを駆動するため適用しない。
           const humanoid = vrm?.humanoid;
           if (!motionPlayer.isPlaying() && humanoid) {
-            const pose = resolveStatePose(avatarStateRef.current, clock.elapsedTime);
+            statePoseOptions.naturalMotionSeed =
+              naturalMotionSeedRef.current ?? generatedNaturalMotionSeed;
+            const pose = resolveStatePose(avatarStateRef.current, clock.elapsedTime, statePoseOptions);
             // 視線誘導 (#422 inc5-c 増分 3)。首と頭に分けて配分し、頭だけが不自然に回るのを
             // 避ける。ポーズ（呼吸・頷き等）へ**加算**するので、既存の所作は失われない。
             const gaze = gazeRef.current;
             if (gaze.yaw !== 0 || gaze.pitch !== 0) {
-              pose.neck = {
-                ...(pose.neck ?? {}),
-                x: (pose.neck?.x ?? 0) + gaze.pitch * 0.4,
-                y: (pose.neck?.y ?? 0) + gaze.yaw * 0.4,
-              };
-              pose.head = {
-                ...(pose.head ?? {}),
-                x: (pose.head?.x ?? 0) + gaze.pitch * 0.6,
-                y: (pose.head?.y ?? 0) + gaze.yaw * 0.6,
-              };
+              // statePoseBuffer が head / neck を事前確保している。置換すると毎フレーム
+              // 2 object を作るため、同じ rotation object へ加算する。
+              const neck = pose.neck;
+              const head = pose.head;
+              if (neck) {
+                neck.x = (neck.x ?? 0) + gaze.pitch * 0.4;
+                neck.y = (neck.y ?? 0) + gaze.yaw * 0.4;
+              }
+              if (head) {
+                head.x = (head.x ?? 0) + gaze.pitch * 0.6;
+                head.y = (head.y ?? 0) + gaze.yaw * 0.6;
+              }
             }
             // 正規化ボーンへ書く。`vrm.update()` の humanoid.update が raw ボーンへ転写する
             // （`autoUpdateHumanBones` 既定 true）。

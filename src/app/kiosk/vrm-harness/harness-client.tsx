@@ -9,6 +9,7 @@
  */
 import { useState } from 'react';
 import { VrmAvatarViewer } from '@/components/kiosk/VrmAvatarViewer';
+import { DEFAULT_NATURAL_MOTION_SEED } from '@/components/kiosk/avatar/vrm-idle';
 
 export function VrmHarnessClient() {
   const [vrmDraft, setVrmDraft] = useState('');
@@ -43,7 +44,11 @@ export function VrmHarnessClient() {
         </button>
       </div>
       <div data-testid="harness-stage" style={{ minHeight: 0 }}>
-        <VrmAvatarViewer vrmUrl={vrmUrl} motionUrl={motionUrl} />
+        <VrmAvatarViewer
+          vrmUrl={vrmUrl}
+          motionUrl={motionUrl}
+          naturalMotionSeed={DEFAULT_NATURAL_MOTION_SEED}
+        />
       </div>
     </main>
   );
