@@ -12,7 +12,7 @@ import type { OnResolved, VoiceSessionFactory } from '@/lib/voice-session/kiosk-
 import type { ReceptionState } from '@/domain/reception/state';
 import { useEffect, useRef } from 'react';
 import { announcementPhrase, shouldAnnounce } from './voice-announcement';
-import type { VoiceKioskState } from '@/domain/voice-session/kiosk-view';
+import type { VoiceKioskMode, VoiceKioskState } from '@/domain/voice-session/kiosk-view';
 import { useVoiceSession } from './useVoiceSession';
 import { VoiceReadbackConfirm } from './VoiceReadbackConfirm';
 
@@ -39,6 +39,12 @@ export type VoiceSessionLayerProps = {
    * 食い違うと、聞いた内容と読んだ内容のどちらを信じるかを来訪者に選ばせることになる。
    */
   onAnnounce?: (text: string) => void;
+  /**
+   * 音声 UI の現在局面を描画側へ伝える観測口 (#1095)。渡すのは `VoiceKioskMode` だけで、
+   * interim text / readback name 等の PII を含みうる値は境界を越えない。これは状態遷移の命令では
+   * なく observation のみで、voice / reception reducer の所有権は変えない。
+   */
+  onModeChange?: (mode: VoiceKioskMode) => void;
 };
 
 export function VoiceSessionLayer({
@@ -47,8 +53,17 @@ export function VoiceSessionLayer({
   receptionState,
   onResolved,
   onAnnounce,
+  onModeChange,
 }: VoiceSessionLayerProps) {
   const { state, confirmYes, confirmNo } = useVoiceSession(factory, receptionState, onResolved);
+
+  // AvatarBehavior へ渡すのは mode だけ。readbackName / interimText などは外へ出さない (#1095)。
+  useEffect(() => {
+    onModeChange?.(state.mode);
+  }, [state.mode, onModeChange]);
+  // voiceSession 注入が外れた/画面を離れた瞬間に観測値を必ず inactive へ戻す。
+  // KioskFlow 側へ reset 用の第2 effect を増やさず、VoiceSessionLayer の生存期間と観測値を一致させる。
+  useEffect(() => () => onModeChange?.('inactive'), [onModeChange]);
 
   /*
    * 局面へ**入った瞬間に 1 度だけ**読み上げる (#803)。判定は純関数へ出してある ——
