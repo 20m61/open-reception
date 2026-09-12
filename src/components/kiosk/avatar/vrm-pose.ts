@@ -1,10 +1,13 @@
 /**
- * 受付状態ごとの手続き的ポーズ・ジェスチャー (issue #31)。
+ * 受付状態ごとの手続き的ポーズ・ジェスチャー (issue #31 / #1085)。
  *
  * 正規ライセンスの .vrma モーションが無くても、状態に応じた所作の variation を与える。
  * arms-down の idle rest pose（vrm-idle.ts）を基準に、状態ごとに控えめな差分を重ね、
  * 一部の状態は時間変化（手を振る/頷く/会釈）を加える。すべて純データ/純関数で定義し、
  * VrmAvatarViewer が `.vrma` 非再生時に humanoid 正規化ボーンへ適用する。実描画は実機 UAT（#65）。
+ *
+ * #1085 では固定周期だけの「揺れている人形」感を減らすため、呼吸/揺れに加えて
+ * deterministic な低周波 micro-motion を頭・首・上体へ薄く重ねる。
  *
  * 値は安全側（rest からの小さな変位）に留め、未調整でも破綻しないようにしている。
  * 腕の向きの符号は dev 実描画で確定（左 upperArm +Z / 右 -Z で下ろす）。
@@ -13,6 +16,7 @@ import type { AvatarState } from '@/domain/reception/ui-contract';
 import {
   IDLE_REST_POSE,
   breathingRotation,
+  naturalMicroMotion,
   swayRotation,
   type BoneEuler,
   type BonePose,
@@ -39,6 +43,23 @@ const STATE_OVERRIDES: Partial<Record<AvatarState, Readonly<BonePose>>> = {
   farewell: { spine: { x: 0.1 }, neck: { x: 0.07 } },
 };
 
+/**
+ * 状態ごとの micro-motion 強度。
+ * 「聞いている/通話中/お詫び」のような集中・静けさが必要な局面では動きを抑える。
+ * これは受付フロー状態ではなく描画パラメータであり、状態遷移を所有しない。
+ */
+const MICRO_MOTION_INTENSITY: Record<AvatarState, number> = {
+  idle: 1,
+  greeting: 0.65,
+  guiding: 0.75,
+  listening: 0.45,
+  confirming: 0.55,
+  calling: 0.5,
+  connected: 0.35,
+  apologizing: 0.45,
+  farewell: 0.6,
+};
+
 /** `Object.entries` はキーを `string` に落とすので、ボーン名の型を保って列挙する。 */
 export function poseEntries(pose: Readonly<BonePose>): Array<[HumanoidBoneName, BoneEuler]> {
   return Object.entries(pose).filter((entry): entry is [HumanoidBoneName, BoneEuler] => Boolean(entry[1]));
@@ -50,7 +71,7 @@ function addAxis(base: BoneEuler | undefined, axis: 'x' | 'y' | 'z', delta: numb
 
 /**
  * 状態 + 経過秒から、適用すべき humanoid ボーン回転（Euler, ラジアン）を解決する純関数。
- * ベース(rest) + 状態上書き + 常時の生命感(呼吸/揺れ) + 状態別の動的モーションを合成する。
+ * ベース(rest) + 状態上書き + 常時の生命感 + 状態別の動的モーションを合成する。
  */
 export function resolveStatePose(state: AvatarState, elapsedSec: number): BonePose {
   const pose: BonePose = {};
@@ -60,9 +81,20 @@ export function resolveStatePose(state: AvatarState, elapsedSec: number): BonePo
   for (const [bone, e] of poseEntries(STATE_OVERRIDES[state] ?? {})) {
     pose[bone] = { ...(pose[bone] ?? {}), ...e };
   }
-  // 常時の生命感: 呼吸(spine.x) と 揺れ(chest.z) を加算。
+
+  // 常時の生命感: 呼吸(spine.x) と非反復の揺れ(chest.z) を加算。
   pose.spine = addAxis(pose.spine, 'x', breathingRotation(elapsedSec));
   pose.chest = addAxis(pose.chest, 'z', swayRotation(elapsedSec));
+
+  // さらに微小な非反復 motion を頭/首/上体へ。UI gaze は viewer 側でこの後に加算される。
+  const micro = naturalMicroMotion(elapsedSec);
+  const microIntensity = MICRO_MOTION_INTENSITY[state];
+  pose.head = addAxis(pose.head, 'x', micro.headX * microIntensity);
+  pose.head = addAxis(pose.head, 'y', micro.headY * microIntensity);
+  pose.neck = addAxis(pose.neck, 'x', micro.neckX * microIntensity);
+  pose.neck = addAxis(pose.neck, 'y', micro.neckY * microIntensity);
+  pose.chest = addAxis(pose.chest, 'y', micro.chestY * microIntensity);
+
   // 状態別の動的モーション。
   if (state === 'greeting') {
     // 右手を小さく振る。
