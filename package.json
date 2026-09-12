@@ -25,6 +25,7 @@
     "verify": "npm run typecheck && npm run lint && npm test && npm run build",
     "lighthouse": "lhci autorun",
     "vrm:check": "bash scripts/vrm-check.sh",
+    "vrm:generate:standard": "node scripts/generate-standard-vrma.mjs",
     "audit:deps": "tsx scripts/audit-deps.ts",
     "sast": "bash scripts/sast.sh",
     "secrets:scan": "gitleaks detect --no-banner --redact",
