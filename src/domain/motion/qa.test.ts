@@ -19,6 +19,18 @@ describe('evaluateMotionQa', () => {
     expect(report.gates.find((g) => g.id === 'loop-seam')?.status).toBe('not-applicable');
   });
 
+  it('does not treat unmeasured framing or neutral calibration as a pass', () => {
+    const report = evaluateMotionQa({
+      ...goodMetrics,
+      neutralStartErrorDeg: undefined,
+      neutralEndErrorDeg: undefined,
+      framingOverflowRatio: undefined,
+    });
+    expect(report.gates.find((g) => g.id === 'neutral-start')?.status).toBe('not-applicable');
+    expect(report.gates.find((g) => g.id === 'neutral-end')?.status).toBe('not-applicable');
+    expect(report.gates.find((g) => g.id === 'framing')?.status).toBe('not-applicable');
+  });
+
   it('requires a seam metric for loop motions', () => {
     const report = evaluateMotionQa(goodMetrics, {
       ...DEFAULT_MOTION_QA_PROFILE,
