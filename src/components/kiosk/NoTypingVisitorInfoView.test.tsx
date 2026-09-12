@@ -18,7 +18,7 @@ const copy: NoTypingVisitorInfoCopy = {
 };
 
 const recognizerFactory: VisitorNameRecognizerFactory = () => ({
-  recognize: async () => ['来客 太郎'],
+  recognize: async () => [{ text: '来客 太郎', certainty: 'high' }],
 });
 
 function render(over: Partial<Parameters<typeof NoTypingVisitorInfoView>[0]> = {}): string {
@@ -33,7 +33,7 @@ function render(over: Partial<Parameters<typeof NoTypingVisitorInfoView>[0]> = {
   );
 }
 
-describe('NoTypingVisitorInfoView (#1057)', () => {
+describe('NoTypingVisitorInfoView (#1057 / #1077)', () => {
   it('visitor-facing typing control を一切描画しない', () => {
     const html = render();
     expect(html).not.toContain('<input');
@@ -58,7 +58,7 @@ describe('NoTypingVisitorInfoView (#1057)', () => {
     expect(html).not.toContain('<input');
   });
 
-  it('確認画面から BACK した既存氏名は消さず、明示確認から再開する', () => {
+  it('確認画面から BACK した既存氏名は消さず、訂正可能なreviewから再開する', () => {
     const html = render({
       initial: { name: '既存 来訪者', company: '既存会社', note: '既存補足' },
     });
