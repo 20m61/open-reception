@@ -1,5 +1,12 @@
 import type { VoiceTransportConnectionContext, VoiceTransportTokenClaims } from '@/domain/voice-transport/types';
 import {
+  VOICE_TRANSPORT_AUTH_PROTOCOL_PREFIX,
+  VOICE_TRANSPORT_MAX_AUDIO_FRAME_BYTES,
+  VOICE_TRANSPORT_MIN_AUDIO_FRAME_BYTES,
+  VOICE_TRANSPORT_WS_PATH,
+  VOICE_TRANSPORT_WS_PROTOCOL,
+} from '@/domain/voice-transport/protocol';
+import {
   authorizeVoiceTransportConnection,
   type VoiceTransportAuthorizationReason,
   type VoiceTransportAuthorizerDeps,
@@ -12,14 +19,6 @@ import {
  * このモジュールは upgrade 前後で必ず通す accept/session 境界だけを持つ。
  * 音声はメモリ上で次段へ渡すだけで永続化しない。
  */
-export const VOICE_TRANSPORT_WS_PATH = '/v1/voice';
-export const VOICE_TRANSPORT_WS_PROTOCOL = 'open-reception.voice.v1';
-export const VOICE_TRANSPORT_AUTH_PROTOCOL_PREFIX = 'auth.';
-
-/** PCM16 mono 16kHz の 20ms / 40ms 分。heartbeat は別途 1 byte。 */
-export const VOICE_TRANSPORT_MIN_AUDIO_FRAME_BYTES = (16_000 * 2 * 20) / 1000; // 640
-export const VOICE_TRANSPORT_MAX_AUDIO_FRAME_BYTES = (16_000 * 2 * 40) / 1000; // 1280
-
 const HEARTBEAT_FRAME = new Uint8Array([0]);
 const MAX_CONTEXT_ID_LENGTH = 256;
 
@@ -79,7 +78,6 @@ export type VoiceTransportGatewayFrameResult =
     };
 
 type ParsedProtocol = { token: string };
-
 type ParsedRequestContext = VoiceTransportConnectionContext;
 
 function rejection(
