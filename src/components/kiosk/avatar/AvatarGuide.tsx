@@ -2,15 +2,17 @@
 
 import dynamic from 'next/dynamic';
 import { useEffect, useMemo, useState } from 'react';
+import { deriveAvatarBehavior } from '@/domain/avatar/behavior';
+import { resolveMotionUrl, type MotionKey } from '@/domain/motion/types';
 import type { ReceptionState } from '@/domain/reception/state';
 import { deriveAvatarState, gazeTargetFor } from '@/domain/reception/ui-contract';
-import type { KioskLayout } from '../layout';
-import { resolveMotionUrl, type MotionKey } from '@/domain/motion/types';
+import type { VoiceKioskMode } from '@/domain/voice-session/kiosk-view';
 import { DEFAULT_LOCALE, htmlLangFor, type Locale } from '@/lib/i18n';
+import type { KioskLayout } from '../layout';
 import { speak, type SpeakSettings } from '../speech';
 import { AvatarFallbackImage } from './fallback-image';
-import { resolveAvatarVisual } from './visual';
 import { avatarGuidanceFor, type AvatarGuidance, type AvatarGuidanceOverride } from './guidance';
+import { resolveAvatarVisual } from './visual';
 
 /**
  * VrmAvatarViewer は viewer 本体 + avatar サブモジュール（lip-sync / vrm-expression /
@@ -31,22 +33,23 @@ const VrmAvatarViewer = dynamic(
  * 責務:
  *  - #120 の `deriveAvatarState(screenState)` を購読し、状態に応じた表情/モーション・
  *    発話・字幕・軽い誘導を提示する（写像ロジックは avatar/guidance.ts の純関数）。
- *  - 音声が出ない/出せない場合も「字幕」で同内容を表示する（subtitle は常に表示）。
+ *  - #1084 の `deriveAvatarBehavior` で音声局面を描画ヒントへ変換する。ここでは状態を所有しない。
+ *  - 音声が出ない/出せない場合も「字幕」で同じ内容を表示する（subtitle は常に表示）。
  *  - VRM ロード失敗時は VrmAvatarViewer が静止画/プレースホルダへ落ち、本コンポーネントは
  *    さらにテキスト案内（fallbackText）で内容を保証する。
  *  - チャットドロワー表示中も操作を遮らないよう、オーバーレイは pointer-events: none。
  *
- * 配線方針（KioskFlow へは本トラックでは触らない / #121 のスロット待ち）:
- *  - KioskFlow が保持する screenState をそのまま `screenState` に渡す。
- *  - locale は受付の言語設定（#103）から、TTS 設定は管理設定（#5/#28）から渡す。
- *  - VRM/静止画 URL・モーションマップは端末設定（#27/#31）から渡す。
- *
- * 本コンポーネントは状態を所有しない（screenState の導出のみ）。スタイルはインラインで
+ * 本コンポーネントは状態を所有しない（screenState / voiceMode の導出のみ）。スタイルはインラインで
  * 完結させ globals.css は触らない（#121 のスコープ）。
  */
 export type AvatarGuideProps = {
   /** 受付フローの画面状態。ここから avatarState を導出する（state は持たない）。 */
   screenState: ReceptionState;
+  /**
+   * 音声対話UIの非PIIな局面 (#1084)。未指定は inactive で、従来のタッチ専用挙動と同一。
+   * `VoiceKioskState` 全体は渡さず、描画に必要な mode だけを受ける。
+   */
+  voiceMode?: VoiceKioskMode;
   /** 表示言語（#103）。未指定は既定 locale。 */
   locale?: Locale;
   /** VRM モデル URL（無ければ静止画/プレースホルダ）。実アセット検証は #65。 */
@@ -76,6 +79,7 @@ export type AvatarGuideProps = {
 
 export function AvatarGuide({
   screenState,
+  voiceMode = 'inactive',
   locale = DEFAULT_LOCALE,
   vrmUrl,
   fallbackImageUrl,
@@ -87,6 +91,7 @@ export function AvatarGuide({
   className,
 }: AvatarGuideProps) {
   const avatarState = deriveAvatarState(screenState);
+  const behavior = deriveAvatarBehavior({ avatarState, voiceMode });
   const guidance: AvatarGuidance = useMemo(
     () => avatarGuidanceFor(avatarState, locale, guidanceOverride),
     [avatarState, locale, guidanceOverride],
@@ -118,6 +123,7 @@ export function AvatarGuide({
       className={className}
       data-testid="avatar-guide"
       data-avatar-state={avatarState}
+      data-avatar-behavior={behavior.phase}
       data-screen-state={screenState}
       data-cue={guidance.cue}
       data-expression={guidance.expression}
@@ -135,6 +141,7 @@ export function AvatarGuide({
             expression={guidance.expression}
             speaking={speaking}
             avatarState={avatarState}
+            behaviorPhase={behavior.phase}
             // 視線誘導は契約から導出する (#422 inc5-c 増分 3)。screenState キーの
             // `gazeTargetFor` が唯一の権威で、ここは向きの解決へ渡すだけ。
             gazeTarget={gazeTargetFor(screenState)}
