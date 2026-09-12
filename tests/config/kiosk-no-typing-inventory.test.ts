@@ -10,6 +10,10 @@ import { describe, expect, it } from 'vitest';
  * contentEditable を追加した時点で落とす。#1057 の各置換 PR は、対応したファイルの
  * 件数を減らしてこの inventory を更新する。最終状態は空オブジェクト。
  *
+ * NoTypingTargetView のような新しい visitor UI は、この inventory に新規エントリを増やさない
+ * こと自体が受け入れ条件になる。既存入力を隠すだけでは件数は減らないため、最終的には DOM から
+ * typing control を削除する。
+ *
  * checkbox/radio/file/hidden/range/color は typing ではないので対象外。
  * password/numeric/search/tel 等は OS software keyboard を開き得るため対象に含める
  * （数字入力は共通テンキーへ置換する）。
