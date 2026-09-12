@@ -35,6 +35,7 @@ describe('parseBvh', () => {
     const parsed = parseBvh(SAMPLE);
     expect(parsed.joints.map((joint) => joint.name)).toEqual(['Hips', 'Neck', 'Head']);
     expect(parsed.joints[1].parent).toBe('Hips');
+    expect(parsed.joints[2].parent).toBe('Neck');
     expect(parsed.frames).toHaveLength(4);
     expect(parsed.frameTimeSec).toBe(0.1);
   });
