@@ -1,14 +1,17 @@
 import { beforeEach, describe, expect, it } from 'vitest';
+import {
+  buildVoiceTransportRequestTarget,
+  voiceTransportAuthProtocol,
+  VOICE_TRANSPORT_MAX_AUDIO_FRAME_BYTES,
+  VOICE_TRANSPORT_MIN_AUDIO_FRAME_BYTES,
+  VOICE_TRANSPORT_WS_PROTOCOL,
+} from '@/domain/voice-transport/protocol';
 import { issueVoiceTransportToken } from '@/lib/voice-transport/token';
 import { createInMemoryReplayGuard } from '@/lib/voice-transport/replay-guard';
 import { createInMemoryStreamLimiter } from '@/lib/voice-transport/stream-limiter';
 import {
   acceptVoiceTransportGatewayConnection,
   parseVoiceTransportProtocolHeader,
-  VOICE_TRANSPORT_AUTH_PROTOCOL_PREFIX,
-  VOICE_TRANSPORT_MAX_AUDIO_FRAME_BYTES,
-  VOICE_TRANSPORT_MIN_AUDIO_FRAME_BYTES,
-  VOICE_TRANSPORT_WS_PROTOCOL,
   type VoiceTransportGatewayAdmissionState,
   type VoiceTransportGatewayDeps,
 } from './voice-gateway';
@@ -23,11 +26,11 @@ const claims = {
 };
 
 function requestTarget(kioskId = claims.kioskId, receptionSessionId = claims.receptionSessionId): string {
-  return `/v1/voice?kioskId=${encodeURIComponent(kioskId)}&receptionSessionId=${encodeURIComponent(receptionSessionId)}`;
+  return buildVoiceTransportRequestTarget(kioskId, receptionSessionId);
 }
 
 function protocolHeader(token: string): string {
-  return `${VOICE_TRANSPORT_WS_PROTOCOL}, ${VOICE_TRANSPORT_AUTH_PROTOCOL_PREFIX}${token}`;
+  return `${VOICE_TRANSPORT_WS_PROTOCOL}, ${voiceTransportAuthProtocol(token)}`;
 }
 
 function makeDeps() {
@@ -112,7 +115,7 @@ describe('Realtime voice gateway accept boundary', () => {
 
   it('rejects malformed protocol sets without reflecting the credential', async () => {
     const { token } = await issueVoiceTransportToken(claims);
-    const malformed = parseVoiceTransportProtocolHeader(`${VOICE_TRANSPORT_AUTH_PROTOCOL_PREFIX}${token}`);
+    const malformed = parseVoiceTransportProtocolHeader(voiceTransportAuthProtocol(token));
 
     expect(malformed).toEqual({ ok: false, status: 401, reason: 'invalid_protocol' });
     expect(JSON.stringify(malformed)).not.toContain(token);
