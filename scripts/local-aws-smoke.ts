@@ -7,7 +7,7 @@ process.env.AWS_DEFAULT_REGION ??= process.env.AWS_REGION;
 process.env.AWS_ACCESS_KEY_ID ??= 'test';
 process.env.AWS_SECRET_ACCESS_KEY ??= 'test';
 process.env.AWS_EC2_METADATA_DISABLED = 'true';
-process.env.AWS_ENDPOINT_URL ??= 'http://localhost:4566';
+process.env.AWS_ENDPOINT_URL ??= 'http://localhost.localstack.cloud:4566';
 process.env.TABLE_NAME ??= 'open-reception-local';
 
 type SmokeItem = {
