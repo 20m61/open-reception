@@ -35,7 +35,10 @@ start_localstack() {
     echo "[local-aws] LocalStack already running."
   else
     echo "[local-aws] Starting LocalStack..."
-    lstk --non-interactive start
+    if ! lstk --non-interactive start; then
+      echo "[local-aws] start failed. In Claude Code Web, configure LOCALSTACK_AUTH_TOKEN as an environment secret." >&2
+      exit 1
+    fi
   fi
 }
 
