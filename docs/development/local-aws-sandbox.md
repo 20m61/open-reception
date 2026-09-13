@@ -16,8 +16,6 @@ Verification ladder:
 
 ## Implemented developer lane
 
-The repository now contains a disposable local lane:
-
 ```bash
 npm install -g @localstack/lstk
 export LOCALSTACK_AUTH_TOKEN='...'
@@ -28,12 +26,9 @@ npm run local:aws:reset
 npm run local:aws:down
 ```
 
-`npm run local:aws:up`:
+Claude Code Web is a headless/non-interactive environment, so `LOCALSTACK_AUTH_TOKEN` must be configured as an environment secret before `lstk start`. Do not commit it.
 
-- starts LocalStack through the repo-local `.lstk/config.toml`;
-- creates `open-reception-local` with the production-compatible `PK/SK`, `GSI1PK/GSI1SK`, GSI1 and `ttl` definition;
-- runs the existing DynamoDB seed with deterministic mock/demo data;
-- uses dummy local AWS credentials only.
+`npm run local:aws:up` starts LocalStack, creates `open-reception-local` with production-compatible `PK/SK`, `GSI1PK/GSI1SK`, GSI1 and `ttl`, runs the existing deterministic DynamoDB seed, and uses dummy local AWS credentials only.
 
 `npm run local:aws:test` additionally executes `scripts/local-aws-smoke.ts` against the **real DynamoDB backend implementation**. The smoke path covers collection put/get/query, GSI lookup, conditional create, compare-and-set update/removal, singleton persistence, indexed log lookup/range query, and delete.
 
@@ -41,20 +36,11 @@ The application code is not given a LocalStack-only repository. AWS SDK v3 is re
 
 ## Local responsibility
 
-Prioritize the sandbox for DynamoDB persistence semantics first. Extend it to S3, Secrets Manager, Cognito, Lambda/API Gateway only when the additional emulator coverage materially improves feedback time.
-
-Keep the existing in-memory backend for the fastest unit/UI iteration.
+Prioritize DynamoDB persistence semantics first. Extend to S3, Secrets Manager, Cognito, Lambda/API Gateway only when additional emulator coverage materially improves feedback time. Keep the existing in-memory backend for the fastest unit/UI iteration.
 
 ## Real AWS / external responsibility
 
-Keep these outside the local proof boundary:
-
-- real iPad/browser/device behavior and soak behavior;
-- Vonage/telephony/WebRTC;
-- speech-service quality/latency and provider edge cases;
-- CloudFront, certificate, DNS and public-delivery behavior;
-- IAM/KMS/Cognito security semantics that depend on AWS implementation details;
-- destructive/replacement/live-drift behavior of CloudFormation/CDK.
+Keep device/soak behavior, Vonage/WebRTC, speech-service fidelity, CloudFront/certificate/DNS/public delivery, AWS-specific IAM/KMS/Cognito semantics, and CloudFormation replacement/live-drift behavior outside the local proof boundary.
 
 ## Guardrails
 
