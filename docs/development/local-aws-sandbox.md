@@ -1,6 +1,6 @@
 # Local AWS sandbox strategy
 
-Status: **implementation baseline complete; Claude Code Web runtime validation pending**
+Status: **implementation baseline complete on `chore/local-aws-dev-sandbox`; Claude Code Web runtime validation pending**
 
 ## Decision
 
