@@ -28,6 +28,40 @@ npm run local:aws:down
 
 Claude Code Web is a headless/non-interactive environment, so `LOCALSTACK_AUTH_TOKEN` must be configured as an environment secret before `lstk start`. Do not commit it.
 
+`LOCALSTACK_AUTH_TOKEN` is a runtime secret: keep it in the environment/secret store only, and never commit, print, fixture, or attach it to evidence. A headless/CI-equivalent lane needs a **CI Auth Token** rather than a personal developer token; a personal token is not licensed for unattended runs.
+
+Environment variables in Claude Code on the web are **baked in at container start**, so a token added to the environment dialog does not reach an already-running session. Add it first, then create the session.
+
+## 🔴 Prerequisites are not present by default in Claude Code on the web (measured 2026-09-14)
+
+`scripts/local-aws.sh` fails closed in `preflight()` when Docker or `lstk` is missing, so `npm run local:aws:up` stops on its first step. A clean Claude Code Web session measured:
+
+| Prerequisite | State |
+| --- | --- |
+| Docker **daemon** | ⛔ absent — `docker info` shows a Client section only and exits 1; `/var/run/docker.sock` does not exist and `find /` locates no socket; no `dockerd` process |
+| `lstk` CLI | ⛔ not installed |
+| `LOCALSTACK_AUTH_TOKEN` | ⛔ unset |
+
+The Docker CLI *is* installed, which makes this easy to misread — the repository's own quality gate reports the same condition when it skips ZAP (`docker デーモンに接続できません（CLI はあります）`). Confirm the **daemon**, not the CLI.
+
+**#1103 AC1 therefore depends on whether Docker can be enabled for this environment**, which is an environment-configuration question, not a code one. If it cannot be enabled, the honest conclusion for #1103 is that LocalStack cannot replace a persistent AWS `dev` *on this lane* — which is a valid answer to the issue, not a failure.
+
+### Diagnosing without Docker
+
+```bash
+npm run local:aws:env
+```
+
+`env` deliberately skips `preflight()` so the lane stays observable where the prerequisites are missing — otherwise the first line fails and nothing is learned. It prints no secret: the credentials are the constant `test` by construction.
+
+## 🔴 The local lane is isolated from real AWS credentials
+
+`scripts/local-aws.sh` assigns dummy credentials **unconditionally** and clears `AWS_SESSION_TOKEN` and `AWS_PROFILE`.
+
+This used to be written `${AWS_ACCESS_KEY_ID:-test}`. Because `:-` means *if unset*, a session holding a real AWS deploy window inherited real STS credentials into the local lane, with the session token never cleared — the full short-lived credential set. AC1 asks for LocalStack to run **without real AWS credentials**, and the `:-` form did not guarantee that. The blast radius was small while the endpoint pointed at localhost, but small is not the same as guaranteed: one wrong `AWS_ENDPOINT_URL` and real credentials reach real AWS.
+
+`tests/hooks/local-aws-credential-isolation.test.ts` pins this by spawning bash. It asserts both sides: that the dummy values are present, **and** that sentinel real-looking values never appear in the output — asserting only the former would pass in a world where both are emitted.
+
 `npm run local:aws:up` starts LocalStack, creates `open-reception-local` with production-compatible `PK/SK`, `GSI1PK/GSI1SK`, GSI1 and `ttl`, runs the existing deterministic DynamoDB seed, and uses dummy local AWS credentials only.
 
 `npm run local:aws:test` additionally executes `scripts/local-aws-smoke.ts` against the **real DynamoDB backend implementation**. The smoke path covers collection put/get/query, GSI lookup, conditional create, compare-and-set update/removal, singleton persistence, indexed log lookup/range query, and delete.

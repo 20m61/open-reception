@@ -6,8 +6,26 @@ cd "$ROOT"
 
 export AWS_REGION="${AWS_REGION:-ap-northeast-1}"
 export AWS_DEFAULT_REGION="${AWS_DEFAULT_REGION:-$AWS_REGION}"
-export AWS_ACCESS_KEY_ID="${AWS_ACCESS_KEY_ID:-test}"
-export AWS_SECRET_ACCESS_KEY="${AWS_SECRET_ACCESS_KEY:-test}"
+
+# 🔴 **資格情報は無条件に dummy へ置き換える（`:-` を使わない）。**
+#
+# かつては `${AWS_ACCESS_KEY_ID:-test}` と書いていたが、`:-` は「**未設定なら**」なので
+# **AWS のデプロイ窓が開いているセッションでは実 STS 資格情報をそのまま引き継ぐ**。
+# `AWS_SESSION_TOKEN` は unset すらしておらず、短命 STS の 3 点セットが揃ってこの
+# レーンへ流れ込んでいた（2026-09-14 に実際にその状態のセッションで踏んだ）。
+#
+# #1103 の AC1 は「実 AWS 資格情報**なしに** LocalStack を起動できること」である。
+# 送り先が localhost である限り実害は小さいが、**小さいことと保証があることは別**で、
+# `AWS_ENDPOINT_URL` を取り違えた瞬間に実資格情報で実 AWS を叩く。ここで断つ。
+#
+# `AWS_PROFILE` も落とす ―― 残っていると SDK が `~/.aws/credentials` を解決してしまい、
+# 「環境変数は dummy なのに実資格情報で動く」という最も読みにくい形になる。
+# `tests/hooks/local-aws-credential-isolation.test.ts` が実際に bash を起動して縛る。
+export AWS_ACCESS_KEY_ID=test
+export AWS_SECRET_ACCESS_KEY=test
+unset AWS_SESSION_TOKEN
+unset AWS_PROFILE
+
 export AWS_EC2_METADATA_DISABLED=true
 export AWS_ENDPOINT_URL="${AWS_ENDPOINT_URL:-http://localhost.localstack.cloud:4566}"
 export DATA_BACKEND=dynamodb
@@ -113,6 +131,24 @@ down() {
   lstk --non-interactive stop
 }
 
+# 🔴 **`env` は preflight を通さない。**
+#
+# docker / lstk が無い環境（Claude Code on the web の既定がまさにそれ）でも、
+# 「このレーンがどこを向き、どの資格情報で動くのか」は観測できなければならない。
+# preflight を通すと最初の 1 行で落ちて**何も分からないまま**になる。
+#
+# 出力に秘密は無い ―― 資格情報は定数 `test` であり、それが本節の主張そのものである。
+lane_env() {
+  echo "AWS_REGION=${AWS_REGION}"
+  echo "AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID}"
+  echo "AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY}"
+  echo "AWS_SESSION_TOKEN=${AWS_SESSION_TOKEN-<unset>}"
+  echo "AWS_PROFILE=${AWS_PROFILE-<unset>}"
+  echo "AWS_ENDPOINT_URL=${AWS_ENDPOINT_URL}"
+  echo "DATA_BACKEND=${DATA_BACKEND}"
+  echo "TABLE_NAME=${TABLE_NAME}"
+}
+
 case "${1:-up}" in
   up) up ;;
   test|smoke) smoke ;;
@@ -124,9 +160,10 @@ case "${1:-up}" in
     ;;
   reset) reset ;;
   status) status ;;
+  env) lane_env ;;
   down|stop) down ;;
   *)
-    echo "usage: $0 {up|test|seed|reset|status|down}" >&2
+    echo "usage: $0 {up|test|seed|reset|status|env|down}" >&2
     exit 2
     ;;
 esac

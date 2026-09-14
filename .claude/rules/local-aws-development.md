@@ -2,7 +2,9 @@
 
 - Prefer a disposable LocalStack sandbox for routine AWS integration before using a real AWS dev/staging environment.
 - Use the current `lstk` CLI (`lstk start`, `lstk status`, `lstk reset --force`, `lstk stop`, `lstk cdk ...`). Do not add new dependencies on the deprecated `localstack` CLI or `cdklocal`.
-- `LOCALSTACK_AUTH_TOKEN` is a runtime secret. Never commit, print, fixture, or persist it.
+- `LOCALSTACK_AUTH_TOKEN` is a runtime secret. Never commit, print, fixture, or persist it. Headless/CI-equivalent lanes need a CI Auth Token, not a personal developer token.
+- Verify the Docker **daemon**, not the `docker` CLI. The CLI is present in Claude Code on the web while the daemon is not, so `command -v docker` succeeding proves nothing.
+- Never let the local lane inherit real AWS credentials. Assign dummy values unconditionally and clear `AWS_SESSION_TOKEN` / `AWS_PROFILE`; `${VAR:-test}` silently keeps a real deploy window's credentials.
 - Never require real staging/production AWS credentials for local development.
 - LocalStack passing is not AWS parity. Infrastructure/auth/network/delivery changes still require the repository's existing CDK and real-AWS verification gates.
 - Never weaken production IAM, encryption, tenancy, audit, or deployment controls to make the emulator pass; introduce local-only endpoint/config wiring instead.
