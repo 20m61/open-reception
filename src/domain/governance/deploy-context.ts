@@ -31,6 +31,8 @@
  * mock だけで動かす dev デプロイを禁じないため、値の選択自体は運用者に委ねる。
  */
 
+import { resolveCustomDomainContext } from './custom-domain-context';
+
 /** 未指定なら deploy を止める環境変数と、対応する CDK context キー。 */
 const REQUIRED: ReadonlyArray<readonly [envVar: string, contextKey: string, why: string]> = [
   ['OR_APP_SECRETS_NAME', 'appSecretsName', '省くと Secrets Manager 連携が落ちて起動が 500 になる'],
@@ -244,10 +246,23 @@ export function resolveDeployContextEnvBlock(
 ): DeployContextEnvBlockResult {
   const resolved = resolveDeployContext(env);
   if (!resolved.ok) return resolved;
+
+  // 独自ドメイン（#189）は**任意**だが、窓を開けるときに運ばれないと
+  // **黙って CDK 生成ドメインのままデプロイされる**（#989 と同じ「1 つだけ貼り忘れ」の型）。
+  // 設定されているなら運び、形が不正なら**窓を開ける前に**落とす。
+  const customDomain = resolveCustomDomainContext(env.OR_CUSTOM_DOMAIN);
+  if (!customDomain.ok) {
+    return { ok: false, missing: [], invalid: ['OR_CUSTOM_DOMAIN'], message: customDomain.message };
+  }
+
   // `resolveDeployContext` が ok を返した時点で全キーが揃い、語彙も検証済み。
   // 値の正規化（trim）もそちらに揃えたいので、env から読み直さずに同じ手順を踏む。
-  const block = REQUIRED.map(([envVar]) => `${envVar}=${(env[envVar] ?? '').trim()}`).join('\n');
-  return { ok: true, block };
+  const lines = REQUIRED.map(([envVar]) => `${envVar}=${(env[envVar] ?? '').trim()}`);
+  // args が空＝「使わない」。その場合はブロックへ足さず、既存の 4 行のままにする。
+  if (customDomain.args.length > 0) {
+    lines.push(`OR_CUSTOM_DOMAIN=${(env.OR_CUSTOM_DOMAIN ?? '').trim()}`);
+  }
+  return { ok: true, block: lines.join('\n') };
 }
 
 /**

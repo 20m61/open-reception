@@ -8,6 +8,7 @@
  * シェル側は `while IFS= read -r` で配列へ積む）。
  * 失敗時: 診断を stderr に出して**非ゼロで終わる**。呼び出し側はそこで止まる。
  */
+import { resolveCustomDomainContext } from '../src/domain/governance/custom-domain-context';
 import { resolveDeployContext } from '../src/domain/governance/deploy-context';
 
 function main(): void {
@@ -16,7 +17,16 @@ function main(): void {
     console.error(result.message);
     process.exit(1);
   }
-  for (const arg of result.args) {
+
+  // 独自ドメイン（#189）は**任意**。未指定なら args が空になり、CDK 生成ドメインのみになる。
+  // 指定があるのに形が不正なときは、必須 4 変数と同じく**窓を消費する前に**止める。
+  const customDomain = resolveCustomDomainContext(process.env.OR_CUSTOM_DOMAIN);
+  if (!customDomain.ok) {
+    console.error(customDomain.message);
+    process.exit(1);
+  }
+
+  for (const arg of [...result.args, ...customDomain.args]) {
     console.log(arg);
   }
 }

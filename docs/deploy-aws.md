@@ -531,6 +531,39 @@ npx cdk deploy OpenReception-Web-prod -c env=prod -c appEnv="$APP_ENV" \
 紐付け後、Outputs の `CustomDomainUrl` が公開 URL になる。`createDnsRecord:false` の場合は
 DNS 側で当該 FQDN を `DistributionDomainName` 宛の CNAME/ALIAS に向ける。
 
+### クラウド経由でデプロイする場合: `OR_CUSTOM_DOMAIN`
+
+`scripts/aws-cloud-deploy.sh` からは **`OR_CUSTOM_DOMAIN`**（JSON 文字列）で渡す。
+未設定なら CDK 生成ドメインのみで、既存の挙動は変わらない。
+
+```
+OR_CUSTOM_DOMAIN={"domainName":"open-reception.example.com","certificateArn":"arn:aws:acm:us-east-1:<acct>:certificate/<id>"}
+```
+
+窓を開けるときの貼り付けブロック（`aws-issue-credentials.sh --with-context`）にも載る。
+**環境ダイアログへ入れ忘れると、黙って CDK 生成ドメインのままデプロイされる**ので、
+`resolveDeployContextEnvBlock` が設定済みの値を一緒に運ぶ。
+
+🔴 **`OR_PUBLIC_ORIGIN_OVERRIDE` も独自ドメインへ変える。** 片方だけ変えると、画面は
+新ドメインで開けるのに**発行される QR / エンロール URL が旧ドメインを指す**。どちらも
+`https://<独自ドメイン>` に揃える。
+
+#### このデプロイ経路では出来ないこと（IAM で機械強制）
+
+| 出来ないこと | 理由 | 代わりに |
+| --- | --- | --- |
+| **証明書の発行** | `acm:*` が明示 Deny（`claude-boundary.json` の `DenySharedDnsAndCertificates` / `claude-cfn-exec.json` の `DenyDnsAndPrincipals`） | 人が **us-east-1** で先に発行する。ゾーンが Route53 にあれば DNS 検証はコンソールから 1 クリック |
+| **`createDnsRecord: true`** | `route53:*` が同じく明示 Deny | `false`（既定）にして紐付けだけ行い、alias / CNAME はゾーン管理者が作る |
+
+Deny は「**共有**の DNS と証明書を触らせない」という意図で、同一アカウントには他プロジェクトが
+同居している。**緩めずに人の作業として分ける。**
+
+`createDnsRecord:true` を渡すと `resolveCustomDomainContext`
+（`src/domain/governance/custom-domain-context.ts`）が**窓を消費する前に**理由付きで落とす。
+通してしまうと synth の `HostedZone.fromLookup` か deploy 途中で AccessDenied になり、
+原因が DNS 権限だと読み取れない。同じ理由で、us-east-1 以外の証明書 ARN と、
+上の例の `<acct>` / `<id>` を残したままの値も落とす（#995 と同じ型）。
+
 ## 環境別設定
 
 `infra/lib/config/environments.ts` で dev / staging / prod を型付き定義。
