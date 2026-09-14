@@ -1805,6 +1805,101 @@ OR_SMOKE_URL=https://<デプロイ後のドメイン> bash scripts/aws-cloud-dep
 
 `scripts/url-quality-gate.sh` と `npm run test:e2e:live` を呼ぶ。
 
+### 実施記録: 2026-09-14（6 回目 ―― ✅ **成功**。独自ドメイン `open-reception.cinc.click` を初回適用）
+
+HEAD `686a55b`（#1104）。**`OpenReception-Web-dev` のみ `UPDATE_COMPLETE`** で、
+`WebMonitoring-dev` / `CfMon-dev` は **no changes**（`LastUpdatedTime` は 5 回目の
+2026-09-09 のまま）。5 回目で `main` に追いついた直後の周回なのでコード差分は無く、
+**変わったのは独自ドメインの配線だけ**である。
+
+| 段 | 結果 | 所要 |
+| --- | --- | --- |
+| §0 診断 | ⚠️ **`OR_CUSTOM_DOMAIN` だけが UNSET**（9/10。後述） | 約 1 分 |
+| `verify` | ✅ green（8 ステップ全 PASS。unit 8298 passed / 633 files、infra cdk 176 passed / 12 files、`flaky` **0**、SKIP **0**） | 約 6 分 |
+| `preflight` | ✅ 全項目 PASS（negative security test `passed=8 failed=0 notSimulatable=0`） | 約 30 秒 |
+| `diff` | ⛔ `Web-dev` のみブロック（設計どおり）。他 2 スタックは「危険な変更はありません」 | 約 2.5 分 |
+| findings 精査 | ✅ `describe-change-set` の実体で裏取り → 承認 | 約 2 分 |
+| `deploy` | ✅ `Web-dev` `UPDATE_COMPLETE`（`Deployment time: 228.01s`） | 約 4.5 分 |
+| `smoke` | ⚠️ 主要ルート 200。lighthouse / live e2e は未実行（後述） | 約 3 分 |
+
+**到達点**（`describe-stacks` の実測）:
+
+| スタック | 状態 | `LastUpdatedTime` |
+| --- | --- | --- |
+| `OpenReception-Web-dev` | `UPDATE_COMPLETE` | 2026-09-14T11:16:36Z |
+| `OpenReception-WebMonitoring-dev` | `UPDATE_COMPLETE`（**今回の変更なし**） | 2026-09-09T21:29:55Z |
+| `OpenReception-CfMon-dev` | `UPDATE_COMPLETE`（**今回の変更なし**） | 2026-09-09T21:30:17Z |
+
+findings は過去 2 回と同じ形だった: `Remove` **0 件** / `Replacement: True` **0 件**。
+`Web-dev` は 10 変更中 7 件が `[resourceReplacement] ... replacement=Conditional`。
+🔴 **`Distribution830FAC52`（`AWS::CloudFront::Distribution`）は `Replacement: False`** で、
+独自ドメインは**その場で**適用された ―― distribution ID `E3JHU0VUXEJJ0J` と
+`dvxkh8nfwl334.cloudfront.net` はどちらも変わっていない。
+
+適用後、Outputs に `CustomDomainUrl = https://open-reception.cinc.click` が現れた。
+提出テンプレート（`infra/cdk.out/OpenReception-Web-dev.template.json`）の実測は
+`Aliases: ["open-reception.cinc.click"]`、`ViewerCertificate` は
+`MinimumProtocolVersion: TLSv1.2_2021` / `SslSupportMethod: sni-only`。
+
+`OR_ORIGIN_VERIFY_SECRET` は verify / diff / deploy の 3 ログとも `grep -c -F` で **0 回**。
+
+#### 🔴 `OR_CUSTOM_DOMAIN` は環境ダイアログへ入れても、既に動いているセッションには届かない
+
+今回の主目的そのものの変数が、セッション開始時点で **UNSET** だった（他 9 変数は SET）。
+env はコンテナ起動時に焼き込まれるため（ステップ 6b）、**窓を開けた後に足した変数は
+そのセッションには入らない**。
+
+これは**黙って通る**型である ―― `resolveCustomDomainContext` は未指定を**正常**として扱う
+（独自ドメインを使わない環境の deploy を止めないため）ので、気づかなければ
+**CDK 生成ドメインのままデプロイが「成功」してしまう**。`docs/deploy-aws.md` が警告している
+「環境ダイアログへ入れ忘れると、黙って CDK 生成ドメインのままデプロイされる」が実際に起きた。
+**`diff` の findings にも出ない**（ドメインが付かないことは「危険な変更」ではないため）。
+
+**セッションを作り直さずに回復した**: 値（FQDN と証明書 ARN）はどちらも秘密ではないので、
+`OR_CUSTOM_DOMAIN=... ./scripts/aws-cloud-deploy.sh diff` と**コマンドへ前置**して渡した。
+`scripts/aws-deploy-context.ts` は `process.env` を読むだけなので、これで
+`-c customDomain=...` が正しく渡る。**窓を消費せずに済む**ので、この型に当たったら
+セッション再作成より先にこちらを試すこと。
+
+#### 🔴 証明書 ARN はこの経路からは*発見*できない（Deny は正しい）
+
+`acm:ListCertificates` は explicit deny（実測）。ARN はリポジトリにも無いので、
+**人から受け取るしかない**。設計どおりなので緩めない。
+
+#### 🔴 検証用 CNAME があっても、公開ドメインは解決しない（alias は別物）
+
+証明書が `ISSUED` でも、それを成立させているのは
+`_15384d9c….open-reception.cinc.click → acm-validations.aws` という**検証用 CNAME** であって、
+`open-reception.cinc.click` を distribution へ向ける **alias/A（または CNAME）ではない**。
+
+実測（**対照付き**）:
+
+```
+https://dvxkh8nfwl334.cloudfront.net  → http=200
+https://open-reception.cinc.click     → curl: (56) CONNECT tunnel failed, 502（名前が解決しない）
+```
+
+🔴 **対照を置くこと。** 片方だけ見ても、サンドボックスに resolver が無いのか
+（`getent hosts` は `cinc.click` でも空を返す）、本当にレコードが無いのかを区別できない。
+
+今回は `OR_PUBLIC_ORIGIN_OVERRIDE` も `https://open-reception.cinc.click` へ揃えたので、
+**alias が出来るまでに発行される QR / エンロール URL は解決しないドメインを指す**。
+画面自体は `dvxkh8nfwl334.cloudfront.net` で引き続き開ける。alias 作成は `route53:*` が
+deny のため人の作業（ゾーン `Z00026383ROYZSO2JGQL0`、向き先 `dvxkh8nfwl334.cloudfront.net`）。
+
+#### lighthouse はこのサンドボックスでは測れない（proxy の CA）
+
+`CHROME_PATH=/opt/pw-browsers/chromium-1194/chrome-linux/chrome` を渡すと
+`Chrome installation not found` は解消して Chrome は起動するが、次に
+`CHROME_INTERSTITIAL_ERROR` で落ちる ―― エージェント proxy の CA を Chrome が信頼せず、
+TLS の interstitial で止まるため。**TLS 検証を切らないと通せないので、切らずに SKIP とする。**
+`url-quality-gate.sh` の判定は `PASS — SKIP: lighthouse(未実行) zap`（ZAP は docker デーモン無し）。
+
+#### live e2e は 5 回目と同じ理由で未実行
+
+`LIVE_BASE_URL` / `LIVE_ADMIN_USER` / `LIVE_ADMIN_PASSWORD` の 3 つとも UNSET。
+ステップ 6 の「live e2e の 3 変数も一緒に入れる」が**今回も守られていない**。
+
 ### 実施記録: 2026-09-09（5 回目 ―― ✅ **成功**。197 コミットぶんが dev へ反映された）
 
 HEAD `442aca3`（#1049）。3 スタックとも `UPDATE_COMPLETE`。2026-08-15 の初回に続く
@@ -1859,17 +1954,25 @@ Alarm 12・MetricFilter 3 のうち唯一の新顔が `KioskRealDialingUnavailab
 推定した。**推定はデプロイのイベントログで裏が取れた**（`CREATE_COMPLETE` がその 2 件）。
 `describe-change-set` で直接読む道は無い ―― 下記のとおり caller には権限が無い。
 
-#### 🔴 caller の資格情報では change set を読めない（`DescribeChangeSet` / `GetTemplate` が Deny）
+#### 🔴 caller が読めないのは `GetTemplate` だけ（`DescribeChangeSet` は読める ―― 2026-09-14 訂正）
 
-「findings の形を change set 実体で裏取りする」ことは**この経路ではできない**:
+> 🔴 **本節はかつて「`DescribeChangeSet` も Deny」と書いていたが、それは誤りである。**
+> 2026-09-14 の 6 回目で、caller（`OpenReceptionClaudeDeploy-dev`）から
+> `aws cloudformation describe-change-set --stack-name OpenReception-Web-dev
+> --change-set-name claude-gate-<sha> --region ap-northeast-1` が**通った**。
+> ステップ 1 の `claude-deploy-entry.json` は元々 `cloudformation:DescribeChangeSet` を
+> Allow に列挙しており（「diff gate 自身が使う読み取り」）、散文だけが実態から遅れていた。
+> **findings の形は、推定ではなく change set 実体で裏取りできる。**
+
+`GetTemplate` は**今も Deny**（2026-09-14 実測）:
 
 ```
-An error occurred (AccessDenied) when calling the DescribeChangeSet operation:
-User: .../OpenReceptionClaudeDeploy-dev/... is not authorized to perform: cloudformation:DescribeChangeSet
+An error occurred (AccessDenied) when calling the GetTemplate operation:
+User: .../OpenReceptionClaudeDeploy-dev/... is not authorized to perform: cloudformation:GetTemplate
 ```
 
-`GetTemplate` も同じく Deny。change set を作るのは wrapper が assume する CDK の deploy role で、
-セッションの caller ではないため。最小権限として正しい状態なので**権限を足すべきではない**。
+最小権限として正しい状態なので**権限を足すべきではない**。テンプレート側を読みたいときは、
+`cdk deploy --no-execute` が書いた `infra/cdk.out/<stack>.template.json`（＝**提出したもの**）を読む。
 
 裏取りは代わりに**検出器の実装**で行う。`src/domain/governance/deploy-diff-gate.ts` は
 `action === 'Remove'` に対して必ず `resourceRemoval` を、`replacement` が `'True'` または
