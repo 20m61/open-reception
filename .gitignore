@@ -209,3 +209,6 @@ infra/cdk-outputs-*.json
 # 追跡したい設定だけを明示的に戻す。tests/config/lstk-secret-ignore.test.ts が縛る。
 .lstk/*
 !.lstk/config.toml
+
+# ローカル AWS エミュレータの venv / ログ（ADR 0010）。実体はコミットしない。
+.aws-local/

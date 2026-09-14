@@ -23,6 +23,7 @@ import {
   wrapInitiateAuth,
   wrapAuthChallenge,
 } from 'cognito-srp-helper';
+import { awsClientConfig } from '@/lib/aws/client-config';
 
 export type CognitoSrpParams = { region: string; userPoolId: string; clientId: string };
 
@@ -35,7 +36,7 @@ const clientCache = new Map<string, CognitoIdentityProviderClient>();
 function getClient(region: string): CognitoIdentityProviderClient {
   let c = clientCache.get(region);
   if (!c) {
-    c = new CognitoIdentityProviderClient({ region });
+    c = new CognitoIdentityProviderClient(awsClientConfig(undefined, { region }));
     clientCache.set(region, c);
   }
   return c;

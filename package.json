@@ -19,7 +19,7 @@
     "local:aws:preflight": "bash scripts/local-aws.sh preflight",
     "local:aws:down": "bash scripts/local-aws.sh down",
     "local:aws:smoke": "tsx scripts/local-aws-smoke.ts",
-    "local:aws:integration": "vitest run src/lib/data/dynamodb.localstack.test.ts",
+    "local:aws:integration": "vitest run src/lib/data/dynamodb.emulator.test.ts",
     "evaluate:gate-runs": "tsx scripts/evaluate-gate-runs.ts",
     "loop:retro": "tsx scripts/loop-retro.ts",
     "change-risk": "tsx scripts/change-risk.ts",
@@ -42,7 +42,16 @@
     "test:e2e:live": "bash scripts/e2e-live.sh",
     "delegate:prompt": "tsx scripts/delegate-gate-prompt.ts",
     "aws:diff-gate": "tsx scripts/aws-diff-gate.ts",
-    "aws:negative-tests": "tsx scripts/aws-negative-tests.ts"
+    "aws:negative-tests": "tsx scripts/aws-negative-tests.ts",
+    "aws:local:start": "bash scripts/aws-local.sh start",
+    "aws:local:stop": "bash scripts/aws-local.sh stop",
+    "aws:local:bootstrap": "bash scripts/aws-local.sh bootstrap",
+    "aws:local:seed": "bash scripts/aws-local.sh seed",
+    "aws:local:up": "bash scripts/aws-local.sh up",
+    "aws:local:test": "bash scripts/aws-local.sh test",
+    "aws:local:reset": "bash scripts/aws-local.sh reset",
+    "aws:local:status": "bash scripts/aws-local.sh status",
+    "aws:local:env": "bash scripts/aws-local.sh env"
   },
   "dependencies": {
     "@aws-sdk/client-cognito-identity-provider": "^3.1076.0",

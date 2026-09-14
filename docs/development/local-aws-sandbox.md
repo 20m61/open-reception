@@ -167,7 +167,7 @@ Cognito being unavailable is a licensing fact, not a configuration mistake; user
 
 ## Condition 4: the production backend is what gets exercised
 
-`src/lib/data/dynamodb.localstack.test.ts` runs the **production `DynamoBackend`** against real LocalStack DynamoDB. There is no LocalStack-specific repository: the class is constructed with no arguments, so it configures itself from `AWS_ENDPOINT_URL` and `TABLE_NAME` exactly as it does in the deployed Lambda.
+`src/lib/data/dynamodb.emulator.test.ts` runs the **production `DynamoBackend`** against real LocalStack DynamoDB. There is no LocalStack-specific repository: the class is constructed with no arguments, so it configures itself from `AWS_ENDPOINT_URL` and `TABLE_NAME` exactly as it does in the deployed Lambda.
 
 It pins what the in-memory fake in `dynamodb.test.ts` **cannot** guarantee, since the fake is a predicate this repository wrote itself:
 

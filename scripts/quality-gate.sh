@@ -16,6 +16,10 @@
 #   --infra          infra/test/** の CDK アサーションを含める（--pr 以上は既定で ON）
 #   --no-infra       infra/test/** を省く
 #   --e2e            Playwright E2E を含める
+#   --aws-local      ローカル AWS エミュレータ統合テストを含める（ADR 0010）
+#                    🔴 --full には**入れない**。エミュレータの green は release evidence
+#                    ではないし（#1103 条件 6）、マージゲートをエミュレータの起動に
+#                    依存させると偽の赤を招く。回すときは明示する。
 #   --secrets        gitleaks による秘密情報スキャンを含める
 #   --sast           semgrep による SAST を含める
 #   --audit          npm audit（本番依存）を含める
@@ -45,6 +49,7 @@ ROOT="$(pwd)"
 # ---- 引数解析 -------------------------------------------------------------
 RUN_TYPECHECK=1 RUN_LINT=1 RUN_UNIT=1 RUN_BUILD=0
 RUN_E2E=0 RUN_SECRETS=0 RUN_SAST=0 RUN_AUDIT=0 RUN_LH=0 RUN_VRM=0 RUN_INFRA=0
+RUN_AWS_LOCAL=0
 STRICT=0
 BOOTSTRAP=1
 SKIP_BY_SCOPE=1
@@ -60,6 +65,7 @@ for arg in "$@"; do
     --infra)      RUN_INFRA=1 ;;
     --no-infra)   RUN_INFRA=0 ;;
     --e2e)        RUN_E2E=1 ;;
+    --aws-local)  RUN_AWS_LOCAL=1 ;;
     --secrets)    RUN_SECRETS=1 ;;
     --vrm)        RUN_VRM=1 ;;
     --sast)       RUN_SAST=1 ;;
@@ -602,6 +608,19 @@ fi
 # --full を回せない環境を、e2e が 1ms 全滅する前に名指しする (#838 AC5)。
 # バイナリ欠落は「任意ツール未導入の SKIP」ではなく「検査できなかった」なので
 # skip_unverified（記録しない）。gitleaks/semgrep は従来どおり skip_or_fail。
+if [[ "$RUN_AWS_LOCAL" -eq 1 ]]; then
+  # ローカル AWS エミュレータ（既定 MiniStack / Docker 不要）に対して、本番の
+  # DynamoDB backend をそのまま通す。install → start → bootstrap → seed → test を
+  # `aws-local.sh test` が 1 コマンドで行う。
+  if ! command -v python3 >/dev/null 2>&1; then
+    skip_or_fail "aws local integration" "python3 が無い（エミュレータは pure Python）"
+  elif ! command -v aws >/dev/null 2>&1; then
+    skip_or_fail "aws local integration" "aws CLI が無い（bootstrap に必要）"
+  else
+    step "aws local integration (${AWS_RUNTIME:-ministack})" npm run --silent aws:local:test
+  fi
+fi
+
 if [[ "$RUN_E2E" -eq 1 || "$RUN_VRM" -eq 1 ]]; then
   if ! gate_tool_playwright_chromium_present; then
     echo ""

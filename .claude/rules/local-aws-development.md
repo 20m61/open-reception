@@ -1,5 +1,18 @@
 # Local AWS development
 
+🔴 **正本は `docs/local-aws.md`、設計判断は ADR 0010。** エミュレータは**交換可能**に
+してある（`AWS_RUNTIME=ministack|moto|localstack`）。既定は **MiniStack（Docker 不要）**。
+
+- AWS 変更は **まず Moto / MiniStack** で検証し、ローカルで再現不能なものだけ実 AWS へ回す。
+- 入口は `npm run aws:local:*`。`scripts/aws-local.sh` は `AWS_RUNTIME=aws` を**拒否する**。
+- エミュレータ固有の分岐をアプリへ書かない。差は endpoint / region / credentials の解決だけ。
+- 🔴 ローカル検証に実 AWS 資格情報を持ち込まない（`aws-runtime.ts` が fail-fast する）。
+- 🔴 Tier 3 の green は AWS 互換性の保証ではない（IAM / KMS / Cognito 実トークン /
+  CloudFront / Transcribe streaming / 実機は実 AWS のみ）。
+- ベンダ固有の health パス（`/_localstack/health` 等）でテストの到達性を判定しない。
+  実際に使う AWS API で確かめる ―― 実装時にこれで Moto が落ち、交換可能性を検証する
+  テスト自身がロックインを持っていた（2026-09-14）。
+
 - Prefer a disposable LocalStack sandbox for routine AWS integration before using a real AWS dev/staging environment.
 - Use the current `lstk` CLI (`lstk start`, `lstk status`, `lstk reset --force`, `lstk stop`, `lstk cdk ...`). Do not add new dependencies on the deprecated `localstack` CLI or `cdklocal`.
 - `LOCALSTACK_AUTH_TOKEN` is a runtime secret. Never commit, print, fixture, or persist it. Headless/CI-equivalent lanes need a CI Auth Token, not a personal developer token.

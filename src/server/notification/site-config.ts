@@ -7,6 +7,7 @@
  * 外部依存なく動作する。
  */
 import type { SiteConfig } from './types';
+import { awsClientConfig } from '@/lib/aws/client-config';
 
 const DEFAULT_VOICE = { voiceId: 'Mizuki', languageCode: 'ja-JP', engine: 'neural' as const };
 
@@ -44,7 +45,7 @@ export class SsmSiteConfigLoader implements SiteConfigLoader {
 
   async load(siteId: string): Promise<SiteConfig | null> {
     const { SSMClient, GetParameterCommand } = await import('@aws-sdk/client-ssm');
-    const client = new SSMClient({ region: this.region });
+    const client = new SSMClient(awsClientConfig(undefined, { region: this.region }));
     const name = `${this.parameterPrefix}/${siteId}`;
     try {
       const res = await client.send(new GetParameterCommand({ Name: name, WithDecryption: true }));

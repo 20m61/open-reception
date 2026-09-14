@@ -21,6 +21,7 @@
  * middleware が読む値（`ORIGIN_VERIFY_SECRET`）は CDK が Lambda 環境変数として渡す。
  * 詳細は `infra/lib/stacks/web-stack.ts` の origin-verify 節。
  */
+import { awsClientConfig } from '@/lib/aws/client-config';
 export async function register(): Promise<void> {
   const secretId = process.env.APP_SECRETS_ARN;
   if (!secretId) return;
@@ -31,7 +32,7 @@ export async function register(): Promise<void> {
   const { SecretsManagerClient, GetSecretValueCommand } = await import(
     '@aws-sdk/client-secrets-manager'
   );
-  const client = new SecretsManagerClient({});
+  const client = new SecretsManagerClient(awsClientConfig());
 
   let secretString: string | undefined;
   try {

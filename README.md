@@ -121,6 +121,7 @@ npx playwright install --with-deps chromium webkit
 ## 初期ドキュメント
 
 - [Project Charter](./PROJECT_CHARTER.md)
+- [Local AWS development](./docs/local-aws.md) — エミュレータ交換可能なローカル AWS 環境（Docker 不要）
 - [Requirements](./docs/requirements.md)
 - [Specification](./docs/specification.md)
 - [Security and Testing Plan](./docs/security-testing-plan.md)
