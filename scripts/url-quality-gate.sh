@@ -71,9 +71,16 @@ echo "════════════════════════�
 # デーモンが無い（`/var/run/docker.sock` が存在しない）。CLI だけを見て実行すると
 # `docker run` が exit 1 で落ち、それが zap の「高リスク検出」と同じコードなので
 # **インフラ障害がセキュリティ指摘として報告される**（下の zap 節を参照）。
+# 🔴 **docker の解決先を変数にする（2026-09-14）。** テストは「docker 不在」を
+# `PATH` からディレクトリ名に "docker" を含む要素を外して作っていたが、実体は
+# `/usr/bin/docker` にあり **`/usr/bin` は落ちない**ので不在を再現できていなかった。
+# デーモンが停止している環境でだけ、たまたま期待どおりの SKIP になっていた。
+# `scripts/local-aws.sh` がデーモンを起動するようになり、この穴が実際に表面化した。
+DOCKER_BIN="${DOCKER_BIN:-docker}"
+
 obs_docker_cli=false; obs_docker_daemon=false
-command -v docker >/dev/null 2>&1 && obs_docker_cli=true
-[[ "$obs_docker_cli" == true ]] && docker info >/dev/null 2>&1 && obs_docker_daemon=true
+command -v "$DOCKER_BIN" >/dev/null 2>&1 && obs_docker_cli=true
+[[ "$obs_docker_cli" == true ]] && "$DOCKER_BIN" info >/dev/null 2>&1 && obs_docker_daemon=true
 
 PLAN_ZAP="run"; PLAN_ZAP_REASON=""
 if plan_out="$(npx --no-install tsx "$ROOT/scripts/url-gate-tooling.ts" plan \
@@ -189,7 +196,7 @@ if [[ "$RUN_ZAP" == 1 ]]; then
       # 化け、docker 側の失敗を high-risk と誤読する（下の判定はレポートの有無を見る）。
       rm -f "$OUT/zap-report.html"
       rc=0
-      docker run --rm -t -v "$OUT:/zap/wrk:rw" ghcr.io/zaproxy/zaproxy:stable \
+      "$DOCKER_BIN" run --rm -t -v "$OUT:/zap/wrk:rw" ghcr.io/zaproxy/zaproxy:stable \
         zap-baseline.py -t "$ZAP_TARGET/kiosk" -m 2 -r zap-report.html -I \
         > "$OUT/zap.log" 2>&1 || rc=$?
       report_written=false

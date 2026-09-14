@@ -38,14 +38,59 @@ require_cmd() {
   }
 }
 
+# 🔴 **停止しているデーモンは「使えない」ではない（2026-09-14 に前提が覆った）。**
+#
+# ここは以前 `docker info` が失敗したら即 `exit 1` していた。Claude Code on the web の
+# 既定セッションはまさにその状態なので、**「この環境では Docker が使えない」と結論しかけた**。
+#
+# 実際は違った。`dockerd` / `containerd` / `runc` は**最初から入っており**、セッションは
+# root で動く。`dockerd` を起動すると **2 秒で上がり**、proxy 経由で Docker Hub から pull でき、
+# コンテナも動いた。**動かないのではなく、起動していないだけ**だった。
+#
+# 観測（既定で動いていない）と、そこから引いた推論（だから有効にできない）を混ぜない。
+# `CLAUDE.md`「調査の作法」の「見つからなかったは無いではない」と同型で、
+# **停止しているは起動できないではない**。
+DOCKERD_LOG="${DOCKERD_LOG:-/tmp/local-aws-dockerd.log}"
+# 🔴 **`dockerd` の解決を変数にする。** テストから「不在」を確実に作れるようにするため。
+# PATH へ偽物を前置しても、実環境の /usr/bin/dockerd が `command -v` に見つかってしまい、
+# 不在の経路を踏めない（2026-09-14 の変異検証で、不在チェックを削る変異が生存した理由）。
+DOCKERD_BIN="${DOCKERD_BIN:-dockerd}"
+DOCKERD_WAIT_SECONDS="${DOCKERD_WAIT_SECONDS:-30}"
+
+ensure_docker_daemon() {
+  # 既に動いているなら何もしない（起動を試みるのは停止しているときだけ）。
+  if docker info >/dev/null 2>&1; then
+    return 0
+  fi
+
+  if ! command -v "${DOCKERD_BIN}" >/dev/null 2>&1; then
+    echo "[local-aws] Docker daemon is not running and dockerd is not installed." >&2
+    echo "[local-aws] Install Docker, or run this lane where a daemon is reachable." >&2
+    exit 1
+  fi
+
+  echo "[local-aws] Docker daemon is not running. Starting dockerd (log: ${DOCKERD_LOG})."
+  nohup "${DOCKERD_BIN}" >"${DOCKERD_LOG}" 2>&1 &
+
+  local i
+  for ((i = 1; i <= DOCKERD_WAIT_SECONDS; i++)); do
+    if docker info >/dev/null 2>&1; then
+      echo "[local-aws] Docker daemon is up (${i}s)."
+      return 0
+    fi
+    sleep 1
+  done
+
+  echo "[local-aws] dockerd did not become ready within ${DOCKERD_WAIT_SECONDS}s." >&2
+  echo "[local-aws] See ${DOCKERD_LOG} for the daemon's own diagnosis." >&2
+  exit 1
+}
+
 preflight() {
   require_cmd docker
   require_cmd lstk
   require_cmd npm
-  docker info >/dev/null 2>&1 || {
-    echo "[local-aws] Docker daemon is not available." >&2
-    exit 1
-  }
+  ensure_docker_daemon
 }
 
 start_localstack() {
@@ -161,9 +206,10 @@ case "${1:-up}" in
   reset) reset ;;
   status) status ;;
   env) lane_env ;;
+  preflight) preflight; echo "[local-aws] preflight OK" ;;
   down|stop) down ;;
   *)
-    echo "usage: $0 {up|test|seed|reset|status|env|down}" >&2
+    echo "usage: $0 {up|test|seed|reset|status|env|preflight|down}" >&2
     exit 2
     ;;
 esac

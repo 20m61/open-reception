@@ -202,3 +202,10 @@ infra/cdk-outputs-*.json
 # ツリー指紋に入るので、repo 内へ spec を書いた時点で直前の green が stale 扱いになり、
 # `--fast` を実際に通していても裏取り (#711) が FAIL する。repo 外へ置いてもよい。
 /.delegate-*.json
+
+# LocalStack (#1103). `.lstk/` は config.toml を追跡するディレクトリだが、lstk は
+# ここへ実行時ファイルを書く。キーリングの無い環境（Claude Code on the web）では
+# LOCALSTACK_AUTH_TOKEN が**ファイルとして保存される**ため、既定で全部無視し、
+# 追跡したい設定だけを明示的に戻す。tests/config/lstk-secret-ignore.test.ts が縛る。
+.lstk/*
+!.lstk/config.toml
