@@ -1820,7 +1820,7 @@ HEAD `686a55b`（#1104）。**`OpenReception-Web-dev` のみ `UPDATE_COMPLETE`**
 | `diff` | ⛔ `Web-dev` のみブロック（設計どおり）。他 2 スタックは「危険な変更はありません」 | 約 2.5 分 |
 | findings 精査 | ✅ `describe-change-set` の実体で裏取り → 承認 | 約 2 分 |
 | `deploy` | ✅ `Web-dev` `UPDATE_COMPLETE`（`Deployment time: 228.01s`） | 約 4.5 分 |
-| `smoke` | ⚠️ 主要ルート 200。lighthouse / live e2e は未実行（後述） | 約 3 分 |
+| `smoke` | ✅ CDK 生成ドメイン・独自ドメインとも主要ルート 200（独自ドメインは alias 作成後に再確認）。lighthouse / live e2e は未実行（後述） | 約 3 分 |
 
 **到達点**（`describe-stacks` の実測）:
 
@@ -1883,9 +1883,26 @@ https://open-reception.cinc.click     → curl: (56) CONNECT tunnel failed, 502�
 （`getent hosts` は `cinc.click` でも空を返す）、本当にレコードが無いのかを区別できない。
 
 今回は `OR_PUBLIC_ORIGIN_OVERRIDE` も `https://open-reception.cinc.click` へ揃えたので、
-**alias が出来るまでに発行される QR / エンロール URL は解決しないドメインを指す**。
-画面自体は `dvxkh8nfwl334.cloudfront.net` で引き続き開ける。alias 作成は `route53:*` が
-deny のため人の作業（ゾーン `Z00026383ROYZSO2JGQL0`、向き先 `dvxkh8nfwl334.cloudfront.net`）。
+**alias が出来るまでに発行される QR / エンロール URL は解決しないドメインを指す**（画面自体は
+`dvxkh8nfwl334.cloudfront.net` で引き続き開ける）。alias 作成は `route53:*` が deny のため人の作業。
+
+**同日 11:40:41Z に人が alias を UPSERT して解消した**（ゾーン `Z00026383ROYZSO2JGQL0`、
+A と AAAA の両方）。alias target のゾーン ID は **`Z2FDTNDATAQYW2`** ―― CloudFront 共通の
+固定値で、distribution ID（`E3JHU0VUXEJJ0J`）とは**別物**である。AAAA も入れるのは、
+CloudFront が IPv6 有効なので A だけだと IPv6 クライアントが落ちるため。
+
+伝播は**1 分未満**だった。11:41:29Z の実測:
+
+| 確認 | 結果 |
+| --- | --- |
+| `https://open-reception.cinc.click` | `http=200` / `ssl_verify_result=0`（ホスト名と証明書が一致） |
+| 主要ルート | `/` `/kiosk` `/admin/login` いずれも 200 |
+| 配信元 | `via: 1.1 ….cloudfront.net (CloudFront)` |
+| セキュリティヘッダ | CSP（nonce 付き）・HSTS `max-age=31536000` とも独自ドメインで有効 |
+
+🔴 **ここまでやって 1 周である。** `deploy` の `UPDATE_COMPLETE` と `CustomDomainUrl` の出力は
+「CloudFront 側の紐付けが済んだ」しか言わない。**公開ドメインで実際に 200 が返ることは、
+alias を作るまで誰も確かめていない。**
 
 #### lighthouse はこのサンドボックスでは測れない（proxy の CA）
 
