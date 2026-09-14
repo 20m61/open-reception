@@ -334,6 +334,48 @@ describe('parseDeployContextFile', () => {
   });
 });
 
+const VALID_CUSTOM_DOMAIN = JSON.stringify({
+  domainName: 'open-reception.example.com',
+  certificateArn: 'arn:aws:acm:us-east-1:000000000000:certificate/00000000-0000-0000-0000-000000000000',
+});
+
+/**
+ * 独自ドメイン（#189）は任意だが、**窓を開けるときに運ばれないと黙って旧ドメインのまま
+ * デプロイされる**。#989（必須 4 変数のうち 1 つだけ貼り忘れた）と同じ型なので、
+ * 貼り付けブロックへ載せ、不正なら窓を開ける前に落とす。
+ */
+describe('resolveDeployContextEnvBlock — 独自ドメイン (#189)', () => {
+  it('🔴 未設定なら既存の 4 行のまま（任意であることを壊さない）', () => {
+    const result = resolveDeployContextEnvBlock(COMPLETE);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.block.split('\n')).toHaveLength(4);
+    expect(result.block).not.toContain('OR_CUSTOM_DOMAIN');
+  });
+
+  it('設定されていればブロックへ運ぶ', () => {
+    const result = resolveDeployContextEnvBlock({
+      ...COMPLETE,
+      OR_CUSTOM_DOMAIN: VALID_CUSTOM_DOMAIN,
+    });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    const lines = result.block.split('\n');
+    expect(lines).toHaveLength(5);
+    expect(lines[4]).toBe(`OR_CUSTOM_DOMAIN=${VALID_CUSTOM_DOMAIN}`);
+  });
+
+  it('🔴 不正なら窓を開ける前に落とす（deploy まで持ち越さない）', () => {
+    const result = resolveDeployContextEnvBlock({
+      ...COMPLETE,
+      OR_CUSTOM_DOMAIN: '{"domainName":"open-reception.example.com","certificateArn":"arn:aws:acm:ap-northeast-1:000000000000:certificate/00000000-0000-0000-0000-000000000000"}',
+    });
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.message).toMatch(/us-east-1/);
+  });
+});
+
 describe('resolveDeployContextEnvBlock', () => {
   it('揃っていれば貼り付け用の KEY=VALUE ブロックを返す', () => {
     const result = resolveDeployContextEnvBlock(COMPLETE);
