@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  parseAcceptedFlags,
   stripBashComments,
   stripBashCommentsAndStrings,
   stripBashStringLiterals,
@@ -88,5 +89,62 @@ describe('stripBashCommentsAndStrings', () => {
     const stripped = stripBashCommentsAndStrings(src);
     expect(stripped).not.toContain('--print を');
     expect(stripped).toContain('--print)');
+  });
+});
+
+describe('parseAcceptedFlags', () => {
+  /**
+   * 🔴 **由来: 2026-09-14。** `deploy-context.ts` の doc コメントが
+   * `aws-issue-credentials.sh --with-context` と書いていたが、実装は `--no-context`
+   * （オプトアウト）で、そんなフラグは存在しなかった。散文を実装で裏取りせずに
+   * ユーザーへ案内し、`未知の引数: --with-context` を踏ませた。
+   *
+   * 実装から受け付けるフラグを取り出せれば、散文がそれを名乗っているかを機械で見られる。
+   */
+  it('case 節から受け付けるフラグを取り出す', () => {
+    const source = [
+      'while [ $# -gt 0 ]; do',
+      '  case "$1" in',
+      '    --hours)',
+      '      HOURS="${2:-}"',
+      '      shift 2',
+      '      ;;',
+      '    --print)',
+      '      PRINT=true',
+      '      ;;',
+      '    --no-context)',
+      '      WITH_CONTEXT=false',
+      '      ;;',
+      '    *)',
+      '      echo "未知の引数: $1" >&2',
+      '      ;;',
+      '  esac',
+      'done',
+    ].join('\n');
+    expect(parseAcceptedFlags(source)).toEqual(['--hours', '--no-context', '--print']);
+  });
+
+  it('`|` で複数を並べた case 節も拾う', () => {
+    expect(parseAcceptedFlags('    -h|--help)\n      usage\n      ;;')).toEqual(['--help']);
+  });
+
+  /**
+   * 🔴 **旧版のこのテストは空虚だった。** 素材が
+   * `# 使い方: script.sh [--with-ctx]` のような形で、行頭アンカーが無くても一致しない
+   * ものだったため、前処理（コメント除去）を丸ごと外す変異が**生存した**（実測）。
+   * 「行頭に `)` 付きで現れる」素材を置いて、アンカーそのものを縛る。
+   */
+  it('行頭の case 節だけを見る（アンカーを緩めると拾ってしまうもので縛る）', () => {
+    const source = [
+      '#    --commented-out)', // コメント行。アンカーが無いと拾われる
+      '      echo "    --in-a-string)"', // 文字列の中。同上
+      '    --print)',
+      '      ;;',
+    ].join('\n');
+    expect(parseAcceptedFlags(source)).toEqual(['--print']);
+  });
+
+  it('case 節が無ければ空', () => {
+    expect(parseAcceptedFlags('echo hi')).toEqual([]);
   });
 });

@@ -1,7 +1,8 @@
 /**
  * 窓を開けるときに貼る「デプロイ context 4 変数」のブロックを stdout へ出す (#989)。
  *
- * `scripts/aws-issue-credentials.sh --with-context`（既定 ON）から呼ばれる薄い I/O 層。
+ * `scripts/aws-issue-credentials.sh`（context の同梱は既定 ON。`--no-context` で外す）から
+ * 呼ばれる薄い I/O 層。
  * 判定そのものは `src/domain/governance/deploy-context.ts` の純関数が持つ ――
  * `aws-cloud-deploy.sh` の必須 context ガードと**同じ基準**を使うため。
  * ここで基準を写経すると、片方だけ直る型の欠陥になる。
