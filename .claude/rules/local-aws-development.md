@@ -4,6 +4,7 @@
 - Use the current `lstk` CLI (`lstk start`, `lstk status`, `lstk reset --force`, `lstk stop`, `lstk cdk ...`). Do not add new dependencies on the deprecated `localstack` CLI or `cdklocal`.
 - `LOCALSTACK_AUTH_TOKEN` is a runtime secret. Never commit, print, fixture, or persist it. Headless/CI-equivalent lanes need a CI Auth Token, not a personal developer token.
 - Verify the Docker **daemon**, not the `docker` CLI. The CLI is present in Claude Code on the web while the daemon is not, so `command -v docker` succeeding proves nothing.
+- A stopped daemon is not an unavailable one. Claude Code on the web ships `dockerd`/`containerd`/`runc` and runs as root; `local-aws.sh preflight` starts the daemon (~2s) instead of failing closed. Do not conclude "Docker is unavailable here" from `docker info` failing — try starting it.
 - Never let the local lane inherit real AWS credentials. Assign dummy values unconditionally and clear `AWS_SESSION_TOKEN` / `AWS_PROFILE`; `${VAR:-test}` silently keeps a real deploy window's credentials.
 - Never require real staging/production AWS credentials for local development.
 - LocalStack passing is not AWS parity. Infrastructure/auth/network/delivery changes still require the repository's existing CDK and real-AWS verification gates.

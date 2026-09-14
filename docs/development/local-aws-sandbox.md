@@ -32,21 +32,37 @@ Claude Code Web is a headless/non-interactive environment, so `LOCALSTACK_AUTH_T
 
 Environment variables in Claude Code on the web are **baked in at container start**, so a token added to the environment dialog does not reach an already-running session. Add it first, then create the session.
 
-## 🔴 Prerequisites are not present by default in Claude Code on the web (measured 2026-09-14)
+## 🔴 Docker is available in Claude Code on the web — it is just not started (measured 2026-09-14)
 
-`scripts/local-aws.sh` fails closed in `preflight()` when Docker or `lstk` is missing, so `npm run local:aws:up` stops on its first step. A clean Claude Code Web session measured:
+A first pass measured a clean session and found no Docker daemon, and nearly concluded that this lane could not run here. **That conclusion was wrong.** The measurement was right; the inference drawn from it was not.
 
-| Prerequisite | State |
+`dockerd`, `containerd` and `runc` are all installed, and the session runs as root. Starting the daemon takes about two seconds, after which image pulls reach Docker Hub through the agent proxy and containers run normally:
+
+| Step | Result |
 | --- | --- |
-| Docker **daemon** | ⛔ absent — `docker info` shows a Client section only and exits 1; `/var/run/docker.sock` does not exist and `find /` locates no socket; no `dockerd` process |
-| `lstk` CLI | ⛔ not installed |
-| `LOCALSTACK_AUTH_TOKEN` | ⛔ unset |
+| `dockerd` start | ✅ up in ~2s (Server 29.3.1, storage-driver `overlayfs`, cgroup v1) |
+| `docker pull hello-world` | ✅ succeeds through the proxy |
+| `docker run hello-world` | ✅ runs |
+| `npm install -g @localstack/lstk` | ✅ installs (v1.0.1) |
+| `lstk start` | ⛔ `authentication required: set LOCALSTACK_AUTH_TOKEN` |
 
-The Docker CLI *is* installed, which makes this easy to misread — the repository's own quality gate reports the same condition when it skips ZAP (`docker デーモンに接続できません（CLI はあります）`). Confirm the **daemon**, not the CLI.
+🔴 **"Stopped" is not "cannot be started."** This is the same shape as the repository's own investigation rule that "not found" only ever means "not found under those conditions" — separate what you measured from what you inferred from it. The default state (daemon down) is a fact; "therefore Docker is unavailable here" was an untested inference.
 
-**#1103 AC1 therefore depends on whether Docker can be enabled for this environment**, which is an environment-configuration question, not a code one. If it cannot be enabled, the honest conclusion for #1103 is that LocalStack cannot replace a persistent AWS `dev` *on this lane* — which is a valid answer to the issue, not a failure.
+`scripts/local-aws.sh preflight` now **starts the daemon** when it is down rather than failing closed, so a fresh session needs no manual step. Verified end to end by stopping `dockerd` and re-running preflight, which brought it back up in 2s. `tests/hooks/local-aws-docker-daemon.test.ts` pins the behavior with fake `docker`/`dockerd` binaries, including the lower bound that an already-running daemon is **not** restarted.
 
-### Diagnosing without Docker
+```bash
+npm run local:aws:preflight   # starts dockerd if needed, then checks lstk/npm
+```
+
+The Docker **CLI** is present even when the daemon is down, which makes this easy to misread — the repository's quality gate reports the same condition when it skips ZAP (`docker デーモンに接続できません（CLI はあります）`). Check the daemon, not the CLI.
+
+### The one remaining prerequisite: `LOCALSTACK_AUTH_TOKEN`
+
+`lstk start` refuses without it in a non-interactive environment. It is a runtime secret, so it belongs in the environment/secret store and must be added **before** a session is created — environment variables in Claude Code on the web are baked in at container start and do not reach an already-running session. A headless lane needs a **CI Auth Token**, not a personal developer token.
+
+**This is what #1103 AC1 now waits on** — not Docker.
+
+### Diagnosing without starting anything
 
 ```bash
 npm run local:aws:env
