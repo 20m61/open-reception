@@ -50,6 +50,56 @@ describe('resolveCustomDomainContext — 任意であること', () => {
   });
 });
 
+describe('resolveCustomDomainContext — CDK へ渡す形', () => {
+  /** ok を前提に、出力 JSON をパースして返す。 */
+  function emitted(raw: string): Record<string, unknown> {
+    const result = resolveCustomDomainContext(raw);
+    if (!result.ok) throw new Error(`期待に反して ok=false: ${result.message}`);
+    return JSON.parse(result.args[1]!.slice('customDomain='.length)) as Record<string, unknown>;
+  }
+
+  // 🔴 **検証済みのフィールドだけを組み直して渡す。** 入力をそのまま横流しする実装でも
+  //    既存テストは全部通った（実測で変異が生存した）。保証をコメントに書いただけでは
+  //    守られないので、述語で縛る。
+  it('未知のキーは落とし、検証済みのフィールドだけを渡す', () => {
+    const raw = JSON.stringify({
+      domainName: 'open-reception.cinc.click',
+      certificateArn: CERT,
+      createDNSRecord: true, // 綴り違い。検査を素通りして CDK へ届かせない
+      somethingElse: 'x',
+      enabled: true,
+    });
+    const parsed = emitted(raw);
+    expect(Object.keys(parsed).sort()).toEqual(
+      ['certificateArn', 'createDnsRecord', 'domainName'].sort(),
+    );
+  });
+
+  // 🔴 出力の createDnsRecord は**常に false**。未指定の入力でも明示して渡すことで、
+  //    CDK 側の既定に依存しない（既定が変われば黙って Route53 を触りにいく）。
+  it('createDnsRecord は入力に無くても false として明示される', () => {
+    expect(emitted(VALID).createDnsRecord).toBe(false);
+    const withFalse = JSON.stringify({
+      domainName: 'open-reception.cinc.click',
+      certificateArn: CERT,
+      createDnsRecord: false,
+    });
+    expect(emitted(withFalse).createDnsRecord).toBe(false);
+  });
+
+  it('additionalDomainNames と hostedZoneDomainName は保存する', () => {
+    const raw = JSON.stringify({
+      domainName: 'open-reception.cinc.click',
+      certificateArn: CERT,
+      additionalDomainNames: ['alt.cinc.click'],
+      hostedZoneDomainName: 'cinc.click',
+    });
+    const parsed = emitted(raw);
+    expect(parsed.additionalDomainNames).toEqual(['alt.cinc.click']);
+    expect(parsed.hostedZoneDomainName).toBe('cinc.click');
+  });
+});
+
 describe('resolveCustomDomainContext — 落とすべきもの', () => {
   it('JSON として読めなければ落とす', () => {
     const result = resolveCustomDomainContext('open-reception.cinc.click');
