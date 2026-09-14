@@ -45,6 +45,16 @@ const REAL = {
   AWS_PROFILE: 'real-admin-profile-sentinel',
 } as const;
 
+/**
+ * 実デプロイ窓が残していく「失効時刻」。**値ではなく存在が効く**ので sentinel とは別に扱う。
+ *
+ * AWS CLI / SDK は `AWS_ACCESS_KEY_ID` + `AWS_SECRET_ACCESS_KEY` +
+ * `AWS_CREDENTIAL_EXPIRATION` が揃うと「**期限付きの静的資格情報**」として解釈する。
+ * したがって窓が閉じたあとのセッションでは、レーンが dummy を入れていても
+ * **その dummy 自体が「失効済み」と判定されて拒否される**。
+ */
+const EXPIRED_STAMP = '2000-01-01T00:00:00+00:00';
+
 function runEnvSubcommand(extraEnv: Record<string, string>) {
   return spawnSync('bash', [SCRIPT, 'env'], {
     cwd: ROOT,
@@ -80,12 +90,44 @@ describe('local-aws.sh の資格情報隔離', () => {
       expect(out).toContain('AWS_SESSION_TOKEN=<unset>');
       // プロファイル経由の解決も塞ぐ（~/.aws/credentials を拾わせない）。
       expect(out).toContain('AWS_PROFILE=<unset>');
+      // 失効時刻も落とす（下記の専用テストが理由を述べる）。
+      expect(out).toContain('AWS_CREDENTIAL_EXPIRATION=<unset>');
 
       // 🔴 下界: 実資格情報の値が 1 度も現れないこと。
       // 「dummy が入っている」だけだと、両方が出力される実装でも通ってしまう。
       for (const [name, value] of Object.entries(REAL)) {
         expect(out, `${name} の値が出力に漏れている`).not.toContain(value);
       }
+    },
+    TIMEOUT,
+  );
+
+  it(
+    '🔴 実デプロイ窓の失効時刻を引き継がない（dummy が「失効済み」にされないこと）',
+    () => {
+      // 🔴 **これは「dummy を入れた」だけでは守れない保証である。**
+      //
+      // 2026-09-14、まさにこの状態のセッションで踏んだ: レーンは
+      // `AWS_ACCESS_KEY_ID=test` を入れていたのに、AWS CLI は
+      //
+      //   `Credentials were refreshed, but the refreshed credentials are still expired.`
+      //
+      // で全コマンドを拒否した。原因は `AWS_CREDENTIAL_EXPIRATION` が**実デプロイ窓の
+      // ものとして環境に残っていた**こと。CLI は env の 3 点が揃うと「期限付き静的資格情報」
+      // と解釈するので、**dummy に他人の失効時刻が貼り付く**。
+      //
+      // 既存の隔離テストは `AWS_SESSION_TOKEN` / `AWS_PROFILE` は縛っていたが、
+      // この 4 つ目を**見ていなかった** ―― `lane_env` が出力すらしていなかったので、
+      // 観測できないものは縛れなかった。
+      const result = runEnvSubcommand({ ...REAL, AWS_CREDENTIAL_EXPIRATION: EXPIRED_STAMP });
+      expect(result.status).toBe(0);
+
+      const out = `${result.stdout}${result.stderr}`;
+
+      // 上界: レーンが落としていること。
+      expect(out).toContain('AWS_CREDENTIAL_EXPIRATION=<unset>');
+      // 🔴 下界: 実窓の失効時刻が出力のどこにも残っていないこと。
+      expect(out, '実デプロイ窓の失効時刻がレーンへ漏れている').not.toContain(EXPIRED_STAMP);
     },
     TIMEOUT,
   );

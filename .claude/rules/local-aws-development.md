@@ -10,6 +10,13 @@
 - LocalStack passing is not AWS parity. Infrastructure/auth/network/delivery changes still require the repository's existing CDK and real-AWS verification gates.
 - Never weaken production IAM, encryption, tenancy, audit, or deployment controls to make the emulator pass; introduce local-only endpoint/config wiring instead.
 
+- Verify the token's **key name**, not just its presence. An environment-dialog key with a trailing space (`"LOCALSTACK_AUTH_TOKEN "`) is a valid env entry but not a valid shell identifier, so `printenv NAME` and `${NAME+x}` both report it missing while the value is really there. When two probes disagree, widen the conditions before concluding "unset"; list raw keys (`env | cut -d= -f1`, `os.environ` reprs). It cannot be repaired in a running session — fix the dialog and start a new one.
+- `lstk` needs the auth token **even for the Community image** (it authenticates the CLI), and it forwards the token into the container, which then attempts Pro activation. Choosing the Community image does not make the lane license-free.
+- Never let `AWS_ENDPOINT_URL` reach `lstk` lifecycle commands (`start`/`stop`); they refuse to run while it is set. Strip it with `env -u` for those calls only — removing it from the lane entirely points the app at real AWS.
+- Treat `AWS_CREDENTIAL_EXPIRATION` as part of credential isolation. With it left in place from a closed deploy window, the AWS CLI rejects even the dummy `test` credentials as expired.
+- `lstk aws` writes a `> Note:` banner to **stdout**; strip banner lines before comparing a `--query`/`--output text` capture, or every comparison silently fails.
+- Behind a TLS-terminating proxy bound to loopback, the emulator container needs host networking plus the proxy CA; `lstk` config has no `network` key, so self-manage the container and drive it via `lstk --endpoint-url`. Mount `/var/run/docker.sock` or Lambda cannot run.
+
 ## open-reception-specific boundary
 
 - Keep `DATA_BACKEND=memory` as the fastest unit/UI path.
