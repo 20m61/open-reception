@@ -1,0 +1,5 @@
+# Disposable local AWS sandbox for development and integration tests.
+# Authentication is supplied at runtime via LOCALSTACK_AUTH_TOKEN; never commit it.
+[[containers]]
+type = "aws"
+port = "4566"
