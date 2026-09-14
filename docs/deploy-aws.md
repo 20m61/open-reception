@@ -540,7 +540,8 @@ DNS 側で当該 FQDN を `DistributionDomainName` 宛の CNAME/ALIAS に向け�
 OR_CUSTOM_DOMAIN={"domainName":"open-reception.example.com","certificateArn":"arn:aws:acm:us-east-1:<acct>:certificate/<id>"}
 ```
 
-窓を開けるときの貼り付けブロック（`aws-issue-credentials.sh --with-context`）にも載る。
+窓を開けるときの貼り付けブロック（`aws-issue-credentials.sh`。context の同梱は**既定 ON** で、
+`--no-context` を付けたときだけ外れる）にも載る。
 **環境ダイアログへ入れ忘れると、黙って CDK 生成ドメインのままデプロイされる**ので、
 `resolveDeployContextEnvBlock` が設定済みの値を一緒に運ぶ。
 

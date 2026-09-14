@@ -18,6 +18,7 @@ import { describe, expect, it, vi } from 'vitest';
 import {
   stripBashComments,
   stripBashCommentsAndStrings,
+  parseAcceptedFlags,
 } from '../../src/domain/governance/bash-source';
 
 const SCRIPT = resolve(process.cwd(), 'scripts/aws-issue-credentials.sh');
@@ -43,7 +44,8 @@ function run(args: ReadonlyArray<string>, env: Record<string, string> = {}) {
 
 
 /**
- * デプロイ context 4 変数もクリップボードへ載せる（#989 / `--with-context`）。
+ * デプロイ context 4 変数もクリップボードへ載せる（#989。同梱は既定 ON で `--no-context` が
+ * オプトアウト）。
  *
  * 🔴 **窓を開ける前に落とす。** 4 変数の欠落に `diff` で気づくと、そこまでの往復が
  * 丸ごと窓を食う（2026-09-06 の 3 回目は `OR_APP_SECRETS_NAME` だけが未登録だった）。
@@ -256,5 +258,79 @@ describe('危険な順序を作らない (#989)', () => {
     // AWS_CREDENTIAL_EXPIRATION と OR_APP_SECRETS_NAME の両方が壊れる。
     // 実行して確かめるには assume-role を通す必要があるので、ここは静的に見る。
     expect(code).toMatch(/BLOCK="\$\{BLOCK\}"\$'\\n'"\$\{CONTEXT_BLOCK\}"/);
+  });
+});
+
+/**
+ * 🔴 **散文が名乗るフラグは、実装が受け付けるものだけであること（2026-09-14）。**
+ *
+ * `deploy-context.ts` の doc コメントが、context 同梱を表す独自フラグ（`with-context`）を
+ * 名乗っていた。実装は `--no-context`（オプトアウト）で、そんなフラグは無い。
+ * それを信じてユーザーへ案内し、`未知の引数` を踏ませた。
+ *
+ * 🔴 **由来を書くときは、実在しないフラグ名からダッシュを外す。** この検査は
+ * 「二重ダッシュ形で名乗っているか」で見るので、由来メモがそのまま違反になる。
+ * 逃げ道を足すより、**二重ダッシュ形を実在するフラグ専用にする**ほうが規律として強い。
+ *
+ * この型は**目視では気づけない** ―― 散文はもっともらしく読めるし、実装を読み直す動機も
+ * 起きない。`tests/config/loop-round-skill.test.ts` が「散文が実測から遅れる型を機械で
+ * 止める」のと同じ理由で、ここでも機械に見させる。
+ */
+describe('フラグ名のドリフト (#189 の周回で発覚)', () => {
+  const ACCEPTED = parseAcceptedFlags(source);
+
+  /**
+   * **ファイル全体**を見るもの。context ブロック機能「だけ」を書いている файл なので、
+   * 現れる `--flag` はこのスクリプトのものしかない（実測: どちらも `--with-context` 1 件のみ）。
+   *
+   * 🔴 ここに他コマンドの呼び出しが増えると偽陽性になる。そのときは**検査を緩めず**、
+   * 当該ファイルを下の LINE_SCOPED へ移すこと（偽陽性は「このファイルはもう焦点が
+   * 絞られていない」という正しい信号である）。
+   */
+  const WHOLE_FILE = [
+    'src/domain/governance/deploy-context.ts',
+    'scripts/deploy-context-block.ts',
+  ] as const;
+
+  /**
+   * **スクリプトを名指しする行だけ**を見るもの。
+   *
+   * docs には 64 種の `--flag` が出る（aws / cdk / git / npm のもの）。スクリプト自身も
+   * `--role-arn` など **aws CLI のフラグ**を含む。全体を見ると巻き込むので行で絞る。
+   */
+  const LINE_SCOPED = [
+    'scripts/aws-issue-credentials.sh',
+    'docs/deploy-aws.md',
+    'docs/runbook-cloud-aws-deploy.md',
+    'tests/hooks/aws-issue-credentials.test.ts',
+  ] as const;
+
+  const FLAG = /--[a-z][a-z0-9-]*/g;
+
+  function offendersIn(file: string, lineScoped: boolean): string[] {
+    const out: string[] = [];
+    readFileSync(resolve(process.cwd(), file), 'utf8')
+      .split('\n')
+      .forEach((line, index) => {
+        if (lineScoped && !line.includes('aws-issue-credentials')) return;
+        for (const token of line.match(FLAG) ?? []) {
+          if (!ACCEPTED.includes(token)) out.push(`${file}:${index + 1}  ${token}`);
+        }
+      });
+    return out;
+  }
+
+  it('実装が受け付けるフラグを取り出せている（下界）', () => {
+    // 🔴 空集合だと検査全体が空虚に通る（比較対象が無いので何も検査されない）。
+    expect(ACCEPTED).toEqual(['--hours', '--no-context', '--print']);
+    expect(ACCEPTED).not.toContain('--with-context');
+  });
+
+  it('散文が名乗るフラグは、すべて実装が受け付ける', () => {
+    const offenders = [
+      ...WHOLE_FILE.flatMap((f) => offendersIn(f, false)),
+      ...LINE_SCOPED.flatMap((f) => offendersIn(f, true)),
+    ];
+    expect(offenders, `実装に無いフラグを名乗っています:\n  ${offenders.join('\n  ')}`).toEqual([]);
   });
 });
