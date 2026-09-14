@@ -545,6 +545,23 @@ OR_CUSTOM_DOMAIN={"domainName":"open-reception.example.com","certificateArn":"ar
 **環境ダイアログへ入れ忘れると、黙って CDK 生成ドメインのままデプロイされる**ので、
 `resolveDeployContextEnvBlock` が設定済みの値を一緒に運ぶ。
 
+🔴 **環境ダイアログへ後から足しても、既に動いているセッションには届かない。** env は
+コンテナ起動時に焼き込まれる。2026-09-14 の初回適用では、他 9 変数が SET なのに
+`OR_CUSTOM_DOMAIN` だけが UNSET だった。**セッションを作り直さなくてよい** ―― `domainName` も
+`certificateArn` も秘密ではないので、コマンドへ前置すれば足りる（窓を消費しない）:
+
+```bash
+OR_CUSTOM_DOMAIN='{"domainName":"…","certificateArn":"…"}' \
+OR_PUBLIC_ORIGIN_OVERRIDE='https://…' \
+  ./scripts/aws-cloud-deploy.sh diff
+```
+
+🔴 **証明書が `ISSUED` でも、公開ドメインが解決するとは限らない。** ACM の**検証用 CNAME**
+（`_xxxx.<domain> → acm-validations.aws`）と、distribution へ向ける **alias/A** は別物である。
+後者が無いまま `OR_PUBLIC_ORIGIN_OVERRIDE` を切り替えると、**発行される QR / エンロール URL が
+解決しないドメインを指す**。確かめるときは CDK 生成ドメインを**対照に置く**（サンドボックスに
+resolver が無い場合と区別できないため）。
+
 🔴 **`OR_PUBLIC_ORIGIN_OVERRIDE` も独自ドメインへ変える。** 片方だけ変えると、画面は
 新ドメインで開けるのに**発行される QR / エンロール URL が旧ドメインを指す**。どちらも
 `https://<独自ドメイン>` に揃える。
