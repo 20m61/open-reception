@@ -30,6 +30,7 @@ import {
   type LogStore,
   type Singleton,
 } from './backend';
+import { awsClientConfig } from '@/lib/aws/client-config';
 
 const GSI1 = 'GSI1';
 const META_KEYS = ['PK', 'SK', 'ttl', 'GSI1PK', 'GSI1SK'] as const;
@@ -48,8 +49,8 @@ function makeClient(): { doc: DynamoDBDocumentClient; table: string } {
   if (!table) {
     throw new Error('TABLE_NAME env var is required when DATA_BACKEND=dynamodb.');
   }
-  const region = process.env.AWS_REGION ?? process.env.AWS_DEFAULT_REGION ?? 'ap-northeast-1';
-  const client = new DynamoDBClient({ region });
+  // endpoint / region / credentials は実行系の解決点に一本化する（ADR 0010）。
+  const client = new DynamoDBClient(awsClientConfig());
   const doc = DynamoDBDocumentClient.from(client, {
     marshallOptions: { removeUndefinedValues: true },
   });

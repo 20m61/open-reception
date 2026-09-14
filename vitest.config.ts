@@ -14,7 +14,23 @@ export default defineConfig({
     globals: true,
     // TZ 依存のテスト（例: OutOfHoursView の reopenAt 整形）はホスト TZ ではなく
     // UTC 固定で走らせる（開発機の TZ 設定に関わらず再現性を保つ）。
-    env: { TZ: 'UTC' },
+    env: {
+      TZ: 'UTC',
+      // 🔴 **unit レーンは AWS 資格情報について hermetic にする（ADR 0010 / #1103）。**
+      //
+      // これらを固定する前、`instrumentation.test.ts` と `cognito-srp.test.ts` は
+      // **開発者の ambient な AWS 資格情報に依存していた**。デプロイ窓を開いている
+      // セッションでは実 STS の 3 点が env に載るため、同じ commit でも
+      // 「窓が開いているか」でテストの通り方が変わる（2026-09-14 に実際に踏んだ）。
+      //
+      // Tier 1（pure unit）は定義上 AWS へ到達してはならないので、dummy を明示し、
+      // 実資格情報の痕跡を消す。空文字は guard から見て「無い」と等価。
+      AWS_ACCESS_KEY_ID: 'test',
+      AWS_SECRET_ACCESS_KEY: 'test',
+      AWS_SESSION_TOKEN: '',
+      AWS_PROFILE: '',
+      AWS_CREDENTIAL_EXPIRATION: '',
+    },
     // soak ハーネスの純ロジック（tests/soak/thresholds.ts）は unit test で高速検証する (#317)。
     // ブラウザ前提の実ループは tests/e2e/soak/*.spec.ts（vitest 対象外・playwright.soak.config.ts）。
     // 音声評価ハーネス（tests/voice-evaluation/）も合成データのみのオフライン純ロジックなので

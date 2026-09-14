@@ -1,6 +1,11 @@
 /**
- * **本番の DynamoDB バックエンドを、実 DynamoDB（LocalStack）に対して**通す統合テスト
- * （#1103 条件 4）。
+ * **本番の DynamoDB バックエンドを、実 DynamoDB エミュレータに対して**通す統合テスト
+ * （#1103 条件 4 / ADR 0010）。
+ *
+ * 🔴 **特定のエミュレータに結合しない。** MiniStack / Moto / LocalStack のどれでも
+ * 同じ 8 本が通ることを実測している（2026-09-14）。結合していたのは当初の到達性
+ * チェックだけで、`/_localstack/health` を叩いていたため Moto で落ちた ―― 交換可能性を
+ * 検証するテスト自身がロックインを持っていた。
  *
  * ## なぜ要るか
  *
@@ -14,7 +19,7 @@
  * - **TTL 属性が epoch 秒で載り、テーブル側で TTL が有効になっていること**
  * - **内部キーが呼び出し側へ漏れないこと**（PII/レスポンス衛生）
  *
- * 🔴 **LocalStack 専用の repository は作らない。** 叩くのは `getBackend()` が返す本番実装
+ * 🔴 **エミュレータ専用の repository は作らない。** 叩くのは `getBackend()` が返す本番実装
  * そのもので、差し替えるのは `AWS_ENDPOINT_URL` だけである。
  *
  * ## 走らせ方
@@ -22,7 +27,7 @@
  * `npm run local:aws:test`（`scripts/local-aws.sh test`）から実行される。単体では:
  *
  * ```
- * LOCAL_AWS_INTEGRATION=1 DATA_BACKEND=dynamodb npx vitest run src/lib/data/dynamodb.localstack.test.ts
+ * LOCAL_AWS_INTEGRATION=1 DATA_BACKEND=dynamodb npx vitest run src/lib/data/dynamodb.emulator.test.ts
  * ```
  *
  * 🔴 **既定の品質ゲートは変えない。** フラグが無ければ suite ごと skip する
@@ -57,7 +62,7 @@ type Audit = {
   action: string;
 };
 
-describe.skipIf(!ENABLED)('本番 DynamoDB バックエンド × 実 LocalStack', () => {
+describe.skipIf(!ENABLED)('本番 DynamoDB バックエンド × 実エミュレータ', () => {
   let backend: DataBackend;
   let raw: DynamoDBDocumentClient;
 
@@ -86,12 +91,28 @@ describe.skipIf(!ENABLED)('本番 DynamoDB バックエンド × 実 LocalStack'
   });
 
   it(
-    '🔴 有効化されている以上、実際に LocalStack へ繋がること（skip で誤魔化さない）',
+    '🔴 有効化されている以上、実際にエミュレータへ繋がること（skip で誤魔化さない）',
     async () => {
       // これが無いと、環境が落ちているときに「他のテストが全部通った」ように見える
       // 書き方（try/catch skip）へ流れやすい。繋がらないなら赤で止める。
-      const res = await fetch(`${ENDPOINT}/_localstack/health`);
-      expect(res.ok, `LocalStack へ繋がらない: ${ENDPOINT}`).toBe(true);
+      //
+      // 🔴 **ベンダ固有の health パスで確かめない（ADR 0010）。** ここは当初
+      // `/_localstack/health` を叩いており、**Moto に差し替えた瞬間に落ちた** ――
+      // 交換可能性を検証するはずのテスト自身が LocalStack に結合していた。
+      // 到達性は**実際に使う AWS API** で確かめる。これはどのエミュレータでも、
+      // 実 AWS でも同じ意味を持つ。
+      const { DynamoDBClient, ListTablesCommand } = await import('@aws-sdk/client-dynamodb');
+      const probe = new DynamoDBClient({
+        endpoint: ENDPOINT,
+        region: process.env.AWS_REGION ?? 'ap-northeast-1',
+        credentials: { accessKeyId: 'test', secretAccessKey: 'test' },
+      });
+      try {
+        const res = await probe.send(new ListTablesCommand({}));
+        expect(Array.isArray(res.TableNames), `エミュレータへ繋がらない: ${ENDPOINT}`).toBe(true);
+      } finally {
+        probe.destroy();
+      }
     },
     TIMEOUT,
   );

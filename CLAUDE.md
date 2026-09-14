@@ -194,6 +194,32 @@ BLOCKER 3 件はすべて**直前の自分の修正が作った**もので、い
 - 外部認証情報・実機・アセット前提のタスクは interface + mock 先行で実装し、実物が要る
   検証は #65 にスタックする。
 
+## AWS 変更の検証順序（ADR 0010）
+
+**AWS 関連の変更は、まずローカルエミュレータで検証する。実 AWS は最後。**
+
+```
+AWS 関連変更
+  → Moto（速い / Polly）または MiniStack（既定・Docker 不要）で検証
+  → ローカルで再現不能なものだけ real AWS
+```
+
+- 入口は `npm run aws:local:up` / `aws:local:test`。実行系は `AWS_RUNTIME` で差し替える
+  （`ministack` 既定 / `moto` / `localstack`）。**Docker は必須ではない**
+- 🔴 **エージェントが安易に実 AWS を叩かない。** `scripts/aws-local.sh` は `AWS_RUNTIME=aws`
+  を拒否する。実 AWS を叩く経路は既存の deploy / negative-test の手順だけで、
+  いずれも**人間承認つきのローカル privileged lane**に固定されている（#675 / ADR 0009）
+- 🔴 **ローカル検証に実 AWS 資格情報を持ち込まない。**
+  `LOCAL AWS TEST + REAL PRODUCTION CREDENTIAL => ABORT`。
+  `src/domain/governance/aws-runtime.ts` が解決と同時に fail-fast する
+- 🔴 **Tier 3（ローカル統合）の green を AWS 互換性の保証と読まない。** IAM 評価・KMS・
+  Cognito の実トークン検証・CloudFront/DNS 配信・Transcribe streaming・実機は
+  **実 AWS / 実機でしか保証できない**。一覧は `docs/local-aws.md` の unsupported 節
+- エミュレータ固有の分岐をアプリへ書かない。差は endpoint / region / credentials の
+  解決だけに落とす（触るのは `aws-runtime.ts` と `lib/aws/client-config.ts` のみ）
+
+詳細は **`docs/local-aws.md`**（正本）と `.claude/rules/local-aws-development.md`。
+
 ## Claude Code 設定（`.claude/`）
 
 - `settings.json`（**追跡・チーム共通**）… このワークフローが前提とするプラグイン
