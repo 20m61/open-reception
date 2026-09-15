@@ -117,8 +117,10 @@ export function negativeFromLoginResult(result: LoginAttempt): NegativeOutcome {
 const MARKS: Readonly<Record<CapabilityVerdict, string>> = {
   verified: '✅',
   // 「使える」と読めない記号を選ぶ。permissive は unavailable より危険なので ⛔ とも分ける。
-  // 🔴 記号は**この表が唯一の出どころ**だが、`docs/local-aws.md` の表は手書きである
-  // （突き合わせる機械検査はまだ無い。レビュー round2 MINOR-3）。
+  // 🔴 記号は**この表が唯一の出どころ**である。`docs/local-aws.md` の表と
+  // `docs/development/local-aws-sandbox.md` の証拠表は、probe の実測記録と**行ごとに**
+  // 突き合わせてある（#1113 / `capability-doc.ts` / `tests/config/capability-doc-sync.test.ts`）
+  // ので、ここを変えれば両方の文書が落ちる。
   permissive: '🔴 素通り',
   unavailable: '⛔',
   inconclusive: '?',
