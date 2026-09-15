@@ -1,3 +1,4 @@
+import { execSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
@@ -7,6 +8,13 @@ import {
   POSITIVE_ONLY_MARK,
   SANDBOX_DOC_LABELS,
   UNMEASURED_MARK,
+  RESERVED_MARK_INVENTORY,
+  findLegendRowGaps,
+  findReservedMarkViolations,
+  findScopeGaps,
+  SCOPE_KEY_MARK,
+  containsMark,
+  normalizeForMarkScan,
   parseMarkdownTables,
   parseRecording,
   reconcileCapabilityDoc,
@@ -168,5 +176,93 @@ describe('docs/development/local-aws-sandbox.md の証拠表', () => {
       runtimeColumns: { ministack: 'MiniStack', moto: 'Moto' },
     });
     expect(found.map((d) => `${d.kind} @${d.line ?? '-'}: ${d.message}`)).toEqual([]);
+  });
+});
+
+/**
+ * 🔴 **予約記号は、許した表の許した列にしか現れてはならない**（#1114）。
+ *
+ * #1113 の検査は「検査対象 2 表の runtime 列」しか見ておらず、独立レビューが
+ * **4 つの逃げ道**を実測した —— matrix の `Notes` 列 / `Real AWS 必須` 列 /
+ * 別の表（`| 段 | 結果 |`）/ 別文書の 2 表。いずれも検査は緑のままだった。
+ * 列を足して塞ぐのではなく、**許す側を数え上げて**族ごと閉じる。
+ */
+describe('予約記号の適用範囲（文書全体）', () => {
+  const FILES = Object.keys(RESERVED_MARK_INVENTORY);
+
+  it.each(FILES)('%s の予約記号の出現が目録と一致する', (file) => {
+    const found = findReservedMarkViolations({
+      file,
+      markdown: read(file),
+      inventory: RESERVED_MARK_INVENTORY[file]!,
+    });
+    expect(found.map((v) => `${v.kind} L${v.line}: ${v.text}`)).toEqual([]);
+  });
+
+  /**
+   * 🔴 **ファイル軸も閉包にする。** 予約記号を含む文書が目録に載っていなければ落ちる。
+   * 鍵は `🔴 素通り` に限る —— `✅` はこのリポジトリで「済み」の汎用記号で、
+   * 13 文書・100 行超が能力と無関係に使っている（理由は `SCOPE_KEY_MARK` の注記）。
+   * 走査根は**リポジトリ全体**（`node_modules` と `.git` を除く）。`docs/` と
+   * `.claude/rules/` に狭めていたときは `CLAUDE.md` と `.claude/skills/**` が閉包の外だった。
+   */
+  it('予約記号を持つ文書が、目録の対象から漏れていない', () => {
+    // 🔴 **根を数え上げない。** `docs` と `.claude/rules` だけを見ていたため、`CLAUDE.md` と
+    // `.claude/skills/**` が閉包の外だった —— どちらも Cognito 素通りの事実が既に転記されて
+    // いる場所で、そこへ**逆の主張**を書いても緑だった（レビュー実測）。リポジトリ全体を見る。
+    const scanned = execSync(
+      `find . -name '*.md' -type f -not -path './node_modules/*' -not -path './.git/*'`,
+      { cwd: process.cwd(), encoding: 'utf8' },
+    )
+      .split('\n')
+      .filter(Boolean)
+      .map((f) => f.replace(/^\.\//u, ''));
+    const carriers = scanned
+      // 🔴 **正規化してから引く。** 生文字列だと正準表記 `🔴 **素通り**`（太字）に一致せず、
+      // 既存 matrix からコピーして作った新文書が閉包を素通りする（レビュー実測）。
+      // 全文を正規化するので、改行での分断も同時に拾える。
+      .filter((f) => containsMark(normalizeForMarkScan(read(f)), SCOPE_KEY_MARK))
+      .sort();
+    expect(carriers.length, '予約記号を持つ文書が 1 つも無い（検査が空振り）').toBeGreaterThan(0);
+    // 🔴 **走査根が痩せていないことを観測可能にする。** 根を `docs` へ狭める変異は、今日
+    // 根の外に carrier が無いというだけで生存する。**走査した集合に repo 直下と
+    // `.claude/skills/**` が含まれること**を直接縛れば、狭める変異が落ちる。
+    expect(scanned, 'リポジトリ直下の md を走査していない').toContain('CLAUDE.md');
+    expect(
+      scanned.some((f) => f.startsWith('.claude/skills/')),
+      '.claude/skills/** を走査していない',
+    ).toBe(true);
+    expect(findScopeGaps({ carriers, scope: RESERVED_MARK_INVENTORY })).toEqual([]);
+  });
+
+  it('凡例の行が導出値ぴったりで、余計な行が無い', () => {
+    const legend = parseMarkdownTables(read('docs/local-aws.md'), '判定')[0]!;
+    expect(findLegendRowGaps(legend.rows.map((r) => r.cells[0] ?? ''))).toEqual([]);
+  });
+
+  /** 🔴 **下界。** 目録が空でも「一致」は通る。実物に出現が在ることを固定する。 */
+  it('目録が痩せていない（検査が空振りしていない）', () => {
+    // 空目録は「記号ゼロを固定する」ファイル（ADR）なので、一律に非空は要求できない。
+    // 縛るのは「**検査が何も持っていない世界**」でないこと。
+    // 🔴 **キー集合を固定する。** 空目録（ゼロ固定）のファイル項目は 1 行消すだけで
+    // 無力化でき、他に何も落ちなかった（変異検証で実測）。キーの下界で閉じる。
+    expect([...Object.keys(RESERVED_MARK_INVENTORY)].sort()).toEqual([
+      'docs/adr/0010-swappable-aws-emulator.md',
+      'docs/development/local-aws-sandbox.md',
+      'docs/local-aws.md',
+    ]);
+    // 🔴 **件数はファイルごとに固定する。** 総数の緩い下界（`> 10`）だと、散文の項目を
+    // 黙って 6 件まで削れた（レビュー実測）。**削除が数値の差分として必ず見える**ようにする。
+    expect(
+      Object.fromEntries(Object.entries(RESERVED_MARK_INVENTORY).map(([f, v]) => [f, v.length])),
+    ).toEqual({
+      'docs/local-aws.md': 14,
+      'docs/development/local-aws-sandbox.md': 4,
+      // 空＝「この文書に予約記号が 1 つも在ってはならない」の意味。
+      'docs/adr/0010-swappable-aws-emulator.md': 0,
+    });
+    const marks = CAPABILITY_VERDICTS.map(matrixMark);
+    const matrix = parseMarkdownTables(read('docs/local-aws.md'), 'Service / 操作')[0]!;
+    expect(matrix.rows.flatMap((r) => r.cells).filter((c) => marks.includes(c))).not.toHaveLength(0);
   });
 });

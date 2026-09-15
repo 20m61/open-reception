@@ -33,21 +33,36 @@
 `ministack` (MIT) と `moto` (Apache-2.0) はいずれも **PyPI の pure-Python** で、
 **Docker を要求しない**。本プロジェクトが実際に行う操作単位で測った:
 
+🔴 **この表は能力の判定記号を使わない。正本は `docs/local-aws.md` の compatibility matrix
+である。** 記号つきの判定を複数の文書へ転記すると必ずずれるので、ここには置かない（#1114）。
+
+- `OK` は「**その操作が通った**」であって、負の対照は当てていない
+- `NG 素通り` は「MiniStack / Moto はどちらも**誤ったパスワードを受理した**」という
+  ADR 執筆時の実測（正本の該当行は matrix の `Cognito SRP のパスワード検証`）
+- 以前この表は `OK` の位置に判定記号を書いており、**matrix と食い違っていた**
+  （`CloudFormation` の Moto を「通った」と書いていたが、matrix は「**Moto では未測**」）。
+  🔴 **`（未測）` へ落とした根拠は matrix 側の記述であって、新たに測り直してはいない。**
+  ADR 執筆時の実測を否定したのではなく、**食い違ったので安全側へ寄せた**という扱いである
+- `（未測）` は matrix の凡例と同じ語だが、ここでは**判定ではなく「測っていない」という
+  事実の記述**として使っている（能力の判定記号そのものは、この文書では一切使わない）
+
+**能力を主張したくなったら、この表ではなく matrix を直すこと。**
+
 | 操作 | LocalStack | MiniStack | Moto |
 | --- | --- | --- | --- |
-| DynamoDB: table + GSI1 | ✅ | ✅ | ✅ |
-| DynamoDB: TTL | ✅ | ✅ | ✅ |
-| DynamoDB: 条件付き書き込み | ✅ | ✅ | ✅ |
-| DynamoDB: GSI query | ✅ | ✅ | ✅ |
-| Secrets Manager | ✅ | ✅ | ✅ |
-| SSM Parameter Store | ✅ | ✅ | ✅ |
-| **Cognito: user pool / client の CRUD** | ⛔ ライセンス | ✅ | ✅ |
-| **Cognito: SRP のパスワード検証** | ⛔ ライセンス | 🔴 素通り | 🔴 素通り |
-| **Polly: synthesize** | ⛔ ライセンス | ⛔ 405 | ✅ |
-| S3 | ✅ | ✅ | ✅ |
-| CloudFormation | ✅ | ✅ | ✅ |
-| Route53 / EC2 | ✅ | ✅ | ✅ |
-| **AutoScaling** | ⛔ ライセンス | ✅ | ✅ |
+| DynamoDB: table + GSI1 | OK | OK | OK |
+| DynamoDB: TTL | OK | OK | OK |
+| DynamoDB: 条件付き書き込み | OK | OK | OK |
+| DynamoDB: GSI query | OK | OK | OK |
+| Secrets Manager | OK | OK | OK |
+| SSM Parameter Store | OK | OK | OK |
+| **Cognito: user pool / client の CRUD** | ⛔ ライセンス | OK | OK |
+| **Cognito: SRP のパスワード検証** | ⛔ ライセンス | NG 素通り | NG 素通り |
+| **Polly: synthesize** | ⛔ ライセンス | ⛔ 405 | OK |
+| S3 | OK | OK | OK |
+| CloudFormation | OK | OK | （未測） |
+| Route53 / EC2 | OK | OK | OK |
+| **AutoScaling** | ⛔ ライセンス | OK | OK |
 
 🔴 **「起動した」ではなく「この操作が通った」で判定している。** サービスが health で
 `available` と出ることと、使う API が通ることは別である。

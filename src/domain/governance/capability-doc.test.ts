@@ -6,6 +6,13 @@ import {
   PROBE_CAPABILITIES,
   UNMEASURED_MARK,
   CAPABILITY_CONTROLS,
+  findLegendRowGaps,
+  findReservedMarkViolations,
+  findScopeGaps,
+  LEGEND_ROWS,
+  SCOPE_KEY_MARK,
+  containsMark,
+  normalizeForMarkScan,
   parseMarkdownTables,
   parseRecording,
   reconcileCapabilityDoc,
@@ -115,6 +122,22 @@ describe('記号の語彙', () => {
 });
 
 describe('表のパース', () => {
+  /**
+   * 🔴 **前の方式が受理した入力集合を固定する。** 区切り行を `-{2,}` へ狭めたことがあり、
+   * GFM として正当な `| - | - |` の表が**丸ごと検査の外へ出た**（`duplicate_table` の保証も
+   * 同時に落ちた）。広げたつもりで受理集合を狭める型は、**出力を見ているだけでは気づけない**。
+   */
+  it.each([
+    ['ハイフン 1 本', '| - | - |'],
+    ['ハイフン 3 本', '| --- | --- |'],
+    ['中央揃え', '|:-:|:-:|'],
+    ['左右揃え', '| :- | -: |'],
+    ['余白あり', '|  ---  |  ---  |'],
+  ])('区切り行 %s を受理する', (_name, sep) => {
+    const md = ['| 能力 | Moto |', sep, '| x | y |'].join('\n');
+    expect(parseMarkdownTables(md, '能力')).toHaveLength(1);
+  });
+
   it('見出しが一致する表だけを取り、行と行番号を返す', () => {
     const parsed = table(CLEAN);
     expect(parsed).toHaveLength(1);
@@ -431,6 +454,185 @@ describe('突き合わせ', () => {
   });
 });
 
+describe('予約記号の出現は目録と完全一致する', () => {
+  /**
+   * 🔴 **表構造で判定しない。** 自前の GFM パーサを判定経路へ置いたところ、レビューが 2 周で
+   * 5 つの穴を実測した（先頭パイプ省略 / 引用 / 複数行 HTML / フェンスのスコープ /
+   * **区切り行のハイフン 1 本**）。最後のものは受理集合を狭める**退行**でもあった。
+   * 綴りを足す競争をやめ、**出現を数え上げる**側へ裏返してある。
+   */
+  const INV = ['| x | ✅ |'];
+  const run = (md: string, inventory: readonly string[] = INV) =>
+    findReservedMarkViolations({ file: 'f.md', markdown: md, inventory });
+
+  it('目録どおりなら通る', () => {
+    expect(run('| x | ✅ |')).toEqual([]);
+  });
+
+  it('目録に無い出現は落ちる（行番号つき）', () => {
+    const found = run('| x | ✅ |\n| y | ✅ |');
+    expect(found.map((v) => [v.kind, v.line])).toEqual([['unblessed', 2]]);
+  });
+
+  /** 🔴 片側だけ主張しない。**全部消せば通る**世界を作らない。 */
+  it('目録に在るのに消えた行も落ちる', () => {
+    expect(run('（記号なし）').map((v) => v.kind)).toEqual(['missing']);
+  });
+
+  /**
+   * 構造に依らないことの確認 —— どの綴りで書いても「出現」として同じに扱われる。
+   * 1 周目・2 周目で穴だった形を全部入れてある。
+   */
+  it.each([
+    ['先頭パイプ省略', 'x | ✅ 実測'],
+    ['引用ブロック', '> | x | ✅ 実測 |'],
+    ['HTML（複数行）', '<td>\n✅ 実測\n</td>'],
+    ['コードフェンス内', '```\n| x | ✅ 実測 |\n```'],
+    ['単一ハイフン区切りの表', '| x | y |\n| - | - |\n| a | ✅ 実測 |'],
+    ['4 スペース字下げ', '    | x | ✅ 実測 |'],
+    ['見出しセル', '| 段 | 結果（すべて ✅） |'],
+    ['散文', 'この能力は ✅ である。'],
+  ])('%s でも出現として捕まる', (_name, md) => {
+    expect(run(md, []).filter((v) => v.kind === 'unblessed')).not.toHaveLength(0);
+  });
+
+  /** 綴りを変える族（#813 と同型）: 装飾・実体参照・タグ・NBSP。 */
+  it.each(['🔴 *素通り*', '&#9989; 実測', '<b>✅</b>', '&#128308;&nbsp;素通り', '✅\u00a0実測'])(
+    '装飾された %s も出現として捕まる',
+    (cell) => {
+      expect(run(`| x | ${cell} |`, []).filter((v) => v.kind === 'unblessed')).not.toHaveLength(0);
+    },
+  );
+
+  /**
+   * 🔴 **2 トークンの記号を分断する形**を必ず入れる。`✅` は 1 文字なので、タグや NBSP を
+   * 潰さなくても検出できてしまい、**正規化の必要性を測れない**（変異検証で実測: `<b>✅</b>`
+   * と `✅\u00a0実測` では正規化を外しても生存した）。`🔴 素通り` で縛る。
+   */
+  it.each([
+    ['タグで分断', '| x | 🔴 <b>素通り</b> |'],
+    ['span で分断', '| x | 🔴 <span>素通り</span> |'],
+    ['NBSP で分断', '| x | 🔴\u00a0素通り |'],
+    ['実体参照 + NBSP', '| x | &#128308;&nbsp;素通り |'],
+    ['強調(*)で分断', '| x | 🔴 *素通り* |'],
+    // 🔴 `*` だけ入れて `_` を入れ忘れていた（`CLAUDE.md`「同型の 2 本には対策を入れており、
+    // 3 本目にだけ入れ忘れていた」と同じ形）。変異検証で生存して分かった。
+    ['強調(_)で分断', '| x | 🔴 _素通り_ |'],
+    ['強調(_)の ✅', '| x | _✅_ 実測 |'],
+  ])('%s でも素通り記号として捕まる', (_name, md) => {
+    expect(run(md, []).filter((v) => v.kind === 'unblessed')).not.toHaveLength(0);
+  });
+
+  /**
+   * 🔴 **「黙って増えない」を主張するなら回数を見なければならない。** 集合所属で判定して
+   * いたときは、**祝福済みの行をそっくり別の節へ複製しても無検出**だった（レビュー実測）。
+   * しかも構造 allowlist 方式はこれを kill していた＝**方式交換で kill を落としていた**。
+   */
+  it('祝福済みの行を複製したら落ちる', () => {
+    expect(run('| x | ✅ |\n（別の節）\n| x | ✅ |').map((v) => [v.kind, v.line])).toEqual([
+      ['unblessed', 3],
+    ]);
+  });
+
+  it('目録が同じ行を 2 回持つなら 2 回まで許す', () => {
+    expect(run('| x | ✅ |\n| x | ✅ |', ['| x | ✅ |', '| x | ✅ |'])).toEqual([]);
+    expect(run('| x | ✅ |', ['| x | ✅ |', '| x | ✅ |']).map((v) => v.kind)).toEqual(['missing']);
+  });
+
+  /**
+   * 🔴 **実体参照で書いたタグは可視テキストである。** 先に復号してからタグ除去すると、
+   * `&#60;span …&#62;` が消えて祝福済み行に化ける（レビュー実測）。除去が先、復号が後。
+   */
+  it('実体参照で作った擬似タグは消さない', () => {
+    // 行を改変したので、**両側**が出るのが正しい —— 知らない行が現れ（unblessed）、
+    // 祝福済みの行が消えた（missing）。片側だけを期待するのは主張として弱い。
+    expect(run('| x | ✅ | &#60;span 実 AWS でも verified&#62;').map((v) => v.kind).sort()).toEqual([
+      'missing',
+      'unblessed',
+    ]);
+  });
+
+  /**
+   * 🔴 **タグ除去が改行をまたぐと、文書が黙って盲目になる。** `[^>]` は改行に一致するので、
+   * `<<EOF` のように同じ行に `>` が無い綴りから**次の `>` まで全部消える**。実測で 1 文書が
+   * 878 文字・28 行を飲み込んでおり、ヒアドキュメントを含む手順書が検査の外へ出ていた。
+   */
+  it('閉じないタグ様の綴りが、後続の行を飲み込まない', () => {
+    const md = ['```bash', 'aws cognito-idp ... <<EOF', 'EOF', '```', '| x | ✅ 実測 |'].join('\n');
+    expect(run(md, []).filter((v) => v.kind === 'unblessed')).not.toHaveLength(0);
+  });
+
+  /**
+   * 🔴 **飲み込みは「全文を 1 つの文字列として正規化する」経路でしか起きない**
+   * （`findReservedMarkViolations` は行ごとに走るので原理的に無関係）。最初に書いた回帰は
+   * 行単位の経路を叩いており、**変異が生存して初めてそれに気づいた**。carrier 走査と同じ
+   * 経路（全文正規化）で縛る。
+   */
+  it('全文正規化で、閉じないタグ様の綴りが後続の記号を飲み込まない', () => {
+    const whole = ['<span', '| Cognito | 🔴 素通り |', '> 備考'].join('\n');
+    expect(containsMark(normalizeForMarkScan(whole), SCOPE_KEY_MARK)).toBe(true);
+  });
+
+  it('全文正規化で、ヒアドキュメントが後続の記号を飲み込まない', () => {
+    const whole = ['aws cognito-idp <<EOF', 'EOF', '| Cognito | 🔴 素通り |', '> 実測'].join('\n');
+    expect(containsMark(normalizeForMarkScan(whole), SCOPE_KEY_MARK)).toBe(true);
+  });
+
+  /** 🔴 空白なし・ゼロ幅で分断した綴りは、描画上まったく区別が付かない。 */
+  it.each([
+    ['空白なし', '| x | 🔴素通り |'],
+    ['ゼロ幅で分断', '| x | 🔴\u200b素通り |'],
+    ['空白 2 つ', '| x | 🔴  素通り |'],
+  ])('%s でも素通り記号として捕まる', (_name, md) => {
+    expect(run(md, []).filter((v) => v.kind === 'unblessed')).not.toHaveLength(0);
+  });
+
+  it('予約されていない記号は出現として数えない', () => {
+    expect(run('| x | ⛔ 405 |\n| y | ◯ 正のみ |\n| z | OK |', [])).toEqual([]);
+  });
+});
+
+describe('範囲そのものの検査', () => {
+  /**
+   * 🔴 **鍵は正規化してから引く。** 生文字列で引くと、このリポジトリの正準表記
+   * `🔴 **素通り**`（太字）に一度も一致せず、既存 matrix からコピーして作った新文書が
+   * 閉包を素通りする（レビュー実測）。改行での分断も全文正規化なら拾える。
+   */
+  it.each([
+    ['太字（正準表記）', '| x | 🔴 **素通り** |'],
+    ['改行で分断', 'これは 🔴\n素通り である'],
+    ['強調', '🔴 _素通り_'],
+    ['空白なし', '🔴素通り'],
+    ['ゼロ幅で分断', '🔴\u200b素通り'],
+  ])('%s でも閉包の鍵として拾える', (_name, text) => {
+    expect(containsMark(normalizeForMarkScan(text), SCOPE_KEY_MARK)).toBe(true);
+  });
+
+  it('予約記号を持つ文書と目録の対象が一致していなければ落ちる', () => {
+    const S = (o: Record<string, string[]>) => o;
+    expect(findScopeGaps({ carriers: ['a.md'], scope: S({ 'a.md': ['x'] }) })).toEqual([]);
+    expect(
+      findScopeGaps({ carriers: ['a.md', 'b.md'], scope: S({ 'a.md': ['x'] }) }).map((g) => g.kind),
+    ).toEqual(['file_not_in_scope']);
+    expect(
+      findScopeGaps({ carriers: ['a.md'], scope: S({ 'a.md': ['x'], 'b.md': ['y'] }) }).map((g) => g.kind),
+    ).toEqual(['scope_file_without_mark']);
+    // 🔴 **空目録は「記号ゼロを固定する」意味**なので、carrier でなくても正しい。
+    expect(findScopeGaps({ carriers: ['a.md'], scope: S({ 'a.md': ['x'], 'z.md': [] }) })).toEqual([]);
+  });
+
+  it('凡例の行が導出値とずれたら落ちる（多くても少なくても）', () => {
+    expect(findLegendRowGaps([...LEGEND_ROWS])).toEqual([]);
+    expect(findLegendRowGaps([...LEGEND_ROWS, '捏造']).map((g) => g.kind)).toEqual(['legend_rows_changed']);
+    expect(findLegendRowGaps(LEGEND_ROWS.slice(1)).map((g) => g.kind)).toEqual(['legend_rows_changed']);
+    // 🔴 **同数の置換**を必ず入れる。3 ケースとも長さを変えていたため、「件数だけ見る」形へ
+    // 退化させる変異が生存した（#813 の「件数 vs 下界」と同型）。
+    expect(
+      findLegendRowGaps(LEGEND_ROWS.map((l, i) => (i === 0 ? 'Cognito SRP' : l))).map((g) => g.kind),
+    ).toEqual(['legend_rows_changed']);
+  });
+});
+
 describe('負の対照列を持たない表（証拠表）', () => {
   const evidence = (rows: string) =>
     parseMarkdownTables(['| 能力 | MiniStack | Moto |', '| --- | --- | --- |', rows].join('\n'), '能力');
@@ -469,3 +671,8 @@ describe('負の対照列を持たない表（証拠表）', () => {
     expect(run(OK.replace('| C | 🔴 素通り |', '| C | ✅ verified |'))).toEqual(['mark_mismatch']);
   });
 });
+
+/**
+ * 範囲の構造的な検査。**テストの assertion ではなく純関数で持つ**ことが要点で、
+ * 変異検証で「その 3 つはテスト側にあるあいだ必ず生存する」ことを実測したので持ち上げた。
+ */

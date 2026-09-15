@@ -144,6 +144,8 @@ export type TableRow = {
 export type ParsedTable = {
   readonly headers: ReadonlyArray<string>;
   readonly rows: ReadonlyArray<TableRow>;
+  /** 見出し行の 1 始まり行番号。見出しセルの違反を指すために要る。 */
+  readonly headerLine: number;
 };
 
 /** 強調記法とセル内の余分な空白を落とす。表記のゆれで判定を変えない。 */
@@ -162,32 +164,259 @@ function splitRow(line: string): ReadonlyArray<string> {
 const isSeparator = (line: string): boolean => /^\|[\s:|-]+\|?\s*$/u.test(line.trim());
 
 /**
- * 先頭見出しが `firstHeader` の markdown 表を**全部**取り出す。
+ * 文書中の markdown 表を全部取り出す。
  *
- * 🔴 **1 枚目で打ち切らない。** 「見出しで特定する」だけでは足りず、**同じ見出しの表が
- * 2 枚あると、実際に読まれるのは 1 枚目で、本物が無検査になる**。しかも文書を分割した
- * ようにしか見えないので、レビューでも気づかれない。呼び出し側が「ちょうど 1 枚」を
- * 要求できるように、枚数を返す形にしてある（レビュー MAJOR-3 が実測: 正しい内容の複製を
- * 足して本物の Cognito 行を ✅ に書き換えると、検査は緑のままだった）。
+ * 🔴 **この関数は「予約記号を書いてよいか」の判定に使わない。** 一度そこへ使ったところ、
+ * 区切り行の書式・引用・HTML・コードフェンスの扱いを足すたびに**別の綴りで突破され**、
+ * しかも受理集合を狭める退行（単一ハイフンの区切り行を落とす）まで作った。
+ * 判定は `findReservedMarkViolations`（出現の目録との完全一致）が持ち、ここは
+ * **記録との突き合わせ（`reconcileCapabilityDoc`）専用**である。
  */
-export function parseMarkdownTables(markdown: string, firstHeader: string): ReadonlyArray<ParsedTable> {
+export function parseAllMarkdownTables(markdown: string): ReadonlyArray<ParsedTable> {
   const lines = markdown.split('\n');
   const tables: ParsedTable[] = [];
   for (let i = 0; i < lines.length - 1; i += 1) {
     const line = lines[i] ?? '';
     if (!line.trim().startsWith('|')) continue;
-    const headers = splitRow(line);
-    if (headers[0] !== firstHeader) continue;
     if (!isSeparator(lines[i + 1] ?? '')) continue;
+    const headers = splitRow(line);
     const rows: TableRow[] = [];
     for (let j = i + 2; j < lines.length; j += 1) {
       const row = lines[j] ?? '';
       if (!row.trim().startsWith('|')) break;
       rows.push({ cells: splitRow(row), line: j + 1 });
     }
-    tables.push({ headers, rows });
+    tables.push({ headers, rows, headerLine: i + 1 });
   }
   return tables;
+}
+
+export function parseMarkdownTables(markdown: string, firstHeader: string): ReadonlyArray<ParsedTable> {
+  return parseAllMarkdownTables(markdown).filter((t) => t.headers[0] === firstHeader);
+}
+
+/**
+ * **予約記号を含んでよい行の目録**（#1114）。値は**正規化した行の全文**。
+ *
+ * ## なぜ「表の中か」で判定しないのか
+ *
+ * 最初は「予約記号は許した表の許した列にしか現れない」を markdown の表構造で判定していた。
+ * それは**自前の GFM パーサを判定経路に置く**ことを意味し、レビューが 2 周で 5 つの穴を実測した
+ * —— 先頭パイプ省略 / 引用ブロック / HTML 表（複数行）/ コードフェンスのスコープ /
+ * **区切り行のハイフン 1 本**。最後のものは、広げたつもりで**受理集合を狭めた退行**だった。
+ *
+ * 綴りを足すたびに別の綴りで破られるのは `.claude/rules/opus5-autonomous-loop.md` の #813 と
+ * 同型である。だから**方式を裏返した**: 構造を解釈せず、**予約記号が現れる行を全部列挙**し、
+ * この目録と**完全一致**することを求める。区切り行の書式・引用・HTML・フェンス・実体参照の
+ * どれも検出力に影響しない（パーサは違反の**説明**にしか使わない）。
+ *
+ * 🔴 **行を 1 文字でも変えたら、ここも変える必要がある。** それが狙いである ――
+ * 予約記号を含む行は、能力の主張かその議論であり、**黙って書き換わってよい行ではない**。
+ *
+ * 🔴 **目録から項目を消したとき、何が守られ何が守られないか。** probe が裏付ける 3 行
+ * （matrix と証拠表の能力行）は、消しても `reconcileCapabilityDoc` が `missing_row` 等で
+ * 落とす（実測）。守られないのは **(a) 散文の行 (b) probe 非対象の行 (c) ファイル項目ごとの削除**
+ * の 3 つだけで、(c) はキー集合の下界で閉じてある。残る (a)(b) は規約 7（テスト削除・弱体化で
+ * green にしない）と同じ**規律**の領域 —— 削除は `src/` の diff に必ず出るので、レビューで見る。
+ *
+ * 🔴 **その下界そのものを弱める変異は kill できない**（変異検証で実測。テストを弱めたことを、
+ * そのテストの実行では検出できない）。判定に使う**述語**は `src/` へ持ち上げてあるが、
+ * 「キー集合はこの 3 つ」という**固定値だけは本質的にテスト側の主張**である。
+ *
+ * 🔴 **空配列は「この文書に予約記号が 1 つも在ってはならない」を意味する。**
+ * 転記先を減らすために記号を消した文書（ADR 0010）は、記号が無いというだけで検査対象から
+ * 外れると、**そこへ書き戻す経路が静かに開く**（変異検証で実測）。消したうえで**ゼロを固定する**。
+ *
+ * 🔴 **目録は現在の文書から生成した。だから「今在る主張が正しい」ことは保証しない。**
+ * 保証するのは「**黙って増えない・黙って消えない**」だけである。主張の真偽は
+ * `reconcileCapabilityDoc`（記録との突き合わせ）が matrix と証拠表について担保する。
+ */
+/** 凡例表に在ってよい行ラベル。**無界にすると捏造した能力行を凡例へ足せる**（レビュー実測）。 */
+export const LEGEND_ROWS: ReadonlyArray<string> = [
+  ...CAPABILITY_VERDICTS.map((v) => `\`${v}\``),
+  '（正の対照のみ）',
+  UNMEASURED_MARK,
+];
+
+export type ScopeGap =
+  | { readonly kind: 'file_not_in_scope'; readonly file: string }
+  | { readonly kind: 'scope_file_without_mark'; readonly file: string }
+  | { readonly kind: 'legend_rows_changed'; readonly actual: ReadonlyArray<string> };
+
+/** 閉包の鍵。**`✅` は使えない**（`SCOPE_KEY_MARK` の注記を読むこと）。 */
+export const SCOPE_KEY_MARK = matrixMark('permissive');
+
+/**
+ * 予約記号を持つ文書の集合と、目録の対象ファイルが**一致する**こと。
+ *
+ * 🔴 **鍵に `✅` を使えない。** レビューは「片側の鍵は片側の閉包しか作らない」と指摘し、
+ * それ自体は正しい。だが実測すると **`✅` はこのリポジトリで「済み」の汎用記号**であり、
+ * `docs/` と `.claude/rules/` の **13 文書・100 行超**が能力とは無関係に使っている
+ * （`docs/runbook-cloud-aws-deploy.md` 33 行 / `docs/scope.md` 19 行 /
+ * `docs/component-catalog.md` 17 行 / `docs/loop-queue.md` 15 行 …）。
+ * `✅` を鍵にすると、それら全部を目録へ取り込むか除外一覧を手で維持するかになり、
+ * **どちらも能力の主張とは関係ないところで壊れる**。
+ *
+ * よって鍵は `🔴 素通り`（能力 verdict にしか現れない綴り）に限る。
+ * 🔴 **鍵で引くときは正規化してから引くこと。** 生文字列で引くと、このリポジトリの正準表記
+ * `🔴 **素通り**`（太字）に**一度も一致しない** —— 既存 matrix からコピーして新しい文書を作る
+ * という最も自然な作り方が、閉包を素通りする（レビュー実測）。
+ * 🔴 **残る穴**: `✅` だけで能力を主張する**新しい**文書は、この閉包に入らない。
+ * 目録の対象 3 文書の中では `✅` も完全に縛られているが、外は縛れていない。
+ */
+export function findScopeGaps(input: {
+  readonly carriers: ReadonlyArray<string>;
+  /** ファイル -> 目録。**空配列は「記号ゼロを固定する」**意味なので carrier でなくてよい。 */
+  readonly scope: Readonly<Record<string, ReadonlyArray<string>>>;
+}): ReadonlyArray<ScopeGap> {
+  const gaps: ScopeGap[] = [];
+  const files = Object.keys(input.scope);
+  for (const file of input.carriers) {
+    if (!files.includes(file)) gaps.push({ kind: 'file_not_in_scope', file });
+  }
+  for (const file of files) {
+    // 空目録のファイルは「記号が無いこと」を固定する対象なので、carrier でなくて当然。
+    if ((input.scope[file] ?? []).length === 0) continue;
+    if (!input.carriers.includes(file)) gaps.push({ kind: 'scope_file_without_mark', file });
+  }
+  return gaps;
+}
+
+/** 凡例の行が導出値ぴったりであること。 */
+export function findLegendRowGaps(rowLabels: ReadonlyArray<string>): ReadonlyArray<ScopeGap> {
+  const same =
+    rowLabels.length === LEGEND_ROWS.length && rowLabels.every((l, i) => l === LEGEND_ROWS[i]);
+  return same ? [] : [{ kind: 'legend_rows_changed', actual: rowLabels }];
+}
+
+export const RESERVED_MARK_INVENTORY: Readonly<Record<string, ReadonlyArray<string>>> = {
+  'docs/local-aws.md': [
+    'トークンを発行しており、「正しいパスワードで通る」だけを見た判定が ✅ を付けていた。',
+    '| `verified` | ✅ | 正は通り、負は拒否された。ローカルの緑に意味がある |',
+    '| `permissive` | 🔴 素通り | 正も負も通る。緑のまま嘘をつく ―― `unavailable` より危険 |',
+    '🔴 機械が予約しているのは ✅ と 🔴 素通り の 2 つだけである。 この 2 つは負の対照を',
+    'これが「まだ測っていない」と「測って ✅ だった」の区別で、凡例ではなく記号が担う',
+    '🔴 下表で ✅ が付いているのは、負の対照まで当てた 3 行だけである。 `◯ 正のみ` の行は',
+    '負の対照を足すこと（足せば ✅ になり、記録と表が同時に動く）。',
+    '🔴 この 3 文書では、予約記号（✅ と 🔴 素通り）が現れる行が機械で固定してある（#1114）',
+    '🔴 この保証は上の 3 文書に閉じている。 `✅` はこのリポジトリで「済み」の汎用記号として',
+    '13 文書・100 行超が使っており、鍵にできない。新しい文書で `✅` だけを使って能力を主張する',
+    '経路は縛れていない（閉包の鍵は `🔴 素通り` のみ）。能力の主張は下表と証拠表にしか書かないこと。',
+    '| DynamoDB 条件付き書き込み | ✓ | ✅ | ✅ | — | `putIfAbsent` / CAS。二重作成が拒否されることまで実測 |',
+    '| DynamoDB GSI テナント分離 | ✓ | ✅ | ✅ | — | 他テナントから引けないことまで実測 |',
+    '| Cognito SRP のパスワード検証 | ✓ | 🔴 素通り | 🔴 素通り | 必須 | 下記「Cognito は素通りする」 |',
+  ],
+  // 🔴 記号を消した文書。**ゼロであること**を固定する（書き戻す経路を塞ぐ）。
+  'docs/adr/0010-swappable-aws-emulator.md': [],
+  'docs/development/local-aws-sandbox.md': [
+    '🔴 この文書では、✅ / 🔴 素通り を含む行が機械で固定してある（`RESERVEDMARKINVENTORY`。',
+    '| DynamoDB 条件付き作成（二重作成が拒否される） | ✅ verified | ✅ verified |',
+    '| DynamoDB GSI テナント分離（他テナントから引けない） | ✅ verified | ✅ verified |',
+    '| Cognito SRP のパスワード検証 | 🔴 素通り | 🔴 素通り |',
+  ],
+};
+
+export type ReservedMarkViolation = {
+  readonly file: string;
+  readonly line: number;
+  readonly text: string;
+  readonly mark: string;
+  /** `unblessed` = 目録に無い出現 / `missing` = 目録に在るのに文書から消えた行。 */
+  readonly kind: 'unblessed' | 'missing';
+};
+
+/**
+ * 予約記号の検出用の正規化。**描画されたときに読者が見る形**へ寄せる。
+ * 実体参照・装飾・HTML タグで綴りを変える族（#813 と同型）を潰す。
+ * 🔴 表のラベル一致（`normalizeCell`）とは**別の関数**にしてある ―― あちらを装飾剥がしに
+ * すると、ラベルに `*` や `<T>` を含む行が静かに一致しなくなる（レビュー MINOR-5）。
+ */
+export function normalizeForMarkScan(raw: string): string {
+  return (
+    raw
+      // 🔴 **タグ除去が先。** 実体参照を先に復号すると、`&#60;span …&#62;` が `<span …>` へ化けて
+      // タグとして除去され、**レンダラには見えているテキスト**が祝福済み行と一致してしまう
+      // （レビュー実測）。実体で書いたものは可視テキストなので、除去の対象ではない。
+      //
+      // 🔴 **`[^>\n]` —— 改行をまたがせない。** `[^>]` は改行に一致するので、`<<EOF` のように
+      // 同じ行に `>` が無い綴りから**次の `>` までを全部消す**。実測で 1 文書が 878 文字・28 行を
+      // 飲み込んでおり、ヒアドキュメントを含む手順書が**無音で検査の外へ出ていた**。
+      .replace(/<\/?[a-z][^>\n]*>/giu, '')
+      .replace(/&#(\d+);/gu, (_m, code: string) => String.fromCodePoint(Number(code)))
+      .replace(/&#x([0-9a-f]+);/giu, (_m, code: string) => String.fromCodePoint(parseInt(code, 16)))
+      .replaceAll('&nbsp;', ' ')
+      .replaceAll('*', '')
+      .replaceAll('_', '')
+      // ゼロ幅文字は描画されないので、綴りを変える手段になる。
+      .replace(/[\u200b-\u200d\ufeff]/gu, '')
+      // `\s` は NBSP(U+00A0) を含む（実測）。`[\s\u00a0]` と書くと「NBSP を別途処理している」
+      // という誤った印象を与えるだけで、振る舞いは同じ（等価変異として変異検証で確認済み）。
+      .replace(/\s+/gu, ' ')
+      .trim()
+  );
+}
+
+/**
+ * 記号の照合は**空白に依存しない**。`🔴素通り`（空白なし）やゼロ幅で分断した綴りは
+ * 描画上まったく区別が付かないので、検出側で吸収する（レビュー実測）。
+ * 🔴 目録との**一致**には使わない —— あちらは読める形（空白を 1 つに畳んだ行）で比べる。
+ */
+const withoutSpaces = (t: string): string => t.replace(/\s/gu, '');
+
+export function containsMark(text: string, mark: string): boolean {
+  return withoutSpaces(text).includes(withoutSpaces(mark));
+}
+
+/** その行が含む予約記号（無ければ undefined）。 */
+export function reservedMarkIn(line: string): string | undefined {
+  const normalized = normalizeForMarkScan(line);
+  return NEGATIVE_CONTROL_ONLY_VERDICTS.map(matrixMark).find((m) => containsMark(normalized, m));
+}
+
+/**
+ * 文書の予約記号の出現が、目録と**完全一致**すること。
+ *
+ * 🔴 **両側を主張する。** 目録に無い出現（新しい主張が勝手に入った）と、目録に在るのに
+ * 消えた行（主張が黙って落ちた）の**どちらも**報告する。片側だけだと、全部消せば通る。
+ */
+export function findReservedMarkViolations(input: {
+  readonly file: string;
+  readonly markdown: string;
+  readonly inventory: ReadonlyArray<string>;
+}): ReadonlyArray<ReservedMarkViolation> {
+  const found: ReservedMarkViolation[] = [];
+  // 🔴 **集合ではなく多重集合で数える。** `Set` と「所属するか」で判定していたときは、
+  // **祝福済みの行をそっくり別の節へ複製しても無検出**だった（レビュー実測。しかも
+  // 構造 allowlist 方式はこれを kill していた＝方式交換で kill を落としていた）。
+  // 「黙って増えない」を主張する以上、**回数**を見なければ嘘になる。
+  const budget = new Map<string, number>();
+  for (const text of input.inventory) budget.set(text, (budget.get(text) ?? 0) + 1);
+
+  input.markdown.split('\n').forEach((raw, index) => {
+    const mark = reservedMarkIn(raw);
+    if (mark === undefined) return;
+    const text = normalizeForMarkScan(raw);
+    const left = budget.get(text) ?? 0;
+    if (left <= 0) {
+      // 目録に無い行、または**目録の回数を超えた複製**。
+      found.push({ file: input.file, line: index + 1, text, mark, kind: 'unblessed' });
+      return;
+    }
+    budget.set(text, left - 1);
+  });
+
+  for (const [text, left] of budget) {
+    for (let i = 0; i < left; i += 1) {
+      found.push({
+        file: input.file,
+        line: 0,
+        text,
+        mark: reservedMarkIn(text) ?? '',
+        kind: 'missing',
+      });
+    }
+  }
+  return found;
 }
 
 export type CapabilityRecording = {
