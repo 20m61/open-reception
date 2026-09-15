@@ -277,6 +277,15 @@ export function parseRecording(raw: unknown): CapabilityRecording {
   if (missing.length > 0) {
     throw new Error(`記録に capability が欠けている (runtime=${runtime}): ${missing.join(' / ')}`);
   }
+  // 🔴 **重複も拒否する。** `reconcile` は `find` で先勝ちに読むので、重複を許すと
+  // 2 件目が無検査になる ―― `duplicate_table` / `duplicate_runtime_recording` で
+  // 「先勝ちは片方を無検査にする」と拒否しておきながら、ここだけ許すのは非対称である。
+  const duplicated = PROBE_CAPABILITIES.filter(
+    (c) => parsed.filter((r) => r.capability === c).length > 1,
+  );
+  if (duplicated.length > 0) {
+    throw new Error(`記録に capability が重複している (runtime=${runtime}): ${duplicated.join(' / ')}`);
+  }
   return { runtime, measuredAt, results: parsed };
 }
 

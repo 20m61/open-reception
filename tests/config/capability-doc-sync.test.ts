@@ -94,8 +94,9 @@ describe('docs/local-aws.md の compatibility matrix', () => {
    */
   it('✅ は負の対照つきの行にしか現れない', () => {
     const verified = matrixMark('verified');
+    const runtimeIndexes = Object.values(RUNTIME_COLUMNS).map((h) => table!.headers.indexOf(h));
     const rowsWithVerified = table!.rows.filter((row) =>
-      [1, 2].map((i) => row.cells[i + 1]).includes(verified),
+      runtimeIndexes.map((i) => row.cells[i]).includes(verified),
     );
     expect(rowsWithVerified.every((row) => (row.cells[1] ?? '').length > 0)).toBe(true);
     // 下界: ✅ が 1 つも無い表でも上の主張は通ってしまう。
@@ -105,9 +106,10 @@ describe('docs/local-aws.md の compatibility matrix', () => {
   });
 
   /**
-   * 🔴 **凡例そのものを検査する。** 記号の意味を定義している表が無検査だと、
+   * 🔴 **凡例の「判定 → 記号」の対応を検査する。** ここが無検査だと、
    * `| verified | ◯ 正のみ |` と書き換えるだけで 12 行の意味が変わる（レビュー MAJOR-4a が
    * それで緑を実測した）。記号の出どころは `matrixMark` 一箇所である。
+   * **意味を説明する 3 列目は縛っていない**（散文なので。AC3 は記号が担う設計）。
    */
   it('凡例の記号が matrixMark と一致し、未測・正のみの行が在る', () => {
     const legend = parseMarkdownTables(read('docs/local-aws.md'), '判定');

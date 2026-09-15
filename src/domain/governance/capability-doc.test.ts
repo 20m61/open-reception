@@ -202,6 +202,16 @@ describe('記録の読み取り', () => {
     ).toThrow(/説明が probe と一致しない/);
   });
 
+  it('能力が重複した記録を受け付けない', () => {
+    expect(() =>
+      parseRecording({
+        runtime: 'moto',
+        measuredAt: 'x',
+        results: [...PROBE_CAPABILITIES, COND].map((c) => entry(c, 'verified')),
+      }),
+    ).toThrow(/重複している/);
+  });
+
   it('runtime と measuredAt が要る', () => {
     expect(() => parseRecording({ results: [] })).toThrow(/runtime/);
     expect(() => parseRecording({ runtime: 'moto', results: [] })).toThrow(/measuredAt/);
@@ -265,6 +275,29 @@ describe('突き合わせ', () => {
     expect(kinds(CLEAN.replace(`| S3 | | ${POSITIVE_ONLY_MARK}`, '| S3 | | '))).toEqual([
       'unknown_mark',
     ]);
+  });
+
+  /**
+   * 🔴 **照合の「向き」を縛る。** `startsWith` を `includes` へ緩める refactor は自然に
+   * 見えるが、そうすると `?`（`inconclusive` の記号は 1 文字）を含む任意のセルが通る。
+   * レビュー 3 周目が「現状のコードは正しいが向きが縛られていない」として実測した。
+   */
+  it('記号が先頭に無いセルは語彙として認めない', () => {
+    expect(kinds(CLEAN.replace(`| S3 | | ${POSITIVE_ONLY_MARK}`, '| S3 | | Moto では ⛔'))).toEqual([
+      'unknown_mark',
+    ]);
+    expect(kinds(CLEAN.replace(`| S3 | | ${POSITIVE_ONLY_MARK}`, '| S3 | | 本当に動く?'))).toEqual([
+      'unknown_mark',
+    ]);
+  });
+
+  /**
+   * 🔴 **裏付けのある行は厳密一致である。** 未裏付け行の装飾だけを縛っていると、
+   * 裏付け行側を前方一致へ緩める変異が素通りし、`✅ 実測（Moto は未確認）` が書ける。
+   */
+  it('裏付けのある行に装飾を足したら落ちる', () => {
+    const rows = CLEAN.replace(`| ${MATRIX_DOC_LABELS[COND]} | ✓ | ✅ |`, `| ${MATRIX_DOC_LABELS[COND]} | ✓ | ✅ 実測 |`);
+    expect(kinds(rows)).toEqual(['mark_mismatch']);
   });
 
   it('末尾の補足は許す（⛔ 405 のような行が実在する）', () => {
@@ -405,7 +438,7 @@ describe('負の対照列を持たない表（証拠表）', () => {
   const run = (rows: string) =>
     reconcileCapabilityDoc({
       tables: evidence(rows),
-      labels: LABELS as never,
+      labels: LABELS as Readonly<Record<ProbeCapability, string>>,
       recordings: RECORDINGS,
       runtimeColumns: { ministack: 'MiniStack', moto: 'Moto' },
     }).map((d) => d.kind);
