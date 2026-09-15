@@ -143,7 +143,6 @@ export function negativeFromBooleanProbe(r: BooleanProbe): NegativeOutcome {
   return r ? 'rejected' : 'accepted';
 }
 
-
 /**
  * probe の終了コード。**「測れなかった」で 0 を返さない**（レビュー round1 M2）。
  * 素通り(1) > 判定不能(3) > 正常(0) の順で強い。

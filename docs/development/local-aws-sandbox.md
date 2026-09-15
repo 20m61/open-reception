@@ -4,14 +4,20 @@ Status: **runtime-validated in Claude Code on the web (2026-09-14).** The lane r
 
 ## Decision
 
-Use LocalStack as the default **AWS integration sandbox** for routine development, with real AWS staging retained as the final compatibility/release-verification layer. This is a candidate replacement for a long-lived AWS `dev` environment, not a replacement for staging or production verification.
+🔴 **Superseded on the emulator choice by [ADR 0010](../adr/0010-swappable-aws-emulator.md):
+the default is now MiniStack (Docker 不要), with LocalStack kept as one interchangeable
+runtime.** Use a local emulator as the **AWS integration sandbox** for routine development,
+with **real AWS** retained as the final compatibility/release-verification layer — today that
+means `dev`; `staging` exists only as configuration and has never been stood up. This is a
+candidate replacement for a long-lived AWS `dev` environment, not a replacement for real-AWS or
+production verification.
 
 Verification ladder:
 
 1. unit/UI tests with `DATA_BACKEND=memory`;
-2. local integration with the real `DATA_BACKEND=dynamodb` repository against LocalStack;
+2. local integration with the real `DATA_BACKEND=dynamodb` repository against the emulator (MiniStack by default);
 3. CDK synth/diff/security gates;
-4. real AWS staging/device/external-service verification;
+4. real AWS (today `dev`) / device / external-service verification;
 5. production release gates.
 
 ## Implemented developer lane
@@ -178,7 +184,7 @@ It pins what the in-memory fake in `dynamodb.test.ts` **cannot** guarantee, sinc
 - internal keys (`PK`/`SK`/`ttl`/`GSI1PK`/`GSI1SK`) stripped before data reaches callers;
 - audit-log range and index queries, with a future `since` as the lower bound.
 
-🔴 **It does not run in the default quality gate.** The suite is skipped unless `LOCAL_AWS_INTEGRATION=1`, which only `scripts/local-aws.sh test` sets — LocalStack green is never promoted into release evidence. But *enabled and unreachable* fails rather than skips, so a broken emulator cannot masquerade as a passing run.
+🔴 **It does not run in the default quality gate.** The suite is skipped unless `LOCAL_AWS_INTEGRATION=1`, which `scripts/aws-local.sh test` and `scripts/local-aws.sh test` set — LocalStack green is never promoted into release evidence. But *enabled and unreachable* fails rather than skips, so a broken emulator cannot masquerade as a passing run.
 
 ## Local responsibility
 
@@ -211,27 +217,40 @@ was caught in review. The common cause is not judgement but **where the record l
 ledger of real-AWS verification events exists, anyone deciding from those two documents will
 make the same error.** Building that ledger is a precondition in #1112.
 
-### What the local lane settles (measured 2026-09-14/15)
+### What the local lane settles
 
-Claude Code on the web, no AWS credentials. 🔴 **Lane と証拠を混ぜないこと** ―― 下表の
-「どう測ったか」列が示す経路でしか測っていない。MiniStack（Docker 不要）で測ったものと、
-LocalStack（**docker socket が要る**）で測ったものは別である。
+🔴 **この節は「機械が測っていること」しか主張しない。** これは方針であって省略ではない。
+この PR のレビューは 5 周にわたり、**手で維持する証拠表のセルが毎回嘘になる**ことを
+検出し続けた（lane の取り違え、負の対照の有無の取り違え、`aws:local:test` が叩かない
+サービスの根拠にされる、IAM の「作成」と「評価」の混同）。**セルを直すより、機械が
+言えないことを書かないほうが確実である。** 機械検査の整備は #1113。
 
-| Capability | Result | How it was measured |
+**機械が測っていること**（`npm run aws:local:capability`、両 runtime で exit 1 を確認済み。
+正の対照と負の対照を組で当てる）:
+
+| 能力 | MiniStack | Moto |
 | --- | --- | --- |
-| DynamoDB persistence (table/GSI1/TTL/conditional write/tenant isolation) | ✅ verified, negative-controlled | production `DynamoBackend`, 8 integration tests + `npm run aws:local:capability` |
-| S3 / Secrets Manager / SSM | ✅ | ADR 0010 の matrix（`npm run aws:local:test` は **DynamoDB しか叩かない**ので根拠にならない） |
-| Lambda invoke / API Gateway / IAM | ✅ ただし **LocalStack** | 下記「LocalStack で測った結果」。Lambda invoke は **docker socket が要る** |
-| `cdk synth` | ✅ 18s | no credentials and no emulator needed; gated behind a fresh `build:open-next` |
-| `cdk bootstrap` / `cdk deploy` → emulator | ✅ 13.9s | real CloudFormation stack created in MiniStack |
-| `cdk diff` after that deploy | ✅ **"There were no differences"** | real change-set path |
+| DynamoDB 条件付き作成（二重作成が拒否される） | ✅ verified | ✅ verified |
+| DynamoDB GSI テナント分離（他テナントから引けない） | ✅ verified | ✅ verified |
+| Cognito SRP のパスワード検証 | 🔴 素通り | 🔴 素通り |
 
-**Routine development — persistence と infra shape — no longer touches AWS at all.**
-Plain CDK v2 honours `AWS_ENDPOINT_URL`, so this needs no `cdklocal` and no new dependency.
+**それ以外は、それぞれの出どころを見ること。** ここへ転記しない:
 
-🔴 The deploy→diff loop round-trips the **mechanism**, not AWS parity. The emulator does not
-evaluate IAM, and replacement/drift/rollback are not real behaviour. `npm run aws:diff-gate`,
-`aws:negative-tests` and the runbook (Tier 4) are all still required.
+- DynamoDB の table / GSI1 / TTL … `src/lib/data/dynamodb.emulator.test.ts`（8 本。
+  **正の対照のみ**。`LOCAL_AWS_INTEGRATION=1` が要る）
+- S3 / Secrets Manager / SSM / Lambda invoke / API Gateway / IAM の **role 作成** …
+  この文書の "Measured service coverage"（**LocalStack** で測った。Lambda invoke は
+  コンテナへ `/var/run/docker.sock` を渡す必要がある）と ADR 0010 の matrix
+- CDK … `docs/local-aws.md`「CDK はローカルで往復する」（**MiniStack のみ**・手動実行。
+  synth 18s / deploy 13.9s / 直後の diff が "There were no differences"）
+
+**ルーチン開発（永続層と infra の形）は AWS を叩かなくなった。** 素の CDK v2 が
+`AWS_ENDPOINT_URL` を尊重するので `cdklocal` も新規依存も要らない。
+
+🔴 往復したのは**機構**であって AWS 互換性ではない。エミュレータは **IAM を評価しない**
+（role を作れることと、policy の許可/拒否が正しいことは別である）。置換挙動・drift・
+ロールバックも実 AWS の挙動ではない。`npm run aws:diff-gate` / `aws:negative-tests` と
+runbook（Tier 4）は**そのまま要る**。
 
 ### What it cannot settle
 

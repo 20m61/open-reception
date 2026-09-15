@@ -133,9 +133,6 @@ describe('probe の配線（測定結果 → outcome）', () => {
     expect(negativeFromBooleanProbe('threw')).toBe('unreachable');
   });
 
-
-
-
   it('🔴 exit code: 素通り=1 / 判定不能=3 / それ以外=0（測れなかったで 0 を返さない）', () => {
     expect(exitCodeFor(['verified', 'verified'])).toBe(0);
     expect(exitCodeFor(['verified', 'unavailable'])).toBe(0);
@@ -144,7 +141,6 @@ describe('probe の配線（測定結果 → outcome）', () => {
     expect(exitCodeFor(['inconclusive', 'permissive'])).toBe(1);
   });
 });
-
 
 describe('2 つの呼び方の負の対照をまとめる', () => {
   it('🔴 どちらかが受理したら素通り（呼び方 1 つで崩れる保証を ✅ にしない）', () => {
