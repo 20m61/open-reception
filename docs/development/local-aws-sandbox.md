@@ -198,9 +198,13 @@ Keep device/soak behavior, Vonage/WebRTC, speech-service fidelity, CloudFront/ce
 
 ## Replacement decision gate
 
-**Decision: `downsize` — stop running a *persistent* AWS `dev` environment. Keep staging as
-the real-AWS gate.** Recorded 2026-09-14 (#1103). Measured, not inferred; the measurements and
-the one thing that is still unmeasured are both below.
+**Decision: `downsize` — stop running an *always-on* AWS `dev` environment, while keeping a
+real AWS environment reachable on demand.** Recorded 2026-09-15 (#1103; measurements 2026-09-14/15). Measured, not inferred;
+the measurements, the precondition, and the one thing still unmeasured are all below.
+
+🔴 **Not `remove`.** `dev` is today the only real AWS environment that exists — `staging` has
+never been stood up — and it is where `/admin/login` is actually verified. See
+"Why `downsize` and not `remove`".
 
 🔴 **Recording this recommendation is not executing it.** Tearing down or resizing AWS
 resources is a stop boundary (cost / infrastructure). The change itself needs human approval.
@@ -239,17 +243,30 @@ Polly audio quality, Vonage/WebRTC, real device/browser behavior.
 ### Why `downsize` and not `remove`
 
 The capabilities that still need AWS — auth, IAM, delivery — are real and frequently touched.
-They are not, however, reasons for a **persistent** `dev` environment:
+What the local lane removes is the **routine** need: persistence, infra shape and API wiring no
+longer touch AWS at all, and `cdk synth`/`deploy`/`diff` round-trip against the emulator.
 
-- they are already routed to **staging**, which this repository has always treated as the
-  Tier 4 compatibility gate;
-- AWS access is already **on demand, not continuous** — the deploy lane issues short-lived STS
-  credentials from the local privileged lane under human approval (ADR 0009 / #675);
-- routine work (persistence, infra shape, API wiring) no longer touches AWS at all.
+🔴 **But `dev` is currently the only real AWS environment that exists, and it is where the
+auth path is actually exercised.** Checked 2026-09-14:
 
-An always-on `dev` environment sitting *beside* staging therefore buys little that staging and
-the credential window do not already provide. `remove` overstates it, because the auth gap means
-some real environment must remain reachable; that environment is staging.
+- `staging` appears only as a type union (`infra/lib/config/environments.ts:7`), an IAM
+  resource pattern, a cost filter and test fixtures. **It has never been stood up.**
+- Every deployment record in `docs/runbook-cloud-aws-deploy.md` is `-c env=dev`; the most
+  recent one (2026-09-14) applied the custom domain for the first time.
+- `scripts/e2e-live.sh` requires `LIVE_BASE_URL` + `LIVE_ADMIN_USER` + `LIVE_ADMIN_PASSWORD`
+  and drives `/admin/login` against a live deployment; `scripts/url-quality-gate.sh` runs
+  ZAP/Lighthouse against a live URL. These are the **only** place the Cognito path above —
+  the one that cannot be verified locally — is checked at all.
+
+So `downsize` here means **stop paying for an always-on `dev`, not stop having a real AWS
+environment.** `remove` would delete the only place auth is verified.
+
+🔴 **Precondition before acting:** a real AWS environment must remain reachable for
+`e2e-live` / `url-quality-gate` / `aws:negative-tests` — whether that is an on-demand `dev`
+re-created from CDK when needed, or a `staging` that someone actually stands up first.
+Deploys already run on demand under human approval with short-lived STS credentials
+(ADR 0009 / #675), so "on-demand rather than always-on" is a change of *lifetime*, not of
+*capability*.
 
 ### Still unmeasured
 
@@ -259,4 +276,5 @@ environment is not *needed* for routine development, not how much it costs to ke
 number requires real AWS billing access (`src/lib/platform/aws-cost-explorer.ts`, real AWS only);
 that is the remaining input before acting, and it affects *how far* to downsize, not *whether*.
 
-Staging remains the real-AWS compatibility gate regardless of the outcome.
+A real AWS environment remains the compatibility gate regardless of the outcome. Today that is
+`dev`; if it is ever to be `staging`, `staging` has to exist first.

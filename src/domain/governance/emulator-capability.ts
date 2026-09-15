@@ -29,8 +29,11 @@
  * `matrixMark()` から導出する（散文が実測から遅れるのを機械で止める）。
  */
 
-/** 能力を主張するために通らなければならない操作の結果。 */
-export type PositiveOutcome = 'passed' | 'failed';
+/**
+ * 能力を主張するために通らなければならない操作の結果。
+ * `unreachable` は「操作を走らせられなかった」であって、能力が無いことではない。
+ */
+export type PositiveOutcome = 'passed' | 'failed' | 'unreachable';
 
 /**
  * 拒否されなければならない操作（負の対照）の結果。
@@ -61,20 +64,44 @@ export type CapabilityProbe = {
 };
 
 /**
+ * ログイン試行の結果（`cognitoSrpLogin` の戻り値と構造的に一致する形）。
+ * 依存を持ち込まないため、ここでは最小の形だけを受ける。
+ */
+export type LoginAttempt =
+  | { readonly ok: true; readonly idToken?: string }
+  | { readonly ok: false; readonly reason: string };
+
+/**
  * 正／負の対照から能力を判定する。
  *
  * 🔴 **`positive === 'passed'` だけで `verified` を返さない。** それがこの関数の全部である。
  */
 export function classifyCapability(probe: CapabilityProbe): CapabilityVerdict {
+  // 🔴 **素通りが支配する。** 拒否すべきものを受理した事実は、正の対照が何であっても
+  // 最も危険な信号である。ここを「正が落ちたら unavailable」で先に畳むと、
+  // **素通りするエミュレータが「嘘はつかない」⛔ に化ける**（Moto が実際にその形だった）。
+  if (probe.negative === 'accepted') return 'permissive';
+  // 正の対照を走らせられなかったなら、何も知らない。
+  if (probe.positive === 'unreachable') return 'inconclusive';
+  // 正の対照を**実際に走らせて落ちた**のは知識である（負の対照の可否に関わらず使えない）。
   if (probe.positive === 'failed') return 'unavailable';
-  switch (probe.negative) {
-    case 'rejected':
-      return 'verified';
-    case 'accepted':
-      return 'permissive';
-    case 'unreachable':
-      return 'inconclusive';
-  }
+  // 正は通った。負を確かめられていないなら verified とは言えない。
+  if (probe.negative === 'unreachable') return 'inconclusive';
+  return 'verified';
+}
+
+/**
+ * ログイン試行の結果を**負の対照**の outcome へ落とす。
+ *
+ * 🔴 **「成功しなかった」を「拒否された」と読まない。** 負の対照で価値があるのは
+ * 「**資格情報が理由で**拒否された」ことだけである。障害（`error`: ネットワーク・5xx・
+ * throttle・トークン欠落）や追加チャレンジ（MFA・初回 PW 変更）は、パスワードが
+ * 誤っていたから止まった証拠にならない。これらを `rejected` に畳むと、
+ * **負の対照が落ちているだけのエミュレータが `verified` に化ける**。
+ */
+export function negativeFromLoginResult(result: LoginAttempt): NegativeOutcome {
+  if (result.ok) return 'accepted';
+  return result.reason === 'invalid_credentials' ? 'rejected' : 'unreachable';
 }
 
 const MARKS: Readonly<Record<CapabilityVerdict, string>> = {

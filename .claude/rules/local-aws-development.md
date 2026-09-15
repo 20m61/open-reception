@@ -12,32 +12,12 @@
 - ベンダ固有の health パス（`/_localstack/health` 等）でテストの到達性を判定しない。
   実際に使う AWS API で確かめる ―― 実装時にこれで Moto が落ち、交換可能性を検証する
   テスト自身がロックインを持っていた（2026-09-14）。
-- 🔴 **実際に使う API を叩いて成功しても、まだ足りない。負の対照を組にする。**
-  「その操作が通った」は「その能力が使える」ではない。2026-09-14（#1103）、MiniStack の
-  Cognito は本番モジュールからの SRP 認証に**誤ったパスワードでもトークンを発行**していたが、
-  正の対照だけを見ていた compatibility matrix は ✅ と書いていた。**拒否されなければ
-  ならない操作が拒否されること**まで測る。判定は
-  `src/domain/governance/emulator-capability.ts`、実測は `npm run aws:local:capability`。
-- 🔴 **`permissive`（素通り）を `unavailable` と同じ扱いにしない。前者のほうが危険である。**
-  使えないエミュレータは使った瞬間に分かるが、素通りするエミュレータは緑のまま嘘をつく。
-  🔴 **Cognito 認証の判定をローカルの緑で担保しない**（`docs/local-aws.md`）。
-
-- Prefer a disposable LocalStack sandbox for routine AWS integration before using a real AWS dev/staging environment.
-- Use the current `lstk` CLI (`lstk start`, `lstk status`, `lstk reset --force`, `lstk stop`, `lstk cdk ...`). Do not add new dependencies on the deprecated `localstack` CLI or `cdklocal`.
-- `LOCALSTACK_AUTH_TOKEN` is a runtime secret. Never commit, print, fixture, or persist it. Headless/CI-equivalent lanes need a CI Auth Token, not a personal developer token.
-- Verify the Docker **daemon**, not the `docker` CLI. The CLI is present in Claude Code on the web while the daemon is not, so `command -v docker` succeeding proves nothing.
-- A stopped daemon is not an unavailable one. Claude Code on the web ships `dockerd`/`containerd`/`runc` and runs as root; `local-aws.sh preflight` starts the daemon (~2s) instead of failing closed. Do not conclude "Docker is unavailable here" from `docker info` failing — try starting it.
-- Never let the local lane inherit real AWS credentials. Assign dummy values unconditionally and clear `AWS_SESSION_TOKEN` / `AWS_PROFILE`; `${VAR:-test}` silently keeps a real deploy window's credentials.
-- Never require real staging/production AWS credentials for local development.
-- LocalStack passing is not AWS parity. Infrastructure/auth/network/delivery changes still require the repository's existing CDK and real-AWS verification gates.
-- Never weaken production IAM, encryption, tenancy, audit, or deployment controls to make the emulator pass; introduce local-only endpoint/config wiring instead.
-
-- Verify the token's **key name**, not just its presence. An environment-dialog key with a trailing space (`"LOCALSTACK_AUTH_TOKEN "`) is a valid env entry but not a valid shell identifier, so `printenv NAME` and `${NAME+x}` both report it missing while the value is really there. When two probes disagree, widen the conditions before concluding "unset"; list raw keys (`env | cut -d= -f1`, `os.environ` reprs). It cannot be repaired in a running session — fix the dialog and start a new one.
-- `lstk` needs the auth token **even for the Community image** (it authenticates the CLI), and it forwards the token into the container, which then attempts Pro activation. Choosing the Community image does not make the lane license-free.
-- Never let `AWS_ENDPOINT_URL` reach `lstk` lifecycle commands (`start`/`stop`); they refuse to run while it is set. Strip it with `env -u` for those calls only — removing it from the lane entirely points the app at real AWS.
-- Treat `AWS_CREDENTIAL_EXPIRATION` as part of credential isolation. With it left in place from a closed deploy window, the AWS CLI rejects even the dummy `test` credentials as expired.
-- `lstk aws` writes a `> Note:` banner to **stdout**; strip banner lines before comparing a `--query`/`--output text` capture, or every comparison silently fails.
-- Behind a TLS-terminating proxy bound to loopback, the emulator container needs host networking plus the proxy CA; `lstk` config has no `network` key, so self-manage the container and drive it via `lstk --endpoint-url`. Mount `/var/run/docker.sock` or Lambda cannot run.
+- 🔴 **Cognito 認証の判定をローカルの緑で担保しない。** MiniStack / Moto はどちらも
+  **SRP のパスワード検証をしていない**（誤った PW でトークンが出る。2026-09-14 実測 / #1103）。
+  ⛔ より危険で、緑のまま嘘をつく。実測と扱いは `docs/local-aws.md`「Cognito は素通りする」。
+- 能力の主張は**負の対照つき**で測る（拒否されるべきものが拒否されること）。判定は
+  `src/domain/governance/emulator-capability.ts`、実測は `npm run aws:local:capability`
+  （素通りなら exit 1 / 判定不能なら exit 3）。
 
 ## open-reception-specific boundary
 

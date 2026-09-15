@@ -20,6 +20,14 @@
 つまり「ローカルで AWS を検証できるか」が**単一ベンダのライセンス状態に従属**していた。
 本プロジェクトの認証は Cognito に依存するので、これは実際に検証範囲を削っている。
 
+> 🔴 **2026-09-14 追記（#1103）。** この ADR は当初「MiniStack / Moto なら Cognito を
+> 検証できる」と書いていたが、**誤りだった**。両者とも user pool / client / user は作れる
+> ものの、**SRP のパスワード検証をしていない**（誤ったパスワードでトークンが出る）。
+> ライセンスで⛔になるより悪く、**緑のまま嘘をつく**。交換可能性という本 ADR の判断は
+> 変わらないが、「Cognito を含む」を交換の動機に数えてはいけない。
+> 実測と扱いは [`../local-aws.md`](../local-aws.md)「Cognito は素通りする」、
+> 再測は `npm run aws:local:capability`。
+
 ### 実測した代替（2026-09-14、同一セッション）
 
 `ministack` (MIT) と `moto` (Apache-2.0) はいずれも **PyPI の pure-Python** で、
@@ -33,7 +41,8 @@
 | DynamoDB: GSI query | ✅ | ✅ | ✅ |
 | Secrets Manager | ✅ | ✅ | ✅ |
 | SSM Parameter Store | ✅ | ✅ | ✅ |
-| **Cognito: user pool + SRP client** | ⛔ ライセンス | ✅ | ✅ |
+| **Cognito: user pool / client の CRUD** | ⛔ ライセンス | ✅ | ✅ |
+| **Cognito: SRP のパスワード検証** | ⛔ ライセンス | 🔴 素通り | 🔴 素通り | 
 | **Polly: synthesize** | ⛔ ライセンス | ⛔ 405 | ✅ |
 | S3 | ✅ | ✅ | ✅ |
 | CloudFormation | ✅ | ✅ | ✅ |
@@ -50,7 +59,7 @@
 1. `AWS_RUNTIME` で実行系を選ぶ: `aws` / `ministack` / `moto` / `localstack`
 2. 選択は **endpoint / region / credentials / account の解決** にだけ影響させる。
    アプリ内に `if ministack` のような分岐を作らない
-3. 既定のローカル統合環境は **MiniStack**（Docker 不要・Cognito を含む）
+3. 既定のローカル統合環境は **MiniStack**（Docker 不要）
 4. **Moto** は高速 fallback かつ Polly の唯一の経路
 5. **LocalStack** は compatibility layer として残す（削除しない）
 6. 実 AWS は staging / 最終検証にのみ使う

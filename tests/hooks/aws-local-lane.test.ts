@@ -12,7 +12,7 @@
  * （`local-aws.sh` で同じ設計を採り、実際に診断を助けた）。
  */
 import { spawnSync } from 'node:child_process';
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
@@ -171,5 +171,26 @@ describe('aws-local.sh: localstack への委譲', () => {
     const out = `${r.stdout}${r.stderr}`;
     expect(out, '委譲で制御が戻っていない（exec になっている）').toContain('bootstrap complete');
     expect(r.status, `stdout=${r.stdout} stderr=${r.stderr}`).toBe(0);
+  });
+});
+
+describe('aws-local.sh: capability サブコマンド (#1103)', () => {
+  const source = readFileSync(SCRIPT, 'utf8');
+
+  it('usage に載っている（隠しサブコマンドにしない）', () => {
+    expect(source).toMatch(/usage:.*\|capability\}/);
+  });
+
+  it('🔴 エミュレータを上げてから測る（測れないまま ⛔ を並べさせない）', () => {
+    // capability だけ start/bootstrap を呼ばないと、エミュレータが落ちている環境で
+    // 全能力が「使えない」ように見え、**素通りの記録が安全側へ格下げされる**。
+    const dispatch = source.split('\n').find((l) => l.trim().startsWith('capability)'));
+    expect(dispatch, 'capability の dispatch 行が見つからない').toBeTruthy();
+    expect(dispatch).toContain('start_emulator');
+    expect(dispatch).toContain('bootstrap');
+  });
+
+  it('probe 本体を呼ぶ（npm script 越しの再帰にしない）', () => {
+    expect(source).toMatch(/aws-local-capability\.ts/);
   });
 });

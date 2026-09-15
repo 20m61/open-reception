@@ -275,7 +275,7 @@ case "${1:-start}" in
   reset)      reset_state ;;
   status)     status ;;
   env)        lane_env ;;
-  capability) shift; capability "$@" ;;
+  capability) shift; start_emulator; bootstrap; capability "$@" ;;
   *)
     echo "usage: $0 {start|stop|bootstrap|seed|up|test|reset|status|env|capability}" >&2
     exit 2

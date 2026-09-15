@@ -88,7 +88,8 @@ Tier 1 は **hermetic** である。`vitest.config.ts` が AWS 資格情報を d
 
 以後、能力の主張には**正の対照**（通らなければならない操作）と**負の対照**
 （拒否されなければならない操作）を組で当てる。判定は
-`src/domain/governance/emulator-capability.ts` に閉じ、記号は手で書かない:
+`src/domain/governance/emulator-capability.ts` に閉じる（probe の出力はそこから導出される。
+**下表は手書きなので、probe の出力と突き合わせる機械検査はまだ無い**）:
 
 | 判定 | 記号 | 意味 |
 | --- | --- | --- |
@@ -97,26 +98,30 @@ Tier 1 は **hermetic** である。`vitest.config.ts` が AWS 資格情報を d
 | `unavailable` | ⛔ | 正が通らない。ローカルでは検証できない（が嘘はつかない） |
 | `inconclusive` | ? | 負の対照を走らせられなかった |
 
-再測は **`npm run aws:local:capability`**（素通りが 1 件でもあれば非 0）。
-下表の Moto / MiniStack 列は 2026-09-14 の実測。
+再測は **`npm run aws:local:capability`**（素通りなら exit 1、判定不能なら exit 3）。
 
-| Service / 操作 | Moto | MiniStack | Real AWS 必須 | Notes |
-| --- | --- | --- | --- | --- |
-| DynamoDB table + GSI1 | ✅ | ✅ | — | 本番 backend をそのまま通して 8 本 green |
-| DynamoDB TTL | ✅ | ✅ | — | 受付セッションの失効機構 |
-| DynamoDB 条件付き書き込み | ✅ | ✅ | — | `putIfAbsent` / CAS |
-| DynamoDB GSI query | ✅ | ✅ | — | テナント分離 |
-| Secrets Manager | ✅ | ✅ | — | |
-| SSM Parameter Store | ✅ | ✅ | — | |
-| Cognito user pool / client の CRUD | ✅ | ✅ | — | プール・クライアント・ユーザーは作れる |
-| **Cognito SRP のパスワード検証** | ⛔ | 🔴 **素通り** | **必須** | 下記「Cognito は素通りする」 |
-| Polly synthesize | ✅ | ⛔ 405 | 音質 | **Moto のみ**。音質評価は実 AWS |
-| S3 | ✅ | ✅ | 配信 | CloudFront 配信は実 AWS |
-| CloudFormation / CDK deploy + diff | ✅ | ✅ | 置換挙動・drift | 下記「CDK はローカルで往復する」 |
-| Route53 / EC2 / AutoScaling | ✅ | ✅ | 実挙動 | LocalStack は ASG ⛔ |
-| Transcribe **streaming** | ⛔ | ⛔ | **必須** | 現在 SDK 未導入（型のみ） |
-| Bedrock | ⛔ | ⛔ | **必須** | 現在 SDK 未使用 |
-| IAM 評価 / KMS | ⛔ | ⛔ | **必須** | 下記 unsupported |
+🔴 **下表の ✅ の大半は、まだ正の対照しか当てていない。** 負の対照つきで測れているのは
+`負の対照` 列に ✓ が付いた行だけである。**それ以外の ✅ は「操作が通った」以上を主張しない**
+—— Cognito 行を誤らせたのと同じ過大主張が残っているということなので、
+その行の緑を能力の根拠にする前に probe へ負の対照を足すこと。
+
+| Service / 操作 | 負の対照 | Moto | MiniStack | Real AWS 必須 | Notes |
+| --- | --- | --- | --- | --- | --- |
+| DynamoDB 条件付き書き込み | ✓ | ✅ | ✅ | — | `putIfAbsent` / CAS。二重作成が拒否されることまで実測 |
+| DynamoDB GSI テナント分離 | ✓ | ✅ | ✅ | — | 他テナントから引けないことまで実測 |
+| **Cognito SRP のパスワード検証** | ✓ | 🔴 **素通り** | 🔴 **素通り** | **必須** | 下記「Cognito は素通りする」 |
+| DynamoDB table + GSI1 | | ✅ | ✅ | — | 本番 backend をそのまま通して 8 本 green |
+| DynamoDB TTL | | ✅ | ✅ | — | 受付セッションの失効機構 |
+| Secrets Manager | | ✅ | ✅ | — | |
+| SSM Parameter Store | | ✅ | ✅ | — | |
+| Cognito user pool / client の CRUD | | ✅ | ✅ | — | プール・クライアント・ユーザーは作れる |
+| Polly synthesize | | ✅ | ⛔ 405 | 音質 | **Moto のみ**。音質評価は実 AWS |
+| S3 | | ✅ | ✅ | 配信 | CloudFront 配信は実 AWS |
+| CloudFormation / CDK deploy + diff | | ? | ✅ | 置換挙動・drift | 下記「CDK はローカルで往復する」。**Moto では未測** |
+| Route53 / EC2 / AutoScaling | | ✅ | ✅ | 実挙動 | LocalStack は ASG ⛔ |
+| Transcribe **streaming** | | ⛔ | ⛔ | **必須** | 現在 SDK 未導入（型のみ） |
+| Bedrock | | ⛔ | ⛔ | **必須** | 現在 SDK 未使用 |
+| IAM 評価 / KMS | | ⛔ | ⛔ | **必須** | 下記 unsupported |
 
 参考: LocalStack(freemium) は Cognito / Polly / AutoScaling が⛔（ライセンス制約）。
 
@@ -126,10 +131,15 @@ Tier 1 は **hermetic** である。`vitest.config.ts` が AWS 資格情報を d
 `InitiateAuth(USER_SRP_AUTH)` + `RespondToAuthChallenge(PASSWORD_VERIFIER)` だけである。
 本番モジュールをそのまま両エミュレータへ当てた実測（2026-09-14 / #1103）:
 
-| | 正しい PW | **誤った PW** | 結論 |
-| --- | --- | --- | --- |
-| MiniStack | トークン発行 | **トークン発行** | 🔴 SRP 証明を検証していない |
-| Moto | `UserNotFoundException` | `UserNotFoundException` | ⛔ 正の対照が通らない |
+| | 呼び方 | 正しい PW | **誤った PW** | 結論 |
+| --- | --- | --- | --- | --- |
+| MiniStack | 本番と同じ | トークン発行 | **トークン発行** | 🔴 SRP 証明を検証していない |
+| Moto | 本番と同じ（`USER_ID_FOR_SRP`） | `UserNotFoundException` | `UserNotFoundException` | 正の対照が通らない |
+| Moto | 平文 username | トークン発行 | **トークン発行** | 🔴 **こちらも検証していない** |
+
+🔴 **Moto を「使えないが嘘はつかない」と読まないこと。** 本番の呼び方では動かないだけで、
+**平文 username に変えれば誤った PW でもトークンが出る**（ゴミの `PASSWORD_CLAIM_SIGNATURE`
+でも通ることを独立に確認済み）。ハーネスを「動くように」直した瞬間に素通りへ踏み込む。
 
 - MiniStack は `PASSWORD_VERIFIER` チャレンジを正しい形（`SRP_B` / `SALT` /
   `SECRET_BLOCK`）で返すので、**API の形だけを見る測り方では区別できない**。
@@ -140,6 +150,14 @@ Tier 1 は **hermetic** である。`vitest.config.ts` が AWS 資格情報を d
   実機検証でこれが正だと判明している、`cognito-srp.ts` のコメント参照）では
   ユーザーを解決できない。**平文 username を渡すと通るが、その場合は誤った PW も
   受理する** —— つまり Moto も SRP 証明を検証していない。
+
+**欠陥は SRP の経路に限られる（＝測り方の誤りではない）。** 同じ MiniStack を
+`ADMIN_USER_PASSWORD_AUTH`（平文 PW 流）で叩くと、誤った PW は
+`NotAuthorizedException: Incorrect username or password` で**正しく拒否される**
+（AWS CLI で確認。`cognito-srp-helper` を通さない独立の経路）。つまり PW は確かに
+保存され検証可能な状態にあり、**検証されていないのは SRP の証明だけ**である。
+本プロジェクトは PW を平文で送らないため SRP を使っており、平文流への切り替えは
+回避策にならない。
 
 したがって **`/admin/login` の認証判定をローカルの緑で担保しない。**
 ログイン経路に触る変更は実 AWS（staging）でしか確かめられない。
@@ -152,7 +170,10 @@ Tier 1 は **hermetic** である。`vitest.config.ts` が AWS 資格情報を d
 
 ### CDK はローカルで往復する（synth → deploy → diff）
 
-2026-09-14 / #1103 実測（MiniStack、資格情報なし）:
+2026-09-14 / #1103 実測（**MiniStack のみ**、資格情報なし）。再現は
+`npm run aws:local:up` のうえで `cd infra && npx cdk synth --quiet` /
+`npx cdk deploy <stack> --require-approval never` /`npx cdk diff <stack>`
+（`AWS_ENDPOINT_URL` をレーンの値にし、実資格情報を unset すること）:
 
 | 段 | 結果 |
 | --- | --- |
