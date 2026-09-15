@@ -20,16 +20,25 @@ import {
 const REPO = { owner: '20m61', repo: 'open-reception' } as const;
 
 describe('資格情報の解決 (#1117)', () => {
-  it('GITHUB_TOKEN を読む', () => {
-    expect(resolveGitHubToken({ GITHUB_TOKEN: 'abc' })).toEqual({ token: 'abc', source: 'GITHUB_TOKEN' });
-  });
-
-  it('GITHUB_TOKEN が無ければ GH_TOKEN を読む', () => {
+  it('GH_TOKEN を読む', () => {
     expect(resolveGitHubToken({ GH_TOKEN: 'xyz' })).toEqual({ token: 'xyz', source: 'GH_TOKEN' });
   });
 
-  it('GITHUB_TOKEN を GH_TOKEN より優先する', () => {
-    expect(resolveGitHubToken({ GITHUB_TOKEN: 'a', GH_TOKEN: 'b' }).token).toBe('a');
+  it('GH_TOKEN が無ければ GITHUB_TOKEN を読む', () => {
+    expect(resolveGitHubToken({ GITHUB_TOKEN: 'abc' })).toEqual({ token: 'abc', source: 'GITHUB_TOKEN' });
+  });
+
+  /**
+   * 🔴 **`gh` の優先順（原典: 「GH_TOKEN, GITHUB_TOKEN (in order of precedence)」）に揃える。**
+   * 環境が制限された `GITHUB_TOKEN` を配り、利用者が権限の広い PAT を `GH_TOKEN` で渡す形が
+   * 現実にある。逆順に読むと黙って別の主体として振る舞う。
+   * **このサンドボックスは両方を設定しているので、順序は実際に効いている。**
+   */
+  it('GH_TOKEN を GITHUB_TOKEN より優先する', () => {
+    expect(resolveGitHubToken({ GITHUB_TOKEN: 'restricted', GH_TOKEN: 'pat' })).toEqual({
+      token: 'pat',
+      source: 'GH_TOKEN',
+    });
   });
 
   it('空白だけの値は「設定されていない」として扱う', () => {
@@ -325,5 +334,60 @@ describe('本体は JSON に限る (#1117)', () => {
   ])('%s の本体は JSON で始まる', (_label, req) => {
     expect(req.body?.[0]).toBe('{');
     expect(() => curlArgs(req)).not.toThrow();
+  });
+});
+
+describe('周囲の設定を読ませない (#1117 review P2)', () => {
+  const req = pullCreateRequest(REPO, { head: 'h', base: 'main', title: 't', body: 'b' });
+
+  /**
+   * 🔴 **`-q` は必ず先頭でなければ意味が無い。** curl は既定で `~/.curlrc` を読む。
+   * **実測（2026-09-15）**: `write-out = "\nFROM-CURLRC-%{http_code}\n"` を置くと
+   * 出力へ 1 行混ざり、`parseCurlResponse` の「末尾行が状態コード」が壊れた。
+   * `-q` を付けると消えた。curlrc の `url = …` なら**追加の転送**が起き、
+   * `--config` で渡した `Authorization` がその先へも飛ぶ。
+   */
+  it('-q を先頭に置く（curlrc を読む前に無効化する）', () => {
+    expect(curlArgs(req)[0]).toBe('-q');
+  });
+
+  it.each([
+    ['照会', pullsQueryRequest(REPO, 'main')],
+    ['マージ', pullMergeRequest(REPO, 12)],
+    ['リポジトリ読み出し', repoReadRequest(REPO)],
+  ])('%s も -q を先頭に置く（1 つでも抜けるとその経路だけ穴になる）', (_label, r) => {
+    expect(curlArgs(r)[0]).toBe('-q');
+  });
+});
+
+describe('401 / 403 は「どの層か」を名指しする (#1117 review P1)', () => {
+  const req = pullCreateRequest(REPO, { head: 'h', base: 'main', title: 't', body: 'b' });
+
+  /**
+   * 🔴 **`gh auth login` の資格情報は環境変数に出ない**（keychain 等に入る）。
+   * ログイン済みの端末でも `GH_TOKEN` / `GITHUB_TOKEN` は空のままなので、
+   * 「ログインしているのに 401」という原因の見えない失敗になる。
+   */
+  it.each([401, 403])('%i で token 未設定なら、渡し方を名指しする', (status) => {
+    const msg = describeHttpFailure(req, status, '{"message":"Bad credentials"}', undefined);
+    expect(msg).toContain('GH_TOKEN');
+    expect(msg).toContain('gh auth token');
+  });
+
+  it('token を渡していたなら「権限」の話だと言う（層を取り違えない）', () => {
+    const msg = describeHttpFailure(req, 403, '{"message":"Resource not accessible"}', 'GH_TOKEN');
+    expect(msg).toContain('GH_TOKEN');
+    expect(msg).toContain('権限');
+    // 渡しているのに「設定されていません」と言わない。
+    expect(msg).not.toContain('設定されていません');
+  });
+
+  /** 下界。資格情報と無関係な状態では、その話を持ち出さない（毎回出ると読まれなくなる）。 */
+  it.each([404, 422, 500])('%i には資格情報の助言を付けない', (status) => {
+    expect(describeHttpFailure(req, status, 'boom', undefined)).not.toContain('gh auth token');
+  });
+
+  it('どの状態でも token の値そのものは運ばない', () => {
+    expect(describeHttpFailure(req, 401, 'boom', 'GH_TOKEN')).not.toContain('Authorization');
   });
 });

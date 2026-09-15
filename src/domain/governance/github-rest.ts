@@ -73,8 +73,17 @@ export type TokenResolution = {
   readonly source: string | undefined;
 };
 
-/** 見る環境変数。`gh` が読むものと同じ順序に揃える。 */
-const TOKEN_ENV_KEYS = ['GITHUB_TOKEN', 'GH_TOKEN'] as const;
+/**
+ * 見る環境変数。**`gh` の優先順に揃える** ―― 公式マニュアルの文言は
+ * 「`GH_TOKEN`, `GITHUB_TOKEN` (in order of precedence)」で、`GH_TOKEN` が先である
+ * （<https://cli.github.com/manual/gh_help_environment>。2026-09-15 に原典で確認）。
+ *
+ * 🔴 **順序は実害を持つ。** 環境が既定の**制限された** `GITHUB_TOKEN` を配り、利用者が
+ * 権限の広い PAT を `GH_TOKEN` で渡す、という形が現実にある。逆順に読むと**黙って別の
+ * 主体として**振る舞い、publish の事前確認やマージが「資格情報は正しいのに落ちる」。
+ * このサンドボックスは**両方**を設定しているので、ここは絵空事ではない。
+ */
+const TOKEN_ENV_KEYS = ['GH_TOKEN', 'GITHUB_TOKEN'] as const;
 
 /**
  * token を解決する。**無くても throw しない。**
@@ -110,6 +119,20 @@ export function resolveGitHubToken(env: Readonly<Record<string, string | undefin
  */
 export function curlArgs(request: GitHubRequest): string[] {
   const args = [
+    // 🔴 **`-q` は必ず先頭。** curl は既定で `~/.curlrc` を読む。**実測（2026-09-15）**:
+    // `write-out = "\nFROM-CURLRC-%{http_code}\n"` を置くと出力へ 1 行混ざり、
+    // `parseCurlResponse` の「末尾行が状態コード」が壊れる。`-q` を付けると消えた。
+    //
+    // 壊れ方は 2 通りあり、どちらも悪い:
+    // 1. **秘密が余所へ飛ぶ** … curlrc の `url = …` は**追加の転送**を起こす。
+    //    `--config` で渡した `Authorization` はその転送にも乗るので、bearer token が
+    //    curlrc の指す先へ送られる
+    // 2. **応答が壊れる** … `write-out` / `output` / `silent` 等が出力を変え、
+    //    状態コードの読み取りが狂う（善意の curlrc でも起きる）
+    //
+    // `-q` は**既定の設定ファイルを読む前に**効く必要があるので、位置が意味を持つ。
+    // 後ろに置くと、読んでから無効化することになり 1 も 2 も防げない。
+    '-q',
     '-sS',
     '--config',
     '-',
@@ -199,8 +222,35 @@ export function isSuccess(status: number): boolean {
  * 要求側から持ち出すのは method と path だけで、**ヘッダには触れない**
  * （`Authorization` を文面へ運ばない）。
  */
-export function describeHttpFailure(request: GitHubRequest, status: number, body: string): string {
-  return `GitHub REST が ${status} を返しました: ${request.method} ${request.path}\n  応答: ${body.trim()}`;
+export function describeHttpFailure(
+  request: GitHubRequest,
+  status: number,
+  body: string,
+  tokenSource?: string | undefined,
+): string {
+  const base = `GitHub REST が ${status} を返しました: ${request.method} ${request.path}\n  応答: ${body.trim()}`;
+  return status === 401 || status === 403 ? `${base}\n  ${describeMissingCredential(tokenSource)}` : base;
+}
+
+/**
+ * 401 / 403 のときに、**どの層の話か**を添える (#1117 の review P1)。
+ *
+ * 🔴 **`gh auth login` の資格情報は環境変数に出ない。** macOS では keychain に入るので、
+ * `gh` でログイン済みの端末でも `GH_TOKEN` / `GITHUB_TOKEN` は空のままになる。
+ * ここを書かないと、**ログインしているのに 401**という、原因の見えない失敗になる ――
+ * `gh` が無いのに「PR の実在を確認できませんでした」と言っていた #1117 と同じ型である。
+ *
+ * **`gh auth token` を内部で呼んで補わないのは意図的。** それをすると、この変更が
+ * 外したはずの `gh` 依存が資格情報の層から戻ってくる。`gh` の有無に依らないことが
+ * この経路の取り柄なので、**足さずに、渡し方を名指しする**。
+ */
+function describeMissingCredential(tokenSource: string | undefined): string {
+  if (tokenSource !== undefined) return `（資格情報は ${tokenSource} から渡しています。権限を確認してください。）`;
+  return (
+    'GH_TOKEN / GITHUB_TOKEN のどちらも設定されていません。' +
+    '`gh auth login` の資格情報は環境変数には現れない（keychain 等に入る）ので、' +
+    'ローカルで使うときは `GH_TOKEN="$(gh auth token)"` のように明示的に渡してください。'
+  );
 }
 
 /** 能力判定の結果。**通らなかった理由を必ず持つ**（黙って false にしない）。 */

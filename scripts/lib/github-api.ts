@@ -88,7 +88,11 @@ export function callGitHub(request: GitHubRequest): GitHubResponse {
 export function callGitHubJson<T>(request: GitHubRequest): T {
   const response = callGitHub(request);
   if (!isSuccess(response.status)) {
-    throw new Error(describeHttpFailure(request, response.status, response.body));
+    // **どの環境変数から資格情報を渡したか**を文面へ運ぶ（値は運ばない）。
+    // 401 / 403 のとき「そもそも渡していない」と「渡したが足りない」を区別するため。
+    throw new Error(
+      describeHttpFailure(request, response.status, response.body, resolveGitHubToken(process.env).source),
+    );
   }
   try {
     return JSON.parse(response.body === '' ? 'null' : response.body) as T;

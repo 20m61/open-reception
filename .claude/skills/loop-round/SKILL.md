@@ -29,6 +29,16 @@ description: Issue を 1 周する（AC マッピング → ブランチ → TDD
 上の 2 スクリプトは `curl` で REST を直接叩くのでどちらでも動く ―― 迷わずそちらを使う。
 判別したい場合は `docs/cloud-dev-environment.md` §0-E の 1 行。
 
+🔴 **ローカル macOS で使うときは token を環境変数で渡す。** `gh auth login` の資格情報は
+**keychain に入り環境変数には現れない**ので、ログイン済みでも 401 になる（#1117 の review 指摘）。
+クラウドでは proxy が資格情報を注入するので何も要らない。ローカルだけ:
+
+```bash
+GH_TOKEN="$(gh auth token)" npx tsx scripts/create-pull-request.ts --head … --title … --body …
+```
+
+401 / 403 のときはスクリプトが渡し方を名指しするので、メッセージを読めば判る。
+
 ## 1. AC を実コードへマッピングする（**省略しない**）
 
 `issue-ac-mapping` スキルに従う。issue 本文と `docs/loop-queue.md` の分類は**仮説**であって

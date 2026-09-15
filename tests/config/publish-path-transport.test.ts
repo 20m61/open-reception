@@ -327,3 +327,50 @@ describe('失敗した応答の本文を読まない (#1117)', () => {
     SPAWN_TIMEOUT_MS,
   );
 });
+
+describe('401 は「どの層の話か」までスクリプトの出力へ届く (#1117 review P1)', () => {
+  /**
+   * 🔴 純関数側で文面を作れても、**I/O 層が出どころを渡さなければ**利用者には届かない。
+   * 実測: `tokenSource` を渡さない変異は、純関数のテストだけでは**生存した**。
+   */
+  it(
+    'token 未設定で 401 なら、渡し方を名指しする',
+    () => {
+      const run = runWithStubs(
+        CREATE,
+        CREATE_ARGS,
+        [
+          { body: JSON.stringify({ message: 'Bad credentials' }), status: 401 },
+          { body: '[]', status: 200 },
+        ],
+        { GITHUB_TOKEN: '', GH_TOKEN: '' },
+      );
+      expect(run.code).toBe(4);
+      expect(run.stderr).toContain('gh auth token');
+    },
+    SPAWN_TIMEOUT_MS,
+  );
+
+  /** 下界。渡しているなら「設定されていません」ではなく権限の話にする。 */
+  it(
+    'token を渡していて 401 なら、権限の話だと言う',
+    () => {
+      const run = runWithStubs(
+        CREATE,
+        CREATE_ARGS,
+        [
+          { body: JSON.stringify({ message: 'Bad credentials' }), status: 401 },
+          { body: '[]', status: 200 },
+        ],
+        { GH_TOKEN: 'some-token' },
+      );
+      expect(run.code).toBe(4);
+      expect(run.stderr).toContain('GH_TOKEN');
+      expect(run.stderr).toContain('権限');
+      expect(run.stderr).not.toContain('gh auth token');
+      // token の値そのものは出さない。
+      expect(run.stderr).not.toContain('some-token');
+    },
+    SPAWN_TIMEOUT_MS,
+  );
+});
