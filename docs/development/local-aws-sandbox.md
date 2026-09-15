@@ -182,7 +182,7 @@ It pins what the in-memory fake in `dynamodb.test.ts` **cannot** guarantee, sinc
 
 ## Local responsibility
 
-Prioritize DynamoDB persistence semantics first. Extend to S3, Secrets Manager, Cognito, Lambda/API Gateway only when additional emulator coverage materially improves feedback time. Keep the existing in-memory backend for the fastest unit/UI iteration.
+Prioritize DynamoDB persistence semantics first. Extend to S3, Secrets Manager, Lambda/API Gateway only when additional emulator coverage materially improves feedback time. 🔴 **Not Cognito** — local Cognito coverage is worse than none (see "Replacement decision gate"). Keep the existing in-memory backend for the fastest unit/UI iteration.
 
 ## Real AWS / external responsibility
 
@@ -213,17 +213,20 @@ make the same error.** Building that ledger is a precondition in #1112.
 
 ### What the local lane settles (measured 2026-09-14/15)
 
-Claude Code on the web, no AWS credentials, no Docker, cold start ~16s:
+Claude Code on the web, no AWS credentials. 🔴 **Lane と証拠を混ぜないこと** ―― 下表の
+「どう測ったか」列が示す経路でしか測っていない。MiniStack（Docker 不要）で測ったものと、
+LocalStack（**docker socket が要る**）で測ったものは別である。
 
 | Capability | Result | How it was measured |
 | --- | --- | --- |
 | DynamoDB persistence (table/GSI1/TTL/conditional write/tenant isolation) | ✅ verified, negative-controlled | production `DynamoBackend`, 8 integration tests + `npm run aws:local:capability` |
-| S3 / Secrets Manager / SSM / Lambda invoke / API Gateway | ✅ | `npm run aws:local:test` |
+| S3 / Secrets Manager / SSM | ✅ | ADR 0010 の matrix（`npm run aws:local:test` は **DynamoDB しか叩かない**ので根拠にならない） |
+| Lambda invoke / API Gateway / IAM | ✅ ただし **LocalStack** | 下記「LocalStack で測った結果」。Lambda invoke は **docker socket が要る** |
 | `cdk synth` | ✅ 18s | no credentials and no emulator needed; gated behind a fresh `build:open-next` |
 | `cdk bootstrap` / `cdk deploy` → emulator | ✅ 13.9s | real CloudFormation stack created in MiniStack |
 | `cdk diff` after that deploy | ✅ **"There were no differences"** | real change-set path |
 
-**Routine development — persistence, infra shape, API wiring — no longer touches AWS at all.**
+**Routine development — persistence と infra shape — no longer touches AWS at all.**
 Plain CDK v2 honours `AWS_ENDPOINT_URL`, so this needs no `cdklocal` and no new dependency.
 
 🔴 The deploy→diff loop round-trips the **mechanism**, not AWS parity. The emulator does not
@@ -236,9 +239,10 @@ evaluate IAM, and replacement/drift/rollback are not real behaviour. `npm run aw
 ID/Access/Refresh tokens for a **wrong password** — details and the measurement table are in
 [`../local-aws.md`](../local-aws.md) ("Cognito は素通りする"). A permissive emulator is worse
 than an absent one: it lets someone add a green "admin login works locally" test that **cannot
-fail** if authentication is removed. Tracked as #1111, which also records that **no wrong
-password has ever been rejected anywhere** — the live suite checks only that the correct one
-works.
+fail** if authentication is removed. Tracked as #1111, which records that **no wrong password has ever
+been rejected against real Cognito** — `tests/e2e-live/*` drives only the correct one. (A wrong
+password *is* rejected in `tests/e2e/admin-auth.spec.ts:20` and `src/lib/auth/cognito-srp.test.ts`,
+but those exercise the `provider=none` path and a mocked SDK, not Cognito.)
 
 Unchanged, still real-AWS-only: IAM evaluation, KMS, real token verification/JWKS,
 CloudFront/certificate/DNS delivery, CloudFormation replacement & drift, Transcribe streaming,
@@ -248,9 +252,13 @@ Polly audio quality, Vonage/WebRTC, real device/browser behavior.
 
 1. A single ledger of real-AWS verification events (see above).
 2. #1111 discharged — a wrong password rejected against a real environment, once.
-3. A cost figure for the current `dev` environment; none is on record, and reading it needs real
-   AWS billing access (`src/lib/platform/aws-cost-explorer.ts`, real AWS only). Without it
-   "downsize" has no denominator.
+3. A **refreshed** cost figure for `dev`. One is already on record and it is not small in its
+   implications: **2026-07 MTD = $0.0005**, "コスト削減を動機に open-reception を消しても
+   効果はゼロ" (`docs/handoff-2026-07-22.md:49-53`, repeated at
+   `docs/handoff-2026-07-27.md:257`). It predates the 2026-08-04 stand-up and the custom
+   domain/CloudFront added since, so it needs refreshing — but **"downsize for cost" already has
+   a denominator, and it is approximately zero.** Refreshing needs real AWS billing access
+   (`src/lib/platform/aws-cost-explorer.ts`, real AWS only).
 
 A real AWS environment remains the compatibility gate regardless of the outcome. Today that is
 `dev`; `staging` would have to be stood up first to become it.

@@ -42,7 +42,7 @@
 | Secrets Manager | ✅ | ✅ | ✅ |
 | SSM Parameter Store | ✅ | ✅ | ✅ |
 | **Cognito: user pool / client の CRUD** | ⛔ ライセンス | ✅ | ✅ |
-| **Cognito: SRP のパスワード検証** | ⛔ ライセンス | 🔴 素通り | 🔴 素通り | 
+| **Cognito: SRP のパスワード検証** | ⛔ ライセンス | 🔴 素通り | 🔴 素通り |
 | **Polly: synthesize** | ⛔ ライセンス | ⛔ 405 | ✅ |
 | S3 | ✅ | ✅ | ✅ |
 | CloudFormation | ✅ | ✅ | ✅ |

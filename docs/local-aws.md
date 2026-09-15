@@ -115,7 +115,7 @@ Tier 1 は **hermetic** である。`vitest.config.ts` が AWS 資格情報を d
 | DynamoDB TTL | | ✅ | ✅ | — | 受付セッションの失効機構 |
 | Secrets Manager | | ✅ | ✅ | — | |
 | SSM Parameter Store | | ✅ | ✅ | — | |
-| Cognito user pool / client の CRUD | | ✅ | ✅ | — | プール・クライアント・ユーザーは作れる |
+| Cognito user pool / client の CRUD | | ✅ | ✅ | **実トークン検証 / JWKS** | 作れるだけ。トークンの正当性は別（unsupported 節） |
 | Polly synthesize | | ✅ | ⛔ 405 | 音質 | **Moto のみ**。音質評価は実 AWS |
 | S3 | | ✅ | ✅ | 配信 | CloudFront 配信は実 AWS |
 | CloudFormation / CDK deploy + diff | | （未測） | ✅ | 置換挙動・drift | 下記「CDK はローカルで往復する」。**Moto では未測** |
@@ -128,8 +128,10 @@ Tier 1 は **hermetic** である。`vitest.config.ts` が AWS 資格情報を d
 
 ### 🔴 Cognito は素通りする ―― ローカルで管理者ログインを検証しない
 
-本プロジェクトの Cognito 実行時の面は `src/lib/auth/cognito-srp.ts` の
-`InitiateAuth(USER_SRP_AUTH)` + `RespondToAuthChallenge(PASSWORD_VERIFIER)` だけである。
+本プロジェクトの Cognito **SDK** の面は `src/lib/auth/cognito-srp.ts` の
+`InitiateAuth(USER_SRP_AUTH)` + `RespondToAuthChallenge(PASSWORD_VERIFIER)` だけである
+（実行時にはこのほかに **JWKS による実トークン検証**がある ―― `src/proxy.ts` /
+`src/lib/auth/actor.ts`。そちらは下記 unsupported のとおり実 AWS でしか担保できない）。
 本番モジュールをそのまま両エミュレータへ当てた実測（2026-09-14 / #1103）:
 
 | | 呼び方 | 正しい PW | **誤った PW** | 結論 |
@@ -161,7 +163,8 @@ Tier 1 は **hermetic** である。`vitest.config.ts` が AWS 資格情報を d
 回避策にならない。
 
 したがって **`/admin/login` の認証判定をローカルの緑で担保しない。**
-ログイン経路に触る変更は実 AWS（staging）でしか確かめられない。
+ログイン経路に触る変更は**実 AWS でしか**確かめられない ―― 現状それは `dev` である
+（`staging` は型と IAM パターンにしか存在せず、一度も立っていない）。
 
 🔴 これは「Cognito が使えない」より悪い。使えなければ使った瞬間に分かるが、
 **素通りするエミュレータはテストを緑にしたまま嘘をつく**。ここへ

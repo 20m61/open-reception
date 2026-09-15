@@ -7,7 +7,6 @@ import {
   positiveFromLoginResult,
   positiveFromBooleanProbe,
   negativeFromBooleanProbe,
-  resolveNegativeOutcome,
   combineNegativeOutcomes,
   measureBooleanCapability,
   measureSrpCapability,
@@ -134,31 +133,8 @@ describe('probe の配線（測定結果 → outcome）', () => {
     expect(negativeFromBooleanProbe('threw')).toBe('unreachable');
   });
 
-  it('🔴 正の対照が通っていないとき、production 由来の rejected を信用しない', () => {
-    // レビュー round2 MAJOR-3: `cognito-srp.ts` は **UserNotFoundException も**
-    // `invalid_credentials` に畳む。Moto は正しい PW でも誤った PW でも
-    // UserNotFound を返すので、「誤った PW が拒否された」と読むと嘘になる。
-    // 正の対照が通っていない＝そこまで到達できていないので、拒否の証拠にならない。
-    expect(
-      resolveNegativeOutcome({ positive: 'failed', production: 'rejected', fallback: 'unreachable' }),
-    ).toBe('unreachable');
-  });
 
-  it('🔴 正の対照が通っていなくても、別の呼び方で受理されたら素通り', () => {
-    expect(
-      resolveNegativeOutcome({ positive: 'failed', production: 'rejected', fallback: 'accepted' }),
-    ).toBe('accepted');
-  });
 
-  it('🔴 fallback は accepted のときだけ上書きする（実測した rejected を捨てない）', () => {
-    // レビュー round2 MINOR-4。
-    expect(
-      resolveNegativeOutcome({ positive: 'passed', production: 'rejected', fallback: 'unreachable' }),
-    ).toBe('rejected');
-    expect(
-      resolveNegativeOutcome({ positive: 'passed', production: 'accepted', fallback: 'unreachable' }),
-    ).toBe('accepted');
-  });
 
   it('🔴 exit code: 素通り=1 / 判定不能=3 / それ以外=0（測れなかったで 0 を返さない）', () => {
     expect(exitCodeFor(['verified', 'verified'])).toBe(0);

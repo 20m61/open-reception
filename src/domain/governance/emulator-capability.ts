@@ -143,29 +143,6 @@ export function negativeFromBooleanProbe(r: BooleanProbe): NegativeOutcome {
   return r ? 'rejected' : 'accepted';
 }
 
-/**
- * 負の対照を、本番の呼び方の結果と代替の呼び方の結果から決める。
- *
- * 🔴 **正の対照が通っていないときの `rejected` を信用しない**（レビュー round2 MAJOR-3）。
- * `cognito-srp.ts` は `UserNotFoundException` も `NotAuthorizedException` も
- * `invalid_credentials` へ畳むので、「ユーザーに到達できていない」と
- * 「パスワードが拒否された」が見分けられない。正の対照が通っていないなら、
- * そもそもパスワード検証まで到達していないので**拒否の証拠にならない**。
- *
- * 🔴 **代替の呼び方は `accepted` のときだけ上書きする**（同 MINOR-4）。
- * 実測できた `rejected` を「走らせられなかった」で捨てない。
- */
-export function resolveNegativeOutcome(input: {
-  readonly positive: PositiveOutcome;
-  readonly production: NegativeOutcome;
-  readonly fallback: NegativeOutcome;
-}): NegativeOutcome {
-  if (input.production === 'accepted') return 'accepted';
-  if (input.fallback === 'accepted') return 'accepted';
-  // 正の対照が通っていない＝拒否の証拠にならない。
-  if (input.positive !== 'passed') return 'unreachable';
-  return input.production;
-}
 
 /**
  * probe の終了コード。**「測れなかった」で 0 を返さない**（レビュー round1 M2）。
