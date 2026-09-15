@@ -486,6 +486,42 @@ describe('予約記号は検査対象の表の中にしか現れない', () => {
     expect(scan('この行は ✅ を付けていたが誤りだった。🔴 素通り である。')).toEqual([]);
   });
 
+  /**
+   * 🔴 **「表」の境界をレビューが 4 種の逃げ道で突いた。** いずれも読者には表に見えるのに
+   * 走査されていなかった。族として塞ぐ。
+   */
+  it('先頭パイプの無い表も表として扱う', () => {
+    expect(scan('段 | 結果\n--- | ---\ncdk deploy | ✅ 実測済み').map((v) => v.mark)).toEqual(['✅']);
+  });
+
+  it('引用ブロックの中の表も表として扱う', () => {
+    expect(scan('> | 段 | 結果 |\n> | --- | --- |\n> | x | ✅ 実測済み |').map((v) => v.mark)).toEqual(['✅']);
+  });
+
+  it('HTML の表セルも拾う', () => {
+    expect(scan('<table><tr><td>✅ 実測済み</td></tr></table>').map((v) => v.column)).toEqual(['(html cell)']);
+  });
+
+  it('見出しセルの主張も落とす', () => {
+    const md = '| 段 | 結果（すべて ✅ 負の対照つき） |\n| --- | --- |\n| x | OK |';
+    expect(scan(md).map((v) => v.column)).toEqual(['見出し2']);
+  });
+
+  it('許した表でも、見出しセルには書けない', () => {
+    const md = MATRIX.replace('| Notes |', '| Notes（✅ 実測済み） |');
+    expect(scan(md).map((v) => v.column)).toEqual(['見出し5']);
+  });
+
+  /** 🔴 コードフェンスの中は表ではない ―― 否定例を書けなくなる。 */
+  it('コードフェンスの中の表は対象外', () => {
+    expect(scan('```\n| 段 | 結果 |\n| --- | --- |\n| x | ✅ |\n```')).toEqual([]);
+  });
+
+  /** 装飾・実体参照で綴りを変える族（#813 と同型）。 */
+  it.each(['🔴 *素通り*', '&#9989; 実測済み', '<b>✅</b>', '✅ 実測'])('装飾された %s も落とす', (cell) => {
+    expect(scan(`| 段 | 結果 |\n| --- | --- |\n| x | ${cell} |`)).not.toHaveLength(0);
+  });
+
   /** 下界: 表を 1 枚も見つけられない実装でも上の主張は空虚に通る。 */
   it('文書中の表を全部数えられる', () => {
     const all = parseAllMarkdownTables([LEGEND, '', MATRIX].join('\n'));

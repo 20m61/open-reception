@@ -33,21 +33,27 @@
 `ministack` (MIT) と `moto` (Apache-2.0) はいずれも **PyPI の pure-Python** で、
 **Docker を要求しない**。本プロジェクトが実際に行う操作単位で測った:
 
+🔴 **この表の `OK` は「その操作が通った」であって、負の対照は当てていない。**
+能力の**正本**は `docs/local-aws.md` の compatibility matrix で、そちらは probe の実測記録と
+機械で突き合わせてある（#1113 / #1114）。以前この表は `OK` の位置に ✅ を書いており、
+matrix の `◯ 正のみ` と食い違っていた（`CloudFormation` の Moto は ✅ と書かれていたが、
+matrix は「**Moto では未測**」）。**能力を主張したくなったら、この表ではなく matrix を直すこと。**
+
 | 操作 | LocalStack | MiniStack | Moto |
 | --- | --- | --- | --- |
-| DynamoDB: table + GSI1 | ✅ | ✅ | ✅ |
-| DynamoDB: TTL | ✅ | ✅ | ✅ |
-| DynamoDB: 条件付き書き込み | ✅ | ✅ | ✅ |
-| DynamoDB: GSI query | ✅ | ✅ | ✅ |
-| Secrets Manager | ✅ | ✅ | ✅ |
-| SSM Parameter Store | ✅ | ✅ | ✅ |
-| **Cognito: user pool / client の CRUD** | ⛔ ライセンス | ✅ | ✅ |
+| DynamoDB: table + GSI1 | OK | OK | OK |
+| DynamoDB: TTL | OK | OK | OK |
+| DynamoDB: 条件付き書き込み | OK | OK | OK |
+| DynamoDB: GSI query | OK | OK | OK |
+| Secrets Manager | OK | OK | OK |
+| SSM Parameter Store | OK | OK | OK |
+| **Cognito: user pool / client の CRUD** | ⛔ ライセンス | OK | OK |
 | **Cognito: SRP のパスワード検証** | ⛔ ライセンス | 🔴 素通り | 🔴 素通り |
-| **Polly: synthesize** | ⛔ ライセンス | ⛔ 405 | ✅ |
-| S3 | ✅ | ✅ | ✅ |
-| CloudFormation | ✅ | ✅ | ✅ |
-| Route53 / EC2 | ✅ | ✅ | ✅ |
-| **AutoScaling** | ⛔ ライセンス | ✅ | ✅ |
+| **Polly: synthesize** | ⛔ ライセンス | ⛔ 405 | OK |
+| S3 | OK | OK | OK |
+| CloudFormation | OK | OK | （未測） |
+| Route53 / EC2 | OK | OK | OK |
+| **AutoScaling** | ⛔ ライセンス | OK | OK |
 
 🔴 **「起動した」ではなく「この操作が通った」で判定している。** サービスが health で
 `available` と出ることと、使う API が通ることは別である。

@@ -1,3 +1,4 @@
+import { execSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
@@ -7,6 +8,8 @@ import {
   POSITIVE_ONLY_MARK,
   SANDBOX_DOC_LABELS,
   UNMEASURED_MARK,
+  LEGEND_ROWS,
+  RESERVED_MARK_SCOPE,
   findReservedMarkViolations,
   parseAllMarkdownTables,
   parseMarkdownTables,
@@ -182,36 +185,62 @@ describe('docs/development/local-aws-sandbox.md の証拠表', () => {
  * 列を足して塞ぐのではなく、**許す側を数え上げて**族ごと閉じる。
  */
 describe('予約記号の適用範囲（文書全体）', () => {
-  const ALLOW = {
-    'docs/local-aws.md': [
-      // 凡例表は記号の**定義**そのものなので全列で許す。
-      { firstHeader: '判定' },
-      // matrix は runtime 列だけ。Notes / Real AWS 必須 では主張させない。
-      { firstHeader: 'Service / 操作', columns: ['Moto', 'MiniStack'] },
-    ],
-    'docs/development/local-aws-sandbox.md': [{ firstHeader: '能力', columns: ['MiniStack', 'Moto'] }],
-  } as const;
+  const FILES = Object.keys(RESERVED_MARK_SCOPE);
 
-  it.each(Object.keys(ALLOW))('%s に範囲外の予約記号が無い', (file) => {
+  it.each(FILES)('%s に範囲外の予約記号が無い', (file) => {
     const found = findReservedMarkViolations({
       markdown: read(file),
-      allow: ALLOW[file as keyof typeof ALLOW],
+      allow: RESERVED_MARK_SCOPE[file]!,
     });
     expect(found.map((v) => `L${v.line} [${v.tableFirstHeader}] ${v.column}: ${v.cell}`)).toEqual([]);
   });
 
   /**
+   * 🔴 **ファイルの軸も数え上げにしない。** 表・列を許可の数え上げへ裏返しても、
+   * **対象ファイルが手書きの一覧なら 3 枚目で抜ける** —— 実際 ADR 0010 が抜けており、
+   * matrix と矛盾していた（CloudFormation の Moto が ADR では ✅、matrix では（未測））。
+   * 「素通り記号を含む md は全部この一覧に載っていること」で閉包にする。
+   */
+  it('素通り記号を持つ文書が、範囲の一覧から漏れていない', () => {
+    const permissive = matrixMark('permissive');
+    const carriers = execSync(`grep -rl ${JSON.stringify(permissive)} docs/ || true`, {
+      cwd: process.cwd(),
+      encoding: 'utf8',
+    })
+      .split('\n')
+      .filter((l) => l.endsWith('.md'))
+      .sort();
+    expect(carriers.length, '素通り記号を持つ文書が 1 つも無い（検査が空振り）').toBeGreaterThan(0);
+    expect(carriers).toEqual([...FILES].sort());
+  });
+
+  /** 🔴 凡例は「許した表」なので、行が無界だと捏造した能力行を足せる（レビュー実測）。 */
+  it('凡例の行が導出値ぴったりで、余計な行が無い', () => {
+    const legend = parseMarkdownTables(read('docs/local-aws.md'), '判定')[0]!;
+    expect(legend.rows.map((r) => r.cells[0])).toEqual([...LEGEND_ROWS]);
+  });
+
+  /** 🔴 死んだ許可が静かに残らないこと（表が改名・削除されても許可だけ残る型）。 */
+  it('どの許可も実際に表へ当たっている', () => {
+    for (const file of FILES) {
+      const heads = parseAllMarkdownTables(read(file)).map((t) => t.headers[0]);
+      for (const a of RESERVED_MARK_SCOPE[file]!) {
+        expect(heads, `${file} に「${a.firstHeader}」の表が無い`).toContain(a.firstHeader);
+      }
+    }
+  });
+
+  /**
    * 🔴 **下界。** 「違反 0 件」は、表を 1 枚も見つけられない実装でも空虚に通る。
-   * 実文書に表と予約記号が**実在する**ことを先に固定する。
    */
   it('実文書に表と予約記号が実在する（検査が空振りしていない）', () => {
-    for (const file of Object.keys(ALLOW)) {
-      const tables = parseAllMarkdownTables(read(file));
-      expect(tables.length, `${file} の表が少なすぎる`).toBeGreaterThanOrEqual(4);
+    // 件数の一律下界は文書ごとの実態に合わない（ADR は 1 表）。**どの許可も実際の表に
+    // 当たっている**ことを上の test が縛っているので、ここは「1 枚も読めていない世界」だけを弾く。
+    for (const file of FILES) {
+      expect(parseAllMarkdownTables(read(file)).length, `${file} の表が読めていない`).toBeGreaterThan(0);
     }
     const marks = CAPABILITY_VERDICTS.map(matrixMark);
     const matrix = parseMarkdownTables(read('docs/local-aws.md'), 'Service / 操作')[0]!;
-    const used = matrix.rows.flatMap((r) => r.cells).filter((c) => marks.includes(c));
-    expect(used, 'matrix に verdict の記号が 1 つも無い').not.toHaveLength(0);
+    expect(matrix.rows.flatMap((r) => r.cells).filter((c) => marks.includes(c))).not.toHaveLength(0);
   });
 });

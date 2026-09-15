@@ -144,22 +144,48 @@ export type TableRow = {
 export type ParsedTable = {
   readonly headers: ReadonlyArray<string>;
   readonly rows: ReadonlyArray<TableRow>;
+  /** 見出し行の 1 始まり行番号。見出しセルの違反を指すために要る。 */
+  readonly headerLine: number;
 };
 
-/** 強調記法とセル内の余分な空白を落とす。表記のゆれで判定を変えない。 */
+/**
+ * 強調記法・数値文字参照・セル内の余分な空白を落とす。表記のゆれで判定を変えない。
+ *
+ * 🔴 **`**` だけでは足りない。** `🔴 *素通り*`（斜体）や `&#9989;`（GitHub は ✅ として描画）で
+ * 予約記号の検査を素通りできることをレビューが実測した。**描画されたときに読者が見る形**へ
+ * 寄せてから判定する。
+ */
 function normalizeCell(raw: string): string {
-  return raw.replaceAll('**', '').replace(/\s+/gu, ' ').trim();
+  return raw
+    .replace(/&#(\d+);/gu, (_m, code: string) => String.fromCodePoint(Number(code)))
+    .replace(/&#x([0-9a-f]+);/giu, (_m, code: string) => String.fromCodePoint(parseInt(code, 16)))
+    .replaceAll('**', '')
+    .replaceAll('*', '')
+    .replaceAll('_', '')
+    .replace(/<\/?[a-z][^>]*>/giu, '')
+    .replace(/\s+/gu, ' ')
+    .trim();
 }
 
 function splitRow(line: string): ReadonlyArray<string> {
-  const trimmed = line.trim();
-  return trimmed
-    .slice(1, trimmed.endsWith('|') ? -1 : undefined)
-    .split('|')
-    .map(normalizeCell);
+  let t = line.trim();
+  if (t.startsWith('|')) t = t.slice(1);
+  if (t.endsWith('|')) t = t.slice(0, -1);
+  return t.split('|').map(normalizeCell);
 }
 
-const isSeparator = (line: string): boolean => /^\|[\s:|-]+\|?\s*$/u.test(line.trim());
+/**
+ * 区切り行。**先頭パイプは省略できる**（GFM）。`| --- | --- |` も `--- | ---` も表である。
+ * 🔴 先頭パイプを要求すると、パイプ無しの表が丸ごと検査の外へ出る（レビュー実測）。
+ */
+const isSeparator = (line: string): boolean =>
+  /^\|?\s*:?-{2,}:?\s*(\|\s*:?-{2,}:?\s*)*\|?$/u.test(line.trim());
+
+/** 引用の `>` を剥がす。引用ブロックの中でも GitHub は表として描画する。 */
+const stripQuote = (line: string): string => line.replace(/^\s*(?:>\s?)+/u, '');
+
+/** 表の行とみなせるか。パイプを含んでいればよい（先頭パイプは必須ではない）。 */
+const looksLikeRow = (line: string): boolean => line.includes('|');
 
 /**
  * 先頭見出しが `firstHeader` の markdown 表を**全部**取り出す。
@@ -170,21 +196,47 @@ const isSeparator = (line: string): boolean => /^\|[\s:|-]+\|?\s*$/u.test(line.t
  * 要求できるように、枚数を返す形にしてある（レビュー MAJOR-3 が実測: 正しい内容の複製を
  * 足して本物の Cognito 行を ✅ に書き換えると、検査は緑のままだった）。
  */
+/**
+ * 文書中の markdown 表を全部取り出す。
+ *
+ * 🔴 **「`|` で始まる行」を表の定義にしない。** レビューが 4 種の逃げ道を実測した ――
+ * 先頭パイプ省略の表 / 引用ブロック内の表 / **見出し行**（`headers` を走査していなかった）/
+ * コードフェンス内の表。読者に表として描画されるものは、検査にとっても表である。
+ * 逆に**コードフェンスの中は表ではない**（「こう書くと落ちる」という否定例を書けなくなる）。
+ */
 export function parseAllMarkdownTables(markdown: string): ReadonlyArray<ParsedTable> {
-  const lines = markdown.split('\n');
+  const raw = markdown.split('\n');
+  // コードフェンスの中を落とす。行番号は保つため空行に置き換える。
+  const lines: string[] = [];
+  let fence: string | null = null;
+  for (const line of raw) {
+    const m = /^\s*(`{3,}|~{3,})/u.exec(stripQuote(line));
+    if (fence === null && m) {
+      fence = m[1]!.slice(0, 1);
+      lines.push('');
+      continue;
+    }
+    if (fence !== null) {
+      if (m && m[1]!.startsWith(fence)) fence = null;
+      lines.push('');
+      continue;
+    }
+    lines.push(line);
+  }
+
   const tables: ParsedTable[] = [];
   for (let i = 0; i < lines.length - 1; i += 1) {
-    const line = lines[i] ?? '';
-    if (!line.trim().startsWith('|')) continue;
-    if (!isSeparator(lines[i + 1] ?? '')) continue;
+    const line = stripQuote(lines[i] ?? '');
+    if (!looksLikeRow(line)) continue;
+    if (!isSeparator(stripQuote(lines[i + 1] ?? ''))) continue;
     const headers = splitRow(line);
     const rows: TableRow[] = [];
     for (let j = i + 2; j < lines.length; j += 1) {
-      const row = lines[j] ?? '';
-      if (!row.trim().startsWith('|')) break;
+      const row = stripQuote(lines[j] ?? '');
+      if (!looksLikeRow(row)) break;
       rows.push({ cells: splitRow(row), line: j + 1 });
     }
-    tables.push({ headers, rows });
+    tables.push({ headers, rows, headerLine: i + 1 });
   }
   return tables;
 }
@@ -198,6 +250,42 @@ export type ReservedMarkAllowance = {
   readonly firstHeader: string;
   readonly columns?: ReadonlyArray<string>;
 };
+
+/**
+ * **予約記号を書いてよい場所の正本**（#1114）。
+ *
+ * 🔴 **テスト側に置かない。** #1113 は `PROBE_CAPABILITIES` も語彙も `capability-doc.ts` へ
+ * 集めた。ここをテストに置くと、**テスト 1 行の編集で逃げ道が全部再び開き、`src/` の diff には
+ * 何も出ない**（レビュー指摘）。方針データは実装側に置き、テストは突き合わせるだけにする。
+ *
+ * 🔴 **キーの集合も数え上げではなく閉包で縛る。** 「素通り記号（`matrixMark('permissive')`）を
+ * 含む `docs/` 配下の md は、全部このマップに載っていること」を検査する ―― 表・列の軸を
+ * 許可の数え上げへ裏返しても、**ファイルの軸が数え上げのままなら 3 枚目で抜ける**。
+ * 実際 ADR 0010 が 3 枚目として抜けており、matrix と矛盾していた（CloudFormation の Moto が
+ * ADR では ✅、matrix では（未測））。
+ */
+export const RESERVED_MARK_SCOPE: Readonly<Record<string, ReadonlyArray<ReservedMarkAllowance>>> = {
+  'docs/local-aws.md': [
+    // 凡例は記号の**定義**。`記号` 列だけで、行は下の LEGEND_ROWS で有界にする。
+    { firstHeader: '判定', columns: ['記号'] },
+    // matrix は runtime 列だけ。`Notes` / `Real AWS 必須` では主張させない。
+    { firstHeader: 'Service / 操作', columns: ['Moto', 'MiniStack'] },
+  ],
+  'docs/development/local-aws-sandbox.md': [
+    { firstHeader: '能力', columns: ['MiniStack', 'Moto'] },
+  ],
+  // ADR は決定の記録。Cognito SRP の**素通り**は正確なので残し、過大主張だった ✅ は落とした。
+  'docs/adr/0010-swappable-aws-emulator.md': [
+    { firstHeader: '操作', columns: ['MiniStack', 'Moto'] },
+  ],
+};
+
+/** 凡例表に在ってよい行ラベル。**無界にすると捏造した能力行を凡例へ足せる**（レビュー実測）。 */
+export const LEGEND_ROWS: ReadonlyArray<string> = [
+  ...CAPABILITY_VERDICTS.map((v) => `\`${v}\``),
+  '（正の対照のみ）',
+  '（未測）',
+];
 
 export type ReservedMarkViolation = {
   readonly tableFirstHeader: string;
@@ -228,19 +316,40 @@ export function findReservedMarkViolations(input: {
   for (const table of parseAllMarkdownTables(input.markdown)) {
     const first = table.headers[0] ?? '';
     const allowance = input.allow.find((a) => a.firstHeader === first);
-    for (const row of table.rows) {
-      row.cells.forEach((cell, index) => {
+    // 🔴 **見出しセルも走査する。** `| 段 | 結果（すべて ✅ 負の対照つき） |` のように
+    // 見出しへ主張を書く逃げ道をレビューが実測した。見出しは常に列指定の外なので許さない。
+    const scan = (cells: ReadonlyArray<string>, line: number, isHeader: boolean) => {
+      cells.forEach((cell, index) => {
         const mark = marks.find((m) => cell.includes(m));
         if (mark === undefined) return;
-        const column = table.headers[index] ?? `列${index + 1}`;
-        // 許した表で、かつ（列指定が無い or その列）なら通す。
-        if (allowance !== undefined && (allowance.columns === undefined || allowance.columns.includes(column))) {
+        const column = isHeader ? `見出し${index + 1}` : (table.headers[index] ?? `列${index + 1}`);
+        if (
+          !isHeader &&
+          allowance !== undefined &&
+          (allowance.columns === undefined || allowance.columns.includes(column))
+        ) {
           return;
         }
-        found.push({ tableFirstHeader: first, column, cell, mark, line: row.line });
+        found.push({ tableFirstHeader: first, column, cell, mark, line });
       });
-    }
+    };
+    scan(table.headers, table.headerLine, true);
+    for (const row of table.rows) scan(row.cells, row.line, false);
   }
+
+  // 🔴 **HTML 表は markdown の表パーサに掛からない。** `<td>✅ …</td>` で丸ごと外へ出られる。
+  input.markdown.split('\n').forEach((line, index) => {
+    if (!/<t[dh][\s>]/iu.test(line)) return;
+    const mark = marks.find((m) => line.includes(m));
+    if (mark === undefined) return;
+    found.push({
+      tableFirstHeader: '(html)',
+      column: '(html cell)',
+      cell: line.trim(),
+      mark,
+      line: index + 1,
+    });
+  });
   return found;
 }
 
