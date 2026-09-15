@@ -213,10 +213,11 @@ export function parseMarkdownTables(markdown: string, firstHeader: string): Read
  * 🔴 **行を 1 文字でも変えたら、ここも変える必要がある。** それが狙いである ――
  * 予約記号を含む行は、能力の主張かその議論であり、**黙って書き換わってよい行ではない**。
  *
- * 🔴 **この目録から項目を消す変異は、機械では捕まらない**（変異検証で実測）。ガードの削除を
- * 別の機構で守ろうとすると無限後退になるので、ここは規約 7（テスト削除・弱体化で green に
- * しない）と同じ**規律**の領域である。**項目の削除は `src/` の diff に必ず出る**ので、
- * レビューで見ること。
+ * 🔴 **目録から項目を消したとき、何が守られ何が守られないか。** probe が裏付ける 3 行
+ * （matrix と証拠表の能力行）は、消しても `reconcileCapabilityDoc` が `missing_row` 等で
+ * 落とす（実測）。守られないのは **(a) 散文の行 (b) probe 非対象の行 (c) ファイル項目ごとの削除**
+ * の 3 つだけで、(c) はキー集合の下界で閉じてある。残る (a)(b) は規約 7（テスト削除・弱体化で
+ * green にしない）と同じ**規律**の領域 —— 削除は `src/` の diff に必ず出るので、レビューで見る。
  *
  * 🔴 **空配列は「この文書に予約記号が 1 つも在ってはならない」を意味する。**
  * 転記先を減らすために記号を消した文書（ADR 0010）は、記号が無いというだけで検査対象から
@@ -332,12 +333,18 @@ export function normalizeForMarkScan(raw: string): string {
       // 🔴 **タグ除去が先。** 実体参照を先に復号すると、`&#60;span …&#62;` が `<span …>` へ化けて
       // タグとして除去され、**レンダラには見えているテキスト**が祝福済み行と一致してしまう
       // （レビュー実測）。実体で書いたものは可視テキストなので、除去の対象ではない。
-      .replace(/<\/?[a-z][^>]*>/giu, '')
+      //
+      // 🔴 **`[^>\n]` —— 改行をまたがせない。** `[^>]` は改行に一致するので、`<<EOF` のように
+      // 同じ行に `>` が無い綴りから**次の `>` までを全部消す**。実測で 1 文書が 878 文字・28 行を
+      // 飲み込んでおり、ヒアドキュメントを含む手順書が**無音で検査の外へ出ていた**。
+      .replace(/<\/?[a-z][^>\n]*>/giu, '')
       .replace(/&#(\d+);/gu, (_m, code: string) => String.fromCodePoint(Number(code)))
       .replace(/&#x([0-9a-f]+);/giu, (_m, code: string) => String.fromCodePoint(parseInt(code, 16)))
       .replaceAll('&nbsp;', ' ')
       .replaceAll('*', '')
       .replaceAll('_', '')
+      // ゼロ幅文字は描画されないので、綴りを変える手段になる。
+      .replace(/[\u200b-\u200d\ufeff]/gu, '')
       // `\s` は NBSP(U+00A0) を含む（実測）。`[\s\u00a0]` と書くと「NBSP を別途処理している」
       // という誤った印象を与えるだけで、振る舞いは同じ（等価変異として変異検証で確認済み）。
       .replace(/\s+/gu, ' ')
@@ -345,10 +352,21 @@ export function normalizeForMarkScan(raw: string): string {
   );
 }
 
+/**
+ * 記号の照合は**空白に依存しない**。`🔴素通り`（空白なし）やゼロ幅で分断した綴りは
+ * 描画上まったく区別が付かないので、検出側で吸収する（レビュー実測）。
+ * 🔴 目録との**一致**には使わない —— あちらは読める形（空白を 1 つに畳んだ行）で比べる。
+ */
+const withoutSpaces = (t: string): string => t.replace(/\s/gu, '');
+
+export function containsMark(text: string, mark: string): boolean {
+  return withoutSpaces(text).includes(withoutSpaces(mark));
+}
+
 /** その行が含む予約記号（無ければ undefined）。 */
 export function reservedMarkIn(line: string): string | undefined {
   const normalized = normalizeForMarkScan(line);
-  return NEGATIVE_CONTROL_ONLY_VERDICTS.map(matrixMark).find((m) => normalized.includes(m));
+  return NEGATIVE_CONTROL_ONLY_VERDICTS.map(matrixMark).find((m) => containsMark(normalized, m));
 }
 
 /**

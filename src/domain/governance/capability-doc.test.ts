@@ -11,6 +11,7 @@ import {
   findScopeGaps,
   LEGEND_ROWS,
   SCOPE_KEY_MARK,
+  containsMark,
   normalizeForMarkScan,
   parseMarkdownTables,
   parseRecording,
@@ -551,6 +552,30 @@ describe('予約記号の出現は目録と完全一致する', () => {
     ]);
   });
 
+  /**
+   * 🔴 **タグ除去が改行をまたぐと、文書が黙って盲目になる。** `[^>]` は改行に一致するので、
+   * `<<EOF` のように同じ行に `>` が無い綴りから**次の `>` まで全部消える**。実測で 1 文書が
+   * 878 文字・28 行を飲み込んでおり、ヒアドキュメントを含む手順書が検査の外へ出ていた。
+   */
+  it('閉じないタグ様の綴りが、後続の行を飲み込まない', () => {
+    const md = ['```bash', 'aws cognito-idp ... <<EOF', 'EOF', '```', '| x | ✅ 実測 |'].join('\n');
+    expect(run(md, []).filter((v) => v.kind === 'unblessed')).not.toHaveLength(0);
+  });
+
+  it('引用の > で閉じられても後続を飲み込まない', () => {
+    const md = ['<span', '| x | ✅ 実測 |', '> 備考'].join('\n');
+    expect(run(md, []).filter((v) => v.kind === 'unblessed')).not.toHaveLength(0);
+  });
+
+  /** 🔴 空白なし・ゼロ幅で分断した綴りは、描画上まったく区別が付かない。 */
+  it.each([
+    ['空白なし', '| x | 🔴素通り |'],
+    ['ゼロ幅で分断', '| x | 🔴\u200b素通り |'],
+    ['空白 2 つ', '| x | 🔴  素通り |'],
+  ])('%s でも素通り記号として捕まる', (_name, md) => {
+    expect(run(md, []).filter((v) => v.kind === 'unblessed')).not.toHaveLength(0);
+  });
+
   it('予約されていない記号は出現として数えない', () => {
     expect(run('| x | ⛔ 405 |\n| y | ◯ 正のみ |\n| z | OK |', [])).toEqual([]);
   });
@@ -566,8 +591,10 @@ describe('範囲そのものの検査', () => {
     ['太字（正準表記）', '| x | 🔴 **素通り** |'],
     ['改行で分断', 'これは 🔴\n素通り である'],
     ['強調', '🔴 _素通り_'],
+    ['空白なし', '🔴素通り'],
+    ['ゼロ幅で分断', '🔴\u200b素通り'],
   ])('%s でも閉包の鍵として拾える', (_name, text) => {
-    expect(normalizeForMarkScan(text)).toContain(SCOPE_KEY_MARK);
+    expect(containsMark(normalizeForMarkScan(text), SCOPE_KEY_MARK)).toBe(true);
   });
 
   it('予約記号を持つ文書と目録の対象が一致していなければ落ちる', () => {
