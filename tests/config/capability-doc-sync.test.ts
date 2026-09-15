@@ -15,7 +15,6 @@ import {
   SCOPE_KEY_MARK,
   containsMark,
   normalizeForMarkScan,
-  parseAllMarkdownTables,
   parseMarkdownTables,
   parseRecording,
   reconcileCapabilityDoc,
@@ -204,7 +203,8 @@ describe('予約記号の適用範囲（文書全体）', () => {
    * 🔴 **ファイル軸も閉包にする。** 予約記号を含む文書が目録に載っていなければ落ちる。
    * 鍵は `🔴 素通り` に限る —— `✅` はこのリポジトリで「済み」の汎用記号で、
    * 13 文書・100 行超が能力と無関係に使っている（理由は `SCOPE_KEY_MARK` の注記）。
-   * 走査根は `docs/` と `.claude/rules/`（同じ事実の転記先が両方に在る）。
+   * 走査根は**リポジトリ全体**（`node_modules` と `.git` を除く）。`docs/` と
+   * `.claude/rules/` に狭めていたときは `CLAUDE.md` と `.claude/skills/**` が閉包の外だった。
    */
   it('予約記号を持つ文書が、目録の対象から漏れていない', () => {
     // 🔴 **根を数え上げない。** `docs` と `.claude/rules` だけを見ていたため、`CLAUDE.md` と
