@@ -9,9 +9,7 @@ import {
   findLegendRowGaps,
   findReservedMarkViolations,
   findScopeGaps,
-  findUnmatchedAllowances,
   LEGEND_ROWS,
-  parseAllMarkdownTables,
   parseMarkdownTables,
   parseRecording,
   reconcileCapabilityDoc,
@@ -437,100 +435,76 @@ describe('突き合わせ', () => {
   });
 });
 
-describe('予約記号は検査対象の表の中にしか現れない', () => {
+describe('予約記号の出現は目録と完全一致する', () => {
   /**
-   * 🔴 **#1113 の検査は「検査対象の 2 表の runtime 列」しか見ていなかった。**
-   * レビューが実測した逃げ道は 4 つあり、いずれも緑のまま通った:
-   * matrix の Notes 列 / `Real AWS 必須` 列 / 別の表（`| 段 | 結果 |`）/ 別文書の 2 表。
-   * **列を足して塞ぐと族を取りこぼす**ので、「予約記号は許した表の許した列にしか現れない」
-   * という**文書全体の不変条件 1 本**で縛る（#1114）。
+   * 🔴 **表構造で判定しない。** 自前の GFM パーサを判定経路へ置いたところ、レビューが 2 周で
+   * 5 つの穴を実測した（先頭パイプ省略 / 引用 / 複数行 HTML / フェンスのスコープ /
+   * **区切り行のハイフン 1 本**）。最後のものは受理集合を狭める**退行**でもあった。
+   * 綴りを足す競争をやめ、**出現を数え上げる**側へ裏返してある。
    */
-  const ALLOW = [
-    { firstHeader: '判定' },
-    { firstHeader: 'Service / 操作', columns: ['Moto', 'MiniStack'] },
-  ];
-  const scan = (md: string) => findReservedMarkViolations({ markdown: md, allow: ALLOW });
+  const INV = ['| x | ✅ |'];
+  const run = (md: string, inventory: readonly string[] = INV) =>
+    findReservedMarkViolations({ file: 'f.md', markdown: md, inventory });
 
-  const LEGEND = ['| 判定 | 記号 | 意味 |', '| --- | --- | --- |', '| `verified` | ✅ | x |'].join('\n');
-  const MATRIX = [
-    '| Service / 操作 | 負の対照 | Moto | MiniStack | Notes |',
-    '| --- | --- | --- | --- | --- |',
-    '| A | ✓ | ✅ | ✅ | ふつうの注記 |',
-  ].join('\n');
-
-  it('許した表の許した列なら通る', () => {
-    expect(scan([LEGEND, '', MATRIX].join('\n'))).toEqual([]);
+  it('目録どおりなら通る', () => {
+    expect(run('| x | ✅ |')).toEqual([]);
   });
 
-  it('許した表でも、許していない列に予約記号があれば落ちる', () => {
-    const bad = MATRIX.replace('| ふつうの注記 |', '| ✅ 負の対照つきで実測済み |');
-    expect(scan(bad).map((v) => v.column)).toEqual(['Notes']);
+  it('目録に無い出現は落ちる（行番号つき）', () => {
+    const found = run('| x | ✅ |\n| y | ✅ |');
+    expect(found.map((v) => [v.kind, v.line])).toEqual([['unblessed', 2]]);
   });
 
-  it('許していない表に予約記号があれば落ちる', () => {
-    const other = ['| 段 | 結果 |', '| --- | --- |', '| `cdk deploy` | ✅ 13.9s |'].join('\n');
-    const found = scan([MATRIX, '', other].join('\n'));
-    expect(found).toHaveLength(1);
-    expect(found[0]?.tableFirstHeader).toBe('段');
-    expect(found[0]?.mark).toBe('✅');
-  });
-
-  it('素通りの記号も同じく縛る', () => {
-    const other = ['| 段 | 結果 |', '| --- | --- |', '| x | 🔴 素通り |'].join('\n');
-    expect(scan(other).map((v) => v.mark)).toEqual(['🔴 素通り']);
-  });
-
-  it('非予約の記号は表の外でも自由に使える', () => {
-    const other = ['| 段 | 結果 |', '| --- | --- |', '| x | ⛔ 405 |', '| y | OK |'].join('\n');
-    expect(scan(other)).toEqual([]);
-  });
-
-  /** 🔴 散文は対象外 —— 記号を**論じる**文（「✅ を付けていた」等）を禁じると書けなくなる。 */
-  it('散文の予約記号は対象外', () => {
-    expect(scan('この行は ✅ を付けていたが誤りだった。🔴 素通り である。')).toEqual([]);
+  /** 🔴 片側だけ主張しない。**全部消せば通る**世界を作らない。 */
+  it('目録に在るのに消えた行も落ちる', () => {
+    expect(run('（記号なし）').map((v) => v.kind)).toEqual(['missing']);
   });
 
   /**
-   * 🔴 **「表」の境界をレビューが 4 種の逃げ道で突いた。** いずれも読者には表に見えるのに
-   * 走査されていなかった。族として塞ぐ。
+   * 構造に依らないことの確認 —— どの綴りで書いても「出現」として同じに扱われる。
+   * 1 周目・2 周目で穴だった形を全部入れてある。
    */
-  it('先頭パイプの無い表も表として扱う', () => {
-    expect(scan('段 | 結果\n--- | ---\ncdk deploy | ✅ 実測済み').map((v) => v.mark)).toEqual(['✅']);
+  it.each([
+    ['先頭パイプ省略', 'x | ✅ 実測'],
+    ['引用ブロック', '> | x | ✅ 実測 |'],
+    ['HTML（複数行）', '<td>\n✅ 実測\n</td>'],
+    ['コードフェンス内', '```\n| x | ✅ 実測 |\n```'],
+    ['単一ハイフン区切りの表', '| x | y |\n| - | - |\n| a | ✅ 実測 |'],
+    ['4 スペース字下げ', '    | x | ✅ 実測 |'],
+    ['見出しセル', '| 段 | 結果（すべて ✅） |'],
+    ['散文', 'この能力は ✅ である。'],
+  ])('%s でも出現として捕まる', (_name, md) => {
+    expect(run(md, []).filter((v) => v.kind === 'unblessed')).not.toHaveLength(0);
   });
 
-  it('引用ブロックの中の表も表として扱う', () => {
-    expect(scan('> | 段 | 結果 |\n> | --- | --- |\n> | x | ✅ 実測済み |').map((v) => v.mark)).toEqual(['✅']);
+  /** 綴りを変える族（#813 と同型）: 装飾・実体参照・タグ・NBSP。 */
+  it.each(['🔴 *素通り*', '&#9989; 実測', '<b>✅</b>', '&#128308;&nbsp;素通り', '✅\u00a0実測'])(
+    '装飾された %s も出現として捕まる',
+    (cell) => {
+      expect(run(`| x | ${cell} |`, []).filter((v) => v.kind === 'unblessed')).not.toHaveLength(0);
+    },
+  );
+
+  it('予約されていない記号は出現として数えない', () => {
+    expect(run('| x | ⛔ 405 |\n| y | ◯ 正のみ |\n| z | OK |', [])).toEqual([]);
+  });
+});
+
+describe('範囲そのものの検査', () => {
+  it('予約記号を持つ文書と目録の対象が一致していなければ落ちる', () => {
+    expect(findScopeGaps({ carriers: ['a.md'], scopeFiles: ['a.md'] })).toEqual([]);
+    expect(findScopeGaps({ carriers: ['a.md', 'b.md'], scopeFiles: ['a.md'] }).map((g) => g.kind)).toEqual([
+      'file_not_in_scope',
+    ]);
+    expect(findScopeGaps({ carriers: ['a.md'], scopeFiles: ['a.md', 'b.md'] }).map((g) => g.kind)).toEqual([
+      'scope_file_without_mark',
+    ]);
   });
 
-  it('HTML の表セルも拾う', () => {
-    expect(scan('<table><tr><td>✅ 実測済み</td></tr></table>').map((v) => v.column)).toEqual(['(html cell)']);
-  });
-
-  it('見出しセルの主張も落とす', () => {
-    const md = '| 段 | 結果（すべて ✅ 負の対照つき） |\n| --- | --- |\n| x | OK |';
-    expect(scan(md).map((v) => v.column)).toEqual(['見出し2']);
-  });
-
-  it('許した表でも、見出しセルには書けない', () => {
-    const md = MATRIX.replace('| Notes |', '| Notes（✅ 実測済み） |');
-    expect(scan(md).map((v) => v.column)).toEqual(['見出し5']);
-  });
-
-  /** 🔴 コードフェンスの中は表ではない ―― 否定例を書けなくなる。 */
-  it('コードフェンスの中の表は対象外', () => {
-    expect(scan('```\n| 段 | 結果 |\n| --- | --- |\n| x | ✅ |\n```')).toEqual([]);
-  });
-
-  /** 装飾・実体参照で綴りを変える族（#813 と同型）。 */
-  it.each(['🔴 *素通り*', '&#9989; 実測済み', '<b>✅</b>', '✅ 実測'])('装飾された %s も落とす', (cell) => {
-    expect(scan(`| 段 | 結果 |\n| --- | --- |\n| x | ${cell} |`)).not.toHaveLength(0);
-  });
-
-  /** 下界: 表を 1 枚も見つけられない実装でも上の主張は空虚に通る。 */
-  it('文書中の表を全部数えられる', () => {
-    const all = parseAllMarkdownTables([LEGEND, '', MATRIX].join('\n'));
-    expect(all.map((t) => t.headers[0])).toEqual(['判定', 'Service / 操作']);
-    expect(all[1]?.rows[0]?.line).toBeGreaterThan(all[0]!.rows[0]!.line);
+  it('凡例の行が導出値とずれたら落ちる（多くても少なくても）', () => {
+    expect(findLegendRowGaps([...LEGEND_ROWS])).toEqual([]);
+    expect(findLegendRowGaps([...LEGEND_ROWS, '捏造']).map((g) => g.kind)).toEqual(['legend_rows_changed']);
+    expect(findLegendRowGaps(LEGEND_ROWS.slice(1)).map((g) => g.kind)).toEqual(['legend_rows_changed']);
   });
 });
 
@@ -577,30 +551,3 @@ describe('負の対照列を持たない表（証拠表）', () => {
  * 範囲の構造的な検査。**テストの assertion ではなく純関数で持つ**ことが要点で、
  * 変異検証で「その 3 つはテスト側にあるあいだ必ず生存する」ことを実測したので持ち上げた。
  */
-describe('範囲そのものの検査', () => {
-  it('素通り記号を持つ文書と範囲の一覧が一致していなければ落ちる', () => {
-    expect(findScopeGaps({ carriers: ['a.md'], scopeFiles: ['a.md'] })).toEqual([]);
-    // 載せ忘れ
-    expect(findScopeGaps({ carriers: ['a.md', 'b.md'], scopeFiles: ['a.md'] }).map((g) => g.kind)).toEqual([
-      'file_not_in_scope',
-    ]);
-    // 🔴 **片側だけ主張しない。** 実体の無い許可も報告する。
-    expect(findScopeGaps({ carriers: ['a.md'], scopeFiles: ['a.md', 'b.md'] }).map((g) => g.kind)).toEqual([
-      'scope_file_without_mark',
-    ]);
-  });
-
-  it('許可した表が実在しなければ落ちる', () => {
-    const allow = [{ firstHeader: '判定' }, { firstHeader: '操作' }];
-    expect(findUnmatchedAllowances({ file: 'x.md', allow, tableFirstHeaders: ['判定', '操作'] })).toEqual([]);
-    expect(
-      findUnmatchedAllowances({ file: 'x.md', allow, tableFirstHeaders: ['判定'] }).map((g) => g.kind),
-    ).toEqual(['allowance_without_table']);
-  });
-
-  it('凡例の行が導出値とずれたら落ちる（多くても少なくても）', () => {
-    expect(findLegendRowGaps([...LEGEND_ROWS])).toEqual([]);
-    expect(findLegendRowGaps([...LEGEND_ROWS, '| 捏造 |']).map((g) => g.kind)).toEqual(['legend_rows_changed']);
-    expect(findLegendRowGaps(LEGEND_ROWS.slice(1)).map((g) => g.kind)).toEqual(['legend_rows_changed']);
-  });
-});

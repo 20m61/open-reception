@@ -8,11 +8,11 @@ import {
   POSITIVE_ONLY_MARK,
   SANDBOX_DOC_LABELS,
   UNMEASURED_MARK,
-  RESERVED_MARK_SCOPE,
+  RESERVED_MARK_INVENTORY,
   findLegendRowGaps,
-  findScopeGaps,
-  findUnmatchedAllowances,
   findReservedMarkViolations,
+  findScopeGaps,
+  SCOPE_KEY_MARK,
   parseAllMarkdownTables,
   parseMarkdownTables,
   parseRecording,
@@ -187,62 +187,50 @@ describe('docs/development/local-aws-sandbox.md の証拠表', () => {
  * 列を足して塞ぐのではなく、**許す側を数え上げて**族ごと閉じる。
  */
 describe('予約記号の適用範囲（文書全体）', () => {
-  const FILES = Object.keys(RESERVED_MARK_SCOPE);
+  const FILES = Object.keys(RESERVED_MARK_INVENTORY);
 
-  it.each(FILES)('%s に範囲外の予約記号が無い', (file) => {
+  it.each(FILES)('%s の予約記号の出現が目録と一致する', (file) => {
     const found = findReservedMarkViolations({
+      file,
       markdown: read(file),
-      allow: RESERVED_MARK_SCOPE[file]!,
+      inventory: RESERVED_MARK_INVENTORY[file]!,
     });
-    expect(found.map((v) => `L${v.line} [${v.tableFirstHeader}] ${v.column}: ${v.cell}`)).toEqual([]);
+    expect(found.map((v) => `${v.kind} L${v.line}: ${v.text}`)).toEqual([]);
   });
 
   /**
-   * 🔴 **ファイルの軸も数え上げにしない。** 表・列を許可の数え上げへ裏返しても、
-   * **対象ファイルが手書きの一覧なら 3 枚目で抜ける** —— 実際 ADR 0010 が抜けており、
-   * matrix と矛盾していた（CloudFormation の Moto が ADR では ✅、matrix では（未測））。
-   * 「素通り記号を含む md は全部この一覧に載っていること」で閉包にする。
+   * 🔴 **ファイル軸も閉包にする。** 予約記号を含む文書が目録に載っていなければ落ちる。
+   * 鍵は `🔴 素通り` に限る —— `✅` はこのリポジトリで「済み」の汎用記号で、
+   * 13 文書・100 行超が能力と無関係に使っている（理由は `SCOPE_KEY_MARK` の注記）。
+   * 走査根は `docs/` と `.claude/rules/`（同じ事実の転記先が両方に在る）。
    */
-  it('素通り記号を持つ文書が、範囲の一覧から漏れていない', () => {
-    const permissive = matrixMark('permissive');
-    const carriers = execSync(`grep -rl ${JSON.stringify(permissive)} docs/ || true`, {
-      cwd: process.cwd(),
-      encoding: 'utf8',
-    })
-      .split('\n')
-      .filter((l) => l.endsWith('.md'))
+  it('予約記号を持つ文書が、目録の対象から漏れていない', () => {
+    const roots = ['docs', '.claude/rules'];
+    const carriers = roots
+      .flatMap((root) =>
+        execSync(`find ${root} -name '*.md' -type f`, { cwd: process.cwd(), encoding: 'utf8' })
+          .split('\n')
+          .filter(Boolean),
+      )
+      .filter((f) => read(f).includes(SCOPE_KEY_MARK))
       .sort();
-    expect(carriers.length, '素通り記号を持つ文書が 1 つも無い（検査が空振り）').toBeGreaterThan(0);
+    expect(carriers.length, '予約記号を持つ文書が 1 つも無い（検査が空振り）').toBeGreaterThan(0);
     expect(findScopeGaps({ carriers, scopeFiles: FILES })).toEqual([]);
   });
 
-  /** 🔴 凡例は「許した表」なので、行が無界だと捏造した能力行を足せる（レビュー実測）。 */
   it('凡例の行が導出値ぴったりで、余計な行が無い', () => {
     const legend = parseMarkdownTables(read('docs/local-aws.md'), '判定')[0]!;
     expect(findLegendRowGaps(legend.rows.map((r) => r.cells[0] ?? ''))).toEqual([]);
   });
 
-  /** 🔴 死んだ許可が静かに残らないこと（表が改名・削除されても許可だけ残る型）。 */
-  it('どの許可も実際に表へ当たっている', () => {
+  /** 🔴 **下界。** 目録が空でも「一致」は通る。実物に出現が在ることを固定する。 */
+  it('目録が痩せていない（検査が空振りしていない）', () => {
     for (const file of FILES) {
-      const tableFirstHeaders = parseAllMarkdownTables(read(file)).map((t) => t.headers[0] ?? '');
-      expect(
-        findUnmatchedAllowances({ file, allow: RESERVED_MARK_SCOPE[file]!, tableFirstHeaders }),
-      ).toEqual([]);
-    }
-  });
-
-  /**
-   * 🔴 **下界。** 「違反 0 件」は、表を 1 枚も見つけられない実装でも空虚に通る。
-   */
-  it('実文書に表と予約記号が実在する（検査が空振りしていない）', () => {
-    // 件数の一律下界は文書ごとの実態に合わない（ADR は 1 表）。**どの許可も実際の表に
-    // 当たっている**ことを上の test が縛っているので、ここは「1 枚も読めていない世界」だけを弾く。
-    for (const file of FILES) {
-      expect(parseAllMarkdownTables(read(file)).length, `${file} の表が読めていない`).toBeGreaterThan(0);
+      expect(RESERVED_MARK_INVENTORY[file]!.length, `${file} の目録が空`).toBeGreaterThan(0);
     }
     const marks = CAPABILITY_VERDICTS.map(matrixMark);
     const matrix = parseMarkdownTables(read('docs/local-aws.md'), 'Service / 操作')[0]!;
     expect(matrix.rows.flatMap((r) => r.cells).filter((c) => marks.includes(c))).not.toHaveLength(0);
+    expect(parseAllMarkdownTables(read('docs/local-aws.md')).length).toBeGreaterThan(0);
   });
 });

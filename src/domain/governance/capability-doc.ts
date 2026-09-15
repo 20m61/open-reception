@@ -148,92 +148,42 @@ export type ParsedTable = {
   readonly headerLine: number;
 };
 
-/**
- * 強調記法・数値文字参照・セル内の余分な空白を落とす。表記のゆれで判定を変えない。
- *
- * 🔴 **`**` だけでは足りない。** `🔴 *素通り*`（斜体）や `&#9989;`（GitHub は ✅ として描画）で
- * 予約記号の検査を素通りできることをレビューが実測した。**描画されたときに読者が見る形**へ
- * 寄せてから判定する。
- */
+/** 強調記法とセル内の余分な空白を落とす。表記のゆれで判定を変えない。 */
 function normalizeCell(raw: string): string {
-  return raw
-    .replace(/&#(\d+);/gu, (_m, code: string) => String.fromCodePoint(Number(code)))
-    .replace(/&#x([0-9a-f]+);/giu, (_m, code: string) => String.fromCodePoint(parseInt(code, 16)))
-    .replaceAll('**', '')
-    .replaceAll('*', '')
-    .replaceAll('_', '')
-    .replace(/<\/?[a-z][^>]*>/giu, '')
-    .replace(/\s+/gu, ' ')
-    .trim();
+  return raw.replaceAll('**', '').replace(/\s+/gu, ' ').trim();
 }
 
 function splitRow(line: string): ReadonlyArray<string> {
-  let t = line.trim();
-  if (t.startsWith('|')) t = t.slice(1);
-  if (t.endsWith('|')) t = t.slice(0, -1);
-  return t.split('|').map(normalizeCell);
+  const trimmed = line.trim();
+  return trimmed
+    .slice(1, trimmed.endsWith('|') ? -1 : undefined)
+    .split('|')
+    .map(normalizeCell);
 }
 
-/**
- * 区切り行。**先頭パイプは省略できる**（GFM）。`| --- | --- |` も `--- | ---` も表である。
- * 🔴 先頭パイプを要求すると、パイプ無しの表が丸ごと検査の外へ出る（レビュー実測）。
- */
-const isSeparator = (line: string): boolean =>
-  /^\|?\s*:?-{2,}:?\s*(\|\s*:?-{2,}:?\s*)*\|?$/u.test(line.trim());
+const isSeparator = (line: string): boolean => /^\|[\s:|-]+\|?\s*$/u.test(line.trim());
 
-/** 引用の `>` を剥がす。引用ブロックの中でも GitHub は表として描画する。 */
-const stripQuote = (line: string): string => line.replace(/^\s*(?:>\s?)+/u, '');
-
-/** 表の行とみなせるか。パイプを含んでいればよい（先頭パイプは必須ではない）。 */
-const looksLikeRow = (line: string): boolean => line.includes('|');
-
-/**
- * 先頭見出しが `firstHeader` の markdown 表を**全部**取り出す。
- *
- * 🔴 **1 枚目で打ち切らない。** 「見出しで特定する」だけでは足りず、**同じ見出しの表が
- * 2 枚あると、実際に読まれるのは 1 枚目で、本物が無検査になる**。しかも文書を分割した
- * ようにしか見えないので、レビューでも気づかれない。呼び出し側が「ちょうど 1 枚」を
- * 要求できるように、枚数を返す形にしてある（レビュー MAJOR-3 が実測: 正しい内容の複製を
- * 足して本物の Cognito 行を ✅ に書き換えると、検査は緑のままだった）。
- */
 /**
  * 文書中の markdown 表を全部取り出す。
  *
- * 🔴 **「`|` で始まる行」を表の定義にしない。** レビューが 4 種の逃げ道を実測した ――
- * 先頭パイプ省略の表 / 引用ブロック内の表 / **見出し行**（`headers` を走査していなかった）/
- * コードフェンス内の表。読者に表として描画されるものは、検査にとっても表である。
- * 逆に**コードフェンスの中は表ではない**（「こう書くと落ちる」という否定例を書けなくなる）。
+ * 🔴 **この関数は「予約記号を書いてよいか」の判定に使わない。** 一度そこへ使ったところ、
+ * 区切り行の書式・引用・HTML・コードフェンスの扱いを足すたびに**別の綴りで突破され**、
+ * しかも受理集合を狭める退行（単一ハイフンの区切り行を落とす）まで作った。
+ * 判定は `findReservedMarkViolations`（出現の目録との完全一致）が持ち、ここは
+ * **記録との突き合わせ（`reconcileCapabilityDoc`）専用**である。
  */
 export function parseAllMarkdownTables(markdown: string): ReadonlyArray<ParsedTable> {
-  const raw = markdown.split('\n');
-  // コードフェンスの中を落とす。行番号は保つため空行に置き換える。
-  const lines: string[] = [];
-  let fence: string | null = null;
-  for (const line of raw) {
-    const m = /^\s*(`{3,}|~{3,})/u.exec(stripQuote(line));
-    if (fence === null && m) {
-      fence = m[1]!.slice(0, 1);
-      lines.push('');
-      continue;
-    }
-    if (fence !== null) {
-      if (m && m[1]!.startsWith(fence)) fence = null;
-      lines.push('');
-      continue;
-    }
-    lines.push(line);
-  }
-
+  const lines = markdown.split('\n');
   const tables: ParsedTable[] = [];
   for (let i = 0; i < lines.length - 1; i += 1) {
-    const line = stripQuote(lines[i] ?? '');
-    if (!looksLikeRow(line)) continue;
-    if (!isSeparator(stripQuote(lines[i + 1] ?? ''))) continue;
+    const line = lines[i] ?? '';
+    if (!line.trim().startsWith('|')) continue;
+    if (!isSeparator(lines[i + 1] ?? '')) continue;
     const headers = splitRow(line);
     const rows: TableRow[] = [];
     for (let j = i + 2; j < lines.length; j += 1) {
-      const row = stripQuote(lines[j] ?? '');
-      if (!looksLikeRow(row)) break;
+      const row = lines[j] ?? '';
+      if (!row.trim().startsWith('|')) break;
       rows.push({ cells: splitRow(row), line: j + 1 });
     }
     tables.push({ headers, rows, headerLine: i + 1 });
@@ -245,68 +195,59 @@ export function parseMarkdownTables(markdown: string, firstHeader: string): Read
   return parseAllMarkdownTables(markdown).filter((t) => t.headers[0] === firstHeader);
 }
 
-/** 予約記号を許す表と、その表の中で許す列。`columns` 省略＝その表の全列で許す。 */
-export type ReservedMarkAllowance = {
-  readonly firstHeader: string;
-  readonly columns?: ReadonlyArray<string>;
-};
-
 /**
- * **予約記号を書いてよい場所の正本**（#1114）。
+ * **予約記号を含んでよい行の目録**（#1114）。値は**正規化した行の全文**。
  *
- * 🔴 **テスト側に置かない。** #1113 は `PROBE_CAPABILITIES` も語彙も `capability-doc.ts` へ
- * 集めた。ここをテストに置くと、**テスト 1 行の編集で逃げ道が全部再び開き、`src/` の diff には
- * 何も出ない**（レビュー指摘）。方針データは実装側に置き、テストは突き合わせるだけにする。
+ * ## なぜ「表の中か」で判定しないのか
  *
- * 🔴 **キーの集合も数え上げではなく閉包で縛る。** 「素通り記号（`matrixMark('permissive')`）を
- * 含む `docs/` 配下の md は、全部このマップに載っていること」を検査する ―― 表・列の軸を
- * 許可の数え上げへ裏返しても、**ファイルの軸が数え上げのままなら 3 枚目で抜ける**。
- * 実際 ADR 0010 が 3 枚目として抜けており、matrix と矛盾していた（CloudFormation の Moto が
- * ADR では ✅、matrix では（未測））。
+ * 最初は「予約記号は許した表の許した列にしか現れない」を markdown の表構造で判定していた。
+ * それは**自前の GFM パーサを判定経路に置く**ことを意味し、レビューが 2 周で 5 つの穴を実測した
+ * —— 先頭パイプ省略 / 引用ブロック / HTML 表（複数行）/ コードフェンスのスコープ /
+ * **区切り行のハイフン 1 本**。最後のものは、広げたつもりで**受理集合を狭めた退行**だった。
+ *
+ * 綴りを足すたびに別の綴りで破られるのは `.claude/rules/opus5-autonomous-loop.md` の #813 と
+ * 同型である。だから**方式を裏返した**: 構造を解釈せず、**予約記号が現れる行を全部列挙**し、
+ * この目録と**完全一致**することを求める。区切り行の書式・引用・HTML・フェンス・実体参照の
+ * どれも検出力に影響しない（パーサは違反の**説明**にしか使わない）。
+ *
+ * 🔴 **行を 1 文字でも変えたら、ここも変える必要がある。** それが狙いである ――
+ * 予約記号を含む行は、能力の主張かその議論であり、**黙って書き換わってよい行ではない**。
+ *
+ * 🔴 **目録は現在の文書から生成した。だから「今在る主張が正しい」ことは保証しない。**
+ * 保証するのは「**黙って増えない・黙って消えない**」だけである。主張の真偽は
+ * `reconcileCapabilityDoc`（記録との突き合わせ）が matrix と証拠表について担保する。
  */
-export const RESERVED_MARK_SCOPE: Readonly<Record<string, ReadonlyArray<ReservedMarkAllowance>>> = {
-  'docs/local-aws.md': [
-    // 凡例は記号の**定義**。`記号` 列だけで、行は下の LEGEND_ROWS で有界にする。
-    { firstHeader: '判定', columns: ['記号'] },
-    // matrix は runtime 列だけ。`Notes` / `Real AWS 必須` では主張させない。
-    { firstHeader: 'Service / 操作', columns: ['Moto', 'MiniStack'] },
-  ],
-  'docs/development/local-aws-sandbox.md': [
-    { firstHeader: '能力', columns: ['MiniStack', 'Moto'] },
-  ],
-  // ADR は決定の記録。Cognito SRP の**素通り**は正確なので残し、過大主張だった ✅ は落とした。
-  'docs/adr/0010-swappable-aws-emulator.md': [
-    { firstHeader: '操作', columns: ['MiniStack', 'Moto'] },
-  ],
-};
-
 /** 凡例表に在ってよい行ラベル。**無界にすると捏造した能力行を凡例へ足せる**（レビュー実測）。 */
 export const LEGEND_ROWS: ReadonlyArray<string> = [
   ...CAPABILITY_VERDICTS.map((v) => `\`${v}\``),
   '（正の対照のみ）',
-  '（未測）',
+  UNMEASURED_MARK,
 ];
 
-/**
- * 範囲の**構造的な検査**。判断そのものを `src/` に置くのが要点である。
- *
- * 🔴 **テストの assertion に置くと、弱めても誰も落ちない。** 変異検証で実測した ――
- * 凡例の下界・ファイル軸の閉包・死んだ許可の 3 つは、テスト側に書いてあるあいだは
- * 「その行を緩める変異」が**必ず生存する**（テストを弱めたことを、そのテスト自身の実行では
- * 検出できない）。純関数へ持ち上げれば変異が捕まる。I/O（走査・読み込み）だけテストに残す。
- */
 export type ScopeGap =
   | { readonly kind: 'file_not_in_scope'; readonly file: string }
   | { readonly kind: 'scope_file_without_mark'; readonly file: string }
-  | { readonly kind: 'allowance_without_table'; readonly file: string; readonly firstHeader: string }
   | { readonly kind: 'legend_rows_changed'; readonly actual: ReadonlyArray<string> };
 
+/** 閉包の鍵。**`✅` は使えない**（`SCOPE_KEY_MARK` の注記を読むこと）。 */
+export const SCOPE_KEY_MARK = matrixMark('permissive');
+
 /**
- * 素通り記号を持つ文書の集合と、範囲の一覧が**一致する**こと。
- * 片側だけの主張にしない（載せ忘れも、実体の無い許可も、どちらも報告する）。
+ * 予約記号を持つ文書の集合と、目録の対象ファイルが**一致する**こと。
+ *
+ * 🔴 **鍵に `✅` を使えない。** レビューは「片側の鍵は片側の閉包しか作らない」と指摘し、
+ * それ自体は正しい。だが実測すると **`✅` はこのリポジトリで「済み」の汎用記号**であり、
+ * `docs/` と `.claude/rules/` の **13 文書・100 行超**が能力とは無関係に使っている
+ * （`docs/runbook-cloud-aws-deploy.md` 33 行 / `docs/scope.md` 19 行 /
+ * `docs/component-catalog.md` 17 行 / `docs/loop-queue.md` 15 行 …）。
+ * `✅` を鍵にすると、それら全部を目録へ取り込むか除外一覧を手で維持するかになり、
+ * **どちらも能力の主張とは関係ないところで壊れる**。
+ *
+ * よって鍵は `🔴 素通り`（能力 verdict にしか現れない綴り）に限る。
+ * 🔴 **残る穴**: `✅` だけで能力を主張する**新しい**文書は、この閉包に入らない。
+ * 目録の対象 3 文書の中では `✅` も完全に縛られているが、外は縛れていない。
  */
 export function findScopeGaps(input: {
-  /** 素通り記号を実際に含む文書のパス（呼び出し側が走査する）。 */
   readonly carriers: ReadonlyArray<string>;
   readonly scopeFiles: ReadonlyArray<string>;
 }): ReadonlyArray<ScopeGap> {
@@ -320,87 +261,108 @@ export function findScopeGaps(input: {
   return gaps;
 }
 
-/** 許可した表が実在すること（改名・削除で許可だけが残るのを防ぐ）。 */
-export function findUnmatchedAllowances(input: {
-  readonly file: string;
-  readonly allow: ReadonlyArray<ReservedMarkAllowance>;
-  readonly tableFirstHeaders: ReadonlyArray<string>;
-}): ReadonlyArray<ScopeGap> {
-  return input.allow
-    .filter((a) => !input.tableFirstHeaders.includes(a.firstHeader))
-    .map((a) => ({ kind: 'allowance_without_table' as const, file: input.file, firstHeader: a.firstHeader }));
-}
-
-/** 凡例の行が導出値ぴったりであること（**無界にすると捏造した能力行を足せる**）。 */
+/** 凡例の行が導出値ぴったりであること。 */
 export function findLegendRowGaps(rowLabels: ReadonlyArray<string>): ReadonlyArray<ScopeGap> {
   const same =
     rowLabels.length === LEGEND_ROWS.length && rowLabels.every((l, i) => l === LEGEND_ROWS[i]);
   return same ? [] : [{ kind: 'legend_rows_changed', actual: rowLabels }];
 }
 
+export const RESERVED_MARK_INVENTORY: Readonly<Record<string, ReadonlyArray<string>>> = {
+  'docs/local-aws.md': [
+    'トークンを発行しており、「正しいパスワードで通る」だけを見た判定が ✅ を付けていた。',
+    '| `verified` | ✅ | 正は通り、負は拒否された。ローカルの緑に意味がある |',
+    '| `permissive` | 🔴 素通り | 正も負も通る。緑のまま嘘をつく ―― `unavailable` より危険 |',
+    '🔴 機械が予約しているのは ✅ と 🔴 素通り の 2 つだけである。 この 2 つは負の対照を',
+    'これが「まだ測っていない」と「測って ✅ だった」の区別で、凡例ではなく記号が担う',
+    '🔴 下表で ✅ が付いているのは、負の対照まで当てた 3 行だけである。 `◯ 正のみ` の行は',
+    '負の対照を足すこと（足せば ✅ になり、記録と表が同時に動く）。',
+    '🔴 この 3 文書では、予約記号（✅ と 🔴 素通り）が現れる行が機械で固定してある（#1114）',
+    '🔴 この保証は上の 3 文書に閉じている。 `✅` はこのリポジトリで「済み」の汎用記号として',
+    '13 文書・100 行超が使っており、鍵にできない。新しい文書で `✅` だけを使って能力を主張する',
+    '経路は縛れていない（閉包の鍵は `🔴 素通り` のみ）。能力の主張は下表と証拠表にしか書かないこと。',
+    '| DynamoDB 条件付き書き込み | ✓ | ✅ | ✅ | — | `putIfAbsent` / CAS。二重作成が拒否されることまで実測 |',
+    '| DynamoDB GSI テナント分離 | ✓ | ✅ | ✅ | — | 他テナントから引けないことまで実測 |',
+    '| Cognito SRP のパスワード検証 | ✓ | 🔴 素通り | 🔴 素通り | 必須 | 下記「Cognito は素通りする」 |',
+  ],
+  'docs/development/local-aws-sandbox.md': [
+    '🔴 この文書で ✅ / 🔴 素通り を書けるのは、下の証拠表の `MiniStack` / `Moto` 列だけである',
+    '| DynamoDB 条件付き作成（二重作成が拒否される） | ✅ verified | ✅ verified |',
+    '| DynamoDB GSI テナント分離（他テナントから引けない） | ✅ verified | ✅ verified |',
+    '| Cognito SRP のパスワード検証 | 🔴 素通り | 🔴 素通り |',
+  ],
+  'docs/adr/0010-swappable-aws-emulator.md': [
+    '機械で突き合わせてある（#1113 / #1114）。以前この表は `OK` の位置に ✅ を書いており、',
+    'matrix の `◯ 正のみ` と食い違っていた（`CloudFormation` の Moto は ✅ と書かれていたが、',
+    '| Cognito: SRP のパスワード検証 | ⛔ ライセンス | 🔴 素通り | 🔴 素通り |',
+  ],
+};
+
 export type ReservedMarkViolation = {
-  readonly tableFirstHeader: string;
-  readonly column: string;
-  readonly cell: string;
-  readonly mark: string;
+  readonly file: string;
   readonly line: number;
+  readonly text: string;
+  readonly mark: string;
+  /** `unblessed` = 目録に無い出現 / `missing` = 目録に在るのに文書から消えた行。 */
+  readonly kind: 'unblessed' | 'missing';
 };
 
 /**
- * **予約記号（✅ / 🔴 素通り）は、許した表の許した列にしか現れてはならない。**
+ * 予約記号の検出用の正規化。**描画されたときに読者が見る形**へ寄せる。
+ * 実体参照・装飾・HTML タグで綴りを変える族（#813 と同型）を潰す。
+ * 🔴 表のラベル一致（`normalizeCell`）とは**別の関数**にしてある ―― あちらを装飾剥がしに
+ * すると、ラベルに `*` や `<T>` を含む行が静かに一致しなくなる（レビュー MINOR-5）。
+ */
+export function normalizeForMarkScan(raw: string): string {
+  return raw
+    .replace(/&#(\d+);/gu, (_m, code: string) => String.fromCodePoint(Number(code)))
+    .replace(/&#x([0-9a-f]+);/giu, (_m, code: string) => String.fromCodePoint(parseInt(code, 16)))
+    .replaceAll('&nbsp;', ' ')
+    .replace(/<\/?[a-z][^>]*>/giu, '')
+    .replaceAll('*', '')
+    .replaceAll('_', '')
+    .replace(/[\s\u00a0]+/gu, ' ')
+    .trim();
+}
+
+/** その行が含む予約記号（無ければ undefined）。 */
+export function reservedMarkIn(line: string): string | undefined {
+  const normalized = normalizeForMarkScan(line);
+  return NEGATIVE_CONTROL_ONLY_VERDICTS.map(matrixMark).find((m) => normalized.includes(m));
+}
+
+/**
+ * 文書の予約記号の出現が、目録と**完全一致**すること。
  *
- * 🔴 **なぜ列を足す形にしないか。** #1113 の検査は「検査対象 2 表の runtime 列」しか見て
- * おらず、レビューが**4 つの逃げ道**を実測した —— matrix の `Notes` 列 / `Real AWS 必須` 列 /
- * 別の表（`| 段 | 結果 |`）/ 別文書の 2 表。列を 2 つ足して塞ぐと、表を 1 枚足すだけで
- * また抜ける（`.claude/rules/opus5-autonomous-loop.md`「方式を替えたら〜」が言う
- * 「新方式向けの穴だけ塞いで族を見落とす」形）。**許す側を数え上げる**ことで族ごと閉じる。
- *
- * 🔴 **散文は対象外である。** 記号を**論じる**文（「当時は ✅ を付けていた」等）まで禁じると
- * 経緯を書けなくなる。危険なのは「verdict の主張に見えるセル」であって、記号への言及ではない。
+ * 🔴 **両側を主張する。** 目録に無い出現（新しい主張が勝手に入った）と、目録に在るのに
+ * 消えた行（主張が黙って落ちた）の**どちらも**報告する。片側だけだと、全部消せば通る。
  */
 export function findReservedMarkViolations(input: {
+  readonly file: string;
   readonly markdown: string;
-  readonly allow: ReadonlyArray<ReservedMarkAllowance>;
+  readonly inventory: ReadonlyArray<string>;
 }): ReadonlyArray<ReservedMarkViolation> {
-  const marks = NEGATIVE_CONTROL_ONLY_VERDICTS.map(matrixMark);
   const found: ReservedMarkViolation[] = [];
-  for (const table of parseAllMarkdownTables(input.markdown)) {
-    const first = table.headers[0] ?? '';
-    const allowance = input.allow.find((a) => a.firstHeader === first);
-    // 🔴 **見出しセルも走査する。** `| 段 | 結果（すべて ✅ 負の対照つき） |` のように
-    // 見出しへ主張を書く逃げ道をレビューが実測した。見出しは常に列指定の外なので許さない。
-    const scan = (cells: ReadonlyArray<string>, line: number, isHeader: boolean) => {
-      cells.forEach((cell, index) => {
-        const mark = marks.find((m) => cell.includes(m));
-        if (mark === undefined) return;
-        const column = isHeader ? `見出し${index + 1}` : (table.headers[index] ?? `列${index + 1}`);
-        if (
-          !isHeader &&
-          allowance !== undefined &&
-          (allowance.columns === undefined || allowance.columns.includes(column))
-        ) {
-          return;
-        }
-        found.push({ tableFirstHeader: first, column, cell, mark, line });
-      });
-    };
-    scan(table.headers, table.headerLine, true);
-    for (const row of table.rows) scan(row.cells, row.line, false);
-  }
-
-  // 🔴 **HTML 表は markdown の表パーサに掛からない。** `<td>✅ …</td>` で丸ごと外へ出られる。
-  input.markdown.split('\n').forEach((line, index) => {
-    if (!/<t[dh][\s>]/iu.test(line)) return;
-    const mark = marks.find((m) => line.includes(m));
+  const seen = new Set<string>();
+  input.markdown.split('\n').forEach((raw, index) => {
+    const mark = reservedMarkIn(raw);
     if (mark === undefined) return;
-    found.push({
-      tableFirstHeader: '(html)',
-      column: '(html cell)',
-      cell: line.trim(),
-      mark,
-      line: index + 1,
-    });
+    const text = normalizeForMarkScan(raw);
+    seen.add(text);
+    if (!input.inventory.includes(text)) {
+      found.push({ file: input.file, line: index + 1, text, mark, kind: 'unblessed' });
+    }
   });
+  for (const text of input.inventory) {
+    if (seen.has(text)) continue;
+    found.push({
+      file: input.file,
+      line: 0,
+      text,
+      mark: reservedMarkIn(text) ?? '',
+      kind: 'missing',
+    });
+  }
   return found;
 }
 
