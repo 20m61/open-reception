@@ -92,7 +92,7 @@ function evaluateBranches(): { findings: GateRunFinding[]; pending: string[] } {
   } catch (e) {
     return unverified(
       `リモートブランチの検査を実行できませんでした（${e instanceof Error ? e.message : String(e)}）。` +
-        'git のネットワーク到達と、PR 問い合わせ用の gh が要ります。**「取りこぼし無し」ではなく「未検査」です。**',
+        'git のネットワーク到達と、PR 問い合わせ用の curl が要ります。**「取りこぼし無し」ではなく「未検査」です。**',
     );
   }
   // **空を「取りこぼし無し」と読ませない。**

@@ -134,6 +134,14 @@ export function curlArgs(request: GitHubRequest): string[] {
     // 後ろに置くと、読んでから無効化することになり 1 も 2 も防げない。
     '-q',
     '-sS',
+    // 🔴 **無期限に待たない (#1117 review M6)。** この呼び出しは**ゲートより前**に居るので、
+    // proxy が詰まると「週次ゲートが黙って走らない」になる（終了コードすら出ない）。
+    // `evaluate-gate-runs` はブランチ本数ぶん直列に叩くので累積も効く。
+    // タイムアウトは curl を非 0 で終わらせ、既存の fail-closed 経路へ乗る。
+    '--connect-timeout',
+    '10',
+    '--max-time',
+    '60',
     '--config',
     '-',
     '-X',
@@ -166,7 +174,19 @@ export function curlArgs(request: GitHubRequest): string[] {
  */
 export function authConfigInput(token: string | undefined): string {
   if (token === undefined || token.trim() === '') return '';
-  return `header = "Authorization: Bearer ${token.trim()}"\n`;
+  const value = token.trim();
+  // 🔴 **改行は curl の設定行を増やせる (#1117 review m2)。**
+  // `--config` の入力は 1 行 1 オプションなので、token に改行が混じると
+  // `output = …` のような**任意のオプションを注入できる**（実測で確認された）。
+  // `"` と `\` は curl のクォート規則を壊し、原因の見えない 401 になる。
+  // この関数の存在理由が「秘密の経路を絞ること」である以上、値の形も絞る。
+  if (!/^[A-Za-z0-9_.\-]+$/.test(value)) {
+    throw new Error(
+      'token に使えない文字が含まれています（英数字・`_`・`.`・`-` のみ）。' +
+        '値そのものは出力しません。環境変数の設定を確認してください。',
+    );
+  }
+  return `header = "Authorization: Bearer ${value}"\n`;
 }
 
 /** この経路が要る外部コマンド。**`gh` はもう要らない**のが #1117 の要点。 */
@@ -253,34 +273,54 @@ function describeMissingCredential(tokenSource: string | undefined): string {
   );
 }
 
+/**
+ * 能力判定の結果。**3 状態**であることが要点 (#1117 review B1 / M1)。
+ *
+ * 🔴 **「駄目」と「分からない」を混ぜない。** 2 値にすると、呼び出し側は
+ * 「判定不能」をどちらかへ丸めるしかなくなる。丸め方の両方が悪い:
+ *
+ * - **ok へ丸める** … 判定不能を PASS にする。このリポジトリが繰り返し禁じている型
+ *   （`command-preflight.ts` の `observed[cmd] !== true` / `branch_check_unverified`）
+ * - **denied へ丸める** … 一過性の 5xx やレート制限で**週次ゲートごと中止**になる。
+ *   実際そうなりかけた ―― 記録も `evaluate:gate-runs` も `loop:retro` も publish の
+ *   後ろに居るので、**FAIL の測定そのものが消える**。#656 より悪い
+ *
+ * だから 3 つ返し、**`denied` のときだけ**呼び出し側が止まる。
+ */
+export type PushCapability = 'ok' | 'denied' | 'unknown';
+
 /** 能力判定の結果。**通らなかった理由を必ず持つ**（黙って false にしない）。 */
-export type PushCapabilityVerdict = { readonly ok: boolean; readonly reason: string };
+export type PushCapabilityVerdict = { readonly capability: PushCapability; readonly reason: string };
 
 /**
  * `GET /repos/{owner}/{repo}` の応答から「この主体は push できるか」を判定する (#1117)。
  *
- * 🔴 **判定不能を PASS へ丸めない。** `permissions` が返らないトークン種別があるので、
- * **返らなかったことを「権限あり」と読まない**。`command-preflight.ts` の
- * `observed[cmd] !== true` と同じ倒し方。
- *
  * ⚠️ **これは push 権限の**申告**であって、PR を作れること・マージできることの保証では
  * ない**（保護ブランチ・レビュー必須・App のスコープはここに現れない）。
- * 20 分のゲートを回す前に**確実に無理な場合を落とす**ための下限の検査である。
+ * 20 分のゲートを回す前に**確実に無理な場合だけ**落とすための下限の検査である。
+ *
+ * 🔴 **`unknown` で止めないのは弱さではなく、止める根拠が無いからである。**
+ * この環境の proxy は資格情報を注入するので、`ok` も「proxy が何でも答える」ことの
+ * 別名でありうる（`docs/local-aws.md`「Cognito は素通りする」と同じ性質）。
+ * 確かなのは `denied` ―― **応答は読めたうえで push できないと書いてある** ―― だけ。
  */
 export function evaluatePushCapability(payload: unknown): PushCapabilityVerdict {
   if (typeof payload !== 'object' || payload === null) {
-    return { ok: false, reason: 'リポジトリの応答を JSON オブジェクトとして読めませんでした' };
+    return { capability: 'unknown', reason: 'リポジトリの応答を JSON オブジェクトとして読めませんでした' };
   }
   // 配列や別形の JSON もここで落ちる（`permissions` を持たないため）。**型の場合分けを
   // 増やさない** —— 増やしても判定は変わらず、分岐だけが増える。
   const permissions = (payload as { permissions?: unknown }).permissions;
   if (typeof permissions !== 'object' || permissions === null) {
-    return { ok: false, reason: '応答に permissions がありません（権限を確認できませんでした）' };
+    // **`unknown`。** `permissions` を返さないトークン種別があるので、
+    // 「返らなかった」を「権限が無い」と読まない（読むと週次ゲートが消える）。
+    return { capability: 'unknown', reason: '応答に permissions がありません（権限を確認できませんでした）' };
   }
-  if ((permissions as { push?: unknown }).push !== true) {
-    return { ok: false, reason: 'このリポジトリへの push 権限がありません' };
-  }
-  return { ok: true, reason: '' };
+  const push = (permissions as { push?: unknown }).push;
+  if (push === true) return { capability: 'ok', reason: '' };
+  if (push === false) return { capability: 'denied', reason: 'このリポジトリへの push 権限がありません' };
+  // `push` キーが無い / 真偽値でない。**真と読まない**が、**確実に駄目とも言えない**。
+  return { capability: 'unknown', reason: 'permissions.push が真偽値で返っていません' };
 }
 
 /** PR 番号として通してよい値だけを通す。パスへ生で埋めると `9/../../x` で曲げられる。 */

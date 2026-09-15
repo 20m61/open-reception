@@ -41,7 +41,12 @@ export function run(cmd: string, args: string[]): string {
  * 「PR の実在を確認できませんでした」という**層の違う**メッセージが出ていたことだった。
  * 原因が判るまで `command -v gh` を別に叩く必要があった。同じ形を持ち込まない。
  */
+let commandsVerified = false;
+
 export function requireCommands(): void {
+  // 1 プロセス 1 回でよい。`evaluate-gate-runs` はブランチ本数ぶん REST を叩くので、
+  // 毎回 `curl --version` を spawn すると純粋な待ち時間になる (#1117 review m8)。
+  if (commandsVerified) return;
   const observed: Record<string, boolean> = {};
   for (const cmd of REQUIRED_REST_COMMANDS) {
     try {
@@ -53,6 +58,7 @@ export function requireCommands(): void {
   }
   const verdict = evaluateCommandAvailability(observed, REQUIRED_REST_COMMANDS);
   if (!verdict.ok) throw new Error(formatMissingRestCommands(verdict.missing));
+  commandsVerified = true;
 }
 
 /**
@@ -94,8 +100,15 @@ export function callGitHubJson<T>(request: GitHubRequest): T {
       describeHttpFailure(request, response.status, response.body, resolveGitHubToken(process.env).source),
     );
   }
+  // 🔴 **空本文を `null` へ倒さない (#1117 review m7)。** 倒すと呼び出し側が
+  // `null.length` / `null.merged` で TypeError になり、**判定不能が素の例外に化ける**
+  // ―― `evaluate-gate-runs` では `branch_check_unverified` にすらならない。
+  // ここで叩く経路はすべて JSON を返すので、空は異常として名指しする。
+  if (response.body.trim() === '') {
+    throw new Error(`GitHub REST が空の本文を返しました: ${request.method} ${request.path}`);
+  }
   try {
-    return JSON.parse(response.body === '' ? 'null' : response.body) as T;
+    return JSON.parse(response.body) as T;
   } catch {
     throw new Error(
       `GitHub REST の応答を JSON として読めませんでした: ${request.method} ${request.path}`,

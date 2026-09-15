@@ -765,14 +765,40 @@ secret 混入・ライセンス問題（#105 方針）は時間経過だけで�
 
     このサンドボックスの外向き HTTPS は agent proxy を通り、**proxy が資格情報を差し替える**
     （`Authorization` を送らなくても、でたらめな token でも 200 が返る）。したがって
-    **`GITHUB_TOKEN` の有無で publish の可否を判定しない** —— 在る環境では送り、
-    無い環境でも落とさない。
+    **`GH_TOKEN` / `GITHUB_TOKEN` の有無で publish の可否を判定しない** —— 在る環境では送り、
+    無い環境でも落とさない。優先順は `gh` の原典に合わせて **`GH_TOKEN` が先**
+    （<https://cli.github.com/manual/gh_help_environment>）。
+
+    🔴 **ローカル macOS では token を明示的に渡す。** `gh auth login` の資格情報は
+    keychain に入り**環境変数には現れない**ので、ログイン済みでも 401 になる。
+    `GH_TOKEN="$(gh auth token)" npx tsx scripts/create-pull-request.ts …` のように渡す。
+    401 / 403 のときはスクリプトが「そもそも渡していない」か「渡したが足りない」かを
+    名指しする。未認証の REST は 60 req/h なので、`evaluate:gate-runs` は
+    ブランチ数によっては 403 を踏む。
   - 🔴 **公開経路はゲートの前に確かめる (#1117)。** `--publish` は
-    `scripts/check-publish-path.ts` を**ゲートより先に**通し、到達できなければ
-    ゲートを回さずに exit 3 で止まる。後ろに置くと、壊れていることが判るのが
-    20〜25 分後になり、落ち方は「記録は push 済み・PR は無し」＝ #656 そのものになる。
-    判定は前提の列挙ではなく `GET /repos/{owner}/{repo}` の `permissions.push` の実測
-    （**下限の検査**であって、保護ブランチやレビュー必須はここに現れない）。
+    `scripts/check-publish-path.ts` を**ゲートより先に**通す。後ろに置くと、壊れていることが
+    判るのが 20〜25 分後になり、落ち方は「記録は push 済み・PR は無し」＝ #656 そのもの。
+    判定は前提の列挙ではなく `GET /repos/{owner}/{repo}` の `permissions.push` の実測。
+
+    🔴 **止めるのは「確実に publish できない」ときだけ。** 終了コードは 3 状態:
+
+    | コード | 意味 | `record-gate-run.sh` |
+    | --- | --- | --- |
+    | 0 | push できると応答が言っている | 進む |
+    | 3 | **確実に無理**（応答は読めたうえで `push: false`） | **ゲートを回さず中止** |
+    | 4 | **判定不能**（到達不能 / `permissions` が読めない / 道具が無い） | 警告して続行 |
+
+    **判定不能で止めてはいけない。** 記録の追記も `evaluate:gate-runs` も `loop:retro` も
+    publish の**後ろ**に居るので、止めると FAIL の測定そのものが消える ―― #656（FAIL が
+    main に載らない）より悪い。ここに落ちるのは一過性の 5xx・レート制限・proxy の瞬断、
+    そして **node_modules がまだ無い fresh clone**（`npx --no-install tsx` が失敗する。
+    ゲート本体は自分で `npm ci` するので、そこまで進めば直る。クラウドの週次 routine は
+    まさにこの姿で始まる）。
+
+    ⚠️ 0 は**下限の検査**であって publish の保証ではない。保護ブランチ・レビュー必須・
+    App のスコープはここに現れず、この環境の proxy は資格情報を注入するので
+    「proxy が何でも答える」ことの別名でもありうる（`docs/local-aws.md`
+    「Cognito は素通りする」と同じ性質）。
   - `--publish --dry-run` でゲートも副作用も実行せず、公開手順だけを歩ける
     （公開経路の事前確認は **dry-run でも走る** —— 読み取り 1 回で副作用が無く、
     公開手順の確認こそ dry-run の目的だから）。

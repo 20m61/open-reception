@@ -196,4 +196,22 @@ describe('record-gate-run.sh: 公開経路の事前確認はゲートより前 (
     },
     SPAWN_TIMEOUT_MS,
   );
+
+  /**
+   * 🔴 **判定不能（exit 3 以外の非 0）でゲートを止めない** (#1117 review B1 / M1)。
+   *
+   * 止めると、ゲートも記録の追記も `evaluate:gate-runs` も `loop:retro` も
+   * publish の**後ろ**に居るので全部消える ―― FAIL が main に載らないどころか、
+   * FAIL の測定そのものが無くなる（#656 より悪い）。ここに落ちるのは一過性の 5xx・
+   * レート制限・proxy の瞬断、そして **node_modules がまだ無い fresh clone**
+   * （`npx --no-install tsx` が失敗する。ゲート本体は自分で `npm ci` するので、
+   * そこまで進めば直る）である。
+   */
+  it.each([1, 4, 127])(
+    '事前確認が exit %i（判定不能）でもゲートは回る',
+    (code) => {
+      expect(runWithPreflight(code).gateRan).toBe(true);
+    },
+    SPAWN_TIMEOUT_MS,
+  );
 });

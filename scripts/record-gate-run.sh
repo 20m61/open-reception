@@ -85,10 +85,22 @@ trap 'rm -f "${OUTPUT_FILE}"' EXIT
 # 冒頭に書いてある。
 if [[ "${PUBLISH}" -eq 1 ]]; then
   echo "▶ 公開経路（PR 作成）へ到達できるかを先に確かめます"
-  if ! npx --no-install tsx "${ROOT}/scripts/check-publish-path.ts"; then
+  npx --no-install tsx "${ROOT}/scripts/check-publish-path.ts"
+  PUBLISH_CHECK=$?
+  # 🔴 **止めるのは「確実に publish できない」ときだけ**（exit 3）。
+  #
+  # 「判定できない」で止めてはいけない。このゲートは記録の追記・`evaluate:gate-runs`・
+  # `loop:retro` を**すべて後ろに**持っているので、止めると FAIL の測定そのものが消える
+  # —— #656（FAIL が main に載らない）より悪い。一過性の 5xx・レート制限・proxy の瞬断、
+  # そして **node_modules がまだ無い fresh clone**（`npx --no-install tsx` が失敗する。
+  # ゲート本体は自分で `npm ci` するので、そこまで進めば直る）が全部ここに落ちる。
+  if [[ "${PUBLISH_CHECK}" -eq 3 ]]; then
     echo "❌ 公開経路へ到達できないため、ゲートを実行せずに中止します。" >&2
     echo "   記録だけが push されて PR が無い状態（#656 の形）を作らないための中止です。" >&2
     exit 3
+  elif [[ "${PUBLISH_CHECK}" -ne 0 ]]; then
+    echo "⚠️  公開経路の可否を判定できませんでした（exit ${PUBLISH_CHECK}）。ゲートは続行します。" >&2
+    echo "   **「publish できる」ではなく「判定できなかった」です。** publish 段で落ちる可能性があります。" >&2
   fi
 fi
 

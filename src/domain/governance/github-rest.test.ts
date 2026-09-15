@@ -209,81 +209,51 @@ describe('失敗の説明 (#1117)', () => {
 });
 
 describe('publish 経路の能力判定 (#1117)', () => {
-  it('push 権限が真なら通す', () => {
-    expect(evaluatePushCapability({ permissions: { push: true } }).ok).toBe(true);
+  it('push が真なら ok', () => {
+    expect(evaluatePushCapability({ permissions: { push: true } }).capability).toBe('ok');
   });
 
   /**
-   * 🔴 **下界。** 「判定不能」を PASS へ丸めない。`permissions` はトークンの種類に
-   * よっては返らないので、**返らなかったことを「権限あり」と読まない**。
+   * 🔴 **`denied` は「応答は読めたうえで push できないと書いてある」ときだけ。**
+   * ここだけが週次ゲートを止める根拠になるので、広げない。
+   */
+  it('push が偽なら denied（ここだけが止める根拠）', () => {
+    const verdict = evaluatePushCapability({ permissions: { push: false } });
+    expect(verdict.capability).toBe('denied');
+    expect(verdict.reason).not.toBe('');
+  });
+
+  /**
+   * 🔴 **判定不能を `denied` へ丸めない (#1117 review B1 / M1)。**
+   * 丸めると、一過性の 5xx やレート制限で**週次ゲートごと中止**になる。記録も
+   * `evaluate:gate-runs` も `loop:retro` も publish の後ろに居るので、FAIL の測定が丸ごと消える。
+   * かといって `ok` へも丸めない（判定不能を PASS にしない）。だから第 3 の状態が要る。
    */
   it.each([
-    ['push が偽', { permissions: { push: false } }],
-    // 🔴 **`push` キーが無い permissions**。`push !== true` を `push === false` へ緩める
-    // 変異は、このケースが無いと**生存する**（実測）。「偽と書いてある」と
-    // 「書いていない」を区別しない判定は、判定不能を PASS へ丸めている。
     ['permissions に push が無い', { permissions: { pull: true } }],
     ['permissions が空', { permissions: {} }],
     ['push が真偽値でない', { permissions: { push: 'true' } }],
     ['permissions が無い', { full_name: 'o/r' }],
     ['null', null],
     ['配列', []],
-  ])('%s なら通さない', (_label, payload) => {
+    ['文字列', 'not json'],
+  ])('%s は unknown（ok でも denied でもない）', (_label, payload) => {
     const verdict = evaluatePushCapability(payload);
-    expect(verdict.ok).toBe(false);
+    expect(verdict.capability).toBe('unknown');
     expect(verdict.reason).not.toBe('');
   });
-});
 
-/**
- * `git-base.ts` から移設した表明 (#1117)。**形は `gh` の argv から HTTP 要求へ変わったが、
- * 守っている不変条件は同じ**なので、そのまま連れてくる（方式を替えたときに前の方式が
- * 守っていたものを落とさない ―― `.claude/rules/opus5-autonomous-loop.md`）。
- */
-describe('移設した不変条件: クエリとパスを壊さない (#656 / #678 / #702 → #1117)', () => {
-  it('クエリを割る文字を通さない', () => {
-    // `&` はパラメータを割り、`#` は以降を捨てる。どちらも git のブランチ名として合法。
-    const q = pullsQueryRequest({ owner: 'o', repo: 'r' }, 'feat/a&head=o:main').path;
-    expect(q).not.toContain('&head=o:main');
-    expect(q).toContain('%26head%3Do%3Amain');
-  });
-
-  it('スラッシュを含むブランチ名をエンコードする', () => {
-    // `%2F` でも生の `/` と同じ結果になることは GitHub API で実測済み。
-    const q = pullsQueryRequest(REPO, 'docs/opus-5-loop-profile').path;
-    expect(q).toContain('head=20m61%3Adocs%2Fopus-5-loop-profile');
-  });
-
-  it.each([
-    ['照会', (repo: { owner: string; repo: string }) => pullsQueryRequest(repo, 'b').path],
-    [
-      '作成',
-      (repo: { owner: string; repo: string }) =>
-        pullCreateRequest(repo, { head: 'h', base: 'main', title: 't', body: 'b' }).path,
-    ],
-    ['マージ', (repo: { owner: string; repo: string }) => pullMergeRequest(repo, 12).path],
-    ['PR 読み出し', (repo: { owner: string; repo: string }) => pullReadRequest(repo, 12).path],
-    ['リポジトリ読み出し', (repo: { owner: string; repo: string }) => repoReadRequest(repo).path],
-  ])('%s は owner / repo をエンコードして埋める', (_label, build) => {
-    expect(build({ owner: 'o w', repo: 'r&x' })).toContain('repos/o%20w/r%26x');
-  });
-
-  it('本文が空でも PR は作れる（本文は無くても PR の意味は壊れない）', () => {
-    const req = pullCreateRequest(REPO, { head: 'h', base: 'main', title: 't', body: '' });
-    expect(JSON.parse(req.body ?? '').body).toBe('');
-  });
-
-  /**
-   * 🔴 **改行を含む本文が 1 つの値として往復すること。** `gh api` の `-f key=value` では
-   * 「値を 1 argv 要素に収める」ことがこの保証の実体だった（分割すると本文が散る）。
-   * JSON へ移した後の等価物がこれ。
-   */
-  it('改行を含む本文がそのまま往復する', () => {
-    const body = '複数行の\n本文（#656）';
-    const req = pullCreateRequest(REPO, { head: 'h', base: 'main', title: 't', body });
-    expect(JSON.parse(req.body ?? '').body).toBe(body);
+  /** 下界。`unknown` を返すだけの実装では上の「push が真なら ok」が落ちる。 */
+  it('3 つの状態がすべて到達可能', () => {
+    const seen = new Set(
+      [{ permissions: { push: true } }, { permissions: { push: false } }, null].map(
+        (p) => evaluatePushCapability(p).capability,
+      ),
+    );
+    expect([...seen].sort()).toEqual(['denied', 'ok', 'unknown']);
   });
 });
+
 
 describe('欠けているコマンドの名指し (#1117 AC1)', () => {
   /**
@@ -389,5 +359,102 @@ describe('401 / 403 は「どの層か」を名指しする (#1117 review P1)', 
 
   it('どの状態でも token の値そのものは運ばない', () => {
     expect(describeHttpFailure(req, 401, 'boom', 'GH_TOKEN')).not.toContain('Authorization');
+  });
+});
+
+/**
+ * `git-base.ts` から移設した表明 (#1117)。**形は `gh` の argv から HTTP 要求へ変わったが、
+ * 守っている不変条件は同じ**なので、そのまま連れてくる（方式を替えたときに前の方式が
+ * 守っていたものを落とさない ―― `.claude/rules/opus5-autonomous-loop.md`）。
+ *
+ * 🔴 **この節は一度、無関係な編集で丸ごと消えた。** 3 状態化のときに
+ * `publish 経路の能力判定` を書き換えた範囲がここまで及び、**owner/repo を
+ * エンコードしない変異が生存**して初めて気づいた。全変異の当て直しが無ければ
+ * 誰も気づかないまま保証が落ちていた ―― 規約の「kill が減っていたら退行」そのもの。
+ */
+describe('移設した不変条件: クエリとパスを壊さない (#656 / #678 / #702 → #1117)', () => {
+  it('クエリを割る文字を通さない', () => {
+    // `&` はパラメータを割り、`#` は以降を捨てる。どちらも git のブランチ名として合法。
+    const q = pullsQueryRequest({ owner: 'o', repo: 'r' }, 'feat/a&head=o:main').path;
+    expect(q).not.toContain('&head=o:main');
+    expect(q).toContain('%26head%3Do%3Amain');
+  });
+
+  it('スラッシュを含むブランチ名をエンコードする', () => {
+    // `%2F` でも生の `/` と同じ結果になることは GitHub API で実測済み。
+    const q = pullsQueryRequest(REPO, 'docs/opus-5-loop-profile').path;
+    expect(q).toContain('head=20m61%3Adocs%2Fopus-5-loop-profile');
+  });
+
+  it.each([
+    ['照会', (repo: { owner: string; repo: string }) => pullsQueryRequest(repo, 'b').path],
+    [
+      '作成',
+      (repo: { owner: string; repo: string }) =>
+        pullCreateRequest(repo, { head: 'h', base: 'main', title: 't', body: 'b' }).path,
+    ],
+    ['マージ', (repo: { owner: string; repo: string }) => pullMergeRequest(repo, 12).path],
+    ['PR 読み出し', (repo: { owner: string; repo: string }) => pullReadRequest(repo, 12).path],
+    ['リポジトリ読み出し', (repo: { owner: string; repo: string }) => repoReadRequest(repo).path],
+  ])('%s は owner / repo をエンコードして埋める', (_label, build) => {
+    expect(build({ owner: 'o w', repo: 'r&x' })).toContain('repos/o%20w/r%26x');
+  });
+
+  it('本文が空でも PR は作れる（本文は無くても PR の意味は壊れない）', () => {
+    const req = pullCreateRequest(REPO, { head: 'h', base: 'main', title: 't', body: '' });
+    expect(JSON.parse(req.body ?? '').body).toBe('');
+  });
+
+  /**
+   * 🔴 **改行を含む本文が 1 つの値として往復すること。** `gh api` の `-f key=value` では
+   * 「値を 1 argv 要素に収める」ことがこの保証の実体だった（分割すると本文が散る）。
+   * JSON へ移した後の等価物がこれ。
+   */
+  it('改行を含む本文がそのまま往復する', () => {
+    const body = '複数行の\n本文（#656）';
+    const req = pullCreateRequest(REPO, { head: 'h', base: 'main', title: 't', body });
+    expect(JSON.parse(req.body ?? '').body).toBe(body);
+  });
+});
+
+describe('レビュー指摘の修正が縛られていること (#1117 review m2 / M6)', () => {
+  /**
+   * 🔴 **`--config` の入力は 1 行 1 オプション。** token に改行が混じると
+   * `output = …` のような**任意の curl オプションを注入できる**（レビューが実測）。
+   * `trim()` は内部の改行を落とさないので、形そのものを絞る。
+   */
+  it.each([
+    ['改行でオプションを足す', 'abc\noutput = /tmp/pwned'],
+    ['引用符でヘッダを壊す', 'ab"c'],
+    ['バックスラッシュ', 'ab\\c'],
+    ['空白', 'ab c'],
+  ])('%s は組み立てない', (_label, token) => {
+    expect(() => authConfigInput(token)).toThrow();
+  });
+
+  it('値そのものは例外メッセージへ載せない', () => {
+    try {
+      authConfigInput('secret\noutput = /tmp/pwned');
+      throw new Error('should have thrown');
+    } catch (e) {
+      expect((e as Error).message).not.toContain('secret');
+    }
+  });
+
+  /** 下界。GitHub の token に現れる文字は通す（絞りすぎると全部使えなくなる）。 */
+  it.each(['ghp_AbC123', 'github_pat_11ABC_def.ghi-jkl', 'abc'])('%s は通す', (token) => {
+    expect(authConfigInput(token)).toContain(token);
+  });
+
+  /**
+   * 🔴 **無期限に待たない。** この呼び出しはゲートより前に居るので、proxy が詰まると
+   * 「週次ゲートが黙って走らない」になる（終了コードすら出ない）。
+   */
+  it('接続と全体の両方にタイムアウトを渡す', () => {
+    const args = curlArgs(repoReadRequest(REPO));
+    expect(args).toContain('--connect-timeout');
+    expect(args).toContain('--max-time');
+    expect(Number(args[args.indexOf('--max-time') + 1])).toBeGreaterThan(0);
+    expect(Number(args[args.indexOf('--connect-timeout') + 1])).toBeGreaterThan(0);
   });
 });

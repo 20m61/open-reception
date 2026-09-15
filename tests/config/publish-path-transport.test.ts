@@ -17,101 +17,45 @@
  * これで「`gh` が無い環境で PR を作れる」を**環境ごと再現して**確かめられる。
  */
 import { execFileSync } from 'node:child_process';
-import {
-  chmodSync,
-  mkdirSync,
-  mkdtempSync,
-  readFileSync,
-  rmSync,
-  symlinkSync,
-  writeFileSync,
-} from 'node:fs';
+import { mkdirSync, mkdtempSync, symlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterAll, describe, expect, it } from 'vitest';
-
-/** 子プロセスで TypeScript を起動するので、既定の 5 秒では負荷下で足りない。 */
-const SPAWN_TIMEOUT_MS = 30_000;
+import { describe, expect, it } from 'vitest';
+import {
+  SPAWN_TIMEOUT_MS,
+  readLog,
+  runScriptWithStubs,
+  type StubResponse,
+  type StubRun,
+} from './helpers/stub-bin';
 
 /** `npx` はレジストリ解決の分だけ余計に待つ。ローカルの tsx を直接呼ぶ。 */
 const TSX = join('node_modules', '.bin', 'tsx');
 
-const created: string[] = [];
-afterAll(() => {
-  for (const dir of created) rmSync(dir, { recursive: true, force: true });
-});
-
-/** 1 回分の応答。`curl -w '\n%{http_code}'` と同じ形（本文 + 改行 + 状態コード）で返す。 */
-type StubResponse = { body: string; status: number };
-
-type StubRun = { code: number; stdout: string; stderr: string; dir: string };
-
 /**
- * 偽の `curl` / `gh` を置いた PATH でスクリプトを起動する。
+ * 応答列を渡してスクリプトを起動する薄い包み。
  *
- * `curl --version` は存在確認（`requireCommands`）が呼ぶので、**応答を消費させない**。
+ * 🔴 **stub は `helpers/stub-bin` へ寄せてある。** かつてこのファイルは自前の stub を
+ * 持っており、`--config -` の有無に関わらず**無条件に stdin を読んで**いた。そのせいで
+ * 「stdin の config で token を渡している」という主張が、`--config -` を落とす変異でも
+ * **空虚に通った**（独立レビューの実測）。stub の側で経路を再現しないと、下界は下界にならない。
  */
-function runWithStubs(script: string, args: string[], responses: StubResponse[], env: Record<string, string> = {}): StubRun {
-  const dir = mkdtempSync(join(tmpdir(), 'publish-path-'));
-  created.push(dir);
-  const bin = join(dir, 'bin');
-  mkdirSync(bin);
-  responses.forEach((r, i) => {
-    writeFileSync(join(dir, `response-${i + 1}`), `${r.body}\n${r.status}`);
-  });
-
-  const curlStub = `#!/usr/bin/env bash
-if [ "$1" = "--version" ]; then echo "curl stub"; exit 0; fi
-n=$(cat "${dir}/count" 2>/dev/null || echo 0)
-n=$((n+1))
-echo "$n" > "${dir}/count"
-printf '%s\\n' "$*" >> "${dir}/argv.log"
-cat > "${dir}/stdin-$n"
-if [ -f "${dir}/response-$n" ]; then cat "${dir}/response-$n"; else printf 'no stub response\\n500'; fi
-`;
-  writeFileSync(join(bin, 'curl'), curlStub);
-  chmodSync(join(bin, 'curl'), 0o755);
-
-  // 🔴 `gh` へ戻る退行を PATH の側から捕まえる。呼ばれたら必ず落ちる。
-  const ghStub = `#!/usr/bin/env bash
-echo "gh was invoked" >> "${dir}/gh.log"
-exit 127
-`;
-  writeFileSync(join(bin, 'gh'), ghStub);
-  chmodSync(join(bin, 'gh'), 0o755);
-
-  try {
-    const stdout = execFileSync(TSX, [script, ...args], {
-      encoding: 'utf8',
-      stdio: ['ignore', 'pipe', 'pipe'],
-      env: {
-        ...process.env,
-        ...env,
-        PATH: `${bin}:${process.env.PATH ?? ''}`,
-        OPEN_RECEPTION_SKIP_GATE_GUARD: '1',
-      },
-    });
-    return { code: 0, stdout, stderr: '', dir };
-  } catch (e) {
-    const err = e as { status?: number; stdout?: string; stderr?: string };
-    return { code: err.status ?? 1, stdout: err.stdout ?? '', stderr: err.stderr ?? '', dir };
-  }
+function runWithStubs(
+  script: string,
+  args: string[],
+  responses: StubResponse[],
+  env: Record<string, string> = {},
+): StubRun {
+  return runScriptWithStubs(script, args, { responses, env });
 }
 
 function argvLog(dir: string): string {
-  try {
-    return readFileSync(join(dir, 'argv.log'), 'utf8');
-  } catch {
-    return '';
-  }
+  return readLog(dir, 'argv.log');
 }
 
 function callCount(dir: string): number {
-  try {
-    return Number(readFileSync(join(dir, 'count'), 'utf8').trim());
-  } catch {
-    return 0;
-  }
+  const raw = readLog(dir, 'count').trim();
+  return raw === '' ? 0 : Number(raw);
 }
 
 const CREATE = 'scripts/create-pull-request.ts';
@@ -169,7 +113,8 @@ describe('PR 作成: gh の無い PATH で REST だけで作れる (#1117 AC1)',
         { body: JSON.stringify({ html_url: PR_URL }), status: 201 },
         { body: JSON.stringify([{ html_url: PR_URL }]), status: 200 },
       ]);
-      expect(() => readFileSync(join(run.dir, 'gh.log'), 'utf8')).toThrow();
+      expect(run.code).toBe(0);
+      expect(readLog(run.dir, 'gh.log')).toBe('');
     },
     SPAWN_TIMEOUT_MS,
   );
@@ -192,7 +137,10 @@ describe('PR 作成: gh の無い PATH で REST だけで作れる (#1117 AC1)',
       );
       expect(run.code).toBe(0);
       expect(argvLog(run.dir)).not.toContain('tok-must-not-leak');
-      expect(readFileSync(join(run.dir, 'stdin-1'), 'utf8')).toContain('tok-must-not-leak');
+      // 下界。**stdin に在る**だけでは足りない ―― `--config -` を argv へ渡していなければ
+      // curl はそれを読まない。経路そのものを併せて縛る。
+      expect(argvLog(run.dir)).toContain('--config -');
+      expect(readLog(run.dir, 'stdin-1')).toContain('tok-must-not-leak');
     },
     SPAWN_TIMEOUT_MS,
   );
@@ -244,6 +192,7 @@ describe('マージ: gh の無い PATH で REST だけでマージできる (#11
         { body: JSON.stringify({ merged: true }), status: 200 },
         { body: JSON.stringify({ merged: true }), status: 200 },
       ]);
+      expect(run.code).toBe(0);
       expect(argvLog(run.dir)).toContain('merge_method');
       expect(argvLog(run.dir)).toContain('squash');
     },
@@ -263,7 +212,6 @@ describe('前提が欠けたときは、欠けているものを名指しする 
     'curl が無い環境では、curl が無いと名指しして落ちる',
     () => {
       const dir = mkdtempSync(join(tmpdir(), 'no-curl-'));
-      created.push(dir);
       const bin = join(dir, 'bin');
       mkdirSync(bin);
       // `node` と `git` だけを通す。**`curl` は置かない** ―― それがこのテストの条件。

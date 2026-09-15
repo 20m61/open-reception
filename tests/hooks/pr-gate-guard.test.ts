@@ -191,6 +191,37 @@ describe('pr-gate-guard: ゲート記録が無ければブロックする', () =
     expect(stderr).toContain('--full');
   });
 
+  /**
+   * 🔴 **作成側も対称に塞ぐ (#1117)。** マージだけ URL で見てい、作成は
+   * スクリプト名でしか見ていなかった ―― `gh` が消えて生の `curl` が既定の手癖に
+   * なった今、素通りする形の方が書きやすい。
+   */
+  it('生の REST 作成（curl -X POST .../pulls）をブロックし --pr を案内する', () => {
+    const { status, stderr } = runHook(
+      'curl -sS -X POST https://api.github.com/repos/20m61/open-reception/pulls --data-binary @/tmp/b.json',
+    );
+    expect(status).toBe(2);
+    expect(stderr).toContain('--pr');
+  });
+
+  it('gh api 版の生の REST 作成もブロックする', () => {
+    expect(
+      runHook('gh api --method POST repos/20m61/open-reception/pulls -f title=x').status,
+    ).toBe(2);
+  });
+
+  /**
+   * 下界。**読み取りは止めない。** URL だけで判定すると一覧取得まで止まり、
+   * 誤検出でガードごと迂回される動機になる（このフックが繰り返し学んだ型）。
+   */
+  it('PR の読み取りは通す（一覧・照会・単体）', () => {
+    expect(runHook('curl -sS https://api.github.com/repos/20m61/open-reception/pulls').status).toBe(0);
+    expect(
+      runHook('curl -sS "https://api.github.com/repos/20m61/open-reception/pulls?state=all&head=x"').status,
+    ).toBe(0);
+    expect(runHook('curl -sS https://api.github.com/repos/20m61/open-reception/pulls/12').status).toBe(0);
+  });
+
   it('マージではない curl 呼び出しは通す（誤検出はガードを無意味にする）', () => {
     expect(
       runHook('curl -sS https://api.github.com/repos/20m61/open-reception/pulls/12').status,

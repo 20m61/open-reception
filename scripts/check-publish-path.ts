@@ -26,7 +26,18 @@
  * 使い方:
  *   npx tsx scripts/check-publish-path.ts
  *
- * 終了コード: 0 = 到達可能 / 3 = 到達不能（理由を stderr に出す）
+ * ## 終了コード（**「駄目」と「分からない」を分ける** / review B1・M1）
+ *
+ * | コード | 意味 | 呼び出し側 |
+ * | --- | --- | --- |
+ * | 0 | push できると応答が言っている | 進む |
+ * | 3 | **確実に publish できない**（応答は読めたうえで push=false） | **止める** |
+ * | 4 | **判定不能**（到達できない / permissions が読めない / 道具が無い） | 警告して進む |
+ *
+ * 🔴 **判定不能で週次ゲートを止めない。** 止めると、ゲートも記録も
+ * `evaluate:gate-runs` も `loop:retro` も publish の後ろに居るので**全部消える** ――
+ * FAIL が main に載らないどころか、FAIL の測定自体が無くなる（#656 より悪い）。
+ * 一過性の 5xx・レート制限・proxy の瞬断でそれが起きてはいけない。
  */
 import { evaluatePushCapability, repoReadRequest } from '../src/domain/governance/github-rest';
 import { callGitHubJson, requireCommands, resolveRepoFromOrigin } from './lib/github-api';
@@ -35,8 +46,9 @@ function main(): number {
   try {
     requireCommands();
   } catch (e) {
-    console.error(`❌ 公開経路を使えません: ${e instanceof Error ? e.message : String(e)}`);
-    return 3;
+    // 道具が無いのは「publish できない」ではなく「**判定できない**」。
+    console.error(`⚠️  公開経路を判定できません: ${e instanceof Error ? e.message : String(e)}`);
+    return 4;
   }
 
   let payload: unknown;
@@ -46,16 +58,20 @@ function main(): number {
     label = `${repo.owner}/${repo.repo}`;
     payload = callGitHubJson<unknown>(repoReadRequest(repo));
   } catch (e) {
-    console.error(`❌ GitHub REST へ到達できませんでした: ${e instanceof Error ? e.message : String(e)}`);
-    console.error('   この状態でゲートを回しても、記録は push できても PR は作れません（#656 の形）。');
-    return 3;
+    // 到達できなかったことは「publish できない」ではない（一過性でありうる）。
+    console.error(`⚠️  GitHub REST へ到達できませんでした: ${e instanceof Error ? e.message : String(e)}`);
+    return 4;
   }
 
   const verdict = evaluatePushCapability(payload);
-  if (!verdict.ok) {
+  if (verdict.capability === 'denied') {
     console.error(`❌ ${label} へ publish できません: ${verdict.reason}`);
     console.error('   この状態でゲートを回しても、記録は push できても PR は作れません（#656 の形）。');
     return 3;
+  }
+  if (verdict.capability === 'unknown') {
+    console.error(`⚠️  ${label} の publish 可否を判定できませんでした: ${verdict.reason}`);
+    return 4;
   }
 
   console.error(`✅ 公開経路に到達できます（${label} / push 権限あり）`);

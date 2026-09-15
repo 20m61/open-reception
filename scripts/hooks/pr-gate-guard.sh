@@ -370,6 +370,19 @@ if [ -z "${required}" ]; then
     required="full"; action="REST でのマージ (gh api .../pulls/<n>/merge)"
   elif printf '%s' "${scan}" | grep -Eq '(^|[;&|[:space:]])gh[[:space:]]+pr[[:space:]]+create([[:space:]]|$)'; then
     required="pr"; action="gh pr create"
+  elif printf '%s' "${scan}" | grep -Eq 'repos/[^[:space:]]+/pulls([[:space:]"'"'"']|$)' &&
+    printf '%s' "${scan}" | grep -Eq '(-X|--method|--request)[[:space:]]+POST|(^|[[:space:]])(-d|--data|--data-binary|--data-raw)([[:space:]]|$)'; then
+    # 🔴 **スクリプトを経由しない生の REST 作成 (#1117)。** マージ側は既に
+    # `.../pulls/<n>/merge` で見ているのに、**作成側は見ていなかった** ―― `gh` が消えて
+    # 生の `curl` が既定の手癖になった今、素通りする形の方が書きやすい。
+    # 「方式を替えたら前の方式が守っていた変異を当て直す」をマージにだけ適用して
+    # 止めていたのが穴だった。
+    #
+    # **2 条件の AND にするのは誤検出を避けるため。** URL だけを見ると
+    # `.../pulls` の一覧取得（読み取り）まで止まり、ガードごと迂回される動機になる
+    # （このフックが繰り返し学んだ型）。`?` で始まる照会と `/<n>` の読み出しは
+    # 1 つ目の正規表現が既に除いており、そのうえで**本体を送る形**だけを見る。
+    required="pr"; action="REST での PR 作成 (POST .../pulls)"
   elif printf '%s' "${scan}" | grep -q 'scripts/create-pull-request\.ts'; then
     # 🔴 **REST 経由の PR 作成も同じ門を通す (#678)。**
     # クラウドセッションでは `gh pr create` が GraphQL 403 で使えないため PR 作成を
