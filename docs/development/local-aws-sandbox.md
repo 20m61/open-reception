@@ -1,6 +1,6 @@
 # Local AWS sandbox strategy
 
-Status: **runtime-validated in Claude Code on the web (2026-09-14).** The lane runs end to end there — `up` / `test` / `reset` / `down` — after three defects found by actually running it. The persistent-AWS-dev replacement decision is **recorded: `keep` (for now)** (#1103) — routine development no longer needs AWS, but no wrong password has ever been rejected anywhere (#1111); see "Replacement decision gate".
+Status: **runtime-validated in Claude Code on the web (2026-09-14).** The lane runs end to end there — `up` / `test` / `reset` / `down` — after three defects found by actually running it. The persistent-AWS-dev replacement decision is **deferred to #1112** — the measurements are here, but the estate's verification history has to be reconstructable first; see "Replacement decision gate".
 
 ## Decision
 
@@ -198,111 +198,59 @@ Keep device/soak behavior, Vonage/WebRTC, speech-service fidelity, CloudFront/ce
 
 ## Replacement decision gate
 
-**Decision: `keep` — for now. Do not downsize or remove the AWS `dev` environment yet.**
-Recorded 2026-09-15 (#1103; measurements 2026-09-14/15).
+**Decision: deferred to #1112.** This document records the *measurements*; the keep / downsize /
+remove call is made there, once its preconditions are met.
 
-🔴 **This reverses an earlier draft of this section, which said `downsize`.** That draft rested
-repeatedly on unverified claims about the AWS estate — "auth is already routed to staging"
-(never stood up), then "auth is verified on dev", then "auth is verified nowhere" (the live suite
-did run, once, on 2026-08-04 — but only its positive control). All were caught in review. The measured position is below, and it
-is the *reason* the answer changed: **the one control that matters for auth — rejecting a wrong
-password — has never been exercised anywhere**, so there is nothing to downsize *onto* yet.
+🔴 **Why it is deferred rather than answered here.** Three successive drafts of this section
+stated the AWS estate's verification status wrongly — "auth is already routed to staging"
+(staging has never been stood up), then "auth is verified on dev", then "auth is verified
+nowhere" (it ran on 2026-08-04, three consecutive stable runs — `05db284` / #614). Each draft
+was caught in review. The common cause is not judgement but **where the record lives**:
+`docs/runbook-cloud-aws-deploy.md` and `docs/loop-queue.md` cover only deploys 4–6, while the
+2026-08-04 stand-up lives in `docs/deploy-aws.md` and in commit messages. **Until a single
+ledger of real-AWS verification events exists, anyone deciding from those two documents will
+make the same error.** Building that ledger is a precondition in #1112.
 
-What the local lane does settle is that **routine development no longer needs AWS at all**. That
-is a real result and it is what makes a future `downsize` plausible — but it is not sufficient on
-its own, and the precondition below has to be met first.
+### What the local lane settles (measured 2026-09-14/15)
 
-🔴 **Recording this recommendation is not executing it.** Tearing down or resizing AWS
-resources is a stop boundary (cost / infrastructure). The change itself needs human approval.
-
-### What routine development can now do locally
-
-Measured in Claude Code on the web, no AWS account credentials, no Docker, cold start ~16s:
+Claude Code on the web, no AWS credentials, no Docker, cold start ~16s:
 
 | Capability | Result | How it was measured |
 | --- | --- | --- |
-| DynamoDB persistence (table/GSI1/TTL/conditional write/tenant isolation) | ✅ verified | production `DynamoBackend`, 8 integration tests + `npm run aws:local:capability` |
+| DynamoDB persistence (table/GSI1/TTL/conditional write/tenant isolation) | ✅ verified, negative-controlled | production `DynamoBackend`, 8 integration tests + `npm run aws:local:capability` |
 | S3 / Secrets Manager / SSM / Lambda invoke / API Gateway | ✅ | `npm run aws:local:test` |
 | `cdk synth` | ✅ 18s | no credentials and no emulator needed; gated behind a fresh `build:open-next` |
 | `cdk bootstrap` / `cdk deploy` → emulator | ✅ 13.9s | real CloudFormation stack created in MiniStack |
-| `cdk diff` after that deploy | ✅ **"There were no differences"** | real change-set path, not `--method=template` |
+| `cdk diff` after that deploy | ✅ **"There were no differences"** | real change-set path |
 
-The deploy→diff loop **round-trips locally**. Plain CDK v2 honours `AWS_ENDPOINT_URL`, so this
-needs no `cdklocal` and no new dependency.
+**Routine development — persistence, infra shape, API wiring — no longer touches AWS at all.**
+Plain CDK v2 honours `AWS_ENDPOINT_URL`, so this needs no `cdklocal` and no new dependency.
 
-### What it cannot do — and the one that bites
+🔴 The deploy→diff loop round-trips the **mechanism**, not AWS parity. The emulator does not
+evaluate IAM, and replacement/drift/rollback are not real behaviour. `npm run aws:diff-gate`,
+`aws:negative-tests` and the runbook (Tier 4) are all still required.
 
-🔴 **Cognito SRP password verification is `permissive`, not missing.** MiniStack issues
-ID/Access/Refresh tokens for a **wrong password**; Moto rejects the production call shape
-entirely and also accepts a wrong password when coaxed into answering. Details and the
-measurement table are in [`../local-aws.md`](../local-aws.md) ("Cognito は素通りする").
+### What it cannot settle
 
-This is the finding that shapes the recommendation. A permissive emulator is worse than an
-absent one: it lets someone add a green "admin login works locally" test that **cannot fail**
-if authentication is removed. So `/admin/login` and anything behind it stays a real-AWS
-concern regardless of how good the local lane gets.
+🔴 **Cognito SRP password verification is `permissive`, not missing.** Both emulators mint
+ID/Access/Refresh tokens for a **wrong password** — details and the measurement table are in
+[`../local-aws.md`](../local-aws.md) ("Cognito は素通りする"). A permissive emulator is worse
+than an absent one: it lets someone add a green "admin login works locally" test that **cannot
+fail** if authentication is removed. Tracked as #1111, which also records that **no wrong
+password has ever been rejected anywhere** — the live suite checks only that the correct one
+works.
 
-Unchanged from before, still real-AWS-only: IAM evaluation, KMS, real token verification/JWKS,
+Unchanged, still real-AWS-only: IAM evaluation, KMS, real token verification/JWKS,
 CloudFront/certificate/DNS delivery, CloudFormation replacement & drift, Transcribe streaming,
 Polly audio quality, Vonage/WebRTC, real device/browser behavior.
 
-### Why `keep` — and what would change it
+### Inputs #1112 still needs
 
-The local lane removes the **routine** need for AWS: persistence, infra shape and API wiring no
-longer touch it, and `cdk synth`/`deploy`/`diff` round-trip against the emulator. What it cannot
-do is verify authentication — and that is where the decision turns.
-
-🔴 **A wrong password has never been rejected anywhere — because nobody has ever tried one.**
-Measured 2026-09-14/15, and reconstructed from git history (not from the deploy runbook alone —
-see the warning below):
-
-- **Locally: permissive.** Both emulators mint tokens for a wrong password
-  (see [`../local-aws.md`](../local-aws.md), "Cognito は素通りする"). A local green is vacuous.
-- **On real AWS: the positive control ran once, on 2026-08-04**, three consecutive stable runs
-  (`05db284` / #614; that run found four real defects, including 管理 API 全 401, which is
-  downstream of a *successful* login). It has **not re-run since**: deploy 5 (2026-09-09) and
-  deploy 6 (2026-09-14) both skipped it for missing `LIVE_*`
-  (`docs/runbook-cloud-aws-deploy.md:1823`, `:1915-1918`; `docs/loop-queue.md:49-53`).
-- **The negative control has never run at all.** `tests/e2e-live/kiosk-journey.spec.ts:35-39`
-  asserts `expect(login.ok()).toBeTruthy()` — correct password only. There is no
-  wrong-password case in any suite, local or live.
-- **`staging` does not exist.** Type union, IAM/cost pattern, test fixtures; never stood up.
-
-> 🔴 **Warning for whoever writes here next.** Two earlier drafts of this section stated the
-> auth situation wrongly — "already routed to staging", then "verified nowhere" — because both
-> were inferred from `docs/runbook-cloud-aws-deploy.md` + `docs/loop-queue.md`, which record only
-> deploys 4–6. The 2026-08-04 stand-up lives in `docs/deploy-aws.md` and in commit messages.
-> **The estate's verification history is not recoverable from the two documents people read.**
-> That is itself worth fixing (#1111).
-
-So `dev` is the only place the missing check *could* be run. Shrinking or removing it now would
-remove the route to the one control that has never been exercised, while the gap stays open.
-
-**Precondition for revisiting (this is the actionable part):**
-
-1. Add a **negative** control to the live suite — a wrong password must be *rejected* — and run it
-   against a real environment during a deploy window (`LIVE_BASE_URL` / `LIVE_ADMIN_USER` /
-   `LIVE_ADMIN_PASSWORD`). 🔴 Running the existing `test:e2e:live` as-is does **not** discharge
-   this: it checks only that the correct password works, which is exactly the positive-only
-   evidence this document exists to reject. Tracked as #1111.
-2. Decide where that check lives permanently (an on-demand `dev` re-created from CDK, or a
-   `staging` that someone actually stands up).
-3. Then re-evaluate. Deploys already run on demand under human approval with short-lived STS
-   credentials (ADR 0009 / #675), so "on-demand rather than always-on" is a change of *lifetime*,
-   not of *capability* — it becomes a reasonable call once (1) and (2) hold.
-
-🔴 **The coverage gap has its own issue: #1111.** #1103 set out to ask whether AWS `dev` could be
-replaced and instead surfaced that **no wrong password has ever been rejected anywhere** — the
-emulators wave them through, and no suite has ever sent one at real AWS. That is the more
-important finding.
-
-### Still unmeasured
-
-**No cost figure for the current `dev` environment is on record**, so the size of any future
-saving is unknown. Reading it requires real AWS billing access
-(`src/lib/platform/aws-cost-explorer.ts`, real AWS only). This does not change the `keep`
-recommendation — that one turns on the auth coverage gap, not on cost — but it will need to be
-answered before deciding *how far* to downsize once the precondition is met.
+1. A single ledger of real-AWS verification events (see above).
+2. #1111 discharged — a wrong password rejected against a real environment, once.
+3. A cost figure for the current `dev` environment; none is on record, and reading it needs real
+   AWS billing access (`src/lib/platform/aws-cost-explorer.ts`, real AWS only). Without it
+   "downsize" has no denominator.
 
 A real AWS environment remains the compatibility gate regardless of the outcome. Today that is
-`dev`; if it is ever to be `staging`, `staging` has to exist first.
+`dev`; `staging` would have to be stood up first to become it.
