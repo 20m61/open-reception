@@ -7,6 +7,8 @@ import {
   POSITIVE_ONLY_MARK,
   SANDBOX_DOC_LABELS,
   UNMEASURED_MARK,
+  findReservedMarkViolations,
+  parseAllMarkdownTables,
   parseMarkdownTables,
   parseRecording,
   reconcileCapabilityDoc,
@@ -168,5 +170,48 @@ describe('docs/development/local-aws-sandbox.md の証拠表', () => {
       runtimeColumns: { ministack: 'MiniStack', moto: 'Moto' },
     });
     expect(found.map((d) => `${d.kind} @${d.line ?? '-'}: ${d.message}`)).toEqual([]);
+  });
+});
+
+/**
+ * 🔴 **予約記号は、許した表の許した列にしか現れてはならない**（#1114）。
+ *
+ * #1113 の検査は「検査対象 2 表の runtime 列」しか見ておらず、独立レビューが
+ * **4 つの逃げ道**を実測した —— matrix の `Notes` 列 / `Real AWS 必須` 列 /
+ * 別の表（`| 段 | 結果 |`）/ 別文書の 2 表。いずれも検査は緑のままだった。
+ * 列を足して塞ぐのではなく、**許す側を数え上げて**族ごと閉じる。
+ */
+describe('予約記号の適用範囲（文書全体）', () => {
+  const ALLOW = {
+    'docs/local-aws.md': [
+      // 凡例表は記号の**定義**そのものなので全列で許す。
+      { firstHeader: '判定' },
+      // matrix は runtime 列だけ。Notes / Real AWS 必須 では主張させない。
+      { firstHeader: 'Service / 操作', columns: ['Moto', 'MiniStack'] },
+    ],
+    'docs/development/local-aws-sandbox.md': [{ firstHeader: '能力', columns: ['MiniStack', 'Moto'] }],
+  } as const;
+
+  it.each(Object.keys(ALLOW))('%s に範囲外の予約記号が無い', (file) => {
+    const found = findReservedMarkViolations({
+      markdown: read(file),
+      allow: ALLOW[file as keyof typeof ALLOW],
+    });
+    expect(found.map((v) => `L${v.line} [${v.tableFirstHeader}] ${v.column}: ${v.cell}`)).toEqual([]);
+  });
+
+  /**
+   * 🔴 **下界。** 「違反 0 件」は、表を 1 枚も見つけられない実装でも空虚に通る。
+   * 実文書に表と予約記号が**実在する**ことを先に固定する。
+   */
+  it('実文書に表と予約記号が実在する（検査が空振りしていない）', () => {
+    for (const file of Object.keys(ALLOW)) {
+      const tables = parseAllMarkdownTables(read(file));
+      expect(tables.length, `${file} の表が少なすぎる`).toBeGreaterThanOrEqual(4);
+    }
+    const marks = CAPABILITY_VERDICTS.map(matrixMark);
+    const matrix = parseMarkdownTables(read('docs/local-aws.md'), 'Service / 操作')[0]!;
+    const used = matrix.rows.flatMap((r) => r.cells).filter((c) => marks.includes(c));
+    expect(used, 'matrix に verdict の記号が 1 つも無い').not.toHaveLength(0);
   });
 });

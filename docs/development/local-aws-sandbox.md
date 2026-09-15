@@ -46,10 +46,10 @@ A first pass measured a clean session and found no Docker daemon, and nearly con
 
 | Step | Result |
 | --- | --- |
-| `dockerd` start | ✅ up in ~2s (Server 29.3.1, storage-driver `overlayfs`, cgroup v1) |
-| `docker pull hello-world` | ✅ succeeds through the proxy |
-| `docker run hello-world` | ✅ runs |
-| `npm install -g @localstack/lstk` | ✅ installs (v1.0.1) |
+| `dockerd` start | OK up in ~2s (Server 29.3.1, storage-driver `overlayfs`, cgroup v1) |
+| `docker pull hello-world` | OK succeeds through the proxy |
+| `docker run hello-world` | OK runs |
+| `npm install -g @localstack/lstk` | OK installs (v1.0.1) |
 | `lstk start` | ⛔ `authentication required: set LOCALSTACK_AUTH_TOKEN` |
 
 🔴 **"Stopped" is not "cannot be started."** This is the same shape as the repository's own investigation rule that "not found" only ever means "not found under those conditions" — separate what you measured from what you inferred from it. The default state (daemon down) is a fact; "therefore Docker is unavailable here" was an untested inference.
@@ -161,12 +161,12 @@ The survivor is the point of doing this: it was a guarantee nobody would have mi
 
 | Service | Result |
 | --- | --- |
-| DynamoDB | ✅ production backend, 8 deterministic integration tests + smoke |
-| S3 | ✅ bucket create / put / get |
-| Secrets Manager | ✅ create / get |
-| Lambda | ✅ create **and invoke** (`{"ok": true}`) — requires the docker socket |
-| API Gateway | ✅ REST API create |
-| IAM | ✅ role create |
+| DynamoDB | OK production backend, 8 deterministic integration tests + smoke |
+| S3 | OK bucket create / put / get |
+| Secrets Manager | OK create / get |
+| Lambda | OK create **and invoke** (`{"ok": true}`) — requires the docker socket |
+| API Gateway | OK REST API create |
+| IAM | OK role create |
 | Cognito | ⛔ **not included in this license** — `cognito-idp service is not included within your LocalStack license` |
 
 Cognito being unavailable is a licensing fact, not a configuration mistake; user-pool and authorizer behavior stays on the real-AWS side of the boundary.

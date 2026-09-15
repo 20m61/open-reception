@@ -131,7 +131,13 @@ Tier 1 は **hermetic** である。`vitest.config.ts` が AWS 資格情報を d
 🔴 **この凡例は下表（と `docs/development/local-aws-sandbox.md` の証拠表）にしか効かない。**
 同じ文書の別の表 —— 例えば下記「CDK はローカルで往復する」の `| 段 | 結果 |` —— の ✅ は
 「その手順が通った」という意味で、負の対照とは無関係であり**機械検査の対象外**である。
-検査対象の表の外に在る ✅ を能力の裏付けとして読まないこと（機械で縛るのは #1114）。
+検査対象の表の外に在る ✅ を能力の裏付けとして読まないこと。
+
+🔴 **この区別は機械で縛ってある**（#1114）。予約記号（✅ / 🔴 素通り）は
+**許した表の許した列にしか書けない** —— 凡例表（記号の定義）と、下表の `Moto` / `MiniStack` 列、
+`docs/development/local-aws-sandbox.md` の証拠表だけである。それ以外の表は `OK` / `⛔` など
+verdict の語彙を持たない記号を使う（`| 段 | 結果 |` が実際にそうなっている）。
+matrix の `Notes` / `Real AWS 必須` 列も対象外なので、そこへ ✅ を書くと落ちる。
 
 | Service / 操作 | 負の対照 | Moto | MiniStack | Real AWS 必須 | Notes |
 | --- | --- | --- | --- | --- | --- |
@@ -208,10 +214,10 @@ Tier 1 は **hermetic** である。`vitest.config.ts` が AWS 資格情報を d
 
 | 段 | 結果 |
 | --- | --- |
-| `cdk synth` | ✅ 18s。**エミュレータすら要らない**（資格情報も不要）。ただし `build:open-next` が新しいこと |
-| `cdk bootstrap` | ✅ CDKToolkit スタックが作られる |
-| `cdk deploy` | ✅ 13.9s。CloudFormation スタックが実際に作られる |
-| デプロイ後の `cdk diff` | ✅ **There were no differences**（change set を実際に作る経路） |
+| `cdk synth` | OK 18s。**エミュレータすら要らない**（資格情報も不要）。ただし `build:open-next` が新しいこと |
+| `cdk bootstrap` | OK CDKToolkit スタックが作られる |
+| `cdk deploy` | OK 13.9s。CloudFormation スタックが実際に作られる |
+| デプロイ後の `cdk diff` | OK **There were no differences**（change set を実際に作る経路） |
 
 素の CDK v2 が `AWS_ENDPOINT_URL` を尊重するので、**`cdklocal` も新規依存も要らない**。
 

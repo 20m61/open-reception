@@ -6,6 +6,8 @@ import {
   PROBE_CAPABILITIES,
   UNMEASURED_MARK,
   CAPABILITY_CONTROLS,
+  findReservedMarkViolations,
+  parseAllMarkdownTables,
   parseMarkdownTables,
   parseRecording,
   reconcileCapabilityDoc,
@@ -428,6 +430,67 @@ describe('突き合わせ', () => {
       negativeControlColumn: '負の対照',
     });
     expect(found.map((d) => d.kind)).toEqual(['table_not_found']);
+  });
+});
+
+describe('予約記号は検査対象の表の中にしか現れない', () => {
+  /**
+   * 🔴 **#1113 の検査は「検査対象の 2 表の runtime 列」しか見ていなかった。**
+   * レビューが実測した逃げ道は 4 つあり、いずれも緑のまま通った:
+   * matrix の Notes 列 / `Real AWS 必須` 列 / 別の表（`| 段 | 結果 |`）/ 別文書の 2 表。
+   * **列を足して塞ぐと族を取りこぼす**ので、「予約記号は許した表の許した列にしか現れない」
+   * という**文書全体の不変条件 1 本**で縛る（#1114）。
+   */
+  const ALLOW = [
+    { firstHeader: '判定' },
+    { firstHeader: 'Service / 操作', columns: ['Moto', 'MiniStack'] },
+  ];
+  const scan = (md: string) => findReservedMarkViolations({ markdown: md, allow: ALLOW });
+
+  const LEGEND = ['| 判定 | 記号 | 意味 |', '| --- | --- | --- |', '| `verified` | ✅ | x |'].join('\n');
+  const MATRIX = [
+    '| Service / 操作 | 負の対照 | Moto | MiniStack | Notes |',
+    '| --- | --- | --- | --- | --- |',
+    '| A | ✓ | ✅ | ✅ | ふつうの注記 |',
+  ].join('\n');
+
+  it('許した表の許した列なら通る', () => {
+    expect(scan([LEGEND, '', MATRIX].join('\n'))).toEqual([]);
+  });
+
+  it('許した表でも、許していない列に予約記号があれば落ちる', () => {
+    const bad = MATRIX.replace('| ふつうの注記 |', '| ✅ 負の対照つきで実測済み |');
+    expect(scan(bad).map((v) => v.column)).toEqual(['Notes']);
+  });
+
+  it('許していない表に予約記号があれば落ちる', () => {
+    const other = ['| 段 | 結果 |', '| --- | --- |', '| `cdk deploy` | ✅ 13.9s |'].join('\n');
+    const found = scan([MATRIX, '', other].join('\n'));
+    expect(found).toHaveLength(1);
+    expect(found[0]?.tableFirstHeader).toBe('段');
+    expect(found[0]?.mark).toBe('✅');
+  });
+
+  it('素通りの記号も同じく縛る', () => {
+    const other = ['| 段 | 結果 |', '| --- | --- |', '| x | 🔴 素通り |'].join('\n');
+    expect(scan(other).map((v) => v.mark)).toEqual(['🔴 素通り']);
+  });
+
+  it('非予約の記号は表の外でも自由に使える', () => {
+    const other = ['| 段 | 結果 |', '| --- | --- |', '| x | ⛔ 405 |', '| y | OK |'].join('\n');
+    expect(scan(other)).toEqual([]);
+  });
+
+  /** 🔴 散文は対象外 —— 記号を**論じる**文（「✅ を付けていた」等）を禁じると書けなくなる。 */
+  it('散文の予約記号は対象外', () => {
+    expect(scan('この行は ✅ を付けていたが誤りだった。🔴 素通り である。')).toEqual([]);
+  });
+
+  /** 下界: 表を 1 枚も見つけられない実装でも上の主張は空虚に通る。 */
+  it('文書中の表を全部数えられる', () => {
+    const all = parseAllMarkdownTables([LEGEND, '', MATRIX].join('\n'));
+    expect(all.map((t) => t.headers[0])).toEqual(['判定', 'Service / 操作']);
+    expect(all[1]?.rows[0]?.line).toBeGreaterThan(all[0]!.rows[0]!.line);
   });
 });
 

@@ -170,15 +170,14 @@ const isSeparator = (line: string): boolean => /^\|[\s:|-]+\|?\s*$/u.test(line.t
  * 要求できるように、枚数を返す形にしてある（レビュー MAJOR-3 が実測: 正しい内容の複製を
  * 足して本物の Cognito 行を ✅ に書き換えると、検査は緑のままだった）。
  */
-export function parseMarkdownTables(markdown: string, firstHeader: string): ReadonlyArray<ParsedTable> {
+export function parseAllMarkdownTables(markdown: string): ReadonlyArray<ParsedTable> {
   const lines = markdown.split('\n');
   const tables: ParsedTable[] = [];
   for (let i = 0; i < lines.length - 1; i += 1) {
     const line = lines[i] ?? '';
     if (!line.trim().startsWith('|')) continue;
-    const headers = splitRow(line);
-    if (headers[0] !== firstHeader) continue;
     if (!isSeparator(lines[i + 1] ?? '')) continue;
+    const headers = splitRow(line);
     const rows: TableRow[] = [];
     for (let j = i + 2; j < lines.length; j += 1) {
       const row = lines[j] ?? '';
@@ -188,6 +187,61 @@ export function parseMarkdownTables(markdown: string, firstHeader: string): Read
     tables.push({ headers, rows });
   }
   return tables;
+}
+
+export function parseMarkdownTables(markdown: string, firstHeader: string): ReadonlyArray<ParsedTable> {
+  return parseAllMarkdownTables(markdown).filter((t) => t.headers[0] === firstHeader);
+}
+
+/** 予約記号を許す表と、その表の中で許す列。`columns` 省略＝その表の全列で許す。 */
+export type ReservedMarkAllowance = {
+  readonly firstHeader: string;
+  readonly columns?: ReadonlyArray<string>;
+};
+
+export type ReservedMarkViolation = {
+  readonly tableFirstHeader: string;
+  readonly column: string;
+  readonly cell: string;
+  readonly mark: string;
+  readonly line: number;
+};
+
+/**
+ * **予約記号（✅ / 🔴 素通り）は、許した表の許した列にしか現れてはならない。**
+ *
+ * 🔴 **なぜ列を足す形にしないか。** #1113 の検査は「検査対象 2 表の runtime 列」しか見て
+ * おらず、レビューが**4 つの逃げ道**を実測した —— matrix の `Notes` 列 / `Real AWS 必須` 列 /
+ * 別の表（`| 段 | 結果 |`）/ 別文書の 2 表。列を 2 つ足して塞ぐと、表を 1 枚足すだけで
+ * また抜ける（`.claude/rules/opus5-autonomous-loop.md`「方式を替えたら〜」が言う
+ * 「新方式向けの穴だけ塞いで族を見落とす」形）。**許す側を数え上げる**ことで族ごと閉じる。
+ *
+ * 🔴 **散文は対象外である。** 記号を**論じる**文（「当時は ✅ を付けていた」等）まで禁じると
+ * 経緯を書けなくなる。危険なのは「verdict の主張に見えるセル」であって、記号への言及ではない。
+ */
+export function findReservedMarkViolations(input: {
+  readonly markdown: string;
+  readonly allow: ReadonlyArray<ReservedMarkAllowance>;
+}): ReadonlyArray<ReservedMarkViolation> {
+  const marks = NEGATIVE_CONTROL_ONLY_VERDICTS.map(matrixMark);
+  const found: ReservedMarkViolation[] = [];
+  for (const table of parseAllMarkdownTables(input.markdown)) {
+    const first = table.headers[0] ?? '';
+    const allowance = input.allow.find((a) => a.firstHeader === first);
+    for (const row of table.rows) {
+      row.cells.forEach((cell, index) => {
+        const mark = marks.find((m) => cell.includes(m));
+        if (mark === undefined) return;
+        const column = table.headers[index] ?? `列${index + 1}`;
+        // 許した表で、かつ（列指定が無い or その列）なら通す。
+        if (allowance !== undefined && (allowance.columns === undefined || allowance.columns.includes(column))) {
+          return;
+        }
+        found.push({ tableFirstHeader: first, column, cell, mark, line: row.line });
+      });
+    }
+  }
+  return found;
 }
 
 export type CapabilityRecording = {
