@@ -571,13 +571,16 @@ describe('範囲そのものの検査', () => {
   });
 
   it('予約記号を持つ文書と目録の対象が一致していなければ落ちる', () => {
-    expect(findScopeGaps({ carriers: ['a.md'], scopeFiles: ['a.md'] })).toEqual([]);
-    expect(findScopeGaps({ carriers: ['a.md', 'b.md'], scopeFiles: ['a.md'] }).map((g) => g.kind)).toEqual([
-      'file_not_in_scope',
-    ]);
-    expect(findScopeGaps({ carriers: ['a.md'], scopeFiles: ['a.md', 'b.md'] }).map((g) => g.kind)).toEqual([
-      'scope_file_without_mark',
-    ]);
+    const S = (o: Record<string, string[]>) => o;
+    expect(findScopeGaps({ carriers: ['a.md'], scope: S({ 'a.md': ['x'] }) })).toEqual([]);
+    expect(
+      findScopeGaps({ carriers: ['a.md', 'b.md'], scope: S({ 'a.md': ['x'] }) }).map((g) => g.kind),
+    ).toEqual(['file_not_in_scope']);
+    expect(
+      findScopeGaps({ carriers: ['a.md'], scope: S({ 'a.md': ['x'], 'b.md': ['y'] }) }).map((g) => g.kind),
+    ).toEqual(['scope_file_without_mark']);
+    // 🔴 **空目録は「記号ゼロを固定する」意味**なので、carrier でなくても正しい。
+    expect(findScopeGaps({ carriers: ['a.md'], scope: S({ 'a.md': ['x'], 'z.md': [] }) })).toEqual([]);
   });
 
   it('凡例の行が導出値とずれたら落ちる（多くても少なくても）', () => {

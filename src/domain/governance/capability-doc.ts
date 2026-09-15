@@ -213,6 +213,10 @@ export function parseMarkdownTables(markdown: string, firstHeader: string): Read
  * 🔴 **行を 1 文字でも変えたら、ここも変える必要がある。** それが狙いである ――
  * 予約記号を含む行は、能力の主張かその議論であり、**黙って書き換わってよい行ではない**。
  *
+ * 🔴 **空配列は「この文書に予約記号が 1 つも在ってはならない」を意味する。**
+ * 転記先を減らすために記号を消した文書（ADR 0010）は、記号が無いというだけで検査対象から
+ * 外れると、**そこへ書き戻す経路が静かに開く**（変異検証で実測）。消したうえで**ゼロを固定する**。
+ *
  * 🔴 **目録は現在の文書から生成した。だから「今在る主張が正しい」ことは保証しない。**
  * 保証するのは「**黙って増えない・黙って消えない**」だけである。主張の真偽は
  * `reconcileCapabilityDoc`（記録との突き合わせ）が matrix と証拠表について担保する。
@@ -252,13 +256,17 @@ export const SCOPE_KEY_MARK = matrixMark('permissive');
  */
 export function findScopeGaps(input: {
   readonly carriers: ReadonlyArray<string>;
-  readonly scopeFiles: ReadonlyArray<string>;
+  /** ファイル -> 目録。**空配列は「記号ゼロを固定する」**意味なので carrier でなくてよい。 */
+  readonly scope: Readonly<Record<string, ReadonlyArray<string>>>;
 }): ReadonlyArray<ScopeGap> {
   const gaps: ScopeGap[] = [];
+  const files = Object.keys(input.scope);
   for (const file of input.carriers) {
-    if (!input.scopeFiles.includes(file)) gaps.push({ kind: 'file_not_in_scope', file });
+    if (!files.includes(file)) gaps.push({ kind: 'file_not_in_scope', file });
   }
-  for (const file of input.scopeFiles) {
+  for (const file of files) {
+    // 空目録のファイルは「記号が無いこと」を固定する対象なので、carrier でなくて当然。
+    if ((input.scope[file] ?? []).length === 0) continue;
     if (!input.carriers.includes(file)) gaps.push({ kind: 'scope_file_without_mark', file });
   }
   return gaps;
@@ -288,6 +296,8 @@ export const RESERVED_MARK_INVENTORY: Readonly<Record<string, ReadonlyArray<stri
     '| DynamoDB GSI テナント分離 | ✓ | ✅ | ✅ | — | 他テナントから引けないことまで実測 |',
     '| Cognito SRP のパスワード検証 | ✓ | 🔴 素通り | 🔴 素通り | 必須 | 下記「Cognito は素通りする」 |',
   ],
+  // 🔴 記号を消した文書。**ゼロであること**を固定する（書き戻す経路を塞ぐ）。
+  'docs/adr/0010-swappable-aws-emulator.md': [],
   'docs/development/local-aws-sandbox.md': [
     '🔴 この文書では、✅ / 🔴 素通り を含む行が機械で固定してある（`RESERVEDMARKINVENTORY`。',
     '| DynamoDB 条件付き作成（二重作成が拒否される） | ✅ verified | ✅ verified |',
