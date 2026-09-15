@@ -176,6 +176,30 @@ describe('pr-gate-guard: ゲート記録が無ければブロックする', () =
     expect(stderr).toContain('--full');
   });
 
+  /**
+   * 🔴 **方式を替えたら、前の方式が守っていた変異を当て直す** (#1117)。
+   *
+   * マージの transport は `gh api` から `curl` へ移った。判定は URL の形を見ているので
+   * 効いているはずだが、**「はず」で済ませると、前の方式が守っていた保証が黙って落ちる**
+   * （`.claude/rules/opus5-autonomous-loop.md`）。新しい形を明示的に当てる。
+   */
+  it('生の REST マージ（curl 版）もブロックする', () => {
+    const { status, stderr } = runHook(
+      "curl -sS -X PUT https://api.github.com/repos/20m61/open-reception/pulls/12/merge",
+    );
+    expect(status).toBe(2);
+    expect(stderr).toContain('--full');
+  });
+
+  it('マージではない curl 呼び出しは通す（誤検出はガードを無意味にする）', () => {
+    expect(
+      runHook('curl -sS https://api.github.com/repos/20m61/open-reception/pulls/12').status,
+    ).toBe(0);
+    expect(
+      runHook('curl -sS https://api.github.com/repos/20m61/open-reception').status,
+    ).toBe(0);
+  });
+
   it('マージではない gh api 呼び出しは通す（誤検出はガードを無意味にする）', () => {
     // PR の照会は REST で日常的に行う。ここを止めると運用が回らない。
     expect(runHook('gh api repos/20m61/open-reception/pulls/12 --jq .merged').status).toBe(0);

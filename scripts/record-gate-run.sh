@@ -32,10 +32,18 @@
 # #656 そのものなので、作成後に**そのブランチを head に持つ PR を REST で引き直して実在を確認**
 # する。確認できなければ非ゼロで落ちる（サイレントに終わらせない）。
 #
-# **PR 作成にも確認にも `gh pr ...` を使わない (#678)。** クラウドのサンドボックスは GitHub
-# GraphQL を絞っており、`gh pr list` / `gh pr view` だけでなく **`gh pr create` も** repo info
-# preamble の GraphQL で 403 になる（2026-08-10 の週次ゲートで実測）。作成・確認とも
-# `scripts/create-pull-request.ts` 経由の REST（`gh api repos/{owner}/{repo}/pulls`）で行う。
+# **PR 作成にも確認にも GitHub CLI を使わない (#678 / #1117)。** 当初の理由は GraphQL
+# だった ―― クラウドのサンドボックスは GitHub GraphQL を絞っており、`gh pr list` /
+# `gh pr view` だけでなく **`gh pr create` も** repo info preamble の GraphQL で 403 に
+# なる（2026-08-10 の週次ゲートで実測）。2026-09-15 にはさらに素朴に壊れた ――
+# **サンドボックスに `gh` が無い**。よって CLI ごとやめ、作成・確認とも
+# `scripts/create-pull-request.ts` 経由で REST を直接叩く。
+#
+# --- 公開経路は**ゲートの前に**確かめる (#1117) ---
+#
+# 公開経路が壊れていると、`--full --strict` を 20〜25 分回した後で最後の一手だけが落ちる。
+# 落ち方は「記録は push 済み・PR は無し」＝ #656 そのもの。ゲートを回す前に 1 回引けば判る
+# ので、`scripts/check-publish-path.ts` を先に通す。
 #
 set -uo pipefail
 
@@ -68,6 +76,21 @@ SHA="$(git rev-parse --short HEAD 2>/dev/null || echo unknown)"
 
 OUTPUT_FILE="$(mktemp)"
 trap 'rm -f "${OUTPUT_FILE}"' EXIT
+
+# --- 公開経路の事前確認 (#1117 AC3) ---
+#
+# 🔴 **ゲートより前に置く。** 後ろに置くと、壊れていることが判るのが 20 分後になる。
+# **`--dry-run` でも回す** ―― 読み取り 1 回で副作用は無く、公開手順の確認こそ dry-run の
+# 目的だからである。判定の中身（なぜ前提の列挙ではなく実際に引くのか）はスクリプト側の
+# 冒頭に書いてある。
+if [[ "${PUBLISH}" -eq 1 ]]; then
+  echo "▶ 公開経路（PR 作成）へ到達できるかを先に確かめます"
+  if ! npx --no-install tsx "${ROOT}/scripts/check-publish-path.ts"; then
+    echo "❌ 公開経路へ到達できないため、ゲートを実行せずに中止します。" >&2
+    echo "   記録だけが push されて PR が無い状態（#656 の形）を作らないための中止です。" >&2
+    exit 3
+  fi
+fi
 
 if [[ "${DRY_RUN}" -eq 1 ]]; then
   # **ゲートは回さない。** 25 分かかるうえ、公開手順の確認には要らない。

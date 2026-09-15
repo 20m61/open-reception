@@ -1,5 +1,14 @@
 import { execFileSync, spawnSync } from 'node:child_process';
-import { cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import {
+  chmodSync,
+  cpSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { afterAll, describe, expect, it } from 'vitest';
@@ -119,4 +128,72 @@ describe('record-gate-run.sh: 未測定の印を備考へ残す (#717)', () => {
     const rows = runRecord('  PASS  typecheck (tsc)  (13s)');
     expect(rows).not.toContain('未測定:');
   });
+});
+
+/**
+ * 公開経路の事前確認が **実際にゲートより前に走る**ことを挙動で縛る (#1117 AC3)。
+ *
+ * 🔴 **ソースの並び順だけでは足りない。** 実測: 事前確認の `if` を偽へ倒す変異は、
+ * テキストの順序が変わらないため**順序の検査を素通りした**。見たいのは
+ * 「20 分のゲートを回す前に落ちること」なので、ゲートが走ったかどうかで見る。
+ */
+describe('record-gate-run.sh: 公開経路の事前確認はゲートより前 (#1117)', () => {
+  /** 子プロセスで bash とスクリプトを起動するので、既定の 5 秒では負荷下で足りない。 */
+  const SPAWN_TIMEOUT_MS = 30_000;
+
+  /**
+   * 事前確認の結果を差し替えた砂場を作る。
+   *
+   * 事前確認は `npx --no-install tsx .../check-publish-path.ts` として呼ばれるので、
+   * PATH の `npx` を差し替えれば結果を決められる。ゲート本体は marker を書くだけの
+   * 偽物に置き換え、**走ったかどうか**を観測する。
+   */
+  function runWithPreflight(preflightExitCode: number): { code: number; gateRan: boolean; stderr: string } {
+    const dir = mkdtempSync(join(tmpdir(), 'record-gate-preflight-'));
+    created.push(dir);
+    mkdirSync(join(dir, 'scripts'), { recursive: true });
+    mkdirSync(join(dir, 'docs'), { recursive: true });
+    mkdirSync(join(dir, 'bin'));
+    cpSync(SCRIPT, join(dir, 'scripts/record-gate-run.sh'));
+
+    const marker = join(dir, 'gate-ran');
+    writeFileSync(join(dir, 'scripts/quality-gate.sh'), `#!/usr/bin/env bash\ntouch "${marker}"\nexit 0\n`);
+    chmodSync(join(dir, 'scripts/quality-gate.sh'), 0o755);
+    // 事前確認だけを差し替える。他の npx / npm 呼び出しは成功として流す。
+    writeFileSync(
+      join(dir, 'bin/npx'),
+      `#!/usr/bin/env bash\ncase "$*" in *check-publish-path*) exit ${preflightExitCode};; esac\nexit 0\n`,
+    );
+    chmodSync(join(dir, 'bin/npx'), 0o755);
+    writeFileSync(join(dir, 'bin/npm'), '#!/usr/bin/env bash\nexit 0\n');
+    chmodSync(join(dir, 'bin/npm'), 0o755);
+
+    const result = spawnSync('bash', [join(dir, 'scripts/record-gate-run.sh'), '--publish'], {
+      cwd: dir,
+      encoding: 'utf8',
+      env: { ...process.env, PATH: `${join(dir, 'bin')}:${process.env.PATH ?? ''}` },
+    });
+    return { code: result.status ?? 1, gateRan: existsSync(marker), stderr: result.stderr ?? '' };
+  }
+
+  it(
+    '🔴 事前確認が落ちたら、ゲートを 1 秒も回さずに終わる',
+    () => {
+      const { code, gateRan } = runWithPreflight(3);
+      expect(gateRan).toBe(false);
+      expect(code).toBe(3);
+    },
+    SPAWN_TIMEOUT_MS,
+  );
+
+  /**
+   * 下界。「常に落ちる」でも上の主張は満たせてしまう。事前確認が通ればゲートは回ること。
+   */
+  it(
+    '事前確認が通ればゲートは回る',
+    () => {
+      expect(runWithPreflight(0).gateRan).toBe(true);
+    },
+    SPAWN_TIMEOUT_MS,
+  );
 });

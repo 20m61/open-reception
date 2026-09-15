@@ -25,8 +25,10 @@ import {
   type GateRunFinding,
   type RemoteBranch,
 } from '../src/domain/governance/gate-run-evaluation';
-import { parseGitHubRepo, parseLsRemoteSymref, pullsQueryPath } from '../src/domain/governance/git-base';
+import { parseGitHubRepo, parseLsRemoteSymref } from '../src/domain/governance/git-base';
+import { pullsQueryRequest } from '../src/domain/governance/github-rest';
 import { describeCommandFailure } from '../src/domain/governance/command-failure';
+import { callGitHubJson } from './lib/github-api';
 
 const REPORT_ONLY = process.argv.includes('--report');
 const GATE_RUNS = resolve(import.meta.dirname, '..', 'docs', 'gate-runs.md');
@@ -116,17 +118,20 @@ function evaluateBranches(): { findings: GateRunFinding[]; pending: string[] } {
     branches.push({ name: ref.name, tipCommittedAt });
     if (ref.name === defaultBranch) continue;
     /**
-     * **PR の問い合わせは REST を使う** (#656)。
+     * **PR の問い合わせは REST を直接叩く** (#656 / #1117)。
      *
-     * `gh pr list` は GraphQL を叩き、クラウドのサンドボックスでは 403 になる:
-     * 「only the pinned set of PR-review operations is served.
-     *   Use REST via `gh api repos/{owner}/{repo}/...` instead.」
+     * 当初の理由は GraphQL だった（`gh pr list` はクラウドのサンドボックスで 403）。
+     * 2026-09-15 にそのサンドボックスから **`gh` 自体が消えた**ため、`gh api` も使えない。
+     * ここは #656 の取りこぼしを外から拾う網なので、**publish 経路と同じ 1 経路**
+     * （`scripts/lib/github-api.ts`）に載せる ―― 網だけが別の依存で黙って
+     * `branch_check_unverified` に倒れ続けると、網が無いのと変わらない。
+     *
      * 一括ではなくブランチ 1 本ずつ引くのは、`--limit` を超えた古い PR が落ちると
      * **そのブランチが orphan に誤検出される**ため。
      */
-    let json: string;
+    let parsed: unknown[];
     try {
-      json = run('gh', ['api', pullsQueryPath(repo, ref.name)]);
+      parsed = callGitHubJson<unknown[]>(pullsQueryRequest(repo, ref.name));
     } catch (e) {
       return unverified(
         `ブランチ '${ref.name}' の PR を問い合わせられませんでした（${e instanceof Error ? e.message : String(e)}）。` +
@@ -134,7 +139,6 @@ function evaluateBranches(): { findings: GateRunFinding[]; pending: string[] } {
       );
     }
     // `state=all` で引いているので、1 件でも返れば「PR が在る」。
-    const parsed = JSON.parse(json) as unknown[];
     if (parsed.length > 0) branchesWithPullRequest.push(ref.name);
   }
 

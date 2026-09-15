@@ -24,10 +24,10 @@ description: Issue を 1 周する（AC マッピング → ブランチ → TDD
 | ブランチ削除 | **できない**（proxy が write を拒否する） | **ここでやる** |
 | `--pr` / `--full` が要るとき | その場で回す | **クラウドへ委譲する**（§5） |
 
-🔴 **`gh pr create` / `gh pr merge` を使わない。** routine セッションでは GraphQL の
-repo info preamble が 403 になる（#678 / #702 で実測）。web セッションでの挙動は未検証だが、
-**REST 経路（上の 2 スクリプト）はどちらでも動く**ので迷わずそちらを使う。判別したい場合は
-`docs/cloud-dev-environment.md` §0-E の 1 行。
+🔴 **GitHub CLI (`gh`) を使わない。** routine セッションでは GraphQL の repo info preamble が
+403 になる（#678 / #702 で実測）。**web セッションでは `gh` 自体が無い**（2026-09-15 実測 / #1117）。
+上の 2 スクリプトは `curl` で REST を直接叩くのでどちらでも動く ―― 迷わずそちらを使う。
+判別したい場合は `docs/cloud-dev-environment.md` §0-E の 1 行。
 
 ## 1. AC を実コードへマッピングする（**省略しない**）
 
