@@ -22,7 +22,7 @@ Application
         ├ ministack   既定のローカル統合環境（Docker 不要）
         ├ moto        高速 fallback / Polly の唯一の経路
         ├ localstack  compatibility layer（Docker が要る）
-        └ aws         staging / production / 最終検証
+        └ aws         最終検証（現状の実環境は dev。staging は未構築）
 ```
 
 実行系の違いは **endpoint / region / credentials の解決だけ**に落ちる。
@@ -71,7 +71,7 @@ AWS_RUNTIME=localstack npm run aws:local:test   # Docker が要る
 | 1 | pure unit（AWS 不要） | プロセス内 | `npm test` |
 | 2 | mock AWS | Moto | `AWS_RUNTIME=moto npm run aws:local:test` |
 | 3 | local integration | MiniStack | `npm run aws:local:test` |
-| 4 | AWS compatibility | 実 AWS dev/staging | `npm run aws:diff-gate` / `aws:negative-tests` / runbook |
+| 4 | AWS compatibility | 実 AWS（現状 **dev** のみ。staging は未構築） | `npm run aws:diff-gate` / `aws:negative-tests` / runbook |
 
 Tier 1 は **hermetic** である。`vitest.config.ts` が AWS 資格情報を dummy に固定する
 ので、開発者の ambient な資格情報でテストの通り方が変わらない

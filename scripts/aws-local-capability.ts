@@ -34,7 +34,7 @@
  *
  * - 負の対照に**正しい**パスワードを渡す（`loginWithWrongPassword` の引数間違い）
  * - closure の中で真偽を反転する / 固定値を返す
- * - 測定を `results` に入れ忘れる
+ * - 測定を `results` に入れ忘れる / `probes` から 1 行消す / 集計前に `filter` する
  * - **判定の「効果」を落とす**: exit code を握り潰す / 表示記号を `verdict` から導出せず
  *   固定する / 実 AWS guard を warn へ落とす。レビュー round4 が実測しており、
  *   いずれも「🔴 素通り と印字しながら exit 0」「permissive を ✅ と印字」まで行く。
@@ -44,7 +44,15 @@
  *   `probes` から 1 行消す、集計へ渡す前に `filter` する。判定関数は設計どおり呼ばれ、
  *   **嘘の入力を渡されるだけ**なので、純関数側の守りは一切効かない。
  *
- * レビュー（#1103 round3 / round5）がこれらの生存を実測している。塞ぐには probe を
+ * - 🔴 **負の対照を、正の対照と「別の対象」へ向ける**（空のコレクション・別のキー）。
+ *   測定は本物なので `rejected` が返り、**✅ verified が出る** ―― 5 つの型の中で最も静かで
+ *   最も危険である。SRP 経路は `combineNegativeOutcomes` が「正の対照が通っていなければ
+ *   `rejected` を信用しない」ことで部分的に守るが、**boolean 経路には同等の結合が無い**
+ *   （`negativeFromBooleanProbe` は `true` を無条件に `rejected` へ写す）。round5 が
+ *   `measureTenantIsolation` の負の対照を空コレクションへ向けて実測し、出力は
+ *   **byte 単位で同一**だった。
+ *
+ * レビュー（#1103 round3 / round5 / round6）がこれらの生存を実測している。塞ぐには probe を
  * **既知の振る舞いを持つ fake クライアント**に対して実行するしかなく、それは
  * 現時点では割に合わないと判断した（#1112 で再考の余地あり）。
  * **このファイルを編集するときは、`npm run aws:local:capability` を両 runtime で

@@ -62,7 +62,7 @@
 3. 既定のローカル統合環境は **MiniStack**（Docker 不要）
 4. **Moto** は高速 fallback かつ Polly の唯一の経路
 5. **LocalStack** は compatibility layer として残す（削除しない）
-6. 実 AWS は staging / 最終検証にのみ使う
+6. 実 AWS は最終検証にのみ使う（現状の実環境は `dev`。staging は定義のみで未構築）
 
 ### レイヤ
 
@@ -73,7 +73,7 @@ Application
       ├ ministack  (default local integration, no Docker)
       ├ moto       (fast fallback / Polly)
       ├ localstack (compatibility, Docker)
-      └ aws        (staging / production)
+      └ aws        (最終検証。現状は dev)
 ```
 
 ### 安全境界（本 ADR の主目的）

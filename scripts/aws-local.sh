@@ -7,7 +7,7 @@
 # （LocalStack freemium は Cognito と AutoScaling を拒否する。2026-09-14 実測）。
 # ここはエミュレータを**交換可能な設定**として扱い、アプリのコードから製品名を消す。
 #
-#   ministack  … 既定。Docker 不要 (pure Python)。Cognito を含む
+#   ministack  … 既定。Docker 不要 (pure Python)。🔴 Cognito は素通りする（docs/local-aws.md）
 #   moto       … 高速 fallback。Polly を持つ唯一の実行系
 #   localstack … compatibility layer（Docker が要る。scripts/local-aws.sh へ委譲）
 #
@@ -35,7 +35,7 @@ case "$AWS_RUNTIME" in
   localstack) DEFAULT_PORT=4566 ;;
   aws)
     echo "[aws-local] AWS_RUNTIME=aws はこのレーンでは使えません。" >&2
-    echo "[aws-local] ここはローカルエミュレータ専用です（実 AWS は staging/最終検証で）。" >&2
+    echo "[aws-local] ここはローカルエミュレータ専用です（実 AWS は最終検証で。現状の実環境は dev）。" >&2
     exit 2
     ;;
   *)

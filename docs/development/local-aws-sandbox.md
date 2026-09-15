@@ -184,7 +184,7 @@ It pins what the in-memory fake in `dynamodb.test.ts` **cannot** guarantee, sinc
 - internal keys (`PK`/`SK`/`ttl`/`GSI1PK`/`GSI1SK`) stripped before data reaches callers;
 - audit-log range and index queries, with a future `since` as the lower bound.
 
-🔴 **It does not run in the default quality gate.** The suite is skipped unless `LOCAL_AWS_INTEGRATION=1`, which `scripts/aws-local.sh test` and `scripts/local-aws.sh test` set — LocalStack green is never promoted into release evidence. But *enabled and unreachable* fails rather than skips, so a broken emulator cannot masquerade as a passing run.
+🔴 **It does not run in the default quality gate.** The suite is skipped unless `LOCAL_AWS_INTEGRATION=1`, which `scripts/aws-local.sh test` and `scripts/local-aws.sh test` set — emulator green is never promoted into release evidence. But *enabled and unreachable* fails rather than skips, so a broken emulator cannot masquerade as a passing run.
 
 ## Local responsibility
 
@@ -225,8 +225,10 @@ make the same error.** Building that ledger is a precondition in #1112.
 サービスの根拠にされる、IAM の「作成」と「評価」の混同）。**セルを直すより、機械が
 言えないことを書かないほうが確実である。** 機械検査の整備は #1113。
 
-**機械が測っていること**（`npm run aws:local:capability`、両 runtime で exit 1 を確認済み。
-正の対照と負の対照を組で当てる）:
+**機械が測っていること**（`npm run aws:local:capability`。正の対照と負の対照を組で当てる。
+2026-09-15 / MiniStack 1.5.11 / Moto 5.2.3 で両 runtime とも exit 1 を確認。
+🔴 **exit code は oracle にならない** —— Cognito の `permissive` が単独で exit 1 を固定するので、
+DynamoDB 行が壊れても exit は変わらない。#1113）:
 
 | 能力 | MiniStack | Moto |
 | --- | --- | --- |
@@ -237,10 +239,13 @@ make the same error.** Building that ledger is a precondition in #1112.
 **それ以外は、それぞれの出どころを見ること。** ここへ転記しない:
 
 - DynamoDB の table / GSI1 / TTL … `src/lib/data/dynamodb.emulator.test.ts`（8 本。
-  **正の対照のみ**。`LOCAL_AWS_INTEGRATION=1` が要る）
-- S3 / Secrets Manager / SSM / Lambda invoke / API Gateway / IAM の **role 作成** …
-  この文書の "Measured service coverage"（**LocalStack** で測った。Lambda invoke は
-  コンテナへ `/var/run/docker.sock` を渡す必要がある）と ADR 0010 の matrix
+  `LOCAL_AWS_INTEGRATION=1` が要る。**このうち条件付き書き込み・テナント分離・TTL 範囲は
+  下界つき**で書かれている ―― 同 `:147` / `:163` / `:175` / `:243` を見ること）
+- S3 / Secrets Manager / SSM … ADR 0010 の matrix（Moto / MiniStack 双方）
+- Lambda invoke / API Gateway / IAM の **role 作成** … この文書の
+  "Measured service coverage"（**LocalStack** で測った。Lambda invoke はコンテナへ
+  `/var/run/docker.sock` を渡す必要がある）。🔴 **IAM は role を作れただけで、
+  policy の評価は⛔**（実 AWS のみ）
 - CDK … `docs/local-aws.md`「CDK はローカルで往復する」（**MiniStack のみ**・手動実行。
   synth 18s / deploy 13.9s / 直後の diff が "There were no differences"）
 
