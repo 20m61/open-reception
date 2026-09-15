@@ -244,6 +244,9 @@ export const SCOPE_KEY_MARK = matrixMark('permissive');
  * **どちらも能力の主張とは関係ないところで壊れる**。
  *
  * よって鍵は `🔴 素通り`（能力 verdict にしか現れない綴り）に限る。
+ * 🔴 **鍵で引くときは正規化してから引くこと。** 生文字列で引くと、このリポジトリの正準表記
+ * `🔴 **素通り**`（太字）に**一度も一致しない** —— 既存 matrix からコピーして新しい文書を作る
+ * という最も自然な作り方が、閉包を素通りする（レビュー実測）。
  * 🔴 **残る穴**: `✅` だけで能力を主張する**新しい**文書は、この閉包に入らない。
  * 目録の対象 3 文書の中では `✅` も完全に縛られているが、外は縛れていない。
  */
@@ -286,15 +289,10 @@ export const RESERVED_MARK_INVENTORY: Readonly<Record<string, ReadonlyArray<stri
     '| Cognito SRP のパスワード検証 | ✓ | 🔴 素通り | 🔴 素通り | 必須 | 下記「Cognito は素通りする」 |',
   ],
   'docs/development/local-aws-sandbox.md': [
-    '🔴 この文書で ✅ / 🔴 素通り を書けるのは、下の証拠表の `MiniStack` / `Moto` 列だけである',
+    '🔴 この文書では、✅ / 🔴 素通り を含む行が機械で固定してある（`RESERVEDMARKINVENTORY`。',
     '| DynamoDB 条件付き作成（二重作成が拒否される） | ✅ verified | ✅ verified |',
     '| DynamoDB GSI テナント分離（他テナントから引けない） | ✅ verified | ✅ verified |',
     '| Cognito SRP のパスワード検証 | 🔴 素通り | 🔴 素通り |',
-  ],
-  'docs/adr/0010-swappable-aws-emulator.md': [
-    '機械で突き合わせてある（#1113 / #1114）。以前この表は `OK` の位置に ✅ を書いており、',
-    'matrix の `◯ 正のみ` と食い違っていた（`CloudFormation` の Moto は ✅ と書かれていたが、',
-    '| Cognito: SRP のパスワード検証 | ⛔ ライセンス | 🔴 素通り | 🔴 素通り |',
   ],
 };
 
@@ -314,17 +312,22 @@ export type ReservedMarkViolation = {
  * すると、ラベルに `*` や `<T>` を含む行が静かに一致しなくなる（レビュー MINOR-5）。
  */
 export function normalizeForMarkScan(raw: string): string {
-  return raw
-    .replace(/&#(\d+);/gu, (_m, code: string) => String.fromCodePoint(Number(code)))
-    .replace(/&#x([0-9a-f]+);/giu, (_m, code: string) => String.fromCodePoint(parseInt(code, 16)))
-    .replaceAll('&nbsp;', ' ')
-    .replace(/<\/?[a-z][^>]*>/giu, '')
-    .replaceAll('*', '')
-    .replaceAll('_', '')
-    // `\s` は NBSP(U+00A0) を含む（実測）。`[\s\u00a0]` と書くと「NBSP を別途処理している」
-    // という誤った印象を与えるだけで、振る舞いは同じ（等価変異として変異検証で確認済み）。
-    .replace(/\s+/gu, ' ')
-    .trim();
+  return (
+    raw
+      // 🔴 **タグ除去が先。** 実体参照を先に復号すると、`&#60;span …&#62;` が `<span …>` へ化けて
+      // タグとして除去され、**レンダラには見えているテキスト**が祝福済み行と一致してしまう
+      // （レビュー実測）。実体で書いたものは可視テキストなので、除去の対象ではない。
+      .replace(/<\/?[a-z][^>]*>/giu, '')
+      .replace(/&#(\d+);/gu, (_m, code: string) => String.fromCodePoint(Number(code)))
+      .replace(/&#x([0-9a-f]+);/giu, (_m, code: string) => String.fromCodePoint(parseInt(code, 16)))
+      .replaceAll('&nbsp;', ' ')
+      .replaceAll('*', '')
+      .replaceAll('_', '')
+      // `\s` は NBSP(U+00A0) を含む（実測）。`[\s\u00a0]` と書くと「NBSP を別途処理している」
+      // という誤った印象を与えるだけで、振る舞いは同じ（等価変異として変異検証で確認済み）。
+      .replace(/\s+/gu, ' ')
+      .trim()
+  );
 }
 
 /** その行が含む予約記号（無ければ undefined）。 */
@@ -345,25 +348,36 @@ export function findReservedMarkViolations(input: {
   readonly inventory: ReadonlyArray<string>;
 }): ReadonlyArray<ReservedMarkViolation> {
   const found: ReservedMarkViolation[] = [];
-  const seen = new Set<string>();
+  // 🔴 **集合ではなく多重集合で数える。** `Set` と「所属するか」で判定していたときは、
+  // **祝福済みの行をそっくり別の節へ複製しても無検出**だった（レビュー実測。しかも
+  // 構造 allowlist 方式はこれを kill していた＝方式交換で kill を落としていた）。
+  // 「黙って増えない」を主張する以上、**回数**を見なければ嘘になる。
+  const budget = new Map<string, number>();
+  for (const text of input.inventory) budget.set(text, (budget.get(text) ?? 0) + 1);
+
   input.markdown.split('\n').forEach((raw, index) => {
     const mark = reservedMarkIn(raw);
     if (mark === undefined) return;
     const text = normalizeForMarkScan(raw);
-    seen.add(text);
-    if (!input.inventory.includes(text)) {
+    const left = budget.get(text) ?? 0;
+    if (left <= 0) {
+      // 目録に無い行、または**目録の回数を超えた複製**。
       found.push({ file: input.file, line: index + 1, text, mark, kind: 'unblessed' });
+      return;
     }
+    budget.set(text, left - 1);
   });
-  for (const text of input.inventory) {
-    if (seen.has(text)) continue;
-    found.push({
-      file: input.file,
-      line: 0,
-      text,
-      mark: reservedMarkIn(text) ?? '',
-      kind: 'missing',
-    });
+
+  for (const [text, left] of budget) {
+    for (let i = 0; i < left; i += 1) {
+      found.push({
+        file: input.file,
+        line: 0,
+        text,
+        mark: reservedMarkIn(text) ?? '',
+        kind: 'missing',
+      });
+    }
   }
   return found;
 }

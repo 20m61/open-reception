@@ -33,11 +33,16 @@
 `ministack` (MIT) と `moto` (Apache-2.0) はいずれも **PyPI の pure-Python** で、
 **Docker を要求しない**。本プロジェクトが実際に行う操作単位で測った:
 
-🔴 **この表の `OK` は「その操作が通った」であって、負の対照は当てていない。**
-能力の**正本**は `docs/local-aws.md` の compatibility matrix で、そちらは probe の実測記録と
-機械で突き合わせてある（#1113 / #1114）。以前この表は `OK` の位置に ✅ を書いており、
-matrix の `◯ 正のみ` と食い違っていた（`CloudFormation` の Moto は ✅ と書かれていたが、
-matrix は「**Moto では未測**」）。**能力を主張したくなったら、この表ではなく matrix を直すこと。**
+🔴 **この表は能力の判定記号を使わない。正本は `docs/local-aws.md` の compatibility matrix
+である。** 記号つきの判定を複数の文書へ転記すると必ずずれるので、ここには置かない（#1114）。
+
+- `OK` は「**その操作が通った**」であって、負の対照は当てていない
+- `NG 素通り` は「MiniStack / Moto はどちらも**誤ったパスワードを受理した**」という
+  ADR 執筆時の実測（正本の該当行は matrix の `Cognito SRP のパスワード検証`）
+- 以前この表は `OK` の位置に判定記号を書いており、**matrix と食い違っていた**
+  （`CloudFormation` の Moto を「通った」と書いていたが、matrix は「**Moto では未測**」）
+
+**能力を主張したくなったら、この表ではなく matrix を直すこと。**
 
 | 操作 | LocalStack | MiniStack | Moto |
 | --- | --- | --- | --- |
@@ -48,7 +53,7 @@ matrix は「**Moto では未測**」）。**能力を主張したくなった�
 | Secrets Manager | OK | OK | OK |
 | SSM Parameter Store | OK | OK | OK |
 | **Cognito: user pool / client の CRUD** | ⛔ ライセンス | OK | OK |
-| **Cognito: SRP のパスワード検証** | ⛔ ライセンス | 🔴 素通り | 🔴 素通り |
+| **Cognito: SRP のパスワード検証** | ⛔ ライセンス | NG 素通り | NG 素通り |
 | **Polly: synthesize** | ⛔ ライセンス | ⛔ 405 | OK |
 | S3 | OK | OK | OK |
 | CloudFormation | OK | OK | （未測） |

@@ -236,9 +236,10 @@ make the same error.** Building that ledger is a precondition in #1112.
 🔴 **exit code は oracle にならない** —— Cognito の `permissive` が単独で exit 1 を固定するので、
 DynamoDB 行が壊れても exit は変わらない。だから突き合わせは**行ごとの verdict** で行う）:
 
-🔴 **この文書で ✅ / 🔴 素通り を書けるのは、下の証拠表の `MiniStack` / `Moto` 列だけである**
-（機械検査。#1114）。他の表は `OK` / `⛔` を使う。規則の正本は
-[`../local-aws.md`](../local-aws.md) の凡例節。
+🔴 **この文書では、✅ / 🔴 素通り を含む行が機械で固定してある**（`RESERVED_MARK_INVENTORY`。
+#1114）。**増やしても・消しても・1 文字変えても落ちる。列の判定はしていない**ので、
+「他の表の `MiniStack` 列なら書ける」ということでもない ―― **どこに書いても落ちる**。
+他の表は `OK` / `⛔` を使う。規則の正本は [`../local-aws.md`](../local-aws.md) の凡例節。
 
 | 能力 | MiniStack | Moto |
 | --- | --- | --- |

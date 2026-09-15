@@ -13,6 +13,7 @@ import {
   findReservedMarkViolations,
   findScopeGaps,
   SCOPE_KEY_MARK,
+  normalizeForMarkScan,
   parseAllMarkdownTables,
   parseMarkdownTables,
   parseRecording,
@@ -212,7 +213,10 @@ describe('予約記号の適用範囲（文書全体）', () => {
           .split('\n')
           .filter(Boolean),
       )
-      .filter((f) => read(f).includes(SCOPE_KEY_MARK))
+      // 🔴 **正規化してから引く。** 生文字列だと正準表記 `🔴 **素通り**`（太字）に一致せず、
+      // 既存 matrix からコピーして作った新文書が閉包を素通りする（レビュー実測）。
+      // 全文を正規化するので、改行での分断も同時に拾える。
+      .filter((f) => normalizeForMarkScan(read(f)).includes(SCOPE_KEY_MARK))
       .sort();
     expect(carriers.length, '予約記号を持つ文書が 1 つも無い（検査が空振り）').toBeGreaterThan(0);
     expect(findScopeGaps({ carriers, scopeFiles: FILES })).toEqual([]);
@@ -231,6 +235,5 @@ describe('予約記号の適用範囲（文書全体）', () => {
     const marks = CAPABILITY_VERDICTS.map(matrixMark);
     const matrix = parseMarkdownTables(read('docs/local-aws.md'), 'Service / 操作')[0]!;
     expect(matrix.rows.flatMap((r) => r.cells).filter((c) => marks.includes(c))).not.toHaveLength(0);
-    expect(parseAllMarkdownTables(read('docs/local-aws.md')).length).toBeGreaterThan(0);
   });
 });

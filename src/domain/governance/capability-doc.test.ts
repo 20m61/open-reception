@@ -10,6 +10,8 @@ import {
   findReservedMarkViolations,
   findScopeGaps,
   LEGEND_ROWS,
+  SCOPE_KEY_MARK,
+  normalizeForMarkScan,
   parseMarkdownTables,
   parseRecording,
   reconcileCapabilityDoc,
@@ -511,9 +513,42 @@ describe('予約記号の出現は目録と完全一致する', () => {
     ['span で分断', '| x | 🔴 <span>素通り</span> |'],
     ['NBSP で分断', '| x | 🔴\u00a0素通り |'],
     ['実体参照 + NBSP', '| x | &#128308;&nbsp;素通り |'],
-    ['強調で分断', '| x | 🔴 *素通り* |'],
+    ['強調(*)で分断', '| x | 🔴 *素通り* |'],
+    // 🔴 `*` だけ入れて `_` を入れ忘れていた（`CLAUDE.md`「同型の 2 本には対策を入れており、
+    // 3 本目にだけ入れ忘れていた」と同じ形）。変異検証で生存して分かった。
+    ['強調(_)で分断', '| x | 🔴 _素通り_ |'],
+    ['強調(_)の ✅', '| x | _✅_ 実測 |'],
   ])('%s でも素通り記号として捕まる', (_name, md) => {
     expect(run(md, []).filter((v) => v.kind === 'unblessed')).not.toHaveLength(0);
+  });
+
+  /**
+   * 🔴 **「黙って増えない」を主張するなら回数を見なければならない。** 集合所属で判定して
+   * いたときは、**祝福済みの行をそっくり別の節へ複製しても無検出**だった（レビュー実測）。
+   * しかも構造 allowlist 方式はこれを kill していた＝**方式交換で kill を落としていた**。
+   */
+  it('祝福済みの行を複製したら落ちる', () => {
+    expect(run('| x | ✅ |\n（別の節）\n| x | ✅ |').map((v) => [v.kind, v.line])).toEqual([
+      ['unblessed', 3],
+    ]);
+  });
+
+  it('目録が同じ行を 2 回持つなら 2 回まで許す', () => {
+    expect(run('| x | ✅ |\n| x | ✅ |', ['| x | ✅ |', '| x | ✅ |'])).toEqual([]);
+    expect(run('| x | ✅ |', ['| x | ✅ |', '| x | ✅ |']).map((v) => v.kind)).toEqual(['missing']);
+  });
+
+  /**
+   * 🔴 **実体参照で書いたタグは可視テキストである。** 先に復号してからタグ除去すると、
+   * `&#60;span …&#62;` が消えて祝福済み行に化ける（レビュー実測）。除去が先、復号が後。
+   */
+  it('実体参照で作った擬似タグは消さない', () => {
+    // 行を改変したので、**両側**が出るのが正しい —— 知らない行が現れ（unblessed）、
+    // 祝福済みの行が消えた（missing）。片側だけを期待するのは主張として弱い。
+    expect(run('| x | ✅ | &#60;span 実 AWS でも verified&#62;').map((v) => v.kind).sort()).toEqual([
+      'missing',
+      'unblessed',
+    ]);
   });
 
   it('予約されていない記号は出現として数えない', () => {
@@ -522,6 +557,19 @@ describe('予約記号の出現は目録と完全一致する', () => {
 });
 
 describe('範囲そのものの検査', () => {
+  /**
+   * 🔴 **鍵は正規化してから引く。** 生文字列で引くと、このリポジトリの正準表記
+   * `🔴 **素通り**`（太字）に一度も一致せず、既存 matrix からコピーして作った新文書が
+   * 閉包を素通りする（レビュー実測）。改行での分断も全文正規化なら拾える。
+   */
+  it.each([
+    ['太字（正準表記）', '| x | 🔴 **素通り** |'],
+    ['改行で分断', 'これは 🔴\n素通り である'],
+    ['強調', '🔴 _素通り_'],
+  ])('%s でも閉包の鍵として拾える', (_name, text) => {
+    expect(normalizeForMarkScan(text)).toContain(SCOPE_KEY_MARK);
+  });
+
   it('予約記号を持つ文書と目録の対象が一致していなければ落ちる', () => {
     expect(findScopeGaps({ carriers: ['a.md'], scopeFiles: ['a.md'] })).toEqual([]);
     expect(findScopeGaps({ carriers: ['a.md', 'b.md'], scopeFiles: ['a.md'] }).map((g) => g.kind)).toEqual([
@@ -536,6 +584,11 @@ describe('範囲そのものの検査', () => {
     expect(findLegendRowGaps([...LEGEND_ROWS])).toEqual([]);
     expect(findLegendRowGaps([...LEGEND_ROWS, '捏造']).map((g) => g.kind)).toEqual(['legend_rows_changed']);
     expect(findLegendRowGaps(LEGEND_ROWS.slice(1)).map((g) => g.kind)).toEqual(['legend_rows_changed']);
+    // 🔴 **同数の置換**を必ず入れる。3 ケースとも長さを変えていたため、「件数だけ見る」形へ
+    // 退化させる変異が生存した（#813 の「件数 vs 下界」と同型）。
+    expect(
+      findLegendRowGaps(LEGEND_ROWS.map((l, i) => (i === 0 ? 'Cognito SRP' : l))).map((g) => g.kind),
+    ).toEqual(['legend_rows_changed']);
   });
 });
 
