@@ -1,6 +1,6 @@
 # Local AWS sandbox strategy
 
-Status: **runtime-validated in Claude Code on the web (2026-09-14).** The lane runs end to end there — `up` / `test` / `reset` / `down` — after three defects found by actually running it. The persistent-AWS-dev replacement decision is **recorded: `downsize`** (#1103); see "Replacement decision gate".
+Status: **runtime-validated in Claude Code on the web (2026-09-14).** The lane runs end to end there — `up` / `test` / `reset` / `down` — after three defects found by actually running it. The persistent-AWS-dev replacement decision is **recorded: `keep` (for now)** (#1103) — routine development no longer needs AWS, but `/admin/login` is currently verified in no environment; see "Replacement decision gate".
 
 ## Decision
 
@@ -198,13 +198,19 @@ Keep device/soak behavior, Vonage/WebRTC, speech-service fidelity, CloudFront/ce
 
 ## Replacement decision gate
 
-**Decision: `downsize` — stop running an *always-on* AWS `dev` environment, while keeping a
-real AWS environment reachable on demand.** Recorded 2026-09-15 (#1103; measurements 2026-09-14/15). Measured, not inferred;
-the measurements, the precondition, and the one thing still unmeasured are all below.
+**Decision: `keep` — for now. Do not downsize or remove the AWS `dev` environment yet.**
+Recorded 2026-09-15 (#1103; measurements 2026-09-14/15).
 
-🔴 **Not `remove`.** `dev` is today the only real AWS environment that exists — `staging` has
-never been stood up — and it is where `/admin/login` is actually verified. See
-"Why `downsize` and not `remove`".
+🔴 **This reverses an earlier draft of this section, which said `downsize`.** That draft rested
+twice on an unverified claim about the AWS estate — first "auth is already routed to staging"
+(staging has never been stood up), then "auth is verified on dev" (the live-e2e run that would
+verify it has never executed). Both were caught in review. The measured position is below, and it
+is the *reason* the answer changed: **the Cognito path is currently verified nowhere**, so there
+is nothing to downsize *onto* yet.
+
+What the local lane does settle is that **routine development no longer needs AWS at all**. That
+is a real result and it is what makes a future `downsize` plausible — but it is not sufficient on
+its own, and the precondition below has to be met first.
 
 🔴 **Recording this recommendation is not executing it.** Tearing down or resizing AWS
 resources is a stop boundary (cost / infrastructure). The change itself needs human approval.
@@ -240,41 +246,52 @@ Unchanged from before, still real-AWS-only: IAM evaluation, KMS, real token veri
 CloudFront/certificate/DNS delivery, CloudFormation replacement & drift, Transcribe streaming,
 Polly audio quality, Vonage/WebRTC, real device/browser behavior.
 
-### Why `downsize` and not `remove`
+### Why `keep` — and what would change it
 
-The capabilities that still need AWS — auth, IAM, delivery — are real and frequently touched.
-What the local lane removes is the **routine** need: persistence, infra shape and API wiring no
-longer touch AWS at all, and `cdk synth`/`deploy`/`diff` round-trip against the emulator.
+The local lane removes the **routine** need for AWS: persistence, infra shape and API wiring no
+longer touch it, and `cdk synth`/`deploy`/`diff` round-trip against the emulator. What it cannot
+do is verify authentication — and that is where the decision turns.
 
-🔴 **But `dev` is currently the only real AWS environment that exists, and it is where the
-auth path is actually exercised.** Checked 2026-09-14:
+🔴 **`/admin/login` (Cognito SRP) is verified in no environment today.** Measured 2026-09-14/15:
 
-- `staging` appears only as a type union (`infra/lib/config/environments.ts:7`), an IAM
-  resource pattern, a cost filter and test fixtures. **It has never been stood up.**
-- Every deployment record in `docs/runbook-cloud-aws-deploy.md` is `-c env=dev`; the most
-  recent one (2026-09-14) applied the custom domain for the first time.
-- `scripts/e2e-live.sh` requires `LIVE_BASE_URL` + `LIVE_ADMIN_USER` + `LIVE_ADMIN_PASSWORD`
-  and drives `/admin/login` against a live deployment; `scripts/url-quality-gate.sh` runs
-  ZAP/Lighthouse against a live URL. These are the **only** place the Cognito path above —
-  the one that cannot be verified locally — is checked at all.
+- **Not locally.** Both emulators are `permissive` — they mint tokens for a wrong password
+  (see [`../local-aws.md`](../local-aws.md), "Cognito は素通りする"). A local green there would
+  be vacuous.
+- **Not on `dev` either.** `npm run test:e2e:live` — the only thing that drives `/admin/login`
+  against a real deployment — **has never run**: `docs/runbook-cloud-aws-deploy.md:1823` (6th
+  deploy, 2026-09-14) records 「lighthouse / live e2e は未実行」, `:1915-1918` records the same
+  for the 5th, and `docs/loop-queue.md:49-53` records `LIVE_BASE_URL` / `LIVE_ADMIN_USER` /
+  `LIVE_ADMIN_PASSWORD` as UNSET. The only real-AWS evidence touching the login route is a smoke
+  check returning HTTP 200 on the page, which exercises no SRP at all.
+- **`staging` does not exist.** It is a type-union member, an IAM/cost pattern and test
+  fixtures; it has never been stood up.
 
-So `downsize` here means **stop paying for an always-on `dev`, not stop having a real AWS
-environment.** `remove` would delete the only place auth is verified.
+So `dev` is not "where auth is verified" — it is the only place auth *could* be verified. Shrinking
+or removing it now would remove the only remaining route to that coverage, while the coverage gap
+itself stays open and unrecorded.
 
-🔴 **Precondition before acting:** a real AWS environment must remain reachable for
-`e2e-live` / `url-quality-gate` / `aws:negative-tests` — whether that is an on-demand `dev`
-re-created from CDK when needed, or a `staging` that someone actually stands up first.
-Deploys already run on demand under human approval with short-lived STS credentials
-(ADR 0009 / #675), so "on-demand rather than always-on" is a change of *lifetime*, not of
-*capability*.
+**Precondition for revisiting (this is the actionable part):**
+
+1. Supply `LIVE_BASE_URL` / `LIVE_ADMIN_USER` / `LIVE_ADMIN_PASSWORD` during a deploy window and
+   run `npm run test:e2e:live` **once** against a real environment, so the Cognito SRP path has
+   been exercised somewhere at least one time.
+2. Decide where that check lives permanently (an on-demand `dev` re-created from CDK, or a
+   `staging` that someone actually stands up).
+3. Then re-evaluate. Deploys already run on demand under human approval with short-lived STS
+   credentials (ADR 0009 / #675), so "on-demand rather than always-on" is a change of *lifetime*,
+   not of *capability* — it becomes a reasonable call once (1) and (2) hold.
+
+🔴 **The coverage gap deserves its own issue regardless of the downsize decision.** #1103 set out
+to ask whether AWS `dev` could be replaced and instead surfaced that the authentication path is
+unverified everywhere. That is the more important finding.
 
 ### Still unmeasured
 
-**No cost figure for the current persistent `dev` environment is on record**, so the size of the
-saving is unknown. This recommendation rests on **capability**, not cost — it says the persistent
-environment is not *needed* for routine development, not how much it costs to keep. Reading the
-number requires real AWS billing access (`src/lib/platform/aws-cost-explorer.ts`, real AWS only);
-that is the remaining input before acting, and it affects *how far* to downsize, not *whether*.
+**No cost figure for the current `dev` environment is on record**, so the size of any future
+saving is unknown. Reading it requires real AWS billing access
+(`src/lib/platform/aws-cost-explorer.ts`, real AWS only). This does not change the `keep`
+recommendation — that one turns on the auth coverage gap, not on cost — but it will need to be
+answered before deciding *how far* to downsize once the precondition is met.
 
 A real AWS environment remains the compatibility gate regardless of the outcome. Today that is
 `dev`; if it is ever to be `staging`, `staging` has to exist first.

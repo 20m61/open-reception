@@ -38,8 +38,13 @@ import {
 import { createSrpSession, signSrpSession, wrapInitiateAuth, wrapAuthChallenge } from 'cognito-srp-helper';
 import {
   classifyCapability,
+  exitCodeFor,
   matrixMark,
+  negativeFromBooleanProbe,
   negativeFromLoginResult,
+  positiveFromBooleanProbe,
+  positiveFromLoginResult,
+  decideNegativeOutcome,
   type CapabilityVerdict,
   type NegativeOutcome,
   type PositiveOutcome,
@@ -134,11 +139,12 @@ async function measureCognitoSrp(): Promise<Measurement> {
     const { cognitoSrpLogin } = await import('../src/lib/auth/cognito-srp');
     const username = `cap-admin-${RUN}`;
     const pool = await cip.send(new CreateUserPoolCommand({ PoolName: `cap-${RUN}` }));
-    userPoolId = pool.UserPool?.Id;
-    if (!userPoolId) throw new Error('no user pool id');
+    const poolId = pool.UserPool?.Id;
+    if (!poolId) throw new Error('no user pool id');
+    userPoolId = poolId;
     const created = await cip.send(
       new CreateUserPoolClientCommand({
-        UserPoolId: userPoolId,
+        UserPoolId: poolId,
         ClientName: `cap-${RUN}`,
         GenerateSecret: false,
         ExplicitAuthFlows: ['ALLOW_USER_SRP_AUTH', 'ALLOW_REFRESH_TOKEN_AUTH'],
@@ -147,34 +153,32 @@ async function measureCognitoSrp(): Promise<Measurement> {
     const clientId = created.UserPoolClient?.ClientId;
     if (!clientId) throw new Error('no client id');
     await cip.send(
-      new AdminCreateUserCommand({ UserPoolId: userPoolId, Username: username, MessageAction: 'SUPPRESS' }),
+      new AdminCreateUserCommand({ UserPoolId: poolId, Username: username, MessageAction: 'SUPPRESS' }),
     );
     await cip.send(
       new AdminSetUserPasswordCommand({
-        UserPoolId: userPoolId,
+        UserPoolId: poolId,
         Username: username,
         Password: PASSWORD,
         Permanent: true,
       }),
     );
 
-    const params = { region: REGION, userPoolId, clientId };
+    const params = { region: REGION, userPoolId: poolId, clientId };
     const good = await cognitoSrpLogin(username, PASSWORD, params, cip);
     const bad = await cognitoSrpLogin(username, `WRONG-${PASSWORD}`, params, cip);
 
-    // 🔴 正の対照も「落ちた」と「走らせられなかった」を分ける。`error` は障害であって
-    // 「この能力が無い」ではない。
-    const positive: PositiveOutcome = good.ok
-      ? 'passed'
-      : good.reason === 'error'
-        ? 'unreachable'
-        : 'failed';
-    // 🔴 `bad.ok ? 'accepted' : 'rejected'` と書かない（それが #1103 レビューの BLOCKER）。
-    let negative: NegativeOutcome = negativeFromLoginResult(bad);
+    // 🔴 判定は **すべて純関数へ**（レビュー round2 MAJOR-1）。ここに丸め方を書くと
+    // ゲートが触れない層に判定が戻り、round1 の BLOCKER をそのまま再現できてしまう。
+    const positive = positiveFromLoginResult(good);
+    const production = negativeFromLoginResult(bad);
     // 本番の呼び方で正の対照が落ちたなら、素通りを見逃していないか別の呼び方で確かめる。
-    if (positive !== 'passed' && negative !== 'accepted') {
-      negative = await wrongPasswordWithPlainUsername(cip, username, userPoolId, clientId);
-    }
+    // 🔴 「代替の呼び方を試すか」の判断は**持たない**。効果だけ渡す（round2 MAJOR-1）。
+    const negative = await decideNegativeOutcome({
+      positive,
+      production,
+      tryFallback: () => wrongPasswordWithPlainUsername(cip, username, poolId, clientId),
+    });
     return {
       capability,
       positiveDesc,
@@ -218,9 +222,13 @@ async function measureConditionalWrite(): Promise<Measurement> {
   });
   const first = await ran(() => col.putIfAbsent({ id: 'dup', tenantId: `t-${RUN}` }));
   const second = await ran(() => col.putIfAbsent({ id: 'dup', tenantId: `t-${RUN}` }));
-  const positive: PositiveOutcome = first === 'threw' ? 'unreachable' : first ? 'passed' : 'failed';
-  const negative: NegativeOutcome =
-    second === 'threw' ? 'unreachable' : second === false ? 'rejected' : 'accepted';
+  const positive = positiveFromBooleanProbe(first);
+  // 二重作成が「拒否された」= putIfAbsent が false を返した。
+  const negative = negativeFromBooleanProbe(second === 'threw' ? 'threw' : !second);
+  await ran(async () => {
+    await col.remove('dup');
+    return true;
+  });
   return { capability, positiveDesc, negativeDesc, positive, negative, verdict: classifyCapability({ positive, negative }) };
 }
 
@@ -240,15 +248,27 @@ async function measureTenantIsolation(): Promise<Measurement> {
     return (await col.listByIndex(mine)).some((v) => v.id === 'a');
   });
   const negativeRan = await ran(async () => (await col.listByIndex(theirs)).length === 0);
-  const positive: PositiveOutcome =
-    positiveRan === 'threw' ? 'unreachable' : positiveRan ? 'passed' : 'failed';
-  const negative: NegativeOutcome =
-    negativeRan === 'threw' ? 'unreachable' : negativeRan === true ? 'rejected' : 'accepted';
+  const positive = positiveFromBooleanProbe(positiveRan);
+  const negative = negativeFromBooleanProbe(negativeRan);
+  await ran(async () => {
+    await col.remove('a');
+    return true;
+  });
   return { capability, positiveDesc, negativeDesc, positive, negative, verdict: classifyCapability({ positive, negative }) };
 }
 
 async function main() {
   const json = process.argv.includes('--json');
+  // 🔴 このスクリプトは**リソースを作る**（Cognito user pool / ユーザー / DynamoDB 項目）。
+  // 実 AWS を向いたまま走らせない。レーン外から直叩きされたときの最後の砦。
+  const { resolveAwsRuntimeConfig } = await import('../src/domain/governance/aws-runtime');
+  if (!resolveAwsRuntimeConfig(process.env).emulated) {
+    console.error(
+      'capability probe はエミュレータ専用です（リソースを作るため）。' +
+        'AWS_RUNTIME=ministack|moto|localstack を指定するか `npm run aws:local:capability` を使ってください。',
+    );
+    process.exit(2);
+  }
   const results: Measurement[] = [];
   // Cognito を先に測る。ここが素通りしていると、他が全部緑でも
   // 「ローカルで認証を検証できる」とは言えない。
@@ -271,25 +291,25 @@ async function main() {
 
   const permissive = results.filter((r) => r.verdict === 'permissive');
   const inconclusive = results.filter((r) => r.verdict === 'inconclusive');
+  const code = exitCodeFor(results.map((r) => r.verdict));
 
   if (permissive.length > 0) {
     console.error(
       `🔴 素通りしている能力が ${permissive.length} 件ある。ローカルの緑をその能力の根拠にしないこと:\n` +
         permissive.map((r) => `  - ${r.capability}`).join('\n'),
     );
-    process.exit(1);
   }
   // 🔴 **「測れなかった」で exit 0 を返さない。** エミュレータが上がっていないまま再測すると
-  // 全部 ⛔/? が並ぶ。これを成功として読むと、素通りの記録が静かに「安全な」判定へ
-  // 格下げされる（#1103 レビュー指摘 M2）。
+  // 全部 ?/⛔ が並ぶ。これを成功として読むと、素通りの記録が静かに「安全な」判定へ
+  // 格下げされる（レビュー round1 M2）。
   if (inconclusive.length > 0) {
     console.error(
       `⚠ 判定できなかった能力が ${inconclusive.length} 件ある（測定環境の問題であって、` +
         `「その能力が無い」ではない）。表を書き換える根拠にしないこと:\n` +
         inconclusive.map((r) => `  - ${r.capability}${r.note ? `: ${r.note}` : ''}`).join('\n'),
     );
-    process.exit(3);
   }
+  if (code !== 0) process.exit(code);
 }
 
 main().catch((e) => {

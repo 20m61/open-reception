@@ -25,8 +25,7 @@
  *
  * 🔴 `permissive`（正は通るが負も通る）は `unavailable` より**危険**である。
  * 使えないエミュレータは使った瞬間に分かるが、素通りするエミュレータは
- * **緑のまま嘘をつく**。表へ描くときも ✅ にしない。記号は手で書かず
- * `matrixMark()` から導出する（散文が実測から遅れるのを機械で止める）。
+ * **緑のまま嘘をつく**。表へ描くときも ✅ にしない。
  */
 
 /**
@@ -46,7 +45,11 @@ export type CapabilityVerdict =
   | 'verified'
   /** 🔴 正も負も通った。素通りしている。ローカルの緑は空虚。 */
   | 'permissive'
-  /** 正が通らない。ローカルでは検証できない（が、嘘はつかない）。 */
+  /**
+   * 正が通らない。ローカルでは**その能力を使えない**。
+   * 🔴 「素通りしない」ことまでは主張しない —— 負の対照が走っていない場合があるため
+   * （レビュー round2 MAJOR-2）。呼び方を変えれば素通りする可能性は残る。
+   */
   | 'unavailable'
   /** 負の対照を走らせられなかった。「測れなかった」を他へ倒さない。 */
   | 'inconclusive';
@@ -107,6 +110,8 @@ export function negativeFromLoginResult(result: LoginAttempt): NegativeOutcome {
 const MARKS: Readonly<Record<CapabilityVerdict, string>> = {
   verified: '✅',
   // 「使える」と読めない記号を選ぶ。permissive は unavailable より危険なので ⛔ とも分ける。
+  // 🔴 記号は**この表が唯一の出どころ**だが、`docs/local-aws.md` の表は手書きである
+  // （突き合わせる機械検査はまだ無い。レビュー round2 MINOR-3）。
   permissive: '🔴 素通り',
   unavailable: '⛔',
   inconclusive: '?',
@@ -115,4 +120,96 @@ const MARKS: Readonly<Record<CapabilityVerdict, string>> = {
 /** matrix へ描く記号。**✅ を返すのは `verified` だけ**。 */
 export function matrixMark(verdict: CapabilityVerdict): string {
   return MARKS[verdict];
+}
+
+/** 正の対照: ログイン結果を outcome へ。障害は「能力が無い」ではない。 */
+export function positiveFromLoginResult(result: LoginAttempt): PositiveOutcome {
+  if (result.ok) return 'passed';
+  return result.reason === 'error' ? 'unreachable' : 'failed';
+}
+
+/** 真偽で測る probe の結果。例外（`'threw'`）を `false` と混ぜない。 */
+export type BooleanProbe = boolean | 'threw';
+
+/** 正の対照: `true` なら通った / `'threw'` は走らせられなかった。 */
+export function positiveFromBooleanProbe(r: BooleanProbe): PositiveOutcome {
+  if (r === 'threw') return 'unreachable';
+  return r ? 'passed' : 'failed';
+}
+
+/** 負の対照: `true` = 期待どおり拒否された / `false` = 受理された（素通り）。 */
+export function negativeFromBooleanProbe(r: BooleanProbe): NegativeOutcome {
+  if (r === 'threw') return 'unreachable';
+  return r ? 'rejected' : 'accepted';
+}
+
+/**
+ * 負の対照を、本番の呼び方の結果と代替の呼び方の結果から決める。
+ *
+ * 🔴 **正の対照が通っていないときの `rejected` を信用しない**（レビュー round2 MAJOR-3）。
+ * `cognito-srp.ts` は `UserNotFoundException` も `NotAuthorizedException` も
+ * `invalid_credentials` へ畳むので、「ユーザーに到達できていない」と
+ * 「パスワードが拒否された」が見分けられない。正の対照が通っていないなら、
+ * そもそもパスワード検証まで到達していないので**拒否の証拠にならない**。
+ *
+ * 🔴 **代替の呼び方は `accepted` のときだけ上書きする**（同 MINOR-4）。
+ * 実測できた `rejected` を「走らせられなかった」で捨てない。
+ */
+export function resolveNegativeOutcome(input: {
+  readonly positive: PositiveOutcome;
+  readonly production: NegativeOutcome;
+  readonly fallback: NegativeOutcome;
+}): NegativeOutcome {
+  if (input.production === 'accepted') return 'accepted';
+  if (input.fallback === 'accepted') return 'accepted';
+  // 正の対照が通っていない＝拒否の証拠にならない。
+  if (input.positive !== 'passed') return 'unreachable';
+  return input.production;
+}
+
+/**
+ * probe の終了コード。**「測れなかった」で 0 を返さない**（レビュー round1 M2）。
+ * 素通り(1) > 判定不能(3) > 正常(0) の順で強い。
+ */
+export function exitCodeFor(verdicts: ReadonlyArray<CapabilityVerdict>): 0 | 1 | 3 {
+  if (verdicts.includes('permissive')) return 1;
+  if (verdicts.includes('inconclusive')) return 3;
+  return 0;
+}
+
+/**
+ * 代替の呼び方（別の呼び出し形）で負の対照をやり直すべきか。
+ *
+ * 🔴 **本番の呼び方で正の対照が通らなかったときこそ試す。** そこで諦めて
+ * `unavailable` と記録すると、「呼び方を変えれば素通りする」エミュレータが
+ * **安全そうな ⛔ に化ける**（Moto が実際にその形だった。レビュー round1 M3）。
+ * 既に素通りが分かっているなら、やり直す必要はない。
+ */
+export function shouldTryFallbackNegative(input: {
+  readonly positive: PositiveOutcome;
+  readonly production: NegativeOutcome;
+}): boolean {
+  if (input.production === 'accepted') return false;
+  return input.positive !== 'passed';
+}
+
+/**
+ * 負の対照を決める。**代替の呼び方を試すかどうかの判断もここで持つ。**
+ *
+ * 🔴 **呼び出し側に「試すか」の条件を書かせない。** レビュー round2 で、条件を script 側に
+ * 置いたままだと `!shouldTryFallbackNegative(...)` と否定するだけで M3（Moto が ⛔ に化ける）
+ * が復活し、テストは全部緑のままだった。実行できない層に判断を残さないのが唯一の対策で、
+ * `tryFallback` は**効果の注入**であって判断ではない。
+ */
+export async function decideNegativeOutcome(input: {
+  readonly positive: PositiveOutcome;
+  readonly production: NegativeOutcome;
+  readonly tryFallback: () => Promise<NegativeOutcome>;
+}): Promise<NegativeOutcome> {
+  const fallback = shouldTryFallbackNegative(input) ? await input.tryFallback() : 'unreachable';
+  return resolveNegativeOutcome({
+    positive: input.positive,
+    production: input.production,
+    fallback,
+  });
 }

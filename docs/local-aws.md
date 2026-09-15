@@ -95,8 +95,9 @@ Tier 1 は **hermetic** である。`vitest.config.ts` が AWS 資格情報を d
 | --- | --- | --- |
 | `verified` | ✅ | 正は通り、負は拒否された。ローカルの緑に意味がある |
 | `permissive` | 🔴 素通り | **正も負も通る。緑のまま嘘をつく** ―― `unavailable` より危険 |
-| `unavailable` | ⛔ | 正が通らない。ローカルでは検証できない（が嘘はつかない） |
-| `inconclusive` | ? | 負の対照を走らせられなかった |
+| `unavailable` | ⛔ | 正が通らない。**その能力をローカルで使えない**。🔴 「素通りしない」ことまでは主張しない |
+| `inconclusive` | ? | 対照を走らせられなかった（測定環境の問題。能力の判定ではない） |
+| （未測） | 空欄 | そもそも測っていない |
 
 再測は **`npm run aws:local:capability`**（素通りなら exit 1、判定不能なら exit 3）。
 
@@ -117,7 +118,7 @@ Tier 1 は **hermetic** である。`vitest.config.ts` が AWS 資格情報を d
 | Cognito user pool / client の CRUD | | ✅ | ✅ | — | プール・クライアント・ユーザーは作れる |
 | Polly synthesize | | ✅ | ⛔ 405 | 音質 | **Moto のみ**。音質評価は実 AWS |
 | S3 | | ✅ | ✅ | 配信 | CloudFront 配信は実 AWS |
-| CloudFormation / CDK deploy + diff | | ? | ✅ | 置換挙動・drift | 下記「CDK はローカルで往復する」。**Moto では未測** |
+| CloudFormation / CDK deploy + diff | | （未測） | ✅ | 置換挙動・drift | 下記「CDK はローカルで往復する」。**Moto では未測** |
 | Route53 / EC2 / AutoScaling | | ✅ | ✅ | 実挙動 | LocalStack は ASG ⛔ |
 | Transcribe **streaming** | | ⛔ | ⛔ | **必須** | 現在 SDK 未導入（型のみ） |
 | Bedrock | | ⛔ | ⛔ | **必須** | 現在 SDK 未使用 |

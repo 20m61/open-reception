@@ -194,3 +194,37 @@ describe('aws-local.sh: capability サブコマンド (#1103)', () => {
     expect(source).toMatch(/aws-local-capability\.ts/);
   });
 });
+
+describe('aws-local-capability.ts: 判定を配線へ書き戻させない (#1103 round2 MAJOR-1)', () => {
+  const probe = readFileSync(join(ROOT, 'scripts/aws-local-capability.ts'), 'utf8');
+
+  // 🔴 このスクリプトは**エミュレータ稼働が前提**なので既定ゲートから実行できない。
+  // round2 のレビューは、判定を純関数へ切り出した後も**呼び出し側へ書き戻せば
+  // 全部 green のまま round1 の BLOCKER が復活する**ことを実測した（3 変異が生存）。
+  // 実行できない層なので、せめて「判定を自前で書いていないこと」を静的に縛る。
+  // 同種の先例: 本ファイル上部（aws-local.sh の本文検査）、tests/config/loop-round-skill.test.ts。
+
+  it('🔴 負の対照を自前で三項演算子に畳まない（round1 BLOCKER の再発形）', () => {
+    expect(probe).not.toMatch(/\bbad\.ok\s*\?/);
+    expect(probe).toContain('negativeFromLoginResult(');
+    expect(probe).toContain('decideNegativeOutcome(');
+    // 効果そのものを差し替えて fallback を無効化する形も塞ぐ（round2 W3）。
+    expect(probe).toMatch(/tryFallback:\s*\(\)\s*=>\s*wrongPasswordWithPlainUsername/);
+  });
+
+  it('🔴 正の対照の判定も自前で書かない', () => {
+    expect(probe).toContain('positiveFromLoginResult(');
+    expect(probe).toContain('positiveFromBooleanProbe(');
+    expect(probe).toContain('negativeFromBooleanProbe(');
+  });
+
+  it('🔴 終了コードを自前で決めない（「測れなかった」で 0 を返す形へ戻させない）', () => {
+    expect(probe).toContain('exitCodeFor(');
+    expect(probe).not.toMatch(/process\.exit\(0\)/);
+  });
+
+  it('🔴 実 AWS を向いたまま走らせない（リソースを作るスクリプトなので）', () => {
+    expect(probe).toContain('resolveAwsRuntimeConfig');
+    expect(probe).toMatch(/\.emulated/);
+  });
+});

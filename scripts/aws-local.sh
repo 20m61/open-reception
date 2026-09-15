@@ -23,6 +23,11 @@ cd "$ROOT"
 # ---------------------------------------------------------------------------
 AWS_RUNTIME="${AWS_RUNTIME:-}"
 [ -z "$AWS_RUNTIME" ] && AWS_RUNTIME=ministack
+# 🔴 **export する。** しないと子プロセス（npx tsx など）が実行系を見られず、
+# `resolveAwsRuntimeConfig` が `aws` として解決してしまい、エミュレータ側の
+# 誤接続 guard（real_credentials / endpoint_is_real_aws）が**評価されない**
+# （レビュー round2 MINOR-2 で実測）。他のレーン変数と揃える。
+export AWS_RUNTIME
 
 case "$AWS_RUNTIME" in
   ministack) DEFAULT_PORT=4566 ;;

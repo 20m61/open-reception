@@ -4,6 +4,13 @@ import {
   classifyCapability,
   matrixMark,
   negativeFromLoginResult,
+  positiveFromLoginResult,
+  positiveFromBooleanProbe,
+  negativeFromBooleanProbe,
+  resolveNegativeOutcome,
+  shouldTryFallbackNegative,
+  decideNegativeOutcome,
+  exitCodeFor,
   type CapabilityVerdict,
   type NegativeOutcome,
   type PositiveOutcome,
@@ -96,6 +103,8 @@ describe('ログイン結果 → 負の対照の outcome', () => {
 
   it('トークンが出たら accepted（素通り）', () => {
     expect(negativeFromLoginResult({ ok: true, idToken: 'x' })).toBe('accepted');
+    // `ok` なら idToken の有無に関わらず素通り扱い。安全側（`ok && idToken` は緩い）。
+    expect(negativeFromLoginResult({ ok: true })).toBe('accepted');
   });
 
   it('🔴 rejected を返すのは invalid_credentials だけ（他の理由を足しても安全側へ倒れる）', () => {
@@ -104,5 +113,116 @@ describe('ログイン結果 → 負の対照の outcome', () => {
       (reason) => negativeFromLoginResult({ ok: false, reason }) === 'rejected',
     );
     expect(rejected).toEqual(['invalid_credentials']);
+  });
+});
+
+describe('probe の配線（測定結果 → outcome）', () => {
+  it('🔴 正の対照: 障害（error）を「能力が無い」と読まない', () => {
+    expect(positiveFromLoginResult({ ok: true, idToken: 'x' })).toBe('passed');
+    expect(positiveFromLoginResult({ ok: false, reason: 'error' })).toBe('unreachable');
+    expect(positiveFromLoginResult({ ok: false, reason: 'invalid_credentials' })).toBe('failed');
+  });
+
+  it('真偽の probe: 例外は unreachable（false と混ぜない）', () => {
+    expect(positiveFromBooleanProbe(true)).toBe('passed');
+    expect(positiveFromBooleanProbe(false)).toBe('failed');
+    expect(positiveFromBooleanProbe('threw')).toBe('unreachable');
+    expect(negativeFromBooleanProbe(true)).toBe('rejected');
+    expect(negativeFromBooleanProbe(false)).toBe('accepted');
+    expect(negativeFromBooleanProbe('threw')).toBe('unreachable');
+  });
+
+  it('🔴 正の対照が通っていないとき、production 由来の rejected を信用しない', () => {
+    // レビュー round2 MAJOR-3: `cognito-srp.ts` は **UserNotFoundException も**
+    // `invalid_credentials` に畳む。Moto は正しい PW でも誤った PW でも
+    // UserNotFound を返すので、「誤った PW が拒否された」と読むと嘘になる。
+    // 正の対照が通っていない＝そこまで到達できていないので、拒否の証拠にならない。
+    expect(
+      resolveNegativeOutcome({ positive: 'failed', production: 'rejected', fallback: 'unreachable' }),
+    ).toBe('unreachable');
+  });
+
+  it('🔴 正の対照が通っていなくても、別の呼び方で受理されたら素通り', () => {
+    expect(
+      resolveNegativeOutcome({ positive: 'failed', production: 'rejected', fallback: 'accepted' }),
+    ).toBe('accepted');
+  });
+
+  it('🔴 fallback は accepted のときだけ上書きする（実測した rejected を捨てない）', () => {
+    // レビュー round2 MINOR-4。
+    expect(
+      resolveNegativeOutcome({ positive: 'passed', production: 'rejected', fallback: 'unreachable' }),
+    ).toBe('rejected');
+    expect(
+      resolveNegativeOutcome({ positive: 'passed', production: 'accepted', fallback: 'unreachable' }),
+    ).toBe('accepted');
+  });
+
+  it('🔴 exit code: 素通り=1 / 判定不能=3 / それ以外=0（測れなかったで 0 を返さない）', () => {
+    expect(exitCodeFor(['verified', 'verified'])).toBe(0);
+    expect(exitCodeFor(['verified', 'unavailable'])).toBe(0);
+    expect(exitCodeFor(['verified', 'inconclusive'])).toBe(3);
+    expect(exitCodeFor(['permissive', 'inconclusive'])).toBe(1);
+    expect(exitCodeFor(['inconclusive', 'permissive'])).toBe(1);
+  });
+});
+
+describe('代替の呼び方を試す条件', () => {
+  it('🔴 本番の呼び方で正の対照が落ちたら試す（M3 の再発を止める要）', () => {
+    // レビュー round2: この条件は script 側に手書きされており、反転させても
+    // 全テストが緑のままだった（Moto が ⛔ へ化ける M3 の再発形）。
+    for (const positive of ['failed', 'unreachable'] as const) {
+      expect(shouldTryFallbackNegative({ positive, production: 'rejected' })).toBe(true);
+      expect(shouldTryFallbackNegative({ positive, production: 'unreachable' })).toBe(true);
+    }
+  });
+
+  it('正の対照が通っているなら、本番の呼び方の測定をそのまま使う', () => {
+    expect(shouldTryFallbackNegative({ positive: 'passed', production: 'rejected' })).toBe(false);
+  });
+
+  it('既に素通りが分かっているならやり直さない', () => {
+    for (const positive of ['passed', 'failed', 'unreachable'] as const) {
+      expect(shouldTryFallbackNegative({ positive, production: 'accepted' })).toBe(false);
+    }
+  });
+});
+
+describe('負の対照の決定（fallback の起動判断ごと）', () => {
+  it('🔴 正の対照が落ちたら fallback を実際に呼ぶ', async () => {
+    let called = 0;
+    const out = await decideNegativeOutcome({
+      positive: 'failed',
+      production: 'rejected',
+      tryFallback: async () => {
+        called += 1;
+        return 'accepted';
+      },
+    });
+    expect(called).toBe(1);
+    expect(out).toBe('accepted');
+  });
+
+  it('正の対照が通っていれば fallback を呼ばず、実測した値を返す', async () => {
+    let called = 0;
+    const out = await decideNegativeOutcome({
+      positive: 'passed',
+      production: 'rejected',
+      tryFallback: async () => {
+        called += 1;
+        return 'accepted';
+      },
+    });
+    expect(called).toBe(0);
+    expect(out).toBe('rejected');
+  });
+
+  it('🔴 fallback が素通りを見つけられなくても、信用できない rejected を残さない', async () => {
+    const out = await decideNegativeOutcome({
+      positive: 'failed',
+      production: 'rejected',
+      tryFallback: async () => 'unreachable',
+    });
+    expect(out).toBe('unreachable');
   });
 });
