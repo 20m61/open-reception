@@ -210,19 +210,28 @@ describe('予約記号の適用範囲（文書全体）', () => {
     // 🔴 **根を数え上げない。** `docs` と `.claude/rules` だけを見ていたため、`CLAUDE.md` と
     // `.claude/skills/**` が閉包の外だった —— どちらも Cognito 素通りの事実が既に転記されて
     // いる場所で、そこへ**逆の主張**を書いても緑だった（レビュー実測）。リポジトリ全体を見る。
-    const carriers = execSync(
+    const scanned = execSync(
       `find . -name '*.md' -type f -not -path './node_modules/*' -not -path './.git/*'`,
       { cwd: process.cwd(), encoding: 'utf8' },
     )
       .split('\n')
       .filter(Boolean)
-      .map((f) => f.replace(/^\.\//u, ''))
+      .map((f) => f.replace(/^\.\//u, ''));
+    const carriers = scanned
       // 🔴 **正規化してから引く。** 生文字列だと正準表記 `🔴 **素通り**`（太字）に一致せず、
       // 既存 matrix からコピーして作った新文書が閉包を素通りする（レビュー実測）。
       // 全文を正規化するので、改行での分断も同時に拾える。
       .filter((f) => containsMark(normalizeForMarkScan(read(f)), SCOPE_KEY_MARK))
       .sort();
     expect(carriers.length, '予約記号を持つ文書が 1 つも無い（検査が空振り）').toBeGreaterThan(0);
+    // 🔴 **走査根が痩せていないことを観測可能にする。** 根を `docs` へ狭める変異は、今日
+    // 根の外に carrier が無いというだけで生存する。**走査した集合に repo 直下と
+    // `.claude/skills/**` が含まれること**を直接縛れば、狭める変異が落ちる。
+    expect(scanned, 'リポジトリ直下の md を走査していない').toContain('CLAUDE.md');
+    expect(
+      scanned.some((f) => f.startsWith('.claude/skills/')),
+      '.claude/skills/** を走査していない',
+    ).toBe(true);
     expect(findScopeGaps({ carriers, scope: RESERVED_MARK_INVENTORY })).toEqual([]);
   });
 

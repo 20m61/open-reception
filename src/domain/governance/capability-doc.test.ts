@@ -562,9 +562,20 @@ describe('予約記号の出現は目録と完全一致する', () => {
     expect(run(md, []).filter((v) => v.kind === 'unblessed')).not.toHaveLength(0);
   });
 
-  it('引用の > で閉じられても後続を飲み込まない', () => {
-    const md = ['<span', '| x | ✅ 実測 |', '> 備考'].join('\n');
-    expect(run(md, []).filter((v) => v.kind === 'unblessed')).not.toHaveLength(0);
+  /**
+   * 🔴 **飲み込みは「全文を 1 つの文字列として正規化する」経路でしか起きない**
+   * （`findReservedMarkViolations` は行ごとに走るので原理的に無関係）。最初に書いた回帰は
+   * 行単位の経路を叩いており、**変異が生存して初めてそれに気づいた**。carrier 走査と同じ
+   * 経路（全文正規化）で縛る。
+   */
+  it('全文正規化で、閉じないタグ様の綴りが後続の記号を飲み込まない', () => {
+    const whole = ['<span', '| Cognito | 🔴 素通り |', '> 備考'].join('\n');
+    expect(containsMark(normalizeForMarkScan(whole), SCOPE_KEY_MARK)).toBe(true);
+  });
+
+  it('全文正規化で、ヒアドキュメントが後続の記号を飲み込まない', () => {
+    const whole = ['aws cognito-idp <<EOF', 'EOF', '| Cognito | 🔴 素通り |', '> 実測'].join('\n');
+    expect(containsMark(normalizeForMarkScan(whole), SCOPE_KEY_MARK)).toBe(true);
   });
 
   /** 🔴 空白なし・ゼロ幅で分断した綴りは、描画上まったく区別が付かない。 */
