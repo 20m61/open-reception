@@ -38,20 +38,16 @@ import {
 import { createSrpSession, signSrpSession, wrapInitiateAuth, wrapAuthChallenge } from 'cognito-srp-helper';
 import {
   classifyCapability,
-  exitCodeFor,
   matrixMark,
-  negativeFromBooleanProbe,
-  negativeFromLoginResult,
-  positiveFromBooleanProbe,
-  positiveFromLoginResult,
-  decideNegativeOutcome,
+  measureBooleanCapability,
+  measureSrpCapability,
+  summarizeMeasurements,
   type CapabilityVerdict,
   type NegativeOutcome,
   type PositiveOutcome,
 } from '../src/domain/governance/emulator-capability';
 import { awsClientConfig } from '../src/lib/aws/client-config';
 
-const RUNTIME = process.env.AWS_RUNTIME ?? 'ministack';
 const ENDPOINT = process.env.AWS_ENDPOINT_URL ?? 'http://127.0.0.1:4566';
 const REGION = process.env.AWS_REGION ?? 'ap-northeast-1';
 const RUN = `${Date.now()}-${Math.random().toString(16).slice(2, 8)}`;
@@ -165,19 +161,12 @@ async function measureCognitoSrp(): Promise<Measurement> {
     );
 
     const params = { region: REGION, userPoolId: poolId, clientId };
-    const good = await cognitoSrpLogin(username, PASSWORD, params, cip);
-    const bad = await cognitoSrpLogin(username, `WRONG-${PASSWORD}`, params, cip);
-
-    // 🔴 判定は **すべて純関数へ**（レビュー round2 MAJOR-1）。ここに丸め方を書くと
-    // ゲートが触れない層に判定が戻り、round1 の BLOCKER をそのまま再現できてしまう。
-    const positive = positiveFromLoginResult(good);
-    const production = negativeFromLoginResult(bad);
-    // 本番の呼び方で正の対照が落ちたなら、素通りを見逃していないか別の呼び方で確かめる。
-    // 🔴 「代替の呼び方を試すか」の判断は**持たない**。効果だけ渡す（round2 MAJOR-1）。
-    const negative = await decideNegativeOutcome({
-      positive,
-      production,
-      tryFallback: () => wrongPasswordWithPlainUsername(cip, username, poolId, clientId),
+    // 🔴 判定も合成も**持たない**。効果だけ渡す（レビュー round3 MAJOR-2）。
+    const { positive, negative, verdict } = await measureSrpCapability({
+      loginWithCorrectPassword: () => cognitoSrpLogin(username, PASSWORD, params, cip),
+      loginWithWrongPassword: () => cognitoSrpLogin(username, `WRONG-${PASSWORD}`, params, cip),
+      loginWithWrongPasswordAlternateShape: () =>
+        wrongPasswordWithPlainUsername(cip, username, poolId, clientId),
     });
     return {
       capability,
@@ -185,11 +174,12 @@ async function measureCognitoSrp(): Promise<Measurement> {
       negativeDesc,
       positive,
       negative,
-      verdict: classifyCapability({ positive, negative }),
-      note: good.ok
-        ? undefined
-        : `正の対照が通らなかった: ${good.reason}` +
-          (negative === 'accepted' ? '（ただし平文 username なら誤った PW でも通る＝素通り）' : ''),
+      verdict,
+      note:
+        positive === 'passed'
+          ? undefined
+          : '正の対照が本番の呼び方で通らなかった' +
+            (negative === 'accepted' ? '（ただし平文 username なら誤った PW でも通る＝素通り）' : ''),
     };
   } catch (e) {
     // セットアップ不能は「能力が無い」ではない。判定を下さない。
@@ -220,16 +210,19 @@ async function measureConditionalWrite(): Promise<Measurement> {
   const col = new DynamoBackend().collection<{ id: string; tenantId: string }>(`cap-cond-${RUN}`, {
     indexedField: 'tenantId',
   });
-  const first = await ran(() => col.putIfAbsent({ id: 'dup', tenantId: `t-${RUN}` }));
-  const second = await ran(() => col.putIfAbsent({ id: 'dup', tenantId: `t-${RUN}` }));
-  const positive = positiveFromBooleanProbe(first);
-  // 二重作成が「拒否された」= putIfAbsent が false を返した。
-  const negative = negativeFromBooleanProbe(second === 'threw' ? 'threw' : !second);
+  const measured = await measureBooleanCapability({
+    runPositive: () => ran(() => col.putIfAbsent({ id: 'dup', tenantId: `t-${RUN}` })),
+    // 二重作成が「拒否された」= putIfAbsent が false を返した。
+    runNegative: async () => {
+      const again = await ran(() => col.putIfAbsent({ id: 'dup', tenantId: `t-${RUN}` }));
+      return again === 'threw' ? 'threw' : !again;
+    },
+  });
   await ran(async () => {
     await col.remove('dup');
     return true;
   });
-  return { capability, positiveDesc, negativeDesc, positive, negative, verdict: classifyCapability({ positive, negative }) };
+  return { capability, positiveDesc, negativeDesc, ...measured };
 }
 
 /** DynamoDB テナント分離: 正 = 自テナントは引ける / 負 = 他テナントからは引けない。 */
@@ -243,18 +236,19 @@ async function measureTenantIsolation(): Promise<Measurement> {
   });
   const mine = `tenant-mine-${RUN}`;
   const theirs = `tenant-theirs-${RUN}`;
-  const positiveRan = await ran(async () => {
-    await col.put({ id: 'a', tenantId: mine });
-    return (await col.listByIndex(mine)).some((v) => v.id === 'a');
+  const measured = await measureBooleanCapability({
+    runPositive: () =>
+      ran(async () => {
+        await col.put({ id: 'a', tenantId: mine });
+        return (await col.listByIndex(mine)).some((v) => v.id === 'a');
+      }),
+    runNegative: () => ran(async () => (await col.listByIndex(theirs)).length === 0),
   });
-  const negativeRan = await ran(async () => (await col.listByIndex(theirs)).length === 0);
-  const positive = positiveFromBooleanProbe(positiveRan);
-  const negative = negativeFromBooleanProbe(negativeRan);
   await ran(async () => {
     await col.remove('a');
     return true;
   });
-  return { capability, positiveDesc, negativeDesc, positive, negative, verdict: classifyCapability({ positive, negative }) };
+  return { capability, positiveDesc, negativeDesc, ...measured };
 }
 
 async function main() {
@@ -262,24 +256,52 @@ async function main() {
   // 🔴 このスクリプトは**リソースを作る**（Cognito user pool / ユーザー / DynamoDB 項目）。
   // 実 AWS を向いたまま走らせない。レーン外から直叩きされたときの最後の砦。
   const { resolveAwsRuntimeConfig } = await import('../src/domain/governance/aws-runtime');
-  if (!resolveAwsRuntimeConfig(process.env).emulated) {
+  const resolved = resolveAwsRuntimeConfig(process.env);
+  if (!resolved.emulated) {
     console.error(
       'capability probe はエミュレータ専用です（リソースを作るため）。' +
         'AWS_RUNTIME=ministack|moto|localstack を指定するか `npm run aws:local:capability` を使ってください。',
     );
     process.exit(2);
   }
+  // 🔴 1 つの測定が落ちても他の結果を捨てない（round3 M-ii: TABLE_NAME 異常で
+  // 確定済みの permissive 記録ごと exit 2 になり、🔴 が消えていた）。
+  const probes: ReadonlyArray<[string, () => Promise<Measurement>]> = [
+    // Cognito を先に測る。ここが素通りしていると、他が全部緑でも
+    // 「ローカルで認証を検証できる」とは言えない。
+    ['Cognito USER_SRP_AUTH（管理者ログイン）', measureCognitoSrp],
+    ['DynamoDB 条件付き作成（putIfAbsent の原子性）', measureConditionalWrite],
+    ['DynamoDB GSI テナント分離', measureTenantIsolation],
+  ];
   const results: Measurement[] = [];
-  // Cognito を先に測る。ここが素通りしていると、他が全部緑でも
-  // 「ローカルで認証を検証できる」とは言えない。
-  results.push(await measureCognitoSrp());
-  results.push(await measureConditionalWrite());
-  results.push(await measureTenantIsolation());
+  for (const [capability, run] of probes) {
+    try {
+      results.push(await run());
+    } catch (e) {
+      results.push({
+        capability,
+        positiveDesc: '-',
+        negativeDesc: '-',
+        positive: 'unreachable',
+        negative: 'unreachable',
+        verdict: classifyCapability({ positive: 'unreachable', negative: 'unreachable' }),
+        note: `測定が落ちた: ${(e as Error)?.message}`,
+      });
+    }
+  }
 
   if (json) {
-    console.log(JSON.stringify({ runtime: RUNTIME, endpoint: ENDPOINT, measuredAt: new Date().toISOString(), results }, null, 2));
+    console.log(
+      JSON.stringify(
+        { runtime: resolved.runtime, endpoint: resolved.endpoint ?? ENDPOINT, measuredAt: new Date().toISOString(), results },
+        null,
+        2,
+      ),
+    );
   } else {
-    console.log(`\nruntime=${RUNTIME} endpoint=${ENDPOINT}\n`);
+    // 🔴 記録の値は**実際に解決された設定**から出す（round3 M-i: env の既定値を
+    // そのまま出していたため `runtime=moto endpoint=…:4566` のような嘘の見出しが出ていた）。
+    console.log(`\nruntime=${resolved.runtime} endpoint=${resolved.endpoint ?? ENDPOINT}\n`);
     for (const r of results) {
       console.log(`${matrixMark(r.verdict)}  ${r.capability}  [${r.verdict}]`);
       console.log(`      正: ${r.positiveDesc} -> ${r.positive}`);
@@ -291,7 +313,7 @@ async function main() {
 
   const permissive = results.filter((r) => r.verdict === 'permissive');
   const inconclusive = results.filter((r) => r.verdict === 'inconclusive');
-  const code = exitCodeFor(results.map((r) => r.verdict));
+  const { code } = summarizeMeasurements(results.map((r) => r.verdict));
 
   if (permissive.length > 0) {
     console.error(

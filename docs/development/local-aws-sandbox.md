@@ -1,6 +1,6 @@
 # Local AWS sandbox strategy
 
-Status: **runtime-validated in Claude Code on the web (2026-09-14).** The lane runs end to end there — `up` / `test` / `reset` / `down` — after three defects found by actually running it. The persistent-AWS-dev replacement decision is **recorded: `keep` (for now)** (#1103) — routine development no longer needs AWS, but `/admin/login` is currently verified in no environment; see "Replacement decision gate".
+Status: **runtime-validated in Claude Code on the web (2026-09-14).** The lane runs end to end there — `up` / `test` / `reset` / `down` — after three defects found by actually running it. The persistent-AWS-dev replacement decision is **recorded: `keep` (for now)** (#1103) — routine development no longer needs AWS, but no wrong password has ever been rejected anywhere (#1111); see "Replacement decision gate".
 
 ## Decision
 
@@ -202,11 +202,11 @@ Keep device/soak behavior, Vonage/WebRTC, speech-service fidelity, CloudFront/ce
 Recorded 2026-09-15 (#1103; measurements 2026-09-14/15).
 
 🔴 **This reverses an earlier draft of this section, which said `downsize`.** That draft rested
-twice on an unverified claim about the AWS estate — first "auth is already routed to staging"
-(staging has never been stood up), then "auth is verified on dev" (the live-e2e run that would
-verify it has never executed). Both were caught in review. The measured position is below, and it
-is the *reason* the answer changed: **the Cognito path is currently verified nowhere**, so there
-is nothing to downsize *onto* yet.
+repeatedly on unverified claims about the AWS estate — "auth is already routed to staging"
+(never stood up), then "auth is verified on dev", then "auth is verified nowhere" (the live suite
+did run, once, on 2026-08-04 — but only its positive control). All were caught in review. The measured position is below, and it
+is the *reason* the answer changed: **the one control that matters for auth — rejecting a wrong
+password — has never been exercised anywhere**, so there is nothing to downsize *onto* yet.
 
 What the local lane does settle is that **routine development no longer needs AWS at all**. That
 is a real result and it is what makes a future `downsize` plausible — but it is not sufficient on
@@ -252,38 +252,49 @@ The local lane removes the **routine** need for AWS: persistence, infra shape an
 longer touch it, and `cdk synth`/`deploy`/`diff` round-trip against the emulator. What it cannot
 do is verify authentication — and that is where the decision turns.
 
-🔴 **`/admin/login` (Cognito SRP) is verified in no environment today.** Measured 2026-09-14/15:
+🔴 **A wrong password has never been rejected anywhere — because nobody has ever tried one.**
+Measured 2026-09-14/15, and reconstructed from git history (not from the deploy runbook alone —
+see the warning below):
 
-- **Not locally.** Both emulators are `permissive` — they mint tokens for a wrong password
-  (see [`../local-aws.md`](../local-aws.md), "Cognito は素通りする"). A local green there would
-  be vacuous.
-- **Not on `dev` either.** `npm run test:e2e:live` — the only thing that drives `/admin/login`
-  against a real deployment — **has never run**: `docs/runbook-cloud-aws-deploy.md:1823` (6th
-  deploy, 2026-09-14) records 「lighthouse / live e2e は未実行」, `:1915-1918` records the same
-  for the 5th, and `docs/loop-queue.md:49-53` records `LIVE_BASE_URL` / `LIVE_ADMIN_USER` /
-  `LIVE_ADMIN_PASSWORD` as UNSET. The only real-AWS evidence touching the login route is a smoke
-  check returning HTTP 200 on the page, which exercises no SRP at all.
-- **`staging` does not exist.** It is a type-union member, an IAM/cost pattern and test
-  fixtures; it has never been stood up.
+- **Locally: permissive.** Both emulators mint tokens for a wrong password
+  (see [`../local-aws.md`](../local-aws.md), "Cognito は素通りする"). A local green is vacuous.
+- **On real AWS: the positive control ran once, on 2026-08-04**, three consecutive stable runs
+  (`05db284` / #614; that run found four real defects, including 管理 API 全 401, which is
+  downstream of a *successful* login). It has **not re-run since**: deploy 5 (2026-09-09) and
+  deploy 6 (2026-09-14) both skipped it for missing `LIVE_*`
+  (`docs/runbook-cloud-aws-deploy.md:1823`, `:1915-1918`; `docs/loop-queue.md:49-53`).
+- **The negative control has never run at all.** `tests/e2e-live/kiosk-journey.spec.ts:35-39`
+  asserts `expect(login.ok()).toBeTruthy()` — correct password only. There is no
+  wrong-password case in any suite, local or live.
+- **`staging` does not exist.** Type union, IAM/cost pattern, test fixtures; never stood up.
 
-So `dev` is not "where auth is verified" — it is the only place auth *could* be verified. Shrinking
-or removing it now would remove the only remaining route to that coverage, while the coverage gap
-itself stays open and unrecorded.
+> 🔴 **Warning for whoever writes here next.** Two earlier drafts of this section stated the
+> auth situation wrongly — "already routed to staging", then "verified nowhere" — because both
+> were inferred from `docs/runbook-cloud-aws-deploy.md` + `docs/loop-queue.md`, which record only
+> deploys 4–6. The 2026-08-04 stand-up lives in `docs/deploy-aws.md` and in commit messages.
+> **The estate's verification history is not recoverable from the two documents people read.**
+> That is itself worth fixing (#1111).
+
+So `dev` is the only place the missing check *could* be run. Shrinking or removing it now would
+remove the route to the one control that has never been exercised, while the gap stays open.
 
 **Precondition for revisiting (this is the actionable part):**
 
-1. Supply `LIVE_BASE_URL` / `LIVE_ADMIN_USER` / `LIVE_ADMIN_PASSWORD` during a deploy window and
-   run `npm run test:e2e:live` **once** against a real environment, so the Cognito SRP path has
-   been exercised somewhere at least one time.
+1. Add a **negative** control to the live suite — a wrong password must be *rejected* — and run it
+   against a real environment during a deploy window (`LIVE_BASE_URL` / `LIVE_ADMIN_USER` /
+   `LIVE_ADMIN_PASSWORD`). 🔴 Running the existing `test:e2e:live` as-is does **not** discharge
+   this: it checks only that the correct password works, which is exactly the positive-only
+   evidence this document exists to reject. Tracked as #1111.
 2. Decide where that check lives permanently (an on-demand `dev` re-created from CDK, or a
    `staging` that someone actually stands up).
 3. Then re-evaluate. Deploys already run on demand under human approval with short-lived STS
    credentials (ADR 0009 / #675), so "on-demand rather than always-on" is a change of *lifetime*,
    not of *capability* — it becomes a reasonable call once (1) and (2) hold.
 
-🔴 **The coverage gap deserves its own issue regardless of the downsize decision.** #1103 set out
-to ask whether AWS `dev` could be replaced and instead surfaced that the authentication path is
-unverified everywhere. That is the more important finding.
+🔴 **The coverage gap has its own issue: #1111.** #1103 set out to ask whether AWS `dev` could be
+replaced and instead surfaced that **no wrong password has ever been rejected anywhere** — the
+emulators wave them through, and no suite has ever sent one at real AWS. That is the more
+important finding.
 
 ### Still unmeasured
 

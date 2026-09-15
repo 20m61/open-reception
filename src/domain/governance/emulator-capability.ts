@@ -178,38 +178,93 @@ export function exitCodeFor(verdicts: ReadonlyArray<CapabilityVerdict>): 0 | 1 |
 }
 
 /**
- * 代替の呼び方（別の呼び出し形）で負の対照をやり直すべきか。
+ * 2 つの呼び方で測った負の対照をまとめる。
  *
- * 🔴 **本番の呼び方で正の対照が通らなかったときこそ試す。** そこで諦めて
- * `unavailable` と記録すると、「呼び方を変えれば素通りする」エミュレータが
- * **安全そうな ⛔ に化ける**（Moto が実際にその形だった。レビュー round1 M3）。
- * 既に素通りが分かっているなら、やり直す必要はない。
+ * 🔴 **どちらかが受理したら素通りである。** 「本番の呼び方では拒否されるが、別の呼び方なら
+ * 誤った PW でも通る」エミュレータが実在する（Moto）。本番の呼び方だけを見て `verified` と
+ * 書くと、呼び方を 1 つ変えただけで崩れる保証を ✅ として記録することになる
+ * （レビュー round3 M-iii）。
+ *
+ * 🔴 **正の対照が通っていないときの `rejected` は信用しない。** `cognito-srp.ts` は
+ * `UserNotFoundException` も `NotAuthorizedException` も `invalid_credentials` へ畳むので、
+ * 「ユーザーに到達できていない」と「パスワードが拒否された」が見分けられない
+ * （レビュー round2 MAJOR-3）。
  */
-export function shouldTryFallbackNegative(input: {
+export function combineNegativeOutcomes(input: {
   readonly positive: PositiveOutcome;
   readonly production: NegativeOutcome;
-}): boolean {
-  if (input.production === 'accepted') return false;
-  return input.positive !== 'passed';
+  readonly alternate: NegativeOutcome;
+}): NegativeOutcome {
+  if (input.production === 'accepted' || input.alternate === 'accepted') return 'accepted';
+  if (input.positive !== 'passed') return 'unreachable';
+  return input.production;
 }
 
 /**
- * 負の対照を決める。**代替の呼び方を試すかどうかの判断もここで持つ。**
+ * SRP 能力の測定**そのもの**。効果（ログイン試行）は注入する。
  *
- * 🔴 **呼び出し側に「試すか」の条件を書かせない。** レビュー round2 で、条件を script 側に
- * 置いたままだと `!shouldTryFallbackNegative(...)` と否定するだけで M3（Moto が ⛔ に化ける）
- * が復活し、テストは全部緑のままだった。実行できない層に判断を残さないのが唯一の対策で、
- * `tryFallback` は**効果の注入**であって判断ではない。
+ * 🔴 **これが script 側に無いことが要点である**（レビュー round3 MAJOR-2）。
+ * probe はエミュレータ稼働を前提にするため既定ゲートから実行できない。判定を script に
+ * 置くと、綴りを変えずに意味だけ変える変異（`classifyCapability({negative: 'rejected'})` を
+ * 直接渡す等）が**全テスト緑のまま通る**ことを round3 が 9 種の変異で実測した。
+ * 静的な綴り検査では塞げないので、**合成ごとここへ持ち上げて unit で縛る**。
  */
-export async function decideNegativeOutcome(input: {
+export async function measureSrpCapability(effects: {
+  readonly loginWithCorrectPassword: () => Promise<LoginAttempt>;
+  readonly loginWithWrongPassword: () => Promise<LoginAttempt>;
+  readonly loginWithWrongPasswordAlternateShape: () => Promise<NegativeOutcome>;
+}): Promise<{
   readonly positive: PositiveOutcome;
-  readonly production: NegativeOutcome;
-  readonly tryFallback: () => Promise<NegativeOutcome>;
-}): Promise<NegativeOutcome> {
-  const fallback = shouldTryFallbackNegative(input) ? await input.tryFallback() : 'unreachable';
-  return resolveNegativeOutcome({
-    positive: input.positive,
-    production: input.production,
-    fallback,
+  readonly negative: NegativeOutcome;
+  readonly verdict: CapabilityVerdict;
+}> {
+  const good = await effects.loginWithCorrectPassword();
+  const bad = await effects.loginWithWrongPassword();
+  const alternate = await effects.loginWithWrongPasswordAlternateShape();
+  const positive = positiveFromLoginResult(good);
+  const negative = combineNegativeOutcomes({
+    positive,
+    production: negativeFromLoginResult(bad),
+    alternate,
   });
+  return { positive, negative, verdict: classifyCapability({ positive, negative }) };
+}
+
+/**
+ * 測定結果の要約と終了コード。**「測れなかった」で 0 を返さない。**
+ * 🔴 空の結果を成功として扱わない（round3 W2: `exitCodeFor([])` が素通りした）。
+ */
+export function summarizeMeasurements(verdicts: ReadonlyArray<CapabilityVerdict>): {
+  readonly code: 0 | 1 | 3;
+  readonly permissive: number;
+  readonly inconclusive: number;
+} {
+  if (verdicts.length === 0) {
+    // 1 件も測れていないのは「全部問題なし」ではない。
+    return { code: 3, permissive: 0, inconclusive: 0 };
+  }
+  return {
+    code: exitCodeFor(verdicts),
+    permissive: verdicts.filter((v) => v === 'permissive').length,
+    inconclusive: verdicts.filter((v) => v === 'inconclusive').length,
+  };
+}
+
+/**
+ * 真偽で測る能力の測定**そのもの**。効果は注入する（Cognito と同じ理由。round3 MAJOR-2）。
+ *
+ * `runPositive` は「能力が働くこと」、`runNegative` は「**拒否されること**」を返す。
+ * 🔴 `runNegative` が `true` を返す＝拒否された、である。呼び出し側で反転させない。
+ */
+export async function measureBooleanCapability(effects: {
+  readonly runPositive: () => Promise<BooleanProbe>;
+  readonly runNegative: () => Promise<BooleanProbe>;
+}): Promise<{
+  readonly positive: PositiveOutcome;
+  readonly negative: NegativeOutcome;
+  readonly verdict: CapabilityVerdict;
+}> {
+  const positive = positiveFromBooleanProbe(await effects.runPositive());
+  const negative = negativeFromBooleanProbe(await effects.runNegative());
+  return { positive, negative, verdict: classifyCapability({ positive, negative }) };
 }

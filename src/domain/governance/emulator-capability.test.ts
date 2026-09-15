@@ -8,8 +8,10 @@ import {
   positiveFromBooleanProbe,
   negativeFromBooleanProbe,
   resolveNegativeOutcome,
-  shouldTryFallbackNegative,
-  decideNegativeOutcome,
+  combineNegativeOutcomes,
+  measureBooleanCapability,
+  measureSrpCapability,
+  summarizeMeasurements,
   exitCodeFor,
   type CapabilityVerdict,
   type NegativeOutcome,
@@ -167,62 +169,94 @@ describe('probe の配線（測定結果 → outcome）', () => {
   });
 });
 
-describe('代替の呼び方を試す条件', () => {
-  it('🔴 本番の呼び方で正の対照が落ちたら試す（M3 の再発を止める要）', () => {
-    // レビュー round2: この条件は script 側に手書きされており、反転させても
-    // 全テストが緑のままだった（Moto が ⛔ へ化ける M3 の再発形）。
-    for (const positive of ['failed', 'unreachable'] as const) {
-      expect(shouldTryFallbackNegative({ positive, production: 'rejected' })).toBe(true);
-      expect(shouldTryFallbackNegative({ positive, production: 'unreachable' })).toBe(true);
-    }
-  });
 
-  it('正の対照が通っているなら、本番の呼び方の測定をそのまま使う', () => {
-    expect(shouldTryFallbackNegative({ positive: 'passed', production: 'rejected' })).toBe(false);
-  });
-
-  it('既に素通りが分かっているならやり直さない', () => {
+describe('2 つの呼び方の負の対照をまとめる', () => {
+  it('🔴 どちらかが受理したら素通り（呼び方 1 つで崩れる保証を ✅ にしない）', () => {
     for (const positive of ['passed', 'failed', 'unreachable'] as const) {
-      expect(shouldTryFallbackNegative({ positive, production: 'accepted' })).toBe(false);
+      expect(combineNegativeOutcomes({ positive, production: 'accepted', alternate: 'rejected' })).toBe('accepted');
+      expect(combineNegativeOutcomes({ positive, production: 'rejected', alternate: 'accepted' })).toBe('accepted');
     }
+  });
+
+  it('🔴 正の対照が通っていないときの rejected は信用しない', () => {
+    expect(
+      combineNegativeOutcomes({ positive: 'failed', production: 'rejected', alternate: 'unreachable' }),
+    ).toBe('unreachable');
+  });
+
+  it('正の対照が通っていれば、本番の呼び方の測定を使う', () => {
+    expect(
+      combineNegativeOutcomes({ positive: 'passed', production: 'rejected', alternate: 'unreachable' }),
+    ).toBe('rejected');
   });
 });
 
-describe('負の対照の決定（fallback の起動判断ごと）', () => {
-  it('🔴 正の対照が落ちたら fallback を実際に呼ぶ', async () => {
-    let called = 0;
-    const out = await decideNegativeOutcome({
-      positive: 'failed',
-      production: 'rejected',
-      tryFallback: async () => {
-        called += 1;
-        return 'accepted';
-      },
-    });
-    expect(called).toBe(1);
-    expect(out).toBe('accepted');
+describe('SRP 能力の測定（合成そのもの）', () => {
+  const effects = (good: unknown, bad: unknown, alternate: unknown) => ({
+    loginWithCorrectPassword: async () => good as never,
+    loginWithWrongPassword: async () => bad as never,
+    loginWithWrongPasswordAlternateShape: async () => alternate as never,
   });
 
-  it('正の対照が通っていれば fallback を呼ばず、実測した値を返す', async () => {
-    let called = 0;
-    const out = await decideNegativeOutcome({
-      positive: 'passed',
-      production: 'rejected',
-      tryFallback: async () => {
-        called += 1;
-        return 'accepted';
-      },
-    });
-    expect(called).toBe(0);
-    expect(out).toBe('rejected');
+  it('🔴 素通りするエミュレータは permissive（✅ にならない）', async () => {
+    const r = await measureSrpCapability(
+      effects({ ok: true, idToken: 'x' }, { ok: true, idToken: 'x' }, 'unreachable'),
+    );
+    expect(r).toEqual({ positive: 'passed', negative: 'accepted', verdict: 'permissive' });
   });
 
-  it('🔴 fallback が素通りを見つけられなくても、信用できない rejected を残さない', async () => {
-    const out = await decideNegativeOutcome({
-      positive: 'failed',
-      production: 'rejected',
-      tryFallback: async () => 'unreachable',
-    });
-    expect(out).toBe('unreachable');
+  it('🔴 本番の呼び方では拒否されるが別の呼び方で通るなら permissive', async () => {
+    const r = await measureSrpCapability(
+      effects({ ok: false, reason: 'invalid_credentials' }, { ok: false, reason: 'invalid_credentials' }, 'accepted'),
+    );
+    expect(r.verdict).toBe('permissive');
+  });
+
+  it('正しく検証するエミュレータだけが verified', async () => {
+    const r = await measureSrpCapability(
+      effects({ ok: true, idToken: 'x' }, { ok: false, reason: 'invalid_credentials' }, 'unreachable'),
+    );
+    expect(r).toEqual({ positive: 'passed', negative: 'rejected', verdict: 'verified' });
+  });
+
+  it('🔴 負の対照に正しいパスワードを使う配線は verified を作れない', async () => {
+    // round3 W3: 負の対照が「正しい PW」で呼ばれると必ず成功 = accepted になり、
+    // permissive へ倒れる（✅ にはならない）。
+    const r = await measureSrpCapability(
+      effects({ ok: true, idToken: 'x' }, { ok: true, idToken: 'x' }, 'unreachable'),
+    );
+    expect(r.verdict).not.toBe('verified');
+  });
+});
+
+describe('測定結果の要約', () => {
+  it('🔴 1 件も測れていないのを成功にしない（round3 W2）', () => {
+    expect(summarizeMeasurements([]).code).toBe(3);
+  });
+
+  it('素通りがあれば 1、判定不能があれば 3', () => {
+    expect(summarizeMeasurements(['permissive', 'verified']).code).toBe(1);
+    expect(summarizeMeasurements(['inconclusive', 'verified']).code).toBe(3);
+    expect(summarizeMeasurements(['verified', 'unavailable']).code).toBe(0);
+  });
+});
+
+describe('真偽で測る能力の測定（合成そのもの）', () => {
+  const eff = (p: unknown, n: unknown) => ({
+    runPositive: async () => p as never,
+    runNegative: async () => n as never,
+  });
+
+  it('🔴 負の対照が拒否しなければ permissive（✅ にならない）', async () => {
+    expect((await measureBooleanCapability(eff(true, false))).verdict).toBe('permissive');
+  });
+
+  it('拒否されたときだけ verified', async () => {
+    expect((await measureBooleanCapability(eff(true, true))).verdict).toBe('verified');
+  });
+
+  it('例外は判定不能（false と混ぜない）', async () => {
+    expect((await measureBooleanCapability(eff(true, 'threw'))).verdict).toBe('inconclusive');
+    expect((await measureBooleanCapability(eff('threw', true))).verdict).toBe('inconclusive');
   });
 });
