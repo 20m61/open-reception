@@ -36,7 +36,9 @@ const read = (rel: string) => readFileSync(resolve(process.cwd(), rel), 'utf8');
 
 const RUNTIME_COLUMNS = { moto: 'Moto', ministack: 'MiniStack' } as const;
 
-const RECORDINGS: ReadonlyArray<CapabilityRecording> = ['ministack', 'moto'].map((runtime) =>
+const RUNTIMES = ['ministack', 'moto'] as const;
+
+const RECORDINGS: ReadonlyArray<CapabilityRecording> = RUNTIMES.map((runtime) =>
   parseRecording(JSON.parse(read(`docs/evidence/emulator-capability.${runtime}.json`))),
 );
 
@@ -46,7 +48,9 @@ describe('実測記録', () => {
    * （`CLAUDE.md`「検証の作法」の「下界を併せて縛る」）。**何がどれだけ在るか**を先に固定する。
    */
   it('両 runtime の記録が在り、probe の全能力を覆っている', () => {
-    expect(RECORDINGS.map((r) => r.runtime).sort()).toEqual(['ministack', 'moto']);
+    // 🔴 **順序を保ったまま比べる。** `sort()` すると「ファイル名と中身の runtime が
+    // 入れ替わっている」（`AWS_RUNTIME=moto … > …ministack.json`）を集合として見逃す。
+    expect(RECORDINGS.map((r) => r.runtime)).toEqual([...RUNTIMES]);
     for (const recording of RECORDINGS) {
       expect(recording.results.map((r) => r.capability).sort()).toEqual([...PROBE_CAPABILITIES].sort());
       expect(Number.isNaN(Date.parse(recording.measuredAt))).toBe(false);
@@ -123,8 +127,13 @@ describe('docs/local-aws.md の compatibility matrix', () => {
    * 「測っていない」→「操作は通った」の格上げは、probe が測らない行なので verdict では
    * 縛れない。**語彙が消えていないこと**だけを下界として置く（レビュー MAJOR-4b）。
    */
-  it('（未測）の行が matrix に実在する', () => {
-    expect(table!.rows.some((row) => row.cells.includes(UNMEASURED_MARK))).toBe(true);
+  it('（未測）を持つ行が増減していない', () => {
+    // 🔴 「1 つ以上ある」だと、2 件目が増えた後は 1 件目の格上げが静かに通る（#813 の
+    // 「件数 vs 下界」と同型の劣化）。**行の集合**で縛って増減の両方を見えるようにする。
+    const unmeasured = table!.rows
+      .filter((row) => row.cells.some((cell) => cell.startsWith(UNMEASURED_MARK)))
+      .map((row) => row.cells[0]);
+    expect(unmeasured).toEqual(['CloudFormation / CDK deploy + diff']);
   });
 
   it('実測記録と食い違わない', () => {

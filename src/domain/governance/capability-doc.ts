@@ -77,12 +77,18 @@ export const MATRIX_DOC_LABELS: Readonly<Record<ProbeCapability, string>> = {
  * 各能力の**対照の説明**。probe（`scripts/aws-local-capability.ts`）はここから読み、
  * 記録の読み取りはここと一致することを要求する。
  *
- * 🔴 **これが probe と記録を機械で結ぶ唯一の紐である。** 無いと、probe 側で測定関数の
- * 対応を取り違えても（能力 A のキーに能力 B の測定を割り当てる）型も検査も何も言わず、
- * 次に記録を取り直した瞬間に**中身が入れ替わった記録**が出来て、突き合わせはその誤ラベルを
- * 忠実に文書へ写す。レビューが実測した（`Record` のキーと値を入れ替えても typecheck 緑・
- * テスト緑）。**説明を変えたら記録を取り直すこと** —— 説明は「何を測ったか」なので、
- * 変わったなら記録は古い。
+ * 🔴 **何を検出できて、何を検出できないか。** probe は説明をここから読むので、probe が
+ * 出した記録で説明が能力名と食い違うことは**構造的に起こらない**。この突き合わせが
+ * 落とせるのは (a) 記録の手編集、(b) 測定が落ちたときの catch 経路、(c) ここの文言を
+ * 変えたのに記録を取り直していない場合 ―― の 3 つである。
+ *
+ * **測定関数の対応の取り違え**（`Record` のキーと値を入れ替える）を実際に止めているのは
+ * `scripts/aws-local-capability.ts` の実行時一致検査と、`parseRecording` の網羅検査
+ * （取り違えると同じ能力が 2 件・別の能力が 0 件になる）である。**測定関数の本体そのものを
+ * 入れ替える**型は、静的にも記録からも検出できない（人のレビューだけが守り）。
+ * 1 周目のこのコメントは「唯一の紐」と書いていたが、それは実態より強い主張だった。
+ *
+ * **説明を変えたら記録を取り直すこと** —— 説明は「何を測ったか」なので、変わったなら記録は古い。
  */
 export const CAPABILITY_CONTROLS: Readonly<
   Record<ProbeCapability, { readonly positiveDesc: string; readonly negativeDesc: string }>
@@ -296,13 +302,35 @@ export type DiscrepancyKind =
   /** 記号が実測の verdict と食い違う。 */
   | 'mark_mismatch'
   /** probe の裏付けが無い行が、負の対照なしでは書けない記号を使っている。 */
-  | 'reserved_mark_outside_probe';
+  | 'reserved_mark_outside_probe'
+  /** probe の裏付けが無い行が、語彙に無い記号を使っている。 */
+  | 'unknown_mark';
 
 export type Discrepancy = {
   readonly kind: DiscrepancyKind;
   readonly message: string;
   readonly line?: number;
 };
+
+/**
+ * probe の裏付けが無い行のセルに許される記号。**ホワイトリストである。**
+ *
+ * 🔴 **ブラックリスト（予約記号との完全一致）では足りない。** `✅ 実測` のように
+ * **装飾を 1 文字足すだけ**で「未測の行に ✅」が通ってしまう ―― レビュー 2 周目が実測した
+ * （`| DynamoDB TTL | | ✅ 実測 | ✅ 実測 |` で検査は緑のままだった）。これは
+ * `.claude/rules/opus5-autonomous-loop.md` の #813 と同型（綴りを足して突破される族）で、
+ * 「使える記号を数え上げる」側に倒さないと塞がらない。
+ *
+ * 末尾の補足は許す（`⛔ 405` のように「なぜ使えないか」を書きたい行が実在する）ので
+ * **前方一致**で判定する。逆に、予約記号を**含む**セルは補足があっても弾く。
+ */
+function unbackedMarkVocabulary(): ReadonlyArray<string> {
+  return [
+    POSITIVE_ONLY_MARK,
+    UNMEASURED_MARK,
+    ...CAPABILITY_VERDICTS.filter((v) => !NEGATIVE_CONTROL_ONLY_VERDICTS.includes(v)).map(matrixMark),
+  ];
+}
 
 /** セルが verdict を主張しているとみなせる表記（記号のみ / 記号 + verdict 名）。 */
 function acceptedCells(verdict: CapabilityVerdict): ReadonlyArray<string> {
@@ -406,17 +434,30 @@ export function reconcileCapabilityDoc(input: {
       // probe の裏付けが無い行は、負の対照なしでは書けない記号を使えない。
       for (const header of Object.values(runtimeColumns)) {
         const cell = cellAt(row, header);
+        // 🔴 **含んでいたら弾く。** 完全一致だと `✅ 実測` が素通りする。
         const reserved = NEGATIVE_CONTROL_ONLY_VERDICTS.find((verdict) =>
-          acceptedCells(verdict).includes(cell),
+          cell.includes(matrixMark(verdict)),
         );
         if (reserved !== undefined) {
           found.push({
             kind: 'reserved_mark_outside_probe',
             line: row.line,
             message:
-              `「${label}」の ${header} が ${cell}（= ${reserved}）と書いてあるが、` +
+              `「${label}」の ${header} が ${cell}（= ${reserved} の記号を含む）と書いてあるが、` +
               `この記号は負の対照を当てた行にしか使えない。正の対照だけなら ${POSITIVE_ONLY_MARK}、` +
               `測っていないなら ${UNMEASURED_MARK}`,
+          });
+          continue;
+        }
+        // 🔴 **語彙の外は「知らない主張」として落とす。** 予約記号の一覧を守るだけでは、
+        // 新しい記号を発明して同じ過大主張を書ける。
+        if (!unbackedMarkVocabulary().some((mark) => cell.startsWith(mark))) {
+          found.push({
+            kind: 'unknown_mark',
+            line: row.line,
+            message:
+              `「${label}」の ${header} が ${cell === '' ? '（空）' : cell} と書いてあるが、` +
+              `probe の裏付けが無い行で使えるのは ${unbackedMarkVocabulary().join(' / ')} のいずれかで始まる記号だけ`,
           });
         }
       }

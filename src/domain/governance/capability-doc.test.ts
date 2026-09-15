@@ -10,6 +10,7 @@ import {
   parseRecording,
   reconcileCapabilityDoc,
   type CapabilityRecording,
+  type ProbeCapability,
 } from './capability-doc';
 import { CAPABILITY_VERDICTS, matrixMark } from './emulator-capability';
 
@@ -39,7 +40,9 @@ const entry = (capability: string, verdict: string, over: Record<string, unknown
   capability,
   ...(OUTCOMES[verdict] ?? { positive: 'passed', negative: 'rejected' }),
   verdict,
-  ...CAPABILITY_CONTROLS[capability as never],
+  // `as never` で索引エラーを黙らせない（規約 7「型安全性低下で green にしない」）。
+  // 知らない能力名のケースを実際に作るので、`?? {}` で実行時の undefined も明示する。
+  ...(CAPABILITY_CONTROLS[capability as ProbeCapability] ?? {}),
   ...over,
 });
 
@@ -138,7 +141,7 @@ describe('表のパース', () => {
 
 describe('記録の読み取り', () => {
   it('知らない verdict を受け付けない', () => {
-    expect(() => REC('moto', { [COND]: 'ok' })).toThrow(/verdict/);
+    expect(() => REC('moto', { [COND]: 'ok' })).toThrow(/知らない verdict/);
   });
 
   it('probe が測らない能力名を受け付けない', () => {
@@ -238,6 +241,34 @@ describe('突き合わせ', () => {
     expect(kinds(CLEAN.replace(`| CDK | | ${UNMEASURED_MARK}`, '| CDK | | 🔴 素通り'))).toEqual([
       'reserved_mark_outside_probe',
     ]);
+  });
+
+  /**
+   * 🔴 **装飾を足して突破する族**（#813 と同型）。完全一致のブラックリストだと
+   * `✅ 実測` が素通りする ―― レビュー 2 周目が実測した。装飾の有無**両方**を
+   * 回帰行列に残す（片方だけでは今と同じ穴が開く）。
+   */
+  it.each(['✅ 実測', '✅', '✅ (Moto のみ)', '🔴 素通り（一部）', '🔴 **素通り**'])(
+    '裏付けの無い行の %s を弾く',
+    (cell) => {
+      expect(kinds(CLEAN.replace(`| S3 | | ${POSITIVE_ONLY_MARK}`, `| S3 | | ${cell}`))).toEqual([
+        'reserved_mark_outside_probe',
+      ]);
+    },
+  );
+
+  it('裏付けの無い行が語彙の外の記号を使ったら落ちる', () => {
+    expect(kinds(CLEAN.replace(`| S3 | | ${POSITIVE_ONLY_MARK}`, '| S3 | | たぶん動く'))).toEqual([
+      'unknown_mark',
+    ]);
+    // 空欄も「主張なし」として通さない（凡例は（未測）と書けと言っている）。
+    expect(kinds(CLEAN.replace(`| S3 | | ${POSITIVE_ONLY_MARK}`, '| S3 | | '))).toEqual([
+      'unknown_mark',
+    ]);
+  });
+
+  it('末尾の補足は許す（⛔ 405 のような行が実在する）', () => {
+    expect(kinds(CLEAN.replace(`| S3 | | ${POSITIVE_ONLY_MARK}`, '| S3 | | ⛔ 405'))).toEqual([]);
   });
 
   it('⛔ は正の対照だけで書けるので、予約されていない', () => {
