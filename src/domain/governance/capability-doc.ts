@@ -211,6 +211,8 @@ export type DiscrepancyKind =
   | 'missing_runtime_recording'
   /** probe が測っている能力の行が表に無い。 */
   | 'missing_row'
+  /** 記録にその能力の測定が無い（記録が壊れている。`parseRecording` を通していれば起きない）。 */
+  | 'missing_measurement'
   /** probe の裏付けが無いのに「負の対照つき」を主張している。 */
   | 'unbacked_negative_control'
   /** probe が測っているのに「負の対照つき」の印が無い（未測と区別できない）。 */
@@ -325,7 +327,18 @@ export function reconcileCapabilityDoc(input: {
       const recording = byRuntime.get(runtime);
       if (recording === undefined) continue;
       const verdict = recording.results.find((r) => r.capability === capability)?.verdict;
-      if (verdict === undefined) continue; // parseRecording が全能力を保証している
+      if (verdict === undefined) {
+        // 🔴 **黙って飛ばさない。** `parseRecording` を通した記録なら全能力が揃っている
+        // （そちらが保証する）。揃っていない記録がここへ来たということは、記録を
+        // 組み立てた側が壊れている ―― それを `continue` で畳むと、**測っていない行が
+        // 「一致した」として緑になる**。表の検査としては最悪の外し方である。
+        found.push({
+          kind: 'missing_measurement',
+          line: row.line,
+          message: `${runtime} の記録に「${capability}」の測定が無い`,
+        });
+        continue;
+      }
       const cell = cellAt(row, header);
       if (!acceptedCells(verdict).includes(cell)) {
         found.push({

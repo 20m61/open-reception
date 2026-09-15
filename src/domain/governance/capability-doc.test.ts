@@ -119,6 +119,16 @@ describe('記録の読み取り', () => {
     expect(() => REC('moto', { '知らない能力': 'verified' })).toThrow(/capability/);
   });
 
+  /**
+   * 🔴 probe は必ず全能力を 1 件ずつ出す（落ちた測定も `inconclusive` として入る）。
+   * 欠けた記録を読めてしまうと、**測っていない行が「一致した」として緑になる**。
+   * この guard は変異検証（M13）で**生存**したので後から縛った ―― 守りが
+   * 効いているかは、書いた時点では分からない。
+   */
+  it('能力が欠けた記録を受け付けない', () => {
+    expect(() => REC('moto', { [COND]: 'verified', [TENANT]: 'verified' })).toThrow(/欠けている/);
+  });
+
   it('runtime と measuredAt が要る', () => {
     expect(() => parseRecording({ results: [] })).toThrow(/runtime/);
     expect(() => parseRecording({ runtime: 'moto', results: [] })).toThrow(/measuredAt/);
@@ -218,6 +228,23 @@ describe('突き合わせ', () => {
       negativeControlColumn: '負の対照',
     });
     expect(found.length).toBeGreaterThan(0);
+  });
+
+  /** `parseRecording` を通さずに組み立てた記録が来ても、黙って飛ばさない。 */
+  it('記録に測定が欠けていたら、一致ではなく欠落として報告する', () => {
+    const broken = [
+      { ...RECORDINGS[0]!, results: RECORDINGS[0]!.results.filter((r) => r.capability !== TENANT) },
+      RECORDINGS[1]!,
+    ];
+    const found = reconcileCapabilityDoc({
+      table: table(CLEAN),
+      labels: MATRIX_DOC_LABELS,
+      recordings: broken,
+      runtimeColumns: RUNTIME_COLUMNS,
+      negativeControlColumn: '負の対照',
+    });
+    expect(found.map((d) => d.kind)).toEqual(['missing_measurement']);
+    expect(found[0]?.message).toContain('moto');
   });
 
   it('表そのものが見つからなければ落ちる', () => {
