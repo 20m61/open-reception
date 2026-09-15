@@ -219,3 +219,23 @@ describe('aws-local-capability.ts: 判定も合成も配線に持たせない (#
     expect(probe).toMatch(/resolved\.emulated/);
   });
 });
+
+describe('aws-local.sh: stdout はデータ専用 (#1110 codex review)', () => {
+  const source = readFileSync(SCRIPT, 'utf8');
+
+  it('🔴 進捗メッセージを stdout へ出さない（`--json` が読めなくなる）', () => {
+    // `capability` の dispatch は start_emulator / bootstrap を先に走らせるので、
+    // 進捗が stdout へ出ると `npm run aws:local:capability -- --json` の先頭に
+    // `[aws-local] ...` が混ざり、**JSON として parse できなくなる**（実測）。
+    // #1113 はこの出力を機械で読む前提なので、ここで縛る。
+    const leaked = source
+      .split('\n')
+      .filter((l) => l.includes('echo "[aws-local]') && !l.includes('>&2'));
+    expect(leaked, `進捗が stdout へ漏れている:\n${leaked.join('\n')}`).toEqual([]);
+  });
+
+  it('env / status のデータは stdout のまま（下界: 全部 stderr にして上を空虚に満たさない）', () => {
+    const laneEnv = source.slice(source.indexOf('lane_env()'), source.indexOf('status()'));
+    expect(laneEnv).toMatch(/echo "AWS_RUNTIME=\$\{AWS_RUNTIME\}"\s*$/m);
+  });
+});

@@ -15,6 +15,10 @@
 # 実 AWS を叩く経路をここに作ると、誤って本番へ向く面が増えるだけで得が無い。
 set -euo pipefail
 
+# 🔴 進捗メッセージ（`[aws-local] ...`）は **stderr** へ出す。stdout は
+# `env` / `status` / `capability --json` の**データ専用**である ―― 混ぜると
+# `npm run aws:local:capability -- --json` の出力が JSON として読めなくなる
+# （#1110 のレビューで実測。#1113 はこの出力を機械で読む前提）。
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 
@@ -109,13 +113,13 @@ ensure_venv() {
     moto)      pkg="moto[server]==${MOTO_VERSION}" ;;
   esac
   if [ ! -x "${bin}/python" ]; then
-    echo "[aws-local] creating venv: ${dir}"
+    echo "[aws-local] creating venv: ${dir}" >&2
     "$(python_bin)" -m venv "$dir"
     "${bin}/pip" install -q --upgrade pip
   fi
   # 固定版が入っているかだけ見る（毎回 install しない）。
   if ! "${bin}/pip" show "${pkg%%[<=>[]*}" >/dev/null 2>&1; then
-    echo "[aws-local] installing ${pkg}"
+    echo "[aws-local] installing ${pkg}" >&2
     "${bin}/pip" install -q "$pkg"
   fi
 }
@@ -129,7 +133,7 @@ wait_ready() {
   local i
   for ((i = 1; i <= READY_SECONDS; i++)); do
     if emulator_healthy; then
-      echo "[aws-local] ${AWS_RUNTIME} ready (${i}s) at ${AWS_ENDPOINT_URL}"
+      echo "[aws-local] ${AWS_RUNTIME} ready (${i}s) at ${AWS_ENDPOINT_URL}" >&2
       return 0
     fi
     sleep 1
@@ -152,14 +156,14 @@ start_emulator() {
     return 0
   fi
   if emulator_healthy; then
-    echo "[aws-local] ${AWS_RUNTIME} already running at ${AWS_ENDPOINT_URL}"
+    echo "[aws-local] ${AWS_RUNTIME} already running at ${AWS_ENDPOINT_URL}" >&2
     return 0
   fi
   ensure_venv
   mkdir -p "$AWS_LOCAL_HOME"
   local bin port log
   bin="$(venv_bin)"; port="$(port_of_endpoint)"; log="${AWS_LOCAL_HOME}/${AWS_RUNTIME}.log"
-  echo "[aws-local] starting ${AWS_RUNTIME} on port ${port} (no Docker)"
+  echo "[aws-local] starting ${AWS_RUNTIME} on port ${port} (no Docker)" >&2
   case "$AWS_RUNTIME" in
     ministack) GATEWAY_PORT="$port" nohup "${bin}/ministack" -d >"$log" 2>&1 || true ;;
     moto)      nohup "${bin}/moto_server" -p "$port" -H 127.0.0.1 >"$log" 2>&1 & ;;
@@ -177,7 +181,7 @@ stop_emulator() {
     ministack) [ -x "${bin}/ministack" ] && "${bin}/ministack" --stop >/dev/null 2>&1 || true ;;
     moto)      pkill -f "moto_server -p $(port_of_endpoint)" >/dev/null 2>&1 || true ;;
   esac
-  echo "[aws-local] ${AWS_RUNTIME} stopped"
+  echo "[aws-local] ${AWS_RUNTIME} stopped" >&2
 }
 
 # ---------------------------------------------------------------------------
@@ -194,7 +198,7 @@ bootstrap() {
     exit 1
   }
   if ! aws_cli dynamodb describe-table --table-name "$TABLE_NAME" >/dev/null 2>&1; then
-    echo "[aws-local] creating DynamoDB table: ${TABLE_NAME}"
+    echo "[aws-local] creating DynamoDB table: ${TABLE_NAME}" >&2
     aws_cli dynamodb create-table \
       --table-name "$TABLE_NAME" \
       --attribute-definitions \
@@ -215,16 +219,16 @@ bootstrap() {
     --query 'TimeToLiveDescription.TimeToLiveStatus' --output text 2>/dev/null |
     grep -v '^>' | awk 'NF' | tail -n 1 || true)"
   if [ "$ttl" != "ENABLED" ] && [ "$ttl" != "ENABLING" ]; then
-    echo "[aws-local] enabling DynamoDB TTL on 'ttl'"
+    echo "[aws-local] enabling DynamoDB TTL on 'ttl'" >&2
     aws_cli dynamodb update-time-to-live --table-name "$TABLE_NAME" \
       --time-to-live-specification 'Enabled=true,AttributeName=ttl' >/dev/null
   fi
-  echo "[aws-local] bootstrap complete (endpoint=${AWS_ENDPOINT_URL} table=${TABLE_NAME})"
+  echo "[aws-local] bootstrap complete (endpoint=${AWS_ENDPOINT_URL} table=${TABLE_NAME})" >&2
 }
 
 # 🔴 seed は合成データのみ。dev/staging/production のデータを複製しない。
 seed() {
-  echo "[aws-local] seeding deterministic synthetic data"
+  echo "[aws-local] seeding deterministic synthetic data" >&2
   npm run seed:dynamodb -- --with-mock
 }
 
@@ -246,7 +250,7 @@ reset_state() {
   start_emulator
   bootstrap
   seed
-  echo "[aws-local] reset complete"
+  echo "[aws-local] reset complete" >&2
 }
 
 lane_env() {
