@@ -70,6 +70,11 @@ import {
 } from '@aws-sdk/client-cognito-identity-provider';
 import { createSrpSession, signSrpSession, wrapInitiateAuth, wrapAuthChallenge } from 'cognito-srp-helper';
 import {
+  CAPABILITY_CONTROLS,
+  PROBE_CAPABILITIES,
+  type ProbeCapability,
+} from '../src/domain/governance/capability-doc';
+import {
   classifyCapability,
   matrixMark,
   measureBooleanCapability,
@@ -87,7 +92,7 @@ const RUN = `${Date.now()}-${Math.random().toString(16).slice(2, 8)}`;
 const PASSWORD = 'TEST-Capability-Passw0rd!';
 
 type Measurement = {
-  readonly capability: string;
+  readonly capability: ProbeCapability;
   readonly positiveDesc: string;
   readonly negativeDesc: string;
   readonly positive: PositiveOutcome;
@@ -157,9 +162,11 @@ async function wrongPasswordWithPlainUsername(
  * 負 = **誤ったパスワードが拒否されること**（ここが 2026-09-14 に落ちていた）。
  */
 async function measureCognitoSrp(): Promise<Measurement> {
-  const capability = 'Cognito USER_SRP_AUTH（管理者ログイン）';
-  const positiveDesc = '正しいパスワードで ID トークンが出る';
-  const negativeDesc = '🔴 誤ったパスワードが拒否される';
+  // 🔴 **能力名は測定関数自身が持つ。** 呼び出し側から渡させると、対応表のキーと値が
+  // ずれたときに誰も気づけない（レビュー実測: `Record` のキーと値を入れ替えても
+  // typecheck 緑・テスト緑で、次の記録が中身の入れ替わったものになる）。
+  const capability: ProbeCapability = 'Cognito USER_SRP_AUTH（管理者ログイン）';
+  const { positiveDesc, negativeDesc } = CAPABILITY_CONTROLS[capability];
   // 🔴 endpoint / 資格情報を手で書かない。`awsClientConfig()` を通すことで
   // 実資格情報の混入は `resolveAwsRuntimeConfig` が fail-fast する（ADR 0010）。
   const cip = new CognitoIdentityProviderClient(awsClientConfig(undefined, { region: REGION }));
@@ -236,9 +243,8 @@ async function measureCognitoSrp(): Promise<Measurement> {
 
 /** DynamoDB 条件付き作成: 正 = 新規は作れる / 負 = 重複は拒否される。 */
 async function measureConditionalWrite(): Promise<Measurement> {
-  const capability = 'DynamoDB 条件付き作成（putIfAbsent の原子性）';
-  const positiveDesc = '新規 id の作成が成功する';
-  const negativeDesc = '同じ id の二重作成が拒否される';
+  const capability: ProbeCapability = 'DynamoDB 条件付き作成（putIfAbsent の原子性）';
+  const { positiveDesc, negativeDesc } = CAPABILITY_CONTROLS[capability];
   const { DynamoBackend } = await import('../src/lib/data/dynamodb');
   const col = new DynamoBackend().collection<{ id: string; tenantId: string }>(`cap-cond-${RUN}`, {
     indexedField: 'tenantId',
@@ -260,9 +266,8 @@ async function measureConditionalWrite(): Promise<Measurement> {
 
 /** DynamoDB テナント分離: 正 = 自テナントは引ける / 負 = 他テナントからは引けない。 */
 async function measureTenantIsolation(): Promise<Measurement> {
-  const capability = 'DynamoDB GSI テナント分離';
-  const positiveDesc = '自テナントの項目が index 越しに引ける';
-  const negativeDesc = '他テナントからは引けない';
+  const capability: ProbeCapability = 'DynamoDB GSI テナント分離';
+  const { positiveDesc, negativeDesc } = CAPABILITY_CONTROLS[capability];
   const { DynamoBackend } = await import('../src/lib/data/dynamodb');
   const col = new DynamoBackend().collection<{ id: string; tenantId: string }>(`cap-tenant-${RUN}`, {
     indexedField: 'tenantId',
@@ -299,17 +304,30 @@ async function main() {
   }
   // 🔴 1 つの測定が落ちても他の結果を捨てない（round3 M-ii: TABLE_NAME 異常で
   // 確定済みの permissive 記録ごと exit 2 になり、🔴 が消えていた）。
-  const probes: ReadonlyArray<[string, () => Promise<Measurement>]> = [
-    // Cognito を先に測る。ここが素通りしていると、他が全部緑でも
-    // 「ローカルで認証を検証できる」とは言えない。
-    ['Cognito USER_SRP_AUTH（管理者ログイン）', measureCognitoSrp],
-    ['DynamoDB 条件付き作成（putIfAbsent の原子性）', measureConditionalWrite],
-    ['DynamoDB GSI テナント分離', measureTenantIsolation],
-  ];
+  // 🔴 **能力名は `PROBE_CAPABILITIES`（`capability-doc.ts`）が唯一の出どころ**である。
+  // ここで綴りを変えると、記録済み JSON と文書の突き合わせ（#1113 /
+  // `tests/config/capability-doc-sync.test.ts`）が**型で**落ちる ―― probe が能力を
+  // 足した／消したのに表が追随しない、という型を機械で止めるため。
+  // `Record<ProbeCapability, ...>` なので網羅も型が強制する。
+  const runners: Readonly<Record<ProbeCapability, () => Promise<Measurement>>> = {
+    // Cognito を先に測る（`PROBE_CAPABILITIES` の順序）。ここが素通りしていると、
+    // 他が全部緑でも「ローカルで認証を検証できる」とは言えない。
+    'Cognito USER_SRP_AUTH（管理者ログイン）': measureCognitoSrp,
+    'DynamoDB 条件付き作成（putIfAbsent の原子性）': measureConditionalWrite,
+    'DynamoDB GSI テナント分離': measureTenantIsolation,
+  };
   const results: Measurement[] = [];
-  for (const [capability, run] of probes) {
+  for (const capability of PROBE_CAPABILITIES) {
     try {
-      results.push(await run());
+      const measurement = await runners[capability]();
+      // 🔴 **対応表のキーと、測定関数が名乗った能力が一致すること。** ずれていたら
+      // 記録は「能力 A の名前で能力 B を測った結果」になる。静かに出荷しない。
+      if (measurement.capability !== capability) {
+        throw new Error(
+          `測定関数の対応がずれている: ${capability} のはずが ${measurement.capability} を測った`,
+        );
+      }
+      results.push(measurement);
     } catch (e) {
       results.push({
         capability,

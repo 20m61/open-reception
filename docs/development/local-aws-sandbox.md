@@ -223,12 +223,18 @@ make the same error.** Building that ledger is a precondition in #1112.
 この PR のレビューは 5 周にわたり、**手で維持する証拠表のセルが毎回嘘になる**ことを
 検出し続けた（lane の取り違え、負の対照の有無の取り違え、`aws:local:test` が叩かない
 サービスの根拠にされる、IAM の「作成」と「評価」の混同）。**セルを直すより、機械が
-言えないことを書かないほうが確実である。** 機械検査の整備は #1113。
+言えないことを書かないほうが確実である。**
+
+🔴 **下表は probe の実測記録と機械で突き合わせてある**（#1113 /
+`tests/config/capability-doc-sync.test.ts`）。突き合わせ相手は
+`docs/evidence/emulator-capability.<runtime>.json` で、**手で書き換えると落ちる**。
+表を直す前に記録を取り直すこと（`docs/evidence/README.md`）。同じ記録が
+[`../local-aws.md`](../local-aws.md) の matrix も縛っているので、**2 箇所が黙ってずれない**。
 
 **機械が測っていること**（`npm run aws:local:capability`。正の対照と負の対照を組で当てる。
 2026-09-15 / MiniStack 1.5.11 / Moto 5.2.3 で両 runtime とも exit 1 を確認。
 🔴 **exit code は oracle にならない** —— Cognito の `permissive` が単独で exit 1 を固定するので、
-DynamoDB 行が壊れても exit は変わらない。#1113）:
+DynamoDB 行が壊れても exit は変わらない。だから突き合わせは**行ごとの verdict** で行う）:
 
 | 能力 | MiniStack | Moto |
 | --- | --- | --- |

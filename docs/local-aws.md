@@ -88,9 +88,16 @@ Tier 1 は **hermetic** である。`vitest.config.ts` が AWS 資格情報を d
 
 以後、能力の主張には**正の対照**（通らなければならない操作）と**負の対照**
 （拒否されなければならない操作）を組で当てる。判定は
-`src/domain/governance/emulator-capability.ts` に閉じる（probe の出力はそこから導出される。
-**下表は手書きなので、probe の出力と突き合わせる機械検査はまだ無い** —— この型で
-5 周連続の誤りを出したので、機械検査を #1113 に切った）:
+`src/domain/governance/emulator-capability.ts` に閉じる（probe の出力はそこから導出される）。
+
+🔴 **下表は probe の実測記録と機械で突き合わせてある**（#1113）。突き合わせ相手は
+`docs/evidence/emulator-capability.<runtime>.json`（`npm run aws:local:capability -- --json`
+の出力そのもの）で、判定は `src/domain/governance/capability-doc.ts`、検査は
+`tests/config/capability-doc-sync.test.ts` が**既定の品質ゲートの中で**行う
+（エミュレータの稼働は要らない。記録との比較なので。#1103 条件 5）。
+**セルを手で書き換えると落ちる** —— この型で 6 周連続の誤りを出し、うち 3 周は
+「この型を直すために」書き換えた表の中で再発した。**表を直す前に記録を取り直すこと**
+（`docs/evidence/README.md`）:
 
 | 判定 | 記号 | 意味 |
 | --- | --- | --- |
@@ -98,29 +105,48 @@ Tier 1 は **hermetic** である。`vitest.config.ts` が AWS 資格情報を d
 | `permissive` | 🔴 素通り | **正も負も通る。緑のまま嘘をつく** ―― `unavailable` より危険 |
 | `unavailable` | ⛔ | 正が通らない。**その能力をローカルで使えない**。🔴 「素通りしない」ことまでは主張しない |
 | `inconclusive` | ? | 対照を走らせられなかった（測定環境の問題。能力の判定ではない） |
-| （未測） | 空欄 | そもそも測っていない |
+| （正の対照のみ） | ◯ 正のみ | **操作は通った。負の対照は当てていない** ―― 「使える」以上を主張しない |
+| （未測） | （未測） | そもそも測っていない |
+
+🔴 **機械が予約しているのは ✅ と 🔴 素通り の 2 つだけである。** この 2 つは負の対照を
+当てなければ原理的に到達できない（`NEGATIVE_CONTROL_ONLY_VERDICTS` は `classifyCapability`
+から導出されている）ので、**`負の対照` 列に ✓ が無い行では使えない** —— 使えば検査が落ちる。
+これが「まだ測っていない」と「測って ✅ だった」の区別で、**凡例ではなく記号が担う**
+（#1113 AC3）。凡例に書いただけの区別は round3 で実際に読み飛ばされた。
+
+🔴 **⛔ と ? はそうではない。** どちらも正の対照だけで書けてしまう判定なので、機械は
+予約していない ―― 下表の ⛔（Transcribe / Bedrock / IAM 評価 / KMS / MiniStack の Polly）は
+**probe の裏付けを持たない**。「使えない」という主張も、負の対照を当てていない限り
+「呼び方を変えれば素通りするかもしれない」を排除しない（Moto の Cognito が現にその形だった）。
+**⛔ を「嘘はつかない」と読まないこと。** この凡例表そのものも記号の出どころ
+（`matrixMark`）と機械で突き合わせてある。
 
 再測は **`npm run aws:local:capability`**（素通りなら exit 1、判定不能なら exit 3）。
 
-🔴 **下表の ✅ の大半は、まだ正の対照しか当てていない。** 負の対照つきで測れているのは
-`負の対照` 列に ✓ が付いた行だけである。**それ以外の ✅ は「操作が通った」以上を主張しない**
-—— Cognito 行を誤らせたのと同じ過大主張が残っているということなので、
-その行の緑を能力の根拠にする前に probe へ負の対照を足すこと。
+🔴 **下表で ✅ が付いているのは、負の対照まで当てた 3 行だけである。** `◯ 正のみ` の行は
+「このプロジェクトが使う操作が通った」以上を主張しない ―― Cognito 行を誤らせたのと
+**同じ過大主張**がそこに残りうるので、その行の緑を能力の根拠にする前に probe へ
+負の対照を足すこと（足せば ✅ になり、記録と表が同時に動く）。
+
+🔴 **この凡例は下表（と `docs/development/local-aws-sandbox.md` の証拠表）にしか効かない。**
+同じ文書の別の表 —— 例えば下記「CDK はローカルで往復する」の `| 段 | 結果 |` —— の ✅ は
+「その手順が通った」という意味で、負の対照とは無関係であり**機械検査の対象外**である。
+検査対象の表の外に在る ✅ を能力の裏付けとして読まないこと（機械で縛るのは #1114）。
 
 | Service / 操作 | 負の対照 | Moto | MiniStack | Real AWS 必須 | Notes |
 | --- | --- | --- | --- | --- | --- |
 | DynamoDB 条件付き書き込み | ✓ | ✅ | ✅ | — | `putIfAbsent` / CAS。二重作成が拒否されることまで実測 |
 | DynamoDB GSI テナント分離 | ✓ | ✅ | ✅ | — | 他テナントから引けないことまで実測 |
 | **Cognito SRP のパスワード検証** | ✓ | 🔴 **素通り** | 🔴 **素通り** | **必須** | 下記「Cognito は素通りする」 |
-| DynamoDB table + GSI1 | | ✅ | ✅ | — | 本番 backend をそのまま通して 8 本 green |
-| DynamoDB TTL | | ✅ | ✅ | — | 受付セッションの失効機構 |
-| Secrets Manager | | ✅ | ✅ | — | |
-| SSM Parameter Store | | ✅ | ✅ | — | |
-| Cognito user pool / client の CRUD | | ✅ | ✅ | **実トークン検証 / JWKS** | 作れるだけ。トークンの正当性は別（unsupported 節） |
-| Polly synthesize | | ✅ | ⛔ 405 | 音質 | **Moto のみ**。音質評価は実 AWS |
-| S3 | | ✅ | ✅ | 配信 | CloudFront 配信は実 AWS |
-| CloudFormation / CDK deploy + diff | | （未測） | ✅ | 置換挙動・drift | 下記「CDK はローカルで往復する」。**Moto では未測** |
-| Route53 / EC2 / AutoScaling | | ✅ | ✅ | 実挙動 | LocalStack は ASG ⛔ |
+| DynamoDB table + GSI1 | | ◯ 正のみ | ◯ 正のみ | — | 本番 backend をそのまま通して 8 本 green |
+| DynamoDB TTL | | ◯ 正のみ | ◯ 正のみ | — | 受付セッションの失効機構 |
+| Secrets Manager | | ◯ 正のみ | ◯ 正のみ | — | |
+| SSM Parameter Store | | ◯ 正のみ | ◯ 正のみ | — | |
+| Cognito user pool / client の CRUD | | ◯ 正のみ | ◯ 正のみ | **実トークン検証 / JWKS** | 作れるだけ。トークンの正当性は別（unsupported 節） |
+| Polly synthesize | | ◯ 正のみ | ⛔ 405 | 音質 | **Moto のみ**。音質評価は実 AWS |
+| S3 | | ◯ 正のみ | ◯ 正のみ | 配信 | CloudFront 配信は実 AWS |
+| CloudFormation / CDK deploy + diff | | （未測） | ◯ 正のみ | 置換挙動・drift | 下記「CDK はローカルで往復する」。**Moto では未測** |
+| Route53 / EC2 / AutoScaling | | ◯ 正のみ | ◯ 正のみ | 実挙動 | LocalStack は ASG ⛔ |
 | Transcribe **streaming** | | ⛔ | ⛔ | **必須** | 現在 SDK 未導入（型のみ） |
 | Bedrock | | ⛔ | ⛔ | **必須** | 現在 SDK 未使用 |
 | IAM 評価 / KMS | | ⛔ | ⛔ | **必須** | 下記 unsupported |
