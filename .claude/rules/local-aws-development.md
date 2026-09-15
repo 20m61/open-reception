@@ -12,14 +12,20 @@
 - ベンダ固有の health パス（`/_localstack/health` 等）でテストの到達性を判定しない。
   実際に使う AWS API で確かめる ―― 実装時にこれで Moto が落ち、交換可能性を検証する
   テスト自身がロックインを持っていた（2026-09-14）。
+- 🔴 **Cognito 認証の判定をローカルの緑で担保しない。** MiniStack / Moto はどちらも
+  **SRP のパスワード検証をしていない**（誤った PW でもトークンが出る。2026-09-14 実測 / #1103）。
+  「使えない」より危険で、緑のまま嘘をつく。実測と扱いは `docs/local-aws.md`「Cognito は素通りする」。
+- 能力の主張は**負の対照つき**で測る（拒否されるべきものが拒否されること）。判定は
+  `src/domain/governance/emulator-capability.ts`、実測は `npm run aws:local:capability`
+  （素通りなら exit 1 / 判定不能なら exit 3）。
 
-- Prefer a disposable LocalStack sandbox for routine AWS integration before using a real AWS dev/staging environment.
+- Prefer a disposable local emulator (MiniStack by default per ADR 0010; LocalStack is one interchangeable runtime) for routine AWS integration before using a real AWS environment.
 - Use the current `lstk` CLI (`lstk start`, `lstk status`, `lstk reset --force`, `lstk stop`, `lstk cdk ...`). Do not add new dependencies on the deprecated `localstack` CLI or `cdklocal`.
 - `LOCALSTACK_AUTH_TOKEN` is a runtime secret. Never commit, print, fixture, or persist it. Headless/CI-equivalent lanes need a CI Auth Token, not a personal developer token.
 - Verify the Docker **daemon**, not the `docker` CLI. The CLI is present in Claude Code on the web while the daemon is not, so `command -v docker` succeeding proves nothing.
 - A stopped daemon is not an unavailable one. Claude Code on the web ships `dockerd`/`containerd`/`runc` and runs as root; `local-aws.sh preflight` starts the daemon (~2s) instead of failing closed. Do not conclude "Docker is unavailable here" from `docker info` failing — try starting it.
 - Never let the local lane inherit real AWS credentials. Assign dummy values unconditionally and clear `AWS_SESSION_TOKEN` / `AWS_PROFILE`; `${VAR:-test}` silently keeps a real deploy window's credentials.
-- Never require real staging/production AWS credentials for local development.
+- Never require real AWS credentials for local development.
 - LocalStack passing is not AWS parity. Infrastructure/auth/network/delivery changes still require the repository's existing CDK and real-AWS verification gates.
 - Never weaken production IAM, encryption, tenancy, audit, or deployment controls to make the emulator pass; introduce local-only endpoint/config wiring instead.
 
@@ -33,8 +39,8 @@
 ## open-reception-specific boundary
 
 - Keep `DATA_BACKEND=memory` as the fastest unit/UI path.
-- Add/use `DATA_BACKEND=dynamodb` against LocalStack as the integration path so the real DynamoDB repository implementation is exercised before AWS deployment.
-- Prioritize DynamoDB, S3, Secrets Manager, Cognito, Lambda and API Gateway integration locally where supported.
+- Add/use `DATA_BACKEND=dynamodb` against the emulator as the integration path so the real DynamoDB repository implementation is exercised before AWS deployment.
+- Prioritize DynamoDB, S3, Secrets Manager, Lambda and API Gateway integration locally where supported. 🔴 **Not Cognito** — its local coverage is permissive (see above), so adding it is worse than having none.
 - Treat telephony/WebRTC/Vonage, device/browser behavior, real Cognito edge cases, CloudFront/certificate/DNS delivery, and speech-service fidelity as external or real-AWS/device verification concerns.
 - Seed deterministic local fixture data and reset the emulator rather than preserving a shared developer state.
 

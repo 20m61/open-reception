@@ -1,17 +1,23 @@
 # Local AWS sandbox strategy
 
-Status: **runtime-validated in Claude Code on the web (2026-09-14).** The lane runs end to end there — `up` / `test` / `reset` / `down` — after three defects found by actually running it. The persistent-AWS-dev replacement decision is **still open**; see "Replacement decision gate".
+Status: **runtime-validated in Claude Code on the web (2026-09-14).** The lane runs end to end there — `up` / `test` / `reset` / `down` — after three defects found by actually running it. The persistent-AWS-dev replacement decision is **deferred to #1112** — the measurements are here, but the estate's verification history has to be reconstructable first; see "Replacement decision gate".
 
 ## Decision
 
-Use LocalStack as the default **AWS integration sandbox** for routine development, with real AWS staging retained as the final compatibility/release-verification layer. This is a candidate replacement for a long-lived AWS `dev` environment, not a replacement for staging or production verification.
+🔴 **Superseded on the emulator choice by [ADR 0010](../adr/0010-swappable-aws-emulator.md):
+the default is now MiniStack (Docker 不要), with LocalStack kept as one interchangeable
+runtime.** Use a local emulator as the **AWS integration sandbox** for routine development,
+with **real AWS** retained as the final compatibility/release-verification layer — today that
+means `dev`; `staging` exists only as configuration and has never been stood up. This is a
+candidate replacement for a long-lived AWS `dev` environment, not a replacement for real-AWS or
+production verification.
 
 Verification ladder:
 
 1. unit/UI tests with `DATA_BACKEND=memory`;
-2. local integration with the real `DATA_BACKEND=dynamodb` repository against LocalStack;
+2. local integration with the real `DATA_BACKEND=dynamodb` repository against the emulator (MiniStack by default);
 3. CDK synth/diff/security gates;
-4. real AWS staging/device/external-service verification;
+4. real AWS (today `dev`) / device / external-service verification;
 5. production release gates.
 
 ## Implemented developer lane
@@ -178,11 +184,11 @@ It pins what the in-memory fake in `dynamodb.test.ts` **cannot** guarantee, sinc
 - internal keys (`PK`/`SK`/`ttl`/`GSI1PK`/`GSI1SK`) stripped before data reaches callers;
 - audit-log range and index queries, with a future `since` as the lower bound.
 
-🔴 **It does not run in the default quality gate.** The suite is skipped unless `LOCAL_AWS_INTEGRATION=1`, which only `scripts/local-aws.sh test` sets — LocalStack green is never promoted into release evidence. But *enabled and unreachable* fails rather than skips, so a broken emulator cannot masquerade as a passing run.
+🔴 **It does not run in the default quality gate.** The suite is skipped unless `LOCAL_AWS_INTEGRATION=1`, which `scripts/aws-local.sh test` and `scripts/local-aws.sh test` set — emulator green is never promoted into release evidence. But *enabled and unreachable* fails rather than skips, so a broken emulator cannot masquerade as a passing run.
 
 ## Local responsibility
 
-Prioritize DynamoDB persistence semantics first. Extend to S3, Secrets Manager, Cognito, Lambda/API Gateway only when additional emulator coverage materially improves feedback time. Keep the existing in-memory backend for the fastest unit/UI iteration.
+Prioritize DynamoDB persistence semantics first. Extend to S3, Secrets Manager, Lambda/API Gateway only when additional emulator coverage materially improves feedback time. 🔴 **Not Cognito** — local Cognito coverage is worse than none (see "Replacement decision gate"). Keep the existing in-memory backend for the fastest unit/UI iteration.
 
 ## Real AWS / external responsibility
 
@@ -198,24 +204,85 @@ Keep device/soak behavior, Vonage/WebRTC, speech-service fidelity, CloudFront/ce
 
 ## Replacement decision gate
 
-**Decision: still open. Not yet `remove` / `off-by-default` / `downsize` / `keep`.**
+**Decision: deferred to #1112.** This document records the *measurements*; the keep / downsize /
+remove call is made there, once its preconditions are met.
 
-🔴 This is deliberate. Infrastructure viability is now measured, but the decision does not turn on viability alone, and writing "it can probably be replaced" from an emulator that merely boots is the failure mode this gate exists to prevent.
+🔴 **Why it is deferred rather than answered here.** Three successive drafts of this section
+stated the AWS estate's verification status wrongly — "auth is already routed to staging"
+(staging has never been stood up), then "auth is verified on dev", then "auth is verified
+nowhere" (it ran on 2026-08-04, three consecutive stable runs — `05db284` / #614). Each draft
+was caught in review. The common cause is not judgement but **where the record lives**:
+`docs/runbook-cloud-aws-deploy.md` and `docs/loop-queue.md` cover only deploys 4–6, while the
+2026-08-04 stand-up lives in `docs/deploy-aws.md` and in commit messages. **Until a single
+ledger of real-AWS verification events exists, anyone deciding from those two documents will
+make the same error.** Building that ledger is a precondition in #1112.
 
-What the 2026-09-14 run settled:
+### What the local lane settles
 
-- the lane **runs in Claude Code on the web**, cold start to `Ready` in ~16s, `up` / `test` / `reset` / `down` all exit 0 and `up` is idempotent;
-- the **production** DynamoDB repository passes deterministic integration tests against the real engine, not a fake;
-- S3, Secrets Manager, Lambda (real invoke), API Gateway and IAM all work;
-- no real AWS credentials are needed or used — the lane is pinned isolated by test.
+🔴 **この節は「機械が測っていること」しか主張しない。** これは方針であって省略ではない。
+この PR のレビューは 5 周にわたり、**手で維持する証拠表のセルが毎回嘘になる**ことを
+検出し続けた（lane の取り違え、負の対照の有無の取り違え、`aws:local:test` が叩かない
+サービスの根拠にされる、IAM の「作成」と「評価」の混同）。**セルを直すより、機械が
+言えないことを書かないほうが確実である。** 機械検査の整備は #1113。
 
-What it did **not** settle, and what the decision still waits on:
+**機械が測っていること**（`npm run aws:local:capability`。正の対照と負の対照を組で当てる。
+2026-09-15 / MiniStack 1.5.11 / Moto 5.2.3 で両 runtime とも exit 1 を確認。
+🔴 **exit code は oracle にならない** —— Cognito の `permissive` が単独で exit 1 を固定するので、
+DynamoDB 行が壊れても exit は変わらない。#1113）:
 
-1. **Cognito is unavailable on this license tier.** Any work touching sign-in, user pools or authorizers still needs real AWS. How much routine development that actually blocks has not been measured.
-2. **No representative feature was taken end to end through this lane.** Booting the emulator and passing a persistence contract is weaker evidence than shipping an issue through it, which is what the original gate asked for.
-3. **CDK synth/diff/deploy against LocalStack is untested here.** The existing AWS diff/negative/security gates are unchanged and un-weakened, but whether they could run locally is unknown.
-4. **No cost figure for the current persistent dev environment** is on record, so "downsize" has no denominator.
+| 能力 | MiniStack | Moto |
+| --- | --- | --- |
+| DynamoDB 条件付き作成（二重作成が拒否される） | ✅ verified | ✅ verified |
+| DynamoDB GSI テナント分離（他テナントから引けない） | ✅ verified | ✅ verified |
+| Cognito SRP のパスワード検証 | 🔴 素通り | 🔴 素通り |
 
-The honest change is to the *shape* of the remaining question: it is no longer "can this run at all here" — that is answered, yes — but "how much of real development does the Cognito gap and the untested deploy path still pull back to AWS." Resolve 1–4, then record the recommendation with the numbers attached.
+**それ以外は、それぞれの出どころを見ること。** ここへ転記しない:
 
-Staging remains the real-AWS compatibility gate regardless of the outcome.
+- DynamoDB の table / GSI1 / TTL … `src/lib/data/dynamodb.emulator.test.ts`（8 本。
+  `LOCAL_AWS_INTEGRATION=1` が要る。**このうち条件付き書き込み・テナント分離・TTL 範囲は
+  下界つき**で書かれている ―― 同 `:147` / `:163` / `:175` / `:243` を見ること）
+- S3 / Secrets Manager / SSM … ADR 0010 の matrix（Moto / MiniStack 双方）
+- Lambda invoke / API Gateway / IAM の **role 作成** … この文書の
+  "Measured service coverage"（**LocalStack** で測った。Lambda invoke はコンテナへ
+  `/var/run/docker.sock` を渡す必要がある）。🔴 **IAM は role を作れただけで、
+  policy の評価は⛔**（実 AWS のみ）
+- CDK … `docs/local-aws.md`「CDK はローカルで往復する」（**MiniStack のみ**・手動実行。
+  synth 18s / deploy 13.9s / 直後の diff が "There were no differences"）
+
+**ルーチン開発（永続層と infra の形）は AWS を叩かなくなった。** 素の CDK v2 が
+`AWS_ENDPOINT_URL` を尊重するので `cdklocal` も新規依存も要らない。
+
+🔴 往復したのは**機構**であって AWS 互換性ではない。エミュレータは **IAM を評価しない**
+（role を作れることと、policy の許可/拒否が正しいことは別である）。置換挙動・drift・
+ロールバックも実 AWS の挙動ではない。`npm run aws:diff-gate` / `aws:negative-tests` と
+runbook（Tier 4）は**そのまま要る**。
+
+### What it cannot settle
+
+🔴 **Cognito SRP password verification is `permissive`, not missing.** Both emulators mint
+ID/Access/Refresh tokens for a **wrong password** — details and the measurement table are in
+[`../local-aws.md`](../local-aws.md) ("Cognito は素通りする"). A permissive emulator is worse
+than an absent one: it lets someone add a green "admin login works locally" test that **cannot
+fail** if authentication is removed. Tracked as #1111, which records that **no wrong password has ever
+been rejected against real Cognito** — `tests/e2e-live/*` drives only the correct one. (A wrong
+password *is* rejected in `tests/e2e/admin-auth.spec.ts:20` and `src/lib/auth/cognito-srp.test.ts`,
+but those exercise the `provider=none` path and a mocked SDK, not Cognito.)
+
+Unchanged, still real-AWS-only: IAM evaluation, KMS, real token verification/JWKS,
+CloudFront/certificate/DNS delivery, CloudFormation replacement & drift, Transcribe streaming,
+Polly audio quality, Vonage/WebRTC, real device/browser behavior.
+
+### Inputs #1112 still needs
+
+1. A single ledger of real-AWS verification events (see above).
+2. #1111 discharged — a wrong password rejected against a real environment, once.
+3. A **refreshed** cost figure for `dev`. One is already on record and it is not small in its
+   implications: **2026-07 MTD = $0.0005**, "コスト削減を動機に open-reception を消しても
+   効果はゼロ" (`docs/handoff-2026-07-22.md:49-53`, repeated at
+   `docs/handoff-2026-07-27.md:257`). It predates the 2026-08-04 stand-up and the custom
+   domain/CloudFront added since, so it needs refreshing — but **"downsize for cost" already has
+   a denominator, and it is approximately zero.** Refreshing needs real AWS billing access
+   (`src/lib/platform/aws-cost-explorer.ts`, real AWS only).
+
+A real AWS environment remains the compatibility gate regardless of the outcome. Today that is
+`dev`; `staging` would have to be stood up first to become it.
