@@ -42,10 +42,13 @@
  */
 import {
   CAPABILITY_VERDICTS,
+  NEGATIVE_OUTCOMES,
   POSITIVE_OUTCOMES,
   classifyCapability,
   matrixMark,
   type CapabilityVerdict,
+  type NegativeOutcome,
+  type PositiveOutcome,
 } from './emulator-capability';
 
 /**
@@ -68,6 +71,34 @@ export const MATRIX_DOC_LABELS: Readonly<Record<ProbeCapability, string>> = {
   'Cognito USER_SRP_AUTH（管理者ログイン）': 'Cognito SRP のパスワード検証',
   'DynamoDB 条件付き作成（putIfAbsent の原子性）': 'DynamoDB 条件付き書き込み',
   'DynamoDB GSI テナント分離': 'DynamoDB GSI テナント分離',
+};
+
+/**
+ * 各能力の**対照の説明**。probe（`scripts/aws-local-capability.ts`）はここから読み、
+ * 記録の読み取りはここと一致することを要求する。
+ *
+ * 🔴 **これが probe と記録を機械で結ぶ唯一の紐である。** 無いと、probe 側で測定関数の
+ * 対応を取り違えても（能力 A のキーに能力 B の測定を割り当てる）型も検査も何も言わず、
+ * 次に記録を取り直した瞬間に**中身が入れ替わった記録**が出来て、突き合わせはその誤ラベルを
+ * 忠実に文書へ写す。レビューが実測した（`Record` のキーと値を入れ替えても typecheck 緑・
+ * テスト緑）。**説明を変えたら記録を取り直すこと** —— 説明は「何を測ったか」なので、
+ * 変わったなら記録は古い。
+ */
+export const CAPABILITY_CONTROLS: Readonly<
+  Record<ProbeCapability, { readonly positiveDesc: string; readonly negativeDesc: string }>
+> = {
+  'Cognito USER_SRP_AUTH（管理者ログイン）': {
+    positiveDesc: '正しいパスワードで ID トークンが出る',
+    negativeDesc: '🔴 誤ったパスワードが拒否される',
+  },
+  'DynamoDB 条件付き作成（putIfAbsent の原子性）': {
+    positiveDesc: '新規 id の作成が成功する',
+    negativeDesc: '同じ id の二重作成が拒否される',
+  },
+  'DynamoDB GSI テナント分離': {
+    positiveDesc: '自テナントの項目が index 越しに引ける',
+    negativeDesc: '他テナントからは引けない',
+  },
 };
 
 /** `docs/development/local-aws-sandbox.md` の証拠表は別の言い回しを使っている。 */
@@ -125,14 +156,17 @@ function splitRow(line: string): ReadonlyArray<string> {
 const isSeparator = (line: string): boolean => /^\|[\s:|-]+\|?\s*$/u.test(line.trim());
 
 /**
- * 先頭見出しが `firstHeader` の markdown 表を 1 つ取り出す。
+ * 先頭見出しが `firstHeader` の markdown 表を**全部**取り出す。
  *
- * 🔴 **見出しで特定する。** 文書には表が何枚もあり（凡例・Tier・診断…）、
- * 「最初の表」や「見出しからの相対位置」で拾うと、表を 1 枚足しただけで別の表を
- * 検査しはじめる ―― しかも**静かに緑のまま**になる。
+ * 🔴 **1 枚目で打ち切らない。** 「見出しで特定する」だけでは足りず、**同じ見出しの表が
+ * 2 枚あると、実際に読まれるのは 1 枚目で、本物が無検査になる**。しかも文書を分割した
+ * ようにしか見えないので、レビューでも気づかれない。呼び出し側が「ちょうど 1 枚」を
+ * 要求できるように、枚数を返す形にしてある（レビュー MAJOR-3 が実測: 正しい内容の複製を
+ * 足して本物の Cognito 行を ✅ に書き換えると、検査は緑のままだった）。
  */
-export function parseMarkdownTable(markdown: string, firstHeader: string): ParsedTable | null {
+export function parseMarkdownTables(markdown: string, firstHeader: string): ReadonlyArray<ParsedTable> {
   const lines = markdown.split('\n');
+  const tables: ParsedTable[] = [];
   for (let i = 0; i < lines.length - 1; i += 1) {
     const line = lines[i] ?? '';
     if (!line.trim().startsWith('|')) continue;
@@ -145,9 +179,9 @@ export function parseMarkdownTable(markdown: string, firstHeader: string): Parse
       if (!row.trim().startsWith('|')) break;
       rows.push({ cells: splitRow(row), line: j + 1 });
     }
-    return { headers, rows };
+    tables.push({ headers, rows });
   }
-  return null;
+  return tables;
 }
 
 export type CapabilityRecording = {
@@ -155,6 +189,8 @@ export type CapabilityRecording = {
   readonly measuredAt: string;
   readonly results: ReadonlyArray<{
     readonly capability: ProbeCapability;
+    readonly positive: PositiveOutcome;
+    readonly negative: NegativeOutcome;
     readonly verdict: CapabilityVerdict;
   }>;
 };
@@ -164,6 +200,12 @@ const isVerdict = (v: unknown): v is CapabilityVerdict =>
 
 const isProbeCapability = (v: unknown): v is ProbeCapability =>
   PROBE_CAPABILITIES.includes(v as ProbeCapability);
+
+const isPositive = (v: unknown): v is PositiveOutcome =>
+  POSITIVE_OUTCOMES.includes(v as PositiveOutcome);
+
+const isNegative = (v: unknown): v is NegativeOutcome =>
+  NEGATIVE_OUTCOMES.includes(v as NegativeOutcome);
 
 /**
  * probe の `--json` 出力を読む。**知らない値を受け流さない。**
@@ -184,7 +226,8 @@ export function parseRecording(raw: unknown): CapabilityRecording {
   }
   if (!Array.isArray(results)) throw new Error(`記録に results が無い (runtime=${runtime})`);
   const parsed = results.map((entry) => {
-    const { capability, verdict } = (entry ?? {}) as Record<string, unknown>;
+    const { capability, verdict, positive, negative, positiveDesc, negativeDesc } = (entry ??
+      {}) as Record<string, unknown>;
     if (!isProbeCapability(capability)) {
       throw new Error(
         `probe が測らない capability が記録にある: ${String(capability)} (runtime=${runtime})`,
@@ -193,7 +236,34 @@ export function parseRecording(raw: unknown): CapabilityRecording {
     if (!isVerdict(verdict)) {
       throw new Error(`知らない verdict: ${String(verdict)} (${capability} / runtime=${runtime})`);
     }
-    return { capability, verdict };
+    if (!isPositive(positive) || !isNegative(negative)) {
+      throw new Error(
+        `知らない対照の結果: positive=${String(positive)} negative=${String(negative)} ` +
+          `(${capability} / runtime=${runtime})`,
+      );
+    }
+    // 🔴 **記録は自分自身と整合していなければならない。** `verdict` だけを書き換える改竄が
+    // 最も安い（文字列 1 個）。生データ（`positive`/`negative`）から判定を導き直して照合する
+    // ことで、嘘をつくには 2 箇所を整合させる必要が生じる。判定規則は `classifyCapability`
+    // が唯一の出どころなので、ここでも再実装しない。
+    const derived = classifyCapability({ positive, negative });
+    if (derived !== verdict) {
+      throw new Error(
+        `記録の verdict が測定値と整合しない (${capability} / runtime=${runtime}): ` +
+          `positive=${positive} negative=${negative} なら ${derived} のはずだが ${verdict} と書いてある`,
+      );
+    }
+    // 🔴 **何を測ったかの説明が probe と一致していること。** ここが probe と記録を結ぶ紐で、
+    // 測定関数の取り違え（能力 A の記録に能力 B の測定が入る）を記録側から検出できる唯一の手段。
+    const controls = CAPABILITY_CONTROLS[capability];
+    if (positiveDesc !== controls.positiveDesc || negativeDesc !== controls.negativeDesc) {
+      throw new Error(
+        `記録の対照の説明が probe と一致しない (${capability} / runtime=${runtime}): ` +
+          `記録=[${String(positiveDesc)} / ${String(negativeDesc)}] ` +
+          `probe=[${controls.positiveDesc} / ${controls.negativeDesc}]。記録を取り直すこと`,
+      );
+    }
+    return { capability, positive, negative, verdict };
   });
   // 🔴 probe は必ず全能力を 1 件ずつ出す（落ちた測定も `inconclusive` として入る）。
   // 欠けている記録は「測っていない」ではなく**記録が壊れている**ので、突き合わせに使わない。
@@ -207,6 +277,12 @@ export function parseRecording(raw: unknown): CapabilityRecording {
 export type DiscrepancyKind =
   /** 表が見つからない（見出しが変わった／表ごと消えた）。 */
   | 'table_not_found'
+  /** 同じ見出しの表が複数ある（どれが正本か決まらない）。 */
+  | 'duplicate_table'
+  /** runtime 列の見出しが表に無い（列ごと消えた／改名された）。 */
+  | 'missing_column'
+  /** 同じ runtime の記録が複数ある。 */
+  | 'duplicate_runtime_recording'
   /** runtime 列に対応する記録が無い。 */
   | 'missing_runtime_recording'
   /** probe が測っている能力の行が表に無い。 */
@@ -241,30 +317,62 @@ function acceptedCells(verdict: CapabilityVerdict): ReadonlyArray<string> {
  * （証拠表がその形。機械が測っていない行をそこへ書けない）。
  */
 export function reconcileCapabilityDoc(input: {
-  readonly table: ParsedTable | null;
+  /** 見出しが一致した表**全部**。ちょうど 1 枚でなければ突き合わせない。 */
+  readonly tables: ReadonlyArray<ParsedTable>;
   readonly labels: Readonly<Record<ProbeCapability, string>>;
   readonly recordings: ReadonlyArray<CapabilityRecording>;
   /** runtime 名 -> 列見出し。 */
   readonly runtimeColumns: Readonly<Record<string, string>>;
   readonly negativeControlColumn?: string;
 }): ReadonlyArray<Discrepancy> {
-  const { table, labels, recordings, runtimeColumns, negativeControlColumn } = input;
-  if (table === null) {
+  const { tables, labels, recordings, runtimeColumns, negativeControlColumn } = input;
+  if (tables.length === 0) {
     return [{ kind: 'table_not_found', message: '突き合わせる表が見つからない' }];
   }
+  if (tables.length > 1) {
+    // 🔴 どれを読むか**選ばない**。選べば、選ばれなかったほうが無検査になる。
+    return [
+      {
+        kind: 'duplicate_table',
+        message: `同じ見出しの表が ${tables.length} 枚ある。正本を 1 枚にすること`,
+      },
+    ];
+  }
+  const table = tables[0]!;
   const found: Discrepancy[] = [];
 
-  /** 列見出し -> index。見出しが無ければ -1（セルは '' として扱われる）。 */
-  const columnIndex = (header: string): number => table.headers.indexOf(header);
   const cellAt = (row: TableRow, header: string): string => {
-    const index = columnIndex(header);
+    const index = table.headers.indexOf(header);
     return index < 0 ? '' : (row.cells[index] ?? '');
   };
+
+  // 🔴 **列ごと消えた／改名された**のを「セルが空」として報告しない。直す人が
+  // 列ではなくセルを見に行ってしまう（レビュー MINOR-3）。
+  for (const header of Object.values(runtimeColumns)) {
+    if (!table.headers.includes(header)) {
+      found.push({ kind: 'missing_column', message: `列 ${header} が表に無い` });
+    }
+  }
+  if (
+    negativeControlColumn !== undefined &&
+    !table.headers.includes(negativeControlColumn)
+  ) {
+    found.push({ kind: 'missing_column', message: `列 ${negativeControlColumn} が表に無い` });
+  }
 
   // runtime 列ごとに記録を引く。記録が無い列は**比較しない**（「一致した」に倒さない）。
   const byRuntime = new Map<string, CapabilityRecording>();
   for (const [runtime, header] of Object.entries(runtimeColumns)) {
-    const recording = recordings.find((r) => r.runtime === runtime);
+    const matches = recordings.filter((r) => r.runtime === runtime);
+    if (matches.length > 1) {
+      // 先勝ちで片方を無視すると、**無視されたほうが無検査になる**。
+      found.push({
+        kind: 'duplicate_runtime_recording',
+        message: `${runtime} の記録が ${matches.length} 件ある`,
+      });
+      continue;
+    }
+    const recording = matches[0];
     if (recording === undefined) {
       found.push({
         kind: 'missing_runtime_recording',

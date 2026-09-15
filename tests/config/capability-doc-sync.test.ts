@@ -6,12 +6,13 @@ import {
   PROBE_CAPABILITIES,
   POSITIVE_ONLY_MARK,
   SANDBOX_DOC_LABELS,
-  parseMarkdownTable,
+  UNMEASURED_MARK,
+  parseMarkdownTables,
   parseRecording,
   reconcileCapabilityDoc,
   type CapabilityRecording,
 } from '../../src/domain/governance/capability-doc';
-import { matrixMark } from '../../src/domain/governance/emulator-capability';
+import { CAPABILITY_VERDICTS, matrixMark } from '../../src/domain/governance/emulator-capability';
 
 /**
  * 文書の能力表を、**probe の実測記録**と行ごとに突き合わせる（#1113）。
@@ -68,7 +69,8 @@ describe('実測記録', () => {
 });
 
 describe('docs/local-aws.md の compatibility matrix', () => {
-  const table = parseMarkdownTable(read('docs/local-aws.md'), 'Service / 操作');
+  const tables = parseMarkdownTables(read('docs/local-aws.md'), 'Service / 操作');
+  const table = tables[0];
 
   it('表が見つかり、行が痩せていない', () => {
     expect(table).not.toBeNull();
@@ -98,9 +100,36 @@ describe('docs/local-aws.md の compatibility matrix', () => {
     expect(table!.rows.some((row) => row.cells.includes(POSITIVE_ONLY_MARK))).toBe(true);
   });
 
+  /**
+   * 🔴 **凡例そのものを検査する。** 記号の意味を定義している表が無検査だと、
+   * `| verified | ◯ 正のみ |` と書き換えるだけで 12 行の意味が変わる（レビュー MAJOR-4a が
+   * それで緑を実測した）。記号の出どころは `matrixMark` 一箇所である。
+   */
+  it('凡例の記号が matrixMark と一致し、未測・正のみの行が在る', () => {
+    const legend = parseMarkdownTables(read('docs/local-aws.md'), '判定');
+    expect(legend).toHaveLength(1);
+    const marks = new Map(legend[0]!.rows.map((row) => [row.cells[0] ?? '', row.cells[1] ?? '']));
+    for (const verdict of CAPABILITY_VERDICTS) {
+      expect(marks.get(`\`${verdict}\``), `凡例の ${verdict} が matrixMark と違う`).toBe(
+        matrixMark(verdict),
+      );
+    }
+    // 下界: 予約されていない記号の行も凡例に在ること（消えると区別が読めなくなる）。
+    expect([...marks.values()]).toContain(POSITIVE_ONLY_MARK);
+    expect([...marks.values()]).toContain(UNMEASURED_MARK);
+  });
+
+  /**
+   * 「測っていない」→「操作は通った」の格上げは、probe が測らない行なので verdict では
+   * 縛れない。**語彙が消えていないこと**だけを下界として置く（レビュー MAJOR-4b）。
+   */
+  it('（未測）の行が matrix に実在する', () => {
+    expect(table!.rows.some((row) => row.cells.includes(UNMEASURED_MARK))).toBe(true);
+  });
+
   it('実測記録と食い違わない', () => {
     const found = reconcileCapabilityDoc({
-      table,
+      tables,
       labels: MATRIX_DOC_LABELS,
       recordings: RECORDINGS,
       runtimeColumns: RUNTIME_COLUMNS,
@@ -111,17 +140,18 @@ describe('docs/local-aws.md の compatibility matrix', () => {
 });
 
 describe('docs/development/local-aws-sandbox.md の証拠表', () => {
-  const table = parseMarkdownTable(read('docs/development/local-aws-sandbox.md'), '能力');
+  const tables = parseMarkdownTables(read('docs/development/local-aws-sandbox.md'), '能力');
+  const table = tables[0];
 
   it('表が見つかり、probe が測る行だけで出来ている', () => {
-    expect(table).not.toBeNull();
+    expect(tables).toHaveLength(1);
     expect(table!.rows).toHaveLength(PROBE_CAPABILITIES.length);
   });
 
   /** 🔴 転記先が 2 つある以上、片方だけ縛っても意味が薄い。両方を同じ記録へ縛る。 */
   it('実測記録と食い違わない', () => {
     const found = reconcileCapabilityDoc({
-      table,
+      tables,
       labels: SANDBOX_DOC_LABELS,
       recordings: RECORDINGS,
       runtimeColumns: { ministack: 'MiniStack', moto: 'Moto' },

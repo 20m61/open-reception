@@ -1,7 +1,7 @@
 {
   "runtime": "moto",
   "endpoint": "http://127.0.0.1:5000",
-  "measuredAt": "2026-09-15T09:15:22.586Z",
+  "measuredAt": "2026-09-15T10:04:30.722Z",
   "results": [
     {
       "capability": "Cognito USER_SRP_AUTH（管理者ログイン）",

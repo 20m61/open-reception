@@ -5,7 +5,8 @@ import {
   POSITIVE_ONLY_MARK,
   PROBE_CAPABILITIES,
   UNMEASURED_MARK,
-  parseMarkdownTable,
+  CAPABILITY_CONTROLS,
+  parseMarkdownTables,
   parseRecording,
   reconcileCapabilityDoc,
   type CapabilityRecording,
@@ -26,16 +27,32 @@ import { CAPABILITY_VERDICTS, matrixMark } from './emulator-capability';
  * 文章の言い回しではない（`tests/config/loop-round-skill.test.ts` と同じ型）。
  */
 
+/** verdict から、それを生む測定値を逆に作る（記録は自己整合していなければ読めない）。 */
+const OUTCOMES: Record<string, { positive: string; negative: string }> = {
+  verified: { positive: 'passed', negative: 'rejected' },
+  permissive: { positive: 'passed', negative: 'accepted' },
+  unavailable: { positive: 'failed', negative: 'rejected' },
+  inconclusive: { positive: 'unreachable', negative: 'unreachable' },
+};
+
+const entry = (capability: string, verdict: string, over: Record<string, unknown> = {}) => ({
+  capability,
+  ...(OUTCOMES[verdict] ?? { positive: 'passed', negative: 'rejected' }),
+  verdict,
+  ...CAPABILITY_CONTROLS[capability as never],
+  ...over,
+});
+
 const REC = (runtime: string, verdicts: Record<string, string>): CapabilityRecording =>
   parseRecording({
     runtime,
     measuredAt: '2026-09-15T09:14:59.522Z',
-    results: Object.entries(verdicts).map(([capability, verdict]) => ({ capability, verdict })),
+    results: Object.entries(verdicts).map(([capability, verdict]) => entry(capability, verdict)),
   });
 
 /** 実物と同じ形の最小の matrix。probe が測る 2 行 + 測っていない 1 行。 */
 const table = (rows: string) =>
-  parseMarkdownTable(
+  parseMarkdownTables(
     ['| Service / 操作 | 負の対照 | Moto | MiniStack | Notes |', '| --- | --- | --- | --- | --- |', rows].join(
       '\n',
     ),
@@ -64,7 +81,7 @@ const CLEAN = [
 
 const reconcile = (rows: string) =>
   reconcileCapabilityDoc({
-    table: table(rows),
+    tables: table(rows),
     labels: MATRIX_DOC_LABELS,
     recordings: RECORDINGS,
     runtimeColumns: RUNTIME_COLUMNS,
@@ -97,16 +114,25 @@ describe('記号の語彙', () => {
 describe('表のパース', () => {
   it('見出しが一致する表だけを取り、行と行番号を返す', () => {
     const parsed = table(CLEAN);
-    expect(parsed?.headers).toEqual(['Service / 操作', '負の対照', 'Moto', 'MiniStack', 'Notes']);
-    expect(parsed?.rows).toHaveLength(6);
+    expect(parsed).toHaveLength(1);
+    expect(parsed[0]!.headers).toEqual(['Service / 操作', '負の対照', 'Moto', 'MiniStack', 'Notes']);
+    expect(parsed[0]!.rows).toHaveLength(6);
     // 行番号は 1 始まりで、ヘッダ 2 行の後から始まる。
-    expect(parsed?.rows[0]?.line).toBe(3);
+    expect(parsed[0]!.rows[0]?.line).toBe(3);
   });
 
   it('別の表を取り違えない', () => {
     const md = ['| 判定 | 記号 |', '| --- | --- |', '| verified | ✅ |'].join('\n');
-    expect(parseMarkdownTable(md, 'Service / 操作')).toBeNull();
-    expect(parseMarkdownTable(md, '判定')?.rows).toHaveLength(1);
+    expect(parseMarkdownTables(md, 'Service / 操作')).toEqual([]);
+    expect(parseMarkdownTables(md, '判定')[0]!.rows).toHaveLength(1);
+  });
+
+  /**
+   * 🔴 同じ見出しの表が 2 枚あるとき、**1 枚目で打ち切らない**。打ち切ると本物が
+   * 無検査になる（レビュー MAJOR-3 の実測経路）。
+   */
+  it('同じ見出しの表を全部返す', () => {
+    expect(table([CLEAN, '', '| Service / 操作 | 負の対照 | Moto | MiniStack | Notes |', '| --- | --- | --- | --- | --- |', '| X | | ⛔ | ⛔ | x |'].join('\n'))).toHaveLength(2);
   });
 });
 
@@ -127,6 +153,50 @@ describe('記録の読み取り', () => {
    */
   it('能力が欠けた記録を受け付けない', () => {
     expect(() => REC('moto', { [COND]: 'verified', [TENANT]: 'verified' })).toThrow(/欠けている/);
+  });
+
+  /**
+   * 🔴 **記録は自分自身と整合していなければならない。** `verdict` 文字列 1 個の
+   * 書き換えが最も安い改竄で、レビュー MAJOR-1 がそれで緑を実測した。
+   */
+  it('verdict が測定値から導けない記録を受け付けない', () => {
+    expect(() =>
+      parseRecording({
+        runtime: 'moto',
+        measuredAt: 'x',
+        results: PROBE_CAPABILITIES.map((c) =>
+          c === COND
+            ? entry(c, 'verified', { positive: 'failed', negative: 'accepted' })
+            : entry(c, 'verified'),
+        ),
+      }),
+    ).toThrow(/整合しない/);
+  });
+
+  it('知らない対照の結果を受け付けない', () => {
+    expect(() =>
+      parseRecording({
+        runtime: 'moto',
+        measuredAt: 'x',
+        results: PROBE_CAPABILITIES.map((c) => entry(c, 'verified', { negative: 'maybe' })),
+      }),
+    ).toThrow(/対照の結果/);
+  });
+
+  /**
+   * 🔴 **probe と記録を結ぶ唯一の紐。** 測定関数の対応がずれた probe で取った記録は、
+   * 説明が食い違うことでここで落ちる（レビュー MAJOR-2）。
+   */
+  it('対照の説明が probe と違う記録を受け付けない', () => {
+    expect(() =>
+      parseRecording({
+        runtime: 'moto',
+        measuredAt: 'x',
+        results: PROBE_CAPABILITIES.map((c) =>
+          entry(c, 'verified', c === TENANT ? { positiveDesc: '別の説明' } : {}),
+        ),
+      }),
+    ).toThrow(/説明が probe と一致しない/);
   });
 
   it('runtime と measuredAt が要る', () => {
@@ -198,7 +268,7 @@ describe('突き合わせ', () => {
       REC('ministack', { [COGNITO]: 'permissive', [COND]: 'verified', [TENANT]: 'verified' }),
     ];
     const found = reconcileCapabilityDoc({
-      table: table(CLEAN),
+      tables: table(CLEAN),
       labels: MATRIX_DOC_LABELS,
       recordings: stale,
       runtimeColumns: RUNTIME_COLUMNS,
@@ -210,7 +280,7 @@ describe('突き合わせ', () => {
 
   it('runtime の記録が欠けていたら落ちる（黙って 1 つ減らせない）', () => {
     const found = reconcileCapabilityDoc({
-      table: table(CLEAN),
+      tables: table(CLEAN),
       labels: MATRIX_DOC_LABELS,
       recordings: [RECORDINGS[0]!],
       runtimeColumns: RUNTIME_COLUMNS,
@@ -221,7 +291,7 @@ describe('突き合わせ', () => {
 
   it('記録が空なら、表が何と書いてあっても落ちる', () => {
     const found = reconcileCapabilityDoc({
-      table: table(CLEAN),
+      tables: table(CLEAN),
       labels: MATRIX_DOC_LABELS,
       recordings: [],
       runtimeColumns: RUNTIME_COLUMNS,
@@ -237,7 +307,7 @@ describe('突き合わせ', () => {
       RECORDINGS[1]!,
     ];
     const found = reconcileCapabilityDoc({
-      table: table(CLEAN),
+      tables: table(CLEAN),
       labels: MATRIX_DOC_LABELS,
       recordings: broken,
       runtimeColumns: RUNTIME_COLUMNS,
@@ -247,9 +317,47 @@ describe('突き合わせ', () => {
     expect(found[0]?.message).toContain('moto');
   });
 
+  it('同じ見出しの表が 2 枚あれば、どちらも読まずに落ちる', () => {
+    const dup = [
+      CLEAN,
+      '',
+      '| Service / 操作 | 負の対照 | Moto | MiniStack | Notes |',
+      '| --- | --- | --- | --- | --- |',
+      `| ${MATRIX_DOC_LABELS[COND]} | ✓ | ✅ | ✅ | x |`,
+    ].join('\n');
+    expect(kinds(dup)).toEqual(['duplicate_table']);
+  });
+
+  it('runtime 列が消えたら、セルが空ではなく列の欠落として報告する', () => {
+    const noColumn = parseMarkdownTables(
+      ['| Service / 操作 | 負の対照 | Moto | Notes |', '| --- | --- | --- | --- |', `| ${MATRIX_DOC_LABELS[COND]} | ✓ | ✅ | x |`].join('\n'),
+      'Service / 操作',
+    );
+    const got = reconcileCapabilityDoc({
+      tables: noColumn,
+      labels: MATRIX_DOC_LABELS,
+      recordings: RECORDINGS,
+      runtimeColumns: RUNTIME_COLUMNS,
+      negativeControlColumn: '負の対照',
+    });
+    expect(got.map((d) => d.kind)).toContain('missing_column');
+    expect(got.find((d) => d.kind === 'missing_column')?.message).toContain('MiniStack');
+  });
+
+  it('同じ runtime の記録が 2 件あれば、先勝ちで黙らせずに落ちる', () => {
+    const got = reconcileCapabilityDoc({
+      tables: table(CLEAN),
+      labels: MATRIX_DOC_LABELS,
+      recordings: [...RECORDINGS, RECORDINGS[0]!],
+      runtimeColumns: RUNTIME_COLUMNS,
+      negativeControlColumn: '負の対照',
+    });
+    expect(got.map((d) => d.kind)).toEqual(['duplicate_runtime_recording']);
+  });
+
   it('表そのものが見つからなければ落ちる', () => {
     const found = reconcileCapabilityDoc({
-      table: null,
+      tables: [],
       labels: MATRIX_DOC_LABELS,
       recordings: RECORDINGS,
       runtimeColumns: RUNTIME_COLUMNS,
@@ -261,11 +369,11 @@ describe('突き合わせ', () => {
 
 describe('負の対照列を持たない表（証拠表）', () => {
   const evidence = (rows: string) =>
-    parseMarkdownTable(['| 能力 | MiniStack | Moto |', '| --- | --- | --- |', rows].join('\n'), '能力');
+    parseMarkdownTables(['| 能力 | MiniStack | Moto |', '| --- | --- | --- |', rows].join('\n'), '能力');
   const LABELS = { [COGNITO]: 'C', [COND]: 'A', [TENANT]: 'B' } as Record<string, string>;
   const run = (rows: string) =>
     reconcileCapabilityDoc({
-      table: evidence(rows),
+      tables: evidence(rows),
       labels: LABELS as never,
       recordings: RECORDINGS,
       runtimeColumns: { ministack: 'MiniStack', moto: 'Moto' },

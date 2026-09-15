@@ -47,6 +47,9 @@ export type NegativeOutcome = 'rejected' | 'accepted' | 'unreachable';
  */
 export const POSITIVE_OUTCOMES: ReadonlyArray<PositiveOutcome> = ['passed', 'failed', 'unreachable'];
 
+/** `NegativeOutcome` の総当たり。記録の読み取りが「知らない値」を受け流さないために要る。 */
+export const NEGATIVE_OUTCOMES: ReadonlyArray<NegativeOutcome> = ['rejected', 'accepted', 'unreachable'];
+
 export type CapabilityVerdict =
   /** 正は通り、負は拒否された。ローカルで意味のある検証ができる。 */
   | 'verified'
