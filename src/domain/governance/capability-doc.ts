@@ -321,7 +321,9 @@ export function normalizeForMarkScan(raw: string): string {
     .replace(/<\/?[a-z][^>]*>/giu, '')
     .replaceAll('*', '')
     .replaceAll('_', '')
-    .replace(/[\s\u00a0]+/gu, ' ')
+    // `\s` は NBSP(U+00A0) を含む（実測）。`[\s\u00a0]` と書くと「NBSP を別途処理している」
+    // という誤った印象を与えるだけで、振る舞いは同じ（等価変異として変異検証で確認済み）。
+    .replace(/\s+/gu, ' ')
     .trim();
 }
 
