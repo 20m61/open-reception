@@ -8,8 +8,10 @@ import {
   POSITIVE_ONLY_MARK,
   SANDBOX_DOC_LABELS,
   UNMEASURED_MARK,
-  LEGEND_ROWS,
   RESERVED_MARK_SCOPE,
+  findLegendRowGaps,
+  findScopeGaps,
+  findUnmatchedAllowances,
   findReservedMarkViolations,
   parseAllMarkdownTables,
   parseMarkdownTables,
@@ -211,22 +213,22 @@ describe('予約記号の適用範囲（文書全体）', () => {
       .filter((l) => l.endsWith('.md'))
       .sort();
     expect(carriers.length, '素通り記号を持つ文書が 1 つも無い（検査が空振り）').toBeGreaterThan(0);
-    expect(carriers).toEqual([...FILES].sort());
+    expect(findScopeGaps({ carriers, scopeFiles: FILES })).toEqual([]);
   });
 
   /** 🔴 凡例は「許した表」なので、行が無界だと捏造した能力行を足せる（レビュー実測）。 */
   it('凡例の行が導出値ぴったりで、余計な行が無い', () => {
     const legend = parseMarkdownTables(read('docs/local-aws.md'), '判定')[0]!;
-    expect(legend.rows.map((r) => r.cells[0])).toEqual([...LEGEND_ROWS]);
+    expect(findLegendRowGaps(legend.rows.map((r) => r.cells[0] ?? ''))).toEqual([]);
   });
 
   /** 🔴 死んだ許可が静かに残らないこと（表が改名・削除されても許可だけ残る型）。 */
   it('どの許可も実際に表へ当たっている', () => {
     for (const file of FILES) {
-      const heads = parseAllMarkdownTables(read(file)).map((t) => t.headers[0]);
-      for (const a of RESERVED_MARK_SCOPE[file]!) {
-        expect(heads, `${file} に「${a.firstHeader}」の表が無い`).toContain(a.firstHeader);
-      }
+      const tableFirstHeaders = parseAllMarkdownTables(read(file)).map((t) => t.headers[0] ?? '');
+      expect(
+        findUnmatchedAllowances({ file, allow: RESERVED_MARK_SCOPE[file]!, tableFirstHeaders }),
+      ).toEqual([]);
     }
   });
 

@@ -6,7 +6,11 @@ import {
   PROBE_CAPABILITIES,
   UNMEASURED_MARK,
   CAPABILITY_CONTROLS,
+  findLegendRowGaps,
   findReservedMarkViolations,
+  findScopeGaps,
+  findUnmatchedAllowances,
+  LEGEND_ROWS,
   parseAllMarkdownTables,
   parseMarkdownTables,
   parseRecording,
@@ -566,5 +570,37 @@ describe('負の対照列を持たない表（証拠表）', () => {
 
   it('記号と verdict 名が食い違ったら落ちる', () => {
     expect(run(OK.replace('| C | 🔴 素通り |', '| C | ✅ verified |'))).toEqual(['mark_mismatch']);
+  });
+});
+
+/**
+ * 範囲の構造的な検査。**テストの assertion ではなく純関数で持つ**ことが要点で、
+ * 変異検証で「その 3 つはテスト側にあるあいだ必ず生存する」ことを実測したので持ち上げた。
+ */
+describe('範囲そのものの検査', () => {
+  it('素通り記号を持つ文書と範囲の一覧が一致していなければ落ちる', () => {
+    expect(findScopeGaps({ carriers: ['a.md'], scopeFiles: ['a.md'] })).toEqual([]);
+    // 載せ忘れ
+    expect(findScopeGaps({ carriers: ['a.md', 'b.md'], scopeFiles: ['a.md'] }).map((g) => g.kind)).toEqual([
+      'file_not_in_scope',
+    ]);
+    // 🔴 **片側だけ主張しない。** 実体の無い許可も報告する。
+    expect(findScopeGaps({ carriers: ['a.md'], scopeFiles: ['a.md', 'b.md'] }).map((g) => g.kind)).toEqual([
+      'scope_file_without_mark',
+    ]);
+  });
+
+  it('許可した表が実在しなければ落ちる', () => {
+    const allow = [{ firstHeader: '判定' }, { firstHeader: '操作' }];
+    expect(findUnmatchedAllowances({ file: 'x.md', allow, tableFirstHeaders: ['判定', '操作'] })).toEqual([]);
+    expect(
+      findUnmatchedAllowances({ file: 'x.md', allow, tableFirstHeaders: ['判定'] }).map((g) => g.kind),
+    ).toEqual(['allowance_without_table']);
+  });
+
+  it('凡例の行が導出値とずれたら落ちる（多くても少なくても）', () => {
+    expect(findLegendRowGaps([...LEGEND_ROWS])).toEqual([]);
+    expect(findLegendRowGaps([...LEGEND_ROWS, '| 捏造 |']).map((g) => g.kind)).toEqual(['legend_rows_changed']);
+    expect(findLegendRowGaps(LEGEND_ROWS.slice(1)).map((g) => g.kind)).toEqual(['legend_rows_changed']);
   });
 });

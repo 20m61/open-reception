@@ -287,6 +287,57 @@ export const LEGEND_ROWS: ReadonlyArray<string> = [
   '（未測）',
 ];
 
+/**
+ * 範囲の**構造的な検査**。判断そのものを `src/` に置くのが要点である。
+ *
+ * 🔴 **テストの assertion に置くと、弱めても誰も落ちない。** 変異検証で実測した ――
+ * 凡例の下界・ファイル軸の閉包・死んだ許可の 3 つは、テスト側に書いてあるあいだは
+ * 「その行を緩める変異」が**必ず生存する**（テストを弱めたことを、そのテスト自身の実行では
+ * 検出できない）。純関数へ持ち上げれば変異が捕まる。I/O（走査・読み込み）だけテストに残す。
+ */
+export type ScopeGap =
+  | { readonly kind: 'file_not_in_scope'; readonly file: string }
+  | { readonly kind: 'scope_file_without_mark'; readonly file: string }
+  | { readonly kind: 'allowance_without_table'; readonly file: string; readonly firstHeader: string }
+  | { readonly kind: 'legend_rows_changed'; readonly actual: ReadonlyArray<string> };
+
+/**
+ * 素通り記号を持つ文書の集合と、範囲の一覧が**一致する**こと。
+ * 片側だけの主張にしない（載せ忘れも、実体の無い許可も、どちらも報告する）。
+ */
+export function findScopeGaps(input: {
+  /** 素通り記号を実際に含む文書のパス（呼び出し側が走査する）。 */
+  readonly carriers: ReadonlyArray<string>;
+  readonly scopeFiles: ReadonlyArray<string>;
+}): ReadonlyArray<ScopeGap> {
+  const gaps: ScopeGap[] = [];
+  for (const file of input.carriers) {
+    if (!input.scopeFiles.includes(file)) gaps.push({ kind: 'file_not_in_scope', file });
+  }
+  for (const file of input.scopeFiles) {
+    if (!input.carriers.includes(file)) gaps.push({ kind: 'scope_file_without_mark', file });
+  }
+  return gaps;
+}
+
+/** 許可した表が実在すること（改名・削除で許可だけが残るのを防ぐ）。 */
+export function findUnmatchedAllowances(input: {
+  readonly file: string;
+  readonly allow: ReadonlyArray<ReservedMarkAllowance>;
+  readonly tableFirstHeaders: ReadonlyArray<string>;
+}): ReadonlyArray<ScopeGap> {
+  return input.allow
+    .filter((a) => !input.tableFirstHeaders.includes(a.firstHeader))
+    .map((a) => ({ kind: 'allowance_without_table' as const, file: input.file, firstHeader: a.firstHeader }));
+}
+
+/** 凡例の行が導出値ぴったりであること（**無界にすると捏造した能力行を足せる**）。 */
+export function findLegendRowGaps(rowLabels: ReadonlyArray<string>): ReadonlyArray<ScopeGap> {
+  const same =
+    rowLabels.length === LEGEND_ROWS.length && rowLabels.every((l, i) => l === LEGEND_ROWS[i]);
+  return same ? [] : [{ kind: 'legend_rows_changed', actual: rowLabels }];
+}
+
 export type ReservedMarkViolation = {
   readonly tableFirstHeader: string;
   readonly column: string;
