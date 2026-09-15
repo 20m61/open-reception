@@ -1,0 +1,32 @@
+{
+  "runtime": "moto",
+  "endpoint": "http://127.0.0.1:5000",
+  "measuredAt": "2026-09-15T09:15:22.586Z",
+  "results": [
+    {
+      "capability": "Cognito USER_SRP_AUTH（管理者ログイン）",
+      "positiveDesc": "正しいパスワードで ID トークンが出る",
+      "negativeDesc": "🔴 誤ったパスワードが拒否される",
+      "positive": "failed",
+      "negative": "accepted",
+      "verdict": "permissive",
+      "note": "正の対照が本番の呼び方で通らなかった（ただし平文 username なら誤った PW でも通る＝素通り）"
+    },
+    {
+      "capability": "DynamoDB 条件付き作成（putIfAbsent の原子性）",
+      "positiveDesc": "新規 id の作成が成功する",
+      "negativeDesc": "同じ id の二重作成が拒否される",
+      "positive": "passed",
+      "negative": "rejected",
+      "verdict": "verified"
+    },
+    {
+      "capability": "DynamoDB GSI テナント分離",
+      "positiveDesc": "自テナントの項目が index 越しに引ける",
+      "negativeDesc": "他テナントからは引けない",
+      "positive": "passed",
+      "negative": "rejected",
+      "verdict": "verified"
+    }
+  ]
+}

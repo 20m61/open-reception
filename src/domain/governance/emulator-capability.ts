@@ -40,6 +40,13 @@ export type PositiveOutcome = 'passed' | 'failed' | 'unreachable';
  */
 export type NegativeOutcome = 'rejected' | 'accepted' | 'unreachable';
 
+/**
+ * `PositiveOutcome` の総当たり。**記号の予約**（`capability-doc.ts` の
+ * `NEGATIVE_CONTROL_ONLY_VERDICTS`）を `classifyCapability` から導出するために要る。
+ * 手で並べた一覧ではなく、ここを唯一の出どころにする。
+ */
+export const POSITIVE_OUTCOMES: ReadonlyArray<PositiveOutcome> = ['passed', 'failed', 'unreachable'];
+
 export type CapabilityVerdict =
   /** 正は通り、負は拒否された。ローカルで意味のある検証ができる。 */
   | 'verified'
