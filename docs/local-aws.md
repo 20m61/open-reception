@@ -53,6 +53,7 @@ npm run aws:local:up       # venv 作成 → エミュレータ起動 → bootst
 | `npm run aws:local:stop` | 停止する |
 | `npm run aws:local:status` | 実行系と稼働状態 |
 | `npm run aws:local:env` | **前提なしで**観測できる診断（下記） |
+| `npm run aws:local:capability` | 能力を**負の対照つき**で実測する（下記 matrix。素通りがあれば非 0） |
 
 実行系は `AWS_RUNTIME` で差し替える:
 
@@ -78,8 +79,26 @@ Tier 1 は **hermetic** である。`vitest.config.ts` が AWS 資格情報を d
 
 ## Compatibility matrix
 
-**「起動した」ではなく「このプロジェクトが実際に使う操作が通ったか」**で判定している
-（2026-09-14 実測 / `matrix.py`）。
+🔴 **「操作が通ったか」でも足りない。負の対照が要る。**
+
+この表は当初「このプロジェクトが実際に使う操作が通ったか」で判定していた。それでも
+**Cognito の行が誤っていた**（#1103 / 2026-09-14）—— MiniStack は誤ったパスワードでも
+トークンを発行しており、「正しいパスワードで通る」だけを見た判定が ✅ を付けていた。
+**認証で価値があるのは拒否するほうである。**
+
+以後、能力の主張には**正の対照**（通らなければならない操作）と**負の対照**
+（拒否されなければならない操作）を組で当てる。判定は
+`src/domain/governance/emulator-capability.ts` に閉じ、記号は手で書かない:
+
+| 判定 | 記号 | 意味 |
+| --- | --- | --- |
+| `verified` | ✅ | 正は通り、負は拒否された。ローカルの緑に意味がある |
+| `permissive` | 🔴 素通り | **正も負も通る。緑のまま嘘をつく** ―― `unavailable` より危険 |
+| `unavailable` | ⛔ | 正が通らない。ローカルでは検証できない（が嘘はつかない） |
+| `inconclusive` | ? | 負の対照を走らせられなかった |
+
+再測は **`npm run aws:local:capability`**（素通りが 1 件でもあれば非 0）。
+下表の Moto / MiniStack 列は 2026-09-14 の実測。
 
 | Service / 操作 | Moto | MiniStack | Real AWS 必須 | Notes |
 | --- | --- | --- | --- | --- |
@@ -89,16 +108,64 @@ Tier 1 は **hermetic** である。`vitest.config.ts` が AWS 資格情報を d
 | DynamoDB GSI query | ✅ | ✅ | — | テナント分離 |
 | Secrets Manager | ✅ | ✅ | — | |
 | SSM Parameter Store | ✅ | ✅ | — | |
-| Cognito user pool + SRP client | ✅ | ✅ | **実トークン検証** | LocalStack freemium は⛔ |
+| Cognito user pool / client の CRUD | ✅ | ✅ | — | プール・クライアント・ユーザーは作れる |
+| **Cognito SRP のパスワード検証** | ⛔ | 🔴 **素通り** | **必須** | 下記「Cognito は素通りする」 |
 | Polly synthesize | ✅ | ⛔ 405 | 音質 | **Moto のみ**。音質評価は実 AWS |
 | S3 | ✅ | ✅ | 配信 | CloudFront 配信は実 AWS |
-| CloudFormation | ✅ | ✅ | 実デプロイ | CDK synth/diff は実 AWS ゲート |
+| CloudFormation / CDK deploy + diff | ✅ | ✅ | 置換挙動・drift | 下記「CDK はローカルで往復する」 |
 | Route53 / EC2 / AutoScaling | ✅ | ✅ | 実挙動 | LocalStack は ASG ⛔ |
 | Transcribe **streaming** | ⛔ | ⛔ | **必須** | 現在 SDK 未導入（型のみ） |
 | Bedrock | ⛔ | ⛔ | **必須** | 現在 SDK 未使用 |
 | IAM 評価 / KMS | ⛔ | ⛔ | **必須** | 下記 unsupported |
 
 参考: LocalStack(freemium) は Cognito / Polly / AutoScaling が⛔（ライセンス制約）。
+
+### 🔴 Cognito は素通りする ―― ローカルで管理者ログインを検証しない
+
+本プロジェクトの Cognito 実行時の面は `src/lib/auth/cognito-srp.ts` の
+`InitiateAuth(USER_SRP_AUTH)` + `RespondToAuthChallenge(PASSWORD_VERIFIER)` だけである。
+本番モジュールをそのまま両エミュレータへ当てた実測（2026-09-14 / #1103）:
+
+| | 正しい PW | **誤った PW** | 結論 |
+| --- | --- | --- | --- |
+| MiniStack | トークン発行 | **トークン発行** | 🔴 SRP 証明を検証していない |
+| Moto | `UserNotFoundException` | `UserNotFoundException` | ⛔ 正の対照が通らない |
+
+- MiniStack は `PASSWORD_VERIFIER` チャレンジを正しい形（`SRP_B` / `SALT` /
+  `SECRET_BLOCK`）で返すので、**API の形だけを見る測り方では区別できない**。
+  署名の合わない証明を返しても ID/Access/Refresh トークンが出る。
+  ただし**存在しないユーザー**は拒否するので、「何も見ていない」わけではない
+  —— 見ていないのは**パスワードだけ**である。
+- Moto は本番と同じ呼び方（`ChallengeResponses.USERNAME` に `USER_ID_FOR_SRP`。
+  実機検証でこれが正だと判明している、`cognito-srp.ts` のコメント参照）では
+  ユーザーを解決できない。**平文 username を渡すと通るが、その場合は誤った PW も
+  受理する** —— つまり Moto も SRP 証明を検証していない。
+
+したがって **`/admin/login` の認証判定をローカルの緑で担保しない。**
+ログイン経路に触る変更は実 AWS（staging）でしか確かめられない。
+
+🔴 これは「Cognito が使えない」より悪い。使えなければ使った瞬間に分かるが、
+**素通りするエミュレータはテストを緑にしたまま嘘をつく**。ここへ
+「ローカルで管理者ログインが通った」という e2e を足すと、認証を丸ごと外す変異が
+**全部素通りする**テストが 1 本増えるだけである
+（`CLAUDE.md`「検証の作法」の「下界を併せて縛る」がそのまま当てはまる）。
+
+### CDK はローカルで往復する（synth → deploy → diff）
+
+2026-09-14 / #1103 実測（MiniStack、資格情報なし）:
+
+| 段 | 結果 |
+| --- | --- |
+| `cdk synth` | ✅ 18s。**エミュレータすら要らない**（資格情報も不要）。ただし `build:open-next` が新しいこと |
+| `cdk bootstrap` | ✅ CDKToolkit スタックが作られる |
+| `cdk deploy` | ✅ 13.9s。CloudFormation スタックが実際に作られる |
+| デプロイ後の `cdk diff` | ✅ **There were no differences**（change set を実際に作る経路） |
+
+素の CDK v2 が `AWS_ENDPOINT_URL` を尊重するので、**`cdklocal` も新規依存も要らない**。
+
+🔴 **往復したのは「機構」であって「AWS 互換性」ではない。** エミュレータは IAM を評価せず、
+置換挙動・drift・ロールバックも実 AWS の挙動ではない。`npm run aws:diff-gate` /
+`aws:negative-tests` と runbook（Tier 4）は**そのまま要る**。
 
 ## Unsupported — 実 AWS でしか保証できないこと
 
@@ -168,7 +235,7 @@ Docker が要るのは `AWS_RUNTIME=localstack` のときだけ。`npm run aws:l
 | `Credentials ... still expired` | 同上。`AWS_CREDENTIAL_EXPIRATION` は存在するだけで効く |
 | ポート衝突 | `ministack`/`localstack` は 4566、`moto` は 5000。`AWS_ENDPOINT_URL` で変えられる |
 | `ready` にならない | `.aws-local/<runtime>.log` |
-| Cognito が使えない | LocalStack freemium の制約。`ministack` か `moto` を使う |
+| Cognito が使えない | LocalStack freemium の制約。ただし **`ministack` / `moto` でも SRP のパスワード検証はできない**（上記「Cognito は素通りする」） |
 | Polly が 405 | MiniStack は非対応。`AWS_RUNTIME=moto` を使う |
 | LocalStack がライセンスで落ちる | `development/local-aws-sandbox.md`（proxy 環境の事情） |
 

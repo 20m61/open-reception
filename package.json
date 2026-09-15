@@ -41,6 +41,7 @@
     "secrets:scan": "gitleaks detect --no-banner --redact",
     "test:e2e:live": "bash scripts/e2e-live.sh",
     "delegate:prompt": "tsx scripts/delegate-gate-prompt.ts",
+    "aws:local:capability": "bash scripts/aws-local.sh capability",
     "aws:diff-gate": "tsx scripts/aws-diff-gate.ts",
     "aws:negative-tests": "tsx scripts/aws-negative-tests.ts",
     "aws:local:start": "bash scripts/aws-local.sh start",

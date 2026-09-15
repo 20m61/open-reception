@@ -118,6 +118,9 @@ export const MANUAL_ONLY_ALLOWLIST: Readonly<Record<string, string>> = {
   'kiosk-visual-check.mjs': '実ブラウザが要る（visual-checks skill から手動）。',
   'qr-routing-check.mjs': '実ブラウザが要る（visual-checks skill から手動）。',
   'vrm-visual-check.mjs': '実ブラウザが要る（visual-checks skill から手動）。',
+  'aws-local-capability.ts':
+    'エミュレータの稼働が前提（`npm run aws:local:capability` = `scripts/aws-local.sh capability`）。' +
+    '能力の再測を人が回すときだけ走る。品質ゲートには入れない（#1103 条件 5: 既定のゲートを変えない）。',
   'aws-cloud-deploy.sh':
     'クラウドセッション / routine から呼ぶ入口そのもの。リポジトリ内に呼び出し元は無くて正しい。',
   'aws-issue-credentials.sh':

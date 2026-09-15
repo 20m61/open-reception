@@ -12,6 +12,15 @@
 - ベンダ固有の health パス（`/_localstack/health` 等）でテストの到達性を判定しない。
   実際に使う AWS API で確かめる ―― 実装時にこれで Moto が落ち、交換可能性を検証する
   テスト自身がロックインを持っていた（2026-09-14）。
+- 🔴 **実際に使う API を叩いて成功しても、まだ足りない。負の対照を組にする。**
+  「その操作が通った」は「その能力が使える」ではない。2026-09-14（#1103）、MiniStack の
+  Cognito は本番モジュールからの SRP 認証に**誤ったパスワードでもトークンを発行**していたが、
+  正の対照だけを見ていた compatibility matrix は ✅ と書いていた。**拒否されなければ
+  ならない操作が拒否されること**まで測る。判定は
+  `src/domain/governance/emulator-capability.ts`、実測は `npm run aws:local:capability`。
+- 🔴 **`permissive`（素通り）を `unavailable` と同じ扱いにしない。前者のほうが危険である。**
+  使えないエミュレータは使った瞬間に分かるが、素通りするエミュレータは緑のまま嘘をつく。
+  🔴 **Cognito 認証の判定をローカルの緑で担保しない**（`docs/local-aws.md`）。
 
 - Prefer a disposable LocalStack sandbox for routine AWS integration before using a real AWS dev/staging environment.
 - Use the current `lstk` CLI (`lstk start`, `lstk status`, `lstk reset --force`, `lstk stop`, `lstk cdk ...`). Do not add new dependencies on the deprecated `localstack` CLI or `cdklocal`.

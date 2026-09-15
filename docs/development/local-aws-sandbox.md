@@ -1,6 +1,6 @@
 # Local AWS sandbox strategy
 
-Status: **runtime-validated in Claude Code on the web (2026-09-14).** The lane runs end to end there — `up` / `test` / `reset` / `down` — after three defects found by actually running it. The persistent-AWS-dev replacement decision is **still open**; see "Replacement decision gate".
+Status: **runtime-validated in Claude Code on the web (2026-09-14).** The lane runs end to end there — `up` / `test` / `reset` / `down` — after three defects found by actually running it. The persistent-AWS-dev replacement decision is **recorded: `downsize`** (#1103); see "Replacement decision gate".
 
 ## Decision
 
@@ -198,24 +198,65 @@ Keep device/soak behavior, Vonage/WebRTC, speech-service fidelity, CloudFront/ce
 
 ## Replacement decision gate
 
-**Decision: still open. Not yet `remove` / `off-by-default` / `downsize` / `keep`.**
+**Decision: `downsize` — stop running a *persistent* AWS `dev` environment. Keep staging as
+the real-AWS gate.** Recorded 2026-09-14 (#1103). Measured, not inferred; the measurements and
+the one thing that is still unmeasured are both below.
 
-🔴 This is deliberate. Infrastructure viability is now measured, but the decision does not turn on viability alone, and writing "it can probably be replaced" from an emulator that merely boots is the failure mode this gate exists to prevent.
+🔴 **Recording this recommendation is not executing it.** Tearing down or resizing AWS
+resources is a stop boundary (cost / infrastructure). The change itself needs human approval.
 
-What the 2026-09-14 run settled:
+### What routine development can now do locally
 
-- the lane **runs in Claude Code on the web**, cold start to `Ready` in ~16s, `up` / `test` / `reset` / `down` all exit 0 and `up` is idempotent;
-- the **production** DynamoDB repository passes deterministic integration tests against the real engine, not a fake;
-- S3, Secrets Manager, Lambda (real invoke), API Gateway and IAM all work;
-- no real AWS credentials are needed or used — the lane is pinned isolated by test.
+Measured in Claude Code on the web, no AWS account credentials, no Docker, cold start ~16s:
 
-What it did **not** settle, and what the decision still waits on:
+| Capability | Result | How it was measured |
+| --- | --- | --- |
+| DynamoDB persistence (table/GSI1/TTL/conditional write/tenant isolation) | ✅ verified | production `DynamoBackend`, 8 integration tests + `npm run aws:local:capability` |
+| S3 / Secrets Manager / SSM / Lambda invoke / API Gateway | ✅ | `npm run aws:local:test` |
+| `cdk synth` | ✅ 18s | no credentials and no emulator needed; gated behind a fresh `build:open-next` |
+| `cdk bootstrap` / `cdk deploy` → emulator | ✅ 13.9s | real CloudFormation stack created in MiniStack |
+| `cdk diff` after that deploy | ✅ **"There were no differences"** | real change-set path, not `--method=template` |
 
-1. **Cognito is unavailable on this license tier.** Any work touching sign-in, user pools or authorizers still needs real AWS. How much routine development that actually blocks has not been measured.
-2. **No representative feature was taken end to end through this lane.** Booting the emulator and passing a persistence contract is weaker evidence than shipping an issue through it, which is what the original gate asked for.
-3. **CDK synth/diff/deploy against LocalStack is untested here.** The existing AWS diff/negative/security gates are unchanged and un-weakened, but whether they could run locally is unknown.
-4. **No cost figure for the current persistent dev environment** is on record, so "downsize" has no denominator.
+The deploy→diff loop **round-trips locally**. Plain CDK v2 honours `AWS_ENDPOINT_URL`, so this
+needs no `cdklocal` and no new dependency.
 
-The honest change is to the *shape* of the remaining question: it is no longer "can this run at all here" — that is answered, yes — but "how much of real development does the Cognito gap and the untested deploy path still pull back to AWS." Resolve 1–4, then record the recommendation with the numbers attached.
+### What it cannot do — and the one that bites
+
+🔴 **Cognito SRP password verification is `permissive`, not missing.** MiniStack issues
+ID/Access/Refresh tokens for a **wrong password**; Moto rejects the production call shape
+entirely and also accepts a wrong password when coaxed into answering. Details and the
+measurement table are in [`../local-aws.md`](../local-aws.md) ("Cognito は素通りする").
+
+This is the finding that shapes the recommendation. A permissive emulator is worse than an
+absent one: it lets someone add a green "admin login works locally" test that **cannot fail**
+if authentication is removed. So `/admin/login` and anything behind it stays a real-AWS
+concern regardless of how good the local lane gets.
+
+Unchanged from before, still real-AWS-only: IAM evaluation, KMS, real token verification/JWKS,
+CloudFront/certificate/DNS delivery, CloudFormation replacement & drift, Transcribe streaming,
+Polly audio quality, Vonage/WebRTC, real device/browser behavior.
+
+### Why `downsize` and not `remove`
+
+The capabilities that still need AWS — auth, IAM, delivery — are real and frequently touched.
+They are not, however, reasons for a **persistent** `dev` environment:
+
+- they are already routed to **staging**, which this repository has always treated as the
+  Tier 4 compatibility gate;
+- AWS access is already **on demand, not continuous** — the deploy lane issues short-lived STS
+  credentials from the local privileged lane under human approval (ADR 0009 / #675);
+- routine work (persistence, infra shape, API wiring) no longer touches AWS at all.
+
+An always-on `dev` environment sitting *beside* staging therefore buys little that staging and
+the credential window do not already provide. `remove` overstates it, because the auth gap means
+some real environment must remain reachable; that environment is staging.
+
+### Still unmeasured
+
+**No cost figure for the current persistent `dev` environment is on record**, so the size of the
+saving is unknown. This recommendation rests on **capability**, not cost — it says the persistent
+environment is not *needed* for routine development, not how much it costs to keep. Reading the
+number requires real AWS billing access (`src/lib/platform/aws-cost-explorer.ts`, real AWS only);
+that is the remaining input before acting, and it affects *how far* to downsize, not *whether*.
 
 Staging remains the real-AWS compatibility gate regardless of the outcome.

@@ -228,6 +228,13 @@ run_tests() {
   LOCAL_AWS_INTEGRATION=1 npm run --silent local:aws:integration
 }
 
+capability() {
+  # 能力の実測（#1103）。**負の対照つき**で測る ―― 「操作が成功した」は
+  # 「その能力が使える」ではない（Cognito が誤ったパスワードを受理していた実例）。
+  # 素通りが 1 件でもあれば非 0 で返るので、呼び出し側でそのまま検知できる。
+  npx tsx "${ROOT}/scripts/aws-local-capability.ts" "$@"
+}
+
 reset_state() {
   # 捨てて作り直すのが最も確実（状態は必ず空から始まる）。
   stop_emulator
@@ -268,8 +275,9 @@ case "${1:-start}" in
   reset)      reset_state ;;
   status)     status ;;
   env)        lane_env ;;
+  capability) shift; capability "$@" ;;
   *)
-    echo "usage: $0 {start|stop|bootstrap|seed|up|test|reset|status|env}" >&2
+    echo "usage: $0 {start|stop|bootstrap|seed|up|test|reset|status|env|capability}" >&2
     exit 2
     ;;
 esac
