@@ -17,8 +17,21 @@ import {
   type StaffResponseResult,
   type StaffResponseSeverity,
 } from '@/domain/reception/staff-response';
+import {
+  staffFailureForStatus,
+  staffResponseFailureMessage,
+  type StaffFailure,
+} from './staff-failure';
 
-type SubmitState = 'idle' | 'submitting' | 'done' | 'error';
+/**
+ * 🔴 **error は必ず原因を伴う (#1123)。** 原因を別 state に分けて既定値で補うと、
+ * **その既定が嘘側（「リンクの有効期限切れ」）に倒れる**。表現不能にしておく。
+ */
+type SubmitState =
+  | { kind: 'idle' }
+  | { kind: 'submitting' }
+  | { kind: 'done' }
+  | { kind: 'error'; failure: StaffFailure };
 
 /** 担当者ボタンに必要な最小メタ（GET /respond の応答形）。来訪者文言・PII は含まない。 */
 type ActionMeta = {
@@ -48,7 +61,7 @@ function defaultActionMeta(): ActionMeta[] {
 export function StaffResponseActions({ receptionId, token }: StaffResponseActionsProps): React.ReactElement {
   // 確認待ちの種別（誤タップ防止）。null なら確認中なし。
   const [pendingConfirm, setPendingConfirm] = useState<StaffResponseAction | null>(null);
-  const [submitState, setSubmitState] = useState<SubmitState>('idle');
+  const [submitState, setSubmitState] = useState<SubmitState>({ kind: 'idle' });
   const [lastResult, setLastResult] = useState<StaffResponseResult | null>(null);
   // サイト設定を反映した応答種別。取得前/失敗時はドメイン既定にフォールバックする。
   const [actions, setActions] = useState<ActionMeta[]>(defaultActionMeta);
@@ -76,7 +89,7 @@ export function StaffResponseActions({ receptionId, token }: StaffResponseAction
 
   const submit = useCallback(
     async (action: StaffResponseAction) => {
-      setSubmitState('submitting');
+      setSubmitState({ kind: 'submitting' });
       setPendingConfirm(null);
       try {
         const res = await fetch(`/api/staff/calls/${receptionId}/respond`, {
@@ -85,13 +98,15 @@ export function StaffResponseActions({ receptionId, token }: StaffResponseAction
           body: JSON.stringify({ token, action }),
         });
         if (!res.ok) {
-          setSubmitState('error');
+          // 🔴 状態コードを見る。非 ok を一括で「リンク切れ」にしない (#1123)。
+          setSubmitState({ kind: 'error', failure: staffFailureForStatus(res.status) });
           return;
         }
         setLastResult((await res.json()) as StaffResponseResult);
-        setSubmitState('done');
+        setSubmitState({ kind: 'done' });
       } catch {
-        setSubmitState('error');
+        // 応答が返らなかった。**届いたか分かっていない**ので、リンクのせいにしない。
+        setSubmitState({ kind: 'error', failure: 'unreachable' });
       }
     },
     [receptionId, token],
@@ -111,7 +126,7 @@ export function StaffResponseActions({ receptionId, token }: StaffResponseAction
   const definitions = actions.filter((d) => d.enabled);
 
   return (
-    <section className="staff-response" data-testid="staff-response" data-submit-state={submitState}>
+    <section className="staff-response" data-testid="staff-response" data-submit-state={submitState.kind}>
       <h2 className="staff-response__title">来訪者への応答を選んでください</h2>
       <div className="staff-response__actions">
         {definitions.map((def) => {
@@ -123,8 +138,8 @@ export function StaffResponseActions({ receptionId, token }: StaffResponseAction
                 className={`btn ${def.severity === 'danger' ? 'btn--danger' : 'btn--secondary'}`}
                 data-testid={`staff-response-${def.action}`}
                 data-confirming={awaitingConfirm ? 'true' : undefined}
-                disabled={submitState === 'submitting'}
-                aria-busy={submitState === 'submitting'}
+                disabled={submitState.kind === 'submitting'}
+                aria-busy={submitState.kind === 'submitting'}
                 onClick={() => onClick(def.action, def.requiresConfirmation)}
               >
                 {awaitingConfirm ? `本当に「${def.staffLabel}」でよろしいですか？（もう一度）` : def.staffLabel}
@@ -143,14 +158,14 @@ export function StaffResponseActions({ receptionId, token }: StaffResponseAction
           );
         })}
       </div>
-      {submitState === 'done' && lastResult ? (
+      {submitState.kind === 'done' && lastResult ? (
         <p className="staff-response__status" role="status" data-testid="staff-response-done">
           応答しました（来訪者には「{lastResult.visitorMessage}」と表示されます）。
         </p>
       ) : null}
-      {submitState === 'error' ? (
+      {submitState.kind === 'error' ? (
         <p className="staff-response__status notice notice--danger" role="status" data-testid="staff-response-error">
-          応答を送れませんでした。リンクの有効期限切れ、または受付が終了している可能性があります。
+          {staffResponseFailureMessage(submitState.failure)}
         </p>
       ) : null}
     </section>

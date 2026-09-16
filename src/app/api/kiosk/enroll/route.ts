@@ -1,7 +1,8 @@
 import { NextResponse } from 'next/server';
 import { readJson } from '@/lib/data-stores/result-http';
 import { getDeviceService } from '@/lib/tenant/store';
-import { readEnrollmentToken } from '@/lib/auth/kiosk-enrollment';
+import { getEnrollmentSecret, readEnrollmentToken } from '@/lib/auth/kiosk-enrollment';
+import { secretUnavailableResponse } from '@/lib/auth/secret-unavailable';
 import { KIOSK_COOKIE, KIOSK_SESSION_TTL_MS, issueKioskSession } from '@/lib/auth/kiosk';
 import type { ConsumeFailure } from '@/lib/tenant/device-service';
 
@@ -23,6 +24,14 @@ export async function POST(request: Request): Promise<NextResponse> {
   const body = (await readJson(request)) as { token?: unknown } | null;
   const token = typeof body?.token === 'string' ? body.token : undefined;
 
+  // 🔴 鍵未設定デプロイで uncaught にしない。**catch の射程は鍵の解決だけ**
+  // （理由と、広げたときに何が壊れるかは `src/lib/auth/secret-unavailable.ts` に 1 度だけ書く）。
+  // 射程は route テストの「鍵以外の throw は 503 に化けない」が縛る (#1123)。
+  try {
+    getEnrollmentSecret();
+  } catch {
+    return secretUnavailableResponse('KIOSK_ENROLLMENT_SECRET');
+  }
   const claims = await readEnrollmentToken(token);
   if (!claims) {
     return NextResponse.json(

@@ -30,7 +30,8 @@ vi.mock('@/lib/auth/cognito-srp', () => ({
   cognitoSrpLogin: (...args: unknown[]) => cognitoSrpLogin(...args),
 }));
 
-import { POST, __resetAdminPasswordLogState } from './route';
+import { POST } from './route';
+import { __resetSecretUnavailableLog } from '@/lib/auth/secret-unavailable';
 
 /** 公開リポジトリに平文で載っている dev フォールバック。 */
 const PUBLIC_DEFAULT = 'open-reception';
@@ -133,7 +134,7 @@ describe('POST /api/admin/login の鍵の配線 (#1021 AC1)', () => {
      * 1 本も無い」と指摘した族）。
      */
     it('🔴 設定不備は 1 度だけ記録し、リクエストごとには出さない', async () => {
-      __resetAdminPasswordLogState();
+      __resetSecretUnavailableLog();
       const spy = vi.spyOn(console, 'error').mockImplementation(() => {});
       try {
         for (let i = 0; i < 3; i += 1) await login(PUBLIC_DEFAULT);
@@ -208,6 +209,33 @@ describe('failClosed の爆発半径 — provider=none の外へ漏れない (#1
     vi.stubEnv('ADMIN_AUTH_PROVIDER', 'entra');
     const res = await login('anything');
     expect(res.status).toBe(409);
+  });
+
+  /**
+   * 🔴 **未認証で叩けるので、ここのログもラッチする (#1123)。**
+   * `/api/admin/login` は誰でも叩ける。設定不備を毎リクエスト記録すると
+   * **CloudWatch の出力量が攻撃者の手に渡る**（ADMIN_PASSWORD 側と同じ理由）。
+   */
+  it('🔴 cognito（COGNITO_* 不完全）: 設定不備を 1 度だけ記録する', async () => {
+    vi.stubEnv('ADMIN_AUTH_PROVIDER', 'cognito');
+    for (const k of ['COGNITO_USER_POOL_ID', 'COGNITO_CLIENT_ID', 'COGNITO_REGION']) {
+      vi.stubEnv(k, undefined);
+    }
+    __resetSecretUnavailableLog();
+    const spy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      for (let i = 0; i < 3; i += 1) await login('anything');
+      expect(spy).toHaveBeenCalledTimes(1);
+      const logged = String(spy.mock.calls[0]?.[0]);
+      expect(logged).toContain('COGNITO_');
+      // 🔴 **直した文面そのものを見る。** 欠けているのは 3 つの**いずれか**なので、
+      // 「is not set」（＝全部未設定と読める）に戻す変異を殺す。
+      expect(logged).toContain('incomplete');
+      expect(logged).not.toMatch(/is not set/);
+    } finally {
+      spy.mockRestore();
+      __resetSecretUnavailableLog();
+    }
   });
 
   it('🔴 cognito（COGNITO_* 不完全）: ADMIN_PASSWORD が無くても 500 の JSON', async () => {

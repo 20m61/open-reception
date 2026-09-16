@@ -87,10 +87,11 @@ server Lambda にはデプロイ時に環境変数を渡す。`.env.example` の
   `KIOSK_ENROLLMENT_SECRET` / `CALL_ANSWER_SECRET` / `ENTRA_*` / `VONAGE_*`）は平文でコミット・
   履歴に残さないこと。次の **方式 B（推奨）** か方式 A を使う。
   > **注意**: `KIOSK_ENROLLMENT_SECRET`（受付URL/QR の署名鍵）は実デプロイ（Lambda）で**必須**。
-  > 未設定だと未認証 `/api/kiosk/enroll` が fail-closed で 500 になり、発行/エンロールが機能しない
+  > 未設定だと発行（管理側）が fail-closed で 500、未認証 `/api/kiosk/enroll` が **503**（#1123）になり、
+  > 発行/エンロールが機能しない
   > （`docs/reception-issuance-design.md`）。Secrets/appEnv の JSON に必ず含める。
   > **注意**: `CALL_ANSWER_SECRET`（担当者応答リンクの署名鍵）も実デプロイで**必須**（#1021）。
-  > 未設定だと `/api/staff/calls/[id]/answer` と `/respond` が fail-closed で 500 になる。
+  > 未設定だと `/api/staff/calls/[id]/answer` と `/respond` が fail-closed で **503**（#1123）になる。
   > 以前は `KIOSK_SESSION_SECRET` へフォールバックしていたが、受付端末と担当者応答で
   > 信頼境界を共有しないために撤去した。**独立した値を必ず与える**。
   > **注意**: `ADMIN_PASSWORD` は `ADMIN_AUTH_PROVIDER=none`（既定）のデプロイで**必須**（#1021）。
@@ -161,7 +162,7 @@ CloudFront 越しに **POST/フォーム/受付発行が機能する**ために�
    **内部 Lambda Function URL（…lambda-url…on.aws）**になり、配布した QR を開くと 403 になる。
 
 > 機密 `KIOSK_ENROLLMENT_SECRET`（受付URL署名鍵）も忘れず secret JSON に含める（手順 5 参照。
-> 未設定だと未認証 `/api/kiosk/enroll` が fail-closed で 500）。
+> 未設定だと未認証 `/api/kiosk/enroll` が fail-closed で **503** になる #1123）。
 
 #### origin-verify シークレットの供給 (#612)
 
@@ -439,9 +440,9 @@ npm run build:open-next
 aws secretsmanager create-secret --name open-reception/dev/app-v2 --secret-string file://secrets.json
 ```
 
-未設定だと deployed 環境で**それぞれ 500 で失敗する**。アプリが「開発用の既定シークレットを
-deployed 環境で使うことを拒否」して安全側に倒れるため。**これは正しい挙動**なので、
-シークレットを与える。どれが欠けると何が落ちるか:
+未設定だと deployed 環境でそれぞれ失敗する（**staff 応答と kiosk enroll は 503、管理ログインは
+500**。#1123）。アプリが「開発用の既定シークレットを deployed 環境で使うことを拒否」して
+安全側に倒れるため。**これは正しい挙動**なので、シークレットを与える。どれが欠けると何が落ちるか:
 
 | 鍵 | 欠けたときに落ちるもの | 実装 |
 | --- | --- | --- |
@@ -451,24 +452,37 @@ deployed 環境で使うことを拒否」して安全側に倒れるため。**
 | `ADMIN_SESSION_SECRET` | **落ちない（warn-only）**。未設定でも動くが、公開既定値で署名した cookie が通る（#1124） | `src/proxy.ts` / `src/lib/auth/admin.ts` |
 
 > 🔴 **この表は網羅ではない。手で書いたものである。** 実測で `serverSecret(..., { failClosed: true })`
-> の呼び出し元は **6 件**あり、`PLATFORM_ELEVATION_SECRET`（platform の昇格 / break-glass）と
+> の呼び出し元は **5 件**あり（#1021 で「6 件」と書いたのは `server-secret.ts` の doc コメントを
+> 数えた誤り。#1123 のレビューで判明）、`PLATFORM_ELEVATION_SECRET`（platform の昇格 / break-glass）と
 > `VOICE_TRANSPORT_TOKEN_SECRET`（受付端末の音声トークン）は**この表にも `.env.example` にも
 > 載っていない**。一覧を手で伸ばすと必ずずれるので、**`serverSecret(` の呼び出し元から導く
-> 検査**を #1122 で入れる。それまでは、新規構築時に上の 5 件だけを入れると
+> 検査**を #1122 で入れる。それまでは、新規構築時に**この表の行だけ**を入れると
 > platform 昇格と音声トークンが落ちることに注意。
 
-> 🔴 `CALL_ANSWER_SECRET` が欠けたとき、担当者の画面には
-> 「リンクの有効期限切れ、または別の端末で応答済みの可能性があります。」と出る ——
-> **原因は設定漏れなのに、担当者には「リンク切れ」と伝わる**（#1123 で直す）。
-> 担当者から「リンクが切れる」と報告されたら、この鍵を疑うこと。
+> 🔴 **症状から鍵を引くとき (#1123 で文言を直した後)**:
+> `CALL_ANSWER_SECRET` が欠けると担当者の画面は「**サーバー側の問題で通話に接続できませんでした**」、
+> `KIOSK_ENROLLMENT_SECRET` が欠けると受付端末は「**サーバー側の問題で登録できません**」と出る。
+> どちらも「リンクの有効期限切れ」とは言わない（言っていたら**別の原因**）。
+> 🔴 **「リンクの有効期限切れ」＝リンクの問題、とは限らない。** 担当者側は**アプリが返す 4xx**も
+> 同じ文言にする —— とくに `POST /api/staff/calls/:id/answer` は**テナントに Vonage 資格情報が
+> 無い**と 409 を返し（未設定が既定状態）、担当者には「リンクの有効期限切れ」と出る。
+> `CALL_ANSWER_SECRET` を疑う前に、**Vonage 設定と受付の `vonageSessionId`** を見ること
+> （4xx 側を揃えるかは #1127、この経路の実配線は #1132）。
+> 逆に **subscriber トークンの発行失敗は 502** なので、こちらは #1123 以降
+> 「サーバー側の問題で通話に接続できませんでした」と出る（**リンクの話ではない**）。
+> サーバログには `[security] <ENV 名> is not set in a deployed environment` が
+> **プロセスにつき 1 度だけ**出る（拾う仕組みはまだ無い。アラーム化は #1131）。
+> 🔴 1 度だけなのは **fail-closed の鍵**（上の表）。`KIOSK_SESSION_SECRET` のように
+> warn-only の鍵は `[security] <ENV 名> unset in deploy` が**毎リクエスト**流れる（#1128）。
 
-> 🔴 **`CALL_ANSWER_SECRET` が欠けたデプロイは、未認証の誰からでも叩ける。**
-> `/api/staff/**` は middleware を `passThrough` するので、でっち上げのトークンで
-> `GET /api/staff/calls/x/respond?token=a` を投げるだけで uncaught 例外が出る
-> （1 リクエスト＝スタックトレース 1 本。CloudWatch の出力量を外部から制御できる）。
-> 応答リンクを**発行する**経路は未配線（`issueAnswerToken` の本番呼び出し元はゼロ）だが、
-> それが効くのは「担当者画面に嘘が出る」側だけで、**この面の到達可能性とは無関係**である。
-> 閉じるのは #1123。
+> **`CALL_ANSWER_SECRET` が欠けたデプロイは、未認証の誰からでも叩ける**（`/api/staff/**` は
+> middleware を `passThrough` するので、でっち上げのトークンで到達する）。#1123 で
+> uncaught 例外は解消し、応答は 503・ログはプロセス 1 回に揃えた。
+> **正常時の 403 との差は残る**ので、1 回叩けば「この環境は鍵を持っていない」は読める（#1127）。
+>
+> 🔴 **切り分けの前提**: 応答リンクを**発行する**経路は現在も未配線（`issueAnswerToken` の
+> 本番呼び出し元はゼロ。走査 2 通りで確認）。したがって**担当者が実際にこの症状を見ることは無い** ——
+> 上の症状表で担当者側を待っても出てこないので、この鍵は API を直接叩いて確かめること。
 
 > 🔴 **provider によって必須の鍵が変わる**: 本書の方式 A の手順（「### 6. デプロイ」の
 > `: "${ADMIN_PASSWORD:?…}"` ブロック。**この節より前**にある）は `ADMIN_PASSWORD` を

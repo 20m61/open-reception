@@ -20,7 +20,7 @@
  * 🔴 **この表は面の網羅ではない。** 行は手で書いたものであり、**「全部の行が閉じた」は
  * 「どの扉からも入れない」を意味しない**。実際、最初に書いたときは `KIOSK_SESSION_SECRET`
  * の面が抜けていた（`brokenDeploy()` がその鍵を unset して舞台を作っていながら、
- * 何も主張していなかった）—— レビュー 6 周目の指摘。
+ * 何も主張していなかった）—— **#1021 の**レビュー 6 周目の指摘。
  *
  * 行の導出規則は「**`serverSecret(` の呼び出し元のうち、未認証で到達できる面を持つもの**」。
  * failClosed かどうかでは分けない —— failClosed でない鍵は「偽造が通る」面を、failClosed な鍵は
@@ -29,15 +29,24 @@
  * 🔴 **最初はこの規則を「failClosed でないもの」と書いていて、表と食い違っていた**
  * （staff answer の行は failClosed 側）。規則から表が導けないなら、それは規則ではない。
  *
- * 規則から導けて**まだ載っていない**面: `POST /api/kiosk/enroll`（未認証 ×
- * `getEnrollmentSecret()` が failClosed × route に try/catch 無し）。staff の行と同型なので、
- * #1123 が両方を同じ契約で閉じる。
+ * 🔴 **規則から導けてまだ載っていない面**: `POST /api/kiosk/voice-transport/token`
+ * （`VOICE_TRANSPORT_TOKEN_SECRET` が failClosed）。kiosk セッションを要求するが、
+ * **この表が下で認めているとおり公開既定値でセッションを鋳造できる**ので未認証で到達しうる。
+ * 既に 503 へ写像済み（`route.ts` の inline try/catch）なので実害は無いが、**規則から
+ * 導ける行が欠けている**＝この表の網羅性の主張がその分だけ弱い。
+ *
+ * failClosed の呼び出し元は実測 **5 件**（`answer-token` / `kiosk-enrollment` /
+ * `voice-transport/token` / `admin`(ADMIN_PASSWORD) / `platform/elevation`）。
+ * このうち `elevation` は platform 認証済み経路のみなので、この表の対象外。
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { NextRequest } from 'next/server';
 import { signSession } from '@/lib/auth/session';
 import { readKioskSession } from '@/lib/auth/kiosk';
 import { POST as staffAnswer } from '@/app/api/staff/calls/[id]/answer/route';
+import { GET as staffRespond, POST as staffRespondPost } from '@/app/api/staff/calls/[id]/respond/route';
+import { POST as kioskEnroll } from '@/app/api/kiosk/enroll/route';
+import { __resetSecretUnavailableLog } from '@/lib/auth/secret-unavailable';
 import { POST as adminLogin } from '@/app/api/admin/login/route';
 import { proxy } from '@/proxy';
 
@@ -54,14 +63,121 @@ function brokenDeploy(): void {
     'ADMIN_SESSION_SECRET',
     'KIOSK_SESSION_SECRET',
     'CALL_ANSWER_SECRET',
+    // 🔴 enroll の行の前提。舞台を作らずに「環境に元から無いこと」へ寄りかからない
+    // （この表が **#1021 の** 6 周目に「舞台を作りながら何も主張していない」と指摘された裏返し）。
+    'KIOSK_ENROLLMENT_SECRET',
     'ADMIN_AUTH_PROVIDER',
   ]) {
     vi.stubEnv(name, undefined);
   }
 }
 
-beforeEach(brokenDeploy);
-afterEach(() => vi.unstubAllEnvs());
+/**
+ * 🔴 **トークンの形を可変にする（#1123 AC1 の後半「**内容・有無に関わらず揃う**」）。**
+ *
+ * これは飾りの網羅ではない。#1021 は「403/500 の差を塞ぐ」として `readAnswerToken` の先頭に
+ * 「トークンが無ければ早期 return」を入れ、**トークンを 1 文字付ければ素通りする**ので撤回した。
+ * #1123 の issue 本文はその機構を名指しして「**同じ半端を繰り返さない**」と書いている。
+ *
+ * ところが固定の `'some.token'` しか踏んでいないと、鍵 guard の**直前**に同じ早期 return を
+ * 挿し戻す変異が**全部素通りする** —— **#1123 の**レビュー 5 周目の実測で、3 route へ同時に挿しても
+ * unit 8768 本が全部緑のままだった。**散文が名指しした反パターンを、機械が見張っていなかった。**
+ */
+type MaybeToken = string | undefined;
+
+/** `undefined` はキー自体を載せない（型で弾かれる経路と、鍵で落ちる経路を取り違えないため）。 */
+const jsonBody = (token: MaybeToken, extra: Record<string, unknown> = {}): string =>
+  JSON.stringify(token === undefined ? extra : { token, ...extra });
+
+const answerRequest = (token: MaybeToken = 'some.token'): Request =>
+  new Request('https://example.test/api/staff/calls/rec-1/answer', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: jsonBody(token),
+  });
+
+const enrollRequest = (token: MaybeToken = 'some.token'): Request =>
+  new Request('https://example.test/api/kiosk/enroll', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: jsonBody(token),
+  });
+
+const respondGetRequest = (token: MaybeToken = 'a'): Request =>
+  new Request(
+    token === undefined
+      ? 'https://example.test/api/staff/calls/rec-1/respond'
+      : `https://example.test/api/staff/calls/rec-1/respond?token=${encodeURIComponent(token)}`,
+  );
+
+const respondPostRequest = (token: MaybeToken = 'some.token'): Request =>
+  new Request('https://example.test/api/staff/calls/rec-1/respond', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: jsonBody(token, { action: 'coming' }),
+  });
+
+const ctx = () => ({ params: Promise.resolve({ id: 'rec-1' }) });
+
+/**
+ * 未認証で到達する **4 入口**（commit 本文が名指ししているのと同じ 4 つ）。
+ *
+ * 🔴 **表にして 1 度だけ書く。** 4 入口 × 2 主張（503 / 下界）を手で 8 本書いていたときは、
+ * `respond` GET の下界だけが**抜けていた**（**#1123 の**レビュー 5 周目）。数え上げをやめれば、
+ * 入口を足したときに主張の側を書き忘れることが原理的に起きない。
+ */
+const UNAUTHENTICATED_ENTRIES: ReadonlyArray<{
+  name: string;
+  /** 鍵が在るときの応答。壊れたデプロイの 503 との差がそのままオラクル（#1127）。 */
+  env: string;
+  value: string;
+  withKey: number;
+  call: (token: MaybeToken) => Promise<Response>;
+}> = [
+  {
+    name: 'POST /api/staff/calls/:id/answer',
+    env: 'CALL_ANSWER_SECRET',
+    value: 'TEST-answer-secret',
+    withKey: 403,
+    call: (t) => staffAnswer(answerRequest(t), ctx()),
+  },
+  {
+    name: 'GET /api/staff/calls/:id/respond',
+    env: 'CALL_ANSWER_SECRET',
+    value: 'TEST-answer-secret',
+    withKey: 403,
+    call: (t) => staffRespond(respondGetRequest(t), ctx()),
+  },
+  {
+    name: 'POST /api/staff/calls/:id/respond',
+    env: 'CALL_ANSWER_SECRET',
+    value: 'TEST-answer-secret',
+    withKey: 403,
+    call: (t) => staffRespondPost(respondPostRequest(t), ctx()),
+  },
+  {
+    name: 'POST /api/kiosk/enroll',
+    env: 'KIOSK_ENROLLMENT_SECRET',
+    value: 'TEST-enrollment-secret',
+    withKey: 400,
+    call: (t) => kioskEnroll(enrollRequest(t)),
+  },
+];
+
+const TOKEN_SHAPES: ReadonlyArray<[label: string, token: MaybeToken]> = [
+  ['キー自体が無い', undefined],
+  ['空文字', ''],
+  ['でっち上げ', 'some.token'],
+];
+
+beforeEach(() => {
+  brokenDeploy();
+  __resetSecretUnavailableLog();
+});
+afterEach(() => {
+  vi.unstubAllEnvs();
+  __resetSecretUnavailableLog();
+});
 
 describe('秘密を入れ忘れたデプロイの攻撃面 (#1021)', () => {
   /** ✅ 閉じた面（AC1）。 */
@@ -133,44 +249,39 @@ describe('秘密を入れ忘れたデプロイの攻撃面 (#1021)', () => {
   });
 
   /**
-   * 🔴 **開いている面（#1123）。** 担当者応答は鍵未設定で throw し、route 層に try/catch が
-   * 無いので **403 ではなく 500** になる。応答の差が「この環境は鍵を持っていない」の
-   * オラクルになり、さらに担当者画面は 5xx を「リンクの有効期限切れ」と**嘘の原因**で伝える。
+   * ✅ **部分的に閉じた面（#1123）。** 担当者応答と受付端末エンロールは、鍵未設定でも
+   * **uncaught 例外を出さず 503** を返すようになった。未認証でスタックトレースを量産させられる
+   * 状態は解消した。
    *
-   * 🔴 **route handler を呼ぶ。** `readAnswerToken` を直に呼ぶと、#1123 が route 層で
-   * 403 へ寄せても**この行が緑のまま**になり、「閉じたら赤くなる」という契約を満たさない。
+   * 🔴 **route handler を呼ぶ。** `readAnswerToken` を直に呼ぶと、route 層の修正で**この行が
+   * 緑のまま**になり、「閉じたら赤くなる」という契約を満たさない。実際 `respond` POST は
+   * route 単体テスト（`readAnswerToken` を mock する＝**mock は throw しないので順序を
+   * 観測できない**）しか持っておらず、guard を `readAnswerToken` の後ろへ動かす変異が
+   * **unit 114 本を素通り**した（**#1123 の**レビュー 4 周目の実測）。
+   *
+   * 🔴 **`GET /api/staff/calls/x/respond?token=a` は commit 本文が名指しした攻撃形そのもの。**
+   * 投げるだけで到達する（発行済みリンクも認証も要らない）。
    */
-  it('🔴 担当者応答: 未認証の route 呼び出しが 403 にならず throw する（未解決 #1123）', async () => {
-    const call = staffAnswer(
-      new Request('https://example.test/api/staff/calls/rec-1/answer', {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ token: 'some.token' }),
-      }),
-      { params: Promise.resolve({ id: 'rec-1' }) },
-    );
-    await expect(call).rejects.toThrow(/CALL_ANSWER_SECRET/);
-  });
+  for (const entry of UNAUTHENTICATED_ENTRIES) {
+    for (const [label, token] of TOKEN_SHAPES) {
+      it(`✅ ${entry.name}: token が${label}でも uncaught にならず 503（#1123 AC1）`, async () => {
+        expect((await entry.call(token)).status).toBe(503);
+      });
+    }
+  }
 
   /**
-   * 🔴 **下界であり、同時にこの面の「オラクル」そのもの。**
+   * 🔴 **残っているオラクルを、残っているまま固定する。**
    *
-   * 鍵が**在る**デプロイでは、まったく同じ呼び出しが **403** で返る。壊れたデプロイでは
-   * throw（= 500）になるので、**外から応答を 1 回見るだけで「この環境は鍵を持っていない」
-   * が読める**。#1123 が閉じるべきはこの差である。
+   * 鍵が**在る**デプロイでは同じ呼び出しが 403（enroll は 400）。壊れたデプロイの 503 との差が
+   * そのまま「この環境は鍵を持っていない」を教える。**#1127 が揃えたらこの行が赤くなる**のが正しい。
    *
-   * この 1 本が無いと、上の主張は**何を渡しても throw する**世界でも満たせてしまう。
+   * この一群は**下界も兼ねる** —— 上の主張は**何を渡しても 503** の世界でも満たせてしまう。
    */
-  it('担当者応答: 鍵が在れば同じ呼び出しは 403（差が読めることの証拠）', async () => {
-    vi.stubEnv('CALL_ANSWER_SECRET', 'TEST-answer-secret');
-    const res = await staffAnswer(
-      new Request('https://example.test/api/staff/calls/rec-1/answer', {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ token: 'some.token' }),
-      }),
-      { params: Promise.resolve({ id: 'rec-1' }) },
-    );
-    expect(res.status).toBe(403);
-  });
+  for (const entry of UNAUTHENTICATED_ENTRIES) {
+    it(`🔴 ${entry.name}: 鍵が在れば ${entry.withKey} で、503 と区別できる（未解決 #1127）`, async () => {
+      vi.stubEnv(entry.env, entry.value);
+      expect((await entry.call('some.token')).status).toBe(entry.withKey);
+    });
+  }
 });
