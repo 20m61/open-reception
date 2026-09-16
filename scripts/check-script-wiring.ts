@@ -104,6 +104,10 @@ const WIRING_DIRS: readonly string[] = ['scripts/hooks', 'src', 'infra/lib', 'in
 export const MANUAL_ONLY_ALLOWLIST: Readonly<Record<string, string>> = {
   'record-gate-run.sh':
     '週次 routine（リポジトリ外）から呼ばれる入口そのもの。リポジトリ内に呼び出し元は無くて正しい。',
+  'check-publish-path.ts':
+    'record-gate-run.sh --publish がゲートの前に呼ぶ事前確認 (#1117)。その入口自体が ' +
+    '週次 routine 専用（上記）なので、自動経路からは辿れなくて正しい。配線は ' +
+    'tests/config/github-cli-independence.test.ts が「ゲートより前に呼ばれること」として縛る。',
   'cloud-setup.sh': 'クラウド開発環境の初期化。人が環境を作るときだけ走る。',
   'cursor-cloud-install.sh':
     'Cursor Cloud Agent の install 正本。ダッシュボードの install 欄へ人が載せる／同期する。自動では走らない。',

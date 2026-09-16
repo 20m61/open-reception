@@ -1,5 +1,14 @@
 import { execFileSync, spawnSync } from 'node:child_process';
-import { cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import {
+  chmodSync,
+  cpSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { afterAll, describe, expect, it } from 'vitest';
@@ -119,4 +128,117 @@ describe('record-gate-run.sh: 未測定の印を備考へ残す (#717)', () => {
     const rows = runRecord('  PASS  typecheck (tsc)  (13s)');
     expect(rows).not.toContain('未測定:');
   });
+});
+
+/**
+ * 公開経路の確認が **どこで報告し、どこで止めるか**を挙動で縛る (#1117 AC3)。
+ *
+ * ## 設計（独立レビュー 2 周目で作り直した）
+ *
+ * | 呼ばれる場所 | 役割 |
+ * | --- | --- |
+ * | ゲートの**前** | 報告だけ。**絶対に止めない** |
+ * | `git push` の**直前** | 到達できなければ **push せずに**終える |
+ *
+ * 🔴 **ゲートの前で止める設計は撤回した。** 記録の追記も `evaluate:gate-runs` も
+ * `loop:retro` も publish の後ろに居るので、止めると FAIL の測定そのものが消える。
+ * しかも fresh clone（クラウド週次 routine の既定の姿）では `npx --no-install tsx` 自体が
+ * 失敗するので、「毎週 1 秒も走らない」に倒れうる。
+ *
+ * 🔴 **代わりに push の直前で止める。** #656 の被害は「push されたブランチに PR が
+ * 無いまま残ること」なので、そこを作らせなければよい。ゲートも記録も既に済んでいる。
+ */
+describe('record-gate-run.sh: 報告はゲート前、判断は push の直前 (#1117)', () => {
+  /** 子プロセスで bash とスクリプトを起動するので、既定の 5 秒では負荷下で足りない。 */
+  const SPAWN_TIMEOUT_MS = 30_000;
+
+  type PublishRun = { code: number; gateRan: boolean; pushed: boolean; stderr: string };
+
+  /**
+   * 到達性検査の結果を差し替えた砂場で `--publish` を回す。
+   *
+   * 検査は `npx --no-install tsx .../check-publish-path.ts` として呼ばれるので、
+   * PATH の `npx` を差し替えれば結果を決められる。`git` も差し替えて
+   * **push が試みられたかどうか**を観測する（#656 の被害はそこにしか出ない）。
+   */
+  function runPublish(checkExitCode: number): PublishRun {
+    const dir = mkdtempSync(join(tmpdir(), 'record-gate-publish-'));
+    created.push(dir);
+    mkdirSync(join(dir, 'scripts'), { recursive: true });
+    mkdirSync(join(dir, 'docs'), { recursive: true });
+    mkdirSync(join(dir, 'bin'));
+    cpSync(SCRIPT, join(dir, 'scripts/record-gate-run.sh'));
+    writeFileSync(join(dir, 'docs/gate-runs.md'), '| 日時 | SHA | tier | 結果 | SKIP | 備考 |\n');
+
+    const marker = join(dir, 'gate-ran');
+    writeFileSync(join(dir, 'scripts/quality-gate.sh'), `#!/usr/bin/env bash\ntouch "${marker}"\nexit 0\n`);
+    chmodSync(join(dir, 'scripts/quality-gate.sh'), 0o755);
+    writeFileSync(
+      join(dir, 'bin/npx'),
+      `#!/usr/bin/env bash\ncase "$*" in *check-publish-path*) exit ${checkExitCode};; esac\nexit 0\n`,
+    );
+    chmodSync(join(dir, 'bin/npx'), 0o755);
+    writeFileSync(join(dir, 'bin/npm'), '#!/usr/bin/env bash\nexit 0\n');
+    chmodSync(join(dir, 'bin/npm'), 0o755);
+    // `git` は成功させつつ、何を呼ばれたかを記録する。
+    writeFileSync(
+      join(dir, 'bin/git'),
+      `#!/usr/bin/env bash\nprintf '%s\\n' "$*" >> "${dir}/git.log"\nexit 0\n`,
+    );
+    chmodSync(join(dir, 'bin/git'), 0o755);
+
+    const result = spawnSync('bash', [join(dir, 'scripts/record-gate-run.sh'), '--publish'], {
+      cwd: dir,
+      encoding: 'utf8',
+      env: { ...process.env, PATH: `${join(dir, 'bin')}:${process.env.PATH ?? ''}` },
+    });
+    let gitLog = '';
+    try {
+      gitLog = readFileSync(join(dir, 'git.log'), 'utf8');
+    } catch {
+      gitLog = '';
+    }
+    return {
+      code: result.status ?? 1,
+      gateRan: existsSync(marker),
+      pushed: /(^|\n)push /.test(gitLog),
+      stderr: result.stderr ?? '',
+    };
+  }
+
+  /**
+   * 🔴 **ゲートは何があっても回る。** ここが 1 周目の BLOCKER の再発防止線である。
+   * `1` は fresh clone で `npx --no-install tsx` が返す値（node_modules 未導入）。
+   */
+  it.each([0, 1, 3, 127])(
+    '到達性検査が exit %i でもゲートは回る（ゲート前では止めない）',
+    (code) => {
+      expect(runPublish(code).gateRan).toBe(true);
+    },
+    SPAWN_TIMEOUT_MS,
+  );
+
+  /**
+   * 🔴 **到達できないなら push しない。** push してしまうと、PR の無いブランチが
+   * リモートに残る ―― #656 の被害そのもの。
+   */
+  it(
+    '到達できなければ push しない（PR の無いブランチを残さない）',
+    () => {
+      const run = runPublish(3);
+      expect(run.pushed).toBe(false);
+      expect(run.code).not.toBe(0);
+      expect(run.gateRan).toBe(true);
+    },
+    SPAWN_TIMEOUT_MS,
+  );
+
+  /** 下界。「常に push しない」では publish が成立しない。到達できれば push する。 */
+  it(
+    '到達できれば push する',
+    () => {
+      expect(runPublish(0).pushed).toBe(true);
+    },
+    SPAWN_TIMEOUT_MS,
+  );
 });

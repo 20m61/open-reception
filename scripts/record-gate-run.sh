@@ -32,10 +32,18 @@
 # #656 そのものなので、作成後に**そのブランチを head に持つ PR を REST で引き直して実在を確認**
 # する。確認できなければ非ゼロで落ちる（サイレントに終わらせない）。
 #
-# **PR 作成にも確認にも `gh pr ...` を使わない (#678)。** クラウドのサンドボックスは GitHub
-# GraphQL を絞っており、`gh pr list` / `gh pr view` だけでなく **`gh pr create` も** repo info
-# preamble の GraphQL で 403 になる（2026-08-10 の週次ゲートで実測）。作成・確認とも
-# `scripts/create-pull-request.ts` 経由の REST（`gh api repos/{owner}/{repo}/pulls`）で行う。
+# **PR 作成にも確認にも GitHub CLI を使わない (#678 / #1117)。** 当初の理由は GraphQL
+# だった ―― クラウドのサンドボックスは GitHub GraphQL を絞っており、`gh pr list` /
+# `gh pr view` だけでなく **`gh pr create` も** repo info preamble の GraphQL で 403 に
+# なる（2026-08-10 の週次ゲートで実測）。2026-09-15 にはさらに素朴に壊れた ――
+# **サンドボックスに `gh` が無い**。よって CLI ごとやめ、作成・確認とも
+# `scripts/create-pull-request.ts` 経由で REST を直接叩く。
+#
+# --- 公開経路は**ゲートの前に**確かめる (#1117) ---
+#
+# 公開経路が壊れていると、`--full --strict` を 20〜25 分回した後で最後の一手だけが落ちる。
+# 落ち方は「記録は push 済み・PR は無し」＝ #656 そのもの。ゲートを回す前に 1 回引けば判る
+# ので、`scripts/check-publish-path.ts` を先に通す。
 #
 set -uo pipefail
 
@@ -68,6 +76,28 @@ SHA="$(git rev-parse --short HEAD 2>/dev/null || echo unknown)"
 
 OUTPUT_FILE="$(mktemp)"
 trap 'rm -f "${OUTPUT_FILE}"' EXIT
+
+# --- 公開経路の事前確認 (#1117 AC3) ---
+#
+# 🔴 **ゲートより前に置く。** 後ろに置くと、壊れていることが判るのが 20 分後になる。
+# **`--dry-run` でも回す** ―― 読み取り 1 回で副作用は無く、公開手順の確認こそ dry-run の
+# 目的だからである。判定の中身（なぜ前提の列挙ではなく実際に引くのか）はスクリプト側の
+# 冒頭に書いてある。
+if [[ "${PUBLISH}" -eq 1 ]]; then
+  # 🔴 **ここは報告だけ。絶対に止めない**（#1117 独立レビュー 2 周目で撤回した）。
+  #
+  # ゲートを止めると、記録の追記も `evaluate:gate-runs` も `loop:retro` も publish の
+  # 後ろに居るので**全部消える** —— FAIL が main に載らないどころか FAIL の測定自体が
+  # 無くなる（#656 より悪い）。加えて、node_modules がまだ無い fresh clone
+  # （＝クラウド週次 routine の既定の姿）では `npx --no-install tsx` 自体が失敗するので、
+  # ここで止める設計は「毎週 1 秒も走らない」に倒れうる。
+  #
+  # **止める判断は `git push` の直前へ移した。** そこでなら、ゲート本体の `npm ci` が
+  # 済んでいて道具が揃っており、到達性を**その時点の事実として**見られる。
+  echo "▶ 公開経路への到達性を先に見ます（報告のみ・ゲートは止めません）"
+  npx --no-install tsx "${ROOT}/scripts/check-publish-path.ts" ||
+    echo "⚠️  いまは到達できません。ゲートは続行し、push の直前にもう一度確かめます。" >&2
+fi
 
 if [[ "${DRY_RUN}" -eq 1 ]]; then
   # **ゲートは回さない。** 25 分かかるうえ、公開手順の確認には要らない。
@@ -180,6 +210,21 @@ if [[ "${PUBLISH}" -eq 1 ]]; then
     echo "❌ commit に失敗しました（記録に差分が無い可能性）。" >&2
     exit 3
   }
+  # 🔴 **push の直前に到達性を確かめ、駄目なら push しない (#1117)。**
+  #
+  # #656 の被害は「push されたブランチに PR が無いまま残ること」である。到達できないまま
+  # push すると、それをそのまま作る。ここで止めれば**ゲートも記録も既に済んでおり**、
+  # 残骸だけを作らずに終えられる（記録は手元に残り、次回の実行で載る）。
+  #
+  # ゲート前の同じ検査は報告だけだった。**判断はこちら側にある。**
+  if [[ "${DRY_RUN}" -eq 1 ]]; then
+    echo "  [dry-run] npx tsx scripts/check-publish-path.ts（到達できなければ push しない）"
+  elif ! npx --no-install tsx "${ROOT}/scripts/check-publish-path.ts"; then
+    echo "❌ 公開経路へ到達できないため push しません（PR の無いブランチを残さないため）。" >&2
+    echo "   ゲートと記録は完了しています。記録は手元に残っているので、次回の実行で載ります。" >&2
+    exit 5
+  fi
+
   run_or_echo git push -u origin "${BRANCH}" || { echo "❌ push に失敗しました。" >&2; exit 3; }
 
   # 🔴 **`gh pr create` は使わない (#678)。** クラウド Routine セッションの `gh` は

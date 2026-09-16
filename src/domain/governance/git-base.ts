@@ -139,131 +139,13 @@ export function parseGitHubRepo(remoteUrl: string): GitHubRepo | undefined {
 }
 
 /**
- * ブランチを head に持つ PR を引く REST パスを組み立てる (#656)。
+ * 🔴 **PR の REST 要求（照会・作成・マージ）は `github-rest.ts` へ移設した (#1117)。**
  *
- * **壊れ方が安全でない向きに倒れるので、生で埋めない。** `head` が落ちた問い合わせは
- * `pulls?state=all&per_page=1` になり、**無関係な PR が 1 件返る**（GitHub API で実測）。
- * 呼び出し側はそれを「PR が在る」と読むため、**本物の取りこぼしを見逃す**。
- * git のブランチ名は `&`（パラメータを割る）も `#`（以降を捨てる）も許すので、
- * エンコードは必須。`%2F` が生の `/` と同じ結果になることも実測で確認済み。
- *
- * `gh pr list` ではなく REST なのは、クラウドのサンドボックスが GraphQL を絞っており
- * 403 になるため（PR #665 の stderr で判明）。
+ * かつてここに `pullsQueryPath` / `pullCreateArgs` / `pullMergeArgs` が在り、いずれも
+ * **`gh` の引数列**を組み立てていた。2026-09-15 にクラウドのサンドボックスから `gh` が
+ * 消え、その形ごと使えなくなったため、HTTP 要求の記述として `github-rest.ts` へ移した
+ * （複製ではない）。ここは git そのものの話に戻す。
  */
-export function pullsQueryPath(repo: GitHubRepo, branch: string): string {
-  const owner = encodeURIComponent(repo.owner);
-  const name = encodeURIComponent(repo.repo);
-  const head = encodeURIComponent(`${repo.owner}:${branch}`);
-  return `repos/${owner}/${name}/pulls?state=all&per_page=1&head=${head}`;
-}
-
-/** PR を 1 本作るのに要る最小の内容。 */
-export interface PullRequestDraft {
-  readonly head: string;
-  readonly base: string;
-  readonly title: string;
-  readonly body: string;
-}
-
-/**
- * PR を **REST で作る** `gh` の引数列を組み立てる (#678)。
- *
- * ## なぜ `gh pr create` を使えないのか
- *
- * `pullsQueryPath` が照会側で踏んだ制約（PR #665）は、**作成側にも当てはまる**。
- * 2026-08-10 の週次ゲート（`record-gate-run.sh --publish`）で実測:
- *
- * ```
- * HTTP 403: This GraphQL query (RepositoryInfo, sent by gh pr create/view (repo info preamble))
- * is not enabled for this session — only the pinned set of PR-review operations is served.
- * Use REST via `gh api repos/{owner}/{repo}/...` instead.
- * ```
- *
- * `gh pr create` は本体の POST の前に repo info の GraphQL preamble を撃つため、
- * **PR 本文が正しくても作成に到達しない**。このとき記録は push 済みで PR だけ無い
- * ―― #656（FAIL が main に載らない）がそのまま再生産される。
- *
- * ## 組み立てで気をつけていること
- *
- * - **値は `-f key=value` の 1 argv 要素**に収める。分割して渡すと本文が引数として散り、
- *   改行を含む body が壊れる（`gh` は `=` の**最初の 1 個**で key と value を割るので、
- *   値の中の `=` は安全）。
- * - **空の head / base / title では組み立てない。** 空 head は 422 で気づけるが、
- *   **空 base は既定ブランチへ倒れうる** ―― 意図しない先へ向いた PR は後から気づきにくい。
- *   `parseGitHubRepo` と同じく「読めなければ推測しない」に倒す。
- * - `--jq .html_url` で URL だけを返す。呼び出し側は #656 の作法に従い、
- *   **返った URL を REST で引き直して実在を確認する**（作成できたという申告を信じない）。
- */
-export function pullCreateArgs(repo: GitHubRepo, draft: PullRequestDraft): string[] {
-  for (const [label, value] of [
-    ['head', draft.head],
-    ['base', draft.base],
-    ['title', draft.title],
-  ] as const) {
-    if (value.trim() === '') {
-      throw new Error(`PR の ${label} が空です（推測で PR を作らないため組み立てを中止します）`);
-    }
-  }
-  const owner = encodeURIComponent(repo.owner);
-  const name = encodeURIComponent(repo.repo);
-  return [
-    'api',
-    '--method',
-    'POST',
-    `repos/${owner}/${name}/pulls`,
-    '-f',
-    `title=${draft.title}`,
-    '-f',
-    `head=${draft.head}`,
-    '-f',
-    `base=${draft.base}`,
-    '-f',
-    `body=${draft.body}`,
-    '--jq',
-    '.html_url',
-  ];
-}
-
-/**
- * PR を **REST で squash マージする** `gh` の引数列を組み立てる (#702)。
- *
- * ## なぜ `gh pr merge` を使えないのか
- *
- * `pullCreateArgs` が作成側で踏んだ制約（#678）は、**マージ側にも当てはまる**。
- * 2026-08-18 の PR #701 のマージで実測:
- *
- * ```
- * gh pr merge 701 --squash --delete-branch
- * non-200 OK status code: 403 Forbidden
- * body: "This GraphQL query is not enabled for this session — only the pinned set of
- *        PR-review operations is served. Use REST via `gh api repos/{owner}/{repo}/...` instead."
- * ```
- *
- * PR #665 の時点では `gh pr merge` は通っていた（当時の記述は正しく、今は誤り）。
- * **通っていたことを根拠に残さない** ―― 実測が変わったら記述を変える。
- *
- * ## 気をつけていること
- *
- * - **`merge_method=squash` を明示する。** GitHub の既定は merge commit で、
- *   本リポジトリの履歴方針（squash 固定）と食い違う。
- * - **PR 番号は正の整数だけを通す。** 文字列をそのまま埋めると
- *   `701/../../other` のような値でパスを曲げられる。
- */
-export function pullMergeArgs(repo: GitHubRepo, pullNumber: number): string[] {
-  if (!Number.isInteger(pullNumber) || pullNumber <= 0) {
-    throw new Error(`PR 番号が正の整数ではありません: ${pullNumber}`);
-  }
-  const owner = encodeURIComponent(repo.owner);
-  const name = encodeURIComponent(repo.repo);
-  return [
-    'api',
-    '--method',
-    'PUT',
-    `repos/${owner}/${name}/pulls/${pullNumber}/merge`,
-    '-f',
-    'merge_method=squash',
-  ];
-}
 
 /** 変更パスの収集結果 (#709)。**失敗を空集合と混ぜない。** */
 export type ChangedPathsCollection = {

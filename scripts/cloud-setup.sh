@@ -13,9 +13,15 @@
 set -u
 
 # --- gh CLI / unzip --------------------------------------------------------
-# gh: プリインストールされていない。ループ workflow は gh pr create / gh pr merge /
-# gh issue に全面的に依存するので必須。GitHub プロキシが認証を代行するため
-# トークンの設定は不要（`echo $GH_TOKEN` が proxy-injected ならその状態）。
+# gh: プリインストールされていない。GitHub プロキシが認証を代行するためトークンの設定は
+# 不要（`echo $GH_TOKEN` が proxy-injected ならその状態）。
+#
+# 🔴 **PR 作成・マージは gh に依存しない (#1117)。** この install は best-effort
+# （`|| true`）で、実際に失敗したまま走っているセッションが在る ―― 2026-09-15 に
+# `command -v gh` が空のまま周回が回り、PR 作成だけが落ちた。以来、公開経路は
+# `curl` で REST を直接叩く（`scripts/lib/github-api.ts`）。**ここで入ることを
+# 当てにする手順を書かないこと。** gh が在れば `gh issue view` 等に使えるだけの
+# 便宜であって、ループの前提ではない。
 # unzip: 下の AWS CLI v2 インストーラ（公式配布は zip）が使う。並行ブロックより先に
 # 同期で入れておく必要がある（並行ブロックの実行順は保証されないため）。
 apt-get update -y || true

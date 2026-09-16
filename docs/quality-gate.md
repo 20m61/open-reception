@@ -462,12 +462,20 @@ CI が無い以上、「PR 前に `--pr` / マージ前に `--full`」は**規�
   （`feedback: merge-gate`）。`--fast` だけでは PR を作れない。
 - 🔴 **REST 経由の PR 作成（`scripts/create-pull-request.ts`）も `--pr` を要求する (#678)。**
   クラウドの routine セッションでは `gh pr create` が GraphQL 403 で使えず、そちらが PR 作成の
-  主経路になる（web セッションでの挙動は未検証。`docs/cloud-dev-environment.md` §4）。
+  主経路になる。**web セッションでは `gh` 自体が無い**ことを 2026-09-15 に実測した (#1117)
+  ので、そちらでも主経路は同じ（`docs/cloud-dev-environment.md` §4）。
   見ていないと**移した先がそのままゲートの抜け道**になる。
 - 🔴 **REST 経由のマージも `--full` を要求する (#702)。** `gh pr merge` も 403 になるため、
-  マージの主経路は `scripts/merge-pull-request.ts` と生の `gh api .../pulls/<n>/merge`。
+  マージの主経路は `scripts/merge-pull-request.ts` と生の REST（`.../pulls/<n>/merge`）。
   **両方**を見る。PR の照会（`.../pulls/<n>`）は止めない — 日常的に使うので、広く取ると
-  誤検出でガードごと迂回される。
+  誤検出でガードごと迂回される。判定は **URL の形**を見ているので、transport が
+  `gh api` から `curl` へ変わっても効く（#1117 でその族を明示的に当て直した）。
+- 🔴 **生の REST での PR 作成（`POST .../pulls`）は見ていない（既知の穴 / #1120）。**
+  #1117 で一度塞ごうとして**撤回した** —— URL と「本体を送る形」の AND で判定したところ、
+  止めたい形を 5 通り以上取りこぼし（`gh api …/pulls -f title=x` ＝ `gh api` での PR 作成の
+  最も普通の形を含む）、止めてはいけない読み取りを 3 通り止めた。**誤検出はガードごと
+  迂回される動機を作る**（#960）ので、薄い保護と引き換えにしない。塞ぐなら数え上げでは
+  なく「読み取りと判る option の allowlist へ裏返す」必要があり、#1120 で扱う。
 - 🔴 **読み取りコマンドの引数として現れただけではブロックしない (#960)。**
   変更前は「コマンド文字列にスクリプト名が含まれるか」だけを見ており、
   `grep -n delete scripts/merge-pull-request.ts | head -20` までブロックしていた。grep は
@@ -738,12 +746,73 @@ secret 混入・ライセンス問題（#105 方針）は時間経過だけで�
 
   - `--publish` を付けずに実行すると「push も PR 作成もしていない」旨を **stderr へ警告**する
     （黙って終わらせない）。
-  - `gh pr create` の終了コードだけを信じず、**返された URL を REST で引き直して実在を確認**し、
+  - 作成の終了コードだけを信じず、**ブランチを head に持つ PR を REST で引き直して実在を確認**し、
     確認できなければ非ゼロで落ちる。「ブランチが出来たこと＝PR が出来たことではない」が
     #656 そのものなので。
-  - 確認に `gh pr list` / `gh pr view` は使わない。**クラウドのサンドボックスは GitHub GraphQL を
-    絞っており 403 になる**（PR #665 で実測）。REST の `gh api repos/.../pulls/<n>` を使う。
-  - `--publish --dry-run` でゲートも副作用も実行せず、公開手順だけを歩ける。
+  - 🔴 **GitHub CLI (`gh`) は使わない (#1117)。** 経緯は 2 段ある:
+    1. **GraphQL が絞られている** … `gh pr list` / `gh pr view` / `gh pr create` /
+       `gh pr merge` はいずれも 403（PR #665 / #678 / #702 で実測）。当時の回避は
+       `gh api` の REST に寄せることだった
+    2. **`gh` 自体が無い** … 2026-09-15、Claude Code on the web のサンドボックスで
+       `command -v gh` が空だった。1 の回避策は `gh` が在ることを前提にしていたので
+       まるごと成立せず、PR #1115 / #1116 はどちらもここで落ちた
+
+    よって **CLI ごとやめ、`curl` で REST を直接叩く**（`scripts/lib/github-api.ts`）。
+    判定・組み立ては `src/domain/governance/github-rest.ts`（純関数）に在る。
+
+    **どの環境で publish が成立するか（実測 2026-09-15、Claude Code on the web）:**
+
+    | 経路 | `GET /repos/20m61/open-reception` |
+    | --- | --- |
+    | `gh` | **存在しない**（`command -v gh` が空） |
+    | `curl`（`HTTPS_PROXY` を見る） | **200** |
+    | node 22 の `fetch`（proxy を見ない） | **401** |
+    | node 22 の `fetch` ＋ `NODE_USE_ENV_PROXY=1` | 200（experimental 警告つき） |
+
+    このサンドボックスの外向き HTTPS は agent proxy を通り、**proxy が資格情報を差し替える**
+    （`Authorization` を送らなくても、でたらめな token でも 200 が返る）。したがって
+    **`GH_TOKEN` / `GITHUB_TOKEN` の有無で publish の可否を判定しない** —— 在る環境では送り、
+    無い環境でも落とさない。優先順は `gh` の原典に合わせて **`GH_TOKEN` が先**
+    （<https://cli.github.com/manual/gh_help_environment>）。
+
+    🔴 **ローカル macOS では token を明示的に渡す。** `gh auth login` の資格情報は
+    keychain に入り**環境変数には現れない**ので、ログイン済みでも 401 になる。
+    `GH_TOKEN="$(gh auth token)" npx tsx scripts/create-pull-request.ts …` のように渡す。
+    401 / 403 のときはスクリプトが「そもそも渡していない」か「渡したが足りない」かを
+    名指しする。未認証の REST は 60 req/h なので、`evaluate:gate-runs` は
+    ブランチ数によっては 403 を踏む。
+  - 🔴 **到達性は 2 箇所で確かめる (#1117)。** `--publish` は
+    `scripts/check-publish-path.ts`（`GET /repos/{owner}/{repo}` が 2xx か、だけを見る）を
+    **ゲートの前**と **`git push` の直前**の 2 回通す。役割が違う:
+
+    | 呼ばれる場所 | 役割 |
+    | --- | --- |
+    | ゲートの**前** | **報告だけ。絶対に止めない** |
+    | `git push` の**直前** | 到達できなければ **push せずに**非 0 で終える（exit 5） |
+
+    🔴 **ゲートの前で止めない。** 記録の追記も `evaluate:gate-runs` も `loop:retro` も
+    publish の**後ろ**に居るので、止めると FAIL の測定そのものが消える ―― #656 より悪い。
+    加えて **node_modules がまだ無い fresh clone**（＝クラウド週次 routine の既定の姿）では
+    `npx --no-install tsx` 自体が失敗するので、ここで止める設計は「毎週 1 秒も走らない」に
+    倒れうる（実測。独立レビューが BLOCKER として指摘した）。
+
+    🔴 **push の直前で止める。** #656 の被害は「push されたブランチに PR が無いまま
+    残ること」なので、そこを作らせなければよい。この時点ではゲート本体の `npm ci` が
+    済んでいて道具が揃っており、到達性を**その時点の事実として**見られる。
+    止めてもゲートと記録は完了しており、記録は手元に残って次回の実行で載る。
+
+    🔴 **push 権限の申告（`permissions.push`）は見ない。** 一度それで
+    「確実に publish できない」を判定していたが、**撤回した**（実測 2 つ）:
+    `permissions.push` は `contents:write` の申告で PR 作成に要る `pull_requests:write`
+    とは別物であり、この環境では proxy が無認証でも `push:true` を返すため
+    **止める側の枝に到達しなかった**。申告を解釈せず、到達したという事実だけを使う。
+
+    ⚠️ 0 は publish の**保証ではない**。保護ブランチ・レビュー必須・App のスコープは
+    ここに現れず、proxy が何でも 200 にする環境ではなおさら。確かなのは
+    「到達できなかった」側だけで、それがこの検査の値打ちである。
+  - `--publish --dry-run` でゲートも副作用も実行せず、公開手順だけを歩ける
+    （公開経路の事前確認は **dry-run でも走る** —— 読み取り 1 回で副作用が無く、
+    公開手順の確認こそ dry-run の目的だから）。
   - 本 Issue (#318) 自体はこの仕組みを**文書化**するのみで、実際の Routine 作成は
     ユーザーの判断で行う（自動では作成しない）。
 - **代替**: Claude Code Routine が使えない環境では、開発マシンのローカル cron/launchd で
@@ -805,9 +874,12 @@ push されたのに PR が作られず、誰の目にも触れないまま残�
 - **squash マージなので ancestry では判定できない**（main に同じ commit は無い）。見るのは
   「そのブランチ名を head に持つ PR が在るか」だけ。open なら進行中、merged なら内容は main に
   載っており、closed なら捨てた判断が見えている — いずれも**一度は人間の目を通っている**。
-- PR は**ブランチ 1 本ずつ問い合わせる**。`gh pr list` を一括で引くと `--limit` を超えた古い
+- PR は**ブランチ 1 本ずつ問い合わせる**。一括で引くと `--limit` を超えた古い
   PR が落ち、**その PR を持つブランチが orphan に誤検出される**。
-- `gh` やネットワークが無く**検査できなかった**場合は `branch_check_unverified`（warning）を出す。
+- 問い合わせは publish 経路と**同じ REST の 1 経路**（`scripts/lib/github-api.ts`）を使う (#1117)。
+  網だけが別の依存で黙って `branch_check_unverified` に倒れ続けると、網が無いのと変わらない
+  —— 実際、`gh` が消えてからこの検査は**一度も本当の判定をしていなかった**。
+- ネットワークが無く**検査できなかった**場合は `branch_check_unverified`（warning）を出す。
   **「取りこぼし無し」ではなく「未検査」**であり、緑にはしない。
 
 これは週次 routine 側の修正の**代わりではない**（routine 自身が PR 作成失敗に気づいて失敗

@@ -176,6 +176,53 @@ describe('pr-gate-guard: ゲート記録が無ければブロックする', () =
     expect(stderr).toContain('--full');
   });
 
+  /**
+   * 🔴 **方式を替えたら、前の方式が守っていた変異を当て直す** (#1117)。
+   *
+   * マージの transport は `gh api` から `curl` へ移った。判定は URL の形を見ているので
+   * 効いているはずだが、**「はず」で済ませると、前の方式が守っていた保証が黙って落ちる**
+   * （`.claude/rules/opus5-autonomous-loop.md`）。新しい形を明示的に当てる。
+   */
+  it('生の REST マージ（curl 版）もブロックする', () => {
+    const { status, stderr } = runHook(
+      "curl -sS -X PUT https://api.github.com/repos/20m61/open-reception/pulls/12/merge",
+    );
+    expect(status).toBe(2);
+    expect(stderr).toContain('--full');
+  });
+
+  /**
+   * 🔴 **生の REST での PR 作成は、ここでは止まらない（既知の穴 / #1120）。**
+   *
+   * #1117 で一度塞ごうとして**撤回した** —— 実測で、止めたい形を 5 通り以上取りこぼし
+   * （`gh api …/pulls -f title=x` を含む）、止めてはいけない読み取りを 3 通り止めた。
+   * **穴が在ることを記録として固定する** —— 「塞いだつもり」で放置するより、
+   * 素通りすることが見えている方が安全側であり、#1120 が閉じたらここが赤くなる。
+   */
+  it('生の REST での PR 作成は素通りする（#1120 で扱う既知の穴）', () => {
+    expect(
+      runHook('curl -sS -X POST https://api.github.com/repos/20m61/open-reception/pulls -d @/tmp/b.json')
+        .status,
+    ).toBe(0);
+    expect(runHook('gh api repos/20m61/open-reception/pulls -f title=x').status).toBe(0);
+  });
+
+  /** 主経路（スクリプト）は塞がっている。撤回したのは生 REST の枝だけ。 */
+  it('スクリプト経由の PR 作成は変わらずブロックする', () => {
+    const { status, stderr } = runHook('npx tsx scripts/create-pull-request.ts --head x --title y');
+    expect(status).toBe(2);
+    expect(stderr).toContain('--pr');
+  });
+
+  it('マージではない curl 呼び出しは通す（誤検出はガードを無意味にする）', () => {
+    expect(
+      runHook('curl -sS https://api.github.com/repos/20m61/open-reception/pulls/12').status,
+    ).toBe(0);
+    expect(
+      runHook('curl -sS https://api.github.com/repos/20m61/open-reception').status,
+    ).toBe(0);
+  });
+
   it('マージではない gh api 呼び出しは通す（誤検出はガードを無意味にする）', () => {
     // PR の照会は REST で日常的に行う。ここを止めると運用が回らない。
     expect(runHook('gh api repos/20m61/open-reception/pulls/12 --jq .merged').status).toBe(0);
