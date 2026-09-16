@@ -19,6 +19,39 @@ import { createJwksResolver, verifyOidcToken } from '@/lib/auth/entra';
  *   Cognito ID トークンを汎用 OIDC 検証（role/allowedRoles）し SSO cookie に格納。
  * - provider=entra  : リダイレクトログインを使うためパスワード API は無効（409）。
  */
+/**
+ * 設定不備を**状態が変わったときだけ**記録する。
+ *
+ * 🔴 **毎リクエスト出さない。** `/api/admin/login` は未認証の公開エンドポイントなので、
+ * 攻撃者が出力量を任意に制御できる（CloudWatch の費用が攻撃者の手に渡る）。
+ * `src/proxy.ts` の `logOriginVerifyTransition` が同じ理由で同じ形を採っている (#630)。
+ *
+ * ただし向こうが**遷移**（復旧と再発の両方を残す）なのに対し、ここは**ラッチ**でよい。
+ * `proxy.ts` が遷移を要るのは middleware が `register()` より先に走るため「秘密が後から
+ * 供給されて復旧する」が実際に起きるからで、この route は route handler ＝ `register()`
+ * の後に走るので、1 プロセス内で結果が変わらない。**要らない機構は持たない。**
+ *
+ * 🔴 **値は出さない**（`rules/pii-secret-minimization.md`）。出すのは env 名だけ。
+ *
+ * 現状このログに対応する CloudWatch メトリクスフィルタは無く、**閉め出しに気づく経路は
+ * 人がログインを試すことだけ**である（`ORIGIN_VERIFY_LOG_MARKERS` のような共有マーカーを
+ * 持っていない）。検知まで含めるのは #1123 / #1124 の射程。
+ */
+let adminPasswordUnsetReported = false;
+
+function reportAdminPasswordUnset(): void {
+  if (adminPasswordUnsetReported) return;
+  adminPasswordUnsetReported = true;
+  console.error(
+    '[auth] ADMIN_PASSWORD is not set in a deployed environment; refusing every password login',
+  );
+}
+
+/** テスト用にログ状態を初期化する（module scope なのでテスト順序に依存させない）。 */
+export function __resetAdminPasswordLogState(): void {
+  adminPasswordUnsetReported = false;
+}
+
 export async function POST(request: Request): Promise<NextResponse> {
   const cfg = getAdminAuthConfig();
   const isHttps = new URL(request.url).protocol === 'https:';
@@ -89,8 +122,27 @@ export async function POST(request: Request): Promise<NextResponse> {
   }
 
   // provider=none: 既存パスワード認証。
+  //
+  // 🔴 **鍵の解決は body を見る前に行う (#1021)。** 後にすると、設定漏れのデプロイで
+  // `{"password":123}` は 401（型で弾かれ `getAdminPassword()` に到達しない）、
+  // `{"password":"x"}` は 500 となり、**応答の差から「この環境は ADMIN_PASSWORD を
+  // 持っていない」が未認証で読める**。先に解決すれば、body が何であれ 500 に揃う。
+  // （設定済みデプロイの 401 との差は残る。500 = 誰も入れない状態なので実害は小さい。）
+  //
+  // 🔴 **throw を素通しにしない。** 公開エンドポイントなので内部の設定状態は本文に出さず、
+  // 詳細はサーバログへ（上の cognito 枝と同じ方針）。素通しにすると Next の既定 500 になり、
+  // 未認証で例外とスタックトレースを無制限に生ませられるうえ、運用者が受け取る応答が
+  // テストで固定できない。
+  let configuredPassword: string;
+  try {
+    configuredPassword = getAdminPassword();
+  } catch {
+    reportAdminPasswordUnset();
+    return NextResponse.json({ error: 'server_error' }, { status: 500 });
+  }
+
   const body = (await request.json().catch(() => null)) as { password?: unknown } | null;
-  if (!body || typeof body.password !== 'string' || body.password !== getAdminPassword()) {
+  if (!body || typeof body.password !== 'string' || body.password !== configuredPassword) {
     return NextResponse.json({ error: 'unauthorized', message: 'invalid password' }, { status: 401 });
   }
   const exp = Date.now() + ADMIN_SESSION_TTL_MS;

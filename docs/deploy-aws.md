@@ -84,11 +84,37 @@ server Lambda にはデプロイ時に環境変数を渡す。`.env.example` の
   ```
 
 - **機密**（`ADMIN_PASSWORD` / `ADMIN_SESSION_SECRET` / `KIOSK_SESSION_SECRET` /
-  `KIOSK_ENROLLMENT_SECRET` / `ENTRA_*` / `VONAGE_*`）は平文でコミット・履歴に残さないこと。
-  次の **方式 B（推奨）** か方式 A を使う。
+  `KIOSK_ENROLLMENT_SECRET` / `CALL_ANSWER_SECRET` / `ENTRA_*` / `VONAGE_*`）は平文でコミット・
+  履歴に残さないこと。次の **方式 B（推奨）** か方式 A を使う。
   > **注意**: `KIOSK_ENROLLMENT_SECRET`（受付URL/QR の署名鍵）は実デプロイ（Lambda）で**必須**。
   > 未設定だと未認証 `/api/kiosk/enroll` が fail-closed で 500 になり、発行/エンロールが機能しない
   > （`docs/reception-issuance-design.md`）。Secrets/appEnv の JSON に必ず含める。
+  > **注意**: `CALL_ANSWER_SECRET`（担当者応答リンクの署名鍵）も実デプロイで**必須**（#1021）。
+  > 未設定だと `/api/staff/calls/[id]/answer` と `/respond` が fail-closed で 500 になる。
+  > 以前は `KIOSK_SESSION_SECRET` へフォールバックしていたが、受付端末と担当者応答で
+  > 信頼境界を共有しないために撤去した。**独立した値を必ず与える**。
+  > **注意**: `ADMIN_PASSWORD` は `ADMIN_AUTH_PROVIDER=none`（既定）のデプロイで**必須**（#1021）。
+  > 未設定だと管理ログインが fail-closed で **500**（401 ではない）になる。以前は公開既定値
+  > `open-reception` で通っていた。Cognito / Entra を使うデプロイでは参照されない。
+  > 🔴 **これだけでは管理画面は守れない（#1124）。** `ADMIN_SESSION_SECRET` は依然
+  > warn-only なので、未設定のまま配ると**公開既定値で署名した `admin_session` cookie が
+  > 有効な管理セッションとして通る**（実測）。`ADMIN_PASSWORD` はパスワードという扉を、
+  > `ADMIN_SESSION_SECRET` はセッションという扉を閉じる —— **どちらも必要で、
+  > 片方を閉じてももう片方は開いたまま**である。両方与えること。
+  >
+  > 🔴 **`ADMIN_SESSION_SECRET` には既知の窓がある（#1124）。** この鍵を読むのは
+  > **middleware（`src/proxy.ts`）**で、middleware は `instrumentation.ts` の `register()`
+  > より**先に走る**（上の「なぜ Lambda 環境変数に値が入るのか」/ #612 の実測）。
+  > 方式 B で供給した場合、**コールドインスタンスが最初に踏んだ admin 系リクエスト 1 本**は
+  > 未解決のまま公開既定値で検証される（admin 以外のパスは `passThrough` して Next サーバへ
+  > 届くので `register()` が走り、以後は解決される）。
+  >
+  > **供給経路はまだ決めていない。#1124 AC1 で決める。** `appEnv` へ移すのは一見簡単だが、
+  > このリポジトリは**同じ形を一度否定している** —— `infra/lib/stacks/web-stack.ts` は
+  > middleware が読む `ORIGIN_VERIFY*` を `appEnv` から**拒否**する（手で壊せる状態を
+  > 作れるため。#612）。origin-verify が採った **CFN 動的参照で Lambda env へ入れる**経路が
+  > 第一候補である。**それまでは方式 B に入れたままでよい**（上の窓は残るが、外すと
+  > 入れ忘れたときに全リクエストが公開既定値になり、**いまより悪い**）。
 
 #### 方式 A: appEnv 平文注入（従来）
 
@@ -105,7 +131,7 @@ AWS Secrets Manager / SSM に保存した値を、デプロイ運用者がデプ
 ```bash
 # 1) シークレットを作成（JSON オブジェクト。キーは env 名に一致させる）
 aws secretsmanager create-secret --name open-reception/prod/app \
-  --secret-string '{"ADMIN_PASSWORD":"...","ADMIN_SESSION_SECRET":"...","KIOSK_SESSION_SECRET":"..."}'
+  --secret-string '{"ADMIN_PASSWORD":"...","ADMIN_SESSION_SECRET":"...","KIOSK_SESSION_SECRET":"...","KIOSK_ENROLLMENT_SECRET":"...","CALL_ANSWER_SECRET":"..."}'
 
 # 2) デプロイ時に名前を渡す（appEnv には非機密のみ）
 npx cdk deploy OpenReception-Web-prod -c env=prod \
@@ -239,14 +265,38 @@ Secrets Manager の値を差し替えてもテンプレートに差分は出な�
 
 ### 6. デプロイ
 
+🔴 **以下は方式 A（`appEnv` 平文注入）を選んだ場合の手順である。** 推奨は方式 B（§「方式 B:
+Secrets Manager から runtime 取得」）で、方式 A は**秘密が CloudFormation テンプレートと
+`-c appEnv="$APP_ENV"` の argv（`ps` から見える）に載る**。方式 B を使うなら `appEnv` には
+非機密のみを入れ、下の必須チェックの対象も非機密に読み替えること。
+
 ```bash
 cd infra
-# 機密値を JSON にまとめて 1 つの appEnv context で渡す（jq でエスケープすると安全）。
+# 🔴 **未 export の変数を黙って空文字で渡さない (#1021)。** `"$VAR"` は未設定でも `""` に
+# 展開され、`jq --arg` はそれをキーごと出力する。Lambda に `ADMIN_PASSWORD=""` が載ると
+# `serverSecret()` は「未設定」と読んで fail-closed で throw し、**管理コンソールへ誰も
+# 入れなくなる**（方式 B を併用していても `instrumentation.ts` は空文字を上書きしない）。
+# 先に必須チェックを通し、値が無いなら**キーごと JSON から外す**こと。
+# 🔴 **`&&` で繋ぐ。** `${VAR:?}` が shell を落とすのは**非対話シェルだけ**で、手元の
+# 端末へこのブロックを貼ると**エラーを 1 行吐いたあと deploy がそのまま走る**（実測）。
+# 機密値は JSON にまとめて 1 つの appEnv context で渡す（jq でエスケープすると安全）。
+: "${ADMIN_PASSWORD:?未設定。空文字を渡すと fail-closed で締め出される}" \
+  "${ADMIN_SESSION_SECRET:?未設定}" \
+  "${KIOSK_SESSION_SECRET:?未設定}" \
+  "${KIOSK_ENROLLMENT_SECRET:?未設定}" \
+  "${CALL_ANSWER_SECRET:?未設定}" &&
 APP_ENV=$(jq -nc \
   --arg p "$ADMIN_PASSWORD" --arg a "$ADMIN_SESSION_SECRET" --arg k "$KIOSK_SESSION_SECRET" \
-  '{ADMIN_PASSWORD:$p, ADMIN_SESSION_SECRET:$a, KIOSK_SESSION_SECRET:$k}')
+  --arg e "$KIOSK_ENROLLMENT_SECRET" --arg c "$CALL_ANSWER_SECRET" \
+  '{ADMIN_PASSWORD:$p, ADMIN_SESSION_SECRET:$a, KIOSK_SESSION_SECRET:$k,
+    KIOSK_ENROLLMENT_SECRET:$e, CALL_ANSWER_SECRET:$c}') &&
 npx cdk deploy OpenReception-Web-prod -c env=prod -c appEnv="$APP_ENV"
 ```
+
+> 🔴 散文での統制には限界がある。**appEnv に空値のキーが載ったら synth で落とす**のが
+> 本来の塞ぎ方で、`infra/lib/stacks/web-stack.ts` には `ORIGIN_VERIFY*` を appEnv から
+> 拒否する先例がある。禁止の列挙ではなく「空値を持つ appEnv キーを拒否」へ裏返せば
+> 族ごと閉じる（#1125）。
 
 完了後、出力（Outputs）に表示される:
 - `DistributionDomainName` … 公開 URL（`https://<domain>/kiosk`, `/admin`）
@@ -384,13 +434,62 @@ npm run build:open-next
 ### 2. アプリシークレットを Secrets Manager に置く
 
 ```sh
-# ADMIN_SESSION_SECRET / KIOSK_SESSION_SECRET / KIOSK_ENROLLMENT_SECRET を含む JSON
+# ADMIN_PASSWORD / ADMIN_SESSION_SECRET / KIOSK_SESSION_SECRET /
+# KIOSK_ENROLLMENT_SECRET / CALL_ANSWER_SECRET を含む JSON
 aws secretsmanager create-secret --name open-reception/dev/app-v2 --secret-string file://secrets.json
 ```
 
-未設定だと**端末エンロールが 500 で失敗する**。アプリが
-「開発用の既定シークレットを deployed 環境で使うことを拒否」して安全側に倒れるため
-（`src/lib/auth/kiosk-enrollment.ts`）。**これは正しい挙動**なので、シークレットを与える。
+未設定だと deployed 環境で**それぞれ 500 で失敗する**。アプリが「開発用の既定シークレットを
+deployed 環境で使うことを拒否」して安全側に倒れるため。**これは正しい挙動**なので、
+シークレットを与える。どれが欠けると何が落ちるか:
+
+| 鍵 | 欠けたときに落ちるもの | 実装 |
+| --- | --- | --- |
+| `KIOSK_ENROLLMENT_SECRET` | 端末エンロール（`/api/kiosk/enroll`） | `src/lib/auth/kiosk-enrollment.ts` |
+| `ADMIN_PASSWORD` | 管理ログイン（`ADMIN_AUTH_PROVIDER=none` のときのみ） | `src/lib/auth/admin.ts` (#1021) |
+| `CALL_ANSWER_SECRET` | 担当者の応答/拒否（`/api/staff/calls/[id]/answer`・`/respond`） | `src/lib/call/answer-token.ts` (#1021) |
+| `ADMIN_SESSION_SECRET` | **落ちない（warn-only）**。未設定でも動くが、公開既定値で署名した cookie が通る（#1124） | `src/proxy.ts` / `src/lib/auth/admin.ts` |
+
+> 🔴 **この表は網羅ではない。手で書いたものである。** 実測で `serverSecret(..., { failClosed: true })`
+> の呼び出し元は **6 件**あり、`PLATFORM_ELEVATION_SECRET`（platform の昇格 / break-glass）と
+> `VOICE_TRANSPORT_TOKEN_SECRET`（受付端末の音声トークン）は**この表にも `.env.example` にも
+> 載っていない**。一覧を手で伸ばすと必ずずれるので、**`serverSecret(` の呼び出し元から導く
+> 検査**を #1122 で入れる。それまでは、新規構築時に上の 5 件だけを入れると
+> platform 昇格と音声トークンが落ちることに注意。
+
+> 🔴 `CALL_ANSWER_SECRET` が欠けたとき、担当者の画面には
+> 「リンクの有効期限切れ、または別の端末で応答済みの可能性があります。」と出る ——
+> **原因は設定漏れなのに、担当者には「リンク切れ」と伝わる**（#1123 で直す）。
+> 担当者から「リンクが切れる」と報告されたら、この鍵を疑うこと。
+
+> 🔴 **`CALL_ANSWER_SECRET` が欠けたデプロイは、未認証の誰からでも叩ける。**
+> `/api/staff/**` は middleware を `passThrough` するので、でっち上げのトークンで
+> `GET /api/staff/calls/x/respond?token=a` を投げるだけで uncaught 例外が出る
+> （1 リクエスト＝スタックトレース 1 本。CloudWatch の出力量を外部から制御できる）。
+> 応答リンクを**発行する**経路は未配線（`issueAnswerToken` の本番呼び出し元はゼロ）だが、
+> それが効くのは「担当者画面に嘘が出る」側だけで、**この面の到達可能性とは無関係**である。
+> 閉じるのは #1123。
+
+> 🔴 **provider によって必須の鍵が変わる**: 本書の方式 A の手順（「### 6. デプロイ」の
+> `: "${ADMIN_PASSWORD:?…}"` ブロック。**この節より前**にある）は `ADMIN_PASSWORD` を
+> 無条件に要求する。`ADMIN_AUTH_PROVIDER=cognito|entra` のデプロイでは参照されないので、
+> その場合はチェックから `ADMIN_PASSWORD` を外すこと（ダミー値を入れて Lambda env に
+> 無意味な秘密を載せない）。**この「dev をゼロから立ち上げる手順」は方式 B のみで、
+> 必須チェックを含まない** —— cognito/entra でこの runbook を辿る場合は、上の
+> 「機密」節の一覧を自分で確認すること。
+
+> 🔴 **既にデプロイ済みの環境を更新する場合**: `ADMIN_PASSWORD` と `CALL_ANSWER_SECRET` は
+> #1021 で fail-closed になった。**新しいビルドを配る前に**この 2 鍵をシークレットへ追加する
+> こと。先に配ると管理ログインが 500 になり、**管理画面から直せなくなる**。
+>
+> 🔴 **先に配ってしまった場合の復旧順序**: シークレットへ 2 鍵を足すだけでは直らない。
+> `src/instrumentation.ts` の `register()` は**プロセスにつき 1 回**しか走らないので、
+> 温まっている Lambda は古い env のまま 500 を返し続ける。鍵を足したあと
+> **関数を更新して実行環境を入れ替える**こと（再デプロイ、または環境変数の更新）。
+>
+> 🔴 **空文字で埋めない。** `instrumentation.ts` の上書き判定は `=== undefined` なので、
+> `appEnv` に `"CALL_ANSWER_SECRET": ""` が載っていると Secrets Manager の値で**上書きされず**、
+> `serverSecret()` は空文字を「未設定」と読んで throw する。値が無いなら**キーごと外す**。
 
 ### 3. デプロイ（context 2 つが必須）
 
