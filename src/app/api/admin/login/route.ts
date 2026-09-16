@@ -10,6 +10,7 @@ import {
 import { getAdminAuthConfig } from '@/lib/auth/admin-auth-config';
 import { cognitoSrpLogin } from '@/lib/auth/cognito-srp';
 import { createJwksResolver, verifyOidcToken } from '@/lib/auth/entra';
+import { reportIncompleteConfig, reportSecretUnavailable } from '@/lib/auth/secret-unavailable';
 
 /**
  * POST /api/admin/login — 管理ログイン (issue #24 / #70 / #238)。
@@ -19,39 +20,6 @@ import { createJwksResolver, verifyOidcToken } from '@/lib/auth/entra';
  *   Cognito ID トークンを汎用 OIDC 検証（role/allowedRoles）し SSO cookie に格納。
  * - provider=entra  : リダイレクトログインを使うためパスワード API は無効（409）。
  */
-/**
- * 設定不備を**状態が変わったときだけ**記録する。
- *
- * 🔴 **毎リクエスト出さない。** `/api/admin/login` は未認証の公開エンドポイントなので、
- * 攻撃者が出力量を任意に制御できる（CloudWatch の費用が攻撃者の手に渡る）。
- * `src/proxy.ts` の `logOriginVerifyTransition` が同じ理由で同じ形を採っている (#630)。
- *
- * ただし向こうが**遷移**（復旧と再発の両方を残す）なのに対し、ここは**ラッチ**でよい。
- * `proxy.ts` が遷移を要るのは middleware が `register()` より先に走るため「秘密が後から
- * 供給されて復旧する」が実際に起きるからで、この route は route handler ＝ `register()`
- * の後に走るので、1 プロセス内で結果が変わらない。**要らない機構は持たない。**
- *
- * 🔴 **値は出さない**（`rules/pii-secret-minimization.md`）。出すのは env 名だけ。
- *
- * 現状このログに対応する CloudWatch メトリクスフィルタは無く、**閉め出しに気づく経路は
- * 人がログインを試すことだけ**である（`ORIGIN_VERIFY_LOG_MARKERS` のような共有マーカーを
- * 持っていない）。検知まで含めるのは #1123 / #1124 の射程。
- */
-let adminPasswordUnsetReported = false;
-
-function reportAdminPasswordUnset(): void {
-  if (adminPasswordUnsetReported) return;
-  adminPasswordUnsetReported = true;
-  console.error(
-    '[auth] ADMIN_PASSWORD is not set in a deployed environment; refusing every password login',
-  );
-}
-
-/** テスト用にログ状態を初期化する（module scope なのでテスト順序に依存させない）。 */
-export function __resetAdminPasswordLogState(): void {
-  adminPasswordUnsetReported = false;
-}
-
 export async function POST(request: Request): Promise<NextResponse> {
   const cfg = getAdminAuthConfig();
   const isHttps = new URL(request.url).protocol === 'https:';
@@ -66,7 +34,13 @@ export async function POST(request: Request): Promise<NextResponse> {
   if (cfg.provider === 'cognito') {
     if (!cfg.cognito?.userPoolId || !cfg.cognito.clientId || !cfg.cognito.region) {
       // 公開エンドポイントのため内部の設定状態を本文に出さない（レビュー#7）。詳細はサーバログへ。
-      console.error('[auth] cognito provider selected but COGNITO_* is incomplete');
+      // 🔴 ログはラッチへ寄せる (#1123)。ここも未認証で叩けるので、毎リクエスト出すと
+      // **出力量を攻撃者が制御できる**（下の ADMIN_PASSWORD 側と同じ理由）。
+      // 🔴 欠けているのは**いずれか**なので、「全部未設定」と読める文にしない。
+      reportIncompleteConfig(
+        'COGNITO_*',
+        'cognito provider selected but COGNITO_USER_POOL_ID / COGNITO_CLIENT_ID / COGNITO_REGION is incomplete',
+      );
       return NextResponse.json({ error: 'server_error' }, { status: 500 });
     }
     const body = (await request.json().catch(() => null)) as
@@ -137,7 +111,9 @@ export async function POST(request: Request): Promise<NextResponse> {
   try {
     configuredPassword = getAdminPassword();
   } catch {
-    reportAdminPasswordUnset();
+    // ラッチ付きのログは `secret-unavailable.ts` に集約してある（機構を 2 つ持たない）。
+    // 🔴 status は 500 のまま。ここを 503 に揃えるかは #1127 の判断で、この増分では触らない。
+    reportSecretUnavailable('ADMIN_PASSWORD');
     return NextResponse.json({ error: 'server_error' }, { status: 500 });
   }
 

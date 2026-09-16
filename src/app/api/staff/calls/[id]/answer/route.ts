@@ -3,7 +3,8 @@ import { getReception, markConnected } from '@/lib/data-stores/reception-store';
 import { resolveVonageSessionService } from '@/lib/call/adapter-factory';
 import { getVonagePublicConfigForTenant } from '@/lib/call/vonage-config';
 import { resolveDefaultScope } from '@/lib/tenant/default-scope';
-import { readAnswerToken } from '@/lib/call/answer-token';
+import { getAnswerSecret, readAnswerToken } from '@/lib/call/answer-token';
+import { secretUnavailableResponse } from '@/lib/auth/secret-unavailable';
 import { readJson } from '@/lib/data-stores/result-http';
 
 /**
@@ -22,6 +23,14 @@ export async function POST(
   const { id } = await params;
   const body = (await readJson(request)) as { token?: string } | null;
 
+  // 🔴 鍵未設定デプロイで uncaught にしない。**catch の射程は鍵の解決だけ**
+  // （理由と、広げたときに何が壊れるかは `src/lib/auth/secret-unavailable.ts` に 1 度だけ書く）。
+  // 射程は route テストの「鍵以外の throw は 503 に化けない」が縛る (#1123)。
+  try {
+    getAnswerSecret();
+  } catch {
+    return secretUnavailableResponse('CALL_ANSWER_SECRET');
+  }
   const answer = await readAnswerToken(body?.token);
   if (!answer || answer.receptionId !== id) {
     return NextResponse.json({ error: 'forbidden', message: 'invalid answer token' }, { status: 403 });
