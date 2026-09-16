@@ -20,6 +20,17 @@ squash マージ → クリーンアップ → Issue クローズ」で消化す
   をこのランブックで運用ルールとして強制する。
 - マージは **squash**、マージ後はブランチを削除する（リポジトリ設定は
   `deleteBranchOnMerge=false` のため `--delete-branch` を明示する）。
+- **feature ブランチを main へ追随させるときは `git merge main` でよい** (#1031)。
+  merge commit が出来るが、squash マージで破棄されるので main の履歴には届かない。
+  `scripts/check-merge-method.ts` は **main の履歴だけ**を検査するので、これでゲートは赤くならない。
+
+  🔴 **かつては赤くなった。** 同検査が `HEAD` を走査していたため、main を取り込んだ
+  merge commit が「squash 規約への逸脱」として検出され、unit が落ちて `--fast` / `--pr` /
+  `--full` が全部赤くなり、`pr-gate-guard.sh` が PR 作成もマージもブロックした
+  （2026-09-09 の PR #1017 で実際に踏み、その場は rebase で回避した）。
+  しかも案内が「`KNOWN_VIOLATIONS` へ載せろ」だったため**誤った回避策へ誘導していた** ――
+  あれは事後に直せない履歴のための枠で、載せると次の本物の逸脱に気づけなくなる。
+  **`KNOWN_VIOLATIONS` へ載せて回避しないこと。**
 
 ---
 
