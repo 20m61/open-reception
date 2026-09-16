@@ -3,7 +3,7 @@
 import { useRouter } from 'next/navigation';
 import { useState } from 'react';
 import { font } from '@/components/admin/ui/tokens';
-import { type LoginFailure, loginFailureMessage } from './login-outcome';
+import { type LoginFailure, loginFailureForStatus, loginFailureMessage } from './login-outcome';
 
 /** パスワードによる管理ログインフォーム (issue #24)。検証は server 側で行う。 */
 export function AdminPasswordLogin() {
@@ -14,6 +14,10 @@ export function AdminPasswordLogin() {
    * 🔴 **失敗の原因を区別して持つ (#973)。** boolean で持っていたころは、
    * `catch` が無いことと相まって**通信が届かないときは何も出なかった**。`catch` を足すだけで
    * boolean のままにすると、今度は「パスワードが正しくありません」と嘘をつく。
+   *
+   * 🔴 **原因は 3 つある (#1021)。** `catch`（届かない）だけでなく、**届いたが
+   * パスワードを検査する前に失敗した**（fail-closed の 500・provider 不一致の 409）も
+   * 「正しくありません」と言ってはいけない。写像は `loginFailureForStatus`。
    */
   const [failure, setFailure] = useState<LoginFailure | null>(null);
   const [busy, setBusy] = useState(false);
@@ -33,7 +37,10 @@ export function AdminPasswordLogin() {
         router.push('/admin');
         router.refresh();
       } else {
-        setFailure('rejected');
+        // 🔴 **状態コードを見る。** 非 ok をすべて `rejected` にすると、サーバが
+        // パスワードを見てすらいない 5xx でも「パスワードが正しくありません」と
+        // **嘘をつく**（#1021 で `ADMIN_PASSWORD` 未設定の 500 を作ってしまい、実際に踏んだ）。
+        setFailure(loginFailureForStatus(res.status));
       }
     } catch {
       // オフライン・DNS 失敗・API 停止。**パスワードの正否は分かっていない**ので、

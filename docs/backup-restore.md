@@ -280,9 +280,9 @@ aws ssm get-parameter --name "${SITE_CONFIG_PREFIX}/${SITE_ID}" --region "$REGIO
 
 ```bash
 # 1) アプリ機密（方式 B, ADMIN_PASSWORD / ADMIN_SESSION_SECRET / KIOSK_SESSION_SECRET /
-#    KIOSK_ENROLLMENT_SECRET 等）
+#    KIOSK_ENROLLMENT_SECRET / CALL_ANSWER_SECRET 等）
 aws secretsmanager create-secret --name "open-reception/${ENV}/app" \
-  --secret-string '{"ADMIN_PASSWORD":"...","ADMIN_SESSION_SECRET":"...","KIOSK_SESSION_SECRET":"...","KIOSK_ENROLLMENT_SECRET":"..."}' \
+  --secret-string '{"ADMIN_PASSWORD":"...","ADMIN_SESSION_SECRET":"...","KIOSK_SESSION_SECRET":"...","KIOSK_ENROLLMENT_SECRET":"...","CALL_ANSWER_SECRET":"..."}' \
   --region "$REGION"
 
 # 2) 拠点トークン HMAC 鍵（必須。無いと通知 authorizer が全拒否）
@@ -301,8 +301,11 @@ aws secretsmanager create-secret --name "open-reception/${ENV}/vonage" \
 Lambda が新しいシークレット ARN を参照するようにする（シークレット名を変えずに再作成した場合は
 再デプロイ不要なことが多いが、ARN が変わる= 新規作成のため念のため再デプロイして反映させる）。
 
-> **KIOSK_ENROLLMENT_SECRET を忘れない**: `docs/deploy-aws.md` に明記の通り、未設定だと
-> `/api/kiosk/enroll` が fail-closed で 500 になる。
+> 🔴 **鍵の一覧は、どの文書も網羅していない。正本は実装である** ――
+> `serverSecret(..., { failClosed: true })` の呼び出し元（実測 6 件）が fail-closed な鍵の全部で、
+> 欠けると該当機能が落ちる。`docs/deploy-aws.md` の説明が最も詳しいが**そこも網羅ではない**
+> （`PLATFORM_ELEVATION_SECRET` / `VOICE_TRANSPORT_TOKEN_SECRET` が抜けている）。
+> 一覧をコードから導く検査は #1122。**この文書を「正本」として頼らないこと。**
 
 ## 4. 誤削除ガードの確認手順（DeletionProtection / `cdk destroy`）
 
