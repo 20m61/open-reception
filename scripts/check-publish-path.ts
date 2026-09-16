@@ -1,80 +1,59 @@
 #!/usr/bin/env tsx
 /**
- * 週次ゲートの**公開経路**が生きているかを、ゲートを回す前に確かめる (#1117 AC3)。
+ * 公開経路（GitHub REST）へ**いま到達できるか**を確かめる (#1117)。
  *
- * ## なぜ前に置くのか
+ * ## 何を見て、何を見ないか
  *
- * `record-gate-run.sh --publish` は `--full --strict`（20〜25 分）を回してから
- * 記録を commit / push し、最後に PR を作る。公開経路が壊れていると、**20 分払った後で**
- * 最後の一手だけが落ちる。落ち方は「記録は push 済み・PR は無し」＝ #656 そのもので、
- * 2026-08-03 には FAIL が 5 日間 main に載らなかった。
+ * 見るのは**到達性だけ**。`GET /repos/{owner}/{repo}` が 2xx を返せば 0、
+ * 返らなければ理由を名指しして非 0。道具（`curl`）の欠落・通信不能・401 / 403 /
+ * レート制限が全部ここに出る ―― **#1117 を作った故障族そのもの**である。
  *
- * 2026-09-15 にはさらに素朴な形で壊れた ―― サンドボックスに `gh` が無く、PR 作成が
- * 到達しなかった (#1117)。**どちらも、ゲートを回す前に 1 回引けば判る。**
+ * 🔴 **push 権限の申告は見ない（撤回した / 独立レビュー 2 周目）。**
+ * `permissions.push` は `contents:write` の申告で、PR 作成に要る `pull_requests:write`
+ * とは別物であり、この環境では proxy が無認証でも `push:true` を返す。
+ * **申告を解釈するより、到達したかどうかという事実だけを使う。**
+ * 理由は `src/domain/governance/github-rest.ts` の該当箇所に残してある。
  *
- * ## 何を確かめるか（前提を数え上げず、能力を測る）
+ * ## どこから呼ばれるか（`scripts/record-gate-run.sh`）
  *
- * 🔴 **「`GITHUB_TOKEN` が在るか」のような前提の列挙で判定しない。** このサンドボックスの
- * agent proxy は資格情報を注入するので、token が無くても 200 が返る（2026-09-15 実測）。
- * 前提を数えると、**実際には publish できる環境を塞ぐ**。逆に token が在っても権限が
- * 無ければ publish はできない。だから**実際に 1 回引いて、返ってきた権限を読む**。
+ * | 呼ばれる場所 | 結果の使い方 |
+ * | --- | --- |
+ * | ゲートの**前** | **報告だけ。止めない** |
+ * | `git push` の**直前** | 非 0 なら **push せずに**終える |
  *
- * ⚠️ これは**下限の検査**である。`permissions.push` は申告であって、保護ブランチや
- * レビュー必須やアプリのスコープはここに現れない。「通れば必ず publish できる」ではなく
- * 「落ちたら確実に publish できない」を早く知るためのもの。
+ * 🔴 **ゲートの前では止めない。** 記録の追記も `evaluate:gate-runs` も `loop:retro` も
+ * publish の後ろに居るので、ここで止めると FAIL の測定そのものが消える（#656 より悪い）。
+ * fresh clone では `npx --no-install tsx` 自体が失敗するが、ゲート本体が `npm ci` するので
+ * push の直前には解決している。
+ *
+ * 🔴 **push の直前では止める。** 到達できないまま push すると
+ * 「記録は push 済み・PR は無し」＝ #656 そのものの orphan ブランチが残る。
+ * push しなければ、ゲートも記録も既に済んでいて、**残骸だけを作らずに済む**。
+ *
+ * ⚠️ 0 は publish の**保証ではない**。保護ブランチ・レビュー必須・App のスコープは
+ * ここに現れないし、proxy が何でも 200 にする環境ではなおさらである。
+ * 確かなのは「到達できなかった」側だけで、それがこの検査の値打ちである。
  *
  * 使い方:
  *   npx tsx scripts/check-publish-path.ts
  *
- * ## 終了コード（**「駄目」と「分からない」を分ける** / review B1・M1）
- *
- * | コード | 意味 | 呼び出し側 |
- * | --- | --- | --- |
- * | 0 | push できると応答が言っている | 進む |
- * | 3 | **確実に publish できない**（応答は読めたうえで push=false） | **止める** |
- * | 4 | **判定不能**（到達できない / permissions が読めない / 道具が無い） | 警告して進む |
- *
- * 🔴 **判定不能で週次ゲートを止めない。** 止めると、ゲートも記録も
- * `evaluate:gate-runs` も `loop:retro` も publish の後ろに居るので**全部消える** ――
- * FAIL が main に載らないどころか、FAIL の測定自体が無くなる（#656 より悪い）。
- * 一過性の 5xx・レート制限・proxy の瞬断でそれが起きてはいけない。
+ * 終了コード: 0 = 到達できた / 3 = 到達できなかった（理由を stderr に出す）
  */
-import { evaluatePushCapability, repoReadRequest } from '../src/domain/governance/github-rest';
+import { repoReadRequest } from '../src/domain/governance/github-rest';
 import { callGitHubJson, requireCommands, resolveRepoFromOrigin } from './lib/github-api';
 
 function main(): number {
+  let label = '(不明)';
   try {
     requireCommands();
-  } catch (e) {
-    // 道具が無いのは「publish できない」ではなく「**判定できない**」。
-    console.error(`⚠️  公開経路を判定できません: ${e instanceof Error ? e.message : String(e)}`);
-    return 4;
-  }
-
-  let payload: unknown;
-  let label: string;
-  try {
     const repo = resolveRepoFromOrigin();
     label = `${repo.owner}/${repo.repo}`;
-    payload = callGitHubJson<unknown>(repoReadRequest(repo));
+    callGitHubJson<unknown>(repoReadRequest(repo));
   } catch (e) {
-    // 到達できなかったことは「publish できない」ではない（一過性でありうる）。
-    console.error(`⚠️  GitHub REST へ到達できませんでした: ${e instanceof Error ? e.message : String(e)}`);
-    return 4;
-  }
-
-  const verdict = evaluatePushCapability(payload);
-  if (verdict.capability === 'denied') {
-    console.error(`❌ ${label} へ publish できません: ${verdict.reason}`);
-    console.error('   この状態でゲートを回しても、記録は push できても PR は作れません（#656 の形）。');
+    console.error(`❌ 公開経路へ到達できません: ${e instanceof Error ? e.message : String(e)}`);
     return 3;
   }
-  if (verdict.capability === 'unknown') {
-    console.error(`⚠️  ${label} の publish 可否を判定できませんでした: ${verdict.reason}`);
-    return 4;
-  }
-
-  console.error(`✅ 公開経路に到達できます（${label} / push 権限あり）`);
+  console.error(`✅ 公開経路へ到達できます（${label}）`);
   return 0;
 }
 

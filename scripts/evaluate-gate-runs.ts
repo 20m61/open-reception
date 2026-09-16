@@ -28,7 +28,7 @@ import {
 import { parseGitHubRepo, parseLsRemoteSymref } from '../src/domain/governance/git-base';
 import { pullsQueryRequest } from '../src/domain/governance/github-rest';
 import { describeCommandFailure } from '../src/domain/governance/command-failure';
-import { callGitHubJson } from './lib/github-api';
+import { callGitHubArray } from './lib/github-api';
 
 const REPORT_ONLY = process.argv.includes('--report');
 const GATE_RUNS = resolve(import.meta.dirname, '..', 'docs', 'gate-runs.md');
@@ -131,7 +131,7 @@ function evaluateBranches(): { findings: GateRunFinding[]; pending: string[] } {
      */
     let parsed: unknown[];
     try {
-      parsed = callGitHubJson<unknown[]>(pullsQueryRequest(repo, ref.name));
+      parsed = callGitHubArray(pullsQueryRequest(repo, ref.name));
     } catch (e) {
       return unverified(
         `ブランチ '${ref.name}' の PR を問い合わせられませんでした（${e instanceof Error ? e.message : String(e)}）。` +

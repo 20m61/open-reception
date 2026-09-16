@@ -92,20 +92,31 @@ describe('record-gate-run.sh は GitHub CLI に依存しない (#678 / #1117)', 
   });
 
   /**
-   * 🔴 **公開経路の確認はゲートより前**（#1117 AC3）。後ろにあると、壊れていることが
-   * 判るのが `--full --strict` を 20〜25 分回した後になる。落ち方は「記録は push 済み・
-   * PR は無し」＝ #656 そのもの。
+   * 🔴 **到達性の確認は 2 箇所から呼ばれる**（#1117。独立レビュー 2 周目で作り直した）:
+   * ゲートの**前**（報告だけ）と `git push` の**直前**（止める）。
+   *
+   * ここはソースの構造だけを見る。**どちらが止めるか**という意味のある主張は
+   * `tests/hooks/record-gate-run.test.ts` が実起動で持っている ―― かつてここに在った
+   * 「事前確認に失敗したらゲートを回さずに落ちる」は、実装を作り直した後も
+   * **文字列一致のまま緑で残っていた**（規約「仕様を足したら既存の回帰テストが
+   * 空虚に通るようになっていないか測る」の型）。意味を持てない主張は置かない。
    */
-  it('公開経路の事前確認をゲート実行より前に置く', () => {
-    const preflight = body.indexOf('scripts/check-publish-path.ts');
-    const gate = body.indexOf('quality-gate.sh');
-    expect(preflight).toBeGreaterThanOrEqual(0);
-    expect(gate).toBeGreaterThanOrEqual(0);
-    expect(preflight).toBeLessThan(gate);
+  it('到達性の確認をゲートの前と push の直前の 2 箇所から呼ぶ', () => {
+    const calls = body.split('scripts/check-publish-path.ts').length - 1;
+    expect(calls).toBeGreaterThanOrEqual(2);
   });
 
-  it('事前確認に失敗したらゲートを回さずに落ちる', () => {
-    // 「警告を出して続行」にすると、20 分払ってから PR 作成だけが落ちる形へ戻る。
-    expect(body).toMatch(/check-publish-path\.ts[\s\S]{0,400}?exit 3/);
+  it('ゲートより前に 1 度目を置く', () => {
+    const first = body.indexOf('scripts/check-publish-path.ts');
+    const gate = body.indexOf('quality-gate.sh');
+    expect(first).toBeGreaterThanOrEqual(0);
+    expect(first).toBeLessThan(gate);
+  });
+
+  it('push より前に 2 度目を置く', () => {
+    const push = body.indexOf('git push');
+    const lastCheck = body.lastIndexOf('scripts/check-publish-path.ts');
+    expect(push).toBeGreaterThanOrEqual(0);
+    expect(lastCheck).toBeLessThan(push);
   });
 });

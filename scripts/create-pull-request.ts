@@ -47,7 +47,7 @@
  *    到達しない原因を 3 周にわたって当て推量した実績がある（PR #665）。
  */
 import { readFileSync } from 'node:fs';
-import { callGitHubJson, resolveRepoFromOrigin } from './lib/github-api';
+import { callGitHubArray, callGitHubJson, resolveRepoFromOrigin } from './lib/github-api';
 import type { GitHubRepo } from '../src/domain/governance/git-base';
 import { pullCreateRequest, pullsQueryRequest } from '../src/domain/governance/github-rest';
 
@@ -174,7 +174,8 @@ function main(): number {
   // 🔴 **作成できたと言われても信じない (#656)。** ブランチを head に持つ PR を REST で引き直す。
   let existing: unknown[];
   try {
-    existing = callGitHubJson<unknown[]>(pullsQueryRequest(repo, head));
+    // **形まで確かめる。** `length === 0` だけでは配列でない 2xx を「PR がある」と読む。
+    existing = callGitHubArray(pullsQueryRequest(repo, head));
   } catch (e) {
     console.error(`❌ PR の実在を確認できませんでした: ${e instanceof Error ? e.message : String(e)}`);
     if (createError !== undefined) console.error(`   作成時のエラー: ${createError}`);

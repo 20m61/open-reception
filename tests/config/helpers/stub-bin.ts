@@ -12,7 +12,7 @@
  * `gh` は「呼ばれたら失敗する」偽物を置き、`gh` へ戻る退行を PATH の側から捕まえる。
  */
 import { execFileSync } from 'node:child_process';
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -38,6 +38,19 @@ const TSX = join('node_modules', '.bin', 'tsx');
 /** 子プロセスで TypeScript を起動するので、既定の 5 秒では負荷下で足りない。 */
 export const SPAWN_TIMEOUT_MS = 30_000;
 
+/**
+ * 作った砂場。**必ず片付ける** —— 実測で 1 実行あたり 29 ディレクトリが `/tmp` に残った。
+ * #721（`/tmp/cdk.out*` が 740 個・26GB まで積もり、メモリも load も正常なまま
+ * e2e が `Target crashed` で落ちた）の前例がある。呼び出し側は
+ * `afterAll(cleanupStubDirs)` を 1 行書く。
+ */
+const createdDirs: string[] = [];
+
+export function cleanupStubDirs(): void {
+  for (const dir of createdDirs) rmSync(dir, { recursive: true, force: true });
+  createdDirs.length = 0;
+}
+
 function writeExecutable(path: string, body: string): void {
   writeFileSync(path, body);
   chmodSync(path, 0o755);
@@ -52,6 +65,7 @@ function writeExecutable(path: string, body: string): void {
  */
 export function runScriptWithStubs(script: string, args: string[], options: StubOptions = {}): StubRun {
   const dir = mkdtempSync(join(tmpdir(), 'stub-bin-'));
+  createdDirs.push(dir);
   const bin = join(dir, 'bin');
   mkdirSync(bin);
 

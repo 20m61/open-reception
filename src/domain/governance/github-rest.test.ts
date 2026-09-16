@@ -6,7 +6,6 @@ import {
   isSuccess,
   curlArgs,
   describeHttpFailure,
-  evaluatePushCapability,
   parseCurlResponse,
   pullCreateRequest,
   pullMergeRequest,
@@ -208,52 +207,17 @@ describe('失敗の説明 (#1117)', () => {
   });
 });
 
-describe('publish 経路の能力判定 (#1117)', () => {
-  it('push が真なら ok', () => {
-    expect(evaluatePushCapability({ permissions: { push: true } }).capability).toBe('ok');
-  });
-
-  /**
-   * 🔴 **`denied` は「応答は読めたうえで push できないと書いてある」ときだけ。**
-   * ここだけが週次ゲートを止める根拠になるので、広げない。
-   */
-  it('push が偽なら denied（ここだけが止める根拠）', () => {
-    const verdict = evaluatePushCapability({ permissions: { push: false } });
-    expect(verdict.capability).toBe('denied');
-    expect(verdict.reason).not.toBe('');
-  });
-
-  /**
-   * 🔴 **判定不能を `denied` へ丸めない (#1117 review B1 / M1)。**
-   * 丸めると、一過性の 5xx やレート制限で**週次ゲートごと中止**になる。記録も
-   * `evaluate:gate-runs` も `loop:retro` も publish の後ろに居るので、FAIL の測定が丸ごと消える。
-   * かといって `ok` へも丸めない（判定不能を PASS にしない）。だから第 3 の状態が要る。
-   */
-  it.each([
-    ['permissions に push が無い', { permissions: { pull: true } }],
-    ['permissions が空', { permissions: {} }],
-    ['push が真偽値でない', { permissions: { push: 'true' } }],
-    ['permissions が無い', { full_name: 'o/r' }],
-    ['null', null],
-    ['配列', []],
-    ['文字列', 'not json'],
-  ])('%s は unknown（ok でも denied でもない）', (_label, payload) => {
-    const verdict = evaluatePushCapability(payload);
-    expect(verdict.capability).toBe('unknown');
-    expect(verdict.reason).not.toBe('');
-  });
-
-  /** 下界。`unknown` を返すだけの実装では上の「push が真なら ok」が落ちる。 */
-  it('3 つの状態がすべて到達可能', () => {
-    const seen = new Set(
-      [{ permissions: { push: true } }, { permissions: { push: false } }, null].map(
-        (p) => evaluatePushCapability(p).capability,
-      ),
-    );
-    expect([...seen].sort()).toEqual(['denied', 'ok', 'unknown']);
-  });
-});
-
+/**
+ * 🔴 **push 権限の判定は撤回した（独立レビュー 2 周目）。**
+ *
+ * かつてここに `evaluatePushCapability` の 3 状態テストが在った。撤回の理由は実測 2 つ:
+ * `permissions.push` は `contents:write` の申告で PR 作成に要る `pull_requests:write`
+ * とは別物であること、そしてこの環境では proxy が無認証でも `push:true` を返すため
+ * **止める側の枝に到達しない**こと。**測っていないものを根拠に止めていた。**
+ *
+ * 代わりに見るのは到達性そのもので、判定は `isSuccess` が持っている（上の節）。
+ * 挙動は `tests/config/publish-path-behavior.test.ts` が実起動で縛る。
+ */
 
 describe('欠けているコマンドの名指し (#1117 AC1)', () => {
   /**

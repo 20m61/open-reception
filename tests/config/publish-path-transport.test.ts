@@ -20,9 +20,10 @@ import { execFileSync } from 'node:child_process';
 import { mkdirSync, mkdtempSync, symlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { describe, expect, it } from 'vitest';
+import { afterAll, describe, expect, it } from 'vitest';
 import {
   SPAWN_TIMEOUT_MS,
+  cleanupStubDirs,
   readLog,
   runScriptWithStubs,
   type StubResponse,
@@ -62,6 +63,8 @@ const CREATE = 'scripts/create-pull-request.ts';
 const MERGE_SCRIPT = ['scripts', 'merge-pull-request.ts'].join('/');
 const PR_URL = 'https://github.com/20m61/open-reception/pull/1234';
 const CREATE_ARGS = ['--head', 'feat/x', '--base', 'main', '--title', 'feat: x', '--body', '本文'];
+
+afterAll(cleanupStubDirs);
 
 describe('PR 作成: gh の無い PATH で REST だけで作れる (#1117 AC1)', () => {
   it(
@@ -318,6 +321,83 @@ describe('401 は「どの層の話か」までスクリプトの出力へ届く
       expect(run.stderr).not.toContain('gh auth token');
       // token の値そのものは出さない。
       expect(run.stderr).not.toContain('some-token');
+    },
+    SPAWN_TIMEOUT_MS,
+  );
+});
+
+describe('引き直しは「形」まで確かめる (#1117 独立レビュー 2 周目 / M4)', () => {
+  /**
+   * 🔴 **#656 の唯一の砦がここ。** 作成の申告を信じず引き直す ―― その引き直しが
+   * 配列でない 2xx で空虚に通っていた。実測: 2 回目を 200 `{"message":"proxy says hi"}`
+   * にすると「✅ PR の実在を REST で確認しました」と言って exit 0 で終わった。
+   * `undefined === 0` が false になるためで、**PR は存在しない**。
+   *
+   * transport が `gh api` から `curl` ＋ 介在 proxy へ移ったことで、200 + 非配列 JSON の
+   * 到達性が上がっている（この環境の proxy は 403 / 405 / 407 を返しうる）。
+   */
+  it(
+    '一覧でない 2xx を「PR がある」と読まない',
+    () => {
+      const run = runWithStubs(CREATE, CREATE_ARGS, [
+        { body: JSON.stringify({ html_url: PR_URL }), status: 201 },
+        { body: JSON.stringify({ message: 'proxy says hi' }), status: 200 },
+      ]);
+      expect(run.code).not.toBe(0);
+      expect(run.stdout).not.toContain(PR_URL);
+    },
+    SPAWN_TIMEOUT_MS,
+  );
+
+  /** 下界。ちゃんと配列で返れば従来どおり成功する。 */
+  it(
+    '一覧で返れば成功する',
+    () => {
+      const run = runWithStubs(CREATE, CREATE_ARGS, [
+        { body: JSON.stringify({ html_url: PR_URL }), status: 201 },
+        { body: JSON.stringify([{ html_url: PR_URL }]), status: 200 },
+      ]);
+      expect(run.code).toBe(0);
+    },
+    SPAWN_TIMEOUT_MS,
+  );
+});
+
+describe('token の形が不正なとき、層を取り違えない (#1117 独立レビュー 2 周目 / m4)', () => {
+  /**
+   * 🔴 実測では、この理由が `describeCommandFailure`（`error.stderr` しか拾わない）に
+   * 飲まれて 1 文字も出ず、「PR の実在を確認できませんでした」になっていた ――
+   * **#1117 が消そうとした「層を取り違えたメッセージ」そのもの**。
+   */
+  it(
+    'token に使えない文字が含まれていることを名指しする',
+    () => {
+      const run = runWithStubs(CREATE, CREATE_ARGS, [], { GH_TOKEN: 'ghp_abc=def' });
+      expect(run.code).not.toBe(0);
+      expect(run.stderr).toContain('token に使えない文字');
+      // 値そのものは出さない。
+      expect(run.stderr).not.toContain('ghp_abc=def');
+    },
+    SPAWN_TIMEOUT_MS,
+  );
+});
+
+describe('空の 2xx 本文を null へ倒さない (#1117 review m7)', () => {
+  /**
+   * 🔴 一覧の経路は `callGitHubArray` の形検査でも落ちるが、**一覧でない経路**
+   * （マージの引き直し）は空本文が `null` になると `.merged` で TypeError になる。
+   * 「判定不能が素の例外に化ける」型なので、名指しで失敗させる。
+   */
+  it(
+    'マージの引き直しが空本文でも、素の例外ではなく名指しで落ちる',
+    () => {
+      const run = runWithStubs(MERGE_SCRIPT, ['--number', '703'], [
+        { body: JSON.stringify({ merged: true }), status: 200 },
+        { body: '', status: 200 },
+      ]);
+      expect(run.code).toBe(4);
+      expect(run.stderr).toContain('空の本文');
+      expect(run.stderr).not.toContain('TypeError');
     },
     SPAWN_TIMEOUT_MS,
   );

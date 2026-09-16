@@ -19,9 +19,9 @@ import { execFileSync } from 'node:child_process';
 import { mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { describe, expect, it } from 'vitest';
+import { afterAll, describe, expect, it } from 'vitest';
 import { curlArgs, parseCurlResponse, repoReadRequest } from '../../src/domain/governance/github-rest';
-import { SPAWN_TIMEOUT_MS, readLog, runScriptWithStubs } from './helpers/stub-bin';
+import { SPAWN_TIMEOUT_MS, cleanupStubDirs, readLog, runScriptWithStubs } from './helpers/stub-bin';
 
 const PUBLISH_CHECK = 'scripts/check-publish-path.ts';
 const EVALUATE = 'scripts/evaluate-gate-runs.ts';
@@ -44,54 +44,42 @@ const GIT = {
   'show -s': OLD_TIP,
 };
 
-describe('check-publish-path: 3 状態が終了コードへ出る (#1117 AC3)', () => {
-  const repo = (permissions: unknown): string => JSON.stringify({ full_name: 'o/r', permissions });
+afterAll(cleanupStubDirs);
 
-  it(
-    'push できるなら 0',
-    () => {
-      const run = runScriptWithStubs(PUBLISH_CHECK, [], {
-        responses: [{ body: repo({ push: true }), status: 200 }],
-        git: GIT,
-      });
-      expect(run.code).toBe(0);
-    },
-    SPAWN_TIMEOUT_MS,
-  );
-
-  /** 🔴 ここだけが週次ゲートを止める根拠。緩む向きの変異はここで落ちる。 */
-  it(
-    'push できないと応答が言っているなら 3（＝ゲートを止めてよい）',
-    () => {
-      const run = runScriptWithStubs(PUBLISH_CHECK, [], {
-        responses: [{ body: repo({ push: false }), status: 200 }],
-        git: GIT,
-      });
-      expect(run.code).toBe(3);
-    },
-    SPAWN_TIMEOUT_MS,
-  );
-
+describe('check-publish-path: 到達できたかだけを返す (#1117 AC3)', () => {
   /**
-   * 🔴 **判定不能は 3 ではない。** 3 にすると、一過性の 5xx やレート制限で
-   * 週次ゲート・記録・取りこぼし検査が丸ごと消える（#656 より悪い）。
+   * 🔴 **push 権限の申告は見ない（撤回した / 独立レビュー 2 周目）。**
+   * `permissions.push` は `contents:write` の申告で PR 作成に要る `pull_requests:write`
+   * とは別物であり、この環境では proxy が無認証でも `push:true` を返すため、
+   * 止める側の枝に到達しなかった。**測っていないものを根拠に止めない。**
    */
   it.each([
-    ['permissions が無い', { body: JSON.stringify({ full_name: 'o/r' }), status: 200 }],
-    ['push が真偽値でない', { body: repo({ push: 'yes' }), status: 200 }],
-    ['サーバ側の一過性エラー', { body: '{"message":"Server Error"}', status: 500 }],
+    ['権限つきの応答', JSON.stringify({ full_name: 'o/r', permissions: { push: true } })],
+    ['push が偽でも到達はしている', JSON.stringify({ full_name: 'o/r', permissions: { push: false } })],
+    ['permissions が無くても到達はしている', JSON.stringify({ full_name: 'o/r' })],
+  ])('%s → 0（2xx が返れば到達できている）', (_label, body) => {
+    const run = runScriptWithStubs(PUBLISH_CHECK, [], {
+      responses: [{ body, status: 200 }],
+      git: GIT,
+    });
+    expect(run.code).toBe(0);
+  }, SPAWN_TIMEOUT_MS);
+
+  /** 🔴 到達できなかったことだけが確かな事実。ここが唯一の「止める」根拠になる。 */
+  it.each([
+    ['資格情報が通らない', { body: '{"message":"Bad credentials"}', status: 401 }],
     ['レート制限', { body: '{"message":"API rate limit exceeded"}', status: 403 }],
     ['見つからない', { body: '{"message":"Not Found"}', status: 404 }],
-  ])('%s なら 4（判定不能。止める根拠にしない）', (_label, response) => {
+    ['サーバ側の一過性エラー', { body: '{"message":"Server Error"}', status: 500 }],
+  ])('%s → 3', (_label, response) => {
     const run = runScriptWithStubs(PUBLISH_CHECK, [], { responses: [response], git: GIT });
-    expect(run.code).toBe(4);
+    expect(run.code).toBe(3);
   }, SPAWN_TIMEOUT_MS);
 
   it(
-    '通信そのものに失敗しても 4（3 ではない）',
+    '通信そのものに失敗しても 3',
     () => {
-      const run = runScriptWithStubs(PUBLISH_CHECK, [], { curlFailsWith: 7, git: GIT });
-      expect(run.code).toBe(4);
+      expect(runScriptWithStubs(PUBLISH_CHECK, [], { curlFailsWith: 7, git: GIT }).code).toBe(3);
     },
     SPAWN_TIMEOUT_MS,
   );
@@ -100,7 +88,7 @@ describe('check-publish-path: 3 状態が終了コードへ出る (#1117 AC3)', 
     'gh を呼ばない',
     () => {
       const run = runScriptWithStubs(PUBLISH_CHECK, [], {
-        responses: [{ body: repo({ push: true }), status: 200 }],
+        responses: [{ body: '{"full_name":"o/r"}', status: 200 }],
         git: GIT,
       });
       expect(readLog(run.dir, 'gh.log')).toBe('');
@@ -164,6 +152,25 @@ describe('evaluate-gate-runs: 判定不能と「取りこぼし無し」を混�
       const out = `${run.stdout}${run.stderr}`;
       expect(out).toContain('branch_check_unverified');
       expect(out).not.toContain('TypeError');
+    },
+    SPAWN_TIMEOUT_MS,
+  );
+
+  /**
+   * 🔴 **配列でない 2xx を「PR がある」と読まない (#1117 独立レビュー 2 周目 / M4)。**
+   * 介在 proxy は 2xx で別形の JSON を返しうる。形を見ずに `length` を読むと
+   * `undefined === 0` が false になり、**取りこぼしを見逃す側**へ倒れる。
+   */
+  it(
+    '一覧でない 2xx は未検査として報告する',
+    () => {
+      const run = runScriptWithStubs(EVALUATE, ['--report'], {
+        responses: [{ body: '{"message":"proxy says hi"}', status: 200 }],
+        git: GIT,
+      });
+      const out = `${run.stdout}${run.stderr}`;
+      expect(out).toContain('branch_check_unverified');
+      expect(out).not.toContain('orphan_branch');
     },
     SPAWN_TIMEOUT_MS,
   );

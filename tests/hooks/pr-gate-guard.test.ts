@@ -192,34 +192,26 @@ describe('pr-gate-guard: ゲート記録が無ければブロックする', () =
   });
 
   /**
-   * 🔴 **作成側も対称に塞ぐ (#1117)。** マージだけ URL で見てい、作成は
-   * スクリプト名でしか見ていなかった ―― `gh` が消えて生の `curl` が既定の手癖に
-   * なった今、素通りする形の方が書きやすい。
+   * 🔴 **生の REST での PR 作成は、ここでは止まらない（既知の穴 / #1120）。**
+   *
+   * #1117 で一度塞ごうとして**撤回した** —— 実測で、止めたい形を 5 通り以上取りこぼし
+   * （`gh api …/pulls -f title=x` を含む）、止めてはいけない読み取りを 3 通り止めた。
+   * **穴が在ることを記録として固定する** —— 「塞いだつもり」で放置するより、
+   * 素通りすることが見えている方が安全側であり、#1120 が閉じたらここが赤くなる。
    */
-  it('生の REST 作成（curl -X POST .../pulls）をブロックし --pr を案内する', () => {
-    const { status, stderr } = runHook(
-      'curl -sS -X POST https://api.github.com/repos/20m61/open-reception/pulls --data-binary @/tmp/b.json',
-    );
+  it('生の REST での PR 作成は素通りする（#1120 で扱う既知の穴）', () => {
+    expect(
+      runHook('curl -sS -X POST https://api.github.com/repos/20m61/open-reception/pulls -d @/tmp/b.json')
+        .status,
+    ).toBe(0);
+    expect(runHook('gh api repos/20m61/open-reception/pulls -f title=x').status).toBe(0);
+  });
+
+  /** 主経路（スクリプト）は塞がっている。撤回したのは生 REST の枝だけ。 */
+  it('スクリプト経由の PR 作成は変わらずブロックする', () => {
+    const { status, stderr } = runHook('npx tsx scripts/create-pull-request.ts --head x --title y');
     expect(status).toBe(2);
     expect(stderr).toContain('--pr');
-  });
-
-  it('gh api 版の生の REST 作成もブロックする', () => {
-    expect(
-      runHook('gh api --method POST repos/20m61/open-reception/pulls -f title=x').status,
-    ).toBe(2);
-  });
-
-  /**
-   * 下界。**読み取りは止めない。** URL だけで判定すると一覧取得まで止まり、
-   * 誤検出でガードごと迂回される動機になる（このフックが繰り返し学んだ型）。
-   */
-  it('PR の読み取りは通す（一覧・照会・単体）', () => {
-    expect(runHook('curl -sS https://api.github.com/repos/20m61/open-reception/pulls').status).toBe(0);
-    expect(
-      runHook('curl -sS "https://api.github.com/repos/20m61/open-reception/pulls?state=all&head=x"').status,
-    ).toBe(0);
-    expect(runHook('curl -sS https://api.github.com/repos/20m61/open-reception/pulls/12').status).toBe(0);
   });
 
   it('マージではない curl 呼び出しは通す（誤検出はガードを無意味にする）', () => {

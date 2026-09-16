@@ -274,54 +274,23 @@ function describeMissingCredential(tokenSource: string | undefined): string {
 }
 
 /**
- * 能力判定の結果。**3 状態**であることが要点 (#1117 review B1 / M1)。
+ * 🔴 **push 権限の判定は撤回した (#1117 独立レビュー 2 周目)。**
  *
- * 🔴 **「駄目」と「分からない」を混ぜない。** 2 値にすると、呼び出し側は
- * 「判定不能」をどちらかへ丸めるしかなくなる。丸め方の両方が悪い:
+ * かつてここに `evaluatePushCapability` が在り、`GET /repos/{owner}/{repo}` の
+ * `permissions.push` から ok / denied / unknown を返して、`denied` のときに
+ * **週次ゲートごと中止**していた。撤回した理由は 2 つあり、どちらも実測である:
  *
- * - **ok へ丸める** … 判定不能を PASS にする。このリポジトリが繰り返し禁じている型
- *   （`command-preflight.ts` の `observed[cmd] !== true` / `branch_check_unverified`）
- * - **denied へ丸める** … 一過性の 5xx やレート制限で**週次ゲートごと中止**になる。
- *   実際そうなりかけた ―― 記録も `evaluate:gate-runs` も `loop:retro` も publish の
- *   後ろに居るので、**FAIL の測定そのものが消える**。#656 より悪い
+ * 1. **測っているものが違う。** `permissions.push` は `contents:write` の申告で、
+ *    PR 作成に要る `pull_requests:write` とは別物。fine-grained PAT や GitHub App では
+ *    `push:false` でも PR を作れる。**止める根拠として誤っていた**
+ * 2. **この環境では `denied` に到達しない。** proxy が資格情報を注入するので、
+ *    無認証でも `permissions={admin:true,…,push:true}` が返る。実運用で観測されるのは
+ *    「ok」と「判定不能」だけで、**止める力をほぼ持っていなかった**
  *
- * だから 3 つ返し、**`denied` のときだけ**呼び出し側が止まる。
+ * 代わりに見るのは**到達性そのもの**である（`scripts/check-publish-path.ts`）。
+ * 2xx が返れば到達できている、返らなければ理由を名指しする ―― 申告を解釈しない。
+ * 判定は `isSuccess` と `describeHttpFailure` が既に持っているので、**関数を足さない**。
  */
-export type PushCapability = 'ok' | 'denied' | 'unknown';
-
-/** 能力判定の結果。**通らなかった理由を必ず持つ**（黙って false にしない）。 */
-export type PushCapabilityVerdict = { readonly capability: PushCapability; readonly reason: string };
-
-/**
- * `GET /repos/{owner}/{repo}` の応答から「この主体は push できるか」を判定する (#1117)。
- *
- * ⚠️ **これは push 権限の**申告**であって、PR を作れること・マージできることの保証では
- * ない**（保護ブランチ・レビュー必須・App のスコープはここに現れない）。
- * 20 分のゲートを回す前に**確実に無理な場合だけ**落とすための下限の検査である。
- *
- * 🔴 **`unknown` で止めないのは弱さではなく、止める根拠が無いからである。**
- * この環境の proxy は資格情報を注入するので、`ok` も「proxy が何でも答える」ことの
- * 別名でありうる（`docs/local-aws.md`「Cognito は素通りする」と同じ性質）。
- * 確かなのは `denied` ―― **応答は読めたうえで push できないと書いてある** ―― だけ。
- */
-export function evaluatePushCapability(payload: unknown): PushCapabilityVerdict {
-  if (typeof payload !== 'object' || payload === null) {
-    return { capability: 'unknown', reason: 'リポジトリの応答を JSON オブジェクトとして読めませんでした' };
-  }
-  // 配列や別形の JSON もここで落ちる（`permissions` を持たないため）。**型の場合分けを
-  // 増やさない** —— 増やしても判定は変わらず、分岐だけが増える。
-  const permissions = (payload as { permissions?: unknown }).permissions;
-  if (typeof permissions !== 'object' || permissions === null) {
-    // **`unknown`。** `permissions` を返さないトークン種別があるので、
-    // 「返らなかった」を「権限が無い」と読まない（読むと週次ゲートが消える）。
-    return { capability: 'unknown', reason: '応答に permissions がありません（権限を確認できませんでした）' };
-  }
-  const push = (permissions as { push?: unknown }).push;
-  if (push === true) return { capability: 'ok', reason: '' };
-  if (push === false) return { capability: 'denied', reason: 'このリポジトリへの push 権限がありません' };
-  // `push` キーが無い / 真偽値でない。**真と読まない**が、**確実に駄目とも言えない**。
-  return { capability: 'unknown', reason: 'permissions.push が真偽値で返っていません' };
-}
 
 /** PR 番号として通してよい値だけを通す。パスへ生で埋めると `9/../../x` で曲げられる。 */
 function assertPullNumber(pullNumber: number): void {

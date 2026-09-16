@@ -71,11 +71,17 @@ export function callGitHub(request: GitHubRequest): GitHubResponse {
   requireCommands();
   const { token } = resolveGitHubToken(process.env);
   const args = curlArgs(request);
+  // 🔴 **`authConfigInput` の throw を try の中で起こさない** (#1117 独立レビュー 2 周目)。
+  // 引数位置で評価すると `describeCommandFailure`（`error.stderr` しか拾わない）に飲まれ、
+  // 「token に使えない文字が含まれています」が 1 文字も出ずに
+  // 「GitHub REST へ到達できませんでした」になる ―― **#1117 が消そうとした
+  // 「層を取り違えたメッセージ」そのもの**。先に評価して、理由をそのまま投げる。
+  const input = authConfigInput(token);
   let stdout: string;
   try {
     stdout = execFileSync('curl', args, {
       encoding: 'utf8',
-      input: authConfigInput(token),
+      input,
       stdio: ['pipe', 'pipe', 'pipe'],
       maxBuffer: 32 * 1024 * 1024,
     });
@@ -91,6 +97,29 @@ export function callGitHub(request: GitHubRequest): GitHubResponse {
  *
  * 失敗の文面には**応答本文を残す**（GitHub の 403 / 422 は理由を本文にしか書かない）。
  */
+/**
+ * 一覧を期待する要求。**配列でなければ失敗させる** (#1117 独立レビュー 2 周目)。
+ *
+ * 🔴 **`length === 0` は形の検査ではない。** 配列でない JSON では `undefined === 0` が
+ * false になり、**「PR が 1 件以上ある」と読まれる**。実測で、2 回目の応答を
+ * 200 `{"message":"…"}` にすると `create-pull-request.ts` が
+ * 「✅ PR の実在を REST で確認しました」と言って 0 で終わった ―― PR は存在しない。
+ *
+ * transport が `gh api`（非 2xx を gh 自身が失敗にする）から `curl` ＋ 介在 proxy へ
+ * 移ったことで、**200 + 非配列 JSON の到達性が上がっている**（この環境の proxy は
+ * 403 / 405 / 407 を返しうると README 自身が書いている）。#656 の砦をそこに預けない。
+ */
+export function callGitHubArray(request: GitHubRequest): unknown[] {
+  const value = callGitHubJson<unknown>(request);
+  if (!Array.isArray(value)) {
+    throw new Error(
+      `GitHub REST の応答が一覧ではありません: ${request.method} ${request.path}\n` +
+        `  受け取った形: ${Object.prototype.toString.call(value)}`,
+    );
+  }
+  return value;
+}
+
 export function callGitHubJson<T>(request: GitHubRequest): T {
   const response = callGitHub(request);
   if (!isSuccess(response.status)) {
