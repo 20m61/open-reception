@@ -17,14 +17,14 @@
  * 入力を完全に制御できる一時リポジトリを作り、正常系・当たり・収集失敗を撃ち分ける。
  */
 import { execFileSync, spawnSync } from 'node:child_process';
-import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { chmodSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { afterAll, describe, expect, it } from 'vitest';
 // 🔴 **リネーム構築だけは共有ヘルパを使う** (#719 レビュー m-4)。
 // 「起点コミットに移動元を入れる」という肝を 2 箇所に複製すると、片方だけ直したときに
 // 素通りするテストへ戻る（今回まさに一度踏んだ型）。
 import { makeRenameRepo } from './helpers/git-repo';
+import { makeTempDir } from '../helpers/temp';
 
 const CLI = resolve(process.cwd(), 'scripts/change-risk.ts');
 
@@ -47,7 +47,7 @@ afterAll(() => {
 });
 
 function tempDir(prefix: string): string {
-  const dir = mkdtempSync(join(tmpdir(), prefix));
+  const dir = makeTempDir(prefix);
   created.push(dir);
   return dir;
 }

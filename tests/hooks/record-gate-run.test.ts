@@ -4,12 +4,10 @@ import {
   cpSync,
   existsSync,
   mkdirSync,
-  mkdtempSync,
   readFileSync,
   rmSync,
   writeFileSync,
 } from 'node:fs';
-import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { afterAll, describe, expect, it } from 'vitest';
 
@@ -19,6 +17,7 @@ afterAll(() => {
   for (const dir of created) rmSync(dir, { recursive: true, force: true });
 });
 import { stripBashComments, stripBashStringLiterals } from '../../src/domain/governance/bash-source';
+import { makeTempDir } from '../helpers/temp';
 
 /**
  * 週次記録の公開経路が **GraphQL を撃たない**ことを固定する (#678)。
@@ -88,7 +87,7 @@ describe('record-gate-run.sh: 未測定の印を備考へ残す (#717)', () => {
    * 実際に走らせて、**出来上がる行**を見る。
    */
   function runRecord(summary: string): string {
-    const dir = mkdtempSync(join(tmpdir(), 'record-gate-run-'));
+    const dir = makeTempDir('record-gate-run-');
     created.push(dir);
     mkdirSync(join(dir, 'scripts'), { recursive: true });
     mkdirSync(join(dir, 'docs'), { recursive: true });
@@ -162,7 +161,7 @@ describe('record-gate-run.sh: 報告はゲート前、判断は push の直前 (
    * **push が試みられたかどうか**を観測する（#656 の被害はそこにしか出ない）。
    */
   function runPublish(checkExitCode: number): PublishRun {
-    const dir = mkdtempSync(join(tmpdir(), 'record-gate-publish-'));
+    const dir = makeTempDir('record-gate-publish-');
     created.push(dir);
     mkdirSync(join(dir, 'scripts'), { recursive: true });
     mkdirSync(join(dir, 'docs'), { recursive: true });

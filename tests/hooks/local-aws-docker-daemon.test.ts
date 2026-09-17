@@ -24,10 +24,10 @@
  * `dockerd` すら無いなら**理由の分かる形で落ちる**こと。
  */
 import { spawnSync } from 'node:child_process';
-import { chmodSync, existsSync, mkdtempSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { chmodSync, existsSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
+import { makeTempDir } from '../helpers/temp';
 
 const ROOT = resolve(process.cwd());
 const SCRIPT = join(ROOT, 'scripts/local-aws.sh');
@@ -54,7 +54,7 @@ function fakeEnv(options: {
   /** dockerd が「上がった」と見えるまでの秒数（既定の待ち時間を測るために使う）。 */
   dockerdStartupDelaySeconds?: number;
 }) {
-  const dir = mkdtempSync(join(tmpdir(), 'local-aws-docker-'));
+  const dir = makeTempDir('local-aws-docker-');
   const upMarker = join(dir, 'daemon-up');
   const dockerdCalled = join(dir, 'dockerd-called');
 

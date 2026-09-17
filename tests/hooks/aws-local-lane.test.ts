@@ -12,10 +12,10 @@
  * （`local-aws.sh` で同じ設計を採り、実際に診断を助けた）。
  */
 import { spawnSync } from 'node:child_process';
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
+import { makeTempDir } from '../helpers/temp';
 
 const ROOT = resolve(process.cwd());
 const SCRIPT = join(ROOT, 'scripts/aws-local.sh');
@@ -139,7 +139,7 @@ describe('aws-local.sh: 前提の無い環境でも観測できる', () => {
  */
 describe('aws-local.sh: localstack への委譲', () => {
   it('🔴 委譲したあとも後段（bootstrap / seed）が走る', () => {
-    const dir = mkdtempSync(join(tmpdir(), 'aws-local-deleg-'));
+    const dir = makeTempDir('aws-local-deleg-');
     const marker = join(dir, 'delegated');
     const stub = join(dir, 'local-aws-stub.sh');
     writeFileSync(stub, `#!/bin/sh\ntouch "${marker}"\necho "[stub] delegated $*"\n`);
