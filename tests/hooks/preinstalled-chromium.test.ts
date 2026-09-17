@@ -23,12 +23,12 @@
  * **その 1 本だけがドリフトしうる**ので、下の「ドリフト検出」で縛る。
  */
 import { spawnSync } from 'node:child_process';
-import { chmodSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { chmodSync, readFileSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
 import { stripBashComments } from '../../src/domain/governance/bash-source';
+import { makeTempDir } from '../helpers/temp';
 
 const ROOT = resolve(process.cwd());
 const LIB = join(ROOT, 'scripts/lib/gate-tooling.sh');
@@ -36,7 +36,7 @@ const TIMEOUT = 60_000;
 
 /** 実行可能な偽 chromium を置いてそのパスを返す。 */
 function fakeChromium(): string {
-  const dir = mkdtempSync(join(tmpdir(), 'preinstalled-chromium-'));
+  const dir = makeTempDir('preinstalled-chromium-');
   const exe = join(dir, 'chromium');
   writeFileSync(exe, '#!/bin/sh\nexit 0\n');
   chmodSync(exe, 0o755);
