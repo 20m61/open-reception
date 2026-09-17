@@ -46,6 +46,12 @@ export default defineConfig({
       // 以外が供給することはない。固定すると `delete` で片付ける既存テスト全部と結合し、
       // 「一覧を手で伸ばす」羽目になる（撤回した #1021 AC5 と同じ「数え上げ」）。
     },
+    // 🔴 **一時領域をテストファイルごとに隔離する (#1136)。**
+    // `os.tmpdir()` は `process.env.TMPDIR` を呼び出しのたびに読むので、ここで
+    // ファイルごとの root へ向けると**どの綴りで作られた一時パスも**その中に落ちる
+    // （ソース走査で綴りを数え上げる方式を、レビュー 2 周目の実測を受けて撤回した）。
+    // 経緯と残る面は tests/setup/temp-isolation.ts の doc に書いてある。
+    setupFiles: ['./tests/setup/temp-isolation.ts'],
     // soak ハーネスの純ロジック（tests/soak/thresholds.ts）は unit test で高速検証する (#317)。
     // ブラウザ前提の実ループは tests/e2e/soak/*.spec.ts（vitest 対象外・playwright.soak.config.ts）。
     // 音声評価ハーネス（tests/voice-evaluation/）も合成データのみのオフライン純ロジックなので

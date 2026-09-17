@@ -1,7 +1,7 @@
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
+import { makeTempDir } from '../helpers/temp';
 import {
   collectOwnershipViolations,
   isCrossBrowserReplicaProject,
@@ -112,7 +112,7 @@ describe('Playwright 既定の発見対象ファイル', () => {
   });
 
   it('listE2eSpecRelPaths は既定拡張子を再帰列挙する', () => {
-    const dir = mkdtempSync(join(tmpdir(), 'e2e-own-'));
+    const dir = makeTempDir('e2e-own-');
     try {
       writeFileSync(join(dir, 'a.spec.ts'), '');
       writeFileSync(join(dir, 'b.test.ts'), '');

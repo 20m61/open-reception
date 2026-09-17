@@ -29,15 +29,14 @@ import {
   cpSync,
   existsSync,
   mkdirSync,
-  mkdtempSync,
   readFileSync,
   readdirSync,
   rmSync,
   writeFileSync,
 } from 'node:fs';
-import { tmpdir } from 'node:os';
 import { basename, join, resolve } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
+import { makeTempDir } from '../helpers/temp';
 
 const REPO = process.cwd();
 const RULES_DIR = 'semgrep-rules';
@@ -63,10 +62,14 @@ function runSast(options: {
   /** `semgrep scan` の終了コード。 */
   scanExit?: number;
 }): GateResult {
-  const dir = mkdtempSync(join(tmpdir(), 'gate-sast-'));
+  const dir = makeTempDir('gate-sast-');
   mkdirSync(join(dir, 'scripts', 'lib'), { recursive: true });
   mkdirSync(join(dir, 'bin'), { recursive: true });
   cpSync(resolve(REPO, 'scripts/quality-gate.sh'), join(dir, 'scripts/quality-gate.sh'));
+  // 🔴 **`gate-tooling.sh` も持っていく (#1136 AC4)。** 無いと temp 側の
+  //    `quality-gate.sh` が毎回 `No such file or directory` を stderr へ出し、
+  //    「どのテストが落ちたか分からない FAIL」の読み解きを難しくする（実測で 19 行）。
+  cpSync(resolve(REPO, 'scripts/lib/gate-tooling.sh'), join(dir, 'scripts/lib/gate-tooling.sh'));
   cpSync(resolve(REPO, 'scripts/sast.sh'), join(dir, 'scripts/sast.sh'));
   chmodSync(join(dir, 'scripts/sast.sh'), 0o755);
   cpSync(resolve(REPO, 'scripts/lib/gate-stamp.sh'), join(dir, 'scripts/lib/gate-stamp.sh'));

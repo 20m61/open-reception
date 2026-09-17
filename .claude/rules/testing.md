@@ -30,4 +30,10 @@ superpowers の `test-driven-development` スキルに沿って **red → green 
   `Connection: close`。それでも RST が残るならサーバ側の異常として
   `kiosk-session-transport:` 付きで落とす（spec のアサーション失敗と区別する）。
 
+- **一時領域は `os.tmpdir()` 経由で作る**（#1136）。`vitest.config.ts` の `setupFiles` が
+  **テストファイルごとに `TMPDIR` を切って回収する**ので、綴りは問わない。絶対パスの
+  直書き（`'/tmp/...'`）と `process.env.TMPDIR` の上書きだけは隔離を外すので、
+  `tests/config/temp-cleanup-guard.test.ts` が報告する（逸脱は `// temp-ok: <理由>`）。
+  テストごとに小さく保つ作法は `tests/helpers/temp.ts`。
+
 > unit/統合は `npm test`、PR 前は `./scripts/quality-gate.sh --pr`、マージ前は `--full`。

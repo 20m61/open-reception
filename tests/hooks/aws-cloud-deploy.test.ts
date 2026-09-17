@@ -19,10 +19,10 @@
  *   インターロックが `aws` 呼び出しより先に止めることを固定する。
  */
 import { spawnSync } from 'node:child_process';
-import { chmodSync, existsSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { chmodSync, existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
+import { makeSharedTempDir } from '../helpers/temp';
 /**
  * 🔴 **検査前にコメント（と、必要なら文字列リテラル）を落とす。**
  *
@@ -235,7 +235,7 @@ describe('workingTreeClean は git status 失敗時に fail-closed する (Impor
    * `status --porcelain -uall` だけを意図的に失敗させ、それ以外（`rev-parse` 等）は
    * 実 git へ委譲する。これにより「git status だけが失敗した」状況を安全に作れる。
    */
-  const fakeBinDir = mkdtempSync(join(tmpdir(), 'aws-cloud-deploy-fake-bin-'));
+  const fakeBinDir = makeSharedTempDir('aws-cloud-deploy-fake-bin-');
 
   writeFileSync(
     join(fakeBinDir, 'aws'),

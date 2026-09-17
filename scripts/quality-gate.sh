@@ -255,19 +255,85 @@ GATE_DISK_START="$(df -Pk "${TMPDIR:-/tmp}" 2>/dev/null | awk 'NR==2 {printf "%.
 # リンク自身しか見ない）。また macOS の `os.tmpdir()` は `$TMPDIR` なので、対象も
 # `${TMPDIR:-/tmp}` に揃える。
 report_workspace_state() {
-  local tmp_root leftovers roots avail_kb avail_h
+  local tmp_root leftovers roots vitest_roots entries top warn_at avail_kb avail_h
   tmp_root="${TMPDIR:-/tmp}"
   # 素の cdk.out（別の生成元・古い残骸）と、周回 root（kill されたときに残る）を分けて数える。
   leftovers=$(find "${tmp_root}/" -maxdepth 1 -name 'cdk.out*' 2>/dev/null | wc -l | tr -d ' ')
   roots=$(find "${tmp_root}/" -maxdepth 1 -name 'open-reception-cdk-*' 2>/dev/null | wc -l | tr -d ' ')
+  # 🔴 **unit の隔離 root は 1 段下を数える (#1136)。** テストファイルごとの一時領域は
+  # `<tmp>/open-reception-vitest/f-*` に入るので、**直下の総数からは 1 件にしか見えない**
+  # —— つまり kill された run の残骸が、いちばん見せたい状況で不可視になる。
+  # ここだけ 1 段潜って数える（隔離の setup が 6 時間より古いものを掃く）。
+  vitest_roots=$(find "${tmp_root}/open-reception-vitest" -maxdepth 1 -mindepth 1 2>/dev/null | wc -l | tr -d ' ')
+  # 🔴 **空き容量だけを見ていると、この族は見えない (#1136)。** 2026-09-17、
+  # `/tmp` に **18,726 エントリ**（うち 10,317 件が 1 つのテストファイル由来）が積もり、
+  # `capability-doc-sync.test.ts` が `Test timed out in 5000ms`（実測 8751ms）で落ちた。
+  # **ディスクは 22G 空いていたので、この節は「正常」と表示した** ——
+  # 単独実行では 663ms で通り、掃除したら green。#721 と同じ「症状が原因を指さない」型である。
+  # **件数も出す。** 数え上げではなくエントリ総数なので、新しい prefix が増えても追随する。
+  entries=$(find "${tmp_root}/" -maxdepth 1 -mindepth 1 2>/dev/null | wc -l | tr -d ' ')
   avail_kb=$(df -Pk "${tmp_root}" 2>/dev/null | awk 'NR==2 {print $4}')
   avail_h=$(df -Pk "${tmp_root}" 2>/dev/null | awk 'NR==2 {printf "%.1fG", $4/1048576}')
-  echo "  ${tmp_root} の空き: ${avail_h:-不明}（開始時: ${GATE_DISK_START:-不明}）"
-  echo "  残骸: cdk.out ${leftovers} 件 / 周回 root ${roots} 件"
+  # 🔴 **内訳はしきい値に関係なく常に出す（レビュー 1 周目 MAJOR 3）。**
+  # AC3 は「族をパターンで数える」だったが、当初はしきい値超えのときだけ出していたので、
+  # **issue が実測した 2,118 件の状況では何も出なかった** ——「多いのかどうか」が判断できない。
+  # find は 1 回で済むので常に出す。しきい値の役割は「⚠ を付けるか」だけに縮める。
+  #
+  # 🔴 **`-printf` は GNU 専用（同 MINOR 2）。** macOS の BSD find には無く、
+  # `2>/dev/null` で潰していたので **darwin では内訳が空のまま出ていた**。
+  # ローカル macOS は `--fast` の既定レーンなので、`sed` で basename を取る形に替える。
+  #
+  # 🔴 **族の括り方は 3 段（2026-09-17 実測。2 度作り替えた）。**
+  #
+  # 1. 最初は `sed 's/[0-9].*//'`（最初の数字で切る）。`mkdtemp` の接尾辞は英数 6 文字の
+  #    ランダムなので数字の位置が毎回違い、**数字を含まない接尾辞では族が砕ける** ——
+  #    実 `/tmp` 7,753 件でバケット 5,900・上位 3 の被覆 6%。
+  # 2. 次に「最後の `-`/`.` 以降を落とす」へ替えた。実 `/tmp` では改善したが、
+  #    🔴 **#1136 の当事者の族で退行した** —— 支配的な漏洩形は
+  #    `aws-preflight-test-<pid>-<rand>.json` で、拡張子だけが落ちて
+  #    `aws-preflight-test-13939-zwid…` がラベルに残り、**1,000 件の族が `1` と出た**
+  #    （レビュー 2 周目 MAJOR 2。合成 2,000 件で実測）。
+  #    **置き換えた側が守っていた分布を測らずに替えたのが誤り。**
+  # 3. 現在: 拡張子 → 末尾トークン → 数字列の順に落とす。両方の分布で正しく出る:
+  #    - `aws-preflight-test-<pid>-<rand>.json` × 1,000 → `1000 aws-preflight-test-#-`
+  #    - `gate-scope-<rand6>` × 300 → `300 gate-scope-`（2 と同等）
+  #    - `vitest`（区切り無し）→ `vitest`（空ラベルへ落とさない）
+  #    実 `/tmp` 1,322 件でバケット 44。
+  top=$(find "${tmp_root}/" -maxdepth 1 -mindepth 1 2>/dev/null \
+    | sed 's#.*/##' \
+    | sed -E 's/\.[A-Za-z0-9]{1,6}$//; s/([-._])[A-Za-z0-9]*$/\1/; s/[0-9]+/#/g' \
+    | sort | uniq -c | sort -rn | head -3 | tr '\n' ' ')
+  echo "  ${tmp_root} の空き: ${avail_h:-不明}（開始時: ${GATE_DISK_START:-不明}）/ エントリ: ${entries} 件"
+  echo "  内訳: ${top:-（無し）}"
+  echo "  残骸: cdk.out ${leftovers} 件 / 周回 root ${roots} 件 / unit 隔離 root ${vitest_roots} 件"
   # 🔴 **算術評価に非数値を渡さない。** `set -u` 下で `[[ unknown -lt N ]]` は
   # **unbound variable で即死**し、summary も判定も出ないまま終わる（レビュー m2 で実測）。
   if [[ "${avail_kb:-}" =~ ^[0-9]+$ ]] && [[ "${avail_kb}" -lt 2097152 ]]; then
     echo "  ⚠ 空きが 2GB を切っています。ビルドやブラウザが不可解に落ちる原因になります"
+  fi
+  # 🔴 **件数のしきい値 (#1136)。** 2026-09-17 の実測では 18,726 件で
+  # `tests/config/**` の 1 本が 5s の timeout に触れた（単独では 663ms）。
+  # 余裕を取って 5,000 件で警告する —— **容量が正常なまま赤くなる**型なので、
+  # 「資源を見た」で終わらせずここを読ませるのが目的である。
+  #
+  # 🔴 **注入できるようにした（レビュー 1 周目 MAJOR 2）。** テストが
+  # `expect(src).toContain('-gt 5000')` で縛っていたが、それは `-gt 500000` を
+  # **部分文字列として満たす** —— しきい値を 100 倍に緩める変更が無検出で通った。
+  # env で差し替えられるようにして、**両側を実走で**縛る。
+  # 🔴 しきい値の妥当性そのものは 1 点（18,726 件）しか測っていない。
+  # 害が出始める点がこれより下でも、上の「内訳を常に出す」が効く。
+  # 🔴 **非数値を算術比較へ渡さない（レビュー 2 周目 MAJOR 3）。** `set -u` 下で
+  # `[[ 7 -gt abc ]]` は **unbound variable でスクリプトごと死ぬ** —— しかも
+  # `finish()` が最初に呼ぶ関数なので、**全ステップ PASS のまま summary もスタンプも
+  # 出ないまま exit 1** になり、以後 `pr-gate-guard` が PR もマージも止める（実測）。
+  # 直上の `avail_kb` に同じガードが在るのに、注入できるようにした側に付け忘れていた。
+  # **不正値では黙って既定へ戻す**（ここで死なせる理由が無い）。
+  # `local` は関数先頭の宣言一覧に在るので、ここでは付けない（二重宣言だった）。
+  warn_at="${TEMP_ENTRY_WARN_THRESHOLD:-5000}"
+  [[ "${warn_at}" =~ ^[0-9]+$ ]] || warn_at=5000
+  if [[ "${entries:-}" =~ ^[0-9]+$ ]] && [[ "${entries}" -gt "${warn_at}" ]]; then
+    echo "  ⚠ ${tmp_root} のエントリが ${entries} 件あります（しきい値 ${warn_at}）。**容量が空いていても**"
+    echo "    unit が \`Test timed out\` で落ちる原因になります（#1136。単独実行で通るなら偽の赤）。"
   fi
   if [[ "${leftovers}" != "0" ]] || [[ "${roots}" != "0" ]]; then
     echo "  ⚠ 残骸があります。infra テストは正常終了・テスト失敗・SIGINT では残しませんが、"
