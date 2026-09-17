@@ -66,7 +66,7 @@ test('🔴 サーバが 403 を返したらリンク切れの可能性として�
   await expect(status).toContainText('リンク');
 });
 
-test('🔴 応答が返らないときは通信の問題として伝える（原因を断定しない）', async ({ page }) => {
+test('🔴 応答が返らないときは原因を断定しない（リンクにも回線にも倒さない）', async ({ page }) => {
   await page.route('**/api/staff/calls/*/answer', (route) => route.abort('failed'));
   await page.goto(STAFF_URL);
 
@@ -74,8 +74,16 @@ test('🔴 応答が返らないときは通信の問題として伝える（原
   // 🔴 **`unreachable` 固有の語を positive で待つ。** `not.toContainText('リンク')` は
   // 初期表示「通話に接続しています…」でも真になり、`接続できませんでした` は `rejected`
   // 文言でも真なので、**レンダが先に落ち着いたから通っただけ**の形になる（#826 の窓）。
-  await expect(status).toContainText('通信状態を確かめて');
+  await expect(status).toContainText('原因は特定できていません');
   await expect(status).not.toContainText('リンク');
+  // 🔴 回線も断定しない (#1132)。同じ値へ Vonage の `onError` も入るが、そちらでは
+  // answer API が 200 を返し終えており、回線は容疑者ではない。
+  await expect(status).not.toContainText('通信状態');
+  // 🔴 **文言が指す導線が実在することを、同じ test で縛る（#1132 レビュー 11 周目 MINOR 3）。**
+  // 「下の応答からの返答も試せます」は、`StaffResponseActions` が失敗状態でも描画されている
+  // ことが前提。将来 `state.kind !== 'error'` でガードされると、**文言だけが存在しない導線を
+  // 指す**（担当者が画面下を探して見つからない間、来訪者は「つながった」まま待つ）。
+  await expect(page.getByTestId('staff-response-coming')).toBeVisible();
 });
 
 /**
@@ -120,8 +128,9 @@ test('🔴 通話の確立に失敗したときは「リンクの有効期限切
   await page.goto(STAFF_URL);
 
   const status = statusOf(page);
-  await expect(status).toContainText('通信状態を確かめて');
+  await expect(status).toContainText('原因は特定できていません');
   await expect(status).not.toContainText('リンク');
+  await expect(status).not.toContainText('通信状態');
 });
 
 /**

@@ -71,6 +71,48 @@ describe('文言 (#1123)', () => {
     expect(staffResponseFailureMessage('rejected')).toContain('リンク');
   });
 
+  /**
+   * 🔴 **通話の文言は、見ている人の回線を疑わせない (#1132)。**
+   *
+   * `staffCallFailureMessage('unreachable')` に入る経路は 2 つある ——
+   * `fetch` の reject（本当に回線が容疑者）と、Vonage の `onError`（**answer API は
+   * 200 を返し終えている**ので回線は容疑者ではない）。1 つの文言で両方を賄う以上、
+   * **回線を断定してはいけない**。実測では今日 `onError` 側が**常に**発火する
+   * （CSP が SDK の CDN 取得を拒否する。#1132 本体）ので、断定は事実上いつも嘘になる。
+   *
+   * 先例は `src/components/admin/ui/save-outcome.ts` の `unreadable` ——
+   * 「通信状態を確かめてください」は**運用者を誤った方向へ調べに行かせる**。
+   */
+  it('🔴 通話の unreachable は回線のせいにしない', () => {
+    const m = staffCallFailureMessage('unreachable');
+    expect(m).not.toContain('通信状態');
+    expect(m).not.toContain('ネットワーク');
+    // 🔴 下界。回線に触れないだけなら**何も言わない**世界でも満たせる。
+    // 原因が分かっていないことと、次の一手があることを併せて縛る。
+    expect(m).toContain('原因は特定できていません');
+    expect(m).toContain('管理者');
+    // 🔴 **今日この画面で有効な次の一手を指す。** 同じ画面の `StaffResponseActions` は
+    // 常に出ており、CSP 由来の失敗なら来訪者へ返答できる（レビュー 3 周目）。
+    // 🔴 ただし**断定しない** —— `fetch` reject 経路では応答送信も同じ fetch で必ず失敗する
+    // （レビュー 4 周目）。「できます」ではなく「試せます」。
+    expect(m).toContain('下の応答からの返答も試せます');
+    expect(m).not.toContain('返答できます');
+  });
+
+  /**
+   * 🔴 **応答送信の側は回線に触れてよい（対にしない判断）。**
+   *
+   * `StaffResponseActions` の catch に入るのは `fetch` の reject だけで、SDK を経由しない。
+   * ここまで曖昧にすると、**本当に回線が原因のときに正しい導線を消す**ことになる。
+   * 「対を揃える」は目的ではなく、**それぞれの経路で真であること**が目的である。
+   */
+  it('🔴 応答送信の unreachable は回線に触れてよい（丸めない）', () => {
+    const m = staffResponseFailureMessage('unreachable');
+    expect(m).toContain('通信状態');
+    // 届いたかどうかは断定しない（save-outcome の先例と同じ語彙）。
+    expect(m).toContain('分かりません');
+  });
+
   /** 🔴 担当者リンクは未認証で開かれる。設定の内訳を出さない。 */
   it.each(ALL)('🔴 %s の文言が env 名・鍵名を漏らさない', (f) => {
     for (const m of [staffCallFailureMessage(f), staffResponseFailureMessage(f)]) {

@@ -209,6 +209,223 @@ increment（PR #632 で A〜C・G を実装。**実発信は #65**）:
 - 実 Vonage 認証情報・実機で REST/JWT/client SDK（グローバル名・URL・API 差異）を結合検証。
 - 受付端末↔担当者の双方向ビデオ疎通、応答/未応答/再呼び出しの実イベント確認。
 
+## 10-A. 🔴 CSP と SDK 配信（#1132）
+
+**この設計は「CDN から SDK を動的ロードする」と書いているのに、CSP に一言も触れていなかった。**
+実測（2026-09-16）では、その CSP が SDK の取得を拒否している:
+
+```
+Refused to load the script 'https://static.opentok.com/v2/js/opentok.min.js'
+because it violates the following Content Security Policy directive:
+"script-src 'self' 'nonce-…'".
+```
+
+`src/lib/security/csp.ts` の `buildCsp` は `script-src 'self' 'nonce-…'` /
+`connect-src 'self' blob:` / `media-src 'self' data:` で、**外部オリジンを 1 つも許可していない**。
+`src/adapters/call/vonage-client.ts` はその CDN を動的 `<script>` で読む。
+したがって **`onError` が実資格情報の有無に関わらず常に発火する** ——
+「認証情報が無いから繋がらない」ではなく、**配信側の設定で繋がらない**。
+
+影響は担当者側だけではない。`new VonageCallClient(` の本番消費者は
+**`StaffCallView` と `KioskCallView` の 2 つ**（`src/adapters/call/vonage-client.test.ts` が
+走査で固定している）で、**来訪者側の映像通話も同じ理由で成立しない**。
+
+### 壁は 1 つではない（増分 2 で扱う）
+
+| 壁 | 現物 | 状況（実測） |
+| --- | --- | --- |
+| `script-src` | `src/lib/security/csp.ts` | 外部オリジン無し。**拒否を確認済み** |
+| **COEP `require-corp`** | `next.config.ts` / `infra/lib/stacks/web-stack.ts` | 🔴 **`script-src` を開いても止まる。** CDN は `Cross-Origin-Resource-Policy` を返さないので、`crossorigin` 無し（no-cors）の cross-origin script は `ERR_BLOCKED_BY_RESPONSE.NotSameOriginAfterDefaultedToSameOriginByCoep` になる。**`crossorigin="anonymous"` を付ければ通る**（`Origin` 付きなら CDN は `access-control-allow-origin: *` を返す） |
+| `connect-src` / `media-src` | 同上 | signaling / media の接続先が要る。**静的なホストは SDK のソースから引ける**（下記）。残る未知は**セッションごとに動的に割り当たる**メディア/シグナリングのホストだけ |
+| 🔴 **`style-src 'self'`** | 同上（#289 が `unsafe-inline` を明示的に排除した） | **壁 1・2 を開いた実測で 4 つ目の壁として出た。** SDK が inline style を当てるため `Refused to apply inline style` が 2 件。**ホストを足しても解けない** |
+
+🔴 **方式 A は「CSP に 1 行足す」では済まない。** `src/adapters/call/vonage-client.ts` の
+`defaultLoadSdk` に **`script.crossOrigin = 'anonymous'` を足すコード変更**を伴う。
+「A は依存が増えないだけ」という説明は誤りだった（レビュー 1 周目の実測で訂正）。
+
+#### 壁 1・2 を開いたときに実際に起きること（2026-09-16 実測）
+
+`script-src` に CDN を許可し、`defaultLoadSdk` に `crossOrigin = 'anonymous'` を足した
+隔離ツリーを実ビルドし、担当者画面を開いた結果（`ignoreHTTPSErrors` で証明書の壁は迂回）:
+
+```
+typeof OT: object                                      ← SDK は読める（壁 1・2 は解ける）
+Refused to apply inline style ... "style-src 'self'"   ← 🔴 4 つ目の壁（2 件）
+Refused to connect to 'https://config.opentok.com/project/<app>/config.json'
+Refused to connect to 'https://video.api.vonage.com/session/<id>?extended=true'
+Refused to connect to 'https://hlg.tokbox.com/prod/logging/ClientEvent'
+OT_CONNECT_FAILED (1006)
+```
+
+🔴 **`style-src` は「ホストを足す」では解けない。** 選択肢は (a) ハッシュを列挙する
+（SDK の版に追随する必要がある）、(b) `unsafe-inline` を戻す（**#289 の決定を覆す**）、
+(c) SDK の UI を使わない、のいずれか。**増分 2 の方式選択（A/B）と一緒にユーザー判断へ回す。**
+
+#### 静的ホスト（SDK バンドルの grep。2026-09-16。**網羅ではない**）
+
+`https://static.opentok.com/v2/js/opentok.min.js`（2.8 MB）を落として
+`https://` のリテラルを拾った結果。**選別の基準を書いておく** ——
+下は「prod の通常経路で出るもの」で、**条件付き・非 prod のものを含まない**:
+
+```
+config.opentok.com    anvil.opentok.com    hlg.tokbox.com
+static-eu.opentok.com static.opentok.com   video.api.vonage.com
+```
+
+含めなかったもの（**増分 2 で機能を有効にするなら要る**）:
+
+- `d3opqjmqzxf057.cloudfront.net` … 背景ぼかし・ノイズ抑制のモデル取得先
+  （`noise-suppression/` / `vonage-tensorflow-wasm/` / `ml/vonage_selfie_segmenter/`）
+- `cdn.jsdelivr.net` … **別ベンダの CDN**。MediaPipe `tasks-vision` の既定取得先
+  （`@mediapipe/tasks-vision@…/+esm` と `${o}/wasm`）で、背景ぼかし系を
+  `modelAssetUriPath` 未指定で有効にすると使われる。**依存/送信先が増えるので #105 の対象**
+- `static.rel.tokbox.com` / `static.dev.tokbox.com` … 非 prod 分岐
+
+`wss://` のリテラルは 1 つも無い（`grep -c wss` → 0）―― **シグナリング/メディアのホストは
+実行時に組み立てられる**。当初この節は「必要ホストの一覧はどこにも無い」と書いていたが
+**言い過ぎ**で、外部待ちなのは**動的ホストだけ**である。
+
+🔴 動的ホストを扱うためにワイルドカードへ逃げたくなるが、**`buildCsp` が返す CSP に
+ホスト source を足すと `src/lib/security/csp.test.ts` が赤くなる**（全文固定＋
+「引用キーワードでもディレクティブ固有スキームでもない source」の報告）。
+
+🔴 **ただし「緩め方の誤りは全部機械が止める」とは書けない。** レビュー 8 周目の実測で、
+**赤くならない緩め方が 2 つ**見つかった（どちらも修正済みだが、射程は限定して書く）:
+
+| 緩め方 | 8 周目の実測 | 今の扱い |
+| --- | --- | --- |
+| `buildCsp` に opts を 1 つ足し、経路別に緩める（`call: pathname.startsWith('/kiosk')`） | **unit 8824 + e2e 29 とも緑**。`/kiosk` に `*` を配りながら無言。検査が**3 つの呼び出し形**にしか当たっていなかった | opts のキーを**型**で縛り（`Record<keyof …, …>`。キーが増えると `TS2741`）、**直積の全域**に当てる（I1/I2/I3）。`proxy.test.ts` が**全ルート**を走査して全文固定（I4） |
+| `proxy.ts` 側で経路・cookie・query・ヘッダ・環境変数を条件に CSP を緩める | 9・10 周目の実測で**全緑**（リテラル表に無い `/demo/`、cookie 条件、query、`sec-fetch-dest`、`process.env.CSP_DEV_RELAX`）。テストレーンでは env が未設定なので**期待値と実測が揃って緩まず、本番だけが緩む** | **導出を `csp.ts` の `cspOptionsFor(pathname)` へ移した**（引数にリクエストの形は渡せない）。env の面は**実行時に読まれた env キーを記録**して `NODE_ENV` 以外がゼロであることを縛る（綴り非依存）。`proxy.ts` 側は**読まれた env キー全部に毒値を入れても配る CSP が変わらない**ことを負の対照で縛る |
+| `OPTION_VALUES` に `[undefined]` だけのキーを足して緩和を仕込む | 10 周目の実測で **tsc 0 / unit 8842 本とも全緑**。I3 はキーが宣言されたので黙り、直積は緩和側の枝を一度も踏まない（個数は積なので下界 10 も動かない） | 各キーが**出力を実際に動かす値**を持つことを縛る（直積の非空虚性） |
+| `csp.ts` がモジュールスコープで `process.env` を読む | 9 周目の実測で**全緑**（テストでは未設定なので**本番だけが緩む**） | **実行時に読まれた env キーを記録**し `NODE_ENV` 以外がゼロであることを縛る（`vi.resetModules()` + 動的 import なのでモジュールスコープも拾う）。`NODE_ENV` 自体への依存は別の 2 本が**モジュールを評価し直して**総当たりする |
+| 引用キーワードだけの新ディレクティブ（`script-src-elem 'self' 'unsafe-inline'`） | **緑のまま nonce 無し inline script が実行された**（負の対照で確認）。`-elem` は `script-src` / `style-src` を**上書きする** | ディレクティブ名を allowlist 化（I2）。前方一致の引き方も完全名へ直した |
+
+**この 2 つは「方式を allowlist へ裏返したときに生まれた新しい族」**である。2 周目の述語版は
+ディレクティブ名を見ずに殺していたので、概念上存在しなかった。
+
+🔴 **増分 2 がやることは 3 つある**（「期待値を書き換える」だけでは緑にならない）:
+
+1. `buildCsp` を緩める（**ホスト境界を持つ形**まで絞る。`https://*.opentok.com` など）
+2. `EXPECTED_PROD_CSP` を同じ内容へ書き換える
+3. **許可の機構を導入する** —— 今日はホストの allowlist を持っていない
+   （空の Set を置いたが、守るものが無いので撤回した）。実際に許可するホストを持った
+   時点で導入し、そのとき満たすべき不変条件を書く。**その判断が diff に出るのが設計**
+
+**オプションを足すなら** `OPTION_VALUES` にも足す（足さないと **typecheck が落ちる**。
+`readonly x?:` のような綴りでも効く —— ソース走査を撤回して型検査へ裏返したため）。
+**ディレクティブを足すなら** `PINNED_DIRECTIVE_NAMES` と個別テストも足す（I2 が赤くなる）。
+**経路を足すなら**`page.tsx` / `route.ts` なら何もしなくてよい（走査が自動で拾う）。
+**メタデータルート**（`manifest.ts` / `icon.tsx` / `sitemap.ts` 等）は走査の射程外なので、
+`src/proxy.test.ts` の `EXTRA_PROBE_PATHS` へ足すこと。
+**`OPTION_VALUES` に値を足すなら**、その値が**出力を実際に動かす**こと（`[undefined]` だけにしない）。
+
+🔴 **機械で止まらない面を明示しておく**（増分 2 の PR で **CSP テストの diff を人が読む**こと）:
+
+- **ホスト source は 1 つも許可していない**（許可の機構自体を持たない）。形で判定するのを
+  やめたので `*.co.uk` / public suffix / port / path の穴は消えた。増分 2 は上の 3 点を揃える
+- **`http://` も報告される**（当初「10055 の射程外なので通る」と書いたが、形で判定するのを
+  やめた結果そうなった。安全側のずれ）
+- 引用キーワードを値まで縛る個別テストが在るのは **`script-src` / `style-src` /
+  `style-src-attr` / `default-src` の 4 つだけ**。残り 8 ディレクティブは
+  全文固定とディレクティブ名の allowlist だけが守る
+- 🔴 **実ビルドで CSP の中身を見ているのは `/` と `/kiosk` と `/admin/login` の 3 経路だけ。**
+  unit の全ルート固定（I4）は `NODE_ENV=test` の世界でしか測れないので、
+  **本番ビルドで配られる値**を見るのはこの 3 本である
+- **`proxy.ts` の経路は走査で全ルートに当てているが、`page.tsx` / `route.ts` の配置から
+  導いている。** メタデータルート・`public/` 配信・404 はリテラルの `EXTRA_PROBE_PATHS` で
+  補っており、rewrite・middleware matcher の外・将来の配信層は射程外
+- **`proxy.ts` が CSP を書き換える形**（戻り値を渡す前・ヘッダへ配った後・別 helper へ
+  委譲・配布行を条件で囲む）は、`src/proxy.test.ts` が **CSP を作って配る 2 関数の本体を
+  丸ごと固定**して見る（コメントと字下げは落とすので、説明を足すだけでは赤くならない）。
+  `CspContext` は **`readonly` ＋ `Object.freeze`** なので、`route()` 経由で
+  `csp.value` を書き換える形は、キャスト無しなら **`tsc` が落とし**、キャストを挟んだ場合は
+  **実行時にそのリクエストが 500** になる（CSP は緩まないが、**テストは緑のまま**。
+  「機械が止める」とは書けない。レビュー 14 周目の実測）。
+  13 周目まではここが**開いていた** —— `route()` が参照を持っていた
+- **`buildCsp` の出どころ（import 元）**も固定する。薄いラッパへ差し替えると本体テキストは
+  変わらないので、本体の固定だけでは足りない（13 周目の実測）
+- 🔴 **`config.matcher` は「CSP を配るかどうか」の配線である。** ここから経路を外すと、
+  その経路は **CSP も origin-verify も丸ごと効かなくなる**（実測で unit 8860 本が全緑だった）。
+  matcher は **I4 で当てている全経路が一致すること**で縛っている（除外 3 本の下界つき）。
+  リテラルの固定は 14 周目に**撤回**した —— 一致テストが包含していることを実測で確認済み。
+  **「matcher の外は射程外」は「外側のパス」の意味であって、matcher を書き換えてよいという
+  意味ではない**
+- 🔴 **一度「ソースの綴りで env を縛る」方式を 2 度書いて 2 度撤回した**
+  （`/process\.env\.(\w+)/` は `process.env['X']` を、1 行ピンは「配った後の上書き」を
+  素通りさせた）。**テキスト走査は fail-open になりやすい** —— 綴りではなく
+  **実行時に観測できるもの**で縛ること
+- **route handler が自前で `Content-Security-Policy` を設定する**形は射程外
+  （今日 CSP を発行する本番コードは `src/proxy.ts` の 2 箇所だけ。全域 grep で確認）
+- **CloudFront 層は誰も見ていない。** `infra/lib/stacks/web-stack.ts` の
+  `ResponseHeadersPolicy.SECURITY_HEADERS` は CSP 項目を持つ。今日はオリジンが常に CSP を
+  返すので上書きされない想定だが、**それを固定したテストは無い**（実 AWS でしか測れない）
+- ZAP 10055 本体は `--full` に無い（稼働 URL 前提の手動レーン）。
+  ワイルドカード禁止の保証は**この手書き検査 1 本に載っている**
+- 🔴 **`NODE_ENV` は allowlist から除外していたので、そこが最後の抜け穴だった**（14 周目）。
+  除外をやめ、**`buildCsp` は `NODE_ENV` に一切依存しない**／**`cspOptionsFor` の依存は
+  `dev` の 1 ビットだけ**を 1 文字ずつ縛った。`NODE_ENV === 'production'` で条件付けた緩和は
+  9 機構すべてと unit 8863 本を素通りしていた。
+  🔴 **その 14 周目の対処は関数スコープしか覆っていなかった**（15 周目の実測）——
+  モジュールスコープで `const PROD = process.env.NODE_ENV === 'production'` と読むと、
+  静的 import 済みのモジュールは `NODE_ENV=test` で一度だけ評価済みなので値が動かず、
+  **tsc 0 / unit 8864 / e2e 30 とも全緑**のまま `/kiosk` が本番で `frame-ancestors 'self'` を
+  返した（実ビルド ＋ `curl` で確認）。総当たりを `vi.resetModules()` + 動的 import へ替え、
+  **モジュールスコープと関数スコープの両方**を覆うようにした
+- 🔴 **env の allowlist と毒値は「全ルート × リクエストの形」で記録した集合に依存する。**
+  綴りには依存しないが、**入力のサンプルには依存する** —— 走査で導けない経路
+  （`EXTRA_PROBE_PATHS` の外）でだけ env を読む形は射程外である
+- 🔴 **リクエストの形（cookie 名・ヘッダ名・query）は数え上げのまま。** 族ごと塞いでいるのは
+  「`cspOptionsFor` が pathname しか受け取らない」ことと「2 関数の本体の固定」で、
+  変種テストはその 2 つが崩れたときに気づくための第 2 の証人にすぎない
+- 🔴 **応答種別を全部無効化したサイトでは、担当者向けの新文言が空の領域を指す（#1137）。**
+  e2e は既定シードを見るので**機械では止まらない**。増分 2 / #1129 で経路を分けるときに一緒に閉じる
+
+### 方式（**未決定。停止境界なのでユーザー判断**）
+
+- **A: CDN を allowlist** … `script-src` に具体ホストを足す。依存は増えない
+- **B: SDK を同梱** … `@vonage/client-sdk-video` を依存に加える。`script-src 'self'` のままにできるが、
+  **npm の `license` が SPDX ではなく Vonage の利用規約 URL**（＝プロプライエタリ・unpacked 23 MB）で、
+  `docs/license-privacy-guide.md` §1.3 の許容リストに当たらない。**新規依存＝停止境界**
+
+**どちらを採っても `connect-src` の問題は同じだけ残る。**
+
+### 増分 1（実施済み）でやったこと
+
+方式を選ばずに進められる前提整備だけ:
+
+1. `not.toContain(' https:')`（ZAP 10055）が**具体ホストを巻き添えにしていた**のを、
+   **配る CSP そのものの固定**へ裏返した（`src/lib/security/csp.test.ts`）。
+   いったん「ワイルドカードとは何か」を判定する述語を書いたが、**禁止の列挙は裾が長く**
+   （`https://*` に port や path が付いた形、`*:*`、`script-src data:` …）、
+   正規表現へ足し続ける形になったので**機構ごと撤回した**。
+   e2e（`tests/e2e/security-headers.spec.ts`）は中身ではなく**配線**を縛る
+2. 通話画面で CSP 違反が出ていることを **e2e が固定**した。
+   **#1132 増分 2 が CSP を開いたらその test が赤くなる**契約（`broken-deploy-reachability.test.ts` と同型）
+3. 担当者側 `unreachable` の文言から**回線の断定を外した**（`onError` 側では嘘だったため）。
+   🔴 **来訪者側（`KioskCallView`）は検査で充足を確認しただけで、ピンは置いていない** ——
+   来訪者が**落ち着く**画面は `reception-screens.tsx` が `CALL_FAILED` を `reason` 無しで
+   dispatch した先の **`reception.failedBody`**（「呼び出しに失敗しました。別の方法で
+   お呼びすることもできます。」）＋代替導線 CTA で、**5 ロケール**（ja/en/ko/zh/やさしい日本語）
+   いずれも回線に触れていない。**今日 AC5 違反は無い。**
+   （`kiosk.call.fallback` は `CALL_FAILED` までの短い窓にしか出ないので、当初そちらを
+   根拠に挙げていたのは**検査対象を取り違えていた**。レビュー 6 周目で訂正）
+   退行ピンを置かないのは、来訪者側の失敗表示が #1129 / 増分 2 で作り替わる見込みだからで、
+   **「縛った」とは書かない**
+4. 本節を書いた（設計正本と実装のギャップを閉じた）
+
+### 何が本当に外部待ちか（当初の分類を訂正）
+
+当初「AC1（実ブラウザで SDK が読める）も AC3（`connect-src` が足りる）も外部待ち」と書いたが、
+**どちらも言い過ぎだった**（レビュー 1 周目の実測）。
+
+| AC | 訂正後 |
+| --- | --- |
+| AC1 | **この環境で検証できる。** サンドボックスの TLS 終端プロキシを Chromium が信頼しないのは事実だが（`net::ERR_CERT_AUTHORITY_INVALID`）、playwright の `ignoreHTTPSErrors` で越えられる。ただしそれは**証明書検証を外した条件下の確認**なので、実配信の TLS 経路までは保証しない |
+| AC3 | **静的ホストは検証できる。** 外部待ちは**動的ホスト**の部分だけ |
+| AC6 | AC1 と同じ |
+
+実機（iPad）・実 Vonage 資格情報での通し確認は引き続き **#65** へスタックする。
+
 ## 11. 仕様照合（2026-09-02）
 
 `developer.vonage.com` はこの環境の egress から読めなかったため、**公式 SDK のソース**（Node
