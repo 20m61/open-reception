@@ -328,6 +328,12 @@ static-eu.opentok.com static.opentok.com   video.api.vonage.com
 - 引用キーワードを値まで縛る個別テストが在るのは **`script-src` / `style-src` /
   `style-src-attr` / `default-src` の 4 つだけ**。残り 8 ディレクティブは
   全文固定とディレクティブ名の allowlist だけが守る
+- 🔴 **「SDK が読めない」契約は cross-origin CDN 配信を前提にしている。**
+  `NEXT_PUBLIC_VONAGE_SDK_URL` で**同一オリジンへ自己ホスト**する構成は
+  `script-src 'self'` が許すので、#1132 の欠陥そのものが存在しない
+  （その構成では契約テストが理由つきで skip される）。
+  増分 2 が方式 B（SDK 同梱）を採るなら、**この契約は自動的に前提を失う** ——
+  そのとき消すのではなく、「同梱した SDK が実際に読める」契約へ置き換えること
 - 🔴 **実ビルドで CSP の中身を見ているのは `/` と `/kiosk` と `/admin/login` の 3 経路だけ。**
   unit の全ルート固定（I4）は `NODE_ENV=test` の世界でしか測れないので、
   **本番ビルドで配られる値**を見るのはこの 3 本である

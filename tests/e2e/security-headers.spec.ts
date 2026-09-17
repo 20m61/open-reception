@@ -171,6 +171,28 @@ test('🔴 通話画面では Vonage SDK が CSP に拒否される（#1132 が�
   // 世界でも満たせる。`<script>` が実際に挿さっていることを併せて縛る。
   await expect(page.locator('script[data-vonage-sdk]')).toHaveCount(1);
 
+  // 🔴 **env から持ってこない（レビュー 3 周目）。** `NEXT_PUBLIC_VONAGE_SDK_URL` は
+  // **ビルド時に**クライアントへ inline されるので、テストプロセスの env とずれると
+  // 「壁 1 は開いた」と読める嘘の赤になる。**このビルドが実際に読みに行った先**を DOM から取る。
+  const sdkSrc = await page.locator('script[data-vonage-sdk]').getAttribute('src');
+  const sdkUrl = new URL(sdkSrc!, page.url());
+
+  // 🔴 **契約の前提を明示する（PR #1138 に対する Codex レビューの指摘）。**
+  //
+  // この契約は「SDK を **cross-origin の CDN** から読む」既定構成についてのものである。
+  // `NEXT_PUBLIC_VONAGE_SDK_URL` で**同一オリジンへ自己ホスト**する構成は
+  // `.env.example` と `docs/vonage-call-design.md` が明示的に支持しており、
+  // その構成では `script-src 'self'` が許すので **#1132 の欠陥そのものが存在しない** ——
+  // `window.OT` は定義されるのが正しい。前提を書かずに `toBe('undefined')` を無条件で
+  // 主張していたため、**支持された構成で e2e スイートが使えなくなっていた**。
+  //
+  // 🔴 「緑にするための skip」ではなく**射程の明示**である。前提が崩れたことが
+  // レポートに理由つきで残るようにする（消すのではなく skip で記録する）。
+  test.skip(
+    sdkUrl.origin === new URL(page.url()).origin,
+    `SDK を同一オリジンから配信する構成（${sdkSrc}）では script-src 'self' が許すため、#1132 の前提が成立しない`,
+  );
+
   // 🔴 **本体は「成果」で書く。壁は 1 つではない。**
   // 実測では `script-src` を開いても COEP `require-corp` が `crossorigin` 無しの
   // cross-origin script を止める（レビュー 1 周目）。CSP のコンソール文字列を主語にすると
@@ -180,11 +202,7 @@ test('🔴 通話画面では Vonage SDK が CSP に拒否される（#1132 が�
 
   // 補助: **今日の壁が CSP であること**を記録する（主語ではない）。
   // 増分 2 で壁 1 だけ外したときは、ここだけが落ちて本体は落ちない —— それが正しい。
-  // 🔴 **env から持ってこない（レビュー 3 周目）。** `NEXT_PUBLIC_VONAGE_SDK_URL` は
-  // **ビルド時に**クライアントへ inline されるので、テストプロセスの env とずれると
-  // 「壁 1 は開いた」と読める嘘の赤になる。**このビルドが実際に読みに行った先**を DOM から取る。
-  const sdkSrc = await page.locator('script[data-vonage-sdk]').getAttribute('src');
-  const sdkHost = new URL(sdkSrc!, page.url()).host;
+  const sdkHost = sdkUrl.host;
   if (!consoleAssertable) return;
   // 🔴 **落ち方が次の一手を指すようにする。** ここだけが落ちたら「壁 1（CSP）は開いた」
   // という意味で、**この行を消して緑に戻すのは誤り**（通話は壊れたままになる）。
