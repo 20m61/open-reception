@@ -189,7 +189,7 @@ export class DevDeployBrokerStack extends cdk.Stack {
               'aws s3 cp "s3://$OR_TRUSTED_POLICY_BUCKET/$OR_TRUSTED_POLICY_KEY" /tmp/open-reception-trusted-policy.mjs --only-show-errors',
               'node /tmp/open-reception-trusted-policy.mjs --assembly infra/cdk.out --account "$OR_BROKER_TARGET_ACCOUNT" > trusted-policy-result.json',
               // Even an allowed static assembly cannot mutate yet.
-              'node -e "const fs=require(\\'fs\\'); const result={result:\\'denied\\',stage:\\'broker-bootstrap\\',rule:\\'BROKER_NOT_ARMED\\',resource:null,reason:\\'Static trusted policy passed, but sparse ledger/live ChangeSet/role chain are intentionally not armed\\',retryable:false,evidence_ref:process.env.CODEBUILD_BUILD_ARN||\\'unknown\\'}; fs.writeFileSync(\\'broker-result.json\\',JSON.stringify(result,null,2)); console.log(JSON.stringify(result));"',
+              'node -e "const fs=require(\\'fs\\'); const sourceRevision=process.env.OR_TRUSTED_SOURCE_REVISION; if(typeof sourceRevision!==\\'string\\'||!/^[0-9a-f]{40}$/i.test(sourceRevision)){throw new Error(\\'trusted source revision missing or invalid\\')} const result={result:\\'denied\\',source_revision:sourceRevision,stage:\\'broker-bootstrap\\',rule:\\'BROKER_NOT_ARMED\\',resource:null,reason:\\'Static trusted policy passed, but sparse ledger/live ChangeSet/role chain are intentionally not armed\\',retryable:false,evidence_ref:process.env.CODEBUILD_BUILD_ARN||\\'unknown\\'}; fs.writeFileSync(\\'broker-result.json\\',JSON.stringify(result,null,2)); console.log(JSON.stringify(result));"',
               'echo "Trusted broker is intentionally unarmed." >&2',
               'exit 42',
             ],
