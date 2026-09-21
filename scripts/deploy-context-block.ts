@@ -1,5 +1,5 @@
 /**
- * 窓を開けるときに貼る「デプロイ context 4 変数」のブロックを stdout へ出す (#989)。
+ * 窓を開けるときに貼る「デプロイ context 3 変数」のブロックを stdout へ出す (#989)。
  *
  * `scripts/aws-issue-credentials.sh`（context の同梱は既定 ON。`--no-context` で外す）から
  * 呼ばれる薄い I/O 層。
