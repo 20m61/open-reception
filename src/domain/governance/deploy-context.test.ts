@@ -209,8 +209,11 @@ describe('parseDeployContextFile', () => {
     expect(Object.keys(parsed)).toEqual(['OR_APP_SECRETS_NAME']);
   });
 
-  it('値の中の = は保つ（secret に = が入りうる）', () => {
-    expect(parseDeployContextFile('OR_PUBLIC_ORIGIN_OVERRIDE=https://example.com/?a=b==').OR_PUBLIC_ORIGIN_OVERRIDE).toBe('https://example.com/?a=b==');
+  it('値の中の = は保つ', () => {
+    expect(
+      parseDeployContextFile('OR_PUBLIC_ORIGIN_OVERRIDE=https://example.com/?a=b==')
+        .OR_PUBLIC_ORIGIN_OVERRIDE,
+    ).toBe('https://example.com/?a=b==');
   });
 
   it('前後の引用符を外す（貼り付けたまま囲ってしまう事故を吸収する）', () => {
@@ -233,7 +236,7 @@ const VALID_CUSTOM_DOMAIN = JSON.stringify({
 
 /**
  * 独自ドメイン（#189）は任意だが、**窓を開けるときに運ばれないと黙って旧ドメインのまま
- * デプロイされる**。#989（必須 4 変数のうち 1 つだけ貼り忘れた）と同じ型なので、
+ * デプロイされる**。#989（当時の必須 context のうち 1 つだけ貼り忘れた）と同じ型なので、
  * 貼り付けブロックへ載せ、不正なら窓を開ける前に落とす。
  */
 describe('resolveDeployContextEnvBlock — 独自ドメイン (#189)', () => {
