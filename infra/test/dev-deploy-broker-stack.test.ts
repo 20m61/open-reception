@@ -126,6 +126,34 @@ describe('DevDeployBrokerStack (#1146 Phase 1)', () => {
     expect(JSON.stringify(docs)).not.toContain('cloudformation:');
   });
 
+  it('keeps sparse deploy state in a retained PAY_PER_REQUEST DynamoDB table', () => {
+    template.hasResourceProperties('AWS::DynamoDB::Table', {
+      TableName: 'OpenReceptionSparseDevDeployLedger',
+      BillingMode: 'PAY_PER_REQUEST',
+      DeletionProtectionEnabled: true,
+      TimeToLiveSpecification: {
+        AttributeName: 'expiresAt',
+        Enabled: true,
+      },
+    });
+  });
+
+  it('keeps ledger authority out of Validation and scoped to Trusted Broker', () => {
+    const validationDocs = JSON.stringify(
+      policyDocumentsForRole(template, 'OpenReceptionDevDeployValidationRole'),
+    );
+    const brokerDocs = JSON.stringify(
+      policyDocumentsForRole(template, 'OpenReceptionTrustedDevDeployBrokerRole'),
+    );
+
+    expect(validationDocs).not.toContain('dynamodb:');
+    expect(brokerDocs).toContain('dynamodb:GetItem');
+    expect(brokerDocs).toContain('dynamodb:UpdateItem');
+    expect(brokerDocs).toContain('dynamodb:TransactWriteItems');
+    expect(brokerDocs).not.toContain('dynamodb:PutItem');
+    expect(brokerDocs).not.toContain('dynamodb:DeleteItem');
+  });
+
   it('keeps source-provider credentials in the pipeline plane, not CodeBuild roles', () => {
     template.resourceCountIs('AWS::CodeBuild::SourceCredential', 0);
 
@@ -157,6 +185,10 @@ describe('DevDeployBrokerStack (#1146 Phase 1)', () => {
     expect(buildSpec).toContain('/tmp/open-reception-trusted-policy.mjs');
     expect(buildSpec).toContain('--assembly infra/cdk.out');
     expect(buildSpec).toContain('trusted-policy-result.json');
+    expect(buildSpec).toContain('OR_SPARSE_LEDGER_TABLE');
+    expect(buildSpec).toContain('/tmp/open-reception-sparse-ledger.mjs');
+    expect(buildSpec).toContain('sparse-ledger-result.json');
+    expect(buildSpec).toContain('--revision "$OR_TRUSTED_SOURCE_REVISION"');
     expect(buildSpec).not.toContain('npm ');
     expect(buildSpec).not.toContain('scripts/');
     expect(buildSpec).not.toContain('cdk deploy');
