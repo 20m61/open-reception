@@ -33,8 +33,14 @@ describe('security-store (#23 #29)', () => {
     const updated = await updateSecuritySettings({ pinRequired: true, pin: '4821' });
     expect(updated.pin).not.toContain('4821');
     expect(isHashedPin(updated.pin)).toBe(true);
-    // 下界: 読み出しても平文に戻っていない（返り値だけを加工していない）。
-    expect((await getSecuritySettings()).pin).not.toContain('4821');
+    // 🔴 **永続層の生レコードで主張する（自動セキュリティレビューの指摘を受けて強化）。**
+    //    返り値や `getSecuritySettings()` は加工を挟むので、「書かれた値」を直接見る。
+    //    ハッシュ化は代入時ではなく **`put` の直前**で行っているため、ここが本当の境界である。
+    const raw = (await getBackend()
+      .singleton<{ pin: string }>('security', { default: () => ({ pin: '' }) })
+      .get()) as { pin: string };
+    expect(raw.pin).not.toContain('4821');
+    expect(isHashedPin(raw.pin)).toBe(true);
     // 下界: それでも本人は通る（ハッシュにして終わり、ではない）。
     expect(await verifyPin('4821')).toBe(true);
   });
@@ -181,6 +187,42 @@ describe('security-store (#23 #29)', () => {
     expect(isPinConfigured(updated)).toBe(false);
     // 下界: それでも組込み既定では通る（今日の振る舞いを保っている）。
     expect(await verifyPin(BUILTIN_DEFAULT_PIN)).toBe(true);
+  });
+
+  /**
+   * 🔴 **空の保存値を持つ旧レコードが「誰も通れない」状態にならない（レビュー 2 周目 MAJOR 1）。**
+   *
+   * `.env.example` の `KIOSK_PIN=`（空）を使っていたサイトが管理画面で 1 度保存すると
+   * `pin: ''` が永続化される。空を拒否した結果**通る入力が 1 つも無い**のに、
+   * 管理画面は「未設定（既定値が有効）」と表示していた（＝画面が嘘をつく）。
+   */
+  it('🔴 空の保存値は組込み既定として読む（表示と挙動を一致させる）', async () => {
+    await getBackend().singleton('security', { default: () => ({}) }).put({
+      pinRequired: true,
+      pin: '',
+      ipAllowlist: [],
+      emergencyStop: false,
+    });
+    expect(await verifyPin(BUILTIN_DEFAULT_PIN)).toBe(true);
+    expect(await verifyPin('')).toBe(false);
+    // 表示は「未設定」のまま（既定値なので）。
+    expect(isPinConfigured(await getSecuritySettings())).toBe(false);
+  });
+
+  /**
+   * 🔴 **判定と保存で同じ正規化を使う（レビュー 2 周目 MINOR 8。変異が生存していた）。**
+   *
+   * 以前は `trim()` で「設定済みか」を判定しながら**未 trim の値を保存**していたので、
+   * `KIOSK_PIN=" 4821 "` は「設定済み」と読まれるのに、端末では前後の空白ごと
+   * 入力しないと通らない（iPad の numeric キーボードでは入力できない）。
+   */
+  it('🔴 KIOSK_PIN の前後の空白は落として保存する', async () => {
+    vi.stubEnv('KIOSK_PIN', '  4821  ');
+    await __resetSecurity();
+    await updateSecuritySettings({ pinRequired: true });
+    expect(await verifyPin('4821')).toBe(true);
+    expect(await verifyPin('  4821  ')).toBe(false);
+    vi.unstubAllEnvs();
   });
 
   it('IP 許可リストを更新できる', async () => {

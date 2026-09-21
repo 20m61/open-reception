@@ -97,6 +97,19 @@ describe('🔴 レビュー 1 周目で見つかった面', () => {
   });
 
   /**
+   * 🔴 **入力側の空も拒否する（レビュー 2 周目 MAJOR 4。実測で変異が生存した）。**
+   *
+   * 保存側だけを見ていると「**空 PIN がハッシュとして保存された世界**」が残る ——
+   * そこでは空入力で通ってしまい、1 周目 BLOCKER が別の綴りで再発する。
+   * 今日それを防いでいるのは保存側のガードだけで、落とすと全テストが素通りした。
+   */
+  it('🔴 空 PIN のハッシュが保存されていても、空入力では通らない', async () => {
+    const hashedEmpty = await hashPin('');
+    expect(isHashedPin(hashedEmpty)).toBe(true);
+    expect(await verifyPinCredential(hashedEmpty, '')).toBe(false);
+  });
+
+  /**
    * 🔴 **MAJOR: 長さガードが落ちると、保存値を接頭辞に持つ入力が全部通る。**
    *
    * 実測でこの変異は**生存していた**（行列に「早期 return を落とす」型が無かった）。
@@ -127,6 +140,111 @@ describe('🔴 レビュー 1 周目で見つかった面', () => {
     expect(isHashedPin(huge)).toBe(false);
     // 平文へも落ちない（空でないので比較はするが、入力が一致しない限り通らない）。
     expect(await verifyPinCredential(huge, '4821')).toBe(false);
+  });
+});
+
+/**
+ * 🔴 **`classify` の節と数値定数から機械的に導いた面（レビュー 2 周目 MAJOR 3）。**
+ *
+ * 2 周目のレビューが、コードから棚卸しした 40 変異のうち **13 の生存**を報告した。
+ * 私の行列は「自分が思いついた平文」から作っており、**分類器の節（6 つ）と
+ * 数値定数（3 つ）から導いていなかった** —— 規約「棚卸しの対象を分岐に狭めない。
+ * 数値パラメータを必ず入れる」を、名指しされているのに守れていなかった。
+ *
+ * ここは節ごと・定数ごとに 1 ケースずつ置く。
+ */
+describe('🔴 分類器の節と定数（機械的に棚卸しした面）', () => {
+  const salt = 'AAAAAAAAAAAAAAAAAAAAAA==';
+
+  /** 節 1: アルゴリズム名。違えば**うちの形式ではない**＝平文として扱う。 */
+  it('🔴 アルゴリズム名が違う値は平文として扱う', async () => {
+    const other = `scrypt$10000$${salt}$BBBB`;
+    expect(isHashedPin(other)).toBe(false);
+    expect(await verifyPinCredential(other, other)).toBe(true);
+  });
+
+  /** 節 2: 反復回数が数字でない → うちの形式ではない（旧平文でありうる）。 */
+  it('🔴 反復回数が数字でない値は平文として扱う', async () => {
+    const weird = `pbkdf2-sha256$abc$${salt}$BBBB`;
+    expect(isHashedPin(weird)).toBe(false);
+    expect(await verifyPinCredential(weird, weird)).toBe(true);
+  });
+
+  /** 節 3: hash が空 → うちの形式ではない。 */
+  it('🔴 hash が空の値は平文として扱う', async () => {
+    const empty = `pbkdf2-sha256$10000$${salt}$`;
+    expect(isHashedPin(empty)).toBe(false);
+    expect(await verifyPinCredential(empty, empty)).toBe(true);
+  });
+
+  /**
+   * 節 4: 反復回数 0。**うちの形式なので平文へは落とさない**（落とすと記録の文字列で通る）。
+   * かつ `deriveBits` は 0 で throw するので、計算させてはいけない。
+   */
+  it('🔴 反復回数 0 の記録は誰も通さない（計算もしない）', async () => {
+    const zero = `pbkdf2-sha256$0$${salt}$BBBB`;
+    expect(await verifyPinCredential(zero, zero)).toBe(false);
+    expect(await verifyPinCredential(zero, '4821')).toBe(false);
+  });
+
+  /** 節 5: 上限超過。同じく平文へ落とさない。 */
+  it('🔴 上限を超える反復回数の記録は誰も通さない', async () => {
+    const huge = `pbkdf2-sha256$100000000$${salt}$BBBB`;
+    expect(await verifyPinCredential(huge, huge)).toBe(false);
+  });
+
+  /** 節 6: salt が空 / base64 でない。同じく平文へ落とさない。 */
+  it.each(['pbkdf2-sha256$10000$$BBBB', 'pbkdf2-sha256$10000$***$BBBB'])(
+    '🔴 salt が読めない記録 (%s) は誰も通さない',
+    async (broken) => {
+      expect(await verifyPinCredential(broken, broken)).toBe(false);
+    },
+  );
+
+  /** 🔴 文字列でない保存値で 500 にしない（authorize も管理画面も落ちる）。 */
+  it('🔴 保存値が文字列でなくても落ちず、誰も通さない', async () => {
+    const notString = undefined as unknown as string;
+    expect(isHashedPin(notString)).toBe(false);
+    expect(await verifyPinCredential(notString, '4821')).toBe(false);
+  });
+
+  /** 🔴 定数 1: salt の長さ（狭める型）。16 バイト＝base64 24 文字。 */
+  it('🔴 salt は 16 バイト（狭める変異を止める）', async () => {
+    const [, , saltPart] = (await hashPin('4821')).split('$');
+    expect(saltPart).toHaveLength(24);
+    expect(atob(saltPart ?? '')).toHaveLength(16);
+  });
+
+  /** 🔴 定数 2: 導出鍵の長さ（狭める型）。256bit＝32 バイト＝base64 44 文字。 */
+  it('🔴 導出鍵は 256 bit（狭める変異を止める）', async () => {
+    const [, , , hash] = (await hashPin('4821')).split('$');
+    expect(atob(hash ?? '')).toHaveLength(32);
+  });
+
+  /** 🔴 定数 3: 組込み既定の値そのもの（記号参照だけだと変異が素通りする）。 */
+  it('🔴 組込み既定は 0000（リテラルで固定する）', () => {
+    expect(BUILTIN_DEFAULT_PIN).toBe('0000');
+  });
+
+  /**
+   * 🔴 **配線: 照合は記録側の反復回数を使う**（定数で照合すると、`ITERATIONS` を
+   * 上げた瞬間に**既存レコードが全部通らなくなる**）。現行と違う値の記録で確かめる。
+   */
+  it('🔴 記録に書かれた反復回数で照合する（現行の定数ではなく）', async () => {
+    const encoder = new TextEncoder();
+    const saltBytes = crypto.getRandomValues(new Uint8Array(16));
+    const key = await crypto.subtle.importKey('raw', encoder.encode('4821'), 'PBKDF2', false, [
+      'deriveBits',
+    ]);
+    const bits = await crypto.subtle.deriveBits(
+      { name: 'PBKDF2', hash: 'SHA-256', salt: saltBytes as BufferSource, iterations: 20_000 },
+      key,
+      256,
+    );
+    const b64 = (bytes: Uint8Array) => btoa(String.fromCharCode(...bytes));
+    const record = `pbkdf2-sha256$20000$${b64(saltBytes)}$${b64(new Uint8Array(bits))}`;
+    expect(await verifyPinCredential(record, '4821')).toBe(true);
+    expect(await verifyPinCredential(record, '9999')).toBe(false);
   });
 });
 

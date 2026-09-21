@@ -19,7 +19,10 @@ vi.mock('@/lib/auth/actor', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@/lib/auth/actor')>();
   return { ...actual, resolveAdminActor: () => resolveAdminActor() };
 });
-vi.mock('@/lib/admin/audit', () => ({ recordDangerAction: vi.fn().mockResolvedValue(undefined) }));
+const recordDangerAction = vi.fn().mockResolvedValue(undefined);
+vi.mock('@/lib/admin/audit', () => ({
+  recordDangerAction: (...args: unknown[]) => recordDangerAction(...args),
+}));
 
 import { GET, PUT } from './route';
 import { __resetSecurity } from '@/lib/security/security-store';
@@ -74,6 +77,37 @@ describe('GET /api/admin/security の pinConfigured (#1021 AC3)', () => {
     expect(body.pinConfigured).toBe(false);
     // 下界: 更新そのものは効いている（何も変えずに返しているなら上の主張は空虚）。
     expect(body.pinRequired).toBe(true);
+  });
+
+  /**
+   * 🔴 **監査の `pinChanged` は「PIN を送ったか」（レビュー 2 周目 MAJOR 2）。**
+   *
+   * 以前は「未設定→設定済みの遷移」で計算しており、**ローテーションが全部 false** だった
+   * —— 退職・漏洩時の PIN 変更は必ず 2 回目以降なので、監査は全件「変更なし」になる。
+   * **間違った記録は無い記録より悪い。**
+   */
+  it('🔴 PIN のローテーションも監査に残る', async () => {
+    const put = (body: unknown) =>
+      PUT(
+        new Request('http://localhost/api/admin/security', {
+          method: 'PUT',
+          body: JSON.stringify(body),
+        }),
+      );
+    await put({ pin: '4821' });
+    await put({ pin: '5555' });
+    const metadata = recordDangerAction.mock.calls.map(
+      (c) => (c[0] as { metadata: { pinChanged: boolean } }).metadata.pinChanged,
+    );
+    expect(metadata).toEqual([true, true]);
+    // 下界: PIN を送らない更新では false（常に true にして満たしていない）。
+    await put({ emergencyStop: true });
+    expect(
+      (recordDangerAction.mock.calls.at(-1)?.[0] as { metadata: { pinChanged: boolean } }).metadata
+        .pinChanged,
+    ).toBe(false);
+    // 🔴 値は残さない。
+    expect(JSON.stringify(recordDangerAction.mock.calls)).not.toContain('4821');
   });
 
   it('🔴 PIN の値そのものは返さない（平文もハッシュも）', async () => {

@@ -33,7 +33,7 @@
 | アセット | `let assets`, `let active` | `src/lib/assets/asset-store.ts` |
 | モーション割当 | `let mapping` | `src/lib/motion/motion-store.ts` |
 | セキュリティ設定 | `let settings` | `src/lib/security/security-store.ts` |
-
+| 音声設定 | `let settings` | `src/lib/voice/voice-store.ts` |
 **セキュリティ設定の PIN は資格情報として保存する（#1021 AC3）。**
 `SecuritySettings.pin` は**平文とは限らない** —— 新しい書き込みは PBKDF2-SHA256 の記録
 （`pbkdf2-sha256$<反復>$<salt>$<hash>`）で、既定値や旧レコードの平文も**次の書き込みで昇格**する。
@@ -45,7 +45,6 @@
   入れ替え中の短い窓では `pinRequired: true` のサイトの**新規 authorize だけ**が通らない。
   既存の kiosk セッションは `KIOSK_SESSION_SECRET` 署名の cookie で PIN と独立なので**無効化されない**。
   復旧は管理画面から PIN を入れ直すこと（旧コードはそれを平文で保存し直す）
-| 音声設定 | `let settings` | `src/lib/voice/voice-store.ts` |
 
 これは OpenNext で AWS Lambda にデプロイすると破綻する:
 

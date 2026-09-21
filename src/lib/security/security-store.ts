@@ -14,8 +14,12 @@ import { getBackend } from '@/lib/data';
 
 /** `KIOSK_PIN` を読む。**空文字は未設定**として扱う（`??` では弾けない）。 */
 function envPin(): string | undefined {
-  const value = process.env.KIOSK_PIN;
-  return value !== undefined && value.trim() !== '' ? value : undefined;
+  // 🔴 **判定と保存で同じ正規化を使う（レビュー 2 周目 MINOR 8）。** 以前は
+  //    `trim()` で判定しながら**未 trim の値を保存**していたので、`KIOSK_PIN=" 4821 "`
+  //    は「設定済み」と読まれるのに、端末では前後の空白ごと入力しないと通らない
+  //    （iPad の numeric キーボードでは入力できない）。
+  const value = process.env.KIOSK_PIN?.trim();
+  return value !== undefined && value !== '' ? value : undefined;
 }
 
 function defaults(): SecuritySettings {
@@ -42,7 +46,17 @@ const security = () => getBackend().singleton<SecuritySettings>('security', { de
 
 async function current(): Promise<SecuritySettings> {
   const s = (await security().get()) ?? defaults();
-  return { ...s, ipAllowlist: [...s.ipAllowlist] };
+  // 🔴 **空の保存値は「未設定」＝組込み既定として読む（レビュー 2 周目 MAJOR 1）。**
+  //
+  // `.env.example` の `KIOSK_PIN=`（空）を使っていたサイトが管理画面で 1 度保存すると、
+  // 永続レコードは `pin: ''` になる。空を拒否するようにした結果、そのサイトは
+  // **通る入力が 1 つも無い**（誰も authorize できない）のに、管理画面は
+  // 「未設定（既定値が有効）」と表示していた —— **画面が嘘をつく**（実測）。
+  //
+  // 空 env を未設定として扱うのと同じ規則をここにも適用し、
+  // **表示と挙動を一致させる**（「既定値が有効」が真になる）。
+  const pin = s.pin === '' || typeof s.pin !== 'string' ? BUILTIN_DEFAULT_PIN : s.pin;
+  return { ...s, pin, ipAllowlist: [...s.ipAllowlist] };
 }
 
 export async function getSecuritySettings(): Promise<SecuritySettings> {
@@ -56,8 +70,13 @@ export async function updateSecuritySettings(patch: unknown): Promise<SecuritySe
     if (typeof o.pinRequired === 'boolean') settings.pinRequired = o.pinRequired;
     // 🔴 **保存はハッシュ (#1021 AC3)。** 設定ストアのダンプ・バックアップ・
     //    監査経路に平文 PIN を残さない。読み側（`verifyPin`）は旧レコードの平文も読める。
+    // 🔴 **ここではハッシュ化しない（レビュー 2 周目 MINOR 5 で撤回）。**
+    //    下の昇格が必ず拾うので、両方でハッシュ化すると**主修正の変異をフォールバックが
+    //    飲み込む**（実測で等価変異になっていた）。`CLAUDE.md` が記録している
+    //    「主修正とフォールバックを同じコミットで入れない」型そのものなので、1 本に寄せる。
+    //    ここが持つのは**「運用者が決めた」という事実**だけ。
     if (typeof o.pin === 'string' && o.pin.trim() !== '') {
-      settings.pin = await hashPin(o.pin.trim());
+      settings.pin = o.pin.trim();
       settings.pinSetByOperator = true;
     }
     if (Array.isArray(o.ipAllowlist)) {

@@ -42,7 +42,19 @@ const ALGORITHM = 'pbkdf2-sha256';
  */
 const ITERATIONS = 10_000;
 
-/** 記録側の反復回数の上限（MINOR 1）。 */
+/**
+ * 記録側の反復回数の上限（計算量の歯止め）。
+ *
+ * 🔴 **`ITERATIONS * 4` まで絞ろうとして、やめた（レビュー 2 周目 MINOR 2 への対処の途中で
+ * テストが捕まえた）。** 絞ると、**正しく書かれた記録**（例: この PR の途中の版が使っていた
+ * 210,000）が「読めない」に落ち、下の分類で**平文として照合**されてしまう ——
+ * つまり**記録の文字列そのものが PIN として通る**。実測で赤くなった。
+ *
+ * 1,000,000 は実測 1 回 476ms（正常経路 5ms の約 95 倍）だが、**そこへ到達するには
+ * 記録を書ける権限が要る**（＝設定ストアへの書き込み権限。そこまで持っていれば
+ * `pinRequired` を落とせる）。**読めるはずの記録を読めなくする**ほうが実害が大きいので、
+ * 上限は緩く取り、**超過は平文へ落とさず fail closed** にする（下の `CredentialShape`）。
+ */
 const MAX_ITERATIONS = 1_000_000;
 const KEY_BITS = 256;
 
@@ -72,11 +84,25 @@ async function derive(pin: string, salt: Uint8Array, iterations: number): Promis
   return toBase64(new Uint8Array(bits));
 }
 
-/** ハッシュ記録を分解した結果。構造として成立していなければ `null`。 */
+/** ハッシュ記録を分解した結果。 */
 type ParsedHash = { iterations: number; salt: Uint8Array; hash: string };
 
 /**
- * 保存された値をハッシュ記録として読む。**構造が揃っていなければ `null`**。
+ * 保存値の 3 分類。
+ *
+ * 🔴 **2 分類（記録 / 平文）では足りない（レビュー 2 周目 MINOR 2 の対処中に実測）。**
+ * 「うちの形式だが使えない」を平文側へ落とすと、**記録の文字列そのものが PIN として通る**。
+ * 使えない記録は**平文へ落とさず拒否**する。
+ */
+type CredentialShape =
+  | { kind: 'hash'; parsed: ParsedHash }
+  /** うちの形式だが読めない（壊れている / 計算量が上限超え）。**誰も通さない。** */
+  | { kind: 'unusable' }
+  /** うちの形式ではない＝旧レコードの平文。 */
+  | { kind: 'plaintext' };
+
+/**
+ * 保存された値を 3 つに分類する。
  *
  * 🔴 **接頭辞だけで判定してはいけない（レビュー指摘。実測で再現した）。**
  * 旧レコードの平文には**何でも入りうる** —— 管理 API は `pin` に数字も長さも
@@ -91,25 +117,29 @@ type ParsedHash = { iterations: number; salt: Uint8Array; hash: string };
  * `pbkdf2-sha256$210000$AAAA$BBBB`）は今も読めない。ここまで来ると平文と記録を
  * 区別する手段が無く、**記録側を壊さない**ことを優先した。
  */
-function parseHash(stored: string): ParsedHash | null {
+function classify(stored: string): CredentialShape {
+  // 🔴 **文字列でない保存値で落ちない（レビュー 2 周目 MINOR 1）。** `pin` を持たない
+  //    レコードが 1 つ在るだけで `split` が throw し、**authorize も管理画面も 500** になる
+  //    （復旧導線ごと失われる）。誰も通さない側へ倒す。
+  if (typeof stored !== 'string') return { kind: 'unusable' };
   const parts = stored.split('$');
-  if (parts.length !== 4 || parts[0] !== ALGORITHM) return null;
+  // ここまでで「うちの形式ではない」＝旧レコードの平文。
+  if (parts.length !== 4 || parts[0] !== ALGORITHM) return { kind: 'plaintext' };
   const [, rawIterations, rawSalt, hash] = parts;
-  if (!/^[0-9]+$/.test(rawIterations ?? '') || !hash) return null;
+  // 🔴 以降は**うちの形式**なので、読めなくても平文へは落とさない。
+  if (!/^[0-9]+$/.test(rawIterations ?? '') || !hash) return { kind: 'plaintext' };
   const iterations = Number(rawIterations);
+  if (!Number.isInteger(iterations) || iterations <= 0 || iterations > MAX_ITERATIONS) {
+    return { kind: 'unusable' };
+  }
   const salt = rawSalt === undefined || rawSalt === '' ? null : fromBase64(rawSalt);
-  // 🔴 **上限を持つ（レビュー 1 周目 MINOR 1）。** 記録側の値をそのまま信じると、
-  //    壊れた/改竄された記録 1 つで照合が止まる —— 実測で `iterations=1e8` の記録は
-  //    **1 回の照合に 52.7 秒**かかった（未認証エンドポイントから踏める）。
-  //    上限を超える記録は「読めない」として扱う（平文へは落ちない。下の空判定が先に効く）。
-  if (!Number.isInteger(iterations) || iterations <= 0 || iterations > MAX_ITERATIONS) return null;
-  if (salt === null) return null;
-  return { iterations, salt, hash };
+  if (salt === null) return { kind: 'unusable' };
+  return { kind: 'hash', parsed: { iterations, salt, hash } };
 }
 
 /** 保存された値がハッシュ記録か（＝旧レコードの平文でないか）。 */
 export function isHashedPin(stored: string): boolean {
-  return parseHash(stored) !== null;
+  return classify(stored).kind === 'hash';
 }
 
 /** PIN を保存形式（ハッシュ）へ変換する。**毎回ランダムな salt を使う。** */
@@ -155,11 +185,22 @@ export async function verifyPinCredential(stored: string, input: string): Promis
   // このモジュールは「読めない記録は fail closed」を謳っているのに、
   // `isPinConfigured('') === false`（未設定）と `verify('','') === true`（通す）が
   // **食い違っていた**。空は常に拒否する。
-  if (stored === '') return false;
-  const parsed = parseHash(stored);
-  // 構造として読めない値は**旧レコードの平文**として扱う（上の `parseHash` の doc 参照）。
-  if (parsed === null) return timingSafeEqual(stored, input);
-  return timingSafeEqual(await derive(input, parsed.salt, parsed.iterations), parsed.hash);
+  //
+  // 🔴 **入力側の空も拒否する（レビュー 2 周目 MAJOR 4）。** 保存側だけを見ていると、
+  //    「空 PIN がハッシュとして保存された世界」が残る ——
+  //    実測: `verifyPinCredential(await hashPin(''), '')` は **true** だった。
+  //    今日それを防いでいるのは保存側の 2 つのガードだけで、**片方を落とす変異は
+  //    全テストを素通りした**（同 MAJOR 3 の実測）。禁止を数え上げるのではなく、
+  //    **「空は資格情報ではない」を両側の不変条件にする**（族ごと塞ぐ）。
+  if (stored === '' || input === '') return false;
+  const shape = classify(stored);
+  // 🔴 **うちの形式だが読めないものは、平文へ落とさない**（記録の文字列で通ってしまう）。
+  if (shape.kind === 'unusable') return false;
+  if (shape.kind === 'plaintext') return timingSafeEqual(stored, input);
+  return timingSafeEqual(
+    await derive(input, shape.parsed.salt, shape.parsed.iterations),
+    shape.parsed.hash,
+  );
 }
 
 /**
