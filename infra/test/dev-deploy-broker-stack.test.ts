@@ -48,6 +48,9 @@ describe('DevDeployBrokerStack (#1146 Phase 1)', () => {
     const serialized = JSON.stringify(pipelines);
     expect(serialized).toContain('CodeStarSourceConnection');
     expect(serialized).toContain(DEV_DEPLOY_PROMOTION_BRANCH);
+    expect(serialized).toContain('OpenReceptionSource');
+    expect(serialized).toContain('CommitId');
+    expect(serialized).toContain('OR_TRUSTED_SOURCE_REVISION');
   });
 
   it('creates separate validation and trusted-broker CodeBuild projects with concurrency 1', () => {
@@ -105,6 +108,8 @@ describe('DevDeployBrokerStack (#1146 Phase 1)', () => {
     expect(serialized).toContain('npm run lint');
     expect(serialized).toContain('npm test');
     expect(serialized).toContain('npm run aws:local:test');
+    expect(serialized).toContain('OR_TRUSTED_SOURCE_REVISION');
+    expect(serialized).not.toContain('CODEBUILD_RESOLVED_SOURCE_VERSION');
     expect(serialized).not.toContain('quality-gate.sh --pr');
     expect(serialized).toContain('OpenReception-Web-dev');
     expect(serialized).toContain('OpenReception-WebMonitoring-dev');
@@ -145,6 +150,8 @@ describe('DevDeployBrokerStack (#1146 Phase 1)', () => {
     );
     expect(buildSpec).toContain('BROKER_NOT_ARMED');
     expect(buildSpec).toContain('broker-evidence.json');
+    expect(buildSpec).toContain('OR_TRUSTED_SOURCE_REVISION');
+    expect(buildSpec).toContain('validation evidence revision mismatch');
     expect(buildSpec).toContain('OR_TRUSTED_POLICY_BUCKET');
     expect(buildSpec).toContain('OR_TRUSTED_POLICY_KEY');
     expect(buildSpec).toContain('/tmp/open-reception-trusted-policy.mjs');
