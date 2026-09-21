@@ -923,25 +923,22 @@ scripts/aws-issue-credentials.sh --hours 4
 値は既定では表示されず、macOS のクリップボードへ直接入る（`--print` を明示したときのみ表示）。
 **値をこの runbook や git や log に書かない。**
 
-### クリップボードには 9 変数が入る（2026-09-06 / #989）
+### クリップボードには 8 変数が入る（#989 / #1148）
 
 AWS の 5 つ（`AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` / `AWS_SESSION_TOKEN` /
-`AWS_REGION` / `AWS_CREDENTIAL_EXPIRATION`）に加えて、**デプロイ必須 context の 4 つ**
+`AWS_REGION` / `AWS_CREDENTIAL_EXPIRATION`）に加えて、**デプロイ必須 context の 3 つ**
 （ステップ 8b）も同じブロックに入る。**まとめて 1 回で貼れる。**
 
-以前は AWS の 5 つだけをコピーしていたため、残り 4 つが「リポジトリに書いてあるから後で」に
-なり、2026-09-06 の 3 回目のデプロイで **`OR_APP_SECRETS_NAME` だけが未登録**のまま窓を開けて
-`diff` が止まった。落ちたのは 4 つのうち唯一「秘密の値ではない」もので、
-**秘密 3 つは貼る意識が働くのに非秘密の 1 つだけ抜ける**という形だった。
+#1148 で origin-verify の生値 handoff は廃止した。`OR_APP_SECRETS_NAME` から
+`appSecretsName` と `originVerifySecretName` を両方生成するため、
+Claude Cloud へ `OR_ORIGIN_VERIFY_SECRET` を登録してはいけない。
 
-**初回だけ、値の置き場所を作る**（**リポジトリの外**。`OR_ORIGIN_VERIFY_SECRET` は秘密そのもので、
-`.gitignore` に頼ると ignore 行が消えた瞬間に commit され得る）:
+**初回だけ、値の置き場所を作る**（リポジトリの外。運用 context を git 管理しない）:
 
 ```bash
 mkdir -p ~/.config/open-reception
 cat > ~/.config/open-reception/deploy-context.env <<'EOF'
 OR_APP_SECRETS_NAME=open-reception/dev/app-v2
-OR_ORIGIN_VERIFY_SECRET=＜実際の高エントロピー値＞
 OR_PUBLIC_ORIGIN_OVERRIDE=https://dvxkh8nfwl334.cloudfront.net
 OR_PROVIDER_SECRET_BACKEND=secrets-manager
 EOF
@@ -951,7 +948,7 @@ chmod 600 ~/.config/open-reception/deploy-context.env
 置き場所は `OR_DEPLOY_CONTEXT_FILE` で変えられる。環境変数が設定されていればそちらが優先される
 （一時的に別の値で試せる）。
 
-🔴 **4 変数が欠けていると、窓を開けずに止まる。** 解決は `aws sts assume-role` **より前**に
+🔴 **3 変数が欠けていると、窓を開けずに止まる。** 解決は `aws sts assume-role` **より前**に
 走るので、資格情報は発行されない ―― 「開いたが使えない窓」を作らないため。欠落を `diff` で
 知ると、そこまでの往復（verify 約 6 分を含む）が丸ごと窓を食う。
 
@@ -999,12 +996,12 @@ claude.ai/code で同じ環境 ＋ リポジトリを選んでセッションを
 3. **ゲートの任意ツールが揃っているか。** セッション開始時の `gate-tooling:` 行を読む。
    `missing gitleaks` が出ていたら `--pr` の unit が**14 件赤になる**（原因はツール不在。
    詳細は `docs/cloud-dev-environment.md` §4）。`bash scripts/cloud-setup.sh` で入れ直す
-4. **必須 context 4 変数が環境ダイアログに揃っているか**（ステップ 8b）。**値は出さない**。
-   ステップ 5 のコピーに 4 変数も入るようになったので（#989）、9 つまとめて貼っていれば
+4. **必須 context 3 変数が環境ダイアログに揃っているか**（ステップ 8b）。**値は出さない**。
+   ステップ 5 のコピーに 3 変数も入るので（#989 / #1148）、8 つまとめて貼っていれば
    ここは揃っているはず。既存セッションで確かめるときは:
 
 ```bash
-for v in OR_APP_SECRETS_NAME OR_ORIGIN_VERIFY_SECRET OR_PUBLIC_ORIGIN_OVERRIDE OR_PROVIDER_SECRET_BACKEND; do
+for v in OR_APP_SECRETS_NAME OR_PUBLIC_ORIGIN_OVERRIDE OR_PROVIDER_SECRET_BACKEND; do
   printf '%-28s %s\n' "$v" "$(printenv "$v" >/dev/null && echo SET || echo UNSET)"
 done
 ```
@@ -1034,13 +1031,13 @@ claude.ai/code の環境ダイアログへ、次の**変数名 5 つ**を登録�
 - `AWS_REGION`
 - `AWS_CREDENTIAL_EXPIRATION`
 
-ステップ 8b の context 4 変数（`OR_APP_SECRETS_NAME` / `OR_ORIGIN_VERIFY_SECRET` /
+ステップ 8b の context 3 変数（`OR_APP_SECRETS_NAME` /
 `OR_PUBLIC_ORIGIN_OVERRIDE` / `OR_PROVIDER_SECRET_BACKEND`）も同じダイアログへ入れる。
-合わせて 9 つ。
+合わせて 8 つ。**`OR_ORIGIN_VERIFY_SECRET` の生値は登録しない。**
 
 ### 🔴 live e2e の 3 変数も一緒に入れる（2026-09-09 追加）
 
-上の 9 つだけだと、**`smoke` の後半（`npm run test:e2e:live`）が必ず落ちる**:
+上の 8 つだけだと、**`smoke` の後半（`npm run test:e2e:live`）が必ず落ちる**:
 
 ```
 ERROR: 次の環境変数が要ります: LIVE_BASE_URL LIVE_ADMIN_USER LIVE_ADMIN_PASSWORD
@@ -1430,22 +1427,20 @@ security test 8 本**である。9b で全部を見切れないことを、ガ�
 
 | 環境変数 | 渡る context | 省くとどうなるか |
 | --- | --- | --- |
-| `OR_APP_SECRETS_NAME` | `appSecretsName` | Secrets Manager 連携が落ち、**起動が 500** |
-| `OR_ORIGIN_VERIFY_SECRET` | `originVerifySecret` | CloudFront 経由の **POST が全滅**（403） |
+| `OR_APP_SECRETS_NAME` | `appSecretsName` **+ `originVerifySecretName`** | アプリ機密の runtime 読込と origin-verify dynamic reference が落ちる |
 | `OR_PUBLIC_ORIGIN_OVERRIDE` | `publicOriginOverride` | 発行される **QR が誰にも使えない** |
 | `OR_PROVIDER_SECRET_BACKEND` | `providerSecretBackend` | テナント provider secret が **in-memory のまま**。実 Vonage 資格情報を入れても Lambda をまたぐと消え、**受付が断続的に 503** になる（下記） |
 
-dev の値は `docs/deploy-aws.md`「dev をゼロから立ち上げる手順」を参照
-（**リポジトリには置かない**。`originVerifySecret` は秘密の値そのもの）。
+dev の値は `docs/deploy-aws.md`「dev をゼロから立ち上げる手順」を参照。
+origin-verify は同じ app secret の `ORIGIN_VERIFY_SECRET` キーを CFN dynamic reference で読む。
+**生値を deploy context / CDK argv へ載せない。**
 
 ### 🔴 `OR_APP_SECRETS_NAME` は「非秘密だから」落ちやすい（2026-09-06）
 
-3 回目のデプロイで、**4 つのうち `OR_APP_SECRETS_NAME` だけが環境ダイアログに未登録**で
-`diff` が停止した（ガードは正しく効いた。2026-08-15 の 500 は再発していない）。
-落ちたのは 4 つのうち**唯一「秘密の値ではない」もの**（Secrets Manager の名前）で、
-しかもリポジトリに平文で 2 箇所書いてある（この節と `docs/deploy-aws.md`）。
-秘密 3 つは「貼る」意識が働くが、非秘密の 1 つは「書いてあるから後で」で落ちる。
-**ステップ 5 の事前チェックで 4 つまとめて set/unset を見る**のはこのためである。
+2026-09-06 の 3 回目のデプロイでは、当時の必須 context のうち
+`OR_APP_SECRETS_NAME` だけが未登録で `diff` が停止した（ガードは正しく効いた）。
+#1148 以降は必須 context を 3 つへ縮小し、origin-verify 名もこの値から導出する。
+**ステップ 5 の事前チェックで 3 つまとめて set/unset を見る**。
 
 **wrapper に既定値フォールバックを入れない（決定）。** 「runbook に書いてあるのだから
 未設定なら埋めればよい」は筋が悪い。このガードの目的は*値を埋めること*ではなく
@@ -1456,81 +1451,21 @@ dev の値は `docs/deploy-aws.md`「dev をゼロから立ち上げる手順」
 
 ```bash
 export OR_APP_SECRETS_NAME=open-reception/dev/app-v2
-export OR_ORIGIN_VERIFY_SECRET=...        # 高エントロピー値。履歴・ログに残さない
-                                          # 🔴 山括弧つきの説明文をそのまま貼らない（下記 2026-09-06）
+# ↑ appSecretsName と originVerifySecretName の両方へ使う。secret 値そのものではない。
 export OR_PUBLIC_ORIGIN_OVERRIDE=https://dvxkh8nfwl334.cloudfront.net
 # 実 Vonage を使うなら secrets-manager。mock だけで動かすなら memory と**明示**する
 export OR_PROVIDER_SECRET_BACKEND=secrets-manager
 ```
 
-### 🔴 「set されている」は「正しい値が入っている」ではない（2026-09-06）
+### 旧方式の事故記録: 生 `OR_ORIGIN_VERIFY_SECRET` handoff（2026-09-06）
 
-4 回目のデプロイで、`OR_ORIGIN_VERIFY_SECRET` に**この runbook の散文に出てくる
-プレースホルダ文字列そのもの**（山括弧つきの `＜実際の高エントロピー値＞`。13 文字 / 39 バイト）が
-入っていた。
+当時は dev だけ `originVerifySecret=<生値>` を許しており、runbook のプレースホルダを
+実値として貼る事故が発生した。CloudFront側で非ASCIIとして拒否された回と、
+ガードで停止した回がある。詳細な当時の経緯は git history / #993 / #995 を参照。
 
-🔴 **この回はクラウドセッションが 2 つ並走した。本節は停止した側（PR #993）の記録である。**
-**もう一方は `deploy` を実行し、CloudFront が `originCustomHeader` を 400 で拒否した**
-（`illegal characters`。ロールバック完走・dev は無傷。ステップ 10「実施記録: 2026-09-06
-（4 回目）」）。つまりこの型は**運が良ければ外部 API に弾かれるが、それは保証ではない** ――
-CloudFront が弾いたのは値が**非 ASCII だった**からであって、`changeme` のような
-ASCII のプレースホルダなら**そのまま通り、デプロイは成功していた**。
-
-🔴 **機械的なガードは入った（#995）。** `resolveDeployContext` が山括弧・非 ASCII・
-`OR_ORIGIN_VERIFY_SECRET` の 22 文字未満を弾くので、この型は**窓を開ける前**か
-`verify` より手前で落ちる。ただしこれは症状を止めるものであり、生値を CDK context に
-載せる方式が続く限り貼り付け事故の余地は残る（本筋は #612）。
-
-**上のガードも、ステップ 5 の事前チェックも、これを止められない。** どちらも
-**set / unset しか見ていない**からで、プレースホルダは堂々と SET と出る。前節
-（`OR_APP_SECRETS_NAME` の未登録）は「登録し忘れ」だったが、こちらは
-**「登録したが中身が説明文」**であり、症状が正反対である ―― 前者は大声で止まり、
-後者は**全部緑のまま通過する**。
-
-実際、以下は**すべて PASS した**:
-
-| 段 | 結果 |
-| --- | --- |
-| ステップ 5 の 4 変数チェック | 4/4 SET |
-| ステップ 7 `verify`（`--pr` 8 ステップ） | ✅ PASS |
-| ステップ 8 `preflight`（negative security test） | ✅ 8/8 PASS |
-| ステップ 9 `diff` gate の findings | `CDKMetadata` の `replacement=Conditional` が 3 スタックぶんのみ |
-
-findings は**事前にユーザーが承認していた形**（`Remove` 0 件 / `Replacement: True` 0 件 /
-WebMonitoring の新規は `KioskRealDialingUnavailable*` の Alarm と MetricFilter 各 1 件）を
-**満たしていた**。トークンを渡していれば通っていた。
-
-**デプロイしていたらどうなったか。** CloudFront の `x-origin-verify` ヘッダと ServerFn の
-`ORIGIN_VERIFY_SECRET` env は**同じ context から組み立てられる**ので、両方が同じ
-プレースホルダになる ―― つまり**アプリは正常に動く**。壊れないので運用では気づけない。
-しかし `src/lib/security/origin-verify.ts` は単純比較なので、**リポジトリの散文を読んだ者は
-誰でもヘッダを偽造でき、CloudFront を迂回して Lambda Function URL を直叩きできる**。
-現行の 44 文字の高エントロピー値を、公開文字列で上書きすることになる。
-
-**検出のしかた（値を出さずに測る）。** synth 済みテンプレートはローカルなので IAM に
-関係なく読める。承認前に必ずこれを通す:
-
-```bash
-jq -r '.Resources | to_entries[] | select(.value.Type=="AWS::CloudFront::Distribution")
-       | .value.Properties.DistributionConfig.Origins[].OriginCustomHeaders[]?
-       | select(.HeaderName=="x-origin-verify")
-       | "len=\(.HeaderValue|length)  looks_like_placeholder=\(.HeaderValue|test("[＜＞<>]"))"' \
-  infra/cdk.out/OpenReception-Web-dev.template.json
-```
-
-`looks_like_placeholder=true`、または `len` が現行値（44）と大きく違うなら**止める**。
-🔴 **`describe-change-set` の `AfterValue` で判定しない。** CloudFront のヘッダ値は
-CloudFormation 側が `?????????????` にマスクして返すので、「マスクされている＝安全に
-解決される」と読めてしまう。**マスクは値の性質を何も保証しない**（9b-1 の実施記録）。
-
-**入れ直すときは、現行 dev に載っている値と同じものを再登録する。** 別の値へ変えると、
-CloudFront の配信更新と ServerFn の env 更新が同時に効くとは限らず、切り替え中に
-`x-origin-verify` の不一致で 403 になる窓が出うる（未実測。`web-stack.ts` の警告の型）。
-
-**Issue 候補（この周回では未実施）**: ガードを presence から plausibility へ広げる
-（山括弧・既知プレースホルダ・最小長・現行値との桁違いを wrapper が拒否する）。
-本筋は #612 の `originVerifySecretName` 移行で、生値を context に載せる方式である限り
-この型は何度でも再現する。
+**#1148 で原因側を除去した。** 現行方式は `OR_APP_SECRETS_NAME` と同じ Secrets Manager secret の
+`ORIGIN_VERIFY_SECRET` キーを dynamic reference で使う。WebStack は
+`originVerifySecret=<生値>` を **devを含む全環境で synth 時に拒否**する。
 
 #### 実施記録: 2026-09-06 のデプロイ ―― このセッションは 9 で停止した
 
@@ -1577,8 +1512,8 @@ secret は消えるので `buildVoiceCredentials` は null を返す ―― #765
 （`bin/open-reception.ts`）。`secrets-manager` を選んで prefix が空のときは
 WebStack が構築段で fail-closed に落とす。
 
-⚠️ `originVerifySecret` は `cdk` の argv に載る＝プロセステーブルから見える。CDK context の
-仕組み上避けられないので、**本筋は `originVerifySecretName`（Secrets Manager 名）への移行**（#612）。
+✅ #1148 で `originVerifySecret` の生値経路を廃止した。現行 wrapper は
+`OR_APP_SECRETS_NAME` から `originVerifySecretName` を生成し、CDK argv に secret 値を載せない。
 
 ---
 
