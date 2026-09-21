@@ -92,21 +92,47 @@ export function staffFailureForStatus(status: number): StaffFailure {
   return isServerSideFailure(status) ? 'unavailable' : 'rejected';
 }
 
+/**
+ * 文言を決めるのに必要な、**画面の側の事実**。
+ *
+ * 🔴 **既定値を持たせない (#1137)。** 省略できるようにすると、その既定は
+ * 「応答導線は在る」＝**嘘になりうる側**へ倒れる。このモジュールが #1123 で
+ * `SubmitState` に対して採った形（「error は必ず原因を伴う」）と同じ理由で、
+ * **呼び出し側に必ず書かせる**。
+ */
+export type StaffCallFailureContext = {
+  /**
+   * この受付で**担当者が選べる応答種別が 1 件以上あるか**。
+   *
+   * サイト設定で全部無効化されていると `StaffResponseActions` はボタンを 1 つも出さない。
+   * そのとき「下の応答からの返答も試せます」は**空の領域を指す** —— 担当者は画面下を
+   * 探しに行き、その間**来訪者は呼び出しが成立したまま待つ**（#1137）。
+   */
+  responsesAvailable: boolean;
+};
+
 /** 通話への参加に失敗したときの文言。 */
-export function staffCallFailureMessage(failure: StaffFailure): string {
+export function staffCallFailureMessage(
+  failure: StaffFailure,
+  context: StaffCallFailureContext,
+): string {
   switch (failure) {
     case 'rejected':
       return '通話に接続できませんでした。リンクの有効期限切れ、または別の端末で応答済みの可能性があります。';
     case 'unavailable':
       return 'サーバー側の問題で通話に接続できませんでした。時間をおいても直らない場合は、管理者へ知らせてください。';
-    case 'unreachable':
+    case 'unreachable': {
       // 🔴 **回線を断定しない (#1132)。** ここに入る経路は 2 つあり、Vonage の `onError`
       // 側では **answer API が 200 を返し終えている**ので回線は容疑者ではない。
       // しかも今日その側は CSP により**常に**発火する。先例は `save-outcome.ts` の
       // `unreadable`（「通信状態を確かめてください」は誤った方向へ調べに行かせる）。
-      // 🔴 **#1137**: サイト設定で応答種別を全部無効化すると、この文が指す領域が
-      //    見出しだけになりボタンが 0 個になる（e2e は既定シードを見るので止まらない）。
-      return '通話に接続できませんでした。原因は特定できていません。下の応答からの返答も試せます。時間をおいて開き直すか、管理者へ知らせてください。';
+      //
+      // 🔴 **指す先が在るときだけ指す (#1137)。** 応答種別を全部無効化したサイトでは
+      //    `StaffResponseActions` にボタンが 1 つも無い。指せないときは 1 文を落とし、
+      //    **残りの次の一手（開き直す／管理者へ知らせる）は残す** —— 全部を曖昧にしない。
+      const fallback = context.responsesAvailable ? '下の応答からの返答も試せます。' : '';
+      return `通話に接続できませんでした。原因は特定できていません。${fallback}時間をおいて開き直すか、管理者へ知らせてください。`;
+    }
   }
 }
 

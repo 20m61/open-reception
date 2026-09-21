@@ -84,6 +84,61 @@ test('🔴 応答が返らないときは原因を断定しない（リンクに
   // ことが前提。将来 `state.kind !== 'error'` でガードされると、**文言だけが存在しない導線を
   // 指す**（担当者が画面下を探して見つからない間、来訪者は「つながった」まま待つ）。
   await expect(page.getByTestId('staff-response-coming')).toBeVisible();
+  // 🔴 **指している文言と、指された導線を同じ test で対にする (#1137)。**
+  //    下の「0 件」のケースと合わせて両側になる。
+  await expect(status).toContainText('下の応答からの返答も試せます');
+});
+
+/**
+ * 🔴 **応答種別を全部無効化したサイトでは、その 1 文を出さない (#1137)。**
+ *
+ * `StaffResponseActions` は `enabled` で絞って描画するので、サイト設定で全部無効に
+ * していると**見出しだけが残りボタンは 0 個**になる。そこを「試せます」と指すと、
+ * 担当者は画面下を探しに行き、その間**来訪者は呼び出しが成立したまま待つ**
+ * （answer API は 200 を返し終えている）。
+ *
+ * 🔴 **seed ではなく route の stub で作る。** この spec は元々 stub で失敗を踏む型で、
+ * かつ**共有 seed を書き換える spec は専用 project へ隔離しないと並行実行で壊れる**
+ * （#787 の実測）。観測したい性質は「画面の状態と文言が一致すること」なので、
+ * ブラウザから見える応答を差し替えれば足りる。
+ */
+test('🔴 応答種別が 0 件のサイトでは、応答導線を指す 1 文を出さない', async ({ page }) => {
+  await page.route('**/api/staff/calls/*/respond?*', async (route) => {
+    if (route.request().method() !== 'GET') return route.fallback();
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        actions: [
+          {
+            action: 'coming',
+            staffLabel: '今行きます',
+            severity: 'normal',
+            requiresConfirmation: false,
+            enabled: false,
+          },
+        ],
+      }),
+    });
+  });
+  await page.route('**/api/staff/calls/*/answer', (route) => route.abort('failed'));
+  await page.goto(STAFF_URL);
+
+  const status = statusOf(page);
+  // 下界: 失敗表示そのものには到達していること（文言が出ていないだけ、では通らない）。
+  await expect(status).toContainText('原因は特定できていません');
+  // 本体: 存在しない導線を指さない。
+  await expect(status).not.toContainText('下の応答');
+  // 🔴 次の一手は残る（1 文を落としただけで、全部を曖昧にしない）。
+  await expect(status).toContainText('管理者');
+
+  // AC3: 見出しだけの空領域を出さない。**空だと言う。**
+  const section = page.getByTestId('staff-response');
+  await expect(page.getByTestId('staff-response-empty')).toBeVisible();
+  await expect(page.getByTestId('staff-response-coming')).toHaveCount(0);
+  // 🔴 見出しも直す —— 選べないのに「選んでください」と言わない。
+  await expect(section).not.toContainText('応答を選んでください');
+  await expect(section).toContainText('設定されていません');
 });
 
 /**

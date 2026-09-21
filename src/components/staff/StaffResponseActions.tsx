@@ -10,13 +10,12 @@
  * 誤タップ防止: requiresConfirmation な種別（拒否・別チャネル誘導）は 2 段階で確認する。
  * 通話参加導線は壊さない（本コンポーネントは応答アクションのみを扱う）。
  */
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useState } from 'react';
 import {
-  listStaffResponseDefinitions,
   type StaffResponseAction,
   type StaffResponseResult,
-  type StaffResponseSeverity,
 } from '@/domain/reception/staff-response';
+import type { ActionMeta } from './use-staff-response-actions';
 import {
   staffFailureForStatus,
   staffResponseFailureMessage,
@@ -33,60 +32,28 @@ type SubmitState =
   | { kind: 'done' }
   | { kind: 'error'; failure: StaffFailure };
 
-/** 担当者ボタンに必要な最小メタ（GET /respond の応答形）。来訪者文言・PII は含まない。 */
-type ActionMeta = {
-  action: StaffResponseAction;
-  staffLabel: string;
-  severity: StaffResponseSeverity;
-  requiresConfirmation: boolean;
-  enabled: boolean;
-};
-
 export type StaffResponseActionsProps = {
   receptionId: string;
   token: string;
+  /**
+   * この受付で選べる応答種別。
+   *
+   * 🔴 **取得は親（`StaffCallView`）が持つ (#1137)。** 以前はここで fetch していたが、
+   * そうすると**失敗文言を作る側から「ボタンが 0 個か」が見えない** ——
+   * 「下の応答からの返答も試せます」が空の領域を指す形になっていた。
+   */
+  actions: ReadonlyArray<ActionMeta>;
 };
 
-/** 設定取得前/失敗時のフォールバック: ドメイン既定（defaultEnabled）から組み立てる。 */
-function defaultActionMeta(): ActionMeta[] {
-  return listStaffResponseDefinitions().map((d) => ({
-    action: d.action,
-    staffLabel: d.staffLabel,
-    severity: d.severity,
-    requiresConfirmation: d.requiresConfirmation,
-    enabled: d.defaultEnabled,
-  }));
-}
-
-export function StaffResponseActions({ receptionId, token }: StaffResponseActionsProps): React.ReactElement {
+export function StaffResponseActions({
+  receptionId,
+  token,
+  actions,
+}: StaffResponseActionsProps): React.ReactElement {
   // 確認待ちの種別（誤タップ防止）。null なら確認中なし。
   const [pendingConfirm, setPendingConfirm] = useState<StaffResponseAction | null>(null);
   const [submitState, setSubmitState] = useState<SubmitState>({ kind: 'idle' });
   const [lastResult, setLastResult] = useState<StaffResponseResult | null>(null);
-  // サイト設定を反映した応答種別。取得前/失敗時はドメイン既定にフォールバックする。
-  const [actions, setActions] = useState<ActionMeta[]>(defaultActionMeta);
-
-  // この受付で有効な応答種別を取得する（無効化された種別をボタンに出さない）。
-  useEffect(() => {
-    let cancelled = false;
-    void (async () => {
-      try {
-        const res = await fetch(
-          `/api/staff/calls/${receptionId}/respond?token=${encodeURIComponent(token)}`,
-          { cache: 'no-store' },
-        );
-        if (!res.ok || cancelled) return;
-        const data = (await res.json()) as { actions?: ActionMeta[] };
-        if (!cancelled && Array.isArray(data.actions)) setActions(data.actions);
-      } catch {
-        /* 取得失敗時はフォールバック（defaultEnabled）のまま操作可能にする */
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, [receptionId, token]);
-
   const submit = useCallback(
     async (action: StaffResponseAction) => {
       setSubmitState({ kind: 'submitting' });
@@ -124,10 +91,28 @@ export function StaffResponseActions({ receptionId, token }: StaffResponseAction
   );
 
   const definitions = actions.filter((d) => d.enabled);
+  // 🔴 **見出しだけの空領域を出さない (#1137 AC3)。** サイト設定で応答種別を全部
+  //    無効化していると、以前は「来訪者への応答を選んでください」とボタン 0 個の
+  //    `section` が残った —— 担当者は**選べないものを探す**。選べないなら、
+  //    見出しも「選んでください」ではなく、**そう言う**。
+  const empty = definitions.length === 0;
 
   return (
-    <section className="staff-response" data-testid="staff-response" data-submit-state={submitState.kind}>
-      <h2 className="staff-response__title">来訪者への応答を選んでください</h2>
+    <section
+      className="staff-response"
+      data-testid="staff-response"
+      data-submit-state={submitState.kind}
+      data-empty={empty ? 'true' : undefined}
+    >
+      <h2 className="staff-response__title">
+        {empty ? '来訪者への応答は設定されていません' : '来訪者への応答を選んでください'}
+      </h2>
+      {empty ? (
+        <p className="staff-response__status notice" role="status" data-testid="staff-response-empty">
+          この受付では応答種別がすべて無効になっています。来訪者へ返答する導線はここにはありません。
+          対応できない場合は管理者へ知らせてください。
+        </p>
+      ) : null}
       <div className="staff-response__actions">
         {definitions.map((def) => {
           const awaitingConfirm = pendingConfirm === def.action;

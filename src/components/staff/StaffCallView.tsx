@@ -13,6 +13,7 @@ import { useEffect, useRef, useState } from 'react';
 import { VonageCallClient } from '@/adapters/call/vonage-client';
 import type { CallTokenResponse } from '@/lib/call/call-controller';
 import { StaffResponseActions } from './StaffResponseActions';
+import { hasEnabledResponses, useStaffResponseActions } from './use-staff-response-actions';
 import {
   staffCallFailureMessage,
   staffFailureForStatus,
@@ -37,6 +38,9 @@ export type StaffCallViewProps = {
 export function StaffCallView({ receptionId, token }: StaffCallViewProps): React.ReactElement {
   const containerRef = useRef<HTMLDivElement>(null);
   const [state, setState] = useState<StaffCallState>({ kind: 'connecting' });
+  // 🔴 **文言と画面が同じ事実を見る (#1137)。** 取得をここへ持ち上げ、
+  //    失敗文言（「下の応答からの返答も試せます」）と応答ボタンの両方へ同じ値を配る。
+  const responseActions = useStaffResponseActions(receptionId, token);
 
   useEffect(() => {
     let stopped = false;
@@ -86,10 +90,13 @@ export function StaffCallView({ receptionId, token }: StaffCallViewProps): React
       <p className="staff-call__status" role="status" data-testid="staff-call-status">
         {state.kind === 'connecting' && '通話に接続しています…'}
         {state.kind === 'connected' && '通話中です。'}
-        {state.kind === 'error' && staffCallFailureMessage(state.failure)}
+        {state.kind === 'error' &&
+          staffCallFailureMessage(state.failure, {
+            responsesAvailable: hasEnabledResponses(responseActions),
+          })}
       </p>
       {/* 通話に参加できなくても応答アクションは選べる（fallback-first）(issue #99)。 */}
-      <StaffResponseActions receptionId={receptionId} token={token} />
+      <StaffResponseActions receptionId={receptionId} token={token} actions={responseActions} />
     </div>
   );
 }
