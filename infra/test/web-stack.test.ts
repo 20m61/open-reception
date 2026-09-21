@@ -562,75 +562,8 @@ describe.runIf(OPEN_NEXT_READY)('WebStack tenant provider secrets (#405 Inc2)', 
   }, 30000);
 });
 
-// originVerifySecret 方式（CloudFront OAC の POST 署名問題回避）:
-// Function URL を NONE にし、CloudFront origin custom header x-origin-verify で保護する。
-// **生値は dev 専用** (issue #612)。prod は Secrets Manager 方式（下の describe）。
-describe.runIf(OPEN_NEXT_READY)('WebStack origin-verify secret (#OAC-POST)', () => {
-  const SECRET = 'test-origin-verify-secret-高エントロピー';
-  let template: Template;
-  beforeAll(() => {
-    const app = new cdk.App();
-    template = Template.fromStack(
-      new WebStack(app, 'TestWebOriginVerify', {
-        env: { account: '123456789012', region: 'ap-northeast-1' },
-        config: resolveEnv('dev'),
-        appEnv: { ADMIN_AUTH_PROVIDER: 'none' },
-        originVerifySecret: SECRET,
-      }),
-    );
-  }, 60000);
-
-  it('uses Function URL authType NONE (public, protected by header)', () => {
-    template.resourceCountIs('AWS::Lambda::Url', 2);
-    // **件数で固定する。** hasResourceProperties は 1 つでも一致すれば通るので、
-    // 「片方だけ NONE」を見逃す。**NONE は server だけ**（image は常に OAC + AWS_IAM。#631）。
-    template.resourcePropertiesCountIs('AWS::Lambda::Url', { AuthType: 'NONE' }, 1);
-    template.resourcePropertiesCountIs('AWS::Lambda::Url', { AuthType: 'AWS_IAM' }, 1);
-  }, 30000);
-
-  it('drops OAC for the server origin only (S3 と image の OAC は残る) (#631)', () => {
-    template.resourceCountIs('AWS::CloudFront::OriginAccessControl', 2);
-  }, 30000);
-
-  it('grants lambda:InvokeFunction only to the image function (server は公開のため不要) (#631)', () => {
-    template.resourcePropertiesCountIs(
-      'AWS::Lambda::Permission',
-      {
-        Action: 'lambda:InvokeFunction',
-        Principal: 'cloudfront.amazonaws.com',
-        SourceArn: Match.anyValue(),
-      },
-      1,
-    );
-  }, 30000);
-
-  it('injects x-origin-verify custom header into the CloudFront origins', () => {
-    template.hasResourceProperties('AWS::CloudFront::Distribution', {
-      DistributionConfig: Match.objectLike({
-        Origins: Match.arrayWith([
-          Match.objectLike({
-            OriginCustomHeaders: Match.arrayWith([
-              Match.objectLike({ HeaderName: 'x-origin-verify', HeaderValue: SECRET }),
-            ]),
-          }),
-        ]),
-      }),
-    });
-  }, 30000);
-
-  it('passes ORIGIN_VERIFY_SECRET to the server function', () => {
-    template.hasResourceProperties('AWS::Lambda::Function', {
-      Environment: { Variables: Match.objectLike({ ORIGIN_VERIFY_SECRET: SECRET }) },
-    });
-  }, 30000);
-
-  it('marks the deployment as origin-verify (proxy が fail-closed に倒せる) (#612)', () => {
-    template.hasResourceProperties('AWS::Lambda::Function', {
-      Environment: { Variables: Match.objectLike({ ORIGIN_VERIFY_REQUIRED: '1' }) },
-    });
-  }, 30000);
-});
-
+// #1148: 生値モードの成功系テストは削除した。raw `originVerifySecret` は全環境で拒否し、
+ // 成功系は Secrets Manager dynamic reference のみを正本とする。
 // origin-verify シークレットを Secrets Manager から供給する (issue #612)。
 // 目的は「CFN テンプレートにも Lambda 環境変数にも平文を載せないこと」。
 describe.runIf(OPEN_NEXT_READY)('WebStack origin-verify via Secrets Manager (#612)', () => {
@@ -731,7 +664,7 @@ describe.runIf(OPEN_NEXT_READY)('WebStack origin-verify via Secrets Manager (#61
   }, 30000);
 });
 
-// 生値・空文字・環境外の経路を塞ぐ (issue #612)。
+// 生値・空文字・供給漏れの経路を塞ぐ (issue #612 / #1148)。
 // **`runIf(OPEN_NEXT_READY)` を付けない。** 引数ガードは `.open-next/` を必要としない位置
 // （assertBuildArtifacts より前）で throw するので、未ビルド環境でも検証できる。
 // runIf を付けていた頃は、ゲート外(#628)であることと相まって一度も実行されていなかった。
@@ -757,9 +690,10 @@ describe('WebStack origin-verify argument guards (#612)', () => {
       });
     };
 
-  it.each(['prod', 'staging'] as const)('rejects the raw-value mode in %s', (envName) => {
-    // 🔴 `=== 'prod'` で書くと staging が素通りする。許可リスト（`!== 'dev'`）で判定すること。
-    expect(build(envName, { originVerifySecret: 'TEST-raw' })).toThrow(/dev 以外では使えません/);
+  it.each(['dev', 'staging', 'prod'] as const)('rejects the raw-value mode in %s (#1148)', (envName) => {
+    // 🔴 dev だけを例外に戻さない。candidate execution に secret 値を渡さない境界である。
+    expect(build(envName, { originVerifySecret: 'TEST-raw' })).toThrow(/廃止されました/);
+    expect(build(envName, { originVerifySecret: 'TEST-raw' })).toThrow(/originVerifySecretName/);
   });
 
   // 🔴 **未指定を「OAC + AWS_IAM へのフォールバック」で黙って通さない (N3)。**
@@ -830,18 +764,16 @@ describe('WebStack origin-verify argument guards (#612)', () => {
     }).not.toThrow();
   });
 
-  it('rejects passing both (どちらがヘッダに載るか曖昧にしない)', () => {
+  it('rejects raw value even when a secret name is also supplied', () => {
     expect(
-      build('prod', { originVerifySecret: 'TEST-raw', originVerifySecretName: 'open-reception/x' }),
-    ).toThrow(/併用できません/);
+      build('dev', { originVerifySecret: 'TEST-raw', originVerifySecretName: 'open-reception/x' }),
+    ).toThrow(/廃止されました/);
   });
 
-  // 🔴 `-c originVerifySecret=$UNSET_VAR` は空文字を渡す。falsy 判定に任せると origin-verify が
-  // 黙って OFF になり、OAC+IAM に戻って全 POST が 403 になる（回避対象の障害そのもの）。
+  // 🔴 secret 名の空文字を「未指定」に落として OAC+IAM へ戻さない。
   it.each([
-    ['originVerifySecret', { originVerifySecret: '' }],
-    ['originVerifySecret（空白のみ）', { originVerifySecret: '   ' }],
     ['originVerifySecretName', { originVerifySecretName: '' }],
+    ['originVerifySecretName（空白のみ）', { originVerifySecretName: '   ' }],
   ])('rejects an empty %s instead of silently disabling verification', (_label, props) => {
     expect(build('prod', props)).toThrow(/空文字\/非文字列/);
   });
