@@ -91,10 +91,10 @@ const REASON_HINT: Readonly<Record<InvalidReason, string>> = {
 /**
  * 値が「明らかにその値ではない」かを判定する。正当なら `null`。
  *
- * 🔴 **値そのものを返さない。** 呼び出し側は理由だけを診断に出す ――
- * 「短すぎる」で弾かれるのは**本物の secret でありうる**ので、載せれば漏れる。
+ * 🔴 **値そのものを返さない。** 呼び出し側は理由だけを診断に出す。
+ * 現在の必須値は secret そのものではないが、診断に入力値を反射しない不変条件は維持する。
  */
-function classifyInvalid(_envVar: string, contextKey: string, value: string): InvalidReason | null {
+function classifyInvalid(contextKey: string, value: string): InvalidReason | null {
   if (contextKey === 'providerSecretBackend' && !PROVIDER_SECRET_BACKENDS.includes(value)) {
     return 'vocabulary';
   }
@@ -139,7 +139,7 @@ export function resolveDeployContext(
       missing.push(envVar);
       continue;
     }
-    const reason = classifyInvalid(envVar, contextKey, value);
+    const reason = classifyInvalid(contextKey, value);
     if (reason !== null) {
       invalidReasons.push([envVar, reason]);
       continue;
