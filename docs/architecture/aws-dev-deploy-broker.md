@@ -12,10 +12,10 @@ flowchart TD
   B --> C[MiniStack / Moto]
   C --> D{Real AWS evidence required?}
   D -- No --> E[Stop: no deploy]
-  D -- Yes --> F[Push dev-deploy branch]
+  D -- Yes --> F[Explicit promotion: move dev-deploy pointer]
 
   subgraph TRUSTED_INGRESS[Trusted source ingress]
-    F --> G[CodePipeline V1]
+    F --> G[CodePipeline V1 captures full commit SHA]
     H[AWS CodeConnections GitHub App] --> G
   end
 
@@ -41,6 +41,45 @@ flowchart TD
   T[Control Tower] -. observe only .-> G
   T -. observe only .-> R
 ```
+
+## Branch strategy vs promotion strategy
+
+`dev-deploy` is **not** a normal development branch and does not introduce GitFlow.
+
+Normal work remains:
+
+```text
+short-lived feature/fix branch
+  -> local checks / MiniStack
+  -> PR
+  -> main
+```
+
+Ordinary pushes, PR updates, and merges do not imply an AWS deploy.
+
+When real AWS evidence is actually needed, the reviewed revision is promoted by moving the
+`dev-deploy` pointer. CodePipeline Source captures the **full commit SHA that triggered that
+execution** and exposes it as `OR_TRUSTED_SOURCE_REVISION` to both Validation and the Trusted
+Broker.
+
+From that point on the SHA, not the branch name, is the deployment identity:
+
+```text
+dev-deploy -> abc123...   (trigger only)
+              |
+              +-> source_revision = abc123...  (immutable for this execution)
+                    -> Validation evidence
+                    -> cloud assembly evaluation
+                    -> sparse-deploy ledger / override
+                    -> future ChangeSet/deploy
+                    -> smoke/result
+```
+
+If `dev-deploy` moves to another commit while an execution is running, that running execution
+must continue using its originally captured SHA. Candidate-produced evidence claiming another
+revision is rejected by the Trusted Broker.
+
+Do not re-resolve `git rev-parse dev-deploy` or remote branch HEAD inside Validation/Broker.
 
 ## Authority split
 
@@ -109,4 +148,4 @@ Required prerequisites:
 
 The pipeline uses CodePipeline V1 and two `BUILD_GENERAL1_SMALL` CodeBuild projects, both with concurrency 1. The `dev-deploy` branch is a **promotion branch**, not a normal development branch. Normal pushes do not update it, so they do not start this pipeline.
 
-The portfolio target remains one successful real-AWS dev deploy per project per local day, soft ceiling two. The third potential success requires a human override tied to that candidate revision. The durable ledger is not implemented yet, so mutation remains unarmed.
+The portfolio target remains one successful real-AWS dev deploy per project per local day, soft ceiling two. The third potential success requires a human override tied to that immutable source revision. The durable ledger is not implemented yet, so mutation remains unarmed.
