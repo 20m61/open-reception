@@ -139,6 +139,10 @@ test('🔴 応答種別が 0 件のサイトでは、応答導線を指す 1 文
   // 🔴 見出しも直す —— 選べないのに「選んでください」と言わない。
   await expect(section).not.toContainText('応答を選んでください');
   await expect(section).toContainText('設定されていません');
+  // 🔴 **「今どうするか」を先に言う（レビュー 1 周目 MAJOR 2 / J-OR-05）。**
+  //    5 種別が全部無効＝来訪者の状態を動かす手段が無いので、設定の話だけでは
+  //    「目の前で待っている来訪者」に対して何も言っていないことになる。
+  await expect(page.getByTestId('staff-response-empty')).toContainText('直接の対応が必要');
 });
 
 /**

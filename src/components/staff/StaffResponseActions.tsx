@@ -95,6 +95,12 @@ export function StaffResponseActions({
   //    無効化していると、以前は「来訪者への応答を選んでください」とボタン 0 個の
   //    `section` が残った —— 担当者は**選べないものを探す**。選べないなら、
   //    見出しも「選んでください」ではなく、**そう言う**。
+  //
+  // 🔴 **「今どうするか」を先に言う（レビュー 1 周目 MAJOR 2 / J-OR-05）。**
+  //    5 種別が全部無効＝**来訪者の状態を動かす手段が 1 つも無い**ということなので、
+  //    「管理者へ知らせる」は設定を直す行為であって、**目の前で待っている来訪者を
+  //    救う行為ではない**。ただし**サイトの運用を前提にした指示は書かない**
+  //    （「受付窓口へ」は窓口が無いサイトで嘘になる。ユーザー判断で事実だけに留めた）。
   const empty = definitions.length === 0;
 
   return (
@@ -108,8 +114,9 @@ export function StaffResponseActions({
       </h2>
       {empty ? (
         <p className="staff-response__status notice" role="status" data-testid="staff-response-empty">
-          この受付では応答種別がすべて無効になっています。来訪者へ返答する導線はここにはありません。
-          対応できない場合は管理者へ知らせてください。
+          この受付では応答種別がすべて無効になっています。
+          <strong>この画面から来訪者へ返答する導線はありません。直接の対応が必要です。</strong>
+          設定については管理者へ知らせてください。
         </p>
       ) : null}
       <div className="staff-response__actions">
