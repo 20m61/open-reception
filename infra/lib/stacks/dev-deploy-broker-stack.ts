@@ -184,7 +184,7 @@ export class DevDeployBrokerStack extends cdk.Stack {
             commands: [
               'test -f broker-evidence.json',
               'test -f infra/cdk.out/manifest.json',
-              'node -e "const fs=require(\\'fs\\'); const e=JSON.parse(fs.readFileSync(\\'broker-evidence.json\\',\\'utf8\\')); if(e.schemaVersion!==1||typeof e.sourceRevision!==\\'string\\'||!e.sourceRevision){throw new Error(\\'invalid broker evidence\\')}"',
+              'node -e "const fs=require(\\'fs\\'); const e=JSON.parse(fs.readFileSync(\\'broker-evidence.json\\',\\'utf8\\')); const trusted=process.env.OR_TRUSTED_SOURCE_REVISION; if(e.schemaVersion!==1||typeof trusted!==\\'string\\'||!trusted||e.sourceRevision!==trusted){throw new Error(\\'validation evidence revision mismatch\\')}"',
               // Download policy by the content-addressed S3 location injected by this stack.
               'aws s3 cp "s3://$OR_TRUSTED_POLICY_BUCKET/$OR_TRUSTED_POLICY_KEY" /tmp/open-reception-trusted-policy.mjs --only-show-errors',
               'node /tmp/open-reception-trusted-policy.mjs --assembly infra/cdk.out --account "$OR_BROKER_TARGET_ACCOUNT" > trusted-policy-result.json',
@@ -208,19 +208,20 @@ export class DevDeployBrokerStack extends cdk.Stack {
     const source = new codepipeline.Artifact('Source');
     const validated = new codepipeline.Artifact('Validated');
 
+    const sourceAction = new actions.CodeStarConnectionsSourceAction({
+      actionName: 'PromotionBranch',
+      owner: '20m61',
+      repo: 'open-reception',
+      branch: DEV_DEPLOY_PROMOTION_BRANCH,
+      connectionArn: githubConnectionArn.valueAsString,
+      output: source,
+      triggerOnPush: true,
+      variablesNamespace: 'OpenReceptionSource',
+    });
+
     pipeline.addStage({
       stageName: 'Source',
-      actions: [
-        new actions.CodeStarConnectionsSourceAction({
-          actionName: 'PromotionBranch',
-          owner: '20m61',
-          repo: 'open-reception',
-          branch: DEV_DEPLOY_PROMOTION_BRANCH,
-          connectionArn: githubConnectionArn.valueAsString,
-          output: source,
-          triggerOnPush: true,
-        }),
-      ],
+      actions: [sourceAction],
     });
 
     pipeline.addStage({
@@ -231,6 +232,13 @@ export class DevDeployBrokerStack extends cdk.Stack {
           project: validationProject,
           input: source,
           outputs: [validated],
+          environmentVariables: {
+            // Trusted source metadata comes from the CodeConnections action, not candidate files.
+            OR_TRUSTED_SOURCE_REVISION: {
+              type: codebuild.BuildEnvironmentVariableType.PLAINTEXT,
+              value: sourceAction.variables.commitId,
+            },
+          },
         }),
       ],
     });
@@ -242,6 +250,12 @@ export class DevDeployBrokerStack extends cdk.Stack {
           actionName: 'TrustedBrokerUnarmed',
           project: brokerProject,
           input: validated,
+          environmentVariables: {
+            OR_TRUSTED_SOURCE_REVISION: {
+              type: codebuild.BuildEnvironmentVariableType.PLAINTEXT,
+              value: sourceAction.variables.commitId,
+            },
+          },
         }),
       ],
     });
