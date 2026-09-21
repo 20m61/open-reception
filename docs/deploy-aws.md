@@ -168,8 +168,8 @@ CloudFront 越しに **POST/フォーム/受付発行が機能する**ために�
 
 | | context | CFN テンプレート | Lambda 環境変数 | 使う環境 |
 | --- | --- | --- | --- | --- |
-| 生値 | `-c originVerifySecret=<値>` | **平文** | 解決済みの値 | **dev のみ** |
-| Secrets Manager | `-c originVerifySecretName=<シークレット名>` | 動的参照 | 解決済みの値 | dev 以外は必須 |
+| Secrets Manager | `-c originVerifySecretName=<シークレット名>` | 動的参照 | 解決済みの値 | **全環境の正本** |
+| 旧: 生値 | `-c originVerifySecret=<値>` | 平文 | 平文 | **#1148 で全環境禁止** |
 
 Secrets Manager 方式では、シークレット JSON の **`ORIGIN_VERIFY_SECRET` キー**を参照する。
 `appSecretsName` と同じシークレットで良い（手順 5 の JSON にキーを 1 つ足すだけ）。
@@ -183,8 +183,9 @@ Secrets Manager 方式では、シークレット JSON の **`ORIGIN_VERIFY_SECR
 - 両モードとも `ORIGIN_VERIFY_REQUIRED=1`（非機密）を渡す。**検証の ON/OFF はこのフラグだけが
   決める**（シークレットの有無では決めない）。これが立っていて値が未解決なら `proxy.ts` は
   **503 を返す**（`mismatch` の 403 とは別。前者は配備側の障害、後者は直叩き）。
-- **dev 以外で `-c originVerifySecret=<生値>` を渡すと `cdk synth` が失敗する**（WebStack が拒否）。
-  併用も、**空文字も**不可（`-c originVerifySecret=$UNSET_VAR` を黙って無効化に落とさないため）。
+- **`-c originVerifySecret=<生値>` は dev を含む全環境で `cdk synth` が失敗する**（#1148）。
+  coding-agent / CodeBuild / CDK argv / CFN template に secret 値を戻さないための境界。
+- `originVerifySecretName` の**空文字も不可**（黙って origin-verify 無効へ倒さないため）。
 - `ORIGIN_VERIFY_*` を `appEnv` から渡すことはできない（synth で拒否）。「検証を要求するが値が無い」
   状態を手で作れてしまい、全リクエストが恒久 503 になるため。
 - `ORIGIN_VERIFY_REQUIRED` で**偽になるのは `0` と空文字だけ**。`false` は真（曖昧な値は
@@ -505,26 +506,24 @@ aws secretsmanager create-secret --name open-reception/dev/app-v2 --secret-strin
 > `appEnv` に `"CALL_ANSWER_SECRET": ""` が載っていると Secrets Manager の値で**上書きされず**、
 > `serverSecret()` は空文字を「未設定」と読んで throw する。値が無いなら**キーごと外す**。
 
-### 3. デプロイ（context 2 つが必須）
+### 3. デプロイ（secret 名を2つの用途へ渡す）
 
 ```sh
 cd infra
 npx cdk deploy OpenReception-Web-dev --require-approval never \
-  -c originVerifySecret=<高エントロピー値> \
-  -c appSecretsName=open-reception/dev/app-v2
+  -c appSecretsName=open-reception/dev/app-v2 \
+  -c originVerifySecretName=open-reception/dev/app-v2
 ```
 
-**`originVerifySecret` を省くと POST が全滅する。** CloudFront OAC は Lambda Function URL への
-リクエスト**ボディを署名しない**ため、Function URL の SigV4 検証が必ず失敗する
-（GET は通り、POST/PUT/PATCH/DELETE だけ 403）。指定すると Function URL が `NONE` になり、
-CloudFront が `x-origin-verify` を付与、`src/proxy.ts` が照合して直叩きを拒否する。
+同じ Secrets Manager secret の `ORIGIN_VERIFY_SECRET` キーを CFN dynamic reference で
+CloudFront custom header と server Lambda env の両方へ渡す。生secretはCDKへ渡さない。
 
-**prod では生値ではなく `-c originVerifySecretName=<シークレット名>`**（同じシークレットの
-`ORIGIN_VERIFY_SECRET` キー）。生値は prod では `cdk synth` が拒否する。
+通常はこのコマンドを手で組み立てず、`scripts/aws-cloud-deploy.sh` を使う。
+wrapper は `OR_APP_SECRETS_NAME` 1つから `appSecretsName` と
+`originVerifySecretName` の両 context を決定論的に生成する（#1148）。
+
+**どちらの context も必要**だが、運用入力は1つの secret 名なので不一致を作らない。
 詳細は上の「origin-verify シークレットの供給 (#612)」。
-
-**どちらの context も次回デプロイで指定を忘れると壊れる。** 指定を省いた `cdk deploy` は
-成功するが、POST が 403 に戻り、エンロールが 500 に戻る。
 
 ### 4. 管理者を作る
 
