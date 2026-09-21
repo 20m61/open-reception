@@ -92,6 +92,29 @@ describe('DevDeployBrokerStack (#1146 Phase 1)', () => {
     expect(buildSpec).toContain('AWS_EC2_METADATA_DISABLED=true');
   });
 
+  it('runs full promotion validation and emits only the approved three-stack cloud assembly', () => {
+    const projects = template.findResources('AWS::CodeBuild::Project');
+    const validation = Object.values(projects).find(
+      (value) =>
+        (value.Properties as { Name?: string }).Name === 'OpenReceptionDevDeployValidation',
+    );
+    expect(validation).toBeDefined();
+
+    const serialized = JSON.stringify(validation);
+    expect(serialized).toContain('npm run typecheck');
+    expect(serialized).toContain('npm run lint');
+    expect(serialized).toContain('npm test');
+    expect(serialized).toContain('npm run aws:local:test');
+    expect(serialized).not.toContain('quality-gate.sh --pr');
+    expect(serialized).toContain('OpenReception-Web-dev');
+    expect(serialized).toContain('OpenReception-WebMonitoring-dev');
+    expect(serialized).toContain('OpenReception-CfMon-dev');
+    expect(serialized).not.toContain('OpenReception-Notification-dev');
+    expect(serialized).not.toContain('OpenReception-Monitoring-dev');
+    expect(serialized).toContain('originVerifySecretName="$OR_APP_SECRETS_NAME"');
+    expect(serialized).toContain('infra/cdk.out/**/*');
+  });
+
   it('keeps the trusted broker unarmed in Phase 1', () => {
     const docs = policyDocumentsForRole(template, 'OpenReceptionTrustedDevDeployBrokerRole');
     expect(JSON.stringify(docs)).not.toContain('sts:AssumeRole');
