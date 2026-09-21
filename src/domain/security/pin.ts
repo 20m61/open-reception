@@ -40,7 +40,7 @@ const ALGORITHM = 'pbkdf2-sha256';
  * 10,000 回なら実測 **約 5ms** で、増幅は 20 分の 1 になる。
  * AC4（試行回数制限）が入ったらここを上げ直す余地がある。
  */
-const ITERATIONS = 10_000;
+export const ITERATIONS = 10_000;
 
 /**
  * 記録側の反復回数の上限（計算量の歯止め）。
@@ -55,7 +55,7 @@ const ITERATIONS = 10_000;
  * `pinRequired` を落とせる）。**読めるはずの記録を読めなくする**ほうが実害が大きいので、
  * 上限は緩く取り、**超過は平文へ落とさず fail closed** にする（下の `CredentialShape`）。
  */
-const MAX_ITERATIONS = 1_000_000;
+export const MAX_ITERATIONS = 1_000_000;
 const KEY_BITS = 256;
 
 const encoder = new TextEncoder();
@@ -142,6 +142,32 @@ export function isHashedPin(stored: string): boolean {
   return classify(stored).kind === 'hash';
 }
 
+/**
+ * 保存された値が**旧レコードの平文**か（＝ハッシュへ昇格してよいか）。
+ *
+ * 🔴 **書き側も 3 状態で判断する（レビュー 3 周目 MAJOR 1）。** 分類を 3 状態にしたとき、
+ * 直したのは**読み側だけ**で、昇格は `!isHashedPin(...)`（＝2 状態）のままだった。
+ * その結果 `unusable` な記録（上限超え・salt 破損）が「平文」として扱われ、
+ * **次の保存でその記録文字列が生きた PIN になる**（実測: 緊急停止を 1 回押すだけで発火し、
+ * ダンプを見た者がその文字列で authorize できた）。
+ *
+ * `pin.ts` の不変条件「うちの形式だが読めない値は平文へ落とさない」は、
+ * **読み側だけでは守れない**。
+ */
+export function isLegacyPlaintextPin(stored: string): boolean {
+  return classify(stored).kind === 'plaintext';
+}
+
+/**
+ * 保存された値が**資格情報として使えるか**（照合に使えるか）。
+ *
+ * `unusable`（うちの形式だが読めない）と空は false。読み側の正規化に使う。
+ */
+export function isUsablePinCredential(stored: string): boolean {
+  if (stored === '') return false;
+  return classify(stored).kind !== 'unusable';
+}
+
 /** PIN を保存形式（ハッシュ）へ変換する。**毎回ランダムな salt を使う。** */
 export async function hashPin(pin: string): Promise<string> {
   const salt = crypto.getRandomValues(new Uint8Array(16));
@@ -192,7 +218,10 @@ export async function verifyPinCredential(stored: string, input: string): Promis
   //    今日それを防いでいるのは保存側の 2 つのガードだけで、**片方を落とす変異は
   //    全テストを素通りした**（同 MAJOR 3 の実測）。禁止を数え上げるのではなく、
   //    **「空は資格情報ではない」を両側の不変条件にする**（族ごと塞ぐ）。
-  if (stored === '' || input === '') return false;
+  // 🔴 **`stored === ''` は撤回した（レビュー 3 周目 MINOR 9）。** `input === ''` と
+  //    `timingSafeEqual` の長さ判定に**完全に包含**されており（外しても全テスト緑＝等価）、
+  //    守るものが無い機構だった。不変条件「空は資格情報ではない」は入力側が持つ。
+  if (input === '') return false;
   const shape = classify(stored);
   // 🔴 **うちの形式だが読めないものは、平文へ落とさない**（記録の文字列で通ってしまう）。
   if (shape.kind === 'unusable') return false;

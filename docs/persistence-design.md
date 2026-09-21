@@ -34,6 +34,7 @@
 | モーション割当 | `let mapping` | `src/lib/motion/motion-store.ts` |
 | セキュリティ設定 | `let settings` | `src/lib/security/security-store.ts` |
 | 音声設定 | `let settings` | `src/lib/voice/voice-store.ts` |
+
 **セキュリティ設定の PIN は資格情報として保存する（#1021 AC3）。**
 `SecuritySettings.pin` は**平文とは限らない** —— 新しい書き込みは PBKDF2-SHA256 の記録
 （`pbkdf2-sha256$<反復>$<salt>$<hash>`）で、既定値や旧レコードの平文も**次の書き込みで昇格**する。

@@ -5,8 +5,9 @@
 import {
   BUILTIN_DEFAULT_PIN,
   hashPin,
-  isHashedPin,
+  isLegacyPlaintextPin,
   isPinConfigured,
+  isUsablePinCredential,
   verifyPinCredential,
 } from '@/domain/security/pin';
 import type { SecuritySettings } from '@/domain/security/types';
@@ -36,7 +37,7 @@ function defaults(): SecuritySettings {
     //    このリポジトリは `${VAR:-test}` 型の取りこぼしを既に教訓化している
     //    （`.claude/rules/local-aws-development.md`）。空なら組込み既定へ落とす。
     pin: envPin() ?? BUILTIN_DEFAULT_PIN,
-    pinSetByOperator: envPin() !== undefined,
+    pinSetByOperator: envPin() !== undefined && envPin() !== BUILTIN_DEFAULT_PIN,
     ipAllowlist: [],
     emergencyStop: false,
   };
@@ -46,17 +47,25 @@ const security = () => getBackend().singleton<SecuritySettings>('security', { de
 
 async function current(): Promise<SecuritySettings> {
   const s = (await security().get()) ?? defaults();
-  // 🔴 **空の保存値は「未設定」＝組込み既定として読む（レビュー 2 周目 MAJOR 1）。**
+  // 🔴 **使えない資格情報は「未設定」＝組込み既定として読む。**
   //
-  // `.env.example` の `KIOSK_PIN=`（空）を使っていたサイトが管理画面で 1 度保存すると、
-  // 永続レコードは `pin: ''` になる。空を拒否するようにした結果、そのサイトは
-  // **通る入力が 1 つも無い**（誰も authorize できない）のに、管理画面は
-  // 「未設定（既定値が有効）」と表示していた —— **画面が嘘をつく**（実測）。
+  // 2 周目 MAJOR 1: `.env.example` の `KIOSK_PIN=`（空）を使っていたサイトが管理画面で
+  // 1 度保存すると永続レコードは `pin: ''` になる。空を拒否した結果、そのサイトは
+  // **通る入力が 1 つも無い**のに管理画面は「未設定（既定値が有効）」と表示していた。
   //
-  // 空 env を未設定として扱うのと同じ規則をここにも適用し、
-  // **表示と挙動を一致させる**（「既定値が有効」が真になる）。
-  const pin = s.pin === '' || typeof s.pin !== 'string' ? BUILTIN_DEFAULT_PIN : s.pin;
-  return { ...s, pin, ipAllowlist: [...s.ipAllowlist] };
+  // 🔴 3 周目 MAJOR 1 / MINOR 3: 同じ嘘が **`unusable`（うちの形式だが読めない記録）**の
+  // 綴りで残っていた —— 空だけを正規化していたため。しかも `unusable` は昇格で
+  // **平文として扱われ、記録文字列が生きた PIN になる**（実測）。
+  // **読めない資格情報は 1 つの規則で「未設定」に倒す**（族ごと閉じる）。
+  const usable = isUsablePinCredential(s.pin);
+  const pin = usable ? s.pin : BUILTIN_DEFAULT_PIN;
+  // 読めない資格情報を「設定済み」と表示しない（表示と挙動を一致させる）。
+  const pinSetByOperator = usable ? s.pinSetByOperator : false;
+  // 🔴 **隣のフィールドでも 500 にしない（レビュー 3 周目 MINOR 6）。** `pin` について
+  //    同じ理屈（「レコードが 1 つ在るだけで 500 になり、復旧導線ごと失われる」）を
+  //    書いておきながら、**同じ式の隣**が素通りだった。
+  const ipAllowlist = Array.isArray(s.ipAllowlist) ? [...s.ipAllowlist] : [];
+  return { ...s, pin, pinSetByOperator, ipAllowlist };
 }
 
 export async function getSecuritySettings(): Promise<SecuritySettings> {
@@ -77,7 +86,11 @@ export async function updateSecuritySettings(patch: unknown): Promise<SecuritySe
     //    ここが持つのは**「運用者が決めた」という事実**だけ。
     if (typeof o.pin === 'string' && o.pin.trim() !== '') {
       settings.pin = o.pin.trim();
-      settings.pinSetByOperator = true;
+      // 🔴 **既定値と同じなら「設定済み」と言わない（レビュー 3 周目 MAJOR 2）。**
+      //    この PR 自身が `.env.example` で「0000 なら未設定と表示される」と約束している。
+      //    運用者が `0000` と入力した場合にだけその約束が破れていた —— しかも保存値は
+      //    ハッシュなので、**後から見た誰も 0000 だと気づけない**（#1021 MAJOR-8 より悪い）。
+      settings.pinSetByOperator = settings.pin !== BUILTIN_DEFAULT_PIN;
     }
     if (Array.isArray(o.ipAllowlist)) {
       settings.ipAllowlist = o.ipAllowlist.filter((x): x is string => typeof x === 'string').map((x) => x.trim()).filter(Boolean);
@@ -91,7 +104,10 @@ export async function updateSecuritySettings(patch: unknown): Promise<SecuritySe
   // `default` を使わないので実デプロイでも起きる）。旧レコードの平文も、ここを通れば昇格する。
   // 「運用者が決めたか」は形式からではなく `pinSetByOperator` が持つので、
   // 昇格させても #1021 MAJOR-8 は再発しない。
-  if (settings.pin !== '' && !isHashedPin(settings.pin)) {
+  // 🔴 **昇格も 3 状態で判断する（レビュー 3 周目 MAJOR 1）。** `!isHashedPin(...)` は
+  //    `unusable` を平文側へ落とすので、**記録文字列がそのまま PIN として封入**されていた。
+  //    昇格してよいのは**旧レコードの平文だけ**である。
+  if (isLegacyPlaintextPin(settings.pin)) {
     // 🔴 **昇格前の平文で「運用者が決めたか」を確定させる。**
     //    昇格すると形式からは判定できなくなるので、ここで決めないと
     //    旧レコードの `0000` が昇格の瞬間に「設定済み」へ化ける（#1021 MAJOR-8 の再発）。

@@ -110,6 +110,24 @@ describe('GET /api/admin/security の pinConfigured (#1021 AC3)', () => {
     expect(JSON.stringify(recordDangerAction.mock.calls)).not.toContain('4821');
   });
 
+  /**
+   * 🔴 **GET 側にも同じ主張を置く（レビュー 3 周目 MINOR 1。変異が生存していた）。**
+   * 管理 UI が毎回読むのは GET であり、PUT にだけ主張があっても穴は塞がらない。
+   */
+  it('🔴 GET も PIN の値を返さない', async () => {
+    await PUT(
+      new Request('http://localhost/api/admin/security', {
+        method: 'PUT',
+        body: JSON.stringify({ pin: '4821' }),
+      }),
+    );
+    const text = await (await GET()).text();
+    expect(text).not.toContain('4821');
+    expect(text).not.toContain('pbkdf2');
+    // 下界: 応答が空でない。
+    expect(JSON.parse(text)).toMatchObject({ pinConfigured: true });
+  });
+
   it('🔴 PIN の値そのものは返さない（平文もハッシュも）', async () => {
     const res = await PUT(
       new Request('http://localhost/api/admin/security', {

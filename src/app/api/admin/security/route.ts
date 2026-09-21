@@ -53,6 +53,8 @@ export async function PUT(request: Request): Promise<NextResponse> {
   // 🔴 **body は 1 度だけ読む。** `pinChanged` は「PIN を送ったか」で決める
   //    （レビュー 2 周目 MAJOR 2）——「未設定→設定済みの遷移」では**ローテーションが
   //    全部 false** になり、退職・漏洩時の変更が監査から消える（実測）。
+  //    🔴 語義は厳密には「**PIN 欄に入力して保存した**」である（同じ値の再投入も true）。
+  //    値を比較できない以上こうなる（レビュー 3 周目 MINOR 10）。
   const patch = await readJson(request);
   const updated = await updateSecuritySettings(patch);
   const pinChanged =

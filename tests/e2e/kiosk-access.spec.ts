@@ -63,6 +63,23 @@ test('pinRequired=true では正しい PIN の authorize がセッションを�
  *
  * 🔴 **共有 seed を書き換えるので、必ず `finally` で戻す**（この spec は既に serial）。
  */
+/**
+ * 🔴 **PIN を書き換える spec の後始末は `test.afterEach`（`finally` ではない）。**
+ *
+ * `.claude/rules/opus5-autonomous-loop.md` の実測: timeout でページが閉じられると
+ * `finally` の中の `await` は**即 reject し、復元されないまま run の残り全部が汚染される**。
+ * 新規の 2 本は**グローバルな PIN の値そのもの**を書き換えるので、既存 1 本より窓が広い。
+ *
+ * 🔴 **完全には元に戻らない**（レビュー 3 周目 MINOR 8）。`pinSetByOperator` を
+ * false へ戻す API 経路が無いため、既定値 `0000` を入れ直すことで
+ * 「運用者が決めていない」状態へは戻る（＝`pinConfigured` は false に戻る）。
+ */
+test.afterEach(async ({ page }) => {
+  await page.request.put('/api/admin/security', {
+    data: { pin: '0000', pinRequired: false },
+  });
+});
+
 test('🔴 管理画面で決めた PIN で authorize できる（ハッシュ保存の通し確認, #1021）', async ({
   page,
 }) => {
@@ -76,18 +93,13 @@ test('🔴 管理画面で決めた PIN で authorize できる（ハッシュ�
   expect(put).not.toContain('4821');
   expect(put).not.toContain('pbkdf2');
   expect(JSON.parse(put)).toMatchObject({ pinConfigured: true });
-  try {
-    // 決めた PIN では通る。
-    const ok = await page.request.post('/api/kiosk/authorize', {
-      data: { pin: '4821', kioskId: 'kiosk-dev' },
-    });
-    expect(ok.ok()).toBeTruthy();
-    const status = await page.request.get('/api/kiosk/session-status');
-    expect(((await status.json()) as { authorized: boolean }).authorized).toBe(true);
-  } finally {
-    // 🔴 既定へ戻す。PIN は「空欄なら変更しない」なので、明示的に既定へ戻してから解除する。
-    await page.request.put('/api/admin/security', { data: { pin: '0000', pinRequired: false } });
-  }
+  // 決めた PIN では通る（後始末は afterEach が持つ）。
+  const ok = await page.request.post('/api/kiosk/authorize', {
+    data: { pin: '4821', kioskId: 'kiosk-dev' },
+  });
+  expect(ok.ok()).toBeTruthy();
+  const status = await page.request.get('/api/kiosk/session-status');
+  expect(((await status.json()) as { authorized: boolean }).authorized).toBe(true);
 });
 
 /**
@@ -96,17 +108,13 @@ test('🔴 管理画面で決めた PIN で authorize できる（ハッシュ�
 test('🔴 管理画面で決めた PIN と違う入力は authorize できない（#1021）', async ({ page }) => {
   await loginAsAdmin(page);
   await page.request.put('/api/admin/security', { data: { pinRequired: true, pin: '4821' } });
-  try {
-    const ng = await page.request.post('/api/kiosk/authorize', {
-      data: { pin: '0000', kioskId: 'kiosk-dev' },
-    });
-    expect(ng.ok()).toBeFalsy();
-    // 🔴 PIN を送らない要求も通らない（レビュー 1 周目 BLOCKER の通し確認）。
-    const empty = await page.request.post('/api/kiosk/authorize', { data: { kioskId: 'kiosk-dev' } });
-    expect(empty.ok()).toBeFalsy();
-  } finally {
-    await page.request.put('/api/admin/security', { data: { pin: '0000', pinRequired: false } });
-  }
+  const ng = await page.request.post('/api/kiosk/authorize', {
+    data: { pin: '0000', kioskId: 'kiosk-dev' },
+  });
+  expect(ng.ok()).toBeFalsy();
+  // 🔴 PIN を送らない要求も通らない（レビュー 1 周目 BLOCKER の通し確認）。
+  const empty = await page.request.post('/api/kiosk/authorize', { data: { kioskId: 'kiosk-dev' } });
+  expect(empty.ok()).toBeFalsy();
 });
 
 test('kiosk セッション（エンロール由来）では管理 API を操作できない', async ({ page }) => {

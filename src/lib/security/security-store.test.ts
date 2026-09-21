@@ -225,6 +225,72 @@ describe('security-store (#23 #29)', () => {
     vi.unstubAllEnvs();
   });
 
+  /**
+   * 🔴 **MAJOR 1 の下界（レビュー 3 周目）。** 3 状態化を読み側にだけ入れた結果、
+   * `unusable` な記録が昇格で**平文として封入**され、**記録文字列がそのまま PIN**になっていた
+   * （実測: 緊急停止を 1 回押すだけで発火し、ダンプを見た者が authorize できた）。
+   */
+  it('🔴 読めない記録は、別項目の更新後もその文字列で authorize できない', async () => {
+    const unusable = `pbkdf2-sha256$2000000$AAAAAAAAAAAAAAAAAAAAAA==$BBBB`;
+    await getBackend().singleton('security', { default: () => ({}) }).put({
+      pinRequired: true,
+      pin: unusable,
+      pinSetByOperator: true,
+      ipAllowlist: [],
+      emergencyStop: false,
+    });
+    await updateSecuritySettings({ emergencyStop: true });
+    expect(await verifyPin(unusable)).toBe(false);
+    // 下界: 締め出しにもしない（読めない資格情報は「未設定」として既定へ倒す）。
+    expect(await verifyPin(BUILTIN_DEFAULT_PIN)).toBe(true);
+    // 読めない資格情報を「設定済み」と表示しない。
+    expect(isPinConfigured(await getSecuritySettings())).toBe(false);
+  });
+
+  /**
+   * 🔴 **MAJOR 2 の下界（同）。** 運用者が `0000` を入力すると「設定済み」と表示されるが、
+   * 有効な PIN は**公開既定値**である。この PR 自身が `.env.example` で
+   * 「0000 なら未設定と表示される」と約束している。
+   */
+  it('🔴 運用者が既定値を入力しても「設定済み」とは言わない', async () => {
+    const updated = await updateSecuritySettings({ pinRequired: true, pin: BUILTIN_DEFAULT_PIN });
+    expect(isPinConfigured(updated)).toBe(false);
+    // 下界: 別の値なら設定済み（全部 false にして満たしていない）。
+    expect(isPinConfigured(await updateSecuritySettings({ pin: '4821' }))).toBe(true);
+  });
+
+  /** 🔴 `KIOSK_PIN=0000` も同じ（env 側の綴り）。 */
+  it('🔴 KIOSK_PIN が既定値と同じなら未設定として扱う', async () => {
+    vi.stubEnv('KIOSK_PIN', BUILTIN_DEFAULT_PIN);
+    await __resetSecurity();
+    expect(isPinConfigured(await getSecuritySettings())).toBe(false);
+    vi.unstubAllEnvs();
+  });
+
+  /**
+   * 🔴 **MINOR 2: 管理 API 側の `trim()` にも対照を置く。**
+   * `KIOSK_PIN` の正規化は縛ったのに、**主経路である管理 API 側**が縛られていなかった。
+   */
+  it('🔴 管理 API から送られた PIN の前後の空白は落とす', async () => {
+    await updateSecuritySettings({ pinRequired: true, pin: '  4821  ' });
+    expect(await verifyPin('4821')).toBe(true);
+    expect(await verifyPin('  4821  ')).toBe(false);
+  });
+
+  /**
+   * 🔴 **MINOR 6: `ipAllowlist` が配列でないレコードで 500 にしない。**
+   * `pin` について同じ理屈を書いておきながら、同じ式の隣が素通りだった。
+   */
+  it('🔴 ipAllowlist が配列でない旧レコードでも落ちない', async () => {
+    await getBackend().singleton('security', { default: () => ({}) }).put({
+      pinRequired: false,
+      pin: BUILTIN_DEFAULT_PIN,
+      ipAllowlist: undefined,
+      emergencyStop: false,
+    });
+    expect((await getSecuritySettings()).ipAllowlist).toEqual([]);
+  });
+
   it('IP 許可リストを更新できる', async () => {
     const updated = await updateSecuritySettings({ ipAllowlist: ['10.0.0.1', ' 10.0.0.2 '] });
     expect(updated.ipAllowlist).toEqual(['10.0.0.1', '10.0.0.2']);

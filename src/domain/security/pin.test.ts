@@ -14,6 +14,8 @@
 import { describe, expect, it } from 'vitest';
 import {
   BUILTIN_DEFAULT_PIN,
+  ITERATIONS,
+  MAX_ITERATIONS,
   hashPin,
   isPinConfigured,
   isHashedPin,
@@ -198,8 +200,43 @@ describe('🔴 分類器の節と定数（機械的に棚卸しした面）', ()
     '🔴 salt が読めない記録 (%s) は誰も通さない',
     async (broken) => {
       expect(await verifyPinCredential(broken, broken)).toBe(false);
+      // 🔴 下界（レビュー 3 周目 MINOR 4）: 「記録として読めない」ことまで主張する。
+      //    `verify` が false なだけなら「hash だが一致しない」世界でも満たせるので、
+      //    salt の検査を外す変異が**生存していた**。
+      expect(isHashedPin(broken)).toBe(false);
     },
   );
+
+  /**
+   * 🔴 **定数の関係を縛る（レビュー 3 周目 MINOR 5）。**
+   * `ITERATIONS` を上限より上へ動かすと、**自分が書いた記録を自分で読めなくなり**
+   * サイト全体が締め出される（実測で再現）。doc が「AC4 が入ったら上げ直す余地がある」と
+   * 書いている操作そのものなので、関係を固定する。
+   */
+  it('🔴 書き込む反復回数は記録側の上限以下', () => {
+    expect(ITERATIONS).toBeLessThanOrEqual(MAX_ITERATIONS);
+  });
+
+  /**
+   * 🔴 **上限の理由になっている値（210,000 の記録）が読めることを固定する。**
+   * doc は「210,000 の記録を読めなくしないために上限を緩く取った」と書いているのに、
+   * それを縛るテストが無く、上限を 20,001〜1e8 の任意値へ狭めても緑だった。
+   */
+  it('🔴 210,000 反復の記録も読める（上限を締めすぎない）', async () => {
+    const encoder = new TextEncoder();
+    const saltBytes = crypto.getRandomValues(new Uint8Array(16));
+    const key = await crypto.subtle.importKey('raw', encoder.encode('4821'), 'PBKDF2', false, [
+      'deriveBits',
+    ]);
+    const bits = await crypto.subtle.deriveBits(
+      { name: 'PBKDF2', hash: 'SHA-256', salt: saltBytes as BufferSource, iterations: 210_000 },
+      key,
+      256,
+    );
+    const b64 = (bytes: Uint8Array) => btoa(String.fromCharCode(...bytes));
+    const record = `pbkdf2-sha256$210000$${b64(saltBytes)}$${b64(new Uint8Array(bits))}`;
+    expect(await verifyPinCredential(record, '4821')).toBe(true);
+  });
 
   /** 🔴 文字列でない保存値で 500 にしない（authorize も管理画面も落ちる）。 */
   it('🔴 保存値が文字列でなくても落ちず、誰も通さない', async () => {
