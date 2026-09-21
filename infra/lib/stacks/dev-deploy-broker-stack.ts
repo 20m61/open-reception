@@ -82,7 +82,16 @@ export class DevDeployBrokerStack extends cdk.Stack {
         phases: {
           install: {
             'runtime-versions': { nodejs: 22 },
-            commands: ['npm ci', 'npm --prefix infra ci'],
+            commands: [
+              // Candidate-controlled lifecycle scripts run below. Remove the standard AWS SDK
+              // credential-provider inputs first so npm/test code cannot accidentally use the
+              // Validation CodeBuild service role. The role has no deploy authority regardless;
+              // this additionally keeps the local-AWS lane hermetic.
+              'unset AWS_SESSION_TOKEN AWS_PROFILE AWS_CREDENTIAL_EXPIRATION AWS_ROLE_ARN AWS_WEB_IDENTITY_TOKEN_FILE AWS_CONTAINER_CREDENTIALS_RELATIVE_URI AWS_CONTAINER_CREDENTIALS_FULL_URI AWS_CONTAINER_AUTHORIZATION_TOKEN AWS_CONTAINER_AUTHORIZATION_TOKEN_FILE',
+              'export AWS_ACCESS_KEY_ID=test AWS_SECRET_ACCESS_KEY=test AWS_EC2_METADATA_DISABLED=true',
+              'npm ci',
+              'npm --prefix infra ci',
+            ],
           },
           build: {
             commands: [
