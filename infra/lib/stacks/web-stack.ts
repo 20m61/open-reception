@@ -86,15 +86,11 @@ export interface WebStackProps extends StackProps {
    */
   readonly appSecretsName?: string;
   /**
-   * CloudFront 経由アクセスの検証用シークレット。指定すると Function URL を authType=NONE にし、
-   * CloudFront が origin custom header `x-origin-verify` にこの値を付与する。server(middleware) が
-   * 一致を検証し、Function URL 直叩き（CloudFront 迂回）を拒否する。
-   * CloudFront OAC は POST/PUT のボディを署名せず Lambda(IAM) が拒否する制約を回避するための方式。
-   * 未指定なら従来どおり OAC + IAM 署名（GET は通るが POST は 403 になる既知問題）。
+   * @deprecated #1148 で生値モードは全環境で禁止した。
    *
-   * **この方式は生値が CFN テンプレートに平文で載る。dev 専用** (issue #612)。
-   * dev 以外では `originVerifySecretName`（Secrets Manager）を使うこと。
-   * 生値を dev 以外へ渡すと **synth 時点で throw する**。空文字も同様。
+   * 後方互換の入力検出だけのため型には残す。値が渡された場合は synth 時点で必ず throw し、
+   * `originVerifySecretName`（Secrets Manager dynamic reference）への移行を要求する。
+   * secret 値を CDK argv / CloudFormation template / coding-agent environment に戻さない。
    */
   readonly originVerifySecret?: string;
   /**
@@ -209,20 +205,15 @@ export class WebStack extends Stack {
           '手で渡すと「検証を要求するが値が無い」状態を作れてしまい、全リクエストが 503 になります。',
       );
     }
-    // 生値（dev 専用）と Secrets Manager は排他。
-    if (originVerifySecret && originVerifySecretName) {
+    // #1148: 生値モードは dev を含む全環境で廃止する。
+    // ここは後方互換の入力を「黙って無視」せず、明示的に移行を要求するために残す。
+    // 候補コードを実行する Validation CodeBuild に secret 値を渡さないことが
+    // safe-dev-deploy の前提なので、dev だけの例外を残さない。
+    if (originVerifySecret !== undefined) {
       throw new Error(
-        'originVerifySecret と originVerifySecretName は併用できません' +
-          '（どちらが CloudFront ヘッダに載るか曖昧になるため）。dev 以外は originVerifySecretName を使ってください。',
-      );
-    }
-    // **許可リストで判定する（`!== 'dev'`）。** `=== 'prod'` だと staging が素通りし、
-    // 環境を足したときの既定が「平文可」に倒れる。
-    if (originVerifySecret && config.environment !== 'dev') {
-      throw new Error(
-        `originVerifySecret（生値）は dev 以外では使えません (issue #612。指定環境: ${config.environment})。` +
-          '生値は CFN テンプレートに平文で載ります。' +
-          '`-c originVerifySecretName=<Secrets Manager シークレット名>` を使ってください。',
+        'originVerifySecret（生値）は #1148 で廃止されました。' +
+          'Secrets Manager の名前を `-c originVerifySecretName=<name>` で渡してください。' +
+          'open-reception の deploy context は OR_APP_SECRETS_NAME と同じ secret 名を使います。',
       );
     }
     // **dev 以外は origin-verify を必須にする（fail-closed / N3）。**
@@ -233,7 +224,7 @@ export class WebStack extends Stack {
     // 受付 URL 発行も `/api/kiosk/enroll` も通らない ── **受付が成立しない状態で立ち上がり、
     // しかも synth も deploy も成功する**。気づけるのは実機で来訪者が詰まったときになる。
     // dev は開発を止めないため従来どおり未指定で通す（上の「生値は dev 専用」と対になる）。
-    if (!originVerifySecret && !originVerifySecretName && config.environment !== 'dev') {
+    if (!originVerifySecretName && config.environment !== 'dev') {
       throw new Error(
         `origin-verify シークレットが未指定です (指定環境: ${config.environment})。` +
           'dev 以外では `-c originVerifySecretName=<Secrets Manager シークレット名>`' +
@@ -276,7 +267,7 @@ export class WebStack extends Stack {
       ? SecretValue.secretsManager(originVerifySecretName, {
           jsonField: ORIGIN_VERIFY_SECRET_KEY,
         }).unsafeUnwrap()
-      : originVerifySecret;
+      : undefined;
     const originVerifyEnabled = originVerifyHeaderValue !== undefined;
 
     // **引数ガード（上）より後であること。理由は上の「引数の検証はビルド成果物の確認より先」。**
