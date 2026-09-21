@@ -10,10 +10,10 @@
  * その一時リポジトリの .git 配下に書かれるので、本リポジトリの状態を汚さない）。
  */
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { makeTempDir } from '../helpers/temp';
 
 const HOOK = resolve(process.cwd(), 'scripts/hooks/pr-gate-guard.sh');
 const LIB = resolve(process.cwd(), 'scripts/lib/gate-stamp.sh');
@@ -61,7 +61,7 @@ function writeStamp(tier: string, fp: string = fingerprint()): void {
 }
 
 beforeEach(() => {
-  repo = mkdtempSync(join(tmpdir(), 'gate-guard-'));
+  repo = makeTempDir('gate-guard-');
   const git = (...args: string[]) => execFileSync('git', args, { cwd: repo, stdio: 'ignore' });
   git('init', '-q');
   git('config', 'user.email', 'test@example.com');
@@ -125,7 +125,7 @@ describe('pr-gate-guard: 対象外は素通しする', () => {
   });
 
   it('git リポジトリ外では判定できないので通す', () => {
-    const outside = mkdtempSync(join(tmpdir(), 'not-a-repo-'));
+    const outside = makeTempDir('not-a-repo-');
     try {
       expect(runHook('gh pr create', { cwd: outside }).status).toBe(0);
     } finally {
@@ -669,7 +669,7 @@ describe('pr-gate-guard: 読み取りは通し、実行は止める (#960)', () 
    * jq が落ちたとき MCP だけ素通りしていた（2026-08-21 に main を red にした経路）。
    */
   it.each([['perl'], ['jq'], ['perl', 'jq']])('🔴 %s が落ちてもブロックする（fail-open にしない）', (...tools) => {
-    const shimDir = mkdtempSync(join(tmpdir(), 'broken-tool-'));
+    const shimDir = makeTempDir('broken-tool-');
     try {
       // 単独と両方の 3 通りを測る。判定は perl と jq にしか依存しない
       // （payload を読めない枝の記号潰しは bash の置換で行う ―― そこで `tr` を挟むと
@@ -700,7 +700,7 @@ describe('pr-gate-guard: 読み取りは通し、実行は止める (#960)', () 
     ['command に空を返す jq', '#!/bin/sh\nfor a in "$@"; do case "$a" in *tool_input*) echo ""; exit 0;; esac; done\nexec /usr/bin/jq "$@"\n'],
     ['何もせず成功する perl', '#!/bin/sh\nexit 0\n'],
   ])('🔴 道具が %s でもブロックする', (_label, script) => {
-    const shimDir = mkdtempSync(join(tmpdir(), 'degraded-tool-'));
+    const shimDir = makeTempDir('degraded-tool-');
     try {
       writeFileSync(join(shimDir, _label.includes('perl') ? 'perl' : 'jq'), script, { mode: 0o755 });
       const env = { PATH: `${shimDir}:${process.env.PATH ?? ''}` };

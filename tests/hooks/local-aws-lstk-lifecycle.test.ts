@@ -28,10 +28,10 @@
  * - それでいて**レーン自体は**その値を保持していること（下界。全部消す実装を弾く）
  */
 import { spawnSync } from 'node:child_process';
-import { chmodSync, mkdtempSync, readFileSync, writeFileSync, existsSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { chmodSync, readFileSync, writeFileSync, existsSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
+import { makeTempDir } from '../helpers/temp';
 
 const ROOT = resolve(process.cwd());
 const SCRIPT = join(ROOT, 'scripts/local-aws.sh');
@@ -48,7 +48,7 @@ function writeExe(dir: string, name: string, body: string): void {
  * `AWS_ENDPOINT_URL`** を 1 行ずつ記録する。記録が唯一の観測点。
  */
 function fakeEnv() {
-  const dir = mkdtempSync(join(tmpdir(), 'local-aws-lstk-'));
+  const dir = makeTempDir('local-aws-lstk-');
   const log = join(dir, 'lstk-calls.log');
 
   // `docker info` は常に成功（デーモン起動経路へ行かせない）。
@@ -171,7 +171,7 @@ describe('local-aws.sh が lstk ライフサイクルへ渡す環境', () => {
  */
 describe('local-aws.sh が lstk の案内行に耐えること', () => {
   function fakeEnvWithBanner() {
-    const dir = mkdtempSync(join(tmpdir(), 'local-aws-banner-'));
+    const dir = makeTempDir('local-aws-banner-');
     const log = join(dir, 'lstk-calls.log');
 
     writeExe(dir, 'docker', 'if [ "$1" = "info" ]; then exit 0; fi\nexit 0');

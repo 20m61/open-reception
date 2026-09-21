@@ -17,10 +17,10 @@
  * これで「`gh` が無い環境で PR を作れる」を**環境ごと再現して**確かめられる。
  */
 import { execFileSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, symlinkSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { mkdirSync, symlinkSync } from 'node:fs';
 import { join } from 'node:path';
 import { afterAll, describe, expect, it } from 'vitest';
+import { makeTempDir } from '../helpers/temp';
 import {
   SPAWN_TIMEOUT_MS,
   cleanupStubDirs,
@@ -214,7 +214,7 @@ describe('前提が欠けたときは、欠けているものを名指しする 
   it(
     'curl が無い環境では、curl が無いと名指しして落ちる',
     () => {
-      const dir = mkdtempSync(join(tmpdir(), 'no-curl-'));
+      const dir = makeTempDir('no-curl-');
       const bin = join(dir, 'bin');
       mkdirSync(bin);
       // `node` と `git` だけを通す。**`curl` は置かない** ―― それがこのテストの条件。
