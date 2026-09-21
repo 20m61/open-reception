@@ -136,8 +136,8 @@ function getItem(table, sk) {
   return result.Item ?? {};
 }
 
-function recordNormalSuccess({ table, day, now }) {
-  awsJson([
+export function buildNormalSuccessUpdateArgs({ table, day, now }) {
+  return [
     'dynamodb',
     'update-item',
     '--table-name',
@@ -155,12 +155,12 @@ function recordNormalSuccess({ table, day, now }) {
       ':soft': { N: String(SOFT_SUCCESS_CEILING) },
       ':updatedAt': { S: now.toISOString() },
     }),
-  ]);
+  ];
 }
 
-function recordOverrideSuccess({ table, day, revision, now }) {
+export function buildOverrideSuccessTransaction({ table, day, revision, now }) {
   const nowEpoch = Math.floor(now.getTime() / 1000);
-  const transaction = [
+  return [
     {
       Update: {
         TableName: table,
@@ -189,7 +189,19 @@ function recordOverrideSuccess({ table, day, revision, now }) {
       },
     },
   ];
-  awsJson(['dynamodb', 'transact-write-items', '--transact-items', JSON.stringify(transaction)]);
+}
+
+function recordNormalSuccess({ table, day, now }) {
+  awsJson(buildNormalSuccessUpdateArgs({ table, day, now }));
+}
+
+function recordOverrideSuccess({ table, day, revision, now }) {
+  awsJson([
+    'dynamodb',
+    'transact-write-items',
+    '--transact-items',
+    JSON.stringify(buildOverrideSuccessTransaction({ table, day, revision, now })),
+  ]);
 }
 
 function parseArgs(argv) {
