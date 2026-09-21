@@ -152,6 +152,7 @@ describe('DevDeployBrokerStack (#1146 Phase 1)', () => {
     expect(buildSpec).toContain('broker-evidence.json');
     expect(buildSpec).toContain('OR_TRUSTED_SOURCE_REVISION');
     expect(buildSpec).toContain('validation evidence revision mismatch');
+    expect(buildSpec).toContain('source_revision');
     expect(buildSpec).toContain('OR_TRUSTED_POLICY_BUCKET');
     expect(buildSpec).toContain('OR_TRUSTED_POLICY_KEY');
     expect(buildSpec).toContain('/tmp/open-reception-trusted-policy.mjs');
