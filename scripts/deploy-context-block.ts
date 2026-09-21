@@ -23,8 +23,9 @@ import {
 } from '../src/domain/governance/deploy-context';
 
 /**
- * 既定はリポジトリの**外**。`OR_ORIGIN_VERIFY_SECRET` は秘密の値そのものなので、
- * 作業ツリーに置いて `.gitignore` に頼る形にしない（ignore 行が消えた瞬間に commit され得る）。
+ * 既定はリポジトリの**外**。
+ * #1148 で origin-verify の生 secret は deploy context から削除したが、
+ * 運用 context をソース管理へ混ぜない境界はそのまま維持する。
  */
 function contextFilePath(env: NodeJS.ProcessEnv): string {
   const override = env.OR_DEPLOY_CONTEXT_FILE?.trim();
