@@ -47,12 +47,39 @@ describe('PIN のハッシュ保存 (#1021 AC3)', () => {
     expect(await verifyPinCredential('4821', '4822')).toBe(false);
   });
 
-  it('壊れたハッシュ文字列は誰も通さない（fail closed）', async () => {
-    for (const broken of ['pbkdf2-sha256$', 'pbkdf2-sha256$abc$def', 'pbkdf2-sha256$1$$']) {
-      expect(await verifyPinCredential(broken, '4821'), broken).toBe(false);
-      // 🔴 下界: 壊れた文字列を**平文として**照合しに行かない（その文字列自体でも通らない）。
-      expect(await verifyPinCredential(broken, broken), broken).toBe(false);
-    }
+  /**
+   * 🔴 **記録として読めたものは、平文へ落ちない。**
+   * 落とすと、**記録の文字列そのものが PIN として通る**。
+   * 構造は揃っているが中身が合わない記録（塩や桁が壊れた等）で確かめる。
+   */
+  it('🔴 記録として読める値は fail closed（その文字列自体でも通らない）', async () => {
+    const wrong = 'pbkdf2-sha256$210000$AAAAAAAAAAAAAAAAAAAAAA==$BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBw=';
+    expect(isHashedPin(wrong)).toBe(true);
+    expect(await verifyPinCredential(wrong, '4821')).toBe(false);
+    expect(await verifyPinCredential(wrong, wrong)).toBe(false);
+  });
+
+  /**
+   * 🔴 **接頭辞が偶然一致する旧平文を、読めなくしない（レビュー指摘。実測で再現した）。**
+   *
+   * 管理 API は `pin` に数字も長さも要求していないので、旧レコードには**何でも入りうる**。
+   * 接頭辞だけで「ハッシュ」と判定すると、`'pbkdf2-sha256$office'` を PIN にしていた
+   * サイトは**本人の PIN でも通らなくなる**（＝受付端末が authorize できない）。
+   * 構造として読めない値は平文として扱う。
+   */
+  it.each([
+    'pbkdf2-sha256$office',
+    'pbkdf2-sha256$',
+    'pbkdf2-sha256$abc$def',
+    'pbkdf2-sha256$1$$',
+    // 🔴 **区切りが多い形（実測 B4 で穴が出た）。** 個数を見ないと、後段の検証
+    //    （数字 / base64）を**先頭 4 つだけで**通してしまい、この旧平文が記録として
+    //    読まれて締め出される。これが「読めるかで判定する」の下界になる。
+    'pbkdf2-sha256$210000$AAAA$BBBB$extra',
+  ])('🔴 接頭辞が似ているだけの旧平文 (%s) は平文として照合する', async (legacy) => {
+    expect(isHashedPin(legacy)).toBe(false);
+    expect(await verifyPinCredential(legacy, legacy)).toBe(true);
+    expect(await verifyPinCredential(legacy, '4821')).toBe(false);
   });
 });
 

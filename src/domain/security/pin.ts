@@ -58,9 +58,39 @@ async function derive(pin: string, salt: Uint8Array, iterations: number): Promis
   return toBase64(new Uint8Array(bits));
 }
 
-/** 保存された値がハッシュ形式か（＝旧レコードの平文でないか）。 */
+/** ハッシュ記録を分解した結果。構造として成立していなければ `null`。 */
+type ParsedHash = { iterations: number; salt: Uint8Array; hash: string };
+
+/**
+ * 保存された値をハッシュ記録として読む。**構造が揃っていなければ `null`**。
+ *
+ * 🔴 **接頭辞だけで判定してはいけない（レビュー指摘。実測で再現した）。**
+ * 旧レコードの平文には**何でも入りうる** —— 管理 API は `pin` に数字も長さも
+ * 要求していない（`o.pin.trim() !== ''` だけ）。そのため `'pbkdf2-sha256$office'` を
+ * PIN にしていたサイトでは、接頭辞判定だと**ハッシュと誤認**して解析に失敗し、
+ * **本人の PIN でも通らなくなる**（実測: `verifyPinCredential(v, v)` が false）。
+ * 受付端末が authorize できなくなる＝**読み互換の約束を破る**形である。
+ *
+ * だから「うちの形式として**完全に読めるか**」で判定する。読めない値は平文として扱う。
+ *
+ * 🔴 **残る衝突**: 旧平文が偶然この構造を**完全に満たす**場合（例
+ * `pbkdf2-sha256$210000$AAAA$BBBB`）は今も読めない。ここまで来ると平文と記録を
+ * 区別する手段が無く、**記録側を壊さない**ことを優先した。
+ */
+function parseHash(stored: string): ParsedHash | null {
+  const parts = stored.split('$');
+  if (parts.length !== 4 || parts[0] !== ALGORITHM) return null;
+  const [, rawIterations, rawSalt, hash] = parts;
+  if (!/^[0-9]+$/.test(rawIterations ?? '') || !hash) return null;
+  const iterations = Number(rawIterations);
+  const salt = rawSalt === undefined || rawSalt === '' ? null : fromBase64(rawSalt);
+  if (!Number.isInteger(iterations) || iterations <= 0 || salt === null) return null;
+  return { iterations, salt, hash };
+}
+
+/** 保存された値がハッシュ記録か（＝旧レコードの平文でないか）。 */
 export function isHashedPin(stored: string): boolean {
-  return stored.startsWith(`${ALGORITHM}$`);
+  return parseHash(stored) !== null;
 }
 
 /** PIN を保存形式（ハッシュ）へ変換する。**毎回ランダムな salt を使う。** */
@@ -81,16 +111,14 @@ function timingSafeEqual(a: string, b: string): boolean {
 /**
  * 保存された値（平文 or ハッシュ）と入力を照合する。
  *
- * 🔴 **ハッシュ形式として壊れているものは、平文として照合しに行かない。**
- * 落とすと、壊れた値が**そのまま PIN として通る**（`stored === input`）。
+ * 🔴 **記録として読めたものは、平文へ落ちない。** 落とすと、**記録の文字列そのものが
+ * PIN として通る**。読めなかったものだけが平文の照合へ行く（旧レコード互換）。
  */
 export async function verifyPinCredential(stored: string, input: string): Promise<boolean> {
-  if (!isHashedPin(stored)) return timingSafeEqual(stored, input);
-  const [, iterations, salt, hash] = stored.split('$');
-  const rounds = Number(iterations);
-  const saltBytes = salt === undefined || salt === '' ? null : fromBase64(salt);
-  if (!Number.isInteger(rounds) || rounds <= 0 || saltBytes === null || !hash) return false;
-  return timingSafeEqual(await derive(input, saltBytes, rounds), hash);
+  const parsed = parseHash(stored);
+  // 構造として読めない値は**旧レコードの平文**として扱う（上の `parseHash` の doc 参照）。
+  if (parsed === null) return timingSafeEqual(stored, input);
+  return timingSafeEqual(await derive(input, parsed.salt, parsed.iterations), parsed.hash);
 }
 
 /**
