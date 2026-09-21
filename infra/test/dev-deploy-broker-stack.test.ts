@@ -70,6 +70,28 @@ describe('DevDeployBrokerStack (#1146 Phase 1)', () => {
     expect(JSON.stringify(docs)).not.toContain('cloudformation:');
   });
 
+  it('scrubs ambient AWS credential providers before candidate lifecycle scripts run', () => {
+    const projects = template.findResources('AWS::CodeBuild::Project');
+    const validation = Object.values(projects).find(
+      (value) =>
+        (value.Properties as { Name?: string }).Name === 'OpenReceptionDevDeployValidation',
+    );
+    expect(validation).toBeDefined();
+
+    const buildSpec = JSON.stringify(
+      ((validation?.Properties as { Source?: { BuildSpec?: unknown } }).Source ?? {}).BuildSpec ?? '',
+    );
+    const unsetAt = buildSpec.indexOf('unset AWS_SESSION_TOKEN');
+    const npmAt = buildSpec.indexOf('npm ci');
+    expect(unsetAt).toBeGreaterThanOrEqual(0);
+    expect(npmAt).toBeGreaterThan(unsetAt);
+    expect(buildSpec).toContain('AWS_WEB_IDENTITY_TOKEN_FILE');
+    expect(buildSpec).toContain('AWS_CONTAINER_CREDENTIALS_RELATIVE_URI');
+    expect(buildSpec).toContain('AWS_CONTAINER_CREDENTIALS_FULL_URI');
+    expect(buildSpec).toContain('AWS_ACCESS_KEY_ID=test');
+    expect(buildSpec).toContain('AWS_EC2_METADATA_DISABLED=true');
+  });
+
   it('keeps the trusted broker unarmed in Phase 1', () => {
     const docs = policyDocumentsForRole(template, 'OpenReceptionTrustedDevDeployBrokerRole');
     expect(JSON.stringify(docs)).not.toContain('sts:AssumeRole');
