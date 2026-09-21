@@ -176,6 +176,24 @@ describe('trusted dev-deploy cloud assembly policy (#1146)', () => {
     expect(resultRules).toContain('LAMBDA_CONCURRENCY_TOO_HIGH');
   });
 
+  it('allows the reviewed dev Lambda concurrency ceilings', () => {
+    const assembly = makeAssembly({
+      'OpenReception-Web-dev': {
+        ServerFn4F3A536E: {
+          Type: 'AWS::Lambda::Function',
+          Properties: { MemorySize: 1024, ReservedConcurrentExecutions: 5 },
+        },
+        ImageFnCD541B83: {
+          Type: 'AWS::Lambda::Function',
+          Properties: { MemorySize: 1536, ReservedConcurrentExecutions: 2 },
+        },
+      },
+    });
+    const result = evaluate(assembly);
+    expect(result.result).toBe('allowed');
+    expect(result.violations).toEqual([]);
+  });
+
   it('requires DynamoDB on-demand billing and forbids provisioned throughput', () => {
     const assembly = makeAssembly({
       'OpenReception-Web-dev': {
