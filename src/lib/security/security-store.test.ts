@@ -248,6 +248,26 @@ describe('security-store (#23 #29)', () => {
   });
 
   /**
+   * 🔴 **運用者が入力した PIN は、読めない綴りでも本人の PIN になる。**
+   *
+   * レビュー 3 周目で昇格を「平文だけ」に狭めたが、変異検証でその述語は**守るものが無い**
+   * と分かった（`current()` が先に正規化するので、読めない**記録**はここへ届かない）。
+   * 届くのは**運用者が PIN 欄へ入力した文字列**だけで、そこを狭めると入力が黙って捨てられ、
+   * 効く PIN は**既定値**になる —— 「保存した」と言いながら効かない沈黙の誤動作である。
+   *
+   * 撤回の根拠をここで縛る。狭める変異はこの 1 本で落ちる。
+   */
+  it('🔴 うちの形式に似た入力でも、運用者が入れたなら本人の PIN になる', async () => {
+    // 反復回数が上限超え＝記録としては読めない綴り。だが**入力**としては正当な文字列。
+    const looksLikeRecord = 'pbkdf2-sha256$2000000$AAAAAAAAAAAAAAAAAAAAAA==$BBBB';
+    await updateSecuritySettings({ pinRequired: true, pin: looksLikeRecord });
+    expect(await verifyPin(looksLikeRecord)).toBe(true);
+    // 下界: 入力を捨てて既定値へ落としていない（＝沈黙の誤動作になっていない）。
+    expect(await verifyPin(BUILTIN_DEFAULT_PIN)).toBe(false);
+    expect(isPinConfigured(await getSecuritySettings())).toBe(true);
+  });
+
+  /**
    * 🔴 **空の PIN で既存の PIN を上書きさせない（変異検証で生存した穴）。**
    *
    * `o.pin.trim() !== ''` を落とす変異が**全テストを素通りした**。落とすと空文字が
