@@ -145,7 +145,7 @@ export class DevDeployBrokerStack extends cdk.Stack {
               // Only the three stacks already admitted by ADR 0009 are synthesized.
               // Context is non-secret; originVerifySecretName reuses the app secret NAME.
               'cd infra && CDK_DEFAULT_ACCOUNT="$OR_BROKER_TARGET_ACCOUNT" CDK_DEFAULT_REGION="$OR_BROKER_TARGET_REGION" npx cdk synth OpenReception-Web-dev OpenReception-WebMonitoring-dev OpenReception-CfMon-dev --output cdk.out -c env=dev -c claudeBoundary=OpenReceptionClaudeBoundary -c appSecretsName="$OR_APP_SECRETS_NAME" -c originVerifySecretName="$OR_APP_SECRETS_NAME" -c publicOriginOverride="$OR_PUBLIC_ORIGIN_OVERRIDE" -c providerSecretBackend="$OR_PROVIDER_SECRET_BACKEND" && cd ..',
-              'node -e "const fs=require(\\'fs\\'); const out={schemaVersion:1,sourceRevision:process.env.CODEBUILD_RESOLVED_SOURCE_VERSION||\\'unknown\\',validationBuildArn:process.env.CODEBUILD_BUILD_ARN||\\'unknown\\',observedAt:new Date().toISOString(),status:\\'validation-complete\\'}; fs.writeFileSync(\\'broker-evidence.json\\',JSON.stringify(out,null,2));"',
+              'node -e "const fs=require(\\'fs\\'); const revision=process.env.OR_TRUSTED_SOURCE_REVISION; if(typeof revision!==\\'string\\'||!/^[0-9a-f]{40}$/i.test(revision)){throw new Error(\\'trusted source revision missing or invalid\\')} const out={schemaVersion:1,sourceRevision:revision,validationBuildArn:process.env.CODEBUILD_BUILD_ARN||\\'unknown\\',observedAt:new Date().toISOString(),status:\\'validation-complete\\'}; fs.writeFileSync(\\'broker-evidence.json\\',JSON.stringify(out,null,2));"',
             ],
           },
         },
