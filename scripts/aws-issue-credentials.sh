@@ -7,18 +7,16 @@
 # OpenReceptionClaudeDeploy-dev を assume して短命 STS を発行し、
 # claude.ai/code の環境ダイアログへ貼るための値をクリップボードへ入れる。
 #
-# 🔴 **9 変数まとめて入れる（#989）。** AWS の 5 つに加えて、デプロイに必須の context
-#    4 つ（`OR_APP_SECRETS_NAME` / `OR_ORIGIN_VERIFY_SECRET` / `OR_PUBLIC_ORIGIN_OVERRIDE` /
-#    `OR_PROVIDER_SECRET_BACKEND`）も同じブロックに載せる。以前は AWS の 5 つだけを
-#    コピーしていたため、残り 4 つが「リポジトリに書いてあるから後で」になり、
-#    2026-09-06 の 3 回目のデプロイで **`OR_APP_SECRETS_NAME` だけが未登録**のまま窓を開けて
-#    `diff` が止まった。落ちたのは 4 つのうち唯一「秘密の値ではない」もので、
-#    **秘密 3 つは貼る意識が働くのに非秘密の 1 つだけ抜ける**という形だった。
-#    9 つを 1 回のコピーにすれば「一部だけ貼る」余地そのものが消える。
+# 🔴 **8 変数まとめて入れる（#989 / #1148）。** AWS の 5 つに加えて、デプロイに必須の
+#    context 3 つ（`OR_APP_SECRETS_NAME` / `OR_PUBLIC_ORIGIN_OVERRIDE` /
+#    `OR_PROVIDER_SECRET_BACKEND`）も同じブロックに載せる。
+#
+#    #1148 で `OR_ORIGIN_VERIFY_SECRET` の生値 handoff を廃止した。
+#    `OR_APP_SECRETS_NAME` から CDK の `appSecretsName` と `originVerifySecretName` を
+#    両方生成するので、Claude Cloud / broker validation に origin-verify の値は渡らない。
 #
 #    値は `~/.config/open-reception/deploy-context.env`（`OR_DEPLOY_CONTEXT_FILE` で変更可）
-#    か環境変数から取る。**リポジトリの中には置かない** —— `OR_ORIGIN_VERIFY_SECRET` は
-#    秘密そのもので、`.gitignore` に頼る形にすると ignore 行が消えた瞬間に commit され得る。
+#    か環境変数から取る。運用 context は引き続きリポジトリの中へ置かない。
 #
 #    🔴 解決は **assume-role より前**に置く。欠けていれば資格情報を発行せずに終わる ――
 #    使えない窓を開けない（欠落に `diff` で気づくと、そこまでの往復が丸ごと窓を食う）。
@@ -164,7 +162,7 @@ EXPIRY="${EXPIRY%$'\n'}"
 VAR_COUNT=5
 if [ -n "${CONTEXT_BLOCK}" ]; then
   BLOCK="${BLOCK}"$'\n'"${CONTEXT_BLOCK}"
-  VAR_COUNT=9
+  VAR_COUNT=8
 fi
 
 if [ "${PRINT}" = true ]; then
@@ -188,7 +186,7 @@ fi
 echo "窓が閉じる時刻: ${EXPIRY}（${HOURS} 時間）"
 echo "claude.ai/code の環境ダイアログへ ${VAR_COUNT} つの環境変数を登録してください。"
 if [ "${VAR_COUNT}" -eq 5 ]; then
-  echo "（--no-context のため AWS の 5 つだけです。デプロイ context 4 つは別途登録してください）"
+  echo "（--no-context のため AWS の 5 つだけです。デプロイ context 3 つは別途登録してください）"
 fi
 echo "🔴 貼り終えてから新しいセッションを作ってください（env はコンテナ起動時に焼き込まれます）。"
 echo "窓を閉じるときは、同じダイアログから AWS の 5 つを削除してください。"
