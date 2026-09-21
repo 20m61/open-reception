@@ -21,17 +21,18 @@ flowchart TD
 
   subgraph UNTRUSTED[Candidate-code execution boundary]
     G --> I[Validation CodeBuild]
-    I --> J[PR-quality + local AWS validation]
-    J --> K[Bounded validation artifact]
+    I --> J[Full deterministic suite + MiniStack/Moto + exact 3-stack synth]
+    J --> K[Candidate-produced cloud assembly: untrusted]
   end
 
   subgraph TRUSTED_BROKER[Trusted broker boundary]
     K --> L[Trusted Broker CodeBuild]
     L --> M[Stack-owned inline broker buildspec]
-    M --> N{Phase 1 armed?}
+    U[Content-addressed trusted policy S3 asset] --> M
+    M --> P[Independent static policy over cloud assembly]
+    P --> N{Mutation armed?}
     N -- No --> O[DENY: BROKER_NOT_ARMED]
-    N -- Future --> P[Trusted policy over cloud assembly]
-    P --> Q[Existing ADR 0009 role chain]
+    N -- Future --> Q[Existing ADR 0009 role chain + live ChangeSet gate]
   end
 
   Q --> R[AWS dev]
@@ -52,7 +53,9 @@ Candidate code is allowed to execute only in **Validation CodeBuild**. That role
 
 The GitHub App connection terminates in **CodePipeline Source**, so package lifecycle scripts or tests cannot request the GitHub connection token.
 
-The **Trusted Broker CodeBuild** consumes only the validation artifact. Its buildspec is embedded into the broker stack with CDK. A candidate commit can edit the TypeScript source that proposes a future broker configuration, but that edit does not change the already-deployed broker. Updating the broker stack is bootstrap/human work.
+The **Trusted Broker CodeBuild** consumes the validation artifact as **untrusted input**. Its buildspec is embedded into the broker stack with CDK. The trusted cloud-assembly policy is a content-addressed S3 asset published when the human-managed broker stack is deployed, and only the broker role receives read access to that object.
+
+A candidate commit can edit the TypeScript/policy source that proposes a future broker configuration, but that edit does not change the already-deployed broker. Updating the broker stack is bootstrap/human work. The broker never executes repository scripts with its privileged identity.
 
 ## Why the single-CodeBuild design was rejected
 
@@ -68,16 +71,42 @@ shell wrappers
 
 The candidate could then call AWS APIs directly with the build role. Repository wrappers are therefore evidence helpers, not the privileged enforcement point.
 
+## Current static policy
+
+Before any future mutation role is assumed, the broker independently parses `infra/cdk.out/manifest.json` and the referenced templates with a stack-owned, dependency-free policy. Initial fail-closed checks include:
+
+- exact stack allowlist: Web / WebMonitoring / CfMon only;
+- exact account and per-stack region;
+- unknown CloudFormation resource type = deny;
+- NAT Gateway / EC2 / RDS / OpenSearch / MSK / EKS / ECS service / schedulers / event-source mappings / SQS = human gate by default;
+- ordinary IAM roles require `OpenReceptionClaudeBoundary`;
+- broad/unscoped/loop-capable IAM actions are denied;
+- DynamoDB must be on-demand;
+- S3 public access block must remain fully enabled;
+- public Lambda Function URL shapes are allowlisted;
+- product Lambda memory/concurrency is bounded;
+- per-type and total resource-count ceilings;
+- cloud-assembly template paths cannot escape the assembly root.
+
+Validation evidence and the cloud assembly are still candidate-produced, so a green Validation build is **not** authorization.
+
 ## Phase 1 invariant
 
-The pipeline ends at `BROKER_NOT_ARMED`. The Trusted Broker role has no `sts:AssumeRole` or CloudFormation mutation permission. This is intentional and is pinned by CDK assertions.
+The pipeline still ends at `BROKER_NOT_ARMED`. The Trusted Broker role has no `sts:AssumeRole` or CloudFormation mutation permission. Static policy can pass and mutation still cannot occur.
 
-## Before Phase 2 can be armed
+## Before mutation can be armed
 
-The broker must first gain a trusted policy over an exact cloud assembly. The dev deployment context must also stop requiring the raw `OR_ORIGIN_VERIFY_SECRET` value during synth; use the existing Secrets Manager-name/dynamic-reference path instead. Only then can the Trusted Broker be allowed to assume the existing ADR 0009 entry-role chain.
+Required prerequisites:
+
+1. #1149 merged/tested: origin-verify uses only the existing Secrets Manager-name/dynamic-reference path; no raw secret reaches Validation.
+2. #1151 merged/tested: dev Server/Image Lambda concurrency is physically bounded at 5/2.
+3. Trusted static policy tested against a real current cloud assembly; do **not** widen the allowlist merely to turn it green.
+4. Sparse deploy ledger implemented (target 1 success/day, soft ceiling 2, third requires human override bound to the candidate revision).
+5. Live CloudFormation ChangeSet evaluation remains in front of execution, preserving ADR 0009 removal/replacement/unknown-action defenses.
+6. Only then may the Trusted Broker be allowed to assume the existing ADR 0009 entry-role chain, through a separately reviewed human/bootstrap change.
 
 ## Cost / frequency
 
 The pipeline uses CodePipeline V1 and two `BUILD_GENERAL1_SMALL` CodeBuild projects, both with concurrency 1. The `dev-deploy` branch is a **promotion branch**, not a normal development branch. Normal pushes do not update it, so they do not start this pipeline.
 
-The portfolio target remains one successful real-AWS dev deploy per project per local day, soft ceiling two; the trusted sparse-deploy ledger is Phase 2.
+The portfolio target remains one successful real-AWS dev deploy per project per local day, soft ceiling two. The third potential success requires a human override tied to that candidate revision. The durable ledger is not implemented yet, so mutation remains unarmed.
