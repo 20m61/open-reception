@@ -3,6 +3,7 @@ import * as cdk from 'aws-cdk-lib';
 import { Construct } from 'constructs';
 import * as codebuild from 'aws-cdk-lib/aws-codebuild';
 import * as codepipeline from 'aws-cdk-lib/aws-codepipeline';
+import * as dynamodb from 'aws-cdk-lib/aws-dynamodb';
 import * as actions from 'aws-cdk-lib/aws-codepipeline-actions';
 import * as iam from 'aws-cdk-lib/aws-iam';
 import * as logs from 'aws-cdk-lib/aws-logs';
@@ -80,6 +81,29 @@ export class DevDeployBrokerStack extends cdk.Stack {
       path: path.join(__dirname, '../../broker/trusted-policy.mjs'),
     });
     trustedPolicyAsset.grantRead(brokerRole);
+
+    const sparseLedgerAsset = new s3assets.Asset(this, 'SparseLedgerAsset', {
+      path: path.join(__dirname, '../../broker/sparse-ledger.mjs'),
+    });
+    sparseLedgerAsset.grantRead(brokerRole);
+
+    const sparseLedger = new dynamodb.Table(this, 'SparseDeployLedger', {
+      tableName: 'OpenReceptionSparseDevDeployLedger',
+      partitionKey: { name: 'PK', type: dynamodb.AttributeType.STRING },
+      sortKey: { name: 'SK', type: dynamodb.AttributeType.STRING },
+      billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
+      encryption: dynamodb.TableEncryption.AWS_MANAGED,
+      timeToLiveAttribute: 'expiresAt',
+      deletionProtection: true,
+      removalPolicy: cdk.RemovalPolicy.RETAIN,
+    });
+    brokerRole.addToPolicy(
+      new iam.PolicyStatement({
+        effect: iam.Effect.ALLOW,
+        actions: ['dynamodb:GetItem', 'dynamodb:UpdateItem', 'dynamodb:TransactWriteItems'],
+        resources: [sparseLedger.tableArn],
+      }),
+    );
 
     const validationLogs = new logs.LogGroup(this, 'ValidationLogs', {
       logGroupName: '/aws/codebuild/open-reception-dev-deploy-validation',
@@ -171,6 +195,9 @@ export class DevDeployBrokerStack extends cdk.Stack {
           OR_BROKER_TARGET_ACCOUNT: { value: cdk.Aws.ACCOUNT_ID },
           OR_TRUSTED_POLICY_BUCKET: { value: trustedPolicyAsset.s3BucketName },
           OR_TRUSTED_POLICY_KEY: { value: trustedPolicyAsset.s3ObjectKey },
+          OR_SPARSE_LEDGER_BUCKET: { value: sparseLedgerAsset.s3BucketName },
+          OR_SPARSE_LEDGER_KEY: { value: sparseLedgerAsset.s3ObjectKey },
+          OR_SPARSE_LEDGER_TABLE: { value: sparseLedger.tableName },
         },
       },
       logging: {
@@ -188,6 +215,8 @@ export class DevDeployBrokerStack extends cdk.Stack {
               // Download policy by the content-addressed S3 location injected by this stack.
               'aws s3 cp "s3://$OR_TRUSTED_POLICY_BUCKET/$OR_TRUSTED_POLICY_KEY" /tmp/open-reception-trusted-policy.mjs --only-show-errors',
               'node /tmp/open-reception-trusted-policy.mjs --assembly infra/cdk.out --account "$OR_BROKER_TARGET_ACCOUNT" > trusted-policy-result.json',
+              'aws s3 cp "s3://$OR_SPARSE_LEDGER_BUCKET/$OR_SPARSE_LEDGER_KEY" /tmp/open-reception-sparse-ledger.mjs --only-show-errors',
+              'node /tmp/open-reception-sparse-ledger.mjs preflight --table "$OR_SPARSE_LEDGER_TABLE" --revision "$OR_TRUSTED_SOURCE_REVISION" > sparse-ledger-result.json',
               // Even an allowed static assembly cannot mutate yet.
               'node -e "const fs=require(\\'fs\\'); const result={result:\\'denied\\',stage:\\'broker-bootstrap\\',rule:\\'BROKER_NOT_ARMED\\',resource:null,reason:\\'Static trusted policy passed, but sparse ledger/live ChangeSet/role chain are intentionally not armed\\',retryable:false,evidence_ref:process.env.CODEBUILD_BUILD_ARN||\\'unknown\\'}; fs.writeFileSync(\\'broker-result.json\\',JSON.stringify(result,null,2)); console.log(JSON.stringify(result));"',
               'echo "Trusted broker is intentionally unarmed." >&2',
