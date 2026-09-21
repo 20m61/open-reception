@@ -66,6 +66,17 @@ describe('checkAwsRuntimeSafety: エミュレータ実行時に実資格情報�
     expect(codes({ ...emulated, AWS_PROFILE: 'admin' })).toContain('real_credentials');
   });
 
+  it.each([
+    ['AWS_ROLE_ARN', 'arn:aws:iam::123456789012:role/codebuild'],
+    ['AWS_WEB_IDENTITY_TOKEN_FILE', '/tmp/token'],
+    ['AWS_CONTAINER_CREDENTIALS_RELATIVE_URI', '/v2/credentials/example'],
+    ['AWS_CONTAINER_CREDENTIALS_FULL_URI', 'http://127.0.0.1/credentials'],
+    ['AWS_CONTAINER_AUTHORIZATION_TOKEN', 'token'],
+    ['AWS_CONTAINER_AUTHORIZATION_TOKEN_FILE', '/tmp/auth-token'],
+  ])('🔴 %s を検出する（ambient provider を残さない）', (name, value) => {
+    expect(codes({ ...emulated, [name]: value })).toContain('real_credentials');
+  });
+
   it('🔴 AWS_CREDENTIAL_EXPIRATION を検出する', () => {
     // デプロイ窓の残骸。存在するだけで CLI/SDK が「期限付き静的資格情報」と解釈し、
     // dummy まで失効扱いにする（2026-09-14 に実際に踏んだ）。
