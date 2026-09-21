@@ -143,22 +143,6 @@ export function isHashedPin(stored: string): boolean {
 }
 
 /**
- * 保存された値が**旧レコードの平文**か（＝ハッシュへ昇格してよいか）。
- *
- * 🔴 **書き側も 3 状態で判断する（レビュー 3 周目 MAJOR 1）。** 分類を 3 状態にしたとき、
- * 直したのは**読み側だけ**で、昇格は `!isHashedPin(...)`（＝2 状態）のままだった。
- * その結果 `unusable` な記録（上限超え・salt 破損）が「平文」として扱われ、
- * **次の保存でその記録文字列が生きた PIN になる**（実測: 緊急停止を 1 回押すだけで発火し、
- * ダンプを見た者がその文字列で authorize できた）。
- *
- * `pin.ts` の不変条件「うちの形式だが読めない値は平文へ落とさない」は、
- * **読み側だけでは守れない**。
- */
-export function isLegacyPlaintextPin(stored: string): boolean {
-  return classify(stored).kind === 'plaintext';
-}
-
-/**
  * 保存された値が**資格情報として使えるか**（照合に使えるか）。
  *
  * `unusable`（うちの形式だが読めない）と空は false。読み側の正規化に使う。
@@ -251,6 +235,8 @@ export function isPinConfigured(settings: {
   if (settings.pinSetByOperator !== undefined) return settings.pinSetByOperator;
   // 旧レコード（フラグが無い）: 平文が組込み既定と違えば運用者が決めたとみなす。
   if (settings.pin === '') return false;
-  if (isHashedPin(settings.pin)) return true;
+  // 🔴 **ハッシュ専用の分岐は撤回した（変異検証で生存＝等価）。** ハッシュ文字列は
+  //    `BUILTIN_DEFAULT_PIN` と一致しないので、下の 1 行が同じ答えを返す。
+  //    「守るものが無い機構は撤回する」（`.claude/rules/opus5-autonomous-loop.md`）。
   return settings.pin !== BUILTIN_DEFAULT_PIN;
 }

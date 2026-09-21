@@ -5,7 +5,7 @@
 import {
   BUILTIN_DEFAULT_PIN,
   hashPin,
-  isLegacyPlaintextPin,
+  isHashedPin,
   isPinConfigured,
   isUsablePinCredential,
   verifyPinCredential,
@@ -104,10 +104,25 @@ export async function updateSecuritySettings(patch: unknown): Promise<SecuritySe
   // `default` を使わないので実デプロイでも起きる）。旧レコードの平文も、ここを通れば昇格する。
   // 「運用者が決めたか」は形式からではなく `pinSetByOperator` が持つので、
   // 昇格させても #1021 MAJOR-8 は再発しない。
-  // 🔴 **昇格も 3 状態で判断する（レビュー 3 周目 MAJOR 1）。** `!isHashedPin(...)` は
-  //    `unusable` を平文側へ落とすので、**記録文字列がそのまま PIN として封入**されていた。
-  //    昇格してよいのは**旧レコードの平文だけ**である。
-  if (isLegacyPlaintextPin(settings.pin)) {
+  // 🔴 **昇格の述語は `!isHashedPin` のままでよい（レビュー 3 周目 MAJOR 1 の対処を撤回）。**
+  //
+  //    3 周目は「`unusable` な記録が平文として昇格し、**記録文字列がそのまま PIN**になる」
+  //    に対し、**読み側の正規化と書き側の述語を両方**入れた。**機構が 1 つ余っていた** ——
+  //    ここへ届く `settings` は必ず `current()` を通っており、`unusable` は既に
+  //    `BUILTIN_DEFAULT_PIN` へ倒れている。変異検証で `isLegacyPlaintextPin` へ戻す変異が
+  //    **生存した**（守るものが無い）ので撤回した。`CLAUDE.md`「まず撤回を検討する」。
+  //
+  //    不変条件は読み側が 1 箇所で持つ:
+  //
+  //    > **保存された使えない資格情報は、決して生きた PIN にならない。**
+  //
+  //    （`current()` の `isUsablePinCredential`。end-to-end の下界は
+  //    「読めない記録は、別項目の更新後もその文字列で authorize できない」が縛る。）
+  //
+  //    ここを通る `unusable` は**運用者が PIN 欄へ入力した文字列**だけで、それは
+  //    昇格して本人の PIN にするのが正しい（入力を黙って捨てて既定値へ戻すと、
+  //    「保存した」と言いながら効かない**沈黙の誤動作**になる）。
+  if (!isHashedPin(settings.pin)) {
     // 🔴 **昇格前の平文で「運用者が決めたか」を確定させる。**
     //    昇格すると形式からは判定できなくなるので、ここで決めないと
     //    旧レコードの `0000` が昇格の瞬間に「設定済み」へ化ける（#1021 MAJOR-8 の再発）。

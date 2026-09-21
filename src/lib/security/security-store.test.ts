@@ -248,6 +248,26 @@ describe('security-store (#23 #29)', () => {
   });
 
   /**
+   * 🔴 **空の PIN で既存の PIN を上書きさせない（変異検証で生存した穴）。**
+   *
+   * `o.pin.trim() !== ''` を落とす変異が**全テストを素通りした**。落とすと空文字が
+   * そのまま代入され、昇格が `hashPin('')` を作る —— 照合側は `input === ''` を常に
+   * 拒否するので、**その時点で誰も authorize できなくなる**のに `pinConfigured` は
+   * `true` のままになる（**沈黙の締め出し**）。管理画面の PIN 欄を空のまま保存すれば
+   * 踏める（PUT は部分更新なので、空欄＝「変えない」が運用者の意図である）。
+   *
+   * 空白だけの入力も同じ（`trim()` 後に空になる綴り）。
+   */
+  it.each(['', '   '])('🔴 PIN 欄が空（%j）の保存は既存の PIN を変えない', async (blank) => {
+    await updateSecuritySettings({ pinRequired: true, pin: '4821' });
+    await updateSecuritySettings({ pin: blank, emergencyStop: true });
+    expect(await verifyPin('4821')).toBe(true);
+    // 下界: 空が「通る入力」になっていない（締め出しでも素通しでもない）。
+    expect(await verifyPin('')).toBe(false);
+    expect(isPinConfigured(await getSecuritySettings())).toBe(true);
+  });
+
+  /**
    * 🔴 **MAJOR 2 の下界（同）。** 運用者が `0000` を入力すると「設定済み」と表示されるが、
    * 有効な PIN は**公開既定値**である。この PR 自身が `.env.example` で
    * 「0000 なら未設定と表示される」と約束している。
