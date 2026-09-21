@@ -145,8 +145,22 @@ describe('DevDeployBrokerStack (#1146 Phase 1)', () => {
     );
     expect(buildSpec).toContain('BROKER_NOT_ARMED');
     expect(buildSpec).toContain('broker-evidence.json');
+    expect(buildSpec).toContain('OR_TRUSTED_POLICY_BUCKET');
+    expect(buildSpec).toContain('OR_TRUSTED_POLICY_KEY');
+    expect(buildSpec).toContain('/tmp/open-reception-trusted-policy.mjs');
+    expect(buildSpec).toContain('--assembly infra/cdk.out');
+    expect(buildSpec).toContain('trusted-policy-result.json');
     expect(buildSpec).not.toContain('npm ');
     expect(buildSpec).not.toContain('scripts/');
     expect(buildSpec).not.toContain('cdk deploy');
+  });
+
+  it('grants the broker only static-policy asset read in addition to pipeline/log plumbing', () => {
+    const docs = policyDocumentsForRole(template, 'OpenReceptionTrustedDevDeployBrokerRole');
+    const serialized = JSON.stringify(docs);
+    expect(serialized).toContain('s3:GetObject');
+    expect(serialized).not.toContain('s3:PutObject');
+    expect(serialized).not.toContain('sts:AssumeRole');
+    expect(serialized).not.toContain('cloudformation:');
   });
 });
