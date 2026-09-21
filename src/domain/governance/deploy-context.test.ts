@@ -72,7 +72,7 @@ describe('resolveDeployContext', () => {
     const result = resolveDeployContext(COMPLETE);
     expect(result.ok).toBe(true);
     if (!result.ok) return;
-    expect(result.args).not.toContain(expect.stringContaining('originVerifySecret='));
+    expect(result.args.some((arg) => arg.startsWith('originVerifySecret='))).toBe(false);
     expect(result.args).toContain('originVerifySecretName=open-reception/dev/app-v2');
   });
 
