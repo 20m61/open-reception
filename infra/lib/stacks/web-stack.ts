@@ -102,7 +102,7 @@ export interface WebStackProps extends StackProps {
    * テンプレートに平文は載らない。ただし **CFN が解決した値は Lambda 環境変数として保持される**
    * （runtime 取得は middleware に間に合わない。理由は下の実装コメント）。
    *
-   * `originVerifySecret`（生値）との併用は不可。空文字も不可。
+   * 空文字は不可。`originVerifySecret`（生値）は #1148 で全環境禁止。
    */
   readonly originVerifySecretName?: string;
   /**
@@ -201,7 +201,7 @@ export class WebStack extends Stack {
     if (forbiddenAppEnvKeys.length > 0) {
       throw new Error(
         `appEnv に ${forbiddenAppEnvKeys.join(', ')} を渡せません (issue #612)。` +
-          'origin-verify の env は originVerifySecret / originVerifySecretName から WebStack が組み立てます。' +
+          'origin-verify の env は originVerifySecretName から WebStack が組み立てます。' +
           '手で渡すと「検証を要求するが値が無い」状態を作れてしまい、全リクエストが 503 になります。',
       );
     }
