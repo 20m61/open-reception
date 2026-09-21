@@ -1,3 +1,4 @@
+import { isPinConfigured } from '@/domain/security/pin';
 import { NextResponse } from 'next/server';
 import { asTenantId } from '@/domain/tenant/types';
 import { getSecuritySettings, updateSecuritySettings } from '@/lib/security/security-store';
@@ -37,7 +38,7 @@ export async function GET(): Promise<NextResponse> {
   return NextResponse.json({
     pinRequired: s.pinRequired,
     ipAllowlist: s.ipAllowlist,
-    pinConfigured: s.pin !== '',
+    pinConfigured: isPinConfigured(s.pin),
     emergencyStop: s.emergencyStop,
   });
 }
@@ -62,7 +63,7 @@ export async function PUT(request: Request): Promise<NextResponse> {
   return NextResponse.json({
     pinRequired: updated.pinRequired,
     ipAllowlist: updated.ipAllowlist,
-    pinConfigured: updated.pin !== '',
+    pinConfigured: isPinConfigured(updated.pin),
     emergencyStop: updated.emergencyStop,
   });
 }
