@@ -53,6 +53,62 @@ test('pinRequired=true では正しい PIN の authorize がセッションを�
   }
 });
 
+/**
+ * 🔴 **管理画面で決めた PIN が、端末の authorize まで通しで効く (#1021 AC3)。**
+ *
+ * unit は「ストアへ保存 → 照合」までしか見ていない。**PIN がハッシュで保存されるように
+ * なった**ので、管理 API（PUT）と端末 API（POST authorize）が**同じ解釈**を持っている
+ * ことを HTTP 越しに確かめる —— 片方だけが旧形式を知っている状態は、
+ * `pinRequired: true` のサイトを**丸ごと締め出す**形で表面化する。
+ *
+ * 🔴 **共有 seed を書き換えるので、必ず `finally` で戻す**（この spec は既に serial）。
+ */
+test('🔴 管理画面で決めた PIN で authorize できる（ハッシュ保存の通し確認, #1021）', async ({
+  page,
+}) => {
+  await loginAsAdmin(page);
+  const res = await page.request.put('/api/admin/security', {
+    data: { pinRequired: true, pin: '4821' },
+  });
+  expect(res.ok()).toBeTruthy();
+  // 🔴 応答に PIN の値（平文もハッシュも）が出ていないこと。
+  const put = await res.text();
+  expect(put).not.toContain('4821');
+  expect(put).not.toContain('pbkdf2');
+  expect(JSON.parse(put)).toMatchObject({ pinConfigured: true });
+  try {
+    // 決めた PIN では通る。
+    const ok = await page.request.post('/api/kiosk/authorize', {
+      data: { pin: '4821', kioskId: 'kiosk-dev' },
+    });
+    expect(ok.ok()).toBeTruthy();
+    const status = await page.request.get('/api/kiosk/session-status');
+    expect(((await status.json()) as { authorized: boolean }).authorized).toBe(true);
+  } finally {
+    // 🔴 既定へ戻す。PIN は「空欄なら変更しない」なので、明示的に既定へ戻してから解除する。
+    await page.request.put('/api/admin/security', { data: { pin: '0000', pinRequired: false } });
+  }
+});
+
+/**
+ * 🔴 **下界: 決めた PIN 以外は通らない（上のテストが「何でも通る」世界でも満たせないように）。**
+ */
+test('🔴 管理画面で決めた PIN と違う入力は authorize できない（#1021）', async ({ page }) => {
+  await loginAsAdmin(page);
+  await page.request.put('/api/admin/security', { data: { pinRequired: true, pin: '4821' } });
+  try {
+    const ng = await page.request.post('/api/kiosk/authorize', {
+      data: { pin: '0000', kioskId: 'kiosk-dev' },
+    });
+    expect(ng.ok()).toBeFalsy();
+    // 🔴 PIN を送らない要求も通らない（レビュー 1 周目 BLOCKER の通し確認）。
+    const empty = await page.request.post('/api/kiosk/authorize', { data: { kioskId: 'kiosk-dev' } });
+    expect(empty.ok()).toBeFalsy();
+  } finally {
+    await page.request.put('/api/admin/security', { data: { pin: '0000', pinRequired: false } });
+  }
+});
+
 test('kiosk セッション（エンロール由来）では管理 API を操作できない', async ({ page }) => {
   await establishKioskSession(page);
   // kiosk_session は持つが admin_session は持たない → 401。

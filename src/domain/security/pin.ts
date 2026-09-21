@@ -24,12 +24,26 @@ export const BUILTIN_DEFAULT_PIN = '0000';
 
 const ALGORITHM = 'pbkdf2-sha256';
 /**
- * 反復回数。4 桁 PIN では総当たりを止められないので、**ここを上げても本質は変わらない**
- * （上の doc のとおり）。オンライン検証 1 回あたりの遅延が受付端末の体感に乗るので、
- * 「平文で置かない」という目的に対して十分な下限として 210,000 を採る（OWASP 2023 の
- * PBKDF2-SHA256 推奨値）。
+ * 反復回数。
+ *
+ * 🔴 **210,000（OWASP 2023）から 10,000 へ下げた（レビュー 1 周目 MINOR 2 の実測を受けて）。**
+ *
+ * 判断の根拠は「どちらのリスクが**今日踏めるか**」である:
+ *
+ * - **オフライン**（記録が漏れた場合）… PIN は事実上 4 桁＝10^4 なので、210,000 回でも
+ *   10,000 回でも**総当たりは現実的な時間で終わる**。上げてもほぼ何も買えていない
+ * - **オンライン**（今日踏める側）… `POST /api/kiosk/authorize` は**未認証**で、
+ *   **試行回数制限がまだ無い**（#1021 AC4 は未着手）。実測で 1 回 **約 104ms** だったので、
+ *   叩くだけで Lambda の実行時間と同時実行を消費させられる ——
+ *   **この増幅はこの増分が持ち込んだもの**（以前は文字列比較だった）
+ *
+ * 10,000 回なら実測 **約 5ms** で、増幅は 20 分の 1 になる。
+ * AC4（試行回数制限）が入ったらここを上げ直す余地がある。
  */
-const ITERATIONS = 210_000;
+const ITERATIONS = 10_000;
+
+/** 記録側の反復回数の上限（MINOR 1）。 */
+const MAX_ITERATIONS = 1_000_000;
 const KEY_BITS = 256;
 
 const encoder = new TextEncoder();
@@ -84,7 +98,12 @@ function parseHash(stored: string): ParsedHash | null {
   if (!/^[0-9]+$/.test(rawIterations ?? '') || !hash) return null;
   const iterations = Number(rawIterations);
   const salt = rawSalt === undefined || rawSalt === '' ? null : fromBase64(rawSalt);
-  if (!Number.isInteger(iterations) || iterations <= 0 || salt === null) return null;
+  // 🔴 **上限を持つ（レビュー 1 周目 MINOR 1）。** 記録側の値をそのまま信じると、
+  //    壊れた/改竄された記録 1 つで照合が止まる —— 実測で `iterations=1e8` の記録は
+  //    **1 回の照合に 52.7 秒**かかった（未認証エンドポイントから踏める）。
+  //    上限を超える記録は「読めない」として扱う（平文へは落ちない。下の空判定が先に効く）。
+  if (!Number.isInteger(iterations) || iterations <= 0 || iterations > MAX_ITERATIONS) return null;
+  if (salt === null) return null;
   return { iterations, salt, hash };
 }
 
@@ -100,7 +119,18 @@ export async function hashPin(pin: string): Promise<string> {
   return `${ALGORITHM}$${ITERATIONS}$${toBase64(salt)}$${hash}`;
 }
 
-/** 長さに依らず一定時間で比べる（`src/lib/auth/session.ts` と同じ形）。 */
+/**
+ * 同じ長さの文字列を、内容に依らず一定時間で比べる（`src/lib/auth/session.ts` と同じ形）。
+ *
+ * 🔴 **「定数時間」と言い切らない（レビュー 1 周目 MINOR 3）。** 実態は次のとおり:
+ *
+ * - 長さが違えば**早期 return** する（旧平文レコードでは PIN の長さが漏れうる）
+ * - ハッシュ経路と平文経路で**桁違いに時間が違う**（実測 5ms 前後 vs ほぼ 0ms）ので、
+ *   未認証の攻撃者は応答時間で「このサイトは未移行か」を判別できる
+ * - ハッシュ経路の比較対象は導出値なので、そもそもここの定数時間性が守るものは小さい
+ *
+ * それでも入れてあるのは**旧平文経路で内容を 1 文字ずつ漏らさない**ためである。
+ */
 function timingSafeEqual(a: string, b: string): boolean {
   if (a.length !== b.length) return false;
   let diff = 0;
@@ -115,6 +145,17 @@ function timingSafeEqual(a: string, b: string): boolean {
  * PIN として通る**。読めなかったものだけが平文の照合へ行く（旧レコード互換）。
  */
 export async function verifyPinCredential(stored: string, input: string): Promise<boolean> {
+  // 🔴 **空は「資格情報が無い」であって「空の PIN」ではない（レビュー 1 周目 BLOCKER）。**
+  //
+  // 実測: `verifyPinCredential('', '')` が **true** を返していた。`.env.example` が配る
+  // `KIOSK_PIN=`（空）のまま `pinRequired: true` にしたサイトでは、
+  // `POST /api/kiosk/authorize` に **`pin` を入れずに投げるだけで** 30 日の kiosk
+  // セッションが取れる（未認証の公開エンドポイント）。
+  //
+  // このモジュールは「読めない記録は fail closed」を謳っているのに、
+  // `isPinConfigured('') === false`（未設定）と `verify('','') === true`（通す）が
+  // **食い違っていた**。空は常に拒否する。
+  if (stored === '') return false;
   const parsed = parseHash(stored);
   // 構造として読めない値は**旧レコードの平文**として扱う（上の `parseHash` の doc 参照）。
   if (parsed === null) return timingSafeEqual(stored, input);
@@ -126,10 +167,20 @@ export async function verifyPinCredential(stored: string, input: string): Promis
  *
  * 🔴 以前は `pin !== ''` で判定しており、既定値が `'0000'` で入るため**常に true** だった
  * —— 運用者は `0000` のまま「設定済み」と読む（#1021 MAJOR-8）。
- * ハッシュは中身を見られないので「決めた」として扱う（運用者が管理画面から入れた値）。
+ *
+ * 🔴 **保存形式からは判定しない（レビュー 1 周目 MAJOR 2）。** 一度は「ハッシュ＝決めた」
+ * としていたが、**既定値も平文で永続化されてしまう**ことが実測で分かり
+ * （`KIOSK_PIN` を入れたサイトで PIN と無関係な更新を 1 回すると、その平文が書かれる）、
+ * 既定値も含めてハッシュ保存へ変えた。その結果「ハッシュ＝決めた」は成り立たない。
+ * **明示フィールド**（`pinSetByOperator`）で持ち、旧レコードだけ従来の推定へ落とす。
  */
-export function isPinConfigured(stored: string): boolean {
-  if (stored === '') return false;
-  if (isHashedPin(stored)) return true;
-  return stored !== BUILTIN_DEFAULT_PIN;
+export function isPinConfigured(settings: {
+  pin: string;
+  pinSetByOperator?: boolean;
+}): boolean {
+  if (settings.pinSetByOperator !== undefined) return settings.pinSetByOperator;
+  // 旧レコード（フラグが無い）: 平文が組込み既定と違えば運用者が決めたとみなす。
+  if (settings.pin === '') return false;
+  if (isHashedPin(settings.pin)) return true;
+  return settings.pin !== BUILTIN_DEFAULT_PIN;
 }

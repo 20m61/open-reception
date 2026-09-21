@@ -63,9 +63,9 @@ describe('security-store (#23 #29)', () => {
    * 以前は `pin !== ''` で、既定値が `'0000'` で入るため**常に true** だった。
    */
   it('🔴 既定のままなら未設定、決めたら設定済み', async () => {
-    expect(isPinConfigured((await getSecuritySettings()).pin)).toBe(false);
+    expect(isPinConfigured(await getSecuritySettings())).toBe(false);
     const updated = await updateSecuritySettings({ pin: '4821' });
-    expect(isPinConfigured(updated.pin)).toBe(true);
+    expect(isPinConfigured(updated)).toBe(true);
   });
 
   /**
@@ -87,12 +87,100 @@ describe('security-store (#23 #29)', () => {
     vi.stubEnv('KIOSK_PIN', '4821');
     await __resetSecurity();
     const settings = await getSecuritySettings();
-    expect(isPinConfigured(settings.pin)).toBe(true);
+    expect(isPinConfigured(settings)).toBe(true);
     await updateSecuritySettings({ pinRequired: true });
     expect(await verifyPin('4821')).toBe(true);
     // 下界: 組込み既定では通らない（env を読んでいることの確認）。
     expect(await verifyPin(BUILTIN_DEFAULT_PIN)).toBe(false);
     vi.unstubAllEnvs();
+  });
+
+  /**
+   * 🔴 **BLOCKER の実行時の対照（レビュー 1 周目）。**
+   *
+   * `.env.example` が配る `KIOSK_PIN=`（空）のまま `pinRequired: true` にしたサイトで、
+   * **PIN を送らない要求が通っていた**（`verifyPin('')` が true）。
+   * 空 env は「未設定」として組込み既定へ落とし、空入力は通さない。
+   */
+  it('🔴 KIOSK_PIN が空でも、PIN 無しの要求は通らない', async () => {
+    vi.stubEnv('KIOSK_PIN', '');
+    await __resetSecurity();
+    await updateSecuritySettings({ pinRequired: true });
+    expect(await verifyPin('')).toBe(false);
+    // 下界: 組込み既定へ落ちている（全部拒否にして満たしていない）。
+    expect(await verifyPin(BUILTIN_DEFAULT_PIN)).toBe(true);
+    // 空 env を「運用者が決めた」と読まない。
+    expect(isPinConfigured(await getSecuritySettings())).toBe(false);
+    vi.unstubAllEnvs();
+  });
+
+  /**
+   * 🔴 **MAJOR 2 の実行時の対照（レビュー 1 周目）。**
+   *
+   * 実測: `KIOSK_PIN` を入れたサイトで **PIN と無関係な更新を 1 回する**だけで、
+   * `defaults()` 由来の**平文がそのまま永続化**されていた
+   * （DynamoDB backend は `default` を使わないので実デプロイでも起きる）。
+   */
+  it('🔴 PIN と無関係な更新でも、永続レコードに平文が残らない', async () => {
+    vi.stubEnv('KIOSK_PIN', 'SECRET-9137');
+    await __resetSecurity();
+    const updated = await updateSecuritySettings({ emergencyStop: true });
+    expect(updated.pin).not.toContain('SECRET-9137');
+    expect(isHashedPin(updated.pin)).toBe(true);
+    // 下界: 昇格しても本人は通る。
+    await updateSecuritySettings({ pinRequired: true });
+    expect(await verifyPin('SECRET-9137')).toBe(true);
+    vi.unstubAllEnvs();
+  });
+
+  /**
+   * 🔴 **昇格しても「設定済み」が嘘にならない（MAJOR 2 と MAJOR-8 の両立）。**
+   *
+   * 既定値もハッシュへ昇格するので「ハッシュ＝運用者が決めた」は成り立たない。
+   * 明示フィールドで持つことを、**既定のまま別項目を更新する**ケースで確かめる。
+   */
+  it('🔴 既定のまま更新してもハッシュになるが、未設定のままと答える', async () => {
+    const updated = await updateSecuritySettings({ emergencyStop: true });
+    expect(isHashedPin(updated.pin)).toBe(true);
+    expect(isPinConfigured(updated)).toBe(false);
+    // 下界: 組込み既定で通る（昇格で壊していない）。
+    await updateSecuritySettings({ pinRequired: true });
+    expect(await verifyPin(BUILTIN_DEFAULT_PIN)).toBe(true);
+  });
+
+  /** 🔴 旧レコードの平文も、次の書き込みで昇格する（永続層から平文が消える）。 */
+  it('🔴 旧レコードの平文は次の更新でハッシュへ昇格する', async () => {
+    await getBackend().singleton('security', { default: () => ({}) }).put({
+      pinRequired: true,
+      pin: '4821',
+      ipAllowlist: [],
+      emergencyStop: false,
+    });
+    const updated = await updateSecuritySettings({ emergencyStop: true });
+    expect(updated.pin).not.toContain('4821');
+    expect(await verifyPin('4821')).toBe(true);
+    // 旧レコードにフラグは無いので、昇格後も「運用者が決めた」と読める必要がある。
+    expect(isPinConfigured(updated)).toBe(true);
+  });
+
+  /**
+   * 🔴 **旧レコードの `0000` が、昇格の瞬間に「設定済み」へ化けない。**
+   *
+   * 昇格するとハッシュになり形式からは判定できないので、**昇格前の平文**で
+   * フラグを確定させる必要がある。ここが無いと #1021 MAJOR-8 が別経路で再発する。
+   */
+  it('🔴 旧レコードが組込み既定なら、昇格しても未設定のまま', async () => {
+    await getBackend().singleton('security', { default: () => ({}) }).put({
+      pinRequired: true,
+      pin: BUILTIN_DEFAULT_PIN,
+      ipAllowlist: [],
+      emergencyStop: false,
+    });
+    const updated = await updateSecuritySettings({ emergencyStop: true });
+    expect(isHashedPin(updated.pin)).toBe(true);
+    expect(isPinConfigured(updated)).toBe(false);
+    // 下界: それでも組込み既定では通る（今日の振る舞いを保っている）。
+    expect(await verifyPin(BUILTIN_DEFAULT_PIN)).toBe(true);
   });
 
   it('IP 許可リストを更新できる', async () => {

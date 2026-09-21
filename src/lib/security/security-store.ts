@@ -2,9 +2,21 @@
  * セキュリティ設定のストア (issue #23, #29)。既定では PIN 不要（既存運用を壊さない）。
  * 永続化は data backend（memory / dynamodb）に委譲する (docs/persistence-design.md)。
  */
-import { BUILTIN_DEFAULT_PIN, hashPin, verifyPinCredential } from '@/domain/security/pin';
+import {
+  BUILTIN_DEFAULT_PIN,
+  hashPin,
+  isHashedPin,
+  isPinConfigured,
+  verifyPinCredential,
+} from '@/domain/security/pin';
 import type { SecuritySettings } from '@/domain/security/types';
 import { getBackend } from '@/lib/data';
+
+/** `KIOSK_PIN` を読む。**空文字は未設定**として扱う（`??` では弾けない）。 */
+function envPin(): string | undefined {
+  const value = process.env.KIOSK_PIN;
+  return value !== undefined && value.trim() !== '' ? value : undefined;
+}
 
 function defaults(): SecuritySettings {
   return {
@@ -13,7 +25,14 @@ function defaults(): SecuritySettings {
     //    ここを空にすると `pinRequired: true` のサイトが**誰も authorize できなくなる**。
     //    「既定のままか」を運用者へ正しく伝えるのは `isPinConfigured` の仕事で、
     //    既定を拒否する（fail closed にする）かどうかは **PIN 制御の境界変更**なので別増分。
-    pin: process.env.KIOSK_PIN ?? BUILTIN_DEFAULT_PIN,
+    //
+    // 🔴 **空の env は「未設定」として扱う（レビュー 1 周目 BLOCKER）。** `??` は空文字を
+    //    弾かないので、`.env.example` が配る `KIOSK_PIN=`（空）がそのまま資格情報になり、
+    //    `pinRequired: true` のサイトで **PIN を送らない POST が通っていた**（実測）。
+    //    このリポジトリは `${VAR:-test}` 型の取りこぼしを既に教訓化している
+    //    （`.claude/rules/local-aws-development.md`）。空なら組込み既定へ落とす。
+    pin: envPin() ?? BUILTIN_DEFAULT_PIN,
+    pinSetByOperator: envPin() !== undefined,
     ipAllowlist: [],
     emergencyStop: false,
   };
@@ -37,11 +56,28 @@ export async function updateSecuritySettings(patch: unknown): Promise<SecuritySe
     if (typeof o.pinRequired === 'boolean') settings.pinRequired = o.pinRequired;
     // 🔴 **保存はハッシュ (#1021 AC3)。** 設定ストアのダンプ・バックアップ・
     //    監査経路に平文 PIN を残さない。読み側（`verifyPin`）は旧レコードの平文も読める。
-    if (typeof o.pin === 'string' && o.pin.trim() !== '') settings.pin = await hashPin(o.pin.trim());
+    if (typeof o.pin === 'string' && o.pin.trim() !== '') {
+      settings.pin = await hashPin(o.pin.trim());
+      settings.pinSetByOperator = true;
+    }
     if (Array.isArray(o.ipAllowlist)) {
       settings.ipAllowlist = o.ipAllowlist.filter((x): x is string => typeof x === 'string').map((x) => x.trim()).filter(Boolean);
     }
     if (typeof o.emergencyStop === 'boolean') settings.emergencyStop = o.emergencyStop;
+  }
+  // 🔴 **平文のまま書き戻さない（レビュー 1 周目 MAJOR 2）。**
+  //
+  // 実測: `KIOSK_PIN` を入れたサイトで **PIN と無関係な更新を 1 回する**だけで、
+  // `defaults()` 由来の**平文がそのまま永続化**されていた（DynamoDB backend は
+  // `default` を使わないので実デプロイでも起きる）。旧レコードの平文も、ここを通れば昇格する。
+  // 「運用者が決めたか」は形式からではなく `pinSetByOperator` が持つので、
+  // 昇格させても #1021 MAJOR-8 は再発しない。
+  if (settings.pin !== '' && !isHashedPin(settings.pin)) {
+    // 🔴 **昇格前の平文で「運用者が決めたか」を確定させる。**
+    //    昇格すると形式からは判定できなくなるので、ここで決めないと
+    //    旧レコードの `0000` が昇格の瞬間に「設定済み」へ化ける（#1021 MAJOR-8 の再発）。
+    settings.pinSetByOperator = settings.pinSetByOperator ?? isPinConfigured(settings);
+    settings.pin = await hashPin(settings.pin);
   }
   await security().put(settings);
   return { ...settings, ipAllowlist: [...settings.ipAllowlist] };

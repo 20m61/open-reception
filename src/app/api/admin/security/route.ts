@@ -38,7 +38,7 @@ export async function GET(): Promise<NextResponse> {
   return NextResponse.json({
     pinRequired: s.pinRequired,
     ipAllowlist: s.ipAllowlist,
-    pinConfigured: isPinConfigured(s.pin),
+    pinConfigured: isPinConfigured(s),
     emergencyStop: s.emergencyStop,
   });
 }
@@ -50,6 +50,7 @@ export async function PUT(request: Request): Promise<NextResponse> {
   } catch (err) {
     return toGuardResponse(err);
   }
+  const before = await getSecuritySettings();
   const updated = await updateSecuritySettings(await readJson(request));
   // 既存 AuditAction（security.updated）を使用。機微値（PIN）は metadata に残さない。
   await recordDangerAction({
@@ -58,12 +59,15 @@ export async function PUT(request: Request): Promise<NextResponse> {
     metadata: {
       pinRequired: updated.pinRequired,
       emergencyStop: updated.emergencyStop,
+      // 🔴 **値は残さず、変えたことだけ残す（レビュー 1 周目 MINOR 6）。**
+      //    運用調査（「いつ誰が PIN を変えたか」）に効く。PII/secret は載せない。
+      pinChanged: isPinConfigured(updated) && !isPinConfigured(before),
     },
   });
   return NextResponse.json({
     pinRequired: updated.pinRequired,
     ipAllowlist: updated.ipAllowlist,
-    pinConfigured: isPinConfigured(updated.pin),
+    pinConfigured: isPinConfigured(updated),
     emergencyStop: updated.emergencyStop,
   });
 }

@@ -83,17 +83,64 @@ describe('PIN のハッシュ保存 (#1021 AC3)', () => {
   });
 });
 
+describe('🔴 レビュー 1 周目で見つかった面', () => {
+  /**
+   * 🔴 **BLOCKER: 空の資格情報は誰も通さない。**
+   *
+   * 実測で `verifyPinCredential('', '')` が **true** だった。`.env.example` が配る
+   * `KIOSK_PIN=`（空）のまま `pinRequired: true` にしたサイトでは、
+   * `POST /api/kiosk/authorize` に **`pin` を入れずに投げるだけで**セッションが取れる。
+   */
+  it('🔴 保存値が空なら、空入力でも通らない', async () => {
+    expect(await verifyPinCredential('', '')).toBe(false);
+    expect(await verifyPinCredential('', '0000')).toBe(false);
+  });
+
+  /**
+   * 🔴 **MAJOR: 長さガードが落ちると、保存値を接頭辞に持つ入力が全部通る。**
+   *
+   * 実測でこの変異は**生存していた**（行列に「早期 return を落とす」型が無かった）。
+   * ガードが無いと `charCodeAt` が `NaN` → `NaN|0 = 0` になり、
+   * 旧平文レコードのサイトで `4821` を知っていれば任意の後続文字列で通る。
+   */
+  it('🔴 保存値を接頭辞に持つ長い入力は通らない（早期 return の面）', async () => {
+    expect(await verifyPinCredential('4821', '4821XYZ')).toBe(false);
+    expect(await verifyPinCredential('4821', '482')).toBe(false);
+    // 下界: 本人は通る（全部拒否にして満たしていない）。
+    expect(await verifyPinCredential('4821', '4821')).toBe(true);
+  });
+
+  /**
+   * 🔴 **MAJOR: 反復回数を狭める変異が生存していた**（数値パラメータの型）。
+   * 記録に実際に焼き込まれている値を見る。
+   */
+  it('🔴 記録には想定した反復回数が入っている', async () => {
+    expect((await hashPin('4821')).split('$')[1]).toBe('10000');
+  });
+
+  /**
+   * 🔴 **MINOR: 記録側の反復回数に上限を持つ。**
+   * 実測で `iterations=1e8` の記録は 1 回の照合に 52.7 秒かかった（未認証経路から踏める）。
+   */
+  it('🔴 上限を超える反復回数の記録は読めないものとして拒否する', async () => {
+    const huge = `pbkdf2-sha256$100000000$AAAAAAAAAAAAAAAAAAAAAA==$BBBB`;
+    expect(isHashedPin(huge)).toBe(false);
+    // 平文へも落ちない（空でないので比較はするが、入力が一致しない限り通らない）。
+    expect(await verifyPinCredential(huge, '4821')).toBe(false);
+  });
+});
+
 describe('pinConfigured の判定 (#1021 AC3)', () => {
   it('🔴 組込み既定のままなら「未設定」と答える（以前は常に true だった）', () => {
-    expect(isPinConfigured(BUILTIN_DEFAULT_PIN)).toBe(false);
-    expect(isPinConfigured('')).toBe(false);
+    expect(isPinConfigured({ pin: BUILTIN_DEFAULT_PIN })).toBe(false);
+    expect(isPinConfigured({ pin: '' })).toBe(false);
   });
 
   it('運用者が決めた平文は「設定済み」', () => {
-    expect(isPinConfigured('4821')).toBe(true);
+    expect(isPinConfigured({ pin: '4821' })).toBe(true);
   });
 
   it('🔴 ハッシュは中身を見られないので「設定済み」として扱う', async () => {
-    expect(isPinConfigured(await hashPin(BUILTIN_DEFAULT_PIN))).toBe(true);
+    expect(isPinConfigured({ pin: await hashPin(BUILTIN_DEFAULT_PIN) })).toBe(true);
   });
 });

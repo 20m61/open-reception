@@ -446,7 +446,7 @@ export function SecurityManager() {
           受付端末の表示に PIN 許可を必須にする
         </label>
         <Field
-          label={`PIN を変更（空欄なら変更しない／現在: ${view.pinConfigured ? '設定済み' : '未設定'}）`}
+          label={`PIN を変更（空欄なら変更しない／現在: ${view.pinConfigured ? '設定済み' : '未設定（既定値が有効）'}）`}
           htmlFor="security-pin"
         >
           <input type="password" id="security-pin" data-testid="security-pin" value={pin} onChange={(e) => setPin(e.target.value)} style={input} />
