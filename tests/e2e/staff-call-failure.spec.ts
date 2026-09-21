@@ -142,6 +142,96 @@ test('🔴 応答種別が 0 件のサイトでは、応答導線を指す 1 文
 });
 
 /**
+ * 🔴 **過渡の窓でも、文言と画面が裂けない（レビュー 1 周目 MINOR 1）。**
+ *
+ * 応答種別の取得は非同期なので、**取得前はドメイン既定（5 件とも有効）**が描かれ、
+ * 取得後に 0 件へ変わる。`answer` が GET より先に失敗すると、その間
+ * 「下の応答からの返答も試せます」を出したあとに**同じ live region から消える**。
+ *
+ * 🔴 **最終状態だけを見る主張では、この面は原理的に見えない** ——
+ * `expect(...).not.toContainText(...)` は auto-retry するので、過渡の嘘は観測できない
+ * （レビューが 1.5s の遅延を注入しても既存 11 本は緑のままだった）。
+ * `CLAUDE.md`「落ちた瞬間の値ではなく**遷移の全列**を記録してから読む」に従って、
+ * `MutationObserver` で列を採り、**各コミットで不変条件が成り立つ**ことを見る:
+ *
+ * > 文言が「下の応答」を含む ⟺ 応答ボタンが 1 つ以上出ている
+ *
+ * 今日は成り立っている（持ち上げたので同じ値が両方を駆動する）。**先に縛っておく**ことで、
+ * 兄弟で別々に取りに行く形へ戻す退行が、裂けた瞬間に落ちるようになる。
+ */
+test('🔴 取得が遅れても、文言と応答ボタンは常に一致する（遷移の全列で見る）', async ({ page }) => {
+  await page.route('**/api/staff/calls/*/respond?*', async (route) => {
+    if (route.request().method() !== 'GET') return route.fallback();
+    // 🔴 **わざと遅らせて過渡窓を作る。** 圧縮した窓で落ちたら本番の窓でも起こりうる
+    //    （#826 の逆向きの教訓: ここでは「起こりうる窓を作って観測する」ために伸ばす）。
+    await new Promise((resolve) => setTimeout(resolve, 1200));
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        actions: [
+          {
+            action: 'coming',
+            staffLabel: '今行きます',
+            severity: 'info',
+            requiresConfirmation: false,
+            enabled: false,
+          },
+        ],
+      }),
+    });
+  });
+  await page.route('**/api/staff/calls/*/answer', (route) => route.abort('failed'));
+
+  await page.goto(STAFF_URL);
+  // 遷移の全列を記録する（値ではなく列を読む）。
+  await page.evaluate(() => {
+    const seen: { text: string; buttons: number; call: string }[] = [];
+    (window as unknown as { __seen: typeof seen }).__seen = seen;
+    const snapshot = () => {
+      const status = document.querySelector('[data-testid="staff-call-status"]');
+      const view = document.querySelector('[data-testid="staff-call"]');
+      const buttons = document.querySelectorAll('button[data-testid^="staff-response-"]');
+      seen.push({
+        text: status?.textContent ?? '',
+        buttons: buttons.length,
+        call: view?.getAttribute('data-call-state') ?? '',
+      });
+    };
+    snapshot();
+    new MutationObserver(snapshot).observe(document.body, {
+      subtree: true,
+      childList: true,
+      characterData: true,
+    });
+  });
+
+  // 0 件へ落ち着くまで待つ（ここまでの列を観測対象にする）。
+  await expect(page.getByTestId('staff-response-empty')).toBeVisible();
+
+  const seen = await page.evaluate(
+    () =>
+      (window as unknown as { __seen: { text: string; buttons: number; call: string }[] }).__seen,
+  );
+  // 🔴 **不変条件は失敗表示のときだけ意味を持つ。** 接続中の文言はそもそも応答導線を
+  //    指さないので、全コミットへ当てると「接続中 ＋ ボタン 5 個」で落ちる（実測）。
+  const failed = seen.filter((s) => s.call === 'error');
+  // 下界 1: 失敗表示の列が**遷移を含む**こと（1 コミットしか無ければ空虚に通る）。
+  expect(new Set(failed.map((s) => `${s.text}|${s.buttons}`)).size).toBeGreaterThan(1);
+  // 下界 2: 「下の応答」を含む状態と含まない状態を**両方通った**こと
+  //         （片方しか通らないなら、この不変条件は何も排除していない）。
+  expect(failed.some((s) => s.text.includes('下の応答'))).toBe(true);
+  expect(failed.some((s) => !s.text.includes('下の応答'))).toBe(true);
+  // 本体: 失敗表示の各コミットで、文言と画面が一致している。
+  for (const state of failed) {
+    expect(
+      state.text.includes('下の応答') === state.buttons > 0,
+      `文言と画面が裂けた: ${JSON.stringify(state)}`,
+    ).toBe(true);
+  }
+});
+
+/**
  * 🔴 **3 つ目の失敗入口（通話の確立失敗）。**
  *
  * `StaffCallView` が失敗表示へ入る道は 3 本ある —— 応答が非 ok / `fetch` が投げた /

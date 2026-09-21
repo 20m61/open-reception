@@ -37,7 +37,7 @@ const ALL: StaffFailure[] = ['rejected', 'unavailable', 'unreachable'];
  * （「リンクのせいにしない」が 0 件のときだけ破れる、という形が作れてしまう）。
  * 総当たりで縛る。
  */
-const CONTEXTS = [{ responsesAvailable: true }, { responsesAvailable: false }] as const;
+const CONTEXTS = [{ responsesShown: true }, { responsesShown: false }] as const;
 const callMessages = (f: StaffFailure): string[] => CONTEXTS.map((c) => staffCallFailureMessage(f, c));
 
 describe('状態コードから失敗の種類への写像 (#1123)', () => {
@@ -95,7 +95,7 @@ describe('文言 (#1123)', () => {
   /**
    * 🔴 **「省略できない」こと自体を縛る（実測 D1 で生存した）。**
    *
-   * 文脈を任意引数にして `{ responsesAvailable: true }` を既定にする変異は、
+   * 文脈を任意引数にして `{ responsesShown: true }` を既定にする変異は、
    * **今の呼び出し側が全部明示しているので実行時には何も変わらず**、unit も e2e も
    * 素通りした。しかしそれは**次に足す呼び出し側が黙って嘘側へ倒れる**形である
    * （このモジュールが #1123 で `SubmitState` に対して避けたのと同じ穴）。
@@ -107,19 +107,23 @@ describe('文言 (#1123)', () => {
   it('🔴 文脈を省略した呼び出しは型で止まる', () => {
     // @ts-expect-error 文脈は必須（既定値を持たせると「応答導線は在る」＝嘘側へ倒れる。#1137）
     const omitted = () => staffCallFailureMessage('unreachable');
-    // 下界: この行が「呼び出しとして成立している」こと（別の型エラーで通っていない）。
     expect(typeof omitted).toBe('function');
+    // 🔴 下界（レビュー 1 周目 MINOR 5）: `@ts-expect-error` は**どんな型エラーでも**
+    //    満たされるので、関数名を改名しても（`Cannot find name`）この 1 本は通る。
+    //    **正しい呼び出しが型として通ること**を対に置いて、名前とシグネチャを縛る。
+    const ok: string = staffCallFailureMessage('unreachable', { responsesShown: true });
+    expect(ok.length).toBeGreaterThan(0);
   });
 
   it('🔴 応答種別が 0 件なら、応答導線を指す 1 文を出さない', () => {
-    expect(staffCallFailureMessage('unreachable', { responsesAvailable: false })).not.toContain(
+    expect(staffCallFailureMessage('unreachable', { responsesShown: false })).not.toContain(
       '下の応答',
     );
   });
 
   /** 🔴 下界: 1 件でも在れば従来どおり指す（全部を曖昧にしない）。 */
   it('🔴 応答種別が在れば、従来どおり応答導線を指す（下界）', () => {
-    expect(staffCallFailureMessage('unreachable', { responsesAvailable: true })).toContain(
+    expect(staffCallFailureMessage('unreachable', { responsesShown: true })).toContain(
       '下の応答',
     );
   });
@@ -129,7 +133,7 @@ describe('文言 (#1123)', () => {
    * 「時間をおいて開き直す／管理者へ知らせる」という次の一手は残す。
    */
   it('🔴 応答種別が 0 件でも次の一手は残る', () => {
-    const message = staffCallFailureMessage('unreachable', { responsesAvailable: false });
+    const message = staffCallFailureMessage('unreachable', { responsesShown: false });
     expect(message).toContain('管理者');
     expect(message).toContain('原因は特定できていません');
   });
@@ -139,8 +143,8 @@ describe('文言 (#1123)', () => {
    * ここが無いと「全部から 1 文を落とす」変異が素通りする。
    */
   it.each<StaffFailure>(['rejected', 'unavailable'])('🔴 %s の文言は件数に依らない', (f) => {
-    expect(staffCallFailureMessage(f, { responsesAvailable: true })).toBe(
-      staffCallFailureMessage(f, { responsesAvailable: false }),
+    expect(staffCallFailureMessage(f, { responsesShown: true })).toBe(
+      staffCallFailureMessage(f, { responsesShown: false }),
     );
   });
 
@@ -172,7 +176,7 @@ describe('文言 (#1123)', () => {
     // 🔴 ただし**断定しない** —— `fetch` reject 経路では応答送信も同じ fetch で必ず失敗する
     // （レビュー 4 周目）。「できます」ではなく「試せます」。
     // 🔴 **指せるのは応答種別が在るときだけ (#1137)。** 0 件の側は上の専用ケースで縛る。
-    const withResponses = staffCallFailureMessage('unreachable', { responsesAvailable: true });
+    const withResponses = staffCallFailureMessage('unreachable', { responsesShown: true });
     expect(withResponses).toContain('下の応答からの返答も試せます');
     expect(withResponses).not.toContain('返答できます');
   });

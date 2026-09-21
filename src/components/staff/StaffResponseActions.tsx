@@ -102,7 +102,6 @@ export function StaffResponseActions({
       className="staff-response"
       data-testid="staff-response"
       data-submit-state={submitState.kind}
-      data-empty={empty ? 'true' : undefined}
     >
       <h2 className="staff-response__title">
         {empty ? '来訪者への応答は設定されていません' : '来訪者への応答を選んでください'}

@@ -33,7 +33,7 @@ export type ActionMeta = {
 };
 
 /** 設定取得前/失敗時のフォールバック: ドメイン既定（defaultEnabled）から組み立てる。 */
-export function defaultActionMeta(): ActionMeta[] {
+function defaultActionMeta(): ActionMeta[] {
   return listStaffResponseDefinitions().map((d) => ({
     action: d.action,
     staffLabel: d.staffLabel,
@@ -41,6 +41,21 @@ export function defaultActionMeta(): ActionMeta[] {
     requiresConfirmation: d.requiresConfirmation,
     enabled: d.defaultEnabled,
   }));
+}
+
+/**
+ * GET の応答から応答種別の一覧を読む。**読めなければ `null`**（＝既定のまま据え置く）。
+ *
+ * 🔴 **純関数へ切り出した理由（レビュー 1 周目 MINOR 2）。** 以前は `Array.isArray` の
+ * ガードを `useEffect` の中に直接書いていたため、**そのガードを落とす変異が生存した**
+ * （e2e も unit も素通り。hook は `fetch` を注入していないので unit で踏めない）。
+ * ガードが守るのは「配列でない応答で `filter` が throw し、**担当者画面が丸ごと落ちる**」
+ * ことなので、**守る対象がある機構**である。切り出せば最も安い層で縛れる。
+ */
+export function parseActions(data: unknown): ActionMeta[] | null {
+  if (typeof data !== 'object' || data === null) return null;
+  const actions = (data as { actions?: unknown }).actions;
+  return Array.isArray(actions) ? (actions as ActionMeta[]) : null;
 }
 
 /**
@@ -71,8 +86,8 @@ export function useStaffResponseActions(receptionId: string, token: string): Act
           { cache: 'no-store' },
         );
         if (!res.ok || cancelled) return;
-        const data = (await res.json()) as { actions?: ActionMeta[] };
-        if (!cancelled && Array.isArray(data.actions)) setActions(data.actions);
+        const parsed = parseActions(await res.json());
+        if (!cancelled && parsed !== null) setActions(parsed);
       } catch {
         /* 取得失敗時はフォールバック（defaultEnabled）のまま操作可能にする */
       }

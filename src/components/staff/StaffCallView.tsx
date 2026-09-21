@@ -92,7 +92,7 @@ export function StaffCallView({ receptionId, token }: StaffCallViewProps): React
         {state.kind === 'connected' && '通話中です。'}
         {state.kind === 'error' &&
           staffCallFailureMessage(state.failure, {
-            responsesAvailable: hasEnabledResponses(responseActions),
+            responsesShown: hasEnabledResponses(responseActions),
           })}
       </p>
       {/* 通話に参加できなくても応答アクションは選べる（fallback-first）(issue #99)。 */}

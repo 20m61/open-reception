@@ -62,7 +62,9 @@ export type StaffFailure =
    *   復帰導線そのものは **#1129**、CSP の実配線は **#1132 増分 2**。
    *
    * 🔴 **今日この画面で有効な次の一手を指す。** 同じ画面には `StaffResponseActions`
-   *   （fallback-first・#99）が**常に**出ており、CSP 由来の失敗なら来訪者へ返答できる。
+   *   （fallback-first・#99）が併設されており、CSP 由来の失敗なら来訪者へ返答できる。
+   *   🔴 **ただし「常に」ではない (#1137)。** サイト設定で応答種別を全部無効化していると
+   *   ボタンは 0 個になるので、**指すかどうかは `responsesShown` で決める**。
    *   今日は `onError` が決定論的に発火するので、「時間をおいて開き直す」だけを案内すると
    *   担当者が再読込を繰り返す間、**来訪者は「つながった」状態のまま待たされる**
    *   （answer API は 200 を返し終えている）。
@@ -93,7 +95,7 @@ export function staffFailureForStatus(status: number): StaffFailure {
 }
 
 /**
- * 文言を決めるのに必要な、**画面の側の事実**。
+ * 文言を決めるのに必要な、**いま画面に出ているもの**。
  *
  * 🔴 **既定値を持たせない (#1137)。** 省略できるようにすると、その既定は
  * 「応答導線は在る」＝**嘘になりうる側**へ倒れる。このモジュールが #1123 で
@@ -102,13 +104,26 @@ export function staffFailureForStatus(status: number): StaffFailure {
  */
 export type StaffCallFailureContext = {
   /**
-   * この受付で**担当者が選べる応答種別が 1 件以上あるか**。
+   * **いま画面に応答ボタンが出ているか。**
    *
    * サイト設定で全部無効化されていると `StaffResponseActions` はボタンを 1 つも出さない。
    * そのとき「下の応答からの返答も試せます」は**空の領域を指す** —— 担当者は画面下を
    * 探しに行き、その間**来訪者は呼び出しが成立したまま待つ**（#1137）。
+   *
+   * 🔴 **「押せば必ず通る」ではない（レビュー 1 周目 MAJOR 1）。** 取得前・取得失敗時は
+   * ドメイン既定（全 `defaultEnabled`）へ倒れるので、この値は**画面の描画と一致する**が
+   * サイト設定の事実とは限らない。`fetch` reject 経路（回線断）では GET も同時に落ちるので、
+   * **ほぼ必ずその世界に入る**。
+   *
+   * 縛れているのは 1 つだけである:
+   *
+   * > **この値が真 ⟺ 画面に応答ボタンが出ている。**
+   *
+   * 押した先が `409 action_disabled` で断られたときに「リンクの有効期限切れ」と表示される面は
+   * **この increment では塞いでいない** —— 上の doc が書いているとおり **#1127 の射程**である
+   * （`staffFailureForStatus` が status だけを見る設計に触れるため）。
    */
-  responsesAvailable: boolean;
+  responsesShown: boolean;
 };
 
 /** 通話への参加に失敗したときの文言。 */
@@ -130,7 +145,7 @@ export function staffCallFailureMessage(
       // 🔴 **指す先が在るときだけ指す (#1137)。** 応答種別を全部無効化したサイトでは
       //    `StaffResponseActions` にボタンが 1 つも無い。指せないときは 1 文を落とし、
       //    **残りの次の一手（開き直す／管理者へ知らせる）は残す** —— 全部を曖昧にしない。
-      const fallback = context.responsesAvailable ? '下の応答からの返答も試せます。' : '';
+      const fallback = context.responsesShown ? '下の応答からの返答も試せます。' : '';
       return `通話に接続できませんでした。原因は特定できていません。${fallback}時間をおいて開き直すか、管理者へ知らせてください。`;
     }
   }
