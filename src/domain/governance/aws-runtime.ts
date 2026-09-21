@@ -98,6 +98,18 @@ function realCredentialSignals(env: Env): string[] {
   if (env.AWS_SESSION_TOKEN) found.push('AWS_SESSION_TOKEN');
   // 残っていると SDK が ~/.aws を解決する。
   if (env.AWS_PROFILE) found.push('AWS_PROFILE');
+  // Web identity / container credential provider。CodeBuild/ECS 等では access key が env に
+  // 直接見えなくても、この URI/token 経由で実 role credential を取得できる。
+  if (env.AWS_ROLE_ARN) found.push('AWS_ROLE_ARN');
+  if (env.AWS_WEB_IDENTITY_TOKEN_FILE) found.push('AWS_WEB_IDENTITY_TOKEN_FILE');
+  if (env.AWS_CONTAINER_CREDENTIALS_RELATIVE_URI) {
+    found.push('AWS_CONTAINER_CREDENTIALS_RELATIVE_URI');
+  }
+  if (env.AWS_CONTAINER_CREDENTIALS_FULL_URI) found.push('AWS_CONTAINER_CREDENTIALS_FULL_URI');
+  if (env.AWS_CONTAINER_AUTHORIZATION_TOKEN) found.push('AWS_CONTAINER_AUTHORIZATION_TOKEN');
+  if (env.AWS_CONTAINER_AUTHORIZATION_TOKEN_FILE) {
+    found.push('AWS_CONTAINER_AUTHORIZATION_TOKEN_FILE');
+  }
   // デプロイ窓の残骸。存在するだけで dummy まで「失効済み」にされる。
   if (env.AWS_CREDENTIAL_EXPIRATION) found.push('AWS_CREDENTIAL_EXPIRATION');
   return found;
