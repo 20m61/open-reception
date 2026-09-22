@@ -1,0 +1,69 @@
+{
+  "$schema": "https://github.com/20m61/cinc-foundation-bootstrap/blob/main/schemas/brand-manifest.schema.json",
+  "schemaVersion": 1,
+  "applicability": "ui",
+  "product": {
+    "id": "open-reception",
+    "displayName": "open-reception",
+    "repository": "20m61/open-reception"
+  },
+  "assets": {
+    "primaryLogo": {
+      "status": "pending",
+      "notes": "No owner-approved standalone product logo/wordmark source was located. Product title text and tenant logos are not substitutes."
+    },
+    "icon": {
+      "status": "canonical",
+      "path": "src/app/icon.tsx",
+      "mediaType": "text",
+      "approvalRef": "issue:#331",
+      "provenanceRef": "docs/ipad-uat.md#3-ホーム画面追加--pwa-運用",
+      "notes": "Next.js ImageResponse source for the product PWA/browser icon. It is explicitly independent from tenant branding."
+    },
+    "faviconSource": {
+      "status": "canonical",
+      "path": "src/app/icon.tsx",
+      "mediaType": "text",
+      "approvalRef": "issue:#331",
+      "provenanceRef": "src/app/manifest.ts",
+      "notes": "Runtime /icon is generated from this source."
+    }
+  },
+  "designTokens": {
+    "source": "src/app/globals.css",
+    "format": "css",
+    "notes": "As-Is implementation source. Current default is premium dark; #1143 tracks the reviewed migration to the approved light/white default. Do not treat current dark values as the final Design Kit direction."
+  },
+  "guidelinesPath": "docs/design-kit/README.md",
+  "deprecatedAssets": [],
+  "screens": {
+    "specPath": "docs/design-kit/screens.md",
+    "evidenceRoot": "tests/e2e",
+    "viewports": [
+      {
+        "name": "ipad-landscape",
+        "width": 1080,
+        "height": 810
+      },
+      {
+        "name": "ipad-portrait",
+        "width": 810,
+        "height": 1080
+      },
+      {
+        "name": "admin-desktop",
+        "width": 1440,
+        "height": 900
+      },
+      {
+        "name": "large-display",
+        "width": 1920,
+        "height": 1080
+      }
+    ]
+  },
+  "approval": {
+    "reference": "issue:#1142",
+    "notes": "Design Kit adoption tracking. Product icon approval is independently traceable to completed owner-authored issue #331. Default visual direction migration is tracked by #1143."
+  }
+}
