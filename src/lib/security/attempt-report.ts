@@ -47,11 +47,29 @@ export function reportAttemptBudgetExceeded(scope: string, now: number = Date.no
   );
 }
 
-/** 帳簿が読めない／書けないことを記録する（fail-closed で 503 を返す側）。 */
+/**
+ * 帳簿が**要求を完了できなかった**ことを記録する（fail-closed で 503 を返す側）。
+ *
+ * 🔴 **「障害」と決めつけない（レビュー 5 周目 MINOR-6）。** ここへ来る経路は 2 つある:
+ *
+ * 1. 帳簿が本当に読めない／書けない（DynamoDB 障害・設定漏れ）
+ * 2. **CAS が 16 回競合して収束しなかった**（帳簿は健康。並行バースト時に起きる）
+ *
+ * 以前は 2 を「予算超過」と偽っていたのでそれは直したが、文面を
+ * 「is unavailable … by breaking the backend」のままにすると、今度は
+ * **健康な DynamoDB の障害を運用者に疑わせる**（4 周目 MINOR-1 と同じ族の裏返し）。
+ * 判定値は増やさず、**文面の側で 2 つを飲める言い方にする** ——
+ * 断っている事実と、切り分けの入口だけを出す。
+ *
+ * 🔴 **文面に `pin` を含む語を使わない。** 最初 `bookkeeping` と書いたら
+ * 「値を載せない」検査（`/PIN|password|pbkdf2/i`）が**部分文字列 `pin` で落ちた**。
+ * 検査は文字列しか見られないので、**こちらが語を選ぶ**（検査を緩めない）。
+ */
 export function reportAttemptStoreUnavailable(scope: string, now: number = Date.now()): void {
   if (latched(`unavailable:${scope}`, now)) return;
   console.error(
-    `[security] attempt budget store is unavailable for ${scope}; ` +
+    `[security] attempt budget update did not complete for ${scope} ` +
+      `(backend failure, or compare-and-set contention under a parallel burst); ` +
       `refusing attempts (fail-closed) so the limit cannot be removed by breaking the backend (#1021 AC4).`,
   );
 }

@@ -22,9 +22,14 @@ const KNOWN: Record<string, 'partial' | 'whole-record'> = {
   'src/lib/platform/repository.ts': 'partial',
   'src/lib/routing/call-correlation.ts': 'partial',
   'src/lib/data-stores/reception-repository.ts': 'partial',
-  // 🔴 試行予算のカウンタ (#1021 AC4)。`{ startedAt, failures }` だけを渡す
-  //    （レコードに任意フィールドが無いので #795 の罠に当たらない）。CAS の `expected` は
-  //    **読んだ値をそのまま**渡す —— 緩めると並行した失敗を取りこぼし、予算が実質的に増える。
+  // 🔴 試行予算のカウンタ (#1021 AC4)。渡すのは `{ startedAt, attempts }`（＋窓を
+  //    転がすときだけ `ttl`）で、**部分更新しか渡さない**ので #795 の罠に当たらない。
+  //    🔴 **「任意フィールドが無いから安全」ではない（レビュー 5 周目 MINOR-3）。**
+  //    `AttemptRecord` には任意フィールド `ttl?: number` が実在する。安全なのは
+  //    **`undefined` を明示的に渡していない**からであって、フィールドが無いからではない
+  //    —— ここを取り違えると、次に `ttl` を省いた更新を書いた人が罠を踏む。
+  //    CAS の `expected` は**読んだ値をそのまま**渡す —— 緩めると並行した失敗を
+  //    取りこぼし、予算が実質的に増える。
   'src/lib/security/attempt-store.ts': 'partial',
   // レコード全体を渡す。**任意フィールドを `undefined` で明示している**ことが前提。
   'src/lib/runtime-policy/store.ts': 'whole-record',

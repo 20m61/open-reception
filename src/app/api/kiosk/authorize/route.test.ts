@@ -41,11 +41,27 @@ vi.mock('@/lib/auth/kiosk', () => ({
 
 import { POST } from './route';
 import { KIOSK_AUTHORIZE_LAYERS } from '@/domain/security/attempt-budget';
+import { __resetSecretUnavailableLog } from '@/lib/auth/secret-unavailable';
 
 function post(body: unknown = { pin: '0000', kioskId: 'kiosk-dev' }) {
   return POST(
     new Request('http://localhost/api/kiosk/authorize', {
       method: 'POST',
+      body: JSON.stringify(body),
+    }),
+  );
+}
+
+/**
+ * 🔴 **発信元が識別できる要求。** XFF が無いと `clientIdentity` はハッシュを計算せずに
+ * `GLOBAL_IDENTITY` へ退避するので、**salt を一度も触らない** ——
+ * 鍵の材料不足を測るテストが**何も測らなくなる**。
+ */
+function postWithXff(body: unknown = { pin: '0000', kioskId: 'kiosk-dev' }) {
+  return POST(
+    new Request('http://localhost/api/kiosk/authorize', {
+      method: 'POST',
+      headers: { 'x-forwarded-for': '203.0.113.9, 192.0.2.1' },
       body: JSON.stringify(body),
     }),
   );
@@ -328,6 +344,73 @@ describe('鍵の材料が無いデプロイ (#1021 AC4)', () => {
     expect(res.status).toBe(503);
     // 🔴 鍵の名前は出してよいが、**値は出さない**（未認証経路）。
     expect(JSON.stringify(await res.json())).not.toContain('0000');
+  });
+
+  /**
+   * 🔴 **鍵が無い世界を「本物の材料不足」で再現する（変異 M-E が生存した穴）。**
+   *
+   * 上の 3 本は `assertIdentitySaltAvailable` **だけ**をモックで throw させている。
+   * 本物の `clientIdentity` は dev フォールバックがあるので**決して throw しない** ——
+   * つまりテストの世界では「鍵が無い」が**片方の関数にしか存在せず、本番と食い違っている**。
+   *
+   * その食い違いのせいで、**検査を `clientIdentity` の後ろへ動かす変異が 25 本全部を
+   * 素通り**した（実測）。その順序だと、鍵未設定の Lambda へ XFF 付きで POST した
+   * 未認証の相手が、**1 リクエストにつき 1 本スタックトレース付きの 500** を無制限に
+   * 生ませられる（`secret-unavailable.ts` が存在する理由そのもの）。
+   *
+   * ここでは env を実際に欠けさせ、**モックを外して本物を使う**。順序が正しければ
+   * 鍵の解決で 503 に倒れ、後ろへ動かすと `clientIdentity` が先に throw して落ちる。
+   */
+  it('🔴 材料が本当に無いとき、鍵の解決が clientIdentity より先に効く', async () => {
+    const savedMarker = process.env.AWS_LAMBDA_FUNCTION_NAME;
+    const savedSecret = process.env.KIOSK_ENROLLMENT_SECRET;
+    const actual = await vi.importActual<typeof import('@/lib/security/client-identity')>(
+      '@/lib/security/client-identity',
+    );
+    process.env.AWS_LAMBDA_FUNCTION_NAME = 'open-reception-server';
+    delete process.env.KIOSK_ENROLLMENT_SECRET;
+    actual.__resetIdentitySalt();
+    // 🔴 モックを外して本物を使う（ここが「本番と同じ世界」にする唯一の手）。
+    assertIdentitySaltAvailable.mockImplementation(actual.assertIdentitySaltAvailable);
+    try {
+      const res = await postWithXff();
+      expect(res.status, '鍵の解決より先に clientIdentity が走っている').toBe(503);
+    } finally {
+      if (savedMarker === undefined) delete process.env.AWS_LAMBDA_FUNCTION_NAME;
+      else process.env.AWS_LAMBDA_FUNCTION_NAME = savedMarker;
+      if (savedSecret === undefined) delete process.env.KIOSK_ENROLLMENT_SECRET;
+      else process.env.KIOSK_ENROLLMENT_SECRET = savedSecret;
+      actual.__resetIdentitySalt();
+    }
+  });
+
+  /**
+   * 🔴 **503 の検出信号を呼んでいる（変異 M-R が生存した穴）。**
+   *
+   * この増分は `reportAttemptBudgetExceeded` / `reportAttemptStoreUnavailable` について
+   * 「信号を足しても**呼んでいることを縛らないと**外しても誰も気づかない」と書いて
+   * 専用の describe で縛っているのに、**3 つ目だけ入れ忘れていた** ——
+   * `secretUnavailableResponse` をログ無しの inline 503 へ置き換えても 25 本全部が緑だった。
+   * `CLAUDE.md` #788 の「同型の 2 本には対策を入れ、3 本目にだけ入れ忘れた」と同型である。
+   *
+   * 信号が落ちると、鍵欠落デプロイで**受付が止まっている理由がサーバログに一切残らない**。
+   */
+  it('🔴 503 のときサーバログに理由を残す（鍵名はログだけ・本文には出さない）', async () => {
+    __resetSecretUnavailableLog();
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+    assertIdentitySaltAvailable.mockImplementation(() => {
+      throw new Error('unset');
+    });
+    try {
+      const res = await post();
+      expect(res.status).toBe(503);
+      const logged = error.mock.calls.map((c) => String(c[0])).join('\n');
+      expect(logged, '鍵欠落の理由がログに残っていない').toContain('KIOSK_ENROLLMENT_SECRET');
+      // 🔴 下界: 鍵名は**本文には**出さない（未認証経路なので設定状態を漏らさない）。
+      expect(JSON.stringify(await res.json())).not.toContain('KIOSK_ENROLLMENT_SECRET');
+    } finally {
+      error.mockRestore();
+    }
   });
 
   /** 🔴 鍵が無いなら照合も予約もしない（未設定デプロイで帳簿を汚さない）。 */
