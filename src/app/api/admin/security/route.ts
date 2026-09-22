@@ -1,3 +1,4 @@
+import { isPinConfigured } from '@/domain/security/pin';
 import { NextResponse } from 'next/server';
 import { asTenantId } from '@/domain/tenant/types';
 import { getSecuritySettings, updateSecuritySettings } from '@/lib/security/security-store';
@@ -37,7 +38,7 @@ export async function GET(): Promise<NextResponse> {
   return NextResponse.json({
     pinRequired: s.pinRequired,
     ipAllowlist: s.ipAllowlist,
-    pinConfigured: s.pin !== '',
+    pinConfigured: isPinConfigured(s),
     emergencyStop: s.emergencyStop,
   });
 }
@@ -49,7 +50,16 @@ export async function PUT(request: Request): Promise<NextResponse> {
   } catch (err) {
     return toGuardResponse(err);
   }
-  const updated = await updateSecuritySettings(await readJson(request));
+  // 🔴 **body は 1 度だけ読む。** `pinChanged` は「PIN を送ったか」で決める
+  //    （レビュー 2 周目 MAJOR 2）——「未設定→設定済みの遷移」では**ローテーションが
+  //    全部 false** になり、退職・漏洩時の変更が監査から消える（実測）。
+  //    🔴 語義は厳密には「**PIN 欄に入力して保存した**」である（同じ値の再投入も true）。
+  //    値を比較できない以上こうなる（レビュー 3 周目 MINOR 10）。
+  const patch = await readJson(request);
+  const updated = await updateSecuritySettings(patch);
+  const pinChanged =
+    typeof (patch as { pin?: unknown } | null)?.pin === 'string' &&
+    ((patch as { pin: string }).pin.trim() !== '');
   // 既存 AuditAction（security.updated）を使用。機微値（PIN）は metadata に残さない。
   await recordDangerAction({
     action: 'security.updated',
@@ -57,12 +67,15 @@ export async function PUT(request: Request): Promise<NextResponse> {
     metadata: {
       pinRequired: updated.pinRequired,
       emergencyStop: updated.emergencyStop,
+      // 🔴 **値は残さず、変えたことだけ残す（レビュー 1 周目 MINOR 6）。**
+      //    運用調査（「いつ誰が PIN を変えたか」）に効く。PII/secret は載せない。
+      pinChanged,
     },
   });
   return NextResponse.json({
     pinRequired: updated.pinRequired,
     ipAllowlist: updated.ipAllowlist,
-    pinConfigured: updated.pin !== '',
+    pinConfigured: isPinConfigured(updated),
     emergencyStop: updated.emergencyStop,
   });
 }
