@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { BUILTIN_DEFAULT_PIN, isHashedPin, isPinConfigured } from '@/domain/security/pin';
+import { BUILTIN_DEFAULT_PIN, hashPin, isHashedPin, isPinConfigured, ITERATIONS } from '@/domain/security/pin';
 import { getBackend } from '@/lib/data';
 import { __resetSecurity, getSecuritySettings, updateSecuritySettings, verifyPin } from './security-store';
 
@@ -248,23 +248,101 @@ describe('security-store (#23 #29)', () => {
   });
 
   /**
-   * 🔴 **運用者が入力した PIN は、読めない綴りでも本人の PIN になる。**
+   * 🔴 **運用者が PIN 欄へ入力した文字列は、綴りが何であっても本人の PIN になる。**
    *
-   * レビュー 3 周目で昇格を「平文だけ」に狭めたが、変異検証でその述語は**守るものが無い**
-   * と分かった（`current()` が先に正規化するので、読めない**記録**はここへ届かない）。
-   * 届くのは**運用者が PIN 欄へ入力した文字列**だけで、そこを狭めると入力が黙って捨てられ、
-   * 効く PIN は**既定値**になる —— 「保存した」と言いながら効かない沈黙の誤動作である。
+   * 🔴 **この主張を、前は 1 綴りでしか測っていなかった（レビュー 4 周目 MAJOR 1）。**
+   * `iterations` が上限超え（＝`classify` が `unusable`）の綴りだけを当てており、
+   * **隣の `hash` の綴りは壊れていた** —— 保存形式の判定（`isHashedPin`）を
+   * **入力にも当てていた**ので「もうハッシュ済み」と見なされ、昇格せず素通りしていた。
+   * 実測した壊れ方:
    *
-   * 撤回の根拠をここで縛る。狭める変異はこの 1 本で落ちる。
+   * - その文字列でも `0000` でも通らない ＝ **通る入力が 1 つも無い**（沈黙の締め出し）
+   * - なのに `pinConfigured` は `true`（画面は「設定済み」と言う）
+   * - 入力が**平文のまま永続層に残る**（本増分の本旨に反する）
+   * - `iterations` を仕込めるので、**未認証の** `authorize` の CPU を 5ms → 478ms にできる
+   *
+   * テストの doc が**実測より広い主張**になっている型なので、`classify` の 4 通りを
+   * 総当たりで縛る（族の見落としは、1 綴りずつ足しても塞がらない）。
    */
-  it('🔴 うちの形式に似た入力でも、運用者が入れたなら本人の PIN になる', async () => {
-    // 反復回数が上限超え＝記録としては読めない綴り。だが**入力**としては正当な文字列。
-    const looksLikeRecord = 'pbkdf2-sha256$2000000$AAAAAAAAAAAAAAAAAAAAAA==$BBBB';
-    await updateSecuritySettings({ pinRequired: true, pin: looksLikeRecord });
-    expect(await verifyPin(looksLikeRecord)).toBe(true);
-    // 下界: 入力を捨てて既定値へ落としていない（＝沈黙の誤動作になっていない）。
+  it.each([
+    ['plaintext（ふつうの入力）', '4821'],
+    ['hash（正当な記録の形。これが壊れていた）', 'pbkdf2-sha256$10000$AAAAAAAAAAAAAAAAAAAAAA==$BBBB'],
+    ['unusable（反復回数が上限超え）', 'pbkdf2-sha256$2000000$AAAAAAAAAAAAAAAAAAAAAA==$BBBB'],
+    ['うちの形式でない区切り', 'pbkdf2-sha256$10000$AAAA'],
+  ])('🔴 運用者の入力はそのまま本人の PIN になる: %s', async (_label, input) => {
+    await __resetSecurity();
+    await updateSecuritySettings({ pinRequired: true, pin: input });
+    expect(await verifyPin(input)).toBe(true);
+    // 下界 1: 入力を捨てて既定値へ落としていない（沈黙の誤動作になっていない）。
     expect(await verifyPin(BUILTIN_DEFAULT_PIN)).toBe(false);
+    // 下界 2: 表示と挙動が一致している。
     expect(isPinConfigured(await getSecuritySettings())).toBe(true);
+  });
+
+  /**
+   * 🔴 **運用者の入力は平文で残らない（AC3 の本旨。上と対で縛る）。**
+   *
+   * 上の 1 本だけだと「保存せず素通りさせる」実装でも満たせてしまう
+   * （実際、壊れていたときの `plaintext` 綴りはそれで通っていた）。
+   * **永続レコードの生の値**を見て、入力そのものが残っていないことを言う。
+   */
+  it.each([
+    ['plaintext', '4821'],
+    ['hash の形', 'pbkdf2-sha256$10000$AAAAAAAAAAAAAAAAAAAAAA==$BBBB'],
+    ['unusable の形', 'pbkdf2-sha256$2000000$AAAAAAAAAAAAAAAAAAAAAA==$BBBB'],
+  ])('🔴 入力した文字列は永続層に残らない: %s', async (_label, input) => {
+    await __resetSecurity();
+    await updateSecuritySettings({ pinRequired: true, pin: input });
+    const raw = await getBackend()
+      .singleton<Record<string, unknown>>('security', { default: () => ({}) })
+      .get();
+    expect(raw?.pin).not.toBe(input);
+    // 下界: 保存されたのは**うちの記録**である（空や既定値へ化けていない）。
+    expect(isHashedPin(String(raw?.pin))).toBe(true);
+  });
+
+  /**
+   * 🔴 **未認証経路の計算量を、管理操作から引き上げられない（レビュー 4 周目 MAJOR 1 の 3 番目）。**
+   *
+   * `pin` 欄へ `pbkdf2-sha256$1000000$…` を入れると、壊れていた実装では**その記録が
+   * そのまま保存**され、未認証の `authorize` 1 回が 478ms（通常 5ms の約 90 倍）になった。
+   * `pin.ts` が `MAX_ITERATIONS` を緩く取る根拠にしている「到達には記録を書ける権限が要る」を
+   * **管理 API が反証していた**。保存後の記録が `ITERATIONS` で作られていることを縛る。
+   */
+  it('🔴 管理 API から反復回数を仕込めない', async () => {
+    await __resetSecurity();
+    await updateSecuritySettings({
+      pinRequired: true,
+      pin: 'pbkdf2-sha256$1000000$AAAAAAAAAAAAAAAAAAAAAA==$BBBB',
+    });
+    const raw = await getBackend()
+      .singleton<Record<string, unknown>>('security', { default: () => ({}) })
+      .get();
+    expect(String(raw?.pin).split('$')[1]).toBe(String(ITERATIONS));
+  });
+
+  /**
+   * 🔴 **この実装が書いたレコードは、必ずフラグを持つ（レビュー 4 周目 MINOR 3）。**
+   *
+   * バックフィルが昇格ブロックの**内側**に在ったため、`pin` が既にハッシュのレコードでは
+   * `pinSetByOperator` が**永久に `undefined`** のままだった。`types.ts` は
+   * 「無い場合は旧レコードとして判定する」と書いているのに、**それを強制する機構が無かった**。
+   */
+  it('🔴 書き戻したレコードは pinSetByOperator を必ず持つ', async () => {
+    const stored = await hashPin(BUILTIN_DEFAULT_PIN);
+    await getBackend().singleton('security', { default: () => ({}) }).put({
+      pinRequired: true,
+      pin: stored,
+      ipAllowlist: [],
+      emergencyStop: false,
+    });
+    await updateSecuritySettings({ emergencyStop: true });
+    const raw = await getBackend()
+      .singleton<Record<string, unknown>>('security', { default: () => ({}) })
+      .get();
+    expect(raw?.pinSetByOperator).toBeTypeOf('boolean');
+    // 下界: 埋めるついでに**意味を変えていない**（旧レコードの推定をそのまま固定する）。
+    expect(await verifyPin(BUILTIN_DEFAULT_PIN)).toBe(true);
   });
 
   /**

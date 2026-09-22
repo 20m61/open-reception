@@ -56,7 +56,13 @@ async function current(): Promise<SecuritySettings> {
   // 🔴 3 周目 MAJOR 1 / MINOR 3: 同じ嘘が **`unusable`（うちの形式だが読めない記録）**の
   // 綴りで残っていた —— 空だけを正規化していたため。しかも `unusable` は昇格で
   // **平文として扱われ、記録文字列が生きた PIN になる**（実測）。
-  // **読めない資格情報は 1 つの規則で「未設定」に倒す**（族ごと閉じる）。
+  // **読めない資格情報は 1 つの規則で「未設定」に倒す。**
+  //
+  // 🔴 **「族ごと閉じた」とは言えない（レビュー 4 周目 MINOR 2）。** `classify` の 1 段目
+  //    （構造）で落ちる綴り —— `pbkdf2-sha256$abc$AAAA$BB` や hash 部が空のもの —— は
+  //    **平文として扱われる**ので、ここは通らず**記録文字列がそのまま生きた PIN になる**。
+  //    実害は旧平文と同等（ダンプを読めた者はどうせ 4 桁を総当たりできる）なので
+  //    振る舞いは変えないが、閉じたのは**構造的に完全な記録だけ**である。
   const usable = isUsablePinCredential(s.pin);
   const pin = usable ? s.pin : BUILTIN_DEFAULT_PIN;
   // 読めない資格情報を「設定済み」と表示しない（表示と挙動を一致させる）。
@@ -74,6 +80,8 @@ export async function getSecuritySettings(): Promise<SecuritySettings> {
 
 export async function updateSecuritySettings(patch: unknown): Promise<SecuritySettings> {
   const settings = await current();
+  /** この更新で**運用者が PIN 欄に入力したか**。入力は定義上つねに平文である。 */
+  let pinFromOperator = false;
   if (typeof patch === 'object' && patch !== null) {
     const o = patch as Record<string, unknown>;
     if (typeof o.pinRequired === 'boolean') settings.pinRequired = o.pinRequired;
@@ -86,6 +94,17 @@ export async function updateSecuritySettings(patch: unknown): Promise<SecuritySe
     //    ここが持つのは**「運用者が決めた」という事実**だけ。
     if (typeof o.pin === 'string' && o.pin.trim() !== '') {
       settings.pin = o.pin.trim();
+      // 🔴 **運用者の入力は、綴りが何であっても平文である（レビュー 4 周目 MAJOR 1）。**
+      //    保存形式の判定（`isHashedPin`）を**入力にも当てていた**ため、運用者が
+      //    `pbkdf2-sha256$…` の形をした文字列を PIN 欄へ入れると「もうハッシュ済み」と
+      //    見なされ、**昇格せずそのまま保存**されていた。結果:
+      //      - その文字列でも `0000` でも通らない ＝ **通る入力が 1 つも無い**
+      //      - なのに `pinConfigured` は true（画面は「設定済み」と言う）
+      //      - 入力文字列が**平文のまま永続層に残る**（本増分の本旨に反する）
+      //      - `iterations` を仕込めるので、**未認証の** `authorize` 1 回の CPU を
+      //        5ms → 478ms へ引き上げられる（実測。`MAX_ITERATIONS` の doc の前提も崩れる）
+      //    ここは**判定を増やす場所ではなく、書き側が既に知っている事実を使う場所**である。
+      pinFromOperator = true;
       // 🔴 **既定値と同じなら「設定済み」と言わない（レビュー 3 周目 MAJOR 2）。**
       //    この PR 自身が `.env.example` で「0000 なら未設定と表示される」と約束している。
       //    運用者が `0000` と入力した場合にだけその約束が破れていた —— しかも保存値は
@@ -122,11 +141,20 @@ export async function updateSecuritySettings(patch: unknown): Promise<SecuritySe
   //    ここを通る `unusable` は**運用者が PIN 欄へ入力した文字列**だけで、それは
   //    昇格して本人の PIN にするのが正しい（入力を黙って捨てて既定値へ戻すと、
   //    「保存した」と言いながら効かない**沈黙の誤動作**になる）。
-  if (!isHashedPin(settings.pin)) {
-    // 🔴 **昇格前の平文で「運用者が決めたか」を確定させる。**
-    //    昇格すると形式からは判定できなくなるので、ここで決めないと
-    //    旧レコードの `0000` が昇格の瞬間に「設定済み」へ化ける（#1021 MAJOR-8 の再発）。
-    settings.pinSetByOperator = settings.pinSetByOperator ?? isPinConfigured(settings);
+  //    縛る不変条件（値ごとの期待値ではなく）:
+  //
+  //    > **運用者が PIN 欄へ入力した文字列は、`classify` の結果が何であっても、
+  //    > その文字列で authorize できる。**
+  // 🔴 **フラグは必ず埋めてから書く（レビュー 4 周目 MINOR 3）。** 以前この行は
+  //    昇格ブロックの**内側**に在ったので、`pin` が既にハッシュのレコードでは
+  //    **永久に `undefined` のまま**だった（`types.ts` が「無い場合は旧レコードとして
+  //    判定する」と書いている前提を、機構が強制していなかった）。
+  //
+  // 🔴 **昇格より前に決める。** 昇格すると形式からは判定できなくなるので、ここで
+  //    決めないと旧レコードの `0000` が昇格の瞬間に「設定済み」へ化ける
+  //    （#1021 MAJOR-8 の再発）。順序が逆になった機構は片側しか塞がない。
+  settings.pinSetByOperator = settings.pinSetByOperator ?? isPinConfigured(settings);
+  if (pinFromOperator || !isHashedPin(settings.pin)) {
     settings.pin = await hashPin(settings.pin);
   }
   await security().put(settings);

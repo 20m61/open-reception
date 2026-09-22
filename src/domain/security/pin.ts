@@ -54,6 +54,14 @@ export const ITERATIONS = 10_000;
  * 記録を書ける権限が要る**（＝設定ストアへの書き込み権限。そこまで持っていれば
  * `pinRequired` を落とせる）。**読めるはずの記録を読めなくする**ほうが実害が大きいので、
  * 上限は緩く取り、**超過は平文へ落とさず fail closed** にする（下の `CredentialShape`）。
+ *
+ * 🔴 **この根拠は一度反証された（レビュー 4 周目 MAJOR 1 / MINOR 8）。** 管理 API の
+ * PIN 欄へ `pbkdf2-sha256$1000000$…` を入れると、書き側が入力を「もうハッシュ済み」と
+ * 見なして**そのまま保存**していたため、**記録を書ける権限なしに**反復回数を仕込めた
+ * （未認証の `authorize` 1 回が 5ms → 478ms。実測）。`pinRequired` を落とせば
+ * authorize は 403 で安くなるので「落とせるから等価」も成り立たなかった。
+ * 書き側が運用者入力を必ず `ITERATIONS` で作り直すようにして、前提を真に戻してある
+ * （`security-store.ts` の `pinFromOperator`）。**上限を更に緩める前に、この経路を確かめること。**
  */
 export const MAX_ITERATIONS = 1_000_000;
 const KEY_BITS = 256;
@@ -123,11 +131,21 @@ function classify(stored: string): CredentialShape {
   //    （復旧導線ごと失われる）。誰も通さない側へ倒す。
   if (typeof stored !== 'string') return { kind: 'unusable' };
   const parts = stored.split('$');
-  // ここまでで「うちの形式ではない」＝旧レコードの平文。
+  // 🔴 **検査は 2 段で、段ごとに倒す先が違う（レビュー 4 周目 MINOR 1）。**
+  //
+  //    1 段目（構造）… 区切り数・アルゴリズム名・各部の**存在**。ここを満たさないものは
+  //      「うちの形式ではない」＝**旧レコードの平文**へ倒す。
+  //    2 段目（値）… 反復回数の範囲・salt の復号。ここで落ちたものは**うちの形式だが
+  //      読めない**ので、平文へは落とさず `unusable`（＝誰も通さない）にする。
+  //
+  //    以前ここには「以降はうちの形式なので平文へは落とさない」と書いていたが、
+  //    **直後の 2 節が落としている**（`pbkdf2-sha256$abc$AAAA$BB` と hash 空は平文）。
+  //    振る舞いは意図どおり（`pin.test.ts` が綴りごとに縛っている）で、注記が誤っていた。
   if (parts.length !== 4 || parts[0] !== ALGORITHM) return { kind: 'plaintext' };
   const [, rawIterations, rawSalt, hash] = parts;
-  // 🔴 以降は**うちの形式**なので、読めなくても平文へは落とさない。
+  // 1 段目の残り: 反復回数が数字列であること・hash 部が空でないこと（構造の検査）。
   if (!/^[0-9]+$/.test(rawIterations ?? '') || !hash) return { kind: 'plaintext' };
+  // ここから 2 段目（値の検査）。落ちたものは平文へ落とさない。
   const iterations = Number(rawIterations);
   if (!Number.isInteger(iterations) || iterations <= 0 || iterations > MAX_ITERATIONS) {
     return { kind: 'unusable' };
