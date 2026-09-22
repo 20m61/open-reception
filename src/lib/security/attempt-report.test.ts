@@ -58,12 +58,27 @@ describe('検出信号 (#1021 AC4)', () => {
     expect(warn).toHaveBeenCalledTimes(2);
   });
 
-  /** 🔴 経路ごとに独立してラッチする（kiosk の信号が admin を黙らせない）。 */
-  it('🔴 経路ごとに独立してラッチする', () => {
+  /**
+   * 🔴 **経路ごとに独立してラッチする**（ある経路の信号が別経路を黙らせない）。
+   *
+   * 🔴 **両方の種別で確かめる（変異 N22 が生存した穴）。** 前はこの面を
+   * 超過（`warn`）側でしか見ておらず、**ストア障害（`error`）側の鍵から経路を外す変異が
+   * 素通り**した。同型の 2 本のうち 1 本にだけ対策が入っていた形である
+   * （`CLAUDE.md` #788 と同じ型）。
+   *
+   * 今日の本番の scope は `kiosk-authorize` ひとつなので、これは**将来のための下界**
+   * である —— #1167 で admin 側の経路が足されたとき、片方の信号がもう片方を
+   * 黙らせないことを、そのとき気づくのではなく今縛っておく。
+   */
+  it('🔴 経路ごとに独立してラッチする（超過・ストア障害の両方）', () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {});
     reportAttemptBudgetExceeded('kiosk-authorize', 1000);
     reportAttemptBudgetExceeded('other-scope', 1000);
-    expect(warn).toHaveBeenCalledTimes(2);
+    expect(warn, '超過の信号が経路をまたいで黙っている').toHaveBeenCalledTimes(2);
+    reportAttemptStoreUnavailable('kiosk-authorize', 1000);
+    reportAttemptStoreUnavailable('other-scope', 1000);
+    expect(error, 'ストア障害の信号が経路をまたいで黙っている').toHaveBeenCalledTimes(2);
   });
 
   /** 🔴 種別ごとにも独立（超過とストア障害が互いを黙らせない）。 */

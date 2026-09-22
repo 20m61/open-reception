@@ -73,11 +73,15 @@ export function authorizeFailureMessage(
       // 🔴 **PIN を疑わせない。** 閉まった原因は来訪者ではない（サイト全体で数えている）。
       // 🔴 **次の一手を残す。** 待つだけしか言わないと来訪者は立ち尽くす ——
       //    辞書側の文言に「担当者へお声がけください」を含めてある。
+      // 🔴 **`Number.isFinite` は撤回した（変異検証で生存＝等価）。** 下の 2 つの比較が
+      //    `NaN`（どの比較も偽）と `±Infinity`（`<= MAX` が偽）を**既に**落としている。
+      //    2 段で書いていたのは片方が無駄で、しかも「有限性はこの行が守っている」と
+      //    読めるぶん**どちらが効いているか分からなくなる**。
+      //    守るものが無い機構は撤回する（`.claude/rules/opus5-autonomous-loop.md`）。
+      //    したがって `retryAfterSec <= MAX_SHOWN_WAIT_SEC` は**見やすさの上限であると
+      //    同時に有限性の境界**でもある ―― 外すと「約 Infinity 秒後」が出る。
       const showable =
-        retryAfterSec !== undefined &&
-        Number.isFinite(retryAfterSec) &&
-        retryAfterSec > 0 &&
-        retryAfterSec <= MAX_SHOWN_WAIT_SEC;
+        retryAfterSec !== undefined && retryAfterSec > 0 && retryAfterSec <= MAX_SHOWN_WAIT_SEC;
       return showable
         ? t('kiosk.authorize.tooManyAttempts', locale, { seconds: Math.ceil(retryAfterSec) })
         : t('kiosk.authorize.tooManyAttemptsLater', locale);

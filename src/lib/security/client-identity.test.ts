@@ -21,8 +21,7 @@
  * admin セッションを要求し、その入口は `/api/admin/login` だけなので、
  * **受付が復旧不能になる**。一次鍵を発信元にすれば、他人の失敗で閉まらない。
  */
-import { readFile } from 'node:fs/promises';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { clientIdentity, GLOBAL_IDENTITY } from './client-identity';
 
 const req = (xff?: string) =>
@@ -132,15 +131,27 @@ describe('発信元の識別 (#1021 AC4)', () => {
    * 現れていなかった** —— 実デプロイでは公開されている dev 既定値が使われ、
    * 「逆引きできない」という主張が**配備の現実で偽**だった。
    *
-   * ここは「env を読まない」ことを**モジュールの依存として**縛る。値だけを見ていると、
-   * 既定値つきで env を読み直す変異（＝ MAJOR-3 の再来）が素通りする。
+   * ## 🔴 ここは一度、散文にテストを通されている
+   *
+   * 最初この面は**ソースの文字列検査**で書いていた（`toContain('getRandomValues')`）。
+   * salt を公開既定値へ戻す変異を当てたところ**生存した** —— 直上の doc コメントに
+   * 「`crypto.getRandomValues` を使う」と書いてあるので、**実装を消しても検査が通る**。
+   * 検査が読んでいたのは実装ではなく自分の散文だった。
+   *
+   * そこで**振る舞いで縛り直す**。モジュールを読み込み直せば salt は作り直されるので、
+   * **同じ IP でも別インスタンスなら鍵が変わる**。固定 salt（env でも定数でも）に
+   * 戻すと、両インスタンスが**同じ鍵**を出すのでここが落ちる。
    */
-  it('🔴 salt を env から読まない（配線漏れで公開既定値に落ちない）', async () => {
-    const source = await readFile(new URL('./client-identity.ts', import.meta.url), 'utf8');
-    expect(source, 'salt を env / serverSecret から読んでいる').not.toMatch(
-      /serverSecret|process\.env/,
-    );
-    expect(source, 'salt が乱数由来でない').toContain('getRandomValues');
+  it('🔴 salt はプロセスごとに変わる（固定の公開既定値ではない）', async () => {
+    const first = await import('./client-identity');
+    const a = await first.clientIdentity(req('192.0.2.1'));
+    vi.resetModules();
+    const second = await import('./client-identity');
+    const b = await second.clientIdentity(req('192.0.2.1'));
+    expect(second, 'モジュールが読み直されていない（テストが空虚になる）').not.toBe(first);
+    expect(b, 'salt が固定値なので、別インスタンスでも同じ鍵になる').not.toBe(a);
+    // 下界: どちらも鍵の形は保っている（「毎回壊れた値を返す」で満たさせない）。
+    for (const key of [a, b]) expect(key).toMatch(/^ip:[0-9a-f]{64}$/);
   });
 
   /**

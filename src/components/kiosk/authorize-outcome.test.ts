@@ -75,6 +75,67 @@ describe('文言 (#1021 AC4)', () => {
   });
 
   /**
+   * 🔴 **大きい待ち時間は秒数で出さない（変異 M43 が生存した穴）。**
+   *
+   * 予算の窓は 10 分なので、超過直後の `Retry-After` は 600 近くになる。
+   * 「約 600 秒後」は来訪者にとって**読めない**（嘘ではないが伝わらない）ので、
+   * 上限を超えたら「しばらく」へ落とす。
+   *
+   * 🔴 この上限は**有限性の境界でもある** —— `Number.isFinite` を撤回したので、
+   * `Infinity` を落としているのはこの比較である（上の `Infinity` の行が下界）。
+   */
+  it.each([
+    [121, '上限のすぐ外'],
+    [600, '窓ちょうど'],
+    [86_400, '桁違い'],
+  ])('🔴 待ち時間が %d 秒（%s）なら秒数を出さない', (value) => {
+    const m = authorizeFailureMessage('too_many_attempts', value);
+    expect(m, `${value} 秒がそのまま画面へ出ている`).not.toContain(String(value));
+    expect(m.trim().length).toBeGreaterThan(0);
+  });
+
+  /** 🔴 下界: 上限**ちょうど**は出す（上限を狭める変異を落とす）。 */
+  it('🔴 上限ちょうどの待ち時間は秒数を出す（下界）', () => {
+    expect(authorizeFailureMessage('too_many_attempts', 120)).toContain('120');
+  });
+
+  /**
+   * 🔴 **全部の原因で locale が効く（変異 M47 が生存した穴）。**
+   *
+   * 1 つでも `locale` を渡し忘れると、その原因だけ**既定 locale（ja）に固定**される。
+   * 辞書を 4 言語ぶん足した意味が、その 1 行で消える。原因ごとに個別のテストを書くと
+   * **書かなかった原因がそのまま穴**になるので（#1004 の教訓）、原因の**全列**を
+   * 型から取って総当たりする。
+   *
+   * 判定は「ja と違う文字列が出ること」。文言そのものを書き写すと、辞書を直すたびに
+   * テストも直すことになり、**辞書とテストが同じ誤りを共有**する。
+   */
+  it('🔴 どの原因でも locale が効く（ja に固定されない）', () => {
+    const failures: AuthorizeFailure[] = [
+      'wrong_pin',
+      'too_many_attempts',
+      'unavailable',
+      'unreachable',
+    ];
+    for (const failure of failures) {
+      const ja = authorizeFailureMessage(failure, 90, 'ja');
+      const en = authorizeFailureMessage(failure, 90, 'en');
+      expect(en, `${failure} が locale を無視して ja に固定されている`).not.toBe(ja);
+      expect(en.trim().length).toBeGreaterThan(0);
+    }
+  });
+
+  /**
+   * 🔴 下界: 秒数を出す枝でも locale が効く（`tooManyAttempts` と
+   * `tooManyAttemptsLater` は別の辞書キーなので、片方だけ渡し忘れられる）。
+   */
+  it('🔴 秒数を出さない枝でも locale が効く（下界）', () => {
+    const ja = authorizeFailureMessage('too_many_attempts', 600, 'ja');
+    const en = authorizeFailureMessage('too_many_attempts', 600, 'en');
+    expect(en).not.toBe(ja);
+  });
+
+  /**
    * 🔴 分からないときも文言が壊れない（「NaN 秒」「undefined 秒」と出さない）。
    *
    * 🔴 **`undefined` だけでは足りない（変異 M34 が生存した）。** この関数は
