@@ -1,7 +1,7 @@
 /**
  * デプロイに必須の CDK context を fail-closed で解決する（#680 / 2026-08-15 のインシデント）。
  *
- * `infra/bin/open-reception.ts` の `appSecretsName` / `originVerifySecret` /
+ * `infra/bin/open-reception.ts` の `appSecretsName` / `originVerifySecretName` /
  * `publicOriginOverride` は **未指定でも synth が通る**。通るが、出来上がるのは別構成の
  * スタックで、Secrets Manager 連携も QR の基底オリジンも落ちる。
  *
@@ -35,8 +35,11 @@ import { resolveCustomDomainContext } from './custom-domain-context';
 
 /** 未指定なら deploy を止める環境変数と、対応する CDK context キー。 */
 const REQUIRED: ReadonlyArray<readonly [envVar: string, contextKey: string, why: string]> = [
-  ['OR_APP_SECRETS_NAME', 'appSecretsName', '省くと Secrets Manager 連携が落ちて起動が 500 になる'],
-  ['OR_ORIGIN_VERIFY_SECRET', 'originVerifySecret', '省くと CloudFront 経由の POST が全滅する（403）'],
+  [
+    'OR_APP_SECRETS_NAME',
+    'appSecretsName',
+    '省くとアプリ機密の runtime 読込と origin-verify の動的参照が両方落ちる',
+  ],
   ['OR_PUBLIC_ORIGIN_OVERRIDE', 'publicOriginOverride', '省くと発行される QR が誰にも使えない'],
   [
     'OR_PROVIDER_SECRET_BACKEND',
@@ -56,41 +59,25 @@ const REQUIRED: ReadonlyArray<readonly [envVar: string, contextKey: string, why:
 const PROVIDER_SECRET_BACKENDS: ReadonlyArray<string> = ['memory', 'secrets-manager'];
 
 /**
- * `originVerifySecret` に要求する最小長。
+ * 必須 context に生 secret は含めない（#1148）。
  *
- * 128 bit を base64url で表す最小長（`ceil(128 / 6) = 22`）。現行 dev は 44 文字（32 バイト）。
- * **上げすぎない** ―― 運用者が選んだ正当な値を弾くと、このガード自体が deploy を止める。
+ * `OR_APP_SECRETS_NAME` は Secrets Manager の**名前**であり、同じ secret の
+ * `ORIGIN_VERIFY_SECRET` キーを CloudFormation dynamic reference で読む。
+ * したがって dev の synth / diff / broker validation に secret 値を渡す必要はない。
+ *
+ * 値の見た目の検査は「説明文や全角を設定値として貼った」事故を fail-closed にするため
+ * 引き続き行う。ただし secret 強度の検査はここでは行わない（値そのものを読まないため）。
  */
-const ORIGIN_VERIFY_MIN_LENGTH = 22;
+type InvalidReason = 'vocabulary' | 'placeholder' | 'non-ascii';
 
-/**
- * 🔴 **「set されている」は「正しい値が入っている」ではない**（2026-09-06）。
- *
- * 4 回目のデプロイで `OR_ORIGIN_VERIFY_SECRET` に、**runbook の散文に出てくる
- * プレースホルダ文字列そのもの**（`＜実際の高エントロピー値＞`）が入っていた。
- * 上の presence / 空文字の判定は**堂々と通す**し、`verify` も `preflight` も緑、
- * `diff` gate の findings も事前に承認された形を満たしていた ―― **一段も止まらなかった**。
- *
- * 前段（未登録）とは症状が正反対である。あちらは大声で止まるが、こちらは
- * **全部緑のまま通過し、しかもデプロイ後もアプリは正常に動く**。CloudFront のヘッダと
- * ServerFn の env は同じ context から組み立てられるので、両方が同じプレースホルダになる。
- * 壊れないので運用でも気づけず、`src/lib/security/origin-verify.ts` は単純比較なので
- * **リポジトリの散文を読んだ者は誰でもヘッダを偽造して CloudFront を迂回できる**。
- *
- * そこで presence だけでなく**値の見た目**も見る。判定は「明らかにその値ではない」形に
- * 限る ―― 強度を測るのではなく、**説明文の貼り付けを落とす**のが目的である。
- */
-type InvalidReason = 'vocabulary' | 'placeholder' | 'non-ascii' | 'too-short';
-
-/** 山括弧（ASCII / 全角）。この 4 変数の正当な値に山括弧は現れない。 */
+/** 山括弧（ASCII / 全角）。必須 context の正当な値に山括弧は現れない。 */
 const PLACEHOLDER_BRACKETS = /[<>＜＞]/u;
 
 /**
  * 印字可能 ASCII 以外（空白・制御文字・全角を含む）。
  *
- * `x-origin-verify` は **HTTP ヘッダ値**なので非 ASCII をそもそも載せられない
- * （RFC 9110 field value）。他の 3 つも Secrets Manager 名・URL・語彙であり、
- * 非 ASCII が入る余地は「説明文を貼った」以外にない。
+ * Secrets Manager 名・URL・語彙のいずれにも、この運用では非 ASCII を使わない。
+ * 非 ASCII が入った場合は「説明文を貼った」事故として止める。
  */
 const NON_PRINTABLE_ASCII = /[^\x21-\x7e]/u;
 
@@ -99,24 +86,20 @@ const REASON_HINT: Readonly<Record<InvalidReason, string>> = {
   placeholder: '山括弧つきのプレースホルダのままです（runbook の記法をそのまま貼っていませんか）',
   'non-ascii':
     '印字可能 ASCII 以外を含みます（説明文の貼り付けが疑われます。空白・全角も不可）',
-  'too-short': `${ORIGIN_VERIFY_MIN_LENGTH} 文字以上が必要です（128 bit 未満）`,
 };
 
 /**
  * 値が「明らかにその値ではない」かを判定する。正当なら `null`。
  *
- * 🔴 **値そのものを返さない。** 呼び出し側は理由だけを診断に出す ――
- * 「短すぎる」で弾かれるのは**本物の secret でありうる**ので、載せれば漏れる。
+ * 🔴 **値そのものを返さない。** 呼び出し側は理由だけを診断に出す。
+ * 現在の必須値は secret そのものではないが、診断に入力値を反射しない不変条件は維持する。
  */
-function classifyInvalid(envVar: string, contextKey: string, value: string): InvalidReason | null {
+function classifyInvalid(contextKey: string, value: string): InvalidReason | null {
   if (contextKey === 'providerSecretBackend' && !PROVIDER_SECRET_BACKENDS.includes(value)) {
     return 'vocabulary';
   }
   if (PLACEHOLDER_BRACKETS.test(value)) return 'placeholder';
   if (NON_PRINTABLE_ASCII.test(value)) return 'non-ascii';
-  if (envVar === 'OR_ORIGIN_VERIFY_SECRET' && value.length < ORIGIN_VERIFY_MIN_LENGTH) {
-    return 'too-short';
-  }
   return null;
 }
 
@@ -139,7 +122,8 @@ export type DeployContextResult =
  * コピペ事故が空文字を作り、それを「設定された」と読むと、まさに今回の事故が再発する
  * （`lesson-empty-string-means-unknown`）。
  *
- * 🔴 **診断に値を載せない。** `originVerifySecret` は秘密そのもの。変数名だけを出す。
+ * 🔴 **診断に値を載せない。** 現在は名前/URL/語彙だけだが、将来 secret が混ざっても
+ * 診断経路から値を漏らさない不変条件は維持する。
  */
 export function resolveDeployContext(
   env: Readonly<Record<string, string | undefined>>,
@@ -155,12 +139,17 @@ export function resolveDeployContext(
       missing.push(envVar);
       continue;
     }
-    const reason = classifyInvalid(envVar, contextKey, value);
+    const reason = classifyInvalid(contextKey, value);
     if (reason !== null) {
       invalidReasons.push([envVar, reason]);
       continue;
     }
     args.push('-c', `${contextKey}=${value}`);
+    // #1148: origin-verify は app secret と同じ Secrets Manager secret の
+    // ORIGIN_VERIFY_SECRET キーを使う。名前を二重設定させず、同じ値から両 context を生成する。
+    if (envVar === 'OR_APP_SECRETS_NAME') {
+      args.push('-c', `originVerifySecretName=${value}`);
+    }
   }
 
   const invalid = invalidReasons.map(([envVar]) => envVar);
@@ -182,10 +171,9 @@ export function resolveDeployContext(
               '設定したつもりで揮発するので、ここで止めます。',
             ]
           : []),
-        ...(reasons.has('placeholder') || reasons.has('non-ascii') || reasons.has('too-short')
+        ...(reasons.has('placeholder') || reasons.has('non-ascii')
           ? [
-              '2026-09-06 に、runbook の説明文をそのまま貼った値で deploy 直前まで進みました。',
-              'この型はデプロイしても壊れず（ヘッダと env が同じ値になる）、運用では気づけません。',
+              'runbook の説明文や全角値を context として貼る事故を防ぐため、ここで止めます。',
               '値は docs/runbook-cloud-aws-deploy.md を参照してください（リポジトリには置きません）。',
             ]
           : []),
@@ -195,7 +183,10 @@ export function resolveDeployContext(
 
   if (missing.length > 0) {
     const lines = REQUIRED.filter(([envVar]) => missing.includes(envVar)).map(
-      ([envVar, contextKey, why]) => `  ${envVar}  →  -c ${contextKey}=...   （${why}）`,
+      ([envVar, contextKey, why]) =>
+        envVar === 'OR_APP_SECRETS_NAME'
+          ? `  ${envVar}  →  -c ${contextKey}=... + -c originVerifySecretName=...   （${why}）`
+          : `  ${envVar}  →  -c ${contextKey}=...   （${why}）`,
     );
     return {
       ok: false,
@@ -229,14 +220,10 @@ export function resolveDeployContext(
  *
  * ## なぜ要るか
  *
- * 環境ダイアログへ登録するのは **9 変数**（AWS の 5 つ ＋ デプロイ context の 4 つ）だが、
- * `aws-issue-credentials.sh` がクリップボードへ入れていたのは **AWS の 5 つだけ**だった。
- * 残り 4 つは「リポジトリに書いてあるから後で」になり、2026-09-06 の 3 回目のデプロイでは
- * **`OR_APP_SECRETS_NAME` だけが未登録**のまま窓を開けてしまい、`diff` が止まった（#989）。
- *
- * 落ちたのは 4 つのうち唯一「秘密の値ではない」もので、**秘密 3 つは貼る意識が働くのに
- * 非秘密の 1 つだけ抜ける**という形だった。9 つまとめて 1 回のコピーにすれば、
- * 「一部だけ貼る」余地そのものが消える。
+ * #989 で AWS 5 変数と deploy context を一括で運ぶようにした。
+ * #1148 では origin-verify の**生 secret 値**を handoff から削除し、
+ * `OR_APP_SECRETS_NAME` から `appSecretsName` と `originVerifySecretName` の両方を
+ * 決定論的に生成する。必須 deploy context は 4 → 3 変数になり、設定ドリフトも減る。
  *
  * 判定は `resolveDeployContext` と**同じ**（欠落・語彙外を同じ基準で弾く）。窓を開けてから
  * `diff` で気づくのでは、その往復ぶん窓を食う ―― **窓を開ける前に落とす**のが要点である。
@@ -277,9 +264,9 @@ export function resolveDeployContextEnvBlock(
 /**
  * `KEY=VALUE` 形式のローカルファイルを読む（既定は**リポジトリの外**に置く）。
  *
- * 🔴 **リポジトリ内に置かせない。** `OR_ORIGIN_VERIFY_SECRET` は秘密の値そのものなので、
- * 既定の置き場所を作業ツリーの外（`~/.config/open-reception/deploy-context.env`）にしてある。
- * `.gitignore` に頼ると、ignore 行を消した瞬間に秘密が commit され得る。
+ * 既定の置き場所は作業ツリーの外（`~/.config/open-reception/deploy-context.env`）。
+ * #1148 で origin-verify の生 secret はこのファイルからも消えるが、運用 context を
+ * リポジトリへ混ぜない境界は維持する。
  *
  * dotenv の完全実装ではない。**貼り付け事故の吸収**だけを担う:
  * 前後の空白、行頭 `#` のコメント、値を丸ごと囲んだ引用符。

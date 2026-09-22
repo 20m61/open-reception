@@ -1,5 +1,5 @@
 /**
- * 窓を開けるときに貼る「デプロイ context 4 変数」のブロックを stdout へ出す (#989)。
+ * 窓を開けるときに貼る「デプロイ context 3 変数」のブロックを stdout へ出す (#989)。
  *
  * `scripts/aws-issue-credentials.sh`（context の同梱は既定 ON。`--no-context` で外す）から
  * 呼ばれる薄い I/O 層。
@@ -23,8 +23,9 @@ import {
 } from '../src/domain/governance/deploy-context';
 
 /**
- * 既定はリポジトリの**外**。`OR_ORIGIN_VERIFY_SECRET` は秘密の値そのものなので、
- * 作業ツリーに置いて `.gitignore` に頼る形にしない（ignore 行が消えた瞬間に commit され得る）。
+ * 既定はリポジトリの**外**。
+ * #1148 で origin-verify の生 secret は deploy context から削除したが、
+ * 運用 context をソース管理へ混ぜない境界はそのまま維持する。
  */
 function contextFilePath(env: NodeJS.ProcessEnv): string {
   const override = env.OR_DEPLOY_CONTEXT_FILE?.trim();

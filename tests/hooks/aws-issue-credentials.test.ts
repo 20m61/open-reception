@@ -44,10 +44,10 @@ function run(args: ReadonlyArray<string>, env: Record<string, string> = {}) {
 
 
 /**
- * デプロイ context 4 変数もクリップボードへ載せる（#989。同梱は既定 ON で `--no-context` が
+ * デプロイ context 3 変数もクリップボードへ載せる（#989。同梱は既定 ON で `--no-context` が
  * オプトアウト）。
  *
- * 🔴 **窓を開ける前に落とす。** 4 変数の欠落に `diff` で気づくと、そこまでの往復が
+ * 🔴 **窓を開ける前に落とす。** 3 変数の欠落に `diff` で気づくと、そこまでの往復が
  * 丸ごと窓を食う（2026-09-06 の 3 回目は `OR_APP_SECRETS_NAME` だけが未登録だった）。
  * したがって解決は **`aws sts assume-role` より前**に置き、欠けていれば資格情報を
  * 発行せずに終わる ―― 使えない窓を開けない。
@@ -57,7 +57,6 @@ function run(args: ReadonlyArray<string>, env: Record<string, string> = {}) {
  */
 const CONTEXT_ENV = {
   OR_APP_SECRETS_NAME: 'open-reception/dev/app-v2',
-  OR_ORIGIN_VERIFY_SECRET: 'TEST-high-entropy-value',
   OR_PUBLIC_ORIGIN_OVERRIDE: 'https://example.cloudfront.net',
   OR_PROVIDER_SECRET_BACKEND: 'secrets-manager',
 } as const;
@@ -165,7 +164,7 @@ describe('VITEST 実行中は AWS を呼ばない（実測で見つかった事�
 
 
 describe('デプロイ context もクリップボードへ載せる (#989)', () => {
-  it('4 変数が揃っていれば context 解決を抜けて VITEST インターロックまで進む', () => {
+  it('3 変数が揃っていれば context 解決を抜けて VITEST インターロックまで進む', () => {
     const { status, stderr } = run(['--hours', '1'], { ...NO_CONTEXT_FILE, ...CONTEXT_ENV });
     expect(status).not.toBe(0);
     expect(stderr).toContain('VITEST');
@@ -194,17 +193,19 @@ describe('デプロイ context もクリップボードへ載せる (#989)', () 
     expect(stderr).not.toContain('VITEST');
   });
 
-  it('🔴 診断に secret の値を出さない', () => {
-    const { stdout, stderr } = run(['--hours', '1'], {
+  it('🔴 deprecated な生 origin secret を渡しても context 要件には戻さない', () => {
+    const { status, stderr } = run(['--hours', '1'], {
       ...NO_CONTEXT_FILE,
       ...CONTEXT_ENV,
-      OR_APP_SECRETS_NAME: '',
+      OR_ORIGIN_VERIFY_SECRET: 'deprecated-raw-value-that-must-not-be-required',
     });
-    expect(stderr).not.toContain(CONTEXT_ENV.OR_ORIGIN_VERIFY_SECRET);
-    expect(stdout).not.toContain(CONTEXT_ENV.OR_ORIGIN_VERIFY_SECRET);
+    expect(status).not.toBe(0);
+    // context は解決済みで、AWS の直前にあるテスト用インターロックまで進む。
+    expect(stderr).toContain('VITEST');
+    expect(stderr).not.toContain('OR_ORIGIN_VERIFY_SECRET');
   });
 
-  it('--no-context なら 4 変数が無くても context では止まらない', () => {
+  it('--no-context なら 3 変数が無くても context では止まらない', () => {
     const { status, stderr } = run(['--hours', '1', '--no-context'], NO_CONTEXT_FILE);
     expect(status).not.toBe(0);
     // context ではなく VITEST インターロックで止まる。
