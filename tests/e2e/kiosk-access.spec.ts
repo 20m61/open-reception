@@ -145,6 +145,20 @@ test.describe("管理画面で決めた PIN (#1021)", () => {
       data: { kioskId: "kiosk-dev" },
     });
     expect(empty.ok()).toBeFalsy();
+    // 🔴 **下界 (#1021 AC4)。** 失敗した直後でも、**予算内なら正しい PIN で通る**。
+    //    上の 2 本だけだと「全部拒否」でも満たせてしまう —— AC4 の試行回数制限が
+    //    正当な来訪者を閉め出していないことを HTTP 越しに固定する。
+    //
+    // 🔴 **副作用として共有状態を戻している。** 予算の鍵は**サイト全体**なので、
+    //    失敗を残したまま抜けると**他の spec の authorize が 429 になりうる**
+    //    （成功は失敗数を捨てるので、ここで戻る）。#1161 と同じ「同居者との共有状態」の型。
+    const recovered = await page.request.post("/api/kiosk/authorize", {
+      data: { pin: "4821", kioskId: "kiosk-dev" },
+    });
+    expect(
+      recovered.ok(),
+      "失敗の直後に正しい PIN が通らない（AC4 が正当な来訪者を閉め出している）",
+    ).toBeTruthy();
   });
 });
 
