@@ -446,7 +446,7 @@ aws secretsmanager create-secret --name open-reception/dev/app-v2 --secret-strin
 
 | 鍵 | 欠けたときに落ちるもの | 実装 |
 | --- | --- | --- |
-| `KIOSK_ENROLLMENT_SECRET` | 端末エンロール（`/api/kiosk/enroll`） | `src/lib/auth/kiosk-enrollment.ts` |
+| `KIOSK_ENROLLMENT_SECRET` | 端末エンロール（`/api/kiosk/enroll`）**＋ PIN による初回許可（`/api/kiosk/authorize`）** | `src/lib/auth/kiosk-enrollment.ts` / `src/lib/security/client-identity.ts` |
 | `ADMIN_PASSWORD` | 管理ログイン（`ADMIN_AUTH_PROVIDER=none` のときのみ） | `src/lib/auth/admin.ts` (#1021) |
 | `CALL_ANSWER_SECRET` | 担当者の応答/拒否（`/api/staff/calls/[id]/answer`・`/respond`） | `src/lib/call/answer-token.ts` (#1021) |
 | `ADMIN_SESSION_SECRET` | **落ちない（warn-only）**。未設定でも動くが、公開既定値で署名した cookie が通る（#1124） | `src/proxy.ts` / `src/lib/auth/admin.ts` |
@@ -462,6 +462,15 @@ aws secretsmanager create-secret --name open-reception/dev/app-v2 --secret-strin
 > 🔴 **症状から鍵を引くとき (#1123 で文言を直した後)**:
 > `CALL_ANSWER_SECRET` が欠けると担当者の画面は「**サーバー側の問題で通話に接続できませんでした**」、
 > `KIOSK_ENROLLMENT_SECRET` が欠けると受付端末は「**サーバー側の問題で登録できません**」と出る。
+> 🔴 **`KIOSK_ENROLLMENT_SECRET` は #1021 AC4 で受付の主経路にも効くようになった。**
+> 欠けると PIN 画面が「**サーバー側の問題で受付を開始できませんでした。担当者へお声がけください。**」
+> （`kiosk.authorize.unavailable`）を出す。**エンロールと PIN 認可は代替関係**（PIN 不要運用の
+> 端末は管理発行 URL/QR で入れる）なので、この鍵が欠けると**両方の入口が同時に死ぬ** ——
+> 受付が新規に開けなくなる。稼働中の端末は 30 日 cookie で動き続ける。
+> 試行予算の鍵ハッシュの salt をこの秘密から HKDF で導出しているため
+> （`src/lib/security/client-identity.ts`）。**ローテーションすると全端末の一次窓が
+> 作り直される**（予算がその瞬間だけ倍になり、TTL 2 時間で収まる。総量の上界を持つ
+> global cap は固定鍵なので影響を受けない）。
 > どちらも「リンクの有効期限切れ」とは言わない（言っていたら**別の原因**）。
 > 🔴 **「リンクの有効期限切れ」＝リンクの問題、とは限らない。** 担当者側は**アプリが返す 4xx**も
 > 同じ文言にする —— とくに `POST /api/staff/calls/:id/answer` は**テナントに Vonage 資格情報が

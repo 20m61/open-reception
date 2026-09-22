@@ -230,6 +230,12 @@ export type MessageKey =
   | 'checkout.confirm.no'
   | 'checkout.error.expired'
   | 'checkout.error.throttled'
+  // 受付端末の PIN 許可の失敗 (#1021 AC4)。試行回数制限が来訪者に見える面。
+  | 'kiosk.authorize.wrongPin'
+  | 'kiosk.authorize.tooManyAttempts'
+  | 'kiosk.authorize.tooManyAttemptsLater'
+  | 'kiosk.authorize.unavailable'
+  | 'kiosk.authorize.unreachable'
   | 'checkout.error.notRecognized'
   | 'checkout.error.unexpected'
   | 'checkout.presentListUnavailable'
@@ -571,6 +577,11 @@ const ja: DefaultDictionary = {
   'checkout.confirm.no': 'いいえ、戻る',
   'checkout.error.expired': '退館コードの有効期限が切れています。受付にお問い合わせください。',
   'checkout.error.throttled': '退館コードの試行が続いたため、しばらく受け付けを制限しています。少し時間をおくか、退館 QR をご利用いただくか、受付にお問い合わせください。',
+  'kiosk.authorize.wrongPin': 'PIN が正しくありません。もう一度入力してください。',
+  'kiosk.authorize.tooManyAttempts': '入力の試行が続いたため、一時的に受付の開始を制限しています。約 {seconds} 秒後にもう一度お試しください。お急ぎの場合は担当者へお声がけください。',
+  'kiosk.authorize.tooManyAttemptsLater': '入力の試行が続いたため、一時的に受付の開始を制限しています。しばらくしてからもう一度お試しください。お急ぎの場合は担当者へお声がけください。',
+  'kiosk.authorize.unavailable': 'サーバー側の問題で受付を開始できませんでした。担当者へお声がけください。',
+  'kiosk.authorize.unreachable': '受付を開始できませんでした。通信状態を確かめてから、もう一度お試しください。',
   'checkout.error.notRecognized': '退館コードまたは呼び出し先が確認できませんでした。もう一度ご確認ください。',
   // 応答は届いたが、この画面が読める形ではなかった (#1004 増分 2)。**来訪者の入力のせいにしない**
   // ―― 再試行では直らないことがあるので、`expired` / `throttled` と同じく有人導線を添える。
@@ -893,6 +904,11 @@ const en: LocaleDictionary = {
   'checkout.confirm.no': 'No, go back',
   'checkout.error.expired': 'This checkout code has expired. Please ask reception for help.',
   'checkout.error.throttled': 'Too many checkout code attempts. Please wait a moment, use your checkout QR, or ask reception for help.',
+  'kiosk.authorize.wrongPin': 'Incorrect PIN. Please try again.',
+  'kiosk.authorize.tooManyAttempts': 'There have been too many attempts, so starting reception is temporarily limited. Please try again in about {seconds} seconds. If you are in a hurry, please ask a staff member.',
+  'kiosk.authorize.tooManyAttemptsLater': 'There have been too many attempts, so starting reception is temporarily limited. Please try again in a little while. If you are in a hurry, please ask a staff member.',
+  'kiosk.authorize.unavailable': 'Reception could not be started because of a server problem. Please ask a staff member.',
+  'kiosk.authorize.unreachable': 'Reception could not be started. Please check your connection and try again.',
   'checkout.error.notRecognized': 'We could not recognize that checkout code or visit target. Please check and try again.',
   'checkout.error.unexpected': 'We could not complete your checkout. Please try again, or ask reception for help.',
   'checkout.credential.title': 'For your checkout',
@@ -1212,6 +1228,11 @@ const ko: LocaleDictionary = {
   'checkout.confirm.no': '아니요, 돌아가기',
   'checkout.error.expired': '퇴실 코드의 유효 기간이 지났습니다. 접수처에 문의해 주세요.',
   'checkout.error.throttled': '퇴실 코드 시도가 많아 잠시 접수를 제한하고 있습니다. 잠시 후 다시 시도하거나 퇴실 QR을 이용하거나 접수처에 문의해 주세요.',
+  'kiosk.authorize.wrongPin': 'PIN이 올바르지 않습니다. 다시 입력해 주세요.',
+  'kiosk.authorize.tooManyAttempts': '입력 시도가 많아 접수 시작을 일시적으로 제한하고 있습니다. 약 {seconds}초 후에 다시 시도해 주세요. 급하신 경우 담당자에게 말씀해 주세요.',
+  'kiosk.authorize.tooManyAttemptsLater': '입력 시도가 많아 접수 시작을 일시적으로 제한하고 있습니다. 잠시 후 다시 시도해 주세요. 급하신 경우 담당자에게 말씀해 주세요.',
+  'kiosk.authorize.unavailable': '서버 문제로 접수를 시작할 수 없습니다. 담당자에게 말씀해 주세요.',
+  'kiosk.authorize.unreachable': '접수를 시작할 수 없습니다. 통신 상태를 확인한 후 다시 시도해 주세요.',
   'checkout.error.notRecognized': '퇴실 코드 또는 방문 대상을 확인할 수 없습니다. 다시 확인해 주세요.',
   'checkout.error.unexpected': '퇴실 절차를 완료하지 못했습니다. 다시 시도하시거나 접수처에 문의해 주세요.',
   'checkout.credential.title': '퇴실 안내',
@@ -1528,6 +1549,11 @@ const zh: LocaleDictionary = {
   'checkout.confirm.no': '否，返回',
   'checkout.error.expired': '退馆码已过期，请联系前台。',
   'checkout.error.throttled': '退馆码尝试次数过多，暂时限制受理。请稍后再试，或使用退馆二维码，或联系前台。',
+  'kiosk.authorize.wrongPin': 'PIN 码不正确。请重新输入。',
+  'kiosk.authorize.tooManyAttempts': '输入尝试次数过多，暂时限制开始受理。请约 {seconds} 秒后再试。如有急事，请告知工作人员。',
+  'kiosk.authorize.tooManyAttemptsLater': '输入尝试次数过多，暂时限制开始受理。请稍后再试。如有急事，请告知工作人员。',
+  'kiosk.authorize.unavailable': '由于服务器问题，无法开始受理。请告知工作人员。',
+  'kiosk.authorize.unreachable': '无法开始受理。请检查网络连接后重试。',
   'checkout.error.notRecognized': '无法识别该退馆码或拜访对象，请确认后重试。',
   'checkout.error.unexpected': '未能完成退馆手续。请重试，或向前台咨询。',
   'checkout.credential.title': '退馆指引',
