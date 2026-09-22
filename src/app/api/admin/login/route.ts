@@ -120,8 +120,27 @@ export async function POST(request: Request): Promise<NextResponse> {
   // 詳細はサーバログへ（上の cognito 枝と同じ方針）。素通しにすると Next の既定 500 になり、
   // 未認証で例外とスタックトレースを無制限に生ませられるうえ、運用者が受け取る応答が
   // テストで固定できない。
-  // 🔴 **鍵の解決より前に予算を見る（#1021 AC4）。** 予算超過なら何も読まずに断るので、
-  //    設定漏れのデプロイでも応答は 429 に揃う（設定状態は漏れない）。
+  let configuredPassword: string;
+  try {
+    configuredPassword = getAdminPassword();
+  } catch {
+    // ラッチ付きのログは `secret-unavailable.ts` に集約してある（機構を 2 つ持たない）。
+    // 🔴 status は 500 のまま。ここを 503 に揃えるかは #1127 の判断で、この増分では触らない。
+    reportSecretUnavailable('ADMIN_PASSWORD');
+    return NextResponse.json({ error: 'server_error' }, { status: 500 });
+  }
+
+  // 🔴 **予算は鍵の解決の【後】に見る（#1021 AC4）。**
+  //
+  //    最初は解決より前に置いたが、それだと**設定漏れのデプロイで攻撃面が変わる** ——
+  //    予算の記録はデータバックエンドに置くので、`DATA_BACKEND` 未設定の壊れたデプロイでは
+  //    `getBackend()` が throw し、`broken-deploy-reachability.test.ts` が固定している
+  //    「公開既定値では入れず、セッションも出ない」が**未捕捉の 500** へ化けた（実測）。
+  //
+  //    後ろへ置いて失うものは無い: 鍵が無いデプロイは**どんなパスワードでも 500** なので
+  //    総当たりする対象が無い。ここの比較は文字列比較（`!==`）で、kiosk 側の PBKDF2 と違い
+  //    **計算増幅も無い**ので、照合前に断る必要もない。
+  //
   //    射程は `provider=none` だけ —— cognito 枝は Cognito 自身が throttle を持ち、
   //    そこへ global な予算を重ねると外部認証の正当な利用者を巻き込む。
   const budget = await checkAttempt(ATTEMPT_KEY, ADMIN_LOGIN_POLICY, Date.now());
@@ -131,16 +150,6 @@ export async function POST(request: Request): Promise<NextResponse> {
       { error: 'too_many_attempts', message: 'too many attempts; try again later' },
       { status: 429, headers: { 'retry-after': String(Math.ceil(budget.retryAfterMs / 1000)) } },
     );
-  }
-
-  let configuredPassword: string;
-  try {
-    configuredPassword = getAdminPassword();
-  } catch {
-    // ラッチ付きのログは `secret-unavailable.ts` に集約してある（機構を 2 つ持たない）。
-    // 🔴 status は 500 のまま。ここを 503 に揃えるかは #1127 の判断で、この増分では触らない。
-    reportSecretUnavailable('ADMIN_PASSWORD');
-    return NextResponse.json({ error: 'server_error' }, { status: 500 });
   }
 
   const body = (await request.json().catch(() => null)) as { password?: unknown } | null;

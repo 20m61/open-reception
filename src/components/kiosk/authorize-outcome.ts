@@ -16,6 +16,8 @@
  * （`rules/pii-secret-minimization.md`）。
  */
 import { isServerSideFailure } from '@/domain/util/http-failure';
+import { DEFAULT_LOCALE, type Locale } from '@/lib/i18n/locale';
+import { t } from '@/lib/i18n/t';
 
 /** PIN 許可の失敗。**原因が違えば来訪者にできることも違う**ので、同じ値にしない。 */
 export type AuthorizeFailure =
@@ -40,31 +42,50 @@ export function authorizeFailureForStatus(status: number): AuthorizeFailure {
 }
 
 /**
+ * 待ち時間を**そのまま秒で見せてよい上限**。
+ *
+ * 予算の窓は最大 10 分なので、超過直後は `retryAfterSec` が 600 近くになる。
+ * 「約 600 秒後」は来訪者にとって読みにくいだけなので、**大きいときは
+ * 「しばらく」へ落とす**（数値そのものは嘘ではないが、伝わらない）。
+ */
+const MAX_SHOWN_WAIT_SEC = 120;
+
+/**
  * 失敗の文言。
  *
+ * 🔴 **文言は辞書から引く (#327)。** ここは**来訪者が見る画面**なので、生の日本語を
+ * 置くと多言語運用で翻訳漏れになる（`cjk-literal.test.ts` が機械的に検出する ——
+ * 実際にこの増分で 1 度踏んだ）。
+ *
  * `retryAfterSec` は `Retry-After` ヘッダの秒数（分からなければ `undefined`）。
- * 🔴 **`undefined` で「NaN 秒」と出さない。** 分からないときは秒数を言わない形に落とす。
+ * 🔴 **`NaN` / `Infinity` / 0 / 負で「約 NaN 秒後」と出さない。** この関数は公開されていて
+ * 引数が `number | undefined` なので、**型は `NaN` を除外しない**（変異検証で実測した穴）。
  */
 export function authorizeFailureMessage(
   failure: AuthorizeFailure,
   retryAfterSec: number | undefined,
+  locale: Locale = DEFAULT_LOCALE,
 ): string {
   switch (failure) {
     case 'wrong_pin':
-      return 'PIN が正しくありません。もう一度入力してください。';
+      return t('kiosk.authorize.wrongPin', locale);
     case 'too_many_attempts': {
-      // 🔴 **PIN を疑わせない。** 閉まった原因は来訪者ではない。
-      // 🔴 **次の一手を残す。** 待つだけしか言わないと来訪者は立ち尽くす。
-      const wait =
-        retryAfterSec !== undefined && Number.isFinite(retryAfterSec) && retryAfterSec > 0
-          ? `約 ${Math.ceil(retryAfterSec)} 秒後にもう一度お試しください。`
-          : 'しばらくしてからもう一度お試しください。';
-      return `入力の試行が続いたため、一時的に受付の開始を制限しています。${wait}お急ぎの場合は担当者へお声がけください。`;
+      // 🔴 **PIN を疑わせない。** 閉まった原因は来訪者ではない（サイト全体で数えている）。
+      // 🔴 **次の一手を残す。** 待つだけしか言わないと来訪者は立ち尽くす ——
+      //    辞書側の文言に「担当者へお声がけください」を含めてある。
+      const showable =
+        retryAfterSec !== undefined &&
+        Number.isFinite(retryAfterSec) &&
+        retryAfterSec > 0 &&
+        retryAfterSec <= MAX_SHOWN_WAIT_SEC;
+      return showable
+        ? t('kiosk.authorize.tooManyAttempts', locale, { seconds: Math.ceil(retryAfterSec) })
+        : t('kiosk.authorize.tooManyAttemptsLater', locale);
     }
     case 'unavailable':
-      return 'サーバー側の問題で受付を開始できませんでした。担当者へお声がけください。';
+      return t('kiosk.authorize.unavailable', locale);
     case 'unreachable':
-      return '受付を開始できませんでした。通信状態を確かめてから、もう一度お試しください。';
+      return t('kiosk.authorize.unreachable', locale);
   }
 }
 

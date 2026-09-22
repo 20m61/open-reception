@@ -1313,7 +1313,7 @@ export function KioskFlow({
           </div>
         </div>
       ) : view === 'authorize' ? (
-        <KioskAuthorizeView onAuthorized={markAuthorized} />
+        <KioskAuthorizeView onAuthorized={markAuthorized} locale={locale} />
       ) : view === 'unenrolled' ? (
         <KioskUnenrolledView />
       ) : view === 'checking' ? (
@@ -1544,7 +1544,14 @@ export function KioskFlow({
  * 原因を別 state に分けて既定値で補うのではなく、**表現不能にしておく**
  * （`StaffResponseActions` が #1123 で採ったのと同じ形）。
  */
-function KioskAuthorizeView({ onAuthorized }: { onAuthorized: () => void }) {
+function KioskAuthorizeView({
+  onAuthorized,
+  locale,
+}: {
+  onAuthorized: () => void;
+  // 🔴 文言は辞書から引く (#327)。来訪者が見る画面なので生の日本語を置かない。
+  locale: Locale;
+}) {
   const [pin, setPin] = useState('');
   const [state, setState] = useState<AuthorizeState>({ kind: 'idle' });
   const [busy, setBusy] = useState(false);
@@ -1602,7 +1609,7 @@ function KioskAuthorizeView({ onAuthorized }: { onAuthorized: () => void }) {
           data-testid="kiosk-pin-error"
           data-failure={state.failure}
         >
-          {authorizeFailureMessage(state.failure, state.retryAfterSec)}
+          {authorizeFailureMessage(state.failure, state.retryAfterSec, locale)}
         </p>
       ) : null}
       <button type="submit" className="btn btn--primary" data-testid="kiosk-authorize" disabled={busy} aria-busy={busy}>

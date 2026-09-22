@@ -22,6 +22,10 @@ const KNOWN: Record<string, 'partial' | 'whole-record'> = {
   'src/lib/platform/repository.ts': 'partial',
   'src/lib/routing/call-correlation.ts': 'partial',
   'src/lib/data-stores/reception-repository.ts': 'partial',
+  // 🔴 試行予算のカウンタ (#1021 AC4)。`{ startedAt, failures }` だけを渡す
+  //    （レコードに任意フィールドが無いので #795 の罠に当たらない）。CAS の `expected` は
+  //    **読んだ値をそのまま**渡す —— 緩めると並行した失敗を取りこぼし、予算が実質的に増える。
+  'src/lib/security/attempt-store.ts': 'partial',
   // レコード全体を渡す。**任意フィールドを `undefined` で明示している**ことが前提。
   'src/lib/runtime-policy/store.ts': 'whole-record',
   'src/lib/operating-policy/store.ts': 'whole-record',

@@ -62,6 +62,14 @@ describe('PIN 画面の配線 (#1021 AC4)', () => {
 
   /** 🔴 下界: 文言は原因から引いている（1 つの文言へ丸めていない）。 */
   it('🔴 文言は authorizeFailureMessage から引く', () => {
-    expect(SOURCE).toContain('authorizeFailureMessage(state.failure, state.retryAfterSec)');
+    expect(SOURCE).toContain('authorizeFailureMessage(state.failure, state.retryAfterSec, locale)');
+  });
+
+  /**
+   * 🔴 **locale を渡している (#327)。** 渡さないと既定 locale（ja）に固定され、
+   * 多言語運用の来訪者に**日本語だけ**が出る（辞書を足した意味が消える）。
+   */
+  it('🔴 文言に locale を渡している', () => {
+    expect(SOURCE).toContain('<KioskAuthorizeView onAuthorized={markAuthorized} locale={locale} />');
   });
 });
