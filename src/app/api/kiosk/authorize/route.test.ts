@@ -9,6 +9,8 @@ const verifyPin = vi.fn();
 const issueKioskSession = vi.fn();
 const reserveLayeredSafely = vi.fn();
 const recordLayeredSuccess = vi.fn();
+const reportAttemptBudgetExceeded = vi.fn();
+const reportAttemptStoreUnavailable = vi.fn();
 
 vi.mock('@/lib/security/security-store', () => ({
   getSecuritySettings: (...a: unknown[]) => getSecuritySettings(...a),
@@ -17,6 +19,10 @@ vi.mock('@/lib/security/security-store', () => ({
 vi.mock('@/lib/security/attempt-store', () => ({
   reserveLayeredSafely: (...a: unknown[]) => reserveLayeredSafely(...a),
   recordLayeredSuccess: (...a: unknown[]) => recordLayeredSuccess(...a),
+}));
+vi.mock('@/lib/security/attempt-report', () => ({
+  reportAttemptBudgetExceeded: (...a: unknown[]) => reportAttemptBudgetExceeded(...a),
+  reportAttemptStoreUnavailable: (...a: unknown[]) => reportAttemptStoreUnavailable(...a),
 }));
 vi.mock('@/lib/auth/kiosk', () => ({
   KIOSK_COOKIE: 'kiosk_session',
@@ -43,9 +49,11 @@ beforeEach(() => {
   reserveLayeredSafely.mockResolvedValue({
     allowed: true,
     nextWindow: { startedAt: 0, failures: 0 },
-    onSuccess: { startedAt: 0, failures: 0 },
-    onFailure: { startedAt: 0, failures: 1 },
   });
+  // 🔴 既定は「記録が成功する」。`vi.clearAllMocks()` が戻り値も消すので、
+  //    ここで置き直さないと `undefined` が返り、通常経路でも
+  //    「記録に失敗した」と読まれる（下界のテストがこの取りこぼしを捕まえた）。
+  recordLayeredSuccess.mockResolvedValue(true);
 });
 
 describe('POST /api/kiosk/authorize (#244)', () => {
@@ -234,5 +242,38 @@ describe('帳簿が落ちたとき (#1021 AC4)', () => {
       }),
     );
     expect(reserveLayeredSafely.mock.calls[0]?.[0]).toBe('ip:192.0.2.1');
+  });
+});
+
+/**
+ * 検出信号の配線（#1021 AC4 / レビュー M4。変異検証で生存した穴）。
+ *
+ * 信号を足しても**呼んでいることを縛らないと**、次に触った人が外しても誰も気づかない。
+ */
+describe('検出信号の配線 (#1021 AC4)', () => {
+  it('🔴 予算超過を記録する', async () => {
+    reserveLayeredSafely.mockResolvedValue({ allowed: false, retryAfterMs: 1000 });
+    await post();
+    expect(reportAttemptBudgetExceeded).toHaveBeenCalledTimes(1);
+  });
+
+  it('🔴 帳簿が読めないことを記録する', async () => {
+    reserveLayeredSafely.mockResolvedValue('unavailable');
+    await post();
+    expect(reportAttemptStoreUnavailable).toHaveBeenCalledTimes(1);
+  });
+
+  /** 🔴 成功の記録に失敗したことも記録する（沈黙で飲まない）。 */
+  it('🔴 成功の記録に失敗したことを記録する', async () => {
+    recordLayeredSuccess.mockResolvedValue(false);
+    await post();
+    expect(reportAttemptStoreUnavailable).toHaveBeenCalledTimes(1);
+  });
+
+  /** 🔴 下界: 通常経路では何も記録しない（常に記録して満たしていない）。 */
+  it('🔴 通常経路では記録しない（下界）', async () => {
+    await post();
+    expect(reportAttemptBudgetExceeded).not.toHaveBeenCalled();
+    expect(reportAttemptStoreUnavailable).not.toHaveBeenCalled();
   });
 });

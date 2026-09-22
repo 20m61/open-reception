@@ -47,7 +47,9 @@ import {
   type AttemptPolicy,
   type AttemptWindow,
   KIOSK_AUTHORIZE_POLICY,
+  KIOSK_AUTHORIZE_LAYERS,
   ADMIN_LOGIN_POLICY,
+  ADMIN_LOGIN_LAYERS,
 } from './attempt-budget';
 
 /** 判定は純関数。窓の状態と現在時刻を渡す。 */
@@ -173,5 +175,63 @@ describe('予算判定 (#1021 AC4)', () => {
         expect(p.windowMs).toBeLessThanOrEqual(3_600_000);
       }
     });
+  });
+});
+
+/**
+ * 層の方針そのもの（#1021 AC4 / レビュー B1・B2）。
+ *
+ * 🔴 **これらは変異検証で生存した穴である。** 層化の**振る舞い**は
+ * `attempt-store.test.ts` が縛っていたが、**方針の定数**を誰も縛っていなかったので、
+ * `ADMIN_LOGIN_LAYERS.global` に cap を入れる変異（＝B2 を戻す変異）が素通りした。
+ */
+describe('層の方針 (#1021 AC4)', () => {
+  /**
+   * 🔴 **本体（B2 の核心を定数で縛る）。** admin に global cap を置くと、
+   * 攻撃者が cap を使い切るだけで**運用者が無期限に入れない**。そして kiosk の
+   * 復旧経路（エンロール URL の発行）は admin セッション必須で、その入口は
+   * `/api/admin/login` だけなので、**受付が復旧不能になる**。
+   */
+  it('🔴 admin には global cap を置かない（受付の復旧経路を閉じさせない）', () => {
+    expect(
+      ADMIN_LOGIN_LAYERS.global,
+      'admin に global cap を置くと攻撃者が運用者を無期限に閉め出せる（レビュー B2）',
+    ).toBeUndefined();
+  });
+
+  /** 🔴 下界: kiosk には置く（PIN が 4 桁なので分散総当たりを止める価値がある）。 */
+  it('🔴 kiosk には global cap を置く（下界）', () => {
+    expect(KIOSK_AUTHORIZE_LAYERS.global).toBeDefined();
+  });
+
+  /** 🔴 一次は両経路とも定数と一致している（層の配線が入れ替わっていない）。 */
+  it('🔴 一次の方針は各経路の予算と一致する', () => {
+    expect(KIOSK_AUTHORIZE_LAYERS.perOrigin).toBe(KIOSK_AUTHORIZE_POLICY);
+    expect(ADMIN_LOGIN_LAYERS.perOrigin).toBe(ADMIN_LOGIN_POLICY);
+  });
+
+  /**
+   * 🔴 **global cap の大きさに上界を置く（変異検証で生存した穴）。**
+   *
+   * cap が巨大だと「発信元を回す分散総当たり」を止められない ―― cap を置いた意味が消える。
+   * 10^4 を cap で割った時間が実用的でない長さに収まること。
+   */
+  it('🔴 kiosk の global cap は分散総当たりを現実的にしない', () => {
+    const cap = KIOSK_AUTHORIZE_LAYERS.global;
+    expect(cap).toBeDefined();
+    if (cap === undefined) throw new Error('unreachable');
+    const perHour = cap.budget * (3_600_000 / cap.windowMs);
+    // 10^4 を尽くすのに 24 時間以上かかること。
+    expect(10_000 / perHour).toBeGreaterThan(24);
+  });
+
+  /**
+   * 🔴 **下界: cap は一次より十分大きい。** 一次と同じか小さいと、
+   * 1 つの発信元の失敗で**全体が閉まる**（B2 が別の綴りで戻る）。
+   */
+  it('🔴 global cap は一次予算より十分大きい（1 発信元で全体を閉じさせない）', () => {
+    const cap = KIOSK_AUTHORIZE_LAYERS.global;
+    if (cap === undefined) throw new Error('unreachable');
+    expect(cap.budget).toBeGreaterThan(KIOSK_AUTHORIZE_LAYERS.perOrigin.budget * 2);
   });
 });

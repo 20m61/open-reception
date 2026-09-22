@@ -24,6 +24,7 @@ import {
   recordSuccess,
   reserveAttempt,
   reserveLayered,
+  reserveLayeredSafely,
   __resetAttempts,
 } from './attempt-store';
 import { GLOBAL_IDENTITY } from './client-identity';
@@ -289,5 +290,106 @@ describe('層になった予算 (#1021 AC4)', () => {
     }
     expect((await reserveLayered('ip:1.1.1.1', 'k', LAYERS, 1000)).allowed).toBe(false);
     expect((await reserveLayered('ip:1.1.1.1', 'a', NO_CAP, 1000)).allowed).toBe(true);
+  });
+});
+
+/**
+ * 変異検証で生存した穴（#1021 AC4）。
+ *
+ * 🔴 **どれもレビュー対応で足した振る舞いで、足したときに縛っていなかった。**
+ * 振る舞いを直して doc に書いただけでは、次に触った人が戻しても誰も気づかない。
+ */
+describe('層と倒れ方の穴（変異検証由来） (#1021 AC4)', () => {
+  const LAYERS = {
+    perOrigin: { budget: 5, windowMs: 60_000 } satisfies AttemptPolicy,
+    global: { budget: 2, windowMs: 60_000 } satisfies AttemptPolicy,
+  };
+
+  /**
+   * 🔴 **成功は global の窓も捨てる（変異 N10 が生存した穴）。**
+   *
+   * 前は一次の予算だけを使い切って確かめていたので、**一次を捨てるだけで満たせた**。
+   * global 側を使い切った状態から確かめる。捨てないと、正当な利用者が成功しても
+   * **global が閉じたまま**で次の来訪者が入れない。
+   */
+  it('🔴 成功は global の窓も捨てる', async () => {
+    // 発信元を変えて global cap を使い切る。
+    for (let i = 0; i < LAYERS.global.budget; i += 1) {
+      expect((await reserveLayered(`ip:10.0.0.${i}`, 'g', LAYERS, 1000)).allowed).toBe(true);
+    }
+    expect((await reserveLayered('ip:10.0.0.99', 'g', LAYERS, 1000)).allowed).toBe(false);
+    // 成功した発信元が global も戻す。
+    await recordLayeredSuccess('ip:10.0.0.0', 'g');
+    expect((await reserveLayered('ip:10.0.0.99', 'g', LAYERS, 1000)).allowed).toBe(true);
+  });
+
+  /**
+   * 🔴 **CAS を諦めたら断る（変異 N16 が 2 周連続で生存した穴）。**
+   *
+   * 諦めた要求を通すと、**CAS を失敗させ続けるだけで予算が実質的に無制限**になる。
+   * `updateIf` を常に失敗させて、リトライを使い切った先が「断る」であることを見る。
+   */
+  it('🔴 CAS を使い切ったら断る（通さない）', async () => {
+    const POLICY2: AttemptPolicy = { budget: 5, windowMs: 60_000 };
+    // 1 度目でレコードを作る（以降は updateIf 経路へ入る）。
+    await reserveAttempt('cas', POLICY2, 1000);
+    const collection = getBackend().collection<{ id: string }>('auth-attempts', {
+      ttlSeconds: 7200,
+    });
+    const spy = vi.spyOn(collection, 'updateIf').mockResolvedValue(false);
+    const backendSpy = vi.spyOn(getBackend(), 'collection').mockReturnValue(
+      collection as ReturnType<typeof getBackend>['collection'] extends (
+        ...a: never[]
+      ) => infer R
+        ? R
+        : never,
+    );
+    try {
+      const r = await reserveAttempt('cas', POLICY2, 1000);
+      expect(r.allowed, 'CAS を使い切ったのに通している（予算が実質無制限になる）').toBe(false);
+    } finally {
+      spy.mockRestore();
+      backendSpy.mockRestore();
+    }
+  });
+
+  /**
+   * 🔴 **予約でストアが落ちたら `unavailable`（変異 N22 が生存した穴）。**
+   *
+   * fail-open にすると、**バックエンドを落とすだけで試行回数制限が消える**
+   * （攻撃者が選べる状態を作らない）。route はこれを 503 に写す。
+   */
+  it('🔴 ストアが落ちたら unavailable を返す（fail-closed）', async () => {
+    const spy = vi.spyOn(getBackend(), 'collection').mockImplementation(() => {
+      throw new Error('backend down');
+    });
+    try {
+      const r = await reserveLayeredSafely('ip:1.1.1.1', 'k', LAYERS, 1000);
+      expect(r).toBe('unavailable');
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  /**
+   * 🔴 **成功の記録が落ちても throw しない（変異 N23 が生存した穴）。**
+   *
+   * throw すると、**正しい PIN を入れた来訪者が帳簿の書き込み失敗だけで
+   * 受付を開始できない**（レビュー M2 の実測）。`false` を返して呼び出し側に任せる。
+   */
+  it('🔴 成功の記録が落ちても throw せず false を返す', async () => {
+    const spy = vi.spyOn(getBackend(), 'collection').mockImplementation(() => {
+      throw new Error('backend down');
+    });
+    try {
+      await expect(recordLayeredSuccess('ip:1.1.1.1', 'k')).resolves.toBe(false);
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  /** 🔴 下界: 落ちていなければ true を返す（常に false にして満たしていない）。 */
+  it('🔴 通常経路では true を返す（下界）', async () => {
+    await expect(recordLayeredSuccess('ip:1.1.1.1', 'k')).resolves.toBe(true);
   });
 });
