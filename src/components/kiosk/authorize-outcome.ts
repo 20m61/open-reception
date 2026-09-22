@@ -67,3 +67,37 @@ export function authorizeFailureMessage(
       return '受付を開始できませんでした。通信状態を確かめてから、もう一度お試しください。';
   }
 }
+
+/**
+ * 画面が持つ失敗の状態。
+ *
+ * 🔴 **原因を既定値で補わない。** `boolean` で持って非 ok を全部 1 つの文言へ丸めるのが
+ * 元の形で、429 が返るようになった時点で**嘘**になった。原因を伴わない error を
+ * **表現不能**にしておく（`StaffResponseActions` が #1123 で採ったのと同じ形）。
+ */
+export type AuthorizeState =
+  | { kind: 'idle' }
+  | { kind: 'error'; failure: AuthorizeFailure; retryAfterSec: number | undefined };
+
+/**
+ * `fetch` の応答から画面の状態を作る。**配線をこの 1 式に寄せてある。**
+ *
+ * 🔴 **なぜ関数にしたか（#826 の教訓）。** 純関数の分岐を全部 kill しても、
+ * **呼び出し側（配線）を変異させていない**と保証は丸ごと落ちる —— #826 では
+ * `KioskFlow` を元へ戻しても unit・e2e とも緑だった。このリポジトリには対話的な
+ * component テストの仕組みが無く、429 の e2e も**サイト全体の予算を使い切ると
+ * スイートを汚染する**ため書けない。だから配線を**テストできる 1 式**へ寄せ、
+ * 残った 1 行は `authorize-wiring.test.ts` が静的に固定する。
+ */
+export function authorizeStateFromResponse(
+  status: number,
+  retryAfterHeader: string | null,
+): AuthorizeState {
+  const parsed = retryAfterHeader !== null ? Number.parseInt(retryAfterHeader, 10) : Number.NaN;
+  return {
+    kind: 'error',
+    failure: authorizeFailureForStatus(status),
+    // 🔴 `Number.isFinite` を外すと「約 NaN 秒後」と出る（変異 M34 が生存した穴）。
+    retryAfterSec: Number.isFinite(parsed) ? parsed : undefined,
+  };
+}

@@ -1,9 +1,9 @@
 'use client';
 
 import {
-  authorizeFailureForStatus,
   authorizeFailureMessage,
-  type AuthorizeFailure,
+  authorizeStateFromResponse,
+  type AuthorizeState,
 } from './authorize-outcome';
 import { asCallResult, asCreatedReception } from '@/domain/reception/parse';
 import { callFailureReasonFrom } from '@/domain/reception/call-failure';
@@ -1544,10 +1544,6 @@ export function KioskFlow({
  * 原因を別 state に分けて既定値で補うのではなく、**表現不能にしておく**
  * （`StaffResponseActions` が #1123 で採ったのと同じ形）。
  */
-type AuthorizeState =
-  | { kind: 'idle' }
-  | { kind: 'error'; failure: AuthorizeFailure; retryAfterSec: number | undefined };
-
 function KioskAuthorizeView({ onAuthorized }: { onAuthorized: () => void }) {
   const [pin, setPin] = useState('');
   const [state, setState] = useState<AuthorizeState>({ kind: 'idle' });
@@ -1570,13 +1566,9 @@ function KioskAuthorizeView({ onAuthorized }: { onAuthorized: () => void }) {
         onAuthorized();
       } else {
         // 🔴 **状態コードを見る。** 非 ok を一括で「PIN が違う」にしない (#1021 AC4)。
-        const header = res.headers.get('retry-after');
-        const parsed = header !== null ? Number.parseInt(header, 10) : Number.NaN;
-        setState({
-          kind: 'error',
-          failure: authorizeFailureForStatus(res.status),
-          retryAfterSec: Number.isFinite(parsed) ? parsed : undefined,
-        });
+        //    判定は `authorizeStateFromResponse` の 1 式に寄せてある（#826 の教訓。
+        //    配線を変異させられる形にしないと、保証が丸ごと落ちても緑のままになる）。
+        setState(authorizeStateFromResponse(res.status, res.headers.get('retry-after')));
       }
     } catch {
       // 応答が返らなかった。**届いたか分かっていない**ので、PIN のせいにしない。

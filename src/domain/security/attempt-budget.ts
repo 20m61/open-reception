@@ -97,10 +97,11 @@ export function consumeAttempt(
     };
   }
   if (window.failures >= policy.budget) {
-    // 🔴 **必ず正の値を返す。** 0 や負を返すと、呼び出し側の `Retry-After` が
-    //    「すぐ再試行してよい」になり、上界が事実上消える。
-    const remaining = policy.windowMs - (now - window.startedAt);
-    return { allowed: false, retryAfterMs: Math.max(1, remaining) };
+    // 🔴 **クランプは撤回した（変異検証で生存＝等価）。** ここへ来る時点で上の分岐
+    //    （`now - startedAt >= windowMs`）が偽なので `remaining > 0` は構造から従う。
+    //    境界を守っているのは上の `>=` であり、その変異はテストで落ちる（M1）。
+    //    「守るものが無い機構は撤回する」（`.claude/rules/opus5-autonomous-loop.md`）。
+    return { allowed: false, retryAfterMs: policy.windowMs - (now - window.startedAt) };
   }
   return {
     allowed: true,

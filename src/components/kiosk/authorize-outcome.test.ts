@@ -21,6 +21,7 @@ import { describe, expect, it } from 'vitest';
 import {
   authorizeFailureForStatus,
   authorizeFailureMessage,
+  authorizeStateFromResponse,
   type AuthorizeFailure,
 } from './authorize-outcome';
 
@@ -94,5 +95,44 @@ describe('文言 (#1021 AC4)', () => {
   it.each(ALL)('🔴 %s の文言が env 名・鍵名を漏らさない', (f) => {
     const m = authorizeFailureMessage(f, 30);
     expect(m).not.toMatch(/SECRET|ADMIN_|KIOSK_|PBKDF2|pbkdf2/);
+  });
+});
+
+/**
+ * 応答 → 画面状態の写像（#1021 AC4）。
+ *
+ * 🔴 **配線をここで縛る（#826 の教訓）。** 純関数の分岐を全部 kill しても、
+ * 呼び出し側を変異させていなければ保証は丸ごと落ちる。`KioskFlow` の PIN 画面は
+ * この 1 式を呼ぶだけにしてあり、その 1 行は `authorize-wiring.test.ts` が静的に固定する。
+ */
+describe('応答から画面状態への写像 (#1021 AC4)', () => {
+  it('🔴 429 と Retry-After から待ち時間つきの状態を作る', () => {
+    const s = authorizeStateFromResponse(429, '90');
+    expect(s).toEqual({ kind: 'error', failure: 'too_many_attempts', retryAfterSec: 90 });
+  });
+
+  it('🔴 Retry-After が無ければ待ち時間は undefined（NaN にしない）', () => {
+    expect(authorizeStateFromResponse(429, null).retryAfterSec).toBeUndefined();
+  });
+
+  /**
+   * 🔴 **本体（変異 M34 が生存した穴）。** ヘッダが数値でないとき
+   * `Number.parseInt` は `NaN` を返す。検査を外すと文言が「約 NaN 秒後」になる。
+   * `undefined` だけ当てていては**この綴りに届かない**。
+   */
+  it.each(['soon', '', 'Wed, 21 Oct 2015 07:28:00 GMT'])(
+    '🔴 Retry-After が数値でない（%j）なら待ち時間は undefined',
+    (header) => {
+      const s = authorizeStateFromResponse(429, header);
+      expect(s.kind).toBe('error');
+      if (s.kind !== 'error') throw new Error('unreachable');
+      expect(s.retryAfterSec).toBeUndefined();
+      // 下界: 文言が壊れていない（NaN を出さない）。
+      expect(authorizeFailureMessage(s.failure, s.retryAfterSec)).not.toContain('NaN');
+    },
+  );
+
+  it('🔴 401 は wrong_pin（下界。全部 too_many_attempts にしていない）', () => {
+    expect(authorizeStateFromResponse(401, null).failure).toBe('wrong_pin');
   });
 });
