@@ -1,139 +1,278 @@
-# Character-led 統合受付 UX 仕様（画面・会話ターン・遷移）
+# Character-led 統合受付 UX 仕様
 
-対象: Issue #361（Epic #360）。実装の真実源は `src/domain/reception/ui-contract.ts`
-（`ConversationTurnView` 契約・純関数）と `src/domain/reception/state.ts`（状態機械）。
+対象: #361 / #1055 / #1057 / #1077
+
+実装の状態遷移の真実源は `src/domain/reception/state.ts`、表示契約は `src/domain/reception/ui-contract.ts`。
+自然会話の詳細は `docs/minimum-turn-natural-conversation.md` を参照する。
 
 ## 目的
 
-現行 `KioskFlow` は選択・入力画面でアバターを出さず、フォームや QR が独立カードとして進むため、
-来訪者から見ると「同じアバターとの対話」が途中で切れる。本仕様は横向き iPad を主対象に、
-VRM キャラクターの質問と回答 UI を**同じ会話ターン**として扱う Character-led UX へ再構成する。
+横向き iPad を主対象に、VRMキャラクター・字幕・タッチ・音声・QRを**ひとつの Reception Stage**で継続させる。
 
-- キャラクターが待機→挨拶→質問→復唱→確認→発信→成功/失敗まで一貫して応対する。
-- タッチ・音声・文字・QR を同一質問への入力手段として扱う。
-- 発信・個人情報送信は必ずタッチ確認を挟む。
-- 音声/VRM/STT が失敗してもタッチだけで完走できる。
+受付をページ遷移型のフォームにしない。来訪者からは、同じ受付係との会話が進んでいるように見えること。
 
-## 単一の真実源（重要）
+現在の上位原則:
 
-表示契約の真実源は `ui-contract.ts` に一本化する。新しい並立した真実源を作らない（#361 AC）。
+- **Single Reception Stage** — stateが変わっても同じ受付空間を維持する
+- **No Typing** — visitor-facing software keyboardを使わない
+- **Minimum Turns** — 必要な情報だけを最短で集める
+- **One focus, multi-slot acceptance** — 1回の主質問は1つだが、追加で話された情報を捨てない
+- **Ask only missing / ambiguous** — 取得済みslotを再質問しない
+- **Single final confirmation** — 同一内容を個別確認と全体確認で二重確認しない
+- **Repair, don't restart** — 間違ったslotだけを訂正する
+- **Mixed modality** — touch / voice / numpad / QRを同じ会話内で自然に混ぜる
 
-- 受付状態の所有者は `state.ts`（`ReceptionState` / `transition`）。本契約は screenState から
-  **導出するだけ**。
-- 会話ターンの提示は `conversationTurnFor(state, overrides?)` が唯一の入口。
-  presence/emotion/gazeTarget/message/answers/inputModes/requiresExplicitConfirmation/escapeHatches
-  を 1 箇所で導出する。
-- 表情語彙（emotion）は `avatar/guidance.ts` の expression と一致させる（`ui-contract.test.ts` が
-  cross-check）。モーションキーは `@/domain/motion/types` の `motionKeyForState` を再利用（二重化しない）。
-- locale 依存の表示文字列（`displayText` / answers ラベル）は component 層が解決し `overrides` で
-  注入する（domain → component への逆依存を避ける）。既定は ja の意味論的短文を内蔵。
+## 単一の真実源
+
+新しい会話UXを入れても、状態機械を並立させない。
+
+- `state.ts`: `ReceptionState` / `transition` の唯一の所有者
+- `ui-contract.ts`: stateからavatar/message/actions/inputModes等を導出
+- `conversation-turn.ts`: locale表示解決
+- `minimum-turn-natural-conversation.md`: visible turn / slot filling / repair / confirmation policy
+
+自然発話から得たslotは短命な `ConversationDraft` に保持できるが、state transitionそのものは必ず `state.ts` の許可遷移を通す。
+
+## Reception Stage
+
+### Landscape / large display
+
+基本構成は 35 / 65。
+
+- 左: avatar / subtitle / listening・speaking状態
+- 右: 現在の質問、候補、確認、テンキー、結果
+- 下端: EscapeBar
+
+画面を切り替えるのではなく、右側の**現在の会話ターンだけを更新**する。
+
+### Portrait
+
+操作面積を優先する。avatarを小さくしても、字幕・状態・会話の連続性は維持する。
 
 ## ConversationTurnView
+
+概念上の契約:
 
 ```ts
 type ConversationTurnView = {
   stateKey: ReceptionState;
   avatar: {
     presence: 'primary' | 'companion' | 'minimal';
-    emotion: AvatarEmotion;      // neutral | happy | relaxed | thinking | concerned
-    motionKey: MotionKey;        // #31 motionKeyForState を再利用
-    gazeTarget?: GazeTarget;     // answers | form | confirmCta | fallbackCta（none は省略）
+    emotion: AvatarEmotion;
+    motionKey: MotionKey;
+    gazeTarget?: GazeTarget;
   };
   message: {
-    semanticKey: MessageKey;     // 画面表示文と発話文が共有する意味論キー
-    displayText: string;         // 画面表示文（既定 ja / component が locale 注入可）
-    speechText?: string;         // 発話専用文（読み・丁寧表現のため分離可能）
-    speak: boolean;              // 通話中(connected)は false: 静かな待機姿勢
+    semanticKey: MessageKey;
+    displayText: string;
+    speechText?: string;
+    speak: boolean;
   };
   answers: Array<{ id: string; label: string; intent: ReceptionAction }>;
-  inputModes: Array<'touch' | 'voice' | 'text' | 'qr'>;  // touch は必ず含む
-  requiresExplicitConfirmation: boolean;                 // 発信/個人情報送信で true
-  escapeHatches: Array<{ action: ReceptionAction }>;     // back / reset のみ
+  inputModes: Array<'touch' | 'voice' | 'numpad' | 'qr'>;
+  requiresExplicitConfirmation: boolean;
+  escapeHatches: Array<{ action: ReceptionAction }>;
 };
 ```
 
-### presence（アバターの在り方）— #123 からの意図反転
+`text` は visitor-facing input mode から除外する。
 
-旧 #123 は「選択/入力画面はコンテンツが密集するためアバターを出さない」とし、
-`avatar-companion.test.ts` がその集合を固定していた。#361 は**この意図を意図的に反転**し、
-選択/入力/確認/呼び出しでもアバターを会話コンパニオンとして継続させる（重なりは「非表示」では
-なく配置で解決する。下記レイアウト方針）。
+`touch` も全stateで必須とは限らない。自由発話が必須のslotでSTTが利用不能なら、software keyboardではなく既知候補 / retry / 有人支援へ移る。
+
+## Internal state と visible turn
+
+内部状態:
+
+```text
+idle
+ → selectingPurpose
+ → selectingTarget
+ → inputVisitorInfo
+ → confirming
+ → calling
+ → connected / timeout / failed
+```
+
+これは安全な内部遷移であり、**来訪者に全stateを別ターンとして見せる必要はない**。
+
+例:
+
+1. internal = `selectingPurpose`
+2. system: 「どなたにご用ですか？」
+3. visitor: 「営業の鈴木さんに打ち合わせで来ました。張です」
+4. extractor/resolverが purpose / target / visitorName を取得
+5. state.ts の許可順で内部適用
+6. visible next = `confirming`
+
+意味の無い `selectingPurpose → selectingTarget → inputVisitorInfo` の画面フラッシュは出さない。
+
+## 最小slot
+
+通常受付の現在のデータ契約上、最低限必要な情報は次の3つ。
+
+- `purpose`
+- `target`
+- `visitorName`
+
+`company` は必要な業務だけ。`note` は通常journeyでは収集しない。
+
+## 会話設計
+
+### One focus, multi-slot acceptance
+
+システムの主質問は1つだけ。
+
+> どなたにご用ですか？
+
+来訪者が「営業の鈴木さんに打ち合わせで来ました。張です」と答えた場合、質問していないpurpose/nameも受け取る。
+
+「担当者名・用件・お名前を全部話してください」のように複数回答を強要しない。
+
+### Progressive disambiguation
+
+| 入力 | 挙動 |
+| --- | --- |
+| touchで担当者を選択 | confirmed。再確認不要 |
+| QR/予約で取得 | confirmed。再質問しない |
+| voiceで一意・高確信 | provisional。次へ進み最終確認に含める |
+| voiceで複数候補 | 2〜4候補ボタン |
+| voice低確信 | short readback + yes/no |
+| 認識不能 | retry / candidate / assistance |
+
+### Final confirmation
+
+呼び出し前の明示確認は残す。
+
+> 張さま、営業部の鈴木さんに打ち合わせでお取り次ぎします。よろしいですか？
+
+- `呼び出す`
+- `修正する`
+
+氏名を別ターンで「はい」と確認した直後、同じ氏名を含む最終確認をもう一度要求する設計は原則避ける。
+
+### Correction
+
+`修正する` 後は対象slotだけ変更する。
+
+- target修正 → purpose / visitorName維持
+- visitorName修正 → purpose / target維持
+- purpose修正 → target / visitorName維持
+
+## 標準journey
+
+### 担当者受付 — 情報が一発話で揃う
+
+1. `担当者を呼ぶ`
+2. 「どなたにご用ですか？」
+3. 「営業の鈴木さんに打ち合わせで来ました。張です」
+4. final confirmation
+5. `呼び出す`
+
+visitor actions / utterances = 3
+
+### 担当者受付 — targetのみ
+
+1. `担当者を呼ぶ`
+2. 「鈴木さん」
+3. systemはtargetを保持し、不足slotだけ質問
+4. final confirmation
+
+鈴木さんをもう一度選び直させない。
+
+### 同姓候補
+
+1. 「佐藤さん」
+2. `佐藤 花子 / 営業部`、`佐藤 太郎 / 開発部`
+3. タップで確定
+4. 不足slotへ
+
+### QR
+
+QR/予約から必須slotが揃えば、そのまま final confirmation。
+同じ情報をフォームへ再入力させない。
+
+## inputModes
+
+来訪者向け通常入力:
+
+- `touch`: 選択・候補・confirm・repair
+- `voice`: 自由な氏名・担当者名・用件
+- `numpad`: PIN・受付番号・人数・数値コード
+- `qr`: 予約・受付情報
+
+禁止:
+
+- visitor-facing `input[type=text|search|email|tel]`
+- `textarea`
+- `contenteditable`
+- OS/software keyboardへのfallback
+
+## Avatar / speech
+
+アバターは会話の案内役であり、ターンを増やすための存在ではない。
+
+- 「承知しました」だけを独立ターンにしない
+- 取得済み情報を毎回全部復唱しない
+- 状態変化は短い字幕・表情・motionで補助できる
+- final confirmationだけは重要slotを明示する
+- connected中は `minimal` / speak=false を維持
+
+presence:
 
 | presence | 状態 | 意味 |
 | --- | --- | --- |
-| `primary` | idle | アバターが画面の主役（ヒーロー表示） |
-| `companion` | selectingPurpose / selectingTarget / inputVisitorInfo / confirming / calling / failed / timeout / fallback / completed / cancelled | 操作の傍らで対話を継続する付き添い |
-| `minimal` | connected | 通話中はキャラクターが発話を止め、静かな待機姿勢へ退く |
+| `primary` | idle | 受付の主役 |
+| `companion` | 選択・入力・確認・calling・error | 会話を継続する付き添い |
+| `minimal` | connected | 通話/取次を邪魔しない |
 
-## 画面一覧（E-00〜E-10 / Q-01〜Q-02）と会話ターン写像
+## フォールバック
 
-`stateKey` は `ReceptionState`。QR（Q-01/Q-02）は現状 `src/domain/checkin/state.ts` の別状態機械で、
-統合シェルは残 increment（下記）。
+### VRM/TTS failure
 
-| 画面 | stateKey | presence | emotion | gaze | message key | inputModes | 確認必須 | 主な answers |
-| --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| E-00 待機・ウェルカム | idle | primary | happy | answers | welcome | touch, qr | – | （クイックアクション） |
-| E-01 用件確認 | selectingPurpose | companion | happy | answers | choosePurpose | touch, voice, text | – | 目的 ×4 (selectPurpose) |
-| E-02 音声入力・復唱 | ※ inputVisitorInfo 内の復唱 UI（残 increment） | – | – | – | – | – | – | – |
-| E-03 担当者検索 | selectingTarget | companion | neutral | answers | chooseTarget | touch, voice, text | – | 担当者（実行時注入） |
-| E-04 部門・窓口検索 | selectingTarget | companion | neutral | answers | chooseTarget | touch, voice, text | – | 部署（実行時注入） |
-| E-05 来訪者情報 | inputVisitorInfo | companion | relaxed | form | enterVisitorInfo | touch, voice, text | **要**（送信=submitVisitorInfo） | フォーム送信 |
-| E-06 取次内容確認 | confirming | companion | thinking | confirmCta | reviewAndConfirm | touch | **要**（発信=confirm） | この内容で呼ぶ (confirm) |
-| E-07 発信中 | calling | companion | relaxed | none | calling | touch | – | – |
-| E-08 担当者との通話 | connected | minimal | happy | none | connected | touch | – | 受付を終了 (complete) |
-| E-09 担当者が向かっている | connected / fallback | minimal / companion | happy / neutral | none / answers | connected / fallbackGuidance | touch | – | 受付を終了 (complete) |
-| E-10 未応答・フォールバック | timeout / failed → fallback | companion | concerned | fallbackCta | apologyTimeout / apologyFailed | touch | – | 別の方法でご連絡 (useFallback) |
-| Q-01 QR 読取 | （checkin: qr-scan） | companion | – | – | – | touch, qr | – | 読み取りのみ（発信しない） |
-| Q-02 QR 内容確認 | （checkin: qr-confirm） | companion | thinking | confirmCta | reviewAndConfirm | touch | **要** | この内容で呼ぶ |
+UIと字幕が残るため受付を継続する。
 
-> 発信（calling へ入る）唯一の経路は `confirming --confirm--> calling`。音声認識結果だけでは
-> 発信されない（`REQUIRES_CONFIRMATION_ACTIONS` / `passesConfirmationInvariant` が担保）。
+### STT failure
 
-## 画面遷移
+自由入力を必要とするjourneyで、無理にtouch-onlyを成立させるためtext inputを復活させない。
 
-```text
-KioskMode: signage → attract → reception   （Presence/KioskMode/ReceptionState の責務分離は #362）
+優先順位:
 
-ReceptionState:
-  idle
-   → selectingPurpose
-   → selectingTarget
-   → inputVisitorInfo
-   → confirming        （発信前確認: 必ずタッチ）
-   → calling
-   → connected / timeout / failed
-        timeout/failed → fallback
-   → completed
-  （どの状態からも RESET → idle。無操作は #125 のカウントダウン付きで idle へ）
+1. known candidate buttons
+2. numeric alternativeならnumpad
+3. voice retry
+4. #1074 assistance
 
-QR（統合シェルは残 increment）:
-  qr-scan → qr-confirm → calling   （読み取りだけで発信しない）
-```
+## ターン予算
 
-## レイアウト方針
+設計目安:
 
-- **横向き iPad（ipad-landscape / large-display）**: 主要ステップ（用件選択・担当者選択・
-  来訪者情報・確認）でアバターを**左レール 35%**、会話・操作を**右 65%** に並置する
-  （`globals.css` の `[data-kiosk-presence]` / `[data-kiosk-state]` セレクタ）。レールは
-  `pointer-events:none` で操作を妨げず、字幕を常時表示する。
-- **縦向き iPad（ipad-portrait）**: 既存プロファイルを壊さない。操作が下部に密集するため、
-  アバターコンパニオンは従来どおりステータス画面（呼び出し/通話/結果/完了）に控えめ表示し、
-  選択/入力での重なりを避ける（`KioskFlow.showAvatarCompanion` のレイアウト別ゲート）。
-- 呼び出し中/通話/結果は中央パネル＋左下の控えめ companion のまま（映像パネル等を壊さない）。
-- 1 ターン 1 質問。回答候補は原則 2〜4 件。字幕は常時表示。
-- 電話番号・Vonage・内部エラーコードは来訪者へ見せない（結果は `result-tone` の抽象トーンのみ）。
+- 通常受付: 2〜4 visitor actions / utterances
+- QR/予約: 0〜2
+- 配送/定型: 1〜3
+- 5超: question necessity review
 
-## フォールバック（縮退）
+#1080 でPIIを含めず実測する。
 
-- 本契約は純データのため、VRM/TTS/STT を描画/再生できなくても `inputModes` に必ず `touch` を含み、
-  `displayText`（字幕相当）でタッチだけで完走できる。
-- 通話中（connected）は `speak=false`・`presence=minimal` でアバターが静かになる。
+## Anti-patterns
 
-## 残 increment（本 doc 時点で未実装・#361 で継続）
+- 1 field = 1 screen
+- 1 state = 1 visible page
+- STT結果を全部個別yes/no
+- 個別確認後に同一情報をfinal confirmationで再度確認
+- state順のために取得済み情報を捨てる
+- correctionで全restart
+- company/noteをフォームにあるから聞く
+- voice/touchを別journey化
+- STT failure → software keyboard
+- LLMがstate transition / staff id / CONFIRMを直接決める
 
-- **QR シェル統一**: `CheckinFlow`（`domain/checkin/state.ts`）を通常受付と同一の画面シェルへ
-  統合し、Q-01/Q-02 を `ConversationTurnView` として扱う（`qr-scan → qr-confirm → calling`）。
-- **E-02 音声認識の復唱・訂正 UI 統一**: STT 結果の復唱ターンを `speechText` 分離を活かして統一。
-- **iPad landscape の Visual Regression / axe テスト**追加。
-- **多言語の displayText**: 現状 `conversationTurnFor` の既定は ja。component が guidance の
-  多言語字幕を `overrides.message` で注入する結線を全ステップに広げる。
+## 関連
+
+- #1057 No Typing
+- #1077 Minimum-Turn Natural Conversation
+- #1079 ConversationDraft / slot resolution
+- #1080 metrics
+- #1081 slot extraction boundary
+- #1082 conversation copy / repair
+- #1083 QR turn reduction
+- #1074 assistance state contract
