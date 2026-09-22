@@ -4,7 +4,8 @@ import { isIpAllowed } from '@/domain/security/types';
 import { KIOSK_COOKIE, KIOSK_SESSION_TTL_MS, issueKioskSession } from '@/lib/auth/kiosk';
 import { readJson } from '@/lib/data-stores/result-http';
 import { KIOSK_AUTHORIZE_LAYERS } from '@/domain/security/attempt-budget';
-import { clientIdentity } from '@/lib/security/client-identity';
+import { assertIdentitySaltAvailable, clientIdentity } from '@/lib/security/client-identity';
+import { secretUnavailableResponse } from '@/lib/auth/secret-unavailable';
 import { recordLayeredSuccess, reserveLayeredSafely } from '@/lib/security/attempt-store';
 import { reportAttemptBudgetExceeded, reportAttemptStoreUnavailable } from '@/lib/security/attempt-report';
 
@@ -28,9 +29,10 @@ import { reportAttemptBudgetExceeded, reportAttemptStoreUnavailable } from '@/li
  * エンロール URL 発行）は**この増分が一切触っていない**ので開いたままである
  * （admin 側の試行回数制限は射程外。`attempt-budget.ts` の該当 doc / #1167）。
  *
- * 🔴 **一次の予算を「1 IP あたり N 回」と読まない。** 鍵の salt がプロセス起動ごとの
- * 乱数なので（`client-identity.ts`）、一次は実質**プロセスあたり**である。
- * 総量の上界を持っているのは salt を通らない global cap のほうである。
+ * 🔴 **一次が「1 IP あたり」であるためには、鍵がプロセス間で安定していなければならない。**
+ * 一度 salt をプロセス起動ごとの乱数にしたとき、Lambda の同時実行ごとに鍵が割れて
+ * **1 本の IP だけで global cap を使い切れる**状態になっていた（独立レビュー 4 周目 MAJOR-1）。
+ * 今は fail-closed の鍵から決定的に導出している（`client-identity.ts`）。
  */
 const ATTEMPT_SCOPE = 'kiosk-authorize';
 
@@ -72,6 +74,15 @@ export async function POST(request: Request): Promise<NextResponse> {
   //    並行バーストで**全員が予算内と読んで全員が照合へ進む**（実測: 予算 3 に対して
   //    20 回中 20 回が到達し 0 回しか断られなかった）。入場を CAS で予約することでしか
   //    閉じられない。数えるのは「入場した試行」で、成功したら窓ごと捨てる。
+  // 🔴 **鍵の解決だけを catch する（`/api/kiosk/enroll` と同じ流儀）。** 発信元ハッシュの
+  //    salt は `KIOSK_ENROLLMENT_SECRET` から導出するので、未設定デプロイでは throw する
+  //    （`failClosed`）。`clientIdentity` ごと try で包むと、ハッシュ計算やヘッダ解析の
+  //    throw まで 503 に化ける —— 射程を広げない理由は `secret-unavailable.ts`（#1123）。
+  try {
+    assertIdentitySaltAvailable();
+  } catch {
+    return secretUnavailableResponse('KIOSK_ENROLLMENT_SECRET');
+  }
   const identity = await clientIdentity(request);
   const budget = await reserveLayeredSafely(
     identity,

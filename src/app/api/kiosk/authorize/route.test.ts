@@ -11,6 +11,7 @@ const reserveLayeredSafely = vi.fn();
 const recordLayeredSuccess = vi.fn();
 const reportAttemptBudgetExceeded = vi.fn();
 const reportAttemptStoreUnavailable = vi.fn();
+const assertIdentitySaltAvailable = vi.fn();
 
 vi.mock('@/lib/security/security-store', () => ({
   getSecuritySettings: (...a: unknown[]) => getSecuritySettings(...a),
@@ -23,6 +24,14 @@ vi.mock('@/lib/security/attempt-store', () => ({
 vi.mock('@/lib/security/attempt-report', () => ({
   reportAttemptBudgetExceeded: (...a: unknown[]) => reportAttemptBudgetExceeded(...a),
   reportAttemptStoreUnavailable: (...a: unknown[]) => reportAttemptStoreUnavailable(...a),
+}));
+// 🔴 **`clientIdentity` は本物のまま残す。** ここをモックすると、下の
+//    「鍵は XFF の末尾から決まる」が**配線を一切通らなくなり空虚に通る**
+//    （実際に一度そうしてしまい、そのテストが落ちて気づいた）。差し替えるのは
+//    鍵の解決可否だけにする。
+vi.mock('@/lib/security/client-identity', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@/lib/security/client-identity')>()),
+  assertIdentitySaltAvailable: (...a: unknown[]) => assertIdentitySaltAvailable(...a),
 }));
 vi.mock('@/lib/auth/kiosk', () => ({
   KIOSK_COOKIE: 'kiosk_session',
@@ -55,6 +64,7 @@ beforeEach(() => {
   //    ここで置き直さないと `undefined` が返り、通常経路でも
   //    「記録に失敗した」と読まれる（下界のテストがこの取りこぼしを捕まえた）。
   recordLayeredSuccess.mockResolvedValue(true);
+  assertIdentitySaltAvailable.mockReturnValue(undefined);
 });
 
 describe('POST /api/kiosk/authorize (#244)', () => {
@@ -103,15 +113,16 @@ describe('POST /api/kiosk/authorize (#244)', () => {
  * この route は**未認証の公開経路**で、PIN は事実上 4 桁＝10^4 しかない。通れば
  * **30 日の kiosk セッション**が出る（以降 #1020 の面が全部開く）。
  *
- * 🔴 **鍵はサイト全体（global）である。** `kioskId` は**リクエスト body 由来**で、
- * `x-forwarded-for` は詐称可能（この route 自身が IP allowlist についてそう書いている）。
- * どちらで鍵を切っても**回せば素通り**するので、予算にならない。PIN がサイト共通である以上、
- * 数える側もサイト共通にしかできない。
+ * 🔴 **この doc は 1 周目の前提を書いていた（「鍵はサイト全体（global）しか選べない」）。
+ * その前提は独立レビュー B1 に反証されたので撤回する。** `x-forwarded-for` の**末尾**は
+ * CloudFront が付ける詐称できない viewer IP で（`src/lib/admin/audit.ts` が同じ抽出をしている）、
+ * `src/proxy.ts` の origin-verify が CloudFront 迂回を全ルートで拒否する。
+ * 今の鍵は**層**になっている: 一次＝発信元ごと / 二次＝global cap。
+ * 下の「鍵は XFF の末尾から決まる」がそれを縛っている。
  *
  * ## 代償（正直に書く）
  *
- * global なので、攻撃者は**安価に PIN 認可の経路を閉じられる**。これは
- * この endpoint に rate limit を掛ける限り**避けられない**（鍵を変えても同じ）。
+ * 二次（global cap）を使い切られている間は**初回の PIN 認可が閉じる**。
  * 被害を限るのは次の 2 つで、機構ではなく事実である:
  *
  * - **既に許可済みの端末は影響を受けない**（kiosk セッションは 30 日 cookie なので、
@@ -298,5 +309,50 @@ describe('検出信号の配線 (#1021 AC4)', () => {
     await post();
     expect(reportAttemptBudgetExceeded).not.toHaveBeenCalled();
     expect(reportAttemptStoreUnavailable).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * 発信元ハッシュの材料（`KIOSK_ENROLLMENT_SECRET`）が解決できないとき
+ * （#1021 AC4 / 独立レビュー 4 周目 MAJOR-1 の対処）。
+ *
+ * salt を fail-closed の鍵から導出するようにしたので、**未設定デプロイでは throw する**。
+ * 未認証経路なので、そのまま素通しにするとスタックトレースつきの 500 を無制限に生ませられる。
+ */
+describe('鍵の材料が無いデプロイ (#1021 AC4)', () => {
+  it('🔴 鍵が解決できないなら 503（未捕捉 500 にしない）', async () => {
+    assertIdentitySaltAvailable.mockImplementation(() => {
+      throw new Error('KIOSK_ENROLLMENT_SECRET is not set in a deployed environment');
+    });
+    const res = await post();
+    expect(res.status).toBe(503);
+    // 🔴 鍵の名前は出してよいが、**値は出さない**（未認証経路）。
+    expect(JSON.stringify(await res.json())).not.toContain('0000');
+  });
+
+  /** 🔴 鍵が無いなら照合も予約もしない（未設定デプロイで帳簿を汚さない）。 */
+  it('🔴 鍵が解決できないなら照合も予約もしない', async () => {
+    assertIdentitySaltAvailable.mockImplementation(() => {
+      throw new Error('unset');
+    });
+    await post();
+    expect(verifyPin).not.toHaveBeenCalled();
+    expect(reserveLayeredSafely).not.toHaveBeenCalled();
+  });
+
+  /**
+   * 🔴 **catch の射程を広げない（#1123 と同じ形）。** 鍵**以外**の throw まで 503 に
+   * 化けると、実装バグが「設定漏れ」に見えて**原因に辿り着けなくなる**。
+   * 鍵の解決の**後**に走るものが落ちたときは、503 へ丸めずそのまま出す。
+   */
+  it('🔴 鍵以外の throw は 503 に化けない', async () => {
+    reserveLayeredSafely.mockRejectedValue(new Error('unexpected implementation bug'));
+    await expect(post()).rejects.toThrow('unexpected implementation bug');
+  });
+
+  /** 🔴 下界: 鍵が解決できる通常経路では 503 にしない。 */
+  it('🔴 鍵が解決できれば通常どおり通す（下界）', async () => {
+    const res = await post();
+    expect(res.status).toBe(200);
   });
 });

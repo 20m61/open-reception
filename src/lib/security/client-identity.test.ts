@@ -21,8 +21,22 @@
  * admin セッションを要求し、その入口は `/api/admin/login` だけなので、
  * **受付が復旧不能になる**。一次鍵を発信元にすれば、他人の失敗で閉まらない。
  */
-import { describe, expect, it, vi } from 'vitest';
-import { clientIdentity, GLOBAL_IDENTITY } from './client-identity';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { __resetIdentitySalt, clientIdentity, GLOBAL_IDENTITY } from './client-identity';
+
+/**
+ * 🔴 **鍵の材料と導出済み salt を毎回戻す。** 戻さないと、あるテストが差し替えた秘密が
+ * 後続へ漏れ、**空虚に通る**（同じ鍵が出続ける）。
+ */
+const savedSecret = process.env.KIOSK_ENROLLMENT_SECRET;
+beforeEach(() => {
+  __resetIdentitySalt();
+});
+afterEach(() => {
+  if (savedSecret === undefined) delete process.env.KIOSK_ENROLLMENT_SECRET;
+  else process.env.KIOSK_ENROLLMENT_SECRET = savedSecret;
+  __resetIdentitySalt();
+});
 
 const req = (xff?: string) =>
   new Request('https://example.test/api/kiosk/authorize', {
@@ -106,6 +120,73 @@ describe('発信元の識別 (#1021 AC4)', () => {
     const key = await clientIdentity(req('192.0.2.1'));
     expect(key).not.toContain('192.0.2.1');
     expect(key).toMatch(/^ip:[0-9a-f]{64}$/);
+  });
+
+  /**
+   * 🔴 **salt を混ぜる。** IPv4 は空間が小さいので、salt 無しの `sha256(ip)` は
+   * 総当たりで逆引きできる（＝ PII が消えていない）。
+   */
+  it('🔴 salt を混ぜている（素の sha256(ip) ではない）', async () => {
+    const plain = new Uint8Array(
+      await crypto.subtle.digest('SHA-256', new TextEncoder().encode('192.0.2.1')),
+    );
+    const plainHex = Array.from(plain)
+      .map((b) => b.toString(16).padStart(2, '0'))
+      .join('');
+    expect(await clientIdentity(req('192.0.2.1'))).not.toBe(`ip:${plainHex}`);
+  });
+
+  /**
+   * 🔴 **鍵は「デプロイの秘密」から決まる（固定の公開既定値ではない）。**
+   *
+   * 一度は `ATTEMPT_KEY_SALT` という専用 env にしたが、実測でそれは**実装・
+   * `.env.example`・設計文書の 3 箇所にしか無く、`infra/` にも `docs/deploy-aws.md` にも
+   * 1 度も現れていなかった** —— 実デプロイでは公開されている dev 既定値が使われ、
+   * 「逆引きできない」が**配備の現実で偽**だった（独立レビュー 3 周目 MAJOR-3）。
+   *
+   * 🔴 **ここは一度、散文にテストを通されている。** 最初この面は**ソースの文字列検査**
+   * （`toContain('getRandomValues')`）で書いていたが、salt を公開既定値へ戻す変異が
+   * **生存した** —— 直上の doc コメントに同じ語が書いてあるので、**実装を消しても通る**。
+   * 検査が読んでいたのは実装ではなく自分の散文だった。だから振る舞いで縛る。
+   *
+   * 秘密を変えれば鍵が変わる ⇒ 鍵は秘密に依存している。定数 salt に戻すと変わらず落ちる。
+   */
+  it('🔴 鍵はデプロイの秘密から決まる（定数 salt ではない）', async () => {
+    process.env.KIOSK_ENROLLMENT_SECRET = 'TEST-enrollment-secret-a';
+    __resetIdentitySalt();
+    const a = await clientIdentity(req('192.0.2.1'));
+    process.env.KIOSK_ENROLLMENT_SECRET = 'TEST-enrollment-secret-b';
+    __resetIdentitySalt();
+    const b = await clientIdentity(req('192.0.2.1'));
+    expect(b, 'salt が秘密に依存しておらず、定数になっている').not.toBe(a);
+    for (const key of [a, b]) expect(key).toMatch(/^ip:[0-9a-f]{64}$/);
+  });
+
+  /**
+   * 🔴 **鍵はプロセス（実行環境）をまたいで安定する**（独立レビュー 4 周目 MAJOR-1）。
+   *
+   * 一度は salt を**プロセス起動ごとの乱数**にした。設定が要らなくなるので MAJOR-3 は
+   * 消えたが、**Lambda は同時実行ごとに別の実行環境を立てる**ので、同じ IP が
+   * 実行環境の数だけ別の一次鍵に割れた。一次予算（10 回）はどれにも当たらないまま、
+   * 固定鍵の global cap（60 回）だけが共有で減る ——
+   * **1 本の IP を並列に投げるだけでサイト全体の初回認可を閉じられた**
+   * （変更前は最低 6 本の IP が要った）。`attempt-store.ts` の
+   * 「1 発信元が二次へ入れられるのは高々 `perOrigin.budget` 回」が**本番で偽**だった。
+   *
+   * 🔴 **この面は `reserveLayered` のテストでは絶対に見えない。** あちらは
+   * **ハッシュ済みの identity 文字列を直接渡す**ので、鍵の生成（配線）を変異させていない。
+   * #826（「純関数の分岐は全部 kill、配線は変異させていない」）とまったく同型である。
+   */
+  it('🔴 鍵はモジュール（実行環境）をまたいで安定する', async () => {
+    process.env.KIOSK_ENROLLMENT_SECRET = 'TEST-enrollment-secret-stable';
+    vi.resetModules();
+    const first = await import('./client-identity');
+    const a = await first.clientIdentity(req('192.0.2.1'));
+    vi.resetModules();
+    const second = await import('./client-identity');
+    const b = await second.clientIdentity(req('192.0.2.1'));
+    expect(second, 'モジュールが読み直されていない（テストが空虚になる）').not.toBe(first);
+    expect(b, '同じ秘密なのに実行環境ごとに鍵が変わっている（一次予算が割れる）').toBe(a);
   });
 
   /**
