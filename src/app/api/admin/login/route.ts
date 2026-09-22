@@ -11,6 +11,19 @@ import { getAdminAuthConfig } from '@/lib/auth/admin-auth-config';
 import { cognitoSrpLogin } from '@/lib/auth/cognito-srp';
 import { createJwksResolver, verifyOidcToken } from '@/lib/auth/entra';
 import { reportIncompleteConfig, reportSecretUnavailable } from '@/lib/auth/secret-unavailable';
+import { ADMIN_LOGIN_POLICY } from '@/domain/security/attempt-budget';
+import { checkAttempt, recordFailure, recordSuccess } from '@/lib/security/attempt-store';
+
+/**
+ * 🔴 **試行予算の鍵はサイト全体（#1021 AC4）。** `x-forwarded-for` は詐称可能なので、
+ * 発信元で鍵を切ると回されて素通りする。パスワードがサイト共通である以上、
+ * 数える側もサイト共通にしかできない。
+ *
+ * 🔴 **admin 側はロックアウトしてよい。** 来訪者導線ではなく、資格情報の価値は桁違いに
+ * 高い（全テナントの設定・監査ログ・予約 PII）。ログインの頻度は 1 日数回なので、
+ * 数分閉じても運用は壊れない —— kiosk 側と方針を変えている理由である。
+ */
+const ATTEMPT_KEY = 'admin-login';
 
 /**
  * POST /api/admin/login — 管理ログイン (issue #24 / #70 / #238)。
@@ -107,6 +120,19 @@ export async function POST(request: Request): Promise<NextResponse> {
   // 詳細はサーバログへ（上の cognito 枝と同じ方針）。素通しにすると Next の既定 500 になり、
   // 未認証で例外とスタックトレースを無制限に生ませられるうえ、運用者が受け取る応答が
   // テストで固定できない。
+  // 🔴 **鍵の解決より前に予算を見る（#1021 AC4）。** 予算超過なら何も読まずに断るので、
+  //    設定漏れのデプロイでも応答は 429 に揃う（設定状態は漏れない）。
+  //    射程は `provider=none` だけ —— cognito 枝は Cognito 自身が throttle を持ち、
+  //    そこへ global な予算を重ねると外部認証の正当な利用者を巻き込む。
+  const budget = await checkAttempt(ATTEMPT_KEY, ADMIN_LOGIN_POLICY, Date.now());
+  if (!budget.allowed) {
+    // 値（入力されたパスワード）は応答に出さない。
+    return NextResponse.json(
+      { error: 'too_many_attempts', message: 'too many attempts; try again later' },
+      { status: 429, headers: { 'retry-after': String(Math.ceil(budget.retryAfterMs / 1000)) } },
+    );
+  }
+
   let configuredPassword: string;
   try {
     configuredPassword = getAdminPassword();
@@ -119,8 +145,11 @@ export async function POST(request: Request): Promise<NextResponse> {
 
   const body = (await request.json().catch(() => null)) as { password?: unknown } | null;
   if (!body || typeof body.password !== 'string' || body.password !== configuredPassword) {
+    await recordFailure(ATTEMPT_KEY, ADMIN_LOGIN_POLICY, Date.now());
     return NextResponse.json({ error: 'unauthorized', message: 'invalid password' }, { status: 401 });
   }
+  // 🔴 成功したら失敗数を捨てる（正しく入った直後に予算切れで断られる形を作らない）。
+  await recordSuccess(ATTEMPT_KEY);
   const exp = Date.now() + ADMIN_SESSION_TTL_MS;
   const token = await signSession({ role: 'admin', exp }, getAdminSecret());
   const res = NextResponse.json({ ok: true });

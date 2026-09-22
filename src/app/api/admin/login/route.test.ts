@@ -26,6 +26,14 @@ import { ADMIN_COOKIE } from '@/lib/auth/admin';
 const cognitoSrpLogin = vi.fn(async (..._args: unknown[]) => ({ ok: false, reason: 'invalid' }) as const);
 // 🔴 引数を捨てない。`() => cognitoSrpLogin()` にすると username/password の受け渡しを
 // 変える変異に無力になる。
+const checkAttempt = vi.fn();
+const recordFailure = vi.fn();
+const recordSuccess = vi.fn();
+vi.mock('@/lib/security/attempt-store', () => ({
+  checkAttempt: (...a: unknown[]) => checkAttempt(...a),
+  recordFailure: (...a: unknown[]) => recordFailure(...a),
+  recordSuccess: (...a: unknown[]) => recordSuccess(...a),
+}));
 vi.mock('@/lib/auth/cognito-srp', () => ({
   cognitoSrpLogin: (...args: unknown[]) => cognitoSrpLogin(...args),
 }));
@@ -49,6 +57,15 @@ beforeEach(() => {
   // 🔴 呼び出し回数をリセットする。しないと `toHaveBeenCalled()` が**ファイル内の
   // 実行順に依存**する（今は先行テストが SRP へ到達しないので偶然成立しているだけ）。
   cognitoSrpLogin.mockClear();
+  checkAttempt.mockReset();
+  recordFailure.mockReset();
+  recordSuccess.mockReset();
+  checkAttempt.mockResolvedValue({
+    allowed: true,
+    nextWindow: { startedAt: 0, failures: 0 },
+    onSuccess: { startedAt: 0, failures: 0 },
+    onFailure: { startedAt: 0, failures: 1 },
+  });
 });
 
 afterEach(() => {
@@ -283,5 +300,83 @@ describe('failClosed の爆発半径 — provider=none の外へ漏れない (#1
   it('🔴 none の枝では確かに fail-closed になる（500）', async () => {
     vi.stubEnv('ADMIN_AUTH_PROVIDER', undefined);
     expect((await login(PUBLIC_DEFAULT)).status).toBe(500);
+  });
+});
+
+/**
+ * 試行回数制限 (#1021 AC4)。
+ *
+ * 🔴 **admin 側はロックアウトしてよい。** 来訪者導線ではなく、資格情報の価値は桁違いに
+ * 高い（全テナントの設定・監査ログ・予約 PII に到達する）。ログインの頻度は 1 日数回なので、
+ * 数分閉じても運用は壊れない —— kiosk 側と方針を変えている理由である。
+ *
+ * 🔴 **射程は `provider=none`（自前パスワード）だけ。** cognito 枝は Cognito 自身が
+ * throttle を持ち（`login.reason === 'error'` → 503）、そこへ global な予算を重ねると
+ * **外部認証の正当な利用者を巻き込む**。触らない。
+ */
+describe('試行回数制限 (#1021 AC4)', () => {
+  it('🔴 予算超過なら 429 と Retry-After を返す', async () => {
+    checkAttempt.mockResolvedValue({ allowed: false, retryAfterMs: 90_000 });
+    const res = await login(CONFIGURED);
+    expect(res.status).toBe(429);
+    expect(res.headers.get('retry-after')).toBe('90');
+    expect(adminCookie(res)).toBeUndefined();
+  });
+
+  /**
+   * 🔴 **予算超過なら**正しいパスワードでも**通さない**。
+   * ここを「正しければ通す」にすると、総当たりの最後の 1 回だけ通るので予算が無意味になる。
+   */
+  it('🔴 予算超過なら正しいパスワードでも通さない', async () => {
+    checkAttempt.mockResolvedValue({ allowed: false, retryAfterMs: 1000 });
+    const res = await login(CONFIGURED);
+    expect(res.status).toBe(429);
+    expect(adminCookie(res)).toBeUndefined();
+  });
+
+  /** 🔴 下界: 予算内なら従来どおり通る（全部 429 にして満たしていない）。 */
+  it('🔴 予算内なら正しいパスワードで通る（下界）', async () => {
+    vi.stubEnv('ADMIN_PASSWORD', CONFIGURED);
+    const res = await login(CONFIGURED);
+    expect(res.status).toBe(200);
+    expect(adminCookie(res)).toBeDefined();
+  });
+
+  it('🔴 パスワード不一致は失敗として数える', async () => {
+    vi.stubEnv('ADMIN_PASSWORD', CONFIGURED);
+    const res = await login('wrong');
+    expect(res.status).toBe(401);
+    expect(recordFailure).toHaveBeenCalledTimes(1);
+    expect(recordSuccess).not.toHaveBeenCalled();
+  });
+
+  it('🔴 成功したら失敗数をリセットする', async () => {
+    vi.stubEnv('ADMIN_PASSWORD', CONFIGURED);
+    await login(CONFIGURED);
+    expect(recordSuccess).toHaveBeenCalledTimes(1);
+    expect(recordFailure).not.toHaveBeenCalled();
+  });
+
+  /** 🔴 429 の応答本文に入力値を出さない（未認証経路）。 */
+  it('🔴 429 の応答本文に入力値を出さない', async () => {
+    checkAttempt.mockResolvedValue({ allowed: false, retryAfterMs: 1000 });
+    const res = await login('TEST-secret-attempt');
+    expect(await res.text()).not.toContain('TEST-secret-attempt');
+  });
+
+  /** 🔴 cognito 枝には予算を重ねない（外部認証の利用者を巻き込まない）。 */
+  it('🔴 cognito provider では予算を見ない', async () => {
+    vi.stubEnv('ADMIN_AUTH_PROVIDER', 'cognito');
+    vi.stubEnv('COGNITO_USER_POOL_ID', 'pool');
+    vi.stubEnv('COGNITO_CLIENT_ID', 'client');
+    vi.stubEnv('COGNITO_REGION', 'ap-northeast-1');
+    await POST(
+      new Request('https://example.test/api/admin/login', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ username: 'u', password: 'p' }),
+      }),
+    );
+    expect(checkAttempt).not.toHaveBeenCalled();
   });
 });
