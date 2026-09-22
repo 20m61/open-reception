@@ -125,7 +125,6 @@ describe('応答から画面状態への写像 (#1021 AC4)', () => {
     (header) => {
       const s = authorizeStateFromResponse(429, header);
       expect(s.kind).toBe('error');
-      if (s.kind !== 'error') throw new Error('unreachable');
       expect(s.retryAfterSec).toBeUndefined();
       // 下界: 文言が壊れていない（NaN を出さない）。
       expect(authorizeFailureMessage(s.failure, s.retryAfterSec)).not.toContain('NaN');

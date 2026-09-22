@@ -75,9 +75,13 @@ export function authorizeFailureMessage(
  * 元の形で、429 が返るようになった時点で**嘘**になった。原因を伴わない error を
  * **表現不能**にしておく（`StaffResponseActions` が #1123 で採ったのと同じ形）。
  */
-export type AuthorizeState =
-  | { kind: 'idle' }
-  | { kind: 'error'; failure: AuthorizeFailure; retryAfterSec: number | undefined };
+export type AuthorizeError = {
+  readonly kind: 'error';
+  readonly failure: AuthorizeFailure;
+  readonly retryAfterSec: number | undefined;
+};
+
+export type AuthorizeState = { kind: 'idle' } | AuthorizeError;
 
 /**
  * `fetch` の応答から画面の状態を作る。**配線をこの 1 式に寄せてある。**
@@ -92,7 +96,7 @@ export type AuthorizeState =
 export function authorizeStateFromResponse(
   status: number,
   retryAfterHeader: string | null,
-): AuthorizeState {
+): AuthorizeError {
   const parsed = retryAfterHeader !== null ? Number.parseInt(retryAfterHeader, 10) : Number.NaN;
   return {
     kind: 'error',
