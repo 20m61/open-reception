@@ -19,7 +19,14 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { KIOSK_AUTHORIZE_POLICY, type AttemptPolicy } from '@/domain/security/attempt-budget';
 import { getBackend } from '@/lib/data';
-import { recordSuccess, reserveAttempt, __resetAttempts } from './attempt-store';
+import {
+  recordLayeredSuccess,
+  recordSuccess,
+  reserveAttempt,
+  reserveLayered,
+  __resetAttempts,
+} from './attempt-store';
+import { GLOBAL_IDENTITY } from './client-identity';
 
 const POLICY: AttemptPolicy = { budget: 3, windowMs: 60_000 };
 const KEY = 'kiosk:kiosk-dev';
@@ -203,5 +210,84 @@ describe('試行予算ストア (#1021 AC4)', () => {
       (await reserveAttempt(KEY, KIOSK_AUTHORIZE_POLICY, now + KIOSK_AUTHORIZE_POLICY.windowMs))
         .allowed,
     ).toBe(true);
+  });
+});
+
+/**
+ * 層になった予算（#1021 AC4 / レビュー B1・B2）。
+ *
+ * ## 縛る不変条件
+ *
+ * > **他人の失敗で自分が閉まらない**（一次は発信元ごと）。
+ * > かつ **global cap を置いた経路では総量も有界**（二次）。
+ * > かつ **global cap を置かない経路では、他の発信元がいくら失敗しても入れる**（admin）。
+ */
+describe('層になった予算 (#1021 AC4)', () => {
+  const LAYERS = {
+    perOrigin: { budget: 2, windowMs: 60_000 } satisfies AttemptPolicy,
+    global: { budget: 5, windowMs: 60_000 } satisfies AttemptPolicy,
+  };
+  const NO_CAP = { perOrigin: { budget: 2, windowMs: 60_000 } satisfies AttemptPolicy, global: undefined };
+
+  /**
+   * 🔴 **本体（レビュー B2 の核心）。** 発信元 A を使い切っても、発信元 B は入れる。
+   * これが成り立たないと、攻撃者が運用者を無期限に閉め出せる。
+   */
+  it('🔴 他の発信元の失敗で閉まらない', async () => {
+    for (let i = 0; i < LAYERS.perOrigin.budget; i += 1) {
+      expect((await reserveLayered('ip:1.1.1.1', 'k', LAYERS, 1000)).allowed).toBe(true);
+    }
+    expect((await reserveLayered('ip:1.1.1.1', 'k', LAYERS, 1000)).allowed).toBe(false);
+    // 🔴 別の発信元は影響を受けない。
+    expect((await reserveLayered('ip:2.2.2.2', 'k', LAYERS, 1000)).allowed).toBe(true);
+  });
+
+  /** 🔴 上界: global cap を置いた経路では、発信元を回しても総量が有界。 */
+  it('🔴 発信元を回しても global cap で止まる', async () => {
+    let admitted = 0;
+    for (let i = 0; i < 20; i += 1) {
+      if ((await reserveLayered(`ip:10.0.0.${i}`, 'k', LAYERS, 1000)).allowed) admitted += 1;
+    }
+    expect(admitted).toBe(LAYERS.global.budget);
+  });
+
+  /**
+   * 🔴 **下界（レビュー B2）。** global cap を置かない経路では、他の発信元が
+   * いくら失敗しても入れる —— 運用者の入口を攻撃者に閉じさせない。
+   */
+  it('🔴 global cap が無い経路は、他の発信元の失敗で閉まらない', async () => {
+    for (let i = 0; i < 50; i += 1) {
+      await reserveLayered(`ip:10.0.0.${i % 5}`, 'a', NO_CAP, 1000);
+    }
+    expect((await reserveLayered('ip:203.0.113.9', 'a', NO_CAP, 1000)).allowed).toBe(true);
+  });
+
+  /** 🔴 識別できない要求は二重に数えない（一次と二次が同じ鍵になる）。 */
+  it('🔴 global 退避の要求を二重に数えない', async () => {
+    let admitted = 0;
+    for (let i = 0; i < 10; i += 1) {
+      if ((await reserveLayered(GLOBAL_IDENTITY, 'k', LAYERS, 1000)).allowed) admitted += 1;
+    }
+    // 一次（2）で止まる。二次を重ねて 1 回で 2 消費していれば 1 回しか入れない。
+    expect(admitted).toBe(LAYERS.perOrigin.budget);
+  });
+
+  /** 🔴 成功は両層の窓を捨てる（正当な利用者の予算を削り残さない）。 */
+  it('🔴 成功すると両層の予算が戻る', async () => {
+    for (let i = 0; i < LAYERS.perOrigin.budget; i += 1) {
+      await reserveLayered('ip:1.1.1.1', 'k', LAYERS, 1000);
+    }
+    expect((await reserveLayered('ip:1.1.1.1', 'k', LAYERS, 1000)).allowed).toBe(false);
+    await recordLayeredSuccess('ip:1.1.1.1', 'k');
+    expect((await reserveLayered('ip:1.1.1.1', 'k', LAYERS, 1000)).allowed).toBe(true);
+  });
+
+  /** 🔴 scope が違えば独立（kiosk の失敗が admin を閉めない）。 */
+  it('🔴 scope が違えば独立して数える', async () => {
+    for (let i = 0; i < LAYERS.perOrigin.budget; i += 1) {
+      await reserveLayered('ip:1.1.1.1', 'k', LAYERS, 1000);
+    }
+    expect((await reserveLayered('ip:1.1.1.1', 'k', LAYERS, 1000)).allowed).toBe(false);
+    expect((await reserveLayered('ip:1.1.1.1', 'a', NO_CAP, 1000)).allowed).toBe(true);
   });
 });

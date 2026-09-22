@@ -26,8 +26,10 @@ import {
   type AttemptDecision,
   type AttemptPolicy,
   type AttemptWindow,
+  type LayeredPolicy,
 } from '@/domain/security/attempt-budget';
 import { getBackend } from '@/lib/data';
+import { GLOBAL_IDENTITY } from './client-identity';
 
 /** 永続レコード。`id` は試行の鍵（`kiosk-authorize` / `admin-login`）。 */
 type AttemptRecord = {
@@ -153,4 +155,73 @@ export async function recordSuccess(key: string): Promise<void> {
 /** テスト用: 記録を消す。 */
 export async function __resetAttempts(): Promise<void> {
   await attempts().reset();
+}
+
+/**
+ * 層になった予算を予約する（#1021 AC4 / レビュー B1・B2）。
+ *
+ * 一次（発信元ごと）→ 二次（global cap。無い経路もある）の順に予約し、
+ * **どちらかが断れば断る**。返す `retryAfterMs` は断った層の値。
+ *
+ * 🔴 **一次で通って二次で断ったとき、一次の 1 回は消費されたままになる。** 実害は
+ * 「攻撃を受けている間、自分の発信元の予算が少し早く減る」だけで、**安全側**である
+ * （逆に戻そうとすると、戻す操作自体が競合して予算が増える経路を作る）。
+ *
+ * 🔴 **`global` が `undefined` の経路では二次を見ない。** admin がそれで、
+ * 理由は `LayeredPolicy` の doc に書いた（運用者を閉め出すと受付が復旧不能になる）。
+ */
+export async function reserveLayered(
+  identity: string,
+  scope: string,
+  layers: LayeredPolicy,
+  now: number,
+): Promise<AttemptDecision> {
+  const primary = await reserveAttempt(`${scope}#${identity}`, layers.perOrigin, now);
+  if (!primary.allowed) return primary;
+  if (layers.global === undefined) return primary;
+  // 発信元が識別できなかった要求は一次と二次が同じ鍵になるので、二重に数えない。
+  if (identity === GLOBAL_IDENTITY) return primary;
+  return reserveAttempt(`${scope}#${GLOBAL_IDENTITY}`, layers.global, now);
+}
+
+/**
+ * 成功したので、その発信元と global の両方の窓を捨てる。
+ *
+ * 🔴 **失敗しても呼び出し側を止めない（レビュー M2）。** ここが throw すると
+ * **正しい PIN / パスワードを入れた人が、帳簿の書き込み失敗だけで受付を開始できない**
+ * （実測: `recordSuccess` を reject させると authorize は未捕捉 500 になり、
+ * `issueKioskSession` が一度も呼ばれなかった）。捨て損なっても予算は**窓明けで自然に戻る**ので、
+ * 失敗を飲んでよい唯一の箇所である。**沈黙はさせない** —— 呼び出し側がログへ寄せる。
+ */
+export async function recordLayeredSuccess(identity: string, scope: string): Promise<boolean> {
+  try {
+    await recordSuccess(`${scope}#${identity}`);
+    if (identity !== GLOBAL_IDENTITY) await recordSuccess(`${scope}#${GLOBAL_IDENTITY}`);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * 予約を試み、**ストアが落ちているときの倒れ方を明示的に選ぶ**（レビュー M2）。
+ *
+ * 🔴 **fail-closed にする。** ストアが読めないときに通すと、バックエンドを落とすだけで
+ * 試行回数制限が無効化される（攻撃者が選べる状態を作らない）。
+ *
+ * 🔴 **未捕捉 throw にはしない。** 未認証経路なので、例外を素通しにすると
+ * スタックトレースつきの 500 を無制限に生ませられる（`admin/login/route.ts` が
+ * 同じ方針を既に書いている）。呼び出し側が 503 として扱えるよう `unavailable` を返す。
+ */
+export async function reserveLayeredSafely(
+  identity: string,
+  scope: string,
+  layers: LayeredPolicy,
+  now: number,
+): Promise<AttemptDecision | 'unavailable'> {
+  try {
+    return await reserveLayered(identity, scope, layers, now);
+  } catch {
+    return 'unavailable';
+  }
 }

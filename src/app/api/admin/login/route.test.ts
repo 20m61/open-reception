@@ -26,11 +26,11 @@ import { ADMIN_COOKIE } from '@/lib/auth/admin';
 const cognitoSrpLogin = vi.fn(async (..._args: unknown[]) => ({ ok: false, reason: 'invalid' }) as const);
 // 🔴 引数を捨てない。`() => cognitoSrpLogin()` にすると username/password の受け渡しを
 // 変える変異に無力になる。
-const reserveAttempt = vi.fn();
-const recordSuccess = vi.fn();
+const reserveLayeredSafely = vi.fn();
+const recordLayeredSuccess = vi.fn();
 vi.mock('@/lib/security/attempt-store', () => ({
-  reserveAttempt: (...a: unknown[]) => reserveAttempt(...a),
-  recordSuccess: (...a: unknown[]) => recordSuccess(...a),
+  reserveLayeredSafely: (...a: unknown[]) => reserveLayeredSafely(...a),
+  recordLayeredSuccess: (...a: unknown[]) => recordLayeredSuccess(...a),
 }));
 vi.mock('@/lib/auth/cognito-srp', () => ({
   cognitoSrpLogin: (...args: unknown[]) => cognitoSrpLogin(...args),
@@ -55,9 +55,10 @@ beforeEach(() => {
   // 🔴 呼び出し回数をリセットする。しないと `toHaveBeenCalled()` が**ファイル内の
   // 実行順に依存**する（今は先行テストが SRP へ到達しないので偶然成立しているだけ）。
   cognitoSrpLogin.mockClear();
-  reserveAttempt.mockReset();
-    recordSuccess.mockReset();
-  reserveAttempt.mockResolvedValue({
+  reserveLayeredSafely.mockReset();
+  recordLayeredSuccess.mockReset();
+  recordLayeredSuccess.mockResolvedValue(true);
+      reserveLayeredSafely.mockResolvedValue({
     allowed: true,
     nextWindow: { startedAt: 0, failures: 0 },
     onSuccess: { startedAt: 0, failures: 0 },
@@ -313,7 +314,7 @@ describe('failClosed の爆発半径 — provider=none の外へ漏れない (#1
  */
 describe('試行回数制限 (#1021 AC4)', () => {
   it('🔴 予算超過なら 429 と Retry-After を返す', async () => {
-    reserveAttempt.mockResolvedValue({ allowed: false, retryAfterMs: 90_000 });
+    reserveLayeredSafely.mockResolvedValue({ allowed: false, retryAfterMs: 90_000 });
     const res = await login(CONFIGURED);
     expect(res.status).toBe(429);
     expect(res.headers.get('retry-after')).toBe('90');
@@ -325,7 +326,7 @@ describe('試行回数制限 (#1021 AC4)', () => {
    * ここを「正しければ通す」にすると、総当たりの最後の 1 回だけ通るので予算が無意味になる。
    */
   it('🔴 予算超過なら正しいパスワードでも通さない', async () => {
-    reserveAttempt.mockResolvedValue({ allowed: false, retryAfterMs: 1000 });
+    reserveLayeredSafely.mockResolvedValue({ allowed: false, retryAfterMs: 1000 });
     const res = await login(CONFIGURED);
     expect(res.status).toBe(429);
     expect(adminCookie(res)).toBeUndefined();
@@ -344,19 +345,19 @@ describe('試行回数制限 (#1021 AC4)', () => {
     const res = await login('wrong');
     expect(res.status).toBe(401);
     // 🔴 予約の時点で数えているので、ここで数え直さない（二重計上になる）。
-    expect(reserveAttempt).toHaveBeenCalledTimes(1);
-    expect(recordSuccess).not.toHaveBeenCalled();
+    expect(reserveLayeredSafely).toHaveBeenCalledTimes(1);
+    expect(recordLayeredSuccess).not.toHaveBeenCalled();
   });
 
   it('🔴 成功したら失敗数をリセットする', async () => {
     vi.stubEnv('ADMIN_PASSWORD', CONFIGURED);
     await login(CONFIGURED);
-    expect(recordSuccess).toHaveBeenCalledTimes(1);
+    expect(recordLayeredSuccess).toHaveBeenCalledTimes(1);
   });
 
   /** 🔴 429 の応答本文に入力値を出さない（未認証経路）。 */
   it('🔴 429 の応答本文に入力値を出さない', async () => {
-    reserveAttempt.mockResolvedValue({ allowed: false, retryAfterMs: 1000 });
+    reserveLayeredSafely.mockResolvedValue({ allowed: false, retryAfterMs: 1000 });
     const res = await login('TEST-secret-attempt');
     expect(await res.text()).not.toContain('TEST-secret-attempt');
   });
@@ -374,6 +375,45 @@ describe('試行回数制限 (#1021 AC4)', () => {
         body: JSON.stringify({ username: 'u', password: 'p' }),
       }),
     );
-    expect(reserveAttempt).not.toHaveBeenCalled();
+    expect(reserveLayeredSafely).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * 帳簿が落ちたとき（#1021 AC4 / レビュー M2）。
+ *
+ * 🔴 **provider=none はこれまでデータバックエンドに一切触っていなかった**
+ * （`getAdminPassword()` は env のみ）。この増分は**運用者ログインに新しい依存を足した**ので、
+ * 倒れ方を明示的に選んでテストで固定する。
+ */
+describe('帳簿が落ちたとき (#1021 AC4)', () => {
+  it('🔴 予約できないときは 503（未捕捉 500 にしない）', async () => {
+    reserveLayeredSafely.mockResolvedValue('unavailable');
+    vi.stubEnv('ADMIN_PASSWORD', CONFIGURED);
+    const res = await login(CONFIGURED);
+    expect(res.status).toBe(503);
+    expect(adminCookie(res)).toBeUndefined();
+  });
+
+  /** 🔴 成功の記録に失敗してもログインさせる（運用者を帳簿の都合で締め出さない）。 */
+  it('🔴 成功の記録に失敗してもセッションを発行する', async () => {
+    recordLayeredSuccess.mockResolvedValue(false);
+    vi.stubEnv('ADMIN_PASSWORD', CONFIGURED);
+    const res = await login(CONFIGURED);
+    expect(res.status).toBe(200);
+    expect(adminCookie(res)).toBeDefined();
+  });
+
+  /** 🔴 鍵は XFF の末尾から決まる（レビュー B1）。 */
+  it('🔴 鍵は XFF の末尾から決まる', async () => {
+    vi.stubEnv('ADMIN_PASSWORD', CONFIGURED);
+    await POST(
+      new Request('https://example.test/api/admin/login', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', 'x-forwarded-for': '9.9.9.9, 203.0.113.5' },
+        body: JSON.stringify({ password: CONFIGURED }),
+      }),
+    );
+    expect(reserveLayeredSafely.mock.calls[0]?.[0]).toBe('ip:203.0.113.5');
   });
 });

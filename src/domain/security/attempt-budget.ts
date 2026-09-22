@@ -9,13 +9,24 @@
  * 片側だけでは空虚に満たせる ―― 上界だけなら「全部拒否」、下界だけなら「何もしない」
  * （後者が今日の状態）。判定を 1 箇所に閉じ、両側をテストで縛る。
  *
- * ## なぜ来訪者側を「ロックアウト」にしないか
+ * ## 鍵の選び方（当初の判断は誤りだった）
  *
- * ロックアウトを **kioskId** に掛けると、攻撃者が故意に失敗させて**受付窓口を閉鎖**できる。
- * **IP** に掛けると、建物の NAT を共有する**来訪者全員が一緒に閉め出される**一方、
- * 攻撃者は回線を変えれば素通りする。どちらも保護を**受付完遂への攻撃**へ変える。
+ * 🔴 **当初は「非詐称可能な識別子は無い」として鍵を global 1 本にしていた。**
+ * それは `kiosk/authorize` が読んでいる `x-forwarded-for` の**先頭**（詐称可能）から
+ * 一般化した誤りで、独立レビューが反証した ——
+ * `src/lib/admin/audit.ts` は**末尾**（CloudFront が付ける実 client IP）を採っており、
+ * `src/proxy.ts` の origin-verify が CloudFront 迂回を**全ルートで**拒否する。
+ * 本番では**末尾は詐称できない**。
  *
- * だから来訪者側は「遅らせる（`retryAfterMs` を返して**即座に**断る）」に留める。
+ * global 1 本だと攻撃者が少量のリクエストで**運用者を無期限に閉め出せ**、
+ * kiosk の復旧経路（エンロール URL の発行 = admin セッション必須）も同じ形で閉じられて
+ * **受付が復旧不能**になった。今は `LayeredPolicy` のとおり
+ * **一次 = 発信元ごと / 二次 = global cap（admin には置かない）** にしてある。
+ *
+ * ## それでもロックアウトを短く保つ
+ *
+ * 一次が発信元ごとでも、来訪者側は「遅らせる（`retryAfterMs` を返して**即座に**断る）」に
+ * 留める —— 端末は 1 つの発信元なので、長く閉じると**その端末の受付が止まる**。
  * 🔴 **待たせるために応答を保留しない。** Lambda では待ち時間そのものに課金されるので、
  * 「sleep してから返す」は #1021 AC3 が持ち込んだ計算増幅を**悪化させる**。
  * 即座に断り、**呼び出し側は PBKDF2 照合を走らせない** ―― 予算超過の試行は
@@ -43,17 +54,43 @@ export type AttemptDecision =
   | {
       readonly allowed: true;
       /** 判定の結果として書くべき窓（窓明けならリセット済み）。 */
+      /**
+       * 予約の結果として書くべき窓（窓明けならリセット済み）。
+       *
+       * 🔴 **`onSuccess` / `onFailure` は撤回した（レビュー M5）。** 入場を予約する形に
+       * 変えた時点で**本番の消費者がゼロ**になっており（シンボル走査とモジュールパス走査の
+       * 2 通りで確認）、成功時の窓は `recordSuccess` の削除が代替している。
+       * 残していると、それを縛る 4 本のテストが**本番挙動を何も守らないまま
+       * kill 数を膨らませる** —— 被覆の主張が過大になる。
+       */
       readonly nextWindow: AttemptWindow;
-      /** 照合が**成功**したときに書く窓（失敗数を捨てる）。 */
-      readonly onSuccess: AttemptWindow;
-      /** 照合が**失敗**したときに書く窓（失敗数を 1 増やす）。 */
-      readonly onFailure: AttemptWindow;
     }
   | {
       readonly allowed: false;
       /** 再試行できるようになるまでの時間（ミリ秒）。必ず正。 */
       readonly retryAfterMs: number;
     };
+
+/**
+ * 予算の方針は**層**になっている（#1021 AC4 / レビュー B1・B2）。
+ *
+ * - `perOrigin` … 一次。**発信元ごと**（非詐称可能な viewer IP）。他人の失敗で閉まらない
+ * - `global` … 二次（backstop）。**無い経路もある** —— `undefined` は「その経路に
+ *   global cap を置かない」という**明示的な判断**である
+ *
+ * 🔴 **admin には global cap を置かない。** 置くと、攻撃者が cap を使い切るだけで
+ * **運用者が無期限に入れない**。そして kiosk の復旧経路（エンロール URL の発行）は
+ * admin セッションを要求し、その入口は `/api/admin/login` だけなので、
+ * **受付が復旧不能になる**（レビュー B2 の連鎖）。
+ *
+ * admin 側の実質的な守りは (a) 発信元ごとの予算、(b) パスワードのエントロピー、
+ * (c) AC1 の fail-closed（公開既定値のデプロイを起動段で塞ぐ）である。
+ * 分散総当たりは**この層では止めない** —— 止められると書かない。
+ */
+export type LayeredPolicy = {
+  readonly perOrigin: AttemptPolicy;
+  readonly global: AttemptPolicy | undefined;
+};
 
 /**
  * 🔴 **来訪者側（`/api/kiosk/authorize`）の方針。**
@@ -67,6 +104,22 @@ export type AttemptDecision =
 export const KIOSK_AUTHORIZE_POLICY: AttemptPolicy = { budget: 10, windowMs: 600_000 };
 
 /**
+ * 🔴 **kiosk の global cap は置く。** PIN は事実上 4 桁なので、発信元を回す分散総当たりを
+ * 止める価値が実際にある。cap を使い切られると初回 PIN 認可が閉じるが、
+ * **稼働中の端末は 30 日 cookie で動き続け、復旧経路（admin → エンロール発行）は
+ * 別の層なので開いている**（admin に global cap を置かないのがその前提）。
+ *
+ * 60 回/10 分 = 360 回/時間。正常運用では 1 サイトで到達しない量である。
+ */
+export const KIOSK_AUTHORIZE_GLOBAL_POLICY: AttemptPolicy = { budget: 60, windowMs: 600_000 };
+
+/** kiosk の層（一次＝発信元ごと、二次＝global cap）。 */
+export const KIOSK_AUTHORIZE_LAYERS: LayeredPolicy = {
+  perOrigin: KIOSK_AUTHORIZE_POLICY,
+  global: KIOSK_AUTHORIZE_GLOBAL_POLICY,
+};
+
+/**
  * 🔴 **運用者側（`/api/admin/login`）の方針。**
  *
  * 来訪者導線ではないので厳しくしてよい。資格情報の価値は桁違いに高く
@@ -74,6 +127,15 @@ export const KIOSK_AUTHORIZE_POLICY: AttemptPolicy = { budget: 10, windowMs: 600
  * 5 回/15 分 = 20 回/時間。
  */
 export const ADMIN_LOGIN_POLICY: AttemptPolicy = { budget: 5, windowMs: 900_000 };
+
+/**
+ * admin の層。🔴 **`global: undefined` は意図である**（上の `LayeredPolicy` の doc を参照）——
+ * global cap を置くと運用者を無期限に閉め出せ、受付の復旧経路が閉じる。
+ */
+export const ADMIN_LOGIN_LAYERS: LayeredPolicy = {
+  perOrigin: ADMIN_LOGIN_POLICY,
+  global: undefined,
+};
 
 /**
  * 試行を 1 つ消費してよいかを判定する。
@@ -89,12 +151,7 @@ export function consumeAttempt(
   const fresh: AttemptWindow = { startedAt: now, failures: 0 };
   // 窓が無い（初回）、または窓が明けた → 新しい窓で許可する。
   if (window === undefined || now - window.startedAt >= policy.windowMs) {
-    return {
-      allowed: true,
-      nextWindow: fresh,
-      onSuccess: fresh,
-      onFailure: { startedAt: now, failures: 1 },
-    };
+    return { allowed: true, nextWindow: fresh };
   }
   if (window.failures >= policy.budget) {
     // 🔴 **クランプは撤回した（変異検証で生存＝等価）。** ここへ来る時点で上の分岐
@@ -103,12 +160,6 @@ export function consumeAttempt(
     //    「守るものが無い機構は撤回する」（`.claude/rules/opus5-autonomous-loop.md`）。
     return { allowed: false, retryAfterMs: policy.windowMs - (now - window.startedAt) };
   }
-  return {
-    allowed: true,
-    nextWindow: window,
-    // 🔴 成功したら失敗数を捨てる（正しく入った直後に予算切れで断られる形を作らない）。
-    onSuccess: { startedAt: window.startedAt, failures: 0 },
-    // 🔴 失敗では窓の開始時刻を動かさない（失敗ごとに窓を伸ばすと恒久的に閉じうる）。
-    onFailure: { startedAt: window.startedAt, failures: window.failures + 1 },
-  };
+  // 🔴 窓の開始時刻を動かさない（試行ごとに窓を伸ばすと恒久的に閉じうる）。
+  return { allowed: true, nextWindow: window };
 }

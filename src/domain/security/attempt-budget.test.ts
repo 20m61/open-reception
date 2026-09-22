@@ -21,14 +21,25 @@
  * 上界だけなら「全部拒否」で満たせる ―― それは受付を止めるので、来訪者導線の破壊である。
  * 下界だけなら「何もしない」で満たせる ―― それが今日の状態である。
  *
- * ## なぜ来訪者側は「ロックアウト」にしないか
+ * ## 鍵の選び方（当初の判断は誤りだった）
  *
- * ロックアウトを **kioskId** に掛けると、攻撃者が故意に失敗させて**受付窓口を閉鎖**できる。
- * **IP** に掛けると、建物の NAT を共有する**来訪者全員が一緒に閉め出される**一方、
- * 攻撃者は回線を変えれば素通りする。どちらも保護を**受付完遂への攻撃**に変える。
+ * 🔴 **当初は「非詐称可能な識別子は無い」として鍵を global 1 本にしていた。**
+ * それは `kiosk/authorize` が読んでいる `x-forwarded-for` の**先頭**（詐称可能）から
+ * 一般化した誤りで、独立レビューが反証した ——
+ * `src/lib/admin/audit.ts` は**末尾**（CloudFront が付ける実 client IP）を採っており、
+ * `src/proxy.ts` の origin-verify が CloudFront 迂回を**全ルートで**拒否する。
+ * 本番では**末尾は詐称できない**。
  *
- * だから来訪者側は「遅らせる（`retryAfterMs` を返して即座に断る）」に留め、
- * **恒久的に閉じない**。予算は**人間の打ち間違い（1〜3 回）が届かない**大きさに取る。
+ * global 1 本だと攻撃者が少量のリクエストで**運用者を無期限に閉め出せ**、
+ * kiosk の復旧経路（エンロール URL の発行 = admin セッション必須）も同じ形で閉じられて
+ * **受付が復旧不能**になった。今は `LayeredPolicy` のとおり
+ * **一次 = 発信元ごと / 二次 = global cap（admin には置かない）** にしてある。
+ *
+ * ## それでもロックアウトを短く保つ
+ *
+ * 一次が発信元ごとでも、来訪者側は「遅らせる（`retryAfterMs` を返して**即座に**断る）」に
+ * 留める —— 端末は 1 つの発信元なので、長く閉じると**その端末の受付が止まる**。
+ * 予算は**人間の打ち間違い（1〜3 回）が届かない**大きさに取る。
  */
 import { describe, expect, it } from 'vitest';
 import {
@@ -86,15 +97,6 @@ describe('予算判定 (#1021 AC4)', () => {
       }
     });
 
-    /** 🔴 窓が明けたら失敗数を捨てる（次の窓へ持ち越さない＝累積で閉じない）。 */
-    it('🔴 窓明けの許可は失敗数をリセットする', () => {
-      const r = consumeAttempt(POLICY, windowAt(1000, 10), 1000 + POLICY.windowMs);
-      expect(r.allowed).toBe(true);
-      if (!r.allowed) throw new Error('unreachable');
-      expect(r.nextWindow.failures).toBe(0);
-      expect(r.nextWindow.startedAt).toBe(1000 + POLICY.windowMs);
-    });
-
     /** 🔴 窓の**境界ちょうど**で明ける（オフバイワンで 1 窓分長く閉じない）。 */
     it('🔴 窓の境界ちょうどで明ける', () => {
       expect(consumeAttempt(POLICY, windowAt(1000, 3), 1000 + POLICY.windowMs).allowed).toBe(true);
@@ -110,6 +112,28 @@ describe('予算判定 (#1021 AC4)', () => {
       expect(r.allowed).toBe(true);
       if (!r.allowed) throw new Error('unreachable');
       expect(r.nextWindow).toEqual({ startedAt: 5000, failures: 0 });
+    });
+
+    /**
+     * 🔴 **窓明けの許可は窓を開き直す。**
+     *
+     * `nextWindow` は**本番が読む唯一のフィールド**である（`onSuccess` / `onFailure` は
+     * 消費者ゼロだったので撤回した。レビュー M5）。開き直さないと `startedAt` が動かず、
+     * 以後 `checkAttempt` が常に「窓が明けている」と判定して
+     * **制限が恒久的に無効化される**。
+     */
+    it('🔴 窓明けの許可は窓を開き直す', () => {
+      const r = consumeAttempt(POLICY, windowAt(1000, 10), 1000 + POLICY.windowMs);
+      expect(r.allowed).toBe(true);
+      if (!r.allowed) throw new Error('unreachable');
+      expect(r.nextWindow).toEqual({ startedAt: 1000 + POLICY.windowMs, failures: 0 });
+    });
+
+    /** 🔴 窓の中の許可は窓を動かさない（試行ごとに伸ばすと恒久的に閉じうる）。 */
+    it('🔴 窓の中の許可は startedAt を動かさない', () => {
+      const r = consumeAttempt(POLICY, windowAt(1000, 1), 1500);
+      if (!r.allowed) throw new Error('unreachable');
+      expect(r.nextWindow.startedAt).toBe(1000);
     });
   });
 
@@ -148,28 +172,6 @@ describe('予算判定 (#1021 AC4)', () => {
         expect(p.windowMs).toBeGreaterThan(0);
         expect(p.windowMs).toBeLessThanOrEqual(3_600_000);
       }
-    });
-  });
-
-  /**
-   * 🔴 **成功は窓を閉じる（失敗数を捨てる）。**
-   * 捨てないと、正しく入った直後に予算切れで断られる形が残る。
-   */
-  describe('成功の扱い', () => {
-    it('🔴 成功したら失敗数をリセットする', () => {
-      const r = consumeAttempt(POLICY, windowAt(1000, 2), 1500);
-      expect(r.allowed).toBe(true);
-      if (!r.allowed) throw new Error('unreachable');
-      expect(r.onSuccess.failures).toBe(0);
-    });
-
-    /** 🔴 失敗は数え上がる（下界だけ満たして数えない実装を落とす）。 */
-    it('🔴 失敗したら失敗数が 1 増える', () => {
-      const r = consumeAttempt(POLICY, windowAt(1000, 2), 1500);
-      if (!r.allowed) throw new Error('unreachable');
-      expect(r.onFailure.failures).toBe(3);
-      // 窓の開始時刻は動かさない（失敗ごとに窓を伸ばすと恒久的に閉じうる）。
-      expect(r.onFailure.startedAt).toBe(1000);
     });
   });
 });

@@ -11,19 +11,27 @@ import { getAdminAuthConfig } from '@/lib/auth/admin-auth-config';
 import { cognitoSrpLogin } from '@/lib/auth/cognito-srp';
 import { createJwksResolver, verifyOidcToken } from '@/lib/auth/entra';
 import { reportIncompleteConfig, reportSecretUnavailable } from '@/lib/auth/secret-unavailable';
-import { ADMIN_LOGIN_POLICY } from '@/domain/security/attempt-budget';
-import { recordSuccess, reserveAttempt } from '@/lib/security/attempt-store';
+import { ADMIN_LOGIN_LAYERS } from '@/domain/security/attempt-budget';
+import { clientIdentity } from '@/lib/security/client-identity';
+import { recordLayeredSuccess, reserveLayeredSafely } from '@/lib/security/attempt-store';
+import { reportAttemptBudgetExceeded, reportAttemptStoreUnavailable } from '@/lib/security/attempt-report';
 
 /**
- * 🔴 **試行予算の鍵はサイト全体（#1021 AC4）。** `x-forwarded-for` は詐称可能なので、
- * 発信元で鍵を切ると回されて素通りする。パスワードがサイト共通である以上、
- * 数える側もサイト共通にしかできない。
+ * 🔴 **試行予算は発信元ごと。global cap は置かない（#1021 AC4 / レビュー B2）。**
  *
- * 🔴 **admin 側はロックアウトしてよい。** 来訪者導線ではなく、資格情報の価値は桁違いに
- * 高い（全テナントの設定・監査ログ・予約 PII）。ログインの頻度は 1 日数回なので、
- * 数分閉じても運用は壊れない —— kiosk 側と方針を変えている理由である。
+ * 一次鍵は `x-forwarded-for` の**末尾**（CloudFront が付ける詐称できない viewer IP）。
+ *
+ * 🔴 **global cap を置かないのは意図である。** 置くと攻撃者が cap を使い切るだけで
+ * **運用者が無期限に入れない**。そして kiosk の復旧経路（エンロール URL の発行）は
+ * `/api/admin/devices/[id]/reissue-token` = **admin セッション必須**で、provider=none の
+ * admin セッションの入口は**この route だけ**である。つまり global cap は
+ * **受付を復旧不能にする**（独立レビュー B2 が辿った連鎖）。
+ *
+ * 分散総当たり（発信元を回す攻撃）は**この層では止まらない**。実質的な守りは
+ * (a) 発信元ごとの予算、(b) パスワードのエントロピー、(c) AC1 の fail-closed である。
+ * **止まると書かない。**
  */
-const ATTEMPT_KEY = 'admin-login';
+const ATTEMPT_SCOPE = 'admin-login';
 
 /**
  * POST /api/admin/login — 管理ログイン (issue #24 / #70 / #238)。
@@ -145,8 +153,16 @@ export async function POST(request: Request): Promise<NextResponse> {
   //    そこへ global な予算を重ねると外部認証の正当な利用者を巻き込む。
   // 🔴 **予約してから照合する（Codex レビュー P1）。** 読み取り専用の判定は
   //    並行バーストで素通りする（authorize 側と同じ穴）。
-  const budget = await reserveAttempt(ATTEMPT_KEY, ADMIN_LOGIN_POLICY, Date.now());
+  const identity = clientIdentity(request);
+  const budget = await reserveLayeredSafely(identity, ATTEMPT_SCOPE, ADMIN_LOGIN_LAYERS, Date.now());
+  if (budget === 'unavailable') {
+    // 🔴 fail-closed（バックエンドを落とせば制限が消える状態を作らない）。
+    //    🔴 未捕捉 throw にしない —— この route 自身が上でそう書いている。
+    reportAttemptStoreUnavailable(ATTEMPT_SCOPE);
+    return NextResponse.json({ error: 'unavailable' }, { status: 503 });
+  }
   if (!budget.allowed) {
+    reportAttemptBudgetExceeded(ATTEMPT_SCOPE);
     // 値（入力されたパスワード）は応答に出さない。
     return NextResponse.json(
       { error: 'too_many_attempts', message: 'too many attempts; try again later' },
@@ -159,8 +175,12 @@ export async function POST(request: Request): Promise<NextResponse> {
     // 予約の時点で数えてあるので、ここで数え直さない（二重計上になる）。
     return NextResponse.json({ error: 'unauthorized', message: 'invalid password' }, { status: 401 });
   }
-  // 🔴 成功したら失敗数を捨てる（正しく入った直後に予算切れで断られる形を作らない）。
-  await recordSuccess(ATTEMPT_KEY);
+  // 🔴 成功したら窓を捨てる。**ここの失敗でログインを止めない（レビュー M2）** ——
+  //    provider=none はこれまでデータバックエンドに一切触っていなかったので、
+  //    止めると「運用者ログインに新しい依存を足す」ことになる。
+  if (!(await recordLayeredSuccess(identity, ATTEMPT_SCOPE))) {
+    reportAttemptStoreUnavailable(ATTEMPT_SCOPE);
+  }
   const exp = Date.now() + ADMIN_SESSION_TTL_MS;
   const token = await signSession({ role: 'admin', exp }, getAdminSecret());
   const res = NextResponse.json({ ok: true });
