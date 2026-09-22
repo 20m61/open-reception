@@ -21,6 +21,7 @@
  * admin セッションを要求し、その入口は `/api/admin/login` だけなので、
  * **受付が復旧不能になる**。一次鍵を発信元にすれば、他人の失敗で閉まらない。
  */
+import { readFile } from 'node:fs/promises';
 import { describe, expect, it } from 'vitest';
 import { clientIdentity, GLOBAL_IDENTITY } from './client-identity';
 
@@ -120,5 +121,37 @@ describe('発信元の識別 (#1021 AC4)', () => {
       .map((b) => b.toString(16).padStart(2, '0'))
       .join('');
     expect(await clientIdentity(req('192.0.2.1'))).not.toBe(`ip:${plainHex}`);
+  });
+
+  /**
+   * 🔴 **salt は設定値ではなく、プロセス起動ごとの乱数である**
+   * （独立レビュー 3 周目 MAJOR-3）。
+   *
+   * 一度は `ATTEMPT_KEY_SALT` という env にしたが、実測でそれは**実装・`.env.example`・
+   * 設計文書の 3 箇所にしか無く、`infra/` にも `docs/deploy-aws.md` にも 1 度も
+   * 現れていなかった** —— 実デプロイでは公開されている dev 既定値が使われ、
+   * 「逆引きできない」という主張が**配備の現実で偽**だった。
+   *
+   * ここは「env を読まない」ことを**モジュールの依存として**縛る。値だけを見ていると、
+   * 既定値つきで env を読み直す変異（＝ MAJOR-3 の再来）が素通りする。
+   */
+  it('🔴 salt を env から読まない（配線漏れで公開既定値に落ちない）', async () => {
+    const source = await readFile(new URL('./client-identity.ts', import.meta.url), 'utf8');
+    expect(source, 'salt を env / serverSecret から読んでいる').not.toMatch(
+      /serverSecret|process\.env/,
+    );
+    expect(source, 'salt が乱数由来でない').toContain('getRandomValues');
+  });
+
+  /**
+   * 🔴 **下界: 同じプロセスの中では鍵が安定している。** 毎回 salt を作り直すと、
+   * 同じ発信元が毎回違う鍵になり**予算が一切効かなくなる**（上の同値テストは
+   * 「別々の IP が違う鍵になる」側だけなので、これが無いと空虚に満たせる）。
+   */
+  it('🔴 同じプロセスの中では鍵が安定する', async () => {
+    const first = await clientIdentity(req('192.0.2.1'));
+    for (let i = 0; i < 5; i += 1) {
+      expect(await clientIdentity(req('192.0.2.1'))).toBe(first);
+    }
   });
 });

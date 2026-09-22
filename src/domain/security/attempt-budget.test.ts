@@ -5,7 +5,10 @@
  *
  * `/api/kiosk/authorize` は**未認証の公開経路**で、PIN は事実上 4 桁＝10^4 しかない。
  * 試行回数制限が無いので総当たりが現実的で、通れば **30 日の kiosk セッション**が出る
- * （以降 #1020 の面が全部開く）。`/api/admin/login` は全テナントの PII へ到達する。
+ * （以降 #1020 の面が全部開く）。
+ *
+ * 🔴 **`/api/admin/login` はこの増分の射程外である**（独立レビュー 3 周目で撤回。
+ * 理由は `attempt-budget.ts` の該当 doc。試行回数制限は #1165 で設計し直す）。
  *
  * 🔴 **AC3 が未認証経路に計算コストを持ち込んだ。** PIN 照合は PBKDF2（実測 約 5ms/回）
  * になったので、叩くだけで Lambda の GB-ms と同時実行を消費させられる。
@@ -33,7 +36,7 @@
  * global 1 本だと攻撃者が少量のリクエストで**運用者を無期限に閉め出せ**、
  * kiosk の復旧経路（エンロール URL の発行 = admin セッション必須）も同じ形で閉じられて
  * **受付が復旧不能**になった。今は `LayeredPolicy` のとおり
- * **一次 = 発信元ごと / 二次 = global cap（admin には置かない）** にしてある。
+ * **一次 = 発信元ごと / 二次 = global cap** にしてある。
  *
  * ## それでもロックアウトを短く保つ
  *
@@ -48,8 +51,6 @@ import {
   type AttemptWindow,
   KIOSK_AUTHORIZE_POLICY,
   KIOSK_AUTHORIZE_LAYERS,
-  ADMIN_LOGIN_POLICY,
-  ADMIN_LOGIN_LAYERS,
 } from './attempt-budget';
 
 /** 判定は純関数。窓の状態と現在時刻を渡す。 */
@@ -160,17 +161,9 @@ describe('予算判定 (#1021 AC4)', () => {
       expect(10_000 / perHour).toBeGreaterThan(24);
     });
 
-    /** 🔴 admin 側はより厳しい（来訪者導線ではなく、価値がはるかに高い）。 */
-    it('🔴 admin の予算は kiosk より厳しい', () => {
-      const adminPerHour = ADMIN_LOGIN_POLICY.budget * (3_600_000 / ADMIN_LOGIN_POLICY.windowMs);
-      const kioskPerHour =
-        KIOSK_AUTHORIZE_POLICY.budget * (3_600_000 / KIOSK_AUTHORIZE_POLICY.windowMs);
-      expect(adminPerHour).toBeLessThan(kioskPerHour);
-    });
-
     /** 窓は TTL で自然消滅させるので、無限に伸ばさない（掃除が要らない長さ）。 */
     it('窓は有限（TTL で消える長さ）', () => {
-      for (const p of [KIOSK_AUTHORIZE_POLICY, ADMIN_LOGIN_POLICY]) {
+      for (const p of [KIOSK_AUTHORIZE_LAYERS.perOrigin, KIOSK_AUTHORIZE_LAYERS.global]) {
         expect(p.windowMs).toBeGreaterThan(0);
         expect(p.windowMs).toBeLessThanOrEqual(3_600_000);
       }
@@ -183,31 +176,12 @@ describe('予算判定 (#1021 AC4)', () => {
  *
  * 🔴 **これらは変異検証で生存した穴である。** 層化の**振る舞い**は
  * `attempt-store.test.ts` が縛っていたが、**方針の定数**を誰も縛っていなかったので、
- * `ADMIN_LOGIN_LAYERS.global` に cap を入れる変異（＝B2 を戻す変異）が素通りした。
+ * cap の値を変える変異（＝層を無効化する変異）が素通りした。
  */
 describe('層の方針 (#1021 AC4)', () => {
-  /**
-   * 🔴 **本体（B2 の核心を定数で縛る）。** admin に global cap を置くと、
-   * 攻撃者が cap を使い切るだけで**運用者が無期限に入れない**。そして kiosk の
-   * 復旧経路（エンロール URL の発行）は admin セッション必須で、その入口は
-   * `/api/admin/login` だけなので、**受付が復旧不能になる**。
-   */
-  it('🔴 admin には global cap を置かない（受付の復旧経路を閉じさせない）', () => {
-    expect(
-      ADMIN_LOGIN_LAYERS.global,
-      'admin に global cap を置くと攻撃者が運用者を無期限に閉め出せる（レビュー B2）',
-    ).toBeUndefined();
-  });
-
-  /** 🔴 下界: kiosk には置く（PIN が 4 桁なので分散総当たりを止める価値がある）。 */
-  it('🔴 kiosk には global cap を置く（下界）', () => {
-    expect(KIOSK_AUTHORIZE_LAYERS.global).toBeDefined();
-  });
-
-  /** 🔴 一次は両経路とも定数と一致している（層の配線が入れ替わっていない）。 */
-  it('🔴 一次の方針は各経路の予算と一致する', () => {
+  /** 🔴 一次は定数と一致している（層の配線が入れ替わっていない）。 */
+  it('🔴 一次の方針は kiosk の予算と一致する', () => {
     expect(KIOSK_AUTHORIZE_LAYERS.perOrigin).toBe(KIOSK_AUTHORIZE_POLICY);
-    expect(ADMIN_LOGIN_LAYERS.perOrigin).toBe(ADMIN_LOGIN_POLICY);
   });
 
   /**
@@ -218,8 +192,6 @@ describe('層の方針 (#1021 AC4)', () => {
    */
   it('🔴 kiosk の global cap は分散総当たりを現実的にしない', () => {
     const cap = KIOSK_AUTHORIZE_LAYERS.global;
-    expect(cap).toBeDefined();
-    if (cap === undefined) throw new Error('unreachable');
     const perHour = cap.budget * (3_600_000 / cap.windowMs);
     // 10^4 を尽くすのに 24 時間以上かかること。
     expect(10_000 / perHour).toBeGreaterThan(24);
@@ -230,36 +202,8 @@ describe('層の方針 (#1021 AC4)', () => {
    * 1 つの発信元の失敗で**全体が閉まる**（B2 が別の綴りで戻る）。
    */
   it('🔴 global cap は一次予算より十分大きい（1 発信元で全体を閉じさせない）', () => {
-    const cap = KIOSK_AUTHORIZE_LAYERS.global;
-    if (cap === undefined) throw new Error('unreachable');
-    expect(cap.budget).toBeGreaterThan(KIOSK_AUTHORIZE_LAYERS.perOrigin.budget * 2);
-  });
-});
-
-/**
- * 帳簿が落ちたときの倒れ方（#1021 AC4 / レビュー 2 周目 B-1）。
- *
- * 🔴 **経路ごとに釣り合いが違うので、1 つに決めない。** 定数で固定しないと、
- * admin を fail-closed へ戻す変異（＝ B-1 の再来）が素通りする。
- */
-describe('帳簿が落ちたときの倒れ方 (#1021 AC4)', () => {
-  /**
-   * 🔴 **本体。** admin を断ると、**DynamoDB の一時障害だけで運用者が入れなくなり**、
-   * kiosk の復旧経路（admin → エンロール発行）ごと閉じて**受付が復旧不能**になる。
-   * 守れるのは「発信元ごと 5 回/15 分」だけで、釣り合っていない。
-   */
-  it('🔴 admin は帳簿が落ちても通す（運用者を閉め出さない）', () => {
-    expect(
-      ADMIN_LOGIN_LAYERS.onStoreFailure,
-      'admin を fail-closed にすると DynamoDB 障害で受付が復旧不能になる（レビュー B-1）',
-    ).toBe('open');
-  });
-
-  /**
-   * 🔴 下界: kiosk は断る（落とせば制限が消える状態を作らない）。
-   * kiosk が閉じても稼働中の端末は 30 日 cookie で動き続ける。
-   */
-  it('🔴 kiosk は帳簿が落ちたら断る（下界）', () => {
-    expect(KIOSK_AUTHORIZE_LAYERS.onStoreFailure).toBe('closed');
+    expect(KIOSK_AUTHORIZE_LAYERS.global.budget).toBeGreaterThan(
+      KIOSK_AUTHORIZE_LAYERS.perOrigin.budget * 2,
+    );
   });
 });

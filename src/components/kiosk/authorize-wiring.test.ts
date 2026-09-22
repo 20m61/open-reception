@@ -72,4 +72,20 @@ describe('PIN 画面の配線 (#1021 AC4)', () => {
   it('🔴 文言に locale を渡している', () => {
     expect(SOURCE).toContain('<KioskAuthorizeView onAuthorized={markAuthorized} locale={locale} />');
   });
+
+  /**
+   * 🔴 **失敗は `role="alert"` で割り込む（`status` ではない）。**
+   *
+   * `status` は polite なので、読み上げは**今喋っていることが終わるまで待つ**。
+   * PIN 画面は打ち込み直後に送信が終わるので、待たされると来訪者は
+   * **何も起きていないように見える画面に対して送信を繰り返す** —— それは 429 を
+   * 自分で引き当てる形でもある。認可が進まなかったことは割り込んで伝える。
+   */
+  it('🔴 失敗の通知は role="alert" である', () => {
+    const src = authorizeSubmitSource();
+    expect(src, 'PIN 失敗の通知が polite（role="status"）になっている').not.toContain(
+      'role="status"',
+    );
+    expect(src).toContain('role="alert"');
+  });
 });

@@ -32,20 +32,7 @@ export type LoginFailure =
    * **500** を返す。運用者にできることは「パスワードを打ち直す」ではなく
    * 「サーバーの設定を直す」なので、`rejected` と同じ値にしてはいけない。
    */
-  | 'server_error'
-  /**
-   * 試行回数の予算を使い切った（429。#1021 AC4 で新設）。
-   *
-   * 🔴 **`server_error` と同じ値にしてはいけない（Codex レビュー P2）。** 一緒にすると
-   * 運用者は「サーバーの設定を確認してください」と読み、**設定を疑って調べに行く** ——
-   * 実際にすべきことは「少し待って、もう一度」である。`Retry-After` も無視されていた。
-   *
-   * 🔴 これは #973 が塞ぎ、#1021 増分 1 が `loginFailureForStatus` で塞ぎ直し、#1123 が
-   * 担当者画面で塞いだのと**同型**である。同じ増分で kiosk 側には対策を入れておきながら、
-   * **admin 側に入れ忘れていた** —— `CLAUDE.md` が #788 で記録している
-   * 「同型の 2 本には対策を入れており、3 本目にだけ入れ忘れていた」そのものである。
-   */
-  | 'too_many_attempts';
+  | 'server_error';
 
 /**
  * 画面と読み上げに出す文言。
@@ -57,10 +44,7 @@ export type LoginFailure =
  * 「どの秘密が入っていないか」は攻撃者への情報になる。原因の特定はサーバログ側の仕事で、
  * `serverSecret()` が env 名つきで throw する。
  */
-export function loginFailureMessage(
-  failure: LoginFailure,
-  retryAfterSec?: number | undefined,
-): string {
+export function loginFailureMessage(failure: LoginFailure): string {
   switch (failure) {
     case 'rejected':
       return 'パスワードが正しくありません。';
@@ -68,15 +52,6 @@ export function loginFailureMessage(
       return 'サーバーに接続できませんでした。通信状態を確かめて、もう一度お試しください。';
     case 'server_error':
       return 'サーバーがログインを処理できませんでした。パスワードの正否は確認されていません。時間をおいても直らない場合は、サーバーの設定を確認してください。';
-    case 'too_many_attempts': {
-      // 🔴 **設定を疑わせない。** 待てば直るので、待ち時間が分かるなら出す。
-      //    `NaN` / 0 / 負で「約 NaN 秒後」と出さない（kiosk 側と同じ境界）。
-      const wait =
-        retryAfterSec !== undefined && Number.isFinite(retryAfterSec) && retryAfterSec > 0
-          ? `約 ${Math.ceil(retryAfterSec)} 秒後に`
-          : 'しばらくしてから';
-      return `ログインの試行が続いたため、一時的に受け付けを制限しています。${wait}もう一度お試しください。`;
-    }
   }
 }
 
@@ -93,7 +68,5 @@ export function loginFailureMessage(
  * を入れ忘れたデプロイで、画面に出るのは「パスワードが正しくありません。」だけだった。
  */
 export function loginFailureForStatus(status: number): LoginFailure {
-  // 🔴 429 は「待てば直る」。設定を疑わせる `server_error` へ丸めない（#1021 AC4）。
-  if (status === 429) return 'too_many_attempts';
   return status === 401 ? 'rejected' : 'server_error';
 }

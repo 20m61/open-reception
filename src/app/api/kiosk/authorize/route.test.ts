@@ -31,6 +31,7 @@ vi.mock('@/lib/auth/kiosk', () => ({
 }));
 
 import { POST } from './route';
+import { KIOSK_AUTHORIZE_LAYERS } from '@/domain/security/attempt-budget';
 
 function post(body: unknown = { pin: '0000', kioskId: 'kiosk-dev' }) {
   return POST(
@@ -281,14 +282,15 @@ describe('検出信号の配線 (#1021 AC4)', () => {
     expect(reportAttemptStoreUnavailable).toHaveBeenCalledTimes(1);
   });
 
-  /** 🔴 下界: 通常経路では何も記録しない（常に記録して満たしていない）。 */
-  it('🔴 kiosk の方針を渡している（admin のものを渡していない）', async () => {
+  /**
+   * 🔴 **方針と scope の配線を縛る。** 別の方針（緩い予算）や別の scope を渡すと、
+   * 定数側のテストが全部緑のまま**この経路だけ制限が外れる**。
+   */
+  it('🔴 kiosk の方針と scope を渡している', async () => {
     await post();
-    const layers = reserveLayeredSafely.mock.calls[0]?.[2] as
-      | { global?: unknown; onStoreFailure?: unknown }
-      | undefined;
-    expect(layers?.global, 'kiosk の global cap が外れている').toBeDefined();
-    expect(layers?.onStoreFailure, 'kiosk が fail-open になっている').toBe('closed');
+    expect(reserveLayeredSafely.mock.calls[0]?.[2], 'kiosk の方針が渡っていない').toBe(
+      KIOSK_AUTHORIZE_LAYERS,
+    );
     expect(reserveLayeredSafely.mock.calls[0]?.[1]).toBe('kiosk-authorize');
   });
 

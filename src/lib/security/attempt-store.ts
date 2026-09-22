@@ -31,7 +31,7 @@ import {
 import { getBackend } from '@/lib/data';
 import { GLOBAL_IDENTITY } from './client-identity';
 
-/** 永続レコード。`id` は試行の鍵（`kiosk-authorize` / `admin-login`）。 */
+/** 永続レコード。`id` は試行の鍵（`<scope>#<発信元>`。scope は `kiosk-authorize`）。 */
 type AttemptRecord = {
   readonly id: string;
   readonly startedAt: number;
@@ -50,7 +50,7 @@ type AttemptRecord = {
 };
 
 /**
- * 窓の最大長（10 分 / 15 分）より十分長い TTL。窓が明けても少し残るが、
+ * 窓の長さ（10 分）より十分長い TTL。窓が明けても少し残るが、
  * 判定は `startedAt` で行うので**残っていても影響しない**（残骸が効くことはない）。
  */
 const TTL_SECONDS = 2 * 60 * 60;
@@ -164,19 +164,18 @@ export async function __resetAttempts(): Promise<void> {
  *
  * | 状況 | 一次 | 二次 |
  * | --- | --- | --- |
- * | 発信元を識別できる | `#<発信元>` に `perOrigin` | `#global` に cap（在れば） |
- * | 識別できない | **無い**（発信元が無いので per-origin は成立しない） | cap が在ればそれだけ |
- * | 識別できない ＋ cap 無し | **制限しない** | — |
+ * | 発信元を識別できる | `#<発信元>` に `perOrigin` | `#global` に cap |
+ * | 識別できない | **無い**（発信元が無いので per-origin は成立しない） | cap だけ |
  *
- * 🔴 **最後の行が B2 の対処である（レビュー 2 周目 M-2）。** 以前は退避鍵
+ * 🔴 **識別できないときに一次を数えない**（レビュー 2 周目 M-2）。以前は退避鍵
  * `GLOBAL_IDENTITY` のとき一次鍵が**二次鍵と同一レコード**になっており、実測で
- * admin が **5 回で閉まった**（= global cap を置かないという対処が丸ごと無効）。
- * 識別できないのに共有鍵で数えるのは per-origin ではなく**事実上の global cap** であり、
- * **運用者を閉め出す**。上界より「運用者が入れる」を優先する、という明示的な判断である。
+ * 一次予算（小さいほう）だけで閉まっていた ―― 二次 cap の値が**効いていなかった**。
+ * 識別できないのに共有鍵で per-origin を数えるのは per-origin ではないので、
+ * **cap だけで数える**。
  *
- * その代償: CloudFront を経ないデプロイでは **admin の試行制限が効かない**。
- * それは `main` と同じ状態（制限が無い）であって、**退行ではない**。
- * 効かせたいなら発信元が識別できる配備にする必要がある。**「効く」と書かない。**
+ * その代償: CloudFront を経ないデプロイでは **kiosk の制限が cap 1 本になる**
+ * （全端末で 60 回/10 分を共有する）。稼働中の端末は 30 日 cookie で動き続けるので、
+ * 影響は「攻撃中は初回 PIN 認可が詰まりうる」に留まる。**per-origin が効くとは書かない。**
  *
  * ## 順序が持っている上界
  *
@@ -195,14 +194,10 @@ export async function reserveLayered(
   now: number,
 ): Promise<AttemptDecision> {
   const globalKey = `${scope}#${GLOBAL_IDENTITY}`;
-  if (identity === GLOBAL_IDENTITY) {
-    // 発信元が無いので一次は成立しない。cap が在ればそれだけ、無ければ制限しない。
-    if (layers.global === undefined) return { allowed: true, nextWindow: { startedAt: now, failures: 0 } };
-    return reserveAttempt(globalKey, layers.global, now);
-  }
+  // 発信元が無いので一次は成立しない ―― cap だけで数える。
+  if (identity === GLOBAL_IDENTITY) return reserveAttempt(globalKey, layers.global, now);
   const primary = await reserveAttempt(`${scope}#${identity}`, layers.perOrigin, now);
   if (!primary.allowed) return primary;
-  if (layers.global === undefined) return primary;
   return reserveAttempt(globalKey, layers.global, now);
 }
 
@@ -226,34 +221,33 @@ export async function recordLayeredSuccess(identity: string, scope: string): Pro
 }
 
 /**
- * 予約を試み、**ストアが落ちているときの倒れ方を経路ごとに選ぶ**
- * （レビュー M2 ＋ 2 周目 B-1）。
+ * 予約を試み、ストアが落ちていたら **fail-closed** で断る（レビュー M2）。
  *
- * 倒れ方は `LayeredPolicy.onStoreFailure` が持つ。**1 つに決めない**のは、経路ごとに
- * 守れるものと失うものの釣り合いが違うからである（同 doc を参照）:
+ * 🔴 **fail-open は撤回した（3 周目 MAJOR-1・MAJOR-2）。** 一度は経路ごとに
+ * 倒れ方を選べるようにしたが、`'open'` を使うのは admin だけで、その admin を
+ * 増分から外したので**守るものが無くなった**。残したままだと:
  *
- * - kiosk は `'closed'` —— 落とせば制限が消える状態を作らない
- * - admin は `'open'` —— 断ると **DynamoDB の一時障害だけで運用者が入れなくなり**、
- *   kiosk の復旧経路ごと閉じて**受付が復旧不能**になる（実測: 正しいパスワードでも 503）
+ * - degraded（通した）と closed（断った）が**同じ信号**になり、ログが
+ *   「refusing attempts (fail-closed)」と**嘘をつく**（実測）
+ * - `catch` があらゆる例外を飲むので、**実装バグでも制限が静かに外れる**
+ *   （`.claude/rules/opus5-autonomous-loop.md`「フォールバックは大声の失敗を
+ *   沈黙の誤動作へ変換する」そのもの）
+ *
+ * kiosk が断っても**稼働中の端末は 30 日 cookie で動き続ける**ので、
+ * fail-closed の代償は「攻撃中は初回 PIN 認可ができない」に留まる。
  *
  * 🔴 **未捕捉 throw にはしない。** 未認証経路なので、例外を素通しにすると
  * スタックトレースつきの 500 を無制限に生ませられる。
- *
- * 🔴 **fail-open でも沈黙させない。** 呼び出し側がラッチ付きで記録する。
  */
 export async function reserveLayeredSafely(
   identity: string,
   scope: string,
   layers: LayeredPolicy,
   now: number,
-): Promise<AttemptDecision | 'unavailable' | 'degraded'> {
+): Promise<AttemptDecision | 'unavailable'> {
   try {
     return await reserveLayered(identity, scope, layers, now);
   } catch {
-    if (layers.onStoreFailure === 'open') {
-      // 制限を諦めて通す。**記録は呼び出し側が残す**（沈黙で劣化させない）。
-      return 'degraded';
-    }
     return 'unavailable';
   }
 }

@@ -35,9 +35,9 @@ describe('検出信号 (#1021 AC4)', () => {
 
   it('🔴 帳簿が読めないことを記録する', () => {
     const error = vi.spyOn(console, 'error').mockImplementation(() => {});
-    reportAttemptStoreUnavailable('admin-login', 1000);
+    reportAttemptStoreUnavailable('other-scope', 1000);
     expect(error).toHaveBeenCalledTimes(1);
-    expect(String(error.mock.calls[0]?.[0])).toContain('admin-login');
+    expect(String(error.mock.calls[0]?.[0])).toContain('other-scope');
   });
 
   /**
@@ -62,7 +62,7 @@ describe('検出信号 (#1021 AC4)', () => {
   it('🔴 経路ごとに独立してラッチする', () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     reportAttemptBudgetExceeded('kiosk-authorize', 1000);
-    reportAttemptBudgetExceeded('admin-login', 1000);
+    reportAttemptBudgetExceeded('other-scope', 1000);
     expect(warn).toHaveBeenCalledTimes(2);
   });
 
@@ -84,7 +84,7 @@ describe('検出信号 (#1021 AC4)', () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const error = vi.spyOn(console, 'error').mockImplementation(() => {});
     reportAttemptBudgetExceeded('kiosk-authorize', 1000);
-    reportAttemptStoreUnavailable('admin-login', 1000);
+    reportAttemptStoreUnavailable('other-scope', 1000);
     const all = [...warn.mock.calls, ...error.mock.calls].map((c) => String(c[0])).join('\n');
     expect(all).not.toMatch(/\d+\.\d+\.\d+\.\d+/); // IP
     expect(all).not.toMatch(/ip:/);

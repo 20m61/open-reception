@@ -24,7 +24,13 @@ import { reportAttemptBudgetExceeded, reportAttemptStoreUnavailable } from '@/li
  * （同 B2）。一次を発信元ごとにすると、他人の失敗で閉まらない。
  *
  * 残る代償: global cap を使い切られている間は**初回の PIN 認可**が閉じる。ただし
- * **稼働中の端末は 30 日 cookie で動き続け**、復旧経路は admin 側（global cap 無し）なので開く。
+ * **稼働中の端末は 30 日 cookie で動き続け**、復旧経路（`/api/admin/login` →
+ * エンロール URL 発行）は**この増分が一切触っていない**ので開いたままである
+ * （admin 側の試行回数制限は射程外。`attempt-budget.ts` の該当 doc / #1165）。
+ *
+ * 🔴 **一次の予算を「1 IP あたり N 回」と読まない。** 鍵の salt がプロセス起動ごとの
+ * 乱数なので（`client-identity.ts`）、一次は実質**プロセスあたり**である。
+ * 総量の上界を持っているのは salt を通らない global cap のほうである。
  */
 const ATTEMPT_SCOPE = 'kiosk-authorize';
 
@@ -73,17 +79,13 @@ export async function POST(request: Request): Promise<NextResponse> {
     KIOSK_AUTHORIZE_LAYERS,
     Date.now(),
   );
-  if (budget === 'degraded') {
-    // 🔴 **帳簿が落ちているが通す**（この経路は `onStoreFailure: 'open'`）。
-    //    沈黙で劣化させない —— ラッチ付きで記録する。
-    reportAttemptStoreUnavailable(ATTEMPT_SCOPE);
-  } else if (budget === 'unavailable') {
+  if (budget === 'unavailable') {
     // 🔴 ストアが読めないときは fail-closed（落とせば制限が消える状態を作らない）。
     //    未捕捉 throw にはしない（未認証経路で 500 を無制限に生ませない）。
     reportAttemptStoreUnavailable(ATTEMPT_SCOPE);
     return NextResponse.json({ error: 'unavailable' }, { status: 503 });
   }
-  if (budget !== 'degraded' && !budget.allowed) {
+  if (!budget.allowed) {
     // 🔴 **閉じたことを記録する（レビュー M4）。** 記録が無いと、来訪者に
     //    「担当者へお声がけください」と言われた担当者が**なぜ閉じたのか知る手段が無い**。
     //    値（PIN）は残さない。

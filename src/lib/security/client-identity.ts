@@ -20,19 +20,41 @@
  * 🔴 **これは認可には使わない。** 予算の鍵（誰の失敗として数えるか）にだけ使う。
  * IP を認可根拠にしないのは authorize route が既に書いているとおり。
  */
-import { serverSecret } from '@/lib/auth/server-secret';
 
 /** 発信元を識別できないときの鍵。**全員がこれを共有する**（fail-safe 側）。 */
 export const GLOBAL_IDENTITY = 'global';
 
 /**
- * 発信元ハッシュの salt。
+ * 発信元ハッシュの salt。**プロセス起動ごとの乱数**で、どこにも保存しない。
  *
- * 🔴 **`failClosed` にしない。** salt が未設定でも**受付は止めない** —— 失われるのは
- * 「保存された鍵から IP を逆引きされにくいこと」だけで、予算そのものは機能する。
- * 止めると、設定漏れのデプロイで**受付が丸ごと開かなくなる**。
+ * 🔴 **設定 env（`ATTEMPT_KEY_SALT`）は撤回した（独立レビュー 3 周目 MAJOR-3）。**
+ * 実測で、その env は**実装・`.env.example`・設計文書の 3 箇所にしか無く、
+ * `infra/` にも `docs/deploy-aws.md` にも 1 度も現れていなかった** ——
+ * つまり実デプロイでは既定値
+ * （リポジトリに平文で置かれた `dev-insecure-attempt-key-salt`）が使われる。
+ * 公開既定値の salt は salt ではないので、**IPv4 の 2^32 は総当たりで逆引きできる**。
+ * 「ハッシュだから PII ではない」という主張が**配備の現実で偽**だった。
+ *
+ * 配線し忘れると静かに嘘になる設定を足すより、**設定を要らなくする**方を採る
+ * （「機構を足さない」`.claude/rules/opus5-autonomous-loop.md`）。
+ *
+ * ## 代償を正確に書く
+ *
+ * salt がプロセスごとに違うので、**同じ IP でも実行環境（Lambda インスタンス）が
+ * 違えば別の鍵**になる。したがって:
+ *
+ * - **一次（発信元ごと）の予算は実質「プロセスあたり」**になり、同時に生きている
+ *   実行環境の数だけ緩む。**「1 IP は 10 回/10 分」と書かない。**
+ * - **二次（global cap）は影響を受けない** —— 鍵が `GLOBAL_IDENTITY` の**固定文字列**で、
+ *   salt を通らないからである。総量の上界を持っているのはこちらなので、
+ *   総当たりに対する実際の backstop は壊れない。
+ * - プロセスが入れ替わると、その分の一次窓は**孤児レコード**として残る。TTL（2 時間）で
+ *   自然消滅する。増える量の見積りは `docs/persistence-design.md` §4.2。
+ *
+ * 🔴 **`crypto.getRandomValues` を使う（`Math.random` ではない）。** 予測できる salt は
+ * 公開既定値と同じ問題（逆引き可能）に戻る。
  */
-const identitySalt = () => serverSecret('ATTEMPT_KEY_SALT', 'dev-insecure-attempt-key-salt');
+const IDENTITY_SALT = crypto.getRandomValues(new Uint8Array(32));
 
 /**
  * IP を**鍵として等価なまま**ハッシュへ写す（#1021 AC4 / レビュー 2 周目 M-4）。
@@ -42,13 +64,17 @@ const identitySalt = () => serverSecret('ATTEMPT_KEY_SALT', 'dev-insecure-attemp
  * 不可逆な 32 バイトで、監査のように「誰の IP か」を後から読む用途には使えない）。
  *
  * 🔴 **salt が要る。** IPv4 は空間が小さいので、salt 無しの `sha256(ip)` は
- * **総当たりで逆引きできる**（＝ PII が消えていない）。サーバ側 salt を混ぜる。
+ * **総当たりで逆引きできる**（＝ PII が消えていない）。上の `IDENTITY_SALT`
+ * （プロセス起動ごとの乱数・非永続）を混ぜる。
  *
  * 🔴 **これは認可でも監査でもない。** 「誰の IP か」を後から知る必要がある調査は
  * 既存の高詳細監査（`auditContextFromRequest`。**認可済み操作**に紐づく）の領分である。
  */
 async function hashedIdentity(viewer: string): Promise<string> {
-  const bytes = new TextEncoder().encode(`${identitySalt()}\u0000${viewer}`);
+  const suffix = new TextEncoder().encode(`\u0000${viewer}`);
+  const bytes = new Uint8Array(IDENTITY_SALT.length + suffix.length);
+  bytes.set(IDENTITY_SALT);
+  bytes.set(suffix, IDENTITY_SALT.length);
   const digest = await crypto.subtle.digest('SHA-256', bytes);
   const hex = Array.from(new Uint8Array(digest))
     .map((b) => b.toString(16).padStart(2, '0'))

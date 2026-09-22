@@ -5,12 +5,7 @@ import { stripComments } from '../../domain/governance/fetch-failure-scan';
 import { type LoginFailure, loginFailureForStatus, loginFailureMessage } from './login-outcome';
 
 /** 網羅を 1 か所に持つ（増えたときに全部の主張へ波及させる）。 */
-const ALL_FAILURES = [
-  'rejected',
-  'unreachable',
-  'server_error',
-  'too_many_attempts',
-] satisfies LoginFailure[];
+const ALL_FAILURES = ['rejected', 'unreachable', 'server_error'] satisfies LoginFailure[];
 
 /**
  * 管理ログインの失敗が**運用者に届く** (#973)。
@@ -87,39 +82,6 @@ describe('状態コードから失敗の種類への写像 (#1021)', () => {
     },
   );
 
-  /**
-   * 🔴 **429 は「設定を疑わせない」（#1021 AC4 / Codex レビュー P2）。**
-   *
-   * `server_error` へ丸めると運用者は「サーバーの設定を確認してください」と読み、
-   * **設定を疑って調べに行く** —— 実際にすべきことは「少し待って、もう一度」である。
-   *
-   * 🔴 これは #973 が塞ぎ、#1021 増分 1 が塞ぎ直し、#1123 が担当者画面で塞いだのと**同型**。
-   * 同じ増分で kiosk 側には対策を入れておきながら、**admin 側に入れ忘れていた**。
-   */
-  it('🔴 429 は too_many_attempts（設定を疑わせない）', () => {
-    expect(loginFailureForStatus(429)).toBe('too_many_attempts');
-    const message = loginFailureMessage('too_many_attempts', 90);
-    expect(message).not.toContain('設定を確認');
-    expect(message).not.toContain('パスワードが正しくありません');
-    // 下界: 待てば直ることと、待ち時間が分かるなら秒数を伝える。
-    expect(message).toContain('90');
-    expect(message).toContain('もう一度');
-  });
-
-  /** 🔴 待ち時間が壊れていても文言が壊れない（kiosk 側と同じ境界）。 */
-  it.each<number | undefined>([undefined, Number.NaN, Number.POSITIVE_INFINITY, 0, -5])(
-    '🔴 待ち時間が %s でも文言が壊れない',
-    (value) => {
-      const message = loginFailureMessage('too_many_attempts', value);
-      expect(message).not.toContain('NaN');
-      expect(message).not.toContain('undefined');
-      expect(message).not.toContain('Infinity');
-      expect(message).not.toContain('約 0 秒');
-      expect(message).not.toContain('-5');
-      expect(message).toContain('もう一度');
-    },
-  );
-
   /** 500 の文言は、正否を断定せず、かつ秘密の名前を漏らさない。 */
   it('🔴 server_error の文言が env 名を漏らさない（ログイン画面は未認証で見える）', () => {
     const message = loginFailureMessage('server_error');
@@ -173,17 +135,8 @@ describe('管理ログインの失敗表示 — 配線 (#973 / #1021)', () => {
     });
 
     it('文言をコンポーネント側に書き写していない（写しは必ずズレる）', () => {
-      expect(source).toContain('loginFailureMessage(failure, retryAfterSec)');
+      expect(source).toContain('loginFailureMessage(failure)');
       expect(source).not.toContain('パスワードが正しくありません');
-    });
-
-    /**
-     * 🔴 **待ち時間を読んでいる（#1021 AC4）。** 読まないと「しばらくしてから」しか
-     * 出せず、運用者は**いつ直るのか分からない**（無言の拒否と区別できない）。
-     */
-    it('🔴 Retry-After ヘッダを読んで文言へ渡している', () => {
-      expect(source).toContain("res.headers.get('retry-after')");
-      expect(source).toContain('Number.isFinite(parsed)');
     });
   });
 });

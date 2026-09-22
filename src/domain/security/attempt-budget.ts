@@ -75,35 +75,16 @@ export type AttemptDecision =
  * 予算の方針は**層**になっている（#1021 AC4 / レビュー B1・B2）。
  *
  * - `perOrigin` … 一次。**発信元ごと**（非詐称可能な viewer IP）。他人の失敗で閉まらない
- * - `global` … 二次（backstop）。**無い経路もある** —— `undefined` は「その経路に
- *   global cap を置かない」という**明示的な判断**である
+ * - `global` … 二次（backstop）。発信元を回す分散総当たりを止める
  *
- * 🔴 **admin には global cap を置かない。** 置くと、攻撃者が cap を使い切るだけで
- * **運用者が無期限に入れない**。そして kiosk の復旧経路（エンロール URL の発行）は
- * admin セッションを要求し、その入口は `/api/admin/login` だけなので、
- * **受付が復旧不能になる**（レビュー B2 の連鎖）。
- *
- * admin 側の実質的な守りは (a) 発信元ごとの予算、(b) パスワードのエントロピー、
- * (c) AC1 の fail-closed（公開既定値のデプロイを起動段で塞ぐ）である。
- * 分散総当たりは**この層では止めない** —— 止められると書かない。
+ * 🔴 **`global` を任意にしていたのは撤回した（独立レビュー 3 周目）。** 「cap を
+ * 置かない経路」は admin だけで、その admin を増分から外したので**守るものが無くなった**。
+ * 分岐を残すと、`undefined` を通す経路（＝二次が丸ごと消える）が**誰にも縛られないまま
+ * 残る** ——「守るものが無い機構は撤回する」（`.claude/rules/opus5-autonomous-loop.md`）。
  */
 export type LayeredPolicy = {
   readonly perOrigin: AttemptPolicy;
-  readonly global: AttemptPolicy | undefined;
-  /**
-   * 帳簿が読めないときに**通すか断るか**（#1021 AC4 / レビュー 2 周目 B-1）。
-   *
-   * 🔴 **経路ごとに釣り合いが違うので、1 つに決めない。**
-   *
-   * - `'closed'`（kiosk）… 落とせば制限が消える状態を作らない。kiosk が閉じても
-   *   **稼働中の端末は 30 日 cookie で動き続け**、復旧経路は admin 側に在る
-   * - `'open'`（admin）… 失うのは「発信元ごと 5 回/15 分」だけで、**分散総当たりは
-   *   そもそもこの層では止まらない**（実質的な守りはパスワードのエントロピーと AC1）。
-   *   対して断ると **DynamoDB の一時障害だけで運用者が入れなくなり**、
-   *   kiosk の復旧経路（admin → エンロール発行）ごと閉じて**受付が復旧不能**になる。
-   *   守れるものと失うものが**釣り合っていない**
-   */
-  readonly onStoreFailure: 'open' | 'closed';
+  readonly global: AttemptPolicy;
 };
 
 /**
@@ -131,28 +112,25 @@ export const KIOSK_AUTHORIZE_GLOBAL_POLICY: AttemptPolicy = { budget: 60, window
 export const KIOSK_AUTHORIZE_LAYERS: LayeredPolicy = {
   perOrigin: KIOSK_AUTHORIZE_POLICY,
   global: KIOSK_AUTHORIZE_GLOBAL_POLICY,
-  onStoreFailure: 'closed',
 };
 
 /**
- * 🔴 **運用者側（`/api/admin/login`）の方針。**
+ * 🔴 **`/api/admin/login` はこの増分の射程外である（独立レビュー 3 周目）。**
  *
- * 来訪者導線ではないので厳しくしてよい。資格情報の価値は桁違いに高く
- * （全テナントの設定・監査ログ・予約 PII に到達する）、ログインの頻度は 1 日数回である。
- * 5 回/15 分 = 20 回/時間。
+ * 一度は admin にも予算を入れたが、3 周のレビューで次が分かったので**撤回した**:
+ *
+ * - 守れるのは「**CloudFront 経由かつ帳簿が健康なとき**に限り、1 つの viewer IP が
+ *   15 分あたり 5 回」だけ。消える条件が 3 つあり（XFF 無し構成・帳簿障害・分散総当たり）、
+ *   **うち 1 つは攻撃者が押せた**（書き込み増幅で throttle させると fail-open へ落ちる）
+ * - 対価として、**`main` ではデータバックエンドに一切触っていなかった**未認証の
+ *   `/api/admin/login` に DynamoDB 依存と**上限の無い書き込み増幅**を新設していた
+ * - 運用者を閉め出さないための例外（識別不能なら制限しない／帳簿障害なら通す）を
+ *   足すほど、**守りが薄く、機構が厚く**なった
+ *
+ * 釣り合っていないので、AC4 は **PIN が事実上 4 桁で実際に総当たり可能な kiosk** に限定する。
+ * admin 側の実質的な守りはパスワードのエントロピーと AC1 の fail-closed である。
+ * 試行回数制限が要るなら別増分で設計し直す（#1165）。
  */
-export const ADMIN_LOGIN_POLICY: AttemptPolicy = { budget: 5, windowMs: 900_000 };
-
-/**
- * admin の層。🔴 **`global: undefined` は意図である**（上の `LayeredPolicy` の doc を参照）——
- * global cap を置くと運用者を無期限に閉め出せ、受付の復旧経路が閉じる。
- */
-export const ADMIN_LOGIN_LAYERS: LayeredPolicy = {
-  perOrigin: ADMIN_LOGIN_POLICY,
-  global: undefined,
-  // 🔴 帳簿が落ちても運用者を閉め出さない（上の `onStoreFailure` の doc を参照）。
-  onStoreFailure: 'open',
-};
 
 /**
  * 試行を 1 つ消費してよいかを判定する。

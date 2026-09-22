@@ -220,19 +220,12 @@ describe('試行予算ストア (#1021 AC4)', () => {
  * ## 縛る不変条件
  *
  * > **他人の失敗で自分が閉まらない**（一次は発信元ごと）。
- * > かつ **global cap を置いた経路では総量も有界**（二次）。
- * > かつ **global cap を置かない経路では、他の発信元がいくら失敗しても入れる**（admin）。
+ * > かつ **総量も有界**（二次 = global cap）。
  */
 describe('層になった予算 (#1021 AC4)', () => {
   const LAYERS = {
     perOrigin: { budget: 2, windowMs: 60_000 } satisfies AttemptPolicy,
     global: { budget: 5, windowMs: 60_000 } satisfies AttemptPolicy,
-    onStoreFailure: 'closed' as const,
-  };
-  const NO_CAP = {
-    perOrigin: { budget: 2, windowMs: 60_000 } satisfies AttemptPolicy,
-    global: undefined,
-    onStoreFailure: 'open' as const,
   };
 
   /**
@@ -248,24 +241,13 @@ describe('層になった予算 (#1021 AC4)', () => {
     expect((await reserveLayered('ip:2.2.2.2', 'k', LAYERS, 1000)).allowed).toBe(true);
   });
 
-  /** 🔴 上界: global cap を置いた経路では、発信元を回しても総量が有界。 */
+  /** 🔴 上界: 発信元を回しても総量が有界。 */
   it('🔴 発信元を回しても global cap で止まる', async () => {
     let admitted = 0;
     for (let i = 0; i < 20; i += 1) {
       if ((await reserveLayered(`ip:10.0.0.${i}`, 'k', LAYERS, 1000)).allowed) admitted += 1;
     }
     expect(admitted).toBe(LAYERS.global.budget);
-  });
-
-  /**
-   * 🔴 **下界（レビュー B2）。** global cap を置かない経路では、他の発信元が
-   * いくら失敗しても入れる —— 運用者の入口を攻撃者に閉じさせない。
-   */
-  it('🔴 global cap が無い経路は、他の発信元の失敗で閉まらない', async () => {
-    for (let i = 0; i < 50; i += 1) {
-      await reserveLayered(`ip:10.0.0.${i % 5}`, 'a', NO_CAP, 1000);
-    }
-    expect((await reserveLayered('ip:203.0.113.9', 'a', NO_CAP, 1000)).allowed).toBe(true);
   });
 
   /**
@@ -293,13 +275,13 @@ describe('層になった予算 (#1021 AC4)', () => {
     expect((await reserveLayered('ip:1.1.1.1', 'k', LAYERS, 1000)).allowed).toBe(true);
   });
 
-  /** 🔴 scope が違えば独立（kiosk の失敗が admin を閉めない）。 */
+  /** 🔴 scope が違えば独立（ある経路の失敗が別経路を閉めない）。 */
   it('🔴 scope が違えば独立して数える', async () => {
     for (let i = 0; i < LAYERS.perOrigin.budget; i += 1) {
       await reserveLayered('ip:1.1.1.1', 'k', LAYERS, 1000);
     }
     expect((await reserveLayered('ip:1.1.1.1', 'k', LAYERS, 1000)).allowed).toBe(false);
-    expect((await reserveLayered('ip:1.1.1.1', 'a', NO_CAP, 1000)).allowed).toBe(true);
+    expect((await reserveLayered('ip:1.1.1.1', 'other', LAYERS, 1000)).allowed).toBe(true);
   });
 });
 
@@ -313,7 +295,6 @@ describe('層と倒れ方の穴（変異検証由来） (#1021 AC4)', () => {
   const LAYERS = {
     perOrigin: { budget: 5, windowMs: 60_000 } satisfies AttemptPolicy,
     global: { budget: 2, windowMs: 60_000 } satisfies AttemptPolicy,
-    onStoreFailure: 'closed' as const,
   };
 
   /**
@@ -413,43 +394,29 @@ describe('層と倒れ方の穴（変異検証由来） (#1021 AC4)', () => {
  * 退避鍵 `GLOBAL_IDENTITY` のとき、一次鍵 `${scope}#global` が**二次鍵と同一レコード**に
  * なっていた。結果:
  *
- * - admin（global cap 無しのはず）が **5 回で閉まった** —— B2 がそのまま戻る
  * - kiosk が cap 60 のはずなのに **10 回で閉まった**（一次 policy で評価されていた）
  * - 識別済み発信元の二次消費が、未識別 client を閉めた
  *
  * ## 直した規則
  *
  * **発信元が無いなら一次の層は無い。** 識別できないときは二次（cap）だけを見る。
- * cap が無い経路（admin）では**制限しない** —— 識別できないのに共有鍵で数えると、
- * それは per-origin ではなく事実上の global cap であり、**運用者を閉め出す**。
- * 上界より「運用者が入れる」を優先する、という明示的な判断である。
+ * 識別できないのに共有鍵で per-origin を数えるのは per-origin ではなく、
+ * **一次予算（小さいほう）を事実上の global cap にしてしまう**。
  */
 describe('発信元を識別できない構成 (#1021 AC4)', () => {
   const CAP = {
     perOrigin: { budget: 2, windowMs: 60_000 } satisfies AttemptPolicy,
     global: { budget: 6, windowMs: 60_000 } satisfies AttemptPolicy,
-    onStoreFailure: 'closed' as const,
-  };
-  const NO_CAP = {
-    perOrigin: { budget: 2, windowMs: 60_000 } satisfies AttemptPolicy,
-    global: undefined,
-    onStoreFailure: 'open' as const,
   };
 
   /**
-   * 🔴 **本体（B2 が戻らない）。** cap の無い経路では、識別できない要求を**制限しない**。
-   * 掛けると攻撃者が 2 回で運用者を閉め出せる（実測でそうなっていた）。
+   * 🔴 **本体。** 識別できない要求は **cap の予算**で評価する。
+   *
+   * 一次予算で評価していると（= 退避鍵で一次と二次が同一レコード）、CloudFront を
+   * 経ない配備では **cap の値が一切効かない**。ここは上界でもあり、
+   * 「一次予算より緩い」という下界でもある。
    */
-  it('🔴 cap が無い経路では、識別できない要求を制限しない', async () => {
-    let admitted = 0;
-    for (let i = 0; i < 50; i += 1) {
-      if ((await reserveLayered(GLOBAL_IDENTITY, 'a', NO_CAP, 1000)).allowed) admitted += 1;
-    }
-    expect(admitted, '識別できない経路で運用者が閉め出されている（B2 の再来）').toBe(50);
-  });
-
-  /** 🔴 上界: cap が在る経路では、識別できない要求は **cap の予算**で評価する。 */
-  it('🔴 cap が在る経路では cap の予算で評価する（一次予算ではない）', async () => {
+  it('🔴 識別できない要求は cap の予算で評価する（一次予算ではない）', async () => {
     let admitted = 0;
     for (let i = 0; i < 20; i += 1) {
       if ((await reserveLayered(GLOBAL_IDENTITY, 'k', CAP, 1000)).allowed) admitted += 1;

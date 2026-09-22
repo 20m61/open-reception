@@ -1603,9 +1603,11 @@ function KioskAuthorizeView({
         style={{ maxWidth: 280, textAlign: 'center' }}
       />
       {state.kind === 'error' ? (
+        // 🔴 `alert`（`status` ではない）。認可が進まなかったことは**割り込んで伝える**
+        //    —— 画面を見ていない来訪者が、黙ったまま何度も送信する形にしない。
         <p
           className="notice notice--danger"
-          role="status"
+          role="alert"
           data-testid="kiosk-pin-error"
           data-failure={state.failure}
         >
