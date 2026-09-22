@@ -22,7 +22,12 @@
  * **受付が復旧不能になる**。一次鍵を発信元にすれば、他人の失敗で閉まらない。
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { __resetIdentitySalt, clientIdentity, GLOBAL_IDENTITY } from './client-identity';
+import {
+  __resetIdentitySalt,
+  assertIdentitySaltAvailable,
+  clientIdentity,
+  GLOBAL_IDENTITY,
+} from './client-identity';
 
 /**
  * 🔴 **鍵の材料と導出済み salt を毎回戻す。** 戻さないと、あるテストが差し替えた秘密が
@@ -120,6 +125,73 @@ describe('発信元の識別 (#1021 AC4)', () => {
     const key = await clientIdentity(req('192.0.2.1'));
     expect(key).not.toContain('192.0.2.1');
     expect(key).toMatch(/^ip:[0-9a-f]{64}$/);
+  });
+
+  /**
+   * 🔴 **HKDF の専用ラベルを実際に使っている（変異 N15b が生存した穴）。**
+   *
+   * doc と PR 本文は「署名鍵をそのまま使わず**専用ラベルの HKDF で分ける**」と書いている。
+   * ラベルを外しても鍵は秘密依存かつ安定なままなので、**上の 2 本は素通りする** ——
+   * つまり「用途を分けている」という主張を**誰も縛っていなかった**。
+   * 散文が成果物より強い状態を残さない（`.claude/rules/opus5-autonomous-loop.md`）。
+   *
+   * 判定は「ラベル無しで導出した値**ではない**こと」。期待値を書き写すのではなく、
+   * **分離していない導出と一致しない**ことだけを主張する。
+   */
+  it('🔴 HKDF の用途ラベルを使っている（分離していない導出と一致しない）', async () => {
+    const secret = 'TEST-enrollment-secret-label';
+    process.env.KIOSK_ENROLLMENT_SECRET = secret;
+    __resetIdentitySalt();
+    const key = await clientIdentity(req('192.0.2.1'));
+
+    // ラベル無し（＝用途を分けていない）で同じ手順を踏むと何になるか。
+    const ikm = new TextEncoder().encode(secret);
+    const material = await crypto.subtle.importKey('raw', ikm, 'HKDF', false, ['deriveBits']);
+    const bits = await crypto.subtle.deriveBits(
+      { name: 'HKDF', hash: 'SHA-256', salt: new Uint8Array(0), info: new Uint8Array(0) },
+      material,
+      256,
+    );
+    const unseparated = new Uint8Array(bits);
+    const suffix = new TextEncoder().encode('\u0000192.0.2.1');
+    const bytes = new Uint8Array(unseparated.length + suffix.length);
+    bytes.set(unseparated);
+    bytes.set(suffix, unseparated.length);
+    const digest = new Uint8Array(await crypto.subtle.digest('SHA-256', bytes));
+    const hex = Array.from(digest)
+      .map((b) => b.toString(16).padStart(2, '0'))
+      .join('');
+
+    expect(key, 'HKDF のラベルが空＝署名鍵と用途を分けていない').not.toBe(`ip:${hex}`);
+  });
+
+  /**
+   * 🔴 **鍵の材料が無いデプロイでは `assertIdentitySaltAvailable` が落ちる
+   * （変異 N19b が生存した穴）。**
+   *
+   * route 側のテストはこの関数を**モックしている**ので、中身を空にする変異は
+   * そちらでは検出できない。空にすると未設定デプロイで `clientIdentity` が
+   * **未捕捉の 500** を生む（未認証経路なので無制限に生ませられる）。
+   *
+   * `serverSecret` は「デプロイ実行か」を `AWS_LAMBDA_FUNCTION_NAME` で判定するので、
+   * そのマーカーを立てて秘密を外す。
+   */
+  it('🔴 デプロイで鍵が未設定なら鍵の解決が落ちる（fail-closed）', () => {
+    const savedMarker = process.env.AWS_LAMBDA_FUNCTION_NAME;
+    process.env.AWS_LAMBDA_FUNCTION_NAME = 'open-reception-server';
+    delete process.env.KIOSK_ENROLLMENT_SECRET;
+    try {
+      expect(() => assertIdentitySaltAvailable()).toThrow();
+    } finally {
+      if (savedMarker === undefined) delete process.env.AWS_LAMBDA_FUNCTION_NAME;
+      else process.env.AWS_LAMBDA_FUNCTION_NAME = savedMarker;
+    }
+  });
+
+  /** 🔴 下界: 鍵が在れば落ちない（常に throw して満たしていない）。 */
+  it('🔴 鍵が在れば鍵の解決は落ちない（下界）', () => {
+    process.env.KIOSK_ENROLLMENT_SECRET = 'TEST-enrollment-secret-present';
+    expect(() => assertIdentitySaltAvailable()).not.toThrow();
   });
 
   /**
