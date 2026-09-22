@@ -4,7 +4,7 @@ import { isIpAllowed } from '@/domain/security/types';
 import { KIOSK_COOKIE, KIOSK_SESSION_TTL_MS, issueKioskSession } from '@/lib/auth/kiosk';
 import { readJson } from '@/lib/data-stores/result-http';
 import { KIOSK_AUTHORIZE_POLICY } from '@/domain/security/attempt-budget';
-import { checkAttempt, recordFailure, recordSuccess } from '@/lib/security/attempt-store';
+import { recordSuccess, reserveAttempt } from '@/lib/security/attempt-store';
 
 /**
  * 🔴 **試行予算の鍵はサイト全体（#1021 AC4）。**
@@ -58,7 +58,11 @@ export async function POST(request: Request): Promise<NextResponse> {
   //    **コストを下げる**のがこの順序の要点である（増幅を閉じる側に使う）。
   // 🔴 数えるのは**PIN の試行だけ**。上の 403（PIN 認可が無効なサイト）は試行ではないので
   //    数えない —— 数えると攻撃でもないもので予算を使い切る。
-  const budget = await checkAttempt(ATTEMPT_KEY, KIOSK_AUTHORIZE_POLICY, Date.now());
+  // 🔴 **予約してから照合する（Codex レビュー P1）。** 読み取り専用の判定だと、
+  //    並行バーストで**全員が予算内と読んで全員が照合へ進む**（実測: 予算 3 に対して
+  //    20 回中 20 回が到達し 0 回しか断られなかった）。入場を CAS で予約することでしか
+  //    閉じられない。数えるのは「入場した試行」で、成功したら窓ごと捨てる。
+  const budget = await reserveAttempt(ATTEMPT_KEY, KIOSK_AUTHORIZE_POLICY, Date.now());
   if (!budget.allowed) {
     // 🔴 **待たせるために応答を保留しない。** Lambda では待ち時間に課金されるので、
     //    sleep は増幅を悪化させる。即座に断り、いつ再試行できるかだけ伝える。
@@ -70,7 +74,7 @@ export async function POST(request: Request): Promise<NextResponse> {
   }
   const pin = typeof body?.pin === 'string' ? body.pin : '';
   if (!(await verifyPin(pin))) {
-    await recordFailure(ATTEMPT_KEY, KIOSK_AUTHORIZE_POLICY, Date.now());
+    // 予約の時点で数えてあるので、ここで数え直さない（二重計上になる）。
     return NextResponse.json({ error: 'unauthorized', message: 'invalid pin' }, { status: 401 });
   }
   // 🔴 成功したら失敗数を捨てる（正しく入った直後に予算切れで断られる形を作らない）。

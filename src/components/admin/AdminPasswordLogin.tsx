@@ -20,6 +20,8 @@ export function AdminPasswordLogin() {
    * 「正しくありません」と言ってはいけない。写像は `loginFailureForStatus`。
    */
   const [failure, setFailure] = useState<LoginFailure | null>(null);
+  /** 🔴 429 のときだけ意味を持つ待ち時間（#1021 AC4）。数値でなければ undefined。 */
+  const [retryAfterSec, setRetryAfterSec] = useState<number | undefined>(undefined);
   const [busy, setBusy] = useState(false);
 
   const submit = async (e: React.FormEvent) => {
@@ -40,6 +42,10 @@ export function AdminPasswordLogin() {
         // 🔴 **状態コードを見る。** 非 ok をすべて `rejected` にすると、サーバが
         // パスワードを見てすらいない 5xx でも「パスワードが正しくありません」と
         // **嘘をつく**（#1021 で `ADMIN_PASSWORD` 未設定の 500 を作ってしまい、実際に踏んだ）。
+        // 🔴 429 は待ち時間を伝える（#1021 AC4）。数値でないヘッダで NaN を渡さない。
+        const header = res.headers.get('retry-after');
+        const parsed = header !== null ? Number.parseInt(header, 10) : Number.NaN;
+        setRetryAfterSec(Number.isFinite(parsed) ? parsed : undefined);
         setFailure(loginFailureForStatus(res.status));
       }
     } catch {
@@ -106,7 +112,7 @@ export function AdminPasswordLogin() {
           role="alert"
           style={{ color: 'var(--color-danger)', margin: 0 }}
         >
-          {loginFailureMessage(failure)}
+          {loginFailureMessage(failure, retryAfterSec)}
         </p>
       ) : null}
       <button

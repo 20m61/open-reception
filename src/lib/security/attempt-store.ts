@@ -29,11 +29,22 @@ import {
 } from '@/domain/security/attempt-budget';
 import { getBackend } from '@/lib/data';
 
-/** 永続レコード。`id` は試行の鍵（`kiosk:<kioskId>` / `admin:<発信元>`）。 */
+/** 永続レコード。`id` は試行の鍵（`kiosk-authorize` / `admin-login`）。 */
 type AttemptRecord = {
   readonly id: string;
   readonly startedAt: number;
-  readonly failures: number;
+  /** 窓の中で**入場した**試行の回数（失敗数ではない。下の `reserveAttempt` を参照）。 */
+  readonly attempts: number;
+  /**
+   * DynamoDB の TTL 属性（epoch 秒）。
+   *
+   * 🔴 **明示的に持つ（Codex レビュー P2）。** backend は `put` / `putIfAbsent` のときだけ
+   * `ttlSeconds` から `ttl` を生成する（`recordFor`）。`updateIf` は**部分マージ**なので
+   * `ttl` に触らない —— 同じレコードを新しい窓へ転がし続けると、**最初に作ったときの
+   * 期限のまま**になり、稼働中のカウンタが 2 時間後に消えて**攻撃者の予算が戻る**。
+   * だから窓を開き直すたびに、こちらで延ばす。
+   */
+  readonly ttl?: number;
 };
 
 /**
@@ -43,7 +54,10 @@ type AttemptRecord = {
 const TTL_SECONDS = 2 * 60 * 60;
 
 /** CAS が負けたときの読み直し回数。並行数が多いほど負けるが、有限で止める。 */
-const CAS_RETRIES = 8;
+const CAS_RETRIES = 16;
+
+/** TTL 属性の値（epoch 秒）。窓を開き直すたびに延ばす。 */
+const ttlAt = (now: number) => Math.floor(now / 1000) + TTL_SECONDS;
 
 const attempts = () =>
   getBackend().collection<AttemptRecord>('auth-attempts', { ttlSeconds: TTL_SECONDS });
@@ -56,60 +70,82 @@ function toWindow(record: AttemptRecord | undefined): AttemptWindow | undefined 
   // 🔴 **`typeof` の検査は撤回した（変異検証で生存＝等価）。** `Number.isFinite` は
   //    引数を**強制変換しない**ので、文字列・`undefined`・`null` はすべて false になる
   //    （グローバルの `isFinite` と違う点）。2 段で書いていたのは片方が無駄だった。
-  if (!Number.isFinite(record.startedAt) || !Number.isFinite(record.failures)) return undefined;
-  return { startedAt: record.startedAt, failures: record.failures };
+  if (!Number.isFinite(record.startedAt) || !Number.isFinite(record.attempts)) return undefined;
+  return { startedAt: record.startedAt, failures: record.attempts };
 }
 
 /**
- * 試行してよいかを判定する（**数えない**）。
+ * 試行を**原子的に予約する**。入場できたら `allowed: true` を返し、**その時点で 1 回数える**。
  *
- * 🔴 **判定と記録を分ける。** 呼び出し側は「断られたら照合を走らせない」ので、
- * 予算超過の試行は PBKDF2 のコストを**払わない**（#1021 AC3 が持ち込んだ増幅を閉じる側）。
+ * ## なぜ「判定」と「記録」を分けてはいけないか（Codex レビュー P1）
+ *
+ * 最初は読み取り専用の `checkAttempt` で入場を判定し、照合の**後**に `recordFailure` で
+ * 数えていた。**数え上げが原子的であることは、入場が原子的であることを何も意味しない** ——
+ * 並行バーストでは全員が「予算内」と読んで**全員が照合へ進む**。実測では
+ * **予算 3 に対して 20 回中 20 回が照合まで到達し、0 回しか断られなかった**。
+ *
+ * つまり総当たりは**並列に投げるだけで素通り**でき、PBKDF2 の計算増幅も閉じていなかった。
+ * 入場そのものを CAS で予約することでしか閉じられない。
+ *
+ * ## 数えるのは「入場した試行」で、失敗数ではない
+ *
+ * 照合の結果を待たずに数えるので、成功した試行も 1 回として数える。**成功したら
+ * `recordSuccess` で窓ごと捨てる**ので、正当な利用者が予算を削られることはない
+ * （逐次で予算ぶんちょうど入場できることをテストで固定している）。
+ *
+ * 途中で落ちた要求は数えられたまま残る —— **安全side へ倒す**ための意図的な選択である。
  */
-export async function checkAttempt(
+export async function reserveAttempt(
   key: string,
   policy: AttemptPolicy,
   now: number,
 ): Promise<AttemptDecision> {
-  return consumeAttempt(policy, toWindow(await attempts().get(key)), now);
-}
-
-/**
- * 失敗を 1 つ数える。**原子的**（CAS。負けたら読み直す）。
- *
- * 窓が明けていれば新しい窓を `failures: 1` で開く。
- */
-export async function recordFailure(
-  key: string,
-  policy: AttemptPolicy,
-  now: number,
-): Promise<void> {
   for (let i = 0; i < CAS_RETRIES; i += 1) {
     const current = await attempts().get(key);
     const window = toWindow(current);
-    const expired = window === undefined || now - window.startedAt >= policy.windowMs;
+    const decision = consumeAttempt(policy, window, now);
+    // 予算超過は書き込まずに断る（**未認証経路から書き込みを無限に誘発させない**）。
+    if (!decision.allowed) return decision;
+
+    const next = decision.nextWindow;
+    // 🔴 窓を開き直すときは **TTL も延ばす**（`updateIf` は `recordFor` を通らない）。
+    const rolling = window === undefined || next.startedAt !== window.startedAt;
+    const attemptsNext = next.failures + 1;
+
     if (current === undefined) {
-      // 不在なら条件付き作成。負けたら（他が先に作った）読み直す。
-      if (await attempts().putIfAbsent({ id: key, startedAt: now, failures: 1 })) return;
-      continue;
+      // 不在なら条件付き作成（`putIfAbsent` は `recordFor` を通るので TTL は backend が付ける）。
+      if (await attempts().putIfAbsent({ id: key, startedAt: next.startedAt, attempts: 1 })) {
+        return decision;
+      }
+      continue; // 他が先に作った → 読み直す
     }
-    const next: AttemptRecord = expired
-      ? { id: key, startedAt: now, failures: 1 }
-      : { id: key, startedAt: window.startedAt, failures: window.failures + 1 };
-    // 🔴 **`expected` には読んだ値をそのまま渡す**（CAS）。ここを緩めると並行で取りこぼす。
-    const won = await attempts().updateIf(
-      key,
-      { startedAt: next.startedAt, failures: next.failures },
-      { startedAt: current.startedAt, failures: current.failures },
-    );
-    if (won) return;
+    // 🔴 **読めないレコードは CAS せず上書きする。**
+    //
+    //    レコードが在るが `toWindow` が読めない（`NaN` 等）場合、`expected` に読めない値を
+    //    渡すことになる。`NaN === NaN` は偽なので **CAS は永遠に勝てず**、リトライを
+    //    使い切って「断る」へ落ちる —— **壊れたレコード 1 件で全端末が締め出される**
+    //    （テストで実測した）。読めない値は守るべき lost-update を持たないので、
+    //    素直に `put` で置き換える（`recordFor` を通るので TTL も付く）。
+    if (window === undefined) {
+      await attempts().put({ id: key, startedAt: next.startedAt, attempts: 1 });
+      return decision;
+    }
+    const changes: Partial<AttemptRecord> = rolling
+      ? { startedAt: next.startedAt, attempts: attemptsNext, ttl: ttlAt(now) }
+      : { startedAt: next.startedAt, attempts: attemptsNext };
+    // 🔴 **`expected` には読んだ値をそのまま渡す**（CAS）。緩めると並行で予算を超える。
+    const won = await attempts().updateIf(key, changes, {
+      startedAt: current.startedAt,
+      attempts: current.attempts,
+    });
+    if (won) return decision;
   }
-  // 🔴 **諦めるときは安全側へ倒す。** 数え損なうと予算が実質的に増えるので、
-  //    最後の手段として窓を「使い切った」状態へ寄せる（下界は窓明けが保証する）。
-  await attempts().put({ id: key, startedAt: now, failures: policy.budget });
+  // 🔴 **諦めるときは安全側へ倒す。** 予約できなかった要求を通すと予算が実質的に増えるので、
+  //    断る（下界は窓明けが保証する —— 恒久的には閉じない）。
+  return { allowed: false, retryAfterMs: policy.windowMs };
 }
 
-/** 成功したので失敗数を捨てる（正しく入った直後に予算切れで断られる形を作らない）。 */
+/** 成功したので窓ごと捨てる（正しく入った直後に予算切れで断られる形を作らない）。 */
 export async function recordSuccess(key: string): Promise<void> {
   await attempts().remove(key);
 }

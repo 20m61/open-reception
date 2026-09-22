@@ -26,12 +26,10 @@ import { ADMIN_COOKIE } from '@/lib/auth/admin';
 const cognitoSrpLogin = vi.fn(async (..._args: unknown[]) => ({ ok: false, reason: 'invalid' }) as const);
 // 🔴 引数を捨てない。`() => cognitoSrpLogin()` にすると username/password の受け渡しを
 // 変える変異に無力になる。
-const checkAttempt = vi.fn();
-const recordFailure = vi.fn();
+const reserveAttempt = vi.fn();
 const recordSuccess = vi.fn();
 vi.mock('@/lib/security/attempt-store', () => ({
-  checkAttempt: (...a: unknown[]) => checkAttempt(...a),
-  recordFailure: (...a: unknown[]) => recordFailure(...a),
+  reserveAttempt: (...a: unknown[]) => reserveAttempt(...a),
   recordSuccess: (...a: unknown[]) => recordSuccess(...a),
 }));
 vi.mock('@/lib/auth/cognito-srp', () => ({
@@ -57,10 +55,9 @@ beforeEach(() => {
   // 🔴 呼び出し回数をリセットする。しないと `toHaveBeenCalled()` が**ファイル内の
   // 実行順に依存**する（今は先行テストが SRP へ到達しないので偶然成立しているだけ）。
   cognitoSrpLogin.mockClear();
-  checkAttempt.mockReset();
-  recordFailure.mockReset();
-  recordSuccess.mockReset();
-  checkAttempt.mockResolvedValue({
+  reserveAttempt.mockReset();
+    recordSuccess.mockReset();
+  reserveAttempt.mockResolvedValue({
     allowed: true,
     nextWindow: { startedAt: 0, failures: 0 },
     onSuccess: { startedAt: 0, failures: 0 },
@@ -316,7 +313,7 @@ describe('failClosed の爆発半径 — provider=none の外へ漏れない (#1
  */
 describe('試行回数制限 (#1021 AC4)', () => {
   it('🔴 予算超過なら 429 と Retry-After を返す', async () => {
-    checkAttempt.mockResolvedValue({ allowed: false, retryAfterMs: 90_000 });
+    reserveAttempt.mockResolvedValue({ allowed: false, retryAfterMs: 90_000 });
     const res = await login(CONFIGURED);
     expect(res.status).toBe(429);
     expect(res.headers.get('retry-after')).toBe('90');
@@ -328,7 +325,7 @@ describe('試行回数制限 (#1021 AC4)', () => {
    * ここを「正しければ通す」にすると、総当たりの最後の 1 回だけ通るので予算が無意味になる。
    */
   it('🔴 予算超過なら正しいパスワードでも通さない', async () => {
-    checkAttempt.mockResolvedValue({ allowed: false, retryAfterMs: 1000 });
+    reserveAttempt.mockResolvedValue({ allowed: false, retryAfterMs: 1000 });
     const res = await login(CONFIGURED);
     expect(res.status).toBe(429);
     expect(adminCookie(res)).toBeUndefined();
@@ -346,7 +343,8 @@ describe('試行回数制限 (#1021 AC4)', () => {
     vi.stubEnv('ADMIN_PASSWORD', CONFIGURED);
     const res = await login('wrong');
     expect(res.status).toBe(401);
-    expect(recordFailure).toHaveBeenCalledTimes(1);
+    // 🔴 予約の時点で数えているので、ここで数え直さない（二重計上になる）。
+    expect(reserveAttempt).toHaveBeenCalledTimes(1);
     expect(recordSuccess).not.toHaveBeenCalled();
   });
 
@@ -354,12 +352,11 @@ describe('試行回数制限 (#1021 AC4)', () => {
     vi.stubEnv('ADMIN_PASSWORD', CONFIGURED);
     await login(CONFIGURED);
     expect(recordSuccess).toHaveBeenCalledTimes(1);
-    expect(recordFailure).not.toHaveBeenCalled();
   });
 
   /** 🔴 429 の応答本文に入力値を出さない（未認証経路）。 */
   it('🔴 429 の応答本文に入力値を出さない', async () => {
-    checkAttempt.mockResolvedValue({ allowed: false, retryAfterMs: 1000 });
+    reserveAttempt.mockResolvedValue({ allowed: false, retryAfterMs: 1000 });
     const res = await login('TEST-secret-attempt');
     expect(await res.text()).not.toContain('TEST-secret-attempt');
   });
@@ -377,6 +374,6 @@ describe('試行回数制限 (#1021 AC4)', () => {
         body: JSON.stringify({ username: 'u', password: 'p' }),
       }),
     );
-    expect(checkAttempt).not.toHaveBeenCalled();
+    expect(reserveAttempt).not.toHaveBeenCalled();
   });
 });

@@ -19,7 +19,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { KIOSK_AUTHORIZE_POLICY, type AttemptPolicy } from '@/domain/security/attempt-budget';
 import { getBackend } from '@/lib/data';
-import { checkAttempt, recordFailure, recordSuccess, __resetAttempts } from './attempt-store';
+import { recordSuccess, reserveAttempt, __resetAttempts } from './attempt-store';
 
 const POLICY: AttemptPolicy = { budget: 3, windowMs: 60_000 };
 const KEY = 'kiosk:kiosk-dev';
@@ -30,17 +30,16 @@ beforeEach(async () => {
 
 describe('試行予算ストア (#1021 AC4)', () => {
   it('初回は許可する', async () => {
-    const r = await checkAttempt(KEY, POLICY, 1000);
+    const r = await reserveAttempt(KEY, POLICY, 1000);
     expect(r.allowed).toBe(true);
   });
 
   it('🔴 予算を使い切ると断る', async () => {
     for (let i = 0; i < POLICY.budget; i += 1) {
-      const r = await checkAttempt(KEY, POLICY, 1000);
+      const r = await reserveAttempt(KEY, POLICY, 1000);
       expect(r.allowed, `${i} 回目で断られた（予算は ${POLICY.budget}）`).toBe(true);
-      await recordFailure(KEY, POLICY, 1000);
     }
-    const blocked = await checkAttempt(KEY, POLICY, 1000);
+    const blocked = await reserveAttempt(KEY, POLICY, 1000);
     expect(blocked.allowed).toBe(false);
     if (blocked.allowed) throw new Error('unreachable');
     expect(blocked.retryAfterMs).toBeGreaterThan(0);
@@ -48,38 +47,61 @@ describe('試行予算ストア (#1021 AC4)', () => {
 
   /** 🔴 下界: 窓が明ければ通る（恒久的に閉じない）。 */
   it('🔴 窓が明ければ、使い切った後でも通る', async () => {
-    for (let i = 0; i < POLICY.budget; i += 1) await recordFailure(KEY, POLICY, 1000);
-    expect((await checkAttempt(KEY, POLICY, 1000)).allowed).toBe(false);
-    expect((await checkAttempt(KEY, POLICY, 1000 + POLICY.windowMs)).allowed).toBe(true);
+    for (let i = 0; i < POLICY.budget; i += 1) await reserveAttempt(KEY, POLICY, 1000);
+    expect((await reserveAttempt(KEY, POLICY, 1000)).allowed).toBe(false);
+    expect((await reserveAttempt(KEY, POLICY, 1000 + POLICY.windowMs)).allowed).toBe(true);
   });
 
   /** 🔴 成功は失敗数を捨てる。 */
   it('🔴 成功すると予算が戻る', async () => {
-    for (let i = 0; i < POLICY.budget; i += 1) await recordFailure(KEY, POLICY, 1000);
-    expect((await checkAttempt(KEY, POLICY, 1000)).allowed).toBe(false);
+    for (let i = 0; i < POLICY.budget; i += 1) await reserveAttempt(KEY, POLICY, 1000);
+    expect((await reserveAttempt(KEY, POLICY, 1000)).allowed).toBe(false);
     await recordSuccess(KEY);
-    expect((await checkAttempt(KEY, POLICY, 1000)).allowed).toBe(true);
+    expect((await reserveAttempt(KEY, POLICY, 1000)).allowed).toBe(true);
   });
 
   /** 🔴 鍵が違えば独立（1 つの端末の失敗が別の端末を閉めない）。 */
   it('🔴 別の鍵は独立して数える', async () => {
-    for (let i = 0; i < POLICY.budget; i += 1) await recordFailure(KEY, POLICY, 1000);
-    expect((await checkAttempt(KEY, POLICY, 1000)).allowed).toBe(false);
-    expect((await checkAttempt('kiosk:other', POLICY, 1000)).allowed).toBe(true);
+    for (let i = 0; i < POLICY.budget; i += 1) await reserveAttempt(KEY, POLICY, 1000);
+    expect((await reserveAttempt(KEY, POLICY, 1000)).allowed).toBe(false);
+    expect((await reserveAttempt('kiosk:other', POLICY, 1000)).allowed).toBe(true);
   });
 
   /**
-   * 🔴 **本体（原子性）。** 並行で失敗を投げても取りこぼさない。
+   * 🔴 **本体（原子性）。並行して投げても、照合が走る回数が予算を超えない。**
    *
-   * 素朴な `get` → `put` はここで落ちる（全員が同じ値を読んで最後の 1 つが勝つので、
-   * 記録される失敗数が 1 になる）。取りこぼすと予算が実質的に増える＝上界が壊れる。
+   * ## 最初はこの不変条件を測っていなかった（Codex レビュー P1）
+   *
+   * 以前ここは「並行した `recordFailure` が取りこぼさない」だけを主張していた。
+   * **数え上げが原子的であることは、入場が原子的であることを何も意味しない** ——
+   * 読み取り専用の `checkAttempt` で入場を判定していたので、並行バーストでは
+   * **全員が予算内と読んで全員が照合へ進んだ**（実測: 予算 3 に対して 20 回中 20 回が
+   * 照合まで到達し、**0 回しか断られなかった**）。
+   *
+   * つまり総当たりは**並列に投げるだけで素通り**でき、PBKDF2 の計算増幅も閉じていなかった。
+   * 自分が作った機構（CAS の数え上げ）をテストしていて、**守るべき不変条件**を
+   * テストしていなかった型である。
+   *
+   * だから入場そのものを原子的にする（`reserveAttempt`）。
    */
-  it('🔴 並行した失敗を取りこぼさない', async () => {
+  it('🔴 並行バーストでも照合の回数は予算を超えない', async () => {
     const n = 20;
-    await Promise.all(Array.from({ length: n }, () => recordFailure(KEY, { budget: 1000, windowMs: 60_000 }, 1000)));
-    const r = await checkAttempt(KEY, { budget: n, windowMs: 60_000 }, 1000);
-    // n 回数えていれば、予算 n はちょうど使い切られている。
-    expect(r.allowed, `失敗を取りこぼしている（予算 ${n} が余っている）`).toBe(false);
+    const results = await Promise.all(
+      Array.from({ length: n }, () => reserveAttempt(KEY, POLICY, 1000)),
+    );
+    const admitted = results.filter((r) => r.allowed).length;
+    expect(admitted, `予算 ${POLICY.budget} に対して ${admitted} 回入場した`).toBe(POLICY.budget);
+    // 下界: 全部断ってもいない（それでは受付が止まる）。
+    expect(admitted).toBeGreaterThan(0);
+  });
+
+  /** 🔴 逐次でも予算ぶんはちょうど入場できる（上界だけでなく下界も）。 */
+  it('🔴 逐次なら予算ぶんちょうど入場できる', async () => {
+    let admitted = 0;
+    for (let i = 0; i < POLICY.budget + 5; i += 1) {
+      if ((await reserveAttempt(KEY, POLICY, 1000)).allowed) admitted += 1;
+    }
+    expect(admitted).toBe(POLICY.budget);
   });
 
   /**
@@ -93,7 +115,7 @@ describe('試行予算ストア (#1021 AC4)', () => {
   it('🔴 窓は TTL 付きのコレクションに置く', async () => {
     const backend = getBackend();
     const spy = vi.spyOn(backend, 'collection');
-    await recordFailure(KEY, POLICY, 1000);
+    await reserveAttempt(KEY, POLICY, 1000);
     const call = spy.mock.calls.find((c) => c[0] === 'auth-attempts');
     expect(call, 'auth-attempts コレクションを開いていない').toBeDefined();
     const ttl = (call?.[1] as { ttlSeconds?: number } | undefined)?.ttlSeconds;
@@ -101,6 +123,31 @@ describe('試行予算ストア (#1021 AC4)', () => {
     // 下界: 窓より十分長い（窓が明ける前に消えると予算が実質的に増える）。
     expect(ttl).toBeGreaterThan(POLICY.windowMs / 1000);
     spy.mockRestore();
+  });
+
+  /**
+   * 🔴 **窓を開き直すときは TTL も延ばす（Codex レビュー P2）。**
+   *
+   * backend は `put` / `putIfAbsent` のときだけ `ttlSeconds` から `ttl` を生成する
+   * （`recordFor`）。`updateIf` は**部分マージ**なので `ttl` に触らない —— 同じレコードを
+   * 新しい窓へ転がし続けると**最初に作ったときの期限のまま**になり、稼働中のカウンタが
+   * 2 時間後に消えて**攻撃者の予算が戻る**。
+   *
+   * memory backend は `ttl` を解釈しないので、**レコードに載っていること**を見る。
+   */
+  it('🔴 窓を開き直すと TTL が延びる', async () => {
+    const raw = () =>
+      getBackend()
+        .collection<{ id: string; ttl?: number }>('auth-attempts', { ttlSeconds: 7200 })
+        .get(KEY);
+    await reserveAttempt(KEY, POLICY, 1000);
+    // 窓明け後に予約すると、同じレコードが新しい窓へ転がる（`updateIf` の経路）。
+    const later = 1000 + POLICY.windowMs * 3;
+    await reserveAttempt(KEY, POLICY, later);
+    const after = await raw();
+    expect(after?.ttl, 'TTL が載っていない（窓を転がすと期限が延びない）').toBeDefined();
+    // 下界: 延ばした先が「今」より十分に後ろ（0 や過去を書いていない）。
+    expect(after?.ttl).toBeGreaterThan(Math.floor(later / 1000));
   });
 
   /**
@@ -115,13 +162,13 @@ describe('試行予算ストア (#1021 AC4)', () => {
   it('🔴 窓が明けた後の失敗は新しい窓を開く（制限が無効化されない）', async () => {
     const t0 = 1000;
     const t1 = t0 + POLICY.windowMs; // 窓明け後
-    await recordFailure(KEY, POLICY, t0);
-    // 窓明け後に予算ぶん失敗させる。
-    for (let i = 0; i < POLICY.budget; i += 1) await recordFailure(KEY, POLICY, t1);
+    await reserveAttempt(KEY, POLICY, t0);
+    // 窓明け後に予算ぶん試行させる。
+    for (let i = 0; i < POLICY.budget; i += 1) await reserveAttempt(KEY, POLICY, t1);
     // 🔴 新しい窓で数えていれば、この時点で断られる。
     //    古い窓に足し続けていると `startedAt` が t0 のままなので**常に許可**になる。
-    const r = await checkAttempt(KEY, POLICY, t1);
-    expect(r.allowed, '窓明け後の失敗が古い窓に足されている（制限が無効化されている）').toBe(
+    const r = await reserveAttempt(KEY, POLICY, t1);
+    expect(r.allowed, '窓明け後の試行が古い窓に足されている（制限が無効化されている）').toBe(
       false,
     );
   });
@@ -141,22 +188,19 @@ describe('試行予算ストア (#1021 AC4)', () => {
     await getBackend()
       .collection<{ id: string }>('auth-attempts', { ttlSeconds: 7200 })
       .put(broken as { id: string });
-    const r = await checkAttempt(KEY, POLICY, 2000);
+    const r = await reserveAttempt(KEY, POLICY, 2000);
     expect(r.allowed).toBe(true);
-    // 下界: 壊れたレコードを「予算を使い切った」と読んで締め出してもいない。
-    await expect(recordFailure(KEY, POLICY, 2000)).resolves.toBeUndefined();
   });
 
   /** 実運用の方針でも上界・下界が成り立つ（定数を差し替えても壊れない）。 */
   it('実運用の kiosk 方針でも上界と下界が成り立つ', async () => {
     const now = 1_000_000;
     for (let i = 0; i < KIOSK_AUTHORIZE_POLICY.budget; i += 1) {
-      expect((await checkAttempt(KEY, KIOSK_AUTHORIZE_POLICY, now)).allowed).toBe(true);
-      await recordFailure(KEY, KIOSK_AUTHORIZE_POLICY, now);
+      expect((await reserveAttempt(KEY, KIOSK_AUTHORIZE_POLICY, now)).allowed).toBe(true);
     }
-    expect((await checkAttempt(KEY, KIOSK_AUTHORIZE_POLICY, now)).allowed).toBe(false);
+    expect((await reserveAttempt(KEY, KIOSK_AUTHORIZE_POLICY, now)).allowed).toBe(false);
     expect(
-      (await checkAttempt(KEY, KIOSK_AUTHORIZE_POLICY, now + KIOSK_AUTHORIZE_POLICY.windowMs))
+      (await reserveAttempt(KEY, KIOSK_AUTHORIZE_POLICY, now + KIOSK_AUTHORIZE_POLICY.windowMs))
         .allowed,
     ).toBe(true);
   });

@@ -12,7 +12,7 @@ import { cognitoSrpLogin } from '@/lib/auth/cognito-srp';
 import { createJwksResolver, verifyOidcToken } from '@/lib/auth/entra';
 import { reportIncompleteConfig, reportSecretUnavailable } from '@/lib/auth/secret-unavailable';
 import { ADMIN_LOGIN_POLICY } from '@/domain/security/attempt-budget';
-import { checkAttempt, recordFailure, recordSuccess } from '@/lib/security/attempt-store';
+import { recordSuccess, reserveAttempt } from '@/lib/security/attempt-store';
 
 /**
  * 🔴 **試行予算の鍵はサイト全体（#1021 AC4）。** `x-forwarded-for` は詐称可能なので、
@@ -143,7 +143,9 @@ export async function POST(request: Request): Promise<NextResponse> {
   //
   //    射程は `provider=none` だけ —— cognito 枝は Cognito 自身が throttle を持ち、
   //    そこへ global な予算を重ねると外部認証の正当な利用者を巻き込む。
-  const budget = await checkAttempt(ATTEMPT_KEY, ADMIN_LOGIN_POLICY, Date.now());
+  // 🔴 **予約してから照合する（Codex レビュー P1）。** 読み取り専用の判定は
+  //    並行バーストで素通りする（authorize 側と同じ穴）。
+  const budget = await reserveAttempt(ATTEMPT_KEY, ADMIN_LOGIN_POLICY, Date.now());
   if (!budget.allowed) {
     // 値（入力されたパスワード）は応答に出さない。
     return NextResponse.json(
@@ -154,7 +156,7 @@ export async function POST(request: Request): Promise<NextResponse> {
 
   const body = (await request.json().catch(() => null)) as { password?: unknown } | null;
   if (!body || typeof body.password !== 'string' || body.password !== configuredPassword) {
-    await recordFailure(ATTEMPT_KEY, ADMIN_LOGIN_POLICY, Date.now());
+    // 予約の時点で数えてあるので、ここで数え直さない（二重計上になる）。
     return NextResponse.json({ error: 'unauthorized', message: 'invalid password' }, { status: 401 });
   }
   // 🔴 成功したら失敗数を捨てる（正しく入った直後に予算切れで断られる形を作らない）。

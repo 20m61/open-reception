@@ -7,8 +7,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 const getSecuritySettings = vi.fn();
 const verifyPin = vi.fn();
 const issueKioskSession = vi.fn();
-const checkAttempt = vi.fn();
-const recordFailure = vi.fn();
+const reserveAttempt = vi.fn();
 const recordSuccess = vi.fn();
 
 vi.mock('@/lib/security/security-store', () => ({
@@ -16,8 +15,7 @@ vi.mock('@/lib/security/security-store', () => ({
   verifyPin: (...a: unknown[]) => verifyPin(...a),
 }));
 vi.mock('@/lib/security/attempt-store', () => ({
-  checkAttempt: (...a: unknown[]) => checkAttempt(...a),
-  recordFailure: (...a: unknown[]) => recordFailure(...a),
+  reserveAttempt: (...a: unknown[]) => reserveAttempt(...a),
   recordSuccess: (...a: unknown[]) => recordSuccess(...a),
 }));
 vi.mock('@/lib/auth/kiosk', () => ({
@@ -42,7 +40,7 @@ beforeEach(() => {
   getSecuritySettings.mockResolvedValue({ pinRequired: true, pin: '0000', ipAllowlist: [] });
   verifyPin.mockResolvedValue(true);
   issueKioskSession.mockResolvedValue('signed-kiosk-session');
-  checkAttempt.mockResolvedValue({
+  reserveAttempt.mockResolvedValue({
     allowed: true,
     nextWindow: { startedAt: 0, failures: 0 },
     onSuccess: { startedAt: 0, failures: 0 },
@@ -113,7 +111,7 @@ describe('POST /api/kiosk/authorize (#244)', () => {
  */
 describe('試行回数制限 (#1021 AC4)', () => {
   it('🔴 予算超過なら 429 と Retry-After を返す', async () => {
-    checkAttempt.mockResolvedValue({ allowed: false, retryAfterMs: 42_000 });
+    reserveAttempt.mockResolvedValue({ allowed: false, retryAfterMs: 42_000 });
     const res = await post();
     expect(res.status).toBe(429);
     expect(res.headers.get('retry-after')).toBe('42');
@@ -129,7 +127,7 @@ describe('試行回数制限 (#1021 AC4)', () => {
    * **コストを下げる**のがこの配線の要点である（増幅を閉じる側に使う）。
    */
   it('🔴 予算超過なら PIN 照合を走らせない（計算増幅を閉じる）', async () => {
-    checkAttempt.mockResolvedValue({ allowed: false, retryAfterMs: 1000 });
+    reserveAttempt.mockResolvedValue({ allowed: false, retryAfterMs: 1000 });
     await post();
     expect(verifyPin).not.toHaveBeenCalled();
   });
@@ -145,7 +143,8 @@ describe('試行回数制限 (#1021 AC4)', () => {
     verifyPin.mockResolvedValue(false);
     const res = await post({ pin: 'wrong' });
     expect(res.status).toBe(401);
-    expect(recordFailure).toHaveBeenCalledTimes(1);
+    // 🔴 予約の時点で数えているので、ここで数え直さない（二重計上になる）。
+    expect(reserveAttempt).toHaveBeenCalledTimes(1);
     expect(recordSuccess).not.toHaveBeenCalled();
   });
 
@@ -153,7 +152,6 @@ describe('試行回数制限 (#1021 AC4)', () => {
   it('🔴 成功したら失敗数をリセットする', async () => {
     await post();
     expect(recordSuccess).toHaveBeenCalledTimes(1);
-    expect(recordFailure).not.toHaveBeenCalled();
   });
 
   /**
@@ -164,21 +162,20 @@ describe('試行回数制限 (#1021 AC4)', () => {
   it('🔴 pinRequired=false の 403 は数えない', async () => {
     getSecuritySettings.mockResolvedValue({ pinRequired: false, pin: '0000', ipAllowlist: [] });
     await post();
-    expect(recordFailure).not.toHaveBeenCalled();
-    expect(checkAttempt).not.toHaveBeenCalled();
+    expect(reserveAttempt).not.toHaveBeenCalled();
   });
 
   /** 🔴 鍵は body の kioskId に依らない（回しても同じ窓を使う＝素通りさせない）。 */
   it('🔴 kioskId を変えても同じ鍵で数える', async () => {
     await post({ pin: '0000', kioskId: 'kiosk-a' });
     await post({ pin: '0000', kioskId: 'kiosk-b' });
-    const keys = checkAttempt.mock.calls.map((c) => c[0]);
+    const keys = reserveAttempt.mock.calls.map((c) => c[0]);
     expect(keys[0]).toBe(keys[1]);
   });
 
   /** 🔴 応答に PIN の値を出さない（未認証経路。`rules/pii-secret-minimization.md`）。 */
   it('🔴 429 の応答本文に入力値を出さない', async () => {
-    checkAttempt.mockResolvedValue({ allowed: false, retryAfterMs: 1000 });
+    reserveAttempt.mockResolvedValue({ allowed: false, retryAfterMs: 1000 });
     const res = await post({ pin: '1234', kioskId: 'kiosk-dev' });
     const text = await res.text();
     expect(text).not.toContain('1234');
