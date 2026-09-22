@@ -153,15 +153,19 @@ export async function POST(request: Request): Promise<NextResponse> {
   //    そこへ global な予算を重ねると外部認証の正当な利用者を巻き込む。
   // 🔴 **予約してから照合する（Codex レビュー P1）。** 読み取り専用の判定は
   //    並行バーストで素通りする（authorize 側と同じ穴）。
-  const identity = clientIdentity(request);
+  const identity = await clientIdentity(request);
   const budget = await reserveLayeredSafely(identity, ATTEMPT_SCOPE, ADMIN_LOGIN_LAYERS, Date.now());
-  if (budget === 'unavailable') {
+  if (budget === 'degraded') {
+    // 🔴 **帳簿が落ちているが通す**（この経路は `onStoreFailure: 'open'`）。
+    //    沈黙で劣化させない —— ラッチ付きで記録する。
+    reportAttemptStoreUnavailable(ATTEMPT_SCOPE);
+  } else if (budget === 'unavailable') {
     // 🔴 fail-closed（バックエンドを落とせば制限が消える状態を作らない）。
     //    🔴 未捕捉 throw にしない —— この route 自身が上でそう書いている。
     reportAttemptStoreUnavailable(ATTEMPT_SCOPE);
     return NextResponse.json({ error: 'unavailable' }, { status: 503 });
   }
-  if (!budget.allowed) {
+  if (budget !== 'degraded' && !budget.allowed) {
     reportAttemptBudgetExceeded(ATTEMPT_SCOPE);
     // 値（入力されたパスワード）は応答に出さない。
     return NextResponse.json(

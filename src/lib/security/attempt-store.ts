@@ -158,17 +158,35 @@ export async function __resetAttempts(): Promise<void> {
 }
 
 /**
- * 層になった予算を予約する（#1021 AC4 / レビュー B1・B2）。
+ * 層になった予算を予約する（#1021 AC4 / レビュー B1・B2・2 周目 M-2）。
  *
- * 一次（発信元ごと）→ 二次（global cap。無い経路もある）の順に予約し、
- * **どちらかが断れば断る**。返す `retryAfterMs` は断った層の値。
+ * ## 規則
  *
- * 🔴 **一次で通って二次で断ったとき、一次の 1 回は消費されたままになる。** 実害は
- * 「攻撃を受けている間、自分の発信元の予算が少し早く減る」だけで、**安全側**である
- * （逆に戻そうとすると、戻す操作自体が競合して予算が増える経路を作る）。
+ * | 状況 | 一次 | 二次 |
+ * | --- | --- | --- |
+ * | 発信元を識別できる | `#<発信元>` に `perOrigin` | `#global` に cap（在れば） |
+ * | 識別できない | **無い**（発信元が無いので per-origin は成立しない） | cap が在ればそれだけ |
+ * | 識別できない ＋ cap 無し | **制限しない** | — |
  *
- * 🔴 **`global` が `undefined` の経路では二次を見ない。** admin がそれで、
- * 理由は `LayeredPolicy` の doc に書いた（運用者を閉め出すと受付が復旧不能になる）。
+ * 🔴 **最後の行が B2 の対処である（レビュー 2 周目 M-2）。** 以前は退避鍵
+ * `GLOBAL_IDENTITY` のとき一次鍵が**二次鍵と同一レコード**になっており、実測で
+ * admin が **5 回で閉まった**（= global cap を置かないという対処が丸ごと無効）。
+ * 識別できないのに共有鍵で数えるのは per-origin ではなく**事実上の global cap** であり、
+ * **運用者を閉め出す**。上界より「運用者が入れる」を優先する、という明示的な判断である。
+ *
+ * その代償: CloudFront を経ないデプロイでは **admin の試行制限が効かない**。
+ * それは `main` と同じ状態（制限が無い）であって、**退行ではない**。
+ * 効かせたいなら発信元が識別できる配備にする必要がある。**「効く」と書かない。**
+ *
+ * ## 順序が持っている上界
+ *
+ * 一次 → 二次の順で消費するので、**1 つの発信元が二次へ入れられるのは高々
+ * `perOrigin.budget` 回**である（順序を入れ替えると 1 IP だけで cap を使い切れる）。
+ * これは doc ではなくテストで縛ってある。
+ *
+ * 🔴 **一次で通って二次で断ったとき、一次の 1 回は消費されたままになる。** 攻撃が
+ * 止んだ後も、**自分の窓が明けるまで**（最大 1 窓）その発信元は閉じたままになりうる
+ * （レビュー m-1 の実測。戻そうとすると戻す操作自体が競合して予算が増える経路を作る）。
  */
 export async function reserveLayered(
   identity: string,
@@ -176,12 +194,16 @@ export async function reserveLayered(
   layers: LayeredPolicy,
   now: number,
 ): Promise<AttemptDecision> {
+  const globalKey = `${scope}#${GLOBAL_IDENTITY}`;
+  if (identity === GLOBAL_IDENTITY) {
+    // 発信元が無いので一次は成立しない。cap が在ればそれだけ、無ければ制限しない。
+    if (layers.global === undefined) return { allowed: true, nextWindow: { startedAt: now, failures: 0 } };
+    return reserveAttempt(globalKey, layers.global, now);
+  }
   const primary = await reserveAttempt(`${scope}#${identity}`, layers.perOrigin, now);
   if (!primary.allowed) return primary;
   if (layers.global === undefined) return primary;
-  // 発信元が識別できなかった要求は一次と二次が同じ鍵になるので、二重に数えない。
-  if (identity === GLOBAL_IDENTITY) return primary;
-  return reserveAttempt(`${scope}#${GLOBAL_IDENTITY}`, layers.global, now);
+  return reserveAttempt(globalKey, layers.global, now);
 }
 
 /**
@@ -204,24 +226,34 @@ export async function recordLayeredSuccess(identity: string, scope: string): Pro
 }
 
 /**
- * 予約を試み、**ストアが落ちているときの倒れ方を明示的に選ぶ**（レビュー M2）。
+ * 予約を試み、**ストアが落ちているときの倒れ方を経路ごとに選ぶ**
+ * （レビュー M2 ＋ 2 周目 B-1）。
  *
- * 🔴 **fail-closed にする。** ストアが読めないときに通すと、バックエンドを落とすだけで
- * 試行回数制限が無効化される（攻撃者が選べる状態を作らない）。
+ * 倒れ方は `LayeredPolicy.onStoreFailure` が持つ。**1 つに決めない**のは、経路ごとに
+ * 守れるものと失うものの釣り合いが違うからである（同 doc を参照）:
+ *
+ * - kiosk は `'closed'` —— 落とせば制限が消える状態を作らない
+ * - admin は `'open'` —— 断ると **DynamoDB の一時障害だけで運用者が入れなくなり**、
+ *   kiosk の復旧経路ごと閉じて**受付が復旧不能**になる（実測: 正しいパスワードでも 503）
  *
  * 🔴 **未捕捉 throw にはしない。** 未認証経路なので、例外を素通しにすると
- * スタックトレースつきの 500 を無制限に生ませられる（`admin/login/route.ts` が
- * 同じ方針を既に書いている）。呼び出し側が 503 として扱えるよう `unavailable` を返す。
+ * スタックトレースつきの 500 を無制限に生ませられる。
+ *
+ * 🔴 **fail-open でも沈黙させない。** 呼び出し側がラッチ付きで記録する。
  */
 export async function reserveLayeredSafely(
   identity: string,
   scope: string,
   layers: LayeredPolicy,
   now: number,
-): Promise<AttemptDecision | 'unavailable'> {
+): Promise<AttemptDecision | 'unavailable' | 'degraded'> {
   try {
     return await reserveLayered(identity, scope, layers, now);
   } catch {
+    if (layers.onStoreFailure === 'open') {
+      // 制限を諦めて通す。**記録は呼び出し側が残す**（沈黙で劣化させない）。
+      return 'degraded';
+    }
     return 'unavailable';
   }
 }

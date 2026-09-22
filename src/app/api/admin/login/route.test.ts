@@ -28,9 +28,15 @@ const cognitoSrpLogin = vi.fn(async (..._args: unknown[]) => ({ ok: false, reaso
 // 変える変異に無力になる。
 const reserveLayeredSafely = vi.fn();
 const recordLayeredSuccess = vi.fn();
+const reportAttemptBudgetExceeded = vi.fn();
+const reportAttemptStoreUnavailable = vi.fn();
 vi.mock('@/lib/security/attempt-store', () => ({
   reserveLayeredSafely: (...a: unknown[]) => reserveLayeredSafely(...a),
   recordLayeredSuccess: (...a: unknown[]) => recordLayeredSuccess(...a),
+}));
+vi.mock('@/lib/security/attempt-report', () => ({
+  reportAttemptBudgetExceeded: (...a: unknown[]) => reportAttemptBudgetExceeded(...a),
+  reportAttemptStoreUnavailable: (...a: unknown[]) => reportAttemptStoreUnavailable(...a),
 }));
 vi.mock('@/lib/auth/cognito-srp', () => ({
   cognitoSrpLogin: (...args: unknown[]) => cognitoSrpLogin(...args),
@@ -56,6 +62,8 @@ beforeEach(() => {
   // 実行順に依存**する（今は先行テストが SRP へ到達しないので偶然成立しているだけ）。
   cognitoSrpLogin.mockClear();
   reserveLayeredSafely.mockReset();
+  reportAttemptBudgetExceeded.mockReset();
+  reportAttemptStoreUnavailable.mockReset();
   recordLayeredSuccess.mockReset();
   recordLayeredSuccess.mockResolvedValue(true);
       reserveLayeredSafely.mockResolvedValue({
@@ -405,15 +413,85 @@ describe('帳簿が落ちたとき (#1021 AC4)', () => {
   });
 
   /** 🔴 鍵は XFF の末尾から決まる（レビュー B1）。 */
-  it('🔴 鍵は XFF の末尾から決まる', async () => {
+  it('🔴 鍵は XFF の末尾から決まる（生の IP は鍵にしない）', async () => {
     vi.stubEnv('ADMIN_PASSWORD', CONFIGURED);
-    await POST(
-      new Request('https://example.test/api/admin/login', {
-        method: 'POST',
-        headers: { 'content-type': 'application/json', 'x-forwarded-for': '9.9.9.9, 203.0.113.5' },
-        body: JSON.stringify({ password: CONFIGURED }),
-      }),
-    );
-    expect(reserveLayeredSafely.mock.calls[0]?.[0]).toBe('ip:203.0.113.5');
+    const send = (xff: string) =>
+      POST(
+        new Request('https://example.test/api/admin/login', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json', 'x-forwarded-for': xff },
+          body: JSON.stringify({ password: CONFIGURED }),
+        }),
+      );
+    await send('9.9.9.9, 203.0.113.5');
+    await send('1.1.1.1, 2.2.2.2, 203.0.113.5');
+    await send('198.51.100.7');
+    const [a, b, c] = reserveLayeredSafely.mock.calls.map((call) => call[0] as string);
+    expect(a).toBe(b);
+    expect(c).not.toBe(a);
+    // 🔴 鍵は 2 時間永続化されるので、生の IP を入れない（レビュー 2 周目 M-4）。
+    expect(a).not.toContain('203.0.113.5');
+    expect(a).toMatch(/^ip:[0-9a-f]{64}$/);
+  });
+});
+
+/**
+ * 層と検出信号の配線（#1021 AC4 / レビュー 2 周目 M-3）。
+ *
+ * 🔴 **これらは変異検証で生存した面である。** 定数側（`global: undefined` /
+ * `onStoreFailure: 'open'`）は縛っていたが、**route がその定数を使い続けること**を
+ * 誰も見ていなかったので、admin が `KIOSK_AUTHORIZE_LAYERS` を渡す変異
+ * （＝ admin に global cap が付く ＝ **B2 の再来**）が **7,852 本を素通り**した。
+ *
+ * 検出信号も kiosk では配線まで縛っていたのに **admin では 1 本も無かった** ——
+ * `CLAUDE.md` #788 の「同型の 2 本には入れて 3 本目に入れ忘れる」が、今度はテスト側で起きた。
+ */
+describe('層と検出信号の配線 (#1021 AC4)', () => {
+  it('🔴 admin の方針を渡している（kiosk のものを渡していない）', async () => {
+    vi.stubEnv('ADMIN_PASSWORD', CONFIGURED);
+    await login(CONFIGURED);
+    const layers = reserveLayeredSafely.mock.calls[0]?.[2] as
+      | { global?: unknown; onStoreFailure?: unknown }
+      | undefined;
+    expect(layers).toBeDefined();
+    expect(layers?.global, 'admin に global cap が付いている（B2 の再来）').toBeUndefined();
+    expect(layers?.onStoreFailure, 'admin が fail-closed になっている（B-1 の再来）').toBe('open');
+  });
+
+  it('🔴 scope は admin 固有（kiosk と混ざらない）', async () => {
+    vi.stubEnv('ADMIN_PASSWORD', CONFIGURED);
+    await login(CONFIGURED);
+    expect(reserveLayeredSafely.mock.calls[0]?.[1]).toBe('admin-login');
+  });
+
+  it('🔴 予算超過を記録する', async () => {
+    reserveLayeredSafely.mockResolvedValue({ allowed: false, retryAfterMs: 1000 });
+    vi.stubEnv('ADMIN_PASSWORD', CONFIGURED);
+    await login(CONFIGURED);
+    expect(reportAttemptBudgetExceeded).toHaveBeenCalledTimes(1);
+  });
+
+  /** 🔴 帳簿が落ちて**通した**ときも記録する（沈黙で劣化させない）。 */
+  it('🔴 劣化して通したことを記録する', async () => {
+    reserveLayeredSafely.mockResolvedValue('degraded');
+    vi.stubEnv('ADMIN_PASSWORD', CONFIGURED);
+    const res = await login(CONFIGURED);
+    expect(res.status, '帳簿が落ちても運用者は入れる').toBe(200);
+    expect(reportAttemptStoreUnavailable).toHaveBeenCalledTimes(1);
+  });
+
+  it('🔴 成功の記録に失敗したことを記録する', async () => {
+    recordLayeredSuccess.mockResolvedValue(false);
+    vi.stubEnv('ADMIN_PASSWORD', CONFIGURED);
+    await login(CONFIGURED);
+    expect(reportAttemptStoreUnavailable).toHaveBeenCalledTimes(1);
+  });
+
+  /** 🔴 下界: 通常経路では何も記録しない。 */
+  it('🔴 通常経路では記録しない（下界）', async () => {
+    vi.stubEnv('ADMIN_PASSWORD', CONFIGURED);
+    await login(CONFIGURED);
+    expect(reportAttemptBudgetExceeded).not.toHaveBeenCalled();
+    expect(reportAttemptStoreUnavailable).not.toHaveBeenCalled();
   });
 });

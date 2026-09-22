@@ -66,20 +66,24 @@ export async function POST(request: Request): Promise<NextResponse> {
   //    並行バーストで**全員が予算内と読んで全員が照合へ進む**（実測: 予算 3 に対して
   //    20 回中 20 回が到達し 0 回しか断られなかった）。入場を CAS で予約することでしか
   //    閉じられない。数えるのは「入場した試行」で、成功したら窓ごと捨てる。
-  const identity = clientIdentity(request);
+  const identity = await clientIdentity(request);
   const budget = await reserveLayeredSafely(
     identity,
     ATTEMPT_SCOPE,
     KIOSK_AUTHORIZE_LAYERS,
     Date.now(),
   );
-  if (budget === 'unavailable') {
+  if (budget === 'degraded') {
+    // 🔴 **帳簿が落ちているが通す**（この経路は `onStoreFailure: 'open'`）。
+    //    沈黙で劣化させない —— ラッチ付きで記録する。
+    reportAttemptStoreUnavailable(ATTEMPT_SCOPE);
+  } else if (budget === 'unavailable') {
     // 🔴 ストアが読めないときは fail-closed（落とせば制限が消える状態を作らない）。
     //    未捕捉 throw にはしない（未認証経路で 500 を無制限に生ませない）。
     reportAttemptStoreUnavailable(ATTEMPT_SCOPE);
     return NextResponse.json({ error: 'unavailable' }, { status: 503 });
   }
-  if (!budget.allowed) {
+  if (budget !== 'degraded' && !budget.allowed) {
     // 🔴 **閉じたことを記録する（レビュー M4）。** 記録が無いと、来訪者に
     //    「担当者へお声がけください」と言われた担当者が**なぜ閉じたのか知る手段が無い**。
     //    値（PIN）は残さない。

@@ -235,3 +235,31 @@ describe('層の方針 (#1021 AC4)', () => {
     expect(cap.budget).toBeGreaterThan(KIOSK_AUTHORIZE_LAYERS.perOrigin.budget * 2);
   });
 });
+
+/**
+ * 帳簿が落ちたときの倒れ方（#1021 AC4 / レビュー 2 周目 B-1）。
+ *
+ * 🔴 **経路ごとに釣り合いが違うので、1 つに決めない。** 定数で固定しないと、
+ * admin を fail-closed へ戻す変異（＝ B-1 の再来）が素通りする。
+ */
+describe('帳簿が落ちたときの倒れ方 (#1021 AC4)', () => {
+  /**
+   * 🔴 **本体。** admin を断ると、**DynamoDB の一時障害だけで運用者が入れなくなり**、
+   * kiosk の復旧経路（admin → エンロール発行）ごと閉じて**受付が復旧不能**になる。
+   * 守れるのは「発信元ごと 5 回/15 分」だけで、釣り合っていない。
+   */
+  it('🔴 admin は帳簿が落ちても通す（運用者を閉め出さない）', () => {
+    expect(
+      ADMIN_LOGIN_LAYERS.onStoreFailure,
+      'admin を fail-closed にすると DynamoDB 障害で受付が復旧不能になる（レビュー B-1）',
+    ).toBe('open');
+  });
+
+  /**
+   * 🔴 下界: kiosk は断る（落とせば制限が消える状態を作らない）。
+   * kiosk が閉じても稼働中の端末は 30 日 cookie で動き続ける。
+   */
+  it('🔴 kiosk は帳簿が落ちたら断る（下界）', () => {
+    expect(KIOSK_AUTHORIZE_LAYERS.onStoreFailure).toBe('closed');
+  });
+});

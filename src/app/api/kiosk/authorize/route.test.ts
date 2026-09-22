@@ -234,14 +234,25 @@ describe('帳簿が落ちたとき (#1021 AC4)', () => {
    * 攻撃者が先頭へ何を詰めても他人の予算を消費できない。
    */
   it('🔴 鍵は XFF の末尾から決まる（先頭の詐称に引きずられない）', async () => {
-    await POST(
-      new Request('http://localhost/api/kiosk/authorize', {
-        method: 'POST',
-        headers: { 'x-forwarded-for': '1.1.1.1, 192.0.2.1' },
-        body: JSON.stringify({ pin: '0000' }),
-      }),
-    );
-    expect(reserveLayeredSafely.mock.calls[0]?.[0]).toBe('ip:192.0.2.1');
+    const send = (xff: string) =>
+      POST(
+        new Request('http://localhost/api/kiosk/authorize', {
+          method: 'POST',
+          headers: { 'x-forwarded-for': xff },
+          body: JSON.stringify({ pin: '0000' }),
+        }),
+      );
+    await send('1.1.1.1, 192.0.2.1');
+    await send('2.2.2.2, 3.3.3.3, 192.0.2.1');
+    await send('9.9.9.9');
+    const [a, b, c] = reserveLayeredSafely.mock.calls.map((call) => call[0] as string);
+    // 末尾が同じなら同じ鍵（先頭に何を詰められても変わらない）。
+    expect(a).toBe(b);
+    // 末尾が違えば違う鍵。
+    expect(c).not.toBe(a);
+    // 🔴 生の IP を鍵にしない（レビュー 2 周目 M-4。鍵は 2 時間永続化される）。
+    expect(a).not.toContain('192.0.2.1');
+    expect(a).toMatch(/^ip:[0-9a-f]{64}$/);
   });
 });
 
@@ -271,6 +282,16 @@ describe('検出信号の配線 (#1021 AC4)', () => {
   });
 
   /** 🔴 下界: 通常経路では何も記録しない（常に記録して満たしていない）。 */
+  it('🔴 kiosk の方針を渡している（admin のものを渡していない）', async () => {
+    await post();
+    const layers = reserveLayeredSafely.mock.calls[0]?.[2] as
+      | { global?: unknown; onStoreFailure?: unknown }
+      | undefined;
+    expect(layers?.global, 'kiosk の global cap が外れている').toBeDefined();
+    expect(layers?.onStoreFailure, 'kiosk が fail-open になっている').toBe('closed');
+    expect(reserveLayeredSafely.mock.calls[0]?.[1]).toBe('kiosk-authorize');
+  });
+
   it('🔴 通常経路では記録しない（下界）', async () => {
     await post();
     expect(reportAttemptBudgetExceeded).not.toHaveBeenCalled();

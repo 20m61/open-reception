@@ -90,6 +90,20 @@ export type AttemptDecision =
 export type LayeredPolicy = {
   readonly perOrigin: AttemptPolicy;
   readonly global: AttemptPolicy | undefined;
+  /**
+   * 帳簿が読めないときに**通すか断るか**（#1021 AC4 / レビュー 2 周目 B-1）。
+   *
+   * 🔴 **経路ごとに釣り合いが違うので、1 つに決めない。**
+   *
+   * - `'closed'`（kiosk）… 落とせば制限が消える状態を作らない。kiosk が閉じても
+   *   **稼働中の端末は 30 日 cookie で動き続け**、復旧経路は admin 側に在る
+   * - `'open'`（admin）… 失うのは「発信元ごと 5 回/15 分」だけで、**分散総当たりは
+   *   そもそもこの層では止まらない**（実質的な守りはパスワードのエントロピーと AC1）。
+   *   対して断ると **DynamoDB の一時障害だけで運用者が入れなくなり**、
+   *   kiosk の復旧経路（admin → エンロール発行）ごと閉じて**受付が復旧不能**になる。
+   *   守れるものと失うものが**釣り合っていない**
+   */
+  readonly onStoreFailure: 'open' | 'closed';
 };
 
 /**
@@ -117,6 +131,7 @@ export const KIOSK_AUTHORIZE_GLOBAL_POLICY: AttemptPolicy = { budget: 60, window
 export const KIOSK_AUTHORIZE_LAYERS: LayeredPolicy = {
   perOrigin: KIOSK_AUTHORIZE_POLICY,
   global: KIOSK_AUTHORIZE_GLOBAL_POLICY,
+  onStoreFailure: 'closed',
 };
 
 /**
@@ -135,6 +150,8 @@ export const ADMIN_LOGIN_POLICY: AttemptPolicy = { budget: 5, windowMs: 900_000 
 export const ADMIN_LOGIN_LAYERS: LayeredPolicy = {
   perOrigin: ADMIN_LOGIN_POLICY,
   global: undefined,
+  // 🔴 帳簿が落ちても運用者を閉め出さない（上の `onStoreFailure` の doc を参照）。
+  onStoreFailure: 'open',
 };
 
 /**

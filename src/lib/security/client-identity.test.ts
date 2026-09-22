@@ -35,27 +35,32 @@ describe('発信元の識別 (#1021 AC4)', () => {
    * 🔴 **本体。末尾を採る。** 先頭は client が詐称できるので、先頭を採ると
    * **鍵を回すだけで予算が素通り**する（それは予算ではない）。
    */
-  it('🔴 XFF の末尾を採る（先頭は詐称可能）', () => {
-    expect(clientIdentity(req('203.0.113.9, 198.51.100.7, 192.0.2.1'))).toBe('ip:192.0.2.1');
+  it('🔴 XFF の末尾を採る（先頭は詐称可能）', async () => {
+    // 末尾が同じなら鍵が同じ、違えば違う。値そのものは保存しない（下の PII のテスト）。
+    const tail = await clientIdentity(req('192.0.2.1'));
+    expect(await clientIdentity(req('203.0.113.9, 198.51.100.7, 192.0.2.1'))).toBe(tail);
+    expect(await clientIdentity(req('203.0.113.9'))).not.toBe(tail);
   });
 
-  it('1 つだけならそれを採る', () => {
-    expect(clientIdentity(req('192.0.2.1'))).toBe('ip:192.0.2.1');
+  it('1 つだけならそれを採る', async () => {
+    expect(await clientIdentity(req('192.0.2.1'))).toBe(await clientIdentity(req('192.0.2.1')));
   });
 
   /**
    * 🔴 **詐称された先頭に引きずられない（下界）。** 攻撃者が先頭へ別の IP を
    * 詰めても、鍵は末尾で決まる。
    */
-  it('🔴 攻撃者が先頭に何を詰めても鍵は変わらない', () => {
-    const a = clientIdentity(req('1.1.1.1, 192.0.2.1'));
-    const b = clientIdentity(req('2.2.2.2, 3.3.3.3, 192.0.2.1'));
+  it('🔴 攻撃者が先頭に何を詰めても鍵は変わらない', async () => {
+    const a = await clientIdentity(req('1.1.1.1, 192.0.2.1'));
+    const b = await clientIdentity(req('2.2.2.2, 3.3.3.3, 192.0.2.1'));
     expect(a).toBe(b);
   });
 
   /** 空白・空要素を落とす（`a, , b` のような綴り）。 */
-  it('空要素を落とす', () => {
-    expect(clientIdentity(req('1.1.1.1, , 192.0.2.1 '))).toBe('ip:192.0.2.1');
+  it('空要素を落とす', async () => {
+    expect(await clientIdentity(req('1.1.1.1, , 192.0.2.1 '))).toBe(
+      await clientIdentity(req('192.0.2.1')),
+    );
   });
 
   /**
@@ -65,25 +70,55 @@ describe('発信元の識別 (#1021 AC4)', () => {
    * 許されている構成）である。`undefined` を鍵にすると**全員が同じ鍵**になるので、
    * 明示的に global の鍵へ倒して**予算が消えないこと**を保証する。
    */
-  it.each([undefined, '', '   ', ','])('🔴 識別できない（%j）なら global へ退避する', (xff) => {
-    expect(clientIdentity(req(xff))).toBe(GLOBAL_IDENTITY);
-  });
+  it.each([undefined, '', '   ', ','])(
+    '🔴 識別できない（%j）なら global へ退避する',
+    async (xff) => {
+      expect(await clientIdentity(req(xff))).toBe(GLOBAL_IDENTITY);
+    },
+  );
 
   /**
    * 🔴 **鍵に接頭辞を付ける。** `ip:` を付けないと、`GLOBAL_IDENTITY` と同じ文字列を
    * XFF に詰めるだけで**global の予算を狙って消費させられる**（鍵の衝突）。
    */
-  it('🔴 global の鍵を XFF から名乗れない', () => {
-    expect(clientIdentity(req(GLOBAL_IDENTITY))).toBe(`ip:${GLOBAL_IDENTITY}`);
-    expect(clientIdentity(req(GLOBAL_IDENTITY))).not.toBe(GLOBAL_IDENTITY);
+  it('🔴 global の鍵を XFF から名乗れない', async () => {
+    expect(await clientIdentity(req(GLOBAL_IDENTITY))).not.toBe(GLOBAL_IDENTITY);
+    expect(await clientIdentity(req(GLOBAL_IDENTITY))).toMatch(/^ip:[0-9a-f]{64}$/);
   });
 
   /** 🔴 鍵に PII を増やさない（IP 以外のヘッダを混ぜない）。 */
-  it('🔴 鍵は IP だけで、user-agent 等を混ぜない', () => {
+  it('🔴 鍵は IP だけで、user-agent 等を混ぜない', async () => {
     const withUa = new Request('https://example.test/x', {
       method: 'POST',
       headers: { 'x-forwarded-for': '192.0.2.1', 'user-agent': 'Mozilla/5.0 (iPad)' },
     });
-    expect(clientIdentity(withUa)).toBe('ip:192.0.2.1');
+    expect(await clientIdentity(withUa)).toBe(await clientIdentity(req('192.0.2.1')));
+  });
+
+  /**
+   * 🔴 **生の IP を鍵に出さない（レビュー 2 周目 M-4）。**
+   *
+   * 鍵は DynamoDB の SK として**2 時間永続化される**ので、生の IP を入れると
+   * 「未認証リクエストの IP を保存する」＝ PII 方針の変更になる。
+   * 予算の鍵は「同じ発信元か」が判定できれば足りるので、値そのものは要らない。
+   */
+  it('🔴 鍵に生の IP を含めない', async () => {
+    const key = await clientIdentity(req('192.0.2.1'));
+    expect(key).not.toContain('192.0.2.1');
+    expect(key).toMatch(/^ip:[0-9a-f]{64}$/);
+  });
+
+  /**
+   * 🔴 **salt を混ぜる。** IPv4 は空間が小さいので、salt 無しの `sha256(ip)` は
+   * 総当たりで逆引きできる（＝ PII が消えていない）。
+   */
+  it('🔴 salt を混ぜている（素の sha256(ip) ではない）', async () => {
+    const plain = new Uint8Array(
+      await crypto.subtle.digest('SHA-256', new TextEncoder().encode('192.0.2.1')),
+    );
+    const plainHex = Array.from(plain)
+      .map((b) => b.toString(16).padStart(2, '0'))
+      .join('');
+    expect(await clientIdentity(req('192.0.2.1'))).not.toBe(`ip:${plainHex}`);
   });
 });
