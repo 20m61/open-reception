@@ -74,12 +74,31 @@ describe('文言 (#1021 AC4)', () => {
     expect(authorizeFailureMessage('too_many_attempts', 90)).toContain('90');
   });
 
-  /** 🔴 分からないときも文言が壊れない（`undefined` で「NaN 秒」と出さない）。 */
-  it('🔴 待ち時間が分からなくても文言が壊れない', () => {
-    const m = authorizeFailureMessage('too_many_attempts', undefined);
+  /**
+   * 🔴 分からないときも文言が壊れない（「NaN 秒」「undefined 秒」と出さない）。
+   *
+   * 🔴 **`undefined` だけでは足りない（変異 M34 が生存した）。** この関数は
+   * **公開されていて引数が `number | undefined`** なので、型は `NaN` を除外しない。
+   * 今日の唯一の呼び出し元（`authorizeStateFromResponse`）が有限性を保証していても、
+   * **直接呼ぶ面は実在する**ので、境界はこちら側でも持つ。
+   * 0 と負も同じ（「約 0 秒後」「約 -5 秒後」と言わない）。
+   */
+  it.each<[string, number | undefined]>([
+    ['undefined', undefined],
+    ['NaN', Number.NaN],
+    ['Infinity', Number.POSITIVE_INFINITY],
+    ['0', 0],
+    ['負', -5],
+  ])('🔴 待ち時間が %s でも文言が壊れない', (_label, value) => {
+    const m = authorizeFailureMessage('too_many_attempts', value);
     expect(m).not.toContain('NaN');
     expect(m).not.toContain('undefined');
+    expect(m).not.toContain('Infinity');
+    expect(m).not.toContain('約 0 秒');
+    expect(m).not.toContain('-5');
     expect(m.trim().length).toBeGreaterThan(0);
+    // 下界: 次の一手は残る。
+    expect(m).toContain('担当者');
   });
 
   /**

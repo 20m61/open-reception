@@ -52,7 +52,10 @@ function toWindow(record: AttemptRecord | undefined): AttemptWindow | undefined 
   if (record === undefined) return undefined;
   // 🔴 壊れたレコードで 500 にしない（未認証経路なので、1 件で全端末が落ちる）。
   //    読めないものは「窓が無い」＝許可側へ倒す —— 予算は次の失敗から数え直される。
-  if (typeof record.startedAt !== 'number' || typeof record.failures !== 'number') return undefined;
+  //
+  // 🔴 **`typeof` の検査は撤回した（変異検証で生存＝等価）。** `Number.isFinite` は
+  //    引数を**強制変換しない**ので、文字列・`undefined`・`null` はすべて false になる
+  //    （グローバルの `isFinite` と違う点）。2 段で書いていたのは片方が無駄だった。
   if (!Number.isFinite(record.startedAt) || !Number.isFinite(record.failures)) return undefined;
   return { startedAt: record.startedAt, failures: record.failures };
 }
