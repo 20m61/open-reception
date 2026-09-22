@@ -129,7 +129,7 @@ export const KIOSK_AUTHORIZE_LAYERS: LayeredPolicy = {
  *
  * 釣り合っていないので、AC4 は **PIN が事実上 4 桁で実際に総当たり可能な kiosk** に限定する。
  * admin 側の実質的な守りはパスワードのエントロピーと AC1 の fail-closed である。
- * 試行回数制限が要るなら別増分で設計し直す（#1165）。
+ * 試行回数制限が要るなら別増分で設計し直す（#1167）。
  */
 
 /**

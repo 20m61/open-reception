@@ -26,7 +26,7 @@ import { reportAttemptBudgetExceeded, reportAttemptStoreUnavailable } from '@/li
  * 残る代償: global cap を使い切られている間は**初回の PIN 認可**が閉じる。ただし
  * **稼働中の端末は 30 日 cookie で動き続け**、復旧経路（`/api/admin/login` →
  * エンロール URL 発行）は**この増分が一切触っていない**ので開いたままである
- * （admin 側の試行回数制限は射程外。`attempt-budget.ts` の該当 doc / #1165）。
+ * （admin 側の試行回数制限は射程外。`attempt-budget.ts` の該当 doc / #1167）。
  *
  * 🔴 **一次の予算を「1 IP あたり N 回」と読まない。** 鍵の salt がプロセス起動ごとの
  * 乱数なので（`client-identity.ts`）、一次は実質**プロセスあたり**である。
