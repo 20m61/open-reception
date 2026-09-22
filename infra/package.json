@@ -4,7 +4,8 @@
   "private": true,
   "description": "open-reception の AWS CDK インフラ定義（Next.js ホスティング WebStack ほか）",
   "bin": {
-    "open-reception": "bin/open-reception.ts"
+    "open-reception": "bin/open-reception.ts",
+    "dev-deploy-broker": "bin/dev-deploy-broker.ts"
   },
   "scripts": {
     "synth": "cdk synth",
@@ -13,7 +14,8 @@
     "deploy:web": "cdk deploy OpenReception-Web-dev",
     "destroy": "cdk destroy",
     "typecheck": "tsc --noEmit",
-    "test": "vitest run"
+    "test": "vitest run",
+    "synth:dev-deploy-broker": "cdk synth --app \"npx ts-node --prefer-ts-exts bin/dev-deploy-broker.ts\" OpenReception-DevDeployBroker"
   },
   "devDependencies": {
     "@aws-sdk/client-auto-scaling": "3.1093.0",
