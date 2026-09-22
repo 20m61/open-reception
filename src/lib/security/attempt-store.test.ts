@@ -316,15 +316,25 @@ describe('層と倒れ方の穴（変異検証由来） (#1021 AC4)', () => {
   });
 
   /**
-   * 🔴 **CAS を諦めたら断る（変異 N16 が 2 周連続で生存した穴）。**
+   * 🔴 **CAS を諦めたら通さない（変異 N16 が 2 周連続で生存した穴）。**
    *
    * 諦めた要求を通すと、**CAS を失敗させ続けるだけで予算が実質的に無制限**になる。
-   * `updateIf` を常に失敗させて、リトライを使い切った先が「断る」であることを見る。
+   *
+   * 🔴 **ただし「予算超過」として断らない（独立レビュー 4 周目 MINOR-1）。** 予算は
+   * 1 回も使われていないのに、以前はそう返していたので、ログが
+   * 「budget exhausted」と嘘をつき、来訪者には「あなたの試行が続いたため」と出て、
+   * 待ち時間も窓の長さ（10 分）になっていた。これは 3 周目 MAJOR-1（degraded と closed が
+   * 同じ信号になる）と同じ族である。判定値を増やさず、既に在る `unavailable` へ倒す。
    */
-  it('🔴 CAS を使い切ったら断る（通さない）', async () => {
+  it('🔴 CAS を使い切ったら「帳簿が完了できなかった」として落とす', async () => {
     const POLICY2: AttemptPolicy = { budget: 5, windowMs: 60_000 };
-    // 1 度目でレコードを作る（以降は updateIf 経路へ入る）。
+    // 🔴 **先にレコードを作る（以降は updateIf 経路へ入る）。** 作っていない鍵は
+    //    `putIfAbsent` で通ってしまい、**CAS の経路を 1 度も踏まないまま緑になる**
+    //    （実際に一度そう書いて、このテストが何も測っていなかった）。
+    //    下の `reserveLayeredSafely` が使う鍵（`<scope>#<identity>` と `<scope>#global`）も
+    //    同じ理由で先に作る。
     await reserveAttempt('cas', POLICY2, 1000);
+    await reserveLayered('ip:1.1.1.1', 'cas-scope', LAYERS, 1000);
     const collection = getBackend().collection<{ id: string }>('auth-attempts', {
       ttlSeconds: 7200,
     });
@@ -337,8 +347,15 @@ describe('層と倒れ方の穴（変異検証由来） (#1021 AC4)', () => {
         : never,
     );
     try {
-      const r = await reserveAttempt('cas', POLICY2, 1000);
-      expect(r.allowed, 'CAS を使い切ったのに通している（予算が実質無制限になる）').toBe(false);
+      // 🔴 通さない（上界）。
+      await expect(
+        reserveAttempt('cas', POLICY2, 1000),
+        'CAS を使い切ったのに通している（予算が実質無制限になる）',
+      ).rejects.toThrow();
+      // 🔴 呼び出し側から見ると `unavailable`（＝ 503）であって、予算超過ではない。
+      await expect(
+        reserveLayeredSafely('ip:1.1.1.1', 'cas-scope', LAYERS, 1000),
+      ).resolves.toBe('unavailable');
     } finally {
       spy.mockRestore();
       backendSpy.mockRestore();

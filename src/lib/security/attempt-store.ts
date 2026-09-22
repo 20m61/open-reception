@@ -142,9 +142,23 @@ export async function reserveAttempt(
     });
     if (won) return decision;
   }
-  // 🔴 **諦めるときは安全側へ倒す。** 予約できなかった要求を通すと予算が実質的に増えるので、
-  //    断る（下界は窓明けが保証する —— 恒久的には閉じない）。
-  return { allowed: false, retryAfterMs: policy.windowMs };
+  // 🔴 **CAS を使い切ったことを「予算超過」として返さない（独立レビュー 4 周目 MINOR-1）。**
+  //
+  //    以前はここで `{ allowed: false, retryAfterMs: policy.windowMs }` を返していた。
+  //    通す訳にはいかない（予算が実質的に増える）ので断ること自体は正しいが、**予算は
+  //    1 回も使われていない**のに:
+  //
+  //    - ログが `attempt budget exhausted ... until the window expires` と**嘘をつく**
+  //    - 来訪者に「入力の試行が続いたため制限しています」＝**あなたの試行のせい**と出る
+  //    - `retryAfterMs` が窓の長さ（10 分）になり、実際はすぐ再試行できるのに待たせる
+  //
+  //    3 周目 MAJOR-1（degraded と closed が同じ信号になりログが嘘をつく）と**同じ族**である。
+  //
+  //    🔴 **第 3 の判定値は足さない。** これは「帳簿が要求を完了できなかった」であって、
+  //    既に在る `unavailable`（503 ＋ `reportAttemptStoreUnavailable`）**そのもの**である。
+  //    throw して `reserveLayeredSafely` に拾わせれば、機構は増えるどころか**減る**
+  //    （分岐が 1 つ消える）。
+  throw new Error('attempt store: compare-and-set did not converge');
 }
 
 /** 成功したので窓ごと捨てる（正しく入った直後に予算切れで断られる形を作らない）。 */
