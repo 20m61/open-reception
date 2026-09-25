@@ -49,9 +49,18 @@ const security = () => getBackend().singleton<SecuritySettings>('security', { de
 /**
  * 読めない PIN 記録を組込み既定へ倒したことを、**このプロセスで既に監査へ出したか** (#1160)。
  *
- * 🔴 **読み出しごとに書かない。** `verifyPin` は未認証の `POST /api/kiosk/authorize` から
- *    毎回呼ばれるので、読み出しごとに監査を書くと**外部から監査の書き込み量を制御できる**
+ * 🔴 **読み出しごとに書かない。** `current()` は未認証の経路（`POST /api/kiosk/authorize`・
+ *    `GET /api/kiosk/session-status` 等。authorize では試行予算の判定より前）から毎回呼ばれる
+ *    ので、読み出しごとに監査を書くと**外部から監査の書き込み量を制御できる**
  *    （#1123 が staff / enroll のログで塞いだのと同じ脅威）。プロセスにつき 1 本に抑える。
+ *
+ * 🔴 **上界は「要求数」ではなく「実行環境の数」である（独立レビュー 1 周目 MAJOR）。**
+ *    Lambda では実行環境ごとにモジュール状態が別なので、同時に叩かれれば**同時実行数ぶん**、
+ *    時間をかければ**環境の入れ替わりぶん**だけ増える。要求数に比例しないことまでしか
+ *    言えない。前提として**記録が既に壊れている**必要がある（現行コードは作らない）。
+ *    環境を跨いで 1 本にするには永続側の冪等マーカーが要り、それは永続レコードと機構を
+ *    足すことになるので、この増分ではやらない（`attempt-budget` が admin 側で同じ理由から
+ *    機構を撤回した前例がある）。
  *
  * 🔴 **書き込みの前に立てる（失敗しても再試行しない）。** 監査ストアが落ちている間、
  *    未認証の要求 1 回ごとに失敗する書き込みを再試行させない。落ちたことはサーバログへ出す。
@@ -67,8 +76,9 @@ async function reportUnreadablePin(): Promise<void> {
   try {
     // 🔴 **値は載せない**（`rules/pii-secret-minimization.md`）。保存されていた文字列も、
     //    その形（どの検査で落ちたか）も出さない —— 事実と時刻だけで足りる（#1160 AC1）。
-    //    metadata のキーに `pin` / `credential` を含めないこと：`sanitizeAuditMetadata` を
-    //    通る経路では値が `[redacted]` に潰れるので、読み手の分かる形を保てない。
+    //    🔴 この経路は `appendAuditLog` を直接呼ぶので **`sanitizeAuditMetadata` を通らない**。
+    //    metadata に載せてよいのは、ここに書いた**静的な列挙値だけ**である（保存値由来の
+    //    文字列を足さない。後段で潰してくれる機構は無い）。
     await appendAuditLog({
       action: 'security.pin_credential_defaulted',
       actor: 'system',
