@@ -1,7 +1,7 @@
 import { isPinConfigured } from '@/domain/security/pin';
 import { NextResponse } from 'next/server';
 import { asTenantId } from '@/domain/tenant/types';
-import { getSecuritySettings, updateSecuritySettings } from '@/lib/security/security-store';
+import { readSecuritySettings, updateSecuritySettings } from '@/lib/security/security-store';
 import { readJson } from '@/lib/data-stores/result-http';
 import {
   assertCanRead,
@@ -34,12 +34,15 @@ export async function GET(): Promise<NextResponse> {
   } catch (err) {
     return toGuardResponse(err);
   }
-  const s = await getSecuritySettings();
+  const { settings: s, storedPinUnreadable } = await readSecuritySettings();
   return NextResponse.json({
     pinRequired: s.pinRequired,
     ipAllowlist: s.ipAllowlist,
     pinConfigured: isPinConfigured(s),
     emergencyStop: s.emergencyStop,
+    // 🔴 保存されていた PIN を読めず、組込み既定で代用しているか (#1160 AC2)。
+    //    真偽だけを返す（値・どう壊れていたかは返さない）。
+    storedPinUnreadable,
   });
 }
 
@@ -77,5 +80,9 @@ export async function PUT(request: Request): Promise<NextResponse> {
     ipAllowlist: updated.ipAllowlist,
     pinConfigured: isPinConfigured(updated),
     emergencyStop: updated.emergencyStop,
+    // 更新は必ず読める記録（ハッシュ）を書くので、書いた直後の記録は読める。
+    // 🔴 読めなかった記録を上書きした事実は `security.pin_credential_defaulted` の監査が
+    //    上書きの前に残している（#1160）。
+    storedPinUnreadable: false,
   });
 }

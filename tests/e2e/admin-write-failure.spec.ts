@@ -435,6 +435,41 @@ test.describe('管理: 書き込み失敗が運用者に見える (#870 増分 0
    * 実測で再現）。順序に依存しない不変条件（保存は `emergencyStop` の権威を持たない）を
    * 入れたので、**両方の順序**を縛る。
    */
+  /**
+   * 🔴 **読めない PIN 記録を運用者へ見せる (#1160 AC2)。**
+   *
+   * 倒れた先は公開されている既定値なので、画面に出なければ誰も気づけない。
+   * store / route の unit は「API が true を返す」までしか言えず、**画面が読まない**
+   * （`asSecurityView` で落とす・描画しない）変異は素通りする。応答は注入で返すので
+   * 共有 seed を変えない。**下界**: 実サーバの GET（読める記録）では出ない。
+   * **消え方**: 保存の応答（更新は読める記録を書く）が false なら消える。
+   */
+  test('セキュリティ設定: 保存された PIN を読めなかったことを画面に出す (#1160)', async ({ page }) => {
+    await page.goto('/admin/security');
+    await expect(page.getByTestId('security-save')).toBeVisible();
+    // 下界: 読める記録では出ない。
+    await expect(page.getByTestId('security-pin-unreadable')).toHaveCount(0);
+
+    const view = (storedPinUnreadable: boolean): string =>
+      JSON.stringify({ pinRequired: true, ipAllowlist: [], pinConfigured: false, emergencyStop: false, storedPinUnreadable });
+    await page.route('**/api/admin/security**', (route) =>
+      route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: view(route.request().method() === 'GET'),
+      }),
+    );
+    await page.reload();
+    const warning = page.getByTestId('security-pin-unreadable');
+    await expect(warning).toBeVisible();
+    await expect(warning).toHaveAttribute('role', 'alert');
+    await expect(warning).toContainText('既定値');
+
+    await page.getByTestId('security-save').click();
+    await expect(page.getByTestId('security-saved')).toBeVisible();
+    await expect(page.getByTestId('security-pin-unreadable')).toHaveCount(0);
+  });
+
   test('緊急停止が先に飛行中でも、保存の応答が巻き戻さない (#973)', async ({ page }) => {
     await page.goto('/admin/security');
     await expect(page.getByTestId('emergency-stop')).toBeVisible();

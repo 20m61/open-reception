@@ -12,6 +12,7 @@ import {
 } from '@/domain/security/pin';
 import type { SecuritySettings } from '@/domain/security/types';
 import { getBackend } from '@/lib/data';
+import { appendAuditLog } from '@/lib/data-stores/reception-log-store';
 
 /** `KIOSK_PIN` を読む。**空文字は未設定**として扱う（`??` では弾けない）。 */
 function envPin(): string | undefined {
@@ -45,7 +46,58 @@ function defaults(): SecuritySettings {
 
 const security = () => getBackend().singleton<SecuritySettings>('security', { default: defaults });
 
+/**
+ * 読めない PIN 記録を組込み既定へ倒したことを、**このプロセスで既に監査へ出したか** (#1160)。
+ *
+ * 🔴 **読み出しごとに書かない。** `verifyPin` は未認証の `POST /api/kiosk/authorize` から
+ *    毎回呼ばれるので、読み出しごとに監査を書くと**外部から監査の書き込み量を制御できる**
+ *    （#1123 が staff / enroll のログで塞いだのと同じ脅威）。プロセスにつき 1 本に抑える。
+ *
+ * 🔴 **書き込みの前に立てる（失敗しても再試行しない）。** 監査ストアが落ちている間、
+ *    未認証の要求 1 回ごとに失敗する書き込みを再試行させない。落ちたことはサーバログへ出す。
+ *
+ * 射程の限界: 同じプロセスの中で「一度直って、また壊れた」2 度目は監査に出ない
+ *    （管理画面の表示 `storedPinUnreadable` は読み出しごとに判定するので、そちらには出る）。
+ */
+let unreadablePinReported = false;
+
+async function reportUnreadablePin(): Promise<void> {
+  if (unreadablePinReported) return;
+  unreadablePinReported = true;
+  try {
+    // 🔴 **値は載せない**（`rules/pii-secret-minimization.md`）。保存されていた文字列も、
+    //    その形（どの検査で落ちたか）も出さない —— 事実と時刻だけで足りる（#1160 AC1）。
+    //    metadata のキーに `pin` / `credential` を含めないこと：`sanitizeAuditMetadata` を
+    //    通る経路では値が `[redacted]` に潰れるので、読み手の分かる形を保てない。
+    await appendAuditLog({
+      action: 'security.pin_credential_defaulted',
+      actor: 'system',
+      targetType: 'security',
+      metadata: { reason: 'stored_record_unreadable', fallback: 'builtin_default' },
+    });
+  } catch (err) {
+    // 監査の失敗で authorize を落とさない（#1160 AC4: 観測を足しただけで挙動を変えない）。
+    console.error('[security] failed to record audit', {
+      action: 'security.pin_credential_defaulted',
+      error: err instanceof Error ? err.name : 'unknown',
+    });
+  }
+}
+
+type SecurityRead = {
+  settings: SecuritySettings;
+  /**
+   * 保存レコードの PIN を資格情報として読めず、**組込み既定で代用した**か (#1160)。
+   * 管理画面が「保存されている設定を読めませんでした」を出すための事実。値は含まない。
+   */
+  storedPinUnreadable: boolean;
+};
+
 async function current(): Promise<SecuritySettings> {
+  return (await read()).settings;
+}
+
+async function read(): Promise<SecurityRead> {
   const s = (await security().get()) ?? defaults();
   // 🔴 **使えない資格情報は「未設定」＝組込み既定として読む。**
   //
@@ -71,11 +123,21 @@ async function current(): Promise<SecuritySettings> {
   //    同じ理屈（「レコードが 1 つ在るだけで 500 になり、復旧導線ごと失われる」）を
   //    書いておきながら、**同じ式の隣**が素通りだった。
   const ipAllowlist = Array.isArray(s.ipAllowlist) ? [...s.ipAllowlist] : [];
-  return { ...s, pin, pinSetByOperator, ipAllowlist };
+  // 🔴 **倒した事実を観測できるようにする (#1160 AC1)。** 倒す先が**公開されている既定値**
+  //    なので、誰も見ていなければ `0000` を知る未認証の攻撃者が通る。倒す向き自体
+  //    （既定値 or 誰も通さない）は PIN 制御の境界変更（#1160 AC3・人間承認）なので変えない。
+  //    `defaults()` は必ず読める値を返すので、ここへ来るのは**保存レコード**だけである。
+  if (!usable) await reportUnreadablePin();
+  return { settings: { ...s, pin, pinSetByOperator, ipAllowlist }, storedPinUnreadable: !usable };
 }
 
 export async function getSecuritySettings(): Promise<SecuritySettings> {
   return current();
+}
+
+/** 設定と、保存レコードの PIN を読めずに既定で代用したかを 1 回の読み出しで返す (#1160 AC2)。 */
+export async function readSecuritySettings(): Promise<SecurityRead> {
+  return read();
 }
 
 export async function updateSecuritySettings(patch: unknown): Promise<SecuritySettings> {
@@ -177,5 +239,6 @@ export async function verifyPin(pin: string): Promise<boolean> {
 
 /** テスト用: 既定へ戻す。 */
 export async function __resetSecurity(): Promise<void> {
+  unreadablePinReported = false;
   await security().reset();
 }
