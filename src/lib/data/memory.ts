@@ -138,6 +138,19 @@ class MemorySingleton<T> implements Singleton<T> {
     this.value = clone(value);
   }
 
+  async putIf(value: T, expected: Partial<T>): Promise<boolean> {
+    // 比較と書き込みの間に await を挟まない（単一スレッドなのでここが原子区間になる）。
+    const cur = this.value as Record<string, unknown> | undefined;
+    // dynamo と揃える: 条件の無い putIf は無条件 put と同じなので、呼び出しの誤りとして落とす。
+    if (Object.keys(expected).length === 0) throw new Error('Singleton.putIf: expected must not be empty');
+    for (const [key, want] of Object.entries(expected)) {
+      const have = cur === undefined ? undefined : cur[key];
+      if (have !== want) return false;
+    }
+    this.value = clone(value);
+    return true;
+  }
+
   async reset(): Promise<void> {
     this.value = this.makeDefault ? clone(this.makeDefault()) : undefined;
   }

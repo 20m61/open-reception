@@ -78,8 +78,89 @@ export async function getSecuritySettings(): Promise<SecuritySettings> {
   return current();
 }
 
+/**
+ * 同時更新で負けた (#1158)。**何も書いていない。** 呼び出し側は 409 にし、黙って勝たない。
+ */
+export class SecuritySettingsConflictError extends Error {
+  constructor() {
+    super('security settings were changed concurrently');
+    this.name = 'SecuritySettingsConflictError';
+  }
+}
+
+/** patch の `rev` が版の形をしていない (#1158)。**何も書いていない。** 呼び出し側は 400 にする。 */
+export class SecuritySettingsInvalidError extends Error {
+  constructor() {
+    super('invalid security settings revision');
+    this.name = 'SecuritySettingsInvalidError';
+  }
+}
+
+/**
+ * 版なしの patch を最新の記録へ当て直す上限 (#1158)。
+ *
+ * 当て直しは「押した緊急停止が他の保存に踏み潰されない」ための機構で、上限を超えたら
+ * 黙って諦めず競合を返す（運用者はもう一度押せる）。管理者が同時に数人触る程度の競合を
+ * 想定した値で、ここを大きくしても守れるものは増えない。
+ */
+const MAX_UPDATE_ATTEMPTS = 3;
+
+/** 記録の版。**版を持たない旧レコード（と未作成）は 0**。形の壊れた版も 0 として読む。 */
+function revisionOf(stored: unknown): number {
+  return typeof stored === 'number' && Number.isInteger(stored) && stored >= 0 ? stored : 0;
+}
+
+/** patch が版を持っていればそれを返す。持っていなければ undefined。形が違えば拒否する。 */
+function expectedRevisionOf(patch: unknown): number | undefined {
+  if (typeof patch !== 'object' || patch === null || !('rev' in patch)) return undefined;
+  const rev = (patch as { rev?: unknown }).rev;
+  // 🔴 **不正な版を「版なし」として扱わない。** 無視すると、古い画面からの保存が
+  //    最新の記録へ当て直されて**黙って勝つ**（この issue が消そうとしている形そのもの）。
+  if (typeof rev !== 'number' || !Number.isInteger(rev) || rev < 0) {
+    throw new SecuritySettingsInvalidError();
+  }
+  return rev;
+}
+
+/**
+ * セキュリティ設定を更新する。
+ *
+ * 🔴 **read-modify-write を条件付き書き込みにする (#1158)。** 以前は読んで・当てて・
+ *    **丸ごと put** していたので、2 つの更新が重なると後勝ちで片方の変更が消えた ——
+ *    「別の運用者が PIN を保存中に、こちらが緊急停止を押す」と、相手の書き込みが
+ *    **緊急停止を落とした状態**を書き戻し、画面は成功と言っていた。
+ *
+ * 守る不変条件（`security-store.concurrency.test.ts`）:
+ *
+ * > 成功を返した ⟹ その patch が書いたフィールドは、同時に成功した他の更新が同じ
+ * > フィールドを書かない限り残っている。成功しなかった ⟹ 例外で、何も書いていない。
+ *
+ * - **版（`rev`）付きの patch** は「その版から見た変更」。読んだ版と違えば書かずに競合
+ *   （管理画面の古い表示からの保存が、他人の変更を消さない。#1158 AC2）
+ * - **版なしの patch**（緊急停止のトグル）は、書き込みで負けたら最新の記録へ当て直す
+ *   （上限つき。#1158 AC3「緊急停止の投入は競合しても落ちない」）
+ */
 export async function updateSecuritySettings(patch: unknown): Promise<SecuritySettings> {
+  const expectedRev = expectedRevisionOf(patch);
+  for (let attempt = 0; attempt < MAX_UPDATE_ATTEMPTS; attempt += 1) {
+    const written = await attemptUpdate(patch, expectedRev);
+    if (written !== null) return written;
+    // 版付きは当て直さない: 読んだ版はもう古いので、当て直すと他人の変更の上に勝つ。
+    if (expectedRev !== undefined) break;
+  }
+  throw new SecuritySettingsConflictError();
+}
+
+/** 1 回だけ読んで当てて条件付きで書く。書き込みで負けたら null（何も書いていない）。 */
+async function attemptUpdate(
+  patch: unknown,
+  expectedRev: number | undefined,
+): Promise<SecuritySettings | null> {
   const settings = await current();
+  /** 読んだ記録の版の**生の値**。条件式はこれと比べる（形が壊れていても一致で判定できる）。 */
+  const storedRev = settings.rev;
+  const rev = revisionOf(storedRev);
+  if (expectedRev !== undefined && expectedRev !== rev) throw new SecuritySettingsConflictError();
   /** この更新で**運用者が PIN 欄に入力したか**。入力は定義上つねに平文である。 */
   let pinFromOperator = false;
   if (typeof patch === 'object' && patch !== null) {
@@ -157,7 +238,10 @@ export async function updateSecuritySettings(patch: unknown): Promise<SecuritySe
   if (pinFromOperator || !isHashedPin(settings.pin)) {
     settings.pin = await hashPin(settings.pin);
   }
-  await security().put(settings);
+  settings.rev = rev + 1;
+  // 版が無い（旧レコード・未作成）なら「版が無いこと」を条件にする（`putIf` の契約）。
+  const written = await security().putIf(settings, { rev: storedRev });
+  if (!written) return null;
   return { ...settings, ipAllowlist: [...settings.ipAllowlist] };
 }
 

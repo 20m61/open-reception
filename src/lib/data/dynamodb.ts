@@ -281,6 +281,43 @@ class DynamoSingleton<T> implements Singleton<T> {
     await this.doc.send(new PutCommand({ TableName: this.table, Item: record }));
   }
 
+  async putIf(value: T, expected: Partial<T>): Promise<boolean> {
+    const record: Item = { ...(value as Item), PK: 'config', SK: this.name };
+    const names: Record<string, string> = {};
+    const values: Record<string, unknown> = {};
+    const conds: string[] = [];
+    let c = 0;
+    for (const [k, v] of Object.entries(expected)) {
+      const nm = `#c${c}`;
+      names[nm] = k;
+      // `attribute_not_exists` は**記録が無いときも真**になる（未作成と旧レコードを同じに扱う）。
+      if (v === undefined) {
+        conds.push(`attribute_not_exists(${nm})`);
+      } else {
+        values[`:c${c}`] = v;
+        conds.push(`${nm} = :c${c}`);
+      }
+      c += 1;
+    }
+    // 🔴 条件が 1 つも無い putIf は無条件 put と同じになる。呼び出しの誤りなので黙って書かない。
+    if (conds.length === 0) throw new Error('Singleton.putIf: expected must not be empty');
+    try {
+      await this.doc.send(
+        new PutCommand({
+          TableName: this.table,
+          Item: record,
+          ConditionExpression: conds.join(' AND '),
+          ExpressionAttributeNames: names,
+          ...(Object.keys(values).length > 0 ? { ExpressionAttributeValues: values } : {}),
+        }),
+      );
+      return true;
+    } catch (err) {
+      if ((err as { name?: string }).name === 'ConditionalCheckFailedException') return false;
+      throw err;
+    }
+  }
+
   async reset(): Promise<void> {
     // no-op（DynamoDB）。
   }

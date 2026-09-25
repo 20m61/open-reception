@@ -142,3 +142,54 @@ describe('GET /api/admin/security の pinConfigured (#1021 AC3)', () => {
     expect(JSON.parse(text)).toMatchObject({ pinConfigured: true });
   });
 });
+
+/**
+ * 🔴 **競合を 409 に写像する配線 (#1158 AC2)。**
+ *
+ * 判定は store が縛っている。残る危険は配線で、例外を 500 にする・握って 200 にする・
+ * 競合でも監査に「更新した」と残す、のどれも store のテストからは見えない。
+ */
+describe('PUT /api/admin/security の競合 (#1158)', () => {
+  const put = (body: unknown) =>
+    PUT(
+      new Request('http://localhost/api/admin/security', {
+        method: 'PUT',
+        body: JSON.stringify(body),
+      }),
+    );
+
+  it('🔴 GET は版を返し、版付きの保存が通るたびに 1 つ進む（下界）', async () => {
+    const { rev } = (await (await GET()).json()) as { rev: number };
+    expect(rev).toBe(0);
+    const res = await put({ rev, pinRequired: true });
+    expect(res.status).toBe(200);
+    expect(((await res.json()) as { rev: number }).rev).toBe(1);
+    expect(((await (await GET()).json()) as { rev: number }).rev).toBe(1);
+  });
+
+  it('🔴 古い版からの保存は 409 で、何も書かず、監査にも残さない', async () => {
+    const { rev } = (await (await GET()).json()) as { rev: number };
+    await put({ emergencyStop: true }); // 別の操作が先に書いた
+    recordDangerAction.mockClear();
+    const res = await put({ rev, pinRequired: true, ipAllowlist: [] });
+    expect(res.status).toBe(409);
+    expect(await res.json()).toEqual({ error: 'conflict' });
+    expect(recordDangerAction).not.toHaveBeenCalled();
+    const now = (await (await GET()).json()) as { pinRequired: boolean; emergencyStop: boolean };
+    expect(now).toMatchObject({ pinRequired: false, emergencyStop: true });
+  });
+
+  it('🔴 版の形が違えば 400 で、何も書かない', async () => {
+    const res = await put({ rev: 'x', emergencyStop: true });
+    expect(res.status).toBe(400);
+    expect(recordDangerAction).not.toHaveBeenCalled();
+    expect(((await (await GET()).json()) as { emergencyStop: boolean }).emergencyStop).toBe(false);
+  });
+
+  it('版を付けない保存（緊急停止のトグル）は版に縛られない', async () => {
+    await put({ pinRequired: true });
+    const res = await put({ emergencyStop: true });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toMatchObject({ emergencyStop: true, rev: 2 });
+  });
+});

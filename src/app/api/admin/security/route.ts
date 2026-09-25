@@ -1,7 +1,12 @@
 import { isPinConfigured } from '@/domain/security/pin';
 import { NextResponse } from 'next/server';
 import { asTenantId } from '@/domain/tenant/types';
-import { getSecuritySettings, updateSecuritySettings } from '@/lib/security/security-store';
+import {
+  getSecuritySettings,
+  SecuritySettingsConflictError,
+  SecuritySettingsInvalidError,
+  updateSecuritySettings,
+} from '@/lib/security/security-store';
 import { readJson } from '@/lib/data-stores/result-http';
 import {
   assertCanRead,
@@ -40,6 +45,8 @@ export async function GET(): Promise<NextResponse> {
     ipAllowlist: s.ipAllowlist,
     pinConfigured: isPinConfigured(s),
     emergencyStop: s.emergencyStop,
+    // 記録の版 (#1158)。管理画面はこれを付けて保存し、読んだ後に誰かが書いていれば 409 になる。
+    rev: s.rev ?? 0,
   });
 }
 
@@ -56,7 +63,20 @@ export async function PUT(request: Request): Promise<NextResponse> {
   //    🔴 語義は厳密には「**PIN 欄に入力して保存した**」である（同じ値の再投入も true）。
   //    値を比較できない以上こうなる（レビュー 3 周目 MINOR 10）。
   const patch = await readJson(request);
-  const updated = await updateSecuritySettings(patch);
+  let updated;
+  try {
+    updated = await updateSecuritySettings(patch);
+  } catch (err) {
+    // 🔴 **競合は黙って勝たない (#1158 AC2)。** 何も書いていないので監査も残さない
+    //    （`security.updated` は「変えた」記録であって「変えようとした」記録ではない）。
+    if (err instanceof SecuritySettingsConflictError) {
+      return NextResponse.json({ error: 'conflict' }, { status: 409 });
+    }
+    if (err instanceof SecuritySettingsInvalidError) {
+      return NextResponse.json({ error: 'invalid_rev' }, { status: 400 });
+    }
+    throw err;
+  }
   const pinChanged =
     typeof (patch as { pin?: unknown } | null)?.pin === 'string' &&
     ((patch as { pin: string }).pin.trim() !== '');
@@ -77,5 +97,6 @@ export async function PUT(request: Request): Promise<NextResponse> {
     ipAllowlist: updated.ipAllowlist,
     pinConfigured: isPinConfigured(updated),
     emergencyStop: updated.emergencyStop,
+    rev: updated.rev ?? 0,
   });
 }

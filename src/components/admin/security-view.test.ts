@@ -63,4 +63,18 @@ describe('asSecurityView (#973)', () => {
       expect(asSecurityView(notObject)).toBeNull();
     }
   });
+
+  /**
+   * 🔴 **版 (#1158) は欠けても通すが、形が違えば通さない。** 欠けた応答（#1158 以前のサーバ）は
+   * 版を付けずに送るだけでそれ以前と同じになる。壊れた版を通すと、正しい保存まで 400 / 409 になる。
+   */
+  it('🔴 rev: 版の形なら通り、欠けても通る', () => {
+    expect(asSecurityView({ ...valid, rev: 0 })?.rev).toBe(0);
+    expect(asSecurityView({ ...valid, rev: 7 })?.rev).toBe(7);
+    expect(asSecurityView({ ...valid })).not.toBeNull();
+  });
+
+  it.each([-1, 1.5, '3', null, Number.NaN])('🔴 rev の形が違えば通さない: %s', (wrong) => {
+    expect(asSecurityView({ ...valid, rev: wrong })).toBeNull();
+  });
 });

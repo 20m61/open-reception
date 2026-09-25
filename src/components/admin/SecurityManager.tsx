@@ -5,7 +5,21 @@ import { Button, Field, Form, SaveFeedback, saveFailureMessage, useSaveFeedback 
 import { space } from '@/components/admin/ui/tokens';
 import { AdminReadGate } from './AdminReadGate';
 
-export type SecurityView = { pinRequired: boolean; ipAllowlist: string[]; pinConfigured: boolean; emergencyStop: boolean };
+export type SecurityView = {
+  pinRequired: boolean;
+  ipAllowlist: string[];
+  pinConfigured: boolean;
+  emergencyStop: boolean;
+  /**
+   * 表示している記録の版 (#1158)。保存に付けて送り、読んだ後に誰かが書いていれば 409 になる。
+   * 欠けていれば（#1158 以前のサーバ）版を付けずに送る＝それ以前と同じ振る舞い。
+   */
+  rev?: number;
+};
+
+/** 保存が競合した（この画面を開いた後に記録が書かれた）ときの文言 (#1158 AC2)。 */
+export const SECURITY_CONFLICT_MESSAGE =
+  'この画面を開いた後に設定が変更されたため、保存しませんでした。画面を再読み込みして現在の設定を確かめてから、もう一度保存してください。';
 
 /**
  * 緊急停止の送信に張る締切 (#973)。応答が返らない経路でボタンが恒久的に無効化されるのを防ぐ。
@@ -33,6 +47,11 @@ export function asSecurityView(value: unknown): SecurityView | null {
   if (typeof v.pinConfigured !== 'boolean') return null;
   if (typeof v.emergencyStop !== 'boolean') return null;
   if (!Array.isArray(v.ipAllowlist) || v.ipAllowlist.some((x) => typeof x !== 'string')) return null;
+  // 版は任意（欠けたら付けずに送るだけ）。在るなら版の形でなければ壊れた応答として扱う ——
+  // 壊れた版を送ると、正しい保存まで 400 / 409 になる。
+  if (v.rev !== undefined && !(typeof v.rev === 'number' && Number.isInteger(v.rev) && v.rev >= 0)) {
+    return null;
+  }
   return v as unknown as SecurityView;
 }
 
@@ -145,7 +164,19 @@ export function SecurityManager() {
   const applyEmergencyResult = useCallback(
     (applied: SecurityView) => {
       const shown = viewRef.current;
-      setView(shown === null ? applied : { ...shown, emergencyStop: applied.emergencyStop });
+      /*
+        🔴 **版を進めてよいのは、表示の全フィールドがその版の記録と一致すると言えるときだけ**
+        (#1158)。応答の版が表示の版の**ちょうど次**なら、表示を読んでから書かれたのは
+        この緊急停止だけで、ほかのフィールドは表示のままである。それ以外（他人も書いた・
+        版が無い）は表示の版を据え置く —— 次の保存は 409 になり、再読み込みを案内する。
+        据え置かずに進めると、他人が変えたフィールドを古い表示のまま保存して**黙って消す**。
+      */
+      const ownWriteOnly = shown?.rev !== undefined && applied.rev === shown.rev + 1;
+      setView(
+        shown === null
+          ? applied
+          : { ...shown, emergencyStop: applied.emergencyStop, ...(ownWriteOnly ? { rev: applied.rev } : {}) },
+      );
       // `viewStale` は触らない（下ろせるのは GET だけ。上の解説を見ること）。
     },
     [setView],
@@ -189,12 +220,23 @@ export function SecurityManager() {
       const ipAllowlist = ipText.split('\n').map((s) => s.trim()).filter(Boolean);
       const body: Record<string, unknown> = { pinRequired, ipAllowlist };
       if (pin.trim() !== '') body.pin = pin.trim();
+      // 🔴 **表示している版を付ける (#1158)。** このフォームは触っていない項目も含めて
+      //    全部送るので、版が無いと古い表示のまま他人の変更を黙って上書きする。
+      const rev = viewRef.current?.rev;
+      if (rev !== undefined) body.rev = rev;
       const res = await fetch('/api/admin/security', {
         method: 'PUT',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify(body),
       });
       if (!res.ok) {
+        // 🔴 **競合は「何も書いていない」と言い切れる (#1158 AC2)。** 表示は古いので
+        //    `viewStale` も立てる（下ろせるのは GET だけ。上の解説を見ること）。
+        if (res.status === 409) {
+          setViewStale(true);
+          failure(SECURITY_CONFLICT_MESSAGE);
+          return;
+        }
         // 緊急停止と同じ規則（5xx は適用済みかもしれない）。同じ条件に別の結論を出さない。
         if (res.status >= 500) setViewStale(true);
         failure(res.status >= 500 ? saveFailureMessage('server-error') : undefined);
