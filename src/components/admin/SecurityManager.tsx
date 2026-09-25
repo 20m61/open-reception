@@ -303,6 +303,10 @@ export function SecurityManager() {
             setViewStale(true);
             setEmergencyFailed(saveFailureMessage('server-error', label));
           } else {
+            // 🔴 **409 は保存と同じ結論にする (#1158)。** 緊急停止の 409 は「当て直しても
+            //    他の書き込みに負け続けた」＝表示を読んでから記録が書かれた証拠なので、
+            //    表示が古いことも伝える（同じ条件に別の結論を出さない。独立レビュー 1 周目）。
+            if (res.status === 409) setViewStale(true);
             setEmergencyFailed(
               emergencyStop ? '緊急停止を有効にできませんでした。' : '緊急停止を解除できませんでした。',
             );

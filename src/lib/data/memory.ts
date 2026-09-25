@@ -145,7 +145,9 @@ class MemorySingleton<T> implements Singleton<T> {
     if (Object.keys(expected).length === 0) throw new Error('Singleton.putIf: expected must not be empty');
     for (const [key, want] of Object.entries(expected)) {
       const have = cur === undefined ? undefined : cur[key];
-      if (have !== want) return false;
+      // `Object.is`: `NaN` 同士を一致とみなす（`!==` だと `NaN` の記録が永久に書けなくなる。
+      // 独立レビュー 1 周目）。記録から読んだ生の値をそのまま期待値に渡す呼び出し元が頼る性質。
+      if (!Object.is(have, want)) return false;
     }
     this.value = clone(value);
     return true;

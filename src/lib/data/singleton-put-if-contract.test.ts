@@ -86,6 +86,21 @@ for (const [label, make] of BACKENDS) {
       expect(await s.get()).toEqual({ rev: 2, a: winner });
     });
 
+    /**
+     * 🔴 **読んだ生の値をそのまま期待値に渡せば、どんな値でも一致する。** 呼び出し元
+     * （`security-store`）は壊れた版でも締め出さないためにこれに頼る。memory の比較を `!==` に
+     * すると `NaN` だけが自分自身と一致せず、**その記録は二度と書けなくなる**。
+     * dynamo は `NaN` を保存できないので memory だけの性質である。
+     */
+    it('読んだ生の値を期待値に渡せば一致する（NaN を含む）', async () => {
+      if (label !== 'memory') return;
+      const s = handle();
+      await s.put({ rev: Number.NaN, a: 'x' });
+      const stored = (await s.get())?.rev;
+      expect(await s.putIf({ rev: 1, a: 'y' }, { rev: stored })).toBe(true);
+      expect((await s.get())?.a).toBe('y');
+    });
+
     it('条件の無い putIf は呼び出しの誤りとして拒否し、書かない', async () => {
       const s = handle();
       await s.put({ rev: 1, a: 'x' });

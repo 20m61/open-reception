@@ -466,6 +466,28 @@ test.describe('管理: 書き込み失敗が運用者に見える (#870 増分 0
   });
 
   /**
+   * 🔴 **緊急停止の 409 も保存と同じ結論にする (#1158)。** 緊急停止は版を付けずに送り、
+   * サーバが当て直しても負け続けたときだけ 409 になる＝表示を読んでから記録が書かれた証拠。
+   * 「できませんでした」に加えて表示が古いことを伝える（保存の 409 と非対称にしない）。
+   */
+  test('緊急停止: 409 なら失敗を伝え、表示が古いことも伝える (#1158)', async ({ page }) => {
+    await page.route('**/api/admin/security**', (route) => {
+      if (route.request().method() === 'GET') return route.continue();
+      return route.fulfill({ status: 409, contentType: 'application/json', body: '{"error":"conflict"}' });
+    });
+    await page.goto('/admin/security');
+    await expect(page.getByTestId('emergency-stop')).toBeVisible();
+    await expect(page.getByTestId('security-view-stale')).toHaveCount(0);
+
+    await page.getByTestId('emergency-stop').click();
+    await page.getByTestId('emergency-confirm').click();
+
+    await expect(page.getByTestId('emergency-error')).toContainText('緊急停止を有効にできませんでした');
+    await expect(page.getByTestId('security-view-stale')).toBeVisible();
+    await expect(page.getByTestId('emergency-saved')).toHaveCount(0);
+  });
+
+  /**
    * 🔴 **緊急停止の応答で表示の版を進めるのは「自分の書き込みだけ」と言えるときだけ (#1158)。**
    *
    * - 応答の版が表示の版のちょうど次 ⟹ 表示を読んでから書かれたのは自分の緊急停止だけ。

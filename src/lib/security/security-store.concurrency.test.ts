@@ -190,7 +190,7 @@ describe('セキュリティ設定の同時更新 (#1158)', () => {
    * 版 0 として読み、その版からの保存も緊急停止も通る。締め出すと、**緊急停止が
    * 管理画面から押せなくなる**（この issue が守ろうとしている面そのもの）。
    */
-  it.each([-1, 1.5, 'x'])('🔴 版が壊れた記録 %s でも、版 0 からの保存と緊急停止が通る', async (broken) => {
+  it.each([-1, 1.5, 'x', Number.NaN])('🔴 版が壊れた記録 %s でも、版 0 からの保存と緊急停止が通る', async (broken) => {
     await raw().put({
       pinRequired: false,
       pin: BUILTIN_DEFAULT_PIN,
@@ -202,5 +202,28 @@ describe('セキュリティ設定の同時更新 (#1158)', () => {
     expect(saved.rev).toBe(1);
     const stopped = await updateSecuritySettings({ emergencyStop: true });
     expect(stopped.emergencyStop).toBe(true);
+  });
+
+  /**
+   * 🔴 **版なしの patch は、送ったフィールドについては後勝ちである（意図した非対称）。**
+   *
+   * 版なしで受け付けるのは、緊急停止のトグルを競合で落とさないため（#1158 AC3）。
+   * 管理画面のフォームは必ず版を付けるので守られるが、**版を付けずに同じフィールドを送る
+   * 呼び出し元（API を直接叩くスクリプト等）同士は後勝ちになる**。版を必須にするのは
+   * 管理 API の契約変更なので、人間の判断へ回している（PR 本文）。ここでは現状を固定し、
+   * 変えたときにこのテストが赤くなるようにする。送らなかったフィールドは消えない（下界）。
+   */
+  it('版なしの patch 同士が同じフィールドを書けば後勝ちで、送らなかったフィールドは残る', async () => {
+    await updateSecuritySettings({ emergencyStop: true });
+    interleaveReads(2);
+    await Promise.all([
+      updateSecuritySettings({ ipAllowlist: ['203.0.113.1'] }),
+      updateSecuritySettings({ ipAllowlist: ['203.0.113.2'] }),
+    ]);
+    vi.restoreAllMocks();
+    const s = await getSecuritySettings();
+    expect(s.ipAllowlist).toHaveLength(1);
+    expect(['203.0.113.1', '203.0.113.2']).toContain(s.ipAllowlist[0]);
+    expect(s.emergencyStop).toBe(true);
   });
 });
