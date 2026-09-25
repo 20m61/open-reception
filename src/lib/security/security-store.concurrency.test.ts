@@ -168,4 +168,39 @@ describe('セキュリティ設定の同時更新 (#1158)', () => {
     );
     expect(await raw().get()).toEqual(before);
   });
+
+  /**
+   * 🔴 **当て直しの下界。** 管理者が数人同時に触る程度（2 回負ける）では、押した緊急停止は
+   * 落ちない。上限を狭める変異（数値パラメータ）はここでしか縛れない。
+   */
+  it('🔴 版なしの更新は 2 回負けても 3 回目で通る', async () => {
+    const store = raw();
+    const real = store.putIf.bind(store);
+    vi.spyOn(store, 'putIf')
+      .mockResolvedValueOnce(false)
+      .mockResolvedValueOnce(false)
+      .mockImplementation(real);
+    await updateSecuritySettings({ emergencyStop: true });
+    vi.restoreAllMocks();
+    expect((await getSecuritySettings()).emergencyStop).toBe(true);
+  });
+
+  /**
+   * 🔴 **壊れた版で締め出さない。** 版の形が壊れた記録（外部からの書き込み・将来版）でも
+   * 版 0 として読み、その版からの保存も緊急停止も通る。締め出すと、**緊急停止が
+   * 管理画面から押せなくなる**（この issue が守ろうとしている面そのもの）。
+   */
+  it.each([-1, 1.5, 'x'])('🔴 版が壊れた記録 %s でも、版 0 からの保存と緊急停止が通る', async (broken) => {
+    await raw().put({
+      pinRequired: false,
+      pin: BUILTIN_DEFAULT_PIN,
+      ipAllowlist: [],
+      emergencyStop: false,
+      rev: broken as number,
+    });
+    const saved = await updateSecuritySettings({ rev: 0, pinRequired: true });
+    expect(saved.rev).toBe(1);
+    const stopped = await updateSecuritySettings({ emergencyStop: true });
+    expect(stopped.emergencyStop).toBe(true);
+  });
 });

@@ -26,6 +26,7 @@ vi.mock('@/lib/admin/audit', () => ({
 
 import { GET, PUT } from './route';
 import { __resetSecurity } from '@/lib/security/security-store';
+import { getBackend } from '@/lib/data';
 
 function tenantAdmin(): Actor {
   return {
@@ -191,5 +192,23 @@ describe('PUT /api/admin/security の競合 (#1158)', () => {
     const res = await put({ emergencyStop: true });
     expect(res.status).toBe(200);
     expect(await res.json()).toMatchObject({ emergencyStop: true, rev: 2 });
+  });
+
+  /**
+   * 🔴 **壊れた版をそのまま返さない。** 画面（`asSecurityView`）は形の違う版を壊れた応答として
+   * 拒否するので、生の値を返すと**管理画面が開けず、緊急停止も押せない**。
+   */
+  it.each([-1, 1.5, 'x'])('🔴 版が壊れた記録 %s でも GET は版 0 を返し、その版で保存できる', async (broken) => {
+    await getBackend().singleton('security', { default: () => ({}) }).put({
+      pinRequired: false,
+      pin: '0000',
+      ipAllowlist: [],
+      emergencyStop: false,
+      rev: broken,
+    });
+    expect(await (await GET()).json()).toMatchObject({ rev: 0 });
+    const res = await put({ rev: 0, pinRequired: true });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toMatchObject({ rev: 1, pinRequired: true });
   });
 });

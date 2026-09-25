@@ -3,6 +3,7 @@ import { NextResponse } from 'next/server';
 import { asTenantId } from '@/domain/tenant/types';
 import {
   getSecuritySettings,
+  revisionOf,
   SecuritySettingsConflictError,
   SecuritySettingsInvalidError,
   updateSecuritySettings,
@@ -46,7 +47,7 @@ export async function GET(): Promise<NextResponse> {
     pinConfigured: isPinConfigured(s),
     emergencyStop: s.emergencyStop,
     // 記録の版 (#1158)。管理画面はこれを付けて保存し、読んだ後に誰かが書いていれば 409 になる。
-    rev: s.rev ?? 0,
+    rev: revisionOf(s.rev),
   });
 }
 
@@ -97,6 +98,6 @@ export async function PUT(request: Request): Promise<NextResponse> {
     ipAllowlist: updated.ipAllowlist,
     pinConfigured: isPinConfigured(updated),
     emergencyStop: updated.emergencyStop,
-    rev: updated.rev ?? 0,
+    rev: revisionOf(updated.rev),
   });
 }

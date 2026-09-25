@@ -105,8 +105,12 @@ export class SecuritySettingsInvalidError extends Error {
  */
 const MAX_UPDATE_ATTEMPTS = 3;
 
-/** 記録の版。**版を持たない旧レコード（と未作成）は 0**。形の壊れた版も 0 として読む。 */
-function revisionOf(stored: unknown): number {
+/**
+ * 記録の版。**版を持たない旧レコード（と未作成）は 0**。形の壊れた版も 0 として読む
+ * （壊れた版をそのまま画面へ返すと、画面が応答を拒否して**緊急停止ごと押せなくなる**）。
+ * 管理 API が返す版はこれを通すこと。
+ */
+export function revisionOf(stored: unknown): number {
   return typeof stored === 'number' && Number.isInteger(stored) && stored >= 0 ? stored : 0;
 }
 
@@ -143,10 +147,11 @@ function expectedRevisionOf(patch: unknown): number | undefined {
 export async function updateSecuritySettings(patch: unknown): Promise<SecuritySettings> {
   const expectedRev = expectedRevisionOf(patch);
   for (let attempt = 0; attempt < MAX_UPDATE_ATTEMPTS; attempt += 1) {
+    // 版付きの patch も同じ経路を通る: 当て直しは読み直しから始まり、読んだ版はもう
+    // 期待した版と違うので、`attemptUpdate` が書く前に競合を返す（他人の変更の上に勝たない）。
+    // 版付きだけを別に止める分岐は置かない —— 変異検証で等価（守るものが無い）と実測した。
     const written = await attemptUpdate(patch, expectedRev);
     if (written !== null) return written;
-    // 版付きは当て直さない: 読んだ版はもう古いので、当て直すと他人の変更の上に勝つ。
-    if (expectedRev !== undefined) break;
   }
   throw new SecuritySettingsConflictError();
 }
