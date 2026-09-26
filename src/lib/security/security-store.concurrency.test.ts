@@ -22,6 +22,7 @@ import {
   getSecuritySettings,
   SecuritySettingsConflictError,
   SecuritySettingsInvalidError,
+  SecuritySettingsPreconditionRequiredError,
   updateSecuritySettings,
   verifyPin,
 } from './security-store';
@@ -63,39 +64,54 @@ function interleaveReads(n: number): void {
 }
 
 type Patch = Record<string, unknown>;
-/** フィールドの素な組。どの 2 つを同時に書いても、互いの変更が残るべきもの。 */
+/**
+ * フィールドの素な組。管理画面と同じ形で送る: フォームの項目は**読んだ版（0）を付けて**、
+ * 緊急停止は版なしのトグルで送る（版なしで受け付けるのは緊急停止だけ）。
+ */
 const DISJOINT: ReadonlyArray<readonly [string, Patch, (s: SecuritySettings) => Promise<boolean>]> = [
   ['緊急停止', { emergencyStop: true }, async (s) => s.emergencyStop === true],
-  ['PIN', { pin: '4821' }, async () => verifyPin('4821')],
-  ['PIN 必須', { pinRequired: true }, async (s) => s.pinRequired === true],
-  ['IP 許可リスト', { ipAllowlist: ['203.0.113.7'] }, async (s) => s.ipAllowlist.includes('203.0.113.7')],
+  ['PIN', { rev: 0, pin: '4821' }, async () => verifyPin('4821')],
+  ['PIN 必須', { rev: 0, pinRequired: true }, async (s) => s.pinRequired === true],
+  ['IP 許可リスト', { rev: 0, ipAllowlist: ['203.0.113.7'] }, async (s) => s.ipAllowlist.includes('203.0.113.7')],
 ];
 
 describe('セキュリティ設定の同時更新 (#1158)', () => {
   /**
    * 🔴 **本題。** 「別の運用者が PIN を保存中に、こちらが緊急停止を押す」と、相手の書き込みが
-   * **緊急停止を落とした状態**を書き戻していた（lost update）。素なフィールドの全組で縛る。
+   * **緊急停止を落とした状態**を書き戻していた（lost update）。素なフィールドの全組で、
+   * 読みを必ず交差させて縛る:
+   *
+   * - 成功した更新の変更は、必ず最終的な記録に残る（黙って消えない）
+   * - 成功しなかった更新は競合（409）で、黙って負けていない
+   * - 下界: 緊急停止は負けない（当て直す）。全部が競合になる実装で空虚に満たさない
    */
   for (const [la, pa, has_a] of DISJOINT) {
     for (const [lb, pb, has_b] of DISJOINT) {
       if (la >= lb) continue;
-      it(`🔴 ${la} と ${lb} を同時に保存しても、どちらも消えない`, async () => {
+      it(`🔴 ${la} と ${lb} を同時に保存しても、成功した変更は消えず、負けた側は競合になる`, async () => {
         interleaveReads(2);
-        await Promise.all([updateSecuritySettings(pa), updateSecuritySettings(pb)]);
+        const results = await Promise.allSettled([updateSecuritySettings(pa), updateSecuritySettings(pb)]);
         vi.restoreAllMocks();
         // PIN の検査は pinRequired が要るので、確認用に立てる（他のフィールドは触らない）。
-        const s = await getSecuritySettings();
-        const check = { ...s };
-        if (la === 'PIN' || lb === 'PIN') await updateSecuritySettings({ pinRequired: true });
-        expect(await has_a(check)).toBe(true);
-        expect(await has_b(check)).toBe(true);
+        const check = { ...(await getSecuritySettings()) };
+        if (la === 'PIN' || lb === 'PIN') await updateSecuritySettings({ rev: check.rev, pinRequired: true });
+        const pairs = [
+          [results[0], has_a, la],
+          [results[1], has_b, lb],
+        ] as const;
+        for (const [result, has, label] of pairs) {
+          if (result.status === 'fulfilled') expect(await has(check), `${label} が消えた`).toBe(true);
+          else expect(result.reason, label).toBeInstanceOf(SecuritySettingsConflictError);
+          if (label === '緊急停止') expect(result.status, '緊急停止が負けた').toBe('fulfilled');
+        }
+        expect(results.some((r) => r.status === 'fulfilled')).toBe(true);
       });
     }
   }
 
   /** 🔴 版付きの patch は、読んだ版から動いていれば書かない（黙って勝たない）。 */
   it('🔴 古い版からの保存は競合になり、記録は変わらない', async () => {
-    const first = await updateSecuritySettings({ pinRequired: true });
+    const first = await updateSecuritySettings({ rev: 0, pinRequired: true });
     const staleRev = first.rev ?? 0;
     await updateSecuritySettings({ emergencyStop: true });
     const before = await raw().get();
@@ -109,7 +125,7 @@ describe('セキュリティ設定の同時更新 (#1158)', () => {
 
   /** 🔴 版付き同士が同時に来たら、勝つのは 1 つで、もう 1 つは競合になる。 */
   it('🔴 同じ版からの保存が 2 つ重なれば、1 つは競合になる', async () => {
-    const { rev } = await updateSecuritySettings({ pinRequired: false });
+    const { rev } = await updateSecuritySettings({ rev: 0, pinRequired: false });
     interleaveReads(2);
     const results = await Promise.allSettled([
       updateSecuritySettings({ rev, ipAllowlist: ['203.0.113.1'] }),
@@ -126,7 +142,7 @@ describe('セキュリティ設定の同時更新 (#1158)', () => {
 
   /** 🔴 下界: 現在の版からの保存は通り、版は 1 つ進む。 */
   it('現在の版からの保存は通り、版は書くたびに 1 つ進む', async () => {
-    const a = await updateSecuritySettings({ pinRequired: true });
+    const a = await updateSecuritySettings({ rev: 0, pinRequired: true });
     const b = await updateSecuritySettings({ rev: a.rev, ipAllowlist: ['203.0.113.9'] });
     const c = await updateSecuritySettings({ emergencyStop: true });
     expect(b.rev).toBe((a.rev ?? 0) + 1);
@@ -205,25 +221,35 @@ describe('セキュリティ設定の同時更新 (#1158)', () => {
   });
 
   /**
-   * 🔴 **版なしの patch は、送ったフィールドについては後勝ちである（意図した非対称）。**
+   * 🔴 **版なしで受け付けるのは緊急停止のトグルだけ（ユーザー判断で必須化）。**
    *
-   * 版なしで受け付けるのは、緊急停止のトグルを競合で落とさないため（#1158 AC3）。
-   * 管理画面のフォームは必ず版を付けるので守られるが、**版を付けずに同じフィールドを送る
-   * 呼び出し元（API を直接叩くスクリプト等）同士は後勝ちになる**。版を必須にするのは
-   * 管理 API の契約変更なので、人間の判断へ回している（PR 本文）。ここでは現状を固定し、
-   * 変えたときにこのテストが赤くなるようにする。送らなかったフィールドは消えない（下界）。
+   * 以前は版なしの patch を全部受け付けて最新の記録へ当て直していたので、API を直接叩く
+   * 呼び出し元同士は**送ったフィールドについて後勝ち**だった（独立レビュー 1 周目 MAJOR）。
+   * 版の無い更新は「読んだ後に誰が何を書いたか」を判定できないので、受け付けない（428）。
+   * 許可の列挙なので、緊急停止に何か 1 つでも混ぜれば版を要求する。何も書かない（下界）。
    */
-  it('版なしの patch 同士が同じフィールドを書けば後勝ちで、送らなかったフィールドは残る', async () => {
-    await updateSecuritySettings({ emergencyStop: true });
-    interleaveReads(2);
-    await Promise.all([
-      updateSecuritySettings({ ipAllowlist: ['203.0.113.1'] }),
-      updateSecuritySettings({ ipAllowlist: ['203.0.113.2'] }),
-    ]);
-    vi.restoreAllMocks();
-    const s = await getSecuritySettings();
-    expect(s.ipAllowlist).toHaveLength(1);
-    expect(['203.0.113.1', '203.0.113.2']).toContain(s.ipAllowlist[0]);
-    expect(s.emergencyStop).toBe(true);
+  it.each([
+    ['PIN 必須', { pinRequired: true }],
+    ['PIN', { pin: '4821' }],
+    ['IP 許可リスト', { ipAllowlist: ['203.0.113.1'] }],
+    ['緊急停止に他の項目を混ぜたもの', { emergencyStop: true, ipAllowlist: [] }],
+    ['緊急停止の値が boolean でないもの', { emergencyStop: 'true' }],
+    ['空の patch', {}],
+    ['null', null],
+    ['配列', [{ emergencyStop: true }]],
+  ] as const)('🔴 版なしの %s は 428 相当で、何も書かない', async (_label, patch) => {
+    await updateSecuritySettings({ rev: 0, pinRequired: false, ipAllowlist: ['203.0.113.9'] });
+    const before = await raw().get();
+    await expect(updateSecuritySettings(patch)).rejects.toBeInstanceOf(
+      SecuritySettingsPreconditionRequiredError,
+    );
+    expect(await raw().get()).toEqual(before);
+  });
+
+  /** 下界: 版なしの緊急停止トグルは受け付ける（開始も解除も）。 */
+  it.each([true, false])('版なしの緊急停止トグル（%s）は受け付ける', async (value) => {
+    await updateSecuritySettings({ emergencyStop: !value });
+    const updated = await updateSecuritySettings({ emergencyStop: value });
+    expect(updated.emergencyStop).toBe(value);
   });
 });

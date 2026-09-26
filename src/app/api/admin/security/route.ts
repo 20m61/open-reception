@@ -6,6 +6,7 @@ import {
   revisionOf,
   SecuritySettingsConflictError,
   SecuritySettingsInvalidError,
+  SecuritySettingsPreconditionRequiredError,
   updateSecuritySettings,
 } from '@/lib/security/security-store';
 import { readJson } from '@/lib/data-stores/result-http';
@@ -75,6 +76,10 @@ export async function PUT(request: Request): Promise<NextResponse> {
     }
     if (err instanceof SecuritySettingsInvalidError) {
       return NextResponse.json({ error: 'invalid_rev' }, { status: 400 });
+    }
+    // 版を付けずに緊急停止以外を変えようとした。GET で `rev` を読んでから送り直させる。
+    if (err instanceof SecuritySettingsPreconditionRequiredError) {
+      return NextResponse.json({ error: 'rev_required' }, { status: 428 });
     }
     throw err;
   }

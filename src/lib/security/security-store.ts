@@ -97,6 +97,32 @@ export class SecuritySettingsInvalidError extends Error {
 }
 
 /**
+ * 版を付けずに、緊急停止以外を変えようとした (#1158)。**何も書いていない。** 呼び出し側は 428 にする。
+ *
+ * 版なしの更新は「読んだ後に誰が何を書いたか」を判定できず、後勝ちで他人の変更を黙って消す。
+ * それを受け付けないのがこの issue の本題なので、版なしで受け付けるのは緊急停止のトグルだけにする。
+ */
+export class SecuritySettingsPreconditionRequiredError extends Error {
+  constructor() {
+    super('security settings revision (rev) is required');
+    this.name = 'SecuritySettingsPreconditionRequiredError';
+  }
+}
+
+/**
+ * patch が**緊急停止のトグルだけ**か（`{ emergencyStop: boolean }` で、他のキーを持たない）。
+ *
+ * 🔴 **許可の列挙にする。** 「PIN 系のキーが無ければ版なしで通す」のような禁止の列挙にすると、
+ *    将来フィールドが増えたときにそのフィールドが版なしで後勝ちになる。知らないキーが 1 つでも
+ *    あれば版を要求する。
+ */
+function isEmergencyToggleOnly(patch: unknown): boolean {
+  if (typeof patch !== 'object' || patch === null || Array.isArray(patch)) return false;
+  const keys = Object.keys(patch);
+  return keys.length === 1 && keys[0] === 'emergencyStop' && typeof (patch as { emergencyStop?: unknown }).emergencyStop === 'boolean';
+}
+
+/**
  * 版なしの patch を最新の記録へ当て直す上限 (#1158)。
  *
  * 当て直しは「押した緊急停止が他の保存に踏み潰されない」ための機構で、上限を超えたら
@@ -141,11 +167,17 @@ function expectedRevisionOf(patch: unknown): number | undefined {
  *
  * - **版（`rev`）付きの patch** は「その版から見た変更」。読んだ版と違えば書かずに競合
  *   （管理画面の古い表示からの保存が、他人の変更を消さない。#1158 AC2）
- * - **版なしの patch**（緊急停止のトグル）は、書き込みで負けたら最新の記録へ当て直す
- *   （上限つき。#1158 AC3「緊急停止の投入は競合しても落ちない」）
+ * - **版なしで受け付けるのは緊急停止のトグルだけ**（`{ emergencyStop }` のみ）。書き込みで
+ *   負けたら最新の記録へ当て直す（上限つき。#1158 AC3「緊急停止の投入は競合しても落ちない」）。
+ *   当て直すのは `emergencyStop` 1 項目だけなので、他人が書いた項目を踏み潰さない
+ * - それ以外の版なしの patch は `SecuritySettingsPreconditionRequiredError`（428）。
+ *   以前は受け付けて後勝ちにしていた（独立レビュー 1 周目 MAJOR・ユーザー判断で必須化）
  */
 export async function updateSecuritySettings(patch: unknown): Promise<SecuritySettings> {
   const expectedRev = expectedRevisionOf(patch);
+  if (expectedRev === undefined && !isEmergencyToggleOnly(patch)) {
+    throw new SecuritySettingsPreconditionRequiredError();
+  }
   for (let attempt = 0; attempt < MAX_UPDATE_ATTEMPTS; attempt += 1) {
     // 版付きの patch も同じ経路を通る: 当て直しは読み直しから始まり、読んだ版はもう
     // 期待した版と違うので、`attemptUpdate` が書く前に競合を返す（他人の変更の上に勝たない）。
