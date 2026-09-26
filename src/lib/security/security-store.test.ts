@@ -4,6 +4,7 @@ import { getBackend } from '@/lib/data';
 import {
   __resetSecurity,
   getSecuritySettings,
+  readSecuritySettings,
   revisionOf,
   updateSecuritySettings,
   verifyPin,
@@ -204,23 +205,24 @@ describe('security-store (#23 #29)', () => {
   });
 
   /**
-   * 🔴 **空の保存値を持つ旧レコードが「誰も通れない」状態にならない（レビュー 2 周目 MAJOR 1）。**
+   * 🔴 **空の保存値は fail closed で、画面はそれを正直に言う (#1160・ユーザー判断)。**
    *
    * `.env.example` の `KIOSK_PIN=`（空）を使っていたサイトが管理画面で 1 度保存すると
-   * `pin: ''` が永続化される。空を拒否した結果**通る入力が 1 つも無い**のに、
-   * 管理画面は「未設定（既定値が有効）」と表示していた（＝画面が嘘をつく）。
+   * `pin: ''` が永続化される。レビュー 2 周目 MAJOR 1 の時点では「通る入力が無いのに
+   * 画面は既定値が有効と言う」嘘を、**既定値へ倒す**ことで解いていた。#1160 で倒す向きを
+   * 「誰も通さない」へ変えたので、嘘は `storedPinUnreadable`（画面の警告）で解く。
    */
-  it('🔴 空の保存値は組込み既定として読む（表示と挙動を一致させる）', async () => {
+  it('🔴 空の保存値では誰も通らず、未設定とも言わない（読めないと言う）', async () => {
     await getBackend().singleton('security', { default: () => ({}) }).put({
       pinRequired: true,
       pin: '',
       ipAllowlist: [],
       emergencyStop: false,
     });
-    expect(await verifyPin(BUILTIN_DEFAULT_PIN)).toBe(true);
+    expect(await verifyPin(BUILTIN_DEFAULT_PIN)).toBe(false);
     expect(await verifyPin('')).toBe(false);
-    // 表示は「未設定」のまま（既定値なので）。
     expect(isPinConfigured(await getSecuritySettings())).toBe(false);
+    expect((await readSecuritySettings()).storedPinUnreadable).toBe(true);
   });
 
   /**
@@ -255,8 +257,8 @@ describe('security-store (#23 #29)', () => {
     });
     await save({ emergencyStop: true });
     expect(await verifyPin(unusable)).toBe(false);
-    // 下界: 締め出しにもしない（読めない資格情報は「未設定」として既定へ倒す）。
-    expect(await verifyPin(BUILTIN_DEFAULT_PIN)).toBe(true);
+    // 🔴 #1160（ユーザー判断で fail closed）: 既定値へも化けない。
+    expect(await verifyPin(BUILTIN_DEFAULT_PIN)).toBe(false);
     // 読めない資格情報を「設定済み」と表示しない。
     expect(isPinConfigured(await getSecuritySettings())).toBe(false);
   });

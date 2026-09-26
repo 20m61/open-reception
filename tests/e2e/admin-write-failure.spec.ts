@@ -528,6 +528,56 @@ test.describe('管理: 書き込み失敗が運用者に見える (#870 増分 0
   }
 
   /**
+   * 🔴 **読めない PIN 記録（fail closed で締め出し中）を運用者へ見せ、この画面で復旧できる (#1160)。**
+   *
+   * store / route の unit は「API が true を返す」までしか言えず、**画面が読まない**
+   * （`asSecurityView` で落とす・描画しない・ラベルが「既定値が有効」と嘘をつく）変異は
+   * 素通りする。応答は注入で返すので共有 seed を変えない。サーバの振る舞い（PIN を送らない
+   * 保存では直らない／PIN を送れば直る）を注入側で再現する。
+   * **下界**: 実サーバの GET（読める記録）では出ない。
+   */
+  test('セキュリティ設定: 読めない PIN 記録を画面に出し、PIN の再設定で消える (#1160)', async ({ page }) => {
+    await page.goto('/admin/security');
+    await expect(page.getByTestId('security-save')).toBeVisible();
+    // 下界: 読める記録では出ない。
+    await expect(page.getByTestId('security-pin-unreadable')).toHaveCount(0);
+
+    // 🔴 実サーバと同じく版（`rev`, #1158）を返し、保存が版を送っていることも見る。版を返さない
+    //    注入では、版なしの保存（実サーバでは 428）が成功する経路を検証してしまう。
+    const view = (storedPinUnreadable: boolean, rev: number): string =>
+      JSON.stringify({ pinRequired: true, ipAllowlist: [], pinConfigured: !storedPinUnreadable, emergencyStop: false, storedPinUnreadable, rev });
+    const sentRevs: unknown[] = [];
+    await page.route('**/api/admin/security**', (route) => {
+      const req = route.request();
+      if (req.method() === 'GET') {
+        return route.fulfill({ status: 200, contentType: 'application/json', body: view(true, 3) });
+      }
+      const body = req.postDataJSON() as { pin?: string; rev?: number };
+      sentRevs.push(body.rev);
+      return route.fulfill({ status: 200, contentType: 'application/json', body: view(!body.pin, (body.rev ?? 0) + 1) });
+    });
+    await page.reload();
+    const warning = page.getByTestId('security-pin-unreadable');
+    await expect(warning).toBeVisible();
+    await expect(warning).toHaveAttribute('role', 'alert');
+    await expect(warning).toContainText('どの PIN でも許可されません');
+    // ラベルが「既定値が有効」と嘘をつかない（既定値では通らない）。
+    await expect(page.getByText('未設定（既定値が有効）')).toHaveCount(0);
+
+    // PIN を送らない保存では直らない。
+    await page.getByTestId('security-save').click();
+    await expect(page.getByTestId('security-saved')).toBeVisible();
+    await expect(page.getByTestId('security-pin-unreadable')).toBeVisible();
+
+    // PIN を設定し直すと消える（復旧経路）。
+    await page.getByTestId('security-pin').fill('5839');
+    await page.getByTestId('security-save').click();
+    await expect(page.getByTestId('security-pin-unreadable')).toHaveCount(0);
+    // 保存は表示の版を送っている（GET の 3 → 1 回目の応答の 4）。
+    expect(sentRevs).toEqual([3, 4]);
+  });
+
+  /**
    * 🔴 **順序が逆でも巻き戻さない** (#973)。
    *
    * 「保存が先に飛行中」だけを塞ぐと、**緊急停止が先に飛行中**（その間に保存を押す）で

@@ -24,6 +24,7 @@ const ACTION_LABEL: Partial<Record<AuditAction, string>> = {
   'kiosk.revoked': '端末: 失効',
   'kiosk.restored': '端末: 再有効化',
   'security.updated': 'セキュリティ設定: 更新',
+  'security.pin_credential_unreadable': 'セキュリティ設定: 保存された PIN を読めず、PIN 認可を停止',
   'voice.updated': '音声設定: 更新',
   'asset.created': 'アセット: 登録',
   'asset.updated': 'アセット: 更新',

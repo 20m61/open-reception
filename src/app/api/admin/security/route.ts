@@ -1,8 +1,8 @@
-import { isPinConfigured } from '@/domain/security/pin';
+import { isPinConfigured, isUsablePinCredential } from '@/domain/security/pin';
 import { NextResponse } from 'next/server';
 import { asTenantId } from '@/domain/tenant/types';
 import {
-  getSecuritySettings,
+  readSecuritySettings,
   revisionOf,
   SecuritySettingsConflictError,
   SecuritySettingsInvalidError,
@@ -41,12 +41,15 @@ export async function GET(): Promise<NextResponse> {
   } catch (err) {
     return toGuardResponse(err);
   }
-  const s = await getSecuritySettings();
+  const { settings: s, storedPinUnreadable } = await readSecuritySettings();
   return NextResponse.json({
     pinRequired: s.pinRequired,
     ipAllowlist: s.ipAllowlist,
     pinConfigured: isPinConfigured(s),
     emergencyStop: s.emergencyStop,
+    // 🔴 保存されていた PIN を読めず、PIN 認可を誰にも通さない状態（fail closed）か (#1160 AC2)。
+    //    真偽だけを返す（値・どう壊れていたかは返さない）。
+    storedPinUnreadable,
     // 記録の版 (#1158)。管理画面はこれを付けて保存し、読んだ後に誰かが書いていれば 409 になる。
     rev: revisionOf(s.rev),
   });
@@ -107,6 +110,9 @@ export async function PUT(request: Request): Promise<NextResponse> {
     ipAllowlist: updated.ipAllowlist,
     pinConfigured: isPinConfigured(updated),
     emergencyStop: updated.emergencyStop,
+    // 書いた記録から導く（GET と同じ判定）。読めない記録は、運用者が PIN を設定し直すまで
+    // 生のまま書き戻されるので、PIN を送らない更新の後も true のまま（#1160 fail closed）。
+    storedPinUnreadable: !isUsablePinCredential(updated.pin),
     rev: revisionOf(updated.rev),
   });
 }

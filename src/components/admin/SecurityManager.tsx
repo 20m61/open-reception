@@ -11,6 +11,14 @@ export type SecurityView = {
   pinConfigured: boolean;
   emergencyStop: boolean;
   /**
+   * 保存されていた PIN を読めず、PIN 認可を誰にも通さない状態（fail closed）か (#1160 AC2)。
+   * 🔴 **欠けていたら false として読む（ほかの 4 つと扱いが違う）。** これは既存 4 つの
+   * 表示を**足す**だけの警告で、欠けた応答（#1160 以前のサーバ）はそれ以前と同じ画面になる。
+   * 他の 4 つを欠いた応答を通すと表示が嘘をつくが、これを欠いても「警告が出ない」以上には
+   * ならない。**型が違う**なら壊れた応答として扱う（他と同じ）。
+   */
+  storedPinUnreadable: boolean;
+  /**
    * 表示している記録の版 (#1158)。保存に付けて送り、読んだ後に誰かが書いていれば 409 になる。
    * 欠けていれば（#1158 以前のサーバ）版を付けずに送る＝それ以前と同じ振る舞い。
    */
@@ -52,7 +60,8 @@ export function asSecurityView(value: unknown): SecurityView | null {
   if (v.rev !== undefined && !(typeof v.rev === 'number' && Number.isInteger(v.rev) && v.rev >= 0)) {
     return null;
   }
-  return v as unknown as SecurityView;
+  if (v.storedPinUnreadable !== undefined && typeof v.storedPinUnreadable !== 'boolean') return null;
+  return { ...(v as unknown as SecurityView), storedPinUnreadable: v.storedPinUnreadable === true };
 }
 
 /** セキュリティ設定 (issue #23, #29)。PIN 必須・PIN 変更・IP 許可リストを編集する。 */
@@ -497,8 +506,26 @@ export function SecurityManager() {
           />
           受付端末の表示に PIN 許可を必須にする
         </label>
+        {/*
+          🔴 **保存されていた PIN を読めなかったことを、運用者が気づける形で出す (#1160 AC2)。**
+          読めない記録は fail closed（ユーザー判断）なので、PIN 必須のサイトでは受付端末が
+          **どの PIN でも許可されない（締め出し）**。画面を見なければ原因に辿り着けない。
+          文言は「今どうなっているか」と「何をすればよいか（この画面で PIN を設定し直す）」だけ。
+          読めなかった値そのもの・壊れ方は出さない（`rules/pii-secret-minimization.md`）。
+          PIN を送らない保存・緊急停止では記録は直らない（サーバが生のまま書き戻す）ので、
+          残っていても嘘にならない。
+        */}
+        {view.storedPinUnreadable ? (
+          <p data-testid="security-pin-unreadable" role="alert" style={{ margin: 0 }}>
+            保存されている PIN の設定を読めません。PIN を必須にしている場合、受付端末はどの PIN でも許可されません。
+            下の欄で PIN を設定し直して保存してください。
+          </p>
+        ) : null}
         <Field
-          label={`PIN を変更（空欄なら変更しない／現在: ${view.pinConfigured ? '設定済み' : '未設定（既定値が有効）'}）`}
+          label={`PIN を変更（空欄なら変更しない／現在: ${
+            // 🔴 読めない記録を「未設定（既定値が有効）」と言わない —— 既定値では通らない (#1160)。
+            view.storedPinUnreadable ? '読めません（どの PIN でも許可されません）' : view.pinConfigured ? '設定済み' : '未設定（既定値が有効）'
+          }）`}
           htmlFor="security-pin"
         >
           <input type="password" id="security-pin" data-testid="security-pin" value={pin} onChange={(e) => setPin(e.target.value)} style={input} />

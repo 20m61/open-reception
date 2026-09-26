@@ -21,6 +21,7 @@ describe('asSecurityView (#973)', () => {
     ipAllowlist: ['203.0.113.10'],
     pinConfigured: true,
     emergencyStop: false,
+    storedPinUnreadable: false,
   };
 
   it('正しい形はそのまま通る', () => {
@@ -76,5 +77,38 @@ describe('asSecurityView (#973)', () => {
 
   it.each([-1, 1.5, '3', null, Number.NaN])('🔴 rev の形が違えば通さない: %s', (wrong) => {
     expect(asSecurityView({ ...valid, rev: wrong })).toBeNull();
+  });
+
+  /**
+   * 🔴 **`storedPinUnreadable` (#1160 AC2) は欠けても通すが、型違いは通さない。**
+   *
+   * 既存 4 つと扱いが違うのは意図どおり（`SecurityView` の注記）。欠けた応答で**警告を
+   * 出さない**のは #1160 以前と同じ画面であって嘘ではないが、**真を偽へ化かす**のは嘘になる。
+   * 3 方向を別々に縛る: 真は真のまま・欠けは偽・型違いは壊れた応答。
+   */
+  it('🔴 storedPinUnreadable: 真は真のまま届く', () => {
+    expect(asSecurityView({ ...valid, storedPinUnreadable: true })?.storedPinUnreadable).toBe(true);
+  });
+
+  it('🔴 storedPinUnreadable: 欠けた応答は偽として読む（#1160 以前のサーバと同じ画面）', () => {
+    const legacy: Record<string, unknown> = { ...valid };
+    delete legacy.storedPinUnreadable;
+    expect(asSecurityView(legacy)).toEqual({ ...valid, storedPinUnreadable: false });
+  });
+
+  it.each(['true', 1, null])('🔴 storedPinUnreadable の型が違えば通さない: %s', (wrong) => {
+    expect(asSecurityView({ ...valid, storedPinUnreadable: wrong })).toBeNull();
+  });
+
+  /**
+   * 🔴 **版 (#1158) と読めない PIN の警告 (#1160) が同じ応答で両方届く。** 片方を検査する行が
+   * もう片方を落としていない（`storedPinUnreadable` を正規化して返す経路が `rev` を捨てない）。
+   */
+  it('🔴 rev と storedPinUnreadable の両方が応答から届く', () => {
+    expect(asSecurityView({ ...valid, rev: 7, storedPinUnreadable: true })).toEqual({
+      ...valid,
+      rev: 7,
+      storedPinUnreadable: true,
+    });
   });
 });
