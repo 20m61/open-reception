@@ -26,6 +26,7 @@ vi.mock('@/lib/admin/audit', () => ({
 
 import { GET, PUT } from './route';
 import { __resetSecurity } from '@/lib/security/security-store';
+import { getBackend } from '@/lib/data';
 
 function tenantAdmin(): Actor {
   return {
@@ -140,5 +141,61 @@ describe('GET /api/admin/security の pinConfigured (#1021 AC3)', () => {
     expect(text).not.toContain('pbkdf2');
     // 下界: 応答が空でないこと（何も返していないなら上の主張は空虚）。
     expect(JSON.parse(text)).toMatchObject({ pinConfigured: true });
+  });
+});
+
+/**
+ * 🔴 **読めない PIN 記録を画面へ届ける配線 (#1160 AC2)。**
+ *
+ * 判定は `security-store` が縛っている。残る危険は配線で、ここを `false` 固定に戻す変異は
+ * store のテストからは見えない（そしてそれは #1160 が報告した「誰も見ていなければ気づけない」
+ * 状態そのもの）。**下界**（読める記録では false）と**値を返さない**を併せて縛る。
+ */
+describe('GET /api/admin/security の storedPinUnreadable (#1160 AC2)', () => {
+  const broken = 'pbkdf2-sha256$10000$***$BBBB';
+
+  it('🔴 読めない記録なら true を返し、値は返さない', async () => {
+    await getBackend().singleton('security', { default: () => ({}) }).put({
+      pinRequired: true,
+      pin: broken,
+      pinSetByOperator: true,
+      ipAllowlist: [],
+      emergencyStop: false,
+    });
+    const text = await (await GET()).text();
+    expect(JSON.parse(text)).toMatchObject({ storedPinUnreadable: true, pinConfigured: false });
+    expect(text).not.toContain('BBBB');
+    expect(text).not.toContain('pbkdf2');
+  });
+
+  it('🔴 読める記録なら false を返す（下界）', async () => {
+    await PUT(
+      new Request('http://localhost/api/admin/security', {
+        method: 'PUT',
+        body: JSON.stringify({ pin: '4821' }),
+      }),
+    );
+    expect(await (await GET()).json()).toMatchObject({ storedPinUnreadable: false });
+  });
+
+  /**
+   * 🔴 **PIN を送らない更新は拒否状態を解かない (#1160 fail closed)。** 応答も GET も true のまま。
+   * PIN を設定し直した更新だけが解き、応答は false になる（管理画面からの復旧経路）。
+   */
+  it('🔴 PIN を送らない更新では true のまま、PIN を設定し直すと false になる', async () => {
+    await getBackend().singleton('security', { default: () => ({}) }).put({
+      pinRequired: true,
+      pin: broken,
+      ipAllowlist: [],
+      emergencyStop: false,
+    });
+    const put = (body: unknown) =>
+      PUT(new Request('http://localhost/api/admin/security', { method: 'PUT', body: JSON.stringify(body) }));
+    const stopped = await put({ emergencyStop: true });
+    expect(await stopped.json()).toMatchObject({ storedPinUnreadable: true, emergencyStop: true });
+    expect(await (await GET()).json()).toMatchObject({ storedPinUnreadable: true });
+    const recovered = await put({ pin: '5839' });
+    expect(await recovered.json()).toMatchObject({ storedPinUnreadable: false, pinConfigured: true });
+    expect(await (await GET()).json()).toMatchObject({ storedPinUnreadable: false });
   });
 });

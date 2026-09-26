@@ -428,6 +428,50 @@ test.describe('管理: 書き込み失敗が運用者に見える (#870 増分 0
   });
 
   /**
+   * 🔴 **読めない PIN 記録（fail closed で締め出し中）を運用者へ見せ、この画面で復旧できる (#1160)。**
+   *
+   * store / route の unit は「API が true を返す」までしか言えず、**画面が読まない**
+   * （`asSecurityView` で落とす・描画しない・ラベルが「既定値が有効」と嘘をつく）変異は
+   * 素通りする。応答は注入で返すので共有 seed を変えない。サーバの振る舞い（PIN を送らない
+   * 保存では直らない／PIN を送れば直る）を注入側で再現する。
+   * **下界**: 実サーバの GET（読める記録）では出ない。
+   */
+  test('セキュリティ設定: 読めない PIN 記録を画面に出し、PIN の再設定で消える (#1160)', async ({ page }) => {
+    await page.goto('/admin/security');
+    await expect(page.getByTestId('security-save')).toBeVisible();
+    // 下界: 読める記録では出ない。
+    await expect(page.getByTestId('security-pin-unreadable')).toHaveCount(0);
+
+    const view = (storedPinUnreadable: boolean): string =>
+      JSON.stringify({ pinRequired: true, ipAllowlist: [], pinConfigured: !storedPinUnreadable, emergencyStop: false, storedPinUnreadable });
+    await page.route('**/api/admin/security**', (route) => {
+      const req = route.request();
+      if (req.method() === 'GET') {
+        return route.fulfill({ status: 200, contentType: 'application/json', body: view(true) });
+      }
+      const body = req.postDataJSON() as { pin?: string };
+      return route.fulfill({ status: 200, contentType: 'application/json', body: view(!body.pin) });
+    });
+    await page.reload();
+    const warning = page.getByTestId('security-pin-unreadable');
+    await expect(warning).toBeVisible();
+    await expect(warning).toHaveAttribute('role', 'alert');
+    await expect(warning).toContainText('どの PIN でも許可されません');
+    // ラベルが「既定値が有効」と嘘をつかない（既定値では通らない）。
+    await expect(page.getByText('未設定（既定値が有効）')).toHaveCount(0);
+
+    // PIN を送らない保存では直らない。
+    await page.getByTestId('security-save').click();
+    await expect(page.getByTestId('security-saved')).toBeVisible();
+    await expect(page.getByTestId('security-pin-unreadable')).toBeVisible();
+
+    // PIN を設定し直すと消える（復旧経路）。
+    await page.getByTestId('security-pin').fill('5839');
+    await page.getByTestId('security-save').click();
+    await expect(page.getByTestId('security-pin-unreadable')).toHaveCount(0);
+  });
+
+  /**
    * 🔴 **順序が逆でも巻き戻さない** (#973)。
    *
    * 「保存が先に飛行中」だけを塞ぐと、**緊急停止が先に飛行中**（その間に保存を押す）で

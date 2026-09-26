@@ -254,6 +254,10 @@ export type AuditAction =
   | 'kiosk.revoked'
   | 'kiosk.restored'
   | 'security.updated'
+  // 保存された受付 PIN を資格情報として読めず、PIN 認可を誰にも通さない状態になっている
+  // (#1160・fail closed)。事実と時刻と締め出しの有無だけ（値・形は残さない）。
+  // プロセスにつき 1 本。actor は 'system'。
+  | 'security.pin_credential_unreadable'
   | 'voice.updated'
   | 'branding.updated'
   | 'asset.created'

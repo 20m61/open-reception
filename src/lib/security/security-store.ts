@@ -12,6 +12,7 @@ import {
 } from '@/domain/security/pin';
 import type { SecuritySettings } from '@/domain/security/types';
 import { getBackend } from '@/lib/data';
+import { appendAuditLog } from '@/lib/data-stores/reception-log-store';
 
 /** `KIOSK_PIN` を読む。**空文字は未設定**として扱う（`??` では弾けない）。 */
 function envPin(): string | undefined {
@@ -45,37 +46,107 @@ function defaults(): SecuritySettings {
 
 const security = () => getBackend().singleton<SecuritySettings>('security', { default: defaults });
 
+/**
+ * 読めない PIN 記録を見つけて PIN 認可を拒否側へ倒したことを、**このプロセスで既に監査へ出したか** (#1160)。
+ *
+ * 🔴 **読み出しごとに書かない。** `current()` は未認証の経路（`POST /api/kiosk/authorize`・
+ *    `GET /api/kiosk/session-status` 等。authorize では試行予算の判定より前）から毎回呼ばれる
+ *    ので、読み出しごとに監査を書くと**外部から監査の書き込み量を制御できる**
+ *    （#1123 が staff / enroll のログで塞いだのと同じ脅威）。プロセスにつき 1 本に抑える。
+ *
+ * 🔴 **上界は「要求数」ではなく「実行環境の数」である（独立レビュー 1 周目 MAJOR）。**
+ *    Lambda では実行環境ごとにモジュール状態が別なので、同時に叩かれれば**同時実行数ぶん**、
+ *    時間をかければ**環境の入れ替わりぶん**だけ増える。要求数に比例しないことまでしか
+ *    言えない。前提として**記録が既に壊れている**必要がある（現行コードは作らない）。
+ *    環境を跨いで 1 本にするには永続側の冪等マーカーが要り、それは永続レコードと機構を
+ *    足すことになるので、この増分ではやらない（`attempt-budget` が admin 側で同じ理由から
+ *    機構を撤回した前例がある）。
+ *
+ * 🔴 **書き込みの前に立てる（失敗しても再試行しない）。** 監査ストアが落ちている間、
+ *    未認証の要求 1 回ごとに失敗する書き込みを再試行させない。落ちたことはサーバログへ出す。
+ *
+ * 射程の限界: 同じプロセスの中で「一度直って、また壊れた」2 度目は監査に出ない
+ *    （管理画面の表示 `storedPinUnreadable` は読み出しごとに判定するので、そちらには出る）。
+ */
+let unreadablePinReported = false;
+
+async function reportUnreadablePin(lockout: boolean): Promise<void> {
+  if (unreadablePinReported) return;
+  unreadablePinReported = true;
+  try {
+    // 🔴 **値は載せない**（`rules/pii-secret-minimization.md`）。保存されていた文字列も、
+    //    その形（どの検査で落ちたか）も出さない —— 事実と時刻だけで足りる（#1160 AC1）。
+    //    🔴 この経路は `appendAuditLog` を直接呼ぶので **`sanitizeAuditMetadata` を通らない**。
+    //    metadata に載せてよいのは、ここに書いた**静的な列挙値だけ**である（保存値由来の
+    //    文字列を足さない。後段で潰してくれる機構は無い）。
+    //    `lockout` は検出時点で PIN 必須だったか（＝受付端末の締め出しが実際に起きているか）。
+    await appendAuditLog({
+      action: 'security.pin_credential_unreadable',
+      actor: 'system',
+      targetType: 'security',
+      metadata: { reason: 'stored_record_unreadable', effect: 'deny_all', lockout: String(lockout) },
+    });
+  } catch (err) {
+    // 監査の失敗で照合の答えを変えない（どのみち拒否側。ここで throw すると 500 になるだけ）。
+    console.error('[security] failed to record audit', {
+      action: 'security.pin_credential_unreadable',
+      error: err instanceof Error ? err.name : 'unknown',
+    });
+  }
+}
+
+type SecurityRead = {
+  settings: SecuritySettings;
+  /**
+   * 保存レコードの PIN を資格情報として読めず、**PIN 認可を誰にも通さない状態**か (#1160)。
+   * 管理画面が「保存されている PIN を読めません」を出すための事実。値は含まない。
+   */
+  storedPinUnreadable: boolean;
+};
+
 async function current(): Promise<SecuritySettings> {
+  return (await read()).settings;
+}
+
+async function read(): Promise<SecurityRead> {
   const s = (await security().get()) ?? defaults();
-  // 🔴 **使えない資格情報は「未設定」＝組込み既定として読む。**
+  // 🔴 **読めない資格情報は fail closed —— 既定値へ倒さず、誰も通さない (#1160・ユーザー判断)。**
   //
-  // 2 周目 MAJOR 1: `.env.example` の `KIOSK_PIN=`（空）を使っていたサイトが管理画面で
-  // 1 度保存すると永続レコードは `pin: ''` になる。空を拒否した結果、そのサイトは
-  // **通る入力が 1 つも無い**のに管理画面は「未設定（既定値が有効）」と表示していた。
+  // 以前（#1021 AC3）は読めない資格情報を「未設定」とみなし、**公開されている組込み既定
+  // `0000` で代用**していた。締め出しを避けるための判断だったが、倒れた先が公開値なので、
+  // 誰も見ていなければ `0000` を知る未認証の攻撃者が 30 日の kiosk セッションを取れた。
+  // #1160 AC3 のユーザー判断で「セキュリティ境界で既定の資格情報へ倒さない」を採った。
   //
-  // 🔴 3 周目 MAJOR 1 / MINOR 3: 同じ嘘が **`unusable`（うちの形式だが読めない記録）**の
-  // 綴りで残っていた —— 空だけを正規化していたため。しかも `unusable` は昇格で
-  // **平文として扱われ、記録文字列が生きた PIN になる**（実測）。
-  // **読めない資格情報は 1 つの規則で「未設定」に倒す。**
+  // 読めない記録は**生のまま**持ち回す（`verifyPinCredential` は空・非文字列・`unusable` を
+  // 全部拒否する）。書き戻しでも昇格させない（`updateSecuritySettings`）ので、無関係な更新で
+  // 元の記録が `hash('0000')` に置き換わって消えることもない。復旧は運用者が管理画面から
+  // PIN を設定し直すこと（その経路は `pinFromOperator` で必ず昇格する）。
   //
-  // 🔴 **「族ごと閉じた」とは言えない（レビュー 4 周目 MINOR 2）。** `classify` の 1 段目
-  //    （構造）で落ちる綴り —— `pbkdf2-sha256$abc$AAAA$BB` や hash 部が空のもの —— は
-  //    **平文として扱われる**ので、ここは通らず**記録文字列がそのまま生きた PIN になる**。
-  //    実害は旧平文と同等（ダンプを読めた者はどうせ 4 桁を総当たりできる）なので
-  //    振る舞いは変えないが、閉じたのは**構造的に完全な記録だけ**である。
+  // 対象は**保存レコード**だけ。レコードが無い（`defaults()`）場合は組込み既定のまま
+  // （そちらは #1021 AC3 の別判断で、本 issue の射程外）。
+  //
+  // 🔴 `classify` の 1 段目（構造）で落ちる綴り —— `pbkdf2-sha256$abc$AAAA$BB` や hash 部が
+  //    空のもの —— は**平文として扱われる**ので、ここは通らず記録文字列がそのまま PIN になる
+  //    （レビュー 4 周目 MINOR 2。振る舞いは #1021 AC3 のまま）。
   const usable = isUsablePinCredential(s.pin);
-  const pin = usable ? s.pin : BUILTIN_DEFAULT_PIN;
-  // 読めない資格情報を「設定済み」と表示しない（表示と挙動を一致させる）。
+  // 読めない資格情報を「設定済み」と表示しない（表示は `storedPinUnreadable` が別に持つ）。
   const pinSetByOperator = usable ? s.pinSetByOperator : false;
-  // 🔴 **隣のフィールドでも 500 にしない（レビュー 3 周目 MINOR 6）。** `pin` について
-  //    同じ理屈（「レコードが 1 つ在るだけで 500 になり、復旧導線ごと失われる」）を
-  //    書いておきながら、**同じ式の隣**が素通りだった。
+  // 🔴 **隣のフィールドでも 500 にしない（レビュー 3 周目 MINOR 6）。**
   const ipAllowlist = Array.isArray(s.ipAllowlist) ? [...s.ipAllowlist] : [];
-  return { ...s, pin, pinSetByOperator, ipAllowlist };
+  // 🔴 **拒否側へ倒した事実を観測できるようにする (#1160 AC1)。** `pinRequired` なら受付端末は
+  //    どの PIN でも許可されない（締め出し）。管理画面と監査の両方から分かるようにする。
+  //    `defaults()` は必ず読める値を返すので、ここへ来るのは**保存レコード**だけである。
+  if (!usable) await reportUnreadablePin(s.pinRequired === true);
+  return { settings: { ...s, pinSetByOperator, ipAllowlist }, storedPinUnreadable: !usable };
 }
 
 export async function getSecuritySettings(): Promise<SecuritySettings> {
   return current();
+}
+
+/** 設定と、保存レコードの PIN を読めず拒否側へ倒しているかを 1 回の読み出しで返す (#1160 AC2)。 */
+export async function readSecuritySettings(): Promise<SecurityRead> {
+  return read();
 }
 
 export async function updateSecuritySettings(patch: unknown): Promise<SecuritySettings> {
@@ -123,26 +194,17 @@ export async function updateSecuritySettings(patch: unknown): Promise<SecuritySe
   // `default` を使わないので実デプロイでも起きる）。旧レコードの平文も、ここを通れば昇格する。
   // 「運用者が決めたか」は形式からではなく `pinSetByOperator` が持つので、
   // 昇格させても #1021 MAJOR-8 は再発しない。
-  // 🔴 **昇格の述語は `!isHashedPin` のままでよい（レビュー 3 周目 MAJOR 1 の対処を撤回）。**
+  // 🔴 **読めない記録は昇格させない (#1160 fail closed)。**
   //
-  //    3 周目は「`unusable` な記録が平文として昇格し、**記録文字列がそのまま PIN**になる」
-  //    に対し、**読み側の正規化と書き側の述語を両方**入れた。**機構が 1 つ余っていた** ——
-  //    ここへ届く `settings` は必ず `current()` を通っており、`unusable` は既に
-  //    `BUILTIN_DEFAULT_PIN` へ倒れている。変異検証で `isLegacyPlaintextPin` へ戻す変異が
-  //    **生存した**（守るものが無い）ので撤回した。`CLAUDE.md`「まず撤回を検討する」。
+  //    `current()` は読めない資格情報を**生のまま**返すので、ここで `!isHashedPin` だけを見て
+  //    昇格すると、記録文字列（空・壊れた記録）が**そのまま生きた PIN になる**
+  //    （レビュー 3 周目 MAJOR 1 で実測された形）。昇格するのは「読める平文（旧レコード・
+  //    `defaults()`）」と「運用者の入力」だけにする。読めない記録は生のまま書き戻し、
+  //    拒否状態と観測（`storedPinUnreadable`）を運用者が PIN を設定し直すまで保つ。
   //
-  //    不変条件は読み側が 1 箇所で持つ:
+  //    縛る不変条件:
   //
-  //    > **保存された使えない資格情報は、決して生きた PIN にならない。**
-  //
-  //    （`current()` の `isUsablePinCredential`。end-to-end の下界は
-  //    「読めない記録は、別項目の更新後もその文字列で authorize できない」が縛る。）
-  //
-  //    ここを通る `unusable` は**運用者が PIN 欄へ入力した文字列**だけで、それは
-  //    昇格して本人の PIN にするのが正しい（入力を黙って捨てて既定値へ戻すと、
-  //    「保存した」と言いながら効かない**沈黙の誤動作**になる）。
-  //    縛る不変条件（値ごとの期待値ではなく）:
-  //
+  //    > **保存された使えない資格情報は、決して生きた PIN にならず、既定値にも化けない。**
   //    > **運用者が PIN 欄へ入力した文字列は、`classify` の結果が何であっても、
   //    > その文字列で authorize できる。**
   // 🔴 **フラグは必ず埋めてから書く（レビュー 4 周目 MINOR 3）。** 以前この行は
@@ -154,7 +216,7 @@ export async function updateSecuritySettings(patch: unknown): Promise<SecuritySe
   //    決めないと旧レコードの `0000` が昇格の瞬間に「設定済み」へ化ける
   //    （#1021 MAJOR-8 の再発）。順序が逆になった機構は片側しか塞がない。
   settings.pinSetByOperator = settings.pinSetByOperator ?? isPinConfigured(settings);
-  if (pinFromOperator || !isHashedPin(settings.pin)) {
+  if (pinFromOperator || (isUsablePinCredential(settings.pin) && !isHashedPin(settings.pin))) {
     settings.pin = await hashPin(settings.pin);
   }
   await security().put(settings);
@@ -177,5 +239,6 @@ export async function verifyPin(pin: string): Promise<boolean> {
 
 /** テスト用: 既定へ戻す。 */
 export async function __resetSecurity(): Promise<void> {
+  unreadablePinReported = false;
   await security().reset();
 }
