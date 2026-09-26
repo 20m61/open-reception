@@ -40,7 +40,7 @@ export async function GET(): Promise<NextResponse> {
     ipAllowlist: s.ipAllowlist,
     pinConfigured: isPinConfigured(s),
     emergencyStop: s.emergencyStop,
-    // 🔴 保存されていた PIN を読めず、組込み既定で代用しているか (#1160 AC2)。
+    // 🔴 保存されていた PIN を読めず、PIN 認可を誰にも通さない状態（fail closed）か (#1160 AC2)。
     //    真偽だけを返す（値・どう壊れていたかは返さない）。
     storedPinUnreadable,
   });
