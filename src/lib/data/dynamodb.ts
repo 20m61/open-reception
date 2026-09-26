@@ -267,11 +267,16 @@ class DynamoSingleton<T> implements Singleton<T> {
     private readonly doc: DynamoDBDocumentClient,
     private readonly table: string,
     private readonly name: string,
+    private readonly consistentRead = false,
   ) {}
 
   async get(): Promise<T | undefined> {
     const res = await this.doc.send(
-      new GetCommand({ TableName: this.table, Key: { PK: 'config', SK: this.name } }),
+      new GetCommand({
+        TableName: this.table,
+        Key: { PK: 'config', SK: this.name },
+        ...(this.consistentRead ? { ConsistentRead: true } : {}),
+      }),
     );
     return strip<T>(res.Item as Item | undefined);
   }
@@ -435,10 +440,10 @@ export class DynamoBackend implements DataBackend {
     return new DynamoCollection<T>(this.doc, this.table, name, opts?.ttlSeconds, opts?.indexedField);
   }
 
-  singleton<T>(name: string, _opts?: { default?: () => T }): Singleton<T> {
-    // _opts.default は memory バックエンド専用。DynamoDB では未保存時 undefined を返し、
+  singleton<T>(name: string, opts?: { default?: () => T; consistentRead?: boolean }): Singleton<T> {
+    // opts.default は memory バックエンド専用。DynamoDB では未保存時 undefined を返し、
     // 呼び出し側が DEFAULTS にフォールバックする（interface 互換のため引数は受ける）。
-    return new DynamoSingleton<T>(this.doc, this.table, name);
+    return new DynamoSingleton<T>(this.doc, this.table, name, opts?.consistentRead === true);
   }
 
   log<T extends { id: string }>(name: string, opts: LogOpts<T>): LogStore<T> {

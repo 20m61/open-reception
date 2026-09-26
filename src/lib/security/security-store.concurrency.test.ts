@@ -20,6 +20,7 @@ import { getBackend } from '@/lib/data';
 import {
   __resetSecurity,
   getSecuritySettings,
+  revisionOf,
   SecuritySettingsConflictError,
   SecuritySettingsInvalidError,
   SecuritySettingsPreconditionRequiredError,
@@ -251,5 +252,72 @@ describe('セキュリティ設定の同時更新 (#1158)', () => {
     await updateSecuritySettings({ emergencyStop: !value });
     const updated = await updateSecuritySettings({ emergencyStop: value });
     expect(updated.emergencyStop).toBe(value);
+  });
+
+  /**
+   * 🔴 **同時の投入と解除で、投入は負けない (#1158 AC3。fresh-context review M1)。**
+   *
+   * 以前は解除（`emergencyStop: false`）も版なしで当て直していたので、投入と解除が交錯すると
+   * **両方が成功と返り、最終値は解除**になった（順序によらず。実測）。投入した運用者の画面は
+   * 「有効にしました」のまま停止が黙って外れる。当て直すのは投入だけにし、解除は 1 回だけ試して
+   * 負けたら競合にする。順序を両方向で縛る。
+   */
+  it.each([
+    ['投入が先', [true, false]],
+    ['解除が先', [false, true]],
+  ] as const)('🔴 投入と解除が交錯しても（%s）、投入は成功し最終値は停止のまま', async (_label, order) => {
+    await updateSecuritySettings({ emergencyStop: false });
+    interleaveReads(2);
+    const results = await Promise.allSettled(order.map((v) => updateSecuritySettings({ emergencyStop: v })));
+    vi.restoreAllMocks();
+    const stop = results[order.indexOf(true)];
+    const resume = results[order.indexOf(false)];
+    expect(stop?.status).toBe('fulfilled');
+    expect((await getSecuritySettings()).emergencyStop).toBe(true);
+    // 解除は「勝った（その後で投入が当て直した）」か「競合」のどちらか。黙って負けて成功とは言わない。
+    if (resume?.status === 'rejected') expect(resume.reason).toBeInstanceOf(SecuritySettingsConflictError);
+  });
+
+  /** 🔴 解除は当て直さない: 1 回負けたら競合（下界として 1 回は試す）。 */
+  it('🔴 版なしの解除は 1 回負けたら競合で、当て直さない', async () => {
+    await updateSecuritySettings({ emergencyStop: true });
+    const store = raw();
+    const putIf = vi.spyOn(store, 'putIf').mockResolvedValue(false);
+    await expect(updateSecuritySettings({ emergencyStop: false })).rejects.toBeInstanceOf(
+      SecuritySettingsConflictError,
+    );
+    expect(putIf).toHaveBeenCalledTimes(1);
+    vi.restoreAllMocks();
+    expect((await getSecuritySettings()).emergencyStop).toBe(true);
+  });
+
+  /** 🔴 security の singleton は強い整合性で読む（配線。#1158 fresh-context review M2）。 */
+  it('security の singleton を consistentRead で開く', async () => {
+    const backend = getBackend();
+    const spy = vi.spyOn(backend, 'singleton');
+    await getSecuritySettings();
+    expect(spy).toHaveBeenCalledWith('security', expect.objectContaining({ consistentRead: true }));
+  });
+
+  /**
+   * 🔴 **版が安全な整数の外なら、進まない版で ABA にしない (fresh-context review L1)。**
+   * `2^53 + 1 === 2^53` なので、以前は版が進まず、同じ版を読んだ 2 つの保存が順に両方通った。
+   * 安全な整数の外は壊れた版として 0 と読み、書けば 1 から進み直す。
+   */
+  it.each([2 ** 53, 2 ** 60])('🔴 版 %s の記録でも、同じ版からの 2 本目の保存は競合になる', async (huge) => {
+    await raw().put({ pinRequired: false, pin: BUILTIN_DEFAULT_PIN, ipAllowlist: [], emergencyStop: false, rev: huge });
+    const rev = revisionOf((await getSecuritySettings()).rev);
+    expect(rev).toBe(0);
+    const first = await updateSecuritySettings({ rev, pinRequired: true });
+    expect(first.rev).toBe(1);
+    await expect(updateSecuritySettings({ rev, ipAllowlist: [] })).rejects.toBeInstanceOf(
+      SecuritySettingsConflictError,
+    );
+  });
+
+  it.each([2 ** 53, Number.MAX_SAFE_INTEGER + 2])('🔴 安全な整数の外の版 %s を送ったら不正な版として拒否する', async (bad) => {
+    await expect(updateSecuritySettings({ rev: bad, pinRequired: true })).rejects.toBeInstanceOf(
+      SecuritySettingsInvalidError,
+    );
   });
 });

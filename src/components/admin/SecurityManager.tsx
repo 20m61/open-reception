@@ -236,7 +236,9 @@ export function SecurityManager() {
       if (!res.ok) {
         // 🔴 **競合は「何も書いていない」と言い切れる (#1158 AC2)。** 表示は古いので
         //    `viewStale` も立てる（下ろせるのは GET だけ。上の解説を見ること）。
-        if (res.status === 409) {
+        // 🔴 **428（版が無い）も同じ結論にする（fresh-context review L3）。** 古いバンドルが版を
+        //    送らないときに出る。どちらも何も書いておらず、再読み込みすれば直る。
+        if (res.status === 409 || res.status === 428) {
           setViewStale(true);
           failure(SECURITY_CONFLICT_MESSAGE);
           return;

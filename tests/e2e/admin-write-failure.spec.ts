@@ -428,42 +428,36 @@ test.describe('管理: 書き込み失敗が運用者に見える (#870 増分 0
   });
 
   /**
-   * 🔴 **順序が逆でも巻き戻さない** (#973)。
-   *
-   * 「保存が先に飛行中」だけを塞ぐと、**緊急停止が先に飛行中**（その間に保存を押す）で
-   * 素通りする —— 世代を数える形はこの鏡像を取りこぼす（独立レビュー 7 周目 MAJOR-1、
-   * 実測で再現）。順序に依存しない不変条件（保存は `emergencyStop` の権威を持たない）を
-   * 入れたので、**両方の順序**を縛る。
-   */
-  /**
    * 🔴 **保存は表示の版を付けて送り、409 を「保存しなかった」と言い切る (#1158 AC2)。**
    *
    * store / route の unit は「版が古ければ 409」までしか言えず、**画面が版を送らない**
    * （＝古い表示から他人の変更を黙って上書きする）変異や、409 を汎用の失敗に畳む変異は
    * 素通りする。応答は注入で返すので共有 seed を変えない。
    */
-  test('セキュリティ設定: 保存は表示の版を送り、競合したら保存しなかったと伝える (#1158)', async ({ page }) => {
-    const view = (rev: number, emergencyStop = false): string =>
-      JSON.stringify({ pinRequired: false, ipAllowlist: [], pinConfigured: false, emergencyStop, rev });
-    const sent: Array<Record<string, unknown>> = [];
-    await page.route('**/api/admin/security**', (route) => {
-      if (route.request().method() === 'GET') {
-        return route.fulfill({ status: 200, contentType: 'application/json', body: view(4) });
-      }
-      sent.push(route.request().postDataJSON() as Record<string, unknown>);
-      return route.fulfill({ status: 409, contentType: 'application/json', body: '{"error":"conflict"}' });
+  for (const status of [409, 428] as const) {
+    test(`セキュリティ設定: 保存は表示の版を送り、${status} なら保存しなかったと伝える (#1158)`, async ({ page }) => {
+      const view = (rev: number, emergencyStop = false): string =>
+        JSON.stringify({ pinRequired: false, ipAllowlist: [], pinConfigured: false, emergencyStop, rev });
+      const sent: Array<Record<string, unknown>> = [];
+      await page.route('**/api/admin/security**', (route) => {
+        if (route.request().method() === 'GET') {
+          return route.fulfill({ status: 200, contentType: 'application/json', body: view(4) });
+        }
+        sent.push(route.request().postDataJSON() as Record<string, unknown>);
+        return route.fulfill({ status, contentType: 'application/json', body: '{"error":"conflict"}' });
+      });
+      await page.goto('/admin/security');
+      await expect(page.getByTestId('security-save')).toBeVisible();
+
+      await page.getByTestId('security-save').click();
+
+      await expect(page.getByTestId('security-error')).toContainText('保存しませんでした');
+      await expect(page.getByTestId('security-view-stale')).toBeVisible();
+      await expect(page.getByTestId('security-saved')).toHaveCount(0);
+      expect(sent).toHaveLength(1);
+      expect(sent[0]).toMatchObject({ rev: 4 });
     });
-    await page.goto('/admin/security');
-    await expect(page.getByTestId('security-save')).toBeVisible();
-
-    await page.getByTestId('security-save').click();
-
-    await expect(page.getByTestId('security-error')).toContainText('保存しませんでした');
-    await expect(page.getByTestId('security-view-stale')).toBeVisible();
-    await expect(page.getByTestId('security-saved')).toHaveCount(0);
-    expect(sent).toHaveLength(1);
-    expect(sent[0]).toMatchObject({ rev: 4 });
-  });
+  }
 
   /**
    * 🔴 **緊急停止の 409 も保存と同じ結論にする (#1158)。** 緊急停止は版を付けずに送り、
@@ -533,6 +527,14 @@ test.describe('管理: 書き込み失敗が運用者に見える (#870 増分 0
     });
   }
 
+  /**
+   * 🔴 **順序が逆でも巻き戻さない** (#973)。
+   *
+   * 「保存が先に飛行中」だけを塞ぐと、**緊急停止が先に飛行中**（その間に保存を押す）で
+   * 素通りする —— 世代を数える形はこの鏡像を取りこぼす（独立レビュー 7 周目 MAJOR-1、
+   * 実測で再現）。順序に依存しない不変条件（保存は `emergencyStop` の権威を持たない）を
+   * 入れたので、**両方の順序**を縛る。
+   */
   test('緊急停止が先に飛行中でも、保存の応答が巻き戻さない (#973)', async ({ page }) => {
     await page.goto('/admin/security');
     await expect(page.getByTestId('emergency-stop')).toBeVisible();

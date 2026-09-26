@@ -43,7 +43,11 @@ function defaults(): SecuritySettings {
   };
 }
 
-const security = () => getBackend().singleton<SecuritySettings>('security', { default: defaults });
+// 🔴 **強い整合性で読む (#1158。fresh-context review M2)。** 版（`rev`）を読んで条件付きで書くので、
+//    結果整合性の読みで古い版を掴むと、保存の直後の保存が 409 になり、緊急停止の当て直しも
+//    古い版を読み続けて予算を使い切りうる。MiniStack は強整合なのでエミュレータでは差が出ない。
+const security = () =>
+  getBackend().singleton<SecuritySettings>('security', { default: defaults, consistentRead: true });
 
 async function current(): Promise<SecuritySettings> {
   const s = (await security().get()) ?? defaults();
@@ -138,7 +142,10 @@ const MAX_UPDATE_ATTEMPTS = 3;
  * 管理 API が返す版はこれを通すこと。
  */
 export function revisionOf(stored: unknown): number {
-  return typeof stored === 'number' && Number.isInteger(stored) && stored >= 0 ? stored : 0;
+  // 🔴 **安全な整数に限る（fresh-context review L1）。** `2^53 + 1 === 2^53` なので、その外では
+  //    版が進まず、同じ版を読んだ 2 つの保存が順に両方通る（ABA）。外れたものは壊れた版として 0 と読み、
+  //    書けば 1 から進み直す（条件式には生の値を渡すので、壊れた版の記録も上書きできる）。
+  return typeof stored === 'number' && Number.isSafeInteger(stored) && stored >= 0 ? stored : 0;
 }
 
 /** patch が版を持っていればそれを返す。持っていなければ undefined。形が違えば拒否する。 */
@@ -147,7 +154,7 @@ function expectedRevisionOf(patch: unknown): number | undefined {
   const rev = (patch as { rev?: unknown }).rev;
   // 🔴 **不正な版を「版なし」として扱わない。** 無視すると、古い画面からの保存が
   //    最新の記録へ当て直されて**黙って勝つ**（この issue が消そうとしている形そのもの）。
-  if (typeof rev !== 'number' || !Number.isInteger(rev) || rev < 0) {
+  if (typeof rev !== 'number' || !Number.isSafeInteger(rev) || rev < 0) {
     throw new SecuritySettingsInvalidError();
   }
   return rev;
@@ -168,9 +175,10 @@ function expectedRevisionOf(patch: unknown): number | undefined {
  *
  * - **版（`rev`）付きの patch** は「その版から見た変更」。読んだ版と違えば書かずに競合
  *   （管理画面の古い表示からの保存が、他人の変更を消さない。#1158 AC2）
- * - **版なしで受け付けるのは緊急停止のトグルだけ**（`{ emergencyStop }` のみ）。書き込みで
- *   負けたら最新の記録へ当て直す（上限つき。#1158 AC3「緊急停止の投入は競合しても落ちない」）。
- *   当て直すのは `emergencyStop` 1 項目だけなので、他人が書いた項目を踏み潰さない
+ * - **版なしで受け付けるのは緊急停止のトグルだけ**（`{ emergencyStop }` のみ）。**投入**
+ *   （`true`）は書き込みで負けたら最新の記録へ当て直す（上限つき。#1158 AC3「緊急停止の投入は
+ *   競合しても落ちない」）。当てるのは `emergencyStop` 1 項目だけなので他人の項目を踏み潰さない。
+ *   **解除**（`false`）は当て直さない（1 回負けたら競合。投入と交錯して停止が黙って外れないように）
  * - それ以外の版なしの patch は `SecuritySettingsPreconditionRequiredError`（428）。
  *   以前は受け付けて後勝ちにしていた（独立レビュー 1 周目 MAJOR・ユーザー判断で必須化）
  */
@@ -179,10 +187,14 @@ export async function updateSecuritySettings(patch: unknown): Promise<SecuritySe
   if (expectedRev === undefined && !isEmergencyToggleOnly(patch)) {
     throw new SecuritySettingsPreconditionRequiredError();
   }
-  for (let attempt = 0; attempt < MAX_UPDATE_ATTEMPTS; attempt += 1) {
-    // 版付きの patch も同じ経路を通る: 当て直しは読み直しから始まり、読んだ版はもう
-    // 期待した版と違うので、`attemptUpdate` が書く前に競合を返す（他人の変更の上に勝たない）。
-    // 版付きだけを別に止める分岐は置かない —— 変異検証で等価（守るものが無い）と実測した。
+  // 🔴 **当て直すのは緊急停止の投入だけ (#1158 AC3。fresh-context review M1)。** 解除も当て直すと、
+  //    投入と解除が交錯したとき**両方が成功と返り、停止が黙って外れる**（実測）。安全側は停止なので、
+  //    解除は 1 回だけ試し、負けたら競合（「解除できませんでした」→ 運用者が押し直す）にする。
+  const attempts =
+    expectedRev === undefined && (patch as { emergencyStop?: unknown }).emergencyStop === true
+      ? MAX_UPDATE_ATTEMPTS
+      : 1;
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
     const written = await attemptUpdate(patch, expectedRev);
     if (written !== null) return written;
   }

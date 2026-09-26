@@ -96,6 +96,10 @@ export async function PUT(request: Request): Promise<NextResponse> {
       // 🔴 **値は残さず、変えたことだけ残す（レビュー 1 周目 MINOR 6）。**
       //    運用調査（「いつ誰が PIN を変えたか」）に効く。PII/secret は載せない。
       pinChanged,
+      // 版の遷移 (#1158。fresh-context review L2)。「どの版からどの版へ書いたか」が無いと、
+      // 409 / 428 の報告と監査の行を突き合わせられない。書くたびに版は 1 つだけ進む。
+      fromRev: revisionOf(updated.rev) - 1,
+      rev: revisionOf(updated.rev),
     },
   });
   return NextResponse.json({

@@ -241,7 +241,7 @@ export class MemoryBackend implements DataBackend {
     return existing as unknown as Collection<T>;
   }
 
-  singleton<T>(name: string, opts?: { default?: () => T }): Singleton<T> {
+  singleton<T>(name: string, opts?: { default?: () => T; consistentRead?: boolean }): Singleton<T> {
     let existing = this.singletons.get(name);
     if (!existing) {
       existing = new MemorySingleton<unknown>(opts?.default as (() => unknown) | undefined);

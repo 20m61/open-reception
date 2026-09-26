@@ -164,6 +164,16 @@ describe('PUT /api/admin/security の競合 (#1158)', () => {
       }),
     );
 
+  it('🔴 成功した保存の監査に、版の遷移（fromRev → rev）が残る', async () => {
+    await put({ rev: 0, pinRequired: true });
+    await put({ emergencyStop: true });
+    const metas = recordDangerAction.mock.calls.map((c) => (c[0] as { metadata: Record<string, unknown> }).metadata);
+    expect(metas).toEqual([
+      expect.objectContaining({ fromRev: 0, rev: 1 }),
+      expect.objectContaining({ fromRev: 1, rev: 2 }),
+    ]);
+  });
+
   it('🔴 GET は版を返し、版付きの保存が通るたびに 1 つ進む（下界）', async () => {
     const { rev } = (await (await GET()).json()) as { rev: number };
     expect(rev).toBe(0);
