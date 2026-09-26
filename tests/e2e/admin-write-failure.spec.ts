@@ -495,9 +495,9 @@ test.describe('管理: 書き込み失敗が運用者に見える (#870 増分 0
    * - それより先（他人も書いた）⟹ 据え置く。進めると、他人が変えた項目を古い表示のまま
    *   保存して黙って消す
    */
-  for (const [label, emergencyRev, expectedSaveRev] of [
-    ['自分の書き込みだけなら版を進める', 5, 5],
-    ['他人も書いていれば版を据え置く', 6, 4],
+  for (const [label, emergencyRev, expectedSaveRev, staleShown] of [
+    ['自分の書き込みだけなら版を進める', 5, 5, false],
+    ['他人も書いていれば版を据え置き、表示が古いと伝える', 6, 4, true],
   ] as const) {
     test(`緊急停止の応答と版: ${label} (#1158)`, async ({ page }) => {
       const view = (rev: number, emergencyStop = false): string =>
@@ -521,6 +521,8 @@ test.describe('管理: 書き込み失敗が運用者に見える (#870 増分 0
       await page.getByTestId('emergency-stop').click();
       await page.getByTestId('emergency-confirm').click();
       await expect(page.getByTestId('emergency-saved')).toBeVisible();
+      // 版が飛んだ（他人も書いた）ときだけ「表示が古い」を出す。自分だけなら出さない（下界）。
+      await expect(page.getByTestId('security-view-stale')).toHaveCount(staleShown ? 1 : 0);
 
       await page.getByTestId('security-save').click();
       await expect(page.getByTestId('security-saved')).toBeVisible();

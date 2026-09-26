@@ -177,6 +177,10 @@ export function SecurityManager() {
           ? applied
           : { ...shown, emergencyStop: applied.emergencyStop, ...(ownWriteOnly ? { rev: applied.rev } : {}) },
       );
+      // 🔴 **据え置いたことを黙らない**（`applySaveResult` と鏡像。独立レビュー 2 周目 MAJOR）。
+      //    版が飛んでいる＝表示を読んでから他の書き込みがあった証拠なので、表示が古いことを伝える。
+      //    版を持たない応答（#1158 以前のサーバ）では判定できないので何もしない。
+      if (shown?.rev !== undefined && applied.rev !== undefined && !ownWriteOnly) setViewStale(true);
       // `viewStale` は触らない（下ろせるのは GET だけ。上の解説を見ること）。
     },
     [setView],
