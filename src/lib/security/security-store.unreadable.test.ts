@@ -42,9 +42,15 @@ import {
   __resetSecurity,
   getSecuritySettings,
   readSecuritySettings,
+  revisionOf,
   updateSecuritySettings,
   verifyPin,
 } from './security-store';
+
+/** 管理画面と同じく、読んだ版を付けて保存する (#1158: 版なしで受け付けるのは緊急停止のトグルだけ)。 */
+async function currentRev(): Promise<number> {
+  return revisionOf((await getSecuritySettings()).rev);
+}
 
 const ACTION = 'security.pin_credential_unreadable';
 
@@ -140,7 +146,7 @@ describe('読めない PIN 記録は fail closed で、観測できる (#1160)',
   it.each(UNREADABLE)('🔴 %s: PIN を送らない更新を経ても通らず、読めないままと答える', async (_label, pin) => {
     await putRaw({ pinRequired: true, pin, pinSetByOperator: true, ipAllowlist: [], emergencyStop: false });
     await updateSecuritySettings({ emergencyStop: true });
-    await updateSecuritySettings({ ipAllowlist: ['203.0.113.1'] });
+    await updateSecuritySettings({ rev: await currentRev(), ipAllowlist: ['203.0.113.1'] });
     for (const probe of [...PROBES, ...(typeof pin === 'string' ? [pin] : [String(pin)])]) {
       expect(await verifyPin(probe), `probe=${probe}`).toBe(false);
     }
@@ -157,7 +163,7 @@ describe('読めない PIN 記録は fail closed で、観測できる (#1160)',
    */
   it.each(UNREADABLE)('🔴 %s: 運用者が PIN を設定し直せば、その PIN でだけ通る', async (_label, pin) => {
     await putRaw({ pinRequired: true, pin, ipAllowlist: [], emergencyStop: false });
-    await updateSecuritySettings({ pin: '5839' });
+    await updateSecuritySettings({ rev: await currentRev(), pin: '5839' });
     expect(await verifyPin('5839')).toBe(true);
     expect(await verifyPin(BUILTIN_DEFAULT_PIN)).toBe(false);
     const read = await readSecuritySettings();
@@ -200,7 +206,7 @@ describe('読めない PIN 記録は fail closed で、観測できる (#1160)',
       });
     }],
     ['管理 API で保存した記録', async () => {
-      await updateSecuritySettings({ pinRequired: true, pin: '4821' });
+      await updateSecuritySettings({ rev: await currentRev(), pinRequired: true, pin: '4821' });
     }],
   ])('🔴 読める記録では監査も表示も出ない: %s', async (_label, arrange) => {
     await arrange();

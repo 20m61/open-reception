@@ -43,6 +43,11 @@ beforeEach(async () => {
   resolveAdminActor.mockResolvedValue(tenantAdmin());
 });
 
+/** 管理画面と同じく、GET で読んだ版を付けて保存する (#1158: 版なしは緊急停止のトグルだけ)。 */
+async function currentRev(): Promise<number> {
+  return ((await (await GET()).json()) as { rev: number }).rev;
+}
+
 describe('GET /api/admin/security の pinConfigured (#1021 AC3)', () => {
   it('🔴 既定のままなら未設定と返す（以前は常に true だった）', async () => {
     const body = (await (await GET()).json()) as { pinConfigured: boolean };
@@ -53,7 +58,7 @@ describe('GET /api/admin/security の pinConfigured (#1021 AC3)', () => {
     await PUT(
       new Request('http://localhost/api/admin/security', {
         method: 'PUT',
-        body: JSON.stringify({ pin: '4821' }),
+        body: JSON.stringify({ rev: await currentRev(), pin: '4821' }),
       }),
     );
     const body = (await (await GET()).json()) as { pinConfigured: boolean };
@@ -71,7 +76,7 @@ describe('GET /api/admin/security の pinConfigured (#1021 AC3)', () => {
     const res = await PUT(
       new Request('http://localhost/api/admin/security', {
         method: 'PUT',
-        body: JSON.stringify({ pinRequired: true }),
+        body: JSON.stringify({ rev: await currentRev(), pinRequired: true }),
       }),
     );
     const body = (await res.json()) as { pinConfigured: boolean; pinRequired: boolean };
@@ -88,11 +93,11 @@ describe('GET /api/admin/security の pinConfigured (#1021 AC3)', () => {
    * **間違った記録は無い記録より悪い。**
    */
   it('🔴 PIN のローテーションも監査に残る', async () => {
-    const put = (body: unknown) =>
+    const put = async (body: Record<string, unknown>) =>
       PUT(
         new Request('http://localhost/api/admin/security', {
           method: 'PUT',
-          body: JSON.stringify(body),
+          body: JSON.stringify({ rev: await currentRev(), ...body }),
         }),
       );
     await put({ pin: '4821' });
@@ -119,7 +124,7 @@ describe('GET /api/admin/security の pinConfigured (#1021 AC3)', () => {
     await PUT(
       new Request('http://localhost/api/admin/security', {
         method: 'PUT',
-        body: JSON.stringify({ pin: '4821' }),
+        body: JSON.stringify({ rev: await currentRev(), pin: '4821' }),
       }),
     );
     const text = await (await GET()).text();
@@ -133,7 +138,7 @@ describe('GET /api/admin/security の pinConfigured (#1021 AC3)', () => {
     const res = await PUT(
       new Request('http://localhost/api/admin/security', {
         method: 'PUT',
-        body: JSON.stringify({ pin: '4821' }),
+        body: JSON.stringify({ rev: await currentRev(), pin: '4821' }),
       }),
     );
     const text = await res.text();
@@ -141,6 +146,101 @@ describe('GET /api/admin/security の pinConfigured (#1021 AC3)', () => {
     expect(text).not.toContain('pbkdf2');
     // 下界: 応答が空でないこと（何も返していないなら上の主張は空虚）。
     expect(JSON.parse(text)).toMatchObject({ pinConfigured: true });
+  });
+});
+
+/**
+ * 🔴 **競合を 409 に写像する配線 (#1158 AC2)。**
+ *
+ * 判定は store が縛っている。残る危険は配線で、例外を 500 にする・握って 200 にする・
+ * 競合でも監査に「更新した」と残す、のどれも store のテストからは見えない。
+ */
+describe('PUT /api/admin/security の競合 (#1158)', () => {
+  const put = (body: unknown) =>
+    PUT(
+      new Request('http://localhost/api/admin/security', {
+        method: 'PUT',
+        body: JSON.stringify(body),
+      }),
+    );
+
+  it('🔴 成功した保存の監査に、版の遷移（fromRev → rev）が残る', async () => {
+    await put({ rev: 0, pinRequired: true });
+    await put({ emergencyStop: true });
+    const metas = recordDangerAction.mock.calls.map((c) => (c[0] as { metadata: Record<string, unknown> }).metadata);
+    expect(metas).toEqual([
+      expect.objectContaining({ fromRev: 0, rev: 1 }),
+      expect.objectContaining({ fromRev: 1, rev: 2 }),
+    ]);
+  });
+
+  it('🔴 GET は版を返し、版付きの保存が通るたびに 1 つ進む（下界）', async () => {
+    const { rev } = (await (await GET()).json()) as { rev: number };
+    expect(rev).toBe(0);
+    const res = await put({ rev, pinRequired: true });
+    expect(res.status).toBe(200);
+    expect(((await res.json()) as { rev: number }).rev).toBe(1);
+    expect(((await (await GET()).json()) as { rev: number }).rev).toBe(1);
+  });
+
+  /**
+   * 🔴 **版なしで緊急停止以外を変えようとしたら 428 (#1158・ユーザー判断で必須化)。**
+   * 何も書かず、監査にも残さない。応答で「版を付けて送り直せ」と分かる。
+   */
+  it.each([
+    ['PIN 必須', { pinRequired: true }],
+    ['PIN', { pin: '4821' }],
+    ['緊急停止に他の項目を混ぜたもの', { emergencyStop: true, ipAllowlist: [] }],
+  ])('🔴 版なしの %s は 428 で、何も書かず、監査にも残さない', async (_label, body) => {
+    const res = await put(body);
+    expect(res.status).toBe(428);
+    expect(await res.json()).toEqual({ error: 'rev_required' });
+    expect(recordDangerAction).not.toHaveBeenCalled();
+    expect(await (await GET()).json()).toMatchObject({ rev: 0, pinRequired: false, emergencyStop: false });
+  });
+
+  it('🔴 古い版からの保存は 409 で、何も書かず、監査にも残さない', async () => {
+    const { rev } = (await (await GET()).json()) as { rev: number };
+    await put({ emergencyStop: true }); // 別の操作が先に書いた
+    recordDangerAction.mockClear();
+    const res = await put({ rev, pinRequired: true, ipAllowlist: [] });
+    expect(res.status).toBe(409);
+    expect(await res.json()).toEqual({ error: 'conflict' });
+    expect(recordDangerAction).not.toHaveBeenCalled();
+    const now = (await (await GET()).json()) as { pinRequired: boolean; emergencyStop: boolean };
+    expect(now).toMatchObject({ pinRequired: false, emergencyStop: true });
+  });
+
+  it('🔴 版の形が違えば 400 で、何も書かない', async () => {
+    const res = await put({ rev: 'x', emergencyStop: true });
+    expect(res.status).toBe(400);
+    expect(recordDangerAction).not.toHaveBeenCalled();
+    expect(((await (await GET()).json()) as { emergencyStop: boolean }).emergencyStop).toBe(false);
+  });
+
+  it('版を付けない保存（緊急停止のトグル）は版に縛られない', async () => {
+    await put({ rev: 0, pinRequired: true });
+    const res = await put({ emergencyStop: true });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toMatchObject({ emergencyStop: true, rev: 2 });
+  });
+
+  /**
+   * 🔴 **壊れた版をそのまま返さない。** 画面（`asSecurityView`）は形の違う版を壊れた応答として
+   * 拒否するので、生の値を返すと**管理画面が開けず、緊急停止も押せない**。
+   */
+  it.each([-1, 1.5, 'x'])('🔴 版が壊れた記録 %s でも GET は版 0 を返し、その版で保存できる', async (broken) => {
+    await getBackend().singleton('security', { default: () => ({}) }).put({
+      pinRequired: false,
+      pin: '0000',
+      ipAllowlist: [],
+      emergencyStop: false,
+      rev: broken,
+    });
+    expect(await (await GET()).json()).toMatchObject({ rev: 0 });
+    const res = await put({ rev: 0, pinRequired: true });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toMatchObject({ rev: 1, pinRequired: true });
   });
 });
 
@@ -172,7 +272,7 @@ describe('GET /api/admin/security の storedPinUnreadable (#1160 AC2)', () => {
     await PUT(
       new Request('http://localhost/api/admin/security', {
         method: 'PUT',
-        body: JSON.stringify({ pin: '4821' }),
+        body: JSON.stringify({ rev: await currentRev(), pin: '4821' }),
       }),
     );
     expect(await (await GET()).json()).toMatchObject({ storedPinUnreadable: false });
@@ -194,7 +294,7 @@ describe('GET /api/admin/security の storedPinUnreadable (#1160 AC2)', () => {
     const stopped = await put({ emergencyStop: true });
     expect(await stopped.json()).toMatchObject({ storedPinUnreadable: true, emergencyStop: true });
     expect(await (await GET()).json()).toMatchObject({ storedPinUnreadable: true });
-    const recovered = await put({ pin: '5839' });
+    const recovered = await put({ rev: await currentRev(), pin: '5839' });
     expect(await recovered.json()).toMatchObject({ storedPinUnreadable: false, pinConfigured: true });
     expect(await (await GET()).json()).toMatchObject({ storedPinUnreadable: false });
   });

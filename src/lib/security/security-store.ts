@@ -44,7 +44,11 @@ function defaults(): SecuritySettings {
   };
 }
 
-const security = () => getBackend().singleton<SecuritySettings>('security', { default: defaults });
+// 🔴 **強い整合性で読む (#1158。fresh-context review M2)。** 版（`rev`）を読んで条件付きで書くので、
+//    結果整合性の読みで古い版を掴むと、保存の直後の保存が 409 になり、緊急停止の当て直しも
+//    古い版を読み続けて予算を使い切りうる。MiniStack は強整合なのでエミュレータでは差が出ない。
+const security = () =>
+  getBackend().singleton<SecuritySettings>('security', { default: defaults, consistentRead: true });
 
 /**
  * 読めない PIN 記録を見つけて PIN 認可を拒否側へ倒したことを、**このプロセスで既に監査へ出したか** (#1160)。
@@ -149,8 +153,135 @@ export async function readSecuritySettings(): Promise<SecurityRead> {
   return read();
 }
 
+/**
+ * 同時更新で負けた (#1158)。**何も書いていない。** 呼び出し側は 409 にし、黙って勝たない。
+ */
+export class SecuritySettingsConflictError extends Error {
+  constructor() {
+    super('security settings were changed concurrently');
+    this.name = 'SecuritySettingsConflictError';
+  }
+}
+
+/** patch の `rev` が版の形をしていない (#1158)。**何も書いていない。** 呼び出し側は 400 にする。 */
+export class SecuritySettingsInvalidError extends Error {
+  constructor() {
+    super('invalid security settings revision');
+    this.name = 'SecuritySettingsInvalidError';
+  }
+}
+
+/**
+ * 版を付けずに、緊急停止以外を変えようとした (#1158)。**何も書いていない。** 呼び出し側は 428 にする。
+ *
+ * 版なしの更新は「読んだ後に誰が何を書いたか」を判定できず、後勝ちで他人の変更を黙って消す。
+ * それを受け付けないのがこの issue の本題なので、版なしで受け付けるのは緊急停止のトグルだけにする。
+ */
+export class SecuritySettingsPreconditionRequiredError extends Error {
+  constructor() {
+    super('security settings revision (rev) is required');
+    this.name = 'SecuritySettingsPreconditionRequiredError';
+  }
+}
+
+/**
+ * patch が**緊急停止のトグルだけ**か（`{ emergencyStop: boolean }` で、他のキーを持たない）。
+ *
+ * 🔴 **許可の列挙にする。** 「PIN 系のキーが無ければ版なしで通す」のような禁止の列挙にすると、
+ *    将来フィールドが増えたときにそのフィールドが版なしで後勝ちになる。知らないキーが 1 つでも
+ *    あれば版を要求する。
+ */
+function isEmergencyToggleOnly(patch: unknown): boolean {
+  // 配列は `Object.keys` が添字になるので下の比較で落ちる（別の分岐は置かない。変異検証で等価）。
+  if (typeof patch !== 'object' || patch === null) return false;
+  const keys = Object.keys(patch);
+  return keys.length === 1 && keys[0] === 'emergencyStop' && typeof (patch as { emergencyStop?: unknown }).emergencyStop === 'boolean';
+}
+
+/**
+ * 版なしの patch を最新の記録へ当て直す上限 (#1158)。
+ *
+ * 当て直しは「押した緊急停止が他の保存に踏み潰されない」ための機構で、上限を超えたら
+ * 黙って諦めず競合を返す（運用者はもう一度押せる）。管理者が同時に数人触る程度の競合を
+ * 想定した値で、ここを大きくしても守れるものは増えない。
+ */
+const MAX_UPDATE_ATTEMPTS = 3;
+
+/**
+ * 記録の版。**版を持たない旧レコード（と未作成）は 0**。形の壊れた版も 0 として読む
+ * （壊れた版をそのまま画面へ返すと、画面が応答を拒否して**緊急停止ごと押せなくなる**）。
+ * 管理 API が返す版はこれを通すこと。
+ */
+export function revisionOf(stored: unknown): number {
+  // 🔴 **安全な整数に限る（fresh-context review L1）。** `2^53 + 1 === 2^53` なので、その外では
+  //    版が進まず、同じ版を読んだ 2 つの保存が順に両方通る（ABA）。外れたものは壊れた版として 0 と読み、
+  //    書けば 1 から進み直す（条件式には生の値を渡すので、壊れた版の記録も上書きできる）。
+  return typeof stored === 'number' && Number.isSafeInteger(stored) && stored >= 0 ? stored : 0;
+}
+
+/** patch が版を持っていればそれを返す。持っていなければ undefined。形が違えば拒否する。 */
+function expectedRevisionOf(patch: unknown): number | undefined {
+  if (typeof patch !== 'object' || patch === null || !('rev' in patch)) return undefined;
+  const rev = (patch as { rev?: unknown }).rev;
+  // 🔴 **不正な版を「版なし」として扱わない。** 無視すると、古い画面からの保存が
+  //    最新の記録へ当て直されて**黙って勝つ**（この issue が消そうとしている形そのもの）。
+  if (typeof rev !== 'number' || !Number.isSafeInteger(rev) || rev < 0) {
+    throw new SecuritySettingsInvalidError();
+  }
+  return rev;
+}
+
+/**
+ * セキュリティ設定を更新する。
+ *
+ * 🔴 **read-modify-write を条件付き書き込みにする (#1158)。** 以前は読んで・当てて・
+ *    **丸ごと put** していたので、2 つの更新が重なると後勝ちで片方の変更が消えた ——
+ *    「別の運用者が PIN を保存中に、こちらが緊急停止を押す」と、相手の書き込みが
+ *    **緊急停止を落とした状態**を書き戻し、画面は成功と言っていた。
+ *
+ * 守る不変条件（`security-store.concurrency.test.ts`）:
+ *
+ * > 成功を返した ⟹ その patch が書いたフィールドは、同時に成功した他の更新が同じ
+ * > フィールドを書かない限り残っている。成功しなかった ⟹ 例外で、何も書いていない。
+ *
+ * - **版（`rev`）付きの patch** は「その版から見た変更」。読んだ版と違えば書かずに競合
+ *   （管理画面の古い表示からの保存が、他人の変更を消さない。#1158 AC2）
+ * - **版なしで受け付けるのは緊急停止のトグルだけ**（`{ emergencyStop }` のみ）。**投入**
+ *   （`true`）は書き込みで負けたら最新の記録へ当て直す（上限つき。#1158 AC3「緊急停止の投入は
+ *   競合しても落ちない」）。当てるのは `emergencyStop` 1 項目だけなので他人の項目を踏み潰さない。
+ *   **解除**（`false`）は当て直さない（1 回負けたら競合。投入と交錯して停止が黙って外れないように）
+ * - それ以外の版なしの patch は `SecuritySettingsPreconditionRequiredError`（428）。
+ *   以前は受け付けて後勝ちにしていた（独立レビュー 1 周目 MAJOR・ユーザー判断で必須化）
+ */
 export async function updateSecuritySettings(patch: unknown): Promise<SecuritySettings> {
+  const expectedRev = expectedRevisionOf(patch);
+  if (expectedRev === undefined && !isEmergencyToggleOnly(patch)) {
+    throw new SecuritySettingsPreconditionRequiredError();
+  }
+  // 🔴 **当て直すのは緊急停止の投入だけ (#1158 AC3。fresh-context review M1)。** 解除も当て直すと、
+  //    投入と解除が交錯したとき**両方が成功と返り、停止が黙って外れる**（実測）。安全側は停止なので、
+  //    解除は 1 回だけ試し、負けたら競合（「解除できませんでした」→ 運用者が押し直す）にする。
+  const attempts =
+    expectedRev === undefined && (patch as { emergencyStop?: unknown }).emergencyStop === true
+      ? MAX_UPDATE_ATTEMPTS
+      : 1;
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    const written = await attemptUpdate(patch, expectedRev);
+    if (written !== null) return written;
+  }
+  throw new SecuritySettingsConflictError();
+}
+
+/** 1 回だけ読んで当てて条件付きで書く。書き込みで負けたら null（何も書いていない）。 */
+async function attemptUpdate(
+  patch: unknown,
+  expectedRev: number | undefined,
+): Promise<SecuritySettings | null> {
   const settings = await current();
+  /** 読んだ記録の版の**生の値**。条件式はこれと比べる（形が壊れていても一致で判定できる）。 */
+  const storedRev = settings.rev;
+  const rev = revisionOf(storedRev);
+  if (expectedRev !== undefined && expectedRev !== rev) throw new SecuritySettingsConflictError();
   /** この更新で**運用者が PIN 欄に入力したか**。入力は定義上つねに平文である。 */
   let pinFromOperator = false;
   if (typeof patch === 'object' && patch !== null) {
@@ -219,7 +350,10 @@ export async function updateSecuritySettings(patch: unknown): Promise<SecuritySe
   if (pinFromOperator || (isUsablePinCredential(settings.pin) && !isHashedPin(settings.pin))) {
     settings.pin = await hashPin(settings.pin);
   }
-  await security().put(settings);
+  settings.rev = rev + 1;
+  // 版が無い（旧レコード・未作成）なら「版が無いこと」を条件にする（`putIf` の契約）。
+  const written = await security().putIf(settings, { rev: storedRev });
+  if (!written) return null;
   return { ...settings, ipAllowlist: [...settings.ipAllowlist] };
 }
 

@@ -267,11 +267,16 @@ class DynamoSingleton<T> implements Singleton<T> {
     private readonly doc: DynamoDBDocumentClient,
     private readonly table: string,
     private readonly name: string,
+    private readonly consistentRead = false,
   ) {}
 
   async get(): Promise<T | undefined> {
     const res = await this.doc.send(
-      new GetCommand({ TableName: this.table, Key: { PK: 'config', SK: this.name } }),
+      new GetCommand({
+        TableName: this.table,
+        Key: { PK: 'config', SK: this.name },
+        ...(this.consistentRead ? { ConsistentRead: true } : {}),
+      }),
     );
     return strip<T>(res.Item as Item | undefined);
   }
@@ -279,6 +284,43 @@ class DynamoSingleton<T> implements Singleton<T> {
   async put(value: T): Promise<void> {
     const record: Item = { ...(value as Item), PK: 'config', SK: this.name };
     await this.doc.send(new PutCommand({ TableName: this.table, Item: record }));
+  }
+
+  async putIf(value: T, expected: Partial<T>): Promise<boolean> {
+    const record: Item = { ...(value as Item), PK: 'config', SK: this.name };
+    const names: Record<string, string> = {};
+    const values: Record<string, unknown> = {};
+    const conds: string[] = [];
+    let c = 0;
+    for (const [k, v] of Object.entries(expected)) {
+      const nm = `#c${c}`;
+      names[nm] = k;
+      // `attribute_not_exists` は**記録が無いときも真**になる（未作成と旧レコードを同じに扱う）。
+      if (v === undefined) {
+        conds.push(`attribute_not_exists(${nm})`);
+      } else {
+        values[`:c${c}`] = v;
+        conds.push(`${nm} = :c${c}`);
+      }
+      c += 1;
+    }
+    // 🔴 条件が 1 つも無い putIf は無条件 put と同じになる。呼び出しの誤りなので黙って書かない。
+    if (conds.length === 0) throw new Error('Singleton.putIf: expected must not be empty');
+    try {
+      await this.doc.send(
+        new PutCommand({
+          TableName: this.table,
+          Item: record,
+          ConditionExpression: conds.join(' AND '),
+          ExpressionAttributeNames: names,
+          ...(Object.keys(values).length > 0 ? { ExpressionAttributeValues: values } : {}),
+        }),
+      );
+      return true;
+    } catch (err) {
+      if ((err as { name?: string }).name === 'ConditionalCheckFailedException') return false;
+      throw err;
+    }
   }
 
   async reset(): Promise<void> {
@@ -398,10 +440,10 @@ export class DynamoBackend implements DataBackend {
     return new DynamoCollection<T>(this.doc, this.table, name, opts?.ttlSeconds, opts?.indexedField);
   }
 
-  singleton<T>(name: string, _opts?: { default?: () => T }): Singleton<T> {
-    // _opts.default は memory バックエンド専用。DynamoDB では未保存時 undefined を返し、
+  singleton<T>(name: string, opts?: { default?: () => T; consistentRead?: boolean }): Singleton<T> {
+    // opts.default は memory バックエンド専用。DynamoDB では未保存時 undefined を返し、
     // 呼び出し側が DEFAULTS にフォールバックする（interface 互換のため引数は受ける）。
-    return new DynamoSingleton<T>(this.doc, this.table, name);
+    return new DynamoSingleton<T>(this.doc, this.table, name, opts?.consistentRead === true);
   }
 
   log<T extends { id: string }>(name: string, opts: LogOpts<T>): LogStore<T> {

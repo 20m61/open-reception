@@ -1,4 +1,4 @@
-import { test, expect } from "@playwright/test";
+import { test, expect, type Page } from "@playwright/test";
 import { establishKioskSession, loginAsAdmin } from "./helpers";
 
 /**
@@ -9,6 +9,15 @@ import { establishKioskSession, loginAsAdmin } from "./helpers";
  * テストは必ず finally で false へ戻す）。他ファイルの kiosk spec はセッション保持のため影響しない。
  */
 test.describe.configure({ mode: "serial" });
+
+/**
+ * 管理画面と同じく、GET で読んだ版（`rev`）を付けて設定を保存する (#1158)。
+ * 版なしで受け付けるのは緊急停止のトグルだけで、それ以外は 428 になる。
+ */
+async function putSecurity(page: Page, data: Record<string, unknown>) {
+  const current = (await (await page.request.get("/api/admin/security")).json()) as { rev: number };
+  return page.request.put("/api/admin/security", { data: { rev: current.rev, ...data } });
+}
 
 test("kiosk セッション未保持で /kiosk は未エンロール案内を出す（受付フローを出さない, #239）", async ({
   page,
@@ -42,9 +51,7 @@ test("pinRequired=true では正しい PIN の authorize がセッションを�
 }) => {
   await loginAsAdmin(page);
   // グローバル設定を一時的に PIN 必須へ。serial + finally で必ず false へ戻す。
-  await page.request.put("/api/admin/security", {
-    data: { pinRequired: true },
-  });
+  await putSecurity(page, { pinRequired: true });
   try {
     // 既定 PIN 0000 で許可 → Set-Cookie。session-status が同 cookie を読み authorized=true を返す
     // （authorize→cookie→再リクエストの実 HTTP 往復を検証）。
@@ -57,9 +64,7 @@ test("pinRequired=true では正しい PIN の authorize がセッションを�
     const body = (await status.json()) as { authorized: boolean };
     expect(body.authorized).toBe(true);
   } finally {
-    await page.request.put("/api/admin/security", {
-      data: { pinRequired: false },
-    });
+    await putSecurity(page, { pinRequired: false });
   }
 });
 
@@ -93,9 +98,7 @@ test.describe("管理画面で決めた PIN (#1021)", () => {
   //    検証されていない**状態になっていた。
   // 🔴 **応答を見る。** 見ないと復元の失敗が**沈黙**し、run の残り全部が汚染される。
   test.afterEach(async ({ page }) => {
-    const res = await page.request.put("/api/admin/security", {
-      data: { pin: "0000", pinRequired: false },
-    });
+    const res = await putSecurity(page, { pin: "0000", pinRequired: false });
     expect(
       res.ok(),
       "PIN の復元に失敗した（以降の spec が汚染される）",
@@ -106,9 +109,7 @@ test.describe("管理画面で決めた PIN (#1021)", () => {
     page,
   }) => {
     await loginAsAdmin(page);
-    const res = await page.request.put("/api/admin/security", {
-      data: { pinRequired: true, pin: "4821" },
-    });
+    const res = await putSecurity(page, { pinRequired: true, pin: "4821" });
     expect(res.ok()).toBeTruthy();
     // 🔴 応答に PIN の値（平文もハッシュも）が出ていないこと。
     const put = await res.text();
@@ -133,9 +134,7 @@ test.describe("管理画面で決めた PIN (#1021)", () => {
     page,
   }) => {
     await loginAsAdmin(page);
-    await page.request.put("/api/admin/security", {
-      data: { pinRequired: true, pin: "4821" },
-    });
+    await putSecurity(page, { pinRequired: true, pin: "4821" });
     const ng = await page.request.post("/api/kiosk/authorize", {
       data: { pin: "0000", kioskId: "kiosk-dev" },
     });
@@ -183,9 +182,7 @@ test("管理者はセキュリティ設定を取得・更新できる（PIN は�
   const get = await page.request.get("/api/admin/security");
   expect(get.ok()).toBeTruthy();
 
-  const put = await page.request.put("/api/admin/security", {
-    data: { pinRequired: false, ipAllowlist: [] },
-  });
+  const put = await putSecurity(page, { pinRequired: false, ipAllowlist: [] });
   const body = (await put.json()) as { pinRequired: boolean };
   expect(body.pinRequired).toBe(false);
 });

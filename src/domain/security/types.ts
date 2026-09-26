@@ -24,6 +24,12 @@ export type SecuritySettings = {
   ipAllowlist: string[];
   /** 緊急停止モード。true の間は全受付端末を停止する。 */
   emergencyStop: boolean;
+  /**
+   * 記録の版（任意。旧レコードには無く、0 として読む）(#1158)。
+   * 書くたびに 1 つ進み、条件付き書き込みの比較に使う。**直接書かないこと**
+   * （`updateSecuritySettings` だけが進める）。
+   */
+  rev?: number;
 };
 
 /** 端末レジストリの有効状態と緊急停止から、実際に受付可能かを決める（純関数）。 */

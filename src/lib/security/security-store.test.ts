@@ -5,9 +5,18 @@ import {
   __resetSecurity,
   getSecuritySettings,
   readSecuritySettings,
+  revisionOf,
   updateSecuritySettings,
   verifyPin,
 } from './security-store';
+
+/**
+ * 管理画面と同じく、**現在の版を付けて**保存する (#1158: 版なしの更新は緊急停止のトグルしか
+ * 受け付けない)。このファイルが縛るのは PIN の意味論なので、版の扱いは concurrency 側に任せる。
+ */
+async function save(patch: Record<string, unknown>) {
+  return updateSecuritySettings({ rev: revisionOf((await getSecuritySettings()).rev), ...patch });
+}
 
 beforeEach(async () => {
   await __resetSecurity();
@@ -23,7 +32,7 @@ describe('security-store (#23 #29)', () => {
   });
 
   it('PIN 必須に変更し、一致のみ許可する', async () => {
-    await updateSecuritySettings({ pinRequired: true, pin: '1234' });
+    await save({ pinRequired: true, pin: '1234' });
     expect(await verifyPin('1234')).toBe(true);
     expect(await verifyPin('9999')).toBe(false);
   });
@@ -36,7 +45,7 @@ describe('security-store (#23 #29)', () => {
    * ここで達成しているのは「平文で置かない」ことだけ。）
    */
   it('🔴 保存した PIN は平文で残らない', async () => {
-    const updated = await updateSecuritySettings({ pinRequired: true, pin: '4821' });
+    const updated = await save({ pinRequired: true, pin: '4821' });
     expect(updated.pin).not.toContain('4821');
     expect(isHashedPin(updated.pin)).toBe(true);
     // 🔴 **永続層の生レコードで主張する（自動セキュリティレビューの指摘を受けて強化）。**
@@ -76,7 +85,7 @@ describe('security-store (#23 #29)', () => {
    */
   it('🔴 既定のままなら未設定、決めたら設定済み', async () => {
     expect(isPinConfigured(await getSecuritySettings())).toBe(false);
-    const updated = await updateSecuritySettings({ pin: '4821' });
+    const updated = await save({ pin: '4821' });
     expect(isPinConfigured(updated)).toBe(true);
   });
 
@@ -89,7 +98,7 @@ describe('security-store (#23 #29)', () => {
    * ここが無いと、既定を空にする変異が「PIN が強くなった」ように見えて通ってしまう。
    */
   it('🔴 既定のままでも組込み既定の PIN で通る（振る舞いを変えていない）', async () => {
-    await updateSecuritySettings({ pinRequired: true });
+    await save({ pinRequired: true });
     expect(await verifyPin(BUILTIN_DEFAULT_PIN)).toBe(true);
     expect(await verifyPin('9999')).toBe(false);
   });
@@ -100,7 +109,7 @@ describe('security-store (#23 #29)', () => {
     await __resetSecurity();
     const settings = await getSecuritySettings();
     expect(isPinConfigured(settings)).toBe(true);
-    await updateSecuritySettings({ pinRequired: true });
+    await save({ pinRequired: true });
     expect(await verifyPin('4821')).toBe(true);
     // 下界: 組込み既定では通らない（env を読んでいることの確認）。
     expect(await verifyPin(BUILTIN_DEFAULT_PIN)).toBe(false);
@@ -117,7 +126,7 @@ describe('security-store (#23 #29)', () => {
   it('🔴 KIOSK_PIN が空でも、PIN 無しの要求は通らない', async () => {
     vi.stubEnv('KIOSK_PIN', '');
     await __resetSecurity();
-    await updateSecuritySettings({ pinRequired: true });
+    await save({ pinRequired: true });
     expect(await verifyPin('')).toBe(false);
     // 下界: 組込み既定へ落ちている（全部拒否にして満たしていない）。
     expect(await verifyPin(BUILTIN_DEFAULT_PIN)).toBe(true);
@@ -136,11 +145,11 @@ describe('security-store (#23 #29)', () => {
   it('🔴 PIN と無関係な更新でも、永続レコードに平文が残らない', async () => {
     vi.stubEnv('KIOSK_PIN', 'SECRET-9137');
     await __resetSecurity();
-    const updated = await updateSecuritySettings({ emergencyStop: true });
+    const updated = await save({ emergencyStop: true });
     expect(updated.pin).not.toContain('SECRET-9137');
     expect(isHashedPin(updated.pin)).toBe(true);
     // 下界: 昇格しても本人は通る。
-    await updateSecuritySettings({ pinRequired: true });
+    await save({ pinRequired: true });
     expect(await verifyPin('SECRET-9137')).toBe(true);
     vi.unstubAllEnvs();
   });
@@ -152,11 +161,11 @@ describe('security-store (#23 #29)', () => {
    * 明示フィールドで持つことを、**既定のまま別項目を更新する**ケースで確かめる。
    */
   it('🔴 既定のまま更新してもハッシュになるが、未設定のままと答える', async () => {
-    const updated = await updateSecuritySettings({ emergencyStop: true });
+    const updated = await save({ emergencyStop: true });
     expect(isHashedPin(updated.pin)).toBe(true);
     expect(isPinConfigured(updated)).toBe(false);
     // 下界: 組込み既定で通る（昇格で壊していない）。
-    await updateSecuritySettings({ pinRequired: true });
+    await save({ pinRequired: true });
     expect(await verifyPin(BUILTIN_DEFAULT_PIN)).toBe(true);
   });
 
@@ -168,7 +177,7 @@ describe('security-store (#23 #29)', () => {
       ipAllowlist: [],
       emergencyStop: false,
     });
-    const updated = await updateSecuritySettings({ emergencyStop: true });
+    const updated = await save({ emergencyStop: true });
     expect(updated.pin).not.toContain('4821');
     expect(await verifyPin('4821')).toBe(true);
     // 旧レコードにフラグは無いので、昇格後も「運用者が決めた」と読める必要がある。
@@ -188,7 +197,7 @@ describe('security-store (#23 #29)', () => {
       ipAllowlist: [],
       emergencyStop: false,
     });
-    const updated = await updateSecuritySettings({ emergencyStop: true });
+    const updated = await save({ emergencyStop: true });
     expect(isHashedPin(updated.pin)).toBe(true);
     expect(isPinConfigured(updated)).toBe(false);
     // 下界: それでも組込み既定では通る（今日の振る舞いを保っている）。
@@ -226,7 +235,7 @@ describe('security-store (#23 #29)', () => {
   it('🔴 KIOSK_PIN の前後の空白は落として保存する', async () => {
     vi.stubEnv('KIOSK_PIN', '  4821  ');
     await __resetSecurity();
-    await updateSecuritySettings({ pinRequired: true });
+    await save({ pinRequired: true });
     expect(await verifyPin('4821')).toBe(true);
     expect(await verifyPin('  4821  ')).toBe(false);
     vi.unstubAllEnvs();
@@ -246,7 +255,7 @@ describe('security-store (#23 #29)', () => {
       ipAllowlist: [],
       emergencyStop: false,
     });
-    await updateSecuritySettings({ emergencyStop: true });
+    await save({ emergencyStop: true });
     expect(await verifyPin(unusable)).toBe(false);
     // 🔴 #1160（ユーザー判断で fail closed）: 既定値へも化けない。
     expect(await verifyPin(BUILTIN_DEFAULT_PIN)).toBe(false);
@@ -278,7 +287,7 @@ describe('security-store (#23 #29)', () => {
     ['うちの形式でない区切り', 'pbkdf2-sha256$10000$AAAA'],
   ])('🔴 運用者の入力はそのまま本人の PIN になる: %s', async (_label, input) => {
     await __resetSecurity();
-    await updateSecuritySettings({ pinRequired: true, pin: input });
+    await save({ pinRequired: true, pin: input });
     expect(await verifyPin(input)).toBe(true);
     // 下界 1: 入力を捨てて既定値へ落としていない（沈黙の誤動作になっていない）。
     expect(await verifyPin(BUILTIN_DEFAULT_PIN)).toBe(false);
@@ -299,7 +308,7 @@ describe('security-store (#23 #29)', () => {
     ['unusable の形', 'pbkdf2-sha256$2000000$AAAAAAAAAAAAAAAAAAAAAA==$BBBB'],
   ])('🔴 入力した文字列は永続層に残らない: %s', async (_label, input) => {
     await __resetSecurity();
-    await updateSecuritySettings({ pinRequired: true, pin: input });
+    await save({ pinRequired: true, pin: input });
     const raw = await getBackend()
       .singleton<Record<string, unknown>>('security', { default: () => ({}) })
       .get();
@@ -318,7 +327,7 @@ describe('security-store (#23 #29)', () => {
    */
   it('🔴 管理 API から反復回数を仕込めない', async () => {
     await __resetSecurity();
-    await updateSecuritySettings({
+    await save({
       pinRequired: true,
       pin: 'pbkdf2-sha256$1000000$AAAAAAAAAAAAAAAAAAAAAA==$BBBB',
     });
@@ -343,7 +352,7 @@ describe('security-store (#23 #29)', () => {
       ipAllowlist: [],
       emergencyStop: false,
     });
-    await updateSecuritySettings({ emergencyStop: true });
+    await save({ emergencyStop: true });
     const raw = await getBackend()
       .singleton<Record<string, unknown>>('security', { default: () => ({}) })
       .get();
@@ -364,8 +373,8 @@ describe('security-store (#23 #29)', () => {
    * 空白だけの入力も同じ（`trim()` 後に空になる綴り）。
    */
   it.each(['', '   '])('🔴 PIN 欄が空（%j）の保存は既存の PIN を変えない', async (blank) => {
-    await updateSecuritySettings({ pinRequired: true, pin: '4821' });
-    await updateSecuritySettings({ pin: blank, emergencyStop: true });
+    await save({ pinRequired: true, pin: '4821' });
+    await save({ pin: blank, emergencyStop: true });
     expect(await verifyPin('4821')).toBe(true);
     // 下界: 空が「通る入力」になっていない（締め出しでも素通しでもない）。
     expect(await verifyPin('')).toBe(false);
@@ -378,10 +387,10 @@ describe('security-store (#23 #29)', () => {
    * 「0000 なら未設定と表示される」と約束している。
    */
   it('🔴 運用者が既定値を入力しても「設定済み」とは言わない', async () => {
-    const updated = await updateSecuritySettings({ pinRequired: true, pin: BUILTIN_DEFAULT_PIN });
+    const updated = await save({ pinRequired: true, pin: BUILTIN_DEFAULT_PIN });
     expect(isPinConfigured(updated)).toBe(false);
     // 下界: 別の値なら設定済み（全部 false にして満たしていない）。
-    expect(isPinConfigured(await updateSecuritySettings({ pin: '4821' }))).toBe(true);
+    expect(isPinConfigured(await save({ pin: '4821' }))).toBe(true);
   });
 
   /** 🔴 `KIOSK_PIN=0000` も同じ（env 側の綴り）。 */
@@ -397,7 +406,7 @@ describe('security-store (#23 #29)', () => {
    * `KIOSK_PIN` の正規化は縛ったのに、**主経路である管理 API 側**が縛られていなかった。
    */
   it('🔴 管理 API から送られた PIN の前後の空白は落とす', async () => {
-    await updateSecuritySettings({ pinRequired: true, pin: '  4821  ' });
+    await save({ pinRequired: true, pin: '  4821  ' });
     expect(await verifyPin('4821')).toBe(true);
     expect(await verifyPin('  4821  ')).toBe(false);
   });
@@ -417,12 +426,12 @@ describe('security-store (#23 #29)', () => {
   });
 
   it('IP 許可リストを更新できる', async () => {
-    const updated = await updateSecuritySettings({ ipAllowlist: ['10.0.0.1', ' 10.0.0.2 '] });
+    const updated = await save({ ipAllowlist: ['10.0.0.1', ' 10.0.0.2 '] });
     expect(updated.ipAllowlist).toEqual(['10.0.0.1', '10.0.0.2']);
   });
 
   it('緊急停止は既定 false、切り替えできる', async () => {
     expect((await getSecuritySettings()).emergencyStop).toBe(false);
-    expect((await updateSecuritySettings({ emergencyStop: true })).emergencyStop).toBe(true);
+    expect((await save({ emergencyStop: true })).emergencyStop).toBe(true);
   });
 });
