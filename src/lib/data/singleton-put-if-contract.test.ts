@@ -101,6 +101,18 @@ for (const [label, make] of BACKENDS) {
       expect((await s.get())?.a).toBe('y');
     });
 
+    /**
+     * 形の壊れた版（文字列）でも、読んだ生の値を渡せば一致する。dynamo にも実際に混入しうる形
+     * なので両バックエンドで縛る（独立レビュー 3 周目 NIT）。
+     */
+    it('形の壊れた版（文字列）でも、読んだ生の値を期待値に渡せば一致する', async () => {
+      const s = handle();
+      await s.put({ rev: 'x' as unknown as number, a: 'x' });
+      const stored = (await s.get())?.rev;
+      expect(await s.putIf({ rev: 1, a: 'y' }, { rev: stored })).toBe(true);
+      expect(await s.get()).toEqual({ rev: 1, a: 'y' });
+    });
+
     it('条件の無い putIf は呼び出しの誤りとして拒否し、書かない', async () => {
       const s = handle();
       await s.put({ rev: 1, a: 'x' });

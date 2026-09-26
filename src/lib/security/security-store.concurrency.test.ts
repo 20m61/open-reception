@@ -154,8 +154,8 @@ describe('セキュリティ設定の同時更新 (#1158)', () => {
     await expect(updateSecuritySettings({ emergencyStop: true })).rejects.toBeInstanceOf(
       SecuritySettingsConflictError,
     );
-    expect(putIf.mock.calls.length).toBeGreaterThan(1); // 当て直している（下界）
-    expect(putIf.mock.calls.length).toBeLessThanOrEqual(5); // 上限がある
+    // 当て直しの回数は上限ちょうど（広げる変異も狭める変異もここで落ちる。独立レビュー 3 周目 MINOR）。
+    expect(putIf.mock.calls.length).toBe(3);
     vi.restoreAllMocks();
     expect(await store.get()).toEqual(before);
   });
