@@ -117,7 +117,8 @@ export class SecuritySettingsPreconditionRequiredError extends Error {
  *    あれば版を要求する。
  */
 function isEmergencyToggleOnly(patch: unknown): boolean {
-  if (typeof patch !== 'object' || patch === null || Array.isArray(patch)) return false;
+  // 配列は `Object.keys` が添字になるので下の比較で落ちる（別の分岐は置かない。変異検証で等価）。
+  if (typeof patch !== 'object' || patch === null) return false;
   const keys = Object.keys(patch);
   return keys.length === 1 && keys[0] === 'emergencyStop' && typeof (patch as { emergencyStop?: unknown }).emergencyStop === 'boolean';
 }
