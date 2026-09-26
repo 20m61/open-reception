@@ -461,20 +461,24 @@ export function SecurityManager() {
         </label>
         {/*
           🔴 **保存されていた PIN を読めなかったことを、運用者が気づける形で出す (#1160 AC2)。**
-          倒れた先は公開されている既定値なので、画面を見ていなければ誰も気づけない。
-          文言は「今どうなっているか（既定値で通る）」と「何をすればよいか（設定し直す）」だけ。
+          読めない記録は fail closed（ユーザー判断）なので、PIN 必須のサイトでは受付端末が
+          **どの PIN でも許可されない（締め出し）**。画面を見なければ原因に辿り着けない。
+          文言は「今どうなっているか」と「何をすればよいか（この画面で PIN を設定し直す）」だけ。
           読めなかった値そのもの・壊れ方は出さない（`rules/pii-secret-minimization.md`）。
-          緊急停止の応答はこの表示の権威を持たない（`applyEmergencyResult`）ので、
-          残っていても嘘にならない文にしてある —— 設定し直すまで既定値が有効なのは同じ。
+          PIN を送らない保存・緊急停止では記録は直らない（サーバが生のまま書き戻す）ので、
+          残っていても嘘にならない。
         */}
         {view.storedPinUnreadable ? (
           <p data-testid="security-pin-unreadable" role="alert" style={{ margin: 0 }}>
-            保存されている PIN の設定を読めませんでした。PIN を必須にしている場合、現在は既定値の PIN で
-            受付端末を許可できる状態です。PIN を設定し直してください。
+            保存されている PIN の設定を読めません。PIN を必須にしている場合、受付端末はどの PIN でも許可されません。
+            下の欄で PIN を設定し直して保存してください。
           </p>
         ) : null}
         <Field
-          label={`PIN を変更（空欄なら変更しない／現在: ${view.pinConfigured ? '設定済み' : '未設定（既定値が有効）'}）`}
+          label={`PIN を変更（空欄なら変更しない／現在: ${
+            // 🔴 読めない記録を「未設定（既定値が有効）」と言わない —— 既定値では通らない (#1160)。
+            view.storedPinUnreadable ? '読めません（どの PIN でも許可されません）' : view.pinConfigured ? '設定済み' : '未設定（既定値が有効）'
+          }）`}
           htmlFor="security-pin"
         >
           <input type="password" id="security-pin" data-testid="security-pin" value={pin} onChange={(e) => setPin(e.target.value)} style={input} />

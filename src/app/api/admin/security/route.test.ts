@@ -178,21 +178,24 @@ describe('GET /api/admin/security の storedPinUnreadable (#1160 AC2)', () => {
     expect(await (await GET()).json()).toMatchObject({ storedPinUnreadable: false });
   });
 
-  it('🔴 更新は読める記録を書くので、PUT の応答は false を返す', async () => {
+  /**
+   * 🔴 **PIN を送らない更新は拒否状態を解かない (#1160 fail closed)。** 応答も GET も true のまま。
+   * PIN を設定し直した更新だけが解き、応答は false になる（管理画面からの復旧経路）。
+   */
+  it('🔴 PIN を送らない更新では true のまま、PIN を設定し直すと false になる', async () => {
     await getBackend().singleton('security', { default: () => ({}) }).put({
       pinRequired: true,
       pin: broken,
       ipAllowlist: [],
       emergencyStop: false,
     });
-    const res = await PUT(
-      new Request('http://localhost/api/admin/security', {
-        method: 'PUT',
-        body: JSON.stringify({ emergencyStop: true }),
-      }),
-    );
-    expect(await res.json()).toMatchObject({ storedPinUnreadable: false, emergencyStop: true });
-    // 応答と実態が一致している（書いた後の GET も false）。
+    const put = (body: unknown) =>
+      PUT(new Request('http://localhost/api/admin/security', { method: 'PUT', body: JSON.stringify(body) }));
+    const stopped = await put({ emergencyStop: true });
+    expect(await stopped.json()).toMatchObject({ storedPinUnreadable: true, emergencyStop: true });
+    expect(await (await GET()).json()).toMatchObject({ storedPinUnreadable: true });
+    const recovered = await put({ pin: '5839' });
+    expect(await recovered.json()).toMatchObject({ storedPinUnreadable: false, pinConfigured: true });
     expect(await (await GET()).json()).toMatchObject({ storedPinUnreadable: false });
   });
 });

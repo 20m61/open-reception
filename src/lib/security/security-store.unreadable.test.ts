@@ -1,10 +1,13 @@
 /**
- * 壊れた PIN 記録が組込み既定へ倒れたことを**観測できる**こと (#1160)。
+ * 壊れた PIN 記録を読んだら **fail closed**（誰も通さない）にし、それを**観測できる**こと (#1160)。
  *
  * ## 守る不変条件（機構より先に書く）
  *
- * > **保存レコードの PIN を資格情報として読めず、組込み既定で代用したなら、
- * > それは監査と管理画面の両方から分かる。代用後の挙動は変えない。**
+ * > **保存レコードの PIN を資格情報として読めないなら、どの入力でも PIN 認可は通らない
+ * > （公開既定値 `0000` にも、記録文字列にも化けない）。その状態は、運用者が PIN を
+ * > 設定し直すまで無関係な更新を経ても続き、監査と管理画面の両方から分かる。**
+ *
+ * 倒す向きはユーザー判断（#1160 AC3・2026-09-26）: セキュリティ境界で既定の資格情報へ倒さない。
  *
  * - 上界: 未認証の `authorize` が何回叩いても、監査は**プロセスにつき 1 本**しか増えない
  *   （監査の書き込み量を要求数に比例させない。#1123 のラッチと同じ理由）。
@@ -13,9 +16,8 @@
  *   **1 本も出ない**（誤報を出す実装でも「1 本出る」は満たせるので、両側を縛る）
  * - 値を載せない: 監査にも応答にも、保存されていた文字列を出さない
  *   （`rules/pii-secret-minimization.md`）
- *
- * 🔴 **倒す先（既定値 or 誰も通さない）は変えない。** それは #1160 AC3 = PIN 制御の境界変更で、
- * 人間承認が要る。ここで足すのは**観測**だけである。
+ * - 下界（締め出しっぱなしにしない）: 運用者が管理画面から PIN を設定し直せば、その PIN で通り、
+ *   以降は「読めない」と言わない（復旧手順が既存の経路で完結する）
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { BUILTIN_DEFAULT_PIN, hashPin, isPinConfigured } from '@/domain/security/pin';
@@ -39,7 +41,7 @@ import {
   verifyPin,
 } from './security-store';
 
-const ACTION = 'security.pin_credential_defaulted';
+const ACTION = 'security.pin_credential_unreadable';
 
 async function putRaw(record: Record<string, unknown>): Promise<void> {
   await getBackend().singleton('security', { default: () => ({}) }).put(record);
@@ -61,7 +63,7 @@ afterEach(() => {
 });
 
 /**
- * `current()` が組込み既定で代用する綴りを**`isUsablePinCredential` の分岐から**列挙した:
+ * `current()` が拒否側へ倒す綴りを**`isUsablePinCredential` の分岐から**列挙した:
  * 空・非文字列（欠落を含む）・`classify` の 2 段目で落ちるもの（反復回数・salt）。
  */
 const UNREADABLE: ReadonlyArray<readonly [string, unknown]> = [
@@ -73,8 +75,11 @@ const UNREADABLE: ReadonlyArray<readonly [string, unknown]> = [
   ['文字列でない', 4821],
 ];
 
-describe('読めない PIN 記録の観測 (#1160 AC1 / AC4)', () => {
-  it.each(UNREADABLE)('🔴 %s: 監査に 1 本残り、既定値の挙動は変わらない', async (_label, pin) => {
+/** 総当たりの代表: 公開既定値・よくある PIN・空・記録文字列（呼び出し側で足す）。 */
+const PROBES = [BUILTIN_DEFAULT_PIN, '1234', '4821', '0', ''] as const;
+
+describe('読めない PIN 記録は fail closed で、観測できる (#1160)', () => {
+  it.each(UNREADABLE)('🔴 %s: どの入力でも通らず、監査に 1 本残る', async (_label, pin) => {
     await putRaw({
       pinRequired: true,
       pin,
@@ -83,13 +88,16 @@ describe('読めない PIN 記録の観測 (#1160 AC1 / AC4)', () => {
       emergencyStop: false,
     });
 
-    // 挙動は変えていない（AC3 は人間承認待ち）: 既定値で通り、記録の文字列では通らない。
-    expect(await verifyPin(BUILTIN_DEFAULT_PIN)).toBe(true);
-    if (typeof pin === 'string' && pin !== '') expect(await verifyPin(pin)).toBe(false);
+    // 🔴 fail closed: 公開既定値でも、記録文字列でも、何を入れても通らない。
+    for (const probe of [...PROBES, ...(typeof pin === 'string' ? [pin] : [String(pin)])]) {
+      expect(await verifyPin(probe), `probe=${probe}`).toBe(false);
+    }
 
     const entries = await fallbackEntries();
     expect(entries).toHaveLength(1);
     expect(entries[0]?.targetType).toBe('security');
+    // 締め出しが実際に起きていること（PIN 必須）が監査から分かる。
+    expect(entries[0]?.metadata).toMatchObject({ effect: 'deny_all', lockout: 'true' });
     // 🔴 値を載せない: 保存されていた文字列もその断片も、監査の行に出ない。
     const serialized = JSON.stringify(entries[0]);
     if (typeof pin === 'string' && pin !== '') {
@@ -120,21 +128,45 @@ describe('読めない PIN 記録の観測 (#1160 AC1 / AC4)', () => {
   });
 
   /**
-   * 🔴 **無関係な更新で記録が上書きされる経路でも残る。** #1160 本文のとおり、次の更新で
-   * `hash('0000')` が書かれ元の記録は恒久的に失われる。**上書きの前に**監査が出ていること。
+   * 🔴 **PIN を送らない更新で、拒否状態が解けない（既定値に化けない）。**
+   * 以前は次の無関係な更新で `hash('0000')` が書かれ、元の記録は失われて `0000` で通った。
+   * 緊急停止のトグルのような更新を経ても、記録は生のまま残り、拒否と観測が続く。
    */
-  it('🔴 読み出しを経ずに更新しても、上書きの前に監査が残る', async () => {
-    await putRaw({
-      pinRequired: true,
-      pin: 'pbkdf2-sha256$10000$***$BBBB',
-      pinSetByOperator: true,
-      ipAllowlist: [],
-      emergencyStop: false,
-    });
+  it.each(UNREADABLE)('🔴 %s: PIN を送らない更新を経ても通らず、読めないままと答える', async (_label, pin) => {
+    await putRaw({ pinRequired: true, pin, pinSetByOperator: true, ipAllowlist: [], emergencyStop: false });
     await updateSecuritySettings({ emergencyStop: true });
+    await updateSecuritySettings({ ipAllowlist: ['203.0.113.1'] });
+    for (const probe of [...PROBES, ...(typeof pin === 'string' ? [pin] : [String(pin)])]) {
+      expect(await verifyPin(probe), `probe=${probe}`).toBe(false);
+    }
+    const read = await readSecuritySettings();
+    expect(read.storedPinUnreadable).toBe(true);
+    // 無関係な更新自体は効いている（何も書かずに返しているなら上の主張は空虚）。
+    expect(read.settings).toMatchObject({ emergencyStop: true, ipAllowlist: ['203.0.113.1'] });
     expect(await fallbackEntries()).toHaveLength(1);
-    // 更新後は読める記録になっている（既定値のハッシュ）ので、以降は「読めない」と言わない。
-    expect((await readSecuritySettings()).storedPinUnreadable).toBe(false);
+  });
+
+  /**
+   * 🔴 **復旧手順（下界）。** 運用者が管理画面から PIN を設定し直せば、その PIN で通り、
+   * 既定値では通らず、以降は「読めない」と言わない。締め出しっぱなしにならないこと。
+   */
+  it.each(UNREADABLE)('🔴 %s: 運用者が PIN を設定し直せば、その PIN でだけ通る', async (_label, pin) => {
+    await putRaw({ pinRequired: true, pin, ipAllowlist: [], emergencyStop: false });
+    await updateSecuritySettings({ pin: '5839' });
+    expect(await verifyPin('5839')).toBe(true);
+    expect(await verifyPin(BUILTIN_DEFAULT_PIN)).toBe(false);
+    const read = await readSecuritySettings();
+    expect(read.storedPinUnreadable).toBe(false);
+    expect(isPinConfigured(read.settings)).toBe(true);
+  });
+
+  /** PIN 必須でないときは、読めない記録があっても端末は締め出されない（監査もそう言う）。 */
+  it('PIN 必須でなければ締め出しは起きず、監査の lockout は false', async () => {
+    await putRaw({ pinRequired: false, pin: '', ipAllowlist: [], emergencyStop: false });
+    expect(await verifyPin('')).toBe(true);
+    const [entry] = await fallbackEntries();
+    expect(entry?.metadata).toMatchObject({ effect: 'deny_all', lockout: 'false' });
+    expect((await readSecuritySettings()).storedPinUnreadable).toBe(true);
   });
 
   /**
@@ -175,16 +207,16 @@ describe('読めない PIN 記録の観測 (#1160 AC1 / AC4)', () => {
   });
 
   /**
-   * 🔴 **監査の失敗で authorize を落とさない。** 観測を足しただけで挙動を変えない（AC4）。
+   * 🔴 **監査の失敗で照合の答えを変えない**（拒否のまま。throw して 500 にもしない）。
    * 監査ストアが落ちているとき、未認証の要求ごとに書き込みを再試行させない（上界と同じ理由）。
    */
-  it('🔴 監査の書き込みが失敗しても照合は今日と同じ答えを返し、再試行で増幅しない', async () => {
+  it('🔴 監査の書き込みが失敗しても照合は拒否のままで、再試行で増幅しない', async () => {
     const error = vi.spyOn(console, 'error').mockImplementation(() => {});
     const unusable = 'pbkdf2-sha256$10000$***$BBBB';
     vi.mocked(appendAuditLog).mockRejectedValueOnce(new Error('audit down'));
     await putRaw({ pinRequired: true, pin: unusable, ipAllowlist: [], emergencyStop: false });
 
-    expect(await verifyPin(BUILTIN_DEFAULT_PIN)).toBe(true);
+    expect(await verifyPin(BUILTIN_DEFAULT_PIN)).toBe(false);
     expect(await verifyPin(unusable)).toBe(false);
     for (let i = 0; i < 5; i += 1) await verifyPin('1111');
 

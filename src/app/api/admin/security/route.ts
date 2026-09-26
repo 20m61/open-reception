@@ -80,10 +80,8 @@ export async function PUT(request: Request): Promise<NextResponse> {
     ipAllowlist: updated.ipAllowlist,
     pinConfigured: isPinConfigured(updated),
     emergencyStop: updated.emergencyStop,
-    // 書いた記録から導く（GET と同じ判定。「更新は必ず読める記録を書く」を前提として
-    // 固定値にしない —— 前提が崩れたとき PUT 応答だけが黙って嘘をつく。独立レビュー 2 周目 MINOR）。
-    // 🔴 読めなかった記録を上書きした事実は `security.pin_credential_defaulted` の監査が
-    //    上書きの前に残している（#1160）。
+    // 書いた記録から導く（GET と同じ判定）。読めない記録は、運用者が PIN を設定し直すまで
+    // 生のまま書き戻されるので、PIN を送らない更新の後も true のまま（#1160 fail closed）。
     storedPinUnreadable: !isUsablePinCredential(updated.pin),
   });
 }
