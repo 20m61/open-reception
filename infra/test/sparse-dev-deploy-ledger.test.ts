@@ -83,6 +83,8 @@ const genesisItem = (over: Partial<Item> = {}): Item => ({
   ledgerId: { S: LEDGER_ID },
   timezone: { S: 'Asia/Tokyo' },
   createdAt: { S: '2026-09-01T00:00:00.000Z' },
+  totalAttempts: { N: '40' },
+  lastDay: { S: '2026-09-20' },
   ...over,
 });
 
@@ -226,6 +228,37 @@ describe('preflight: genesis item distinguishes a fresh day from an empty or rep
     expect(d.rule).toBe('SPARSE_LEDGER_CORRUPT');
   });
 
+  it.each([
+    ['lastDay after today (clock regression / tampering)', { genesisItem: genesisItem({ lastDay: { S: '2026-09-22' } }) }],
+    ['today already reserved but its counter was deleted', { genesisItem: genesisItem({ lastDay: { S: DAY } }), dayItem: undefined }],
+    ['day counter above the cumulative total', { genesisItem: genesisItem({ totalAttempts: { N: '1' } }), dayItem: dayItem(2) }],
+    ['totalAttempts missing', { genesisItem: genesisItem({ totalAttempts: undefined }) }],
+    ['lastDay malformed', { genesisItem: genesisItem({ lastDay: { S: 'yesterday' } }) }],
+    ['lastDay without any attempt', { genesisItem: genesisItem({ totalAttempts: { N: '0' } }) }],
+    ['attempts without lastDay', { genesisItem: genesisItem({ lastDay: undefined }) }],
+  ])('denies when %s', (_l, over) => {
+    const g = (over as { genesisItem?: Item }).genesisItem;
+    if (g) for (const [k, v] of Object.entries(g)) if (v === undefined) delete g[k];
+    const d = preflight({ dayItem: dayItem(1), ...over });
+    expect(d.result).toBe('denied');
+    expect(d.rule).toBe('SPARSE_LEDGER_CORRUPT');
+  });
+
+  it('a later day with lastDay = yesterday and no counter yet is a fresh day', () => {
+    const d = preflight({ dayItem: undefined });
+    expect(d).toMatchObject({ result: 'allowed', observedAttemptCount: 0, observedTotalAttempts: 40 });
+  });
+
+  it('reservation compare-and-sets the cumulative total and a monotonic lastDay on genesis', () => {
+    const tx = L.buildReserveTransaction({ table: 'T', decision: preflight({ dayItem: dayItem(1) }), now: NOW });
+    const g = tx.TransactItems[0]!.Update!;
+    expect(g.Key).toEqual({ PK: { S: 'PROJECT#open-reception' }, SK: { S: 'META#genesis' } });
+    for (const clause of ['#ledgerId = :ledgerId', '#totalAttempts = :observedTotal', '#lastDay <= :day']) {
+      expect(g.ConditionExpression).toContain(clause);
+    }
+    expect((g.ExpressionAttributeValues as Item)[':newTotal']).toEqual({ N: '41' });
+  });
+
   it('genesis put is create-only and is accepted by preflight', () => {
     const put = L.buildGenesisPut({ table: 'T', ledgerId: LEDGER_ID, now: NOW });
     expect(put.ConditionExpression).toBe('attribute_not_exists(#PK)');
@@ -316,11 +349,11 @@ describe('reservation transaction shape', () => {
 
   it('first attempt of the day creates the counter only if absent and writes a create-only attempt record', () => {
     const tx = L.buildReserveTransaction({ table, decision: preflight(), now: NOW });
-    expect(tx.TransactItems).toHaveLength(2);
-    const upd = tx.TransactItems[0]!.Update!;
+    expect(tx.TransactItems).toHaveLength(3);
+    const upd = tx.TransactItems[1]!.Update!;
     expect(upd.Key).toEqual({ PK: { S: 'PROJECT#open-reception' }, SK: { S: `DAY#${DAY}` } });
     expect(upd.ConditionExpression).toBe('attribute_not_exists(#PK)');
-    const put = tx.TransactItems[1]!.Put!;
+    const put = tx.TransactItems[2]!.Put!;
     expect(put.ConditionExpression).toBe('attribute_not_exists(#PK)');
     expect((put.Item as Item).status).toEqual({ S: 'in_progress' });
     expect((put.Item as Item).attemptNumber).toEqual({ N: '1' });
@@ -328,7 +361,7 @@ describe('reservation transaction shape', () => {
 
   it('later attempts compare-and-set on the observed count', () => {
     const tx = L.buildReserveTransaction({ table, decision: preflight({ dayItem: dayItem(1, 0, 1) }), now: NOW });
-    const upd = tx.TransactItems[0]!.Update!;
+    const upd = tx.TransactItems[1]!.Update!;
     expect(upd.ConditionExpression).toContain('#attemptCount = :observed');
     expect((upd.ExpressionAttributeValues as Item)[':observed']).toEqual({ N: '1' });
   });
@@ -336,8 +369,8 @@ describe('reservation transaction shape', () => {
   it('an override reservation consumes the override in the same transaction and copies it into the audit record', () => {
     const decision = preflight({ dayItem: dayItem(2), overrideItem: overrideItem() });
     const tx = L.buildReserveTransaction({ table, decision, now: NOW });
-    expect(tx.TransactItems).toHaveLength(3);
-    const consume = tx.TransactItems[1]!.Update!;
+    expect(tx.TransactItems).toHaveLength(4);
+    const consume = tx.TransactItems[2]!.Update!;
     expect(consume.Key).toEqual({
       PK: { S: 'PROJECT#open-reception' },
       SK: { S: `OVERRIDE#SPARSE_DAILY_ATTEMPT_CEILING#${REV}#${DAY}` },
@@ -345,7 +378,7 @@ describe('reservation transaction shape', () => {
     for (const clause of ['attribute_not_exists(#consumedAt)', '#revision = :rev', '#rule = :rule', '#day = :day', '#expiresAt > :epoch']) {
       expect(consume.ConditionExpression).toContain(clause);
     }
-    const audit = tx.TransactItems[2]!.Put!.Item as Item;
+    const audit = tx.TransactItems[3]!.Put!.Item as Item;
     expect(audit.mode).toEqual({ S: 'override' });
     expect(audit.overrideApprover).toEqual({ S: '20m61' });
     expect(audit.overrideRule).toEqual({ S: 'SPARSE_DAILY_ATTEMPT_CEILING' });

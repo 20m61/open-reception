@@ -43,6 +43,25 @@ export const SPARSE_LEDGER_PROTECTED_WRITES = [
   'dynamodb:PartiQLDelete',
 ] as const;
 
+/**
+ * Control-plane actions that could silently reset or unprotect the ledger: TTL on a counter
+ * attribute deletes items, a resource-policy change removes this protection, UpdateTable can
+ * disable deletion protection, and so on. Denied to every principal except the human override
+ * issuer and the human stack-deploy (CloudFormation execution) role, which needs them to update
+ * this stack.
+ */
+export const SPARSE_LEDGER_PROTECTED_CONTROL = [
+  'dynamodb:UpdateTimeToLive',
+  'dynamodb:PutResourcePolicy',
+  'dynamodb:DeleteResourcePolicy',
+  'dynamodb:UpdateTable',
+  'dynamodb:DeleteTable',
+  'dynamodb:UpdateContinuousBackups',
+  'dynamodb:RestoreTableFromBackup',
+  'dynamodb:RestoreTableToPointInTime',
+  'dynamodb:UpdateKinesisStreamingDestination',
+] as const;
+
 export const SPARSE_LEDGER_BROKER_ACTIONS = [
   'dynamodb:GetItem',
   'dynamodb:PutItem',
@@ -193,6 +212,15 @@ export class DevDeployBrokerStack extends cdk.Stack {
       allowedPattern: '^arn:aws[^:]*:iam::[0-9]{12}:role/[A-Za-z0-9+=,.@_/-]+$',
     });
 
+    // The CloudFormation execution role a human uses to deploy/update THIS stack. It is the only
+    // principal besides the issuer allowed to change the ledger's configuration.
+    const stackDeployRoleArn = new cdk.CfnParameter(this, 'SparseLedgerStackDeployRoleArn', {
+      type: 'String',
+      description:
+        'IAM role ARN (this account) CloudFormation uses when a human deploys this stack (e.g. the admin CDK bootstrap cfn-exec role). Never a Claude/candidate role.',
+      allowedPattern: '^arn:aws[^:]*:iam::[0-9]{12}:role/[A-Za-z0-9+=,.@_/-]+$',
+    });
+
     const validationRole = new iam.Role(this, 'ValidationRole', {
       roleName: 'OpenReceptionDevDeployValidationRole',
       assumedBy: new iam.ServicePrincipal('codebuild.amazonaws.com'),
@@ -242,6 +270,18 @@ export class DevDeployBrokerStack extends cdk.Stack {
             conditions: {
               ArnNotEquals: {
                 'aws:PrincipalArn': [brokerRole.roleArn, overrideIssuerRoleArn.valueAsString],
+              },
+            },
+          }),
+          new iam.PolicyStatement({
+            sid: 'DenyLedgerControlExceptHumanRoles',
+            effect: iam.Effect.DENY,
+            principals: [new iam.AnyPrincipal()],
+            actions: [...SPARSE_LEDGER_PROTECTED_CONTROL],
+            resources: ['*'],
+            conditions: {
+              ArnNotEquals: {
+                'aws:PrincipalArn': [overrideIssuerRoleArn.valueAsString, stackDeployRoleArn.valueAsString],
               },
             },
           }),

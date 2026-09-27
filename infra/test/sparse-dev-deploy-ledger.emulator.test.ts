@@ -71,6 +71,7 @@ let CreateTableCommand: typeof DynamoSdk.CreateTableCommand;
 let GetItemCommand: typeof DynamoSdk.GetItemCommand;
 let PutItemCommand: typeof DynamoSdk.PutItemCommand;
 let TransactWriteItemsCommand: typeof DynamoSdk.TransactWriteItemsCommand;
+let DeleteItemCommand: typeof DynamoSdk.DeleteItemCommand;
 let ddb: DynamoDBClient;
 let client: LedgerClient;
 
@@ -128,7 +129,7 @@ describe.skipIf(!ENABLED)('sparse deploy ledger × real DynamoDB engine (emulato
     }
     L = (await import(pathToFileURL(path.resolve(__dirname, '../broker/sparse-ledger.mjs')).href)) as Ledger;
     sdk = await import('@aws-sdk/client-dynamodb');
-    ({ CreateTableCommand, GetItemCommand, PutItemCommand, TransactWriteItemsCommand } = sdk);
+    ({ CreateTableCommand, GetItemCommand, PutItemCommand, TransactWriteItemsCommand, DeleteItemCommand } = sdk);
     ddb = new sdk.DynamoDBClient({
       endpoint: ENDPOINT,
       region: 'ap-northeast-1',
@@ -265,6 +266,20 @@ describe.skipIf(!ENABLED)('sparse deploy ledger × real DynamoDB engine (emulato
     );
     const d = await L.reserveAttempt({ client, table: other, ledgerId: LEDGER_ID, revision: REV, attemptId: attemptId(), now: freshNow() });
     expect(d).toMatchObject({ result: 'denied', rule: 'SPARSE_LEDGER_CORRUPT' });
+  });
+
+  it("deleting today's counter after a reservation is detected (genesis lastDay / total)", async () => {
+    const now = freshNow();
+    expect((await reserve(now)).result).toBe('allowed');
+    await ddb.send(
+      new DeleteItemCommand({
+        TableName: TABLE,
+        Key: { PK: { S: 'PROJECT#open-reception' }, SK: { S: `DAY#${L.ledgerDay(now)}` } },
+      }),
+    );
+    expect(await reserve(now)).toMatchObject({ result: 'denied', rule: 'SPARSE_LEDGER_CORRUPT' });
+    const genesis = await getItem('META#genesis');
+    expect(genesis?.lastDay?.S).toBe(L.ledgerDay(now));
   });
 
   it('a ceiling denial is audited without consuming budget', async () => {

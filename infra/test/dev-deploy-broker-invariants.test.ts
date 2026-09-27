@@ -487,8 +487,31 @@ describe('sparse deploy ledger (#1153, Foundation S6a): broker-only, least privi
     const doc = (table.Properties.ResourcePolicy as { PolicyDocument: unknown }).PolicyDocument;
     const statements = documentStatements(doc);
     // Only Deny statements: the resource policy must never grant anything by itself.
-    expect(statements.map((st) => st.Effect)).toEqual(['Deny']);
-    const [deny] = statements;
+    expect(statements.map((st) => st.Effect)).toEqual(['Deny', 'Deny']);
+    const [deny, control] = statements;
+    expect(control!.Principal).toEqual({ AWS: '*' });
+    expect(actionsOf(control!).sort()).toEqual(
+      [
+        'dynamodb:updatetimetolive',
+        'dynamodb:putresourcepolicy',
+        'dynamodb:deleteresourcepolicy',
+        'dynamodb:updatetable',
+        'dynamodb:deletetable',
+        'dynamodb:updatecontinuousbackups',
+        'dynamodb:restoretablefrombackup',
+        'dynamodb:restoretabletopointintime',
+        'dynamodb:updatekinesisstreamingdestination',
+      ].sort(),
+    );
+    // The broker never manages the table.
+    expect(control!.Condition).toEqual({
+      ArnNotEquals: {
+        'aws:PrincipalArn': [
+          { Ref: 'SparseLedgerOverrideIssuerRoleArn' },
+          { Ref: 'SparseLedgerStackDeployRoleArn' },
+        ],
+      },
+    });
     expect(deny!.Principal).toEqual({ AWS: '*' });
     expect(actionsOf(deny!).sort()).toEqual(
       [
@@ -516,13 +539,15 @@ describe('sparse deploy ledger (#1153, Foundation S6a): broker-only, least privi
     expect(deny!.NotPrincipal).toBeUndefined();
   });
 
-  it('the override issuer is a deploy-time IAM role ARN parameter (never a stack-created role)', () => {
-    const param = (template.toJSON().Parameters as Record<string, { Type: string; AllowedPattern?: string }>)
-      .SparseLedgerOverrideIssuerRoleArn;
-    expect(param?.Type).toBe('String');
-    expect(param?.AllowedPattern).toBe('^arn:aws[^:]*:iam::[0-9]{12}:role/[A-Za-z0-9+=,.@_/-]+$');
-    expect(param).not.toHaveProperty('Default');
-  });
+  it.each(['SparseLedgerOverrideIssuerRoleArn', 'SparseLedgerStackDeployRoleArn'])(
+    '%s is a deploy-time IAM role ARN parameter without a default (never a stack-created role)',
+    (name) => {
+      const param = (template.toJSON().Parameters as Record<string, { Type: string; AllowedPattern?: string }>)[name];
+      expect(param?.Type).toBe('String');
+      expect(param?.AllowedPattern).toBe('^arn:aws[^:]*:iam::[0-9]{12}:role/[A-Za-z0-9+=,.@_/-]+$');
+      expect(param).not.toHaveProperty('Default');
+    },
+  );
 
   it('the Claude boundary and CFN exec policies deny dynamodb:* on this stack\'s tables', () => {
     for (const name of [
@@ -540,7 +565,15 @@ describe('sparse deploy ledger (#1153, Foundation S6a): broker-only, least privi
       expect(deny, name).toBeDefined();
       expect(deny!.Effect).toBe('Deny');
       expect(actionsOf(deny!)).toContain('dynamodb:*');
-      expect(deny!.Resource).toContain('arn:aws:dynamodb:*:822063948773:table/OpenReception-DevDeployBroker-*');
+      expect(deny!.Resource).toContain('arn:aws:dynamodb:*:*:table/OpenReception-DevDeployBroker-*');
+      // The broker stack itself: otherwise a boundaried role with CloudFormation rights could
+      // update it through the stack's previously used (human, admin) service role.
+      const stacks = documentStatements(doc).find(
+        (st) => (st as { Sid?: string }).Sid === 'DenyForeignProjectStacks',
+      );
+      expect(stacks?.Effect, name).toBe('Deny');
+      expect(actionsOf(stacks!)).toEqual(['cloudformation:*']);
+      expect(stacks!.Resource).toContain('arn:aws:cloudformation:*:*:stack/OpenReception-DevDeployBroker/*');
     }
     // The deny prefix is `<stackName>-*`, which is how CloudFormation names an unnamed table.
     const bin = readFileSync(resolve(__dirname, '../bin/dev-deploy-broker.ts'), 'utf8');

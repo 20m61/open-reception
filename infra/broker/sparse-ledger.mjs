@@ -22,7 +22,10 @@
  *
  * The genesis item is what distinguishes "a fresh day" from "an empty or replaced table": a
  * missing day counter only means zero when the genesis item exists and carries the ledger id
- * the broker was configured with. Otherwise the ledger's integrity cannot be established (S6a).
+ * the broker was configured with. It also carries a cumulative `totalAttempts` and the
+ * monotonic `lastDay` of the latest reservation, both compare-and-set in every reservation, so
+ * a deleted counter for today, a day count above the total, or a clock that went backwards is
+ * detected. Otherwise the ledger's integrity cannot be established (S6a).
  */
 
 export const PROJECT_KEY = 'PROJECT#open-reception';
@@ -171,7 +174,18 @@ export function readGenesis(genesisItem, ledgerId) {
     return { ok: false, why: 'genesis ledger id differs from the configured ledger id' };
   }
   if (readStr(genesisItem, 'timezone') !== LEDGER_TIMEZONE) return { ok: false, why: 'genesis timezone differs' };
-  return { ok: true };
+  const totalAttempts = readInt(genesisItem, 'totalAttempts');
+  if (totalAttempts === undefined || totalAttempts === CORRUPT) {
+    return { ok: false, why: 'genesis totalAttempts is missing or not a non-negative integer' };
+  }
+  const lastDay = readStr(genesisItem, 'lastDay');
+  if (lastDay === CORRUPT || (lastDay !== undefined && !DAY.test(lastDay))) {
+    return { ok: false, why: 'genesis lastDay is malformed' };
+  }
+  if ((lastDay === undefined) !== (totalAttempts === 0)) {
+    return { ok: false, why: 'genesis lastDay and totalAttempts disagree' };
+  }
+  return { ok: true, totalAttempts, lastDay };
 }
 
 /**
@@ -236,7 +250,18 @@ export function evaluatePreflight({ revision, attemptId, now, ledgerId, genesisI
   if (!counter.ok) {
     return deny(RULES.LEDGER_CORRUPT, `sparse deploy ledger integrity cannot be established: ${counter.why}`, base);
   }
+  if (genesis.lastDay !== undefined && genesis.lastDay > day) {
+    return deny(RULES.LEDGER_CORRUPT, `sparse deploy ledger integrity cannot be established: last reservation (${genesis.lastDay}) is after today (${day}); clock regression or tampering`, base);
+  }
+  if (genesis.lastDay === day && !counter.exists) {
+    return deny(RULES.LEDGER_CORRUPT, 'sparse deploy ledger integrity cannot be established: today already has reservations but its day counter is missing', base);
+  }
+  if (counter.attemptCount > genesis.totalAttempts) {
+    return deny(RULES.LEDGER_CORRUPT, 'sparse deploy ledger integrity cannot be established: day counter exceeds the cumulative total', base);
+  }
   const counts = {
+    ledgerId,
+    observedTotalAttempts: genesis.totalAttempts,
     observedAttemptCount: counter.attemptCount,
     successCount: counter.successCount,
     failureCount: counter.failureCount,
@@ -266,7 +291,10 @@ export function evaluatePreflight({ revision, attemptId, now, ledgerId, genesisI
  */
 export function buildReserveTransaction({ table, decision, now }) {
   if (decision?.result !== 'allowed') throw new Error('only an allowed preflight decision can be reserved');
-  const { day, revision, attemptId, mode, observedAttemptCount } = decision;
+  const { day, revision, attemptId, mode, observedAttemptCount, observedTotalAttempts, ledgerId } = decision;
+  if (!isLedgerId(ledgerId) || !Number.isSafeInteger(observedTotalAttempts) || observedTotalAttempts < observedAttemptCount) {
+    throw new Error('reservation requires the verified genesis state of the decision');
+  }
   if (mode === 'normal' && !(observedAttemptCount < SOFT_ATTEMPT_CEILING)) {
     throw new Error('normal reservation requires an observed count below the soft ceiling');
   }
@@ -303,7 +331,21 @@ export function buildReserveTransaction({ table, decision, now }) {
     attemptNumber: { N: String(observedAttemptCount + 1) },
     reservedAt: { S: nowIso },
   };
-  const items = [{ Update: withNames(dayUpdate) }];
+  const genesisUpdate = {
+    TableName: table,
+    Key: key(GENESIS_KEY),
+    UpdateExpression: 'SET #totalAttempts = :newTotal, #lastDay = :day',
+    ConditionExpression:
+      '#ledgerId = :ledgerId AND #timezone = :tz AND #totalAttempts = :observedTotal AND (attribute_not_exists(#lastDay) OR #lastDay <= :day)',
+    ExpressionAttributeValues: {
+      ':newTotal': { N: String(observedTotalAttempts + 1) },
+      ':observedTotal': { N: String(observedTotalAttempts) },
+      ':day': { S: day },
+      ':ledgerId': { S: ledgerId },
+      ':tz': { S: LEDGER_TIMEZONE },
+    },
+  };
+  const items = [{ Update: withNames(genesisUpdate) }, { Update: withNames(dayUpdate) }];
   if (mode === 'override') {
     const o = decision.override;
     Object.assign(attemptItem, {
@@ -456,6 +498,7 @@ export function buildGenesisPut({ table, ledgerId, now }) {
       ledgerId: { S: ledgerId },
       timezone: { S: LEDGER_TIMEZONE },
       createdAt: { S: now.toISOString() },
+      totalAttempts: { N: '0' },
     },
     ConditionExpression: 'attribute_not_exists(#PK)',
   });
@@ -517,6 +560,20 @@ export async function reserveAttempt({ client, table, ledgerId, revision, attemp
     }
   }
   return decision;
+}
+
+/**
+ * Audit a denial from a gate that runs before `reserveAttempt` (static policy, live ChangeSet
+ * evaluation, BROKER_NOT_ARMED). Best-effort: returns whether the record was written; it never
+ * changes the denial.
+ */
+export async function recordDenial({ client, table, attemptId, revision, rule, now }) {
+  try {
+    await client.putItem(buildDenialPut({ table, attemptId, revision, rule, now }));
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 /** Record the terminal outcome of a reserved attempt. Throws when the ledger refuses it. */

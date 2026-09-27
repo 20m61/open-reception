@@ -194,6 +194,13 @@ describe('trusted dev-deploy cloud assembly policy (#1146)', () => {
     ['single-char wildcard', 'arn:aws:dynamodb:*:*:table/Open?eception-DevDeployBroker-*'],
     ['ledger index/stream', 'arn:aws:dynamodb:*:*:table/*/stream/*'],
     ['intrinsic naming the broker stack', { 'Fn::ImportValue': 'OpenReception-DevDeployBroker-LedgerArn' }],
+    ['Fn::Join building a table wildcard', { 'Fn::Join': ['', ['arn:aws:dynamodb:', { Ref: 'AWS::Region' }, ':', { Ref: 'AWS::AccountId' }, ':table/*']] }],
+    ['Fn::Sub building a table wildcard', { 'Fn::Sub': 'arn:aws:dynamodb:${AWS::Region}:${AWS::AccountId}:table/*' }],
+    ['Fn::Join with a bare wildcard part', { 'Fn::Join': [':', ['arn', 'aws', 'dynamodb', '*', '*', '*']] }],
+    ['any dynamodb resource', 'arn:aws:dynamodb:*:*:*'],
+    ['table prefix without slash', 'arn:aws:dynamodb:*:*:table*'],
+    ['service wildcard', 'arn:aws:dynamo*:*:*:table/*'],
+    ['everything', 'arn:*'],
   ])('denies candidate IAM that could reach the broker-only sparse ledger: %s (#1153)', (_label, resource) => {
     const assembly = makeAssembly({
       'OpenReception-Web-dev': {
@@ -210,10 +217,59 @@ describe('trusted dev-deploy cloud assembly policy (#1146)', () => {
     expect(rules(assembly)).toContain('IAM_REACHES_SPARSE_LEDGER');
   });
 
+  it('denies an Allow with NotResource (it grants everything else, including the ledger)', () => {
+    const assembly = makeAssembly({
+      'OpenReception-Web-dev': {
+        RuntimePolicy: {
+          Type: 'AWS::IAM::Policy',
+          Properties: {
+            PolicyDocument: {
+              Statement: [{ Effect: 'Allow', Action: ['dynamodb:PutItem'], NotResource: ['arn:aws:dynamodb:*:*:table/nodi-*'] }],
+            },
+          },
+        },
+      },
+    });
+    expect(rules(assembly)).toContain('IAM_NOT_RESOURCE');
+  });
+
+  it('checks role inline Policies for ledger reach and NotResource, including carve-out roles', () => {
+    const inline = (statement: Record<string, unknown>) => ({
+      Type: 'AWS::IAM::Role',
+      Properties: {
+        AssumeRolePolicyDocument: {},
+        PermissionsBoundary: 'arn:aws:iam::123456789012:policy/OpenReceptionClaudeBoundary',
+        Policies: [{ PolicyName: 'p', PolicyDocument: { Statement: [statement] } }],
+      },
+    });
+    const reach = makeAssembly({
+      'OpenReception-Web-dev': {
+        RuntimeRole: inline({ Effect: 'Allow', Action: 'dynamodb:PutItem', Resource: 'arn:aws:dynamodb:*:*:table/*' }),
+        CustomS3AutoDeleteObjectsCustomResourceProviderRole3B1BD092: inline({ Effect: 'Allow', Action: 'dynamodb:PutItem', Resource: '*' }),
+      },
+    });
+    const violations = evaluate(reach).violations as Array<{ rule: string; resource: string }>;
+    const ledger = violations.filter((v) => v.rule === 'IAM_REACHES_SPARSE_LEDGER').map((v) => v.resource).sort();
+    expect(ledger).toEqual(['CustomS3AutoDeleteObjectsCustomResourceProviderRole3B1BD092', 'RuntimeRole']);
+    const notResource = makeAssembly({
+      'OpenReception-Web-dev': { RuntimeRole: inline({ Effect: 'Allow', Action: 's3:GetObject', NotResource: 'x' }) },
+    });
+    expect(rules(notResource)).toContain('IAM_NOT_RESOURCE');
+    const opaque = makeAssembly({
+      'OpenReception-Web-dev': {
+        RuntimeRole: { Type: 'AWS::IAM::Role', Properties: { PermissionsBoundary: 'OpenReceptionClaudeBoundary', Policies: [{ PolicyDocument: { 'Fn::If': [] } }] } },
+      },
+    });
+    expect(rules(opaque)).toContain('IAM_POLICY_OPAQUE');
+  });
+
   it.each([
     ['the app table by name', 'arn:aws:dynamodb:ap-northeast-1:123456789012:table/open-reception-dev'],
     ['the app table index', 'arn:aws:dynamodb:ap-northeast-1:123456789012:table/open-reception-dev/index/*'],
     ['a stack-local Ref', { 'Fn::GetAtt': ['AppTable0A1B2C3D', 'Arn'] }],
+    ['an app-table index via Fn::Join', { 'Fn::Join': ['', [{ 'Fn::GetAtt': ['AppTable0A1B2C3D', 'Arn'] }, '/index/*']] }],
+    ['Fn::Sub of the app table', { 'Fn::Sub': 'arn:aws:dynamodb:${AWS::Region}:${AWS::AccountId}:table/open-reception-dev' }],
+    ['an S3 object wildcard', 'arn:aws:s3:::open-reception-dev-assets/*'],
   ])('does not flag the product table: %s', (_label, resource) => {
     const assembly = makeAssembly({
       'OpenReception-Web-dev': {

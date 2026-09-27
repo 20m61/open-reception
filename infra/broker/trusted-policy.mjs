@@ -151,25 +151,45 @@ function resolvesToLogicalId(value, logicalId) {
 }
 
 /**
- * A name the broker stack's CloudFormation-generated ledger table can have. Candidate IAM that
- * could match it (exact, prefix or wildcard) would let a deployed workload forge overrides or
- * reset counters (#1153, Foundation S6a), so it is rejected before mutation.
+ * Sample ARNs of the broker stack's CloudFormation-generated ledger table (and its sub-resources).
+ * Candidate IAM that could match any of them - exact, prefix, wildcard, or built by an intrinsic
+ * - would let a deployed workload forge overrides or reset counters (#1153, Foundation S6a), so
+ * it is rejected before mutation. Matching is against the whole ARN, so wildcards in the
+ * partition / service / region / account / resource segments are all covered.
  */
 const SPARSE_LEDGER_TABLE_SAMPLE = 'OpenReception-DevDeployBroker-SparseDeployLedger0A1B2C3D-0A1B2C3D4E5F';
+const SPARSE_LEDGER_ARN_SAMPLES = [
+  `arn:aws:dynamodb:ap-northeast-1:822063948773:table/${SPARSE_LEDGER_TABLE_SAMPLE}`,
+  `arn:aws:dynamodb:ap-northeast-1:822063948773:table/${SPARSE_LEDGER_TABLE_SAMPLE}/stream/2026-01-01T00:00:00.000`,
+];
 
-function globMatches(pattern, value) {
-  const re = new RegExp(`^${pattern.split('*').map((part) => part.replace(/[.+?^${}()|[\]\\]/g, '\\$&')).join('.*')}$`);
+/** IAM resource glob: `*` any run of characters (including `/`), `?` one character, case-sensitive. */
+function iamGlobMatches(pattern, value) {
+  const re = new RegExp(
+    `^${[...pattern].map((c) => (c === '*' ? '.*' : c === '?' ? '.' : c.replace(/[.+^${}()|[\]\\]/g, '\\$&'))).join('')}$`,
+  );
   return re.test(value);
 }
 
 function reachesSparseLedger(resource) {
   if (typeof resource !== 'string') {
-    // Intrinsics: reject anything naming the broker stack or its ledger.
-    return /DevDeployBroker|SparseDeployLedger/i.test(JSON.stringify(resource));
+    // Intrinsics (Fn::Join / Fn::Sub / Fn::ImportValue ...) cannot be resolved here. Reject any
+    // that names the broker stack or its ledger, or that builds a DynamoDB / wildcard-service ARN
+    // containing a wildcard.
+    const text = JSON.stringify(resource);
+    if (/DevDeployBroker|SparseDeployLedger/i.test(text)) return true;
+    return text.includes('*') && /dynamo|arn:[^"]*:\*:|"\*"/i.test(text);
   }
   if (/DevDeployBroker|SparseDeployLedger/i.test(resource)) return true;
-  const m = /^arn:[^:]*:dynamodb:[^:]*:[^:]*:table\/([^/]*)/.exec(resource);
-  return m !== null && globMatches(m[1].replace(/\?/g, '*'), SPARSE_LEDGER_TABLE_SAMPLE);
+  // The assembly's own account / region are not the question here: treat those segments as
+  // wildcards (broader match = fail closed).
+  const parts = resource.split(':');
+  if (parts.length >= 6) {
+    parts[3] = '*';
+    parts[4] = '*';
+  }
+  const normalized = parts.join(':');
+  return SPARSE_LEDGER_ARN_SAMPLES.some((sample) => iamGlobMatches(normalized, sample));
 }
 
 function boundaryLooksCorrect(value) {
@@ -193,6 +213,9 @@ function policyDocumentViolations(stackName, logicalId, document) {
       if (LOOP_CAPABLE_IAM_ACTIONS.has(action)) {
         out.push(violation('IAM_LOOP_CAPABLE_ACTION', stackName, logicalId, `runtime role may trigger work recursively: ${action}`));
       }
+    }
+    if (statement.NotResource !== undefined) {
+      out.push(violation('IAM_NOT_RESOURCE', stackName, logicalId, 'Allow with NotResource grants everything except a list, including the sparse deploy ledger'));
     }
     if (resources.some(reachesSparseLedger)) {
       out.push(violation('IAM_REACHES_SPARSE_LEDGER', stackName, logicalId, 'candidate IAM may reach the broker-only sparse deploy ledger'));
@@ -232,6 +255,28 @@ function evaluateResource(stackName, logicalId, resource) {
 
   if (type === 'AWS::IAM::Policy') {
     out.push(...policyDocumentViolations(stackName, logicalId, props.PolicyDocument));
+  }
+
+  // Role inline policies: at least the ledger / NotResource checks apply to every role, including
+  // reviewed CDK carve-outs (the full inline-policy review is pre-arming blocker 1).
+  if (type === 'AWS::IAM::Role' && props.Policies !== undefined) {
+    const inline = Array.isArray(props.Policies) ? props.Policies : [props.Policies];
+    for (const policy of inline) {
+      const statements = isRecord(policy) && isRecord(policy.PolicyDocument) ? policy.PolicyDocument.Statement : undefined;
+      if (!Array.isArray(statements)) {
+        out.push(violation('IAM_POLICY_OPAQUE', stackName, logicalId, 'role inline policy has no concrete Statement array'));
+        continue;
+      }
+      for (const statement of statements) {
+        if (!isRecord(statement) || statement.Effect !== 'Allow') continue;
+        if (statement.NotResource !== undefined) {
+          out.push(violation('IAM_NOT_RESOURCE', stackName, logicalId, 'inline Allow with NotResource'));
+        }
+        if (asArray(statement.Resource).some(reachesSparseLedger)) {
+          out.push(violation('IAM_REACHES_SPARSE_LEDGER', stackName, logicalId, 'role inline policy may reach the broker-only sparse deploy ledger'));
+        }
+      }
+    }
   }
 
   if (type === 'AWS::Lambda::Function') {
