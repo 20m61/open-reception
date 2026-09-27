@@ -90,10 +90,10 @@ describe('廃止した生 origin secret は全サブコマンドの先頭で止�
       env: { ...withoutRetired(), ...env },
     });
 
-  // 🔴 **`verify` は spawn しない。** verify は AWS に触れず、ローカルで build と品質ゲート
-  // （＝この test 自身を含む `npm test`）を走らせる。先頭の検査が退行すると、この test が
-  // verify を再帰的に起動し続ける（2026-09-27 に変異注入で実際に起きた）。verify を含む
-  // 全サブコマンドに効くことは、下の「分岐より前に置かれている」で位置として固定する。
+  // 🔴 **`verify` はここでは spawn しない。** verify は AWS に触れず、ローカルで build と品質ゲート
+  // （＝この test 自身を含む `npm test`）を走らせる。先頭の検査が退行すると、素の spawn は
+  // verify を再帰的に起動し続ける（2026-09-27 に変異注入で実際に起きた）。verify は下の
+  // 「再帰しない形で実際に起動」（stub の npm）と「分岐より前に置かれている」で固定する。
   it.each(['preflight', 'diff', 'deploy', 'smoke'])('%s', (sub) => {
     const { status, stdout, stderr } = run([sub], { OR_ORIGIN_VERIFY_SECRET: RAW });
     expect(status).toBe(2);
@@ -122,7 +122,8 @@ describe('廃止した生 origin secret は全サブコマンドの先頭で止�
   it('verify も止める（再帰しない形で実際に起動して確かめる）', () => {
     // verify の最初の処理は `npm run build:open-next`。PATH の先頭に「印を出して 97 で終わる」
     // npm を置くので、検査が退行しても build / 品質ゲート（＝この test 自身）へは進まない。
-    // さらに spawn に上限時間を付け、万一でも待ち続けない。
+    // さらに spawn に上限時間を付け、万一でも待ち続けない（file の testTimeout 30s に収める。
+    // SIGKILL は bash 本体にしか届かず、孫プロセスは残りうる ―― 再帰の防止は stub が担う）。
     const stubDir = makeSharedTempDir('aws-cloud-deploy-stub-npm-');
     const stub = join(stubDir, 'npm');
     writeFileSync(stub, '#!/bin/sh\necho STUB_NPM_REACHED >&2\nexit 97\n');
@@ -131,7 +132,7 @@ describe('廃止した生 origin secret は全サブコマンドの先頭で止�
       encoding: 'utf8',
       stdio: ['ignore', 'pipe', 'pipe'],
       env: { ...process.env, PATH: `${stubDir}:${process.env.PATH ?? ''}`, OR_ORIGIN_VERIFY_SECRET: RAW },
-      timeout: 60_000,
+      timeout: 25_000,
       killSignal: 'SIGKILL',
     });
     expect(result.error).toBeUndefined();

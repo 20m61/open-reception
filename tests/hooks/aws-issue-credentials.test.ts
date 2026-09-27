@@ -4,7 +4,7 @@
  * **秘密の値を出力・保存しないこと**が本スクリプトの唯一かつ最大の要件なので、
  * そこを機械で固定する。AWS へは接続しない（引数検証と本文の性質だけ見る）。
  */
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
 import { readFileSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
@@ -267,8 +267,24 @@ describe('デプロイ context もクリップボードへ載せる (#989)', () 
     const { status, stderr } = run(['--hours', '1', '--no-context'], { OR_DEPLOY_CONTEXT_FILE: file });
     expect(status).not.toBe(0);
     expect(stderr).toContain('OR_ORIGIN_VERIFY_SECRET');
+    // 終了コード 3 を「廃止変数」として読み分けている（検査を実行できない、とは言わない）。
+    expect(stderr).toContain('廃止された変数が残っているため');
+    expect(stderr).not.toContain('検査を実行できない');
     expect(stderr).not.toContain('VITEST');
     expect(stderr).not.toContain(raw);
+  });
+
+  it('deploy-context-block.ts は未知の引数（ダッシュ付きの綴り違いなど）で context を出さずに止まる', () => {
+    const cli = resolve(process.cwd(), 'scripts/deploy-context-block.ts');
+    for (const args of [['-' + '-retired-only'], ['retired-only', 'x']]) {
+      const result = spawnSync('npx', ['--no-install', 'tsx', cli, ...args], {
+        encoding: 'utf8',
+        stdio: ['ignore', 'pipe', 'pipe'],
+        env: { ...process.env, ...NO_CONTEXT_FILE, ...CONTEXT_ENV },
+      });
+      expect(result.status, args.join(' ')).toBe(2);
+      expect(result.stdout, args.join(' ')).toBe('');
+    }
   });
 
   it('--no-context なら 3 変数が無くても context では止まらない', () => {
