@@ -18,6 +18,19 @@
  * Without the flag the suite is skipped (the default gate does not change). With the flag, an
  * unreachable endpoint FAILS instead of skipping, so a broken environment cannot read as green.
  * The endpoint must be loopback; this test never talks to real AWS.
+ *
+ * 🔴 Concurrency cases need an engine with real transaction isolation. moto's
+ * `transact_write_items` deep-copies the tables at the start and, when the transaction fails,
+ * writes the copies back without a lock, so a losing racer can erase a winner's committed write
+ * (lost update). Those cases therefore run only with `LEDGER_TX_ISOLATION=1`, set when the
+ * endpoint is DynamoDB Local (verified 2026-09-27) or another engine with DynamoDB's
+ * transactional semantics:
+ *
+ * ```
+ * java -Djava.library.path=./DynamoDBLocal_lib -jar DynamoDBLocal.jar -inMemory -port 8000
+ * LOCAL_AWS_INTEGRATION=1 LEDGER_TX_ISOLATION=1 AWS_ENDPOINT_URL=http://127.0.0.1:8000 \
+ *   npx vitest run test/sparse-dev-deploy-ledger.emulator.test.ts
+ * ```
  */
 import * as path from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -28,6 +41,7 @@ import type { AttributeValue, DynamoDBClient } from '@aws-sdk/client-dynamodb';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
 const ENABLED = process.env.LOCAL_AWS_INTEGRATION === '1';
+const TX_ISOLATION = process.env.LEDGER_TX_ISOLATION === '1';
 const ENDPOINT = process.env.AWS_ENDPOINT_URL ?? 'http://127.0.0.1:4566';
 const RUN = `${Date.now()}-${Math.random().toString(16).slice(2, 8)}`;
 const TABLE = `sparse-ledger-${RUN}`;
@@ -189,7 +203,7 @@ describe.skipIf(!ENABLED)('sparse deploy ledger × real DynamoDB engine (emulato
     expect((await reserve(now)).result).toBe('denied');
   });
 
-  it('concurrent racers never reserve more than the ceiling or share an attempt number', async () => {
+  it.runIf(TX_ISOLATION)('concurrent racers never reserve more than the ceiling or share an attempt number', async () => {
     const now = freshNow();
     const day = L.ledgerDay(now);
     const allowed: Decision[] = [];
@@ -198,11 +212,9 @@ describe.skipIf(!ENABLED)('sparse deploy ledger × real DynamoDB engine (emulato
       allowed.push(...results.filter((r) => r.result === 'allowed'));
       for (const r of results) {
         if (r.result === 'denied') {
-          // SPARSE_LEDGER_CORRUPT / UNAVAILABLE are also correct (fail-closed) answers here: moto
-          // does not isolate TransactGetItems from concurrent TransactWriteItems, so a racer can
-          // read a torn snapshot. Real DynamoDB serializes them (a conflicting read is cancelled,
-          // which surfaces as UNAVAILABLE). The safety property below is what this test pins.
-          expect(['SPARSE_LEDGER_CONFLICT', 'SPARSE_DAILY_ATTEMPT_CEILING', 'SPARSE_LEDGER_CORRUPT', 'SPARSE_LEDGER_UNAVAILABLE']).toContain(r.rule);
+          // A read cancelled by a concurrent transaction surfaces as UNAVAILABLE (fail closed).
+          // CORRUPT here would mean the snapshot read is not isolated, so it is not accepted.
+          expect(['SPARSE_LEDGER_CONFLICT', 'SPARSE_DAILY_ATTEMPT_CEILING', 'SPARSE_LEDGER_UNAVAILABLE']).toContain(r.rule);
         }
       }
     }
@@ -211,7 +223,7 @@ describe.skipIf(!ENABLED)('sparse deploy ledger × real DynamoDB engine (emulato
     expect((await counts(day)).attempts).toBe(2);
   });
 
-  it('an override allows exactly one more attempt, only for its revision, once', async () => {
+  it.runIf(TX_ISOLATION)('an override allows exactly one more attempt, only for its revision, once', async () => {
     const now = freshNow();
     const day = L.ledgerDay(now);
     await reserve(now);

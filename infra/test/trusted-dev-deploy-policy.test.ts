@@ -212,6 +212,10 @@ describe('trusted dev-deploy cloud assembly policy (#1146)', () => {
     ['Fn::Sub of a concrete table', { 'Fn::Sub': 'arn:aws:dynamodb:${AWS::Region}:${AWS::AccountId}:table/open-reception-dev' }],
     ['GetAtt of a resource not in this template', { 'Fn::GetAtt': ['ElsewhereTable', 'Arn'] }],
     ['Join of GetAtt with a non-path suffix', { 'Fn::Join': ['', [{ 'Fn::GetAtt': ['AppTable0A1B2C3D', 'Arn'] }, ':*']] }],
+    ['IAM policy variable in the table name', 'arn:aws:dynamodb:*:*:table/${aws:PrincipalTag/t}'],
+    ['glob on the real ledger hash', 'arn:aws:dynamodb:*:*:table/*Ledger9F8E7D6C*'],
+    ['glob on a ledger name prefix', 'arn:aws:dynamodb:ap-northeast-1:123456789012:table/OpenRecep*'],
+    ['exact real ledger name', 'arn:aws:dynamodb:ap-northeast-1:123456789012:table/OpenReception-DevDeployBroker-SparseDeployLedger9F8E7D6C-1XYZ'],
   ])('denies candidate IAM that could reach the broker-only sparse ledger: %s (#1153)', (_label, resource) => {
     const assembly = makeAssembly({
       'OpenReception-Web-dev': {
@@ -382,6 +386,8 @@ describe('trusted dev-deploy cloud assembly policy (#1146)', () => {
     ['a stack-local Ref', { Ref: 'AppTable0A1B2C3D' }],
     ['an app-table index via Fn::Join (CDK grant shape)', { 'Fn::Join': ['', [{ 'Fn::GetAtt': ['AppTable0A1B2C3D', 'Arn'] }, '/index/*']] }],
     ['an S3 object wildcard', 'arn:aws:s3:::open-reception-dev-assets/*'],
+    ['an app table glob anchored to a non-ledger prefix', 'arn:aws:dynamodb:*:*:table/open-reception-dev*'],
+    ['an app table index glob', 'arn:aws:dynamodb:*:*:table/open-reception-dev/index/*'],
   ])('does not flag the product table: %s', (_label, resource) => {
     const assembly = makeAssembly({
       'OpenReception-Web-dev': {

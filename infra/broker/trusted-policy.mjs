@@ -230,9 +230,27 @@ function isLocalResourceRef(value, templateResources) {
   return false;
 }
 
+/** Physical-name prefix CloudFormation gives the ledger table (`<stack name>-<logical id>...`). */
+const SPARSE_LEDGER_NAME_PREFIX = 'OpenReception-DevDeployBroker-';
+
+/**
+ * Could this table-name glob match a name starting with the ledger prefix? Only the literal part
+ * before the first wildcard can rule that out: the glob can match a ledger name iff that literal
+ * and the ledger prefix are prefixes of one another.
+ */
+function tableNameGlobMayMatchLedger(name) {
+  const cut = name.search(/[*?]/);
+  const literal = cut === -1 ? name : name.slice(0, cut);
+  if (cut === -1) return literal.startsWith(SPARSE_LEDGER_NAME_PREFIX);
+  return literal.startsWith(SPARSE_LEDGER_NAME_PREFIX) || SPARSE_LEDGER_NAME_PREFIX.startsWith(literal);
+}
+
 function reachesSparseLedger(resource, templateResources) {
   if (typeof resource !== 'string') return !isLocalResourceRef(resource, templateResources);
   if (resource.includes('{{resolve:')) return true;
+  // IAM policy variables (`${aws:PrincipalTag/x}` ...) are substituted per request, and a
+  // candidate controls its own role's tags: the resource is not determined by the template.
+  if (resource.includes('${')) return true;
   if (/DevDeployBroker|SparseDeployLedger/i.test(resource)) return true;
   // The assembly's own account / region are not the question here: treat those segments as
   // wildcards (broader match = fail closed).
@@ -242,7 +260,15 @@ function reachesSparseLedger(resource, templateResources) {
     parts[4] = '*';
   }
   const normalized = parts.join(':');
-  return SPARSE_LEDGER_ARN_SAMPLES.some((sample) => iamGlobMatches(normalized, sample));
+  if (SPARSE_LEDGER_ARN_SAMPLES.some((sample) => iamGlobMatches(normalized, sample))) return true;
+  // A glob built on the ledger's real (deterministic) physical name does not match the sample's
+  // hash, so check the table-name part structurally.
+  if (parts.length >= 6 && iamGlobMatches(parts[2].toLowerCase(), 'dynamodb')) {
+    const rest = parts.slice(5).join(':');
+    const m = /^table\/([^/]*)/.exec(rest);
+    if (m && tableNameGlobMayMatchLedger(m[1])) return true;
+  }
+  return false;
 }
 
 /** Only statements that can grant a DynamoDB action are relevant to the ledger. */
