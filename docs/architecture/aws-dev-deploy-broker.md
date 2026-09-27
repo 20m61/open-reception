@@ -199,6 +199,13 @@ tested before the broker may assume any deploy role:
    substitution). Needs per-execution write scope or broker-side content binding.
 3. **No deploy-account pinning.** The target account is the stack's own `AWS::AccountId`; there is
    no independent, human-reviewed pin of the one dev account the broker may deploy to.
+   **Status: pin established in code.** `DEV_DEPLOY_TARGET_ACCOUNT` is a reviewed constant equal to the account
+   every ADR 0009 policy in `scripts/aws-policies/` pins (a test keeps them equal). A concrete synth for another
+   account fails; both builds receive the literal (never `AWS::AccountId`); the trusted policy evaluates the
+   assembly against it; and the broker's first command checks that its own build ARN is in that account.
+   Binding the account the armed broker actually deploys to (manifest role ARNs, asset destinations) is the
+   trusted policy's job (blocker 1) and must be re-checked when the role chain is armed (e.g. caller identity
+   after AssumeRole).
 4. **Stale retry reuses an old CommitId.** Retrying an old failed `BrokerBoundary` stage re-runs
    with that execution's original CommitId and artifacts, which may be long superseded; arming
    needs freshness (e.g. `dev-deploy` pointer / ledger check) before mutation.

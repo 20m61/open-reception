@@ -9,7 +9,7 @@ import {
 const synth = () => {
   const app = new cdk.App();
   const stack = new DevDeployBrokerStack(app, 'TestDevDeployBroker', {
-    env: { account: '123456789012', region: 'ap-northeast-1' },
+    env: { account: '822063948773', region: 'ap-northeast-1' },
   });
   return Template.fromStack(stack);
 };
