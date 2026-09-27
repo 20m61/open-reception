@@ -14,6 +14,45 @@ const VALIDATION_PROJECT_NAME = 'OpenReceptionDevDeployValidation';
 const BROKER_PROJECT_NAME = 'OpenReceptionTrustedDevDeployBroker';
 
 /**
+ * Wrap a dependency-free JS snippet as a POSIX-shell-safe `node -e '<script>'` command.
+ * Shell single quotes disable every expansion (`$`, backticks, `\`), so the snippet must not
+ * contain a single quote itself; JS string literals inside use double quotes.
+ */
+export const nodeEval = (script: string): string => {
+  if (script.includes("'")) {
+    throw new Error('inline broker script must not contain a single quote');
+  }
+  return `node -e '${script}'`;
+};
+
+/** Validation: record the trusted CodePipeline CommitId (never candidate metadata). */
+export const VALIDATION_EVIDENCE_SCRIPT = [
+  'const fs=require("fs");',
+  'const revision=process.env.OR_TRUSTED_SOURCE_REVISION;',
+  'if(typeof revision!=="string"||!/^[0-9a-f]{40}$/i.test(revision)){throw new Error("trusted source revision missing or invalid")}',
+  'const out={schemaVersion:1,sourceRevision:revision,validationBuildArn:process.env.CODEBUILD_BUILD_ARN||"unknown",observedAt:new Date().toISOString(),status:"validation-complete"};',
+  'fs.writeFileSync("broker-evidence.json",JSON.stringify(out,null,2));',
+].join(' ');
+
+/** Broker: candidate-produced evidence must name exactly the trusted pipeline CommitId. */
+export const BROKER_REVISION_CHECK_SCRIPT = [
+  'const fs=require("fs");',
+  'const e=JSON.parse(fs.readFileSync("broker-evidence.json","utf8"));',
+  'const trusted=process.env.OR_TRUSTED_SOURCE_REVISION;',
+  'if(e.schemaVersion!==1||typeof trusted!=="string"||!trusted||e.sourceRevision!==trusted){throw new Error("validation evidence revision mismatch")}',
+].join(' ');
+
+/** Broker: even an allowed static assembly cannot mutate yet. */
+export const BROKER_NOT_ARMED_RESULT_SCRIPT = [
+  'const fs=require("fs");',
+  'const sourceRevision=process.env.OR_TRUSTED_SOURCE_REVISION;',
+  'if(typeof sourceRevision!=="string"||!/^[0-9a-f]{40}$/i.test(sourceRevision)){throw new Error("trusted source revision missing or invalid")}',
+  'const result={result:"denied",source_revision:sourceRevision,stage:"broker-bootstrap",rule:"BROKER_NOT_ARMED",resource:null,reason:"Static trusted policy passed, but sparse ledger/live ChangeSet/role chain are intentionally not armed",retryable:false,evidence_ref:process.env.CODEBUILD_BUILD_ARN||"unknown"};',
+  'fs.writeFileSync("broker-result.json",JSON.stringify(result,null,2));',
+  'console.log(JSON.stringify(result));',
+].join(' ');
+
+/**
  * Dev deploy broker control plane (#1146).
  *
  * Security boundary:
@@ -145,7 +184,7 @@ export class DevDeployBrokerStack extends cdk.Stack {
               // Only the three stacks already admitted by ADR 0009 are synthesized.
               // Context is non-secret; originVerifySecretName reuses the app secret NAME.
               'cd infra && CDK_DEFAULT_ACCOUNT="$OR_BROKER_TARGET_ACCOUNT" CDK_DEFAULT_REGION="$OR_BROKER_TARGET_REGION" npx cdk synth OpenReception-Web-dev OpenReception-WebMonitoring-dev OpenReception-CfMon-dev --output cdk.out -c env=dev -c claudeBoundary=OpenReceptionClaudeBoundary -c appSecretsName="$OR_APP_SECRETS_NAME" -c originVerifySecretName="$OR_APP_SECRETS_NAME" -c publicOriginOverride="$OR_PUBLIC_ORIGIN_OVERRIDE" -c providerSecretBackend="$OR_PROVIDER_SECRET_BACKEND" && cd ..',
-              'node -e "const fs=require(\\'fs\\'); const revision=process.env.OR_TRUSTED_SOURCE_REVISION; if(typeof revision!==\\'string\\'||!/^[0-9a-f]{40}$/i.test(revision)){throw new Error(\\'trusted source revision missing or invalid\\')} const out={schemaVersion:1,sourceRevision:revision,validationBuildArn:process.env.CODEBUILD_BUILD_ARN||\\'unknown\\',observedAt:new Date().toISOString(),status:\\'validation-complete\\'}; fs.writeFileSync(\\'broker-evidence.json\\',JSON.stringify(out,null,2));"',
+              nodeEval(VALIDATION_EVIDENCE_SCRIPT),
             ],
           },
         },
@@ -184,12 +223,12 @@ export class DevDeployBrokerStack extends cdk.Stack {
             commands: [
               'test -f broker-evidence.json',
               'test -f infra/cdk.out/manifest.json',
-              'node -e "const fs=require(\\'fs\\'); const e=JSON.parse(fs.readFileSync(\\'broker-evidence.json\\',\\'utf8\\')); const trusted=process.env.OR_TRUSTED_SOURCE_REVISION; if(e.schemaVersion!==1||typeof trusted!==\\'string\\'||!trusted||e.sourceRevision!==trusted){throw new Error(\\'validation evidence revision mismatch\\')}"',
+              nodeEval(BROKER_REVISION_CHECK_SCRIPT),
               // Download policy by the content-addressed S3 location injected by this stack.
               'aws s3 cp "s3://$OR_TRUSTED_POLICY_BUCKET/$OR_TRUSTED_POLICY_KEY" /tmp/open-reception-trusted-policy.mjs --only-show-errors',
               'node /tmp/open-reception-trusted-policy.mjs --assembly infra/cdk.out --account "$OR_BROKER_TARGET_ACCOUNT" > trusted-policy-result.json',
               // Even an allowed static assembly cannot mutate yet.
-              'node -e "const fs=require(\\'fs\\'); const sourceRevision=process.env.OR_TRUSTED_SOURCE_REVISION; if(typeof sourceRevision!==\\'string\\'||!/^[0-9a-f]{40}$/i.test(sourceRevision)){throw new Error(\\'trusted source revision missing or invalid\\')} const result={result:\\'denied\\',source_revision:sourceRevision,stage:\\'broker-bootstrap\\',rule:\\'BROKER_NOT_ARMED\\',resource:null,reason:\\'Static trusted policy passed, but sparse ledger/live ChangeSet/role chain are intentionally not armed\\',retryable:false,evidence_ref:process.env.CODEBUILD_BUILD_ARN||\\'unknown\\'}; fs.writeFileSync(\\'broker-result.json\\',JSON.stringify(result,null,2)); console.log(JSON.stringify(result));"',
+              nodeEval(BROKER_NOT_ARMED_RESULT_SCRIPT),
               'echo "Trusted broker is intentionally unarmed." >&2',
               'exit 42',
             ],

@@ -116,7 +116,14 @@ describe('DevDeployBrokerStack (#1146 Phase 1)', () => {
     expect(serialized).toContain('OpenReception-CfMon-dev');
     expect(serialized).not.toContain('OpenReception-Notification-dev');
     expect(serialized).not.toContain('OpenReception-Monitoring-dev');
-    expect(serialized).toContain('originVerifySecretName="$OR_APP_SECRETS_NAME"');
+    // BuildSpec is itself a JSON string inside the template; compare against the parsed commands.
+    const buildSpecText = String(
+      ((validation?.Properties as { Source?: { BuildSpec?: unknown } }).Source ?? {}).BuildSpec ?? '',
+    );
+    const buildCommands = (
+      JSON.parse(buildSpecText) as { phases: { build: { commands: string[] } } }
+    ).phases.build.commands.join('\n');
+    expect(buildCommands).toContain('originVerifySecretName="$OR_APP_SECRETS_NAME"');
     expect(serialized).toContain('infra/cdk.out/**/*');
   });
 
