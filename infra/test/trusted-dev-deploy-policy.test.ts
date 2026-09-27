@@ -216,6 +216,15 @@ describe('trusted dev-deploy cloud assembly policy (#1146)', () => {
     ['glob on the real ledger hash', 'arn:aws:dynamodb:*:*:table/*Ledger9F8E7D6C*'],
     ['glob on a ledger name prefix', 'arn:aws:dynamodb:ap-northeast-1:123456789012:table/OpenRecep*'],
     ['exact real ledger name', 'arn:aws:dynamodb:ap-northeast-1:123456789012:table/OpenReception-DevDeployBroker-SparseDeployLedger9F8E7D6C-1XYZ'],
+    ['resource-part glob on the real hash', 'arn:aws:dynamodb:*:*:*Ledger9F8E7D6C*'],
+    ['bare real hash', 'arn:aws:dynamodb:*:*:*9F8E7D6C*'],
+    ['mangled table literal', 'arn:aws:dynamodb:*:*:t?ble/*Ledger9F8E7D6C*'],
+    ['any type prefix', 'arn:aws:dynamodb:*:*:*/*Ledger9F8E7D6C*'],
+    ['table glob without slash', 'arn:aws:dynamodb:*:*:table*9F8E7D6C*'],
+    ['partial table literal', 'arn:aws:dynamodb:*:*:*able/Open*9F8E7D6C*'],
+    ['service glob and hash', 'arn:aws:dynamo*:*:*:*9F8E7D6C*'],
+    ['stream under hash glob', 'arn:aws:dynamodb:*:*:*9F8E7D6C*/stream/*'],
+    ['short ARN', 'arn:aws:dynamodb:*9F8E7D6C*'],
   ])('denies candidate IAM that could reach the broker-only sparse ledger: %s (#1153)', (_label, resource) => {
     const assembly = makeAssembly({
       'OpenReception-Web-dev': {
@@ -288,6 +297,22 @@ describe('trusted dev-deploy cloud assembly policy (#1146)', () => {
       },
     });
     expect(rules(inline)).toContain('IAM_POLICY_OPAQUE');
+  });
+
+  it('a DynamoDB-capable action on a non-DynamoDB ARN does not reach the ledger', () => {
+    const assembly = makeAssembly({
+      'OpenReception-Web-dev': {
+        RuntimePolicy: {
+          Type: 'AWS::IAM::Policy',
+          Properties: {
+            PolicyDocument: {
+              Statement: [{ Effect: 'Allow', Action: '*', Resource: ['arn:aws:logs:*:*:*', 'arn:aws:s3:::open-reception-dev-assets/*'] }],
+            },
+          },
+        },
+      },
+    });
+    expect(rules(assembly)).not.toContain('IAM_REACHES_SPARSE_LEDGER');
   });
 
   it.each([
@@ -388,6 +413,10 @@ describe('trusted dev-deploy cloud assembly policy (#1146)', () => {
     ['an S3 object wildcard', 'arn:aws:s3:::open-reception-dev-assets/*'],
     ['an app table glob anchored to a non-ledger prefix', 'arn:aws:dynamodb:*:*:table/open-reception-dev*'],
     ['an app table index glob', 'arn:aws:dynamodb:*:*:table/open-reception-dev/index/*'],
+    ['a table name that only shares letters', 'arn:aws:dynamodb:*:*:table/OpenReception-Web-*'],
+    ['an SSM parameter wildcard', 'arn:aws:ssm:ap-northeast-1:123456789012:parameter/open-reception/dev/sites/*'],
+    ['an exact table whose name is a strict prefix of the ledger name', 'arn:aws:dynamodb:*:*:table/OpenReception-DevDeploy'],
+    ['another partition', 'arn:aws-cn:dynamodb:*:*:table/*'],
   ])('does not flag the product table: %s', (_label, resource) => {
     const assembly = makeAssembly({
       'OpenReception-Web-dev': {

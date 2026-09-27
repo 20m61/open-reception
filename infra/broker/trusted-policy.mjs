@@ -150,18 +150,11 @@ function resolvesToLogicalId(value, logicalId) {
   return Array.isArray(getAtt) && getAtt[0] === logicalId;
 }
 
-/**
- * Sample ARNs of the broker stack's CloudFormation-generated ledger table (and its sub-resources).
- * Candidate IAM that could match any of them - exact, prefix, wildcard, or built by an intrinsic
- * - would let a deployed workload forge overrides or reset counters (#1153, Foundation S6a), so
- * it is rejected before mutation. Matching is against the whole ARN, so wildcards in the
- * partition / service / region / account / resource segments are all covered.
+/*
+ * Candidate IAM that could reach the broker stack's ledger table - exact, prefix, wildcard, or
+ * built by an intrinsic - would let a deployed workload forge overrides or reset counters
+ * (#1153, Foundation S6a), so it is rejected before mutation.
  */
-const SPARSE_LEDGER_TABLE_SAMPLE = 'OpenReception-DevDeployBroker-SparseDeployLedger0A1B2C3D-0A1B2C3D4E5F';
-const SPARSE_LEDGER_ARN_SAMPLES = [
-  `arn:aws:dynamodb:ap-northeast-1:822063948773:table/${SPARSE_LEDGER_TABLE_SAMPLE}`,
-  `arn:aws:dynamodb:ap-northeast-1:822063948773:table/${SPARSE_LEDGER_TABLE_SAMPLE}/stream/2026-01-01T00:00:00.000`,
-];
 
 /** IAM resource glob: `*` any run of characters (including `/`), `?` one character, case-sensitive. */
 function iamGlobMatches(pattern, value) {
@@ -230,19 +223,26 @@ function isLocalResourceRef(value, templateResources) {
   return false;
 }
 
-/** Physical-name prefix CloudFormation gives the ledger table (`<stack name>-<logical id>...`). */
-const SPARSE_LEDGER_NAME_PREFIX = 'OpenReception-DevDeployBroker-';
+/**
+ * Resource-part prefix of every ledger table ARN and each of its sub-resources (stream, index,
+ * backup, export). CloudFormation names the table `<stack name>-<logical id><hash>-<random>`.
+ */
+const SPARSE_LEDGER_RESOURCE_PREFIX = 'table/OpenReception-DevDeployBroker-';
 
 /**
- * Could this table-name glob match a name starting with the ledger prefix? Only the literal part
- * before the first wildcard can rule that out: the glob can match a ledger name iff that literal
- * and the ledger prefix are prefixes of one another.
+ * Can IAM glob `pattern` (`*` = any run, `?` = one character) match SOME string that starts with
+ * `prefix`? Walk the pattern against the prefix: a literal must equal, `?` takes any character,
+ * and the first `*` can absorb the rest of the prefix (after it, the remainder of the string is
+ * free to satisfy the rest of the pattern). Running out of pattern before the prefix ends means
+ * no match.
  */
-function tableNameGlobMayMatchLedger(name) {
-  const cut = name.search(/[*?]/);
-  const literal = cut === -1 ? name : name.slice(0, cut);
-  if (cut === -1) return literal.startsWith(SPARSE_LEDGER_NAME_PREFIX);
-  return literal.startsWith(SPARSE_LEDGER_NAME_PREFIX) || SPARSE_LEDGER_NAME_PREFIX.startsWith(literal);
+function globMayMatchStringWithPrefix(pattern, prefix) {
+  for (let i = 0; i < prefix.length; i += 1) {
+    const p = pattern[i];
+    if (p === '*') return true;
+    if (p === undefined || (p !== '?' && p !== prefix[i])) return false;
+  }
+  return true;
 }
 
 function reachesSparseLedger(resource, templateResources) {
@@ -252,23 +252,16 @@ function reachesSparseLedger(resource, templateResources) {
   // candidate controls its own role's tags: the resource is not determined by the template.
   if (resource.includes('${')) return true;
   if (/DevDeployBroker|SparseDeployLedger/i.test(resource)) return true;
-  // The assembly's own account / region are not the question here: treat those segments as
-  // wildcards (broader match = fail closed).
+  // IAM matches an ARN segment by segment (a wildcard does not span `:` into another segment;
+  // the resource part - everything after the fifth `:` - is one segment). Partition and service
+  // are glob-matched; region / account are the assembly's own and cannot rule the ledger out
+  // (any value counts as matching). The resource part is matched with the prefix NFA, which
+  // covers globs on the real (deterministic) name hash and mangled `table/` literals.
   const parts = resource.split(':');
-  if (parts.length >= 6) {
-    parts[3] = '*';
-    parts[4] = '*';
-  }
-  const normalized = parts.join(':');
-  if (SPARSE_LEDGER_ARN_SAMPLES.some((sample) => iamGlobMatches(normalized, sample))) return true;
-  // A glob built on the ledger's real (deterministic) physical name does not match the sample's
-  // hash, so check the table-name part structurally.
-  if (parts.length >= 6 && iamGlobMatches(parts[2].toLowerCase(), 'dynamodb')) {
-    const rest = parts.slice(5).join(':');
-    const m = /^table\/([^/]*)/.exec(rest);
-    if (m && tableNameGlobMayMatchLedger(m[1])) return true;
-  }
-  return false;
+  if (parts.length < 6 || parts[0] !== 'arn') return /[*?]/.test(resource);
+  const [, partition, service] = parts;
+  if (!iamGlobMatches(partition, 'aws') || !iamGlobMatches(service.toLowerCase(), 'dynamodb')) return false;
+  return globMayMatchStringWithPrefix(parts.slice(5).join(':'), SPARSE_LEDGER_RESOURCE_PREFIX);
 }
 
 /** Only statements that can grant a DynamoDB action are relevant to the ledger. */
