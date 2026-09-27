@@ -452,6 +452,10 @@ describe('sparse deploy ledger (#1153, Foundation S6a): broker-only, least privi
     expect(table.Properties.DeletionProtectionEnabled).toBe(true);
     expect(table.Properties.PointInTimeRecoverySpecification).toEqual({ PointInTimeRecoveryEnabled: true });
     expect(table.Properties.TableName).toBeUndefined();
+    // No stream: every ledger ARN then has exactly five colons, which the trusted policy's
+    // segment-wise ledger-reach check relies on.
+    expect(table.Properties.StreamSpecification).toBeUndefined();
+    expect(table.Properties.KinesisStreamSpecification).toBeUndefined();
     expect((table as unknown as { DeletionPolicy?: string }).DeletionPolicy).toBe('Retain');
   });
 

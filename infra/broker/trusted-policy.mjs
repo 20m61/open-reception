@@ -252,15 +252,17 @@ function reachesSparseLedger(resource, templateResources) {
   // candidate controls its own role's tags: the resource is not determined by the template.
   if (resource.includes('${')) return true;
   if (/DevDeployBroker|SparseDeployLedger/i.test(resource)) return true;
-  // IAM matches an ARN segment by segment (a wildcard does not span `:` into another segment;
-  // the resource part - everything after the fifth `:` - is one segment). Partition and service
-  // are glob-matched; region / account are the assembly's own and cannot rule the ledger out
-  // (any value counts as matching). The resource part is matched with the prefix NFA, which
-  // covers globs on the real (deterministic) name hash and mangled `table/` literals.
+  // Match segment by segment: partition and service are glob-matched, region / account are the
+  // assembly's own and cannot rule the ledger out (any value counts as matching), and the
+  // resource part (everything after the fifth `:`) must not be able to match anything starting
+  // with the ledger prefix - this covers globs on the real (deterministic) name hash and mangled
+  // `table/` literals. Real IAM lets a segment-final `*` expand across `:`; that only matters for
+  // ARNs with more than five colons, and every ledger ARN has exactly five because the table has
+  // no stream (pinned in dev-deploy-broker-invariants.test.ts).
   const parts = resource.split(':');
   if (parts.length < 6 || parts[0] !== 'arn') return /[*?]/.test(resource);
   const [, partition, service] = parts;
-  if (!iamGlobMatches(partition, 'aws') || !iamGlobMatches(service.toLowerCase(), 'dynamodb')) return false;
+  if (!iamGlobMatches(partition.toLowerCase(), 'aws') || !iamGlobMatches(service.toLowerCase(), 'dynamodb')) return false;
   return globMayMatchStringWithPrefix(parts.slice(5).join(':'), SPARSE_LEDGER_RESOURCE_PREFIX);
 }
 

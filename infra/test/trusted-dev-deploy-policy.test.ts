@@ -225,6 +225,7 @@ describe('trusted dev-deploy cloud assembly policy (#1146)', () => {
     ['service glob and hash', 'arn:aws:dynamo*:*:*:*9F8E7D6C*'],
     ['stream under hash glob', 'arn:aws:dynamodb:*:*:*9F8E7D6C*/stream/*'],
     ['short ARN', 'arn:aws:dynamodb:*9F8E7D6C*'],
+    ['upper-case partition', 'arn:AWS:dynamodb:*:*:table/*'],
   ])('denies candidate IAM that could reach the broker-only sparse ledger: %s (#1153)', (_label, resource) => {
     const assembly = makeAssembly({
       'OpenReception-Web-dev': {
