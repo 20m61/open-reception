@@ -46,6 +46,15 @@ function readContextFile(path: string): Record<string, string> {
   }
 }
 
+// 引数は「無し」か位置引数 `retired-only` だけ。それ以外（ダッシュ付きの綴り違いなど）で
+// 通常の解決へ落ちると、検査のつもりの呼び出しが context の値を stdout へ出してしまう。
+const cliArgs = process.argv.slice(2);
+if (!(cliArgs.length === 0 || (cliArgs.length === 1 && cliArgs[0] === 'retired-only'))) {
+  process.stderr.write('未知の引数です（使えるのは位置引数 retired-only だけ）\n');
+  process.exit(2);
+}
+const retiredOnly = cliArgs.length === 1;
+
 const path = contextFilePath(process.env);
 const fromFile = readContextFile(path);
 // env を優先する（一時的な上書きを効かせる）。
@@ -59,7 +68,7 @@ if (retired.length > 0) {
   process.stderr.write(`環境変数と、次のファイルの両方から削除してください: ${path}\n`);
   process.exit(3);
 }
-if (process.argv.slice(2).includes('retired-only')) {
+if (retiredOnly) {
   process.exit(0);
 }
 

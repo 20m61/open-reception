@@ -259,6 +259,18 @@ describe('デプロイ context もクリップボードへ載せる (#989)', () 
     expect(stderr).not.toContain(raw);
   });
 
+  it('🔴 --no-context でも context ファイルに残った廃止変数を検査する (#1148)', () => {
+    const dir = makeSharedTempDir('aws-issue-credentials-retired-nc-');
+    const file = join(dir, 'deploy-context.env');
+    const raw = 'raw-origin-verify-value-in-file-no-context';
+    writeFileSync(file, `OR_ORIGIN_VERIFY_SECRET=${raw}\n`);
+    const { status, stderr } = run(['--hours', '1', '--no-context'], { OR_DEPLOY_CONTEXT_FILE: file });
+    expect(status).not.toBe(0);
+    expect(stderr).toContain('OR_ORIGIN_VERIFY_SECRET');
+    expect(stderr).not.toContain('VITEST');
+    expect(stderr).not.toContain(raw);
+  });
+
   it('--no-context なら 3 変数が無くても context では止まらない', () => {
     const { status, stderr } = run(['--hours', '1', '--no-context'], NO_CONTEXT_FILE);
     expect(status).not.toBe(0);

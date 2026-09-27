@@ -81,20 +81,20 @@ fi
 # 失敗時の stderr はそのまま通す ―― 純関数側が「変数名だけで値を出さない」診断を作る。
 # 🔴 廃止した生 origin-verify secret（#1148）は --no-context でも検査する。
 # 環境変数にも context ファイルにも残さない（残っていれば窓を開けない）。
-if ! npx --no-install tsx "${ROOT}/scripts/deploy-context-block.ts" retired-only; then
+RETIRED_STATUS=0
+npx --no-install tsx "${ROOT}/scripts/deploy-context-block.ts" retired-only || RETIRED_STATUS=$?
+if [ "${RETIRED_STATUS}" -eq 3 ]; then
   echo "廃止された変数が残っているため、窓を開けずに終了します（削除してから再実行してください）" >&2
+  exit 2
+elif [ "${RETIRED_STATUS}" -ne 0 ]; then
+  echo "廃止変数の検査を実行できないため、窓を開けずに終了します（npm install 済みか確認してください）" >&2
   exit 2
 fi
 
 CONTEXT_BLOCK=""
 if [ "${WITH_CONTEXT}" = true ]; then
-  CONTEXT_STATUS=0
-  CONTEXT_BLOCK="$(npx --no-install tsx "${ROOT}/scripts/deploy-context-block.ts")" || CONTEXT_STATUS=$?
-  if [ "${CONTEXT_STATUS}" -eq 3 ]; then
-    # 廃止した生 secret（#1148）。--no-context では回避させない ―― ファイルに secret が残るため。
-    echo "廃止された変数が残っているため、窓を開けずに終了します（削除してから再実行してください）" >&2
-    exit 2
-  elif [ "${CONTEXT_STATUS}" -ne 0 ]; then
+  # 廃止変数（#1148）は上の無条件の検査で先に止まる。ここに来る失敗は context の欠落・不正だけ。
+  if ! CONTEXT_BLOCK="$(npx --no-install tsx "${ROOT}/scripts/deploy-context-block.ts")"; then
     echo "デプロイ context を解決できないため、窓を開けずに終了します（--no-context で省略できます）" >&2
     exit 2
   fi

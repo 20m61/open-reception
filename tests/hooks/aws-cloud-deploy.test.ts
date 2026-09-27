@@ -119,6 +119,28 @@ describe('廃止した生 origin secret は全サブコマンドの先頭で止�
     expect(match!.index).toBeLessThan(dispatch);
   });
 
+  it('verify も止める（再帰しない形で実際に起動して確かめる）', () => {
+    // verify の最初の処理は `npm run build:open-next`。PATH の先頭に「印を出して 97 で終わる」
+    // npm を置くので、検査が退行しても build / 品質ゲート（＝この test 自身）へは進まない。
+    // さらに spawn に上限時間を付け、万一でも待ち続けない。
+    const stubDir = makeSharedTempDir('aws-cloud-deploy-stub-npm-');
+    const stub = join(stubDir, 'npm');
+    writeFileSync(stub, '#!/bin/sh\necho STUB_NPM_REACHED >&2\nexit 97\n');
+    chmodSync(stub, 0o755);
+    const result = spawnSync('bash', [WRAPPER, 'verify'], {
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'pipe'],
+      env: { ...process.env, PATH: `${stubDir}:${process.env.PATH ?? ''}`, OR_ORIGIN_VERIFY_SECRET: RAW },
+      timeout: 60_000,
+      killSignal: 'SIGKILL',
+    });
+    expect(result.error).toBeUndefined();
+    expect(result.status).toBe(2);
+    expect(result.stderr).toContain('OR_ORIGIN_VERIFY_SECRET');
+    expect(result.stderr).not.toContain('STUB_NPM_REACHED');
+    expect(`${result.stdout}${result.stderr}`).not.toContain(RAW);
+  });
+
   it('空文字でも止める（存在そのものが問題）', () => {
     const { status, stderr } = run(['smoke'], { OR_ORIGIN_VERIFY_SECRET: '' });
     expect(status).toBe(2);
