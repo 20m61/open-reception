@@ -35,7 +35,7 @@ const TABLE = `sparse-ledger-${RUN}`;
 type Item = Record<string, AttributeValue>;
 type Decision = Record<string, unknown> & { result: string; rule: string | null };
 type LedgerClient = {
-  getItem(input: unknown): Promise<{ Item?: Item }>;
+  transactGetItems(input: unknown): Promise<{ Responses?: Array<{ Item?: Item }> }>;
   putItem(input: unknown): Promise<unknown>;
   transactWriteItems(input: unknown): Promise<unknown>;
 };
@@ -72,6 +72,7 @@ let GetItemCommand: typeof DynamoSdk.GetItemCommand;
 let PutItemCommand: typeof DynamoSdk.PutItemCommand;
 let TransactWriteItemsCommand: typeof DynamoSdk.TransactWriteItemsCommand;
 let DeleteItemCommand: typeof DynamoSdk.DeleteItemCommand;
+let TransactGetItemsCommand: typeof DynamoSdk.TransactGetItemsCommand;
 let ddb: DynamoDBClient;
 let client: LedgerClient;
 
@@ -129,7 +130,7 @@ describe.skipIf(!ENABLED)('sparse deploy ledger × real DynamoDB engine (emulato
     }
     L = (await import(pathToFileURL(path.resolve(__dirname, '../broker/sparse-ledger.mjs')).href)) as Ledger;
     sdk = await import('@aws-sdk/client-dynamodb');
-    ({ CreateTableCommand, GetItemCommand, PutItemCommand, TransactWriteItemsCommand, DeleteItemCommand } = sdk);
+    ({ CreateTableCommand, GetItemCommand, PutItemCommand, TransactWriteItemsCommand, DeleteItemCommand, TransactGetItemsCommand } = sdk);
     ddb = new sdk.DynamoDBClient({
       endpoint: ENDPOINT,
       region: 'ap-northeast-1',
@@ -137,7 +138,7 @@ describe.skipIf(!ENABLED)('sparse deploy ledger × real DynamoDB engine (emulato
       maxAttempts: 1,
     });
     client = {
-      getItem: (input) => ddb.send(new GetItemCommand(input as never)),
+      transactGetItems: (input) => ddb.send(new TransactGetItemsCommand(input as never)),
       putItem: (input) => ddb.send(new PutItemCommand(input as never)),
       transactWriteItems: (input) => ddb.send(new TransactWriteItemsCommand(input as never)),
     };
@@ -282,6 +283,46 @@ describe.skipIf(!ENABLED)('sparse deploy ledger × real DynamoDB engine (emulato
     expect(genesis?.lastDay?.S).toBe(L.ledgerDay(now));
   });
 
+  it("overwriting today's counter with a lower value is detected", async () => {
+    const now = freshNow();
+    const day = L.ledgerDay(now);
+    await reserve(now);
+    await reserve(now);
+    await ddb.send(
+      new PutItemCommand({
+        TableName: TABLE,
+        Item: {
+          PK: { S: 'PROJECT#open-reception' },
+          SK: { S: `DAY#${day}` },
+          timezone: { S: 'Asia/Tokyo' },
+          day: { S: day },
+          attemptCount: { N: '0' },
+          successCount: { N: '0' },
+          failureCount: { N: '0' },
+        },
+      }),
+    );
+    expect(await reserve(now)).toMatchObject({ result: 'denied', rule: 'SPARSE_LEDGER_CORRUPT' });
+  });
+
+  it('a reservation built on a stale cumulative total is refused by the engine', async () => {
+    const now = freshNow();
+    await reserve(now);
+    const decision = L.evaluatePreflight({
+      revision: REV,
+      attemptId: attemptId(),
+      now,
+      ledgerId: LEDGER_ID,
+      genesisItem: await getItem('META#genesis'),
+      dayItem: await getItem(`DAY#${L.ledgerDay(now)}`),
+    });
+    expect(decision.result).toBe('allowed');
+    const stale = { ...decision, observedTotalAttempts: (decision.observedTotalAttempts as number) - 1 };
+    await expect(
+      ddb.send(new TransactWriteItemsCommand(L.buildReserveTransaction({ table: TABLE, decision: stale, now }) as never)),
+    ).rejects.toMatchObject({ name: 'TransactionCanceledException' });
+  });
+
   it('a ceiling denial is audited without consuming budget', async () => {
     const now = freshNow();
     await reserve(now);
@@ -387,7 +428,7 @@ describe.skipIf(!ENABLED)('sparse deploy ledger × real DynamoDB engine (emulato
       maxAttempts: 1,
     });
     const deadClient: LedgerClient = {
-      getItem: (input) => dead.send(new GetItemCommand(input as never)),
+      transactGetItems: (input) => dead.send(new TransactGetItemsCommand(input as never)),
       putItem: (input) => dead.send(new PutItemCommand(input as never)),
       transactWriteItems: (input) => dead.send(new TransactWriteItemsCommand(input as never)),
     };

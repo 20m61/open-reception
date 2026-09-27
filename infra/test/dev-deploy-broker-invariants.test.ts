@@ -501,6 +501,8 @@ describe('sparse deploy ledger (#1153, Foundation S6a): broker-only, least privi
         'dynamodb:restoretablefrombackup',
         'dynamodb:restoretabletopointintime',
         'dynamodb:updatekinesisstreamingdestination',
+        'dynamodb:enablekinesisstreamingdestination',
+        'dynamodb:disablekinesisstreamingdestination',
       ].sort(),
     );
     // The broker never manages the table.
@@ -544,8 +546,26 @@ describe('sparse deploy ledger (#1153, Foundation S6a): broker-only, least privi
     (name) => {
       const param = (template.toJSON().Parameters as Record<string, { Type: string; AllowedPattern?: string }>)[name];
       expect(param?.Type).toBe('String');
-      expect(param?.AllowedPattern).toBe('^arn:aws[^:]*:iam::[0-9]{12}:role/[A-Za-z0-9+=,.@_/-]+$');
       expect(param).not.toHaveProperty('Default');
+      // JS and Java agree on this subset (anchors, classes, negative lookahead).
+      const re = new RegExp(param!.AllowedPattern!);
+      for (const ok of [
+        'arn:aws:iam::822063948773:role/cdk-hnb659fds-cfn-exec-role-822063948773-ap-northeast-1',
+        'arn:aws:iam::822063948773:role/OpenReceptionLedgerOverrideIssuer',
+      ]) {
+        expect(re.test(ok), ok).toBe(true);
+      }
+      for (const bad of [
+        'arn:aws:iam::822063948773:role/cdk-orcloud01-cfn-exec-role-822063948773-ap-northeast-1',
+        'arn:aws:iam::822063948773:role/OpenReceptionClaudeDeploy-dev',
+        'arn:aws:iam::822063948773:role/OpenReceptionClaudeEntry',
+        'arn:aws:iam::822063948773:role/OpenReceptionTrustedDevDeployBrokerRole',
+        'arn:aws:iam::822063948773:role/OpenReceptionDevDeployValidationRole',
+        'arn:aws:iam::822063948773:user/CDK',
+        'arn:aws:iam::822063948773:role/x y',
+      ]) {
+        expect(re.test(bad), bad).toBe(false);
+      }
     },
   );
 

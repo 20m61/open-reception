@@ -85,6 +85,7 @@ const genesisItem = (over: Partial<Item> = {}): Item => ({
   createdAt: { S: '2026-09-01T00:00:00.000Z' },
   totalAttempts: { N: '40' },
   lastDay: { S: '2026-09-20' },
+  lastDayAttempts: { N: '1' },
   ...over,
 });
 
@@ -230,12 +231,16 @@ describe('preflight: genesis item distinguishes a fresh day from an empty or rep
 
   it.each([
     ['lastDay after today (clock regression / tampering)', { genesisItem: genesisItem({ lastDay: { S: '2026-09-22' } }) }],
-    ['today already reserved but its counter was deleted', { genesisItem: genesisItem({ lastDay: { S: DAY } }), dayItem: undefined }],
+    ['today already reserved but its counter was deleted', { genesisItem: genesisItem({ lastDay: { S: DAY }, lastDayAttempts: { N: '1' } }), dayItem: undefined }],
+    ["today's counter overwritten to a lower value", { genesisItem: genesisItem({ lastDay: { S: DAY }, lastDayAttempts: { N: '2' } }), dayItem: dayItem(0) }],
+    ["today's counter above genesis", { genesisItem: genesisItem({ lastDay: { S: DAY }, lastDayAttempts: { N: '1' } }), dayItem: dayItem(2) }],
+    ['lastDayAttempts missing', { genesisItem: genesisItem({ lastDayAttempts: undefined }) }],
+    ['lastDayAttempts above total', { genesisItem: genesisItem({ totalAttempts: { N: '1' }, lastDayAttempts: { N: '2' } }) }],
     ['day counter above the cumulative total', { genesisItem: genesisItem({ totalAttempts: { N: '1' } }), dayItem: dayItem(2) }],
     ['totalAttempts missing', { genesisItem: genesisItem({ totalAttempts: undefined }) }],
     ['lastDay malformed', { genesisItem: genesisItem({ lastDay: { S: 'yesterday' } }) }],
     ['lastDay without any attempt', { genesisItem: genesisItem({ totalAttempts: { N: '0' } }) }],
-    ['attempts without lastDay', { genesisItem: genesisItem({ lastDay: undefined }) }],
+    ['attempts without lastDay', { genesisItem: genesisItem({ lastDay: undefined, lastDayAttempts: undefined }) }],
   ])('denies when %s', (_l, over) => {
     const g = (over as { genesisItem?: Item }).genesisItem;
     if (g) for (const [k, v] of Object.entries(g)) if (v === undefined) delete g[k];
@@ -253,10 +258,22 @@ describe('preflight: genesis item distinguishes a fresh day from an empty or rep
     const tx = L.buildReserveTransaction({ table: 'T', decision: preflight({ dayItem: dayItem(1) }), now: NOW });
     const g = tx.TransactItems[0]!.Update!;
     expect(g.Key).toEqual({ PK: { S: 'PROJECT#open-reception' }, SK: { S: 'META#genesis' } });
-    for (const clause of ['#ledgerId = :ledgerId', '#totalAttempts = :observedTotal', '#lastDay <= :day']) {
+    for (const clause of ['#ledgerId = :ledgerId', '#totalAttempts = :observedTotal', '#lastDay < :day']) {
       expect(g.ConditionExpression).toContain(clause);
     }
     expect((g.ExpressionAttributeValues as Item)[':newTotal']).toEqual({ N: '41' });
+    expect((g.ExpressionAttributeValues as Item)[':newDayCount']).toEqual({ N: '2' });
+  });
+
+  it('a second reservation on the same day also compare-and-sets lastDayAttempts', () => {
+    const today = genesisItem({ lastDay: { S: DAY }, lastDayAttempts: { N: '1' } });
+    const decision = preflight({ genesisItem: today, dayItem: dayItem(1) });
+    expect(decision.result).toBe('allowed');
+    const g = L.buildReserveTransaction({ table: 'T', decision, now: NOW }).TransactItems[0]!.Update!;
+    expect(g.ConditionExpression).toContain('#lastDay = :day AND #lastDayAttempts = :observedDayCount');
+    expect(g.ConditionExpression).toContain('#totalAttempts = :observedTotal');
+    expect((g.ExpressionAttributeValues as Item)[':observedDayCount']).toEqual({ N: '1' });
+    expect((g.ExpressionAttributeValues as Item)[':newDayCount']).toEqual({ N: '2' });
   });
 
   it('genesis put is create-only and is accepted by preflight', () => {
@@ -397,7 +414,12 @@ describe('reservation transaction shape', () => {
 
   it('every attribute name in every expression is aliased (DynamoDB reserves e.g. timezone / status / day)', () => {
     const ops = [
-      ...[preflight(), preflight({ dayItem: dayItem(1) }), preflight({ dayItem: dayItem(2), overrideItem: overrideItem() })]
+      ...[
+        preflight(),
+        preflight({ dayItem: dayItem(1) }),
+        preflight({ dayItem: dayItem(2), overrideItem: overrideItem() }),
+        preflight({ genesisItem: genesisItem({ lastDay: { S: DAY }, lastDayAttempts: { N: '1' } }), dayItem: dayItem(1) }),
+      ]
         .flatMap((decision) => L.buildReserveTransaction({ table, decision, now: NOW }).TransactItems),
       ...L.buildOutcomeTransaction({ table, attemptId: ATTEMPT, day: DAY, outcome: 'succeeded', now: NOW }).TransactItems,
     ].map((entry) => Object.values(entry)[0]!);

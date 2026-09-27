@@ -10,7 +10,7 @@
  * - an unavailable, unreadable or inconsistent ledger denies (S6a).
  *
  * This file is dependency-free. DynamoDB access goes through an injected client whose methods
- * take the low-level DynamoDB JSON request (`getItem`, `putItem`, `transactWriteItems`), so the
+ * take the low-level DynamoDB JSON request (`transactGetItems`, `putItem`, `transactWriteItems`), so the
  * same code runs against the AWS SDK, the AWS CLI or an emulator. Every write is conditional:
  * the broker runs with concurrency 1, and the conditions are the second line of defence.
  *
@@ -22,10 +22,10 @@
  *
  * The genesis item is what distinguishes "a fresh day" from "an empty or replaced table": a
  * missing day counter only means zero when the genesis item exists and carries the ledger id
- * the broker was configured with. It also carries a cumulative `totalAttempts` and the
- * monotonic `lastDay` of the latest reservation, both compare-and-set in every reservation, so
- * a deleted counter for today, a day count above the total, or a clock that went backwards is
- * detected. Otherwise the ledger's integrity cannot be established (S6a).
+ * the broker was configured with. It also carries a cumulative `totalAttempts`, the monotonic
+ * `lastDay` of the latest reservation and that day's attempt count (`lastDayAttempts`), all
+ * compare-and-set in every reservation, so a deleted, overwritten or decremented counter for
+ * today, a day count above the total, or a clock that went backwards is detected. Otherwise the ledger's integrity cannot be established (S6a).
  */
 
 export const PROJECT_KEY = 'PROJECT#open-reception';
@@ -185,7 +185,14 @@ export function readGenesis(genesisItem, ledgerId) {
   if ((lastDay === undefined) !== (totalAttempts === 0)) {
     return { ok: false, why: 'genesis lastDay and totalAttempts disagree' };
   }
-  return { ok: true, totalAttempts, lastDay };
+  const lastDayAttempts = readInt(genesisItem, 'lastDayAttempts');
+  if (lastDayAttempts === CORRUPT || (lastDay === undefined) !== (lastDayAttempts === undefined)) {
+    return { ok: false, why: 'genesis lastDayAttempts is malformed or disagrees with lastDay' };
+  }
+  if (lastDayAttempts !== undefined && (lastDayAttempts < 1 || lastDayAttempts > totalAttempts)) {
+    return { ok: false, why: 'genesis lastDayAttempts is out of range' };
+  }
+  return { ok: true, totalAttempts, lastDay, lastDayAttempts };
 }
 
 /**
@@ -253,8 +260,8 @@ export function evaluatePreflight({ revision, attemptId, now, ledgerId, genesisI
   if (genesis.lastDay !== undefined && genesis.lastDay > day) {
     return deny(RULES.LEDGER_CORRUPT, `sparse deploy ledger integrity cannot be established: last reservation (${genesis.lastDay}) is after today (${day}); clock regression or tampering`, base);
   }
-  if (genesis.lastDay === day && !counter.exists) {
-    return deny(RULES.LEDGER_CORRUPT, 'sparse deploy ledger integrity cannot be established: today already has reservations but its day counter is missing', base);
+  if (genesis.lastDay === day && counter.attemptCount !== genesis.lastDayAttempts) {
+    return deny(RULES.LEDGER_CORRUPT, `sparse deploy ledger integrity cannot be established: today's counter (${counter.exists ? counter.attemptCount : 'missing'}) differs from the ${genesis.lastDayAttempts} reservations recorded on genesis`, base);
   }
   if (counter.attemptCount > genesis.totalAttempts) {
     return deny(RULES.LEDGER_CORRUPT, 'sparse deploy ledger integrity cannot be established: day counter exceeds the cumulative total', base);
@@ -262,6 +269,7 @@ export function evaluatePreflight({ revision, attemptId, now, ledgerId, genesisI
   const counts = {
     ledgerId,
     observedTotalAttempts: genesis.totalAttempts,
+    observedLastDay: genesis.lastDay,
     observedAttemptCount: counter.attemptCount,
     successCount: counter.successCount,
     failureCount: counter.failureCount,
@@ -334,11 +342,16 @@ export function buildReserveTransaction({ table, decision, now }) {
   const genesisUpdate = {
     TableName: table,
     Key: key(GENESIS_KEY),
-    UpdateExpression: 'SET #totalAttempts = :newTotal, #lastDay = :day',
+    // Same day: lastDayAttempts moves in lock-step with the day counter's CAS. New day: it restarts.
+    UpdateExpression: 'SET #totalAttempts = :newTotal, #lastDay = :day, #lastDayAttempts = :newDayCount',
     ConditionExpression:
-      '#ledgerId = :ledgerId AND #timezone = :tz AND #totalAttempts = :observedTotal AND (attribute_not_exists(#lastDay) OR #lastDay <= :day)',
+      decision.observedLastDay === day
+        ? '#ledgerId = :ledgerId AND #timezone = :tz AND #totalAttempts = :observedTotal AND #lastDay = :day AND #lastDayAttempts = :observedDayCount'
+        : '#ledgerId = :ledgerId AND #timezone = :tz AND #totalAttempts = :observedTotal AND (attribute_not_exists(#lastDay) OR #lastDay < :day)',
     ExpressionAttributeValues: {
       ':newTotal': { N: String(observedTotalAttempts + 1) },
+      ':newDayCount': { N: String(observedAttemptCount + 1) },
+      ...(decision.observedLastDay === day ? { ':observedDayCount': { N: String(observedAttemptCount) } } : {}),
       ':observedTotal': { N: String(observedTotalAttempts) },
       ':day': { S: day },
       ':ledgerId': { S: ledgerId },
@@ -530,11 +543,12 @@ export async function reserveAttempt({ client, table, ledgerId, revision, attemp
   if (isValidDate(now) && isFullSha(revision) && isAttemptId(attemptId)) {
     try {
       const day = ledgerDay(now);
-      const read = async (sk) =>
-        (await client.getItem({ TableName: table, Key: key(sk), ConsistentRead: true }))?.Item;
-      genesisItem = await read(GENESIS_KEY);
-      dayItem = await read(dayKey(day));
-      overrideItem = await read(overrideKey(DAILY_CEILING_RULE, revision, day));
+      // One serializable snapshot of the three items, so a concurrent reservation cannot make
+      // genesis and the day counter look inconsistent (which would read as corruption).
+      const keys = [GENESIS_KEY, dayKey(day), overrideKey(DAILY_CEILING_RULE, revision, day)];
+      const res = await client.transactGetItems({ TransactItems: keys.map((sk) => ({ Get: { TableName: table, Key: key(sk) } })) });
+      if (!Array.isArray(res?.Responses) || res.Responses.length !== keys.length) throw new Error('incomplete snapshot');
+      [genesisItem, dayItem, overrideItem] = res.Responses.map((r) => r?.Item);
     } catch {
       readError = true;
     }

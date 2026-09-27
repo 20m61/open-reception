@@ -33,6 +33,15 @@ export const SPARSE_LEDGER_PROJECT_KEY = 'PROJECT#open-reception';
  * `dynamodb:*` on this stack's tables (`scripts/aws-policies`), so a deployed candidate workload
  * cannot forge an override or reset a counter even though it lives in the same account.
  */
+/**
+ * Pattern for the two human role ARN parameters. The negative lookahead refuses the roles that
+ * must never hold ledger authority: Claude's deploy chain / CDK bootstrap roles
+ * (`cdk-orcloud01-*`, `OpenReceptionClaude*`) and this stack's own broker / validation roles.
+ * CloudFormation AllowedPattern is a Java regex, which supports lookahead.
+ */
+export const HUMAN_ROLE_ARN_PATTERN =
+  '^arn:aws[^:]*:iam::[0-9]{12}:role/(?!cdk-orcloud01-|OpenReceptionClaude|OpenReceptionDevDeploy|OpenReceptionTrustedDevDeploy)[A-Za-z0-9+=,.@_/-]+$';
+
 export const SPARSE_LEDGER_PROTECTED_WRITES = [
   'dynamodb:PutItem',
   'dynamodb:UpdateItem',
@@ -60,6 +69,8 @@ export const SPARSE_LEDGER_PROTECTED_CONTROL = [
   'dynamodb:RestoreTableFromBackup',
   'dynamodb:RestoreTableToPointInTime',
   'dynamodb:UpdateKinesisStreamingDestination',
+  'dynamodb:EnableKinesisStreamingDestination',
+  'dynamodb:DisableKinesisStreamingDestination',
 ] as const;
 
 export const SPARSE_LEDGER_BROKER_ACTIONS = [
@@ -209,7 +220,7 @@ export class DevDeployBrokerStack extends cdk.Stack {
       type: 'String',
       description:
         'IAM role ARN (this account) that a human uses to initialise the sparse ledger and issue one-shot overrides. Never a Claude/candidate role.',
-      allowedPattern: '^arn:aws[^:]*:iam::[0-9]{12}:role/[A-Za-z0-9+=,.@_/-]+$',
+      allowedPattern: HUMAN_ROLE_ARN_PATTERN,
     });
 
     // The CloudFormation execution role a human uses to deploy/update THIS stack. It is the only
@@ -218,7 +229,7 @@ export class DevDeployBrokerStack extends cdk.Stack {
       type: 'String',
       description:
         'IAM role ARN (this account) CloudFormation uses when a human deploys this stack (e.g. the admin CDK bootstrap cfn-exec role). Never a Claude/candidate role.',
-      allowedPattern: '^arn:aws[^:]*:iam::[0-9]{12}:role/[A-Za-z0-9+=,.@_/-]+$',
+      allowedPattern: HUMAN_ROLE_ARN_PATTERN,
     });
 
     const validationRole = new iam.Role(this, 'ValidationRole', {

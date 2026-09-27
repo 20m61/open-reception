@@ -171,15 +171,39 @@ function iamGlobMatches(pattern, value) {
   return re.test(value);
 }
 
-function reachesSparseLedger(resource) {
-  if (typeof resource !== 'string') {
-    // Intrinsics (Fn::Join / Fn::Sub / Fn::ImportValue ...) cannot be resolved here. Reject any
-    // that names the broker stack or its ledger, or that builds a DynamoDB / wildcard-service ARN
-    // containing a wildcard.
-    const text = JSON.stringify(resource);
-    if (/DevDeployBroker|SparseDeployLedger/i.test(text)) return true;
-    return text.includes('*') && /dynamo|arn:[^"]*:\*:|"\*"/i.test(text);
+/** Could this action pattern include any DynamoDB action? (`*`, `dynamo*`, `dynamodb:*`, `*:*` ...) */
+function actionMayIncludeDynamo(action) {
+  const a = String(action).toLowerCase();
+  return iamGlobMatches(a, 'dynamodb:putitem') || a.startsWith('dynamodb:');
+}
+
+/**
+ * A resource reference whose target is fully determined by THIS template: `GetAtt X.Arn|StreamArn`
+ * or `Ref X` of a resource declared here, or `Fn::Join('', [that, '/literal-suffix'])` (CDK's
+ * index / stream grants). Anything else (parameters, mappings, imports, Sub, Select, dynamic
+ * references ...) cannot be resolved by this policy and fails closed.
+ */
+function isLocalResourceRef(value, templateResources) {
+  if (!isRecord(value)) return false;
+  const keys = Object.keys(value);
+  if (keys.length !== 1) return false;
+  if (keys[0] === 'Ref') return typeof value.Ref === 'string' && Object.hasOwn(templateResources, value.Ref);
+  if (keys[0] === 'Fn::GetAtt') {
+    const g = value['Fn::GetAtt'];
+    return Array.isArray(g) && g.length === 2 && typeof g[0] === 'string' && Object.hasOwn(templateResources, g[0]) && (g[1] === 'Arn' || g[1] === 'StreamArn');
   }
+  if (keys[0] === 'Fn::Join') {
+    const j = value['Fn::Join'];
+    if (!Array.isArray(j) || j.length !== 2 || j[0] !== '' || !Array.isArray(j[1]) || j[1].length !== 2) return false;
+    const [head, tail] = j[1];
+    return isLocalResourceRef(head, templateResources) && !isRecord(head['Fn::Join'] ?? null) && typeof tail === 'string' && /^\/[A-Za-z0-9_.*/-]*$/.test(tail);
+  }
+  return false;
+}
+
+function reachesSparseLedger(resource, templateResources) {
+  if (typeof resource !== 'string') return !isLocalResourceRef(resource, templateResources);
+  if (resource.includes('{{resolve:')) return true;
   if (/DevDeployBroker|SparseDeployLedger/i.test(resource)) return true;
   // The assembly's own account / region are not the question here: treat those segments as
   // wildcards (broader match = fail closed).
@@ -192,11 +216,37 @@ function reachesSparseLedger(resource) {
   return SPARSE_LEDGER_ARN_SAMPLES.some((sample) => iamGlobMatches(normalized, sample));
 }
 
+/** Only statements that can grant a DynamoDB action are relevant to the ledger. */
+function statementReachesSparseLedger(statement, templateResources) {
+  const actions = asArray(statement.Action);
+  const dynamoCapable = statement.NotAction !== undefined || actions.some((a) => typeof a !== 'string' || actionMayIncludeDynamo(a));
+  if (!dynamoCapable) return false;
+  return asArray(statement.Resource).some((r) => reachesSparseLedger(r, templateResources));
+}
+
+/** AWS-managed policies a candidate role may attach. Everything else is unreviewed authority. */
+const REVIEWED_MANAGED_POLICIES = new Set([
+  'arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole',
+]);
+
+/** Resolve the CDK shapes of an AWS-managed policy ARN (literal, Sub / Join with AWS::Partition). */
+function resolveManagedPolicyArn(value) {
+  if (typeof value === 'string') return value;
+  if (!isRecord(value)) return null;
+  if (typeof value['Fn::Sub'] === 'string') return value['Fn::Sub'].replaceAll('${AWS::Partition}', 'aws');
+  const j = value['Fn::Join'];
+  if (Array.isArray(j) && j.length === 2 && j[0] === '' && Array.isArray(j[1])) {
+    const parts = j[1].map((p) => (typeof p === 'string' ? p : isRecord(p) && p.Ref === 'AWS::Partition' ? 'aws' : null));
+    return parts.includes(null) ? null : parts.join('');
+  }
+  return null;
+}
+
 function boundaryLooksCorrect(value) {
   return JSON.stringify(value).includes('OpenReceptionClaudeBoundary');
 }
 
-function policyDocumentViolations(stackName, logicalId, document) {
+function policyDocumentViolations(stackName, logicalId, document, templateResources) {
   const out = [];
   if (!isRecord(document) || !Array.isArray(document.Statement)) {
     out.push(violation('IAM_POLICY_OPAQUE', stackName, logicalId, 'PolicyDocument.Statement is not a concrete array'));
@@ -217,7 +267,7 @@ function policyDocumentViolations(stackName, logicalId, document) {
     if (statement.NotResource !== undefined) {
       out.push(violation('IAM_NOT_RESOURCE', stackName, logicalId, 'Allow with NotResource grants everything except a list, including the sparse deploy ledger'));
     }
-    if (resources.some(reachesSparseLedger)) {
+    if (statementReachesSparseLedger(statement, templateResources)) {
       out.push(violation('IAM_REACHES_SPARSE_LEDGER', stackName, logicalId, 'candidate IAM may reach the broker-only sparse deploy ledger'));
     }
     if (resources.includes('*')) {
@@ -230,7 +280,7 @@ function policyDocumentViolations(stackName, logicalId, document) {
   return out;
 }
 
-function evaluateResource(stackName, logicalId, resource) {
+function evaluateResource(stackName, logicalId, resource, templateResources = {}) {
   const out = [];
   if (!isRecord(resource) || typeof resource.Type !== 'string') {
     return [violation('RESOURCE_SHAPE_INVALID', stackName, logicalId, 'resource has no concrete Type')];
@@ -254,7 +304,17 @@ function evaluateResource(stackName, logicalId, resource) {
   }
 
   if (type === 'AWS::IAM::Policy') {
-    out.push(...policyDocumentViolations(stackName, logicalId, props.PolicyDocument));
+    out.push(...policyDocumentViolations(stackName, logicalId, props.PolicyDocument, templateResources));
+  }
+
+  // Managed policies are authority this file cannot inspect: only reviewed AWS-managed ones.
+  if (type === 'AWS::IAM::Role' && props.ManagedPolicyArns !== undefined) {
+    for (const arn of asArray(props.ManagedPolicyArns)) {
+      const resolved = resolveManagedPolicyArn(arn);
+      if (resolved === null || !REVIEWED_MANAGED_POLICIES.has(resolved)) {
+        out.push(violation('IAM_MANAGED_POLICY_NOT_REVIEWED', stackName, logicalId, `managed policy outside the reviewed set: ${JSON.stringify(arn)}`));
+      }
+    }
   }
 
   // Role inline policies: at least the ledger / NotResource checks apply to every role, including
@@ -272,7 +332,7 @@ function evaluateResource(stackName, logicalId, resource) {
         if (statement.NotResource !== undefined) {
           out.push(violation('IAM_NOT_RESOURCE', stackName, logicalId, 'inline Allow with NotResource'));
         }
-        if (asArray(statement.Resource).some(reachesSparseLedger)) {
+        if (statementReachesSparseLedger(statement, templateResources)) {
           out.push(violation('IAM_REACHES_SPARSE_LEDGER', stackName, logicalId, 'role inline policy may reach the broker-only sparse deploy ledger'));
         }
       }
@@ -429,7 +489,7 @@ export function evaluateAssembly({ assemblyDir, targetAccount }) {
       if (isRecord(resource) && typeof resource.Type === 'string') {
         counts[resource.Type] = (counts[resource.Type] ?? 0) + 1;
       }
-      violations.push(...evaluateResource(stackName, logicalId, resource));
+      violations.push(...evaluateResource(stackName, logicalId, resource, template.Resources));
     }
   }
 

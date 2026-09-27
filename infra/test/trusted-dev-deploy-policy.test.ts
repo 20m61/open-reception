@@ -201,9 +201,21 @@ describe('trusted dev-deploy cloud assembly policy (#1146)', () => {
     ['table prefix without slash', 'arn:aws:dynamodb:*:*:table*'],
     ['service wildcard', 'arn:aws:dynamo*:*:*:table/*'],
     ['everything', 'arn:*'],
+    ['Resource "*"', '*'],
+    ['Fn::FindInMap', { 'Fn::FindInMap': ['M', 'k', 'arn'] }],
+    ['Ref to a parameter', { Ref: 'LedgerArnParam' }],
+    ['Fn::Select / Fn::Split', { 'Fn::Select': [0, { 'Fn::Split': [',', 'arn:aws:dynamodb:*:*:table/*'] }] }],
+    ['Fn::ImportValue', { 'Fn::ImportValue': 'SomeExport' }],
+    ['dynamic reference', '{{resolve:ssm:/x}}'],
+    ['Fn::Sub with a service variable', { 'Fn::Sub': 'arn:${AWS::Partition}:${Svc}:${AWS::Region}:${AWS::AccountId}:*' }],
+    ['Fn::Join with a Ref service', { 'Fn::Join': ['', ['arn:aws:', { Ref: 'Svc' }, ':*:*:*']] }],
+    ['Fn::Sub of a concrete table', { 'Fn::Sub': 'arn:aws:dynamodb:${AWS::Region}:${AWS::AccountId}:table/open-reception-dev' }],
+    ['GetAtt of a resource not in this template', { 'Fn::GetAtt': ['ElsewhereTable', 'Arn'] }],
+    ['Join of GetAtt with a non-path suffix', { 'Fn::Join': ['', [{ 'Fn::GetAtt': ['AppTable0A1B2C3D', 'Arn'] }, ':*']] }],
   ])('denies candidate IAM that could reach the broker-only sparse ledger: %s (#1153)', (_label, resource) => {
     const assembly = makeAssembly({
       'OpenReception-Web-dev': {
+        AppTable0A1B2C3D: { Type: 'AWS::DynamoDB::Table', Properties: { BillingMode: 'PAY_PER_REQUEST' } },
         RuntimePolicy: {
           Type: 'AWS::IAM::Policy',
           Properties: {
@@ -215,6 +227,62 @@ describe('trusted dev-deploy cloud assembly policy (#1146)', () => {
       },
     });
     expect(rules(assembly)).toContain('IAM_REACHES_SPARSE_LEDGER');
+  });
+
+  it('does not flag Resource "*" for non-DynamoDB actions (the real ServerFn Cost Explorer statement)', () => {
+    const assembly = makeAssembly({
+      'OpenReception-Web-dev': {
+        ServerFnServiceRoleDefaultPolicyBF3298B4: {
+          Type: 'AWS::IAM::Policy',
+          Properties: {
+            PolicyDocument: {
+              Statement: [{ Effect: 'Allow', Action: ['ce:GetCostAndUsage', 'ce:GetCostForecast'], Resource: '*' }],
+            },
+          },
+        },
+      },
+    });
+    expect(rules(assembly)).not.toContain('IAM_REACHES_SPARSE_LEDGER');
+  });
+
+  it.each([
+    ['NotAction', { NotAction: 's3:*' }],
+    ['action wildcard', { Action: '*' }],
+    ['service wildcard', { Action: 'dynamo*' }],
+    ['any service', { Action: '*:*' }],
+    ['a read action', { Action: 'dynamodb:GetItem' }],
+  ])('treats %s as DynamoDB-capable', (_label, action) => {
+    const assembly = makeAssembly({
+      'OpenReception-Web-dev': {
+        RuntimePolicy: {
+          Type: 'AWS::IAM::Policy',
+          Properties: { PolicyDocument: { Statement: [{ Effect: 'Allow', ...action, Resource: '*' }] } },
+        },
+      },
+    });
+    expect(rules(assembly)).toContain('IAM_REACHES_SPARSE_LEDGER');
+  });
+
+  it('allows only reviewed AWS-managed policies on roles, in every CDK ARN shape', () => {
+    const role = (arn: unknown) => ({
+      Type: 'AWS::IAM::Role',
+      Properties: { PermissionsBoundary: 'OpenReceptionClaudeBoundary', ManagedPolicyArns: [arn] },
+    });
+    const ok = makeAssembly({
+      'OpenReception-Web-dev': {
+        A: role('arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole'),
+        B: role({ 'Fn::Sub': 'arn:${AWS::Partition}:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole' }),
+        C: role({ 'Fn::Join': ['', ['arn:', { Ref: 'AWS::Partition' }, ':iam::aws:policy/service-role/AWSLambdaBasicExecutionRole']] }),
+      },
+    });
+    expect(rules(ok)).not.toContain('IAM_MANAGED_POLICY_NOT_REVIEWED');
+    for (const arn of [
+      'arn:aws:iam::aws:policy/AmazonDynamoDBFullAccess',
+      'arn:aws:iam::123456789012:policy/Custom',
+      { Ref: 'PolicyParam' },
+    ]) {
+      expect(rules(makeAssembly({ 'OpenReception-Web-dev': { R: role(arn) } }))).toContain('IAM_MANAGED_POLICY_NOT_REVIEWED');
+    }
   });
 
   it('denies an Allow with NotResource (it grants everything else, including the ledger)', () => {
@@ -266,13 +334,14 @@ describe('trusted dev-deploy cloud assembly policy (#1146)', () => {
   it.each([
     ['the app table by name', 'arn:aws:dynamodb:ap-northeast-1:123456789012:table/open-reception-dev'],
     ['the app table index', 'arn:aws:dynamodb:ap-northeast-1:123456789012:table/open-reception-dev/index/*'],
-    ['a stack-local Ref', { 'Fn::GetAtt': ['AppTable0A1B2C3D', 'Arn'] }],
-    ['an app-table index via Fn::Join', { 'Fn::Join': ['', [{ 'Fn::GetAtt': ['AppTable0A1B2C3D', 'Arn'] }, '/index/*']] }],
-    ['Fn::Sub of the app table', { 'Fn::Sub': 'arn:aws:dynamodb:${AWS::Region}:${AWS::AccountId}:table/open-reception-dev' }],
+    ['a stack-local GetAtt (CDK grant shape)', { 'Fn::GetAtt': ['AppTable0A1B2C3D', 'Arn'] }],
+    ['a stack-local Ref', { Ref: 'AppTable0A1B2C3D' }],
+    ['an app-table index via Fn::Join (CDK grant shape)', { 'Fn::Join': ['', [{ 'Fn::GetAtt': ['AppTable0A1B2C3D', 'Arn'] }, '/index/*']] }],
     ['an S3 object wildcard', 'arn:aws:s3:::open-reception-dev-assets/*'],
   ])('does not flag the product table: %s', (_label, resource) => {
     const assembly = makeAssembly({
       'OpenReception-Web-dev': {
+        AppTable0A1B2C3D: { Type: 'AWS::DynamoDB::Table', Properties: { BillingMode: 'PAY_PER_REQUEST' } },
         RuntimePolicy: {
           Type: 'AWS::IAM::Policy',
           Properties: {
