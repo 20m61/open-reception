@@ -437,7 +437,9 @@ npm run build:open-next
 
 ```sh
 # ADMIN_PASSWORD / ADMIN_SESSION_SECRET / KIOSK_SESSION_SECRET /
-# KIOSK_ENROLLMENT_SECRET / CALL_ANSWER_SECRET を含む JSON
+# KIOSK_ENROLLMENT_SECRET / CALL_ANSWER_SECRET / ORIGIN_VERIFY_SECRET を含む JSON
+# （ORIGIN_VERIFY_SECRET は #1148 から dev でも必須。CloudFront ヘッダと Lambda env へ
+#   CFN dynamic reference で渡る。値は `openssl rand -base64 32` などで生成する）
 aws secretsmanager create-secret --name open-reception/dev/app-v2 --secret-string file://secrets.json
 ```
 

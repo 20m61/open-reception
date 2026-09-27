@@ -76,6 +76,32 @@ describe('resolveDeployContext', () => {
     expect(result.args).toContain('originVerifySecretName=open-reception/dev/app-v2');
   });
 
+  it.each([
+    ['値あり', 'raw-origin-verify-value-9f8e7d6c5b4a'],
+    ['空文字', ''],
+  ])('🔴 廃止した OR_ORIGIN_VERIFY_SECRET が残っていれば（%s）止め、値は返さない (#1148)', (_label, value) => {
+    const result = resolveDeployContext({ ...COMPLETE, OR_ORIGIN_VERIFY_SECRET: value });
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.invalid).toEqual(['OR_ORIGIN_VERIFY_SECRET']);
+    expect(result.message).toContain('OR_ORIGIN_VERIFY_SECRET');
+    if (value !== '') expect(result.message).not.toContain(value);
+    // 窓を開ける前の block 生成も同じ判定で止まる。
+    expect(resolveDeployContextEnvBlock({ ...COMPLETE, OR_ORIGIN_VERIFY_SECRET: value }).ok).toBe(false);
+  });
+
+  it('🔴 診断は入力値を反射しない（変数名と理由だけ）', () => {
+    const placeholder = '<実際の値>/secret-name-9f8e7d6c';
+    const nonAscii = 'open-reception/dev/アプリ';
+    for (const bad of [placeholder, nonAscii]) {
+      const result = resolveDeployContext({ ...COMPLETE, OR_APP_SECRETS_NAME: bad });
+      expect(result.ok).toBe(false);
+      if (result.ok) continue;
+      expect(result.invalid).toEqual(['OR_APP_SECRETS_NAME']);
+      expect(result.message).not.toContain(bad);
+    }
+  });
+
   it('前後の空白は落として渡す（コピペ事故で -c の値が壊れないように）', () => {
     const result = resolveDeployContext({ ...COMPLETE, OR_APP_SECRETS_NAME: '  a/b  ' });
     expect(result.ok).toBe(true);

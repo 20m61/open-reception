@@ -1435,6 +1435,21 @@ dev の値は `docs/deploy-aws.md`「dev をゼロから立ち上げる手順」
 origin-verify は同じ app secret の `ORIGIN_VERIFY_SECRET` キーを CFN dynamic reference で読む。
 **生値を deploy context / CDK argv へ載せない。**
 
+### 🔴 #1148 後の初回 deploy の前に一度だけ行うこと（人間の作業 / Human Gate）
+
+#1148 から dev でも origin-verify が常に有効になる（Function URL は `NONE` + ヘッダ検証、
+`ORIGIN_VERIFY_REQUIRED=1`）。**dev の app secret に `ORIGIN_VERIFY_SECRET` キーが無いと、
+CloudFormation が dynamic reference を解決できず stack 操作が失敗する**（fail closed だが窓を無駄にする）。
+
+1. **環境ダイアログと context ファイルから `OR_ORIGIN_VERIFY_SECRET` を削除する。**
+   残っていると `aws-issue-credentials.sh` / `aws-cloud-deploy.sh` が「廃止された変数」として止める。
+2. **値は露出済みとして扱い、新しい値を作る。** 旧手順では生値が Claude の環境に置かれていた。
+   旧値を Secrets Manager へ写すのではなく、新しい高エントロピー値
+   （例: `openssl rand -base64 32`）を生成し、`open-reception/dev/app-v2` の JSON に
+   `ORIGIN_VERIFY_SECRET` キーとして追加する（Mac 側で実行し、値を Claude に渡さない）。
+3. deploy では Lambda の env と CloudFront のヘッダが同時に新しい値へ変わる。
+   CloudFront への反映の間、**一時的に 403** が出うる。利用の少ない時間に行う。
+
 ### 🔴 `OR_APP_SECRETS_NAME` は「非秘密だから」落ちやすい（2026-09-06）
 
 2026-09-06 の 3 回目のデプロイでは、当時の必須 context のうち

@@ -105,6 +105,15 @@ function classifyInvalid(contextKey: string, value: string): InvalidReason | nul
 
 export const REQUIRED_DEPLOY_CONTEXT_VARS: ReadonlyArray<string> = REQUIRED.map(([envVar]) => envVar);
 
+/**
+ * #1148 で廃止した変数。**値が入っていれば（空文字でも）止める。**
+ *
+ * 黙って無視すると、以前の手順で環境ダイアログや context ファイルに登録した生 secret が
+ * そのまま残り、以後の Claude セッションすべての環境に secret が渡り続ける ――
+ * しかも wrapper はどれも緑になるので誰も気づかない。変数名だけを示し、値は読まない。
+ */
+export const RETIRED_DEPLOY_CONTEXT_VARS: ReadonlyArray<string> = ['OR_ORIGIN_VERIFY_SECRET'];
+
 export type DeployContextResult =
   | { readonly ok: true; readonly args: ReadonlyArray<string> }
   | {
@@ -128,6 +137,24 @@ export type DeployContextResult =
 export function resolveDeployContext(
   env: Readonly<Record<string, string | undefined>>,
 ): DeployContextResult {
+  const retired = RETIRED_DEPLOY_CONTEXT_VARS.filter((envVar) => env[envVar] !== undefined);
+  if (retired.length > 0) {
+    return {
+      ok: false,
+      missing: [],
+      invalid: retired,
+      message: [
+        '廃止された変数が残っています（#1148）:',
+        ...retired.map((envVar) => `  ${envVar}`),
+        '',
+        'origin-verify の生 secret は deploy context から廃止しました。この値を Claude の環境に置くと、',
+        '以後のセッションすべてに secret が渡ります。環境ダイアログと context ファイルの両方から削除し、',
+        '値はすでに露出したものとして Secrets Manager 側で新しい値へ入れ替えてください（Human Gate）。',
+        '手順は docs/runbook-cloud-aws-deploy.md を参照してください。',
+      ].join('\n'),
+    };
+  }
+
   const missing: string[] = [];
   const invalidReasons: Array<readonly [envVar: string, reason: InvalidReason]> = [];
   const args: string[] = [];
@@ -162,7 +189,7 @@ export function resolveDeployContext(
       invalid,
       message: [
         'デプロイ context の値が不正です:',
-        // 🔴 値そのものは載せない（必須変数は秘密を運ぶ。ここだけ例外にすると型が崩れる）。
+        // 🔴 値そのものは載せない（#1148 以降の必須変数は名前/URL/語彙だが、不変条件として維持する）。
         ...invalidReasons.map(([envVar, reason]) => `  ${envVar}  →  ${REASON_HINT[reason]}`),
         '',
         ...(reasons.has('vocabulary')

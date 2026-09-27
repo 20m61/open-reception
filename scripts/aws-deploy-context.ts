@@ -19,7 +19,7 @@ function main(): void {
   }
 
   // 独自ドメイン（#189）は**任意**。未指定なら args が空になり、CDK 生成ドメインのみになる。
-  // 指定があるのに形が不正なときは、必須 4 変数と同じく**窓を消費する前に**止める。
+  // 指定があるのに形が不正なときは、必須 3 変数と同じく**窓を消費する前に**止める。
   const customDomain = resolveCustomDomainContext(process.env.OR_CUSTOM_DOMAIN);
   if (!customDomain.ok) {
     console.error(customDomain.message);

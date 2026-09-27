@@ -207,16 +207,22 @@ describe('デプロイ context もクリップボードへ載せる (#989)', () 
     expect(stderr).not.toContain('VITEST');
   });
 
-  it('🔴 deprecated な生 origin secret を渡しても context 要件には戻さない', () => {
+  it.each([
+    ['値あり', 'deprecated-raw-value-that-must-not-be-echoed'],
+    ['空文字', ''],
+  ])('🔴 廃止した生 origin secret（%s）が残っていれば、窓を開ける前に止める (#1148)', (_label, value) => {
     const { status, stderr } = run(['--hours', '1'], {
       ...NO_CONTEXT_FILE,
       ...CONTEXT_ENV,
-      OR_ORIGIN_VERIFY_SECRET: 'deprecated-raw-value-that-must-not-be-required',
+      OR_ORIGIN_VERIFY_SECRET: value,
     });
     expect(status).not.toBe(0);
-    // context は解決済みで、AWS の直前にあるテスト用インターロックまで進む。
-    expect(stderr).toContain('VITEST');
-    expect(stderr).not.toContain('OR_ORIGIN_VERIFY_SECRET');
+    // 資格情報の発行（VITEST インターロック）より前で止まる。
+    expect(stderr).not.toContain('VITEST');
+    expect(stderr).toContain('OR_ORIGIN_VERIFY_SECRET');
+    expect(stderr).toContain('廃止');
+    // 値は反射しない。
+    if (value !== '') expect(stderr).not.toContain(value);
   });
 
   it('--no-context なら 3 変数が無くても context では止まらない', () => {

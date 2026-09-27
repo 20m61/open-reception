@@ -117,7 +117,7 @@ open-reception の実構成では **Cognito / CloudFront / IAM Policy につい�
 | T5 | **CFN 実行ロール経由の昇格** | 専用 exec policy（AdministratorAccess を使わない）＋ Permissions Boundary | — |
 | T6 | **Boundary 外し** | boundary 無し Role 作成 Deny / boundary の Put・Delete Deny / policy 版数変更 Deny | — |
 | T7 | **credential 漏洩** | 短命 STS のみ（最大 12h、既定 4h）。長期キーをクラウドへ置かない。ExternalId 必須 | 窓の間は有効。境界が実質的な防御 |
-| T8 | **Secrets / KMS の窃取** | **`secretsmanager:*` を全面 Deny。** `OpenReception-Web-dev` のリソース一覧に Secrets Manager は 1 つも無く（dev は `originVerifySecret` を context の生値で渡す運用。`bin/open-reception.ts:68`）、デプロイに不要だと実測で確認した。`kms:*` も CDK assets の SSE-S3 以外に不要 | dev が Secrets Manager を使い始めたら境界の拡張が要る（意図的に fail-closed） |
+| T8 | **Secrets / KMS の窃取** | **`secretsmanager:*` を全面 Deny。** `OpenReception-Web-dev` のリソース一覧に Secrets Manager は 1 つも無く（当時の dev は `originVerifySecret` を context の生値で渡す運用だった。#1148 で廃止し、現在は Secrets Manager の `originVerifySecretName` dynamic reference のみ）、デプロイに不要だと実測で確認した。`kms:*` も CDK assets の SSE-S3 以外に不要 | dev が Secrets Manager を使い始めたら境界の拡張が要る（意図的に fail-closed） |
 | T9 | **Route53 / ACM の変更** | 全面 Deny（human-only）。dev はカスタムドメイン未使用のため実害なし | staging/prod でドメインを使う際に再設計 |
 | T10 | **DynamoDB / S3 のデータ破壊** | dev のみ。dev の DynamoDB は `pointInTimeRecovery: false` / `removalProtection: false`（`environments.ts:151`）＝**再構築前提**。他プロジェクトのテーブルは Deny | dev データは失いうる（許容） |
 | T11 | **CloudFormation replacement / 削除** | dangerous diff gate（§6）で自動停止 | gate は自動 deploy を止めるだけ。人間が承認すれば通る |
