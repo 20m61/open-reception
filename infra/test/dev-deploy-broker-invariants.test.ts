@@ -44,6 +44,12 @@ const resources = template.toJSON().Resources as Record<string, { Type: string; 
 const byType = (type: string) =>
   Object.entries(resources).filter(([, r]) => r.Type === type);
 
+const pipelineResource = () => {
+  const pipelines = byType('AWS::CodePipeline::Pipeline');
+  expect(pipelines).toHaveLength(1);
+  return pipelines[0]![1];
+};
+
 const project = (name: string): Json => {
   const found = byType('AWS::CodeBuild::Project').find(([, r]) => r.Properties.Name === name);
   expect(found, `project ${name}`).toBeDefined();
@@ -253,7 +259,7 @@ describe('dev deploy broker invariants: trusted broker (stack-owned buildspec, u
 
 describe('dev deploy broker invariants: trusted source revision', () => {
   it('injects OR_TRUSTED_SOURCE_REVISION from the CodeConnections CommitId into both builds', () => {
-    const [, pipeline] = byType('AWS::CodePipeline::Pipeline')[0];
+    const pipeline = pipelineResource();
     const stages = pipeline.Properties.Stages as Array<{
       Name: string;
       Actions: Array<{ Name: string; Configuration: Json }>;
@@ -305,7 +311,7 @@ const workspace = (): string => {
 const commandContaining = (projectName: string, marker: string): string => {
   const found = allCommands(projectName).filter((c) => c.includes(marker));
   expect(found, `exactly one command containing ${marker}`).toHaveLength(1);
-  return found[0];
+  return found[0]!;
 };
 
 const run = (
@@ -318,7 +324,7 @@ const run = (
   try {
     const stdout = execFileSync('bash', ['-c', command], {
       cwd,
-      env: cleanEnv,
+      env: cleanEnv as NodeJS.ProcessEnv,
       encoding: 'utf8',
       stdio: ['ignore', 'pipe', 'pipe'],
     });
@@ -486,11 +492,11 @@ describe('architecture view (S8 repo-side drift check)', () => {
     const end = doc.indexOf('<!-- broker-resource-names:end -->');
     expect(start, 'doc must declare the synthesized resource names').toBeGreaterThanOrEqual(0);
     expect(end).toBeGreaterThan(start);
-    return [...doc.slice(start, end).matchAll(/`([^`]+)`/g)].map((m) => m[1]).sort();
+    return [...doc.slice(start, end).matchAll(/`([^`]+)`/g)].map((m) => m[1] ?? '').sort();
   };
 
   const synthesizedNames = (): string[] => {
-    const [, pipeline] = byType('AWS::CodePipeline::Pipeline')[0];
+    const pipeline = pipelineResource();
     const stages = pipeline.Properties.Stages as Array<{ Name: string; Actions: Array<{ Name: string }> }>;
     return [
       pipeline.Properties.Name as string,

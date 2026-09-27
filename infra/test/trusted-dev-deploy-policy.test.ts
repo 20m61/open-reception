@@ -120,7 +120,7 @@ describe('trusted dev-deploy cloud assembly policy (#1146)', () => {
   it('denies an approved stack aimed at the wrong account or region', () => {
     const assembly = makeAssembly({}, (manifest) => {
       const artifacts = manifest.artifacts as Record<string, { environment: string }>;
-      artifacts['OpenReception-CfMon-dev'].environment =
+      artifacts['OpenReception-CfMon-dev']!.environment =
         'aws://999999999999/ap-northeast-1';
     });
     expect(rules(assembly)).toContain('STACK_ENVIRONMENT_MISMATCH');
@@ -283,7 +283,7 @@ describe('trusted dev-deploy cloud assembly policy (#1146)', () => {
         string,
         { properties: { templateFile: string } }
       >;
-      artifacts['OpenReception-Web-dev'].properties.templateFile = '../outside.json';
+      artifacts['OpenReception-Web-dev']!.properties.templateFile = '../outside.json';
     });
     expect(rules(assembly)).toContain('TEMPLATE_PATH_INVALID');
   });
