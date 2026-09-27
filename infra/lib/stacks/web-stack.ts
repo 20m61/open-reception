@@ -36,6 +36,10 @@ const ORIGIN_VERIFY_SECRET_KEY = 'ORIGIN_VERIFY_SECRET';
 const ORIGIN_VERIFY_REQUIRED_KEY = 'ORIGIN_VERIFY_REQUIRED';
 const OPEN_NEXT_DIR = path.join(REPO_ROOT, '.open-next');
 
+/** #1150: dev の実行量を物理的に有界にする。prod/staging へは適用しない。 */
+export const DEV_SERVER_RESERVED_CONCURRENCY = 5;
+export const DEV_IMAGE_RESERVED_CONCURRENCY = 2;
+
 /**
  * 既存サブドメインを CloudFront に紐付けるカスタムドメイン設定 (issue #189)。
  *
@@ -346,6 +350,8 @@ export class WebStack extends Stack {
       handler: 'index.handler',
       code: lambda.Code.fromAsset(path.join(OPEN_NEXT_DIR, 'server-functions', 'default')),
       memorySize: config.web.serverMemoryMb,
+      reservedConcurrentExecutions:
+        config.environment === 'dev' ? DEV_SERVER_RESERVED_CONCURRENCY : undefined,
       timeout: Duration.seconds(config.web.serverTimeoutSec),
       logGroup: makeLogGroup('ServerFnLogs'),
       environment: {
@@ -501,6 +507,8 @@ export class WebStack extends Stack {
       handler: 'index.handler',
       code: lambda.Code.fromAsset(path.join(OPEN_NEXT_DIR, 'image-optimization-function')),
       memorySize: config.web.imageMemoryMb,
+      reservedConcurrentExecutions:
+        config.environment === 'dev' ? DEV_IMAGE_RESERVED_CONCURRENCY : undefined,
       timeout: Duration.seconds(config.web.serverTimeoutSec),
       logGroup: makeLogGroup('ImageFnLogs'),
       environment: {
