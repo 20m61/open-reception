@@ -14,6 +14,7 @@ import {
   BROKER_REVISION_CHECK_SCRIPT,
   DEV_DEPLOY_TARGET_ACCOUNT,
   DevDeployBrokerStack,
+  PIPELINE_ARTIFACT_RETENTION_DAYS,
   SPARSE_LEDGER_BROKER_ACTIONS,
   SPARSE_LEDGER_PROJECT_KEY,
   TRUSTED_POLICY_LOCAL_PATH,
@@ -1023,5 +1024,63 @@ describe('deploy account pin (pre-arming blocker 3)', () => {
   ])('the account check with %s', (_label, buildArn, pinned, ok) => {
     const r = run(nodeEval(BROKER_ACCOUNT_PIN_CHECK_SCRIPT), workspace(), { CODEBUILD_BUILD_ARN: buildArn, OR_BROKER_TARGET_ACCOUNT: pinned });
     expect(r.ok).toBe(ok);
+  });
+});
+
+describe('artifact bucket lifecycle and physical names (pre-arming blockers 5 and 6)', () => {
+  const [bucketId, bucket] = byType('AWS::S3::Bucket')[0]!;
+
+  it('there is exactly one bucket and it is the pipeline artifact store', () => {
+    expect(byType('AWS::S3::Bucket')).toHaveLength(1);
+    const [, pipeline] = byType('AWS::CodePipeline::Pipeline')[0]!;
+    expect((pipeline.Properties.ArtifactStore as Json).Location).toEqual({ Ref: bucketId });
+  });
+
+  it('expires candidate artifacts and incomplete uploads', () => {
+    const rules = ((bucket.Properties.LifecycleConfiguration as Json).Rules as Json[]).filter((r) => r.Status === 'Enabled');
+    expect(rules).toEqual([
+      expect.objectContaining({
+        ExpirationInDays: PIPELINE_ARTIFACT_RETENTION_DAYS,
+        AbortIncompleteMultipartUpload: { DaysAfterInitiation: 1 },
+      }),
+    ]);
+    // A rule scoped by prefix or tag would leave the rest of the bucket unbounded.
+    expect(rules[0]).not.toHaveProperty('Prefix');
+    expect(rules[0]).not.toHaveProperty('TagFilters');
+    expect(rules[0]).not.toHaveProperty('Filter');
+    expect(PIPELINE_ARTIFACT_RETENTION_DAYS).toBeGreaterThanOrEqual(1);
+    expect(PIPELINE_ARTIFACT_RETENTION_DAYS).toBeLessThanOrEqual(30);
+  });
+
+  it('keeps the default pipeline bucket protections (no public access, TLS only, encrypted)', () => {
+    expect(bucket.Properties.PublicAccessBlockConfiguration).toEqual({
+      BlockPublicAcls: true,
+      BlockPublicPolicy: true,
+      IgnorePublicAcls: true,
+      RestrictPublicBuckets: true,
+    });
+    expect(JSON.stringify(bucket.Properties.BucketEncryption)).toContain('AES256');
+    const [, policy] = byType('AWS::S3::BucketPolicy')[0]!;
+    const statements = (policy.Properties.PolicyDocument as { Statement: Statement[] }).Statement;
+    expect(statements.filter((st) => st.Effect === 'Allow')).toEqual([]);
+    expect(statements).toContainEqual(
+      expect.objectContaining({ Effect: 'Deny', Condition: { Bool: { 'aws:SecureTransport': 'false' } } }),
+    );
+  });
+
+  it('no retained resource has a fixed physical name (delete + recreate cannot collide)', () => {
+    const retained = Object.entries(resources).filter(
+      ([, r]) => (r as unknown as { DeletionPolicy?: string }).DeletionPolicy === 'Retain',
+    );
+    expect(retained.map(([, r]) => r.Type).sort()).toEqual([
+      'AWS::DynamoDB::Table',
+      'AWS::Logs::LogGroup',
+      'AWS::Logs::LogGroup',
+      'AWS::S3::Bucket',
+    ]);
+    for (const [id, r] of retained) {
+      const named = Object.keys(r.Properties ?? {}).filter((k) => /Name$/.test(k));
+      expect(named, id).toEqual([]);
+    }
   });
 });

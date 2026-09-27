@@ -211,8 +211,15 @@ tested before the broker may assume any deploy role:
    needs freshness (e.g. `dev-deploy` pointer / ledger check) before mutation.
 5. **Artifact bucket has no lifecycle rule.** Candidate artifacts accumulate indefinitely (cost and
    stale-artifact reuse surface).
+   **Status: closed in code.** The pipeline uses an explicit artifact bucket (same protections as the CDK
+   default: S3-managed encryption, all public access blocked, TLS only) whose lifecycle expires every object
+   after `PIPELINE_ARTIFACT_RETENTION_DAYS` (7) and aborts incomplete uploads after 1 day.
 6. **Fixed physical names + `RETAIN`.** Fixed role/project/log-group names with retained log
    groups cause name conflicts when the stack is deleted and recreated.
+   **Status: closed in code.** The two retained log groups no longer have fixed names, and a test asserts
+   that no retained resource (ledger table, log groups, artifact bucket) has a fixed physical name. Role,
+   project and pipeline names stay fixed: they are deleted with the stack, so they cannot collide, and the
+   future ADR 0009 trust needs a stable broker role ARN.
 
 ## Before mutation can be armed
 
