@@ -13,6 +13,15 @@ import * as s3assets from 'aws-cdk-lib/aws-s3-assets';
 
 export const DEV_DEPLOY_PROMOTION_BRANCH = 'dev-deploy';
 
+/**
+ * The one AWS account the broker may ever deploy to (pre-arming blocker 3). This is a reviewed
+ * constant, not the stack's own `AWS::AccountId`: the same account is pinned by the ADR 0009
+ * policies in `scripts/aws-policies/` (a test keeps them equal). A concrete synth for another
+ * account fails, the trusted policy evaluates the cloud assembly against this account, and the
+ * broker build refuses to run in any other account.
+ */
+export const DEV_DEPLOY_TARGET_ACCOUNT = '822063948773';
+
 const VALIDATION_PROJECT_NAME = 'OpenReceptionDevDeployValidation';
 const BROKER_PROJECT_NAME = 'OpenReceptionTrustedDevDeployBroker';
 
@@ -112,6 +121,20 @@ export const nodeEval = (script: string, ...args: string[]): string => {
   return [`node -e '${script}'`, ...args].join(' ');
 };
 
+/**
+ * Broker: the account this build runs in (from the CodeBuild build ARN, set by the service) must
+ * be the pinned deploy account. Runs before anything else; no AWS call is needed. The pin is a
+ * literal in the stack-owned buildspec, never an environment variable: a StartBuild
+ * `environmentVariablesOverride` (or an action-level override) could replace an env value.
+ */
+export const BROKER_ACCOUNT_PIN_CHECK_SCRIPT = [
+  `const pinned="${DEV_DEPLOY_TARGET_ACCOUNT}";`,
+  'const arn=process.env.CODEBUILD_BUILD_ARN;',
+  'const m=typeof arn==="string"?arn.match(/^arn:aws[a-z-]*:codebuild:[a-z0-9-]+:([0-9]{12}):build[/].+$/):null;',
+  'if(!m){throw new Error("broker build ARN missing or malformed")}',
+  'if(m[1]!==pinned){throw new Error("broker runs outside the pinned deploy account")}',
+].join(' ');
+
 /** Validation: record the trusted CodePipeline CommitId (never candidate metadata). */
 export const VALIDATION_EVIDENCE_SCRIPT = [
   'const fs=require("fs");',
@@ -187,6 +210,15 @@ export const BROKER_NOT_ARMED_RESULT_SCRIPT = [
 export class DevDeployBrokerStack extends cdk.Stack {
   constructor(scope: Construct, id: string, props?: cdk.StackProps) {
     super(scope, id, props);
+
+    // Pre-arming blocker 3: refuse to synthesize for any account but the pinned one. (A
+    // CloudFormation rule on AWS::AccountId was considered and left out: whether CloudFormation
+    // evaluates a rule that references no parameter is unverified, and a wrong guess either does
+    // nothing or breaks the human deploy.) An environment-agnostic synth is still possible; the
+    // broker's first command then refuses to run in any other account.
+    if (!cdk.Token.isUnresolved(this.account) && this.account !== DEV_DEPLOY_TARGET_ACCOUNT) {
+      throw new Error(`DevDeployBrokerStack must be deployed to ${DEV_DEPLOY_TARGET_ACCOUNT}, not ${this.account}`);
+    }
 
     const githubConnectionArn = new cdk.CfnParameter(this, 'GitHubConnectionArn', {
       type: 'String',
@@ -336,7 +368,7 @@ export class DevDeployBrokerStack extends cdk.Stack {
         computeType: codebuild.ComputeType.SMALL,
         privileged: false,
         environmentVariables: {
-          OR_BROKER_TARGET_ACCOUNT: { value: cdk.Aws.ACCOUNT_ID },
+          OR_BROKER_TARGET_ACCOUNT: { value: DEV_DEPLOY_TARGET_ACCOUNT },
           OR_BROKER_TARGET_REGION: { value: cdk.Aws.REGION },
           OR_APP_SECRETS_NAME: { value: appSecretsName.valueAsString },
           OR_PUBLIC_ORIGIN_OVERRIDE: { value: publicOriginOverride.valueAsString },
@@ -399,7 +431,7 @@ export class DevDeployBrokerStack extends cdk.Stack {
         computeType: codebuild.ComputeType.SMALL,
         privileged: false,
         environmentVariables: {
-          OR_BROKER_TARGET_ACCOUNT: { value: cdk.Aws.ACCOUNT_ID },
+          OR_BROKER_TARGET_ACCOUNT: { value: DEV_DEPLOY_TARGET_ACCOUNT },
           OR_TRUSTED_POLICY_BUCKET: { value: trustedPolicyAsset.s3BucketName },
           OR_TRUSTED_POLICY_KEY: { value: trustedPolicyAsset.s3ObjectKey },
           OR_TRUSTED_POLICY_SHA256: { value: trustedPolicyContentSha256 },
@@ -414,6 +446,7 @@ export class DevDeployBrokerStack extends cdk.Stack {
         phases: {
           build: {
             commands: [
+              nodeEval(BROKER_ACCOUNT_PIN_CHECK_SCRIPT),
               'test -f broker-evidence.json',
               'test -f infra/cdk.out/manifest.json',
               nodeEval(BROKER_REVISION_CHECK_SCRIPT),
@@ -421,7 +454,7 @@ export class DevDeployBrokerStack extends cdk.Stack {
               // content SHA-256 before executing it (fail closed on any mismatch).
               `aws s3 cp "s3://$OR_TRUSTED_POLICY_BUCKET/$OR_TRUSTED_POLICY_KEY" ${TRUSTED_POLICY_LOCAL_PATH} --only-show-errors`,
               nodeEval(BROKER_POLICY_HASH_CHECK_SCRIPT, TRUSTED_POLICY_LOCAL_PATH),
-              `node ${TRUSTED_POLICY_LOCAL_PATH} --assembly infra/cdk.out --account "$OR_BROKER_TARGET_ACCOUNT" > trusted-policy-result.json`,
+              `node ${TRUSTED_POLICY_LOCAL_PATH} --assembly infra/cdk.out --account ${DEV_DEPLOY_TARGET_ACCOUNT} > trusted-policy-result.json`,
               // Even an allowed static assembly cannot mutate yet.
               nodeEval(BROKER_NOT_ARMED_RESULT_SCRIPT),
               'echo "Trusted broker is intentionally unarmed." >&2',

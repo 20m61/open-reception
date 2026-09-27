@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import { execFileSync } from 'node:child_process';
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -8,9 +8,11 @@ import * as cdk from 'aws-cdk-lib';
 import { Template } from 'aws-cdk-lib/assertions';
 import { createHash } from 'node:crypto';
 import {
+  BROKER_ACCOUNT_PIN_CHECK_SCRIPT,
   BROKER_NOT_ARMED_RESULT_SCRIPT,
   BROKER_POLICY_HASH_CHECK_SCRIPT,
   BROKER_REVISION_CHECK_SCRIPT,
+  DEV_DEPLOY_TARGET_ACCOUNT,
   DevDeployBrokerStack,
   SPARSE_LEDGER_BROKER_ACTIONS,
   SPARSE_LEDGER_PROJECT_KEY,
@@ -52,7 +54,7 @@ const REV_B = '0123456789abcdef0123456789abcdef01234567';
 const template = (() => {
   const app = new cdk.App();
   const stack = new DevDeployBrokerStack(app, 'TestDevDeployBroker', {
-    env: { account: '123456789012', region: 'ap-northeast-1' },
+    env: { account: '822063948773', region: 'ap-northeast-1' },
   });
   return Template.fromStack(stack);
 })();
@@ -339,7 +341,7 @@ describe('dev deploy broker invariants: trusted broker (stack-owned buildspec, u
       /^node -e '[^']*'$/,
       /^aws s3 cp "s3:\/\/\$OR_TRUSTED_POLICY_BUCKET\/\$OR_TRUSTED_POLICY_KEY" \/tmp\/open-reception-trusted-policy\.mjs --only-show-errors$/,
       /^node -e '[^']*' \/tmp\/open-reception-trusted-policy\.mjs$/,
-      /^node \/tmp\/open-reception-trusted-policy\.mjs --assembly infra\/cdk\.out --account "\$OR_BROKER_TARGET_ACCOUNT" > trusted-policy-result\.json$/,
+      /^node \/tmp\/open-reception-trusted-policy\.mjs --assembly infra\/cdk\.out --account 822063948773 > trusted-policy-result\.json$/,
       /^echo "[^"$`]*" >&2$/,
       /^exit 42$/,
     ];
@@ -970,5 +972,65 @@ describe('architecture view (S8 repo-side drift check)', () => {
     ]) {
       expect(mermaid).toContain(node);
     }
+  });
+});
+
+describe('deploy account pin (pre-arming blocker 3)', () => {
+  const policiesDir = resolve(__dirname, '../../scripts/aws-policies');
+
+  it('is the same account every ADR 0009 policy pins', () => {
+    const files = readdirSync(policiesDir).filter((f) => f.endsWith('.json'));
+    expect(files.length).toBeGreaterThanOrEqual(7);
+    for (const file of files) {
+      const accounts = new Set(readFileSync(join(policiesDir, file), 'utf8').match(/(?<![0-9])[0-9]{12}(?![0-9])/g) ?? []);
+      expect([...accounts], file).toEqual([DEV_DEPLOY_TARGET_ACCOUNT]);
+    }
+  });
+
+  it('both builds receive the pinned literal, never the stack-derived AWS::AccountId', () => {
+    for (const name of [VALIDATION_PROJECT, BROKER_PROJECT]) {
+      const project = Object.values(resources).find((r) => r.Type === 'AWS::CodeBuild::Project' && r.Properties.Name === name)!;
+      const env = (project.Properties.Environment as { EnvironmentVariables: Array<{ Name: string; Value: unknown }> }).EnvironmentVariables;
+      expect(env.find((e) => e.Name === 'OR_BROKER_TARGET_ACCOUNT')?.Value, name).toBe(DEV_DEPLOY_TARGET_ACCOUNT);
+    }
+  });
+
+  it('carries no CloudFormation rule whose semantics are unverified (parameter-free AWS::AccountId assertion)', () => {
+    // Only CDK's own bootstrap-version rule (which references its SSM parameter).
+    expect(Object.keys(template.toJSON().Rules ?? {})).toEqual(['CheckBootstrapVersion']);
+  });
+
+  it('a concrete synth for another account fails before any template exists', () => {
+    const app = new cdk.App();
+    expect(() => new DevDeployBrokerStack(app, 'Other', { env: { account: '123456789012', region: 'ap-northeast-1' } })).toThrow(/822063948773/);
+    // Environment-agnostic synth is allowed; the broker's first command refuses any other account.
+    expect(() => new DevDeployBrokerStack(new cdk.App(), 'Agnostic')).not.toThrow();
+  });
+
+  it('the broker checks its own account first, before reading any candidate file', () => {
+    const commands = allCommands(BROKER_PROJECT);
+    expect(commands[0]).toBe(nodeEval(BROKER_ACCOUNT_PIN_CHECK_SCRIPT));
+  });
+
+  it.each([
+    ['the pinned account', `arn:aws:codebuild:ap-northeast-1:${DEV_DEPLOY_TARGET_ACCOUNT}:build/OpenReceptionTrustedDevDeployBroker:x`, DEV_DEPLOY_TARGET_ACCOUNT, true],
+    ['another account', 'arn:aws:codebuild:ap-northeast-1:123456789012:build/OpenReceptionTrustedDevDeployBroker:x', DEV_DEPLOY_TARGET_ACCOUNT, false],
+    ['no build ARN', undefined, DEV_DEPLOY_TARGET_ACCOUNT, false],
+    ['a malformed build ARN', `arn:aws:codebuild:ap-northeast-1:${DEV_DEPLOY_TARGET_ACCOUNT}:project/x`, DEV_DEPLOY_TARGET_ACCOUNT, false],
+    ['an ARN with the account elsewhere', `arn:aws:codebuild:ap-northeast-1:123456789012:build/${DEV_DEPLOY_TARGET_ACCOUNT}`, DEV_DEPLOY_TARGET_ACCOUNT, false],
+    // An environment override cannot move the pin: the literal in the buildspec decides.
+    ['an overridden env pin matching another account', 'arn:aws:codebuild:ap-northeast-1:123456789012:build/OpenReceptionTrustedDevDeployBroker:x', '123456789012', false],
+    ['no env pin at all', `arn:aws:codebuild:ap-northeast-1:${DEV_DEPLOY_TARGET_ACCOUNT}:build/x`, undefined, true],
+  ])('the account check with %s', (_label, buildArn, envPin, ok) => {
+    const r = run(nodeEval(BROKER_ACCOUNT_PIN_CHECK_SCRIPT), workspace(), { CODEBUILD_BUILD_ARN: buildArn, OR_BROKER_TARGET_ACCOUNT: envPin });
+    expect(r.ok).toBe(ok);
+  });
+
+  it('the pin and the policy account are literals in the buildspec, not environment values', () => {
+    expect(BROKER_ACCOUNT_PIN_CHECK_SCRIPT).toContain(`const pinned="${DEV_DEPLOY_TARGET_ACCOUNT}";`);
+    expect(BROKER_ACCOUNT_PIN_CHECK_SCRIPT).not.toContain('process.env.OR_BROKER_TARGET_ACCOUNT');
+    const policyRun = allCommands(BROKER_PROJECT).find((c) => c.startsWith('node /tmp/open-reception-trusted-policy.mjs '))!;
+    expect(policyRun).toContain(`--account ${DEV_DEPLOY_TARGET_ACCOUNT} `);
+    expect(policyRun).not.toContain('$OR_BROKER_TARGET_ACCOUNT');
   });
 });
