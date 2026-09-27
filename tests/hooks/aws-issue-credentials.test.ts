@@ -77,6 +77,20 @@ const NO_CONTEXT_FILE = { OR_DEPLOY_CONTEXT_FILE: '/nonexistent/deploy-context.e
  */
 vi.setConfig({ testTimeout: 30_000 });
 
+describe('スクリプト全体が bash として解釈できる (#1148 の周回で発覚)', () => {
+  /**
+   * 🔴 **実行系の test は引数検証で早期終了するので、末尾の構文破損に届かない。**
+   * bash は逐次解析なので、`$'\n'` の中に別のブロックが貼り込まれて文字列が閉じなくなっても、
+   * `--help` や引数エラーの経路は正常に終わる。本物の窓開け（macOS の assume-role）で
+   * 初めて `unexpected EOF` になる。`bash -n` で全体を先に解析して固定する。
+   */
+  it('bash -n が通る', () => {
+    expect(() =>
+      execFileSync('bash', ['-n', SCRIPT], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }),
+    ).not.toThrow();
+  });
+});
+
 describe('値を残さない', () => {
   it('credential をファイルへ書き出さない', () => {
     expect(source).not.toMatch(/>\s*[^&|\s]*credential/i);

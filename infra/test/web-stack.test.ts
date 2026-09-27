@@ -563,7 +563,7 @@ describe.runIf(OPEN_NEXT_READY)('WebStack tenant provider secrets (#405 Inc2)', 
 });
 
 // #1148: 生値モードの成功系テストは削除した。raw `originVerifySecret` は全環境で拒否し、
- // 成功系は Secrets Manager dynamic reference のみを正本とする。
+// 成功系は Secrets Manager dynamic reference のみを正本とする。
 // origin-verify シークレットを Secrets Manager から供給する (issue #612)。
 // 目的は「CFN テンプレートにも Lambda 環境変数にも平文を載せないこと」。
 describe.runIf(OPEN_NEXT_READY)('WebStack origin-verify via Secrets Manager (#612)', () => {
@@ -593,6 +593,19 @@ describe.runIf(OPEN_NEXT_READY)('WebStack origin-verify via Secrets Manager (#61
     template.resourcePropertiesCountIs('AWS::Lambda::Url', { AuthType: 'NONE' }, 1);
     template.resourcePropertiesCountIs('AWS::Lambda::Url', { AuthType: 'AWS_IAM' }, 1);
     template.resourceCountIs('AWS::CloudFront::OriginAccessControl', 2);
+  }, 30000);
+
+  // #1148 で生値モードの suite を削除した際に失われた #631 の固定を、正本側で持ち直す。
+  it('grants lambda:InvokeFunction only to the image function (server は公開のため不要) (#631)', () => {
+    template.resourcePropertiesCountIs(
+      'AWS::Lambda::Permission',
+      {
+        Action: 'lambda:InvokeFunction',
+        Principal: 'cloudfront.amazonaws.com',
+        SourceArn: Match.anyValue(),
+      },
+      1,
+    );
   }, 30000);
 
   it('puts a CFN dynamic reference (not a literal) in the CloudFront custom header', () => {
