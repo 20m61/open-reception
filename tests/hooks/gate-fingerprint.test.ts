@@ -12,10 +12,10 @@
  * 「削除済み」に分類され、中身の変更が指紋に入らない（実測で再現済み）。
  */
 import { execFileSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { afterAll, describe, expect, it } from 'vitest';
+import { makeTempDir } from '../helpers/temp';
 
 const LIB = resolve(process.cwd(), 'scripts/lib/gate-stamp.sh');
 const created: string[] = [];
@@ -25,7 +25,7 @@ afterAll(() => {
 
 /** `gate_tree_fingerprint` だけを走らせる隔離リポジトリ。 */
 function makeRepo(): string {
-  const dir = mkdtempSync(join(tmpdir(), 'gate-fingerprint-'));
+  const dir = makeTempDir('gate-fingerprint-');
   created.push(dir);
   mkdirSync(join(dir, 'scripts', 'lib'), { recursive: true });
   execFileSync('cp', [LIB, join(dir, 'scripts/lib/gate-stamp.sh')]);

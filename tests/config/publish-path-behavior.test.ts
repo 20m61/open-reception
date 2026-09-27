@@ -16,12 +16,12 @@
  * ソースの grep では届かないので、**PATH ごと差し替えて実際に起動する**。
  */
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { afterAll, describe, expect, it } from 'vitest';
 import { curlArgs, parseCurlResponse, repoReadRequest } from '../../src/domain/governance/github-rest';
 import { SPAWN_TIMEOUT_MS, cleanupStubDirs, readLog, runScriptWithStubs } from './helpers/stub-bin';
+import { makeTempDir } from '../helpers/temp';
 
 const PUBLISH_CHECK = 'scripts/check-publish-path.ts';
 const EVALUATE = 'scripts/evaluate-gate-runs.ts';
@@ -218,7 +218,7 @@ describe('実 curl の -w 書式 (#1117)', () => {
   it(
     '本文の後ろに改行 1 つと状態コードだけを書く',
     () => {
-      const dir = mkdtempSync(join(tmpdir(), 'curl-w-'));
+      const dir = makeTempDir('curl-w-');
       const file = join(dir, 'body.json');
       // 🔴 **最悪の本文**: それ自体が 3 桁の数字 1 行。書式が壊れていれば
       // `parseCurlResponse` がこれを状態コードとして拾い、本文が空になる。

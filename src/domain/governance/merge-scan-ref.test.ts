@@ -1,8 +1,8 @@
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, rmSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { afterAll, describe, expect, it } from 'vitest';
+import { makeTempDir } from '../../../tests/helpers/temp';
 import {
   findUnexplainedMergeCommits,
   resolveMergeScanRef,
@@ -66,7 +66,7 @@ function commit(cwd: string, message: string): void {
  * `withMergeOnMain` が真なら、**main 自身へ merge commit を入れる**（#656 が捕まえた形）。
  */
 function makeRepo(options: { withMergeOnMain?: boolean } = {}): string {
-  const root = mkdtempSync(join(tmpdir(), 'merge-scan-'));
+  const root = makeTempDir('merge-scan-');
   created.push(root);
   const origin = join(root, 'origin.git');
   const work = join(root, 'work');

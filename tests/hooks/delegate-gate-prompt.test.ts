@@ -9,10 +9,10 @@
  * この一連の周回で同じ型を何度も踏んでいる。
  */
 import { execFileSync, spawnSync } from 'node:child_process';
-import { cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { cpSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { afterAll, describe, expect, it } from 'vitest';
+import { makeTempDir } from '../helpers/temp';
 
 const REPO = process.cwd();
 const created: string[] = [];
@@ -72,7 +72,7 @@ function run(options: {
   // 🔴 **パスに `$(...)` を仕込む。** probe がライブラリのパスを文字列へ埋め込んで
   // いると、bash がここを**コマンド置換として実行**して別のパスを source しようとし、
   // 裏取りが静かに exit 2（判定不能）へ縮退する。`$1` で渡していれば無害。
-  const dir = mkdtempSync(join(tmpdir(), 'delegate-prompt-$(echo x)-'));
+  const dir = makeTempDir('delegate-prompt-$(echo x)-');
   created.push(dir);
   // 🔴 **要る物だけ写す。** `src` 全体は 11MB あり、ケースごとに複製すると
   // ディスクを食う（#721 でゲートを落としたのはディスク枯渇だった）。
@@ -161,7 +161,7 @@ function run(options: {
     specPath = join(dir, options.specInRepo);
     writeFileSync(specPath, JSON.stringify(specBody));
   } else {
-    const specDir = mkdtempSync(join(tmpdir(), 'delegate-spec-'));
+    const specDir = makeTempDir('delegate-spec-');
     created.push(specDir);
     specPath = join(specDir, 'spec.json');
     writeFileSync(specPath, JSON.stringify(specBody));

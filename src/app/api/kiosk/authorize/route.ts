@@ -3,6 +3,38 @@ import { getSecuritySettings, verifyPin } from '@/lib/security/security-store';
 import { isIpAllowed } from '@/domain/security/types';
 import { KIOSK_COOKIE, KIOSK_SESSION_TTL_MS, issueKioskSession } from '@/lib/auth/kiosk';
 import { readJson } from '@/lib/data-stores/result-http';
+import { KIOSK_AUTHORIZE_LAYERS } from '@/domain/security/attempt-budget';
+import { assertIdentitySaltAvailable, clientIdentity } from '@/lib/security/client-identity';
+import { secretUnavailableResponse } from '@/lib/auth/secret-unavailable';
+import { recordLayeredSuccess, reserveLayeredSafely } from '@/lib/security/attempt-store';
+import { reportAttemptBudgetExceeded, reportAttemptStoreUnavailable } from '@/lib/security/attempt-report';
+
+/**
+ * 🔴 **試行予算は層になっている（#1021 AC4 / レビュー B1・B2）。**
+ *
+ * 一次は**発信元ごと**（`x-forwarded-for` の**末尾** = CloudFront が付ける詐称できない
+ * viewer IP。`clientIdentity`）。二次は global cap。
+ *
+ * 🔴 **当初は global 1 本にしていた。** 「非詐称可能な識別子は無い」と判断したためだが、
+ * それは**この route が読んでいる `split(',')[0]`（先頭＝詐称可能）から一般化した誤り**で、
+ * `src/lib/admin/audit.ts` が末尾を採っていることと `src/proxy.ts` の origin-verify が
+ * CloudFront 迂回を全ルートで拒否していることで反証された（独立レビュー B1）。
+ *
+ * global 1 本だと、攻撃者が少量のリクエストで**受付の初回認可を無期限に閉じられる**うえ、
+ * 復旧経路（admin → エンロール URL 発行）も同じ形で閉じられて**受付が復旧不能**になった
+ * （同 B2）。一次を発信元ごとにすると、他人の失敗で閉まらない。
+ *
+ * 残る代償: global cap を使い切られている間は**初回の PIN 認可**が閉じる。ただし
+ * **稼働中の端末は 30 日 cookie で動き続け**、復旧経路（`/api/admin/login` →
+ * エンロール URL 発行）は**この増分が一切触っていない**ので開いたままである
+ * （admin 側の試行回数制限は射程外。`attempt-budget.ts` の該当 doc / #1167）。
+ *
+ * 🔴 **一次が「1 IP あたり」であるためには、鍵がプロセス間で安定していなければならない。**
+ * 一度 salt をプロセス起動ごとの乱数にしたとき、Lambda の同時実行ごとに鍵が割れて
+ * **1 本の IP だけで global cap を使い切れる**状態になっていた（独立レビュー 4 周目 MAJOR-1）。
+ * 今は fail-closed の鍵から決定的に導出している（`client-identity.ts`）。
+ */
+const ATTEMPT_SCOPE = 'kiosk-authorize';
 
 /**
  * POST /api/kiosk/authorize — PIN / IP による受付端末の初回許可 (issue #23)。
@@ -32,9 +64,62 @@ export async function POST(request: Request): Promise<NextResponse> {
       { status: 403 },
     );
   }
+  // 🔴 **照合の前に予算を見る（#1021 AC4）。** 予算超過の試行は `verifyPin` を
+  //    **走らせない** —— AC3 で照合は PBKDF2（実測 約 5ms/回）になったので、走らせると
+  //    叩くだけで Lambda の GB-ms と同時実行を消費させられる。断るついでに
+  //    **コストを下げる**のがこの順序の要点である（増幅を閉じる側に使う）。
+  // 🔴 数えるのは**PIN の試行だけ**。上の 403（PIN 認可が無効なサイト）は試行ではないので
+  //    数えない —— 数えると攻撃でもないもので予算を使い切る。
+  // 🔴 **予約してから照合する（Codex レビュー P1）。** 読み取り専用の判定だと、
+  //    並行バーストで**全員が予算内と読んで全員が照合へ進む**（実測: 予算 3 に対して
+  //    20 回中 20 回が到達し 0 回しか断られなかった）。入場を CAS で予約することでしか
+  //    閉じられない。数えるのは「入場した試行」で、成功したら窓ごと捨てる。
+  // 🔴 **鍵の解決だけを catch する（`/api/kiosk/enroll` と同じ流儀）。** 発信元ハッシュの
+  //    salt は `KIOSK_ENROLLMENT_SECRET` から導出するので、未設定デプロイでは throw する
+  //    （`failClosed`）。`clientIdentity` ごと try で包むと、ハッシュ計算やヘッダ解析の
+  //    throw まで 503 に化ける —— 射程を広げない理由は `secret-unavailable.ts`（#1123）。
+  try {
+    assertIdentitySaltAvailable();
+  } catch {
+    return secretUnavailableResponse('KIOSK_ENROLLMENT_SECRET');
+  }
+  const identity = await clientIdentity(request);
+  const budget = await reserveLayeredSafely(
+    identity,
+    ATTEMPT_SCOPE,
+    KIOSK_AUTHORIZE_LAYERS,
+    Date.now(),
+  );
+  if (budget === 'unavailable') {
+    // 🔴 ストアが読めないときは fail-closed（落とせば制限が消える状態を作らない）。
+    //    未捕捉 throw にはしない（未認証経路で 500 を無制限に生ませない）。
+    reportAttemptStoreUnavailable(ATTEMPT_SCOPE);
+    return NextResponse.json({ error: 'unavailable' }, { status: 503 });
+  }
+  if (!budget.allowed) {
+    // 🔴 **閉じたことを記録する（レビュー M4）。** 記録が無いと、来訪者に
+    //    「担当者へお声がけください」と言われた担当者が**なぜ閉じたのか知る手段が無い**。
+    //    値（PIN）は残さない。
+    reportAttemptBudgetExceeded(ATTEMPT_SCOPE);
+    // 🔴 **待たせるために応答を保留しない。** Lambda では待ち時間に課金されるので、
+    //    sleep は増幅を悪化させる。即座に断り、いつ再試行できるかだけ伝える。
+    //    値（入力された PIN）は応答に出さない（未認証経路）。
+    return NextResponse.json(
+      { error: 'too_many_attempts', message: 'too many attempts; try again later' },
+      { status: 429, headers: { 'retry-after': String(Math.ceil(budget.retryAfterMs / 1000)) } },
+    );
+  }
   const pin = typeof body?.pin === 'string' ? body.pin : '';
   if (!(await verifyPin(pin))) {
+    // 予約の時点で数えてあるので、ここで数え直さない（二重計上になる）。
     return NextResponse.json({ error: 'unauthorized', message: 'invalid pin' }, { status: 401 });
+  }
+  // 🔴 成功したら窓を捨てる（正しく入った直後に予算切れで断られる形を作らない）。
+  //    🔴 **ここの失敗でセッション発行を止めない（レビュー M2）。** 捨て損なっても
+  //    予算は窓明けで自然に戻る。止めると、帳簿の書き込み失敗だけで**正しい PIN を
+  //    入れた来訪者が受付を開始できない**（実測で未捕捉 500 になっていた）。
+  if (!(await recordLayeredSuccess(identity, ATTEMPT_SCOPE))) {
+    reportAttemptStoreUnavailable(ATTEMPT_SCOPE);
   }
 
   const kioskId = typeof body?.kioskId === 'string' && body.kioskId ? body.kioskId : 'kiosk-dev';

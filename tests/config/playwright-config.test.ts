@@ -45,12 +45,14 @@ describe('playwright.config.ts', () => {
   it('PW_EXECUTABLE_PATH 指定時もフェイクカメラ引数を失わない（置換ではなくマージ）', async () => {
     vi.resetModules();
     const previous = process.env.PW_EXECUTABLE_PATH;
+    // temp-ok: 実在しない偽のパス。作らないので隔離の外でも害が無い。
     process.env.PW_EXECUTABLE_PATH = '/tmp/fake-chromium';
     try {
       const config = (await import('../../playwright.config')).default;
       const project = (config.projects ?? []).find((p) => p.name === 'chromium-ipad');
       // executablePath を返す分岐で launchOptions ごと置き換えると、プリインストール
       // Chromium を使う実行環境でだけフェイクカメラが消えて #361 が再発する。
+      // temp-ok: 上で立てた偽のパスと一致することを見るだけ。
       expect(project?.use?.launchOptions?.executablePath).toBe('/tmp/fake-chromium');
       expect(project?.use?.launchOptions?.args).toContain('--use-fake-device-for-media-stream');
     } finally {

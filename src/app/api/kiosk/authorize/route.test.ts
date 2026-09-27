@@ -7,10 +7,31 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 const getSecuritySettings = vi.fn();
 const verifyPin = vi.fn();
 const issueKioskSession = vi.fn();
+const reserveLayeredSafely = vi.fn();
+const recordLayeredSuccess = vi.fn();
+const reportAttemptBudgetExceeded = vi.fn();
+const reportAttemptStoreUnavailable = vi.fn();
+const assertIdentitySaltAvailable = vi.fn();
 
 vi.mock('@/lib/security/security-store', () => ({
   getSecuritySettings: (...a: unknown[]) => getSecuritySettings(...a),
   verifyPin: (...a: unknown[]) => verifyPin(...a),
+}));
+vi.mock('@/lib/security/attempt-store', () => ({
+  reserveLayeredSafely: (...a: unknown[]) => reserveLayeredSafely(...a),
+  recordLayeredSuccess: (...a: unknown[]) => recordLayeredSuccess(...a),
+}));
+vi.mock('@/lib/security/attempt-report', () => ({
+  reportAttemptBudgetExceeded: (...a: unknown[]) => reportAttemptBudgetExceeded(...a),
+  reportAttemptStoreUnavailable: (...a: unknown[]) => reportAttemptStoreUnavailable(...a),
+}));
+// 🔴 **`clientIdentity` は本物のまま残す。** ここをモックすると、下の
+//    「鍵は XFF の末尾から決まる」が**配線を一切通らなくなり空虚に通る**
+//    （実際に一度そうしてしまい、そのテストが落ちて気づいた）。差し替えるのは
+//    鍵の解決可否だけにする。
+vi.mock('@/lib/security/client-identity', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@/lib/security/client-identity')>()),
+  assertIdentitySaltAvailable: (...a: unknown[]) => assertIdentitySaltAvailable(...a),
 }));
 vi.mock('@/lib/auth/kiosk', () => ({
   KIOSK_COOKIE: 'kiosk_session',
@@ -19,6 +40,8 @@ vi.mock('@/lib/auth/kiosk', () => ({
 }));
 
 import { POST } from './route';
+import { KIOSK_AUTHORIZE_LAYERS } from '@/domain/security/attempt-budget';
+import { __resetSecretUnavailableLog } from '@/lib/auth/secret-unavailable';
 
 function post(body: unknown = { pin: '0000', kioskId: 'kiosk-dev' }) {
   return POST(
@@ -29,11 +52,35 @@ function post(body: unknown = { pin: '0000', kioskId: 'kiosk-dev' }) {
   );
 }
 
+/**
+ * 🔴 **発信元が識別できる要求。** XFF が無いと `clientIdentity` はハッシュを計算せずに
+ * `GLOBAL_IDENTITY` へ退避するので、**salt を一度も触らない** ——
+ * 鍵の材料不足を測るテストが**何も測らなくなる**。
+ */
+function postWithXff(body: unknown = { pin: '0000', kioskId: 'kiosk-dev' }) {
+  return POST(
+    new Request('http://localhost/api/kiosk/authorize', {
+      method: 'POST',
+      headers: { 'x-forwarded-for': '203.0.113.9, 192.0.2.1' },
+      body: JSON.stringify(body),
+    }),
+  );
+}
+
 beforeEach(() => {
   vi.clearAllMocks();
   getSecuritySettings.mockResolvedValue({ pinRequired: true, pin: '0000', ipAllowlist: [] });
   verifyPin.mockResolvedValue(true);
   issueKioskSession.mockResolvedValue('signed-kiosk-session');
+  reserveLayeredSafely.mockResolvedValue({
+    allowed: true,
+    nextWindow: { startedAt: 0, failures: 0 },
+  });
+  // 🔴 既定は「記録が成功する」。`vi.clearAllMocks()` が戻り値も消すので、
+  //    ここで置き直さないと `undefined` が返り、通常経路でも
+  //    「記録に失敗した」と読まれる（下界のテストがこの取りこぼしを捕まえた）。
+  recordLayeredSuccess.mockResolvedValue(true);
+  assertIdentitySaltAvailable.mockReturnValue(undefined);
 });
 
 describe('POST /api/kiosk/authorize (#244)', () => {
@@ -71,5 +118,324 @@ describe('POST /api/kiosk/authorize (#244)', () => {
     );
     expect(res.status).toBe(403);
     expect(issueKioskSession).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * 試行回数制限 (#1021 AC4)。
+ *
+ * ## 何を守るか
+ *
+ * この route は**未認証の公開経路**で、PIN は事実上 4 桁＝10^4 しかない。通れば
+ * **30 日の kiosk セッション**が出る（以降 #1020 の面が全部開く）。
+ *
+ * 🔴 **この doc は 1 周目の前提を書いていた（「鍵はサイト全体（global）しか選べない」）。
+ * その前提は独立レビュー B1 に反証されたので撤回する。** `x-forwarded-for` の**末尾**は
+ * CloudFront が付ける詐称できない viewer IP で（`src/lib/admin/audit.ts` が同じ抽出をしている）、
+ * `src/proxy.ts` の origin-verify が CloudFront 迂回を全ルートで拒否する。
+ * 今の鍵は**層**になっている: 一次＝発信元ごと / 二次＝global cap。
+ * 下の「鍵は XFF の末尾から決まる」がそれを縛っている。
+ *
+ * ## 代償（正直に書く）
+ *
+ * 二次（global cap）を使い切られている間は**初回の PIN 認可が閉じる**。
+ * 被害を限るのは次の 2 つで、機構ではなく事実である:
+ *
+ * - **既に許可済みの端末は影響を受けない**（kiosk セッションは 30 日 cookie なので、
+ *   稼働中の受付端末は攻撃中も動き続ける）。閉じるのは**初回の PIN 認可だけ**
+ * - 窓は短く取り、攻撃が止まれば**自然に開く**
+ */
+describe('試行回数制限 (#1021 AC4)', () => {
+  it('🔴 予算超過なら 429 と Retry-After を返す', async () => {
+    reserveLayeredSafely.mockResolvedValue({ allowed: false, retryAfterMs: 42_000 });
+    const res = await post();
+    expect(res.status).toBe(429);
+    expect(res.headers.get('retry-after')).toBe('42');
+    expect(issueKioskSession).not.toHaveBeenCalled();
+    expect(res.headers.get('set-cookie')).toBeNull();
+  });
+
+  /**
+   * 🔴 **本体。** 予算超過の試行は**照合を走らせない**。
+   *
+   * AC3 で PIN 照合は PBKDF2（実測 約 5ms/回）になったので、走らせると
+   * 叩くだけで Lambda の GB-ms と同時実行を消費させられる。断るついでに
+   * **コストを下げる**のがこの配線の要点である（増幅を閉じる側に使う）。
+   */
+  it('🔴 予算超過なら PIN 照合を走らせない（計算増幅を閉じる）', async () => {
+    reserveLayeredSafely.mockResolvedValue({ allowed: false, retryAfterMs: 1000 });
+    await post();
+    expect(verifyPin).not.toHaveBeenCalled();
+  });
+
+  /** 🔴 下界: 予算内なら従来どおり照合する（全部 429 にして満たしていない）。 */
+  it('🔴 予算内なら照合して通す（下界）', async () => {
+    const res = await post();
+    expect(res.status).toBe(200);
+    expect(verifyPin).toHaveBeenCalledTimes(1);
+  });
+
+  it('🔴 PIN 不一致は失敗として数える', async () => {
+    verifyPin.mockResolvedValue(false);
+    const res = await post({ pin: 'wrong' });
+    expect(res.status).toBe(401);
+    // 🔴 予約の時点で数えているので、ここで数え直さない（二重計上になる）。
+    expect(reserveLayeredSafely).toHaveBeenCalledTimes(1);
+    expect(recordLayeredSuccess).not.toHaveBeenCalled();
+  });
+
+  /** 🔴 成功は失敗数を捨てる（正しく入った直後に予算切れで断られる形を作らない）。 */
+  it('🔴 成功したら失敗数をリセットする', async () => {
+    await post();
+    expect(recordLayeredSuccess).toHaveBeenCalledTimes(1);
+  });
+
+  /**
+   * 🔴 **PIN 認可が無効なサイトでは数えない。** `pinRequired=false` の 403 は
+   * PIN の試行ではないので、数えると**攻撃でもないもので予算を使い切る**
+   * （その端末は enroll 経路を使うのが正しい）。
+   */
+  it('🔴 pinRequired=false の 403 は数えない', async () => {
+    getSecuritySettings.mockResolvedValue({ pinRequired: false, pin: '0000', ipAllowlist: [] });
+    await post();
+    expect(reserveLayeredSafely).not.toHaveBeenCalled();
+  });
+
+  /** 🔴 鍵は body の kioskId に依らない（回しても同じ窓を使う＝素通りさせない）。 */
+  it('🔴 kioskId を変えても同じ鍵で数える', async () => {
+    await post({ pin: '0000', kioskId: 'kiosk-a' });
+    await post({ pin: '0000', kioskId: 'kiosk-b' });
+    const keys = reserveLayeredSafely.mock.calls.map((c) => c[0]);
+    expect(keys[0]).toBe(keys[1]);
+  });
+
+  /** 🔴 応答に PIN の値を出さない（未認証経路。`rules/pii-secret-minimization.md`）。 */
+  it('🔴 429 の応答本文に入力値を出さない', async () => {
+    reserveLayeredSafely.mockResolvedValue({ allowed: false, retryAfterMs: 1000 });
+    const res = await post({ pin: '1234', kioskId: 'kiosk-dev' });
+    const text = await res.text();
+    expect(text).not.toContain('1234');
+  });
+});
+
+/**
+ * ストア障害時の倒れ方（#1021 AC4 / レビュー M2）。
+ *
+ * 🔴 **この増分は「帳簿」を受付完遂の経路に足した。** その帳簿が落ちたときに
+ * どう倒れるかを**明示的に選んでテストで固定する** —— 選ばないと未捕捉 500 になり、
+ * 「正しい PIN を入れた来訪者が、DynamoDB の一時障害だけで受付を開始できない」が起きる
+ * （実測でそうなっていた）。
+ */
+describe('帳簿が落ちたとき (#1021 AC4)', () => {
+  /** 🔴 判定できないときは fail-closed（落とせば制限が消える状態を作らない）。 */
+  it('🔴 予約できないときは 503（未捕捉 500 にしない）', async () => {
+    reserveLayeredSafely.mockResolvedValue('unavailable');
+    const res = await post();
+    expect(res.status).toBe(503);
+    expect(verifyPin).not.toHaveBeenCalled();
+    expect(issueKioskSession).not.toHaveBeenCalled();
+  });
+
+  /**
+   * 🔴 **本体（M2）。成功の記録に失敗しても、セッションは発行する。**
+   *
+   * 捨て損なっても予算は窓明けで自然に戻るので、ここで止める理由が無い。止めると
+   * **正しい PIN を入れた来訪者が受付を開始できない**（帳簿の書き込み失敗だけで）。
+   */
+  it('🔴 成功の記録に失敗してもセッションを発行する', async () => {
+    recordLayeredSuccess.mockResolvedValue(false);
+    const res = await post();
+    expect(res.status).toBe(200);
+    expect(issueKioskSession).toHaveBeenCalledTimes(1);
+    expect(res.headers.get('set-cookie')).toContain('kiosk_session=');
+  });
+
+  /** 🔴 下界: 記録が成功する通常経路でも当然発行する（上を空虚に満たさない）。 */
+  it('🔴 記録が成功する通常経路でも発行する（下界）', async () => {
+    const res = await post();
+    expect(res.status).toBe(200);
+    expect(issueKioskSession).toHaveBeenCalledTimes(1);
+  });
+
+  /**
+   * 🔴 **予算の鍵は発信元ごと（レビュー B1）。** XFF の**末尾**で鍵が決まるので、
+   * 攻撃者が先頭へ何を詰めても他人の予算を消費できない。
+   */
+  it('🔴 鍵は XFF の末尾から決まる（先頭の詐称に引きずられない）', async () => {
+    const send = (xff: string) =>
+      POST(
+        new Request('http://localhost/api/kiosk/authorize', {
+          method: 'POST',
+          headers: { 'x-forwarded-for': xff },
+          body: JSON.stringify({ pin: '0000' }),
+        }),
+      );
+    await send('1.1.1.1, 192.0.2.1');
+    await send('2.2.2.2, 3.3.3.3, 192.0.2.1');
+    await send('9.9.9.9');
+    const [a, b, c] = reserveLayeredSafely.mock.calls.map((call) => call[0] as string);
+    // 末尾が同じなら同じ鍵（先頭に何を詰められても変わらない）。
+    expect(a).toBe(b);
+    // 末尾が違えば違う鍵。
+    expect(c).not.toBe(a);
+    // 🔴 生の IP を鍵にしない（レビュー 2 周目 M-4。鍵は 2 時間永続化される）。
+    expect(a).not.toContain('192.0.2.1');
+    expect(a).toMatch(/^ip:[0-9a-f]{64}$/);
+  });
+});
+
+/**
+ * 検出信号の配線（#1021 AC4 / レビュー M4。変異検証で生存した穴）。
+ *
+ * 信号を足しても**呼んでいることを縛らないと**、次に触った人が外しても誰も気づかない。
+ */
+describe('検出信号の配線 (#1021 AC4)', () => {
+  it('🔴 予算超過を記録する', async () => {
+    reserveLayeredSafely.mockResolvedValue({ allowed: false, retryAfterMs: 1000 });
+    await post();
+    expect(reportAttemptBudgetExceeded).toHaveBeenCalledTimes(1);
+  });
+
+  it('🔴 帳簿が読めないことを記録する', async () => {
+    reserveLayeredSafely.mockResolvedValue('unavailable');
+    await post();
+    expect(reportAttemptStoreUnavailable).toHaveBeenCalledTimes(1);
+  });
+
+  /** 🔴 成功の記録に失敗したことも記録する（沈黙で飲まない）。 */
+  it('🔴 成功の記録に失敗したことを記録する', async () => {
+    recordLayeredSuccess.mockResolvedValue(false);
+    await post();
+    expect(reportAttemptStoreUnavailable).toHaveBeenCalledTimes(1);
+  });
+
+  /**
+   * 🔴 **方針と scope の配線を縛る。** 別の方針（緩い予算）や別の scope を渡すと、
+   * 定数側のテストが全部緑のまま**この経路だけ制限が外れる**。
+   */
+  it('🔴 kiosk の方針と scope を渡している', async () => {
+    await post();
+    expect(reserveLayeredSafely.mock.calls[0]?.[2], 'kiosk の方針が渡っていない').toBe(
+      KIOSK_AUTHORIZE_LAYERS,
+    );
+    expect(reserveLayeredSafely.mock.calls[0]?.[1]).toBe('kiosk-authorize');
+  });
+
+  it('🔴 通常経路では記録しない（下界）', async () => {
+    await post();
+    expect(reportAttemptBudgetExceeded).not.toHaveBeenCalled();
+    expect(reportAttemptStoreUnavailable).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * 発信元ハッシュの材料（`KIOSK_ENROLLMENT_SECRET`）が解決できないとき
+ * （#1021 AC4 / 独立レビュー 4 周目 MAJOR-1 の対処）。
+ *
+ * salt を fail-closed の鍵から導出するようにしたので、**未設定デプロイでは throw する**。
+ * 未認証経路なので、そのまま素通しにするとスタックトレースつきの 500 を無制限に生ませられる。
+ */
+describe('鍵の材料が無いデプロイ (#1021 AC4)', () => {
+  it('🔴 鍵が解決できないなら 503（未捕捉 500 にしない）', async () => {
+    assertIdentitySaltAvailable.mockImplementation(() => {
+      throw new Error('KIOSK_ENROLLMENT_SECRET is not set in a deployed environment');
+    });
+    const res = await post();
+    expect(res.status).toBe(503);
+    // 🔴 鍵の名前は出してよいが、**値は出さない**（未認証経路）。
+    expect(JSON.stringify(await res.json())).not.toContain('0000');
+  });
+
+  /**
+   * 🔴 **鍵が無い世界を「本物の材料不足」で再現する（変異 M-E が生存した穴）。**
+   *
+   * 上の 3 本は `assertIdentitySaltAvailable` **だけ**をモックで throw させている。
+   * 本物の `clientIdentity` は dev フォールバックがあるので**決して throw しない** ——
+   * つまりテストの世界では「鍵が無い」が**片方の関数にしか存在せず、本番と食い違っている**。
+   *
+   * その食い違いのせいで、**検査を `clientIdentity` の後ろへ動かす変異が 25 本全部を
+   * 素通り**した（実測）。その順序だと、鍵未設定の Lambda へ XFF 付きで POST した
+   * 未認証の相手が、**1 リクエストにつき 1 本スタックトレース付きの 500** を無制限に
+   * 生ませられる（`secret-unavailable.ts` が存在する理由そのもの）。
+   *
+   * ここでは env を実際に欠けさせ、**モックを外して本物を使う**。順序が正しければ
+   * 鍵の解決で 503 に倒れ、後ろへ動かすと `clientIdentity` が先に throw して落ちる。
+   */
+  it('🔴 材料が本当に無いとき、鍵の解決が clientIdentity より先に効く', async () => {
+    const savedMarker = process.env.AWS_LAMBDA_FUNCTION_NAME;
+    const savedSecret = process.env.KIOSK_ENROLLMENT_SECRET;
+    const actual = await vi.importActual<typeof import('@/lib/security/client-identity')>(
+      '@/lib/security/client-identity',
+    );
+    process.env.AWS_LAMBDA_FUNCTION_NAME = 'open-reception-server';
+    delete process.env.KIOSK_ENROLLMENT_SECRET;
+    actual.__resetIdentitySalt();
+    // 🔴 モックを外して本物を使う（ここが「本番と同じ世界」にする唯一の手）。
+    assertIdentitySaltAvailable.mockImplementation(actual.assertIdentitySaltAvailable);
+    try {
+      const res = await postWithXff();
+      expect(res.status, '鍵の解決より先に clientIdentity が走っている').toBe(503);
+    } finally {
+      if (savedMarker === undefined) delete process.env.AWS_LAMBDA_FUNCTION_NAME;
+      else process.env.AWS_LAMBDA_FUNCTION_NAME = savedMarker;
+      if (savedSecret === undefined) delete process.env.KIOSK_ENROLLMENT_SECRET;
+      else process.env.KIOSK_ENROLLMENT_SECRET = savedSecret;
+      actual.__resetIdentitySalt();
+    }
+  });
+
+  /**
+   * 🔴 **503 の検出信号を呼んでいる（変異 M-R が生存した穴）。**
+   *
+   * この増分は `reportAttemptBudgetExceeded` / `reportAttemptStoreUnavailable` について
+   * 「信号を足しても**呼んでいることを縛らないと**外しても誰も気づかない」と書いて
+   * 専用の describe で縛っているのに、**3 つ目だけ入れ忘れていた** ——
+   * `secretUnavailableResponse` をログ無しの inline 503 へ置き換えても 25 本全部が緑だった。
+   * `CLAUDE.md` #788 の「同型の 2 本には対策を入れ、3 本目にだけ入れ忘れた」と同型である。
+   *
+   * 信号が落ちると、鍵欠落デプロイで**受付が止まっている理由がサーバログに一切残らない**。
+   */
+  it('🔴 503 のときサーバログに理由を残す（鍵名はログだけ・本文には出さない）', async () => {
+    __resetSecretUnavailableLog();
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+    assertIdentitySaltAvailable.mockImplementation(() => {
+      throw new Error('unset');
+    });
+    try {
+      const res = await post();
+      expect(res.status).toBe(503);
+      const logged = error.mock.calls.map((c) => String(c[0])).join('\n');
+      expect(logged, '鍵欠落の理由がログに残っていない').toContain('KIOSK_ENROLLMENT_SECRET');
+      // 🔴 下界: 鍵名は**本文には**出さない（未認証経路なので設定状態を漏らさない）。
+      expect(JSON.stringify(await res.json())).not.toContain('KIOSK_ENROLLMENT_SECRET');
+    } finally {
+      error.mockRestore();
+    }
+  });
+
+  /** 🔴 鍵が無いなら照合も予約もしない（未設定デプロイで帳簿を汚さない）。 */
+  it('🔴 鍵が解決できないなら照合も予約もしない', async () => {
+    assertIdentitySaltAvailable.mockImplementation(() => {
+      throw new Error('unset');
+    });
+    await post();
+    expect(verifyPin).not.toHaveBeenCalled();
+    expect(reserveLayeredSafely).not.toHaveBeenCalled();
+  });
+
+  /**
+   * 🔴 **catch の射程を広げない（#1123 と同じ形）。** 鍵**以外**の throw まで 503 に
+   * 化けると、実装バグが「設定漏れ」に見えて**原因に辿り着けなくなる**。
+   * 鍵の解決の**後**に走るものが落ちたときは、503 へ丸めずそのまま出す。
+   */
+  it('🔴 鍵以外の throw は 503 に化けない', async () => {
+    reserveLayeredSafely.mockRejectedValue(new Error('unexpected implementation bug'));
+    await expect(post()).rejects.toThrow('unexpected implementation bug');
+  });
+
+  /** 🔴 下界: 鍵が解決できる通常経路では 503 にしない。 */
+  it('🔴 鍵が解決できれば通常どおり通す（下界）', async () => {
+    const res = await post();
+    expect(res.status).toBe(200);
   });
 });

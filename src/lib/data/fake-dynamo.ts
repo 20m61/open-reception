@@ -62,6 +62,12 @@ export class FakeDoc {
           if (notExists) return cur === undefined || cur[names[notExists[1] ?? ''] ?? ''] === undefined;
           const exists = t.match(/^attribute_exists\((#\w+)\)$/);
           if (exists) return cur != null && cur[names[exists[1] ?? ''] ?? ''] !== undefined;
+          // 値の一致（`Singleton.putIf` #1158）。記録が無ければ不成立（DynamoDB と同じ）。
+          const eq = t.match(/^(#\w+) = (:\w+)$/);
+          if (eq) {
+            const values = (input.ExpressionAttributeValues as Item) ?? {};
+            return cur != null && cur[names[eq[1] ?? ''] ?? ''] === values[eq[2] ?? ''];
+          }
           // 未対応の式を「条件不成立」に倒すと、次に別の条件式を使ったとき**偽の 409**になる。
           throw new Error(`FakeDoc: unsupported ConditionExpression '${t}'`);
         });

@@ -48,7 +48,7 @@ increment 1（#136）でドメイン定義・担当者 UI・受付端末ポー�
 
 `GET /api/staff/calls/:id/respond?token=`（inc2 で追加）: 担当者 UI が無効種別をボタンに出さない
 ために、有効/無効を含む種別メタ（種別・担当者ラベル・トーン・確認要否・有効）のみを返す。
-来訪者文言・PII は返さない。`StaffResponseActions` は起動時にこれを取得し、失敗時は
+来訪者文言・PII は返さない。`StaffCallView` の `useStaffResponseActions` が起動時にこれを取得し（#1137 で子から持ち上げた）、`StaffResponseActions` はそれを受け取って、失敗時は
 ドメイン既定（`defaultEnabled`）にフォールバックする。
 
 ## 監査・プライバシー

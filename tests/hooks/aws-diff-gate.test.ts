@@ -7,18 +7,22 @@
  * 「Status を見ずに Changes だけで判定すると fail-open になる」（2026-08-12 レビュー）を固定する。
  */
 import { spawnSync } from 'node:child_process';
-import { writeFileSync } from 'node:fs';
+// 🔴 **下のマーカーの実効範囲は「その行」ではなく**、検出器が import 行だけを報告する以上
+//    **ファイル全体**である（レビュー 2 周目 BLOCKER 2）。つまりこのファイル内で
+//    `tmpdir()` から実際に作る退行は報告されない。**未修正** —— 検出の方式自体を
+//    どうするかが未決なので、粒度だけを弄っても族は塞がらない（PR #1140 / #1136 に記録）。
+// temp-ok: 存在しないパスを渡す negative case（326/359 行）のためだけに使う。作らない。
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
+import { makeTempFile } from '../helpers/temp';
 
 const CLI = resolve(process.cwd(), 'scripts/aws-diff-gate.ts');
 const STACK = 'OpenReception-Web-dev';
 
 function writeJson(value: unknown): string {
-  const path = join(tmpdir(), `aws-diff-gate-test-${process.pid}-${Math.random().toString(36).slice(2)}.json`);
-  writeFileSync(path, JSON.stringify(value));
-  return path;
+  // 🔴 一時ファイルは helper 経由で作る（後始末が afterEach に載る。#1136）。
+  return makeTempFile('aws-diff-gate-test-', JSON.stringify(value));
 }
 
 const writeChangeSet = writeJson;
@@ -323,6 +327,7 @@ describe('synth テンプレートを読んで carve-out を制動する (#680 R
 
   it('🔴 テンプレートが読めなければ「検査なしで green」ではなく停止する', () => {
     const path = writeChangeSet(roleChangeSet('CustomEvilRole'));
+    // 存在しないパスを渡す negative case（作らないので回収も要らない。マーカーは不要）。
     const { status, stderr, stdout } = run(path, STACK, join(tmpdir(), 'no-such-template.json'));
     expect(status).not.toBe(0);
     expect(stderr).toContain('synth テンプレートを読めません');
@@ -355,6 +360,7 @@ describe('synth テンプレートを読んで carve-out を制動する (#680 R
       StatusReason: "The submitted information didn't contain changes.",
       Changes: [],
     });
+    // 存在しないパスを渡す negative case（作らないので回収も要らない。マーカーは不要）。
     const { status, stdout } = run(path, STACK, join(tmpdir(), 'no-such-template.json'));
     expect(status).toBe(0);
     expect(stdout).toContain('変更なし');

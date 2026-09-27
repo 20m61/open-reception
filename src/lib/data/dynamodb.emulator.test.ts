@@ -118,6 +118,29 @@ describe.skipIf(!ENABLED)('本番 DynamoDB バックエンド × 実エミュレ
   );
 
   it(
+    '🔴 Singleton.putIf の条件を実エンジンが評価すること（#1158。fake の述語に寄りかからない）',
+    async () => {
+      const s = backend.singleton<{ rev?: number; a: string }>(`it-security-${RUN}`);
+      // 未作成: 「版が無い」は成立し、「版 1」は成立しない（記録が無ければ `=` は偽）。
+      expect(await s.putIf({ rev: 2, a: 'no' }, { rev: 1 })).toBe(false);
+      expect(await s.get()).toBeUndefined();
+      expect(await s.putIf({ rev: 1, a: 'first' }, { rev: undefined })).toBe(true);
+      // 在る: 版が違えば書かない。版が無いことを期待しても書かない。
+      expect(await s.putIf({ rev: 9, a: 'lost' }, { rev: 2 })).toBe(false);
+      expect(await s.putIf({ rev: 9, a: 'lost' }, { rev: undefined })).toBe(false);
+      expect(await s.get()).toEqual({ rev: 1, a: 'first' });
+      // 一致すれば置き換える。同じ版を期待した 2 本目は負ける。
+      const [x, y] = await Promise.all([
+        s.putIf({ rev: 2, a: 'x' }, { rev: 1 }),
+        s.putIf({ rev: 2, a: 'y' }, { rev: 1 }),
+      ]);
+      expect([x, y].filter(Boolean)).toHaveLength(1);
+      expect((await s.get())?.a).toBe(x ? 'x' : 'y');
+    },
+    TIMEOUT,
+  );
+
+  it(
     'GSI1 が実在し、index 越しに引けること（テーブル形状と実装の一致）',
     async () => {
       const tenantA = `tenant-a-${RUN}`;

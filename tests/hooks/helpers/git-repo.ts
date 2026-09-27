@@ -8,9 +8,9 @@
  * 実際に指摘された）。入力を完全に制御できる一時リポジトリを作る。
  */
 import { execFileSync, spawnSync } from 'node:child_process';
-import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { chmodSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
+import { makeTempDir } from '../../helpers/temp';
 
 /** cwd が別リポジトリになるので、tsx はリポジトリ root の絶対パスで起動する。 */
 export const TSX = resolve(process.cwd(), 'node_modules/.bin/tsx');
@@ -33,7 +33,7 @@ export function cleanupTempDirs(): void {
 }
 
 function tempDir(prefix: string): string {
-  const dir = mkdtempSync(join(tmpdir(), prefix));
+  const dir = makeTempDir(prefix);
   created.push(dir);
   return dir;
 }

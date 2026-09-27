@@ -1,8 +1,8 @@
 import { execFileSync } from 'node:child_process';
-import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { cpSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
+import { makeTempDir } from '../helpers/temp';
 
 /**
  * `.open-next/` が無いときにゲートが**自分でビルドしてから** synth を検査することを固定する (#677)。
@@ -50,11 +50,15 @@ function runGate(options: {
   /** ビルドしても fresh にならない状況（ビルドが成功したのに前提が揃わない）。 */
   buildHeals?: boolean;
 }): GateRun {
-  const dir = mkdtempSync(join(tmpdir(), 'gate-open-next-'));
+  const dir = makeTempDir('gate-open-next-');
   mkdirSync(join(dir, 'scripts', 'lib'), { recursive: true });
   mkdirSync(join(dir, 'infra'), { recursive: true });
   mkdirSync(join(dir, 'bin'), { recursive: true });
   cpSync(resolve(REPO, 'scripts/quality-gate.sh'), join(dir, 'scripts/quality-gate.sh'));
+  // 🔴 **`gate-tooling.sh` も持っていく (#1136 AC4)。** 無いと temp 側の
+  //    `quality-gate.sh` が毎回 `No such file or directory` を stderr へ出し、
+  //    「どのテストが落ちたか分からない FAIL」の読み解きを難しくする（実測で 19 行）。
+  cpSync(resolve(REPO, 'scripts/lib/gate-tooling.sh'), join(dir, 'scripts/lib/gate-tooling.sh'));
   cpSync(resolve(REPO, 'scripts/lib/gate-stamp.sh'), join(dir, 'scripts/lib/gate-stamp.sh'));
   execFileSync('git', ['init', '-q'], { cwd: dir });
 

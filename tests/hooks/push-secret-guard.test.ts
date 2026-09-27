@@ -11,11 +11,11 @@
  * 検証は使い捨ての一時 git リポジトリを cwd にして実際にフックを起動する。
  */
 import { execFileSync, spawnSync } from 'node:child_process';
-import { mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { missingToolTestPrerequisiteMessage } from '../../src/domain/governance/gate-tooling';
+import { makeTempDir } from '../helpers/temp';
 
 /**
  * 🔴 **既定の 5 秒では足りない。**
@@ -114,7 +114,7 @@ function assertGitleaksAvailable(pathEnv: string = process.env.PATH ?? ''): void
 
 /** gitleaks を含まない PATH を作る（他の必須コマンドは実体を symlink する）。 */
 function pathWithoutGitleaks(): string {
-  const dir = mkdtempSync(join(tmpdir(), 'no-gitleaks-path-'));
+  const dir = makeTempDir('no-gitleaks-path-');
   for (const bin of ['git', 'jq', 'perl', 'tr', 'grep', 'cat', 'bash', 'sh']) {
     const real = execFileSync(BASH, ['-c', `command -v ${bin}`], { encoding: 'utf8' }).trim();
     symlinkSync(real, join(dir, bin));
@@ -131,7 +131,7 @@ function pathWithoutGitleaks(): string {
  * 中身を実行しない（アサートは `command -v` しか見ない）ので、本物の gitleaks は要らない。
  */
 function pathWithGitleaks(): string {
-  const dir = mkdtempSync(join(tmpdir(), 'with-gitleaks-path-'));
+  const dir = makeTempDir('with-gitleaks-path-');
   writeFileSync(join(dir, 'gitleaks'), '#!/bin/sh\nexit 0\n', { mode: 0o755 });
   return dir;
 }
@@ -165,7 +165,7 @@ function pathWithGitleaks(): string {
 const FAKE_AWS_KEY = ['AKIA', 'TESTFAKEKEY', '23456'].join('');
 
 beforeEach(() => {
-  repo = mkdtempSync(join(tmpdir(), 'push-secret-guard-'));
+  repo = makeTempDir('push-secret-guard-');
   initRepo(repo);
 });
 
@@ -196,7 +196,7 @@ describe('push-secret-guard: 対象外は素通しする', () => {
   });
 
   it('git リポジトリ外では判定できないので通す', () => {
-    const outside = mkdtempSync(join(tmpdir(), 'not-a-repo-'));
+    const outside = makeTempDir('not-a-repo-');
     try {
       expect(runHook('git push', { cwd: outside }).status).toBe(0);
     } finally {

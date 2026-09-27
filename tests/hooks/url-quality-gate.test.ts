@@ -9,10 +9,10 @@
  * 必ず嘘をつく。`PATH` を差し替えて**観測そのものを固定**する。
  */
 import { spawnSync } from 'node:child_process';
-import { chmodSync, mkdtempSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { chmodSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
+import { makeTempDir } from '../helpers/temp';
 
 const SCRIPT = resolve(process.cwd(), 'scripts/url-quality-gate.sh');
 /** 接続拒否になるアドレス。DNS も外部ネットワークも使わない。 */
@@ -44,7 +44,7 @@ const ABSENT_DOCKER = '/nonexistent/urlgate-absent-docker';
  * ―― 変異検証で M2（終了コードだけで判定へ戻す）が生存して分かった。
  */
 function fakeDockerDir(infoOk: boolean): string {
-  const dir = mkdtempSync(join(tmpdir(), 'urlgate-docker-'));
+  const dir = makeTempDir('urlgate-docker-');
   const bin = join(dir, 'docker');
   // run は必ず exit 1 —— zap-baseline.py の「高リスク検出」と同じコード。
   // レポートは書かない（＝ zap は一度も走っていない）。
@@ -178,7 +178,7 @@ describe('url-quality-gate.sh', () => {
      * @param writesReport lhci が outputDir に結果を書いたことにするか
      */
     function fakeNpxDir(writesReport: boolean): string {
-      const dir = mkdtempSync(join(tmpdir(), 'urlgate-npx-'));
+      const dir = makeTempDir('urlgate-npx-');
       const realNpx = spawnSync('bash', ['-lc', 'command -v npx'], {
         encoding: 'utf8',
       }).stdout.trim();

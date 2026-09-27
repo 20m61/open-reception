@@ -19,10 +19,10 @@
  * 「emulator を reset して共有状態を持ち越さない」とも一致する。
  */
 import { spawnSync } from 'node:child_process';
-import { chmodSync, mkdtempSync, readFileSync, existsSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { chmodSync, readFileSync, existsSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
+import { makeTempDir } from '../helpers/temp';
 
 const ROOT = resolve(process.cwd());
 const SCRIPT = join(ROOT, 'scripts/local-aws.sh');
@@ -43,7 +43,7 @@ function writeExe(dir: string, name: string, body: string): void {
  * 「`run` で在る／`rm -f` で無くなる」を marker ファイルで模す。
  */
 function fakeEnv() {
-  const dir = mkdtempSync(join(tmpdir(), 'local-aws-self-'));
+  const dir = makeTempDir('local-aws-self-');
   const dockerLog = join(dir, 'docker.log');
   const lstkLog = join(dir, 'lstk.log');
   const exists = join(dir, 'container-exists');

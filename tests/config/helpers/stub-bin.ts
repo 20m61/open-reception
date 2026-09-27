@@ -12,9 +12,9 @@
  * `gh` は「呼ばれたら失敗する」偽物を置き、`gh` へ戻る退行を PATH の側から捕まえる。
  */
 import { execFileSync } from 'node:child_process';
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { chmodSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { makeTempDir } from '../../helpers/temp';
 
 /** 1 回分の応答。`curl -w '\n%{http_code}'` と同じ形（本文 + 改行 + 状態コード）で返す。 */
 export type StubResponse = { body: string; status: number };
@@ -64,7 +64,7 @@ function writeExecutable(path: string, body: string): void {
  * 「stdin で秘密を渡している」という主張が空虚に通る（実測で確認した欠陥）。
  */
 export function runScriptWithStubs(script: string, args: string[], options: StubOptions = {}): StubRun {
-  const dir = mkdtempSync(join(tmpdir(), 'stub-bin-'));
+  const dir = makeTempDir('stub-bin-');
   createdDirs.push(dir);
   const bin = join(dir, 'bin');
   mkdirSync(bin);

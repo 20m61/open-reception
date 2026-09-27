@@ -1,8 +1,8 @@
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { spawnSync } from 'node:child_process';
+import { makeTempDir } from '../helpers/temp';
 
 const ROOT = join(import.meta.dirname, '../..');
 
@@ -131,7 +131,7 @@ describe('gate-tooling の復旧 (#985)', () => {
   });
 
   it('🔴 欠けていたら両方を戻しにいく', () => {
-    const stub = mkdtempSync(join(tmpdir(), 'no-tools-'));
+    const stub = makeTempDir('no-tools-');
     try {
       const r = spawnSync('bash', [RESTORE], {
         encoding: 'utf8',
@@ -159,7 +159,7 @@ describe('gate-tooling の復旧 (#985)', () => {
    * `gate_tool_report` が欠落を名指しする。
    */
   it('🔴 取得に失敗しても exit 0（ただし黙らない）', () => {
-    const stub = mkdtempSync(join(tmpdir(), 'broken-curl-'));
+    const stub = makeTempDir('broken-curl-');
     try {
       writeFileSync(join(stub, 'curl'), '#!/bin/sh\nexit 1\n', { mode: 0o755 });
       writeFileSync(join(stub, 'pip'), '#!/bin/sh\nexit 1\n', { mode: 0o755 });
@@ -178,7 +178,7 @@ describe('gate-tooling の復旧 (#985)', () => {
   });
 
   it('明示的に止められる（オフライン環境向け）', () => {
-    const stub = mkdtempSync(join(tmpdir(), 'no-tools-'));
+    const stub = makeTempDir('no-tools-');
     try {
       const r = spawnSync('bash', [RESTORE], {
         encoding: 'utf8',

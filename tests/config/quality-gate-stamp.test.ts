@@ -1,8 +1,8 @@
 import { execFileSync } from 'node:child_process';
-import { cpSync, existsSync, mkdtempSync, mkdirSync, readFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { cpSync, existsSync, mkdirSync, readFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
+import { makeTempDir } from '../helpers/temp';
 
 /**
  * 「検証できなかったステップ」があるとき green として**記録しない**ことを固定する (#640)。
@@ -45,7 +45,7 @@ function runIsolated(
   stampExists: boolean;
   stamp: string;
 } {
-  const dir = mkdtempSync(join(tmpdir(), 'gate-stamp-'));
+  const dir = makeTempDir('gate-stamp-');
   mkdirSync(join(dir, 'scripts', 'lib'), { recursive: true });
   cpSync(resolve(REPO, 'scripts/quality-gate.sh'), join(dir, 'scripts/quality-gate.sh'));
   cpSync(resolve(REPO, 'scripts/lib/gate-stamp.sh'), join(dir, 'scripts/lib/gate-stamp.sh'));
@@ -200,7 +200,7 @@ describe('quality-gate: change-risk の判定保留を green にしない (#713)
     //
     // このテストだけに掛ける —— 全 `runIsolated` に広げると、他のケースまで
     // cache-cold になって別の経路を通る（実際に踏んだ）。
-    const npmCache = mkdtempSync(join(tmpdir(), 'gate-stamp-npm-cache-'));
+    const npmCache = makeTempDir('gate-stamp-npm-cache-');
     const r = runIsolated('change-risk-invoke', { npm_config_cache: npmCache });
     expect(r.stampExists).toBe(false);
     expect(r.status).not.toBe(0);

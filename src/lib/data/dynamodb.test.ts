@@ -259,6 +259,20 @@ describe('DynamoBackend singleton', () => {
     expect(raw.PK).toBe('config');
     expect(raw.SK).toBe('voice');
   });
+
+  /**
+   * 🔴 **consistentRead を指定した singleton だけが強い整合性で読む (#1158)。** 条件付き書き込みの
+   * 版を読む security は、結果整合性の読みで古い版を掴むと直後の保存が 409 になる。
+   * MiniStack は強整合なので差が出ない —— 送った要求で縛る。指定しない singleton は従来どおり（下界）。
+   */
+  it('consistentRead を指定したときだけ GetCommand に ConsistentRead: true を付ける', async () => {
+    const { backend, fake } = makeBackend();
+    await backend.singleton<{ a: number }>('security', { consistentRead: true }).get();
+    await backend.singleton<{ a: number }>('voice').get();
+    const gets = fake.calls.filter((c) => c.name === 'GetCommand').map((c) => c.input);
+    expect(gets[0]).toMatchObject({ ConsistentRead: true });
+    expect(gets[1]?.ConsistentRead).toBeUndefined();
+  });
 });
 
 describe('DynamoBackend log', () => {

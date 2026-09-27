@@ -19,10 +19,10 @@
  *   インターロックが `aws` 呼び出しより先に止めることを固定する。
  */
 import { spawnSync } from 'node:child_process';
-import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { chmodSync, existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
+import { makeSharedTempDir, makeTempDir } from '../helpers/temp';
 /**
  * 🔴 **検査前にコメント（と、必要なら文字列リテラル）を落とす。**
  *
@@ -124,26 +124,23 @@ describe('廃止した生 origin secret は全サブコマンドの先頭で止�
     // npm を置くので、検査が退行しても build / 品質ゲート（＝この test 自身）へは進まない。
     // さらに spawn に上限時間を付け、万一でも待ち続けない（file の testTimeout 30s に収める。
     // SIGKILL は bash 本体にしか届かず、孫プロセスは残りうる ―― 再帰の防止は stub が担う）。
-    const stubDir = mkdtempSync(join(tmpdir(), 'aws-cloud-deploy-stub-npm-'));
-    try {
-      const stub = join(stubDir, 'npm');
-      writeFileSync(stub, '#!/bin/sh\necho STUB_NPM_REACHED >&2\nexit 97\n');
-      chmodSync(stub, 0o755);
-      const result = spawnSync('bash', [WRAPPER, 'verify'], {
-        encoding: 'utf8',
-        stdio: ['ignore', 'pipe', 'pipe'],
-        env: { ...process.env, PATH: `${stubDir}:${process.env.PATH ?? ''}`, OR_ORIGIN_VERIFY_SECRET: RAW },
-        timeout: 25_000,
-        killSignal: 'SIGKILL',
-      });
-      expect(result.error).toBeUndefined();
-      expect(result.status).toBe(2);
-      expect(result.stderr).toContain('OR_ORIGIN_VERIFY_SECRET');
-      expect(result.stderr).not.toContain('STUB_NPM_REACHED');
-      expect(`${result.stdout}${result.stderr}`).not.toContain(RAW);
-    } finally {
-      rmSync(stubDir, { recursive: true, force: true });
-    }
+    // The helper collects it after this test (#1136): no try/finally cleanup needed.
+    const stubDir = makeTempDir('aws-cloud-deploy-stub-npm-');
+    const stub = join(stubDir, 'npm');
+    writeFileSync(stub, '#!/bin/sh\necho STUB_NPM_REACHED >&2\nexit 97\n');
+    chmodSync(stub, 0o755);
+    const result = spawnSync('bash', [WRAPPER, 'verify'], {
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'pipe'],
+      env: { ...process.env, PATH: `${stubDir}:${process.env.PATH ?? ''}`, OR_ORIGIN_VERIFY_SECRET: RAW },
+      timeout: 25_000,
+      killSignal: 'SIGKILL',
+    });
+    expect(result.error).toBeUndefined();
+    expect(result.status).toBe(2);
+    expect(result.stderr).toContain('OR_ORIGIN_VERIFY_SECRET');
+    expect(result.stderr).not.toContain('STUB_NPM_REACHED');
+    expect(`${result.stdout}${result.stderr}`).not.toContain(RAW);
   });
 
   it('空文字でも止める（存在そのものが問題）', () => {
@@ -331,7 +328,7 @@ describe('workingTreeClean は git status 失敗時に fail-closed する (Impor
    * `status --porcelain -uall` だけを意図的に失敗させ、それ以外（`rev-parse` 等）は
    * 実 git へ委譲する。これにより「git status だけが失敗した」状況を安全に作れる。
    */
-  const fakeBinDir = mkdtempSync(join(tmpdir(), 'aws-cloud-deploy-fake-bin-'));
+  const fakeBinDir = makeSharedTempDir('aws-cloud-deploy-fake-bin-');
 
   writeFileSync(
     join(fakeBinDir, 'aws'),

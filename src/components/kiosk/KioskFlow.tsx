@@ -1,5 +1,10 @@
 'use client';
 
+import {
+  authorizeFailureMessage,
+  authorizeStateFromResponse,
+  type AuthorizeState,
+} from './authorize-outcome';
 import { asCallResult, asCreatedReception } from '@/domain/reception/parse';
 import { callFailureReasonFrom } from '@/domain/reception/call-failure';
 import {
@@ -1308,7 +1313,7 @@ export function KioskFlow({
           </div>
         </div>
       ) : view === 'authorize' ? (
-        <KioskAuthorizeView onAuthorized={markAuthorized} />
+        <KioskAuthorizeView onAuthorized={markAuthorized} locale={locale} />
       ) : view === 'unenrolled' ? (
         <KioskUnenrolledView />
       ) : view === 'checking' ? (
@@ -1532,16 +1537,30 @@ export function KioskFlow({
   );
 }
 
-function KioskAuthorizeView({ onAuthorized }: { onAuthorized: () => void }) {
+/**
+ * 🔴 **失敗は原因を伴う (#1021 AC4)。** 以前は `boolean` で持ち、非 ok を全部
+ * 「PIN が正しくありません」にしていた。429（試行回数制限）が返りうるようになったので、
+ * それでは**正しい PIN を入れた来訪者に「PIN が違う」と言う**ことになる。
+ * 原因を別 state に分けて既定値で補うのではなく、**表現不能にしておく**
+ * （`StaffResponseActions` が #1123 で採ったのと同じ形）。
+ */
+function KioskAuthorizeView({
+  onAuthorized,
+  locale,
+}: {
+  onAuthorized: () => void;
+  // 🔴 文言は辞書から引く (#327)。来訪者が見る画面なので生の日本語を置かない。
+  locale: Locale;
+}) {
   const [pin, setPin] = useState('');
-  const [error, setError] = useState(false);
+  const [state, setState] = useState<AuthorizeState>({ kind: 'idle' });
   const [busy, setBusy] = useState(false);
 
   const submit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (busy) return;
     setBusy(true);
-    setError(false);
+    setState({ kind: 'idle' });
     try {
       const res = await fetch('/api/kiosk/authorize', {
         method: 'POST',
@@ -1550,10 +1569,17 @@ function KioskAuthorizeView({ onAuthorized }: { onAuthorized: () => void }) {
         // サーバが dev 既定へ倒す。以後の端末 ID はセッションが権威になる。
         body: JSON.stringify({ pin }),
       });
-      if (res.ok) onAuthorized();
-      else setError(true);
+      if (res.ok) {
+        onAuthorized();
+      } else {
+        // 🔴 **状態コードを見る。** 非 ok を一括で「PIN が違う」にしない (#1021 AC4)。
+        //    判定は `authorizeStateFromResponse` の 1 式に寄せてある（#826 の教訓。
+        //    配線を変異させられる形にしないと、保証が丸ごと落ちても緑のままになる）。
+        setState(authorizeStateFromResponse(res.status, res.headers.get('retry-after')));
+      }
     } catch {
-      setError(true);
+      // 応答が返らなかった。**届いたか分かっていない**ので、PIN のせいにしない。
+      setState({ kind: 'error', failure: 'unreachable', retryAfterSec: undefined });
     } finally {
       setBusy(false);
     }
@@ -1576,9 +1602,16 @@ function KioskAuthorizeView({ onAuthorized }: { onAuthorized: () => void }) {
         onChange={(e) => setPin(e.target.value)}
         style={{ maxWidth: 280, textAlign: 'center' }}
       />
-      {error ? (
-        <p className="notice notice--danger" data-testid="kiosk-pin-error">
-          PIN が正しくありません。
+      {state.kind === 'error' ? (
+        // 🔴 `alert`（`status` ではない）。認可が進まなかったことは**割り込んで伝える**
+        //    —— 画面を見ていない来訪者が、黙ったまま何度も送信する形にしない。
+        <p
+          className="notice notice--danger"
+          role="alert"
+          data-testid="kiosk-pin-error"
+          data-failure={state.failure}
+        >
+          {authorizeFailureMessage(state.failure, state.retryAfterSec, locale)}
         </p>
       ) : null}
       <button type="submit" className="btn btn--primary" data-testid="kiosk-authorize" disabled={busy} aria-busy={busy}>
