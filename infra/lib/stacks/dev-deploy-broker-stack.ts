@@ -29,44 +29,54 @@ export const nodeEval = (script: string): string => {
 export const VALIDATION_EVIDENCE_SCRIPT = [
   'const fs=require("fs");',
   'const revision=process.env.OR_TRUSTED_SOURCE_REVISION;',
-  'if(typeof revision!=="string"||!/^[0-9a-f]{40}$/i.test(revision)){throw new Error("trusted source revision missing or invalid")}',
+  'if(typeof revision!=="string"||!/^[0-9a-f]{40}$/.test(revision)){throw new Error("trusted source revision missing or invalid")}',
   'const out={schemaVersion:1,sourceRevision:revision,validationBuildArn:process.env.CODEBUILD_BUILD_ARN||"unknown",observedAt:new Date().toISOString(),status:"validation-complete"};',
   'fs.writeFileSync("broker-evidence.json",JSON.stringify(out,null,2));',
 ].join(' ');
 
-/** Broker: candidate-produced evidence must name exactly the trusted pipeline CommitId. */
+/** Trusted revision shape: a full 40-hex commit SHA (short or missing values fail closed). */
+const FULL_SHA_CHECK =
+  'const isFullSha=(v)=>typeof v==="string"&&/^[0-9a-f]{40}$/.test(v);';
+
+/**
+ * Broker: candidate-produced evidence must name exactly the trusted pipeline CommitId.
+ * Both sides must be full 40-hex SHAs; a stale/substituted artifact that declares another
+ * revision, a short SHA, or no revision is rejected before the policy runs.
+ */
 export const BROKER_REVISION_CHECK_SCRIPT = [
   'const fs=require("fs");',
+  FULL_SHA_CHECK,
   'const e=JSON.parse(fs.readFileSync("broker-evidence.json","utf8"));',
   'const trusted=process.env.OR_TRUSTED_SOURCE_REVISION;',
-  'if(e.schemaVersion!==1||typeof trusted!=="string"||!trusted||e.sourceRevision!==trusted){throw new Error("validation evidence revision mismatch")}',
+  'if(!isFullSha(trusted)){throw new Error("trusted source revision missing or invalid")}',
+  'if(e===null||typeof e!=="object"||e.schemaVersion!==1||!isFullSha(e.sourceRevision)||e.sourceRevision!==trusted){throw new Error("validation evidence revision mismatch")}',
 ].join(' ');
 
-/** Broker: even an allowed static assembly cannot mutate yet. */
+/**
+ * Broker: even an allowed static assembly cannot mutate yet.
+ *
+ * Emits the Foundation safe-dev-deploy S11 minimum shape. `source_revision` is the trusted
+ * CodePipeline CommitId; `attempt_id` is the CodeBuild build id (unique per attempt, so two
+ * attempts on one revision differ); `decided_at` is the broker clock; `policy_version` binds the
+ * decision to the stack-owned policy (`POLICY_VERSION` reported by the trusted policy run, plus
+ * the content hash of the deployed policy asset). Missing inputs fail closed (no result file).
+ */
 export const BROKER_NOT_ARMED_RESULT_SCRIPT = [
   'const fs=require("fs");',
+  FULL_SHA_CHECK,
   'const sourceRevision=process.env.OR_TRUSTED_SOURCE_REVISION;',
-  'if(typeof sourceRevision!=="string"||!/^[0-9a-f]{40}$/i.test(sourceRevision)){throw new Error("trusted source revision missing or invalid")}',
-  'const result={result:"denied",source_revision:sourceRevision,stage:"broker-bootstrap",rule:"BROKER_NOT_ARMED",resource:null,reason:"Static trusted policy passed, but sparse ledger/live ChangeSet/role chain are intentionally not armed",retryable:false,evidence_ref:process.env.CODEBUILD_BUILD_ARN||"unknown"};',
+  'if(!isFullSha(sourceRevision)){throw new Error("trusted source revision missing or invalid")}',
+  'const attemptId=process.env.CODEBUILD_BUILD_ID;',
+  'if(typeof attemptId!=="string"||!attemptId){throw new Error("attempt id missing")}',
+  'const assetHash=process.env.OR_TRUSTED_POLICY_ASSET_HASH;',
+  'if(typeof assetHash!=="string"||!/^[0-9a-f]{64}$/.test(assetHash)){throw new Error("trusted policy asset hash missing or invalid")}',
+  'const policy=JSON.parse(fs.readFileSync("trusted-policy-result.json","utf8"));',
+  'if(policy===null||typeof policy!=="object"||policy.result!=="allowed"||!Number.isInteger(policy.policyVersion)){throw new Error("trusted policy result missing or not allowed")}',
+  'const result={result:"denied",source_revision:sourceRevision,attempt_id:attemptId,decided_at:new Date().toISOString(),policy_version:"trusted-policy@"+policy.policyVersion+"+sha256:"+assetHash,stage:"broker-bootstrap",rule:"BROKER_NOT_ARMED",resource:null,reason:"Static trusted policy passed, but sparse ledger/live ChangeSet/role chain are intentionally not armed",retryable:false,evidence_ref:process.env.CODEBUILD_BUILD_ARN||"unknown"};',
   'fs.writeFileSync("broker-result.json",JSON.stringify(result,null,2));',
   'console.log(JSON.stringify(result));',
 ].join(' ');
 
-/**
- * Dev deploy broker control plane (#1146).
- *
- * Security boundary:
- * - CodeConnections terminates in CodePipeline, not in candidate-code execution.
- * - Validation executes repository-controlled code but has no dev mutation/AssumeRole authority.
- * - Validation output (including cdk.out) remains untrusted input.
- * - Trusted Broker uses a buildspec and policy asset deployed with THIS stack; candidate source
- *   cannot replace either in the running broker.
- * - The broker independently evaluates the candidate cloud assembly.
- * - Mutation remains intentionally UNARMED: broker role has no sts:AssumeRole / CFN write authority.
- *
- * This stack is human/bootstrap-managed control-plane infrastructure and deliberately does not
- * match the autonomous OpenReception-*-dev workload stack allowlist.
- */
 export class DevDeployBrokerStack extends cdk.Stack {
   constructor(scope: Construct, id: string, props?: cdk.StackProps) {
     super(scope, id, props);
@@ -210,6 +220,7 @@ export class DevDeployBrokerStack extends cdk.Stack {
           OR_BROKER_TARGET_ACCOUNT: { value: cdk.Aws.ACCOUNT_ID },
           OR_TRUSTED_POLICY_BUCKET: { value: trustedPolicyAsset.s3BucketName },
           OR_TRUSTED_POLICY_KEY: { value: trustedPolicyAsset.s3ObjectKey },
+          OR_TRUSTED_POLICY_ASSET_HASH: { value: trustedPolicyAsset.assetHash },
         },
       },
       logging: {

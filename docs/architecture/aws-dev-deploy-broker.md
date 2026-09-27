@@ -42,6 +42,28 @@ flowchart TD
   T -. observe only .-> R
 ```
 
+## Synthesized resource names
+
+The names below are what `DevDeployBrokerStack` synthesizes. `infra/test/dev-deploy-broker-invariants.test.ts`
+fails when this list and the synthesized template diverge (a repository-side drift check; the
+broker-side S8 enforcement from the Foundation contract is **not** implemented yet).
+
+<!-- broker-resource-names:start -->
+| Kind | Name |
+| --- | --- |
+| CodePipeline (V1) | `OpenReceptionSparseDevDeploy` |
+| Stage | `Source` |
+| Stage | `Validate` |
+| Stage | `BrokerBoundary` |
+| Action | `Source/PromotionBranch` |
+| Action | `Validate/UnprivilegedValidation` |
+| Action | `BrokerBoundary/TrustedBrokerUnarmed` |
+| CodeBuild (candidate code) | `OpenReceptionDevDeployValidation` |
+| CodeBuild (trusted broker) | `OpenReceptionTrustedDevDeployBroker` |
+| IAM role (validation) | `OpenReceptionDevDeployValidationRole` |
+| IAM role (broker) | `OpenReceptionTrustedDevDeployBrokerRole` |
+<!-- broker-resource-names:end -->
+
 ## Branch strategy vs promotion strategy
 
 `dev-deploy` is **not** a normal development branch and does not introduce GitFlow.
@@ -132,6 +154,27 @@ Validation evidence and the cloud assembly are still candidate-produced, so a gr
 ## Phase 1 invariant
 
 The pipeline still ends at `BROKER_NOT_ARMED`. The Trusted Broker role has no `sts:AssumeRole` or CloudFormation mutation permission. Static policy can pass and mutation still cannot occur.
+
+### Phase 1 result shape (Foundation S11)
+
+The unarmed broker writes `broker-result.json` (and prints it) with:
+`result` (`denied`), `source_revision` (trusted CodePipeline `CommitId`, full 40-hex), `attempt_id`
+(`CODEBUILD_BUILD_ID`, unique per attempt), `decided_at` (broker clock, RFC3339), `policy_version`
+(`trusted-policy@<POLICY_VERSION>+sha256:<policy asset hash>`), `stage`, `rule` (`BROKER_NOT_ARMED`),
+`resource`, `reason`, `retryable` (`false`), `evidence_ref`. A missing trusted revision, attempt id,
+policy asset hash, or a non-`allowed` policy result writes no result and fails the build.
+Delivering this result to GitHub is not implemented yet.
+
+### Known residual risk (must be closed before arming)
+
+The revision check compares candidate-written evidence with the trusted `CommitId`. It rejects
+stale/honest mismatches, but it is **not** a cryptographic binding of the cloud assembly to that
+revision: candidate code in Validation can read `OR_TRUSTED_SOURCE_REVISION` and write matching
+evidence. In addition, the Validation role (CDK default grant for the output artifact) can write and
+delete any object in the pipeline artifact bucket, so candidate code of one execution could
+overwrite another execution's artifacts. While unarmed this cannot mutate AWS; before arming, the
+content that is deployed must be bound to the promoted revision independently of candidate-written
+files (e.g. broker-side verification or a narrower artifact write scope).
 
 ## Before mutation can be armed
 
