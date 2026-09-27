@@ -89,6 +89,34 @@ describe('trusted dev-deploy cloud assembly policy (#1146)', () => {
     expect(rules(assembly)).toContain('STACK_NOT_APPROVED');
   });
 
+  it('denies a production-named stack even when it reuses an approved template (dev-only reach)', () => {
+    const assembly = makeAssembly({}, (manifest) => {
+      const artifacts = manifest.artifacts as Record<string, unknown>;
+      artifacts['OpenReception-Web-prod'] = {
+        type: 'aws:cloudformation:stack',
+        environment: `aws://${ACCOUNT}/ap-northeast-1`,
+        properties: {
+          stackName: 'OpenReception-Web-prod',
+          templateFile: 'OpenReception-Web-dev.template.json',
+        },
+      };
+    });
+    const result = evaluate(assembly);
+    expect(result.result).toBe('denied');
+    expect(result.violations.map((v) => v.rule)).toContain('STACK_NOT_APPROVED');
+  });
+
+  it('fails closed with a non-zero exit and no allow when the account argument is missing or short', () => {
+    for (const account of ['', '12345']) {
+      expect(() =>
+        execFileSync(process.execPath, [POLICY, '--assembly', makeAssembly(), '--account', account], {
+          encoding: 'utf8',
+          stdio: ['ignore', 'pipe', 'pipe'],
+        }),
+      ).toThrow();
+    }
+  });
+
   it('denies an approved stack aimed at the wrong account or region', () => {
     const assembly = makeAssembly({}, (manifest) => {
       const artifacts = manifest.artifacts as Record<string, { environment: string }>;
