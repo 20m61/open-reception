@@ -255,7 +255,7 @@ export function VrmAvatarViewer({
           VRMUtils.deepDispose(gltf.scene);
           return;
         }
-        // `gltf.userData` は `any`。ここで型を付けないと以降の three-vrm API が全部無検査になる
+        // `gltf.userData.vrm` は `any`。ここで型を付けないと以降の three-vrm API が全部無検査になる
         // （VRM でない glTF を読んだときは undefined）。
         const vrm = gltf.userData.vrm as VRM | undefined;
         // 読込直後の公式手順（VRMUtils 最適化・frustumCulled・0.x の向き補正・lookAt proxy）。
@@ -356,29 +356,6 @@ export function VrmAvatarViewer({
             autoBlinkStateRef.current = autoBlinkFrame.state;
             blinkBaseWeight = autoBlinkFrame.weight;
           }
-          // 受付状態に応じた表情を expressionManager に適用（#31）。感情 preset のみを操作し、
-          // 口形素/瞬き/視線は触らない（リップシンク #5 と非干渉）。
-          const expressionManager = vrm?.expressionManager;
-          if (expressionManager) {
-            for (const { name, value } of emotionExpressionValues(expressionRef.current)) {
-              expressionManager.setValue(name, value);
-            }
-            // 簡易リップシンク（#5）+ 感情連動の重み合成（#31）: 発話中は口形素 `aa` を
-            // 時間ベースで開閉しつつ、感情付き表情中は口の開き重みを減衰させ、まばたきは
-            // 抑制する（表情と口パクの破綻回避。`domain/avatar/expression-blend` 参照）。
-            // blinkBaseWeight は auto-blink（#31 増分）が計算した周期的な生の重み。感情中の
-            // 抑制は resolveFrameExpressionWeights 内の既存合成が処理するため、ここでは
-            // 重複して抑制しない。
-            const frameWeights = resolveFrameExpressionWeights({
-              expression: expressionRef.current,
-              expressionIntensity: expressionIntensityRef.current,
-              speaking: speakingRef.current,
-              elapsedSec: clock.elapsedTime,
-              blinkBaseWeight,
-            });
-            expressionManager.setValue('aa', frameWeights.mouthAa);
-            expressionManager.setValue('blink', frameWeights.blink);
-          }
           // .vrma モーションが無いときは受付状態に応じた手続き的ポーズ/所作を適用する（#31）。
           // モーション再生中は AnimationMixer がボーンを駆動するため適用しない。
           const humanoid = vrm?.humanoid;
@@ -406,9 +383,33 @@ export function VrmAvatarViewer({
               if (node) node.rotation.set(rot.x ?? 0, rot.y ?? 0, rot.z ?? 0);
             }
           }
-          // 公式例と同じ順: mixer が正規化ボーン/表情/lookAt proxy を書き、vrm.update が
-          // humanoid → raw 転写・lookAt・expression・constraint・springBone を適用する。
+
+          // VRMA は body/head だけでなく expression track を持ち得るため先に評価する。
+          // runtime の受付状態・TTS が表情/口形素/blink の最終権威であり、アセット側の
+          // expression track に上書きされないよう facial controls は mixer.update の後へ置く。
           mixer.update(dt);
+
+          const expressionManager = vrm?.expressionManager;
+          if (expressionManager) {
+            // 受付状態に応じた感情 preset。対象以外も毎フレーム 0 に戻すため前状態を残さない。
+            for (const { name, value } of emotionExpressionValues(expressionRef.current)) {
+              expressionManager.setValue(name, value);
+            }
+            // 簡易リップシンク（#5）+ 感情連動の重み合成（#31）。VRMA が `aa` / `blink`
+            // track を持っていても、ここで現在の発話状態・auto-blink を最終値として適用する。
+            const frameWeights = resolveFrameExpressionWeights({
+              expression: expressionRef.current,
+              expressionIntensity: expressionIntensityRef.current,
+              speaking: speakingRef.current,
+              elapsedSec: clock.elapsedTime,
+              blinkBaseWeight,
+            });
+            expressionManager.setValue('aa', frameWeights.mouthAa);
+            expressionManager.setValue('blink', frameWeights.blink);
+          }
+
+          // mixer → runtime facial controls → vrm.update の順で、humanoid 転写・expression・
+          // constraint・springBone を 1 回だけ確定する。
           vrm?.update(dt);
           gl.render(scene, camera);
           // 最初のフレームを描いた事実だけを 1 回報告する（毎フレーム setState しない）。
