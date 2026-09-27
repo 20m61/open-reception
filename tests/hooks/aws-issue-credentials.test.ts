@@ -5,10 +5,10 @@
  * そこを機械で固定する。AWS へは接続しない（引数検証と本文の性質だけ見る）。
  */
 import { execFileSync, spawnSync } from 'node:child_process';
-import { readFileSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
-import { makeSharedTempDir } from '../helpers/temp';
 /**
  * 🔴 **R5（#680 残件）: このファイルにはコメント除去が 1 つも無かった。**
  * `--print` は usage コメント（5 行目）と 2 本の `echo` 文言にも現れ、
@@ -28,6 +28,16 @@ const source = readFileSync(SCRIPT, 'utf8');
 const code = stripBashComments(source);
 /** コメント＋文字列除去。エラー文言・usage に同じ語句があるもの（`--print`）を探すのに使う。 */
 const codeNoStrings = stripBashCommentsAndStrings(source);
+
+/** 一時ディレクトリで fn を走らせ、終わったら必ず消す（context ファイルの test 用）。 */
+function withTempDir<T>(prefix: string, fn: (dir: string) => T): T {
+  const dir = mkdtempSync(join(tmpdir(), prefix));
+  try {
+    return fn(dir);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
 
 function run(args: ReadonlyArray<string>, env: Record<string, string> = {}) {
   try {
@@ -227,24 +237,25 @@ describe('デプロイ context もクリップボードへ載せる (#989)', () 
   });
 
   it('🔴 context ファイルに残った廃止変数は --no-context を勧めずに止める (#1148)', () => {
-    const dir = makeSharedTempDir('aws-issue-credentials-retired-');
-    const file = join(dir, 'deploy-context.env');
-    const raw = 'raw-origin-verify-value-in-file';
-    writeFileSync(
-      file,
-      [
-        'OR_APP_SECRETS_NAME=open-reception/dev/app-v2',
-        'OR_PUBLIC_ORIGIN_OVERRIDE=https://example.cloudfront.net',
-        'OR_PROVIDER_SECRET_BACKEND=secrets-manager',
-        `OR_ORIGIN_VERIFY_SECRET=${raw}`,
-      ].join('\n'),
-    );
-    const { status, stderr } = run(['--hours', '1'], { OR_DEPLOY_CONTEXT_FILE: file });
-    expect(status).not.toBe(0);
-    expect(stderr).toContain('OR_ORIGIN_VERIFY_SECRET');
-    expect(stderr).not.toContain('--no-context');
-    expect(stderr).not.toContain('VITEST');
-    expect(stderr).not.toContain(raw);
+    withTempDir('aws-issue-credentials-retired-', (dir) => {
+      const file = join(dir, 'deploy-context.env');
+      const raw = 'raw-origin-verify-value-in-file';
+      writeFileSync(
+        file,
+        [
+          'OR_APP_SECRETS_NAME=open-reception/dev/app-v2',
+          'OR_PUBLIC_ORIGIN_OVERRIDE=https://example.cloudfront.net',
+          'OR_PROVIDER_SECRET_BACKEND=secrets-manager',
+          `OR_ORIGIN_VERIFY_SECRET=${raw}`,
+        ].join('\n'),
+      );
+      const { status, stderr } = run(['--hours', '1'], { OR_DEPLOY_CONTEXT_FILE: file });
+      expect(status).not.toBe(0);
+      expect(stderr).toContain('OR_ORIGIN_VERIFY_SECRET');
+      expect(stderr).not.toContain('--no-context');
+      expect(stderr).not.toContain('VITEST');
+      expect(stderr).not.toContain(raw);
+    });
   });
 
   it('🔴 --no-context でも廃止変数は検査する (#1148)', () => {
@@ -260,18 +271,19 @@ describe('デプロイ context もクリップボードへ載せる (#989)', () 
   });
 
   it('🔴 --no-context でも context ファイルに残った廃止変数を検査する (#1148)', () => {
-    const dir = makeSharedTempDir('aws-issue-credentials-retired-nc-');
-    const file = join(dir, 'deploy-context.env');
-    const raw = 'raw-origin-verify-value-in-file-no-context';
-    writeFileSync(file, `OR_ORIGIN_VERIFY_SECRET=${raw}\n`);
-    const { status, stderr } = run(['--hours', '1', '--no-context'], { OR_DEPLOY_CONTEXT_FILE: file });
-    expect(status).not.toBe(0);
-    expect(stderr).toContain('OR_ORIGIN_VERIFY_SECRET');
-    // 終了コード 3 を「廃止変数」として読み分けている（検査を実行できない、とは言わない）。
-    expect(stderr).toContain('廃止された変数が残っているため');
-    expect(stderr).not.toContain('検査を実行できない');
-    expect(stderr).not.toContain('VITEST');
-    expect(stderr).not.toContain(raw);
+    withTempDir('aws-issue-credentials-retired-nc-', (dir) => {
+      const file = join(dir, 'deploy-context.env');
+      const raw = 'raw-origin-verify-value-in-file-no-context';
+      writeFileSync(file, `OR_ORIGIN_VERIFY_SECRET=${raw}\n`);
+      const { status, stderr } = run(['--hours', '1', '--no-context'], { OR_DEPLOY_CONTEXT_FILE: file });
+      expect(status).not.toBe(0);
+      expect(stderr).toContain('OR_ORIGIN_VERIFY_SECRET');
+      // 終了コード 3 を「廃止変数」として読み分けている（検査を実行できない、とは言わない）。
+      expect(stderr).toContain('廃止された変数が残っているため');
+      expect(stderr).not.toContain('検査を実行できない');
+      expect(stderr).not.toContain('VITEST');
+      expect(stderr).not.toContain(raw);
+    });
   });
 
   it('deploy-context-block.ts は未知の引数（ダッシュ付きの綴り違いなど）で context を出さずに止まる', () => {
