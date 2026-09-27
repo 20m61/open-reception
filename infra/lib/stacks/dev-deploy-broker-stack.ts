@@ -9,6 +9,7 @@ import * as actions from 'aws-cdk-lib/aws-codepipeline-actions';
 import * as dynamodb from 'aws-cdk-lib/aws-dynamodb';
 import * as iam from 'aws-cdk-lib/aws-iam';
 import * as logs from 'aws-cdk-lib/aws-logs';
+import * as s3 from 'aws-cdk-lib/aws-s3';
 import * as s3assets from 'aws-cdk-lib/aws-s3-assets';
 
 export const DEV_DEPLOY_PROMOTION_BRANCH = 'dev-deploy';
@@ -89,6 +90,9 @@ export const SPARSE_LEDGER_BROKER_ACTIONS = [
   'dynamodb:PutItem',
   'dynamodb:UpdateItem',
 ] as const;
+
+/** Days a pipeline artifact (candidate source archive / cloud assembly) is kept (pre-arming blocker 5). */
+export const PIPELINE_ARTIFACT_RETENTION_DAYS = 7;
 
 /** Broker-local download target of the trusted policy (outside the candidate artifact tree). */
 export const TRUSTED_POLICY_LOCAL_PATH = '/tmp/open-reception-trusted-policy.mjs';
@@ -344,15 +348,36 @@ export class DevDeployBrokerStack extends cdk.Stack {
       }),
     );
 
+    // Build logs are audit evidence, so they outlive the stack (RETAIN). They have no fixed name
+    // (pre-arming blocker 6): a retained group with a fixed name makes deleting and recreating
+    // the stack fail on a name conflict. The names below that stay fixed (roles, projects,
+    // pipeline) are deleted with the stack and give the future ADR 0009 trust a stable ARN.
     const validationLogs = new logs.LogGroup(this, 'ValidationLogs', {
-      logGroupName: '/aws/codebuild/open-reception-dev-deploy-validation',
       retention: logs.RetentionDays.ONE_MONTH,
       removalPolicy: cdk.RemovalPolicy.RETAIN,
     });
     const brokerLogs = new logs.LogGroup(this, 'BrokerLogs', {
-      logGroupName: '/aws/codebuild/open-reception-trusted-dev-deploy-broker',
       retention: logs.RetentionDays.ONE_MONTH,
       removalPolicy: cdk.RemovalPolicy.RETAIN,
+    });
+
+    // Pipeline artifacts are candidate output (source archive, cloud assembly). They are only
+    // useful to the execution that produced them, so they expire (pre-arming blocker 5): no
+    // unbounded cost, and no long-lived pool of stale artifacts for a later execution to reuse.
+    // Same encryption / public-access / TLS settings as the CDK default pipeline bucket.
+    const artifactBucket = new s3.Bucket(this, 'PipelineArtifacts', {
+      encryption: s3.BucketEncryption.S3_MANAGED,
+      blockPublicAccess: s3.BlockPublicAccess.BLOCK_ALL,
+      enforceSSL: true,
+      removalPolicy: cdk.RemovalPolicy.RETAIN,
+      lifecycleRules: [
+        {
+          id: 'ExpireCandidateArtifacts',
+          enabled: true,
+          expiration: cdk.Duration.days(PIPELINE_ARTIFACT_RETENTION_DAYS),
+          abortIncompleteMultipartUploadAfter: cdk.Duration.days(1),
+        },
+      ],
     });
 
     const validationProject = new codebuild.PipelineProject(this, 'ValidationProject', {
@@ -468,6 +493,7 @@ export class DevDeployBrokerStack extends cdk.Stack {
     const pipeline = new codepipeline.Pipeline(this, 'Pipeline', {
       pipelineName: 'OpenReceptionSparseDevDeploy',
       pipelineType: codepipeline.PipelineType.V1,
+      artifactBucket,
       crossAccountKeys: false,
       restartExecutionOnUpdate: false,
     });
